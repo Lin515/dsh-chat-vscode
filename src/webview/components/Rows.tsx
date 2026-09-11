@@ -10,8 +10,8 @@ import { formatDuration, formatTokens, Row, useStickyBody } from "./primitives";
 import { useTexts, resolveText } from "../texts";
 import {
   IconAlert,
-  IconBrain,
   IconCheck,
+  IconDsh,
   IconExternal,
   IconFile,
   IconGlobe,
@@ -135,7 +135,16 @@ export function ThinkingRow({
 
   return (
     <Row
-      icon={<IconBrain size={13} />}
+      // 流式思考中发光，结束后恢复常态
+      icon={
+        streaming ? (
+          <span className="icon-glow">
+            <IconDsh size={14} />
+          </span>
+        ) : (
+          <IconDsh size={14} />
+        )
+      }
       title={texts.thinking}
       detail={firstLine}
       meta={durationMs ? formatDuration(durationMs) : undefined}

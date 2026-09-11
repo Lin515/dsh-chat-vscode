@@ -3,9 +3,9 @@ import type { CommandView, FileRefView } from "../../shared/chat";
 import type { AppState } from "../state";
 import { post } from "../bridge";
 import {
-  IconBrain,
   IconChevronDown,
   IconClose,
+  IconDsh,
   IconImage,
   IconShield,
   IconShieldCheck,
@@ -13,7 +13,7 @@ import {
   IconSparkles,
   IconStop,
 } from "../icons";
-import { CtxText, Popover, formatDuration } from "./primitives";
+import { CtxText, Ellipsis, Popover, formatDuration } from "./primitives";
 import { fill, useTexts } from "../texts";
 
 /** 权限模式的展示定义：图标固定用盾牌（WebUI 未提供专用图标），文案与 WebUI 对齐。 */
@@ -287,6 +287,19 @@ export function Composer({ state, onDraft }: { state: AppState; onDraft: (text: 
         </div>
       ) : null}
       <Lump state={state} waitingApproval={waitingApproval} waitingQuestion={waitingQuestion} />
+
+      {/* 运行状态：会话底部一行无边框文字；等待审批/提问时 agent 暂停，
+          不该说「生成中」；队列消息与它并存（不再互相覆盖） */}
+      {state.running && !waitingApproval && !waitingQuestion ? (
+        <div className="running-line">
+          <span className="lump-thinking" aria-hidden>
+            <IconDsh size={13} />
+          </span>
+          <span>{texts.running}</span>
+          <Ellipsis />
+          <span className="lump-hint">{texts.runningHint}</span>
+        </div>
+      ) : null}
 
       {/* 触发词候选：浮在输入框上方 */}
       {trigger && (candidates.length > 0 || trigger.kind === "mention") ? (
@@ -646,18 +659,6 @@ function Lump({
         <span>{texts.waitingQuestion}</span>
         <span className="spacer" />
         <span className="lump-hint">{texts.waitingQuestionHint}</span>
-      </div>
-    );
-  }
-  if (state.running) {
-    return (
-      <div className="lump">
-        <span className="lump-thinking" aria-hidden>
-          <IconBrain size={13} />
-        </span>
-        <span>{texts.running}</span>
-        <span className="spacer" />
-        <span className="lump-hint">{texts.runningHint}</span>
       </div>
     );
   }

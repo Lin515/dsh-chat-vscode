@@ -795,7 +795,8 @@
 /* 发送栏：只留权限图标 + 发送，其余工具按钮/上下文文字/tps 隐藏 */
 .app.is-mini .pill[data-mini="hide"],
 .app.is-mini .ctx-text,
-.app.is-mini .ctx-speed {
+.app.is-mini .ctx-speed,
+.app.is-mini .running-line .lump-hint {
   display: none;
 }
 .app.is-mini .composer-bar {
@@ -902,12 +903,42 @@
   opacity: 0.75;
 }
 
-/* 运行中状态条的「思考」图标：复用 dot-pulse 的呼吸节奏 */
+/* 运行状态：会话底部一行无边框文字（图标 + 生成中… + 提示） */
+.running-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 7px;
+  padding: 2px 8px;
+  font-size: var(--font-size-2xs);
+  color: var(--description);
+}
+
+/* 运行中状态条的「思考」图标：思考时发光 */
 .lump-thinking {
   flex: 0 0 auto;
   display: inline-flex;
   color: var(--info);
-  animation: dot-pulse 1.4s ease-in-out infinite;
+  animation: icon-glow 1.6s ease-in-out infinite;
+}
+
+/* 思考图标发光：drop-shadow 呼吸（运行状态条、流式思考行共用） */
+.icon-glow {
+  display: inline-flex;
+  color: var(--info);
+  animation: icon-glow 1.6s ease-in-out infinite;
+}
+
+@keyframes icon-glow {
+  0%,
+  100% {
+    filter: drop-shadow(0 0 0 transparent);
+    opacity: 0.7;
+  }
+  50% {
+    filter: drop-shadow(0 0 3px var(--info));
+    opacity: 1;
+  }
 }
 
 /* 计划模式挂起提示条：叠在缺口状态条之上（下边框补回，与输入框保持间隔） */
