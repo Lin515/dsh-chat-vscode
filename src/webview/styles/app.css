@@ -662,10 +662,12 @@
 }
 
 /* 运行中的节点：与思考节点的 `.icon-glow` 用**同一组关键帧**，呼吸节奏一致。
-   小圆点只有 7px，纯透明度变化在长任务里太不显眼，加一层 drop-shadow 才看得出
-   「还在跑」（构建动辄几分钟，这是唯一的活性信号）。 */
+   小圆点只有 7px，纯透明度变化在长任务里太不显眼，所以再给它一圈**常驻光晕**
+   （box-shadow 会跟着元素 opacity 一起呼吸）——「亮着」由光晕表达，「在呼吸」由动画
+   表达。这样即使动画被抑制，圆点也仍是亮的，不会退化成一块死蓝。 */
 .dot-running {
   background: var(--info);
+  box-shadow: 0 0 4px 2px color-mix(in srgb, var(--info) 38%, transparent);
   animation: icon-glow 1.6s ease-in-out infinite;
 }
 
@@ -1087,6 +1089,15 @@
   animation: icon-glow 1.6s ease-in-out infinite;
 }
 
+/* 思考节点的鲸鱼：**思考结束后仍是蓝色**，只是不再呼吸。
+   与 .icon-glow 同一个蓝（--info），区别只在有无动画——「还在思考」用动效表达，
+   「这是个思考节点」用颜色表达。若走 .row-icon 的默认灰，节点就只剩下标题能认了。
+   刻意不复用 .icon-glow：思考已结束却持续呼吸会误示「仍在活动」。 */
+.icon-brand {
+  display: inline-flex;
+  color: var(--info);
+}
+
 @keyframes icon-glow {
   0%,
   100% {
@@ -1203,10 +1214,14 @@
   background-size: 200% 200%;
 }
 
+/* 降低动效偏好：只抑制**装饰性**动画（转圈、省略号）。
+   活性指示器（思考鲸鱼的 .icon-glow、运行节点的 .dot-running）**刻意不抑制**：
+   它们是长任务里「还在跑」的唯一信号，属于功能性动效而非装饰；而且两者必须同等对待
+   ——曾经这里只列了 .dot-running 而漏了 .icon-glow，在开启「减少动画」的系统上
+   就变成「鲸鱼在呼吸、圆点纹丝不动」，用户会以为任务卡死了。 */
 @media (prefers-reduced-motion: reduce) {
   .spinner,
-  .ellipsis::after,
-  .dot-running {
+  .ellipsis::after {
     animation: none;
   }
 }

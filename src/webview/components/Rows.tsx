@@ -179,15 +179,12 @@ export function ThinkingRow({
 
   return (
     <Row
-      // 流式思考中发光，结束后恢复常态
+      // 鲸鱼恒为品牌蓝：思考中额外呼吸发光，结束后保持蓝色静置
+      // （不回落成 .row-icon 的灰色——那样节点只剩标题可辨）
       icon={
-        streaming ? (
-          <span className="icon-glow">
-            <IconDsh size={14} />
-          </span>
-        ) : (
+        <span className={streaming ? "icon-glow" : "icon-brand"}>
           <IconDsh size={14} />
-        )
+        </span>
       }
       title={texts.thinking}
       detail={firstLine}

@@ -91,7 +91,60 @@ console.log("styles: 5 档以上用 grid 定列 ✓");
   assert.ok(/animation:\s*icon-glow/.test(dot), ".dot-running 应复用 icon-glow 关键帧");
   assert.ok(/animation:\s*icon-glow/.test(glow), ".icon-glow 应使用 icon-glow 关键帧");
   assert.ok(/@keyframes\s+icon-glow/.test(css), "icon-glow 关键帧必须存在");
+
+  // 小圆点只有 7px，纯透明度变化太不显眼：必须有常驻光晕，且动画被抑制时它仍在
+  assert.ok(
+    /box-shadow:/.test(dot),
+    ".dot-running 必须有常驻光晕——7px 的圆点只靠透明度呼吸，长任务里几乎看不出在跑",
+  );
 }
 console.log("styles: 运行中圆点与思考节点共用发光 ✓");
+
+// ---------- 3b. 两个活性指示器在「减少动画」下必须同等对待 ----------
+//
+// 真实 bug：@media (prefers-reduced-motion) 里只列了 .dot-running 而漏了 .icon-glow，
+// 于是开启「减少动画」的系统上出现「思考鲸鱼在呼吸、执行圆点纹丝不动」——
+// 用户合理地以为任务卡死了。这属于两者的**待遇不一致**，而不是抑制与不抑制的选择，
+// 所以断言写成「要么都在名单里，要么都不在」，任一种都比现在这种好。
+{
+  const reduced = /@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{([\s\S]*?)\n\}/.exec(css);
+  assert.ok(reduced, "应当存在 prefers-reduced-motion 媒体查询");
+
+  const body = reduced[1];
+  const hasDot = /\.dot-running/.test(body);
+  const hasGlow = /\.icon-glow/.test(body);
+  assert.strictEqual(
+    hasDot,
+    hasGlow,
+    `\`.dot-running\` 与 \`.icon-glow\` 必须在减少动画时同等对待，` +
+      `现在是 圆点${hasDot ? "被抑制" : "保留"}、鲸鱼${hasGlow ? "被抑制" : "保留"}：\n${body.trim()}`,
+  );
+}
+console.log("styles: 减少动画下两个活性指示器待遇一致 ✓");
+
+// ---------- 4. 思考结束后的鲸鱼必须是蓝色，不能灰 ----------
+//
+// 用户明确要求过两次「思考完毕的鲸鱼显示为蓝色而不是灰色」。
+// 曾经把结束态写成 `<IconDsh />`（落在 .row-icon 的 muted 灰上）→ 需求反向实现了。
+// 这里钉住两件事：存在一个不带动画的蓝色类，且它是思考行的结束态用色。
+{
+  const brand = rule(".icon-brand");
+  assert.ok(
+    /color:\s*var\(--info\)/.test(brand),
+    ".icon-brand 必须是品牌蓝 var(--info)（思考结束后鲸鱼的颜色）",
+  );
+  assert.ok(
+    !/animation:/.test(brand),
+    ".icon-brand 不该带动画——思考已结束，持续呼吸会误示「仍在活动」",
+  );
+
+  // 组件里结束态必须用 .icon-brand，不能退回裸图标（裸图标 = .row-icon 的灰色）
+  const rows = readFileSync(join(process.cwd(), "src", "webview", "components", "Rows.tsx"), "utf8");
+  assert.ok(
+    /streaming\s*\?\s*"icon-glow"\s*:\s*"icon-brand"/.test(rows),
+    "ThinkingRow 的结束态必须用 .icon-brand；写成裸 <IconDsh /> 会变灰",
+  );
+}
+console.log("styles: 思考结束后的鲸鱼仍为蓝色 ✓");
 
 console.log("\nstyles: all assertions passed");
