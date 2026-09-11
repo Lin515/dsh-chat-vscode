@@ -330,6 +330,14 @@ export interface ChatState {
    */
   contextOccupancy?: ContextOccupancyView;
   /**
+   * 最近一次已知的输出速度（tok/s）。
+   *
+   * 速度是按 step 算的，而新一轮一开始「最后一条消息」还没有 usage——界面若只读
+   * 最后一条消息，速度就会闪没。宿主保留上一次的已知值，有新值再覆盖，
+   * 即「拿不到最新数据就以旧数据显示」。
+   */
+  lastSpeed?: number;
+  /**
    * 上下文构成（`contextBreakdown` 投影）：系统提示词 / 工具定义 / 对话消息的
    * 启发式估算 token 数——是构成占比，不是计费值，也不与占用分子相加。
    */

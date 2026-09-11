@@ -6,7 +6,7 @@ import type {
   ToolCallView,
   UsageView,
 } from "../../shared/chat";
-import { formatDuration, formatTokens, Row, useStickyBody } from "./primitives";
+import { formatDuration, formatTokens, Row, useSelectionFreeze, useStickyBody } from "./primitives";
 import { useTexts, resolveText } from "../texts";
 import {
   IconAlert,
@@ -56,6 +56,8 @@ export function ToolRow({ tool }: { tool: ToolCallView }) {
   const bodyRef = useRef<HTMLDivElement>(null);
   // 展开且有结果时 body 区贴住最新内容：超出出现滚动条就自动滚到最新一行
   useStickyBody(bodyRef, open && Boolean(tool.output));
+  // 结果行仍可能被后续更新刷新；用户在其中划选时冻结渲染，保住选区
+  const shownOutput = useSelectionFreeze(bodyRef, tool.output ?? "");
   const tone = tool.status === "running" || tool.status === "pending"
     ? "running"
     : tool.status === "error"
@@ -87,7 +89,7 @@ export function ToolRow({ tool }: { tool: ToolCallView }) {
     >
       {tool.output ? (
         <div ref={bodyRef} className="row-body mono">
-          {tool.output}
+          {shownOutput}
         </div>
       ) : null}
       {tool.images?.length ? (
@@ -131,6 +133,8 @@ export function ThinkingRow({
   const bodyRef = useRef<HTMLDivElement>(null);
   // 思考是流式增长的：展开时 body 区贴住最新内容
   useStickyBody(bodyRef, open);
+  // 流式期间用户划选正文时冻结渲染，否则每来一个 token 选区就没了
+  const shownText = useSelectionFreeze(bodyRef, text);
   const firstLine = text.split("\n").find((line) => line.trim())?.trim() ?? "";
 
   return (
@@ -152,7 +156,7 @@ export function ThinkingRow({
       onToggle={() => setManual(!open)}
     >
       <div ref={bodyRef} className="row-body">
-        {text}
+        {shownText}
       </div>
     </Row>
   );

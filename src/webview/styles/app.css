@@ -964,15 +964,22 @@
   color: var(--fg);
 }
 
-/* 消息队列：缺口状态条纵向版，每条未发消息独占一行、可单独取消 */
-.lump.queue {
+/* 待发消息队列：不套状态条边框，做成「影子消息」——沿用用户消息气泡的形状与
+   配色，整体淡化表示还没真正发出；悬停恢复清晰，右侧 × 单独取消 */
+.queue {
+  display: flex;
   flex-direction: column;
-  align-items: stretch;
-  gap: 2px;
+  gap: 3px;
+  margin: 0 7px 4px;
+  max-height: 33vh;
+  overflow-y: auto;
 }
 
 .queue-head {
+  padding: 0 2px;
+  font-size: var(--font-size-2xs);
   color: var(--muted);
+  opacity: 0.85;
 }
 
 .queue-item {
@@ -980,6 +987,19 @@
   align-items: center;
   gap: 6px;
   min-width: 0;
+  padding: 5px 9px;
+  border: 1px solid var(--command-border);
+  border-radius: var(--radius);
+  background: var(--input-bg);
+  color: var(--description);
+  font-size: var(--font-size-body);
+  line-height: 1.4;
+  opacity: 0.6;
+  transition: opacity 0.12s ease;
+}
+
+.queue-item:hover {
+  opacity: 1;
 }
 
 .queue-text {
@@ -999,6 +1019,7 @@
   color: var(--muted);
   padding: 2px;
   border-radius: var(--radius-sm);
+  transition: color 0.12s ease, background 0.12s ease;
 }
 
 .queue-cancel:hover {

@@ -262,7 +262,7 @@ const zh: Texts = {
   settingsNamespace: (ns) => `命名空间 ${ns}`,
 
   running: "生成中",
-  queued: "队列中有 {n} 条消息",
+  queued: "待发送 {n} 条",
   queueRemove: "取消这条消息",
   queueMediaOnly: "（附件）",
   waitingApproval: "有工具调用等待你的许可",
@@ -423,7 +423,7 @@ const en: Texts = {
   settingsNamespace: (ns) => `namespace ${ns}`,
 
   running: "Generating",
-  queued: "{n} message(s) queued",
+  queued: "{n} queued",
   queueRemove: "Remove this message",
   queueMediaOnly: "(attachment)",
   waitingApproval: "A tool call needs your permission",

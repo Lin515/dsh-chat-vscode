@@ -58,6 +58,9 @@ export class ChatController implements vscode.Disposable {
   private subagents: SubagentView[] = [];
   private jobs: JobItemView[] = [];
   private queueItems: QueuedMessageView[] = [];
+  /** 上下文构成与会话统计（投影值），存下来供首帧快照使用。 */
+  private contextBreakdown: ChatState["contextBreakdown"];
+  private sessionStats: ChatState["sessionStats"];
   private goal: ChatState["goal"];
   private connection: ConnectionState | "error" = "connecting";
   private connectionDetail: string | undefined;
@@ -129,6 +132,11 @@ export class ChatController implements vscode.Disposable {
       subagents: this.subagents,
       jobs: this.jobs,
       goal: this.goal,
+      // 会话内的粘性显示值：首帧快照必须带上，否则 webview 一重载，上下文占用/
+      // 速度/构成/统计就空到下一轮才有数据（表现为「时有时无」）
+      ...(this.adapter?.stickyState() ?? {}),
+      contextBreakdown: this.contextBreakdown,
+      sessionStats: this.sessionStats,
     };
   }
 
@@ -362,6 +370,7 @@ export class ChatController implements vscode.Disposable {
         vscode.workspace.getConfiguration("dshChat").get<string>("defaultReasoningEffort") || undefined;
       this.follow(created.sessionId);
       await this.refreshSessions();
+      this.clearStickySessionState();
       this.emit({ type: "messages/reset", messages: [] });
       this.emit({ type: "todos", todos: [] });
       this.emit({
@@ -378,8 +387,7 @@ export class ChatController implements vscode.Disposable {
           draft: this.drafts.get(created.sessionId) ?? "",
           attachments: this.attachmentsBySession.get(created.sessionId) ?? [],
           // 上一会话的投影与队列残留清掉（新会话队列必为空）
-          contextBreakdown: undefined,
-          sessionStats: undefined,
+          ...this.clearedStickyPatch(),
           queueItems: [],
         },
       });
@@ -393,6 +401,7 @@ export class ChatController implements vscode.Disposable {
     this.follow(sessionId);
     // 重开控制流拿新会话的 baseline（队列/任务/投影），否则旧会话的队列残留
     this.openControlStream();
+    this.clearStickySessionState();
     this.emit({
       type: "patch",
       patch: {
@@ -400,11 +409,30 @@ export class ChatController implements vscode.Disposable {
         // 输入框内容跟随会话切换
         draft: this.drafts.get(sessionId) ?? "",
         attachments: this.attachmentsBySession.get(sessionId) ?? [],
-        // 上一会话的投影残留清掉，等新会话的 snapshot/baseline 回填
-        contextBreakdown: undefined,
-        sessionStats: undefined,
+        // 上一会话的粘性显示值清掉，等新会话的 snapshot/baseline 回填
+        ...this.clearedStickyPatch(),
       },
     });
+  }
+
+  /** 切换会话时清掉控制器侧存的投影值（新会话由新适配器/投影重新填）。 */
+  private clearStickySessionState(): void {
+    this.contextBreakdown = undefined;
+    this.sessionStats = undefined;
+  }
+
+  /** 切换会话时一并把界面上的粘性显示值清空。 */
+  private clearedStickyPatch(): Pick<
+    ChatState,
+    "contextBreakdown" | "sessionStats" | "contextOccupancy" | "contextWindow" | "lastSpeed"
+  > {
+    return {
+      contextBreakdown: undefined,
+      sessionStats: undefined,
+      contextOccupancy: undefined,
+      contextWindow: undefined,
+      lastSpeed: undefined,
+    };
   }
 
   private follow(sessionId: string): void {
@@ -680,16 +708,12 @@ export class ChatController implements vscode.Disposable {
           typeof bd.toolsTokens === "number" &&
           typeof bd.messageTokens === "number"
         ) {
-          this.emit({
-            type: "patch",
-            patch: {
-              contextBreakdown: {
-                systemTokens: bd.systemTokens,
-                toolsTokens: bd.toolsTokens,
-                messageTokens: bd.messageTokens,
-              },
-            },
-          });
+          this.contextBreakdown = {
+            systemTokens: bd.systemTokens,
+            toolsTokens: bd.toolsTokens,
+            messageTokens: bd.messageTokens,
+          };
+          this.emit({ type: "patch", patch: { contextBreakdown: this.contextBreakdown } });
         }
         break;
       }
@@ -707,21 +731,17 @@ export class ChatController implements vscode.Disposable {
           decodeTokens?: number;
         } | null;
         if (st && typeof st.llmMs === "number" && typeof st.toolMs === "number") {
-          this.emit({
-            type: "patch",
-            patch: {
-              sessionStats: {
-                turns: st.turns ?? 0,
-                steps: st.steps ?? 0,
-                llmMs: st.llmMs,
-                toolMs: st.toolMs,
-                ttftMs: st.ttftMs ?? 0,
-                ttftSteps: st.ttftSteps ?? 0,
-                decodeMs: st.decodeMs ?? 0,
-                decodeTokens: st.decodeTokens ?? 0,
-              },
-            },
-          });
+          this.sessionStats = {
+            turns: st.turns ?? 0,
+            steps: st.steps ?? 0,
+            llmMs: st.llmMs,
+            toolMs: st.toolMs,
+            ttftMs: st.ttftMs ?? 0,
+            ttftSteps: st.ttftSteps ?? 0,
+            decodeMs: st.decodeMs ?? 0,
+            decodeTokens: st.decodeTokens ?? 0,
+          };
+          this.emit({ type: "patch", patch: { sessionStats: this.sessionStats } });
         }
         break;
       }

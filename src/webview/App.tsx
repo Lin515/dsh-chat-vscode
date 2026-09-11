@@ -6,7 +6,7 @@ import { Composer } from "./components/Composer";
 import { HistoryPanel } from "./components/History";
 import { Message } from "./components/Message";
 import { JobsPanel, SettingsPanel, SubagentTranscriptPanel, SubagentsPanel, TrajectoryPanel } from "./components/Panels";
-import { Spinner } from "./components/primitives";
+import { Spinner, hasSelectionInside } from "./components/primitives";
 import { AppState, useAppState, type PanelKind } from "./state";
 import {
   IconAgents,
@@ -179,7 +179,8 @@ function useAutoScroll() {
       lastTopRef.current = el.scrollTop;
     };
     const pin = () => {
-      if (stickRef.current) el.scrollTop = el.scrollHeight;
+      // 用户正在对话区划选时不要跟着滚：会把选区内容推出视野
+      if (stickRef.current && !hasSelectionInside(el)) el.scrollTop = el.scrollHeight;
     };
     const observer = new ResizeObserver(pin);
     observer.observe(content);

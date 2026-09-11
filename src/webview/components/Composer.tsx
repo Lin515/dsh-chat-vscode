@@ -248,12 +248,13 @@ export function Composer({ state, onDraft }: { state: AppState; onDraft: (text: 
     return () => observer.disconnect();
   }, []);
 
-  // 实时生成速度：直接取最近一条助手消息的 usage.tokensPerSecond（由宿主从
-  // dsh 协议流式帧时间戳折叠得出：decode 窗口 = 首个 token delta → 最终消息，
-  // 等价于 dsh web 客户端 `turn-metrics` 的 decode 吞吐口径，不含 prefill/工具等待）。
-  // 该 step 缺 timing 或 usage 时为 undefined（不显示）。
+  // 生成速度：优先取最近一条助手消息的 usage.tokensPerSecond（由宿主从 dsh 协议
+  // 流式帧时间戳折叠得出：decode 窗口 = 首个 token delta → 最终消息，等价于
+  // dsh web 客户端 `turn-metrics` 的 decode 吞吐口径，不含 prefill/工具等待）。
+  // 新一轮刚发出时最新消息还没有 usage，退回宿主保留的上一次已知值
+  // （state.lastSpeed），避免数字闪没。
   const lastMessage = state.messages.at(-1);
-  const tps = lastMessage?.usage?.tokensPerSecond;
+  const tps = lastMessage?.usage?.tokensPerSecond ?? state.lastSpeed;
 
   // 速度值的悬停明细：全日志会话统计（`sessionStats` 投影），口径对齐
   // Web 的「会话统计」对话框；未知项省略，无数据则不显示 tooltip
@@ -663,9 +664,10 @@ function Lump({
     );
   }
   if (state.queueItems.length > 0) {
-    // 排队中（尚未发送）的消息逐条列出，每条可单独取消
+    // 排队中（尚未发送）的消息逐条列出，每条可单独取消。
+    // 不套状态条边框：做成淡化版用户消息气泡，和上方对话同一视觉语言
     return (
-      <div className="lump queue">
+      <div className="queue">
         <span className="queue-head">{fill(texts.queued, { n: state.queueItems.length })}</span>
         {state.queueItems.map((item) => (
           <div className="queue-item" key={item.id}>

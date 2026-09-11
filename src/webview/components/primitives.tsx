@@ -211,7 +211,8 @@ export function useStickyBody(
       lastTopRef.current = el.scrollTop;
     };
     const pin = () => {
-      if (stickRef.current) el.scrollTop = el.scrollHeight;
+      // 用户正在这里划选时不要跟着滚：滚动会把选区内容推出视野
+      if (stickRef.current && !hasSelectionInside(el)) el.scrollTop = el.scrollHeight;
     };
     const observer = new MutationObserver(pin);
     observer.observe(el, { childList: true, subtree: true, characterData: true });
@@ -221,6 +222,49 @@ export function useStickyBody(
       el.removeEventListener("scroll", onScroll);
     };
   }, [enabled]);
+}
+
+/** 元素内是否存在非折叠选区（用户正在其中划选文字）。 */
+export function hasSelectionInside(el: HTMLElement): boolean {
+  const selection = window.getSelection();
+  if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return false;
+  return (
+    selection.anchorNode !== null &&
+    selection.focusNode !== null &&
+    el.contains(selection.anchorNode) &&
+    el.contains(selection.focusNode)
+  );
+}
+
+/**
+ * 选区冻结：节点内容持续更新时（流式思考、流式正文），用户在其中划选的文字
+ * 会因文本节点被改写而立刻丢失选区。这里一旦检测到该元素内的非折叠选区，
+ * 就把渲染内容冻结在划选那一刻的文本，直到选区消失才恢复跟随。
+ *
+ * 只影响界面渲染，不中断后台 agent——新内容照常到达并保存在状态里，
+ * 选区一取消即显示最新内容。
+ */
+export function useSelectionFreeze(
+  ref: RefObject<HTMLElement | null>,
+  text: string,
+): string {
+  const [frozen, setFrozen] = useState<string | undefined>(undefined);
+  // 冻结取「当前已渲染的源文本」而不是 DOM textContent：
+  // 正文按 Markdown 渲染，textContent 会丢掉语法、重新渲染可能改变结构
+  const liveRef = useRef(text);
+  liveRef.current = text;
+
+  useEffect(() => {
+    const onChange = () => {
+      const el = ref.current;
+      if (el && hasSelectionInside(el)) setFrozen((prev) => prev ?? liveRef.current);
+      else setFrozen(undefined);
+    };
+    document.addEventListener("selectionchange", onChange);
+    return () => document.removeEventListener("selectionchange", onChange);
+  }, [ref]);
+
+  return frozen ?? text;
 }
 
 export function Ellipsis() {

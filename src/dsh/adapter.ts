@@ -1,5 +1,6 @@
 import type {
   ApprovalView,
+  ChatState,
   MessageView,
   ModelSelectionView,
   QuestionView,
@@ -190,11 +191,40 @@ export class SessionAdapter {
    * 每次 `request/context` 更新分母，每次 `assistant/message` / usage 更新分子。
    */
   contextOccupancy: { percent: number; usedTokens: number; contextWindow: number } | undefined;
+  /**
+   * 最近一次已知的解码速度（tok/s）。
+   * 新一轮开始时最新消息还没有 usage，界面只读最后一条消息会闪没，这里兜住。
+   */
+  lastSpeed: number | undefined;
 
   constructor(private readonly emit: (frame: HostToWebview) => void) {}
 
   snapshotMessages(): MessageView[] {
     return this.messages;
+  }
+
+  /**
+   * 会话内的粘性显示值：上下文窗口 / 占用 / 速度。
+   * 控制器的首帧快照要带上它们，否则 webview 重载后这些数字会消失到下一轮才有。
+   */
+  stickyState(): Pick<ChatState, "contextWindow" | "contextOccupancy" | "lastSpeed"> {
+    return {
+      contextWindow: this.contextWindow,
+      contextOccupancy: this.contextOccupancy,
+      lastSpeed: this.lastSpeed,
+    };
+  }
+
+  /**
+   * 记住最近一次可用的解码速度，供界面长期显示。
+   * 速度是按 step 算的：该 step 结束时才成立；没有新值就保留旧值。
+   */
+  private rememberUsage(usage: UsageView | undefined): void {
+    const speed = usage?.tokensPerSecond;
+    if (typeof speed !== "number" || !Number.isFinite(speed) || speed <= 0) return;
+    if (this.lastSpeed === speed) return;
+    this.lastSpeed = speed;
+    this.emit({ type: "patch", patch: { lastSpeed: speed } });
   }
 
   // ---------- 帧入口 ----------
@@ -446,6 +476,7 @@ export class SessionAdapter {
       message.usage = usage;
       // 同步刷新上下文占用：分子 = 最近一次 provider 报告的 totalTokens
       this.refreshOccupancy();
+      this.rememberUsage(usage);
     }
     if (wire?.source?.kind === "model" && typeof wire.source.model === "string") {
       message.model = wire.source.model;
@@ -574,8 +605,9 @@ export class SessionAdapter {
         });
         if (usage) {
           message.usage = usage;
-          // 流式 usage 帧也同步刷新上下文占用
+          // 流式 usage 帧也同步刷新上下文占用与速度（拿不到就留旧值）
           this.refreshOccupancy();
+          this.rememberUsage(usage);
           this.emit({ type: "message/upsert", message: { ...message } });
         }
         break;
@@ -598,8 +630,10 @@ export class SessionAdapter {
     this.turnStartedAt = undefined;
     this.stepFirstTokenAt = undefined;
     this.sequence = 0;
-    this.contextWindow = undefined;
-    this.contextOccupancy = undefined;
+    // 刻意不清 contextWindow / contextOccupancy / lastSpeed：
+    // 适配器按会话新建，同一会话内的 snapshot（重连、重开跟随流）不该把这些
+    // 显示值抹成空——回放里未必带得回 `request/context` 与 usage。
+    // 新的数据一到就覆盖，拿不到就继续显示旧值。
   }
 
   private currentSession: SessionSummaryView | undefined;

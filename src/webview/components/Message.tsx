@@ -1,11 +1,25 @@
-import { memo } from "react";
+import { memo, useRef } from "react";
 import type { MessageView, Segment } from "../../shared/chat";
 import { post } from "../bridge";
 import { IconCopy } from "../icons";
 import { Markdown } from "./Markdown";
-import { formatClock } from "./primitives";
+import { formatClock, useSelectionFreeze } from "./primitives";
 import { ApprovalCard, NoticeRow, QuestionCard, ThinkingRow, ToolRow, UsageRow } from "./Rows";
 import { useTexts } from "../texts";
+
+/**
+ * 助手正文块。流式期间正文每个 token 都在变，用户划选时冻结渲染保住选区
+ * （只影响界面，后台 agent 不受影响），选区消失后立刻恢复跟随最新内容。
+ */
+function StreamText({ text }: { text: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const shown = useSelectionFreeze(ref, text);
+  return (
+    <div ref={ref} className="md-wrapper">
+      <Markdown text={shown} />
+    </div>
+  );
+}
 
 /** 单条消息。用户消息是输入框样式的块，助手消息是无气泡正文。 */
 export const Message = memo(function Message({
@@ -44,11 +58,7 @@ export const Message = memo(function Message({
         {message.segments.map((segment) => {
           switch (segment.kind) {
             case "text":
-              return (
-                <div key={segment.id} className="md-wrapper">
-                  <Markdown text={segment.text} />
-                </div>
-              );
+              return <StreamText key={segment.id} text={segment.text} />;
             case "thinking":
               return (
                 <ThinkingRow
