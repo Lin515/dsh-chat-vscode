@@ -172,11 +172,19 @@ docs/
 
 ```bash
 npm run watch          # 增量构建
-npm run typecheck      # 宿主与 webview 两套 tsconfig
-npm run test           # 离线单元断言（工具结果解析、diff 计算）
+npm run typecheck      # 宿主与 webview 两套 tsconfig（并行跑）
+npm run test           # 离线单元断言（14 套，并行跑）
 npm run build          # 生产构建
 npm run package        # 打成 vsix
+node scripts/bench.mjs # 开发循环耗时分解（哪一步慢）
 ```
+
+> 构建本身很快（`npm run build` 约 0.7s）。历史上真正拖慢验证循环的是
+> `token-cleanup` 那套断言：它在 Windows 上**逐个 pid** 起 PowerShell 取命令行，
+> 而每次查询的代价几乎全在解释器启动上（实测单查一个 pid ≈1600ms，
+> 一次查全部进程 ≈1800ms）。改成「一次取回全部进程的命令行」并取消固定 sleep、
+> 再并行化之后，`npm test` 从约 14.6s 降到约 6s。
+> 同样的问题也会拖慢扩展启动时的残留进程清理，所以这是产品与开发共同受益的改动。
 
 ### 验证手段
 

@@ -1,4 +1,5 @@
 import esbuild from "esbuild";
+import { mkdirSync, readdirSync, rmSync } from "node:fs";
 
 /**
  * 开发期脚本的打包（冒烟测试、诊断探针、环境修复）。
@@ -6,11 +7,19 @@ import esbuild from "esbuild";
  * 产物放在 `build/` 而不是 `dist/`：`dist/` 是随 vsix 发布的内容，
  * 测试与诊断脚本不该混进去。
  *
+ * 打包前先清掉旧的 `*.mjs`：`npm test` 用 `build/*.test.mjs` 通配来发现断言，
+ * 删掉的测试若留下旧产物会被继续执行，看起来像「测试还在跑但改了没生效」。
+ *
  * `ws` 是 CJS 且会动态 require Node 内置模块，ESM 产物需要补一个 require。
  */
 const banner = {
   js: "import { createRequire as __createRequire } from 'node:module'; const require = __createRequire(import.meta.url);",
 };
+
+mkdirSync("build", { recursive: true });
+for (const name of readdirSync("build")) {
+  if (name.endsWith(".mjs")) rmSync(`build/${name}`, { force: true });
+}
 
 const entries = {
   "build/smoke.mjs": "scripts/smoke.ts",

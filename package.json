@@ -192,9 +192,9 @@
   "scripts": {
     "build": "node esbuild.mjs --production",
     "watch": "node esbuild.mjs --watch",
-    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.webview.json",
+    "typecheck": "node scripts/typecheck.mjs",
     "build:scripts": "node esbuild.scripts.mjs",
-    "test": "npm run build:scripts && node build/parse-tool-result.test.mjs && node build/diff.test.mjs && node build/attachments.test.mjs && node build/queue-view.test.mjs && node build/session-cookie.test.mjs && node build/tool-view.test.mjs && node build/text-file.test.mjs && node build/thinking-stream.test.mjs && node build/injected.test.mjs && node build/styles.test.mjs && node build/read-range.test.mjs && node build/segment.test.mjs && node build/path-insert.test.mjs && node build/token-cleanup.test.mjs",
+    "test": "npm run build:scripts && node scripts/runTests.mjs",
     "smoke": "npm run build:scripts && node build/smoke.mjs",
     "e2e:queue-esc": "npm run build:scripts && node build/queue-esc-e2e.mjs",
     "preview": "node scripts/previewServer.mjs",
