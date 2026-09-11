@@ -143,8 +143,11 @@ export interface Texts {
   runningTag: string;
   /** 历史列表行内操作：归档（服务端从工作区移出）与删除（本地删除日志文件）。 */
   archive: string;
+  /** 归档视图入口按钮 / 抽屉标题。 */
+  archiveList: string;
   deleteSession: string;
   deleteSessionConfirm: string;
+  noArchivedSessions: string;
 
   contextUsed: (percent: number, used: string, total: string) => string;
   /** 悬停上下文占用时的明细行（标签 + 数值）。 */
@@ -299,8 +302,10 @@ const zh: Texts = {
   untitled: "未命名对话",
   runningTag: "运行中",
   archive: "归档（从工作区列表移出）",
+  archiveList: "归档列表",
   deleteSession: "删除（删除本地日志文件）",
   deleteSessionConfirm: "再次点击确认删除",
+  noArchivedSessions: "暂无归档会话",
 
   contextUsed: (percent, used, total) => `上下文已用 ${percent}%（${used} / ${total}）`,
   ctxDetailCached: "缓存命中",
@@ -453,8 +458,10 @@ const en: Texts = {
   untitled: "Untitled chat",
   runningTag: "running",
   archive: "Archive (move out of workspace list)",
+  archiveList: "Archived sessions",
   deleteSession: "Delete (remove local log files)",
   deleteSessionConfirm: "Click again to confirm",
+  noArchivedSessions: "No archived sessions",
 
   contextUsed: (percent, used, total) => `Context used ${percent}% (${used} / ${total})`,
   ctxDetailCached: "Cache hit",

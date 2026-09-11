@@ -247,8 +247,9 @@ export function Composer({ state, onDraft }: { state: AppState; onDraft: (text: 
   }, []);
 
   // 实时生成速度：直接取最近一条助手消息的 usage.tokensPerSecond（由宿主从
-  // dsh 协议的 timing + usage 折叠得出，等价于 dsh web 客户端 `turn-metrics` 输出）。
-  // 流式期间为 undefined（不显示），本轮结束后显示整轮平均值。
+  // dsh 协议流式帧时间戳折叠得出：decode 窗口 = 首个 token delta → 最终消息，
+  // 等价于 dsh web 客户端 `turn-metrics` 的 decode 吞吐口径，不含 prefill/工具等待）。
+  // 该 step 缺 timing 或 usage 时为 undefined（不显示）。
   const lastMessage = state.messages.at(-1);
   const tps = lastMessage?.usage?.tokensPerSecond;
 

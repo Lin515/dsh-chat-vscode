@@ -94,14 +94,17 @@ export interface UsageView {
   inputTokens?: number;
   outputTokens?: number;
   cachedTokens?: number;
+  /** 缓存读取 token（provider cacheRead），缓存命中率分子。 */
+  cacheReadTokens?: number;
   reasoningTokens?: number;
   totalTokens?: number;
   /** 上下文窗口上限（用于上下文占用条）。 */
   contextWindow?: number;
   /**
-   * 本轮的输出 token 生成速度（tok/s）。
-   * 来自 dsh web 客户端的 `turn-metrics` 折叠：`outputTokens / decodeMs`，
-   * 仅当 step 同时有 timing 和 usage 时才计算。
+   * 输出 token 生成速度（tok/s）：该消息所在 step 的 decode 窗口速度，
+   * `outputTokens / (首个 token delta → 最终消息)`，对齐 dsh web 客户端
+   * `turn-metrics` 的 decode 吞吐口径（不含 prefill/工具等待）。
+   * 仅当该 step 同时有 timing 和 usage 时才计算。
    */
   tokensPerSecond?: number;
 }

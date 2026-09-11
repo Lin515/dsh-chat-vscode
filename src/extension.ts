@@ -20,7 +20,7 @@ export function activate(context: vscode.ExtensionContext): void {
     log,
   });
 
-  const controller = new ChatController(server, log);
+  const controller = new ChatController(server, log, context.globalState);
   const provider = new ChatViewProvider(context, controller);
 
   context.subscriptions.push(

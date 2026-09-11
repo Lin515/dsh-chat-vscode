@@ -33,6 +33,8 @@ export type HostToWebview =
   | { type: "message/segment"; messageId: string; segment: Segment }
   /** 会话列表（历史抽屉）。 */
   | { type: "sessions"; sessions: SessionSummaryView[] }
+  /** 归档会话列表（历史抽屉的归档视图）。 */
+  | { type: "archivedSessions"; sessions: SessionSummaryView[] }
   /** 模型目录。 */
   | { type: "models"; groups: ProviderGroupView[]; current?: ModelSelectionView }
   /** 待办清单。 */

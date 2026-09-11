@@ -35,6 +35,14 @@ export class ChatController implements vscode.Disposable {
   /** 已归档会话的权威集合（来自 workspace/follow 流）。 */
   private archivedSessionIds = new Set<string>();
   /**
+   * 本地已删除的会话 id 集合（持久化于 globalState 的 `deletedSessionIds`）。
+   *
+   * 服务端**没有**会话删除/detach API：当前 dsh 进程打开过的会话常驻服务端内存
+   * 直到进程退出，删掉本地日志目录后 `session/list` 仍会列出它们。扩展因此把
+   * 删除过的 id 持久化下来，从历史/归档两个列表里永久过滤，界面不再显示。
+   */
+  private readonly deletedSessionIds: Set<string>;
+  /**
    * 草稿与附件按会话隔离：切换会话时输入框文本与附件芯片一起切换。
    * 无当前会话时挂在空 key 上（连接建立前暂存）。
    */
@@ -58,7 +66,10 @@ export class ChatController implements vscode.Disposable {
   constructor(
     private readonly server: ServerManager,
     private readonly log: (line: string) => void,
-  ) {}
+    private readonly state: vscode.Memento,
+  ) {
+    this.deletedSessionIds = new Set(this.state.get<string[]>("deletedSessionIds") ?? []);
+  }
 
   // ---------- 订阅与广播 ----------
 
@@ -207,6 +218,9 @@ export class ChatController implements vscode.Disposable {
       const workspace = this.workspacePath().replace(/\\/g, "/").toLowerCase();
       const currentCwd = this.sessions.find((s) => s.id === this.currentSessionId)?.cwd?.replace(/\\/g, "/").toLowerCase();
       this.sessions = (value.items ?? [])
+        // 本地删过的会话若被当前 dsh 进程打开过，仍会留在服务端内存里被
+        // session/list 列出——按持久化的删除集合过滤，保证界面干净
+        .filter((item) => !this.deletedSessionIds.has(item.sessionId))
         .filter((item) => !item.origin && !item.parentSessionId)
         .filter((item) => {
           if (!item.cwd) return false;
@@ -214,18 +228,21 @@ export class ChatController implements vscode.Disposable {
           return cwd === workspace || (currentCwd !== undefined && cwd === currentCwd);
         })
         .map((item) => this.toSessionView(item));
-      this.emitSessions();
+      this.emitSessionLists();
     } catch (error) {
       this.log(`[sessions] 列表获取失败：${this.describeError(error)}`);
     }
   }
 
-  /** 真正展示给界面的列表：滤掉已归档会话。 */
-  private emitSessions(): void {
-    this.emit({
-      type: "sessions",
-      sessions: this.sessions.filter((s) => !this.archivedSessionIds.has(s.id)),
-    });
+  /** 真正展示给界面的两个列表：历史列表（滤掉已归档会话）与归档列表。 */
+  private emitSessionLists(): void {
+    const active: SessionSummaryView[] = [];
+    const archived: SessionSummaryView[] = [];
+    for (const session of this.sessions) {
+      (this.archivedSessionIds.has(session.id) ? archived : active).push(session);
+    }
+    this.emit({ type: "sessions", sessions: active });
+    this.emit({ type: "archivedSessions", sessions: archived });
   }
 
   /**
@@ -237,7 +254,7 @@ export class ChatController implements vscode.Disposable {
     try {
       await this.client.archiveSession(sessionId);
       this.archivedSessionIds.add(sessionId);
-      this.emitSessions();
+      this.emitSessionLists();
       setTimeout(() => void this.refreshSessions(), 500);
     } catch (error) {
       this.reportError("归档会话失败", error);
@@ -245,9 +262,14 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
-   * 删除会话。服务端**没有**删除 API（会话日志文件只增不减），这里直接删除
-   * 本地日志目录：`~/.dsh/sessions/<工作区>/session-<会话id>`（目录名就是
-   * 会话 id，见日志文件头 `id` 字段）。
+   * 删除会话。服务端**没有**删除/detach API（会话日志文件只增不减），这里
+   * 直接删除本地日志目录：`~/.dsh/sessions/<工作区>/session-<会话id>`（目录名
+   * 就是会话 id，见日志文件头 `id` 字段），并把会话 id 记入 `deletedSessionIds`
+   * （持久化）：被当前 dsh 进程打开过的会话常驻服务端内存、`session/list` 会
+   * 一直列出它，客户端必须过滤才能让列表干净。
+   *
+   * 日志目录已不存在（此前已删过）时同样记录 id 并清理列表——那次删除已经把
+   * 文件删掉了，这里不再报错。
    *
    * 保护：运行中的会话不能删（服务端还在往里写）；当前正在跟随的会话不能删
    * （删完无处可看，且服务端内存里还开着它）。
@@ -267,19 +289,32 @@ export class ChatController implements vscode.Disposable {
       return;
     }
     const dir = this.findSessionDir(sessionId);
-    if (!dir) {
-      this.log(`[sessions] 删除失败：找不到会话日志目录（${sessionId}）`);
-      void vscode.window.showWarningMessage("找不到该会话的日志文件，无法删除。");
-      return;
+    let removed = false;
+    if (dir) {
+      try {
+        rmSync(dir, { recursive: true, force: true });
+        removed = true;
+        this.log(`[sessions] 已删除会话日志：${dir}`);
+      } catch (error) {
+        this.reportError("删除会话失败", error);
+        return;
+      }
     }
-    try {
-      rmSync(dir, { recursive: true, force: true });
-      this.sessions = this.sessions.filter((s) => s.id !== sessionId);
-      this.emitSessions();
-      this.log(`[sessions] 已删除会话日志：${dir}`);
-    } catch (error) {
-      this.reportError("删除会话失败", error);
+    this.sessions = this.sessions.filter((s) => s.id !== sessionId);
+    this.rememberDeleted(sessionId);
+    this.emitSessionLists();
+    if (!removed) {
+      this.log(
+        `[sessions] 会话 ${sessionId} 的日志目录已不存在，已从列表中移除（服务端内存中的副本仍存活到 dsh 进程退出）`,
+      );
     }
+  }
+
+  /** 记住一个已删除的会话 id 并持久化（跨扩展重载，列表保持干净）。 */
+  private rememberDeleted(sessionId: string): void {
+    if (this.deletedSessionIds.has(sessionId)) return;
+    this.deletedSessionIds.add(sessionId);
+    void this.state.update("deletedSessionIds", [...this.deletedSessionIds]);
   }
 
   /** 在 `~/.dsh/sessions` 的各工作区子目录里找会话日志目录（目录名=会话 id）。 */
@@ -508,7 +543,7 @@ export class ChatController implements vscode.Disposable {
     }
     if (!changed) return;
     this.archivedSessionIds = nextSet;
-    this.emitSessions();
+    this.emitSessionLists();
   }
 
   /**

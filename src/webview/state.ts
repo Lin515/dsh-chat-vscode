@@ -27,6 +27,8 @@ export type PanelKind = "none" | "history" | "subagents" | "jobs" | "trajectory"
 export interface AppState extends ChatState {
   /** 会话列表（历史抽屉内容）。 */
   sessions: SessionSummaryView[];
+  /** 归档会话列表（历史抽屉的归档视图）。 */
+  archivedSessions: SessionSummaryView[];
   panel: PanelKind;
   commands: CommandView[];
   fileRefs: { query: string; items: FileRefView[] };
@@ -56,6 +58,7 @@ export const initialState: AppState = {
   subagents: [],
   jobs: [],
   sessions: [],
+  archivedSessions: [],
   panel: "none",
   commands: [],
   fileRefs: { query: "", items: [] },
@@ -151,6 +154,9 @@ export function reducer(state: AppState, action: Action): AppState {
 
     case "sessions":
       return { ...state, sessions: action.sessions };
+
+    case "archivedSessions":
+      return { ...state, archivedSessions: action.sessions };
 
     case "models":
       return { ...state, models: action.groups, model: action.current ?? state.model };

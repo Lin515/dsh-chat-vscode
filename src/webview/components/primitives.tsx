@@ -133,7 +133,9 @@ export function CtxText({
 
   const detail: string[] = [texts.contextUsed(pct, formatTokens(usedValue), formatTokens(total))];
   if (usage) {
-    if (usage.cachedTokens) detail.push(`${texts.ctxDetailCached} ${formatTokens(usage.cachedTokens)}`);
+    const cacheHit = cacheHitPercent(usage);
+    if (cacheHit !== undefined) detail.push(`${texts.ctxDetailCached} ${cacheHit}%`);
+    else if (usage.cachedTokens) detail.push(`${texts.ctxDetailCached} ${formatTokens(usage.cachedTokens)}`);
     if (usage.inputTokens !== undefined) detail.push(`${texts.ctxDetailInput} ${formatTokens(usage.inputTokens)}`);
     if (usage.outputTokens !== undefined) detail.push(`${texts.ctxDetailOutput} ${formatTokens(usage.outputTokens)}`);
     if (usage.reasoningTokens) detail.push(`${texts.ctxDetailReasoning} ${formatTokens(usage.reasoningTokens)}`);
@@ -171,6 +173,22 @@ export function Spinner({ size = 12 }: { size?: number }) {
 
 export function Ellipsis() {
   return <span className="ellipsis" />;
+}
+
+/**
+ * 缓存命中率（官方 turn-usage 口径）：缓存读取 / 总输入
+ * （totalTokens - outputTokens，total 缺失时退回 inputTokens）。
+ * provider 未报 cacheReadTokens 或分母非正时返回 undefined。
+ */
+function cacheHitPercent(usage: import("../../shared/chat").UsageView): number | undefined {
+  const read = usage.cacheReadTokens;
+  if (typeof read !== "number" || read < 0) return undefined;
+  const denom =
+    typeof usage.totalTokens === "number" && typeof usage.outputTokens === "number"
+      ? usage.totalTokens - usage.outputTokens
+      : usage.inputTokens;
+  if (typeof denom !== "number" || denom <= 0) return undefined;
+  return Math.round((read / denom) * 1000) / 10;
 }
 
 export function formatTokens(value: number): string {

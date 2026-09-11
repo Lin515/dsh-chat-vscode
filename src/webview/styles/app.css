@@ -1209,12 +1209,27 @@
   color: var(--description);
 }
 
-.drawer-search {
+.drawer-search-box {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   margin: 6px;
-  padding: 4px 8px;
-  border: none;
+  padding: 0 8px;
   border-radius: var(--radius);
   background: var(--input-bg);
+}
+
+.drawer-search-box svg {
+  flex: 0 0 auto;
+  color: var(--input-placeholder);
+}
+
+.drawer-search {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 4px 0;
+  border: none;
+  background: none;
   color: var(--input-fg);
   outline: none;
   font-size: var(--font-size-sm);

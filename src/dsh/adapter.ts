@@ -34,14 +34,22 @@ export function blocksToText(content: unknown): string {
   return parts.join("\n").trim();
 }
 
-function toUsage(usage: TokenUsage | undefined, timing?: { startedAt?: number; endedAt?: number }): UsageView | undefined {
+/**
+ * usage → UsageView。可选 timing 描述该 step 的 decode 窗口
+ * （首个 token delta → 最终消息，均为服务端时间），对齐 dsh web 客户端
+ * `turn-metrics` 的 decode 吞吐口径；不含 prefill 与工具等待。
+ */
+function toUsage(
+  usage: TokenUsage | undefined,
+  timing?: { firstTokenAt?: number; endedAt?: number },
+): UsageView | undefined {
   if (!usage) return undefined;
   const output = usage.outputTokens;
-  const startedAt = timing?.startedAt;
+  const firstTokenAt = timing?.firstTokenAt;
   const endedAt = timing?.endedAt;
   const decodeMs =
-    typeof startedAt === "number" && typeof endedAt === "number" && endedAt > startedAt
-      ? endedAt - startedAt
+    typeof firstTokenAt === "number" && typeof endedAt === "number" && endedAt > firstTokenAt
+      ? endedAt - firstTokenAt
       : undefined;
   const tokensPerSecond =
     typeof output === "number" && typeof decodeMs === "number" && decodeMs > 0
@@ -52,6 +60,7 @@ function toUsage(usage: TokenUsage | undefined, timing?: { startedAt?: number; e
     outputTokens: usage.outputTokens,
     totalTokens: usage.totalTokens ?? usage.inputTokens + usage.outputTokens,
     cachedTokens: (usage.cacheReadTokens ?? 0) + (usage.cacheWriteTokens ?? 0),
+    cacheReadTokens: usage.cacheReadTokens,
     reasoningTokens: usage.reasoningTokens,
     tokensPerSecond,
   };
@@ -135,6 +144,8 @@ export class SessionAdapter {
   private currentTurn: number | undefined;
   private currentStep = 0;
   private turnStartedAt: number | undefined;
+  /** 当前 step 首个 token delta 的时间戳（服务端时钟，取自 chunk 帧 time）。 */
+  private stepFirstTokenAt: number | undefined;
   /** 当前活跃 attempt 的 turn/step，由 assistant-stream 的 start 帧给出。 */
   private liveTurn = 0;
   private liveStep = 0;
@@ -190,6 +201,7 @@ export class SessionAdapter {
         this.currentTurn = typeof data.turn === "number" ? data.turn : this.currentTurn;
         this.currentStep = 0;
         this.turnStartedAt = event.time;
+        this.stepFirstTokenAt = undefined;
         const message = this.ensureAssistantMessage(event.time);
         message.streaming = true;
         this.emit({ type: "patch", patch: { running: true } });
@@ -221,6 +233,7 @@ export class SessionAdapter {
 
       case "step/start":
         this.currentStep = typeof data.step === "number" ? data.step : 0;
+        this.stepFirstTokenAt = undefined;
         break;
 
       case "user/message": {
@@ -390,10 +403,12 @@ export class SessionAdapter {
       }
     }
 
+    // decode 窗口：本 step 首个 token delta → 该 durable 消息（均为服务端时钟）
     const usage = toUsage(data.usage, {
-      startedAt: this.turnStartedAt,
+      firstTokenAt: this.stepFirstTokenAt,
       endedAt: event.time,
     });
+    this.stepFirstTokenAt = undefined;
     if (usage) {
       message.usage = usage;
       // 同步刷新上下文占用：分子 = 最近一次 provider 报告的 totalTokens
@@ -433,6 +448,7 @@ export class SessionAdapter {
       this.currentStep = frame.step;
       this.liveTurn = frame.turn;
       this.liveStep = frame.step;
+      this.stepFirstTokenAt = undefined;
       const message = this.ensureAssistantMessage(Date.now());
       message.streaming = true;
       this.emit({ type: "message/upsert", message: { ...message } });
@@ -461,6 +477,7 @@ export class SessionAdapter {
         break;
 
       case "text-delta": {
+        if (this.stepFirstTokenAt === undefined) this.stepFirstTokenAt = frame.time;
         const existing = this.liveSegments.get(liveId);
         if (existing) {
           this.emit({ type: "message/delta", messageId: message.id, segmentId: existing.segmentId, delta: chunk.text });
@@ -480,6 +497,7 @@ export class SessionAdapter {
       }
 
       case "reasoning-delta": {
+        if (this.stepFirstTokenAt === undefined) this.stepFirstTokenAt = frame.time;
         const existing = this.liveSegments.get(liveId);
         if (existing) {
           this.emit({ type: "message/delta", messageId: message.id, segmentId: existing.segmentId, delta: chunk.text });
@@ -516,7 +534,11 @@ export class SessionAdapter {
       }
 
       case "usage": {
-        const usage = toUsage(chunk.usage);
+        // 流式 usage 帧也带 decode 窗口：首个 token delta → 该帧时间
+        const usage = toUsage(chunk.usage, {
+          firstTokenAt: this.stepFirstTokenAt,
+          endedAt: frame.time,
+        });
         if (usage) {
           message.usage = usage;
           // 流式 usage 帧也同步刷新上下文占用
@@ -540,6 +562,8 @@ export class SessionAdapter {
     this.liveSegments.clear();
     this.currentTurn = undefined;
     this.currentStep = 0;
+    this.turnStartedAt = undefined;
+    this.stepFirstTokenAt = undefined;
     this.sequence = 0;
     this.contextWindow = undefined;
     this.contextOccupancy = undefined;

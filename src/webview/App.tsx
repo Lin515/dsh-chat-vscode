@@ -261,6 +261,7 @@ export function App() {
         {state.panel === "history" ? (
           <HistoryPanel
             sessions={state.sessions}
+            archivedSessions={state.archivedSessions}
             currentId={state.session?.id}
             onClose={closePanel}
           />
