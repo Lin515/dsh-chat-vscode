@@ -1,15 +1,13 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { CommandView, FileRefView } from "../../shared/chat";
 import type { AppState } from "../state";
 import { post } from "../bridge";
 import {
-  IconAt,
   IconChevronDown,
   IconImage,
   IconShield,
   IconShieldCheck,
   IconShieldFilled,
-  IconSlash,
   IconStop,
 } from "../icons";
 import { CtxText, Popover } from "./primitives";
@@ -18,7 +16,7 @@ import { fill, useTexts } from "../texts";
 /** 权限模式的展示定义：图标固定用盾牌（WebUI 未提供专用图标），文案与 WebUI 对齐。 */
 function permissionMeta(
   texts: ReturnType<typeof useTexts>,
-): { id: string; label: string; desc: string; icon: JSX.Element }[] {
+): { id: string; label: string; desc: string; icon: ReactNode }[] {
   return [
     { id: "read-only", label: texts.permReadOnly, desc: texts.permReadOnlyDesc, icon: <IconShield size={12} /> },
     {
@@ -220,37 +218,13 @@ export function Composer({ state, onDraft }: { state: AppState; onDraft: (text: 
     return () => observer.disconnect();
   }, []);
 
-  // 实时生成速度：按最近 3 秒的输出 token 增量计算 tps（与 dsh web 一致，每秒刷新一次）
+  // 实时生成速度：直接取最近一条助手消息的 usage.tokensPerSecond（由宿主从
+  // dsh 协议的 timing + usage 折叠得出，等价于 dsh web 客户端 `turn-metrics` 输出）。
+  // 流式期间为 undefined（不显示），本轮结束后显示整轮平均值。
   const lastMessage = state.messages.at(-1);
-  const liveUsage = lastMessage && (lastMessage.streaming || state.running) ? lastMessage.usage : undefined;
-  const speedRef = useRef<{ t: number; n: number } | undefined>(undefined);
-  const [tps, setTps] = useState<number | undefined>(undefined);
-  const tpsValueRef = useRef<number | undefined>(undefined);
-  useEffect(() => {
-    const value = liveUsage?.outputTokens;
-    const now = Date.now();
-    if (typeof value !== "number") return;
-    const prev = speedRef.current;
-    if (prev && now - prev.t < 5_000 && value >= prev.n) {
-      const tpsNow = (value - prev.n) / ((now - prev.t) / 1000);
-      speedRef.current = { t: now, n: value };
-      if (Math.abs((tpsNow ?? 0) - (tpsValueRef.current ?? 0)) >= 0.5) {
-        tpsValueRef.current = tpsNow;
-        setTps(tpsNow);
-      }
-      return;
-    }
-    speedRef.current = { t: now, n: value };
-    tpsValueRef.current = undefined;
-    setTps(undefined);
-  }, [liveUsage?.outputTokens]);
-  useEffect(() => {
-    if (!state.running) {
-      speedRef.current = undefined;
-      tpsValueRef.current = undefined;
-      setTps(undefined);
-    }
-  }, [state.running]);
+  const tps = lastMessage?.usage?.tokensPerSecond;
+
+
 
   return (
     <div ref={appRef} className={`composer${mini ? " is-mini" : ""}`}>
@@ -350,15 +324,14 @@ export function Composer({ state, onDraft }: { state: AppState; onDraft: (text: 
           />
 
           <div className="composer-bar">
-            {/* 权限：盾牌图标 + 权限名（不再显示 Agent） */}
+            {/* 权限：始终只显示盾牌图标（悬停有 title，点开弹层可见权限名） */}
             <div className="anchor">
               <button
                 className="pill-mode"
                 onClick={() => setModeOpen((v) => !v)}
-                title={texts.permission}
+                title={currentPermission.label}
               >
                 {currentPermission.icon}
-                {currentPermission.label}
                 <IconChevronDown size={8} />
               </button>
               <Popover open={modeOpen} onClose={() => { setModeOpen(false); setConfirmFullAccess(false); }}>
@@ -520,16 +493,13 @@ export function Composer({ state, onDraft }: { state: AppState; onDraft: (text: 
               </Popover>
             </div>
 
-            <button className="pill" data-mini="hide" title={texts.commands} onClick={() => insertToken("/")}>
-              <IconSlash size={13} />
-            </button>
-            <button className="pill" data-mini="hide" title={texts.addImage} onClick={() => post({ type: "addImages" })}>
-              <IconImage size={13} />
-            </button>
-            {/* @ 走提及列表（选具体文件），不再直接弹系统文件对话框 */}
-            <button className="pill" data-mini="hide" title={texts.mentionFiles} onClick={() => insertToken("@")}>
-              <IconAt size={13} />
-            </button>
+            {/* / 与 @ 直接在输入框里打符号即可触发，不再放按钮。
+                图片按钮按当前模型的 acceptsImage 动态显示。 */}
+            {state.model?.acceptsImage ? (
+              <button className="pill" data-mini="hide" title={texts.addImage} onClick={() => post({ type: "addImages" })}>
+                <IconImage size={13} />
+              </button>
+            ) : null}
 
             <span className="spacer" />
 
@@ -537,9 +507,10 @@ export function Composer({ state, onDraft }: { state: AppState; onDraft: (text: 
               <span className="ctx-speed">{tps.toFixed(1)} tps</span>
             ) : null}
             <CtxText
-              used={state.messages.at(-1)?.usage?.totalTokens}
-              total={state.model?.contextWindow}
-              usage={state.messages.at(-1)?.usage}
+              percent={state.contextOccupancy?.percent}
+              used={state.contextOccupancy?.usedTokens ?? lastMessage?.usage?.totalTokens}
+              total={state.contextOccupancy?.contextWindow ?? state.contextWindow?.tokens ?? state.model?.contextWindow}
+              usage={lastMessage?.usage}
             />
 
             {state.running ? (
@@ -557,23 +528,6 @@ export function Composer({ state, onDraft }: { state: AppState; onDraft: (text: 
     </div>
   );
 
-  /** 把触发字符插到光标处并立即唤起候选列表。 */
-  function insertToken(token: string) {
-    const el = textareaRef.current;
-    const at = el?.selectionStart ?? draft.length;
-    const needsSpace = at > 0 && !/\s/.test(draft[at - 1] ?? "");
-    const next = `${draft.slice(0, at)}${needsSpace ? " " : ""}${token}${draft.slice(at)}`;
-    onDraft(next);
-    post({ type: "setDraft", text: next });
-    const caret = at + (needsSpace ? 1 : 0) + token.length;
-    setTrigger({ kind: token === "/" ? "command" : "mention", start: caret - 1, query: "" });
-    requestAnimationFrame(() => {
-      const node = textareaRef.current;
-      if (!node) return;
-      node.focus();
-      node.setSelectionRange(caret, caret);
-    });
-  }
 }
 
 /**

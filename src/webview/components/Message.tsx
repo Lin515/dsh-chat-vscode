@@ -1,7 +1,7 @@
 import { memo } from "react";
 import type { MessageView, Segment } from "../../shared/chat";
 import { post } from "../bridge";
-import { IconCopy, IconThumbDown, IconThumbUp } from "../icons";
+import { IconCopy } from "../icons";
 import { Markdown } from "./Markdown";
 import { formatClock } from "./primitives";
 import { ApprovalCard, NoticeRow, QuestionCard, ThinkingRow, ToolRow, UsageRow } from "./Rows";
@@ -86,12 +86,6 @@ export const Message = memo(function Message({
           onClick={() => post({ type: "copy", text: fullText })}
         >
           <IconCopy size={14} />
-        </button>
-        <button className="icon-btn" title={texts.thumbsUp} onClick={() => post({ type: "copy", text: "/feedback good" })}>
-          <IconThumbUp size={14} />
-        </button>
-        <button className="icon-btn" title={texts.thumbsDown} onClick={() => post({ type: "copy", text: "/feedback bad" })}>
-          <IconThumbDown size={14} />
         </button>
       </div>
     </div>

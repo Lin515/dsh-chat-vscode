@@ -48,10 +48,10 @@ function useDescribeTool(): (name: string) => { icon: JSX.Element; verb: string 
 }
 
 export function ToolRow({ tool }: { tool: ToolCallView }) {
-  // 运行中默认展开以便观察，结束后收起；用户手动开合优先
+  // 工具调用默认收起（不自动展开），用户手动开合优先
   const [manual, setManual] = useState<boolean | undefined>(undefined);
   const describeTool = useDescribeTool();
-  const open = manual ?? tool.status === "running";
+  const open = manual ?? false;
   const { icon, verb } = describeTool(tool.name);
   const tone = tool.status === "running" || tool.status === "pending"
     ? "running"

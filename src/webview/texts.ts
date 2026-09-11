@@ -124,8 +124,6 @@ export interface Texts {
 
   copy: string;
   copied: string;
-  thumbsUp: string;
-  thumbsDown: string;
   insertToEditor: string;
   openFile: string;
   stopped: string;
@@ -149,6 +147,10 @@ export interface Texts {
   ctxDetailOutput: string;
   ctxDetailReasoning: string;
   ctxDetailTotal: string;
+  /** 上下文占用 tooltip：显示明细行。 */
+  ctxDetailTitle: string;
+  /** 当前模型不支持图片输入时的提示（模型名作为变量）。 */
+  imageUnsupported: (model: string) => string;
   turnFailed: string;
   interrupted: string;
   compacted: string;
@@ -274,8 +276,6 @@ const zh: Texts = {
 
   copy: "复制",
   copied: "已复制到剪贴板",
-  thumbsUp: "有帮助",
-  thumbsDown: "没帮助",
   insertToEditor: "插入到当前编辑器",
   openFile: "打开文件",
   stopped: "已停止",
@@ -298,9 +298,12 @@ const zh: Texts = {
   ctxDetailOutput: "输出",
   ctxDetailReasoning: "其中推理",
   ctxDetailTotal: "合计",
+  ctxDetailTitle: "上下文占用",
   turnFailed: "本轮执行失败",
   interrupted: "本轮被中断",
   compacted: "上下文已压缩",
+  /** 当前模型不支持图片输入时的提示（模型名作为变量）。 */
+  imageUnsupported: (model: string) => `模型「${model}」不支持图片输入`,
   unknownEvent: (type) => `遇到了本客户端不认识的事件「${type}」，已跳过其内容。`,
   toolRead: "读取",
   toolWrite: "写入",
@@ -423,8 +426,6 @@ const en: Texts = {
 
   copy: "Copy",
   copied: "Copied to clipboard",
-  thumbsUp: "Helpful",
-  thumbsDown: "Not helpful",
   insertToEditor: "Insert into the active editor",
   openFile: "Open file",
   stopped: "Stopped",
@@ -447,9 +448,11 @@ const en: Texts = {
   ctxDetailOutput: "Output",
   ctxDetailReasoning: "of which reasoning",
   ctxDetailTotal: "Total",
+  ctxDetailTitle: "Context usage",
   turnFailed: "This turn failed",
   interrupted: "This turn was interrupted",
   compacted: "Context compacted",
+  imageUnsupported: (model: string) => `Model "${model}" does not accept image input`,
   unknownEvent: (type) => `Skipped an event this client does not understand: "${type}".`,
   toolRead: "Read",
   toolWrite: "Write",
@@ -506,6 +509,8 @@ export function resolveText(text: string, texts: Texts): string {
       return texts.compacted;
     case "unknownEvent":
       return texts.unknownEvent(arg);
+    case "imageUnsupported":
+      return texts.imageUnsupported(arg);
     default:
       return text;
   }

@@ -142,20 +142,6 @@ export const IconCopy = (p: IconProps) => (
   </Icon>
 );
 
-export const IconThumbUp = (p: IconProps) => (
-  <Icon {...p}>
-    <path d="M7 21V10l4.5-7a2 2 0 0 1 2.9 2.4L13 10h5.5a2 2 0 0 1 2 2.4l-1.2 6A2 2 0 0 1 17.3 20H7z" />
-    <path d="M7 10H4v11h3" />
-  </Icon>
-);
-
-export const IconThumbDown = (p: IconProps) => (
-  <Icon {...p}>
-    <path d="M17 3v11l-4.5 7a2 2 0 0 1-2.9-2.4L11 14H5.5a2 2 0 0 1-2-2.4l1.2-6A2 2 0 0 1 6.7 4H17z" />
-    <path d="M17 14h3V3h-3" />
-  </Icon>
-);
-
 export const IconChevronRight = (p: IconProps) => (
   <Icon {...p}>
     <path d="M9 5l7 7-7 7" />

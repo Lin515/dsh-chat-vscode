@@ -727,9 +727,8 @@
   cursor: default;
 }
 
-/* mode pill: rounded-full, translucent grey, 11px
-   max-width:100% + overflow:hidden 让窄时按钮随可用空间收缩、文字被裁掉，
-   配合 JS 的 scrollWidth 检测加 is-narrow（收紧 padding） */
+/* mode pill: 始终只显示盾牌图标 + 下拉箭头（不显示权限名），
+   悬停 title 显示当前权限名，点开弹层可切换 */
 .pill-mode {
   display: inline-flex;
   align-items: center;
@@ -750,29 +749,15 @@
   color: var(--fg);
 }
 
-.pill-mode.is-narrow {
-  padding: 0 6px;
-}
-
-/* 权限胶囊：图标不被 flex 压扁裁掉；文字 span 允许收缩被裁 */
+/* 权限胶囊：图标不被 flex 压扁裁掉 */
 .pill-mode > svg {
   flex: 0 0 auto;
-}
-.pill-mode > span {
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
 }
 
 /* ============================ 迷你模式（窄边栏收成图标条） ============================
    .app 宽度 < 220px 时进入：聊天列表、头部按钮、发送栏全部收成图标条，
    避免文字被裁半的「一层底一层」；宽度回到 ≥232px 恢复（滞回防抖动）。
    拖到 VS Code 侧栏最小宽度时由 VS Code 原生收起成图标条。 */
-
-/* 权限胶囊：隐藏文字，只留盾牌图标 + 下拉箭头 */
-.app.is-mini .pill-mode > span {
-  display: none;
-}
 
 /* 头部：收成品牌 + 新建 + 历史（其余按钮隐藏），标题用图标表示未命名 */
 .app.is-mini .header-title {

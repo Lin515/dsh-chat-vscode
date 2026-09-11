@@ -34,14 +34,26 @@ export function blocksToText(content: unknown): string {
   return parts.join("\n").trim();
 }
 
-function toUsage(usage: TokenUsage | undefined): UsageView | undefined {
+function toUsage(usage: TokenUsage | undefined, timing?: { startedAt?: number; endedAt?: number }): UsageView | undefined {
   if (!usage) return undefined;
+  const output = usage.outputTokens;
+  const startedAt = timing?.startedAt;
+  const endedAt = timing?.endedAt;
+  const decodeMs =
+    typeof startedAt === "number" && typeof endedAt === "number" && endedAt > startedAt
+      ? endedAt - startedAt
+      : undefined;
+  const tokensPerSecond =
+    typeof output === "number" && typeof decodeMs === "number" && decodeMs > 0
+      ? output / (decodeMs / 1000)
+      : undefined;
   return {
     inputTokens: usage.inputTokens,
     outputTokens: usage.outputTokens,
     totalTokens: usage.totalTokens ?? usage.inputTokens + usage.outputTokens,
     cachedTokens: (usage.cacheReadTokens ?? 0) + (usage.cacheWriteTokens ?? 0),
     reasoningTokens: usage.reasoningTokens,
+    tokensPerSecond,
   };
 }
 
@@ -127,6 +139,13 @@ export class SessionAdapter {
   private liveTurn = 0;
   private liveStep = 0;
   private sequence = 0;
+  /** 最近一次 `request/context` 事件给出的上下文窗口，用于占用条显示。 */
+  contextWindow: { tokens: number; model: string } | undefined;
+  /**
+   * 当前会话的上下文占用（等价于 dsh web 客户端 `context-occupancy` 投影的输出）。
+   * 每次 `request/context` 更新分母，每次 `assistant/message` / usage 更新分子。
+   */
+  contextOccupancy: { percent: number; usedTokens: number; contextWindow: number } | undefined;
 
   constructor(private readonly emit: (frame: HostToWebview) => void) {}
 
@@ -286,6 +305,19 @@ export class SessionAdapter {
         if (typeof data.mode === "string") this.emit({ type: "patch", patch: { permission: data.mode } });
         break;
 
+      case "request/context": {
+        // 当前轮次生效的上下文窗口：占用条显示百分比、hover 明细。
+        // 同步刷新 contextOccupancy（dsh web 客户端 `context-occupancy` 投影等价物）。
+        const cw = typeof data.contextWindow === "number" ? data.contextWindow : undefined;
+        const modelId = typeof data.model === "string" ? data.model : undefined;
+        if (cw && modelId) {
+          this.contextWindow = { tokens: cw, model: modelId };
+          this.refreshOccupancy();
+          this.emit({ type: "patch", patch: { contextWindow: this.contextWindow } });
+        }
+        break;
+      }
+
       case "model/selection": {
         if (typeof data.provider === "string" && typeof data.model === "string") {
           this.emit({
@@ -358,13 +390,39 @@ export class SessionAdapter {
       }
     }
 
-    const usage = toUsage(data.usage);
-    if (usage) message.usage = usage;
+    const usage = toUsage(data.usage, {
+      startedAt: this.turnStartedAt,
+      endedAt: event.time,
+    });
+    if (usage) {
+      message.usage = usage;
+      // 同步刷新上下文占用：分子 = 最近一次 provider 报告的 totalTokens
+      this.refreshOccupancy();
+    }
     if (wire?.source?.kind === "model" && typeof wire.source.model === "string") {
       message.model = wire.source.model;
     }
     if (data.interrupted) message.error = "@interrupted";
     this.emit({ type: "message/upsert", message: { ...message } });
+  }
+
+  /**
+   * 等价于 dsh web 客户端的 `context-occupancy` 投影输出：
+   * `percent = round(usedTokens / contextWindow * 100)`，分子取最近一次
+   * `assistant/message` 或 assistant-stream `usage` chunk 的 `totalTokens`，
+   * 分母取最近一次 `request/context` 的 `contextWindow`。
+   */
+  private refreshOccupancy(): void {
+    const lastMessage = this.messages.at(-1);
+    const usedTokens = lastMessage?.usage?.totalTokens;
+    const window = this.contextWindow?.tokens;
+    if (typeof usedTokens !== "number" || typeof window !== "number" || window <= 0) return;
+    this.contextOccupancy = {
+      percent: Math.min(100, Math.round((usedTokens / window) * 100)),
+      usedTokens,
+      contextWindow: window,
+    };
+    this.emit({ type: "patch", patch: { contextOccupancy: this.contextOccupancy } });
   }
 
   // ---------- 瞬态流式帧 ----------
@@ -461,6 +519,8 @@ export class SessionAdapter {
         const usage = toUsage(chunk.usage);
         if (usage) {
           message.usage = usage;
+          // 流式 usage 帧也同步刷新上下文占用
+          this.refreshOccupancy();
           this.emit({ type: "message/upsert", message: { ...message } });
         }
         break;
@@ -481,6 +541,8 @@ export class SessionAdapter {
     this.currentTurn = undefined;
     this.currentStep = 0;
     this.sequence = 0;
+    this.contextWindow = undefined;
+    this.contextOccupancy = undefined;
   }
 
   private currentSession: SessionSummaryView | undefined;

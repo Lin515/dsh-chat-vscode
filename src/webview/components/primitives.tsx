@@ -103,16 +103,20 @@ export function Popover({
 }
 
 /**
- * 上下文占用纯文字：`xxxk/xxxk(xM)`，超过 60% 变琥珀色；
- * 悬停显示明细（缓存命中、输入/输出/推理等）。
+ * 上下文占用百分比：`xx%`，超过 60% 变琥珀色；
+ * 悬停显示明细行（已用/上限、缓存命中、输入/输出/推理等）。
  *
- * 生成过程中 usage 帧不一定每轮都来，所以常驻显示上一轮的值（不做实时刷新）。
+ * 主界面只显示百分比，避免发送更新时数字跳动闪烁。
+ * 明细里的数字每次发送/更新会重新计算，但只在 hover 时才可见。
  */
 export function CtxText({
+  percent,
   used,
   total,
   usage,
 }: {
+  /** 宿主算好的百分比（dsh web `context-occupancy` 投影的等价输出）；未传时本地重算。 */
+  percent?: number;
   used?: number;
   total?: number;
   usage?: import("../../shared/chat").UsageView;
@@ -121,9 +125,9 @@ export function CtxText({
   if (!total || total <= 0) return null;
   const usedValue = used ?? usage?.totalTokens ?? 0;
   if (!usedValue) return null;
-  const percent = Math.min(100, Math.round((usedValue / total) * 100));
+  const pct = percent ?? Math.min(100, Math.round((usedValue / total) * 100));
 
-  const detail: string[] = [texts.contextUsed(percent, formatTokens(usedValue), formatTokens(total))];
+  const detail: string[] = [texts.contextUsed(pct, formatTokens(usedValue), formatTokens(total))];
   if (usage) {
     if (usage.cachedTokens) detail.push(`${texts.ctxDetailCached} ${formatTokens(usage.cachedTokens)}`);
     if (usage.inputTokens !== undefined) detail.push(`${texts.ctxDetailInput} ${formatTokens(usage.inputTokens)}`);
@@ -133,8 +137,11 @@ export function CtxText({
   }
 
   return (
-    <span className={`ctx-text${percent >= 60 ? " is-high" : ""}`} title={detail.join("\n")}>
-      {formatTokens(usedValue)}/{formatTokens(total)}({formatTokens(total)})
+    <span
+      className={`ctx-text${pct >= 60 ? " is-high" : ""}`}
+      title={[texts.ctxDetailTitle, ...detail].join("\n")}
+    >
+      {pct}%
     </span>
   );
 }

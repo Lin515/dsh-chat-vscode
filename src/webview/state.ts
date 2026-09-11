@@ -9,6 +9,8 @@ import type {
   SessionSummaryView,
   SettingsSectionView,
   SubagentView,
+  ContextWindowView,
+  ContextOccupancyView,
 } from "../shared/chat";
 import type { HostToWebview } from "../shared/ipc";
 
@@ -34,6 +36,10 @@ export interface AppState extends ChatState {
   settingsSections: SettingsSectionView[];
   settingsWritable: boolean;
   settingsLoaded: boolean;
+  /** 最近一次 `request/context` 事件给出的上下文窗口。 */
+  contextWindow?: ContextWindowView;
+  /** 当前会话的上下文占用（dsh web 客户端 `context-occupancy` 投影的等价输出）。 */
+  contextOccupancy?: ContextOccupancyView;
   /** 正在查看的子代理对话。 */
   subagent?: { id: string; messages: MessageView[] };
 }

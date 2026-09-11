@@ -98,6 +98,19 @@ export interface UsageView {
   totalTokens?: number;
   /** 上下文窗口上限（用于上下文占用条）。 */
   contextWindow?: number;
+  /**
+   * 本轮的输出 token 生成速度（tok/s）。
+   * 来自 dsh web 客户端的 `turn-metrics` 折叠：`outputTokens / decodeMs`，
+   * 仅当 step 同时有 timing 和 usage 时才计算。
+   */
+  tokensPerSecond?: number;
+}
+
+/** 上下文占用（dsh web 客户端 `context-occupancy` 投影的输出形状）。 */
+export interface ContextOccupancyView {
+  percent: number;
+  usedTokens: number;
+  contextWindow: number;
 }
 
 export interface DeliverableView {
@@ -153,6 +166,8 @@ export interface ModelOptionView {
   defaultEffort?: string;
   /** 上下文窗口上限，用于占用条。 */
   contextWindow?: number;
+  /** 该模型是否接受图片输入（目录里的 input 模态）。 */
+  acceptsImage?: boolean;
 }
 
 export interface ProviderGroupView {
@@ -170,6 +185,8 @@ export interface ModelSelectionView {
   efforts?: ModelEffortView[];
   /** 该模型的上下文窗口上限，用于占用条。 */
   contextWindow?: number;
+  /** 该模型是否接受图片输入（目录里的 input 模态）。 */
+  acceptsImage?: boolean;
 }
 
 export interface GoalView {
@@ -243,6 +260,13 @@ export interface SettingsSectionView {
   writable: boolean;
 }
 
+/** 上下文窗口的权威值来源（由服务端 `request/context` 事件给出）。 */
+export interface ContextWindowView {
+  tokens: number;
+  /** 该上下文窗口属于哪个模型（模型 id）。 */
+  model: string;
+}
+
 export interface ChatState {
   connection: ConnectionState;
   /** 连接失败/服务器异常时的说明文本。 */
@@ -274,4 +298,14 @@ export interface ChatState {
   hasMoreHistory?: boolean;
   /** 最近的错误提示（一次性，展示后清除）。 */
   error?: string;
+  /**
+   * 当前生效的上下文窗口（来自 `request/context` 事件，与当前 model/selection 对齐）。
+   * 占用条只显示百分比，明细放 hover。
+   */
+  contextWindow?: ContextWindowView;
+  /**
+   * 当前会话的上下文占用（来自 dsh web 客户端 `context-occupancy` 投影的等价输出）。
+   * 百分比只在 hover 时变化，避免主界面每次发送更新时闪烁。
+   */
+  contextOccupancy?: ContextOccupancyView;
 }

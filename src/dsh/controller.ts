@@ -298,6 +298,7 @@ export class ChatController implements vscode.Disposable {
       reasoningEffort: used.reasoningEffort || undefined,
       efforts: model?.efforts,
       contextWindow: model?.contextWindow ?? this.model?.contextWindow,
+      acceptsImage: this.acceptsImageFor(used.provider, used.model),
     };
     this.emit({ type: "patch", patch: { model: this.model } });
     void this.applyPendingEffort();
@@ -609,6 +610,7 @@ export class ChatController implements vscode.Disposable {
     label?: string;
     efforts?: { id: string; name: string }[];
     contextWindow?: number;
+    acceptsImage?: boolean;
   } | undefined;
   /** 最近一次收到的 modelSelection 原始投影，模型目录就绪后用于重放。 */
   private lastModelSelection: unknown;
@@ -624,6 +626,68 @@ export class ChatController implements vscode.Disposable {
 
   // ---------- 模型 ----------
 
+  /**
+   * `provider:model` → 是否接受图片输入。
+   *
+   * `session/modelCatalog` 的线格式不带输入模态（严格 schema 只有
+   * id/name/description/reasoning），模态只存在于 LLM 适配器的设置命名空间：
+   * - `llm-pi-ai`：`{providers: {<route>: {defaultInput?, models?, modelOverrides?}}}`；
+   * - `llm-deepseek`：`{models: [{id, inputModalities?}]}`（provider 固定 deepseek-official）。
+   * 从 `settings/describe` 读出后按模型归档；未声明者按「支持」处理（与 dsh web
+   * 一致——它也不隐藏按钮，发送时由服务端 `session/attachment` 复核并报错）。
+   */
+  private imageCaps = new Map<string, boolean>();
+
+  private acceptsImageFor(provider: string, model: string): boolean {
+    return this.imageCaps.get(`${provider}:${model}`) ?? true;
+  }
+
+  private async refreshImageCaps(): Promise<void> {
+    if (!this.client) return;
+    try {
+      const described = await this.client.settingsDescribe();
+      const caps = new Map<string, boolean>();
+      for (const section of described.namespaces ?? []) {
+        const value = section.value as Record<string, any> | null | undefined;
+        if (!value || typeof value !== "object") continue;
+        const providers = value.providers as Record<string, any> | undefined;
+        if (section.ns === "llm-pi-ai" && providers && typeof providers === "object") {
+          for (const [provider, profile] of Object.entries(providers)) {
+            const p = (profile && typeof profile === "object" ? profile : {}) as Record<string, any>;
+            const defaultInput = Array.isArray(p.defaultInput) ? p.defaultInput : undefined;
+            const record = (id: string, declared?: string[]) => {
+              const list = declared ?? defaultInput;
+              if (Array.isArray(list)) caps.set(`${provider}:${id}`, list.includes("image"));
+            };
+            if (Array.isArray(p.models)) {
+              for (const entry of p.models) {
+                if (entry?.id) record(entry.id, Array.isArray(entry.input) ? entry.input : undefined);
+              }
+            }
+            const overrides = (p.modelOverrides && typeof p.modelOverrides === "object" ? p.modelOverrides : {}) as Record<string, any>;
+            for (const [id, ov] of Object.entries(overrides)) {
+              if (!caps.has(`${provider}:${id}`)) record(id, Array.isArray(ov?.input) ? ov.input : undefined);
+            }
+          }
+        } else if (section.ns === "llm-deepseek" && Array.isArray(value.models)) {
+          for (const m of value.models) {
+            if (m?.id && Array.isArray(m.inputModalities)) {
+              caps.set(`deepseek-official:${m.id}`, m.inputModalities.includes("image"));
+            }
+          }
+        }
+      }
+      this.imageCaps = caps;
+      // 当前模型同步刷新后推给界面（切换模型前目录/设置可能已更新）
+      if (this.model) {
+        this.model = { ...this.model, acceptsImage: this.acceptsImageFor(this.model.provider, this.model.model) };
+        this.emit({ type: "patch", patch: { model: this.model } });
+      }
+    } catch (error) {
+      this.log(`[models] 图片输入能力读取失败：${this.describeError(error)}`);
+    }
+  }
+
   private async loadModels(): Promise<void> {
     if (!this.client) return;
     try {
@@ -637,10 +701,11 @@ export class ChatController implements vscode.Disposable {
           description: model.description,
           efforts: model.reasoning?.efforts,
           defaultEffort: model.reasoning?.defaultEffort,
-          contextWindow: (model as { contextWindow?: number }).contextWindow,
         })),
       }));
       this.emit({ type: "models", groups: this.models, current: this.model });
+      // 图片能力来自设置命名空间，在选定默认/当前模型前刷新
+      await this.refreshImageCaps();
       // 投影可能先于模型目录到达（WS 一开就推 baseline），那时只能显示模型 id；
       // 目录就绪后用原始投影重放一次，把 id 换成人类可读的名字
       if (this.lastModelSelection) this.applyModelSelection(this.lastModelSelection);
@@ -670,6 +735,7 @@ export class ChatController implements vscode.Disposable {
         reasoningEffort: value.reasoningEffort,
         efforts: model?.efforts,
         contextWindow: model?.contextWindow,
+        acceptsImage: this.acceptsImageFor(value.provider, value.model),
       };
       this.emit({ type: "patch", patch: { model: this.model } });
       void this.applyPendingEffort();
@@ -724,6 +790,7 @@ export class ChatController implements vscode.Disposable {
           label: model?.name ?? message.model,
           efforts: model?.efforts,
           contextWindow: model?.contextWindow ?? this.model?.contextWindow,
+          acceptsImage: this.acceptsImageFor(message.provider, message.model),
         };
         // 立即更新胶囊显示（实际 selectModel 在下次发送前执行）
         this.model = {
@@ -733,6 +800,7 @@ export class ChatController implements vscode.Disposable {
           reasoningEffort: this.pendingModel.reasoningEffort,
           efforts: this.pendingModel.efforts,
           contextWindow: this.pendingModel.contextWindow,
+          acceptsImage: this.pendingModel.acceptsImage,
         };
         this.emit({ type: "patch", patch: { model: this.model } });
         break;
@@ -770,6 +838,15 @@ export class ChatController implements vscode.Disposable {
         break;
 
       case "addImages":
+        // 模型不支持图片输入时拒绝（防御性，正常情况下 UI 已隐藏按钮）
+        if (this.model && this.model.acceptsImage === false) {
+          this.emit({
+            type: "toast",
+            level: "warn",
+            text: `@imageUnsupported:${this.model.label ?? this.model.model}`,
+          });
+          break;
+        }
         await this.pickImages();
         break;
 
@@ -833,10 +910,13 @@ export class ChatController implements vscode.Disposable {
 
       case "saveSetting":
         await this.saveSetting(message.ns, message.path, message.value, message.expectedRevision);
+        // 设置里可能改了 LLM 适配器的输入模态声明，刷新图片能力
+        void this.refreshImageCaps();
         break;
 
       case "resetSettings":
         await this.resetNamespace(message.ns);
+        void this.refreshImageCaps();
         break;
 
       case "saveSecret":
