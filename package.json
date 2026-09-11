@@ -109,23 +109,6 @@
       }
     ],
     "menus": {
-      "view/title": [
-        {
-          "command": "dshChat.newSession",
-          "when": "view == dshChat.view || view == dshChat.viewSecondary",
-          "group": "navigation@1"
-        },
-        {
-          "command": "dshChat.history",
-          "when": "view == dshChat.view || view == dshChat.viewSecondary",
-          "group": "navigation@2"
-        },
-        {
-          "command": "dshChat.openInEditor",
-          "when": "view == dshChat.view || view == dshChat.viewSecondary",
-          "group": "navigation@3"
-        }
-      ],
       "editor/context": [
         {
           "command": "dshChat.addSelection",

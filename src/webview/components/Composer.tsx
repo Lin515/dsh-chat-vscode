@@ -8,6 +8,7 @@ import {
   IconShield,
   IconShieldCheck,
   IconShieldFilled,
+  IconSparkles,
   IconStop,
 } from "../icons";
 import { CtxText, Popover } from "./primitives";
@@ -70,12 +71,19 @@ export function Composer({ state, onDraft }: { state: AppState; onDraft: (text: 
   const [modelOpen, setModelOpen] = useState(false);
   const [modeOpen, setModeOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
-  // UI 里点「进入计划模式」不再直接发 /plan：记到这里，下一条消息发出时
-  // 把 /plan 拼到消息前面一起提交（服务端会随消息进入计划模式）
-  const pendingPlanRef = useRef(false);
+  // UI 里点「进入计划模式」不直接发 /plan：记到所属会话 id，下一条消息发出时
+  // 把 /plan 拼到消息前面一起提交（服务端随消息进入计划模式）。挂起态绑定会话，
+  // 输入区显示「下轮生效」提示条并可以取消
+  const [pendingPlan, setPendingPlan] = useState<string | undefined>(undefined);
   // 模型按钮 toggle 标志：标记「这次关闭是按钮触发的」，让 Popover 的
   // mousedown 外部检测跳过它（选中模型后弹层不关，再点按钮需能关闭）
   const modelToggleRef = useRef(false);
+  // 权限按钮与模型按钮同机制：弹层已开时再点按钮是关闭，而不是被外部检测
+  // 「关掉」之后又被 click 翻转回来
+  const modeToggleRef = useRef(false);
+  // ESC 关掉候选弹层后记下当时的文本与光标：只要没有真实编辑，随后的 keyup /
+  // 聚焦回调不会重新探测触发词把列表弹回来（否则表现为「按 ESC 列表又弹出」）
+  const dismissedRef = useRef<{ value: string; caret: number } | null>(null);
   const [trigger, setTrigger] = useState<Trigger | undefined>(undefined);
   const [highlight, setHighlight] = useState(0);
   const [confirmFullAccess, setConfirmFullAccess] = useState(false);
@@ -123,11 +131,13 @@ export function Composer({ state, onDraft }: { state: AppState; onDraft: (text: 
 
   const send = () => {
     if (!canSend) return;
-    // 进入计划模式时：把 /plan 拼到这条消息前面一起发出
-    const text = pendingPlanRef.current ? `/plan ${draft.trim()}` : draft.trim();
-    pendingPlanRef.current = false;
+    // 进入计划模式时：把 /plan 拼到这条消息前面一起发出（只认挂起态所属的会话）
+    const pending = state.session !== undefined && pendingPlan === state.session.id;
+    const text = pending ? `/plan ${draft.trim()}` : draft.trim();
+    if (pending) setPendingPlan(undefined);
     post({ type: "send", text, attachments: state.attachments });
     onDraft("");
+    dismissedRef.current = null;
     setTrigger(undefined);
   };
 
@@ -161,37 +171,55 @@ export function Composer({ state, onDraft }: { state: AppState; onDraft: (text: 
   };
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (trigger && candidates.length > 0) {
-      if (event.key === "ArrowDown") {
-        event.preventDefault();
-        setHighlight((value) => (value + 1) % candidates.length);
-        return;
-      }
-      if (event.key === "ArrowUp") {
-        event.preventDefault();
-        setHighlight((value) => (value - 1 + candidates.length) % candidates.length);
-        return;
-      }
-      if (event.key === "Enter" || event.key === "Tab") {
-        event.preventDefault();
-        applyCandidate(highlight);
-        return;
-      }
+    if (trigger) {
+      // ESC 关掉候选弹层：优先级最高。记下文本+光标防止随后的 keyup 重新
+      // 探测把列表弹回来；stopPropagation 让这次 ESC 不再落到「关弹层 / 停止
+      // 生成」的更高层监听上
       if (event.key === "Escape") {
         event.preventDefault();
+        event.stopPropagation();
+        dismissedRef.current = {
+          value: draft,
+          caret: event.currentTarget.selectionStart ?? draft.length,
+        };
         setTrigger(undefined);
         return;
+      }
+      if (candidates.length > 0) {
+        if (event.key === "ArrowDown") {
+          event.preventDefault();
+          setHighlight((value) => (value + 1) % candidates.length);
+          return;
+        }
+        if (event.key === "ArrowUp") {
+          event.preventDefault();
+          setHighlight((value) => (value - 1 + candidates.length) % candidates.length);
+          return;
+        }
+        if (event.key === "Enter" || event.key === "Tab") {
+          event.preventDefault();
+          applyCandidate(highlight);
+          return;
+        }
       }
     }
     if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
       event.preventDefault();
       send();
     }
-    if (event.key === "Escape" && state.running) post({ type: "stop" });
+    // ESC 停止生成统一由 App 的 window 层兜底（候选弹层 / 浮层都没有消费时才到）
   };
 
   /** 每次输入后重算触发词。 */
   const refreshTrigger = (value: string, caret: number) => {
+    const dismissed = dismissedRef.current;
+    if (dismissed && dismissed.value === value && dismissed.caret === caret) {
+      // ESC 刚关闭、文本与光标都没变：保持关闭，不重新弹出
+      setTrigger(undefined);
+      return;
+    }
+    // 任何真实的文本 / 光标变化都解除「已关闭」标记
+    dismissedRef.current = null;
     const found = findTrigger(value, caret);
     setTrigger(found);
     if (!found && candidates.length) setHighlight(0);
@@ -228,6 +256,17 @@ export function Composer({ state, onDraft }: { state: AppState; onDraft: (text: 
 
   return (
     <div ref={appRef} className={`composer${mini ? " is-mini" : ""}`}>
+      {/* 计划模式挂起态：下一条消息带 /plan 前缀发出，可取消 */}
+      {state.session !== undefined && pendingPlan === state.session.id && !state.planMode ? (
+        <div className="lump is-stacked">
+          <IconSparkles size={11} />
+          <span>{texts.planPending}</span>
+          <span className="spacer" />
+          <button className="lump-cancel" onClick={() => setPendingPlan(undefined)}>
+            {texts.cancel}
+          </button>
+        </div>
+      ) : null}
       <Lump state={state} waitingApproval={waitingApproval} waitingQuestion={waitingQuestion} />
 
       {/* 触发词候选：浮在输入框上方 */}
@@ -328,13 +367,35 @@ export function Composer({ state, onDraft }: { state: AppState; onDraft: (text: 
             <div className="anchor">
               <button
                 className="pill-mode"
-                onClick={() => setModeOpen((v) => !v)}
+                onMouseDown={() => {
+                  // 标记：接下来 Popover 的 mousedown 外部检测是「按钮触发的」，跳过
+                  modeToggleRef.current = true;
+                }}
+                onClick={() => {
+                  // 同一次交互内消费标志（mousedown 已先于 click 触发）
+                  setTimeout(() => {
+                    modeToggleRef.current = false;
+                  }, 0);
+                  setModeOpen((v) => {
+                    // 经按钮关闭时顺带复位完全权限确认态
+                    if (v) setConfirmFullAccess(false);
+                    return !v;
+                  });
+                }}
                 title={currentPermission.label}
               >
                 {currentPermission.icon}
                 <IconChevronDown size={8} />
               </button>
-              <Popover open={modeOpen} onClose={() => { setModeOpen(false); setConfirmFullAccess(false); }}>
+              <Popover
+                open={modeOpen}
+                onClose={() => {
+                  // 由按钮 toggle 触发的关闭不在此处理（按钮自己已翻转状态）
+                  if (modeToggleRef.current) return;
+                  setModeOpen(false);
+                  setConfirmFullAccess(false);
+                }}
+              >
                 <div className="popover-section">{texts.permission}</div>
                 {confirmFullAccess ? (
                   <div className="confirm-block">
@@ -378,14 +439,19 @@ export function Composer({ state, onDraft }: { state: AppState; onDraft: (text: 
                 )}
                 <div className="popover-sep" />
                 <button
-                  className={`popover-item${state.planMode ? " is-selected" : ""}`}
+                  className={`popover-item${
+                    state.planMode || (state.session !== undefined && pendingPlan === state.session.id)
+                      ? " is-selected"
+                      : ""
+                  }`}
                   onClick={() => {
                     if (state.planMode) {
                       // 退出计划模式：无副作用，即时切换
                       post({ type: "send", text: "/plan", attachments: [] });
                     } else {
-                      // 进入计划模式：不直接发指令，下一条消息带 /plan 前缀发出
-                      pendingPlanRef.current = true;
+                      // 进入计划模式：不直接发指令，下一条消息带 /plan 前缀发出。
+                      // 挂起态绑定当前会话，输入区显示「下轮生效」提示条、可取消
+                      setPendingPlan(state.session?.id);
                     }
                     setModeOpen(false);
                   }}

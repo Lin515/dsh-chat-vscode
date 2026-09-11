@@ -187,6 +187,9 @@ export function reducer(state: AppState, action: Action): AppState {
     case "ui/setPanel":
       return { ...state, panel: action.panel };
 
+    case "ui/openPanel":
+      return { ...state, panel: action.panel as PanelKind };
+
     case "ui/setDraft":
       return { ...state, draft: action.text };
 

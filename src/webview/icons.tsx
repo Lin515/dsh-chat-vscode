@@ -281,6 +281,15 @@ export const IconGlobe = (p: IconProps) => (
   </Icon>
 );
 
+/** 归档盒（heroicons archive-box outline）：从工作区列表移出会话。 */
+export const IconArchive = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M3.75 7.5a3 3 0 0 1 3-3h10.5a3 3 0 0 1 3 3v9a3 3 0 0 1-3 3H6.75a3 3 0 0 1-3-3z" />
+    <path d="M3.75 7.5h16.5" />
+    <path d="M9.5 11.5h5" />
+  </Icon>
+);
+
 export const IconTrash = (p: IconProps) => (
   <Icon {...p}>
     <path d="M4 7h16" />

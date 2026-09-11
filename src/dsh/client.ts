@@ -266,6 +266,15 @@ export class DshClient {
     return this.request(METHODS.sessionRename, { request: { sessionId, title } });
   }
 
+  /**
+   * 归档会话：从工作区分组移出（`WorkspaceArchiveValue`）。
+   * 服务端**没有**删除会话的 API（日志文件只增不减）；权威归档集合经
+   * `workspace/follow` 流的 baseline / `archived` 增量下发。
+   */
+  archiveSession(sessionId: string): Promise<{ archivedSessionIds: string[] }> {
+    return this.request("workspace/archiveSession", { request: { sessionId } });
+  }
+
   page(sessionId: string, throughSeq: number, beforeSeq: number, maxMessages = 50): Promise<{ records: unknown[]; hasMore: boolean }> {
     return this.request(METHODS.sessionPage, {
       request: { address: { kind: "session", sessionId }, throughSeq, beforeSeq, maxMessages },

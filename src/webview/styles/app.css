@@ -896,6 +896,29 @@
   opacity: 0.75;
 }
 
+/* 计划模式挂起提示条：叠在缺口状态条之上（下边框补回，与输入框保持间隔） */
+.lump.is-stacked {
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--command-border);
+  color: var(--accent);
+}
+
+.lump-cancel {
+  flex: 0 0 auto;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: var(--font-size-2xs);
+  color: var(--description);
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+}
+
+.lump-cancel:hover {
+  background: var(--hover);
+  color: var(--fg);
+}
+
 /* 1px shell */
 .composer-shell {
   padding: 1px;
@@ -1210,11 +1233,11 @@
 
 .session-item {
   display: flex;
-  flex-direction: column;
+  align-items: center;
   gap: 2px;
   width: 100%;
   margin-bottom: 2px;
-  padding: 6px 8px;
+  padding: 4px 2px;
   border-radius: var(--radius);
   text-align: left;
 }
@@ -1225,6 +1248,46 @@
 
 .session-item.is-current {
   background: var(--active);
+}
+
+/* 行主体仍是可点按钮（打开会话），操作图标收在右侧、悬停时浮现 */
+.session-item-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 2px 6px;
+  border: none;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.session-item-actions {
+  display: flex;
+  gap: 2px;
+  flex: 0 0 auto;
+  opacity: 0;
+}
+
+.session-item:hover .session-item-actions,
+.session-item:focus-within .session-item-actions {
+  opacity: 1;
+}
+
+.session-item-actions .icon-btn {
+  width: 20px;
+  height: 20px;
+}
+
+.session-item-actions .icon-btn.is-danger {
+  color: var(--error);
+}
+
+.session-item-actions .icon-btn.is-danger:hover {
+  color: var(--error);
 }
 
 .session-item-title {
@@ -1243,6 +1306,11 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 删除两步确认：首次点击后行内显示红色提示，取代时间文本 */
+.session-item-delete-hint {
+  color: var(--error);
 }
 
 .session-group {

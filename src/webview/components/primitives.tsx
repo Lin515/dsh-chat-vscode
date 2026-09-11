@@ -78,7 +78,11 @@ export function Popover({
       if (el && !el.contains(event.target as Node)) onClose();
     };
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape") {
+        // 本层消费：不再落到全局「ESC 停止生成」
+        event.stopPropagation();
+        onClose();
+      }
     };
     document.addEventListener("mousedown", onDown);
     document.addEventListener("keydown", onKey);

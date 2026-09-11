@@ -50,7 +50,9 @@ export type HostToWebview =
   /** 指定子代理的会话内容（复用 message 帧之外的单帧快照）。 */
   | { type: "subagent/transcript"; id: string; messages: MessageView[] }
   /** 一次性提示。 */
-  | { type: "toast"; level: "info" | "warn" | "error"; text: string };
+  | { type: "toast"; level: "info" | "warn" | "error"; text: string }
+  /** 让界面打开某个右侧抽屉（命令面板入口用，如「DSH: 历史对话」）。 */
+  | { type: "ui/openPanel"; panel: string };
 
 export type WebviewToHost =
   /** webview 加载完成，请求首帧状态。 */
@@ -65,6 +67,10 @@ export type WebviewToHost =
   | { type: "openSession"; sessionId: string }
   /** 请求会话列表。 */
   | { type: "listSessions" }
+  /** 归档会话（服务端 workspace/archiveSession：从工作区分组移出，可再找回）。 */
+  | { type: "archiveSession"; sessionId: string }
+  /** 删除会话（服务端没有删除 API：本地删除会话日志文件目录）。 */
+  | { type: "deleteSession"; sessionId: string }
   /** 加载更早的历史。 */
   | { type: "loadMore" }
   /** 切换模型 / 思考深度。 */

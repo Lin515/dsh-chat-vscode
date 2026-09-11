@@ -191,11 +191,19 @@ export function App() {
   const texts = dictionaryFor(normalizeLocale(state.locale));
   const closePanel = () => dispatch({ type: "ui/setPanel", panel: "none" });
 
+  // 下面的监听只在挂载时注册一次，running 用 ref 读，避免闭包里是首帧的旧值
+  const runningRef = useRef(state.running);
+  useEffect(() => {
+    runningRef.current = state.running;
+  }, [state.running]);
+
   useEffect(() => {
     const unsubscribe = subscribe(dispatch as (message: HostToWebview) => void);
     post({ type: "ready" });
+    // ESC 优先级链的兜底层：候选弹层（textarea 层）> 浮层（document 层）> 停止
+    // 生成（window 层）。上层消费后会 stopPropagation，不会走到这里
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && state.running) post({ type: "stop" });
+      if (event.key === "Escape" && runningRef.current) post({ type: "stop" });
     };
     window.addEventListener("keydown", onKey);
     return () => {

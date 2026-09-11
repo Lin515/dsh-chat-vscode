@@ -52,6 +52,8 @@ export interface Texts {
   permConfirmEnable: string;
   enterPlanMode: string;
   exitPlanMode: string;
+  /** 计划模式挂起态提示条（下一条消息将进入计划模式，可取消）。 */
+  planPending: string;
 
   /** 子代理面板 */
   subagents: string;
@@ -139,6 +141,10 @@ export interface Texts {
   noSessions: string;
   untitled: string;
   runningTag: string;
+  /** 历史列表行内操作：归档（服务端从工作区移出）与删除（本地删除日志文件）。 */
+  archive: string;
+  deleteSession: string;
+  deleteSessionConfirm: string;
 
   contextUsed: (percent: number, used: string, total: string) => string;
   /** 悬停上下文占用时的明细行（标签 + 数值）。 */
@@ -211,6 +217,7 @@ const zh: Texts = {
   permConfirmEnable: "启用完全权限",
   enterPlanMode: "进入计划模式",
   exitPlanMode: "退出计划模式",
+  planPending: "下一条消息将进入计划模式",
 
   subagents: "子代理",
   subagentsEmpty: "当前会话没有子代理",
@@ -291,6 +298,9 @@ const zh: Texts = {
   noSessions: "还没有历史对话",
   untitled: "未命名对话",
   runningTag: "运行中",
+  archive: "归档（从工作区列表移出）",
+  deleteSession: "删除（删除本地日志文件）",
+  deleteSessionConfirm: "再次点击确认删除",
 
   contextUsed: (percent, used, total) => `上下文已用 ${percent}%（${used} / ${total}）`,
   ctxDetailCached: "缓存命中",
@@ -361,6 +371,7 @@ const en: Texts = {
   permConfirmEnable: "Enable full access",
   enterPlanMode: "Enter plan mode",
   exitPlanMode: "Exit plan mode",
+  planPending: "Plan mode will be enabled on your next message",
 
   subagents: "Subagents",
   subagentsEmpty: "This session has no subagents",
@@ -441,6 +452,9 @@ const en: Texts = {
   noSessions: "No past sessions yet",
   untitled: "Untitled chat",
   runningTag: "running",
+  archive: "Archive (move out of workspace list)",
+  deleteSession: "Delete (remove local log files)",
+  deleteSessionConfirm: "Click again to confirm",
 
   contextUsed: (percent, used, total) => `Context used ${percent}% (${used} / ${total})`,
   ctxDetailCached: "Cache hit",

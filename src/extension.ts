@@ -38,7 +38,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
     vscode.commands.registerCommand("dshChat.newSession", () => controller.newSession()),
     vscode.commands.registerCommand("dshChat.history", async () => {
-      await controller.refreshSessions();
+      await controller.openHistory();
       await vscode.commands.executeCommand("dshChat.view.focus");
     }),
     vscode.commands.registerCommand("dshChat.openInEditor", () => provider.openPanel()),

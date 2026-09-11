@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync, statSync } from "node:fs";
-import { basename, relative } from "node:path";
+import { readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { homedir } from "node:os";
+import { basename, join, relative } from "node:path";
 import * as vscode from "vscode";
 import type {
   Attachment,
@@ -30,8 +31,15 @@ export class ChatController implements vscode.Disposable {
   private eventsHandle: { cancel(): void } | undefined;
   private eventsClientId: string | undefined;
   private readonly handledEvents = new Set<string>();
-  private readonly attachments: Attachment[] = [];
-  private draft = "";
+  private workspaceHandle: { cancel(): void } | undefined;
+  /** 已归档会话的权威集合（来自 workspace/follow 流）。 */
+  private archivedSessionIds = new Set<string>();
+  /**
+   * 草稿与附件按会话隔离：切换会话时输入框文本与附件芯片一起切换。
+   * 无当前会话时挂在空 key 上（连接建立前暂存）。
+   */
+  private readonly drafts = new Map<string, string>();
+  private readonly attachmentsBySession = new Map<string, Attachment[]>();
   private models: ProviderGroupView[] = [];
   private model: ModelSelectionView | undefined;
   private running = false;
@@ -68,6 +76,24 @@ export class ChatController implements vscode.Disposable {
     return folder ? folder.uri.fsPath : process.cwd();
   }
 
+  /** 当前会话的草稿 / 附件键（无会话时空串）。 */
+  private sessionKey(): string {
+    return this.currentSessionId ?? "";
+  }
+
+  private attachmentsNow(): Attachment[] {
+    return this.attachmentsBySession.get(this.sessionKey()) ?? [];
+  }
+
+  /** 修改当前会话的附件并同步给界面。 */
+  private mutateAttachments(fn: (list: Attachment[]) => void): void {
+    const key = this.sessionKey();
+    const list = this.attachmentsBySession.get(key) ?? [];
+    fn(list);
+    this.attachmentsBySession.set(key, list);
+    this.emit({ type: "patch", patch: { attachments: [...list] } });
+  }
+
   /** 给新连接的 webview 的首帧快照。 */
   snapshot(): ChatState {
     return {
@@ -80,8 +106,8 @@ export class ChatController implements vscode.Disposable {
       messages: this.adapter?.snapshotMessages() ?? [],
       running: this.running,
       queue: 0,
-      attachments: this.attachments,
-      draft: this.draft,
+      attachments: this.attachmentsNow(),
+      draft: this.drafts.get(this.sessionKey()) ?? "",
       models: this.models,
       model: this.model,
       permission: this.permission,
@@ -125,6 +151,7 @@ export class ChatController implements vscode.Disposable {
     if (this.currentSessionId) this.follow(this.currentSessionId);
     this.openControlStream();
     this.openEventsStream();
+    this.openWorkspaceStream();
   }
 
   private setConnection(state: ConnectionState | "error", detail?: string): void {
@@ -165,6 +192,12 @@ export class ChatController implements vscode.Disposable {
 
   // ---------- 会话 ----------
 
+  /** 命令面板入口「DSH: 历史对话」：刷新列表并让界面切到历史抽屉。 */
+  async openHistory(): Promise<void> {
+    await this.refreshSessions();
+    this.emit({ type: "ui/openPanel", panel: "history" });
+  }
+
   async refreshSessions(): Promise<void> {
     if (!this.client) return;
     try {
@@ -181,10 +214,92 @@ export class ChatController implements vscode.Disposable {
           return cwd === workspace || (currentCwd !== undefined && cwd === currentCwd);
         })
         .map((item) => this.toSessionView(item));
-      this.emit({ type: "sessions", sessions: this.sessions });
+      this.emitSessions();
     } catch (error) {
       this.log(`[sessions] 列表获取失败：${this.describeError(error)}`);
     }
+  }
+
+  /** 真正展示给界面的列表：滤掉已归档会话。 */
+  private emitSessions(): void {
+    this.emit({
+      type: "sessions",
+      sessions: this.sessions.filter((s) => !this.archivedSessionIds.has(s.id)),
+    });
+  }
+
+  /**
+   * 归档：服务端把会话从工作区分组移出。权威状态经 workspace/follow 流的
+   * `archived` 增量回到这里，列表自动刷新；兜底再拉一次列表（增量延迟时）。
+   */
+  private async archiveSession(sessionId: string): Promise<void> {
+    if (!this.client) return;
+    try {
+      await this.client.archiveSession(sessionId);
+      this.archivedSessionIds.add(sessionId);
+      this.emitSessions();
+      setTimeout(() => void this.refreshSessions(), 500);
+    } catch (error) {
+      this.reportError("归档会话失败", error);
+    }
+  }
+
+  /**
+   * 删除会话。服务端**没有**删除 API（会话日志文件只增不减），这里直接删除
+   * 本地日志目录：`~/.dsh/sessions/<工作区>/session-<会话id>`（目录名就是
+   * 会话 id，见日志文件头 `id` 字段）。
+   *
+   * 保护：运行中的会话不能删（服务端还在往里写）；当前正在跟随的会话不能删
+   * （删完无处可看，且服务端内存里还开着它）。
+   */
+  private async deleteSession(sessionId: string): Promise<void> {
+    const session = this.sessions.find((s) => s.id === sessionId);
+    if (!session) {
+      this.log(`[sessions] 删除失败：列表中不存在会话 ${sessionId}`);
+      return;
+    }
+    if (session.running) {
+      void vscode.window.showWarningMessage("该会话正在运行，无法删除。");
+      return;
+    }
+    if (sessionId === this.currentSessionId) {
+      void vscode.window.showWarningMessage("不能删除当前正在查看的会话，请先切换到其他会话。");
+      return;
+    }
+    const dir = this.findSessionDir(sessionId);
+    if (!dir) {
+      this.log(`[sessions] 删除失败：找不到会话日志目录（${sessionId}）`);
+      void vscode.window.showWarningMessage("找不到该会话的日志文件，无法删除。");
+      return;
+    }
+    try {
+      rmSync(dir, { recursive: true, force: true });
+      this.sessions = this.sessions.filter((s) => s.id !== sessionId);
+      this.emitSessions();
+      this.log(`[sessions] 已删除会话日志：${dir}`);
+    } catch (error) {
+      this.reportError("删除会话失败", error);
+    }
+  }
+
+  /** 在 `~/.dsh/sessions` 的各工作区子目录里找会话日志目录（目录名=会话 id）。 */
+  private findSessionDir(sessionId: string): string | undefined {
+    const root = join(homedir(), ".dsh", "sessions");
+    let entries: string[];
+    try {
+      entries = readdirSync(root);
+    } catch {
+      return undefined;
+    }
+    for (const entry of entries) {
+      const candidate = join(root, entry, sessionId);
+      try {
+        if (statSync(candidate).isDirectory()) return candidate;
+      } catch {
+        // 不在这个工作区，继续
+      }
+    }
+    return undefined;
   }
 
   private toSessionView(item: SessionSummaryWire): SessionSummaryView {
@@ -222,6 +337,9 @@ export class ChatController implements vscode.Disposable {
             running: false,
           },
           running: false,
+          // 新会话的草稿与附件天然是空的，显式下发让输入框复位
+          draft: this.drafts.get(created.sessionId) ?? "",
+          attachments: this.attachmentsBySession.get(created.sessionId) ?? [],
         },
       });
     } catch (error) {
@@ -234,7 +352,12 @@ export class ChatController implements vscode.Disposable {
     this.follow(sessionId);
     this.emit({
       type: "patch",
-      patch: { session: this.sessions.find((s) => s.id === sessionId) },
+      patch: {
+        session: this.sessions.find((s) => s.id === sessionId),
+        // 输入框内容跟随会话切换
+        draft: this.drafts.get(sessionId) ?? "",
+        attachments: this.attachmentsBySession.get(sessionId) ?? [],
+      },
     });
   }
 
@@ -329,9 +452,11 @@ export class ChatController implements vscode.Disposable {
     this.followHandle?.cancel();
     this.controlHandle?.cancel();
     this.eventsHandle?.cancel();
+    this.workspaceHandle?.cancel();
     this.followHandle = undefined;
     this.controlHandle = undefined;
     this.eventsHandle = undefined;
+    this.workspaceHandle = undefined;
     this.eventsClientId = undefined;
     this.handledEvents.clear();
   }
@@ -342,6 +467,48 @@ export class ChatController implements vscode.Disposable {
     this.controlHandle = this.client.followControl({
       onItem: (value) => this.onControlFrame(value as SessionControlFrame),
     });
+  }
+
+  private openWorkspaceStream(): void {
+    if (!this.client) return;
+    this.workspaceHandle?.cancel();
+    this.workspaceHandle = this.client.openStream(
+      "workspace/follow",
+      {},
+      {
+        onItem: (value) =>
+          this.onWorkspaceFrame(
+            value as { type?: string; value?: { archivedSessionIds?: string[] }; archivedSessionIds?: string[] },
+          ),
+      },
+    );
+  }
+
+  /**
+   * 工作区状态流承载已归档会话的权威集合：每代以一个 `baseline` 开场，
+   * 其后是 `archived` 增量（每次都是**完整集合**）。`session/list` 不分
+   * 归档与否，归档过滤在客户端做。
+   */
+  private onWorkspaceFrame(
+    frame: { type?: string; value?: { archivedSessionIds?: string[] }; archivedSessionIds?: string[] },
+  ): void {
+    let next: string[] | undefined;
+    if (frame?.type === "baseline") next = frame.value?.archivedSessionIds;
+    else if (frame?.type === "archived") next = frame.archivedSessionIds;
+    if (!Array.isArray(next)) return;
+    const nextSet = new Set(next);
+    let changed = nextSet.size !== this.archivedSessionIds.size;
+    if (!changed) {
+      for (const id of nextSet) {
+        if (!this.archivedSessionIds.has(id)) {
+          changed = true;
+          break;
+        }
+      }
+    }
+    if (!changed) return;
+    this.archivedSessionIds = nextSet;
+    this.emitSessions();
   }
 
   /**
@@ -778,6 +945,14 @@ export class ChatController implements vscode.Disposable {
         await this.refreshSessions();
         break;
 
+      case "archiveSession":
+        await this.archiveSession(message.sessionId);
+        break;
+
+      case "deleteSession":
+        await this.deleteSession(message.sessionId);
+        break;
+
       case "setModel":
         // 延迟到下一次发送时生效（与 UI 进入计划模式同机制）：
         // 避免正在生成时切模型导致本轮中途换模型，也让界面立刻反映选择
@@ -852,14 +1027,17 @@ export class ChatController implements vscode.Disposable {
 
       case "addMention": {
         // @ 提及选中的文件/目录：直接作为附件芯片加入（不再弹系统对话框）
-        if (this.attachments.some((item) => item.path === message.path)) break;
-        this.attachments.push({
+        const key = this.sessionKey();
+        const list = this.attachmentsBySession.get(key) ?? [];
+        if (list.some((item) => item.path === message.path)) break;
+        list.push({
           id: randomUUID(),
           kind: message.kind === "directory" ? "folder" : "file",
           path: message.path,
           name: this.relativePath(message.path),
         });
-        this.emit({ type: "patch", patch: { attachments: [...this.attachments] } });
+        this.attachmentsBySession.set(key, list);
+        this.emit({ type: "patch", patch: { attachments: [...list] } });
         break;
       }
 
@@ -868,7 +1046,7 @@ export class ChatController implements vscode.Disposable {
         break;
 
       case "setDraft":
-        this.draft = message.text;
+        this.drafts.set(this.sessionKey(), message.text);
         break;
 
       case "openFile":
@@ -978,8 +1156,9 @@ export class ChatController implements vscode.Disposable {
           this.log(`[model] 发送前应用模型选择失败：${this.describeError(error)}`);
         }
       }
-      this.attachments.length = 0;
-      this.draft = "";
+      const key = this.sessionKey();
+      this.attachmentsBySession.set(key, []);
+      this.drafts.set(key, "");
       this.running = true;
       this.emit({ type: "patch", patch: { attachments: [], draft: "", running: true } });
       // dsh 自身维护队列：运行中提交即排队（steer 需要显式打断语义，首期不用）
@@ -1070,22 +1249,23 @@ export class ChatController implements vscode.Disposable {
       openLabel: "添加为上下文",
     });
     if (!picked?.length) return;
-    for (const uri of picked) {
-      let isDirectory = false;
-      try {
-        isDirectory = statSync(uri.fsPath).isDirectory();
-      } catch {
-        continue;
+    this.mutateAttachments((list) => {
+      for (const uri of picked) {
+        let isDirectory = false;
+        try {
+          isDirectory = statSync(uri.fsPath).isDirectory();
+        } catch {
+          continue;
+        }
+        const attachment: Attachment = {
+          id: randomUUID(),
+          kind: isDirectory ? "folder" : "file",
+          path: uri.fsPath,
+          name: this.relativePath(uri.fsPath),
+        };
+        if (!list.some((a) => a.path === attachment.path)) list.push(attachment);
       }
-      const attachment: Attachment = {
-        id: randomUUID(),
-        kind: isDirectory ? "folder" : "file",
-        path: uri.fsPath,
-        name: this.relativePath(uri.fsPath),
-      };
-      if (!this.attachments.some((a) => a.path === attachment.path)) this.attachments.push(attachment);
-    }
-    this.emit({ type: "patch", patch: { attachments: [...this.attachments] } });
+    });
   }
 
   private async pickImages(): Promise<void> {
@@ -1095,47 +1275,51 @@ export class ChatController implements vscode.Disposable {
       openLabel: "添加图片",
     });
     if (!picked?.length) return;
-    for (const uri of picked) {
-      try {
-        const bytes = readFileSync(uri.fsPath);
-        const ext = uri.fsPath.split(".").pop()?.toLowerCase() ?? "png";
-        const mediaType = ext === "jpg" || ext === "jpeg" ? "image/jpeg" : `image/${ext}`;
-        this.attachments.push({
-          id: randomUUID(),
-          kind: "image",
-          name: basename(uri.fsPath),
-          path: uri.fsPath,
-          dataUrl: `data:${mediaType};base64,${bytes.toString("base64")}`,
-          bytes: bytes.length,
-        });
-      } catch (error) {
-        this.log(`[image] 读取失败：${this.describeError(error)}`);
+    this.mutateAttachments((list) => {
+      for (const uri of picked) {
+        try {
+          const bytes = readFileSync(uri.fsPath);
+          const ext = uri.fsPath.split(".").pop()?.toLowerCase() ?? "png";
+          const mediaType = ext === "jpg" || ext === "jpeg" ? "image/jpeg" : `image/${ext}`;
+          list.push({
+            id: randomUUID(),
+            kind: "image",
+            name: basename(uri.fsPath),
+            path: uri.fsPath,
+            dataUrl: `data:${mediaType};base64,${bytes.toString("base64")}`,
+            bytes: bytes.length,
+          });
+        } catch (error) {
+          this.log(`[image] 读取失败：${this.describeError(error)}`);
+        }
       }
-    }
-    this.emit({ type: "patch", patch: { attachments: [...this.attachments] } });
+    });
   }
 
   private removeAttachment(id: string): void {
-    const index = this.attachments.findIndex((a) => a.id === id);
-    if (index >= 0) this.attachments.splice(index, 1);
-    this.emit({ type: "patch", patch: { attachments: [...this.attachments] } });
+    this.mutateAttachments((list) => {
+      const index = list.findIndex((a) => a.id === id);
+      if (index >= 0) list.splice(index, 1);
+    });
   }
 
   /** 供编辑器命令调用：把一段文本作为上下文加入输入框。 */
   addSelection(name: string, text: string): void {
-    this.attachments.push({ id: randomUUID(), kind: "selection", name, text });
-    this.emit({ type: "patch", patch: { attachments: [...this.attachments] } });
+    this.mutateAttachments((list) => {
+      list.push({ id: randomUUID(), kind: "selection", name, text });
+    });
   }
 
   addFileContext(path: string): void {
-    if (this.attachments.some((a) => a.path === path)) return;
-    this.attachments.push({
-      id: randomUUID(),
-      kind: "file",
-      path,
-      name: this.relativePath(path),
+    this.mutateAttachments((list) => {
+      if (list.some((a) => a.path === path)) return;
+      list.push({
+        id: randomUUID(),
+        kind: "file",
+        path,
+        name: this.relativePath(path),
+      });
     });
-    this.emit({ type: "patch", patch: { attachments: [...this.attachments] } });
   }
 
   private async openFile(path: string): Promise<void> {
