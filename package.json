@@ -2,7 +2,7 @@
   "name": "dsh-chat",
   "displayName": "DSH Chat",
   "description": "Continue-style chat UI for DeepSeek Harness (dsh) inside VS Code. Runs `dsh web` in the background and renders the conversation natively in VS Code (bilingual UI).",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "publisher": "lin",
   "license": "MIT",
   "repository": {
