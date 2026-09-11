@@ -13,7 +13,18 @@ import assert from "node:assert";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { DshAuthError, DshClient } from "../src/dsh/client";
-import { clearLease, cleanupResidualServers, isProcessAlive, readLeases, scanServers, writeLease } from "../src/dsh/processRegistry";
+import {
+  clearLease,
+  cleanupResidualServers,
+  isKillable,
+  isProcessAlive,
+  parseProcessList,
+  readLeases,
+  resetCommandLineCache,
+  scanServers,
+  shellCallCount,
+  writeLease,
+} from "../src/dsh/processRegistry";
 
 // ---------- 1. 令牌：401/403 → DshAuthError ----------
 
@@ -112,6 +123,21 @@ async function stub(
 
 const log = () => {};
 
+/**
+ * 轮询等待条件成立。
+ *
+ * 取代原来的固定 `setTimeout`：既有的 400/700/1500ms 三处硬等占了本测试一半以上
+ * 时间，而且慢机器上还可能不够。轮询通常在 30ms 内就满足，慢机器上会一直等到超时。
+ */
+async function waitFor(predicate: () => boolean, label: string, timeoutMs = 8_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.fail(`等待超时（${timeoutMs}ms）：${label}`);
+}
+
 /** 起一个存活 60s 的假进程；`args` 会出现在命令行里，用于「是不是 dsh」的判定。 */
 async function fakeProcess(args: string[]): Promise<{ pid: number; kill: () => void }> {
   const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)", ...args], {
@@ -119,9 +145,12 @@ async function fakeProcess(args: string[]): Promise<{ pid: number; kill: () => v
     windowsHide: true,
   });
   child.unref();
-  await new Promise((resolve) => setTimeout(resolve, 400));
   const pid = child.pid;
-  assert.ok(pid && isProcessAlive(pid), "测试用子进程应当存活");
+  assert.ok(pid, "子进程应当有 pid");
+  await waitFor(() => isProcessAlive(pid), "子进程应当存活");
+  // 进程表里出现该进程的行需要一点时间，命令行快照才认得它
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.ok(isProcessAlive(pid), "测试用子进程应当存活");
   return { pid: pid!, kill: () => child.kill() };
 }
 
@@ -131,11 +160,11 @@ async function fakeProcess(args: string[]): Promise<{ pid: number; kill: () => v
   const alive = await fakeProcess(["dsh", "web"]);
   try {
     writeLease({ serverPid: alive.pid, hostPid: process.pid, command: "dsh", startedAt: Date.now() });
-    const found = scanServers().filter((item) => item.lease.serverPid === alive.pid);
+    const found = (await scanServers()).filter((item) => item.lease.serverPid === alive.pid);
     assert.strictEqual(found.length, 1);
     assert.strictEqual(found[0].orphan, false, "宿主存活时不能判为孤儿");
     assert.strictEqual(found[0].heldByLiveHost, true);
-    const result = cleanupResidualServers(log);
+    const result = await cleanupResidualServers(log);
     assert.ok(!result.killed.includes(alive.pid), "宿主存活时不能被杀");
     assert.ok(isProcessAlive(alive.pid), "宿主存活时进程应当还在");
     console.log("cleanup: 宿主存活 → 不清理 ✓");
@@ -146,28 +175,71 @@ async function fakeProcess(args: string[]): Promise<{ pid: number; kill: () => v
 }
 
 // 2b. 宿主已消失 → 判为孤儿；命令行不含 dsh → 只清租约、不动进程（防 pid 回收误杀）
+//
+// 这里放**两个**孤儿，顺便钉住「一次扫描只起一次 PowerShell」的批量化不变量：
+// 逐个 pid 查的话 Windows 上每次都要付 ~1600ms 的解释器启动成本
+// （实测：单查一个 pid 约 1600ms，一次查全部进程约 1800ms），
+// 于是 N 个孤儿 = N×1600ms。本文件曾因此慢到 11.6s。
 {
+  resetCommandLineCache();
   // 注意：标记不能以 `-` 开头，否则 node 把它当自己的选项直接退出
   const plain = await fakeProcess(["plain-worker"]);
+  const plain2 = await fakeProcess(["plain-worker-2"]);
   try {
     // 用一个几乎不可能存在的 pid 当「死掉的宿主」
-    writeLease({ serverPid: plain.pid, hostPid: 999_999_999, command: "node", startedAt: Date.now() });
-    const item = scanServers().find((entry) => entry.lease.serverPid === plain.pid);
-    assert.ok(item?.orphan, "宿主消失后应判为孤儿");
-    assert.strictEqual(item?.confirmed, false, "命令行不含 dsh 时应确认失败");
-    const result = cleanupResidualServers(log);
-    assert.ok(result.orphans.includes(plain.pid), "应报告这个孤儿");
-    assert.ok(result.skipped.includes(plain.pid), "命令行不含 dsh 时应跳过进程、只清租约");
-    assert.ok(isProcessAlive(plain.pid), "未确认是 dsh 时不能杀进程");
-    assert.strictEqual(
-      readLeases().some((entry) => entry.lease.serverPid === plain.pid),
-      false,
-      "租约应被清掉",
+    for (const pid of [plain.pid, plain2.pid]) {
+      writeLease({ serverPid: pid, hostPid: 999_999_999, command: "node", startedAt: Date.now() });
+    }
+    resetCommandLineCache();
+    // 异步不变量：调用必须**立刻**返回，把 1.5s 的 PowerShell 查询交给事件循环。
+    // 退回 spawnSync 时这一段会阻塞 1500ms 以上（扩展宿主会卡住）。
+    const scanStarted = Date.now();
+    const scannedPromise = scanServers();
+    const scanSyncMs = Date.now() - scanStarted;
+    assert.ok(
+      scanSyncMs < 250,
+      `scanServers 应当立刻返回（同步段只读租约文件），实际阻塞 ${scanSyncMs}ms——` +
+        `退回 spawnSync 会卡住扩展宿主约 1.5s`,
     );
+    const scanned = (await scannedPromise).filter(
+      (entry) => entry.lease.serverPid === plain.pid || entry.lease.serverPid === plain2.pid,
+    );
+    assert.strictEqual(scanned.length, 2, "两个孤儿都该被扫到");
+    assert.ok(
+      scanned.every((entry) => entry.orphan),
+      "宿主消失后应判为孤儿",
+    );
+    assert.ok(
+      scanned.every((entry) => entry.confirmed === false),
+      "命令行不含 dsh 时应确认失败",
+    );
+    const shellCalls = shellCallCount();
+    assert.strictEqual(
+      shellCalls,
+      1,
+      `两个孤儿只应起一次 PowerShell（批量取全部命令行），实际起了 ${shellCalls} 次——` +
+        `退回逐个查会让每次扫描慢 N×1600ms`,
+    );
+
+    // 缓存命中（上一个 scanServers 刚取过），这里不再起 PowerShell
+    const result = await cleanupResidualServers(log);
+    for (const pid of [plain.pid, plain2.pid]) {
+      assert.ok(result.orphans.includes(pid), "应报告这个孤儿");
+      assert.ok(result.skipped.includes(pid), "命令行不含 dsh 时应跳过进程、只清租约");
+      assert.ok(isProcessAlive(pid), "未确认是 dsh 时不能杀进程");
+      assert.strictEqual(
+        readLeases().some((entry) => entry.lease.serverPid === pid),
+        false,
+        "租约应被清掉",
+      );
+    }
     console.log("cleanup: 宿主消失 + 命令行非 dsh → 只清租约 ✓");
+    console.log("cleanup: 多个孤儿只起一次 PowerShell（批量）✓");
   } finally {
     clearLease(plain.pid);
+    clearLease(plain2.pid);
     plain.kill();
+    plain2.kill();
   }
 }
 
@@ -175,13 +247,22 @@ async function fakeProcess(args: string[]): Promise<{ pid: number; kill: () => v
 {
   const dshLike = await fakeProcess(["dsh", "web", "--port", "0"]);
   writeLease({ serverPid: dshLike.pid, hostPid: 999_999_999, command: "dsh", startedAt: Date.now() });
-  const item = scanServers().find((entry) => entry.lease.serverPid === dshLike.pid);
-  assert.strictEqual(item?.confirmed, true, "命令行含 dsh 时应确认成功");
-  const result = cleanupResidualServers(log);
+  // 先清缓存，让下面的 cleanup 必须真起一次 PowerShell——这样「同步段不阻塞」的
+  // 断言才是在有真实进程查询的前提下测的（缓存命中时它当然立刻就返回）
+  resetCommandLineCache();
+  // 异步不变量：cleanup 也必须立刻返回，把查询与 taskkill 都交给事件循环
+  const cleanupStarted = Date.now();
+  const cleanupPromise = cleanupResidualServers(log);
+  const cleanupSyncMs = Date.now() - cleanupStarted;
+  assert.ok(
+    cleanupSyncMs < 250,
+    `cleanupResidualServers 应当立刻返回，实际阻塞 ${cleanupSyncMs}ms——` +
+      `它的同步段只该读租约文件，进程查询必须 await`,
+  );
+  const result = await cleanupPromise;
   assert.ok(result.killed.includes(dshLike.pid), `应杀掉 pid=${dshLike.pid}，实际 killed=${result.killed.join()}`);
-  // taskkill /F 是异步生效的，给它一点时间
-  await new Promise((resolve) => setTimeout(resolve, 1500));
-  assert.strictEqual(isProcessAlive(dshLike.pid), false, "dsh 进程应已被清理");
+  // taskkill /F 返回不等于进程已经消失，轮询等它真的不见
+  await waitFor(() => !isProcessAlive(dshLike.pid), `pid=${dshLike.pid} 应被清理`);
   assert.strictEqual(
     readLeases().some((entry) => entry.lease.serverPid === dshLike.pid),
     false,
@@ -195,9 +276,9 @@ async function fakeProcess(args: string[]): Promise<{ pid: number; kill: () => v
   const gone = spawn(process.execPath, ["-e", "process.exit(0)", "dsh"], { stdio: "ignore", windowsHide: true });
   gone.unref();
   const gonePid = gone.pid!;
-  await new Promise((resolve) => setTimeout(resolve, 700));
+  await waitFor(() => !isProcessAlive(gonePid), "子进程应当已退出");
   writeLease({ serverPid: gonePid, hostPid: 999_999_999, command: "dsh", startedAt: Date.now() });
-  const result = cleanupResidualServers(log);
+  const result = await cleanupResidualServers(log);
   assert.ok(!result.killed.includes(gonePid), "已退出的进程不该出现在 killed 里");
   assert.strictEqual(
     readLeases().some((entry) => entry.lease.serverPid === gonePid),
@@ -205,6 +286,90 @@ async function fakeProcess(args: string[]): Promise<{ pid: number; kill: () => v
     "死进程的租约应被删除",
   );
   console.log("cleanup: 进程已退出 → 租约作废 ✓");
+}
+
+// 2f. 并发扫描共享同一次 PowerShell（single-flight）
+//
+// 改成异步后，两个并发调用（例如启动清理与「显示诊断信息」同时触发）会各自
+// 起一次 PowerShell——异步本是为了不卡主线程，却可能因此起两倍解释器。
+// 这里钉住「并发只起一次」。
+{
+  const a = await fakeProcess(["plain-c"]);
+  const b = await fakeProcess(["plain-d"]);
+  try {
+    for (const pid of [a.pid, b.pid]) {
+      writeLease({ serverPid: pid, hostPid: 999_999_999, command: "node", startedAt: Date.now() });
+    }
+    resetCommandLineCache();
+    // 不 await 第一个，紧接着发第二个：两者必须共享在途查询
+    const first = scanServers();
+    const second = scanServers();
+    const [one, two] = await Promise.all([first, second]);
+    for (const pid of [a.pid, b.pid]) {
+      assert.ok(
+        one.some((entry) => entry.lease.serverPid === pid && entry.confirmed === false),
+        "第一次扫描应含该孤儿",
+      );
+      assert.ok(
+        two.some((entry) => entry.lease.serverPid === pid && entry.confirmed === false),
+        "第二次扫描应含该孤儿",
+      );
+    }
+    const calls = shellCallCount();
+    assert.strictEqual(
+      calls,
+      1,
+      `并发扫描应共享同一次 PowerShell，实际起了 ${calls} 次——异步化后没做 single-flight 就会翻倍`,
+    );
+    console.log("cleanup: 并发扫描共享同一次 PowerShell（single-flight）✓");
+  } finally {
+    clearLease(a.pid);
+    clearLease(b.pid);
+    a.kill();
+    b.kill();
+  }
+}
+
+// 2g. 进程列表解析（批量化里最容易写错的一段：ConvertTo-Json 的数组/单元素两种形状）
+{
+  assert.deepStrictEqual(
+    [...parseProcessList('[{"ProcessId":42,"CommandLine":"node a.js"}]')],
+    [[42, "node a.js"]],
+    "数组形状应解析成 pid → 命令行",
+  );
+  assert.deepStrictEqual(
+    [...parseProcessList('{"ProcessId":7,"CommandLine":"dsh web"}')],
+    [[7, "dsh web"]],
+    "单元素时 ConvertTo-Json 给的是对象而非数组，也必须吃下",
+  );
+  // 空/畸形输入一律安全降级为空表（此时确认失败 → 不杀，是安全方向）
+  assert.strictEqual(parseProcessList("").size, 0);
+  assert.strictEqual(parseProcessList("not json").size, 0);
+  assert.strictEqual(parseProcessList("null").size, 0);
+  assert.strictEqual(parseProcessList('[{"ProcessId":"42","CommandLine":"x"}]').size, 0, "pid 必须是数字");
+  assert.strictEqual(parseProcessList('[{"ProcessId":0,"CommandLine":"x"}]').size, 1, "pid=0 是合法数字");
+  assert.strictEqual(parseProcessList('[{"ProcessId":1,"CommandLine":""}]').size, 0, "空命令行不入表");
+  assert.strictEqual(parseProcessList('[{"ProcessId":1,"CommandLine":null}]').size, 0, "null 命令行不入表");
+  console.log("cleanup: 进程列表解析（数组/单元素/畸形）✓");
+}
+
+// ---------- 3. 杀进程的许可判定（安全关键） ----------
+//
+// `confirmed` 是三态：true=确认是 dsh / false=确认不是 / undefined=拿不到命令行。
+// 曾经写成 `if (item.confirmed === false) 跳过`，于是 undefined **落到下面被杀掉**——
+// 与函数注释「拿不到命令行就不动进程」正好相反，而且那恰恰是最无法排除
+// 「pid 已被回收」的情形。这里把许可判定钉死：只有 true 才允许杀。
+{
+  assert.strictEqual(isKillable({ orphan: true, confirmed: true }), true, "确认是 dsh 才允许杀");
+  assert.strictEqual(
+    isKillable({ orphan: true, confirmed: undefined }),
+    false,
+    "拿不到命令行 ≠ 确认：必须按「不杀」处理（这正是旧代码的错误）",
+  );
+  assert.strictEqual(isKillable({ orphan: true, confirmed: false }), false, "确认不是 dsh 不杀");
+  assert.strictEqual(isKillable({ orphan: false, confirmed: true }), false, "不是孤儿不杀");
+  assert.strictEqual(isKillable({ orphan: false, confirmed: undefined }), false);
+  console.log("cleanup: 只有确认是 dsh 才允许杀进程 ✓");
 }
 
 console.log("\nprocessRegistry / token: all assertions passed");

@@ -82,7 +82,7 @@ function registerContributions(context: vscode.ExtensionContext, host: Contribut
     // 外部服务器（dshChat.url）要求授权时，令牌从这里输入
     vscode.commands.registerCommand("dshChat.setToken", () => controller.setToken()),
     vscode.commands.registerCommand("dshChat.cleanupProcesses", async () => {
-      const result = cleanupResidualServers(log);
+      const result = await cleanupResidualServers(log);
       const message = result.killed.length
         ? `已清理 ${result.killed.length} 个残留的 dsh 进程：${result.killed.join("、")}`
         : result.orphans.length
@@ -96,7 +96,7 @@ function registerContributions(context: vscode.ExtensionContext, host: Contribut
     }),
     vscode.commands.registerCommand("dshChat.showDiagnostics", async () => {
       const status = server.getStatus();
-      const orphans = scanServers()
+      const orphans = (await scanServers())
         .filter((item) => item.orphan)
         .map((item) => item.lease.serverPid);
       const message = [
@@ -156,19 +156,19 @@ function startup(
   provider: ChatViewProvider,
 ): void {
   // 上次 VS Code 非正常关闭（崩溃 / 强杀）留下的 dsh web 进程：认出来并清掉。
-  // 放到下一个 tick：先让激活与自动启动跑完，清理本身是同步的（要 taskkill）。
-  setTimeout(() => {
-    try {
-      const result = cleanupResidualServers(log);
+  // 不 await：清理要起 PowerShell（Windows 上约 1.5s），不该拖住激活流程；
+  // 它本身已是异步的，await 期间扩展宿主照常响应。失败也只记日志。
+  void cleanupResidualServers(log)
+    .then((result) => {
       if (result.killed.length) {
         void vscode.window.showInformationMessage(
           `已清理 ${result.killed.length} 个残留的 dsh 服务器进程（上次 VS Code 未正常关闭）。`,
         );
       }
-    } catch (error) {
+    })
+    .catch((error: unknown) => {
       log(`[cleanup] 残留进程检测失败：${error instanceof Error ? error.message : String(error)}`);
-    }
-  }, 0);
+    });
 
   const autoStart = config().get<boolean>("autoStart") ?? true;
   if (autoStart) {

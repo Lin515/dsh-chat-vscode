@@ -130,6 +130,17 @@ VS Code 正常关闭时扩展会连带结束自己拉起的 `dsh web` 进程树�
 消失、而 dsh 进程还在的，确认命令行后自动清理并提示。手动入口是命令面板的
 **DSH: 清理残留进程**，**DSH: 显示诊断信息** 会列出当前发现的残留进程。
 
+两个实现要点：
+
+- **判定「是不是 dsh」要起 PowerShell，所以整条链路是异步的**。Windows 上一次
+  PowerShell 启动约 1.5s，用同步调用会把扩展宿主的主线程整个卡住（启动时表现为
+  界面迟滞）。现在同步段只读租约文件，进程查询与 `taskkill` 一律 await；
+  并发的扫描共享同一次在途查询，不会因为异步化而起两倍解释器。
+- **只有确认命令行里确实是 dsh 才会杀**。拿不到命令行时按「不杀」处理——
+  那恰好是最无法排除「pid 已被系统回收」的情形，此时动手等于闭着眼睛杀进程。
+  判定写成「肯定证据才杀」（`=== true`）而不是「否定证据才跳过」（`!== false`），
+  因为后者会让「拿不到命令行」这一态漏过去。
+
 ## 工作原理
 
 1. 扩展启动时运行 `dsh web --port 0 --no-open`：端口交给操作系统分配（不会撞端口），
@@ -359,6 +370,17 @@ next activation the extension looks for dsh processes whose owning VS Code windo
 confirms the command line and kills the tree, and reports what it found. **DSH: Clean Up
 Leftover Processes** does it on demand, and **DSH: Show Diagnostics** lists what is
 currently detected.
+
+Two things worth knowing about the implementation. The whole chain is **asynchronous**,
+because deciding "is this command line dsh?" needs PowerShell and a single Windows PowerShell
+start-up costs about 1.5s — a synchronous call would freeze the extension host's main thread
+(visible as UI lag during activation), so only the lease-file reads are synchronous and every
+process query and `taskkill` is awaited; concurrent scans share one in-flight query so
+becoming async does not double the number of interpreters. And a process is killed **only when
+its command line is positively confirmed to be dsh**: when the command line cannot be read the
+extension does not kill, since that is exactly the case where the PID may already have been
+recycled, which is why the check is written as "kill on positive evidence"
+(`confirmed === true`) rather than "skip on negative evidence" (`confirmed !== false`).
 
 ## Licence and attribution
 
