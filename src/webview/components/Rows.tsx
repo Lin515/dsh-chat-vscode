@@ -62,23 +62,27 @@ export function ToolRow({ tool }: { tool: ToolCallView }) {
   const meta =
     tool.endedAt && tool.startedAt ? formatDuration(tool.endedAt - tool.startedAt) : undefined;
 
-  // 标题行只放「动词 + 短标题」；长内容（完整命令/路径、输出全文）都收进展开区，
-  // 避免长 detail 把标题挤成半个字
-  const shownTitle = tool.detail
-    ? `${verb} ${tool.detail}`.slice(0, 40)
-    : tool.title || verb;
+  // 展开区只显示「解析后的有价值信息」：结果文本（读取出的文本 / 运行输出 /
+  // 搜索结果等）。原始参数（tool.input）不渲染——它只是流式期累积的线格式载荷，
+  // 标题行已表达「做了什么」。没有任何展开内容时该行不可点开。
+  const hasBody =
+    Boolean(tool.output) || (tool.images?.length ?? 0) > 0 || (tool.files?.length ?? 0) > 0;
 
   return (
     <Row
       icon={icon}
       tone={tone}
-      title={shownTitle}
+      // 节点名（动词）完整显示，路径/命令/查询等次要标题进 detail 列，
+      // 过长时由 CSS 省略——思考/工具/用量行同一布局
+      title={tool.title || verb}
+      detail={tool.detail}
       meta={meta}
       open={open}
-      onToggle={() => setManual(!open)}
+      onToggle={() => {
+        if (hasBody) setManual(!open);
+      }}
     >
-      {tool.detail && tool.detail.length > 20 ? <div className="row-body mono">{tool.detail}</div> : null}
-      {tool.input ? <div className="row-body mono">{tool.input}</div> : null}
+      {tool.output ? <div className="row-body mono">{tool.output}</div> : null}
       {tool.images?.length ? (
         <div className="row-body-images">
           {tool.images.map((src, index) => (
@@ -86,7 +90,6 @@ export function ToolRow({ tool }: { tool: ToolCallView }) {
           ))}
         </div>
       ) : null}
-      {tool.output ? <div className="row-body mono">{tool.output}</div> : null}
       {tool.files?.length ? (
         <div className="row-body">
           {tool.files.map((file) => (

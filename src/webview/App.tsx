@@ -149,32 +149,53 @@ function EmptyState() {
 
 /**
  * 自动滚动：仅当用户本来就贴在底部时才跟随，否则不打断阅读。
+ *
+ * 贴底判定只由「scrollTop 真正变小」（用户上滑）推翻：贴底时内容先长高、
+ * 滚动事件后结算会让距离超过阈值，但那不是用户移动，不能据此脱离跟随。
+ * 内容高度变化（新行、工具/思考展开、流式文本、图片加载）由 ResizeObserver
+ * 主动跟随，不依赖滚动事件时序。
  */
-function useAutoScroll(dependency: unknown) {
+function useAutoScroll() {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
+  const lastTopRef = useRef(0);
 
   useLayoutEffect(() => {
     const el = scrollRef.current;
-    if (!el) return;
+    const content = contentRef.current;
+    if (!el || !content) return;
+    // 初始贴底按实际位置定（内容不足一屏即贴底）
+    stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+    lastTopRef.current = el.scrollTop;
+
     const onScroll = () => {
-      stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+      const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+      if (distance < 40) {
+        stickRef.current = true;
+      } else if (el.scrollTop < lastTopRef.current) {
+        stickRef.current = false; // 用户真的上滑了
+      }
+      lastTopRef.current = el.scrollTop;
     };
+    const pin = () => {
+      if (stickRef.current) el.scrollTop = el.scrollHeight;
+    };
+    const observer = new ResizeObserver(pin);
+    observer.observe(content);
     el.addEventListener("scroll", onScroll, { passive: true });
-    return () => el.removeEventListener("scroll", onScroll);
+    return () => {
+      observer.disconnect();
+      el.removeEventListener("scroll", onScroll);
+    };
   }, []);
 
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (el && stickRef.current) el.scrollTop = el.scrollHeight;
-  }, [dependency]);
-
-  return scrollRef;
+  return { scrollRef, contentRef };
 }
 
 export function App() {
   const { state, dispatch } = useAppState();
-  const scrollRef = useAutoScroll(state.messages);
+  const { scrollRef, contentRef } = useAutoScroll();
   // 迷你模式：.app 宽度 < 220px 时收成图标条（滞回 ≥232 恢复），由 Composer 测宽后同步到这里
   const appRef = useRef<HTMLDivElement>(null);
   const [mini, setMini] = useState(false);
@@ -221,19 +242,19 @@ export function App() {
         <ConnectionBar state={state} />
 
         <div className="chat-scroll" ref={scrollRef}>
-          {state.messages.length === 0 ? (
-            <EmptyState />
-          ) : (
-            <div className="chat-list">
-              {state.messages.map((message) => (
+          <div className="chat-list" ref={contentRef}>
+            {state.messages.length === 0 ? (
+              <EmptyState />
+            ) : (
+              state.messages.map((message) => (
                 <Message
                   key={message.id}
                   message={message}
                   showUsageStats={state.showUsageStats !== false}
                 />
-              ))}
-            </div>
-          )}
+              ))
+            )}
+          </div>
         </div>
 
         {state.todos.length ? (

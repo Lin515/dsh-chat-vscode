@@ -108,7 +108,7 @@ export function Popover({
 
 /**
  * 上下文占用百分比：`xx%`，超过 60% 变琥珀色；
- * 悬停显示明细行（已用/上限、缓存命中、输入/输出/推理等）。
+ * 悬停显示明细行（已用/上限、缓存命中、上下文构成）。
  *
  * 主界面只显示百分比，避免发送更新时数字跳动闪烁。
  * 明细里的数字每次发送/更新会重新计算，但只在 hover 时才可见。
@@ -118,12 +118,15 @@ export function CtxText({
   used,
   total,
   usage,
+  breakdown,
 }: {
   /** 宿主算好的百分比（dsh web `context-occupancy` 投影的等价输出）；未传时本地重算。 */
   percent?: number;
   used?: number;
   total?: number;
   usage?: import("../../shared/chat").UsageView;
+  /** 上下文构成（`contextBreakdown` 投影），与 Web 的 ContextMeter 面板同源。 */
+  breakdown?: import("../../shared/chat").ChatState["contextBreakdown"];
 }) {
   const texts = useTexts();
   if (!total || total <= 0) return null;
@@ -136,16 +139,19 @@ export function CtxText({
     const cacheHit = cacheHitPercent(usage);
     if (cacheHit !== undefined) detail.push(`${texts.ctxDetailCached} ${cacheHit}%`);
     else if (usage.cachedTokens) detail.push(`${texts.ctxDetailCached} ${formatTokens(usage.cachedTokens)}`);
-    if (usage.inputTokens !== undefined) detail.push(`${texts.ctxDetailInput} ${formatTokens(usage.inputTokens)}`);
-    if (usage.outputTokens !== undefined) detail.push(`${texts.ctxDetailOutput} ${formatTokens(usage.outputTokens)}`);
-    if (usage.reasoningTokens) detail.push(`${texts.ctxDetailReasoning} ${formatTokens(usage.reasoningTokens)}`);
-    if (usage.totalTokens) detail.push(`${texts.ctxDetailTotal} ${formatTokens(usage.totalTokens)}`);
+  }
+  // 上下文构成三行（启发式估算，~ 前缀与 Web 一致）；不再显示单步的
+  // 输入/输出/推理/合计——那是本轮用量，不是上下文总量
+  if (breakdown) {
+    detail.push(`${texts.ctxDetailSystem} ~${formatTokens(breakdown.systemTokens)}`);
+    detail.push(`${texts.ctxDetailTools} ~${formatTokens(breakdown.toolsTokens)}`);
+    detail.push(`${texts.ctxDetailMessages} ~${formatTokens(breakdown.messageTokens)}`);
   }
 
   return (
     <span
       className={`ctx-text${pct >= 60 ? " is-high" : ""}`}
-      title={[texts.ctxDetailTitle, ...detail].join("\n")}
+      title={detail.join("\n")}
     >
       {pct}%
     </span>

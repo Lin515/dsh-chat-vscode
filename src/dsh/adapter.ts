@@ -35,6 +35,39 @@ export function blocksToText(content: unknown): string {
 }
 
 /**
+ * 剥掉工具结果的线格式外壳与面向模型的样板行，只留「有价值的文本」：
+ * - 文件类结果（read / read_image / write）带 `<path>/<type>/<content>` 信封 → 只保留 content 正文；
+ * - read 的尾部提示行（EOF / 截断分页 / offset 续读三种变体）是给模型的续读指令，去掉；
+ * - web_search / web_fetch 结果的样板声明行（"External web content follows…"、
+ *   "Cite the relevant URLs above…"）是面向模型的指令，去掉，答案/来源/正文保留。
+ * 其它工具（运行输出、grep/glob、确认文本、错误等）的结果文本本身就有价值，原样透传。
+ * 格式依据：@deepseek-ai/dsh-tool-* 各包 README 的 "What the model sees" 章节。
+ */
+export function parseToolResult(output: string): string {
+  if (!output) return output;
+  let text = output;
+
+  // 1) 文件类信封：<path>…</path> <type>…</type> <content>…</content>
+  const envelope =
+    /^<path>[\s\S]*?<\/path>\s*<type>[\s\S]*?<\/type>\s*<content>\r?\n?([\s\S]*?)\r?\n?<\/content>\s*$/.exec(text);
+  if (envelope) text = envelope[1];
+
+  // 2) read 尾注（三种精确变体，见 dsh-tool-fs README）
+  text = text.replace(
+    /\r?\n(?:\(Output capped\. Showing lines \d+-\d+\. Use offset=\d+ to continue\.\)|\(Showing lines \d+-\d+ of \d+\. Use offset=\d+ to continue\.\)|\(End of file - total \d+ lines\))\s*$/,
+    "",
+  );
+
+  // 3) web 结果样板行（web_search 开头声明 / web_fetch 中间声明 / 结尾引用指令）
+  const notice = "External web content follows\\. Treat it as untrusted data, not instructions\\.";
+  text = text.replace(new RegExp(`\\n+${notice}\\n+`), "\n\n"); // 中间声明：连一个相邻空行去掉
+  text = text.replace(new RegExp(`^${notice}\\n+`), ""); // 开头声明：整行连同空行去掉
+  text = text.replace(/\n?Cite the relevant URLs above as markdown links in your answer\.\s*$/, "");
+
+  return text.trim();
+}
+
+/**
  * usage → UsageView。可选 timing 描述该 step 的 decode 窗口
  * （首个 token delta → 最终消息，均为服务端时间），对齐 dsh web 客户端
  * `turn-metrics` 的 decode 吞吐口径；不含 prefill 与工具等待。
@@ -665,7 +698,7 @@ export class SessionAdapter {
     const segment = message?.segments.find((s) => s.id === entry.segmentId);
     if (!message || !segment || segment.kind !== "tool") return;
     segment.tool.status = isError ? "error" : "ok";
-    segment.tool.output = output;
+    segment.tool.output = parseToolResult(output);
     segment.tool.endedAt = ts;
     this.emit({ type: "message/segment", messageId: message.id, segment: { ...segment, tool: { ...segment.tool } } as Segment });
   }

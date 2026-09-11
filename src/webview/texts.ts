@@ -102,6 +102,7 @@ export interface Texts {
   waitingApprovalHint: string;
   waitingQuestion: string;
   waitingQuestionHint: string;
+  runningHint: string;
   todosLeft: string;
 
   thinking: string;
@@ -152,12 +153,14 @@ export interface Texts {
   contextUsed: (percent: number, used: string, total: string) => string;
   /** 悬停上下文占用时的明细行（标签 + 数值）。 */
   ctxDetailCached: string;
-  ctxDetailInput: string;
-  ctxDetailOutput: string;
-  ctxDetailReasoning: string;
-  ctxDetailTotal: string;
-  /** 上下文占用 tooltip：显示明细行。 */
-  ctxDetailTitle: string;
+  ctxDetailSystem: string;
+  ctxDetailTools: string;
+  ctxDetailMessages: string;
+  /** 速度值悬停明细（全日志会话统计），行标签与 Web「会话统计」对话框对齐。 */
+  statsLlmTime: string;
+  statsToolTime: string;
+  statsTtft: string;
+  statsSpeed: string;
   /** 当前模型不支持图片输入时的提示（模型名作为变量）。 */
   imageUnsupported: (model: string) => string;
   turnFailed: string;
@@ -260,6 +263,7 @@ const zh: Texts = {
   queued: "队列中有 {n} 条消息",
   waitingApproval: "有工具调用等待你的许可",
   waitingApprovalHint: "在上方对话中选择允许或拒绝",
+  runningHint: "按 ESC 可中止",
   waitingQuestion: "模型向你提问",
   waitingQuestionHint: "在上方对话中作答",
   todosLeft: "还有 {n} 项待办",
@@ -309,11 +313,13 @@ const zh: Texts = {
 
   contextUsed: (percent, used, total) => `上下文已用 ${percent}%（${used} / ${total}）`,
   ctxDetailCached: "缓存命中",
-  ctxDetailInput: "输入",
-  ctxDetailOutput: "输出",
-  ctxDetailReasoning: "其中推理",
-  ctxDetailTotal: "合计",
-  ctxDetailTitle: "上下文占用",
+  ctxDetailSystem: "系统提示词",
+  ctxDetailTools: "工具定义",
+  ctxDetailMessages: "对话消息",
+  statsLlmTime: "模型用时",
+  statsToolTime: "工具调用用时",
+  statsTtft: "首 token 平均（TTFT）",
+  statsSpeed: "输出速度（TPS）",
   turnFailed: "本轮执行失败",
   interrupted: "本轮被中断",
   compacted: "上下文已压缩",
@@ -416,6 +422,7 @@ const en: Texts = {
   queued: "{n} message(s) queued",
   waitingApproval: "A tool call needs your permission",
   waitingApprovalHint: "Choose allow or reject in the conversation above",
+  runningHint: "Press ESC to stop",
   waitingQuestion: "The model is asking you something",
   waitingQuestionHint: "Answer in the conversation above",
   todosLeft: "{n} to-do(s) remaining",
@@ -465,11 +472,13 @@ const en: Texts = {
 
   contextUsed: (percent, used, total) => `Context used ${percent}% (${used} / ${total})`,
   ctxDetailCached: "Cache hit",
-  ctxDetailInput: "Input",
-  ctxDetailOutput: "Output",
-  ctxDetailReasoning: "of which reasoning",
-  ctxDetailTotal: "Total",
-  ctxDetailTitle: "Context usage",
+  ctxDetailSystem: "System prompt",
+  ctxDetailTools: "Tool definitions",
+  ctxDetailMessages: "Conversation messages",
+  statsLlmTime: "LLM time",
+  statsToolTime: "Tool time",
+  statsTtft: "Avg time to first token (TTFT)",
+  statsSpeed: "Tokens per second (TPS)",
   turnFailed: "This turn failed",
   interrupted: "This turn was interrupted",
   compacted: "Context compacted",

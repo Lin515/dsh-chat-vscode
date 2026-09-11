@@ -101,6 +101,8 @@
   flex-direction: column;
   padding: 0 6px;
   min-width: 0;
+  /* 空态容器靠 min-height:100% 居中，需要父级有确定高度 */
+  min-height: 100%;
 }
 
 .msg {
@@ -422,18 +424,22 @@
   color: var(--muted);
 }
 
+/* 节点名必须完整显示：不参与压缩（此前 title/detail 同比例收缩，
+   长 detail 会把「思考」这类短标题挤掉几个像素，露出半个字）。
+   仅当节点名自身超过容器宽度时才省略。 */
 .row-title {
-  flex: 0 1 auto;
+  flex: 0 0 auto;
   min-width: 0;
-  max-width: 80%;
+  max-width: 100%;
   color: var(--fg);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+/* 次要标题是其次的：吃掉剩余空间，过长省略 */
 .row-detail {
-  flex: 1 1 auto;
+  flex: 1 1 0;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -894,6 +900,14 @@
 .lump-hint {
   color: var(--muted);
   opacity: 0.75;
+}
+
+/* 运行中状态条的「思考」图标：复用 dot-pulse 的呼吸节奏 */
+.lump-thinking {
+  flex: 0 0 auto;
+  display: inline-flex;
+  color: var(--info);
+  animation: dot-pulse 1.4s ease-in-out infinite;
 }
 
 /* 计划模式挂起提示条：叠在缺口状态条之上（下边框补回，与输入框保持间隔） */

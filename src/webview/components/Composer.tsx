@@ -3,6 +3,7 @@ import type { CommandView, FileRefView } from "../../shared/chat";
 import type { AppState } from "../state";
 import { post } from "../bridge";
 import {
+  IconBrain,
   IconChevronDown,
   IconImage,
   IconShield,
@@ -11,7 +12,7 @@ import {
   IconSparkles,
   IconStop,
 } from "../icons";
-import { CtxText, Popover } from "./primitives";
+import { CtxText, Popover, formatDuration } from "./primitives";
 import { fill, useTexts } from "../texts";
 
 /** 权限模式的展示定义：图标固定用盾牌（WebUI 未提供专用图标），文案与 WebUI 对齐。 */
@@ -252,6 +253,22 @@ export function Composer({ state, onDraft }: { state: AppState; onDraft: (text: 
   // 该 step 缺 timing 或 usage 时为 undefined（不显示）。
   const lastMessage = state.messages.at(-1);
   const tps = lastMessage?.usage?.tokensPerSecond;
+
+  // 速度值的悬停明细：全日志会话统计（`sessionStats` 投影），口径对齐
+  // Web 的「会话统计」对话框；未知项省略，无数据则不显示 tooltip
+  const stats = state.sessionStats;
+  const statsTitle = stats
+    ? [
+        stats.llmMs > 0 ? `${texts.statsLlmTime} ${formatDuration(stats.llmMs)}` : null,
+        stats.toolMs > 0 ? `${texts.statsToolTime} ${formatDuration(stats.toolMs)}` : null,
+        stats.ttftSteps > 0 ? `${texts.statsTtft} ${formatDuration(stats.ttftMs / stats.ttftSteps)}` : null,
+        stats.decodeMs > 0 && stats.decodeTokens > 0
+          ? `${texts.statsSpeed} ${Math.round(stats.decodeTokens / (stats.decodeMs / 1000))} tok/s`
+          : null,
+      ]
+        .filter((line): line is string => line !== null)
+        .join("\n")
+    : undefined;
 
 
 
@@ -571,13 +588,14 @@ export function Composer({ state, onDraft }: { state: AppState; onDraft: (text: 
             <span className="spacer" />
 
             {tps !== undefined ? (
-              <span className="ctx-speed">{tps.toFixed(1)} tps</span>
+              <span className="ctx-speed" title={statsTitle || undefined}>{tps.toFixed(1)} tps</span>
             ) : null}
             <CtxText
               percent={state.contextOccupancy?.percent}
               used={state.contextOccupancy?.usedTokens ?? lastMessage?.usage?.totalTokens}
               total={state.contextOccupancy?.contextWindow ?? state.contextWindow?.tokens ?? state.model?.contextWindow}
               usage={lastMessage?.usage}
+              breakdown={state.contextBreakdown}
             />
 
             {state.running ? (
@@ -611,7 +629,7 @@ function Lump({
   waitingQuestion: boolean;
 }) {
   const texts = useTexts();
-  if (state.running) return null;
+  // 等待审批/提问优先：那时 agent 暂停等人，不该说「生成中」
   if (waitingApproval) {
     return (
       <div className="lump">
@@ -627,6 +645,18 @@ function Lump({
         <span>{texts.waitingQuestion}</span>
         <span className="spacer" />
         <span className="lump-hint">{texts.waitingQuestionHint}</span>
+      </div>
+    );
+  }
+  if (state.running) {
+    return (
+      <div className="lump">
+        <span className="lump-thinking" aria-hidden>
+          <IconBrain size={13} />
+        </span>
+        <span>{texts.running}</span>
+        <span className="spacer" />
+        <span className="lump-hint">{texts.runningHint}</span>
       </div>
     );
   }

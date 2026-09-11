@@ -47,7 +47,7 @@ export interface ToolCallView {
   /** 次要说明（路径、命令摘要）。 */
   detail?: string;
   status: ToolStatus;
-  /** 参数（已格式化的文本，惰性渲染）。 */
+  /** 原始参数载荷（流式期逐 delta 累积，durable 事件到达后重新摘要）。界面不直接渲染。 */
   input?: string;
   /** 结果文本。 */
   output?: string;
@@ -311,4 +311,27 @@ export interface ChatState {
    * 百分比只在 hover 时变化，避免主界面每次发送更新时闪烁。
    */
   contextOccupancy?: ContextOccupancyView;
+  /**
+   * 上下文构成（`contextBreakdown` 投影）：系统提示词 / 工具定义 / 对话消息的
+   * 启发式估算 token 数——是构成占比，不是计费值，也不与占用分子相加。
+   */
+  contextBreakdown?: { systemTokens: number; toolsTokens: number; messageTokens: number };
+  /**
+   * 全日志会话统计（`sessionStats` 投影）：轮次/步骤计数与 LLM / 工具 / 首 token /
+   * 解码墙钟时间合计。分页与压缩不改变这些数字。
+   */
+  sessionStats?: {
+    turns: number;
+    steps: number;
+    llmMs: number;
+    toolMs: number;
+    /** 已记录首 token 的步上的首 token 时延合计。 */
+    ttftMs: number;
+    /** 记录过首 token 的步数（ttftMs 的分母）。 */
+    ttftSteps: number;
+    /** 同时报告了输出 token 的步上的解码墙钟合计。 */
+    decodeMs: number;
+    /** 同一批步的 provider 输出 token 合计。 */
+    decodeTokens: number;
+  };
 }

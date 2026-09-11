@@ -20,6 +20,7 @@ const entries = {
   "build/schema-debug.mjs": "scripts/schemaDebug.ts",
   "build/probe.mjs": "scripts/probe.ts",
   "build/set-default-model.mjs": "scripts/setDefaultModel.ts",
+  "build/parse-tool-result.test.mjs": "scripts/parseToolResult.test.ts",
 };
 
 await Promise.all(

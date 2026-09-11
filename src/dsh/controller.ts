@@ -375,6 +375,9 @@ export class ChatController implements vscode.Disposable {
           // 新会话的草稿与附件天然是空的，显式下发让输入框复位
           draft: this.drafts.get(created.sessionId) ?? "",
           attachments: this.attachmentsBySession.get(created.sessionId) ?? [],
+          // 上一会话的投影残留清掉
+          contextBreakdown: undefined,
+          sessionStats: undefined,
         },
       });
     } catch (error) {
@@ -392,6 +395,9 @@ export class ChatController implements vscode.Disposable {
         // 输入框内容跟随会话切换
         draft: this.drafts.get(sessionId) ?? "",
         attachments: this.attachmentsBySession.get(sessionId) ?? [],
+        // 上一会话的投影残留清掉，等新会话的 snapshot/baseline 回填
+        contextBreakdown: undefined,
+        sessionStats: undefined,
       },
     });
   }
@@ -412,10 +418,12 @@ export class ChatController implements vscode.Disposable {
     this.followHandle = this.client.followSession(sessionId, {
       onItem: (value) => {
         const frame = value as { type?: string; projections?: { values?: Record<string, unknown> } };
-        // 开窗投影里带着当前模型选择：用它初始化模型胶囊，
-        // 并（仅新会话）应用配置的默认思考深度
+        // 开窗投影带全部折叠值（模型选择、上下文构成、会话统计…）：逐个走
+        // applyProjection，未知 key 忽略
         if (frame?.type === "snapshot") {
-          this.applyModelSelection(frame.projections?.values?.modelSelection);
+          for (const [key, projectionValue] of Object.entries(frame.projections?.values ?? {})) {
+            this.applyProjection(key, projectionValue);
+          }
         }
         adapter.applyFrame(value as never);
       },
@@ -652,6 +660,61 @@ export class ChatController implements vscode.Disposable {
         if (typeof contextWindow === "number" && contextWindow > 0 && this.model) {
           this.model = { ...this.model, contextWindow };
           this.emit({ type: "patch", patch: { model: this.model } });
+        }
+        break;
+      }
+
+      case "contextBreakdown": {
+        // {systemTokens, toolsTokens, messageTokens}：上下文构成的启发式估算
+        const bd = value as { systemTokens?: number; toolsTokens?: number; messageTokens?: number } | null;
+        if (
+          bd &&
+          typeof bd.systemTokens === "number" &&
+          typeof bd.toolsTokens === "number" &&
+          typeof bd.messageTokens === "number"
+        ) {
+          this.emit({
+            type: "patch",
+            patch: {
+              contextBreakdown: {
+                systemTokens: bd.systemTokens,
+                toolsTokens: bd.toolsTokens,
+                messageTokens: bd.messageTokens,
+              },
+            },
+          });
+        }
+        break;
+      }
+
+      case "sessionStats": {
+        // 全日志墙钟统计：{turns, steps, llmMs, toolMs, ttftMs, ttftSteps, decodeMs, decodeTokens}
+        const st = value as {
+          turns?: number;
+          steps?: number;
+          llmMs?: number;
+          toolMs?: number;
+          ttftMs?: number;
+          ttftSteps?: number;
+          decodeMs?: number;
+          decodeTokens?: number;
+        } | null;
+        if (st && typeof st.llmMs === "number" && typeof st.toolMs === "number") {
+          this.emit({
+            type: "patch",
+            patch: {
+              sessionStats: {
+                turns: st.turns ?? 0,
+                steps: st.steps ?? 0,
+                llmMs: st.llmMs,
+                toolMs: st.toolMs,
+                ttftMs: st.ttftMs ?? 0,
+                ttftSteps: st.ttftSteps ?? 0,
+                decodeMs: st.decodeMs ?? 0,
+                decodeTokens: st.decodeTokens ?? 0,
+              },
+            },
+          });
         }
         break;
       }
