@@ -158,6 +158,7 @@ export const METHODS = {
   sessionRename: "session/rename",
   sessionModelCatalog: "session/modelCatalog",
   sessionSelectModel: "session/selectModel",
+  sessionUpdateQueue: "session/updateQueue",
   sessionAttachment: "session/attachment",
   eventsResult: "$events/result",
 } as const;

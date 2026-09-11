@@ -262,6 +262,16 @@ export class DshClient {
     return this.request(METHODS.sessionCancel, { request: { sessionId } });
   }
 
+  /**
+   * 移除一条排队 / 插话消息（`SessionUpdateQueueRequest`，action `{kind:'remove'}`）。
+   * 服务端队列帧随后会重发剩余项，界面以队列帧为准。
+   */
+  updateQueueRemove(sessionId: string, itemId: string): Promise<{ accepted: true }> {
+    return this.request(METHODS.sessionUpdateQueue, {
+      request: { sessionId, itemId, action: { kind: "remove" } },
+    });
+  }
+
   rename(sessionId: string, title: string): Promise<{ title: string }> {
     return this.request(METHODS.sessionRename, { request: { sessionId, title } });
   }

@@ -63,6 +63,8 @@ export type WebviewToHost =
   | { type: "send"; text: string; attachments: Attachment[] }
   /** 停止当前生成。 */
   | { type: "stop" }
+  /** 取消一条排队中（尚未发送）的消息。 */
+  | { type: "queueRemove"; id: string }
   /** 新建会话。 */
   | { type: "newSession" }
   /** 切换到某个会话。 */

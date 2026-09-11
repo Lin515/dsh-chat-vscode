@@ -215,6 +215,24 @@ export interface JobItemView {
   finishedAt?: number;
 }
 
+/**
+ * 排队中（尚未发送）的消息。
+ *
+ * 线格式是 `SessionQueuedItem`：`placement` 有 `queued`（排队）/ `steering`
+ * （插话）/ `context`（插件注入的环境上下文）三种——后一种是服务器自己放的，
+ * 不算用户消息，宿主不下发。
+ */
+export interface QueuedMessageView {
+  /** 线格式消息 id；取消时经 session/updateQueue 带回。 */
+  id: string;
+  /** 消息文本内容（各 text 块按原顺序拼接）。 */
+  text: string;
+  /** 是否携带图片/文件等附件（文本为空时界面用「附件」占位）。 */
+  hasMedia?: boolean;
+  /** `queued`（排队等待）或 `steering`（中途插话）。 */
+  placement: "queued" | "steering";
+}
+
 /** 斜杠命令描述符（commands/list）。 */
 export interface CommandView {
   name: string;
@@ -283,8 +301,8 @@ export interface ChatState {
   running: boolean;
   /** 是否在折叠行里显示 token 用量与耗时（对应 dshChat.showUsageStats）。 */
   showUsageStats?: boolean;
-  /** 排队中的消息数。 */
-  queue: number;
+  /** 排队中（尚未发送）的消息列表，来自 session/control 的 queue 帧。 */
+  queueItems: QueuedMessageView[];
   attachments: Attachment[];
   draft: string;
   models: ProviderGroupView[];

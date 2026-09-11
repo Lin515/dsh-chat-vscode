@@ -5,6 +5,7 @@ import {
   useState,
   type CSSProperties,
   type ReactNode,
+  type RefObject,
 } from "react";
 import { IconChevronRight } from "../icons";
 import { useTexts } from "../texts";
@@ -175,6 +176,51 @@ export function Spinner({ size = 12 }: { size?: number }) {
       <path d="M12 3a9 9 0 1 0 9 9" />
     </svg>
   );
+}
+
+/**
+ * 折叠 body 区（`.row-body`）的自动滚动：节点展开时贴住最新内容——
+ * 内容超出 `max-height` 出现垂直滚动条时自动滚到最新一行。
+ *
+ * 粘性语义与主对话区一致：只有「scrollTop 真正变小」（用户上滑）才脱离跟随，
+ * 滚回底部重新跟随。body 区自身是滚动容器（max-height 固定，盒子尺寸不变，
+ * ResizeObserver 不会触发），内容增长改由 MutationObserver 捕获后主动跟随。
+ */
+export function useStickyBody(
+  ref: RefObject<HTMLDivElement | null>,
+  enabled: boolean,
+): void {
+  const stickRef = useRef(true);
+  const lastTopRef = useRef(0);
+
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el || !enabled) return;
+    stickRef.current = true;
+    lastTopRef.current = 0;
+    // 展开即从最新内容开始
+    el.scrollTop = el.scrollHeight;
+
+    const onScroll = () => {
+      const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+      if (distance < 40) {
+        stickRef.current = true;
+      } else if (el.scrollTop < lastTopRef.current) {
+        stickRef.current = false; // 用户真的上滑了
+      }
+      lastTopRef.current = el.scrollTop;
+    };
+    const pin = () => {
+      if (stickRef.current) el.scrollTop = el.scrollHeight;
+    };
+    const observer = new MutationObserver(pin);
+    observer.observe(el, { childList: true, subtree: true, characterData: true });
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      observer.disconnect();
+      el.removeEventListener("scroll", onScroll);
+    };
+  }, [enabled]);
 }
 
 export function Ellipsis() {

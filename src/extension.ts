@@ -27,6 +27,8 @@ export function activate(context: vscode.ExtensionContext): void {
     output ?? vscode.window.createOutputChannel("DSH Chat"),
     controller,
     provider,
+    // 必须注册 server 本身：deactivate 时 dispose → stop() 带走它拉起的进程树
+    server,
     server.onDidChangeStatus((status) => controller.onServerStatus(status)),
 
     vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, provider, {
@@ -110,5 +112,6 @@ function supportsSecondarySidebar(): boolean {
 }
 
 export function deactivate(): void {
-  // 资源随 context.subscriptions 释放；服务器进程若由本扩展启动，交由 dispose 处理
+  // 全部资源（含 ServerManager.dispose → stop() 杀服务器进程树）随
+  // context.subscriptions 在 deactivate 时释放，这里无需额外动作
 }

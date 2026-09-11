@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { post } from "../bridge";
 import type {
   ApprovalView,
@@ -6,7 +6,7 @@ import type {
   ToolCallView,
   UsageView,
 } from "../../shared/chat";
-import { formatDuration, formatTokens, Row } from "./primitives";
+import { formatDuration, formatTokens, Row, useStickyBody } from "./primitives";
 import { useTexts, resolveText } from "../texts";
 import {
   IconAlert,
@@ -53,6 +53,9 @@ export function ToolRow({ tool }: { tool: ToolCallView }) {
   const describeTool = useDescribeTool();
   const open = manual ?? false;
   const { icon, verb } = describeTool(tool.name);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  // 展开且有结果时 body 区贴住最新内容：超出出现滚动条就自动滚到最新一行
+  useStickyBody(bodyRef, open && Boolean(tool.output));
   const tone = tool.status === "running" || tool.status === "pending"
     ? "running"
     : tool.status === "error"
@@ -82,7 +85,11 @@ export function ToolRow({ tool }: { tool: ToolCallView }) {
         if (hasBody) setManual(!open);
       }}
     >
-      {tool.output ? <div className="row-body mono">{tool.output}</div> : null}
+      {tool.output ? (
+        <div ref={bodyRef} className="row-body mono">
+          {tool.output}
+        </div>
+      ) : null}
       {tool.images?.length ? (
         <div className="row-body-images">
           {tool.images.map((src, index) => (
@@ -121,6 +128,9 @@ export function ThinkingRow({
   const texts = useTexts();
   // 流式期间展开，思考结束后自动收起
   const open = manual ?? Boolean(streaming);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  // 思考是流式增长的：展开时 body 区贴住最新内容
+  useStickyBody(bodyRef, open);
   const firstLine = text.split("\n").find((line) => line.trim())?.trim() ?? "";
 
   return (
@@ -132,7 +142,9 @@ export function ThinkingRow({
       open={open}
       onToggle={() => setManual(!open)}
     >
-      <div className="row-body">{text}</div>
+      <div ref={bodyRef} className="row-body">
+        {text}
+      </div>
     </Row>
   );
 }

@@ -114,6 +114,14 @@ export class ServerManager {
     return this.ensure();
   }
 
+  /**
+   * 扩展停用（关窗 / 重载扩展）时由 context.subscriptions 调用：
+   * 把本扩展拉起的整个进程树带走——否则 Windows 上孤儿进程会一直残留。
+   */
+  dispose(): void {
+    this.stop();
+  }
+
   /** 停止由本扩展启动的服务器（外部服务器不受影响）。 */
   stop(): void {
     const child = this.child;

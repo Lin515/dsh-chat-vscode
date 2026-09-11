@@ -10,6 +10,7 @@ import type {
   ModelSelectionView,
   ProviderGroupView,
   QuestionView,
+  QueuedMessageView,
   SessionSummaryView,
   SubagentView,
 } from "../shared/chat";
@@ -56,6 +57,7 @@ export class ChatController implements vscode.Disposable {
   private todos: ChatState["todos"] = [];
   private subagents: SubagentView[] = [];
   private jobs: JobItemView[] = [];
+  private queueItems: QueuedMessageView[] = [];
   private goal: ChatState["goal"];
   private connection: ConnectionState | "error" = "connecting";
   private connectionDetail: string | undefined;
@@ -116,7 +118,7 @@ export class ChatController implements vscode.Disposable {
       session: this.sessions.find((session) => session.id === this.currentSessionId),
       messages: this.adapter?.snapshotMessages() ?? [],
       running: this.running,
-      queue: 0,
+      queueItems: this.queueItems,
       attachments: this.attachmentsNow(),
       draft: this.drafts.get(this.sessionKey()) ?? "",
       models: this.models,
@@ -375,9 +377,10 @@ export class ChatController implements vscode.Disposable {
           // 新会话的草稿与附件天然是空的，显式下发让输入框复位
           draft: this.drafts.get(created.sessionId) ?? "",
           attachments: this.attachmentsBySession.get(created.sessionId) ?? [],
-          // 上一会话的投影残留清掉
+          // 上一会话的投影与队列残留清掉（新会话队列必为空）
           contextBreakdown: undefined,
           sessionStats: undefined,
+          queueItems: [],
         },
       });
     } catch (error) {
@@ -388,6 +391,8 @@ export class ChatController implements vscode.Disposable {
   async openSession(sessionId: string): Promise<void> {
     this.currentSessionId = sessionId;
     this.follow(sessionId);
+    // 重开控制流拿新会话的 baseline（队列/任务/投影），否则旧会话的队列残留
+    this.openControlStream();
     this.emit({
       type: "patch",
       patch: {
@@ -573,14 +578,16 @@ export class ChatController implements vscode.Disposable {
         for (const [key, projectionValue] of Object.entries(projections)) {
           this.applyProjection(key, projectionValue);
         }
-        this.emit({ type: "patch", patch: { queue: pendingCount(value.queues?.[sessionId]) } });
+        this.queueItems = queueItemsView(value.queues?.[sessionId]);
+        this.emit({ type: "patch", patch: { queueItems: this.queueItems } });
         this.applyJobs(value.jobs?.[sessionId]);
       }
       return;
     }
 
     if (frame.type === "queue" && frame.sessionId === this.currentSessionId) {
-      this.emit({ type: "patch", patch: { queue: pendingCount(frame.items) } });
+      this.queueItems = queueItemsView(frame.items);
+      this.emit({ type: "patch", patch: { queueItems: this.queueItems } });
       return;
     }
 
@@ -1028,6 +1035,15 @@ export class ChatController implements vscode.Disposable {
         if (this.client && this.currentSessionId) {
           await this.client.cancel(this.currentSessionId);
           this.emit({ type: "patch", patch: { running: false } });
+        }
+        break;
+
+      case "queueRemove":
+        // 移除后服务端会重发队列帧，界面以帧为准；这里只做请求与兜底报错
+        if (this.client && this.currentSessionId && message.id) {
+          this.client.updateQueueRemove(this.currentSessionId, message.id).catch((error) => {
+            this.reportError("取消排队消息失败", error);
+          });
         }
         break;
 
@@ -1658,18 +1674,37 @@ export class ChatController implements vscode.Disposable {
 }
 
 /**
- * 队列里「等待发送的消息」数量。
+ * 队列里「用户等待发送的消息」的视图（线格式 `SessionQueuedItem` → `QueuedMessageView`）。
  *
  * 队列项有三种 `placement`：`queued`（用户排队待发的消息）、`steering`（插话）、
- * `context`（插件注入的环境上下文，例如 MCP 服务器状态）。把 context 也算进去
- * 会让全新会话一开场就显示「N 条消息排队」——那是环境上下文，不是用户在等。
+ * `context`（插件注入的环境上下文，例如 MCP 服务器状态）。context 不是用户消息，
+ * 不下发——否则全新会话一开场就会显示一串「排队消息」。
  */
-function pendingCount(items: unknown[] | undefined): number {
-  if (!Array.isArray(items)) return 0;
-  return items.filter((item) => {
-    const placement = (item as { placement?: string } | null)?.placement;
-    return placement === "queued" || placement === "steering";
-  }).length;
+function queueItemsView(items: unknown[] | undefined): QueuedMessageView[] {
+  if (!Array.isArray(items)) return [];
+  const out: QueuedMessageView[] = [];
+  for (const raw of items) {
+    const item = raw as {
+      id?: string;
+      placement?: string;
+      message?: { content?: unknown[] };
+    } | null;
+    if (!item?.id) continue;
+    if (item.placement !== "queued" && item.placement !== "steering") continue;
+    const parts = Array.isArray(item.message?.content) ? item.message!.content : [];
+    const text = parts
+      .map((part) => part as { type?: string; text?: string } | null)
+      .filter((part) => part?.type === "text" && typeof part.text === "string")
+      .map((part) => part!.text)
+      .join("\n")
+      .trim();
+    const hasMedia = parts.some((part) => {
+      const type = (part as { type?: string } | null)?.type;
+      return type === "image" || type === "file";
+    });
+    out.push({ id: item.id, text, hasMedia, placement: item.placement });
+  }
+  return out;
 }
 
 /** 供日志通道使用的时间戳。 */

@@ -5,6 +5,7 @@ import { post } from "../bridge";
 import {
   IconBrain,
   IconChevronDown,
+  IconClose,
   IconImage,
   IconShield,
   IconShieldCheck,
@@ -660,10 +661,23 @@ function Lump({
       </div>
     );
   }
-  if (state.queue > 0) {
+  if (state.queueItems.length > 0) {
+    // 排队中（尚未发送）的消息逐条列出，每条可单独取消
     return (
-      <div className="lump">
-        <span>{fill(texts.queued, { n: state.queue })}</span>
+      <div className="lump queue">
+        <span className="queue-head">{fill(texts.queued, { n: state.queueItems.length })}</span>
+        {state.queueItems.map((item) => (
+          <div className="queue-item" key={item.id}>
+            <span className="queue-text">{item.text || texts.queueMediaOnly}</span>
+            <button
+              className="queue-cancel"
+              title={texts.queueRemove}
+              onClick={() => post({ type: "queueRemove", id: item.id })}
+            >
+              <IconClose size={11} />
+            </button>
+          </div>
+        ))}
       </div>
     );
   }

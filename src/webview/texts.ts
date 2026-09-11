@@ -98,6 +98,8 @@ export interface Texts {
 
   running: string;
   queued: string;
+  queueRemove: string;
+  queueMediaOnly: string;
   waitingApproval: string;
   waitingApprovalHint: string;
   waitingQuestion: string;
@@ -261,6 +263,8 @@ const zh: Texts = {
 
   running: "生成中",
   queued: "队列中有 {n} 条消息",
+  queueRemove: "取消这条消息",
+  queueMediaOnly: "（附件）",
   waitingApproval: "有工具调用等待你的许可",
   waitingApprovalHint: "在上方对话中选择允许或拒绝",
   runningHint: "按 ESC 可中止",
@@ -420,6 +424,8 @@ const en: Texts = {
 
   running: "Generating",
   queued: "{n} message(s) queued",
+  queueRemove: "Remove this message",
+  queueMediaOnly: "(attachment)",
   waitingApproval: "A tool call needs your permission",
   waitingApprovalHint: "Choose allow or reject in the conversation above",
   runningHint: "Press ESC to stop",

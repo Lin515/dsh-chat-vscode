@@ -50,7 +50,7 @@ export const initialState: AppState = {
   connection: "connecting",
   messages: [],
   running: false,
-  queue: 0,
+  queueItems: [],
   attachments: [],
   draft: "",
   models: [],
