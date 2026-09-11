@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useReducer } from "react";
+import type { ToolCallView } from "../shared/chat";
 import type {
   ChatState,
   CommandView,
@@ -19,7 +20,7 @@ import type { HostToWebview } from "../shared/ipc";
  */
 
 /** 右侧抽屉当前显示的页面。 */
-export type PanelKind = "none" | "history" | "subagents" | "jobs" | "settings" | "subagent";
+export type PanelKind = "none" | "history" | "subagents" | "jobs" | "trajectory" | "settings" | "subagent";
 
 export interface AppState extends ChatState {
   /** 会话列表（历史抽屉内容）。 */
@@ -28,6 +29,8 @@ export interface AppState extends ChatState {
   commands: CommandView[];
   fileRefs: { query: string; items: FileRefView[] };
   subagentEntries: SubagentView[];
+  /** 轨迹：本会话全部工具调用（从消息流派生，供轨迹面板渲染）。 */
+  trajectory: ToolCallView[];
   settingsSections: SettingsSectionView[];
   settingsWritable: boolean;
   settingsLoaded: boolean;
@@ -51,6 +54,7 @@ export const initialState: AppState = {
   commands: [],
   fileRefs: { query: "", items: [] },
   subagentEntries: [],
+  trajectory: [],
   settingsSections: [],
   settingsWritable: false,
   settingsLoaded: false,
@@ -188,5 +192,20 @@ export function reducer(state: AppState, action: Action): AppState {
 export function useAppState() {
   const [state, dispatch] = useReducer(reducer, initialState);
   const stableDispatch = useCallback(dispatch, [dispatch]);
-  return useMemo(() => ({ state, dispatch: stableDispatch }), [state, stableDispatch]);
+  // 轨迹直接从消息流派生（消息已是权威状态，无需宿主单独推送）
+  const trajectory = useMemo(
+    () =>
+      state.messages
+        .flatMap((message) =>
+          message.segments.flatMap((segment) =>
+            segment.kind === "tool" ? [segment.tool] : [],
+          ),
+        )
+        .sort((a, b) => (a.startedAt ?? 0) - (b.startedAt ?? 0)),
+    [state.messages],
+  );
+  return useMemo(
+    () => ({ state: { ...state, trajectory }, dispatch: stableDispatch }),
+    [state, trajectory, stableDispatch],
+  );
 }

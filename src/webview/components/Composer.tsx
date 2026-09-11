@@ -4,7 +4,6 @@ import type { AppState } from "../state";
 import { post } from "../bridge";
 import {
   IconAt,
-  IconBulb,
   IconChevronDown,
   IconImage,
   IconShield,
@@ -13,7 +12,7 @@ import {
   IconSlash,
   IconStop,
 } from "../icons";
-import { CtxBar, Ellipsis, Popover, Spinner } from "./primitives";
+import { CtxText, Popover } from "./primitives";
 import { fill, useTexts } from "../texts";
 
 /** 权限模式的展示定义：图标固定用盾牌（WebUI 未提供专用图标），文案与 WebUI 对齐。 */
@@ -73,6 +72,12 @@ export function Composer({ state, onDraft }: { state: AppState; onDraft: (text: 
   const [modelOpen, setModelOpen] = useState(false);
   const [modeOpen, setModeOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+  // UI 里点「进入计划模式」不再直接发 /plan：记到这里，下一条消息发出时
+  // 把 /plan 拼到消息前面一起提交（服务端会随消息进入计划模式）
+  const pendingPlanRef = useRef(false);
+  // 模型按钮 toggle 标志：标记「这次关闭是按钮触发的」，让 Popover 的
+  // mousedown 外部检测跳过它（选中模型后弹层不关，再点按钮需能关闭）
+  const modelToggleRef = useRef(false);
   const [trigger, setTrigger] = useState<Trigger | undefined>(undefined);
   const [highlight, setHighlight] = useState(0);
   const [confirmFullAccess, setConfirmFullAccess] = useState(false);
@@ -120,7 +125,10 @@ export function Composer({ state, onDraft }: { state: AppState; onDraft: (text: 
 
   const send = () => {
     if (!canSend) return;
-    post({ type: "send", text: draft.trim(), attachments: state.attachments });
+    // 进入计划模式时：把 /plan 拼到这条消息前面一起发出
+    const text = pendingPlanRef.current ? `/plan ${draft.trim()}` : draft.trim();
+    pendingPlanRef.current = false;
+    post({ type: "send", text, attachments: state.attachments });
     onDraft("");
     setTrigger(undefined);
   };
@@ -191,12 +199,61 @@ export function Composer({ state, onDraft }: { state: AppState; onDraft: (text: 
     if (!found && candidates.length) setHighlight(0);
   };
 
-  const effort = state.model?.efforts ?? [];
   const currentPermission =
     permissions.find((item) => item.id === state.permission) ?? permissions[1];
 
+  // 窄边栏适配：测 .app 宽度，宽度 < 220px 进入「迷你模式」——
+  // 聊天列表/头部按钮/发送栏全部收成图标条，避免文字被裁半的「一层底一层」。
+  // 滞回（<220 进、≥232 出）避免临界抖动。拖到 VS Code 最小宽度时原生收起侧栏。
+  const appRef = useRef<HTMLDivElement>(null);
+  const [mini, setMini] = useState(false);
+  useEffect(() => {
+    const el = appRef.current;
+    if (!el) return;
+    const check = () => {
+      const w = el.clientWidth;
+      setMini((prev) => (prev ? w < 232 : w < 220));
+    };
+    check();
+    const observer = new ResizeObserver(check);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  // 实时生成速度：按最近 3 秒的输出 token 增量计算 tps（与 dsh web 一致，每秒刷新一次）
+  const lastMessage = state.messages.at(-1);
+  const liveUsage = lastMessage && (lastMessage.streaming || state.running) ? lastMessage.usage : undefined;
+  const speedRef = useRef<{ t: number; n: number } | undefined>(undefined);
+  const [tps, setTps] = useState<number | undefined>(undefined);
+  const tpsValueRef = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    const value = liveUsage?.outputTokens;
+    const now = Date.now();
+    if (typeof value !== "number") return;
+    const prev = speedRef.current;
+    if (prev && now - prev.t < 5_000 && value >= prev.n) {
+      const tpsNow = (value - prev.n) / ((now - prev.t) / 1000);
+      speedRef.current = { t: now, n: value };
+      if (Math.abs((tpsNow ?? 0) - (tpsValueRef.current ?? 0)) >= 0.5) {
+        tpsValueRef.current = tpsNow;
+        setTps(tpsNow);
+      }
+      return;
+    }
+    speedRef.current = { t: now, n: value };
+    tpsValueRef.current = undefined;
+    setTps(undefined);
+  }, [liveUsage?.outputTokens]);
+  useEffect(() => {
+    if (!state.running) {
+      speedRef.current = undefined;
+      tpsValueRef.current = undefined;
+      setTps(undefined);
+    }
+  }, [state.running]);
+
   return (
-    <div className="composer">
+    <div ref={appRef} className={`composer${mini ? " is-mini" : ""}`}>
       <Lump state={state} waitingApproval={waitingApproval} waitingQuestion={waitingQuestion} />
 
       {/* 触发词候选：浮在输入框上方 */}
@@ -239,7 +296,7 @@ export function Composer({ state, onDraft }: { state: AppState; onDraft: (text: 
         </div>
       ) : null}
 
-      <div className={`composer-shell${state.running ? " is-streaming" : ""}`}>
+      <div className="composer-shell">
         <div
           className={`composer-box${dragOver ? " is-drop-target" : ""}`}
           onDragOver={(event) => {
@@ -295,7 +352,11 @@ export function Composer({ state, onDraft }: { state: AppState; onDraft: (text: 
           <div className="composer-bar">
             {/* 权限：盾牌图标 + 权限名（不再显示 Agent） */}
             <div className="anchor">
-              <button className="pill-mode" onClick={() => setModeOpen((v) => !v)} title={texts.permission}>
+              <button
+                className="pill-mode"
+                onClick={() => setModeOpen((v) => !v)}
+                title={texts.permission}
+              >
                 {currentPermission.icon}
                 {currentPermission.label}
                 <IconChevronDown size={8} />
@@ -346,8 +407,13 @@ export function Composer({ state, onDraft }: { state: AppState; onDraft: (text: 
                 <button
                   className={`popover-item${state.planMode ? " is-selected" : ""}`}
                   onClick={() => {
-                    post({ type: "send", text: "/plan", attachments: [] });
-                    onDraft("");
+                    if (state.planMode) {
+                      // 退出计划模式：无副作用，即时切换
+                      post({ type: "send", text: "/plan", attachments: [] });
+                    } else {
+                      // 进入计划模式：不直接发指令，下一条消息带 /plan 前缀发出
+                      pendingPlanRef.current = true;
+                    }
                     setModeOpen(false);
                   }}
                 >
@@ -360,11 +426,34 @@ export function Composer({ state, onDraft }: { state: AppState; onDraft: (text: 
             </div>
 
             <div className="anchor">
-              <button className="pill" onClick={() => setModelOpen((v) => !v)} title={texts.thinkingDepth}>
+              <button
+                className="pill"
+                title={texts.thinkingDepth}
+                onMouseDown={() => {
+                  // 标记：接下来 Popover 的 mousedown 外部检测是「按钮触发的」，跳过
+                  modelToggleRef.current = true;
+                }}
+                onClick={() => {
+                  // 同一次交互内消费标志（mousedown 已先于 click 触发）
+                  setTimeout(() => {
+                    modelToggleRef.current = false;
+                  }, 0);
+                  setModelOpen((v) => !v);
+                }}
+              >
                 <span className="pill-label">{state.model?.label ?? texts.defaultModel}</span>
                 <IconChevronDown size={8} />
               </button>
-              <Popover open={modelOpen} onClose={() => setModelOpen(false)}>
+              {/* 选完模型不关闭：思考深度区留在同一面板里继续调。
+                  选中态只在点击时更新（不再随鼠标悬停变化），与权限/命令弹层一致 */}
+              <Popover
+                open={modelOpen}
+                onClose={() => {
+                  // 由按钮 toggle 触发的关闭不在此处理（按钮自己已翻转状态）
+                  if (modelToggleRef.current) return;
+                  setModelOpen(false);
+                }}
+              >
                 <div className="popover-section">{texts.models}</div>
                 {state.models.length === 0 ? (
                   <div className="popover-empty">{texts.noModels}</div>
@@ -383,7 +472,8 @@ export function Composer({ state, onDraft }: { state: AppState; onDraft: (text: 
                               : ""
                           }`}
                           onClick={() => {
-                            // 档位只在目标模型支持时才带上，否则服务端会拒绝
+                            // 档位只在目标模型支持时才带上，否则服务端会拒绝；
+                            // 面板保持打开，用户可紧接着调深度
                             const wanted = model.efforts?.some(
                               (item) => item.id === state.model?.reasoningEffort,
                             )
@@ -395,7 +485,6 @@ export function Composer({ state, onDraft }: { state: AppState; onDraft: (text: 
                               model: model.id,
                               reasoningEffort: wanted,
                             });
-                            setModelOpen(false);
                           }}
                         >
                           <span className="popover-item-main">{model.name}</span>
@@ -404,25 +493,23 @@ export function Composer({ state, onDraft }: { state: AppState; onDraft: (text: 
                     </div>
                   ))
                 )}
-                {effort.length ? (
+                {state.model?.efforts?.length ? (
                   <>
                     <div className="popover-sep" />
                     <div className="popover-section">{texts.thinkingDepth}</div>
                     <div className="segment">
-                      {effort.map((item) => (
+                      {state.model.efforts.map((item) => (
                         <button
                           key={item.id}
-                          className={`segment-item${
-                            (state.model?.reasoningEffort ?? "") === item.id ? " is-selected" : ""
-                          }`}
-                          onClick={() =>
+                          className={`segment-item${(state.model?.reasoningEffort ?? "") === item.id ? " is-selected" : ""}`}
+                          onClick={() => {
                             post({
                               type: "setModel",
                               provider: state.model!.provider,
                               model: state.model!.model,
                               reasoningEffort: item.id,
-                            })
-                          }
+                            });
+                          }}
                         >
                           {item.name}
                         </button>
@@ -433,39 +520,27 @@ export function Composer({ state, onDraft }: { state: AppState; onDraft: (text: 
               </Popover>
             </div>
 
-            <button className="pill" title={texts.commands} onClick={() => insertToken("/")}>
+            <button className="pill" data-mini="hide" title={texts.commands} onClick={() => insertToken("/")}>
               <IconSlash size={13} />
             </button>
-            <button className="pill" title={texts.addImage} onClick={() => post({ type: "addImages" })}>
+            <button className="pill" data-mini="hide" title={texts.addImage} onClick={() => post({ type: "addImages" })}>
               <IconImage size={13} />
             </button>
             {/* @ 走提及列表（选具体文件），不再直接弹系统文件对话框 */}
-            <button className="pill" title={texts.mentionFiles} onClick={() => insertToken("@")}>
+            <button className="pill" data-mini="hide" title={texts.mentionFiles} onClick={() => insertToken("@")}>
               <IconAt size={13} />
             </button>
-            {effort.length ? (
-              <button
-                className="pill"
-                title={texts.toggleThinking}
-                onClick={() => {
-                  const ids = effort.map((e) => e.id);
-                  const current = ids.indexOf(state.model?.reasoningEffort ?? "");
-                  const next = ids[(current + 1) % ids.length];
-                  post({
-                    type: "setModel",
-                    provider: state.model!.provider,
-                    model: state.model!.model,
-                    reasoningEffort: next,
-                  });
-                }}
-              >
-                <IconBulb size={13} />
-              </button>
-            ) : null}
 
             <span className="spacer" />
 
-            <CtxBar used={state.messages.at(-1)?.usage?.totalTokens} total={state.model?.contextWindow} />
+            {tps !== undefined ? (
+              <span className="ctx-speed">{tps.toFixed(1)} tps</span>
+            ) : null}
+            <CtxText
+              used={state.messages.at(-1)?.usage?.totalTokens}
+              total={state.model?.contextWindow}
+              usage={state.messages.at(-1)?.usage}
+            />
 
             {state.running ? (
               <button className="send-btn is-stop" title={texts.stopTitle} onClick={() => post({ type: "stop" })}>
@@ -473,7 +548,7 @@ export function Composer({ state, onDraft }: { state: AppState; onDraft: (text: 
               </button>
             ) : (
               <button className="send-btn" disabled={!canSend} title={texts.sendTitle} onClick={send}>
-                ⏎ {texts.send}
+                {texts.send}
               </button>
             )}
           </div>
@@ -515,6 +590,7 @@ function Lump({
   waitingQuestion: boolean;
 }) {
   const texts = useTexts();
+  if (state.running) return null;
   if (waitingApproval) {
     return (
       <div className="lump">
@@ -533,22 +609,6 @@ function Lump({
       </div>
     );
   }
-  if (state.running) {
-    return (
-      <div className="lump">
-        <Spinner size={11} />
-        <span>
-          {texts.running}
-          <Ellipsis />
-        </span>
-        <span className="spacer" />
-        <button className="lump-btn" onClick={() => post({ type: "stop" })}>
-          <IconStop size={10} /> {texts.stop}
-          <span className="lump-hint">Esc</span>
-        </button>
-      </div>
-    );
-  }
   if (state.queue > 0) {
     return (
       <div className="lump">
@@ -564,16 +624,6 @@ function Lump({
       </div>
     );
   }
-  return (
-    <div className="lump">
-      <span>{state.model?.label ?? texts.brand}</span>
-      {state.session?.title ? (
-        <>
-          <span className="spacer" />
-          <span className="lump-hint">{state.session.title}</span>
-        </>
-      ) : null}
-    </div>
-  );
+  return null;
 }
 

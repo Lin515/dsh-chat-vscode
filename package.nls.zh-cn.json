@@ -1,6 +1,6 @@
 {
-  "container.title": "DSH 对话",
-  "view.chat.name": "对话",
+  "container.title": "DSH Chat",
+  "view.chat.name": "DSH Chat",
   "cmd.newSession.title": "DSH: 新建对话",
   "cmd.history.title": "DSH: 历史对话",
   "cmd.openInEditor.title": "DSH: 在编辑器中打开对话",

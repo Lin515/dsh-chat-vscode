@@ -424,6 +424,8 @@
 
 .row-title {
   flex: 0 1 auto;
+  min-width: 0;
+  max-width: 80%;
   color: var(--fg);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -725,7 +727,9 @@
   cursor: default;
 }
 
-/* mode pill: rounded-full, translucent grey, 11px */
+/* mode pill: rounded-full, translucent grey, 11px
+   max-width:100% + overflow:hidden 让窄时按钮随可用空间收缩、文字被裁掉，
+   配合 JS 的 scrollWidth 检测加 is-narrow（收紧 padding） */
 .pill-mode {
   display: inline-flex;
   align-items: center;
@@ -737,11 +741,82 @@
   color: var(--description);
   font-size: var(--font-size-2xs);
   white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
 }
 
 .pill-mode:hover {
   filter: brightness(1.15);
   color: var(--fg);
+}
+
+.pill-mode.is-narrow {
+  padding: 0 6px;
+}
+
+/* 权限胶囊：图标不被 flex 压扁裁掉；文字 span 允许收缩被裁 */
+.pill-mode > svg {
+  flex: 0 0 auto;
+}
+.pill-mode > span {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* ============================ 迷你模式（窄边栏收成图标条） ============================
+   .app 宽度 < 220px 时进入：聊天列表、头部按钮、发送栏全部收成图标条，
+   避免文字被裁半的「一层底一层」；宽度回到 ≥232px 恢复（滞回防抖动）。
+   拖到 VS Code 侧栏最小宽度时由 VS Code 原生收起成图标条。 */
+
+/* 权限胶囊：隐藏文字，只留盾牌图标 + 下拉箭头 */
+.app.is-mini .pill-mode > span {
+  display: none;
+}
+
+/* 头部：收成品牌 + 新建 + 历史（其余按钮隐藏），标题用图标表示未命名 */
+.app.is-mini .header-title {
+  display: none;
+}
+.app.is-mini .icon-btn[data-mini="hide"] {
+  display: none;
+}
+.app.is-mini .header {
+  padding: 0 4px;
+  gap: 1px;
+}
+
+/* 聊天列表：收成窄条，只露消息左缘，不再显示正文/工具行 */
+.app.is-mini .chat-list {
+  padding: 4px;
+}
+.app.is-mini .msg {
+  min-width: 0;
+}
+.app.is-mini .md-wrapper,
+.app.is-mini .row,
+.app.is-mini .approval,
+.app.is-mini .question,
+.app.is-mini .notice {
+  display: none;
+}
+
+/* 发送栏：只留权限图标 + 发送，其余工具按钮/上下文文字/tps 隐藏 */
+.app.is-mini .pill[data-mini="hide"],
+.app.is-mini .ctx-text,
+.app.is-mini .ctx-speed {
+  display: none;
+}
+.app.is-mini .composer-bar {
+  gap: 4px;
+  padding: 4px 6px 5px;
+}
+
+/* 缺口状态条：只留状态点，文字进 title */
+.app.is-mini .lump span:not(.lump-hint) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
 }
 
 .pill {
@@ -767,29 +842,22 @@
   max-width: 150px;
 }
 
-/* context-window usage bar: 14x7px with a hairline outline */
-.ctx-bar {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
+/* context-window usage, plain text: `xxxk/xxxk(xM)`; amber past 60% */
+.ctx-text {
+  font-variant-numeric: tabular-nums;
+  color: var(--description);
+  white-space: nowrap;
 }
 
-.ctx-track {
-  width: 14px;
-  height: 7px;
-  border-radius: 1px;
-  border: 0.5px solid var(--muted);
-  overflow: hidden;
-  display: inline-flex;
+.ctx-text.is-high {
+  color: var(--warning);
 }
 
-.ctx-fill {
-  background: var(--accent);
-  height: 100%;
-}
-
-.ctx-fill.is-high {
-  background: var(--warning);
+/* live generation speed next to the usage text */
+.ctx-speed {
+  font-variant-numeric: tabular-nums;
+  color: var(--description);
+  white-space: nowrap;
 }
 
 /* ============================ empty state ============================ */
@@ -838,28 +906,12 @@
   min-width: 0;
 }
 
-.lump-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 1px 6px;
-  border-radius: var(--radius-sm);
-  color: var(--description);
-  font-size: var(--font-size-2xs);
-}
-
-.lump-btn:hover {
-  filter: brightness(1.2);
-  background: var(--hover);
-  color: var(--fg);
-}
-
 .lump-hint {
   color: var(--muted);
   opacity: 0.75;
 }
 
-/* 1px gradient shell; idle it paints the page colour (invisible) */
+/* 1px shell */
 .composer-shell {
   padding: 1px;
   border-radius: var(--radius);
@@ -867,24 +919,7 @@
   background-size: 200% 200%;
 }
 
-.composer-shell.is-streaming {
-  margin-top: 8px;
-  background: var(--gradient-stream);
-  background-size: 200% 200%;
-  animation: gradient-sweep 6s linear infinite;
-}
-
-@keyframes gradient-sweep {
-  0% {
-    background-position: 0% 0;
-  }
-  100% {
-    background-position: 200% 0;
-  }
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .composer-shell.is-streaming,
   .spinner,
   .ellipsis::after,
   .dot-running {
@@ -974,7 +1009,7 @@
 .composer-bar {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   padding: 4px 8px 5px;
   min-width: 0;
   font-size: var(--font-size-2xs);

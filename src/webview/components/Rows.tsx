@@ -62,16 +62,22 @@ export function ToolRow({ tool }: { tool: ToolCallView }) {
   const meta =
     tool.endedAt && tool.startedAt ? formatDuration(tool.endedAt - tool.startedAt) : undefined;
 
+  // 标题行只放「动词 + 短标题」；长内容（完整命令/路径、输出全文）都收进展开区，
+  // 避免长 detail 把标题挤成半个字
+  const shownTitle = tool.detail
+    ? `${verb} ${tool.detail}`.slice(0, 40)
+    : tool.title || verb;
+
   return (
     <Row
       icon={icon}
       tone={tone}
-      title={tool.title || verb}
-      detail={tool.detail}
+      title={shownTitle}
       meta={meta}
       open={open}
       onToggle={() => setManual(!open)}
     >
+      {tool.detail && tool.detail.length > 20 ? <div className="row-body mono">{tool.detail}</div> : null}
       {tool.input ? <div className="row-body mono">{tool.input}</div> : null}
       {tool.images?.length ? (
         <div className="row-body-images">

@@ -102,16 +102,39 @@ export function Popover({
   );
 }
 
-/** 上下文占用小竖条：14×7，超过 60% 变琥珀色。 */
-export function CtxBar({ used, total }: { used?: number; total?: number }) {
+/**
+ * 上下文占用纯文字：`xxxk/xxxk(xM)`，超过 60% 变琥珀色；
+ * 悬停显示明细（缓存命中、输入/输出/推理等）。
+ *
+ * 生成过程中 usage 帧不一定每轮都来，所以常驻显示上一轮的值（不做实时刷新）。
+ */
+export function CtxText({
+  used,
+  total,
+  usage,
+}: {
+  used?: number;
+  total?: number;
+  usage?: import("../../shared/chat").UsageView;
+}) {
   const texts = useTexts();
-  if (!used || !total || total <= 0) return null;
-  const percent = Math.min(100, Math.round((used / total) * 100));
+  if (!total || total <= 0) return null;
+  const usedValue = used ?? usage?.totalTokens ?? 0;
+  if (!usedValue) return null;
+  const percent = Math.min(100, Math.round((usedValue / total) * 100));
+
+  const detail: string[] = [texts.contextUsed(percent, formatTokens(usedValue), formatTokens(total))];
+  if (usage) {
+    if (usage.cachedTokens) detail.push(`${texts.ctxDetailCached} ${formatTokens(usage.cachedTokens)}`);
+    if (usage.inputTokens !== undefined) detail.push(`${texts.ctxDetailInput} ${formatTokens(usage.inputTokens)}`);
+    if (usage.outputTokens !== undefined) detail.push(`${texts.ctxDetailOutput} ${formatTokens(usage.outputTokens)}`);
+    if (usage.reasoningTokens) detail.push(`${texts.ctxDetailReasoning} ${formatTokens(usage.reasoningTokens)}`);
+    if (usage.totalTokens) detail.push(`${texts.ctxDetailTotal} ${formatTokens(usage.totalTokens)}`);
+  }
+
   return (
-    <span className="ctx-bar" title={texts.contextUsed(percent, formatTokens(used), formatTokens(total))}>
-      <span className="ctx-track">
-        <span className={`ctx-fill${percent >= 60 ? " is-high" : ""}`} style={{ width: `${percent}%` }} />
-      </span>
+    <span className={`ctx-text${percent >= 60 ? " is-high" : ""}`} title={detail.join("\n")}>
+      {formatTokens(usedValue)}/{formatTokens(total)}({formatTokens(total)})
     </span>
   );
 }

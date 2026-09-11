@@ -1,10 +1,11 @@
 import { useState } from "react";
-import type { JobItemView, SettingsFieldView, SettingsSectionView, SubagentView } from "../../shared/chat";
+import type { JobItemView, SettingsFieldView, SettingsSectionView, SubagentView, ToolCallView } from "../../shared/chat";
 import { post } from "../bridge";
-import { IconAgents, IconChevronDown, IconChevronLeft, IconClose, IconJobs, IconUndo } from "../icons";
+import { IconAgents, IconChevronDown, IconChevronLeft, IconClose, IconJobs, IconTrajectory, IconUndo } from "../icons";
 import { formatClock, formatDuration } from "./primitives";
 import { useTexts } from "../texts";
 import { Message } from "./Message";
+import { ToolRow } from "./Rows";
 
 /** 抽屉外壳：四个面板共用（标题栏 + 可滚动内容）。 */
 function Drawer({
@@ -146,6 +147,32 @@ export function JobsPanel({ jobs, onClose }: { jobs: JobItemView[]; onClose: () 
             </div>
             {job.detail ? <div className="job-detail">{job.detail}</div> : null}
           </div>
+        ))
+      )}
+    </Drawer>
+  );
+}
+
+/**
+ * 轨迹面板：本会话全部工具调用，按时间顺序（对齐 Web UI 的轨迹页）。
+ * 每行可展开查看完整参数与输出。
+ */
+export function TrajectoryPanel({
+  tools,
+  onClose,
+}: {
+  tools: ToolCallView[];
+  onClose: () => void;
+}) {
+  const texts = useTexts();
+  const sorted = [...tools].sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0));
+  return (
+    <Drawer title={texts.trajectory} icon={<IconTrajectory size={14} />} onClose={onClose}>
+      {sorted.length === 0 ? (
+        <div className="popover-empty">{texts.trajectoryEmpty}</div>
+      ) : (
+        sorted.map((tool) => (
+          <ToolRow key={`${tool.id}:${tool.startedAt ?? 0}`} tool={tool} />
         ))
       )}
     </Drawer>

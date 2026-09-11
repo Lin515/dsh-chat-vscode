@@ -332,3 +332,13 @@ export const IconRefresh = (p: IconProps) => (
     <path d="M20 4v5h-5" />
   </Icon>
 );
+
+/** 轨迹：一条曲线串起三个节点（本会话全部工具调用的时间线）。 */
+export const IconTrajectory = (p: IconProps) => (
+  <Icon {...p}>
+    <circle cx="5" cy="19" r="2" />
+    <circle cx="12" cy="9" r="2" />
+    <circle cx="19" cy="5" r="2" />
+    <path d="M6.5 17.5L10.5 10.5M13.5 7.8L17.2 6" />
+  </Icon>
+);

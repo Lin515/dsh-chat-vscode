@@ -1,11 +1,11 @@
-import { useEffect, useLayoutEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ChatState } from "../shared/chat";
 import type { HostToWebview } from "../shared/ipc";
 import { post, subscribe } from "./bridge";
 import { Composer } from "./components/Composer";
 import { HistoryPanel } from "./components/History";
 import { Message } from "./components/Message";
-import { JobsPanel, SettingsPanel, SubagentTranscriptPanel, SubagentsPanel } from "./components/Panels";
+import { JobsPanel, SettingsPanel, SubagentTranscriptPanel, SubagentsPanel, TrajectoryPanel } from "./components/Panels";
 import { Spinner } from "./components/primitives";
 import { AppState, useAppState, type PanelKind } from "./state";
 import {
@@ -16,6 +16,7 @@ import {
   IconPlus,
   IconRefresh,
   IconSettings,
+  IconTrajectory,
 } from "./icons";
 import { TextsContext, dictionaryFor, normalizeLocale, useTexts } from "./texts";
 
@@ -43,6 +44,7 @@ function Header({
       <span className="header-brand" title="DeepSeek Harness">
         <BrandMark />
       </span>
+      {/* 侧栏容器名已经是「DSH Chat」，这里只放会话名，不再重复产品名 */}
       <span className="header-title">{state.session?.title || texts.untitled}</span>
       <span className="header-spacer" />
       <button className="icon-btn" title={texts.newChat} onClick={() => post({ type: "newSession" })}>
@@ -56,6 +58,7 @@ function Header({
         <IconHistory size={15} />
       </button>
       <button
+        data-mini="hide"
         className={`icon-btn${state.panel === "subagents" ? " is-active" : ""}`}
         title={texts.subagents}
         onClick={() => toggle("subagents", () => post({ type: "listSubagents" }))}
@@ -63,16 +66,31 @@ function Header({
         <IconAgents size={15} />
       </button>
       <button
+        data-mini="hide"
         className={`icon-btn${state.panel === "jobs" ? " is-active" : ""}`}
         title={texts.jobs}
         onClick={() => toggle("jobs", () => post({ type: "listJobs" }))}
       >
         <IconJobs size={15} />
       </button>
-      <button className="icon-btn" title={texts.openInEditor} onClick={() => post({ type: "openInEditor" })}>
+      <button
+        data-mini="hide"
+        className={`icon-btn${state.panel === "trajectory" ? " is-active" : ""}`}
+        title={texts.trajectory}
+        onClick={() => toggle("trajectory")}
+      >
+        <IconTrajectory size={15} />
+      </button>
+      <button
+        data-mini="hide"
+        className="icon-btn"
+        title={texts.openInEditor}
+        onClick={() => post({ type: "openInEditor" })}
+      >
         <IconOpenInEditor size={15} />
       </button>
       <button
+        data-mini="hide"
         className={`icon-btn${state.panel === "settings" ? " is-active" : ""}`}
         title={texts.settingsTitle}
         onClick={() => toggle("settings", () => post({ type: "describeSettings" }))}
@@ -157,6 +175,18 @@ function useAutoScroll(dependency: unknown) {
 export function App() {
   const { state, dispatch } = useAppState();
   const scrollRef = useAutoScroll(state.messages);
+  // 迷你模式：.app 宽度 < 220px 时收成图标条（滞回 ≥232 恢复），由 Composer 测宽后同步到这里
+  const appRef = useRef<HTMLDivElement>(null);
+  const [mini, setMini] = useState(false);
+  useEffect(() => {
+    const el = appRef.current;
+    if (!el) return;
+    const check = () => setMini((prev) => (prev ? el.clientWidth < 232 : el.clientWidth < 220));
+    check();
+    const observer = new ResizeObserver(check);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
   // 文案跟随 VS Code 显示语言；词典随语言切换而重建，界面即时更新
   const texts = dictionaryFor(normalizeLocale(state.locale));
   const closePanel = () => dispatch({ type: "ui/setPanel", panel: "none" });
@@ -178,7 +208,7 @@ export function App() {
 
   return (
     <TextsContext.Provider value={texts}>
-      <div className="app">
+      <div ref={appRef} className={`app${mini ? " is-mini" : ""}`}>
         <Header state={state} dispatch={dispatch} />
         <ConnectionBar state={state} />
 
@@ -249,6 +279,10 @@ export function App() {
         ) : null}
 
         {state.panel === "jobs" ? <JobsPanel jobs={state.jobs} onClose={closePanel} /> : null}
+
+        {state.panel === "trajectory" ? (
+          <TrajectoryPanel tools={state.trajectory} onClose={closePanel} />
+        ) : null}
 
         {state.panel === "settings" ? (
           <SettingsPanel

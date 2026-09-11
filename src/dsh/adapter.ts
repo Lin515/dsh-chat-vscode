@@ -69,14 +69,30 @@ function summarizeTool(name: string, argsRaw: string): { detail?: string; input?
   };
   const firstLine = (text: string) => text.split("\n")[0].slice(0, 120);
 
+  // 单行摘要里**文件名/命令名必须完整保留**（标题只给它 80px 左右的空间，
+  // 长路径会把标题挤成半个字）：路径只留最后 2 段，用 … 折叠中间。
+  const shortPath = (value: string): string => {
+    const parts = value.split(/[\\/]+/).filter(Boolean);
+    if (parts.length <= 2) return value;
+    return `…/${parts.slice(-2).join("/")}`;
+  };
+
   const lower = name.toLowerCase();
   const path = pick("file_path", "path", "filePath", "filename");
   if (lower.startsWith("read") || lower.startsWith("write") || lower.includes("edit") || lower.includes("replace")) {
-    return { detail: path && firstLine(path), input: argsRaw };
+    return { detail: path && shortPath(firstLine(path)), input: argsRaw };
   }
   if (lower.includes("pwsh") || lower.includes("bash")) {
     const command = pick("command", "cmd", "script");
-    return { detail: command && firstLine(command), input: argsRaw };
+    // 命令名（首个 token）完整保留，过长的其余部分折叠
+    return {
+      detail: command
+        ? firstLine(command).length > 72
+          ? `${firstLine(command).slice(0, 72)}…`
+          : firstLine(command)
+        : undefined,
+      input: argsRaw,
+    };
   }
   if (lower.includes("grep") || lower.includes("glob")) {
     return { detail: pick("pattern", "query"), input: argsRaw };

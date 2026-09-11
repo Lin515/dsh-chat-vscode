@@ -106,19 +106,6 @@
   --gap: 8px;
   --pad: 12px;
 
-  /* Continue's signature streaming outline: a hard-coded rainbow sweep that
-     deliberately ignores the theme, animating once every 6s. */
-  --gradient-stream: repeating-linear-gradient(
-    101.79deg,
-    #1bbe84 0%,
-    #331bbe 16%,
-    #be1b55 33%,
-    #a6be1b 55%,
-    #be1b55 67%,
-    #331bbe 85%,
-    #1bbe84 99%
-  );
-
   color-scheme: light dark;
 }
 

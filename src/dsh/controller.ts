@@ -169,8 +169,17 @@ export class ChatController implements vscode.Disposable {
     if (!this.client) return;
     try {
       const value = await this.client.listSessions();
+      // 只显示属于**当前工作区**的会话（dsh web 可能为多个项目开过会话，
+      // 跨项目会话混进来会既占列表又会因 cwd 不匹配导致 resume 失败）
+      const workspace = this.workspacePath().replace(/\\/g, "/").toLowerCase();
+      const currentCwd = this.sessions.find((s) => s.id === this.currentSessionId)?.cwd?.replace(/\\/g, "/").toLowerCase();
       this.sessions = (value.items ?? [])
         .filter((item) => !item.origin && !item.parentSessionId)
+        .filter((item) => {
+          if (!item.cwd) return false;
+          const cwd = item.cwd.replace(/\\/g, "/").toLowerCase();
+          return cwd === workspace || (currentCwd !== undefined && cwd === currentCwd);
+        })
         .map((item) => this.toSessionView(item));
       this.emit({ type: "sessions", sessions: this.sessions });
     } catch (error) {
@@ -592,6 +601,15 @@ export class ChatController implements vscode.Disposable {
   private pendingQuestion: string | undefined;
   /** 新建会话后要套用的默认思考深度（来自 dshChat.defaultReasoningEffort）。 */
   private pendingReasoningEffort: string | undefined;
+  /** 待应用的模型选择：UI 切换模型时只记到这里，下次发送前才真正 selectModel。 */
+  private pendingModel: {
+    provider: string;
+    model: string;
+    reasoningEffort?: string;
+    label?: string;
+    efforts?: { id: string; name: string }[];
+    contextWindow?: number;
+  } | undefined;
   /** 最近一次收到的 modelSelection 原始投影，模型目录就绪后用于重放。 */
   private lastModelSelection: unknown;
 
@@ -669,6 +687,9 @@ export class ChatController implements vscode.Disposable {
         break;
 
       case "send":
+        // 未连接时先恢复连接：历史会话切换后跟随流尚未建立时直接 prompt
+        // 会触发服务端 resume，冷启动竞态下 resume 可能失败
+        if (!this.client || this.connection !== "connected") await this.ensureConnected();
         await this.send(message.text, message.attachments);
         break;
 
@@ -692,30 +713,28 @@ export class ChatController implements vscode.Disposable {
         break;
 
       case "setModel":
-        if (this.client && this.currentSessionId) {
-          try {
-            await this.client.selectModel(
-              this.currentSessionId,
-              message.provider,
-              message.model,
-              message.reasoningEffort,
-            );
-            const group = this.models.find((g) => g.id === message.provider);
-            const model = group?.models.find((m) => m.id === message.model);
-            this.model = {
-              provider: message.provider,
-              model: message.model,
-              label: model?.name ?? message.model,
-              reasoningEffort: message.reasoningEffort,
-              efforts: model?.efforts,
-              // 上下文窗口必须一起带上：漏掉它上下文占用条会在切模型后消失
-              contextWindow: model?.contextWindow ?? this.model?.contextWindow,
-            };
-            this.emit({ type: "patch", patch: { model: this.model } });
-          } catch (error) {
-            this.reportError("切换模型失败", error);
-          }
-        }
+        // 延迟到下一次发送时生效（与 UI 进入计划模式同机制）：
+        // 避免正在生成时切模型导致本轮中途换模型，也让界面立刻反映选择
+        const group = this.models.find((g) => g.id === message.provider);
+        const model = group?.models.find((m) => m.id === message.model);
+        this.pendingModel = {
+          provider: message.provider,
+          model: message.model,
+          reasoningEffort: message.reasoningEffort,
+          label: model?.name ?? message.model,
+          efforts: model?.efforts,
+          contextWindow: model?.contextWindow ?? this.model?.contextWindow,
+        };
+        // 立即更新胶囊显示（实际 selectModel 在下次发送前执行）
+        this.model = {
+          provider: this.pendingModel.provider,
+          model: this.pendingModel.model,
+          label: this.pendingModel.label ?? this.pendingModel.model,
+          reasoningEffort: this.pendingModel.reasoningEffort,
+          efforts: this.pendingModel.efforts,
+          contextWindow: this.pendingModel.contextWindow,
+        };
+        this.emit({ type: "patch", patch: { model: this.model } });
         break;
 
       case "setPermission":
@@ -869,6 +888,16 @@ export class ChatController implements vscode.Disposable {
     if (content.length === 0) return;
 
     try {
+      // 发送前应用待生效的模型选择（与计划模式前缀同机制：切换即时生效于"下一轮"）
+      if (this.pendingModel) {
+        const { provider, model, reasoningEffort } = this.pendingModel;
+        this.pendingModel = undefined;
+        try {
+          await this.client.selectModel(this.currentSessionId, provider, model, reasoningEffort);
+        } catch (error) {
+          this.log(`[model] 发送前应用模型选择失败：${this.describeError(error)}`);
+        }
+      }
       this.attachments.length = 0;
       this.draft = "";
       this.running = true;

@@ -59,6 +59,9 @@ export interface Texts {
   subagentOneShot: string;
   subagentContinuable: string;
   subagentInactive: string;
+  /** 轨迹面板 */
+  trajectory: string;
+  trajectoryEmpty: string;
   /** 后台任务面板 */
   jobs: string;
   jobsEmpty: string;
@@ -140,6 +143,12 @@ export interface Texts {
   runningTag: string;
 
   contextUsed: (percent: number, used: string, total: string) => string;
+  /** 悬停上下文占用时的明细行（标签 + 数值）。 */
+  ctxDetailCached: string;
+  ctxDetailInput: string;
+  ctxDetailOutput: string;
+  ctxDetailReasoning: string;
+  ctxDetailTotal: string;
   turnFailed: string;
   interrupted: string;
   compacted: string;
@@ -206,6 +215,8 @@ const zh: Texts = {
   subagentOneShot: "一次性",
   subagentContinuable: "可继续",
   subagentInactive: "已结束",
+  trajectory: "轨迹",
+  trajectoryEmpty: "本会话还没有工具调用",
   jobs: "后台任务",
   jobsEmpty: "当前会话没有后台任务",
   jobRunning: "运行中",
@@ -282,6 +293,11 @@ const zh: Texts = {
   runningTag: "运行中",
 
   contextUsed: (percent, used, total) => `上下文已用 ${percent}%（${used} / ${total}）`,
+  ctxDetailCached: "缓存命中",
+  ctxDetailInput: "输入",
+  ctxDetailOutput: "输出",
+  ctxDetailReasoning: "其中推理",
+  ctxDetailTotal: "合计",
   turnFailed: "本轮执行失败",
   interrupted: "本轮被中断",
   compacted: "上下文已压缩",
@@ -348,6 +364,8 @@ const en: Texts = {
   subagentOneShot: "one-shot",
   subagentContinuable: "continuable",
   subagentInactive: "finished",
+  trajectory: "Trajectory",
+  trajectoryEmpty: "No tool calls in this session yet",
   jobs: "Background jobs",
   jobsEmpty: "This session has no background jobs",
   jobRunning: "running",
@@ -424,6 +442,11 @@ const en: Texts = {
   runningTag: "running",
 
   contextUsed: (percent, used, total) => `Context used ${percent}% (${used} / ${total})`,
+  ctxDetailCached: "Cache hit",
+  ctxDetailInput: "Input",
+  ctxDetailOutput: "Output",
+  ctxDetailReasoning: "of which reasoning",
+  ctxDetailTotal: "Total",
   turnFailed: "This turn failed",
   interrupted: "This turn was interrupted",
   compacted: "Context compacted",
