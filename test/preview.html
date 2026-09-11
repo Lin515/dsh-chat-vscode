@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="zh">
+  <head>
+    <meta charset="UTF-8" />
+    <title>DSH Chat — UI preview harness</title>
+    <link rel="stylesheet" href="../dist/webview.css" />
+    <style>
+      /* 模拟 VS Code 暗色主题注入的变量，让预览与真实面板的观感一致 */
+      :root {
+        --vscode-sideBar-background: #1e1e1e;
+        --vscode-sideBar-foreground: #e6e6e6;
+        --vscode-editor-background: #1e1e1e;
+        --vscode-editor-foreground: #e6e6e6;
+        --vscode-input-background: #2d2d2d;
+        --vscode-input-foreground: #e6e6e6;
+        --vscode-input-placeholderForeground: #9e9e9e;
+        --vscode-commandCenter-background: #252525;
+        --vscode-commandCenter-inactiveBorder: #555555;
+        --vscode-commandCenter-activeBorder: #4d8bf0;
+        --vscode-button-background: #2c5aa0;
+        --vscode-button-foreground: #ffffff;
+        --vscode-button-hoverBackground: #3a6db3;
+        --vscode-button-secondaryBackground: #303030;
+        --vscode-button-secondaryForeground: #e6e6e6;
+        --vscode-button-secondaryHoverBackground: #3a3a3a;
+        --vscode-descriptionForeground: #b3b3b3;
+        --vscode-list-deemphasizedForeground: #8c8c8c;
+        --vscode-list-hoverBackground: #383838;
+        --vscode-list-activeSelectionBackground: #2c5aa050;
+        --vscode-list-activeSelectionForeground: #ffffff;
+        --vscode-textLink-foreground: #5c9ce6;
+        --vscode-textCodeBlock-background: #141414;
+        --vscode-focusBorder: #007fd4;
+        --vscode-badge-background: #4d4d4d;
+        --vscode-badge-foreground: #ffffff;
+        --vscode-editorError-foreground: #f14c4c;
+        --vscode-editorWarning-foreground: #cca700;
+        --vscode-charts-green: #89d185;
+        --vscode-charts-blue: #3794ff;
+        --vscode-editor-font-family: Consolas, monospace;
+        --vscode-font-family: "Segoe UI", sans-serif;
+        --vscode-font-size: 13px;
+      }
+      html,
+      body {
+        width: 420px;
+        height: 900px;
+        margin: 0;
+        overflow: hidden;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script>
+      // webview 通过 acquireVsCodeApi 与宿主通信；预览里复刻真实握手：
+      // webview 发 ready → 宿主回 state 快照
+      window.__sent = [];
+      window.acquireVsCodeApi = function () {
+        return {
+          postMessage: function (message) {
+            window.__sent.push(message);
+            if (message && message.type === "ready") {
+              // 真实宿主是异步回帧的（webview → 扩展进程 → postMessage 回来），
+              // 这里用宏任务复刻同样的时序：effect 里的 ready 发完，脚本才继续定义 __buildState
+              setTimeout(function () {
+                window.dispatchEvent(
+                  new MessageEvent("message", { data: { type: "state", state: window.__buildState() } }),
+                );
+              }, 0);
+            }
+          },
+          getState: function () {
+            return undefined;
+          },
+          setState: function () {},
+        };
+      };
+      window.__push = function (frame) {
+        window.dispatchEvent(new MessageEvent("message", { data: frame }));
+      };
+      // 面板数据按需推给界面，便于逐个预览
+      window.__panels = function () {
+        window.__push({
+          type: "subagents/list",
+          parentAvailable: true,
+          entries: [
+            { id: "sub-1", label: "调研 MCP 工具清单", activity: "running" },
+            { id: "sub-2", label: "扫描未使用导出", activity: "inactive" },
+          ],
+        });
+        window.__push({
+          type: "jobs/list",
+          jobs: [
+            { id: "j1", kind: "pwsh", label: "npm run typecheck", status: "running", startedAt: Date.now() - 42000 },
+            { id: "j2", kind: "subagent", label: "调研 MCP 工具清单", status: "running", startedAt: Date.now() - 90000 },
+            { id: "j3", kind: "pwsh", label: "node build/smoke.mjs", status: "completed", startedAt: Date.now() - 600000, finishedAt: Date.now() - 545000, detail: "✓ 端到端通过" },
+            { id: "j4", kind: "pwsh", label: "git push origin main", status: "failed", startedAt: Date.now() - 900000, finishedAt: Date.now() - 899000, detail: "fatal: could not read Username" },
+          ],
+        });
+        window.__push({
+          type: "settings/describe",
+          writable: true,
+          sections: [
+            {
+              ns: "agent-default-model", applies: "live", revision: 3, writable: true, jsonFields: [],
+              fields: [
+                { path: ["provider"], label: "provider", type: "string", value: "cc", overridden: true },
+                { path: ["model"], label: "model", type: "string", value: "deepseek/deepseek-v4.1-flash", overridden: true },
+                { path: ["reasoningEffort"], label: "reasoningEffort", type: "enum", value: "max",
+                  options: [{ value: "off", label: "off" }, { value: "high", label: "high" }, { value: "max", label: "max" }] },
+              ],
+            },
+            {
+              ns: "permission", applies: "live", revision: 0, writable: true, jsonFields: [],
+              fields: [
+                { path: ["defaultPreset"], label: "defaultPreset", type: "enum", value: "workspace-write",
+                  options: [{ value: "read-only", label: "read-only" }, { value: "workspace-write", label: "workspace-write" }, { value: "danger-full-access", label: "danger-full-access" }] },
+              ],
+            },
+            {
+              ns: "web-search-deepseek", applies: "restart", revision: 7, writable: true,
+              fields: [
+                { path: ["apiKey"], label: "apiKey", type: "string", value: "", secret: true, secretSet: true },
+                { path: ["model"], label: "model", type: "string", value: "deepseek-v4-flash" },
+                { path: ["maxUses"], label: "maxUses", type: "number", value: 5, min: 1, step: 1 },
+              ],
+              jsonFields: [],
+            },
+            {
+              ns: "llm-pi-ai", applies: "live", revision: 0, writable: true,
+              fields: [{ path: ["providers"], label: "providers", type: "json", value: null }],
+              jsonFields: [{ path: ["providers"], label: "providers", value: { cc: { displayName: "Command Code" } } }],
+            },
+          ],
+        });
+      };
+      window.__composer = function () {
+        window.__push({
+          type: "commands/list",
+          commands: [
+            { name: "plan", description: "进入计划模式" },
+            { name: "compact", description: "压缩上下文" },
+            { name: "goal", description: "设置目标" },
+            { name: "permission", description: "切换权限模式", hint: "read-only | workspace-write | danger-full-access" },
+            { name: "feedback", description: "记录反馈" },
+          ],
+        });
+        window.__push({
+          type: "files/list",
+          query: "ctrl",
+          items: [
+            { path: "src/dsh/controller.ts", kind: "file" },
+            { path: "src/dsh/client.ts", kind: "file" },
+            { path: "src/webview/components", kind: "directory" },
+          ],
+        });
+      };
+    </script>
+    <script src="../dist/webview.js"></script>
+    <script>
+      const now = Date.now();
+      const codeSample =
+        "export function createServer(options) {\n" +
+        "  const server = http.createServer((req, res) => {\n" +
+        "    res.writeHead(200, { 'content-type': 'application/json' });\n" +
+        "    res.end(JSON.stringify({ ok: true }));\n" +
+        "  });\n" +
+        "  return server;\n" +
+        "}";
+
+      window.__buildState = function () {
+        // 用 ?locale=en 预览英文界面
+        const locale = new URLSearchParams(location.search).get("locale") || "zh-cn";
+        return {
+          locale,
+          connection: "ready",
+          serverUrl: "http://127.0.0.1:3080",
+          session: { id: "s1", title: "重构 server 启动流程", updatedAt: now, running: false },
+          running: true,
+          queue: 0,
+          attachments: [
+            { id: "a1", kind: "file", name: "src/server/index.ts", path: "D:\\\\dev\\\\app\\\\src\\\\server\\\\index.ts" },
+            { id: "a2", kind: "selection", name: "src/config.ts", text: "const port = 3080;" }
+          ],
+          draft: "把这两个文件的启动逻辑合并到一个入口",
+          models: [
+            {
+              id: "deepseek-official",
+              name: "DeepSeek",
+              models: [
+                { id: "deepseek-v4-pro", name: "DeepSeek-V4-Pro" },
+                { id: "deepseek-v4-flash", name: "DeepSeek-V4-Flash" }
+              ]
+            }
+          ],
+          model: {
+            provider: "deepseek-official",
+            model: "deepseek-v4-pro",
+            label: "DeepSeek-V4-Pro",
+            reasoningEffort: "high",
+            contextWindow: 128000,
+            efforts: [
+              { id: "", name: "默认" },
+              { id: "off", name: "关闭" },
+              { id: "low", name: "低" },
+              { id: "high", name: "高" },
+              { id: "max", name: "最高" }
+            ]
+          },
+          permission: "workspace-write",
+          planMode: false,
+          todos: [
+            { id: "t1", content: "通读现有启动逻辑", status: "completed" },
+            { id: "t2", content: "合并入口并去掉重复初始化", status: "in_progress" },
+            { id: "t3", content: "补充回归测试", status: "pending" }
+          ],
+          subagents: [],
+          messages: [
+            {
+              id: "u:1",
+              role: "user",
+              ts: now - 240000,
+              text: "把这两个文件的启动逻辑合并到一个入口，并去掉重复初始化。",
+              segments: [],
+              attachments: [
+                { id: "a1", kind: "file", name: "src/server/index.ts" },
+                { id: "a2", kind: "selection", name: "src/config.ts" }
+              ]
+            },
+            {
+              id: "a:0",
+              role: "assistant",
+              ts: now - 235000,
+              model: "DeepSeek-V4-Pro",
+              durationMs: 41200,
+              firstTokenMs: 900,
+              usage: { inputTokens: 16605, outputTokens: 1180, totalTokens: 19200, cachedTokens: 1152, reasoningTokens: 420 },
+              segments: [
+                { id: "r1", kind: "thinking", text: "先看两个文件各自的初始化路径。\nindex.ts 里创建了 server 并调用了 listen，config.ts 又从环境变量里读了一遍端口，两处会打架。", streaming: false },
+                { id: "t1", kind: "text", text: "我看了两个文件，重复初始化的根因是端口和中间件被注册了两次。" },
+                { id: "tool1", kind: "tool", tool: { id: "call_1", name: "read", title: "", detail: "src/server/index.ts", status: "ok", input: '{"file_path":"src/server/index.ts"}', output: "export function bootstrap() {…}", startedAt: now - 234000, endedAt: now - 233400 } },
+                { id: "tool2", kind: "tool", tool: { id: "call_2", name: "grep", title: "", detail: "listen(", status: "ok", input: '{"pattern":"listen\\\\("}', output: "src/server/index.ts:24\nsrc/config.ts:11", startedAt: now - 233300, endedAt: now - 233000 } },
+                { id: "t2", kind: "text", text: "把入口收敛成一个 `bootstrap()`，配置只读一次：", streaming: false },
+                { id: "c1", kind: "text", text: "```ts\n" + codeSample + "\n```", streaming: true }
+              ]
+            },
+            {
+              id: "a:1",
+              role: "assistant",
+              ts: now - 20000,
+              model: "DeepSeek-V4-Pro",
+              segments: [
+                { id: "q1", kind: "approval", approval: { requestId: "ev1", toolName: "pwsh", reason: "escalate sandbox to danger-full-access：需要在工作区外写入日志文件", detail: "调用标识：call_9f2", state: "waiting" } }
+              ]
+            }
+          ]
+        };
+      };
+    </script>
+  </body>
+</html>

@@ -1,0 +1,21 @@
+{
+  "container.title": "DSH 对话",
+  "view.chat.name": "对话",
+  "cmd.newSession.title": "DSH: 新建对话",
+  "cmd.history.title": "DSH: 历史对话",
+  "cmd.openInEditor.title": "DSH: 在编辑器中打开对话",
+  "cmd.stop.title": "DSH: 停止",
+  "cmd.addSelection.title": "DSH: 添加选中代码到对话",
+  "cmd.addFile.title": "DSH: 添加文件到对话",
+  "cmd.startServer.title": "DSH: 启动服务器",
+  "cmd.restartServer.title": "DSH: 重启服务器",
+  "cmd.showLogs.title": "DSH: 显示日志",
+  "cmd.showDiagnostics.title": "DSH: 显示诊断信息",
+  "config.url": "已运行的 `dsh web` 服务地址（例如 `http://127.0.0.1:3080`）。留空则由扩展自行启动并管理服务器。",
+  "config.autoStart": "VS Code 启动时自动运行 `dsh web`。",
+  "config.openPanelOnStartup": "VS Code 启动时在编辑器区打开对话面板。",
+  "config.command": "用于启动服务器的命令（找不到时回退到 `npx --yes @deepseek-ai/dsh@latest`）。",
+  "config.startTimeoutSec": "等待服务器就绪的最长秒数。",
+  "config.defaultReasoningEffort": "新会话的默认思考深度（如 `off`、`low`、`high`、`max`）。留空则使用服务器默认值。",
+  "config.showUsageStats": "在可折叠的行内显示 token 用量与耗时信息。"
+}

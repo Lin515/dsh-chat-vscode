@@ -1,0 +1,197 @@
+/*
+ * Design tokens for the DSH chat webview.
+ *
+ * The palette mirrors Continue's semantic theme layer (gui/src/styles/theme.ts):
+ * every semantic colour resolves to a VS Code theme variable first and falls
+ * back to Continue's own default when the host does not provide it. Keeping the
+ * same names means the visual language matches Continue while the UI still
+ * follows whatever theme the user has installed.
+ */
+
+:root {
+  /* ---- surfaces ---- */
+  --bg: var(
+    --vscode-sideBar-background,
+    var(--vscode-editor-background, var(--vscode-panel-background, #1e1e1e))
+  );
+  --fg: var(
+    --vscode-sideBar-foreground,
+    var(--vscode-editor-foreground, var(--vscode-panel-foreground, #e6e6e6))
+  );
+  --editor-bg: var(--vscode-editor-background, #1e1e1e);
+  --editor-fg: var(--vscode-editor-foreground, #e6e6e6);
+  --command-bg: var(--vscode-commandCenter-background, #252525);
+  --command-fg: var(--vscode-commandCenter-foreground, #e6e6e6);
+
+  /* ---- primary action (send button, links to actions) ---- */
+  --primary: var(--vscode-button-background, #2c5aa0);
+  --primary-fg: var(--vscode-button-foreground, #ffffff);
+  --primary-hover: var(--vscode-button-hoverBackground, #3a6db3);
+
+  /* ---- secondary action (toolbar pills) ---- */
+  --secondary: var(--vscode-button-secondaryBackground, #303030);
+  --secondary-fg: var(--vscode-button-secondaryForeground, #e6e6e6);
+  --secondary-hover: var(--vscode-button-secondaryHoverBackground, #3a3a3a);
+
+  /* ---- lines ---- */
+  --border: var(--vscode-sideBar-border, var(--vscode-panel-border, #2a2a2a));
+  --border-focus: var(--vscode-focusBorder, #3a6db3);
+  --command-border: var(--vscode-commandCenter-inactiveBorder, #555555);
+  --command-border-focus: var(--vscode-commandCenter-activeBorder, #4d8bf0);
+
+  /* ---- inputs ---- */
+  --input-bg: var(--vscode-input-background, #2d2d2d);
+  --input-fg: var(--vscode-input-foreground, #e6e6e6);
+  --input-border: var(
+    --vscode-input-border,
+    var(--vscode-commandCenter-inactiveBorder, #555555)
+  );
+  --input-placeholder: var(--vscode-input-placeholderForeground, #9e9e9e);
+  --code-bg: var(--vscode-textCodeBlock-background, #1e1e1e);
+
+  /* ---- text roles ---- */
+  --description: var(--vscode-descriptionForeground, #b3b3b3);
+  --muted: var(--vscode-list-deemphasizedForeground, #8c8c8c);
+  --link: var(--vscode-textLink-foreground, #5c9ce6);
+  --accent: var(--vscode-tab-activeBorderTop, var(--vscode-focusBorder, #4d8bf0));
+
+  /* ---- status ---- */
+  --info: var(--vscode-charts-blue, #2196f3);
+  --success: var(
+    --vscode-notebookStatusSuccessIcon-foreground,
+    var(--vscode-testing-iconPassed, var(--vscode-charts-green, #4caf50))
+  );
+  --warning: var(--vscode-editorWarning-foreground, #ffb74d);
+  --error: var(--vscode-editorError-foreground, #f44336);
+  --terminal: var(--vscode-terminal-ansiGreen, #0dbc79);
+
+  /* ---- interactive rows / lists ---- */
+  --hover: var(--vscode-list-hoverBackground, #383838);
+  --active: var(--vscode-list-activeSelectionBackground, #2c5aa050);
+  --active-fg: var(--vscode-list-activeSelectionForeground, #ffffff);
+  --badge-bg: var(--vscode-badge-background, #4d4d4d);
+  --badge-fg: var(--vscode-badge-foreground, #ffffff);
+
+  /* ---- geometry: Continue uses a 0.5rem default radius and 11px for the
+         smallest label size, which is what gives its chrome the soft look ---- */
+  --radius: 0.5rem;
+  --radius-sm: 0.375rem;
+  --radius-lg: 0.75rem;
+  --radius-pill: 999px;
+
+  --font-family: var(
+    --vscode-font-family,
+    -apple-system,
+    "Segoe UI",
+    system-ui,
+    sans-serif
+  );
+  --font-size: var(--vscode-font-size, 13px);
+  /* Continue sizes conversation text and the composer at 14px regardless of the
+     host font size, then drops to 11-12px for chrome (spec §0/§8). */
+  --font-size-body: 14px;
+  --font-size-2xs: 0.6875rem; /* 11px, Continue's smallest label */
+  --font-size-xs: 0.75rem; /* 12px, toolbar / code-block header */
+  --font-size-sm: 0.8125rem;
+  --font-size-lg: 0.9375rem;
+  --mono: var(
+    --vscode-editor-font-family,
+    "SF Mono",
+    Consolas,
+    "Courier New",
+    monospace
+  );
+  --mono-size: var(--vscode-editor-font-size, 12px);
+
+  --gap: 8px;
+  --pad: 12px;
+
+  /* Continue's signature streaming outline: a hard-coded rainbow sweep that
+     deliberately ignores the theme, animating once every 6s. */
+  --gradient-stream: repeating-linear-gradient(
+    101.79deg,
+    #1bbe84 0%,
+    #331bbe 16%,
+    #be1b55 33%,
+    #a6be1b 55%,
+    #be1b55 67%,
+    #331bbe 85%,
+    #1bbe84 99%
+  );
+
+  color-scheme: light dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* rem 必须锚定 16px：VS Code 会把 --vscode-font-size 注入到根字号上，
+   若直接拿它当根字号，0.6875rem 这类 token 会跟着缩水（11px 变 8.9px、
+   0.5rem 圆角变 6.5px），整套尺度都会走形。字号只作用于 body。 */
+html {
+  font-size: 16px;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-family);
+}
+
+body {
+  font-size: var(--font-size);
+}
+
+#root {
+  height: 100%;
+}
+
+button {
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+button:focus-visible,
+[tabindex]:focus-visible {
+  outline: 1px solid var(--border-focus);
+  outline-offset: 1px;
+}
+
+input,
+textarea {
+  font-family: inherit;
+  font-size: inherit;
+}
+
+a {
+  color: var(--link);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--vscode-scrollbarSlider-background, #4d4d4d80);
+  border-radius: var(--radius-pill);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--vscode-scrollbarSlider-hoverBackground, #64646480);
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}

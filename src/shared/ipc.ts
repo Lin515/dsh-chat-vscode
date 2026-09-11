@@ -1,0 +1,116 @@
+import type { Attachment, ChatState, MessageView, ModelSelectionView, ProviderGroupView, Segment, SessionSummaryView, TodoView } from "./chat";
+import type {
+  CommandView,
+  FileRefView,
+  JobItemView,
+  SettingsSectionView,
+  SubagentView,
+} from "./chat";
+
+/**
+ * 宿主 ↔ webview 消息协议。
+ *
+ * 宿主持有权威状态；webview 只是一面镜子，通过增量帧更新（避免每来一个
+ * token 就重发整棵消息树）。
+ */
+
+export type HostToWebview =
+  /** 首次连接时的一次性全量快照。 */
+  | { type: "state"; state: ChatState }
+  /** 状态中非消息字段的局部更新。 */
+  | { type: "patch"; patch: Partial<ChatState> }
+  /** 新增或整体替换一条消息。 */
+  | { type: "message/upsert"; message: MessageView }
+  /** 删除一条消息（回退/重放时使用）。 */
+  | { type: "message/remove"; messageId: string }
+  /** 整体替换消息列表（切换会话、回放历史）。 */
+  | { type: "messages/reset"; messages: MessageView[] }
+  /** 在消息尾部追加一个段落。 */
+  | { type: "message/append"; messageId: string; segment: Segment }
+  /** 追加流式文本（text / thinking 段落）。 */
+  | { type: "message/delta"; messageId: string; segmentId: string; delta: string }
+  /** 整体替换某个段落（工具状态变化、审批结果等）。 */
+  | { type: "message/segment"; messageId: string; segment: Segment }
+  /** 会话列表（历史抽屉）。 */
+  | { type: "sessions"; sessions: SessionSummaryView[] }
+  /** 模型目录。 */
+  | { type: "models"; groups: ProviderGroupView[]; current?: ModelSelectionView }
+  /** 待办清单。 */
+  | { type: "todos"; todos: TodoView[] }
+  /** 子代理目录（子代理面板）。 */
+  | { type: "subagents/list"; entries: SubagentView[]; parentAvailable: boolean }
+  /** 后台任务清单（任务面板）。 */
+  | { type: "jobs/list"; jobs: JobItemView[] }
+  /** 斜杠命令目录（输入框输入 / 时弹出）。 */
+  | { type: "commands/list"; commands: CommandView[] }
+  /** 文件引用候选（输入框输入 @ 时弹出）。 */
+  | { type: "files/list"; query: string; items: FileRefView[] }
+  /** 设置各命名空间（设置面板）。 */
+  | { type: "settings/describe"; sections: SettingsSectionView[]; writable: boolean }
+  /** 指定子代理的会话内容（复用 message 帧之外的单帧快照）。 */
+  | { type: "subagent/transcript"; id: string; messages: MessageView[] }
+  /** 一次性提示。 */
+  | { type: "toast"; level: "info" | "warn" | "error"; text: string };
+
+export type WebviewToHost =
+  /** webview 加载完成，请求首帧状态。 */
+  | { type: "ready" }
+  /** 发送一条消息。 */
+  | { type: "send"; text: string; attachments: Attachment[] }
+  /** 停止当前生成。 */
+  | { type: "stop" }
+  /** 新建会话。 */
+  | { type: "newSession" }
+  /** 切换到某个会话。 */
+  | { type: "openSession"; sessionId: string }
+  /** 请求会话列表。 */
+  | { type: "listSessions" }
+  /** 加载更早的历史。 */
+  | { type: "loadMore" }
+  /** 切换模型 / 思考深度。 */
+  | { type: "setModel"; provider: string; model: string; reasoningEffort?: string }
+  /** 切换权限模式。 */
+  | { type: "setPermission"; permission: string }
+  /** 审批工具调用。 */
+  | { type: "answerApproval"; requestId: string; approved: boolean; always?: boolean }
+  /** 回答模型提问。 */
+  | { type: "answerQuestion"; requestId: string; answers: { id: string; selected: string[]; custom?: string }[] }
+  /** 选择文件 / 文件夹 / 图片加入上下文。 */
+  | { type: "addFiles" }
+  | { type: "addImages" }
+  /** @ 提及选中的文件 / 目录，作为附件加入。 */
+  | { type: "addMention"; path: string; kind: "file" | "directory" }
+  | { type: "removeAttachment"; id: string }
+  /** 更新草稿（宿主侧保留，重载后不丢）。 */
+  | { type: "setDraft"; text: string }
+  /** 在编辑器中打开文件。 */
+  | { type: "openFile"; path: string; diff?: boolean }
+  /** 在编辑器区打开一个独立的聊天面板。 */
+  | { type: "openInEditor" }
+  /** 把代码块内容插入当前编辑器。 */
+  | { type: "insertText"; text: string }
+  /** 复制到剪贴板（webview 里 navigator.clipboard 受限，交给宿主）。 */
+  | { type: "copy"; text: string }
+  | { type: "showLogs" }
+  | { type: "restartServer" }
+  | { type: "openSettings" }
+  /** 打开子代理面板（列出当前会话的子代理）。 */
+  | { type: "listSubagents" }
+  /** 查看某个子代理的对话记录。 */
+  | { type: "openSubagent"; id: string }
+  /** 请求后台任务清单。 */
+  | { type: "listJobs" }
+  /** 请求斜杠命令目录。 */
+  | { type: "listCommands" }
+  /** 查询文件引用候选（@ 提及）。 */
+  | { type: "queryFiles"; query: string }
+  /** 请求设置内容。 */
+  | { type: "describeSettings" }
+  /** 写入一个设置字段。 */
+  | { type: "saveSetting"; ns: string; path: string[]; value: unknown; expectedRevision: number }
+  /** 重置整个命名空间（清除用户层覆盖）。 */
+  | { type: "resetSettings"; ns: string }
+  /** 写入密钥字段（走 credentials/set，ref 为环境变量名）。 */
+  | { type: "saveSecret"; ns: string; path: string[]; value: string; ref?: string }
+  /** 打开原生设置（VS Code 侧配置）。 */
+  | { type: "openVscodeSettings" };

@@ -1,0 +1,21 @@
+{
+  "container.title": "DSH Chat",
+  "view.chat.name": "Chat",
+  "cmd.newSession.title": "DSH: New Chat",
+  "cmd.history.title": "DSH: Chat History",
+  "cmd.openInEditor.title": "DSH: Open Chat in Editor",
+  "cmd.stop.title": "DSH: Stop",
+  "cmd.addSelection.title": "DSH: Add Selection to Chat",
+  "cmd.addFile.title": "DSH: Add File to Chat",
+  "cmd.startServer.title": "DSH: Start Server",
+  "cmd.restartServer.title": "DSH: Restart Server",
+  "cmd.showLogs.title": "DSH: Show Logs",
+  "cmd.showDiagnostics.title": "DSH: Show Diagnostics",
+  "config.url": "Base URL of an already running `dsh web` server (e.g. `http://127.0.0.1:3080`). Leave empty to let the extension start and manage its own server.",
+  "config.autoStart": "Start `dsh web` automatically when VS Code starts.",
+  "config.openPanelOnStartup": "Open the chat panel in the editor area when VS Code starts.",
+  "config.command": "Command used to launch the server (falls back to `npx --yes @deepseek-ai/dsh@latest`).",
+  "config.startTimeoutSec": "How long to wait for the server to become ready, in seconds.",
+  "config.defaultReasoningEffort": "Default thinking depth for new sessions (e.g. `off`, `low`, `high`, `max`). Leave empty to use the server default.",
+  "config.showUsageStats": "Show token usage and timing details inside collapsible rows."
+}

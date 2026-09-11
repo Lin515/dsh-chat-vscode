@@ -1,0 +1,11 @@
+node_modules/
+dist/
+build/
+out/
+Releases/
+.tmp/
+.npm-cache/
+*.vsix
+*.log
+.vscode-test/
+.dsh/

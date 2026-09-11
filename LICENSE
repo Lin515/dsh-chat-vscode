@@ -1,0 +1,46 @@
+MIT License
+
+Copyright (c) 2026 Lin
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+Third-party attribution
+-----------------------
+
+This project builds on work by others:
+
+- **DeepSeek Harness** (`@deepseek-ai/dsh`) — MIT, Copyright (c) 2026 DeepSeek.
+  The DSH wire-protocol types in `src/dsh/protocol.ts` are derived from the
+  official packages' TypeScript declarations.
+
+- **DeepSeek-Harness-for-VS-Code** — MIT, Copyright (c) 2025 dsh-chat
+  contributors. This project's DSH transport layer (authentication, the
+  `remote.mux` stream registry, reconnect behaviour, server lifecycle) was
+  written after reading that extension's client, and inherits its structural
+  approach.
+
+- **Continue** — Apache License 2.0, Copyright 2023 Continue Dev, Inc.
+  The user interface follows Continue's visual and interaction design,
+  re-implemented from a written specification. No Continue source code was
+  copied, and no Continue trademarks are used.
+
+See THIRD-PARTY-NOTICES.md for the full itemised disclosure.
+

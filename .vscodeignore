@@ -1,0 +1,22 @@
+# 开发期文件不进发布包
+src/**
+docs/**
+scripts/**
+test/**
+build/**
+.vscode/**
+.npm-cache/**
+.tmp/**
+Releases/**
+node_modules/**
+
+# 构建配置本身也不需要
+esbuild*.mjs
+tsconfig*.json
+package-lock.json
+.gitignore
+
+# 源码映射
+**/*.map
+**/*.ts
+!dist/**
