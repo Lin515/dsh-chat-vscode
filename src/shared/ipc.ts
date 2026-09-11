@@ -53,6 +53,13 @@ export type HostToWebview =
   | { type: "subagent/transcript"; id: string; messages: MessageView[] }
   /** 一次性提示。 */
   | { type: "toast"; level: "info" | "warn" | "error"; text: string }
+  /**
+   * 把一段文本插到输入框的**光标处**（不是替换整个草稿）。
+   *
+   * 用途：选了不能内嵌的路径（目录 / 二进制 / 非 UTF-8 / 过大）时，把
+   * `"C:\path"` 这样带引号的路径放进用户正在写的话里，而不是塞成附件芯片。
+   */
+  | { type: "ui/insertText"; text: string }
   /** 让界面打开某个右侧抽屉（命令面板入口用，如「DSH: 历史对话」）。 */
   | { type: "ui/openPanel"; panel: string };
 
@@ -65,6 +72,8 @@ export type WebviewToHost =
   | { type: "stop" }
   /** 取消一条排队中（尚未发送）的消息。 */
   | { type: "queueRemove"; id: string }
+  /** 把一条排队中（尚未发送）的消息取回输入框重新编辑。 */
+  | { type: "queueEdit"; id: string }
   /** 新建会话。 */
   | { type: "newSession" }
   /** 切换到某个会话。 */
@@ -85,9 +94,8 @@ export type WebviewToHost =
   | { type: "answerApproval"; requestId: string; approved: boolean; always?: boolean }
   /** 回答模型提问。 */
   | { type: "answerQuestion"; requestId: string; answers: { id: string; selected: string[]; custom?: string }[] }
-  /** 选择文件 / 文件夹 / 图片加入上下文。 */
+  /** 选择文件 / 文件夹加入上下文（图片按图片发送，其余按文件内联）。 */
   | { type: "addFiles" }
-  | { type: "addImages" }
   /** @ 提及选中的文件 / 目录，作为附件加入。 */
   | { type: "addMention"; path: string; kind: "file" | "directory" }
   | { type: "removeAttachment"; id: string }
@@ -103,6 +111,8 @@ export type WebviewToHost =
   | { type: "copy"; text: string }
   | { type: "showLogs" }
   | { type: "restartServer" }
+  /** 输入 / 替换外部服务器的访问令牌（服务端要求授权时使用）。 */
+  | { type: "setToken" }
   | { type: "openSettings" }
   /** 打开子代理面板（列出当前会话的子代理）。 */
   | { type: "listSubagents" }

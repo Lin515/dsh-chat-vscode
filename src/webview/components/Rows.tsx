@@ -2,12 +2,14 @@ import { useRef, useState } from "react";
 import { post } from "../bridge";
 import type {
   ApprovalView,
+  DiffLayout,
+  InjectedView,
   QuestionView,
   ToolCallView,
-  UsageView,
 } from "../../shared/chat";
-import { formatDuration, formatTokens, Row, useSelectionFreeze, useStickyBody } from "./primitives";
-import { useTexts, resolveText } from "../texts";
+import { formatDuration, Row, useElapsed, useSelectionFreeze, useStickyBody } from "./primitives";
+import { DiffView } from "./Diff";
+import { fill, useTexts, resolveText } from "../texts";
 import {
   IconAlert,
   IconCheck,
@@ -17,6 +19,7 @@ import {
   IconGlobe,
   IconList,
   IconPencil,
+  IconPlug,
   IconQuestion,
   IconRead,
   IconSearch,
@@ -47,31 +50,48 @@ function useDescribeTool(): (name: string) => { icon: JSX.Element; verb: string 
   };
 }
 
-export function ToolRow({ tool }: { tool: ToolCallView }) {
+export function ToolRow({ tool, diffLayout }: { tool: ToolCallView; diffLayout?: DiffLayout }) {
   // 工具调用默认收起（不自动展开），用户手动开合优先
   const [manual, setManual] = useState<boolean | undefined>(undefined);
   const describeTool = useDescribeTool();
+  const texts = useTexts();
   const open = manual ?? false;
   const { icon, verb } = describeTool(tool.name);
   const bodyRef = useRef<HTMLDivElement>(null);
-  // 展开且有结果时 body 区贴住最新内容：超出出现滚动条就自动滚到最新一行
-  useStickyBody(bodyRef, open && Boolean(tool.output));
+  const running = tool.status === "running" || tool.status === "pending";
+  // 运行中：每秒跳一次的实时耗时（协议没有工具进度事件，这是「还在跑」的唯一活证据）
+  const elapsed = useElapsed(tool.startedAt ?? tool.endedAt, running);
+  // 编辑类工具：结构化 diff（结果里的 hunk，或结果未回时参数推导的预览）
+  const diff = tool.diff?.filter((hunk) => hunk.lines.length > 0);
+  const hasDiff = Boolean(diff?.length);
+  // 出错时结果文本（失败原因）比 diff 更有用，两者都显示
+  const showOutput = Boolean(tool.output) && (!hasDiff || tool.status === "error");
+  // 运行中还没有结果，但展开区仍有东西可看：实时耗时 +（认得出的话）完整命令。
+  // 一律可展开——任何正在跑的节点都该能点开确认「它还活着」，这正是长任务的需要。
+  const runningBody = running;
+  // 展开且有内容时 body 区贴住最新内容：超出出现滚动条就自动滚到最新一行
+  useStickyBody(bodyRef, open && (hasDiff || showOutput));
   // 结果行仍可能被后续更新刷新；用户在其中划选时冻结渲染，保住选区
   const shownOutput = useSelectionFreeze(bodyRef, tool.output ?? "");
-  const tone = tool.status === "running" || tool.status === "pending"
-    ? "running"
-    : tool.status === "error"
-      ? "error"
-      : "ok";
+  const tone = running ? "running" : tool.status === "error" ? "error" : "ok";
 
   const meta =
-    tool.endedAt && tool.startedAt ? formatDuration(tool.endedAt - tool.startedAt) : undefined;
+    tool.endedAt && tool.startedAt
+      ? formatDuration(tool.endedAt - tool.startedAt)
+      : running && tool.startedAt
+        ? formatDuration(elapsed)
+        : undefined;
 
-  // 展开区只显示「解析后的有价值信息」：结果文本（读取出的文本 / 运行输出 /
-  // 搜索结果等）。原始参数（tool.input）不渲染——它只是流式期累积的线格式载荷，
-  // 标题行已表达「做了什么」。没有任何展开内容时该行不可点开。
+  // 展开区只显示「解析后的有价值信息」：编辑类给 diff，其余给结果文本
+  // （读取出的文本 / 运行输出 / 搜索结果等）。原始参数（tool.input）不渲染——
+  // 它只是流式期累积的线格式载荷，标题行已表达「做了什么」。
+  // 运行中也要可展开：长任务（构建）要能看见完整命令与「还在跑」的计时。
   const hasBody =
-    Boolean(tool.output) || (tool.images?.length ?? 0) > 0 || (tool.files?.length ?? 0) > 0;
+    hasDiff ||
+    showOutput ||
+    runningBody ||
+    (tool.images?.length ?? 0) > 0 ||
+    (tool.files?.length ?? 0) > 0;
 
   return (
     <Row
@@ -81,14 +101,34 @@ export function ToolRow({ tool }: { tool: ToolCallView }) {
       // 过长时由 CSS 省略——思考/工具/用量行同一布局
       title={tool.title || verb}
       detail={tool.detail}
+      // 只读了一段时把行号缀在文件名后；该片段不可压缩，窄侧栏也看得见
+      detailSuffix={tool.readLines ? `:${tool.readLines.start}-${tool.readLines.end}` : undefined}
       meta={meta}
       open={open}
       onToggle={() => {
         if (hasBody) setManual(!open);
       }}
     >
-      {tool.output ? (
-        <div ref={bodyRef} className="row-body mono">
+      {runningBody ? (
+        <div className="row-body mono row-running">
+          <div className="row-running-head">
+            {/* 与思考节点同一个发光标记：一眼看出「还在跑」 */}
+            <span className="icon-glow" aria-hidden>
+              <IconDsh size={11} />
+            </span>
+            <span>{fill(texts.toolRunning, { duration: formatDuration(elapsed) })}</span>
+          </div>
+          {tool.command ? <div className="row-running-command">{tool.command}</div> : null}
+          <div className="row-running-hint">{texts.toolRunningHint}</div>
+        </div>
+      ) : null}
+      {hasDiff && diff ? (
+        <div ref={bodyRef} className="row-body diff-body">
+          <DiffView hunks={diff} layout={diffLayout} />
+        </div>
+      ) : null}
+      {showOutput ? (
+        <div ref={hasDiff ? undefined : bodyRef} className="row-body mono">
           {shownOutput}
         </div>
       ) : null}
@@ -162,43 +202,72 @@ export function ThinkingRow({
   );
 }
 
-/** dsh 的用量/耗时信息默认收进折叠行，保持对话面干净。 */
-export function UsageRow({
-  usage,
-  durationMs,
-  firstTokenMs,
-  enabled = true,
-}: {
-  usage?: UsageView;
-  durationMs?: number;
-  firstTokenMs?: number;
-  /** 对应 dshChat.showUsageStats；关掉后这些统计完全不出现。 */
-  enabled?: boolean;
-}) {
+/** 自动载入节点的标签：优先按来源大类，其次按注入形式，最后退回通用文案。 */
+function useDescribeInjected(): (injected: InjectedView) => { label: string; detail?: string } {
+  const texts = useTexts();
+  return (injected) => {
+    const plugin = injected.plugin;
+    const form = injected.form;
+
+    // 系统提示词插件的 snapshot 形态 = 运行时上下文（沙箱/审批策略等），
+    // 与那条完整的系统提示词区分开，标签更准确
+    if (injected.sourceKind === "system") {
+      return { label: texts.injectedSystemPrompt, detail: plugin };
+    }
+    if (plugin === "@deepseek-ai/dsh-system-prompt" && form === "snapshot") {
+      return { label: texts.injectedRuntimeContext, detail: form };
+    }
+    if (injected.sourceKind === "agent-instructions") {
+      return { label: texts.injectedAgentInstructions, detail: form };
+    }
+    if (injected.sourceKind === "skill-catalog") {
+      return { label: texts.injectedSkillCatalog, detail: form };
+    }
+    if (injected.sourceKind === "plugin") {
+      return { label: texts.injectedPlugin, detail: plugin ?? form };
+    }
+    return { label: texts.injectedGeneric, detail: plugin ?? injected.sourceKind };
+  };
+}
+
+/**
+ * 自动载入的提示词节点（系统提示词 / 插件注入 / 项目指令 / 技能目录…）。
+ *
+ * 默认收起：这些内容动辄数千字符（技能目录实测 6.9K），展开全部会把对话淹没。
+ * 收起时给出标签 + 字数 + 首行摘要，既能一眼看出「这轮被喂了什么」，
+ * 又需要点开才占用注意力。
+ */
+export function InjectedRow({ injected }: { injected: InjectedView }) {
   const [open, setOpen] = useState(false);
   const texts = useTexts();
-  if (!enabled) return null;
-  const parts: string[] = [];
-  if (usage?.totalTokens) parts.push(`${formatTokens(usage.totalTokens)} tok`);
-  if (durationMs) parts.push(formatDuration(durationMs));
-  if (!parts.length) return null;
+  const describe = useDescribeInjected();
+  const { label, detail } = describe(injected);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  useStickyBody(bodyRef, open);
+  const shownText = useSelectionFreeze(bodyRef, injected.text);
+  const firstLine = injected.text.split("\n").find((line) => line.trim())?.trim() ?? "";
 
   return (
-    <Row title={texts.usage} detail={parts.join(" · ")} open={open} onToggle={() => setOpen(!open)}>
-      <div className="row-body mono">
-        {[
-          usage?.inputTokens !== undefined ? `${texts.usageInput} ${formatTokens(usage.inputTokens)}` : null,
-          usage?.cachedTokens !== undefined ? `${texts.usageCached} ${formatTokens(usage.cachedTokens)}` : null,
-          usage?.outputTokens !== undefined ? `${texts.usageOutput} ${formatTokens(usage.outputTokens)}` : null,
-          usage?.reasoningTokens !== undefined ? `${texts.usageReasoning} ${formatTokens(usage.reasoningTokens)}` : null,
-          firstTokenMs !== undefined ? `${texts.usageFirstToken} ${formatDuration(firstTokenMs)}` : null,
-          durationMs !== undefined ? `${texts.usageTotal} ${formatDuration(durationMs)}` : null,
-        ]
-          .filter(Boolean)
-          .join("\n")}
+    <Row
+      icon={<IconPlug size={13} />}
+      title={label}
+      detail={detail ?? firstLine}
+      meta={texts.injectedChars(formatChars(injected.text.length))}
+      open={open}
+      onToggle={() => setOpen(!open)}
+    >
+      <div ref={bodyRef} className="row-body mono row-injected">
+        {shownText}
       </div>
     </Row>
   );
+}
+
+/** 字数：上千用 K，与 token 的展示口径分开（这是字符数，不是 token）。 */
+function formatChars(chars: number): string {
+  if (chars >= 10_000) return `${Math.round(chars / 1000)}K`;
+  if (chars >= 1000) return `${(chars / 1000).toFixed(1)}K`;
+  return String(chars);
 }
 
 export function ApprovalCard({ approval }: { approval: ApprovalView }) {

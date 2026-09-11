@@ -1,12 +1,13 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import type { CommandView, FileRefView } from "../../shared/chat";
 import type { AppState } from "../state";
 import { post } from "../bridge";
 import {
+  IconAttach,
   IconChevronDown,
   IconClose,
   IconDsh,
-  IconImage,
+  IconPencil,
   IconShield,
   IconShieldCheck,
   IconShieldFilled,
@@ -14,6 +15,8 @@ import {
   IconStop,
 } from "../icons";
 import { CtxText, Ellipsis, Popover, formatDuration } from "./primitives";
+import { insertAtCaret } from "../insert";
+import { segmentColumns } from "../segment";
 import { fill, useTexts } from "../texts";
 
 /** 权限模式的展示定义：图标固定用盾牌（WebUI 未提供专用图标），文案与 WebUI 对齐。 */
@@ -112,6 +115,36 @@ export function Composer({ state, onDraft }: { state: AppState; onDraft: (text: 
   useEffect(() => {
     if (!state.running) textareaRef.current?.focus();
   }, [state.running]);
+
+  /**
+   * 宿主要求把文本插到光标处（选了不能内嵌的路径：目录 / 二进制 / 非 UTF-8…）。
+   *
+   * 光标位置只有界面知道，所以宿主只下发「插什么」，由这里读 textarea 的
+   * selectionEnd 决定插在哪，插完再把光标挪到插入内容之后。
+   * 按 id 去重：同一个请求只处理一次（重渲染不该重复插入）。
+   */
+  const handledInsertId = useRef(0);
+  useEffect(() => {
+    const request = state.insertRequest;
+    if (!request || request.id === handledInsertId.current) return;
+    handledInsertId.current = request.id;
+
+    const el = textareaRef.current;
+    // 有选区时插在选区之后（不删用户已选中的文字）
+    const caret = el?.selectionEnd ?? state.draft.length;
+    const next = insertAtCaret(state.draft, request.text, caret);
+    onDraft(next.value);
+    post({ type: "setDraft", text: next.value });
+    // 等 React 把新 value 渲染出来再定位光标
+    requestAnimationFrame(() => {
+      const node = textareaRef.current;
+      if (!node) return;
+      node.focus();
+      node.setSelectionRange(next.caret, next.caret);
+    });
+    // 只依赖 id：effect 内读的 state.draft 就是这次请求对应的那一帧
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.insertRequest?.id]);
 
   // 触发词出现时才去拉候选列表，避免每次输入都请求
   useEffect(() => {
@@ -287,10 +320,11 @@ export function Composer({ state, onDraft }: { state: AppState; onDraft: (text: 
           </button>
         </div>
       ) : null}
-      <Lump state={state} waitingApproval={waitingApproval} waitingQuestion={waitingQuestion} />
+      <Lump state={state} />
 
       {/* 运行状态：会话底部一行无边框文字；等待审批/提问时 agent 暂停，
-          不该说「生成中」；队列消息与它并存（不再互相覆盖） */}
+          不该说「生成中」；队列消息与它并存（不再互相覆盖）。
+          提示文案跟着 ESC 的实际行为走：有排队消息时 ESC 还会把队首发出去 */}
       {state.running && !waitingApproval && !waitingQuestion ? (
         <div className="running-line">
           <span className="lump-thinking" aria-hidden>
@@ -298,7 +332,9 @@ export function Composer({ state, onDraft }: { state: AppState; onDraft: (text: 
           </span>
           <span>{texts.running}</span>
           <Ellipsis />
-          <span className="lump-hint">{texts.runningHint}</span>
+          <span className="lump-hint">
+            {state.queueItems.length > 0 ? texts.runningHintQueue : texts.runningHint}
+          </span>
         </div>
       ) : null}
 
@@ -569,7 +605,16 @@ export function Composer({ state, onDraft }: { state: AppState; onDraft: (text: 
                   <>
                     <div className="popover-sep" />
                     <div className="popover-section">{texts.thinkingDepth}</div>
-                    <div className="segment">
+                    {/* 5 档及以上固定分两行（列数由 segmentColumns 决定）：
+                        自然换行会随文案长度折成 4+1 这类不均匀分布，且中英文不一致 */}
+                    <div
+                      className={`segment${segmentColumns(state.model.efforts.length) ? " is-multi-row" : ""}`}
+                      style={
+                        {
+                          "--segment-columns": segmentColumns(state.model.efforts.length) ?? 1,
+                        } as CSSProperties
+                      }
+                    >
                       {state.model.efforts.map((item) => (
                         <button
                           key={item.id}
@@ -593,12 +638,16 @@ export function Composer({ state, onDraft }: { state: AppState; onDraft: (text: 
             </div>
 
             {/* / 与 @ 直接在输入框里打符号即可触发，不再放按钮。
-                图片按钮按当前模型的 acceptsImage 动态显示。 */}
-            {state.model?.acceptsImage ? (
-              <button className="pill" data-mini="hide" title={texts.addImage} onClick={() => post({ type: "addImages" })}>
-                <IconImage size={13} />
-              </button>
-            ) : null}
+                附件按钮是通用入口：图片按图片发送，其余文件等价于 @ 指定，
+                所以它不随模型是否支持图片而隐藏。 */}
+            <button
+              className="pill"
+              data-mini="hide"
+              title={texts.attachFile}
+              onClick={() => post({ type: "addFiles" })}
+            >
+              <IconAttach size={13} />
+            </button>
 
             <span className="spacer" />
 
@@ -631,38 +680,17 @@ export function Composer({ state, onDraft }: { state: AppState; onDraft: (text: 
 }
 
 /**
- * 缺口状态条。按优先级显示当前最该被看到的状态——与 Continue 的 LumpToolbar
- * 同样的思路，但只保留 dsh 真正需要的分支。
+ * 输入框上方的状态条。按优先级显示当前最该被看到的状态——与 Continue 的
+ * LumpToolbar 同样的思路，但只保留 dsh 真正需要的分支。
+ *
+ * 刻意**只**剩「排队消息」一种：审批卡片、提问卡片、待办清单都在上方常驻
+ * 且自带操作按钮，在输入框上方再说一遍只是噪音。
+ *
+ * 注意状态条空着不代表 agent 一定在跑：等待审批/提问时 agent 其实是暂停的，
+ * 那两种情况由 `running-line` 的抑制条件负责，不在这里表达。
  */
-function Lump({
-  state,
-  waitingApproval,
-  waitingQuestion,
-}: {
-  state: AppState;
-  waitingApproval: boolean;
-  waitingQuestion: boolean;
-}) {
+function Lump({ state }: { state: AppState }) {
   const texts = useTexts();
-  // 等待审批/提问优先：那时 agent 暂停等人，不该说「生成中」
-  if (waitingApproval) {
-    return (
-      <div className="lump">
-        <span>{texts.waitingApproval}</span>
-        <span className="spacer" />
-        <span className="lump-hint">{texts.waitingApprovalHint}</span>
-      </div>
-    );
-  }
-  if (waitingQuestion) {
-    return (
-      <div className="lump">
-        <span>{texts.waitingQuestion}</span>
-        <span className="spacer" />
-        <span className="lump-hint">{texts.waitingQuestionHint}</span>
-      </div>
-    );
-  }
   if (state.queueItems.length > 0) {
     // 排队中（尚未发送）的消息逐条列出，每条可单独取消。
     // 不套状态条边框：做成淡化版用户消息气泡，和上方对话同一视觉语言
@@ -673,22 +701,21 @@ function Lump({
           <div className="queue-item" key={item.id}>
             <span className="queue-text">{item.text || texts.queueMediaOnly}</span>
             <button
-              className="queue-cancel"
+              className="queue-action"
+              title={texts.queueEdit}
+              onClick={() => post({ type: "queueEdit", id: item.id })}
+            >
+              <IconPencil size={13} />
+            </button>
+            <button
+              className="queue-action is-danger"
               title={texts.queueRemove}
               onClick={() => post({ type: "queueRemove", id: item.id })}
             >
-              <IconClose size={11} />
+              <IconClose size={13} />
             </button>
           </div>
         ))}
-      </div>
-    );
-  }
-  const todos = state.todos.filter((todo) => todo.status !== "completed").length;
-  if (todos > 0) {
-    return (
-      <div className="lump">
-        <span>{fill(texts.todosLeft, { n: todos })}</span>
       </div>
     );
   }

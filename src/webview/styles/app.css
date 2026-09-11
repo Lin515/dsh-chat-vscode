@@ -447,6 +447,14 @@
   color: var(--muted);
 }
 
+/* 紧跟在 detail 之后、**不参与压缩**的片段（读取节点的 `:100-120`）。
+   detail 从右侧省略，所以这个后缀必须自己撑着——否则窄侧栏里会被一起截掉 */
+.row-detail-suffix {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
 .row-meta {
   flex: 0 0 auto;
   color: var(--muted);
@@ -470,6 +478,163 @@
   font-family: var(--mono);
   font-size: var(--mono-size);
   line-height: 1.5;
+}
+
+/* 运行中的节点展开区：还没有结果，显示「还在跑」的状态、完整命令与计时。
+   刻意不做进度条：协议没有工具进度事件（`tool/result` 只在结束时落地），
+   编一个百分比出来是骗人的。 */
+.row-running {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.row-running-head {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--info);
+}
+
+.row-running-command {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--description);
+}
+
+.row-running-hint {
+  font-family: var(--font-family);
+  font-size: var(--font-size-2xs);
+  color: var(--muted);
+}
+
+/* 自动载入的提示词节点（系统提示词 / 插件注入…）：淡化处理，表明这不是
+   用户或模型写的内容；展开后仍可读，所以只压字号与颜色，不压内容。 */
+.row-injected {
+  max-height: 400px;
+  color: var(--muted);
+  font-size: var(--font-size-2xs);
+}
+
+/* ============================ diff（编辑类节点） ============================
+   展开区渲染结构化 diff：单栏（`+`/`-` 前缀 + 底色）或双栏（左旧右新）。
+   自适应模式由容器宽度决定（见 components/Diff.tsx）。 */
+
+.diff-body {
+  /* 行底色要铺满整行，去掉 row-body 的左右内边距 */
+  padding: 4px 0;
+}
+
+.diff {
+  display: flex;
+  flex-direction: column;
+  font-family: var(--mono);
+  font-size: var(--mono-size);
+  line-height: 1.5;
+}
+
+.diff-hunk + .diff-hunk {
+  margin-top: 6px;
+  border-top: 1px dashed var(--border);
+  padding-top: 4px;
+}
+
+.diff-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px 2px;
+  color: var(--muted);
+  font-size: var(--font-size-2xs);
+}
+
+.diff-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diff-stat {
+  flex: 0 0 auto;
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.diff-stat .diff-add + .diff-del {
+  margin-left: 6px;
+}
+
+.diff-stat .diff-add {
+  color: var(--success);
+}
+
+.diff-stat .diff-del {
+  color: var(--error);
+}
+
+.diff-line,
+.diff-cell {
+  display: flex;
+  align-items: flex-start;
+  padding: 0 8px 0 4px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.diff-sign {
+  flex: 0 0 14px;
+  text-align: center;
+  color: var(--muted);
+  user-select: none;
+}
+
+.diff-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.diff-line.is-add,
+.diff-cell.is-add {
+  background: color-mix(in srgb, var(--success) 15%, transparent);
+}
+
+.diff-line.is-del,
+.diff-cell.is-del {
+  background: color-mix(in srgb, var(--error) 13%, transparent);
+}
+
+.diff-line.is-add .diff-sign {
+  color: var(--success);
+}
+
+.diff-line.is-del .diff-sign {
+  color: var(--error);
+}
+
+/* 双栏：同一处改动的删除行与新增行左右对齐 */
+.diff-pair {
+  display: flex;
+  align-items: stretch;
+}
+
+.diff-pair > .diff-cell {
+  flex: 1 1 50%;
+  min-width: 0;
+}
+
+.diff-pair > .diff-cell + .diff-cell {
+  border-left: 1px solid var(--border);
+}
+
+.diff-cell.is-empty {
+  background: color-mix(in srgb, var(--muted) 10%, transparent);
+}
+
+.diff-more {
+  padding: 2px 8px;
+  color: var(--muted);
+  font-size: var(--font-size-2xs);
 }
 
 .row-body-images {
@@ -496,9 +661,12 @@
   background: var(--muted);
 }
 
+/* 运行中的节点：与思考节点的 `.icon-glow` 用**同一组关键帧**，呼吸节奏一致。
+   小圆点只有 7px，纯透明度变化在长任务里太不显眼，加一层 drop-shadow 才看得出
+   「还在跑」（构建动辄几分钟，这是唯一的活性信号）。 */
 .dot-running {
   background: var(--info);
-  animation: dot-pulse 1.4s ease-in-out infinite;
+  animation: icon-glow 1.6s ease-in-out infinite;
 }
 
 .dot-ok {
@@ -507,16 +675,6 @@
 
 .dot-error {
   background: var(--error);
-}
-
-@keyframes dot-pulse {
-  0%,
-  100% {
-    opacity: 0.35;
-  }
-  50% {
-    opacity: 1;
-  }
 }
 
 /* slow 6s spinner + width-animated ellipsis: Continue's idle rhythm */
@@ -1010,21 +1168,31 @@
   white-space: nowrap;
 }
 
-.queue-cancel {
+/* 队列行的操作按钮：取回编辑 / 取消。默认与文字同色（弱化），悬停才提亮。
+   点击目标做到 ~22px：这两个按钮是队列行的主要操作，15px 太难点中 */
+.queue-action {
   flex: 0 0 auto;
   display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
   border: none;
   background: none;
   cursor: pointer;
   color: var(--muted);
-  padding: 2px;
+  padding: 0;
   border-radius: var(--radius-sm);
   transition: color 0.12s ease, background 0.12s ease;
 }
 
-.queue-cancel:hover {
-  color: var(--error);
+.queue-action:hover {
+  color: var(--fg);
   background: var(--hover);
+}
+
+.queue-action.is-danger:hover {
+  color: var(--error);
 }
 
 /* 1px shell */
@@ -1175,8 +1343,16 @@
   position: absolute;
   bottom: calc(100% + 6px);
   z-index: 20;
-  min-width: 180px;
-  max-width: min(420px, 92vw);
+  /* 宽度两头都要管：
+     - 下限 224px 是为了让思考档位一行放得下 4 个（Off/Low/High/Max，
+       中文字面下原来 180px 会折成 3+1）；
+     - 上限里的 `100vw - 76px` 是防窄侧栏裁切：弹层相对触发按钮右展，而
+       按钮本身距左边缘约 66px（权限图标 + 模型胶囊），所以可用宽度不是
+       100vw 而是 100vw 减掉这段偏移。少了这个钳制，窄到 ~290px 时弹层
+       会溢出到视口外被裁掉。
+     76 = 触发按钮左侧偏移(~66) + 一点余量，两者都随主题字体略变，取宽不吃亏。 */
+  min-width: min(224px, calc(100vw - 76px));
+  max-width: min(420px, calc(100vw - 76px));
   max-height: 330px;
   overflow-y: auto;
   padding: 0.2rem;
@@ -1252,8 +1428,11 @@
 }
 
 /* segmented control (reasoning effort)
-   条目少时要铺满整条，条目多时也允许换行而不挤压文字：
-   flex:1 1 0 + min-width 让两个档位也能平分宽度。 */
+   档位要**一行放下**：实测常见档位是 4 个（Off/Low/High/Max，deepseek-flash）
+   或 3 个（Off/High/Max），5 个以上罕见。原来每个条目带 `min-width: 3.75em`，
+   4 个就超出弹层默认的 180px 宽度、被折成 3+1 两行（末行只放一个，很难看）。
+   这里去掉最小宽度、让它按内容分配，并把弹层加宽（见 .popover 的 min-width）
+   以容纳最长的中文档位名。文字仍不换行：真放不下时宁可换行也不要挤成两个字一行。 */
 .segment {
   display: flex;
   flex-wrap: wrap;
@@ -1265,14 +1444,27 @@
 }
 
 .segment-item {
-  flex: 1 1 0;
-  min-width: 3.75em;
+  flex: 1 1 auto;
+  min-width: 0;
   padding: 3px 8px;
   border-radius: 4px;
   font-size: var(--font-size-2xs);
   color: var(--description);
   text-align: center;
   white-space: nowrap;
+  /* 档位名超长时省略而不是撑破按钮（grid 列宽固定，溢出会压到相邻档位） */
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 5 档及以上：固定每行 --segment-columns 个，强制分两行（5 → 3+2，6 → 3+3）。
+   用 grid 而不是 flex-wrap：flex 的每行会各自分配剩余宽度，5 档时第二行两个
+   被拉得比第一行三个宽（实测 103px vs 68px），列对不齐；grid 固定列宽后
+   第二行的两个与第一行同宽，缺口留在右侧，看起来才是整齐的矩阵。
+   `minmax(0, 1fr)` 是让长文案能收缩而不是把列撑破。 */
+.segment.is-multi-row {
+  display: grid;
+  grid-template-columns: repeat(var(--segment-columns, 2), minmax(0, 1fr));
 }
 
 .segment-item:hover {
@@ -1468,6 +1660,22 @@
 
 .conn-bar .spacer {
   flex: 1 1 auto;
+}
+
+/* 一次性轻提示条（复制成功、设置已重置、图片被跳过…）：与连接条同位置，
+   自动消失，不占常驻布局 */
+.notice-bar {
+  display: flex;
+  align-items: center;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--hover);
+}
+
+.notice-bar .notice {
+  padding: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 /* anchored wrapper so popovers position relative to their trigger */

@@ -8,7 +8,13 @@
 
 export type ConnectionState = "connecting" | "ready" | "error";
 
-export type AttachmentKind = "file" | "folder" | "image" | "selection" | "context";
+/**
+ * 附件种类。
+ *
+ * 没有 `folder`：目录的内容无法内嵌，按「不能内嵌」处理——其带引号的路径直接
+ * 插进输入框，而不是变成一个芯片（见 `dsh/attachments.classifyPath`）。
+ */
+export type AttachmentKind = "file" | "image" | "selection" | "context";
 
 export interface Attachment {
   id: string;
@@ -27,6 +33,33 @@ export interface Attachment {
 
 export type ToolStatus = "pending" | "running" | "ok" | "error";
 
+/** diff 的一行：上下文 / 新增 / 删除。 */
+export interface DiffLineView {
+  kind: "context" | "add" | "del";
+  text: string;
+}
+
+/**
+ * 一个 diff 段。
+ *
+ * 来源有两条：服务端 `tool/result.meta.diffs` 的 hunk（edit/write 工具自带
+ * 3 行上下文的成对文本），或工具参数里的 `old_string` / `new_string`
+ * （结果还没回来时先给个预览）。两者都归一成这里的行序列。
+ */
+export interface DiffHunkView {
+  /** 文件路径（工具参数里的原样字符串）。 */
+  path?: string;
+  lines: DiffLineView[];
+  /** 新增 / 删除的行数，界面用 `+N −M` 展示。 */
+  added: number;
+  removed: number;
+  /** 行数超上限被截断（界面给一行省略提示）。 */
+  truncated?: boolean;
+}
+
+/** 编辑类节点的 diff 排版：自适应（按容器宽度）/ 固定单栏 / 固定双栏。 */
+export type DiffLayout = "auto" | "unified" | "split";
+
 export interface ApprovalView {
   requestId: string;
   toolName: string;
@@ -44,13 +77,36 @@ export interface ToolCallView {
   name: string;
   /** 人类可读的一行标题，如「读取 package.json」。 */
   title: string;
-  /** 次要说明（路径、命令摘要）。 */
+  /** 次要说明（路径、命令摘要），单行标题里过长会被省略。 */
   detail?: string;
+  /**
+   * 完整、未截断的「在做什么」（命令原文 / 完整路径 / 查询串）。
+   *
+   * `detail` 会被标题的省略号截掉，构建这类长命令看不全；展开区用它显示原文。
+   */
+  command?: string;
+  /**
+   * 读取类工具本次读到的行号区间。
+   *
+   * 只读了一段时界面把它缀在文件名后（`…/controller.ts:100-120`），
+   * 让用户一眼看出模型是看了整个文件还是只扫了一段。整篇读取时不下发。
+   *
+   * 刻意与 `detail` 分开、而不是拼进字符串：`detail` 是从**右侧**省略的，
+   * 把行号拼在末尾会在窄侧栏被截掉，正好丢掉这个信息。
+   */
+  readLines?: { start: number; end: number };
   status: ToolStatus;
   /** 原始参数载荷（流式期逐 delta 累积，durable 事件到达后重新摘要）。界面不直接渲染。 */
   input?: string;
   /** 结果文本。 */
   output?: string;
+  /**
+   * 编辑类工具的结构化 diff（edit / str_replace / write）。
+   *
+   * 展开时优先渲染它而不是 `output` 的确认句；结果带 `meta.diffs` 时以它为准，
+   * 否则用参数里的 old/new 文本兜底（运行中也就能看到将要改什么）。
+   */
+  diff?: DiffHunkView[];
   /** 图片结果（data URL）。 */
   images?: string[];
   /** 该工具产生的可交付文件。 */
@@ -82,12 +138,33 @@ export interface QuestionView {
   answers?: Record<string, string[]>;
 }
 
+/**
+ * 一条**自动载入**的提示词内容（系统提示词 / 插件注入 / 项目指令 / 技能目录…）。
+ *
+ * 这些不是用户输入，但确实进入了模型上下文：服务端把它们作为
+ * `system/message` 事件，或作为 `source.kind !== 'user'` 的 `user/message`
+ * 事件发出来。此前全部被丢弃，用户看不到「模型到底被喂了什么」。
+ *
+ * 只带语言中立字段，标签由界面按当前语言渲染。
+ */
+export interface InjectedView {
+  /** 来源大类：`system`（系统提示词）/ `plugin` / `agent-instructions` / `skill-catalog` / 其它。 */
+  sourceKind: string;
+  /** 具体插件名（`source.plugin`），如 `dsh-mcp-manager`。 */
+  plugin?: string;
+  /** 注入形式（`source.form`）：`instructions` / `snapshot` / `catalog` / `recall` / `mcp-status`… */
+  form?: string;
+  /** 内容文本。 */
+  text: string;
+}
+
 export type Segment =
   | { kind: "text"; id: string; text: string; streaming?: boolean }
   | { kind: "thinking"; id: string; text: string; streaming?: boolean; durationMs?: number; open?: boolean }
   | { kind: "tool"; id: string; tool: ToolCallView }
   | { kind: "approval"; id: string; approval: ApprovalView }
   | { kind: "question"; id: string; question: QuestionView }
+  | { kind: "injected"; id: string; injected: InjectedView }
   | { kind: "notice"; id: string; level: "info" | "warn" | "error"; text: string };
 
 export interface UsageView {
@@ -131,9 +208,8 @@ export interface MessageView {
   attachments?: Attachment[];
   streaming?: boolean;
   model?: string;
+  /** 本 step 的用量：只用于上下文占用条与输出速度（tok/s），不再单独成行展示。 */
   usage?: UsageView;
-  durationMs?: number;
-  firstTokenMs?: number;
   deliverables?: DeliverableView[];
   /** 出错时的提示文本。 */
   error?: string;
@@ -223,10 +299,17 @@ export interface JobItemView {
  * 不算用户消息，宿主不下发。
  */
 export interface QueuedMessageView {
-  /** 线格式消息 id；取消时经 session/updateQueue 带回。 */
+  /** 线格式消息 id；取消 / 重新编辑时经 session/updateQueue 带回。 */
   id: string;
-  /** 消息文本内容（各 text 块按原顺序拼接）。 */
+  /**
+   * 提交这批内容时客户端铸造的 requestId（`SessionQueuedItem.rpcId`）。
+   * 用于把队列项对回用户原始输入——线上正文含内联的文件上下文，不是原样。
+   */
+  rpcId?: string;
+  /** 消息文本内容：优先用户原始输入，取不到才退回线上文本。 */
   text: string;
+  /** 已恢复的附件数量（有原始记录时）。 */
+  attachments?: number;
   /** 是否携带图片/文件等附件（文本为空时界面用「附件」占位）。 */
   hasMedia?: boolean;
   /** `queued`（排队等待）或 `steering`（中途插话）。 */
@@ -292,6 +375,8 @@ export interface ChatState {
   connection: ConnectionState;
   /** 连接失败/服务器异常时的说明文本。 */
   connectionDetail?: string;
+  /** 外部服务器要求授权且尚未拿到有效令牌：界面显示「输入令牌」入口。 */
+  needsToken?: boolean;
   serverUrl?: string;
   /** VS Code 的显示语言标识（如 zh-cn、en），界面据此选中英文案。 */
   locale?: string;
@@ -299,8 +384,8 @@ export interface ChatState {
   messages: MessageView[];
   /** 当前会话是否正在生成。 */
   running: boolean;
-  /** 是否在折叠行里显示 token 用量与耗时（对应 dshChat.showUsageStats）。 */
-  showUsageStats?: boolean;
+  /** 编辑类节点的 diff 排版（对应 dshChat.diffLayout）。 */
+  diffLayout?: DiffLayout;
   /** 排队中（尚未发送）的消息列表，来自 session/control 的 queue 帧。 */
   queueItems: QueuedMessageView[];
   attachments: Attachment[];
@@ -317,8 +402,20 @@ export interface ChatState {
   jobs: JobItemView[];
   /** 历史是否还有更早的内容可加载。 */
   hasMoreHistory?: boolean;
-  /** 最近的错误提示（一次性，展示后清除）。 */
-  error?: string;
+  /**
+   * 一次性轻提示（复制成功、设置已保存、图片被跳过…）。
+   *
+   * `id` 每次自增：同样的文案连续来两次（例如连点两次复制）也要重新计时，
+   * 否则第二次会因为没有状态变化而不刷新。
+   */
+  notice?: { id: number; level: "info" | "warn" | "error"; text: string };
+  /**
+   * 待插入输入框光标处的文本（宿主 → 界面的单向指令）。
+   *
+   * `id` 递增让界面能识别「这是新的一次插入」；界面按 id 去重后自行把文本
+   * 插进光标位置并移动光标——宿主不知道也无需知道光标在哪。
+   */
+  insertRequest?: { id: number; text: string };
   /**
    * 当前生效的上下文窗口（来自 `request/context` 事件，与当前 model/selection 对齐）。
    * 占用条只显示百分比，明细放 hover。

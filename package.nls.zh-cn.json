@@ -7,8 +7,11 @@
   "cmd.stop.title": "DSH: 停止",
   "cmd.addSelection.title": "DSH: 添加选中代码到对话",
   "cmd.addFile.title": "DSH: 添加文件到对话",
+  "cmd.addFolder.title": "DSH: 添加文件夹到对话",
   "cmd.startServer.title": "DSH: 启动服务器",
   "cmd.restartServer.title": "DSH: 重启服务器",
+  "cmd.setToken.title": "DSH: 输入访问令牌",
+  "cmd.cleanupProcesses.title": "DSH: 清理残留进程",
   "cmd.showLogs.title": "DSH: 显示日志",
   "cmd.showDiagnostics.title": "DSH: 显示诊断信息",
   "config.url": "已运行的 `dsh web` 服务地址（例如 `http://127.0.0.1:3080`）。留空则由扩展自行启动并管理服务器。",
@@ -16,6 +19,8 @@
   "config.openPanelOnStartup": "VS Code 启动时在编辑器区打开对话面板。",
   "config.command": "用于启动服务器的命令（找不到时回退到 `npx --yes @deepseek-ai/dsh@latest`）。",
   "config.startTimeoutSec": "等待服务器就绪的最长秒数。",
-  "config.defaultReasoningEffort": "新会话的默认思考深度（如 `off`、`low`、`high`、`max`）。留空则使用服务器默认值。",
-  "config.showUsageStats": "在可折叠的行内显示 token 用量与耗时信息。"
+  "config.diffLayout": "编辑类工具调用的改动怎么排版：单栏还是左右对照。",
+  "config.diffLayout.auto": "自适应：窄面板单栏，宽面板双栏。",
+  "config.diffLayout.unified": "固定单栏。",
+  "config.diffLayout.split": "固定双栏。"
 }

@@ -3,6 +3,7 @@ import { closeSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { clearLease, updateLease, writeLease } from "./processRegistry";
 
 /**
  * 服务器连接信息。
@@ -50,6 +51,8 @@ export class ServerManager {
       readonly command: string;
       /** 等待就绪的最长毫秒数。 */
       readonly startTimeoutMs: number;
+      /** 当前工作区（写进进程租约，同机多窗口时便于分辨）。 */
+      readonly workspace?: string;
       readonly log: (line: string) => void;
     },
   ) {}
@@ -71,6 +74,15 @@ export class ServerManager {
   /** 服务器日志的路径（供诊断命令展示）。 */
   get logPath(): string {
     return this.logFile;
+  }
+
+  /**
+   * 用户显式配置的外部服务器地址（`dshChat.url`），未配置时为 undefined。
+   * 外部模式才需要访问令牌，控制器据此决定是否提示输入 token。
+   */
+  get externalUrl(): string | undefined {
+    const url = this.options.url?.trim();
+    return url ? url.replace(/\/+$/, "") : undefined;
   }
 
   /** 读取服务器日志尾部，出错时附在提示里。 */
@@ -128,6 +140,7 @@ export class ServerManager {
     this.child = undefined;
     if (child?.pid !== undefined) {
       this.options.log(`[server] 停止子进程 pid=${child.pid}`);
+      clearLease(child.pid);
       if (process.platform === "win32") {
         // 直接 kill 只结束 cmd 外壳，taskkill /T 才能带走整棵进程树
         try {
@@ -165,6 +178,20 @@ export class ServerManager {
       closeSync(fd);
     }
     this.child = child;
+    // 进程租约：VS Code 非正常退出（崩溃/强杀）时，下次激活靠它认出并清理残留
+    if (child.pid !== undefined) {
+      const recorded = writeLease({
+        serverPid: child.pid,
+        hostPid: process.pid,
+        workspace: this.options.workspace,
+        command: this.options.command,
+        startedAt: Date.now(),
+      });
+      if (!recorded) {
+        // 不致命，但要说清楚：这台机器上残留进程将无法被自动识别
+        this.options.log("[server] 进程租约写入失败，残留进程检测对本进程不可用");
+      }
+    }
 
     let exitInfo: string | undefined;
     child.on("error", (error) => {
@@ -173,6 +200,7 @@ export class ServerManager {
     child.on("exit", (code, signal) => {
       if (this.child !== child) return; // 已被 stop() 主动结束
       this.child = undefined;
+      clearLease(child.pid);
       const detail = `dsh web 进程退出（code=${code ?? "?"} signal=${signal ?? "?"}）`;
       this.options.log(`[server] ${detail}`);
       this.setStatus({ state: "failed", detail });
@@ -187,6 +215,7 @@ export class ServerManager {
         if (ok) {
           const info: ServerInfo = { ...parsed, owned: true };
           this.options.log(`[server] 就绪：${info.baseUrl}`);
+          if (child.pid !== undefined) updateLease(child.pid, { baseUrl: info.baseUrl });
           this.setStatus({ state: "ready", info });
           return info;
         }

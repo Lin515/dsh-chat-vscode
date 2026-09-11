@@ -7,8 +7,11 @@
   "cmd.stop.title": "DSH: Stop",
   "cmd.addSelection.title": "DSH: Add Selection to Chat",
   "cmd.addFile.title": "DSH: Add File to Chat",
+  "cmd.addFolder.title": "DSH: Add Folder to Chat",
   "cmd.startServer.title": "DSH: Start Server",
   "cmd.restartServer.title": "DSH: Restart Server",
+  "cmd.setToken.title": "DSH: Enter Access Token",
+  "cmd.cleanupProcesses.title": "DSH: Clean Up Leftover Processes",
   "cmd.showLogs.title": "DSH: Show Logs",
   "cmd.showDiagnostics.title": "DSH: Show Diagnostics",
   "config.url": "Base URL of an already running `dsh web` server (e.g. `http://127.0.0.1:3080`). Leave empty to let the extension start and manage its own server.",
@@ -16,6 +19,8 @@
   "config.openPanelOnStartup": "Open the chat panel in the editor area when VS Code starts.",
   "config.command": "Command used to launch the server (falls back to `npx --yes @deepseek-ai/dsh@latest`).",
   "config.startTimeoutSec": "How long to wait for the server to become ready, in seconds.",
-  "config.defaultReasoningEffort": "Default thinking depth for new sessions (e.g. `off`, `low`, `high`, `max`). Leave empty to use the server default.",
-  "config.showUsageStats": "Show token usage and timing details inside collapsible rows."
+  "config.diffLayout": "How edit tool calls render their change: single column or side-by-side.",
+  "config.diffLayout.auto": "Adaptive: single column in a narrow panel, side-by-side when wide.",
+  "config.diffLayout.unified": "Always single column.",
+  "config.diffLayout.split": "Always side-by-side."
 }

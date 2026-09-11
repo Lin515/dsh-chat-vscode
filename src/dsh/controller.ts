@@ -2,10 +2,12 @@ import { randomUUID } from "node:crypto";
 import { readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join, relative } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import * as vscode from "vscode";
 import type {
   Attachment,
   ChatState,
+  DiffLayout,
   JobItemView,
   ModelSelectionView,
   ProviderGroupView,
@@ -16,10 +18,45 @@ import type {
 } from "../shared/chat";
 import type { HostToWebview, WebviewToHost } from "../shared/ipc";
 import { SessionAdapter } from "./adapter";
+import { classifyPath, INLINE_TEXT_MAX_BYTES, formatPathList, isDirectoryPath, isImagePath } from "./attachments";
+import { decodeTextFile, notInlinedNote } from "./textFile";
 import { DshApiError, DshAuthError, DshClient, type ConnectionState, type SessionSummaryWire } from "./client";
 import type { RemoteEventFrame, RemoteEventWaterfall, SessionControlFrame } from "./protocol";
-import { ServerManager, type ServerStatus } from "./serverManager";
+import { ServerManager, type ServerInfo, type ServerStatus } from "./serverManager";
+import { queueItems, type QueueOrigin } from "./queueView";
 import { buildSettingsSection } from "./settingsSchema";
+
+/**
+ * SecretStorage 里存「外部服务器会话 cookie」的 key 前缀。
+ *
+ * 存 cookie 而不是启动令牌，是因为二者的生命周期完全不同（实测见
+ * `scripts/cookieSurvivesRestart.ts`）：
+ * - 启动令牌是 `randomBytes(32)` 按进程生成的，**每次 `dsh web` 启动都会刷新**，
+ *   存下来下次必然失效；
+ * - cookie 的签名密钥存在服务端凭据库里（`client-connection.browser-session`，
+ *   跨重启不变，`cookieMaxAgeDays` 默认 30 天），cookie 只绑定 authority 与有效期，
+ *   所以同一个地址的服务器**重启后 cookie 依然有效**。
+ *
+ * 按 baseUrl 分键：不同地址的服务器各有各的会话。
+ */
+const SESSION_SECRET_PREFIX = "dshChat.session.";
+
+/** 早期版本把启动令牌存进了 SecretStorage；存它没有意义，激活时清掉。 */
+const LEGACY_TOKEN_SECRET = "dshChat.externalAccessToken";
+
+function sessionSecretKey(baseUrl: string): string {
+  return `${SESSION_SECRET_PREFIX}${baseUrl}`;
+}
+
+/** 提交记录（用于队列「重新编辑」还原原文）的保留时长与条数上限。 */
+const SUBMISSION_TTL_MS = 30 * 60 * 1000;
+const MAX_SUBMISSIONS = 50;
+
+/** 读取编辑节点 diff 的排版设置（auto / unified / split，缺省自适应）。 */
+function readDiffLayout(): DiffLayout {
+  const value = vscode.workspace.getConfiguration("dshChat").get<string>("diffLayout");
+  return value === "unified" || value === "split" ? value : "auto";
+}
 
 /** 服务器 → webview 的会话内容总控。 */
 export class ChatController implements vscode.Disposable {
@@ -58,12 +95,28 @@ export class ChatController implements vscode.Disposable {
   private subagents: SubagentView[] = [];
   private jobs: JobItemView[] = [];
   private queueItems: QueuedMessageView[] = [];
+  /**
+   * 已提交但可能还排在队列里的消息：requestId → 用户当时真正输入的内容。
+   *
+   * 为什么不能直接用队列回显：提交给服务端的正文里已经把文件/目录上下文
+   * 内联进去了（见 `buildContextText`），图片则是独立的内容块。用回显文本
+   * 「重新编辑」会把整段内联上下文倒回输入框。这里按 requestId 存原文，
+   * 队列帧带回 `rpcId` 时就能对回去。
+   */
+  private readonly submissions = new Map<
+    string,
+    { text: string; attachments: Attachment[]; content: unknown[]; at: number }
+  >();
+  /** 队列项 id → 它的原始输入（每次队列帧到达时按 rpcId 重建）。 */
+  private readonly queueOrigin = new Map<string, QueueOrigin>();
   /** 上下文构成与会话统计（投影值），存下来供首帧快照使用。 */
   private contextBreakdown: ChatState["contextBreakdown"];
   private sessionStats: ChatState["sessionStats"];
   private goal: ChatState["goal"];
   private connection: ConnectionState | "error" = "connecting";
   private connectionDetail: string | undefined;
+  /** 上次连接因缺少/拒绝令牌失败：界面据此给出「输入令牌」入口。 */
+  private needsToken = false;
   private disposed = false;
 
   private readonly listeners = new Set<(frame: HostToWebview) => void>();
@@ -72,8 +125,12 @@ export class ChatController implements vscode.Disposable {
     private readonly server: ServerManager,
     private readonly log: (line: string) => void,
     private readonly state: vscode.Memento,
+    /** 外部服务器会话 cookie 的存放处（SecretStorage，不落明文配置）。 */
+    private readonly secrets: vscode.SecretStorage,
   ) {
     this.deletedSessionIds = new Set(this.state.get<string[]>("deletedSessionIds") ?? []);
+    // 早期版本存过启动令牌；令牌每次启动都会刷新，留着只会误导，直接清掉
+    void this.secrets.delete(LEGACY_TOKEN_SECRET);
   }
 
   // ---------- 订阅与广播 ----------
@@ -84,6 +141,11 @@ export class ChatController implements vscode.Disposable {
   }
 
   private emit(frame: HostToWebview): void {
+    // 顺带把「是否正在生成」同步到控制器自己：宿主状态（首帧快照、ESC 处理）
+    // 依赖它，而 turn/start 与 turn/end 只由适配器发出 patch
+    if (frame.type === "patch" && typeof frame.patch.running === "boolean") {
+      this.running = frame.patch.running;
+    }
     for (const listener of this.listeners) listener(frame);
   }
 
@@ -115,9 +177,12 @@ export class ChatController implements vscode.Disposable {
     return {
       connection: this.connection === "error" ? "error" : this.connection === "connected" ? "ready" : "connecting",
       connectionDetail: this.connectionDetail,
+      /** 外部服务器缺令牌：界面给「输入令牌」按钮。 */
+      needsToken: this.needsToken || undefined,
       serverUrl: this.client?.baseUrl,
       locale: vscode.env.language,
-      showUsageStats: vscode.workspace.getConfiguration("dshChat").get<boolean>("showUsageStats") ?? true,
+      /** 编辑类节点的 diff 排版（auto / unified / split）。 */
+      diffLayout: readDiffLayout(),
       session: this.sessions.find((session) => session.id === this.currentSessionId),
       messages: this.adapter?.snapshotMessages() ?? [],
       running: this.running,
@@ -148,8 +213,7 @@ export class ChatController implements vscode.Disposable {
     this.setConnection("connecting");
     try {
       const info = await this.server.ensure();
-      const client = new DshClient(info.baseUrl, info.token, this.log);
-      await client.authenticate();
+      const client = info.owned ? await this.openOwnedClient(info) : await this.openExternalClient(info);
       client.onDidChangeState((state) => {
         this.setConnection(state === "connected" ? "connected" : state === "connecting" ? "connecting" : "error", state === "disconnected" ? "与服务器的连接已断开，正在重连…" : undefined);
         if (state === "connected") void this.onConnected();
@@ -161,10 +225,147 @@ export class ChatController implements vscode.Disposable {
       this.setConnection("connected");
       if (!this.currentSessionId) await this.newSession();
     } catch (error) {
+      // 外部服务器要求授权：记下标记，界面显示「输入令牌」入口
+      if (error instanceof DshAuthError && this.server.externalUrl) this.setNeedsToken(true);
       const detail = this.describeError(error);
       this.log(`[connect] 失败：${detail}`);
       this.setConnection("error", detail);
     }
+  }
+
+  /** 自管服务器：启动令牌来自子进程日志，认证失败只能如实报错。 */
+  private async openOwnedClient(info: ServerInfo): Promise<DshClient> {
+    const client = new DshClient(info.baseUrl, info.token, this.log);
+    await client.authenticate();
+    return client;
+  }
+
+  /**
+   * 外部服务器（`dshChat.url`）：可能要求访问令牌。
+   *
+   * 两级尝试：
+   * 1. **上次换来的会话 cookie**（SecretStorage）——服务器重启后依然有效，
+   *    所以重启用户自己的 `dsh web` 不会反复要令牌；cookie 过期或被拒才往下走；
+   * 2. **启动令牌**——用一次换 cookie 并落盘。没带令牌先按「无认证服务器」试，
+   *    401 时再弹输入框；用户取消就记下 needsToken，交给界面给入口。
+   */
+  private async openExternalClient(info: ServerInfo): Promise<DshClient> {
+    const key = sessionSecretKey(info.baseUrl);
+
+    // 1) 复用已保存的会话
+    const saved = await this.secrets.get(key);
+    if (saved) {
+      const client = new DshClient(info.baseUrl, undefined, this.log);
+      client.useSessionCookie(saved);
+      try {
+        await client.listSessions();
+        this.setNeedsToken(false);
+        this.log("[auth] 复用已保存的会话 cookie");
+        return client;
+      } catch (error) {
+        client.dispose();
+        if (!(error instanceof DshAuthError)) throw error;
+        // 会话过期（默认 30 天）或服务端换了 DSH home：删掉，回落到令牌
+        await this.secrets.delete(key);
+        this.log("[auth] 已保存的会话已失效，改用启动令牌");
+      }
+    }
+
+    // 2) 用启动令牌换 cookie；被拒就弹输入框
+    let token: string | undefined;
+    let retry = false;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const client = new DshClient(info.baseUrl, token, this.log);
+      try {
+        await client.authenticate();
+        // authenticate 只换 cookie；真正的鉴权探测要打一次 /api
+        await client.listSessions();
+        const cookie = client.sessionCookie;
+        if (cookie) await this.secrets.store(key, cookie);
+        this.setNeedsToken(false);
+        return client;
+      } catch (error) {
+        client.dispose();
+        if (!(error instanceof DshAuthError)) throw error;
+        const entered = await this.promptForToken(info.baseUrl, retry);
+        if (!entered) {
+          this.setNeedsToken(true);
+          throw error;
+        }
+        token = entered;
+        retry = true;
+      }
+    }
+    throw new DshAuthError("访问令牌连续被拒，请确认用的是 dsh web 最新打印的 URL。");
+  }
+
+  /**
+   * 弹窗要求输入访问令牌。
+   *
+   * `retry` 为真表示上一次输入的没通过（或本地会话已失效）。
+   */
+  private async promptForToken(baseUrl: string, retry: boolean): Promise<string | undefined> {
+    const entered = await vscode.window.showInputBox({
+      title: retry ? "访问令牌无效" : "DSH 服务器需要访问令牌",
+      prompt: retry
+        ? `服务器 ${baseUrl} 拒绝了上一次的令牌。请粘贴启动 dsh web 时输出在 URL 里的 token（?token= 之后那一段）。`
+        : `服务器 ${baseUrl} 要求授权。请粘贴启动 dsh web 时输出在 URL 里的 token（?token= 之后那一段；该令牌每次重启都会刷新，但验证通过后本扩展会记住会话，不必反复输入）。`,
+      placeHolder: "token",
+      password: true,
+      ignoreFocusOut: true,
+      validateInput: (text) => (text.trim() ? undefined : "令牌不能为空"),
+    });
+    return entered?.trim() || undefined;
+  }
+
+  /**
+   * 手动输入 / 替换外部服务器访问令牌（命令面板与连接失败提示条共用）。
+   *
+   * 校验通过后立即换成会话 cookie 落盘，所以这个命令的实际语义是
+   * 「重新建立会话」——用户只需在令牌刷新后输一次。
+   */
+  async setToken(): Promise<void> {
+    const baseUrl = this.server.externalUrl;
+    if (!baseUrl) {
+      void vscode.window.showInformationMessage(
+        "当前没有配置外部 DSH 服务器（dshChat.url）：服务器由扩展自行启动，令牌会自动获取，无需填写。",
+      );
+      return;
+    }
+    const entered = await this.promptForToken(baseUrl, this.needsToken);
+    if (!entered) return;
+
+    const probe = new DshClient(baseUrl, entered, this.log);
+    try {
+      await probe.authenticate();
+      await probe.listSessions();
+      const cookie = probe.sessionCookie;
+      if (cookie) await this.secrets.store(sessionSecretKey(baseUrl), cookie);
+    } catch (error) {
+      this.setNeedsToken(true);
+      void vscode.window.showWarningMessage(`令牌校验失败：${this.describeError(error)}`);
+      return;
+    } finally {
+      probe.dispose();
+    }
+
+    // 已建立的连接带着旧会话，重新走一遍连接流程
+    this.teardownStreams();
+    this.client?.dispose();
+    this.client = undefined;
+    this.connection = "connecting";
+    await this.ensureConnected();
+  }
+
+  private setNeedsToken(needed: boolean): void {
+    if (this.needsToken === needed) return;
+    this.needsToken = needed;
+    this.emit({ type: "patch", patch: { needsToken: needed } });
+  }
+
+  /** 配置里改了 diff 排版：直接推给界面，不必重载 webview。 */
+  refreshDiffLayout(): void {
+    this.emit({ type: "patch", patch: { diffLayout: readDiffLayout() } });
   }
 
   private async onConnected(): Promise<void> {
@@ -189,7 +390,12 @@ export class ChatController implements vscode.Disposable {
   }
 
   private describeError(error: unknown): string {
-    if (error instanceof DshAuthError) return error.message;
+    if (error instanceof DshAuthError) {
+      if (this.server.externalUrl) {
+        return "外部 DSH 服务器需要访问令牌：请点「输入令牌」填入 dsh web 启动时打印的 token（或命令面板「DSH: 输入访问令牌」）。";
+      }
+      return "服务器要求授权，且自动获取的令牌未被接受。请用命令面板「DSH: 重启服务器」重启它。";
+    }
     if (error instanceof DshApiError) return `${error.message}（${error.code}）`;
     return error instanceof Error ? error.message : String(error);
   }
@@ -366,8 +572,6 @@ export class ChatController implements vscode.Disposable {
     try {
       const created = await this.client.createSession(this.workspacePath());
       this.currentSessionId = created.sessionId;
-      this.pendingReasoningEffort =
-        vscode.workspace.getConfiguration("dshChat").get<string>("defaultReasoningEffort") || undefined;
       this.follow(created.sessionId);
       await this.refreshSessions();
       this.clearStickySessionState();
@@ -500,28 +704,6 @@ export class ChatController implements vscode.Disposable {
       acceptsImage: this.acceptsImageFor(used.provider, used.model),
     };
     this.emit({ type: "patch", patch: { model: this.model } });
-    void this.applyPendingEffort();
-  }
-
-  /** 把 `dshChat.defaultReasoningEffort` 应用到当前会话（只做一次）。 */
-  private async applyPendingEffort(): Promise<void> {
-    const wanted = this.pendingReasoningEffort;
-    if (!wanted || !this.client || !this.currentSessionId || !this.model) return;
-    if (this.model.reasoningEffort === wanted) {
-      this.pendingReasoningEffort = undefined;
-      return;
-    }
-    this.pendingReasoningEffort = undefined;
-    const { provider, model } = this.model;
-    try {
-      await this.client.selectModel(this.currentSessionId, provider, model, wanted);
-      if (this.model) {
-        this.model = { ...this.model, reasoningEffort: wanted };
-        this.emit({ type: "patch", patch: { model: this.model } });
-      }
-    } catch (error) {
-      this.log(`[model] 应用默认思考深度失败：${this.describeError(error)}`);
-    }
   }
 
   private teardownStreams(): void {
@@ -606,16 +788,14 @@ export class ChatController implements vscode.Disposable {
         for (const [key, projectionValue] of Object.entries(projections)) {
           this.applyProjection(key, projectionValue);
         }
-        this.queueItems = queueItemsView(value.queues?.[sessionId]);
-        this.emit({ type: "patch", patch: { queueItems: this.queueItems } });
+        this.syncQueue(value.queues?.[sessionId]);
         this.applyJobs(value.jobs?.[sessionId]);
       }
       return;
     }
 
     if (frame.type === "queue" && frame.sessionId === this.currentSessionId) {
-      this.queueItems = queueItemsView(frame.items);
-      this.emit({ type: "patch", patch: { queueItems: this.queueItems } });
+      this.syncQueue(frame.items);
       return;
     }
 
@@ -627,6 +807,24 @@ export class ChatController implements vscode.Disposable {
     if (frame.type === "projection" && frame.sessionId === this.currentSessionId) {
       this.applyProjection(String(frame.key ?? ""), frame.value);
     }
+  }
+
+  /**
+   * 队列帧进来到界面状态：同时重建「队列项 id → 原始输入 / 可重发内容」的索引，
+   * 供「重新编辑」与「ESC 中止并把队首发出去」使用。
+   */
+  private syncQueue(items: unknown[] | undefined): void {
+    const entries = queueItems(items, (rpcId) => this.originFor(rpcId));
+    this.queueOrigin.clear();
+    for (const entry of entries) {
+      this.queueOrigin.set(entry.view.id, {
+        text: entry.view.text,
+        attachments: this.originFor(entry.view.rpcId)?.attachments ?? [],
+        content: entry.content,
+      });
+    }
+    this.queueItems = entries.map((entry) => entry.view);
+    this.emit({ type: "patch", patch: { queueItems: this.queueItems } });
   }
 
   /** 单个投影值 → 界面状态。未知 key 直接忽略（插件没加载 = 能力缺失，不是错误）。 */
@@ -892,8 +1090,6 @@ export class ChatController implements vscode.Disposable {
 
   private pendingApproval: string | undefined;
   private pendingQuestion: string | undefined;
-  /** 新建会话后要套用的默认思考深度（来自 dshChat.defaultReasoningEffort）。 */
-  private pendingReasoningEffort: string | undefined;
   /** 待应用的模型选择：UI 切换模型时只记到这里，下次发送前才真正 selectModel。 */
   private pendingModel: {
     provider: string;
@@ -1030,7 +1226,6 @@ export class ChatController implements vscode.Disposable {
         acceptsImage: this.acceptsImageFor(value.provider, value.model),
       };
       this.emit({ type: "patch", patch: { model: this.model } });
-      void this.applyPendingEffort();
     } catch (error) {
       this.log(`[models] 默认模型读取失败：${this.describeError(error)}`);
     }
@@ -1052,10 +1247,7 @@ export class ChatController implements vscode.Disposable {
         break;
 
       case "stop":
-        if (this.client && this.currentSessionId) {
-          await this.client.cancel(this.currentSessionId);
-          this.emit({ type: "patch", patch: { running: false } });
-        }
+        await this.stopRunning();
         break;
 
       case "queueRemove":
@@ -1065,6 +1257,10 @@ export class ChatController implements vscode.Disposable {
             this.reportError("取消排队消息失败", error);
           });
         }
+        break;
+
+      case "queueEdit":
+        await this.editQueuedMessage(message.id);
         break;
 
       case "newSession":
@@ -1146,32 +1342,12 @@ export class ChatController implements vscode.Disposable {
         await this.pickFiles();
         break;
 
-      case "addImages":
-        // 模型不支持图片输入时拒绝（防御性，正常情况下 UI 已隐藏按钮）
-        if (this.model && this.model.acceptsImage === false) {
-          this.emit({
-            type: "toast",
-            level: "warn",
-            text: `@imageUnsupported:${this.model.label ?? this.model.model}`,
-          });
-          break;
-        }
-        await this.pickImages();
-        break;
-
       case "addMention": {
-        // @ 提及选中的文件/目录：直接作为附件芯片加入（不再弹系统对话框）
-        const key = this.sessionKey();
-        const list = this.attachmentsBySession.get(key) ?? [];
-        if (list.some((item) => item.path === message.path)) break;
-        list.push({
-          id: randomUUID(),
-          kind: message.kind === "directory" ? "folder" : "file",
-          path: message.path,
-          name: this.relativePath(message.path),
-        });
-        this.attachmentsBySession.set(key, list);
-        this.emit({ type: "patch", patch: { attachments: [...list] } });
+        // @ 提及选中的文件/目录：按内容分派（能内嵌的做附件，目录等不能内嵌的
+        // 把带引号路径插回输入框，与本文件里其它入口行为一致）
+        this.applyPaths([
+          { path: message.path, name: this.attachmentName(message.path), directory: message.kind === "directory" },
+        ]);
         break;
       }
 
@@ -1193,7 +1369,7 @@ export class ChatController implements vscode.Disposable {
 
       case "copy":
         await vscode.env.clipboard.writeText(message.text);
-        this.emit({ type: "toast", level: "info", text: "已复制到剪贴板" });
+        this.emit({ type: "toast", level: "info", text: "@copied" });
         break;
 
       case "listSubagents":
@@ -1251,6 +1427,10 @@ export class ChatController implements vscode.Disposable {
         await this.restart();
         break;
 
+      case "setToken":
+        await this.setToken();
+        break;
+
       case "openSettings":
         await vscode.commands.executeCommand("workbench.action.openSettings", "dshChat");
         break;
@@ -1266,7 +1446,8 @@ export class ChatController implements vscode.Disposable {
     if (!this.currentSessionId) return;
 
     const content: unknown[] = [];
-    const contextText = this.buildContextText(attachments);
+    const notInlined: string[] = [];
+    const contextText = this.buildContextText(attachments, notInlined);
     if (contextText) content.push({ type: "text", text: contextText });
     if (text.trim()) content.push({ type: "text", text: text.trim() });
     for (const attachment of attachments) {
@@ -1295,8 +1476,13 @@ export class ChatController implements vscode.Disposable {
       this.drafts.set(key, "");
       this.running = true;
       this.emit({ type: "patch", patch: { attachments: [], draft: "", running: true } });
+      // requestId 由这里铸造：队列帧会把同一个 id 作为 rpcId 带回来，
+      // 「重新编辑」凭它还原成用户当时输入的文本与附件
+      const requestId = randomUUID();
+      this.rememberSubmission(requestId, text.trim(), content, attachments);
       // dsh 自身维护队列：运行中提交即排队（steer 需要显式打断语义，首期不用）
-      await this.client.prompt(this.currentSessionId, content, "queue");
+      await this.client.prompt(this.currentSessionId, content, "queue", requestId);
+      this.warnNotInlined(notInlined);
     } catch (error) {
       this.running = false;
       this.emit({ type: "patch", patch: { running: false } });
@@ -1304,8 +1490,16 @@ export class ChatController implements vscode.Disposable {
     }
   }
 
-  /** 把文件/文件夹附件折叠成上下文文本（不做文件上传，保持简单可靠）。 */
-  private buildContextText(attachments: Attachment[]): string {
+  /**
+   * 把文件/文件夹附件折叠成上下文文本（不做文件上传，保持简单可靠）。
+   *
+   * 二进制/非 UTF-8 的文件**不内联**：按 UTF-8 读它不会报错，只会把非法字节
+   * 静默换成 U+FFFD，于是一段乱码被当成「文件内容」喂给模型。判定口径与 dsh
+   * 自己的 `read` 工具一致（见 dsh/textFile.ts），只把绝对路径交给模型。
+   *
+   * `skipped` 回传没能内联的文件名，供调用方提示用户——否则用户以为模型读到了。
+   */
+  private buildContextText(attachments: Attachment[], skipped: string[]): string {
     const parts: string[] = [];
     for (const attachment of attachments) {
       if (attachment.kind === "selection" && attachment.text) {
@@ -1315,22 +1509,45 @@ export class ChatController implements vscode.Disposable {
       if (attachment.kind === "file" && attachment.path) {
         try {
           const stat = statSync(attachment.path);
-          if (stat.size > 512 * 1024) {
-            parts.push(`文件 ${this.relativePath(attachment.path)} 过大（${Math.round(stat.size / 1024)} KB），未内联。`);
+          if (stat.size > INLINE_TEXT_MAX_BYTES) {
+            parts.push(
+              `文件 ${this.relativePath(attachment.path)} 过大（${Math.round(stat.size / 1024)} KB），未内联。绝对路径：${attachment.path}`,
+            );
+            skipped.push(attachment.name);
             continue;
           }
-          const body = readFileSync(attachment.path, "utf8");
-          parts.push(`文件 ${this.relativePath(attachment.path)} 的内容：\n\`\`\`\n${body}\n\`\`\``);
+          const decoded = decodeTextFile(readFileSync(attachment.path));
+          if (decoded.kind !== "text") {
+            parts.push(
+              notInlinedNote(this.relativePath(attachment.path), attachment.path, decoded.kind, stat.size),
+            );
+            skipped.push(attachment.name);
+            continue;
+          }
+          parts.push(
+            `文件 ${this.relativePath(attachment.path)} 的内容：\n\`\`\`\n${decoded.text}\n\`\`\``,
+          );
         } catch {
           parts.push(`文件路径：${attachment.path}`);
         }
         continue;
       }
-      if (attachment.kind === "folder" && attachment.path) {
-        parts.push(`请关注目录：${this.relativePath(attachment.path)}`);
-      }
     }
     return parts.join("\n\n");
+  }
+
+  /**
+   * 提示用户：有附件没能内联（二进制/非 UTF-8/过大）。
+   *
+   * 这只是**发送时的最后一道防线**：加进来时已经按同一口径判过一轮，能内嵌的才会
+   * 成为附件。走到这里说明文件在「加入」与「发送」之间被改成了二进制或撑过上限，
+   * 属于罕见情形，但静默丢内容比提示一下糟糕得多。
+   */
+  private warnNotInlined(names: string[]): void {
+    if (!names.length) return;
+    const preview = names.slice(0, 3).join("、");
+    const more = names.length > 3 ? ` 等 ${names.length} 个` : "";
+    this.emit({ type: "toast", level: "warn", text: `@attachmentNotInlined:${preview}${more}` });
   }
 
   private relativePath(path: string): string {
@@ -1375,59 +1592,99 @@ export class ChatController implements vscode.Disposable {
   /** 记下 0.1.5 起的参数名，回退成功后更新。 */
   private attachmentsParam: "submittedAttachments" | "images" = "submittedAttachments";
 
+  /**
+   * 通用「添加文件」：一个入口收下任意**文件**，按内容分派。
+   *
+   * - 能内嵌（合法图片 / 合法 UTF-8 文本且不过大）→ 附件，随消息发送；
+   * - 不能内嵌（二进制 / 非 UTF-8 / 过大 / 读不出来）→ 带引号的路径插到输入框光标处。
+   *
+   * 这里**只选文件**，不能同时选目录：VS Code 的 `OpenDialogOptions` 明确写着
+   * 「On Windows and Linux, a file dialog cannot be both a file selector and a
+   * folder selector, so if you set both `canSelectFiles` and `canSelectFolders`
+   * to `true` on these platforms, a folder selector will be shown.」——同时置 true
+   * 会让 Windows/Linux 上**只**弹目录选择器，文件全被过滤掉（这正是之前的 bug）。
+   * 目录改由 `pickFolder`（命令面板 / 资源管理器右键文件夹）负责。
+   *
+   * 刻意不再有「只选图片」的对话框：同一个按钮既能给图片也能给代码/日志，
+   * 由文件本身决定走哪条路，用户不必先想清楚该点哪个按钮。
+   */
   private async pickFiles(): Promise<void> {
     const picked = await vscode.window.showOpenDialog({
       canSelectMany: true,
       canSelectFiles: true,
-      canSelectFolders: true,
+      canSelectFolders: false,
       openLabel: "添加为上下文",
     });
     if (!picked?.length) return;
-    this.mutateAttachments((list) => {
-      for (const uri of picked) {
-        let isDirectory = false;
-        try {
-          isDirectory = statSync(uri.fsPath).isDirectory();
-        } catch {
-          continue;
-        }
-        const attachment: Attachment = {
-          id: randomUUID(),
-          kind: isDirectory ? "folder" : "file",
-          path: uri.fsPath,
-          name: this.relativePath(uri.fsPath),
-        };
-        if (!list.some((a) => a.path === attachment.path)) list.push(attachment);
-      }
-    });
+    this.addPaths(picked.map((uri) => uri.fsPath));
   }
 
-  private async pickImages(): Promise<void> {
+  /** 添加目录（单独入口：与文件选择器在 Windows 上互斥，见 pickFiles 注释）。 */
+  private async pickFolder(): Promise<void> {
     const picked = await vscode.window.showOpenDialog({
       canSelectMany: true,
-      filters: { Images: ["png", "jpg", "jpeg", "webp", "gif"] },
-      openLabel: "添加图片",
+      canSelectFiles: false,
+      canSelectFolders: true,
+      openLabel: "添加目录为上下文",
     });
     if (!picked?.length) return;
-    this.mutateAttachments((list) => {
-      for (const uri of picked) {
-        try {
-          const bytes = readFileSync(uri.fsPath);
-          const ext = uri.fsPath.split(".").pop()?.toLowerCase() ?? "png";
-          const mediaType = ext === "jpg" || ext === "jpeg" ? "image/jpeg" : `image/${ext}`;
-          list.push({
-            id: randomUUID(),
-            kind: "image",
-            name: basename(uri.fsPath),
-            path: uri.fsPath,
-            dataUrl: `data:${mediaType};base64,${bytes.toString("base64")}`,
-            bytes: bytes.length,
-          });
-        } catch (error) {
-          this.log(`[image] 读取失败：${this.describeError(error)}`);
-        }
+    this.addPaths(picked.map((uri) => uri.fsPath));
+  }
+
+  /** 把一批路径交给 `applyPaths` 分派（附件 / 插入路径）。 */
+  private addPaths(paths: string[]): void {
+    this.applyPaths(paths.map((path) => ({ path, name: this.attachmentName(path) })));
+  }
+
+  /**
+   * 把一批路径并入当前会话的输入：**能内嵌的做附件，不能内嵌的把路径插到光标处**。
+   *
+   * 判据见 `attachments.classifyPath`。不能内嵌的（目录 / 二进制 / 非 UTF-8 /
+   * 过大 / 读不出来）不再变成芯片——变成芯片的话，发送时要么被静默读成乱码，
+   * 要么退化成一句「未内联」，用户既看不出原因、也没法直接引用路径。
+   * 直接把带引号的路径放进输入框，用户能看见、能编辑、模型也拿得到。
+   */
+  private applyPaths(items: { path: string; name: string; directory?: boolean }[]): void {
+    const key = this.sessionKey();
+    const list = this.attachmentsBySession.get(key) ?? [];
+    const pathOnly: string[] = [];
+    let unsupportedImages = 0;
+
+    for (const item of items) {
+      // 附件按路径去重（同一张图加两次没有意义）；路径型结果不去重——
+      // 用户每次明确选择都应该在光标处再插一份
+      if (list.some((a) => a.path === item.path)) continue;
+      const outcome = classifyPath({
+        ...item,
+        // 未拿到模型能力时按「支持」处理，与服务端最终校验一致
+        acceptsImage: this.model?.acceptsImage !== false,
+        onError: (message) => this.log(`[attach] ${message}`),
+      });
+      if (outcome.kind === "attachment") {
+        list.push(outcome.attachment);
+        continue;
       }
-    });
+      pathOnly.push(item.path);
+      if (outcome.reason === "image-unsupported") unsupportedImages++;
+    }
+
+    this.attachmentsBySession.set(key, list);
+    this.emit({ type: "patch", patch: { attachments: [...list] } });
+    if (pathOnly.length) {
+      this.emit({ type: "ui/insertText", text: formatPathList(pathOnly) });
+    }
+    if (unsupportedImages > 0) {
+      const model = this.model?.label ?? this.model?.model ?? "";
+      this.emit({ type: "toast", level: "warn", text: `@imagePathsInserted:${unsupportedImages}:${model}` });
+    }
+  }
+
+  /**
+   * 附件的展示名：图片与目录取文件名（芯片里更好读），其余取工作区相对路径。
+   * 三个入口（选文件 / 选目录 / 右键 / `@`）共用，避免各自写一份而走样。
+   */
+  private attachmentName(path: string): string {
+    return isImagePath(path) || isDirectoryPath(path) ? basename(path) : this.relativePath(path);
   }
 
   private removeAttachment(id: string): void {
@@ -1437,6 +1694,233 @@ export class ChatController implements vscode.Disposable {
     });
   }
 
+  /**
+   * 按 requestId 取回用户原始输入，并顺手缓存到 `queueOrigin`（供「重新编辑」）。
+   * 取不到返回 undefined，调用方退回线上文本。
+   */
+  private originFor(rpcId: string | undefined): QueueOrigin | undefined {
+    if (!rpcId) return undefined;
+    const record = this.submissions.get(rpcId);
+    if (!record) return undefined;
+    return { text: record.text, attachments: record.attachments, content: record.content };
+  }
+
+  /**
+   * 记下这次提交的原文、附件与内容块，供队列「重新编辑」还原、
+   * 以及「ESC 中止后把队首重新发出」使用（后者需要原样内容块才能带上图片）。
+   *
+   * 服务端不保证会回 `rpcId`（插件/版本差异），所以这只是尽力而为的记录；
+   * 同时按时间与条数设上限，避免长会话里无限增长。
+   */
+  private rememberSubmission(
+    requestId: string,
+    text: string,
+    content: unknown[],
+    attachments: Attachment[],
+  ): void {
+    const now = Date.now();
+    for (const [key, value] of [...this.submissions]) {
+      if (now - value.at > SUBMISSION_TTL_MS) this.submissions.delete(key);
+    }
+    while (this.submissions.size >= MAX_SUBMISSIONS) {
+      const oldest = this.submissions.keys().next().value;
+      if (oldest === undefined) break;
+      this.submissions.delete(oldest);
+    }
+    this.submissions.set(requestId, {
+      text,
+      attachments: [...attachments],
+      content: [...content],
+      at: now,
+    });
+  }
+
+  /**
+   * 中止当前轮；**队列非空时把队首消息接着发出去**。
+   *
+   * 实测（`scripts/queueContinueProbe.ts`，两轮各 3 次）确定的两个事实：
+   * 1. 只 `cancel` **不会**让队列自动接续——agent 因 abort 抛出而跳出轮循环，
+   *    队列项保留（`cancel` 用 `keepInbox: true`）但不会被消费；
+   * 2. 服务端是否顺带继续**取决于中止时刻落在哪一步**，客户端无法预判；
+   *    若在中止尚未收尾时提交新消息，它会被「abort 后唤醒」机制锁存进
+   *    `next-turn`，于是排在仍留在队列里的消息**之后**（顺序被倒置）。
+   *
+   * 所以做法是：先把**整条队列**摘空（服务端就没有可继续的待办，事实 2 不再成立），
+   * 再中止、等空闲，然后按原顺序重新提交。首条自然成为新一轮，其余在其后排队，
+   * 与正常排队语义一致。任何一步失败都退化为「只中止」，不会丢消息或发两遍。
+   */
+  private async stopRunning(): Promise<void> {
+    if (!this.client || !this.currentSessionId) return;
+    const sessionId = this.currentSessionId;
+
+    const pending = this.queueItems
+      .map((item) => ({ id: item.id, origin: this.queueOrigin.get(item.id) }))
+      .filter((entry): entry is { id: string; origin: QueueOrigin } => Boolean(entry.origin?.content?.length));
+
+    if (!pending.length) {
+      if (this.queueItems.length) {
+        // 有排队消息但拿不到可重发内容（理论上不会发生）：只中止，别把消息弄丢
+        this.emit({ type: "toast", level: "warn", text: "@queueContentLost" });
+      }
+      await this.finishCancelOnly();
+      return;
+    }
+
+    // 1) 摘空队列：避免服务端继续消费，也避免重发后重复
+    const removed: typeof pending = [];
+    for (const entry of pending) {
+      try {
+        await this.client.updateQueueRemove(sessionId, entry.id);
+        removed.push(entry);
+        this.queueOrigin.delete(entry.id);
+      } catch (error) {
+        // 摘不动（可能正好开始执行了）：把已摘的放回队列，退化为纯中止
+        this.reportError("取出排队消息失败，已只中止当前轮", error);
+        await this.requeue(removed);
+        await this.finishCancelOnly();
+        return;
+      }
+    }
+
+    // 2) 中止，并等本轮真正结束
+    await this.cancelTurn();
+    if (!(await this.waitUntilIdle())) {
+      this.reportError("等待当前轮结束超时", new Error("turn did not settle"));
+      await this.requeue(removed);
+      this.emit({ type: "toast", level: "warn", text: "@queueDispatchFailed" });
+      return;
+    }
+
+    // 3) 按原顺序重新提交（首条即是「接着发出去」的那条）
+    await this.resubmit(removed);
+  }
+
+  /** 只中止，并把界面上的「生成中」收掉（服务端迟迟不回时兜底）。 */
+  private async finishCancelOnly(): Promise<void> {
+    await this.cancelTurn();
+    if (!(await this.waitUntilIdle())) {
+      this.emit({ type: "patch", patch: { running: false } });
+    }
+  }
+
+  /** 把一批已摘出的消息按顺序重新提交。失败时剩下的内容放回输入框。 */
+  private async resubmit(entries: { origin: QueueOrigin }[]): Promise<void> {
+    for (let index = 0; index < entries.length; index++) {
+      const { origin } = entries[index];
+      if (!this.client || !this.currentSessionId) return;
+      try {
+        // 必须用新的 requestId：旧 id 已被服务端记为已受理，复用会被当成重试而不插入
+        const requestId = randomUUID();
+        this.rememberSubmission(requestId, origin.text, origin.content ?? [], origin.attachments);
+        if (index === 0) {
+          this.running = true;
+          this.emit({ type: "patch", patch: { running: true } });
+        }
+        await this.client.prompt(this.currentSessionId, origin.content ?? [], "queue", requestId);
+      } catch (error) {
+        this.running = false;
+        this.emit({ type: "patch", patch: { running: false } });
+        this.reportError("发出排队消息失败（内容已放回输入框）", error);
+        this.emit({ type: "toast", level: "warn", text: "@queueDispatchFailed" });
+        // 这条以及后面还没发出的，内容都放回输入框
+        for (const rest of entries.slice(index)) {
+          this.appendDraft(rest.origin.text, rest.origin.attachments);
+        }
+        return;
+      }
+    }
+  }
+
+  /** 把已摘出的消息按顺序放回队列（回滚用）。 */
+  private async requeue(entries: { origin: QueueOrigin }[]): Promise<void> {
+    if (!entries.length) return;
+    await this.resubmit(entries);
+  }
+
+  /**
+   * 中止当前轮。
+   *
+   * 刻意**不**在这里乐观地置 `running: false`：那会骗过下面的 `waitUntilIdle`，
+   * 让我们在本轮真正结束前就重新提交（于是那条消息被排进队列且不会自动接续）。
+   * 界面上的「生成中」由服务端回 `turn/end` 时适配器发的 patch 收掉。
+   */
+  private async cancelTurn(): Promise<void> {
+    if (!this.client || !this.currentSessionId) return;
+    try {
+      await this.client.cancel(this.currentSessionId);
+    } catch (error) {
+      this.reportError("中止失败", error);
+    }
+  }
+
+  /** 轮询等待当前轮结束（`running` 由适配器的 patch 帧同步）；返回是否真的等到了。 */
+  private async waitUntilIdle(timeoutMs = 8_000): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (this.running && Date.now() < deadline) {
+      await delay(80);
+    }
+    return !this.running;
+  }
+
+  /** 把文本与附件追加回输入框（发送失败时的兜底，尽量不丢内容）。 */
+  private appendDraft(text: string, attachments: Attachment[]): void {
+    const key = this.sessionKey();
+    const existing = this.drafts.get(key) ?? "";
+    const next = existing.trim()
+      ? `${existing.replace(/\s+$/, "")}\n${text}`
+      : text;
+    this.drafts.set(key, next);
+    const list = this.attachmentsBySession.get(key) ?? [];
+    for (const attachment of attachments) {
+      if (!list.some((entry) => entry.id === attachment.id)) list.push(attachment);
+    }
+    this.attachmentsBySession.set(key, list);
+    this.emit({ type: "patch", patch: { draft: next, attachments: [...list] } });
+  }
+
+  /**
+   * 队列消息「重新编辑」：把它从队列里摘掉，内容放回输入框。
+   *
+   * 顺序不能反——先摘队列再回填。若这条其实已经开始发送了（服务端回
+   * `session/queue-item-not-found`），回填会让用户以为它还没发出去，
+   * 接着一发送就变成重复消息。
+   *
+   * 正文用客户端自己存的原文（`submissions`）而不是队列回显：提交给服务端的
+   * 正文已经把文件上下文内联进去了，把回显倒回输入框会是一大坨内容。
+   */
+  private async editQueuedMessage(itemId: string): Promise<void> {
+    if (!this.client || !this.currentSessionId) return;
+    const item = this.queueItems.find((entry) => entry.id === itemId);
+    try {
+      await this.client.updateQueueRemove(this.currentSessionId, itemId);
+    } catch (error) {
+      this.reportError("取回排队消息失败（可能已经开始发送）", error);
+      return;
+    }
+
+    const origin = this.queueOrigin.get(itemId);
+    this.queueOrigin.delete(itemId);
+
+    const key = this.sessionKey();
+    const restored = origin?.text ?? item?.text ?? "";
+    // 输入框里可能已经有草稿：追加而不是覆盖，避免把用户正在写的内容弄丢
+    const existing = this.drafts.get(key) ?? "";
+    const next = existing.trim() ? `${existing.replace(/\s+$/, "")}\n${restored}` : restored;
+    this.drafts.set(key, next);
+
+    const list = this.attachmentsBySession.get(key) ?? [];
+    for (const attachment of origin?.attachments ?? []) {
+      if (!list.some((entry) => entry.id === attachment.id)) list.push(attachment);
+    }
+    this.attachmentsBySession.set(key, list);
+    this.emit({ type: "patch", patch: { draft: next, attachments: [...list] } });
+
+    // 线上正文里带附件、本地却没有原始记录（扩展重载过）：附件找不回来，说清楚
+    if (item?.hasMedia && !origin?.attachments.length) {
+      this.emit({ type: "toast", level: "warn", text: "@queueAttachmentsLost" });
+    }
+  }
+
   /** 供编辑器命令调用：把一段文本作为上下文加入输入框。 */
   addSelection(name: string, text: string): void {
     this.mutateAttachments((list) => {
@@ -1444,16 +1928,14 @@ export class ChatController implements vscode.Disposable {
     });
   }
 
+  /** 供资源管理器右键调用：文件/目录都按内容分派（目录会自动识别成路径型）。 */
   addFileContext(path: string): void {
-    this.mutateAttachments((list) => {
-      if (list.some((a) => a.path === path)) return;
-      list.push({
-        id: randomUUID(),
-        kind: "file",
-        path,
-        name: this.relativePath(path),
-      });
-    });
+    this.applyPaths([{ path, name: this.attachmentName(path) }]);
+  }
+
+  /** 命令面板 / 右键文件夹：选目录加为上下文。 */
+  async addFolder(): Promise<void> {
+    await this.pickFolder();
   }
 
   private async openFile(path: string): Promise<void> {
@@ -1641,7 +2123,7 @@ export class ChatController implements vscode.Disposable {
         ops: [{ op: "set", path, value }],
         expectedRevision,
       });
-      this.emit({ type: "toast", level: "info", text: "settingsSaved" });
+      // 不额外弹提示：字段自己会显示「已保存」（见 Panels.tsx 的 Field）
       await this.describeSettings();
     } catch (error) {
       this.reportError(`保存到 ${ns} 失败`, error);
@@ -1655,7 +2137,8 @@ export class ChatController implements vscode.Disposable {
     if (!this.client) return;
     try {
       await this.client.request("settings/replace", { ns, section: {} });
-      this.emit({ type: "toast", level: "info", text: "settingsResetDone" });
+      // 整组重置没有行内反馈，用轻提示告知结果
+      this.emit({ type: "toast", level: "info", text: "@settingsResetDone" });
       await this.describeSettings();
     } catch (error) {
       this.reportError(`重置 ${ns} 失败`, error);
@@ -1673,7 +2156,7 @@ export class ChatController implements vscode.Disposable {
     const target = ref || path[path.length - 1];
     try {
       await this.client.request("credentials/set", { ref: target, value });
-      this.emit({ type: "toast", level: "info", text: "settingsSaved" });
+      this.emit({ type: "toast", level: "info", text: "@settingsSaved" });
       await this.describeSettings();
     } catch (error) {
       this.reportError(`写入密钥失败（${ns} → ${target}）`, error);
@@ -1694,38 +2177,9 @@ export class ChatController implements vscode.Disposable {
 }
 
 /**
- * 队列里「用户等待发送的消息」的视图（线格式 `SessionQueuedItem` → `QueuedMessageView`）。
- *
- * 队列项有三种 `placement`：`queued`（用户排队待发的消息）、`steering`（插话）、
- * `context`（插件注入的环境上下文，例如 MCP 服务器状态）。context 不是用户消息，
- * 不下发——否则全新会话一开场就会显示一串「排队消息」。
+ * 队列里「用户等待发送的消息」的视图：纯映射，见 dsh/queueView.ts。
+ * 放在那边是为了让冒烟测试能直接验证，不必启动扩展宿主。
  */
-function queueItemsView(items: unknown[] | undefined): QueuedMessageView[] {
-  if (!Array.isArray(items)) return [];
-  const out: QueuedMessageView[] = [];
-  for (const raw of items) {
-    const item = raw as {
-      id?: string;
-      placement?: string;
-      message?: { content?: unknown[] };
-    } | null;
-    if (!item?.id) continue;
-    if (item.placement !== "queued" && item.placement !== "steering") continue;
-    const parts = Array.isArray(item.message?.content) ? item.message!.content : [];
-    const text = parts
-      .map((part) => part as { type?: string; text?: string } | null)
-      .filter((part) => part?.type === "text" && typeof part.text === "string")
-      .map((part) => part!.text)
-      .join("\n")
-      .trim();
-    const hasMedia = parts.some((part) => {
-      const type = (part as { type?: string } | null)?.type;
-      return type === "image" || type === "file";
-    });
-    out.push({ id: item.id, text, hasMedia, placement: item.placement });
-  }
-  return out;
-}
 
 /** 供日志通道使用的时间戳。 */
 export function stamp(line: string): string {

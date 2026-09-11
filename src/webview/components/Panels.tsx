@@ -1,7 +1,7 @@
 import { useState } from "react";
-import type { JobItemView, SettingsFieldView, SettingsSectionView, SubagentView, ToolCallView } from "../../shared/chat";
+import type { DiffLayout, JobItemView, SettingsFieldView, SettingsSectionView, SubagentView, ToolCallView } from "../../shared/chat";
 import { post } from "../bridge";
-import { IconAgents, IconChevronDown, IconChevronLeft, IconClose, IconJobs, IconTrajectory, IconUndo } from "../icons";
+import { IconAgents, IconChevronDown, IconChevronLeft, IconClose, IconJobs, IconSettings, IconTrajectory, IconUndo } from "../icons";
 import { formatClock, formatDuration } from "./primitives";
 import { useTexts } from "../texts";
 import { Message } from "./Message";
@@ -95,7 +95,7 @@ export function SubagentTranscriptPanel({
       ) : (
         <div className="subagent-transcript">
           {messages.map((message) => (
-            <Message key={message.id} message={message} showUsageStats={false} />
+            <Message key={message.id} message={message} />
           ))}
         </div>
       )}
@@ -159,9 +159,11 @@ export function JobsPanel({ jobs, onClose }: { jobs: JobItemView[]; onClose: () 
  */
 export function TrajectoryPanel({
   tools,
+  diffLayout,
   onClose,
 }: {
   tools: ToolCallView[];
+  diffLayout?: DiffLayout;
   onClose: () => void;
 }) {
   const texts = useTexts();
@@ -172,7 +174,7 @@ export function TrajectoryPanel({
         <div className="popover-empty">{texts.trajectoryEmpty}</div>
       ) : (
         sorted.map((tool) => (
-          <ToolRow key={`${tool.id}:${tool.startedAt ?? 0}`} tool={tool} />
+          <ToolRow key={`${tool.id}:${tool.startedAt ?? 0}`} tool={tool} diffLayout={diffLayout} />
         ))
       )}
     </Drawer>
@@ -306,7 +308,7 @@ export function SettingsPanel({
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
   return (
-    <Drawer title={texts.settingsTitle} icon={<IconUndo size={14} />} onClose={onClose}>
+    <Drawer title={texts.settingsTitle} icon={<IconSettings size={14} />} onClose={onClose}>
       {!loaded ? (
         <div className="popover-empty">{texts.settingsLoading}</div>
       ) : sections.length === 0 ? (

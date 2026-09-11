@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { ChatViewProvider } from "./chatView";
 import { ChatController, stamp } from "./dsh/controller";
+import { cleanupResidualServers, leaseDirectory, scanServers } from "./dsh/processRegistry";
 import { ServerManager } from "./dsh/serverManager";
 
 let output: vscode.OutputChannel | undefined;
@@ -17,11 +18,42 @@ export function activate(context: vscode.ExtensionContext): void {
     url: config().get<string>("url") ?? "",
     command: config().get<string>("command") || "dsh",
     startTimeoutMs: (config().get<number>("startTimeoutSec") ?? 90) * 1000,
+    workspace: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
     log,
   });
 
-  const controller = new ChatController(server, log, context.globalState);
+  const controller = new ChatController(server, log, context.globalState, context.secrets);
   const provider = new ChatViewProvider(context, controller);
+
+  // 第一部分：把服务、控制器、视图与全部命令挂到 context.subscriptions（释放即随扩展一起走）
+  registerContributions(context, { controller, provider, server });
+
+  // 辅助侧栏容器（secondarySidebar 贡献点）只在 VS Code ≥ 1.106 存在。
+  // 活动栏容器用 `when: !dshChat.supportsSecondarySidebar` 与它互斥，
+  // 所以这个标记必须按真实版本设置：写死 true 会让旧版本两个容器都不显示。
+  void vscode.commands.executeCommand(
+    "setContext",
+    "dshChat.supportsSecondarySidebar",
+    supportsSecondarySidebar(),
+  );
+
+  // 第二部分：启动期收尾——清残留进程、自动连接、按需打开面板
+  startup(config, controller, provider);
+}
+
+/** 激活期需要交给命令注册使用的对象。 */
+interface Contributions {
+  controller: ChatController;
+  provider: ChatViewProvider;
+  server: ServerManager;
+}
+
+/**
+ * 注册视图提供者、命令与配置/状态监听。
+ * 全部一次性 push 进 context.subscriptions，deactivate 时统一释放。
+ */
+function registerContributions(context: vscode.ExtensionContext, host: Contributions): void {
+  const { controller, provider, server } = host;
 
   context.subscriptions.push(
     output ?? vscode.window.createOutputChannel("DSH Chat"),
@@ -47,17 +79,37 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("dshChat.stop", () => controller.handle({ type: "stop" })),
     vscode.commands.registerCommand("dshChat.startServer", () => controller.ensureConnected()),
     vscode.commands.registerCommand("dshChat.restartServer", () => controller.restart()),
+    // 外部服务器（dshChat.url）要求授权时，令牌从这里输入
+    vscode.commands.registerCommand("dshChat.setToken", () => controller.setToken()),
+    vscode.commands.registerCommand("dshChat.cleanupProcesses", async () => {
+      const result = cleanupResidualServers(log);
+      const message = result.killed.length
+        ? `已清理 ${result.killed.length} 个残留的 dsh 进程：${result.killed.join("、")}`
+        : result.orphans.length
+          ? `发现 ${result.orphans.length} 个疑似残留进程，但未能确认/清理：${result.orphans.join("、")}`
+          : "没有发现残留的 dsh 进程。";
+      await vscode.window.showInformationMessage(message, { modal: true });
+    }),
     vscode.commands.registerCommand("dshChat.showLogs", () => {
       output ??= vscode.window.createOutputChannel("DSH Chat");
       output.show(true);
     }),
     vscode.commands.registerCommand("dshChat.showDiagnostics", async () => {
       const status = server.getStatus();
+      const orphans = scanServers()
+        .filter((item) => item.orphan)
+        .map((item) => item.lease.serverPid);
       const message = [
         `服务器状态：${status.state}`,
         status.info ? `地址：${status.info.baseUrl}` : undefined,
         status.info ? `由本扩展启动：${status.info.owned ? "是" : "否（使用 dshChat.url）"}` : undefined,
         status.detail ? `说明：${status.detail}` : undefined,
+        `残留进程：${
+          orphans.length
+            ? `${orphans.length} 个（pid ${orphans.join("、")}）——用命令「DSH: 清理残留进程」处理`
+            : "无"
+        }`,
+        `进程租约目录：${leaseDirectory()}`,
         `服务器日志：${server.logPath}`,
         `扩展日志：输出通道「DSH Chat」`,
       ]
@@ -81,16 +133,42 @@ export function activate(context: vscode.ExtensionContext): void {
       controller.addFileContext(target.fsPath);
       void vscode.commands.executeCommand("dshChat.view.focus");
     }),
-  );
+    // 目录单独入口：Windows/Linux 的文件对话框不能同时选文件和目录
+    // （见 controller.pickFiles 的注释），所以目录走独立命令。
+    // 右键文件夹时 uri 直接给到，不再弹对话框。
+    vscode.commands.registerCommand("dshChat.addFolder", async (uri?: vscode.Uri) => {
+      if (uri) controller.addFileContext(uri.fsPath);
+      else await controller.addFolder();
+      void vscode.commands.executeCommand("dshChat.view.focus");
+    }),
 
-  // 辅助侧栏容器（secondarySidebar 贡献点）只在 VS Code ≥ 1.106 存在。
-  // 活动栏容器用 `when: !dshChat.supportsSecondarySidebar` 与它互斥，
-  // 所以这个标记必须按真实版本设置：写死 true 会让旧版本两个容器都不显示。
-  void vscode.commands.executeCommand(
-    "setContext",
-    "dshChat.supportsSecondarySidebar",
-    supportsSecondarySidebar(),
+    // 界面相关配置（diff 排版）改了即时生效，不必重载窗口
+    vscode.workspace.onDidChangeConfiguration((event) => {
+      if (event.affectsConfiguration("dshChat.diffLayout")) controller.refreshDiffLayout();
+    }),
   );
+}
+
+/** 启动期收尾：清理上次未正常关闭的残留服务器、按配置自动连接、按需打开面板。 */
+function startup(
+  config: () => vscode.WorkspaceConfiguration,
+  controller: ChatController,
+  provider: ChatViewProvider,
+): void {
+  // 上次 VS Code 非正常关闭（崩溃 / 强杀）留下的 dsh web 进程：认出来并清掉。
+  // 放到下一个 tick：先让激活与自动启动跑完，清理本身是同步的（要 taskkill）。
+  setTimeout(() => {
+    try {
+      const result = cleanupResidualServers(log);
+      if (result.killed.length) {
+        void vscode.window.showInformationMessage(
+          `已清理 ${result.killed.length} 个残留的 dsh 服务器进程（上次 VS Code 未正常关闭）。`,
+        );
+      }
+    } catch (error) {
+      log(`[cleanup] 残留进程检测失败：${error instanceof Error ? error.message : String(error)}`);
+    }
+  }, 0);
 
   const autoStart = config().get<boolean>("autoStart") ?? true;
   if (autoStart) {

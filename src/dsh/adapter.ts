@@ -1,6 +1,8 @@
 import type {
   ApprovalView,
   ChatState,
+  DiffHunkView,
+  InjectedView,
   MessageView,
   ModelSelectionView,
   QuestionView,
@@ -10,6 +12,8 @@ import type {
   ToolCallView,
   UsageView,
 } from "../shared/chat";
+import { hunksFromMeta, hunksFromToolArgs } from "../shared/diff";
+import { readRangeFromMeta, readRangeFromOutput } from "./readRange";
 import type { HostToWebview } from "../shared/ipc";
 import {
   RENDERED_EVENT_TYPES,
@@ -101,13 +105,29 @@ function toUsage(
 }
 
 /**
- * 解析工具参数，提炼出一行摘要。
+ * 长路径折叠成末两段：单行标题里文件名必须完整可读（标题只给 80px 左右，
+ * 完整路径会把文件名挤成半个字）。读取节点的行号后缀也复用同一条路径。
+ */
+function shortPath(value: string): string {
+  const parts = value.split(/[\\/]+/).filter(Boolean);
+  if (parts.length <= 2) return value;
+  return `…/${parts.slice(-2).join("/")}`;
+}
+
+/**
+ * 解析工具参数，提炼出一行摘要 + 一行完整命令。
  *
  * 刻意**不生成动词文案**：文案属于界面语言，由 webview 的词典决定
  * （否则英文界面里会混进中文标题）。这里只产出与语言无关的数据：
  * 路径、命令行、查询串。
+ *
+ * `detail` 是给单行标题的**截断**版；`command` 是**完整**原文，给展开区用——
+ * 长命令在标题里被省略号截掉后，展开时得能看到原本跑的是什么（构建命令尤其需要）。
  */
-function summarizeTool(name: string, argsRaw: string): { detail?: string; input?: string } {
+function summarizeTool(
+  name: string,
+  argsRaw: string,
+): { detail?: string; input?: string; command?: string; diff?: DiffHunkView[] } {
   let args: Record<string, unknown> = {};
   try {
     const parsed = JSON.parse(argsRaw || "{}");
@@ -124,20 +144,18 @@ function summarizeTool(name: string, argsRaw: string): { detail?: string; input?
   };
   const firstLine = (text: string) => text.split("\n")[0].slice(0, 120);
 
-  // 单行摘要里**文件名/命令名必须完整保留**（标题只给它 80px 左右的空间，
-  // 长路径会把标题挤成半个字）：路径只留最后 2 段，用 … 折叠中间。
-  const shortPath = (value: string): string => {
-    const parts = value.split(/[\\/]+/).filter(Boolean);
-    if (parts.length <= 2) return value;
-    return `…/${parts.slice(-2).join("/")}`;
-  };
-
   const lower = name.toLowerCase();
   const path = pick("file_path", "path", "filePath", "filename");
   if (lower.startsWith("read") || lower.startsWith("write") || lower.includes("edit") || lower.includes("replace")) {
-    return { detail: path && shortPath(firstLine(path)), input: argsRaw };
+    // 写文件类工具：参数里就能推出 diff（结果回来后再用 meta.diffs 的真实 hunk 覆盖）
+    return {
+      detail: path && shortPath(firstLine(path)),
+      command: path,
+      input: argsRaw,
+      diff: hunksFromToolArgs(name, argsRaw),
+    };
   }
-  if (lower.includes("pwsh") || lower.includes("bash")) {
+  if (lower.includes("pwsh") || lower.includes("bash") || lower.includes("shell")) {
     const command = pick("command", "cmd", "script");
     // 命令名（首个 token）完整保留，过长的其余部分折叠
     return {
@@ -146,17 +164,24 @@ function summarizeTool(name: string, argsRaw: string): { detail?: string; input?
           ? `${firstLine(command).slice(0, 72)}…`
           : firstLine(command)
         : undefined,
+      command,
       input: argsRaw,
     };
   }
   if (lower.includes("grep") || lower.includes("glob")) {
-    return { detail: pick("pattern", "query"), input: argsRaw };
+    return { detail: pick("pattern", "query"), command: pick("pattern", "query"), input: argsRaw };
   }
-  if (lower.includes("web")) return { detail: pick("url", "query"), input: argsRaw };
+  if (lower.includes("web")) {
+    return { detail: pick("url", "query"), command: pick("url", "query"), input: argsRaw };
+  }
   if (lower.includes("subagent") || lower.includes("task")) {
-    return { detail: pick("description", "prompt")?.slice(0, 80), input: argsRaw };
+    const text = pick("description", "prompt");
+    return { detail: text?.slice(0, 80), command: text, input: argsRaw };
   }
-  return { input: argsRaw };
+  // 其余工具（含 build 这类外部工具）：参数里最像「在做什么」的那一项。
+  // 认不出就不给 command，展开区退化为只显示状态，不编造内容。
+  const generic = pick("command", "cmd", "script", "description", "query", "url", "file_path", "path");
+  return { detail: generic ? firstLine(generic).slice(0, 120) : undefined, command: generic, input: argsRaw };
 }
 
 /**
@@ -170,6 +195,19 @@ function summarizeTool(name: string, argsRaw: string): { detail?: string; input?
  * 流式文本以「叠加层」形式存在，durable 的 assistant/message 到达时按 turn/step
  * 替换掉该叠加层，因此不会重复也不会丢内容。
  */
+/**
+ * 读取节点：算出本次读到的行号区间（整篇读取返回 undefined）。
+ *
+ * 区间优先取 `tool/result.meta`（工具的权威输出），meta 缺失才回退到正文尾注。
+ * 非读取工具一律 undefined。
+ */
+function readLinesOf(tool: ToolCallView, output: string, meta: unknown): { start: number; end: number } | undefined {
+  if (!tool.name.toLowerCase().startsWith("read")) return undefined;
+  const range = readRangeFromMeta(meta) ?? readRangeFromOutput(output);
+  if (!range?.partial) return undefined;
+  return { start: range.start, end: range.end };
+}
+
 export class SessionAdapter {
   private messages: MessageView[] = [];
   private readonly byId = new Map<string, MessageView>();
@@ -177,7 +215,6 @@ export class SessionAdapter {
   private readonly liveSegments = new Map<string, { messageId: string; segmentId: string; turn: number; step: number }>();
   private currentTurn: number | undefined;
   private currentStep = 0;
-  private turnStartedAt: number | undefined;
   /** 当前 step 首个 token delta 的时间戳（服务端时钟，取自 chunk 帧 time）。 */
   private stepFirstTokenAt: number | undefined;
   /** 当前活跃 attempt 的 turn/step，由 assistant-stream 的 start 帧给出。 */
@@ -263,7 +300,6 @@ export class SessionAdapter {
       case "turn/start": {
         this.currentTurn = typeof data.turn === "number" ? data.turn : this.currentTurn;
         this.currentStep = 0;
-        this.turnStartedAt = event.time;
         this.stepFirstTokenAt = undefined;
         const message = this.ensureAssistantMessage(event.time);
         message.streaming = true;
@@ -275,7 +311,10 @@ export class SessionAdapter {
       case "turn/end": {
         const message = this.ensureAssistantMessage(event.time);
         message.streaming = false;
-        if (this.turnStartedAt) message.durationMs = Math.max(0, event.time - this.turnStartedAt);
+        // 本轮结束，任何段落都不该再处于「思考中」：流式叠加层未必被 durable 消息
+        // 替换掉（服务端可能没回带 reasoning 的正文，或本步只有思考），残留的
+        // streaming 标记会让思考鲸鱼一直发蓝光。这里只清标记，不动内容。
+        this.settleStreaming(message);
         const reason = data.reason as { kind?: string; error?: { message?: string } } | undefined;
         if (reason?.kind === "error") {
           // 模型/服务端的原始报错原样透出；没有报文时用语言中立 key 交给界面翻译
@@ -290,7 +329,6 @@ export class SessionAdapter {
         }
         this.emit({ type: "message/upsert", message: { ...message } });
         this.emit({ type: "patch", patch: { running: false } });
-        this.turnStartedAt = undefined;
         break;
       }
 
@@ -312,20 +350,36 @@ export class SessionAdapter {
             text,
             segments: [],
           };
-          // 日志里 turn/start 可能先于 user/message 落盘，而 turn/start 已经建好了
-          // 本轮的助手消息；此时把用户消息插到它前面，保证对话顺序正确。
+          // 用户消息必须落在**本轮助手消息之前**（这一轮的顶部）。不能要求助手
+          // 消息还是空的：流式正文往往先于 durable 的 user/message 到达，那时本轮
+          // 助手消息已经有段落了；按旧逻辑会退化成「追加到末尾」，用户消息就跑到
+          // 助手输出下面去了。
+          //
+          // 但同轮还可能有第二条用户消息（运行中插话）。用「紧邻助手消息的前一条
+          // 是不是用户消息」区分：已有本轮提问时按时间顺序追加在末尾，否则插到顶部。
           const assistant = this.currentAssistantMessage();
           const index = assistant ? this.messages.indexOf(assistant) : -1;
-          if (assistant && index >= 0 && assistant.segments.length === 0) {
+          const alreadyHasTurnPrompt = index > 0 && this.messages[index - 1].role === "user";
+          if (this.byId.has(view.id)) break; // 重连/重放时同一条事件可能再来一次
+          if (assistant && index >= 0 && !alreadyHasTurnPrompt) {
             this.messages.splice(index, 0, view);
             this.byId.set(view.id, view);
             this.emit({ type: "messages/reset", messages: this.messages });
           } else {
             this.appendMessage(view);
           }
+          break;
         }
-        // 其余来源（system prompt / agent instructions / goal / skill）不是用户输入，
-        // 与 Continue 一致地不进转写
+        // 其余来源（system prompt / agent instructions / goal / skill / 插件注入）
+        // 不是用户说的话，但确实进了模型上下文——作为「自动载入」节点显示出来，
+        // 否则用户完全看不到模型被喂了什么。
+        this.pushInjected(event, message?.content, message?.source);
+        break;
+      }
+
+      case "system/message": {
+        const message = data.message as WireMessage | undefined;
+        this.pushInjected(event, message?.content, message?.source);
         break;
       }
 
@@ -348,7 +402,7 @@ export class SessionAdapter {
         const callId = String(message?.source?.callId ?? "");
         const text = blocksToText(message?.content);
         const isError = Boolean(data.error) || (Array.isArray(message?.content) && (message!.content as ContentBlock[]).some((b) => b.type === "tool-result" && b.isError));
-        this.finishToolCall(event.time, callId, text, isError);
+        this.finishToolCall(event.time, callId, text, isError, data.meta);
         break;
       }
 
@@ -627,7 +681,6 @@ export class SessionAdapter {
     this.liveSegments.clear();
     this.currentTurn = undefined;
     this.currentStep = 0;
-    this.turnStartedAt = undefined;
     this.stepFirstTokenAt = undefined;
     this.sequence = 0;
     // 刻意不清 contextWindow / contextOccupancy / lastSpeed：
@@ -678,6 +731,47 @@ export class SessionAdapter {
     message.segments.push(segment);
   }
 
+  /**
+   * 追加一个「自动载入」节点（系统提示词 / 插件注入 / 项目指令 / 技能目录…）。
+   *
+   * 这些内容此前被整体丢弃，用户看不到模型被喂了什么。现在按事件到达顺序挂到
+   * 本轮的助手消息上（用户消息本身插在助手消息之前，所以视觉顺序是
+   * 「用户提问 → 自动载入的上下文 → 回答」）。
+   *
+   * 用 `x:${seq}` 当 id：重连/快照重放时同一条事件会再来一次，按 id 去重，
+   * 不会重复堆叠。内容为空（例如「没有系统提示词」）直接跳过。
+   */
+  private pushInjected(event: SessionWireEvent, content: unknown, source: unknown): void {
+    const text = blocksToText(content);
+    if (!text) return;
+    const id = `x:${event.seq}`;
+    const message = this.ensureAssistantMessage(event.time);
+    if (message.segments.some((segment) => segment.id === id)) return;
+
+    const origin = (source ?? {}) as { kind?: unknown; plugin?: unknown; form?: unknown };
+    const injected: InjectedView = {
+      sourceKind: typeof origin.kind === "string" ? origin.kind : "unknown",
+      plugin: typeof origin.plugin === "string" ? origin.plugin : undefined,
+      form: typeof origin.form === "string" ? origin.form : undefined,
+      text,
+    };
+    const segment: Segment = { kind: "injected", id, injected };
+    this.pushSegment(message, segment);
+    this.emit({ type: "message/append", messageId: message.id, segment });
+  }
+
+  /**
+   * 收掉一条消息里所有段落的流式标记（内容保留）。
+   *
+   * 界面的「思考中发光」只看 `segment.streaming`，所以只要有一处漏清，鲸鱼就会
+   * 一直亮着。回合结束时统一兜底清理，比逐条路径去清可靠。
+   */
+  private settleStreaming(message: MessageView): void {
+    for (const segment of message.segments) {
+      if (segment.kind === "text" || segment.kind === "thinking") segment.streaming = false;
+    }
+  }
+
   private dropLiveSegments(message: MessageView, turn: number, step: number, all = false): void {
     let changed = false;
     for (const [key, value] of [...this.liveSegments]) {
@@ -703,7 +797,9 @@ export class SessionAdapter {
       if (target && segment && segment.kind === "tool") {
         segment.tool.name = name;
         segment.tool.detail = summary.detail;
+        segment.tool.command = summary.command;
         segment.tool.input = argsRaw;
+        segment.tool.diff = summary.diff;
         this.emit({ type: "message/segment", messageId: target.id, segment: { ...segment } });
       }
       return;
@@ -715,8 +811,10 @@ export class SessionAdapter {
       // title 留空：动词由界面按当前语言渲染（见 webview/components/Rows.tsx）
       title: "",
       detail: summary.detail,
+      command: summary.command,
       status: "running",
       input: argsRaw,
+      diff: summary.diff,
       startedAt: ts,
     };
     const segment: Segment = { kind: "tool", id: segmentId, tool };
@@ -725,7 +823,12 @@ export class SessionAdapter {
     this.emit({ type: "message/append", messageId: message.id, segment: { ...segment, tool: { ...tool } } as Segment });
   }
 
-  private finishToolCall(ts: number, callId: string, output: string, isError: boolean): void {
+  private finishToolCall(    ts: number,
+    callId: string,
+    output: string,
+    isError: boolean,
+    meta?: unknown,
+  ): void {
     const entry = this.toolSegments.get(callId);
     if (!entry) return;
     const message = this.byId.get(entry.messageId);
@@ -733,6 +836,11 @@ export class SessionAdapter {
     if (!message || !segment || segment.kind !== "tool") return;
     segment.tool.status = isError ? "error" : "ok";
     segment.tool.output = parseToolResult(output);
+    // 结果里的真实 hunk（3 行上下文，由工具自己算）优先于参数推导的预览
+    const fromMeta = hunksFromMeta(meta);
+    if (fromMeta) segment.tool.diff = fromMeta;
+    // 读取节点：只读了一段时把行号记下来，界面缀在文件名后（整篇读取不标注）
+    if (!isError) segment.tool.readLines = readLinesOf(segment.tool, output, meta);
     segment.tool.endedAt = ts;
     this.emit({ type: "message/segment", messageId: message.id, segment: { ...segment, tool: { ...segment.tool } } as Segment });
   }

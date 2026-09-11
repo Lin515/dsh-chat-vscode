@@ -1,10 +1,10 @@
 import { memo, useRef } from "react";
-import type { MessageView, Segment } from "../../shared/chat";
+import type { DiffLayout, MessageView, Segment } from "../../shared/chat";
 import { post } from "../bridge";
 import { IconCopy } from "../icons";
 import { Markdown } from "./Markdown";
 import { formatClock, useSelectionFreeze } from "./primitives";
-import { ApprovalCard, NoticeRow, QuestionCard, ThinkingRow, ToolRow, UsageRow } from "./Rows";
+import { ApprovalCard, InjectedRow, NoticeRow, QuestionCard, ThinkingRow, ToolRow } from "./Rows";
 import { useTexts } from "../texts";
 
 /**
@@ -24,10 +24,11 @@ function StreamText({ text }: { text: string }) {
 /** 单条消息。用户消息是输入框样式的块，助手消息是无气泡正文。 */
 export const Message = memo(function Message({
   message,
-  showUsageStats = true,
+  diffLayout,
 }: {
   message: MessageView;
-  showUsageStats?: boolean;
+  /** 编辑类节点的 diff 排版（来自设置；缺省自适应）。 */
+  diffLayout?: DiffLayout;
 }) {
   const texts = useTexts();
   if (message.role === "user") {
@@ -69,11 +70,13 @@ export const Message = memo(function Message({
                 />
               );
             case "tool":
-              return <ToolRow key={segment.id} tool={segment.tool} />;
+              return <ToolRow key={segment.id} tool={segment.tool} diffLayout={diffLayout} />;
             case "approval":
               return <ApprovalCard key={segment.id} approval={segment.approval} />;
             case "question":
               return <QuestionCard key={segment.id} question={segment.question} />;
+            case "injected":
+              return <InjectedRow key={segment.id} injected={segment.injected} />;
             case "notice":
               return <NoticeRow key={segment.id} level={segment.level} text={segment.text} />;
             default:
@@ -81,12 +84,6 @@ export const Message = memo(function Message({
           }
         })}
         {message.error ? <NoticeRow level="error" text={message.error} /> : null}
-        <UsageRow
-          usage={message.usage}
-          durationMs={message.durationMs}
-          firstTokenMs={message.firstTokenMs}
-          enabled={showUsageStats}
-        />
       </div>
       <div className="msg-actions">
         <span className="msg-time">{formatClock(message.ts)}</span>

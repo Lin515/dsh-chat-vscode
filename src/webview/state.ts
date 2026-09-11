@@ -117,6 +117,7 @@ function mapMessage(
 export type Action =
   | HostToWebview
   | { type: "ui/setPanel"; panel: PanelKind }
+  | { type: "ui/dismissNotice" }
   | { type: "ui/setDraft"; text: string };
 
 export function reducer(state: AppState, action: Action): AppState {
@@ -187,14 +188,29 @@ export function reducer(state: AppState, action: Action): AppState {
     case "subagent/transcript":
       return { ...state, subagent: { id: action.id, messages: action.messages } };
 
-    case "toast":
-      return { ...state, error: action.level === "error" ? action.text : state.error };
+    case "toast": {
+      // 每次都给新的 id：同样文案连续两次也要重新计时
+      const previous = state.notice?.id ?? 0;
+      return {
+        ...state,
+        notice: { id: previous + 1, level: action.level, text: action.text },
+      };
+    }
+
+    case "ui/insertText": {
+      // 同样用自增 id：连续两次插入同一段文本也要各插一次
+      const previous = state.insertRequest?.id ?? 0;
+      return { ...state, insertRequest: { id: previous + 1, text: action.text } };
+    }
 
     case "ui/setPanel":
       return { ...state, panel: action.panel };
 
     case "ui/openPanel":
       return { ...state, panel: action.panel as PanelKind };
+
+    case "ui/dismissNotice":
+      return { ...state, notice: undefined };
 
     case "ui/setDraft":
       return { ...state, draft: action.text };

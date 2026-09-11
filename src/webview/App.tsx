@@ -12,13 +12,14 @@ import {
   IconAgents,
   IconHistory,
   IconJobs,
+  IconKey,
   IconOpenInEditor,
   IconPlus,
   IconRefresh,
   IconSettings,
   IconTrajectory,
 } from "./icons";
-import { TextsContext, dictionaryFor, normalizeLocale, useTexts } from "./texts";
+import { TextsContext, dictionaryFor, normalizeLocale, resolveText, useTexts } from "./texts";
 
 /**
  * 顶部只有一排图标按钮——Continue 的聊天页没有传统工具栏，
@@ -128,6 +129,11 @@ function ConnectionBar({ state }: { state: ChatState }) {
           : `${texts.connecting}${state.serverUrl ? ` ${state.serverUrl}` : ""}`}
       </span>
       <span className="spacer" />
+      {isError && state.needsToken ? (
+        <button className="btn" onClick={() => post({ type: "setToken" })}>
+          <IconKey size={12} /> {texts.enterToken}
+        </button>
+      ) : null}
       {isError ? (
         <button className="btn" onClick={() => post({ type: "restartServer" })}>
           <IconRefresh size={12} /> {texts.restartServer}
@@ -143,6 +149,43 @@ function EmptyState() {
   return (
     <div className="empty">
       <div className="empty-hint">{texts.emptyHint}</div>
+    </div>
+  );
+}
+
+/** 轻提示的停留时长（毫秒）。 */
+const NOTICE_MS = 4000;
+
+/**
+ * 一次性轻提示条（复制成功、设置已保存、图片被跳过…）。
+ *
+ * 宿主用语言中立的 `@key:arg` 传文案，这里按当前语言翻译（`resolveText`）。
+ * 同一条提示靠 `id` 变化重新计时：连点两次复制也能再闪一次。
+ */
+function NoticeBar({
+  notice,
+  onDismiss,
+}: {
+  notice: ChatState["notice"];
+  onDismiss: () => void;
+}) {
+  const texts = useTexts();
+  useEffect(() => {
+    if (!notice) return;
+    const timer = setTimeout(onDismiss, NOTICE_MS);
+    return () => clearTimeout(timer);
+  }, [notice?.id, onDismiss]);
+
+  if (!notice) return null;
+  const cls =
+    notice.level === "error"
+      ? "notice notice-error"
+      : notice.level === "warn"
+        ? "notice notice-warn"
+        : "notice";
+  return (
+    <div className="notice-bar">
+      <div className={cls}>{resolveText(notice.text, texts)}</div>
     </div>
   );
 }
@@ -241,6 +284,10 @@ export function App() {
       <div ref={appRef} className={`app${mini ? " is-mini" : ""}`}>
         <Header state={state} dispatch={dispatch} />
         <ConnectionBar state={state} />
+        <NoticeBar
+          notice={state.notice}
+          onDismiss={() => dispatch({ type: "ui/dismissNotice" })}
+        />
 
         <div className="chat-scroll" ref={scrollRef}>
           <div className="chat-list" ref={contentRef}>
@@ -248,11 +295,7 @@ export function App() {
               <EmptyState />
             ) : (
               state.messages.map((message) => (
-                <Message
-                  key={message.id}
-                  message={message}
-                  showUsageStats={state.showUsageStats !== false}
-                />
+                <Message key={message.id} message={message} diffLayout={state.diffLayout} />
               ))
             )}
           </div>
@@ -312,7 +355,11 @@ export function App() {
         {state.panel === "jobs" ? <JobsPanel jobs={state.jobs} onClose={closePanel} /> : null}
 
         {state.panel === "trajectory" ? (
-          <TrajectoryPanel tools={state.trajectory} onClose={closePanel} />
+          <TrajectoryPanel
+            tools={state.trajectory}
+            diffLayout={state.diffLayout}
+            onClose={closePanel}
+          />
         ) : null}
 
         {state.panel === "settings" ? (

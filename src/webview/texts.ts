@@ -32,8 +32,8 @@ export interface Texts {
   models: string;
   defaultModel: string;
   noModels: string;
-  addImage: string;
-  addContext: string;
+  /** 通用附件按钮（图片与普通文件同一入口）。 */
+  attachFile: string;
   attachFolder: string;
   cancel: string;
   toggleThinking: string;
@@ -99,22 +99,26 @@ export interface Texts {
   running: string;
   queued: string;
   queueRemove: string;
+  /** 把排队消息取回输入框重新编辑。 */
+  queueEdit: string;
   queueMediaOnly: string;
-  waitingApproval: string;
-  waitingApprovalHint: string;
-  waitingQuestion: string;
-  waitingQuestionHint: string;
   runningHint: string;
-  todosLeft: string;
+  /** 队列非空时的运行提示：ESC 除了中止，还会把队首消息发出去。 */
+  runningHintQueue: string;
 
   thinking: string;
-  usage: string;
-  usageInput: string;
-  usageCached: string;
-  usageOutput: string;
-  usageReasoning: string;
-  usageFirstToken: string;
-  usageTotal: string;
+  /** diff 行数超上限时的截断提示。 */
+  diffTruncated: string;
+
+  /** 自动载入的提示词节点：把来源映射成人类可读标签。 */
+  injectedSystemPrompt: string;
+  injectedRuntimeContext: string;
+  injectedAgentInstructions: string;
+  injectedSkillCatalog: string;
+  injectedPlugin: string;
+  injectedGeneric: string;
+  /** 自动载入节点的字数标注，如「7.0K 字符」。 */
+  injectedChars: (chars: string) => string;
 
   approvalTitle: string;
   approvalApproved: string;
@@ -137,6 +141,8 @@ export interface Texts {
   connectionFailed: string;
   reconnect: string;
   restartServer: string;
+  /** 外部服务器要求授权时的「输入令牌」按钮。 */
+  enterToken: string;
 
   searchSessions: string;
   today: string;
@@ -163,8 +169,16 @@ export interface Texts {
   statsToolTime: string;
   statsTtft: string;
   statsSpeed: string;
-  /** 当前模型不支持图片输入时的提示（模型名作为变量）。 */
-  imageUnsupported: (model: string) => string;
+  /** 模型不支持图片输入、改为把路径插进输入框的提示（张数 + 模型名）。 */
+  imagePathsInserted: (count: number, model: string) => string;
+  /** 排队消息取回编辑时，附件无法还原的提示。 */
+  queueAttachmentsLost: string;
+  /** 排队消息拿不到可重发内容时的提示。 */
+  queueContentLost: string;
+  /** 排队消息没能自动发出时的提示（内容已放回输入框）。 */
+  queueDispatchFailed: string;
+  /** 附件是二进制/非文本、没能内联时的提示（文件名作为变量）。 */
+  attachmentNotInlined: (names: string) => string;
   turnFailed: string;
   interrupted: string;
   compacted: string;
@@ -179,6 +193,10 @@ export interface Texts {
   toolTodo: string;
   toolDelegate: string;
   toolPresent: string;
+  /** 运行中的工具行展开后：`运行中 · 已用 {duration}`。 */
+  toolRunning: string;
+  /** 运行中的工具行展开后：说明为什么现在还没有输出。 */
+  toolRunningHint: string;
 }
 
 const zh: Texts = {
@@ -204,8 +222,7 @@ const zh: Texts = {
   models: "模型",
   defaultModel: "默认模型",
   noModels: "未获取到模型目录",
-  addImage: "添加图片",
-  addContext: "添加文件或文件夹",
+  attachFile: "添加文件",
   attachFolder: "整个目录",
   cancel: "取消",
   toggleThinking: "切换思考深度",
@@ -264,22 +281,21 @@ const zh: Texts = {
   running: "生成中",
   queued: "待发送 {n} 条",
   queueRemove: "取消这条消息",
+  queueEdit: "取回重新编辑",
   queueMediaOnly: "（附件）",
-  waitingApproval: "有工具调用等待你的许可",
-  waitingApprovalHint: "在上方对话中选择允许或拒绝",
   runningHint: "按 ESC 可中止",
-  waitingQuestion: "模型向你提问",
-  waitingQuestionHint: "在上方对话中作答",
-  todosLeft: "还有 {n} 项待办",
+  runningHintQueue: "按 ESC 可中止并发出排队消息",
 
   thinking: "思考",
-  usage: "用量",
-  usageInput: "输入",
-  usageCached: "缓存命中",
-  usageOutput: "输出",
-  usageReasoning: "其中推理",
-  usageFirstToken: "首 token",
-  usageTotal: "总用时",
+  diffTruncated: "… 内容过长，已截断",
+
+  injectedSystemPrompt: "系统提示词",
+  injectedRuntimeContext: "运行时上下文",
+  injectedAgentInstructions: "项目指令",
+  injectedSkillCatalog: "技能目录",
+  injectedPlugin: "插件上下文",
+  injectedGeneric: "自动载入",
+  injectedChars: (chars) => `${chars} 字符`,
 
   approvalTitle: "需要你的许可",
   approvalApproved: "已允许",
@@ -302,6 +318,7 @@ const zh: Texts = {
   connectionFailed: "无法连接 DSH 服务器",
   reconnect: "重新连接",
   restartServer: "重启服务器",
+  enterToken: "输入令牌",
 
   searchSessions: "搜索历史对话",
   today: "今天",
@@ -328,7 +345,12 @@ const zh: Texts = {
   interrupted: "本轮被中断",
   compacted: "上下文已压缩",
   /** 当前模型不支持图片输入时的提示（模型名作为变量）。 */
-  imageUnsupported: (model: string) => `模型「${model}」不支持图片输入`,
+  imagePathsInserted: (count, model) =>
+    `模型「${model}」不支持图片输入，已把 ${count} 个路径插入输入框`,
+  queueAttachmentsLost: "这条消息的附件无法还原，请重新添加（正文已放回输入框）",
+  queueContentLost: "排队消息的内容无法还原，已只中止当前轮",
+  queueDispatchFailed: "排队消息没能自动发出，内容已放回输入框",
+  attachmentNotInlined: (names) => `${names} 不是文本文件，只把路径发给了模型（未内联内容）`,
   unknownEvent: (type) => `遇到了本客户端不认识的事件「${type}」，已跳过其内容。`,
   toolRead: "读取",
   toolWrite: "写入",
@@ -340,6 +362,8 @@ const zh: Texts = {
   toolTodo: "更新待办",
   toolDelegate: "委派子代理",
   toolPresent: "交付文件",
+  toolRunning: "运行中 · 已用 {duration}",
+  toolRunningHint: "输出会在执行结束后显示",
 };
 
 const en: Texts = {
@@ -365,8 +389,7 @@ const en: Texts = {
   models: "Models",
   defaultModel: "Default model",
   noModels: "No model catalog available",
-  addImage: "Attach image",
-  addContext: "Attach file or folder",
+  attachFile: "Attach file",
   attachFolder: "whole folder",
   cancel: "Cancel",
   toggleThinking: "Cycle thinking depth",
@@ -425,22 +448,21 @@ const en: Texts = {
   running: "Generating",
   queued: "{n} queued",
   queueRemove: "Remove this message",
+  queueEdit: "Take back to edit",
   queueMediaOnly: "(attachment)",
-  waitingApproval: "A tool call needs your permission",
-  waitingApprovalHint: "Choose allow or reject in the conversation above",
   runningHint: "Press ESC to stop",
-  waitingQuestion: "The model is asking you something",
-  waitingQuestionHint: "Answer in the conversation above",
-  todosLeft: "{n} to-do(s) remaining",
+  runningHintQueue: "Press ESC to stop and send the queued message",
 
   thinking: "Thinking",
-  usage: "Usage",
-  usageInput: "Input",
-  usageCached: "Cache hit",
-  usageOutput: "Output",
-  usageReasoning: "of which reasoning",
-  usageFirstToken: "First token",
-  usageTotal: "Total",
+  diffTruncated: "… truncated",
+
+  injectedSystemPrompt: "System prompt",
+  injectedRuntimeContext: "Runtime context",
+  injectedAgentInstructions: "Workspace instructions",
+  injectedSkillCatalog: "Skill catalog",
+  injectedPlugin: "Plugin context",
+  injectedGeneric: "Auto-loaded",
+  injectedChars: (chars) => `${chars} chars`,
 
   approvalTitle: "Permission required",
   approvalApproved: "Allowed",
@@ -463,6 +485,7 @@ const en: Texts = {
   connectionFailed: "Cannot reach the DSH server",
   reconnect: "Reconnect",
   restartServer: "Restart server",
+  enterToken: "Enter token",
 
   searchSessions: "Search past sessions",
   today: "Today",
@@ -488,7 +511,12 @@ const en: Texts = {
   turnFailed: "This turn failed",
   interrupted: "This turn was interrupted",
   compacted: "Context compacted",
-  imageUnsupported: (model: string) => `Model "${model}" does not accept image input`,
+  imagePathsInserted: (count, model) =>
+    `Model "${model}" does not accept image input; inserted ${count} path(s) into the box`,
+  queueAttachmentsLost: "Attachments could not be restored; please re-attach them (text is back in the box)",
+  queueContentLost: "Could not restore the queued message; only the current turn was stopped",
+  queueDispatchFailed: "The queued message could not be sent; its content is back in the box",
+  attachmentNotInlined: (names) => `${names} is not a text file; only the path was sent (contents not inlined)`,
   unknownEvent: (type) => `Skipped an event this client does not understand: "${type}".`,
   toolRead: "Read",
   toolWrite: "Write",
@@ -500,6 +528,8 @@ const en: Texts = {
   toolTodo: "Update to-dos",
   toolDelegate: "Delegate",
   toolPresent: "Deliver",
+  toolRunning: "Running · {duration} elapsed",
+  toolRunningHint: "Output appears once the call finishes",
 };
 
 const DICTIONARIES: Record<Locale, Texts> = { zh, en };
@@ -543,10 +573,29 @@ export function resolveText(text: string, texts: Texts): string {
       return texts.stopped;
     case "compacted":
       return texts.compacted;
+    case "copied":
+      return texts.copied;
+    case "settingsSaved":
+      return texts.settingsSaved;
+    case "settingsResetDone":
+      return texts.settingsResetDone;
+    case "queueAttachmentsLost":
+      return texts.queueAttachmentsLost;
+    case "queueContentLost":
+      return texts.queueContentLost;
+    case "queueDispatchFailed":
+      return texts.queueDispatchFailed;
+    case "attachmentNotInlined":
+      return texts.attachmentNotInlined(arg);
     case "unknownEvent":
       return texts.unknownEvent(arg);
-    case "imageUnsupported":
-      return texts.imageUnsupported(arg);
+    case "imagePathsInserted": {
+      // 参数形如 `<张数>:<模型名>`：张数在前，模型名里可能含冒号，所以按第一段切
+      const separator = arg.indexOf(":");
+      const count = Number(separator < 0 ? arg : arg.slice(0, separator));
+      const model = separator < 0 ? "" : arg.slice(separator + 1);
+      return texts.imagePathsInserted(Number.isFinite(count) ? count : 0, model);
+    }
     default:
       return text;
   }

@@ -136,6 +136,16 @@
         });
       };
       window.__composer = function () {
+        // 待发消息队列：一条纯文本、一条只有附件（文本为空）
+        window.__push({
+          type: "patch",
+          patch: {
+            queueItems: [
+              { id: "q1", text: "把入口文件里的重复初始化也一起去掉，顺带补一段说明注释", placement: "queued" },
+              { id: "q2", text: "", hasMedia: true, attachments: 2, placement: "queued" },
+            ],
+          },
+        });
         window.__push({
           type: "commands/list",
           commands: [
@@ -196,12 +206,12 @@
           ],
           model: {
             provider: "deepseek-official",
-            model: "deepseek-v4-pro",
+            model: "deepseek-flash",
             label: "DeepSeek-V4-Pro",
             reasoningEffort: "high",
             contextWindow: 128000,
+            // 与真实目录一致：deepseek-flash 是 4 档（Off/Low/High/Max）
             efforts: [
-              { id: "", name: "默认" },
               { id: "off", name: "关闭" },
               { id: "low", name: "低" },
               { id: "high", name: "高" },
@@ -240,7 +250,55 @@
                 { id: "r1", kind: "thinking", text: "先看两个文件各自的初始化路径。\nindex.ts 里创建了 server 并调用了 listen，config.ts 又从环境变量里读了一遍端口，两处会打架。", streaming: false },
                 { id: "t1", kind: "text", text: "我看了两个文件，重复初始化的根因是端口和中间件被注册了两次。" },
                 { id: "tool1", kind: "tool", tool: { id: "call_1", name: "read", title: "", detail: "src/server/index.ts", status: "ok", input: '{"file_path":"src/server/index.ts"}', output: "export function bootstrap() {…}", startedAt: now - 234000, endedAt: now - 233400 } },
+                // 读取节点：只读了一段 → 行号缀在文件名后（含一个很长的路径，验证窄侧栏下不被截掉）
+                { id: "tool1b", kind: "tool", tool: { id: "call_1b", name: "read", title: "", detail: "…/dsh/controller.ts", command: "d:\\dev\\dsh-chat\\src\\dsh\\controller.ts", readLines: { start: 3201, end: 3220 }, status: "ok", input: '{"file_path":"d:\\\\dev\\\\dsh-chat\\\\src\\\\dsh\\\\controller.ts","offset":3201,"limit":20}', output: "3201: …", startedAt: now - 233900, endedAt: now - 233500 } },
                 { id: "tool2", kind: "tool", tool: { id: "call_2", name: "grep", title: "", detail: "listen(", status: "ok", input: '{"pattern":"listen\\\\("}', output: "src/server/index.ts:24\nsrc/config.ts:11", startedAt: now - 233300, endedAt: now - 233000 } },
+                // 编辑类节点：结构化 diff（结果 meta 里的 hunk）
+                { id: "tool3", kind: "tool", tool: { id: "call_3", name: "edit", title: "", detail: "…/server/index.ts", status: "ok",
+                  input: '{"file_path":"D:/dev/app/src/server/index.ts"}',
+                  output: "The file D:/dev/app/src/server/index.ts has been updated successfully.",
+                  diff: [{ path: "D:/dev/app/src/server/index.ts", added: 3, removed: 2, lines: [
+                    { kind: "context", text: "export function createServer(options) {" },
+                    { kind: "context", text: "  const server = http.createServer((req, res) => {" },
+                    { kind: "del", text: "    res.writeHead(200);" },
+                    { kind: "add", text: "    res.writeHead(200, { 'content-type': 'application/json' });" },
+                    { kind: "context", text: "    res.end(JSON.stringify({ ok: true }));" },
+                    { kind: "context", text: "  });" },
+                    { kind: "del", text: "  server.listen(3080);" },
+                    { kind: "add", text: "  server.listen(options.port);" },
+                    { kind: "add", text: "  return server;" },
+                    { kind: "context", text: "}" }
+                  ] }],
+                  startedAt: now - 232000, endedAt: now - 231000 } },
+                { id: "tool4", kind: "tool", tool: { id: "call_4", name: "write", title: "", detail: "…/config.ts", status: "ok",
+                  input: '{"file_path":"D:/dev/app/src/config.ts"}',
+                  output: "Created file",
+                  diff: [{ path: "D:/dev/app/src/config.ts", added: 4, removed: 0, lines: [
+                    { kind: "add", text: "export const config = {" },
+                    { kind: "add", text: "  port: Number(process.env.PORT ?? 3080)," },
+                    { kind: "add", text: "  host: process.env.HOST ?? '127.0.0.1'," },
+                    { kind: "add", text: "};" }
+                  ] }],
+                  startedAt: now - 230000, endedAt: now - 229500 } },
+                // 运行中的 build 节点：命令很长（标题里会被省略），正在跑，可展开
+                { id: "tool5", kind: "tool", tool: { id: "call_5", name: "build", title: "", status: "running",
+                  detail: "cmake --build build-agent --config Rel…",
+                  command: "cmake --build build-agent --config RelWithDebInfo --target dsh_chat_plugin --parallel 8",
+                  input: '{"command":"cmake --build build-agent --config RelWithDebInfo --target dsh_chat_plugin --parallel 8"}',
+                  startedAt: now - 74000 } },
+                // 自动载入的提示词节点（形态取自真实会话 dump）
+                { id: "inj1", kind: "injected", injected: { sourceKind: "plugin", plugin: "@deepseek-ai/dsh-system-prompt",
+                  text: "You are an AI agent powered by DeepSeek Harness.\n\nYou are a coding agent powered by the deepseek/deepseek-v4.1-flash model.\n\n# Rules\n\n1. Read before you write.\n2. Prefer the project's own tooling." } },
+                { id: "inj2", kind: "injected", injected: { sourceKind: "plugin", plugin: "dsh-mcp-manager", form: "mcp-status",
+                  text: "<mcp-status>\nMCP 服务器当前状态（● 运行中 / ○ 停止）：\n○ context7 (mcp-context7) — 查文档\n○ excel (mcp-excel) — 读/写 Excel 表格" } },
+                { id: "inj3", kind: "injected", injected: { sourceKind: "agent-instructions", form: "instructions",
+                  text: "<system-reminder>\nThe following workspace instructions may be relevant to your work.\n\n# 全局经验\n\n1. 构建前先加载 skill build。" } },
+                { id: "inj4", kind: "injected", injected: { sourceKind: "plugin", plugin: "@deepseek-ai/dsh-system-prompt", form: "snapshot",
+                  text: "Current runtime context. This snapshot supersedes earlier runtime-context snapshots.\n\nCurrent DSH file policy: workspace-write." } },
+                { id: "inj5", kind: "injected", injected: { sourceKind: "skill-catalog", form: "catalog",
+                  text: "<system-reminder>\nA skill is a reusable set of task-specific instructions. The following skills are available in this session:\n\n- build: 一切构建相关内容的统一入口…\n- tdd: Test-driven development…" } },
+                { id: "inj6", kind: "injected", injected: { sourceKind: "plugin", plugin: "openviking-memory", form: "recall",
+                  text: "<openviking-context>\nRelevant memory from OpenViking. Use the search/read MCP tools to expand URIs.\n\n<memory uri=\"viking://resources/dsh-vscode-project\" type=\"resources\" score=\"0.79\" />\n</openviking-context>" } },
                 { id: "t2", kind: "text", text: "把入口收敛成一个 `bootstrap()`，配置只读一次：", streaming: false },
                 { id: "c1", kind: "text", text: "```ts\n" + codeSample + "\n```", streaming: true }
               ]
@@ -252,6 +310,25 @@
               model: "DeepSeek-V4-Pro",
               segments: [
                 { id: "q1", kind: "approval", approval: { requestId: "ev1", toolName: "pwsh", reason: "escalate sandbox to danger-full-access：需要在工作区外写入日志文件", detail: "调用标识：call_9f2", state: "waiting" } }
+              ]
+            },
+            {
+              id: "a:2",
+              role: "assistant",
+              ts: now - 12000,
+              model: "DeepSeek-V4-Pro",
+              segments: [
+                { id: "ask1", kind: "question", question: { requestId: "ev2", state: "waiting", items: [
+                  { id: "mode", header: "确认", question: "重构范围要覆盖到哪一层？", options: [
+                    { label: "只改入口文件", description: "风险最小，先把重复初始化去掉" },
+                    { label: "连同配置读取一起收敛", description: "改动更大，但结构更干净" },
+                    { label: "全量重构 server 目录", description: "包含测试与构建脚本的调整" }
+                  ] },
+                  { id: "tests", header: "回归", question: "要不要同时补测试？", multiSelect: true, options: [
+                    { label: "补单元测试" },
+                    { label: "补冒烟测试" }
+                  ] }
+                ] } }
               ]
             }
           ]

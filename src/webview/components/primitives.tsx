@@ -15,6 +15,7 @@ export function Row({
   icon,
   title,
   detail,
+  detailSuffix,
   meta,
   open,
   onToggle,
@@ -24,6 +25,13 @@ export function Row({
   icon?: ReactNode;
   title: string;
   detail?: string;
+  /**
+   * 紧跟在 detail 之后的**不可压缩**片段（读取节点的 `:100-120`）。
+   *
+   * 单独一个元素而不是拼进 detail：detail 从右侧省略，拼在末尾的内容在窄侧栏
+   * 会被截掉——那恰好是这个后缀要传达的信息。
+   */
+  detailSuffix?: string;
   meta?: ReactNode;
   open: boolean;
   onToggle: () => void;
@@ -39,7 +47,14 @@ export function Row({
         </span>
         {tone ? <span className={`dot dot-${tone}`} /> : icon ? <span className="row-icon">{icon}</span> : null}
         <span className="row-title">{title}</span>
-        {detail ? <span className="row-detail">{detail}</span> : null}
+        {/* detail 会被省略号从右侧截断（路径太长时），所以补 title：
+            即使截断，悬停仍能看到完整内容 */}
+        {detail ? (
+          <span className="row-detail" title={detailSuffix ? `${detail}${detailSuffix}` : detail}>
+            {detail}
+          </span>
+        ) : null}
+        {detailSuffix ? <span className="row-detail-suffix">{detailSuffix}</span> : null}
         {meta ? <span className="row-meta">{meta}</span> : null}
       </button>
       {open && children ? children : null}
@@ -269,6 +284,26 @@ export function useSelectionFreeze(
 
 export function Ellipsis() {
   return <span className="ellipsis" />;
+}
+
+/**
+ * 实时耗时：工具还在跑时每秒跳一次。
+ *
+ * 构建这类工具动辄几分钟，而协议里**没有**工具进度事件（实测：`tool/result`
+ * 只在结束时落地，官方 Web UI 运行中同样只有 `output: undefined`），所以
+ * 「还在跑」只能靠一个会动的数字表达。`active` 为假时停止计时并返回 0，
+ * 收尾后由 `endedAt` 给出最终值。
+ */
+export function useElapsed(startedAt: number | undefined, active: boolean): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active || startedAt === undefined) return;
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [active, startedAt]);
+  if (startedAt === undefined) return 0;
+  return Math.max(0, now - startedAt);
 }
 
 /**

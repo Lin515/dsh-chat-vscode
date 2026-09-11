@@ -78,8 +78,31 @@ export class DshClient {
 
   // ---------- 认证 ----------
 
+  /**
+   * 当前会话 cookie（`name=value`，可直接放进 Cookie 头）。
+   *
+   * 换取成功后由宿主持久化：**它是这里唯一值得存下来的东西**——cookie 的签名
+   * 密钥存在服务端凭据库里（跨重启不变，默认 30 天），而启动令牌是
+   * `randomBytes(32)` 按进程生成的，每次 `dsh web` 启动都会刷新。
+   */
+  get sessionCookie(): string {
+    return this.cookie;
+  }
+
+  /**
+   * 直接使用一个已有的签名 cookie，跳过启动令牌交换。
+   *
+   * 外部服务器（固定地址）重启后走这条：不需要用户重新输入令牌。
+   * cookie 不对时后续请求会 401 → `DshAuthError`，调用方据此回退到令牌。
+   */
+  useSessionCookie(cookie: string): void {
+    this.cookie = cookie;
+  }
+
   /** 用启动令牌换取签名 cookie；旧版无认证时静默通过。 */
   async authenticate(): Promise<void> {
+    // 已经带着会话 cookie（复用上次换来的）：不必再走令牌交换
+    if (this.cookie) return;
     if (!this.launchToken) {
       // 未持有令牌（外部服务器）：先按无认证试一次，401 时再报错
       this.cookie = "";
@@ -93,7 +116,9 @@ export class DshClient {
       signal: AbortSignal.timeout(10_000),
     });
     if (res.status === 401 || res.status === 403) {
-      throw new DshAuthError("服务器拒绝了启动令牌（可能已过期），请重启 DSH 服务器。");
+      throw new DshAuthError(
+        "服务器拒绝了启动令牌（令牌每次启动都会刷新，请用 dsh web 最新打印的 URL）。",
+      );
     }
     const setCookie = res.headers.get("set-cookie");
     this.cookie = setCookie ? setCookie.split(";")[0].trim() : "";
@@ -124,9 +149,7 @@ export class DshClient {
 
     const out = await attempt();
     if (out.status === 401 || out.status === 403) {
-      throw new DshAuthError(
-        `服务器要求授权（HTTP ${out.status}）。请让本扩展自行启动 DSH 服务器（命令面板：DSH: 重启服务器）。`,
-      );
+      throw new DshAuthError(`服务器要求授权（HTTP ${out.status}）。`);
     }
     if (!out.body) throw new Error(`${method} 失败：HTTP ${out.status}`);
     if (!("result" in out.body)) throw new Error(`${method} 收到了非响应帧`);
@@ -238,16 +261,25 @@ export class DshClient {
     });
   }
 
+  /**
+   * 提交一轮对话。
+   *
+   * `requestId` 由客户端铸造，是**唯一的关联身份**：Host 会把它写进 durable
+   * `user/message` 的 `source.rpcId`，队列项也带 `SessionQueuedItem.rpcId`。
+   * 调用方因此能凭它把「服务端队列里的这一条」对回「用户当时真正输入的文本」——
+   * 这里的内容块已经把文件上下文内联进正文了，队列回显不足以还原输入框。
+   */
   prompt(
     sessionId: string,
     content: unknown[],
     mode: "queue" | "steer" = "queue",
+    requestId: string = randomUUID(),
   ): Promise<{ accepted: true }> {
     return this.request(
       METHODS.sessionPrompt,
       {
         request: {
-          requestId: randomUUID(),
+          requestId,
           sessionId,
           mode,
           content,

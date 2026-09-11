@@ -92,12 +92,24 @@
         "title": "%cmd.addFile.title%"
       },
       {
+        "command": "dshChat.addFolder",
+        "title": "%cmd.addFolder.title%"
+      },
+      {
         "command": "dshChat.startServer",
         "title": "%cmd.startServer.title%"
       },
       {
         "command": "dshChat.restartServer",
         "title": "%cmd.restartServer.title%"
+      },
+      {
+        "command": "dshChat.setToken",
+        "title": "%cmd.setToken.title%"
+      },
+      {
+        "command": "dshChat.cleanupProcesses",
+        "title": "%cmd.cleanupProcesses.title%"
       },
       {
         "command": "dshChat.showLogs",
@@ -120,6 +132,11 @@
         {
           "command": "dshChat.addFile",
           "when": "!explorerResourceIsFolder",
+          "group": "dshChat@1"
+        },
+        {
+          "command": "dshChat.addFolder",
+          "when": "explorerResourceIsFolder",
           "group": "dshChat@1"
         }
       ]
@@ -154,15 +171,20 @@
           "maximum": 600,
           "description": "%config.startTimeoutSec%"
         },
-        "dshChat.defaultReasoningEffort": {
+        "dshChat.diffLayout": {
           "type": "string",
-          "default": "",
-          "description": "%config.defaultReasoningEffort%"
-        },
-        "dshChat.showUsageStats": {
-          "type": "boolean",
-          "default": true,
-          "description": "%config.showUsageStats%"
+          "enum": [
+            "auto",
+            "unified",
+            "split"
+          ],
+          "default": "auto",
+          "enumDescriptions": [
+            "%config.diffLayout.auto%",
+            "%config.diffLayout.unified%",
+            "%config.diffLayout.split%"
+          ],
+          "markdownDescription": "%config.diffLayout%"
         }
       }
     }
@@ -172,7 +194,9 @@
     "watch": "node esbuild.mjs --watch",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.webview.json",
     "build:scripts": "node esbuild.scripts.mjs",
+    "test": "npm run build:scripts && node build/parse-tool-result.test.mjs && node build/diff.test.mjs && node build/attachments.test.mjs && node build/queue-view.test.mjs && node build/session-cookie.test.mjs && node build/tool-view.test.mjs && node build/text-file.test.mjs && node build/thinking-stream.test.mjs && node build/injected.test.mjs && node build/styles.test.mjs && node build/read-range.test.mjs && node build/segment.test.mjs && node build/path-insert.test.mjs && node build/token-cleanup.test.mjs",
     "smoke": "npm run build:scripts && node build/smoke.mjs",
+    "e2e:queue-esc": "npm run build:scripts && node build/queue-esc-e2e.mjs",
     "preview": "node scripts/previewServer.mjs",
     "package": "npm run build && node scripts/package.mjs"
   },
