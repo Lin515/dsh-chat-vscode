@@ -40,6 +40,7 @@ const entries = {
   "build/text-file.test.mjs": "scripts/textFile.test.ts",
   "build/thinking-stream.test.mjs": "scripts/thinkingStream.test.ts",
   "build/injected.test.mjs": "scripts/injected.test.ts",
+  "build/unknown-event.test.mjs": "scripts/unknownEvent.test.ts",
   "build/styles.test.mjs": "scripts/styles.test.ts",
   "build/read-range.test.mjs": "scripts/readRange.test.ts",
   "build/segment.test.mjs": "scripts/segment.test.ts",

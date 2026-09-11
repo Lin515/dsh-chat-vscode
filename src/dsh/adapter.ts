@@ -16,7 +16,7 @@ import { hunksFromMeta, hunksFromToolArgs } from "../shared/diff";
 import { readRangeFromMeta, readRangeFromOutput } from "./readRange";
 import type { HostToWebview } from "../shared/ipc";
 import {
-  RENDERED_EVENT_TYPES,
+  isKnownEventType,
   type AssistantStreamFrame,
   type ContentBlock,
   type SessionFollowFrame,
@@ -489,8 +489,10 @@ export class SessionAdapter {
       }
 
       default: {
-        // 未知事件：有 ignorable 才允许安全跳过，否则明确提示（协议要求）
-        if (!RENDERED_EVENT_TYPES.has(event.type) && !event.ignorable) {
+        // 未知事件：有 ignorable 才允许安全跳过，否则明确提示（协议要求）。
+        // 「未知」= 本客户端与 dsh 词汇表都不认识；已知但有意不渲染的类型
+        // （SILENT_EVENT_TYPES）不算，否则簿记事件会把告警刷成噪音。
+        if (!isKnownEventType(event.type) && !event.ignorable) {
           this.emit({
             type: "toast",
             level: "warn",

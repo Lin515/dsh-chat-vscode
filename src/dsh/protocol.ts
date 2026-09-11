@@ -169,8 +169,8 @@ export const STREAMS = {
   events: "$events",
 } as const;
 
-/** 会话事件里我们主动渲染的类型；未列出的按 `ignorable` 规则降级。 */
-export const RENDERED_EVENT_TYPES = new Set([
+/** 会话事件里我们主动渲染的类型；其余按下面的 `SILENT_EVENT_TYPES` / `ignorable` 规则降级。 */
+export const RENDERED_EVENT_TYPES: ReadonlySet<string> = new Set([
   "turn/start",
   "turn/end",
   "step/start",
@@ -200,3 +200,70 @@ export const RENDERED_EVENT_TYPES = new Set([
   "session/end-seed",
   "agent-preset/selected",
 ]);
+
+/**
+ * 已知但**有意不渲染**的事件类型（dsh 内核的簿记类事件）。
+ *
+ * 和 `RENDERED_EVENT_TYPES` 的唯一区别是「渲染」还是「知情的静默」：两者都表示
+ * 本客户端**认识**这个类型，因此都不该触发「不认识的事件」告警。那条告警唯一的
+ * 价值是提示「内核冒出了本客户端从未见过的词汇」；一旦已知类型混进去，就退化成
+ * 噪音——`agent/inbox/spliced` 每次入队/领取各来一条（新会话开场就有 3~5 条），
+ * `command/*` 每次斜杠命令、`llm/retry` 每次模型重试都会命中（审计报告 §11）。
+ *
+ * 名单 = dsh-session `KNOWN_SESSION_EVENT_TYPES`（0.1.5-rc.1）减去已渲染的类型。
+ * 其中 `llm/retry*`、`command/*`、`tool/ptc-dispatch*` 官方 web 端是有界面的
+ * （重试提示、斜杠命令节点、`run_code` 子派发卡片），这里先静默，属于待补的
+ * 功能缺口，而非永久决定。
+ */
+export const SILENT_EVENT_TYPES: ReadonlySet<string> = new Set([
+  // inbox 队列簿记：插入 / 编辑 / 领取 / 取消（每条用户消息至少两条）
+  "agent/inbox/spliced",
+  // 斜杠命令节点（官方 web 端渲染）
+  "command/run",
+  "command/done",
+  // 上下文压缩的裁剪明细（start/summary/end 已渲染，prune 只是记账）
+  "compaction/prune",
+  // 消息反馈插件
+  "feedback/message-delete",
+  "feedback/message-put",
+  "feedback/record",
+  // 钩子
+  "hook/invoked",
+  "hook/result",
+  // 模型重试（官方 web 端渲染重试提示）
+  "llm/retry",
+  "llm/retry-started",
+  // 定时任务
+  "schedule/change",
+  // 会话日志上报回执
+  "session-log-deepseek/delivery-accepted",
+  // 标题生成的模型请求快照
+  "session/title-llm-request",
+  // 子代理目录 / 描述符 / 模型选择策略
+  "subagent/catalog",
+  "subagent/descriptor",
+  "subagent/model-selection-policy",
+  // 团队协作
+  "team/member",
+  "team/message/delivered",
+  "team/message/queued",
+  "team/task",
+  // run_code 子派发（官方 web 端渲染卡片）
+  "tool/ptc-dispatch",
+  "tool/ptc-dispatch-start",
+  // 工作流工具
+  "tool-workflow/agent-end",
+  "tool-workflow/agent-start",
+  "tool-workflow/run-end",
+  "tool-workflow/run-start",
+  // web_search 的模型请求快照
+  "web/deepseek-search-llm-request",
+]);
+
+/**
+ * 本客户端是否认识这个事件类型（渲染或知情静默）。
+ * 不认识、又没标 `ignorable` 的才需要告警，见 `adapter.ts` 的 default 分支。
+ */
+export function isKnownEventType(type: string): boolean {
+  return RENDERED_EVENT_TYPES.has(type) || SILENT_EVENT_TYPES.has(type);
+}
