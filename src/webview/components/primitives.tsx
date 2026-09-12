@@ -11,6 +11,48 @@ import { IconChevronRight } from "../icons";
 import { splitPath } from "../pathDisplay";
 import { useTexts } from "../texts";
 
+/**
+ * 元素的内容是否**真的被裁**（内容的布局宽度超过可见宽度）。
+ *
+ * 用在标题行的目录段上：左侧渐隐是「前面还有内容」的提示，只在被裁时才成立。
+ * 无条件挂着的话，短目录（`…/`、`src/`）开头那 10px 会被无端吃掉一截，
+ * 看着像被节点名盖住——用户 2026-09-12 报的正是这个。
+ *
+ * 判据**不能**用 `scrollWidth`：目录段是 flex 容器，文本排在匿名 flex 项里，
+ * 项内的溢出不计入父级的 scrollable overflow——实测长目录文本宽 338px、
+ * 盒子 245px，而 `scrollWidth == clientWidth == 245`，判据永远为 false。
+ * 量「文本自己的布局宽度」（Range 覆盖内容）才准。
+ *
+ * 依赖两项：`content` 变化时复检（路径是流式长出来的），容器宽度变化由
+ * `ResizeObserver` 兜住（目录段是 flex 项，侧栏变窄它跟着变窄）。
+ * 只在挂载与内容变化时读尺寸，不在每次渲染里读——流式期间每来一个 token 都强制
+ * 同步布局会很贵。
+ *
+ * @param ref 目标元素。
+ * @param content 该元素的内容；为空表示这一段不存在，直接返回 false。
+ */
+function useClipped(ref: RefObject<HTMLElement>, content: string | undefined): boolean {
+  const [clipped, setClipped] = useState(false);
+  useLayoutEffect(() => {
+    if (!content) {
+      setClipped(false);
+      return;
+    }
+    const el = ref.current;
+    if (!el) return;
+    const check = () => {
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      setClipped(range.getBoundingClientRect().width - el.clientWidth > 1);
+    };
+    check();
+    const observer = new ResizeObserver(check);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [ref, content]);
+  return clipped;
+}
+
 /** 一个可折叠的单行过程行（思考、工具、用量…），沿用 Continue 的导轨观感。 */
 export function Row({
   icon,
@@ -45,18 +87,37 @@ export function Row({
   // 块内没有 gap，所以它是 `文件名:行号` 而不是「文件名 行号」；同时它自己不压缩，
   // 挨裁的永远是目录那一段（曾经把它放在 detail 之外，detail 一撑宽就被顶到行尾）。
   const parts = detail ? splitPath(detail) : undefined;
+  // 目录段真的被裁时才做左侧渐隐（见 useClipped）
+  const dirRef = useRef<HTMLSpanElement>(null);
+  const dirClipped = useClipped(dirRef, parts?.dir);
   return (
     <div className={`row${open ? " is-open" : ""}`}>
       <button className="row-head" onClick={onToggle} aria-expanded={open}>
         <span className="row-chevron">
           <IconChevronRight size={11} />
         </span>
-        {tone ? <span className={`dot dot-${tone}`} /> : icon ? <span className="row-icon">{icon}</span> : null}
+        {tone ? (
+          // 状态点占的格子与图标同宽（.row-icon-status）：否则「运行中（13px 图标）
+          // → 出错 / 被中止（7px 圆点）」时，后面的节点名会横向跳 6px
+          // （预览页实测 title 的 x 从 61 → 55）。圆点自身位置不变。
+          <span className="row-icon row-icon-status">
+            <span className={`dot dot-${tone}`} />
+          </span>
+        ) : icon ? (
+          <span className="row-icon">{icon}</span>
+        ) : null}
         <span className="row-title">{title}</span>
         {/* detail 过长时会被裁掉，所以补 title：即使截断，悬停仍能看到完整内容 */}
         {parts ? (
           <span className="row-detail" title={detail}>
-            {parts.dir ? <span className="row-detail-dir">{parts.dir}</span> : null}
+            {parts.dir ? (
+              <span
+                ref={dirRef}
+                className={`row-detail-dir${dirClipped ? " is-clipped" : ""}`}
+              >
+                {parts.dir}
+              </span>
+            ) : null}
             <span className="row-detail-name">{parts.name}</span>
             {detailSuffix ? <span className="row-detail-suffix">{detailSuffix}</span> : null}
           </span>

@@ -55,6 +55,7 @@ const entries = {
   "build/invariants.test.mjs": "scripts/invariants.test.ts",
   "build/wire.test.mjs": "scripts/wire.test.ts",
   "build/turn-files.test.mjs": "scripts/turnFiles.test.ts",
+  "build/file-change.test.mjs": "scripts/fileChange.test.ts",
   "build/styles.test.mjs": "scripts/styles.test.ts",
   "build/read-range.test.mjs": "scripts/readRange.test.ts",
   "build/segment.test.mjs": "scripts/segment.test.ts",

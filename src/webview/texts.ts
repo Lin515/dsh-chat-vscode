@@ -74,8 +74,10 @@ export interface Texts {
   presentedLabel: string;
   /** 产出文件超出展示上限时的剩余计数（也是「展开全部」按钮的文案）。 */
   producedMore: (count: number) => string;
-  /** 打开产出文件的无障碍标题。 */
-  producedOpen: (name: string) => string;
+  /** 文件芯片的无障碍标题（点击查看该文件的改动）。 */
+  openChangesAria: (name: string) => string;
+  /** 文件芯片的悬停说明：默认看改动、按住修饰键直接打开文件。 */
+  openChangesHint: string;
   /** 文件芯片行「展开全部」按钮的无障碍标题。 */
   filesExpandAria: (count: number) => string;
   /** 文件芯片行展开后的「收起」文案。 */
@@ -373,7 +375,8 @@ const zh: Texts = {
   producedLabel: "本轮文件改动",
   presentedLabel: "交付文件",
   producedMore: (count) => `+ ${count} 个文件`,
-  producedOpen: (name) => `打开 ${name}`,
+  openChangesAria: (name) => `查看 ${name} 的改动`,
+  openChangesHint: "点击查看改动对比；按住 Alt 直接打开文件",
   filesExpandAria: (count) => `展开全部 ${count} 个文件`,
   filesCollapse: "收起",
   filesCollapseAria: "收起文件列表",
@@ -609,7 +612,8 @@ const en: Texts = {
   producedLabel: "Files changed",
   presentedLabel: "Presented files",
   producedMore: (count) => `+ ${count} file${count === 1 ? "" : "s"}`,
-  producedOpen: (name) => `Open ${name}`,
+  openChangesAria: (name) => `View changes in ${name}`,
+  openChangesHint: "Click to view changes; hold Alt to open the file",
   filesExpandAria: (count) => `Show all ${count} file${count === 1 ? "" : "s"}`,
   filesCollapse: "Collapse",
   filesCollapseAria: "Collapse file list",

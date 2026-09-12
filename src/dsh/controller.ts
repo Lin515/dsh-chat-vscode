@@ -18,6 +18,7 @@ import type {
 import type { HostToWebview, WebviewToHost } from "../shared/ipc";
 import { SessionAdapter, type ImageRef } from "./adapter";
 import { classifyPath, formatPathList, isDirectoryPath, isImagePath } from "./attachments";
+import { hasWorkingChange, type GitChangeStateLike } from "./fileChange";
 import { composeWithReferences, formatFileMention } from "./references";
 import { resolveForVsCode } from "./hostText";
 import { DshApiError, DshAuthError, DshClient, type ConnectionState, type SessionSummaryWire } from "./client";
@@ -97,6 +98,23 @@ function numberOr(value: unknown, fallback: number): number {
 /** 同上，但没有回退值：缺字段/坏值一律 undefined（用于「可缺」的投影字段）。 */
 function optionalNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+/**
+ * 内建 git 扩展导出对象的**结构**视图。
+ *
+ * `@types/vscode` 只带 VS Code 自己的 API，git 扩展的 API 类型不随包发布，
+ * 所以这里按用到的字段自己声明。形状是读内建扩展的实现确认的（VS Code 1.137
+ * `extensions/git/dist/main.js`：`getAPI(1).getRepository(uri).state` 上确实有
+ * `workingTreeChanges` / `indexChanges` / `mergeChanges` 三个清单——同一个文件里
+ * 的 `git.api.getRepositoryState` 也是这么取的）。
+ */
+interface GitApiLike {
+  getRepository(uri: vscode.Uri): { readonly state?: GitChangeStateLike } | null;
+}
+
+interface GitExtensionExportsLike {
+  getAPI(version: number): GitApiLike;
 }
 
 /** 服务器 → webview 的会话内容总控。 */
@@ -1905,7 +1923,7 @@ export class ChatController implements vscode.Disposable {
         break;
 
       case "openFile":
-        await this.openFile(message.path);
+        await this.openFile(message.path, message.diff);
         break;
 
       case "insertText":
@@ -2718,12 +2736,48 @@ export class ChatController implements vscode.Disposable {
     await this.pickFolder(viewId);
   }
 
-  private async openFile(path: string): Promise<void> {
+  /**
+   * 在编辑器里打开一个文件。
+   *
+   * `diff` 表示**想看改动**（文件芯片的普通点击）：有可对比的改动就打开 VS Code
+   * 的改动对比窗口（等同 SCM 里的「打开更改」），否则回落成普通打开——拿不到
+   * 改动不是错误，「点了什么都不发生」才是。
+   *
+   * `preview: true` 是既有行为：单击芯片只是预览，不挤掉已经打开的文件。
+   */
+  private async openFile(path: string, diff?: boolean): Promise<void> {
+    const uri = vscode.Uri.file(path);
+    if (diff === true && (await this.openChanges(uri))) return;
     try {
-      const document = await vscode.workspace.openTextDocument(vscode.Uri.file(path));
+      const document = await vscode.workspace.openTextDocument(uri);
       await vscode.window.showTextDocument(document, { preview: true });
     } catch (error) {
       this.log(`[open] 打开失败 ${path}：${this.describeError(error)}`);
+    }
+  }
+
+  /**
+   * 有可对比的改动时打开 VS Code 的对比窗口，返回是否开出来了。
+   *
+   * 复用 git 扩展的 `git.openChange`（左边是 HEAD/暂存版本、右边是工作区文件），
+   * 但**先自己判定有没有改动**：该命令对不在 SCM 改动清单里的文件是静默无操作
+   * （内部 `getSCMResource()` 找不到资源就 return），直接调用会「点了没反应」。
+   * 判定口径见 `fileChange.ts`——只认工作区/暂存/合并三组，未跟踪文件不算改动。
+   */
+  private async openChanges(uri: vscode.Uri): Promise<boolean> {
+    try {
+      const git = vscode.extensions.getExtension<GitExtensionExportsLike>("vscode.git");
+      if (!git) return false;
+      // 内建扩展按需激活：没激活时 exports 还是空的
+      const exports = git.isActive ? git.exports : await git.activate();
+      const state = exports?.getAPI?.(1)?.getRepository(uri)?.state;
+      if (!hasWorkingChange(state, uri.fsPath)) return false;
+      await vscode.commands.executeCommand("git.openChange", uri);
+      return true;
+    } catch (error) {
+      // git 扩展缺失 / 命令失败都不该让「点文件」整个失败：回落普通打开
+      this.log(`[open] 改动对比不可用，改为直接打开 ${uri.fsPath}：${this.describeError(error)}`);
+      return false;
     }
   }
 

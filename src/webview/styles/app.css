@@ -435,6 +435,25 @@
   color: var(--muted);
 }
 
+/* 节点图标的内层盒子：**运行中与完成后必须是同一个盒子**。
+   `.icon-glow` 自带 `display: inline-flex`，而完成态的内层 span 是普通 inline——
+   于是运行中盒子 13px、完成后 16px（行盒带 line-height 的上下留白，SVG 沿基线摆），
+   图标在完成的一瞬间**向上跳 1.5px**（预览页实测：svg 的 y 从 -690.72 → -692.22）。
+   用户 2026-09-12 报的「执行完毕时图标会小挪动一下」就是它。
+   现在两种状态都由本类提供 inline-flex：盒子恒为内容大小、在行内居中，
+   运行/完成两态的几何完全一致（`.icon-glow` 只管发光，不再顺带改布局）。 */
+.node-icon {
+  display: inline-flex;
+}
+
+/* 状态点（error / stopped）所在的坑位：宽度与图标一致（13px），圆点仍在左边。
+   否则「运行中 → 出错 / 被中止」时行首从 13px 图标换成 7px 圆点，节点名横向跳 6px
+   （预览页实测 title 的 x 从 61 → 55）——与图标纵向跳 1.5px 是同一类问题：
+   同一个位置的两种状态必须是同一个盒子。 */
+.row-icon-status {
+  min-width: 13px;
+}
+
 /* 节点图标色：每种节点一个专属色（tokens.css 的 --node-*）。
    完成态 = 静态彩色图标（不再回落灰）；运行中 = 同色上叠 .icon-glow 呼吸发光
    （关键帧用 currentColor，光色自动跟随图标色）。
@@ -502,6 +521,10 @@
   display: flex;
   align-items: baseline;
   flex: 0 1 auto;
+  /* 与节点名之间留出呼吸空间（.row-head 的 gap 之外再加 4px）：
+     实测 gap 只有 6px 时，路径的第一个字符紧贴节点名，看着像被节点名压住
+     （用户 2026-09-12：「写入、编辑等文件路径太靠左了，有一点点被节点名遮盖」）。 */
+  margin-left: 4px;
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
@@ -510,13 +533,20 @@
 
 /* 目录段：内容比容器宽时从**左**被裁掉。
    `justify-content: flex-end` + `overflow: hidden` 让溢出发生在起始侧，
-   再叠一层左侧渐隐，读起来就是「前面还有内容」，而不是被硬切。 */
+   再叠一层左侧渐隐，读起来就是「前面还有内容」，而不是被硬切。
+
+   渐隐**只在真的被裁时**才挂（`.is-clipped`，由 primitives.tsx 的 useClipped
+   量出来）：无条件挂着的话，短目录（`…/`、`src/`）开头那 10px 也被吃掉一截，
+   看着同样像「被节点名遮盖」——而它其实一个字都没被裁。 */
 .row-detail-dir {
   display: inline-flex;
   justify-content: flex-end;
   flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
+}
+
+.row-detail-dir.is-clipped {
   -webkit-mask-image: linear-gradient(to right, transparent 0, #000 10px);
   mask-image: linear-gradient(to right, transparent 0, #000 10px);
 }

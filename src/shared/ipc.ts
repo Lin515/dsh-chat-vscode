@@ -138,7 +138,13 @@ export type WebviewToHost =
   | { type: "removeAttachment"; id: string }
   /** 更新草稿（宿主侧保留，重载后不丢）。 */
   | { type: "setDraft"; text: string }
-  /** 在编辑器中打开文件。 */
+  /**
+   * 在编辑器中打开文件。
+   *
+   * `diff` 表示「想看改动」：宿主查到可对比的改动就开 VS Code 的改动对比窗口
+   * （SCM 的「打开更改」），否则——未跟踪文件、文件没改过、根本不是 git 仓库——
+   * 回落成普通打开（判定见 `dsh/fileChange.ts`）。
+   */
   | { type: "openFile"; path: string; diff?: boolean }
   /** 在编辑器区打开一个独立的聊天面板。 */
   | { type: "openInEditor" }

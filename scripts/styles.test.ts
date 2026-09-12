@@ -155,23 +155,50 @@ console.log("styles: 思考结束后的鲸鱼仍为蓝色 ✓");
 // 完成态保持彩色图标（不落回灰）。断言钉组件层面：ToolRow / CommandRow
 // 运行中给行首图标挂 `.icon-glow <节点色类>`，结束态也带节点色类
 // （裸图标 = .row-icon 的灰色）；「运行中」不再用小圆点。
+//
+// 用户 2026-09-12 追加：执行完毕的一瞬间图标会「小挪动」一下。根因是两态的
+// **盒子不同**——`.icon-glow` 自带 `display: inline-flex`（13px 盒子），而完成态
+// 的内层 span 是普通 inline（16px 行盒、SVG 沿基线摆），实测向上跳 1.5px。
+// 现在两态都由 `.node-icon` 提供 inline-flex，断言同时钉住这件事。
 {
   const rows = readFileSync(join(process.cwd(), "src", "webview", "components", "Rows.tsx"), "utf8");
   assert.ok(
-    /running\s*\?\s*\(\s*<span className=\{`icon-glow \$\{iconClass\}`\}>\{icon\}<\/span>/.test(rows),
-    "ToolRow 行首图标运行中必须挂 .icon-glow + 节点色类（同色呼吸发光）——不能只有静态灰图标",
+    /<span className=\{`node-icon \$\{iconClass\}\$\{running \? " icon-glow" : ""\}`\}>\{icon\}<\/span>/.test(
+      rows,
+    ),
+    "ToolRow 行首图标必须恒带 .node-icon（两态同一盒子），运行中再叠 .icon-glow + 节点色类",
   );
   assert.ok(
-    /<span className="icon-glow node-command">\s*<IconSlash size=\{13\} \/>/.test(rows),
-    "CommandRow 行首图标运行中同样要挂 .icon-glow（带命令色）",
-  );
-  assert.ok(
-    /:\s*\(\s*<span className=\{iconClass\}>\{icon\}<\/span>/.test(rows),
-    "ToolRow 完成态行首图标必须保留节点色类（.node-*）——裸图标会落回 .row-icon 的灰",
+    /<span className=\{`node-icon node-command\$\{command\.state === "running" \? " icon-glow" : ""\}`\}>/.test(
+      rows,
+    ),
+    "CommandRow 行首图标同样恒带 .node-icon，运行中叠 .icon-glow（带命令色）",
   );
   assert.ok(
     !/tone=\{[^}]*"running"/.test(rows),
     "「运行中」状态不该再用 dot-running 小圆点——呼吸灯在图标级",
+  );
+
+  // 两态的盒子必须由同一个类提供布局：`.icon-glow` 只负责动画，不再改 display
+  const nodeIcon = rule(".node-icon");
+  assert.ok(
+    /display:\s*inline-flex/.test(nodeIcon),
+    ".node-icon 必须是 display: inline-flex——否则完成态落回行盒，图标会跳 1.5px",
+  );
+
+  // 出错 / 被中止时行首换成 7px 圆点：坑位宽度要与图标一致（13px），
+  // 否则节点名横向跳 6px（实测 61 → 55）——同一类「两态盒子不同」的问题
+  const status = rule(".row-icon-status");
+  assert.strictEqual(
+    /min-width:\s*(\d+)px/.exec(status)?.[1],
+    "13",
+    `.row-icon-status 的坑位必须与图标同宽（13px），现在是 "${status.trim()}"`,
+  );
+  assert.ok(
+    /<span className="row-icon row-icon-status">\s*<span className=\{`dot dot-\$\{tone\}`\} \/>/.test(
+      readFileSync(join(process.cwd(), "src", "webview", "components", "primitives.tsx"), "utf8"),
+    ),
+    "Row 的状态点必须渲染在与图标同宽的坑位里（.row-icon-status）",
   );
 }
 console.log("styles: 运行中节点呼吸发光与图标同色、完成态保色 ✓");
@@ -301,5 +328,76 @@ console.log("styles: 主文字优先完整、描述先省略 ✓");
   );
 }
 console.log("styles: 行号紧跟文件名、时长先让位 ✓");
+
+// ---------- 7. 节点名与文件路径之间要有呼吸空间，且目录渐隐只在真被裁时出现 ----------
+//
+// 用户 2026-09-12：「写入、编辑等文件路径太靠左了，有一点点被节点名遮盖」。
+// 两处原因：
+//   a) `.row-head` 的 gap 只有 6px，路径第一个字符紧贴节点名；
+//   b) `.row-detail-dir` **无条件**挂着左侧 10px 渐隐，于是短目录（`…/`、`src/`）
+//      开头那一段被吃掉——它其实一个字都没被裁，渐隐在这里是假信号。
+//      渐隐因此挪到 `.is-clipped`（由 primitives.tsx 量 `scrollWidth` 决定）。
+{
+  const detail = rule(".row-detail");
+  const margin = Number(/margin-left:\s*(\d+(?:\.\d+)?)px/.exec(detail)?.[1] ?? "0");
+  assert.ok(
+    margin >= 4,
+    `.row-detail 需要与节点名拉开距离（现在 margin-left: ${margin}px）——太近会像被节点名盖住`,
+  );
+
+  const dir = rule(".row-detail-dir");
+  assert.ok(
+    !/mask-image/.test(dir),
+    ".row-detail-dir 的基础规则不能带渐隐——短目录会被无端吃掉开头一截；" +
+      "渐隐只属于 .row-detail-dir.is-clipped",
+  );
+  const clipped = rule(".row-detail-dir.is-clipped");
+  assert.ok(
+    /mask-image:\s*linear-gradient\(to right/.test(clipped),
+    ".row-detail-dir.is-clipped 必须有左侧渐隐（真被裁时提示「前面还有内容」）",
+  );
+
+  // 组件侧：渐隐类由实测决定，且判据必须是**文本布局宽度**而不是 scrollWidth
+  // （目录段是 flex 容器，匿名 flex 项的溢出不进 scrollWidth——实测长目录
+  //   文本 338px / 盒子 245px，scrollWidth 却等于 clientWidth，判据永远 false）
+  const primitives = readFileSync(
+    join(process.cwd(), "src", "webview", "components", "primitives.tsx"),
+    "utf8",
+  );
+  assert.ok(
+    /className=\{`row-detail-dir\$\{dirClipped \? " is-clipped" : ""\}`\}/.test(primitives),
+    "Row 的目录段必须按实测结果决定是否挂 .is-clipped",
+  );
+  assert.ok(
+    /createRange\(\)[\s\S]{0,200}?getBoundingClientRect\(\)\.width - el\.clientWidth > 1/.test(primitives),
+    "useClipped 必须量文本的布局宽度（Range）而不是 scrollWidth——后者对 flex 项的溢出恒为 0",
+  );
+}
+console.log("styles: 路径与节点名有间距、目录渐隐只在被裁时 ✓");
+
+// ---------- 8. 会话历史里不弹 webview 的默认右键菜单 ----------
+//
+// 用户 2026-09-12：「去掉历史对话中的右键菜单」。webview 宿主把
+// `defaultPrevented` 当作「扩展已处理」的开关，所以 preventDefault 就是唯一手段；
+// 搜索框（可编辑元素）要放行，否则连粘贴都没了。
+{
+  const history = readFileSync(
+    join(process.cwd(), "src", "webview", "components", "History.tsx"),
+    "utf8",
+  );
+  assert.ok(
+    /event\.preventDefault\(\)/.test(history),
+    "History 必须 preventDefault 掉右键菜单",
+  );
+  assert.ok(
+    /closest\("input, textarea, \[contenteditable='true'\]"\)/.test(history),
+    "搜索框这类可编辑元素要放行右键菜单（否则粘贴没了）",
+  );
+  assert.ok(
+    /<div className="drawer" onContextMenu=\{blockContextMenu\}>/.test(history),
+    "抽屉本体必须挂上 onContextMenu",
+  );
+}
+console.log("styles: 会话历史屏蔽默认右键菜单 ✓");
 
 console.log("\nstyles: all assertions passed");

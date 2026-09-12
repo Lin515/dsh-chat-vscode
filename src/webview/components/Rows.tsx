@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import type { MouseEvent } from "react";
 import { post } from "../bridge";
 import type {
   ApprovalView,
@@ -143,13 +144,11 @@ export function ToolRow({ tool, diffLayout }: { tool: ToolCallView; diffLayout?:
     <Row
       // 运行中的节点：行首图标呼吸发光（.icon-glow，与思考鲸鱼同节奏），
       // 光色跟随节点自己的颜色（.node-*）；结束保持静态彩色图标
-      // （不落回 .row-icon 的灰），与鲸鱼「结束仍是品牌蓝」同一条语言
+      // （不落回 .row-icon 的灰），与鲸鱼「结束仍是品牌蓝」同一条语言。
+      // 两态都带 .node-icon：它提供 inline-flex 布局，盒子在运行/完成时**完全一致**
+      // ——否则完成的一瞬间图标会跳 1.5px（用户 2026-09-12 报的「小挪动」）
       icon={
-        running ? (
-          <span className={`icon-glow ${iconClass}`}>{icon}</span>
-        ) : (
-          <span className={iconClass}>{icon}</span>
-        )
+        <span className={`node-icon ${iconClass}${running ? " icon-glow" : ""}`}>{icon}</span>
       }
       tone={tone}
       // 节点名（动词）完整显示，路径/命令/查询等次要标题进 detail 列，
@@ -205,7 +204,7 @@ export function ToolRow({ tool, diffLayout }: { tool: ToolCallView; diffLayout?:
             <button
               key={file.path}
               className="lump-btn"
-              onClick={() => post({ type: "openFile", path: file.path })}
+              onClick={(event) => post({ type: "openFile", path: file.path, diff: wantsChanges(event) })}
             >
               <IconExternal size={12} />
               {file.path}
@@ -491,17 +490,12 @@ export function CommandRow({ command }: { command: CommandRunView }) {
   return (
     <Row
       // 运行中的命令与工具行同等待遇：行首图标呼吸发光（同节点色），
-      // 而不是 7px 小圆点；结束保持静态彩色
+      // 而不是 7px 小圆点；结束保持静态彩色。同样恒带 .node-icon，
+      // 免得完成时行首图标跳一下（与 ToolRow 同一个坑）
       icon={
-        command.state === "running" ? (
-          <span className="icon-glow node-command">
-            <IconSlash size={13} />
-          </span>
-        ) : (
-          <span className="node-command">
-            <IconSlash size={13} />
-          </span>
-        )
+        <span className={`node-icon node-command${command.state === "running" ? " icon-glow" : ""}`}>
+          <IconSlash size={13} />
+        </span>
       }
       tone={failed ? "error" : undefined}
       title={`/${command.name || texts.commands}`}
@@ -527,6 +521,10 @@ export function CommandRow({ command }: { command: CommandRunView }) {
  * 末尾一条 `+ N 文件`；点它展开全部文件，再点一次「收起」恢复（官方 produced 行
  * 只有静态计数，展开/收起是扩展自己的便利能力，交互形态与官方交付行的
  * 展开/收起按钮一致）。
+ *
+ * 芯片的**普通点击是看改动**（`diff`，宿主有改动就开 VS Code 的对比窗口），
+ * 按住修饰键时才直接打开文件本身——两行用同一套点击语义，同一个文件不会因为
+ * 模型申报没申报交付而行为不同（见 `wantsChanges`）。
  */
 export function FileChips({
   label,
@@ -550,9 +548,13 @@ export function FileChips({
         <button
           key={file.path}
           className="file-chip"
-          title={file.description ?? file.path}
-          aria-label={texts.producedOpen(file.path)}
-          onClick={() => post({ type: "openFile", path: file.path })}
+          title={
+            file.description
+              ? `${file.description}\n${texts.openChangesHint}`
+              : `${file.path}\n${texts.openChangesHint}`
+          }
+          aria-label={texts.openChangesAria(file.path)}
+          onClick={(event) => post({ type: "openFile", path: file.path, diff: wantsChanges(event) })}
         >
           <IconFile size={12} />
           <span className="file-chip-name">{basename(file.path)}</span>
@@ -574,6 +576,15 @@ export function FileChips({
 
 /** 与官方 `ProducedFiles` 相同的展示上限（多余的只报数量，不铺满侧栏）。 */
 const SHOWN_FILES = 6;
+
+/**
+ * 文件芯片点击的意图：默认**看改动**（宿主有改动就开 VS Code 的对比窗口，
+ * 没有则回落成普通打开）；按住 Alt/Ctrl/Cmd/Shift 时直接打开文件本身
+ * ——对比窗口里看内容不方便时的逃生口，同一份文件不必另找入口。
+ */
+function wantsChanges(event: MouseEvent): boolean {
+  return !(event.altKey || event.ctrlKey || event.metaKey || event.shiftKey);
+}
 
 /** 路径的末段：窄侧栏里要一眼认出是哪个文件（官方 `presented.basename` 等价物）。 */
 function basename(path: string): string {
