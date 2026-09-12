@@ -58,6 +58,71 @@
 | 崩溃遗留的 writer 锁会让 `dsh web` 起不来 | 强杀后 `~/.dsh/.credentials.yaml.lock` 留下；`dsh-atomic-write` 刻意不回收孤儿锁，而 boot 等 30 秒后抛错退出整个进程。已实现 `clearStaleDocumentLocks`（按肯定证据判持有者已死），在**每次拉起服务器之前**清理 |
 | `contextPressure` **分母先到、分子后到** | 实测（`scripts/pressureProbe.ts`，三轮真实对话）：投影每轮推十来次，`contextWindow` 先就位，而分子要等**下一次请求上报 usage** 才出现。实测表：一轮后只有分母、本地复算已能给出 19206；二轮后官方 pressure=19206 / projected=19215；三轮后 pressure 仍 19206 而 **projected 19844**。两条结论：**①`projectedTokens` 才是逐轮变化的那个**（也是压缩后唯一会降的），必须优先；**②本地 `input + cached` 与官方 `pressureTokens` 逐字相等**（19206 == 19206，且 ≠ totalTokens 19208），可以在投影缺分子时**同口径**兜底。占用条按用户要求**常驻显示**：三个来源都拿不到时保留旧值，不清空 |
 
+### 已修复（第三批：配置文件热重载同步，2026-09-12）
+
+**背景**：`dsh web` 的 web profile 是 `patchReload: live`（`dsh-app-boot` README：随产品
+交付的 `web` 模板实时重载，其他随附模板只在启动时应用 patch），改配置文件**不重启**就生效。
+宿主把这些变化以 `$events` 流上的 `{type:'emit', event, args}` 帧推给客户端，
+但本扩展的 `onEventFrame` 是 `if (frame.type !== "waterfall") return;`——**帧全被丢掉**，
+于是「外部改了配置，界面纹丝不动」。
+
+DSH Web 会热重载的配置文件与到达客户端的帧（**[契约]** 类型声明 + 实现逐字）：
+
+| 配置文件 | 宿主侧机制 | 转发给客户端的帧 |
+|---|---|---|
+| `$DSH_HOME/settings.yaml`（或 `.json`） | `dsh-settings-file` chokidar（`debounceMs` 100）→ `reconcileFromDisk` → `publish` → `bumpRevision` → `emitDocumentUpdated` | `settings/document-updated(ns, revision)` |
+| `$DSH_HOME/cordis.patch.yml`、`$DSH_HOME/profiles/<name>/cordis.patch.yml` | `watchUserPatches`（`hmr.registerConfig`）事务性重新组合 | 无专属帧；后果经 `commands/change`、`llm/adapters-updated` 出来 |
+| `$DSH_HOME/.credentials.yaml` | `dsh-credentials-local` chokidar → `publish` | `credentials/reference-updated(ref)` |
+| skill 根目录（`~/.dsh/skills`、`~/.agents/skills`、项目内） | `dsh-skill-filesystem` chokidar / `watchFile` | **没有**——`skills/change` 不在转发白名单里 |
+| 客户端插件 bundle（仅开发时 `pnpm run dev:web`） | `dsh-client-hmr` stat 轮询 + `/plugins/events` SSE | 与本扩展（webview 前端）无关 |
+
+转发白名单是 `dsh-api-remotes` 的 `API_REMOTE_FORWARDED_EVENTS`（20 项，其中 17 个
+`emit`、3 个 `waterfall`）；官方前端据此让 settings 镜像失效并重读
+（`ui-settings` / `ui-settings-models` / `ui-model-selection` / `ui-agent-preset`
+监听 `settings/document-updated`，`ui-commands` 监听 `commands/change`）。
+
+> **`llm/adapters-updated` 不是「模型目录变了」的充分信号**（第一版修完留下的漏网，
+> 用户 2026-09-12 实测复现）。它只在提供方**拓扑**提交点发（适配器注册/注销、可配置
+> 提供方目录增删）。改一个**已有模型**的 `reasoningEfforts`——路由集合没变——实测
+> **只发 `settings/document-updated`**，而 `session/modelCatalog` 的内容确实跟着变。
+> 只重读设置、不重取目录，模型选择框里的档位就永远停在旧目录上。官方
+> `ui-model-selection` 的写法是对 `settings/document-updated` /
+> `credentials/reference-updated` / `llm/adapters-updated` **三者**都
+> `this.catalog.refresh()`。
+
+| # | 条目 | 结论 |
+|---|---|---|
+| 20 | `$events` 的 emit 帧全被丢弃 | ✅ 新增 `dsh/configChanges.ts`：帧 → 重读动作的映射 + 合并闸门（同一批帧合成「在飞 + 一次 rerun」，对齐官方 settings 镜像），`controller.onEventFrame` 接上 |
+| 21 | `settings/document-updated` 未同步 | ✅ 重读设置面板（含 `busyEnter`）、图片输入能力、部署默认模型（此前 `defaultModel` 有缓存，不清掉永远读不到新值）**并重取模型目录** |
+| 22 | `credentials/reference-updated` 未同步 | ✅ 同上（密钥 set 状态在 `settings/describe` 里；换密钥可能激活提供方，目录也要重取，官方同口径） |
+| 23 | `llm/adapters-updated` 未同步 | ✅ 重取 `session/modelCatalog` 并重放各域模型选择；连设置命名空间一起重读（可配置提供方就注册在设置里） |
+| 24 | `commands/change` 未同步 | ✅ 重取所有打开域的 `commands/list`（顺带 `skills/list`——技能没有专属帧，只能借这些时机刷新，官方 `ui-skill` 同口径） |
+| 25 | `agent-preset/selected` 未消费 | ✅ 按官方 `directory.resetSession(sessionId)` 只重取该会话的目录 |
+| 26 | 删模型档位后档位列表不变（第一版漏网） | ✅ 三个事件都同时重读设置与目录（见上方注）；`runRound` 改为**顺序**执行（重读设置要用刚重取的目录，并发会读到旧的） |
+| 27 | 新会话（投影 `{lastUsed:null,next:null}`）的部署默认不刷新 | ✅ `applyDefaultModelToScopes` 改判据：旧写法 `scope.model \|\| scope.lastModelSelection` 会跳过所有「已经套过默认值」的域，改档位后它们的 `efforts` 停在旧目录上；现在按「投影里有没有 `next`/`lastUsed`」判，且有未提交的界面选择（`pendingModel`）时仍不动它 |
+
+**实测**：`scripts/configReloadProbe.ts`（新增）用**独立临时 `DSH_HOME`**（临时 home 里
+dsh 会按 `PROFILE_TEMPLATES` 自动初始化 web profile）起真实 `dsh web`，直接改磁盘上的
+配置文件，抓到真实帧：
+
+```
+1) 改 <tmp>/settings.yaml（ui-conversation.busyEnter）
+   ✓ settings/document-updated ["ui-conversation", 1]
+2) 改 <tmp>/.credentials.yaml（插入 DSH_CHAT_PROBE 引用）
+   ✓ credentials/reference-updated ["DSH_CHAT_PROBE"]
+3) 改模型的思考档位（llm-pi-ai 探针路由，两档 → 删掉 low）
+   写入两档 → 目录读到 ["off","low","high"]
+   ✓ 删档后目录读到 ["off","high"]；这一步到达的帧只有
+     settings/document-updated ["llm-pi-ai", 2]（**没有** llm/adapters-updated）
+4) 真实帧 → ConfigChangeRouter
+   ✓ 只把「删档」那批帧喂进干净路由器：动作 = topology, settings
+```
+
+离线断言 `scripts/configChanges.test.ts` 钉住映射与合并：不认识的帧零动作、
+4 条设置帧合并成 2 轮（每轮都重取目录 + 重读设置）、**只有
+`settings/document-updated` 也要重取模型目录**（删档现场）、`runRound` 顺序执行、
+一轮内某个动作失败不拖垮其余动作、`applyDefaultModelToScopes` 的判据不被改回旧写法。
+
 ### 仍未修复
 
 - **#17 停止语义**：官方契约说 cancel 后排队工作按 FIFO 继续，UI 只发一次 cancel。

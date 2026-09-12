@@ -18,6 +18,7 @@ import type {
 import type { HostToWebview, WebviewToHost } from "../shared/ipc";
 import { SessionAdapter, type ImageRef } from "./adapter";
 import { classifyPath, formatPathList, isDirectoryPath, isImagePath } from "./attachments";
+import { ConfigChangeRouter } from "./configChanges";
 import { hasWorkingChange, type GitChangeStateLike } from "./fileChange";
 import { composeWithReferences, formatFileMention } from "./references";
 import { resolveForVsCode } from "./hostText";
@@ -140,6 +141,12 @@ export class ChatController implements vscode.Disposable {
   private eventsClientId: string | undefined;
   private readonly handledEvents = new Set<string>();
   /**
+   * 配置文件热重载：宿主侧的 watcher（`settings.yaml` / `cordis.patch.yml` /
+   * `.credentials.yaml`）改了什么，这里就按服务端转发的 emit 帧重读什么。
+   * 帧 → 动作的映射与合并见 `configChanges.ts`。
+   */
+  private readonly configChanges: ConfigChangeRouter;
+  /**
    * 对应会话**还没有窗口打开**时就到达的审批 / 提问（关窗后服务端仍可能继续跑）。
    * 先挂起——**不能回**：回了等于放行，请求就丢了。会话再次被打开（域创建）时
    * 回放进适配器。eventId → 会话 同时记在 `eventSessions`，回答时据此路由回域。
@@ -208,6 +215,14 @@ export class ChatController implements vscode.Disposable {
     private readonly secrets: vscode.SecretStorage,
   ) {
     this.deletedSessionIds = new Set(this.state.get<string[]>("deletedSessionIds") ?? []);
+    this.configChanges = new ConfigChangeRouter(
+      {
+        reloadSettings: () => this.reloadSettings(),
+        reloadModelTopology: () => this.loadModels(),
+        reloadCommandCatalogs: (sessionId) => this.reloadCommandCatalogs(sessionId),
+      },
+      log,
+    );
     // 早期版本存过启动令牌；令牌每次启动都会刷新，留着只会误导，直接清掉
     void this.secrets.delete(LEGACY_TOKEN_SECRET);
   }
@@ -1504,11 +1519,20 @@ export class ChatController implements vscode.Disposable {
   /**
    * 审批与提问只从这条流来。**收到 waterfall 必须回复**——不回复会把 Agent 永久挂住，
    * 而且重连后同一条会重投递，所以要按 eventId 去重。
+   *
+   * 这条流上还有**转发的 emit 帧**（网关 `broadcastRemoteEvent` 的
+   * `{type:'emit', event, args}`）：配置文件热重载的后果就藏在里面
+   * （`settings/document-updated` 等，白名单见 `dsh-api-remotes`）。emit 帧
+   * **不需要回复**，交给 `ConfigChangeRouter` 决定重读什么。
    */
   private async onEventFrame(frame: RemoteEventFrame): Promise<void> {
     if (!frame || typeof frame !== "object") return;
     if (frame.type === "ready") {
       this.eventsClientId = frame.clientId;
+      return;
+    }
+    if (frame.type === "emit") {
+      this.configChanges.handle(frame.event, frame.args ?? []);
       return;
     }
     if (frame.type !== "waterfall") return;
@@ -1588,6 +1612,43 @@ export class ChatController implements vscode.Disposable {
     } catch (error) {
       this.log(`[$events] 回复失败：${this.describeError(error)}`);
     }
+  }
+
+  // ---------- 配置文件热重载的重读动作（由 ConfigChangeRouter 调用） ----------
+
+  /**
+   * 用户设置层被外部改动（`settings/document-updated`：`~/.dsh/settings.yaml`
+   * 被手改或被另一个 dsh 界面写；`credentials/reference-updated`：
+   * `~/.dsh/.credentials.yaml` 改了）。
+   *
+   * 三样东西都从设置命名空间派生，官方前端同样是「失效就重读」：
+   * 设置面板（含 `busyEnter`）、图片输入能力、部署默认模型。
+   */
+  private async reloadSettings(): Promise<void> {
+    // 部署默认模型是**有缓存**的（`agent-default-model` 设置）：不清掉就永远读不到新值
+    this.defaultModel = undefined;
+    await this.describeSettings();
+    await this.refreshImageCaps();
+    // 模型目录还没到（首连的那一小段窗口）时不读默认模型：标签会退化成裸 id
+    // 并被缓存住；那次连接流程自己会在 loadModels 之后读一遍。
+    if (this.models.length > 0) await this.loadDefaultModel();
+  }
+
+  /**
+   * 命令 / 技能目录重取（`commands/change`：插件行增删让命令注册表变了；
+   * `agent-preset/selected`：预设换了，该会话能用的命令与技能都不一样）。
+   *
+   * 缺省重取**所有打开的域**——命令注册表是全局的；给 `sessionId` 时只重取那一个。
+   * 技能顺带一起重取（`listCommandsFor` 里合并了 `skills/list`）：宿主侧
+   * `skills/change` **不在**转发白名单里，所以技能目录没有专属帧，只能借这些
+   * 时机刷新——官方 `ui-skill` 也只在 `agent-preset/selected` 时作废缓存。
+   */
+  private async reloadCommandCatalogs(sessionId?: string): Promise<void> {
+    const scopes =
+      sessionId === undefined
+        ? [...this.scopes.values()]
+        : [this.scopes.get(sessionId)].filter((scope): scope is SessionScope => scope !== undefined);
+    await Promise.all(scopes.map((scope) => this.listCommandsFor(scope)));
   }
 
   // ---------- 模型 ----------
@@ -1729,11 +1790,28 @@ export class ChatController implements vscode.Disposable {
     }
   }
 
-  /** 把部署默认填进还没有模型选择、也没收到过投影的各域。 */
+  /**
+   * 把部署默认**填进或刷新到**「没有自己选择」的各域。
+   *
+   * 判据是「投影里有没有 `next`/`lastUsed`」，不是「域上有没有 model」：
+   * 新会话的投影是 `{lastUsed:null,next:null}`（**不是** undefined），
+   * 胶囊此时显示的就是部署默认——按旧判据（`scope.model || lastModelSelection`
+   * 就跳过）它永远不会被刷新，于是改 `settings.yaml` 里的档位后，
+   * 新会话的档位列表停在旧目录上（用户 2026-09-12 报的现场之一）。
+   *
+   * 有未提交的界面选择（`pendingModel`）时不动它——那是用户刚点下、
+   * 下次发送才落库的值，覆盖掉会让胶囊自己跳回去。
+   */
   private applyDefaultModelToScopes(): void {
     if (!this.defaultModel) return;
     for (const scope of this.scopes.values()) {
-      if (scope.model || scope.lastModelSelection) continue;
+      if (scope.pendingModel) continue;
+      const shown = scope.lastModelSelection as
+        | { lastUsed?: { provider?: string } | null; next?: { provider?: string } | null }
+        | null
+        | undefined;
+      const used = shown?.next ?? shown?.lastUsed;
+      if (used?.provider) continue; // 该域有自己的选择，默认值管不着它
       scope.model = this.defaultModel;
       this.deliver(scope.sessionId, { type: "patch", patch: { model: scope.model } });
     }

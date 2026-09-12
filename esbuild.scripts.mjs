@@ -70,6 +70,8 @@ const entries = {
   "build/session-list-probe.mjs": "scripts/sessionListProbe.ts",
   "build/session-list.test.mjs": "scripts/sessionList.test.ts",
   "build/token-cleanup.test.mjs": "scripts/tokenAndCleanup.test.ts",
+  "build/config-changes.test.mjs": "scripts/configChanges.test.ts",
+  "build/config-reload-probe.mjs": "scripts/configReloadProbe.ts",
 };
 
 await Promise.all(
