@@ -366,6 +366,14 @@ export const IconRefresh = (p: IconProps) => (
   </Icon>
 );
 
+/** 时钟：轮尾「用时 X」胶囊的图标（官方 `IconClockOutline16` 同义）。 */
+export const IconClock = (p: IconProps) => (
+  <Icon {...p}>
+    <circle cx="12" cy="12" r="8" />
+    <path d="M12 8v4.5l3 1.5" />
+  </Icon>
+);
+
 /** 钥匙：外部服务器的访问令牌入口（heroicons 24/outline `key`）。 */
 export const IconKey = (p: IconProps) => (
   <Icon {...p}>

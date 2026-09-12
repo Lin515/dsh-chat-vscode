@@ -130,3 +130,52 @@ export function quotePath(path: string): string {
 export function formatPathList(paths: string[]): string {
   return paths.map(quotePath).join(" ");
 }
+
+/**
+ * 拖放单个文件的字节上限。
+ *
+ * 拖放走 base64 过线（见 `shared/ipc.ts` 的 `attachBytes`），4/3 的体积放大加上
+ * webview RPC 的字符串拷贝，太大就会卡住界面。超限的直接提示改用「添加文件」
+ * 按钮——那条路是宿主 `readFileSync`，多大都不经过 webview。
+ */
+export const DROP_BYTES_LIMIT = 8 * 1024 * 1024;
+
+export interface DroppedBytesInput {
+  /** 文件名（webview 侧 `File.name`，只有名字，没有路径）。 */
+  name: string;
+  bytes: Uint8Array;
+  /** 当前模型是否接受图片输入；false 时图片不能内嵌，改走上传。 */
+  acceptsImage: boolean;
+}
+
+/**
+ * 归类一份**只有字节和文件名**的附件（拖放进来的文件没有路径）。
+ *
+ * 判据与 `classifyPath` 同口径，只是能用的信息更少：
+ * - **图片且模型收图** → 图片附件（内容块，与官方内联图片字节一致），
+ *   `dataUrl` 由字节直接拼，无需路径；
+ * - **其余**（含模型不收图的图片）→ 文件附件，调用方**立即上传字节**
+ *   （上传路径按字节发、不挑类型，图片当普通文件上传也比丢掉强——模型仍能用
+ *   工具处理它，而"模型不收图"时退回路径文本对拖放根本不可行：没有路径可插）。
+ *
+ * 刻意不读盘、不引 `vscode`：冒烟测试能直接验证归类结果。
+ */
+export function classifyDroppedBytes(
+  input: DroppedBytesInput,
+): { kind: "attachment"; attachment: Attachment } {
+  const { name, bytes, acceptsImage } = input;
+  const mediaType = imageMediaTypeFor(name);
+  if (mediaType && acceptsImage) {
+    return {
+      kind: "attachment",
+      attachment: {
+        id: randomUUID(),
+        kind: "image",
+        name,
+        dataUrl: `data:${mediaType};base64,${Buffer.from(bytes).toString("base64")}`,
+        bytes: bytes.length,
+      },
+    };
+  }
+  return { kind: "attachment", attachment: { id: randomUUID(), kind: "file", name } };
+}

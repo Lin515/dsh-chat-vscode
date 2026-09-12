@@ -7,6 +7,11 @@
 >
 > 主线已独立复核本报告的 `goal` 嵌套形状与 `subagentCatalog` 缺 `kind`/`activity` 两条
 > （读官方 `types.d.ts` + 本仓库 `controller.ts` 对拍），结论成立，见 `audit-summary.md` §3.3/§3.4。
+>
+> ⚠️ **本文的判定定格在审计当时，不随修复更新**：下面的「**不一致**」多数已经修好
+> （当前状态见 `audit-summary.md` 的「零、修复状态」），**不要照着本文去重复修一遍**。
+> 它的价值是证据（官方 `path:line` 引用）与仍未处理的差异（§16 `schedule`、§17
+> `agentPreset` 等仍未消费，与 `audit-summary.md`「仍未修复」一致）。
 
 审计范围：仅 **projections & panels**。官方源码为只读权威，路径记为 `@dsh/<pkg>/...`，
 其中 `@dsh` = `C:\Users\Cueio\AppData\Roaming\npm\node_modules\@deepseek-ai\dsh\node_modules\@deepseek-ai\`。

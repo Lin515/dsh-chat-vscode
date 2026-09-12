@@ -65,6 +65,15 @@ export function classifyTool(name: string): ToolVariant {
 }
 
 /**
+ * 这个工具调用是不是**派发子代理**（官方 `isSubagentDelegationTool`，逐字同口径）。
+ *
+ * 轮级过程折叠要把「N 次工具调用」与「K 个 subagent」分开数，判据就是这一条。
+ */
+export function isSubagentDelegationTool(name: string): boolean {
+  return name === "subagent" || name.startsWith("subagent_");
+}
+
+/**
  * 这个工具是否有**独立的标题键**（官方 `TOOL_TITLE_KEYS`）。
  *
  * 界面据此决定标题栏显示什么；返回 undefined 表示套用变体的通用名。

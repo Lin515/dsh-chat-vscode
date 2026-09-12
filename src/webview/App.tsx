@@ -8,6 +8,7 @@ import { Message } from "./components/Message";
 import { JobsPanel, SettingsPanel, SubagentTranscriptPanel, SubagentsPanel, TrajectoryPanel } from "./components/Panels";
 import { Spinner, hasSelectionInside } from "./components/primitives";
 import { AppState, useAppState, type PanelKind } from "./state";
+import { pendingInteractionOf } from "./pendingInteraction";
 import {
   IconAgents,
   IconHistory,
@@ -348,7 +349,14 @@ export function App() {
           </div>
         ) : null}
 
-        <Composer state={state} onDraft={(text) => dispatch({ type: "ui/setDraft", text })} />
+        {/* 待处理的审批 / 提问**接管输入区**（官方把两者注册进 `conversation.composer` 槽）：
+            卡片永远在视野里，界面看起来就是「在等你回答」；已经答过的仍留在对话流里当记录
+            （见 Message.tsx 里对 waiting 段的跳过）。 */}
+        <Composer
+          state={state}
+          pending={pendingInteractionOf(state.messages)}
+          onDraft={(text) => dispatch({ type: "ui/setDraft", text })}
+        />
 
         {state.panel === "history" ? (
           <HistoryPanel

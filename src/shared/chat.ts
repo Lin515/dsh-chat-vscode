@@ -6,6 +6,13 @@
  * 好处是界面代码不随服务端协议变动，协议变更只影响适配器。
  */
 
+import type {
+  CatalogEntry,
+  InstructionChange,
+  RecalledSession,
+  SnapshotSection,
+} from "./injectedSource";
+
 export type ConnectionState = "connecting" | "ready" | "error";
 
 /**
@@ -181,6 +188,15 @@ export interface QuestionView {
   answers?: Record<string, string[]>;
 }
 
+/** 上下文注入条目里按 form 各自解析出来的结构化字段（见 `shared/injectedSource.ts`）。 */
+export interface InjectedSourceView {
+  changes?: InstructionChange[];
+  entries?: CatalogEntry[];
+  sections?: SnapshotSection[];
+  senderSessionId?: string;
+  references?: RecalledSession[];
+}
+
 /**
  * 一条**自动载入**的提示词内容（系统提示词 / 插件注入 / 项目指令 / 技能目录…）。
  *
@@ -199,9 +215,25 @@ export interface InjectedView {
   form?: string;
   /** 内容文本。 */
   text: string;
+  /**
+   * `source` 里的**结构化字段**（按 form 各自解析，见 `shared/injectedSource.ts`）。
+   *
+   * 官方的上下文条目是按 form 分派正文的：指令列出「哪个文件 + 已新增/已更新/已移除」、
+   * 目录列出条目、快照列出分节、回忆给出「保留 N 条 · 省略 M 条」。这些字段此前被我们
+   * 整个丢掉，界面上只剩一段文字。形状不合预期时**整项不填**，退回「正文 + 原样字段」。
+   */
+  source?: InjectedSourceView;
 }
 
-export type Segment =
+/**
+ * 助手消息里的一个显示段。
+ *
+ * 外面套一层 `{ step?: number }`：**该段所属的 step**（轮内从 0 起）。轮级过程折叠
+ * 要用它区分「过程」与「答案」——官方按节点锚点把答案步之前的成员折起来，
+ * 我们的显示段没有节点锚点，step 就是那条边界的依据（见 `webview/turnProcess.ts`）。
+ * 拿不到 step 时（历史里缺 `step/start`）**不折叠**：宁可平铺，也不要折错。
+ */
+export type Segment = { step?: number } & (
   | { kind: "text"; id: string; text: string; streaming?: boolean }
   | { kind: "thinking"; id: string; text: string; streaming?: boolean; durationMs?: number; open?: boolean }
   | { kind: "tool"; id: string; tool: ToolCallView }
@@ -209,10 +241,44 @@ export type Segment =
   | { kind: "question"; id: string; question: QuestionView }
   | { kind: "injected"; id: string; injected: InjectedView }
   | { kind: "command"; id: string; command: CommandRunView }
-  | { kind: "notice"; id: string; level: "info" | "warn" | "error"; text: string };
+  /**
+   * 助手消息里的图片块（模型输出或工具回带的图）。
+   *
+   * 契约里 `assistant/message` 的 `content` 是完整的内容块联合
+   * （`text | reasoning | image | file | tool-call | tool-result`），此前适配器只折叠
+   * text/reasoning，**图片块被静默丢弃**——模型给你看一张图，界面上什么都没有。
+   * `images` 是已经换成 data URL 的字节（句柄 → `session/attachment` 的 RPC 由控制器
+   * 完成），加载中会是空数组（宁可不占位，也不要先闪一个碎图图标）。
+   */
+  | { kind: "images"; id: string; images: string[] }
+  | { kind: "notice"; id: string; level: "info" | "warn" | "error"; text: string }
+  /**
+   * **认不出的内容块**（官方渲染链的 default 分支：`JsonBlock` + 「未知内容块」）。
+   *
+   * 此前适配器只认 text/reasoning/image，其余块**整块消失**——模型给的东西在界面上
+   * 连痕迹都没有。现在按官方口径留一条 JSON 记录：`type` 是块类型、`json` 是内容
+   * （超长会截断，见适配器里的上限）。`file` 块也走这里——官方同样没给它专属分支。
+   */
+  | { kind: "unknown"; id: string; type: string; json: string }
+);
 
-export interface UsageView {
-  inputTokens?: number;
+/**
+ * 一轮的用时与速度（官方的 turn-time）：轮尾操作条上那枚「用时 X」胶囊 + 点开的明细。
+ *
+ * - `ranForMs`：本轮总用时 = `turn/end` 的时刻 − 本段开始时刻（与官方
+ *   `runMs = turn.end.time - turn.start.time` 同口径）。**同轮被插话切成多段时**
+ *   是「本段」的用时（官方没有分段概念，这是本扩展自己的机制）。
+ * - `tokensPerSecond`：解码吞吐 = 各 step 的输出 token 之和 ÷ 各 step 解码窗口之和
+ *   （官方 `stats.decodeTokens / (stats.decodeMs / 1e3)` 的同一个算法）。
+ * - `ttftMs`：**本轮第一步**的首 token 用时（官方 `firstStepTtftMs`）。
+ */
+export interface TurnStatsView {
+  ranForMs: number;
+  tokensPerSecond?: number;
+  ttftMs?: number;
+}
+
+export interface UsageView {  inputTokens?: number;
   outputTokens?: number;
   cachedTokens?: number;
   /** 缓存读取 token（provider cacheRead），缓存命中率分子。 */
@@ -251,6 +317,12 @@ export interface MessageView {
   segments: Segment[];
   attachments?: Attachment[];
   streaming?: boolean;
+  /**
+   * 轮尾的用时与速度（`turn/end` 时写入，见 `TurnStatsView`）。
+   *
+   * 只在**轮次结束后**才有值：轮次进行中算不出总用时，也不该显示。
+   */
+  turnStats?: TurnStatsView;
   model?: string;
   /** 本 step 的用量：只用于上下文占用条与输出速度（tok/s），不再单独成行展示。 */
   usage?: UsageView;

@@ -293,20 +293,23 @@
               role: "assistant",
               ts: now - 235000,
               model: "DeepSeek-V4-Pro",
-              durationMs: 41200,
-              firstTokenMs: 900,
+              // 轮尾用时/速度明细（`turn/end` 时由适配器写入）。
+              // 形状 = shared/chat.ts 的 TurnStatsView：总用时（ms）+ 整轮解码吞吐 + 首 token。
+              // 此前这里放着 `durationMs` / `firstTokenMs` 两个 **MessageView 上根本不存在**
+              // 的字段（旧设计的遗留），夹具照着一个假形状摆了很久——顺手换成真的。
+              turnStats: { ranForMs: 96000, tokensPerSecond: 42.7, ttftMs: 1850 },
               usage: { inputTokens: 16605, outputTokens: 1180, totalTokens: 19200, cachedTokens: 1152, reasoningTokens: 420 },
               segments: [
-                { id: "r1", kind: "thinking", text: "先看两个文件各自的初始化路径。\nindex.ts 里创建了 server 并调用了 listen，config.ts 又从环境变量里读了一遍端口，两处会打架。", streaming: false },
-                { id: "t1", kind: "text", text: "我看了两个文件，重复初始化的根因是端口和中间件被注册了两次。" },
-                { id: "tool1", kind: "tool", tool: { id: "call_1", name: "read", title: "", detail: "src/server/index.ts", status: "ok", input: '{"file_path":"src/server/index.ts"}', output: "export function bootstrap() {…}", startedAt: now - 234000, endedAt: now - 233400 } },
+                { step: 0, id: "r1", kind: "thinking", text: "先看两个文件各自的初始化路径。\nindex.ts 里创建了 server 并调用了 listen，config.ts 又从环境变量里读了一遍端口，两处会打架。", streaming: false },
+                { step: 0, id: "t1", kind: "text", text: "我看了两个文件，重复初始化的根因是端口和中间件被注册了两次。" },
+                { step: 0, id: "tool1", kind: "tool", tool: { id: "call_1", name: "read", title: "", detail: "src/server/index.ts", status: "ok", input: '{"file_path":"src/server/index.ts"}', output: "export function bootstrap() {…}", startedAt: now - 234000, endedAt: now - 233400 } },
                 // 读取节点：只读了一段 → 行号缀在文件名后（含一个很长的路径，验证窄侧栏下不被截掉）
-                { id: "tool1b", kind: "tool", tool: { id: "call_1b", name: "read", title: "", detail: "…/dsh/controller.ts", command: "d:\\dev\\dsh-chat\\src\\dsh\\controller.ts", readLines: { start: 3201, end: 3220 }, status: "ok", input: '{"file_path":"d:\\\\dev\\\\dsh-chat\\\\src\\\\dsh\\\\controller.ts","offset":3201,"limit":20}', output: "3201: …", startedAt: now - 233900, endedAt: now - 233500 } },
-                { id: "tool2", kind: "tool", tool: { id: "call_2", name: "grep", title: "", detail: "listen(", status: "ok", input: '{"pattern":"listen\\\\("}', output: "src/server/index.ts:24\nsrc/config.ts:11", startedAt: now - 233300, endedAt: now - 233000 } },
+                { step: 0, id: "tool1b", kind: "tool", tool: { id: "call_1b", name: "read", title: "", detail: "…/dsh/controller.ts", command: "d:\\dev\\dsh-chat\\src\\dsh\\controller.ts", readLines: { start: 3201, end: 3220 }, status: "ok", input: '{"file_path":"d:\\\\dev\\\\dsh-chat\\\\src\\\\dsh\\\\controller.ts","offset":3201,"limit":20}', output: "3201: …", startedAt: now - 233900, endedAt: now - 233500 } },
+                { step: 0, id: "tool2", kind: "tool", tool: { id: "call_2", name: "grep", title: "", detail: "listen(", status: "ok", input: '{"pattern":"listen\\\\("}', output: "src/server/index.ts:24\nsrc/config.ts:11", startedAt: now - 233300, endedAt: now - 233000 } },
                 // code 变体（run_code）：摘要取 description，图标是代码括号
-                { id: "tool2b", kind: "tool", tool: { id: "call_2b", name: "run_code", title: "", detail: "抽出 bootstrap()", status: "ok", input: '{"description":"抽出 bootstrap()"}', output: "extracted", startedAt: now - 232900, endedAt: now - 232600 } },
+                { step: 0, id: "tool2b", kind: "tool", tool: { id: "call_2b", name: "run_code", title: "", detail: "抽出 bootstrap()", status: "ok", input: '{"description":"抽出 bootstrap()"}', output: "extracted", startedAt: now - 232900, endedAt: now - 232600 } },
                 // 编辑类节点：结构化 diff（结果 meta 里的 hunk）
-                { id: "tool3", kind: "tool", tool: { id: "call_3", name: "edit", title: "", detail: "…/server/index.ts", status: "ok",
+                { step: 1, id: "tool3", kind: "tool", tool: { id: "call_3", name: "edit", title: "", detail: "…/server/index.ts", status: "ok",
                   input: '{"file_path":"D:/dev/app/src/server/index.ts"}',
                   output: "The file D:/dev/app/src/server/index.ts has been updated successfully.",
                   diff: [{ path: "D:/dev/app/src/server/index.ts", added: 3, removed: 2, lines: [
@@ -322,7 +325,7 @@
                     { kind: "context", text: "}" }
                   ] }],
                   startedAt: now - 232000, endedAt: now - 231000 } },
-                { id: "tool4", kind: "tool", tool: { id: "call_4", name: "write", title: "", detail: "…/config.ts", status: "ok",
+                { step: 1, id: "tool4", kind: "tool", tool: { id: "call_4", name: "write", title: "", detail: "…/config.ts", status: "ok",
                   input: '{"file_path":"D:/dev/app/src/config.ts"}',
                   output: "Created file",
                   diff: [{ path: "D:/dev/app/src/config.ts", added: 4, removed: 0, lines: [
@@ -334,13 +337,13 @@
                   startedAt: now - 230000, endedAt: now - 229500 } },
                 // 运行中的 build 节点：命令很长（标题里会被省略），正在跑，可展开。
                 // `build` 不在官方精确名表里 → `others` 变体，摘要取首行、图标是星形
-                { id: "tool5", kind: "tool", tool: { id: "call_5", name: "build", title: "", status: "running",
+                { step: 1, id: "tool5", kind: "tool", tool: { id: "call_5", name: "build", title: "", status: "running",
                   detail: "cmake --build build-agent --config RelWithDebInfo --target dsh_chat_plugin --parallel 8",
                   command: "cmake --build build-agent --config RelWithDebInfo --target dsh_chat_plugin --parallel 8",
                   input: '{"command":"cmake --build build-agent --config RelWithDebInfo --target dsh_chat_plugin --parallel 8"}',
                   startedAt: now - 74000 } },
                 // 运行中的终端行：bash 变体（pwsh）——行首图标以橙色（--node-bash）呼吸发光
-                { id: "tool6b", kind: "tool", tool: { id: "call_6b", name: "pwsh", title: "", detail: "npm run build", status: "running", command: "npm run build", input: '{"command":"npm run build"}', startedAt: now - 30000 } },
+                { step: 1, id: "tool6b", kind: "tool", tool: { id: "call_6b", name: "pwsh", title: "", detail: "npm run build", status: "running", command: "npm run build", input: '{"command":"npm run build"}', startedAt: now - 30000 } },
                 // 终端失败：非零退出码。bash/pwsh **不**把非零退出标成 isError，
                 // 失败靠 `parseExitStatus` 自己判（`[exit code: N]` 已从正文剥掉）
                 { id: "tool6", kind: "tool", tool: { id: "call_6", name: "pwsh", title: "", status: "error",
@@ -364,19 +367,55 @@
                 { id: "inj2", kind: "injected", injected: { sourceKind: "plugin", plugin: "dsh-mcp-manager", form: "mcp-status",
                   text: "<mcp-status>\nMCP 服务器当前状态（● 运行中 / ○ 停止）：\n○ context7 (mcp-context7) — 查文档\n○ excel (mcp-excel) — 读/写 Excel 表格" } },
                 { id: "inj3", kind: "injected", injected: { sourceKind: "agent-instructions", form: "instructions",
-                  text: "<system-reminder>\nThe following workspace instructions may be relevant to your work.\n\n# 全局经验\n\n1. 构建前先加载 skill build。" } },
+                  text: "<system-reminder>\nThe following workspace instructions may be relevant to your work.\n\n# 全局经验\n\n1. 构建前先加载 skill build。",
+                  // 结构化字段（官方 instructionChanges 读的就是 source.changes）：
+                  // 界面据此逐条列出「哪个文件 + 已新增/已更新/已移除」，不必点开看全文
+                  source: { changes: [ { path: "AGENTS.md", action: "set" }, { path: "~/.dsh/AGENTS.md", action: "replace" }, { path: "CLAUDE.md", action: "remove" } ] } } },
                 { id: "inj4", kind: "injected", injected: { sourceKind: "plugin", plugin: "@deepseek-ai/dsh-system-prompt", form: "snapshot",
                   text: "Current runtime context. This snapshot supersedes earlier runtime-context snapshots.\n\nCurrent DSH file policy: workspace-write." } },
                 { id: "inj5", kind: "injected", injected: { sourceKind: "skill-catalog", form: "catalog",
-                  text: "<system-reminder>\nA skill is a reusable set of task-specific instructions. The following skills are available in this session:\n\n- build: 一切构建相关内容的统一入口…\n- tdd: Test-driven development…" } },
+                  text: "<system-reminder>\nA skill is a reusable set of task-specific instructions. The following skills are available in this session:\n\n- build: 一切构建相关内容的统一入口…\n- tdd: Test-driven development…",
+                  source: { entries: [ { name: "build", description: "一切构建相关内容的统一入口与经验库" }, { name: "review", description: "两轴代码评审" }, { name: "windows-shell", description: "Windows 的 shell 选择与使用" } ] } } },
                 { id: "inj6", kind: "injected", injected: { sourceKind: "plugin", plugin: "openviking-memory", form: "recall",
-                  text: "<openviking-context>\nRelevant memory from OpenViking. Use the search/read MCP tools to expand URIs.\n\n<memory uri=\"viking://resources/dsh-vscode-project\" type=\"resources\" score=\"0.79\" />\n</openviking-context>" } },
+                  text: "<openviking-context>\nRelevant memory from OpenViking. Use the search/read MCP tools to expand URIs.\n\n<memory uri=\"viking://resources/dsh-vscode-project\" type=\"resources\" score=\"0.79\" />\n</openviking-context>",
+                  source: { references: [ { label: "D--dev-dsh-chat 偏好", retainedMessages: 6, omittedMessages: 118, truncated: true } ] } } },
                 // 斜杠命令节点：命令名 + 参数在标题行，结果是服务端给的原文。
                 // 两条的文案都逐字来自真实 `commands/execute` 返回（见 commandE2E）
-                { id: "cmd1", kind: "command", command: { commandId: "cmd-4a8cbf32-3", name: "plan", state: "ok", text: "Plan mode on. Use /plan off to leave." } },
-                { id: "cmd2", kind: "command", command: { commandId: "cmd-4a8cbf32-4", name: "goal", args: "用一句话说明这个仓库是做什么的", state: "ok", text: "Goal created\nStatus: active\nObjective: 用一句话说明这个仓库是做什么的\nRounds: 0/256\nActivation: armed\n\nCommands: /goal edit <objective>, /goal pause, /goal clear" } },
-                { id: "t2", kind: "text", text: "把入口收敛成一个 `bootstrap()`，配置只读一次：", streaming: false },
-                { id: "c1", kind: "text", text: "```ts\n" + codeSample + "\n```", streaming: true }
+                { step: 1, id: "cmd1", kind: "command", command: { commandId: "cmd-4a8cbf32-3", name: "plan", state: "ok", text: "Plan mode on. Use /plan off to leave." } },
+                { step: 1, id: "cmd2", kind: "command", command: { commandId: "cmd-4a8cbf32-4", name: "goal", args: "用一句话说明这个仓库是做什么的", state: "ok", text: "Goal created\nStatus: active\nObjective: 用一句话说明这个仓库是做什么的\nRounds: 0/256\nActivation: armed\n\nCommands: /goal edit <objective>, /goal pause, /goal clear" } },
+                { step: 3, id: "t2", kind: "text", text: "把入口收敛成一个 `bootstrap()`，配置只读一次：", streaming: false },
+                // 认不出的内容块（官方 default 分支的「未知内容块」记录）：
+                // 此前适配器只认 text/reasoning/image，这类块**整块消失**。
+                // 形状取自契约里的 `file` 块（官方同样没给它专属分支，也走默认路径）。
+                {
+                  step: 3,
+                  id: "u1",
+                  kind: "unknown",
+                  type: "file",
+                  json:
+                    '{\n  "type": "file",\n  "attachment": {\n    "attachmentId": "att-7f3",\n    "name": "merge-plan.pdf",\n    "bytes": 284417\n  }\n}',
+                },
+                { step: 3, id: "c1", kind: "text", text: "```ts\n" + codeSample + "\n```", streaming: true },
+                // 助手消息里的图片块（契约里 `assistant/message` 的 content 联合含
+                // `image`）：适配器折成 `images` 段、句柄换成 data URL。
+                // 夹具里用一张内联 SVG（真实链路给的是服务端字节的 data URL），
+                // 形状一致，只是内容换成看得见的占位图。
+                {
+                  id: "img1",
+                  kind: "images",
+                  images: [
+                    "data:image/svg+xml;base64," +
+                      btoa(
+                        '<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180">' +
+                          '<rect width="320" height="180" fill="#3b3f46"/>' +
+                          '<rect x="16" y="16" width="120" height="12" rx="6" fill="#8b949e"/>' +
+                          '<rect x="16" y="40" width="240" height="8" rx="4" fill="#5a6068"/>' +
+                          '<rect x="16" y="56" width="200" height="8" rx="4" fill="#5a6068"/>' +
+                          '<rect x="16" y="88" width="288" height="76" rx="8" fill="#2b2f36"/>' +
+                          "</svg>",
+                      ),
+                  ],
+                }
               ],
               // 轮尾文件两行：`produced` 从成功的 write/edit 推导，`deliverables`
               // 是 present 工具的显式申报（两条独立来源，界面上分行、各有标签）。
@@ -425,6 +464,21 @@
                     { label: "补冒烟测试" }
                   ] }
                 ] } }
+              ]
+            },
+            // 运行中的一轮：`streaming: true` + 已经攒下来的 produced。轮尾文件两行
+            // **不该**在这一轮显示（官方把两行挂在 turn-tail 节点上，只在 turn/end
+            // 发布）——它们在生成期间只是不断变长的文件名，看起来像已经定稿。
+            // 记号表（`patch.fileKinds`）照旧查得到，只是行不画。
+            {
+              id: "a:3",
+              role: "assistant",
+              ts: now - 42000,
+              streaming: true,
+              model: "DeepSeek-V4-Pro",
+              produced: ["D:/dev/app/src/server/index.ts", "D:/dev/app/src/bootstrap.ts"],
+              segments: [
+                { id: "t3", kind: "text", text: "正在收敛入口……", streaming: true }
               ]
             }
           ]

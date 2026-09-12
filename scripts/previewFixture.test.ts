@@ -67,6 +67,50 @@ const must = [
   ["命令节点", () => state.messages.some((m) => m.segments.some((s) => s.kind === "command"))],
   ["轮尾 produced", () => state.messages.some((m) => m.produced?.length)],
   ["轮尾 deliverables", () => state.messages.some((m) => m.deliverables?.length)],
+  // 助手消息里的图片块（`images` 段）：此前 image 块被静默丢弃，夹具要留住这个形态
+  ["助手消息里的图片", () => state.messages.some((m) => m.segments.some((s) => s.kind === "images"))],
+  // 用户消息的操作行（时钟 + 复制）：预览页靠悬停显示，DOM 里必须在
+  ["用户消息操作行", () => state.messages.some((m) => m.role === "user")],
+  // 轮尾「用时 X」胶囊：turn/end 才写入的 turnStats
+  ["轮尾用时胶囊", () => state.messages.some((m) => (m.turnStats?.ranForMs ?? 0) > 0)],
+  // 轮级过程折叠要有 step 才能算边界：夹具里必须有带 step 的段，否则预览页永远
+  // 看不到折叠（保守降级成平铺），这条断言防止「改了折叠但预览看不出」
+  [
+    "轮级过程折叠（段带 step）",
+    () => state.messages.some((m) => m.segments.some((s) => typeof s.step === "number")),
+  ],
+  // 认不出的内容块（官方 default 分支）：夹具要留一个，否则预览页看不到它
+  ["未知内容块记录", () => state.messages.some((m) => m.segments.some((s) => s.kind === "unknown"))],
+  // 上下文条目的结构化字段（官方按 form 分派正文的依据）：三种 form 各留一条，
+  // 否则预览页只能看到「正文」，看不出 per-form 正文有没有生效
+  [
+    "上下文 per-form 字段（changes/entries/references）",
+    () => {
+      const sources = state.messages.flatMap((m) =>
+        m.segments.flatMap((s) => (s.kind === "injected" ? [s.injected.source] : [])),
+      );
+      return (
+        sources.some((s) => (s?.changes?.length ?? 0) > 0) &&
+        sources.some((s) => (s?.entries?.length ?? 0) > 0) &&
+        sources.some((s) => (s?.references?.length ?? 0) > 0)
+      );
+    },
+  ],
+  // 夹具里不许再出现 MessageView 上不存在的字段（曾经摆着 durationMs/firstTokenMs 这种
+  // 旧设计的遗留，照着假形状调样式会白干）
+  [
+    "夹具没有幽灵字段",
+    () =>
+      state.messages.every(
+        (m) => !("durationMs" in m) && !("firstTokenMs" in m),
+      ),
+  ],
+  // 运行中的一轮：produced 已经攒下来了，但轮尾那两行**不显示**（等 turn/end）。
+  // 夹具必须留着这个形态，否则「生成中不显示文件行」这条规则在预览页里看不见。
+  [
+    "运行中一轮（produced 攒着但行不显示）",
+    () => state.messages.some((m) => m.streaming === true && (m.produced?.length ?? 0) > 0),
+  ],
   ["stopped 工具行", () => state.messages.some((m) => m.segments.some((s) => s.kind === "tool" && s.tool.status === "stopped"))],
   ["非零退出码工具行", () => state.messages.some((m) => m.segments.some((s) => s.kind === "tool" && s.tool.exitCode))],
   ["重试提示", () => state.messages.some((m) => m.segments.some((s) => s.kind === "notice" && s.text.startsWith("@llmRetry")))],

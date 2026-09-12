@@ -5,6 +5,7 @@ import { post } from "../bridge";
 import {
   IconAt,
   IconAttach,
+  IconCheck,
   IconChevronDown,
   IconClose,
   IconDsh,
@@ -20,9 +21,34 @@ import {
   IconTarget,
 } from "../icons";
 import { CtxText, Ellipsis, Popover, Spinner, formatDuration } from "./primitives";
+import { ApprovalCard, QuestionCard } from "./Rows";
+import type { PendingInteraction } from "../pendingInteraction";
 import { insertAtCaret } from "../insert";
 import { segmentColumns } from "../segment";
-import { fill, useTexts } from "../texts";
+import { fill, resolveText, useTexts } from "../texts";
+
+/**
+ * 拖放的字节上限，与宿主 `attachments.ts` 的 `DROP_BYTES_LIMIT` 同值。
+ *
+ * 界面侧先按它拦一道：超限的**根本不读**（读了再 base64 是白烧内存），
+ * 只把名字报给宿主去提示。两处常量必须一致——不一致时界面要么白读，
+ * 要么把宿主会拒的东西发过去。
+ */
+const DROP_BYTES_LIMIT = 8 * 1024 * 1024;
+
+/** 一份 `File` 的字节 → base64（`postMessage` 两端的序列化都吃不掉字符串）。 */
+function fileToBase64(file: File): Promise<string> {
+  return file.arrayBuffer().then((buffer) => {
+    const bytes = new Uint8Array(buffer);
+    let binary = "";
+    // 分块拼接：一次 apply 传十万级参数会栈溢出
+    const CHUNK = 0x8000;
+    for (let i = 0; i < bytes.length; i += CHUNK) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+    }
+    return btoa(binary);
+  });
+}
 
 /** 权限模式的展示定义：图标固定用盾牌（WebUI 未提供专用图标），文案与 WebUI 对齐。 */
 function permissionMeta(
@@ -76,7 +102,16 @@ function findTrigger(text: string, caret: number): Trigger | undefined {
   return undefined;
 }
 
-export function Composer({ state, onDraft }: { state: AppState; onDraft: (text: string) => void }) {
+export function Composer({
+  state,
+  pending,
+  onDraft,
+}: {
+  state: AppState;
+  /** 正在等用户回答的交互（审批 / 提问）：有它时**接管**输入区（官方 `conversation.composer` 槽）。 */
+  pending?: PendingInteraction;
+  onDraft: (text: string) => void;
+}) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [modelOpen, setModelOpen] = useState(false);
   const [modeOpen, setModeOpen] = useState(false);
@@ -340,6 +375,18 @@ export function Composer({ state, onDraft }: { state: AppState; onDraft: (text: 
     <div ref={appRef} className={`composer${mini ? " is-mini" : ""}`}>
       {/* 目标条：官方 dock 在输入框上方的同一个位置（`conversation.input.dock`） */}
       <GoalBar goal={state.goal} />
+      {/* 待处理的审批 / 提问接管输入区（官方 `conversation.composer` 的 `pendingInteraction`
+          选举）：卡片常驻视野、就在你敲字的地方，而不是滚上去就看不见。
+          已答过的卡不在这里——它们留在对话流里当记录（见 Message.tsx）。 */}
+      {pending ? (
+        <div className="composer-interaction">
+          {pending.kind === "approval" ? (
+            <ApprovalCard approval={pending.approval} />
+          ) : (
+            <QuestionCard question={pending.question} />
+          )}
+        </div>
+      ) : null}
       <Lump state={state} />
 
       {/* 运行状态：会话底部一行无边框文字；等待审批/提问时 agent 暂停，
@@ -430,11 +477,50 @@ export function Composer({ state, onDraft }: { state: AppState; onDraft: (text: 
             setDragOver(true);
           }}
           onDragLeave={() => setDragOver(false)}
+          /*
+           * 拖放添加附件。
+           *
+           * **只能拿字节**：VS Code 不把拖拽的资源注入 webview 的 DataTransfer
+           * （没有 `ResourceURLs`、没有 `text/uri-list`），而 `File.path` 自 Electron 32
+           * 起已被移除（本机 VS Code 是 Electron 42），webview 侧的 `window.vscode`
+           * 也只有 `acquireVsCodeApi`、拿不到 `webUtils.getPathForFile`——所以路径
+           * 这条路根本不存在，字节是唯一通道（见 `shared/ipc.ts` 的 `attachBytes`）。
+           *
+           * 注意：**从 VS Code 资源管理器拖进来要先按住 Shift**。webview 是 iframe，
+           * 拖拽期间被 workbench 用 `pointer-events: none` 挡住，只有按了 Shift 才放行
+           * 事件（`workbench.desktop.main.js` 的 `windowDidDragStart`）；不按 Shift 时
+           * 这里连 dragover 都收不到，文件会在编辑器里被打开。从系统资源管理器拖
+           * 不受此限。这是 VS Code 的行为，不是本扩展能绕过的，故写进 README 说明。
+           */
           onDrop={(event) => {
             event.preventDefault();
             setDragOver(false);
+            const files = [...(event.dataTransfer?.files ?? [])];
+            if (!files.length) return;
+            const accepted = files.filter((file) => file.size <= DROP_BYTES_LIMIT);
+            const tooLarge = files.filter((file) => file.size > DROP_BYTES_LIMIT).map((f) => f.name);
+            void (async () => {
+              const payload: { name: string; base64: string }[] = [];
+              const unreadable: string[] = [];
+              for (const file of accepted) {
+                try {
+                  payload.push({ name: file.name, base64: await fileToBase64(file) });
+                } catch {
+                  // 目录拖进来就是一个读不出字节的 File（arrayBuffer 抛 IO 错误）
+                  unreadable.push(file.name);
+                }
+              }
+              if (!payload.length && !unreadable.length && !tooLarge.length) return;
+              post({ type: "attachBytes", files: payload, unreadable, tooLarge });
+            })();
           }}
         >
+          {dragOver ? (
+            <div className="composer-drop-hint" aria-hidden>
+              <IconAttach size={12} />
+              {texts.dropHint}
+            </div>
+          ) : null}
           {state.attachments.length ? (
             <div className="composer-chips">
               {state.attachments.map((attachment) => (
@@ -452,7 +538,14 @@ export function Composer({ state, onDraft }: { state: AppState; onDraft: (text: 
                   ) : attachment.upload?.status === "error" ? (
                     <button
                       className="chip-retry"
-                      title={texts.uploadFailed}
+                      // 悬停给出**服务端/宿主的真实失败原因**，不再一律「上传失败」：
+                      // 原因可能是 `@` 标记（如缺会话），也可能是服务端原始报错
+                      // （原样显示，不翻译）——都过一遍 resolveText
+                      title={
+                        attachment.upload.message
+                          ? texts.uploadFailedReason(resolveText(attachment.upload.message, texts))
+                          : texts.uploadFailed
+                      }
                       onClick={() => post({ type: "retryUpload", id: attachment.id })}
                     >
                       <IconRefresh size={11} />
@@ -762,6 +855,10 @@ export function Composer({ state, onDraft }: { state: AppState; onDraft: (text: 
  */
 function GoalBar({ goal }: { goal: GoalView | undefined }) {
   const texts = useTexts();
+  // 内联编辑的草稿：undefined = 不在编辑态。必须放在早退之前（hooks 顺序固定）
+  const [draft, setDraft] = useState<string | undefined>(undefined);
+  // 目标正文默认一行截断，展开后显示全文（再点收起）
+  const [expanded, setExpanded] = useState(false);
   if (!goal || goal.phase === "complete") return null;
   const phase =
     goal.phase === "paused"
@@ -771,8 +868,53 @@ function GoalBar({ goal }: { goal: GoalView | undefined }) {
         : texts.goalActive;
   const run = (action: "pause" | "resume" | "clear") =>
     post({ type: "runCommand", line: `/goal ${action}` });
+  /**
+   * 提交内联编辑走 `/goal edit <objective>`：与暂停 / 恢复 / 清除同一条命令通道，
+   * 结果会作为命令节点留在对话里（看得见生效没有）。
+   *
+   * 目标正文必须先压成**一行**：命令是按行解析的，正文里的换行会把剩下的部分
+   * 变成第二条命令。空正文不提交（服务端也会拒），直接退出编辑态。
+   */
+  const save = () => {
+    const objective = (draft ?? "").replace(/\s*\n\s*/g, " ").trim();
+    setDraft(undefined);
+    if (objective) post({ type: "runCommand", line: `/goal edit ${objective}` });
+  };
+  if (draft !== undefined) {
+    return (
+      <div className="goal-bar is-editing">
+        <span className="goal-icon" aria-hidden>
+          <IconTarget size={12} />
+        </span>
+        <input
+          className="goal-edit-input"
+          aria-label={texts.goalEdit}
+          // 用原正文当占位符：输入框空着也知道在改什么
+          placeholder={goal.objective}
+          value={draft}
+          autoFocus
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") save();
+            else if (event.key === "Escape") setDraft(undefined);
+          }}
+        />
+        <button className="goal-action" title={texts.goalSave} onClick={save}>
+          <IconCheck size={12} />
+        </button>
+        <button className="goal-action" title={texts.goalCancel} onClick={() => setDraft(undefined)}>
+          <IconClose size={12} />
+        </button>
+      </div>
+    );
+  }
   return (
-    <div className={`goal-bar is-${goal.phase}`} title={goal.blockedReason ?? goal.objective}>
+    <div
+      className={`goal-bar is-${goal.phase}${expanded ? " is-expanded" : ""}`}
+      // 悬停必须能读到**完整目标**：受阻时把受阻原因接在后面，而不是拿它顶掉目标
+      // （顶掉的那版让人看不到自己在做什么）
+      title={goal.blockedReason ? `${goal.objective}\n${goal.blockedReason}` : goal.objective}
+    >
       <span className="goal-icon" aria-hidden>
         <IconTarget size={12} />
       </span>
@@ -782,6 +924,16 @@ function GoalBar({ goal }: { goal: GoalView | undefined }) {
         <span className="goal-rounds">{`${goal.rounds}/${goal.maxRounds}`}</span>
       ) : null}
       <span className="spacer" />
+      {/* 展开 / 收起全文：正文默认一行截断，要看全文按这里（悬停也能看）。
+          位置按用户要求放在暂停按钮**左侧**。 */}
+      <button
+        className={`goal-action goal-expand${expanded ? " is-open" : ""}`}
+        title={expanded ? texts.goalCollapse : texts.goalExpand}
+        aria-expanded={expanded}
+        onClick={() => setExpanded(!expanded)}
+      >
+        <IconChevronDown size={12} />
+      </button>
       {goal.phase === "active" ? (
         <button className="goal-action" title={texts.goalPause} onClick={() => run("pause")}>
           <IconPause size={12} />
@@ -791,6 +943,15 @@ function GoalBar({ goal }: { goal: GoalView | undefined }) {
           <IconPlay size={12} />
         </button>
       )}
+      {/* 内联编辑：官方 GoalBar 的动作就是 pause/resume、edit（同一横条里的内联表单）
+          与 clear 三个，这里对齐 */}
+      <button
+        className="goal-action"
+        title={texts.goalEdit}
+        onClick={() => setDraft(goal.objective)}
+      >
+        <IconPencil size={12} />
+      </button>
       <button className="goal-action" title={texts.goalClear} onClick={() => run("clear")}>
         <IconClose size={12} />
       </button>

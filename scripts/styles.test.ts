@@ -311,15 +311,23 @@ console.log("styles: 主文字优先完整、描述先省略 ✓");
 
   // 组件结构：行号必须渲染在 .row-detail **内部**（在文件名之后），
   // 放外面就又会隔着 .row-head 的 gap 被推开。
+  // 文件名本身有两种形态（可点链接 / 纯文本，见工具行的 fileLink 对齐），
+  // 所以断言钉的是「文件名那一块之后紧跟 detailSuffix、且都在 .row-detail 里」。
   const primitives = readFileSync(
     join(process.cwd(), "src", "webview", "components", "primitives.tsx"),
     "utf8",
   );
+  const detailBlock = /<span className="row-detail" title=\{detail\}>([\s\S]*?)<\/span>\s*\) : detail \?/.exec(
+    primitives,
+  )?.[1] ?? "";
   const inner =
-    /<span className="row-detail-name">\{parts\.name\}<\/span>\s*\{detailSuffix \? <span className="row-detail-suffix">/.test(
-      primitives,
+    /row-detail-name[\s\S]*?<\/span>\s*\)\s*\}\s*\{detailSuffix \? <span className="row-detail-suffix">/.test(
+      detailBlock,
     );
-  assert.ok(inner, "primitives 的 Row 必须把 detailSuffix 渲染在 .row-detail 内部、紧跟文件名之后");
+  assert.ok(
+    inner,
+    "primitives 的 Row 必须把 detailSuffix 渲染在 .row-detail 内部、紧跟文件名之后",
+  );
   assert.ok(
     !/\{detailSuffix \? <span className="row-detail-suffix">\{detailSuffix\}<\/span> : null\}\s*\n\s*\{meta \?/.test(
       primitives,
@@ -399,5 +407,247 @@ console.log("styles: 路径与节点名有间距、目录渐隐只在被裁时 �
   );
 }
 console.log("styles: 会话历史屏蔽默认右键菜单 ✓");
+
+// ---------- 13. 目标条：默认一行截断，展开按钮切全文（不做「最多两行」） ----------
+//
+// 用户 2026-09-14 拍板：**要么一行截断、要么全文**，中间态（-webkit-line-clamp: 2）
+// 不要——半截的目标比一行还难认，多出来的那一行还把输入区往上顶。
+// 展开按钮放在暂停按钮左侧，可以再收起；悬停本来就能看到全文（title）。
+{
+  const objective = rule(".goal-objective");
+  assert.ok(
+    /white-space:\s*nowrap/.test(objective) && /text-overflow:\s*ellipsis/.test(objective),
+    ".goal-objective 默认必须是一行截断（省略号）",
+  );
+  assert.ok(
+    !/-webkit-line-clamp/.test(css) && !/\bline-clamp:/.test(css),
+    "不许用「最多两行」的钳制（用户明确否决的中间态）：要么一行截断、要么全文",
+  );
+
+  const expanded = rule(".goal-bar.is-expanded .goal-objective");
+  assert.ok(
+    /white-space:\s*normal/.test(expanded),
+    "展开态必须允许换行，否则「看了全文」还是被截",
+  );
+  assert.ok(
+    /overflow-wrap:\s*anywhere/.test(expanded),
+    "长目标（中文长串/无空格路径）展开时要能强制换行，不能撑破条",
+  );
+
+  // 按钮顺序：展开在暂停/恢复**左侧**（用户指定的位置）
+  const composer = readFileSync(
+    join(process.cwd(), "src", "webview", "components", "Composer.tsx"),
+    "utf8",
+  );
+  const expandAt = composer.indexOf('goal-action goal-expand');
+  const pauseAt = composer.indexOf("texts.goalPause}");
+  assert.ok(expandAt > 0 && pauseAt > 0, "展开按钮与暂停按钮都应当存在");
+  assert.ok(
+    expandAt < pauseAt,
+    "展开按钮必须在暂停按钮**左侧**（源码顺序即渲染顺序）",
+  );
+  assert.ok(
+    /aria-expanded=\{expanded\}/.test(composer),
+    "展开按钮要带 aria-expanded（无障碍状态）",
+  );
+}
+console.log("styles: 目标条默认一行截断 + 展开切全文 ✓");
+
+// ---------- 14. 用户消息也要有操作行（官方 MessageIconActions 是两者共用的） ----------
+//
+// 官方 `MessageIconActions`（`dsh-client-ui-chat/lib/client.js`）用户与助手**共用**：
+// 顺序固定 clock → copy → extra → branch → usage，用户那一支给「时钟（start）+ 复制」、
+// **没有分支**（分支必须锚在 `turn/end` 上，用户消息不是锚点）。
+// 此前本扩展的用户消息只有一个气泡 + 附件芯片、没有任何操作行——想复制自己刚发的
+// 那段长 prompt 无处可点，只能手动选中。这里钉住三件事：有操作行、能复制正文、
+// 且**没有**分支按钮。
+{
+  const message = readFileSync(
+    join(process.cwd(), "src", "webview", "components", "Message.tsx"),
+    "utf8",
+  );
+  const userBranch = message.slice(
+    message.indexOf('if (message.role === "user")'),
+    message.indexOf("const fullText"),
+  );
+  assert.ok(userBranch.length > 0, "应当能找到用户消息分支");
+  assert.ok(
+    /className="msg-actions"/.test(userBranch),
+    "用户消息必须有操作行（否则复制不了自己发过的内容）",
+  );
+  assert.ok(
+    /post\(\{ type: "copy", text: message\.text \?\? "" \}\)/.test(userBranch),
+    "用户消息的复制按钮要把正文发出去（text 可空，不能是 undefined）",
+  );
+  assert.ok(
+    /formatClock\(message\.ts\)/.test(userBranch),
+    "用户消息按时钟（start）显示时间，与官方顺序一致",
+  );
+  assert.ok(
+    !/branchFrom/.test(userBranch),
+    "用户消息**不能**有分支按钮：分支锚点必须落在 turn/end 上，用户消息不是锚点",
+  );
+}
+console.log("styles: 用户消息操作行（时钟 + 复制，无分支） ✓");
+
+// ---------- 3c. 「正在生成」那一行：只留文案，不搞扫光动画与秒表 ----------
+//
+// 用户 2026-09-14 拍板：**鲸鱼发光本身就是「还在跑」的证据**，官方那套
+// 「深度求索中... + 渐变扫光 + ≥15s 实时用时」不要；
+// 而工具行本来就各自显示实时耗时（那是我们要保留的信息增量），
+// 轮次总用时另由轮尾的「用时 X」胶囊给出。这里钉住「没有扫光那套」不回来。
+{
+  assert.ok(
+    !/turn-status-shimmer/.test(css) && !/\.turn-status\b/.test(css),
+    "不应再有 TurnStatus 的扫光状态行（用户明确去掉：鲸鱼发光已足够）",
+  );
+  const texts = readFileSync(join(process.cwd(), "src", "webview", "texts.ts"), "utf8");
+  assert.ok(
+    /running: "深度求索中"/.test(texts),
+    "运行中的文案应当是「深度求索中」（原来写的是「生成中」）",
+  );
+  assert.ok(
+    !/deepDiving/.test(texts),
+    "不再保留 deepDiving 词条（那是被去掉的扫光行专用文案）",
+  );
+}
+console.log("styles: 运行中文案（无扫光/无秒表） ✓");
+
+// ---------- 3c. 思考段与官方对齐：恒默认折叠 + 摘要口径 ----------
+//
+// 官方 `ReasoningRow`：`useState(false)`（运行中也不展开）、标题「思考」，
+// 折叠摘要 = **流式中取最后一行、结束后取第一行**，并且**去掉 `**`**。
+// 本扩展此前是「流式期间整段展开、摘要恒取首行且不剥 `**`」——长思考把正文顶出
+// 屏幕，而摘要里露出的 markdown 强调符号看着很脏。
+{
+  const rows = readFileSync(join(process.cwd(), "src", "webview", "components", "Rows.tsx"), "utf8");
+  assert.ok(
+    /const open = manual \?\? false;/.test(rows),
+    "思考段必须恒默认折叠（官方 useState(false)，运行中也不展开）",
+  );
+  assert.ok(
+    !/manual \?\? Boolean\(streaming\)/.test(rows),
+    "不再有「流式期间默认展开」那条旧口径",
+  );
+  assert.ok(
+    /\(streaming \? latestLine\(text\) : firstLine\(text\)\)\.replaceAll\("\*\*", ""\)/.test(rows),
+    "摘要在流式中取最后一行、结束后取第一行，并剥掉 **（与官方逐字同口径）",
+  );
+  assert.ok(
+    /function latestLine\(text: string\): string \{[\s\S]*?text\.trimEnd\(\)[\s\S]*?lastIndexOf\("\\n"\)/.test(rows),
+    "latestLine 要先去尾部空白再取最后一个换行之后（官方 latestLine 的实现）",
+  );
+  assert.ok(
+    /function firstLine\(text: string\): string \{[\s\S]*?text\.indexOf\("\\n"\)/.test(rows),
+    "firstLine 取第一个换行之前（官方 firstLine 的实现）",
+  );
+}
+console.log("styles: 思考段恒折叠 + 摘要口径对齐官方 ✓");
+
+// ---------- 15. 工具行三件套对齐官方：IN/OUT 分区、`+N -M`、可点路径 ----------
+//
+// 官方 `ToolRow`（`dsh-client-ui-tool/lib/client.js`）：
+// - 非 diff 工具的展开体是 `ioCard` 两段，标签 `row.input`/`row.output`
+//   （zh「输入/输出」、en「IN/OUT」）；**diff 类工具直接给 DiffBlock**，不套 IN/OUT；
+// - 折叠行右侧的 suffix 是 `+N -M`（`diffTotals(card.diffs)`，`.diffStat` 类）；
+// - 摘要是文件路径时，摘要本身是个 `fileLink` 按钮（点了预览该文件）。
+{
+  const rows = readFileSync(join(process.cwd(), "src", "webview", "components", "Rows.tsx"), "utf8");
+  assert.ok(
+    /!hasDiff && \(inputText \|\| showOutput\)/.test(rows),
+    "IN/OUT 只在**没有 diff** 时渲染（官方 diff 类工具直接给 DiffBlock，套 IN/OUT 会重复）",
+  );
+  assert.ok(/className="io-label">\{texts\.toolInput\}/.test(rows), "输入段要有标签");
+  assert.ok(/className="io-label">\{texts\.toolOutput\}/.test(rows), "输出段要有标签");
+  assert.ok(
+    /diffStat=\{diffStat\}/.test(rows),
+    "编辑类工具的折叠行要带 `+N -M`（官方 diffStat）",
+  );
+  assert.ok(
+    /const diffStat = hasDiff && diff[\s\S]*?added: total\.added[\s\S]*?removed: total\.removed/.test(rows),
+    "`+N -M` 必须由 diff hunk 累加而来（官方 diffTotals 口径）",
+  );
+  assert.ok(
+    /onDetailActivate=\{[\s\S]*?!tool\.command[\s\S]*?openFile/.test(rows),
+    "路径类 detail 可点开预览（官方 fileLink）；命令行类的 detail 不能当路径打开",
+  );
+
+  const primitives = readFileSync(
+    join(process.cwd(), "src", "webview", "components", "primitives.tsx"),
+    "utf8",
+  );
+  assert.ok(
+    /role="link"[\s\S]*?tabIndex=\{0\}/.test(primitives),
+    "行内文件链接要键盘可达（role=link + tabIndex，HTML 不允许按钮嵌套按钮）",
+  );
+  assert.ok(
+    /event\.stopPropagation\(\);\s*\n\s*onDetailActivate\(\)/.test(primitives),
+    "点链接不能顺手把行展开（stopPropagation）",
+  );
+  assert.ok(
+    !/onDetailActivate && <button/.test(primitives),
+    "链接不能用嵌套 <button>：行头本身已经是按钮",
+  );
+
+  const texts = readFileSync(join(process.cwd(), "src", "webview", "texts.ts"), "utf8");
+  assert.ok(/toolInput: "输入"/.test(texts) && /toolInput: "IN"/.test(texts), "两段标签要双语且与官方一致");
+}
+console.log("styles: 工具行 IN/OUT + 改动统计 + 可点路径 ✓");
+
+// ---------- 16. 代码块自动换行（官方 pre-wrap + break-all，不横向滚动） ----------
+//
+// 官方 `pre { white-space: pre-wrap; word-break: break-all }`。窄侧栏里横向滚动
+// 意味着长行要一路拖到底才读得完，而代码块正是窄栏里最长的东西。
+{
+  const pre = rule(".code-block pre");
+  assert.ok(
+    /white-space:\s*pre-wrap/.test(pre),
+    "代码块要自动换行（官方 pre-wrap）——横向滚动在窄侧栏里读长行很痛苦",
+  );
+  assert.ok(/word-break:\s*break-all/.test(pre), "断词方式与官方一致（break-all）");
+  assert.ok(!/overflow-x:\s*auto/.test(pre), "换了行就不该再留横向滚动");
+}
+console.log("styles: 代码块自动换行（官方 pre-wrap） ✓");
+
+// ---------- 17. 待处理的审批 / 提问卡接管输入区 ----------
+//
+// 官方把两者注册进 `conversation.composer` 槽（`select: ({pendingInteraction}) => …`），
+// 待处理时**接管输入区**——卡片常驻视野，界面看起来就是「在等你回答」。
+// 我们此前画在对话流里，滚上去就看不见了。口径：待处理的归输入区、已答过的留流里当记录。
+{
+  const app = readFileSync(join(process.cwd(), "src", "webview", "App.tsx"), "utf8");
+  assert.ok(
+    /pending=\{pendingInteractionOf\(state\.messages\)\}/.test(app),
+    "App 要把待处理交互交给 Composer（接管输入区）",
+  );
+
+  const composer = readFileSync(
+    join(process.cwd(), "src", "webview", "components", "Composer.tsx"),
+    "utf8",
+  );
+  assert.ok(
+    /className="composer-interaction"/.test(composer),
+    "输入区要有承载这张卡的容器（与目标条同一条 dock 带）",
+  );
+  assert.ok(
+    /pending\.kind === "approval" \? \(\s*<ApprovalCard/.test(composer),
+    "审批卡在这里渲染",
+  );
+  assert.ok(/<QuestionCard question=\{pending\.question\}/.test(composer), "提问卡同理");
+
+  const message = readFileSync(
+    join(process.cwd(), "src", "webview", "components", "Message.tsx"),
+    "utf8",
+  );
+  assert.ok(
+    /isTakenOverByComposer\(segment\) \? null : \(\s*<ApprovalCard/.test(message),
+    "流里要跳过**待处理**的卡（否则同一张卡出现两次），已答过的照常渲染",
+  );
+  assert.ok(
+    /isTakenOverByComposer\(segment\) \? null : \(\s*<QuestionCard/.test(message),
+    "提问卡同理",
+  );
+}
+console.log("styles: 待处理交互接管输入区（流里跳过、答过留档） ✓");
 
 console.log("\nstyles: all assertions passed");

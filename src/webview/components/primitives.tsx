@@ -59,6 +59,8 @@ export function Row({
   title,
   detail,
   detailSuffix,
+  diffStat,
+  onDetailActivate,
   meta,
   open,
   onToggle,
@@ -75,6 +77,21 @@ export function Row({
    * 拼在末尾的内容在窄侧栏会被一起截掉——那恰好是这个后缀要传达的信息。
    */
   detailSuffix?: string;
+  /**
+   * 改动统计（编辑类工具折叠行右侧的 `+N -M`，官方 `diffTotals`）。
+   *
+   * 单独一个 prop 而不是拼进 `detailSuffix`：它要按增/删分别着色。
+   */
+  diffStat?: { added: number; removed: number };
+  /**
+   * detail 是**可点的文件路径**时给一个动作（官方把摘要做成 `fileLink` 按钮，
+   * 点了用侧栏预览打开该文件）。
+   *
+   * 这里做成行内 `<span role="link">` 而不是嵌套 `<button>`：行头本身已经是一个
+   * 切换展开的按钮，HTML 不允许按钮嵌套按钮。用 role/tabIndex + Enter/Space
+   * 保住键盘可达，点击时 `stopPropagation` 免得顺手把行展开了。
+   */
+  onDetailActivate?: () => void;
   meta?: ReactNode;
   open: boolean;
   onToggle: () => void;
@@ -108,7 +125,8 @@ export function Row({
           <span className="row-icon">{icon}</span>
         ) : null}
         <span className="row-title">{title}</span>
-        {/* detail 过长时会被裁掉，所以补 title：即使截断，悬停仍能看到完整内容 */}
+        {/* detail 过长时会被裁掉，所以补 title：即使截断，悬停仍能看到完整内容。
+            路径类 detail 若带 onDetailActivate，则整块变成可点的文件链接。 */}
         {parts ? (
           <span className="row-detail" title={detail}>
             {parts.dir ? (
@@ -119,7 +137,28 @@ export function Row({
                 {parts.dir}
               </span>
             ) : null}
-            <span className="row-detail-name">{parts.name}</span>
+            {onDetailActivate ? (
+              <span
+                className="row-detail-name is-link"
+                role="link"
+                tabIndex={0}
+                onClick={(event) => {
+                  // 别顺手把行展开了（这也是用 span 而不是嵌套 button 的原因）
+                  event.stopPropagation();
+                  onDetailActivate();
+                }}
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter" && event.key !== " ") return;
+                  event.preventDefault();
+                  event.stopPropagation();
+                  onDetailActivate();
+                }}
+              >
+                {parts.name}
+              </span>
+            ) : (
+              <span className="row-detail-name">{parts.name}</span>
+            )}
             {detailSuffix ? <span className="row-detail-suffix">{detailSuffix}</span> : null}
           </span>
         ) : detail ? (
@@ -130,6 +169,13 @@ export function Row({
         ) : detailSuffix ? (
           // 没有 detail 只有后缀：单独渲染，仍然是不可压缩的一段
           <span className="row-detail-suffix">{detailSuffix}</span>
+        ) : null}
+        {/* 编辑类工具的折叠行右侧 `+N -M`（官方 diffStat）：绿加红减，一览改动量 */}
+        {diffStat && (diffStat.added > 0 || diffStat.removed > 0) ? (
+          <span className="row-diffstat" aria-label={`+${diffStat.added} -${diffStat.removed}`}>
+            {diffStat.added > 0 ? <span className="is-added">{`+${diffStat.added}`}</span> : null}
+            {diffStat.removed > 0 ? <span className="is-removed">{`-${diffStat.removed}`}</span> : null}
+          </span>
         ) : null}
         {meta ? <span className="row-meta">{meta}</span> : null}
       </button>

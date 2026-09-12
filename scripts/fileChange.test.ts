@@ -14,6 +14,7 @@ import { join } from "node:path";
 import {
   fileChangeKind,
   hasWorkingChange,
+  isNotFoundError,
   isUntracked,
   resolveChipPath,
   type GitChangeStateLike,
@@ -154,11 +155,13 @@ console.log("fileChange: 相邻路径不误判 ✓");
     /if \(hasWorkingChange\(repo\.state, uri\.fsPath\)\) \{\s*await vscode\.commands\.executeCommand\("git\.openChange", uri\);/.test(
       controller,
     ),
-    "对比窗口只准在「确认在改动清单里」的分支里开（未跟踪/已删除/无改动一律不进这条命令）",
+    "对比窗口只准在「确认在改动清单里」的分支里开（未跟踪 / 无改动不进这条命令；" +
+      "被跟踪的删除**在**工作区清单里，走的正是这条——点开看得到删除前的内容）",
   );
   assert.ok(
     !/git\.refresh/.test(controller),
-    "点击链路不做「轻推重扫 + 轮询」（用户 2026-09-14 拍板：即时感优先，宁可第一次点不出 diff）",
+    "点击链路不做「轻推重扫 + 轮询」（用户 2026-09-14 拍板：即时感优先，宁可第一次点不出 diff）；" +
+      "刷新只发生在轮次结束（refreshGitState 走 git API 的 repository.status()，不是这条命令）",
   );
   assert.ok(
     !/nudgeGitRefresh/.test(controller),
@@ -168,9 +171,72 @@ console.log("fileChange: 相邻路径不误判 ✓");
     /executeCommand\("git\.openChange", uri\)/.test(controller),
     "对比窗口复用 git 扩展的 git.openChange（SCM 的「打开更改」）",
   );
+  // ---------- 轮次结束主动刷新 Git 状态（修「第一次点不是 diff」） ----------
+  //
+  // git 扩展按 fs 事件去抖刷新，模型刚写完的文件还没进改动清单 → 第一次点芯片
+  // 被判定「没改动」、打开完整文件；过一会儿或点第二次才是 diff。解法是在轮次
+  // 结束（文件都落盘了）时主动推一次 repo.status()，**不在点击链路里等**
+  // （点击时轮询那个方案已被用户否决）。
+  assert.ok(
+    /adapter\.refreshFiles = \(\) => this\.refreshGitState\(\)/.test(controller),
+    "适配器必须拿到「轮次结束刷新 git」的回调，否则第一次点芯片看不到 diff",
+  );
+  assert.ok(
+    /await repository\.status\(\)/.test(controller),
+    "刷新要用 git API 的 repository.status()（本机 git 扩展实测有 async status()），而不是点击时执行 git.refresh",
+  );
+  const adapter = readFileSync(join(process.cwd(), "src", "dsh", "adapter.ts"), "utf8");
+  assert.ok(
+    /this\.scheduleFileKinds\(true\)/.test(adapter),
+    "turn/end 必须带 refreshGit 调一次（先推 Git 重扫再分类），这是记号与 diff 状态都准的前提",
+  );
+  // ---------- fileKinds 必须在首帧快照里 ----------
+  //
+  // patch 侧有「没变化不重发」的去重（lastFileKindsJson）：页面重载 / 第二个窗口
+  // 绑上同一会话时，重算出的表与缓存相同 → 那个 patch 永远不发，新窗口的
+  // [新增] / 删除线就会一直是空的。所以表必须随 state 快照一起给（controller.ts
+  // 的 stickyState 那一类约定）。
+  assert.ok(
+    /fileKindsState\(\): Record<string, FileChangeKind> \| undefined/.test(adapter),
+    "适配器要暴露分类表给宿主快照用",
+  );
+  assert.ok(
+    /fileKinds: scope\?\.adapter\?\.fileKindsState\(\)/.test(controller),
+    "首帧快照必须带上 fileKinds（重载 / 第二窗口否则永远拿不到记号）",
+  );
+  assert.ok(
+    /kinds = paths\.length \? await classify\(paths\) : \{\}/.test(adapter),
+    "没有芯片时也要下发空表：整表替换的语义要求「空」也是一次下发，否则界面留着旧表",
+  );
+  // ---------- 轮尾文件行只在轮次结束后显示 ----------
+  //
+  // 官方把这两行挂在 turn-tail 节点上，`publication` 只在 turn/end 时 immediate
+  // （dsh-client-ui-chat/lib/client.js 的 turnTailDefinition）；数据在轮次进行中
+  // 就累积，但节点不发布、行不渲染。轮次没完就画一行不断变长的文件名既与官方
+  // 不一致，也让「本轮改了什么」看起来像已经定稿。
+  const message = readFileSync(join(process.cwd(), "src", "webview", "components", "Message.tsx"), "utf8");
+  assert.ok(
+    /\{!message\.streaming && producedFiles\.length \? \(/.test(message),
+    "「本轮文件改动」必须等轮次结束（streaming=false）再显示",
+  );
+  assert.ok(
+    /\{!message\.streaming && message\.deliverables\?\.length \? \(/.test(message),
+    "「交付文件」同样只在轮次结束后显示",
+  );
   assert.ok(
     /@chipFileDeleted/.test(controller),
     "内容找不回的已删除文件要明确提示，不能静默",
+  );
+  // 解析不了会话 cwd 时以前只写日志 → 用户点了完全没反应。现在必须明确告知。
+  assert.ok(
+    /@chipPathUnresolved/.test(controller),
+    "相对路径 + 拿不到会话工作目录时必须提示，不能静默什么都不做",
+  );
+  // 修饰键点击（=「直接打开文件」）撞上已删除的文件，以前会静默失败：那条分支
+  // 绕过了删除提示。现在两种情况都先试改动对比、再明确告知。
+  assert.ok(
+    /} else if \(existence === "absent"\) \{/.test(controller),
+    "修饰键点已删除芯片也要有反应（退化成看改动对比 / 提示），不能静默",
   );
 }
 console.log("fileChange: 界面与宿主都接上了这条链路 ✓");
@@ -185,39 +251,54 @@ console.log("fileChange: 界面与宿主都接上了这条链路 ✓");
   const untracked: GitChangeStateLike = { untrackedChanges: [change(TARGET)] };
 
   assert.strictEqual(
-    fileChangeKind(tracked, TARGET, true),
+    fileChangeKind(tracked, TARGET, "present"),
     "edited",
     "在工作区改动清单里 = edited（git.openChange 能开对比窗口）",
   );
   assert.strictEqual(
-    fileChangeKind(staged, TARGET, true),
+    fileChangeKind(staged, TARGET, "present"),
     "edited",
     "暂存过的改动同样算 edited（SCM 里它也是「打开更改」）",
   );
   assert.strictEqual(
-    fileChangeKind(untracked, TARGET, true),
+    fileChangeKind(untracked, TARGET, "present"),
     "new",
     "未跟踪 = new（模型新建，点开直接看文件，不开 diff）",
   );
   assert.strictEqual(
-    fileChangeKind(undefined, TARGET, true),
+    fileChangeKind(undefined, TARGET, "present"),
     undefined,
     "拿不到 git 状态 → 不标记号（没有记号是「不确定」，不是「没改动」）",
   );
   assert.strictEqual(
-    fileChangeKind({}, TARGET, true),
+    fileChangeKind({}, TARGET, "present"),
     undefined,
     "哪个清单都不在 → 不标记号（无改动 / 被 .gitignore / 不在仓库）",
   );
   assert.strictEqual(
-    fileChangeKind(untracked, TARGET, false),
+    fileChangeKind(untracked, TARGET, "absent"),
     "deleted",
     "磁盘上没有了 → deleted 优先于未跟踪（先写后删的临时文件就该这么显示）",
   );
   assert.strictEqual(
-    fileChangeKind(tracked, TARGET, false),
+    fileChangeKind(tracked, TARGET, "absent"),
     "deleted",
     "跟踪中的删除也是 deleted：点开对比窗口还能看到删除前的内容",
+  );
+  // ---------- 存在性「查不出来」不等于「已删除」 ----------
+  //
+  // stat 抛错的原因不止「文件不在」：权限不足、离线共享盘、路径含非法字符、
+  // 虚拟文件系统都可能抛。旧写法把任何异常都当「不存在」→ 给无辜文件画删除线、
+  // 点击还弹「内容找不回来了」。现在只有明确 FileNotFound 才算 absent。
+  assert.strictEqual(
+    fileChangeKind(tracked, TARGET, "unknown"),
+    undefined,
+    "存在性未知 → 不标记号（拿不到证据时不动），哪怕它在改动清单里",
+  );
+  assert.strictEqual(
+    fileChangeKind(untracked, TARGET, "unknown"),
+    undefined,
+    "存在性未知 → 也不能标 [新增]：可能已经被删了，只是查不出来",
   );
   assert.strictEqual(
     isUntracked(untracked, "d:/dev/app/src/config.ts"),
@@ -231,6 +312,29 @@ console.log("fileChange: 界面与宿主都接上了这条链路 ✓");
   );
 }
 console.log("fileChange: 种类判定（new/edited/deleted/不确定）✓");
+
+// ---------- 7b. stat 错误的判读：只认 FileNotFound ----------
+//
+// `code` 的取值是本机 VS Code 实测出来的：`FileSystemError` 的构造函数是
+// `this.code = n?.name ?? "Unknown"`，`n` 是静态工厂本身，所以 code 正好是
+// 方法名（`FileNotFound` / `NoPermissions` / `Unavailable`），**不是**
+// `FileSystemError.FileNotFound`，也不是内部那个 `EntryNotFound`。@types/vscode
+// 只说「names of errors, like FileNotFound」——光看契约会写成前者，判据就永远
+// 不成立、deleted 记号永远不会出现。这条断言把实测值钉住。
+{
+  assert.strictEqual(isNotFoundError({ code: "FileNotFound" }), true, "明确报找不到 = absent");
+  assert.strictEqual(isNotFoundError({ code: "NoPermissions" }), false, "权限问题是 unknown");
+  assert.strictEqual(isNotFoundError({ code: "Unavailable" }), false, "盘不可用是 unknown");
+  assert.strictEqual(isNotFoundError({ code: "Unknown" }), false, "未指明的错误是 unknown");
+  assert.strictEqual(
+    isNotFoundError({ code: "FileSystemError.FileNotFound" }),
+    false,
+    "带前缀的写法不是本机实测值（写成它会永远判不出 absent）",
+  );
+  assert.strictEqual(isNotFoundError(new Error("ENOENT")), false, "普通 Error 没有 code");
+  assert.strictEqual(isNotFoundError(undefined), false, "连错误对象都没有 → 不猜");
+}
+console.log("fileChange: stat 错误判读（只认 FileNotFound）✓");
 
 // ---------- 8. 相对芯片路径解析（基准 = 会话工作目录） ----------
 //

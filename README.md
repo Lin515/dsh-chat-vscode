@@ -49,6 +49,13 @@
 - 回形针按钮是**通用文件入口**，按内容分派；**读不出来又传不上去的**（极端情况）
   把带双引号的路径插到输入框光标处，而不是做一个读不出内容的芯片
   （模型不支持图片输入时，图片也走这条路径）；选区、拖拽同样归入附件
+- **拖放文件到输入框**即可加入附件：界面只能拿到**字节和文件名**（VS Code 不给
+  webview 拖拽资源的路径，`File.path` 自 Electron 32 起也已移除），所以拖放走
+  base64 字节上传，单文件上限 8 MB（更大的请用回形针按钮，那条路是宿主直接读盘）。
+  **注意：从 VS Code 资源管理器往外拖时，要按住 `Shift` 才能拖进 webview** ——
+  webview 是 iframe，拖拽期间被 VS Code 用 `pointer-events` 挡住，不按 `Shift`
+  时事件根本到不了界面（文件会在编辑器里被打开）。从系统资源管理器拖不受此限。
+  目录不能拖放（读不出字节），请用回形针或 `@` 引用
 - 目录单独入口（命令面板「添加文件夹到对话」或资源管理器右键文件夹）：
   VS Code 的文件对话框在 Windows/Linux 上**不能同时**选文件与目录，同时开只会
   变成目录选择器、文件全被过滤，所以两者必须分开
@@ -76,6 +83,16 @@
   命令记录，所以界面上按钮发出的命令（权限预设、计划模式）也看得见结果
 - **模型重试有提示**：`llm/retry` 显示「正在重试 n/m…」，重试成功后收掉
 - **达到输出上限会说明**：`turn/end` 原因为 `max-tokens` 时给一条「回答被截断」
+- **轮尾两行文件都要等这一轮生成完**（`turn/end`）才出现：「本轮文件改动」
+  （从成功的 `write`/`edit` 推导）与「交付文件」（`present` 工具的显式申报）是
+  两条**互补**来源，官方也是两行并存、互不抑制——生成期间画的只是一行不断变长的
+  文件名，看起来像已经定稿，所以与官方一致地等轮次结束。轮次结束的同一时刻会**主动
+  推一次 Git 重扫**，于是这两行出现时记号是准的、用户第一次点芯片就直接进 diff
+  视图（此前 git 扩展按文件事件去抖，刚写完的文件还没进改动清单，第一次点只会
+  打开完整文件、点第二次才是 diff）
+- **芯片上的改动记号**：新建文件标 `[新增]`、已删除的画删除线（文件在磁盘上不存在
+  且**有确证**——`stat` 只把 `FileNotFound` 当删除，权限/离线盘等一律按「不确定」
+  处理，不标记号）。这是本扩展在官方之上的信息增量（官方芯片只区分文件类型）
 
 **面板**
 
@@ -321,6 +338,11 @@ npm run preview        # 打开 http://127.0.0.1:8777/test/preview.html
   队列项」则**不稳定**（同一脚本两次运行得到 0/3 与 3/3 两种相反结果）。
   所以本扩展仍是「摘空队列 → cancel → 等空闲 → 按原序重发」：它让 ESC 的行为**由客户端
   决定**，不依赖服务端那个测不准的分支。这是实测与契约冲突时的取舍，不是遗漏。
+- **从 VS Code 资源管理器拖文件进输入框必须先按 `Shift`**：webview 是 iframe，
+  拖拽期间 VS Code 用 `pointer-events` 挡住它，不按 `Shift` 事件到不了界面。
+  这是 VS Code 的既有行为（`workbench.desktop.main.js` 的 `windowDidDragStart`），
+  本扩展无法绕过；从系统资源管理器拖不受此限。拖放按字节上传，单文件上限 8 MB，
+  目录不支持（读不出字节）。
 
 ## 归属与许可
 
@@ -395,7 +417,16 @@ the caret** rather than becoming an attachment chip whose contents could never b
 images go that way too when the active model takes no image input. Selections and
 drag-and-drop land in the same attachment list; the binary/non-UTF-8 test is the same one
 dsh's own `read` tool applies (a NUL byte in the first 8 KB means binary, otherwise strict
-UTF-8 is required). Folders have their own entry point (the **DSH: Add Folder to Chat**
+UTF-8 is required). **Dropping files onto the composer** attaches them: the webview can only
+ever get the **bytes and the file name** (VS Code never hands a webview the paths of dragged
+resources, and `File.path` was removed in Electron 32), so a drop uploads base64 bytes, with
+a 8 MB per-file limit (use the paperclip for anything larger — that path reads from disk in
+the extension host). **Dragging from the VS Code Explorer requires holding `Shift`**: the
+webview is an iframe and VS Code blocks its pointer events for the duration of the drag
+(`windowDidDragStart` in `workbench.desktop.main.js`), so without `Shift` the events never
+arrive and the file opens in the editor instead. Drags from the OS file manager are not
+affected. Folders cannot be dropped (their bytes cannot be read) — use the paperclip or an
+`@` reference. Folders have their own entry point (the **DSH: Add Folder to Chat**
 command, or right-clicking a folder in the Explorer), because VS Code's file dialog
 **cannot** be both a file and a folder selector on Windows/Linux — enabling both silently
 degenerates into a folder picker and filters every file out. Model and thinking-effort
@@ -419,7 +450,19 @@ do this or `exit 1` and `exit 0` look identical. **Image results are visible**: 
 `session/attachment` and shown. **Slash commands get their own node** (`command/run` ↔
 `command/done`), so a command issued from a UI button has a visible result too. **Model
 retries are announced** (`llm/retry` → "retrying n/m …", cleared once the retry resumes), and
-a turn that ends at the output-token cap says so instead of looking complete.
+a turn that ends at the output-token cap says so instead of looking complete. **The two
+turn-tail file rows wait until the turn is finished** (`turn/end`): "Files changed" (derived
+from successful `write`/`edit` calls) and "Presented files" (the `present` tool's explicit
+declaration) are two **complementary** sources — the official UI shows both side by side
+without suppressing or de-duplicating either — and drawing them mid-turn only produces a row
+of file names that keeps growing and looks final. The same moment triggers **one explicit Git
+re-scan**, so the rows appear with correct markers and the first click on a chip opens the
+diff view (previously the git extension's debounced refresh had not yet seen the new file, so
+the first click opened the whole file and only the second showed a diff). **Change markers on
+chips**: a newly created file is tagged `[new]`, a deleted one is struck through — deleted
+only on positive evidence (`stat` counts `FileNotFound` alone as deletion; permissions,
+offline shares and the like are treated as "unknown" and left unmarked). That is information
+the official UI does not offer (its chips only distinguish file type).
 
 **Panels** — **History** (grouped, searchable), **Subagents** (list the session's
 subagents and open their full transcripts), **Background jobs** (state, start/end, duration

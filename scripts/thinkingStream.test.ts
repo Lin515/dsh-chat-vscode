@@ -12,6 +12,8 @@
  * 运行：npm test
  */
 import assert from "node:assert";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { SessionAdapter } from "../src/dsh/adapter";
 import type { HostToWebview } from "../src/shared/ipc";
 import type { MessageView, Segment } from "../src/shared/chat";
@@ -67,6 +69,199 @@ function harness() {
 
 const thinkingSegments = (messages: MessageView[]): Extract<Segment, { kind: "thinking" }>[] =>
   messages.flatMap((m) => m.segments.filter((s): s is Extract<Segment, { kind: "thinking" }> => s.kind === "thinking"));
+
+// ---------- A0. 助手消息里的图片块不能被静默丢弃 ----------
+//
+// 契约里 `assistant/message` 的 `content` 是完整的内容块联合
+// （`text | reasoning | image | file | tool-call | tool-result`）。适配器此前只折叠
+// text/reasoning，**image 块整块消失**——模型给你看一张图，界面上什么都没有。
+// 句柄是不透明 id，要经 `loadImages`（控制器注入，做 `session/attachment` 的 RPC）
+// 换成 data URL，所以这里桩掉回调、验证「先挂段、字节到了覆盖」这条链。
+{
+  const { adapter, messages } = harness();
+  const t = Date.now();
+  adapter.loadImages = (refs, done) => {
+    assert.strictEqual(refs.length, 1, "一个 image 块应当换成一个句柄");
+    assert.strictEqual(refs[0].attachmentId, "att-1", "句柄 id 要原样带过去");
+    done(["data:image/png;base64,AAAA"]);
+  };
+  adapter.applyEvent({
+    type: "assistant/message",
+    seq: 1,
+    time: t,
+    data: {
+      turn: 1,
+      step: 0,
+      message: {
+        id: "m1",
+        role: "assistant",
+        content: [
+          { type: "text", text: "这是截图：" },
+          { type: "image", attachment: { attachmentId: "att-1", mediaType: "image/png" } },
+        ],
+      },
+    },
+  });
+  const images = messages.flatMap((m) =>
+    m.segments.filter((s): s is Extract<Segment, { kind: "images" }> => s.kind === "images"),
+  );
+  assert.strictEqual(images.length, 1, "image 块必须折成一个 images 段（此前被整块丢掉）");
+  assert.deepStrictEqual(
+    images[0].images,
+    ["data:image/png;base64,AAAA"],
+    "字节到达后要覆盖到同一个段上（界面据此显示图）",
+  );
+  assert.ok(
+    messages.some((m) => m.segments.some((s) => s.kind === "text" && s.text === "这是截图：")),
+    "同一帧里的文本块照常保留，不能被图片挤掉",
+  );
+
+  // 拿不到 loadImages（子代理转录那类没有网络客户端的适配器）时不挂空段：
+  // 一个永远空着的图库位比不显示更让人困惑
+  const bare = harness();
+  bare.adapter.applyEvent({
+    type: "assistant/message",
+    seq: 1,
+    time: t,
+    data: {
+      turn: 1,
+      step: 0,
+      message: { id: "m1", role: "assistant", content: [{ type: "image", attachment: { attachmentId: "att-2" } }] },
+    },
+  });
+  assert.strictEqual(
+    bare.messages.flatMap((m) => m.segments).filter((s) => s.kind === "images").length,
+    0,
+    "没有 loadImages 时不挂空段",
+  );
+}
+console.log("thinkingStream: 助手图片块折成 images 段（不再静默丢弃） ✓");
+
+// ---------- A0c. 认不出的内容块留一条 JSON 记录（官方 default 分支） ----------
+//
+// 官方渲染链对认不出的块走 default：`JsonBlock` + 「未知内容块」。此前适配器只认
+// text/reasoning/image，其余块**整块消失**——`file` 块就是其中之一（官方也没给它
+// 专属分支，所以它同样落在这条默认路径上）。
+{
+  const { adapter, messages } = harness();
+  adapter.applyEvent({
+    type: "assistant/message",
+    seq: 1,
+    time: Date.now(),
+    data: {
+      turn: 1,
+      step: 0,
+      message: {
+        id: "m1",
+        role: "assistant",
+        content: [
+          { type: "text", text: "看这个文件：" },
+          { type: "file", attachment: { attachmentId: "att-9", name: "report.pdf", bytes: 1024 } },
+        ],
+      },
+    },
+  } as never);
+  const unknown = messages
+    .flatMap((m) => m.segments)
+    .filter((s): s is Extract<Segment, { kind: "unknown" }> => s.kind === "unknown");
+  assert.strictEqual(unknown.length, 1, "认不出的块必须留一条记录，不能整块消失");
+  assert.strictEqual(unknown[0].type, "file", "记录里要写清块类型");
+  assert.ok(
+    unknown[0].json.includes("report.pdf"),
+    "记录里要带上内容（这里是附件的名字），否则这条记录没有信息量",
+  );
+
+  // 工具块是**故意**不在这里渲染的（它们各有自己的事件、已经折成工具行）
+  const bare = harness();
+  bare.adapter.applyEvent({
+    type: "assistant/message",
+    seq: 1,
+    time: Date.now(),
+    data: {
+      turn: 1,
+      step: 0,
+      message: {
+        id: "m1",
+        role: "assistant",
+        content: [{ type: "tool-call", id: "c1", name: "read", arguments: "{}" }],
+      },
+    },
+  } as never);
+  assert.strictEqual(
+    bare.messages.flatMap((m) => m.segments).filter((s) => s.kind === "unknown").length,
+    0,
+    "tool-call 块不在这里渲染（否则与工具行重复）",
+  );
+}
+console.log("thinkingStream: 认不出的内容块留记录（file 块不再消失） ✓");
+
+// ---------- A0b. 轮尾用时/速度：整轮累加（官方 deriveStats 的口径） ----------
+//
+// `ranForMs` = turn/end − 本轮开始；`tokensPerSecond` = **各 step 解码窗口与输出
+// token 相加**后再除（逐 step 覆盖的 `usage.tokensPerSecond` 只是最后一步的速度，
+// 拿来当整轮用会系统性偏差）；`ttftMs` 取**第一步**的首 token 用时。
+{
+  const { adapter, messages } = harness();
+  const t = 1_789_147_200_000;
+  adapter.applyEvent({ type: "turn/start", seq: 1, time: t, data: { turn: 1 } });
+  adapter.applyAssistantStream({ type: "start", attemptId: "att1", revision: 1, turn: 1, step: 0 });
+  // 首个 token 落在 t+2000（改判据：TTFT = 首个 token − step 开始）
+  adapter.applyAssistantStream({
+    type: "chunk",
+    attemptId: "att1",
+    revision: 1,
+    index: 0,
+    time: t + 2000,
+    chunk: { type: "text-delta", index: 0, text: "hi" },
+  });
+  // durable 消息落在 t+12000：解码窗口 = 10s，输出 100 token → 10 tok/s
+  adapter.applyEvent({
+    type: "assistant/message",
+    seq: 2,
+    time: t + 12_000,
+    data: {
+      turn: 1,
+      step: 0,
+      usage: { inputTokens: 10, outputTokens: 100, totalTokens: 110 },
+      message: { id: "m1", role: "assistant", content: [{ type: "text", text: "hi" }] },
+    },
+  } as never);
+  // 第二个 step：再解码 5s、再输出 50 token → 合计 15s / 150 token → 10 tok/s
+  adapter.applyEvent({ type: "step/start", seq: 3, time: t + 20_000, data: { step: 1 } });
+  adapter.applyAssistantStream({
+    type: "chunk",
+    attemptId: "att2",
+    revision: 1,
+    index: 0,
+    time: t + 22_000,
+    chunk: { type: "text-delta", index: 0, text: " again" },
+  });
+  adapter.applyEvent({
+    type: "assistant/message",
+    seq: 4,
+    time: t + 27_000,
+    data: {
+      turn: 1,
+      step: 1,
+      usage: { inputTokens: 10, outputTokens: 50, totalTokens: 60 },
+      message: { id: "m2", role: "assistant", content: [{ type: "text", text: " again" }] },
+    },
+  } as never);
+  const before = messages.find((m) => m.id === "a:1");
+  assert.strictEqual(before?.turnStats, undefined, "轮次没结束就不该有用时/速度（算不出总用时）");
+
+  adapter.applyEvent({ type: "turn/end", seq: 5, time: t + 60_000, data: { turn: 1, reason: { kind: "completed" } } });
+  const stats = messages.find((m) => m.id === "a:1")?.turnStats;
+  assert.ok(stats, "turn/end 之后必须写入 turnStats");
+  assert.strictEqual(stats.ranForMs, 60_000, "总用时 = turn/end − 本轮开始");
+  assert.strictEqual(stats.ttftMs, 2000, "TTFT 取**第一步**的首 token 用时");
+  assert.strictEqual(
+    Math.round(stats.tokensPerSecond ?? 0),
+    10,
+    `速度要按整轮累加算（150 token / 15s = 10），实际 ${stats.tokensPerSecond}`,
+  );
+}
+console.log("thinkingStream: 轮尾用时/速度按整轮累加（官方 deriveStats 口径） ✓");
 
 // ---------- A. 思考时的流式叠加层必须被 durable 消息清掉 ----------
 
@@ -343,6 +538,44 @@ console.log("thinkingStream: 重复事件去重 ✓");
   }
 }
 console.log("thinkingStream: 本轮关闭后未结算的工具行收成 stopped（不按收场原因分支） ✓");
+
+// ---------- C1b. 被中断的一轮在界面上不是「红色报错」 ----------
+//
+// `assistant/message` 的 `interrupted` 标记走 `message.error` 这个槽位，但语义是
+// 「用户按了 ESC」而不是失败。官方把它画成冻结正文末尾一枚 tertiary 色的小胶囊
+// 「已停止」；与「工具行的 stopped 用警告色」是同一口径。渲染侧必须把
+// `@interrupted` 与非中断的错误区分开，否则按一次 ESC 看起来像出了事故。
+{
+  const { adapter, messages } = harness();
+  const t = Date.now();
+  adapter.applyEvent({ type: "turn/start", seq: 1, time: t, data: { turn: 1 } });
+  adapter.applyEvent({
+    type: "user/message",
+    seq: 2,
+    time: t + 1,
+    data: { id: "u1", role: "user", content: [{ type: "text", text: "问" }], source: { kind: "user" } },
+  });
+  adapter.applyEvent({
+    type: "assistant/message",
+    seq: 3,
+    time: t + 2,
+    data: {
+      turn: 1,
+      step: 0,
+      interrupted: true,
+      message: { id: "m1", role: "assistant", content: [{ type: "text", text: "答到一半" }] },
+    },
+  });
+  const marked = messages.find((m) => m.error === "@interrupted");
+  assert.ok(marked, "interrupted 标记要落到 message.error（语言中立的 key）");
+
+  const source = readFileSync(join(process.cwd(), "src", "webview", "components", "Message.tsx"), "utf8");
+  assert.ok(
+    /level=\{message\.error === "@interrupted" \? "info" : "error"\}/.test(source),
+    "@interrupted 必须按 info（弱化）渲染，不能与真失败一样染红",
+  );
+}
+console.log("thinkingStream: 中断不画成红色报错（与官方 tertiary 胶囊同口径） ✓");
 
 // ---------- C2. 已结算的调用不被合成覆盖 ----------
 

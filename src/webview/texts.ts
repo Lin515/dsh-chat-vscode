@@ -60,6 +60,44 @@ export interface Texts {
   goalPause: string;
   goalResume: string;
   goalClear: string;
+  /** 目标条的「编辑」按钮（官方 GoalBar 有内联编辑，键名 action.edit）。 */
+  goalEdit: string;
+  /** 内联编辑表单的保存 / 取消（官方 action.save / action.cancel）。 */
+  goalSave: string;
+  goalCancel: string;
+  /** 目标条展开 / 收起全文（目标正文默认一行截断，悬停也能看到全文）。 */
+  goalExpand: string;
+  goalCollapse: string;
+
+  /**
+   * 轮尾「用时 X」里的时长。格式与官方 `formatRunDuration` 逐字一致
+   * （zh「42秒」「1分05秒」/ en「42s」「1m 05s」），**不能**复用界面里工具行的
+   * `formatDuration`：那是本扩展自己的紧凑格式（「1m 5s」「0.8s」），单位口径不同。
+   */
+  turnClock: (ms: number) => string;
+  /**
+   * 轮级过程折叠那枚按钮的文案（官方 `message.turnProcess.*`）。
+   *
+   * 官方是「N 次工具调用 · M 条消息 · K 个 subagent」三段拼起来（各自单复数），
+   * 三者皆 0 时读「已思考」。**整句交给词典**而不是在组件里拼：中文没有复数变化、
+   * 英文有，分隔符两语言也可能不同（官方 zh/en 都是「 · 」，但仍由词典定义）。
+   */
+  turnProcessLabel: (counts: { toolCalls: number; messages: number; subagents: number }) => string;
+  /** 轮尾的用时与速度（`TurnStatsView` 的展示文案）。 */
+  turnRanFor: (duration: string) => string;
+  /** 用时胶囊点开后的明细（官方 `message.turnTime.*`）。 */
+  turnTimeTitle: string;
+  turnTimeDuration: string;
+  turnTimeSpeed: string;
+  turnTimeTtft: string;
+  /** 输出速度的值（官方 `message.tokensPerSecond`：`{tps} tok/s`）。 */
+  tokensPerSecond: (tps: string) => string;
+  /**
+   * 首 token 用时（TTFT）。**与 `turnClock` 不同**：官方这里走
+   * `formatLatencySeconds`——**十秒以内保留一位小数**、十秒以上取整（TTFT 是
+   * 亚秒级的量，「1.9 秒」和「1 秒」是两回事，抹掉小数就没信息了）。
+   */
+  turnLatency: (ms: number) => string;
 
   /** 命令节点：命令名 + 参数、运行中、结果。 */
   commandRunning: string;
@@ -76,6 +114,26 @@ export interface Texts {
   producedMore: (count: number) => string;
   /** 文件芯片的无障碍标题（点击查看该文件的改动）。 */
   openChangesAria: (name: string) => string;
+  /** 助手消息里图片块的无障碍文本（工具结果图片另有一份，见 `toolImageAlt`）。 */
+  messageImageAlt: string;
+  /** 工具行展开体的两段标签（官方 `row.input` / `row.output`：zh「输入/输出」、en「IN/OUT」）。 */
+  toolInput: string;
+  toolOutput: string;
+  /** 可点路径的无障碍/悬停说明（官方把摘要做成 fileLink，点了预览该文件）。 */
+  toolOpenFile: string;
+  /** 认不出的内容块的标签（官方 `message.unknownBlock` 逐字）。 */
+  unknownBlock: string;
+  /** 上下文条目的 per-form 正文文案（官方 `message.context.*` 逐字）。 */
+  contextInstructions: string;
+  contextAdded: string;
+  contextUpdated: string;
+  contextRemoved: string;
+  contextCatalogReplaced: string;
+  contextCatalogMore: (count: number) => string;
+  contextSnapshotSupersedes: string;
+  contextRelayFrom: (session: string) => string;
+  contextRecallCounts: (retained: number, omitted: number) => string;
+  contextRecallTruncated: string;
   /** 文件芯片的悬停说明：默认看改动、按住修饰键直接打开文件。 */
   openChangesHint: string;
   /** 文件芯片行「展开全部」按钮的无障碍标题。 */
@@ -86,8 +144,27 @@ export interface Texts {
   filesCollapseAria: string;
   /** 新建文件芯片的前缀记号（git 未跟踪 = 模型新建，点击直接打开文件）。 */
   fileNewTag: string;
-  /** 文件已删除且内容找不回时的提示（toast 与删除线芯片的悬停说明共用）。 */
+  /**
+   * 已删除芯片（文件名画删除线）的悬停说明。
+   *
+   * 只陈述**磁盘上没有了**这个事实，并给出可试的动作——**不能**说「内容找不回来
+   * 了」：被跟踪的文件删除后仍在工作区改动清单里，点开对比窗口就能看到删除前的
+   * 内容（见 `dsh/fileChange.ts` 的 `fileChangeKind` 与 `fileChange.test.ts` 的
+   * 「跟踪中的删除」断言）。真正找不回时才由宿主发 `@chipFileDeleted`。
+   */
+  fileDeletedHint: string;
+  /** 已删除芯片的无障碍标题（与 `openChangesAria` 同构，不带语言特有的括号）。 */
+  deletedFileAria: (name: string) => string;
+  /** 文件已删除且**内容确实找不回**时的 toast（宿主 `@chipFileDeleted` 专用）。 */
   chipFileDeleted: string;
+  /** 相对路径但拿不到会话工作目录时的 toast（宿主 `@chipPathUnresolved` 专用）。 */
+  chipPathUnresolved: string;
+  /** 拖放里读不出字节的项（目录等）的 toast（宿主 `@dropUnreadable:name`）。 */
+  dropUnreadable: (name: string) => string;
+  /** 拖放里超过大小上限的项的 toast（宿主 `@dropTooLarge:name`）。 */
+  dropTooLarge: (name: string) => string;
+  /** 拖放区高亮时显示的提示（松开即添加）。 */
+  dropHint: string;
 
   /** 子代理面板 */
   subagents: string;
@@ -112,7 +189,13 @@ export interface Texts {
   /** `/` 列表里标记「这条是技能，不是可执行的斜杠命令」。 */
   skillTag: string;
   /** 文件附件上传失败（芯片上给重试）。 */
+  /** 上传失败且**拿不到服务端原因**时的兜底文案。 */
   uploadFailed: string;
+  /**
+   * 上传失败芯片的悬停说明：`reason` 是服务端/宿主给的真实原因（可能本身是
+   * `@` 标记，调用方先过 `resolveText` 再进来），换行后接「点击重试」。
+   */
+  uploadFailedReason: (reason: string) => string;
   /** 有附件没上传成功、发送时被跳过（文件名预览 + 总个数）。 */
   uploadIncomplete: (names: string, count: number) => string;
   /** 还没有会话（连不上服务器），附件传不上去。 */
@@ -371,6 +454,36 @@ const zh: Texts = {
   goalPause: "暂停目标",
   goalResume: "恢复目标",
   goalClear: "清除目标",
+  goalEdit: "编辑目标",
+  goalSave: "保存",
+  goalCancel: "取消",
+  goalExpand: "展开目标全文",
+  goalCollapse: "收起目标全文",
+  turnClock: (ms) => {
+    const total = Math.max(0, Math.floor(ms / 1000));
+    const minutes = Math.floor(total / 60);
+    const seconds = total % 60;
+    return minutes > 0
+      ? `${minutes}分${String(seconds).padStart(2, "0")}秒`
+      : `${seconds}秒`;
+  },
+  turnRanFor: (duration) => `用时 ${duration}`,
+  turnProcessLabel: ({ toolCalls, messages, subagents }) => {
+    const parts: string[] = [];
+    if (toolCalls > 0) parts.push(`${toolCalls} 次工具调用`);
+    if (messages > 0) parts.push(`${messages} 条消息`);
+    if (subagents > 0) parts.push(`${subagents} 个 subagent`);
+    return parts.length ? parts.join(" · ") : "已思考";
+  },
+  turnTimeTitle: "本轮用时和速度",
+  turnTimeDuration: "本轮总用时",
+  turnTimeSpeed: "输出速度（TPS）",
+  turnTimeTtft: "首 token 用时（TTFT）",
+  tokensPerSecond: (tps) => `${tps} tok/s`,
+  turnLatency: (ms) => {
+    const seconds = Math.max(0, ms) / 1000;
+    return `${seconds < 10 ? seconds.toFixed(1) : String(Math.round(seconds))}秒`;
+  },
 
   commandRunning: "执行中",
   commandFailed: "执行失败",
@@ -385,7 +498,13 @@ const zh: Texts = {
   filesCollapse: "收起",
   filesCollapseAria: "收起文件列表",
   fileNewTag: "[新增]",
+  fileDeletedHint: "文件已从磁盘删除；点击尝试查看删除前的内容",
+  deletedFileAria: (name) => `已删除的文件 ${name}`,
   chipFileDeleted: "文件已删除，内容找不回来了",
+  chipPathUnresolved: "暂时拿不到会话工作目录，无法定位这个文件；稍后再点一次试试",
+  dropUnreadable: (name) => `${name} 读不出来，没有加进来（目录暂不支持拖放，请用「添加文件」或 @ 引用）`,
+  dropTooLarge: (name) => `${name} 太大，拖放上限 8 MB；请改用「添加文件」`,
+  dropHint: "松开即添加为附件",
 
   subagents: "子代理",
   subagentsEmpty: "当前会话没有子代理",
@@ -405,6 +524,7 @@ const zh: Texts = {
   commandsEmpty: "没有可用命令",
   skillTag: "技能",
   uploadFailed: "上传失败，点击重试",
+  uploadFailedReason: (reason) => `${reason}\n点击重试`,
   uploadIncomplete: (names, count) =>
     `有 ${count} 个文件没能上传（${names}），本次只发送了就绪的附件`,
   uploadNoSession: "还没有连上服务器，附件传不上去",
@@ -426,7 +546,7 @@ const zh: Texts = {
   settingsNoDocument: "服务器未启用设置文档，只读展示",
   settingsNamespace: (ns) => `命名空间 ${ns}`,
 
-  running: "生成中",
+  running: "深度求索中",
   queued: "待发送 {n} 条",
   queueRemove: "取消这条消息",
   queueEdit: "取回重新编辑",
@@ -534,6 +654,21 @@ const zh: Texts = {
   toolExitCode: (code) => `退出码 ${code}`,
   toolSignal: (signal) => `被信号 ${signal} 终止`,
   toolImageAlt: "工具返回的图片",
+  messageImageAlt: "消息里的图片",
+  toolInput: "输入",
+  toolOutput: "输出",
+  toolOpenFile: "点击预览这个文件",
+  unknownBlock: "未知内容块",
+  contextInstructions: "上下文指令",
+  contextAdded: "已新增",
+  contextUpdated: "已更新",
+  contextRemoved: "已移除",
+  contextCatalogReplaced: "替换目录",
+  contextCatalogMore: (count) => `…还有 ${count} 条`,
+  contextSnapshotSupersedes: "取代先前的快照",
+  contextRelayFrom: (session) => `来自会话 ${session}`,
+  contextRecallCounts: (retained, omitted) => `保留 ${retained} 条 · 省略 ${omitted} 条`,
+  contextRecallTruncated: "已截断",
   toolStatusRunning: "运行中",
   toolStatusStopped: "已停止",
   toolStatusFailed: "失败",
@@ -610,6 +745,37 @@ const en: Texts = {
   goalPause: "Pause goal",
   goalResume: "Resume goal",
   goalClear: "Clear goal",
+  goalEdit: "Edit goal",
+  goalSave: "Save",
+  goalCancel: "Cancel",
+  goalExpand: "Show the full goal",
+  goalCollapse: "Collapse the goal",
+  turnClock: (ms) => {
+    const total = Math.max(0, Math.floor(ms / 1000));
+    const minutes = Math.floor(total / 60);
+    const seconds = total % 60;
+    return minutes > 0
+      ? `${minutes}m ${String(seconds).padStart(2, "0")}s`
+      : `${seconds}s`;
+  },
+  turnRanFor: (duration) => `Ran for ${duration}`,
+  turnProcessLabel: ({ toolCalls, messages, subagents }) => {
+    const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`;
+    const parts: string[] = [];
+    if (toolCalls > 0) parts.push(plural(toolCalls, "tool call"));
+    if (messages > 0) parts.push(plural(messages, "message"));
+    if (subagents > 0) parts.push(plural(subagents, "subagent"));
+    return parts.length ? parts.join(" · ") : "Thought for a while";
+  },
+  turnTimeTitle: "Turn time and speed",
+  turnTimeDuration: "Total run time",
+  turnTimeSpeed: "Tokens per second (TPS)",
+  turnTimeTtft: "Time to first token (TTFT)",
+  tokensPerSecond: (tps) => `${tps} tok/s`,
+  turnLatency: (ms) => {
+    const seconds = Math.max(0, ms) / 1000;
+    return `${seconds < 10 ? seconds.toFixed(1) : String(Math.round(seconds))}s`;
+  },
 
   commandRunning: "Running",
   commandFailed: "Failed",
@@ -624,7 +790,15 @@ const en: Texts = {
   filesCollapse: "Collapse",
   filesCollapseAria: "Collapse file list",
   fileNewTag: "[new]",
+  fileDeletedHint: "This file is no longer on disk; click to try to view its content before deletion",
+  deletedFileAria: (name) => `Deleted file ${name}`,
   chipFileDeleted: "The file was deleted; its content is no longer available",
+  chipPathUnresolved:
+    "The session working directory is not available yet, so this file cannot be located; try again in a moment",
+  dropUnreadable: (name) =>
+    `${name} could not be read and was not attached (folders cannot be dropped; use the attach button or an @ reference)`,
+  dropTooLarge: (name) => `${name} is too large to drop (limit 8 MB); use the attach button instead`,
+  dropHint: "Release to attach",
 
   subagents: "Subagents",
   subagentsEmpty: "This session has no subagents",
@@ -644,6 +818,7 @@ const en: Texts = {
   commandsEmpty: "No commands available",
   skillTag: "Skill",
   uploadFailed: "Upload failed — click to retry",
+  uploadFailedReason: (reason) => `${reason}\nClick to retry`,
   uploadIncomplete: (names, count) =>
     `${count} file(s) could not be uploaded (${names}); only the ready attachments were sent`,
   uploadNoSession: "Not connected to the server yet; the attachment cannot be uploaded",
@@ -665,7 +840,7 @@ const en: Texts = {
   settingsNoDocument: "The server exposes no settings document; showing read-only values",
   settingsNamespace: (ns) => `namespace ${ns}`,
 
-  running: "Generating",
+  running: "Deep diving",
   queued: "{n} queued",
   queueRemove: "Remove this message",
   queueEdit: "Take back to edit",
@@ -773,6 +948,21 @@ const en: Texts = {
   toolExitCode: (code) => `exit code ${code}`,
   toolSignal: (signal) => `killed by signal ${signal}`,
   toolImageAlt: "Image returned by the tool",
+  messageImageAlt: "Image in the message",
+  toolInput: "IN",
+  toolOutput: "OUT",
+  toolOpenFile: "Click to preview this file",
+  unknownBlock: "Unknown content block",
+  contextInstructions: "Context instructions",
+  contextAdded: "Added",
+  contextUpdated: "Updated",
+  contextRemoved: "Removed",
+  contextCatalogReplaced: "Catalog replaced",
+  contextCatalogMore: (count) => `…and ${count} more`,
+  contextSnapshotSupersedes: "Supersedes the previous snapshot",
+  contextRelayFrom: (session) => `From session ${session}`,
+  contextRecallCounts: (retained, omitted) => `${retained} kept · ${omitted} omitted`,
+  contextRecallTruncated: "Truncated",
   toolStatusRunning: "Running",
   toolStatusStopped: "Stopped",
   toolStatusFailed: "Failed",
@@ -873,6 +1063,12 @@ function resolveMarker(text: string, texts: Texts): string {
       return texts.queueAttachmentsLost;
     case "chipFileDeleted":
       return texts.chipFileDeleted;
+    case "chipPathUnresolved":
+      return texts.chipPathUnresolved;
+    case "dropUnreadable":
+      return texts.dropUnreadable(arg);
+    case "dropTooLarge":
+      return texts.dropTooLarge(arg);
     case "queueContentLost":
       return texts.queueContentLost;
     case "queueDispatchFailed":

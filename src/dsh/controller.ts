@@ -18,9 +18,9 @@ import type {
 } from "../shared/chat";
 import type { HostToWebview, WebviewToHost } from "../shared/ipc";
 import { SessionAdapter, type ImageRef } from "./adapter";
-import { classifyPath, formatPathList, isDirectoryPath, isImagePath } from "./attachments";
+import { classifyDroppedBytes, classifyPath, formatPathList, isDirectoryPath, isImagePath } from "./attachments";
 import { ConfigChangeRouter } from "./configChanges";
-import { fileChangeKind, hasWorkingChange, resolveChipPath, type GitChangeStateLike } from "./fileChange";
+import { fileChangeKind, hasWorkingChange, isNotFoundError, resolveChipPath, type FileExistence, type GitChangeStateLike } from "./fileChange";
 import { composeWithReferences, formatFileMention } from "./references";
 import { resolveForVsCode } from "./hostText";
 import { DshApiError, DshAuthError, DshClient, type ConnectionState, type SessionSummaryWire } from "./client";
@@ -107,12 +107,24 @@ function optionalNumber(value: unknown): number | undefined {
  *
  * `@types/vscode` 只带 VS Code 自己的 API，git 扩展的 API 类型不随包发布，
  * 所以这里按用到的字段自己声明。形状是读内建扩展的实现确认的（VS Code 1.137
- * `extensions/git/dist/main.js`：`getAPI(1).getRepository(uri).state` 上确实有
- * `workingTreeChanges` / `indexChanges` / `mergeChanges` 三个清单——同一个文件里
- * 的 `git.api.getRepositoryState` 也是这么取的）。
+ * `extensions/git/dist/main.js`）：
+ * - `getAPI(1).getRepository(uri).state` 上确实有 `workingTreeChanges` /
+ *   `indexChanges` / `mergeChanges` 三个清单（同一个文件里的
+ *   `git.api.getRepositoryState` 也是这么取的）；
+ * - `getAPI(1).repositories` 返回数组（`get repositories(){return this.#e.repositories.map(...)}`），
+ *   每个元素有 `async status(): Promise<void>`（`await this.run(ae.Status)`）
+ *   —— 这就是轮次结束后主动推 Git 状态刷新用的那个方法。
  */
 interface GitApiLike {
-  getRepository(uri: vscode.Uri): { readonly state?: GitChangeStateLike } | null;
+  /** 全部已打开仓库（写类调用可能落在别的仓库里，刷新要全覆盖）。 */
+  readonly repositories?: readonly GitRepositoryLike[];
+  getRepository(uri: vscode.Uri): GitRepositoryLike | null;
+}
+
+interface GitRepositoryLike {
+  readonly state?: GitChangeStateLike;
+  /** 重跑一次 `git status` 并刷新扩展里的 `state`。 */
+  status(): Promise<void>;
 }
 
 interface GitExtensionExportsLike {
@@ -307,6 +319,11 @@ export class ChatController implements vscode.Disposable {
       // 会话内的粘性显示值：首帧快照必须带上，否则 webview 一重载，上下文占用/
       // 速度/构成/统计就空到下一轮才有数据（表现为「时有时无」）
       ...(scope?.adapter?.stickyState() ?? {}),
+      // 文件芯片的记号表同理**必须在首帧里**：patch 侧有「没变化不重发」的去重，
+      // 而重载 / 第二个窗口一来就重算出的表与缓存相同 → 那个 patch 永远不会发，
+      // 新窗口的 [新增] / 删除线就会一直是空的（用户 2026-09-14 报的「重载后
+      // 记号全没了」）。undefined 会过线成 null → 界面折回「没有这张表」。
+      fileKinds: scope?.adapter?.fileKindsState(),
       // 「加载更早」的可用性：重放只在 follow 流开窗那一刻发过一次 patch，
       // 第二个窗口绑上已有会话 / 页面重载后要靠快照补回
       hasMoreHistory: scope?.adapter?.hasMoreHistory() ?? false,
@@ -945,6 +962,9 @@ export class ChatController implements vscode.Disposable {
     // 文件芯片种类（[新增] / 删除线）的分类回调：适配器交路径，宿主查 git 与磁盘。
     // 带上会话 cwd：芯片路径可能是相对会话工作目录的拼写，解析不了会误判 deleted
     adapter.classifyFiles = (paths) => this.classifyFiles(this.cwdOf(scope), paths);
+    // 轮次结束时先推一次 Git 重扫：否则刚写完的文件还没进改动清单，用户第一次
+    // 点芯片看到的是完整文件而不是 diff（见 refreshGitState 的注释）
+    adapter.refreshFiles = () => this.refreshGitState();
     adapter.setSession(
       this.sessions.find((s) => s.id === sessionId) ?? {
         id: sessionId,
@@ -1966,6 +1986,11 @@ export class ChatController implements vscode.Disposable {
         await this.pickFiles(viewId);
         break;
 
+      case "attachBytes":
+        // 拖放进来的文件（只有字节和名字，见 shared/ipc.ts 的 attachBytes）
+        await this.applyBytesForView(viewId, message.files, message.unreadable, message.tooLarge);
+        break;
+
       case "addMention": {
         // `@` 选中一律是**引用芯片**，不上传、不读内容（官方 dsh-client-ui-reference：
         // @ 只发 `@path` / `@dir/` token，模型自己用 read 工具读；逐字节上传只归
@@ -2460,6 +2485,63 @@ export class ChatController implements vscode.Disposable {
     }
   }
 
+  /**
+   * 拖放进来的文件：**只有字节和文件名**（webview 拿不到路径，理由见
+   * `shared/ipc.ts` 的 `attachBytes`）。与 `applyPathsForView` 同口径，只是信息更少：
+   * - 图片且模型收图 → 图片附件（内容块，与官方内联图片字节一致）；
+   * - 其余（含模型不收图的图片）→ 文件附件并**立即上传字节**。上传路径本来就
+   *   按字节发、不挑类型，图片当普通文件传也比丢掉强——"模型不收图"时退回
+   *   路径文本对拖放根本不可行（没有路径可插）。
+   *
+   * `unreadable` / `tooLarge` 是这一批里没进来的名字（目录 / 超限），逐个提示，
+   * 不静默丢弃——拖了一堆文件却少进来几个，用户必须知道是哪个、为什么。
+   */
+  private async applyBytesForView(
+    viewId: string,
+    files: readonly { name: string; base64: string }[],
+    unreadable: readonly string[],
+    tooLarge: readonly string[],
+  ): Promise<void> {
+    // 上传需要会话：与 addFiles 一样，空态时先建一个
+    if (!this.scopeOfView(viewId)) {
+      if (this.client || this.connection === "connected") {
+        await this.newSession(viewId);
+      }
+    }
+    const key = this.keyForView(viewId);
+    const list = this.attachmentsBySession.get(key) ?? [];
+    const acceptsImage = this.scopeOfView(viewId)?.model?.acceptsImage !== false;
+    const pending: { attachment: Attachment; bytes: Uint8Array }[] = [];
+
+    for (const file of files) {
+      let bytes: Uint8Array;
+      try {
+        bytes = new Uint8Array(Buffer.from(file.base64, "base64"));
+      } catch (error) {
+        this.log(`[attach] 拖放解码失败 ${file.name}：${this.describeError(error)}`);
+        continue;
+      }
+      const outcome = classifyDroppedBytes({ name: file.name, bytes, acceptsImage });
+      list.push(outcome.attachment);
+      if (outcome.attachment.kind === "file") {
+        pending.push({ attachment: outcome.attachment, bytes });
+      }
+    }
+
+    this.attachmentsBySession.set(key, list);
+    this.pushAttachmentsForView(viewId, list);
+
+    for (const item of pending) {
+      this.uploadBytes(viewId, item.attachment, item.bytes);
+    }
+    for (const name of unreadable) {
+      this.emitToView(viewId, { type: "toast", level: "warn", text: `@dropUnreadable:${name}` });
+    }
+    for (const name of tooLarge) {
+      this.emitToView(viewId, { type: "toast", level: "warn", text: `@dropTooLarge:${name}` });
+    }
+  }
+
   /** 把窗口的附件列表推给界面：绑了会话走会话投递，空态直接发给这个窗口。 */
   private pushAttachmentsForView(viewId: string, list: readonly Attachment[]): void {
     const sessionId = this.viewSessions.get(viewId);
@@ -2473,6 +2555,46 @@ export class ChatController implements vscode.Disposable {
   /** 上传一个文件附件并把 `receiptId` 写回芯片（失败标 error，可重试）。 */
   private uploadAttachment(viewId: string, attachment: Attachment): void {
     void this.runUpload(viewId, attachment.id, attachment.path, attachment.name);
+  }
+
+  /**
+   * 上传**拖放进来**的字节（没有路径可读）。
+   *
+   * 字节先存进 `droppedBytes`：上传失败后芯片上的「重试」要能再传一次，而拖放的
+   * 字节没有任何别的来源（列表里只有名字）。上传成功后立刻丢掉，失败则留到用户
+   * 重试或删掉芯片——内存占用因此只跟「在飞 + 失败」的条目走。
+   */
+  private uploadBytes(viewId: string, attachment: Attachment, bytes: Uint8Array): void {
+    this.droppedBytes.set(attachment.id, bytes);
+    this.setStateForUpload(viewId, attachment.id, { status: "uploading", loaded: 0 });
+    void this.runUploadBytes(viewId, attachment.id, attachment.name, bytes);
+  }
+
+  /** 拖放字节的暂存（键 = 附件 id）：只为「上传失败后重试」而留。 */
+  private readonly droppedBytes = new Map<string, Uint8Array>();
+
+  private async runUploadBytes(viewId: string, id: string, name: string, bytes: Uint8Array): Promise<void> {
+    const sessionId = this.viewSessions.get(viewId);
+    if (!this.client || !sessionId) {
+      this.setStateForUpload(viewId, id, { status: "error", message: "@uploadNoSession" });
+      return;
+    }
+    try {
+      const value = await this.client.uploadFile(sessionId, bytes, name);
+      this.droppedBytes.delete(id);
+      this.setStateForUpload(viewId, id, { status: "ready", receiptId: value.receiptId });
+    } catch (error) {
+      this.log(`[upload] ${name} 上传失败：${this.describeError(error)}`);
+      this.setStateForUpload(viewId, id, { status: "error", message: this.describeError(error) });
+    }
+  }
+
+  /** 改**指定窗口**某个附件的上传状态并下发。 */
+  private setStateForUpload(viewId: string, id: string, state: UploadState): void {
+    this.mutateAttachmentsForView(viewId, (list) => {
+      const target = list.find((a) => a.id === id);
+      if (target) target.upload = state;
+    });
   }
 
   private async runUpload(
@@ -2535,7 +2657,14 @@ export class ChatController implements vscode.Disposable {
   private retryUpload(viewId: string, id: string): void {
     const key = this.keyForView(viewId);
     const attachment = (this.attachmentsBySession.get(key) ?? []).find((a) => a.id === id);
-    if (!attachment?.path) return;
+    if (!attachment) return;
+    // 拖放进来的附件没有路径，字节存在 `droppedBytes` 里（见 uploadBytes）
+    const dropped = this.droppedBytes.get(id);
+    if (dropped) {
+      void this.runUploadBytes(viewId, id, attachment.name, dropped);
+      return;
+    }
+    if (!attachment.path) return;
     void this.runUpload(viewId, attachment.id, attachment.path, attachment.name);
   }
 
@@ -2548,6 +2677,8 @@ export class ChatController implements vscode.Disposable {
   }
 
   private removeAttachment(viewId: string, id: string): void {
+    // 拖放字节只为「失败重试」而留：芯片删了就没用了，别占着内存
+    this.droppedBytes.delete(id);
     this.mutateAttachmentsForView(viewId, (list) => {
       const index = list.findIndex((a) => a.id === id);
       if (index >= 0) list.splice(index, 1);
@@ -2833,7 +2964,8 @@ export class ChatController implements vscode.Disposable {
    * `path` 是芯片上的原样拼写，可能是**相对**会话工作目录的路径（工具调用
    * 参数原样保留）：先经 `resolveChipPath` 用会话 cwd 解析成绝对路径再动手——
    * 不解析的话 `Uri.file` 拼不出可解析的 URI，「已删除」提示与打开失败都会
-   * 对无辜文件发生。解析不了（拿不到 cwd）时放弃打开并记日志。
+   * 对无辜文件发生。解析不了（拿不到 cwd）时**明确告知**用户，不再只写日志：
+   * 「点了什么都不发生」正是本文件反复要避免的那种失败。
    *
    * `preview: true` 是既有行为：单击芯片只是预览，不挤掉已经打开的文件。
    */
@@ -2848,20 +2980,34 @@ export class ChatController implements vscode.Disposable {
     // 都会对无辜文件发生（与 classifyFiles 同一口径，见 resolveChipPath）
     const resolved = resolveChipPath(cwd, path);
     if (!resolved) {
+      // 只可能发生在「相对路径 + 拿不到会话工作目录」时（会话还没进列表）。
+      // 以前这里只写日志 → 用户点了完全没反应，不知道发生了什么。
       this.log(`[open] 路径解析不了（相对且缺会话工作目录），放弃打开：${path}`);
+      if (viewId) {
+        this.emitToView(viewId, { type: "toast", level: "warn", text: "@chipPathUnresolved" });
+      }
       return;
     }
     const uri = vscode.Uri.file(resolved);
-    const exists = await this.fileExists(uri);
+    const existence = await this.fileExistence(uri);
     if (diff === true) {
       if (await this.openChanges(uri)) return;
-      if (!exists) {
+      if (existence === "absent") {
         // 磁盘上没有了、git 也没有记录 → 内容找不回。明确说一声，别静默。
         if (viewId) {
           this.emitToView(viewId, { type: "toast", level: "warn", text: "@chipFileDeleted" });
         }
         return;
       }
+    } else if (existence === "absent") {
+      // 按住修饰键 = 「直接打开文件本身」，但磁盘上已经没有这个文件了，
+      // 打开必然失败。这里退化成和普通点击同一条链（先试改动对比），
+      // 而不是静默失败：对被删除的文件来说，能看到删除前的内容已经是最好的结果。
+      if (await this.openChanges(uri)) return;
+      if (viewId) {
+        this.emitToView(viewId, { type: "toast", level: "warn", text: "@chipFileDeleted" });
+      }
+      return;
     }
     try {
       const document = await vscode.workspace.openTextDocument(uri);
@@ -2908,13 +3054,18 @@ export class ChatController implements vscode.Disposable {
   }
 
   // ---------- 文件芯片分类（[新增] / 删除线记号的数据来源） ----------
-  /** 文件是否存在于磁盘（`vscode.workspace.fs` 是宿主内的标准异步入口）。 */
-  private async fileExists(uri: vscode.Uri): Promise<boolean> {
+  /**
+   * 文件在磁盘上的存在性（`vscode.workspace.fs` 是宿主内的标准异步入口）。
+   *
+   * **只有 stat 明确报「找不到」才算 `absent`**，其余异常一律 `unknown`——
+   * 拿不到证据时不动（见 `FileExistence` 与 `isNotFoundError` 的注释）。
+   */
+  private async fileExistence(uri: vscode.Uri): Promise<FileExistence> {
     try {
       await vscode.workspace.fs.stat(uri);
-      return true;
-    } catch {
-      return false;
+      return "present";
+    } catch (error) {
+      return isNotFoundError(error) ? "absent" : "unknown";
     }
   }
 
@@ -2948,9 +3099,9 @@ export class ChatController implements vscode.Disposable {
           const resolved = resolveChipPath(cwd, path);
           if (!resolved) return undefined; // 解析不了 = 不确定，不猜 deleted
           const uri = vscode.Uri.file(resolved);
-          const exists = await this.fileExists(uri);
+          const existence = await this.fileExistence(uri);
           const state = this.gitStateFor(uri);
-          const kind = fileChangeKind(state, uri.fsPath, exists);
+          const kind = fileChangeKind(state, uri.fsPath, existence);
           return kind ? [path, kind] : undefined;
         } catch {
           return undefined;
@@ -2964,13 +3115,48 @@ export class ChatController implements vscode.Disposable {
     return kinds;
   }
 
+  /**
+   * 主动让 git 扩展重新算一次状态（**轮次结束时**调一次，不在点击链路里）。
+   *
+   * 为什么需要：git 扩展按文件系统事件去抖刷新，模型刚写完的文件往往还没进
+   * 改动清单。于是用户第一次点文件芯片时 `hasWorkingChange` 判定为「没改动」，
+   * 回落成普通打开——看到的是完整文件内容而不是 diff；过一会儿（或点第二次）
+   * 刷新到了才是 diff。在轮次结束、文件都已落盘之后主动推一次，用户几秒后
+   * 再点就是 diff 了。
+   *
+   * 与「点击时轻推重扫 + 轮询」的区别：那个是**点击当场等**（真没改动也要白等
+   * 1.2s，用户 2026-09-14 拍板撤掉）；这里是**轮次结束时推一次**，不占点击的
+   * 任何时间。刷新是尽力而为：失败只记日志，分类照旧（拿不到就无记号）。
+   */
+  private async refreshGitState(): Promise<void> {
+    try {
+      const git = vscode.extensions.getExtension<GitExtensionExportsLike>("vscode.git");
+      if (!git) return;
+      // 这里**要**激活：用户马上就会点芯片，状态必须是对的
+      const exports = git.isActive ? git.exports : await git.activate();
+      const repositories = exports?.getAPI?.(1)?.repositories ?? [];
+      await Promise.all(
+        repositories.map(async (repository) => {
+          try {
+            await repository.status();
+          } catch (error) {
+            this.log(`[files] 刷新 git 状态失败：${this.describeError(error)}`);
+          }
+        }),
+      );
+    } catch (error) {
+      this.log(`[files] 取 git 扩展失败：${this.describeError(error)}`);
+    }
+  }
+
   /** git 扩展里该路径所属仓库的状态；扩展缺失 / 不在仓库里时返回 undefined。 */
   private gitStateFor(uri: vscode.Uri): GitChangeStateLike | undefined {
     try {
       const git = vscode.extensions.getExtension<GitExtensionExportsLike>("vscode.git");
       const exports = git?.isActive ? git.exports : undefined;
       // 注意：这里**不**主动激活 git 扩展——分类是锦上添花，不值得为一批记号
-      // 把整个内建扩展拉起来；没激活就当没有（下次点击 diff 链路会激活它）。
+      // 把整个内建扩展拉起来；没激活就当没有（点击 diff 链路会激活它，
+      // 轮次结束的 `refreshGitState` 也会）。
       return exports?.getAPI?.(1)?.getRepository(uri)?.state;
     } catch {
       return undefined;

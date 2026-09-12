@@ -6,16 +6,21 @@ import type {
   CommandRunView,
   DiffLayout,
   FileChangeKind,
+  InjectedSourceView,
   InjectedView,
   QuestionView,
   ToolCallView,
+  TurnStatsView,
 } from "../../shared/chat";
 import { classifyTool, toolTitleKey } from "../../shared/toolMeta";
-import { formatDuration, Row, useElapsed, useSelectionFreeze, useStickyBody } from "./primitives";
+import { MAX_CATALOG_ENTRIES } from "../../shared/injectedSource";
+import { formatDuration, Popover, Row, useElapsed, useSelectionFreeze, useStickyBody } from "./primitives";
 import { DiffView } from "./Diff";
 import { fill, useTexts, resolveText } from "../texts";
 import {
   IconAlert,
+  IconChevronDown,
+  IconClock,
   IconCode,
   IconDsh,
   IconExternal,
@@ -129,13 +134,38 @@ export function ToolRow({ tool, diffLayout }: { tool: ToolCallView; diffLayout?:
         ? formatDuration(elapsed)
         : undefined;
 
-  // 展开区只显示「解析后的有价值信息」：编辑类给 diff，其余给结果文本
-  // （读取出的文本 / 运行输出 / 搜索结果等）。原始参数（tool.input）不渲染——
-  // 它只是流式期累积的线格式载荷，标题行已表达「做了什么」。
+  // 改动统计（官方 `diffTotals`）：折叠行右侧的 `+N -M`
+  const diffStat = hasDiff && diff
+    ? diff.reduce(
+        (total, hunk) => ({
+          added: total.added + (hunk.added ?? hunk.lines.filter((l) => l.kind === "add").length),
+          removed: total.removed + (hunk.removed ?? hunk.lines.filter((l) => l.kind === "del").length),
+        }),
+        { added: 0, removed: 0 },
+      )
+    : undefined;
+  /**
+   * 「输入」段的内容：模型实际传的参数（官方 `cardBody`）。
+   *
+   * 官方这里给的是**解析后的卡片体**，所以我们把线格式的 JSON 缩进后显示；
+   * 解析不了（半截 JSON、非 JSON 参数）就原样透出——总比什么都不显示强。
+   */
+  const inputText = (() => {
+    if (!tool.input) return undefined;
+    try {
+      const parsed = JSON.parse(tool.input) as unknown;
+      return JSON.stringify(parsed, null, 2);
+    } catch {
+      return tool.input;
+    }
+  })();
+  // 展开区只显示「解析后的有价值信息」：编辑类给 diff，其余给 IN/OUT 两段
+  // （读取出的文本 / 运行输出 / 搜索结果等）。
   // 运行中也要可展开：长任务（构建）要能看见完整命令与「还在跑」的计时。
   const hasBody =
     hasDiff ||
     showOutput ||
+    Boolean(inputText) ||
     runningBody ||
     Boolean(exitMeta) ||
     (tool.images?.length ?? 0) > 0 ||
@@ -158,6 +188,15 @@ export function ToolRow({ tool, diffLayout }: { tool: ToolCallView; diffLayout?:
       detail={tool.detail}
       // 只读了一段时把行号缀在文件名后；该片段不可压缩，窄侧栏也看得见
       detailSuffix={tool.readLines ? `:${tool.readLines.start}-${tool.readLines.end}` : undefined}
+      diffStat={diffStat}
+      // detail 是文件路径时可点：官方把摘要做成 `fileLink`，点了用侧栏预览打开。
+      // 这里只在路径确实存在（不是命令行/查询串）时才挂链接——`tool.command` 类
+      // 的 detail 点了会去打开一个不存在的文件。
+      onDetailActivate={
+        tool.detail && !tool.command
+          ? () => post({ type: "openFile", path: tool.detail as string, diff: false })
+          : undefined
+      }
       meta={meta}
       open={open}
       onToggle={() => {
@@ -183,8 +222,32 @@ export function ToolRow({ tool, diffLayout }: { tool: ToolCallView; diffLayout?:
           <DiffView hunks={diff} layout={diffLayout} />
         </div>
       ) : null}
-      {showOutput ? (
-        <div ref={hasDiff ? undefined : bodyRef} className="row-body mono">
+      {/* 非 diff 工具的展开体按官方的 IN/OUT 两段呈现：
+          「输入」= 模型实际传的参数（缩进后的 JSON，官方 cardBody 同义），
+          「输出」= 工具返回的正文（出错时整段染红）。
+          官方对 diff 类工具直接给 DiffBlock、不套 IN/OUT，所以这里也只在**没有 diff**
+          时分开渲染——否则同一份改动会既在 IN 里露参数、又在下面出 diff，重复。 */}
+      {!hasDiff && (inputText || showOutput) ? (
+        <div className="row-body io-card">
+          {inputText ? (
+            <div className="io-section">
+              <span className="io-label">{texts.toolInput}</span>
+              <span className="io-text mono">{inputText}</span>
+            </div>
+          ) : null}
+          {inputText && showOutput ? <span className="io-divider" aria-hidden /> : null}
+          {showOutput ? (
+            <div className="io-section">
+              <span className="io-label">{texts.toolOutput}</span>
+              <span className={`io-text mono${tool.status === "error" ? " is-error" : ""}`}>
+                {shownOutput}
+              </span>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+      {hasDiff && showOutput ? (
+        <div ref={bodyRef} className="row-body mono">
           {shownOutput}
         </div>
       ) : null}
@@ -228,14 +291,22 @@ export function ThinkingRow({
 }) {
   const [manual, setManual] = useState<boolean | undefined>(undefined);
   const texts = useTexts();
-  // 流式期间展开，思考结束后自动收起
-  const open = manual ?? Boolean(streaming);
+  // **恒默认折叠**（官方 `ReasoningRow` 就是 `useState(false)`，运行中也不展开）：
+  // 长思考会把正文顶出屏幕，而思考本身只要一行摘要就够——要看全文点开。
+  const open = manual ?? false;
   const bodyRef = useRef<HTMLDivElement>(null);
   // 思考是流式增长的：展开时 body 区贴住最新内容
   useStickyBody(bodyRef, open);
   // 流式期间用户划选正文时冻结渲染，否则每来一个 token 选区就没了
   const shownText = useSelectionFreeze(bodyRef, text);
-  const firstLine = text.split("\n").find((line) => line.trim())?.trim() ?? "";
+  /**
+   * 折叠摘要与官方逐字同口径（`ReasoningRow` 里的 `summary`）：
+   * - **流式中取最后一行**（`latestLine`：先去尾部空白，再取最后一个换行之后）——
+   *   正在写的思考，最新的一句才是有信息量的那半；
+   * - **结束后取第一行**（`firstLine`）；
+   * - 两者都**去掉 `**` 标记**（推理里常带 markdown 强调，摘要里露出来很脏）。
+   */
+  const summary = (streaming ? latestLine(text) : firstLine(text)).replaceAll("**", "");
 
   return (
     <Row
@@ -248,7 +319,7 @@ export function ThinkingRow({
         </span>
       }
       title={texts.thinking}
-      detail={firstLine}
+      detail={summary}
       meta={durationMs ? formatDuration(durationMs) : undefined}
       open={open}
       onToggle={() => setManual(!open)}
@@ -258,6 +329,19 @@ export function ThinkingRow({
       </div>
     </Row>
   );
+}
+
+/** 首行（官方 `firstLine`）：第一个换行之前。 */
+function firstLine(text: string): string {
+  const newline = text.indexOf("\n");
+  return newline === -1 ? text : text.slice(0, newline);
+}
+
+/** 最后一行（官方 `latestLine`）：先去尾部空白，再取最后一个换行之后。 */
+function latestLine(text: string): string {
+  const visible = text.trimEnd();
+  const newline = visible.lastIndexOf("\n");
+  return newline === -1 ? visible : visible.slice(newline + 1);
 }
 
 /** 自动载入节点的标签：优先按来源大类，其次按注入形式，最后退回通用文案。 */
@@ -318,11 +402,108 @@ export function InjectedRow({ injected }: { injected: InjectedView }) {
       open={open}
       onToggle={() => setOpen(!open)}
     >
+      {/* 按 form 分派的**结构化正文**（官方 `ContextBody` 的 switch (form)）：
+          指令逐条列「文件 + 已新增/已更新/已移除」，目录列条目，快照列分节，
+          回忆给「保留 N 条 · 省略 M 条」。形状认不出时这些块不渲染，
+          下面的正文原样兜底——不显示半截列表。 */}
+      <InjectedFormBody source={injected.source} />
       <div ref={bodyRef} className="row-body mono row-injected">
         {shownText}
       </div>
     </Row>
   );
+}
+
+/** 上下文条目的 per-form 正文（官方 `ContextBody` 的对应部分）。 */
+function InjectedFormBody({ source }: { source?: InjectedSourceView }) {
+  const texts = useTexts();
+  if (!source) return null;
+
+  if (source.changes?.length) {
+    return (
+      <div className="row-body ctx-body">
+        <div className="ctx-title">{texts.contextInstructions}</div>
+        <ul className="ctx-list">
+          {source.changes.map((change) => (
+            <li key={change.path}>
+              <span className="ctx-state">
+                {change.action === "remove"
+                  ? texts.contextRemoved
+                  : change.action === "set"
+                    ? texts.contextAdded
+                    : texts.contextUpdated}
+              </span>
+              <span className="ctx-value">{change.path}</span>
+            </li>
+          ))}
+        </ul>
+      </div>
+    );
+  }
+
+  if (source.entries?.length) {
+    const shown = source.entries.slice(0, MAX_CATALOG_ENTRIES);
+    return (
+      <div className="row-body ctx-body">
+        <div className="ctx-title">{texts.contextCatalogReplaced}</div>
+        <ul className="ctx-list">
+          {shown.map((entry) => (
+            <li key={entry.name}>
+              <span className="ctx-value">{entry.name}</span>
+              <span className="ctx-desc">{entry.description}</span>
+            </li>
+          ))}
+        </ul>
+        {shown.length < source.entries.length ? (
+          <div className="ctx-more">
+            {texts.contextCatalogMore(source.entries.length - shown.length)}
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
+  if (source.sections?.length) {
+    return (
+      <div className="row-body ctx-body">
+        <div className="ctx-title">{texts.contextSnapshotSupersedes}</div>
+        {source.sections.map((section) => (
+          <div className="ctx-section" key={section.name}>
+            <div className="ctx-sub">{section.name}</div>
+            <div className="ctx-desc">{section.text}</div>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  if (source.senderSessionId) {
+    return (
+      <div className="row-body ctx-body">
+        <div className="ctx-title">{texts.contextRelayFrom(source.senderSessionId)}</div>
+      </div>
+    );
+  }
+
+  if (source.references?.length) {
+    return (
+      <div className="row-body ctx-body">
+        <ul className="ctx-list">
+          {source.references.map((reference) => (
+            <li key={reference.label}>
+              <span className="ctx-value">{reference.label}</span>
+              <span className="ctx-desc">
+                {texts.contextRecallCounts(reference.retainedMessages, reference.omittedMessages)}
+                {reference.truncated ? ` · ${texts.contextRecallTruncated}` : ""}
+              </span>
+            </li>
+          ))}
+        </ul>
+      </div>
+    );
+  }
+
+  return null;
 }
 
 /** 字数：上千用 K，与 token 的展示口径分开（这是字符数，不是 token）。 */
@@ -470,6 +651,137 @@ export function QuestionCard({ question }: { question: QuestionView }) {
   );
 }
 
+/**
+ * 助手消息里的图片块（模型输出 / 工具回带的图）。
+ *
+ * 与工具结果的图库同一种呈现（`.row-body-images` 的样式），但它是**消息正文的一部分**，
+ * 不是某个工具行的展开体，所以单独一个行组件。加载中 `images` 为空 → 不渲染任何东西，
+ * 避免先闪一个 `src=""` 的碎图图标。
+ */
+export function MessageImages({ images }: { images: string[] }) {
+  const texts = useTexts();
+  const shown = images.filter((src) => src);
+  if (!shown.length) return null;
+  return (
+    <div className="row-body-images">
+      {shown.map((src, index) => (
+        <img key={index} src={src} alt={texts.messageImageAlt} />
+      ))}
+    </div>
+  );
+}
+
+/**
+ * 轮尾「用时 X」胶囊 + 点开的明细（官方 `TurnTimePanel`）。
+ *
+ * 官方把它放在轮尾操作条的 `usageAction` 槽里（不算独立一行）：最新一轮常显、
+ * 其余轮悬停出现。点开是一张明细卡：**本轮总用时 / 输出速度（TPS）/ 首 token 用时**，
+ * 三行都按官方 `message.turnTime.*` 的文案。
+ *
+ * 为什么不做成时时跳动的秒表：工具行本来就各自显示实时耗时（那是本扩展的信息增量），
+ * 轮次总用时只在**轮次结束时**才有意义——进行中算不出总数，跳动的数字也只是噪音。
+ */
+export function TurnStatsButton({ stats }: { stats: TurnStatsView }) {
+  const texts = useTexts();
+  const [open, setOpen] = useState(false);
+  const speed =
+    stats.tokensPerSecond !== undefined ? formatTps(stats.tokensPerSecond) : undefined;
+  const duration = texts.turnClock(stats.ranForMs);
+  return (
+    <span className="turn-stats">
+      <button
+        type="button"
+        className="turn-stats-trigger"
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        title={texts.turnTimeTitle}
+        onClick={() => setOpen(!open)}
+      >
+        <IconClock size={12} />
+        <span className="turn-stats-label">{texts.turnRanFor(duration)}</span>
+      </button>
+      <Popover open={open} onClose={() => setOpen(false)} align="right">
+        <div className="turn-stats-panel" role="dialog" aria-label={texts.turnTimeTitle}>
+          <div className="turn-stats-title">{texts.turnTimeTitle}</div>
+          <dl className="turn-stats-rows">
+            <dt>{texts.turnTimeDuration}</dt>
+            <dd>{duration}</dd>
+            {speed !== undefined ? (
+              <>
+                <dt>{texts.turnTimeSpeed}</dt>
+                <dd>{texts.tokensPerSecond(speed)}</dd>
+              </>
+            ) : null}
+            {stats.ttftMs !== undefined ? (
+              <>
+                <dt>{texts.turnTimeTtft}</dt>
+                <dd>{texts.turnLatency(stats.ttftMs)}</dd>
+              </>
+            ) : null}
+          </dl>
+        </div>
+      </Popover>
+    </span>
+  );
+}
+
+/** 输出速度的数值：官方 `formatTokensPerSecond` 的口径（一位小数）。 */
+function formatTps(value: number): string {
+  return value >= 100 ? String(Math.round(value)) : value.toFixed(1);
+}
+
+/**
+ * 轮级过程折叠按钮（官方 `TurnProcessNodeView`）。
+ *
+ * 一轮关闭后，把「答案步之前的一切」折成这一枚按钮：标签是
+ * 「N 次工具调用 · M 条消息 · K 个 subagent」（皆 0 时「已思考」），右侧一个
+ * 朝下的 chevron，点开把成员铺回来。官方是 `<button aria-expanded>`，
+ * 这里照做——键盘可达、无障碍状态正确。
+ */
+export function TurnProcessRow({
+  label,
+  open,
+  onToggle,
+}: {
+  label: string;
+  open: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button type="button" className="turn-process" aria-expanded={open} onClick={onToggle}>
+      <span className="turn-process-label">{label}</span>
+      <IconChevronDown size={14} className="turn-process-chevron" />
+    </button>
+  );
+}
+
+/**
+ * 认不出的内容块（官方渲染链 default 分支的 `JsonBlock`）。
+ *
+ * 标签是「未知内容块」（官方 `message.unknownBlock` 逐字），detail 给出块类型，
+ * 展开后是内容本身。默认收起——正常轮次里它不该出现，出现了就该是一条**看得见的
+ * 记录**而不是消失在界面上。
+ */
+export function UnknownBlockRow({ block }: { block: { type: string; json: string } }) {
+  const texts = useTexts();
+  const [open, setOpen] = useState(false);
+  return (
+    <Row
+      icon={
+        <span className="node-icon node-others">
+          <IconQuestion size={14} />
+        </span>
+      }
+      title={texts.unknownBlock}
+      detail={block.type}
+      open={open}
+      onToggle={() => setOpen(!open)}
+    >
+      <div className="row-body mono">{block.json}</div>
+    </Row>
+  );
+}
+
 export function NoticeRow({ level, text }: { level: "info" | "warn" | "error"; text: string }) {
   const texts = useTexts();
   const cls = level === "error" ? "notice notice-error" : level === "warn" ? "notice notice-warn" : "notice";
@@ -557,15 +869,15 @@ export function FileChips({
             className={`file-chip${deleted ? " is-deleted" : ""}`}
             title={
               deleted
-                ? `${file.path}\n${texts.chipFileDeleted}`
+                ? `${file.path}\n${texts.fileDeletedHint}`
                 : file.description
                   ? `${file.description}\n${texts.openChangesHint}`
                   : `${file.path}\n${texts.openChangesHint}`
             }
+            // 无障碍标题走词典：旧写法在这里用模板串硬拼中文全角括号
+            // （`${path}（${...}）`），英文界面下会露出全角括号
             aria-label={
-              deleted
-                ? `${file.path}（${texts.chipFileDeleted}）`
-                : texts.openChangesAria(file.path)
+              deleted ? texts.deletedFileAria(file.path) : texts.openChangesAria(file.path)
             }
             onClick={(event) => post({ type: "openFile", path: file.path, diff: wantsChanges(event) })}
           >

@@ -181,6 +181,239 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* 工具行展开体的 IN/OUT 两段（官方 ioCard / ioSection / ioLabel / ioDivider）。
+   标签窄而固定、正文占满剩余宽度并自动换行——窄侧栏下正文不能被标签挤走。 */
+.io-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.io-section {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.io-label {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: var(--font-size-2xs);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.io-text {
+  min-width: 0;
+  color: var(--description);
+  font-size: var(--font-size-xs);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* 失败的输出整段染红：与工具行的 error 态同一套颜色语言 */
+.io-text.is-error {
+  color: var(--error);
+}
+
+.io-divider {
+  height: 1px;
+  background: var(--border);
+}
+
+/* 折叠行右侧的改动统计 `+N -M`（官方 diffStat）：不可压缩，紧挨 detail */
+.row-diffstat {
+  flex: 0 0 auto;
+  display: inline-flex;
+  gap: 4px;
+  font-size: var(--font-size-2xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.row-diffstat .is-added {
+  color: var(--success);
+}
+
+.row-diffstat .is-removed {
+  color: var(--error);
+}
+
+/* detail 是文件路径时可点（官方 fileLink）：悬停给下划线，键盘可达 */
+.row-detail-name.is-link {
+  cursor: pointer;
+}
+
+.row-detail-name.is-link:hover,
+.row-detail-name.is-link:focus-visible {
+  color: var(--link);
+  text-decoration: underline;
+}
+/* 待处理的审批 / 提问卡：接管输入区时贴在输入框上方（官方 `conversation.composer` 槽）。
+   与目标条同一条 dock 带，左右留同样的边距。 */
+.composer-interaction {
+  margin: 0 7px 4px;
+}
+
+/* 上下文条目的 per-form 正文（官方 ContextBody）：标题 + 条目列表。
+   窄侧栏里「名字 + 说明」不能挤成一行——名字不压缩、说明换行。 */
+.ctx-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--font-size-xs);
+  color: var(--description);
+}
+
+.ctx-title {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.ctx-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ctx-list li {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.ctx-state {
+  flex: 0 0 auto;
+  color: var(--info);
+}
+
+.ctx-value {
+  flex: 0 0 auto;
+  font-family: var(--mono);
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+
+.ctx-desc {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.ctx-sub {
+  color: var(--fg);
+  font-weight: 500;
+}
+
+.ctx-section {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.ctx-more {
+  color: var(--muted);
+}
+
+/* 轮级过程折叠按钮（官方 TurnProcessNodeView）：一枚无边框的文字行，
+   文案「N 次工具调用 · M 条消息 · K 个 subagent」，右侧 chevron，展开后转 180° */
+.turn-process {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  margin: 2px 0;
+  padding: 2px 4px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--muted);
+  font-family: inherit;
+  font-size: var(--font-size-xs);
+  text-align: left;
+  cursor: pointer;
+}
+
+.turn-process:hover {
+  background: var(--hover);
+  color: var(--fg);
+}
+
+.turn-process-chevron {
+  flex: 0 0 auto;
+  transition: transform 0.15s ease-in-out;
+}
+
+.turn-process[aria-expanded="true"] .turn-process-chevron {
+  transform: rotate(180deg);
+}
+
+/* 轮尾「用时 X」胶囊（官方 TurnTimePanel 的 trigger）：操作条里的一枚小按钮，
+   比图标按钮宽（带文字），所以不套 .icon-btn 的固定 22px */
+.turn-stats {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.turn-stats-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--muted);
+  font-size: var(--font-size-2xs);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.turn-stats-trigger:hover {
+  background: var(--hover);
+  color: var(--fg);
+}
+
+.turn-stats-panel {
+  min-width: 200px;
+  padding: 8px 10px;
+  font-size: var(--font-size-2xs);
+}
+
+.turn-stats-title {
+  margin-bottom: 6px;
+  color: var(--fg);
+  font-weight: 600;
+}
+
+/* 明细：两列（标签 / 值），值右对齐——官方 stat dialog 的 dl 布局 */
+.turn-stats-rows {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 3px 10px;
+  margin: 0;
+}
+
+.turn-stats-rows dt {
+  color: var(--muted);
+}
+
+.turn-stats-rows dd {
+  margin: 0;
+  text-align: right;
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+}
+
 /* 禁用的操作按钮（生成中不能分支）：明确变暗，别让用户点了没反应 */
 .msg-actions .icon-btn:disabled {
   opacity: 0.35;
@@ -344,10 +577,17 @@
   color: var(--muted);
 }
 
+/* 代码块**自动换行**，不横向滚动（官方 `pre { white-space: pre-wrap;
+   word-break: break-all }`）。窄侧栏里横向滚动意味着长行要一路拖到底才能读完，
+   而代码块恰恰是窄栏里最长的东西；换行后整段竖着读完即可。
+   `break-all` 而不是 `anywhere`：与官方逐字一致，且长路径/长标识符在
+   `anywhere` 下可能整块溢出。 */
 .code-block pre {
   margin: 0;
   padding: 0 12px 10px;
-  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  overflow-wrap: normal;
 }
 
 .code-block code {
@@ -1470,6 +1710,26 @@
   color: var(--description);
 }
 
+/* 内联编辑态：整条变成一行表单（官方 GoalBar 的 edit 就是同一横条里的内联表单） */
+.goal-bar.is-editing {
+  border-color: var(--command-border-focus);
+}
+
+.goal-edit-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: none;
+  background: none;
+  color: var(--fg);
+  font-family: inherit;
+  font-size: inherit;
+  padding: 0;
+}
+
+.goal-edit-input:focus {
+  outline: none;
+}
+
 .goal-bar .spacer {
   flex: 1 1 auto;
   min-width: 0;
@@ -1486,8 +1746,10 @@
   color: var(--muted);
 }
 
-/* 目标正文是这行里唯一该被省略的部分：占满剩余宽度并截断，
-   阶段标签、轮次与按钮都不可压缩 */
+/* 目标正文：**默认一行截断**（阶段标签、轮次与按钮都不可压缩），
+   要看全文按左边的展开按钮（`.goal-bar.is-expanded`），或者直接悬停
+   （完整正文始终在 title 里）。不做「最多两行」那种中间态——半截的目标
+   比一行还难认，而多出来的那一行会把输入区往上顶。 */
 .goal-objective {
   flex: 1 1 auto;
   min-width: 0;
@@ -1495,6 +1757,29 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--fg);
+}
+
+/* 展开态：正文显示全文（多行）。正文与右侧按钮**都垂直居中**——用户明确要求：
+   展开后整条变高，按顶对齐会让按钮看起来浮在上面。
+   注意**不做**「最多两行」那种中间态：要么一行截断、要么全文。 */
+.goal-bar.is-expanded {
+  align-items: center;
+}
+
+.goal-bar.is-expanded .goal-objective {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  overflow-wrap: anywhere;
+}
+
+/* 展开/收起：一个朝下的 chevron，展开后转 180° */
+.goal-expand svg {
+  transition: transform 0.15s ease-in-out;
+}
+
+.goal-expand.is-open svg {
+  transform: rotate(180deg);
 }
 
 .goal-rounds {
@@ -1621,11 +1906,18 @@
   .ellipsis::after {
     animation: none;
   }
+
+  /* 展开按钮的箭头翻转也是装饰性动效 */
+  .goal-expand svg {
+    transition: none;
+  }
 }
 
 .composer-box {
   display: flex;
   flex-direction: column;
+  /* 拖放提示是绝对定位的浮层，靠这个做定位基准 */
+  position: relative;
   border: 1px solid var(--command-border);
   border-radius: var(--radius);
   background: var(--input-bg);
@@ -1640,6 +1932,25 @@
 .composer-box.is-drop-target {
   border-color: var(--accent);
   border-style: dashed;
+}
+
+/* 拖放高亮时的提示。从**资源管理器**往 webview 里拖必须先按住 Shift
+   （webview 是 iframe，拖拽期间被 workbench 用 pointer-events 挡住，事件根本
+   到不了这里），所以这条提示只在事件真到了的时候才显示：它说明「松开就会添加」，
+   避免高亮看起来像装饰。从系统资源管理器拖不受此限。 */
+.composer-drop-hint {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border-radius: var(--radius);
+  background: var(--input-bg);
+  color: var(--accent);
+  font-size: var(--font-size-2xs);
+  pointer-events: none;
 }
 
 .composer-chips {

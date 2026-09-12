@@ -73,29 +73,65 @@ export function hasWorkingChange(state: GitChangeStateLike | undefined, fsPath: 
 }
 
 /**
+ * 文件在磁盘上的存在性——**三态**，不是布尔。
+ *
+ * 为什么不是 boolean：`vscode.workspace.fs.stat` 抛错的原因不止「文件不在」，
+ * 还有权限不足、离线共享盘、路径含非法字符、虚拟/远程文件系统不支持……把
+ * 「stat 抛错」直接当「不存在」，就会给一个好好的文件画上删除线、还会在点击时
+ * 弹出「内容找不回来了」。按本仓库的判据纪律（拿不到证据时**不动**），这些
+ * 一律只是 `unknown`：
+ *
+ * - `present`：stat 成功（肯定证据）；
+ * - `absent`：stat 明确报「找不到」（肯定证据，见 `isNotFoundError`）；
+ * - `unknown`：其余一切——**不知道**，调用方按「不确定」处理（不标记号、
+ *   点击不宣称已删除）。
+ */
+export type FileExistence = "present" | "absent" | "unknown";
+
+/**
  * 文件芯片的**改动种类**：界面据此标 `[新增]` / 画删除线，宿主据此决定点击行为。
  *
  * 判定顺序就是语义的优先级：
- * - 文件在磁盘上不存在 → `deleted`（被删了；git 有没有记录只影响「还能不能点开看」）；
+ * - 明确不在磁盘上（`absent`）→ `deleted`（被删了；git 有没有记录只影响「还能不能点开看」）；
  * - 在三个改动清单里 → `edited`（git.openChange 能开对比窗口）；
  * - 在未跟踪清单里 → `new`（模型新建的文件，没有基线可比，点开就是看文件）；
- * - 都不是 → `undefined`（无改动 / 不在 git 仓库 / 被忽略）：不标任何记号，
- *   点击行为由调用方回落成普通打开。
+ * - 都不是，或存在性 `unknown` → `undefined`（无改动 / 不在 git 仓库 / 被忽略 /
+ *   查不出来）：不标任何记号，点击行为由调用方回落成普通打开。
  *
  * @param state git 仓库状态；拿不到（无仓库）时传 undefined。
  * @param fsPath 目标文件的宿主路径。
- * @param existsOnDisk 文件当前是否存在于磁盘（调用方先 `fs.stat`）。
+ * @param existence 文件在磁盘上的存在性（调用方先 stat，见 `FileExistence`）。
  */
 export function fileChangeKind(
   state: GitChangeStateLike | undefined,
   fsPath: string,
-  existsOnDisk: boolean,
+  existence: FileExistence,
 ): FileChangeKind | undefined {
   if (!fsPath) return undefined;
-  if (!existsOnDisk) return "deleted";
+  // 查不出来 ≠ 已删除：宁可不标记号，也不要给无辜文件画删除线
+  if (existence === "unknown") return undefined;
+  if (existence === "absent") return "deleted";
   if (hasWorkingChange(state, fsPath)) return "edited";
   if (isUntracked(state, fsPath)) return "new";
   return undefined;
+}
+
+/**
+ * 这个 stat 错误是不是**明确**的「找不到」。
+ *
+ * `code` 的取值来自本机 VS Code 的实测（`extensionHostProcess.js` 里
+ * `FileSystemError` 的构造函数是 `this.code = n?.name ?? "Unknown"`，`n` 传的是
+ * 静态工厂函数本身，所以 `code` 正好是 `FileNotFound` / `NoPermissions` /
+ * `Unavailable` 这些**方法名**——**不是** `FileSystemError.FileNotFound`，
+ * 也不是内部那个 `EntryNotFound`）。`@types/vscode` 只说「names of errors,
+ * like FileNotFound」，光看契约会写错，所以这里按实测值判。
+ *
+ * 其余任何错误（含 `Unknown` / `NoPermissions` / `Unavailable` 与非
+ * `FileSystemError` 的异常）都返回 false → 上层退化为 `unknown`。
+ */
+export function isNotFoundError(error: unknown): boolean {
+  const code = (error as { code?: unknown } | undefined)?.code;
+  return code === "FileNotFound";
 }
 
 /**

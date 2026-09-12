@@ -13,7 +13,14 @@ import assert from "node:assert";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { classifyPath, imageMediaTypeFor, isDirectoryPath, isImagePath } from "../src/dsh/attachments";
+import {
+  DROP_BYTES_LIMIT,
+  classifyDroppedBytes,
+  classifyPath,
+  imageMediaTypeFor,
+  isDirectoryPath,
+  isImagePath,
+} from "../src/dsh/attachments";
 
 // ---------- 1. 扩展名 → mediaType ----------
 
@@ -87,6 +94,58 @@ console.log("attachments: 目录探测 / id / 错误上报 ✓");
     );
   }
   console.log(`attachments: showOpenDialog 标志互斥（扫到 ${calls.length} 处）✓`);
+}
+
+// ---------- 4. 拖放（只有字节 + 文件名，没有路径） ----------
+//
+// webview 拿不到被拖文件的路径：VS Code 不把资源注入 webview 的 DataTransfer
+// （没有 ResourceURLs / text/uri-list），`File.path` 自 Electron 32 起也已移除。
+// 所以拖放只能走字节，归类判据也只剩「文件名 + 模型收不收图」。
+{
+  const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+  const image = classifyDroppedBytes({ name: "shot.png", bytes: pngBytes, acceptsImage: true });
+  assert.strictEqual(image.attachment.kind, "image", "模型收图时图片内联成内容块");
+  assert.strictEqual(
+    image.attachment.dataUrl,
+    `data:image/png;base64,${Buffer.from(pngBytes).toString("base64")}`,
+    "dataUrl 必须由字节直接拼（没有路径可读）",
+  );
+  assert.strictEqual(image.attachment.bytes, pngBytes.length, "字节数要如实带上");
+  assert.strictEqual(image.attachment.path, undefined, "拖放来的附件没有路径");
+
+  // 模型不收图：不能退回「插入路径」——拖放根本没有路径可插，改走上传
+  const unsupported = classifyDroppedBytes({ name: "shot.png", bytes: pngBytes, acceptsImage: false });
+  assert.strictEqual(
+    unsupported.attachment.kind,
+    "file",
+    "模型不收图时图片退化为普通文件上传，而不是丢掉（拖放没有路径可插）",
+  );
+
+  const text = classifyDroppedBytes({
+    name: "notes.md",
+    bytes: new TextEncoder().encode("# hi"),
+    acceptsImage: true,
+  });
+  assert.strictEqual(text.attachment.kind, "file", "普通文件走上传");
+  assert.strictEqual(text.attachment.name, "notes.md", "文件名原样保留（芯片上显示它）");
+
+  // id 必须唯一：两个同名文件拖两次是两条附件
+  const a = classifyDroppedBytes({ name: "same.txt", bytes: new Uint8Array([1]), acceptsImage: true });
+  const b = classifyDroppedBytes({ name: "same.txt", bytes: new Uint8Array([2]), acceptsImage: true });
+  assert.notStrictEqual(a.attachment.id, b.attachment.id, "同名文件的附件 id 不能相同");
+
+  // 上限：界面按它拦掉超大文件（读了再 base64 是白烧内存），宿主侧同值
+  assert.strictEqual(DROP_BYTES_LIMIT, 8 * 1024 * 1024, "拖放上限 8 MB");
+  const composer = readFileSync(join(process.cwd(), "src", "webview", "components", "Composer.tsx"), "utf8");
+  assert.ok(
+    /const DROP_BYTES_LIMIT = 8 \* 1024 \* 1024;/.test(composer),
+    "界面侧的上限必须与宿主同值：不一致时要么白读，要么发过去被拒",
+  );
+  assert.ok(
+    /post\(\{ type: "attachBytes", files: payload, unreadable, tooLarge \}\)/.test(composer),
+    "拖放结果必须走 attachBytes（只有字节，没有路径）",
+  );
+  console.log("attachments: 拖放字节归类 ✓");
 }
 
 console.log("\nattachments: all assertions passed");

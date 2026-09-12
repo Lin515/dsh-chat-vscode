@@ -60,6 +60,10 @@ const MARKERS: string[] = [
   "queueDispatchFailed",
   // 文件芯片
   "chipFileDeleted",
+  "chipPathUnresolved",
+  // 拖放
+  "dropUnreadable",
+  "dropTooLarge",
   // 剪贴板 / 设置
   "copied",
   "settingsSaved",
@@ -120,6 +124,8 @@ console.log(`i18n: ${MARKERS.length} 个标记 × ${LOCALES.length} 种语言均
     serverSpawnFailed: "@serverSpawnFailed:ENOENT",
     serverStaleLock: "@serverStaleLock:C:\\Users\\me\\.credentials.yaml.lock",
     serverLogTail: "@serverLogTail:dsh web: ready",
+    dropUnreadable: "@dropUnreadable:notes.pdf",
+    dropTooLarge: "@dropTooLarge:big.zip",
   };
   for (const [key, marker] of Object.entries(args)) {
     const resolved = resolveText(marker, zh);

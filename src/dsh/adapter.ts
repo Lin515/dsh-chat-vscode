@@ -5,6 +5,7 @@ import type {
   CommandRunView,
   DiffHunkView,
   FileChangeKind,
+  InjectedSourceView,
   InjectedView,
   MessageView,
   ModelSelectionView,
@@ -16,6 +17,13 @@ import type {
   UsageView,
 } from "../shared/chat";
 import { hunksFromMeta, hunksFromToolArgs } from "../shared/diff";
+import {
+  parseCatalogEntries,
+  parseInstructionChanges,
+  parseRecalledSessions,
+  parseRelaySender,
+  parseSnapshotSections,
+} from "../shared/injectedSource";
 import { classifyTool, parseExitStatus, summaryKeys, terminalFailed } from "../shared/toolMeta";
 import { readRangeFromMeta, readRangeFromOutput } from "./readRange";
 import { producedPath } from "./produced";
@@ -58,6 +66,45 @@ function toolResultContent(content: unknown): ContentBlock[] {
     if (block?.type === "tool-result" && Array.isArray(block.content)) return block.content;
   }
   return [];
+}
+
+/**
+ * 未知内容块的 JSON 记录（有上限）。
+ *
+ * 官方用 `boundedText` + `json.truncated` 截断，因为未知生产方可能塞进任意大的
+ * 字符串或数组。这里也截断：整份内容要跟着 message/upsert 过线，几百 KB 的载荷
+ * 会把界面拖住，而它的价值只是「让用户知道这里有个东西、长什么样」。
+ */
+const UNKNOWN_BLOCK_LIMIT = 4000;
+
+function boundedJson(block: unknown): string {
+  let text: string;
+  try {
+    text = JSON.stringify(block, null, 2) ?? String(block);
+  } catch {
+    text = String(block);
+  }
+  return text.length > UNKNOWN_BLOCK_LIMIT
+    ? `${text.slice(0, UNKNOWN_BLOCK_LIMIT)}\n…`
+    : text;
+}
+
+/**
+ * 按 `form` 解析上下文条目的结构化字段（官方 `ContextBody` 的分派口径）。
+ *
+ * 每种 form 读的是 `source` 上不同的字段与形状，认不出就整项不填——
+ * 界面上退回「正文 + 原样字段」，而不是显示一个半截的列表。
+ */
+function injectedSourceFields(form: string | undefined, source: unknown): InjectedSourceView | undefined {
+  const fields: InjectedSourceView = {
+    ...(form === "instructions" ? { changes: parseInstructionChanges(source) } : {}),
+    ...(form === "catalog" ? { entries: parseCatalogEntries(source) } : {}),
+    ...(form === "snapshot" ? { sections: parseSnapshotSections(source) } : {}),
+    ...(form === "relay" ? { senderSessionId: parseRelaySender(source) } : {}),
+    ...(form === "recall" ? { references: parseRecalledSessions(source) } : {}),
+  };
+  // 键都存在但值全是 undefined（形状不合预期）时不留空壳
+  return Object.values(fields).some((value) => value !== undefined) ? fields : undefined;
 }
 
 /** 图片句柄（不透明 id + 元数据），用于向服务端换取可显示的字节。 */
@@ -372,6 +419,17 @@ export class SessionAdapter {
   private readonly turnEndSeqs = new Map<number, number>();
   /** 当前 step 首个 token delta 的时间戳（服务端时钟，取自 chunk 帧 time）。 */
   private stepFirstTokenAt: number | undefined;
+  /** 当前 step 的**开始**时刻（`turn/start` / `step/start` 的 time）：TTFT 的基准。 */
+  private stepStartedAt: number | undefined;
+  /**
+   * 本轮（= 本条助手消息）的用时与速度累加器，键 = 消息 id。
+   *
+   * 与官方 `deriveStats` 同口径地把**各 step 相加**：解码窗口相加、输出 token 相加，
+   * 最后 `decodeTokens / (decodeMs / 1000)` 得到整轮吞吐；TTFT 取**第一步**的
+   * （官方 `firstStepTtftMs`）。逐 step 覆盖式的 `message.usage.tokensPerSecond`
+   * 只是最后一步的速度，不能当整轮用。
+   */
+  private readonly turnMetrics = new Map<string, { decodeMs: number; decodeTokens: number; ttftMs?: number }>();
   /** 当前活跃 attempt 的 turn/step，由 assistant-stream 的 start 帧给出。 */
   private liveTurn = 0;
   private liveStep = 0;
@@ -431,11 +489,38 @@ export class SessionAdapter {
    */
   classifyFiles: ((paths: string[]) => Promise<Record<string, FileChangeKind>>) | undefined;
 
+  /**
+   * 「刷新 git 状态」回调（由控制器注入）：**轮次结束**时先推一次 Git 重扫，
+   * 再分类。
+   *
+   * 为什么要这个钩子：git 扩展按文件系统事件去抖刷新，模型刚写完的文件往往还
+   * 不在改动清单里。不推这一下，用户第一次点芯片会被判定成「没改动」→ 打开的是
+   * 完整文件而不是 diff，点第二次才是 diff。刷新放在**轮次结束**（文件都落盘了）
+   * 而不是点击时，是为了不占用点击的响应时间。
+   */
+  refreshFiles: (() => Promise<void>) | undefined;
+
   /** 文件分类的去抖计时器（见 `scheduleFileKinds`）。 */
   private fileKindsTimer: ReturnType<typeof setTimeout> | undefined;
 
+  /** 下次分类前是否要先推一次 Git 重扫（轮次结束时置位）。 */
+  private fileKindsRefreshPending = false;
+
+  /**
+   * 最近一次下发的分类表。**要进首帧快照**（`fileKindsState()`）：
+   * 页面重载或第二个窗口绑上同一会话时，新窗口只有靠快照才拿得到记号；
+   * 光靠 patch 不行——表没变化时 `deliverFileKinds` 会按 `lastFileKindsJson`
+   * 去重跳过，新窗口就永远收不到那张表。
+   */
+  private fileKindsTable: Record<string, FileChangeKind> | undefined;
+
   /** 上次下发的分类表（JSON 形式）：没变化就不重发 patch。 */
   private lastFileKindsJson: string | undefined;
+
+  /** 首帧快照要带的分类表（没分类过时 undefined → 界面不标记号）。 */
+  fileKindsState(): Record<string, FileChangeKind> | undefined {
+    return this.fileKindsTable;
+  }
 
   /**
    * 安排一次文件分类（去抖 250ms）。
@@ -443,9 +528,13 @@ export class SessionAdapter {
    * 一轮里 write/edit 可能连发十几次，每次都分类既浪费也让 git 状态来回抖；
    * 并起来一批做完，等 `tool/result` 的连发平息后再问一次 git。历史回放
    * （快照 / 加载更早）也走这里——旧轮次的芯片同样要有记号。
+   *
+   * @param refreshGit 轮次结束时传 true：先推一次 Git 重扫再分类，让刚写完的
+   *   文件立刻进改动清单（见 `refreshFiles`）。
    */
-  scheduleFileKinds(): void {
+  scheduleFileKinds(refreshGit = false): void {
     if (!this.classifyFiles) return;
+    if (refreshGit) this.fileKindsRefreshPending = true;
     if (this.fileKindsTimer) clearTimeout(this.fileKindsTimer);
     this.fileKindsTimer = setTimeout(() => {
       this.fileKindsTimer = undefined;
@@ -457,6 +546,14 @@ export class SessionAdapter {
   private async deliverFileKinds(): Promise<void> {
     const classify = this.classifyFiles;
     if (!classify) return;
+    if (this.fileKindsRefreshPending) {
+      this.fileKindsRefreshPending = false;
+      try {
+        await this.refreshFiles?.();
+      } catch {
+        // 刷新失败不致命：分类照旧（拿不到状态的条目退化为无记号）
+      }
+    }
     const paths: string[] = [];
     const seen = new Set<string>();
     for (const message of this.messages) {
@@ -473,16 +570,18 @@ export class SessionAdapter {
         }
       }
     }
-    if (!paths.length) return;
     let kinds: Record<string, FileChangeKind>;
     try {
-      kinds = await classify(paths);
+      // 没有芯片了也要走一趟：整表替换的语义要求「空表」也是一次下发，
+      // 否则界面会一直留着上一次的表（芯片没了、记号却还在查表）
+      kinds = paths.length ? await classify(paths) : {};
     } catch {
       return; // 分类失败不致命：芯片退化为无记号（现状）
     }
     const json = JSON.stringify(kinds);
     if (json === this.lastFileKindsJson) return;
     this.lastFileKindsJson = json;
+    this.fileKindsTable = kinds;
     this.emit({ type: "patch", patch: { fileKinds: kinds } });
   }
 
@@ -651,6 +750,8 @@ export class SessionAdapter {
         if (data.turn !== this.currentTurn) this.turnPart = 1;
         this.currentTurn = typeof data.turn === "number" ? data.turn : this.currentTurn;
         this.currentStep = 0;
+        // TTFT 的基准：本 step 从这里开始算（官方 timing.stepStartTime 同义）
+        this.stepStartedAt = event.time;
         this.stepFirstTokenAt = undefined;
         const message = this.ensureAssistantMessage(event.time);
         message.streaming = true;
@@ -675,6 +776,18 @@ export class SessionAdapter {
         }
         const message = this.ensureAssistantMessage(event.time);
         message.streaming = false;
+        // 轮尾「用时 X」胶囊的数据：总用时 = 本轮结束时刻 − 本段开始时刻
+        // （官方 `runMs = turn.end.time - turn.start.time` 同口径）；
+        // 速度与 TTFT 取自本轮的累加器（见 turnMetrics）。
+        const metrics = this.turnMetrics.get(message.id);
+        const decodeSeconds = metrics ? metrics.decodeMs / 1000 : 0;
+        message.turnStats = {
+          ranForMs: Math.max(0, event.time - message.ts),
+          ...(metrics && decodeSeconds > 0 && metrics.decodeTokens > 0
+            ? { tokensPerSecond: metrics.decodeTokens / decodeSeconds }
+            : {}),
+          ...(metrics?.ttftMs !== undefined ? { ttftMs: metrics.ttftMs } : {}),
+        };
         const reason = data.reason as { kind?: string; error?: { message?: string } } | undefined;
         if (reason?.kind === "error") {
           // 模型/服务端的原始报错原样透出；没有报文时用语言中立 key 交给界面翻译
@@ -707,12 +820,17 @@ export class SessionAdapter {
         this.synthesizeInterrupted(event.time);
         this.emit({ type: "message/upsert", message: { ...message } });
         this.emit({ type: "patch", patch: { running: false } });
+        // 轮次结束 = 文件都落盘了：先推一次 Git 重扫再分类，让芯片的
+        // [新增] / 删除线立刻是准的，也让「用户随后点芯片」直接看到 diff
+        // （不推的话刚写完的文件还没进改动清单，第一次点只会打开完整文件）。
+        this.scheduleFileKinds(true);
         break;
       }
 
       case "step/start":
         this.currentStep = typeof data.step === "number" ? data.step : 0;
         this.stepFirstTokenAt = undefined;
+        this.stepStartedAt = event.time;
         break;
 
       case "user/message": {
@@ -956,15 +1074,45 @@ export class SessionAdapter {
     const content = Array.isArray(wire?.content) ? (wire!.content as ContentBlock[]) : [];
     for (const block of content) {
       if (block.type === "text" && block.text.trim()) {
-        this.pushSegment(message, { kind: "text", id: `t${event.seq}:${this.sequence++}`, text: block.text });
+        this.pushSegment(
+          message,
+          { kind: "text", id: `t${event.seq}:${this.sequence++}`, text: block.text },
+          step,
+        );
       } else if (block.type === "reasoning" && block.text.trim()) {
-        this.pushSegment(message, { kind: "thinking", id: `r${event.seq}:${this.sequence++}`, text: block.text });
+        this.pushSegment(
+          message,
+          { kind: "thinking", id: `r${event.seq}:${this.sequence++}`, text: block.text },
+          step,
+        );
+      } else if (block.type === "image") {
+        // 助手消息里的图片块：此前整块被丢掉，用户看不到模型给的图。
+        // 句柄要换字节（一次 RPC），所以先挂一个空段、拿到 data URL 再补发。
+        this.pushAssistantImages(message, event.seq, imageAttachments([block]), step);
+      }
+      // `tool-call` / `tool-result` 块**故意不在这里渲染**：它们各自有
+      // `tool/call`、`tool/result` 事件，已经折成工具行了，再画一遍就是重复
+      // （官方渲染链对 `tool-call` 也是 `break`）。
+      // 其余认不出的块走官方的 default 分支：留一条 JSON 记录，**不静默丢弃**
+      // （`file` 块也在其中——官方同样没给它专属分支）。
+      else if (block.type !== "tool-call" && block.type !== "tool-result") {
+        this.pushSegment(
+          message,
+          {
+            kind: "unknown",
+            id: `u${event.seq}:${this.sequence++}`,
+            type: String(block.type ?? "unknown"),
+            json: boundedJson(block),
+          },
+          step,
+        );
       }
     }
 
     // decode 窗口：本 step 首个 token delta → 该 durable 消息（均为服务端时钟）
+    const firstTokenAt = this.stepFirstTokenAt;
     const usage = toUsage(data.usage, {
-      firstTokenAt: this.stepFirstTokenAt,
+      firstTokenAt,
       endedAt: event.time,
     });
     this.stepFirstTokenAt = undefined;
@@ -974,11 +1122,43 @@ export class SessionAdapter {
       // （投影走控制流，可能迟到甚至漏推）
       this.applyUsage(usage);
     }
+    // 整轮指标：本 step 的解码窗口与输出 token 累加进去（官方 deriveStats 的口径），
+    // TTFT 只取本轮第一步的（`firstStepTtftMs`）
+    if (firstTokenAt !== undefined) {
+      const metrics = this.turnMetrics.get(message.id) ?? { decodeMs: 0, decodeTokens: 0 };
+      metrics.decodeMs += Math.max(0, event.time - firstTokenAt);
+      metrics.decodeTokens += usage?.outputTokens ?? 0;
+      if (metrics.ttftMs === undefined && this.stepStartedAt !== undefined) {
+        metrics.ttftMs = Math.max(0, firstTokenAt - this.stepStartedAt);
+      }
+      this.turnMetrics.set(message.id, metrics);
+    }
     if (wire?.source?.kind === "model" && typeof wire.source.model === "string") {
       message.model = wire.source.model;
     }
     if (data.interrupted) message.error = "@interrupted";
     this.emit({ type: "message/upsert", message: { ...message } });
+  }
+
+  /**
+   * 助手消息里的图片块 → 一个 `images` 段，字节异步补。
+   *
+   * 与工具结果里的图片同一套机制（`loadImages` 由控制器注入，做
+   * `session/attachment` 的 RPC）：先挂空段，字节到了用 `message/segment` 覆盖。
+   * 拿不到 `loadImages`（子代理转录那类没有网络客户端的适配器）就不挂段——
+   * 挂一个永远空着的图库位比不显示更让人困惑。
+   */
+  private pushAssistantImages(message: MessageView, seq: number, refs: ImageRef[], step?: number): void {
+    if (!refs.length || !this.loadImages) return;
+    const id = `img${seq}:${this.sequence++}`;
+    const segment: Segment = { kind: "images", id, images: [] };
+    this.pushSegment(message, segment, step);
+    this.loadImages(refs, (dataUrls) => {
+      const holder = message.segments.find((item) => item.id === id);
+      if (!holder || holder.kind !== "images") return;
+      holder.images = dataUrls;
+      this.emit({ type: "message/segment", messageId: message.id, segment: { ...holder } });
+    });
   }
 
   /**
@@ -1314,7 +1494,11 @@ export class SessionAdapter {
     this.emit({ type: "message/upsert", message: { ...message } });
   }
 
-  private pushSegment(message: MessageView, segment: Segment): void {
+  private pushSegment(message: MessageView, segment: Segment, step?: number): void {
+    // 顺手记下所属 step：轮级过程折叠靠它区分「过程」与「答案」（见 shared/chat.ts
+    // 的 Segment 注释）。显式传进来的优先（durable 事件里带着 step 的最准），
+    // 其余（工具结果等）用当前的 step 号。
+    if (segment.step === undefined) segment.step = step ?? this.currentStep;
     message.segments.push(segment);
   }
 
@@ -1336,11 +1520,15 @@ export class SessionAdapter {
     if (message.segments.some((segment) => segment.id === id)) return;
 
     const origin = (source ?? {}) as { kind?: unknown; plugin?: unknown; form?: unknown };
+    const form = typeof origin.form === "string" ? origin.form : undefined;
     const injected: InjectedView = {
       sourceKind: typeof origin.kind === "string" ? origin.kind : "unknown",
       plugin: typeof origin.plugin === "string" ? origin.plugin : undefined,
-      form: typeof origin.form === "string" ? origin.form : undefined,
+      form,
       text,
+      // 按 form 解析 `source` 里的结构化字段（官方 `ContextBody` 就是按 form 分派正文的）。
+      // 形状不合预期时整项不填 → 界面退回「正文 + 原样字段」，不显示半截列表。
+      source: injectedSourceFields(form, source),
     };
     const segment: Segment = { kind: "injected", id, injected };
     this.pushSegment(message, segment);
