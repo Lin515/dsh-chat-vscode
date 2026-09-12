@@ -23,10 +23,12 @@ export function activate(context: vscode.ExtensionContext): void {
   });
 
   const controller = new ChatController(server, log, context.globalState, context.secrets);
-  const provider = new ChatViewProvider(context, controller);
+  // 两个侧栏视图容器各挂一个带标识的实例：日志里能区分视图来自主侧栏还是辅助侧栏
+  const provider = new ChatViewProvider(context, controller, "primary", log);
+  const secondaryProvider = new ChatViewProvider(context, controller, "secondary", log);
 
   // 第一部分：把服务、控制器、视图与全部命令挂到 context.subscriptions（释放即随扩展一起走）
-  registerContributions(context, { controller, provider, server });
+  registerContributions(context, { controller, provider, secondaryProvider, server });
 
   // 辅助侧栏容器（secondarySidebar 贡献点）只在 VS Code ≥ 1.106 存在。
   // 活动栏容器用 `when: !dshChat.supportsSecondarySidebar` 与它互斥，
@@ -45,6 +47,7 @@ export function activate(context: vscode.ExtensionContext): void {
 interface Contributions {
   controller: ChatController;
   provider: ChatViewProvider;
+  secondaryProvider: ChatViewProvider;
   server: ServerManager;
 }
 
@@ -53,7 +56,7 @@ interface Contributions {
  * 全部一次性 push 进 context.subscriptions，deactivate 时统一释放。
  */
 function registerContributions(context: vscode.ExtensionContext, host: Contributions): void {
-  const { controller, provider, server } = host;
+  const { controller, provider, secondaryProvider, server } = host;
 
   context.subscriptions.push(
     output ?? vscode.window.createOutputChannel("DSH Chat"),
@@ -66,17 +69,28 @@ function registerContributions(context: vscode.ExtensionContext, host: Contribut
     vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, provider, {
       webviewOptions: { retainContextWhenHidden: true },
     }),
-    vscode.window.registerWebviewViewProvider(ChatViewProvider.secondaryViewType, provider, {
+    vscode.window.registerWebviewViewProvider(ChatViewProvider.secondaryViewType, secondaryProvider, {
       webviewOptions: { retainContextWhenHidden: true },
     }),
+    secondaryProvider,
 
-    vscode.commands.registerCommand("dshChat.newSession", () => controller.newSession()),
+    // 「新建对话」建在**最近活动的窗口**上：那个窗口的会话换成新的（其他窗口不动）
+    vscode.commands.registerCommand("dshChat.newSession", () => controller.newSession(controller.activeViewId())),
     vscode.commands.registerCommand("dshChat.history", async () => {
       await controller.openHistory();
       await vscode.commands.executeCommand("dshChat.view.focus");
     }),
-    vscode.commands.registerCommand("dshChat.openInEditor", () => provider.openPanel()),
-    vscode.commands.registerCommand("dshChat.stop", () => controller.handle({ type: "stop" })),
+    // 「在编辑器中打开」：webview 按钮会把点击来源窗口的会话带过来；
+    // 命令面板直接执行（没有来源窗口）时用最近活动窗口的会话；都没有就空态
+    vscode.commands.registerCommand(
+      "dshChat.openInEditor",
+      (sessionId?: string) => {
+        log(`[cmd] openInEditor session=${sessionId ?? "（无来源窗口，取活动窗口）"}`);
+        return provider.openPanel(sessionId ?? controller.activeSessionId());
+      },
+    ),
+    // 「停止」停最近活动窗口的会话轮
+    vscode.commands.registerCommand("dshChat.stop", () => controller.stopActive()),
     vscode.commands.registerCommand("dshChat.startServer", () => controller.ensureConnected()),
     vscode.commands.registerCommand("dshChat.restartServer", () => controller.restart()),
     // 外部服务器（dshChat.url）要求授权时，令牌从这里输入
@@ -148,14 +162,14 @@ function registerContributions(context: vscode.ExtensionContext, host: Contribut
     vscode.commands.registerCommand("dshChat.addFile", (uri?: vscode.Uri) => {
       const target = uri ?? vscode.window.activeTextEditor?.document.uri;
       if (!target || target.scheme !== "file") return;
-      controller.addFileContext(target.fsPath);
+      void controller.addFileContext(target.fsPath);
       void vscode.commands.executeCommand("dshChat.view.focus");
     }),
     // 目录单独入口：Windows/Linux 的文件对话框不能同时选文件和目录
     // （见 controller.pickFiles 的注释），所以目录走独立命令。
     // 右键文件夹时 uri 直接给到，不再弹对话框。
     vscode.commands.registerCommand("dshChat.addFolder", async (uri?: vscode.Uri) => {
-      if (uri) controller.addFileContext(uri.fsPath);
+      if (uri) await controller.addFileContext(uri.fsPath);
       else await controller.addFolder();
       void vscode.commands.executeCommand("dshChat.view.focus");
     }),

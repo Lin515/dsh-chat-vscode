@@ -104,11 +104,23 @@ console.log("wire: 切会话的粘性值清除全部过线 ✓");
 // null 会当成真值写进状态。
 {
   const chatView = readFileSync(join(process.cwd(), "src", "chatView.ts"), "utf8");
+  // 多窗口后广播改成了定向投递（deliver），但不变量不变：**所有** postMessage
+  // 发出去的都是过线后的 `wire`，绝不发原始帧（广播与定向两条路径都查）。
   assert.ok(
-    /const wire = jsonSafeFrame\(frame\);\s*\n\s*for \(const view of this\.views\) void view\.postMessage\(wire\);/.test(
-      chatView,
-    ),
-    "chatView.broadcast 必须 postMessage(jsonSafeFrame(frame))——直接发原始帧会让清空失效",
+    /const wire = jsonSafeFrame\(frame\);/.test(chatView),
+    "chatView.deliver 必须先 jsonSafeFrame(frame)——直接发原始帧会让清空失效",
+  );
+  assert.ok(
+    /for \(const view of this\.viewWebviews\.values\(\)\) void view\.postMessage\(wire\);/.test(chatView),
+    "广播路径必须发 wire（不是原始 frame）",
+  );
+  assert.ok(
+    /this\.viewWebviews\.get\(target\)\?\.postMessage\(wire\)/.test(chatView),
+    "定向路径必须发 wire（不是原始 frame）",
+  );
+  assert.ok(
+    !/postMessage\(frame\)/.test(chatView),
+    "不允许把原始帧直接 postMessage 出去",
   );
 
   const state = readFileSync(join(process.cwd(), "src", "webview", "state.ts"), "utf8");

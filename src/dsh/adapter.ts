@@ -384,6 +384,12 @@ export class SessionAdapter {
    * 新一轮开始时最新消息还没有 usage，界面只读最后一条消息会闪没，这里兜住。
    */
   lastSpeed: number | undefined;
+  /**
+   * 窗口外还有没有更早的历史（跟随开帧的 `hasMore`，分页后更新）。
+   * 单独存一份：首帧快照要带它，「加载更早」按钮才能在第二个窗口绑上已有
+   * 会话、以及页面重载后正确显示（重放只发生在 follow 流开窗那一刻）。
+   */
+  private hasMore = false;
 
   constructor(private readonly emit: (frame: HostToWebview) => void) {}
 
@@ -426,6 +432,11 @@ export class SessionAdapter {
     };
   }
 
+  /** 窗口外是否还有更早的历史（首帧快照要带，见字段注释）。 */
+  hasMoreHistory(): boolean {
+    return this.hasMore;
+  }
+
   /**
    * 记住最近一次可用的解码速度，供界面长期显示。
    * 速度是按 step 算的：该 step 结束时才成立；没有新值就保留旧值。
@@ -450,7 +461,8 @@ export class SessionAdapter {
         if (record?.type === "event") this.remember(record.event);
       }
       this.refold();
-      this.emit({ type: "patch", patch: { hasMoreHistory: Boolean(frame.hasMore) } });
+      this.hasMore = Boolean(frame.hasMore);
+      this.emit({ type: "patch", patch: { hasMoreHistory: this.hasMore } });
       const title = frame.projections?.values?.title;
       if (typeof title === "string" && title) {
         this.emit({ type: "patch", patch: { session: this.sessionWithTitle(title) } });
@@ -498,7 +510,8 @@ export class SessionAdapter {
       added = true;
     }
     if (added) this.refold();
-    this.emit({ type: "patch", patch: { hasMoreHistory: hasMore } });
+    this.hasMore = hasMore;
+    this.emit({ type: "patch", patch: { hasMoreHistory: this.hasMore } });
     if (added) this.emit({ type: "messages/reset", messages: this.messages });
   }
 
