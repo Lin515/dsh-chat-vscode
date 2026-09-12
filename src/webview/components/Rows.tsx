@@ -24,8 +24,8 @@ import {
   IconRead,
   IconSearch,
   IconSlash,
-  IconSparkles,
   IconTerminal,
+  IconWrench,
   IconWrite,
 } from "../icons";
 
@@ -72,7 +72,7 @@ function useDescribeTool(): (name: string) => { icon: JSX.Element; iconClass: st
       ) : variant === "code" ? (
         <IconCode size={13} />
       ) : (
-        <IconSparkles size={13} />
+        <IconWrench size={13} />
       );
     // 变体 → 专属节点色（.node-*，tokens.css 的 --node-*）：完成态静态彩色，
     // 运行中由 .icon-glow 以同色呼吸发光

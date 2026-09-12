@@ -197,10 +197,13 @@ export const IconChevronDown = (p: IconProps) => (
   </Icon>
 );
 
-export const IconSparkles = (p: IconProps) => (
+/**
+ * 扳手（Feather `tool`，MIT）：未知类工具节点（`others` 变体）的兜底图标。
+ * 单条闭合路径、规整圆弧，13px 下与齿轮同标准——糊不成团。
+ */
+export const IconWrench = (p: IconProps) => (
   <Icon {...p}>
-    <path d="M12 3l1.6 4.4L18 9l-4.4 1.6L12 15l-1.6-4.4L6 9l4.4-1.6L12 3z" />
-    <path d="M18.5 15.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7.7-1.8z" />
+    <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.92 6.92a2.12 2.12 0 0 1-3-3l6.92-6.92a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
   </Icon>
 );
 

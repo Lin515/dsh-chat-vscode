@@ -77,7 +77,9 @@
   --node-write: var(--vscode-charts-pink, #f06292);
   --node-edit: var(--vscode-charts-purple, #ab47bc);
   --node-code: var(--vscode-charts-aqua, #00bcd4);
-  --node-others: var(--vscode-charts-grey, #9e9e9e);
+  /* 未知类工具（扳手）用固定银色：不走主题图表灰——用户指定银色，
+     亮/暗主题下保持同一色相，运行中的呼吸光（currentColor）随之同为银色 */
+  --node-others: #c0c0c0;
   --node-command: var(--vscode-charts-apricot, #f08d49);
   --node-injected: var(--vscode-charts-lightgreen, #81c784);
 
