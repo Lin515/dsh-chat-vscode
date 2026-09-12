@@ -53,6 +53,8 @@ const entries = {
   "build/i18n.test.mjs": "scripts/i18n.test.ts",
   "build/occupancy.test.mjs": "scripts/occupancy.test.ts",
   "build/invariants.test.mjs": "scripts/invariants.test.ts",
+  "build/wire.test.mjs": "scripts/wire.test.ts",
+  "build/turn-files.test.mjs": "scripts/turnFiles.test.ts",
   "build/styles.test.mjs": "scripts/styles.test.ts",
   "build/read-range.test.mjs": "scripts/readRange.test.ts",
   "build/segment.test.mjs": "scripts/segment.test.ts",
@@ -62,6 +64,10 @@ const entries = {
   "build/effort-probe.mjs": "scripts/effortProbe.ts",
   "build/read-range-probe.mjs": "scripts/readRangeProbe.ts",
   "build/plan-command-probe.mjs": "scripts/planCommandProbe.ts",
+  "build/goal-session-probe.mjs": "scripts/goalSessionProbe.ts",
+  "build/session-log-scan.mjs": "scripts/sessionLogScan.ts",
+  "build/session-list-probe.mjs": "scripts/sessionListProbe.ts",
+  "build/session-list.test.mjs": "scripts/sessionList.test.ts",
   "build/token-cleanup.test.mjs": "scripts/tokenAndCleanup.test.ts",
 };
 

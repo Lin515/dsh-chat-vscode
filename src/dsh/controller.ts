@@ -28,6 +28,7 @@ import type { RemoteEventFrame, RemoteEventWaterfall, SessionControlFrame } from
 import { ServerManager, type ServerInfo, type ServerStatus } from "./serverManager";
 import { queueItems, type QueueOrigin } from "./queueView";
 import { goalFromProjection, planModeFromProjection, subagentsFromCatalog, subagentsFromList } from "./projections";
+import { lineageDepths, visibleSessionRows } from "./sessionList";
 import { buildSettingsSection } from "./settingsSchema";
 
 /**
@@ -531,17 +532,19 @@ export class ChatController implements vscode.Disposable {
       // 跨项目会话混进来会既占列表又会因 cwd 不匹配导致 resume 失败）
       const workspace = this.workspacePath().replace(/\\/g, "/").toLowerCase();
       const currentCwd = this.sessions.find((s) => s.id === this.currentSessionId)?.cwd?.replace(/\\/g, "/").toLowerCase();
-      this.sessions = (value.items ?? [])
+      const views = visibleSessionRows(value.items ?? [])
         // 本地删过的会话若被当前 dsh 进程打开过，仍会留在服务端内存里被
         // session/list 列出——按持久化的删除集合过滤，保证界面干净
         .filter((item) => !this.deletedSessionIds.has(item.sessionId))
-        .filter((item) => !item.origin && !item.parentSessionId)
         .filter((item) => {
           if (!item.cwd) return false;
           const cwd = item.cwd.replace(/\\/g, "/").toLowerCase();
           return cwd === workspace || (currentCwd !== undefined && cwd === currentCwd);
         })
         .map((item) => this.toSessionView(item));
+      // 血缘深度：分支缩进显示在源会话下面（否则「分支继承了源标题」会看成两条重复项）
+      const depths = lineageDepths(views);
+      this.sessions = views.map((view) => ({ ...view, depth: depths.get(view.id) ?? 0 }));
       this.emitSessionLists();
     } catch (error) {
       this.log(`[sessions] 列表获取失败：${this.describeError(error)}`);
@@ -666,6 +669,8 @@ export class ChatController implements vscode.Disposable {
       cwd: item.cwd,
       running: Boolean(item.running),
       blank: item.blank,
+      // 血缘：分支会话带 parentSessionId（子代理的 origin 已在过滤时排除）
+      parentSessionId: item.parentSessionId,
     };
   }
 

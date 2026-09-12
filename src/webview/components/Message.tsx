@@ -6,6 +6,7 @@ import { Markdown } from "./Markdown";
 import { formatClock, useSelectionFreeze } from "./primitives";
 import { ApprovalCard, CommandRow, FileChips, InjectedRow, NoticeRow, QuestionCard, ThinkingRow, ToolRow } from "./Rows";
 import { useTexts } from "../texts";
+import { producedOnly } from "../turnFiles";
 
 /**
  * 助手正文块。流式期间正文每个 token 都在变，用户划选时冻结渲染保住选区
@@ -61,6 +62,10 @@ export const Message = memo(function Message({
     .map((s) => s.text)
     .join("\n\n");
 
+  // 「本轮改动」里刨掉已经申报交付的文件：模型申报的通常就是它刚改的那几个，
+  // 两行都列一遍看着像同一件事说了两遍（口径见 turnFiles.ts）
+  const producedFiles = producedOnly(message.produced, message.deliverables);
+
   return (
     <div className="msg msg-assistant">
       <div className="segments">
@@ -95,11 +100,12 @@ export const Message = memo(function Message({
         })}
         {/* 轮尾文件：先「本轮改动」（从成功的写类调用推导），再「交付文件」
             （present 工具的显式申报）。两者此前都不渲染——写过的文件在界面上
-            完全不可见，只能靠模型在正文里自己说（docs/audit-summary.md §5）。 */}
-        {message.produced?.length ? (
+            完全不可见，只能靠模型在正文里自己说（docs/audit-summary.md §5）。
+            申报过交付的文件不再在本行重复，只留在下面的交付行。 */}
+        {producedFiles.length ? (
           <FileChips
             label={texts.producedLabel}
-            paths={message.produced.map((path) => ({ path }))}
+            paths={producedFiles.map((path) => ({ path }))}
           />
         ) : null}
         {message.deliverables?.length ? (

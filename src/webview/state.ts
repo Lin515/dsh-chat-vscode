@@ -13,6 +13,7 @@ import type {
   ContextOccupancyView,
 } from "../shared/chat";
 import type { HostToWebview } from "../shared/ipc";
+import { mergeWirePatch } from "../shared/wire";
 
 /**
  * webview 侧状态归约：把宿主的增量帧合并成可渲染的聊天状态。
@@ -123,10 +124,11 @@ export type Action =
 export function reducer(state: AppState, action: Action): AppState {
   switch (action.type) {
     case "state":
-      return { ...state, ...action.state, panel: state.panel };
+      // 过线帧里可选字段的「空」是 null（`shared/wire.ts`），合并时折回 undefined
+      return { ...mergeWirePatch(state, action.state), panel: state.panel };
 
     case "patch":
-      return { ...state, ...action.patch };
+      return mergeWirePatch(state, action.patch);
 
     case "message/upsert": {
       // 流式中的助手消息可能没有 changesVersion 语义，直接整条替换

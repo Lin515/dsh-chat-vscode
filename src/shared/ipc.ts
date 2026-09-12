@@ -14,11 +14,21 @@ import type {
  * token 就重发整棵消息树）。
  */
 
+/**
+ * 过线后的状态形状。
+ *
+ * 宿主发帧前会把「清空」表达成 `null`（`shared/wire.ts`：VS Code 的 webview
+ * 消息走 `JSON.stringify`，`undefined` 值的键会被丢掉），所以界面上必须接受
+ * `null` 并在合并时把它折回「这个键不存在」。
+ */
+export type WirePatch = { [K in keyof ChatState]?: ChatState[K] | null };
+export type WireState = { [K in keyof ChatState]: ChatState[K] | null };
+
 export type HostToWebview =
   /** 首次连接时的一次性全量快照。 */
-  | { type: "state"; state: ChatState }
+  | { type: "state"; state: WireState }
   /** 状态中非消息字段的局部更新。 */
-  | { type: "patch"; patch: Partial<ChatState> }
+  | { type: "patch"; patch: WirePatch }
   /** 新增或整体替换一条消息。 */
   | { type: "message/upsert"; message: MessageView }
   /** 删除一条消息（回退/重放时使用）。 */

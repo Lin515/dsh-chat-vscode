@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import type { HostToWebview, WebviewToHost } from "./shared/ipc";
+import { jsonSafeFrame } from "./shared/wire";
 import type { ChatController } from "./dsh/controller";
 
 /**
@@ -64,7 +65,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   }
 
   private broadcast(frame: HostToWebview): void {
-    for (const view of this.views) void view.postMessage(frame);
+    // ✅ 过线前必须过一遍 jsonSafeFrame：VS Code 把 webview 消息 `JSON.stringify`
+    // 过（见 shared/wire.ts 的模块注释），原样发的话「清空某字段」的 patch
+    // 会因为值是 undefined 而被整条丢掉，界面永远停在旧值上。
+    const wire = jsonSafeFrame(frame);
+    for (const view of this.views) void view.postMessage(wire);
   }
 
   private html(webview: vscode.Webview): string {

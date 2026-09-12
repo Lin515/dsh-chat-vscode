@@ -273,6 +273,15 @@ export interface SessionSummaryView {
   cwd?: string;
   running: boolean;
   blank?: boolean;
+  /**
+   * 源会话 id：分支（`session/fork`）出来的会话带它，列表里缩进显示在源会话下面。
+   *
+   * 注意**不能**用「有没有它」判断该不该显示——子代理会话也有它，
+   * 但子代理另有 `origin: 'subagent'`（见 `dsh/sessionList.ts`）。
+   */
+  parentSessionId?: string;
+  /** 血缘深度（root = 0；分支 1、分支的分支 2…），界面乘一个缩进宽度。 */
+  depth?: number;
 }
 
 export interface ModelEffortView {

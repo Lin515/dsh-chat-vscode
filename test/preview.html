@@ -64,9 +64,7 @@
               // 真实宿主是异步回帧的（webview → 扩展进程 → postMessage 回来），
               // 这里用宏任务复刻同样的时序：effect 里的 ready 发完，脚本才继续定义 __buildState
               setTimeout(function () {
-                window.dispatchEvent(
-                  new MessageEvent("message", { data: { type: "state", state: window.__buildState() } }),
-                );
+                window.__push({ type: "state", state: window.__buildState() });
               }, 0);
             }
           },
@@ -76,11 +74,31 @@
           setState: function () {},
         };
       };
+      // VS Code 的 webview 消息是 `JSON.stringify` 过的（实测扩展宿主里的 r8()），
+      // 所以预览**也必须过一遍 JSON**：不过的话「值为 undefined 的键会消失」
+      // 这类 bug 在预览里根本看不见（曾因此漏掉「目标条清不掉」，见 src/shared/wire.ts）。
       window.__push = function (frame) {
-        window.dispatchEvent(new MessageEvent("message", { data: frame }));
+        window.dispatchEvent(new MessageEvent("message", { data: JSON.parse(JSON.stringify(frame)) }));
+      };
+      // 验证「清空目标」这条链路：宿主发的就是 `goal: null`（过线后 undefined 会消失）
+      window.__clearGoal = function () {
+        window.__push({ type: "patch", patch: { goal: null } });
       };
       // 面板数据按需推给界面，便于逐个预览
       window.__panels = function () {
+        // 会话历史：含一条**分支**会话（`parentSessionId` + `depth: 1`）。
+        // 字段形状来自真实 `session/list`（scripts/sessionListProbe.ts 实测）：
+        // fork 出来的子会话带 parentSessionId、`origin` 为空；标题继承源会话，
+        // 所以界面必须靠缩进把两条区分开。
+        window.__push({
+          type: "sessions",
+          sessions: [
+            { id: "s1", title: "重构 server 启动流程", updatedAt: Date.now() - 7200000, running: false, depth: 0 },
+            { id: "s1-fork", title: "重构 server 启动流程", updatedAt: Date.now() - 1800000, running: false, parentSessionId: "s1", depth: 1 },
+            { id: "s2", title: "清理残留进程", updatedAt: Date.now() - 10800000, running: false, depth: 0 },
+            { id: "s3", title: "会话历史里的分支显示", updatedAt: Date.now() - 60000, running: true, depth: 0 },
+          ],
+        });
         window.__push({
           type: "subagents/list",
           parentAvailable: true,
@@ -154,6 +172,11 @@
             { name: "goal", description: "设置目标" },
             { name: "permission", description: "切换权限模式", hint: "read-only | workspace-write | danger-full-access" },
             { name: "feedback", description: "记录反馈" },
+            // 技能也进 `/` 候选（名字与 description 逐字取自真实 skills/list）。
+            // 名字长 + 带「技能」标记，是「命令名必须完整、宽度不够先省描述」这条
+            // 样式的压力样本：窄侧栏下曾经被压成 `/git…`。
+            { name: "git-guardrails-claude-code", description: "Set up Claude Code hooks to block dangerous git commands (push, reset --hard, clean, branch -D, etc.) before they execute.", skill: true },
+            { name: "transfer-read", description: "读取移交文档/接手继续任务。用户说「读取移交文档 xxx」「接手」「继续上次的任务」时调用。", skill: true },
           ],
         });
         window.__push({
@@ -352,11 +375,14 @@
                 { id: "c1", kind: "text", text: "```ts\n" + codeSample + "\n```", streaming: true }
               ],
               // 轮尾文件两行：`produced` 从成功的 write/edit 推导，`deliverables`
-              // 是 present 工具的显式申报（两条独立来源，界面上分行、各有标签）
+              // 是 present 工具的显式申报（两条独立来源，界面上分行、各有标签）。
+              // `config.ts` 两边都有——这正是「申报的通常就是刚改过的文件」那一种，
+              // 「本轮文件改动」行里不该再重复列它。
               produced: ["D:/dev/app/src/server/index.ts", "D:/dev/app/src/config.ts"],
               deliverables: [
                 { path: "D:/dev/app/docs/merge-plan.md", description: "合并方案" },
-                { path: "D:/dev/app/docs/merge-plan.md.bak" }
+                { path: "D:/dev/app/docs/merge-plan.md.bak" },
+                { path: "D:/dev/app/src/config.ts", description: "收敛后的配置读取" }
               ]
             },
             {

@@ -376,7 +376,10 @@ export function Composer({ state, onDraft }: { state: AppState; onDraft: (text: 
                       applyCandidate(index);
                     }}
                   >
-                    <span className="popover-item-main">
+                    {/* 命令名走「优先完整」那档样式（`.is-priority`）：宽度不够时
+                        先省略右边的描述，绝不把命令截成 `/git-guard…`（用户口径）。
+                        文件路径不做这个标记——长路径必须能省略。 */}
+                    <span className={`popover-item-main${isCommand ? " is-priority" : ""}`}>
                       {isCommand ? `/${row.name}` : row.path}
                     </span>
                     {isCommand && row.description ? (
@@ -553,7 +556,11 @@ export function Composer({ state, onDraft }: { state: AppState; onDraft: (text: 
                       }}
                     >
                       <span className="popover-item-icon">{item.icon}</span>
-                      <span className="popover-item-main">{item.label}</span>
+                      {/* 档位名同样是「主文字」：英文下 Read Only / Workspace Write /
+                          Full Access 曾经被长描述挤成 `Read O…`（预览页 252px 宽实测）。
+                          注意下面 `/plan` 那一行**不**加这个标记——那行的副文字是命令名，
+                          该让位的是左侧标签，与用户「命令要完整」的口径一致。 */}
+                      <span className="popover-item-main is-priority">{item.label}</span>
                       <span className="popover-item-sub">{item.desc}</span>
                     </button>
                   ))

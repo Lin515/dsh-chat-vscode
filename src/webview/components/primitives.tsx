@@ -41,7 +41,9 @@ export function Row({
   children?: ReactNode;
 }) {
   // 路径类 detail 拆成「目录 + 文件名」：目录可压缩（从左裁掉），文件名不吃压缩。
-  // 这样行号（detailSuffix）永远紧跟在**完整的**文件名后面，而不是缀在半截路径后面。
+  // 行号（detailSuffix）作为**同一个 detail 块内部**的最后一个片段：
+  // 块内没有 gap，所以它是 `文件名:行号` 而不是「文件名 行号」；同时它自己不压缩，
+  // 挨裁的永远是目录那一段（曾经把它放在 detail 之外，detail 一撑宽就被顶到行尾）。
   const parts = detail ? splitPath(detail) : undefined;
   return (
     <div className={`row${open ? " is-open" : ""}`}>
@@ -56,13 +58,17 @@ export function Row({
           <span className="row-detail" title={detail}>
             {parts.dir ? <span className="row-detail-dir">{parts.dir}</span> : null}
             <span className="row-detail-name">{parts.name}</span>
+            {detailSuffix ? <span className="row-detail-suffix">{detailSuffix}</span> : null}
           </span>
         ) : detail ? (
-          <span className="row-detail" title={detail}>
+          <span className="row-detail is-text" title={detail}>
             <span className="row-detail-name">{detail}</span>
+            {detailSuffix ? <span className="row-detail-suffix">{detailSuffix}</span> : null}
           </span>
+        ) : detailSuffix ? (
+          // 没有 detail 只有后缀：单独渲染，仍然是不可压缩的一段
+          <span className="row-detail-suffix">{detailSuffix}</span>
         ) : null}
-        {detailSuffix ? <span className="row-detail-suffix">{detailSuffix}</span> : null}
         {meta ? <span className="row-meta">{meta}</span> : null}
       </button>
       {open && children ? children : null}

@@ -147,4 +147,100 @@ console.log("styles: 减少动画下两个活性指示器待遇一致 ✓");
 }
 console.log("styles: 思考结束后的鲸鱼仍为蓝色 ✓");
 
+// ---------- 5. 候选行：主文字完整优先，宽度不够先省描述 ----------
+//
+// 用户口径：「命令列表应当将命令显示完整，如果宽度不够则应去省略描述」。
+// 改前两段文字按 flex-shrink 比例一起收缩，窄侧栏下实测 `/transfer-read` 的
+// 名字框只剩 26px（渲染成 `/tr…`），而描述还占着 131px——主次反了。
+// 现在主文字 flex-shrink: 0，收缩只由描述承担；这组断言钉住这个方向。
+{
+  const name = rule(".popover-item-main.is-priority");
+  assert.ok(
+    /flex:\s*0\s+0\s/.test(name),
+    `.popover-item-main.is-priority 必须是 flex: 0 0 auto（不收缩、不抢空白），现在是 "${name.trim()}"`,
+  );
+
+  const sub = rule(".popover-item-sub");
+  assert.ok(
+    !/flex-shrink:\s*0/.test(sub),
+    ".popover-item-sub 不能设 flex-shrink: 0——它是行里唯一能给主文字让位的一方",
+  );
+  // 描述必须能被压到 0：要么 min-width: 0，要么 overflow: hidden（后者按 flex 规范
+  // 让自动最小尺寸为 0）。两条都没有时它会挡在内容宽度上，主文字又被挤没。
+  assert.ok(
+    /min-width:\s*0/.test(sub) || /overflow:\s*hidden/.test(sub),
+    ".popover-item-sub 必须允许收缩到 0（min-width: 0 或 overflow: hidden）——" +
+      "否则它不让位，收缩会重新落到主文字上",
+  );
+
+  // 组件里两处主文字必须真的挂上标记：
+  //   - 命令名（挂到文件路径上会让长路径撑破弹层，所以按 isCommand 区分）；
+  //   - 权限档位名（英文 Read Only / Workspace Write 曾被长描述挤成 `Read O…`）。
+  const composer = readFileSync(
+    join(process.cwd(), "src", "webview", "components", "Composer.tsx"),
+    "utf8",
+  );
+  assert.ok(
+    /isCommand \? " is-priority" : ""/.test(composer),
+    "Composer 的候选行必须按 isCommand 给命令名加 .is-priority（文件路径不加）",
+  );
+  assert.ok(
+    /popover-item-main is-priority">\{item\.label\}/.test(composer),
+    "权限弹层的档位名也要 .is-priority（否则英文长描述会把档位名挤成 `Read O…`）",
+  );
+}
+console.log("styles: 主文字优先完整、描述先省略 ✓");
+
+// ---------- 6. 行号必须贴着文件名，不能飘到行尾 ----------
+//
+// 用户 2026-09-12 反馈「行号还是没有紧跟在文件名后面，一直靠右」：
+// `.row-detail` 当时是 `flex: 1 1 0`，吃掉整行剩余空间 → 它后面的行号
+// （`.row-detail-suffix`）被顶到行尾。实测（预览页 420px）：文件名结束于 x=191、
+// 行号起于 x=289，中间空了 98px。现在行号是 `.row-detail` **内部**的最后一段，
+// 块内无 gap，挨裁的只有目录段。
+{
+  const detail = rule(".row-detail");
+  assert.ok(
+    /flex:\s*0\s+1\s/.test(detail),
+    `.row-detail 不能吃剩余空间（现在是 "${detail.trim()}" 里的 flex）——` +
+      "一旦写成 `flex: 1 1 …`，行号又会被推到行尾，回到用户报的那个 bug",
+  );
+
+  const suffix = rule(".row-detail-suffix");
+  assert.ok(
+    /flex:\s*0\s+0\s/.test(suffix),
+    ".row-detail-suffix 不参与压缩（它是要紧的行号区间）",
+  );
+
+  // 尾部 meta（时长）必须**先让位**：靠 margin-left: auto 顶到行尾，
+  // 收缩权重远大于 detail；否则缺口按比例摊到 detail，行号会被 overflow 裁掉半截。
+  const meta = rule(".row-meta");
+  assert.ok(/margin-left:\s*auto/.test(meta), ".row-meta 要用 margin-left: auto 顶到行尾");
+  const shrink = Number(/flex:\s*0\s+(\d+)/.exec(meta)?.[1] ?? "0");
+  assert.ok(
+    shrink >= 100,
+    `.row-meta 的收缩权重必须远大于 detail 的 1（现在是 ${shrink}）——` +
+      "空间不够时要先丢时长，不能去裁文件名和行号",
+  );
+
+  // 组件结构：行号必须渲染在 .row-detail **内部**（在文件名之后），
+  // 放外面就又会隔着 .row-head 的 gap 被推开。
+  const primitives = readFileSync(
+    join(process.cwd(), "src", "webview", "components", "primitives.tsx"),
+    "utf8",
+  );
+  const inner =
+    /<span className="row-detail-name">\{parts\.name\}<\/span>\s*\{detailSuffix \? <span className="row-detail-suffix">/.test(
+      primitives,
+    );
+  assert.ok(inner, "primitives 的 Row 必须把 detailSuffix 渲染在 .row-detail 内部、紧跟文件名之后");
+  assert.ok(
+    !/\{detailSuffix \? <span className="row-detail-suffix">\{detailSuffix\}<\/span> : null\}\s*\n\s*\{meta \?/.test(
+      primitives,
+    ),
+    "detailSuffix 不该再作为 .row-detail 的兄弟节点出现（那会飘到行尾）",
+  );
+}
+console.log("styles: 行号紧跟文件名、时长先让位 ✓");
+
 console.log("\nstyles: all assertions passed");

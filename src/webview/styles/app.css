@@ -448,14 +448,20 @@
   white-space: nowrap;
 }
 
-/* 次要标题是其次的：吃掉剩余空间，过长时**省略前段**。
+/* 次要标题是其次的：长了**省略前段**，但**不吃剩余空间**。
    路径类 detail 会被拆成「目录 + 文件名」两段（见 primitives.tsx 的 Row）：
-   目录段允许被裁（从左裁掉），文件名段不参与压缩——用户要的是「保住文件名」，
-   而行号（.row-detail-suffix）紧跟在文件名之后，因此永远贴在文件名右边。 */
+   目录段允许被裁（从左裁掉），文件名段不参与压缩——用户要的是「保住文件名」。
+
+   这里**不能**用 `flex: 1 1 0`（曾经是）：detail 一旦吃掉整行剩余空间，
+   紧跟其后的行号（.row-detail-suffix）就被推到整行最右边，看着像右对齐的一列
+   数字，而不是「文件名:行号」——用户 2026-09-12 反馈「行号还是没有紧跟在文件名
+   后面」。实测（预览页 420px 宽）：改前文件名结束于 x=191、行号起于 x=289，
+   中间空 98px；改后行号就贴在文件名右边（只隔一个 6px 的行内 gap）。
+   剩余空间交给 `.row-meta`（`margin-left: auto`）——时长仍然靠右。 */
 .row-detail {
   display: flex;
   align-items: baseline;
-  flex: 1 1 0;
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
@@ -481,23 +487,38 @@
   white-space: pre;
 }
 
-/* 没有目录部分（命令、查询串、裸文件名）时的形态：同样从右侧省略 */
-.row-detail > .row-detail-name:only-child {
+/* 非路径的 detail（命令、查询串、裸文件名）：没有目录可裁，自己从右侧省略。
+   带行号时也一样——行号不可压缩，挨省略的只有它前面那段文字。 */
+.row-detail.is-text > .row-detail-name {
   flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-/* 紧跟在 detail 之后、**不参与压缩**的片段（读取节点的 `:100-120`）。 */
+/* 行号：detail 块内部的最后一段，**不参与压缩**、与文件名之间没有间隙
+   （`.row-detail` 不设 gap）。挨裁的永远是目录那一段，所以 `文件名:行号`
+   始终完整地待在一起。 */
 .row-detail-suffix {
   flex: 0 0 auto;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
 
+/* 时长 / 字符数这类尾部信息：靠 `margin-left: auto` 顶到行尾（视觉与改动前一致）。
+   空间不够时**它先整段让位**：收缩权重给到 1000（对比 detail 的 1），
+   于是缺口几乎全由它吸收——文件名与行号（`.row-detail` 里的
+   `name` + `suffix`）因此不会被裁，目录段也能先被裁。
+   实测（预览页 260px 窄栏，行宽 230px）：时长被压没，`controller.ts:3201-3220`
+   完整可见。反过来把权重留成 1 的话，缺口会按比例分给 detail，
+   行号就会被 `.row-detail` 的 overflow 裁掉半截。 */
 .row-meta {
-  flex: 0 0 auto;
+  flex: 0 1000 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-left: auto;
   color: var(--muted);
   font-size: var(--font-size-2xs);
   font-variant-numeric: tabular-nums;
@@ -1714,6 +1735,8 @@
   color: var(--active-fg);
 }
 
+/* 候选行的主文字（命令名 / 文件路径）：默认可收缩。
+   `@` 列表里的长路径必须能省略——路径没法换行，不省略就会把弹层撑出横向滚动条。 */
 .popover-item-main {
   flex: 1 1 auto;
   min-width: 0;
@@ -1722,7 +1745,31 @@
   white-space: nowrap;
 }
 
+/* 优先级文字：行里**身份那一段**——斜杠命令候选的命令名、权限弹层的档位名。
+   口径（用户提出）：主文字要显示完整，宽度不够就省右边的描述。
+   `flex-shrink: 0` → 它不参与收缩，缺口全部落到唯一的可收缩项 `.popover-item-sub`
+   上（描述通常远宽于可用宽，一压就到位）；同时 `grow: 0` 让它不再抢空白，
+   描述紧跟在名字后面，各行描述因此左对齐，而不是随名字长短左右飘。
+   实测（预览页 260px 窄栏、真实技能名）：改前 `/transfer-read` 的名字框只有 26px
+   （渲染成 `/tr…`）而描述占 131px；改后名字 74px 完整、描述压到 84px 省略，
+   `/git-guardrails-claude-code` 同理（名字 146px 完整，描述只剩 12px）。
+   只有「名字 + 技能标记」本身就宽过弹层时才溢出（弹层下限 224px 已容得下
+   29 字符的 `git-guardrails-claude-code`），那种极端情况宁可让弹层横向滚动，
+   也不要把命令截成 `/git-guard…`。
+   反过来，副文字**是**命令名的行（权限弹层里的 `/plan`）刻意不加这个标记：
+   那行该让位的是左侧标签，好让命令保持完整。 */
+.popover-item-main.is-priority {
+  flex: 0 0 auto;
+}
+
+/* 描述：候选行里**唯一**可收缩的文字，宽度不够时由它先让位（省略号收尾）。
+   `min-width: 0` 是显式写出来的那一条——`overflow: hidden` 自己就已经让它
+   的自动最小尺寸为 0（实测：把它改回 `auto`，收缩结果一模一样），
+   写出来是为了让「描述可以让位到 0」在样式里一眼可见，也免得以后有人
+   删掉 overflow 时静默退化回「名字被挤没」。 */
 .popover-item-sub {
+  flex: 0 1 auto;
+  min-width: 0;
   font-size: var(--font-size-2xs);
   color: var(--muted);
   overflow: hidden;
@@ -1868,8 +1915,20 @@
   width: 100%;
   margin-bottom: 2px;
   padding: 4px 2px;
+  /* 分支会话缩进（`--session-indent` 由 History.tsx 按血缘深度算好）：
+     分支继承源会话的标题，不缩进会看成两条重复项 */
+  padding-left: var(--session-indent, 2px);
   border-radius: var(--radius);
   text-align: left;
+}
+
+/* 分支行左侧一道细竖线，让「它挂在上面那条下面」一眼可见 */
+.session-item.is-child .session-item-main {
+  border-left: 1px solid var(--border);
+}
+
+.session-item.is-child .session-item-title {
+  color: var(--description);
 }
 
 .session-item:hover {

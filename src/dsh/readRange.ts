@@ -115,7 +115,9 @@ export function readRangeFromOutput(output: string): ReadRange | undefined {
  * `total` 不并进字符串：单行标题空间紧张，总行数对「这次读了哪一段」没有帮助。
  *
  * 注意界面**没有**用这个函数拼字符串，而是把区间单独下发、由 `.row-detail-suffix`
- * 渲染成不可压缩的片段——`detail` 从右侧省略，拼进去会在窄侧栏被截掉。
+ * 渲染成不可压缩的一段——拼进 `detail` 里会跟着路径一起被省略（`detail` 是按
+ * 「目录可裁、文件名不裁」的规则省略的，区间缀在字符串末尾就守不住）。
+ * 界面上它紧跟在文件名之后（在 `.row-detail` 内部，见 primitives.tsx 的 Row）。
  * 这里保留给「需要一行纯文本」的场景（例如日志、测试断言）。
  */
 export function formatReadDetail(displayPath: string, range: ReadRange): string | undefined {

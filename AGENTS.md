@@ -86,6 +86,12 @@ this.emit({ type: "toast", level: "warn", text: "@uploadIncomplete:report.pdf" }
 - **安全谓词按肯定证据写**（`=== true`），不按否定证据写（`!== false`）——
   见 `processRegistry.isKillable` 的教训：拿不到证据时应当**不动**，而不是动手。
 - **进程查询一律异步**（`await`），同步的 `spawnSync` 会冻住扩展宿主约 1.5 秒。
+- **宿主 → webview 的帧是 JSON 过的**（实测扩展宿主里的 `r8()` 就是
+  `JSON.stringify`）：**值为 `undefined` 的键会被整条丢掉**，所以「清空某个字段」
+  必须发 `null`（宿主侧走 `jsonSafeFrame`，界面侧 `mergeWirePatch` 折回
+  「键不存在」）。漏掉这一步的症状是**清空指令静默失效**——用户 2026-09-12 报的
+  「进行中的目标清不掉、切会话也一直在」就是它：服务端早已 `Goal cleared.`，
+  界面纹丝不动。细则见 `src/shared/wire.ts`，回归断言在 `scripts/wire.test.ts`。
 
 ## git
 

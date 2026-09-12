@@ -200,6 +200,16 @@ export interface Texts {
   noSessions: string;
   untitled: string;
   runningTag: string;
+  /**
+   * 分支（`session/fork`）会话在历史列表里的标题前缀。
+   *
+   * 分支**继承源会话的标题**（官方 wire 端点没有 `increaseTitle` 字段），
+   * 不前缀的话历史里就是两条一模一样的标题。带标题参数，避免在组件里拼串。
+   *
+   * 两种语言都用**半角冒号 + 一个空格**与标题分隔（用户口径）：
+   * `分支: 标题` / `Fork: Title`。
+   */
+  forkedTitle: (title: string) => string;
   /** 历史列表行内操作：归档（服务端从工作区移出）与删除（本地删除日志文件）。 */
   archive: string;
   /** 归档视图入口按钮 / 抽屉标题。 */
@@ -466,6 +476,7 @@ const zh: Texts = {
   noSessions: "还没有历史对话",
   untitled: "未命名对话",
   runningTag: "运行中",
+  forkedTitle: (title) => `分支: ${title}`,
   archive: "归档（从工作区列表移出）",
   archiveList: "归档列表",
   deleteSession: "删除（删除本地日志文件）",
@@ -703,6 +714,7 @@ const en: Texts = {
   noSessions: "No past sessions yet",
   untitled: "Untitled chat",
   runningTag: "running",
+  forkedTitle: (title) => `Fork: ${title}`,
   archive: "Archive (move out of workspace list)",
   archiveList: "Archived sessions",
   deleteSession: "Delete (remove local log files)",
