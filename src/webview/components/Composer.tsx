@@ -186,8 +186,20 @@ export function Composer({ state, onDraft }: { state: AppState; onDraft: (text: 
       onDraft(next);
       post({ type: "setDraft", text: next });
       setTrigger(undefined);
-      // 命令通常需要回车执行，这里保留焦点让用户确认参数
-      textareaRef.current?.focus();
+      // 光标落到命令名之后：接下来直接打参数，再按回车就是执行。
+      // 同步改 textarea 的 DOM 值与光标——React 这帧提交时 prop 值已相同、
+      // 不会再重置光标，于是这次 Enter 随后的 keyup 读到的正是「新文本+新光标」。
+      // 把同一对记进「已关闭」标记：keyup 重新探测时命中它、列表保持关闭。
+      // 不记的话（尤其光标还停在 `/` 后面），findTrigger 会再次命中触发词，
+      // 弹层关了又弹出——即「按回车命令列表闪一下」
+      const caret = before.length + 1 + command.name.length;
+      const node = textareaRef.current;
+      if (node) {
+        node.focus();
+        node.value = next;
+        node.setSelectionRange(caret, caret);
+      }
+      dismissedRef.current = { value: next, caret };
       return;
     }
 
