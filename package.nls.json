@@ -27,9 +27,5 @@
   "config.language.auto": "Follow the VS Code display language.",
   "config.language.zh": "Always Simplified Chinese.",
   "config.language.en": "Always English.",
-  "config.fontSize": "Font size of the chat UI. `auto` follows the VS Code font size.",
-  "config.fontSize.auto": "Follow the VS Code font size.",
-  "config.fontSize.small": "Small (12px base).",
-  "config.fontSize.medium": "Medium (13px base, VS Code default).",
-  "config.fontSize.large": "Large (15px base)."
+  "config.fontSize": "Font size of the chat UI in integer pixels (>= 8). `0` follows the VS Code font size."
 }

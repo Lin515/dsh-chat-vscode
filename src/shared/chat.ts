@@ -506,11 +506,9 @@ export interface ChatState {
   /** 编辑类节点的 diff 排版（对应 dshChat.diffLayout）。 */
   diffLayout?: DiffLayout;
   /**
-   * 字号档位（对应 `dshChat.fontSize`）：`auto` 跟随 VS Code 注入的字号。
-   * 界面只把它当 CSS 变量用，不做逻辑判断。
+   * 界面字号（整数 px，对应 `dshChat.fontSize`）：不下发时（配置为 0）
+   * 跟随 VS Code 注入的字号。界面只把它当 CSS 变量用，不做逻辑判断。
    */
-  fontSize?: "auto" | "small" | "medium" | "large";
-  /** 字号档位换算出的基准像素；`auto` 时不下发（由 VS Code 变量决定）。 */
   fontSizePx?: number;
   /** 排队中（尚未发送）的消息列表，来自 session/control 的 queue 帧。 */
   queueItems: QueuedMessageView[];

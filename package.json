@@ -204,20 +204,9 @@
           "markdownDescription": "%config.language%"
         },
         "dshChat.fontSize": {
-          "type": "string",
-          "enum": [
-            "auto",
-            "small",
-            "medium",
-            "large"
-          ],
-          "default": "auto",
-          "enumDescriptions": [
-            "%config.fontSize.auto%",
-            "%config.fontSize.small%",
-            "%config.fontSize.medium%",
-            "%config.fontSize.large%"
-          ],
+          "type": "integer",
+          "default": 0,
+          "minimum": 0,
           "markdownDescription": "%config.fontSize%"
         }
       }

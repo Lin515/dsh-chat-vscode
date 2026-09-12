@@ -105,9 +105,9 @@ export function ToolRow({ tool, diffLayout }: { tool: ToolCallView; diffLayout?:
 
   // 官方 `leadingFor`：**只有** error 与 stopped 画状态点，running/ok 显示工具图标。
   // 此前只要传了 tone 就画点，于是所有工具图标都不可见（docs/audit-summary.md §6）。
-  const dot =
-    tool.status === "error" ? "error" : stopped ? "stopped" : running ? "running" : undefined;
-  const tone = dot === "error" || dot === "stopped" ? dot : undefined;
+  // 运行中不画小圆点而是让图标本身呼吸（与思考鲸鱼同一组关键帧）：build/命令行
+  // 这类长任务里 7px 的圆点太不显眼，图标级发光才是一眼可见的「还在跑」。
+  const tone = tool.status === "error" ? "error" : stopped ? "stopped" : undefined;
 
   // 退出状态：非零退出码 / 被信号杀死要看得出来（bash/pwsh 不把非零退出当 isError，
   // 不自己判的话 `exit 1` 和 `exit 0` 长得一样）
@@ -139,7 +139,15 @@ export function ToolRow({ tool, diffLayout }: { tool: ToolCallView; diffLayout?:
 
   return (
     <Row
-      icon={icon}
+      // 运行中的节点：行首图标呼吸发光（.icon-glow，与思考鲸鱼同节奏）；
+      // 结束回落为静态灰图标——「还在动」由动效表达，与鲸鱼结束停呼吸同一条语言
+      icon={
+        running ? (
+          <span className="icon-glow">{icon}</span>
+        ) : (
+          icon
+        )
+      }
       tone={tone}
       // 节点名（动词）完整显示，路径/命令/查询等次要标题进 detail 列，
       // 过长时由 CSS 省略——思考/工具/用量行同一布局
@@ -473,8 +481,17 @@ export function CommandRow({ command }: { command: CommandRunView }) {
   useStickyBody(bodyRef, open);
   return (
     <Row
-      icon={<IconSlash size={13} />}
-      tone={failed ? "error" : command.state === "running" ? "running" : undefined}
+      // 运行中的命令与工具行同等待遇：行首图标呼吸发光，而不是 7px 小圆点
+      icon={
+        command.state === "running" ? (
+          <span className="icon-glow">
+            <IconSlash size={13} />
+          </span>
+        ) : (
+          <IconSlash size={13} />
+        )
+      }
+      tone={failed ? "error" : undefined}
       title={`/${command.name || texts.commands}`}
       detail={command.args}
       meta={failed ? texts.commandFailed : command.state === "running" ? texts.commandRunning : undefined}

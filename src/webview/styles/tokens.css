@@ -86,14 +86,10 @@
     system-ui,
     sans-serif
   );
+  /* 字号基准：auto 取 VS Code 注入的字号；用户填了具体像素时由 App.tsx 写到
+     .app 上覆盖它。整套派生尺度在下面的 .app 规则里——自定义属性的 var()
+     在**声明处**求值，写在 :root 会永远钉死在根上的基准值，档位覆盖失效。 */
   --font-size: var(--vscode-font-size, 13px);
-  /* Continue sizes conversation text and the composer at 14px regardless of the
-     host font size, then drops to 11-12px for chrome (spec §0/§8). */
-  --font-size-body: 14px;
-  --font-size-2xs: 0.6875rem; /* 11px, Continue's smallest label */
-  --font-size-xs: 0.75rem; /* 12px, toolbar / code-block header */
-  --font-size-sm: 0.8125rem;
-  --font-size-lg: 0.9375rem;
   --mono: var(
     --vscode-editor-font-family,
     "SF Mono",
@@ -101,7 +97,6 @@
     "Courier New",
     monospace
   );
-  --mono-size: var(--vscode-editor-font-size, 12px);
 
   --gap: 8px;
   --pad: 12px;
@@ -133,6 +128,21 @@ body {
 
 body {
   font-size: var(--font-size);
+}
+
+/* 文本尺度从 --font-size 基准派生（Continue 的 getFontSize() + n 做法）。
+   必须写在 .app 上：自定义属性的 var() 在**声明处**求值，写在 :root 会永远
+   钉死在根上的基准值，App.tsx 在 .app 上的字号覆盖（inline --font-size）
+   就传不进来了。基准 13px 时解算为 body 14 / sm 13 / xs 12 / 2xs 11——
+   与原先的写死值相同；用户填的任意整数像素（≥8）让整套尺度一起移动。 */
+.app {
+  --font-size-body: calc(var(--font-size) + 1px);
+  --font-size-2xs: calc(var(--font-size) - 2px);
+  --font-size-xs: calc(var(--font-size) - 1px);
+  --font-size-sm: var(--font-size);
+  --font-size-lg: calc(var(--font-size) + 2px);
+  /* 代码字号跟随编辑器字号；固定档位只会把它抬高，不会压到编辑器字号之下。 */
+  --mono-size: max(var(--vscode-editor-font-size, 12px), calc(var(--font-size) - 1px));
 }
 
 #root {

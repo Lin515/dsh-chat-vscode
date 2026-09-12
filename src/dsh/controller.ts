@@ -76,23 +76,20 @@ function readLanguage(): string {
 }
 
 /**
- * 界面字号档位（`dshChat.fontSize`）。
+ * 界面字号（`dshChat.fontSize`）：用户填的基准像素（整数）。
  *
- * `auto` 下界面用 VS Code 注入的 `--vscode-font-size`；固定档位时下发基准像素，
- * 界面写进 `--font-size` 覆盖它。用字符串档位而不是数字：字号是**设计尺度**，
- * 让人直接填 13.5px 只会做出越界的排版。
+ * 合法域是 `0` ∪ 整数 ≥8：`0`（以及缺省/坏值）时界面用 VS Code 注入的
+ * `--vscode-font-size`；填了整数时下发像素，界面写进 `--font-size`，
+ * 整套文本尺度随之移动。手写 settings.json 能绕开设置页的类型校验，
+ * 负数、小数、1–7 这类坏值按「拿不到肯定证据」处理：回退 auto，不动。
  */
-function readFontSize(): "auto" | "small" | "medium" | "large" {
-  const value = vscode.workspace.getConfiguration("dshChat").get<string>("fontSize");
-  return value === "small" || value === "medium" || value === "large" ? value : "auto";
+function readFontSize(): number | undefined {
+  const value = vscode.workspace.getConfiguration("dshChat").get<number>("fontSize");
+  if (typeof value === "number" && Number.isInteger(value) && value >= 8) {
+    return value;
+  }
+  return undefined;
 }
-
-/** 字号档位 → 基准像素（与 VS Code 的默认 13px 对齐）。 */
-const FONT_SIZE_PX: Record<"small" | "medium" | "large", number> = {
-  small: 12,
-  medium: 13,
-  large: 15,
-};
 
 /** 把投影里的未知值收成数字（缺字段/坏值一律用回退值）。 */
 function numberOr(value: unknown, fallback: number): number {
@@ -235,9 +232,8 @@ export class ChatController implements vscode.Disposable {
       locale: readLanguage(),
       /** 编辑类节点的 diff 排版（auto / unified / split）。 */
       diffLayout: readDiffLayout(),
-      /** 字号档位（auto = 跟随 VS Code）；界面换算成 --font-size。 */
-      fontSize: readFontSize(),
-      fontSizePx: readFontSize() === "auto" ? undefined : FONT_SIZE_PX[readFontSize() as "small" | "medium" | "large"],
+      /** 界面字号（px）；undefined = auto，跟随 VS Code 注入的字号。 */
+      fontSizePx: readFontSize(),
       session: this.sessions.find((session) => session.id === this.currentSessionId),
       messages: this.adapter?.snapshotMessages() ?? [],
       running: this.running,
@@ -445,13 +441,12 @@ export class ChatController implements vscode.Disposable {
    * 字号是写一个 CSS 变量。重载会丢掉滚动位置与展开状态，代价不成比例。
    */
   refreshAppearance(): void {
-    const fontSize = readFontSize();
     this.emit({
       type: "patch",
       patch: {
         locale: readLanguage(),
-        fontSize,
-        fontSizePx: fontSize === "auto" ? undefined : FONT_SIZE_PX[fontSize],
+        /** 0（auto）时为 undefined，过线成 null，界面清掉 `--font-size` 回到 VS Code 字号 */
+        fontSizePx: readFontSize(),
       },
     });
   }

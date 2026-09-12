@@ -296,11 +296,6 @@ export interface Texts {
   /** 设置：字体大小。 */
   fontSize: string;
   fontSizeDesc: string;
-  /** 字体大小档位名。 */
-  fontSizeSmall: string;
-  fontSizeMedium: string;
-  fontSizeLarge: string;
-  fontSizeAuto: string;
 
   /** 设置：界面语言。 */
   language: string;
@@ -536,11 +531,7 @@ const zh: Texts = {
   historyBusy: "生成中不能加载历史，请等这一轮结束",
 
   fontSize: "字体大小",
-  fontSizeDesc: "聊天界面的字号（跟随 VS Code 或固定档位）。",
-  fontSizeSmall: "小",
-  fontSizeMedium: "中",
-  fontSizeLarge: "大",
-  fontSizeAuto: "跟随 VS Code",
+  fontSizeDesc: "聊天界面的字号（整数 px）；0 跟随 VS Code。",
 
   language: "界面语言",
   languageDesc: "聊天界面的显示语言（默认跟随 VS Code）。",
@@ -773,11 +764,7 @@ const en: Texts = {
   historyBusy: "Cannot load history while generating — wait for this turn to finish",
 
   fontSize: "Font size",
-  fontSizeDesc: "Chat UI font size (follow VS Code or a fixed step).",
-  fontSizeSmall: "Small",
-  fontSizeMedium: "Medium",
-  fontSizeLarge: "Large",
-  fontSizeAuto: "Follow VS Code",
+  fontSizeDesc: "Chat UI font size (integer px); 0 follows VS Code.",
 
   language: "Language",
   languageDesc: "Language of the chat UI (follows VS Code by default).",

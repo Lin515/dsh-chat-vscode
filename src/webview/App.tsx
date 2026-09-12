@@ -255,8 +255,8 @@ export function App() {
   // 文案跟随 VS Code 显示语言（或 `dshChat.language` 的固定选择）；
   // 词典随语言切换而重建，界面即时更新
   const texts = dictionaryFor(normalizeLocale(state.locale));
-  // 字号档位：只写一个 CSS 变量，不动任何布局代码。
-  // `auto` 时不下发像素值，`--font-size` 继续取 VS Code 注入的 `--vscode-font-size`。
+  // 字号：只写一个 CSS 变量，整套文本尺度从它派生（tokens.css）。
+  // 0（auto）时不下发像素值，`--font-size` 继续取 VS Code 注入的 `--vscode-font-size`。
   const fontStyle = state.fontSizePx
     ? ({ "--font-size": `${state.fontSizePx}px` } as CSSProperties)
     : undefined;

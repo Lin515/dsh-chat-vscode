@@ -147,6 +147,29 @@ console.log("styles: 减少动画下两个活性指示器待遇一致 ✓");
 }
 console.log("styles: 思考结束后的鲸鱼仍为蓝色 ✓");
 
+// ---------- 4b. 所有运行中的节点都要有呼吸灯式发光（图标级，同思考鲸鱼） ----------
+//
+// 用户要求：正在执行的节点都要有和思考鲸鱼一样呼吸灯式的发光，尤其是
+// build/命令行这类可能很长的外部工具调用——7px 小圆点在长任务里太不显眼，
+// 呼吸灯必须落在行首图标上。断言钉组件层面：ToolRow / CommandRow 在运行中
+// 给行首图标挂 .icon-glow（与鲸鱼同一组关键帧），且「运行中」不再用小圆点。
+{
+  const rows = readFileSync(join(process.cwd(), "src", "webview", "components", "Rows.tsx"), "utf8");
+  assert.ok(
+    /running\s*\?\s*\(\s*<span className="icon-glow">\{icon\}<\/span>/.test(rows),
+    "ToolRow 行首图标在运行中必须挂 .icon-glow（呼吸发光）——build/命令行长任务不能只有静态灰图标",
+  );
+  assert.ok(
+    /<span className="icon-glow">\s*<IconSlash size=\{13\} \/>/.test(rows),
+    "CommandRow 行首图标在运行中同样要挂 .icon-glow",
+  );
+  assert.ok(
+    !/tone=\{[^}]*"running"/.test(rows),
+    "「运行中」状态不该再用 dot-running 小圆点——呼吸灯在图标级",
+  );
+}
+console.log("styles: 运行中节点有呼吸灯发光（图标级） ✓");
+
 // ---------- 5. 候选行：主文字完整优先，宽度不够先省描述 ----------
 //
 // 用户口径：「命令列表应当将命令显示完整，如果宽度不够则应去省略描述」。

@@ -141,7 +141,7 @@ npm run watch          # 增量构建
 | `dshChat.openPanelOnStartup` | `false` | 启动时在编辑器区打开对话面板 |
 | `dshChat.diffLayout` | `auto` | 编辑类节点的 diff 排版：`auto`（窄单栏 / 宽双栏）、`unified`（固定单栏）、`split`（固定双栏） |
 | `dshChat.language` | `auto` | 聊天界面语言：`auto` 跟随 VS Code、`zh-cn` 固定中文、`en` 固定英文 |
-| `dshChat.fontSize` | `auto` | 聊天界面字号：`auto` 跟随 VS Code、`small` / `medium` / `large`（12 / 13 / 15px 基准） |
+| `dshChat.fontSize` | `0` | 聊天界面字号（整数 px，≥8）；`0` 跟随 VS Code 的字号 |
 
 > 语言与字号改完**即时生效**，不需要重载窗口（它们只影响词典与一个 CSS 变量，
 > 重载反而会丢掉滚动位置与展开状态）。
@@ -467,7 +467,7 @@ bar is used); `dsh` runnable locally (falls back to `npx`); model credentials co
 | `dshChat.openPanelOnStartup` | `false` | Open the panel in the editor area on startup |
 | `dshChat.diffLayout` | `auto` | Diff layout for edit calls: `auto` (single column when narrow, side-by-side when wide), `unified`, `split` |
 | `dshChat.language` | `auto` | Chat UI language: `auto` follows VS Code, `zh-cn`, `en` |
-| `dshChat.fontSize` | `auto` | Chat UI font size: `auto` follows VS Code, or `small` / `medium` / `large` (12 / 13 / 15px base) |
+| `dshChat.fontSize` | `0` | Chat UI font size in integer px (≥ 8); `0` follows the VS Code font size |
 
 Language and font size apply **immediately** — no window reload, which would cost you the
 scroll position and every expanded row for no reason.
