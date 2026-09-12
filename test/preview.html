@@ -189,9 +189,13 @@
           session: { id: "s1", title: "重构 server 启动流程", updatedAt: now, running: false },
           running: true,
           queue: 0,
+          // 附件芯片的四种形态（对齐官方 FileCard）：`@` 引用（文件 / 目录）、
+          // 上传中（带进度）、上传失败（可重试）。引用**不内联正文**。
           attachments: [
-            { id: "a1", kind: "file", name: "src/server/index.ts", path: "D:\\\\dev\\\\app\\\\src\\\\server\\\\index.ts" },
-            { id: "a2", kind: "selection", name: "src/config.ts", text: "const port = 3080;" }
+            { id: "at-ref", kind: "reference", path: "src/dsh/adapter.ts", name: "src/dsh/adapter.ts", referenceKind: "file" },
+            { id: "at-dir", kind: "reference", path: "src/webview", name: "webview/", referenceKind: "directory" },
+            { id: "at-up", kind: "file", path: "D:/dev/app/docs/spec.pdf", name: "docs/spec.pdf", upload: { status: "uploading", loaded: 42000, total: 180000 } },
+            { id: "at-err", kind: "file", path: "D:/dev/app/big.bin", name: "big.bin", upload: { status: "error", message: "HTTP 413" } }
           ],
           draft: "把这两个文件的启动逻辑合并到一个入口",
           models: [
@@ -220,6 +224,29 @@
           },
           permission: "workspace-write",
           planMode: false,
+          // 字号档位（`dshChat.fontSize`）：undefined = auto（跟随 VS Code）
+          fontSizePx: undefined,
+          // 「加载更早」：跟随窗口只带 60 条，更早的内容从没进过客户端
+          hasMoreHistory: true,
+          // 占用条（圆环）的数据源。真实部署长这样：`projectedTokens` 优先于
+          // `pressureTokens`（前者会跟着压缩下降），分母来自 `contextWindow`。
+          contextOccupancy: { percent: 34, usedTokens: 43520, contextWindow: 128000 },
+          tokenUsage: {
+            uncachedInputTokens: 18240,
+            outputTokens: 3120,
+            cacheReadTokens: 40100,
+            cacheWriteTokens: 2048
+          },
+          // 目标条（`goal` 投影）。取值**逐字来自真实投影**（scripts/commandE2E.ts
+          // 的 C 组实测输出），不是编的：目标本体嵌在 goal 里、轮次上限默认 256。
+          goal: {
+            id: "goal-678e4355-c485-4134-8124-47022662ae5b",
+            revision: 1,
+            objective: "用一句话说明这个仓库是做什么的",
+            phase: "active",
+            rounds: 0,
+            maxRounds: 256
+          },
           todos: [
             { id: "t1", content: "通读现有启动逻辑", status: "completed" },
             { id: "t2", content: "合并入口并去掉重复初始化", status: "in_progress" },
@@ -280,12 +307,30 @@
                     { kind: "add", text: "};" }
                   ] }],
                   startedAt: now - 230000, endedAt: now - 229500 } },
-                // 运行中的 build 节点：命令很长（标题里会被省略），正在跑，可展开
+                // 运行中的 build 节点：命令很长（标题里会被省略），正在跑，可展开。
+                // `build` 不在官方精确名表里 → `others` 变体，摘要取首行、图标是星形
                 { id: "tool5", kind: "tool", tool: { id: "call_5", name: "build", title: "", status: "running",
-                  detail: "cmake --build build-agent --config Rel…",
+                  detail: "cmake --build build-agent --config RelWithDebInfo --target dsh_chat_plugin --parallel 8",
                   command: "cmake --build build-agent --config RelWithDebInfo --target dsh_chat_plugin --parallel 8",
                   input: '{"command":"cmake --build build-agent --config RelWithDebInfo --target dsh_chat_plugin --parallel 8"}',
                   startedAt: now - 74000 } },
+                // 终端失败：非零退出码。bash/pwsh **不**把非零退出标成 isError，
+                // 失败靠 `parseExitStatus` 自己判（`[exit code: N]` 已从正文剥掉）
+                { id: "tool6", kind: "tool", tool: { id: "call_6", name: "pwsh", title: "", status: "error",
+                  detail: "npm run typecheck",
+                  command: "npm run typecheck",
+                  input: '{"command":"npm run typecheck"}',
+                  output: "src/dsh/adapter.ts(1013,5): error TS6133: 'callId' is declared but its value is never read.\n\nFound 1 error.",
+                  exitCode: 2,
+                  startedAt: now - 120000, endedAt: now - 108000 } },
+                // 被中止的工具行：`stopped` 态（警告色，不是错误色——中断不是失败）
+                { id: "tool7", kind: "tool", tool: { id: "call_7", name: "read", title: "", status: "stopped",
+                  detail: "D:/dev/app/src/server/index.ts",
+                  command: "D:/dev/app/src/server/index.ts",
+                  input: '{"file_path":"D:/dev/app/src/server/index.ts"}',
+                  startedAt: now - 90000, endedAt: now - 88000 } },
+                // 模型重试提示（`llm/retry`）：官方 web 端也渲染，此前是静默的
+                { id: "retry1", kind: "notice", level: "warn", text: "@llmRetry:2:5" },
                 // 自动载入的提示词节点（形态取自真实会话 dump）
                 { id: "inj1", kind: "injected", injected: { sourceKind: "plugin", plugin: "@deepseek-ai/dsh-system-prompt",
                   text: "You are an AI agent powered by DeepSeek Harness.\n\nYou are a coding agent powered by the deepseek/deepseek-v4.1-flash model.\n\n# Rules\n\n1. Read before you write.\n2. Prefer the project's own tooling." } },
@@ -299,8 +344,19 @@
                   text: "<system-reminder>\nA skill is a reusable set of task-specific instructions. The following skills are available in this session:\n\n- build: 一切构建相关内容的统一入口…\n- tdd: Test-driven development…" } },
                 { id: "inj6", kind: "injected", injected: { sourceKind: "plugin", plugin: "openviking-memory", form: "recall",
                   text: "<openviking-context>\nRelevant memory from OpenViking. Use the search/read MCP tools to expand URIs.\n\n<memory uri=\"viking://resources/dsh-vscode-project\" type=\"resources\" score=\"0.79\" />\n</openviking-context>" } },
+                // 斜杠命令节点：命令名 + 参数在标题行，结果是服务端给的原文。
+                // 两条的文案都逐字来自真实 `commands/execute` 返回（见 commandE2E）
+                { id: "cmd1", kind: "command", command: { commandId: "cmd-4a8cbf32-3", name: "plan", state: "ok", text: "Plan mode on. Use /plan off to leave." } },
+                { id: "cmd2", kind: "command", command: { commandId: "cmd-4a8cbf32-4", name: "goal", args: "用一句话说明这个仓库是做什么的", state: "ok", text: "Goal created\nStatus: active\nObjective: 用一句话说明这个仓库是做什么的\nRounds: 0/256\nActivation: armed\n\nCommands: /goal edit <objective>, /goal pause, /goal clear" } },
                 { id: "t2", kind: "text", text: "把入口收敛成一个 `bootstrap()`，配置只读一次：", streaming: false },
                 { id: "c1", kind: "text", text: "```ts\n" + codeSample + "\n```", streaming: true }
+              ],
+              // 轮尾文件两行：`produced` 从成功的 write/edit 推导，`deliverables`
+              // 是 present 工具的显式申报（两条独立来源，界面上分行、各有标签）
+              produced: ["D:/dev/app/src/server/index.ts", "D:/dev/app/src/config.ts"],
+              deliverables: [
+                { path: "D:/dev/app/docs/merge-plan.md", description: "合并方案" },
+                { path: "D:/dev/app/docs/merge-plan.md.bak" }
               ]
             },
             {

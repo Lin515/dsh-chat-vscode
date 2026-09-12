@@ -35,21 +35,47 @@
 
 **输入与上下文**
 
-- 输入 `/` 弹出斜杠命令菜单，继续输入即过滤，↑↓ 选择、Enter 确认
-- 输入 `@` 弹出文件候选（含目录），选中即作为上下文附件
-- 回形针按钮是**通用文件入口**，按内容分派：能内嵌的（合法图片 / 合法 UTF-8 文本且
-  不过大）成为附件随消息发送；**不能内嵌的（目录 / 二进制 / 非 UTF-8 / 过大 /
-  读不出来）把带双引号的路径插到输入框光标处**，而不是做一个读不出内容的芯片
+- 输入 `/` 弹出斜杠命令菜单（含**技能**，技能带「技能」标记——它不是可执行的命令，
+  选中只是把名字写进正文），继续输入即过滤，↑↓ 选择、Enter 确认
+- 输入 `@` 弹出文件候选（含目录）。**选中目录默认是打开它**（继续下钻）；
+  只有点右侧的「整个目录」按钮才是把目录本身作为 `@dir/` 引用载入
+- **引用与上传（对齐官方）**：文件不再把正文塞进提示词，而是走两条官方路径——
+  - 图片 → 内容块（字节随消息发送）；
+  - 其余文件 → **选中即上传**，芯片上显示进度，发送时只带 `receiptId`；
+  - `@` 引用 → 正文里只出现 `@path`（目录是 `@dir/`），模型需要内容时自己用
+    `read` 工具读。这条由系统提示段 `context:file-reference` 定义语义
+  - 为什么不再内联：内联让 token 成本高（一个源文件就吃掉几千 token）、二进制
+    根本读不到、`@path` 的语义被抹掉、队列「取回重新编辑」退化成几百行文件内容
+- 回形针按钮是**通用文件入口**，按内容分派；**读不出来又传不上去的**（极端情况）
+  把带双引号的路径插到输入框光标处，而不是做一个读不出内容的芯片
   （模型不支持图片输入时，图片也走这条路径）；选区、拖拽同样归入附件
 - 目录单独入口（命令面板「添加文件夹到对话」或资源管理器右键文件夹）：
   VS Code 的文件对话框在 Windows/Linux 上**不能同时**选文件与目录，同时开只会
   变成目录选择器、文件全被过滤，所以两者必须分开
-- 二进制 / 非 UTF-8 / 过大的文件不会只发路径给模型了事：路径以双引号包裹插进输入框，
-  你能看见、能编辑，模型也拿得到。判定口径与 dsh 自己的 `read` 工具一致
+- 二进制 / 非 UTF-8 的判定口径与 dsh 自己的 `read` 工具一致
   （前 8KB 含 NUL 即二进制，否则要求严格 UTF-8）
 - 模型与思考档位切换：4 档及以下一行；5/6 档固定分两行且均匀（5 → 3+2，6 → 3+3，
   用 grid 定列，上下两行列宽对齐）
 - 权限模式切换：仅可查看 / 工作区内修改 / 完全权限（启用完全权限前有风险确认）
+
+**过程信息与工具行（对齐官方语义）**
+
+- 工具行**只在失败 / 被中止时画状态点**，其余时候显示工具自己的图标；分类走官方
+  的精确名表（`bash`/`read`/`search`/`write`/`edit`/`code`/其余），`pwsh` 与
+  `read_image` 等有各自的标题
+- **四种状态**：运行中 / 成功 / 失败 / **已停止**（被中止——警告色而不是错误色，
+  中断不是工具的失败）。中止时仍在跑的调用会**合成**一个中断结果，不会永远卡在
+  「运行中」
+- **终端退出状态**：`[exit code: N]` / `[killed by signal: X]` 从结果正文里剥掉，
+  改以「退出码 N」呈现，并把非零退出升级为失败——bash/pwsh **故意**不把非零退出
+  标成错误（「退出状态是结果数据」），所以这一步必须由客户端做，
+  否则 `exit 1` 和 `exit 0` 长得一模一样
+- **图片结果可见**：`read_image` 的图像块此前被整体丢弃；现在用
+  `session/attachment` 把不透明句柄换成字节后显示
+- **斜杠命令有自己的节点**：`command/run` ↔ `command/done` 折成一行可展开的
+  命令记录，所以界面上按钮发出的命令（权限预设、计划模式）也看得见结果
+- **模型重试有提示**：`llm/retry` 显示「正在重试 n/m…」，重试成功后收掉
+- **达到输出上限会说明**：`turn/end` 原因为 `max-tokens` 时给一条「回答被截断」
 
 **面板**
 
@@ -62,10 +88,21 @@
 
 **其它**
 
-- 中英双语界面，跟随 VS Code 显示语言
+- 中英双语界面，跟随 VS Code 显示语言（也可用 `dshChat.language` 固定）
 - 活动栏与辅助侧栏两种容器，另可在编辑器区打开独立面板
+- **任意助手回复都能「从这里分支」**（复制按钮左侧）：以该轮为界开一个新会话，
+  原会话不动。生成中不能分支——契约要求锚点落在 `turn/end` 上
+- **目标条**：当前目标的阶段、进度与暂停 / 恢复 / 清除，贴在输入框上方
+- **占用率以圆环显示**：环内是百分比（60% 起转黄、90% 起转红），悬停给明细。
+  数值口径与官方一致——prompt 侧、不含 output、优先 `projectedTokens`
+  （所以**压缩后会下降**）。**常驻显示**：每轮结束都会刷新；投影还没给出新值时用
+  同口径的本地复算兜底；什么新数据都没有时保留上一次的数字，不会空掉。
+- **「加载更早的消息」**：跟随窗口只带 60 条，更早的内容需要点一下往前翻页
+  （按钮只在服务端还有更早内容时出现）
 - dsh 特有信息（token 用量、回合耗时）收进折叠行，默认不打扰
-- VS Code 非正常关闭留下的 dsh 残留进程会在下次启动时被识别并清理
+- VS Code 非正常关闭留下的 dsh 残留进程会在下次启动时被识别并清理；
+  **崩溃遗留的文件锁**（`~/.dsh/*.yaml.lock`）同样会在启动前清掉——
+  否则 `dsh web` 会因等锁 30 秒而整个启动失败
 
 ## 安装
 
@@ -103,6 +140,11 @@ npm run watch          # 增量构建
 | `dshChat.startTimeoutSec` | `90` | 等待服务器就绪的秒数 |
 | `dshChat.openPanelOnStartup` | `false` | 启动时在编辑器区打开对话面板 |
 | `dshChat.diffLayout` | `auto` | 编辑类节点的 diff 排版：`auto`（窄单栏 / 宽双栏）、`unified`（固定单栏）、`split`（固定双栏） |
+| `dshChat.language` | `auto` | 聊天界面语言：`auto` 跟随 VS Code、`zh-cn` 固定中文、`en` 固定英文 |
+| `dshChat.fontSize` | `auto` | 聊天界面字号：`auto` 跟随 VS Code、`small` / `medium` / `large`（12 / 13 / 15px 基准） |
+
+> 语言与字号改完**即时生效**，不需要重载窗口（它们只影响词典与一个 CSS 变量，
+> 重载反而会丢掉滚动位置与展开状态）。
 
 ### 外部服务器与访问令牌
 
@@ -140,6 +182,32 @@ VS Code 正常关闭时扩展会连带结束自己拉起的 `dsh web` 进程树�
   那恰好是最无法排除「pid 已被系统回收」的情形，此时动手等于闭着眼睛杀进程。
   判定写成「肯定证据才杀」（`=== true`）而不是「否定证据才跳过」（`!== false`），
   因为后者会让「拿不到命令行」这一态漏过去。
+
+### 崩溃遗留的文件锁
+
+强杀 VS Code（乃至强杀 `dsh`）会让 `~/.dsh/.credentials.yaml.lock` 这类
+**writer 锁**留下来：`dsh-atomic-write` 用 `wx` 创建 `<file>.lock`（内容是持有者 pid），
+靠 `finally` 删除；进程被强杀时 `finally` 不会执行。库本身**刻意不回收**孤儿锁
+（「文件年龄无法证明持有者已经停止，孤儿回收是运维动作」），而 `dsh web` 的 boot
+会去锁 `.credentials.yaml`，等 30 秒拿不到就抛错退出——于是下次启动直接失败：
+
+```
+Error: atomic-write: timed out waiting for the writer lock at
+  C:\Users\<you>\.dsh\.credentials.yaml.lock
+```
+
+扩展把这个「运维动作」接了过来：**每次拉起服务器之前**检查 `.credentials.yaml`
+与 `settings.yaml` 的锁文件，按**肯定证据**判定持有者是否已死——
+
+| 情形 | 处置 |
+| --- | --- |
+| 锁里的 pid 不存活 | 持有者已死 → 删锁 |
+| pid 存活但命令行不是 dsh/node | pid 被回收 → 删锁 |
+| pid 存活且确实是 dsh | 真的在用 → **不动** |
+| 拿不到命令行 | **不删**（无法排除 pid 被回收） |
+
+删了锁会弹一条通知说明；启动仍然失败时，错误信息里会直接点出是哪个锁文件、
+以及该怎么办（`ServerManager` 从子进程日志里把锁路径解析出来）。
 
 ## 工作原理
 
@@ -184,7 +252,7 @@ docs/
 ```bash
 npm run watch          # 增量构建
 npm run typecheck      # 宿主与 webview 两套 tsconfig（并行跑）
-npm run test           # 离线单元断言（14 套，并行跑）
+npm run test           # 离线单元断言（21 套，并行跑）
 npm run build          # 生产构建
 npm run package        # 打成 vsix
 node scripts/bench.mjs # 开发循环耗时分解（哪一步慢）
@@ -233,6 +301,8 @@ npm run preview        # 打开 http://127.0.0.1:8777/test/preview.html
 | `node build/system-prompt-probe.mjs` | dump 真实会话里自动载入的提示词（系统提示词 / 插件注入 / 项目指令 / 技能目录）的来源、字数与是否重复 |
 | `node build/effort-probe.mjs` | 打印各模型真实有几个思考档位（排版依据，别照预览夹具猜） |
 | `node build/read-range-probe.mjs` | 真实跑一次 read，验证 `tool/result.meta` 形状与行号标注 |
+| `node build/command-e2e.mjs` | 命令通道与投影形状的端到端验证：`/plan` 只认命令通道、`plan.pending` 的生效语义、`command/run`↔`done` 折叠、**真实** `goal` 投影的嵌套形状 |
+| `node build/queue-continue-probe.mjs` | 「只 cancel 会不会让队列自动接续」——ESC 设计的立论依据（两轮各 3 次） |
 
 > `session/selectModel` 会写回 `agent-default-model` 设置（dsh 服务端自身行为）。
 > 会切模型的脚本都在结束前自动还原，避免污染本机默认。
@@ -240,12 +310,17 @@ npm run preview        # 打开 http://127.0.0.1:8777/test/preview.html
 ## 已知限制
 
 - 不做回合级 Git 回退、子代理追问、计划模式的确认交互、轨迹视图。
-- 文件附件以文本内联方式注入上下文（未走 `session/uploadFileBinary` 上传通道）。
-- 上下文占用条需要服务端给出 `contextPressure.contextWindow`；没有该投影时不显示。
+- 上下文占用环需要服务端给出 `contextPressure` 投影（分子 + 分母）；没有该投影时不显示。
 - 在模型胶囊里换模型会写回部署默认模型（与 dsh 网页端行为一致）。
 - 服务端协议无版本协商。本项目针对 DSH **0.1.5-rc.1** 实测；0.1.2 的已知差异
   只有 `commands/execute` 的附件参数名（`images` → `submittedAttachments`），
   已按「新名优先、参数不匹配则回退并记忆」处理。
+- **停止语义与官方契约有一处刻意的偏离**：官方契约说 cancel 后「排队的工作保留并按
+  FIFO 继续」，UI 只发一次 cancel、不碰队列。但本机实测（`build/queue-continue-probe.mjs`）
+  **只 cancel 不会让队列自行接续**（两轮 3/3 都停住），而「之后再提交新消息会不会唤醒
+  队列项」则**不稳定**（同一脚本两次运行得到 0/3 与 3/3 两种相反结果）。
+  所以本扩展仍是「摘空队列 → cancel → 等空闲 → 按原序重发」：它让 ESC 的行为**由客户端
+  决定**，不依赖服务端那个测不准的分支。这是实测与契约冲突时的取舍，不是遗漏。
 
 ## 归属与许可
 
@@ -303,22 +378,48 @@ listed individually so each can be taken back into the composer for editing (tex
 attachments restored) or cancelled on its own.
 
 **Input and context** — type `/` for a slash-command menu that filters as you type
-(↑↓ to move, Enter to confirm); type `@` for file mentions (files *and* folders). The
-paperclip button is a **single file entry point** that routes by content: what can be
-inlined (a valid image, or valid UTF-8 text within the size cap) becomes an attachment sent
-with the message, while what cannot (a folder, a binary, non-UTF-8 text, an oversized file,
-an unreadable one) has its **double-quoted path inserted at the caret in the input box**
-instead of becoming an attachment chip whose contents could never be read — images go that
-way too when the active model takes no image input. Selections and drag-and-drop land in the
-same attachment list; the test is the same one dsh's own `read` tool applies (a NUL byte in
-the first 8 KB means binary, otherwise strict UTF-8 is required). Folders have their own
-entry point (the **DSH: Add Folder to Chat** command, or right-clicking a folder in the
-Explorer), because VS Code's file dialog **cannot** be both a file and a folder selector on
-Windows/Linux — enabling both silently degenerates into a folder picker and filters every
-file out. Model and thinking-effort switching (4 tiers or fewer stay on one row; 5–6 tiers
-are forced onto two evenly split rows — 3+2 and 3+3 — using a fixed-column grid so the two
-rows line up); permission mode switching (Read Only / Workspace Write / Full Access, with a
-risk confirmation before Full Access).
+(↑↓ to move, Enter to confirm); it also lists **skills**, tagged as such because a skill is
+not an executable command — picking one just writes its name into the message. Type `@` for
+file mentions (files *and* folders): **selecting a folder opens it** (drills in); only the
+"whole folder" button on the right of the row loads the folder itself as an `@dir/`
+reference. Attachments follow the official two paths — images are sent as content blocks,
+**every other file uploads the moment it is picked** (the chip shows progress, and the send
+carries only a `receiptId`), and an `@` reference puts just `@path` in the message text, so
+the model reads the file itself when it needs the contents (the `context:file-reference`
+system-prompt section defines that meaning). Nothing inlines file bodies any more: inlining
+cost thousands of tokens per source file, could never carry a binary, erased the `@path`
+semantics, and degraded the queue's "take back to edit" into hundreds of lines of file
+content. The paperclip button is a **single file entry point** that routes by content; what
+can neither be read nor uploaded (a rare edge case) has its **double-quoted path inserted at
+the caret** rather than becoming an attachment chip whose contents could never be read —
+images go that way too when the active model takes no image input. Selections and
+drag-and-drop land in the same attachment list; the binary/non-UTF-8 test is the same one
+dsh's own `read` tool applies (a NUL byte in the first 8 KB means binary, otherwise strict
+UTF-8 is required). Folders have their own entry point (the **DSH: Add Folder to Chat**
+command, or right-clicking a folder in the Explorer), because VS Code's file dialog
+**cannot** be both a file and a folder selector on Windows/Linux — enabling both silently
+degenerates into a folder picker and filters every file out. Model and thinking-effort
+switching (4 tiers or fewer stay on one row; 5–6 tiers are forced onto two evenly split rows
+— 3+2 and 3+3 — using a fixed-column grid so the two rows line up); permission mode
+switching (Read Only / Workspace Write / Full Access, with a risk confirmation before Full
+Access).
+
+**Process rows and tool semantics** — a tool row draws a **status dot only when it failed or
+was stopped**; otherwise it shows the tool's own icon, classified by the official
+exact-match table (`bash`/`read`/`search`/`write`/`edit`/`code`/others), with per-tool titles
+(`pwsh`, `read_image`, …). Four states: running / ok / failed / **stopped** (interrupted —
+a warning colour, not an error one, because an interrupt is not a tool failure); calls still
+running when a turn aborts get a **synthesised** interrupted result instead of staying on
+"running" forever. **Terminal exit status** is extracted from the result tail
+(`[exit code: N]` / `[killed by signal: X]`) and stripped from the body, rendered as
+"exit code N", and a non-zero exit is upgraded to a failure — bash/pwsh deliberately leave
+`isError` false for a non-zero exit ("the exit status is result data"), so the client has to
+do this or `exit 1` and `exit 0` look identical. **Image results are visible**: a
+`read_image` image block used to be dropped entirely; it is now fetched through
+`session/attachment` and shown. **Slash commands get their own node** (`command/run` ↔
+`command/done`), so a command issued from a UI button has a visible result too. **Model
+retries are announced** (`llm/retry` → "retrying n/m …", cleared once the retry resumes), and
+a turn that ends at the output-token cap says so instead of looking complete.
 
 **Panels** — **History** (grouped, searchable), **Subagents** (list the session's
 subagents and open their full transcripts), **Background jobs** (state, start/end, duration
@@ -326,10 +427,22 @@ and detail), **Settings** (every namespace rendered from the server schema: stri
 boolean/enum forms, JSON editing for complex structures, per-field save, per-group reset,
 secret writes without echo, "needs restart" badges).
 
-**Other** — bilingual UI following the VS Code display language; activity bar and
-secondary sidebar containers plus a standalone editor-area panel; dsh-specific stats
-(token usage, turn duration) tucked into collapsible rows; leftover `dsh web` processes from
-an unclean VS Code shutdown are detected and cleaned up on the next launch.
+**Other** — bilingual UI following the VS Code display language (or pinned via
+`dshChat.language`); **any assistant reply can be branched** (the button left of Copy) into
+a new session cut at that turn, leaving the original untouched — not while generating, since
+the contract requires the anchor to land on a `turn/end`; a **goal bar** above the composer
+showing phase, progress and pause/resume/clear; **context occupancy as a ring** with the
+percentage inside (amber from 60%, red from 90%) and the breakdown on hover, using the
+official numerator (prompt-side, preferring `projectedTokens`, so it **drops after a
+compaction**) and **always on screen** — it refreshes every turn, falls back to an
+identically-derived local figure while the projection has no numerator yet, and keeps the
+previous number rather than blanking when there is nothing new; a **"load earlier messages"**
+control, because the follow window only carries 60 messages; activity bar and secondary
+sidebar containers plus a standalone editor-area panel; dsh-specific stats (token usage,
+turn duration) tucked into collapsible rows;
+leftover `dsh web` processes from an unclean VS Code shutdown are detected and cleaned up on
+the next launch, and so are **orphaned writer locks** (`~/.dsh/*.yaml.lock`) — without that
+cleanup `dsh web` fails to boot after waiting 30s for a lock whose owner is long gone.
 
 ## Install
 
@@ -342,6 +455,22 @@ Then in VS Code: Extensions → `…` → Install from VSIX → reload.
 
 Prerequisites: VS Code ≥ 1.101 (secondary sidebar needs ≥ 1.106, otherwise the activity
 bar is used); `dsh` runnable locally (falls back to `npx`); model credentials configured.
+
+### Settings
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `dshChat.url` | empty | Address of an already-running `dsh web`; leave empty to let the extension manage its own server |
+| `dshChat.autoStart` | `true` | Connect automatically when VS Code starts |
+| `dshChat.command` | `dsh` | Launch command (falls back to `npx`) |
+| `dshChat.startTimeoutSec` | `90` | Seconds to wait for the server to become ready |
+| `dshChat.openPanelOnStartup` | `false` | Open the panel in the editor area on startup |
+| `dshChat.diffLayout` | `auto` | Diff layout for edit calls: `auto` (single column when narrow, side-by-side when wide), `unified`, `split` |
+| `dshChat.language` | `auto` | Chat UI language: `auto` follows VS Code, `zh-cn`, `en` |
+| `dshChat.fontSize` | `auto` | Chat UI font size: `auto` follows VS Code, or `small` / `medium` / `large` (12 / 13 / 15px base) |
+
+Language and font size apply **immediately** — no window reload, which would cost you the
+scroll position and every expanded row for no reason.
 
 ## How it works
 
@@ -381,6 +510,16 @@ its command line is positively confirmed to be dsh**: when the command line cann
 extension does not kill, since that is exactly the case where the PID may already have been
 recycled, which is why the check is written as "kill on positive evidence"
 (`confirmed === true`) rather than "skip on negative evidence" (`confirmed !== false`).
+
+Orphaned writer locks: killing `dsh` (or VS Code) mid-write leaves `~/.dsh/.credentials.yaml.lock`
+behind, because `dsh-atomic-write` creates `<file>.lock` with `wx` and relies on `finally` to
+remove it. The library deliberately refuses to reclaim orphans ("file age cannot prove the owner
+stopped; orphan recovery is an operator action") — but `dsh web`'s boot takes that same lock and
+gives up after 30 seconds, so the next launch fails outright. The extension performs that
+operator action **before every server start**, deciding on positive evidence only: a dead PID, or
+a live PID whose command line is not dsh/node, means the lock is orphaned and gets removed; a live
+dsh owner is left alone; an unreadable command line means leave it. When startup still fails, the
+error message names the lock file and says what to do.
 
 ## Licence and attribution
 

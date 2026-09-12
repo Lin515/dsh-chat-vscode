@@ -3,7 +3,7 @@ import { closeSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { clearLease, updateLease, writeLease } from "./processRegistry";
+import { clearLease, clearStaleDocumentLocks, updateLease, writeLease } from "./processRegistry";
 
 /**
  * 服务器连接信息。
@@ -105,7 +105,7 @@ export class ServerManager {
       this.setStatus({ state: "starting", detail: `connecting ${baseUrl}` });
       const ready = await this.waitForHttp(baseUrl, 5_000);
       if (!ready) {
-        const detail = `无法连接 ${baseUrl}，请确认该地址上运行着 dsh web。`;
+        const detail = `@serverUnreachable:${baseUrl}`;
         this.setStatus({ state: "failed", detail });
         throw new Error(detail);
       }
@@ -162,6 +162,21 @@ export class ServerManager {
     this.setStatus({ state: "starting" });
     // 清空上一次的日志，避免解析到过期的 token/端口
     writeFileSync(this.logFile, "", "utf8");
+
+    // 起进程**之前**清一次崩溃遗留 writer 锁。放在这里而不是只放在激活期：
+    // 这是唯一能保证「无论谁触发启动都清过」的位置（重启服务器命令、手动连接、
+    // 自动重连都经这里）。`dsh web` 的 boot 锁不到就等 30 秒然后整个进程退出，
+    // 而库本身刻意不回收孤儿锁——回收是客户端的责任。
+    try {
+      const lock = await clearStaleDocumentLocks((line) => this.options.log(line));
+      if (lock.cleared.length) {
+        this.options.log(`[server] 清理了 ${lock.cleared.length} 个崩溃遗留的文件锁`);
+      }
+    } catch (error) {
+      // 清锁失败不该拦住启动：服务器自己去试，失败时 staleLockHint 会给出说明
+      this.options.log(`[server] 残留锁检测失败：${error instanceof Error ? error.message : String(error)}`);
+    }
+
     const args = ["web", "--port", "0", "--no-open"];
     this.options.log(`[server] 启动：${this.options.command} ${args.join(" ")}`);
 
@@ -195,13 +210,13 @@ export class ServerManager {
 
     let exitInfo: string | undefined;
     child.on("error", (error) => {
-      exitInfo = `spawn 失败：${error.message}`;
+      exitInfo = `@serverSpawnFailed:${error.message}`;
     });
     child.on("exit", (code, signal) => {
       if (this.child !== child) return; // 已被 stop() 主动结束
       this.child = undefined;
       clearLease(child.pid);
-      const detail = `dsh web 进程退出（code=${code ?? "?"} signal=${signal ?? "?"}）`;
+      const detail = `@serverExited:${code ?? "?"}:${signal ?? "?"}`;
       this.options.log(`[server] ${detail}`);
       this.setStatus({ state: "failed", detail });
     });
@@ -226,14 +241,41 @@ export class ServerManager {
 
     const tail = this.logTail();
     const detail = [
-      exitInfo ?? `等待 dsh web 就绪超时（${Math.round(this.options.startTimeoutMs / 1000)}s）`,
-      tail && `日志尾部：\n${tail}`,
+      exitInfo ??
+        `@serverStartTimeout:${Math.round(this.options.startTimeoutMs / 1000)}`,
+      this.staleLockHint(),
+      tail && `@serverLogTail:${tail}`,
     ]
       .filter(Boolean)
       .join("\n");
     this.setStatus({ state: "failed", detail });
     this.stop();
     throw new Error(detail);
+  }
+
+  /**
+   * 启动失败时，若原因落在**崩溃遗留的 writer 锁**上，追加一句可操作的说明。
+   *
+   * `dsh web` 的 boot 会去锁 `.credentials.yaml`，等 30 秒拿不到就抛错退出——
+   * 日志里是 `atomic-write: timed out waiting for the writer lock at <path>`。
+   * 扩展在启动服务器**之前**会清一遍（`clearStaleDocumentLocks`），但那之后又有
+   * 进程被强杀的话，锁还会留下；此时用户看到的只是「启动超时」，无从下手。
+   *
+   * 返回 undefined 时不影响原有报错（正常失败路径一个字都不变）。
+   */
+  private staleLockHint(): string | undefined {
+    let text: string;
+    try {
+      text = readFileSync(this.logFile, "utf8");
+    } catch {
+      return undefined;
+    }
+    const match = /timed out waiting for the writer lock at (.+?)[\r\n]/.exec(text);
+    if (!match) return undefined;
+    const lockPath = match[1].trim();
+    // 标记而不是中文：这段说明会进 `connectionDetail`，由 webview 按用户选的
+    // 界面语言渲染（多行说明写在词典里，见 texts.ts 的 serverStaleLock）。
+    return `@serverStaleLock:${lockPath}`;
   }
 
   /** 从子进程日志里解析 `dsh web: http://127.0.0.1:<port>/?token=<TOKEN>`。 */

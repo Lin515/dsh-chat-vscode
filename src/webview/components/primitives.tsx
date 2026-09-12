@@ -8,6 +8,7 @@ import {
   type RefObject,
 } from "react";
 import { IconChevronRight } from "../icons";
+import { splitPath } from "../pathDisplay";
 import { useTexts } from "../texts";
 
 /** 一个可折叠的单行过程行（思考、工具、用量…），沿用 Continue 的导轨观感。 */
@@ -28,17 +29,20 @@ export function Row({
   /**
    * 紧跟在 detail 之后的**不可压缩**片段（读取节点的 `:100-120`）。
    *
-   * 单独一个元素而不是拼进 detail：detail 从右侧省略，拼在末尾的内容在窄侧栏
-   * 会被截掉——那恰好是这个后缀要传达的信息。
+   * 单独一个元素而不是拼进 detail：detail 里的路径会从**前段**省略，
+   * 拼在末尾的内容在窄侧栏会被一起截掉——那恰好是这个后缀要传达的信息。
    */
   detailSuffix?: string;
   meta?: ReactNode;
   open: boolean;
   onToggle: () => void;
   /** 状态点颜色，用于工具行。 */
-  tone?: "running" | "ok" | "error";
+  tone?: "running" | "ok" | "error" | "stopped";
   children?: ReactNode;
 }) {
+  // 路径类 detail 拆成「目录 + 文件名」：目录可压缩（从左裁掉），文件名不吃压缩。
+  // 这样行号（detailSuffix）永远紧跟在**完整的**文件名后面，而不是缀在半截路径后面。
+  const parts = detail ? splitPath(detail) : undefined;
   return (
     <div className={`row${open ? " is-open" : ""}`}>
       <button className="row-head" onClick={onToggle} aria-expanded={open}>
@@ -47,11 +51,15 @@ export function Row({
         </span>
         {tone ? <span className={`dot dot-${tone}`} /> : icon ? <span className="row-icon">{icon}</span> : null}
         <span className="row-title">{title}</span>
-        {/* detail 会被省略号从右侧截断（路径太长时），所以补 title：
-            即使截断，悬停仍能看到完整内容 */}
-        {detail ? (
-          <span className="row-detail" title={detailSuffix ? `${detail}${detailSuffix}` : detail}>
-            {detail}
+        {/* detail 过长时会被裁掉，所以补 title：即使截断，悬停仍能看到完整内容 */}
+        {parts ? (
+          <span className="row-detail" title={detail}>
+            {parts.dir ? <span className="row-detail-dir">{parts.dir}</span> : null}
+            <span className="row-detail-name">{parts.name}</span>
+          </span>
+        ) : detail ? (
+          <span className="row-detail" title={detail}>
+            <span className="row-detail-name">{detail}</span>
           </span>
         ) : null}
         {detailSuffix ? <span className="row-detail-suffix">{detailSuffix}</span> : null}
@@ -123,11 +131,19 @@ export function Popover({
 }
 
 /**
- * 上下文占用百分比：`xx%`，超过 60% 变琥珀色；
- * 悬停显示明细行（已用/上限、缓存命中、上下文构成）。
+ * 上下文占用：圆环 + 环内百分比，悬停显示明细行。
  *
- * 主界面只显示百分比，避免发送更新时数字跳动闪烁。
- * 明细里的数字每次发送/更新会重新计算，但只在 hover 时才可见。
+ * **数字只有一个来源**：宿主按官方口径算好的 `contextOccupancy`
+ * （`projectedTokens ?? pressureTokens`，prompt 侧、不含 output）。
+ * 这里刻意**不本地重算、也不回退到 `usage.totalTokens`**：
+ * 后者含 output，会让同一个圆环在不同时刻代表不同口径的东西
+ * ——「这数字怎么不动了 / 怎么乱跳」的观感正是这么来的。
+ *
+ * 拿不到值时**什么都不显示**（宿主会在没数据时不下发）。但**一旦有过值就不会再空**：
+ * 宿主那边会一直保留上一次的数字（占用条是常驻指示器，见 `adapter.refreshOccupancy`）。
+ *
+ * 主界面只显示百分比，避免发送更新时数字跳动闪烁；
+ * 明细里的数字每次更新会重新计算，但只在 hover 时才可见。
  */
 export function CtxText({
   percent,
@@ -136,19 +152,20 @@ export function CtxText({
   usage,
   breakdown,
 }: {
-  /** 宿主算好的百分比（dsh web `context-occupancy` 投影的等价输出）；未传时本地重算。 */
+  /** 宿主算好的百分比（官方 `contextOccupancy` 的等价输出）。 */
   percent?: number;
   used?: number;
+  /** 分母；与 `percent` 一样只来自投影/宿主，缺一不显示。 */
   total?: number;
   usage?: import("../../shared/chat").UsageView;
   /** 上下文构成（`contextBreakdown` 投影），与 Web 的 ContextMeter 面板同源。 */
   breakdown?: import("../../shared/chat").ChatState["contextBreakdown"];
 }) {
   const texts = useTexts();
-  if (!total || total <= 0) return null;
-  const usedValue = used ?? usage?.totalTokens ?? 0;
-  if (!usedValue) return null;
-  const pct = percent ?? Math.min(100, Math.round((usedValue / total) * 100));
+  // 三个值同源同现：宿主没给（还没拿到任何可信测量）就不显示
+  if (percent === undefined || used === undefined || !total || total <= 0) return null;
+  const usedValue = used;
+  const pct = percent;
 
   const detail: string[] = [texts.contextUsed(pct, formatTokens(usedValue), formatTokens(total))];
   if (usage) {
@@ -165,11 +182,68 @@ export function CtxText({
   }
 
   return (
-    <span
-      className={`ctx-text${pct >= 60 ? " is-high" : ""}`}
+    <CtxRing
+      percent={pct}
+      label={`${pct}%`}
       title={detail.join("\n")}
+      used={usedValue}
+      total={total}
+    />
+  );
+}
+
+/**
+ * 上下文占用的图形化显示：一个圆环 + 环内的百分比。
+ *
+ * 取代原来的纯文字 `67%`。文字读的是「精确数值」，圆环读的是「还剩多少余地」——
+ * 后者才是用上下文条的目的（扫一眼就知道快满了）。数值与明细都保留：
+ * 百分比在环内，悬停给出明细。
+ *
+ * 用 SVG 而不是 CSS `conic-gradient`：环在任意尺寸/缩放（含 VS Code 的
+ * webview 缩放与高 DPI）下都是清晰的矢量，且 `stroke-dasharray` 的表达
+ * 比角度拼接更容易按百分比精确控制。环从 12 点方向顺时针填充。
+ */
+export function CtxRing({
+  percent,
+  label,
+  title,
+  used,
+  total,
+}: {
+  percent: number;
+  /** 环内文字（一般就是百分比；迷你模式传空则只留环）。 */
+  label?: string;
+  title?: string;
+  used?: number;
+  total?: number;
+}) {
+  // 半径与描边按 16×16 视窗设计：小尺寸下仍有 1px 以上的笔画，不会糊成一团
+  const radius = 6.4;
+  const circumference = 2 * Math.PI * radius;
+  const clamped = Math.max(0, Math.min(100, percent));
+  const dash = (clamped / 100) * circumference;
+  // 与文字版同一套阈值语义：60% 起进入「偏高」，90% 起算「快满」
+  const level = clamped >= 90 ? "is-critical" : clamped >= 60 ? "is-high" : "";
+  return (
+    <span
+      className={`ctx-ring ${level}`.trimEnd()}
+      title={title}
+      role="img"
+      aria-label={title ?? `${clamped}%`}
+      data-used={used}
+      data-total={total}
     >
-      {pct}%
+      <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+        <circle className="ctx-ring-track" cx="8" cy="8" r={radius} />
+        <circle
+          className="ctx-ring-value"
+          cx="8"
+          cy="8"
+          r={radius}
+          strokeDasharray={`${dash} ${circumference - dash}`}
+        />
+      </svg>
+      {label ? <span className="ctx-ring-label">{label}</span> : null}
     </span>
   );
 }

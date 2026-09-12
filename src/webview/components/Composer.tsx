@@ -1,20 +1,25 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import type { CommandView, FileRefView } from "../../shared/chat";
+import type { CommandView, FileRefView, GoalView } from "../../shared/chat";
 import type { AppState } from "../state";
 import { post } from "../bridge";
 import {
+  IconAt,
   IconAttach,
   IconChevronDown,
   IconClose,
   IconDsh,
+  IconFolder,
+  IconPause,
   IconPencil,
+  IconPlay,
+  IconRefresh,
   IconShield,
   IconShieldCheck,
   IconShieldFilled,
-  IconSparkles,
   IconStop,
+  IconTarget,
 } from "../icons";
-import { CtxText, Ellipsis, Popover, formatDuration } from "./primitives";
+import { CtxText, Ellipsis, Popover, Spinner, formatDuration } from "./primitives";
 import { insertAtCaret } from "../insert";
 import { segmentColumns } from "../segment";
 import { fill, useTexts } from "../texts";
@@ -76,10 +81,6 @@ export function Composer({ state, onDraft }: { state: AppState; onDraft: (text: 
   const [modelOpen, setModelOpen] = useState(false);
   const [modeOpen, setModeOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
-  // UI 里点「进入计划模式」不直接发 /plan：记到所属会话 id，下一条消息发出时
-  // 把 /plan 拼到消息前面一起提交（服务端随消息进入计划模式）。挂起态绑定会话，
-  // 输入区显示「下轮生效」提示条并可以取消
-  const [pendingPlan, setPendingPlan] = useState<string | undefined>(undefined);
   // 模型按钮 toggle 标志：标记「这次关闭是按钮触发的」，让 Popover 的
   // mousedown 外部检测跳过它（选中模型后弹层不关，再点按钮需能关闭）
   const modelToggleRef = useRef(false);
@@ -166,18 +167,14 @@ export function Composer({ state, onDraft }: { state: AppState; onDraft: (text: 
 
   const send = () => {
     if (!canSend) return;
-    // 进入计划模式时：把 /plan 拼到这条消息前面一起发出（只认挂起态所属的会话）
-    const pending = state.session !== undefined && pendingPlan === state.session.id;
-    const text = pending ? `/plan ${draft.trim()}` : draft.trim();
-    if (pending) setPendingPlan(undefined);
-    post({ type: "send", text, attachments: state.attachments });
+    post({ type: "send", text: draft.trim(), attachments: state.attachments });
     onDraft("");
     dismissedRef.current = null;
     setTrigger(undefined);
   };
 
   /** 把触发词替换成选中的命令 / 文件。 */
-  const applyCandidate = (index: number) => {
+  const applyCandidate = (index: number, drill = false) => {
     const candidate = candidates[index];
     if (!candidate || !trigger) return;
     const before = draft.slice(0, trigger.start);
@@ -195,7 +192,27 @@ export function Composer({ state, onDraft }: { state: AppState; onDraft: (text: 
     }
 
     const file = candidate as FileRefView;
-    // 文件作为附件芯片加入，文本里不留 @token
+    // 目录：**默认打开**它（下钻），不是把它本身载入——这是用户明确的口径。
+    // 下钻 = 把触发词替换成 `@<path>/` 并继续留在候选态；服务端按结尾斜杠
+    // 把它当目录查询，于是列表变成该目录的内容。
+    if (file.kind === "directory" && !drill) {
+      const next = `${before}@${file.path}/${after}`;
+      onDraft(next);
+      post({ type: "setDraft", text: next });
+      // 光标落在结尾斜杠之后：下一层候选立刻按新前缀拉取
+      const caret = before.length + 1 + file.path.length + 1;
+      requestAnimationFrame(() => {
+        const node = textareaRef.current;
+        if (!node) return;
+        node.focus();
+        node.setSelectionRange(caret, caret);
+        refreshTrigger(next, caret);
+      });
+      post({ type: "queryFiles", query: `${file.path}/` });
+      return;
+    }
+    // 文件（或用户点了「整个目录」按钮）：把路径从正文里拿掉，改成引用芯片。
+    // 正文里不出现 `@token` —— 引用是芯片，发送时由宿主拼回正文（见 dsh/references.ts）。
     post({ type: "queryFiles", query: "" });
     const next = `${before}${after}`;
     onDraft(next);
@@ -309,17 +326,8 @@ export function Composer({ state, onDraft }: { state: AppState; onDraft: (text: 
 
   return (
     <div ref={appRef} className={`composer${mini ? " is-mini" : ""}`}>
-      {/* 计划模式挂起态：下一条消息带 /plan 前缀发出，可取消 */}
-      {state.session !== undefined && pendingPlan === state.session.id && !state.planMode ? (
-        <div className="lump is-stacked">
-          <IconSparkles size={11} />
-          <span>{texts.planPending}</span>
-          <span className="spacer" />
-          <button className="lump-cancel" onClick={() => setPendingPlan(undefined)}>
-            {texts.cancel}
-          </button>
-        </div>
-      ) : null}
+      {/* 目标条：官方 dock 在输入框上方的同一个位置（`conversation.input.dock`） */}
+      <GoalBar goal={state.goal} />
       <Lump state={state} />
 
       {/* 运行状态：会话底部一行无边框文字；等待审批/提问时 agent 暂停，
@@ -352,25 +360,46 @@ export function Composer({ state, onDraft }: { state: AppState; onDraft: (text: 
             candidates.slice(0, 40).map((candidate, index) => {
               const isCommand = trigger.kind === "command";
               const row = candidate as CommandView & FileRefView;
+              const isFolder = !isCommand && row.kind === "directory";
               return (
-                <button
+                <div
                   key={isCommand ? row.name : row.path}
                   className={`popover-item${index === highlight ? " is-selected" : ""}`}
                   onMouseEnter={() => setHighlight(index)}
-                  onMouseDown={(event) => {
-                    event.preventDefault();
-                    applyCandidate(index);
-                  }}
                 >
-                  <span className="popover-item-main">
-                    {isCommand ? `/${row.name}` : row.path}
-                  </span>
-                  {isCommand && row.description ? (
-                    <span className="popover-item-sub">{row.description}</span>
-                  ) : !isCommand && row.kind === "directory" ? (
-                    <span className="popover-item-sub">{texts.attachFolder}</span>
+                  {/* 主体：点它选中。目录在 `@` 列表里**默认是打开该目录**（下钻），
+                      只有右侧的「整个目录」按钮才是把目录本身载入——用户明确的口径。 */}
+                  <button
+                    className="popover-item-hit"
+                    onMouseDown={(event) => {
+                      event.preventDefault();
+                      applyCandidate(index);
+                    }}
+                  >
+                    <span className="popover-item-main">
+                      {isCommand ? `/${row.name}` : row.path}
+                    </span>
+                    {isCommand && row.description ? (
+                      <span className="popover-item-sub">{row.description}</span>
+                    ) : null}
+                    {isCommand && row.skill ? (
+                      <span className="popover-item-tag">{texts.skillTag}</span>
+                    ) : null}
+                  </button>
+                  {isFolder ? (
+                    <button
+                      className="popover-item-action"
+                      title={texts.attachFolder}
+                      onMouseDown={(event) => {
+                        event.preventDefault();
+                        applyCandidate(index, true);
+                      }}
+                    >
+                      <IconFolder size={11} />
+                      {texts.attachFolder}
+                    </button>
                   ) : null}
-                </button>
+                </div>
               );
             })
           )}
@@ -394,7 +423,30 @@ export function Composer({ state, onDraft }: { state: AppState; onDraft: (text: 
           {state.attachments.length ? (
             <div className="composer-chips">
               {state.attachments.map((attachment) => (
-                <span className="chip" key={attachment.id} title={attachment.path ?? attachment.name}>
+                <span
+                  className={`chip${attachment.upload?.status === "error" ? " is-error" : ""}`}
+                  key={attachment.id}
+                  title={attachment.path ?? attachment.name}
+                >
+                  {/* 上传状态：官方 FileCard 里文件芯片带进度/失败态。
+                      失败可点重试，否则用户只能删掉重选（内容其实还在磁盘上）。 */}
+                  {attachment.upload?.status === "uploading" ? (
+                    <span className="chip-spinner" aria-hidden>
+                      <Spinner size={10} />
+                    </span>
+                  ) : attachment.upload?.status === "error" ? (
+                    <button
+                      className="chip-retry"
+                      title={texts.uploadFailed}
+                      onClick={() => post({ type: "retryUpload", id: attachment.id })}
+                    >
+                      <IconRefresh size={11} />
+                    </button>
+                  ) : attachment.kind === "reference" ? (
+                    <span className="chip-glyph" aria-hidden>
+                      {attachment.referenceKind === "directory" ? <IconFolder size={11} /> : <IconAt size={11} />}
+                    </span>
+                  ) : null}
                   <span className="chip-name">{attachment.name}</span>
                   <button
                     className="chip-remove"
@@ -508,20 +560,13 @@ export function Composer({ state, onDraft }: { state: AppState; onDraft: (text: 
                 )}
                 <div className="popover-sep" />
                 <button
-                  className={`popover-item${
-                    state.planMode || (state.session !== undefined && pendingPlan === state.session.id)
-                      ? " is-selected"
-                      : ""
-                  }`}
+                  className={`popover-item${state.planMode ? " is-selected" : ""}`}
                   onClick={() => {
-                    if (state.planMode) {
-                      // 退出计划模式：无副作用，即时切换
-                      post({ type: "send", text: "/plan", attachments: [] });
-                    } else {
-                      // 进入计划模式：不直接发指令，下一条消息带 /plan 前缀发出。
-                      // 挂起态绑定当前会话，输入区显示「下轮生效」提示条、可取消
-                      setPendingPlan(state.session?.id);
-                    }
+                    // 进出计划模式都必须走命令通道：把 `/plan` 拼进消息正文服务端
+                    // 不认（实测 plan.active 仍为 false），而退出应当是 `/plan off`
+                    // ——正文写 `/plan` 按官方语义反而是**进入**，方向会反。
+                    // 见 scripts/planCommandProbe.ts 与 docs/audit-summary.md §1。
+                    post({ type: "runCommand", line: state.planMode ? "/plan off" : "/plan" });
                     setModeOpen(false);
                   }}
                 >
@@ -655,9 +700,14 @@ export function Composer({ state, onDraft }: { state: AppState; onDraft: (text: 
               <span className="ctx-speed" title={statsTitle || undefined}>{tps.toFixed(1)} tps</span>
             ) : null}
             <CtxText
+              // 三个值**同源**：都取自宿主按官方口径算好的 contextOccupancy。
+              // 刻意不回退到 usage / contextWindow 事件——那会得到一个含 output、
+              // 且压缩后不下降的数，与投影口径不是一回事（同一个圆环在不同时刻
+              // 代表不同东西，正是「数字卡住 / 乱跳」的观感来源）。
               percent={state.contextOccupancy?.percent}
-              used={state.contextOccupancy?.usedTokens ?? lastMessage?.usage?.totalTokens}
-              total={state.contextOccupancy?.contextWindow ?? state.contextWindow?.tokens ?? state.model?.contextWindow}
+              used={state.contextOccupancy?.usedTokens}
+              total={state.contextOccupancy?.contextWindow}
+              // 明细里的缓存命中与构成是**独立**的投影，有就显示
               usage={lastMessage?.usage}
               breakdown={state.contextBreakdown}
             />
@@ -677,6 +727,55 @@ export function Composer({ state, onDraft }: { state: AppState; onDraft: (text: 
     </div>
   );
 
+}
+
+/**
+ * 目标条：当前目标的阶段、进度与操作，贴在输入框上方。
+ *
+ * 位置与官方 `GoalBar` 一致（会话输入区的 dock 条）。渲染规则也照抄官方：
+ * 没有目标（`undefined`/`null`）与 phase 为 `complete` 的目标**都不占位**——
+ * 已完成的目标留在条上只会挡住输入区。
+ *
+ * 三个操作走**命令通道**（`/goal pause|resume|clear`）而不是目标专用 RPC：
+ * `/goal` 命令处理器调的就是同一个目标服务，而命令结果会作为命令节点留在
+ * 对话里（看得见生效没有），不必再造一套 RPC 与错误通道。
+ */
+function GoalBar({ goal }: { goal: GoalView | undefined }) {
+  const texts = useTexts();
+  if (!goal || goal.phase === "complete") return null;
+  const phase =
+    goal.phase === "paused"
+      ? texts.goalPaused
+      : goal.phase === "blocked"
+        ? texts.goalBlocked
+        : texts.goalActive;
+  const run = (action: "pause" | "resume" | "clear") =>
+    post({ type: "runCommand", line: `/goal ${action}` });
+  return (
+    <div className={`goal-bar is-${goal.phase}`} title={goal.blockedReason ?? goal.objective}>
+      <span className="goal-icon" aria-hidden>
+        <IconTarget size={12} />
+      </span>
+      <span className="goal-phase">{phase}</span>
+      <span className="goal-objective">{goal.objective}</span>
+      {goal.maxRounds ? (
+        <span className="goal-rounds">{`${goal.rounds}/${goal.maxRounds}`}</span>
+      ) : null}
+      <span className="spacer" />
+      {goal.phase === "active" ? (
+        <button className="goal-action" title={texts.goalPause} onClick={() => run("pause")}>
+          <IconPause size={12} />
+        </button>
+      ) : (
+        <button className="goal-action" title={texts.goalResume} onClick={() => run("resume")}>
+          <IconPlay size={12} />
+        </button>
+      )}
+      <button className="goal-action" title={texts.goalClear} onClick={() => run("clear")}>
+        <IconClose size={12} />
+      </button>
+    </div>
+  );
 }
 
 /**

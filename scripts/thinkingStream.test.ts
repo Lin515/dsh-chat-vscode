@@ -245,4 +245,66 @@ console.log("thinkingStream: 同轮插话按时间顺延 ✓");
 }
 console.log("thinkingStream: 重复事件去重 ✓");
 
+// ---------- C. 本轮关闭时为未结算的工具调用合成中断结果 ----------
+//
+// 官方语义（`projectBlock` + `interruption(context)`）：只要 step/turn **已关闭**，
+// 所有还没结算的调用都会在视图投影阶段被合成一个 `error.code === 'interrupted'`
+// 的结果，界面渲染成 stopped（警告色）。不这么做的话，这些行永远停在「运行中」，
+// 看起来像任务卡死（docs/audit-summary.md §12）。
+//
+// 关键：**不按收场原因分支**。官方只看「turn 是否关闭」，所以正常完成但调用没收尾
+// 的情形同样要合成（结果被截断、连接抖动都会造成它）。
+{
+  const tools = (messages: MessageView[]) =>
+    messages.flatMap((m) =>
+      m.segments.filter((s): s is Extract<Segment, { kind: "tool" }> => s.kind === "tool"),
+    );
+
+  for (const reason of [{ kind: "aborted" }, { kind: "completed" }, { kind: "max-tokens" }, { kind: "error" }]) {
+    const { adapter, messages } = harness();
+    const t = Date.now();
+    adapter.applyEvent({ type: "turn/start", seq: 1, time: t, data: { turn: 1 } });
+    adapter.applyEvent({
+      type: "tool/call", seq: 2, time: t + 1,
+      data: { callId: `c-${reason.kind}`, name: "read", arguments: '{"file_path":"a.ts"}' },
+    });
+    // 故意**不发** tool/result —— 模拟这一轮结束时调用还没收尾
+    adapter.applyEvent({ type: "turn/end", seq: 3, time: t + 2, data: { turn: 1, reason } });
+
+    const list = tools(messages);
+    assert.strictEqual(list.length, 1, `${reason.kind}: 应当有一条工具行`);
+    assert.strictEqual(
+      list[0].tool.status,
+      "stopped",
+      `${reason.kind}: 未结算的调用必须收成 stopped，而不是永远停在 ${list[0].tool.status}`,
+    );
+    assert.ok(list[0].tool.endedAt, `${reason.kind}: 合成结果要带上结束时间（否则计时器还在跳）`);
+  }
+}
+console.log("thinkingStream: 本轮关闭后未结算的工具行收成 stopped（不按收场原因分支） ✓");
+
+// ---------- C2. 已结算的调用不被合成覆盖 ----------
+
+{
+  const { adapter, messages } = harness();
+  const t = Date.now();
+  adapter.applyEvent({ type: "turn/start", seq: 1, time: t, data: { turn: 1 } });
+  adapter.applyEvent({
+    type: "tool/call", seq: 2, time: t + 1,
+    data: { callId: "c1", name: "read", arguments: '{"file_path":"a.ts"}' },
+  });
+  adapter.applyEvent({
+    type: "tool/result", seq: 3, time: t + 2,
+    data: { message: { source: { callId: "c1" }, content: [{ type: "tool-result", content: [{ type: "text", text: "文件内容" }] }] } },
+  });
+  adapter.applyEvent({ type: "turn/end", seq: 4, time: t + 3, data: { turn: 1, reason: { kind: "aborted" } } });
+
+  const tool = messages
+    .flatMap((m) => m.segments)
+    .find((s): s is Extract<Segment, { kind: "tool" }> => s.kind === "tool");
+  assert.strictEqual(tool?.tool.status, "ok", "已经拿到结果的调用不该被改写成 stopped");
+  assert.strictEqual(tool?.tool.output, "文件内容", "结果文本要保住");
+}
+console.log("thinkingStream: 已结算的调用不被中断合成覆盖 ✓");
+
 console.log("\nthinkingStream: all assertions passed");

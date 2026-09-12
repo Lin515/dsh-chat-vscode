@@ -90,6 +90,14 @@ export type WebviewToHost =
   | { type: "setModel"; provider: string; model: string; reasoningEffort?: string }
   /** 切换权限模式。 */
   | { type: "setPermission"; permission: string }
+  /**
+   * 执行一条斜杠命令（`commands/execute`）。
+   *
+   * 界面里所有「按钮化的命令」（权限预设、进入/退出计划模式）都走这里，
+   * 不走会话 prompt：`/plan` 这类命令**必须**经命令通道，把它拼进消息正文
+   * 服务端不认（实测见 `scripts/planCommandProbe.ts`）。
+   */
+  | { type: "runCommand"; line: string }
   /** 审批工具调用。 */
   | { type: "answerApproval"; requestId: string; approved: boolean; always?: boolean }
   /** 回答模型提问。 */
@@ -98,6 +106,24 @@ export type WebviewToHost =
   | { type: "addFiles" }
   /** @ 提及选中的文件 / 目录，作为附件加入。 */
   | { type: "addMention"; path: string; kind: "file" | "directory" }
+  /**
+   * 把一个**目录**作为 `@dir/` 引用加入（不是下钻打开）。
+   *
+   * 用户口径：`@` 列表里选中目录默认是**打开该目录**（继续下钻），
+   * 只有点右侧的「整个目录」才是把目录本身载入。
+   */
+  | { type: "addFolderReference"; path: string }
+  /** 重传一个上传失败的文件附件。 */
+  | { type: "retryUpload"; id: string }
+  /** 直接执行一条命令（命令面板里点的，不是手打的正文）。 */
+  | { type: "runCommandLine"; line: string }
+  /**
+   * 从某条助手消息**创建分支**：以该轮为界开一个新会话，原会话不动。
+   *
+   * `messageId` 是视图里的消息 id（`a:<turn>`），宿主换算出 `atSeq` 边界——
+   * 契约要求是 `turn/end` 的 seq（在开放轮里锚定会被拒绝，而不是往前裁剪）。
+   */
+  | { type: "branchFrom"; messageId: string }
   | { type: "removeAttachment"; id: string }
   /** 更新草稿（宿主侧保留，重载后不丢）。 */
   | { type: "setDraft"; text: string }

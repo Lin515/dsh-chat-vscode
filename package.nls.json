@@ -22,5 +22,14 @@
   "config.diffLayout": "How edit tool calls render their change: single column or side-by-side.",
   "config.diffLayout.auto": "Adaptive: single column in a narrow panel, side-by-side when wide.",
   "config.diffLayout.unified": "Always single column.",
-  "config.diffLayout.split": "Always side-by-side."
+  "config.diffLayout.split": "Always side-by-side.",
+  "config.language": "Language of the chat UI. `auto` follows the VS Code display language.",
+  "config.language.auto": "Follow the VS Code display language.",
+  "config.language.zh": "Always Simplified Chinese.",
+  "config.language.en": "Always English.",
+  "config.fontSize": "Font size of the chat UI. `auto` follows the VS Code font size.",
+  "config.fontSize.auto": "Follow the VS Code font size.",
+  "config.fontSize.small": "Small (12px base).",
+  "config.fontSize.medium": "Medium (13px base, VS Code default).",
+  "config.fontSize.large": "Large (15px base)."
 }

@@ -1,10 +1,10 @@
 import { memo, useRef } from "react";
 import type { DiffLayout, MessageView, Segment } from "../../shared/chat";
 import { post } from "../bridge";
-import { IconCopy } from "../icons";
+import { IconBranch, IconCopy } from "../icons";
 import { Markdown } from "./Markdown";
 import { formatClock, useSelectionFreeze } from "./primitives";
-import { ApprovalCard, InjectedRow, NoticeRow, QuestionCard, ThinkingRow, ToolRow } from "./Rows";
+import { ApprovalCard, CommandRow, FileChips, InjectedRow, NoticeRow, QuestionCard, ThinkingRow, ToolRow } from "./Rows";
 import { useTexts } from "../texts";
 
 /**
@@ -25,10 +25,18 @@ function StreamText({ text }: { text: string }) {
 export const Message = memo(function Message({
   message,
   diffLayout,
+  canBranch = false,
 }: {
   message: MessageView;
   /** 编辑类节点的 diff 排版（来自设置；缺省自适应）。 */
   diffLayout?: DiffLayout;
+  /**
+   * 这条消息能否作为分支锚点（只有**已结束**的那一轮可以）。
+   *
+   * `session/fork` 的 `atSeq` 必须落在 `turn/end` 上：开放轮里锚定会被宿主
+   * 以 `OPEN_TURN` 拒绝，而不是往前裁剪——所以按钮在这里就要禁用。
+   */
+  canBranch?: boolean;
 }) {
   const texts = useTexts();
   if (message.role === "user") {
@@ -77,16 +85,40 @@ export const Message = memo(function Message({
               return <QuestionCard key={segment.id} question={segment.question} />;
             case "injected":
               return <InjectedRow key={segment.id} injected={segment.injected} />;
+            case "command":
+              return <CommandRow key={segment.id} command={segment.command} />;
             case "notice":
               return <NoticeRow key={segment.id} level={segment.level} text={segment.text} />;
             default:
               return null;
           }
         })}
+        {/* 轮尾文件：先「本轮改动」（从成功的写类调用推导），再「交付文件」
+            （present 工具的显式申报）。两者此前都不渲染——写过的文件在界面上
+            完全不可见，只能靠模型在正文里自己说（docs/audit-summary.md §5）。 */}
+        {message.produced?.length ? (
+          <FileChips
+            label={texts.producedLabel}
+            paths={message.produced.map((path) => ({ path }))}
+          />
+        ) : null}
+        {message.deliverables?.length ? (
+          <FileChips label={texts.presentedLabel} paths={message.deliverables} />
+        ) : null}
         {message.error ? <NoticeRow level="error" text={message.error} /> : null}
       </div>
       <div className="msg-actions">
         <span className="msg-time">{formatClock(message.ts)}</span>
+        {/* 分支：复制按钮**左侧**（用户指定）。运行中不能分支——`session/fork`
+            的锚点必须落在 `turn/end` 上，开放轮里锚定会被宿主拒绝而不是往前裁剪。 */}
+        <button
+          className="icon-btn"
+          title={canBranch ? texts.branchFromHere : texts.branchRunning}
+          disabled={!canBranch}
+          onClick={() => post({ type: "branchFrom", messageId: message.id })}
+        >
+          <IconBranch size={14} />
+        </button>
         <button
           className="icon-btn"
           title={texts.copy}

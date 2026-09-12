@@ -39,14 +39,3 @@ export function decodeTextFile(bytes: Uint8Array): TextFileResult {
     return { kind: "not-utf8" };
   }
 }
-
-/**
- * 给模型的说明：文件没能内联，只给了路径。
- *
- * 附上**绝对路径**——dsh 的文件工具要求绝对路径，只给相对路径模型也用不上。
- */
-export function notInlinedNote(displayPath: string, absolutePath: string, reason: "binary" | "not-utf8", sizeBytes: number): string {
-  const size = `${Math.max(1, Math.round(sizeBytes / 1024))} KB`;
-  const why = reason === "binary" ? "二进制文件" : "非 UTF-8 编码的文本";
-  return `文件 ${displayPath} 是${why}（${size}），未内联内容。绝对路径：${absolutePath}`;
-}

@@ -181,6 +181,17 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* 禁用的操作按钮（生成中不能分支）：明确变暗，别让用户点了没反应 */
+.msg-actions .icon-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.msg-actions .icon-btn:disabled:hover {
+  background: none;
+  color: var(--muted);
+}
+
 /* ============================ markdown ============================ */
 
 .md {
@@ -437,18 +448,48 @@
   white-space: nowrap;
 }
 
-/* 次要标题是其次的：吃掉剩余空间，过长省略 */
+/* 次要标题是其次的：吃掉剩余空间，过长时**省略前段**。
+   路径类 detail 会被拆成「目录 + 文件名」两段（见 primitives.tsx 的 Row）：
+   目录段允许被裁（从左裁掉），文件名段不参与压缩——用户要的是「保住文件名」，
+   而行号（.row-detail-suffix）紧跟在文件名之后，因此永远贴在文件名右边。 */
 .row-detail {
+  display: flex;
+  align-items: baseline;
   flex: 1 1 0;
   min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--muted);
 }
 
-/* 紧跟在 detail 之后、**不参与压缩**的片段（读取节点的 `:100-120`）。
-   detail 从右侧省略，所以这个后缀必须自己撑着——否则窄侧栏里会被一起截掉 */
+/* 目录段：内容比容器宽时从**左**被裁掉。
+   `justify-content: flex-end` + `overflow: hidden` 让溢出发生在起始侧，
+   再叠一层左侧渐隐，读起来就是「前面还有内容」，而不是被硬切。 */
+.row-detail-dir {
+  display: inline-flex;
+  justify-content: flex-end;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 10px);
+  mask-image: linear-gradient(to right, transparent 0, #000 10px);
+}
+
+/* 文件名段：不压缩、不换行 */
+.row-detail-name {
+  flex: 0 0 auto;
+  white-space: pre;
+}
+
+/* 没有目录部分（命令、查询串、裸文件名）时的形态：同样从右侧省略 */
+.row-detail > .row-detail-name:only-child {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 紧跟在 detail 之后、**不参与压缩**的片段（读取节点的 `:100-120`）。 */
 .row-detail-suffix {
   flex: 0 0 auto;
   color: var(--muted);
@@ -679,6 +720,13 @@
   background: var(--error);
 }
 
+/* 已停止（中断）：官方用**警告色**而不是错误色——中断不是工具的失败，
+   把被用户按停的行标成红色会误示「出错了」。
+   刻意不带呼吸动画：它已经不动了，还在呼吸就与「运行中」分不开。 */
+.dot-stopped {
+  background: var(--warning);
+}
+
 /* slow 6s spinner + width-animated ellipsis: Continue's idle rhythm */
 @keyframes spin-slow {
   to {
@@ -849,6 +897,95 @@
   color: var(--warning);
 }
 
+/* 斜杠命令节点：折叠态与工具行同一套 Row；展开区给出完整命令行与结果 */
+.row-command {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.row-command-line {
+  color: var(--description);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.row-command-result {
+  color: var(--fg);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* 终端退出状态：非零退出码 / 信号终止。放在展开区，不与正文混在一起
+   （结果正文里那行标记已被剥掉，改由这里承载）。 */
+.row-exit {
+  margin: 2px 0 4px 18px;
+  padding: 2px 8px;
+  border-left: 2px solid var(--warning);
+  color: var(--warning);
+  font-family: var(--mono);
+  font-size: var(--font-size-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.row-exit.is-error {
+  border-left-color: var(--error);
+  color: var(--error);
+}
+
+/* 轮尾文件行：标签 + 可点开的文件芯片。与官方 ProducedFiles 同构——
+   窄侧栏下文件芯片允许换行，标签不被压缩 */
+.file-chips {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  margin-top: 4px;
+  font-size: var(--font-size-2xs);
+}
+
+.file-chips-label {
+  flex: 0 0 auto;
+  color: var(--muted);
+  opacity: 0.85;
+}
+
+.file-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 1px 7px;
+  border: 1px solid var(--command-border);
+  border-radius: var(--radius-pill);
+  background: var(--input-bg);
+  color: var(--description);
+  font-size: var(--font-size-2xs);
+  cursor: pointer;
+}
+
+.file-chip:hover {
+  color: var(--fg);
+  background: var(--hover);
+}
+
+.file-chip > svg {
+  flex: 0 0 auto;
+}
+
+/* 路径可能很长：只显示末段（title 里有完整路径），窄侧栏也不会被撑破 */
+.file-chip-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-chips-more {
+  flex: 0 0 auto;
+  color: var(--muted);
+}
+
 /* ============================ buttons & pills ============================ */
 
 .btn {
@@ -954,9 +1091,13 @@
 
 /* 发送栏：只留权限图标 + 发送，其余工具按钮/上下文文字/tps 隐藏 */
 .app.is-mini .pill[data-mini="hide"],
-.app.is-mini .ctx-text,
 .app.is-mini .ctx-speed,
 .app.is-mini .running-line .lump-hint {
+  display: none;
+}
+
+/* 迷你模式里圆环保留（它本来就是图形，比文字更适合窄条），只把环内数字去掉 */
+.app.is-mini .ctx-ring-label {
   display: none;
 }
 .app.is-mini .composer-bar {
@@ -995,14 +1136,58 @@
 }
 
 /* context-window usage, plain text: `xxxk/xxxk(xM)`; amber past 60% */
-.ctx-text {
-  font-variant-numeric: tabular-nums;
+/* 上下文占用：圆环 + 环内百分比。文字给精确数值，圆环给「还剩多少余地」。 */
+.ctx-ring {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
   color: var(--description);
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
-.ctx-text.is-high {
+.ctx-ring svg {
+  display: block;
+  flex: 0 0 auto;
+  /* 从 12 点方向顺时针填充：SVG 圆默认从 3 点起画，转 -90° 对齐表盘 */
+  transform: rotate(-90deg);
+}
+
+.ctx-ring-track {
+  fill: none;
+  stroke: var(--command-border);
+  stroke-width: 2.4;
+  opacity: 0.55;
+}
+
+.ctx-ring-value {
+  fill: none;
+  stroke: var(--description);
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  transition: stroke-dasharray 0.25s ease;
+}
+
+.ctx-ring-label {
+  font-size: var(--font-size-2xs);
+}
+
+/* 60% 起偏高、90% 起快满：与原来文字版同一套阈值语义 */
+.ctx-ring.is-high .ctx-ring-value {
+  stroke: var(--warning);
+}
+
+.ctx-ring.is-high .ctx-ring-label {
   color: var(--warning);
+}
+
+.ctx-ring.is-critical .ctx-ring-value {
+  stroke: var(--error);
+}
+
+.ctx-ring.is-critical .ctx-ring-label {
+  color: var(--error);
 }
 
 /* live generation speed next to the usage text */
@@ -1029,6 +1214,29 @@
 }
 
 /* ============================ composer ============================ */
+
+/* 「加载更早的消息」：跟随窗口之外的更早内容从没进过客户端，
+   点它就往前翻一页。整行居中的低调按钮——历史入口不该抢正文的注意力。 */
+.history-more {
+  display: block;
+  width: 100%;
+  margin: 2px 0 6px;
+  padding: 4px;
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  font-size: var(--font-size-2xs);
+  text-align: center;
+}
+
+.history-more:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--fg);
+}
+
+.history-more:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
 
 .composer {
   flex: 0 0 auto;
@@ -1110,27 +1318,80 @@
   }
 }
 
-/* 计划模式挂起提示条：叠在缺口状态条之上（下边框补回，与输入框保持间隔） */
-.lump.is-stacked {
-  margin-bottom: 4px;
-  border-bottom: 1px solid var(--command-border);
-  color: var(--accent);
-}
-
-.lump-cancel {
-  flex: 0 0 auto;
-  border: none;
-  background: none;
-  cursor: pointer;
+/* 目标条：当前目标的阶段、进度与操作，位置与官方 GoalBar 的 dock 一致
+   （输入框正上方）。用状态条同款缺口造型，与「待发消息」等输入区状态并列。 */
+.goal-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 7px 4px;
+  padding: 2px 8px;
+  min-height: 22px;
+  border: 1px solid var(--command-border);
+  border-radius: var(--radius);
+  background: var(--input-bg);
   font-size: var(--font-size-2xs);
   color: var(--description);
-  padding: 1px 6px;
-  border-radius: var(--radius-sm);
 }
 
-.lump-cancel:hover {
+.goal-bar .spacer {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.goal-icon {
+  flex: 0 0 auto;
+  display: inline-flex;
+  color: var(--info);
+}
+
+.goal-phase {
+  flex: 0 0 auto;
+  color: var(--muted);
+}
+
+/* 目标正文是这行里唯一该被省略的部分：占满剩余宽度并截断，
+   阶段标签、轮次与按钮都不可压缩 */
+.goal-objective {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg);
+}
+
+.goal-rounds {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.goal-action {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--description);
+  cursor: pointer;
+}
+
+.goal-action:hover {
   background: var(--hover);
   color: var(--fg);
+}
+
+/* 受阻的目标：状态本身要说出来，别让用户以为是正常在跑 */
+.goal-bar.is-blocked {
+  border-color: var(--warn-border, var(--command-border));
+}
+
+.goal-bar.is-blocked .goal-phase,
+.goal-bar.is-blocked .goal-icon {
+  color: var(--warning, var(--info));
 }
 
 /* 待发消息队列：不套状态条边框，做成「影子消息」——沿用用户消息气泡的形状与
@@ -1287,6 +1548,35 @@
   opacity: 1;
 }
 
+/* 上传失败的文件芯片：红色描边 + 一个可点的重试按钮。
+   不这样标出来的话，用户按发送时只会看到「文件被跳过」的提示，却不知道该做什么。 */
+.chip.is-error {
+  outline: 1px solid var(--error);
+  outline-offset: -1px;
+}
+
+.chip-spinner,
+.chip-glyph {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  opacity: 0.85;
+}
+
+.chip-retry {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  color: var(--error);
+}
+
+.chip-retry:hover {
+  background: var(--hover);
+}
+
 .composer-input {
   border: none;
   outline: none;
@@ -1341,6 +1631,16 @@
 .send-btn.is-stop {
   background: var(--secondary);
   color: var(--secondary-fg);
+}
+
+/* 停止按钮的悬停：**必须**单独写。
+   `.send-btn.is-stop` 与 `.send-btn:hover` 的特异性相同（都是 0,2,0），
+   而 `.is-stop` 在后面 → 它的 background 会把悬停色整个吃掉，
+   表现为「鼠标移上去没有任何反应」（用户 2026-09-12 反馈）。
+   悬停染成错误色是刻意的：停止是破坏性动作，红一下比亮一下更符合预期。 */
+.send-btn.is-stop:hover {
+  background: var(--error);
+  color: #ffffff;
 }
 
 .send-btn:disabled {
@@ -1723,6 +2023,47 @@
   display: inline-flex;
   flex: 0 0 auto;
   color: var(--description);
+}
+
+/* 候选行里的可点主体：占满剩余宽度，点击区与视觉行一致 */
+.popover-item-hit {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: left;
+}
+
+/* 候选行右侧的独立动作（目录的「整个目录」）。与主体分开是因为两者的**语义不同**：
+   点主体是「打开这个目录」，点这里是「把目录本身载入」。合成一个按钮就没法表达两件事。 */
+.popover-item-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border: 1px solid var(--command-border);
+  border-radius: var(--radius-pill);
+  color: var(--muted);
+  font-size: var(--font-size-2xs);
+  white-space: nowrap;
+}
+
+.popover-item-action:hover {
+  color: var(--fg);
+  background: var(--hover);
+}
+
+/* 「技能」标记：技能不是可执行的斜杠命令（选中只是把名字写进正文），
+   不标出来用户会以为回车就会执行。 */
+.popover-item-tag {
+  flex: 0 0 auto;
+  padding: 0 5px;
+  border-radius: var(--radius-pill);
+  background: var(--badge-bg);
+  color: var(--badge-fg);
+  font-size: var(--font-size-2xs);
 }
 
 .confirm-block {

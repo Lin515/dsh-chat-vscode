@@ -16,6 +16,60 @@
 
 ---
 
+## 零、修复状态（2026-09-12 更新）
+
+本章只记「已修 / 未修」，**不改动下面各节的原始判定**——那些是当时的证据，保留原样。
+
+### 已修复（第一批）
+
+| # | 条目 | 结论 |
+|---|---|---|
+| 1 | `/plan` 双向失效 | ✅ 进出都走 `commands/execute`（退出用 `/plan off`）；`Composer.tsx` 的「下轮生效」前缀机制整体删除 |
+| 2 | 手打斜杠命令不执行 | ✅ 行首 `/` + 名字在命令目录里 → 命令通道；并新增**命令节点**渲染（`command/run`↔`command/done`），结果可见 |
+| 3 | goal 投影形状读错 + 未渲染 | ✅ 按嵌套形状读（`goalFromProjection`），并新增输入区上方的**目标条** |
+| 4 | subagentCatalog 用错契约 | ✅ 投影按 `{id,createdAt,mode,label?}` 读、不按 `kind` 过滤；RPC 行才过滤 `kind:'child'`；`mode` 不再硬编码 |
+| 5 | 交付文件完全不可见 | ✅ 新增两种来源的渲染：`produced`（成功 write/edit 推导，`producedPath`）+ `deliverables`（present 申报） |
+
+### 已修复（第二批）
+
+| # | 条目 | 结论 |
+|---|---|---|
+| 6 | 工具行状态点覆盖图标 + 缺 `stopped` | ✅ 按官方 `leadingFor`：**只有 error/stopped 画点**，running/ok 显示工具图标；`stopped` 用警告色（中断不是失败） |
+| 7 | 工具分类用子串启发 | ✅ 换成官方 `TOOL_VARIANTS` **精确名表**（16 项）+ `TOOL_TITLE_KEYS`（`pwsh`→「Pwsh」等）。`shared/toolMeta.ts` |
+| 8 | 终端退出码从未解析 | ✅ `parseExitStatus` 剥掉尾部标记行并取退出状态；非零退出/信号**升级为失败**（bash/pwsh 故意不置 isError） |
+| 9 | `tool.images` 未赋值 | ✅ 从 `tool-result` 内层内容块取 image 句柄，经 `session/attachment` 换成 data URL 显示 |
+| 10 | `max-tokens` 无输出 | ✅ `turn/end` 原因 `max-tokens` → 「回答被截断」提示 |
+| 11 | 已知未处理事件弹 warn | ✅ `llm/retry` 改为渲染「正在重试 n/m」，`llm/retry-started` 收掉提示；两者移出静默名单 |
+| 12 | 中止后工具行卡「运行中」 | ✅ `turn/end`（aborted/error/max-tokens）为未结算调用**合成**中断结果（官方 `projectBlock` 语义） |
+| 13 | 窗口外 `tool/result` 被丢弃 | ✅ 补一张只有结果、头部显示 callId 的占位卡片（与官方 `call: null` 回退一致） |
+| 14 | 用户消息非文本块被丢 | ✅ `userMedia()` 保留图片/文件块；纯图片消息不再整条消失 |
+| 15 | 占用条分子口径错 | ✅ 改用 `contextPressure`：`projectedTokens ?? pressureTokens`（prompt 侧、不含 output、**压缩后会下降**） |
+| 16 | `busyEnter` 被忽略 | ✅ 从 `ui-conversation` 设置读取；`steer` 仅在 agent 运行中生效，否则退回 queue |
+| 18 | 未消费投影 | ✅ 新增 `tokenUsage`（四桶累计）、`turnOutline`（轮次导航）、`imageLimits`（图片准入）；`contextPressure`、`plan.pending` 已在 #15、新发现里消费 |
+| 19 | 附件内联 vs 引用/上传 | ✅ 改为官方模式：图片走内容块；其余文件**选中即上传**拿 `receiptId`；`@` 引用只发 `@path`。不再内联正文 |
+
+### 本批新发现（原审计未列）
+
+| 条目 | 说明 |
+|---|---|
+| `plan` 投影只读 `active` 是错的 | 生效状态是 `pending ? !active : active`。轮次进行中发 `/plan` 只会挂起（`{active:false,pending:true}`），裸读 active 会让「进入计划模式」看起来毫无反应。契约见 `dsh-plan-mode/lib/types/types.d.ts`，实测见 `scripts/commandE2E.ts` A 组 |
+| 快照回放会覆盖投影折叠值 | `follow()` 原来先铺投影、再回放记录 → 历史里最后一个事件把折叠值覆盖回旧状态。`plan` 的 `pending` 是活例（每次重开会话都丢）。已改为**先回放、再铺投影** |
+| 会话历史翻不到 | 不是「被清理」，而是**分页从未接上**：跟随流只带 `maxMessages: 60`，更早的内容从未进过客户端；而 `session/page` 的入口（`client.page()`、`loadMore` 消息类型）在协议层有、**没有任何地方调用**。已实现：适配器记住 `snapshot.cursor`（`throughSeq` 的唯一合法来源）与已折叠事件，界面加「加载更早的消息」按钮 |
+| 崩溃遗留的 writer 锁会让 `dsh web` 起不来 | 强杀后 `~/.dsh/.credentials.yaml.lock` 留下；`dsh-atomic-write` 刻意不回收孤儿锁，而 boot 等 30 秒后抛错退出整个进程。已实现 `clearStaleDocumentLocks`（按肯定证据判持有者已死），在**每次拉起服务器之前**清理 |
+| `contextPressure` **分母先到、分子后到** | 实测（`scripts/pressureProbe.ts`，三轮真实对话）：投影每轮推十来次，`contextWindow` 先就位，而分子要等**下一次请求上报 usage** 才出现。实测表：一轮后只有分母、本地复算已能给出 19206；二轮后官方 pressure=19206 / projected=19215；三轮后 pressure 仍 19206 而 **projected 19844**。两条结论：**①`projectedTokens` 才是逐轮变化的那个**（也是压缩后唯一会降的），必须优先；**②本地 `input + cached` 与官方 `pressureTokens` 逐字相等**（19206 == 19206，且 ≠ totalTokens 19208），可以在投影缺分子时**同口径**兜底。占用条按用户要求**常驻显示**：三个来源都拿不到时保留旧值，不清空 |
+
+### 仍未修复
+
+- **#17 停止语义**：官方契约说 cancel 后排队工作按 FIFO 继续，UI 只发一次 cancel。
+  但实测 `build/queue-continue-probe.mjs` **只 cancel 不会让队列自行接续**（两轮 3/3），
+  且「之后再提交会不会唤醒队列项」**不稳定**（同一脚本两次运行 0/3 vs 3/3）。
+  这是实测与契约冲突，**刻意保留**现有实现（摘空 → cancel → 重发），
+  因为官方做法在本机实测下会让队列卡住。取舍已记入 README 的「已知限制」。
+- §四 #18 余项：`schedule`、`agentPreset`、`subagentTiming`、`permissions.options`
+  （前三个是面板/展示层功能，未做；`permissions.options` 目前只取 `currentValue`）。
+
+---
+
 ## 一、结论概览
 
 | 维度 | 判定 |

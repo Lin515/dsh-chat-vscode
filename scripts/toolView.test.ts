@@ -12,6 +12,7 @@
  */
 import assert from "node:assert";
 import { SessionAdapter } from "../src/dsh/adapter";
+import { filePathFrom } from "../src/shared/toolMeta";
 import type { HostToWebview } from "../src/shared/ipc";
 import type { ToolCallView } from "../src/shared/chat";
 
@@ -40,9 +41,35 @@ const LONG_BUILD = "cmake --build build-agent --config RelWithDebInfo --target d
   assert.strictEqual(tool.command, LONG_BUILD, "展开区要拿到未截断的命令");
   assert.strictEqual(tool.status, "running");
   assert.ok(tool.startedAt && tool.startedAt > 0, "要有开始时间，界面才能显示实时耗时");
-  // 标题里的是截断版，不该等于完整命令
+  // `build` 不在官方的精确名表里 → `others` 变体：官方对未知工具**不猜字段**、
+  // 摘要只取首行（不额外截断），长出来的部分由 CSS 省略号处理。
   assert.ok((tool.detail?.length ?? 0) <= 120, `标题摘要不该过长：${tool.detail}`);
 }
+
+// 1b. `others` 变体对**未知工具**不编造字段（官方 SUMMARY_KEYS.others 是空表）
+{
+  const tool = toolFrom("mcp__openviking__find", { query: "memory", limit: 5 });
+  // 官方对未知工具退回「参数里第一个非空字符串」，所以能取到 query 当摘要
+  assert.strictEqual(tool.detail, "memory");
+}
+
+// 1c. 「可打开的工程文件」这条语义**只**给 read/write/edit 变体
+//
+// 这是 `FILE_PATH_VARIANTS` 那道闸：`command` 只是「展开区要显示的完整文本」，
+// 什么工具都可能有；而「这是不是工作区里的文件、能不能点开」是另一回事。
+// 混为一谈会让未知工具的参数被当成可打开路径。
+{
+  assert.strictEqual(filePathFrom("read", { file_path: "a.ts" }), "a.ts");
+  assert.strictEqual(filePathFrom("write", { path: "a.ts" }), "a.ts");
+  assert.strictEqual(filePathFrom("edit", { file_path: "a.ts" }), "a.ts");
+  // 未知工具即便参数里有 file_path，也不算文件（官方 FILE_PATH_VARIANTS 只含三者）
+  assert.strictEqual(filePathFrom("some_unknown_tool", { file_path: "D:/x/y.ts" }), undefined);
+  // `read` 变体里的 `web_fetch` 用 url：官方**刻意**不把 url 当路径键
+  assert.strictEqual(filePathFrom("web_fetch", { url: "https://example.com/a" }), undefined);
+  // 空白路径不算
+  assert.strictEqual(filePathFrom("read", { file_path: "   " }), undefined);
+}
+console.log("toolView: others 变体不编造文件语义；路径语义只给 read/write/edit ✓");
 console.log("toolView: build 完整命令 ✓");
 
 // 2. pwsh/bash：同样带出完整命令（标题截断、展开区完整）
@@ -54,14 +81,18 @@ console.log("toolView: build 完整命令 ✓");
 }
 console.log("toolView: pwsh 完整命令 ✓");
 
-// 3. read/write/edit：command 取完整路径
+// 3. read/write/edit：command 取完整路径，detail 也是完整路径
+//
+// detail 刻意**不**在宿主侧预先缩短：省略口径是「保住文件名、省略前段路径」，
+// 由界面按可用宽度执行（webview/pathDisplay.ts 的 splitPath + `.row-detail-dir`）。
+// 宿主预缩短会让宽面板也只看到末两段，且窄侧栏里文件名仍可能被右省略切掉。
 {
   const path = "D:/dev/very/deep/nested/folder/structure/src/server/index.ts";
   const tool = toolFrom("read", { file_path: path });
   assert.strictEqual(tool.command, path);
-  assert.notStrictEqual(tool.detail, path, "标题只留末两段");
+  assert.strictEqual(tool.detail, path, "detail 要给完整路径，省略交给界面做");
 }
-console.log("toolView: 读文件完整路径 ✓");
+console.log("toolView: 读文件完整路径（省略交给界面） ✓");
 
 // 4. 认不出参数的未知工具：不编造命令，但仍要给到 startedAt（界面才能发光/计时）
 {

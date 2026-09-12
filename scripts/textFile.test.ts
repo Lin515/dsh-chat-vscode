@@ -14,7 +14,7 @@ import assert from "node:assert";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { BINARY_SAMPLE_BYTES, decodeTextFile, notInlinedNote } from "../src/dsh/textFile";
+import { BINARY_SAMPLE_BYTES, decodeTextFile } from "../src/dsh/textFile";
 
 // ---------- 1. 纯文本照常解码 ----------
 
@@ -81,23 +81,7 @@ console.log("textFile: GBK 文本 → 非 UTF-8 ✓");
 }
 console.log("textFile: 旧写法会产出乱码（回归对照）✓");
 
-// ---------- 5. 给模型的说明：带上绝对路径 ----------
-
-{
-  const note = notInlinedNote("bin/app.exe", "D:/dev/app/bin/app.exe", "binary", 352 * 1024);
-  assert.ok(note.includes("二进制文件"), note);
-  assert.ok(note.includes("352 KB"), note);
-  assert.ok(
-    note.includes("D:/dev/app/bin/app.exe"),
-    `必须给出绝对路径（dsh 的文件工具只认绝对路径）：${note}`,
-  );
-
-  const gbkNote = notInlinedNote("readme.txt", "D:/x/readme.txt", "not-utf8", 2048);
-  assert.ok(gbkNote.includes("非 UTF-8"), gbkNote);
-}
-console.log("textFile: 未内联说明带绝对路径 ✓");
-
-// ---------- 6. 真实文件：有 exe 就用它，没有就构造一个 ----------
+// ---------- 5. 真实文件：有 exe 就用它，没有就构造一个 ----------
 
 {
   const dir = mkdtempSync(join(tmpdir(), "dsh-textfile-"));

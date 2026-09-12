@@ -10,6 +10,9 @@ build/**
 Releases/**
 node_modules/**
 
+# 给 AI 会话用的项目约束文档：是仓库的开发者资料，不是扩展的一部分
+AGENTS.md
+
 # 构建配置本身也不需要
 esbuild*.mjs
 tsconfig*.json

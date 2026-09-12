@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import { ChatViewProvider } from "./chatView";
 import { ChatController, stamp } from "./dsh/controller";
-import { cleanupResidualServers, leaseDirectory, scanServers } from "./dsh/processRegistry";
+import { clearStaleDocumentLocks, cleanupResidualServers, leaseDirectory, scanServers } from "./dsh/processRegistry";
 import { ServerManager } from "./dsh/serverManager";
 
 let output: vscode.OutputChannel | undefined;
@@ -84,10 +84,18 @@ function registerContributions(context: vscode.ExtensionContext, host: Contribut
     vscode.commands.registerCommand("dshChat.cleanupProcesses", async () => {
       const result = await cleanupResidualServers(log);
       const message = result.killed.length
-        ? `已清理 ${result.killed.length} 个残留的 dsh 进程：${result.killed.join("、")}`
+        ? vscode.l10n.t(
+            "Cleaned up {0} leftover dsh process(es): {1}",
+            result.killed.length,
+            result.killed.join(", "),
+          )
         : result.orphans.length
-          ? `发现 ${result.orphans.length} 个疑似残留进程，但未能确认/清理：${result.orphans.join("、")}`
-          : "没有发现残留的 dsh 进程。";
+          ? vscode.l10n.t(
+              "Found {0} process(es) that look leftover but could not be confirmed or cleaned up: {1}",
+              result.orphans.length,
+              result.orphans.join(", "),
+            )
+          : vscode.l10n.t("No leftover dsh processes were found.");
       await vscode.window.showInformationMessage(message, { modal: true });
     }),
     vscode.commands.registerCommand("dshChat.showLogs", () => {
@@ -100,18 +108,28 @@ function registerContributions(context: vscode.ExtensionContext, host: Contribut
         .filter((item) => item.orphan)
         .map((item) => item.lease.serverPid);
       const message = [
-        `服务器状态：${status.state}`,
-        status.info ? `地址：${status.info.baseUrl}` : undefined,
-        status.info ? `由本扩展启动：${status.info.owned ? "是" : "否（使用 dshChat.url）"}` : undefined,
-        status.detail ? `说明：${status.detail}` : undefined,
-        `残留进程：${
+        vscode.l10n.t("Server state: {0}", status.state),
+        status.info ? vscode.l10n.t("Address: {0}", status.info.baseUrl) : undefined,
+        status.info
+          ? vscode.l10n.t(
+              "Started by this extension: {0}",
+              status.info.owned ? vscode.l10n.t("yes") : vscode.l10n.t("no (using dshChat.url)"),
+            )
+          : undefined,
+        status.detail ? vscode.l10n.t("Detail: {0}", status.detail) : undefined,
+        vscode.l10n.t(
+          "Leftover processes: {0}",
           orphans.length
-            ? `${orphans.length} 个（pid ${orphans.join("、")}）——用命令「DSH: 清理残留进程」处理`
-            : "无"
-        }`,
-        `进程租约目录：${leaseDirectory()}`,
-        `服务器日志：${server.logPath}`,
-        `扩展日志：输出通道「DSH Chat」`,
+            ? vscode.l10n.t(
+                "{0} (pid {1}) — use the “DSH: Clean Up Leftover Processes” command",
+                orphans.length,
+                orphans.join(", "),
+              )
+            : vscode.l10n.t("none"),
+        ),
+        vscode.l10n.t("Process lease directory: {0}", leaseDirectory()),
+        vscode.l10n.t("Server log: {0}", server.logPath),
+        vscode.l10n.t("Extension log: the “DSH Chat” output channel"),
       ]
         .filter(Boolean)
         .join("\n");
@@ -142,9 +160,16 @@ function registerContributions(context: vscode.ExtensionContext, host: Contribut
       void vscode.commands.executeCommand("dshChat.view.focus");
     }),
 
-    // 界面相关配置（diff 排版）改了即时生效，不必重载窗口
+    // 界面相关配置（diff 排版 / 语言 / 字号）改了即时生效，不必重载窗口。
+    // 三者都是纯显示层：重载会丢掉滚动位置与展开状态，代价不成比例。
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (event.affectsConfiguration("dshChat.diffLayout")) controller.refreshDiffLayout();
+      if (
+        event.affectsConfiguration("dshChat.language") ||
+        event.affectsConfiguration("dshChat.fontSize")
+      ) {
+        controller.refreshAppearance();
+      }
     }),
   );
 }
@@ -162,7 +187,10 @@ function startup(
     .then((result) => {
       if (result.killed.length) {
         void vscode.window.showInformationMessage(
-          `已清理 ${result.killed.length} 个残留的 dsh 服务器进程（上次 VS Code 未正常关闭）。`,
+          vscode.l10n.t(
+            "Cleaned up {0} leftover dsh server process(es) (VS Code did not shut down cleanly last time).",
+            result.killed.length,
+          ),
         );
       }
     })
@@ -170,12 +198,37 @@ function startup(
       log(`[cleanup] 残留进程检测失败：${error instanceof Error ? error.message : String(error)}`);
     });
 
+  // 崩溃留下的 writer 锁同样要清，而且**必须在起服务器之前**：
+  // `dsh web` 的 boot 会去锁 `.credentials.yaml`，等 30 秒拿不到就把整个进程带走
+  // （用户实测的 `atomic-write: timed out waiting for the writer lock`）。
+  // 库本身刻意不回收孤儿锁，所以这一步是扩展的责任。
+  //
+  // 顺序是硬要求：不 await 就会与 ensureConnected 赛跑，服务器照样撞上那把锁。
+  // 没有锁时这一步只是两次 ENOENT 的读文件（微秒级），有锁时才起 PowerShell。
   const autoStart = config().get<boolean>("autoStart") ?? true;
-  if (autoStart) {
-    void controller.ensureConnected();
-  } else {
-    log("已关闭自动启动，可用命令「DSH: 启动服务器」手动连接。");
-  }
+  void clearStaleDocumentLocks(log)
+    .then((result) => {
+      if (result.cleared.length) {
+        void vscode.window.showInformationMessage(
+          vscode.l10n.t(
+            "Cleared the file lock left behind by the last abnormal exit (otherwise the dsh server would fail to start while waiting for it).",
+          ),
+        );
+      }
+      if (result.held.length) {
+        log(`[lock] ${result.held.join("、")} 仍有持有者，未清理`);
+      }
+    })
+    .catch((error: unknown) => {
+      log(`[lock] 残留锁检测失败：${error instanceof Error ? error.message : String(error)}`);
+    })
+    .finally(() => {
+      if (autoStart) {
+        void controller.ensureConnected();
+      } else {
+        log("已关闭自动启动，可用命令「DSH: 启动服务器」手动连接。");
+      }
+    });
 
   if (config().get<boolean>("openPanelOnStartup")) {
     provider.openPanel();

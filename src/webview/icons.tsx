@@ -34,6 +34,46 @@ export const IconPlus = (p: IconProps) => (
   </Icon>
 );
 
+/** 目标条的目标字形（靶心）。 */
+export const IconTarget = (p: IconProps) => (
+  <Icon {...p}>
+    <circle cx="12" cy="12" r="8" />
+    <circle cx="12" cy="12" r="3.2" />
+  </Icon>
+);
+
+/** 暂停目标（两根竖条）。 */
+export const IconPause = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M9.5 5v14M14.5 5v14" />
+  </Icon>
+);
+
+/** 恢复目标（播放三角）。 */
+export const IconPlay = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M8 5.5v13l10-6.5z" />
+  </Icon>
+);
+
+/** 代码类工具（`run_code`）。 */
+export const IconCode = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M9 7.5 4.5 12 9 16.5M15 7.5 19.5 12 15 16.5" />
+  </Icon>
+);
+
+/** 分支：从一条线分出去的新线。 */
+export const IconBranch = (p: IconProps) => (
+  <Icon {...p}>
+    <circle cx="7" cy="5.5" r="2.2" />
+    <circle cx="7" cy="18.5" r="2.2" />
+    <circle cx="17" cy="9.5" r="2.2" />
+    <path d="M7 7.7v8.6" />
+    <path d="M17 11.7c0 3.2-2.4 5-5.4 5.6" />
+  </Icon>
+);
+
 export const IconHistory = (p: IconProps) => (
   <Icon {...p}>
     <path d="M3 12a9 9 0 1 0 3-6.7" />

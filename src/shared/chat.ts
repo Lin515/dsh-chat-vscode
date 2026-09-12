@@ -11,10 +11,20 @@ export type ConnectionState = "connecting" | "ready" | "error";
 /**
  * 附件种类。
  *
- * 没有 `folder`：目录的内容无法内嵌，按「不能内嵌」处理——其带引号的路径直接
- * 插进输入框，而不是变成一个芯片（见 `dsh/attachments.classifyPath`）。
+ * 与官方客户端的两条路一一对应（见 `dsh/references.ts` 的文件头说明）：
+ * - `image`：图片按内容块发送（官方同样内联图片字节）；
+ * - `file`：**上传**后拿 `receiptId` 发送，不再内联正文；
+ * - `reference`：`@path` 引用，正文里只出现路径 token；
+ * - `selection`：编辑器选区——没有对应的官方原语（官方靠引用 + read 工具），
+ *   保留为「把这段代码贴进正文」的便利能力。
  */
-export type AttachmentKind = "file" | "image" | "selection" | "context";
+export type AttachmentKind = "file" | "image" | "selection" | "context" | "reference";
+
+/** 文件附件的上传生命周期（官方 `DraftFileUpload`）。 */
+export type UploadState =
+  | { status: "uploading"; loaded: number; total?: number }
+  | { status: "ready"; receiptId: string }
+  | { status: "error"; message: string };
 
 export interface Attachment {
   id: string;
@@ -23,15 +33,31 @@ export interface Attachment {
   path?: string;
   /** 展示名：优先相对工作区的路径。 */
   name: string;
-  /** 随消息发送的文本内容（选区、文件正文）。 */
+  /**
+   * 随消息发送的文本内容。
+   *
+   * **只有选区与 `context` 用**：文件不再内联正文（改为上传或 `@` 引用）。
+   */
   text?: string;
   /** 图片的 data URL。 */
   dataUrl?: string;
   /** 图片字节数。 */
   bytes?: number;
+  /** 该文件附件的上传状态（`kind === "file"` 时）。 */
+  upload?: UploadState;
+  /** `@` 引用的目标类型（`kind === "reference"` 时）。 */
+  referenceKind?: "file" | "directory";
 }
 
-export type ToolStatus = "pending" | "running" | "ok" | "error";
+/**
+ * 工具行的状态。
+ *
+ * `stopped` 是官方 `ToolRowState` 的第四态：工具调用被**中断**（`turn/end` 因
+ * abort 收场时，官方为所有未结算的调用**合成**一个 `error.code === 'interrupted'`
+ * 的结果）。它与 `error` 的区别不只是颜色——中断不是工具的失败，界面用警告色而非
+ * 错误色，且不该把结果文本渲染成报错。
+ */
+export type ToolStatus = "pending" | "running" | "ok" | "error" | "stopped";
 
 /** diff 的一行：上下文 / 新增 / 删除。 */
 export interface DiffLineView {
@@ -109,6 +135,14 @@ export interface ToolCallView {
   diff?: DiffHunkView[];
   /** 图片结果（data URL）。 */
   images?: string[];
+  /**
+   * 终端类结果的退出状态（`parseExitStatus` 的产物）。
+   *
+   * 结果正文里那行 `[exit code: N]` 已被剥掉，改由这两个字段承载；界面据此把
+   * 非零退出呈现为失败（bash/pwsh 工具**故意**不把非零退出标成 isError）。
+   */
+  exitCode?: number;
+  signal?: string;
   /** 该工具产生的可交付文件。 */
   files?: { path: string; description?: string }[];
   startedAt?: number;
@@ -165,6 +199,7 @@ export type Segment =
   | { kind: "approval"; id: string; approval: ApprovalView }
   | { kind: "question"; id: string; question: QuestionView }
   | { kind: "injected"; id: string; injected: InjectedView }
+  | { kind: "command"; id: string; command: CommandRunView }
   | { kind: "notice"; id: string; level: "info" | "warn" | "error"; text: string };
 
 export interface UsageView {
@@ -211,6 +246,14 @@ export interface MessageView {
   /** 本 step 的用量：只用于上下文占用条与输出速度（tok/s），不再单独成行展示。 */
   usage?: UsageView;
   deliverables?: DeliverableView[];
+  /**
+   * 本轮**产生**的文件（成功的 write / edit / str_replace_editor 调用）。
+   *
+   * 与 `deliverables`（`present` 工具的显式申报）是两回事：官方也分开算——
+   * 这是从工具参数推导的，不依赖模型记得在正文里点名（`dsh-client-ui-deliverables`
+   * 的 `producedForClosing`）。界面在轮尾列出它们。
+   */
+  produced?: string[];
   /** 出错时的提示文本。 */
   error?: string;
 }
@@ -268,17 +311,77 @@ export interface ModelSelectionView {
   acceptsImage?: boolean;
 }
 
+/** 目标生命周期（`GoalSnapshot.phase` 词表，逐字取自 `dsh-goal`）。 */
+export type GoalPhase = "active" | "paused" | "blocked" | "complete";
+
+/**
+ * 目标条的数据（`goal` 投影的**嵌套**形状）。
+ *
+ * 线格式是
+ * `{ goal: { id, revision, objective, phase, blockedReason?, maxGoalRounds },
+ *    roundsStarted, createdAt, updatedAt }`
+ * ——目标本体嵌在 `goal` 里，轮次计数却在**外层**。
+ * 早先按扁平的 `{objective, phase, rounds, maxRounds}` 读，于是
+ * `goal?.objective` 恒 undefined、状态恒被清空（docs/audit-summary.md §3）。
+ */
 export interface GoalView {
+  id?: string;
+  revision?: number;
   objective: string;
-  phase: string;
+  phase: GoalPhase;
+  /** 已开始的轮次数（外层 `roundsStarted`）。 */
   rounds: number;
+  /** 轮次上限（`goal.maxGoalRounds`；契约里是必填字段）。 */
   maxRounds?: number;
+  /** 仅在 `phase === "blocked"` 时给出。 */
+  blockedReason?: string;
 }
 
+/**
+ * 子代理（子代理面板一行）。
+ *
+ * 两个来源的字段集**不一样**，别互相套用：
+ * - `subagents/list` RPC 返回 `SubagentListEntry`：`{kind:'child', id, activity,
+ *   hasChildren, mode, label?}`；
+ * - `subagentCatalog` **投影**返回 `SubagentCatalogEntry`：`{id, createdAt, mode,
+ *   label?}`——**没有 `kind`/`activity`**。
+ *
+ * 早先把 RPC 行的过滤（`kind === "child"`）套在投影上，于是面板每次刷新都被
+ * 清空（docs/audit-summary.md §4）。
+ */
 export interface SubagentView {
   id: string;
   label: string;
-  activity: "running" | "inactive";
+  /**
+   * 生命周期模式。打开子代理对话时必须原样带上：硬编码 `continuable` 会被
+   * 宿主以 `subagent/unauthorized` 拒绝 one-shot 子代理。
+   */
+  mode: "one-shot" | "continuable";
+  /**
+   * 是否驻留（`SubagentListEntry.activity`，仅 RPC 行有）。
+   *
+   * 投影没有这个字段，所以投影刷新时保留已知值、未知就**不下发**——
+   * 界面据此决定画不画状态点，而不是猜一个「正在运行」。
+   */
+  activity?: "running" | "inactive";
+}
+
+/**
+ * 一条斜杠命令的执行记录。
+ *
+ * 由会话日志里的 `command/run` ↔ `command/done` 按 `commandId` 配对折出：
+ * 官方 web 端把它渲染成持久节点（两个事件都是**日志事件**，不是模型表层），
+ * 这样任何入口发出的命令都有可见结果——包括命令面板上的按钮。
+ */
+export interface CommandRunView {
+  commandId: string;
+  /** 命令名（不含前导斜杠）。 */
+  name: string;
+  /** 命令名之后的原始参数（`command/run` 的 `args`，前导空白含在内）。 */
+  args?: string;
+  state: "running" | "ok" | "error";
+  /** 处理器给出的结果文案；成功时也可能没有。 */
+  text?: string;
 }
 
 export interface JobItemView {
@@ -321,6 +424,13 @@ export interface CommandView {
   name: string;
   description: string;
   hint?: string;
+  /**
+   * 这条其实是**技能**而非斜杠命令（来自 `skills/list`）。
+   *
+   * 技能没有 `commands/execute` 处理器：选中它只是把名字写进正文（用户照着
+   * 点名让模型调起），所以界面要标出来，别让用户以为回车就会执行。
+   */
+  skill?: boolean;
 }
 
 /** 文件引用候选（fileReferences/list）。 */
@@ -386,6 +496,13 @@ export interface ChatState {
   running: boolean;
   /** 编辑类节点的 diff 排版（对应 dshChat.diffLayout）。 */
   diffLayout?: DiffLayout;
+  /**
+   * 字号档位（对应 `dshChat.fontSize`）：`auto` 跟随 VS Code 注入的字号。
+   * 界面只把它当 CSS 变量用，不做逻辑判断。
+   */
+  fontSize?: "auto" | "small" | "medium" | "large";
+  /** 字号档位换算出的基准像素；`auto` 时不下发（由 VS Code 变量决定）。 */
+  fontSizePx?: number;
   /** 排队中（尚未发送）的消息列表，来自 session/control 的 queue 帧。 */
   queueItems: QueuedMessageView[];
   attachments: Attachment[];
@@ -439,6 +556,31 @@ export interface ChatState {
    * 启发式估算 token 数——是构成占比，不是计费值，也不与占用分子相加。
    */
   contextBreakdown?: { systemTokens: number; toolsTokens: number; messageTokens: number };
+  /**
+   * 全日志累计的 provider 用量（`tokenUsage` 投影），四桶**互不重叠**。
+   *
+   * 注意 reasoning token **已经算在 outputTokens 里**，不再单列——重复计入是
+   * 最容易被误读成「用量异常」的地方。这个值与占用条**不是一回事**：占用条是
+   * prompt 侧（不含 output），这里是全会话累计。
+   */
+  tokenUsage?: {
+    uncachedInputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+    cacheWriteTokens: number;
+  };
+  /** 轮次导航（`turnOutline` 投影）：每轮的序号、起始 seq 与摘要。 */
+  turnOutline?: { turn: number; seq: number; summary: string; startedAt: number }[];
+  /**
+   * 图片准入上限（`imageLimits` 投影）。
+   *
+   * 有它就能在**发送前**拦住超限的图并说明原因；没有就只能等服务端拒绝。
+   */
+  imageLimits?: {
+    maxImagesPerMessage?: number;
+    maxImageBytes?: number;
+    maxMessageImageBytes?: number;
+  };
   /**
    * 全日志会话统计（`sessionStats` 投影）：轮次/步骤计数与 LLM / 工具 / 首 token /
    * 解码墙钟时间合计。分页与压缩不改变这些数字。

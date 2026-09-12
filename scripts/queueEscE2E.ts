@@ -135,12 +135,17 @@ try {
   const dispatched = await until(() => view.userTexts().some((t) => t.includes("队首")), 25_000, 300);
   check("队首消息已发出", dispatched);
 
-  // 队尾排在队首之后，要等队首那一轮跑完才会被接续——等它出现即可
+  // 队尾排在队首之后，要等队首那一轮跑完才会被接续——等它出现即可。
+  //
+  // 窗口刻意给得宽（180s）：队首那条会让模型**真的做点事**（读文件、改文件），
+  // 耗时完全取决于模型与工具，实测同一脚本在不同run 之间能差出一分钟以上。
+  // 90s 时曾出现「队首跑完但队尾还没轮到」的假失败——断言的语义（队尾最终会被
+  // 接续）没错，错的是窗口太短，而假失败会让人去追一个不存在的回归。
   const bothRan = await until(
     () =>
       view.userTexts().some((t) => t.includes("队首")) &&
       view.userTexts().some((t) => t.includes("队尾")),
-    90_000,
+    180_000,
     400,
   );
   check("队尾也被接续执行", bothRan, `turn/start=${view.turnStarts()} queue=${view.queue.length}`);

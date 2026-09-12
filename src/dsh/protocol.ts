@@ -96,7 +96,7 @@ export interface SessionControlFrame {
 
 export interface ReasoningBlock { type: "reasoning"; text: string }
 export interface TextBlock { type: "text"; text: string }
-export interface ImageBlock { type: "image"; attachment: { attachmentId: string; mediaType: string; bytes?: number; name?: string } }
+export interface ImageBlock { type: "image"; attachment: { attachmentId: string; mediaType: string; bytes?: number; name?: string; width?: number; height?: number } }
 export interface FileBlock { type: "file"; attachment: { attachmentId: string; name: string; bytes?: number } }
 export interface ToolCallBlock { type: "tool-call"; id: string; name: string; arguments: string }
 export interface ToolResultBlock { type: "tool-result"; toolCallId: string; content: ContentBlock[]; isError?: boolean }
@@ -189,6 +189,10 @@ export const RENDERED_EVENT_TYPES: ReadonlySet<string> = new Set([
   "permission/preset",
   "sandbox/mode",
   "deliverables/presented",
+  "command/run",
+  "command/done",
+  "llm/retry",
+  "llm/retry-started",
   "compaction/start",
   "compaction/summary",
   "compaction/end",
@@ -218,9 +222,6 @@ export const RENDERED_EVENT_TYPES: ReadonlySet<string> = new Set([
 export const SILENT_EVENT_TYPES: ReadonlySet<string> = new Set([
   // inbox 队列簿记：插入 / 编辑 / 领取 / 取消（每条用户消息至少两条）
   "agent/inbox/spliced",
-  // 斜杠命令节点（官方 web 端渲染）
-  "command/run",
-  "command/done",
   // 上下文压缩的裁剪明细（start/summary/end 已渲染，prune 只是记账）
   "compaction/prune",
   // 消息反馈插件
@@ -230,9 +231,6 @@ export const SILENT_EVENT_TYPES: ReadonlySet<string> = new Set([
   // 钩子
   "hook/invoked",
   "hook/result",
-  // 模型重试（官方 web 端渲染重试提示）
-  "llm/retry",
-  "llm/retry-started",
   // 定时任务
   "schedule/change",
   // 会话日志上报回执

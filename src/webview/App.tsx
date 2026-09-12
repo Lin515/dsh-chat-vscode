@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import type { ChatState } from "../shared/chat";
 import type { HostToWebview } from "../shared/ipc";
 import { post, subscribe } from "./bridge";
@@ -125,7 +125,7 @@ function ConnectionBar({ state }: { state: ChatState }) {
       {state.connection === "connecting" ? <Spinner size={11} /> : null}
       <span>
         {isError
-          ? state.connectionDetail ?? texts.connectionFailed
+          ? resolveText(state.connectionDetail ?? texts.connectionFailed, texts)
           : `${texts.connecting}${state.serverUrl ? ` ${state.serverUrl}` : ""}`}
       </span>
       <span className="spacer" />
@@ -252,8 +252,14 @@ export function App() {
     observer.observe(el);
     return () => observer.disconnect();
   }, []);
-  // 文案跟随 VS Code 显示语言；词典随语言切换而重建，界面即时更新
+  // 文案跟随 VS Code 显示语言（或 `dshChat.language` 的固定选择）；
+  // 词典随语言切换而重建，界面即时更新
   const texts = dictionaryFor(normalizeLocale(state.locale));
+  // 字号档位：只写一个 CSS 变量，不动任何布局代码。
+  // `auto` 时不下发像素值，`--font-size` 继续取 VS Code 注入的 `--vscode-font-size`。
+  const fontStyle = state.fontSizePx
+    ? ({ "--font-size": `${state.fontSizePx}px` } as CSSProperties)
+    : undefined;
   const closePanel = () => dispatch({ type: "ui/setPanel", panel: "none" });
 
   // 下面的监听只在挂载时注册一次，running 用 ref 读，避免闭包里是首帧的旧值
@@ -281,7 +287,7 @@ export function App() {
 
   return (
     <TextsContext.Provider value={texts}>
-      <div ref={appRef} className={`app${mini ? " is-mini" : ""}`}>
+      <div ref={appRef} className={`app${mini ? " is-mini" : ""}`} style={fontStyle}>
         <Header state={state} dispatch={dispatch} />
         <ConnectionBar state={state} />
         <NoticeBar
@@ -294,9 +300,29 @@ export function App() {
             {state.messages.length === 0 ? (
               <EmptyState />
             ) : (
-              state.messages.map((message) => (
-                <Message key={message.id} message={message} diffLayout={state.diffLayout} />
-              ))
+              <>
+                {/* 「加载更早」：跟随窗口只带 60 条，更早的内容从没进过客户端。
+                    按钮只在服务端说「还有更早的」时出现——空按钮比没有按钮更烦人。 */}
+                {state.hasMoreHistory ? (
+                  <button
+                    className="history-more"
+                    disabled={state.running}
+                    title={state.running ? texts.historyBusy : texts.historyMore}
+                    onClick={() => post({ type: "loadMore" })}
+                  >
+                    {texts.historyMore}
+                  </button>
+                ) : null}
+                {state.messages.map((message, index) => (
+                  <Message
+                    key={message.id}
+                    message={message}
+                    diffLayout={state.diffLayout}
+                    // 只有非最后一条（= 不是正在跑的那一轮）才能作为分支锚点
+                    canBranch={!state.running || index < state.messages.length - 1}
+                  />
+                ))}
+              </>
             )}
           </div>
         </div>

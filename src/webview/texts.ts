@@ -52,8 +52,30 @@ export interface Texts {
   permConfirmEnable: string;
   enterPlanMode: string;
   exitPlanMode: string;
-  /** 计划模式挂起态提示条（下一条消息将进入计划模式，可取消）。 */
-  planPending: string;
+
+  /** 目标条（`goal` 投影）：阶段标签与三个操作。 */
+  goalActive: string;
+  goalPaused: string;
+  goalBlocked: string;
+  goalPause: string;
+  goalResume: string;
+  goalClear: string;
+
+  /** 命令节点：命令名 + 参数、运行中、结果。 */
+  commandRunning: string;
+  commandFailed: string;
+  /** 「没有这条命令」的提示（命令通道返回空结果）。 */
+  unknownCommand: (line: string) => string;
+  /** 命令通道调用失败（RPC 层面）的提示。 */
+  commandDispatchFailed: (line: string) => string;
+  /** 轮尾产出文件行的标签（与官方 `produced.label` 逐字一致）。 */
+  producedLabel: string;
+  /** 轮尾申报交付文件行的标签。 */
+  presentedLabel: string;
+  /** 产出文件超出展示上限时的剩余计数。 */
+  producedMore: (count: number) => string;
+  /** 打开产出文件的无障碍标题。 */
+  producedOpen: (name: string) => string;
 
   /** 子代理面板 */
   subagents: string;
@@ -75,6 +97,14 @@ export interface Texts {
   /** 斜杠命令 */
   commands: string;
   commandsEmpty: string;
+  /** `/` 列表里标记「这条是技能，不是可执行的斜杠命令」。 */
+  skillTag: string;
+  /** 文件附件上传失败（芯片上给重试）。 */
+  uploadFailed: string;
+  /** 有附件没上传成功、发送时被跳过（文件名预览 + 总个数）。 */
+  uploadIncomplete: (names: string, count: number) => string;
+  /** 还没有会话（连不上服务器），附件传不上去。 */
+  uploadNoSession: string;
   /** @ 提及 */
   mentionFiles: string;
   mentionEmpty: string;
@@ -127,6 +157,8 @@ export interface Texts {
   allow: string;
   allowAlways: string;
   reject: string;
+  /** 审批卡上的「调用标识」（工具调用的 callId）。 */
+  callId: (id: string) => string;
   questionHead: string;
   questionPlaceholder: string;
   submit: string;
@@ -143,6 +175,24 @@ export interface Texts {
   restartServer: string;
   /** 外部服务器要求授权时的「输入令牌」按钮。 */
   enterToken: string;
+  /** 连接失败条：外部服务器要令牌，而自动获取的那个没被接受。 */
+  authNeedsToken: string;
+  /** 连接失败条：令牌连续被拒。 */
+  authTokenRejected: string;
+  /** 连接失败条：连接断开，正在重连。 */
+  connectionLost: string;
+  /** 连接失败条：dsh 进程起不来（原因来自 spawn）。 */
+  serverSpawnFailed: (detail: string) => string;
+  /** 连接失败条：dsh web 进程退出（退出码 / 信号，取不到时是 `?`）。 */
+  serverExited: (code: string, signal: string) => string;
+  /** 连接失败条：等 dsh web 就绪超时（秒数）。 */
+  serverStartTimeout: (seconds: number) => string;
+  /** 连接失败条：该地址上连不上 dsh web（地址）。 */
+  serverUnreachable: (baseUrl: string) => string;
+  /** 连接失败条：崩溃遗留的 writer 锁（锁文件路径）。 */
+  serverStaleLock: (lockPath: string) => string;
+  /** 连接失败条末段：服务器日志尾部（原文照贴，不翻译）。 */
+  serverLogTail: (tail: string) => string;
 
   searchSessions: string;
   today: string;
@@ -177,11 +227,13 @@ export interface Texts {
   queueContentLost: string;
   /** 排队消息没能自动发出时的提示（内容已放回输入框）。 */
   queueDispatchFailed: string;
-  /** 附件是二进制/非文本、没能内联时的提示（文件名作为变量）。 */
-  attachmentNotInlined: (names: string) => string;
   turnFailed: string;
   interrupted: string;
   compacted: string;
+  /** 模型调用失败后自动重试（第几次 / 共几次）。 */
+  llmRetry: (attempt: number, max: number) => string;
+  /** 同上，但服务端没给重试上限。 */
+  llmRetryAlways: (attempt: number) => string;
   unknownEvent: (type: string) => string;
   toolRead: string;
   toolWrite: string;
@@ -193,6 +245,59 @@ export interface Texts {
   toolTodo: string;
   toolDelegate: string;
   toolPresent: string;
+  /** 官方 `TOOL_TITLE_KEYS` 里各工具的**自有标题**（不套用变体名）。 */
+  toolPwsh: string;
+  toolReadImage: string;
+  /** `others` 变体的兜底标题（官方 `tool.title.generic`）。 */
+  toolGeneric: string;
+  toolCode: string;
+  /** 非零退出码的标注（官方 `terminal.exitCode`）。 */
+  toolExitCode: (code: number) => string;
+  /** 被信号杀死的标注（官方 `terminal.signal`）。 */
+  toolSignal: (signal: string) => string;
+  /** 工具结果里图片的替代文本。 */
+  toolImageAlt: string;
+  /** 运行中工具行的状态点标签（官方 `row.running`）。 */
+  toolStatusRunning: string;
+  /** 已停止（官方 `row.stopped`：中断，不是失败）。 */
+  toolStatusStopped: string;
+  /** 失败（官方 `row.failed`）。 */
+  toolStatusFailed: string;
+  /** 达到输出 token 上限、回答被截断（官方 `turn-max-tokens` 节点）。 */
+  maxTokens: string;
+
+  /** 分支：从某个回复节点创建新的并行会话。 */
+  branchFromHere: string;
+  /** 分支创建失败的提示。 */
+  branchFailed: string;
+  /** 分支创建成功的提示（新会话标题作为变量）。 */
+  branchCreated: (title: string) => string;
+  /** 这条消息还取不到分支锚点（本轮尚未收尾）。 */
+  branchNoAnchor: string;
+  /** 分支按钮的禁用说明（运行中不能分支）。 */
+  branchRunning: string;
+  /** 会话列表里「这是分支」的角标。 */
+  branchTag: string;
+  /** 历史：加载更早的一页（跟随窗口只有 60 条）。 */
+  historyMore: string;
+  /** 生成中不能翻历史（重折会让流式正文重来）。 */
+  historyBusy: string;
+
+  /** 设置：字体大小。 */
+  fontSize: string;
+  fontSizeDesc: string;
+  /** 字体大小档位名。 */
+  fontSizeSmall: string;
+  fontSizeMedium: string;
+  fontSizeLarge: string;
+  fontSizeAuto: string;
+
+  /** 设置：界面语言。 */
+  language: string;
+  languageDesc: string;
+  languageAuto: string;
+  languageZh: string;
+  languageEn: string;
   /** 运行中的工具行展开后：`运行中 · 已用 {duration}`。 */
   toolRunning: string;
   /** 运行中的工具行展开后：说明为什么现在还没有输出。 */
@@ -242,7 +347,22 @@ const zh: Texts = {
   permConfirmEnable: "启用完全权限",
   enterPlanMode: "进入计划模式",
   exitPlanMode: "退出计划模式",
-  planPending: "下一条消息将进入计划模式",
+
+  goalActive: "进行中的目标",
+  goalPaused: "已暂停的目标",
+  goalBlocked: "受阻的目标",
+  goalPause: "暂停目标",
+  goalResume: "恢复目标",
+  goalClear: "清除目标",
+
+  commandRunning: "执行中",
+  commandFailed: "执行失败",
+  unknownCommand: (line) => `没有这条命令：${line}`,
+  commandDispatchFailed: (line) => `命令 ${line} 没能发出去`,
+  producedLabel: "本轮文件改动",
+  presentedLabel: "交付文件",
+  producedMore: (count) => `+ ${count} 个文件`,
+  producedOpen: (name) => `打开 ${name}`,
 
   subagents: "子代理",
   subagentsEmpty: "当前会话没有子代理",
@@ -260,6 +380,11 @@ const zh: Texts = {
   jobFailed: "失败",
   commands: "命令",
   commandsEmpty: "没有可用命令",
+  skillTag: "技能",
+  uploadFailed: "上传失败，点击重试",
+  uploadIncomplete: (names, count) =>
+    `有 ${count} 个文件没能上传（${names}），本次只发送了就绪的附件`,
+  uploadNoSession: "还没有连上服务器，附件传不上去",
   mentionFiles: "文件",
   mentionEmpty: "没有匹配的文件",
   mentionHint: "↑↓ 选择 · Enter 确认 · Esc 取消",
@@ -304,6 +429,7 @@ const zh: Texts = {
   allow: "允许",
   allowAlways: "始终允许",
   reject: "拒绝",
+  callId: (id) => `调用标识：${id}`,
   questionHead: "问题",
   questionPlaceholder: "或直接输入回答…",
   submit: "提交",
@@ -319,6 +445,20 @@ const zh: Texts = {
   reconnect: "重新连接",
   restartServer: "重启服务器",
   enterToken: "输入令牌",
+  authNeedsToken:
+    "外部 DSH 服务器需要访问令牌：请点「输入令牌」填入 dsh web 启动时打印的 token（或命令面板「DSH: 输入访问令牌」）。",
+  authTokenRejected:
+    "服务器要求授权，且自动获取的令牌未被接受。请用命令面板「DSH: 重启服务器」重启它。",
+  connectionLost: "与服务器的连接已断开，正在重连…",
+  serverSpawnFailed: (detail) => `启动 dsh 进程失败：${detail}`,
+  serverExited: (code, signal) => `dsh web 进程已退出（code=${code} signal=${signal}）`,
+  serverStartTimeout: (seconds) => `等待 dsh web 就绪超时（${seconds}s）`,
+  serverUnreachable: (baseUrl) => `无法连接 ${baseUrl}，请确认该地址上运行着 dsh web。`,
+  serverStaleLock: (lockPath) =>
+    `检测到崩溃遗留的文件锁：${lockPath}\n` +
+    "它属于一次被强制结束的 dsh 进程（锁的持有者已不在）。确认没有其它 dsh 正在运行后，" +
+    "删除该文件并重试；或执行命令「DSH: 重新连接」——扩展会在启动前清掉无主的锁。",
+  serverLogTail: (tail) => `日志尾部：\n${tail}`,
 
   searchSessions: "搜索历史对话",
   today: "今天",
@@ -344,13 +484,14 @@ const zh: Texts = {
   turnFailed: "本轮执行失败",
   interrupted: "本轮被中断",
   compacted: "上下文已压缩",
+  llmRetry: (attempt, max) => `模型调用失败，正在重试（第 ${attempt} / ${max} 次）`,
+  llmRetryAlways: (attempt) => `模型调用失败，正在重试（第 ${attempt} 次）`,
   /** 当前模型不支持图片输入时的提示（模型名作为变量）。 */
   imagePathsInserted: (count, model) =>
     `模型「${model}」不支持图片输入，已把 ${count} 个路径插入输入框`,
   queueAttachmentsLost: "这条消息的附件无法还原，请重新添加（正文已放回输入框）",
   queueContentLost: "排队消息的内容无法还原，已只中止当前轮",
   queueDispatchFailed: "排队消息没能自动发出，内容已放回输入框",
-  attachmentNotInlined: (names) => `${names} 不是文本文件，只把路径发给了模型（未内联内容）`,
   unknownEvent: (type) => `遇到了本客户端不认识的事件「${type}」，已跳过其内容。`,
   toolRead: "读取",
   toolWrite: "写入",
@@ -362,6 +503,39 @@ const zh: Texts = {
   toolTodo: "更新待办",
   toolDelegate: "委派子代理",
   toolPresent: "交付文件",
+  toolPwsh: "Pwsh",
+  toolReadImage: "读取图片",
+  toolGeneric: "工具调用",
+  toolCode: "代码",
+  toolExitCode: (code) => `退出码 ${code}`,
+  toolSignal: (signal) => `被信号 ${signal} 终止`,
+  toolImageAlt: "工具返回的图片",
+  toolStatusRunning: "运行中",
+  toolStatusStopped: "已停止",
+  toolStatusFailed: "失败",
+  maxTokens: "已达到输出 token 上限，回答被截断。发送「继续」可接着写。",
+
+  branchFromHere: "从这里分支",
+  branchFailed: "创建分支失败",
+  branchCreated: (title) => `已创建分支：${title}`,
+  branchNoAnchor: "这条消息还取不到分支锚点（本轮尚未收尾），暂时不能分支",
+  branchRunning: "生成中不能分支",
+  branchTag: "分支",
+  historyMore: "加载更早的消息",
+  historyBusy: "生成中不能加载历史，请等这一轮结束",
+
+  fontSize: "字体大小",
+  fontSizeDesc: "聊天界面的字号（跟随 VS Code 或固定档位）。",
+  fontSizeSmall: "小",
+  fontSizeMedium: "中",
+  fontSizeLarge: "大",
+  fontSizeAuto: "跟随 VS Code",
+
+  language: "界面语言",
+  languageDesc: "聊天界面的显示语言（默认跟随 VS Code）。",
+  languageAuto: "跟随 VS Code",
+  languageZh: "简体中文",
+  languageEn: "English",
   toolRunning: "运行中 · 已用 {duration}",
   toolRunningHint: "输出会在执行结束后显示",
 };
@@ -409,7 +583,22 @@ const en: Texts = {
   permConfirmEnable: "Enable full access",
   enterPlanMode: "Enter plan mode",
   exitPlanMode: "Exit plan mode",
-  planPending: "Plan mode will be enabled on your next message",
+
+  goalActive: "Ongoing Goal",
+  goalPaused: "Paused Goal",
+  goalBlocked: "Blocked Goal",
+  goalPause: "Pause goal",
+  goalResume: "Resume goal",
+  goalClear: "Clear goal",
+
+  commandRunning: "Running",
+  commandFailed: "Failed",
+  unknownCommand: (line) => `No such command: ${line}`,
+  commandDispatchFailed: (line) => `Could not dispatch ${line}`,
+  producedLabel: "Files changed",
+  presentedLabel: "Presented files",
+  producedMore: (count) => `+ ${count} file${count === 1 ? "" : "s"}`,
+  producedOpen: (name) => `Open ${name}`,
 
   subagents: "Subagents",
   subagentsEmpty: "This session has no subagents",
@@ -427,6 +616,11 @@ const en: Texts = {
   jobFailed: "failed",
   commands: "Commands",
   commandsEmpty: "No commands available",
+  skillTag: "Skill",
+  uploadFailed: "Upload failed — click to retry",
+  uploadIncomplete: (names, count) =>
+    `${count} file(s) could not be uploaded (${names}); only the ready attachments were sent`,
+  uploadNoSession: "Not connected to the server yet; the attachment cannot be uploaded",
   mentionFiles: "Files",
   mentionEmpty: "No matching files",
   mentionHint: "↑↓ select · Enter confirm · Esc cancel",
@@ -471,6 +665,7 @@ const en: Texts = {
   allow: "Allow",
   allowAlways: "Always allow",
   reject: "Reject",
+  callId: (id) => `Call ID: ${id}`,
   questionHead: "Question",
   questionPlaceholder: "Or type your own answer…",
   submit: "Submit",
@@ -486,6 +681,21 @@ const en: Texts = {
   reconnect: "Reconnect",
   restartServer: "Restart server",
   enterToken: "Enter token",
+  authNeedsToken:
+    "The external DSH server requires an access token: click “Enter token” and paste the token printed by dsh web (or run “DSH: Enter Access Token” from the Command Palette).",
+  authTokenRejected:
+    "The server requires authentication and the token obtained automatically was rejected. Restart it with “DSH: Restart Server” from the Command Palette.",
+  connectionLost: "Lost the connection to the server; reconnecting…",
+  serverSpawnFailed: (detail) => `Could not start the dsh process: ${detail}`,
+  serverExited: (code, signal) => `The dsh web process exited (code=${code} signal=${signal})`,
+  serverStartTimeout: (seconds) => `Timed out waiting for dsh web to become ready (${seconds}s)`,
+  serverUnreachable: (baseUrl) => `Cannot reach ${baseUrl}; make sure dsh web is running there.`,
+  serverStaleLock: (lockPath) =>
+    `Found a file lock left behind by a crash: ${lockPath}\n` +
+    "It belongs to a dsh process that was force-killed (its owner is gone). Once you are sure no " +
+    "other dsh is running, delete the file and retry; or run “DSH: Reconnect” — the extension " +
+    "clears ownerless locks before starting the server.",
+  serverLogTail: (tail) => `Log tail:\n${tail}`,
 
   searchSessions: "Search past sessions",
   today: "Today",
@@ -511,12 +721,13 @@ const en: Texts = {
   turnFailed: "This turn failed",
   interrupted: "This turn was interrupted",
   compacted: "Context compacted",
+  llmRetry: (attempt, max) => `The model call failed; retrying (attempt ${attempt} of ${max})`,
+  llmRetryAlways: (attempt) => `The model call failed; retrying (attempt ${attempt})`,
   imagePathsInserted: (count, model) =>
     `Model "${model}" does not accept image input; inserted ${count} path(s) into the box`,
   queueAttachmentsLost: "Attachments could not be restored; please re-attach them (text is back in the box)",
   queueContentLost: "Could not restore the queued message; only the current turn was stopped",
   queueDispatchFailed: "The queued message could not be sent; its content is back in the box",
-  attachmentNotInlined: (names) => `${names} is not a text file; only the path was sent (contents not inlined)`,
   unknownEvent: (type) => `Skipped an event this client does not understand: "${type}".`,
   toolRead: "Read",
   toolWrite: "Write",
@@ -528,6 +739,39 @@ const en: Texts = {
   toolTodo: "Update to-dos",
   toolDelegate: "Delegate",
   toolPresent: "Deliver",
+  toolPwsh: "Pwsh",
+  toolReadImage: "Read image",
+  toolGeneric: "Tool call",
+  toolCode: "Code",
+  toolExitCode: (code) => `exit code ${code}`,
+  toolSignal: (signal) => `killed by signal ${signal}`,
+  toolImageAlt: "Image returned by the tool",
+  toolStatusRunning: "Running",
+  toolStatusStopped: "Stopped",
+  toolStatusFailed: "Failed",
+  maxTokens: "Output token limit reached; the answer was truncated. Send “continue” to resume.",
+
+  branchFromHere: "Branch from here",
+  branchFailed: "Could not create the branch",
+  branchCreated: (title) => `Branch created: ${title}`,
+  branchNoAnchor: "No branch anchor for this message yet (the turn has not finished)",
+  branchRunning: "Cannot branch while generating",
+  branchTag: "Branch",
+  historyMore: "Load earlier messages",
+  historyBusy: "Cannot load history while generating — wait for this turn to finish",
+
+  fontSize: "Font size",
+  fontSizeDesc: "Chat UI font size (follow VS Code or a fixed step).",
+  fontSizeSmall: "Small",
+  fontSizeMedium: "Medium",
+  fontSizeLarge: "Large",
+  fontSizeAuto: "Follow VS Code",
+
+  language: "Language",
+  languageDesc: "Language of the chat UI (follows VS Code by default).",
+  languageAuto: "Follow VS Code",
+  languageZh: "简体中文",
+  languageEn: "English",
   toolRunning: "Running · {duration} elapsed",
   toolRunningHint: "Output appears once the call finishes",
 };
@@ -559,8 +803,20 @@ export function fill(template: string, values: Record<string, string | number>):
 /**
  * 宿主用 `@key` / `@key:arg` 这种语言中立的标记传递文案，
  * 由界面按当前语言翻译；不以 `@` 开头的文本（如模型原始报错）原样显示。
+ *
+ * 连接失败条的说明是**多行**拼接的（原因 + 遗留锁提示 + 服务器日志尾部），
+ * 所以按行解析：每一行各自是一个标记，不认识的 key 原样保留——这样宿主
+ * 拼进日志原文也不会被误伤。
  */
 export function resolveText(text: string, texts: Texts): string {
+  if (!text.includes("@")) return text;
+  return text
+    .split("\n")
+    .map((line) => resolveMarker(line, texts))
+    .join("\n");
+}
+
+function resolveMarker(text: string, texts: Texts): string {
   if (!text.startsWith("@")) return text;
   const [key, ...rest] = text.slice(1).split(":");
   const arg = rest.join(":");
@@ -573,6 +829,17 @@ export function resolveText(text: string, texts: Texts): string {
       return texts.stopped;
     case "compacted":
       return texts.compacted;
+    case "llmRetryAlways":
+      return texts.llmRetryAlways(Number(arg));
+    case "llmRetry": {
+      // 参数形如 `<第几次>:<共几次>`
+      const separator = arg.indexOf(":");
+      const attempt = Number(separator < 0 ? arg : arg.slice(0, separator));
+      const max = Number(separator < 0 ? "" : arg.slice(separator + 1));
+      return texts.llmRetry(attempt, max);
+    }
+    case "maxTokens":
+      return texts.maxTokens;
     case "copied":
       return texts.copied;
     case "settingsSaved":
@@ -585,10 +852,56 @@ export function resolveText(text: string, texts: Texts): string {
       return texts.queueContentLost;
     case "queueDispatchFailed":
       return texts.queueDispatchFailed;
-    case "attachmentNotInlined":
-      return texts.attachmentNotInlined(arg);
+    case "uploadNoSession":
+      return texts.uploadNoSession;
+    case "historyBusy":
+      return texts.historyBusy;
+    case "branchNoAnchor":
+      return texts.branchNoAnchor;
+    case "branchFailed":
+      return texts.branchFailed;
+    case "branchCreated":
+      return texts.branchCreated(arg);
     case "unknownEvent":
       return texts.unknownEvent(arg);
+    case "unknownCommand":
+      return texts.unknownCommand(arg);
+    case "commandFailed":
+      return texts.commandDispatchFailed(arg);
+    case "callId":
+      return texts.callId(arg);
+    case "toolGeneric":
+      return texts.toolGeneric;
+    case "connectionLost":
+      return texts.connectionLost;
+    case "authNeedsToken":
+      return texts.authNeedsToken;
+    case "authTokenRejected":
+      return texts.authTokenRejected;
+    case "serverSpawnFailed":
+      return texts.serverSpawnFailed(arg);
+    case "serverUnreachable":
+      return texts.serverUnreachable(arg);
+    case "serverStaleLock":
+      return texts.serverStaleLock(arg);
+    case "serverLogTail":
+      return texts.serverLogTail(arg);
+    case "serverStartTimeout":
+      return texts.serverStartTimeout(Number(arg));
+    case "serverExited": {
+      // 参数形如 `<code>:<signal>`，两者都可能是 `?`
+      const separator = arg.indexOf(":");
+      const code = separator < 0 ? arg : arg.slice(0, separator);
+      const signal = separator < 0 ? "" : arg.slice(separator + 1);
+      return texts.serverExited(code, signal);
+    }
+    case "uploadIncomplete": {
+      // 参数形如 `<个数>:<文件名预览>`：个数在前，文件名里可能含冒号，所以按第一段切
+      const separator = arg.indexOf(":");
+      const count = Number(separator < 0 ? arg : arg.slice(0, separator));
+      const names = separator < 0 ? "" : arg.slice(separator + 1);
+      return texts.uploadIncomplete(names, Number.isFinite(count) ? count : 0);
+    }
     case "imagePathsInserted": {
       // 参数形如 `<张数>:<模型名>`：张数在前，模型名里可能含冒号，所以按第一段切
       const separator = arg.indexOf(":");

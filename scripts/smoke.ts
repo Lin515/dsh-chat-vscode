@@ -277,9 +277,17 @@ try {
       message.role === "user"
         ? (message.text ?? "").slice(0, 40)
         : message.segments
-            .map((s) => (s.kind === "text" ? s.text : s.kind === "thinking" ? "(思考)" : ""))
+            .map((s) =>
+              s.kind === "text"
+                ? s.text
+                : s.kind === "thinking"
+                  ? "(思考)"
+                  : s.kind === "command"
+                    ? `(命令 /${s.command.name} → ${s.command.state})`
+                    : "",
+            )
             .join("")
-            .slice(0, 60);
+            .slice(0, 80);
     console.log(`   [${message.role}] 段落=${kinds} ${JSON.stringify(preview)}`);
   }
   const usage = messages.find((m) => m.usage)?.usage;

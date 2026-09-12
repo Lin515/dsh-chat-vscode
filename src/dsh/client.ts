@@ -127,6 +127,69 @@ export class DshClient {
 
   // ---------- 一元 RPC ----------
 
+  /**
+   * 上传一个文件，拿回它的 `receiptId`（官方 `dsh-client-file-upload`）。
+   *
+   * 走**原始 HTTP 路由**而不是 RPC 信封：
+   * `POST /api/session/uploadFileBinary?sessionId&name`，
+   * `content-type: application/octet-stream`，body 是原始字节。
+   * 响应**永远是 HTTP 200**，成败在 JSON 信封里
+   * （`{ok:true,value:{receiptId,file}}` / `{ok:false,error:{code,message,details}}`）。
+   *
+   * `receiptId` 只对铸造它的会话作用域有效——拿别的会话的 receipt 去发 prompt
+   * 会被宿主以 `session/attachment-invalid`（`FILE_NOT_STAGED`）拒绝。
+   */
+  async uploadFile(
+    sessionId: string,
+    bytes: Uint8Array,
+    name?: string,
+  ): Promise<{ receiptId: string; file: { attachmentId: string; name: string; bytes: number } }> {
+    const query = new URLSearchParams({ sessionId });
+    if (name) query.set("name", name);
+    const headers: Record<string, string> = { "content-type": "application/octet-stream" };
+    if (this.cookie) headers.cookie = this.cookie;
+    const response = await fetch(`${this.baseUrl}/api/session/uploadFileBinary?${query.toString()}`, {
+      method: "POST",
+      headers,
+      // undici 接受 Uint8Array；TS 的 BodyInit 定义偏窄，这里收窄一次
+      body: bytes as unknown as Uint8Array<ArrayBuffer>,
+      signal: AbortSignal.timeout(120_000),
+    });
+    if (response.status === 401 || response.status === 403) {
+      throw new DshAuthError("上传文件时被拒绝：会话 cookie 已失效。");
+    }
+    if (response.status !== 200) {
+      throw new DshApiError("upload/transport", `file upload failed with HTTP ${response.status}`, undefined);
+    }
+    const parsed = (await response.json().catch(() => undefined)) as
+      | { ok?: unknown; value?: unknown; error?: { code?: string; message?: string } }
+      | undefined;
+    if (parsed?.ok !== true) {
+      throw new DshApiError(
+        parsed?.error?.code ?? "upload/failed",
+        parsed?.error?.message ?? "file upload failed",
+        undefined,
+      );
+    }
+    const value = parsed.value as
+      | { receiptId?: unknown; file?: { attachmentId?: unknown; name?: unknown; bytes?: unknown } }
+      | undefined;
+    const receiptId = value?.receiptId;
+    const file = value?.file;
+    if (
+      typeof receiptId !== "string" ||
+      typeof file?.attachmentId !== "string" ||
+      typeof file.name !== "string" ||
+      typeof file.bytes !== "number"
+    ) {
+      throw new DshApiError("upload/invalid", "file upload returned an invalid receipt", undefined);
+    }
+    return {
+      receiptId,
+      file: { attachmentId: file.attachmentId, name: file.name, bytes: file.bytes },
+    };
+  }
+
   async request<T>(method: string, args: Record<string, unknown>, timeoutMs = 60_000): Promise<T> {
     const attempt = async () => {
       const message: ClientRequest = {
@@ -361,13 +424,21 @@ export class DshClient {
   }
 
   /** 打开会话事件流（含逐 token 增量，必须带 assistantStream）。 */
-  followSession(sessionId: string, callbacks: StreamCallbacks): StreamHandle {
+  followSession(
+    sessionId: string,
+    callbacks: StreamCallbacks,
+    options: { maxMessages?: number; beforeSeq?: number } = {},
+  ): StreamHandle {
     return this.openStream(
       STREAMS.sessionFollow,
       {
         request: {
           address: { kind: "session", sessionId },
-          maxMessages: 60,
+          // 跟随窗口带多少条消息。默认 60：够渲染一屏多的上下文，又不至于每次
+          // 打开会话都把整段历史搬过来。往前翻页用 session/page（见 page()）。
+          maxMessages: options.maxMessages ?? 60,
+          // 从某个 seq 之前开始（「加载更早」用）：服务端只回该点之前的窗口
+          ...(options.beforeSeq === undefined ? {} : { beforeSeq: options.beforeSeq }),
           assistantStream: true,
         },
       },
