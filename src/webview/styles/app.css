@@ -1401,8 +1401,8 @@
   cursor: default;
 }
 
-/* mode pill: 始终只显示盾牌图标 + 下拉箭头（不显示权限名），
-   悬停 title 显示当前权限名，点开弹层可切换 */
+/* mode pill: 默认只显示盾牌图标 + 下拉箭头；工具栏宽度宽裕时（最低优先级那一档）
+   才补上权限名。悬停 title 显示当前权限名，点开弹层可切换 */
 .pill-mode {
   display: inline-flex;
   align-items: center;
@@ -1426,6 +1426,25 @@
 /* 权限胶囊：图标不被 flex 压扁裁掉 */
 .pill-mode > svg {
   flex: 0 0 auto;
+}
+
+/* 权限名（最低优先级那一档才渲染）：同样不换行、不撑破胶囊。
+   英文 "Workspace Write" 比「工作区写入」长近一倍，宽度由工具栏实测决定要不要显示，
+   这里的 ellipsis 只是最后一道保险（真被压到时也不出现半截字）。 */
+.pill-mode-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+/* 思考强度（模型右侧的次优先级元素）：只是当前档位的展示，点击开模型弹层。
+   比模型胶囊更淡——它是模型的一个属性，不是一个独立入口。 */
+.pill-effort {
+  color: var(--muted);
+  max-width: 96px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* ============================ 迷你模式（窄边栏收成图标条） ============================
@@ -1460,17 +1479,10 @@
   display: none;
 }
 
-/* 发送栏：只留权限图标 + 发送，其余工具按钮/上下文文字/tps 隐藏 */
-.app.is-mini .pill[data-mini="hide"],
-.app.is-mini .ctx-speed,
-.app.is-mini .running-line .lump-hint {
-  display: none;
-}
-
-/* 迷你模式里圆环保留（它本来就是图形，比文字更适合窄条），只把环内数字去掉 */
-.app.is-mini .ctx-ring-label {
-  display: none;
-}
+/* 迷你模式（<220px）下发送栏只保留间距收紧。
+   **显示哪些元素不在这里管**：那是工具栏自己的优先级分配（`toolbarFit.ts` +
+   Composer 的 useToolbarFit），按实测宽度算，比这个固定的 220px 阈值准得多
+   ——同样的 220px，中文「工作区写入」放得下、英文 "Workspace Write" 不一定。 */
 .app.is-mini .composer-bar {
   gap: 4px;
   padding: 4px 6px 5px;
@@ -1483,6 +1495,11 @@
   max-width: 100%;
 }
 
+/* 「按 ESC 停止」的提示在窄条里放不下，收进 title（与工具栏无关，仍是固定阈值） */
+.app.is-mini .running-line .lump-hint {
+  display: none;
+}
+
 .pill {
   display: inline-flex;
   align-items: center;
@@ -1493,6 +1510,11 @@
   color: var(--description);
   font-size: var(--font-size-2xs);
   white-space: nowrap;
+  /* 极窄（< 190px）时连 P0 三项都排不下，P0 由 CSS 压缩兜底：
+     胶囊不设下限、按内容省略号收窄，**不硬裁**（.pill-label 负责出省略号）。
+     工具栏的宽度分配不会走到这一步——那是「连模型名都放不下」的极端情形。 */
+  max-width: 100%;
+  overflow: hidden;
 }
 
 .pill:hover {
@@ -1506,8 +1528,8 @@
   max-width: 150px;
 }
 
-/* context-window usage, plain text: `xxxk/xxxk(xM)`; amber past 60% */
-/* 上下文占用：圆环 + 环内百分比。文字给精确数值，圆环给「还剩多少余地」。 */
+/* context-window usage: 圆环给「还剩多少余地」，宽裕时环右侧再给精确数值
+   `44K/128K`（最低优先级那一档）。环内**不写百分比**。 */
 .ctx-ring {
   display: inline-flex;
   align-items: center;
@@ -1540,16 +1562,16 @@
   transition: stroke-dasharray 0.25s ease;
 }
 
-.ctx-ring-label {
+.ctx-ring-text {
   font-size: var(--font-size-2xs);
 }
 
-/* 60% 起偏高、90% 起快满：与原来文字版同一套阈值语义 */
+/* 60% 起偏高、90% 起快满：与更早的文字版同一套阈值语义 */
 .ctx-ring.is-high .ctx-ring-value {
   stroke: var(--warning);
 }
 
-.ctx-ring.is-high .ctx-ring-label {
+.ctx-ring.is-high .ctx-ring-text {
   color: var(--warning);
 }
 
@@ -1557,7 +1579,7 @@
   stroke: var(--error);
 }
 
-.ctx-ring.is-critical .ctx-ring-label {
+.ctx-ring.is-critical .ctx-ring-text {
   color: var(--error);
 }
 
@@ -2049,11 +2071,49 @@
   padding: 4px 8px 5px;
   min-width: 0;
   font-size: var(--font-size-2xs);
+  /* 测量层（.composer-measure）是绝对定位的浮层，靠这个做定位基准 */
+  position: relative;
 }
 
 .composer-bar .spacer {
   flex: 1 1 auto;
   min-width: 0;
+}
+
+/* ============================ 工具栏的宽度测量层 ============================
+   工具栏显示哪些元素，取决于每个候选档位的**实际宽度**（见 toolbarFit.ts）。
+   做法是把所有候选档位都渲染到这里量一次 `getBoundingClientRect()`。
+
+   两条约束缺一不可：
+   1. 外层必须是**零尺寸 + overflow: hidden**：内层行宽是 max-content（否则会被
+      外层压窄、量出偏小的宽度），若外层不裁剪，这块比工具栏还宽的内容会把
+      webview 撑出横向滚动条；
+   2. 内层每一项 flex: 0 0 auto：默认的 flex-shrink: 1 会让它们在窄容器里被压缩，
+      量出来的就不是「自然宽度」了。
+   visibility: hidden 让它不进无障碍树、也不吃 Tab 焦点（所以里面那份按钮副本
+   不会被键盘选中）。 */
+.composer-measure {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.composer-measure-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: max-content;
+}
+
+.composer-measure-row > * {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
 }
 
 /* Send button: a compact primary chip, matching Continue's "⏎ Enter".

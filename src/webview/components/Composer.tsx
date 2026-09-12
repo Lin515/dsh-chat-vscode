@@ -1,4 +1,13 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
 import type { CommandView, FileRefView, GoalView } from "../../shared/chat";
 import type { AppState } from "../state";
 import { post } from "../bridge";
@@ -20,12 +29,13 @@ import {
   IconStop,
   IconTarget,
 } from "../icons";
-import { CtxText, Ellipsis, Popover, Spinner, formatDuration } from "./primitives";
+import { CtxText, Ellipsis, Popover, Spinner, contextNumbers, formatDuration } from "./primitives";
 import { ApprovalCard, QuestionCard } from "./Rows";
 import type { PendingInteraction } from "../pendingInteraction";
 import { insertAtCaret } from "../insert";
 import { segmentColumns } from "../segment";
 import { fill, resolveText, useTexts } from "../texts";
+import { BAR_ORDER, pickVariants, type ToolbarVariant } from "../toolbarFit";
 
 /**
  * 拖放的字节上限，与宿主 `attachments.ts` 的 `DROP_BYTES_LIMIT` 同值。
@@ -100,6 +110,83 @@ function findTrigger(text: string, caret: number): Trigger | undefined {
     return { kind: "command", start: before.length - query.length - 1, query };
   }
   return undefined;
+}
+
+/** 一帧都没结算时的空集合（模块级常量：避免每次渲染新建 Set 触发无谓的重渲染）。 */
+const EMPTY_RANKS: ReadonlySet<number> = new Set();
+
+/**
+ * 底部工具栏的自适应：量出候选档位的**实际宽度**，按 `toolbarFit.ts` 的优先级
+ * 决定这一帧显示哪些（分配规则在那边，这里只管「量」与「什么时候重量」）。
+ *
+ * 两个触发点：
+ * - 每次提交后的 layout effect：文案、字号、语言、模型名、数字位数变了就重量，
+ *   并且在 layout 阶段结算——不会先画一帧「全挤在一起」再收回去；
+ * - `.composer-bar` 的 ResizeObserver：侧栏被拖动、可用宽度变了就重量。
+ *
+ * 全程没有写死的像素阈值：「多宽显示谁」完全由实测宽度算出来，
+ * 所以换语言（权限名长短差近一倍）、换模型、调字号都自动跟上。
+ */
+function useToolbarFit(barRef: React.RefObject<HTMLDivElement>, variants: ToolbarVariant[]) {
+  /** 测量层里的 DOM（rank → 元素），宽度每次结算时重新读。 */
+  const nodes = useRef(new Map<number, HTMLElement>());
+  // 每次渲染刷新「当前档位表」：ResizeObserver 的回调引用是稳定的，
+  // 只有通过 ref 才能读到这一帧的表
+  const latest = useRef(variants);
+  latest.current = variants;
+  /** 上一次结算出的档位签名（排序后的 rank），用来判断要不要重新渲染。 */
+  const signature = useRef("");
+  const [shown, setShown] = useState<ReadonlySet<number>>(EMPTY_RANKS);
+
+  const fit = useCallback(() => {
+    const bar = barRef.current;
+    if (!bar) return;
+    const style = getComputedStyle(bar);
+    const px = (value: string) => Number.parseFloat(value) || 0;
+    // 可用宽度 = 内容盒宽度（clientWidth 已排除边框与滚动条）再扣掉左右内边距
+    const available = bar.clientWidth - px(style.paddingLeft) - px(style.paddingRight);
+    // 间距同样读实算值：宽/窄两种形态的 gap 不一样（`.app.is-mini` 会改它）
+    const gap = px(style.columnGap);
+    const measured = latest.current.map((variant) => ({
+      ...variant,
+      // 每次都**重新读 DOM**，不能沿用 ref 回调那一次的结果：文案/字号/语言变了
+      // 宽度就变，而节点本身没有重新挂载，ref 回调不会再触发
+      width: nodes.current.get(variant.rank)?.getBoundingClientRect().width ?? 0,
+    }));
+    const picked = [...pickVariants(measured, available, gap).values()]
+      .map((variant) => variant.rank)
+      .sort((a, b) => a - b)
+      .join(",");
+    if (picked === signature.current) return;
+    signature.current = picked;
+    setShown(new Set(picked ? picked.split(",").map(Number) : []));
+  }, [barRef]);
+
+  useLayoutEffect(fit);
+
+  useEffect(() => {
+    const bar = barRef.current;
+    if (!bar) return;
+    const observer = new ResizeObserver(fit);
+    observer.observe(bar);
+    return () => observer.disconnect();
+  }, [barRef, fit]);
+
+  // ref 回调必须**稳定**：每次渲染新建函数的话，React 会先把旧的解绑（传 null）
+  // 再绑新的，白白多一轮往返。档位表变没变看 rank 列表就够了。
+  const ranks = variants.map((variant) => variant.rank).join(",");
+  const register = useMemo(() => {
+    const map = new Map<number, (element: HTMLElement | null) => void>();
+    for (const rank of ranks ? ranks.split(",").map(Number) : []) {
+      map.set(rank, (element) => {
+        if (element) nodes.current.set(rank, element);
+        else nodes.current.delete(rank);
+      });
+    }
+    return map;
+  }, [ranks]);
+
+  return { shown, register };
 }
 
 export function Composer({
@@ -327,24 +414,6 @@ export function Composer({
   const currentPermission =
     permissions.find((item) => item.id === state.permission) ?? permissions[1];
 
-  // 窄边栏适配：测 .app 宽度，宽度 < 220px 进入「迷你模式」——
-  // 聊天列表/头部按钮/发送栏全部收成图标条，避免文字被裁半的「一层底一层」。
-  // 滞回（<220 进、≥232 出）避免临界抖动。拖到 VS Code 最小宽度时原生收起侧栏。
-  const appRef = useRef<HTMLDivElement>(null);
-  const [mini, setMini] = useState(false);
-  useEffect(() => {
-    const el = appRef.current;
-    if (!el) return;
-    const check = () => {
-      const w = el.clientWidth;
-      setMini((prev) => (prev ? w < 232 : w < 220));
-    };
-    check();
-    const observer = new ResizeObserver(check);
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, []);
-
   // 生成速度：优先取最近一条助手消息的 usage.tokensPerSecond（由宿主从 dsh 协议
   // 流式帧时间戳折叠得出：decode 窗口 = 首个 token delta → 最终消息，等价于
   // dsh web 客户端 `turn-metrics` 的 decode 吞吐口径，不含 prefill/工具等待）。
@@ -371,8 +440,158 @@ export function Composer({
 
 
 
+  /* ---------------- 底部工具栏：候选档位表 ---------------- */
+  //
+  // 每个档位一个节点，键是 `槽位:档位`，与 `toolbarFit.ts` 的 BAR_ORDER 一一对应。
+  // 这些节点是**先渲染、再决定显不显示**的：`useToolbarFit` 会把整张表渲染进一个
+  // 不可见的测量层里量出各自的实际宽度，再按优先级挑出这一帧显示哪些。
+  //
+  // 缺数据的档位（模型没有思考档位、还没有 tps、还没有上下文测量）直接不进表——
+  // 渲染成 null 的档位会白占一个坑位和一段间距，把本来装得下的东西挤掉。
+
+  /** 权限胶囊：`withLabel` 是用户口径里最低优先级那一档（图标 + 权限名）。 */
+  const permissionPill = (withLabel: boolean) => (
+    <button
+      className="pill-mode"
+      title={currentPermission.label}
+      onMouseDown={() => {
+        // 标记：接下来 Popover 的 mousedown 外部检测是「按钮触发的」，跳过
+        modeToggleRef.current = true;
+      }}
+      onClick={() => {
+        // 同一次交互内消费标志（mousedown 已先于 click 触发）
+        setTimeout(() => {
+          modeToggleRef.current = false;
+        }, 0);
+        setModeOpen((v) => {
+          // 经按钮关闭时顺带复位完全权限确认态
+          if (v) setConfirmFullAccess(false);
+          return !v;
+        });
+      }}
+    >
+      {currentPermission.icon}
+      {withLabel ? <span className="pill-mode-label">{currentPermission.label}</span> : null}
+      <IconChevronDown size={8} />
+    </button>
+  );
+
+  /** 模型切换按钮（P0）。 */
+  const modelPill = (
+    <button
+      className="pill"
+      title={texts.thinkingDepth}
+      onMouseDown={() => {
+        // 标记：接下来 Popover 的 mousedown 外部检测是「按钮触发的」，跳过
+        modelToggleRef.current = true;
+      }}
+      onClick={() => {
+        // 同一次交互内消费标志（mousedown 已先于 click 触发）
+        setTimeout(() => {
+          modelToggleRef.current = false;
+        }, 0);
+        setModelOpen((v) => !v);
+      }}
+    >
+      <span className="pill-label">{state.model?.label ?? texts.defaultModel}</span>
+      <IconChevronDown size={8} />
+    </button>
+  );
+
+  // 思考强度：用户口径的次优先级元素，显示在模型按钮右侧。
+  // 只读展示当前档位（改档位仍在弹层里选，避免点一下就把思考深度换掉）；
+  // 点它开/关**同一个**模型弹层（思考档位就在那一层里）。开合语义必须与模型
+  // 按钮**逐字一致**（都是 toggle + 同一个 modelToggleRef）——否则「弹层开着时
+  // 再点一下」在模型按钮上关闭、在思考强度上却没反应，看起来像按钮失灵。
+  const effort = state.model?.efforts?.find((item) => item.id === state.model?.reasoningEffort);
+  const effortPill = effort ? (
+    <button
+      className="pill pill-effort"
+      title={texts.thinkingDepth}
+      onMouseDown={() => {
+        // 与模型按钮共用同一个标志：两者开的是同一个弹层
+        modelToggleRef.current = true;
+      }}
+      onClick={() => {
+        // 同一次交互内消费标志（mousedown 已先于 click 触发）。
+        // toggle 与模型按钮同一语义：弹层开着时再点一下就关掉
+        setTimeout(() => {
+          modelToggleRef.current = false;
+        }, 0);
+        setModelOpen((v) => !v);
+      }}
+    >
+      {effort.name}
+    </button>
+  ) : null;
+
+  // 附件按钮是通用入口：图片按图片发送，其余文件逐字节上传
+  // （@ 只产生引用，真正上传只从这里发生），所以它不随模型是否支持图片而隐藏。
+  const attachPill = (
+    <button className="pill" title={texts.attachFile} onClick={() => post({ type: "addFiles" })}>
+      <IconAttach size={13} />
+    </button>
+  );
+
+  const speedText =
+    tps !== undefined ? (
+      <span className="ctx-speed" title={statsTitle || undefined}>
+        {tps.toFixed(1)} tps
+      </span>
+    ) : null;
+
+  // 上下文占用：三个值**同源**，都取自宿主按官方口径算好的 contextOccupancy。
+  // 刻意不回退到 usage / contextWindow 事件——那会得到一个含 output、
+  // 且压缩后不下降的数，与投影口径不是一回事（同一个圆环在不同时刻
+  // 代表不同东西，正是「数字卡住 / 乱跳」的观感来源）。
+  const ctxNumbers = contextNumbers(
+    state.contextOccupancy?.percent,
+    state.contextOccupancy?.usedTokens,
+    state.contextOccupancy?.contextWindow,
+  );
+  const ctxProps = {
+    percent: state.contextOccupancy?.percent,
+    used: state.contextOccupancy?.usedTokens,
+    total: state.contextOccupancy?.contextWindow,
+    // 明细里的缓存命中与构成是**独立**的投影，有就显示
+    usage: lastMessage?.usage,
+    breakdown: state.contextBreakdown,
+  };
+
+  const sendPill = state.running ? (
+    <button className="send-btn is-stop" title={texts.stopTitle} onClick={() => post({ type: "stop" })}>
+      <IconStop size={12} />
+    </button>
+  ) : (
+    <button className="send-btn" disabled={!canSend} title={texts.sendTitle} onClick={send}>
+      {texts.send}
+    </button>
+  );
+
+  const barNodes: Record<string, ReactNode> = {
+    "permission:icon": permissionPill(false),
+    "permission:label": permissionPill(true),
+    "model:full": modelPill,
+    "send:full": sendPill,
+    "effort:full": effortPill,
+    "attach:full": attachPill,
+    "tps:full": speedText,
+    "context:ring": ctxNumbers ? <CtxText {...ctxProps} /> : null,
+    "context:text": ctxNumbers ? <CtxText {...ctxProps} detailed /> : null,
+  };
+  const barVariants: ToolbarVariant[] = BAR_ORDER.filter(
+    (spec) => barNodes[`${spec.slot}:${spec.level}`] != null,
+  ).map((spec) => ({ ...spec, width: 0 }));
+  const barRef = useRef<HTMLDivElement>(null);
+  const { shown, register } = useToolbarFit(barRef, barVariants);
+  /** 这一帧实际要渲染的节点（槽位 → 节点），按优先级分配的结果。 */
+  const bar: Record<string, ReactNode> = {};
+  for (const variant of barVariants) {
+    if (shown.has(variant.rank)) bar[variant.slot] = barNodes[`${variant.slot}:${variant.level}`];
+  }
+
   return (
-    <div ref={appRef} className={`composer${mini ? " is-mini" : ""}`}>
+    <div className="composer">
       {/* 目标条：官方 dock 在输入框上方的同一个位置（`conversation.input.dock`） */}
       <GoalBar goal={state.goal} />
       {/* 待处理的审批 / 提问接管输入区（官方 `conversation.composer` 的 `pendingInteraction`
@@ -591,31 +810,13 @@ export function Composer({
             onKeyDown={onKeyDown}
           />
 
-          <div className="composer-bar">
-            {/* 权限：始终只显示盾牌图标（悬停有 title，点开弹层可见权限名） */}
+          {/* 底部工具栏：显示哪些由 useToolbarFit 按实测宽度 + 优先级决定，
+              这里只按视觉顺序摆位（槽位 → 节点）。 */}
+          <div className="composer-bar" ref={barRef}>
+            {/* 权限：P0（始终显示）。窄时只有盾牌图标，宽裕时才补上权限名。
+                悬停始终有 title，点开弹层也能看到权限名。 */}
             <div className="anchor">
-              <button
-                className="pill-mode"
-                onMouseDown={() => {
-                  // 标记：接下来 Popover 的 mousedown 外部检测是「按钮触发的」，跳过
-                  modeToggleRef.current = true;
-                }}
-                onClick={() => {
-                  // 同一次交互内消费标志（mousedown 已先于 click 触发）
-                  setTimeout(() => {
-                    modeToggleRef.current = false;
-                  }, 0);
-                  setModeOpen((v) => {
-                    // 经按钮关闭时顺带复位完全权限确认态
-                    if (v) setConfirmFullAccess(false);
-                    return !v;
-                  });
-                }}
-                title={currentPermission.label}
-              >
-                {currentPermission.icon}
-                <IconChevronDown size={8} />
-              </button>
+              {bar.permission}
               <Popover
                 open={modeOpen}
                 onClose={() => {
@@ -690,25 +891,9 @@ export function Composer({
               </Popover>
             </div>
 
+            {/* 模型切换：P0（始终显示）。 */}
             <div className="anchor">
-              <button
-                className="pill"
-                title={texts.thinkingDepth}
-                onMouseDown={() => {
-                  // 标记：接下来 Popover 的 mousedown 外部检测是「按钮触发的」，跳过
-                  modelToggleRef.current = true;
-                }}
-                onClick={() => {
-                  // 同一次交互内消费标志（mousedown 已先于 click 触发）
-                  setTimeout(() => {
-                    modelToggleRef.current = false;
-                  }, 0);
-                  setModelOpen((v) => !v);
-                }}
-              >
-                <span className="pill-label">{state.model?.label ?? texts.defaultModel}</span>
-                <IconChevronDown size={8} />
-              </button>
+              {bar.model}
               {/* 选完模型不关闭：思考深度区留在同一面板里继续调。
                   选中态只在点击时更新（不再随鼠标悬停变化），与权限/命令弹层一致 */}
               <Popover
@@ -794,46 +979,40 @@ export function Composer({
               </Popover>
             </div>
 
+            {/* 思考强度：次优先级，紧挨在模型右侧（点它开模型弹层）。 */}
+            {bar.effort}
+
             {/* / 与 @ 直接在输入框里打符号即可触发，不再放按钮。
                 附件按钮是通用入口：图片按图片发送，其余文件逐字节上传
                 （@ 只产生引用，真正上传只从这里发生），所以它不随模型
                 是否支持图片而隐藏。 */}
-            <button
-              className="pill"
-              data-mini="hide"
-              title={texts.attachFile}
-              onClick={() => post({ type: "addFiles" })}
-            >
-              <IconAttach size={13} />
-            </button>
+            {bar.attach}
 
             <span className="spacer" />
 
-            {tps !== undefined ? (
-              <span className="ctx-speed" title={statsTitle || undefined}>{tps.toFixed(1)} tps</span>
-            ) : null}
-            <CtxText
-              // 三个值**同源**：都取自宿主按官方口径算好的 contextOccupancy。
-              // 刻意不回退到 usage / contextWindow 事件——那会得到一个含 output、
-              // 且压缩后不下降的数，与投影口径不是一回事（同一个圆环在不同时刻
-              // 代表不同东西，正是「数字卡住 / 乱跳」的观感来源）。
-              percent={state.contextOccupancy?.percent}
-              used={state.contextOccupancy?.usedTokens}
-              total={state.contextOccupancy?.contextWindow}
-              // 明细里的缓存命中与构成是**独立**的投影，有就显示
-              usage={lastMessage?.usage}
-              breakdown={state.contextBreakdown}
-            />
+            {/* tps 与上下文占用：次优先级（占用只给圆环）；最宽裕时圆环
+                右侧才补上 `44K/128K` 的精确数值（最低优先级）。 */}
+            {bar.tps}
+            {bar.context}
 
-            {state.running ? (
-              <button className="send-btn is-stop" title={texts.stopTitle} onClick={() => post({ type: "stop" })}>
-                <IconStop size={12} />
-              </button>
-            ) : (
-              <button className="send-btn" disabled={!canSend} title={texts.sendTitle} onClick={send}>
-                {texts.send}
-              </button>
-            )}
+            {bar.send}
+
+            {/* 测量层：把**所有**候选档位渲染出来量实际宽度（见 useToolbarFit）。
+                零尺寸 + overflow: hidden，所以既不占位也不给页面添横向滚动条；
+                visibility: hidden 让它不进无障碍树、也不吃 Tab 焦点。 */}
+            <div className="composer-measure" aria-hidden="true">
+              <div className="composer-measure-row">
+                {barVariants.map((variant) => (
+                  <span
+                    className="measure-item"
+                    key={`${variant.slot}:${variant.level}`}
+                    ref={register.get(variant.rank)}
+                  >
+                    {barNodes[`${variant.slot}:${variant.level}`]}
+                  </span>
+                ))}
+              </div>
+            </div>
           </div>
         </div>
       </div>

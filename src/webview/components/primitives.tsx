@@ -245,7 +245,24 @@ export function Popover({
 }
 
 /**
- * 上下文占用：圆环 + 环内百分比，悬停显示明细行。
+ * 上下文占用的三个数**同源同现**：缺一个就不显示（宿主没算出可信测量时不下发）。
+ *
+ * 单独抽出来是给工具栏用的：它要在**渲染之前**决定「上下文占用」这一档是否参与
+ * 宽度分配（见 `Composer` 的候选档位表）——数据没有就不该占一个坑位与一段间距。
+ */
+export function contextNumbers(
+  percent?: number,
+  used?: number,
+  total?: number,
+): { percent: number; used: number; total: number } | undefined {
+  if (percent === undefined || used === undefined || total === undefined || total <= 0) {
+    return undefined;
+  }
+  return { percent, used, total };
+}
+
+/**
+ * 上下文占用：圆环（宽裕时环右侧再给精确数值），悬停显示明细行。
  *
  * **数字只有一个来源**：宿主按官方口径算好的 `contextOccupancy`
  * （`projectedTokens ?? pressureTokens`，prompt 侧、不含 output）。
@@ -256,8 +273,12 @@ export function Popover({
  * 拿不到值时**什么都不显示**（宿主会在没数据时不下发）。但**一旦有过值就不会再空**：
  * 宿主那边会一直保留上一次的数字（占用条是常驻指示器，见 `adapter.refreshOccupancy`）。
  *
- * 主界面只显示百分比，避免发送更新时数字跳动闪烁；
- * 明细里的数字每次更新会重新计算，但只在 hover 时才可见。
+ * 两种形态由工具栏的优先级分配决定（`toolbarFit.ts`）：
+ * - 次优先级：只有圆环——弧长本身就回答了「还剩多少余地」；
+ * - 最低优先级：`detailed` 打开，环右侧补 `44K/128K` 的精确数值。
+ *
+ * 环内**始终不写百分比**（用户 2026-09-15 口径：只显示圆圈）；
+ * 百分比与构成只在悬停明细里——那里每次更新都会重算，但只有悬停时才看得见。
  */
 export function CtxText({
   percent,
@@ -265,6 +286,7 @@ export function CtxText({
   total,
   usage,
   breakdown,
+  detailed,
 }: {
   /** 宿主算好的百分比（官方 `contextOccupancy` 的等价输出）。 */
   percent?: number;
@@ -274,14 +296,16 @@ export function CtxText({
   usage?: import("../../shared/chat").UsageView;
   /** 上下文构成（`contextBreakdown` 投影），与 Web 的 ContextMeter 面板同源。 */
   breakdown?: import("../../shared/chat").ChatState["contextBreakdown"];
+  /** 最低优先级档位：环右侧再显示 `44K/128K`。 */
+  detailed?: boolean;
 }) {
   const texts = useTexts();
-  // 三个值同源同现：宿主没给（还没拿到任何可信测量）就不显示
-  if (percent === undefined || used === undefined || !total || total <= 0) return null;
-  const usedValue = used;
-  const pct = percent;
+  const numbers = contextNumbers(percent, used, total);
+  if (!numbers) return null;
 
-  const detail: string[] = [texts.contextUsed(pct, formatTokens(usedValue), formatTokens(total))];
+  const detail: string[] = [
+    texts.contextUsed(numbers.percent, formatTokens(numbers.used), formatTokens(numbers.total)),
+  ];
   if (usage) {
     const cacheHit = cacheHitPercent(usage);
     if (cacheHit !== undefined) detail.push(`${texts.ctxDetailCached} ${cacheHit}%`);
@@ -297,21 +321,22 @@ export function CtxText({
 
   return (
     <CtxRing
-      percent={pct}
-      label={`${pct}%`}
+      percent={numbers.percent}
       title={detail.join("\n")}
-      used={usedValue}
-      total={total}
+      used={numbers.used}
+      total={numbers.total}
+      text={detailed ? formatContextSpan(numbers.used, numbers.total) : undefined}
     />
   );
 }
 
 /**
- * 上下文占用的图形化显示：一个圆环 + 环内的百分比。
+ * 上下文占用的图形化显示：一个圆环（可选在右侧带一段精确数值）。
  *
- * 取代原来的纯文字 `67%`。文字读的是「精确数值」，圆环读的是「还剩多少余地」——
- * 后者才是用上下文条的目的（扫一眼就知道快满了）。数值与明细都保留：
- * 百分比在环内，悬停给出明细。
+ * 取代更早的纯文字 `67%`。文字读的是「精确数值」，圆环读的是「还剩多少余地」——
+ * 后者才是用上下文条的目的（扫一眼就知道快满了）。数值仍然保留：
+ * 平时在悬停明细里，宽度宽裕时贴到环右侧（用户口径的最低优先级那一档）；
+ * 环内**不写百分比**。
  *
  * 用 SVG 而不是 CSS `conic-gradient`：环在任意尺寸/缩放（含 VS Code 的
  * webview 缩放与高 DPI）下都是清晰的矢量，且 `stroke-dasharray` 的表达
@@ -319,17 +344,17 @@ export function CtxText({
  */
 export function CtxRing({
   percent,
-  label,
   title,
   used,
   total,
+  text,
 }: {
   percent: number;
-  /** 环内文字（一般就是百分比；迷你模式传空则只留环）。 */
-  label?: string;
   title?: string;
   used?: number;
   total?: number;
+  /** 环右侧的精确数值（`44K/128K`）；不传就只有环。 */
+  text?: string;
 }) {
   // 半径与描边按 16×16 视窗设计：小尺寸下仍有 1px 以上的笔画，不会糊成一团
   const radius = 6.4;
@@ -357,7 +382,7 @@ export function CtxRing({
           strokeDasharray={`${dash} ${circumference - dash}`}
         />
       </svg>
-      {label ? <span className="ctx-ring-label">{label}</span> : null}
+      {text ? <span className="ctx-ring-text">{text}</span> : null}
     </span>
   );
 }
@@ -515,6 +540,18 @@ export function formatTokens(value: number): string {
   if (value >= 10_000) return `${Math.round(value / 1000)}K`;
   if (value >= 1000) return `${(value / 1000).toFixed(1)}K`;
   return String(value);
+}
+
+/**
+ * 上下文占用的精确写法（用户 2026-09-15 口径）：`44K/128K`、`400K/1.0M`。
+ *
+ * 分子分母**各自按量级挑单位**（`formatTokens` 那套：千位给 K、百万位给 M），
+ * 所以 1M 的窗口就写作 `1.0M` 而不是 `1000K`，也不会再加一层括号把总量重复一遍。
+ *
+ * 与圆环是同一份数据的两种读法：环看「还剩多少余地」，这行看精确用量。
+ */
+export function formatContextSpan(used: number, total: number): string {
+  return `${formatTokens(used)}/${formatTokens(total)}`;
 }
 
 export function formatDuration(ms: number): string {

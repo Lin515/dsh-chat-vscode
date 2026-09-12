@@ -24,6 +24,7 @@ import assert from "node:assert";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { SessionAdapter } from "../src/dsh/adapter";
+import { contextNumbers, formatContextSpan } from "../src/webview/components/primitives";
 
 /** 收集 patch 帧里的 contextOccupancy 序列。 */
 function harness() {
@@ -261,5 +262,27 @@ console.log("occupancy: 封顶 100 / 容量 0 不算 / 未变不发 ✓");
   );
 }
 console.log("occupancy: 界面侧没有本地重算 / 回退路径（结构不变量） ✓");
+
+// ---------- 8. 精确数值的写法（用户 2026-09-15 口径 `44K/128K` / `400K/1.0M`）----------
+//
+// 工具栏最宽裕那一档把这段文字显示在圆环右侧。分子分母**各自按量级挑单位**：
+// 百万位的窗口就该写作 `1.0M`，不是 `1000K`，也不再额外加括号把总量重复一遍。
+{
+  assert.strictEqual(formatContextSpan(43_520, 128_000), "44K/128K");
+  assert.strictEqual(formatContextSpan(8_500, 128_000), "8.5K/128K", "万位以下保留一位小数");
+  assert.strictEqual(formatContextSpan(400_000, 1_000_000), "400K/1.0M", "1M 的窗口用 M，不用 1000K");
+  assert.strictEqual(formatContextSpan(437_000, 1_000_000), "437K/1.0M");
+  assert.strictEqual(formatContextSpan(250_000, 2_000_000), "250K/2.0M");
+  assert.strictEqual(formatContextSpan(1_500_000, 2_000_000), "1.5M/2.0M", "分子超过 1M 也照样升到 M");
+  assert.strictEqual(formatContextSpan(500, 128_000), "500/128K", "不足 1K 时照实给数字");
+  assert.ok(!/\(/.test(formatContextSpan(437_000, 1_000_000)), "不再有括号");
+  // 三个数同源同现：缺一就不该有「上下文占用」这一档（工具栏按它决定要不要占坑位）
+  assert.strictEqual(contextNumbers(34, 43_520, 128_000)?.used, 43_520);
+  assert.strictEqual(contextNumbers(34, 43_520, undefined), undefined, "缺分母不显示");
+  assert.strictEqual(contextNumbers(undefined, 43_520, 128_000), undefined, "缺百分比不显示");
+  assert.strictEqual(contextNumbers(34, undefined, 128_000), undefined, "缺分子不显示");
+  assert.strictEqual(contextNumbers(34, 43_520, 0), undefined, "分母为 0 不显示");
+}
+console.log("occupancy: 精确数值写法 `44K/128K` / `400K/1.0M` ✓");
 
 console.log("\noccupancy: all assertions passed");

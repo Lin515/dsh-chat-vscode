@@ -650,4 +650,91 @@ console.log("styles: 代码块自动换行（官方 pre-wrap） ✓");
 }
 console.log("styles: 待处理交互接管输入区（流里跳过、答过留档） ✓");
 
+// ---------- 18. 工具栏：按实测宽度分配，而不是按固定阈值隐藏 ----------
+//
+// 用户 2026-09-15 口径：底部工具栏「根据窗口宽度与优先级调整显示」——
+// P0 权限/模型/发送（始终显示）、P1 思考强度/附件/tps/上下文环、
+// P2 权限文字与上下文精确数值。宽度是**量**出来的（Composer 的 useToolbarFit
+// 把候选档位渲染进测量层读 getBoundingClientRect），所以文案长短（中英差异）、
+// 模型名、字号变化都能自动跟上——固定阈值做不到这件事。
+//
+// 这里钉住三件靠肉眼很难复查、坏了却很难看出来的事：
+//   1. 测量层的三条硬约束（零尺寸 / 裁剪 / 不被压缩）；
+//   2. 工具栏（.composer-bar）必须是测量层的定位基准；
+//   3. 旧的固定阈值通道没有回来（`.app.is-mini` 不再决定工具栏显示谁）。
+{
+  const measure = rule(".composer-measure");
+  assert.ok(
+    /position:\s*absolute/.test(measure) && /width:\s*0/.test(measure) && /height:\s*0/.test(measure),
+    `测量层必须是零尺寸的绝对定位元素，现在是 "${measure.trim()}"——它会占掉工具栏的位置`,
+  );
+  assert.ok(
+    /overflow:\s*hidden/.test(measure),
+    "测量层必须裁剪：里面那行是 max-content，比工具栏宽，不裁剪会把 webview 撑出横向滚动条",
+  );
+  assert.ok(
+    /visibility:\s*hidden/.test(measure),
+    "测量层要 visibility: hidden（不是 display: none——那样量不到宽度）",
+  );
+
+  const row = rule(".composer-measure-row");
+  assert.ok(
+    /width:\s*max-content/.test(row),
+    `测量行必须是 max-content，否则会被外层压窄、量出的宽度偏小；现在是 "${row.trim()}"`,
+  );
+  assert.ok(
+    /flex:\s*0\s+0/.test(rule(".composer-measure-row > *")),
+    "测量行里的每一项都不许被压缩（flex: 0 0 auto）——压缩后量的就不是自然宽度了",
+  );
+
+  // 用行首锚定的正则取规则本体：`rule()` 是按子串找第一个匹配，
+  // 而 `.app.is-mini .composer-bar { … }` 排在前面，会把它的声明块认成工具栏本体
+  const bar = /^\.composer-bar\s*\{([\s\S]*?)\}/m.exec(css)?.[1] ?? "";
+  assert.ok(
+    /position:\s*relative/.test(bar),
+    `工具栏必须是测量层的定位基准（position: relative），现在是 "${bar.trim()}"`,
+  );
+
+  // 固定阈值通道不许回来：工具栏显示谁由 toolbarFit 决定
+  assert.ok(
+    !/\.app\.is-mini \.ctx-speed/.test(css) && !/\.app\.is-mini \.pill\[data-mini/.test(css),
+    "工具栏的元素显示不能再用 220px 的迷你模式阈值决定（那是固定值，中英文字宽不同就会错）",
+  );
+
+  // 环内百分比按用户口径去掉：只留环，精确数值改到环右侧（最低优先级那一档）
+  const primitives = readFileSync(
+    join(process.cwd(), "src", "webview", "components", "primitives.tsx"),
+    "utf8",
+  );
+  assert.ok(
+    /ctx-ring-text/.test(primitives) && !/ctx-ring-label/.test(primitives),
+    "上下文圆环：环内不再写百分比（ctx-ring-label），精确数值走环右侧的 ctx-ring-text",
+  );
+  assert.ok(!/ctx-ring-label/.test(css), "app.css 里不该再留 .ctx-ring-label 的样式");
+
+  // 思考强度胶囊与模型按钮开的是**同一个**弹层，点击语义也必须一致（用户 2026-09-15：
+  // 「思考强度按钮点击并没有和模型按钮点击一样，如果已经弹出了切换窗口，则再次点击
+  // 应是将其关闭」）。此前写的是 setModelOpen(true)（只开不关），表现为弹层开着时
+  // 点它毫无反应、像按钮失灵。两者都是 toggle。
+  const composer = readFileSync(
+    join(process.cwd(), "src", "webview", "components", "Composer.tsx"),
+    "utf8",
+  );
+  const effortPill = /const effortPill = effort \? \(([\s\S]*?)\n  \) : null;/.exec(composer)?.[1] ?? "";
+  assert.ok(effortPill.length > 100, "取不到 effortPill 的定义（组件结构变了？）");
+  assert.ok(
+    /setModelOpen\(\(v\) => !v\)/.test(effortPill),
+    "思考强度胶囊必须与模型按钮同样 toggle（setModelOpen((v) => !v)）",
+  );
+  assert.ok(
+    !/setModelOpen\(true\)/.test(effortPill),
+    "思考强度胶囊不能是「只开不关」——弹层开着时再点应当关掉",
+  );
+  assert.ok(
+    /modelToggleRef\.current = true/.test(effortPill),
+    "思考强度胶囊也要在 mousedown 打标记，否则会被弹层的外部点击检测先关掉再打开（闪一下）",
+  );
+}
+console.log("styles: 工具栏按实测宽度分配、测量层约束完整 ✓");
+
 console.log("\nstyles: all assertions passed");
