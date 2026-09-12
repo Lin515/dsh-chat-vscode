@@ -31,6 +31,8 @@ const entries = {
   "build/set-default-model.mjs": "scripts/setDefaultModel.ts",
   "build/queue-esc-e2e.mjs": "scripts/queueEscE2E.ts",
   "build/queue-continue-probe.mjs": "scripts/queueContinueProbe.ts",
+  "build/queue-order-probe.mjs": "scripts/queueOrderProbe.ts",
+  "build/queue-log-inspect.mjs": "scripts/queueLogInspect.ts",
   "build/command-e2e.mjs": "scripts/commandE2E.ts",
   "build/pressure-probe.mjs": "scripts/pressureProbe.ts",
   "build/cookie-survives-restart.mjs": "scripts/cookieSurvivesRestart.ts",

@@ -71,7 +71,14 @@ interface Row {
 }
 
 function readRows(file: string): Row[] | undefined {
-  const text = decodeSessionLog(file);
+  // 日志可能还没落盘（刚建会话）、或读到一半：都当「解不出来」跳过，
+  // 不能让单个坏文件炸掉整个扫描（queueLogInspect 引用本文件时同样受益）
+  let text: string | undefined;
+  try {
+    text = decodeSessionLog(file);
+  } catch {
+    return undefined;
+  }
   if (!text) return undefined;
   const rows: Row[] = [];
   for (const line of text.split("\n")) {

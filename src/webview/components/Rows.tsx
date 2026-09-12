@@ -5,6 +5,7 @@ import type {
   ApprovalView,
   CommandRunView,
   DiffLayout,
+  FileChangeKind,
   InjectedView,
   QuestionView,
   ToolCallView,
@@ -529,9 +530,12 @@ export function CommandRow({ command }: { command: CommandRunView }) {
 export function FileChips({
   label,
   paths,
+  kinds,
 }: {
   label: string;
   paths: { path: string; description?: string }[];
+  /** 芯片路径 → 改动种类（宿主按 git 状态判定，查不到 = 还没分类完，不标记号）。 */
+  kinds?: Record<string, FileChangeKind>;
 }) {
   const texts = useTexts();
   // 每行独立记忆展开态；消息重渲染（新 segment 追加）不重置
@@ -544,22 +548,35 @@ export function FileChips({
   return (
     <div className="file-chips">
       <span className="file-chips-label">{label}</span>
-      {shown.map((file) => (
-        <button
-          key={file.path}
-          className="file-chip"
-          title={
-            file.description
-              ? `${file.description}\n${texts.openChangesHint}`
-              : `${file.path}\n${texts.openChangesHint}`
-          }
-          aria-label={texts.openChangesAria(file.path)}
-          onClick={(event) => post({ type: "openFile", path: file.path, diff: wantsChanges(event) })}
-        >
-          <IconFile size={12} />
-          <span className="file-chip-name">{basename(file.path)}</span>
-        </button>
-      ))}
+      {shown.map((file) => {
+        const kind = kinds?.[file.path];
+        const deleted = kind === "deleted";
+        return (
+          <button
+            key={file.path}
+            className={`file-chip${deleted ? " is-deleted" : ""}`}
+            title={
+              deleted
+                ? `${file.path}\n${texts.chipFileDeleted}`
+                : file.description
+                  ? `${file.description}\n${texts.openChangesHint}`
+                  : `${file.path}\n${texts.openChangesHint}`
+            }
+            aria-label={
+              deleted
+                ? `${file.path}（${texts.chipFileDeleted}）`
+                : texts.openChangesAria(file.path)
+            }
+            onClick={(event) => post({ type: "openFile", path: file.path, diff: wantsChanges(event) })}
+          >
+            <IconFile size={12} />
+            {/* 新建文件（git 未跟踪）标 [新增]：它没有可对比的基线，点击直接
+                打开文件而不是开 diff——记号让「为什么行为不一样」看得见 */}
+            {kind === "new" ? <span className="file-chip-tag">{texts.fileNewTag}</span> : null}
+            <span className="file-chip-name">{basename(file.path)}</span>
+          </button>
+        );
+      })}
       {hasMore ? (
         <button
           className="file-chips-more"

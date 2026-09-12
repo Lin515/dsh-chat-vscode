@@ -99,7 +99,8 @@ export function Row({
         {tone ? (
           // 状态点占的格子与图标同宽（.row-icon-status）：否则「运行中（13px 图标）
           // → 出错 / 被中止（7px 圆点）」时，后面的节点名会横向跳 6px
-          // （预览页实测 title 的 x 从 61 → 55）。圆点自身位置不变。
+          // （预览页实测 title 的 x 从 61 → 55）。圆点在格子内居中（CSS），
+          // 中心与相邻行的图标中心对齐。
           <span className="row-icon row-icon-status">
             <span className={`dot dot-${tone}`} />
           </span>

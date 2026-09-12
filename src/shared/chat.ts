@@ -86,6 +86,15 @@ export interface DiffHunkView {
 /** 编辑类节点的 diff 排版：自适应（按容器宽度）/ 固定单栏 / 固定双栏。 */
 export type DiffLayout = "auto" | "unified" | "split";
 
+/**
+ * 文件芯片的改动种类（宿主按 git 状态 + 磁盘存在性分类，见 dsh/fileChange.ts）。
+ *
+ * - `new`：git 未跟踪（模型本轮新建）→ 芯片标 `[新增]`，点击直接打开文件；
+ * - `edited`：有可对比的工作区/暂存/合并改动 → 点击开 VS Code 的对比窗口；
+ * - `deleted`：文件已不在磁盘上 → 芯片名画删除线，点击尝试打开旧内容。
+ */
+export type FileChangeKind = "new" | "edited" | "deleted";
+
 export interface ApprovalView {
   requestId: string;
   toolName: string;
@@ -505,6 +514,14 @@ export interface ChatState {
   running: boolean;
   /** 编辑类节点的 diff 排版（对应 dshChat.diffLayout）。 */
   diffLayout?: DiffLayout;
+  /**
+   * 文件芯片的改动种类表（键 = 芯片上的原样路径，值 = git/磁盘判定的种类）。
+   *
+   * 宿主在会话加载与每轮写类调用后**整表**重算下发（patch 顶层合并，整表替换）；
+   * 界面只查表渲染 `[新增]` / 删除线，不做任何自己的判定。查不到的路径（还没
+   * 分类完、或不在 git 仓库）就没有记号——没有记号不是「没改动」，只是「不确定」。
+   */
+  fileKinds?: Record<string, FileChangeKind>;
   /**
    * 界面字号（整数 px，对应 `dshChat.fontSize`）：不下发时（配置为 0）
    * 跟随 VS Code 注入的字号。界面只把它当 CSS 变量用，不做逻辑判断。

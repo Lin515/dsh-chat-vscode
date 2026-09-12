@@ -4,6 +4,7 @@ import type {
   ChatState,
   CommandRunView,
   DiffHunkView,
+  FileChangeKind,
   InjectedView,
   MessageView,
   ModelSelectionView,
@@ -347,6 +348,21 @@ export class SessionAdapter {
   private currentTurn: number | undefined;
   private currentStep = 0;
   /**
+   * 当前轮的**显示分段**号（从 1 起）。
+   *
+   * 服务端会把运行中提交的消息（队列自动派发、运行中发送）经 `agent/inbox`
+   * **直接 splice 进还在跑的同一轮**——实测会话日志里这条 user/message 落在
+   * turn/end 之前几十分钟（用户 2026-09-14 报告的「生成内容在用户消息上方
+   * 继续生成」）。轮次不结束，回答都进同一条助手消息；如果把用户消息简单地
+   * 追加到末尾，后续生成永远压在它上方。
+   *
+   * 所以在插话处把该轮**切成多段**：第 1 段沿用传统 id `a:N`（分支锚点等
+   * 旧逻辑不变），第 2 段起是 `a:N:2`、`a:N:3`……插话夹在两段之间，
+   * 后续生成进下一段（= 显示在插话下方）。重放（refold）按同样的规则
+   * 折叠，结果确定。
+   */
+  private turnPart = 1;
+  /**
    * 每一轮**结束**事件的 seq（`turn` → `turn/end` 的 seq）。
    *
    * 分支的唯一合法锚点：`session/fork` 要求 `atSeq` 落在某个 `turn/end` 上
@@ -404,6 +420,72 @@ export class SessionAdapter {
     | ((refs: ImageRef[], done: (dataUrls: string[]) => void) => void)
     | undefined;
 
+  /**
+   * 文件芯片的分类回调（由控制器注入，像 `loadImages` 一样）。
+   *
+   * 适配器只负责「这里有哪些路径」（`produced` / `deliverables`），而「每个文件是
+   * 新建 / 改动 / 已删除」要看 git 状态与磁盘，那是控制器（vscode API）的事。
+   * 注入为空（比如子代理转录的适配器）就跳过分类，界面维持无记号的现状。
+   *
+   * 键 = 芯片上的原样路径，值 = 种类；判定细节见 `dsh/fileChange.ts`。
+   */
+  classifyFiles: ((paths: string[]) => Promise<Record<string, FileChangeKind>>) | undefined;
+
+  /** 文件分类的去抖计时器（见 `scheduleFileKinds`）。 */
+  private fileKindsTimer: ReturnType<typeof setTimeout> | undefined;
+
+  /** 上次下发的分类表（JSON 形式）：没变化就不重发 patch。 */
+  private lastFileKindsJson: string | undefined;
+
+  /**
+   * 安排一次文件分类（去抖 250ms）。
+   *
+   * 一轮里 write/edit 可能连发十几次，每次都分类既浪费也让 git 状态来回抖；
+   * 并起来一批做完，等 `tool/result` 的连发平息后再问一次 git。历史回放
+   * （快照 / 加载更早）也走这里——旧轮次的芯片同样要有记号。
+   */
+  scheduleFileKinds(): void {
+    if (!this.classifyFiles) return;
+    if (this.fileKindsTimer) clearTimeout(this.fileKindsTimer);
+    this.fileKindsTimer = setTimeout(() => {
+      this.fileKindsTimer = undefined;
+      void this.deliverFileKinds();
+    }, 250);
+  }
+
+  /** 收集全部芯片路径 → 交给控制器分类 → 整表下发。 */
+  private async deliverFileKinds(): Promise<void> {
+    const classify = this.classifyFiles;
+    if (!classify) return;
+    const paths: string[] = [];
+    const seen = new Set<string>();
+    for (const message of this.messages) {
+      for (const path of message.produced ?? []) {
+        if (path && !seen.has(path)) {
+          seen.add(path);
+          paths.push(path);
+        }
+      }
+      for (const file of message.deliverables ?? []) {
+        if (file.path && !seen.has(file.path)) {
+          seen.add(file.path);
+          paths.push(file.path);
+        }
+      }
+    }
+    if (!paths.length) return;
+    let kinds: Record<string, FileChangeKind>;
+    try {
+      kinds = await classify(paths);
+    } catch {
+      return; // 分类失败不致命：芯片退化为无记号（现状）
+    }
+    const json = JSON.stringify(kinds);
+    if (json === this.lastFileKindsJson) return;
+    this.lastFileKindsJson = json;
+    this.emit({ type: "patch", patch: { fileKinds: kinds } });
+  }
+
   snapshotMessages(): MessageView[] {
     return this.messages;
   }
@@ -415,7 +497,9 @@ export class SessionAdapter {
    * 契约里在开放轮上锚定会被**拒绝**而不是往前裁剪，所以宁可拒绝也不猜。
    */
   forkAnchorFor(messageId: string): number | undefined {
-    const match = /^a:(\d+)$/.exec(messageId);
+    // 同轮插话会把轮切成多段（a:N:2…），分支锚点认轮号就行——每段都能作为
+    // 这一轮的入口，锚点仍落在该轮的 turn/end 上
+    const match = /^a:(\d+)(?::\d+)?$/.exec(messageId);
     if (!match) return undefined;
     return this.turnEndSeqs.get(Number(match[1]));
   }
@@ -463,6 +547,9 @@ export class SessionAdapter {
       this.refold();
       this.hasMore = Boolean(frame.hasMore);
       this.emit({ type: "patch", patch: { hasMoreHistory: this.hasMore } });
+      // 历史里可能有旧轮次的文件芯片：回放完安排一次分类（旧文件多已定型，
+      // 这一批通常一次 fs.stat + 一次 git 状态读取就出结果）
+      this.scheduleFileKinds();
       const title = frame.projections?.values?.title;
       if (typeof title === "string" && title) {
         this.emit({ type: "patch", patch: { session: this.sessionWithTitle(title) } });
@@ -512,7 +599,11 @@ export class SessionAdapter {
     if (added) this.refold();
     this.hasMore = hasMore;
     this.emit({ type: "patch", patch: { hasMoreHistory: this.hasMore } });
-    if (added) this.emit({ type: "messages/reset", messages: this.messages });
+    if (added) {
+      this.emit({ type: "messages/reset", messages: this.messages });
+      // 更早的历史里也有芯片：同样安排分类
+      this.scheduleFileKinds();
+    }
   }
 
   /** 当前已折叠事件里最小的 seq（`session/page` 的 `beforeSeq`）。 */
@@ -540,6 +631,7 @@ export class SessionAdapter {
     this.liveSegments.clear();
     this.turnEndSeqs.clear();
     this.currentTurn = undefined;
+    this.turnPart = 1;
     this.currentStep = 0;
     this.stepFirstTokenAt = undefined;
     this.sequence = 0;
@@ -555,6 +647,8 @@ export class SessionAdapter {
     const data = (event.data ?? {}) as Record<string, any>;
     switch (event.type) {
       case "turn/start": {
+        // 新轮次：显示分段归位。轮号没变时（同轮重复事件）不动分段。
+        if (data.turn !== this.currentTurn) this.turnPart = 1;
         this.currentTurn = typeof data.turn === "number" ? data.turn : this.currentTurn;
         this.currentStep = 0;
         this.stepFirstTokenAt = undefined;
@@ -568,12 +662,19 @@ export class SessionAdapter {
       case "turn/end": {
         // 记下这一轮的结束 seq：它是分支唯一合法的锚点（见 turnEndSeqs 注释）
         if (typeof data.turn === "number") this.turnEndSeqs.set(data.turn, event.seq);
+        // 该轮的**每一段**都要收尾：插话切分后同轮可能有多条助手消息，
+        // 残留的 streaming 标记会让思考鲸鱼一直发蓝光
+        const endTurn = typeof data.turn === "number" ? data.turn : this.currentTurn ?? 0;
+        for (let part = 1; part <= this.turnPart; part++) {
+          const partMessage = this.byId.get(this.assistantIdFor(endTurn, part));
+          if (!partMessage) continue;
+          partMessage.streaming = false;
+          if (this.settleStreaming(partMessage)) {
+            this.emit({ type: "message/upsert", message: { ...partMessage } });
+          }
+        }
         const message = this.ensureAssistantMessage(event.time);
         message.streaming = false;
-        // 本轮结束，任何段落都不该再处于「思考中」：流式叠加层未必被 durable 消息
-        // 替换掉（服务端可能没回带 reasoning 的正文，或本步只有思考），残留的
-        // streaming 标记会让思考鲸鱼一直发蓝光。这里只清标记，不动内容。
-        this.settleStreaming(message);
         const reason = data.reason as { kind?: string; error?: { message?: string } } | undefined;
         if (reason?.kind === "error") {
           // 模型/服务端的原始报错原样透出；没有报文时用语言中立 key 交给界面翻译
@@ -632,13 +733,18 @@ export class SessionAdapter {
             segments: [],
             ...(media.length ? { attachments: media } : {}),
           };
-          // 用户消息必须落在**本轮助手消息之前**（这一轮的顶部）。不能要求助手
-          // 消息还是空的：流式正文往往先于 durable 的 user/message 到达，那时本轮
-          // 助手消息已经有段落了；按旧逻辑会退化成「追加到末尾」，用户消息就跑到
-          // 助手输出下面去了。
+          // 用户消息的落位分三种情形（服务端实测见 queueLogInspect/queue-order 探针）：
           //
-          // 但同轮还可能有第二条用户消息（运行中插话）。用「紧邻助手消息的前一条
-          // 是不是用户消息」区分：已有本轮提问时按时间顺序追加在末尾，否则插到顶部。
+          // 1. **本轮提问迟到**：turn/start 已把本轮助手消息建出来（流式正文甚至
+          //    已经在跑了），提问才落盘。插到本轮助手消息之前（这一轮的顶部）。
+          // 2. **运行中插话**：服务端把运行中提交的消息（队列自动派发、运行中
+          //    发送）经 agent/inbox **splice 进还在跑的同一轮**——轮次不结束。
+          //    表现是「紧邻助手消息的前一条是用户消息」。这时追加到末尾并把该轮
+          //    **切到下一段**（turnPart+1）：后续生成进 `a:N:2`（新段在插话下方），
+          //    而不是继续压在插话上方——那正是「生成内容在用户消息上方继续生成」
+          //    的根源。
+          // 3. **轮间正常到达**（当前轮已结束、新一轮未开始）：currentTurn 还停在
+          //    上一轮，走追加分支即可，随后 turn/start 会把分段归位。
           const assistant = this.currentAssistantMessage();
           const index = assistant ? this.messages.indexOf(assistant) : -1;
           const alreadyHasTurnPrompt = index > 0 && this.messages[index - 1].role === "user";
@@ -649,6 +755,9 @@ export class SessionAdapter {
             this.emit({ type: "messages/reset", messages: this.messages });
           } else {
             this.appendMessage(view);
+            // 插话切分：这一轮还有后续生成就让它进下一段（插话下方）。
+            // currentTurn 未定（首轮之前）没有「本轮」可言，不切。
+            if (assistant) this.turnPart += 1;
           }
           break;
         }
@@ -761,6 +870,8 @@ export class SessionAdapter {
           description: typeof file?.description === "string" ? file.description : undefined,
         }));
         this.emit({ type: "message/upsert", message: { ...message } });
+        // 申报的路径同样要分类（交付行与改动行共用一套记号）
+        this.scheduleFileKinds();
         break;
       }
 
@@ -840,7 +951,7 @@ export class SessionAdapter {
     const wire = data.message as WireMessage | undefined;
 
     // 丢弃该 step 的流式叠加层，改用 durable 内容，避免重复
-    this.dropLiveSegments(message, turn, step);
+    this.dropLiveSegmentsForStep(turn, step);
 
     const content = Array.isArray(wire?.content) ? (wire!.content as ContentBlock[]) : [];
     for (const block of content) {
@@ -968,6 +1079,9 @@ export class SessionAdapter {
 
   applyAssistantStream(frame: AssistantStreamFrame): void {
     if (frame.type === "start") {
+      // 轮号变化才算新轮（插话切分后同轮的后续 start 帧不能重置分段，
+      // 否则切分又失效、生成回到插话上方）
+      if (frame.turn !== this.currentTurn) this.turnPart = 1;
       this.currentTurn = frame.turn;
       this.currentStep = frame.step;
       this.liveTurn = frame.turn;
@@ -980,12 +1094,7 @@ export class SessionAdapter {
     }
     if (frame.type === "end") {
       if (frame.outcome.kind === "abandoned") {
-        this.dropLiveSegments(
-          this.ensureAssistantMessage(Date.now()),
-          this.currentTurn ?? 0,
-          this.currentStep,
-          true,
-        );
+        this.dropLiveSegmentsForTurn(this.currentTurn ?? 0);
       }
       return;
     }
@@ -1089,6 +1198,7 @@ export class SessionAdapter {
     // （重连后服务端会重发基线，留着会与新窗口的 seq 集合混在一起）
     this.seen.clear();
     this.currentTurn = undefined;
+    this.turnPart = 1;
     this.currentStep = 0;
     this.stepFirstTokenAt = undefined;
     this.sequence = 0;
@@ -1115,8 +1225,7 @@ export class SessionAdapter {
   }
 
   private ensureAssistantMessage(ts: number): MessageView {
-    const turn = this.currentTurn ?? 0;
-    const id = `a:${turn}`;
+    const id = this.currentAssistantId();
     let message = this.byId.get(id);
     if (!message) {
       message = { id, role: "assistant", ts, segments: [] };
@@ -1127,7 +1236,17 @@ export class SessionAdapter {
 
   private currentAssistantMessage(): MessageView | undefined {
     if (this.currentTurn === undefined) return undefined;
-    return this.byId.get(`a:${this.currentTurn}`);
+    return this.byId.get(this.currentAssistantId());
+  }
+
+  /** 某（轮, 段）的助手消息 id：第 1 段 `a:N`，后续段 `a:N:2`、`a:N:3`… */
+  private assistantIdFor(turn: number, part: number): string {
+    return part > 1 ? `a:${turn}:${part}` : `a:${turn}`;
+  }
+
+  /** 当前（轮, 段）对应的助手消息 id。 */
+  private currentAssistantId(): string {
+    return this.assistantIdFor(this.currentTurn ?? 0, this.turnPart);
   }
 
   /**
@@ -1234,25 +1353,51 @@ export class SessionAdapter {
    * 界面的「思考中发光」只看 `segment.streaming`，所以只要有一处漏清，鲸鱼就会
    * 一直亮着。回合结束时统一兜底清理，比逐条路径去清可靠。
    */
-  private settleStreaming(message: MessageView): void {
+  private settleStreaming(message: MessageView): boolean {
+    let changed = false;
     for (const segment of message.segments) {
-      if (segment.kind === "text" || segment.kind === "thinking") segment.streaming = false;
+      if ((segment.kind === "text" || segment.kind === "thinking") && segment.streaming) {
+        segment.streaming = false;
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+  /**
+   * 收掉该轮该 step 的流式叠加层，durable 内容到达时去重。
+   *
+   * **跨段清理**：叠加层记录在哪一段就从哪一段摘。运行中插话把轮切分后，
+   * 同一个 (turn, step) 的 durable 内容可能落在与叠加层不同的段
+   * （切分发生在叠加层与其 durable 替换之间），按 message 过滤会漏。
+   */
+  private dropLiveSegmentsForStep(turn: number, step: number): void {
+    for (const [key, value] of [...this.liveSegments]) {
+      if (value.turn !== turn || value.step !== step) continue;
+      this.removeLiveSegment(key, value);
     }
   }
 
-  private dropLiveSegments(message: MessageView, turn: number, step: number, all = false): void {
-    let changed = false;
+  /** 收掉该轮**全部**流式叠加层（轮被放弃时）。同样跨段。 */
+  private dropLiveSegmentsForTurn(turn: number): void {
     for (const [key, value] of [...this.liveSegments]) {
-      if (value.messageId !== message.id) continue;
-      if (!all && (value.turn !== turn || value.step !== step)) continue;
-      const index = message.segments.findIndex((s) => s.id === value.segmentId);
-      if (index >= 0) {
-        message.segments.splice(index, 1);
-        changed = true;
-      }
-      this.liveSegments.delete(key);
+      if (value.turn !== turn) continue;
+      this.removeLiveSegment(key, value);
     }
-    if (changed) this.emit({ type: "message/upsert", message: { ...message } });
+  }
+
+  private removeLiveSegment(
+    key: string,
+    value: { messageId: string; segmentId: string; turn: number; step: number },
+  ): void {
+    this.liveSegments.delete(key);
+    const holder = this.byId.get(value.messageId);
+    if (!holder) return;
+    const index = holder.segments.findIndex((s) => s.id === value.segmentId);
+    if (index >= 0) {
+      holder.segments.splice(index, 1);
+      this.emit({ type: "message/upsert", message: { ...holder } });
+    }
   }
 
   private upsertToolCall(ts: number, callId: string, name: string, argsRaw: string, messageId?: string): void {
@@ -1449,6 +1594,8 @@ export class SessionAdapter {
     if (list.includes(path)) return;
     list.push(path);
     this.emit({ type: "message/upsert", message: { ...message } });
+    // 新路径进芯片了：安排一次分类（去抖），让 [新增]/删除线跟上来
+    this.scheduleFileKinds();
   }
 
   /**

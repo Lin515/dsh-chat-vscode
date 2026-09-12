@@ -58,6 +58,8 @@ const MARKERS: string[] = [
   "queueAttachmentsLost",
   "queueContentLost",
   "queueDispatchFailed",
+  // 文件芯片
+  "chipFileDeleted",
   // 剪贴板 / 设置
   "copied",
   "settingsSaved",

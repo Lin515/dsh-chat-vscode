@@ -446,12 +446,14 @@
   display: inline-flex;
 }
 
-/* 状态点（error / stopped）所在的坑位：宽度与图标一致（13px），圆点仍在左边。
-   否则「运行中 → 出错 / 被中止」时行首从 13px 图标换成 7px 圆点，节点名横向跳 6px
-   （预览页实测 title 的 x 从 61 → 55）——与图标纵向跳 1.5px 是同一类问题：
-   同一个位置的两种状态必须是同一个盒子。 */
+/* 状态点（error / stopped）所在的坑位：宽度与图标一致（13px），圆点在槽内**居中**。
+   宽度不变保证「运行中 → 出错 / 被中止」切换时节点名不横跳（预览页实测 title 的 x
+   从 61 → 55 的老问题不再回来）——坑位是同一个盒子，动的只是坑内的圆点。
+   居中则是 2026-09-14 的补充：圆点只有 7px，靠左摆放时与相邻行的 13px 图标
+   差了 3px，看起来像没对齐；居中后圆点的中心与图标中心落在同一条竖线上。 */
 .row-icon-status {
   min-width: 13px;
+  justify-content: center;
 }
 
 /* 节点图标色：每种节点一个专属色（tokens.css 的 --node-*）。
@@ -1073,6 +1075,30 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 新建文件（git 未跟踪）的 [新增] 记号：弱化成「附注」而不是第二个文件名——
+   芯片的主角仍是文件名，记号只负责解释「为什么这个芯片点开不是 diff」。 */
+.file-chip-tag {
+  flex: 0 0 auto;
+  color: var(--muted);
+  letter-spacing: 0.02em;
+}
+
+/* 已删除的文件：文件名画删除线 + 整体褪色。芯片仍然可点（git 跟踪中的删除
+   点开还能看到删除前的内容），但外观要明确说出「这个文件已经不在了」。 */
+.file-chip.is-deleted {
+  color: var(--muted);
+  border-style: dashed;
+}
+
+.file-chip.is-deleted .file-chip-name {
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+
+.file-chip.is-deleted:hover {
+  color: var(--description);
 }
 
 /* 超出上限的计数现在是展开/收起切换按钮（button 默认样式全要剥掉） */
@@ -1719,19 +1745,25 @@
   min-width: 0;
 }
 
-/* Send button: a compact primary chip, matching Continue's "⏎ Enter". */
+/* Send button: a compact primary chip, matching Continue's "⏎ Enter".
+   尺寸**固化**（用户 2026-09-14 要求）：flex 0 0 auto 让它不参与发送栏的压缩，
+   nowrap 让「发送 / Send」在任何宽度下都不折行——此前侧栏收窄时按钮被挤，
+   文字会折成两行。padding 0 10px 是「刚好包住文案」的富余：不靠 min-width
+   撑宽，中英文都贴内容自适应，两种语言下都是同一条边距。 */
 .send-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 4px;
+  flex: 0 0 auto;
   height: 22px;
   min-width: 24px;
-  padding: 0 6px;
+  padding: 0 10px;
   border-radius: var(--radius);
   background: var(--primary);
   color: var(--primary-fg);
   font-size: var(--font-size-2xs);
+  white-space: nowrap;
 }
 
 .send-btn:hover {

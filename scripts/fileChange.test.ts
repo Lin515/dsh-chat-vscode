@@ -11,7 +11,12 @@
 import assert from "node:assert";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { hasWorkingChange, type GitChangeStateLike } from "../src/dsh/fileChange";
+import {
+  fileChangeKind,
+  hasWorkingChange,
+  isUntracked,
+  type GitChangeStateLike,
+} from "../src/dsh/fileChange";
 
 /** 造一条改动记录（与 git 扩展 API 里 `Change.uri.fsPath` 同形）。 */
 function change(fsPath: string) {
@@ -66,7 +71,7 @@ console.log("fileChange: 分隔符与大小写不影响判定 ✓");
 // 在 untrackedGroup 里找不到资源 → 命令静默什么都不做 → 用户点了没反应。
 // 正确做法是不算改动，让宿主回落成普通打开（至少文件会打开）。
 {
-  const state: GitChangeStateLike & { untrackedChanges?: { uri: { fsPath: string } }[] } = {
+  const state: GitChangeStateLike = {
     untrackedChanges: [change(TARGET)],
   };
   assert.strictEqual(
@@ -127,26 +132,93 @@ console.log("fileChange: 相邻路径不误判 ✓");
 
   const controller = readFileSync(join(process.cwd(), "src", "dsh", "controller.ts"), "utf8");
   assert.ok(
-    /await this\.openFile\(message\.path, message\.diff\)/.test(controller),
-    "openFile 分支必须把 diff 传下去",
+    /await this\.openFile\(message\.path, message\.diff, viewId\)/.test(controller),
+    "openFile 分支必须把 diff 与 viewId（删除提示 toast 要发给对应窗口）传下去",
   );
   assert.ok(
-    /if \(diff === true && \(await this\.openChanges\(uri\)\)\) return;/.test(controller),
-    "有改动就走对比窗口，并且不给普通打开留第二次机会（否则会多开一个标签）",
+    /await this\.openChanges\(uri\)/.test(controller),
+    "openChanges 不再吃 exists：磁盘存在性只由 openFile 决定「删除提示 vs 普通打开」",
   );
   assert.ok(
-    /hasWorkingChange\(state, uri\.fsPath\)/.test(controller),
-    "调 git.openChange 之前必须先自己判定有没有改动",
+    /if \(hasWorkingChange\(repo\.state, uri\.fsPath\)\) \{\s*await vscode\.commands\.executeCommand\("git\.openChange", uri\);/.test(
+      controller,
+    ),
+    "对比窗口只准在「确认在改动清单里」的分支里开（未跟踪/已删除/无改动一律不进这条命令）",
   );
   assert.ok(
-    !/untrackedChanges/.test(controller),
-    "不能把未跟踪文件当改动：git.openChange 对它们静默无操作 → 点了没反应",
+    !/git\.refresh/.test(controller),
+    "点击链路不做「轻推重扫 + 轮询」（用户 2026-09-14 拍板：即时感优先，宁可第一次点不出 diff）",
+  );
+  assert.ok(
+    !/nudgeGitRefresh/.test(controller),
+    "竞态修复机制已整体撤掉，别只删一半留下死代码",
   );
   assert.ok(
     /executeCommand\("git\.openChange", uri\)/.test(controller),
     "对比窗口复用 git 扩展的 git.openChange（SCM 的「打开更改」）",
   );
+  assert.ok(
+    /@chipFileDeleted/.test(controller),
+    "内容找不回的已删除文件要明确提示，不能静默",
+  );
 }
 console.log("fileChange: 界面与宿主都接上了这条链路 ✓");
+
+// ---------- 7. 种类判定：新文件 / 改动 / 已删除 / 不确定 ----------
+//
+// 芯片记号（[新增] / 删除线）与点击行为共用这一份判定（fileChangeKind）；
+// 优先级是「磁盘说了算」：文件没了就是 deleted，哪怕 git 清单里还有它。
+{
+  const tracked: GitChangeStateLike = { workingTreeChanges: [change(TARGET)] };
+  const staged: GitChangeStateLike = { indexChanges: [change(TARGET)] };
+  const untracked: GitChangeStateLike = { untrackedChanges: [change(TARGET)] };
+
+  assert.strictEqual(
+    fileChangeKind(tracked, TARGET, true),
+    "edited",
+    "在工作区改动清单里 = edited（git.openChange 能开对比窗口）",
+  );
+  assert.strictEqual(
+    fileChangeKind(staged, TARGET, true),
+    "edited",
+    "暂存过的改动同样算 edited（SCM 里它也是「打开更改」）",
+  );
+  assert.strictEqual(
+    fileChangeKind(untracked, TARGET, true),
+    "new",
+    "未跟踪 = new（模型新建，点开直接看文件，不开 diff）",
+  );
+  assert.strictEqual(
+    fileChangeKind(undefined, TARGET, true),
+    undefined,
+    "拿不到 git 状态 → 不标记号（没有记号是「不确定」，不是「没改动」）",
+  );
+  assert.strictEqual(
+    fileChangeKind({}, TARGET, true),
+    undefined,
+    "哪个清单都不在 → 不标记号（无改动 / 被 .gitignore / 不在仓库）",
+  );
+  assert.strictEqual(
+    fileChangeKind(untracked, TARGET, false),
+    "deleted",
+    "磁盘上没有了 → deleted 优先于未跟踪（先写后删的临时文件就该这么显示）",
+  );
+  assert.strictEqual(
+    fileChangeKind(tracked, TARGET, false),
+    "deleted",
+    "跟踪中的删除也是 deleted：点开对比窗口还能看到删除前的内容",
+  );
+  assert.strictEqual(
+    isUntracked(untracked, "d:/dev/app/src/config.ts"),
+    true,
+    "isUntracked 与 hasWorkingChange 同一口径：路径写法变体要能命中",
+  );
+  assert.strictEqual(
+    isUntracked({}, TARGET),
+    false,
+    "空状态不算未跟踪（不会把没分类的文件误标成 [新增]）",
+  );
+}
+console.log("fileChange: 种类判定（new/edited/deleted/不确定）✓");
 
 console.log("\nfileChange: all assertions passed");

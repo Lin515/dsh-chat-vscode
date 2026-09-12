@@ -1,5 +1,5 @@
 import { memo, useRef } from "react";
-import type { DiffLayout, MessageView, Segment } from "../../shared/chat";
+import type { DiffLayout, FileChangeKind, MessageView, Segment } from "../../shared/chat";
 import { post } from "../bridge";
 import { IconBranch, IconCopy } from "../icons";
 import { Markdown } from "./Markdown";
@@ -26,11 +26,14 @@ function StreamText({ text }: { text: string }) {
 export const Message = memo(function Message({
   message,
   diffLayout,
+  fileKinds,
   canBranch = false,
 }: {
   message: MessageView;
   /** 编辑类节点的 diff 排版（来自设置；缺省自适应）。 */
   diffLayout?: DiffLayout;
+  /** 文件芯片的种类表（宿主按 git 判定后整表下发；缺省不标记号）。 */
+  fileKinds?: Record<string, FileChangeKind>;
   /**
    * 这条消息能否作为分支锚点（只有**已结束**的那一轮可以）。
    *
@@ -106,10 +109,11 @@ export const Message = memo(function Message({
           <FileChips
             label={texts.producedLabel}
             paths={producedFiles.map((path) => ({ path }))}
+            kinds={fileKinds}
           />
         ) : null}
         {message.deliverables?.length ? (
-          <FileChips label={texts.presentedLabel} paths={message.deliverables} />
+          <FileChips label={texts.presentedLabel} paths={message.deliverables} kinds={fileKinds} />
         ) : null}
         {message.error ? <NoticeRow level="error" text={message.error} /> : null}
       </div>

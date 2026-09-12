@@ -84,6 +84,10 @@ export interface Texts {
   filesCollapse: string;
   /** 文件芯片行「收起」的无障碍标题。 */
   filesCollapseAria: string;
+  /** 新建文件芯片的前缀记号（git 未跟踪 = 模型新建，点击直接打开文件）。 */
+  fileNewTag: string;
+  /** 文件已删除且内容找不回时的提示（toast 与删除线芯片的悬停说明共用）。 */
+  chipFileDeleted: string;
 
   /** 子代理面板 */
   subagents: string;
@@ -380,6 +384,8 @@ const zh: Texts = {
   filesExpandAria: (count) => `展开全部 ${count} 个文件`,
   filesCollapse: "收起",
   filesCollapseAria: "收起文件列表",
+  fileNewTag: "[新增]",
+  chipFileDeleted: "文件已删除，内容找不回来了",
 
   subagents: "子代理",
   subagentsEmpty: "当前会话没有子代理",
@@ -617,6 +623,8 @@ const en: Texts = {
   filesExpandAria: (count) => `Show all ${count} file${count === 1 ? "" : "s"}`,
   filesCollapse: "Collapse",
   filesCollapseAria: "Collapse file list",
+  fileNewTag: "[new]",
+  chipFileDeleted: "The file was deleted; its content is no longer available",
 
   subagents: "Subagents",
   subagentsEmpty: "This session has no subagents",
@@ -863,6 +871,8 @@ function resolveMarker(text: string, texts: Texts): string {
       return texts.settingsResetDone;
     case "queueAttachmentsLost":
       return texts.queueAttachmentsLost;
+    case "chipFileDeleted":
+      return texts.chipFileDeleted;
     case "queueContentLost":
       return texts.queueContentLost;
     case "queueDispatchFailed":

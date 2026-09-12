@@ -227,6 +227,67 @@ console.log("thinkingStream: 多轮顺序 ✓");
 }
 console.log("thinkingStream: 同轮插话按时间顺延 ✓");
 
+// ---------- B5. 队列消息被 splice 进**运行中的同一轮**：切开轮次，后续生成在插话下方 ----------
+//
+// 用户 2026-09-14 报告（会话日志实锤，见 scripts/queueLogInspect.ts）：服务端经
+// agent/inbox 把运行中提交的消息直接注入同一轮（user/message 落在 turn/end 之前
+// 几十分钟），该轮的后续回答全部进同一条助手消息——旧折叠把插话追加到末尾后，
+// 生成继续压在插话上方（「生成内容在其上方继续生成」）。修复 = 在插话处把轮切
+// 成多段（a:1 → a:1:2），后续生成进下一段。
+
+{
+  const { adapter, messages } = harness();
+  const t = Date.now();
+  adapter.applyEvent({ type: "turn/start", seq: 1, time: t, data: { turn: 1 } });
+  adapter.applyEvent({
+    type: "user/message", seq: 2, time: t + 1,
+    data: { id: "u1", role: "user", content: [{ type: "text", text: "第一问" }], source: { kind: "user" } },
+  });
+  adapter.applyEvent({
+    type: "assistant/message", seq: 3, time: t + 50,
+    data: { turn: 1, step: 0, message: { id: "m1", role: "assistant", content: [{ type: "text", text: "第一答" }] } },
+  });
+  // 队列项被 splice 进还在跑的 turn 1（同一条 user 来源消息，本轮第二条）
+  adapter.applyEvent({
+    type: "user/message", seq: 4, time: t + 60,
+    data: { id: "u2", role: "user", content: [{ type: "text", text: "【QUEUED】排队的问题" }], source: { kind: "user" } },
+  });
+  // 同一轮的后续生成改走流式（step 1）：必须落在插话**下方**的新段 a:1:2
+  adapter.applyAssistantStream({ type: "start", attemptId: "att2", revision: 1, turn: 1, step: 1 });
+  adapter.applyAssistantStream({
+    type: "chunk", attemptId: "att2", revision: 1, index: 0, time: t + 70,
+    chunk: { type: "text-delta", index: 0, text: "对插话的回答" },
+  });
+
+  const order = messages.map((m) => (m.role === "user" ? `U:${m.text}` : `A:${m.id}`));
+  assert.deepStrictEqual(
+    order,
+    ["U:第一问", "A:a:1", "U:【QUEUED】排队的问题", "A:a:1:2"],
+    `插话后同轮的后续生成要进新段（插话下方），实际 ${JSON.stringify(order)}`,
+  );
+  const part2 = messages.find((m) => m.id === "a:1:2");
+  const liveText = part2?.segments.find((s) => s.id === "live:att2:0");
+  assert.ok(
+    liveText && liveText.kind === "text" && liveText.text === "对插话的回答" && liveText.streaming,
+    "切分后流式增量要进新段 a:1:2",
+  );
+
+  // durable 内容到达：替换掉叠加层，仍在新段里
+  adapter.applyEvent({
+    type: "assistant/message", seq: 5, time: t + 100,
+    data: { turn: 1, step: 1, message: { id: "m2", role: "assistant", content: [{ type: "text", text: "对插话的回答（完整）" }] } },
+  });
+  const afterDurable = messages.find((m) => m.id === "a:1:2");
+  assert.ok(
+    afterDurable?.segments.some((s) => s.kind === "text" && s.text === "对插话的回答（完整）"),
+    "durable 替换要落回同一段（跨段清叠加层）",
+  );
+  // 第一段原样保留
+  const part1 = messages.find((m) => m.id === "a:1");
+  assert.ok(part1?.segments.some((s) => s.kind === "text" && s.text === "第一答"), "切分前的内容留在第一段");
+}
+console.log("thinkingStream: 运行中插话切开轮次（生成进插话下方） ✓");
+
 // ---------- B4. 重复事件（重连重放）不产生重复的用户消息 ----------
 
 {

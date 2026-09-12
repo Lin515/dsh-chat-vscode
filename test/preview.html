@@ -430,6 +430,32 @@
           ]
         };
       };
+      // 文件芯片的种类表（`patch.fileKinds`）：形状与真实宿主一致（键 = 芯片上的
+      // 原样路径，值 = "new" | "edited" | "deleted"，见 src/dsh/fileChange.ts）。
+      // 夹具按「一条 edited / 一条 new / 一条 deleted」铺开，三种记号一次看全。
+      window.__fileKinds = function () {
+        window.__push({
+          type: "patch",
+          patch: {
+            fileKinds: {
+              "D:/dev/app/src/server/index.ts": "edited",
+              "D:/dev/app/src/config.ts": "edited",
+              "D:/dev/app/src/bootstrap.ts": "new",
+              "D:/dev/app/src/client.ts": "edited",
+              "D:/dev/app/src/auth/middleware.ts": "edited",
+              "D:/dev/app/src/routes/api.ts": "edited",
+              "D:/dev/app/src/util/retry.ts": "edited",
+              "D:/dev/app/package.json": "edited",
+              "D:/dev/app/docs/merge-plan.md": "edited",
+              "D:/dev/app/docs/merge-plan.md.bak": "deleted"
+            }
+          }
+        });
+      };
+      // 开机后跟着 state 快照推一次：预览页默认就能看到记号
+      setTimeout(function () {
+        window.__fileKinds();
+      }, 60);
     </script>
   </body>
 </html>

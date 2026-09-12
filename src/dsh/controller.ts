@@ -9,6 +9,7 @@ import type {
   ChatState,
   CommandView,
   DiffLayout,
+  FileChangeKind,
   ModelSelectionView,
   ProviderGroupView,
   QuestionView,
@@ -19,7 +20,7 @@ import type { HostToWebview, WebviewToHost } from "../shared/ipc";
 import { SessionAdapter, type ImageRef } from "./adapter";
 import { classifyPath, formatPathList, isDirectoryPath, isImagePath } from "./attachments";
 import { ConfigChangeRouter } from "./configChanges";
-import { hasWorkingChange, type GitChangeStateLike } from "./fileChange";
+import { fileChangeKind, hasWorkingChange, type GitChangeStateLike } from "./fileChange";
 import { composeWithReferences, formatFileMention } from "./references";
 import { resolveForVsCode } from "./hostText";
 import { DshApiError, DshAuthError, DshClient, type ConnectionState, type SessionSummaryWire } from "./client";
@@ -941,6 +942,8 @@ export class ChatController implements vscode.Disposable {
     adapter.loadImages = (refs, done) => {
       void this.loadAttachmentImages(sessionId, refs, done);
     };
+    // 文件芯片种类（[新增] / 删除线）的分类回调：适配器交路径，宿主查 git 与磁盘
+    adapter.classifyFiles = (paths) => this.classifyFiles(paths);
     adapter.setSession(
       this.sessions.find((s) => s.id === sessionId) ?? {
         id: sessionId,
@@ -2001,7 +2004,7 @@ export class ChatController implements vscode.Disposable {
         break;
 
       case "openFile":
-        await this.openFile(message.path, message.diff);
+        await this.openFile(message.path, message.diff, viewId);
         break;
 
       case "insertText":
@@ -2819,13 +2822,26 @@ export class ChatController implements vscode.Disposable {
    *
    * `diff` 表示**想看改动**（文件芯片的普通点击）：有可对比的改动就打开 VS Code
    * 的改动对比窗口（等同 SCM 里的「打开更改」），否则回落成普通打开——拿不到
-   * 改动不是错误，「点了什么都不发生」才是。
+   * 改动不是错误，「点了什么都不发生」才是。回落逻辑按文件种类分（见
+   * `fileChangeKind`）：新文件/无改动 → 直接打开文件本身（用户新增 2026-09-14 的
+   * 口径：新建文件点开就是看文件，不是 diff）；已删除 → git 里还有旧内容就开
+   * 对比窗口（左边 HEAD、右边空 = 查看被删前的内容），真找不回再明确告知。
    *
    * `preview: true` 是既有行为：单击芯片只是预览，不挤掉已经打开的文件。
    */
-  private async openFile(path: string, diff?: boolean): Promise<void> {
+  private async openFile(path: string, diff?: boolean, viewId?: string): Promise<void> {
     const uri = vscode.Uri.file(path);
-    if (diff === true && (await this.openChanges(uri))) return;
+    const exists = await this.fileExists(uri);
+    if (diff === true) {
+      if (await this.openChanges(uri)) return;
+      if (!exists) {
+        // 磁盘上没有了、git 也没有记录 → 内容找不回。明确说一声，别静默。
+        if (viewId) {
+          this.emitToView(viewId, { type: "toast", level: "warn", text: "@chipFileDeleted" });
+        }
+        return;
+      }
+    }
     try {
       const document = await vscode.workspace.openTextDocument(uri);
       await vscode.window.showTextDocument(document, { preview: true });
@@ -2840,7 +2856,14 @@ export class ChatController implements vscode.Disposable {
    * 复用 git 扩展的 `git.openChange`（左边是 HEAD/暂存版本、右边是工作区文件），
    * 但**先自己判定有没有改动**：该命令对不在 SCM 改动清单里的文件是静默无操作
    * （内部 `getSCMResource()` 找不到资源就 return），直接调用会「点了没反应」。
-   * 判定口径见 `fileChange.ts`——只认工作区/暂存/合并三组，未跟踪文件不算改动。
+   * 判定口径见 `fileChange.ts`——只认工作区/暂存/合并三组，未跟踪文件不算改动
+   * （点新文件回落普通打开，正是要的语义）。
+   *
+   * 判定只做**一次**、落空立即回落，绝不等待（用户 2026-09-14 拍板）：曾试过
+   * 「轻推 SCM 重扫 + 限时轮询」来救「第一次点不出 diff」的竞态（git
+   * 扩展按 fs 事件去抖刷新，刚写完的文件还没进改动清单），但代价是「真没改动」
+   * 的点击（无改动的交付文件、被忽略的文件）每次都要白等 1.2s——点击的即时感
+   * 优先，宁可偶尔第一下先看到文件、第二下才是 diff。
    */
   private async openChanges(uri: vscode.Uri): Promise<boolean> {
     try {
@@ -2848,14 +2871,71 @@ export class ChatController implements vscode.Disposable {
       if (!git) return false;
       // 内建扩展按需激活：没激活时 exports 还是空的
       const exports = git.isActive ? git.exports : await git.activate();
-      const state = exports?.getAPI?.(1)?.getRepository(uri)?.state;
-      if (!hasWorkingChange(state, uri.fsPath)) return false;
-      await vscode.commands.executeCommand("git.openChange", uri);
-      return true;
+      const repo = exports?.getAPI?.(1)?.getRepository(uri);
+      if (!repo) return false;
+      // 对比窗口只在这里开：确认在改动清单里才会走进来
+      if (hasWorkingChange(repo.state, uri.fsPath)) {
+        await vscode.commands.executeCommand("git.openChange", uri);
+        return true;
+      }
+      return false;
     } catch (error) {
       // git 扩展缺失 / 命令失败都不该让「点文件」整个失败：回落普通打开
       this.log(`[open] 改动对比不可用，改为直接打开 ${uri.fsPath}：${this.describeError(error)}`);
       return false;
+    }
+  }
+
+  // ---------- 文件芯片分类（[新增] / 删除线记号的数据来源） ----------
+  /** 文件是否存在于磁盘（`vscode.workspace.fs` 是宿主内的标准异步入口）。 */
+  private async fileExists(uri: vscode.Uri): Promise<boolean> {
+    try {
+      await vscode.workspace.fs.stat(uri);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * 给一批芯片路径做种类判定（供适配器下发表格给界面）。
+   *
+   * 每个路径独立判定；单个失败不影响其它（那条退化为无记号）。判定靠
+   * `fileChangeKind`（git 状态 + 磁盘存在性），**没有**轮询——那是点击链路
+   * （`openChanges`）的专属：分类慢半拍顶多晚一点显示记号，点击必须当场给出
+   * 正确行为，二者要求不同。
+   */
+  private async classifyFiles(paths: readonly string[]): Promise<Record<string, FileChangeKind>> {
+    const entries = await Promise.all(
+      paths.map(async (path): Promise<[string, FileChangeKind] | undefined> => {
+        try {
+          const uri = vscode.Uri.file(path);
+          const exists = await this.fileExists(uri);
+          const state = this.gitStateFor(uri);
+          const kind = fileChangeKind(state, uri.fsPath, exists);
+          return kind ? [path, kind] : undefined;
+        } catch {
+          return undefined;
+        }
+      }),
+    );
+    const kinds: Record<string, FileChangeKind> = {};
+    for (const entry of entries) {
+      if (entry) kinds[entry[0]] = entry[1];
+    }
+    return kinds;
+  }
+
+  /** git 扩展里该路径所属仓库的状态；扩展缺失 / 不在仓库里时返回 undefined。 */
+  private gitStateFor(uri: vscode.Uri): GitChangeStateLike | undefined {
+    try {
+      const git = vscode.extensions.getExtension<GitExtensionExportsLike>("vscode.git");
+      const exports = git?.isActive ? git.exports : undefined;
+      // 注意：这里**不**主动激活 git 扩展——分类是锦上添花，不值得为一批记号
+      // 把整个内建扩展拉起来；没激活就当没有（下次点击 diff 链路会激活它）。
+      return exports?.getAPI?.(1)?.getRepository(uri)?.state;
+    } catch {
+      return undefined;
     }
   }
 
