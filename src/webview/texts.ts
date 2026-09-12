@@ -72,10 +72,16 @@ export interface Texts {
   producedLabel: string;
   /** 轮尾申报交付文件行的标签。 */
   presentedLabel: string;
-  /** 产出文件超出展示上限时的剩余计数。 */
+  /** 产出文件超出展示上限时的剩余计数（也是「展开全部」按钮的文案）。 */
   producedMore: (count: number) => string;
   /** 打开产出文件的无障碍标题。 */
   producedOpen: (name: string) => string;
+  /** 文件芯片行「展开全部」按钮的无障碍标题。 */
+  filesExpandAria: (count: number) => string;
+  /** 文件芯片行展开后的「收起」文案。 */
+  filesCollapse: string;
+  /** 文件芯片行「收起」的无障碍标题。 */
+  filesCollapseAria: string;
 
   /** 子代理面板 */
   subagents: string;
@@ -368,6 +374,9 @@ const zh: Texts = {
   presentedLabel: "交付文件",
   producedMore: (count) => `+ ${count} 个文件`,
   producedOpen: (name) => `打开 ${name}`,
+  filesExpandAria: (count) => `展开全部 ${count} 个文件`,
+  filesCollapse: "收起",
+  filesCollapseAria: "收起文件列表",
 
   subagents: "子代理",
   subagentsEmpty: "当前会话没有子代理",
@@ -601,6 +610,9 @@ const en: Texts = {
   presentedLabel: "Presented files",
   producedMore: (count) => `+ ${count} file${count === 1 ? "" : "s"}`,
   producedOpen: (name) => `Open ${name}`,
+  filesExpandAria: (count) => `Show all ${count} file${count === 1 ? "" : "s"}`,
+  filesCollapse: "Collapse",
+  filesCollapseAria: "Collapse file list",
 
   subagents: "Subagents",
   subagentsEmpty: "This session has no subagents",

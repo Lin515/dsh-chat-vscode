@@ -141,10 +141,10 @@ export class ChatController implements vscode.Disposable {
   /**
    * 已提交但可能还排在队列里的消息：requestId → 用户当时真正输入的内容。
    *
-   * 为什么不能直接用队列回显：提交给服务端的正文里已经把文件/目录上下文
-   * 内联进去了（见 `buildContextText`），图片则是独立的内容块。用回显文本
-   * 「重新编辑」会把整段内联上下文倒回输入框。这里按 requestId 存原文，
-   * 队列帧带回 `rpcId` 时就能对回去。
+   * 为什么不能直接用队列回显：提交给服务端的正文里已经把 `@path` 引用拼在正文
+   * 前面（见 `composeWithReferences`），上传文件变成 `{type:'file', receiptId}`
+   * 内容块、图片是独立内容块——回显文本里看不到这些结构。用回显「重新编辑」
+   * 会丢掉附件芯片。这里按 requestId 存原文，队列帧带回 `rpcId` 时就能对回去。
    */
   private readonly submissions = new Map<
     string,
@@ -1641,15 +1641,10 @@ export class ChatController implements vscode.Disposable {
         break;
 
       case "addMention": {
-        // `@` 选中的文件/目录：
-        // - 目录 → 变成 `@dir/` **引用芯片**（官方靠结尾斜杠标记目录，模型自己
-        //   决定要不要 list；以前是把带引号路径插进输入框，语义弱且用户看不见状态）；
-        // - 文件 → 走常规分派（图片内联、其余上传）。
-        if (message.kind === "directory") {
-          this.addReference(message.path, "directory");
-        } else {
-          this.applyPaths([{ path: message.path, name: this.attachmentName(message.path) }]);
-        }
+        // `@` 选中一律是**引用芯片**，不上传、不读内容（官方 dsh-client-ui-reference：
+        // @ 只发 `@path` / `@dir/` token，模型自己用 read 工具读；逐字节上传只归
+        // 附件按钮 / 拖拽入口）。目录靠结尾斜杠标记（`@dir/`）。
+        this.addReference(message.path, message.kind);
         break;
       }
 
@@ -1995,7 +1990,8 @@ export class ChatController implements vscode.Disposable {
    *
    * - 图片 → 图片附件（按内容块发送）；
    * - 其余文件 → **上传**成文件附件（拿 `receiptId`），不再内联正文；
-   * - 读不出来 / 过大到无法上传 → 带引号的路径插到输入框光标处。
+   *   上传按字节发，二进制 / 非 UTF-8 / 过大都不拦；只有读不出来（选择到读取之间被删）/ 模型不收图片 → 带引号的路径
+   *   插到输入框光标处（最后兜底）。
    *
    * 这里**只选文件**，不能同时选目录：VS Code 的 `OpenDialogOptions` 明确写着
    * 「On Windows and Linux, a file dialog cannot be both a file selector and a
@@ -2030,25 +2026,28 @@ export class ChatController implements vscode.Disposable {
     this.addPaths(picked.map((uri) => uri.fsPath));
   }
 
-  /** 把一批路径交给 `applyPaths` 分派（附件 / 上传 / 路径）。 */
+  /** 把一批路径交给 `applyPaths` 分派（图片 / 上传 / 目录引用）。 */
   private addPaths(paths: string[]): void {
     this.applyPaths(paths.map((path) => ({ path, name: this.attachmentName(path) })));
   }
 
   /**
-   * 把一批路径并入当前会话的输入。
+   * 把一批路径并入当前会话的输入（附件入口：文件选择器 / 资源管理器右键 /
+   * 命令面板「添加文件夹」）。
    *
    * 三条去向，与官方一致：
    * - **图片** → 图片附件（内容块，官方同样内联图片字节）；
-   * - **目录** → `@dir/` 引用（官方靠结尾斜杠标记目录，模型自己决定要不要 list）；
+   * - **目录** → `@dir/` **引用芯片**（官方靠结尾斜杠标记目录，模型自己决定
+   *   要不要 list；目录不是「读不出来的文件」，不走路径文本兜底）；
    * - **其余文件** → 文件附件并**立即上传**（官方 upload-on-pick：选完就开始传，
-   *   大文件在按下发送前就能看到进度，发送时只带 `receiptId`）。
+   *   大文件在按下发送前就能看到进度，发送时只带 `receiptId`；上传路径按字节发，
+   *   类型与大小都不挑）。
    *
-   * 读不出来且上传不了的（极端情况）退回把带引号的路径插到光标处——那是最后一道
-   * 兜底，不再假装「已作为上下文加入」。
+   * 只有文件读不出来（选择到读取之间被删的竞态）、或模型不收图片，才退回把带
+   * 引号的路径插到光标处——那是最后一道兜底，不再假装「已作为上下文加入」。
    *
-   * 用户明确说过的口径（2026-09-12）：`@` 列表里选中**目录**默认是**打开该目录**
-   * （继续下钻），只有点右侧的「整个目录」才是把目录本身载入。这里收的就是后者。
+   * 分工与 `@` 入口不同：`@` 选中的文件/目录一律只生成引用芯片（官方 @ 只发
+   * `@path` / `@dir/` token），真正逐字节上传只从这里发生。
    */
   private applyPaths(items: { path: string; name: string; directory?: boolean }[]): void {
     const key = this.sessionKey();
@@ -2060,6 +2059,17 @@ export class ChatController implements vscode.Disposable {
       // 附件按路径去重（同一张图加两次没有意义）；路径型结果不去重——
       // 用户每次明确选择都应该在光标处再插一份
       if (list.some((a) => a.path === item.path)) continue;
+      // 目录 → 引用芯片（与 `@` 的「整个目录」同形；官方靠结尾斜杠区分）
+      if (item.directory ?? isDirectoryPath(item.path)) {
+        list.push({
+          id: randomUUID(),
+          kind: "reference",
+          path: item.path,
+          name: `${basename(item.path)}/`,
+          referenceKind: "directory",
+        });
+        continue;
+      }
       const outcome = classifyPath({
         ...item,
         // 未拿到模型能力时按「支持」处理，与服务端最终校验一致
@@ -2423,7 +2433,7 @@ export class ChatController implements vscode.Disposable {
     });
   }
 
-  /** 供资源管理器右键调用：文件/目录都按内容分派（目录会自动识别成路径型）。 */
+  /** 供资源管理器右键调用：文件 → 上传附件；目录 → `@dir/` 引用芯片。 */
   addFileContext(path: string): void {
     this.applyPaths([{ path, name: this.attachmentName(path) }]);
   }

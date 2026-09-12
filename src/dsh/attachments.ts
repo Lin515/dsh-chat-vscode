@@ -1,22 +1,20 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import type { Attachment } from "../shared/chat";
-import { decodeTextFile } from "./textFile";
 
 /**
- * 路径 → 「能不能内嵌」的归类。
+ * 路径 → 「附件怎么发」的归类。
  *
  * 刻意与 vscode 无关，这样冒烟/单元测试能直接验证归类结果，不必启动扩展宿主。
  *
- * 判据只有一条：**内容能不能内嵌成消息的一部分**。
- * - 能（合法图片 / 合法 UTF-8 文本且不过大）→ 附件，随消息一起发；
- * - 不能（目录 / 二进制 / 非 UTF-8 / 过大 / 读不出来）→ 只把**路径**给它，
- *   由界面以双引号包裹插到输入框光标处。
- *
- * 为什么不能一律当附件：`kind: "file"` 的发送路径是按 UTF-8 读成文本内联，
- * 对二进制**不会报错**，只会把非法字节静默换成 U+FFFD——于是一段乱码被当成
- * 「文件内容」喂给模型。目录更直接：读它会抛 EISDIR。
- * 判定口径与 dsh 自己的 `read` 工具一致（见 textFile.ts）。
+ * 判据与官方两条路对齐（见 references.ts 文件头）：
+ * - **目录** → 引用（官方靠结尾斜杠标记，模型自己决定要不要 list）；
+ * - **图片**（模型接受图片输入）→ 图片内容块（官方同样内联图片字节）；
+ * - **其余文件** → 文件附件，选中即**逐字节上传**拿 `receiptId`。
+ *   上传路径对字节不做任何假设——二进制、非 UTF-8、任意大小都能传，
+ *   所以这里**不读内容**（旧版按 UTF-8 解码 + 512KB 上限是「内联正文」时代的
+ *   判据，0.5.0 起正文不再内联，门槛随之移除）；只 stat 确认存在。
+ * - **读不出来 / 模型不收图片** → 最后兜底：把带引号的路径插到输入框光标处。
  */
 
 /** 以图片块发送的扩展名 → mediaType（与服务端支持的图片类型对齐）。 */
@@ -28,24 +26,15 @@ const IMAGE_MEDIA_TYPES: Record<string, string> = {
   gif: "image/gif",
 };
 
-/**
- * 可内联文本的大小上限。
- *
- * 与 `controller.buildContextText` 发送时的上限**必须一致**：这里决定了「加进来
- * 时算不算能内嵌」，那里是最后一道防线。两处不一致会让用户看到「加进来时是正常
- * 附件、发出去时却变成一行『过大未内联』」的怪现象。
- */
-export const INLINE_TEXT_MAX_BYTES = 512 * 1024;
+/** 候选路径是图片吗（用于界面提示与测试）。 */
+export function isImagePath(path: string): boolean {
+  return imageMediaTypeFor(path) !== undefined;
+}
 
 /** 路径是图片时给出 mediaType，否则 undefined。 */
 export function imageMediaTypeFor(path: string): string | undefined {
   const match = /\.([a-z0-9]+)$/i.exec(path);
   return match ? IMAGE_MEDIA_TYPES[match[1].toLowerCase()] : undefined;
-}
-
-/** 候选路径是图片吗（用于界面提示与测试）。 */
-export function isImagePath(path: string): boolean {
-  return imageMediaTypeFor(path) !== undefined;
 }
 
 /**
@@ -62,19 +51,13 @@ export function isDirectoryPath(path: string): boolean {
   }
 }
 
-/** 不能内嵌时的原因（用于提示与测试断言）。 */
-export type PathOnlyReason =
-  | "directory"
-  | "binary"
-  | "not-utf8"
-  | "too-large"
-  | "unreadable"
-  | "image-unsupported";
+/** 不能做附件时的原因（用于提示与测试断言）。 */
+export type PathOnlyReason = "directory" | "unreadable" | "image-unsupported";
 
 export type ClassifyOutcome =
-  /** 可以内嵌：作为附件随消息发送。 */
+  /** 可以做附件：随消息发送（图片内容块 / 上传后拿 receiptId）。 */
   | { kind: "attachment"; attachment: Attachment }
-  /** 不能内嵌：只把路径交给用户/模型。 */
+  /** 不做附件：目录交给引用，读不出来的把路径交给用户。 */
   | { kind: "path"; reason: PathOnlyReason };
 
 export interface ClassifyInput {
@@ -85,15 +68,15 @@ export interface ClassifyInput {
   directory?: boolean;
   /** 当前模型是否接受图片输入；false 时图片无法内嵌。 */
   acceptsImage: boolean;
-  /** 读文件失败时的回调（默认静默）。 */
+  /** 读取失败时的回调（默认静默）。 */
   onError?: (message: string) => void;
 }
 
 /**
  * 归类一个路径。
  *
- * 顺序有讲究：先判目录（否则会去读目录）、再判图片（扩展名即可，不必先读）、
- * 最后才是文本校验（要真读一遍才能确定是不是合法 UTF-8）。
+ * 顺序有讲究：先判目录（目录不做附件）、再判图片（图片要读字节做内容块）、
+ * 最后才是普通文件（上传不挑内容，stat 确认存在即可）。
  */
 export function classifyPath(input: ClassifyInput): ClassifyOutcome {
   const { path, name, acceptsImage, onError } = input;
@@ -122,21 +105,14 @@ export function classifyPath(input: ClassifyInput): ClassifyOutcome {
     }
   }
 
-  // 非图片：必须真读一遍才能确定能不能当文本内联
-  let bytes: Buffer;
+  // 普通文件：上传路径按字节发，不读内容（二进制/非 UTF-8/过大都不是障碍）；
+  // 只确认文件还在（选择到读取之间被删掉的竞态）
   try {
-    const stat = statSync(path);
-    if (stat.size > INLINE_TEXT_MAX_BYTES) return { kind: "path", reason: "too-large" };
-    bytes = readFileSync(path);
+    statSync(path);
   } catch (error) {
     onError?.(`读取文件失败 ${path}：${error instanceof Error ? error.message : String(error)}`);
     return { kind: "path", reason: "unreadable" };
   }
-
-  const decoded = decodeTextFile(bytes);
-  if (decoded.kind === "binary") return { kind: "path", reason: "binary" };
-  if (decoded.kind === "not-utf8") return { kind: "path", reason: "not-utf8" };
-
   return { kind: "attachment", attachment: { id: randomUUID(), kind: "file", path, name } };
 }
 

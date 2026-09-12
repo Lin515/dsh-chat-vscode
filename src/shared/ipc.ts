@@ -66,8 +66,9 @@ export type HostToWebview =
   /**
    * 把一段文本插到输入框的**光标处**（不是替换整个草稿）。
    *
-   * 用途：选了不能内嵌的路径（目录 / 二进制 / 非 UTF-8 / 过大）时，把
+   * 用途：最后兜底——选了读不出来的文件、或模型不收图片时，把
    * `"C:\path"` 这样带引号的路径放进用户正在写的话里，而不是塞成附件芯片。
+   * （目录不走这里：目录是 `@dir/` 引用芯片。）
    */
   | { type: "ui/insertText"; text: string }
   /** 让界面打开某个右侧抽屉（命令面板入口用，如「DSH: 历史对话」）。 */
@@ -112,9 +113,9 @@ export type WebviewToHost =
   | { type: "answerApproval"; requestId: string; approved: boolean; always?: boolean }
   /** 回答模型提问。 */
   | { type: "answerQuestion"; requestId: string; answers: { id: string; selected: string[]; custom?: string }[] }
-  /** 选择文件 / 文件夹加入上下文（图片按图片发送，其余按文件内联）。 */
+  /** 选择文件 / 文件夹加入上下文（图片按图片发送，其余文件上传，目录做引用）。 */
   | { type: "addFiles" }
-  /** @ 提及选中的文件 / 目录，作为附件加入。 */
+  /** @ 提及选中的文件 / 目录，作为 `@path` / `@dir/` 参考芯片加入（不上传）。 */
   | { type: "addMention"; path: string; kind: "file" | "directory" }
   /**
    * 把一个**目录**作为 `@dir/` 引用加入（不是下钻打开）。

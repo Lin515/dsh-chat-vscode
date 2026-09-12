@@ -65,6 +65,22 @@
   --error: var(--vscode-editorError-foreground, #f44336);
   --terminal: var(--vscode-terminal-ansiGreen, #0dbc79);
 
+  /* ---- node icon colors: every node kind owns one colour; the thinking
+     whale's blue (--info / charts-blue) is its exclusive and may not be
+     reused by any other node icon (用户 2026-09-12 要求) ----
+     Fallbacks follow the same Material-style defaults as the status
+     tokens above; inside a real VS Code theme each resolves to that
+     theme's own chart colour (light themes lighter, dark themes darker). */
+  --node-search: var(--vscode-charts-yellow, #fbc02d);
+  --node-read: var(--vscode-charts-green, #4caf50);
+  --node-bash: var(--vscode-charts-orange, #ff9800);
+  --node-write: var(--vscode-charts-pink, #f06292);
+  --node-edit: var(--vscode-charts-purple, #ab47bc);
+  --node-code: var(--vscode-charts-aqua, #00bcd4);
+  --node-others: var(--vscode-charts-grey, #9e9e9e);
+  --node-command: var(--vscode-charts-apricot, #f08d49);
+  --node-injected: var(--vscode-charts-lightgreen, #81c784);
+
   /* ---- interactive rows / lists ---- */
   --hover: var(--vscode-list-hoverBackground, #383838);
   --active: var(--vscode-list-activeSelectionBackground, #2c5aa050);

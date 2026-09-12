@@ -435,6 +435,46 @@
   color: var(--muted);
 }
 
+/* 节点图标色：每种节点一个专属色（tokens.css 的 --node-*）。
+   完成态 = 静态彩色图标（不再回落灰）；运行中 = 同色上叠 .icon-glow 呼吸发光
+   （关键帧用 currentColor，光色自动跟随图标色）。
+   思考鲸鱼的蓝（--info / charts-blue）是它的独属色，这里刻意没有 node-* 用它。 */
+.node-search {
+  color: var(--node-search);
+}
+
+.node-read {
+  color: var(--node-read);
+}
+
+.node-bash {
+  color: var(--node-bash);
+}
+
+.node-write {
+  color: var(--node-write);
+}
+
+.node-edit {
+  color: var(--node-edit);
+}
+
+.node-code {
+  color: var(--node-code);
+}
+
+.node-others {
+  color: var(--node-others);
+}
+
+.node-command {
+  color: var(--node-command);
+}
+
+.node-injected {
+  color: var(--node-injected);
+}
+
 /* 节点名必须完整显示：不参与压缩（此前 title/detail 同比例收缩，
    长 detail 会把「思考」这类短标题挤掉几个像素，露出半个字）。
    仅当节点名自身超过容器宽度时才省略。 */
@@ -729,6 +769,9 @@
    表达。这样即使动画被抑制，圆点也仍是亮的，不会退化成一块死蓝。 */
 .dot-running {
   background: var(--info);
+  /* 图标呼吸关键帧的 drop-shadow 现在用 currentColor：圆点没有文字，
+     显式把 color 也钉成蓝，动画里的那圈光才不会变成文字色 */
+  color: var(--info);
   box-shadow: 0 0 4px 2px color-mix(in srgb, var(--info) 38%, transparent);
   animation: icon-glow 1.6s ease-in-out infinite;
 }
@@ -1002,9 +1045,20 @@
   white-space: nowrap;
 }
 
+/* 超出上限的计数现在是展开/收起切换按钮（button 默认样式全要剥掉） */
 .file-chips-more {
   flex: 0 0 auto;
+  padding: 0;
+  border: none;
+  background: none;
   color: var(--muted);
+  font: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.file-chips-more:hover {
+  color: var(--fg);
 }
 
 /* ============================ buttons & pills ============================ */
@@ -1311,16 +1365,21 @@
   animation: icon-glow 1.6s ease-in-out infinite;
 }
 
-/* 思考图标发光：drop-shadow 呼吸（运行状态条、流式思考行共用） */
+/* 图标呼吸发光：drop-shadow 呼吸（运行状态条、流式思考行、运行中的节点图标共用）。
+   光色跟随**图标自己的颜色**（关键帧用 currentColor）——鲸鱼发蓝光，工具图标
+   按各自的节点色发光（--node-* / .icon-brand）。
+   本类不再自带颜色：使用方必须自带色（鲸鱼 .icon-brand、节点 .node-*），
+   裸挂会落回 .row-icon 的灰，光也就变成灰的。 */
 .icon-glow {
   display: inline-flex;
-  color: var(--info);
   animation: icon-glow 1.6s ease-in-out infinite;
 }
 
 /* 思考节点的鲸鱼：**思考结束后仍是蓝色**，只是不再呼吸。
-   与 .icon-glow 同一个蓝（--info），区别只在有无动画——「还在思考」用动效表达，
-   「这是个思考节点」用颜色表达。若走 .row-icon 的默认灰，节点就只剩下标题能认了。
+   这个蓝（--info / charts-blue）是**鲸鱼独属**——其它节点图标不得用它
+   （--node-* 里刻意没有指向它，styles.test.ts 有断言钉住），否则鲸鱼会失去
+   「思考」的辨识度。运行中在它上面叠 .icon-glow，呼吸光同样是蓝。
+   若走 .row-icon 的默认灰，节点就只剩下标题能认了。
    刻意不复用 .icon-glow：思考已结束却持续呼吸会误示「仍在活动」。 */
 .icon-brand {
   display: inline-flex;
@@ -1334,7 +1393,7 @@
     opacity: 0.7;
   }
   50% {
-    filter: drop-shadow(0 0 3px var(--info));
+    filter: drop-shadow(0 0 3px currentColor);
     opacity: 1;
   }
 }

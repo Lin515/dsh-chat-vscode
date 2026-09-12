@@ -33,8 +33,9 @@ export interface QueueOrigin {
 /**
  * 把队列项映射成视图 + 原始内容。
  *
- * `resolve` 按队列项的 `rpcId` 取回用户原始输入：线格式正文里已内联了文件
- * 上下文（见 controller 的 `buildContextText`），直接显示会很吓人。
+ * `resolve` 按队列项的 `rpcId` 取回用户原始输入：线格式正文里已拼进
+ * `@path` 引用 token（见 controller 的 `composeWithReferences`），上传文件
+ * 则是 `{type:'file', receiptId}` 块，直接显示回显会丢掉附件芯片。
  * 取不到时（例如扩展重载过）退回线上文本，至少有内容。
  */
 export function queueItems(

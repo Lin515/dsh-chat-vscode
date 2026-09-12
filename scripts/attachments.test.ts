@@ -4,7 +4,7 @@
  * 1. 扩展名 → mediaType 的纯映射（最便宜的落点）；
  * 2. `showOpenDialog` 的跨平台约束——这条无法在无头环境测行为，只能扫源码。
  *
- * `classifyPath` 的完整覆盖（能内嵌 / 目录 / 二进制 / 非 UTF-8 / 过大 /
+ * `classifyPath` 的完整覆盖（目录 / 图片 / 文本 / 二进制 / 非 UTF-8 / 过大 /
  * 读不出来 / 模型不支持图片）在 `pathInsert.test.ts`，那里有真实临时文件。
  *
  * 运行：npm test

@@ -1,13 +1,15 @@
 /**
- * 「能不能内嵌」的归类 + 路径插入光标处。
+ * 附件归类（`classifyPath`）+ 路径插入光标处。
  *
- * 契约（用户指定）：
- *  - 合法图片 / 合法文本且不过大 → **附件**，随消息内嵌发送；
- *  - 目录 / 二进制 / 非 UTF-8 / 过大 / 读不出来 → **只给路径**，
+ * 契约（0.5.0 起，对齐官方两条路）：
+ *  - 目录 → **引用**（`@dir/`，模型自己决定要不要 list）；
+ *  - 图片（模型收图）→ 图片内容块；
+ *  - 其余文件（二进制/非 UTF-8/任意大小都一样）→ 文件附件，选中即上传；
+ *  - 只有「读不出来」（选择到读取之间被删）与「模型不收图片」退回**只给路径**，
  *    由界面以双引号包裹插到输入框光标处。
  *
- * 这两件事以前都是「一律做成附件」：二进制被按 UTF-8 读成乱码（`toString("utf8")`
- * 不报错，只把坏字节换成 U+FFFD），目录更直接抛 EISDIR。
+ * 旧版还按「内容能不能内联正文」分派（二进制/非 UTF-8/过大 → 只给路径）——那是
+ * 内联时代的判据；0.5.0 起文件走逐字节上传，上传不挑内容，门槛随之移除。
  *
  * 运行：npm test
  */
@@ -15,12 +17,7 @@ import assert from "node:assert";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  INLINE_TEXT_MAX_BYTES,
-  classifyPath,
-  formatPathList,
-  quotePath,
-} from "../src/dsh/attachments";
+import { classifyPath, formatPathList, quotePath } from "../src/dsh/attachments";
 import { insertAtCaret } from "../src/webview/insert";
 
 const dir = mkdtempSync(join(tmpdir(), "dsh-classify-"));
@@ -39,39 +36,48 @@ try {
   writeFileSync(gbkPath, Buffer.from([0xd6, 0xd0, 0xce, 0xc4])); // GBK 的「中文」
 
   const bigPath = join(dir, "big.txt");
-  writeFileSync(bigPath, "x".repeat(INLINE_TEXT_MAX_BYTES + 1), "utf8");
+  writeFileSync(bigPath, "x".repeat(600 * 1024), "utf8");
 
   const subDir = join(dir, "assets");
   mkdirSync(subDir, { recursive: true });
 
-  // ---------- 1. 能内嵌 → 附件 ----------
+  // ---------- 1. 可附件：文本/图片/二进制/非 UTF-8/过大，一律附件 ----------
 
   const text = classifyPath({ path: textPath, name: "notes.txt", acceptsImage: true });
-  assert.strictEqual(text.kind, "attachment", "合法 UTF-8 文本应当内嵌");
+  assert.strictEqual(text.kind, "attachment", "文本文件应当上传");
   assert.strictEqual(text.kind === "attachment" && text.attachment.kind, "file");
 
   const png = classifyPath({ path: pngPath, name: "shot.png", acceptsImage: true });
   assert.strictEqual(png.kind, "attachment", "合法图片应当内嵌");
   assert.strictEqual(png.kind === "attachment" && png.attachment.kind, "image");
   assert.ok(png.kind === "attachment" && png.attachment.dataUrl?.startsWith("data:image/png;base64,"));
-  console.log("classify: 合法文本/图片 → 附件 ✓");
 
-  // ---------- 2. 不能内嵌 → 路径（且理由正确） ----------
+  // 旧版这三样都退回「只给路径」；上传路径按字节发，它们都能传
+  const cases: [string, Parameters<typeof classifyPath>[0]][] = [
+    ["二进制", { path: exePath, name: "tool.exe", acceptsImage: true }],
+    ["非 UTF-8", { path: gbkPath, name: "gbk.txt", acceptsImage: true }],
+    ["过大", { path: bigPath, name: "big.txt", acceptsImage: true }],
+  ];
+  for (const [label, input] of cases) {
+    const outcome = classifyPath(input);
+    assert.strictEqual(outcome.kind, "attachment", `${label} 应当作为文件附件上传`);
+    assert.strictEqual(outcome.kind === "attachment" && outcome.attachment.kind, "file", `${label} 是文件附件`);
+  }
+  console.log("classify: 文本/图片/二进制/非 UTF-8/过大 → 附件 ✓");
 
-  const cases: [string, string, Parameters<typeof classifyPath>[0]][] = [
+  // ---------- 2. 不做附件 → 路径（且理由正确） ----------
+
+  const pathCases: [string, string, Parameters<typeof classifyPath>[0]][] = [
     ["目录", "directory", { path: subDir, name: "assets", acceptsImage: true }],
-    ["二进制", "binary", { path: exePath, name: "tool.exe", acceptsImage: true }],
-    ["非 UTF-8", "not-utf8", { path: gbkPath, name: "gbk.txt", acceptsImage: true }],
-    ["过大", "too-large", { path: bigPath, name: "big.txt", acceptsImage: true }],
     ["不存在", "unreadable", { path: join(dir, "nope.txt"), name: "nope.txt", acceptsImage: true }],
     ["模型不支持图片", "image-unsupported", { path: pngPath, name: "shot.png", acceptsImage: false }],
   ];
-  for (const [label, reason, input] of cases) {
+  for (const [label, reason, input] of pathCases) {
     const outcome = classifyPath(input);
     assert.strictEqual(outcome.kind, "path", `${label} 应当只给路径`);
     assert.strictEqual(outcome.kind === "path" && outcome.reason, reason, `${label} 的理由`);
   }
-  console.log("classify: 不能内嵌的六种情形 → 路径 ✓");
+  console.log("classify: 目录/读不出/模型不收图 → 路径 ✓");
 
   // 目录名像图片（xxx.png/）仍按目录处理，不能因为扩展名就去读它
   const imageNamedDir = join(dir, "screenshot.png");
@@ -80,7 +86,7 @@ try {
   assert.strictEqual(dirOutcome.kind === "path" && dirOutcome.reason, "directory");
   console.log("classify: 名字像图片的目录仍按目录 ✓");
 
-  // ---------- 3. 引号与拼接 ----------
+  // ---------- 3. 引号与拼接（兜底路径文本） ----------
 
   assert.strictEqual(quotePath("C:\\a b\\c.exe"), '"C:\\a b\\c.exe"', "路径必须整体被双引号包住");
   assert.strictEqual(

@@ -138,37 +138,73 @@ console.log("styles: 减少动画下两个活性指示器待遇一致 ✓");
     ".icon-brand 不该带动画——思考已结束，持续呼吸会误示「仍在活动」",
   );
 
-  // 组件里结束态必须用 .icon-brand，不能退回裸图标（裸图标 = .row-icon 的灰色）
+  // 组件里鲸鱼运行与结束两态都必须保留 .icon-brand（品牌蓝）：
+  // 裸 <IconDsh /> 落回 .row-icon 的灰色；裸 .icon-glow 也不行——该类已不带颜色
+  // （呼吸光色改由图标自己的颜色决定，见下方 4c/4b）
   const rows = readFileSync(join(process.cwd(), "src", "webview", "components", "Rows.tsx"), "utf8");
   assert.ok(
-    /streaming\s*\?\s*"icon-glow"\s*:\s*"icon-brand"/.test(rows),
-    "ThinkingRow 的结束态必须用 .icon-brand；写成裸 <IconDsh /> 会变灰",
+    /streaming\s*\?\s*"icon-glow icon-brand"\s*:\s*"icon-brand"/.test(rows),
+    "ThinkingRow 的鲸鱼必须恒带 .icon-brand（品牌蓝）；裸 <IconDsh /> 会变灰，裸 .icon-glow 现在无色",
   );
 }
 console.log("styles: 思考结束后的鲸鱼仍为蓝色 ✓");
 
-// ---------- 4b. 所有运行中的节点都要有呼吸灯式发光（图标级，同思考鲸鱼） ----------
+// ---------- 4b. 运行中的节点呼吸发光颜色必须跟随节点自己的颜色 ----------
 //
-// 用户要求：正在执行的节点都要有和思考鲸鱼一样呼吸灯式的发光，尤其是
-// build/命令行这类可能很长的外部工具调用——7px 小圆点在长任务里太不显眼，
-// 呼吸灯必须落在行首图标上。断言钉组件层面：ToolRow / CommandRow 在运行中
-// 给行首图标挂 .icon-glow（与鲸鱼同一组关键帧），且「运行中」不再用小圆点。
+// 用户要求：正在执行的节点要有呼吸灯式发光，且**光色与图标颜色同步**；
+// 完成态保持彩色图标（不落回灰）。断言钉组件层面：ToolRow / CommandRow
+// 运行中给行首图标挂 `.icon-glow <节点色类>`，结束态也带节点色类
+// （裸图标 = .row-icon 的灰色）；「运行中」不再用小圆点。
 {
   const rows = readFileSync(join(process.cwd(), "src", "webview", "components", "Rows.tsx"), "utf8");
   assert.ok(
-    /running\s*\?\s*\(\s*<span className="icon-glow">\{icon\}<\/span>/.test(rows),
-    "ToolRow 行首图标在运行中必须挂 .icon-glow（呼吸发光）——build/命令行长任务不能只有静态灰图标",
+    /running\s*\?\s*\(\s*<span className=\{`icon-glow \$\{iconClass\}`\}>\{icon\}<\/span>/.test(rows),
+    "ToolRow 行首图标运行中必须挂 .icon-glow + 节点色类（同色呼吸发光）——不能只有静态灰图标",
   );
   assert.ok(
-    /<span className="icon-glow">\s*<IconSlash size=\{13\} \/>/.test(rows),
-    "CommandRow 行首图标在运行中同样要挂 .icon-glow",
+    /<span className="icon-glow node-command">\s*<IconSlash size=\{13\} \/>/.test(rows),
+    "CommandRow 行首图标运行中同样要挂 .icon-glow（带命令色）",
+  );
+  assert.ok(
+    /:\s*\(\s*<span className=\{iconClass\}>\{icon\}<\/span>/.test(rows),
+    "ToolRow 完成态行首图标必须保留节点色类（.node-*）——裸图标会落回 .row-icon 的灰",
   );
   assert.ok(
     !/tone=\{[^}]*"running"/.test(rows),
     "「运行中」状态不该再用 dot-running 小圆点——呼吸灯在图标级",
   );
 }
-console.log("styles: 运行中节点有呼吸灯发光（图标级） ✓");
+console.log("styles: 运行中节点呼吸发光与图标同色、完成态保色 ✓");
+
+// ---------- 4c. 鲸鱼的品牌蓝是独属色：其它节点色不得用它 ----------
+//
+// 用户要求：思考鲸鱼的蓝色是它的辨识度，其它图标不得用同一色。
+// tokens.css 里所有 --node-* 的定义不得引用 charts-blue / --info；
+// app.css 里每种节点（含命令与注入）都必有专属色类。
+{
+  const tokens = readFileSync(
+    join(process.cwd(), "src", "webview", "styles", "tokens.css"),
+    "utf8",
+  );
+  const nodeTokens = tokens.match(/--node-\w+\s*:\s*[^;]+/g) ?? [];
+  assert.ok(
+    nodeTokens.length >= 9,
+    `tokens.css 至少定义 9 个 --node-* 节点色（现在是 ${nodeTokens.length} 个）`,
+  );
+  for (const def of nodeTokens) {
+    assert.ok(
+      !/charts-blue|var\(--info\)/.test(def),
+      `节点色 ${def.trim()} 不得用鲸鱼独属的蓝（charts-blue / --info）`,
+    );
+  }
+  for (const node of ["search", "read", "bash", "write", "edit", "code", "others", "command", "injected"]) {
+    assert.ok(
+      new RegExp(`\\.node-${node}\\s*\\{[^}]*color:\\s*var\\(--node-${node}\\)`).test(css),
+      `app.css 缺少 .node-${node} 的颜色规则（或没引用 --node-${node}）`,
+    );
+  }
+}
+console.log("styles: 鲸鱼蓝色独属、各节点有专属色 ✓");
 
 // ---------- 5. 候选行：主文字完整优先，宽度不够先省描述 ----------
 //

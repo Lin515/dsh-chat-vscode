@@ -37,7 +37,7 @@ import {
  * 变体决定图标，`TOOL_TITLE_KEYS` 里列出的工具用自己的标题（`pwsh`→「Pwsh」、
  * `read_image`→「读取图片」），与官方 `toolRowModel` 的 titleKey 选择一致。
  */
-function useDescribeTool(): (name: string) => { icon: JSX.Element; verb: string } {
+function useDescribeTool(): (name: string) => { icon: JSX.Element; iconClass: string; verb: string } {
   const texts = useTexts();
   return (name: string) => {
     const variant = classifyTool(name);
@@ -74,7 +74,9 @@ function useDescribeTool(): (name: string) => { icon: JSX.Element; verb: string 
       ) : (
         <IconSparkles size={13} />
       );
-    return { icon, verb };
+    // 变体 → 专属节点色（.node-*，tokens.css 的 --node-*）：完成态静态彩色，
+    // 运行中由 .icon-glow 以同色呼吸发光
+    return { icon, iconClass: `node-${variant}`, verb };
   };
 }
 
@@ -84,7 +86,7 @@ export function ToolRow({ tool, diffLayout }: { tool: ToolCallView; diffLayout?:
   const describeTool = useDescribeTool();
   const texts = useTexts();
   const open = manual ?? false;
-  const { icon, verb } = describeTool(tool.name);
+  const { icon, iconClass, verb } = describeTool(tool.name);
   const bodyRef = useRef<HTMLDivElement>(null);
   const running = tool.status === "running" || tool.status === "pending";
   const stopped = tool.status === "stopped";
@@ -139,13 +141,14 @@ export function ToolRow({ tool, diffLayout }: { tool: ToolCallView; diffLayout?:
 
   return (
     <Row
-      // 运行中的节点：行首图标呼吸发光（.icon-glow，与思考鲸鱼同节奏）；
-      // 结束回落为静态灰图标——「还在动」由动效表达，与鲸鱼结束停呼吸同一条语言
+      // 运行中的节点：行首图标呼吸发光（.icon-glow，与思考鲸鱼同节奏），
+      // 光色跟随节点自己的颜色（.node-*）；结束保持静态彩色图标
+      // （不落回 .row-icon 的灰），与鲸鱼「结束仍是品牌蓝」同一条语言
       icon={
         running ? (
-          <span className="icon-glow">{icon}</span>
+          <span className={`icon-glow ${iconClass}`}>{icon}</span>
         ) : (
-          icon
+          <span className={iconClass}>{icon}</span>
         )
       }
       tone={tone}
@@ -164,8 +167,9 @@ export function ToolRow({ tool, diffLayout }: { tool: ToolCallView; diffLayout?:
       {runningBody ? (
         <div className="row-body mono row-running">
           <div className="row-running-head">
-            {/* 与思考节点同一个发光标记：一眼看出「还在跑」 */}
-            <span className="icon-glow" aria-hidden>
+            {/* 与思考节点同一个发光标记：一眼看出「还在跑」
+                （.icon-brand 提供鲸鱼的独属蓝，.icon-glow 只负责呼吸） */}
+            <span className="icon-glow icon-brand" aria-hidden>
               <IconDsh size={11} />
             </span>
             <span>{fill(texts.toolRunning, { duration: formatDuration(elapsed) })}</span>
@@ -235,10 +239,11 @@ export function ThinkingRow({
 
   return (
     <Row
-      // 鲸鱼恒为品牌蓝：思考中额外呼吸发光，结束后保持蓝色静置
-      // （不回落成 .row-icon 的灰色——那样节点只剩标题可辨）
+      // 鲸鱼恒为品牌蓝（.icon-brand，独属色）：思考中叠 .icon-glow 呼吸发光
+      // （光同为蓝），结束后保持蓝色静置——不回落成 .row-icon 的灰色，
+      // 裸 .icon-glow 也不行（它已不自带颜色）
       icon={
-        <span className={streaming ? "icon-glow" : "icon-brand"}>
+        <span className={streaming ? "icon-glow icon-brand" : "icon-brand"}>
           <IconDsh size={14} />
         </span>
       }
@@ -302,7 +307,11 @@ export function InjectedRow({ injected }: { injected: InjectedView }) {
 
   return (
     <Row
-      icon={<IconPlug size={13} />}
+      icon={
+        <span className="node-injected">
+          <IconPlug size={13} />
+        </span>
+      }
       title={label}
       detail={detail ?? firstLine}
       meta={texts.injectedChars(formatChars(injected.text.length))}
@@ -481,14 +490,17 @@ export function CommandRow({ command }: { command: CommandRunView }) {
   useStickyBody(bodyRef, open);
   return (
     <Row
-      // 运行中的命令与工具行同等待遇：行首图标呼吸发光，而不是 7px 小圆点
+      // 运行中的命令与工具行同等待遇：行首图标呼吸发光（同节点色），
+      // 而不是 7px 小圆点；结束保持静态彩色
       icon={
         command.state === "running" ? (
-          <span className="icon-glow">
+          <span className="icon-glow node-command">
             <IconSlash size={13} />
           </span>
         ) : (
-          <IconSlash size={13} />
+          <span className="node-command">
+            <IconSlash size={13} />
+          </span>
         )
       }
       tone={failed ? "error" : undefined}
@@ -511,7 +523,10 @@ export function CommandRow({ command }: { command: CommandRunView }) {
  * （`deliverables/presented`）。
  *
  * 两者分开成两行、各有标签，因为来源不同：前者从成功的写类调用推导，后者是
- * `present` 工具的申报。与官方一致，超出上限只在首个多余位置显示一条剩余计数。
+ * `present` 工具的申报。默认只铺到上限（与官方 ProducedFiles 相同），多余的收成
+ * 末尾一条 `+ N 文件`；点它展开全部文件，再点一次「收起」恢复（官方 produced 行
+ * 只有静态计数，展开/收起是扩展自己的便利能力，交互形态与官方交付行的
+ * 展开/收起按钮一致）。
  */
 export function FileChips({
   label,
@@ -521,8 +536,13 @@ export function FileChips({
   paths: { path: string; description?: string }[];
 }) {
   const texts = useTexts();
-  const shown = paths.slice(0, SHOWN_FILES);
-  const remainder = paths.length - shown.length;
+  // 每行独立记忆展开态；消息重渲染（新 segment 追加）不重置
+  const [expanded, setExpanded] = useState(false);
+  // 收起按钮的显隐只看「有没有被藏过的文件」：展开后 shown 就是全部，
+  // 若按 remainder 判断，展开态会把「收起」也一起藏掉（只能展开不能收缩）
+  const hasMore = paths.length > SHOWN_FILES;
+  const shown = expanded ? paths : paths.slice(0, SHOWN_FILES);
+  const remainder = paths.length - SHOWN_FILES;
   return (
     <div className="file-chips">
       <span className="file-chips-label">{label}</span>
@@ -538,7 +558,16 @@ export function FileChips({
           <span className="file-chip-name">{basename(file.path)}</span>
         </button>
       ))}
-      {remainder > 0 ? <span className="file-chips-more">{texts.producedMore(remainder)}</span> : null}
+      {hasMore ? (
+        <button
+          className="file-chips-more"
+          aria-expanded={expanded}
+          aria-label={expanded ? texts.filesCollapseAria : texts.filesExpandAria(paths.length)}
+          onClick={() => setExpanded((value) => !value)}
+        >
+          {expanded ? texts.filesCollapse : texts.producedMore(remainder)}
+        </button>
+      ) : null}
     </div>
   );
 }

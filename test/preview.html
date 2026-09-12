@@ -303,6 +303,8 @@
                 // 读取节点：只读了一段 → 行号缀在文件名后（含一个很长的路径，验证窄侧栏下不被截掉）
                 { id: "tool1b", kind: "tool", tool: { id: "call_1b", name: "read", title: "", detail: "…/dsh/controller.ts", command: "d:\\dev\\dsh-chat\\src\\dsh\\controller.ts", readLines: { start: 3201, end: 3220 }, status: "ok", input: '{"file_path":"d:\\\\dev\\\\dsh-chat\\\\src\\\\dsh\\\\controller.ts","offset":3201,"limit":20}', output: "3201: …", startedAt: now - 233900, endedAt: now - 233500 } },
                 { id: "tool2", kind: "tool", tool: { id: "call_2", name: "grep", title: "", detail: "listen(", status: "ok", input: '{"pattern":"listen\\\\("}', output: "src/server/index.ts:24\nsrc/config.ts:11", startedAt: now - 233300, endedAt: now - 233000 } },
+                // code 变体（run_code）：摘要取 description，图标是代码括号
+                { id: "tool2b", kind: "tool", tool: { id: "call_2b", name: "run_code", title: "", detail: "抽出 bootstrap()", status: "ok", input: '{"description":"抽出 bootstrap()"}', output: "extracted", startedAt: now - 232900, endedAt: now - 232600 } },
                 // 编辑类节点：结构化 diff（结果 meta 里的 hunk）
                 { id: "tool3", kind: "tool", tool: { id: "call_3", name: "edit", title: "", detail: "…/server/index.ts", status: "ok",
                   input: '{"file_path":"D:/dev/app/src/server/index.ts"}',
@@ -337,6 +339,8 @@
                   command: "cmake --build build-agent --config RelWithDebInfo --target dsh_chat_plugin --parallel 8",
                   input: '{"command":"cmake --build build-agent --config RelWithDebInfo --target dsh_chat_plugin --parallel 8"}',
                   startedAt: now - 74000 } },
+                // 运行中的终端行：bash 变体（pwsh）——行首图标以橙色（--node-bash）呼吸发光
+                { id: "tool6b", kind: "tool", tool: { id: "call_6b", name: "pwsh", title: "", detail: "npm run build", status: "running", command: "npm run build", input: '{"command":"npm run build"}', startedAt: now - 30000 } },
                 // 终端失败：非零退出码。bash/pwsh **不**把非零退出标成 isError，
                 // 失败靠 `parseExitStatus` 自己判（`[exit code: N]` 已从正文剥掉）
                 { id: "tool6", kind: "tool", tool: { id: "call_6", name: "pwsh", title: "", status: "error",
@@ -378,7 +382,17 @@
               // 是 present 工具的显式申报（两条独立来源，界面上分行、各有标签）。
               // `config.ts` 两边都有——这正是「申报的通常就是刚改过的文件」那一种，
               // 「本轮文件改动」行里不该再重复列它。
-              produced: ["D:/dev/app/src/server/index.ts", "D:/dev/app/src/config.ts"],
+              // 8 个改动文件 > 展示上限 6：末尾多出「+ 2 个文件」展开按钮
+              produced: [
+                "D:/dev/app/src/server/index.ts",
+                "D:/dev/app/src/config.ts",
+                "D:/dev/app/src/bootstrap.ts",
+                "D:/dev/app/src/client.ts",
+                "D:/dev/app/src/auth/middleware.ts",
+                "D:/dev/app/src/routes/api.ts",
+                "D:/dev/app/src/util/retry.ts",
+                "D:/dev/app/package.json"
+              ],
               deliverables: [
                 { path: "D:/dev/app/docs/merge-plan.md", description: "合并方案" },
                 { path: "D:/dev/app/docs/merge-plan.md.bak" },

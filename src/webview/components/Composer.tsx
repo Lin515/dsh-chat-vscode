@@ -690,8 +690,9 @@ export function Composer({ state, onDraft }: { state: AppState; onDraft: (text: 
             </div>
 
             {/* / 与 @ 直接在输入框里打符号即可触发，不再放按钮。
-                附件按钮是通用入口：图片按图片发送，其余文件等价于 @ 指定，
-                所以它不随模型是否支持图片而隐藏。 */}
+                附件按钮是通用入口：图片按图片发送，其余文件逐字节上传
+                （@ 只产生引用，真正上传只从这里发生），所以它不随模型
+                是否支持图片而隐藏。 */}
             <button
               className="pill"
               data-mini="hide"
