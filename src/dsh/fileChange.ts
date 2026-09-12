@@ -20,6 +20,7 @@
  * 纯函数、不引 `vscode`：断言见 `scripts/fileChange.test.ts`。
  */
 
+import { isAbsolute, join } from "node:path";
 import type { FileChangeKind } from "../shared/chat";
 
 /** git 扩展 API 里一条改动的**结构**视图（`@types/vscode` 不含 git API）。 */
@@ -95,6 +96,37 @@ export function fileChangeKind(
   if (hasWorkingChange(state, fsPath)) return "edited";
   if (isUntracked(state, fsPath)) return "new";
   return undefined;
+}
+
+/**
+ * 把文件芯片上的路径**解析成可查盘 / 可查 git 的绝对路径**。
+ *
+ * 芯片上的路径取自工具调用参数（`produced`）或 `present` 申报（`deliverables`），
+ * 两者都可能是**相对路径**——模型常写 `src/webview/Composer.tsx` 这种相对会话
+ * 工作目录的拼写（本扩展自己发起的 edit / write 调用就是相对路径）。`produced.ts`
+ * 刻意保留原样拼写（界面直接显示它），但宿主要拿它去 `vscode.Uri.file` +
+ * `workspace.fs.stat` / `getRepository` 时，相对路径会拼出一个**无法解析的
+ * URI**：`stat` 抛错 → `existsOnDisk=false` → `fileChangeKind` 误判成
+ * `deleted`（明明刚改过的文件被画上删除线——用户报的 Composer.tsx 正是这条）。
+ *
+ * 规则（按「能不能解析出肯定证据」的优先级）：
+ * - 空路径 → undefined（调用方本就不该传空，这里不猜）；
+ * - 已是绝对路径 → 原样返回；
+ * - 相对路径且有会话工作目录（cwd） → 拼到 cwd 下；
+ * - 相对路径但拿不到 cwd → undefined（解析不了 ≠ 已删除：调用方把它当
+ *   「不确定」处理——分类退化为无记号、点击放弃打开，而不是误判 deleted）。
+ *
+ * 纯函数、不引 `vscode`：断言见 `scripts/fileChange.test.ts`。
+ *
+ * @param cwd 会话工作目录（`session.cwd`）；拿不到时传 undefined。
+ * @param path 芯片上的原样路径（绝对或相对）。
+ * @returns 可查盘 / 可查 git 的绝对路径；解析不了时 undefined。
+ */
+export function resolveChipPath(cwd: string | undefined, path: string): string | undefined {
+  if (!path) return undefined;
+  if (isAbsolute(path)) return path;
+  if (!cwd) return undefined;
+  return join(cwd, path);
 }
 
 /** 该文件是否在 git 的未跟踪清单里（= 模型新建、还没进过版本库）。 */

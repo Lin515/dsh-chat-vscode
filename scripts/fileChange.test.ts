@@ -15,6 +15,7 @@ import {
   fileChangeKind,
   hasWorkingChange,
   isUntracked,
+  resolveChipPath,
   type GitChangeStateLike,
 } from "../src/dsh/fileChange";
 
@@ -132,8 +133,18 @@ console.log("fileChange: 相邻路径不误判 ✓");
 
   const controller = readFileSync(join(process.cwd(), "src", "dsh", "controller.ts"), "utf8");
   assert.ok(
-    /await this\.openFile\(message\.path, message\.diff, viewId\)/.test(controller),
-    "openFile 分支必须把 diff 与 viewId（删除提示 toast 要发给对应窗口）传下去",
+    /await this\.openFile\(message\.path, message\.diff, viewId, scope \? this\.cwdOf\(scope\) : undefined\)/.test(
+      controller,
+    ),
+    "openFile 分支必须把 diff、viewId（删除提示 toast 要发给对应窗口）与会话 cwd（相对路径解析基准）传下去",
+  );
+  assert.ok(
+    /adapter\.classifyFiles = \(paths\) => this\.classifyFiles\(this\.cwdOf\(scope\), paths\)/.test(controller),
+    "分类回调必须带会话 cwd：芯片相对路径不解析会被误判成 deleted",
+  );
+  assert.ok(
+    /const resolved = resolveChipPath\(cwd, path\);\s*if \(!resolved\) return undefined;/.test(controller),
+    "classifyFiles 必须先解析再查盘：解析不了 = 不确定（无记号），不猜 deleted",
   );
   assert.ok(
     /await this\.openChanges\(uri\)/.test(controller),
@@ -220,5 +231,35 @@ console.log("fileChange: 界面与宿主都接上了这条链路 ✓");
   );
 }
 console.log("fileChange: 种类判定（new/edited/deleted/不确定）✓");
+
+// ---------- 8. 相对芯片路径解析（基准 = 会话工作目录） ----------
+//
+// 芯片路径取自工具调用参数的原样拼写，模型常用相对路径（本扩展自己发起的
+// edit / write 调用就是）。不先解析就 Uri.file → stat 必失败 → fileChangeKind
+// 把刚改过的文件误判成 deleted（用户报的 Composer.tsx 删除线）。
+{
+  assert.strictEqual(
+    resolveChipPath("D:\\dev\\app", "src/config.ts"),
+    "D:\\dev\\app\\src\\config.ts",
+    "相对路径必须拼到会话 cwd 下",
+  );
+  assert.strictEqual(
+    resolveChipPath("D:\\dev\\app", "src/webview/components/Composer.tsx"),
+    "D:\\dev\\app\\src\\webview\\components\\Composer.tsx",
+    "多级相对路径同样拼到 cwd 下",
+  );
+  assert.strictEqual(
+    resolveChipPath("D:\\dev\\app", "D:\\other\\config.ts"),
+    "D:\\other\\config.ts",
+    "绝对路径原样透传（不二次拼接）",
+  );
+  assert.strictEqual(
+    resolveChipPath(undefined, "src/config.ts"),
+    undefined,
+    "相对但拿不到 cwd → 解析不了（调用方退化为无记号，绝不猜 deleted）",
+  );
+  assert.strictEqual(resolveChipPath("D:\\dev\\app", ""), undefined, "空路径解析不了（调用方跳过）");
+}
+console.log("fileChange: 相对路径解析（基准是会话 cwd）✓");
 
 console.log("\nfileChange: all assertions passed");

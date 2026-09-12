@@ -20,7 +20,7 @@ import type { HostToWebview, WebviewToHost } from "../shared/ipc";
 import { SessionAdapter, type ImageRef } from "./adapter";
 import { classifyPath, formatPathList, isDirectoryPath, isImagePath } from "./attachments";
 import { ConfigChangeRouter } from "./configChanges";
-import { fileChangeKind, hasWorkingChange, type GitChangeStateLike } from "./fileChange";
+import { fileChangeKind, hasWorkingChange, resolveChipPath, type GitChangeStateLike } from "./fileChange";
 import { composeWithReferences, formatFileMention } from "./references";
 import { resolveForVsCode } from "./hostText";
 import { DshApiError, DshAuthError, DshClient, type ConnectionState, type SessionSummaryWire } from "./client";
@@ -942,8 +942,9 @@ export class ChatController implements vscode.Disposable {
     adapter.loadImages = (refs, done) => {
       void this.loadAttachmentImages(sessionId, refs, done);
     };
-    // 文件芯片种类（[新增] / 删除线）的分类回调：适配器交路径，宿主查 git 与磁盘
-    adapter.classifyFiles = (paths) => this.classifyFiles(paths);
+    // 文件芯片种类（[新增] / 删除线）的分类回调：适配器交路径，宿主查 git 与磁盘。
+    // 带上会话 cwd：芯片路径可能是相对会话工作目录的拼写，解析不了会误判 deleted
+    adapter.classifyFiles = (paths) => this.classifyFiles(this.cwdOf(scope), paths);
     adapter.setSession(
       this.sessions.find((s) => s.id === sessionId) ?? {
         id: sessionId,
@@ -2003,9 +2004,11 @@ export class ChatController implements vscode.Disposable {
         this.drafts.set(this.keyForView(viewId), message.text);
         break;
 
-      case "openFile":
-        await this.openFile(message.path, message.diff, viewId);
+      case "openFile": {
+        const scope = this.scopeOfView(viewId);
+        await this.openFile(message.path, message.diff, viewId, scope ? this.cwdOf(scope) : undefined);
         break;
+      }
 
       case "insertText":
         await this.insertIntoEditor(message.text);
@@ -2827,10 +2830,28 @@ export class ChatController implements vscode.Disposable {
    * 口径：新建文件点开就是看文件，不是 diff）；已删除 → git 里还有旧内容就开
    * 对比窗口（左边 HEAD、右边空 = 查看被删前的内容），真找不回再明确告知。
    *
+   * `path` 是芯片上的原样拼写，可能是**相对**会话工作目录的路径（工具调用
+   * 参数原样保留）：先经 `resolveChipPath` 用会话 cwd 解析成绝对路径再动手——
+   * 不解析的话 `Uri.file` 拼不出可解析的 URI，「已删除」提示与打开失败都会
+   * 对无辜文件发生。解析不了（拿不到 cwd）时放弃打开并记日志。
+   *
    * `preview: true` 是既有行为：单击芯片只是预览，不挤掉已经打开的文件。
    */
-  private async openFile(path: string, diff?: boolean, viewId?: string): Promise<void> {
-    const uri = vscode.Uri.file(path);
+  private async openFile(
+    path: string,
+    diff?: boolean,
+    viewId?: string,
+    cwd?: string,
+  ): Promise<void> {
+    // 芯片路径可能是相对会话工作目录的拼写：先解析成绝对路径再动手，
+    // 不解析的话 Uri.file 拼不出可解析的 URI，「已删除」提示与打开失败
+    // 都会对无辜文件发生（与 classifyFiles 同一口径，见 resolveChipPath）
+    const resolved = resolveChipPath(cwd, path);
+    if (!resolved) {
+      this.log(`[open] 路径解析不了（相对且缺会话工作目录），放弃打开：${path}`);
+      return;
+    }
+    const uri = vscode.Uri.file(resolved);
     const exists = await this.fileExists(uri);
     if (diff === true) {
       if (await this.openChanges(uri)) return;
@@ -2898,18 +2919,35 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
+   * 会话的工作目录（芯片**相对**路径的解析基准）；会话还没进列表时 undefined
+   * （调用方按「解析不了 = 不确定」处理，不猜）。
+   */
+  private cwdOf(scope: SessionScope): string | undefined {
+    return this.sessions.find((s) => s.id === scope.sessionId)?.cwd;
+  }
+
+  /**
    * 给一批芯片路径做种类判定（供适配器下发表格给界面）。
    *
    * 每个路径独立判定；单个失败不影响其它（那条退化为无记号）。判定靠
    * `fileChangeKind`（git 状态 + 磁盘存在性），**没有**轮询——那是点击链路
    * （`openChanges`）的专属：分类慢半拍顶多晚一点显示记号，点击必须当场给出
    * 正确行为，二者要求不同。
+   *
+   * 芯片路径可能是**相对**会话工作目录的拼写（工具调用参数原样保留）：先经
+   * `resolveChipPath` 解析成绝对路径再查盘 / 查 git，否则 `stat` 必失败、
+   * 被改过的文件会被误判成 `deleted`。表格键保持芯片上的原样路径（界面按它查）。
    */
-  private async classifyFiles(paths: readonly string[]): Promise<Record<string, FileChangeKind>> {
+  private async classifyFiles(
+    cwd: string | undefined,
+    paths: readonly string[],
+  ): Promise<Record<string, FileChangeKind>> {
     const entries = await Promise.all(
       paths.map(async (path): Promise<[string, FileChangeKind] | undefined> => {
         try {
-          const uri = vscode.Uri.file(path);
+          const resolved = resolveChipPath(cwd, path);
+          if (!resolved) return undefined; // 解析不了 = 不确定，不猜 deleted
+          const uri = vscode.Uri.file(resolved);
           const exists = await this.fileExists(uri);
           const state = this.gitStateFor(uri);
           const kind = fileChangeKind(state, uri.fsPath, exists);
