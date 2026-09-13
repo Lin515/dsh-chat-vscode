@@ -15,12 +15,12 @@
  */
 import { SessionAdapter } from "../src/dsh/adapter";
 import { DshClient } from "../src/dsh/client";
-import { ServerManager } from "../src/dsh/serverManager";
+import { SupervisorManager } from "../src/dsh/supervisorManager";
 import type { MessageView, Segment } from "../src/shared/chat";
 
 export async function liveOrderCheck(): Promise<number> {
   const log = (line: string) => console.log(`[live] ${line}`);
-  const server = new ServerManager({ url: "", command: "dsh", startTimeoutMs: 180_000, log });
+  const server = new SupervisorManager({ url: "", command: "dsh", startTimeoutMs: 180_000, log });
   let client: DshClient | undefined;
   let failures = 0;
   const check = (ok: boolean, label: string, detail = "") => {

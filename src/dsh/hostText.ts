@@ -43,11 +43,6 @@ function resolveMarker(text: string): string {
       return vscode.l10n.t("Timed out waiting for dsh web to become ready ({0}s)", arg);
     case "serverUnreachable":
       return vscode.l10n.t("Cannot reach {0}; make sure dsh web is running there.", arg);
-    case "serverStaleLock":
-      return vscode.l10n.t(
-        "Found a file lock left behind by a crash: {0}\nIt belongs to a dsh process that was force-killed (its owner is gone). Once you are sure no other dsh is running, delete the file and retry; or run “DSH: Reconnect” — the extension clears ownerless locks before starting the server.",
-        arg,
-      );
     case "serverLogTail":
       return vscode.l10n.t("Log tail:\n{0}", arg);
     case "serverExited": {

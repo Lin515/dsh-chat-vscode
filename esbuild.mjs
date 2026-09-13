@@ -40,12 +40,33 @@ const webview = {
   },
 };
 
+/**
+ * supervisor 进程（设计 `docs/design-supervisor.md`）：**随扩展一起分发**，
+ * 由扩展用 VS Code 自带的 Node 拉起（`src/dsh/runtimeResolve.ts`）。
+ *
+ * 固定 CJS + `node20`：运行它的是 VS Code 自带的 Electron-as-Node，
+ * 产物不能依赖"某个特定 Electron 版本才有"的语法/API。
+ */
+/** @type {import('esbuild').BuildOptions} */
+const supervisor = {
+  entryPoints: ["src/supervisor/main.ts"],
+  outfile: "dist/supervisor.js",
+  bundle: true,
+  platform: "node",
+  format: "cjs",
+  target: "node20",
+  sourcemap: production ? false : "inline",
+  minify: production,
+  logLevel: "info",
+};
+
 if (watch) {
   const ctxHost = await esbuild.context(host);
   const ctxWeb = await esbuild.context(webview);
-  await Promise.all([ctxHost.watch(), ctxWeb.watch()]);
+  const ctxSupervisor = await esbuild.context(supervisor);
+  await Promise.all([ctxHost.watch(), ctxWeb.watch(), ctxSupervisor.watch()]);
   console.log("[dsh-chat] watching for changes...");
 } else {
-  await Promise.all([esbuild.build(host), esbuild.build(webview)]);
+  await Promise.all([esbuild.build(host), esbuild.build(webview), esbuild.build(supervisor)]);
   console.log("[dsh-chat] build complete");
 }

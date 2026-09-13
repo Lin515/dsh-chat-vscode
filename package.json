@@ -107,12 +107,12 @@
         "title": "%cmd.restartServer.title%"
       },
       {
-        "command": "dshChat.setToken",
-        "title": "%cmd.setToken.title%"
+        "command": "dshChat.stopServer",
+        "title": "%cmd.stopServer.title%"
       },
       {
-        "command": "dshChat.cleanupProcesses",
-        "title": "%cmd.cleanupProcesses.title%"
+        "command": "dshChat.setToken",
+        "title": "%cmd.setToken.title%"
       },
       {
         "command": "dshChat.showLogs",
@@ -147,20 +147,27 @@
     "configuration": {
       "title": "DSH Chat",
       "properties": {
+        "dshChat.autoStart": {
+          "type": "boolean",
+          "default": true,
+          "description": "%config.autoStart%"
+        },
         "dshChat.command": {
           "type": "string",
           "default": "dsh web --port 0 --no-open",
           "markdownDescription": "%config.command%"
         },
+        "dshChat.supervisorIdleSec": {
+          "type": "number",
+          "default": 10,
+          "minimum": 5,
+          "maximum": 600,
+          "markdownDescription": "%config.supervisorIdleSec%"
+        },
         "dshChat.url": {
           "type": "string",
           "default": "",
           "markdownDescription": "%config.url%"
-        },
-        "dshChat.autoStart": {
-          "type": "boolean",
-          "default": true,
-          "description": "%config.autoStart%"
         },
         "dshChat.openPanelOnStartup": {
           "type": "boolean",

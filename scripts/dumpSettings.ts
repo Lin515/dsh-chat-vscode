@@ -4,15 +4,15 @@
  * 不给参数时自行拉起一个临时服务器。
  */
 import { DshClient } from "../src/dsh/client";
-import { ServerManager } from "../src/dsh/serverManager";
+import { SupervisorManager } from "../src/dsh/supervisorManager";
 import { writeFileSync } from "node:fs";
 
 let baseUrl = process.argv[2];
 let token = process.argv[3];
-let server: ServerManager | undefined;
+let server: SupervisorManager | undefined;
 
 if (!baseUrl) {
-  server = new ServerManager({ url: "", command: "dsh", startTimeoutMs: 120_000, log: () => {} });
+  server = new SupervisorManager({ url: "", command: "dsh", startTimeoutMs: 120_000, log: () => {} });
   const info = await server.ensure();
   baseUrl = info.baseUrl;
   token = info.token;

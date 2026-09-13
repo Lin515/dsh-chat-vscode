@@ -18,10 +18,10 @@ import { randomUUID } from "node:crypto";
 import { SessionAdapter } from "../src/dsh/adapter";
 import { goalFromProjection, planModeFromProjection } from "../src/dsh/projections";
 import { DshClient } from "../src/dsh/client";
-import { ServerManager } from "../src/dsh/serverManager";
+import { SupervisorManager } from "../src/dsh/supervisorManager";
 
 const log = (line: string) => console.log(`[cmd-e2e] ${line}`);
-const server = new ServerManager({ url: "", command: "dsh", startTimeoutMs: 120_000, log });
+const server = new SupervisorManager({ url: "", command: "dsh", startTimeoutMs: 120_000, log });
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 let client: DshClient | undefined;

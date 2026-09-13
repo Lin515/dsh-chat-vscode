@@ -3,10 +3,10 @@
  *   node build/panels-probe.mjs
  */
 import { DshClient } from "../src/dsh/client";
-import { ServerManager } from "../src/dsh/serverManager";
+import { SupervisorManager } from "../src/dsh/supervisorManager";
 import { buildSettingsSection } from "../src/dsh/settingsSchema";
 
-const server = new ServerManager({ url: "", command: "dsh", startTimeoutMs: 120_000, log: () => {} });
+const server = new SupervisorManager({ url: "", command: "dsh", startTimeoutMs: 120_000, log: () => {} });
 const info = await server.ensure();
 const client = new DshClient(info.baseUrl, info.token, () => {});
 await client.authenticate();

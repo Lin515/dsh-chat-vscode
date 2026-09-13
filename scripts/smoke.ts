@@ -1,13 +1,13 @@
 /**
  * 端到端冒烟测试：拉起真实的 dsh web，走完「连接 → 建会话 → 发消息 → 收流」。
  *
- * 只覆盖与 vscode 无关的三层（ServerManager / DshClient / SessionAdapter），
+ * 只覆盖与 vscode 无关的三层（SupervisorManager / DshClient / SessionAdapter），
  * 因此可以在没有 VS Code 的环境里直接跑：
  *   node esbuild.smoke.mjs && node dist/smoke.cjs
  */
 import { SessionAdapter } from "../src/dsh/adapter";
 import { DshClient } from "../src/dsh/client";
-import { ServerManager } from "../src/dsh/serverManager";
+import { SupervisorManager } from "../src/dsh/supervisorManager";
 
 const log = (line: string) => console.log(`[smoke] ${line}`);
 
@@ -16,7 +16,7 @@ function fail(message: string): never {
   process.exit(1);
 }
 
-const server = new ServerManager({
+const server = new SupervisorManager({
   url: "",
   command: "dsh",
   startTimeoutMs: 120_000,

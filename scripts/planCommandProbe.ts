@@ -12,10 +12,10 @@
  */
 import { randomUUID } from "node:crypto";
 import { DshClient } from "../src/dsh/client";
-import { ServerManager } from "../src/dsh/serverManager";
+import { SupervisorManager } from "../src/dsh/supervisorManager";
 
 const log = () => {};
-const server = new ServerManager({ url: "", command: "dsh", startTimeoutMs: 120_000, log });
+const server = new SupervisorManager({ url: "", command: "dsh", startTimeoutMs: 120_000, log });
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 interface Probe {

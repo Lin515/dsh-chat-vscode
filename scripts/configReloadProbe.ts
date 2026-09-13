@@ -30,7 +30,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DshClient } from "../src/dsh/client";
 import { ConfigChangeRouter, type ConfigChangeActions } from "../src/dsh/configChanges";
-import { ServerManager } from "../src/dsh/serverManager";
+import { SupervisorManager } from "../src/dsh/supervisorManager";
 
 const home = mkdtempSync(join(tmpdir(), "dsh-chat-config-probe-"));
 process.env.DSH_HOME = home;
@@ -43,7 +43,7 @@ writeFileSync(settingsFile, "# dsh-chat config-reload probe\n", "utf8");
 writeFileSync(credentialsFile, "version: 1\nrefs: {}\n", "utf8");
 
 const log = (line: string) => console.log(`[probe] ${line}`);
-const server = new ServerManager({ url: "", command: "dsh", startTimeoutMs: 180_000, log });
+const server = new SupervisorManager({ url: "", command: "dsh", startTimeoutMs: 180_000, log });
 let client: DshClient | undefined;
 const failures: string[] = [];
 

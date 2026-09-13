@@ -309,8 +309,6 @@ export interface Texts {
   serverStartTimeout: (seconds: number) => string;
   /** 连接失败条：该地址上连不上 dsh web（地址）。 */
   serverUnreachable: (baseUrl: string) => string;
-  /** 连接失败条：崩溃遗留的 writer 锁（锁文件路径）。 */
-  serverStaleLock: (lockPath: string) => string;
   /** 连接失败条末段：服务器日志尾部（原文照贴，不翻译）。 */
   serverLogTail: (tail: string) => string;
   /**
@@ -318,8 +316,6 @@ export interface Texts {
    * （参数是当时开着几个会话——用户在意的正是「我的对话是不是断了」）。
    */
   switchingServer: (sessions: number) => string;
-  /** toast：本窗口接入的是**别的窗口**起的后台（参数是当前共用它的窗口数）。 */
-  joinedSharedServer: (windows: number) => string;
   /** toast：在共享后台的窗口里执行「重启服务器」，后台已由本窗口接管重起。 */
   sharedRestarted: string;
 
@@ -648,17 +644,11 @@ const zh: Texts = {
   serverExited: (code, signal) => `dsh web 进程已退出（code=${code} signal=${signal}）`,
   serverStartTimeout: (seconds) => `等待 dsh web 就绪超时（${seconds}s）`,
   serverUnreachable: (baseUrl) => `无法连接 ${baseUrl}，请确认该地址上运行着 dsh web。`,
-  serverStaleLock: (lockPath) =>
-    `检测到崩溃遗留的文件锁：${lockPath}\n` +
-    "它属于一次被强制结束的 dsh 进程（锁的持有者已不在）。确认没有其它 dsh 正在运行后，" +
-    "删除该文件并重试；或执行命令「DSH: 重新连接」——扩展会在启动前清掉无主的锁。",
   serverLogTail: (tail) => `日志尾部：\n${tail}`,
   switchingServer: (sessions) =>
     sessions > 0
       ? `服务器配置已更改：已中止上一个后台并按新配置重连，${sessions} 个进行中的会话已中断。`
       : "服务器配置已更改：已中止上一个后台并按新配置重连。",
-  joinedSharedServer: (windows) =>
-    `已接入另一个 VS Code 窗口启动的 DSH 后台（当前 ${windows} 个窗口共用它）。`,
   sharedRestarted: "共享后台已由本窗口接管并重启，其它窗口会自动重新接入。",
 
   searchSessions: "搜索历史对话",
@@ -957,18 +947,11 @@ const en: Texts = {
   serverExited: (code, signal) => `The dsh web process exited (code=${code} signal=${signal})`,
   serverStartTimeout: (seconds) => `Timed out waiting for dsh web to become ready (${seconds}s)`,
   serverUnreachable: (baseUrl) => `Cannot reach ${baseUrl}; make sure dsh web is running there.`,
-  serverStaleLock: (lockPath) =>
-    `Found a file lock left behind by a crash: ${lockPath}\n` +
-    "It belongs to a dsh process that was force-killed (its owner is gone). Once you are sure no " +
-    "other dsh is running, delete the file and retry; or run “DSH: Reconnect” — the extension " +
-    "clears ownerless locks before starting the server.",
   serverLogTail: (tail) => `Log tail:\n${tail}`,
   switchingServer: (sessions) =>
     sessions > 0
       ? `Server settings changed: the previous background server was stopped and a new one started; ${sessions} conversation(s) in progress were interrupted.`
       : "Server settings changed: the previous background server was stopped and a new one started.",
-  joinedSharedServer: (windows) =>
-    `Connected to the DSH server started by another VS Code window (${windows} window(s) sharing it).`,
   sharedRestarted: "This window took over the shared server and restarted it; the other windows reconnect automatically.",
 
   searchSessions: "Search past sessions",
@@ -1179,8 +1162,6 @@ function resolveMarker(text: string, texts: Texts): string {
       return texts.serverSpawnFailed(arg);
     case "serverUnreachable":
       return texts.serverUnreachable(arg);
-    case "serverStaleLock":
-      return texts.serverStaleLock(arg);
     case "serverLogTail":
       return texts.serverLogTail(arg);
     case "serverStartTimeout":
@@ -1195,10 +1176,6 @@ function resolveMarker(text: string, texts: Texts): string {
     case "switchingServer": {
       const sessions = Number(arg);
       return texts.switchingServer(Number.isFinite(sessions) ? sessions : 0);
-    }
-    case "joinedSharedServer": {
-      const windows = Number(arg);
-      return texts.joinedSharedServer(Number.isFinite(windows) ? windows : 1);
     }
     case "sharedRestarted":
       return texts.sharedRestarted;

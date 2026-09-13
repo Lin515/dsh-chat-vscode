@@ -1,18 +1,14 @@
-import { createHash } from "node:crypto";
 import * as vscode from "vscode";
 import { ChatViewProvider } from "./chatView";
 import { ChatController } from "./dsh/controller";
 import { selectionLines } from "./dsh/selection";
 import { createHostLog } from "./dsh/hostLog";
+import { IDLE_SEC_DEFAULT } from "./dsh/supervisorProtocol";
+import { SupervisorManager, groupForConfig } from "./dsh/supervisorManager";
+import { createDefaultSupervisorLauncher } from "./dsh/supervisorRunner";
 import {
   clearStaleDocumentLocks,
-  cleanupResidualServers,
-  dropStaleHostLeases,
-  leaseDirectory,
-  scanServers,
-  setLeaseGroup,
 } from "./dsh/processRegistry";
-import { ServerManager } from "./dsh/serverManager";
 
 let output: vscode.OutputChannel | undefined;
 
@@ -39,12 +35,14 @@ const DEFAULT_COMMAND = "dsh web --port 0 --no-open";
  *
  * 所以按**有效配置**分组：有效配置相同的窗口（包括"来源不同但有效值相同"）共用一个后台；
  * 不同的各管各的。`url` 非空时只按 url 分组——那时 `command` 与超时本来就不生效。
+ *
+ * **算法只有一份**（`groupForConfig`）：探针也要算同一个键，两处漂移就会变成
+ * "两个窗口互相看不见对方的后台、各起一个"。
  */
 function leaseGroupKey(config: () => vscode.WorkspaceConfiguration): string {
   const url = (config().get<string>("url") ?? "").trim().replace(/\/+$/, "");
   const command = config().get<string>("command") || DEFAULT_COMMAND;
-  const identity = url ? `external:${url}` : `internal:${command}`;
-  return createHash("sha256").update(identity).digest("hex").slice(0, 12);
+  return groupForConfig(url, command);
 }
 
 function outputChannel(): vscode.OutputChannel {
@@ -63,14 +61,25 @@ const log = createHostLog(() => outputChannel());
 export function activate(context: vscode.ExtensionContext): void {
   const config = () => vscode.workspace.getConfiguration("dshChat");
 
-  // **先定分组，再碰任何租约**：分组决定"和哪些窗口共享后台"
-  setLeaseGroup(leaseGroupKey(config));
+  // 有效配置算出"分组"：有效配置相同的窗口共用一套 supervisor（见 `leaseGroupKey`）。
+  const group = leaseGroupKey(config);
 
-  const server = new ServerManager({
+  // 拉起 supervisor 的真实实现：用 VS Code 自带的 Node 跑 `dist/supervisor.js`
+  // （见 `dsh/runtimeResolve.ts`——不要求用户装 Node，也不用 PATH 上的 node）
+  const launcher = createDefaultSupervisorLauncher({
+    extensionPath: context.extensionPath,
+    appRoot: vscode.env.appRoot,
+    log,
+  });
+
+  const server = new SupervisorManager({
+    group,
     url: config().get<string>("url") ?? "",
     command: config().get<string>("command") || DEFAULT_COMMAND,
     startTimeoutMs: (config().get<number>("startTimeoutSec") ?? 90) * 1000,
+    idleSec: config().get<number>("supervisorIdleSec") ?? IDLE_SEC_DEFAULT,
     workspace: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
+    launcher,
     log,
   });
 
@@ -115,7 +124,7 @@ interface Contributions {
   controller: ChatController;
   provider: ChatViewProvider;
   secondaryProvider: ChatViewProvider;
-  server: ServerManager;
+  server: SupervisorManager;
   /** 每次调用都重读 `dshChat.*`（配置变更监听要用最新值，不能用激活期快照）。 */
   config: () => vscode.WorkspaceConfiguration;
 }
@@ -131,7 +140,8 @@ function registerContributions(context: vscode.ExtensionContext, host: Contribut
     output ?? vscode.window.createOutputChannel("DSH Chat"),
     controller,
     provider,
-    // 必须注册 server 本身：deactivate 时 dispose → stop() 带走它拉起的进程树
+    // 必须注册 server 本身：deactivate 时 dispose 会**关掉本窗口与 supervisor 的长连接**
+    // （不再杀任何进程——dsh 的生死由 supervisor 按"还有几个窗口连着"自己裁决）
     server,
     server.onDidChangeStatus((status) => controller.onServerStatus(status)),
 
@@ -158,70 +168,65 @@ function registerContributions(context: vscode.ExtensionContext, host: Contribut
         return provider.openPanel(sessionId ?? controller.activeSessionId());
       },
     ),
-    // 「停止」停最近活动窗口的会话轮
+    // 「停止生成」停最近活动窗口正在跑的这一轮（后台继续）
     vscode.commands.registerCommand("dshChat.stop", () => controller.stopActive()),
     vscode.commands.registerCommand("dshChat.startServer", () => controller.ensureConnected()),
     vscode.commands.registerCommand("dshChat.restartServer", () => controller.restart()),
+    // 「停止服务器」：请 supervisor 把 dsh 一起收场并退出（**扩展自己不 taskkill**）
+    vscode.commands.registerCommand("dshChat.stopServer", async () => {
+      await server.stopAndExit();
+      await vscode.window.showInformationMessage(
+        vscode.l10n.t("Stopped the DSH server and its supervisor process."),
+      );
+    }),
     // 外部服务器（dshChat.url）要求授权时，令牌从这里输入
     vscode.commands.registerCommand("dshChat.setToken", () => controller.setToken()),
-    vscode.commands.registerCommand("dshChat.cleanupProcesses", async () => {
-      const result = await cleanupResidualServers(log);
-      const message = result.killed.length
-        ? vscode.l10n.t(
-            "Cleaned up {0} leftover dsh process(es): {1}",
-            result.killed.length,
-            result.killed.join(", "),
-          )
-        : result.orphans.length
-          ? vscode.l10n.t(
-              "Found {0} process(es) that look leftover but could not be confirmed or cleaned up: {1}",
-              result.orphans.length,
-              result.orphans.join(", "),
-            )
-          : vscode.l10n.t("No leftover dsh processes were found.");
-      await vscode.window.showInformationMessage(message, { modal: true });
-    }),
     vscode.commands.registerCommand("dshChat.showLogs", () => {
       outputChannel().show(true);
     }),
     vscode.commands.registerCommand("dshChat.showDiagnostics", async () => {
       const status = server.getStatus();
       const shared = server.sharedSummary();
-      const orphans = (await scanServers())
-        .filter((item) => item.orphan)
-        .map((item) => item.lease.serverPid);
+      const state = server.peekState();
       const message = [
         vscode.l10n.t("Server state: {0}", status.state),
         status.info ? vscode.l10n.t("Address: {0}", status.info.baseUrl) : undefined,
+        // 「是不是本扩展启动的」**只在外部模式下才是否**：内部后台一律由本扩展拉起，
+        // 区别只在于"是不是**这个窗口**拉起的"。原来写成 yes / no(用 url) 会误导用户
+        // （用户 2026-09-13 报：连到别的窗口拉起的那个时，它明明也是本扩展启动的）。
         status.info
-          ? vscode.l10n.t(
-              "Started by this extension: {0}",
-              status.info.owned ? vscode.l10n.t("yes") : vscode.l10n.t("no (using dshChat.url)"),
-            )
+          ? status.info.ownership === "external"
+            ? vscode.l10n.t("Started by this extension: {0}", vscode.l10n.t("no (external dshChat.url)"))
+            : vscode.l10n.t(
+                "Started by this extension: {0}",
+                status.info.owned
+                  ? vscode.l10n.t("yes, by this window")
+                  : vscode.l10n.t("yes, by another window (shared)"),
+              )
           : undefined,
         shared
           ? vscode.l10n.t(
               "Shared with other VS Code windows: {0}",
               shared.ownership === "self"
-                ? vscode.l10n.t("this window runs the server, {0} window(s) in total", shared.hostCount)
+                ? vscode.l10n.t("this window started the supervisor, {0} window(s) in total", shared.hostCount)
                 : shared.ownership === "peer"
-                  ? vscode.l10n.t("using the server of another window, {0} window(s) in total", shared.hostCount)
-                  : vscode.l10n.t("no (dshChat.url)"),
+                  ? vscode.l10n.t("using the supervisor of another window, {0} window(s) in total", shared.hostCount)
+                  : vscode.l10n.t("no (external dshChat.url)"),
             )
           : undefined,
         status.detail ? vscode.l10n.t("Detail: {0}", status.detail) : undefined,
-        vscode.l10n.t(
-          "Leftover processes: {0}",
-          orphans.length
-            ? vscode.l10n.t(
-                "{0} (pid {1}) — use the “DSH: Clean Up Leftover Processes” command",
-                orphans.length,
-                orphans.join(", "),
-              )
-            : vscode.l10n.t("none"),
-        ),
-        vscode.l10n.t("Process lease directory: {0}", leaseDirectory()),
-        vscode.l10n.t("Server log: {0}", server.logPath),
+        // 只列**当前后台自己的**进程：守护进程 + 它持有的 dsh。
+        // （曾经这里会"扫描并报残留进程"，但那个判定依赖命令行匹配、分不清"在用"与"没人管"，
+        //   准确度不够——不准确的判定不如不要，用户 2026-09-13 定。）
+        state
+          ? vscode.l10n.t(
+              "Server processes: supervisor {0}{1}",
+              state.supervisorPid,
+              state.serverPid === undefined ? "" : `, dsh ${state.serverPid}`,
+            )
+          : undefined,
+        vscode.l10n.t("Supervisor directory: {0}", server.rendezvousDirectory),
+        vscode.l10n.t("Supervisor log: {0}", server.logPath),
         vscode.l10n.t("Extension log: the “DSH Chat” output channel"),
       ]
         .filter(Boolean)
@@ -298,30 +303,16 @@ function startup(
   controller: ChatController,
   provider: ChatViewProvider,
 ): void {
-  // 启动初期的残留处置（顺应用户口径 2026-09-14）：
+  // 启动初期的残留处置：
   //
-  // 1) **所有失效的心跳文件一律清理**（不论 `dshChat.url` 有没有配置——残留可能发生在
-  //    改 URL 之前）。判"失效"用的是**进程真的在不在**（批量 `Get-Process`），
-  //    不能用 `process.kill(pid, 0)`：被强杀的进程在回收前那个探测仍返回成功。
-  // 2) **服务器本身不在这里动**：能复用的（还在跑）留给 `ServerManager.start()` 接管
-  //    ——它手里还攥着会话与内存状态；真的连不上的，也由它在启动决策里顺手回收并重起。
-  //    放在这里杀会和"接管"抢时序（踩过：遗留租约被这条清理删掉，于是只能重起）。
+  // **supervisor 的会合文件与进程都不在这里动**。新形态下"没人用"由 supervisor 自己
+  // 按连接数裁决（默认空闲 10 秒就收场），扩展启动时**没有**任何需要"清理残留"的动作
+  // —— 旧实现那套"清失效心跳 / 回收遗留租约"是在替多方协商擦屁股，现在没有协商了。
   //
-  // 不 await：判活要起一次 PowerShell，不该拖住激活流程；失败也只记日志。
-  try {
-    const dropped = dropStaleHostLeases();
-    if (dropped.length) log(`[cleanup] 清理了 ${dropped.length} 个失效心跳文件`);
-  } catch (error) {
-    log(`[cleanup] 心跳清理失败：${error instanceof Error ? error.message : String(error)}`);
-  }
-
-  // 崩溃留下的 writer 锁同样要清，而且**必须在起服务器之前**：
+  // 唯一保留的是**崩溃遗留的 writer 锁**清理，而且必须在起 dsh 之前：
   // `dsh web` 的 boot 会去锁 `.credentials.yaml`，等 30 秒拿不到就把整个进程带走
   // （用户实测的 `atomic-write: timed out waiting for the writer lock`）。
   // 库本身刻意不回收孤儿锁，所以这一步是扩展的责任。
-  //
-  // 顺序是硬要求：不 await 就会与 ensureConnected 赛跑，服务器照样撞上那把锁。
-  // 没有锁时这一步只是两次 ENOENT 的读文件（微秒级），有锁时才起 PowerShell。
   const autoStart = config().get<boolean>("autoStart") ?? true;
   void clearStaleDocumentLocks(log)
     .then((result) => {

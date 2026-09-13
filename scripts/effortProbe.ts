@@ -6,10 +6,10 @@
  * 运行：npm run build:scripts && node build/effort-probe.mjs
  */
 import { DshClient } from "../src/dsh/client";
-import { ServerManager } from "../src/dsh/serverManager";
+import { SupervisorManager } from "../src/dsh/supervisorManager";
 
 const log = () => {};
-const server = new ServerManager({ url: "", command: "dsh", startTimeoutMs: 120_000, log });
+const server = new SupervisorManager({ url: "", command: "dsh", startTimeoutMs: 120_000, log });
 
 let client: DshClient | undefined;
 try {

@@ -26,8 +26,7 @@ import { composeWithReferences, formatFileMention } from "./references";
 import { resolveForVsCode } from "./hostText";
 import { DshApiError, DshAuthError, DshClient, type ConnectionState, type SessionSummaryWire } from "./client";
 import type { RemoteEventFrame, RemoteEventWaterfall, SessionControlFrame } from "./protocol";
-import { ServerManager, type ServerInfo, type ServerStatus } from "./serverManager";
-import { findAttachable } from "./processRegistry";
+import { SupervisorManager, type ServerInfo, type ServerStatus } from "./supervisorManager";
 import { SessionScope } from "./scope";
 import { queueItems, type QueueOrigin } from "./queueView";
 import { goalFromProjection, planModeFromProjection, subagentsFromCatalog, subagentsFromList } from "./projections";
@@ -285,8 +284,6 @@ export class ChatController implements vscode.Disposable {
   private needsToken = false;
   /** 心跳触发的共享后台切换正在跑（去重，见 `reconnectPeer`）。 */
   private peerReconnect = false;
-  /** 已经提示过「接入了别的窗口的后台」的那个地址（按地址去重，避免每次重连都弹）。 */
-  private announcedPeerUrl: string | undefined;
   private disposed = false;
 
   /**
@@ -297,7 +294,7 @@ export class ChatController implements vscode.Disposable {
   private readonly listeners = new Set<(target: "all" | string, frame: HostToWebview) => void>();
 
   constructor(
-    private server: ServerManager,
+    private server: SupervisorManager,
     private readonly log: (line: string) => void,
     /** 全局存储：跨工作区的状态（本地已删除的会话 id）。 */
     private readonly state: vscode.Memento,
@@ -340,14 +337,14 @@ export class ChatController implements vscode.Disposable {
   }
 
   /** 当前后台管理器（恒为激活期那一个；配置变更改为重载窗口，不再整体替换）。 */
-  get currentServer(): ServerManager {
+  get currentServer(): SupervisorManager {
     return this.server;
   }
 
   /**
    * 心跳的一次体检：连接还活着吗？不活就换到该去的地方。
    *
-   * 完全异步（探测本身要发 HTTP），所以它**不阻塞** ServerManager 的心跳节拍：
+   * 完全异步（探测本身要发 HTTP），所以它**不阻塞** manager 的心跳节拍：
    * 钩子只负责叫起这一轮，结论由这里自己消化。
    */
   private async handleHeartbeat(): Promise<void> {
@@ -362,25 +359,13 @@ export class ChatController implements vscode.Disposable {
    * 刻意这么轻：它每 5 秒跑一次，任何"顺手重连一下"的动作都会变成风暴。
    * 未授权（401/403）也算活着——我们只判断"这个地址上有没有服务器"。
    *
-   * 三种结论：
-   * - 自己持有的后台 / 外部服务器：地址就是当前连接用的那个（端口由公告行决定，
-   *   不会自己变），所以只回答"它还活着吗"，`alive` 为假时 `info` 是原样一份；
-   * - **接入的共享后台**：`info` 换成租约里的**最新地址**与令牌；
-   * - 没有任何后台可连：`alive: false`、`info: undefined`（下一次心跳再说）。
+   * 新形态下它比旧实现简单得多：**地址只有一个来源**（supervisor 的会合文件，
+   * 由 manager 通过长连接推给我们），不再需要"去租约里找别的窗口的后台"。
    */
   private async probeConnection(active: string | undefined): Promise<{ alive: boolean; info?: ServerInfo }> {
-    const owned = this.server.getStatus().info;
-    if (this.server.externalUrl || owned?.ownership === "self") {
-      if (!active) return { alive: false };
-      return { alive: await this.reachable(active), info: owned ? { ...owned } : undefined };
-    }
-    const lease = findAttachable();
-    if (!lease?.baseUrl) return { alive: false };
-    const baseUrl = lease.baseUrl.replace(/\/+$/, "");
-    return {
-      alive: await this.reachable(baseUrl),
-      info: { baseUrl, token: lease.token, owned: false, ownership: "peer" },
-    };
+    const info = this.server.getStatus().info;
+    if (!active || !info) return { alive: false };
+    return { alive: await this.reachable(active), info: { ...info } };
   }
 
   /** 不带凭据探一下这个地址上有没有 HTTP 服务（401/403 也算活着）。 */
@@ -831,16 +816,6 @@ export class ChatController implements vscode.Disposable {
     try {
       const info = await this.server.ensure();
       const client = info.owned ? await this.openOwnedClient(info) : await this.openExternalClient(info);
-      // 接入的是别的窗口的后台：说一声。共享是静默发生的，不说的话用户会以为
-      // 自己这个窗口起了个后台（关掉别的窗口时它却还活着）
-      if (info.ownership === "peer" && this.announcedPeerUrl !== info.baseUrl) {
-        this.announcedPeerUrl = info.baseUrl;
-        this.emitAll({
-          type: "toast",
-          level: "info",
-          text: `@joinedSharedServer:${this.server.sharedSummary()?.hostCount ?? 1}`,
-        });
-      }
       client.onDidChangeState((state) => {
         this.setConnection(state === "connected" ? "connected" : state === "connecting" ? "connecting" : "error", state === "disconnected" ? "@connectionLost" : undefined);
         if (state === "connected") void this.onConnected();
@@ -1084,15 +1059,13 @@ export class ChatController implements vscode.Disposable {
   }
 
   async restart(): Promise<void> {
-    // 接入的是**别的窗口**的后台时，"重启服务器"会把整个共享后台换成我们自己的
-    // （决策 A1）——那是一次对所有窗口的中断，必须说出来，不能静默
+    // 接入的是**别的窗口**拉起的后台时，"重启服务器"会打断所有窗口（supervisor 杀 dsh
+    // 再拉起一个，端口通常会变）——那是一次对所有人的中断，必须说出来，不能静默
     const wasPeer = this.server.getStatus().info?.ownership === "peer";
-    this.log(wasPeer ? "[server] 重启（当前是共享后台，将由本窗口接管）" : "[server] 重启");
+    this.log(wasPeer ? "[server] 重启（后台由别的窗口拉起，会打断所有窗口）" : "[server] 重启");
     this.teardownStreams();
     this.client?.dispose();
     this.client = undefined;
-    // 接管之后就不是"接入"了，把提示去重标记清掉，将来再接入别的后台还能提示
-    this.announcedPeerUrl = undefined;
     await this.server.restart();
     await this.ensureConnected();
     if (wasPeer) {

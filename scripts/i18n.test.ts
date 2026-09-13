@@ -79,11 +79,9 @@ const MARKERS: string[] = [
   "serverExited",
   "serverStartTimeout",
   "serverUnreachable",
-  "serverStaleLock",
   "serverLogTail",
   "switchingServer",
   // 多窗口共享后台
-  "joinedSharedServer",
   "sharedRestarted",
 ];
 
@@ -126,7 +124,6 @@ console.log(`i18n: ${MARKERS.length} 个标记 × ${LOCALES.length} 种语言均
     serverStartTimeout: "@serverStartTimeout:30",
     serverUnreachable: "@serverUnreachable:http://127.0.0.1:8080",
     serverSpawnFailed: "@serverSpawnFailed:ENOENT",
-    serverStaleLock: "@serverStaleLock:C:\\Users\\me\\.credentials.yaml.lock",
     serverLogTail: "@serverLogTail:dsh web: ready",
     dropUnreadable: "@dropUnreadable:notes.pdf",
     dropTooLarge: "@dropTooLarge:big.zip",
@@ -144,9 +141,9 @@ console.log(`i18n: ${MARKERS.length} 个标记 × ${LOCALES.length} 种语言均
     );
   }
 
-  // 参数里的冒号不能被截断：Windows 路径 `C:\...` 必须整段保留
-  const lock = resolveText("@serverStaleLock:C:\\Users\\me\\a.lock", zh);
-  assert.ok(lock.includes("C:\\Users\\me\\a.lock"), `路径被冒号截断了：${lock}`);
+  // 参数里的冒号不能被截断：Windows 路径必须整段保留
+  const unreachable = resolveText("@serverUnreachable:C:\\tools\\dsh\\bin", zh);
+  assert.ok(unreachable.includes("C:\\tools\\dsh\\bin"), `路径被冒号截断了：${unreachable}`);
 
   // `imagePathsInserted` 的模型名里可能带冒号，个数要按第一段切
   const inserted = resolveText("@imagePathsInserted:2:vendor:model", zh);
@@ -159,16 +156,13 @@ console.log("i18n: 带参数的标记参数不丢 ✓");
 
 {
   const zh = dictionaryFor("zh");
-  const detail = ["@serverStartTimeout:30", "@serverStaleLock:C:\\x\\a.lock", "@serverLogTail:dsh web: ready\nport 8080"]
-    .join("\n");
+  const detail = ["@serverStartTimeout:30", "@serverLogTail:dsh web: ready\nport 8080"].join("\n");
   const resolved = resolveText(detail, zh);
   assert.ok(!resolved.includes("@serverStartTimeout"), resolved);
-  assert.ok(!resolved.includes("@serverStaleLock"), resolved);
   assert.ok(!resolved.includes("@serverLogTail"), resolved);
   assert.ok(resolved.includes("30"), resolved);
-  assert.ok(resolved.includes("C:\\x\\a.lock"), resolved);
   assert.ok(resolved.includes("port 8080"), "日志原文不能被吃掉");
-  assert.ok(resolved.split("\n").length >= 5, `多行结构应保留：${resolved}`);
+  assert.ok(resolved.split("\n").length >= 4, `多行结构应保留：${resolved}`);
 }
 console.log("i18n: 多行连接说明逐行解析 ✓");
 

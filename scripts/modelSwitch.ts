@@ -13,11 +13,11 @@
  * 会把部署默认模型还原，避免污染本机默认。
  */
 import { DshApiError, DshClient } from "../src/dsh/client";
-import { ServerManager } from "../src/dsh/serverManager";
+import { SupervisorManager } from "../src/dsh/supervisorManager";
 
 const log = (line: string) => console.log(`[model] ${line}`);
 
-const server = new ServerManager({ url: "", command: "dsh", startTimeoutMs: 120_000, log });
+const server = new SupervisorManager({ url: "", command: "dsh", startTimeoutMs: 120_000, log });
 let client: DshClient | undefined;
 const failures: string[] = [];
 

@@ -16,7 +16,7 @@
 import { SessionAdapter } from "../src/dsh/adapter";
 import { DshClient } from "../src/dsh/client";
 import { shouldContinuePaging } from "../src/dsh/historyPaging";
-import { ServerManager } from "../src/dsh/serverManager";
+import { SupervisorManager } from "../src/dsh/supervisorManager";
 
 const args = process.argv.slice(2);
 const opt = (name: string): string | undefined => {
@@ -28,7 +28,7 @@ const maxPages = Number(opt("--pages") ?? 8);
 const maxMessages = Number(opt("--max-messages") ?? 60);
 
 const log = (line: string) => console.log(line);
-const server = new ServerManager({ url: "", command: "dsh", startTimeoutMs: 180_000, log: () => {} });
+const server = new SupervisorManager({ url: "", command: "dsh", startTimeoutMs: 180_000, log: () => {} });
 let client: DshClient | undefined;
 
 try {
