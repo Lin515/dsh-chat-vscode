@@ -123,9 +123,11 @@ say(
     `；当前租约数=${readLeases().length}`,
 );
 
-// 等被强杀；stdin 关闭时走正常退出（模拟用户关窗）
+// 等被强杀；stdin 关闭时走正常退出（模拟用户关窗 → deactivate → dispose）
 process.stdin.resume();
 process.stdin.on("end", () => {
+  say("[window] 收到关窗信号，开始 dispose");
   manager.dispose();
+  say("[window] dispose 已返回（kill 是同步发起的），进程退出");
   process.exit(0);
 });
