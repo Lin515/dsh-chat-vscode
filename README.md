@@ -120,6 +120,11 @@
 
 - 中英双语界面，跟随 VS Code 显示语言（也可用 `dshChat.language` 固定）
 - 活动栏与辅助侧栏两种容器，另可在编辑器区打开独立面板
+- **各对话窗口的状态跟着工作区走**：上次关掉这个文件夹时开着的窗口（主侧栏 / 辅助侧栏 /
+  编辑区面板）与它们各自的会话，下次打开时自动回到原样；最近活动的那个窗口也记得，
+  命令面板入口仍指向它。记录存放在 **VS Code 自己的工作区缓存**里
+  （`workspaceState`，即 `workspaceStorage` 下的 `state.vscdb`），**不往项目目录写文件**；
+  会话已被删除或归档时该窗口回落空态
 - **任意助手回复都能「从这里分支」**（复制按钮左侧）：以该轮为界开一个新会话，
   原会话不动。生成中不能分支——契约要求锚点落在 `turn/end` 上
 - **目标条**：当前目标的阶段、进度与暂停 / 恢复 / 清除，贴在输入框上方
@@ -288,7 +293,7 @@ docs/
 ```bash
 npm run watch          # 增量构建
 npm run typecheck      # 宿主与 webview 两套 tsconfig（并行跑）
-npm run test           # 离线单元断言（21 套，并行跑）
+npm run test           # 离线单元断言（42 套，并行跑）
 npm run build          # 生产构建
 npm run package        # 打成 vsix
 node scripts/bench.mjs # 开发循环耗时分解（哪一步慢）
@@ -345,6 +350,10 @@ npm run preview        # 打开 http://127.0.0.1:8777/test/preview.html
 
 ## 已知限制
 
+- **窗口状态恢复依赖 VS Code 自己的工作区缓存与面板恢复**：关掉工作区时若
+  `window.restoreWindows` 为 `none`（或直接以「打开文件夹」重新进入而没有恢复上次的
+  编辑器布局），编辑区面板本身就不会被 VS Code 恢复，这时只有侧栏视图按槽位接回会话。
+  缓存里的会话被删 / 归档时窗口回落空态，不做「自动挑一个最近的会话顶上」。
 - 不做回合级 Git 回退、子代理追问、计划模式的确认交互、轨迹视图。
 - 上下文占用环需要服务端给出 `contextPressure` 投影（分子 + 分母）；没有该投影时不显示。
 - 在模型胶囊里换模型会写回部署默认模型（与 dsh 网页端行为一致）。
@@ -521,7 +530,14 @@ lists, tables and **footnotes** (`[^1]`, the same shape as the official `markdow
 the definitions collect into a trailing `section.footnotes`), while math and syntax
 highlighting are **deliberately out** (they would pull in KaTeX / Shiki — see
 `THIRD-PARTY-NOTICES.md`); activity bar and secondary
-sidebar containers plus a standalone editor-area panel; dsh-specific stats (token usage,
+sidebar containers plus a standalone editor-area panel, and **each chat window's state
+travels with the workspace**: the windows that were open when you last closed the folder
+(activity bar / secondary sidebar / editor-area panel) reopen on their own sessions, and
+the most recently active window is remembered so command-palette entries still target it —
+the record lives in **VS Code's own per-workspace cache** (`workspaceState`, i.e. the
+`state.vscdb` under `workspaceStorage`), never in a file inside your project, and a window
+falls back to its empty state if its session has since been deleted or archived;
+dsh-specific stats (token usage,
 turn duration) tucked into collapsible rows;
 leftover `dsh web` processes from an unclean VS Code shutdown are detected and cleaned up on
 the next launch, and so are **orphaned writer locks** (`~/.dsh/*.yaml.lock`) — without that

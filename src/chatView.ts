@@ -17,10 +17,16 @@ import type { ChatController } from "./dsh/controller";
 export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   static readonly viewType = "dshChat.view";
   static readonly secondaryViewType = "dshChat.viewSecondary";
+  /** 编辑区面板的 viewType：也是 VS Code 恢复面板时回传给序列化器的类型名。 */
+  static readonly panelViewType = "dshChat.panel";
 
   private readonly disposables: vscode.Disposable[] = [];
   /** 窗口（viewId）→ 它的 webview。定向投递按这个表找到目标。 */
   private readonly viewWebviews = new Map<string, vscode.Webview>();
+  /** 恢复期的兜底定时器：页面迟迟不发 `ready` 时到点也得把会话接回去。 */
+  private readonly restoreTimers = new Set<ReturnType<typeof setTimeout>>();
+  /** 已经认领过缓存会话的侧栏槽位（每个槽位只认领一次，见 `resolveWebviewView`）。 */
+  private readonly sidebarRestored = new Set<string>();
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -39,6 +45,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     // reveal 用 `view.show()`：侧栏视图的「带到前台」就是它（面板那侧是
     // `panel.reveal()`）。命令入口靠这个把焦点还给「你上次用的那个对话窗口」。
     const viewId = this.attach(view.webview, view.onDidDispose, () => view.show());
+    const sidebar = this.kind === "secondary" ? "secondary" : "primary";
+    this.controller.bindViewKind(viewId, sidebar);
+    // 工作区打开时把**这个侧栏上次开的会话**认下来（真正接回要等页面 ready，
+    // 见 controller.resumeRestoreHint）。每个侧栏只认领一次：之后 VS Code 再
+    // 实例化视图（用户手动关掉又打开）算新窗口，不该被旧缓存拽回旧会话。
+    if (!this.sidebarRestored.has(sidebar)) {
+      this.sidebarRestored.add(sidebar);
+      this.controller.claimSidebarRestore(viewId, sidebar);
+    }
+    this.armRestoreFallback(viewId);
     this.log(`[view] ${this.kind} 侧栏视图实例化 viewId=${viewId}`);
     // 侧栏视图变可见视作活动：命令面板入口（新建/历史/加选区…）据此定位窗口。
     // 编辑区面板有同样的处理（见 openPanel），两边口径必须一致
@@ -49,22 +65,60 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     );
   }
 
+  /**
+   * 让扩展**接管编辑区聊天面板的恢复**。
+   *
+   * 面板是 VS Code 的编辑器（`WebviewPanel`），重开工作区时由 VS Code 自己按
+   * 当初的排布重建；扩展这边拿到的是一个全新的 `WebviewPanel`，只有靠序列化器
+   * 才能挂回事件、把页面填上、把会话接回去。不注册它，恢复出来的面板就是一块
+   * 白板（VS Code 把面板恢复了，但我们不认识它）。
+   *
+   * `activate()` 里**同步**注册：面板恢复可能正是扩展被激活的原因
+   * （`onWebviewPanel:dshChat.panel`），晚一步注册就接不到这次恢复。
+   *
+   * 序列化器是扩展级的（一个 viewType 一个），但面板的挂载只走一处，所以
+   * 由传进来的 `owner` 挂——默认 `this`，`openPanel` 的调用方与它保持一致。
+   */
+  registerPanelSerializer(owner: ChatViewProvider = this): void {
+    this.disposables.push(
+      vscode.window.registerWebviewPanelSerializer(ChatViewProvider.panelViewType, {
+        deserializeWebviewPanel: (panel: vscode.WebviewPanel) => {
+          const viewId = owner.attachPanel(panel);
+          // 按 VS Code 的恢复顺序对位认领会话（见 dsh/windowState.ts）
+          owner.controller.claimPanelRestore(viewId);
+          owner.armRestoreFallback(viewId);
+          owner.log(`[view] 恢复编辑区面板 viewId=${viewId}`);
+          return Promise.resolve();
+        },
+      }),
+    );
+  }
+
   /** 在编辑器区打开一个独立面板；指定会话时面板打开那个会话。 */
   openPanel(sessionId?: string): vscode.WebviewPanel {
     const panel = vscode.window.createWebviewPanel(
-      "dshChat.panel",
+      ChatViewProvider.panelViewType,
       "DSH",
       vscode.ViewColumn.Beside,
       this.webviewOptions(),
     );
-    const viewId = this.attach(panel.webview, panel.onDidDispose, () =>
-      panel.reveal(undefined, false),
-    );
+    const viewId = this.attachPanel(panel);
     this.log(`[view] 创建编辑区面板 viewId=${viewId} session=${sessionId ?? "（空态）"}`);
     // 「在编辑器中打开」：调用方带会话时，编辑器窗口打开那个会话（点击动作
     // 来自那个会话所在的窗口）。openSession 绑定后会向这个窗口推完整状态
     // 快照，页面加载早于绑定完成的窗口也会被补上内容
     if (sessionId) void this.controller.openSession(viewId, sessionId);
+    // 新面板刻意**不认领**缓存里的会话：缓存属于「上次退出时还开着的那些窗口」，
+    // 用户此刻新开一个，就该是空态
+    return panel;
+  }
+
+  /** 挂一个编辑区面板：与侧栏共用 attach，额外登记种类与可见性。 */
+  private attachPanel(panel: vscode.WebviewPanel): string {
+    const viewId = this.attach(panel.webview, panel.onDidDispose, () =>
+      panel.reveal(undefined, false),
+    );
+    this.controller.bindViewKind(viewId, "panel");
     // 面板变可见时视作活动（命令面板入口「最近活动的窗口」靠它定位）
     this.disposables.push(
       panel.onDidChangeViewState((event) => {
@@ -72,7 +126,33 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       }),
     );
     panel.iconPath = vscode.Uri.joinPath(this.context.extensionUri, "media", "icon.svg");
-    return panel;
+    return viewId;
+  }
+
+  /**
+   * 恢复的兜底：页面迟迟不发 `ready` 时也得把会话接回去。
+   *
+   * 正常情况下 `ready` 是唯一的接回时机（那一刻绑定，会话内容正好进首帧快照）。
+   * 但有两条路会让 `ready` 永远不来：视图在**折叠的侧栏容器**里时 webview 可能
+   * 一直不加载；或者认领时工作区身份还没就绪、请求还排着队（`hasPendingRestore`）。
+   * 到点后照接不误——`resumeRestoreHint` 是幂等的，`ready` 先到就什么都不做。
+   */
+  private armRestoreFallback(viewId: string): void {
+    if (!this.controller.hasRestoreHint(viewId) && !this.controller.hasPendingRestore(viewId)) return;
+    const timer = setTimeout(() => {
+      this.restoreTimers.delete(timer);
+      if (!this.controller.hasRestoreHint(viewId)) {
+        // 认领还排着队（工作区身份一直没就绪）：留一行日志，方便解释
+        // 「为什么这个窗口没接回上一次的会话」
+        if (this.controller.hasPendingRestore(viewId)) {
+          this.log(`[view] ${viewId} 的恢复认领仍未就绪（工作区身份未绑定？）`);
+        }
+        return;
+      }
+      this.log(`[view] ${viewId} 迟迟没有 ready，按超时接回会话`);
+      void this.controller.resumeRestoreHint(viewId);
+    }, RESTORE_READY_TIMEOUT_MS);
+    this.restoreTimers.add(timer);
   }
 
   private webviewOptions(): vscode.WebviewOptions & vscode.WebviewPanelOptions {
@@ -159,11 +239,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   }
 
   dispose(): void {
+    for (const timer of this.restoreTimers) clearTimeout(timer);
+    this.restoreTimers.clear();
     for (const disposable of this.disposables) disposable.dispose();
     this.disposables.length = 0;
     this.viewWebviews.clear();
   }
 }
+
+/**
+ * 恢复期等页面 `ready` 的上限。
+ *
+ * 8 秒是权衡：正常加载远快于此（本机 webview 首帧通常 <1s），而给「视图在折叠
+ * 的容器里、webview 迟迟没加载」留出足够的宽限——到点强制接回，最坏结果是
+ * 会话已经绑好、用户展开侧栏时页面自己再拉一次快照，不会重复。
+ */
+const RESTORE_READY_TIMEOUT_MS = 8_000;
 
 function makeNonce(): string {
   const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";

@@ -23,10 +23,25 @@ export function activate(context: vscode.ExtensionContext): void {
     log,
   });
 
-  const controller = new ChatController(server, log, context.globalState, context.secrets);
+  const controller = new ChatController(
+    server,
+    log,
+    // 全局存储：跨工作区共享（本地已删除的会话 id）
+    context.globalState,
+    // 工作区存储：VS Code 自己那份**按工作区分文件**的缓存，用来记「这个文件夹
+    // 上次开着哪几个对话窗口、各自是哪个会话」（见 dsh/windowState.ts）。
+    // 它落在 VS Code 的 workspaceStorage 下，不往项目目录里写任何文件。
+    context.workspaceState,
+    context.secrets,
+  );
   // 两个侧栏视图容器各挂一个带标识的实例：日志里能区分视图来自主侧栏还是辅助侧栏
   const provider = new ChatViewProvider(context, controller, "primary", log);
   const secondaryProvider = new ChatViewProvider(context, controller, "secondary", log);
+
+  // 编辑区面板的恢复必须**同步**注册：重开工作区时面板恢复可能就是扩展被激活的
+  // 原因，晚一步注册这次恢复就接不到了（见 ChatViewProvider.registerPanelSerializer）。
+  // 挂在主侧栏那个实例上，与 openPanel 的创建方保持一致（面板只有这一处宿主）
+  provider.registerPanelSerializer();
 
   // 第一部分：把服务、控制器、视图与全部命令挂到 context.subscriptions（释放即随扩展一起走）
   registerContributions(context, { controller, provider, secondaryProvider, server });

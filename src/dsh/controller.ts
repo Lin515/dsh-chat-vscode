@@ -32,6 +32,7 @@ import { queueItems, type QueueOrigin } from "./queueView";
 import { goalFromProjection, planModeFromProjection, subagentsFromCatalog, subagentsFromList } from "./projections";
 import { lineageDepths, visibleSessionRows } from "./sessionList";
 import { buildSettingsSection } from "./settingsSchema";
+import { isBlank, WindowRestore, WorkspaceWindowStateStore, type SidebarSlot, type WindowCache, type WindowKind } from "./windowState";
 
 /**
  * SecretStorage 里存「外部服务器会话 cookie」的 key 前缀。
@@ -160,6 +161,39 @@ export class ChatController implements vscode.Disposable {
   /** 窗口（viewId）→ 当前绑定的会话 id。未绑定的窗口是「空态」（还没有会话）。 */
   private readonly viewSessions = new Map<string, string>();
   /**
+   * 窗口（viewId）→ 它属于哪种宿主（主侧栏 / 辅助侧栏 / 编辑区面板）。
+   *
+   * 只有编辑区面板需要额外照看：VS Code 会按自己的节奏恢复面板（`WebviewPanelSerializer`），
+   * 而侧栏视图是 VS Code 必定重建的容器。窗口状态缓存要按种类分别记（见
+   * `persistWindowState`），所以挂窗口时就得把种类记下来。
+   */
+  private readonly viewKinds = new Map<string, WindowKind>();
+  /**
+   * 工作区级的「会话窗口状态」缓存（`workspaceState`，见 `dsh/windowState.ts`）。
+   * 关掉工作区前谁开着哪个会话，下次打开时据此各自接回。
+   */
+  private readonly windowState: WorkspaceWindowStateStore;
+  /** 恢复期的会话认领器（编辑区面板按下标对位，见 `WindowRestore`）。 */
+  private readonly windowRestore: WindowRestore;
+  /**
+   * 恢复期给每个窗口暂存的「该接回哪个会话」：窗口刚挂上时可能还没连接、
+   * 甚至页面还没加载，那一刻绑定会推开一个空快照；等它发 `ready` 时再绑，
+   * 正好把这个会话写进它的首帧快照里。
+   */
+  private readonly restoreHints = new Map<string, string>();
+  /**
+   * 恢复窗口（还有缓存里的窗口没来认领）期间攒下的「要写缓存」标记。
+   * 见 `persistWindowState` 与 `settleRestoreWindow`。
+   */
+  private restoreWritePending = false;
+  /**
+   * 工作区身份还没就绪时排队的**编辑区面板**认领（按 VS Code 的恢复顺序入队）。
+   * 顺序就是位置，所以必须按原序补（见 `flushRestoreClaims`）。
+   */
+  private readonly panelClaimsQueued: string[] = [];
+  /** 上面那批窗口（`ChatViewProvider` 据此决定是否留等 `ready` 的兜底）。 */
+  private readonly restoreAwaiting = new Set<string>();
+  /**
    * 窗口的最近活动顺序（末尾 = 最近活动）。命令面板入口（新建/历史/停止/加选区…）
    * 都指向「最近活动的那个窗口」——VS Code 没有 API 问用户此刻在看哪个视图，
    * 只能按「谁最后发了消息 / 谁可见」推断。
@@ -260,11 +294,24 @@ export class ChatController implements vscode.Disposable {
   constructor(
     private readonly server: ServerManager,
     private readonly log: (line: string) => void,
+    /** 全局存储：跨工作区的状态（本地已删除的会话 id）。 */
     private readonly state: vscode.Memento,
+    /** **工作区**存储：VS Code 自己那份按工作区分文件的缓存（窗口状态）。 */
+    private readonly workspaceState: vscode.Memento,
     /** 外部服务器会话 cookie 的存放处（SecretStorage，不落明文配置）。 */
     private readonly secrets: vscode.SecretStorage,
   ) {
     this.deletedSessionIds = new Set(this.state.get<string[]>("deletedSessionIds") ?? []);
+    // 窗口状态缓存走 **workspaceState**（VS Code 自己的工作区缓存）而不是 globalState：
+    // 「这个文件夹上次开着哪几个窗口、各自是哪个会话」本来就是工作区级的，
+    // 换个项目不该被带过去。读取是同步的（构造期一次），所以激活同期的
+    // `deserializeWebviewPanel` 里也能立刻拿到缓存。
+    this.windowState = new WorkspaceWindowStateStore({ storage: this.workspaceState, log });
+    this.windowRestore = new WindowRestore(this.windowState.snapshot(), log);
+    // 工作区身份可能此刻还没就绪：恢复由 VS Code 驱动（面板恢复甚至就是本次激活的
+    // 原因），序列化器可能先于 workspaceFolders 可用被调用。所以这里允许「先挂窗口、
+    // 后绑缓存键」：认领请求按序排队，等键绑上（`ensureWindowState`）再补。
+    this.ensureWindowState();
     this.configChanges = new ConfigChangeRouter(
       {
         reloadSettings: () => this.reloadSettings(),
@@ -381,6 +428,140 @@ export class ChatController implements vscode.Disposable {
     if (!this.viewOrder.includes(viewId)) this.viewOrder.push(viewId);
   }
 
+  /**
+   * 登记窗口的种类（主侧栏 / 辅助侧栏 / 编辑区面板）。
+   *
+   * 窗口状态缓存按种类分槽：侧栏各一个固定槽位，编辑区面板是一条列表
+   * ——恢复时侧栏按槽位接、面板按下标认领（见 `WindowRestore`）。
+   */
+  bindViewKind(viewId: string, kind: WindowKind): void {
+    this.viewKinds.set(viewId, kind);
+    this.persistWindowState();
+  }
+
+  /**
+   * 把一个已有的窗口绑到某个会话（恢复路径用：刷新会话列表 + 建域 + 推快照）。
+   *
+   * 与 `openSession` 的分工：那边是「用户点了历史里的一条」，只做重绑；这边是
+   * 「工作区刚打开，这个窗口上次开的就是它」，多一步**先确认会话还在**——
+   * 缓存是上一次运行留下的，会话可能已经被删掉或归档（服务端没有删除 API，
+   * 本地删除只记了 id）。会话不在了就什么都不做，窗口保持空态。
+   */
+  async restoreViewSession(viewId: string, sessionId: string): Promise<void> {
+    if (this.viewSessions.get(viewId) === sessionId) return;
+    if (!this.client || this.connection !== "connected") await this.ensureConnected();
+    if (!this.client || this.connection !== "connected") {
+      this.log(`[restore] 未连接，跳过 ${sessionId}`);
+      return;
+    }
+    // 会话列表是「哪些会话还在」的权威来源（它已经滤掉本地删除的、并在
+    // 归档流到达后重建）：不在列表里就当它不存在，别把窗口接到一个死会话上
+    if (!this.sessions.length) await this.refreshSessions();
+    if (!this.sessions.some((session) => session.id === sessionId)) {
+      this.log(`[restore] 会话已不存在（已删/已归档），窗口回退空态：${sessionId}`);
+      return;
+    }
+    this.log(`[restore] 窗口=${viewId} 接回会话=${sessionId}`);
+    await this.openSession(viewId, sessionId);
+  }
+
+  /**
+   * 这个窗口的恢复认领**还排着队**（工作区身份未就绪，见 `ensureWindowState`）。
+   *
+   * `ChatViewProvider` 用它决定要不要给这个窗口留一次「等 `ready` 再接回会话」
+   * 的机会：认领已经落定的窗口不必留（那时接回本来就要等 `ready`）。
+   */
+  hasPendingRestore(viewId: string): boolean {
+    return this.restoreAwaiting.has(viewId);
+  }
+
+  /**
+   * 面板恢复会话的认领（按下标对位，见 `WindowRestore.claimPanel`）。
+   *
+   * 缓存键还没绑上时**先排队**：位置就是这个面板的恢复顺序，等键绑好再按序补
+   * （见 `flushRestoreClaims`）——提前认领会把顺序用掉，后面的窗口就接错了。
+   */
+  claimPanelRestore(viewId: string): void {
+    if (!this.windowState.key) {
+      this.panelClaimsQueued.push(viewId);
+      this.restoreAwaiting.add(viewId);
+      this.log(`[restore] 工作区身份未就绪，面板 ${viewId} 的认领先排队`);
+      return;
+    }
+    this.applyRestoreHint(viewId, this.windowRestore.claimPanel());
+    this.settleRestoreWindow();
+  }
+
+  /** 侧栏恢复会话的认领（固定槽位）。 */
+  claimSidebarRestore(viewId: string, slot: SidebarSlot): void {
+    if (!this.windowState.key) {
+      this.ensureWindowState();
+      if (!this.windowState.key) {
+        // 工作区真的没有文件夹（空窗口）→ 本来就没有缓存可恢复
+        this.log("[restore] 没有打开的工作区文件夹，不做窗口恢复");
+        return;
+      }
+    }
+    this.applyRestoreHint(viewId, this.windowRestore.slot(slot));
+    this.settleRestoreWindow();
+  }
+
+  /** 该窗口有没有待接回的会话（`ChatViewProvider` 发 `ready` 前用它决定等多久）。 */
+  hasRestoreHint(viewId: string): boolean {
+    return this.restoreHints.has(viewId);
+  }
+
+  private applyRestoreHint(viewId: string, sessionId: string | undefined): void {
+    if (sessionId) this.restoreHints.set(viewId, sessionId);
+  }
+
+  /**
+   * 缓存的读侧延迟绑定：构造时工作区身份可能还没就绪（`workspaceFolders` 为空），
+   * 键就先没有；第一次真正要用（认领 / 恢复）时补一次，绑上就重新读一次缓存。
+   *
+   * 绑定只做一次：键有了就不再重算——工作区在会话中途变过（多根增删）属于极少数，
+   * 那时以启动时的 folders 为准更稳定。
+   */
+  private ensureWindowState(): void {
+    if (this.windowState.key) return;
+    const folders = (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath);
+    if (!folders.length) return;
+    const cache = this.windowState.bindFolders(folders);
+    this.windowRestore.replace(cache);
+    const known = [cache.primary, cache.secondary].filter((entry) => !isBlank(entry)).length;
+    this.log(
+      `[restore] 窗口缓存：侧栏 ${known} 个、编辑区面板 ${cache.panels.length} 个（key=${this.windowState.key}）`,
+    );
+    this.flushRestoreClaims();
+  }
+
+  /** 把排队中的认领按原顺序补上（顺序就是这个窗口在恢复序列里的位置）。 */
+  private flushRestoreClaims(): void {
+    if (!this.windowState.key) return;
+    for (const viewId of this.panelClaimsQueued.splice(0)) {
+      this.restoreAwaiting.delete(viewId);
+      if (!this.viewKinds.has(viewId)) continue;
+      this.applyRestoreHint(viewId, this.windowRestore.claimPanel());
+      this.settleRestoreWindow();
+    }
+  }
+
+  /**
+   * 窗口的页面就绪（或兜底超时）时把暂存的会话接回去。
+   *
+   * 为什么必须等 `ready`：`restoreViewSession` 会推一份完整快照，而网页还没加载完
+   * 时推的快照会丢（webview 的 message 监听是在 bundle 执行后才挂上的）。
+   * 绑在这一刻，会话内容正好出现在它的首帧快照里。
+   */
+  async resumeRestoreHint(viewId: string): Promise<void> {
+    const sessionId = this.restoreHints.get(viewId);
+    if (!sessionId) return;
+    this.restoreHints.delete(viewId);
+    await this.restoreViewSession(viewId, sessionId);
+    // 接回会话会落一次缓存；若这是最后一个待恢复的窗口，恢复窗口就此结束
+    this.settleRestoreWindow();
+  }
+
   /** 注册「把这个窗口带到前台」的动作（见 `revealers`）。 */
   registerRevealer(viewId: string, reveal: () => void): void {
     this.revealers.set(viewId, reveal);
@@ -400,8 +581,12 @@ export class ChatController implements vscode.Disposable {
   /** 窗口产生活动（发了消息 / 编辑器面板变可见）。 */
   noteActiveView(viewId: string): void {
     const index = this.viewOrder.indexOf(viewId);
+    if (index >= 0 && index === this.viewOrder.length - 1) return;
     if (index >= 0) this.viewOrder.splice(index, 1);
     this.viewOrder.push(viewId);
+    // 顺序变了才落缓存：这条路径每来一条消息都会被调（流式期间很密），
+    // 落盘本身是防抖的，这里再省掉「本来就是最后一个」的绝大多数调用
+    this.persistWindowState();
   }
 
   /** 窗口下线：解绑，若它是该会话最后一个窗口则回收整个域。 */
@@ -409,9 +594,69 @@ export class ChatController implements vscode.Disposable {
     const sessionId = this.viewSessions.get(viewId);
     this.viewSessions.delete(viewId);
     this.revealers.delete(viewId);
+    this.viewKinds.delete(viewId);
+    this.restoreHints.delete(viewId);
     const index = this.viewOrder.indexOf(viewId);
     if (index >= 0) this.viewOrder.splice(index, 1);
     if (sessionId) this.dropViewers(sessionId);
+    // 关掉的窗口不该留在缓存里：VS Code 只恢复「上次退出时还开着」的面板，
+    // 缓存里多留一条，下次启动就可能多开一个窗口（恢复未完时这次写会延后，
+    // 见 `persistWindowState`，但一定会写）
+    this.persistWindowState();
+  }
+
+  /**
+   * 把当前窗口状态写进工作区缓存（变更后调用，落盘由 store 防抖）。
+   *
+   * 「当前状态」就是内存里那几张表的投影：`viewSessions` 是绑定，
+   * `viewKinds` 是种类，`viewOrder` 是最近活动顺序。编辑区面板的顺序取
+   * `viewOrder` 里出现过的先后（= 创建顺序），与 VS Code 恢复编辑器的
+   * 顺序一致（都是「当初的排布顺序」）。
+   *
+   * **恢复未完时不写**：VS Code 是「面板第一次变为可见时」才认领会话的
+   * （见 `WindowRestore.pending`），那一刻之前活着的窗口只是**已经恢复的**那部分
+   * ——此时按内存状态覆写，缓存里还没露面的面板就会被抹掉（它们的会话随之失联）。
+   * 所以恢复窗口内只记「待写」，等最后一个槽位问过话再一次性落盘；
+   * 用户在恢复窗口里真关掉一个窗口也走这条路（关窗会调 `markDirty`），
+   * 不会因为延后而丢。
+   */
+  private persistWindowState(): void {
+    if (!this.windowState.key) return;
+    if (this.pendingRestore) {
+      this.restoreWritePending = true;
+      return;
+    }
+    const now = Date.now();
+    const cache: WindowCache = { panels: [], activeOrder: [...this.viewOrder] };
+    // 编辑区面板：按 `viewOrder` 里出现的先后（= 创建顺序）逐条记，
+    // 与 VS Code 恢复编辑器时的顺序一致
+    for (const viewId of this.viewOrder) {
+      if (this.viewKinds.get(viewId) !== "panel") continue;
+      cache.panels.push({ sessionId: this.viewSessions.get(viewId) ?? null, lastActiveAt: now });
+    }
+    for (const [viewId, kind] of this.viewKinds) {
+      if (kind === "panel") continue;
+      cache[kind] = { sessionId: this.viewSessions.get(viewId) ?? null, lastActiveAt: now };
+    }
+    this.windowState.load(cache);
+    this.windowState.markDirty();
+  }
+
+  /**
+   * 恢复窗口是否还没结束（还有缓存里的窗口没来认领）。
+   *
+   * 恢复一结束就把期间攒下的变更补写一次——否则「恢复窗口里的最后一次变更」
+   * 要等到下一次窗口活动才落盘，中间关掉 VS Code 就白改了。
+   */
+  private get pendingRestore(): boolean {
+    return this.windowRestore.pending;
+  }
+
+  private settleRestoreWindow(): void {
+    if (this.pendingRestore || !this.restoreWritePending) return;
+    this.restoreWritePending = false;
+    this.log("[restore] 恢复窗口结束，补写窗口缓存");
+    this.persistWindowState();
   }
 
   /** 最近活动的窗口（命令面板入口都指向它）。 */
@@ -478,6 +723,7 @@ export class ChatController implements vscode.Disposable {
     this.viewSessions.set(viewId, sessionId);
     scope.viewers += 1;
     this.log(`[bind] 窗口=${viewId} → 会话=${sessionId}（原=${previous ?? "空态"}）`);
+    this.persistWindowState();
   }
 
   // ---------- 连接 ----------
@@ -2012,6 +2258,10 @@ export class ChatController implements vscode.Disposable {
   async handle(message: WebviewToHost, viewId: string): Promise<void> {
     switch (message.type) {
       case "ready":
+        // 页面就绪前不推帧（webview 的监听还没挂上，推了也白推），所以工作区
+        // 打开时「这个窗口上次开着哪个会话」的接回动作放在这里：绑定完再发
+        // 快照，会话内容直接出现在它的首帧里
+        await this.resumeRestoreHint(viewId);
         // 每个窗口拿的是**自己**的快照（它绑定的会话；未绑定 = 空态）
         this.emitToView(viewId, { type: "state", state: this.snapshotFor(viewId) });
         break;
@@ -3637,6 +3887,9 @@ export class ChatController implements vscode.Disposable {
     this.disposed = true;
     this.teardownStreams();
     this.client?.dispose();
+    // 停用（关窗 / 重载 / 退出）时把窗口状态缓存刷盘：这一次写基本就是
+    // 「下次打开工作区」要用的那份，等不到防抖到点
+    this.windowState.dispose();
   }
 }
 

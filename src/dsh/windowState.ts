@@ -1,0 +1,374 @@
+/**
+ * 工作区级「会话窗口状态」缓存。
+ *
+ * 目标：像 VS Code 自己记得这个文件夹开过哪些文件一样，本扩展也记得
+ * **上次关掉工作区时，每个对话窗口开着哪个会话**（主侧栏 / 辅助侧栏 / 编辑区面板），
+ * 下次打开这个工作区时各自接回原来的会话。
+ *
+ * 存放位置是 **VS Code 自己的工作区缓存**（`ExtensionContext.workspaceState`，
+ * 落在 `%APPDATA%\Code\User\workspaceStorage\<hash>\state.vscdb`），
+ * **不往项目目录里写任何文件**，也不进全局存储——本来就是「这个工作区的窗口布局」。
+ *
+ * 三处容易踩的坑，这里都按「按契约写」处理：
+ *
+ * 1. **Memento 是 JSON 过的**（`state.vscdb` 里就是 JSON）：值为 `undefined` 的键
+ *    会被整条丢掉，所以「清空某个槽位」必须写 `null`，读回时再把 `null` 折回
+ *    `undefined`。漏掉这一步的症状是**清空指令静默失效**——与宿主 → webview 的
+ *    帧是同一个坑（见 `shared/wire.ts`）。
+ * 2. **缓存是磁盘上的旧数据**：用户可能换过服务器、删过会话、手工动过状态文件，
+ *    所以 `parseWindowCache` 对每个字段都做形状校验，坏的**逐条丢弃**而不是整份
+ *    丢掉（能救一条是一条），并且 `undefined` 不当成 `null`。
+ * 3. **写盘要防抖**：窗口活动顺序每次消息都会更新，直接写会把磁盘打满。
+ *
+ * 模块刻意**不 import vscode**：缓存语义要能在 `npm test` 里直接跑
+ * （见 `scripts/windowState.test.ts`），所以这里只声明一个 `WindowStateStorage`
+ * 结构类型，`vscode.Memento` 天然满足它。
+ */
+
+/** 窗口种类：主侧栏 / 辅助侧栏 / 编辑区面板。 */
+export type WindowKind = "primary" | "secondary" | "panel";
+
+/** 侧栏槽位（固定一个）；编辑区面板是列表，按下标认领。 */
+export type SidebarSlot = "primary" | "secondary";
+
+/** 一个窗口上次开着的会话（`sessionId` 为 null = 当时是空态）。 */
+export interface WindowEntry {
+  sessionId: string | null;
+  /** 最近活动时间（epoch ms），仅供排查用，不参与恢复。 */
+  lastActiveAt?: number;
+}
+
+/** 这份工作区上次关掉时的窗口状态。 */
+export interface WindowCache {
+  primary?: WindowEntry;
+  secondary?: WindowEntry;
+  /** 编辑区面板，**按 VS Code 恢复它们的顺序**排列。 */
+  panels: WindowEntry[];
+  /** 窗口的最近活动顺序（末尾 = 最近活动）：接回后命令面板入口仍落在原窗口上。 */
+  activeOrder: string[];
+}
+
+/** 这里只用到 `get` / `update` 两个方法，`vscode.Memento` 结构上满足。 */
+export interface WindowStateStorage {
+  get<T>(key: string): T | undefined;
+  update(key: string, value: unknown): Thenable<void>;
+}
+
+/** 缓存书写版本：将来形状变了，旧数据能被认出来并丢弃。 */
+export const WINDOW_CACHE_VERSION = 1;
+
+const KEY_PREFIX = "windowCache";
+
+/**
+ * 缓存键：一个工作区一份。
+ *
+ * 用**工作区文件夹路径**（全部根都拼进去，多根工作区各算一份），而不是
+ * workspaceFile 的路径——「同一个文件夹」无论是直接打开还是被某个 .code-workspace
+ * 包含，窗口状态都该跟着文件夹走。
+ *
+ * 路径只做小写归一（Windows 大小写不敏感），**不做 realpath**：磁盘上的
+ * `state.vscdb` 本来就由 VS Code 按工作区身份分文件，这里只需在同一个
+ * workspaceStorage 里互相区分。
+ */
+export function windowCacheKey(folders: readonly string[]): string | undefined {
+  const normalized = folders
+    .map((folder) => folder.trim().replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase())
+    .filter((folder) => folder.length > 0);
+  if (!normalized.length) return undefined;
+  // 多根：排序后拼接。顺序不同的同一组根目录应当共用一份缓存
+  // （VS Code 的编辑器恢复本来就与根的顺序无关）
+  const identity = [...normalized].sort().join("|");
+  return `${KEY_PREFIX}:${identity}`;
+}
+
+function parseEntry(value: unknown): WindowEntry | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as Record<string, unknown>;
+  const raw = record.sessionId;
+  // `null`（当时空态）与字符串都合法；其余形状（数字/对象/undefined）当坏数据丢
+  if (raw !== null && typeof raw !== "string") return undefined;
+  const entry: WindowEntry = { sessionId: typeof raw === "string" && raw ? raw : null };
+  if (typeof record.lastActiveAt === "number" && Number.isFinite(record.lastActiveAt)) {
+    entry.lastActiveAt = record.lastActiveAt;
+  }
+  return entry;
+}
+
+/**
+ * 把缓存值解析成可用形状。
+ *
+ * 坏数据**逐条丢弃**：一条烂掉的面板记录不该让另外两个窗口也恢复不了。
+ * 返回值里的 `dropped` 只用于日志（让「怎么没恢复」在输出通道里看得见）。
+ */
+export function parseWindowCache(raw: unknown): { cache: WindowCache; dropped: number } {
+  const cache: WindowCache = { panels: [], activeOrder: [] };
+  if (!raw || typeof raw !== "object") return { cache, dropped: 0 };
+  const record = raw as Record<string, unknown>;
+  let dropped = 0;
+  if (record.version !== WINDOW_CACHE_VERSION) {
+    // 版本不认识（含从未写过：undefined）→ 当作没有缓存，但不算「坏数据」
+    return { cache, dropped: 0 };
+  }
+  for (const slot of ["primary", "secondary"] as const) {
+    if (record[slot] === undefined) continue;
+    const entry = parseEntry(record[slot]);
+    if (entry) cache[slot] = entry;
+    else dropped += 1;
+  }
+  if (Array.isArray(record.panels)) {
+    for (const value of record.panels) {
+      const entry = parseEntry(value);
+      if (entry) cache.panels.push(entry);
+      else dropped += 1;
+    }
+  } else if (record.panels !== undefined) {
+    dropped += 1;
+  }
+  if (Array.isArray(record.activeOrder)) {
+    cache.activeOrder = record.activeOrder.filter(
+      (value): value is string => typeof value === "string" && value.length > 0,
+    );
+  }
+  return { cache, dropped };
+}
+
+/**
+ * 序列化成可存进 Memento 的形状。
+ *
+ * **槽位缺失写 `null` 而不是 `undefined`**：Memento 走 JSON，`undefined` 的键会
+ * 被丢掉，于是「这个窗口当时是空态」与「这条记录没写」在磁盘上长得一样。
+ * 这里统一成显式 null，语义唯一。
+ */
+export function serializeWindowCache(cache: WindowCache): Record<string, unknown> {
+  const entry = (value: WindowEntry | undefined): WindowEntry | null =>
+    value ? { sessionId: value.sessionId, lastActiveAt: value.lastActiveAt } : null;
+  return {
+    version: WINDOW_CACHE_VERSION,
+    primary: entry(cache.primary),
+    secondary: entry(cache.secondary),
+    panels: cache.panels.map((panel) => ({
+      sessionId: panel.sessionId,
+      lastActiveAt: panel.lastActiveAt,
+    })),
+    activeOrder: [...cache.activeOrder],
+  };
+}
+
+/** 会话是 `undefined` 还是 `null` 都表示「空态」。 */
+export function isBlank(entry: WindowEntry | undefined): boolean {
+  return !entry || !entry.sessionId;
+}
+
+/**
+ * 恢复期的认领器：回答「这个正在恢复的窗口该接回哪个会话」。
+ *
+ * 侧栏用固定槽位（`primary`/`secondary`）：一个容器只有一个实例，谈不上顺序。
+ *
+ * 编辑区面板**按顺序认领**：`deserializeWebviewPanel(panel, state)` 的 `state` 是
+ * webview 自己用 `setState` 存下来的，而我们的 webview 侧没有存过会话 id（界面不
+ * 需要知道它，会话是宿主侧的绑定），所以那个 `state` 指望不上。好在契约里 VS Code
+ * 恢复的是**当初的编辑器布局**，序列化器就按那个顺序被逐个调用——把「缓存里的第 N 条」
+ * 给「第 N 个来认领的面板」，就是当初那个面板。
+ *
+ * 代价写在明处：顺序对不上（用户在两次运行之间重新排布过标签页之类）时可能张冠李戴。
+ * 真要做得更准，得让界面把会话 id 存进 `setState` 再在序列化器里读回来——那需要改
+ * webview 侧的产物，眼下这点收益不值得（对比：Claude Code 的
+ * [issue #35022](https://github.com/anthropics/claude-code/issues/35022) 正是「序列化器
+ * 拿到了 state 里的 sessionId 却没用」导致恢复出来的标签页内容错乱）。
+ */
+export class WindowRestore {
+  private panelCursor = 0;
+  /** 问过话的侧栏槽位（认领过就不再计入「还没恢复完」）。 */
+  private readonly slotsClaimed = new Set<SidebarSlot>();
+
+  constructor(
+    private cache: WindowCache,
+    private readonly log: (line: string) => void = () => {},
+  ) {}
+
+  /** 当前缓存（解析后的形状，调用方不要改）。 */
+  get value(): WindowCache {
+    return this.cache;
+  }
+
+  /** 换一份缓存（测试与「缓存后来才读到」的场景用）。 */
+  replace(cache: WindowCache): void {
+    this.cache = cache;
+    this.panelCursor = 0;
+    this.slotsClaimed.clear();
+  }
+
+  /**
+   * 还有没有被认领的缓存窗口。
+   *
+   * 恢复**不是一次做完的**：契约（`vscode.d.ts` 的 `WebviewPanelSerializer`）写的是
+   * 「webview 重启后**第一次变为可见**时」才回调序列化器——用户没点到的面板标签页
+   * 可能过很久才认领，甚至直到关窗都没认领。所以「恢复窗口」结束的判据不是某个
+   * 超时，而是**槽位都问过了**（侧栏各一个槽位 + 面板逐条对位）。
+   */
+  get pending(): boolean {
+    return this.remaining > 0;
+  }
+
+  /** 还剩几个缓存窗口没被认领（侧栏按槽位算、面板按条数算）。 */
+  get remaining(): number {
+    let count = Math.max(0, this.cache.panels.length - this.panelCursor);
+    for (const slot of ["primary", "secondary"] as const) {
+      if (!this.slotsClaimed.has(slot) && !isBlank(this.cache[slot])) count += 1;
+    }
+    return count;
+  }
+
+  /** 侧栏槽位要接回的会话（没有就是空态）。 */
+  slot(slot: SidebarSlot): string | undefined {
+    this.slotsClaimed.add(slot);
+    const entry = this.cache[slot];
+    // 空态（记录在、sessionId 为 null）与「这条记录压根没有」都返回 undefined
+    return isBlank(entry) ? undefined : entry?.sessionId ?? undefined;
+  }
+
+  /** 认领下一个编辑区面板的会话（按 VS Code 的恢复顺序对位）。 */
+  claimPanel(): string | undefined {
+    const entry = this.cache.panels[this.panelCursor];
+    this.panelCursor += 1;
+    this.reportLeftovers();
+    return isBlank(entry) ? undefined : entry?.sessionId ?? undefined;
+  }
+
+  /**
+   * 一次性日志：缓存里的面板都被认领完时打一行。
+   *
+   * 只在**认领完最后一个面板**时打，不是每个面板都打——否则输出通道会被刷屏。
+   * 这一行是排查「怎么少恢复了一个窗口」的线索：VS Code 恢复了几个面板从界面上
+   * 看不出来，只有「认领数 vs 缓存数」对得上才对得上账；缓存里还剩几条没被认领，
+   * 下一次写缓存时会自然收敛掉。
+   */
+  private reportLeftovers(): void {
+    if (this.panelCursor !== this.cache.panels.length) return;
+    const blanks = this.cache.panels.filter((panel) => isBlank(panel)).length;
+    this.log(
+      `[restore] 编辑区面板认领完毕：${this.panelCursor} 个（缓存里空态 ${blanks} 个）`,
+    );
+  }
+}
+
+/** 一份缓存最多记多少个窗口——防手改状态文件塞进来一个巨大的数组。 */
+const MAX_ENTRIES = 64;
+
+/** 把缓存裁剪到合理范围（最近活动的面板优先保留，其余按原顺序）。 */
+export function trimCache(cache: WindowCache): WindowCache {
+  if (cache.panels.length <= MAX_ENTRIES) return cache;
+  return { ...cache, panels: cache.panels.slice(-MAX_ENTRIES) };
+}
+
+/**
+ * 缓存的读写 + 防抖落盘。
+ *
+ * 读是同步的（构造时一次），写在 `markDirty()` 后延迟合并——但 `dispose()`
+ * 会**立刻刷一次**：扩展停用（关窗、重载）时那一次写很可能就是最后一次机会，
+ * 漏掉它等于这一轮的窗口状态白记了。
+ */
+export class WorkspaceWindowStateStore {
+  private readonly storage: WindowStateStorage;
+  private readonly log: (line: string) => void;
+  /** 这个工作区对应的缓存键；没有打开的文件夹时是 undefined（不缓存）。 */
+  key: string | undefined;
+  private cache: WindowCache;
+  private timer: ReturnType<typeof setTimeout> | undefined;
+  private dirty = false;
+  private disposed = false;
+
+  constructor(options: {
+    storage: WindowStateStorage;
+    /**
+     * 工作区根目录路径（`vscode.workspace.workspaceFolders` 的 fsPath）。
+     *
+     * 可以**晚一点再给**（构造时不传、之后用 `bindFolders`）：面板恢复可能正是
+     * 扩展被激活的原因，那一刻 `workspaceFolders` 未必已经就绪。
+     */
+    folders?: readonly string[];
+    log?: (line: string) => void;
+    /** 防抖窗口（ms）。测试里调小即可。 */
+    debounceMs?: number;
+  }) {
+    this.storage = options.storage;
+    this.log = options.log ?? (() => {});
+    this.debounceMs = options.debounceMs ?? 2_000;
+    this.cache = { panels: [], activeOrder: [] };
+    this.key = undefined;
+    this.bindFolders(options.folders ?? []);
+  }
+
+  private readonly debounceMs: number;
+
+  /**
+   * 绑定工作区身份并读回缓存；已经有键时什么都不做（幂等）。
+   *
+   * 返回当前缓存——调用方（控制器）要拿它初始化恢复认领器。
+   */
+  bindFolders(folders: readonly string[]): WindowCache {
+    if (!this.key) {
+      this.key = windowCacheKey(folders);
+      if (!this.key) return this.cache;
+      // 读不出来 / 格式不认识时给空缓存：恢复不了是遗憾，崩掉是事故
+      let raw: unknown;
+      try {
+        raw = this.storage.get<unknown>(this.key);
+      } catch (error) {
+        this.log(`[restore] 窗口缓存读取失败：${error instanceof Error ? error.message : String(error)}`);
+      }
+      const parsed = parseWindowCache(raw);
+      if (parsed.dropped) {
+        this.log(`[restore] 窗口缓存里有 ${parsed.dropped} 条形状不对的记录，已丢弃`);
+      }
+      this.cache = parsed.cache;
+    }
+    return this.cache;
+  }
+
+  /** 当前缓存（供 `WindowRestore` 使用；返回的是内部引用，别改）。 */
+  snapshot(): WindowCache {
+    return this.cache;
+  }
+
+  /** 换一份缓存（测试用；生产路径只从磁盘读一次）。 */
+  load(cache: WindowCache): void {
+    this.cache = cache;
+  }
+
+  /** 标记「窗口状态变了」，防抖合并后落盘。 */
+  markDirty(): void {
+    if (this.disposed || !this.key) return;
+    this.dirty = true;
+    this.timer ??= setTimeout(() => {
+      this.timer = undefined;
+      this.flush();
+    }, this.debounceMs);
+  }
+
+  /**
+   * 立刻写盘（幂等）。
+   *
+   * `update` 失败只记日志：状态缓存写不进去不该影响会话本身——
+   * 磁盘满 / 权限异常时最坏的结果是下次少恢复几个窗口。
+   */
+  flush(): void {
+    if (!this.dirty || !this.key) return;
+    this.dirty = false;
+    const payload = serializeWindowCache(trimCache(this.cache));
+    try {
+      void Promise.resolve(this.storage.update(this.key, payload)).catch((error: unknown) => {
+        this.log(`[restore] 窗口缓存写入失败：${error instanceof Error ? error.message : String(error)}`);
+      });
+    } catch (error) {
+      this.log(`[restore] 窗口缓存写入失败：${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  dispose(): void {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = undefined;
+    this.flush();
+    this.disposed = true;
+  }
+}
