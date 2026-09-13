@@ -6,11 +6,11 @@
  *
  * ```text
  * 19:59:47.828 [info] Extension host terminating: received terminate message from renderer
- * 19:59:47.848 [error] An error occurred when disposing the subscriptions for extension 'lin.dsh-chat':
+ * 19:59:47.848 [error] An error occurred when disposing the subscriptions for extension 'Lin515.dsh-chat':
  * 19:59:47.848 [error] Error: Channel has been closed
  *     at Object.appendLine (...)
- *     at Object.M [as log] (.../lin.dsh-chat-0.6.0/dist/extension.js:44:5487)
- *     at Et.release (.../lin.dsh-chat-0.6.0/dist/extension.js:43:2091)     ← ServerManager.release()
+ *     at Object.M [as log] (.../Lin515.dsh-chat-0.6.0/dist/extension.js:44:5487)
+ *     at Et.release (.../Lin515.dsh-chat-0.6.0/dist/extension.js:43:2091)     ← ServerManager.release()
  * ```
  *
  * `release()` 是「关窗必须带走后台」的唯一落点，而它的第一条语句就是写日志

@@ -55,7 +55,7 @@
   `ServerManager.release()`（唯一负责"关窗杀后台"的地方）的**第一条语句就是写日志**，
   那句 `appendLine` 在真实关窗现场抛 `Error: Channel has been closed`（exthost.log
   里能查到 `An error occurred when disposing the subscriptions for extension
-  'lin.dsh-chat'`），**下面杀进程的代码根本执行不到**——后台就这么留下来了。
+  'Lin515.dsh-chat'`），**下面杀进程的代码根本执行不到**——后台就这么留下来了。
   日志写入现在抽到 `src/dsh/hostLog.ts`：写入失败一律吞掉、失败期间的消息先攒着，
   等通道回来再补写，**任何生命周期阶段都不允许抛异常**。
   离线断言 `scripts/hostLog.test.ts`，端到端 `node build/closed-channel-probe.mjs`
