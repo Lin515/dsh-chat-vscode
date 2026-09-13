@@ -22,12 +22,10 @@ import {
   listeningPids,
   liveHosts,
   readLeaseByPid,
-  readLeases,
   registerHost,
   removeHost,
   startedLongAgo,
   touchHost,
-  updateLease,
   writeHostLease,
   writeLease,
   type ServerLease,
@@ -135,10 +133,16 @@ export class ServerManager {
     log: (line: string) => void;
   };
   /**
-   * 当前后台是不是**别的窗口**拉起的：本窗口只在租约里挂着心跳，不能杀它。
-   * 存 pid 而不是布尔值——杀之前要核对「我接入的还是那个进程」。
+   * 当前后台的**身份键**：自管时是我起的子进程 pid，接入时是对方租约里的 pid。
+   *
+   * 全窗口只认这一把钥匙（心跳文件、hosts 登记、清理判据都以它为准）；
+   * netstat 查到的"真实在服务的 pid"另存 `servedPid`，只作附加信息。
    */
   private sharedServerPid: number | undefined;
+  /** netstat 查到的"真实在服务的 pid"（附加信息，供清理时优先杀对进程）。 */
+  private servedPid: number | undefined;
+  /** 已停用/已释放：心跳里每个 await 之后都要复查，避免给关掉的窗口留下新鲜心跳。 */
+  private disposed = false;
   /** 当前生效的地址（自管/接入的都算）：心跳自检据此判断「我该连哪儿」。 */
   private activeUrl: string | undefined;
   /** 心跳定时器（接入或自建后台后启动）。 */
@@ -294,16 +298,21 @@ export class ServerManager {
   }
 
   /**
-   * 摘掉心跳与租约登记，**不杀进程**：重启 / 换配置 / 主动断连前先走这里。
+   * 摘掉心跳与租约登记，**不杀进程**：重启命令 / 「重启服务器」用（重启会紧接着起新的）。
+   *
+   * 注意与 `stop()` 的差别：这里**不设 disposed**——重启之后这个管理器还要继续用；
+   * 心跳由随后的 `ensure()` → `startHeartbeat` 重新拉起。
    */
   private detach(): void {
     this.clearHeartbeat();
+    clearHostLease(this.hostId);
     if (this.sharedServerPid !== undefined) removeHost(this.sharedServerPid);
     this.sharedServerPid = undefined;
+    this.servedPid = undefined;
     const child = this.child;
     this.child = undefined;
     if (child?.pid !== undefined) {
-      this.options.log(`[server] 停止子进程 pid=${child.pid}`);
+      this.options.log(`[server] 重启：停止旧后台 pid=${child.pid}`);
       killOwnedServer(child.pid, (line) => this.options.log(line));
     }
     this.activeUrl = undefined;
@@ -323,30 +332,34 @@ export class ServerManager {
       this.setStatus({ state: "stopped" });
       return;
     }
+    this.disposed = true; // 之后不再写心跳（在途心跳里每个 await 后都会复查）
     this.clearHeartbeat();
-    if (this.sharedServerPid !== undefined) {
-      const pid = this.sharedServerPid;
-      this.sharedServerPid = undefined;
-      removeHost(pid);
-      this.options.log(`[server] 已断开共享后台 pid=${pid}（不杀：由它的窗口管理）`);
-      this.activeUrl = undefined;
-      this.setStatus({ state: "stopped" });
-      return;
-    }
+    // **先摘掉自己的心跳文件**，两条分支都要（这里曾经只在"自己起的"那支里清，
+    // 于是从"接入别人的后台"切到外部服务器时心跳还留着：对方会以为我还在用，
+    // 它先关就把后台留成孤儿）。判据也依赖这一条——下面问的是"还有别人吗"。
+    clearHostLease(this.hostId);
+    // **先看"我有没有子进程"**：那是"这个后台是我起的"的唯一可靠判据。
+    // 曾经先看 `sharedServerPid !== undefined` 就当成"接入的后台"直接返回，
+    // 而自管的窗口也会设这个字段（它是身份键），于是切配置时**根本不杀**、
+    // `this.child` 也不清空 —— 内部后台被悄悄丢下，新配置又起一个（固定端口还会撞车）。
     const child = this.child;
     this.child = undefined;
+    // **判活与动手都用"身份键"**（`sharedServerPid`，即迁就后的服务 pid），不要用
+    // `child.pid`——那是 cmd 外壳：心跳里记的是服务 pid，拿外壳去问"还有别人吗"永远
+    // 得到"没有"，于是关窗时把 peer 还在用的后台整棵树带走（实测症状：关掉先开的窗口
+    // 之后，另一个窗口的后台连接直接断掉）。
+    const key = this.sharedServerPid ?? child?.pid;
+    this.sharedServerPid = undefined;
+    this.servedPid = undefined;
     this.activeUrl = undefined;
-    if (child?.pid !== undefined) {
-      // **先停掉自己的心跳**再判"还有别人吗"：心跳文件刚续过期，留着会让判据
-      // 永远认为"我还在用"，于是谁都杀不掉（次序错了就是这个症状）
-      clearHostLease(this.hostId);
-      if (otherLiveHost(child.pid)) {
+    if (key !== undefined) {
+      if (otherLiveHost(key)) {
         // 还有别的窗口在用：只把自己从 hosts 摘掉，进程留着（它退出时自然会杀）
-        removeHost(child.pid);
-        this.options.log(`[server] pid=${child.pid} 仍被其它 VS Code 窗口使用，不停止`);
+        removeHost(key);
+        this.options.log(`[server] pid=${key} 仍被其它 VS Code 窗口使用，不停止`);
       } else {
-        this.options.log(`[server] 停止子进程 pid=${child.pid}（按 pid + 端口两道清理）`);
-        killOwnedServer(child.pid, (line) => this.options.log(line));
+        this.options.log(`[server] 停止后台 pid=${key}（按 pid + 端口两道清理）`);
+        killOwnedServer(key, (line) => this.options.log(line));
       }
     }
     this.setStatus({ state: "stopped" });
@@ -370,32 +383,27 @@ export class ServerManager {
    * 不是设计退让。
    */
   private release(): void {
+    this.disposed = true;
     this.clearHeartbeat();
-    // 先摘掉自己的心跳：下面两条判据都问"还有别人吗"，自己那份必须先消失
+    // 先摘掉自己的心跳：下面的判据都在问"还有别人吗"，自己那份必须先消失
     clearHostLease(this.hostId);
-    const sharedPid = this.sharedServerPid;
+    const key = this.sharedServerPid ?? this.child?.pid;
     this.sharedServerPid = undefined;
-    if (sharedPid !== undefined) {
-      removeHost(sharedPid);
-      // **摘掉自己之后再判**：owner 可能早就退了（需求 R4），那这一位就是最后一个，
-      // 后台得由它带走——不然会留下一个没人管的孤儿（探针第 4 步钉的就是这条）。
-      // 判据读的是磁盘上的租约与各实例的心跳文件，刚写的摘除已经落盘。
-      if (!otherLiveHost(sharedPid)) {
-        this.options.log(`[server] 本窗口退出：接手的共享后台 pid=${sharedPid} 已无人使用，停止它`);
-        killOwnedServer(sharedPid, (line) => this.options.log(line));
-      } else {
-        this.options.log(`[server] 本窗口退出，已从共享后台 pid=${sharedPid} 摘除`);
-      }
-    }
+    this.servedPid = undefined;
     const child = this.child;
     this.child = undefined;
-    if (child?.pid !== undefined) {
-      if (otherLiveHost(child.pid)) {
-        removeHost(child.pid);
-        this.options.log(`[server] 本窗口退出：pid=${child.pid} 仍被其它 VS Code 窗口使用，不停止`);
+    if (child?.pid !== undefined && key !== undefined) removeHost(key);
+    // **判活与动手都用身份键**（迁就后的服务 pid），不要用 `child.pid`（cmd 外壳）：
+    // 心跳里记的是服务 pid，拿外壳去问"还有别人吗"永远得到"没有"，于是关窗时把
+    // peer 还在用的后台整棵树带走（实测症状：关掉先开的窗口之后，另一个窗口直接掉线）。
+    // 摘掉自己的登记**之后再判**：owner 可能早就退了（需求 R4），那这一位就是最后一个，
+    // 后台得由它带走——不然会留下一个没人管的孤儿（探针第 4 步钉的就是这条）。
+    if (key !== undefined) {
+      if (otherLiveHost(key)) {
+        this.options.log(`[server] 本窗口退出：pid=${key} 仍被其它 VS Code 窗口使用，不停止`);
       } else {
-        this.options.log(`[server] 本窗口退出：停止子进程 pid=${child.pid}（按 pid + 端口两道清理）`);
-        killOwnedServer(child.pid, (line) => this.options.log(line));
+        this.options.log(`[server] 本窗口退出：停止后台 pid=${key}（按 pid + 端口两道清理）`);
+        killOwnedServer(key, (line) => this.options.log(line));
       }
     }
     this.setStatus({ state: "stopped" });
@@ -403,6 +411,9 @@ export class ServerManager {
 
   private async start(): Promise<ServerInfo> {
     this.setStatus({ state: "starting" });
+    // 这次启动之后本管理器还要继续用：把"已停用"标记复位（`stop()` 会置上它来拦住在途心跳，
+    // 而「重启服务器」是先 stop 再 ensure 的——不复位的话重启后的心跳会被自己拦掉）
+    this.disposed = false;
     // 清空上一次的日志，避免解析到过期的 token/端口
     writeFileSync(this.logFile, "", "utf8");
 
@@ -530,17 +541,26 @@ export class ServerManager {
   /**
    * 写心跳文件（统一入口：**连接信息与启动命令都要带上**）。
    *
+   * `key` 是本窗口使用的那个后台的**稳定身份**（租约里的 pid）；`servedPid` 是
+   * netstat 查出的"真实在服务的进程"，只作附加信息（清理时有用），**不当键**——
+   * 键必须与租约一致，否则别的窗口的判据会对不上（见 `attach` 的注释）。
+   *
    * 崩溃复用全靠它：上次 VS Code 崩溃时，租约会随服务器进程的 exit 处理器被删掉，
    * 磁盘上只剩这份心跳——没有 `baseUrl`/`token` 就永远接不回那个还活着的服务器。
    */
-  private writeHeartbeat(serverPid: number, info?: { baseUrl: string; token?: string }): void {
+  private writeHeartbeat(
+    key: number,
+    info?: { baseUrl: string; token?: string },
+    servedPid?: number,
+  ): void {
     writeHostLease({
       hostId: this.hostId,
-      serverPid,
+      serverPid: key,
       workspace: this.options.workspace,
       baseUrl: info?.baseUrl,
       token: info?.token,
       command: this.options.command,
+      servedPid,
     });
   }
 
@@ -598,16 +618,24 @@ export class ServerManager {
           const info: ServerInfo = { ...parsed, owned: true, ownership: "self" };
           this.options.log(`[server] 就绪：${info.baseUrl}`);
           if (child.pid !== undefined) {
-            updateLease(child.pid, { baseUrl: info.baseUrl, token: info.token });
-            this.sharedServerPid = undefined;
-            this.startHeartbeat(child.pid);
+            // **身份键与接入方统一**：这里也迁就到真正在监听的进程 pid，这样 owner 与
+            // 接入方写的是同一把钥匙（否则 hosts[] 登记与心跳会分家，见 `rekeyTo`）。
+            const served = await this.rekeyTo(child.pid, info.baseUrl, {
+              baseUrl: info.baseUrl,
+              token: info.token,
+            });
+            this.sharedServerPid = served;
+            this.servedPid = served;
+            this.startHeartbeat(served, served);
           }
           this.activeUrl = info.baseUrl;
           this.setStatus({ state: "ready", info });
           // 心跳文件：本实例"正在使用这个后台"的凭据，**同时记下连接信息**——
           // 若 VS Code 在此之后崩溃，租约会随服务器进程的 exit 处理器一起被删掉，
-          // 这份心跳就是新窗口找回这个后台的唯一线索（见 processRegistry.writeHostLease）
-          this.writeHeartbeat(child.pid as number, info);
+          // 这份心跳就是新窗口找回这个后台的唯一线索（见 processRegistry.writeHostLease）。
+          // **键必须与租约一致**（`sharedServerPid`，即迁就后的服务 pid），不能用
+          // `child.pid`（那是 cmd 外壳）——否则紧接着就把上面刚写对的心跳覆盖回错键。
+          this.writeHeartbeat(this.sharedServerPid ?? child.pid, info, this.servedPid);
           return info;
         }
       }
@@ -649,33 +677,42 @@ export class ServerManager {
       throw new Error(detail);
     }
     const info: ServerInfo = { baseUrl, token, owned: false, ownership: "peer" };
-    // **把"真正在服务的进程"解析出来再记住**：租约/心跳里那个 pid 往往是 `cmd.exe` 外壳，
-    // VS Code 崩溃后外壳没了、服务器还在。照抄旧 pid 记下去，心跳每 5 秒就判定
-    // "后台已退出"→ 再接管一次 → 死循环（实测踩过：日志里反复出现"已接入共享后台"）。
-    const servedPid = await this.resolveServedPid(lease.serverPid, baseUrl);
-    this.sharedServerPid = servedPid;
-    // **收拾陈旧租约、只留一份真的**：崩溃时服务器进程的 exit 处理器会把租约删掉，
-    // 磁盘上留下的那几份要么指向已死的外壳 pid、要么是上一轮的残影。留着它们会有两个后果：
-    // ① 别的窗口按旧 pid 判断"后台还在"，② 真正那份被当成"多条后台"。所以这里清干净，
-    // 下面按**真实在服务的 pid** 重建一份（实测症状：接管后 `租约数=2`、退出后清不干净）。
-    for (const { lease: stale } of readLeases()) {
-      if (stale.serverPid === servedPid) continue;
-      clearLease(stale.serverPid);
-    }
-    this.options.log(`[server] 接管时整理了陈旧租约，现按 pid=${servedPid} 重建`);
-    this.writeLeaseFor(servedPid, baseUrl, token);
+    // **身份只有一个：租约里那个 pid（`lease.serverPid`）**。它可能是 `cmd.exe` 外壳、
+    // 也可能已死，但它是**所有窗口共同认的那把钥匙**——心跳文件、hosts 登记、清理判据
+    // 全部以它为键。真实在服务的进程 pid（netstat 查出来的）只作**附加信息**记在心跳里，
+    // 绝不拿来当键：一旦两边用不同的键，`hasLiveHostFor(lease.serverPid)` 会恒为假，
+    // 于是别的窗口找不到可接入的后台（会多起一个）、关窗时还会误判"没人用"而杀掉
+    // peer 正在用的后台（实测过的严重回归）。
+    // **统一身份**：租约里常记的是 `cmd.exe` 外壳，而真正在服务的是它的 node 子进程。
+    // 所有窗口（owner 与接入方）都必须用**同一个 pid** 当键——否则 `hosts[]` 登记与心跳
+    // 会分家：接入方登记到 N、owner 判活看 S，谁也算不清"还有没有人在用"
+    // （实测症状：owner 关窗时把接入方还在用的后台杀掉）。netstat 查到的监听者是唯一
+    // 确定的答案（同一端口同一时刻只可能有一个监听者），所以双方都迁就到它。
+    const key = await this.rekeyTo(lease.serverPid, baseUrl);
+    const servedPid = key;
+    this.sharedServerPid = key;
+    this.servedPid = servedPid;
+    // 租约按**原有的键**补全/重建（不换键）：崩溃时服务器的 exit 处理器会把租约删掉，
+    // 磁盘上只剩心跳，这里按心跳里的连接信息把租约补回来，别的窗口就能找到它了。
+    //
+    // **不删别的租约**：曾经在这里"顺手清掉其它 pid 的租约"，但那些可能是
+    // 另一个窗口**正在启动中**的那条（它在锁内刚写下、还没拿到地址）——删掉它，
+    // 对方随后的 `updateLease` 会静默失败（`if (!current) return`），那个后台就
+    // 彻底没有租约：谁也接不上、崩了也没法按端口回收。要清也只清**认定已死**的，
+    // 那是 `dropDeadLeases` 的职责。
+    this.writeLeaseFor(key, baseUrl, token);
     // 登记自己：**必须在令牌拿到之后立刻做**——否则我在别人眼里"不存在"，
     // 对方关窗时就会把后台带走，而我还连着它
-    registerHost(servedPid, {
+    registerHost(key, {
       pid: process.pid,
       workspace: this.options.workspace,
       seenAt: Date.now(),
     });
     // 心跳文件同样立刻写：它是"这个实例在用"的权威凭据，并带上连接信息供崩溃复用
-    this.writeHeartbeat(servedPid, { baseUrl, token });
-    this.startHeartbeat(servedPid);
+    this.writeHeartbeat(key, { baseUrl, token }, servedPid);
+    this.startHeartbeat(key, servedPid);
     this.activeUrl = baseUrl;
-    this.options.log(`[server] 已接入共享后台 ${baseUrl}（pid=${servedPid}）`);
+    this.options.log(`[server] 已接入共享后台 ${baseUrl}（键 pid=${key}，实际服务 pid=${servedPid}）`);
     this.setStatus({ state: "ready", info });
     return info;
   }
@@ -696,12 +733,21 @@ export class ServerManager {
   }
 
   /**
-   * 解析"这个地址上真正在服务的进程 pid"。
+   * 把租约/心跳的身份键从"记录值"迁就到"真正在服务的 pid"，返回最终使用的键。
    *
-   * 优先用端口占用者（`netstat`），因为只有它一定准：记录里的 pid 可能是外壳、
-   * 可能已被回收。拿不到就退回记录值（至少不比原来差）。
+   * 为什么必须迁就（实测教训）：租约里记的常是 `cmd.exe` 外壳，真正服务的是它的 node
+   * 子进程。owner 若按外壳 pid 记心跳、接入方按解析出的 node pid 记心跳，两边的
+   * `hosts[]` 与心跳就分家了——"还有没有人在用"谁都算不准，最后演成
+   * **owner 关窗时把接入方还在用的后台杀掉**。统一到 netstat 查出的监听者即可
+   * （同一端口同一时刻只可能有一个监听者，这个答案唯一确定）。
+   *
+   * 迁移是**换文件**：新键写一份、旧键删掉。做不到就退回原键（至少不比原来差）。
    */
-  private async resolveServedPid(recordedPid: number, baseUrl: string): Promise<number> {
+  private async rekeyTo(
+    recordedPid: number,
+    baseUrl: string,
+    patch?: { baseUrl: string; token?: string },
+  ): Promise<number> {
     let port: number | undefined;
     try {
       port = Number(new URL(baseUrl).port) || undefined;
@@ -710,7 +756,33 @@ export class ServerManager {
     }
     if (port === undefined) return recordedPid;
     const owners = await listeningPids(port);
-    return owners[0] ?? recordedPid;
+    const served = owners[0];
+    if (served === undefined || served === recordedPid) return recordedPid;
+    const existing = readLeaseByPid(recordedPid);
+    writeLease({
+      version: 2,
+      serverPid: served,
+      command: existing?.command ?? this.options.command,
+      startedAt: existing?.startedAt ?? Date.now(),
+      workspace: existing?.workspace ?? this.options.workspace,
+      // **地址与令牌要一次写全**：迁移会把旧租约删掉，之后再也补不上
+      //（`updateLease` 依赖原文件还在，删了就静默失效）。
+      baseUrl: patch?.baseUrl ?? existing?.baseUrl,
+      token: patch?.token ?? existing?.token,
+      hosts: existing?.hosts ?? [{ pid: process.pid, workspace: this.options.workspace, seenAt: Date.now() }],
+    });
+    clearLease(recordedPid);
+    // **心跳立刻跟着换键，无条件**：起进程时那条心跳是按外壳 pid 写的，而租约刚刚换成了
+    // 服务 pid——两边对不上时，别的窗口的 `hasLiveHostFor(租约的键)` 会判"无人使用"，
+    // 于是**自己也起一个**（实测症状：机器上出现两个 dsh）。早点写无害：此时地址可能还没有，
+    // 传 undefined 即可，随后就绪时会再写一次带地址的。
+    this.writeHeartbeat(
+      served,
+      patch ? { baseUrl: patch.baseUrl, token: patch.token } : undefined,
+      served,
+    );
+    this.options.log(`[server] 身份键迁就真实进程：${recordedPid} → ${served}（原记录是外壳）`);
+    return served;
   }
 
   /**
@@ -755,15 +827,19 @@ export class ServerManager {
    */
   private async heartbeat(): Promise<void> {
     if (this.options.url?.trim()) return; // 外部服务器不参与共享
+    if (this.disposed) return; // 窗口正在停用：不要再写心跳（否则会给已关闭的实例留下新鲜心跳）
     const info = this.status.info;
     if (!info) return;
     try {
       // 先让连接侧自检（它可能在内部换掉连接；这一步不能阻塞心跳，回调是同步返回的）
       this.heartbeatHook?.();
 
-      // 我正在用哪个后台（自管的是子进程 pid，接入的是别人那个）
-      let serverPid = this.sharedServerPid ?? this.child?.pid;
-      if (serverPid === undefined) {
+      // **身份键**：优先用已确定的键（`sharedServerPid`）——它在就绪时已经迁就到
+      // "真正在服务的 pid"。**绝不能优先用 `child.pid`**：那是 cmd 外壳，租约里的键
+      // 却是它的 node 子进程，两边不一致会让别的窗口判"无人使用"而各起一个
+      //（实测症状：心跳日志里 key 在外壳与服务 pid 之间来回跳）。
+      const key = this.sharedServerPid ?? this.child?.pid;
+      if (key === undefined) {
         this.options.log("[server] 自己的后台已不在，尝试重新拉起");
         this.activeUrl = undefined;
         this.setStatus({ state: "stopped" });
@@ -772,8 +848,7 @@ export class ServerManager {
       }
 
       // 心跳：① 租约里那条（同实例多面板共享）② 本实例自己的心跳文件（被禁用的唯一线索）
-      touchHost(serverPid);
-      this.writeHeartbeat(serverPid, { baseUrl: info.baseUrl, token: info.token });
+      touchHost(key);
 
       // **健康判据用"端口还在不在听"，不用 pid**（实测教训）：`dsh web` 是 shell→node 的
       // 结构，我们手里那个 pid 可能是外壳、可能已被回收，`isProcessAlive` 对它既会误报活
@@ -782,23 +857,29 @@ export class ServerManager {
       const port = this.activePort();
       if (port !== undefined) {
         const owners = await listeningPids(port);
+        if (this.disposed) return; // await 期间窗口关掉了：下面不要写任何东西
         if (owners.length) {
-          // 顺手把"真正在服务的 pid"记下来，供退出清理与其它窗口使用
-          if (owners[0] !== serverPid) {
-            this.sharedServerPid = owners[0];
-            this.writeHeartbeat(owners[0], { baseUrl: info.baseUrl, token: info.token });
-          }
+          // 把"真实在服务的 pid"记进心跳（附加信息），**身份键不变**
+          this.servedPid = owners[0];
+          this.writeHeartbeat(key, { baseUrl: info.baseUrl, token: info.token }, owners[0]);
           return;
         }
-      } else if (isProcessAlive(serverPid)) {
+      } else if (isProcessAlive(key)) {
+        this.writeHeartbeat(key, { baseUrl: info.baseUrl, token: info.token }, this.servedPid);
         return; // 没有端口信息（外部/异常）：退回进程判据
       }
 
-      // 端口没人听了 = 后台真的没了。自己起的就重起，接入的去找新的（没有就自己起）。
+      // 端口没人听了 —— 但**先别急着重起**：`dsh web` 是 `cmd → node` 的结构，
+      // 我们手里那个键可能只是**外壳**（它随 owner 窗口一起死了），而真正的 node 仍在
+      // 另一个端口上服务。先按心跳里记的连接信息重新解析一次，能连上就继续用它。
+      if (await this.adoptRelocated(port)) return;
+
+      // 确实没了：自己起的就重起，接入的去找新的（没有就自己起）。
       this.options.log(
-        `[server] 后台已不再监听端口 ${port ?? "?"}（pid=${serverPid}），寻找新的后台`,
+        `[server] 后台已不再监听端口 ${port ?? "?"}（键 pid=${key}），寻找新的后台`,
       );
       this.sharedServerPid = undefined;
+      this.servedPid = undefined;
       this.activeUrl = undefined;
       this.setStatus({ state: "stopped" });
       // `ensure()` 自己带在途合并（startPromise），若干次心跳重入不会起多个进程
@@ -807,6 +888,47 @@ export class ServerManager {
       // 心跳失败不改变既有状态：连接层有自己的重连与报错，这里只记一行
       this.options.log(`[server] 心跳自检失败：${error instanceof Error ? error.message : String(error)}`);
     }
+  }
+
+  /**
+   * 心跳发现"原端口没人听了"之后的**补救**：后台还在，只是换了 pid（或换了端口）。
+   *
+   * 触发场景（实测）：owner 窗口的 `cmd` 外壳被带走，而 node 服务器活着并**被系统
+   * 重新分配了端口**；或者我们记的键恰好是那个死掉的外壳。这时若不补救，唯一的结局
+   * 就是"另外起一个后台"——而原地那个还攥着会话与内存状态。
+   *
+   * 做法：读自己心跳里记的连接信息（`baseUrl`/`token`）再探一次；能连上就把身份键与
+   * 心跳改记到"真正在监听的进程"上（**此时换键是安全的**：旧键已经没有任何进程对应）。
+   *
+   * @returns 是否已接管（true 时调用方不该再重起）。
+   */
+  private async adoptRelocated(deadPort: number | undefined): Promise<boolean> {
+    const info = this.status.info;
+    if (!info) return false;
+    for (const candidate of [info.baseUrl, this.activeUrl]) {
+      if (!candidate) continue;
+      let port: number | undefined;
+      try {
+        port = Number(new URL(candidate).port) || undefined;
+      } catch {
+        continue;
+      }
+      if (port === undefined || port === deadPort) continue;
+      const owners = await listeningPids(port);
+      if (this.disposed || !owners.length) continue;
+      const served = owners[0];
+      this.options.log(
+        `[server] 后台仍在 ${candidate}（端口 ${port}，pid=${served}）：把身份键改记为它，继续用`,
+      );
+      this.sharedServerPid = served;
+      this.servedPid = served;
+      this.activeUrl = candidate;
+      this.writeHeartbeat(served, { baseUrl: candidate, token: info.token }, served);
+      this.startHeartbeat(served, served);
+      this.setStatus({ state: "ready", info: { ...info, baseUrl: candidate } });
+      return true;
+    }
+    return false;
   }
 
   /**
@@ -828,10 +950,11 @@ export class ServerManager {
     };
   }
 
-  private startHeartbeat(serverPid: number): void {
+  private startHeartbeat(serverPid: number, servedPid?: number): void {
     this.clearHeartbeat();
     // 记下"我在用哪个后台"：接入的是别人的 pid，自管的是自己的子进程 pid
     if (this.child?.pid !== serverPid) this.sharedServerPid = serverPid;
+    if (servedPid !== undefined) this.servedPid = servedPid;
     const timer = setInterval(() => void this.heartbeat(), HOST_HEARTBEAT_MS);
     // 心跳定时器不该拖住扩展宿主的退出
     timer.unref?.();

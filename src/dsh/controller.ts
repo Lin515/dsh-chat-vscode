@@ -339,17 +339,9 @@ export class ChatController implements vscode.Disposable {
     });
   }
 
-  /** 当前后台管理器（配置变更时会整体替换，见 `reconnectServer`）。 */
+  /** 当前后台管理器（恒为激活期那一个；配置变更改为重载窗口，不再整体替换）。 */
   get currentServer(): ServerManager {
     return this.server;
-  }
-
-  /** 换成新的后台管理器并重设心跳钩子（配置变更后走这条）。 */
-  private useServer(manager: ServerManager): void {
-    this.server = manager;
-    manager.onHeartbeat(() => {
-      void this.handleHeartbeat();
-    });
   }
 
   /**
@@ -1108,49 +1100,6 @@ export class ChatController implements vscode.Disposable {
       return;
     }
     vscode.window.showInformationMessage(vscode.l10n.t("The DSH server has been restarted."));
-  }
-
-  /**
-   * `dshChat.url` / `dshChat.command` / `dshChat.startTimeoutSec` 改了：**中止当前由
-   * 扩展管理的后台**，再按新配置重新连接（外部地址则直接对接外部 DSH）。
-   *
-   * 用户口径（2026-09-13）：「配置了 Url 则前两条配置是无效的」——所以这里不是
-   * 「尽量保留旧连接」，而是**先彻底断干净再按新配置来**：
-   * - `server.configure()` 只改下一次启动用的参数，已经在跑的子进程不受它影响；
-   * - 于是先 `stop()`（`dshChat.url` 从空变非空时必须做，否则扩展会继续用自己那个
-   *   后台，用户的「切到外部服务器」静默失效），再 `ensure()`；
-   * - 客户端的会话/流全部作废，**进行中的会话会中断**——调用方负责用
-   *   `@switchingServer:<n>` 告诉用户，别让对话无声无息地断掉。
-   */
-  async reconnectServer(config: {
-    url: string;
-    command: string;
-    startTimeoutMs: number;
-  }): Promise<void> {
-    const sessions = this.scopes.size;
-    const wasExternal = this.server.externalUrl !== undefined;
-    this.log(
-      `[server] 配置变更：url=${config.url.trim() || "（空，自管）"} command=${config.command} ` +
-        `timeout=${Math.round(config.startTimeoutMs / 1000)}s，中止当前后台并重连（窗口会话=${sessions}）`,
-    );
-    this.teardownStreams();
-    this.client?.dispose();
-    this.client = undefined;
-    if (wasExternal) this.log("[server] 当前为外部服务器模式，无需中止内部后台");
-    else this.server.stop();
-    // 内存里的后台管理器带着旧命令/旧地址，**换一个新的**（`configure()` 只改
-    // 下一次启动用的值，而这里连"当前是不是外部模式"都变了）
-    this.useServer(
-      new ServerManager({
-        url: config.url,
-        command: config.command,
-        startTimeoutMs: config.startTimeoutMs,
-        workspace: this.workspacePath() || undefined,
-        log: this.log,
-      }),
-    );
-    await this.ensureConnected();
-    this.emitAll({ type: "toast", level: "warn", text: `@switchingServer:${sessions}` });
   }
 
   /** 服务器状态变化时同步给界面。 */
@@ -4053,6 +4002,10 @@ export class ChatController implements vscode.Disposable {
     this.disposed = true;
     this.teardownStreams();
     this.client?.dispose();
+    // **后台管理器一定要释放**：`reconnectServer` 每次配置变更都会换一个新的管理器，
+    // 而只有激活期那个进了 `context.subscriptions`——不在这里统一 dispose，
+    // 配置变更之后起的那个后台就不会被清（关窗后它照样在跑，白占端口与内存）。
+    this.server.dispose();
     // 停用（关窗 / 重载 / 退出）时把窗口状态缓存刷盘：这一次写基本就是
     // 「下次打开工作区」要用的那份，等不到防抖到点
     this.windowState.dispose();

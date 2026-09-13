@@ -1,8 +1,16 @@
+import { createHash } from "node:crypto";
 import * as vscode from "vscode";
 import { ChatViewProvider } from "./chatView";
 import { ChatController, stamp } from "./dsh/controller";
 import { selectionLines } from "./dsh/selection";
-import { clearStaleDocumentLocks, cleanupResidualServers, dropStaleHostLeases, leaseDirectory, scanServers } from "./dsh/processRegistry";
+import {
+  clearStaleDocumentLocks,
+  cleanupResidualServers,
+  dropStaleHostLeases,
+  leaseDirectory,
+  scanServers,
+  setLeaseGroup,
+} from "./dsh/processRegistry";
 import { ServerManager } from "./dsh/serverManager";
 
 let output: vscode.OutputChannel | undefined;
@@ -19,6 +27,25 @@ let output: vscode.OutputChannel | undefined;
  */
 const DEFAULT_COMMAND = "dsh web --port 0 --no-open";
 
+/**
+ * 这台机器上"共享同一个后台"的分组键：**由有效服务器配置算出来**。
+ *
+ * 为什么需要它：VS Code 的设置是有作用域的（默认 / 工作区 / 工作区文件夹），所以
+ * **不同窗口的 `dshChat.url` / `dshChat.command` 可能不同**——例如 A、B 两个工作区
+ * 各自写了"用内部 dsh"，而全局用户设置是"用外部 URL"，其余窗口就该走外部。
+ * 若所有窗口共用一份会合信息，配置不同的窗口会互相抢后台（配置外部的那位会无视
+ * 自己那份配置，去接入别人起的内部后台）。
+ *
+ * 所以按**有效配置**分组：有效配置相同的窗口（包括"来源不同但有效值相同"）共用一个后台；
+ * 不同的各管各的。`url` 非空时只按 url 分组——那时 `command` 与超时本来就不生效。
+ */
+function leaseGroupKey(config: () => vscode.WorkspaceConfiguration): string {
+  const url = (config().get<string>("url") ?? "").trim().replace(/\/+$/, "");
+  const command = config().get<string>("command") || DEFAULT_COMMAND;
+  const identity = url ? `external:${url}` : `internal:${command}`;
+  return createHash("sha256").update(identity).digest("hex").slice(0, 12);
+}
+
 function log(line: string): void {
   output ??= vscode.window.createOutputChannel("DSH Chat");
   if (line) output.appendLine(stamp(line));
@@ -26,6 +53,9 @@ function log(line: string): void {
 
 export function activate(context: vscode.ExtensionContext): void {
   const config = () => vscode.workspace.getConfiguration("dshChat");
+
+  // **先定分组，再碰任何租约**：分组决定"和哪些窗口共享后台"
+  setLeaseGroup(leaseGroupKey(config));
 
   const server = new ServerManager({
     url: config().get<string>("url") ?? "",
@@ -86,7 +116,7 @@ interface Contributions {
  * 全部一次性 push 进 context.subscriptions，deactivate 时统一释放。
  */
 function registerContributions(context: vscode.ExtensionContext, host: Contributions): void {
-  const { controller, provider, secondaryProvider, server, config } = host;
+  const { controller, provider, secondaryProvider, server } = host;
 
   context.subscriptions.push(
     output ?? vscode.window.createOutputChannel("DSH Chat"),
@@ -230,16 +260,28 @@ function registerContributions(context: vscode.ExtensionContext, host: Contribut
       }
       // 服务器三件套改了要**真正换一个后台**：配置项只在启动时读一次，
       // 不重连的话用户改了 `dshChat.url`（或启动命令）却仍连着旧服务器。
-      // 口径见 controller.reconnectServer：先中止当前内部后台，再按新配置来。
+      // **服务器三件套不再就地热切换**（用户口径 2026-09-14：太复杂，改成重载窗口生效）。
+      // 原地切需要"断干净 + 按新配置接上 + 换分组 + 别把别人的后台带走"一整套时序，
+      // 收益却只是省一次窗口重载——不值得。这里的提示是**唯一**的生效入口，
+      // 配置项说明里也写明了「改完需要重载窗口」。
       if (
         event.affectsConfiguration("dshChat.url") ||
         event.affectsConfiguration("dshChat.command") ||
         event.affectsConfiguration("dshChat.startTimeoutSec")
       ) {
-        void reconnectServer(config, controller);
+        void promptServerReload();
       }
     }),
   );
+}
+
+/** 服务器配置改了：提示重载窗口（这是唯一生效方式）。 */
+async function promptServerReload(): Promise<void> {
+  const picked = await vscode.window.showInformationMessage(
+    vscode.l10n.t("Server settings changed. Reload the window to apply them."),
+    vscode.l10n.t("Reload Window"),
+  );
+  if (picked) void vscode.commands.executeCommand("workbench.action.reloadWindow");
 }
 
 /** 启动期收尾：清理上次未正常关闭的残留服务器、按配置自动连接、按需打开面板。 */
@@ -299,28 +341,6 @@ function startup(
 
   if (config().get<boolean>("openPanelOnStartup")) {
     provider.openPanel();
-  }
-}
-
-/**
- * 服务器相关配置变更后的重连。
- *
- * 读配置 + 交给控制器是**一步**：`vscode.workspace.getConfiguration` 每次都要重读，
- * 不能沿用激活期捕获的那份快照（那正是「改了配置不生效」的成因）。
- * 失败只记日志——控制器自己会把错误渲染成连接失败条，这里再弹一次是重复打扰。
- */
-async function reconnectServer(
-  config: () => vscode.WorkspaceConfiguration,
-  controller: ChatController,
-): Promise<void> {
-  try {
-    await controller.reconnectServer({
-      url: config().get<string>("url") ?? "",
-      command: config().get<string>("command") || DEFAULT_COMMAND,
-      startTimeoutMs: (config().get<number>("startTimeoutSec") ?? 90) * 1000,
-    });
-  } catch (error) {
-    log(`[server] 配置变更后重连失败：${error instanceof Error ? error.message : String(error)}`);
   }
 }
 

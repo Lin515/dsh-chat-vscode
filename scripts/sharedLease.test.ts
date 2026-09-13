@@ -37,6 +37,7 @@ import {
   parseListeningPids,
   parseListeningPidsSync,
   readLeases,
+  setLeaseGroup,
   registerHost,
   removeHost,
   touchHost,
@@ -416,6 +417,40 @@ function startLease(serverPid: number, patch: Partial<ServerLease> = {}): void {
     `租约=${JSON.stringify(readLeases().map((item) => item.lease.serverPid))}`,
   );
   clearHostLease("shape-check");
+}
+
+// ---------- 12. 配置分组：不同有效配置的窗口不许共享后台 ----------
+
+{
+  // 用户口径（2026-09-14）：设置是有作用域的，A/B 工作区各自写"内部"、全局是"外部"，
+  // 那就只有 A/B 该共用一个后台，其余窗口走外部。靠"按有效配置分组"实现。
+  const groupA = leaseDirectory();
+  const serverPid = GHOST_PID;
+  startLease(serverPid, { baseUrl: "http://127.0.0.1:1", token: "tok-g" });
+  check("默认组里能看到这条租约", readLeases().some((item) => item.lease.serverPid === serverPid));
+
+  setLeaseGroup("another-group");
+  check("换组后租约目录真的变了", leaseDirectory() !== groupA, `${groupA} → ${leaseDirectory()}`);
+  check(
+    "换组后读不到别组的租约（配置不同的窗口不会互相抢后台）",
+    !readLeases().some((item) => item.lease.serverPid === serverPid),
+  );
+
+  // 在别组写一条，两边互不可见
+  startLease(serverPid + 1, { baseUrl: "http://127.0.0.1:2", token: "tok-h" });
+  check("别组里有自己的租约", readLeases().length === 1);
+  setLeaseGroup("default");
+  const back = readLeases().map((item) => item.lease.serverPid);
+  check("切回原组只看到原组那条", back.includes(serverPid) && !back.includes(serverPid + 1), `看到=${JSON.stringify(back)}`);
+
+  // 组名做文件系统安全过滤：非法字符不落成怪路径
+  setLeaseGroup("a/b\\c:d");
+  check("组名里的非法字符被过滤", !/[\\/:]/.test(leaseDirectory().slice(groupA.length)), leaseDirectory());
+  setLeaseGroup("default");
+  clearLease(serverPid);
+  setLeaseGroup("another-group");
+  clearLease(serverPid + 1);
+  setLeaseGroup("default");
 }
 
 // ---------- 收尾：整个临时租约目录删掉（本文件全程只用它，不会碰到用户的租约） ----------

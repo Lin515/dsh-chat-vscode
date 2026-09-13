@@ -22,7 +22,7 @@ import { setTimeout as delay } from "node:timers/promises";
 // （`processRegistry` 在初始化时读一次环境变量，晚了就固化成用户的真实目录了）
 import { PROBE_LEASE_DIR } from "./sharedServerProbeEnv";
 import { ServerManager } from "../src/dsh/serverManager";
-import { isProcessAlive, leaseDirectory, readLeases } from "../src/dsh/processRegistry";
+import { isProcessAlive, leaseDirectory, readHostLeases, readLeases } from "../src/dsh/processRegistry";
 
 const COMMAND = "dsh web --port 0 --no-open";
 /**
@@ -57,7 +57,8 @@ if (process.argv.includes("--window")) {
   }));
   console.error(
     `[B] 决策前看到的租约：${JSON.stringify(seen)}` +
-      `（本进程 pid=${process.pid}，租约目录=${leaseDirectory()}，env=${process.env.DSH_CHAT_LEASE_DIR ?? "未设置"}）`,
+      `；心跳=${JSON.stringify(readHostLeases().map((h) => ({ key: h.serverPid, pid: h.pid, url: h.baseUrl })))}` +
+      `；租约目录=${leaseDirectory()}`,
   );
   const info = await manager.ensure();
   // 唯一一条 stdout：父进程读它就知道 B 接到哪儿了。
@@ -185,6 +186,11 @@ if (process.argv.includes("--window")) {
     const serverPid = pids[0];
 
     console.log("\n2) 窗口 B（真实子进程）激活 —— 应当复用 A 的后台…");
+    // **先等 6 秒**：A 的心跳要跑过至少一轮（5 秒节拍）才会把"真实在服务的 pid"写进心跳。
+    // 这一等正是为了覆盖 F1 那类回归——心跳的身份键一旦与被接入方用的键不一致，
+    // B 就会找不到可接入的后台而自己起一个（多出一个 dsh 进程）。
+    console.log("   （先等 6 秒，让 A 的心跳跑过一轮）");
+    await delay(6_000);
     b = spawn(process.execPath, [process.argv[1], "--window"], {
       stdio: ["pipe", "pipe", "inherit"],
       windowsHide: true,
@@ -208,7 +214,13 @@ if (process.argv.includes("--window")) {
     check("B 复用了 A 的地址", parsed?.baseUrl === infoA.baseUrl, `${infoA.baseUrl} vs ${parsed?.baseUrl}`);
     check("B 的 ownership=peer", parsed?.ownership === "peer");
     check("没有新增第二个后台", leasedServers().length === 1, `pids=${leasedServers().join(",")}`);
-    check("租约里登记了两个窗口", (readLeases()[0]?.lease.hosts?.length ?? 0) === 2, `hosts=${readLeases()[0]?.lease.hosts?.length}`);
+    // 判"有几个窗口在用"看**心跳文件**（每个扩展实例一份），不是租约里的 hosts[]：
+    // hosts[] 按 pid 去重，而本探针的两个"窗口"同进程同 pid，压根区分不开。
+    check(
+      "两个实例各有一份心跳（即两个窗口在用）",
+      readHostLeases().length === 2,
+      `心跳数=${readHostLeases().length}`,
+    );
 
     console.log("\n3) 关闭窗口 A（B 还在用 → 后台必须活着）…");
     a.dispose();

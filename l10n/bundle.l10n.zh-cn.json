@@ -56,5 +56,7 @@
   "Server log: {0}": "服务器日志：{0}",
   "Extension log: the “DSH Chat” output channel": "扩展日志：输出通道「DSH Chat」",
   "Cleaned up {0} leftover dsh server process(es) (VS Code did not shut down cleanly last time).": "已清理 {0} 个残留的 dsh 服务器进程（上次 VS Code 未正常关闭）。",
-  "Cleared the file lock left behind by the last abnormal exit (otherwise the dsh server would fail to start while waiting for it).": "已清理上次异常退出留下的文件锁（否则 dsh 服务器会因等待该锁而启动失败）。"
+  "Cleared the file lock left behind by the last abnormal exit (otherwise the dsh server would fail to start while waiting for it).": "已清理上次异常退出留下的文件锁（否则 dsh 服务器会因等待该锁而启动失败）。",
+  "Server settings changed. Reload the window to apply them.": "服务器设置已更改，重载窗口后生效。",
+  "Reload Window": "重载窗口"
 }

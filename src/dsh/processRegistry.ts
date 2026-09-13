@@ -155,22 +155,46 @@ export interface LeaseHost {
 }
 
 /**
- * 会合租约（与启动锁）的目录。
+ * 会合租约（与启动锁）的目录：`~/.dsh-chat/servers/<配置分组>/`。
  *
- * 默认 `~/.dsh-chat/servers`。`DSH_CHAT_LEASE_DIR` 可以整体改掉它——**探针要用**：
- * 共享后台的端到端验证要起真实的 `dsh web` 并伪造多个"窗口"，如果和用户正在跑的
- * VS Code 共用同一份租约，两边会互相接入/互相清理，测出来的结论不可信。
- * 顺带也是排查手段：指向一个空目录就退化成"每个窗口各自一个后台"。
+ * **为什么要分组**：VS Code 的设置是有作用域的（默认 / 工作区 / 工作区文件夹），
+ * 不同窗口的 `dshChat.url` / `dshChat.command` **可能不同**：比如 A、B 两个工作区
+ * 各自写了"用内部 dsh"，而全局用户设置是"用外部 URL"，其余窗口就该走外部。
+ * 如果所有窗口共用一个租约目录，配置不同的窗口会互相抢同一个后台（B 会无视自己那份
+ * 外部配置去接入 A 的内部后台）。按**有效配置**分组之后：
+ * - 配置相同的窗口（含"来源不同但有效值相同"）共用一个后台；
+ * - 配置不同的窗口各管各的，互不干扰。
+ *
+ * `DSH_CHAT_LEASE_DIR` 可以整体改掉它（探针用：要起真实 dsh，不能和用户那套混在一起）。
  */
-function resolveLeaseDir(): string {
+function resolveLeaseRoot(): string {
   const configured = process.env.DSH_CHAT_LEASE_DIR?.trim();
   return configured ? configured : join(homedir(), ".dsh-chat", "servers");
 }
 
-const LEASE_DIR = resolveLeaseDir();
+const LEASE_ROOT = resolveLeaseRoot();
+
+/** 当前配置分组（默认 `default`；由 `setLeaseGroup()` 在激活期设定）。 */
+let leaseGroup = "default";
+
+/**
+ * 切换配置分组（扩展在激活期、以及配置变更后调用）。
+ *
+ * 分组名由调用方按"有效服务器配置"算出来（见 `extension.ts` 的 `leaseGroupKey`）。
+ * 组名只做文件系统安全过滤，不参与语义。
+ */
+export function setLeaseGroup(group: string): void {
+  const safe = group.trim().replace(/[^\w.-]/g, "_");
+  leaseGroup = safe || "default";
+}
+
+/** 会合租约（与启动锁）的目录：`<根>/<当前分组>`。 */
+function leaseDir(): string {
+  return join(LEASE_ROOT, leaseGroup);
+}
 
 function leaseFileFor(pid: number): string {
-  return join(LEASE_DIR, `server-${pid}.json`);
+  return join(leaseDir(), `server-${pid}.json`);
 }
 
 /**
@@ -188,7 +212,7 @@ function leaseFileFor(pid: number): string {
  * @param onTimeout 拿不到锁时怎么办：`undefined` = 放弃这次写。
  */
 function withLeaseLock<T>(key: string, body: () => T): T {
-  const lockPath = join(LEASE_DIR, `${key}.lock`);
+  const lockPath = join(leaseDir(), `${key}.lock`);
   let locked = false;
   try {
     writeFileSync(lockPath, String(process.pid), { flag: "wx" });
@@ -240,7 +264,7 @@ export function writeLease(lease: ServerLease): boolean {
   // 就会互相覆盖
   return withLeaseLock(`server-${lease.serverPid}`, () => {
     try {
-      mkdirSync(LEASE_DIR, { recursive: true });
+      mkdirSync(leaseDir(), { recursive: true });
       writeFileSync(leaseFileFor(lease.serverPid), JSON.stringify(lease), "utf8");
       return true;
     } catch {
@@ -346,10 +370,12 @@ export function liveHosts(lease: ServerLease, now = Date.now()): LeaseHost[] {
  *
  * 心跳文件只有当前进程在读（`hostsOf`），所以不需要加锁。
  */
-const HOST_DIR = join(LEASE_DIR, "hosts");
+function hostDir(): string {
+  return join(leaseDir(), "hosts");
+}
 
 function hostLeaseFile(hostId: string): string {
-  return join(HOST_DIR, `${hostId.replace(/[^\w.-]/g, "_")}.json`);
+  return join(hostDir(), `${hostId.replace(/[^\w.-]/g, "_")}.json`);
 }
 
 /**
@@ -362,14 +388,17 @@ function hostLeaseFile(hostId: string): string {
  */
 export function writeHostLease(host: {
   hostId: string;
+  /** **身份键**：本窗口用的那个后台在租约里的 pid（所有窗口必须用同一个键）。 */
   serverPid: number;
   workspace?: string;
   baseUrl?: string;
   token?: string;
   command?: string;
+  /** 真实在服务的进程 pid（netstat 查出），只作附加信息。 */
+  servedPid?: number;
 }): boolean {
   try {
-    mkdirSync(HOST_DIR, { recursive: true });
+    mkdirSync(hostDir(), { recursive: true });
     writeFileSync(
       hostLeaseFile(host.hostId),
       JSON.stringify({
@@ -380,6 +409,7 @@ export function writeHostLease(host: {
         baseUrl: host.baseUrl,
         token: host.token,
         command: host.command,
+        servedPid: host.servedPid,
         seenAt: Date.now(),
       }),
       "utf8",
@@ -413,6 +443,7 @@ function readHostLease(hostId: string): HostLeaseEntry | undefined {
       baseUrl?: string;
       token?: string;
       command?: string;
+      servedPid?: number;
       seenAt?: number;
     };
     if (typeof parsed?.seenAt !== "number") return undefined;
@@ -423,6 +454,7 @@ function readHostLease(hostId: string): HostLeaseEntry | undefined {
       baseUrl: typeof parsed.baseUrl === "string" ? parsed.baseUrl : undefined,
       token: typeof parsed.token === "string" ? parsed.token : undefined,
       command: typeof parsed.command === "string" ? parsed.command : undefined,
+      servedPid: typeof parsed.servedPid === "number" ? parsed.servedPid : undefined,
       seenAt: parsed.seenAt,
     };
   } catch {
@@ -439,6 +471,8 @@ interface HostLeaseEntry {
   baseUrl?: string;
   token?: string;
   command?: string;
+  /** 真实在服务的进程 pid（netstat 查出；只作附加信息，**不是**身份键）。 */
+  servedPid?: number;
   seenAt: number;
 }
 
@@ -488,7 +522,7 @@ function liveHostSnapshot(entries: HostLeaseEntry[], now: number): HostLeaseEntr
 export function readHostLeases(): HostLeaseEntry[] {
   let entries: string[];
   try {
-    entries = readdirSync(HOST_DIR);
+    entries = readdirSync(hostDir());
   } catch {
     return [];
   }
@@ -719,10 +753,10 @@ const START_LOCK = "start.lock";
  * 这个明确上界。
  */
 export async function acquireStartLock(timeoutMs: number): Promise<(() => void) | undefined> {
-  const path = join(LEASE_DIR, START_LOCK);
+  const path = join(leaseDir(), START_LOCK);
   const deadline = Date.now() + timeoutMs;
   try {
-    mkdirSync(LEASE_DIR, { recursive: true });
+    mkdirSync(leaseDir(), { recursive: true });
   } catch {
     return undefined;
   }
@@ -813,7 +847,7 @@ function asLease(value: unknown): ServerLease | undefined {
 export function readLeases(): { file: string; lease: ServerLease }[] {
   let dirents: Dirent[];
   try {
-    dirents = readdirSync(LEASE_DIR, { withFileTypes: true });
+    dirents = readdirSync(leaseDir(), { withFileTypes: true });
   } catch {
     return [];
   }
@@ -821,7 +855,7 @@ export function readLeases(): { file: string; lease: ServerLease }[] {
   for (const dirent of dirents) {
     // 子目录（hosts/ 等）一律跳过；锁文件不是 .json，也被下面的判断挡掉
     if (!dirent.isFile() || !dirent.name.endsWith(".json")) continue;
-    const file = join(LEASE_DIR, dirent.name);
+    const file = join(leaseDir(), dirent.name);
     let parsed: unknown;
     try {
       parsed = JSON.parse(readFileSync(file, "utf8"));
@@ -1220,7 +1254,8 @@ export async function killLeasedServerAndWait(
  */
 function ledger(line: string): void {
   try {
-    appendFileSync(join(LEASE_DIR, "..", "kill-ledger.log"), `${new Date().toISOString()} ${line}\n`, "utf8");
+    // 台账写在**分组根目录**（`servers/`）：分组是配置维度的，台账是全机的诊断线索
+    appendFileSync(join(LEASE_ROOT, "kill-ledger.log"), `${new Date().toISOString()} ${line}\n`, "utf8");
   } catch {
     // 忽略
   }
@@ -1430,7 +1465,7 @@ export async function cleanupResidualServers(log: (line: string) => void): Promi
 
 /** 租约目录（诊断信息里展示）。 */
 export function leaseDirectory(): string {
-  return LEASE_DIR;
+  return leaseDir();
 }
 
 // ---------- 崩溃后残留的 writer 锁 ----------

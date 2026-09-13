@@ -94,6 +94,9 @@ const entries = {
   "build/shared-server-probe.mjs": "scripts/sharedServerProbe.ts",
   "build/crash-reuse-probe.mjs": "scripts/crashReuseProbe.ts",
   "build/crash-window.mjs": "scripts/crashWindow.ts",
+  "build/group-isolation-probe.mjs": "scripts/groupIsolationProbe.ts",
+  "build/group-window.mjs": "scripts/groupWindow.ts",
+
 };
 
 await Promise.all(
