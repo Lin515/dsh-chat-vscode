@@ -147,6 +147,11 @@
     "configuration": {
       "title": "DSH Chat",
       "properties": {
+        "dshChat.command": {
+          "type": "string",
+          "default": "dsh web --port 0 --no-open",
+          "markdownDescription": "%config.command%"
+        },
         "dshChat.url": {
           "type": "string",
           "default": "",
@@ -161,11 +166,6 @@
           "type": "boolean",
           "default": false,
           "description": "%config.openPanelOnStartup%"
-        },
-        "dshChat.command": {
-          "type": "string",
-          "default": "dsh",
-          "description": "%config.command%"
         },
         "dshChat.startTimeoutSec": {
           "type": "number",

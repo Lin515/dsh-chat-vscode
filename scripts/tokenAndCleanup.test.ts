@@ -14,6 +14,7 @@ import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { DshAuthError, DshClient } from "../src/dsh/client";
 import {
+  clearHostLease,
   clearLease,
   cleanupResidualServers,
   isKillable,
@@ -23,6 +24,7 @@ import {
   resetCommandLineCache,
   scanServers,
   shellCallCount,
+  writeHostLease,
   writeLease,
 } from "../src/dsh/processRegistry";
 
@@ -154,21 +156,25 @@ async function fakeProcess(args: string[]): Promise<{ pid: number; kill: () => v
   return { pid: pid!, kill: () => child.kill() };
 }
 
-// 2a. 宿主还活着（用当前进程 pid）→ 不算孤儿，清理不动它
+// 2a. 有活着的扩展实例（心跳文件）→ 不算孤儿，清理不动它
 {
-  // 命令行故意带 dsh：证明「宿主存活」这一条优先于「像 dsh」
+  // 命令行故意带 dsh：证明「有人在用」这一条优先于「像 dsh」。
+  // 注意判据是**实例心跳文件**，不是租约里的 hostPid——多窗口共享之后，
+  // "当初拉起它的宿主还在不在"已经不是问题所在（owner 先关、别人还在用是正常的）。
   const alive = await fakeProcess(["dsh", "web"]);
   try {
     writeLease({ serverPid: alive.pid, hostPid: process.pid, command: "dsh", startedAt: Date.now() });
+    writeHostLease({ hostId: "cleanup-2a", serverPid: alive.pid });
     const found = (await scanServers()).filter((item) => item.lease.serverPid === alive.pid);
     assert.strictEqual(found.length, 1);
-    assert.strictEqual(found[0].orphan, false, "宿主存活时不能判为孤儿");
+    assert.strictEqual(found[0].orphan, false, "有活实例时不能判为孤儿");
     assert.strictEqual(found[0].heldByLiveHost, true);
     const result = await cleanupResidualServers(log);
-    assert.ok(!result.killed.includes(alive.pid), "宿主存活时不能被杀");
-    assert.ok(isProcessAlive(alive.pid), "宿主存活时进程应当还在");
-    console.log("cleanup: 宿主存活 → 不清理 ✓");
+    assert.ok(!result.killed.includes(alive.pid), "有活实例时不能被杀");
+    assert.ok(isProcessAlive(alive.pid), "有活实例时进程应当还在");
+    console.log("cleanup: 有活实例 → 不清理 ✓");
   } finally {
+    clearHostLease("cleanup-2a");
     clearLease(alive.pid);
     alive.kill();
   }

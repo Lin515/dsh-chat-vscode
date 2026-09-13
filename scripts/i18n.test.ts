@@ -81,6 +81,10 @@ const MARKERS: string[] = [
   "serverUnreachable",
   "serverStaleLock",
   "serverLogTail",
+  "switchingServer",
+  // 多窗口共享后台
+  "joinedSharedServer",
+  "sharedRestarted",
 ];
 
 // ---------- 1. 每个标记在两种语言下都能解析出内容 ----------

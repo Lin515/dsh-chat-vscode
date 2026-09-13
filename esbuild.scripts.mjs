@@ -90,6 +90,10 @@ const entries = {
   "build/page-loop-probe.mjs": "scripts/pageLoopProbe.ts",
   "build/config-reload-probe.mjs": "scripts/configReloadProbe.ts",
   "build/window-state.test.mjs": "scripts/windowState.test.ts",
+  "build/shared-lease.test.mjs": "scripts/sharedLease.test.ts",
+  "build/shared-server-probe.mjs": "scripts/sharedServerProbe.ts",
+  "build/crash-reuse-probe.mjs": "scripts/crashReuseProbe.ts",
+  "build/crash-window.mjs": "scripts/crashWindow.ts",
 };
 
 await Promise.all(

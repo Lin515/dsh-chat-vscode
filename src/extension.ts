@@ -2,10 +2,22 @@ import * as vscode from "vscode";
 import { ChatViewProvider } from "./chatView";
 import { ChatController, stamp } from "./dsh/controller";
 import { selectionLines } from "./dsh/selection";
-import { clearStaleDocumentLocks, cleanupResidualServers, leaseDirectory, scanServers } from "./dsh/processRegistry";
+import { clearStaleDocumentLocks, cleanupResidualServers, dropStaleHostLeases, leaseDirectory, scanServers } from "./dsh/processRegistry";
 import { ServerManager } from "./dsh/serverManager";
 
 let output: vscode.OutputChannel | undefined;
+
+/**
+ * 启动命令的兜底默认值——**与 `package.json` 里 `dshChat.command` 的 default 必须一致**。
+ *
+ * 为什么要有这个常量：设置在用户没写过时也会返回 schema 的 default，所以这里只在
+ * 「用户把命令清成空串」时才生效；但它出现在**两个**地方（激活期构造 ServerManager、
+ * 配置变更后重连），写两份字符串迟早漂移。
+ *
+ * 命令**原样执行，扩展不追加任何参数**：`--port 0`（系统分配端口）与 `--no-open`
+ * （不弹系统浏览器）都是这条默认值的一部分，用户可以整条改掉。
+ */
+const DEFAULT_COMMAND = "dsh web --port 0 --no-open";
 
 function log(line: string): void {
   output ??= vscode.window.createOutputChannel("DSH Chat");
@@ -17,7 +29,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
   const server = new ServerManager({
     url: config().get<string>("url") ?? "",
-    command: config().get<string>("command") || "dsh",
+    command: config().get<string>("command") || DEFAULT_COMMAND,
     startTimeoutMs: (config().get<number>("startTimeoutSec") ?? 90) * 1000,
     workspace: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
     log,
@@ -44,7 +56,7 @@ export function activate(context: vscode.ExtensionContext): void {
   provider.registerPanelSerializer();
 
   // 第一部分：把服务、控制器、视图与全部命令挂到 context.subscriptions（释放即随扩展一起走）
-  registerContributions(context, { controller, provider, secondaryProvider, server });
+  registerContributions(context, { controller, provider, secondaryProvider, server, config });
 
   // 辅助侧栏容器（secondarySidebar 贡献点）只在 VS Code ≥ 1.106 存在。
   // 活动栏容器用 `when: !dshChat.supportsSecondarySidebar` 与它互斥，
@@ -65,6 +77,8 @@ interface Contributions {
   provider: ChatViewProvider;
   secondaryProvider: ChatViewProvider;
   server: ServerManager;
+  /** 每次调用都重读 `dshChat.*`（配置变更监听要用最新值，不能用激活期快照）。 */
+  config: () => vscode.WorkspaceConfiguration;
 }
 
 /**
@@ -72,7 +86,7 @@ interface Contributions {
  * 全部一次性 push 进 context.subscriptions，deactivate 时统一释放。
  */
 function registerContributions(context: vscode.ExtensionContext, host: Contributions): void {
-  const { controller, provider, secondaryProvider, server } = host;
+  const { controller, provider, secondaryProvider, server, config } = host;
 
   context.subscriptions.push(
     output ?? vscode.window.createOutputChannel("DSH Chat"),
@@ -134,6 +148,7 @@ function registerContributions(context: vscode.ExtensionContext, host: Contribut
     }),
     vscode.commands.registerCommand("dshChat.showDiagnostics", async () => {
       const status = server.getStatus();
+      const shared = server.sharedSummary();
       const orphans = (await scanServers())
         .filter((item) => item.orphan)
         .map((item) => item.lease.serverPid);
@@ -144,6 +159,16 @@ function registerContributions(context: vscode.ExtensionContext, host: Contribut
           ? vscode.l10n.t(
               "Started by this extension: {0}",
               status.info.owned ? vscode.l10n.t("yes") : vscode.l10n.t("no (using dshChat.url)"),
+            )
+          : undefined,
+        shared
+          ? vscode.l10n.t(
+              "Shared with other VS Code windows: {0}",
+              shared.ownership === "self"
+                ? vscode.l10n.t("this window runs the server, {0} window(s) in total", shared.hostCount)
+                : shared.ownership === "peer"
+                  ? vscode.l10n.t("using the server of another window, {0} window(s) in total", shared.hostCount)
+                  : vscode.l10n.t("no (dshChat.url)"),
             )
           : undefined,
         status.detail ? vscode.l10n.t("Detail: {0}", status.detail) : undefined,
@@ -203,6 +228,16 @@ function registerContributions(context: vscode.ExtensionContext, host: Contribut
       ) {
         controller.refreshAppearance();
       }
+      // 服务器三件套改了要**真正换一个后台**：配置项只在启动时读一次，
+      // 不重连的话用户改了 `dshChat.url`（或启动命令）却仍连着旧服务器。
+      // 口径见 controller.reconnectServer：先中止当前内部后台，再按新配置来。
+      if (
+        event.affectsConfiguration("dshChat.url") ||
+        event.affectsConfiguration("dshChat.command") ||
+        event.affectsConfiguration("dshChat.startTimeoutSec")
+      ) {
+        void reconnectServer(config, controller);
+      }
     }),
   );
 }
@@ -213,23 +248,22 @@ function startup(
   controller: ChatController,
   provider: ChatViewProvider,
 ): void {
-  // 上次 VS Code 非正常关闭（崩溃 / 强杀）留下的 dsh web 进程：认出来并清掉。
-  // 不 await：清理要起 PowerShell（Windows 上约 1.5s），不该拖住激活流程；
-  // 它本身已是异步的，await 期间扩展宿主照常响应。失败也只记日志。
-  void cleanupResidualServers(log)
-    .then((result) => {
-      if (result.killed.length) {
-        void vscode.window.showInformationMessage(
-          vscode.l10n.t(
-            "Cleaned up {0} leftover dsh server process(es) (VS Code did not shut down cleanly last time).",
-            result.killed.length,
-          ),
-        );
-      }
-    })
-    .catch((error: unknown) => {
-      log(`[cleanup] 残留进程检测失败：${error instanceof Error ? error.message : String(error)}`);
-    });
+  // 启动初期的残留处置（顺应用户口径 2026-09-14）：
+  //
+  // 1) **所有失效的心跳文件一律清理**（不论 `dshChat.url` 有没有配置——残留可能发生在
+  //    改 URL 之前）。判"失效"用的是**进程真的在不在**（批量 `Get-Process`），
+  //    不能用 `process.kill(pid, 0)`：被强杀的进程在回收前那个探测仍返回成功。
+  // 2) **服务器本身不在这里动**：能复用的（还在跑）留给 `ServerManager.start()` 接管
+  //    ——它手里还攥着会话与内存状态；真的连不上的，也由它在启动决策里顺手回收并重起。
+  //    放在这里杀会和"接管"抢时序（踩过：遗留租约被这条清理删掉，于是只能重起）。
+  //
+  // 不 await：判活要起一次 PowerShell，不该拖住激活流程；失败也只记日志。
+  try {
+    const dropped = dropStaleHostLeases();
+    if (dropped.length) log(`[cleanup] 清理了 ${dropped.length} 个失效心跳文件`);
+  } catch (error) {
+    log(`[cleanup] 心跳清理失败：${error instanceof Error ? error.message : String(error)}`);
+  }
 
   // 崩溃留下的 writer 锁同样要清，而且**必须在起服务器之前**：
   // `dsh web` 的 boot 会去锁 `.credentials.yaml`，等 30 秒拿不到就把整个进程带走
@@ -265,6 +299,28 @@ function startup(
 
   if (config().get<boolean>("openPanelOnStartup")) {
     provider.openPanel();
+  }
+}
+
+/**
+ * 服务器相关配置变更后的重连。
+ *
+ * 读配置 + 交给控制器是**一步**：`vscode.workspace.getConfiguration` 每次都要重读，
+ * 不能沿用激活期捕获的那份快照（那正是「改了配置不生效」的成因）。
+ * 失败只记日志——控制器自己会把错误渲染成连接失败条，这里再弹一次是重复打扰。
+ */
+async function reconnectServer(
+  config: () => vscode.WorkspaceConfiguration,
+  controller: ChatController,
+): Promise<void> {
+  try {
+    await controller.reconnectServer({
+      url: config().get<string>("url") ?? "",
+      command: config().get<string>("command") || DEFAULT_COMMAND,
+      startTimeoutMs: (config().get<number>("startTimeoutSec") ?? 90) * 1000,
+    });
+  } catch (error) {
+    log(`[server] 配置变更后重连失败：${error instanceof Error ? error.message : String(error)}`);
   }
 }
 

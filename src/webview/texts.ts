@@ -313,6 +313,15 @@ export interface Texts {
   serverStaleLock: (lockPath: string) => string;
   /** 连接失败条末段：服务器日志尾部（原文照贴，不翻译）。 */
   serverLogTail: (tail: string) => string;
+  /**
+   * toast：`dshChat.url` / `dshChat.command` 改了，扩展已中止当前后台并按新配置重连
+   * （参数是当时开着几个会话——用户在意的正是「我的对话是不是断了」）。
+   */
+  switchingServer: (sessions: number) => string;
+  /** toast：本窗口接入的是**别的窗口**起的后台（参数是当前共用它的窗口数）。 */
+  joinedSharedServer: (windows: number) => string;
+  /** toast：在共享后台的窗口里执行「重启服务器」，后台已由本窗口接管重起。 */
+  sharedRestarted: string;
 
   searchSessions: string;
   today: string;
@@ -644,6 +653,13 @@ const zh: Texts = {
     "它属于一次被强制结束的 dsh 进程（锁的持有者已不在）。确认没有其它 dsh 正在运行后，" +
     "删除该文件并重试；或执行命令「DSH: 重新连接」——扩展会在启动前清掉无主的锁。",
   serverLogTail: (tail) => `日志尾部：\n${tail}`,
+  switchingServer: (sessions) =>
+    sessions > 0
+      ? `服务器配置已更改：已中止上一个后台并按新配置重连，${sessions} 个进行中的会话已中断。`
+      : "服务器配置已更改：已中止上一个后台并按新配置重连。",
+  joinedSharedServer: (windows) =>
+    `已接入另一个 VS Code 窗口启动的 DSH 后台（当前 ${windows} 个窗口共用它）。`,
+  sharedRestarted: "共享后台已由本窗口接管并重启，其它窗口会自动重新接入。",
 
   searchSessions: "搜索历史对话",
   today: "今天",
@@ -947,6 +963,13 @@ const en: Texts = {
     "other dsh is running, delete the file and retry; or run “DSH: Reconnect” — the extension " +
     "clears ownerless locks before starting the server.",
   serverLogTail: (tail) => `Log tail:\n${tail}`,
+  switchingServer: (sessions) =>
+    sessions > 0
+      ? `Server settings changed: the previous background server was stopped and a new one started; ${sessions} conversation(s) in progress were interrupted.`
+      : "Server settings changed: the previous background server was stopped and a new one started.",
+  joinedSharedServer: (windows) =>
+    `Connected to the DSH server started by another VS Code window (${windows} window(s) sharing it).`,
+  sharedRestarted: "This window took over the shared server and restarted it; the other windows reconnect automatically.",
 
   searchSessions: "Search past sessions",
   today: "Today",
@@ -1169,6 +1192,16 @@ function resolveMarker(text: string, texts: Texts): string {
       const signal = separator < 0 ? "" : arg.slice(separator + 1);
       return texts.serverExited(code, signal);
     }
+    case "switchingServer": {
+      const sessions = Number(arg);
+      return texts.switchingServer(Number.isFinite(sessions) ? sessions : 0);
+    }
+    case "joinedSharedServer": {
+      const windows = Number(arg);
+      return texts.joinedSharedServer(Number.isFinite(windows) ? windows : 1);
+    }
+    case "sharedRestarted":
+      return texts.sharedRestarted;
     case "uploadIncomplete": {
       // 参数形如 `<个数>:<文件名预览>`：个数在前，文件名里可能含冒号，所以按第一段切
       const separator = arg.indexOf(":");
