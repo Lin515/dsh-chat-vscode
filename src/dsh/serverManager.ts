@@ -365,7 +365,8 @@ export class ServerManager {
    * `killOwnedServer`，它会先按 pid 杀、再按端口把真正在监听的进程找出来杀。
    *
    * 唯一真正来不及的情形是**扩展宿主被强杀**（没有 deactivate、也没有任何进程能执行
-   * 清理代码）。那种情况由下一次激活的 `reclaimOrphanServers` 收尾——这是机制边界，
+   * 清理代码）。那种情况由**下一次激活时的启动决策**收尾：那里的顺序是"能接管的接管、
+   * 连不上的才回收"（见 `start()` 与 `findReusableLeftover`）——这是机制边界，
    * 不是设计退让。
    */
   private release(): void {
