@@ -9,7 +9,7 @@
 import assert from "node:assert";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { producedOnly } from "../src/webview/turnFiles";
+import { producedOnly, withoutVanished } from "../src/webview/turnFiles";
 
 // ---------- 1. 用户报的那个场景：两边一模一样 ----------
 {
@@ -59,14 +59,55 @@ console.log("turnFiles: 单边与空输入安全 ✓");
 {
   const message = readFileSync(join(process.cwd(), "src", "webview", "components", "Message.tsx"), "utf8");
   assert.ok(
-    /const producedFiles = producedOnly\(message\.produced, message\.deliverables\)/.test(message),
-    "Message 必须用 producedOnly(...) 推导「本轮文件改动」行",
+    /withoutVanished\(\s*producedOnly\(message\.produced, message\.deliverables\)/.test(message),
+    "Message 必须用 producedOnly(...) 推导「本轮文件改动」行（外面再套一层 withoutVanished）",
   );
   assert.ok(
     !/message\.produced\.map\(\(path\) => \(\{ path \}\)\)/.test(message),
     "不能直接用 message.produced 渲染——那会把已申报交付的文件重复列一遍",
   );
+  assert.ok(
+    !/paths=\{message\.deliverables\}/.test(message),
+    "交付行也要过 withoutVanished：净效果为零的文件两行都不该出现",
+  );
 }
 console.log("turnFiles: 轮尾渲染接了去重 ✓");
+
+// ---------- 6. 净效果为零的文件不出现在轮尾两行里 ----------
+//
+// 用户 2026-09-14 报的现场：让模型提交时它把提交信息写进 `commit.msg.txt`，
+// 提交完再删掉。文件进过 write 调用，于是永远留在 produced 里；磁盘上已经没有了，
+// 宿主按存在性判成 deleted → 界面上冒出一条带删除线的 commit.msg.txt，
+// 看着像仓库里挂着一个待提交的删除。宿主现在把它分类成 `gone`（磁盘上没有 +
+// git 四张清单里都没有），界面据此**整条不渲染**。
+{
+  const kinds = {
+    "commit.msg.txt": "gone" as const,
+    "src/app.ts": "edited" as const,
+  };
+  assert.deepStrictEqual(
+    withoutVanished(["commit.msg.txt", "src/app.ts"], kinds, (path) => path),
+    ["src/app.ts"],
+    "写了又删、git 也不认识的临时文件不列出来",
+  );
+  assert.deepStrictEqual(
+    withoutVanished([{ path: "commit.msg.txt" }], kinds, (file) => file.path),
+    [],
+    "交付行同理（present 申报过的临时文件也一并消失）",
+  );
+  // 真被删掉的文件（git 有记录 = deleted）必须**留下**：那是仓库里真实的待提交改动
+  assert.deepStrictEqual(
+    withoutVanished(["old.ts"], { "old.ts": "deleted" as const }, (path) => path),
+    ["old.ts"],
+    "git 有记录的删除照旧显示——藏起来才是丢信息",
+  );
+  // 拿不到分类表时一律保留：不确定 ≠ 净效果为零
+  assert.deepStrictEqual(
+    withoutVanished(["a.ts"], undefined, (path) => path),
+    ["a.ts"],
+    "还没分类完时不能凭猜测隐藏文件",
+  );
+}
+console.log("turnFiles: 净效果为零的文件两行都不列 ✓");
 
 console.log("\nturnFiles: all assertions passed");

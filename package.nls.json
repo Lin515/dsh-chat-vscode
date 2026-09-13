@@ -1,5 +1,6 @@
 {
   "container.title": "DSH Chat",
+  "description": "Continue-style chat UI for DeepSeek Harness (dsh) inside VS Code. Runs `dsh web` in the background and renders the conversation natively in VS Code (bilingual UI).",
   "view.chat.name": "Chat",
   "cmd.newSession.title": "DSH: New Chat",
   "cmd.history.title": "DSH: Chat History",
@@ -27,5 +28,6 @@
   "config.language.auto": "Follow the VS Code display language.",
   "config.language.zh": "Always Simplified Chinese.",
   "config.language.en": "Always English.",
-  "config.fontSize": "Font size of the chat UI in integer pixels (>= 8). `0` follows the VS Code font size."
+  "config.fontSize": "Font size of the chat UI in integer pixels (>= 8). `0` follows the VS Code font size.",
+  "config.questionBatch": "How many questions of one questionnaire to show at once. A questionnaire with more questions than this is asked one question at a time. `0` always shows every question at once."
 }

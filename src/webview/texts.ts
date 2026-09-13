@@ -204,6 +204,8 @@ export interface Texts {
   mentionFiles: string;
   mentionEmpty: string;
   mentionHint: string;
+  /** @ 列表里「返回上一层目录」那一行的无障碍标题与悬停说明。 */
+  mentionParent: string;
   /** 设置面板 */
   settingsTitle: string;
   settingsLoading: string;
@@ -240,8 +242,16 @@ export interface Texts {
   injectedRuntimeContext: string;
   injectedAgentInstructions: string;
   injectedSkillCatalog: string;
-  injectedPlugin: string;
-  injectedGeneric: string;
+  /**
+   * 上下文注入节点的**标题**（官方 `message.contextInjection` =「上下文注入」）。
+   *
+   * 用户 2026-09-15 要求与 Web 一致：非系统提示词的注入（插件注入、项目指令、
+   * 技能目录、运行时上下文…）在 Web 上**统一**叫「上下文注入」，具体来源放在右侧。
+   * 我们此前按来源各起一个名字（「插件上下文」等），标题与 Web 不一致。
+   */
+  injectedContext: string;
+  /** 跨会话召回的标题（官方 `message.contextRecall` =「跨会话召回」）。 */
+  injectedRecall: string;
   /** 自动载入节点的字数标注，如「7.0K 字符」。 */
   injectedChars: (chars: string) => string;
 
@@ -257,6 +267,16 @@ export interface Texts {
   questionHead: string;
   questionPlaceholder: string;
   submit: string;
+  /**
+   * 依次问答时的进度（官方 `QuestionComposer` 的分页只给一个 `N/M` 数字，
+   * 这里给出带「题」的完整短语——中文没有 the 这类冠词，拼串翻不准）。
+   */
+  questionStep: (index: number, total: number) => string;
+  /** 依次问答的上一题 / 下一题（官方 `nav.prev` / `action.next`）。 */
+  questionPrev: string;
+  questionNext: string;
+  /** 答完收缩后的摘要（「已作答 N 题」）。 */
+  questionAnswered: (count: number) => string;
 
   copy: string;
   copied: string;
@@ -324,6 +344,16 @@ export interface Texts {
   statsToolTime: string;
   statsTtft: string;
   statsSpeed: string;
+  /**
+   * 悬停明细的标题：**必须**说清这份明细的口径是全日志的会话统计。
+   *
+   * 工具栏上直接显示的那个 tps 是**最近一条助手消息**的解码窗口吞吐（逐 token
+   * 变化），明细里的是**全会话累计**（Σ 输出 token ÷ Σ 解码窗口）——两者本来就
+   * 不是同一个数（用户 2026-09-14 就是被这一点问住的）。标题让口径写在脸上。
+   */
+  statsTitle: string;
+  /** Markdown 脚注区的无障碍标题（官方 `markdown.footnotes`，视觉上隐藏）。 */
+  markdownFootnotes: string;
   /** 模型不支持图片输入、改为把路径插进输入框的提示（张数 + 模型名）。 */
   imagePathsInserted: (count: number, model: string) => string;
   /** 排队消息取回编辑时，附件无法还原的提示。 */
@@ -385,6 +415,8 @@ export interface Texts {
   branchTag: string;
   /** 历史：加载更早的一页（跟随窗口只有 60 条）。 */
   historyMore: string;
+  /** 正在取更早的历史（按钮在此期间是不可点的）。 */
+  historyLoading: string;
   /** 生成中不能翻历史（重折会让流式正文重来）。 */
   historyBusy: string;
 
@@ -531,6 +563,7 @@ const zh: Texts = {
   mentionFiles: "文件",
   mentionEmpty: "没有匹配的文件",
   mentionHint: "↑↓ 选择 · Enter 确认 · Esc 取消",
+  mentionParent: "返回上一层目录",
   settingsTitle: "设置",
   settingsLoading: "正在读取设置…",
   settingsEmpty: "服务器没有返回可配置项",
@@ -561,8 +594,8 @@ const zh: Texts = {
   injectedRuntimeContext: "运行时上下文",
   injectedAgentInstructions: "项目指令",
   injectedSkillCatalog: "技能目录",
-  injectedPlugin: "插件上下文",
-  injectedGeneric: "自动载入",
+  injectedContext: "上下文注入",
+  injectedRecall: "跨会话召回",
   injectedChars: (chars) => `${chars} 字符`,
 
   approvalTitle: "需要你的许可",
@@ -576,6 +609,10 @@ const zh: Texts = {
   questionHead: "问题",
   questionPlaceholder: "或直接输入回答…",
   submit: "提交",
+  questionStep: (index, total) => `第 ${index} / ${total} 题`,
+  questionPrev: "上一题",
+  questionNext: "下一题",
+  questionAnswered: (count) => `已作答 ${count} 题`,
 
   copy: "复制",
   copied: "已复制到剪贴板",
@@ -624,7 +661,9 @@ const zh: Texts = {
   statsLlmTime: "模型用时",
   statsToolTime: "工具调用用时",
   statsTtft: "首 token 平均（TTFT）",
-  statsSpeed: "输出速度（TPS）",
+  statsSpeed: "平均输出速度（TPS）",
+  statsTitle: "会话统计（全日志累计）",
+  markdownFootnotes: "脚注",
   turnFailed: "本轮执行失败",
   interrupted: "本轮被中断",
   compacted: "上下文已压缩",
@@ -681,6 +720,7 @@ const zh: Texts = {
   branchRunning: "生成中不能分支",
   branchTag: "分支",
   historyMore: "加载更早的消息",
+  historyLoading: "正在加载更早消息…",
   historyBusy: "生成中不能加载历史，请等这一轮结束",
 
   fontSize: "字体大小",
@@ -825,6 +865,7 @@ const en: Texts = {
   mentionFiles: "Files",
   mentionEmpty: "No matching files",
   mentionHint: "↑↓ select · Enter confirm · Esc cancel",
+  mentionParent: "Go to the parent folder",
   settingsTitle: "Settings",
   settingsLoading: "Loading settings…",
   settingsEmpty: "The server returned no configurable namespaces",
@@ -855,8 +896,8 @@ const en: Texts = {
   injectedRuntimeContext: "Runtime context",
   injectedAgentInstructions: "Workspace instructions",
   injectedSkillCatalog: "Skill catalog",
-  injectedPlugin: "Plugin context",
-  injectedGeneric: "Auto-loaded",
+  injectedContext: "Context injection",
+  injectedRecall: "Session recall",
   injectedChars: (chars) => `${chars} chars`,
 
   approvalTitle: "Permission required",
@@ -870,6 +911,10 @@ const en: Texts = {
   questionHead: "Question",
   questionPlaceholder: "Or type your own answer…",
   submit: "Submit",
+  questionStep: (index, total) => `Question ${index} of ${total}`,
+  questionPrev: "Previous",
+  questionNext: "Next",
+  questionAnswered: (count) => (count === 1 ? "1 question answered" : `${count} questions answered`),
 
   copy: "Copy",
   copied: "Copied to clipboard",
@@ -919,7 +964,9 @@ const en: Texts = {
   statsLlmTime: "LLM time",
   statsToolTime: "Tool time",
   statsTtft: "Avg time to first token (TTFT)",
-  statsSpeed: "Tokens per second (TPS)",
+  statsSpeed: "Average tokens per second (TPS)",
+  statsTitle: "Session stats (whole log)",
+  markdownFootnotes: "Footnotes",
   turnFailed: "This turn failed",
   interrupted: "This turn was interrupted",
   compacted: "Context compacted",
@@ -975,6 +1022,7 @@ const en: Texts = {
   branchRunning: "Cannot branch while generating",
   branchTag: "Branch",
   historyMore: "Load earlier messages",
+  historyLoading: "Loading earlier messages…",
   historyBusy: "Cannot load history while generating — wait for this turn to finish",
 
   fontSize: "Font size",

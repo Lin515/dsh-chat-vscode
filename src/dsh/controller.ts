@@ -21,6 +21,7 @@ import { SessionAdapter, type ImageRef } from "./adapter";
 import { classifyDroppedBytes, classifyPath, formatPathList, isDirectoryPath, isImagePath } from "./attachments";
 import { ConfigChangeRouter } from "./configChanges";
 import { fileChangeKind, hasWorkingChange, isNotFoundError, resolveChipPath, type FileExistence, type GitChangeStateLike } from "./fileChange";
+import { shouldContinuePaging } from "./historyPaging";
 import { composeWithReferences, formatFileMention } from "./references";
 import { resolveForVsCode } from "./hostText";
 import { DshApiError, DshAuthError, DshClient, type ConnectionState, type SessionSummaryWire } from "./client";
@@ -92,6 +93,21 @@ function readFontSize(): number | undefined {
   return undefined;
 }
 
+/**
+ * 一份问卷一次展开几道题（`dshChat.questionBatch`）。
+ *
+ * 合法域是**整数 ≥0**：`0` 表示始终一次展开全部；题目数**多于**它时界面改为
+ * 依次问答。坏值（负数、小数、非数字）一律回退默认 3——手写 settings.json 能
+ * 绕开设置页的校验，而「负数」既不是「全部展开」也不是「一题一题」，
+ * 猜它的意图不如用默认值（与 `readFontSize` 同一条判据纪律）。
+ */
+const DEFAULT_QUESTION_BATCH = 3;
+function readQuestionBatch(): number {
+  const value = vscode.workspace.getConfiguration("dshChat").get<number>("questionBatch");
+  if (typeof value === "number" && Number.isInteger(value) && value >= 0) return value;
+  return DEFAULT_QUESTION_BATCH;
+}
+
 /** 把投影里的未知值收成数字（缺字段/坏值一律用回退值）。 */
 function numberOr(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
@@ -149,6 +165,18 @@ export class ChatController implements vscode.Disposable {
    * 只能按「谁最后发了消息 / 谁可见」推断。
    */
   private readonly viewOrder: string[] = [];
+  /**
+   * 窗口（viewId）→ 把它带到前台的动作。
+   *
+   * 三种宿主的「显示」语义各不相同：主/辅助侧栏是 `WebviewView.show()`（还需要
+   * 先把容器切过去），编辑区面板是 `WebviewPanel.reveal()`。控制器不知道谁是谁，
+   * 由 `ChatViewProvider` 在挂窗口时注册。
+   *
+   * 为什么需要：编辑器右键「添加选中代码到对话」之后要**把焦点还给用户上次用的
+   * 那个对话窗口**。此前写死 `dshChat.view.focus`（主侧栏），于是对话开在编辑区
+   * 面板时，加完引用视线被硬拽到侧栏——用户 2026-09-14 报的正是这条。
+   */
+  private readonly revealers = new Map<string, () => void>();
   private controlHandle: { cancel(): void } | undefined;
   private eventsHandle: { cancel(): void } | undefined;
   private eventsClientId: string | undefined;
@@ -170,6 +198,15 @@ export class ChatController implements vscode.Disposable {
   >();
   private readonly eventSessions = new Map<string, string>();
   private workspaceHandle: { cancel(): void } | undefined;
+  /**
+   * 服务端**工作区注册表**里当前项目那条记录的 id（`workspace/create` 幂等返回）。
+   *
+   * 它决定新会话会不会被记进工作区分组：DSH Web 的分组不是按 cwd 推的，而是
+   * 「会话 header 的 cwd == 工作区路径」**且**「会话在注册表的 sessionIds 里」，
+   * 后半条只有 `session/create` 带 `workspaceId` 时才会发生。缓存它避免每次
+   * 新建会话都发一次注册请求；换个服务器（新 client）时清空重取。
+   */
+  private workspaceId: string | undefined;
   /** 已归档会话的权威集合（来自 workspace/follow 流）。 */
   private archivedSessionIds = new Set<string>();
   /**
@@ -302,6 +339,8 @@ export class ChatController implements vscode.Disposable {
       diffLayout: readDiffLayout(),
       /** 界面字号（px）；undefined = auto，跟随 VS Code 注入的字号。 */
       fontSizePx: readFontSize(),
+      /** 问卷一次展开几道题（多于它就依次问答；0 = 始终全部展开）。 */
+      questionBatch: readQuestionBatch(),
       session: sessionId ? this.sessions.find((session) => session.id === sessionId) : undefined,
       messages: scope?.adapter?.snapshotMessages() ?? [],
       running: scope?.running ?? false,
@@ -342,6 +381,22 @@ export class ChatController implements vscode.Disposable {
     if (!this.viewOrder.includes(viewId)) this.viewOrder.push(viewId);
   }
 
+  /** 注册「把这个窗口带到前台」的动作（见 `revealers`）。 */
+  registerRevealer(viewId: string, reveal: () => void): void {
+    this.revealers.set(viewId, reveal);
+  }
+
+  /**
+   * 把**最近活动的窗口**带到前台。
+   *
+   * 命令面板与编辑器右键入口调用它：那些动作的目标窗口就是 `activeViewId()`，
+   * 把焦点交回同一个窗口才对得上（见 `revealers` 的注释）。
+   */
+  revealActiveView(): void {
+    const viewId = this.activeViewId();
+    if (viewId) this.revealers.get(viewId)?.();
+  }
+
   /** 窗口产生活动（发了消息 / 编辑器面板变可见）。 */
   noteActiveView(viewId: string): void {
     const index = this.viewOrder.indexOf(viewId);
@@ -353,6 +408,7 @@ export class ChatController implements vscode.Disposable {
   unbindView(viewId: string): void {
     const sessionId = this.viewSessions.get(viewId);
     this.viewSessions.delete(viewId);
+    this.revealers.delete(viewId);
     const index = this.viewOrder.indexOf(viewId);
     if (index >= 0) this.viewOrder.splice(index, 1);
     if (sessionId) this.dropViewers(sessionId);
@@ -438,6 +494,9 @@ export class ChatController implements vscode.Disposable {
         if (state === "connected") void this.onConnected();
       });
       this.client = client;
+      // 工作区 id 是**服务端注册表**里的东西：换了服务器（或注册表被重置）时
+      // 旧 id 会 `workspace/not-found`，所以每次新建 client 都重新解析一次
+      this.workspaceId = undefined;
       client.connect();
       await this.loadModels();
       await this.refreshSessions();
@@ -535,7 +594,7 @@ export class ChatController implements vscode.Disposable {
             baseUrl,
           )
         : vscode.l10n.t(
-            "The server {0} requires authorization. Paste the token printed in the URL when dsh web started (the part after ?token=; the token is refreshed on every restart, but this extension remembers the session once it is accepted, so you will not have to enter it again).",
+            "The server {0} requires authorization. Paste the token printed in the URL when dsh web started (the part after ?token=; the token is refreshed on every restart, but the extension stores the session cookie it exchanges for, so it does not have to be verified again).",
             baseUrl,
           ),
       placeHolder: "token",
@@ -601,10 +660,10 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
-   * 配置里改了语言或字号：推给界面。
+   * 配置里改了语言、字号或问卷一次展开的题数：推给界面。
    *
-   * 两者都**不需要**重载 webview：语言是纯词典切换（界面用 `locale` 选字典），
-   * 字号是写一个 CSS 变量。重载会丢掉滚动位置与展开状态，代价不成比例。
+   * 三者都**不需要**重载 webview：语言是纯词典切换（界面用 `locale` 选字典），
+   * 字号与题数是几个数字。重载会丢掉滚动位置与展开状态，代价不成比例。
    */
   refreshAppearance(): void {
     this.emitAll({
@@ -613,6 +672,7 @@ export class ChatController implements vscode.Disposable {
         locale: readLanguage(),
         /** 0（auto）时为 undefined，过线成 null，界面清掉 `--font-size` 回到 VS Code 字号 */
         fontSizePx: readFontSize(),
+        questionBatch: readQuestionBatch(),
       },
     });
   }
@@ -862,6 +922,40 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
+   * 取回（必要时注册）当前项目在服务端的工作区 id。
+   *
+   * `workspace/create` 是**幂等**的：同一条 realpath 再来一次就返回原有记录
+   * （`resolveByPath`），所以「每次连接解析一次」不会堆出重复工作区。
+   *
+   * 拿不到（老版本服务器没有这条 RPC、路径不存在、网络失败…）时**返回 undefined
+   * 而不是抛错**：会话照旧按 cwd 建得出来，只是那一条在 Web 端仍落在未分组里——
+   * 让「新建会话」整体失败是更糟的结果。失败原因进日志。
+   */
+  private async ensureWorkspace(): Promise<string | undefined> {
+    if (this.workspaceId) return this.workspaceId;
+    if (!this.client) return undefined;
+    // 没有打开文件夹时不注册：那种情况下 `workspacePath()` 是扩展宿主的 cwd，
+    // 把 VS Code 自己所在目录注册成一个工作区不是用户的意思（会话照旧按 cwd 建）
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!folder) return undefined;
+    const path = folder.uri.fsPath;
+    try {
+      const value = await this.client.createWorkspace(path);
+      const id = value?.workspace?.workspaceId;
+      if (typeof id === "string" && id) {
+        this.workspaceId = id;
+        this.log(`[workspace] 工作区已注册：${path} → ${id}`);
+        return id;
+      }
+      this.log(`[workspace] 注册返回里没有 workspaceId：${JSON.stringify(value)}`);
+      return undefined;
+    } catch (error) {
+      this.log(`[workspace] 注册失败（本次回退到按 cwd 建会话）：${this.describeError(error)}`);
+      return undefined;
+    }
+  }
+
+  /**
    * 新建一个会话。指定窗口时把**那个窗口**绑上去（其他窗口保持各自会话，
    * 互不同步）；不指定窗口（命令面板入口且无活动窗口）时只建会话，不挂域。
    */
@@ -871,7 +965,8 @@ export class ChatController implements vscode.Disposable {
     }
     if (!this.client) return;
     try {
-      const created = await this.client.createSession(this.workspacePath());
+      const workspaceId = await this.ensureWorkspace();
+      const created = await this.createSessionInWorkspace(workspaceId);
       // 域是「窗口打开会话」的产物：没有窗口要绑（命令面板且无活动窗口）就不建域，
       // 会话只进列表，等某个窗口打开它时再开 follow 流
       const scope = viewId ? this.ensureScope(created.sessionId) : undefined;
@@ -885,6 +980,24 @@ export class ChatController implements vscode.Disposable {
       }
     } catch (error) {
       this.reportError(vscode.l10n.t("Failed to create a session"), error);
+    }
+  }
+
+  /**
+   * 按工作区建会话；工作区 id 失效（注册表被重置 / 换了 DSH home）时清掉缓存、
+   * 退化成按 cwd 建——**一次重试**，不再递归（见 `ensureWorkspace`）。
+   */
+  private async createSessionInWorkspace(
+    workspaceId: string | undefined,
+  ): Promise<{ sessionId: string; agentPreset?: string }> {
+    if (!this.client) throw new Error("no client");
+    if (!workspaceId) return this.client.createSession({ cwd: this.workspacePath() });
+    try {
+      return await this.client.createSession({ workspaceId });
+    } catch (error) {
+      this.workspaceId = undefined;
+      this.log(`[workspace] 按工作区建会话失败，回退 cwd：${this.describeError(error)}`);
+      return this.client.createSession({ cwd: this.workspacePath() });
     }
   }
 
@@ -1046,6 +1159,18 @@ export class ChatController implements vscode.Disposable {
    * - `throughSeq` **必须**来自同一次 `session/follow` 开帧的 `snapshot.cursor`，
    *   从别处拿会校验失败——所以由适配器记着（`cursor()`）；
    * - `beforeSeq` 取当前已折叠事件的最小 seq，服务端只回它之前的那一页。
+   *
+   * `historyLoading` 由**宿主**发：界面据此把「加载更早」按钮变成不可点的
+   * 「正在加载更早消息…」，也据它判断一页是否落定。发帧顺序必须是
+   * `true` →（prependRecords 的 hasMoreHistory / messages/reset）→ `false`：
+   * 界面先拿到内容，再看到「取完了」。
+   *
+   * **连取由宿主驱动**（界面只发一次请求）：一次触发要「至少取到用户的上一条消息」，
+   * 而判断「到没到一轮的开头」「这一页到底有没有带来新事件」都只有宿主有真凭据
+   * （适配器的消息流与新并入的事件数）。放在界面侧拿「首条消息 id 变没变」猜，
+   * 会在「旧事件只是把第一条助手消息补长」时误判成没进展而提前收手
+   * （用户 2026-09-15 报的「并没有加载到上一条消息就已经停了」，现场见
+   * `scripts/pageLoopProbe.ts`）。
    */
   private async loadMore(viewId: string): Promise<void> {
     const scope = this.scopeOfView(viewId);
@@ -1055,18 +1180,55 @@ export class ChatController implements vscode.Disposable {
       this.emitToView(viewId, { type: "toast", level: "warn", text: "@historyBusy" });
       return;
     }
-    const throughSeq = scope.adapter.cursor();
-    const beforeSeq = scope.adapter.earliestSeq();
-    if (throughSeq === undefined || beforeSeq === undefined) {
-      this.log("[history] 拿不到分页锚点（缺 snapshot.cursor 或本地无事件）");
-      this.deliver(scope.sessionId, { type: "patch", patch: { hasMoreHistory: false } });
-      return;
-    }
+    // 一次只跑一条链：滚动事件会在「historyLoading 帧回到界面」之前连发好几个
+    if (scope.historyLoading) return;
+    scope.historyLoading = true;
+    this.deliver(scope.sessionId, { type: "patch", patch: { historyLoading: true } });
     try {
-      const page = await this.client.page(scope.sessionId, throughSeq, beforeSeq);
-      scope.adapter.prependRecords((page.records ?? []) as never[], Boolean(page.hasMore));
+      await this.pageBackwards(scope);
     } catch (error) {
       this.reportError(vscode.l10n.t("Failed to load earlier history"), error);
+    } finally {
+      scope.historyLoading = false;
+      this.deliver(scope.sessionId, { type: "patch", patch: { historyLoading: false } });
+    }
+  }
+
+  /**
+   * 一页一页往前取，直到**取到用户的上一条消息**（一轮的开头）或没有更早的了。
+   *
+   * 每页都会单独发一份 `messages/reset`：界面逐页把视口钉回原处（见 App 的
+   * `useHistoryPaging`），所以用户看到的是「内容在上面长出来、自己没被推走」。
+   */
+  private async pageBackwards(scope: SessionScope): Promise<void> {
+    let pages = 0;
+    for (;;) {
+      // 生成开始了就停：分页与流式叠加层互斥
+      if (scope.running) {
+        this.log(`[history] 取到第 ${pages + 1} 页前发现新一轮已开始，停下`);
+        return;
+      }
+      const throughSeq = scope.adapter?.cursor();
+      const beforeSeq = scope.adapter?.earliestSeq();
+      if (!scope.adapter || throughSeq === undefined || beforeSeq === undefined) {
+        this.log("[history] 拿不到分页锚点（缺 snapshot.cursor 或本地无事件）");
+        this.deliver(scope.sessionId, { type: "patch", patch: { hasMoreHistory: false } });
+        return;
+      }
+      const page = await this.client!.page(scope.sessionId, throughSeq, beforeSeq);
+      const added = scope.adapter.prependRecords(
+        (page.records ?? []) as never[],
+        Boolean(page.hasMore),
+      );
+      pages += 1;
+      if (shouldContinuePaging(added, Boolean(page.hasMore), scope.adapter.snapshotMessages())) {
+        continue;
+      }
+      this.log(
+        `[history] 取到第 ${pages} 页停：新并入 ${added} 条事件、hasMore=${Boolean(page.hasMore)}、` +
+          `顶部=${scope.adapter.snapshotMessages()[0]?.role ?? "（空）"}`,
+      );
+      return;
     }
   }
 
@@ -2166,11 +2328,18 @@ export class ChatController implements vscode.Disposable {
     );
     const selections = attachments.filter((attachment) => attachment.kind === "selection" && attachment.text);
     // 选区是本地便利能力（官方没有对应原语）：它的文本仍作为上下文前置。
+    // 带行号的选区把范围写进正文——用户引的是「这个文件的这几行」，
+    // 不说清楚的话模型只能猜代码出处（用户 2026-09-14 明确要求）。
     if (selections.length) {
       content.push({
         type: "text",
         text: selections
-          .map((attachment) => `以下是来自 ${attachment.name} 的选中代码：\n\`\`\`\n${attachment.text}\n\`\`\``)
+          .map((attachment) => {
+            const range = attachment.lines
+              ? ` 第 ${attachment.lines.start}-${attachment.lines.end} 行`
+              : "";
+            return `以下是来自 ${attachment.name}${range} 的选中代码：\n\`\`\`\n${attachment.text}\n\`\`\``;
+          })
           .join("\n\n"),
       });
     }
@@ -2928,12 +3097,18 @@ export class ChatController implements vscode.Disposable {
     }
   }
 
-  /** 供编辑器命令调用：把一段文本作为上下文加入最近活动窗口的输入框。 */
-  addSelection(name: string, text: string): void {
+  /**
+   * 供编辑器命令调用：把一段文本作为上下文加入最近活动窗口的输入框。
+   *
+   * `lines` 是选区覆盖的行号（1 基闭区间）：**部分引用必须带上它**——界面上
+   * 芯片要显示 `文件:12-40`，发给模型的正文里也要写清是哪些行（否则模型看到的
+   * 是一段无出处的代码，用户也分不清自己引的是整篇还是几行）。
+   */
+  addSelection(name: string, text: string, lines?: { start: number; end: number }): void {
     const viewId = this.activeViewId();
     if (!viewId) return;
     this.mutateAttachmentsForView(viewId, (list) => {
-      list.push({ id: randomUUID(), kind: "selection", name, text });
+      list.push({ id: randomUUID(), kind: "selection", name, text, lines });
     });
   }
 

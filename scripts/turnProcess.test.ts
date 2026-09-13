@@ -18,8 +18,8 @@ const tool = (id: string, name: string, step: number): Segment =>
   ({ kind: "tool", id, tool: { id, name, status: "ok" }, step }) as Segment;
 const notice = (id: string, step: number): Segment =>
   ({ kind: "notice", id, level: "warn", text: "@maxTokens", step }) as Segment;
-const injected = (id: string, step: number): Segment =>
-  ({ kind: "injected", id, injected: { sourceKind: "plugin", text: "x" }, step }) as Segment;
+const injected = (id: string, step: number, sourceKind = "plugin"): Segment =>
+  ({ kind: "injected", id, injected: { sourceKind, text: "x" }, step }) as Segment;
 
 // ---------- 1. 基本折叠：答案步之前的都进去，答案留着 ----------
 {
@@ -65,13 +65,16 @@ const injected = (id: string, step: number): Segment =>
   assert.deepStrictEqual(fold.visible.map((s) => s.id), ["a1"]);
 }
 
-// ---------- 3. 豁免段永不折叠：中止/截断提示与自动载入的上下文 ----------
+// ---------- 3. 豁免段：轮级提示 + **系统提示词**；其余上下文注入照常折叠 ----------
 //
-// 官方 `TURN_PROCESS_INDEPENDENT_KINDS` 里有 turn-error / turn-max-tokens /
-// system-prompt。把「回答被截断了」折进按钮里是绝不能接受的信息损失。
+// 官方 `TURN_PROCESS_INDEPENDENT_KINDS` = system-prompt / user / steering /
+// turn-process / turn-error / turn-max-tokens / turn-tail —— **没有 context 一类**。
+// 所以：轮级提示（截断/中止）与系统提示词永不折；插件注入 / 项目指令 / 技能目录 /
+// 运行时上下文都算过程成员（用户 2026-09-15 对照 Web 报的「上下文注入也要折进去」）。
 {
   const segments: Segment[] = [
-    injected("x1", 0),
+    injected("sys1", 0, "system"),
+    injected("x1", 0, "plugin"),
     tool("t0", "read", 0),
     notice("n1", 1),
     text("a2", "答案", 2),
@@ -81,8 +84,16 @@ const injected = (id: string, step: number): Segment =>
     fold.visible.some((s) => s.id === "n1"),
     "轮级提示（截断/中止）必须保持可见，不能折进去",
   );
-  assert.ok(fold.visible.some((s) => s.id === "x1"), "自动载入的上下文同样保持可见");
-  assert.deepStrictEqual(fold.folded.map((s) => s.id), ["t0"], "只有真正的过程成员被折起来");
+  assert.ok(fold.visible.some((s) => s.id === "sys1"), "系统提示词对应官方的 system-prompt，豁免");
+  assert.ok(
+    !fold.visible.some((s) => s.id === "x1"),
+    "上下文注入要折进过程（官方集合里没有 context 一类）",
+  );
+  assert.deepStrictEqual(
+    fold.folded.map((s) => s.id),
+    ["x1", "t0"],
+    "折叠成员 = 上下文注入 + 工具行（顺序不变）",
+  );
 }
 
 // ---------- 4. 流式期间不折叠（官方要求 turnClosed） ----------

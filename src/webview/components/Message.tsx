@@ -6,7 +6,7 @@ import { Markdown } from "./Markdown";
 import { formatClock, useSelectionFreeze } from "./primitives";
 import { ApprovalCard, CommandRow, FileChips, InjectedRow, MessageImages, NoticeRow, QuestionCard, ThinkingRow, ToolRow, TurnProcessRow, TurnStatsButton, UnknownBlockRow } from "./Rows";
 import { useTexts } from "../texts";
-import { producedOnly } from "../turnFiles";
+import { producedOnly, withoutVanished } from "../turnFiles";
 import { foldTurnProcess } from "../turnProcess";
 import { isTakenOverByComposer } from "../pendingInteraction";
 
@@ -29,6 +29,7 @@ export const Message = memo(function Message({
   message,
   diffLayout,
   fileKinds,
+  questionBatch,
   canBranch = false,
 }: {
   message: MessageView;
@@ -36,6 +37,8 @@ export const Message = memo(function Message({
   diffLayout?: DiffLayout;
   /** 文件芯片的种类表（宿主按 git 判定后整表下发；缺省不标记号）。 */
   fileKinds?: Record<string, FileChangeKind>;
+  /** 问卷一次展开几道题（`dshChat.questionBatch`；缺省用默认阈值）。 */
+  questionBatch?: number;
   /**
    * 这条消息能否作为分支锚点（只有**已结束**的那一轮可以）。
    *
@@ -84,8 +87,19 @@ export const Message = memo(function Message({
     .join("\n\n");
 
   // 「本轮改动」里刨掉已经申报交付的文件：模型申报的通常就是它刚改的那几个，
-  // 两行都列一遍看着像同一件事说了两遍（口径见 turnFiles.ts）
-  const producedFiles = producedOnly(message.produced, message.deliverables);
+  // 两行都列一遍看着像同一件事说了两遍（口径见 turnFiles.ts）。
+  // 再刨掉**净效果为零**的文件（写了又删、git 完全不认识，宿主分类为 `gone`）：
+  // 模型提交时写的 `commit.msg.txt` 正是这一类。
+  const producedFiles = withoutVanished(
+    producedOnly(message.produced, message.deliverables),
+    fileKinds,
+    (path) => path,
+  );
+  const deliverables = withoutVanished(
+    message.deliverables ?? [],
+    fileKinds,
+    (file) => file.path,
+  );
 
   // 轮级过程折叠（官方默认的 compact 转写模式）：一轮**结束后**，把答案步之前的一切
   // 折成一枚按钮。流式期间不折（官方要求 turnClosed）。口径与边界见 turnProcess.ts。
@@ -115,7 +129,7 @@ export const Message = memo(function Message({
         );
       case "question":
         return isTakenOverByComposer(segment) ? null : (
-          <QuestionCard key={segment.id} question={segment.question} />
+          <QuestionCard key={segment.id} question={segment.question} batch={questionBatch} />
         );
       case "injected":
         return <InjectedRow key={segment.id} injected={segment.injected} />;
@@ -180,8 +194,8 @@ export const Message = memo(function Message({
             kinds={fileKinds}
           />
         ) : null}
-        {!message.streaming && message.deliverables?.length ? (
-          <FileChips label={texts.presentedLabel} paths={message.deliverables} kinds={fileKinds} />
+        {!message.streaming && deliverables.length ? (
+          <FileChips label={texts.presentedLabel} paths={deliverables} kinds={fileKinds} />
         ) : null}
         {/*
           `message.error` 有两种来源：真正的失败（`turn/end` 的 error 原因、服务端

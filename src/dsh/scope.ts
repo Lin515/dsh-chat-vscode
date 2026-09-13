@@ -35,6 +35,14 @@ export class SessionScope {
 
   /** 本会话是否正在生成（由适配器的 running patch 帧同步）。 */
   running = false;
+  /**
+   * 本会话是否有一页更早的历史正在取（`loadMore` 的并发闸门）。
+   *
+   * 界面那边靠宿主发的 `historyLoading` 帧去重，但帧要一个来回才到——用户滚到顶时
+   * 一秒能来几十个滚动事件，闸门放在宿主侧才真正「一次只飞一页」（否则同一页会被
+   * 并发请求多次，白白重折一遍历史）。
+   */
+  historyLoading = false;
   /** 排队中的消息（session/control 的 queue 帧）。 */
   queueItems: QueuedMessageView[] = [];
   /** 队列项 id → 它的原始输入（每次队列帧到达时按 rpcId 重建）。 */

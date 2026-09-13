@@ -35,8 +35,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   resolveWebviewView(view: vscode.WebviewView): void {
     // VS Code 实例化侧栏视图时才会走到这里——多出一个侧栏 DSH 视图必然是
     // 某个时刻调用了这里，日志用于定位是谁/何时触发的
-    const viewId = this.attach(view.webview, view.onDidDispose);
+    //
+    // reveal 用 `view.show()`：侧栏视图的「带到前台」就是它（面板那侧是
+    // `panel.reveal()`）。命令入口靠这个把焦点还给「你上次用的那个对话窗口」。
+    const viewId = this.attach(view.webview, view.onDidDispose, () => view.show());
     this.log(`[view] ${this.kind} 侧栏视图实例化 viewId=${viewId}`);
+    // 侧栏视图变可见视作活动：命令面板入口（新建/历史/加选区…）据此定位窗口。
+    // 编辑区面板有同样的处理（见 openPanel），两边口径必须一致
+    this.disposables.push(
+      view.onDidChangeVisibility(() => {
+        if (view.visible) this.controller.noteActiveView(viewId);
+      }),
+    );
   }
 
   /** 在编辑器区打开一个独立面板；指定会话时面板打开那个会话。 */
@@ -47,7 +57,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       vscode.ViewColumn.Beside,
       this.webviewOptions(),
     );
-    const viewId = this.attach(panel.webview, panel.onDidDispose);
+    const viewId = this.attach(panel.webview, panel.onDidDispose, () =>
+      panel.reveal(undefined, false),
+    );
     this.log(`[view] 创建编辑区面板 viewId=${viewId} session=${sessionId ?? "（空态）"}`);
     // 「在编辑器中打开」：调用方带会话时，编辑器窗口打开那个会话（点击动作
     // 来自那个会话所在的窗口）。openSession 绑定后会向这个窗口推完整状态
@@ -75,12 +87,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   private attach(
     webview: vscode.Webview,
     onDispose: (listener: () => void) => vscode.Disposable,
+    /** 把这个窗口带到前台（侧栏视图 `show()` / 编辑区面板 `reveal()`）。 */
+    reveal: () => void,
   ): string {
     const viewId = randomUUID();
     webview.options = this.webviewOptions();
     webview.html = this.html(webview);
     this.viewWebviews.set(viewId, webview);
     this.controller.bindView(viewId);
+    this.controller.registerRevealer(viewId, reveal);
 
     this.disposables.push(
       webview.onDidReceiveMessage((message: WebviewToHost) => {

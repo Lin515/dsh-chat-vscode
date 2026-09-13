@@ -78,6 +78,16 @@ const entries = {
   "build/session-list.test.mjs": "scripts/sessionList.test.ts",
   "build/token-cleanup.test.mjs": "scripts/tokenAndCleanup.test.ts",
   "build/config-changes.test.mjs": "scripts/configChanges.test.ts",
+  "build/footnotes.test.mjs": "scripts/footnotes.test.ts",
+  "build/question-flow.test.mjs": "scripts/questionFlow.test.ts",
+  "build/mention-nav.test.mjs": "scripts/mentionNav.test.ts",
+  "build/selection.test.mjs": "scripts/selection.test.ts",
+  "build/workspace-probe.mjs": "scripts/workspaceProbe.ts",
+  "build/history-replay.test.mjs": "scripts/historyReplay.test.ts",
+  "build/render-order-probe.mjs": "scripts/renderOrderProbe.ts",
+  "build/render-order.test.mjs": "scripts/renderOrder.test.ts",
+  "build/live-order-probe.mjs": "scripts/liveOrderProbe.ts",
+  "build/page-loop-probe.mjs": "scripts/pageLoopProbe.ts",
   "build/config-reload-probe.mjs": "scripts/configReloadProbe.ts",
 };
 

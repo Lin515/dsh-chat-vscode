@@ -54,6 +54,14 @@ export interface Attachment {
   upload?: UploadState;
   /** `@` 引用的目标类型（`kind === "reference"` 时）。 */
   referenceKind?: "file" | "directory";
+  /**
+   * 选区覆盖的行号（1 基，闭区间；`kind === "selection"` 时）。
+   *
+   * 编辑器右键「添加选中代码到对话」带过来的选区是**部分引用**：没有行号的话，
+   * 界面上只能看到一个文件名，模型也只拿到一段无名代码（用户 2026-09-14 明确
+   * 要求「部分引用要体现出行号」）。整文件引用（无选区）不带这个字段。
+   */
+  lines?: { start: number; end: number };
 }
 
 /**
@@ -98,9 +106,12 @@ export type DiffLayout = "auto" | "unified" | "split";
  *
  * - `new`：git 未跟踪（模型本轮新建）→ 芯片标 `[新增]`，点击直接打开文件；
  * - `edited`：有可对比的工作区/暂存/合并改动 → 点击开 VS Code 的对比窗口；
- * - `deleted`：文件已不在磁盘上 → 芯片名画删除线，点击尝试打开旧内容。
+ * - `deleted`：文件已不在磁盘上（且 git 知道它）→ 芯片名画删除线，点击尝试打开旧内容；
+ * - `gone`：磁盘上没有、git 也**完全不知道**它（不在工作区/暂存/合并/未跟踪任何
+ *   一张清单里）→ 本轮「写了又删、净效果为零」的临时文件（`commit.msg.txt` 这类），
+ *   界面**不渲染**这一条：它不代表任何改动，画成删除线只会让人以为仓库脏了。
  */
-export type FileChangeKind = "new" | "edited" | "deleted";
+export type FileChangeKind = "new" | "edited" | "deleted" | "gone";
 
 export interface ApprovalView {
   requestId: string;
@@ -527,6 +538,13 @@ export interface CommandView {
 export interface FileRefView {
   path: string;
   kind: "file" | "directory";
+  /**
+   * 界面自己插入的「返回上一层目录」行（不是服务端给的候选）。
+   *
+   * 只在 `@` 查询已经进入某个子目录时才有：它的 `path` 是**上一层目录**的
+   * 拼写（工作区根目录是空串），选中它就回到那一层。服务端从不产出这个标记。
+   */
+  parent?: boolean;
 }
 
 /** 设置页的一个字段（由 schema 推导）。 */
@@ -599,6 +617,13 @@ export interface ChatState {
    * 跟随 VS Code 注入的字号。界面只把它当 CSS 变量用，不做逻辑判断。
    */
   fontSizePx?: number;
+  /**
+   * 一份问卷一次展开几道题（对应 `dshChat.questionBatch`，取值 ≥0）。
+   *
+   * 题目数**多于**它时界面改为依次问答；`0` 表示始终一次展开全部。
+   * 宿主只下发用户填的数，界面不再自己读配置（webview 读不到 VS Code 配置）。
+   */
+  questionBatch?: number;
   /** 排队中（尚未发送）的消息列表，来自 session/control 的 queue 帧。 */
   queueItems: QueuedMessageView[];
   attachments: Attachment[];
@@ -615,6 +640,15 @@ export interface ChatState {
   jobs: JobItemView[];
   /** 历史是否还有更早的内容可加载。 */
   hasMoreHistory?: boolean;
+  /**
+   * 宿主正在取更早的一页历史（`session/page` 在飞）。
+   *
+   * 由**宿主**发而不是界面自己记：界面只知道「消息数变了没有」，遇到「这一页回来了
+   * 但没带来新内容」就分不清是还在飞还是已经取完（只能干等超时）。有了这个标记，
+   * 「加载更早」按钮能在整条连取链期间稳定显示「正在加载更早消息…」的不可点状态，
+   * 一落定就恢复；连取下一页的时机也由它决定。
+   */
+  historyLoading?: boolean;
   /**
    * 一次性轻提示（复制成功、设置已保存、图片被跳过…）。
    *

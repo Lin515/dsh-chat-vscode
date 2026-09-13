@@ -16,18 +16,27 @@
 **会话与对话**
 
 - 自动拉起并连接本机 `dsh web`，断线指数退避重连，长活流自动重开
-- 会话列表（按今天/更早分组、可搜索）、新建、切换、历史回放
+- 会话列表（按今天/更早分组、可搜索）、新建、切换、历史回放；滚到顶自动加载更早的
+  历史（一次触发**取到一轮的开头为止**，插进来之后视口停在原来那几行上、旧轮次一出现
+  就是折叠态；手动按钮保留作兜底，整条连取链期间显示「正在加载更早消息…」）
+- 会话会**注册进当前项目的工作区**（`workspace/create` + 按 `workspaceId` 建会话），
+  所以在 DSH Web 端按工作区分组显示，而不是一律「未分组」（证据见
+  `scripts/workspaceProbe.ts`；此前已经建好的会话不会追溯分组）
 - 流式对话：正文逐 token 上屏，思考独立成块并在结束后自动收起
 - 工具调用压成单行（读取 / 写入 / 编辑 / 运行 / 搜索…），点开查看完整参数与结果
 - 读取节点只读了一段时，行号缀在文件名后（`…/controller.ts:100-120`）；该后缀不参与
   压缩，窄侧栏下宁可截断路径也保住行号——一眼看出模型是读了整个文件还是只扫了一段
-- **自动载入的提示词可见**：系统提示词、插件注入（MCP 状态、记忆召回…）、项目指令
-  （AGENTS.md）、技能目录都作为节点出现在对话里，默认收起、标注来源与字数，点开看全文
+- **自动载入的提示词可见**：系统提示词、上下文注入（插件注入、MCP 状态、记忆召回…）、
+  项目指令（AGENTS.md）、技能目录都作为节点出现在对话里，默认收起、标注来源与字数，
+  点开看全文；标签用官方词汇（「上下文注入」/「跨会话召回」/「系统提示词」），
+  并随上下文注入一起进「轮级过程」折叠（只有系统提示词那一条与中止/截断提示不折）
 - 运行中的节点（构建等长任务）：圆点与思考节点同样呼吸发光，展开区显示完整命令与
   **每秒跳动的实时耗时**，随时能确认它还在跑
 - 编辑类节点（`edit` / `write` / `str_replace`）展开时渲染为**结构化 diff**：
   窄对话框单栏、宽对话框左右对照（`dshChat.diffLayout` 可选自适应 / 固定单栏 / 固定双栏）
-- 审批与提问卡片：允许 / 拒绝；未识别的交互事件一律放行，避免把 Agent 挂住
+- 审批与提问卡片：允许 / 拒绝；未识别的交互事件一律放行，避免把 Agent 挂住。
+  **问卷**（`ask_user_question`）默认一次展开全部题目，题目多于 `dshChat.questionBatch`
+  时改成依次问答（上一题 / 下一题），答完**自动收缩**成一行，可再点开复看
 - 代码块卡片：复制、插入当前编辑器、语言标注、长块折叠
 - 停止生成（按钮或 Esc）；**队列非空时，Esc 会中止当前轮并把队首消息接着发出去**
   （提示文案随之变为「按 ESC 可中止并发出排队消息」）；排队消息逐条列出，可直接
@@ -36,9 +45,13 @@
 **输入与上下文**
 
 - 输入 `/` 弹出斜杠命令菜单（含**技能**，技能带「技能」标记——它不是可执行的命令，
-  选中只是把名字写进正文），继续输入即过滤，↑↓ 选择、Enter 确认
+  选中只是把名字写进正文），继续输入即过滤，↑↓ 选择（选中项自动滚进视野）、Enter 确认
 - 输入 `@` 弹出文件候选（含目录）。**选中目录默认是打开它**（继续下钻）；
-  只有点右侧的「整个目录」按钮才是把目录本身作为 `@dir/` 引用载入
+  只有点右侧的「整个目录」按钮才是把目录本身作为 `@dir/` 引用载入。
+  进了子目录之后列表**顶部**多出 `..` 一行，点它回到上一层
+- 编辑器右键「添加选中代码到对话」加进来的是**部分引用**：芯片上带行号
+  （`src/config.ts:12-40`），提示词正文里同样写明行范围；加完之后焦点回到
+  你上次用的那个对话窗口（侧栏或编辑区面板），不再固定跳主侧栏
 - **引用与上传（对齐官方）**：文件不再把正文塞进提示词，而是走两条官方路径——
   - 图片 → 内容块（字节随消息发送）；
   - 其余文件 → **选中即上传**，芯片上显示进度，发送时只带 `receiptId`；
@@ -114,8 +127,13 @@
   数值口径与官方一致——prompt 侧、不含 output、优先 `projectedTokens`
   （所以**压缩后会下降**）。**常驻显示**：每轮结束都会刷新；投影还没给出新值时用
   同口径的本地复算兜底；什么新数据都没有时保留上一次的数字，不会空掉。
-- **「加载更早的消息」**：跟随窗口只带 60 条，更早的内容需要点一下往前翻页
-  （按钮只在服务端还有更早内容时出现）
+- **「加载更早的消息」**：跟随窗口只带 60 条，更早的内容**滚到顶部就自动加载**，
+  并且一次触发就**取到一轮的开头为止**（顶部变成用户消息；连取由宿主驱动，界面只发
+  一次请求）；插进来之后视口停在原来那几行上，旧轮次一出现就是折叠态。按钮只在服务端
+  还有更早内容时出现，整条连取链期间它自己是**不可点的「正在加载更早消息…」**
+- **Markdown**：GFM 任务列表、表格、脚注（`[^1]`，官方 `markdown.footnotes` 同口径，
+  定义收进文末的 `section.footnotes`）；公式与代码高亮**刻意不做**（要引入 KaTeX / Shiki，
+  见 `THIRD-PARTY-NOTICES.md` 的取舍记录）
 - dsh 特有信息（token 用量、回合耗时）收进折叠行，默认不打扰
 - VS Code 非正常关闭留下的 dsh 残留进程会在下次启动时被识别并清理；
   **崩溃遗留的文件锁**（`~/.dsh/*.yaml.lock`）同样会在启动前清掉——
@@ -159,8 +177,9 @@ npm run watch          # 增量构建
 | `dshChat.diffLayout` | `auto` | 编辑类节点的 diff 排版：`auto`（窄单栏 / 宽双栏）、`unified`（固定单栏）、`split`（固定双栏） |
 | `dshChat.language` | `auto` | 聊天界面语言：`auto` 跟随 VS Code、`zh-cn` 固定中文、`en` 固定英文 |
 | `dshChat.fontSize` | `0` | 聊天界面字号（整数 px，≥8）；`0` 跟随 VS Code 的字号 |
+| `dshChat.questionBatch` | `3` | 一份问卷一次展开几道题；题目多于它时改为**依次问答**。`0` = 始终一次展开全部 |
 
-> 语言与字号改完**即时生效**，不需要重载窗口（它们只影响词典与一个 CSS 变量，
+> 语言、字号与问卷题数改完**即时生效**，不需要重载窗口（它们只影响词典与几个数字，
 > 重载反而会丢掉滚动位置与展开状态）。
 
 ### 外部服务器与访问令牌
@@ -380,7 +399,12 @@ rainbow outline while streaming), while every conversational capability comes fr
 
 **Conversation** — auto-start and connect to a local `dsh web` with exponential-backoff
 reconnect and automatic stream recovery; session list (grouped by today/earlier,
-searchable), new chat, switching, history replay; token-by-token streaming with reasoning
+searchable), new chat, switching, history replay; earlier history loads automatically when
+you scroll to the top; sessions are **registered into the project's workspace**
+(`workspace/create` plus creating them by `workspaceId`), so they appear grouped by
+workspace in the DSH Web UI instead of under "Ungrouped" (evidence:
+`scripts/workspaceProbe.ts`; sessions created before this change keep their old grouping);
+token-by-token streaming with reasoning
 in its own collapsible block; **auto-loaded prompts are visible** — the system prompt,
 plugin injections (MCP status, memory recall …), workspace instructions (AGENTS.md) and the
 skill catalog each appear as a node labelled by origin with its size, collapsed by default
@@ -393,7 +417,10 @@ untruncated command plus a **live elapsed timer**, and edit-style calls (`edit` 
 structured diff — single column in a narrow panel, side-by-side when wide
 (`dshChat.diffLayout`: adaptive / always single column / always side-by-side); approval and
 question cards (unknown interaction events are always
-passed through so the agent never hangs); code blocks with copy/insert, language label and
+passed through so the agent never hangs) — a **questionnaire** opens with every question at
+once, switches to one-at-a-time paging (Previous / Next) when it has more questions than
+`dshChat.questionBatch`, and **collapses into a single row once answered**, expandable again
+to review what was asked; code blocks with copy/insert, language label and
 collapsing for long blocks; stop generation (button or Esc) — when messages are queued, Esc
 also stops the current turn and sends the frontmost queued message; queued messages are
 listed individually so each can be taken back into the composer for editing (text and
@@ -404,7 +431,12 @@ attachments restored) or cancelled on its own.
 not an executable command — picking one just writes its name into the message. Type `@` for
 file mentions (files *and* folders): **selecting a folder opens it** (drills in); only the
 "whole folder" button on the right of the row loads the folder itself as an `@dir/`
-reference. Attachments follow the official two paths — images are sent as content blocks,
+reference; once you have drilled into a folder, a `..` row appears **at the top** of the
+list to climb back one level; a selection added from the editor's context menu is a
+**partial reference** and carries its line range (`src/config.ts:12-40`) both on the chip
+and in the prompt text, and focus returns to the chat window you were last using (sidebar
+or editor panel) instead of always jumping to the primary sidebar. Attachments follow the
+official two paths — images are sent as content blocks,
 **every other file uploads the moment it is picked** (the chip shows progress, and the send
 carries only a `receiptId`), and an `@` reference puts just `@path` in the message text, so
 the model reads the file itself when it needs the contents (the `context:file-reference`
@@ -479,8 +511,16 @@ percentage inside (amber from 60%, red from 90%) and the breakdown on hover, usi
 official numerator (prompt-side, preferring `projectedTokens`, so it **drops after a
 compaction**) and **always on screen** — it refreshes every turn, falls back to an
 identically-derived local figure while the projection has no numerator yet, and keeps the
-previous number rather than blanking when there is nothing new; a **"load earlier messages"**
-control, because the follow window only carries 60 messages; activity bar and secondary
+previous number rather than blanking when there is nothing new; earlier history **loads
+automatically when you scroll to the top** and keeps paging (host-driven) until it reaches
+**the start of a turn** — the topmost message becomes the user's previous message — pinning
+the viewport to the lines you were reading, with turns that come back already folded staying
+folded; the manual "load earlier messages" button stays as a fallback and shows
+**"Loading earlier messages…" (disabled)** for the whole run; **Markdown** covers GFM task
+lists, tables and **footnotes** (`[^1]`, the same shape as the official `markdown.footnotes`:
+the definitions collect into a trailing `section.footnotes`), while math and syntax
+highlighting are **deliberately out** (they would pull in KaTeX / Shiki — see
+`THIRD-PARTY-NOTICES.md`); activity bar and secondary
 sidebar containers plus a standalone editor-area panel; dsh-specific stats (token usage,
 turn duration) tucked into collapsible rows;
 leftover `dsh web` processes from an unclean VS Code shutdown are detected and cleaned up on
@@ -511,6 +551,7 @@ bar is used); `dsh` runnable locally (falls back to `npx`); model credentials co
 | `dshChat.diffLayout` | `auto` | Diff layout for edit calls: `auto` (single column when narrow, side-by-side when wide), `unified`, `split` |
 | `dshChat.language` | `auto` | Chat UI language: `auto` follows VS Code, `zh-cn`, `en` |
 | `dshChat.fontSize` | `0` | Chat UI font size in integer px (≥ 8); `0` follows the VS Code font size |
+| `dshChat.questionBatch` | `3` | How many questions of one questionnaire to show at once; more than this many are asked **one at a time**. `0` always shows every question at once |
 
 Language and font size apply **immediately** — no window reload, which would cost you the
 scroll position and every expanded row for no reason.

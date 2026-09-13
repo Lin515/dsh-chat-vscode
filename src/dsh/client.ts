@@ -318,10 +318,36 @@ export class DshClient {
     return this.request(METHODS.sessionList, { _request: {} });
   }
 
-  createSession(cwd: string, sessionId?: string): Promise<{ sessionId: string; agentPreset?: string }> {
-    return this.request(METHODS.sessionCreate, {
-      request: { cwd, ...(sessionId ? { sessionId } : {}) },
-    });
+  /**
+   * 注册（或幂等取回）一个工作区：DSH Web 的会话按**工作区**分组，而分组不是
+   * 按 cwd 推出来的——它是一张持久注册表（`workspace/create`，路径经 realpath
+   * 归一做唯一性）。扩展此前只按 cwd 建会话，于是服务端**从没把会话记进任何
+   * 工作区**，同一批会话在 DSH Web 端全部落在「未分组」。
+   */
+  createWorkspace(path: string): Promise<{ workspace?: { workspaceId?: string }; created?: boolean }> {
+    return this.request("workspace/create", { request: { path } });
+  }
+
+  /**
+   * 新建会话。
+   *
+   * 契约（`dsh-api-session-controller` 的 `create`）**只接受两者之一**：
+   * 给了 `workspaceId` 就按那个工作区的路径建会话并把会话记进工作区；
+   * 只给 `cwd` 建出来的会话不属于任何工作区（Web 端显示为未分组）。
+   * 同时给两个会被网关以 `gateway/bad-request` 拒绝。
+   *
+   * 第一个参数收字符串是给探针脚本用的（`createSession(process.cwd())`）：
+   * 那些脚本要的是「按 cwd 建一条临时会话」，与工作区分组无关。
+   */
+  createSession(
+    target: string | { workspaceId?: string; cwd?: string },
+    sessionId?: string,
+  ): Promise<{ sessionId: string; agentPreset?: string }> {
+    const wanted = typeof target === "string" ? { cwd: target } : target;
+    const request = wanted.workspaceId
+      ? { workspaceId: wanted.workspaceId, ...(sessionId ? { sessionId } : {}) }
+      : { cwd: wanted.cwd ?? "", ...(sessionId ? { sessionId } : {}) };
+    return this.request(METHODS.sessionCreate, { request });
   }
 
   /**

@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import type { ChatState } from "../shared/chat";
 import type { HostToWebview } from "../shared/ipc";
 import { post, subscribe } from "./bridge";
@@ -158,6 +158,76 @@ function EmptyState() {
 const NOTICE_MS = 4000;
 
 /**
+ * 「滚到顶就自动取更早的历史」的触发距离（px）。
+ *
+ * 不写成 0：滚动条贴到最顶上才算的话，稍快一点的滚轮/拖动会一下子冲到 0 再被
+ * 浏览器回弹，用户得停在极窄的一条里才触发。几十像素是「已经在看开头了」。
+ */
+const HISTORY_TOP_PX = 64;
+
+/**
+ * 滚动到接近顶部时**自动加载**更早的历史（`session/page`）。
+ *
+ * 此前只有一枚「加载更早的消息」按钮：跟随窗口只带 60 条，用户想往回看就得先
+ * 意识到「上面还有东西」并准确点到按钮（用户 2026-09-14 要求按滚动条位置自动加载）。
+ *
+ * 分工（2026-09-15 定稿）：
+ * - **连取由宿主驱动**：界面只发一次 `loadMore`，宿主一页一页往前取，直到取到
+ *   用户的上一条消息（一轮的开头）或没有更早的了——「到没到一轮的开头」「这一页
+ *   有没有带来新事件」只有宿主有真凭据（见 `dsh/historyPaging.ts` 的注释：
+ *   界面侧拿「首条消息 id 变没变」猜，会在旧事件只是把第一条助手消息补长时提前收手）；
+ * - **界面只管两件事**：把视口钉住（每落一页就补一次高度差），以及按钮的加载态
+ *   （读宿主发的 `historyLoading`）。
+ *
+ * 视口钉住的细节：更早的内容插在**上面**，浏览器保持 scrollTop 不变，于是正文整体
+ * 下滑。加载前记下 scrollHeight，每落一页把差值补回 scrollTop——按高度差补，**不**按
+ * 「首条消息变没变」判断（同一条消息被补长时首条 id 不变，但上面的内容确实变多了）。
+ * 手动按钮走同一个入口。
+ */
+function useHistoryPaging(scrollRef: React.RefObject<HTMLDivElement>, state: AppState) {
+  /** 本次加载开始时的内容高度（每落一页后更新成新高度）。 */
+  const height = useRef<number | null>(null);
+  // 监听器只注册一次（流式期间每次渲染都重挂/摘监听器是白烧）
+  const latest = useRef(state);
+  latest.current = state;
+
+  const loadEarlier = useCallback(() => {
+    const el = scrollRef.current;
+    const current = latest.current;
+    if (!el || !current.hasMoreHistory) return;
+    // 已经在取（宿主说了算）：滚动事件一秒来几十个也不会重复发
+    if (current.historyLoading) return;
+    height.current = el.scrollHeight;
+    post({ type: "loadMore" });
+  }, [scrollRef]);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      if (el.scrollTop > HISTORY_TOP_PX) return;
+      const current = latest.current;
+      if (current.historyLoading || !current.hasMoreHistory || current.running) return;
+      loadEarlier();
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, [scrollRef, loadEarlier]);
+
+  // 每落一页：把视口钉回加载前那一行；取完（宿主说落定）就丢掉锚点
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (el && height.current !== null) {
+      el.scrollTop += el.scrollHeight - height.current;
+      height.current = el.scrollHeight;
+    }
+    if (!state.historyLoading) height.current = null;
+  }, [state.messages, state.historyLoading, scrollRef]);
+
+  return { loadEarlier, loading: state.historyLoading === true };
+}
+
+/**
  * 一次性轻提示条（复制成功、设置已保存、图片被跳过…）。
  *
  * 宿主用语言中立的 `@key:arg` 传文案，这里按当前语言翻译（`resolveText`）。
@@ -241,6 +311,8 @@ function useAutoScroll() {
 export function App() {
   const { state, dispatch } = useAppState();
   const { scrollRef, contentRef } = useAutoScroll();
+  // 滚到顶附近自动取更早的历史；手动按钮走同一个入口（取到轮次边界为止）
+  const { loadEarlier, loading: loadingEarlier } = useHistoryPaging(scrollRef, state);
   // 迷你模式：.app 宽度 < 220px 时收成图标条（滞回 ≥232 恢复），由 Composer 测宽后同步到这里
   const appRef = useRef<HTMLDivElement>(null);
   const [mini, setMini] = useState(false);
@@ -303,15 +375,24 @@ export function App() {
             ) : (
               <>
                 {/* 「加载更早」：跟随窗口只带 60 条，更早的内容从没进过客户端。
-                    按钮只在服务端说「还有更早的」时出现——空按钮比没有按钮更烦人。 */}
+                    按钮只在服务端说「还有更早的」时出现——空按钮比没有按钮更烦人。
+                    滚到顶会自动取，这个按钮是同一个入口；**取的过程中**它自己变成
+                    「正在加载更早消息…」的不可点状态（连取多页时一直保持），
+                    这样「点了没反应」与「还在取」一眼可分。 */}
                 {state.hasMoreHistory ? (
                   <button
                     className="history-more"
-                    disabled={state.running}
-                    title={state.running ? texts.historyBusy : texts.historyMore}
-                    onClick={() => post({ type: "loadMore" })}
+                    disabled={state.running || loadingEarlier}
+                    title={
+                      loadingEarlier
+                        ? texts.historyLoading
+                        : state.running
+                          ? texts.historyBusy
+                          : texts.historyMore
+                    }
+                    onClick={() => loadEarlier()}
                   >
-                    {texts.historyMore}
+                    {loadingEarlier ? texts.historyLoading : texts.historyMore}
                   </button>
                 ) : null}
                 {state.messages.map((message, index) => (
@@ -320,6 +401,7 @@ export function App() {
                     message={message}
                     diffLayout={state.diffLayout}
                     fileKinds={state.fileKinds}
+                    questionBatch={state.questionBatch}
                     // 只有非最后一条（= 不是正在跑的那一轮）才能作为分支锚点
                     canBranch={!state.running || index < state.messages.length - 1}
                   />

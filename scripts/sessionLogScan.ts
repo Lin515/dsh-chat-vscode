@@ -26,42 +26,11 @@
  *   node build/session-log-scan.mjs --ws --d-dev-dsh-chat--   # 只看某个工作区
  *   node build/session-log-scan.mjs --session 24d26055-...    # 看某个会话的 goal 记录与尾部
  */
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import zlib from "node:zlib";
+import { decodeSessionLog } from "./sessionLog";
 
 const SESSIONS_ROOT = join(process.env.USERPROFILE ?? process.env.HOME ?? ".", ".dsh", "sessions");
-
-/** 多帧 zstd → 整份 jsonl 文本。解不出来返回 undefined。 */
-export function decodeSessionLog(file: string): string | undefined {
-  const buf = readFileSync(file);
-  const offsets: number[] = [];
-  for (let i = 0; i + 4 <= buf.length; i += 1) {
-    if (buf[i] === 0x28 && buf[i + 1] === 0xb5 && buf[i + 2] === 0x2f && buf[i + 3] === 0xfd) {
-      offsets.push(i);
-    }
-  }
-  if (!offsets.length || offsets[0] !== 0) return undefined;
-
-  const parts: Buffer[] = [];
-  let index = 0;
-  while (index < offsets.length) {
-    let decoded: Buffer | undefined;
-    // 从当前帧起点往后试切点：真正的帧边界是「切到那里能解码」的那个
-    for (let end = index + 1; end <= offsets.length && !decoded; end += 1) {
-      const stop = end < offsets.length ? offsets[end] : buf.length;
-      try {
-        decoded = zlib.zstdDecompressSync(buf.subarray(offsets[index], stop));
-        index = end;
-      } catch {
-        // 切在帧内部：换下一个候选
-      }
-    }
-    if (!decoded) return undefined;
-    parts.push(decoded);
-  }
-  return Buffer.concat(parts).toString("utf8");
-}
 
 interface Row {
   type?: string;

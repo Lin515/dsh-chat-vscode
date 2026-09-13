@@ -12,7 +12,11 @@
  * - 「本轮改动」只补交付行没申报的那些（改了但没申报的文件）；
  * - Bash / 终端建的文件不在 `produced` 里，本来就只在交付行出现，不受影响；
  * - 两边都空时不显示任何一行（调用方按空数组判断）。
+ *
+ * 另一条与去重并列的口径：**净效果为零的文件两行都不列**（见 `withoutVanished`）。
  */
+
+import type { FileChangeKind } from "../shared/chat";
 
 /** 交付文件（`deliverables` / `presented`）里判重需要的最小形状。 */
 export interface DeliverablePath {
@@ -46,4 +50,29 @@ export function producedOnly(
   if (!deliverables?.length) return [...produced];
   const delivered = new Set(deliverables.map((file) => pathKey(file.path)));
   return produced.filter((path) => !delivered.has(pathKey(path)));
+}
+
+/**
+ * 去掉**净效果为零**的文件：磁盘上没有、git 也完全不认识的那些（宿主分类为
+ * `gone`，见 `dsh/fileChange.ts`）。
+ *
+ * 现场：让模型提交时它常把提交信息写进 `commit.msg.txt`，提交完再删掉。这个文件
+ * 进过 `write` 调用，于是永远留在 `produced` 里；磁盘上已经没有它，宿主按存在性
+ * 归类成删除——界面上就冒出一条带删除线的 `commit.msg.txt`，看着像仓库里挂着一个
+ * 待提交的删除（用户 2026-09-14 报的）。它既不在工作区清单里、也不在未跟踪清单里，
+ * 说明这一轮对它的净效果就是零：不显示才是诚实的。
+ *
+ * 真被删掉的文件（git 有记录：跟踪中的删除）**照样显示**——那是仓库里真实存在的
+ * 待提交改动，藏起来才是丢信息。
+ *
+ * @param kinds 宿主的分类表（键 = 芯片上的原样路径）；查不到（还没分类完/
+ *   不在 git 仓库）时一律保留：**不确定 ≠ 净效果为零**。
+ */
+export function withoutVanished<T>(
+  files: readonly T[],
+  kinds: Record<string, FileChangeKind> | undefined,
+  pathOf: (file: T) => string,
+): T[] {
+  if (!kinds) return [...files];
+  return files.filter((file) => kinds[pathOf(file)] !== "gone");
 }

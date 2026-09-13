@@ -529,6 +529,52 @@
   border-radius: var(--radius-sm);
 }
 
+/* ---- footnotes（官方 `markdown.footnotes`，结构与官方渲染器一致） ---- */
+
+/* 脚注区：与正文之间一条细分隔线，字号略小——它是附注，不该和正文抢注意力 */
+.md .footnotes {
+  margin-top: 10px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+  font-size: var(--font-size-sm);
+  color: var(--description);
+}
+
+.md .footnotes ol {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.md .footnotes li {
+  margin: 2px 0;
+}
+
+/* 回跳箭头：脚注区里那个 `↩`，弱化到不打断阅读 */
+.md .footnotes li a,
+.md .footnotes li span {
+  color: var(--muted);
+}
+
+/* 上标引用序号：不改变行高（`sup` 默认会把行撑开） */
+.md sup {
+  font-size: 0.72em;
+  line-height: 1;
+  vertical-align: super;
+}
+
+/* 视觉上隐藏但保留给读屏：官方脚注区的标题用 `h2.sr-only` 就是这个类 */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 /* ---- code blocks: an editor-coloured card outlined rather than bordered ---- */
 
 .code-block {
@@ -1213,6 +1259,44 @@
 
 .question-input:focus {
   border-color: var(--border-focus);
+}
+
+/* 底部一行：左边是「第 N / M 题 + 上一题 / 下一题」（依次问答时），右边是提交。
+   一次展开时左边整块不渲染，`spacer` 把提交按钮顶到右端——与工具行的操作区同侧。 */
+.question-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.question-footer .spacer {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.question-pager {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* 进度：等宽数字，翻页时 `1 / 12` → `2 / 12` 不会左右抖 */
+.question-step {
+  flex: 0 0 auto;
+  color: var(--description);
+  font-size: var(--font-size-2xs);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* 已答完的问卷：整张卡收进过程行里，去掉外框与留白——
+   它已经是「一条记录」，再套一层卡片会与行的导轨观感打架 */
+.question.is-record {
+  border: none;
+  background: none;
+  padding: 0;
+  margin: 0;
 }
 
 /* notices */
@@ -2000,6 +2084,14 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   max-width: 26ch;
+}
+
+/* 部分引用（编辑器选区）的行号：**不可压缩**。与工具行的 `.row-detail-suffix`
+   同一条语言——文件名先省略，行号留住（它是「引的是哪几行」这个信息本身）。 */
+.chip-lines {
+  flex: 0 0 auto;
+  opacity: 0.75;
+  font-variant-numeric: tabular-nums;
 }
 
 .chip-remove {

@@ -217,6 +217,8 @@
           attachments: [
             { id: "at-ref", kind: "reference", path: "src/dsh/adapter.ts", name: "src/dsh/adapter.ts", referenceKind: "file" },
             { id: "at-dir", kind: "reference", path: "src/webview", name: "webview/", referenceKind: "directory" },
+            // 编辑器右键加进来的**部分引用**：带行号（芯片上 `:640-690` 那一段不可压缩）
+            { id: "at-sel", kind: "selection", name: "src/webview/Composer.tsx", lines: { start: 640, end: 690 } },
             { id: "at-up", kind: "file", path: "D:/dev/app/docs/spec.pdf", name: "docs/spec.pdf", upload: { status: "uploading", loaded: 42000, total: 180000 } },
             { id: "at-err", kind: "file", path: "D:/dev/app/big.bin", name: "big.bin", upload: { status: "error", message: "HTTP 413" } }
           ],
@@ -247,6 +249,9 @@
           },
           permission: "workspace-write",
           planMode: false,
+          // 问卷一次展开几道题（`dshChat.questionBatch`）：题目多于它时依次问答。
+          // 夹具里的待答问卷是 2 题 → 走「一次展开」（默认阈值 3）。
+          questionBatch: 3,
           // 界面字号（整数 px，`dshChat.fontSize`）：undefined = auto（配置为 0 或坏值）
           fontSizePx: undefined,
           // 「加载更早」：跟随窗口只带 60 条，更早的内容从没进过客户端
@@ -396,6 +401,19 @@
                     '{\n  "type": "file",\n  "attachment": {\n    "attachmentId": "att-7f3",\n    "name": "merge-plan.pdf",\n    "bytes": 284417\n  }\n}',
                 },
                 { step: 3, id: "c1", kind: "text", text: "```ts\n" + codeSample + "\n```", streaming: true },
+                // markdown 脚注（官方 `markdown.footnotes`）：引用是上标数字，定义收进
+                // 文末的 `section.footnotes`。**净化链能否保住这个容器**只有真实浏览器
+                // 里看得出来（DOMPurify 需要 DOM），所以夹具里必须有一段。
+                {
+                  step: 3,
+                  id: "fn1",
+                  kind: "text",
+                  text:
+                    "合并方案见脚注[^plan]，端口冲突的来源在另一条注里[^port]，`[^not-a-note]` 是行内代码不该生效。\n\n" +
+                    "[^plan]: 来自 `docs/merge-plan.md` 的三步收敛：先去重、再收口、最后补测试。\n" +
+                    "[^port]: `config.ts` 与 `index.ts` 各读了一次 `process.env.PORT`。\n",
+                  streaming: false,
+                },
                 // 助手消息里的图片块（契约里 `assistant/message` 的 content 联合含
                 // `image`）：适配器折成 `images` 段、句柄换成 data URL。
                 // 夹具里用一张内联 SVG（真实链路给的是服务端字节的 data URL），
@@ -453,6 +471,17 @@
               ts: now - 12000,
               model: "DeepSeek-V4-Pro",
               segments: [
+                // 已答完的问卷：**默认收缩成一行**（点行头可再展开看当时的问题）
+                { id: "ask0", kind: "question", question: { requestId: "ev0", state: "answered", items: [
+                  { id: "scope", header: "范围", question: "这次改动覆盖到哪一层？", options: [
+                    { label: "只改入口文件" },
+                    { label: "连同配置读取一起收敛" }
+                  ] },
+                  { id: "docs", header: "文档", question: "要不要同步更新 README？", options: [
+                    { label: "要" },
+                    { label: "不要" }
+                  ] }
+                ] } },
                 { id: "ask1", kind: "question", question: { requestId: "ev2", state: "waiting", items: [
                   { id: "mode", header: "确认", question: "重构范围要覆盖到哪一层？", options: [
                     { label: "只改入口文件", description: "风险最小，先把重复初始化去掉" },

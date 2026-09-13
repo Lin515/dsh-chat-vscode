@@ -15,6 +15,7 @@ import type {
 import { classifyTool, toolTitleKey } from "../../shared/toolMeta";
 import { MAX_CATALOG_ENTRIES } from "../../shared/injectedSource";
 import { formatDuration, Popover, Row, useElapsed, useSelectionFreeze, useStickyBody } from "./primitives";
+import { canSubmit, isAnswered, questionMode } from "../questionFlow";
 import { DiffView } from "./Diff";
 import { fill, useTexts, resolveText } from "../texts";
 import {
@@ -344,31 +345,42 @@ function latestLine(text: string): string {
   return newline === -1 ? visible : visible.slice(newline + 1);
 }
 
-/** 自动载入节点的标签：优先按来源大类，其次按注入形式，最后退回通用文案。 */
+/**
+ * 自动载入节点的标签。
+ *
+ * **标题用官方词汇**（`dsh-client-ui-chat` 的 `ContextInjectionRow`）：系统提示词那条
+ * 叫「系统提示词」（`message.systemPrompt`），跨会话召回叫「跨会话召回」
+ * （`message.contextRecall`），**其余注入统一叫「上下文注入」**
+ * （`message.contextInjection`，用户 2026-09-15 要求与 Web 一致的正是这一条——
+ * 我们此前叫「插件上下文」）。
+ *
+ * 我们比官方多给一层**副标题**：官方在标题右侧只放 source（插件名），我们把
+ * 「项目指令 / 技能目录 / 运行时上下文」这类具体来源也写进去——标题一致、信息不减。
+ */
 function useDescribeInjected(): (injected: InjectedView) => { label: string; detail?: string } {
   const texts = useTexts();
   return (injected) => {
     const plugin = injected.plugin;
     const form = injected.form;
 
-    // 系统提示词插件的 snapshot 形态 = 运行时上下文（沙箱/审批策略等），
-    // 与那条完整的系统提示词区分开，标签更准确
     if (injected.sourceKind === "system") {
       return { label: texts.injectedSystemPrompt, detail: plugin };
     }
+    // 官方把跨会话召回单独起名（`provenance.role === "recall"`）
+    const label = form === "recall" ? texts.injectedRecall : texts.injectedContext;
+    // 系统提示词插件的 snapshot 形态 = 运行时上下文（沙箱/审批策略等），
+    // 与那条完整的系统提示词区分开，副标题更准确
     if (plugin === "@deepseek-ai/dsh-system-prompt" && form === "snapshot") {
-      return { label: texts.injectedRuntimeContext, detail: form };
+      return { label, detail: texts.injectedRuntimeContext };
     }
     if (injected.sourceKind === "agent-instructions") {
-      return { label: texts.injectedAgentInstructions, detail: form };
+      return { label, detail: texts.injectedAgentInstructions };
     }
     if (injected.sourceKind === "skill-catalog") {
-      return { label: texts.injectedSkillCatalog, detail: form };
+      return { label, detail: texts.injectedSkillCatalog };
     }
-    if (injected.sourceKind === "plugin") {
-      return { label: texts.injectedPlugin, detail: plugin ?? form };
-    }
-    return { label: texts.injectedGeneric, detail: plugin ?? injected.sourceKind };
+    // 其余（插件注入等）：副标题给来源插件名，与官方那个 source 位一致
+    return { label, detail: plugin ?? injected.sourceKind };
   };
 }
 
@@ -566,29 +578,61 @@ export function ApprovalCard({ approval }: { approval: ApprovalView }) {
   );
 }
 
-export function QuestionCard({ question }: { question: QuestionView }) {
+/**
+ * 问卷卡片（`ask_user_question`）。
+ *
+ * 三种形态：
+ * 1. **待回答 · 一次展开**（题目数不超过 `dshChat.questionBatch`）：与原来一样，
+ *    所有题目一起铺开，全部作答后才能提交；
+ * 2. **待回答 · 依次问答**（题目数更多）：一次一道，带「第 N / M 题」与上一题 /
+ *    下一题；单选点一下就前进（官方 `choose` 同口径），最后一题变成提交；
+ * 3. **已答完**：默认**收缩成一行**（`已作答 N 题`），点行头可再展开看当时的题目
+ *    ——用户 2026-09-14 的口径，免得答过的问卷常驻在对话流里占满屏。
+ *
+ * `batch` 由宿主下发（webview 读不到 VS Code 配置），缺省用默认阈值。
+ */
+export function QuestionCard({
+  question,
+  batch,
+}: {
+  question: QuestionView;
+  batch?: number;
+}) {
+  const texts = useTexts();
   const [selected, setSelected] = useState<Record<string, string[]>>({});
   const [custom, setCustom] = useState<Record<string, string>>({});
-  const texts = useTexts();
+  const [index, setIndex] = useState(0);
+  // 已答完的问卷默认收缩；用户点开看记录后不再自动收起
+  const [expanded, setExpanded] = useState(false);
   const waiting = question.state === "waiting";
+  const items = question.items;
+  const mode = questionMode(items.length, batch);
+  const stepped = waiting && mode === "stepped";
+  // 依次问答只渲染当前这一题；题目被服务端更新（数组变短）时夹住下标，
+  // 免得 `items[current]` 变成 undefined 把整张卡渲染成空白
+  const current = stepped ? Math.min(index, Math.max(0, items.length - 1)) : 0;
+  const shown = stepped ? items.slice(current, current + 1) : items;
 
   const toggle = (itemId: string, label: string, multi?: boolean) => {
     setSelected((prev) => {
-      const current = prev[itemId] ?? [];
+      const active = prev[itemId] ?? [];
       const next = multi
-        ? current.includes(label)
-          ? current.filter((v) => v !== label)
-          : [...current, label]
+        ? active.includes(label)
+          ? active.filter((v) => v !== label)
+          : [...active, label]
         : [label];
       return { ...prev, [itemId]: next };
     });
+    // 单选：选中即前进（官方 `choose` 对非多选项就是 index + 1），
+    // 最后一题不动——它下面是提交按钮
+    if (stepped && !multi && current < items.length - 1) setIndex(current + 1);
   };
 
   const submit = () => {
     post({
       type: "answerQuestion",
       requestId: question.requestId,
-      answers: question.items.map((item) => ({
+      answers: items.map((item) => ({
         id: item.id,
         selected: selected[item.id] ?? [],
         custom: custom[item.id]?.trim() || undefined,
@@ -596,57 +640,99 @@ export function QuestionCard({ question }: { question: QuestionView }) {
     });
   };
 
-  return (
-    <div className="question">
-      {question.items.map((item) => (
-        <div className="question-item" key={item.id}>
-          <div className="question-head">
-            <IconQuestion size={11} /> {item.header ?? texts.questionHead}
-          </div>
-          <div className="question-text">{item.question}</div>
-          {item.options.length ? (
-            <div className="question-options">
-              {item.options.map((option) => {
-                const isSelected = (selected[item.id] ?? []).includes(option.label);
-                return (
-                  <button
-                    key={option.label}
-                    className={`question-option${isSelected ? " is-selected" : ""}`}
-                    disabled={!waiting}
-                    onClick={() => toggle(item.id, option.label, item.multiSelect)}
-                  >
-                    <span className="question-option-label">{option.label}</span>
-                    {option.description ? (
-                      <span className="question-option-desc">{option.description}</span>
-                    ) : null}
-                  </button>
-                );
-              })}
-            </div>
-          ) : null}
-          {waiting ? (
-            <input
-              className="question-input"
-              placeholder={texts.questionPlaceholder}
-              value={custom[item.id] ?? ""}
-              onChange={(event) => setCustom((prev) => ({ ...prev, [item.id]: event.target.value }))}
-            />
-          ) : null}
-        </div>
-      ))}
-      {waiting ? (
-        <div className="approval-actions">
-          <button
-            className="btn btn-primary"
-            disabled={question.items.some(
-              (item) => !(selected[item.id]?.length || custom[item.id]?.trim()),
-            )}
-            onClick={submit}
-          >
-            {texts.submit}
-          </button>
+  /** 题目正文（两种形态共用）。 */
+  const renderItem = (item: QuestionView["items"][number]) => (
+    <div className="question-item" key={item.id}>
+      <div className="question-head">
+        <IconQuestion size={11} /> {item.header ?? texts.questionHead}
+      </div>
+      <div className="question-text">{item.question}</div>
+      {item.options.length ? (
+        <div className="question-options">
+          {item.options.map((option) => {
+            const isSelected = (selected[item.id] ?? []).includes(option.label);
+            return (
+              <button
+                key={option.label}
+                className={`question-option${isSelected ? " is-selected" : ""}`}
+                disabled={!waiting}
+                onClick={() => toggle(item.id, option.label, item.multiSelect)}
+              >
+                <span className="question-option-label">{option.label}</span>
+                {option.description ? (
+                  <span className="question-option-desc">{option.description}</span>
+                ) : null}
+              </button>
+            );
+          })}
         </div>
       ) : null}
+      {waiting ? (
+        <input
+          className="question-input"
+          placeholder={texts.questionPlaceholder}
+          value={custom[item.id] ?? ""}
+          onChange={(event) => setCustom((prev) => ({ ...prev, [item.id]: event.target.value }))}
+        />
+      ) : null}
+    </div>
+  );
+
+  // 已答完：收缩成一行（行头可点开复看题目）。用与工具行同一套 `Row`，
+  // 视觉语言不分家：这同样是「对话里发生过的一件事」。
+  if (!waiting) {
+    return (
+      <Row
+        icon={
+          <span className="node-icon node-others">
+            <IconQuestion size={13} />
+          </span>
+        }
+        title={texts.questionHead}
+        detail={texts.questionAnswered(items.length)}
+        open={expanded}
+        onToggle={() => setExpanded(!expanded)}
+      >
+        <div className="question is-record">{items.map(renderItem)}</div>
+      </Row>
+    );
+  }
+
+  const currentAnswered = isAnswered(selected[items[current]?.id ?? ""], custom[items[current]?.id ?? ""]);
+  const ready = canSubmit(items, selected, custom);
+
+  return (
+    <div className="question">
+      {shown.map(renderItem)}
+      <div className="question-footer">
+        {stepped ? (
+          <div className="question-pager">
+            <span className="question-step">{texts.questionStep(current + 1, items.length)}</span>
+            <button
+              className="btn btn-ghost"
+              disabled={current === 0}
+              onClick={() => setIndex(Math.max(0, current - 1))}
+            >
+              {texts.questionPrev}
+            </button>
+            {/* 最后一题的「下一题」就是提交，不再单独放一个按钮（与官方
+                `submit`/`action.next` 同一个按钮同一条语义） */}
+            {current < items.length - 1 ? (
+              <button
+                className="btn"
+                disabled={!currentAnswered}
+                onClick={() => setIndex(Math.min(items.length - 1, current + 1))}
+              >
+                {texts.questionNext}
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+        <span className="spacer" />
+        <button className="btn btn-primary" disabled={!ready} onClick={submit}>
+          {texts.submit}
+        </button>
+      </div>
     </div>
   );
 }

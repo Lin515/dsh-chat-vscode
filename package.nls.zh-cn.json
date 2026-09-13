@@ -1,5 +1,6 @@
 {
   "container.title": "DSH Chat",
+  "description": "在 VS Code 里以 Continue 风格自绘 DSH 对话界面：后台运行 `dsh web`，把会话原生渲染在 VS Code 中（界面中英双语）。",
   "view.chat.name": "DSH Chat",
   "cmd.newSession.title": "DSH: 新建对话",
   "cmd.history.title": "DSH: 历史对话",
@@ -27,5 +28,6 @@
   "config.language.auto": "跟随 VS Code 的显示语言。",
   "config.language.zh": "始终使用简体中文。",
   "config.language.en": "始终使用英文。",
-  "config.fontSize": "聊天界面的字体大小（整数像素，≥8）。`0` 跟随 VS Code 的字号。"
+  "config.fontSize": "聊天界面的字体大小（整数像素，≥8）。`0` 跟随 VS Code 的字号。",
+  "config.questionBatch": "一份问卷一次展开几道题。题目多于这个数时改为依次问答（一题一题来）。`0` 表示始终一次展开全部题目。"
 }

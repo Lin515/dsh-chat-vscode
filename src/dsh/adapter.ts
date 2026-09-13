@@ -465,7 +465,36 @@ export class SessionAdapter {
    */
   private hasMore = false;
 
-  constructor(private readonly emit: (frame: HostToWebview) => void) {}
+  /**
+   * 重放期间**不发帧**（见 `refold`）。
+   *
+   * 重放是「把所有已记录事件从头折一遍」，中间态（每条 `message/append`、每轮开头
+   * 那个 `running: true`、每个 step 的局部 patch）都会立刻被收尾的 `messages/reset`
+   * 整体覆盖。不发的话界面**根本看不到那些中间态**——发的话（此前就是发的）界面会
+   * 一帧一帧地把它画出来：用户滚到顶自动翻页时，新加载进来的旧轮次会先是「运行中 /
+   * 展开」的样子，过一会儿才收成折叠态（用户 2026-09-15 报的「加载时不要将其实时
+   * 渲染」就是这个），视口锚定也会因为内容分几十帧长高而漂移。
+   */
+  private replaying = false;
+
+  /**
+   * 当前是否有一轮在跑（`turn/start` 与 `turn/end` 之间）。
+   *
+   * 单独记一个字段而不是只发 `patch running`：重放期间不发帧（见 `replaying`），
+   * 而「打开一个正在跑的会话」这件事**只能**从重放里看出来——`session/follow`
+   * 的快照把这一轮的 `turn/start` 一起回放，重放静默之后若不补一帧，界面就会把
+   * 正在生成的会话显示成空闲（连控制器的 queue/steer 判定也会错）。
+   * 所以重放结束后由快照那条路径**显式**补一帧（见 `applyFrame`）。
+   */
+  private turnRunning = false;
+
+  constructor(private readonly sendFrame: (frame: HostToWebview) => void) {}
+
+  /** 发一帧给宿主；重放期间静默（见 `replaying`）。 */
+  private emit(frame: HostToWebview): void {
+    if (this.replaying) return;
+    this.sendFrame(frame);
+  }
 
   /**
    * 图片句柄 → 可显示字节的装载回调（由控制器注入）。
@@ -646,6 +675,10 @@ export class SessionAdapter {
       this.refold();
       this.hasMore = Boolean(frame.hasMore);
       this.emit({ type: "patch", patch: { hasMoreHistory: this.hasMore } });
+      // 重放静默（见 `replaying`），所以「这一轮还在跑」要**显式**补一帧：
+      // 打开一个正在生成的会话时，这是 running 的唯一来源（`snapshotFor` 里那份
+      // 首帧快照读的是 `scope.running`，而它同样只由这一类帧更新）。
+      this.emit({ type: "patch", patch: { running: this.turnRunning } });
       // 历史里可能有旧轮次的文件芯片：回放完安排一次分类（旧文件多已定型，
       // 这一批通常一次 fs.stat + 一次 git 状态读取就出结果）
       this.scheduleFileKinds();
@@ -685,24 +718,33 @@ export class SessionAdapter {
    * 正在生成时往前翻页会让当前这段流式正文重来一次，而且服务端也不会在这种情况下
    * 给出稳定的分页结果。
    *
-   * @returns 是否真的拿到了更早的记录（界面据此决定还要不要显示「加载更早」）。
+   * **重折过程不发帧**（见 `replaying`）：界面只收到「hasMoreHistory 变了」与一整份
+   * `messages/reset`，于是新加载的旧轮次**一出现就是折叠好的最终态**，不会先被画成
+   * 「运行中 / 展开」再收起来。
+   *
+   * @returns **新并入的事件条数**（0 = 这一页没带来新东西）。调用方（控制器）据此
+   *   判断要不要接着取下一页——不能拿「首条消息 id 变没变」当判据：更早的事件常常
+   *   只是**把现有的第一条助手消息补长**（它的 id 是按轮次派生的 `a:<turn>`，不会变），
+   *   于是「没换首条」会被误判成「没进展」而在半轮中间停下（2026-09-15 的缺陷现场，
+   *   见 `scripts/pageLoopProbe.ts`）。
    */
-  prependRecords(records: readonly SessionHistoryRecord[], hasMore: boolean): void {
-    let added = false;
+  prependRecords(records: readonly SessionHistoryRecord[], hasMore: boolean): number {
+    let added = 0;
     for (const record of records ?? []) {
       if (record?.type !== "event") continue;
       if (typeof record.event?.seq !== "number" || this.seen.has(record.event.seq)) continue;
       this.seen.set(record.event.seq, record.event);
-      added = true;
+      added += 1;
     }
-    if (added) this.refold();
+    if (added > 0) this.refold();
     this.hasMore = hasMore;
     this.emit({ type: "patch", patch: { hasMoreHistory: this.hasMore } });
-    if (added) {
+    if (added > 0) {
       this.emit({ type: "messages/reset", messages: this.messages });
       // 更早的历史里也有芯片：同样安排分类
       this.scheduleFileKinds();
     }
+    return added;
   }
 
   /** 当前已折叠事件里最小的 seq（`session/page` 的 `beforeSeq`）。 */
@@ -734,7 +776,14 @@ export class SessionAdapter {
     this.currentStep = 0;
     this.stepFirstTokenAt = undefined;
     this.sequence = 0;
-    for (const event of events) this.applyEvent(event);
+    // 重放期间静默：中间态会被调用方随后的 `messages/reset` 整体覆盖（见 `replaying`）。
+    // 两个调用方（follow 开窗快照、prependRecords）都在重放之后立刻发 reset。
+    this.replaying = true;
+    try {
+      for (const event of events) this.applyEvent(event);
+    } finally {
+      this.replaying = false;
+    }
   }
 
   // ---------- durable 事件 ----------
@@ -755,6 +804,7 @@ export class SessionAdapter {
         this.stepFirstTokenAt = undefined;
         const message = this.ensureAssistantMessage(event.time);
         message.streaming = true;
+        this.turnRunning = true;
         this.emit({ type: "patch", patch: { running: true } });
         this.emit({ type: "message/upsert", message: { ...message } });
         break;
@@ -819,6 +869,7 @@ export class SessionAdapter {
         // 「正常完成但调用没收尾」在真实会话里确实会出现（结果被截断、连接抖动）。
         this.synthesizeInterrupted(event.time);
         this.emit({ type: "message/upsert", message: { ...message } });
+        this.turnRunning = false;
         this.emit({ type: "patch", patch: { running: false } });
         // 轮次结束 = 文件都落盘了：先推一次 Git 重扫再分类，让芯片的
         // [新增] / 删除线立刻是准的，也让「用户随后点芯片」直接看到 diff
@@ -1071,6 +1122,22 @@ export class SessionAdapter {
     // 丢弃该 step 的流式叠加层，改用 durable 内容，避免重复
     this.dropLiveSegmentsForStep(turn, step);
 
+    /**
+     * durable 的思考/正文插在**本 step 最早的工具行之前**，而不是追加到末尾。
+     *
+     * 为什么：模型是**边说边吐工具调用**的——`tool-call-delta` 流式帧会先把那个
+     * 工具行建出来（`upsertToolCall`），该 step 的 durable `assistant/message`
+     * （思考/正文）随后才到。追加会把思考/正文排到自己那个 step 的工具行**后面**：
+     * 界面上就是「编辑 → 思考 → 编辑…」这种错位（用户 2026-09-15 报的），
+     * 而官方按内容块顺序渲染——工具调用在内容里永远排在思考/正文之后。
+     *
+     * 锚点只认**同一个 step** 的工具行：跨 step 找会把上一步的工具行也当锚点，
+     * 把后面的思考插到前面去。找不到（没有流式帧：重放、中途加入、无 tool-call-delta）
+     * 就追加——那条路径的顺序本来就是对的。
+     */
+    let at = message.segments.findIndex((segment) => segment.kind === "tool" && segment.step === step);
+    if (at < 0) at = message.segments.length;
+
     const content = Array.isArray(wire?.content) ? (wire!.content as ContentBlock[]) : [];
     for (const block of content) {
       if (block.type === "text" && block.text.trim()) {
@@ -1078,17 +1145,19 @@ export class SessionAdapter {
           message,
           { kind: "text", id: `t${event.seq}:${this.sequence++}`, text: block.text },
           step,
+          at++,
         );
       } else if (block.type === "reasoning" && block.text.trim()) {
         this.pushSegment(
           message,
           { kind: "thinking", id: `r${event.seq}:${this.sequence++}`, text: block.text },
           step,
+          at++,
         );
       } else if (block.type === "image") {
         // 助手消息里的图片块：此前整块被丢掉，用户看不到模型给的图。
         // 句柄要换字节（一次 RPC），所以先挂一个空段、拿到 data URL 再补发。
-        this.pushAssistantImages(message, event.seq, imageAttachments([block]), step);
+        this.pushAssistantImages(message, event.seq, imageAttachments([block]), step, at++);
       }
       // `tool-call` / `tool-result` 块**故意不在这里渲染**：它们各自有
       // `tool/call`、`tool/result` 事件，已经折成工具行了，再画一遍就是重复
@@ -1148,11 +1217,17 @@ export class SessionAdapter {
    * 拿不到 `loadImages`（子代理转录那类没有网络客户端的适配器）就不挂段——
    * 挂一个永远空着的图库位比不显示更让人困惑。
    */
-  private pushAssistantImages(message: MessageView, seq: number, refs: ImageRef[], step?: number): void {
+  private pushAssistantImages(
+    message: MessageView,
+    seq: number,
+    refs: ImageRef[],
+    step?: number,
+    at?: number,
+  ): void {
     if (!refs.length || !this.loadImages) return;
     const id = `img${seq}:${this.sequence++}`;
     const segment: Segment = { kind: "images", id, images: [] };
-    this.pushSegment(message, segment, step);
+    this.pushSegment(message, segment, step, at);
     this.loadImages(refs, (dataUrls) => {
       const holder = message.segments.find((item) => item.id === id);
       if (!holder || holder.kind !== "images") return;
@@ -1381,6 +1456,7 @@ export class SessionAdapter {
     this.turnPart = 1;
     this.currentStep = 0;
     this.stepFirstTokenAt = undefined;
+    this.turnRunning = false;
     this.sequence = 0;
     // 刻意不清 contextWindow / contextOccupancy / lastSpeed：
     // 适配器按会话新建，同一会话内的 snapshot（重连、重开跟随流）不该把这些
@@ -1494,12 +1570,15 @@ export class SessionAdapter {
     this.emit({ type: "message/upsert", message: { ...message } });
   }
 
-  private pushSegment(message: MessageView, segment: Segment, step?: number): void {
+  private pushSegment(message: MessageView, segment: Segment, step?: number, at?: number): void {
     // 顺手记下所属 step：轮级过程折叠靠它区分「过程」与「答案」（见 shared/chat.ts
     // 的 Segment 注释）。显式传进来的优先（durable 事件里带着 step 的最准），
     // 其余（工具结果等）用当前的 step 号。
     if (segment.step === undefined) segment.step = step ?? this.currentStep;
-    message.segments.push(segment);
+    // `at` 是**插入位置**（durable 的思考/正文要插在本 step 的工具行之前，
+    // 见 applyAssistantMessage）：越界或没给就照旧追加。
+    if (at === undefined || at >= message.segments.length) message.segments.push(segment);
+    else message.segments.splice(Math.max(0, at), 0, segment);
   }
 
   /**

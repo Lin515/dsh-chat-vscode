@@ -13,6 +13,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   fileChangeKind,
+  hasGitRecord,
   hasWorkingChange,
   isNotFoundError,
   isUntracked,
@@ -220,8 +221,8 @@ console.log("fileChange: 相邻路径不误判 ✓");
     "「本轮文件改动」必须等轮次结束（streaming=false）再显示",
   );
   assert.ok(
-    /\{!message\.streaming && message\.deliverables\?\.length \? \(/.test(message),
-    "「交付文件」同样只在轮次结束后显示",
+    /\{!message\.streaming && deliverables\.length \? \(/.test(message),
+    "「交付文件」同样只在轮次结束后显示（且已过 withoutVanished：净效果为零的不列）",
   );
   assert.ok(
     /@chipFileDeleted/.test(controller),
@@ -285,6 +286,28 @@ console.log("fileChange: 界面与宿主都接上了这条链路 ✓");
     "deleted",
     "跟踪中的删除也是 deleted：点开对比窗口还能看到删除前的内容",
   );
+  // ---------- 磁盘上没有 + git 完全不认识 = 净效果为零（gone） ----------
+  //
+  // 用户 2026-09-14 报的现场：让模型提交时它把提交信息写进 `commit.msg.txt`，
+  // 提交完再删掉。文件进过 write 调用，于是永远留在轮尾的「本轮改动」里；磁盘上
+  // 已经没有了、git 四张清单里也都没有它 —— 界面按 deleted 画一条带删除线的芯片，
+  // 看着像仓库里挂着一个待提交的删除。实际上这一轮对它的净效果是零。
+  assert.strictEqual(
+    fileChangeKind({}, TARGET, "absent"),
+    "gone",
+    "磁盘上没有 + git 不认识 → gone（界面据此整条不渲染）",
+  );
+  assert.strictEqual(
+    fileChangeKind(undefined, TARGET, "absent"),
+    "gone",
+    "拿不到 git 状态时同理：absent 是肯定证据（文件确实没了），而没有任何清单提到它",
+  );
+  assert.strictEqual(
+    hasGitRecord({ untrackedChanges: [change(TARGET)] }, TARGET),
+    true,
+    "未跟踪清单里有它 → git 认识它（不能判成净效果为零）",
+  );
+  assert.strictEqual(hasGitRecord({}, TARGET), false, "四张清单都没有 → git 不认识");
   // ---------- 存在性「查不出来」不等于「已删除」 ----------
   //
   // stat 抛错的原因不止「文件不在」：权限不足、离线共享盘、路径含非法字符、

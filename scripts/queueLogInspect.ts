@@ -14,7 +14,7 @@
  */
 import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { decodeSessionLog } from "./sessionLogScan";
+import { decodeSessionLog } from "./sessionLog";
 
 const SESSIONS_ROOT = join(process.env.USERPROFILE ?? process.env.HOME ?? ".", ".dsh", "sessions");
 const args = process.argv.slice(2);

@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { ChatViewProvider } from "./chatView";
 import { ChatController, stamp } from "./dsh/controller";
+import { selectionLines } from "./dsh/selection";
 import { clearStaleDocumentLocks, cleanupResidualServers, leaseDirectory, scanServers } from "./dsh/processRegistry";
 import { ServerManager } from "./dsh/serverManager";
 
@@ -78,7 +79,7 @@ function registerContributions(context: vscode.ExtensionContext, host: Contribut
     vscode.commands.registerCommand("dshChat.newSession", () => controller.newSession(controller.activeViewId())),
     vscode.commands.registerCommand("dshChat.history", async () => {
       await controller.openHistory();
-      await vscode.commands.executeCommand("dshChat.view.focus");
+      controller.revealActiveView();
     }),
     // 「在编辑器中打开」：webview 按钮会把点击来源窗口的会话带过来；
     // 命令面板直接执行（没有来源窗口）时用最近活动窗口的会话；都没有就空态
@@ -156,14 +157,16 @@ function registerContributions(context: vscode.ExtensionContext, host: Contribut
       if (!editor) return;
       const text = editor.document.getText(editor.selection);
       const name = vscode.workspace.asRelativePath(editor.document.uri);
-      controller.addSelection(name, text);
-      void vscode.commands.executeCommand("dshChat.view.focus");
+      controller.addSelection(name, text, selectionLines(editor.selection));
+      // 焦点回到**加引用的那个窗口**（可能是侧栏，也可能是编辑区面板）：
+      // 写死 `dshChat.view.focus` 会把开在编辑区的对话硬拽回侧栏
+      controller.revealActiveView();
     }),
     vscode.commands.registerCommand("dshChat.addFile", (uri?: vscode.Uri) => {
       const target = uri ?? vscode.window.activeTextEditor?.document.uri;
       if (!target || target.scheme !== "file") return;
       void controller.addFileContext(target.fsPath);
-      void vscode.commands.executeCommand("dshChat.view.focus");
+      controller.revealActiveView();
     }),
     // 目录单独入口：Windows/Linux 的文件对话框不能同时选文件和目录
     // （见 controller.pickFiles 的注释），所以目录走独立命令。
@@ -171,16 +174,17 @@ function registerContributions(context: vscode.ExtensionContext, host: Contribut
     vscode.commands.registerCommand("dshChat.addFolder", async (uri?: vscode.Uri) => {
       if (uri) await controller.addFileContext(uri.fsPath);
       else await controller.addFolder();
-      void vscode.commands.executeCommand("dshChat.view.focus");
+      controller.revealActiveView();
     }),
 
-    // 界面相关配置（diff 排版 / 语言 / 字号）改了即时生效，不必重载窗口。
-    // 三者都是纯显示层：重载会丢掉滚动位置与展开状态，代价不成比例。
+    // 界面相关配置（diff 排版 / 语言 / 字号 / 问卷题数）改了即时生效，不必重载窗口。
+    // 它们都是纯显示层：重载会丢掉滚动位置与展开状态，代价不成比例。
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (event.affectsConfiguration("dshChat.diffLayout")) controller.refreshDiffLayout();
       if (
         event.affectsConfiguration("dshChat.language") ||
-        event.affectsConfiguration("dshChat.fontSize")
+        event.affectsConfiguration("dshChat.fontSize") ||
+        event.affectsConfiguration("dshChat.questionBatch")
       ) {
         controller.refreshAppearance();
       }

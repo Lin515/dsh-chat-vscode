@@ -9,10 +9,13 @@ import { isSubagentDelegationTool } from "../shared/toolMeta";
  * - 一轮**关闭之后**，把「答案步」之前的全部节点折成一枚按钮，读作
  *   「N 次工具调用 · M 条消息 · K 个 subagent」，三者皆 0 时读「已思考」；
  * - 点开就把成员原样铺回来；
- * - **有几类节点永不折叠**（官方 `TURN_PROCESS_INDEPENDENT_KINDS`）：系统提示词、
- *   用户消息、steering、轮级错误与「达到输出上限」提示、轮尾。对我们而言对应的就是
- *   `injected`（自动载入的上下文）与 `notice`（中止/截断/失败这类提示）——
- *   把「回答被截断了」折进按钮里是绝不能接受的信息损失；
+ * - **有几类节点永不折叠**（官方 `TURN_PROCESS_INDEPENDENT_KINDS` =
+ *   system-prompt / user / steering / turn-process / turn-error / turn-max-tokens /
+ *   turn-tail）：对我们而言对应的是**系统提示词那一条** `injected`（`sourceKind ===
+ *   "system"`）与 `notice`（中止/截断/失败这类提示）——把「回答被截断了」折进按钮里
+ *   是绝不能接受的信息损失。**其余上下文注入照常折叠**（插件注入 / 项目指令 /
+ *   技能目录 / 运行时上下文）：官方那个集合里没有 context 一类，它们在 Web 上就是
+ *   过程里的一条普通节点（用户 2026-09-15 对照 Web 报的）；
  * - 答案步**自己的思考**在折叠态也不显示（官方 `reasoningHidden`）。
  *
  * 我们的显示段没有官方那种节点锚点，边界只能靠 `step`：
@@ -23,7 +26,17 @@ import { isSubagentDelegationTool } from "../shared/toolMeta";
  */
 
 /** 永不折叠的段（官方 `TURN_PROCESS_INDEPENDENT_KINDS` 里与本扩展对应得上的那几类）。 */
-const FOLD_EXEMPT: ReadonlySet<Segment["kind"]> = new Set(["injected", "notice"]);
+function isFoldExempt(segment: Segment): boolean {
+  // 中止 / 截断 / 失败这类提示：把「回答被截断了」折进按钮里是绝不能接受的信息损失
+  // （官方 `turn-error` / `turn-max-tokens`）
+  if (segment.kind === "notice") return true;
+  // **系统提示词**是官方明确豁免的那一类（`system-prompt`）；
+  // 其余上下文注入（插件注入 / 项目指令 / 技能目录 / 运行时上下文）**参与折叠**
+  // ——官方那个集合里没有 context 一类，它们就是过程里的一条普通节点
+  // （用户 2026-09-15 对照 Web 提的；此前我们把 `injected` 整类都豁免了）
+  if (segment.kind === "injected") return segment.injected.sourceKind === "system";
+  return false;
+}
 
 export interface TurnProcessCounts {
   toolCalls: number;
@@ -76,7 +89,7 @@ export function foldTurnProcess(
   // 边界 = 答案步的第一个段。官方按锚点切：锚点 < answerAnchorSeq 的才是成员，
   // 所以答案步自己的段一个都不折（它自己的 thinking 另算，见下）。
   const boundary = segments.findIndex(
-    (segment) => segment.step === answerStep && !FOLD_EXEMPT.has(segment.kind),
+    (segment) => segment.step === answerStep && !isFoldExempt(segment),
   );
   if (boundary <= 0) return noFold(segments); // 答案步就是第一个段 → 没有过程可折
 
@@ -86,7 +99,7 @@ export function foldTurnProcess(
 
   segments.forEach((segment, index) => {
     // 豁免段永远可见（就地保留，位置不变）
-    if (FOLD_EXEMPT.has(segment.kind)) {
+    if (isFoldExempt(segment)) {
       visible.push(segment);
       return;
     }

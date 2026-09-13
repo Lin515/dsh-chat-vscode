@@ -33,6 +33,7 @@ import { CtxText, Ellipsis, Popover, Spinner, contextNumbers, formatDuration } f
 import { ApprovalCard, QuestionCard } from "./Rows";
 import type { PendingInteraction } from "../pendingInteraction";
 import { insertAtCaret } from "../insert";
+import { mentionParent } from "../mentionNav";
 import { segmentColumns } from "../segment";
 import { fill, resolveText, useTexts } from "../texts";
 import { BAR_ORDER, pickVariants, type ToolbarVariant } from "../toolbarFit";
@@ -212,6 +213,10 @@ export function Composer({
   // ESC 关掉候选弹层后记下当时的文本与光标：只要没有真实编辑，随后的 keyup /
   // 聚焦回调不会重新探测触发词把列表弹回来（否则表现为「按 ESC 列表又弹出」）
   const dismissedRef = useRef<{ value: string; caret: number } | null>(null);
+  /** 候选行的容器（`@` / `/` 弹层本体，可滚动的那一层），键盘导航要滚它。 */
+  const popoverRef = useRef<HTMLDivElement>(null);
+  /** 这一次高亮变化是不是键盘导航引起的（鼠标悬停不滚动列表，见 onKeyDown）。 */
+  const keyboardNavRef = useRef(false);
   const [trigger, setTrigger] = useState<Trigger | undefined>(undefined);
   const [highlight, setHighlight] = useState(0);
   const [confirmFullAccess, setConfirmFullAccess] = useState(false);
@@ -276,16 +281,59 @@ export function Composer({
     setHighlight(0);
   }, [trigger?.kind, trigger?.query]);
 
+  /**
+   * 当前 `@` 查询进入子目录时的「上一层」查询串（没有就是 undefined）。
+   *
+   * 计算在 `mentionNav.ts`（纯函数，带断言）：这里只把它接到候选列表与选中动作上。
+   */
+  const parentQuery = trigger?.kind === "mention" ? mentionParent(trigger.query) : undefined;
+
   const candidates = useMemo(() => {
     if (!trigger) return [];
     if (trigger.kind === "command") {
       const query = trigger.query.toLowerCase();
       return state.commands.filter((command) => command.name.toLowerCase().includes(query));
     }
-    return state.fileRefs.items;
-  }, [trigger, state.commands, state.fileRefs]);
+    const items = state.fileRefs.items;
+    // 「..」永远排在最前（文件浏览器的惯例），键盘上下也能选中它。
+    // 只在查询已经进入某个子目录时才有这一行（根目录没有上一层）。
+    if (parentQuery === undefined) return items;
+    const up: FileRefView = { path: parentQuery, kind: "directory", parent: true };
+    return [up, ...items];
+  }, [trigger, state.commands, state.fileRefs, parentQuery]);
 
   const canSend = draft.trim().length > 0 && state.connection === "ready";
+
+  /**
+   * 键盘上下键移动高亮时，把选中行**滚进视野**。
+   *
+   * 弹层是 `max-height: 330px; overflow-y: auto`（`.popover`）：候选多于一屏时，
+   * 光改高亮而不滚动，选中项会跑到视野外——用户看着列表「没反应」，回车却选中了
+   * 一个看不见的条目（用户 2026-09-15 报的）。
+   *
+   * 只在**键盘导航**后滚动（`keyboardNavRef`）：鼠标悬停也会改高亮
+   * （`onMouseEnter`），那时滚列表会把指针底下的内容挪走，晃得没法用。
+   * 用 `getBoundingClientRect` 自己算差值而不是 `scrollIntoView`：后者会连带
+   * 滚动外层容器（对话区），而这里只想动弹层自己。
+   */
+  useLayoutEffect(() => {
+    if (!keyboardNavRef.current) return;
+    keyboardNavRef.current = false;
+    const list = popoverRef.current;
+    const item = list?.querySelector<HTMLElement>(".popover-item.is-selected");
+    if (!list || !item) return;
+    // 回到第一行时滚到最顶：让「命令 / 文件」那行分组标题也一起露出来
+    // （只按「贴边」算的话，第一行会顶在标题下面、标题永远被压在视野外）
+    const first = list.querySelector<HTMLElement>(".popover-item");
+    if (item === first) {
+      list.scrollTop = 0;
+      return;
+    }
+    const listRect = list.getBoundingClientRect();
+    const itemRect = item.getBoundingClientRect();
+    if (itemRect.top < listRect.top) list.scrollTop -= listRect.top - itemRect.top;
+    else if (itemRect.bottom > listRect.bottom) list.scrollTop += itemRect.bottom - listRect.bottom;
+  }, [highlight, trigger]);
 
   const send = () => {
     if (!canSend) return;
@@ -326,6 +374,24 @@ export function Composer({
     }
 
     const file = candidate as FileRefView;
+    // 「..」：回到上一层目录。正文里只留 `@<上一层>`（上一层就是工作区根目录时
+    // 是裸 `@`），光标停在末尾——服务端按结尾斜杠当目录查询，列表于是变成那一层
+    // 的内容（与下钻走同一条链路，只是方向相反）。
+    if (file.parent) {
+      const next = `${before}@${file.path}${after}`;
+      onDraft(next);
+      post({ type: "setDraft", text: next });
+      const caret = before.length + 1 + file.path.length;
+      requestAnimationFrame(() => {
+        const node = textareaRef.current;
+        if (!node) return;
+        node.focus();
+        node.setSelectionRange(caret, caret);
+        refreshTrigger(next, caret);
+      });
+      post({ type: "queryFiles", query: file.path });
+      return;
+    }
     // 目录：**默认打开**它（下钻），不是把它本身载入——这是用户明确的口径。
     // 下钻 = 把触发词替换成 `@<path>/` 并继续留在候选态；服务端按结尾斜杠
     // 把它当目录查询，于是列表变成该目录的内容。
@@ -374,11 +440,15 @@ export function Composer({
       if (candidates.length > 0) {
         if (event.key === "ArrowDown") {
           event.preventDefault();
+          // 标记「这次高亮是键盘来的」：只有键盘导航才把选中行滚进视野，
+          // 鼠标悬停（onMouseEnter 也会改高亮）时滚动列表会晃得没法用
+          keyboardNavRef.current = true;
           setHighlight((value) => (value + 1) % candidates.length);
           return;
         }
         if (event.key === "ArrowUp") {
           event.preventDefault();
+          keyboardNavRef.current = true;
           setHighlight((value) => (value - 1 + candidates.length) % candidates.length);
           return;
         }
@@ -423,10 +493,14 @@ export function Composer({
   const tps = lastMessage?.usage?.tokensPerSecond ?? state.lastSpeed;
 
   // 速度值的悬停明细：全日志会话统计（`sessionStats` 投影），口径对齐
-  // Web 的「会话统计」对话框；未知项省略，无数据则不显示 tooltip
+  // Web 的「会话统计」对话框；未知项省略，无数据则不显示 tooltip。
+  // 第一行是**标题**：明细里的「平均输出速度」是全会话累计（Σ 输出 token ÷
+  // Σ 解码窗口），而胶囊上直接显示的那个数取最近一条助手消息的解码窗口——
+  // 两者本来就不是同一个数，不写清口径就会被当成同一个值对不上。
   const stats = state.sessionStats;
   const statsTitle = stats
     ? [
+        texts.statsTitle,
         stats.llmMs > 0 ? `${texts.statsLlmTime} ${formatDuration(stats.llmMs)}` : null,
         stats.toolMs > 0 ? `${texts.statsToolTime} ${formatDuration(stats.toolMs)}` : null,
         stats.ttftSteps > 0 ? `${texts.statsTtft} ${formatDuration(stats.ttftMs / stats.ttftSteps)}` : null,
@@ -602,7 +676,7 @@ export function Composer({
           {pending.kind === "approval" ? (
             <ApprovalCard approval={pending.approval} />
           ) : (
-            <QuestionCard question={pending.question} />
+            <QuestionCard question={pending.question} batch={state.questionBatch} />
           )}
         </div>
       ) : null}
@@ -626,7 +700,7 @@ export function Composer({
 
       {/* 触发词候选：浮在输入框上方 */}
       {trigger && (candidates.length > 0 || trigger.kind === "mention") ? (
-        <div className="popover trigger-popover" role="listbox">
+        <div className="popover trigger-popover" role="listbox" ref={popoverRef}>
           <div className="popover-section">
             {trigger.kind === "command" ? texts.commands : texts.mentionFiles}
           </div>
@@ -638,7 +712,9 @@ export function Composer({
             candidates.slice(0, 40).map((candidate, index) => {
               const isCommand = trigger.kind === "command";
               const row = candidate as CommandView & FileRefView;
-              const isFolder = !isCommand && row.kind === "directory";
+              // 「..」也算目录行，但不是服务端给的目录：它不该有「整个目录」按钮
+              const isParent = !isCommand && row.parent === true;
+              const isFolder = !isCommand && row.kind === "directory" && !isParent;
               return (
                 <div
                   key={isCommand ? row.name : row.path}
@@ -646,9 +722,11 @@ export function Composer({
                   onMouseEnter={() => setHighlight(index)}
                 >
                   {/* 主体：点它选中。目录在 `@` 列表里**默认是打开该目录**（下钻），
-                      只有右侧的「整个目录」按钮才是把目录本身载入——用户明确的口径。 */}
+                      只有右侧的「整个目录」按钮才是把目录本身载入——用户明确的口径。
+                      「..」一行的语义是回到上一层，同样是「选中即生效」。 */}
                   <button
                     className="popover-item-hit"
+                    title={isParent ? texts.mentionParent : undefined}
                     onMouseDown={(event) => {
                       event.preventDefault();
                       applyCandidate(index);
@@ -657,10 +735,19 @@ export function Composer({
                     {/* 命令名走「优先完整」那档样式（`.is-priority`）：宽度不够时
                         先省略右边的描述，绝不把命令截成 `/git-guard…`（用户口径）。
                         文件路径不做这个标记——长路径必须能省略。 */}
-                    <span className={`popover-item-main${isCommand ? " is-priority" : ""}`}>
-                      {isCommand ? `/${row.name}` : row.path}
+                    <span
+                      className={`popover-item-main${
+                        isCommand || isParent ? " is-priority" : ""
+                      }`}
+                    >
+                      {isCommand ? `/${row.name}` : isParent ? ".." : row.path}
                     </span>
-                    {isCommand && row.description ? (
+                    {isParent ? (
+                      <span className="popover-item-sub">
+                        {/* 上一层就是根目录时没有路径可显示，退回说明文案 */}
+                        {row.path || texts.mentionParent}
+                      </span>
+                    ) : isCommand && row.description ? (
                       <span className="popover-item-sub">{row.description}</span>
                     ) : null}
                     {isCommand && row.skill ? (
@@ -746,7 +833,11 @@ export function Composer({
                 <span
                   className={`chip${attachment.upload?.status === "error" ? " is-error" : ""}`}
                   key={attachment.id}
-                  title={attachment.path ?? attachment.name}
+                  title={
+                    attachment.lines
+                      ? `${attachment.name}:${attachment.lines.start}-${attachment.lines.end}`
+                      : attachment.path ?? attachment.name
+                  }
                 >
                   {/* 上传状态：官方 FileCard 里文件芯片带进度/失败态。
                       失败可点重试，否则用户只能删掉重选（内容其实还在磁盘上）。 */}
@@ -775,6 +866,14 @@ export function Composer({
                     </span>
                   ) : null}
                   <span className="chip-name">{attachment.name}</span>
+                  {/* 部分引用（编辑器选区）把行号写在文件名后，且它是**不可压缩**的
+                      那一段：英文/窄侧栏下文件名可以先省略，`:12-40` 不能跟着消失
+                      ——那正是「引的是哪几行」这个信息本身。 */}
+                  {attachment.lines ? (
+                    <span className="chip-lines">
+                      {`:${attachment.lines.start}-${attachment.lines.end}`}
+                    </span>
+                  ) : null}
                   <button
                     className="chip-remove"
                     title={texts.remove}
@@ -1038,6 +1137,34 @@ function GoalBar({ goal }: { goal: GoalView | undefined }) {
   const [draft, setDraft] = useState<string | undefined>(undefined);
   // 目标正文默认一行截断，展开后显示全文（再点收起）
   const [expanded, setExpanded] = useState(false);
+  const objectiveRef = useRef<HTMLSpanElement>(null);
+  /**
+   * 正文是否**真的**被截断了（默认一行 + 省略号，见 `.goal-objective` 的 CSS）。
+   *
+   * 没被截断时展开按钮是纯噪音——点了什么都不会变，只会把整条撑成两行（用户
+   * 2026-09-14 报的）。量法与 `.row-detail-dir` 的渐隐判定同一套：Range 量的是
+   * 文本的**自然宽度**（`overflow: hidden` 只影响绘制，不影响 Range 的矩形），
+   * 比盒子宽就是被截断了。
+   *
+   * 展开态**不测**：那时正文已经换行铺开，量出来必然「不截断」，会把收起按钮
+   * 一起藏掉——按钮一旦因截断出现过，就一直留到收起为止。
+   */
+  const [truncated, setTruncated] = useState(false);
+  const objective = goal?.objective;
+  useLayoutEffect(() => {
+    if (expanded || !objective) return;
+    const el = objectiveRef.current;
+    if (!el) return;
+    const check = () => {
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      setTruncated(range.getBoundingClientRect().width - el.clientWidth > 1);
+    };
+    check();
+    const observer = new ResizeObserver(check);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [expanded, objective]);
   if (!goal || goal.phase === "complete") return null;
   const phase =
     goal.phase === "paused"
@@ -1098,21 +1225,26 @@ function GoalBar({ goal }: { goal: GoalView | undefined }) {
         <IconTarget size={12} />
       </span>
       <span className="goal-phase">{phase}</span>
-      <span className="goal-objective">{goal.objective}</span>
+      <span className="goal-objective" ref={objectiveRef}>
+        {goal.objective}
+      </span>
       {goal.maxRounds ? (
         <span className="goal-rounds">{`${goal.rounds}/${goal.maxRounds}`}</span>
       ) : null}
       <span className="spacer" />
       {/* 展开 / 收起全文：正文默认一行截断，要看全文按这里（悬停也能看）。
-          位置按用户要求放在暂停按钮**左侧**。 */}
-      <button
-        className={`goal-action goal-expand${expanded ? " is-open" : ""}`}
-        title={expanded ? texts.goalCollapse : texts.goalExpand}
-        aria-expanded={expanded}
-        onClick={() => setExpanded(!expanded)}
-      >
-        <IconChevronDown size={12} />
-      </button>
+          位置按用户要求放在暂停按钮**左侧**；**只有真的被截断时才出现**——
+          一行放得下的目标不需要这个按钮。 */}
+      {truncated || expanded ? (
+        <button
+          className={`goal-action goal-expand${expanded ? " is-open" : ""}`}
+          title={expanded ? texts.goalCollapse : texts.goalExpand}
+          aria-expanded={expanded}
+          onClick={() => setExpanded(!expanded)}
+        >
+          <IconChevronDown size={12} />
+        </button>
+      ) : null}
       {goal.phase === "active" ? (
         <button className="goal-action" title={texts.goalPause} onClick={() => run("pause")}>
           <IconPause size={12} />

@@ -89,10 +89,14 @@ export function hasWorkingChange(state: GitChangeStateLike | undefined, fsPath: 
 export type FileExistence = "present" | "absent" | "unknown";
 
 /**
- * 文件芯片的**改动种类**：界面据此标 `[新增]` / 画删除线，宿主据此决定点击行为。
+ * 文件芯片的**改动种类**：界面据此标 `[新增]` / 画删除线 / **整条不渲染**。
  *
  * 判定顺序就是语义的优先级：
- * - 明确不在磁盘上（`absent`）→ `deleted`（被删了；git 有没有记录只影响「还能不能点开看」）；
+ * - 明确不在磁盘上（`absent`）且 git 有记录（工作区/暂存/合并/未跟踪任一）→
+ *   `deleted`（真被删了；git 有记录只影响「还能不能点开看」）；
+ * - 明确不在磁盘上、git **完全不知道**它 → `gone`：本轮「写了又删、净效果为零」
+ *   的临时文件（模型提交时写的 `commit.msg.txt` 就是典型）。它不代表任何改动，
+ *   界面不渲染这一条；
  * - 在三个改动清单里 → `edited`（git.openChange 能开对比窗口）；
  * - 在未跟踪清单里 → `new`（模型新建的文件，没有基线可比，点开就是看文件）；
  * - 都不是，或存在性 `unknown` → `undefined`（无改动 / 不在 git 仓库 / 被忽略 /
@@ -110,10 +114,21 @@ export function fileChangeKind(
   if (!fsPath) return undefined;
   // 查不出来 ≠ 已删除：宁可不标记号，也不要给无辜文件画删除线
   if (existence === "unknown") return undefined;
-  if (existence === "absent") return "deleted";
+  if (existence === "absent") return hasGitRecord(state, fsPath) ? "deleted" : "gone";
   if (hasWorkingChange(state, fsPath)) return "edited";
   if (isUntracked(state, fsPath)) return "new";
   return undefined;
+}
+
+/**
+ * git 是否**知道**这个路径：四张清单里出现过任意一张即可。
+ *
+ * 用于区分两种「磁盘上没有」：git 有记录（跟踪中的删除 = 仓库里真实的待提交改动）
+ * 与 git 完全不知道（这一轮写出来又删掉的临时文件）。没有记录时，删除这件事在
+ * 版本库层面**不存在**，界面上列它只会让人以为仓库脏了。
+ */
+export function hasGitRecord(state: GitChangeStateLike | undefined, fsPath: string): boolean {
+  return hasWorkingChange(state, fsPath) || isUntracked(state, fsPath);
 }
 
 /**

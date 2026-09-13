@@ -11,7 +11,7 @@
   "Access token rejected": "访问令牌无效",
   "The DSH server requires an access token": "DSH 服务器需要访问令牌",
   "The server {0} rejected the previous token. Paste the token printed in the URL when dsh web started (the part after ?token=).": "服务器 {0} 拒绝了上一次的令牌。请粘贴启动 dsh web 时输出在 URL 里的 token（?token= 之后那一段）。",
-  "The server {0} requires authorization. Paste the token printed in the URL when dsh web started (the part after ?token=; the token is refreshed on every restart, but this extension remembers the session once it is accepted, so you will not have to enter it again).": "服务器 {0} 要求授权。请粘贴启动 dsh web 时输出在 URL 里的 token（?token= 之后那一段；该令牌每次重启都会刷新，但验证通过后本扩展会记住会话，不必反复输入）。",
+  "The server {0} requires authorization. Paste the token printed in the URL when dsh web started (the part after ?token=; the token is refreshed on every restart, but the extension stores the session cookie it exchanges for, so it does not have to be verified again).": "服务器 {0} 要求授权。请粘贴启动 dsh web 时输出在 URL 里的 token（?token= 之后那一段；该令牌每次重启都会刷新，但本扩展会把手里的 token 换成会话 cookie 存下来，之后不必再次验证）。",
   "The token cannot be empty": "令牌不能为空",
   "No external DSH server is configured (dshChat.url): the extension starts the server itself, so the token is obtained automatically and does not need to be entered.": "当前没有配置外部 DSH 服务器（dshChat.url）：服务器由扩展自行启动，令牌会自动获取，无需填写。",
   "Token check failed: {0}": "令牌校验失败：{0}",
