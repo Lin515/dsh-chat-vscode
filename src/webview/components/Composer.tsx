@@ -302,7 +302,15 @@ export function Composer({
     return [up, ...items];
   }, [trigger, state.commands, state.fileRefs, parentQuery]);
 
-  const canSend = draft.trim().length > 0 && state.connection === "ready";
+  /**
+   * 能不能发送。
+   *
+   * `stopped`（关掉 `dshChat.autoStart` 且后台没在跑）**也算能发**：用户口径
+   * （2026-09-14）是"发消息这类显式动作照旧允许拉起后台"——输入了一句话却发不出去、
+   * 还得先去点「启动服务器」，是把 autoStart 的语义读成了"什么都不许做"。
+   * `connecting` / `error` 不给发：后台正在起或起不来，发出去只会失败。
+   */
+  const canSend = draft.trim().length > 0 && (state.connection === "ready" || state.connection === "stopped");
 
   /**
    * 键盘上下键移动高亮时，把选中行**滚进视野**。

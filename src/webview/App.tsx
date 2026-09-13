@@ -117,27 +117,71 @@ function BrandMark() {
   );
 }
 
+/**
+ * 连接条：**未就绪时**显示在所有内容上方（就绪时不占位置）。
+ *
+ * 三种"没好"的状态要给出**不同的下一步**（用户 2026-09-14 口径）：
+ * - `stopped`：后台没在跑（关掉 `dshChat.autoStart` 的常态）→ 「启动服务器」；
+ *   外部服务器不由本扩展启动 → 「尝试重连」；
+ * - `connecting` + `reconnecting`：扩展在一轮轮重连（**没有总超时**）→ 「停止连接」；
+ * - `error`：连不上 → 原因 + 「尝试重连」（+ 外部模式的「输入令牌」、内部模式的「重启服务器」）。
+ *
+ * 三种状态下都留一个「查看日志」：失败原因写进扩展的输出通道，用户得有个入口去看。
+ */
 function ConnectionBar({ state }: { state: ChatState }) {
   const texts = useTexts();
   if (state.connection === "ready") return null;
   const isError = state.connection === "error";
+  const isStopped = state.connection === "stopped";
+  const external = state.externalServer === true;
+  // 详情优先：`stopped` 也可能是"用户按了停止重连"，那时条上的原因是上一轮的失败原因
+  const detail = state.connectionDetail ? resolveText(state.connectionDetail, texts) : undefined;
+  const text = isError
+    ? (detail ?? texts.connectionFailed)
+    : isStopped
+      ? (detail ?? (state.serverRunning || external ? texts.reconnectStopped : texts.serverNotRunning))
+      : state.reconnecting
+        ? (detail && detail !== resolveText("@connectionLost", texts) ? detail : texts.reconnecting)
+        : `${texts.connecting}${state.serverUrl ? ` ${state.serverUrl}` : ""}`;
   return (
-    <div className={`conn-bar${isError ? " is-error" : ""}`}>
+    <div className={`conn-bar${isError ? " is-error" : ""}${isStopped ? " is-stopped" : ""}`}>
       {state.connection === "connecting" ? <Spinner size={11} /> : null}
-      <span>
-        {isError
-          ? resolveText(state.connectionDetail ?? texts.connectionFailed, texts)
-          : `${texts.connecting}${state.serverUrl ? ` ${state.serverUrl}` : ""}`}
+      <span className="conn-text" title={text}>
+        {text}
       </span>
       <span className="spacer" />
-      {isError && state.needsToken ? (
+      {state.needsToken ? (
         <button className="btn" onClick={() => post({ type: "setToken" })}>
           <IconKey size={12} /> {texts.enterToken}
         </button>
       ) : null}
-      {isError ? (
+      {/* 后台没在跑（且不是外部服务器）→ 用户显式拉起一套 */}
+      {isStopped && !state.serverRunning && !external ? (
+        <button className="btn btn-primary" onClick={() => post({ type: "startServer" })}>
+          <IconPlus size={12} /> {texts.startServer}
+        </button>
+      ) : null}
+      {/* 连不上 / 已停止但后台还在 → 只接上已经在跑的那一套 */}
+      {isError || (isStopped && (state.serverRunning || external)) ? (
+        <button className="btn" onClick={() => post({ type: "reconnectNow" })}>
+          <IconRefresh size={12} /> {texts.reconnect}
+        </button>
+      ) : null}
+      {/* 重连循环在跑：必须能停（它没有总超时） */}
+      {state.reconnecting ? (
+        <button className="btn" onClick={() => post({ type: "stopReconnect" })}>
+          {texts.stopReconnect}
+        </button>
+      ) : null}
+      {/* 内部后台连不上时，「重启服务器」是最有效的一招（守护进程重起 dsh） */}
+      {isError && !external ? (
         <button className="btn" onClick={() => post({ type: "restartServer" })}>
           <IconRefresh size={12} /> {texts.restartServer}
+        </button>
+      ) : null}
+      {isError || isStopped || state.reconnecting ? (
+        <button className="btn btn-ghost" data-mini="hide" onClick={() => post({ type: "showLogs" })}>
+          {texts.showLogs}
         </button>
       ) : null}
     </div>

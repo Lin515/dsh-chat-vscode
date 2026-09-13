@@ -101,6 +101,13 @@ this.emit({ type: "toast", level: "warn", text: "@uploadIncomplete:report.pdf" }
 
 ## 代码约定
 
+- **"能不能启动后台"是一条显式许可**（`supervisorManager` 的 `autoStart` + `ensure({start})`）：
+  `autoStart` 只约束**自动**路径（激活期、窗口恢复、5 秒心跳），用户**显式**动作
+  （发消息 / 新建 / 切换会话 / 启动 / 重启服务器）一律允许启动——用户要后台时不该被配置挡住。
+  认证链按 `ownership === "external"` 分叉，**不按 `owned`**：peer 窗口（第二个窗口、
+  重载后接上的同一个后台）同样用会合文件里的 `token` 换 cookie，内部模式没有「输入令牌」。
+  连接状态里 `stopped`（没启动 → 给「启动服务器」）与 `error`（连不上 → 给原因与重试）
+  必须分开渲染。详见 `docs/design-supervisor.md` §8。
 - **注释与文档用中文**（本仓库既有风格）；标识符用英文。
 - **界面文案一律走词典**，不在组件里写死中文字符串。
 - **安全谓词按肯定证据写**（`=== true`），不按否定证据写（`!== false`）——

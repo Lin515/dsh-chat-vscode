@@ -15,13 +15,25 @@
  * 运行：npm run build:scripts && node build/command-e2e.mjs
  */
 import { randomUUID } from "node:crypto";
+// 必须排在最前面：把会合目录指到本次探针专用的临时目录（模块求值期读一次）。
+// 少了它，探针会往**用户的真实** `~/.dsh-chat/supervisors` 里起一套后台
+// （2026-09-14 实测：命令写错时留下一个 2MB 的 supervisor.log 与一个目录）。
+import { PROBE_SUPERVISOR_ROOT } from "./supervisorProbeEnv";
 import { SessionAdapter } from "../src/dsh/adapter";
 import { goalFromProjection, planModeFromProjection } from "../src/dsh/projections";
 import { DshClient } from "../src/dsh/client";
 import { SupervisorManager } from "../src/dsh/supervisorManager";
 
+if (!PROBE_SUPERVISOR_ROOT || !/dsh-chat-sup-probe-/.test(PROBE_SUPERVISOR_ROOT)) {
+  process.stderr.write(`[probe] 隔离失效：会合根目录=${PROBE_SUPERVISOR_ROOT}\n`);
+  process.exit(2);
+}
+
 const log = (line: string) => console.log(`[cmd-e2e] ${line}`);
-const server = new SupervisorManager({ url: "", command: "dsh", startTimeoutMs: 120_000, log });
+// 命令与其它探针、与扩展默认值一致：裸 `dsh` 在需要 `--profile` 的版本上会直接退出
+// （实测 `error: --profile <name> is required`），于是 supervisor 每秒重起一次、
+// 探针在两分钟后报"启动超时"，而真正的原因在命令字符串里。
+const server = new SupervisorManager({ url: "", command: "dsh web --port 0 --no-open", startTimeoutMs: 120_000, log });
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 let client: DshClient | undefined;

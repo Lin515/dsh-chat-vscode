@@ -13,7 +13,18 @@ import type {
   SnapshotSection,
 } from "./injectedSource";
 
-export type ConnectionState = "connecting" | "ready" | "error";
+/**
+ * 界面可见的连接状态。
+ *
+ * `stopped` 与 `error` 的区别是**要不要用户动手**：
+ * - `stopped` = 后台根本没在跑（关掉自动启动后的常态）→ 界面显示「启动服务器」；
+ * - `error` = 后台在跑/尝试过，但这次连不上 → 界面显示原因 + 「尝试重连」。
+ *
+ * 两者分开是用户 2026-09-14 的口径：关掉 `dshChat.autoStart` 之后，扩展**不许**在
+ * 后台不存在时自己拉起一套，界面上要明明白白给一个「启动服务器」的按钮，
+ * 而不是把"没启动"渲染成"正在连接…"（那样用户只会以为卡住了）。
+ */
+export type ConnectionState = "connecting" | "ready" | "error" | "stopped";
 
 /**
  * 附件种类。
@@ -596,6 +607,27 @@ export interface ChatState {
   connection: ConnectionState;
   /** 连接失败/服务器异常时的说明文本。 */
   connectionDetail?: string;
+  /**
+   * 自动重连循环正在跑（`connection === "connecting"` 时的补充信息）。
+   *
+   * 重连**没有总超时**（用户 2026-09-14 口径：只要守护进程与 dsh 还在，就一直试），
+   * 所以界面必须给出「停止连接」；这个字段就是那个按钮的开关。
+   */
+  reconnecting?: boolean;
+  /**
+   * 后台（守护进程 + dsh）此刻是不是真的在跑。
+   *
+   * 与 `connection` 正交：`stopped` + `serverRunning` 表示"后台在跑，但用户按了停止重连"，
+   * 界面据此给「尝试重连」而不是「启动服务器」。
+   */
+  serverRunning?: boolean;
+  /**
+   * 当前是**外部服务器**模式（`dshChat.url` 非空）。
+   *
+   * 界面靠它决定"没连上时给哪个按钮"：外部服务器不由本扩展启动，所以 `stopped` 态下
+   * 给的是「尝试重连」而不是「启动服务器」。
+   */
+  externalServer?: boolean;
   /** 外部服务器要求授权且尚未拿到有效令牌：界面显示「输入令牌」入口。 */
   needsToken?: boolean;
   serverUrl?: string;

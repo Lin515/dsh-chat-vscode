@@ -24,9 +24,15 @@ import { fileChangeKind, hasWorkingChange, isNotFoundError, resolveChipPath, typ
 import { shouldContinuePaging } from "./historyPaging";
 import { composeWithReferences, formatFileMention } from "./references";
 import { resolveForVsCode } from "./hostText";
-import { DshApiError, DshAuthError, DshClient, type ConnectionState, type SessionSummaryWire } from "./client";
+import { DshApiError, DshAuthError, DshClient, type SessionSummaryWire } from "./client";
 import type { RemoteEventFrame, RemoteEventWaterfall, SessionControlFrame } from "./protocol";
-import { SupervisorManager, type ServerInfo, type ServerStatus } from "./supervisorManager";
+import {
+  ServerNotRunningError,
+  SupervisorManager,
+  type EnsureOptions,
+  type ServerInfo,
+  type ServerStatus,
+} from "./supervisorManager";
 import { SessionScope } from "./scope";
 import { queueItems, type QueueOrigin } from "./queueView";
 import { goalFromProjection, planModeFromProjection, subagentsFromCatalog, subagentsFromList } from "./projections";
@@ -64,6 +70,17 @@ const MAX_SUBMISSIONS = 50;
 function readDiffLayout(): DiffLayout {
   const value = vscode.workspace.getConfiguration("dshChat").get<string>("diffLayout");
   return value === "unified" || value === "split" ? value : "auto";
+}
+
+/**
+ * `dshChat.autoStart`：**自动**路径允不允许"后台不存在时自己拉起一套"。
+ *
+ * 语义（用户 2026-09-14 口径）：它只约束扩展自己的自动行为（激活期自动连接、窗口
+ * 恢复会话、心跳自检）。用户显式动作——发消息、新建/切换会话、重启服务器、
+ * 点「启动服务器」——一律不受它限制。
+ */
+function readAutoStart(): boolean {
+  return vscode.workspace.getConfiguration("dshChat").get<boolean>("autoStart") ?? true;
 }
 
 /**
@@ -278,12 +295,32 @@ export class ChatController implements vscode.Disposable {
     string,
     { text: string; attachments: Attachment[]; content: unknown[]; at: number }
   >();
-  private connection: ConnectionState | "error" = "connecting";
+  /**
+   * 连接状态。
+   *
+   * `"stopped"` 是 2026-09-14 新增的一档，与 `"error"` 分开：**没启动**（关掉
+   * `dshChat.autoStart` 且后台不存在）要界面给「启动服务器」，而**连不上**要给原因
+   * 与重试入口——把前者渲染成"正在连接…"会让用户以为卡住了。
+   */
+  private connection: "connecting" | "connected" | "disconnected" | "error" | "stopped" = "connecting";
   private connectionDetail: string | undefined;
   /** 上次连接因缺少/拒绝令牌失败：界面据此给出「输入令牌」入口。 */
   private needsToken = false;
   /** 心跳触发的共享后台切换正在跑（去重，见 `reconnectPeer`）。 */
   private peerReconnect = false;
+  /**
+   * 自动重连是开着的（用户可点「停止连接」关掉，点「尝试重连」再打开）。
+   *
+   * 重连**没有总超时**（用户 2026-09-14 口径），但只对"后台真的在跑"生效：
+   * 后台不在了就切到 `stopped`（界面给「启动服务器」），不会无限空转。
+   */
+  private autoReconnect = true;
+  /** 后台（守护进程 + dsh）此刻在不在跑，来自心跳的巡检（首次由激活期探测填）。 */
+  private serverRunning = false;
+  /** 正在跑的那一轮连接（并发调用合并；见 `ensureConnected`）。 */
+  private connectPromise: Promise<void> | undefined;
+  /** 本轮连接尝试有没有拿到"可以拉起后台"的许可（并发时按最宽的那个算）。 */
+  private connectMayStart = false;
   private disposed = false;
 
   /**
@@ -348,9 +385,43 @@ export class ChatController implements vscode.Disposable {
    * 钩子只负责叫起这一轮，结论由这里自己消化。
    */
   private async handleHeartbeat(): Promise<void> {
-    const probe = await this.probeConnection(this.server.activeBaseUrl);
-    if (probe.alive || !probe.info) return;
-    await this.reconnectPeer(probe.info);
+    // 后台还在不在（守护进程 + dsh）：这是"要不要继续重连"的唯一判据。
+    // 关掉自动启动时，后台不在就什么都不做——界面给「启动服务器」，由用户点头。
+    const snapshot = await this.server.probeRunning();
+    this.setServerRunning(snapshot.supervisorAlive);
+    if (this.connection === "connected") {
+      const probe = await this.probeConnection(this.server.activeBaseUrl);
+      if (probe.alive || !probe.info) return;
+      // 地址还在但服务器没了：通常是守护进程把 dsh 重起了（端口变了）。
+      // 这里**只接上**（start:false）——后台是守护进程在管，扩展不负责起它。
+      if (!this.reconnecting) return;
+      await this.reconnectPeer(probe.info);
+      return;
+    }
+    if (this.connection === "stopped") {
+      // 没启动的常态：只探测。守护进程起来了（别的窗口拉的、或用户点了启动按钮）就自动接上。
+      if (!snapshot.supervisorAlive) return;
+      await this.ensureConnected({ start: false });
+      return;
+    }
+    // 连接失败/断开中：后台还在就一轮一轮重试（**没有总超时**），
+    // 用户点了「停止连接」就安静等着（界面仍有「尝试重连」）。
+    if (!this.reconnecting) return;
+    await this.ensureConnected({ start: false });
+  }
+
+  /**
+   * 重连循环是否在跑（界面「停止连接」按钮的开关，见字段注释）。
+   *
+   * 三个条件缺一不可：用户没停 → 后台真的在跑 → 还没连上。后台不在时不给"正在重连"的
+   * 假象（那正是用户报的"无脑重连"），而是切到 `stopped` 让用户看到「启动服务器」。
+   */
+  private get reconnecting(): boolean {
+    if (this.connection === "connected" || this.connection === "stopped") return false;
+    if (!this.autoReconnect) return false;
+    // 外部服务器没有"守护进程/dsh 进程"可判（用户口径：外部模式只做重连尝试），
+    // 所以它只要没连上就算在重连；内部模式必须"后台真的在跑"才算。
+    return this.server.externalUrl !== undefined || this.serverRunning;
   }
 
   /**
@@ -397,7 +468,8 @@ export class ChatController implements vscode.Disposable {
       this.teardownStreams();
       this.client?.dispose();
       this.client = undefined;
-      await this.ensureConnected();
+      // 后台是守护进程在管、此刻确实在跑：这里只接上，绝不因为"连不上"就自己拉起一套
+      await this.ensureConnected({ start: false });
     } catch (error) {
       this.log(`[server] 切换共享后台失败：${this.describeError(error)}`);
     } finally {
@@ -457,8 +529,14 @@ export class ChatController implements vscode.Disposable {
     const sessionId = viewId ? this.viewSessions.get(viewId) : undefined;
     const scope = sessionId ? this.scopes.get(sessionId) : undefined;
     return {
-      connection: this.connection === "error" ? "error" : this.connection === "connected" ? "ready" : "connecting",
+      connection: this.viewConnection(),
       connectionDetail: this.connectionDetail,
+      /** 重连循环在跑：界面给「停止连接」（重连没有总超时，得让用户能停）。 */
+      reconnecting: this.reconnecting || undefined,
+      /** 后台在不在跑：`stopped` 时决定给「启动服务器」还是「尝试重连」。 */
+      serverRunning: this.serverRunning || undefined,
+      /** 外部服务器不由本扩展启动：`stopped` 时同样给「尝试重连」。 */
+      externalServer: this.server.externalUrl !== undefined || undefined,
       /** 外部服务器缺令牌：界面给「输入令牌」按钮。 */
       needsToken: this.needsToken || undefined,
       serverUrl: this.client?.baseUrl,
@@ -530,7 +608,9 @@ export class ChatController implements vscode.Disposable {
    */
   async restoreViewSession(viewId: string, sessionId: string): Promise<void> {
     if (this.viewSessions.get(viewId) === sessionId) return;
-    if (!this.client || this.connection !== "connected") await this.ensureConnected();
+    // **自动路径**：跟随 `dshChat.autoStart`——关掉自动启动且后台不在时，恢复会话
+    // 不该顺手把后台起起来（用户 2026-09-14 口径：那时界面只显示「启动服务器」）
+    if (!this.client || this.connection !== "connected") await this.ensureConnected({ start: readAutoStart() });
     if (!this.client || this.connection !== "connected") {
       this.log(`[restore] 未连接，跳过 ${sessionId}`);
       return;
@@ -809,13 +889,48 @@ export class ChatController implements vscode.Disposable {
 
   // ---------- 连接 ----------
 
-  async ensureConnected(): Promise<void> {
+  /**
+   * 建立（或恢复）与 dsh 的连接。
+   *
+   * `options.start` 决定"后台不存在时允不允许拉一套"（透传给管理器，见
+   * `supervisorManager` 文件头的启动决策）：**自动**路径跟随 `dshChat.autoStart`，
+   * **用户显式**路径（发消息 / 新建会话 / 重启服务器 / 点「启动服务器」）一律允许。
+   * 不允许且后台不在时，管理器抛 `ServerNotRunningError`，这里切成 `stopped`——
+   * 界面显示「启动服务器」，而不是把"没启动"渲染成"正在连接…"或"连接失败"。
+   */
+  async ensureConnected(options: EnsureOptions = {}): Promise<void> {
     if (this.disposed) return;
     if (this.client && this.connection === "connected") return;
+    // **并发合并**：心跳每 5 秒重试一轮，用户动作可能同时到；两轮叠在一起会建出两个
+    // 客户端（两条 WS、两套跟随流，服务端会看到两个"窗口"）。
+    // 已经有一轮在跑时：请求"允许启动"而那一轮没有许可 → 等它结束后**补跑一轮**
+    // （否则用户点「启动服务器」可能正好被合并进一次"接不上就报没启动"的尝试里，点了没反应）。
+    if (this.connectPromise) {
+      const inFlight = this.connectPromise;
+      if (options.start && !this.connectMayStart) {
+        await inFlight;
+        return this.ensureConnected(options);
+      }
+      return inFlight;
+    }
+    if (options.start) this.connectMayStart = true;
+    this.connectPromise = this.connectOnce().finally(() => {
+      this.connectPromise = undefined;
+      this.connectMayStart = false;
+    });
+    return this.connectPromise;
+  }
+
+  private async connectOnce(): Promise<void> {
     this.setConnection("connecting");
     try {
-      const info = await this.server.ensure();
-      const client = info.owned ? await this.openOwnedClient(info) : await this.openExternalClient(info);
+      // 许可按"这一轮里最宽的那个请求"算（见 ensureConnected）
+      const info = await this.server.ensure(this.connectMayStart ? { start: true } : {});
+      // **认证链按"是不是外部服务器"分叉，不按"是不是本窗口拉起的"**（2026-09-14 修）：
+      // peer（别的窗口拉起的、或窗口重载后接上的同一套）手里同样有会合文件里的启动
+      // 令牌，必须走同一条令牌换 cookie 的路；此前它们被当成外部服务器处理，于是
+      // 弹「输入令牌」框——用户报的"内部启动后拿不到 token、连不上"就是这里。
+      const client = info.ownership === "external" ? await this.openExternalClient(info) : await this.openOwnedClient(info);
       client.onDidChangeState((state) => {
         this.setConnection(state === "connected" ? "connected" : state === "connecting" ? "connecting" : "error", state === "disconnected" ? "@connectionLost" : undefined);
         if (state === "connected") void this.onConnected();
@@ -831,6 +946,11 @@ export class ChatController implements vscode.Disposable {
       // 不再自动建会话：每个窗口的会话由它自己的首次动作（发消息/新建/切会话）
       // 按需建立，空窗口保持空态——多窗口各自为政，互不同步。
     } catch (error) {
+      if (error instanceof ServerNotRunningError) {
+        this.log("[connect] 后台没有在运行，且本次调用不允许启动（界面给「启动服务器」）");
+        this.setConnection("stopped", "@serverNotRunning");
+        return;
+      }
       // 外部服务器要求授权：记下标记，界面显示「输入令牌」入口
       if (error instanceof DshAuthError && this.server.externalUrl) this.setNeedsToken(true);
       const detail = this.describeError(error);
@@ -839,11 +959,30 @@ export class ChatController implements vscode.Disposable {
     }
   }
 
-  /** 自管服务器：启动令牌来自子进程日志，认证失败只能如实报错。 */
+  /** 自管服务器：启动令牌来自会合文件，认证失败只能如实报错。 */
   private async openOwnedClient(info: ServerInfo): Promise<DshClient> {
-    const client = new DshClient(info.baseUrl, info.token, this.log);
-    await client.authenticate();
-    return client;
+    try {
+      return await this.authenticateWithToken(info.baseUrl, info.token);
+    } catch (error) {
+      // 令牌可能刚好被换掉（守护进程在我们取令牌与换 cookie 的空档里重起了 dsh）。
+      // 会合文件是**唯一权威**，重读一次再用，而不是把用户丢给「输入令牌」。
+      const fresh = this.server.freshToken();
+      if (!(error instanceof DshAuthError) || !fresh || fresh === info.token) throw error;
+      this.log("[auth] 会合文件里的启动令牌被拒，换用刚读到的那一份重试");
+      return this.authenticateWithToken(info.baseUrl, fresh);
+    }
+  }
+
+  /** 用启动令牌换会话 cookie（不成功就把客户端丢掉，别留着半条连接）。 */
+  private async authenticateWithToken(baseUrl: string, token: string | undefined): Promise<DshClient> {
+    const client = new DshClient(baseUrl, token, this.log);
+    try {
+      await client.authenticate();
+      return client;
+    } catch (error) {
+      client.dispose();
+      throw error;
+    }
   }
 
   /**
@@ -967,12 +1106,12 @@ export class ChatController implements vscode.Disposable {
       probe.dispose();
     }
 
-    // 已建立的连接带着旧会话，重新走一遍连接流程
+    // 已建立的连接带着旧会话，重新走一遍连接流程（**用户显式动作**：允许拉起后台）
     this.teardownStreams();
     this.client?.dispose();
     this.client = undefined;
     this.connection = "connecting";
-    await this.ensureConnected();
+    await this.ensureConnected({ start: true });
   }
 
   private setNeedsToken(needed: boolean): void {
@@ -1022,18 +1161,51 @@ export class ChatController implements vscode.Disposable {
     this.openWorkspaceStream();
   }
 
-  private setConnection(state: ConnectionState | "error", detail?: string): void {
+  /** 内部连接状态 → 界面可见的状态（见 `connection` 字段注释）。 */
+  private viewConnection(): ChatState["connection"] {
+    switch (this.connection) {
+      case "connected":
+        return "ready";
+      case "error":
+        return "error";
+      case "stopped":
+        return "stopped";
+      default:
+        return "connecting";
+    }
+  }
+
+  private setConnection(state: "connecting" | "connected" | "disconnected" | "error" | "stopped", detail?: string): void {
     this.connection = state;
     this.connectionDetail = detail;
     // 连接状态是所有窗口共享的全局态
+    this.emitConnection();
+  }
+
+  /** 把连接相关的字段整组推给所有窗口（状态、原因、重连开关、后台在不在）。 */
+  private emitConnection(): void {
     this.emitAll({
       type: "patch",
       patch: {
-        connection: state === "error" ? "error" : state === "connected" ? "ready" : "connecting",
-        connectionDetail: detail,
+        connection: this.viewConnection(),
+        connectionDetail: this.connectionDetail,
+        reconnecting: this.reconnecting || undefined,
+        serverRunning: this.serverRunning || undefined,
+        externalServer: this.server.externalUrl !== undefined || undefined,
         serverUrl: this.client?.baseUrl,
       },
     });
+  }
+
+  /**
+   * 后台在不在跑（心跳巡检的结论）变了就推给界面。
+   *
+   * `stopped` 态的按钮由它决定：在跑 → 「尝试重连」，不在 → 「启动服务器」。
+   */
+  private setServerRunning(running: boolean): void {
+    if (this.serverRunning === running) return;
+    this.serverRunning = running;
+    this.emitConnection();
   }
 
   /**
@@ -1067,7 +1239,8 @@ export class ChatController implements vscode.Disposable {
     this.client?.dispose();
     this.client = undefined;
     await this.server.restart();
-    await this.ensureConnected();
+    // 「重启服务器」是用户显式动作：允许拉起一套（关掉自动启动时也算数）
+    await this.ensureConnected({ start: true });
     if (wasPeer) {
       this.emitAll({ type: "toast", level: "warn", text: "@sharedRestarted" });
       return;
@@ -1079,7 +1252,70 @@ export class ChatController implements vscode.Disposable {
   onServerStatus(status: ServerStatus): void {
     if (status.state === "failed" && status.detail) {
       this.setConnection("error", status.detail);
+      return;
     }
+    // 「停止服务器」/ 守护进程自己退场：界面立刻切到"已停止 + 启动服务器"，
+    // 而不是继续显示旧的就绪状态（那样用户会以为后台还在）
+    if (status.state === "stopped") {
+      this.setServerRunning(false);
+      this.setConnection("stopped", status.detail ?? "@serverNotRunning");
+    }
+  }
+
+  // ---------- 启动 / 重连（用户可控，2026-09-14） ----------
+
+  /**
+   * 激活期的自动连接（`startup()` 调用）。
+   *
+   * - `dshChat.autoStart` 开着：照旧自动确保一套（没有就起、有就复用）；
+   * - 关着：**先判断后台在不在跑**（用户口径）——在跑就自动接上并持续重连，
+   *   不在就切到 `stopped`，界面显示「启动服务器」，绝不自己拉起一套；
+   * - 外部服务器（`dshChat.url`）：不问进程，直接尝试连接（连接失败会一轮轮重试）。
+   */
+  async autoConnect(autoStart: boolean): Promise<void> {
+    this.autoReconnect = true;
+    if (autoStart || this.server.externalUrl) {
+      await this.ensureConnected({ start: autoStart });
+      return;
+    }
+    const snapshot = await this.server.probeRunning();
+    this.setServerRunning(snapshot.supervisorAlive);
+    if (snapshot.supervisorAlive) {
+      await this.ensureConnected({ start: false });
+      return;
+    }
+    this.log("[connect] 已关闭自动启动，且后台没有在运行：等待用户点「启动服务器」");
+    this.setConnection("stopped", "@serverNotRunning");
+  }
+
+  /** 「启动服务器」（命令面板或界面按钮）：**用户显式要求**，允许拉起一套后台。 */
+  async startServer(): Promise<void> {
+    this.autoReconnect = true;
+    if (this.connection === "stopped") this.setConnection("connecting");
+    await this.ensureConnected({ start: true });
+  }
+
+  /** 「尝试重连」：只接上已经在跑的后台（后台不在就还是 `stopped`，不会顺手起一套）。 */
+  async reconnectNow(): Promise<void> {
+    this.autoReconnect = true;
+    this.log("[connect] 用户点了「尝试重连」");
+    if (this.connection === "stopped") this.setConnection("connecting");
+    await this.ensureConnected({ start: false });
+  }
+
+  /**
+   * 「停止连接」：停掉自动重连循环。
+   *
+   * 后台**一个字都不动**（这正是 supervisor 架构的分工：dsh 的生死归守护进程，
+   * 它按"还有几条活连接"自己裁决；本窗口只是不再反复尝试连接）。
+   */
+  stopReconnect(): void {
+    if (!this.reconnecting) return;
+    this.autoReconnect = false;
+    this.log("[connect] 用户点了「停止连接」");
+    // 切到 `stopped`（而不是继续 `connecting`）：界面据此给出「尝试重连」，
+    // 同时保留 `connectionDetail`——"为什么没连上"仍然显示在条上
+    this.setConnection("stopped", this.connectionDetail);
   }
 
   // ---------- 会话 ----------
@@ -1295,7 +1531,8 @@ export class ChatController implements vscode.Disposable {
    */
   async newSession(viewId?: string): Promise<void> {
     if (!this.client || this.connection !== "connected") {
-      await this.ensureConnected();
+      // 用户显式动作（点「新建对话」）：允许拉起后台
+      await this.ensureConnected({ start: true });
     }
     if (!this.client) return;
     try {
@@ -1340,7 +1577,8 @@ export class ChatController implements vscode.Disposable {
     // 已经在这个会话上（历史抽屉里点了当前选中的那条）：什么都不做，
     // 避免重绑把粘性显示值清掉后等不到回填
     if (this.viewSessions.get(viewId) === sessionId) return;
-    if (!this.client || this.connection !== "connected") await this.ensureConnected();
+    // 用户显式动作（点历史里的一条）：允许拉起后台
+    if (!this.client || this.connection !== "connected") await this.ensureConnected({ start: true });
     if (!this.client) return;
     const scope = this.ensureScope(sessionId);
     if (!scope) return;
@@ -2356,8 +2594,10 @@ export class ChatController implements vscode.Disposable {
 
       case "send":
         // 未连接时先恢复连接：历史会话切换后跟随流尚未建立时直接 prompt
-        // 会触发服务端 resume，冷启动竞态下 resume 可能失败
-        if (!this.client || this.connection !== "connected") await this.ensureConnected();
+        // 会触发服务端 resume，冷启动竞态下 resume 可能失败。
+        // **用户显式动作**（按了发送）：允许拉起后台（关掉自动启动时也算数，
+        // 用户口径 2026-09-14：autoStart 只约束扩展自己的自动行为）
+        if (!this.client || this.connection !== "connected") await this.ensureConnected({ start: true });
         await this.send(viewId, message.text, message.attachments);
         break;
 
@@ -2599,7 +2839,22 @@ export class ChatController implements vscode.Disposable {
       }
 
       case "showLogs":
-        this.log("");
+        // 界面按钮「查看日志」：把输出通道（扩展日志）显示出来。
+        // 以前这里只写一行空日志，用户点了等于没点——连接失败时用户最需要的
+        // 恰恰是"去哪儿看原因"（用户 2026-09-14 口径）。
+        await vscode.commands.executeCommand("dshChat.showLogs");
+        break;
+
+      case "startServer":
+        await this.startServer();
+        break;
+
+      case "reconnectNow":
+        await this.reconnectNow();
+        break;
+
+      case "stopReconnect":
+        this.stopReconnect();
         break;
 
       case "restartServer":

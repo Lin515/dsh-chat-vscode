@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { ChatViewProvider } from "./chatView";
 import { ChatController } from "./dsh/controller";
+import { resolveForVsCode } from "./dsh/hostText";
 import { selectionLines } from "./dsh/selection";
 import { createHostLog } from "./dsh/hostLog";
 import { IDLE_SEC_DEFAULT } from "./dsh/supervisorProtocol";
@@ -78,6 +79,9 @@ export function activate(context: vscode.ExtensionContext): void {
     command: config().get<string>("command") || DEFAULT_COMMAND,
     startTimeoutMs: (config().get<number>("startTimeoutSec") ?? 90) * 1000,
     idleSec: config().get<number>("supervisorIdleSec") ?? IDLE_SEC_DEFAULT,
+    // `autoStart` 关掉时，扩展**不许**自己拉起后台（只在后台已在跑时自动接上）；
+    // 用户显式动作（发消息 / 点「启动服务器」）不受它约束，见 supervisorManager 文件头
+    autoStart: config().get<boolean>("autoStart") ?? true,
     workspace: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
     launcher,
     log,
@@ -170,7 +174,9 @@ function registerContributions(context: vscode.ExtensionContext, host: Contribut
     ),
     // 「停止生成」停最近活动窗口正在跑的这一轮（后台继续）
     vscode.commands.registerCommand("dshChat.stop", () => controller.stopActive()),
-    vscode.commands.registerCommand("dshChat.startServer", () => controller.ensureConnected()),
+    // 「启动服务器」：**用户显式要求**，允许在后台不存在时拉起一套
+    // （关掉 `dshChat.autoStart` 时，这就是界面上那个「启动服务器」按钮的落点）
+    vscode.commands.registerCommand("dshChat.startServer", () => controller.startServer()),
     vscode.commands.registerCommand("dshChat.restartServer", () => controller.restart()),
     // 「停止服务器」：请 supervisor 把 dsh 一起收场并退出（**扩展自己不 taskkill**）
     vscode.commands.registerCommand("dshChat.stopServer", async () => {
@@ -214,7 +220,7 @@ function registerContributions(context: vscode.ExtensionContext, host: Contribut
                   : vscode.l10n.t("no (external dshChat.url)"),
             )
           : undefined,
-        status.detail ? vscode.l10n.t("Detail: {0}", status.detail) : undefined,
+        status.detail ? vscode.l10n.t("Detail: {0}", resolveForVsCode(status.detail)) : undefined,
         // 只列**当前后台自己的**进程：守护进程 + 它持有的 dsh。
         // （曾经这里会"扫描并报残留进程"，但那个判定依赖命令行匹配、分不清"在用"与"没人管"，
         //   准确度不够——不准确的判定不如不要，用户 2026-09-13 定。）
@@ -331,11 +337,11 @@ function startup(
       log(`[lock] 残留锁检测失败：${error instanceof Error ? error.message : String(error)}`);
     })
     .finally(() => {
-      if (autoStart) {
-        void controller.ensureConnected();
-      } else {
-        log("已关闭自动启动，可用命令「DSH: 启动服务器」手动连接。");
-      }
+      // 自动连接的决策全在控制器里（用户 2026-09-14 口径）：
+      // - `autoStart` 开着：没有就起一套、有就复用（原行为）；
+      // - 关着：**先判断后台在不在跑**——在跑（守护进程 + dsh）才自动重连，
+      //   不在就只切到"已停止"，界面显示「启动服务器」，扩展绝不自己拉起一套。
+      void controller.autoConnect(autoStart);
     });
 
   if (config().get<boolean>("openPanelOnStartup")) {

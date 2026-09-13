@@ -92,11 +92,13 @@ const entries = {
   "build/window-state.test.mjs": "scripts/windowState.test.ts",
   "build/host-log.test.mjs": "scripts/hostLog.test.ts",
   "build/supervisor-protocol.test.mjs": "scripts/supervisorProtocol.test.ts",
+  "build/supervisor-policy.test.mjs": "scripts/supervisorPolicy.test.ts",
   "build/pinger.mjs": "scripts/pinger.ts",
   "build/supervisor-reload-probe.mjs": "scripts/supervisorReloadProbe.ts",
   "build/supervisor-idle-probe.mjs": "scripts/supervisorIdleProbe.ts",
   "build/supervisor-scenarios-probe.mjs": "scripts/supervisorScenariosProbe.ts",
   "build/supervisor-manager-probe.mjs": "scripts/supervisorManagerProbe.ts",
+  "build/auth-chain-probe.mjs": "scripts/authChainProbe.ts",
 
 };
 

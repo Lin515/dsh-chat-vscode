@@ -79,6 +79,8 @@ const MARKERS: string[] = [
   "serverExited",
   "serverStartTimeout",
   "serverUnreachable",
+  "serverNotRunning",
+  "serverStopped",
   "serverLogTail",
   "switchingServer",
   // 多窗口共享后台

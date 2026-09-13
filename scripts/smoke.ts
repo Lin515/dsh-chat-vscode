@@ -3,11 +3,19 @@
  *
  * 只覆盖与 vscode 无关的三层（SupervisorManager / DshClient / SessionAdapter），
  * 因此可以在没有 VS Code 的环境里直接跑：
- *   node esbuild.smoke.mjs && node dist/smoke.cjs
+ *   npm run smoke
  */
+// 必须排在最前面：把会合目录指到本次冒烟专用的临时目录（模块求值期读一次）。
+// 少了它，冒烟会往**用户的真实** `~/.dsh-chat/supervisors` 里起一套后台。
+import { PROBE_SUPERVISOR_ROOT } from "./supervisorProbeEnv";
 import { SessionAdapter } from "../src/dsh/adapter";
 import { DshClient } from "../src/dsh/client";
 import { SupervisorManager } from "../src/dsh/supervisorManager";
+
+if (!PROBE_SUPERVISOR_ROOT || !/dsh-chat-sup-probe-/.test(PROBE_SUPERVISOR_ROOT)) {
+  process.stderr.write(`[smoke] 隔离失效：会合根目录=${PROBE_SUPERVISOR_ROOT}\n`);
+  process.exit(2);
+}
 
 const log = (line: string) => console.log(`[smoke] ${line}`);
 
@@ -18,7 +26,10 @@ function fail(message: string): never {
 
 const server = new SupervisorManager({
   url: "",
-  command: "dsh",
+  // 与扩展默认值、与其它探针一致：裸 `dsh` 在需要 `--profile` 的版本上会直接退出
+  // （实测 `error: --profile <name> is required`），supervisor 于是每秒重起一次、
+  // 两分钟后报"启动超时"——真正的原因只在命令字符串里。
+  command: "dsh web --port 0 --no-open",
   startTimeoutMs: 120_000,
   log,
 });

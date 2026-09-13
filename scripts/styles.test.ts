@@ -738,4 +738,41 @@ console.log("styles: 待处理交互接管输入区（流里跳过、答过留�
 }
 console.log("styles: 工具栏按实测宽度分配、测量层约束完整 ✓");
 
+// ---------- 16. 连接条：按钮不裁切，文字可以让位（2026-09-14 新增四种状态与按钮） ----------
+//
+// 连接条现在最多有四个按钮（启动服务器 / 尝试重连 / 停止重连 / 查看日志），而英文文案
+// 比中文长 1.5~2 倍。三件事必须同时成立，否则窄侧栏下会裁掉按钮（不是"难看"，是点不到）：
+// 1. 按钮自己不换行（继承 `.btn` 的 nowrap）——换行由容器负责；
+// 2. 容器允许换行（flex-wrap: wrap），放不下就折到第二行，**不裁**；
+// 3. 说明文字可以被压缩（min-width: 0 + 省略号），但按钮不参与压缩。
+{
+  // **按行首锚定**取主规则：`rule(".conn-bar")` 会先命中 `.app.is-mini .conn-bar`
+  // （那个助手不做行首锚定，选择器更短就赢），所以这里自己锚一下
+  const barMatch = /^\.conn-bar\s*\{([\s\S]*?)\}/mu.exec(css);
+  assert.ok(barMatch, "app.css 里找不到 .conn-bar 主规则");
+  const bar = barMatch[1];
+  assert.ok(
+    /flex-wrap:\s*wrap/.test(bar),
+    "`.conn-bar` 必须允许换行：按钮是 nowrap 的，不换行就会在窄侧栏里被裁掉（点不到的按钮等于没有）",
+  );
+  const btn = rule(".btn");
+  assert.ok(/white-space:\s*nowrap/.test(btn), "`.btn` 一律 nowrap（条内的按钮标签不能被折成两行）");
+
+  const text = rule(".conn-bar .conn-text");
+  assert.ok(/min-width:\s*0/.test(text), "连接条说明文字要能压缩（min-width: 0），否则会把按钮挤出去");
+  assert.ok(
+    /text-overflow:\s*ellipsis/.test(text) && /white-space:\s*nowrap/.test(text),
+    "连接条说明文字超长时出省略号（长 URL / 长错误文本不能顶破一行）",
+  );
+
+  // 「没在跑」不是错误：不该用错误色（红色会让用户以为出事了）
+  assert.ok(/\.conn-bar\.is-stopped/.test(css), "连接条要有 is-stopped 的中性色一档（没启动 ≠ 失败）");
+  // 极小宽度下先收起「查看日志」（命令面板里还有同一个入口）
+  assert.ok(
+    /\.app\.is-mini \.conn-bar \[data-mini="hide"\]/.test(css),
+    "迷你模式下连接条要能收起次要按钮（查看日志），保证启动/重连按钮仍然可点",
+  );
+}
+console.log("styles: 连接条按钮不被裁切、文字可让位 ✓");
+
 console.log("\nstyles: all assertions passed");

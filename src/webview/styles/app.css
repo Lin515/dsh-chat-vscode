@@ -1543,6 +1543,17 @@
 .app.is-mini .icon-btn[data-mini="hide"] {
   display: none;
 }
+
+/* 连接条同理：极小宽度下先收起「查看日志」（命令面板里还有同一个入口，
+   而启动/重连这类按钮在那一档仍然必须是可点的） */
+.app.is-mini .conn-bar [data-mini="hide"] {
+  display: none;
+}
+
+.app.is-mini .conn-bar {
+  gap: 4px;
+  padding: 5px 6px;
+}
 .app.is-mini .header {
   padding: 0 4px;
   gap: 1px;
@@ -2610,10 +2621,28 @@
   font-size: var(--font-size-xs);
   color: var(--warning);
   border-bottom: 1px solid var(--border);
+  /* 这一条现在最多有四个按钮（启动 / 尝试重连 / 停止连接 / 查看日志），而英文
+     文案比中文长 1.5~2 倍：窄侧栏下与其裁掉按钮，不如让它们换到第二行。
+     按钮自己一律 `nowrap`（`.btn`），所以换行是唯一的兜底。 */
+  flex-wrap: wrap;
 }
 
 .conn-bar.is-error {
   color: var(--error);
+}
+
+/* 「没在跑」（关掉自动启动后的常态）：不是错误，用中性色——红色会让用户以为出事了 */
+.conn-bar.is-stopped {
+  color: var(--description);
+}
+
+/* 说明文字可以让位给按钮：英文文案比中文长 1.5~2 倍，窄侧栏下必须能截断 */
+.conn-bar .conn-text {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .conn-bar .spacer {

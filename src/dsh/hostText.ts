@@ -43,6 +43,12 @@ function resolveMarker(text: string): string {
       return vscode.l10n.t("Timed out waiting for dsh web to become ready ({0}s)", arg);
     case "serverUnreachable":
       return vscode.l10n.t("Cannot reach {0}; make sure dsh web is running there.", arg);
+    // 这一对会经「DSH: 显示诊断信息」的 `Detail:` 那一行外溢到 VS Code 原生弹窗，
+    // 所以也要在这里登记（否则用户看到的是裸 `@serverNotRunning`）
+    case "serverNotRunning":
+      return vscode.l10n.t("The DSH server is not running. Click “Start server” to launch one.");
+    case "serverStopped":
+      return vscode.l10n.t("The DSH server has been stopped.");
     case "serverLogTail":
       return vscode.l10n.t("Log tail:\n{0}", arg);
     case "serverExited": {

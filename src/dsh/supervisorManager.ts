@@ -12,9 +12,26 @@
  *
  * **本文件不杀任何进程**（唯一例外：`restart()`/`stop()` 是把"请求"交给 supervisor 执行，
  * 由它动手）。这条纪律是本次架构改动的核心：今天所有麻烦都源于"扩展也在杀 dsh"。
+ *
+ * ## 2026-09-14：启动决策（`autoStart` 关掉之后）
+ *
+ * 用户口径：**关掉 `dshChat.autoStart` 时，后台不存在就只显示「启动服务器」按钮，
+ * 扩展不许自作主张拉起一套**；但后台（守护进程 + dsh）真的在跑时，要**自动接上**
+ * 并且一直重试（没有总超时）。因此这里把"能不能启动"变成一条**显式许可**：
+ *
+ * - `options.autoStart`（配置项）：**自动**路径（激活期、心跳自检）的许可，默认 true；
+ * - `ensure({ start: true })`：**用户显式**动作（点「启动服务器」、发消息、重启服务器）的许可，
+ *   它覆盖配置——用户要后台的时候不该被配置挡住；
+ * - `ensure({ start: false })`：只接上已经在跑的（「尝试重连」用）。
+ *
+ * 另一条纪律：**守护进程还活着时，永远只接入、不另起一套**。Windows 上命名管道只能被
+ * 一个进程监听，重复 spawn 出来的第二个 supervisor 会在 `listen` 处失败自杀，而它
+ * 已经把父进程的 spawn 开销付掉了；接入还顺带把"dsh 崩了但守护进程还在"这套自愈
+ * 交回给唯一裁决者（连接本身就是"我在用"，它据此重起 dsh）。
  */
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { connect as connectTcp } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   IDLE_SEC_DEFAULT,
@@ -33,7 +50,7 @@ import {
   type SupervisorLauncher,
 } from "./supervisorClient";
 import { createDefaultSupervisorLauncher } from "./supervisorRunner";
-import { isProcessAlive, tcpReachableSync } from "./processRegistry";
+import { isProcessAlive } from "./processRegistry";
 
 /** 后台连接信息（沿用旧形状，controller 与界面不必跟着改）。 */
 export interface ServerInfo {
@@ -55,6 +72,45 @@ export interface ServerInfo {
 export type Ownership = "self" | "peer" | "external";
 export type ServerState = "stopped" | "starting" | "ready" | "failed";
 
+/**
+ * 后台**现在到底在不在跑**（只读探测，绝不启动任何东西）。
+ *
+ * 单独一个类型是因为"要不要自动重连"完全由它决定（用户 2026-09-14 口径）：
+ * 守护进程还在 → 自动接上并重试到成功；不在 → 界面只给「启动服务器」按钮。
+ */
+export interface RunningSnapshot {
+  /** 会合目录里有会合文件（诊断用：没有 = 从没起过，或被 supervisor 收尾删掉了）。 */
+  hasState: boolean;
+  /** 守护进程进程还在。 */
+  supervisorAlive: boolean;
+  /** dsh 真的在监听会合文件里的地址。 */
+  serverAlive: boolean;
+  /** 守护进程正在拉起 dsh（还没就绪）。 */
+  starting: boolean;
+  baseUrl?: string;
+  supervisorPid?: number;
+  serverPid?: number;
+}
+
+/**
+ * 后台没有在跑，而本次调用**不允许**启动一套。
+ *
+ * 调用方据此把界面切到"已停止 + 启动服务器按钮"，而不是当成连接失败
+ * （那是两件不同的事：失败要重试，没启动要用户点头）。
+ */
+export class ServerNotRunningError extends Error {
+  constructor() {
+    super("@serverNotRunning");
+    this.name = "ServerNotRunningError";
+  }
+}
+
+/** `ensure()` 的许可参数（见文件头「启动决策」）。省略时取 `options.autoStart`。 */
+export interface EnsureOptions {
+  /** true = 允许在后台不存在时拉起一套；false = 只接上已经在跑的。 */
+  start?: boolean;
+}
+
 export interface ServerStatus {
   state: ServerState;
   info?: ServerInfo;
@@ -70,6 +126,13 @@ export interface ManagerOptions {
   startTimeoutMs: number;
   /** 空闲阈值（秒）：写进会合文件，supervisor 热读。 */
   idleSec?: number;
+  /**
+   * `dshChat.autoStart`：**自动**路径是否允许"后台不存在时自己拉起一套"（默认 true）。
+   *
+   * 只约束自动路径（激活期的自动连接、5 秒一次的心跳自检）。用户显式动作走
+   * `ensure({ start: true })`，一律覆盖它。
+   */
+  autoStart?: boolean;
   workspace?: string;
   /** 配置分组（由有效配置算出的指纹）。**省缺时按命令算**（与扩展的 `leaseGroupKey` 同构）。 */
   group?: string;
@@ -103,7 +166,22 @@ export class SupervisorManager {
   private heartbeatHook: (() => void) | undefined;
   private heartbeatTimer: NodeJS.Timeout | undefined;
   private ensurePromise: Promise<ServerInfo> | undefined;
+  /**
+   * 本轮 `bringUp` 有没有拿到"可以拉起一套"的许可（见文件头的启动决策）。
+   *
+   * 它是**本轮**的暂态而不是配置快照：并发调用会合并到同一次 `bringUp`，
+   * 许可按最宽的那个算（用户点「启动服务器」时，正好在跑的心跳自检不该把它降级掉）。
+   */
+  private startAllowed = false;
   private disposed = false;
+  /**
+   * 用户按过「停止服务器」：**不许**自动重连、也不许自动拉起，直到用户显式要求
+   * （点「启动服务器」/发消息/重启服务器，任何一条都会走 `bringUp` 清掉它）。
+   *
+   * 与 `disposed` 分开：`disposed` 是"本窗口退出了"（心跳也停），这个是"后台是用户
+   * 主动停的"——心跳要继续跑，别的窗口把后台重新起起来时这边要能自动接上。
+   */
+  private stoppedByUser = false;
   private state: SupervisorState | undefined;
   private launched = false;
   /** supervisor 报的**活连接数**（它才是"还有几个人在用"的唯一裁决者）。 */
@@ -119,6 +197,10 @@ export class SupervisorManager {
     this.launcher =
       options.launcher ??
       createDefaultSupervisorLauncher({ extensionPath: options.extensionPath, appRoot: options.appRoot, log: options.log });
+    // 心跳**常驻**（旧实现只在连上 socket 之后才开）：它现在同时承担"后台还在吗"的
+    // 巡检——关掉自动启动时，正是这一次巡检发现"守护进程起来了"并自动接上，
+    // 而不会自己去拉起一套。控制器的心跳自检（`onHeartbeat`）也挂在同一个节拍上。
+    this.startHeartbeat();
   }
 
   // ---------- 对外只读信息 ----------
@@ -206,6 +288,76 @@ export class SupervisorManager {
     this.heartbeatHook = hook;
   }
 
+  // ---------- 只读探测（绝不启动任何东西） ----------
+
+  /** 自动路径允许拉起一套吗（`dshChat.autoStart`，缺省 true）。 */
+  canStart(): boolean {
+    return this.options.autoStart ?? true;
+  }
+
+  /**
+   * 后台现在在不在跑。
+   *
+   * **异步**（不像旧的 5 秒心跳里那个 `tcpReachableSync`）：Windows 上那个同步探测
+   * 要 spawn 一个 PowerShell，几秒一次地把扩展宿主冻住百来毫秒，不值得。
+   */
+  async probeRunning(): Promise<RunningSnapshot> {
+    const state = readState(this.directory);
+    if (!state) {
+      return { hasState: false, supervisorAlive: false, serverAlive: false, starting: false };
+    }
+    const supervisorAlive = isProcessAlive(state.supervisorPid);
+    const serverAlive = supervisorAlive && Boolean(state.baseUrl) && (await this.tcpReachable(state.baseUrl!));
+    return {
+      hasState: true,
+      supervisorAlive,
+      serverAlive,
+      starting: state.starting,
+      baseUrl: state.baseUrl,
+      supervisorPid: state.supervisorPid,
+      serverPid: state.serverPid,
+    };
+  }
+
+  /**
+   * 会合文件里**现读**一份启动令牌。
+   *
+   * 用途只有一个：本窗口刚用过的那份令牌被服务端拒了（守护进程在我们换 cookie 的
+   * 空档里重起了 dsh、换了新令牌），重读一次再用，而不是把用户丢给"输入令牌"。
+   */
+  freshToken(): string | undefined {
+    return readState(this.directory)?.token;
+  }
+
+  /** 异步探一个地址上有没有人监听（几毫秒级；失败即 false）。 */
+  private tcpReachable(baseUrl: string, timeoutMs = 1_200): Promise<boolean> {
+    let host: string;
+    let port: number;
+    try {
+      const url = new URL(baseUrl);
+      host = url.hostname;
+      port = Number(url.port || (url.protocol === "https:" ? 443 : 80));
+    } catch {
+      return Promise.resolve(false);
+    }
+    if (!host || !Number.isInteger(port) || port <= 0) return Promise.resolve(false);
+    return new Promise((resolve) => {
+      let settled = false;
+      const socket = connectTcp({ host, port });
+      const finish = (ok: boolean) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        socket.destroy();
+        resolve(ok);
+      };
+      const timer = setTimeout(() => finish(false), timeoutMs);
+      timer.unref?.();
+      socket.once("connect", () => finish(true));
+      socket.once("error", () => finish(false));
+    });
+  }
+
   // ---------- 状态 ----------
 
   private setStatus(next: ServerStatus): void {
@@ -224,10 +376,14 @@ export class SupervisorManager {
   /**
    * 确保有一个可用后台。
    *
-   * 三条分支：外部模式只探测；内部模式"读会合文件 → 必要时拉起 supervisor → 连上"。
-   * 全程幂等（`ensurePromise` 合并并发调用）。
+   * 三条分支：外部模式只探测；内部模式"守护进程还在就接入，不在才（有许可时）拉起"。
+   * 全程幂等（`ensurePromise` 合并并发调用，许可按最宽的那个算）。
+   *
+   * `options.start` 决定"后台不存在时允不允许拉一套"；省略时取 `dshChat.autoStart`。
+   * 不允许时会抛 `ServerNotRunningError`（界面据此切到"已停止 + 启动服务器"，
+   * 而不是当成连接失败去重试）。
    */
-  async ensure(): Promise<ServerInfo> {
+  async ensure(options: EnsureOptions = {}): Promise<ServerInfo> {
     const external = this.externalUrl;
     if (external) {
       this.setStatus({ state: "starting", detail: `connecting ${external}` });
@@ -243,20 +399,58 @@ export class SupervisorManager {
     // 已经就绪**且长连接还在**才算数：只看状态会在"地址还在、连接没了"时误判成已完成
     // （实测：restart 之后状态是 ready、连接却没重建，于是再也收不到状态推送）
     if (this.status.state === "ready" && this.status.info && this.connection?.connected) return this.status.info;
+    if (options.start ?? this.canStart()) this.startAllowed = true;
     this.ensurePromise ??= this.bringUp().finally(() => {
       this.ensurePromise = undefined;
+      this.startAllowed = false;
     });
     return this.ensurePromise;
   }
 
   private async bringUp(): Promise<ServerInfo> {
     this.disposed = false;
+    this.stoppedByUser = false;
     this.setStatus({ state: "starting" });
 
-    // 先把上一轮遗留的崩溃残留处理掉：会合文件在、但 supervisor 进程已死
+    // ① 守护进程还活着 → **只接入，绝不另起一套**（见文件头的启动决策）
     const existing = readState(this.directory);
-    if (existing && !isProcessAlive(existing.supervisorPid)) {
+    if (existing && isProcessAlive(existing.supervisorPid)) {
+      this.launched = false;
+      this.state = existing;
+      // 先连上它的 socket 再谈别的：连接本身就是"我在用"，守护进程据此会把
+      // 崩掉的 dsh 重新拉起（它只在有活连接时才重起 dsh）
+      if (!this.connection?.connected) await this.connect(existing);
+      if (existing.baseUrl && existing.token && (await this.usable(existing))) {
+        return this.publishReady(existing);
+      }
+      // 它正在拉起（或刚被我们唤醒）→ 等它写出一份可用状态。
+      // **单次等待仍然有上限**（startTimeoutMs），但**没有总超时**：上层会一轮一轮重试，
+      // 直到接上或用户点「停止连接」（用户 2026-09-14 口径）。
+      const state = await waitForReadyState({
+        group: this.group,
+        timeoutMs: this.options.startTimeoutMs,
+        usable: (candidate) => this.usable(candidate),
+        onTick: (tick) => {
+          if (tick) {
+            this.state = tick;
+            this.setStatus({ state: "starting", detail: tick.starting ? "starting server" : undefined });
+          }
+        },
+      });
+      if (!state) throw this.startFailure(state);
+      return this.publishReady(state);
+    }
+
+    // ①' 会合文件在、但守护进程已死：崩溃残留（留给下一次决策，顺带记一条日志）
+    if (existing) {
       this.options.log(`[supervisor] 会合文件指向的 supervisor（pid=${existing.supervisorPid}）已不在，重新起一套`);
+    }
+
+    // ② 守护进程不在：**只有拿到许可**才拉一套
+    if (!this.startAllowed) {
+      this.options.log("[supervisor] 后台没有在跑，且本次调用不允许启动（dshChat.autoStart 关掉时只显示启动按钮）");
+      this.setStatus({ state: "stopped", detail: "@serverNotRunning" });
+      throw new ServerNotRunningError();
     }
 
     const ensured = await ensureSupervisor({
@@ -287,21 +481,19 @@ export class SupervisorManager {
         },
       });
     }
-    if (!state?.baseUrl || !state.token) {
-      const tail = this.logTail();
-      const detail = [
-        `@serverStartTimeout:${Math.round(this.options.startTimeoutMs / 1000)}`,
-        // 把"到底缺哪一样"写进详情：否则只剩一个超时数字，排查时完全看不出方向
-        `detail: state=${state ? `url=${state.baseUrl ?? "无"} token=${state.token ? "有" : "无"} starting=${state.starting}` : "（会合文件不存在）"}`,
-        this.staleLockHint(),
-        tail && `@serverLogTail:${tail}`,
-      ]
-        .filter(Boolean)
-        .join("\n");
-      this.setStatus({ state: "failed", detail });
-      throw new Error(detail);
-    }
+    if (!state) throw this.startFailure(state);
+    return this.publishReady(state);
+  }
 
+  /**
+   * 一份状态可用时收尾：记下来、报就绪、建立/恢复长连接。
+   *
+   * 缺地址或令牌时按"还没就绪"抛错——错误详情里会写清**到底缺哪一样**
+   * （否则只剩一个超时数字，排查时完全看不出方向）。多窗口接入靠的就是
+   * 会合文件里那份令牌：`token` 是 supervisor 写进去的、跨窗口共用的唯一凭据。
+   */
+  private async publishReady(state: SupervisorState): Promise<ServerInfo> {
+    if (!state.baseUrl || !state.token) throw this.startFailure(state);
     const info: ServerInfo = {
       baseUrl: state.baseUrl,
       token: state.token,
@@ -317,6 +509,21 @@ export class SupervisorManager {
     return info;
   }
 
+  /** 启动/等待失败时的错误（详情含"缺哪一样"、遗留锁提示与日志尾部）。 */
+  private startFailure(state: SupervisorState | undefined): Error {
+    const tail = this.logTail();
+    const detail = [
+      `@serverStartTimeout:${Math.round(this.options.startTimeoutMs / 1000)}`,
+      `detail: state=${state ? `url=${state.baseUrl ?? "无"} token=${state.token ? "有" : "无"} starting=${state.starting}` : "（会合文件不存在）"}`,
+      this.staleLockHint(),
+      tail && `@serverLogTail:${tail}`,
+    ]
+      .filter(Boolean)
+      .join("\n");
+    this.setStatus({ state: "failed", detail });
+    return new Error(detail);
+  }
+
   /**
    * 会合文件里那一套还可用吗：supervisor 进程在 + （就绪后）地址连得上。
    *
@@ -329,7 +536,7 @@ export class SupervisorManager {
     try {
       if (!isProcessAlive(state.supervisorPid)) return false;
       if (!state.baseUrl) return state.starting; // 正在启动：算"可用"，交给等待逻辑
-      return tcpReachableSync(state.baseUrl, 1_500);
+      return await this.tcpReachable(state.baseUrl);
     } catch {
       return false;
     }
@@ -402,7 +609,8 @@ export class SupervisorManager {
    * 心跳：只做"连接还在吗 / 该不该重连"。
    *
    * **不做**旧实现那套"判还有没有别的窗口、决定要不要杀"——那件事已经由 supervisor
-   * 按连接数自己裁决了。
+   * 按连接数自己裁决了。也**不做**"后台不在就自己拉一套"，除非 `autoStart` 允许
+   * （见文件头的启动决策）：关掉自动启动的用户要的是"没启动就显示按钮"。
    */
   private startHeartbeat(): void {
     this.stopHeartbeat();
@@ -419,7 +627,7 @@ export class SupervisorManager {
 
   private async heartbeatTick(): Promise<void> {
     if (this.disposed) return;
-    // 让控制器做它那侧的体检（连接存活 / 跟随换了地址的后台）
+    // 让控制器做它那侧的体检（连接存活 / 跟随换了地址的后台 / 该不该继续重连）
     try {
       this.heartbeatHook?.();
     } catch (error) {
@@ -427,17 +635,29 @@ export class SupervisorManager {
     }
     if (this.connection?.connected) return;
     if (this.externalUrl) return;
-    // 连接没了：先看会合文件里那一套还在不在；不在就重新 ensure 一套
+    // 连接没了：先看会合文件里那一套还在不在；在就接上（连接本身就是"我在用"）
     const state = readState(this.directory);
     if (state && isProcessAlive(state.supervisorPid)) {
       this.state = state;
       await this.connect(state);
       return;
     }
+    // 守护进程不在了：关掉自动启动、或用户刚按过「停止服务器」时，**不许**自己拉一套
+    if (this.stoppedByUser || !this.canStart()) {
+      if (this.status.state !== "stopped") {
+        this.options.log(
+          this.stoppedByUser
+            ? "[supervisor] 用户已停止服务器：不自动拉起（界面给「启动服务器」）"
+            : "[supervisor] 守护进程不在了；已关闭自动启动，不自行拉起（界面给「启动服务器」）",
+        );
+        this.setStatus({ state: "stopped", detail: "@serverNotRunning" });
+      }
+      return;
+    }
     this.options.log("[supervisor] 会合文件不在了（或 supervisor 已退出），重新确保一套");
     this.setStatus({ state: "stopped" });
     try {
-      await this.ensure();
+      await this.ensure({ start: true });
     } catch (error) {
       this.options.log(`[supervisor] 重新确保后台失败：${error instanceof Error ? error.message : String(error)}`);
     }
@@ -460,7 +680,8 @@ export class SupervisorManager {
     const previous = this.state?.serverPid;
     if (!this.connection?.connected) {
       this.options.log("[supervisor] 重启请求：连接不在，先重新确保一套");
-      return this.ensure();
+      // 「重启服务器」是**用户显式动作**：允许拉起一套（关掉自动启动时也算数）
+      return this.ensure({ start: true });
     }
     this.options.log("[supervisor] 重启请求：交给 supervisor 执行");
     this.setStatus({ state: "starting", detail: "restarting server" });
@@ -485,7 +706,7 @@ export class SupervisorManager {
       const serving = await this.usable(state);
       if (serving) {
         this.options.log(`[supervisor] 重启完成：${state.baseUrl}（server=${state.serverPid ?? "?"}）`);
-        return this.ensure();
+        return this.ensure({ start: true });
       }
     }
     const detail = `@serverStartTimeout:${Math.round(this.options.startTimeoutMs / 1000)}`;
@@ -499,7 +720,9 @@ export class SupervisorManager {
    * 本窗口只发请求 + 关连接；**不自己 taskkill**（那条纪律的落点）。
    */
   async stopAndExit(): Promise<void> {
-    this.disposed = true;
+    // **心跳继续跑**（不 stopHeartbeat）：别的窗口把后台重新起起来时，本窗口要能自动接上。
+    // 抑制"自动拉起"改用 `stoppedByUser`（见字段注释）。
+    this.stoppedByUser = true;
     const connection = this.connection;
     if (connection?.connected) {
       this.options.log("[supervisor] 停止请求：交给 supervisor 执行");
@@ -507,8 +730,7 @@ export class SupervisorManager {
     }
     connection?.close();
     this.connection = undefined;
-    this.stopHeartbeat();
-    this.setStatus({ state: "stopped" });
+    this.setStatus({ state: "stopped", detail: "@serverStopped" });
   }
 
   /** 旧接口名（扩展里 `dispose()` 语义）：**只关自己的连接**，不杀任何进程。 */

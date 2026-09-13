@@ -205,9 +205,19 @@
       window.__buildState = function () {
         // 用 ?locale=en 预览英文界面
         const locale = new URLSearchParams(location.search).get("locale") || "zh-cn";
+        // 连接条的四种形态都能直接预览（`?conn=stopped&running=1&reconnecting=1`）：
+        // 这些字段就是宿主真的会下发的那些（见 src/shared/chat.ts 的 ChatState）
+        const query = new URLSearchParams(location.search);
+        const connection = query.get("conn") || "ready";
+        const flag = (name) => (query.get(name) === "1" ? true : undefined);
         return {
           locale,
-          connection: "ready",
+          connection,
+          connectionDetail: query.get("detail") || undefined,
+          reconnecting: flag("reconnecting"),
+          serverRunning: flag("running"),
+          externalServer: flag("external"),
+          needsToken: flag("token"),
           serverUrl: "http://127.0.0.1:3080",
           session: { id: "s1", title: "重构 server 启动流程", updatedAt: now, running: false },
           running: true,

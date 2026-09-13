@@ -170,6 +170,16 @@ export type WebviewToHost =
   | { type: "copy"; text: string }
   | { type: "showLogs" }
   | { type: "restartServer" }
+  /**
+   * 「启动服务器」：**用户显式**要求拉起一套后台（关掉 `dshChat.autoStart` 时界面上的按钮）。
+   *
+   * 与 `reconnectNow` 的分工：这个允许"后台不存在就起一套"，那个只允许"接上已经在跑的"。
+   */
+  | { type: "startServer" }
+  /** 「尝试重连」：只去接上**已经在跑**的后台，绝不顺手拉起一套。 */
+  | { type: "reconnectNow" }
+  /** 「停止连接」：停掉自动重连循环（后台不动，用户可随时再点尝试重连）。 */
+  | { type: "stopReconnect" }
   /** 输入 / 替换外部服务器的访问令牌（服务端要求授权时使用）。 */
   | { type: "setToken" }
   | { type: "openSettings" }
