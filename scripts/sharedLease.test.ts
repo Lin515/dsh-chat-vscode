@@ -23,7 +23,9 @@ import {
   clearLease,
   dropDeadLeases,
   dropStaleHostLeases,
+  findAdoptCandidates,
   findAttachable,
+  findServingLeftoverLease,
   findStarting,
   hasLiveHostFor,
   isHostLive,
@@ -451,6 +453,64 @@ function startLease(serverPid: number, patch: Partial<ServerLease> = {}): void {
   setLeaseGroup("another-group");
   clearLease(serverPid + 1);
   setLeaseGroup("default");
+}
+
+// ---------- 13. 残留后台的接管：为什么不能只认"心跳能证明主人已死" ----------
+
+{
+  // 用户 2026-09-13 报的「残留后台不被接管」：判决依赖进程表查询，而查询可能给不出结论
+  // （心跳文件丢失、pid 被回收、查询被挡），于是新窗口去起一个新的、撞上端口占用。
+  // 修法是把"接不接"交给**实测 HTTP**，这里钉住为此新增的两个兜底取数。
+  const serverPid = GHOST_PID + 10;
+  const url = "http://127.0.0.1:59999";
+  startLease(serverPid, { baseUrl: url, token: "tok-leftover" });
+
+  // 13.1 只剩租约（心跳丢了）也要能被找到
+  check(
+    "只剩租约时也能给出接管候选（这是缺陷现场的那条路径）",
+    findServingLeftoverLease()?.serverPid === serverPid,
+    `拿到=${JSON.stringify(findServingLeftoverLease()?.serverPid)}`,
+  );
+
+  // 13.2 但"还有活窗口在用"时不能动它：那属于别人正在用的共享后台
+  writeHostLease({ hostId: "still-using", serverPid, baseUrl: url, token: "tok-leftover" });
+  registerHost(serverPid, { pid: process.pid, workspace: "D:/dev/dsh-chat", seenAt: Date.now() });
+  check("有活窗口在用 → 不再是「可接管的遗留」", findServingLeftoverLease()?.serverPid !== serverPid);
+  clearHostLease("still-using");
+  removeHost(serverPid);
+  check("窗口退出后 → 又变回可接管", findServingLeftoverLease()?.serverPid === serverPid);
+
+  // 13.3 采纳候选列表里必须**包含**它（哪怕首选判据说"主人还活着"）：
+  // 心跳里写一个活着的 pid，首选判据会认为"还有人用"，兜底列表绝不能因此漏掉它。
+  writeHostLease({
+    hostId: "reused-pid",
+    serverPid,
+    baseUrl: url,
+    token: "tok-leftover",
+    command: "dsh web --port 0 --no-open",
+  });
+  const fallback = findAdoptCandidates("dsh web --port 0 --no-open").map((item) => item.serverPid);
+  check("兜底候选包含这条记录", fallback.includes(serverPid), `候选=${JSON.stringify(fallback)}`);
+  check(
+    "命令不一致的记录不进候选（防误接别人的后台）",
+    findAdoptCandidates("dsh web --port 3000 --no-open").length === 0,
+  );
+  clearHostLease("reused-pid");
+
+  // 13.4 心跳里必须记下"写它的进程启动时刻"：pid 被回收时，这是唯一的辨别依据
+  writeHostLease({ hostId: "stamp-check", serverPid, baseUrl: url, token: "tok-leftover" });
+  const stampRaw = JSON.parse(readFileSync(join(LEASE_DIR, "hosts", "stamp-check.json"), "utf8")) as {
+    ownerStartedAt?: number;
+    pid?: number;
+  };
+  check(
+    "心跳记下了写它的进程启动时刻（判 pid 复用用）",
+    typeof stampRaw.ownerStartedAt === "number" && stampRaw.ownerStartedAt > 0 &&
+      stampRaw.ownerStartedAt <= Date.now() && stampRaw.pid === process.pid,
+    `ownerStartedAt=${stampRaw.ownerStartedAt} pid=${stampRaw.pid}`,
+  );
+  clearHostLease("stamp-check");
+  clearLease(serverPid);
 }
 
 // ---------- 收尾：整个临时租约目录删掉（本文件全程只用它，不会碰到用户的租约） ----------

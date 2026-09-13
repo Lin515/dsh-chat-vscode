@@ -4017,8 +4017,6 @@ export class ChatController implements vscode.Disposable {
  * 放在那边是为了让冒烟测试能直接验证，不必启动扩展宿主。
  */
 
-/** 供日志通道使用的时间戳。 */
-export function stamp(line: string): string {
-  return `[${new Date().toLocaleTimeString()}] ${line}`;
-}
+/** 供日志通道使用的时间戳；实现已移到 `dsh/hostLog.ts`（日志写入器之家），这里只做转出。 */
+export { stamp } from "./hostLog";
 

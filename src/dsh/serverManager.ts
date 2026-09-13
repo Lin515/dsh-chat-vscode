@@ -12,8 +12,10 @@ import {
   clearStaleDocumentLocks,
   dropDeadLeases,
   dropStaleHostLeases,
+  findAdoptCandidates,
   findAdoptable,
   findAttachable,
+  findServingLeftoverLease,
   findStarting,
   hasLiveHostFor,
   isProcessAlive,
@@ -40,6 +42,23 @@ import {
  */
 function otherLiveHost(serverPid: number): boolean {
   return hasLiveHostFor(serverPid);
+}
+
+/**
+ * 按 `serverPid` 去重（保留先出现的那个）。
+ *
+ * 接管的候选来自三处（首选心跳、全部心跳、只剩租约的那条），同一个后台很可能被
+ * 记在多份记录里——不去重就会对同一个地址反复发 HTTP 探测（每条 3 秒超时）。
+ */
+function dedupe(leases: ServerLease[]): ServerLease[] {
+  const seen = new Set<number>();
+  const out: ServerLease[] = [];
+  for (const lease of leases) {
+    if (seen.has(lease.serverPid)) continue;
+    seen.add(lease.serverPid);
+    out.push(lease);
+  }
+  return out;
 }
 
 /**
@@ -353,13 +372,32 @@ export class ServerManager {
     this.servedPid = undefined;
     this.activeUrl = undefined;
     if (key !== undefined) {
-      if (otherLiveHost(key)) {
-        // 还有别的窗口在用：只把自己从 hosts 摘掉，进程留着（它退出时自然会杀）
-        removeHost(key);
-        this.options.log(`[server] pid=${key} 仍被其它 VS Code 窗口使用，不停止`);
-      } else {
-        this.options.log(`[server] 停止后台 pid=${key}（按 pid + 端口两道清理）`);
-        killOwnedServer(key, (line) => this.options.log(line));
+      // 与 `release()` 同一条纪律：判活与日志都不许挡住"杀"（见那里的说明）。
+      // 自己起的后台归自己带走，判不出"还有没有别人"时按"没有"处理 = 动手清理。
+      let others = false;
+      try {
+        others = otherLiveHost(key);
+      } catch {
+        others = false;
+      }
+      try {
+        if (others) {
+          // 还有别的窗口在用：只把自己从 hosts 摘掉，进程留着（它退出时自然会杀）
+          removeHost(key);
+          this.options.log(`[server] pid=${key} 仍被其它 VS Code 窗口使用，不停止`);
+        } else {
+          this.options.log(`[server] 停止后台 pid=${key}（按 pid + 端口两道清理）`);
+          killOwnedServer(key, (line) => {
+            try {
+              this.options.log(line);
+            } catch {
+              // 清理已经发起，日志写不出去不影响结果
+            }
+          });
+        }
+      } catch {
+        // 上面每一步都不该抛，真抛了也只能咽下：stop() 还跑在"重启/切配置"的中途，
+        // 把异常传出去会让调用方以为整个动作失败
       }
     }
     this.setStatus({ state: "stopped" });
@@ -398,15 +436,37 @@ export class ServerManager {
     // peer 还在用的后台整棵树带走（实测症状：关掉先开的窗口之后，另一个窗口直接掉线）。
     // 摘掉自己的登记**之后再判**：owner 可能早就退了（需求 R4），那这一位就是最后一个，
     // 后台得由它带走——不然会留下一个没人管的孤儿（探针第 4 步钉的就是这条）。
-    if (key !== undefined) {
-      if (otherLiveHost(key)) {
+    if (key === undefined) {
+      this.setStatus({ state: "stopped" });
+      return;
+    }
+    // **判活与日志都不许挡住"杀"**：这条路径的唯一职责就是把最后一个后台带走，
+    // 而它跑在扩展停用的尾巴上——那里每一步都可能出错（输出通道已关闭、注销租约时
+    // 撞上别人正在写的锁、进程表查询超时…）。曾经就是写日志那句抛出去，把 taskkill
+    // 整段跳过，留下一个占着端口的孤儿（见 `dsh/hostLog.ts` 文件头）。所以分三段：
+    // 判活（吞异常时按"没人用"处理 = 动手）、杀（绝不吞）、记账（写不出去就算了）。
+    let others = false;
+    try {
+      others = otherLiveHost(key);
+    } catch {
+      others = false;
+    }
+    try {
+      if (others) {
         this.options.log(`[server] 本窗口退出：pid=${key} 仍被其它 VS Code 窗口使用，不停止`);
       } else {
         this.options.log(`[server] 本窗口退出：停止后台 pid=${key}（按 pid + 端口两道清理）`);
-        killOwnedServer(key, (line) => this.options.log(line));
+        killOwnedServer(key, (line) => {
+          try {
+            this.options.log(line);
+          } catch {
+            // 清理已经发起，日志写不出去不影响结果
+          }
+        });
       }
+    } finally {
+      this.setStatus({ state: "stopped" });
     }
-    this.setStatus({ state: "stopped" });
   }
 
   private async start(): Promise<ServerInfo> {
@@ -490,24 +550,50 @@ export class ServerManager {
    *
    * "连不上"必须**实测**（HTTP 探一下）：租约说它还活着不算数——Windows 上被强杀的
    * 进程在回收前，pid 探测与进程表查询都可能说它还在。
+   *
+   * **候选的取法刻意宽松**（用户 2026-09-13 报的"残留后台不被接管"）：先按
+   * `findAdoptable`（能证明"写心跳的实例已经不在了"的那些），再退到
+   * `findAdoptCandidates`（任何记过地址/令牌、命令一致的心跳）。
+   * 原因：前者的证明依赖**进程表查询**，pid 复用、查询被挡、心跳缺失都会让它误判成
+   * "还有人用"，于是新窗口去起一个新的、撞上端口占用。而"要不要接管"的最终判据本来
+   * 就只应该是**那个地址还连不连得上**——接管的代价只是多挂一个客户端，
+   * 多起一个后台的代价却是端口冲突 + 会话全丢（用户明确要的是"能接管就接管"）。
+   *
+   * 接手一个"看起来还有人在用"的后台是安全的：`release()`/`stop()` 判"还有别人吗"
+   * 看的是**心跳文件**，我接手时会立刻写下自己的心跳，对方就不会把它带走。
    */
   private async findReusableLeftover(): Promise<ServerLease | undefined> {
-    const candidate = findAdoptable(this.options.command);
-    if (!candidate) return undefined;
-    const baseUrl = (candidate.baseUrl ?? "").replace(/\/+$/, "");
-    if (baseUrl && (await this.waitForHttp(baseUrl, 3_000))) {
-      this.options.log(
-        `[server] 发现上次遗留的后台 ${baseUrl}（pid=${candidate.serverPid}，自 ${new Date(candidate.startedAt).toLocaleTimeString()} 起运行），直接接管`,
-      );
-      return candidate;
+    const preferred = findAdoptable(this.options.command);
+    const candidates = preferred
+      ? [preferred, ...findAdoptCandidates(this.options.command)]
+      : findAdoptCandidates(this.options.command);
+    // 只剩租约（心跳丢了）时也要能接回去：租约里同样有地址与令牌
+    const leaseOnly = findServingLeftoverLease();
+    if (leaseOnly && !candidates.some((item) => item.serverPid === leaseOnly.serverPid)) {
+      candidates.push(leaseOnly);
     }
-    if (!startedLongAgo(candidate)) {
+
+    // 从新到旧逐个实测（HTTP 才算数）：第一个连得上的就是它
+    for (const candidate of dedupe(candidates)) {
+      const baseUrl = (candidate.baseUrl ?? "").replace(/\/+$/, "");
+      if (baseUrl && (await this.waitForHttp(baseUrl, 3_000))) {
+        this.options.log(
+          `[server] 接管上次遗留的后台 ${baseUrl}（pid=${candidate.serverPid}，自 ${new Date(candidate.startedAt).toLocaleTimeString()} 起运行）`,
+        );
+        return candidate;
+      }
+    }
+
+    const stale = preferred ?? candidates[0];
+    if (!stale) return undefined;
+    if (!startedLongAgo(stale)) {
       // 刚宣布启动、还没打印公告行：属于"别人正在启动"，不要回收（会打断对方的启动）
-      this.options.log(`[server] 遗留租约 pid=${candidate.serverPid} 仍在启动宽限内，暂不处理`);
+      this.options.log(`[server] 遗留租约 pid=${stale.serverPid} 仍在启动宽限内，暂不处理`);
       return undefined;
     }
-    this.options.log(`[server] 遗留后台 ${baseUrl || `pid=${candidate.serverPid}`} 已连不上，回收它`);
-    await killLeasedServerAndWait(candidate, (line) => this.options.log(line), 20_000);
+    const baseUrl = (stale.baseUrl ?? "").replace(/\/+$/, "");
+    this.options.log(`[server] 遗留后台 ${baseUrl || `pid=${stale.serverPid}`} 已连不上，回收它`);
+    await killLeasedServerAndWait(stale, (line) => this.options.log(line), 20_000);
     return undefined;
   }
 

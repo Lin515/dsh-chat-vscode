@@ -405,6 +405,7 @@ export function writeHostLease(host: {
         hostId: host.hostId,
         serverPid: host.serverPid,
         pid: process.pid,
+        ownerStartedAt: ownStartTime(),
         workspace: host.workspace,
         baseUrl: host.baseUrl,
         token: host.token,
@@ -440,6 +441,7 @@ function readHostLease(hostId: string): HostLeaseEntry | undefined {
       hostId?: string;
       serverPid?: number;
       pid?: number;
+      ownerStartedAt?: number;
       baseUrl?: string;
       token?: string;
       command?: string;
@@ -451,6 +453,7 @@ function readHostLease(hostId: string): HostLeaseEntry | undefined {
       hostId: typeof parsed.hostId === "string" ? parsed.hostId : hostId,
       serverPid: typeof parsed.serverPid === "number" ? parsed.serverPid : undefined,
       pid: typeof parsed.pid === "number" ? parsed.pid : undefined,
+      ownerStartedAt: typeof parsed.ownerStartedAt === "number" ? parsed.ownerStartedAt : undefined,
       baseUrl: typeof parsed.baseUrl === "string" ? parsed.baseUrl : undefined,
       token: typeof parsed.token === "string" ? parsed.token : undefined,
       command: typeof parsed.command === "string" ? parsed.command : undefined,
@@ -462,11 +465,22 @@ function readHostLease(hostId: string): HostLeaseEntry | undefined {
   }
 }
 
-/** 心跳文件的记录形状。 */
+/**
+ * 心跳文件的记录形状。
+ *
+ * `ownerStartedAt` 是**写这份心跳的进程的启动时刻**：它是判"这个 pid 还是原来那个进程吗"
+ * 的唯一可靠依据。Windows 会回收 pid——老扩展宿主死后那串数字很快可能落到一个无关进程上，
+ * 只按 `pid 活不活` 判断就会认为"老窗口还活着"，于是残留的后台永远不被接管
+ * （`orphanDiagnose --pid-reused` 钉的就是这一条）。
+ *
+ * 老版本写的心跳没有这个字段：那时退回"只看 pid 活不活"（保守），不影响既有行为。
+ */
 interface HostLeaseEntry {
   hostId: string;
   serverPid?: number;
   pid?: number;
+  /** 写心跳那个进程的启动时刻（epoch ms，进程表查得）。 */
+  ownerStartedAt?: number;
   /** 服务器就绪后记下的连接信息：崩溃复用的唯一依据。 */
   baseUrl?: string;
   token?: string;
@@ -502,6 +516,53 @@ function livePidsSync(pids: number[]): Set<number> {
   }
   return live;
 }
+
+/**
+ * 批量取进程的**启动时刻**（epoch ms，一次进程表查询）。查不到返回 `undefined`。
+ *
+ * 目的只有一个：区分"还是原来那个进程"与"pid 被回收后落到了别人身上"。
+ * 只看 pid 活不活会把后者当成"老窗口还在"，于是残留后台永远不被接管。
+ *
+ * 端口或 WMI 的 `CreationDate` 是 UTC，用 `.ToUniversalTime()` 换算成毫秒再减去 epoch；
+ * 单个进程取不到（已死）就整段跳过——那种情况本来就该按"进程不在了"处理。
+ */
+function pidStartTimesSync(pids: number[]): Map<number, number> | undefined {
+  const wanted = pids.filter((pid) => Number.isInteger(pid) && pid > 0);
+  if (!wanted.length || process.platform !== "win32") return undefined;
+  const epoch = "([datetime]'1970-01-01T00:00:00Z')";
+  const script =
+    `Get-CimInstance Win32_Process -Filter "ProcessId=${wanted.join(" OR ProcessId=")}" | ` +
+    `ForEach-Object { try { "$($_.ProcessId) " + [long]($_.CreationDate.ToUniversalTime() - ${epoch}).TotalMilliseconds } catch {} }`;
+  const args = ["-NoProfile", "-NonInteractive", "-Command", script];
+  const out = spawnSyncQuiet("pwsh.exe", args, 15_000) ?? spawnSyncQuiet("powershell.exe", args, 15_000);
+  if (out === undefined) return undefined;
+  const times = new Map<number, number>();
+  for (const line of out.split(/\r?\n/)) {
+    const [pidText, timeText] = line.trim().split(/\s+/);
+    const pid = Number(pidText);
+    const at = Number(timeText);
+    if (Number.isInteger(pid) && pid > 0 && Number.isFinite(at) && at > 0) times.set(pid, at);
+  }
+  return times.size ? times : undefined;
+}
+
+/**
+ * 本进程（扩展宿主）的启动时刻：写进心跳，供后来者判"pid 是不是被回收了"。
+ *
+ * 只算一次（模块初始化时懒算），拿不到就一直是 `undefined`——那时判据退回"只看 pid 活不活"。
+ */
+let ownStartTimeCache: number | undefined;
+let ownStartTimeComputed = false;
+function ownStartTime(): number | undefined {
+  if (!ownStartTimeComputed) {
+    ownStartTimeComputed = true;
+    ownStartTimeCache = pidStartTimesSync([process.pid])?.get(process.pid);
+  }
+  return ownStartTimeCache;
+}
+
+/** pid 被回收的判定容差：进程启动时刻与心跳写入时刻相差超过这么多，就不是同一个进程了。 */
+const PID_REUSE_TOLERANCE_MS = 2_000;
 
 /**
  * 一份"谁真的还活着"的快照，用于一次判定走完所有心跳。
@@ -622,17 +683,27 @@ export function findStarting(withinMs: number, now = Date.now()): ServerLease | 
 /**
  * 这份心跳对应的实例**已经没了**吗（可以接管它的后台）。
  *
- * "时间陈旧"或"进程已不在"任一成立即可——**不能只等时间**：实测 `Get-Process` 在
- * 进程被强杀后约 300ms 就查不到它了，而心跳阈值是 30 秒；只按时间判会让"崩溃后复用"
- * 白等半分钟（用户口径是要立刻接着用）。
+ * 判据从强到弱：
+ * 1. **pid 复用**：心跳里记了写它的进程启动时刻，而进程表里那个 pid 的启动时刻晚于
+ *    心跳写入时刻 → 那串数字已经被别人占用了，写心跳的那个人早就不在了
+ *    （Windows 回收 pid 很快，这是"残留后台不被接管"最隐蔽的一种成因）；
+ * 2. **时间陈旧**（超过 `HOST_STALE_MS`）；
+ * 3. **进程不在**。
  *
- * 反过来也不能只看进程：正常退出走的是删心跳文件，所以"文件还在但进程没了"确实等于
- * "那个实例不在了"；而心跳陈旧则是兜底（进程表查不到时用）。
+ * 反过来也不能只看时间：实测 `Get-Process` 在进程被强杀后约 300ms 就查不到它了，
+ * 而心跳阈值是 30 秒；只按时间判会让"崩溃后复用"白等半分钟（用户口径是要立刻接着用）。
  */
 function hostEntryStale(entry: HostLeaseEntry, now: number): boolean {
   if (now - entry.seenAt >= HOST_STALE_MS) return true;
   if (typeof entry.pid !== "number") return false;
-  return !livePidsSync([entry.pid]).has(entry.pid);
+  const live = livePidsSync([entry.pid]).has(entry.pid);
+  if (!live) return true;
+  // pid 活着 —— 但可能已经不是原来那个进程了。有启动时刻就比一下，没有就保守认作"还活着"。
+  if (typeof entry.ownerStartedAt === "number") {
+    const started = pidStartTimesSync([entry.pid])?.get(entry.pid);
+    if (started !== undefined && started > entry.seenAt + PID_REUSE_TOLERANCE_MS) return true;
+  }
+  return false;
 }
 
 /**
@@ -663,6 +734,52 @@ export function findAdoptable(command: string, now = Date.now()): ServerLease | 
     baseUrl: best.baseUrl,
     token: best.token,
   };
+}
+
+/**
+ * 兜底：**不管那条记录看起来"还有人用"与否**，找出所有"记过连接信息、命令与当前配置一致"
+ * 的遗留记录，按新旧排序。
+ *
+ * 存在的理由（用户 2026-09-13 报的"残留后台不被接管"）：`findAdoptable` 要求先证明
+ * "写心跳的实例已经没了"，而这条证明依赖**进程表查询**——pid 复用、查询超时/被挡、
+ * 心跳文件缺失，任何一种都会让结论变成"还有人用"，于是新窗口去起一个新的、撞上端口占用。
+ * 而"要不要接管"的最终判据只应该是**那个地址还连不连得上**（调用方真的发一次 HTTP）。
+ * 接管的代价只是"多挂一个客户端"，多起一个后台的代价却是端口冲突 + 会话全丢。
+ *
+ * **心跳文件缺失的情形**（只剩租约）由 `ServerManager` 侧的
+ * `findServingLeftoverLease()` 补上——这里只处理心跳。
+ */
+export function findAdoptCandidates(command: string): ServerLease[] {
+  return readHostLeases()
+    .filter((entry) => entry.serverPid !== undefined && entry.baseUrl && entry.token)
+    .filter((entry) => entry.command === command)
+    .sort((left, right) => right.seenAt - left.seenAt)
+    .map((entry) => ({
+      version: 2 as const,
+      serverPid: entry.serverPid as number,
+      command: entry.command ?? command,
+      startedAt: entry.seenAt,
+      baseUrl: entry.baseUrl,
+      token: entry.token,
+    }));
+}
+
+/**
+ * 只剩租约、没有心跳时，找一个"没人登记在用、但地址还在服务"的后台。
+ *
+ * 这一个补的是**心跳丢失**的情形：心跳是在"服务器就绪"时才写的，而它可能没写成
+ * （写盘失败、进程随即被杀），也可能被清理掉。此时租约里仍有 `baseUrl`/`token`，
+ * 足以接回去——只要没有别的活窗口在用（`hasLiveHostFor`）。
+ *
+ * 只返回**候选**：真的连不连得上由调用方实测。
+ */
+export function findServingLeftoverLease(now = Date.now()): ServerLease | undefined {
+  const candidates = readLeases()
+    .map((item) => item.lease)
+    .filter((lease) => Boolean(lease.baseUrl) && Boolean(lease.token))
+    .filter((lease) => !hasLiveHostFor(lease.serverPid, now))
+    .sort((left, right) => right.startedAt - left.startedAt);
+  return candidates[0];
 }
 
 /**

@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
 import * as vscode from "vscode";
 import { ChatViewProvider } from "./chatView";
-import { ChatController, stamp } from "./dsh/controller";
+import { ChatController } from "./dsh/controller";
 import { selectionLines } from "./dsh/selection";
+import { createHostLog } from "./dsh/hostLog";
 import {
   clearStaleDocumentLocks,
   cleanupResidualServers,
@@ -46,10 +47,18 @@ function leaseGroupKey(config: () => vscode.WorkspaceConfiguration): string {
   return createHash("sha256").update(identity).digest("hex").slice(0, 12);
 }
 
-function log(line: string): void {
+function outputChannel(): vscode.OutputChannel {
   output ??= vscode.window.createOutputChannel("DSH Chat");
-  if (line) output.appendLine(stamp(line));
+  return output;
 }
+
+/**
+ * 日志写入器：**永不抛异常**（见 `dsh/hostLog.ts` 的文件头——2026-09-13 那个
+ * 「关窗后后台还在、下次启动连不上」的缺陷就是这一句抛异常导致的）。
+ *
+ * 通道取用是懒的：关窗期通道已被 VS Code 关闭时，消息先攒着，不往外抛。
+ */
+const log = createHostLog(() => outputChannel());
 
 export function activate(context: vscode.ExtensionContext): void {
   const config = () => vscode.workspace.getConfiguration("dshChat");
@@ -173,8 +182,7 @@ function registerContributions(context: vscode.ExtensionContext, host: Contribut
       await vscode.window.showInformationMessage(message, { modal: true });
     }),
     vscode.commands.registerCommand("dshChat.showLogs", () => {
-      output ??= vscode.window.createOutputChannel("DSH Chat");
-      output.show(true);
+      outputChannel().show(true);
     }),
     vscode.commands.registerCommand("dshChat.showDiagnostics", async () => {
       const status = server.getStatus();

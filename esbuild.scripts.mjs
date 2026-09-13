@@ -95,6 +95,10 @@ const entries = {
   "build/crash-reuse-probe.mjs": "scripts/crashReuseProbe.ts",
   "build/crash-window.mjs": "scripts/crashWindow.ts",
   "build/graceful-close-probe.mjs": "scripts/gracefulCloseProbe.ts",
+  "build/closed-channel-probe.mjs": "scripts/closedChannelProbe.ts",
+  "build/orphan-diagnose.mjs": "scripts/orphanDiagnose.ts",
+  "build/lease-state.mjs": "scripts/leaseState.ts",
+  "build/host-log.test.mjs": "scripts/hostLog.test.ts",
   "build/group-isolation-probe.mjs": "scripts/groupIsolationProbe.ts",
   "build/group-window.mjs": "scripts/groupWindow.ts",
 
