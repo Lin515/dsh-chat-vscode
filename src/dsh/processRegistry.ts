@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import { connect } from "node:net";
-import { appendFileSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, type Dirent } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -786,29 +786,56 @@ export function dropDeadLeases(): number {
   return dropped;
 }
 
-/** 读出全部租约（跳过解析失败的坏文件并清掉）。 */
+/**
+ * 判断一份 JSON 是不是**真的租约**（结构校验，宁缺勿滥）。
+ *
+ * 为什么不能只看 `serverPid`：租约目录是共享的，里面还住着锁文件、以及别的工具/探针
+ * 顺手放进去的 JSON；只要某个文件恰好带个数字 `serverPid`，就会被当成"一个后台"，
+ * 于是"有几个后台""还有没有后台"这类判断全线失真（实测踩过：探针的握手文件混进来，
+ * 数出两个后台其实是同一份）。形状不符的**直接跳过**——不删别人的文件。
+ */
+function asLease(value: unknown): ServerLease | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as Partial<ServerLease>;
+  if (typeof record.serverPid !== "number") return undefined;
+  if (typeof record.startedAt !== "number") return undefined;
+  if (typeof record.command !== "string") return undefined;
+  return record as ServerLease;
+}
+
+/**
+ * 读出全部租约（只认结构完整的；坏文件清掉，形状不符的跳过）。
+ *
+ * **只认顶层的普通文件**：心跳文件住在同一目录树的 `hosts/` 子目录里，而它同样带
+ * `serverPid` 字段——不过滤的话每份心跳都会被当成"一整份租约"，
+ * 于是"有几个后台"这类判断全部翻倍。
+ */
 export function readLeases(): { file: string; lease: ServerLease }[] {
-  let entries: string[];
+  let dirents: Dirent[];
   try {
-    entries = readdirSync(LEASE_DIR);
+    dirents = readdirSync(LEASE_DIR, { withFileTypes: true });
   } catch {
     return [];
   }
   const out: { file: string; lease: ServerLease }[] = [];
-  for (const entry of entries) {
-    if (!entry.endsWith(".json")) continue;
-    const file = join(LEASE_DIR, entry);
+  for (const dirent of dirents) {
+    // 子目录（hosts/ 等）一律跳过；锁文件不是 .json，也被下面的判断挡掉
+    if (!dirent.isFile() || !dirent.name.endsWith(".json")) continue;
+    const file = join(LEASE_DIR, dirent.name);
+    let parsed: unknown;
     try {
-      const lease = JSON.parse(readFileSync(file, "utf8")) as ServerLease;
-      if (typeof lease?.serverPid !== "number") throw new Error("bad lease");
-      out.push({ file, lease });
+      parsed = JSON.parse(readFileSync(file, "utf8"));
     } catch {
+      // 解析不了 = 半截写入的坏文件（我们自己写的租约是整体 writeFileSync），删掉
       try {
         rmSync(file, { force: true });
       } catch {
         // 忽略
       }
+      continue;
     }
+    const lease = asLease(parsed);
+    if (lease) out.push({ file, lease });
   }
   return out;
 }

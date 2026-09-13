@@ -15,6 +15,7 @@
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { appendFileSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 // 必须排在最前面：把租约目录指到本次探针专用的临时目录（见 sharedServerProbeEnv）
@@ -40,7 +41,9 @@ interface Handshake {
 }
 
 const scriptDir = process.cwd();
-const handshakeFile = join(PROBE_LEASE_DIR, "handshake.json");
+// 握手文件**不能放进租约目录**：那儿的东西会被当作"后台记录"来读（即使代码已经做了
+// 结构校验，也不该往别人的目录里塞无关文件）。放系统临时目录，与本轮日志同处。
+const handshakeFile = join(tmpdir(), `dsh-chat-handshake-${process.pid}.json`);
 
 async function serving(url: string): Promise<boolean> {
   try {
@@ -60,14 +63,14 @@ async function waitGone(url: string, timeoutMs: number): Promise<string | undefi
   return undefined;
 }
 
-/** 现在有几个后台真的在监听（按租约里的端口逐个探）。 */
-async function listeningCount(): Promise<number> {
-  let count = 0;
+/** 现在有几个后台真的在监听（按租约里的端口逐个探；返回明细便于断言失败时定位）。 */
+async function listeningDetail(): Promise<{ url: string; pid: number; serving: boolean }[]> {
+  const out: { url: string; pid: number; serving: boolean }[] = [];
   for (const { lease } of readLeases()) {
     if (!lease.baseUrl) continue;
-    if (await serving(lease.baseUrl)) count++;
+    out.push({ url: lease.baseUrl, pid: lease.serverPid, serving: await serving(lease.baseUrl) });
   }
-  return count;
+  return out;
 }
 
 /** 起一个窗口进程并等它的握手文件。 */
@@ -135,6 +138,16 @@ let crashedUrl: string | undefined;
 try {
   say(`租约目录（隔离）：${leaseDirectory()}`);
 
+  // 起跑线必须干净：上一轮可能留下仍在服务的后台（本探针会杀掉自己启动的窗口，
+  // 但窗口的子孙进程未必跟着走）。不清理的话，后面"只有一个后台在服务"这类断言
+  // 会被上轮的残骸污染（实测踩过：目录名只差一个字符的旧目录残留被算进来了）。
+  const leftovers = await listeningDetail();
+  if (leftovers.length) {
+    say(`   起跑前清理上轮残留：${JSON.stringify(leftovers)}`);
+    await killLeftovers(undefined);
+    for (const item of leftovers) await killLeftovers(item.url);
+  }
+
   say("\n1) 窗口 A 起后台…");
   const a = await startWindow("A", join(PROBE_LEASE_DIR, "window-a.log"));
   windowA = a.child;
@@ -170,9 +183,18 @@ try {
   check("B 接上的就是崩溃前那个后台（同一地址）", b.info.baseUrl === crashedUrl, `${crashedUrl} vs ${b.info.baseUrl}`);
   // 数"**在服务**的后台"而不是"租约文件数"：崩溃会留下陈旧租约（服务器 exit 处理器删不掉
   // 已是死 pid 的那份），那是需要收拾的垃圾，不等于"起了第二个后台"。
-  const listening = await listeningCount();
-  check("整场只有一个后台在服务（没有重起）", listening === 1, `监听中的后台数=${listening}`);
-  check("陈旧租约已被收拾（只剩一条）", readLeases().length === 1, `租约数=${readLeases().length}`);
+  const detail = await listeningDetail();
+  const liveServers = detail.filter((item) => item.serving);
+  check(
+    "整场只有一个后台在服务（没有重起）",
+    liveServers.length === 1,
+    `明细=${JSON.stringify(detail)}`,
+  );
+  check(
+    "磁盘上只剩一份租约",
+    readLeases().length === 1,
+    `租约=${JSON.stringify(readLeases().map((item) => ({ file: item.file, pid: item.lease.serverPid })))}`,
+  );
 
   say("\n4) 窗口 B 正常关闭 → 这时才带走后台…");
   b.child.stdin?.end();

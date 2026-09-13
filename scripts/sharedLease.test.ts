@@ -28,6 +28,7 @@ import {
   hasLiveHostFor,
   isHostLive,
   isOrphanLease,
+  STARTING_GRACE_MS,
   isServiceable,
   leaseDirectory,
   leaseHosts,
@@ -265,12 +266,15 @@ function startLease(serverPid: number, patch: Partial<ServerLease> = {}): void {
     check("进程已退出的租约被删", !remaining.includes(gonePid), `dropped=${dropped}`);
     check("有活窗口的租约保留", remaining.includes(alivePid));
 
-    // 崩溃遗留：进程活着但没有任何实例的心跳 → 删租约，但**不能杀进程**
-    // （动手要"命令行确认是 dsh"的肯定证据，那是 reclaimOrphanServers 的事）
+    // 进程还在、只是没人用：**这个函数不删**（判据只认"进程不在"，见它的注释）——
+    // 那种遗留后台要留给接管逻辑去用，删早了就再也找不回来
     removeHost(alivePid);
     clearHostLease("keep-alive");
     dropDeadLeases();
-    check("无活实例的租约被删", !readLeases().some((item) => item.lease.serverPid === alivePid));
+    check(
+      "进程还活着的租约不被 dropDeadLeases 删掉（留给接管）",
+      readLeases().some((item) => item.lease.serverPid === alivePid),
+    );
     check("dropDeadLeases 不杀进程（进程仍在）", alive.exitCode === null);
   } finally {
     clearLease(alivePid);
@@ -349,39 +353,69 @@ function startLease(serverPid: number, patch: Partial<ServerLease> = {}): void {
 // ---------- 10. 心跳文件：按实例记，"被禁用"才可能被发现 ----------
 
 {
-  const serverPid = GHOST_PID;
   const fakeServer = aliveChild();
-  const realPid = fakeServer.pid as number;
+  // 这一节的判据是"还有没有活实例"，但 `isOrphanLease` 现在还会问"端口有没有人在听"
+  // （`isServiceable` 里的 TCP 探测）。要让结论只由心跳决定，就把租约写成
+  // **进程已不在 + 端口没人听**的形状：用一个真实存在过的死 pid 当 serverPid。
+  const dead = spawn(process.execPath, ["-e", "process.exit(0)"], { stdio: "ignore", windowsHide: true });
+  await new Promise((resolve) => dead.on("close", resolve));
+  const deadPid = dead.pid as number;
   try {
-    startLease(realPid, { baseUrl: "http://127.0.0.1:5555", token: "tok-h" });
-    check("没有心跳文件时，租约里也没有活窗口 → 视为孤儿", isOrphanLease(readLeases()[0].lease));
+    startLease(deadPid, {
+      baseUrl: "http://127.0.0.1:1",
+      token: "tok-h",
+      startedAt: Date.now() - STARTING_GRACE_MS - 1_000,
+    });
+    const leaseOf = () => readLeases().find((item) => item.lease.serverPid === deadPid)!.lease;
+    check("没有心跳文件时，租约里也没有活窗口 → 视为孤儿", isOrphanLease(leaseOf()));
 
-    writeHostLease({ hostId: "host-a", serverPid: realPid, workspace: "D:/dev/a" });
-    writeHostLease({ hostId: "host-b", serverPid: realPid, workspace: "D:/dev/b" });
-    check("两个实例写了心跳 → 不是孤儿", !isOrphanLease(readLeases()[0].lease));
+    writeHostLease({ hostId: "host-a", serverPid: deadPid, workspace: "D:/dev/a" });
+    writeHostLease({ hostId: "host-b", serverPid: deadPid, workspace: "D:/dev/b" });
+    check("两个实例写了心跳 → 不是孤儿", !isOrphanLease(leaseOf()));
     check("liveHostIds 数出两个实例", liveHostIds().filter((id) => id.startsWith("host-")).length === 2);
 
     // 模拟"一个窗口的扩展被禁用"：它不再刷心跳 → 判死（这是 pid 判据做不到的）
     clearHostLease("host-a");
     const stillThere = liveHostIds().includes("host-a");
     check("被禁用的实例不再算活着", !stillThere);
-    check("另一个实例仍在 → 后台仍不算孤儿", !isOrphanLease(readLeases()[0].lease));
+    check("另一个实例仍在 → 后台仍不算孤儿", !isOrphanLease(leaseOf()));
 
     clearHostLease("host-b");
-    check("所有实例都停了 → 变成孤儿（等待下一次激活回收）", isOrphanLease(readLeases()[0].lease));
+    check("所有实例都停了 → 变成孤儿（等待下一次激活回收）", isOrphanLease(leaseOf()));
 
     // 陈旧心跳文件也要被清掉
-    writeHostLease({ hostId: "host-stale", serverPid: realPid });
+    writeHostLease({ hostId: "host-stale", serverPid: deadPid });
     const hostFile = join(LEASE_DIR, "hosts", "host-stale.json");
-    writeFileSync(hostFile, JSON.stringify({ hostId: "host-stale", serverPid: realPid, seenAt: Date.now() - HOST_STALE_MS - 1000 }), "utf8");
+    writeFileSync(hostFile, JSON.stringify({ hostId: "host-stale", serverPid: deadPid, seenAt: Date.now() - HOST_STALE_MS - 1000 }), "utf8");
     const dropped = dropStaleHostLeases();
     check("陈旧心跳文件被清理", dropped.includes("host-stale"), `dropped=${JSON.stringify(dropped)}`);
   } finally {
-    clearLease(realPid);
+    clearLease(deadPid);
     clearHostLease("host-a");
     clearHostLease("host-b");
     fakeServer.kill();
   }
+}
+
+// ---------- 11. 租约目录里的杂散 JSON 不能被当成租约 ----------
+
+{
+  // 实测教训：探针的握手文件（也有 serverPid 字段）混进租约目录，被当真租约读了出来，
+  // 于是"有几个后台""还有没有后台"全线失真（数出两个后台，其实是同一份）。
+  const stray = join(LEASE_DIR, "stray.json");
+  writeFileSync(stray, JSON.stringify({ baseUrl: "http://127.0.0.1:1", serverPid: 999, ready: true }), "utf8");
+  check("形状不符的 JSON 不被当成租约", !readLeases().some((item) => item.file === stray));
+  check("也不会被误删（不碰别人的文件）", existsSync(stray));
+  rmSync(stray, { force: true });
+
+  // 子目录（hosts/ 里的心跳）同样不能被当成租约
+  writeHostLease({ hostId: "shape-check", serverPid: GHOST_PID, baseUrl: "http://127.0.0.1:1", token: "t" });
+  check(
+    "hosts/ 下的心跳不被当成租约",
+    !readLeases().some((item) => item.lease.serverPid === GHOST_PID),
+    `租约=${JSON.stringify(readLeases().map((item) => item.lease.serverPid))}`,
+  );
+  clearHostLease("shape-check");
 }
 
 // ---------- 收尾：整个临时租约目录删掉（本文件全程只用它，不会碰到用户的租约） ----------

@@ -97,7 +97,15 @@ say(
     `心跳判活=${JSON.stringify(hosts.map((entry) => liveHostIds().includes(entry.hostId)))}`,
 );
 
-const info = await manager.ensure();
+let info;
+try {
+  info = await manager.ensure();
+} catch (error) {
+  say(
+    `[window] ensure() 抛错：${error instanceof Error ? `${error.message}\n${error.stack ?? ""}` : String(error)}`,
+  );
+  process.exit(1);
+}
 const lease = readLeases().find((item) => item.lease.baseUrl === info.baseUrl)?.lease;
 writeFileSync(
   handshake,

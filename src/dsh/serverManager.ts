@@ -22,6 +22,7 @@ import {
   listeningPids,
   liveHosts,
   readLeaseByPid,
+  readLeases,
   registerHost,
   removeHost,
   startedLongAgo,
@@ -429,7 +430,6 @@ export class ServerManager {
       const attachable = findAttachable();
       // 崩溃遗留的后台（没有活实例、但还在跑）优先接管：它手里还有会话与内存状态，
       // "杀掉重起"纯属浪费。判定要**真的连一下**——租约说它还活着不算数。
-      this.options.log(`[server] 决策：attachable=${attachable ? attachable.baseUrl : "无"}`);
       const leftover = attachable ? undefined : await this.findReusableLeftover();
       if (attachable) {
         this.options.log(`[server] 复用已有后台 ${attachable.baseUrl}（pid=${attachable.serverPid}）`);
@@ -481,9 +481,6 @@ export class ServerManager {
    */
   private async findReusableLeftover(): Promise<ServerLease | undefined> {
     const candidate = findAdoptable(this.options.command);
-    this.options.log(
-      `[server] 找遗留后台：candidate=${candidate ? `${candidate.baseUrl}(pid=${candidate.serverPid})` : "无"}`,
-    );
     if (!candidate) return undefined;
     const baseUrl = (candidate.baseUrl ?? "").replace(/\/+$/, "");
     if (baseUrl && (await this.waitForHttp(baseUrl, 3_000))) {
