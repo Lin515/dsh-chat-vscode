@@ -142,7 +142,12 @@ export interface Texts {
   filesCollapse: string;
   /** 文件芯片行「收起」的无障碍标题。 */
   filesCollapseAria: string;
-  /** 新建文件芯片的前缀记号（git 未跟踪 = 模型新建，点击直接打开文件）。 */
+  /**
+   * 新建文件芯片的前缀记号（git 未跟踪 = 模型新建，点击直接打开文件）。
+   *
+   * 判定见 `dsh/fileChange.ts` 的 `isUntracked`——它要同时认 `git.untrackedChanges`
+   * 的 `"mixed"`（默认）与 `"separate"` 两种口径，否则这个记号在实际使用中不出现。
+   */
   fileNewTag: string;
   /**
    * 已删除芯片（文件名画删除线）的悬停说明。

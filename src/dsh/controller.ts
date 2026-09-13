@@ -3198,8 +3198,11 @@ export class ChatController implements vscode.Disposable {
    * 复用 git 扩展的 `git.openChange`（左边是 HEAD/暂存版本、右边是工作区文件），
    * 但**先自己判定有没有改动**：该命令对不在 SCM 改动清单里的文件是静默无操作
    * （内部 `getSCMResource()` 找不到资源就 return），直接调用会「点了没反应」。
-   * 判定口径见 `fileChange.ts`——只认工作区/暂存/合并三组，未跟踪文件不算改动
-   * （点新文件回落普通打开，正是要的语义）。
+   * 判定口径见 `fileChange.ts`——只认工作区/暂存/合并三组（`getSCMResource()` 查的
+   * 就是这三组）。未跟踪文件在默认配置（`git.untrackedChanges: "mixed"`）下**也在**
+   * 工作区组里，所以这条命令找得到它；只是 git 自己解析不出左侧、最终执行的是
+   * `vscode.open`（打开文件本身）——新文件点开就是看文件，正是要的语义。
+   * 设成 `"separate"` 时它在未跟踪组、这里判定为「没改动」→ 回落普通打开，结果一样。
    *
    * 判定只做**一次**、落空立即回落，绝不等待（用户 2026-09-14 拍板）：曾试过
    * 「轻推 SCM 重扫 + 限时轮询」来救「第一次点不出 diff」的竞态（git

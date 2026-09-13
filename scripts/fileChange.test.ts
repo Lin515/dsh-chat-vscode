@@ -26,6 +26,23 @@ function change(fsPath: string) {
   return { uri: { fsPath } };
 }
 
+/** 造一条带 status 的改动记录（公开 API 的 `Change.status`）。 */
+function changeWithStatus(fsPath: string, status: number) {
+  return { uri: { fsPath }, status };
+}
+
+/**
+ * git 扩展 `Status` 枚举的**实测值**（本机 VS Code 1.137.0 的
+ * `extensions/git/dist/main.js` 里那个冻结字面量：
+ * `{INDEX_MODIFIED:0, …, MODIFIED:5, DELETED:6, UNTRACKED:7, IGNORED:8, …}`）。
+ *
+ * 这里**故意写成字面量**、不 import 源码里的常量：断言要钉住的是「源码用的是
+ * 这个实测值」，import 进来就成了自证（源码改错、测试跟着一起错）。
+ */
+const MODIFIED = 5;
+const UNTRACKED = 7;
+const IGNORED = 8;
+
 const TARGET = "D:\\dev\\app\\src\\config.ts";
 
 // ---------- 1. 三个清单都算改动：工作区 / 暂存区 / 合并 ----------
@@ -68,22 +85,45 @@ console.log("fileChange: 三个改动清单都能命中 ✓");
 }
 console.log("fileChange: 分隔符与大小写不影响判定 ✓");
 
-// ---------- 3. 未跟踪文件**刻意不算**改动 ----------
+// ---------- 3. 未跟踪文件不算「有改动」，但要**认得出来** ----------
 //
-// 这条是本次最容易踩的坑：把 untrackedChanges 也当改动 → `git.openChange` 内部
-// 在 untrackedGroup 里找不到资源 → 命令静默什么都不做 → 用户点了没反应。
-// 正确做法是不算改动，让宿主回落成普通打开（至少文件会打开）。
+// 这条最初是为了「点了没反应」：`git.openChange` 内部走 `getSCMResource()`，而它只查
+// 工作区 / 暂存 / 合并三组。未跟踪文件在 `untrackedGroup` 里（`git.untrackedChanges:
+// "separate"` 时）→ 命令找不到资源 → 静默什么都不做。
+//
+// 但清单归属**取决于配置**（本机 VS Code 1.137.0 的 git 扩展实测：`case"??"` 按
+// `git.untrackedChanges` 分流，"mixed" 进工作区组、"separate" 进未跟踪组、"hidden"
+// 丢弃）。默认是 "mixed"，所以同一件事有两种形状：
+//
+// - separate：只在 `untrackedChanges` 里 → 三个清单都没它 → 不算改动（宿主回落普通打开）；
+// - mixed：在**工作区清单**里、`status = UNTRACKED(7)` → 算「findable」，
+//   `git.openChange` 找得到它，只是 git 对 UNTRACKED 解析出的左侧为空 → 最终执行
+//   的是 `vscode.open`（打开文件本身）。点击链路因此**不必**为 [新增] 单开分支。
 {
-  const state: GitChangeStateLike = {
+  const separate: GitChangeStateLike = {
     untrackedChanges: [change(TARGET)],
   };
   assert.strictEqual(
-    hasWorkingChange(state, TARGET),
+    hasWorkingChange(separate, TARGET),
     false,
-    "未跟踪文件不算「有可对比的改动」——交给调用方回落普通打开",
+    "separate 配置：未跟踪文件不在三组里 → 不算「有可对比的改动」，交给调用方回落普通打开",
+  );
+  const mixed: GitChangeStateLike = {
+    workingTreeChanges: [changeWithStatus(TARGET, UNTRACKED)],
+  };
+  assert.strictEqual(
+    hasWorkingChange(mixed, TARGET),
+    true,
+    "mixed 配置：未跟踪文件就在工作区清单里 → getSCMResource 找得到，点击会走 git.openChange" +
+      "（git 自己对 UNTRACKED 解析出空左侧 → 实际执行 vscode.open，开的是文件本身）",
+  );
+  assert.strictEqual(
+    hasWorkingChange(mixed, "D:\\dev\\app\\src\\other.ts"),
+    false,
+    "同目录的另一个文件不受影响",
   );
 }
-console.log("fileChange: 未跟踪文件不算改动（否则点了没反应）✓");
+console.log("fileChange: 未跟踪文件不算「有改动」，但两种配置下都认得出来 ✓");
 
 // ---------- 4. 没有改动 / 拿不到状态：一律 false ----------
 {
@@ -156,7 +196,8 @@ console.log("fileChange: 相邻路径不误判 ✓");
     /if \(hasWorkingChange\(repo\.state, uri\.fsPath\)\) \{\s*await vscode\.commands\.executeCommand\("git\.openChange", uri\);/.test(
       controller,
     ),
-    "对比窗口只准在「确认在改动清单里」的分支里开（未跟踪 / 无改动不进这条命令；" +
+    "对比窗口只准在「确认在改动清单里」的分支里开（无改动不进这条命令；" +
+      "未跟踪文件在默认 mixed 配置下本就在工作区清单里，git 自己解析成 vscode.open，" +
       "被跟踪的删除**在**工作区清单里，走的正是这条——点开看得到删除前的内容）",
   );
   assert.ok(
@@ -335,6 +376,87 @@ console.log("fileChange: 界面与宿主都接上了这条链路 ✓");
   );
 }
 console.log("fileChange: 种类判定（new/edited/deleted/不确定）✓");
+
+// ---------- 7a. [新增] 记号必须两种 git 配置下都出得来 ----------
+//
+// 用户报的现场：纯新增文件头上不标 [new]。根因是清单归属看配置
+// （`git.untrackedChanges`），而旧代码只查 `untrackedChanges` 一张清单 ——
+// 默认的 "mixed" 下那张清单**永远是空的**，新文件全在**工作区清单**里，
+// 于是先被 `hasWorkingChange` 判成 edited、记号永远不出现。
+//
+// 唯一能把它和工作区里的普通改动分开的是 `Change.status`（公开 API）。
+{
+  const separate: GitChangeStateLike = { untrackedChanges: [change(TARGET)] };
+  const mixed: GitChangeStateLike = {
+    workingTreeChanges: [changeWithStatus(TARGET, UNTRACKED)],
+  };
+  assert.strictEqual(
+    fileChangeKind(mixed, TARGET, "present"),
+    "new",
+    'mixed（默认配置）：新文件在工作区清单里、status = UNTRACKED(7) → 必须判 new（这条就是用户报的 bug）',
+  );
+  assert.strictEqual(
+    fileChangeKind(separate, TARGET, "present"),
+    "new",
+    "separate：新文件在未跟踪清单里 → 同样判 new（两种配置行为一致）",
+  );
+  // 反向：工作区清单里**不是**未跟踪的，绝不能跟着标 [新增]
+  assert.strictEqual(
+    fileChangeKind({ workingTreeChanges: [changeWithStatus(TARGET, MODIFIED)] }, TARGET, "present"),
+    "edited",
+    "已跟踪但改过（status = MODIFIED(5)）仍然是 edited —— 标成 [新增] 会让每个改过的文件都戴上新文件帽子",
+  );
+  assert.strictEqual(
+    fileChangeKind({ workingTreeChanges: [changeWithStatus(TARGET, IGNORED)] }, TARGET, "present"),
+    "edited",
+    "被 .gitignore 的文件在版本库里从来不存在，不是本轮新建：绝不标 [新增]",
+  );
+  assert.strictEqual(
+    fileChangeKind({ workingTreeChanges: [change(TARGET)] }, TARGET, "present"),
+    "edited",
+    "拿不到 status（旧版本 / 结构变了）→ 按「不确定」处理：不标 [新增]，退化成原来的 edited",
+  );
+  // `git add` / `git add -N` 过的新文件**刻意**不算 new：它们点下去真开得出对比窗口
+  // （索引里有位子，git 能拿空树当基线给 diff），标 [新增] 与点击行为自相矛盾。
+  assert.strictEqual(
+    fileChangeKind({ indexChanges: [changeWithStatus(TARGET, 1)] }, TARGET, "present"),
+    "edited",
+    "git add 过的（INDEX_ADDED）不算 new：SCM 里点它是「打开更改」，确实有 diff",
+  );
+  assert.strictEqual(
+    fileChangeKind({ workingTreeChanges: [changeWithStatus(TARGET, 9)] }, TARGET, "present"),
+    "edited",
+    "git add -N 的（INTENT_TO_ADD）同理不算 new",
+  );
+  // status 命中但路径是别的文件：不能误伤
+  assert.strictEqual(
+    fileChangeKind(
+      { workingTreeChanges: [changeWithStatus("D:\\dev\\app\\src\\config.tsx", UNTRACKED)] },
+      TARGET,
+      "present",
+    ),
+    undefined,
+    "未跟踪判定同样按整段路径相等（相邻文件 config.tsx 不算）",
+  );
+  assert.strictEqual(
+    isUntracked({ workingTreeChanges: [changeWithStatus(TARGET, UNTRACKED)] }, "d:/dev/app/src/config.ts"),
+    true,
+    "mixed 口径与路径写法变体一起生效（分隔符 / 大小写不敏感）",
+  );
+  assert.strictEqual(
+    isUntracked({ workingTreeChanges: [changeWithStatus(TARGET, UNTRACKED)] }, TARGET),
+    true,
+    "mixed 口径：工作区清单 + status 7 = 未跟踪",
+  );
+  // 数值本身就是判据：源码里的常量必须是实测的 7（写成别的值会让这条链路整体失效，
+  // 且症状只是「记号不见了」——不报错、不崩，最容易被漏掉）
+  const fileChangeSource = readFileSync(join(process.cwd(), "src", "dsh", "fileChange.ts"), "utf8");
+  assert.ok(
+    /const STATUS_UNTRACKED = 7;/.test(fileChangeSource),
+    "STATUS_UNTRACKED 必须是 git 扩展 Status.UNTRACKED 的实测值 7（写成别的值 → 默认配置下 [新增] 永远不出现）",
+  );
+}
+console.log("fileChange: [新增] 记号两种配置下都出得来（mixed / separate）✓");
 
 // ---------- 7b. stat 错误的判读：只认 FileNotFound ----------
 //

@@ -283,6 +283,16 @@
   句柄经 `session/attachment` 换成字节后显示（与 `read_image` 的工具结果图同一套机制）。
   `tool-call` / `tool-result` 块**故意**仍不在这里渲染（它们各有自己的事件、已经折成
   工具行，再画一遍就是重复）；`file` 块的缺口记在 `docs/audit-summary.md` 的未验证表 V6 里。
+- **纯新增文件不标 `[新增]`**：git 扩展把未跟踪文件放哪张清单**取决于 `git.untrackedChanges`**
+  ——只有设成 `"separate"` 才进 `untrackedChanges`，**默认的 `"mixed"` 是塞进工作区清单**，
+  而判定只查了前者，于是默认配置下那条分支永远不成立（`git.untrackedChanges` 出厂值就是
+  `"mixed"`，`package.json` 实测）。现在两种配置都认：工作区清单里 `status === UNTRACKED`(7)
+  的条目同样判为新文件，判 `new` 也提到判 `edited` 之前（否则先被「在工作区清单里」截胡）。
+  `IGNORED`(8) 的忽略文件**不**跟着标（它在版本库里从来不存在，不是本轮新建），`git add`
+  过 / `add -N` 的新文件也仍是改动（点下去确实开得出对比窗口，标 `[新增]` 就自相矛盾）。
+  点击行为不变：未跟踪文件在默认配置下本来就会被 git 解析成打开文件本身（左侧为空，没有
+  可比基线），宿主不必为记号单开分支。唯一标不出来的是 `git.untrackedChanges: "hidden"`
+  ——那时 git 压根不上报未跟踪文件，要认这个只能绕过 git 扩展自己问 git，不值当。
 
 ## 0.5.1
 

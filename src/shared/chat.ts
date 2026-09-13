@@ -104,7 +104,10 @@ export type DiffLayout = "auto" | "unified" | "split";
 /**
  * 文件芯片的改动种类（宿主按 git 状态 + 磁盘存在性分类，见 dsh/fileChange.ts）。
  *
- * - `new`：git 未跟踪（模型本轮新建）→ 芯片标 `[新增]`，点击直接打开文件；
+ * - `new`：git 未跟踪（模型本轮新建）→ 芯片标 `[新增]`，点击直接打开文件。
+ *   **两种 `git.untrackedChanges` 配置都算**：默认 `"mixed"` 下它在工作区清单里、
+ *   靠 `status === UNTRACKED` 认出来，`"separate"` 下才在 `untrackedChanges` 里
+ *   （只认后者的症状是新文件永远不标 [新增]，见 `dsh/fileChange.ts` 的 `isUntracked`）；
  * - `edited`：有可对比的工作区/暂存/合并改动 → 点击开 VS Code 的对比窗口；
  * - `deleted`：文件已不在磁盘上（且 git 知道它）→ 芯片名画删除线，点击尝试打开旧内容；
  * - `gone`：磁盘上没有、git 也**完全不知道**它（不在工作区/暂存/合并/未跟踪任何

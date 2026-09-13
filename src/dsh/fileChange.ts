@@ -9,13 +9,31 @@
  *
  * 「有没有改动」只认**工作区 / 暂存区 / 合并**三组——`getSCMResource()` 正是只查
  * 这三组（本机 VS Code 的 `extensions/git/dist/main.js` 实测，`openChange(e)` 一进来
- * 就走 `getSCMResource(e)`）。未跟踪文件在 `untrackedGroup` 里，`git.openChange` 对
- * 它们同样什么也不做，所以这里**刻意不算改动**：未跟踪 = 模型新建的文件 = 没有可
- * 对比的基线，调用方按「新文件」回落成普通打开——至少文件会打开。
+ * 就走 `getSCMResource(e)`）。未跟踪文件没有可对比的基线，所以不标成「有改动」。
  *
- * `untrackedChanges` 在公开 API（`RepositoryState`）上存在（git 扩展 dist/main.js
- * 的 ApiRepository 有 `get untrackedChanges()`），但它**只用于分类**（标 [新文件]），
- * 不进 `hasWorkingChange` 的判定——那条边界不能动。
+ * **未跟踪文件在哪张清单里，取决于 `git.untrackedChanges`**（用户报的
+ * 「纯新增文件不标 [new]」的根因）：默认的 `"mixed"` 下 git 扩展把 `??` 文件塞进
+ * **工作区清单**，只有显式设成 `"separate"` 才进 `untrackedChanges`（`"hidden"` 直接
+ * 丢弃）。本机 VS Code 1.137.0 的 `extensions/git/dist/main.js` 实测，`getStatus()`
+ * 里就是这段分流：
+ *
+ * ```js
+ * case "??": switch (r) {                        // r = git.untrackedChanges
+ *   case "mixed":    return D.push(…E.UNTRACKED…);  // D = workingTreeGroup
+ *   case "separate": return x.push(…E.UNTRACKED…);  // x = untrackedGroup
+ *   default:         return;                        // "hidden"：git 压根不报
+ * } }
+ * ```
+ *
+ * 所以判「新文件」必须**两条路都认**（见 `isUntracked`）；只查 `untrackedChanges`
+ * 会让默认配置下的 [新增] 记号永远不出现。区分它和工作区里的普通改动的唯一依据是
+ * `Change.status`（公开 API）：未跟踪 = `Status.UNTRACKED`(7)，改过 = `MODIFIED`(5)。
+ *
+ * `hasWorkingChange`（= 能不能开对比窗口）**照旧**包含未跟踪条目——它在默认配置下
+ * 就在工作区组里，`getSCMResource()` 找得到；而 git 自己对 `UNTRACKED` 解析出的左侧
+ * 是空的（`getLeftResource` 对它返回 `{}` → `leftUri` 为 undefined），命令最终执行的
+ * 是 `vscode.open`，即**打开文件本身而不是 diff**。也就是说未跟踪文件点下去本来就
+ * 会打开文件，[新增] 记号只是把「为什么它和别的芯片不一样」显示出来。
  *
  * 纯函数、不引 `vscode`：断言见 `scripts/fileChange.test.ts`。
  */
@@ -26,13 +44,37 @@ import type { FileChangeKind } from "../shared/chat";
 /** git 扩展 API 里一条改动的**结构**视图（`@types/vscode` 不含 git API）。 */
 export interface GitChangeLike {
   readonly uri?: { readonly fsPath?: string };
+  /**
+   * 改动种类（公开 API 的 `Change.status`，取值见 `Status` 枚举）。
+   *
+   * 只为**认出未跟踪**而读：默认配置（`git.untrackedChanges: "mixed"`）下新文件
+   * 混在工作区清单里，不看 status 就分不出它是「新建」还是「改过」（见 `isUntracked`）。
+   */
+  readonly status?: number;
 }
 
 /**
- * git 扩展 API 里 `Repository.state` 的**结构**视图：判定用得到的四个清单。
+ * git 扩展 `Status.UNTRACKED` 的数值。
  *
- * `untrackedChanges` 只给分类（`fileChangeKind` 认「新文件」）用；
- * `hasWorkingChange`（= 能不能开对比窗口）仍然只认前三组。
+ * 本机 VS Code 1.137.0 的 `extensions/git/dist/main.js` 实测（冻结的枚举字面量）：
+ *
+ * ```js
+ * E = Object.freeze({ INDEX_MODIFIED:0, INDEX_ADDED:1, INDEX_DELETED:2, INDEX_RENAMED:3,
+ *   INDEX_COPIED:4, MODIFIED:5, DELETED:6, UNTRACKED:7, IGNORED:8, INTENT_TO_ADD:9,
+ *   INTENT_TO_RENAME:10, TYPE_CHANGED:11, … })
+ * ```
+ *
+ * 与公开 API `Status` 枚举同序。扩展的模块导出里没有 `GitStatus` 这个名字
+ * （`getAPI(1)` 只给 API 对象），所以这里按数值判，并把实测值钉在断言里。
+ */
+const STATUS_UNTRACKED = 7;
+
+/**
+ * git 扩展 API 里 `Repository.state` 的**结构**视图：判定用得到的四张清单。
+ *
+ * `untrackedChanges` 只是「新文件」的**一条**来路（`"separate"` 配置）：默认的
+ * `"mixed"` 下新文件在工作区清单里、靠 `status === UNTRACKED` 认出来（见
+ * `isUntracked`）。`hasWorkingChange`（= 能不能开对比窗口）仍然只认前三组。
  */
 export interface GitChangeStateLike {
   readonly workingTreeChanges?: readonly GitChangeLike[];
@@ -57,7 +99,11 @@ function pathKey(path: string): string {
 }
 
 /**
- * 该文件在三个改动清单里出现过 → 有可对比的改动。
+ * 该文件在三个改动清单里出现过 → `git.openChange` 找得到它的资源。
+ *
+ * 判据是**清单名字**，不是「有没有基线」：默认配置下未跟踪文件也在工作区清单里，
+ * 所以新文件这里同样返回 true——这是对的，`getSCMResource()` 查的就是这三组、
+ * 找得到；只是 git 对 `UNTRACKED` 解析出的左侧为空，最终打开的是文件本身。
  *
  * @param state git 仓库状态（`api.getRepository(uri)?.state`）；拿不到时传 undefined。
  * @param fsPath 目标文件的宿主路径。
@@ -97,10 +143,17 @@ export type FileExistence = "present" | "absent" | "unknown";
  * - 明确不在磁盘上、git **完全不知道**它 → `gone`：本轮「写了又删、净效果为零」
  *   的临时文件（模型提交时写的 `commit.msg.txt` 就是典型）。它不代表任何改动，
  *   界面不渲染这一条；
+ * - **未跟踪 → `new`**（两种 `git.untrackedChanges` 配置都认，见 `isUntracked`）：
+ *   模型新建的文件没有基线，`git.openChange` 对它最终执行的是打开文件本身；
+ *   这一步必须排在 `edited` **前面**——默认配置下新文件就在工作区清单里，
+ *   排在后面会被 `hasWorkingChange` 截胡、[新增] 永远不出现（用户报的）；
  * - 在三个改动清单里 → `edited`（git.openChange 能开对比窗口）；
- * - 在未跟踪清单里 → `new`（模型新建的文件，没有基线可比，点开就是看文件）；
  * - 都不是，或存在性 `unknown` → `undefined`（无改动 / 不在 git 仓库 / 被忽略 /
  *   查不出来）：不标任何记号，点击行为由调用方回落成普通打开。
+ *
+ * **刻意不算 new 的两种**（它们点下去确实开得出对比窗口，标 [新增] 就自相矛盾）：
+ * `git add` 过的（`INDEX_ADDED`）与 `git add -N` 的（`INTENT_TO_ADD`）——它们在
+ * 索引里有位子，git 能拿空树当基线给出 diff。
  *
  * @param state git 仓库状态；拿不到（无仓库）时传 undefined。
  * @param fsPath 目标文件的宿主路径。
@@ -115,8 +168,8 @@ export function fileChangeKind(
   // 查不出来 ≠ 已删除：宁可不标记号，也不要给无辜文件画删除线
   if (existence === "unknown") return undefined;
   if (existence === "absent") return hasGitRecord(state, fsPath) ? "deleted" : "gone";
-  if (hasWorkingChange(state, fsPath)) return "edited";
   if (isUntracked(state, fsPath)) return "new";
+  if (hasWorkingChange(state, fsPath)) return "edited";
   return undefined;
 }
 
@@ -180,12 +233,31 @@ export function resolveChipPath(cwd: string | undefined, path: string): string |
   return join(cwd, path);
 }
 
-/** 该文件是否在 git 的未跟踪清单里（= 模型新建、还没进过版本库）。 */
+/**
+ * 该文件是否在 git 眼里的「未跟踪」状态（= 模型新建、还没进过版本库）。
+ *
+ * **两条来路都要认**，因为 `git.untrackedChanges` 决定了清单往哪儿放（见文件头）：
+ *
+ * - `untrackedChanges` 清单里有它 —— 用户把该配置设成 `"separate"` 时的口径；
+ * - **工作区清单**里有它、且 `status === UNTRACKED` —— 默认 `"mixed"` 时的口径。
+ *
+ * 只看第一条是原来的写法，症状就是用户报的「纯新增文件不标 [新增]」：默认配置下
+ * 那张清单永远是空的，新文件全在工作区清单里。
+ *
+ * `status` 必须**精确等于** 7：被 `.gitignore` 的文件同样躺在工作区清单里
+ * （`IGNORED`(8)）——它在版本库里从来不存在，不是本轮新建，标 [新增] 是撒谎。
+ * 拿不到 `status`（旧版本 / 结构变了）时不认，按「不确定」处理（不标记号），
+ * 符合本仓库「拿不到证据就不动」的判据纪律。
+ */
 export function isUntracked(state: GitChangeStateLike | undefined, fsPath: string): boolean {
   if (!state || !fsPath) return false;
   const key = pathKey(fsPath);
   if (!key) return false;
-  return (state.untrackedChanges ?? []).some(
-    (change) => pathKey(change?.uri?.fsPath ?? "") === key,
-  );
+  const listedIn = (list: readonly GitChangeLike[] | undefined, onlyUntracked: boolean): boolean =>
+    (list ?? []).some(
+      (change) =>
+        pathKey(change?.uri?.fsPath ?? "") === key &&
+        (!onlyUntracked || change?.status === STATUS_UNTRACKED),
+    );
+  return listedIn(state.untrackedChanges, false) || listedIn(state.workingTreeChanges, true);
 }
