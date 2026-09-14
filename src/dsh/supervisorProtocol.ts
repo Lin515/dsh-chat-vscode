@@ -64,7 +64,8 @@ export const IDLE_SEC_MAX = 600;
 export const IDLE_SEC_DEFAULT = 10;
 /** socket 上的保活间隔（毫秒）。 */
 export const PING_INTERVAL_MS = 1_000;
-/** supervisor 等 dsh 打印公告行的宽限（毫秒）——与扩展侧"启动超时"不同，这是 supervisor 自己的。 */
+/** supervisor 等 dsh 打印公告行的宽限（毫秒）——**supervisor 自己的**一轮尝试上限，与扩展侧无关
+ *  （扩展侧已经没有"等多久算超时"这一档了，见 `supervisorClient.waitForReadyState`）。 */
 export const SPAWN_GRACE_MS = 120_000;
 
 /** 把用户填的阈值夹到合法范围（NaN/越界都收敛，不报错：配置项不该让扩展用不了）。 */

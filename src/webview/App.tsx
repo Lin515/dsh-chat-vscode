@@ -6,12 +6,13 @@ import { Composer } from "./components/Composer";
 import { HistoryPanel } from "./components/History";
 import { Message } from "./components/Message";
 import { JobsPanel, SettingsPanel, SubagentTranscriptPanel, SubagentsPanel } from "./components/Panels";
-import { TrajectoryPanel } from "./components/Trajectory";
+import { TrajectoryView } from "./components/Trajectory";
 import { Spinner, hasSelectionInside } from "./components/primitives";
 import { AppState, useAppState, type PanelKind } from "./state";
 import { pendingInteractionOf } from "./pendingInteraction";
 import {
   IconAgents,
+  IconChat,
   IconHistory,
   IconJobs,
   IconKey,
@@ -77,12 +78,16 @@ function Header({
         <IconJobs size={15} />
       </button>
       <button
-        data-mini="hide"
+        // 轨迹是**整页**视图（不是抽屉），这颗按钮就是进出它的唯一开关：
+        // 会话视图下它是「轨迹」图标，切过去之后变成「会话」图标（点回来）。
+        // 迷你模式下别的按钮都收起来，唯独这颗在轨迹视图里必须留着——
+        // 否则把侧栏拖窄之后就出不来了（`data-mini` 只在不显示轨迹时生效）。
+        data-mini={state.panel === "trajectory" ? undefined : "hide"}
         className={`icon-btn${state.panel === "trajectory" ? " is-active" : ""}`}
-        title={texts.trajectory}
+        title={state.panel === "trajectory" ? texts.backToChat : texts.trajectory}
         onClick={() => toggle("trajectory", () => post({ type: "listTrajectory" }))}
       >
-        <IconTrajectory size={15} />
+        {state.panel === "trajectory" ? <IconChat size={15} /> : <IconTrajectory size={15} />}
       </button>
       <button
         data-mini="hide"
@@ -216,7 +221,7 @@ const HISTORY_TOP_PX = 64;
  * 此前只有一枚「加载更早的消息」按钮：跟随窗口只带 60 条，用户想往回看就得先
  * 意识到「上面还有东西」并准确点到按钮（用户 2026-09-14 要求按滚动条位置自动加载）。
  *
- * 分工（2026-09-15 定稿）：
+ * 分工（2026-09-14 定稿）：
  * - **连取由宿主驱动**：界面只发一次 `loadMore`，宿主一页一页往前取，直到取到
  *   用户的上一条消息（一轮的开头）或没有更早的了——「到没到一轮的开头」「这一页
  *   有没有带来新事件」只有宿主有真凭据（见 `dsh/historyPaging.ts` 的注释：
@@ -229,7 +234,7 @@ const HISTORY_TOP_PX = 64;
  * 「首条消息变没变」判断（同一条消息被补长时首条 id 不变，但上面的内容确实变多了）。
  * 手动按钮走同一个入口。
  */
-function useHistoryPaging(scrollRef: React.RefObject<HTMLDivElement>, state: AppState) {
+function useHistoryPaging(scrollRef: React.RefObject<HTMLDivElement>, state: AppState, active: boolean) {
   /** 本次加载开始时的内容高度（每落一页后更新成新高度）。 */
   const height = useRef<number | null>(null);
   // 监听器只注册一次（流式期间每次渲染都重挂/摘监听器是白烧）
@@ -237,12 +242,14 @@ function useHistoryPaging(scrollRef: React.RefObject<HTMLDivElement>, state: App
   latest.current = state;
 
   const loadEarlier = useCallback(() => {
-    const el = scrollRef.current;
     const current = latest.current;
-    if (!el || !current.hasMoreHistory) return;
+    if (!current.hasMoreHistory) return;
     // 已经在取（宿主说了算）：滚动事件一秒来几十个也不会重复发
     if (current.historyLoading) return;
-    height.current = el.scrollHeight;
+    // 视口锚点只有会话页在的时候才有得记：轨迹视图里聊天区是卸载的
+    // （入口仍然要能用——那就是轨迹时间线左端那个 `…`）
+    const el = scrollRef.current;
+    height.current = el ? el.scrollHeight : null;
     post({ type: "loadMore" });
   }, [scrollRef]);
 
@@ -257,7 +264,8 @@ function useHistoryPaging(scrollRef: React.RefObject<HTMLDivElement>, state: App
     };
     el.addEventListener("scroll", onScroll, { passive: true });
     return () => el.removeEventListener("scroll", onScroll);
-  }, [scrollRef, loadEarlier]);
+    // `active`：会话页被轨迹视图顶掉又回来时，元素是新的，监听必须重新挂上
+  }, [scrollRef, loadEarlier, active]);
 
   // 每落一页：把视口钉回加载前那一行；取完（宿主说落定）就丢掉锚点
   useLayoutEffect(() => {
@@ -314,19 +322,32 @@ function NoticeBar({
  * 内容高度变化（新行、工具/思考展开、流式文本、图片加载）由 ResizeObserver
  * 主动跟随，不依赖滚动事件时序。
  */
-function useAutoScroll() {
+function useAutoScroll(active: boolean) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
   const lastTopRef = useRef(0);
+  /** 是否已经挂过一次：用来区分「首次挂载」与「从轨迹视图回来」。 */
+  const attachedRef = useRef(false);
 
   useLayoutEffect(() => {
     const el = scrollRef.current;
     const content = contentRef.current;
     if (!el || !content) return;
-    // 初始贴底按实际位置定（内容不足一屏即贴底）
-    stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
-    lastTopRef.current = el.scrollTop;
+    if (attachedRef.current) {
+      // 从轨迹视图回来：这是一个**新元素**，旧元素连同滚动位置一起没了
+      // （新元素 scrollTop 一律是 0，不补一下就会把用户丢回会话开头、
+      // 而且贴底状态也没了）。按离开前的状态复原：贴着底就跟到底，
+      // 否则回到原来的位置。
+      el.scrollTop = stickRef.current
+        ? el.scrollHeight
+        : Math.min(lastTopRef.current, Math.max(0, el.scrollHeight - el.clientHeight));
+    } else {
+      attachedRef.current = true;
+      // 初始贴底按实际位置定（内容不足一屏即贴底）
+      stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+      lastTopRef.current = el.scrollTop;
+    }
 
     const onScroll = () => {
       const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
@@ -348,16 +369,19 @@ function useAutoScroll() {
       observer.disconnect();
       el.removeEventListener("scroll", onScroll);
     };
-  }, []);
+    // `active`：轨迹视图会把会话页整块卸载（元素换了一个），回来时必须重挂
+  }, [active]);
 
   return { scrollRef, contentRef };
 }
 
 export function App() {
   const { state, dispatch } = useAppState();
-  const { scrollRef, contentRef } = useAutoScroll();
+  // 会话页是否在场：轨迹视图下它整块卸载，两个滚动 hook 都要能重挂
+  const chatActive = state.panel !== "trajectory";
+  const { scrollRef, contentRef } = useAutoScroll(chatActive);
   // 滚到顶附近自动取更早的历史；手动按钮走同一个入口（取到轮次边界为止）
-  const { loadEarlier, loading: loadingEarlier } = useHistoryPaging(scrollRef, state);
+  const { loadEarlier, loading: loadingEarlier } = useHistoryPaging(scrollRef, state, chatActive);
   // 迷你模式：.app 宽度 < 220px 时收成图标条（滞回 ≥232 恢复），由 Composer 测宽后同步到这里
   const appRef = useRef<HTMLDivElement>(null);
   const [mini, setMini] = useState(false);
@@ -386,11 +410,15 @@ export function App() {
     runningRef.current = state.running;
   }, [state.running]);
 
-  // 轨迹面板开着时的刷新节奏：**运行中每 3 秒取一次**，停下后再取一次收尾。
+  // 轨迹视图开着时的刷新节奏：**运行中每 3 秒取一次**，停下后再取一次收尾。
   //
   // 官方的轨迹是跟着事件流增量长的（流式中的助手行、刚结算的工具行都会实时出现）；
-  // 本扩展的账本是宿主按需折好整份下发的，所以用「面板开着 + 运行中」这个条件轮询——
-  // 面板关着时一个请求都不发（整份模型几百行，不值得白推）。
+  // 本扩展的账本是宿主按需折好整份下发的，所以用「视图开着 + 运行中」这个条件轮询——
+  // 视图关着时一个请求都不发（整份模型几百行，不值得白推）。
+  //
+  // 会话 id 也进依赖：切会话 / 新建时宿主推的是**整份快照**，而轨迹模型不在快照里
+  // （只有 `listTrajectory` 现折），不跟着重取就会一直显示上一个会话的账本。
+  const sessionId = state.session?.id;
   useEffect(() => {
     if (state.panel !== "trajectory") return;
     if (!state.running) {
@@ -399,7 +427,19 @@ export function App() {
     }
     const timer = setInterval(() => post({ type: "listTrajectory" }), 3000);
     return () => clearInterval(timer);
-  }, [state.panel, state.running]);
+  }, [state.panel, state.running, sessionId]);
+
+  // 轨迹里的「加载更早」与会话页**共用同一条链路**（都发 `loadMore`，宿主一次取到底、
+  // 逐页回填消息）。但宿主只回填会话侧，不会顺手重推账本，所以取完
+  // （`historyLoading` 从 true 落回 false）由界面自己再要一份账本——
+  // 这就是「点轨迹的『加载更早』→ 会话去取历史 → 取完轨迹自己刷新」。
+  const historyWasLoading = useRef(state.historyLoading === true);
+  useEffect(() => {
+    const loading = state.historyLoading === true;
+    const settled = historyWasLoading.current && !loading;
+    historyWasLoading.current = loading;
+    if (settled && state.panel === "trajectory") post({ type: "listTrajectory" });
+  }, [state.historyLoading, state.panel]);
 
   useEffect(() => {
     const unsubscribe = subscribe(dispatch as (message: HostToWebview) => void);
@@ -428,68 +468,84 @@ export function App() {
           onDismiss={() => dispatch({ type: "ui/dismissNotice" })}
         />
 
-        <div className="chat-scroll" ref={scrollRef}>
-          <div className="chat-list" ref={contentRef}>
-            {state.messages.length === 0 ? (
-              <EmptyState />
-            ) : (
-              <>
-                {/* 「加载全部历史」：跟随窗口只带 60 条，更早的内容从没进过客户端。
-                    按钮只在服务端说「还有更早的」时出现——空按钮比没有按钮更烦人。
-                    滚到顶会自动取，这个按钮是同一个入口；**取的过程中**它自己变成
-                    「正在加载全部历史…」的不可点状态（可能连取多页），这样
-                    「点了没反应」与「还在取」一眼可分。 */}
-                {state.hasMoreHistory ? (
-                  <button
-                    className="history-more"
-                    disabled={state.running || loadingEarlier}
-                    title={
-                      loadingEarlier
-                        ? texts.historyLoading
-                        : state.running
-                          ? texts.historyBusy
-                          : texts.historyMore
-                    }
-                    onClick={() => loadEarlier()}
-                  >
-                    {loadingEarlier ? texts.historyLoading : texts.historyMore}
-                  </button>
-                ) : null}
-                {state.messages.map((message, index) => (
-                  <Message
-                    key={message.id}
-                    message={message}
-                    diffLayout={state.diffLayout}
-                    fileKinds={state.fileKinds}
-                    questionBatch={state.questionBatch}
-                    // 只有非最后一条（= 不是正在跑的那一轮）才能作为分支锚点
-                    canBranch={!state.running || index < state.messages.length - 1}
-                  />
-                ))}
-              </>
-            )}
-          </div>
-        </div>
-
-        {state.todos.length ? (
-          <div className="todos">
-            {state.todos.map((todo) => (
-              <div
-                key={todo.id}
-                className={`todo-item${todo.status === "completed" ? " is-completed" : ""}`}
-              >
-                <span className="todo-glyph">
-                  <span
-                    className={`dot ${
-                      todo.status === "completed" ? "dot-ok" : todo.status === "in_progress" ? "dot-running" : ""
-                    }`}
-                  />
-                </span>
-                <span className="todo-content">{todo.content}</span>
+        {/* 轨迹是**整页**视图（和官方 Web UI 一样），不是盖在会话上的抽屉：
+            它顶掉的是会话页本身（消息列表 + 待办），输入区留在原地——官方的轨迹
+            视图同样在底部给输入区留位（`--dsh-trajectory-bottom-clearance`）。
+            注意两个滚动监听挂在 `chat-scroll` 上，它被卸载后必须能在回来时重挂，
+            所以下面两个 hook 都吃一个 `active`（见 `useAutoScroll`）。 */}
+        {state.panel === "trajectory" ? (
+          <TrajectoryView
+            model={state.trajectory}
+            locale={state.locale}
+            onLoadEarlier={() => loadEarlier()}
+            loadingEarlier={loadingEarlier}
+          />
+        ) : (
+          <>
+            <div className="chat-scroll" ref={scrollRef}>
+              <div className="chat-list" ref={contentRef}>
+                {state.messages.length === 0 ? (
+                  <EmptyState />
+                ) : (
+                  <>
+                    {/* 「加载全部历史」：跟随窗口只带 60 条，更早的内容从没进过客户端。
+                        按钮只在服务端说「还有更早的」时出现——空按钮比没有按钮更烦人。
+                        滚到顶会自动取，这个按钮是同一个入口；**取的过程中**它自己变成
+                        「正在加载全部历史…」的不可点状态（可能连取多页），这样
+                        「点了没反应」与「还在取」一眼可分。 */}
+                    {state.hasMoreHistory ? (
+                      <button
+                        className="history-more"
+                        disabled={state.running || loadingEarlier}
+                        title={
+                          loadingEarlier
+                            ? texts.historyLoading
+                            : state.running
+                              ? texts.historyBusy
+                              : texts.historyMore
+                        }
+                        onClick={() => loadEarlier()}
+                      >
+                        {loadingEarlier ? texts.historyLoading : texts.historyMore}
+                      </button>
+                    ) : null}
+                    {state.messages.map((message, index) => (
+                      <Message
+                        key={message.id}
+                        message={message}
+                        diffLayout={state.diffLayout}
+                        fileKinds={state.fileKinds}
+                        questionBatch={state.questionBatch}
+                        // 只有非最后一条（= 不是正在跑的那一轮）才能作为分支锚点
+                        canBranch={!state.running || index < state.messages.length - 1}
+                      />
+                    ))}
+                  </>
+                )}
               </div>
-            ))}
-          </div>
-        ) : null}
+            </div>
+
+            {state.todos.length ? (
+              <div className="todos">
+                {state.todos.map((todo) => (
+                  <div
+                    key={todo.id}
+                    className={`todo-item${todo.status === "completed" ? " is-completed" : ""}`}
+                  >
+                    <span className="todo-glyph">
+                      <span
+                        className={`dot ${
+                          todo.status === "completed" ? "dot-ok" : todo.status === "in_progress" ? "dot-running" : ""
+                        }`}
+                      />
+                    </span>
+                    <span className="todo-content">{todo.content}</span>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </>
+        )}
 
         {/* 待处理的审批 / 提问**接管输入区**（官方把两者注册进 `conversation.composer` 槽）：
             卡片永远在视野里，界面看起来就是「在等你回答」；已经答过的仍留在对话流里当记录
@@ -530,16 +586,6 @@ export function App() {
         ) : null}
 
         {state.panel === "jobs" ? <JobsPanel jobs={state.jobs} onClose={closePanel} /> : null}
-
-        {state.panel === "trajectory" ? (
-          <TrajectoryPanel
-            model={state.trajectory}
-            locale={state.locale}
-            onClose={closePanel}
-            onLoadEarlier={() => loadEarlier()}
-            loadingEarlier={loadingEarlier}
-          />
-        ) : null}
 
         {state.panel === "settings" ? (
           <SettingsPanel

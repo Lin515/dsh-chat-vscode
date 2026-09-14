@@ -39,10 +39,15 @@ function resolveMarker(text: string): string {
       );
     case "serverSpawnFailed":
       return vscode.l10n.t("Could not start the dsh process: {0}", arg);
-    case "serverStartTimeout":
-      return vscode.l10n.t("Timed out waiting for dsh web to become ready ({0}s)", arg);
+    case "serverNotReady":
+      return vscode.l10n.t(
+        "The background server did not become ready (the rendezvous file has no address or token yet). Try “Restart Server”, or check the logs.",
+      );
     case "serverUnreachable":
-      return vscode.l10n.t("Cannot reach {0}; make sure dsh web is running there.", arg);
+      return vscode.l10n.t(
+        "Cannot reach the DSH server at {0} yet (retrying until it answers or you stop connecting). Make sure dsh web is running there.",
+        arg,
+      );
     // 这一对会经「DSH: 显示诊断信息」的 `Detail:` 那一行外溢到 VS Code 原生弹窗，
     // 所以也要在这里登记（否则用户看到的是裸 `@serverNotRunning`）
     case "serverNotRunning":

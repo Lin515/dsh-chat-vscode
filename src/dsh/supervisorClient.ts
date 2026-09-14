@@ -271,18 +271,21 @@ export async function ensureSupervisor(options: {
 /**
  * 等会合文件出现且**真的可用**（supervisor 写完"正在启动"之后还要等 dsh 打印公告行）。
  *
- * 轮询而不是订阅：这一步本来就是"等另一件事发生"，轮询最不容易出错，
- * 而且等待窗口只有启动超时那么长（默认 90s，通常 5~8s 就结束）。
+ * 轮询而不是订阅：这一步本来就是"等另一件事发生"，轮询最不容易出错。
+ *
+ * **没有时长上限**（用户 2026-09-14 口径）：等多久不由时钟决定，只由两件事结束——
+ * 真的就绪，或用户点了「停止连接」（`signal` 被 abort）。所以这里不再有 deadline，
+ * 也不再有"等到 N 秒就报超时"这一档状态改写。
  */
 export async function waitForReadyState(options: {
   group: string;
-  timeoutMs: number;
   usable: (state: SupervisorState) => Promise<boolean>;
   onTick?: (state: SupervisorState | undefined) => void;
+  /** 用户按钮（「停止连接」/「停止服务器」）的中断信号：abort 后立刻返回 undefined。 */
+  signal?: AbortSignal;
 }): Promise<SupervisorState | undefined> {
   const directory = supervisorDirectory(options.group);
-  const deadline = Date.now() + options.timeoutMs;
-  while (Date.now() < deadline) {
+  while (!options.signal?.aborted) {
     let state: SupervisorState | undefined;
     try {
       state = readState(directory);
@@ -291,7 +294,7 @@ export async function waitForReadyState(options: {
     }
     options.onTick?.(state);
     if (state && state.baseUrl) {
-      // 判据自己出错时**继续等**，不要把异常抛给调用方（那会被误读成"启动超时"）
+      // 判据自己出错时**继续等**，不要把异常抛给调用方（那会被误读成一次失败）
       let ok = false;
       try {
         ok = await options.usable(state);
@@ -300,7 +303,8 @@ export async function waitForReadyState(options: {
       }
       if (ok) return state;
     }
-    await delay(300);
+    // abort 时 delay 会抛 AbortError：吃掉它，让 while 条件收尾
+    await delay(300, undefined, { signal: options.signal }).catch(() => undefined);
   }
   return undefined;
 }

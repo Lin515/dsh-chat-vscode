@@ -218,7 +218,6 @@ npm run watch          # 增量构建
 | `dshChat.url` | 空 | 已运行的 `dsh web` 地址；留空则由扩展自行启动并管理服务器 |
 | `dshChat.autoStart` | `true` | 启动 VS Code 时自动连接 |
 | `dshChat.command` | `dsh` | 启动命令（找不到时回退 `npx`） |
-| `dshChat.startTimeoutSec` | `90` | 等待服务器就绪的秒数 |
 | `dshChat.openPanelOnStartup` | `false` | 启动时在编辑器区打开对话面板 |
 | `dshChat.diffLayout` | `auto` | 编辑类节点的 diff 排版：`auto`（窄单栏 / 宽双栏）、`unified`（固定单栏）、`split`（固定双栏） |
 | `dshChat.language` | `auto` | 聊天界面语言：`auto` 跟随 VS Code、`zh-cn` 固定中文、`en` 固定英文 |
@@ -615,7 +614,6 @@ bar is used); `dsh` runnable locally (falls back to `npx`); model credentials co
 | `dshChat.url` | empty | Address of an already-running `dsh web`; leave empty to let the extension manage its own server |
 | `dshChat.autoStart` | `true` | Connect automatically when VS Code starts |
 | `dshChat.command` | `dsh web --port 0 --no-open` | Launch command for the internal server |
-| `dshChat.startTimeoutSec` | `90` | Seconds to wait for the server to become ready |
 | `dshChat.openPanelOnStartup` | `false` | Open the panel in the editor area on startup |
 | `dshChat.diffLayout` | `auto` | Diff layout for edit calls: `auto` (single column when narrow, side-by-side when wide), `unified`, `split` |
 | `dshChat.language` | `auto` | Chat UI language: `auto` follows VS Code, `zh-cn`, `en` |

@@ -24,9 +24,22 @@ const event = (type: string, data: Record<string, unknown>, offset = seq): Sessi
 };
 const block = (text: string) => [{ type: "text", text }];
 const message = (text: string, source: Record<string, unknown>) => ({
+  id: `m${seq}`,
+  role: "user",
   content: block(text),
   source,
 });
+/**
+ * `user/message` 的**线格式**：data 就是 UserMessage 本身
+ * （`dsh-session`：`'user/message': UserMessage`），**不是** `{message}` 包一层
+ * ——包一层的是 `system/message` / `tool/result`。
+ *
+ * 这个坑真的踩过（用户 2026-09-14 报「用户消息与上下文节点都不出现在轨迹里」）：
+ * 折叠按 `data.message` 读，`kind`/`text` 全空 → 整条被丢掉。断言夹具原先也照
+ * 错的形状编（`{message}`），两边一起错才没被测试抓住——所以这里专门写个
+ * `userMessage()` 把线格式钉住，并在下面第 2 组里显式断言。
+ */
+const userMessage = (text: string, source: Record<string, unknown>) => message(text, source);
 
 // ---------- 1. 一个完整轮次：系统 → 用户 → 助手 → 工具 → 子工具 ----------
 {
@@ -35,7 +48,7 @@ const message = (text: string, source: Record<string, unknown>) => ({
     event("turn/start", { turn: 0 }, 0),
     event("step/start", { turn: 0, step: 0 }, 0),
     event("system/message", { turn: 0, step: 0, message: message("你是 DSH。", { kind: "system" }) }, 0),
-    event("user/message", { message: message("帮我看看这个文件", { kind: "user" }) }, 1),
+    event("user/message", message("帮我看看这个文件", { kind: "user" }), 1),
     event("request/header", { header: { config: { provider: "p", model: "m" }, tools: [{ name: "read" }] }, reason: "initial" }, 1),
     event("assistant/message", { turn: 0, step: 0, message: message("我看看。", { model: "m" }), usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 3 } }, 2),
     event("tool/call", { turn: 0, step: 0, callId: "c1", name: "read", arguments: '{"file_path":"a.ts"}' }, 3),
@@ -85,23 +98,35 @@ const message = (text: string, source: Record<string, unknown>) => ({
 console.log("trajectory: 完整轮次的账本折叠 ✓");
 
 // ---------- 2. 用户 vs 上下文：按 `source.kind` 分派 ----------
+//
+// **线格式**：`user/message` 的 data 就是消息本身（`{id, role, content, source}`），
+// 不是 `{message}`。夹具曾经按 `{message}` 编，折叠也按 `data.message` 读，于是
+// 两边一起错、测试全绿，而真机上「用户消息 + 上下文节点」整类消失。
 {
   seq = 0;
   const events: SessionWireEvent[] = [
     event("turn/start", { turn: 0 }, 0),
-    event("user/message", { message: message("插件注入的上下文", { kind: "plugin", plugin: "dsh-goal" }) }, 0),
-    event("user/message", { message: message("人类说的话", { kind: "user" }) }, 1),
-    event("user/message", { message: message("RPC 发的话", { kind: "user-rpc" }) }, 2),
+    event("user/message", userMessage("插件注入的上下文", { kind: "plugin", plugin: "dsh-goal" }), 0),
+    event("user/message", userMessage("人类说的话", { kind: "user" }), 1),
+    event("user/message", userMessage("RPC 发的话", { kind: "user-rpc" }), 2),
     event("turn/end", { turn: 0, reason: "success" }, 2),
   ];
+  // 夹具自检：data 必须是消息本身（有 content/source，没有被 message 包一层）
+  const sample = events[1].data as Record<string, unknown>;
+  assert.strictEqual(sample.message, undefined, "user/message 的 data 不许是 {message} 包装");
+  assert.ok(Array.isArray(sample.content), "user/message 的 data 自己就带 content");
+
   const cells = deriveTrajectoryModel(events, false).turns.flatMap((turn) => turn.cells);
   assert.deepStrictEqual(
     cells.map((cell) => cell.kind),
     ["context", "user", "user"],
     "插件注入 → context；`user` / `user-rpc` → user（官方只把这两种算人的话）",
   );
+  assert.strictEqual(cells.length, 3, "三类来源各出一条记录——一条都不许被吞掉");
   assert.strictEqual(cells[0].messageSource?.plugin, "dsh-goal");
   assert.strictEqual(cells[0].opensTurn, undefined, "上下文注入不开启轮次");
+  assert.strictEqual(cells[0].text, "插件注入的上下文", "上下文记录要有正文（曾经整条被丢）");
+  assert.strictEqual(cells[0].previewMarkdown, "插件注入的上下文");
   assert.strictEqual(cells[1].opensTurn, true);
 }
 console.log("trajectory: context 与 user 的分派 ✓");
@@ -150,7 +175,7 @@ console.log("trajectory: 压缩的生命周期 ✓");
     event("step/start", { turn: 0, step: 0 }, 0),
     event("system/message", { turn: 0, step: 0, message: message("第一版提示词", { kind: "system" }) }, 0),
     event("request/header", { header: { config: { provider: "p", model: "m" } }, reason: "initial" }, 0),
-    event("user/message", { message: message("你好", { kind: "user" }) }, 1),
+    event("user/message", message("你好", { kind: "user" }), 1),
     event("assistant/message", { turn: 0, step: 0, message: message("在", {}) }, 1),
     // 第二轮：系统提示词变了（历史内更新）→ 官方在账本里再出一行 SYSTEM
     event("turn/end", { turn: 0, reason: "success" }, 2),
@@ -158,7 +183,7 @@ console.log("trajectory: 压缩的生命周期 ✓");
     event("step/start", { turn: 1, step: 0 }, 2),
     event("system/message", { turn: 1, step: 0, message: message("第二版提示词", { kind: "system" }) }, 2),
     event("request/header", { header: { config: { provider: "p", model: "m" } }, reason: "change" }, 2),
-    event("user/message", { message: message("再来", { kind: "user" }) }, 3),
+    event("user/message", message("再来", { kind: "user" }), 3),
     event("assistant/message", { turn: 1, step: 0, message: message("好", {}) }, 3),
     event("turn/end", { turn: 1, reason: "success" }, 4),
   ];
@@ -184,7 +209,7 @@ console.log("trajectory: 系统提示词的更新 ✓");
     event("turn/end", { turn: 0, reason: "success" }, 1),
     event("turn/start", { turn: 1 }, 1),
     event("step/start", { turn: 1, step: 0 }, 1),
-    event("user/message", { message: message("第一句人话", { kind: "user" }) }, 1),
+    event("user/message", message("第一句人话", { kind: "user" }), 1),
     event("assistant/message", { turn: 1, step: 0, message: message("答", {}) }, 2),
     event("turn/end", { turn: 1, reason: "success" }, 2),
   ];
@@ -204,7 +229,7 @@ console.log("trajectory: 轮次分组与 prologue 合并 ✓");
   const events: SessionWireEvent[] = [
     event("turn/start", { turn: 0 }, 0),
     event("step/start", { turn: 0, step: 0 }, 0),
-    event("user/message", { message: message("问", { kind: "user" }) }, 0),
+    event("user/message", message("问", { kind: "user" }), 0),
     event("llm/retry", { attempt: 2, maxAttempts: 5 }, 1),
     event("assistant/message", { turn: 0, step: 0, message: message("答", {}) }, 2),
     event("turn/end", { turn: 0, reason: "error" }, 3),
@@ -221,7 +246,7 @@ console.log("trajectory: 轮次分组与 prologue 合并 ✓");
   const events: SessionWireEvent[] = [
     event("turn/start", { turn: 0 }, 0),
     event("step/start", { turn: 0, step: 0 }, 0),
-    event("user/message", { message: message("问", { kind: "user" }) }, 0),
+    event("user/message", message("问", { kind: "user" }), 0),
     event("assistant/message", { turn: 0, step: 0, message: message("半截", {}) }, 1),
     event("turn/end", { turn: 0, reason: "max-tokens" }, 2),
   ];
@@ -238,7 +263,7 @@ console.log("trajectory: 重试与轮次错误 ✓");
   const events: SessionWireEvent[] = [
     event("turn/start", { turn: 0 }, 0),
     event("step/start", { turn: 0, step: 0 }, 0),
-    event("user/message", { message: message("问", { kind: "user" }) }, 0),
+    event("user/message", message("问", { kind: "user" }), 0),
     // 这一步开了但**没有** assistant/message（被中断），随后 turn/end 收尾
     event("turn/end", { turn: 0, reason: "aborted" }, 1),
     // 新一轮已经开跑：这一步同样没有 assistant/message，但它是**当前**在跑的那一步
@@ -268,7 +293,7 @@ console.log("trajectory: 运行中的占位行 ✓");
   const events: SessionWireEvent[] = [
     event("turn/start", { turn: 0 }, 0),
     event("step/start", { turn: 0, step: 0 }, 0),
-    event("user/message", { message: message("问", { kind: "user" }) }, 0),
+    event("user/message", message("问", { kind: "user" }), 0),
     event("assistant/message", { turn: 0, step: 0, message: message("半截", {}), interrupted: true }, 1),
     event("tool/call", { turn: 0, step: 0, callId: "c9", name: "bash", arguments: "{}" }, 2),
   ];
@@ -296,7 +321,7 @@ console.log("trajectory: 单行摘要 ✓");
   const events: SessionWireEvent[] = [
     event("turn/start", { turn: 0 }, 0),
     event("step/start", { turn: 0, step: 0 }, 0),
-    event("user/message", { message: message("问", { kind: "user" }) }, 0),
+    event("user/message", message("问", { kind: "user" }), 0),
     event("assistant/message", { turn: 0, step: 0, message: message("答", {}) }, 2),
     event("tool/call", { turn: 0, step: 0, callId: "c1", name: "read", arguments: "{}" }, 4),
     event("tool/result", { turn: 0, step: 0, message: { content: block("ok"), source: { callId: "c1" } } }, 5),

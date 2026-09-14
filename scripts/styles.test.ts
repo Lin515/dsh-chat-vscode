@@ -653,7 +653,7 @@ console.log("styles: 待处理交互接管输入区（流里跳过、答过留�
 
 // ---------- 18. 工具栏：按实测宽度分配，而不是按固定阈值隐藏 ----------
 //
-// 用户 2026-09-15 口径：底部工具栏「根据窗口宽度与优先级调整显示」——
+// 用户 2026-09-14 口径：底部工具栏「根据窗口宽度与优先级调整显示」——
 // P0 权限/模型/发送（始终显示）、P1 思考强度/附件/tps/上下文环、
 // P2 权限文字与上下文精确数值。宽度是**量**出来的（Composer 的 useToolbarFit
 // 把候选档位渲染进测量层读 getBoundingClientRect），所以文案长短（中英差异）、
@@ -713,7 +713,7 @@ console.log("styles: 待处理交互接管输入区（流里跳过、答过留�
   );
   assert.ok(!/ctx-ring-label/.test(css), "app.css 里不该再留 .ctx-ring-label 的样式");
 
-  // 思考强度胶囊与模型按钮开的是**同一个**弹层，点击语义也必须一致（用户 2026-09-15：
+  // 思考强度胶囊与模型按钮开的是**同一个**弹层，点击语义也必须一致（用户 2026-09-14：
   // 「思考强度按钮点击并没有和模型按钮点击一样，如果已经弹出了切换窗口，则再次点击
   // 应是将其关闭」）。此前写的是 setModelOpen(true)（只开不关），表现为弹层开着时
   // 点它毫无反应、像按钮失灵。两者都是 toggle。
@@ -774,5 +774,208 @@ console.log("styles: 工具栏按实测宽度分配、测量层约束完整 ✓"
   );
 }
 console.log("styles: 连接条按钮不被裁切、文字可让位 ✓");
+
+// ---------- 17. 轨迹是整页视图（不是抽屉），「加载更早」贴在时间线左端 ----------
+//
+// 用户 2026-09-14 口径：
+// 1) 点轨迹按钮应当**整页**切到轨迹（像官方 Web UI 的视图槽），不是弹出侧边抽屉；
+//    切过去之后那颗图标要变成会话图标，点它能回来；
+// 2) 官方的「加载更早」是时间线**左端**的 `…`（`earlierHistory`：贴左缘、向右渐隐），
+//    我们此前排在绘图区右侧；标题栏里那个重复的「加载更早」按钮要一起去掉。
+{
+  const trajectory = readFileSync(
+    join(process.cwd(), "src", "webview", "components", "Trajectory.tsx"),
+    "utf8",
+  );
+  const app = readFileSync(join(process.cwd(), "src", "webview", "App.tsx"), "utf8");
+  const flatApp = app.replace(/\s+/gu, " ");
+  const flatTrajectory = trajectory.replace(/\s+/gu, " ");
+
+  assert.ok(
+    /className="trajectory-view" role="region"/.test(flatTrajectory),
+    '轨迹视图必须是整页区块（.trajectory-view），不是 role="dialog" 的抽屉',
+  );
+  assert.ok(
+    !/role="dialog"/.test(trajectory) && !/drawer-head/.test(trajectory),
+    "轨迹视图不许再有抽屉头——标题栏里那个「加载更早」正是它带出来的重复入口",
+  );
+  assert.ok(
+    /\{state\.panel === "trajectory" \? \( <TrajectoryView/.test(flatApp),
+    "App 必须在轨迹分支里**顶掉整块会话页**（含 chat-scroll），而不是叠在会话上",
+  );
+
+  // 「…」在绘图区**内部**、贴左缘（官方 earlierHistory）
+  const plotStart = flatTrajectory.indexOf("className={`trajectory-plot");
+  assert.ok(plotStart > 0, "找不到时间线绘图区");
+  const resetAt = flatTrajectory.indexOf('className="trajectory-more"');
+  assert.ok(resetAt > plotStart, "绘图区之后应当还有右侧的缩放复位按钮");
+  assert.ok(
+    flatTrajectory.slice(plotStart, resetAt).includes("trajectory-earlier"),
+    "「加载更早」的 `…` 必须画在绘图区里（左端），不能再排到绘图区右侧",
+  );
+  const earlier = rule(".trajectory-earlier");
+  assert.ok(
+    /position:\s*absolute/.test(earlier) && /left:\s*0/.test(earlier),
+    "`.trajectory-earlier` 必须绝对定位贴住绘图区左缘（官方 earlierHistory 的位置）",
+  );
+  assert.ok(
+    /linear-gradient\(to right/.test(earlier),
+    "`.trajectory-earlier` 要向右渐隐，否则会整片盖住左端的记录条",
+  );
+
+  // 头部那颗按钮：会话 ⇄ 轨迹共用一个开关，且轨迹视图下迷你模式也必须留着
+  // （它是唯一的退路，收起来就出不来了）
+  assert.ok(
+    /\{state\.panel === "trajectory" \? <IconChat size=\{15\} \/> : <IconTrajectory size=\{15\} \/>\}/.test(flatApp),
+    "头部按钮要在轨迹视图下换成会话图标（点它回来），会话视图下才是轨迹图标",
+  );
+  assert.ok(
+    /data-mini=\{state\.panel === "trajectory" \? undefined : "hide"\}/.test(flatApp),
+    "轨迹视图下那颗按钮不能被迷你模式收起——它是回到会话的唯一入口",
+  );
+}
+console.log("styles: 轨迹整页切换、加载更早在时间线左端 ✓");
+
+// ---------- 18. 轨迹取历史与会话同一条链路；概述里直接摊开后几张卡片 ----------
+//
+// 用户 2026-09-14 口径：
+// 1) 「轨迹点击加载历史 → 触发会话页那条取历史的链路 → 取完轨迹自己刷新」；
+//    加载中要看得见（账本顶部那行显示 spinner + 文案），不能「点了没反应」；
+// 2) 概述页要像官方那样**直接把后几张卡片的内容摊出来**（工具行 = 参数 / 结果 /
+//    Schema / 计时），不是让人一页一页点过去。
+{
+  const trajectory = readFileSync(
+    join(process.cwd(), "src", "webview", "components", "Trajectory.tsx"),
+    "utf8",
+  );
+  const app = readFileSync(join(process.cwd(), "src", "webview", "App.tsx"), "utf8");
+  const flatApp = app.replace(/\s+/gu, " ");
+  const flatTrajectory = trajectory.replace(/\s+/gu, " ");
+
+  // 1) 取历史：轨迹侧只有 `onLoadEarlier` 一个入口（不自己发 loadMore），
+  //    宿主说「取完了」（historyLoading 回落）时界面自己再要一份账本。
+  assert.ok(
+    /onLoadEarlier=\{\(\) => loadEarlier\(\)\}/.test(flatApp),
+    "轨迹的「加载更早」必须接会话页那条链路（App 里同一个 loadEarlier）",
+  );
+  assert.ok(
+    !/post\(\{ type: "loadMore" \}\)/.test(flatTrajectory),
+    "轨迹侧不许自己发 loadMore——必须走会话页那条链路，否则两边会各取各的",
+  );
+  assert.ok(
+    /const settled = historyWasLoading\.current && !loading;/.test(flatApp) &&
+      /settled && state\.panel === "trajectory"[\s\S]{0,60}listTrajectory/.test(flatApp),
+    "取完（historyLoading 由 true 落回 false）时，轨迹视图必须自己重取账本",
+  );
+  // 加载中看得见：账本最上面那行（官方 historyLoadRow 的位置）
+  assert.ok(
+    /className="trajectory-history-load"/.test(flatTrajectory),
+    "账本最上面要有「加载更早的历史」那一行（官方 `historyLoadRow`）",
+  );
+  assert.ok(
+    /disabled=\{loadingEarlier\}/.test(flatTrajectory) &&
+      /<Spinner size=\{11\} \/>/.test(flatTrajectory),
+    "取历史的过程中那一行要禁用并显示 spinner（不是「点了没反应」）",
+  );
+
+  // 2) 概述里的分节：工具/子工具 = 参数 / 结果 / Schema / 计时；markdown 记录 = 预览
+  assert.ok(
+    /className="trajectory-overview-sections"/.test(flatTrajectory),
+    "概述页要有「后几张卡片」的分节容器（官方 `overviewSections`）",
+  );
+  const sectionPush = /const sections:[\s\S]*?sections\.push\(\{ key: "timing"[\s\S]*?\n\s*\}/.exec(trajectory)?.[0] ?? "";
+  assert.ok(sectionPush.length > 100, "取不到概述分节的构造（组件结构变了？）");
+  for (const key of ['"payload"', '"result"', '"schema"', '"timing"']) {
+    assert.ok(sectionPush.includes(key), `工具行的概述分节必须包含 ${key}`);
+  }
+  assert.ok(
+    /sections\.push\(\{ key: "preview", label: texts\.tabPreview/.test(flatTrajectory),
+    "markdown 记录（用户/上下文/助手）的概述分节是「预览」",
+  );
+  assert.ok(
+    /onClick=\{\(\) => setTab\(section\.tab as TabId\)\}/.test(flatTrajectory),
+    "分节标题可点：点了切到对应页签看完整版（官方 `OverviewSection` 的 onOpen）",
+  );
+  // 同一份正文只写一次（分节与页签共用），否则两处迟早走样
+  assert.ok(
+    /const bodies: Record<TabId, React\.ReactNode>/.test(flatTrajectory),
+    "各页签正文要抽成一份（`bodies`），概述分节与页签共用",
+  );
+
+  // 3) 布局：分节限高自己滚；账本与检查器**不换行**、检查器最多占满去掉 280px 的宽度
+  const preview = rule(".trajectory-overview-preview");
+  assert.ok(
+    /max-height:/.test(preview) && /overflow:\s*auto/.test(preview),
+    ".trajectory-overview-preview 必须限高自己滚（一节原文可能几千字）",
+  );
+  const body = rule(".trajectory-body");
+  assert.ok(
+    /flex-wrap:\s*nowrap/.test(body),
+    ".trajectory-body 不许换行——换行会把检查器挤到第二行并撑出主体",
+  );
+  const details = rule(".trajectory-details");
+  assert.ok(
+    /max-width:\s*calc\(100% - 280px\)/.test(details),
+    "检查器的 max-width 要留 280px 给账本（官方 TABLE_MIN_WIDTH）",
+  );
+}
+console.log("styles: 轨迹取历史同链路、概述摊开后几张卡片 ✓");
+
+// ---------- 19. 轨迹记录配色对齐官方（输入绿 / 模型紫） ----------
+//
+// 用户 2026-09-14：「官方轨迹样式输入是绿色，模型是紫色，请对齐」。
+// 官方那两个关键色调是 `contextGreen`（context）与 `assistantVioletBright`（message）；
+// 账本种类标签与时间线的条共用同一套（官方时间线也是按 kind 着色）。
+// 这里钉两件事：**色相**（token 本身是绿/紫）与**接线**（轨迹用的是这两个 token）。
+{
+  const tokens = readFileSync(
+    join(process.cwd(), "src", "webview", "styles", "tokens.css"),
+    "utf8",
+  );
+  assert.ok(
+    /--node-read:\s*var\(--vscode-charts-green/.test(tokens),
+    "--node-read 必须是绿色——轨迹的「上下文 / 输入」用它",
+  );
+  assert.ok(
+    /--node-edit:\s*var\(--vscode-charts-purple/.test(tokens),
+    "--node-edit 必须是紫色——轨迹的「助手 / 模型」用它",
+  );
+
+  const contextTag = rule(".trajectory-kind.is-context");
+  const messageTag = rule(".trajectory-kind.is-message");
+  const contextSpan = rule(".trajectory-span.is-context");
+  const messageSpan = rule(".trajectory-span.is-message");
+  assert.ok(/color:\s*var\(--node-read\)/.test(contextTag), "账本里「上下文」标签是绿的");
+  assert.ok(/color:\s*var\(--node-edit\)/.test(messageTag), "账本里「助手」标签是紫的");
+  assert.ok(/background:\s*var\(--node-read\)/.test(contextSpan), "时间线上「上下文」的条是绿的");
+  assert.ok(/background:\s*var\(--node-edit\)/.test(messageSpan), "时间线上「助手」的条是紫的");
+  assert.ok(
+    /opacity:\s*1/.test(contextSpan) && /opacity:\s*1/.test(messageSpan),
+    "有色调的条不透明度拉满（官方 span 只有中性那档是 .78）",
+  );
+  assert.ok(
+    /opacity:\s*0\.78/.test(rule(".trajectory-span")),
+    "时间线条的基准是中性 + .78 不透明度（官方 `._1p9O6q_span`）",
+  );
+  // 七种记录一个都不能漏（漏了会静默落回中性色，看着像「没实现」）
+  for (const kind of ["system", "user", "context", "compacted", "message", "tool", "subtool"]) {
+    assert.ok(
+      new RegExp(`\\.trajectory-kind\\.is-${kind}\\s*\\{`).test(css),
+      `记录种类 ${kind} 必须有配色（漏了会静默变中性）`,
+    );
+  }
+  // 标签底色 = 该色调的淡色版（官方 kindTag 的 tertiary 底）
+  //
+  // **按行首锚定**取主规则：`rule(".trajectory-kind")` 会先命中
+  // `.trajectory-row.is-error .trajectory-kind { color: ... }`（那个助手不做行首锚定，
+  // 选择器更短就赢），拿到的根本不是主规则。
+  const kindBase = /^\.trajectory-kind\s*\{([\s\S]*?)\}/mu.exec(css)?.[1] ?? "";
+  assert.ok(kindBase.length > 50, "app.css 里找不到 .trajectory-kind 主规则");
+  assert.ok(
+    /background:\s*color-mix\(in srgb, currentColor/.test(kindBase),
+    "种类标签的底色要跟着自己的色调走（官方 kindTag 的浅色底）",
+  );
+}
+console.log("styles: 轨迹配色对齐官方（输入绿 / 模型紫）✓");
 
 console.log("\nstyles: all assertions passed");

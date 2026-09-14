@@ -33,7 +33,7 @@ const log = (line: string) => console.log(`[cmd-e2e] ${line}`);
 // 命令与其它探针、与扩展默认值一致：裸 `dsh` 在需要 `--profile` 的版本上会直接退出
 // （实测 `error: --profile <name> is required`），于是 supervisor 每秒重起一次、
 // 探针在两分钟后报"启动超时"，而真正的原因在命令字符串里。
-const server = new SupervisorManager({ url: "", command: "dsh web --port 0 --no-open", startTimeoutMs: 120_000, log });
+const server = new SupervisorManager({ url: "", command: "dsh web --port 0 --no-open", log });
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 let client: DshClient | undefined;

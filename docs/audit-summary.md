@@ -133,7 +133,7 @@ dsh 会按 `PROFILE_TEMPLATES` 自动初始化 web profile）起真实 `dsh web`
 
 | 维度 | 结论 |
 |---|---|
-| 轮级过程折叠 | ✅ 官方默认 compact（`DEFAULT_TRANSCRIPT_VIEW_MODE = "compact"`）：一轮结束后把**答案步之前**的一切折成一枚按钮（「N 次工具调用 · M 条消息 · K 个 subagent」，皆 0 读「已思考」），点开铺回。豁免段**只有两类**：中止/截断提示（官方 `turn-error` / `turn-max-tokens`）与**系统提示词**（官方 `system-prompt`）；**上下文注入照常折叠**（2026-09-15 修正：官方 `TURN_PROCESS_INDEPENDENT_KINDS` 里没有 context 一类，此前把整类 `injected` 都豁免是读错口径，用户对照 Web 报的）。答案步自己的 thinking 折叠态不显示；流式期间不折。边界靠段所属 **step**，拿不到就不折 |
+| 轮级过程折叠 | ✅ 官方默认 compact（`DEFAULT_TRANSCRIPT_VIEW_MODE = "compact"`）：一轮结束后把**答案步之前**的一切折成一枚按钮（「N 次工具调用 · M 条消息 · K 个 subagent」，皆 0 读「已思考」），点开铺回。豁免段**只有两类**：中止/截断提示（官方 `turn-error` / `turn-max-tokens`）与**系统提示词**（官方 `system-prompt`）；**上下文注入照常折叠**（2026-09-14 修正：官方 `TURN_PROCESS_INDEPENDENT_KINDS` 里没有 context 一类，此前把整类 `injected` 都豁免是读错口径，用户对照 Web 报的）。答案步自己的 thinking 折叠态不显示；流式期间不折。边界靠段所属 **step**，拿不到就不折 |
 | 思考段 | ✅ 恒默认折叠（官方 `useState(false)`），摘要**流式中取最后一行、结束后取第一行**并剥 `**` |
 | 运行中文案 | ✅ 「生成中」→「深度求索中」。**不加**官方那套扫光 + ≥15s 实时用时：鲸鱼发光已是活动证据，工具行本就各自显示耗时（用户 2026-09-14 拍板） |
 | 中断 | ✅ 不再画成红色报错（官方是冻结正文末尾的 tertiary 色小胶囊） |
@@ -154,10 +154,10 @@ dsh 会按 `PROFILE_TEMPLATES` 自动初始化 web profile）起真实 `dsh web`
 - **用户消息不是右对齐气泡**：沿用输入框样式，见 `app.css` 里的注释。
 - **两行文件行之间去重**：官方不去重（同一路径两行都列），我们去掉交付行里已申报的重复。
 - **`+N −M` 的计数口径**：官方 Web 按**编辑块**统计（块内没真正变化的行也计入），
-  本扩展按**最终结果**统计（只算真正变化的行）。用户 2026-09-15 确认本扩展的口径更贴近
+  本扩展按**最终结果**统计（只算真正变化的行）。用户 2026-09-14 确认本扩展的口径更贴近
   直觉，**保持不动**——不要为了「跟 Web 一致」而改（这是本扩展的信息增量之一）。
 
-### 段顺序（2026-09-15 修的活路径缺陷）
+### 段顺序（2026-09-14 修的活路径缺陷）
 
 `applyAssistantMessage` 此前把 durable 的思考/正文**追加到消息末尾**。模型是边说边吐
 工具调用的：`tool-call-delta` 会先把工具行建出来，durable 消息随后才到 → 思考/正文被排到
@@ -167,7 +167,7 @@ dsh 会按 `PROFILE_TEMPLATES` 自动初始化 web profile）起真实 `dsh web`
 （真实日志的事件序 vs 段序）、`scripts/liveOrderProbe.ts --live`（真实服务器上验证
 `tool-call-delta` 早于 durable `assistant/message` 到达）。
 
-### 分页（2026-09-15：没取到上一条用户消息就停）
+### 分页（2026-09-14：没取到上一条用户消息就停）
 
 「取到一轮的开头就停」这条规则没错，错在**进展判据**：当时界面拿「首条消息 id 变没变」
 判断这一页有没有进展，而更早的事件常常只是把现有的第一条助手消息**补长**（消息 id 是按
@@ -178,10 +178,10 @@ dsh 会按 `PROFILE_TEMPLATES` 自动初始化 web profile）起真实 `dsh web`
 
 ### 仍未修复
 
-> 2026-09-15 用户报的一批（问卷依次问答 / 答完收缩、`@` 列表 `..`、滚到顶自动翻页、
+> 2026-09-14 用户报的一批（问卷依次问答 / 答完收缩、`@` 列表 `..`、滚到顶自动翻页、
 > 选区行号与焦点窗口、目标条展开按钮、`commit.msg.txt` 幽灵条目、工作区分组、令牌
 > 说明、扩展说明、脚注、tps 口径澄清）不在本章的分批表里，逐条记录见 `CHANGELOG.md`
-> 的「未发布 → 用户报的一批（2026-09-15）」。其中**工作区分组**的端到端证据是新加的
+> 的「未发布 → 用户报的一批（2026-09-14）」。其中**工作区分组**的端到端证据是新加的
 > 探针 `scripts/workspaceProbe.ts`。
 
 - **#17 停止语义**：官方契约说 cancel 后排队工作按 FIFO 继续，UI 只发一次 cancel。
@@ -192,7 +192,7 @@ dsh 会按 `PROFILE_TEMPLATES` 自动初始化 web profile）起真实 `dsh web`
 - §四 #16（本表 #18「未消费的投影」）的余项：`schedule`、`agentPreset`、
   `subagentTiming`、`permissions.options`
   （前三个是面板/展示层功能，未做；`permissions.options` 目前只取 `currentValue`）。
-- **markdown 的能力缺口**：脚注**已补**（2026-09-15）——官方 `markdown.footnotes` 真实
+- **markdown 的能力缺口**：脚注**已补**（2026-09-14）——官方 `markdown.footnotes` 真实
   存在，我们补的是自家的 marked 扩展（`src/webview/footnotes.ts`，无需新依赖），结构
   逐字对齐官方渲染器，见 CHANGELOG 的「markdown 脚注」一节与 `scripts/footnotes.test.ts`。
   **公式**（要 **KaTeX**）与**代码高亮**（官方是 **Shiki** 增量高亮）仍是**刻意不做**：

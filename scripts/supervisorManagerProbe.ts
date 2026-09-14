@@ -50,7 +50,6 @@ function makeWindow(tag: string): SupervisorManager {
     group: GROUP,
     url: "",
     command: COMMAND,
-    startTimeoutMs: 120_000,
     // 阈值取下限：探针十几秒出结论；默认值的正确性由离线断言覆盖
     idleSec: 5,
     workspace: `D:/dev/dsh-chat#${tag}`,

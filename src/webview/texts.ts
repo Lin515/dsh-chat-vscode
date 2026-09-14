@@ -183,6 +183,8 @@ export interface Texts {
   /** 轨迹面板 */
   trajectory: string;
   trajectoryEmpty: string;
+  /** 轨迹视图（整页）下那颗按钮的提示：点它回到会话。 */
+  backToChat: string;
   /** 后台任务面板 */
   jobs: string;
   jobsEmpty: string;
@@ -252,7 +254,7 @@ export interface Texts {
   /**
    * 上下文注入节点的**标题**（官方 `message.contextInjection` =「上下文注入」）。
    *
-   * 用户 2026-09-15 要求与 Web 一致：非系统提示词的注入（插件注入、项目指令、
+   * 用户 2026-09-14 要求与 Web 一致：非系统提示词的注入（插件注入、项目指令、
    * 技能目录、运行时上下文…）在 Web 上**统一**叫「上下文注入」，具体来源放在右侧。
    * 我们此前按来源各起一个名字（「插件上下文」等），标题与 Web 不一致。
    */
@@ -321,9 +323,9 @@ export interface Texts {
   serverSpawnFailed: (detail: string) => string;
   /** 连接失败条：dsh web 进程退出（退出码 / 信号，取不到时是 `?`）。 */
   serverExited: (code: string, signal: string) => string;
-  /** 连接失败条：等 dsh web 就绪超时（秒数）。 */
-  serverStartTimeout: (seconds: number) => string;
-  /** 连接失败条：该地址上连不上 dsh web（地址）。 */
+  /** 连接失败条：后台没能就绪（缺地址或令牌；**不再有"等超时"这一档**）。 */
+  serverNotReady: string;
+  /** 连接条：该地址上一次都没应答过（**仍在重试**，直到连通或用户点「停止连接」）。 */
   serverUnreachable: (baseUrl: string) => string;
   /** 连接失败条末段：服务器日志尾部（原文照贴，不翻译）。 */
   serverLogTail: (tail: string) => string;
@@ -594,6 +596,7 @@ const zh: Texts = {
   subagentInactive: "未运行",
   trajectory: "轨迹",
   trajectoryEmpty: "本会话还没有工具调用",
+  backToChat: "返回会话",
   jobs: "后台任务",
   jobsEmpty: "当前会话没有后台任务",
   jobRunning: "运行中",
@@ -689,8 +692,8 @@ const zh: Texts = {
   connectionLost: "与服务器的连接已断开，正在重连…",
   serverSpawnFailed: (detail) => `启动 dsh 进程失败：${detail}`,
   serverExited: (code, signal) => `dsh web 进程已退出（code=${code} signal=${signal}）`,
-  serverStartTimeout: (seconds) => `等待 dsh web 就绪超时（${seconds}s）`,
-  serverUnreachable: (baseUrl) => `无法连接 ${baseUrl}，请确认该地址上运行着 dsh web。`,
+  serverNotReady: "后台没有就绪（会合文件里还没有地址或令牌）。可点「重启服务器」重试，或用「查看日志」看原因。",
+  serverUnreachable: (baseUrl) => `连不上 ${baseUrl}（会一直重试，可点「停止连接」）。请确认该地址上运行着 dsh web。`,
   serverLogTail: (tail) => `日志尾部：\n${tail}`,
   switchingServer: (sessions) =>
     sessions > 0
@@ -918,6 +921,7 @@ const en: Texts = {
   subagentInactive: "not running",
   trajectory: "Trajectory",
   trajectoryEmpty: "No tool calls in this session yet",
+  backToChat: "Back to chat",
   jobs: "Background jobs",
   jobsEmpty: "This session has no background jobs",
   jobRunning: "running",
@@ -1013,8 +1017,10 @@ const en: Texts = {
   connectionLost: "Lost the connection to the server; reconnecting…",
   serverSpawnFailed: (detail) => `Could not start the dsh process: ${detail}`,
   serverExited: (code, signal) => `The dsh web process exited (code=${code} signal=${signal})`,
-  serverStartTimeout: (seconds) => `Timed out waiting for dsh web to become ready (${seconds}s)`,
-  serverUnreachable: (baseUrl) => `Cannot reach ${baseUrl}; make sure dsh web is running there.`,
+  serverNotReady:
+    "The background server did not become ready (the rendezvous file has no address or token yet). Try “Restart Server”, or check the logs.",
+  serverUnreachable: (baseUrl) =>
+    `Cannot reach ${baseUrl} yet (retrying until it answers or you click “Stop connecting”). Make sure dsh web is running there.`,
   serverLogTail: (tail) => `Log tail:\n${tail}`,
   switchingServer: (sessions) =>
     sessions > 0
@@ -1247,8 +1253,8 @@ function resolveMarker(text: string, texts: Texts): string {
       return texts.serverUnreachable(arg);
     case "serverLogTail":
       return texts.serverLogTail(arg);
-    case "serverStartTimeout":
-      return texts.serverStartTimeout(Number(arg));
+    case "serverNotReady":
+      return texts.serverNotReady;
     case "serverExited": {
       // 参数形如 `<code>:<signal>`，两者都可能是 `?`
       const separator = arg.indexOf(":");

@@ -316,9 +316,26 @@ export function deriveTrajectoryModel(events: readonly SessionWireEvent[], hasOl
       }
 
       case "user/message": {
-        const message = data.message as MessageLike | undefined;
+        /**
+         * **线格式**：`user/message` 的 `data` **就是** `UserMessage` 自己
+         * （`dsh-session lib/types/types.d.ts`：`'user/message': UserMessage`，
+         * 字段是 `{id, role, content, source}`），**没有 `message` 包一层**——
+         * 包一层的是 `system/message` 与 `tool/result`（`{turn, step, message}`）。
+         *
+         * 这里曾经按 `data.message` 读，于是 `kind` 与 `text` 全为空、整条被
+         * `if (!text && !isHuman) break` 丢掉：真机上「**用户消息与上下文节点
+         * 全都不出现在轨迹里**」（用户 2026-09-14 报的）就是这个。核对方式是
+         * 扫 280 份真实会话日志里全部 2443 条 `user/message`：`data` 的键
+         * 一律是 `content,id,role,source`，带 `message` 包装的**一条都没有**。
+         */
+        const message = data as MessageLike;
         const kind = typeof message?.source?.kind === "string" ? (message.source.kind as string) : "";
         const text = blocksToText(message?.content);
+        // 官方 `trajectory-input-message` 的判据是 `source.kind !== 'user'` → context。
+        // 真实日志里的 kind 分布：plugin / user / agent-instructions / skill-catalog /
+        // agent-message / subagent-settled / goal / skill-invocation（**没有 user-rpc**）。
+        // 这里保留 `user-rpc` 也算人的话，是为了与本扩展聊天侧
+        // （`adapter.ts` 的 user/message 分支）口径一致——两者对真实数据的分派完全相同。
         const isHuman = kind === "user" || kind === "user-rpc";
         if (!text && !isHuman) break;
         push({

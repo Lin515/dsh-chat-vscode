@@ -177,13 +177,6 @@
           "default": false,
           "description": "%config.openPanelOnStartup%"
         },
-        "dshChat.startTimeoutSec": {
-          "type": "number",
-          "default": 90,
-          "minimum": 5,
-          "maximum": 600,
-          "description": "%config.startTimeoutSec%"
-        },
         "dshChat.diffLayout": {
           "type": "string",
           "enum": [

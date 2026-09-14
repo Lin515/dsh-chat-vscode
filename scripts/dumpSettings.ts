@@ -12,7 +12,7 @@ let token = process.argv[3];
 let server: SupervisorManager | undefined;
 
 if (!baseUrl) {
-  server = new SupervisorManager({ url: "", command: "dsh", startTimeoutMs: 120_000, log: () => {} });
+  server = new SupervisorManager({ url: "", command: "dsh", log: () => {} });
   const info = await server.ensure();
   baseUrl = info.baseUrl;
   token = info.token;

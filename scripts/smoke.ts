@@ -30,7 +30,6 @@ const server = new SupervisorManager({
   // （实测 `error: --profile <name> is required`），supervisor 于是每秒重起一次、
   // 两分钟后报"启动超时"——真正的原因只在命令字符串里。
   command: "dsh web --port 0 --no-open",
-  startTimeoutMs: 120_000,
   log,
 });
 

@@ -1,5 +1,5 @@
 /**
- * 段顺序的**活路径**端到端证据（用户 2026-09-15 报的「思考/正文与工具行错位」）。
+ * 段顺序的**活路径**端到端证据（用户 2026-09-14 报的「思考/正文与工具行错位」）。
  *
  *   node build/render-order-probe.mjs --live
  *
@@ -20,7 +20,7 @@ import type { MessageView, Segment } from "../src/shared/chat";
 
 export async function liveOrderCheck(): Promise<number> {
   const log = (line: string) => console.log(`[live] ${line}`);
-  const server = new SupervisorManager({ url: "", command: "dsh", startTimeoutMs: 180_000, log });
+  const server = new SupervisorManager({ url: "", command: "dsh", log });
   let client: DshClient | undefined;
   let failures = 0;
   const check = (ok: boolean, label: string, detail = "") => {

@@ -19,7 +19,7 @@ import { DshClient } from "../src/dsh/client";
 import { SupervisorManager } from "../src/dsh/supervisorManager";
 
 const log = (line: string) => console.log(`[list-probe] ${line}`);
-const server = new SupervisorManager({ url: "", command: "dsh", startTimeoutMs: 120_000, log });
+const server = new SupervisorManager({ url: "", command: "dsh", log });
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 let client: DshClient | undefined;

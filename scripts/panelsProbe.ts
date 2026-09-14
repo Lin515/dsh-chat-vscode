@@ -6,7 +6,7 @@ import { DshClient } from "../src/dsh/client";
 import { SupervisorManager } from "../src/dsh/supervisorManager";
 import { buildSettingsSection } from "../src/dsh/settingsSchema";
 
-const server = new SupervisorManager({ url: "", command: "dsh", startTimeoutMs: 120_000, log: () => {} });
+const server = new SupervisorManager({ url: "", command: "dsh", log: () => {} });
 const info = await server.ensure();
 const client = new DshClient(info.baseUrl, info.token, () => {});
 await client.authenticate();

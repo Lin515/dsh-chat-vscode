@@ -77,7 +77,7 @@ const MARKERS: string[] = [
   "authTokenRejected",
   "serverSpawnFailed",
   "serverExited",
-  "serverStartTimeout",
+  "serverNotReady",
   "serverUnreachable",
   "serverNotRunning",
   "serverStopped",
@@ -123,7 +123,6 @@ console.log(`i18n: ${MARKERS.length} 个标记 × ${LOCALES.length} 种语言均
     unknownEvent: "@unknownEvent:weird/event",
     callId: "@callId:call_abc123",
     serverExited: "@serverExited:1:SIGTERM",
-    serverStartTimeout: "@serverStartTimeout:30",
     serverUnreachable: "@serverUnreachable:http://127.0.0.1:8080",
     serverSpawnFailed: "@serverSpawnFailed:ENOENT",
     serverLogTail: "@serverLogTail:dsh web: ready",
@@ -158,11 +157,10 @@ console.log("i18n: 带参数的标记参数不丢 ✓");
 
 {
   const zh = dictionaryFor("zh");
-  const detail = ["@serverStartTimeout:30", "@serverLogTail:dsh web: ready\nport 8080"].join("\n");
+  const detail = ["@serverNotReady", "@serverLogTail:dsh web: ready\nport 8080"].join("\n");
   const resolved = resolveText(detail, zh);
-  assert.ok(!resolved.includes("@serverStartTimeout"), resolved);
+  assert.ok(!resolved.includes("@serverNotReady"), resolved);
   assert.ok(!resolved.includes("@serverLogTail"), resolved);
-  assert.ok(resolved.includes("30"), resolved);
   assert.ok(resolved.includes("port 8080"), "日志原文不能被吃掉");
   assert.ok(resolved.split("\n").length >= 4, `多行结构应保留：${resolved}`);
 }

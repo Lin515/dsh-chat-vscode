@@ -1,5 +1,5 @@
 /**
- * 「加载更早的历史」分页循环的真实推演（用户 2026-09-15 报的「没取到上一条用户
+ * 「加载更早的历史」分页循环的真实推演（用户 2026-09-14 报的「没取到上一条用户
  * 消息就停了」）。
  *
  *   node build/page-loop-probe.mjs --session ff34f000 [--pages 8]
@@ -28,7 +28,7 @@ const maxPages = Number(opt("--pages") ?? 8);
 const maxMessages = Number(opt("--max-messages") ?? 60);
 
 const log = (line: string) => console.log(line);
-const server = new SupervisorManager({ url: "", command: "dsh", startTimeoutMs: 180_000, log: () => {} });
+const server = new SupervisorManager({ url: "", command: "dsh", log: () => {} });
 let client: DshClient | undefined;
 
 try {

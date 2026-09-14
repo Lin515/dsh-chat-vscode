@@ -351,7 +351,7 @@ function latestLine(text: string): string {
  * **标题用官方词汇**（`dsh-client-ui-chat` 的 `ContextInjectionRow`）：系统提示词那条
  * 叫「系统提示词」（`message.systemPrompt`），跨会话召回叫「跨会话召回」
  * （`message.contextRecall`），**其余注入统一叫「上下文注入」**
- * （`message.contextInjection`，用户 2026-09-15 要求与 Web 一致的正是这一条——
+ * （`message.contextInjection`，用户 2026-09-14 要求与 Web 一致的正是这一条——
  * 我们此前叫「插件上下文」）。
  *
  * 我们比官方多给一层**副标题**：官方在标题右侧只放 source（插件名），我们把

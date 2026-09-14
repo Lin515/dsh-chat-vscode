@@ -31,7 +31,7 @@ process.env.DSH_HOME = home;
 console.log(`[probe] 临时 DSH_HOME = ${home}`);
 
 const log = (line: string) => console.log(`[probe] ${line}`);
-const server = new SupervisorManager({ url: "", command: "dsh", startTimeoutMs: 180_000, log });
+const server = new SupervisorManager({ url: "", command: "dsh", log });
 let client: DshClient | undefined;
 const failures: string[] = [];
 

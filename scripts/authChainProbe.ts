@@ -44,7 +44,6 @@ function makeWindow(tag: string): SupervisorManager {
     group: GROUP,
     url: "",
     command: COMMAND,
-    startTimeoutMs: 120_000,
     idleSec: 5,
     workspace: `D:/dev/dsh-chat#${tag}`,
     launcher: createDefaultSupervisorLauncher({ log: (line) => say(`   [${tag}] ${line}`) }),

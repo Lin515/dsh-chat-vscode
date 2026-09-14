@@ -77,7 +77,6 @@ export function activate(context: vscode.ExtensionContext): void {
     group,
     url: config().get<string>("url") ?? "",
     command: config().get<string>("command") || DEFAULT_COMMAND,
-    startTimeoutMs: (config().get<number>("startTimeoutSec") ?? 90) * 1000,
     idleSec: config().get<number>("supervisorIdleSec") ?? IDLE_SEC_DEFAULT,
     // `autoStart` 关掉时，扩展**不许**自己拉起后台（只在后台已在跑时自动接上）；
     // 用户显式动作（发消息 / 点「启动服务器」）不受它约束，见 supervisorManager 文件头
@@ -313,16 +312,16 @@ function registerContributions(context: vscode.ExtensionContext, host: Contribut
       ) {
         controller.refreshAppearance();
       }
-      // 服务器三件套改了要**真正换一个后台**：配置项只在启动时读一次，
-      // 不重连的话用户改了 `dshChat.url`（或启动命令）却仍连着旧服务器。
-      // **服务器三件套不再就地热切换**（用户口径 2026-09-14：太复杂，改成重载窗口生效）。
+      // 服务器两件套（`dshChat.url` / `dshChat.command`）改了要**真正换一个后台**：
+      // 配置项只在启动时读一次，不重连的话用户改了 `dshChat.url`（或启动命令）
+      // 却仍连着旧服务器。
+      // **服务器配置不再就地热切换**（用户口径 2026-09-14：太复杂，改成重载窗口生效）。
       // 原地切需要"断干净 + 按新配置接上 + 换分组 + 别把别人的后台带走"一整套时序，
       // 收益却只是省一次窗口重载——不值得。这里的提示是**唯一**的生效入口，
       // 配置项说明里也写明了「改完需要重载窗口」。
       if (
         event.affectsConfiguration("dshChat.url") ||
-        event.affectsConfiguration("dshChat.command") ||
-        event.affectsConfiguration("dshChat.startTimeoutSec")
+        event.affectsConfiguration("dshChat.command")
       ) {
         void promptServerReload();
       }

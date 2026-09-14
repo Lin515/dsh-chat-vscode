@@ -24,6 +24,14 @@
  *   它覆盖配置——用户要后台的时候不该被配置挡住；
  * - `ensure({ start: false })`：只接上已经在跑的（「尝试重连」用）。
  *
+ * ## 2026-09-14：等待**不再由时长决定**（用户口径，见 `docs/design-supervisor.md` §8.4）
+ *
+ * 配置项 `dshChat.startTimeoutSec`（以及 `ManagerOptions.startTimeoutMs`）已删除：
+ * 等待只由两件事结束——**真的就绪**，或用户按钮（「停止连接」/「停止服务器」→
+ * `cancelWaiting()` → `WaitCancelledError`，调用方按"用户叫停"处理，不当失败）。
+ * 从前的"到 90 秒就报一次启动超时、再由心跳拉回重试"是一档**由时钟改写界面状态**
+ * 的逻辑，与"状态只由真实事件与按钮改变"冲突。
+ *
  * 另一条纪律：**守护进程还活着时，永远只接入、不另起一套**。Windows 上命名管道只能被
  * 一个进程监听，重复 spawn 出来的第二个 supervisor 会在 `listen` 处失败自杀，而它
  * 已经把父进程的 spawn 开销付掉了；接入还顺带把"dsh 崩了但守护进程还在"这套自愈
@@ -105,6 +113,20 @@ export class ServerNotRunningError extends Error {
   }
 }
 
+/**
+ * 用户点了「停止连接」/「停止服务器」：**在途的等待立刻让位**。
+ *
+ * 这不是失败（对方没坏），也不是"后台没在跑"（对方可能正在起）：它是一条
+ * **用户指令**的产物，所以调用方只把界面切回 `stopped`（给「尝试重连」），
+ * 不报错误详情、也不重试。
+ */
+export class WaitCancelledError extends Error {
+  constructor() {
+    super("wait cancelled by user");
+    this.name = "WaitCancelledError";
+  }
+}
+
 /** `ensure()` 的许可参数（见文件头「启动决策」）。省略时取 `options.autoStart`。 */
 export interface EnsureOptions {
   /** true = 允许在后台不存在时拉起一套；false = 只接上已经在跑的。 */
@@ -122,8 +144,6 @@ export interface ManagerOptions {
   url: string;
   /** 启动命令（`dshChat.command`，原样执行、不追加参数）。 */
   command: string;
-  /** 等 dsh 就绪的超时（毫秒）。 */
-  startTimeoutMs: number;
   /** 空闲阈值（秒）：写进会合文件，supervisor 热读。 */
   idleSec?: number;
   /**
@@ -166,6 +186,19 @@ export class SupervisorManager {
   private heartbeatHook: (() => void) | undefined;
   private heartbeatTimer: NodeJS.Timeout | undefined;
   private ensurePromise: Promise<ServerInfo> | undefined;
+  /**
+   * 在途的"等就绪/等新地址"（`beginWait` 登记、`endWait` 注销）。
+   *
+   * 等待**没有时长上限**，能结束它的只有两件事：真的就绪，或用户按钮
+   * （「停止连接」/「停止服务器」→ `cancelWaiting`）。少了中断这一半，
+   * "无上限"就会退化成"点了停止还在等"。
+   *
+   * 用**集合**而不是单个控制器：同时可能有两轮在等（`ensure()` 那一轮 +
+   * 「重启服务器」等新地址那一轮），而**后开的绝不能把先开的顶掉**——
+   * 顶掉过一次（顶掉的写法见 git 历史）：重启那一轮被心跳发起的 ensure 中止，
+   * 于是"重启完成"的收尾与提示全被跳过。用户叫停时两轮一起中断才是对的。
+   */
+  private readonly waits = new Set<AbortController>();
   /**
    * 本轮 `bringUp` 有没有拿到"可以拉起一套"的许可（见文件头的启动决策）。
    *
@@ -387,10 +420,13 @@ export class SupervisorManager {
     const external = this.externalUrl;
     if (external) {
       this.setStatus({ state: "starting", detail: `connecting ${external}` });
-      if (!(await this.waitForHttp(external, 5_000))) {
-        const detail = `@serverUnreachable:${external}`;
-        this.setStatus({ state: "failed", detail });
-        throw new Error(detail);
+      // 外部地址**同样等到底**（没有"到点就报连不上"这一档）：连上，或用户点「停止连接」。
+      // 口径与内部模式一致——状态只由真实事件与用户按钮改变（用户 2026-09-14 口径）。
+      const wait = this.beginWait();
+      try {
+        if (!(await this.waitForHttp(external, wait.signal))) throw new WaitCancelledError();
+      } finally {
+        this.endWait(wait);
       }
       const info: ServerInfo = { baseUrl: external, owned: false, ownership: "external" };
       this.setStatus({ state: "ready", info });
@@ -407,11 +443,48 @@ export class SupervisorManager {
     return this.ensurePromise;
   }
 
+  // ---------- 等待的中断（用户按钮） ----------
+
+  /** 登记一轮等待，返回它的中断器（可以同时有多轮，见 `waits` 字段注释）。 */
+  private beginWait(): AbortController {
+    const controller = new AbortController();
+    this.waits.add(controller);
+    return controller;
+  }
+
+  private endWait(controller: AbortController): void {
+    this.waits.delete(controller);
+  }
+
+  /**
+   * 用户点了「停止连接」/「停止服务器」：让**所有在途的等待**立刻让位。
+   *
+   * **不碰任何进程**（本文件那条纪律）：守护进程与 dsh 的生死照旧归 supervisor。
+   * 界面侧把这件事当"用户叫停"，不当失败（见 `WaitCancelledError`）。
+   */
+  cancelWaiting(): void {
+    const live = [...this.waits];
+    this.waits.clear();
+    for (const controller of live) controller.abort();
+  }
+
   private async bringUp(): Promise<ServerInfo> {
     this.disposed = false;
     this.stoppedByUser = false;
     this.setStatus({ state: "starting" });
+    const wait = this.beginWait();
+    try {
+      return await this.bringUpWith(wait.signal);
+    } finally {
+      this.endWait(wait);
+    }
+  }
 
+  /**
+   * `bringUp` 的本体：等待一律走 `signal`（用户按钮可中断），
+   * **没有任何时长判据**（超时不再改写状态）。
+   */
+  private async bringUpWith(signal: AbortSignal): Promise<ServerInfo> {
     // ① 守护进程还活着 → **只接入，绝不另起一套**（见文件头的启动决策）
     const existing = readState(this.directory);
     if (existing && isProcessAlive(existing.supervisorPid)) {
@@ -424,11 +497,10 @@ export class SupervisorManager {
         return this.publishReady(existing);
       }
       // 它正在拉起（或刚被我们唤醒）→ 等它写出一份可用状态。
-      // **单次等待仍然有上限**（startTimeoutMs），但**没有总超时**：上层会一轮一轮重试，
-      // 直到接上或用户点「停止连接」（用户 2026-09-14 口径）。
+      // **等多久不由时钟决定**：一直等到就绪，或用户点「停止连接」（用户 2026-09-14 口径）。
       const state = await waitForReadyState({
         group: this.group,
-        timeoutMs: this.options.startTimeoutMs,
+        signal,
         usable: (candidate) => this.usable(candidate),
         onTick: (tick) => {
           if (tick) {
@@ -437,6 +509,7 @@ export class SupervisorManager {
           }
         },
       });
+      if (signal.aborted) throw new WaitCancelledError();
       if (!state) throw this.startFailure(state);
       return this.publishReady(state);
     }
@@ -471,7 +544,7 @@ export class SupervisorManager {
     if (!state) {
       state = await waitForReadyState({
         group: this.group,
-        timeoutMs: this.options.startTimeoutMs,
+        signal,
         usable: (candidate) => this.usable(candidate),
         onTick: (tick) => {
           if (tick) {
@@ -481,6 +554,7 @@ export class SupervisorManager {
         },
       });
     }
+    if (signal.aborted) throw new WaitCancelledError();
     if (!state) throw this.startFailure(state);
     return this.publishReady(state);
   }
@@ -489,7 +563,7 @@ export class SupervisorManager {
    * 一份状态可用时收尾：记下来、报就绪、建立/恢复长连接。
    *
    * 缺地址或令牌时按"还没就绪"抛错——错误详情里会写清**到底缺哪一样**
-   * （否则只剩一个超时数字，排查时完全看不出方向）。多窗口接入靠的就是
+   * （否则只剩一条没头没脑的失败，排查时完全看不出方向）。多窗口接入靠的就是
    * 会合文件里那份令牌：`token` 是 supervisor 写进去的、跨窗口共用的唯一凭据。
    */
   private async publishReady(state: SupervisorState): Promise<ServerInfo> {
@@ -513,7 +587,7 @@ export class SupervisorManager {
   private startFailure(state: SupervisorState | undefined): Error {
     const tail = this.logTail();
     const detail = [
-      `@serverStartTimeout:${Math.round(this.options.startTimeoutMs / 1000)}`,
+      "@serverNotReady",
       `detail: state=${state ? `url=${state.baseUrl ?? "无"} token=${state.token ? "有" : "无"} starting=${state.starting}` : "（会合文件不存在）"}`,
       this.staleLockHint(),
       tail && `@serverLogTail:${tail}`,
@@ -528,8 +602,8 @@ export class SupervisorManager {
    * 会合文件里那一套还可用吗：supervisor 进程在 + （就绪后）地址连得上。
    *
    * **整体包 try/catch**：它是轮询里的判据，任何一处抛出去都会把"等待就绪"整段打断，
-   * 而错误信息会伪装成"启动超时"（实测踩到：探针里表现为几百毫秒就报 `@serverStartTimeout`，
-   * 看着像超时，其实是判据自己炸了）。判据的纪律是：**拿不到证据就当"还不可用"**，
+   * 而错误信息会伪装成一次失败（实测踩到：探针里表现为几百毫秒就报失败，
+   * 看着像对方坏了，其实是判据自己炸了）。判据的纪律是：**拿不到证据就当"还不可用"**，
    * 让轮询继续，而不是把异常抛给上层。
    */
   private async usable(state: SupervisorState): Promise<boolean> {
@@ -689,29 +763,37 @@ export class SupervisorManager {
     // **刻意不断开这条连接**（踩过）：断开会立刻变成"0 个窗口在用"——`--idle-sec` 一过
     // supervisor 就自己退场，而重起 dsh 要 5~8 秒，于是它会在半路把自己收走
     // （实测：会合文件被删、新地址只出现在日志里）。连接本身也是"我还在用"的凭据。
-    const deadline = Date.now() + this.options.startTimeoutMs;
-    // 必须先看到 supervisor 把"连接信息清空（正在重起）"写出来，才认后面那个新地址。
-    // 否则会在它还没开始重起时读到**旧的**那一份（时间上完全可能：控制消息才刚发出去），
-    // 于是"重启完成"返回的其实是旧后台（实测偶发，表现为令牌没变、地址照旧）。
-    let sawReset = false;
-    while (Date.now() < deadline) {
-      await delay(500);
-      const state = readState(this.directory);
-      if (!state?.baseUrl) {
-        sawReset = true;
-        continue;
+    //
+    // 等新地址**同样没有时长上限**（用户 2026-09-14 口径）：等到就绪，或用户点
+    // 「停止连接」——时钟不替用户判定"重起失败了"。
+    const wait = this.beginWait();
+    const signal = wait.signal;
+    try {
+      // 必须先看到 supervisor 把"连接信息清空（正在重起）"写出来，才认后面那个新地址。
+      // 否则会在它还没开始重起时读到**旧的**那一份（时间上完全可能：控制消息才刚发出去），
+      // 于是"重启完成"返回的其实是旧后台（实测偶发，表现为令牌没变、地址照旧）。
+      let sawReset = false;
+      while (!signal.aborted) {
+        await delay(500);
+        if (signal.aborted) break;
+        const state = readState(this.directory);
+        if (!state?.baseUrl) {
+          sawReset = true;
+          continue;
+        }
+        if (state.starting) continue;
+        if (!sawReset && state.serverPid === previous) continue; // 还没开始重起，等
+        const serving = await this.usable(state);
+        if (serving) {
+          this.options.log(`[supervisor] 重启完成：${state.baseUrl}（server=${state.serverPid ?? "?"}）`);
+          return this.ensure({ start: true });
+        }
       }
-      if (state.starting) continue;
-      if (!sawReset && state.serverPid === previous) continue; // 还没开始重起，等
-      const serving = await this.usable(state);
-      if (serving) {
-        this.options.log(`[supervisor] 重启完成：${state.baseUrl}（server=${state.serverPid ?? "?"}）`);
-        return this.ensure({ start: true });
-      }
+      this.options.log("[supervisor] 等新地址被用户中止（「停止连接」）");
+      throw new WaitCancelledError();
+    } finally {
+      this.endWait(wait);
     }
-    const detail = `@serverStartTimeout:${Math.round(this.options.startTimeoutMs / 1000)}`;
-    this.setStatus({ state: "failed", detail });
-    throw new Error(detail);
   }
 
   /**
@@ -723,6 +805,8 @@ export class SupervisorManager {
     // **心跳继续跑**（不 stopHeartbeat）：别的窗口把后台重新起起来时，本窗口要能自动接上。
     // 抑制"自动拉起"改用 `stoppedByUser`（见字段注释）。
     this.stoppedByUser = true;
+    // 在途的"等就绪/等新地址"立刻让位：用户已经明确要停了，不需要再等出结果
+    this.cancelWaiting();
     const connection = this.connection;
     if (connection?.connected) {
       this.options.log("[supervisor] 停止请求：交给 supervisor 执行");
@@ -736,6 +820,8 @@ export class SupervisorManager {
   /** 旧接口名（扩展里 `dispose()` 语义）：**只关自己的连接**，不杀任何进程。 */
   dispose(): void {
     this.disposed = true;
+    // 在途的等待没有时长上限：本窗口要走了就别再留着它空转（只停等待，不碰后台）
+    this.cancelWaiting();
     this.stopHeartbeat();
     this.connection?.close();
     this.connection = undefined;
@@ -751,11 +837,24 @@ export class SupervisorManager {
     return this.state ?? readState(this.directory);
   }
 
-  private async waitForHttp(baseUrl: string, timeoutMs: number): Promise<boolean> {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
+  /**
+   * 等这个外部地址上真的有人应答：**没有时长上限**，一轮轮探测到连通，或用户叫停。
+   *
+   * 单次探测自己仍然有 2 秒上限（`reachable` 的 fetch 超时）——那是"这一次探测等多久"，
+   * 不是"等多久就放弃"。第一次探不通时把原因同时写进日志与状态详情
+   * （`@serverUnreachable`，界面据此在连接条上说明"地址连不上、还在重试"）：
+   * 地址填错时用户不必点开日志才知道。
+   */
+  private async waitForHttp(baseUrl: string, signal: AbortSignal): Promise<boolean> {
+    let announced = false;
+    while (!signal.aborted) {
       if (await this.reachable(baseUrl)) return true;
-      await delay(300);
+      if (!announced) {
+        announced = true;
+        this.options.log(`[supervisor] ${baseUrl} 暂时连不上（外部服务器），继续重试到连上或用户点「停止连接」`);
+        this.setStatus({ state: "starting", detail: `@serverUnreachable:${baseUrl}` });
+      }
+      await delay(300, undefined, { signal }).catch(() => undefined);
     }
     return false;
   }

@@ -3051,21 +3051,20 @@
 /* ============================ 轨迹（官方账本的对齐实现） ============================ */
 /*
  * 结构对照 `dsh-client-ui-trajectory`：工具栏（轮次/调用折叠 + 搜索）+ 两列账本
- * （event / content）+ 详情检查器。官方那两个宽度常量照抄：event 列 122px、
- * 窄容器（<=620px 容器宽，这里用视口宽近似，webview 视口就是面板宽）降到 50px。
- * 时间线是第二步，这里还没有。
+ * （event / content）+ 详情检查器 + 顶部时间线。官方那两个宽度常量照抄：event 列
+ * 122px、窄容器（<=620px 容器宽，这里用视口宽近似，webview 视口就是面板宽）降到 50px。
+ *
+ * 它是**整页**视图（官方把轨迹注册进 `conversation.view` 槽，选中就整块换掉会话页），
+ * 不是抽屉：所以这里没有 `.drawer` 那套绝对定位/遮罩，只有「面板剩下的高度归我」。
  */
 
-/* 面板本身是「头 + 工具栏 + 主体」的纵向布局，且**主体自己滚**
-   （抽屉默认整体滚，账本和检查器要各自滚才能对得上行） */
-.trajectory-drawer {
+/* 面板本身是「工具栏 + 时间线 + 主体」的纵向布局，且**主体自己滚**
+   （抽屉那套是整体滚，账本和检查器要各自滚才能对得上行） */
+.trajectory-view {
+  flex: 1 1 auto;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  min-height: 0;
-}
-
-.trajectory-drawer .drawer-head {
-  flex: 0 0 auto;
 }
 
 .trajectory-toolbar {
@@ -3108,17 +3107,22 @@
   outline: none;
 }
 
+/* 账本 + 检查器并排：**不许换行**——换行会把检查器挤到第二行、撑出主体之外
+   （主体是固定高度的 flex 项）。窄到放不下时由 ≤760px 那条媒体查询把检查器
+   变成盖在账本上的抽屉（官方同款），所以这里始终是「一行」。
+   检查器的上限照官方 `max-width: calc(100% - 280px)`（`TABLE_MIN_WIDTH = 280`）：
+   拖到 720px 也不能把账本挤没。 */
 .trajectory-body {
   flex: 1 1 auto;
   min-height: 0;
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: stretch;
   gap: 8px;
   padding: 6px;
 }
 
-/* 账本：窄面板下检查器会换到下一行（flex-wrap），不会把账本挤没 */
+/* 账本：窄面板下检查器会盖上来（≤760px 的抽屉），不会把账本挤没 */
 .trajectory-ledger {
   flex: 1 1 320px;
   min-width: 0;
@@ -3193,21 +3197,31 @@
 .trajectory-kind {
   padding: 0 5px;
   border-radius: 4px;
-  background: var(--code-bg);
+  /* 官方 kindTag 的底色是该色调的浅色版（`state-success-tertiary` 之类）。
+     这里用 currentColor 的淡色底：`color` 由下面的 kind 类给，底色自动跟着走，
+     七种记录各一份、不用手写七条。 */
+  background: color-mix(in srgb, currentColor 14%, transparent);
   color: var(--description);
   font-size: 10px;
   font-weight: 650;
   letter-spacing: 0.02em;
 }
 
-/* 七种记录的配色（官方每种一个色调；这里映射到既有 token） */
+/* 七种记录的配色：逐条对齐官方 `kindTag` 的七个色调（用户 2026-09-14：
+ * 「官方轨迹样式输入是绿色，模型是紫色」）——
+ *   system / compacted → 中性（官方 `systemNeutral` / `compacted`）
+ *   user               → 蓝（官方 state-business-primary）
+ *   context            → **绿**（官方 `contextGreen`；输入侧最常看到的就是它）
+ *   message（助手）    → **紫**（官方 `assistantVioletBright`）
+ *   tool               → 琥珀（官方 `toolAmber`）
+ *   subtool            → 更淡的琥珀（官方 `subtoolAmber` = warn 62% + label-tertiary） */
 .trajectory-kind.is-system { color: var(--muted); }
 .trajectory-kind.is-user { color: var(--link); }
 .trajectory-kind.is-context { color: var(--node-read); }
-.trajectory-kind.is-compacted { color: var(--node-edit); }
-.trajectory-kind.is-message { color: var(--node-code); }
+.trajectory-kind.is-compacted { color: var(--muted); }
+.trajectory-kind.is-message { color: var(--node-edit); }
 .trajectory-kind.is-tool { color: var(--node-bash); }
-.trajectory-kind.is-subtool { color: var(--node-write); }
+.trajectory-kind.is-subtool { color: color-mix(in srgb, var(--node-bash) 62%, var(--muted)); }
 
 .trajectory-content {
   display: flex;
@@ -3259,6 +3273,8 @@
 .trajectory-details {
   flex: 1 1 260px;
   min-width: 0;
+  /* 拖到最宽也留 280px 给账本（官方 `TABLE_MIN_WIDTH`） */
+  max-width: calc(100% - 280px);
   max-height: 100%;
   display: flex;
   flex-direction: column;
@@ -3385,6 +3401,97 @@
   margin: 2px 0 4px;
 }
 
+/* 概述里摊开的「后几张卡片」（官方 `overviewSections`）：每节 = 可点标题 +
+   该页签正文的预览。限高自己滚——一节原文可能几千字，不能把概述撑成一整页。 */
+.trajectory-overview-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+
+.trajectory-overview-section {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.trajectory-overview-heading {
+  margin: 0;
+  color: var(--description);
+  font-size: var(--font-size-2xs);
+  font-weight: 600;
+}
+
+.trajectory-overview-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.trajectory-overview-title:hover {
+  color: var(--fg);
+}
+
+.trajectory-overview-preview {
+  min-width: 0;
+  max-height: 220px;
+  overflow: auto;
+}
+
+/* 预览里的原文自己滚（外层已经限高了），别再叠一层 320px 的内滚动 */
+.trajectory-overview-preview .trajectory-pre {
+  max-height: none;
+}
+
+/* 压缩记录的摘要正文（官方 `compactedSummary`：没有分节标题，直接接在概述行下面） */
+.trajectory-compacted-summary {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+
+/* 「加载更早的历史」：账本最上面那一行（官方 `historyLoadRow`）。
+   它和时间线左端的 `…` 是同一个动作，样式上要一眼看出是「按钮行」而不是一条记录 */
+.trajectory-history-row td {
+  padding: 0;
+}
+
+.trajectory-history-load {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  height: 28px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  background: none;
+  color: var(--muted);
+  font-size: var(--font-size-2xs);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.trajectory-history-load:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--fg);
+}
+
+.trajectory-history-load:disabled {
+  cursor: default;
+}
+
 /* 窄面板（webview 视口就是面板宽）：event 列收到 50px，只留 `#N` 与种类标签 */
 @media (max-width: 420px) {
   .trajectory-col-event {
@@ -3409,11 +3516,6 @@
   gap: 4px;
   padding: 4px 6px;
   border-bottom: 1px solid var(--border);
-}
-
-.trajectory-timeline.is-empty {
-  color: var(--muted);
-  font-size: var(--font-size-2xs);
 }
 
 .trajectory-lanes {
@@ -3456,7 +3558,11 @@
   padding: 0;
   border: 0;
   border-radius: 2px;
+  /* 默认为中性（system / compacted 没有自己的色调），78% 不透明度；
+     有色调的记录在下面拉满——官方 span 就是这套口径（`opacity:.78` 是基准，
+     `message` / `tool` 那些各自 `opacity:1`） */
   background: var(--muted);
+  opacity: 0.78;
   cursor: pointer;
   min-width: 2px;
 }
@@ -3465,13 +3571,12 @@
 .trajectory-span[data-lane="1"] { top: 17px; }
 .trajectory-span[data-lane="2"] { top: 30px; }
 
-.trajectory-span.is-system { background: var(--muted); }
-.trajectory-span.is-user { background: var(--link); }
-.trajectory-span.is-context { background: var(--node-read); }
-.trajectory-span.is-compacted { background: var(--node-edit); }
-.trajectory-span.is-message { background: var(--node-code); }
-.trajectory-span.is-tool { background: var(--node-bash); }
-.trajectory-span.is-subtool { background: var(--node-write); }
+/* 与账本种类标签同一套色调（官方 span 也是按 kind 着色，只是 tool/subtool 同色） */
+.trajectory-span.is-user { background: var(--link); opacity: 1; }
+.trajectory-span.is-context { background: var(--node-read); opacity: 1; }
+.trajectory-span.is-message { background: var(--node-edit); opacity: 1; }
+.trajectory-span.is-tool,
+.trajectory-span.is-subtool { background: var(--node-bash); opacity: 1; }
 
 .trajectory-span.is-error {
   background: var(--error);
@@ -3480,6 +3585,51 @@
 .trajectory-span.is-selected {
   outline: 1px solid var(--fg);
   outline-offset: 1px;
+}
+
+/* 没有计时数据时的提示：绘图区正中（官方 `timeline.noTimingData` 同位置） */
+.trajectory-plot-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font-size: var(--font-size-2xs);
+  pointer-events: none;
+}
+
+/* 左端的「加载更早」：官方 `earlierHistory` 的位置与形态——贴住绘图区左缘，
+   向右渐隐（不把下面的条整片盖住），28px 宽、内容左对齐 */
+.trajectory-earlier {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  width: 28px;
+  padding: 0 0 0 3px;
+  border: 0;
+  border-radius: 0;
+  background: linear-gradient(to right, var(--code-bg) 0, var(--code-bg) 38%, transparent 100%);
+  color: var(--muted);
+  font-size: var(--font-size-sm);
+  line-height: 1;
+  opacity: 0.72;
+  cursor: pointer;
+}
+
+.trajectory-earlier:hover:not(:disabled) {
+  opacity: 1;
+  color: var(--fg);
+}
+
+.trajectory-earlier:disabled {
+  cursor: default;
+  opacity: 0.45;
 }
 
 /* 拖动出来的选区（官方 `onRangeChange` 的等价物：只做高亮，不做缩放） */
@@ -3491,7 +3641,7 @@
   pointer-events: none;
 }
 
-/* 左端的「加载更早」（官方那个 `…` 按钮，只在还有更早记录时出现） */
+/* 右侧的「缩放复位」：时间线放大之后唯一的出路（官方靠双击复位，这里多给一个按钮） */
 .trajectory-more {
   flex: 0 0 auto;
   align-self: center;

@@ -128,9 +128,17 @@ export type Action =
 
 export function reducer(state: AppState, action: Action): AppState {
   switch (action.type) {
-    case "state":
+    case "state": {
       // 过线帧里可选字段的「空」是 null（`shared/wire.ts`），合并时折回 undefined
-      return { ...mergeWirePatch(state, action.state), panel: state.panel };
+      const merged = mergeWirePatch(state, action.state);
+      // 换了会话（含「新建对话」）：整份快照里**没有**轨迹模型（它只在
+      // `listTrajectory` 时现折，见 `shared/ipc.ts`），旧账本必须立刻丢掉——
+      // 否则轨迹视图会拿上一个会话的记录充数，直到新的一帧回来。
+      // 判据要「先前有会话 + id 变了」：首帧从「还没有会话」绑到 s1 时不能清，
+      // 那一帧本身就是全量快照（清掉等于把随帧来的账本一起扔了）。
+      const switched = state.session !== undefined && merged.session?.id !== state.session.id;
+      return { ...merged, panel: state.panel, ...(switched ? { trajectory: undefined } : {}) };
+    }
 
     case "patch":
       return mergeWirePatch(state, action.patch);

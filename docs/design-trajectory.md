@@ -5,6 +5,24 @@
 > `src/webview/components/Trajectory.tsx`（工具栏 / 账本 / 时间线 / 检查器）、
 > `src/webview/trajectoryTexts.ts`（官方文案）、`scripts/trajectory.test.ts`（断言）。
 > 时间线的滚轮缩放与右键平移、检查器拖宽与窄屏抽屉、运行中的占位行也都做了。
+> **视图形态与官方一致**：轨迹是**整页视图**（`App` 里会话页整块让位、输入区留在
+> 原地），不是盖在会话上的抽屉——官方也是把视图注册进 `conversation.view` 槽后整块
+> 换掉（`dsh-client-ui-conversation lib/client.js:15122-15129`）。所以这里没有标题栏
+> 与关闭按钮，进出靠头部那颗「轨迹 ⇄ 会话」图标。时间线的「加载更早」是**左端**的
+> `…`（官方 `earlierHistory` 的位置：贴绘图区左缘、向右渐隐），
+> 不是排在绘图区右侧；标题栏里那个重复入口已经删掉。
+> **取历史的链路与官方同一条**：轨迹的「加载更早」不发自己的请求，它走会话页那条
+> `loadMore`（宿主一次取到底），宿主把 `historyLoading` 落回 false 之后由界面自己
+> 重取账本（`App` 里那个 true→false 收尾的 effect）；账本最上面另有官方那行
+> `historyLoadRow`（取的过程中显示 spinner）。检查器的「概述」页**直接摊开后几张卡片**
+> （官方 `overviewSections`）：工具/子工具 = 参数 / 结果 / Schema / 计时，markdown
+> 记录 = 预览，压缩记录 = 摘要正文；分节标题可点，点了切到对应页签。
+> **`user/message` 的线格式别读错**：事件 `data` **就是** `UserMessage`
+> （`{id, role, content, source}`），不是 `{message}` 包一层（包一层的是
+> `system/message` / `tool/result`）。按 `data.message` 读会让**用户与上下文记录整类
+> 消失**（2026-09-14 踩过，280 份真实日志里 2443 条 user/message 全无包装）。
+> 记录配色逐条对齐官方 `kindTag`：context 绿、message（助手）紫、user 蓝、
+> tool/subtool 琥珀（子工具更淡）、system/compacted 中性。
 > **仍未做**：流式正文本身（只出空占位行）、系统提示词面替换的完整语义（S3/S4 的
 > 边角）、检查器里的 `hierarchy` 跳转 / `usage` 会话累计 / `options` 页签、
 > 从对话跳进轨迹（官方 `viewRequest.focus`）、请求边界小标记、
@@ -1106,6 +1124,12 @@ CSS 变量 `--trajectory-span-left / -width / -gap / -lane / -assistant-ttft`。
 ---
 
 ## D. 本扩展现状与差距
+
+> **本节已过时（2026-09-14 之后）**：D.1–D.3 写的是**落地之前**的现状与计划——里面的
+> `Panels.tsx` 抽屉版 `TrajectoryPanel`、`state.trajectory: ToolCallView[]` 都已经不存在，
+> 现在看本文件开头的《实现状态》与 `src/webview/components/Trajectory.tsx`、
+> `src/dsh/trajectory.ts` 的文件头。这里保留下来只作「官方要哪些字段」的索引（D.2 的
+> 差距表按记录种类逐条列了字段来源，仍然好用）。
 
 ### D.1 现在有什么
 

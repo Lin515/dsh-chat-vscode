@@ -15,7 +15,7 @@ import { isSubagentDelegationTool } from "../shared/toolMeta";
  *   "system"`）与 `notice`（中止/截断/失败这类提示）——把「回答被截断了」折进按钮里
  *   是绝不能接受的信息损失。**其余上下文注入照常折叠**（插件注入 / 项目指令 /
  *   技能目录 / 运行时上下文）：官方那个集合里没有 context 一类，它们在 Web 上就是
- *   过程里的一条普通节点（用户 2026-09-15 对照 Web 报的）；
+ *   过程里的一条普通节点（用户 2026-09-14 对照 Web 报的）；
  * - 答案步**自己的思考**在折叠态也不显示（官方 `reasoningHidden`）。
  *
  * 我们的显示段没有官方那种节点锚点，边界只能靠 `step`：
@@ -33,7 +33,7 @@ function isFoldExempt(segment: Segment): boolean {
   // **系统提示词**是官方明确豁免的那一类（`system-prompt`）；
   // 其余上下文注入（插件注入 / 项目指令 / 技能目录 / 运行时上下文）**参与折叠**
   // ——官方那个集合里没有 context 一类，它们就是过程里的一条普通节点
-  // （用户 2026-09-15 对照 Web 提的；此前我们把 `injected` 整类都豁免了）
+  // （用户 2026-09-14 对照 Web 提的；此前我们把 `injected` 整类都豁免了）
   if (segment.kind === "injected") return segment.injected.sourceKind === "system";
   return false;
 }

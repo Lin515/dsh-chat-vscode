@@ -39,7 +39,7 @@
 | R5 | supervisor 崩了能自愈 | 强杀 supervisor 后，任一窗口在下一次自检时发现并重新拉起；强杀后遗留的 dsh 被回收（不占端口） |
 | R6 | 用户仍能掌控 | `DSH: 停止服务器`（立刻停 dsh+supervisor）、`DSH: 重启服务器`、`DSH: 清理残留进程`、诊断命令都保留 |
 | R7 | 配置生效路径不变 | `dshChat.command` / `url` / `supervisorIdleSec` 语义不变；`autoStart` 的**语义在 2026-09-14 被明确并收紧**（见 §8，用户口径） |
-| R8 | **关掉自动启动时不乱启动**（§8） | 扩展激活后先判断后台在不在跑：在跑就一直重连（无总超时，可手动停止/重试），没跑就只显示「启动服务器」按钮 |
+| R8 | **关掉自动启动时不乱启动**（§8） | 扩展激活后先判断后台在不在跑：在跑就一直重连（**没有总超时、也没有单次超时**，用户按「停止连接」才停），没跑就只显示「启动服务器」按钮 |
 | R9 | **多窗口复用会合文件里的令牌**（§8.2） | 非启动窗口（peer）也用 `supervisor.json` 里的 `token` 换 cookie，不再弹「输入令牌」 |
 
 ## 3. 形态与协议
@@ -151,14 +151,15 @@ VS Code 窗口 3 ─┘                                          │
 窗口激活：
   ① 读 supervisor.json
        ├─ 有、能 HTTP 连上 baseUrl                        → 连 socket、接上，完事
-       ├─ 有、但 starting=true 且未超时                   → 等它就绪（轮询 ≤ 启动超时）
+       ├─ 有、但 starting=true 且未就绪                   → 等它就绪（轮询到就绪；没有超时，
+       │                                                   用户可点「停止连接」中断，见 §8.4）
        ├─ 有、但 socket 连不上 / 服务器连不上且过了宽限     → 说明 supervisor 或 dsh 死了：
        │                                                   → 通知/重拉（见 §3.5 与 §3.4-3）
        └─ 没有                                          → 进入 ②
   ② 抢 OS 锁（<分组目录>/supervisor.lock，`wx` 独占 + 持有者 pid 判活）
        ├─ 抢到 → 写 supervisor.json（含 idleSec、command、socket 路径）→ spawn supervisor（detached）
        └─ 没抢到 → 说明别人正在起 → 回到 ① 轮询等待
-  ③ 轮询 supervisor.json 直到 serverStartedAt 出现且 baseUrl 可连（≤ 启动超时）
+  ③ 轮询 supervisor.json 直到 serverStartedAt 出现且 baseUrl 可连（同样是等就绪，没有超时）
 ```
 
 锁只保护"**启动 supervisor**"这一个动作（几十毫秒），不保护 dsh 的启动过程——
@@ -354,7 +355,9 @@ supervisor → 连 socket 并 ping → 退出时关连接），行为与扩展�
 - **P1 ping 间隔**：建议 1 秒（同时兼作保活）。连接是长连接，ping 频率只影响
   "多久发现对端死了"——1 秒足够，也不必更密。
 - **P2 已由 D6 解决**：`stop` 走 socket 控制请求，不再有"stop 请求文件"。
-- **P3 是否需要"启动超时"提示的用户可见文案**（沿用现有 `@serverStartTimeout` 标记即可，暂定不改）。
+- **P3 已作废（2026-09-14）**：原议题是"'启动超时'提示的文案"。用户口径是**这一档
+  时长判定本身不该存在**，所以 `dshChat.startTimeoutSec` 配置项与 `@serverStartTimeout`
+  标记一并删除，改为"等到就绪，或用户点「停止连接」"（见 §8.4）。
 
 **实现顺序**（每步都可独立验证，探针先行）
 
@@ -382,10 +385,10 @@ supervisor → 连 socket 并 ping → 退出时关连接），行为与扩展�
 
 | 情形 | 扩展怎么做 |
 |---|---|
-| 后台（守护进程 + dsh）在跑 | **自动接上**，并且一轮一轮重试到成功为止（**没有总超时**，单次尝试仍受 `startTimeoutSec` 约束） |
+| 后台（守护进程 + dsh）在跑 | **自动接上**，并且一轮一轮重试到成功为止（**没有任何时长判定**；等待只由"真的就绪"或「停止连接」结束，见 §8.4） |
 | 后台不在跑 | **什么都不启动**，连接条显示「启动服务器」；守护进程后来起来了（别的窗口拉的）会自动接上 |
-| 用户点「停止连接」 | 停掉重试循环，后台**一个字都不动**（杀 dsh 永远是守护进程的事），条上给「尝试重连」 |
-| 外部服务器（`dshChat.url`） | 不判进程，只重连（那条地址不归本扩展管，"启动"这个动作不存在） |
+| 用户点「停止连接」 | 停掉重试循环，**并中断在途的那一轮等待**（否则"无上限等待"会变成点了停止还在等），后台**一个字都不动**（杀 dsh 永远是守护进程的事），条上给「尝试重连」 |
+| 外部服务器（`dshChat.url`） | 不判进程，只重连（那条地址不归本扩展管，"启动"这个动作不存在）；**同样等到底**（没有"到点报连不上"），一次都没应答过就把 `@serverUnreachable` 摆在条上 |
 | 连不上 | 条上显示原因 + 「尝试重连」/「重启服务器」/「查看日志」（输出通道「DSH Chat」） |
 
 **"能不能启动"是一条显式许可**（`SupervisorManager` 的 `autoStart` + `ensure({start})`）：
@@ -416,11 +419,44 @@ controller 的认证链此前按 `info.owned`（"是不是本窗口拉起的"）
 监听，第二个 supervisor 会在 `listen` 处失败自杀，而 spawn 开销已经付掉，且原守护进程
 因为"没人连着"会在空闲阈值后收场——白折腾一场。
 
-### 8.4 验证
+### 8.4 等就绪**没有时长上限**（2026-09-14 用户口径）
+
+> 用户口径：*"控制自动重连状态通过提供停止连接、开始连接、启动服务器等按钮，以完全由
+> 用户手动操作，而不是通过时长控制……这个时长控制不应该还在。"*
+
+2026-09-14 那一版只删掉了"重连的**总**超时"，单次等待仍受 `dshChat.startTimeoutSec`
+（默认 90 秒）约束，于是每 90 秒就会把界面从"正在连接…"改写成一次"启动超时"错误、
+再由心跳拉回重试——**状态依然由时钟决定**，用户看到的是一条条假失败。现在：
+
+- `dshChat.startTimeoutSec` 配置项、`ManagerOptions.startTimeoutMs`、
+  `@serverStartTimeout` 标记**一并删除**（`@serverNotReady` 取代后者）；
+- `waitForReadyState` 不再有 deadline：等到**真的就绪**，或 `AbortSignal` 被 abort；
+- 「停止连接」/「停止服务器」调用 `SupervisorManager.cancelWaiting()` **中断在途的那一轮
+  等待**（只中断等待，不碰任何进程）。中断抛 `WaitCancelledError`，controller 把它当
+  "用户叫停"：界面停在 `stopped`（给「尝试重连」），**不写错误详情**；
+- 「重启服务器」等新地址同样没有 deadline（原来 90 秒后报 `@serverStartTimeout`）；
+- 顺手补掉两处"按钮说了不算"的洞（都属于同一条口径：**开关只由按钮翻**）：
+  ① `handleHeartbeat` 在 `stopped` 那一支原本不读 `autoReconnect`，于是「停止连接」
+  只维持到下一个心跳（≤5 秒）就被自动接了回去；② 一轮连接**已经在跑**时按「停止连接」，
+  它照样会把连接建起来（等待结束之后、以及客户端建好之后各有一道
+  `userAskedToStop()` 检查，后者会把刚建好的客户端收掉）；
+- 真正的失败（守护进程起不来、会合文件缺地址/令牌）照旧如实报错，文案是
+  `@serverNotReady` + "缺哪一样" + 日志尾部；
+- **外部服务器也统一到同一条口径**：原来 `waitForHttp(url, 5_000)` 到点就报
+  `@serverUnreachable` 并抛错，现在同样**一轮轮探测到底**（连上，或用户点「停止连接」）。
+  单次探测自己的 2 秒 fetch 超时保留——那是"这一次探测等多久"。第一次探不通时把
+  `@serverUnreachable` 摆到连接条上（controller 会把带 `@` 的 `starting` 详情透给界面），
+  用户看到的是"连不上 `<url>`（会一直重试，可点「停止连接」）"，而不是一个转圈的空条。
+
+**还按秒计时的只剩 supervisor 自己那一处**：等 dsh 宣布地址的 `SPAWN_GRACE_MS`
+（120 秒，且它会一轮轮重跑）。它是 **supervisor 内部的重试节奏**，不是扩展侧
+"等多久就放弃"的状态判定。
+
+### 8.5 验证
 
 | 断言 / 探针 | 覆盖 |
 |---|---|
-| `scripts/supervisorPolicy.test.ts`（`npm test`） | 没有许可时 `ensure()` 抛 `ServerNotRunningError` 且**启动器调用 0 次**；有许可才拉起；守护进程活着时不重复拉起（peer）；地址/令牌来自会合文件；`probeRunning()` 的三个事实判据 |
+| `scripts/supervisorPolicy.test.ts`（`npm test`） | 没有许可时 `ensure()` 抛 `ServerNotRunningError` 且**启动器调用 0 次**；有许可才拉起；守护进程活着时不重复拉起（peer）；地址/令牌来自会合文件；`probeRunning()` 的三个事实判据；**第 5 组**：等就绪没有时长上限、期间一次 spawn 都没有、`cancelWaiting()` 后立刻以 `WaitCancelledError` 结束；**第 6 组**：外部地址没人应答时同样一直等（详情 `@serverUnreachable:<url>`）、叫停同样立刻生效 |
 | `node build/auth-chain-probe.mjs` | **真实 dsh**：启动者与接入者各走一遍 `authenticate()` + `listSessions()`（= controller 的认证链） |
 | `scripts/styles.test.ts`（第 16 组） | 连接条允许换行、按钮 nowrap、说明文字可省略——窄侧栏下按钮不会被裁掉 |
 | `test/preview.html?conn=…&running=1&locale=en` | 六种连接状态的按钮组合可直接肉眼核对（中英各一遍） |

@@ -43,7 +43,7 @@ writeFileSync(settingsFile, "# dsh-chat config-reload probe\n", "utf8");
 writeFileSync(credentialsFile, "version: 1\nrefs: {}\n", "utf8");
 
 const log = (line: string) => console.log(`[probe] ${line}`);
-const server = new SupervisorManager({ url: "", command: "dsh", startTimeoutMs: 180_000, log });
+const server = new SupervisorManager({ url: "", command: "dsh", log });
 let client: DshClient | undefined;
 const failures: string[] = [];
 

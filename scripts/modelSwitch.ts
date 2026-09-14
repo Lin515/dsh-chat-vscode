@@ -17,7 +17,7 @@ import { SupervisorManager } from "../src/dsh/supervisorManager";
 
 const log = (line: string) => console.log(`[model] ${line}`);
 
-const server = new SupervisorManager({ url: "", command: "dsh", startTimeoutMs: 120_000, log });
+const server = new SupervisorManager({ url: "", command: "dsh", log });
 let client: DshClient | undefined;
 const failures: string[] = [];
 

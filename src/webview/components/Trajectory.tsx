@@ -2,12 +2,17 @@
  * 「轨迹」视图：**官方账本的对齐实现**（第一步：工具栏 + 账本 + 详情检查器；
  * 第二步：时间线）。
  *
+ * 它是**整页**视图（`App` 里会话页整块让位），不是盖在会话上的抽屉——和官方
+ * Web UI 一样：官方把轨迹注册进 `conversation.view` 槽，选中哪个视图就整块换掉
+ * （`dsh-client-ui-conversation lib/client.js:15122-15129`）。所以这里没有标题栏、
+ * 没有关闭按钮：进出靠头部那颗「轨迹 ⇄ 会话」图标。
+ *
  * 结构逐条对照 `dsh-client-ui-trajectory` 的客户端实现：
  * - **工具栏**（官方的 `TrajectoryToolbar`）：时长开关 / 轮次折叠 / 调用折叠 / 搜索；
  * - **账本**（官方 2 列：event + content）：每行 = 记录种类标签 + `#N` + 摘要，
  *   工具行把「请求 → 结果」摊成两列；
  * - **时间线**（官方的 `TrajectoryTimeline`）：三条泳道（输入 / 模型 / 工具）、
- *   轮次边界竖线、点选与拖动选区、左端「加载更早」；
+ *   轮次边界竖线、点选与拖动选区、**左端**的「加载更早」（官方 `earlierHistory`）；
  * - **详情检查器**（官方的 `details` 面板）：页签集合按记录种类派生，与官方
  *   `detailTabs()` 同一套分支。
  *
@@ -23,8 +28,9 @@ import {
   type TrajectoryTimelineMode,
   type TrajectoryTurn,
 } from "../../shared/trajectory";
-import { IconSearch } from "../icons";
+import { IconChevronRight, IconSearch } from "../icons";
 import { Markdown } from "./Markdown";
+import { Spinner } from "./primitives";
 import { useTexts } from "../texts";
 import {
   formatDurationMs,
@@ -176,6 +182,143 @@ function Inspector({
   const status =
     cell.status === "running" ? texts.statusPending : cell.status === "error" ? texts.statusFailed : texts.statusCompleted;
 
+  /**
+   * 各页签的正文**抽在一起**：概述页里的同名分节要显示的就是这一份内容
+   * （官方 `overviewSections` 里那几节，点的也是同一个正文组件），
+   * 分成两处写迟早会走样。
+   */
+  const bodies: Record<TabId, React.ReactNode> = {
+    summary: null,
+    payload: cell.inputDetail ? (
+      <pre className="trajectory-pre">{cell.inputDetail}</pre>
+    ) : (
+      <div className="trajectory-empty">{texts.recordNoPayload}</div>
+    ),
+    result: cell.outputDetail ? (
+      <pre className="trajectory-pre">{cell.outputDetail}</pre>
+    ) : (
+      <div className="trajectory-empty">{texts.recordNoResult}</div>
+    ),
+    "raw-output": cell.inputDetail ? (
+      <pre className="trajectory-pre">{cell.inputDetail}</pre>
+    ) : (
+      <div className="trajectory-empty">{texts.recordNoOutput}</div>
+    ),
+    preview: cell.previewMarkdown ? (
+      <div className="trajectory-markdown">
+        <Markdown text={cell.previewMarkdown} />
+      </div>
+    ) : (
+      <div className="trajectory-empty">{texts.recordNoContent}</div>
+    ),
+    raw: <pre className="trajectory-pre">{cell.previewMarkdown ?? cell.outputDetail ?? ""}</pre>,
+    source:
+      cell.messageSource?.raw !== undefined ? (
+        <pre className="trajectory-pre">{JSON.stringify(cell.messageSource.raw, null, 2)}</pre>
+      ) : (
+        <div className="trajectory-empty">{texts.sourceNotRecorded}</div>
+      ),
+    "system-prompt": cell.systemPromptDetail ? (
+      <pre className="trajectory-pre">{cell.systemPromptDetail}</pre>
+    ) : (
+      <div className="trajectory-empty">{texts.recordSystemPromptMissing}</div>
+    ),
+    diff: (
+      <>
+        {cell.previousSystemPromptDetail !== undefined ? (
+          <div className="trajectory-detail-block">
+            <div className="trajectory-detail-label">{texts.detailsCompacted}</div>
+            <pre className="trajectory-pre">{cell.previousSystemPromptDetail}</pre>
+          </div>
+        ) : null}
+        <div className="trajectory-detail-block">
+          <div className="trajectory-detail-label">{texts.tabSystemPrompt}</div>
+          <pre className="trajectory-pre">{cell.systemPromptDetail ?? ""}</pre>
+        </div>
+      </>
+    ),
+    tools: cell.toolsDetail?.length ? (
+      cell.toolsDetail.map((tool) => (
+        <details key={tool.name} className="trajectory-tool">
+          <summary>{tool.name}</summary>
+          {tool.description ? <div className="trajectory-tool-desc">{tool.description}</div> : null}
+          {tool.parameters === undefined ? null : (
+            <pre className="trajectory-pre">{JSON.stringify(tool.parameters, null, 2)}</pre>
+          )}
+        </details>
+      ))
+    ) : (
+      <div className="trajectory-empty">{texts.recordToolsMissing}</div>
+    ),
+    schema: schema ? (
+      <>
+        <div className="trajectory-detail-label">{schema.name}</div>
+        {schema.description ? <div className="trajectory-tool-desc">{schema.description}</div> : null}
+        {schema.parameters === undefined ? null : (
+          <pre className="trajectory-pre">{JSON.stringify(schema.parameters, null, 2)}</pre>
+        )}
+      </>
+    ) : (
+      <div className="trajectory-empty">
+        {cell.toolName === undefined ? texts.recordSchemaUnavailable : `${texts.recordParameters}: ${cell.toolName}`}
+      </div>
+    ),
+    timing: (
+      <>
+        {row(texts.timingStarted, formatRecordedTime(cell.startedAt))}
+        {row(texts.timingTotalDuration, formatElapsedSeconds(cell.timeSeconds, texts))}
+        {cell.assistantMetrics ? (
+          <>
+            {row(
+              texts.timingTtft,
+              cell.assistantMetrics.firstTokenTime === null
+                ? texts.timingNotRecorded
+                : formatRecordedTime(cell.assistantMetrics.firstTokenTime),
+            )}
+            {row(
+              texts.timingGeneration,
+              cell.assistantMetrics.stepStartTime !== null && cell.assistantMetrics.completedTime !== null
+                ? formatDurationMs(
+                    cell.assistantMetrics.completedTime - cell.assistantMetrics.stepStartTime,
+                    texts,
+                  )
+                : texts.timingNotAvailable,
+            )}
+            {row(
+              texts.usageOutput,
+              formatDurationMs(
+                cell.assistantMetrics.outputTokens === null || cell.timeSeconds === null
+                  ? null
+                  : cell.timeSeconds * 1000,
+                texts,
+              ),
+            )}
+          </>
+        ) : null}
+      </>
+    ),
+  };
+
+  /**
+   * 概述页里摊开哪几节（官方 `overviewSections` 的同一套分派）：
+   * markdown 记录（user / context / message）只有「预览」一节；
+   * 工具与子工具是「参数 / 结果 / Schema / 计时」四节（参数与结果没内容就不出）。
+   */
+  const sections: { key: string; label: string; tab?: TabId; body: React.ReactNode }[] = [];
+  const timingInSection = cell.kind === "tool" || cell.kind === "subtool";
+  if (cell.kind === "user" || cell.kind === "context" || cell.kind === "message") {
+    sections.push({ key: "preview", label: texts.tabPreview, tab: "preview", body: bodies.preview });
+  } else if (timingInSection) {
+    if (cell.inputDetail !== undefined) {
+      sections.push({ key: "payload", label: texts.tabPayload, tab: "payload", body: bodies.payload });
+    }
+    if (cell.outputDetail !== undefined) {
+      sections.push({ key: "result", label: texts.tabResult, tab: "result", body: bodies.result });
+    }
+    sections.push({ key: "schema", label: texts.tabSchema, tab: "schema", body: bodies.schema });
+    sections.push({ key: "timing", label: texts.tabTiming, tab: "timing", body: bodies.timing });
+  }
+
   return (
     <aside className="trajectory-details" aria-label={texts.detailsEvent} style={{ width: `${width}px`, flex: "0 0 auto" }}>
       {/* 左边这条把手调宽（官方 `details.resize` / `details.resizeTitle`；
@@ -244,8 +387,11 @@ function Inspector({
                 )
               : null}
             {cell.messageSource ? row(texts.detailsSource, sourceLabel(cell.messageSource, texts)) : null}
-            {row(texts.timingStarted, formatRecordedTime(cell.startedAt))}
-            {row(texts.timingTotalDuration, formatElapsedSeconds(cell.timeSeconds, texts))}
+            {/* 工具 / 子工具的「开始时间 + 总时长」在下面的「计时」分节里，
+                这里不再重复一遍（官方也是这个分工：概述行只管来源/层级/状态，
+                计时进 `tab.timing` 那一节）。 */}
+            {timingInSection ? null : row(texts.timingStarted, formatRecordedTime(cell.startedAt))}
+            {timingInSection ? null : row(texts.timingTotalDuration, formatElapsedSeconds(cell.timeSeconds, texts))}
             {cell.usage ? (
               <>
                 {row(texts.usageInput, String(cell.usage.input ?? 0))}
@@ -261,142 +407,43 @@ function Inspector({
                 <pre className="trajectory-pre">{cell.thinkingDetail}</pre>
               </div>
             ) : null}
-          </>
-        ) : null}
 
-        {tab === "payload" ? (
-          cell.inputDetail ? (
-            <pre className="trajectory-pre">{cell.inputDetail}</pre>
-          ) : (
-            <div className="trajectory-empty">{texts.recordNoPayload}</div>
-          )
-        ) : null}
-
-        {tab === "result" ? (
-          cell.outputDetail ? (
-            <pre className="trajectory-pre">{cell.outputDetail}</pre>
-          ) : (
-            <div className="trajectory-empty">{texts.recordNoResult}</div>
-          )
-        ) : null}
-
-        {tab === "raw-output" ? (
-          cell.inputDetail ? (
-            <pre className="trajectory-pre">{cell.inputDetail}</pre>
-          ) : (
-            <div className="trajectory-empty">{texts.recordNoOutput}</div>
-          )
-        ) : null}
-
-        {tab === "preview" ? (
-          cell.previewMarkdown ? (
-            <div className="trajectory-markdown">
-              <Markdown text={cell.previewMarkdown} />
-            </div>
-          ) : (
-            <div className="trajectory-empty">{texts.recordNoContent}</div>
-          )
-        ) : null}
-
-        {tab === "raw" ? <pre className="trajectory-pre">{cell.previewMarkdown ?? cell.outputDetail ?? ""}</pre> : null}
-
-        {tab === "source" ? (
-          cell.messageSource?.raw !== undefined ? (
-            <pre className="trajectory-pre">{JSON.stringify(cell.messageSource.raw, null, 2)}</pre>
-          ) : (
-            <div className="trajectory-empty">{texts.sourceNotRecorded}</div>
-          )
-        ) : null}
-
-        {tab === "system-prompt" ? (
-          cell.systemPromptDetail ? (
-            <pre className="trajectory-pre">{cell.systemPromptDetail}</pre>
-          ) : (
-            <div className="trajectory-empty">{texts.recordSystemPromptMissing}</div>
-          )
-        ) : null}
-
-        {tab === "diff" ? (
-          <>
-            {cell.previousSystemPromptDetail !== undefined ? (
-              <div className="trajectory-detail-block">
-                <div className="trajectory-detail-label">{texts.detailsCompacted}</div>
-                <pre className="trajectory-pre">{cell.previousSystemPromptDetail}</pre>
+            {/* 压缩记录的摘要正文（官方 `compactedSummary`：没有分节标题，直接摊开） */}
+            {cell.kind === "compacted" && cell.outputDetail ? (
+              <div className="trajectory-markdown trajectory-compacted-summary">
+                <Markdown text={cell.outputDetail} />
               </div>
             ) : null}
-            <div className="trajectory-detail-block">
-              <div className="trajectory-detail-label">{texts.tabSystemPrompt}</div>
-              <pre className="trajectory-pre">{cell.systemPromptDetail ?? ""}</pre>
+
+            {/* 概述里**直接摊开后几张卡片的内容**（官方 `overviewSections`）：
+                工具行 = 参数 / 结果 / Schema / 计时，markdown 记录 = 预览。
+                标题可点：点了切到对应页签看完整版。 */}
+            <div className="trajectory-overview-sections">
+              {sections.map((section) => (
+                <section className="trajectory-overview-section" key={section.key}>
+                  <div className="trajectory-overview-heading">
+                    {section.tab === undefined ? (
+                      <span className="trajectory-overview-title">{section.label}</span>
+                    ) : (
+                      <button
+                        type="button"
+                        className="trajectory-overview-title"
+                        title={section.label}
+                        onClick={() => setTab(section.tab as TabId)}
+                      >
+                        {section.label}
+                        <IconChevronRight size={12} />
+                      </button>
+                    )}
+                  </div>
+                  <div className="trajectory-overview-preview">{section.body}</div>
+                </section>
+              ))}
             </div>
           </>
-        ) : null}
-
-        {tab === "tools" ? (
-          cell.toolsDetail?.length ? (
-            cell.toolsDetail.map((tool) => (
-              <details key={tool.name} className="trajectory-tool">
-                <summary>{tool.name}</summary>
-                {tool.description ? <div className="trajectory-tool-desc">{tool.description}</div> : null}
-                {tool.parameters === undefined ? null : (
-                  <pre className="trajectory-pre">{JSON.stringify(tool.parameters, null, 2)}</pre>
-                )}
-              </details>
-            ))
-          ) : (
-            <div className="trajectory-empty">{texts.recordToolsMissing}</div>
-          )
-        ) : null}
-
-        {tab === "schema" ? (
-          schema ? (
-            <>
-              <div className="trajectory-detail-label">{schema.name}</div>
-              {schema.description ? <div className="trajectory-tool-desc">{schema.description}</div> : null}
-              {schema.parameters === undefined ? null : (
-                <pre className="trajectory-pre">{JSON.stringify(schema.parameters, null, 2)}</pre>
-              )}
-            </>
-          ) : (
-            <div className="trajectory-empty">
-              {cell.toolName === undefined ? texts.recordSchemaUnavailable : `${texts.recordParameters}: ${cell.toolName}`}
-            </div>
-          )
-        ) : null}
-
-        {tab === "timing" ? (
-          <>
-            {row(texts.timingStarted, formatRecordedTime(cell.startedAt))}
-            {row(texts.timingTotalDuration, formatElapsedSeconds(cell.timeSeconds, texts))}
-            {cell.assistantMetrics ? (
-              <>
-                {row(
-                  texts.timingTtft,
-                  cell.assistantMetrics.firstTokenTime === null
-                    ? texts.timingNotRecorded
-                    : formatRecordedTime(cell.assistantMetrics.firstTokenTime),
-                )}
-                {row(
-                  texts.timingGeneration,
-                  cell.assistantMetrics.stepStartTime !== null && cell.assistantMetrics.completedTime !== null
-                    ? formatDurationMs(
-                        cell.assistantMetrics.completedTime - cell.assistantMetrics.stepStartTime,
-                        texts,
-                      )
-                    : texts.timingNotAvailable,
-                )}
-                {row(
-                  texts.usageOutput,
-                  formatDurationMs(
-                    cell.assistantMetrics.outputTokens === null || cell.timeSeconds === null
-                      ? null
-                      : cell.timeSeconds * 1000,
-                    texts,
-                  ),
-                )}
-              </>
-            ) : null}
-          </>
-        ) : null}
+        ) : (
+          bodies[tab]
+        )}
       </div>
     </aside>
   );
@@ -410,6 +457,10 @@ function Inspector({
  *
  * 泳道归属（官方 `laneFor` 逐字）：工具/子工具 → 工具道；助手/压缩 → 模型道；
  * 其余（系统/用户/上下文）→ 输入道。
+ *
+ * 「加载更早」的位置照官方：**贴住绘图区左缘**（官方 `earlierHistory` 是
+ * `position:absolute; left:0; top:0; bottom:0; width:28px` + 向右渐隐），
+ * 不是排在绘图区右边——它标的是「左边界之外还有内容」这个方向。
  */
 function TrajectoryTimeline({
   timeline,
@@ -443,10 +494,6 @@ function TrajectoryTimeline({
    */
   const [zoom, setZoom] = useState(1);
   const [offset, setOffset] = useState(0);
-
-  if (timeline.spans.length === 0) {
-    return <div className="trajectory-timeline is-empty">{texts.timelineNoTimingData}</div>;
-  }
 
   const maxOffset = Math.max(0, 1 - 1 / zoom);
   const clampOffset = (value: number) => Math.min(maxOffset, Math.max(0, value));
@@ -554,6 +601,11 @@ function TrajectoryTimeline({
           }
         }}
       >
+        {/* 没有计时数据时绘图区留空提示（官方 `timeline.noTimingData`）——
+            但**左端的 `…` 照样在**：有没有更早的历史与有没有计时无关 */}
+        {timeline.spans.length === 0 ? (
+          <span className="trajectory-plot-empty">{texts.timelineNoTimingData}</span>
+        ) : null}
         {timeline.boundaries.map((boundary) => {
           const left = screen(boundary.left);
           if (left < 0 || left > 1) return null;
@@ -599,18 +651,28 @@ function TrajectoryTimeline({
             }}
           />
         ) : null}
+        {/* 左端「加载更早」（官方 `earlierHistory` 的位置与形态）：它标的是
+            「绘图区左边界之外还有内容」，所以必须贴左缘；按下时不能起手拖选区，
+            所以把 mousedown 拦掉 */}
+        {hasOlder ? (
+          <button
+            type="button"
+            className="trajectory-earlier"
+            data-loading={loadingEarlier || undefined}
+            title={loadingEarlier ? texts.loadingEarlier : texts.loadEarlier}
+            aria-label={loadingEarlier ? texts.loadingEarlier : texts.loadEarlier}
+            aria-disabled={loadingEarlier || undefined}
+            disabled={loadingEarlier}
+            onMouseDown={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.stopPropagation();
+              onLoadEarlier();
+            }}
+          >
+            …
+          </button>
+        ) : null}
       </div>
-      {hasOlder ? (
-        <button
-          className="trajectory-more"
-          title={texts.loadEarlier}
-          aria-label={texts.loadEarlier}
-          disabled={loadingEarlier}
-          onClick={onLoadEarlier}
-        >
-          …
-        </button>
-      ) : null}
       {zoom > 1 ? (
         <button
           className="trajectory-more"
@@ -627,16 +689,22 @@ function TrajectoryTimeline({
     </div>
   );
 }
-export function TrajectoryPanel({
+/**
+ * 轨迹视图本体（整页）：工具栏 + 时间线 + 账本（+ 详情检查器）。
+ *
+ * **没有标题栏**：视图切换由头部那颗「轨迹 ⇄ 会话」图标负责，这里再放一条
+ * 「轨迹」标题 + 关闭按钮就是重复的入口（用户 2026-09-14 报的那条「点了之后标题栏
+ * 突然多出一个『加载早期历史』按钮」也是它——标题栏里那个按钮与时间线左端的 `…`
+ * 是同一个动作的两份入口，现在只留官方那一个）。
+ */
+export function TrajectoryView({
   model,
   locale,
-  onClose,
   onLoadEarlier,
   loadingEarlier,
 }: {
   model: TrajectoryModel | undefined;
   locale: string | undefined;
-  onClose: () => void;
   onLoadEarlier: () => void;
   loadingEarlier: boolean;
 }) {
@@ -832,20 +900,7 @@ export function TrajectoryPanel({
   }
 
   return (
-    <div className="drawer trajectory-drawer" role="dialog" aria-label={tt.title}>
-      <div className="drawer-head">
-        <span className="drawer-title">{tt.title}</span>
-        <span className="spacer" />
-        {model?.hasOlder ? (
-          <button className="btn btn-ghost" disabled={loadingEarlier} onClick={onLoadEarlier}>
-            {loadingEarlier ? tt.loadingEarlier : tt.loadEarlier}
-          </button>
-        ) : null}
-        <button className="icon-btn" title={texts.close} onClick={onClose}>
-          ×
-        </button>
-      </div>
-
+    <div className="trajectory-view" role="region" aria-label={tt.title}>
       <div className="trajectory-toolbar" role="toolbar" aria-label={tt.toolbarAria}>
         <div className="trajectory-toolbar-actions">
           {/* 时长开关：官方 `toolbar.duration`（按下 = 按真实耗时成条，未按下 = 等宽） */}
@@ -917,7 +972,30 @@ export function TrajectoryPanel({
                 <col className="trajectory-col-event" />
                 <col className="trajectory-col-content" />
               </colgroup>
-              <tbody>{rows}</tbody>
+              <tbody>
+                {/* 「加载更早的历史」：官方把这一行放在账本**最上面**
+                    （`historyLoadRow` + `historyLoadButton`），与时间线左端那个 `…`
+                    是同一个动作——两者都走会话页那条取历史的链路：点一下让会话去取，
+                    取完这一页自己再要一份账本（见 `App` 的 `historyLoading` 收尾）。
+                    取的过程中这行显示 spinner +「正在加载更早的历史…」，不是「点了没反应」。 */}
+                {model.hasOlder ? (
+                  <tr className="trajectory-history-row">
+                    <td colSpan={2}>
+                      <button
+                        type="button"
+                        className="trajectory-history-load"
+                        disabled={loadingEarlier}
+                        title={loadingEarlier ? tt.loadingEarlier : tt.loadEarlier}
+                        onClick={onLoadEarlier}
+                      >
+                        {loadingEarlier ? <Spinner size={11} /> : null}
+                        <span>{loadingEarlier ? tt.loadingEarlier : tt.loadEarlier}</span>
+                      </button>
+                    </td>
+                  </tr>
+                ) : null}
+                {rows}
+              </tbody>
             </table>
           )}
         </div>

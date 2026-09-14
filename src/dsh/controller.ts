@@ -30,6 +30,7 @@ import type { RemoteEventFrame, RemoteEventWaterfall, SessionControlFrame } from
 import {
   ServerNotRunningError,
   SupervisorManager,
+  WaitCancelledError,
   type EnsureOptions,
   type ServerInfo,
   type ServerStatus,
@@ -402,6 +403,10 @@ export class ChatController implements vscode.Disposable {
     }
     if (this.connection === "stopped") {
       // 没启动的常态：只探测。守护进程起来了（别的窗口拉的、或用户点了启动按钮）就自动接上。
+      // **但用户按过「停止连接」就不再自动接上**（`autoReconnect === false` ⇔ 用户叫停）：
+      // 那条路原来是漏的——停止后界面切到 `stopped`，下一个心跳又从这一支接了回去，
+      // "停止连接"只维持 5 秒。用户口径（2026-09-14）：**开关只由按钮翻**。
+      if (!this.autoReconnect) return;
       if (!snapshot.supervisorAlive) return;
       await this.ensureConnected({ start: false });
       return;
@@ -932,6 +937,7 @@ export class ChatController implements vscode.Disposable {
     try {
       // 许可按"这一轮里最宽的那个请求"算（见 ensureConnected）
       const info = await this.server.ensure(this.connectMayStart ? { start: true } : {});
+      if (this.userAskedToStop()) return this.abandonRound();
       // **认证链按"是不是外部服务器"分叉，不按"是不是本窗口拉起的"**（2026-09-14 修）：
       // peer（别的窗口拉起的、或窗口重载后接上的同一套）手里同样有会合文件里的启动
       // 令牌，必须走同一条令牌换 cookie 的路；此前它们被当成外部服务器处理，于是
@@ -948,6 +954,16 @@ export class ChatController implements vscode.Disposable {
       client.connect();
       await this.loadModels();
       await this.refreshSessions();
+      // 用户在这一轮跑着的时候按了「停止连接」：**刚建好的连接也要收掉**。
+      // 到这里才收，是因为上面几步（换 cookie、拉模型、拉会话）都要一两秒，而"停止"
+      // 恰恰可能落在这个窗口里；漏掉的话，用户按了停止却照样被连上，而且连上之后
+      // 连接条消失，他连个反悔的入口都没有。
+      if (this.userAskedToStop()) {
+        client.dispose();
+        this.client = undefined;
+        this.teardownStreams();
+        return this.abandonRound();
+      }
       this.setConnection("connected");
       // 不再自动建会话：每个窗口的会话由它自己的首次动作（发消息/新建/切会话）
       // 按需建立，空窗口保持空态——多窗口各自为政，互不同步。
@@ -957,12 +973,37 @@ export class ChatController implements vscode.Disposable {
         this.setConnection("stopped", "@serverNotRunning");
         return;
       }
+      // 用户按了「停止连接」/「停止服务器」：等待被主动中止，这不是失败。
+      // 界面停在"已停止"（可再点「尝试重连」），也不写错误详情。
+      if (error instanceof WaitCancelledError) {
+        this.log("[connect] 等待就绪被用户中止（界面给「尝试重连」）");
+        this.setConnection("stopped", this.connectionDetail);
+        return;
+      }
       // 外部服务器要求授权：记下标记，界面显示「输入令牌」入口
       if (error instanceof DshAuthError && this.server.externalUrl) this.setNeedsToken(true);
       const detail = this.describeError(error);
       this.log(`[connect] 失败：${detail}`);
       this.setConnection("error", detail);
     }
+  }
+
+  /**
+   * 本轮连接是不是"用户已经叫停、且不是他自己发起的"。
+   *
+   * `autoReconnect === false` ⇔ 用户按过「停止连接」；`connectMayStart` 为真表示这一轮
+   * 是用户显式动作（发消息 / 启动服务器 / 重启）发起的——**用户显式动作永远算数**，
+   * 只有"自动路径的一轮"才该在用户叫停后放弃。用于两个时刻：等待结束之后、以及
+   * 连接建好之前，把"停止"真正贯彻到这一轮里（否则停止按钮只改界面不改行为）。
+   */
+  private userAskedToStop(): boolean {
+    return !this.autoReconnect && !this.connectMayStart;
+  }
+
+  /** 用户叫停后放弃这一轮：切到"已停止"（界面给「尝试重连」），不写错误详情。 */
+  private abandonRound(): void {
+    this.log("[connect] 用户已点「停止连接」：本轮不再建连");
+    this.setConnection("stopped", this.connectionDetail);
   }
 
   /** 自管服务器：启动令牌来自会合文件，认证失败只能如实报错。 */
@@ -1244,7 +1285,17 @@ export class ChatController implements vscode.Disposable {
     this.teardownStreams();
     this.client?.dispose();
     this.client = undefined;
-    await this.server.restart();
+    try {
+      await this.server.restart();
+    } catch (error) {
+      // 用户在"等新地址"期间按了「停止连接」/「停止服务器」：这是一条用户指令，不是重启失败
+      if (error instanceof WaitCancelledError) {
+        this.log("[server] 重启被用户中止（「停止连接」/「停止服务器」）");
+        this.setConnection("stopped", this.connectionDetail);
+        return;
+      }
+      throw error;
+    }
     // 「重启服务器」是用户显式动作：允许拉起一套（关掉自动启动时也算数）
     await this.ensureConnected({ start: true });
     if (wasPeer) {
@@ -1258,6 +1309,14 @@ export class ChatController implements vscode.Disposable {
   onServerStatus(status: ServerStatus): void {
     if (status.state === "failed" && status.detail) {
       this.setConnection("error", status.detail);
+      return;
+    }
+    // "还在等"的那一轮如果带着 `@` 详情（外部地址一次都没应答过），把它摆到连接条上：
+    // **等到底**不比"到点报错"差，但用户得知道自己在等哪个地址、为什么连不上
+    //（`@serverUnreachable`）。管理器的内部一轮用的是英文调试串（"starting server"），
+    // 不带 `@`，照旧不往界面送。
+    if (status.state === "starting" && status.detail?.startsWith("@")) {
+      this.setConnection("connecting", status.detail);
       return;
     }
     // 「停止服务器」/ 守护进程自己退场：界面立刻切到"已停止 + 启动服务器"，
@@ -1319,6 +1378,9 @@ export class ChatController implements vscode.Disposable {
     if (!this.reconnecting) return;
     this.autoReconnect = false;
     this.log("[connect] 用户点了「停止连接」");
+    // **在途的那一轮等待也要真的停下**：等待没有时长上限（只有用户能结束它），
+    // 不断开这一半的话，"停止连接"只是把界面改了个样子，后台一起来照样会接上。
+    this.server.cancelWaiting();
     // 切到 `stopped`（而不是继续 `connecting`）：界面据此给出「尝试重连」，
     // 同时保留 `connectionDetail`——"为什么没连上"仍然显示在条上
     this.setConnection("stopped", this.connectionDetail);

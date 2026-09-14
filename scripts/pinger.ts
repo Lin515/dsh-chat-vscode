@@ -83,7 +83,7 @@ if (ensured.error) {
 }
 const state = ensured.state?.baseUrl && (await usable(ensured.state))
   ? ensured.state
-  : await waitForReadyState({ group, timeoutMs: 120_000, usable, onTick: (tick) => say(`[pinger] 等待就绪：${tick?.baseUrl ?? (tick?.starting ? "启动中" : "无会合文件")}`) });
+  : await waitForReadyState({ group, usable, onTick: (tick) => say(`[pinger] 等待就绪：${tick?.baseUrl ?? (tick?.starting ? "启动中" : "无会合文件")}`) });
 if (!state?.baseUrl) {
   say("[pinger] 等不到就绪的后台");
   process.exit(4);

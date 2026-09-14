@@ -9,7 +9,12 @@
  * - **守护进程还活着就只接入、不另起**（重复 spawn 出来的 supervisor 会因管道被占用
  *   自杀，而父进程的 spawn 开销已经付掉了）；
  * - **令牌/地址来自会合文件**：这是"多窗口复用同一个后台"的唯一凭据（认证链部分由
- *   `build/auth-chain-probe.mjs` 用真实 dsh 覆盖，这里覆盖"值有没有传出来"）。
+ *   `build/auth-chain-probe.mjs` 用真实 dsh 覆盖，这里覆盖"值有没有传出来"）；
+ * - **等就绪没有时长上限、且用户能中断**（用户 2026-09-14 口径）：后台在起的时候
+ *   `ensure()` 一直等（状态不会被时钟改写成"失败"），只有 `cancelWaiting()`
+ *   （= 界面「停止连接」/「停止服务器」）能让它结束，结束方式是 `WaitCancelledError`。
+ *   这一条是"删掉 `startTimeoutSec`"之后**唯一**保证等待不会变成"点了停止还在等"的防线；
+ *   外部服务器（`dshChat.url`）走**同一条口径**：没人应答就一直探，不再"5 秒到点报错"。
  *
  * 全程不 spawn 任何真实进程：启动器是假的，会合文件由断言自己写，端口用本地
  * `net.createServer` 真监听（"服务在不在"必须用事实判据，不能用假函数）。
@@ -25,7 +30,7 @@ import { join } from "node:path";
 // 必须排在最前面：把会合根目录指到本次断言专用的临时目录（模块求值期读一次）
 const TEST_ROOT = mkdtempSync(join(tmpdir(), "dsh-chat-policy-"));
 process.env.DSH_CHAT_SUPERVISOR_DIR = TEST_ROOT;
-const { ServerNotRunningError, SupervisorManager } = await import("../src/dsh/supervisorManager");
+const { ServerNotRunningError, SupervisorManager, WaitCancelledError } = await import("../src/dsh/supervisorManager");
 const { STATE_VERSION, socketPathIn, supervisorDirectory, writeState } = await import("../src/dsh/supervisorProtocol");
 
 let failures = 0;
@@ -86,7 +91,6 @@ function makeManager(group: string, autoStart: boolean, launcher: { launch: (inp
     group,
     url: "",
     command: "dsh web --port 0 --no-open",
-    startTimeoutMs: 5_000,
     autoStart,
     launcher: launcher as never,
     log: () => undefined,
@@ -184,6 +188,80 @@ try {
     check("端口没了 → serverAlive=false（守护进程还在）", noServer.supervisorAlive && !noServer.serverAlive);
     manager.dispose();
   }
+
+  // ---------- 5. 等就绪：没有时长上限，只有用户能叫停（2026-09-14） ----------
+  {
+    // 守护进程活着、dsh 还没交出地址 —— 这正是"以前等 90 秒就报超时"的那个窗口
+    publishState("policy-wait", { starting: true });
+    const launcher = fakeLauncher();
+    const manager = makeManager("policy-wait", false, launcher.launcher);
+    managers.push(manager);
+    let settled: Error | "resolved" | undefined;
+    const pending = manager.ensure({ start: false }).then(
+      () => {
+        settled = "resolved";
+      },
+      (error: unknown) => {
+        settled = error instanceof Error ? error : new Error(String(error));
+      },
+    );
+    // 观察一段：这期间**不该**有任何东西因为"时间到了"而结束这一轮
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    check(
+      "等待期间状态仍是 starting（没有被时长判定改写成失败）",
+      manager.getStatus().state === "starting",
+      manager.getStatus().state,
+    );
+    check("等待期间这一轮没有结束（没有超时这一档）", settled === undefined, String(settled));
+    check("等待期间一次 spawn 都没发生（守护进程活着就只接入）", launcher.calls() === 0, `calls=${launcher.calls()}`);
+
+    // 用户点「停止连接」= cancelWaiting()：等待必须立刻让位，且按"用户叫停"而不是失败结束
+    const startedAt = Date.now();
+    manager.cancelWaiting();
+    await pending;
+    check(
+      "cancelWaiting() 后 ensure() 以 WaitCancelledError 结束（不是超时失败）",
+      settled instanceof WaitCancelledError,
+      String(settled),
+    );
+    check("中断是立刻的（< 2s，不用等下一轮判据）", Date.now() - startedAt < 2_000, `${Date.now() - startedAt}ms`);
+    manager.dispose();
+  }
+
+  // ---------- 6. 外部服务器**同样等到底**（原来 5 秒探不通就报 @serverUnreachable） ----------
+  {
+    // 端口拿到手就立刻关掉：这个地址上确实没人应答（真实事实判据，不靠猜）
+    const dead = await listen();
+    await dead.close();
+    const manager = new SupervisorManager({
+      url: dead.baseUrl,
+      command: "dsh web --port 0 --no-open",
+      autoStart: false,
+      launcher: fakeLauncher().launcher as never,
+      log: () => undefined,
+    });
+    managers.push(manager);
+    let settled: Error | "resolved" | undefined;
+    const pending = manager.ensure().then(
+      () => {
+        settled = "resolved";
+      },
+      (error: unknown) => {
+        settled = error instanceof Error ? error : new Error(String(error));
+      },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    check("外部地址没人应答时不会“到点报错”（等待仍在继续）", settled === undefined, String(settled));
+    check(
+      "状态是 starting，且详情写明是哪个地址（@serverUnreachable:…）",
+      manager.getStatus().state === "starting" && (manager.getStatus().detail ?? "").startsWith("@serverUnreachable:"),
+      manager.getStatus().detail ?? "（无）",
+    );
+    manager.cancelWaiting();
+    await pending;
+    check("外部等待也能被用户叫停（WaitCancelledError）", settled instanceof WaitCancelledError, String(settled));
+    manager.dispose();
+  }
 } finally {
   for (const manager of managers) manager.dispose();
   await background.close().catch(() => undefined);
@@ -194,6 +272,6 @@ if (failures > 0) {
   console.error(`\n✗ supervisor 启动/重连决策：${failures} 项未通过`);
   process.exitCode = 1;
 } else {
-  console.log("\n✓ supervisor 启动/重连决策（许可 / 复用 / 令牌来自会合文件 / 只读探测）全通过");
+  console.log("\n✓ supervisor 启动/重连决策（许可 / 复用 / 令牌来自会合文件 / 只读探测 / 等待可中断 / 外部也等到底）全通过");
   assert.ok(true);
 }

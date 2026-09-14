@@ -70,7 +70,7 @@ const injected = (id: string, step: number, sourceKind = "plugin"): Segment =>
 // 官方 `TURN_PROCESS_INDEPENDENT_KINDS` = system-prompt / user / steering /
 // turn-process / turn-error / turn-max-tokens / turn-tail —— **没有 context 一类**。
 // 所以：轮级提示（截断/中止）与系统提示词永不折；插件注入 / 项目指令 / 技能目录 /
-// 运行时上下文都算过程成员（用户 2026-09-15 对照 Web 报的「上下文注入也要折进去」）。
+// 运行时上下文都算过程成员（用户 2026-09-14 对照 Web 报的「上下文注入也要折进去」）。
 {
   const segments: Segment[] = [
     injected("sys1", 0, "system"),
