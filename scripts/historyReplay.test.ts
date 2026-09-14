@@ -20,7 +20,7 @@ import { SessionAdapter } from "../src/dsh/adapter";
 import type { MessageView, Segment } from "../src/shared/chat";
 import type { HostToWebview } from "../src/shared/ipc";
 import { foldTurnProcess } from "../src/webview/turnProcess";
-import { atTurnBoundary, shouldContinuePaging } from "../src/dsh/historyPaging";
+import { MAX_HISTORY_PAGES, shouldContinuePaging } from "../src/dsh/historyPaging";
 
 /** 收集帧（与 thinkingStream.test.ts 同一套：深拷贝，模拟 postMessage）。 */
 function harness() {
@@ -184,40 +184,32 @@ console.log("historyReplay: 更早的一轮落盘即折叠态 ✓");
 }
 console.log("historyReplay: 正在跑的会话靠显式一帧报 running ✓");
 
-// ---------- B. 取到「用户的上一条消息」为止（判据在宿主侧） ----------
+// ---------- B. 一次触发把窗口外的历史**全部**取回来（判据在宿主侧） ----------
 //
-// 用户口径（2026-09-15 两轮澄清）：**至少取到用户的上一条消息**——也就是取到一轮的
-// 开头（顶部变成用户消息）。三条停止条件：到轮次边界 / 服务端说没有更早的 / 这一页
-// 没带来新事件。
+// 用户口径（2026-09-14）：不再按「用户的上一条消息」分段取，**直接加载全部历史**。
+// 原因（见 `src/dsh/historyPaging.ts`）：`session/page` 按固定消息条数分页，切点与
+// 轮次边界无关，「顶部变成用户消息」这个判据只在页边界碰巧落在一轮开头时才成立——
+// 一轮几十条消息、一页固定 50 条，切点几乎总落在上一轮中间，于是循环一路取到底。
+// 既然真实行为就是这样、用户也认可，就把它定成设计。
 //
-// 关键教训：第三条必须用**真实的新增事件数**。用户报的「并没有加载到上一条消息就已经
-// 停了」，根因就是当时拿「首条消息 id 变没变」当进展判据——更早的事件常常只是把现有的
-// 第一条助手消息**补长**（id 是按轮次派生的 `a:<turn>`，不会变），于是被误判成「没进展」
-// 而在半轮中间收手（现场见 `scripts/pageLoopProbe.ts`）。
+// 只剩两条停止条件：服务端说没有更早的 / 这一页没带来新事件。第三参数是**页数**
+// （防病态的安全阀），不再是消息流。
 {
-  const user = (id: string): MessageView => ({ id, role: "user", ts: 0, text: "问", segments: [] });
-  const assistant = (id: string): MessageView => ({ id, role: "assistant", ts: 0, segments: [] });
-
-  assert.strictEqual(atTurnBoundary([user("u1"), assistant("a:1")]), true, "顶部是用户消息 = 一轮的开头");
-  assert.strictEqual(atTurnBoundary([assistant("a:1"), user("u2")]), false, "顶部是助手消息 = 半轮中间");
-  assert.strictEqual(atTurnBoundary([]), true, "没有消息时不再取");
-
-  // 半轮中间 + 还有更早 + 这一页确实带来了事件 → 接着取（这正是被误判掉的那一步）
+  assert.strictEqual(shouldContinuePaging(250, true, 1), true, "还有更早的且这一页有进展 → 接着取");
+  assert.strictEqual(shouldContinuePaging(12, false, 1), false, "服务端说没有了 → 停");
+  assert.strictEqual(shouldContinuePaging(0, true, 1), false, "零进展 → 停（防死循环）");
   assert.strictEqual(
-    shouldContinuePaging(250, true, [assistant("a:0")]),
-    true,
-    "「首条消息没换、但并入了 250 条事件」必须继续取——否则就是用户报的提前停",
+    shouldContinuePaging(12, true, MAX_HISTORY_PAGES),
+    false,
+    "到页数安全阀 → 停（服务端病态时不至于把宿主拖死）",
   );
-  // 到了轮次边界 → 停
-  assert.strictEqual(shouldContinuePaging(12, true, [user("u1"), assistant("a:0")]), false, "到边界 → 停");
-  // 没有更早了 → 停
-  assert.strictEqual(shouldContinuePaging(12, false, [assistant("a:0")]), false, "服务端说没有了 → 停");
-  // 这一页没带来事件 → 停（防死循环）
-  assert.strictEqual(shouldContinuePaging(0, true, [assistant("a:0")]), false, "零进展 → 停");
-  // 判据里不能有「取了几页」这种输入：那等于把页数上限又加回来
-  assert.strictEqual(shouldContinuePaging.length, 3, "只吃 (added, hasMore, messages)");
+  assert.strictEqual(
+    shouldContinuePaging.length,
+    3,
+    "只吃 (added, hasMore, pages)——判据里不再有「消息流顶部角色」",
+  );
 }
-console.log("historyReplay: 取到用户的上一条消息为止 ✓");
+console.log("historyReplay: 一次触发取回全部历史 ✓");
 
 // ---------- C. 结构不变量：宿主连取、界面只管视口与按钮 ----------
 {
@@ -251,8 +243,8 @@ console.log("historyReplay: 取到用户的上一条消息为止 ✓");
     "宿主取一页前后要各发一帧 historyLoading",
   );
   assert.ok(
-    /shouldContinuePaging\(added, Boolean\(page\.hasMore\), scope\.adapter\.snapshotMessages\(\)\)/.test(controller),
-    "宿主用「真实新增事件数 + hasMore + 顶部角色」决定要不要继续取",
+    /shouldContinuePaging\(added, Boolean\(page\.hasMore\), pages\)/.test(controller),
+    "宿主用「真实新增事件数 + hasMore + 页数安全阀」决定要不要继续取",
   );
   const adapter = readFileSync(join(process.cwd(), "src", "dsh", "adapter.ts"), "utf8");
   assert.ok(
@@ -260,8 +252,8 @@ console.log("historyReplay: 取到用户的上一条消息为止 ✓");
     "prependRecords 要返回新并入的事件条数（进展判据的唯一真凭据）",
   );
   const texts = readFileSync(join(process.cwd(), "src", "webview", "texts.ts"), "utf8");
-  assert.ok(/historyLoading: "正在加载更早消息…"/.test(texts), "中文文案");
-  assert.ok(/historyLoading: "Loading earlier messages…"/.test(texts), "英文文案");
+  assert.ok(/historyLoading: "正在加载全部历史…"/.test(texts), "中文文案");
+  assert.ok(/historyLoading: "Loading all history…"/.test(texts), "英文文案");
   assert.ok(/this\.replaying = true;/.test(adapter) && /if \(this\.replaying\) return;/.test(adapter), "适配器要有重放静默开关");
   const composer = readFileSync(
     join(process.cwd(), "src", "webview", "components", "Composer.tsx"),

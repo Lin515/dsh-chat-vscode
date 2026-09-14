@@ -47,31 +47,43 @@ console.log("selection: 「下一行行首」不多报一行 ✓");
 }
 console.log("selection: 空选区返回 undefined ✓");
 
-// ---------- 5. 结构不变量：命令、芯片、提示词三处都带上了行号 ----------
+// ---------- 5. 结构不变量：命令把行号交给宿主，宿主插成带行号的 `@` 引用 ----------
+//
+// 用户 2026-09-14 口径：目录、文件、文件某行**一律走 `@` 引用**，不做附件。
+// 所以「三处接线」现在是：命令带行号 → 宿主格式化 → 界面插到光标处。
 {
   const extension = readFileSync(join(process.cwd(), "src", "extension.ts"), "utf8");
   assert.ok(
-    /controller\.addSelection\(name, text, selectionLines\(editor\.selection\)\)/.test(extension),
+    /controller\.addSelection\(name, selectionLines\(editor\.selection\)\)/.test(extension),
     "编辑器命令必须把行号一起交给控制器",
-  );
-  const composer = readFileSync(
-    join(process.cwd(), "src", "webview", "components", "Composer.tsx"),
-    "utf8",
-  );
-  assert.ok(
-    /attachment\.lines \? \(/.test(composer) && /chip-lines/.test(composer),
-    "芯片要显示行号（.chip-lines）",
   );
   const controller = readFileSync(join(process.cwd(), "src", "dsh", "controller.ts"), "utf8");
   assert.ok(
-    /attachment\.lines\s*\?[^;]*第 \$\{attachment\.lines\.start\}-\$\{attachment\.lines\.end\} 行/s.test(
-      controller,
-    ),
-    "发给模型的正文也要写明行范围（否则模型只看到一段无出处的代码）",
+    /this\.insertMention\(viewId, formatFileMentionWithLines\(name, lines\)\)/.test(controller),
+    "选区要插成带行号的 `@` 引用",
   );
-  const styles = readFileSync(join(process.cwd(), "src", "webview", "styles", "app.css"), "utf8");
-  assert.ok(/\.chip-lines\s*\{[^}]*flex:\s*0 0 auto/s.test(styles), "行号那一段不可压缩");
+  assert.ok(
+    /formatFileMention\(this\.relativePath\(path\), kind\)/.test(controller),
+    "文件/目录右键也要插成 `@` 引用（目录用结尾斜杠标记）",
+  );
+  assert.ok(
+    !/kind: "selection"/.test(controller),
+    "不能再产生选区附件（引用替代了它）",
+  );
+
+  // 带行号的引用文本本身：单行只写一个行号；含空白的路径把行号写在引号内
+  const mention = readFileSync(join(process.cwd(), "src", "shared", "mentions.ts"), "utf8");
+  assert.ok(/formatFileMentionWithLines/.test(mention), "带行号的引用有独立实现（供两端共用）");
+  const { formatFileMentionWithLines } = await import("../src/shared/mentions");
+  assert.strictEqual(formatFileMentionWithLines("src/config.ts", { start: 12, end: 40 }), "@src/config.ts:12-40");
+  assert.strictEqual(formatFileMentionWithLines("src/config.ts", { start: 7, end: 7 }), "@src/config.ts:7");
+  assert.strictEqual(formatFileMentionWithLines("src/config.ts"), "@src/config.ts", "没有行号就是整文件引用");
+  assert.strictEqual(
+    formatFileMentionWithLines("a b/c.ts", { start: 1, end: 2 }),
+    '@"a b/c.ts:1-2"',
+    "含空白的路径把行号写在引号内，整段仍是一个 token",
+  );
 }
-console.log("selection: 命令 / 芯片 / 提示词三处接线 ✓");
+console.log("selection: 命令 → 带行号的 `@` 引用 ✓");
 
 console.log("\nselection: all assertions passed");

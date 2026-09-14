@@ -69,8 +69,36 @@ const must = [
   ["轮尾 deliverables", () => state.messages.some((m) => m.deliverables?.length)],
   // 助手消息里的图片块（`images` 段）：此前 image 块被静默丢弃，夹具要留住这个形态
   ["助手消息里的图片", () => state.messages.some((m) => m.segments.some((s) => s.kind === "images"))],
-  // 用户消息的操作行（时钟 + 复制）：预览页靠悬停显示，DOM 里必须在
+  // 用户消息的操作行（时钟 + 复制）：**常驻**显示（不再靠悬停揭示），DOM 里必须在
   ["用户消息操作行", () => state.messages.some((m) => m.role === "user")],
+  // 超过 5 行的用户消息：默认收缩 + 「展开 / 收起」。夹具要留一条长的，
+  // 否则预览页看不到那枚按钮（判定按实测渲染高度，不看换行符）
+  [
+    "长用户消息（默认收缩）",
+    () => state.messages.some((m) => m.role === "user" && (m.text ?? "").split("\n").length > 5),
+  ],
+  // 轨迹账本：七种记录要留够形态，否则预览页看不到种类标签/检查器页签/折叠行的差别
+  [
+    "轨迹账本（六种记录 + 系统提示词更新）",
+    () => {
+      const kinds = new Set(
+        (state.trajectory?.turns ?? []).flatMap((turn: { cells: { kind: string }[] }) =>
+          turn.cells.map((cell) => cell.kind),
+        ),
+      );
+      return ["system", "user", "message", "tool", "subtool", "compacted", "context"].every((kind) =>
+        kinds.has(kind),
+      );
+    },
+  ],
+  [
+    "轨迹账本：序号连续、工具行带结果",
+    () => {
+      const cells = (state.trajectory?.turns ?? []).flatMap((turn: { cells: { index: number }[] }) => turn.cells);
+      const sequential = cells.every((cell: { index: number }, position: number) => cell.index === position + 1);
+      return sequential && cells.some((cell: { kind: string; result?: string }) => cell.kind === "tool" && cell.result);
+    },
+  ],
   // 轮尾「用时 X」胶囊：turn/end 才写入的 turnStats
   ["轮尾用时胶囊", () => state.messages.some((m) => (m.turnStats?.ranForMs ?? 0) > 0)],
   // 轮级过程折叠要有 step 才能算边界：夹具里必须有带 step 的段，否则预览页永远

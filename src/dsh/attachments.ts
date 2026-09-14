@@ -9,12 +9,31 @@ import type { Attachment } from "../shared/chat";
  *
  * 判据与官方两条路对齐（见 references.ts 文件头）：
  * - **目录** → 引用（官方靠结尾斜杠标记，模型自己决定要不要 list）；
- * - **图片**（模型接受图片输入）→ 图片内容块（官方同样内联图片字节）；
+ * - **图片**（模型接受图片输入）→ 图片内容块；
  * - **其余文件** → 文件附件，选中即**逐字节上传**拿 `receiptId`。
- *   上传路径对字节不做任何假设——二进制、非 UTF-8、任意大小都能传，
- *   所以这里**不读内容**（旧版按 UTF-8 解码 + 512KB 上限是「内联正文」时代的
- *   判据，0.5.0 起正文不再内联，门槛随之移除）；只 stat 确认存在。
- * - **读不出来 / 模型不收图片** → 最后兜底：把带引号的路径插到输入框光标处。
+ *
+ * ## 为什么**不**判断「文件可不可读」「文件大不大」
+ *
+ * 曾经按「模型能不能直接读这段字节」分派（二进制 / 非 UTF-8 / 过大 → 只给路径），
+ * 理由是「给模型读不出的字节没意义」。**那是错的**，用户在 Web 端实测（上传一个
+ * exe）推翻了它：
+ *
+ * - 官方客户端**完全不筛**：`dsh-client-file-upload` 只做 base64 / 流式上传两件事，
+ *   没有任何按类型或大小的判据（`lib/types/client/runtime.js` 的 `upload()`）；
+ * - 官方在上下文里也**从不放文件字节**——`session/prompt` 只带
+ *   `{type:'file', receiptId}`，宿主把 receipt 解析成 `FileAttachmentRef`
+ *   （`dsh-attachment/lib/types/types.d.ts`：`attachmentId` **就是字节的 sha256**，
+ *   外加 `bytes` 与显示名），模型看到的是「路径 + 大小 + sha256 前缀」这个**引用**，
+ *   字节原样落到 attachments 目录。
+ *
+ * 所以「exe 没有进上下文」不是后台做了过滤，而是**所有文件都不进上下文**；上传出来
+ * 的那份只读副本 + 内容寻址 id 对模型反而有用（它可以用工具去处理那个副本、核对
+ * sha256）。扩展自己那一层筛子只会让同一个文件在 Web 上是「已上传的引用」、在扩展
+ * 里变成一串裸路径文本，属于自造差异。
+ *
+ * 唯一真实的准入限制在**图片**那条路上（官方 `IMAGE_ADMISSION_ERROR_CODES`：
+ * 类型 / 张数 / 字节 / 像素上限）——那由宿主校验，并把限额经 `imageLimits` 投影
+ * 下发（本扩展已消费）；这里只需按「模型收不收图」决定走内容块还是走上传。
  */
 
 /** 以图片块发送的扩展名 → mediaType（与服务端支持的图片类型对齐）。 */
@@ -105,7 +124,7 @@ export function classifyPath(input: ClassifyInput): ClassifyOutcome {
     }
   }
 
-  // 普通文件：上传路径按字节发，不读内容（二进制/非 UTF-8/过大都不是障碍）；
+  // 普通文件：上传路径按字节发，不读内容（二进制 / 非 UTF-8 / 过大都不是障碍）；
   // 只确认文件还在（选择到读取之间被删掉的竞态）
   try {
     statSync(path);
@@ -136,7 +155,10 @@ export function formatPathList(paths: string[]): string {
  *
  * 拖放走 base64 过线（见 `shared/ipc.ts` 的 `attachBytes`），4/3 的体积放大加上
  * webview RPC 的字符串拷贝，太大就会卡住界面。超限的直接提示改用「添加文件」
- * 按钮——那条路是宿主 `readFileSync`，多大都不经过 webview。
+ * 按钮——那条路是宿主 `readFileSync` + 原始字节 POST，不经过 webview。
+ *
+ * 这条限制**只关于 webview 这条通道**，不是「附件判据」：回形针 / 资源管理器
+ * 右键那条路不限大小（官方也不限）。
  */
 export const DROP_BYTES_LIMIT = 8 * 1024 * 1024;
 

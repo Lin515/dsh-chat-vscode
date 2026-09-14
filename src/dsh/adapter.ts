@@ -650,6 +650,19 @@ export class SessionAdapter {
   }
 
   /**
+   * 轨迹折叠的输入：**全部** durable 事件（按 seq 升序）。
+   *
+   * 与 `snapshotMessages()` 的区别：那个是给聊天流用的「人类转写」，这里的原始
+   * 事件包含聊天流**刻意忽略**的那些（`request/header`、`system/message` 的
+   * 面替换、`compaction/*`、`tool/ptc-dispatch*`、`session/end-seed`）——
+   * 轨迹账本正是靠它们才成立（官方也是同一份事件的第二套折叠，见
+   * `src/dsh/trajectory.ts` 的文件头与 `docs/design-trajectory.md`）。
+   */
+  trajectoryEvents(): SessionWireEvent[] {
+    return [...this.seen.values()].sort((left, right) => left.seq - right.seq);
+  }
+
+  /**
    * 记住最近一次可用的解码速度，供界面长期显示。
    * 速度是按 step 算的：该 step 结束时才成立；没有新值就保留旧值。
    */

@@ -44,9 +44,9 @@
 | 13 | 窗口外 `tool/result` 被丢弃 | ✅ 补一张只有结果、头部显示 callId 的占位卡片（与官方 `call: null` 回退一致） |
 | 14 | 用户消息非文本块被丢 | ✅ `userMedia()` 保留图片/文件块；纯图片消息不再整条消失 |
 | 15 | 占用条分子口径错 | ✅ 改用 `contextPressure`：`projectedTokens ?? pressureTokens`（prompt 侧、不含 output、**压缩后会下降**） |
-| 16 | `busyEnter` 被忽略 | ✅ 从 `ui-conversation` 设置读取；`steer` 仅在 agent 运行中生效，否则退回 queue |
-| 18 | 未消费投影 | ✅ 新增 `tokenUsage`（四桶累计）、`turnOutline`（轮次导航）、`imageLimits`（图片准入）；`contextPressure`、`plan.pending` 已在 #15、新发现里消费 |
-| 19 | 附件内联 vs 引用/上传 | ✅ 改为官方模式：图片走内容块；其余文件**选中即上传**拿 `receiptId`；`@` 引用只发 `@path`。不再内联正文 |
+| 16 | `busyEnter` 被忽略 | ✅ 从 `ui-conversation` 设置读取并作为 `session/prompt.mode` 发出。**2026-09-14 补齐三处缺口**：冷启动也读（随 `settings/describe` 一起喂）、`running` 判定移到乐观置位**之前**、Enter 与 Cmd/Ctrl+Enter 分叉（`resolveSubmitMode(running, gesture)` 逐字移植官方）+ 运行中主按钮标注「排队发送/插话发送」+ 队列行「插话发送」。见 CHANGELOG 未发布第六节 |
+| 18 | 未消费投影 | ✅ 新增 `tokenUsage`（四桶累计）、`turnOutline`（轮次导航）、`imageLimits`（图片准入）；`contextPressure`、`plan.pending` 已在 #15、新发现里消费。**注意 `turnOutline` 的字段一度读错**（见「本批新发现」末尾那条）：2026-09-14 按契约改成 `{turn, seq, prompt, response}` 并由右侧轮次横条实际消费 |
+| 19 | 附件内联 vs 引用/上传 | ✅ 改为官方模式：图片走内容块；文件走上传拿 `receiptId`；`@` 引用只发 `@path`。不再内联正文。**2026-09-14 细化**：`@` 改为把 token **插进输入框正文**（不再生成附件栏芯片），上传只留给「模型可直接读的文本」，二进制/非 UTF-8/超过 8 MB 一律降级为路径引用 |
 
 ### 本批新发现（原审计未列）
 
@@ -57,6 +57,8 @@
 | 会话历史翻不到 | 不是「被清理」，而是**分页从未接上**：跟随流只带 `maxMessages: 60`，更早的内容从未进过客户端；而 `session/page` 的入口（`client.page()`、`loadMore` 消息类型）在协议层有、**没有任何地方调用**。已实现：适配器记住 `snapshot.cursor`（`throughSeq` 的唯一合法来源）与已折叠事件，界面加「加载更早的消息」按钮 |
 | 崩溃遗留的 writer 锁会让 `dsh web` 起不来 | 强杀后 `~/.dsh/.credentials.yaml.lock` 留下；`dsh-atomic-write` 刻意不回收孤儿锁，而 boot 等 30 秒后抛错退出整个进程。已实现 `clearStaleDocumentLocks`（按肯定证据判持有者已死），在**每次拉起服务器之前**清理 |
 | `contextPressure` **分母先到、分子后到** | 实测（`scripts/pressureProbe.ts`，三轮真实对话）：投影每轮推十来次，`contextWindow` 先就位，而分子要等**下一次请求上报 usage** 才出现。实测表：一轮后只有分母、本地复算已能给出 19206；二轮后官方 pressure=19206 / projected=19215；三轮后 pressure 仍 19206 而 **projected 19844**。两条结论：**①`projectedTokens` 才是逐轮变化的那个**（也是压缩后唯一会降的），必须优先；**②本地 `input + cached` 与官方 `pressureTokens` 逐字相等**（19206 == 19206，且 ≠ totalTokens 19208），可以在投影缺分子时**同口径**兜底。占用条按用户要求**常驻显示**：三个来源都拿不到时保留旧值，不清空 |
+| `turnOutline` **字段名读错**（第三次「按猜测的形状写」） | 契约是 `{turn, seq, prompt, response}`（`dsh-session-turn-outline/lib/types/types.d.ts:12-21`），而扩展读的是 `{turn, seq, summary, startedAt}` —— `summary` 恒空串、`startedAt` 恒 0，`prompt`/`response` **从未被读过**。因为没有消费者，这个错误一直没有症状。前两次同类缺陷是 `goal`（嵌套形状）与 `subagentCatalog`（多按 `kind` 过滤）。2026-09-14 按契约改成 `{turn, seq, prompt, response}`（容忍度与官方 `outlineEntry` 同口径：`turn`/`seq` 坏了整条丢弃，预览坏了退化成空串），并由右侧**轮次横条**实际消费——**「解析了但既错又没人用」是最差的状态**，改完之后要么真用、要么别解析 |
+| 历史分页的停止判据与服务端分页粒度**对不上** | 早先的口径是「至少取到用户的上一条消息」（消息流顶部变成用户消息就停）。但 `session/page` 的 `paginate()`（`dsh-api-session-controller/lib/index.js:1602-1624`）是按**固定消息条数**（本扩展传 50）从 `beforeSeq` 往前切一刀，切点与轮次边界无关；一轮几十条消息而一页固定 50 条，切点几乎总落在上一轮中间 → 判据不成立 → 接着取 → 一路取到底。**实际行为本来就是「一次触发取回整个历史」**，与设计意图相反，而用户认可这个行为。现按用户口径定成设计（见 `src/dsh/historyPaging.ts`），界面配右侧轮次横条做导航 |
 
 ### 已修复（第三批：配置文件热重载同步，2026-09-12）
 
@@ -233,11 +235,11 @@ dsh 会按 `PROFILE_TEMPLATES` 自动初始化 web profile）起真实 `dsh web`
 | 事件折叠骨架（消息/工具/流式叠加） | **基本一致** |
 | surfaceOp 替换事件一律跳过 | **一致（且这正是官方契约要求的做法）**，非缺陷 |
 | 工具行的摘要 / 状态语义 | **不一致**（信息丢失 + 图标失效） |
-| 投影消费 | **不一致**（20 个投影只消费 10 个，其中 2 个形状读错） |
+| 投影消费 | **不一致**（20 个投影只消费 10 个；形状读错的两处已修：`plan`、`turnOutline`） |
 | 斜杠命令 | **不一致（功能失效）** |
-| 提交模式（queue/steer） | **不一致**（用户设置被忽略） |
+| 提交模式（queue/steer） | **已修**（2026-09-14：`resolveSubmitMode` 逐字移植 + 冷启动读取 + 手势分叉 + 按钮/队列行插话） |
 | 停止语义 | **不一致**（与官方契约相反） |
-| 附件表示 | **不一致**（内联正文 vs 引用/上传） |
+| 附件表示 | **已修**（图片内容块 / 文本上传 / 其余降级路径引用；`@` 改为正文里的 `@path` token） |
 
 ---
 
@@ -386,11 +388,23 @@ webview 不渲染它；`ToolCallView.files` 有渲染分支（`Rows.tsx:135`）�
 `plan.pending`、`modelCatalog.default/routableProviders/failures` —— 逐个确认
 `case` 数为 0。
 
+> **2026-09-14 补**：`turnOutline` 虽然早有 `case`，但**字段名读错了**（见下一节），
+> 而且从来没有消费者。现在按契约解析并由右侧轮次横条使用。
+> 仍未做的还有：`subagentTiming`（成对字段，子代理面板的「活跃耗时」列）、
+> `subagent`（身份投影，决定子代理会话的只读输入框）、`schedule`、`agentPreset`、
+> `permissions.options`、`modelCatalog` 的另外三个字段。
+
 ### 17. 提交模式：用户设置 `busyEnter: steer` 被忽略 **[契约][实测环境]**
+
+> **2026-09-14 已修（本节保留为历史记录 + 修复明细）**：模式判定改成官方
+> `resolveSubmitMode` 的逐字移植，并补齐「冷启动不读设置」「`running` 判定晚于乐观
+> 置位」「Cmd/Ctrl+Enter 未分叉」「发送按钮恒为停止」四处缺口。修复后 `steer` 的
+> **生效范围**是：agent 正在运行、且手势是主手势（回车/发送按钮）时用设置值，
+> Cmd/Ctrl+Enter 取相反值，空闲一律 queue。详见 CHANGELOG 未发布第六节。
 
 本机 `~/.dsh/settings.yaml` 就是 `ui-conversation.busyEnter: steer`。
 官方 `resolveSubmitMode(preferred, running, gesture, steeringAvailable)` 据此决定 queue/steer；
-扩展把 `"queue"` 写死（`controller.ts:1484`、`1819`），且设置面板里改它「保存成功但不生效」。
+扩展曾把 `"queue"` 写死（`controller.ts:1484`、`1819`），且设置面板里改它「保存成功但不生效」。
 Ctrl+Enter 也未区分（`Composer.tsx:241` 只判 `!shiftKey`）。
 
 ### 18. 停止语义与官方契约相反 **[契约][代码]**

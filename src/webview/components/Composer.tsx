@@ -23,12 +23,14 @@ import {
   IconPencil,
   IconPlay,
   IconRefresh,
+  IconSend,
   IconShield,
   IconShieldCheck,
   IconShieldFilled,
   IconStop,
   IconTarget,
 } from "../icons";
+import { formatFileMention } from "../../shared/mentions";
 import { CtxText, Ellipsis, Popover, Spinner, contextNumbers, formatDuration } from "./primitives";
 import { ApprovalCard, QuestionCard } from "./Rows";
 import type { PendingInteraction } from "../pendingInteraction";
@@ -343,9 +345,12 @@ export function Composer({
     else if (itemRect.bottom > listRect.bottom) list.scrollTop += itemRect.bottom - listRect.bottom;
   }, [highlight, trigger]);
 
-  const send = () => {
+  const send = (gesture: "enter" | "accelerated" = "enter") => {
     if (!canSend) return;
-    post({ type: "send", text: draft.trim(), attachments: state.attachments });
+    // 只发**手势**，不发模式：`session/prompt.mode` 由宿主按
+    // `ui-conversation.busyEnter` + 「按下的那一刻 agent 在不在跑」解析
+    // （官方 resolveSubmitMode）。界面自己算会算错——它拿到的是上一帧的 running。
+    post({ type: "send", text: draft.trim(), attachments: state.attachments, gesture });
     onDraft("");
     dismissedRef.current = null;
     setTrigger(undefined);
@@ -419,15 +424,31 @@ export function Composer({
       post({ type: "queryFiles", query: `${file.path}/` });
       return;
     }
-    // 文件（或用户点了「整个目录」按钮）：把路径从正文里拿掉，改成引用芯片。
-    // 正文里不出现 `@token` —— 引用是芯片，发送时由宿主拼回正文（见 dsh/references.ts）。
+    // 文件（或用户点了「整个目录」按钮）：把路径**作为纯引用 token 插进正文**。
+    //
+    // 用户口径（2026-09-14）：`@` 的语义就是「纯路径引用，交给 agent 自己读」，
+    // 与「附件上传」是两条不同的通道，界面上也要一眼可分。所以这里**不再**生成
+    // 附件栏里的引用芯片（那会让 @ 和「添加文件」看起来一模一样），而是把官方的
+    // `@path` token 直接写进输入框——这正是官方客户端发出去的那串文本
+    // （见 shared/mentions.ts 的文件头）。
     post({ type: "queryFiles", query: "" });
-    const next = `${before}${after}`;
+    const mention = formatFileMention(file.path, file.kind);
+    const next = mention
+      ? `${before}${mention}${after}`
+      : `${before}"${file.path}"${after}`; // 不可引用（含控制字符/引号）→ 退回带引号路径
     onDraft(next);
     post({ type: "setDraft", text: next });
-    post({ type: "addMention", path: file.path, kind: file.kind });
     setTrigger(undefined);
-    textareaRef.current?.focus();
+    const caret = before.length + (mention ?? `"${file.path}"`).length;
+    // 记下「已关闭」：否则随后那次 keyup 的重新探测会在同一个位置再命中 `@path`，
+    // 弹层关了又弹（与 `/` 命令选中后同一套处理，见 refreshTrigger）
+    dismissedRef.current = { value: next, caret };
+    requestAnimationFrame(() => {
+      const node = textareaRef.current;
+      if (!node) return;
+      node.focus();
+      node.setSelectionRange(caret, caret);
+    });
   };
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -468,8 +489,13 @@ export function Composer({
       }
     }
     if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+      // 长按重复：官方 keymap 明确忽略 `event.repeat`（避免一次按住连发多条）
+      if (event.repeat) return;
       event.preventDefault();
-      send();
+      // Cmd/Ctrl+Enter = **加速手势**（官方 `ComposerSubmitGesture` 的
+      // `accelerated`）：运行中它取 busyEnter 的**相反**行为。手势原样交给宿主，
+      // 由宿主按「按下的那一刻」的运行状态解析（见 send 的注释）。
+      send(event.ctrlKey || event.metaKey ? "accelerated" : "enter");
     }
     // ESC 停止生成统一由 App 的 window 层兜底（候选弹层 / 浮层都没有消费时才到）
   };
@@ -640,13 +666,25 @@ export function Composer({
     breakdown: state.contextBreakdown,
   };
 
-  const sendPill = state.running ? (
+  // 运行中的主按钮（官方 `primaryStops = running && (empty || blocked)`）：
+  // - 草稿为空 → 停止（生成中还能"点一下停"，这是用户最需要的动作）；
+  // - 草稿非空 → **发送**，文案按 `busyEnter` 标成「排队发送 / 插话发送」。
+  //
+  // 以前运行中一律是「停止」，于是设置项描述里的「发送按钮的行为」在本扩展里
+  // 根本无从生效（审计结论 §3.4）。
+  const busySendLabel = state.busyEnter === "steer" ? texts.sendSteer : texts.sendQueue;
+  const sendPill = state.running && !canSend ? (
     <button className="send-btn is-stop" title={texts.stopTitle} onClick={() => post({ type: "stop" })}>
       <IconStop size={12} />
     </button>
   ) : (
-    <button className="send-btn" disabled={!canSend} title={texts.sendTitle} onClick={send}>
-      {texts.send}
+    <button
+      className="send-btn"
+      disabled={!canSend}
+      title={state.running ? busySendLabel : texts.sendTitle}
+      onClick={() => send("enter")}
+    >
+      {state.running ? busySendLabel : texts.send}
     </button>
   );
 
@@ -841,11 +879,7 @@ export function Composer({
                 <span
                   className={`chip${attachment.upload?.status === "error" ? " is-error" : ""}`}
                   key={attachment.id}
-                  title={
-                    attachment.lines
-                      ? `${attachment.name}:${attachment.lines.start}-${attachment.lines.end}`
-                      : attachment.path ?? attachment.name
-                  }
+                  title={attachment.path ?? attachment.name}
                 >
                   {/* 上传状态：官方 FileCard 里文件芯片带进度/失败态。
                       失败可点重试，否则用户只能删掉重选（内容其实还在磁盘上）。 */}
@@ -874,14 +908,6 @@ export function Composer({
                     </span>
                   ) : null}
                   <span className="chip-name">{attachment.name}</span>
-                  {/* 部分引用（编辑器选区）把行号写在文件名后，且它是**不可压缩**的
-                      那一段：英文/窄侧栏下文件名可以先省略，`:12-40` 不能跟着消失
-                      ——那正是「引的是哪几行」这个信息本身。 */}
-                  {attachment.lines ? (
-                    <span className="chip-lines">
-                      {`:${attachment.lines.start}-${attachment.lines.end}`}
-                    </span>
-                  ) : null}
                   <button
                     className="chip-remove"
                     title={texts.remove}
@@ -1299,6 +1325,20 @@ function Lump({ state }: { state: AppState }) {
         {state.queueItems.map((item) => (
           <div className="queue-item" key={item.id}>
             <span className="queue-text">{item.text || texts.queueMediaOnly}</span>
+            {/* 「插话发送」（官方 queue 行的第三个动作 `{kind:'steer'}`）：
+                只对**排队中**的那条给出（已经是 steering 的不必再来一次），
+                并且只有 agent 正在运行时可用——服务端同样要求运行中，否则回
+                `session/steer-unavailable`（宿主按官方口径静默处理）。 */}
+            {item.placement !== "steering" ? (
+              <button
+                className="queue-action"
+                disabled={!state.running}
+                title={state.running ? texts.queueSteer : texts.queueSteerUnavailable}
+                onClick={() => post({ type: "queueSteer", id: item.id })}
+              >
+                <IconSend size={12} />
+              </button>
+            ) : null}
             <button
               className="queue-action"
               title={texts.queueEdit}

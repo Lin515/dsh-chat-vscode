@@ -5,7 +5,8 @@ import { post, subscribe } from "./bridge";
 import { Composer } from "./components/Composer";
 import { HistoryPanel } from "./components/History";
 import { Message } from "./components/Message";
-import { JobsPanel, SettingsPanel, SubagentTranscriptPanel, SubagentsPanel, TrajectoryPanel } from "./components/Panels";
+import { JobsPanel, SettingsPanel, SubagentTranscriptPanel, SubagentsPanel } from "./components/Panels";
+import { TrajectoryPanel } from "./components/Trajectory";
 import { Spinner, hasSelectionInside } from "./components/primitives";
 import { AppState, useAppState, type PanelKind } from "./state";
 import { pendingInteractionOf } from "./pendingInteraction";
@@ -79,7 +80,7 @@ function Header({
         data-mini="hide"
         className={`icon-btn${state.panel === "trajectory" ? " is-active" : ""}`}
         title={texts.trajectory}
-        onClick={() => toggle("trajectory")}
+        onClick={() => toggle("trajectory", () => post({ type: "listTrajectory" }))}
       >
         <IconTrajectory size={15} />
       </button>
@@ -385,6 +386,16 @@ export function App() {
     runningRef.current = state.running;
   }, [state.running]);
 
+  // 轨迹面板开着时，一轮结束后重取一次账本。
+  // **流式期间不取**：整份模型可能几百行，边生成边整份下发是白烧；面板一打开先取
+  // 一次（Header 的 toggle 里带着请求），之后每轮结束刷新一次即可。
+  const trajectoryRunningRef = useRef(state.running);
+  useEffect(() => {
+    const was = trajectoryRunningRef.current;
+    trajectoryRunningRef.current = state.running;
+    if (state.panel === "trajectory" && was && !state.running) post({ type: "listTrajectory" });
+  }, [state.running, state.panel]);
+
   useEffect(() => {
     const unsubscribe = subscribe(dispatch as (message: HostToWebview) => void);
     post({ type: "ready" });
@@ -418,11 +429,11 @@ export function App() {
               <EmptyState />
             ) : (
               <>
-                {/* 「加载更早」：跟随窗口只带 60 条，更早的内容从没进过客户端。
+                {/* 「加载全部历史」：跟随窗口只带 60 条，更早的内容从没进过客户端。
                     按钮只在服务端说「还有更早的」时出现——空按钮比没有按钮更烦人。
                     滚到顶会自动取，这个按钮是同一个入口；**取的过程中**它自己变成
-                    「正在加载更早消息…」的不可点状态（连取多页时一直保持），
-                    这样「点了没反应」与「还在取」一眼可分。 */}
+                    「正在加载全部历史…」的不可点状态（可能连取多页），这样
+                    「点了没反应」与「还在取」一眼可分。 */}
                 {state.hasMoreHistory ? (
                   <button
                     className="history-more"
@@ -517,9 +528,11 @@ export function App() {
 
         {state.panel === "trajectory" ? (
           <TrajectoryPanel
-            tools={state.trajectory}
-            diffLayout={state.diffLayout}
+            model={state.trajectory}
+            locale={state.locale}
             onClose={closePanel}
+            onLoadEarlier={() => loadEarlier()}
+            loadingEarlier={loadingEarlier}
           />
         ) : null}
 

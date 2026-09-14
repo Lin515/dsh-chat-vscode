@@ -15,7 +15,7 @@
  */
 import { SessionAdapter } from "../src/dsh/adapter";
 import { DshClient } from "../src/dsh/client";
-import { shouldContinuePaging } from "../src/dsh/historyPaging";
+import { MAX_HISTORY_PAGES, shouldContinuePaging } from "../src/dsh/historyPaging";
 import { SupervisorManager } from "../src/dsh/supervisorManager";
 
 const args = process.argv.slice(2);
@@ -86,18 +86,19 @@ try {
         `消息 ${before.length} → ${after.length}；首条 ${beforeFirst ?? "?"} → ${top?.id ?? "?"}（${top?.role ?? "?"}）；` +
         `hasMore=${adapter.hasMoreHistory()}；earliestSeq=${adapter.earliestSeq()}`,
     );
-    // 宿主侧的停止判据（与 `src/dsh/historyPaging.ts` 同一份逻辑）
-    if (!shouldContinuePaging(added, adapter.hasMoreHistory(), after)) {
+    // 宿主侧的停止判据（与 `src/dsh/historyPaging.ts` 同一份逻辑）：
+    // 现在是「一次取到底」——只有服务端说没有了、或这一页没进展才停。
+    if (!shouldContinuePaging(added, adapter.hasMoreHistory(), page)) {
       const why =
         added <= 0
           ? "这一页没有带来新事件 → 再取也没意义"
           : !adapter.hasMoreHistory()
-            ? "服务端说没有更早的了"
-            : `顶部已经是 ${top?.role ?? "?"} 消息（= 一轮的开头，即用户的上一条消息）`;
+            ? "服务端说没有更早的了（= 已取回全部历史）"
+            : `到页数安全阀 ${MAX_HISTORY_PAGES} 页`;
       console.log(`   ■ 停止：${why}`);
       break;
     }
-    console.log(`   · 顶部仍是助手消息（半轮中间）→ 继续取下一页`);
+    console.log(`   · 还有更早的历史 → 继续取下一页`);
   }
 } catch (error) {
   console.log(`探针失败：${error instanceof Error ? error.message : String(error)}`);

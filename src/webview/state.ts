@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useReducer } from "react";
-import type { ToolCallView } from "../shared/chat";
+import type { TrajectoryModel } from "../shared/trajectory";
 import type {
   ChatState,
   CommandView,
@@ -34,8 +34,14 @@ export interface AppState extends ChatState {
   commands: CommandView[];
   fileRefs: { query: string; items: FileRefView[] };
   subagentEntries: SubagentView[];
-  /** 轨迹：本会话全部工具调用（从消息流派生，供轨迹面板渲染）。 */
-  trajectory: ToolCallView[];
+  /**
+   * 轨迹账本（宿主折叠后下发，见 `src/dsh/trajectory.ts`）。
+   *
+   * **不是**从消息流派生的：官方轨迹是对同一份 durable 事件的**另一套折叠**
+   * （系统提示词 / 上下文 / 压缩 / 子工具这些在聊天流里根本不出行），
+   * 所以必须由宿主单独推。`undefined` = 还没取过（面板打开时请求）。
+   */
+  trajectory?: TrajectoryModel;
   settingsSections: SettingsSectionView[];
   settingsWritable: boolean;
   settingsLoaded: boolean;
@@ -64,7 +70,6 @@ export const initialState: AppState = {
   commands: [],
   fileRefs: { query: "", items: [] },
   subagentEntries: [],
-  trajectory: [],
   settingsSections: [],
   settingsWritable: false,
   settingsLoaded: false,
@@ -173,6 +178,20 @@ export function reducer(state: AppState, action: Action): AppState {
     case "jobs/list":
       return { ...state, jobs: action.jobs };
 
+    case "trajectory": {
+      // 宿主发的是一整段 JSON 字符串（不是逐键 patch）：
+      // 轨迹模型里 `startedAt: null` / `timeSeconds: null` 是**有意义的空值**，
+      // 而宿主→webview 的帧过一遍 JSON.stringify，值为 `undefined` 的键会被整条
+      // 丢掉（见 `shared/wire.ts`）。整体过字符串就绕开了这套逐键折回语义。
+      let model: TrajectoryModel | undefined;
+      try {
+        model = JSON.parse(action.json) as TrajectoryModel;
+      } catch {
+        return state;
+      }
+      return { ...state, trajectory: model };
+    }
+
     case "commands/list":
       return { ...state, commands: action.commands };
 
@@ -225,20 +244,5 @@ export function reducer(state: AppState, action: Action): AppState {
 export function useAppState() {
   const [state, dispatch] = useReducer(reducer, initialState);
   const stableDispatch = useCallback(dispatch, [dispatch]);
-  // 轨迹直接从消息流派生（消息已是权威状态，无需宿主单独推送）
-  const trajectory = useMemo(
-    () =>
-      state.messages
-        .flatMap((message) =>
-          message.segments.flatMap((segment) =>
-            segment.kind === "tool" ? [segment.tool] : [],
-          ),
-        )
-        .sort((a, b) => (a.startedAt ?? 0) - (b.startedAt ?? 0)),
-    [state.messages],
-  );
-  return useMemo(
-    () => ({ state: { ...state, trajectory }, dispatch: stableDispatch }),
-    [state, trajectory, stableDispatch],
-  );
+  return useMemo(() => ({ state, dispatch: stableDispatch }), [state, stableDispatch]);
 }

@@ -240,19 +240,55 @@ function registerContributions(context: vscode.ExtensionContext, host: Contribut
       await vscode.window.showInformationMessage(message, { modal: true });
     }),
 
-    // 编辑器与资源管理器右键入口
-    vscode.commands.registerCommand("dshChat.addSelection", () => {
+    // 编辑器与资源管理器右键入口。
+    //
+    // 「添加选区」与「添加文件」**合并成一条命令**（用户 2026-09-14 口径）：同一个
+    // 快捷键 `alt+shift+2` 与同一个右键项，行为按「当前有没有选中」自己分派——
+    // 有选中就加选区，没有就加整个文件。
+    //
+    // **三者一律走 `@` 引用**（用户 2026-09-14 口径：「不论是目录、文件、文件某行，
+    // 均以 @ 引用形式而不是附件形式添加」）：插入的是 `@路径` / `@路径:12-40` /
+    // `@目录/` 这样的**正文 token**，由模型自己用 `read` / `list` 去读；
+    // 附件（上传、图片）只从回形针与拖放那条通道走。
+    //
+    // **坑（用户 2026-09-14 实测报的）**：VS Code 给 `editor/context` 的命令也会把
+    // **当前文档的 uri** 当作第一个参数传进来，和 `explorer/context` 一模一样。所以
+    // 「有 uri 就当资源管理器点击」会把编辑器里选中的代码当成「添加整个文件」——
+    // 右键菜单于是永远加整文件。判据必须是「这个 uri 是不是当前编辑器打开的那份」：
+    // 是 → 编辑器入口（按选区分派）；不是 → 资源管理器点中的那个文件。
+    //
+    // 残留的歧义：在资源管理器里右键**正好是当前编辑器打开的那份文件**、且编辑器里
+    // 有选区时，按选区处理。那种情形下「加选中的这段」也是合理读法，不必再加一个
+    // 命令 id 去区分。
+    //
+    // 命令标题**不能**随选中状态变化：菜单项标题来自 `package.json` 的
+    // `contributes.commands`，运行期没有任何 API 能改（菜单贡献项本身也不支持逐项
+    // `title` 覆盖，见 microsoft/vscode#34048）。所以统一命名为
+    // 「添加文件(或选区)到对话」，把两种语义都写在名字里。
+    vscode.commands.registerCommand("dshChat.addToChat", (uri?: vscode.Uri) => {
       const editor = vscode.window.activeTextEditor;
-      if (!editor) return;
-      const text = editor.document.getText(editor.selection);
-      const name = vscode.workspace.asRelativePath(editor.document.uri);
-      controller.addSelection(name, text, selectionLines(editor.selection));
-      // 焦点回到**加引用的那个窗口**（可能是侧栏，也可能是编辑区面板）：
-      // 写死 `dshChat.view.focus` 会把开在编辑区的对话硬拽回侧栏
-      controller.revealActiveView();
-    }),
-    vscode.commands.registerCommand("dshChat.addFile", (uri?: vscode.Uri) => {
-      const target = uri ?? vscode.window.activeTextEditor?.document.uri;
+      const fromEditor =
+        uri !== undefined && editor !== undefined && uri.toString() === editor.document.uri.toString();
+
+      // 资源管理器点中的文件（且不是编辑器里正开着的那份）→ 加这个文件的 `@` 引用
+      if (uri && !fromEditor) {
+        if (uri.scheme !== "file") return;
+        void controller.addFileContext(uri.fsPath);
+        controller.revealActiveView();
+        return;
+      }
+
+      // 编辑器入口（或有选中时的命令面板/快捷键）：有选中加**带行号的选区引用**
+      if (editor && !editor.selection.isEmpty) {
+        const name = vscode.workspace.asRelativePath(editor.document.uri);
+        controller.addSelection(name, selectionLines(editor.selection));
+        // 焦点回到**加引用的那个窗口**（可能是侧栏，也可能是编辑区面板）：
+        // 写死 `dshChat.view.focus` 会把开在编辑区的对话硬拽回侧栏
+        controller.revealActiveView();
+        return;
+      }
+      // 没有选区（或选区为空）→ 添加整个文件的 `@` 引用
+      const target = editor?.document.uri;
       if (!target || target.scheme !== "file") return;
       void controller.addFileContext(target.fsPath);
       controller.revealActiveView();

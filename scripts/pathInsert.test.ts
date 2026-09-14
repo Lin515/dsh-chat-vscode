@@ -4,12 +4,15 @@
  * 契约（0.5.0 起，对齐官方两条路）：
  *  - 目录 → **引用**（`@dir/`，模型自己决定要不要 list）；
  *  - 图片（模型收图）→ 图片内容块；
- *  - 其余文件（二进制/非 UTF-8/任意大小都一样）→ 文件附件，选中即上传；
+ *  - **其余文件**（二进制 / 非 UTF-8 / 任意大小都一样）→ 文件附件，选中即上传；
  *  - 只有「读不出来」（选择到读取之间被删）与「模型不收图片」退回**只给路径**，
  *    由界面以双引号包裹插到输入框光标处。
  *
- * 旧版还按「内容能不能内联正文」分派（二进制/非 UTF-8/过大 → 只给路径）——那是
- * 内联时代的判据；0.5.0 起文件走逐字节上传，上传不挑内容，门槛随之移除。
+ * **0.7.x 的一版曾经加过「可读性 / 大小筛子」**（二进制、非 UTF-8、>8MB → 只给
+ * 路径），**已被推翻**：官方客户端与上传接口**都不筛**，而且上下文里对**任何**文件
+ * 都只放「路径 + 大小 + sha256」引用、从不放字节——「exe 没进上下文」不是过滤，
+ * 是所有文件都不进上下文。详见 `src/dsh/attachments.ts` 的文件头。这一组断言就是
+ * 防止那个筛子再被加回来。
  *
  * 运行：npm test
  */
@@ -35,8 +38,9 @@ try {
   const gbkPath = join(dir, "gbk.txt");
   writeFileSync(gbkPath, Buffer.from([0xd6, 0xd0, 0xce, 0xc4])); // GBK 的「中文」
 
-  const bigPath = join(dir, "big.txt");
-  writeFileSync(bigPath, "x".repeat(600 * 1024), "utf8");
+  // 比 webview 拖放上限大得多：回形针这条路（宿主直读 + 原始字节 POST）不设限
+  const bigPath = join(dir, "big.bin");
+  writeFileSync(bigPath, Buffer.alloc(12 * 1024 * 1024, 0x78));
 
   const subDir = join(dir, "assets");
   mkdirSync(subDir, { recursive: true });
@@ -52,15 +56,15 @@ try {
   assert.strictEqual(png.kind === "attachment" && png.attachment.kind, "image");
   assert.ok(png.kind === "attachment" && png.attachment.dataUrl?.startsWith("data:image/png;base64,"));
 
-  // 旧版这三样都退回「只给路径」；上传路径按字节发，它们都能传
+  // 这三样**不能**再被筛掉：官方上传不挑内容，上下文里只放引用（不是字节）
   const cases: [string, Parameters<typeof classifyPath>[0]][] = [
     ["二进制", { path: exePath, name: "tool.exe", acceptsImage: true }],
     ["非 UTF-8", { path: gbkPath, name: "gbk.txt", acceptsImage: true }],
-    ["过大", { path: bigPath, name: "big.txt", acceptsImage: true }],
+    ["超过拖放上限", { path: bigPath, name: "big.bin", acceptsImage: true }],
   ];
   for (const [label, input] of cases) {
     const outcome = classifyPath(input);
-    assert.strictEqual(outcome.kind, "attachment", `${label} 应当作为文件附件上传`);
+    assert.strictEqual(outcome.kind, "attachment", `${label} 应当作为文件附件上传（官方不筛）`);
     assert.strictEqual(outcome.kind === "attachment" && outcome.attachment.kind, "file", `${label} 是文件附件`);
   }
   console.log("classify: 文本/图片/二进制/非 UTF-8/过大 → 附件 ✓");

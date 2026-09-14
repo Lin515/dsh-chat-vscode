@@ -6,6 +6,146 @@
 
 （发版时改成版本号。下面这一批是 0.5.1 之后报上来的问题与对齐工作。）
 
+### 输入通道、历史加载、轮尾与面板的一批对齐（2026-09-14，用户口径）
+
+**零、「轨迹」开始与官方对齐（第一步：账本 + 详情检查器 + 工具栏）。**
+先纠正一个事实：上一版把面板**改名**成「工具调用」以「不冒充官方视图」——用户否掉
+了这条路（「我要的效果就是要和官方一样，请对齐实现」），所以**名字保持「轨迹」**，
+改为真做。调研结论（完整规格见 `docs/design-trajectory.md`）：
+
+- 官方的轨迹视图**没有任何服务端接口、也没有投影**：它是客户端对**同一份 durable
+  事件窗口**做的**第二次折叠**（8 个 definition 各自贡献记录 → snapshot → 账本）。
+  `session/follow` + `session/page` 就是它的全部输入，所以本扩展**不需要新 RPC**，
+  需要的只是同一份事件的另一套折叠（聊天流那套在 `adapter.ts`，口径是「人类转写」）。
+- 落地：宿主新增 `src/dsh/trajectory.ts`（`deriveTrajectoryModel`，纯函数，输入是
+  `adapter.trajectoryEvents()` 的**全部** durable 事件——chat 折叠刻意忽略的
+  `request/header`、`compaction/*`、`tool/ptc-dispatch*` 正是账本的原料）；
+  线格式 `{type:"trajectory", json}`（整段 JSON 字符串，绕开「undefined 键被丢掉」
+  那套语义，也不必给几十个轨迹字段登记 `wire.ts`）；界面 `components/Trajectory.tsx`
+  = 工具栏（轮次/调用折叠 + 搜索）+ 两列账本（event / content）+ 详情检查器
+  （页签按记录种类派生，与官方 `detailTabs()` 同一套分支）；文案逐字取官方，
+  单独放 `webview/trajectoryTexts.ts`（只在 webview 内消费，不走 `@key` 标记）。
+- **本步刻意没做的**（都写在 `dsh/trajectory.ts` 的文件头，免得下次当成 bug 查）：
+  **时间线**（第二步）、流式中的助手正文不出行、系统提示词的独立更新按
+  `request/header` 变化合并、请求编号按 `step/start` 递增。
+- 验证：`scripts/trajectory.test.ts`（八个断言组：七种记录的顺序与序号连续性、
+  用户 vs 上下文的分派、工具 call↔result 合成一条、压缩生命周期、系统提示词更新带
+  上一版、轮次分组与 prologue 合并、重试与轮次错误、运行中与中断）；
+  夹具 + `npm run preview` 用 Playwright 实测（七种标签、轮次折叠 9→2→9、搜索高亮、
+  三种记录的页签集合与官方一致）。
+
+**一、`@` 与「附件」是两条通道，界面上一眼可分。** 此前 `@` 选中文件后生成的是
+**附件栏里的引用芯片**——和「添加文件」上传出来的芯片长得几乎一样，用户分不出
+「我是让它自己读，还是我把文件传上去了」。现在：
+
+- `@` 选中文件 → 把官方的 `@path` token **直接插进输入框正文**（目录是 `@dir/`，
+  含空白的路径加引号），发送出去的就是这串文本；系统提示段据此告诉模型「这是用户
+  显式引用的工作区路径，需要内容就用 `read` 工具读」。**不再进附件栏**。
+  token 的产生规则收敛到 `src/shared/mentions.ts` 一份（宿主拼引用与界面插 token
+  必须逐字一致，否则同一次引用会随入口变成两种拼写）。
+- 附件通道**与官方一致：只按「是不是图片」分派**。图片 → 内容块；**其余文件
+  （含二进制、非 UTF-8、任意大小）一律逐字节上传**。
+- **踩过的坑，别再踩**：中途加过一层「模型读不读得了」的筛子（二进制 / 非 UTF-8 /
+  超 8 MB → 改成裸路径引用），理由是「给模型读不出的字节没意义」。**这个理由本身是
+  错的**，用户实测（Web 端上传一个 exe）推翻了它：官方客户端与上传接口都**不筛**
+  （`dsh-client-file-upload/lib/types/client/runtime.js` 的 `upload()` 只做 base64 /
+  流式两件事），而**上下文里对任何文件都只放**「路径 + 大小 + sha256」引用
+  （`session/prompt` 只带 `{type:'file', receiptId}`，宿主解析成 `FileAttachmentRef`，
+  其 `attachmentId` 就是字节的 sha256）——「exe 没进上下文」不是过滤，是**所有文件
+  都不进上下文**。上传出来的那份只读副本 + 内容寻址 id 对模型反而有用。扩展自加的
+  筛子只会让同一个文件在 Web 上是「已上传的引用」、在扩展里变成一串裸路径文本。
+  唯一的真实准入限制在图片那条路上（官方 `IMAGE_ADMISSION_ERROR_CODES`，限额经
+  `imageLimits` 投影下发，本扩展已消费）。
+
+**二、「添加选区」与「添加文件」合并成一条命令，并给了默认快捷键。**
+`dshChat.addSelection` + `dshChat.addFile` → `dshChat.addToChat`，绑定
+**`Alt+Shift+2`**；有选中就加选区，没选中就加整个文件。命令标题**不能**随选中状态
+变化（VS Code 的菜单项标题来自 `package.json`，运行期没有 API 可改，菜单贡献项也
+不支持逐项 `title` 覆盖），所以命名为「添加文件(或选区)到对话」。
+
+**二之二、右键菜单里「选了代码也加整个文件」——VS Code 的传参坑。**
+`editor/context` 的命令**也会**把当前文档的 uri 当第一个参数传进来，和
+`explorer/context` 一模一样；当初「有 uri 就当资源管理器点击」的判断于是把编辑器
+里的选区吃掉了。判据改成「这个 uri 是不是当前编辑器打开的那份」：是 → 编辑器入口
+（按选区分派），不是 → 资源管理器点中的文件。
+
+**三、历史加载定成「一次取全部」。** 审计结论：早先「至少取到用户的上一条消息」
+的判据与服务端的分页粒度**对不上**——`session/page` 的 `paginate()` 按**固定条数**
+（本扩展传 50）从 `beforeSeq` 往前切，切点与轮次边界无关；一轮几十条消息而一页固定
+50 条，切点几乎总落在上一轮中间，于是循环一路取到底——**实际行为本来就是「一次
+触发取回整个历史」**，与当初的设计意图相反。既然用户也认可，就把它定成设计：判据
+只留「服务端说没有了」与「这一页没进展」，外加一个防病态的页数安全阀
+`MAX_HISTORY_PAGES = 200`（`src/dsh/historyPaging.ts` 有完整推导）。按钮文案改为
+「加载全部历史」。
+
+**四、右侧轮次横条：做完又被否掉，已整体删除。** 曾按官方 turn rail 实现（投影 +
+已加载窗口合并、可点可预览、未加载画虚线），用户试用后判定「有点违和，先删掉，
+后续再考虑别的设计」。**代码已全部移除**（`src/webview/turnRail.ts`、断言、
+`App.tsx` 里的横条与滚动定位、CSS）。`turnOutline` 投影的**解析保留**——它的形状
+上一批刚按契约修对（见第七节），留着给后续的导航设计直接用。
+
+**五、其它界面改动。**
+
+- **用户消息超过 5 行默认收缩**，「展开 / 收起」放在**轮尾操作行的最右侧**
+  （时间 → 复制 → 展开，用户口径）。判定按**实测渲染高度**而不是数换行符——一段
+  没有换行符的长 prompt 照样会折行占满整屏。折叠行数只写在 `Message.tsx` 的
+  `USER_COLLAPSE_LINES`，CSS 经自定义属性读它（两处各写一个 5 迟早对不上）。
+  **坑**：把这个 ref 当 prop 传给子组件时**不能叫 `ref`** —— React 18 里它是函数
+  组件的保留 prop，传进去不进 props（只有一条警告），`ref.current` 永远 null、
+  溢出测不出来，按钮根本不出现。已改名 `nodeRef` 并写在注释里。
+- **每轮的复制 / 分支 / 用时常驻显示**（原来 `opacity: 0` + 悬停揭示）。一条轮尾操作
+  行本来就是那一轮唯一可点的东西，藏起来只会看着像一段空白；
+- **分支图标改成「竖干 + 向右拐出再向下」**：旧版那三段弧线没有接到主干上，
+  15px 下看不出哪条是分支、更没有「分出方向」。
+  （「轨迹」面板**保留原名**，见第零节。）
+
+**六、`ui-conversation.busyEnter` 从「部分生效」补成完整生效。** 审计发现三处缺口：
+
+- **冷启动读不到**：`applyBusyEnter` 只在 `describeSettings()` 里调用，而它只由
+  「打开设置抽屉 / 保存设置 / 外部改 settings.yaml」触发——新窗口在碰过一次设置面板
+  之前 `busyEnter` 恒为 undefined，用户的 `steer` 静默退回 queue。现在随
+  `settings/describe` 一起喂（`refreshImageCaps` 那条链路），并按变化推一帧给界面；
+- **运行中守门失效**：`send()` 先乐观置 `scope.running = true` 再判定模式，于是
+  `!running → queue` 这道门永远走不进去，空闲发消息也带 `mode:"steer"`。现在**先取
+  `wasRunning` 再置位**；
+- **手势与按钮那一半完全没做**：`submitMode(scope)` → `resolveSubmitMode(running,
+  gesture)`，逐字移植官方 `resolveSubmitMode`（主手势用设置值、**Cmd/Ctrl+Enter 取
+  相反值**、空闲恒 queue）；`send` IPC 增加 `gesture` 字段；运行中草稿非空时主按钮
+  不再是「停止」，而是按设置标注的「排队发送 / 插话发送」（草稿为空才是停止，与官方
+  `primaryStops` 同口径）；队列行补上「插话发送」（`session/updateQueue` 的
+  `{kind:'steer'}`，只对 `queued` 行给出，`steer-unavailable` 按官方口径静默）。
+  设置面板里这一项现在有中英双语的人话标题与说明。
+
+**七、`turnOutline` 投影的形状读错了（第三次「按猜测的形状写」）。** 契约是
+`{turn, seq, prompt, response}`，扩展读的是 `{turn, seq, summary, startedAt}` ——
+`summary` 恒空串、`startedAt` 恒 0，而 `prompt`/`response` **从未被读过**；因为没有
+消费者所以一直没显症状。现在按契约逐字解析（容忍度与官方 `outlineEntry` 同口径：
+`turn`/`seq` 坏了整条丢弃，预览坏了退化成空串）。它一度由轮次横条消费，横条被否掉
+之后**解析保留、暂无消费者**——形状是对的，留着给后续的导航设计直接用（比「解析了
+但字段全错」好得多）。
+
+**八、后台任务面板的两处错判。** `stopping` / `killed` 以前画成「运行中」/「没有
+状态点」，与官方 `dotState`（两者同为 warning 色）相反——按了停止的任务看起来还在
+跑、已被取消的连点都没有；排序也改回官方 `ordered()`（在跑的恒在最前、按开始时间
+升序；已结束按结束时间降序）。另外**词表外的状态不再折成「已完成」**（那是对未知
+状态给出一个错误的肯定结论），而是原样显示 + 未知色调。
+
+**九、`code --install-extension` 的 `[DEP0169] url.parse()` 警告：不是扩展的问题，
+但给了静音办法。** `--trace-deprecation` 的调用栈指向 VS Code 自己的 CLI
+（`cliProcessMain.js` → gallery 元数据查询 → `url.parse`），安装阶段扩展根本没被
+加载，命令退出码 0。本扩展改不了 VS Code 源码，新增 `npm run install:vsix`
+（`scripts/installVsix.mjs`）用 `NODE_OPTIONS=--no-deprecation` 静音；脚本自己解析
+`Code.exe` + `out/cli.js` 直接启动，绕开 `.cmd`（Node 不允许直接 spawn `.cmd`，
+`shell: true` 又会引入 DEP0190，手拼 `cmd /s /c` 的引号规则会把路径连引号当字面量）。
+
+**验证**：`npm run typecheck` / `npm test`（47 套，新增 `jobsOrder` 与 `trajectory`
+两套）/ `npm run build`（无 `[duplicate-case]` 警告）；`scripts/historyReplay.test.ts`
+按新口径重写（旧断言「取到用户的上一条消息为止」已被取代）；
+`scripts/pathInsert.test.ts` 明确钉住「二进制 / 非 UTF-8 / 超限也要做成附件」
+（防止可读性筛子被加回来）；界面改动在 `npm run preview` 里用 Playwright 实测过
+（展开按钮的位置与折叠往返、操作行常驻、横条已移除）；`npm run install:vsix`
+实测警告消失、安装成功。
+
 ### 关掉自动启动后不再"无脑重连"，多窗口共用会合文件里的令牌（2026-09-14，用户口径）
 
 **问题一：关掉 `dshChat.autoStart` 之后扩展还是会自己拉起后台。** 激活期的自动连接、

@@ -29,6 +29,7 @@
   "Failed to load earlier history": "加载更早的历史失败",
   "Failed to create the branch": "创建分支失败",
   "Failed to cancel the queued message": "取消排队消息失败",
+  "Failed to steer the queued message": "插话发送失败",
   "Failed to send": "发送失败",
   "Failed to run {0}": "执行 {0} 失败",
   "Failed to take back the queued message; only the current turn was stopped": "取出排队消息失败，已只中止当前轮",

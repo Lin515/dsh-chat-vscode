@@ -1,4 +1,4 @@
-import { memo, useRef, useState, type ReactNode } from "react";
+import { memo, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
 import type { DiffLayout, FileChangeKind, MessageView, Segment } from "../../shared/chat";
 import { post } from "../bridge";
 import { IconBranch, IconCopy } from "../icons";
@@ -20,6 +20,53 @@ function StreamText({ text }: { text: string }) {
   return (
     <div ref={ref} className="md-wrapper">
       <Markdown text={shown} />
+    </div>
+  );
+}
+
+/**
+ * 用户消息默认折叠的行数（用户 2026-09-14 口径：超过 5 行就默认收缩）。
+ *
+ * 实现走 CSS `max-height` + 实测溢出，而不是「数字符串里的换行符」：一段很长的
+ * prompt 可能一个 `\n` 都没有，却会折行占满整屏——按换行符数会以为只有一行、
+ * 于是不折，正是用户抱怨的那种「一条消息把整个会话顶下去」。
+ */
+const USER_COLLAPSE_LINES = 5;
+
+/**
+ * 用户消息正文（只渲染气泡；「展开 / 收起」按钮在消息的**操作行**里，见下面）。
+ *
+ * 溢出判定必须**在折叠态下量**：`is-clamped` 一直在（未展开时），于是
+ * `scrollHeight > clientHeight` 就是「内容比 5 行高」这个事实本身。展开后不再
+ * 重算（那时量不出区别），按钮由已知的溢出状态决定去留。
+ *
+ * 状态与测量都由**父组件**（`Message`）持有：「展开」按用户口径要和时间、复制
+ * 同一行、且最靠右——那三个按钮都在 `.msg-actions` 里，气泡在它上面。hooks 因此
+ * 提到 `Message` 顶部（必须在 role 早退之前，顺序才固定）。
+ */
+function UserBubble({
+  text,
+  expanded,
+  nodeRef,
+}: {
+  text: string;
+  expanded: boolean;
+  /**
+   * **不能叫 `ref`**：React 18 里 `ref` 是函数组件的保留 prop，传进去不会出现在
+   * props 里（会警告「Function components cannot be given refs」），
+   * `bubbleRef.current` 于是永远是 null、溢出永远测不出来——按钮就不出现。
+   */
+  nodeRef: RefObject<HTMLDivElement>;
+}) {
+  return (
+    <div
+      ref={nodeRef}
+      className={`bubble${expanded ? "" : " is-clamped"}`}
+      // 折叠行数只写在这一个常量里，CSS 通过自定义属性读它（见 app.css 的
+      // `.bubble.is-clamped`）——两处各写一个 5 迟早会对不上。
+      style={{ "--user-clamp-lines": USER_COLLAPSE_LINES } as CSSProperties}
+    >
+      {text}
     </div>
   );
 }
@@ -50,10 +97,32 @@ export const Message = memo(function Message({
   const texts = useTexts();
   // 轮级过程折叠的展开态。hooks 必须在早退之前（顺序固定）
   const [processOpen, setProcessOpen] = useState(false);
+  // 用户消息的收缩态与「内容比 5 行高」这个事实（同上，必须在早退之前）。
+  // 按钮画在操作行里、气泡在它上面，所以状态只能由这里持有。
+  const bubbleRef = useRef<HTMLDivElement>(null);
+  const [bubbleOpen, setBubbleOpen] = useState(false);
+  const [bubbleOverflowing, setBubbleOverflowing] = useState(false);
+
+  useLayoutEffect(() => {
+    if (message.role !== "user") return;
+    const el = bubbleRef.current;
+    if (!el || bubbleOpen) return;
+    const measure = () => setBubbleOverflowing(el.scrollHeight - el.clientHeight > 2);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    // 面板变窄会让同样的文字折成更多行：窗口尺寸变化也要重量一次
+    window.addEventListener("resize", measure);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, [message.role, message.text, bubbleOpen]);
+
   if (message.role === "user") {
     return (
       <div className="msg msg-user">
-        <div className="bubble">{message.text}</div>
+        <UserBubble text={message.text ?? ""} expanded={bubbleOpen} nodeRef={bubbleRef} />
         {message.attachments?.length ? (
           <div className="composer-chips">
             {message.attachments.map((attachment) => (
@@ -66,7 +135,10 @@ export const Message = memo(function Message({
         {/* 用户消息也有操作行：官方 `MessageIconActions` 是用户与助手**共用**的，
             用户那一支给「时钟（start）+ 复制」、**没有分支**（分支必须锚在
             `turn/end` 上，用户消息不是锚点）。此前用户消息完全没有操作行，
-            想复制自己刚发的那段长 prompt 无处可点，只能手动选中。 */}
+            想复制自己刚发的那段长 prompt 无处可点，只能手动选中。
+
+            「展开 / 收起」也在这里，且**最靠右**（用户 2026-09-14 口径）：它属于
+            「这条消息的操作」，和复制同一行才顺手；放在气泡下方会另起一段空白。 */}
         <div className="msg-actions">
           <span className="msg-time">{formatClock(message.ts)}</span>
           <button
@@ -76,6 +148,16 @@ export const Message = memo(function Message({
           >
             <IconCopy size={14} />
           </button>
+          {bubbleOverflowing ? (
+            <button
+              className="msg-expand"
+              aria-expanded={bubbleOpen}
+              title={bubbleOpen ? texts.userMessageCollapse : texts.userMessageExpand}
+              onClick={() => setBubbleOpen((value) => !value)}
+            >
+              {bubbleOpen ? texts.userMessageCollapse : texts.userMessageExpand}
+            </button>
+          ) : null}
         </div>
       </div>
     );

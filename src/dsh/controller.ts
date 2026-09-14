@@ -23,6 +23,7 @@ import { ConfigChangeRouter } from "./configChanges";
 import { fileChangeKind, hasWorkingChange, isNotFoundError, resolveChipPath, type FileExistence, type GitChangeStateLike } from "./fileChange";
 import { shouldContinuePaging } from "./historyPaging";
 import { composeWithReferences, formatFileMention } from "./references";
+import { formatFileMentionWithLines } from "../shared/mentions";
 import { resolveForVsCode } from "./hostText";
 import { DshApiError, DshAuthError, DshClient, type SessionSummaryWire } from "./client";
 import type { RemoteEventFrame, RemoteEventWaterfall, SessionControlFrame } from "./protocol";
@@ -36,6 +37,7 @@ import {
 import { SessionScope } from "./scope";
 import { queueItems, type QueueOrigin } from "./queueView";
 import { goalFromProjection, planModeFromProjection, subagentsFromCatalog, subagentsFromList } from "./projections";
+import { deriveTrajectoryModel } from "./trajectory";
 import { lineageDepths, visibleSessionRows } from "./sessionList";
 import { buildSettingsSection } from "./settingsSchema";
 import { isBlank, WindowRestore, WorkspaceWindowStateStore, type SidebarSlot, type WindowCache, type WindowKind } from "./windowState";
@@ -577,6 +579,10 @@ export class ChatController implements vscode.Disposable {
       tokenUsage: scope?.tokenUsage,
       turnOutline: scope?.turnOutline,
       imageLimits: scope?.imageLimits,
+      // 「繁忙时的发送行为」是**全局部署设置**（不是会话态），但界面要按它显示
+      // 运行中发送按钮的文案，所以首帧也得带上——否则重载后按钮文案退回默认，
+      // 直到下一次 settings/describe 才有值。
+      busyEnter: this.busyEnter === "steer" ? "steer" : "queue",
     };
   }
 
@@ -1737,12 +1743,11 @@ export class ChatController implements vscode.Disposable {
    * `true` →（prependRecords 的 hasMoreHistory / messages/reset）→ `false`：
    * 界面先拿到内容，再看到「取完了」。
    *
-   * **连取由宿主驱动**（界面只发一次请求）：一次触发要「至少取到用户的上一条消息」，
-   * 而判断「到没到一轮的开头」「这一页到底有没有带来新事件」都只有宿主有真凭据
-   * （适配器的消息流与新并入的事件数）。放在界面侧拿「首条消息 id 变没变」猜，
-   * 会在「旧事件只是把第一条助手消息补长」时误判成没进展而提前收手
-   * （用户 2026-09-15 报的「并没有加载到上一条消息就已经停了」，现场见
-   * `scripts/pageLoopProbe.ts`）。
+   * **连取由宿主驱动，且一次取到底**（界面只发一次请求）：服务端按固定消息条数
+   * 分页，页边界与轮次无关，因此「取到用户的上一条消息就停」这个判据在真实数据上
+   * 几乎从不成立（切点总落在某一轮中间），实际表现就是**一次触发把整个历史取完**
+   * ——那正是现在的设计（用户 2026-09-14 拍板）。判据只留「服务端说没有了」与
+   * 「这一页没进展」两条，外加一个防病态的页数安全阀（见 `dsh/historyPaging.ts`）。
    */
   private async loadMore(viewId: string): Promise<void> {
     const scope = this.scopeOfView(viewId);
@@ -1767,7 +1772,9 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
-   * 一页一页往前取，直到**取到用户的上一条消息**（一轮的开头）或没有更早的了。
+   * 一页一页往前取，**直到把窗口外的历史全部取回来**（不再停在「用户的上一条
+   * 消息」那个轮次边界上——服务端按固定条数分页，切点与轮次无关，那个判据只在
+   * 页边界碰巧落在一轮开头时才成立；见 `dsh/historyPaging.ts` 的完整说明）。
    *
    * 每页都会单独发一份 `messages/reset`：界面逐页把视口钉回原处（见 App 的
    * `useHistoryPaging`），所以用户看到的是「内容在上面长出来、自己没被推走」。
@@ -1793,12 +1800,12 @@ export class ChatController implements vscode.Disposable {
         Boolean(page.hasMore),
       );
       pages += 1;
-      if (shouldContinuePaging(added, Boolean(page.hasMore), scope.adapter.snapshotMessages())) {
+      if (shouldContinuePaging(added, Boolean(page.hasMore), pages)) {
         continue;
       }
       this.log(
-        `[history] 取到第 ${pages} 页停：新并入 ${added} 条事件、hasMore=${Boolean(page.hasMore)}、` +
-          `顶部=${scope.adapter.snapshotMessages()[0]?.role ?? "（空）"}`,
+        `[history] 共取 ${pages} 页停：本页新并入 ${added} 条事件、hasMore=${Boolean(page.hasMore)}、` +
+          `消息 ${scope.adapter.snapshotMessages().length} 条`,
       );
       return;
     }
@@ -2108,16 +2115,30 @@ export class ChatController implements vscode.Disposable {
       }
 
       case "turnOutline": {
-        // 轮次导航：每轮的序号、起始 seq 与一句话摘要。界面用它做「跳到某一轮」。
+        // 轮次横条的数据源：每轮的序号、`turn/start` 的 seq 与两段有界预览。
+        //
+        // 形状**逐字按契约**（`dsh-session-turn-outline` 的 `TurnOutlineEntry`）：
+        // `{turn, seq, prompt, response}`。此前读的是 `summary`/`startedAt`——投影里
+        // 没有这两个字段，于是恒为空串/0，而真正的 `prompt`/`response` 从没被读过。
+        //
+        // 容忍度与官方客户端 `outlineEntry` 同口径：`turn`/`seq` 是**承重字段**
+        // （没有它们横条既画不出记号也跳不了），坏了就整条丢弃；两段预览只是装饰，
+        // 类型不对退化成空串，轮次照样可按序号导航。
         const rounds = Array.isArray(value) ? value : [];
-        scope.turnOutline = rounds.map((round) => {
-          const item = round as { turn?: unknown; seq?: unknown; summary?: unknown; startedAt?: unknown };
-          return {
-            turn: numberOr(item.turn, 0),
-            seq: numberOr(item.seq, 0),
-            summary: typeof item.summary === "string" ? item.summary : "",
-            startedAt: numberOr(item.startedAt, 0),
-          };
+        scope.turnOutline = rounds.flatMap((round) => {
+          const item = round as { turn?: unknown; seq?: unknown; prompt?: unknown; response?: unknown };
+          const turn = numberOr(item.turn, -1);
+          const seq = numberOr(item.seq, -1);
+          if (!Number.isSafeInteger(turn) || turn < 0) return [];
+          if (!Number.isSafeInteger(seq) || seq < 0) return [];
+          return [
+            {
+              turn,
+              seq,
+              prompt: typeof item.prompt === "string" ? item.prompt : "",
+              response: typeof item.response === "string" ? item.response : "",
+            },
+          ];
         });
         this.deliver(scope.sessionId, { type: "patch", patch: { turnOutline: scope.turnOutline } });
         break;
@@ -2242,19 +2263,14 @@ export class ChatController implements vscode.Disposable {
         startedAt?: number;
         finishedAt?: number;
       };
-      const status =
-        item.status === "running" ||
-        item.status === "stopping" ||
-        item.status === "completed" ||
-        item.status === "killed" ||
-        item.status === "failed"
-          ? item.status
-          : "completed";
+      // 状态**原样保留**（含服务端将来新增的取值）：以前这里把词表外的状态兜底成
+      // `"completed"`，等于对未知状态给出「已完成」这个肯定结论——正是 AGENTS.md
+      // 禁止的「按否定证据下结论」。界面按查表渲染，查不到就原样显示、不猜色调。
       return {
         id: item.id,
         kind: item.kind ?? "job",
         label: item.label ?? item.id,
-        status,
+        status: typeof item.status === "string" && item.status ? item.status : "unknown",
         detail: item.detail,
         startedAt: item.startedAt ?? Date.now(),
         finishedAt: item.finishedAt,
@@ -2475,6 +2491,13 @@ export class ChatController implements vscode.Disposable {
           acceptsImage: this.acceptsImageFor(this.defaultModel.provider, this.defaultModel.model),
         };
       }
+      // 同一份 settings/describe 结果顺带喂「运行中回车行为」。
+      //
+      // 以前 `applyBusyEnter` 只在 `describeSettings()` 里调用，而后者只在**用户
+      // 打开设置抽屉 / 保存设置 / 外部改了 settings.yaml** 时才跑——于是新开一个
+      // 窗口后、在碰过一次设置面板之前，`busyEnter` 恒为 undefined，用户的
+      // `steer` 设置静默退回 queue（本条修复来自审计结论，见 CHANGELOG）。
+      this.applyBusyEnter(described.namespaces ?? []);
     } catch (error) {
       this.log(`[models] 图片输入能力读取失败：${this.describeError(error)}`);
     }
@@ -2598,7 +2621,7 @@ export class ChatController implements vscode.Disposable {
         // **用户显式动作**（按了发送）：允许拉起后台（关掉自动启动时也算数，
         // 用户口径 2026-09-14：autoStart 只约束扩展自己的自动行为）
         if (!this.client || this.connection !== "connected") await this.ensureConnected({ start: true });
-        await this.send(viewId, message.text, message.attachments);
+        await this.send(viewId, message.text, message.attachments, message.gesture ?? "enter");
         break;
 
       case "stop":
@@ -2619,6 +2642,21 @@ export class ChatController implements vscode.Disposable {
       case "queueEdit":
         await this.editQueuedMessage(viewId, message.id);
         break;
+
+      case "queueSteer": {
+        // 把队列里的一条改成插话（官方 queue 行的「插话」按钮）。
+        // 服务端要求 agent 正在运行；`session/steer-unavailable` 与
+        // `session/queue-item-not-found` 按官方口径**静默**处理——那是「状态已经
+        // 不是你以为的那样」，队列帧随之会刷新界面，弹一个错误只会让人困惑。
+        const scope = this.scopeOfView(viewId);
+        if (!this.client || !scope || !message.id) break;
+        this.client.updateQueueSteer(scope.sessionId, message.id).catch((error) => {
+          const text = error instanceof Error ? error.message : String(error);
+          if (/steer-unavailable|queue-item-not-found/.test(text)) return;
+          this.reportError(vscode.l10n.t("Failed to steer the queued message"), error);
+        });
+        break;
+      }
 
       case "newSession":
         await this.newSession(viewId);
@@ -2798,6 +2836,18 @@ export class ChatController implements vscode.Disposable {
         break;
       }
 
+      case "listTrajectory": {
+        // 轨迹账本：把该窗口会话的**全部 durable 事件**折一遍（官方视图也是
+        // 客户端自己折的，没有对应 RPC，见 `dsh/trajectory.ts` 的文件头）。
+        // 整份模型走 JSON 字符串，绕开「undefined 键被丢掉」那套线格式语义。
+        const adapter = this.scopeOfView(viewId)?.adapter;
+        const model = adapter
+          ? deriveTrajectoryModel(adapter.trajectoryEvents(), adapter.hasMoreHistory())
+          : { turns: [], cellCount: 0, totalSeconds: 0, firstStartedAt: null, hasOlder: false };
+        this.emitToView(viewId, { type: "trajectory", json: JSON.stringify(model) });
+        break;
+      }
+
       case "listCommands":
         await this.listCommandsForView(viewId);
         break;
@@ -2880,7 +2930,12 @@ export class ChatController implements vscode.Disposable {
     if (viewId) await this.stopRunning(viewId);
   }
 
-  private async send(viewId: string, text: string, attachments: Attachment[]): Promise<void> {
+  private async send(
+    viewId: string,
+    text: string,
+    attachments: Attachment[],
+    gesture: "enter" | "accelerated" = "enter",
+  ): Promise<void> {
     if (!this.client) return;
     // 窗口还没有会话（空态）：首条消息就建立它
     let scope = this.scopeOfView(viewId);
@@ -2919,23 +2974,6 @@ export class ChatController implements vscode.Disposable {
       (attachment): attachment is Attachment & { path: string } =>
         attachment.kind === "reference" && Boolean(attachment.path),
     );
-    const selections = attachments.filter((attachment) => attachment.kind === "selection" && attachment.text);
-    // 选区是本地便利能力（官方没有对应原语）：它的文本仍作为上下文前置。
-    // 带行号的选区把范围写进正文——用户引的是「这个文件的这几行」，
-    // 不说清楚的话模型只能猜代码出处（用户 2026-09-14 明确要求）。
-    if (selections.length) {
-      content.push({
-        type: "text",
-        text: selections
-          .map((attachment) => {
-            const range = attachment.lines
-              ? ` 第 ${attachment.lines.start}-${attachment.lines.end} 行`
-              : "";
-            return `以下是来自 ${attachment.name}${range} 的选中代码：\n\`\`\`\n${attachment.text}\n\`\`\``;
-          })
-          .join("\n\n"),
-      });
-    }
     const uploaded: { receiptId: string }[] = [];
     const notUploaded: string[] = [];
     for (const attachment of attachments) {
@@ -2980,6 +3018,10 @@ export class ChatController implements vscode.Disposable {
       const key = this.keyForView(viewId);
       this.attachmentsBySession.set(key, []);
       this.drafts.set(key, "");
+      // **先**取「发出去的那一刻 agent 还在不在跑」，再乐观置位。顺序反了的话
+      // `resolveSubmitMode` 里的 `!running` 这道门永远走不进去，空闲发消息也会带
+      // `mode:"steer"`（审计确认的缺陷，见 resolveSubmitMode 的注释）。
+      const wasRunning = scope.running;
       scope.running = true;
       this.deliver(scope.sessionId, { type: "patch", patch: { attachments: [], draft: "", running: true } });
       // requestId 由这里铸造：队列帧会把同一个 id 作为 rpcId 带回来，
@@ -2987,7 +3029,9 @@ export class ChatController implements vscode.Disposable {
       const requestId = randomUUID();
       // 队列「重新编辑」要还原用户**原始**输入，所以记的是拼引用之前的正文
       this.rememberSubmission(requestId, text.trim(), content, attachments);
-      await this.client.prompt(scope.sessionId, content, this.submitMode(scope), requestId);
+      const mode = this.resolveSubmitMode(wasRunning, gesture);
+      this.log(`[submit] 手势=${gesture} 运行中=${wasRunning} → mode=${mode}`);
+      await this.client.prompt(scope.sessionId, content, mode, requestId);
       if (notUploaded.length) this.warnUploadIncomplete(viewId, notUploaded);
     } catch (error) {
       scope.running = false;
@@ -2997,18 +3041,31 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
-   * 运行中提交时用 queue 还是 steer（官方 `resolveSubmitMode`）。
+   * 提交模式：官方 `resolveSubmitMode` 的逐字移植
+   * （`dsh-client-ui-conversation/lib/client.js`）：
    *
-   * 本机 `~/.dsh/settings.yaml` 就是 `ui-conversation.busyEnter: steer`，而这里
-   * 曾经把 `"queue"` 写死——设置面板里改了「保存成功但不生效」
-   * （docs/audit-summary.md §17）。
+   * ```js
+   * if (!running || !steeringAvailable) return "queue";
+   * if (gesture === "enter") return preferred;                       // 设置值本身
+   * return preferred === "queue" ? "steer" : "queue";                // 加速手势取反面
+   * ```
    *
-   * steer 需要 agent 处于 `running`：不满足时退回 queue，否则服务端会拒绝。
-   * running 是**会话**级状态（多会话并行跑时互不影响）。
+   * 三个要点：
+   * - **`running` 必须是「手势发生时」的值**，不能是乐观置位之后的（见 send 里
+   *   `wasRunning` 的取值顺序）——否则空闲发消息也会带 `mode:"steer"`，队列行被
+   *   标成 `steering`；
+   * - **主手势（回车 / 发送按钮）用设置值，Cmd/Ctrl+Enter 取反面**：设置项文案
+   *   「Cmd/Ctrl+Enter 使用另一行为」说的就是这条；
+   * - `steeringAvailable` 在本扩展里**恒为真**：子代理会话不进会话列表
+   *   （`dsh/sessionList.ts` 过滤 `origin !== "subagent"`），`openSubagent` 只拉一份
+   *   只读快照、不把窗口绑到子代理会话上，所以可发送的会话都不是「一次性子代理
+   *   地址」。这是自觉的取值（不是官方等价实现），写在注释里以免将来误读。
    */
-  private submitMode(scope: SessionScope): "queue" | "steer" {
-    if (!scope.running) return "queue";
-    return this.busyEnter === "steer" ? "steer" : "queue";
+  private resolveSubmitMode(running: boolean, gesture: "enter" | "accelerated"): "queue" | "steer" {
+    if (!running) return "queue";
+    const preferred = this.busyEnter === "steer" ? "steer" : "queue";
+    if (gesture === "enter") return preferred;
+    return preferred === "queue" ? "steer" : "queue";
   }
 
   /** `ui-conversation.busyEnter` 设置（`queue` / `steer`），未配置时按 queue。 */
@@ -3018,7 +3075,12 @@ export class ChatController implements vscode.Disposable {
   private applyBusyEnter(settings: { ns?: string; value?: unknown }[]): void {
     const section = settings.find((item) => item?.ns === "ui-conversation");
     const value = (section?.value ?? {}) as { busyEnter?: unknown };
-    this.busyEnter = typeof value.busyEnter === "string" ? value.busyEnter : undefined;
+    const next = typeof value.busyEnter === "string" ? value.busyEnter : undefined;
+    if (next === this.busyEnter) return;
+    this.busyEnter = next;
+    // 界面按它决定运行中发送按钮的文案（排队发送 / 插话发送），所以变了要推一帧；
+    // 值本身仍然由**宿主**在发送时解析成 `session/prompt.mode`（见 resolveSubmitMode）。
+    this.emitAll({ type: "patch", patch: { busyEnter: next === "steer" ? "steer" : "queue" } });
   }
 
   /** 提示：有文件附件没上传成功，发送时被跳过（内容没丢，仍在芯片上）。 */
@@ -3150,7 +3212,12 @@ export class ChatController implements vscode.Disposable {
     await this.addPaths(viewId, picked.map((uri) => uri.fsPath));
   }
 
-  /** 添加目录（单独入口：与文件选择器在 Windows 上互斥，见 pickFiles 注释）。 */
+  /**
+   * 添加目录（单独入口：与文件选择器在 Windows 上互斥，见 pickFiles 注释）。
+   *
+   * 与「添加文件/选区」统一：选中的目录插成 **`@dir/` 引用**（用户 2026-09-14
+   * 口径：目录、文件、文件某行一律走引用，不做附件）。
+   */
   private async pickFolder(viewId: string): Promise<void> {
     const picked = await vscode.window.showOpenDialog({
       canSelectMany: true,
@@ -3159,10 +3226,12 @@ export class ChatController implements vscode.Disposable {
       openLabel: vscode.l10n.t("Add folder as context"),
     });
     if (!picked?.length) return;
-    await this.addPaths(viewId, picked.map((uri) => uri.fsPath));
+    for (const uri of picked) {
+      this.insertMention(viewId, formatFileMention(this.relativePath(uri.fsPath), "directory"));
+    }
   }
 
-  /** 把一批路径交给 `applyPathsForView` 分派（图片 / 上传 / 目录引用）。 */
+  /** 把一批路径交给 `applyPathsForView` 分派（图片 / 上传）——**附件**入口专用。 */
   private async addPaths(viewId: string, paths: string[]): Promise<void> {
     await this.applyPathsForView(viewId, paths.map((path) => ({ path, name: this.attachmentName(path) })));
   }
@@ -3171,19 +3240,20 @@ export class ChatController implements vscode.Disposable {
    * 把一批路径并入当前会话的输入（附件入口：文件选择器 / 资源管理器右键 /
    * 命令面板「添加文件夹」）。
    *
-   * 三条去向，与官方一致：
+   * 三条去向，与官方一致（判据在 `attachments.classifyPath`）：
    * - **图片** → 图片附件（内容块，官方同样内联图片字节）；
    * - **目录** → `@dir/` **引用芯片**（官方靠结尾斜杠标记目录，模型自己决定
    *   要不要 list；目录不是「读不出来的文件」，不走路径文本兜底）；
    * - **其余文件** → 文件附件并**立即上传**（官方 upload-on-pick：选完就开始传，
    *   大文件在按下发送前就能看到进度，发送时只带 `receiptId`；上传路径按字节发，
-   *   类型与大小都不挑）。
+   *   类型与大小都不挑——官方也不挑，**不要**在这里加可读性/大小筛子，
+   *   理由见 `attachments.ts` 的文件头）。
    *
    * 只有文件读不出来（选择到读取之间被删的竞态）、或模型不收图片，才退回把带
    * 引号的路径插到光标处——那是最后一道兜底，不再假装「已作为上下文加入」。
    *
-   * 分工与 `@` 入口不同：`@` 选中的文件/目录一律只生成引用芯片（官方 @ 只发
-   * `@path` / `@dir/` token），真正逐字节上传只从这里发生。
+   * 分工与 `@` 入口不同：`@` 选中的文件/目录变成正文里的 `@path` token
+   * （纯路径引用，官方 @ 的语义），真正逐字节上传只从这里发生。
    */
   private async applyPathsForView(viewId: string, items: { path: string; name: string; directory?: boolean }[]): Promise<void> {
     // 文件上传需要会话：窗口还是空态时先建（附件按键是常见的第一步动作）
@@ -3691,32 +3761,55 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
-   * 供编辑器命令调用：把一段文本作为上下文加入最近活动窗口的输入框。
+   * 把编辑器选区作为 **`@` 引用**加进最近活动窗口的输入框（用户 2026-09-14 口径）。
    *
-   * `lines` 是选区覆盖的行号（1 基闭区间）：**部分引用必须带上它**——界面上
-   * 芯片要显示 `文件:12-40`，发给模型的正文里也要写清是哪些行（否则模型看到的
-   * 是一段无出处的代码，用户也分不清自己引的是整篇还是几行）。
+   * 以前这里塞的是一个 `selection` 附件芯片、发送时把选中的代码整段**内联**进正文。
+   * 现在与文件 / 目录统一：插入 `@文件:12-40` 这样的**路径引用**，由模型自己用
+   * `read` 工具去读那几行。
+   *
+   * `lines` 是选区覆盖的行号（1 基闭区间）：**部分引用必须带上它**——它是这条引用
+   * 与「整文件引用」唯一的区别（不说清楚的话模型只看到一个路径，而用户想的是
+   * 「这几行」）。语法偏离官方的说明见 `shared/mentions.ts`。
    */
-  addSelection(name: string, text: string, lines?: { start: number; end: number }): void {
+  addSelection(name: string, lines?: { start: number; end: number }): void {
     const viewId = this.activeViewId();
     if (!viewId) return;
-    this.mutateAttachmentsForView(viewId, (list) => {
-      list.push({ id: randomUUID(), kind: "selection", name, text, lines });
-    });
+    this.insertMention(viewId, formatFileMentionWithLines(name, lines));
   }
 
-  /** 供资源管理器右键调用：文件 → 上传附件；目录 → `@dir/` 引用芯片。 */
+  /**
+   * 供资源管理器右键 / 命令调用：把**文件或目录**作为 `@` 引用加到输入框。
+   *
+   * 与「附件」是两条通道：引用只把路径 token 写进正文，字节一个都不发；
+   * 目录以结尾斜杠标记（`@dir/`），模型据此决定要不要 list。
+   */
   async addFileContext(path: string): Promise<void> {
     const viewId = this.activeViewId();
     if (!viewId) return;
-    await this.applyPathsForView(viewId, [{ path, name: this.attachmentName(path) }]);
+    const kind = isDirectoryPath(path) ? "directory" : "file";
+    this.insertMention(viewId, formatFileMention(this.relativePath(path), kind));
   }
 
-  /** 命令面板 / 右键文件夹：选目录加为最近活动窗口的上下文。 */
+  /** 命令面板 / 右键文件夹：选目录加为最近活动窗口的 `@dir/` 引用。 */
   async addFolder(): Promise<void> {
     const viewId = this.activeViewId();
     if (!viewId) return;
     await this.pickFolder(viewId);
+  }
+
+  /**
+   * 把一条 `@` 引用插到**输入框光标处**。
+   *
+   * 走界面已有的 `ui/insertText`（界面自己知道光标在哪、按需补空格并移动光标）；
+   * 引用不可表示（路径含控制字符或引号）时 `mention` 是 undefined，静默跳过——
+   * 那种路径官方语法也表达不了，硬塞一个坏 token 只会让模型读到半截路径。
+   */
+  private insertMention(viewId: string, mention: string | undefined): void {
+    if (!mention) {
+      this.log("[mention] 路径无法表示为 @ 引用（含控制字符或引号），已跳过");
+      return;
+    }
+    this.emitToView(viewId, { type: "ui/insertText", text: mention });
   }
 
   /**

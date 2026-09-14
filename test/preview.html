@@ -266,6 +266,195 @@
           fontSizePx: undefined,
           // 「加载更早」：跟随窗口只带 60 条，更早的内容从没进过客户端
           hasMoreHistory: true,
+          // 轮次大纲（`turnOutline` 投影）当前**没有消费者**：右侧轮次横条那个设计
+          // 已被用户否掉（「有点违和，先删掉，后续再考虑别的设计」），但形状按契约
+          // 是**对的**（`{turn, seq, prompt, response}`，见 TurnOutlineEntry），
+          // 留着给后续的导航设计直接用。
+          turnOutline: [
+            { turn: 0, seq: 0, prompt: "把这两个文件的启动逻辑合并到一个入口，并去掉重复初始化。", response: "我看了两个文件，重复初始化的根因是端口和中间件被注册了两次。" },
+            { turn: 1, seq: 12, prompt: "先跑一遍现有测试，确认基线是绿的。", response: "" },
+            { turn: 2, seq: 24, prompt: "重构范围要覆盖到哪一层？", response: "" },
+            { turn: 3, seq: 36, prompt: "按你选的方案改吧，顺便把回归测试补上。", response: "" }
+          ],
+          // 轨迹账本（宿主折叠后按需下发；形状 = `src/shared/trajectory.ts` 的
+          // `TrajectoryModel`，内容对着本夹具的故事线手写，覆盖七种记录里的六种 +
+          // 系统提示词更新、工具请求→结果、压缩失败、来源与用量）。
+          trajectory: {
+            cellCount: 9,
+            totalSeconds: 12.5,
+            firstStartedAt: now - 250000,
+            hasOlder: true,
+            turns: [
+              {
+                turn: 0,
+                cells: [
+                  {
+                    index: 1,
+                    kind: "system",
+                    turn: 0,
+                    seq: 0,
+                    time: now - 250000,
+                    text: "你是 DeepSeek Harness 的编码助手。",
+                    systemPromptDetail: "你是 DeepSeek Harness 的编码助手。\n\n规则：\n1. 先读再改；\n2. 不要动 public/；",
+                    toolsDetail: [
+                      { name: "read", description: "读文件", parameters: { type: "object", properties: { path: { type: "string" } } } },
+                      { name: "edit", description: "改文件" }
+                    ],
+                    optionsDetail: { provider: "deepseek", model: "DeepSeek-V4-Pro", reasoningEffort: "medium" },
+                    provider: "deepseek",
+                    model: "DeepSeek-V4-Pro",
+                    timeSeconds: null,
+                    startedAt: now - 250000,
+                    status: "complete"
+                  },
+                  {
+                    index: 2,
+                    kind: "user",
+                    turn: 0,
+                    seq: 1,
+                    time: now - 249000,
+                    text: "把这两个文件的启动逻辑合并到一个入口，并去掉重复初始化。",
+                    previewMarkdown: "把这两个文件的启动逻辑合并到一个入口，并去掉重复初始化。",
+                    inputDetail: "把这两个文件的启动逻辑合并到一个入口，并去掉重复初始化。",
+                    opensTurn: true,
+                    requestNumber: 1,
+                    messageSource: { kind: "user", raw: { kind: "user" } },
+                    timeSeconds: null,
+                    startedAt: now - 249000,
+                    status: "complete"
+                  },
+                  {
+                    index: 3,
+                    kind: "message",
+                    turn: 0,
+                    seq: 2,
+                    time: now - 240000,
+                    text: "我看了两个文件，重复初始化的根因是端口和中间件被注册了两次。",
+                    previewMarkdown: "我看了两个文件，重复初始化的根因是端口和中间件被注册了两次。",
+                    outputDetail: "我看了两个文件，重复初始化的根因是端口和中间件被注册了两次。",
+                    thinkingDetail: "先看两个文件各自的初始化路径。",
+                    requestNumber: 1,
+                    usage: { input: 16605, cacheRead: 1152, cacheWrite: 0, output: 1180, think: 420 },
+                    provider: "deepseek",
+                    model: "DeepSeek-V4-Pro",
+                    timeSeconds: 9.6,
+                    startedAt: now - 249600,
+                    status: "complete",
+                    assistantMetrics: {
+                      timingRecorded: true,
+                      stepStartTime: now - 249600,
+                      firstTokenTime: now - 247750,
+                      completedTime: now - 240000,
+                      usageProvided: true,
+                      outputTokens: 1180
+                    }
+                  },
+                  {
+                    index: 4,
+                    kind: "tool",
+                    turn: 0,
+                    seq: 3,
+                    time: now - 236000,
+                    text: 'read · {"file_path":"src/server/index.ts"}',
+                    inputDetail: '{"file_path":"src/server/index.ts"}',
+                    result: "export function bootstrap() {…}",
+                    outputDetail: "export function bootstrap() {…}",
+                    callId: "call_1",
+                    toolName: "read",
+                    requestNumber: 1,
+                    timeSeconds: 0.6,
+                    startedAt: now - 236000,
+                    status: "complete"
+                  },
+                  {
+                    index: 5,
+                    kind: "subtool",
+                    turn: 0,
+                    seq: 4,
+                    time: now - 235000,
+                    text: 'grep · {"pattern":"listen\\\\("}',
+                    inputDetail: '{"pattern":"listen\\\\("}',
+                    result: "src/server/index.ts:24",
+                    outputDetail: "src/server/index.ts:24",
+                    callId: "call_1:ptc:1",
+                    toolName: "grep",
+                    timeSeconds: 0.4,
+                    startedAt: now - 235000,
+                    status: "complete"
+                  }
+                ]
+              },
+              {
+                turn: 1,
+                cells: [
+                  {
+                    index: 6,
+                    kind: "system",
+                    turn: 1,
+                    seq: 12,
+                    time: now - 120000,
+                    text: "",
+                    systemPromptDetail: "你是 DeepSeek Harness 的编码助手。\n\n规则：\n1. 先读再改；\n2. 不要动 public/；\n3. 改完跑一遍测试。",
+                    previousSystemPromptDetail: "你是 DeepSeek Harness 的编码助手。\n\n规则：\n1. 先读再改；\n2. 不要动 public/；",
+                    toolsDetail: [{ name: "read" }, { name: "edit" }],
+                    optionsDetail: { provider: "deepseek", model: "DeepSeek-V4-Pro" },
+                    timeSeconds: null,
+                    startedAt: now - 120000,
+                    status: "complete"
+                  },
+                  {
+                    index: 7,
+                    kind: "context",
+                    turn: 1,
+                    seq: 13,
+                    time: now - 119000,
+                    text: "工作区文件在上一轮之后发生了变化：src/config.ts",
+                    previewMarkdown: "工作区文件在上一轮之后发生了变化：src/config.ts",
+                    inputDetail: "工作区文件在上一轮之后发生了变化：src/config.ts",
+                    messageSource: { kind: "plugin", plugin: "dsh-fs-observation-policy", raw: { kind: "plugin", plugin: "dsh-fs-observation-policy" } },
+                    timeSeconds: null,
+                    startedAt: now - 119000,
+                    status: "complete"
+                  },
+                  {
+                    index: 8,
+                    kind: "compacted",
+                    turn: 1,
+                    seq: 14,
+                    time: now - 100000,
+                    text: "上下文已压缩",
+                    outputDetail: "本轮之前的历史已压缩为摘要：端口只 listen 一次……",
+                    inputDetail: "模型写摘要时的原始输出",
+                    provider: "deepseek",
+                    model: "DeepSeek-V4-Pro",
+                    usage: { input: 900, output: 120 },
+                    requestNumber: 2,
+                    timeSeconds: 2.5,
+                    startedAt: now - 100000,
+                    status: "complete"
+                  },
+                  {
+                    index: 9,
+                    kind: "tool",
+                    turn: 1,
+                    seq: 15,
+                    time: now - 90000,
+                    text: 'edit · {"file_path":"src/server/index.ts"}',
+                    inputDetail: '{"file_path":"src/server/index.ts"}',
+                    result: "The file has been updated successfully.",
+                    outputDetail: "The file has been updated successfully.",
+                    callId: "call_3",
+                    toolName: "edit",
+                    isError: true,
+                    error: "EACCES",
+                    timeSeconds: null,
+                    startedAt: now - 90000,
+                    status: "error"
+                  }
+                ]
+              }
+            ]
+          },
           // 占用条（圆环）的数据源。真实部署长这样：`projectedTokens` 优先于
           // `pressureTokens`（前者会跟着压缩下降），分母来自 `contextWindow`。
           contextOccupancy: { percent: 34, usedTokens: 43520, contextWindow: 128000 },
@@ -467,6 +656,13 @@
               ]
             },
             {
+              id: "u:2",
+              role: "user",
+              ts: now - 22000,
+              text: "先跑一遍现有测试，确认基线是绿的。",
+              segments: []
+            },
+            {
               id: "a:1",
               role: "assistant",
               ts: now - 20000,
@@ -474,6 +670,13 @@
               segments: [
                 { id: "q1", kind: "approval", approval: { requestId: "ev1", toolName: "pwsh", reason: "escalate sandbox to danger-full-access：需要在工作区外写入日志文件", detail: "调用标识：call_9f2", state: "waiting" } }
               ]
+            },
+            {
+              id: "u:3",
+              role: "user",
+              ts: now - 14000,
+              text: "重构范围要覆盖到哪一层？",
+              segments: []
             },
             {
               id: "a:2",
@@ -509,6 +712,24 @@
             // **不该**在这一轮显示（官方把两行挂在 turn-tail 节点上，只在 turn/end
             // 发布）——它们在生成期间只是不断变长的文件名，看起来像已经定稿。
             // 记号表（`patch.fileKinds`）照旧查得到，只是行不画。
+            {
+              id: "u:4",
+              role: "user",
+              ts: now - 44000,
+              // 超过 5 行的用户消息：默认收缩 + 「展开 / 收起」（判定按实测渲染高度，
+              // 不是数换行符——这段确实有 8 行，两种判据在这里一致）
+              text: [
+                "按你选的方案改吧，另外有几件事一起处理：",
+                "1. 把 server 与 config 的端口读取收敛到一处；",
+                "2. 中间件只注册一次，别再各自 register；",
+                "3. 新增的 bootstrap.ts 要能被旧的 index.ts 复用；",
+                "4. 补上冒烟测试，覆盖「端口只 listen 一次」这条；",
+                "5. README 里那段启动说明同步改掉；",
+                "6. 别动 public/ 下面的静态资源；",
+                "7. 改完把 diff 发我看看。"
+              ].join("\n"),
+              segments: []
+            },
             {
               id: "a:3",
               role: "assistant",

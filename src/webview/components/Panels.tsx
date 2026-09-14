@@ -1,11 +1,11 @@
 import { useState } from "react";
-import type { DiffLayout, JobItemView, SettingsFieldView, SettingsSectionView, SubagentView, ToolCallView } from "../../shared/chat";
+import type { JobItemView, SettingsFieldView, SettingsSectionView, SubagentView } from "../../shared/chat";
 import { post } from "../bridge";
-import { IconAgents, IconChevronDown, IconChevronLeft, IconClose, IconJobs, IconSettings, IconTrajectory, IconUndo } from "../icons";
+import { IconAgents, IconChevronDown, IconChevronLeft, IconClose, IconJobs, IconSettings, IconUndo } from "../icons";
 import { formatClock, formatDuration } from "./primitives";
-import { useTexts } from "../texts";
+import { compareJobs } from "../jobsOrder";
+import { useTexts, type Texts } from "../texts";
 import { Message } from "./Message";
-import { ToolRow } from "./Rows";
 
 /** 抽屉外壳：四个面板共用（标题栏 + 可滚动内容）。 */
 function Drawer({
@@ -21,13 +21,14 @@ function Drawer({
   children: React.ReactNode;
   onBack?: () => void;
 }) {
+  const texts = useTexts();
   return (
     <>
       <div className="drawer-backdrop" onClick={onClose} />
       <div className="drawer">
         <div className="drawer-head">
           {onBack ? (
-            <button className="icon-btn" title="返回" onClick={onBack}>
+            <button className="icon-btn" title={texts.back} onClick={onBack}>
               <IconChevronLeft size={14} />
             </button>
           ) : (
@@ -35,7 +36,7 @@ function Drawer({
           )}
           <span>{title}</span>
           <span className="spacer" />
-          <button className="icon-btn" title="关闭" onClick={onClose}>
+          <button className="icon-btn" title={texts.close} onClick={onClose}>
             <IconClose size={14} />
           </button>
         </div>
@@ -103,25 +104,38 @@ export function SubagentTranscriptPanel({
   );
 }
 
-const JOB_TONE: Record<JobItemView["status"], string> = {
+/**
+ * 状态色调：与官方 `dotState` 逐条对齐（`dsh-client-ui-jobs/lib/client.js`：
+ * `running→ongoing, stopping→warning, completed→done, killed→warning, failed→error`）。
+ *
+ * `stopping` 以前画成 `dot-running`（按了停止的任务看起来还在正常运行），
+ * `killed` 干脆没有点（一条已被取消的任务连状态点都不显示）——两种都会让用户
+ * 得到与事实相反的结论。`.dot-stopped` 本身就是 warning 色，直接用既有类。
+ *
+ * 未知状态不猜色调（见 `applyJobs`：状态原样保留，不再折成 completed）。
+ */
+const JOB_TONE: Record<string, string> = {
   running: "dot-running",
-  stopping: "dot-running",
+  stopping: "dot-stopped",
   completed: "dot-ok",
-  killed: "",
+  killed: "dot-stopped",
   failed: "dot-error",
 };
 
 /** 后台任务面板：bash / pwsh / 子代理等，来自 session/control 的 jobs 帧。 */
 export function JobsPanel({ jobs, onClose }: { jobs: JobItemView[]; onClose: () => void }) {
   const texts = useTexts();
-  const label: Record<JobItemView["status"], string> = {
+  const label: Record<string, string> = {
     running: texts.jobRunning,
     stopping: texts.jobStopping,
     completed: texts.jobCompleted,
     killed: texts.jobKilled,
     failed: texts.jobFailed,
   };
-  const sorted = [...jobs].sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0));
+  // 排序照官方 `ordered()`：**在跑的（含正在停止）排在最前**、按开始时间升序，
+  // 已结束的按结束时间降序。以前一律按开始时间倒序，于是一个跑了十分钟的后台任务
+  // 会被刚结束的任务挤到列表下面，看起来像"不见了"。
+  const sorted = [...jobs].sort(compareJobs);
 
   return (
     <Drawer title={texts.jobs} icon={<IconJobs size={14} />} onClose={onClose}>
@@ -131,14 +145,14 @@ export function JobsPanel({ jobs, onClose }: { jobs: JobItemView[]; onClose: () 
         sorted.map((job) => (
           <div key={job.id} className="job-row">
             <div className="job-head">
-              <span className={`dot ${JOB_TONE[job.status]}`} />
+              <span className={`dot ${JOB_TONE[job.status] ?? ""}`} />
               <span className="job-label" title={job.label}>
                 {job.label}
               </span>
               <span className="job-kind">{job.kind}</span>
             </div>
             <div className="job-meta">
-              {label[job.status]}
+              {label[job.status] ?? (job.status === "unknown" ? texts.jobUnknown : job.status)}
               {" · "}
               {formatClock(job.startedAt)}
               {job.finishedAt
@@ -154,31 +168,39 @@ export function JobsPanel({ jobs, onClose }: { jobs: JobItemView[]; onClose: () 
 }
 
 /**
- * 轨迹面板：本会话全部工具调用，按时间顺序（对齐 Web UI 的轨迹页）。
- * 每行可展开查看完整参数与输出。
+ * 任务排序（官方 `dsh-client-ui-jobs/lib/client.js` 的 `ordered()` 同口径）：
+ * 1. live（`running` / `stopping`）在前，按 `startedAt` **升序**（先开跑的排上面）；
+ * 2. settled 在后，按 `finishedAt` **降序**；没有 `finishedAt` 的按开始时间兜底。
+ *
+ * 实现在 `webview/jobsOrder.ts`（纯函数，`scripts/jobsOrder.test.ts` 直接钉住）。
  */
-export function TrajectoryPanel({
-  tools,
-  diffLayout,
-  onClose,
-}: {
-  tools: ToolCallView[];
-  diffLayout?: DiffLayout;
-  onClose: () => void;
-}) {
-  const texts = useTexts();
-  const sorted = [...tools].sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0));
-  return (
-    <Drawer title={texts.trajectory} icon={<IconTrajectory size={14} />} onClose={onClose}>
-      {sorted.length === 0 ? (
-        <div className="popover-empty">{texts.trajectoryEmpty}</div>
-      ) : (
-        sorted.map((tool) => (
-          <ToolRow key={`${tool.id}:${tool.startedAt ?? 0}`} tool={tool} diffLayout={diffLayout} />
-        ))
-      )}
-    </Drawer>
-  );
+
+/**
+ * 「已知字段」的人话标签 / 说明 / 选项文案（中英双语）。
+ *
+ * 设置面板是按 schema **通用渲染**的：字段名与选项值原样显示，于是
+ * `ui-conversation.busyEnter` 在两种语言下都长成 `busyEnter: queue | steer` —— 用户
+ * 看不出它管什么（官方 Web 里这一项有完整的标题、说明与「排队发送 / 插话发送」）。
+ * 这里只给**已经认识的**那一项做映射，其余仍走通用渲染，不动 schema 层。
+ */
+function friendlyField(
+  ns: string,
+  field: SettingsFieldView,
+  texts: Texts,
+): { label: string; description?: string; optionLabel?: (value: string) => string } | undefined {
+  if (ns === "ui-conversation" && field.path.join(".") === "busyEnter") {
+    return {
+      label: texts.settingBusyEnter,
+      description: texts.settingBusyEnterDesc,
+      optionLabel: (value) =>
+        value === "steer"
+          ? texts.settingBusyEnterSteer
+          : value === "queue"
+            ? texts.settingBusyEnterQueue
+            : value,
+    };
+  }
+  return undefined;
 }
 
 /** 单个设置字段的编辑器。 */
@@ -215,12 +237,17 @@ function Field({
     setTimeout(() => setSaved(false), 1500);
   };
 
+  const friendly = friendlyField(ns, field, texts);
   const label = (
     <span className="field-label" title={field.path.join(".")}>
-      {field.label}
+      {friendly?.label ?? field.label}
       {field.overridden ? <span className="field-badge">{texts.settingsOverridden}</span> : null}
     </span>
   );
+  /** 说明按官方那一行原文放在字段下方（只对已知字段有）。 */
+  const hint = friendly?.description ? (
+    <div className="field-hint">{friendly.description}</div>
+  ) : null;
 
   if (field.type === "boolean") {
     return (
@@ -235,6 +262,7 @@ function Field({
             setDirty(true);
           }}
         />
+        {hint}
       </label>
     );
   }
@@ -254,10 +282,11 @@ function Field({
         >
           {(field.options ?? []).map((option) => (
             <option key={option.value} value={option.value}>
-              {option.label}
+              {friendly?.optionLabel?.(option.value) ?? option.label}
             </option>
           ))}
         </select>
+        {hint}
       </label>
     );
   }
@@ -287,6 +316,7 @@ function Field({
         ) : saved ? (
           <span className="field-saved">{texts.settingsSaved}</span>
         ) : null}
+        {hint}
       </span>
     </label>
   );

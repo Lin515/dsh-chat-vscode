@@ -38,6 +38,9 @@ export interface Texts {
   cancel: string;
   toggleThinking: string;
   remove: string;
+  /** 抽屉标题栏的「关闭」/「返回」（此前这两个是写死的中文，双语规则不允许）。 */
+  close: string;
+  back: string;
 
   permission: string;
   permReadOnly: string;
@@ -209,8 +212,7 @@ export interface Texts {
   mentionFiles: string;
   mentionEmpty: string;
   mentionHint: string;
-  /** @ 列表里「返回上一层目录」那一行的无障碍标题与悬停说明。 */
-  mentionParent: string;
+  /** @ 列表里「返回上一层目录」那一行的无障碍标题与悬停说明。 */  mentionParent: string;
   /** 设置面板 */
   settingsTitle: string;
   settingsLoading: string;
@@ -437,12 +439,33 @@ export interface Texts {
   branchRunning: string;
   /** 会话列表里「这是分支」的角标。 */
   branchTag: string;
-  /** 历史：加载更早的一页（跟随窗口只有 60 条）。 */
+  /** 历史：把窗口外的历史**一次全部**取回来（不再按「上一条用户消息」分段）。 */
   historyMore: string;
   /** 正在取更早的历史（按钮在此期间是不可点的）。 */
   historyLoading: string;
   /** 生成中不能翻历史（重折会让流式正文重来）。 */
   historyBusy: string;
+  /** 用户消息过长时默认折叠：展开。 */
+  userMessageExpand: string;
+  /** 用户消息过长时默认折叠：收起。 */
+  userMessageCollapse: string;
+  /** 运行中发消息：按 busyEnter=queue 时的按钮文案。 */
+  sendQueue: string;
+  /** 运行中发消息：按 busyEnter=steer 时的按钮文案。 */
+  sendSteer: string;
+  /** 队列行：把这条排队消息改成插话（仅运行中可用）。 */
+  queueSteer: string;
+  /** 插话按钮的禁用说明（非运行中）。 */
+  queueSteerUnavailable: string;
+  /** 插话失败（服务端拒绝）。 */
+  queueSteerFailed: string;
+  /** 服务端给了本扩展还不认识的状态：原样说明，不猜它已完成。 */
+  jobUnknown: string;
+  /** 设置：繁忙时的发送行为。 */
+  settingBusyEnter: string;
+  settingBusyEnterDesc: string;
+  settingBusyEnterQueue: string;
+  settingBusyEnterSteer: string;
 
   /** 设置：字体大小。 */
   fontSize: string;
@@ -488,6 +511,8 @@ const zh: Texts = {
   cancel: "取消",
   toggleThinking: "切换思考深度",
   remove: "移除",
+  close: "关闭",
+  back: "返回",
 
   permission: "权限",
   permReadOnly: "仅可查看",
@@ -566,15 +591,16 @@ const zh: Texts = {
   subagentsEmpty: "当前会话没有子代理",
   subagentOneShot: "一次性",
   subagentContinuable: "可继续",
-  subagentInactive: "已结束",
+  subagentInactive: "未运行",
   trajectory: "轨迹",
   trajectoryEmpty: "本会话还没有工具调用",
   jobs: "后台任务",
   jobsEmpty: "当前会话没有后台任务",
   jobRunning: "运行中",
-  jobStopping: "停止中",
+  jobStopping: "正在停止",
   jobCompleted: "已完成",
-  jobKilled: "已终止",
+  jobKilled: "已取消",
+  jobUnknown: "未知状态",
   jobFailed: "失败",
   commands: "命令",
   commandsEmpty: "没有可用命令",
@@ -751,9 +777,20 @@ const zh: Texts = {
   branchNoAnchor: "这条消息还取不到分支锚点（本轮尚未收尾），暂时不能分支",
   branchRunning: "生成中不能分支",
   branchTag: "分支",
-  historyMore: "加载更早的消息",
-  historyLoading: "正在加载更早消息…",
+  historyMore: "加载全部历史",
+  historyLoading: "正在加载全部历史…",
   historyBusy: "生成中不能加载历史，请等这一轮结束",
+  userMessageExpand: "展开",
+  userMessageCollapse: "收起",
+  sendQueue: "排队发送",
+  sendSteer: "插话发送",
+  queueSteer: "插话发送",
+  queueSteerUnavailable: "仅运行中可插话发送",
+  queueSteerFailed: "插话发送失败，请重试。",
+  settingBusyEnter: "繁忙时的发送行为",
+  settingBusyEnterDesc: "智能体运行时 Enter 键和发送按钮的行为；Cmd/Ctrl+Enter 使用另一行为",
+  settingBusyEnterQueue: "排队发送",
+  settingBusyEnterSteer: "插话发送",
 
   fontSize: "字体大小",
   fontSizeDesc: "聊天界面的字号（整数 px）；0 跟随 VS Code。",
@@ -795,6 +832,8 @@ const en: Texts = {
   cancel: "Cancel",
   toggleThinking: "Cycle thinking depth",
   remove: "Remove",
+  close: "Close",
+  back: "Back",
 
   permission: "Permission",
   permReadOnly: "Read Only",
@@ -876,7 +915,7 @@ const en: Texts = {
   subagentsEmpty: "This session has no subagents",
   subagentOneShot: "one-shot",
   subagentContinuable: "continuable",
-  subagentInactive: "finished",
+  subagentInactive: "not running",
   trajectory: "Trajectory",
   trajectoryEmpty: "No tool calls in this session yet",
   jobs: "Background jobs",
@@ -884,7 +923,8 @@ const en: Texts = {
   jobRunning: "running",
   jobStopping: "stopping",
   jobCompleted: "completed",
-  jobKilled: "killed",
+  jobKilled: "cancelled",
+  jobUnknown: "unknown status",
   jobFailed: "failed",
   commands: "Commands",
   commandsEmpty: "No commands available",
@@ -1060,9 +1100,20 @@ const en: Texts = {
   branchNoAnchor: "No branch anchor for this message yet (the turn has not finished)",
   branchRunning: "Cannot branch while generating",
   branchTag: "Branch",
-  historyMore: "Load earlier messages",
-  historyLoading: "Loading earlier messages…",
+  historyMore: "Load all history",
+  historyLoading: "Loading all history…",
   historyBusy: "Cannot load history while generating — wait for this turn to finish",
+  userMessageExpand: "Expand",
+  userMessageCollapse: "Collapse",
+  sendQueue: "Queue message",
+  sendSteer: "Send as steer",
+  queueSteer: "Send as steer",
+  queueSteerUnavailable: "Steering is only available while the agent is running",
+  queueSteerFailed: "Steering failed. Please try again.",
+  settingBusyEnter: "Send behavior while busy",
+  settingBusyEnterDesc: "Behavior of the Enter key and the send button while the agent is running; Cmd/Ctrl+Enter uses the other behavior",
+  settingBusyEnterQueue: "Queue message",
+  settingBusyEnterSteer: "Send as steer",
 
   fontSize: "Font size",
   fontSizeDesc: "Chat UI font size (integer px); 0 follows VS Code.",

@@ -71,26 +71,61 @@ export type HostToWebview =
    * （目录不走这里：目录是 `@dir/` 引用芯片。）
    */
   | { type: "ui/insertText"; text: string }
+  /**
+   * 轨迹账本（宿主折叠后下发）。
+   *
+   * 整段 **JSON 字符串**而不是结构化对象：轨迹模型里 `startedAt: null` /
+   * `timeSeconds: null` 是有意义的空值，而宿主→webview 的帧过 `JSON.stringify`
+   * 时会**丢掉值为 `undefined` 的键**（见 `shared/wire.ts`）。整体过字符串就绕开了
+   * 逐键折回那套语义，也不必在 `wire.ts` 里逐个登记轨迹字段。
+   */
+  | { type: "trajectory"; json: string }
   /** 让界面打开某个右侧抽屉（命令面板入口用，如「DSH: 历史对话」）。 */
   | { type: "ui/openPanel"; panel: string };
 
 export type WebviewToHost =
   /** webview 加载完成，请求首帧状态。 */
   | { type: "ready" }
-  /** 发送一条消息。 */
-  | { type: "send"; text: string; attachments: Attachment[] }
+  /**
+   * 发送一条消息。
+   *
+   * `gesture` 是**手势**，不是模式（官方 `ComposerSubmitGesture`）：
+   * - 缺省 / `"enter"`：主发送按钮与回车（同一个手势）；
+   * - `"accelerated"`：Cmd/Ctrl+Enter。
+   *
+   * 两者最终发到服务端的 `session/prompt.mode` 由宿主按
+   * `ui-conversation.busyEnter` + 是否正在运行解析（官方 `resolveSubmitMode`：
+   * 运行中主手势用设置值、加速手势用**相反**值；空闲恒 queue）。
+   * 界面不自己算——它不知道「发出去的那一刻 agent 还在不在跑」。
+   */
+  | { type: "send"; text: string; attachments: Attachment[]; gesture?: "enter" | "accelerated" }
   /** 停止当前生成。 */
   | { type: "stop" }
   /** 取消一条排队中（尚未发送）的消息。 */
   | { type: "queueRemove"; id: string }
   /** 把一条排队中（尚未发送）的消息取回输入框重新编辑。 */
   | { type: "queueEdit"; id: string }
+  /**
+   * 把一条**排队中**的消息改成插话发送（`session/updateQueue` + `{kind:'steer'}`）。
+   *
+   * 与 `send` 的 `mode:"steer"` 不是一回事：那条是「新消息直接以 steer 投递」，
+   * 这条是把**已经在队列里**的那一条改成插话。服务端要求 agent 正在运行，
+   * 否则回 `session/steer-unavailable`（官方把它当静默 no-op）。
+   */
+  | { type: "queueSteer"; id: string }
   /** 新建会话。 */
   | { type: "newSession" }
   /** 切换到某个会话。 */
   | { type: "openSession"; sessionId: string }
   /** 请求会话列表。 */
   | { type: "listSessions" }
+  /**
+   * 请求轨迹账本（宿主折好之后回一帧 `trajectory`）。
+   *
+   * 按需请求而不是每个事件都推：账本能到几百行，流式期间每帧重算再整份下发
+   * 是白烧。面板打开时请求一次，之后「一轮结束」时再请求一次（见 App 的接线）。
+   */
+  | { type: "listTrajectory" }
   /** 归档会话（服务端 workspace/archiveSession：从工作区分组移出，可再找回）。 */
   | { type: "archiveSession"; sessionId: string }
   /** 删除会话（服务端没有删除 API：本地删除会话日志文件目录）。 */

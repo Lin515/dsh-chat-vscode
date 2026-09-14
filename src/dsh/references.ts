@@ -18,6 +18,7 @@
  *
  * 本模块只放**纯逻辑**（路径 → mention 文本、分类），网络与文件 IO 在控制器。
  */
+import { formatFileMention } from "../shared/mentions";
 
 /** 一个待发送的 `@` 引用。 */
 export interface Reference {
@@ -29,26 +30,10 @@ export interface Reference {
 /**
  * 生成 `@` 引用的**模型可见文本**（官方 `formatFileMention`）。
  *
- * 规则逐字对齐官方：
- * - 目录补结尾 `/`（`@src/`）——系统提示段用它区分文件与目录；
- * - 路径含空白时整体加引号（`@"my file.txt"`），否则不加；
- * - 含控制字符或 `"` 的路径**不可引用**（返回 undefined，调用方退回普通文本）。
- *
- * 目录带引号时官方只写**开引号**（`@"dir/`）：这是刻意的——那个形式在输入框里
- * 还是一个「未闭合」的引用，用户继续往下打字（drill）时语法仍然成立。
+ * 实现在 `shared/mentions.ts`——界面在 `@` 候选里选中文件时直接用同一个函数
+ * 把 token 插进输入框（纯路径引用），两边必须逐字一致，所以规则只有一份。
  */
-export function formatFileMention(path: string, kind: "file" | "directory" = "file"): string | undefined {
-  // 目录补结尾 `/`——系统提示段靠它区分「这是目录，要内容就 list」。
-  // 已经带分隔符时不重复追加：官方那行是无条件 `` `${path}/` ``（调用方从不传带
-  // 尾斜杠的路径），而我们的路径可能来自用户手输或工具回传，`@dir//` 虽然语义
-  // 不变但很难看。归一化只影响这一个退化输入，正确输入一个字节都不变。
-  const needsSlash = kind === "directory" && !/[/\\]$/u.test(path);
-  const full = needsSlash ? `${path}/` : path;
-  // eslint-disable-next-line no-control-regex -- 官方逐字如此：控制字符会让 token 无法解析
-  if (/[\u0000-\u001f\u007f-\u009f"]/u.test(full)) return undefined;
-  if (!/\s/u.test(full)) return `@${full}`;
-  return kind === "directory" ? `@"${full}` : `@"${full}"`;
-}
+export { formatFileMention };
 
 /**
  * 把一批引用拼进用户正文。

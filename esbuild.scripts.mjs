@@ -99,6 +99,8 @@ const entries = {
   "build/supervisor-scenarios-probe.mjs": "scripts/supervisorScenariosProbe.ts",
   "build/supervisor-manager-probe.mjs": "scripts/supervisorManagerProbe.ts",
   "build/auth-chain-probe.mjs": "scripts/authChainProbe.ts",
+  "build/jobs-order.test.mjs": "scripts/jobsOrder.test.ts",
+  "build/trajectory.test.mjs": "scripts/trajectory.test.ts",
 
 };
 

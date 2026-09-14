@@ -112,8 +112,7 @@
   padding: 4px 6px;
 }
 
-/* The trailing message keeps a 200px floor so short conversations still
-   breathe, and it is the only row whose action strip is always visible. */
+/* The trailing message keeps a 200px floor so short conversations still breathe. */
 .chat-list > .msg:last-child {
   min-height: 200px;
 }
@@ -135,6 +134,34 @@
   line-height: 1.5;
 }
 
+/* 超过 5 行的用户消息默认收缩。行数来自 `Message.tsx` 的 `USER_COLLAPSE_LINES`
+   （经自定义属性传进来，只写一份）：`1.5em × 行数` 是正文高度，`+ 12px` 是气泡
+   自己的上下内边距（全局 `box-sizing: border-box`，内边距要从上限里让出来）。
+   `overflow: hidden` 让折满之后的内容不占位、也不半行露头。 */
+.msg-user .bubble.is-clamped {
+  max-height: calc(1.5em * var(--user-clamp-lines, 5) + 12px);
+  overflow: hidden;
+}
+
+/* 「展开 / 收起」：坐在轮尾操作行里、复制按钮**右边**（用户 2026-09-14 口径）。
+   它是文字按钮而不是图标——「展开」这两个字本身就是「这里还有内容」的提示，
+   图标（箭头）在 14px 下看不出指的是什么。 */
+.msg-expand {
+  margin-left: 2px;
+  padding: 0 3px;
+  border: 0;
+  background: none;
+  color: var(--link);
+  font-family: var(--font-family);
+  font-size: var(--font-size-2xs);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.msg-expand:hover {
+  text-decoration: underline;
+}
+
 .msg-assistant {
   color: var(--fg);
   font-size: var(--font-size-body);
@@ -149,7 +176,11 @@
   padding: 0 8px;
 }
 
-/* hover-revealed action strip */
+/* 轮尾操作条：**常驻**显示（不再靠悬停揭示）。
+   以前 `opacity: 0` + 悬停显示，一轮结束后的那条操作行在视觉上就是一整段空白
+   ——「复制 / 分支 / 用时」本来是该轮唯一可点的东西，却要先把鼠标移上去才知道
+   它在那儿（用户 2026-09-14 口径）。时间与按钮都是低对比度的弱化色，常驻也不会
+   抢正文的注意力。 */
 .msg-actions {
   display: flex;
   align-items: center;
@@ -158,13 +189,6 @@
   height: 28px;
   margin-top: 8px;
   padding: 0 8px;
-  opacity: 0;
-  transition: opacity 0.12s ease;
-}
-
-.msg:hover .msg-actions,
-.msg:focus-within .msg-actions,
-.chat-list > .msg:last-child .msg-actions {
   opacity: 1;
 }
 
@@ -2097,14 +2121,6 @@
   max-width: 26ch;
 }
 
-/* 部分引用（编辑器选区）的行号：**不可压缩**。与工具行的 `.row-detail-suffix`
-   同一条语言——文件名先省略，行号留住（它是「引的是哪几行」这个信息本身）。 */
-.chip-lines {
-  flex: 0 0 auto;
-  opacity: 0.75;
-  font-variant-numeric: tabular-nums;
-}
-
 .chip-remove {
   display: inline-flex;
   align-items: center;
@@ -2888,6 +2904,20 @@
   align-items: center;
   gap: 8px;
   min-width: 0;
+  /* 允许换行：已知字段的说明（.field-hint）整行占满、落在控件下方。
+     标签本身是 `min-width: 0` + ellipsis，正常情况不会因此提前换行。 */
+  flex-wrap: wrap;
+}
+
+/* 已知字段的人话说明（如「繁忙时的发送行为」那一项）。
+   是给人读的句子：不用等宽字体、不 nowrap、颜色比标签再淡一档。 */
+.field-hint {
+  flex: 1 0 100%;
+  font-family: var(--font-family);
+  font-size: var(--font-size-2xs);
+  color: var(--muted);
+  line-height: 1.4;
+  white-space: normal;
 }
 
 .field-label {
@@ -3016,4 +3046,357 @@
 .todo-item.is-completed .todo-content {
   color: var(--muted);
   text-decoration: line-through;
+}
+
+/* ============================ 轨迹（官方账本的对齐实现） ============================ */
+/*
+ * 结构对照 `dsh-client-ui-trajectory`：工具栏（轮次/调用折叠 + 搜索）+ 两列账本
+ * （event / content）+ 详情检查器。官方那两个宽度常量照抄：event 列 122px、
+ * 窄容器（<=620px 容器宽，这里用视口宽近似，webview 视口就是面板宽）降到 50px。
+ * 时间线是第二步，这里还没有。
+ */
+
+/* 面板本身是「头 + 工具栏 + 主体」的纵向布局，且**主体自己滚**
+   （抽屉默认整体滚，账本和检查器要各自滚才能对得上行） */
+.trajectory-drawer {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.trajectory-drawer .drawer-head {
+  flex: 0 0 auto;
+}
+
+.trajectory-toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.trajectory-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.trajectory-search {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0 6px;
+  border: 1px solid var(--input-border);
+  border-radius: var(--radius-sm);
+  background: var(--input-bg);
+  color: var(--input-placeholder);
+}
+
+.trajectory-search input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 0;
+  background: none;
+  color: var(--input-fg);
+  font-size: var(--font-size-2xs);
+  outline: none;
+}
+
+.trajectory-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 8px;
+  padding: 6px;
+}
+
+/* 账本：窄面板下检查器会换到下一行（flex-wrap），不会把账本挤没 */
+.trajectory-ledger {
+  flex: 1 1 320px;
+  min-width: 0;
+  max-height: 100%;
+  overflow: auto;
+}
+
+.trajectory-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: var(--font-size-2xs);
+}
+
+.trajectory-col-event {
+  width: 122px;
+}
+
+.trajectory-col-content {
+  width: auto;
+}
+
+.trajectory-row {
+  cursor: pointer;
+}
+
+.trajectory-row:hover {
+  background: var(--hover);
+}
+
+.trajectory-row.is-selected {
+  background: var(--active);
+}
+
+.trajectory-row.is-dimmed {
+  opacity: 0.45;
+}
+
+.trajectory-row.is-match .trajectory-text {
+  background: var(--badge-bg);
+}
+
+.trajectory-row.is-error .trajectory-kind {
+  color: var(--error);
+}
+
+.trajectory-event {
+  padding: 3px 4px 3px 8px;
+  vertical-align: top;
+  border-top: 1px solid transparent;
+}
+
+.trajectory-event-inner {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.trajectory-index {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: var(--font-size-2xs);
+}
+
+.trajectory-turn-label {
+  display: block;
+  color: var(--description);
+  font-family: var(--mono);
+  font-size: var(--font-size-2xs);
+}
+
+.trajectory-kind {
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--code-bg);
+  color: var(--description);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+}
+
+/* 七种记录的配色（官方每种一个色调；这里映射到既有 token） */
+.trajectory-kind.is-system { color: var(--muted); }
+.trajectory-kind.is-user { color: var(--link); }
+.trajectory-kind.is-context { color: var(--node-read); }
+.trajectory-kind.is-compacted { color: var(--node-edit); }
+.trajectory-kind.is-message { color: var(--node-code); }
+.trajectory-kind.is-tool { color: var(--node-bash); }
+.trajectory-kind.is-subtool { color: var(--node-write); }
+
+.trajectory-content {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 3px 4px;
+  min-width: 0;
+  vertical-align: top;
+}
+
+.trajectory-request {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-family: var(--mono);
+}
+
+.trajectory-text {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 工具行：左「请求」右「结果」两列（官方 resultPreview 的 grid 口径） */
+.trajectory-arrow {
+  flex: 0 0 auto;
+  color: var(--muted);
+}
+
+.trajectory-result {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--description);
+}
+
+.trajectory-row.is-error .trajectory-result {
+  color: var(--error);
+}
+
+.trajectory-row.is-collapsed-summary .trajectory-content {
+  color: var(--description);
+}
+
+/* 详情检查器 */
+.trajectory-details {
+  flex: 1 1 260px;
+  min-width: 0;
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.trajectory-details-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.trajectory-details-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--font-size-2xs);
+  color: var(--description);
+}
+
+.trajectory-tabs {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.trajectory-tab {
+  padding: 1px 6px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: none;
+  color: var(--muted);
+  font-size: var(--font-size-2xs);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.trajectory-tab:hover {
+  background: var(--hover);
+  color: var(--fg);
+}
+
+.trajectory-tab.is-active {
+  background: var(--primary);
+  color: var(--primary-fg);
+}
+
+.trajectory-detail-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.trajectory-detail-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: var(--font-size-2xs);
+}
+
+.trajectory-detail-label {
+  flex: 0 0 auto;
+  color: var(--muted);
+}
+
+.trajectory-detail-value {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg);
+}
+
+.trajectory-detail-block {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.trajectory-pre {
+  margin: 0;
+  padding: 6px;
+  max-height: 320px;
+  overflow: auto;
+  border-radius: var(--radius-sm);
+  background: var(--code-bg);
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: var(--font-size-2xs);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.trajectory-empty {
+  color: var(--muted);
+  font-size: var(--font-size-2xs);
+}
+
+.trajectory-markdown {
+  font-size: var(--font-size-2xs);
+}
+
+.trajectory-tool {
+  font-size: var(--font-size-2xs);
+}
+
+.trajectory-tool-desc {
+  color: var(--description);
+  margin: 2px 0 4px;
+}
+
+/* 窄面板（webview 视口就是面板宽）：event 列收到 50px，只留 `#N` 与种类标签 */
+@media (max-width: 420px) {
+  .trajectory-col-event {
+    width: 50px;
+  }
+
+  .trajectory-kind {
+    padding: 0 3px;
+    font-size: 9px;
+  }
+
+  .trajectory-turn-label {
+    display: none;
+  }
 }

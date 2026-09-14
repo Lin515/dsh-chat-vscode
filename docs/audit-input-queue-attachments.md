@@ -7,8 +7,20 @@
 >
 > ⚠️ **本文的判定定格在审计当时，不随修复更新**：下面的「**不一致**」多数已经修好
 > （当前状态见 `audit-summary.md` 的「零、修复状态」），**不要照着本文去重复修一遍**。
-> 它的价值是证据（官方 `path:line` 引用）与仍未处理的差异——例如 §3.4「拖放 / 粘贴
-> 文件不落地」至今仍属实（`Composer.tsx` 的 `onDrop` 只 `preventDefault()`，不接文件）。
+> 它的价值是证据（官方 `path:line` 引用）与仍未处理的差异。
+>
+> **2026-09-14 状态更新（本轮修的，别再重复修）**：
+> - §1.1「扩展恒为 queue、从不读 `ui-conversation`」→ **已修且补齐**：`resolveSubmitMode`
+>   逐字移植官方；冷启动也读设置；`running` 判定移到乐观置位之前；见 CHANGELOG 未发布第六节。
+> - §1.2「加速手势无区分」→ **已修**：Cmd/Ctrl+Enter 走 `gesture:"accelerated"`，
+>   运行中取 `busyEnter` 的相反值；忽略 `event.repeat`。
+> - §1.2 的「无 steerQueue / 无队列行插话」→ 队列行插话**已做**（`session/updateQueue`
+>   的 `{kind:'steer'}`）；「空草稿 + 加速手势 → 整队插话」**仍未做**。
+> - §2.1/§2.3「队列重新编辑用 remove + 本地回填」→ 仍是现状（未做官方 `action{kind:'edit'}`）。
+> - §3.1「官方从不内联文件正文」→ 已对齐；**2026-09-14 进一步细化**：`@` 变成正文里的
+>   `@path` token（不再生成附件栏芯片），上传只留给「模型可直接读的文本」。
+> - §3.4「拖放 / 粘贴文件不落地」→ **已过期**：`Composer.tsx` 的 `onDrop` 现在真的读字节
+>   上传（`attachBytes`）；**粘贴**仍不落地。
 >
 > 主线实测补充（本报告未覆盖）：`scripts/planCommandProbe.ts` 用真实服务器证实了
 > 「`/plan` 走 prompt 正文无效、必须走 `commands/execute`」，见 `audit-summary.md` §3.1。

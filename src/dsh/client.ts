@@ -393,6 +393,19 @@ export class DshClient {
     });
   }
 
+  /**
+   * 把一条**排队中**的消息改成插话（`action {kind:'steer'}`），语义见
+   * `dsh-api-session-controller` 的 `SessionQueueAction`。
+   *
+   * 服务端要求 agent 正在运行，否则报 `session/steer-unavailable`——调用方按官方
+   * 口径把这一类拒绝当**静默 no-op**（队列帧本来就是权威，拒绝意味着状态没变）。
+   */
+  updateQueueSteer(sessionId: string, itemId: string): Promise<{ accepted: true }> {
+    return this.request(METHODS.sessionUpdateQueue, {
+      request: { sessionId, itemId, action: { kind: "steer" } },
+    });
+  }
+
   rename(sessionId: string, title: string): Promise<{ title: string }> {
     return this.request(METHODS.sessionRename, { request: { sessionId, title } });
   }

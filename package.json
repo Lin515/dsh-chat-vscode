@@ -87,12 +87,8 @@
         "icon": "$(debug-stop)"
       },
       {
-        "command": "dshChat.addSelection",
-        "title": "%cmd.addSelection.title%"
-      },
-      {
-        "command": "dshChat.addFile",
-        "title": "%cmd.addFile.title%"
+        "command": "dshChat.addToChat",
+        "title": "%cmd.addToChat.title%"
       },
       {
         "command": "dshChat.addFolder",
@@ -123,17 +119,24 @@
         "title": "%cmd.showDiagnostics.title%"
       }
     ],
+    "keybindings": [
+      {
+        "command": "dshChat.addToChat",
+        "key": "alt+shift+2",
+        "mac": "alt+shift+2",
+        "when": "editorTextFocus"
+      }
+    ],
     "menus": {
       "editor/context": [
         {
-          "command": "dshChat.addSelection",
-          "when": "editorHasSelection",
+          "command": "dshChat.addToChat",
           "group": "dshChat@1"
         }
       ],
       "explorer/context": [
         {
-          "command": "dshChat.addFile",
+          "command": "dshChat.addToChat",
           "when": "!explorerResourceIsFolder",
           "group": "dshChat@1"
         },
@@ -235,7 +238,8 @@
     "smoke": "npm run build:scripts && node build/smoke.mjs",
     "e2e:queue-esc": "npm run build:scripts && node build/queue-esc-e2e.mjs",
     "preview": "node scripts/previewServer.mjs",
-    "package": "npm run build && node scripts/package.mjs"
+    "package": "npm run build && node scripts/package.mjs",
+    "install:vsix": "node scripts/installVsix.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

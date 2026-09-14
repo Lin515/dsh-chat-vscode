@@ -33,10 +33,13 @@ export type ConnectionState = "connecting" | "ready" | "error" | "stopped";
  * - `image`：图片按内容块发送（官方同样内联图片字节）；
  * - `file`：**上传**后拿 `receiptId` 发送，不再内联正文；
  * - `reference`：`@path` 引用，正文里只出现路径 token；
- * - `selection`：编辑器选区——没有对应的官方原语（官方靠引用 + read 工具），
- *   保留为「把这段代码贴进正文」的便利能力。
+ * - `context`：纯文本上下文（插件注入等）。
+ *
+ * **没有 `selection`**：编辑器选区、文件、目录现在**一律走 `@` 引用**（用户
+ * 2026-09-14 口径：「不论是目录、文件、文件某行，均以 @ 引用形式而不是附件形式
+ * 添加」）——引用是由宿主把 token 插进输入框正文的，不经过附件列表。
  */
-export type AttachmentKind = "file" | "image" | "selection" | "context" | "reference";
+export type AttachmentKind = "file" | "image" | "context" | "reference";
 
 /** 文件附件的上传生命周期（官方 `DraftFileUpload`）。 */
 export type UploadState =
@@ -47,16 +50,10 @@ export type UploadState =
 export interface Attachment {
   id: string;
   kind: AttachmentKind;
-  /** 文件/目录的绝对路径（图片与选区没有）。 */
+  /** 文件/目录的绝对路径（图片没有）。 */
   path?: string;
   /** 展示名：优先相对工作区的路径。 */
   name: string;
-  /**
-   * 随消息发送的文本内容。
-   *
-   * **只有选区与 `context` 用**：文件不再内联正文（改为上传或 `@` 引用）。
-   */
-  text?: string;
   /** 图片的 data URL。 */
   dataUrl?: string;
   /** 图片字节数。 */
@@ -65,14 +62,6 @@ export interface Attachment {
   upload?: UploadState;
   /** `@` 引用的目标类型（`kind === "reference"` 时）。 */
   referenceKind?: "file" | "directory";
-  /**
-   * 选区覆盖的行号（1 基，闭区间；`kind === "selection"` 时）。
-   *
-   * 编辑器右键「添加选中代码到对话」带过来的选区是**部分引用**：没有行号的话，
-   * 界面上只能看到一个文件名，模型也只拿到一段无名代码（用户 2026-09-14 明确
-   * 要求「部分引用要体现出行号」）。整文件引用（无选区）不带这个字段。
-   */
-  lines?: { start: number; end: number };
 }
 
 /**
@@ -499,11 +488,22 @@ export interface CommandRunView {
   text?: string;
 }
 
+/** 官方 `SessionJob.status` 的五态（`dsh-api-session-controller` 的线上契约）。 */
+export type JobStatus = "running" | "stopping" | "completed" | "killed" | "failed";
+
 export interface JobItemView {
   id: string;
   kind: string;
   label: string;
-  status: "running" | "stopping" | "completed" | "killed" | "failed";
+  /**
+   * 五态之一，也可能是**服务端将来新增的状态**。
+   *
+   * 这里刻意保留原字符串、不折成已知值：以前未知状态被兜底成 `"completed"`，
+   * 于是服务端一加新状态（比如 `paused`）界面就显示「已完成」——一个与事实相反
+   * 的**肯定结论**。界面按查表 + 兜底渲染（未知 → 原样显示、不猜色调）。
+   * 类型写成 `JobStatus | (string & {})`：既保留自动补全，又接受任意字符串。
+   */
+  status: JobStatus | (string & {});
   detail?: string;
   startedAt: number;
   finishedAt?: number;
@@ -734,8 +734,29 @@ export interface ChatState {
     cacheReadTokens: number;
     cacheWriteTokens: number;
   };
-  /** 轮次导航（`turnOutline` 投影）：每轮的序号、起始 seq 与摘要。 */
-  turnOutline?: { turn: number; seq: number; summary: string; startedAt: number }[];
+  /**
+   * 轮次大纲（`turnOutline` 投影）：**每一轮**的序号、`turn/start` 的 seq 与
+   * 两段有界预览。
+   *
+   * 形状按契约逐字核过（`@deepseek-ai/dsh-session-turn-outline/lib/types/types.d.ts`
+   * 的 `TurnOutlineEntry`）：`{turn, seq, prompt, response}`。此前这里读的是
+   * `{summary, startedAt}`——投影里根本没有这两个字段，于是恒为空串/0，而
+   * `prompt`/`response` 从未被读过（第三次「按猜测的形状写」，前两次是 goal 与
+   * subagentCatalog）。侧边轮次横条就是它的消费者。
+   *
+   * 注意：投影**独立于分页窗口**——没加载进来的轮次也在里面，这正是横条能列出
+   * 全部轮次、并按 `seq` 往前加载到某一轮的依据。
+   */
+  turnOutline?: { turn: number; seq: number; prompt: string; response: string }[];
+  /**
+   * 「繁忙时的发送行为」（`ui-conversation.busyEnter`，全局部署设置）。
+   *
+   * 界面只用它显示运行中发送按钮的文案（排队发送 / 插话发送）与插话可用性提示；
+   * **真正发出去的 `session/prompt.mode` 由宿主解析**（官方 `resolveSubmitMode`：
+   * 运行中主手势用这个值、Cmd/Ctrl+Enter 用相反值，空闲恒 queue）——界面不知道
+   * 「按下回车那一刻 agent 还在不在跑」，自己算会算错。
+   */
+  busyEnter?: "queue" | "steer";
   /**
    * 图片准入上限（`imageLimits` 投影）。
    *
