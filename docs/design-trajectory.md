@@ -1,5 +1,17 @@
 # 轨迹面板对齐官方 DSH Web 的实现规格
 
+> **实现状态（2026-09-14）**：本规格的 S1–S2、S5–S8 已落地，见
+> `src/shared/trajectory.ts`（类型 + 时间线折叠）、`src/dsh/trajectory.ts`（账本折叠）、
+> `src/webview/components/Trajectory.tsx`（工具栏 / 账本 / 时间线 / 检查器）、
+> `src/webview/trajectoryTexts.ts`（官方文案）、`scripts/trajectory.test.ts`（断言）。
+> 时间线的滚轮缩放与右键平移、检查器拖宽与窄屏抽屉、运行中的占位行也都做了。
+> **仍未做**：流式正文本身（只出空占位行）、系统提示词面替换的完整语义（S3/S4 的
+> 边角）、检查器里的 `hierarchy` 跳转 / `usage` 会话累计 / `options` 页签、
+> 从对话跳进轨迹（官方 `viewRequest.focus`）、请求边界小标记、
+> `session.loadOlder` 的本地节点窗口（我们现在一次取全部历史）。
+> 差异清单也写在 `src/dsh/trajectory.ts` 的文件头。
+> **本文件其余部分是**当初面向实现的完整规格与逐行证据，动相关代码前先读它。
+
 > 依据：`dsh-client-ui-trajectory` 0.1.5-rc.1 的安装产物（`.d.ts` 契约 + `lib/client.js` 实现逐行核对）。
 > 文中官方代码位置一律写成 `包名 lib/xxx.js:行号`；本仓库代码写成 `src/...:行号`。
 > 本文只描述**事实与照抄口径**，不下猜测性结论；不确定的部分集中在末尾《证据不足 / 无法确认》。

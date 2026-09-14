@@ -14,6 +14,7 @@
 import assert from "node:assert";
 import type { SessionWireEvent } from "../src/dsh/protocol";
 import { deriveTrajectoryModel, trajectorySummary } from "../src/dsh/trajectory";
+import { deriveTrajectoryTimeline } from "../src/shared/trajectory";
 
 let seq = 0;
 const at = (offset: number) => 1_700_000_000_000 + offset * 1000;
@@ -231,6 +232,36 @@ console.log("trajectory: 轮次分组与 prologue 合并 ✓");
 }
 console.log("trajectory: 重试与轮次错误 ✓");
 
+// ---------- 6b. 还在跑的步骤出一行「正在生成」；被中断的旧步骤不臆造正文 ----------
+{
+  seq = 0;
+  const events: SessionWireEvent[] = [
+    event("turn/start", { turn: 0 }, 0),
+    event("step/start", { turn: 0, step: 0 }, 0),
+    event("user/message", { message: message("问", { kind: "user" }) }, 0),
+    // 这一步开了但**没有** assistant/message（被中断），随后 turn/end 收尾
+    event("turn/end", { turn: 0, reason: "aborted" }, 1),
+    // 新一轮已经开跑：这一步同样没有 assistant/message，但它是**当前**在跑的那一步
+    event("turn/start", { turn: 1 }, 1),
+    event("step/start", { turn: 1, step: 0 }, 1),
+    event("tool/call", { turn: 1, step: 0, callId: "c1", name: "read", arguments: "{}" }, 2),
+  ];
+  const cells = deriveTrajectoryModel(events, false).turns.flatMap((turn) => turn.cells);
+  const running = cells.filter((cell) => cell.status === "running");
+  assert.strictEqual(running.length, 2, "一行是运行中的助手占位，一行是未结算的工具");
+  const placeholder = running.find((cell) => cell.kind === "message");
+  assert.ok(placeholder, "运行中的助手占位要出（官方那是流式行）");
+  assert.strictEqual(placeholder?.text, "", "正文留空（token 还没到，不编造）");
+  assert.strictEqual(placeholder?.turn, 1, "只给**最后一次 turn/end 之后**开的步骤出行");
+  assert.strictEqual(placeholder?.requestNumber, 2, "它是第二次请求");
+  assert.strictEqual(
+    cells.some((cell) => cell.turn === 0 && cell.kind === "message"),
+    false,
+    "被中断的旧步骤不出占位行（那一段正文官方由 assistant/attempt 还原，我们不臆造）",
+  );
+}
+console.log("trajectory: 运行中的占位行 ✓");
+
 // ---------- 7. 中断的助手消息 + 未结算的工具（运行中） ----------
 {
   seq = 0;
@@ -258,5 +289,59 @@ console.log("trajectory: 中断与运行中的记录 ✓");
   assert.strictEqual(trajectorySummary("a".repeat(200)).length, 161, "160 字符 + 省略号");
 }
 console.log("trajectory: 单行摘要 ✓");
+
+// ---------- 9. 时间线的折叠（等宽 / 按耗时 / 按真实时刻） ----------
+{
+  seq = 0;
+  const events: SessionWireEvent[] = [
+    event("turn/start", { turn: 0 }, 0),
+    event("step/start", { turn: 0, step: 0 }, 0),
+    event("user/message", { message: message("问", { kind: "user" }) }, 0),
+    event("assistant/message", { turn: 0, step: 0, message: message("答", {}) }, 2),
+    event("tool/call", { turn: 0, step: 0, callId: "c1", name: "read", arguments: "{}" }, 4),
+    event("tool/result", { turn: 0, step: 0, message: { content: block("ok"), source: { callId: "c1" } } }, 5),
+    event("turn/end", { turn: 0, reason: "success" }, 5),
+  ];
+  const cells = deriveTrajectoryModel(events, false).turns.flatMap((turn) => turn.cells);
+
+  // 等宽：每条记录一格，与时间无关（官方默认）
+  const sequence = deriveTrajectoryTimeline(cells, "sequence");
+  assert.strictEqual(sequence.spans.length, cells.length, "每条记录都成条");
+  assert.deepStrictEqual(
+    sequence.spans.map((span) => [Math.round(span.left * 100), Math.round(span.width * 100)]),
+    cells.map((_, index) => [Math.round((index / cells.length) * 100), Math.round(100 / cells.length)]),
+    "等宽模式下位置只与序号有关",
+  );
+  // 泳道：用户 → 输入道(0)，助手 → 模型道(1)，工具 → 工具道(2)
+  const laneOf = (kind: string) => sequence.spans.find((span) => span.kind === kind)?.lane;
+  assert.strictEqual(laneOf("user"), 0);
+  assert.strictEqual(laneOf("message"), 1);
+  assert.strictEqual(laneOf("tool"), 2);
+
+  // 按耗时：宽度与自身耗时成正比、且扣掉空闲（总宽 100%）
+  const duration = deriveTrajectoryTimeline(cells, "duration");
+  const totalWidth = duration.spans.reduce((sum, span) => sum + span.width, 0);
+  assert.ok(Math.abs(totalWidth - 1) < 0.01, "扣掉空闲后所有条加起来正好铺满");
+  const toolSpan = duration.spans.find((span) => span.kind === "tool");
+  assert.ok((toolSpan?.width ?? 0) > 0, "有耗时的记录才有宽度");
+
+  // 按真实时刻：位置体现空闲（工具比助手晚开始）
+  const time = deriveTrajectoryTimeline(cells, "time");
+  const userAt = time.spans.find((span) => span.kind === "user")?.left ?? 0;
+  const toolAt = time.spans.find((span) => span.kind === "tool")?.left ?? 0;
+  assert.ok(toolAt > userAt, "按真实时刻摆时，晚发生的记录在右边");
+  assert.ok(
+    time.spans.every((span) => span.width === 0),
+    "`time` 模式下每条宽度归零（相等宽度让「什么时候发生」成为唯一信息）",
+  );
+
+  // 没有时刻的记录不进时间线（拿不到就不画，不塞到最左边假装它在最前）
+  const untimed = deriveTrajectoryTimeline(
+    [{ ...cells[0], index: 1, kind: "system", startedAt: null, timeSeconds: null } as never],
+    "time",
+  );
+  assert.strictEqual(untimed.spans.length, 0);
+}
+console.log("trajectory: 时间线的三种模式 ✓");
 
 console.log("\ntrajectory: all assertions passed");

@@ -33,7 +33,7 @@ export function formatFileMention(path: string, kind: "file" | "directory" = "fi
 }
 
 /**
- * 带**行号区间**的引用：`@src/config.ts:12-40`（单行时只写一个行号）。
+ * 带**行号区间**的引用：`@src/config.ts#L12-L40`（单行时 `#L12`）。
  *
  * 官方语法里**没有**行号（`dsh-file-reference` 的 `FILE_REFERENCE_PROMPT` 只说
  * 「`@` 开头的是用户显式引用的工作区路径；结尾斜杠是目录；其余是文件，需要内容
@@ -41,8 +41,11 @@ export function formatFileMention(path: string, kind: "file" | "directory" = "fi
  * `@` 引用形式添加，而行号是这条引用**唯一**区别于「整文件引用」的信息
  * （不说清楚的话，模型只看到一个路径，用户想的是「这几行」）。
  *
- * `path:line` 是编译器/搜索工具通用的写法，模型读得懂；引号形式把行号写在引号
- * **内**（`@"my file.txt:12-40"`），这样整段仍旧是一个 token。
+ * 用 GitHub 的 `#L12-L40` 而不是编译器的 `:12-40`：`#` 开头的锚点**不可能是
+ * 文件路径**，所以「模型把行号当成路径的一部分去 read」这条误读路径根本不存在
+ * （`:12-40` 在 Windows 上还容易和盘符/流语法混淆）。GitHub 的锚点语法模型也见得多。
+ *
+ * 引号形式把行号写在引号**内**（`@"my file.txt#L12-L40"`），这样整段仍旧是一个 token。
  */
 export function formatFileMentionWithLines(
   path: string,
@@ -50,7 +53,7 @@ export function formatFileMentionWithLines(
 ): string | undefined {
   const mention = formatFileMention(path, "file");
   if (mention === undefined || lines === undefined) return mention;
-  const range = lines.start === lines.end ? `${lines.start}` : `${lines.start}-${lines.end}`;
-  if (!mention.startsWith('@"')) return `${mention}:${range}`;
-  return `${mention.slice(0, -1)}:${range}"`;
+  const range = lines.start === lines.end ? `#L${lines.start}` : `#L${lines.start}-L${lines.end}`;
+  if (!mention.startsWith('@"')) return `${mention}${range}`;
+  return `${mention.slice(0, -1)}${range}"`;
 }

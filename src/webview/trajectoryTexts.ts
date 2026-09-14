@@ -78,6 +78,9 @@ export interface TrajectoryTexts {
   detailsSubtoolCalls: string;
   detailsCompacted: string;
   detailsAssistantMessage: string;
+  /** 检查器可拖宽（官方 `details.resize` / `details.resizeTitle`）。 */
+  detailsResize: string;
+  detailsResizeTitle: string;
 
   /** 记录正文 */
   recordNoContent: string;
@@ -138,6 +141,21 @@ export interface TrajectoryTexts {
   loadingEarlier: string;
   /** 面板还没取过账本（刚打开、宿主还没回帧） */
   loading: string;
+
+  /** 时间线（工具栏开关 + 泳道标签 + tooltip） */
+  toolbarDuration: string;
+  toolbarUseActualDuration: string;
+  toolbarUseEqualWidth: string;
+  columnInput: string;
+  columnModel: string;
+  columnTools: string;
+  timelineAria: string;
+  timelineNoTimingData: string;
+  timelineTotal: (duration: string) => string;
+  timelineStarted: (time: string) => string;
+  timelineTtftDecoding: (ttft: string, decoding: string) => string;
+  /** 缩放复位（官方没有这个按钮：官方只有双击清选区；这里多一个出路）。 */
+  timelineResetZoom: string;
 }
 
 const zh: TrajectoryTexts = {
@@ -202,6 +220,8 @@ const zh: TrajectoryTexts = {
   detailsSubtoolCalls: "子工具调用",
   detailsCompacted: "已压缩",
   detailsAssistantMessage: "助手消息",
+  detailsResize: "调整事件详情宽度",
+  detailsResizeTitle: "拖动调整大小；双击恢复默认值。",
 
   recordNoContent: "无内容",
   recordNoPayload: "未捕获参数",
@@ -254,6 +274,19 @@ const zh: TrajectoryTexts = {
   loadEarlier: "加载更早的历史",
   loadingEarlier: "正在加载更早的历史…",
   loading: "正在加载轨迹…",
+
+  toolbarDuration: "时长",
+  toolbarUseActualDuration: "使用实际时长",
+  toolbarUseEqualWidth: "使用等宽操作",
+  columnInput: "输入",
+  columnModel: "模型",
+  columnTools: "工具",
+  timelineAria: "轨迹时间线",
+  timelineNoTimingData: "无计时数据",
+  timelineTotal: (duration) => `总计 ${duration}`,
+  timelineStarted: (time) => `开始于 ${time}`,
+  timelineTtftDecoding: (ttft, decoding) => `首 token ${ttft} · 解码 ${decoding}`,
+  timelineResetZoom: "缩放复位（当前已放大；悬停滚轮缩放，右键拖动平移）",
 };
 
 const en: TrajectoryTexts = {
@@ -318,6 +351,8 @@ const en: TrajectoryTexts = {
   detailsSubtoolCalls: "Subtool calls",
   detailsCompacted: "Compacted",
   detailsAssistantMessage: "Assistant Message",
+  detailsResize: "Resize event details",
+  detailsResizeTitle: "Drag to resize. Double-click to reset.",
 
   recordNoContent: "No content",
   recordNoPayload: "No payload captured",
@@ -370,6 +405,19 @@ const en: TrajectoryTexts = {
   loadEarlier: "Load earlier history",
   loadingEarlier: "Loading earlier history…",
   loading: "Loading trajectory…",
+
+  toolbarDuration: "Duration",
+  toolbarUseActualDuration: "Use actual duration",
+  toolbarUseEqualWidth: "Use equal-width operations",
+  columnInput: "Input",
+  columnModel: "Model",
+  columnTools: "Tools",
+  timelineAria: "Trajectory timeline",
+  timelineNoTimingData: "No timing data",
+  timelineTotal: (duration) => `Total ${duration}`,
+  timelineStarted: (time) => `Started ${time}`,
+  timelineTtftDecoding: (ttft, decoding) => `TTFT ${ttft} · Decoding ${decoding}`,
+  timelineResetZoom: "Reset zoom (wheel to zoom, right-drag to pan)",
 };
 
 /** 按界面语言取这套词典（与 `texts.ts` 的 `normalizeLocale` 同一套取值）。 */

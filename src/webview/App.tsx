@@ -386,15 +386,20 @@ export function App() {
     runningRef.current = state.running;
   }, [state.running]);
 
-  // 轨迹面板开着时，一轮结束后重取一次账本。
-  // **流式期间不取**：整份模型可能几百行，边生成边整份下发是白烧；面板一打开先取
-  // 一次（Header 的 toggle 里带着请求），之后每轮结束刷新一次即可。
-  const trajectoryRunningRef = useRef(state.running);
+  // 轨迹面板开着时的刷新节奏：**运行中每 3 秒取一次**，停下后再取一次收尾。
+  //
+  // 官方的轨迹是跟着事件流增量长的（流式中的助手行、刚结算的工具行都会实时出现）；
+  // 本扩展的账本是宿主按需折好整份下发的，所以用「面板开着 + 运行中」这个条件轮询——
+  // 面板关着时一个请求都不发（整份模型几百行，不值得白推）。
   useEffect(() => {
-    const was = trajectoryRunningRef.current;
-    trajectoryRunningRef.current = state.running;
-    if (state.panel === "trajectory" && was && !state.running) post({ type: "listTrajectory" });
-  }, [state.running, state.panel]);
+    if (state.panel !== "trajectory") return;
+    if (!state.running) {
+      post({ type: "listTrajectory" });
+      return;
+    }
+    const timer = setInterval(() => post({ type: "listTrajectory" }), 3000);
+    return () => clearInterval(timer);
+  }, [state.panel, state.running]);
 
   useEffect(() => {
     const unsubscribe = subscribe(dispatch as (message: HostToWebview) => void);

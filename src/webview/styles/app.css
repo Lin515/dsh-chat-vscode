@@ -3400,3 +3400,170 @@
     display: none;
   }
 }
+
+/* 时间线（官方 `.plot`：高 50px，左侧 44px 放三条泳道标签） */
+.trajectory-timeline {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.trajectory-timeline.is-empty {
+  color: var(--muted);
+  font-size: var(--font-size-2xs);
+}
+
+.trajectory-lanes {
+  flex: 0 0 44px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-around;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.trajectory-plot {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 42px;
+  border-radius: var(--radius-sm);
+  background: var(--code-bg);
+  cursor: crosshair;
+  overflow: hidden;
+}
+
+/* 轮次边界：一条竖线（官方 `turnBoundaries` 同形态） */
+.trajectory-boundary {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--border);
+  pointer-events: none;
+}
+
+/* 三条泳道：0 输入 / 1 模型 / 2 工具（官方 `laneFor`） */
+.trajectory-span {
+  position: absolute;
+  height: 8px;
+  padding: 0;
+  border: 0;
+  border-radius: 2px;
+  background: var(--muted);
+  cursor: pointer;
+  min-width: 2px;
+}
+
+.trajectory-span[data-lane="0"] { top: 4px; }
+.trajectory-span[data-lane="1"] { top: 17px; }
+.trajectory-span[data-lane="2"] { top: 30px; }
+
+.trajectory-span.is-system { background: var(--muted); }
+.trajectory-span.is-user { background: var(--link); }
+.trajectory-span.is-context { background: var(--node-read); }
+.trajectory-span.is-compacted { background: var(--node-edit); }
+.trajectory-span.is-message { background: var(--node-code); }
+.trajectory-span.is-tool { background: var(--node-bash); }
+.trajectory-span.is-subtool { background: var(--node-write); }
+
+.trajectory-span.is-error {
+  background: var(--error);
+}
+
+.trajectory-span.is-selected {
+  outline: 1px solid var(--fg);
+  outline-offset: 1px;
+}
+
+/* 拖动出来的选区（官方 `onRangeChange` 的等价物：只做高亮，不做缩放） */
+.trajectory-range {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: var(--active);
+  pointer-events: none;
+}
+
+/* 左端的「加载更早」（官方那个 `…` 按钮，只在还有更早记录时出现） */
+.trajectory-more {
+  flex: 0 0 auto;
+  align-self: center;
+  width: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--muted);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+}
+
+.trajectory-more:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--fg);
+}
+
+/* 落在时间线选区里的账本行 */
+.trajectory-row.is-in-range {
+  background: var(--hover);
+}
+
+/* 时间线放大后：右键拖动平移（官方 `pannable`），光标给出可拖的暗示 */
+.trajectory-plot.is-zoomed {
+  cursor: grab;
+}
+
+.trajectory-plot.is-zoomed:active {
+  cursor: grabbing;
+}
+
+/* 运行中的账本行：状态点与种类标签之间留一点距离（点复用聊天区那套 .dot） */
+.trajectory-event-inner .dot {
+  flex: 0 0 auto;
+}
+
+/* 检查器的拖宽把手（官方 details.resize：贴在左边缘的一条细窄区域） */
+.trajectory-resize {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  background: none;
+}
+
+.trajectory-resize:hover {
+  background: var(--border-focus);
+}
+
+/* 检查器是绝对定位把手 + 内部滚动，所以自身要 relative */
+.trajectory-details {
+  position: relative;
+}
+
+/* 窄面板：检查器改成盖在账本上的抽屉（官方 <=760px 同款行为） */
+@media (max-width: 760px) {
+  .trajectory-details {
+    position: absolute;
+    right: 6px;
+    top: 40px;
+    bottom: 6px;
+    z-index: 3;
+    box-shadow: 0 2px 12px rgb(0 0 0 / 35%);
+    background: var(--bg);
+    max-width: calc(100% - 24px);
+  }
+}
+
+/* 窄屏时检查器是绝对定位的（见上面的 media query），锚点就是这块主体区 */
+.trajectory-body {
+  position: relative;
+}

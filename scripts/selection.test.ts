@@ -75,13 +75,22 @@ console.log("selection: 空选区返回 undefined ✓");
   const mention = readFileSync(join(process.cwd(), "src", "shared", "mentions.ts"), "utf8");
   assert.ok(/formatFileMentionWithLines/.test(mention), "带行号的引用有独立实现（供两端共用）");
   const { formatFileMentionWithLines } = await import("../src/shared/mentions");
-  assert.strictEqual(formatFileMentionWithLines("src/config.ts", { start: 12, end: 40 }), "@src/config.ts:12-40");
-  assert.strictEqual(formatFileMentionWithLines("src/config.ts", { start: 7, end: 7 }), "@src/config.ts:7");
+  assert.strictEqual(
+    formatFileMentionWithLines("src/config.ts", { start: 12, end: 40 }),
+    "@src/config.ts#L12-L40",
+    "GitHub 式锚点：`#` 开头不可能是路径，模型不会把它当路径的一部分",
+  );
+  assert.strictEqual(formatFileMentionWithLines("src/config.ts", { start: 7, end: 7 }), "@src/config.ts#L7");
   assert.strictEqual(formatFileMentionWithLines("src/config.ts"), "@src/config.ts", "没有行号就是整文件引用");
   assert.strictEqual(
     formatFileMentionWithLines("a b/c.ts", { start: 1, end: 2 }),
-    '@"a b/c.ts:1-2"',
+    '@"a b/c.ts#L1-L2"',
     "含空白的路径把行号写在引号内，整段仍是一个 token",
+  );
+  assert.strictEqual(
+    /[^"]:[0-9]/.test(formatFileMentionWithLines("src/a.ts", { start: 1, end: 2 }) ?? ""),
+    false,
+    "不再用编译器的 `:12-40` 写法",
   );
 }
 console.log("selection: 命令 → 带行号的 `@` 引用 ✓");

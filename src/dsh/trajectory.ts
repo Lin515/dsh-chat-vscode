@@ -191,6 +191,17 @@ export function deriveTrajectoryModel(events: readonly SessionWireEvent[], hasOl
   let requestNumber = 0;
   /** step → 每次重试的最新进度（挂到该 step 的助手行上）。 */
   const retries = new Map<string, { attempt: number; max?: number }>();
+  /**
+   * 已经开过 `step/start` 的步骤（key = `turn:step`）。
+   *
+   * 与 `settledSteps` 一减，剩下的就是**还在跑**的步骤——官方把它画成一行
+   * 「流式中的助手」（`PartialAssistant` + `requestOnly`），本扩展不映射流式叠加层，
+   * 只出一行「正在生成」的占位（`status: "running"`、正文留空）。
+   */
+  const startedSteps = new Map<string, { turn: number | null; step: number | null; time: number; seq: number; requestNumber: number }>();
+  const settledSteps = new Set<string>();
+  /** 最后一次 `turn/end` 的 seq：只有它**之后**开的步骤才算「还在跑」。 */
+  let lastTurnEndSeq = -1;
   /** 轮次收尾错误：挂到该轮**最后一条助手消息**上（官方 `applyTurnErrors`）。 */
   const turnErrors = new Map<number, string>();
   /** 系统提示词：当前生效的正文与上一次的正文（差异页签要两者）。 */
@@ -231,6 +242,7 @@ export function deriveTrajectoryModel(events: readonly SessionWireEvent[], hasOl
         const turn = typeof data.turn === "number" ? data.turn : currentTurn;
         const error = turnEndError(data.reason);
         if (turn !== null && error !== undefined) turnErrors.set(turn, error);
+        lastTurnEndSeq = event.seq;
         break;
       }
 
@@ -239,6 +251,13 @@ export function deriveTrajectoryModel(events: readonly SessionWireEvent[], hasOl
         requestNumber += 1;
         currentStep = typeof data.step === "number" ? data.step : null;
         if (typeof data.turn === "number") currentTurn = data.turn;
+        startedSteps.set(`${currentTurn ?? "?"}:${currentStep ?? "?"}`, {
+          turn: currentTurn,
+          step: currentStep,
+          time,
+          seq: event.seq,
+          requestNumber,
+        });
         break;
       }
 
@@ -326,6 +345,7 @@ export function deriveTrajectoryModel(events: readonly SessionWireEvent[], hasOl
 
       case "assistant/message": {
         const message = data.message as MessageLike | undefined;
+        settledSteps.add(`${currentTurn ?? "?"}:${currentStep ?? "?"}`);
         const text = blocksToText(message?.content);
         const thinking = blocksToText(
           Array.isArray(message?.content)
@@ -507,6 +527,25 @@ export function deriveTrajectoryModel(events: readonly SessionWireEvent[], hasOl
       default:
         break;
     }
+  }
+
+  // 还在跑的步骤补一行「正在生成」（官方那是流式中的助手行；本扩展不出流式正文，
+  // 只出占位）。判据取**最后一次 `turn/end` 之后**开的步骤——更早的未结算步骤是
+  // 被中断的那一轮，官方由 `assistant/attempt` 还原，我们这里不臆造正文。
+  for (const [key, started] of startedSteps) {
+    if (settledSteps.has(key)) continue;
+    if (started.seq < lastTurnEndSeq) continue;
+    push({
+      kind: "message",
+      turn: started.turn,
+      seq: started.seq,
+      time: started.time,
+      text: "",
+      requestNumber: started.requestNumber,
+      timeSeconds: null,
+      startedAt: started.time,
+      status: "running",
+    });
   }
 
   // 轮次收尾的原因挂到该轮**最后一条助手行**上（官方 `applyTurnErrors` 同口径：

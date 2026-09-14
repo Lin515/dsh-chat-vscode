@@ -1,20 +1,28 @@
 /**
  * 「轨迹」视图：**官方账本的对齐实现**（第一步：工具栏 + 账本 + 详情检查器；
- * 时间线留给第二步）。
+ * 第二步：时间线）。
  *
  * 结构逐条对照 `dsh-client-ui-trajectory` 的客户端实现：
- * - **工具栏**（官方的 `TrajectoryToolbar`）：轮次折叠 / 调用折叠 / 搜索；
+ * - **工具栏**（官方的 `TrajectoryToolbar`）：时长开关 / 轮次折叠 / 调用折叠 / 搜索；
  * - **账本**（官方 2 列：event + content）：每行 = 记录种类标签 + `#N` + 摘要，
  *   工具行把「请求 → 结果」摊成两列；
+ * - **时间线**（官方的 `TrajectoryTimeline`）：三条泳道（输入 / 模型 / 工具）、
+ *   轮次边界竖线、点选与拖动选区、左端「加载更早」；
  * - **详情检查器**（官方的 `details` 面板）：页签集合按记录种类派生，与官方
  *   `detailTabs()` 同一套分支。
  *
  * 与官方**刻意的差异**（见 `docs/design-trajectory.md` 与 `dsh/trajectory.ts` 的
- * 文件头）：时间是第二步、流式中的助手正文不出行、系统提示词按 `request/header`
- * 变化合并、折叠行用官方的 `request.collapsedSummary` 文案。
+ * 文件头）：流式中的助手正文不出行、系统提示词按 `request/header` 变化合并、
+ * 时间线**没有滚轮缩放与右键平移**（官方有；这两样是纯交互糖，数据层已经齐了）。
  */
-import { useMemo, useState } from "react";
-import type { TrajectoryCell, TrajectoryModel, TrajectoryTurn } from "../../shared/trajectory";
+import { useMemo, useRef, useState } from "react";
+import {
+  deriveTrajectoryTimeline,
+  type TrajectoryCell,
+  type TrajectoryModel,
+  type TrajectoryTimelineMode,
+  type TrajectoryTurn,
+} from "../../shared/trajectory";
 import { IconSearch } from "../icons";
 import { Markdown } from "./Markdown";
 import { useTexts } from "../texts";
@@ -28,8 +36,16 @@ import {
   type TrajectoryTexts,
 } from "../trajectoryTexts";
 
-/** 详情检查器的页签（官方 `detailTabs()` 的等价分支）。 */
-type TabId = "summary" | "payload" | "result" | "schema" | "timing" | "preview" | "raw" | "source" | "system-prompt" | "tools" | "diff" | "raw-output";
+/**
+ * 检查器的默认宽度：官方是 `clamp(320px, 38%, 440px)`（相对面板宽算一个初值），
+ * 拖动范围 320–720（官方 `clampDetailsWidth` 的 min/max）。
+ */
+function defaultInspectorWidth(): number {
+  const panel = typeof window === "undefined" ? 480 : window.innerWidth;
+  return Math.min(440, Math.max(320, Math.round(panel * 0.38)));
+}
+
+/** 详情检查器的页签（官方 `detailTabs()` 的等价分支）。 */type TabId = "summary" | "payload" | "result" | "schema" | "timing" | "preview" | "raw" | "source" | "system-prompt" | "tools" | "diff" | "raw-output";
 
 interface Tab {
   id: TabId;
@@ -90,6 +106,9 @@ function cellContent(cell: TrajectoryCell, texts: TrajectoryTexts): { text: stri
       if (cell.status === "error") return { text: texts.compactionFailed };
       return { text: cell.status === "running" ? texts.compacting : cell.text || texts.compacted };
     case "message":
+      // 流式中那一行正文还是空的（官方此时也是空的，token 到了才长出来）——
+      // 不能退化成「仅工具调用」，那是**已结算且没正文**时的说法
+      if (cell.status === "running" && !cell.text) return { text: "" };
       return { text: cell.text || texts.toolCallOnly };
     default:
       return { text: cell.text, ...(cell.result === undefined ? {} : { result: cell.result }) };
@@ -114,17 +133,23 @@ function Inspector({
   cell,
   previousTools,
   texts,
+  width,
+  onWidth,
   onClose,
 }: {
   cell: TrajectoryCell;
   /** 该行之前最近一次生效的工具目录（Schema 页签要按调用时的目录查）。 */
   previousTools: TrajectoryCell["toolsDetail"];
   texts: TrajectoryTexts;
+  /** 检查器宽度（px）。官方是 `clamp(320px, 38%, 440px)`，可拖动调宽（320–720）。 */
+  width: number;
+  onWidth: (width: number) => void;
   onClose: () => void;
 }) {
   const tabs = useMemo(() => tabsFor(cell, texts), [cell, texts]);
   const [tab, setTab] = useState<TabId>("summary");
   const [history, setHistory] = useState<{ key: string; tab: TabId }>({ key: "", tab: "summary" });
+  const resizing = useRef<{ x: number; width: number } | null>(null);
   // 切记录时保留仍然可用的页签（官方 `tabHistory` 同口径），否则回到「概述」
   const key = `${cell.seq}:${cell.index}`;
   if (history.key !== key) {
@@ -152,7 +177,32 @@ function Inspector({
     cell.status === "running" ? texts.statusPending : cell.status === "error" ? texts.statusFailed : texts.statusCompleted;
 
   return (
-    <aside className="trajectory-details" aria-label={texts.detailsEvent}>
+    <aside className="trajectory-details" aria-label={texts.detailsEvent} style={{ width: `${width}px`, flex: "0 0 auto" }}>
+      {/* 左边这条把手调宽（官方 `details.resize` / `details.resizeTitle`；
+          双击复位到默认宽度） */}
+      <span
+        className="trajectory-resize"
+        role="separator"
+        aria-label={texts.detailsResize}
+        title={texts.detailsResizeTitle}
+        onMouseDown={(event) => {
+          resizing.current = { x: event.clientX, width };
+          event.preventDefault();
+        }}
+        onMouseMove={(event) => {
+          const start = resizing.current;
+          if (!start) return;
+          // 往左拖 = 变宽（把手在检查器左边缘）
+          onWidth(Math.min(720, Math.max(280, start.width - (event.clientX - start.x))));
+        }}
+        onMouseUp={() => {
+          resizing.current = null;
+        }}
+        onMouseLeave={() => {
+          resizing.current = null;
+        }}
+        onDoubleClick={() => onWidth(defaultInspectorWidth())}
+      />
       <div className="trajectory-details-head">
         <span className="trajectory-details-title">
           {`#${cell.index} `}
@@ -352,6 +402,231 @@ function Inspector({
   );
 }
 
+/**
+ * 时间线：三条泳道 + 轮次边界 + 点选 / 拖动选区 + 左端「加载更早」。
+ *
+ * 官方那条是 50px 高的概览条（`.plot` 左侧 44px 放泳道标签）。**没有**滚轮缩放与
+ * 右键平移——那两样是纯交互糖，先不做（数据层已齐，随时能补）。
+ *
+ * 泳道归属（官方 `laneFor` 逐字）：工具/子工具 → 工具道；助手/压缩 → 模型道；
+ * 其余（系统/用户/上下文）→ 输入道。
+ */
+function TrajectoryTimeline({
+  timeline,
+  selected,
+  range,
+  onSelect,
+  onRange,
+  onLoadEarlier,
+  loadingEarlier,
+  hasOlder,
+  texts,
+}: {
+  timeline: ReturnType<typeof deriveTrajectoryTimeline>;
+  selected: number | undefined;
+  range: { start: number; end: number } | null;
+  onSelect: (index: number) => void;
+  onRange: (range: { start: number; end: number } | null) => void;
+  onLoadEarlier: () => void;
+  loadingEarlier: boolean;
+  hasOlder: boolean;
+  texts: TrajectoryTexts;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const dragging = useRef<number | null>(null);
+  const panning = useRef<{ x: number; offset: number } | null>(null);
+  /**
+   * 视口：`zoom` = 放大倍数（1 = 全部铺满），`offset` = 左边界在 0..1 里的位置。
+   *
+   * 官方的交互是「滚轮以光标为锚缩放 + 右键拖动平移」（`Math.exp(deltaY * 0.0015)`、
+   * `pannable` 仅在已缩放时）。这里照同一套，只是把「最小缩放」定成 1（不缩到看不全）。
+   */
+  const [zoom, setZoom] = useState(1);
+  const [offset, setOffset] = useState(0);
+
+  if (timeline.spans.length === 0) {
+    return <div className="trajectory-timeline is-empty">{texts.timelineNoTimingData}</div>;
+  }
+
+  const maxOffset = Math.max(0, 1 - 1 / zoom);
+  const clampOffset = (value: number) => Math.min(maxOffset, Math.max(0, value));
+  /** 归一化位置 → 屏幕位置（0..1）。 */
+  const screen = (value: number) => (value - offset) * zoom;
+
+  /** 客户端 x → 0..1 的归一化位置（夹到两端）。 */
+  const positionOf = (clientX: number): number => {
+    const el = ref.current;
+    if (!el) return 0;
+    const rect = el.getBoundingClientRect();
+    if (rect.width <= 0) return 0;
+    return Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+  };
+
+  /** 滚轮缩放：**以光标为锚**（光标下那条记录不动）。 */
+  const onWheel = (event: React.WheelEvent<HTMLDivElement>) => {
+    const anchorScreen = positionOf(event.clientX);
+    // 屏幕位置 → 域位置（缩放前）
+    const anchorDomain = offset + anchorScreen / zoom;
+    // 官方那行是 `Math.exp(deltaY * 0.0015)`，乘在**域跨度**上：向上滚（deltaY<0）
+    // 域变小 = 放大。这里的 `zoom` 是放大倍数（越大越放大），所以要取倒数——
+    // 照抄原式的符号会让「向上滚」变成缩小（第一次实现就是这么错的）。
+    const factor = Math.exp(-event.deltaY * 0.0015);
+    const next = Math.min(100, Math.max(1, zoom * factor));
+    if (next === zoom) return;
+    setZoom(next);
+    setOffset(Math.min(Math.max(0, 1 - 1 / next), Math.max(0, anchorDomain - anchorScreen / next)));
+  };
+
+  const tooltipOf = (span: (typeof timeline.spans)[number]): string => {
+    const parts = [kindLabel(span.kind, texts)];
+    parts.push(
+      span.timeSeconds === null
+        ? texts.timelineStarted(formatRecordedTime(span.startedAt))
+        : texts.timelineTotal(formatElapsedSeconds(span.timeSeconds, texts)),
+    );
+    if (span.ttftMs !== null && span.decodingMs !== null) {
+      parts.push(
+        texts.timelineTtftDecoding(
+          formatDurationMs(span.ttftMs, texts),
+          formatDurationMs(span.decodingMs, texts),
+        ),
+      );
+    }
+    return parts.join(" · ");
+  };
+
+  return (
+    <div className="trajectory-timeline">
+      <div className="trajectory-lanes" aria-hidden>
+        <span>{texts.columnInput}</span>
+        <span>{texts.columnModel}</span>
+        <span>{texts.columnTools}</span>
+      </div>
+      <div
+        className={`trajectory-plot${zoom > 1 ? " is-zoomed" : ""}`}
+        ref={ref}
+        role="group"
+        aria-label={texts.timelineAria}
+        onWheel={onWheel}
+        onContextMenu={(event) => {
+          // 右键是**平移**手势（官方 `pannable`）：不弹原生菜单
+          if (zoom > 1) event.preventDefault();
+        }}
+        onMouseDown={(event) => {
+          // 右键 + 已缩放 → 平移视口（官方同款）
+          if (event.button === 2 && zoom > 1) {
+            panning.current = { x: event.clientX, offset };
+            return;
+          }
+          if (event.button !== 0) return;
+          const at = positionOf(event.clientX);
+          dragging.current = at;
+          onRange({ start: at, end: at });
+        }}
+        onMouseMove={(event) => {
+          const pan = panning.current;
+          if (pan) {
+            const el = ref.current;
+            const width = el?.getBoundingClientRect().width ?? 0;
+            if (width > 0) setOffset(clampOffset(pan.offset - (event.clientX - pan.x) / width / zoom));
+            return;
+          }
+          const start = dragging.current;
+          if (start === null) return;
+          const at = positionOf(event.clientX);
+          onRange({ start: Math.min(start, at), end: Math.max(start, at) });
+        }}
+        onMouseUp={() => {
+          dragging.current = null;
+          panning.current = null;
+        }}
+        onMouseLeave={() => {
+          dragging.current = null;
+          panning.current = null;
+        }}
+        onDoubleClick={() => {
+          // 双击：先清空选区；已经没选区了就把缩放复位（官方双击是清选区，这里多一步
+          // 「回到全部」，否则缩进去之后没有别的出路）
+          if (range && range.end > range.start) onRange(null);
+          else {
+            setZoom(1);
+            setOffset(0);
+          }
+        }}
+      >
+        {timeline.boundaries.map((boundary) => {
+          const left = screen(boundary.left);
+          if (left < 0 || left > 1) return null;
+          return (
+            <span
+              key={`turn-${boundary.turn}`}
+              className="trajectory-boundary"
+              style={{ left: `${left * 100}%` }}
+              title={texts.turnLabel(boundary.turn + 1)}
+            />
+          );
+        })}
+        {timeline.spans.map((span) => {
+          const left = screen(span.left);
+          const width = span.width * zoom;
+          if (left + width < 0 || left > 1) return null;
+          return (
+            <button
+              key={`span-${span.cellIndex}`}
+              type="button"
+              data-lane={span.lane}
+              data-kind={span.kind}
+              className={`trajectory-span is-${span.kind}${span.error ? " is-error" : ""}${
+                span.cellIndex === selected ? " is-selected" : ""
+              }`}
+              style={{
+                left: `${left * 100}%`,
+                // 0 宽度（`time` 模式）也要看得见：给一个最小可见宽度
+                width: `${Math.max(width * 100, 0.5)}%`,
+              }}
+              title={tooltipOf(span)}
+              onMouseDown={(event) => event.stopPropagation()}
+              onClick={() => onSelect(span.cellIndex)}
+            />
+          );
+        })}
+        {range && range.end > range.start ? (
+          <span
+            className="trajectory-range"
+            style={{
+              left: `${screen(range.start) * 100}%`,
+              width: `${(range.end - range.start) * zoom * 100}%`,
+            }}
+          />
+        ) : null}
+      </div>
+      {hasOlder ? (
+        <button
+          className="trajectory-more"
+          title={texts.loadEarlier}
+          aria-label={texts.loadEarlier}
+          disabled={loadingEarlier}
+          onClick={onLoadEarlier}
+        >
+          …
+        </button>
+      ) : null}
+      {zoom > 1 ? (
+        <button
+          className="trajectory-more"
+          title={texts.timelineResetZoom}
+          aria-label={texts.timelineResetZoom}
+          onClick={() => {
+            setZoom(1);
+            setOffset(0);
+          }}
+        >
+          ⤢
+        </button>
+      ) : null}
+    </div>
+  );
+}
 export function TrajectoryPanel({
   model,
   locale,
@@ -371,8 +646,26 @@ export function TrajectoryPanel({
   const [collapsedCalls, setCollapsedCalls] = useState<ReadonlySet<number>>(new Set());
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<{ index: number } | undefined>(undefined);
+  /** 时间线模式：官方工具栏「时长」开关（`sequence` ⇄ `duration`）。 */
+  const [mode, setMode] = useState<TrajectoryTimelineMode>("sequence");
+  /** 时间线上拖出来的选区（用来在账本里高亮那一段）。 */
+  const [range, setRange] = useState<{ start: number; end: number } | null>(null);
+  /** 检查器宽度（官方那套 clamp(320, 38%, 440) 的初值 + 可拖到 280–720）。 */
+  const [inspectorWidth, setInspectorWidth] = useState(() => defaultInspectorWidth());
 
   const turns = model?.turns ?? [];
+  const allCells = useMemo(() => turns.flatMap((turn) => turn.cells), [turns]);
+  const timeline = useMemo(() => deriveTrajectoryTimeline(allCells, mode), [allCells, mode]);
+  /** 落在时间线选区里的记录（账本行加 `is-in-range`）。 */
+  const inRange = useMemo(() => {
+    if (!range || range.end <= range.start) return undefined;
+    const set = new Set<number>();
+    for (const span of timeline.spans) {
+      const right = span.left + span.width;
+      if (span.left < range.end && right > range.start) set.add(span.cellIndex);
+    }
+    return set;
+  }, [range, timeline]);
   /** 可折叠的轮次（`turn.turn !== null`）与「后跟工具」的助手行。 */
   const collapsibleTurns = useMemo(
     () => turns.filter((turn) => turnCollapsible(turn)).map((turn) => turn.turn as number),
@@ -478,7 +771,9 @@ export function TrajectoryPanel({
           key={`${cell.kind}-${cell.index}`}
           className={`trajectory-row${cell.status === "error" ? " is-error" : ""}${
             selected?.index === cell.index ? " is-selected" : ""
-          }${needle && !isMatch ? " is-dimmed" : ""}${isMatch ? " is-match" : ""}`}
+          }${inRange?.has(cell.index) ? " is-in-range" : ""}${needle && !isMatch ? " is-dimmed" : ""}${
+            isMatch ? " is-match" : ""
+          }`}
           aria-selected={selected?.index === cell.index}
           onClick={() => setSelected({ index: cell.index })}
           onDoubleClick={() => {
@@ -509,6 +804,7 @@ export function TrajectoryPanel({
             ) : null}
             <span className="trajectory-event-inner">
               <span className="trajectory-index">{`#${cell.index}`}</span>
+              {cell.status === "running" ? <span className="dot dot-running" aria-hidden /> : null}
               <span className={kindClass(cell)}>{kindLabel(cell.kind, tt)}</span>
             </span>
           </td>
@@ -552,6 +848,18 @@ export function TrajectoryPanel({
 
       <div className="trajectory-toolbar" role="toolbar" aria-label={tt.toolbarAria}>
         <div className="trajectory-toolbar-actions">
+          {/* 时长开关：官方 `toolbar.duration`（按下 = 按真实耗时成条，未按下 = 等宽） */}
+          <button
+            className="btn btn-ghost"
+            aria-pressed={mode !== "sequence"}
+            title={mode === "sequence" ? tt.toolbarUseActualDuration : tt.toolbarUseEqualWidth}
+            onClick={() => {
+              setMode(mode === "sequence" ? "duration" : "sequence");
+              setRange(null);
+            }}
+          >
+            {tt.toolbarDuration}
+          </button>
           <button
             className="btn btn-ghost"
             title={allTurnsCollapsed ? tt.toolbarExpandTurns : tt.toolbarCollapseTurns}
@@ -583,6 +891,20 @@ export function TrajectoryPanel({
         </span>
       </div>
 
+      {model !== undefined && turns.length > 0 ? (
+        <TrajectoryTimeline
+          timeline={timeline}
+          selected={selected?.index}
+          range={range}
+          onSelect={(index) => setSelected({ index })}
+          onRange={setRange}
+          onLoadEarlier={onLoadEarlier}
+          loadingEarlier={loadingEarlier}
+          hasOlder={model.hasOlder}
+          texts={tt}
+        />
+      ) : null}
+
       <div className="trajectory-body">
         <div className="trajectory-ledger">
           {model === undefined ? (
@@ -600,7 +922,14 @@ export function TrajectoryPanel({
           )}
         </div>
         {selectedCell ? (
-          <Inspector cell={selectedCell} previousTools={selectedTools} texts={tt} onClose={() => setSelected(undefined)} />
+          <Inspector
+            cell={selectedCell}
+            previousTools={selectedTools}
+            texts={tt}
+            width={inspectorWidth}
+            onWidth={setInspectorWidth}
+            onClose={() => setSelected(undefined)}
+          />
         ) : null}
       </div>
     </div>

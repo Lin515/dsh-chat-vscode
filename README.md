@@ -52,14 +52,16 @@
 - **`@` 是纯路径引用**：选中文件后，`@path`（目录是 `@dir/`）**直接写进输入框正文**，
   发送出去的就是这串 token——系统提示段告诉模型「这是用户显式引用的工作区路径，
   需要内容就用 `read` 工具读」。它**不进附件栏**，一眼就能和「上传的附件」分开
-- 编辑器右键「**添加文件(或选区)到对话**」（快捷键 `Alt+Shift+2`）：**有选中就加选区**
-  （芯片上带行号 `src/config.ts:12-40`，正文里同样写明行范围），**没选中就加整个文件**。
-  资源管理器里右键某个文件 → 加那个文件。VS Code 的菜单项标题来自 `package.json`、
-  运行期改不了（也没有逐项标题覆盖），所以两种语义写在同一个名字里。加完之后焦点回到
-  你上次用的那个对话窗口（侧栏或编辑区面板），不再固定跳主侧栏
+- 编辑器右键「**添加文件(或选区)到对话**」（快捷键 `Alt+Shift+2`）：**选中了代码就加选区
+  引用** `@src/config.ts#L12-L40`（GitHub 式锚点：`#` 开头不可能是路径，模型不会把它
+  当成路径的一部分；单行是 `#L7`），**没选中就加整个文件的** `@src/config.ts`。
+  资源管理器里右键文件/目录 → 加 `@路径` / `@目录/`。三者**都是引用**，不进附件栏。
+  VS Code 的菜单项标题来自 `package.json`、运行期改不了（也没有逐项标题覆盖），
+  所以两种语义写在同一个名字里。加完之后焦点回到你上次用的那个对话窗口
+  （侧栏或编辑区面板），不再固定跳主侧栏
 - **引用与上传是两条通道**：
   - `@` → 正文里的 `@path` token（路径引用，模型自己读）；
-  - 回形针 / 拖放 / 资源管理器右键 → **附件**：
+  - 回形针 / 拖放 → **附件**：
     - 图片 → 内容块（字节随消息发送）；
     - **其余文件一律逐字节上传**，芯片上显示进度，发送时只带 `receiptId`。
       二进制、非 UTF-8、多大的文件都一样——**官方也不挑**：上传出来的字节按内容寻址
@@ -123,15 +125,22 @@
   按官方 `dsh-client-ui-jobs` 的口径（`stopping` / `killed` 同为警告色；在跑的任务
   恒排在最前、按开始时间升序，已结束的按结束时间降序）；服务端若给出本扩展还不认识
   的状态，**原样显示**而不是折成「已完成」
-- **轨迹**（与官方对齐，第一步已落地）：账本列出**七种记录**——系统提示词 / 用户 /
-  上下文（注入）/ 已压缩 / 助手 / 工具 / 子工具，每行带种类标签、`#N` 与单行摘要，
-  工具行摊成「请求 → 结果」；工具栏可一键折叠所有轮次 / 所有调用、可搜索；
-  选中任意一行打开**详情检查器**（页签按记录种类派生：概述 / 参数 / 结果 / Schema /
-  计时 / 预览 / 原始内容 / 来源 / 系统提示词 / 工具 / 差异……）。
+- **轨迹**（已与官方对齐）：账本列出**七种记录**——系统提示词 / 用户 / 上下文（注入）/
+  已压缩 / 助手 / 工具 / 子工具，每行带种类标签、`#N` 与单行摘要，工具行摊成
+  「请求 → 结果」；生成中的步骤会出一行「正在生成」（面板开着时每 3 秒刷新）；
+  工具栏可切换**等宽 / 按耗时**成条、一键折叠所有轮次 / 所有调用、可搜索；上方是
+  **时间线**（三条泳道：输入 / 模型 / 工具，轮次边界竖线，点一条跳到对应记录、
+  拖动框选一段会在账本里高亮，**滚轮以光标为锚缩放、右键拖动平移**、双击复位，
+  左端 `…` 加载更早）；选中任意一行打开**详情检查器**（页签按记录种类派生：
+  概述 / 参数 / 结果 / Schema / 计时 / 预览 / 原始内容 / 来源 / 系统提示词 / 工具 /
+  差异……；默认宽度按官方 `clamp(320px,38%,440px)`，左边缘可拖宽，窄面板下变成
+  盖在账本上的抽屉）。
   官方的轨迹视图**没有服务端接口**：它是客户端对同一份 durable 事件的**第二次折叠**，
   本扩展照同一口径在宿主侧折（`src/dsh/trajectory.ts`），文案逐字取官方。
-  **第二步（时间线：按记录时间成条、可拖动选区、左端「加载更早」）还没做**，
-  规格与计划见 `docs/design-trajectory.md`
+  与官方**刻意的差异**（写在 `src/dsh/trajectory.ts` 的文件头）：生成中只出占位行、
+  不出流式正文；系统提示词的独立更新按 `request/header` 变化合并；检查器还没有
+  官方的层级跳转 / 用量会话累计 / 选项页签；没有「从对话里的工具行跳进轨迹」。
+  规格见 `docs/design-trajectory.md`
 - **设置**：按服务端 schema 渲染全部命名空间（字符串 / 数字 / 布尔 / 枚举表单，
   复杂结构走 JSON 编辑），支持逐字段保存、整组重置、密钥写入（不回显）、
   「需重启生效」标注。少数**关键项**有中英双语的人话标题与说明
@@ -393,8 +402,8 @@ npm run preview        # 打开 http://127.0.0.1:8777/test/preview.html
   `window.restoreWindows` 为 `none`（或直接以「打开文件夹」重新进入而没有恢复上次的
   编辑器布局），编辑区面板本身就不会被 VS Code 恢复，这时只有侧栏视图按槽位接回会话。
   缓存里的会话被删 / 归档时窗口回落空态，不做「自动挑一个最近的会话顶上」。
-- 不做回合级 Git 回退、子代理追问、计划模式的确认交互。**「轨迹」与官方对齐**分两步，
-  第一步（账本 + 详情检查器 + 工具栏）已落地，**时间线是第二步**；规格与分步计划见
+- 不做回合级 Git 回退、子代理追问、计划模式的确认交互。**「轨迹」与官方对齐**已落地
+  （账本 + 详情检查器 + 工具栏 + 时间线），剩下的差异与规格见
   `docs/design-trajectory.md`。子代理面板与官方 Web 的差距
   （`subagentTiming` 耗时、`hasChildren` 树、诊断行、只读输入框、实时刷新）见
   `docs/audit-summary.md`——数据是齐的，缺的是呈现。
@@ -484,9 +493,10 @@ not an executable command — picking one just writes its name into the message.
 file mentions (files *and* folders): **selecting a folder opens it** (drills in); only the
 "whole folder" button on the right of the row loads the folder itself as an `@dir/`
 reference; once you have drilled into a folder, a `..` row appears **at the top** of the
-list to climb back one level; a selection added from the editor's context menu is a
-**partial reference** and carries its line range (`src/config.ts:12-40`) both on the chip
-and in the prompt text, and focus returns to the chat window you were last using (sidebar
+list to climb back one level; adding a file, a folder or an editor selection from the context
+menu (or `Alt+Shift+2`) always inserts a **plain `@` reference** into the composer — a selection
+carries its line range as a GitHub-style anchor (`@src/config.ts#L12-L40`, `#L7` for one line) —
+and focus returns to the chat window you were last using (sidebar
 or editor panel) instead of always jumping to the primary sidebar. Attachments follow the
 official two paths — images are sent as content blocks,
 **every other file uploads the moment it is picked** (the chip shows progress, and the send

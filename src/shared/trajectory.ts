@@ -196,3 +196,154 @@ export function trajectorySpanRange(cell: TrajectoryCell): { start: number; end:
   const seconds = cell.timeSeconds ?? 0;
   return { start: cell.startedAt, end: cell.startedAt + Math.max(0, seconds) * 1000 };
 }
+
+/** 时间线上的一段（位置已归一化到 0..1，界面直接乘宽度）。 */
+export interface TrajectoryTimelineSpan {
+  cellIndex: number;
+  kind: TrajectoryCellKind;
+  lane: TrajectoryLane;
+  /** 左边界与宽度，都是 0..1 的归一化值。 */
+  left: number;
+  width: number;
+  startedAt: number | null;
+  timeSeconds: number | null;
+  error: boolean;
+  /** 助手记录的 TTFT / 解码时长（ms），tooltip 用。 */
+  ttftMs: number | null;
+  decodingMs: number | null;
+}
+
+/** 轮次边界竖线（官方只在 `turn !== null` 时画）。 */
+export interface TrajectoryTimelineBoundary {
+  turn: number;
+  left: number;
+}
+
+export interface TrajectoryTimeline {
+  spans: TrajectoryTimelineSpan[];
+  boundaries: TrajectoryTimelineBoundary[];
+  /** 该模式下的域总跨度（毫秒）；`sequence` 模式是「单位数」。 */
+  domainMs: number;
+}
+
+/**
+ * 把账本折成时间线（官方 `deriveTrajectoryTimeline` / `deriveTimedTimeline` 的等价物）。
+ *
+ * 四种模式（官方工具栏的两个开关组合出来的）：
+ * - `sequence`：**每条记录占等宽一格**，与时间无关（默认；官方 `toolbar.duration`
+ *   未按下时就是这个）；
+ * - `duration`：宽度按记录自身耗时，并**扣掉操作之间的空闲**（官方 `compressIdle`）；
+ * - `time` / `actual`：按真实时刻摆放（含空闲），`time` 模式下每条宽度归零
+ *   （官方 `data-equal-duration` 的读法）。
+ *
+ * 缺 `startedAt` 的记录不参与时间线（官方同样跳过）——拿不到时刻就不画，
+ * 而不是塞到左边 0 的位置假装它在最前面。
+ */
+export function deriveTrajectoryTimeline(
+  cells: readonly TrajectoryCell[],
+  mode: TrajectoryTimelineMode,
+): TrajectoryTimeline {
+  const visible = cells;
+  const spans: TrajectoryTimelineSpan[] = [];
+
+  const decorate = (
+    cell: TrajectoryCell,
+    left: number,
+    width: number,
+    startedAt: number | null,
+  ): TrajectoryTimelineSpan => {
+    const metrics = cell.assistantMetrics;
+    const ttftMs =
+      metrics?.firstTokenTime != null && metrics.stepStartTime != null
+        ? metrics.firstTokenTime - metrics.stepStartTime
+        : null;
+    const decodingMs =
+      metrics?.completedTime != null && metrics.firstTokenTime != null
+        ? metrics.completedTime - metrics.firstTokenTime
+        : null;
+    return {
+      cellIndex: cell.index,
+      kind: cell.kind,
+      lane: trajectoryLane(cell.kind),
+      left,
+      width,
+      startedAt,
+      timeSeconds: cell.timeSeconds,
+      error: cell.status === "error",
+      ttftMs,
+      decodingMs,
+    };
+  };
+
+  if (mode === "sequence") {
+    const total = Math.max(1, visible.length);
+    visible.forEach((cell, index) => {
+      spans.push(decorate(cell, index / total, 1 / total, cell.startedAt));
+    });
+    return { spans, boundaries: sequenceBoundaries(visible, total), domainMs: total };
+  }
+
+  // 时间模式：先用「有 startedAt」的记录定位
+  const timed = visible
+    .map((cell) => ({ cell, range: trajectorySpanRange(cell) }))
+    .filter((entry): entry is { cell: TrajectoryCell; range: { start: number; end: number } } => entry.range !== null)
+    // 没有耗时的记录给一个 0 宽度的瞬时点（官方 `time` 模式也是这样）
+    .map((entry) => ({ ...entry, duration: Math.max(0, entry.range.end - entry.range.start) }));
+
+  if (timed.length === 0) return { spans: [], boundaries: [], domainMs: 0 };
+
+  if (mode === "duration" || mode === "actual") {
+    // 扣掉空闲：每条紧接上一条摆放
+    const total = Math.max(1, timed.reduce((sum, entry) => sum + entry.duration, 0));
+    let cursor = 0;
+    for (const entry of timed) {
+      spans.push(decorate(entry.cell, cursor / total, entry.duration / total, entry.range.start));
+      cursor += entry.duration;
+    }
+    return { spans, boundaries: timedBoundaries(timed, total, (entry) => entry.range.start), domainMs: total };
+  }
+
+  // `time`：按真实时刻摆放，宽度归零（相等的宽度让「什么时候发生」成为唯一信息）
+  const first = Math.min(...timed.map((entry) => entry.range.start));
+  const last = Math.max(...timed.map((entry) => entry.range.end));
+  const total = Math.max(1, last - first);
+  for (const entry of timed) {
+    spans.push(decorate(entry.cell, (entry.range.start - first) / total, 0, entry.range.start));
+  }
+  return { spans, boundaries: timedBoundaries(timed, total, (entry) => entry.range.start, first), domainMs: total };
+}
+
+/** 等宽模式下的轮次边界（每组第一格的位置）。 */
+function sequenceBoundaries(cells: readonly TrajectoryCell[], total: number): TrajectoryTimelineBoundary[] {
+  const boundaries: TrajectoryTimelineBoundary[] = [];
+  let lastTurn: number | null | undefined;
+  cells.forEach((cell, index) => {
+    if (cell.turn === null || cell.turn === lastTurn) {
+      lastTurn = cell.turn;
+      return;
+    }
+    boundaries.push({ turn: cell.turn, left: index / total });
+    lastTurn = cell.turn;
+  });
+  return boundaries;
+}
+
+/** 时间模式下的轮次边界（每组第一条有时刻的记录的位置）。 */
+function timedBoundaries(
+  entries: readonly { cell: TrajectoryCell; range: { start: number } }[],
+  total: number,
+  at: (entry: { cell: TrajectoryCell; range: { start: number } }) => number,
+  origin?: number,
+): TrajectoryTimelineBoundary[] {
+  const boundaries: TrajectoryTimelineBoundary[] = [];
+  let lastTurn: number | null | undefined;
+  for (const entry of entries) {
+    if (entry.cell.turn === null || entry.cell.turn === lastTurn) {
+      lastTurn = entry.cell.turn;
+      continue;
+    }
+    boundaries.push({ turn: entry.cell.turn, left: (at(entry) - (origin ?? 0)) / total });
+    lastTurn = entry.cell.turn;
+  }
+  return boundaries;
+}
