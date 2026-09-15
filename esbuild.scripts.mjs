@@ -26,7 +26,6 @@ const entries = {
   "build/model-switch.mjs": "scripts/modelSwitch.ts",
   "build/dump-settings.mjs": "scripts/dumpSettings.ts",
   "build/panels-probe.mjs": "scripts/panelsProbe.ts",
-  "build/schema-debug.mjs": "scripts/schemaDebug.ts",
   "build/probe.mjs": "scripts/probe.ts",
   "build/set-default-model.mjs": "scripts/setDefaultModel.ts",
   "build/queue-esc-e2e.mjs": "scripts/queueEscE2E.ts",

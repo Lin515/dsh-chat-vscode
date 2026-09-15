@@ -339,4 +339,100 @@ console.log("interactionSync: 宿主侧接线正确 ✓");
 }
 console.log("interactionSync: @ 对话引用的接线 ✓");
 
+// ---------- 9. 切走再切回来，还没答复的问卷/审批必须回到页面上 ----------
+//
+// 用户 2026-09-15 报的现场：正在等问卷的时候切去看历史会话（或别的页面），
+// 回来时卡片没了，agent 永久卡在 ask 节点——只能中断重问。
+//
+// 根因是**请求的存放位置**：`addQuestion` / `addApproval` 把卡片放进域（scope）的
+// 适配器里，而切会话会 `dropViewers` → `destroyScope` 把整个适配器回收；审批/提问
+// **不是 durable 事件**（会话日志里没有它们），重放不回，于是只存在于被回收的适配器里
+// 的那份请求就永久丢了。修法是把「还没结算的审批/提问」留在宿主的 `heldEvents` 里，
+// 直到有人答复（`answerApproval` / `answerQuestion`）或 Host 撤回（`cancel` 帧），
+// 并在**有窗口绑上这个会话**时回放。
+//
+// 这一组按源码结构钉住这条生命周期（域的生命周期只能在真宿主里跑，这里是接线断言）。
+{
+  const controller = readFileSync(join(process.cwd(), "src", "dsh", "controller.ts"), "utf8");
+
+  // (1) waterfall 分支：先记「未结算」，再投递；不能是「投递了就不留」
+  const branchStart = controller.indexOf('waterfall.event === "user-questions/request") {');
+  const branchEnd = controller.indexOf("// 不认识的事件", branchStart);
+  assert.ok(branchStart > 0 && branchEnd > branchStart, "取不到审批/提问的 waterfall 分支");
+  const branch = controller.slice(branchStart, branchEnd);
+  const setAt = branch.indexOf("this.heldEvents.set(waterfall.eventId, held);");
+  const deliverAt = branch.indexOf("deliverEventToScope(waterfall.eventId, held, scope)");
+  assert.ok(setAt >= 0, "waterfall 必须把请求记成「未结算」（否则切会话就丢）");
+  assert.ok(deliverAt > setAt, "顺序必须是：先记未结算 → 再投递（投递只是显示，不是记账）");
+  assert.ok(
+    !/else\s*\{\s*\/\/[^\n]*\n\s*this\.heldEvents\.set/.test(branch),
+    "不能是「有域就直接投递、只把没域的挂起」——那正是丢请求的写法",
+  );
+
+  // (2) 有窗口绑上会话时要回放（切走再切回来的唯一时刻）
+  const bindStart = controller.indexOf("private bindViewToSession(");
+  const bindEnd = controller.indexOf("private replayHeldEvents(", bindStart);
+  assert.ok(bindStart > 0 && bindEnd > bindStart, "取不到 bindViewToSession");
+  const bind = controller.slice(bindStart, bindEnd);
+  assert.ok(
+    /this\.replayHeldEvents\(sessionId, scope\);/.test(bind),
+    "绑定窗口时必须回放未结算的审批/提问——用户切回来的那一刻卡片要回来",
+  );
+
+  // (3) 回放本身**不删条目**：删了下次切走再回来又没了
+  const replay = controller.slice(bindEnd, controller.indexOf("// ---------- 连接 ----------", bindEnd));
+  assert.ok(
+    /private replayHeldEvents\(sessionId: string, scope: SessionScope\)/.test(replay) &&
+      !/heldEvents\.delete/.test(replay),
+    "回放只投递、不删条目（条目要留到真正结算）",
+  );
+
+  // (4) 建域时**不**回放：那一刻还没有窗口绑上来，投递出去没人收
+  const ensureStart = controller.indexOf("private ensureScope(");
+  const ensure = controller.slice(ensureStart, controller.indexOf("private ensureDefaultModelApplied(", ensureStart));
+  assert.ok(!/heldEvents/.test(ensure), "ensureScope 不该回放（域建成时还没有窗口绑定）");
+
+  // (5) 结算点只有三个：本窗口答复两处 + Host 撤回一处。多一处少一处都要在这里说清楚
+  const deletes = controller.match(/this\.heldEvents\.delete\(/g) ?? [];
+  assert.strictEqual(
+    deletes.length,
+    3,
+    `heldEvents 的结算点应当正好 3 处（answerApproval / answerQuestion / cancelHeldEvent），` +
+      `现在是 ${deletes.length} 处——少一处会让卡片永远复原不回来，多一处会让它在切回来时丢`,
+  );
+  assert.ok(
+    /case "answerApproval":[\s\S]{0,200}?this\.heldEvents\.delete\(eventId\);/.test(controller) &&
+      /case "answerQuestion":[\s\S]{0,200}?this\.heldEvents\.delete\(eventId\);/.test(controller),
+    "本窗口答复后要结算掉（否则下次切回来会弹一张已经答过的卡）",
+  );
+}
+console.log("interactionSync: 未结算的问卷/审批随「绑定窗口」回放 ✓");
+
+// ---------- 9b. 同一张审批卡重复投递不画两遍 ----------
+//
+// 回放的落点是适配器，而 `addApproval` 原先无条件 push 一个新段：第二个窗口绑上
+// 同一个会话（或切走再切回）就会画出两张一模一样的审批卡，两张还都得分别答复。
+// 问卷那边本来就有 existing 分支，审批这里补齐同口径。
+{
+  const { adapter, messages } = harness();
+  // 每步都**重新取一遍**段：`message/segment` 在 reducer 里是替换成新对象，
+  // 抓住旧引用会读到过期状态（自己踩过）
+  const approvalsNow = () =>
+    messages
+      .flatMap((m) => m.segments)
+      .filter((s): s is Extract<Segment, { kind: "approval" }> => s.kind === "approval");
+
+  adapter.addApproval({ requestId: "ev-a9", toolName: "pwsh", callId: "call_9", state: "waiting" });
+  adapter.addApproval({ requestId: "ev-a9", toolName: "pwsh", callId: "call_9", state: "waiting" });
+  assert.strictEqual(approvalsNow().length, 1, "同一个 requestId 重投递只能有一张卡");
+
+  // 已经收场的那张不能被重投递改回 waiting
+  adapter.resolveApproval("ev-a9", "approved");
+  adapter.addApproval({ requestId: "ev-a9", toolName: "pwsh", callId: "call_9", state: "waiting" });
+  assert.strictEqual(approvalsNow()[0].approval.state, "approved", "已答完的审批不能被重投递改回等待");
+  assert.strictEqual(approvalsNow().length, 1, "重投递也不该再加一张");
+  assert.strictEqual(pendingInteractionOf(messages), undefined, "也不会重新占住输入区");
+}
+console.log("interactionSync: 审批卡重复投递去重 ✓");
+
 console.log("\ninteractionSync: all assertions passed");

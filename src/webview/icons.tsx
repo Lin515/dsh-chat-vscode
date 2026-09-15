@@ -326,6 +326,15 @@ export const IconWrite = (p: IconProps) => (
   </Icon>
 );
 
+/**
+ * 地球：顶部「在浏览器中打开」用的图标（VS Code 自己的 Simple Browser 也是地球）。
+ *
+ * 这里**必须**与「在编辑器中打开」的 `IconOpenInEditor` 区分开。两者原先都是
+ * 「方框 + 右上角箭头」——本图标旁边的 `IconExternal` 就是那个形状（文件链接行在用），
+ * 与 `IconOpenInEditor` 只差斜线长短（8.5 vs 8），15px 下完全分不出来（用户 2026-09-15
+ * 报的：两颗按钮看起来一模一样）。地球的圆 + 赤道 + 经线在任何尺寸下都不会与
+ * 方框类图标混淆。
+ */
 export const IconGlobe = (p: IconProps) => (
   <Icon {...p}>
     <circle cx="12" cy="12" r="9" />

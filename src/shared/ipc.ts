@@ -4,7 +4,6 @@ import type {
   FileRefView,
   JobItemView,
   SessionRefView,
-  SettingsSectionView,
   SubagentView,
 } from "./chat";
 
@@ -58,8 +57,6 @@ export type HostToWebview =
   | { type: "commands/list"; commands: CommandView[] }
   /** 文件引用候选（输入框输入 @ 时弹出）。 */
   | { type: "files/list"; query: string; items: FileRefView[]; sessions?: SessionRefView[] }
-  /** 设置各命名空间（设置面板）。 */
-  | { type: "settings/describe"; sections: SettingsSectionView[]; writable: boolean }
   /** 指定子代理的会话内容（复用 message 帧之外的单帧快照）。 */
   | { type: "subagent/transcript"; id: string; messages: MessageView[] }
   /** 一次性提示。 */
@@ -223,7 +220,15 @@ export type WebviewToHost =
   | { type: "stopReconnect" }
   /** 输入 / 替换外部服务器的访问令牌（服务端要求授权时使用）。 */
   | { type: "setToken" }
-  | { type: "openSettings" }
+  /**
+   * 用**系统默认浏览器**打开这个 dsh web（带启动令牌）。
+   *
+   * 刻意不做「打开到指定会话」：Web UI 没有任何 URL 深链——它唯一读查询串的地方是
+   * fixture 测试开关（官方 `dsh-client-connection` 的 `fixtureOptionsFromLocation`），
+   * 会话选择存在浏览器本地的持久单元（`dsh.sessions.current`），外部指定不了；
+   * 而且启动令牌换 cookie 是 `303 → 裸 /`，附带的查询串本来就会被丢掉。
+   */
+  | { type: "openInBrowser" }
   /** 打开子代理面板（列出当前会话的子代理）。 */
   | { type: "listSubagents" }
   /** 查看某个子代理的对话记录。 */
@@ -233,14 +238,4 @@ export type WebviewToHost =
   /** 请求斜杠命令目录。 */
   | { type: "listCommands" }
   /** 查询文件引用候选（@ 提及）。 */
-  | { type: "queryFiles"; query: string }
-  /** 请求设置内容。 */
-  | { type: "describeSettings" }
-  /** 写入一个设置字段。 */
-  | { type: "saveSetting"; ns: string; path: string[]; value: unknown; expectedRevision: number }
-  /** 重置整个命名空间（清除用户层覆盖）。 */
-  | { type: "resetSettings"; ns: string }
-  /** 写入密钥字段（走 credentials/set，ref 为环境变量名）。 */
-  | { type: "saveSecret"; ns: string; path: string[]; value: string; ref?: string }
-  /** 打开原生设置（VS Code 侧配置）。 */
-  | { type: "openVscodeSettings" };
+  | { type: "queryFiles"; query: string };

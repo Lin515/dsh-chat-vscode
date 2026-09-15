@@ -5,7 +5,7 @@ import { post, subscribe } from "./bridge";
 import { Composer } from "./components/Composer";
 import { HistoryPanel } from "./components/History";
 import { Message } from "./components/Message";
-import { JobsPanel, SettingsPanel, SubagentTranscriptPanel, SubagentsPanel } from "./components/Panels";
+import { JobsPanel, SubagentTranscriptPanel, SubagentsPanel } from "./components/Panels";
 import { TrajectoryView } from "./components/Trajectory";
 import { Spinner, hasSelectionInside } from "./components/primitives";
 import { AppState, useAppState, type PanelKind } from "./state";
@@ -13,20 +13,26 @@ import { pendingInteractionOf } from "./pendingInteraction";
 import {
   IconAgents,
   IconChat,
+  IconGlobe,
   IconHistory,
   IconJobs,
   IconKey,
   IconOpenInEditor,
   IconPlus,
   IconRefresh,
-  IconSettings,
   IconTrajectory,
 } from "./icons";
 import { TextsContext, dictionaryFor, normalizeLocale, resolveText, useTexts } from "./texts";
 
 /**
  * 顶部只有一排图标按钮——Continue 的聊天页没有传统工具栏，
- * 这里保留最少的入口：新建、历史、子代理、后台任务、在编辑器中打开、设置。
+ * 这里保留最少的入口：新建、历史、子代理、后台任务、在编辑器中打开、
+ * 在浏览器中打开（官方 Web UI）。
+ *
+ * 这里曾经还有一颗**设置**按钮（自绘的 DSH 服务端设置面板）。它被删掉了：
+ * Web 端的设置页是各功能插件自绘的页面组合（`settings.section` 槽），没有任何
+ * 数据契约可以自绘复刻，而通用 schema 表单只能展示裸字段名。现在 Web 专属设置
+ * 走「在浏览器中打开」，扩展真正读取的设置（模型、`busyEnter`…）另有入口。
  */
 function Header({
   state,
@@ -102,11 +108,11 @@ function Header({
       </button>
       <button
         data-mini="hide"
-        className={`icon-btn${state.panel === "settings" ? " is-active" : ""}`}
-        title={texts.settingsTitle}
-        onClick={() => toggle("settings", () => post({ type: "describeSettings" }))}
+        className="icon-btn"
+        title={texts.openInBrowser}
+        onClick={() => post({ type: "openInBrowser" })}
       >
-        <IconSettings size={15} />
+        <IconGlobe size={15} />
       </button>
     </div>
   );
@@ -591,15 +597,6 @@ export function App() {
         ) : null}
 
         {state.panel === "jobs" ? <JobsPanel jobs={state.jobs} onClose={closePanel} /> : null}
-
-        {state.panel === "settings" ? (
-          <SettingsPanel
-            sections={state.settingsSections}
-            writable={state.settingsWritable}
-            loaded={state.settingsLoaded}
-            onClose={closePanel}
-          />
-        ) : null}
       </div>
     </TextsContext.Provider>
   );

@@ -64,10 +64,10 @@ const MARKERS: string[] = [
   // 拖放
   "dropUnreadable",
   "dropTooLarge",
-  // 剪贴板 / 设置
+  // 剪贴板 / 浏览器
   "copied",
-  "settingsSaved",
-  "settingsResetDone",
+  "openInBrowserOffline",
+  "openInBrowserFailed",
   // 审批
   "toolGeneric",
   "callId",

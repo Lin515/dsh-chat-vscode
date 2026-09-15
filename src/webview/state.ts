@@ -8,7 +8,6 @@ import type {
   Segment,
   SessionRefView,
   SessionSummaryView,
-  SettingsSectionView,
   SubagentView,
   ContextWindowView,
   ContextOccupancyView,
@@ -24,7 +23,7 @@ import { mergeWirePatch } from "../shared/wire";
  */
 
 /** 右侧抽屉当前显示的页面。 */
-export type PanelKind = "none" | "history" | "subagents" | "jobs" | "trajectory" | "settings" | "subagent";
+export type PanelKind = "none" | "history" | "subagents" | "jobs" | "trajectory" | "subagent";
 
 export interface AppState extends ChatState {
   /** 会话列表（历史抽屉内容）。 */
@@ -43,9 +42,6 @@ export interface AppState extends ChatState {
    * 所以必须由宿主单独推。`undefined` = 还没取过（面板打开时请求）。
    */
   trajectory?: TrajectoryModel;
-  settingsSections: SettingsSectionView[];
-  settingsWritable: boolean;
-  settingsLoaded: boolean;
   /** 最近一次 `request/context` 事件给出的上下文窗口。 */
   contextWindow?: ContextWindowView;
   /** 当前会话的上下文占用（dsh web 客户端 `context-occupancy` 投影的等价输出）。 */
@@ -71,9 +67,6 @@ export const initialState: AppState = {
   commands: [],
   fileRefs: { query: "", items: [], sessions: [] },
   subagentEntries: [],
-  settingsSections: [],
-  settingsWritable: false,
-  settingsLoaded: false,
 };
 
 function replaceSegment(message: MessageView, segment: Segment): MessageView {
@@ -208,14 +201,6 @@ export function reducer(state: AppState, action: Action): AppState {
       return {
         ...state,
         fileRefs: { query: action.query, items: action.items, sessions: action.sessions ?? [] },
-      };
-
-    case "settings/describe":
-      return {
-        ...state,
-        settingsSections: action.sections,
-        settingsWritable: action.writable,
-        settingsLoaded: true,
       };
 
     case "subagent/transcript":

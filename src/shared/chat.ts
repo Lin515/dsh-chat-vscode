@@ -615,41 +615,6 @@ export interface SessionRefView {
   updatedAt?: number;
 }
 
-/** 设置页的一个字段（由 schema 推导）。 */
-export interface SettingsFieldView {
-  /** 字段路径，写回时作为 settings/mutate 的 path。 */
-  path: string[];
-  label: string;
-  type: "string" | "number" | "boolean" | "enum" | "json";
-  value: unknown;
-  defaultValue?: unknown;
-  min?: number;
-  max?: number;
-  step?: number;
-  options?: { value: string; label: string }[];
-  /** 是否属于密钥字段（写入走 credentials/set 而非 settings）。 */
-  secret?: boolean;
-  /**
-   * 密钥写入用的引用名（POSIX 环境变量名，如 `DEEPSEEK_API_KEY`）。
-   * 取自同一对象里 `role: credential-ref` 的兄弟字段的值——服务端的凭据
-   * 引用空间是「环境变量名」，不是设置路径。
-   */
-  secretRef?: string;
-  secretSet?: boolean;
-  /** 该字段被用户层覆盖过（user 里出现过）。 */
-  overridden?: boolean;
-}
-
-export interface SettingsSectionView {
-  ns: string;
-  applies: "live" | "restart";
-  revision: number;
-  fields: SettingsFieldView[];
-  /** 表单无法表达的复杂结构（对象数组等），退化为 JSON 文本编辑。 */
-  jsonFields: { path: string[]; label: string; value: unknown }[];
-  writable: boolean;
-}
-
 /** 上下文窗口的权威值来源（由服务端 `request/context` 事件给出）。 */
 export interface ContextWindowView {
   tokens: number;

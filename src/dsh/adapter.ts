@@ -2026,10 +2026,31 @@ export class SessionAdapter {
     }
   }
 
-  /** 追加一个审批卡片到当前回合。 */
+  /**
+   * 追加一个审批卡片到当前回合。
+   *
+   * 同一个 `requestId` **重复投递只更新、不重加**（与 `addQuestion` 同口径）：
+   * 宿主会在「有窗口绑上这个会话」时回放还没结算的请求（见 `controller.heldEvents`），
+   * 第二个窗口、或者切走再切回来都会走到这里——不去重就会画出两张一样的审批卡，
+   * 而且两张都得分别答复（另一张永远没人点）。
+   */
   addApproval(approval: ApprovalView): void {
     const message = this.ensureAssistantMessage(Date.now());
-    const segment: Segment = { kind: "approval", id: `ap:${approval.requestId}`, approval };
+    const id = `ap:${approval.requestId}`;
+    const existing = message.segments.find((segment) => segment.id === id);
+    if (existing && existing.kind === "approval") {
+      // 已经收场的卡片不被重投递改回 waiting（服务端只在请求**还没结算**时重投递，
+      // 这一步是纯防御；真出现只会把用户答完的卡片又变回可编辑）
+      if (existing.approval.state !== "waiting") return;
+      existing.approval = approval;
+      this.emit({
+        type: "message/segment",
+        messageId: message.id,
+        segment: { ...existing, approval: { ...approval } } as Segment,
+      });
+      return;
+    }
+    const segment: Segment = { kind: "approval", id, approval };
     this.pushSegment(message, segment);
     this.emit({ type: "message/append", messageId: message.id, segment });
   }

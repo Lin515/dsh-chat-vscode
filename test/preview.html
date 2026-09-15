@@ -116,42 +116,6 @@
             { id: "j4", kind: "pwsh", label: "git push origin main", status: "failed", startedAt: Date.now() - 900000, finishedAt: Date.now() - 899000, detail: "fatal: could not read Username" },
           ],
         });
-        window.__push({
-          type: "settings/describe",
-          writable: true,
-          sections: [
-            {
-              ns: "agent-default-model", applies: "live", revision: 3, writable: true, jsonFields: [],
-              fields: [
-                { path: ["provider"], label: "provider", type: "string", value: "cc", overridden: true },
-                { path: ["model"], label: "model", type: "string", value: "deepseek/deepseek-v4.1-flash", overridden: true },
-                { path: ["reasoningEffort"], label: "reasoningEffort", type: "enum", value: "max",
-                  options: [{ value: "off", label: "off" }, { value: "high", label: "high" }, { value: "max", label: "max" }] },
-              ],
-            },
-            {
-              ns: "permission", applies: "live", revision: 0, writable: true, jsonFields: [],
-              fields: [
-                { path: ["defaultPreset"], label: "defaultPreset", type: "enum", value: "workspace-write",
-                  options: [{ value: "read-only", label: "read-only" }, { value: "workspace-write", label: "workspace-write" }, { value: "danger-full-access", label: "danger-full-access" }] },
-              ],
-            },
-            {
-              ns: "web-search-deepseek", applies: "restart", revision: 7, writable: true,
-              fields: [
-                { path: ["apiKey"], label: "apiKey", type: "string", value: "", secret: true, secretSet: true },
-                { path: ["model"], label: "model", type: "string", value: "deepseek-v4-flash" },
-                { path: ["maxUses"], label: "maxUses", type: "number", value: 5, min: 1, step: 1 },
-              ],
-              jsonFields: [],
-            },
-            {
-              ns: "llm-pi-ai", applies: "live", revision: 0, writable: true,
-              fields: [{ path: ["providers"], label: "providers", type: "json", value: null }],
-              jsonFields: [{ path: ["providers"], label: "providers", value: { cc: { displayName: "Command Code" } } }],
-            },
-          ],
-        });
       };
       window.__composer = function () {
         // 待发消息队列：一条纯文本、一条只有附件（文本为空）、一条**插话发送**

@@ -4,7 +4,6 @@
  */
 import { DshClient } from "../src/dsh/client";
 import { SupervisorManager } from "../src/dsh/supervisorManager";
-import { buildSettingsSection } from "../src/dsh/settingsSchema";
 
 const server = new SupervisorManager({ url: "", command: "dsh", log: () => {} });
 const info = await server.ensure();
@@ -50,20 +49,6 @@ await check("subagents/list（子代理面板）", async () => {
   const result = await client.request<any>("subagents/list", { parentSessionId: session.sessionId });
   const children = (result.entries ?? []).filter((e: any) => e.kind === "child");
   return `${children.length} 个子代理，parentAvailable=${result.parentAvailable}`;
-});
-
-await check("settings/describe → 表单字段（设置页）", async () => {
-  const described = await client.settingsDescribe();
-  const sections = (described.namespaces ?? []).map((ns: any) => buildSettingsSection(ns));
-  const totalFields = sections.reduce((sum: number, s: any) => sum + s.fields.length, 0);
-  const totalJson = sections.reduce((sum: number, s: any) => sum + s.jsonFields.length, 0);
-  const withSecrets = sections.filter((s: any) => s.fields.some((f: any) => f.secret)).map((s: any) => s.ns);
-  const restart = sections.filter((s: any) => s.applies === "restart").map((s: any) => s.ns);
-  if (totalFields === 0) throw new Error("解析出 0 个表单字段（schema 结构判断有误）");
-  return (
-    `${sections.length} 个命名空间，${totalFields} 个表单字段 + ${totalJson} 个 JSON 字段；` +
-    `密钥字段在 ${withSecrets.join(",") || "无"}；需重启 ${restart.join(",") || "无"}`
-  );
 });
 
 // 密钥写入的 ref 属于 CredentialRef 空间（POSIX 环境变量名），

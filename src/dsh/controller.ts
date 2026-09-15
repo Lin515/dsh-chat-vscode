@@ -42,7 +42,6 @@ import { queueItems, type QueueOrigin } from "./queueView";
 import { goalFromProjection, planModeFromProjection, subagentsFromCatalog, subagentsFromList } from "./projections";
 import { deriveTrajectoryModel } from "./trajectory";
 import { lineageDepths, normalizePath, visibleForWorkspace, visibleSessionRows } from "./sessionList";
-import { buildSettingsSection } from "./settingsSchema";
 import { isBlank, mergeWindowCache, WindowRestore, WorkspaceWindowStateStore, type SidebarSlot, type WindowCache, type WindowKind } from "./windowState";
 
 /**
@@ -298,9 +297,20 @@ export class ChatController implements vscode.Disposable {
    */
   private readonly configChanges: ConfigChangeRouter;
   /**
-   * 对应会话**还没有窗口打开**时就到达的审批 / 提问（关窗后服务端仍可能继续跑）。
-   * 先挂起——**不能回**：回了等于放行，请求就丢了。会话再次被打开（域创建）时
-   * 回放进适配器。eventId → 会话 同时记在 `eventSessions`，回答时据此路由回域。
+   * **还没结算**的审批 / 提问：`eventId` → 原始请求。
+   *
+   * 「结算」= 有人答复了（本窗口 `answerApproval` / `answerQuestion`）或 Host 撤回了
+   * （`$events` 的 `cancel` 帧）——那两处会把它删掉。条目**投递出去也留着**，因为
+   * 卡片可能随时被回收：用户切到别的会话会把域连同适配器一起丢掉
+   * （`dropViewers` → `destroyScope`），而审批/提问**不是 durable 事件**
+   * （会话日志里没有它们，重放不回），只留适配器里就会永久丢失——agent 卡在 ask 节点。
+   *
+   * 于是它有两个作用：
+   * 1. 会话从没被打开过 → 只挂着，**不能回**（回了等于放行，请求就丢了）；
+   * 2. 会话被打开 / 被切回来 → 由 `bindViewToSession` 回放进适配器
+   *    （重复投递安全：适配器按 `requestId` 去重）。
+   *
+   * `eventId → 会话` 另记在 `eventSessions`，回答时据此路由回域。
    */
   private readonly heldEvents = new Map<
     string,
@@ -652,7 +662,7 @@ export class ChatController implements vscode.Disposable {
       imageLimits: scope?.imageLimits,
       // 「繁忙时的发送行为」是**全局部署设置**（不是会话态），但界面要按它显示
       // 运行中发送按钮的文案，所以首帧也得带上——否则重载后按钮文案退回默认，
-      // 直到下一次 settings/describe 才有值。
+      // 直到 `refreshImageCaps` 把它重读出来（连上模型目录时那一次）。
       busyEnter: this.busyEnter === "steer" ? "steer" : "queue",
     };
   }
@@ -967,8 +977,27 @@ export class ChatController implements vscode.Disposable {
     }
     this.viewSessions.set(viewId, sessionId);
     scope.viewers += 1;
+    // 有窗口盯上这个会话了：把**还没结算**的审批 / 提问交出去（见 `heldEvents`）。
+    // 位置很关键——放在这里而不是 `ensureScope`：用户切走又切回来时域早就存在、
+    // 不会重新建域（`ensureScope` 直接返回），而这正是卡片必须回来的时刻。
+    // 重复投递安全：适配器按 `requestId` 去重（`addQuestion` / `addApproval`
+    // 的 existing 分支只更新、不重加）。
+    this.replayHeldEvents(sessionId, scope);
     this.log(`[bind] 窗口=${viewId} → 会话=${sessionId}（原=${previous ?? "空态"}）`);
     this.persistWindowState();
+  }
+
+  /**
+   * 把某个会话**还没结算**的审批 / 提问回放进它的适配器（`bindViewToSession` 用）。
+   *
+   * 只投递，**不删条目**：条目要一直留到真正结算（答复或 Host 撤回）。因为卡片
+   * 随时可能随着域被回收而消失（切会话就是），留一份原始请求才能在切回来时复原。
+   */
+  private replayHeldEvents(sessionId: string, scope: SessionScope): void {
+    for (const [eventId, held] of [...this.heldEvents]) {
+      if (held.sessionId !== sessionId) continue;
+      this.deliverEventToScope(eventId, held, scope);
+    }
   }
 
   // ---------- 连接 ----------
@@ -1267,15 +1296,11 @@ export class ChatController implements vscode.Disposable {
     // socket 重建后长活流都要重开：每个打开的域重新跟随（适配器整个重建，
     // 新快照会重放最近 60 条），全局流重开一次
     for (const scope of this.scopes.values()) this.openScopeFollow(scope);
-    // 重连后服务端会重投递未决的审批/提问；若某个会话的窗口当时关着、事件已
-    // 挂在 heldEvents 里，域还在，这里直接回放（heldEvents 消费后即清，
-    // 服务端重投递会被 handledEvents 幂等放行，不会重复弹卡片）
-    for (const [eventId, held] of [...this.heldEvents]) {
-      const scope = this.scopes.get(held.sessionId);
-      if (!scope) continue;
-      this.heldEvents.delete(eventId);
-      this.deliverEventToScope(eventId, held, scope);
-    }
+    // 适配器刚被整个重建，卡片要重新回放一遍。**不删 `heldEvents` 条目**——
+    // 条目留到真正结算（见 `heldEvents` 的注释），否则「重连 → 切会话 → 切回来」
+    // 这条路上卡片又会消失。服务端重连后重投递的 waterfall 会被 `handledEvents`
+    // 幂等放行（回 `next`），不会重复弹卡片；回放本身也按 requestId 去重。
+    for (const scope of this.scopes.values()) this.replayHeldEvents(scope.sessionId, scope);
     this.openControlStream();
     this.openEventsStream();
     this.openWorkspaceStream();
@@ -1763,7 +1788,10 @@ export class ChatController implements vscode.Disposable {
 
   /**
    * 取（或创建）给定会话的域：建视图模型、开 follow 流、重开控制流拿该会话
-   * 的 baseline、预取命令目录、回放挂起的审批/提问事件。
+   * 的 baseline、预取命令目录。
+   *
+   * 挂起的审批/提问**不在这里回放**（见 `bindViewToSession`）：域建成的这一刻
+   * 还没有窗口绑上来，投递出去也没人收。
    */
   private ensureScope(sessionId: string): SessionScope | undefined {
     const existing = this.scopes.get(sessionId);
@@ -1778,12 +1806,6 @@ export class ChatController implements vscode.Disposable {
     // 命令目录随会话预取：手打的 `/xxx` 要靠它才能被路由到命令通道，
     // 不能等输入 `/` 弹出候选时才拉（粘贴一行后立刻回车就赶不上了）
     void this.listCommandsFor(scope);
-    // 回放该会话窗口关闭期间挂起的审批/提问（会话再次被打开，请求不该丢）
-    for (const [eventId, held] of [...this.heldEvents]) {
-      if (held.sessionId !== sessionId) continue;
-      this.heldEvents.delete(eventId);
-      this.deliverEventToScope(eventId, held, scope);
-    }
     // 新建的域没有 `modelSelection` 投影（首次对话前），给它填部署默认模型；
     // 服务端真给了投影时，baseline 到达会覆盖这里的默认值
     this.ensureDefaultModelApplied();
@@ -2531,13 +2553,16 @@ export class ChatController implements vscode.Disposable {
       };
       this.handledEvents.add(waterfall.eventId);
       this.eventSessions.set(waterfall.eventId, sessionId);
-      if (scope) {
-        this.deliverEventToScope(waterfall.eventId, held, scope);
-      } else {
-        // 该会话的窗口关着：挂起（**不能回**——回了等于放行，请求就丢了），
-        // 会话再次被打开（域创建）时回放
-        this.heldEvents.set(waterfall.eventId, held);
-      }
+      // 先记成「未结算」再投递，而且**一直留到结算**（本窗口答复 / Host 撤回），
+      // 不是投递出去就删。这是用户 2026-09-15 现场的根因：卡片已经在一个窗口上
+      // 显示着，用户切去看别的会话 → `bindViewToSession` 把上一个会话的域回收掉
+      // （`dropViewers` → `destroyScope`，适配器一起丢），这条请求就只剩下在被回收的
+      // 适配器里。切回来时域是新建的、卡片没了，而审批/提问**不是 durable 事件**
+      // （会话日志里没有它们），重放不回 —— agent 永久卡在 ask 节点，只能中断重问。
+      this.heldEvents.set(waterfall.eventId, held);
+      // 有域就先投进适配器（卡片立刻显示）；没域就只挂着——**不能回**：
+      // 回了等于放行，请求就丢了。回放由 `bindViewToSession` 负责。
+      if (scope) this.deliverEventToScope(waterfall.eventId, held, scope);
       return;
     }
 
@@ -2546,17 +2571,17 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
-   * Host 撤回一条挂起 / 已展示的审批或提问（`$events` 的 `cancel` 帧）。
+   * Host 撤回一条未结算的审批或提问（`$events` 的 `cancel` 帧）。
    *
-   * 两种情形都要处理：卡片已经在某个窗口上（交给适配器收场），或者请求还挂在
-   * `heldEvents` 里等会话被打开（**直接丢掉**——它已经不需要人回答了，留着只会在
+   * 两种情形都要处理：卡片已经在某个窗口上（交给适配器收场），或者请求还没被投递
+   * 到任何域（**直接从 `heldEvents` 丢掉**——它已经不需要人回答了，留着只会在
    * 用户下次打开这个会话时凭空弹一张过期的卡）。
    */
   private cancelHeldEvent(eventId: string): void {
     const held = this.heldEvents.get(eventId);
     if (held) {
       this.heldEvents.delete(eventId);
-      this.log(`[$events] 挂起的${held.kind === "approval" ? "审批" : "提问"}被 Host 撤回：${eventId}`);
+      this.log(`[$events] 未结算的${held.kind === "approval" ? "审批" : "提问"}被 Host 撤回：${eventId}`);
     }
     const sessionId = this.eventSessions.get(eventId);
     const scope = sessionId ? this.scopes.get(sessionId) : undefined;
@@ -2615,12 +2640,11 @@ export class ChatController implements vscode.Disposable {
    * `~/.dsh/.credentials.yaml` 改了）。
    *
    * 三样东西都从设置命名空间派生，官方前端同样是「失效就重读」：
-   * 设置面板（含 `busyEnter`）、图片输入能力、部署默认模型。
+   * 图片输入能力、部署默认模型、以及顺带喂进去的 `busyEnter`（见 `refreshImageCaps`）。
    */
   private async reloadSettings(): Promise<void> {
     // 部署默认模型是**有缓存**的（`agent-default-model` 设置）：不清掉就永远读不到新值
     this.defaultModel = undefined;
-    await this.describeSettings();
     await this.refreshImageCaps();
     // 模型目录还没到（首连的那一小段窗口）时不读默认模型：标签会退化成裸 id
     // 并被缓存住；那次连接流程自己会在 loadModels 之后读一遍。
@@ -2712,10 +2736,11 @@ export class ChatController implements vscode.Disposable {
       }
       // 同一份 settings/describe 结果顺带喂「运行中回车行为」。
       //
-      // 以前 `applyBusyEnter` 只在 `describeSettings()` 里调用，而后者只在**用户
-      // 打开设置抽屉 / 保存设置 / 外部改了 settings.yaml** 时才跑——于是新开一个
-      // 窗口后、在碰过一次设置面板之前，`busyEnter` 恒为 undefined，用户的
-      // `steer` 设置静默退回 queue（本条修复来自审计结论，见 CHANGELOG）。
+      // 这里是 `busyEnter` **唯一**的喂入口（本条链路连模型目录时必然会跑）：以前它
+      // 还挂在 `describeSettings()` 上，而那个只在**用户打开设置抽屉 / 保存设置 /
+      // 外部改了 settings.yaml** 时才跑——于是新开一个窗口后、在碰过一次设置面板
+      // 之前，`busyEnter` 恒为 undefined，用户的 `steer` 设置静默退回 queue
+      // （本条修复来自审计结论，见 CHANGELOG）。设置面板已删除，入口只剩这一处。
       this.applyBusyEnter(described.namespaces ?? []);
     } catch (error) {
       this.log(`[models] 图片输入能力读取失败：${this.describeError(error)}`);
@@ -2956,6 +2981,8 @@ export class ChatController implements vscode.Disposable {
       case "answerApproval": {
         const eventId = message.requestId;
         if (!eventId) break;
+        // 结算掉：这条请求不再需要回放（见 `heldEvents` 的注释）
+        this.heldEvents.delete(eventId);
         await this.replyEvent(eventId, {
           kind: "result",
           value: message.approved ? "allowed-once" : "rejected",
@@ -2969,6 +2996,8 @@ export class ChatController implements vscode.Disposable {
       case "answerQuestion": {
         const eventId = message.requestId;
         if (!eventId) break;
+        // 结算掉：这条请求不再需要回放（见 `heldEvents` 的注释）
+        this.heldEvents.delete(eventId);
         await this.replyEvent(eventId, {
           kind: "result",
           value: { answers: message.answers },
@@ -3078,27 +3107,8 @@ export class ChatController implements vscode.Disposable {
         await this.queryFiles(viewId, message.query);
         break;
 
-      case "describeSettings":
-        await this.describeSettings();
-        break;
-
-      case "saveSetting":
-        await this.saveSetting(message.ns, message.path, message.value, message.expectedRevision);
-        // 设置里可能改了 LLM 适配器的输入模态声明，刷新图片能力
-        void this.refreshImageCaps();
-        break;
-
-      case "resetSettings":
-        await this.resetNamespace(message.ns);
-        void this.refreshImageCaps();
-        break;
-
-      case "saveSecret":
-        await this.saveSecret(message.ns, message.path, message.value, message.ref);
-        break;
-
-      case "openVscodeSettings":
-        await vscode.commands.executeCommand("workbench.action.openSettings", "dshChat");
+      case "openInBrowser":
+        await this.openInBrowser();
         break;
 
       case "openInEditor": {
@@ -3135,10 +3145,6 @@ export class ChatController implements vscode.Disposable {
 
       case "setToken":
         await this.setToken();
-        break;
-
-      case "openSettings":
-        await vscode.commands.executeCommand("workbench.action.openSettings", "dshChat");
         break;
 
       default:
@@ -4477,80 +4483,41 @@ export class ChatController implements vscode.Disposable {
     });
   }
 
-  // ---------- 设置（部署级配置，所有窗口共享同一份） ----------
-
-  /** 读取全部设置命名空间，并把手里的 schema 化成可渲染字段。 */
-  private async describeSettings(): Promise<void> {
-    if (!this.client) return;
-    try {
-      const described = await this.client.settingsDescribe();
-      const namespaces = (described as { namespaces?: Record<string, unknown>[] }).namespaces ?? [];
-      // 「运行中回车」的行为来自部署设置（`ui-conversation.busyEnter`）。
-      // 本机就是 `steer`，而发送路径曾经把 `queue` 写死——设置改了却没效果。
-      this.applyBusyEnter(namespaces as { ns?: string; value?: unknown }[]);
-      const sections = namespaces.map((item) => buildSettingsSection(item as never));
-      this.emitAll({
-        type: "settings/describe",
-        sections,
-        writable: Boolean((described as { writable?: boolean }).writable),
-      });
-    } catch (error) {
-      this.log(`[settings] 读取失败：${this.describeError(error)}`);
-      this.emitAll({ type: "settings/describe", sections: [], writable: false });
-    }
-  }
-
-  /** 写入一个字段：布尔/数字/字符串都走 settings/mutate 的 set 操作。 */
-  private async saveSetting(
-    ns: string,
-    path: string[],
-    value: unknown,
-    expectedRevision: number,
-  ): Promise<void> {
-    if (!this.client) return;
-    try {
-      await this.client.request("settings/mutate", {
-        ns,
-        ops: [{ op: "set", path, value }],
-        expectedRevision,
-      });
-      // 不额外弹提示：字段自己会显示「已保存」（见 Panels.tsx 的 Field）
-      await this.describeSettings();
-    } catch (error) {
-      this.reportError(vscode.l10n.t("Failed to save to {0}", ns), error);
-      // 版本冲突后重读，界面拿到新的 revision 才能重试
-      await this.describeSettings();
-    }
-  }
-
-  /** 重置某个命名空间的用户层覆盖。 */
-  private async resetNamespace(ns: string): Promise<void> {
-    if (!this.client) return;
-    try {
-      await this.client.request("settings/replace", { ns, section: {} });
-      // 整组重置没有行内反馈，用轻提示告知结果
-      this.emitAll({ type: "toast", level: "info", text: "@settingsResetDone" });
-      await this.describeSettings();
-    } catch (error) {
-      this.reportError(vscode.l10n.t("Failed to reset {0}", ns), error);
-    }
-  }
+  // ---------- 在浏览器中打开（官方 Web UI 的入口） ----------
 
   /**
-   * 密钥字段写入凭据存储（值不会回显，服务端只回 set 状态）。
+   * 用**系统默认浏览器**打开这个 dsh web 服务器（带上启动令牌）。
    *
-   * ref 是 POSIX 环境变量名（schema 里 `role: credential-ref` 的兄弟字段给出，
-   * 界面随字段一起带到 secretRef），不是设置路径。
+   * **只能开到首页，不能指定会话**：Web UI 没有 URL 深链——它唯一读查询串的地方是
+   * fixture 测试开关（官方 `dsh-client-connection` 的 `fixtureOptionsFromLocation`），
+   * 会话选择存在浏览器本地的持久单元（`dsh.sessions.current`），外部指定不了；
+   * 而且令牌换 cookie 那一步是 `303 → 裸 /`，附带的查询串本来就会被丢掉。
+   *
+   * **必须带令牌**：`index.html` 本身就要认证（官方 `BrowserAuth.authorizeIndex`），
+   * 不带令牌打开的是一页 401 文本。令牌是按进程生成的随机值，只有自管服务器能从
+   * 会合文件里读到（`freshToken()`）。
+   *
+   * 外部服务器模式（`dshChat.url`）**刻意开裸地址**：那种模式下的令牌是用户自己
+   * 输进来的（`setToken` / 连接失败时的输入框），扩展拿它换完 cookie 就丢掉、不落盘
+   * ——令牌按进程生成、重启即失效，存它没有意义（同 `SESSION_SECRET_PREFIX` 那段
+   * 注释）。于是这里没得可带，浏览器若已持有那个站点的会话（以前打开过 `dsh web`
+   * 打印的 URL）就仍然可用，否则让用户自己把令牌填进地址栏——他手里本来就有。
    */
-  private async saveSecret(ns: string, path: string[], value: string, ref?: string): Promise<void> {
-    if (!this.client || !value) return;
-    const target = ref || path[path.length - 1];
-    try {
-      await this.client.request("credentials/set", { ref: target, value });
-      this.emitAll({ type: "toast", level: "info", text: "@settingsSaved" });
-      await this.describeSettings();
-    } catch (error) {
-      this.reportError(vscode.l10n.t("Failed to write the secret ({0} → {1})", ns, target), error);
+  private async openInBrowser(): Promise<void> {
+    const baseUrl = this.client?.baseUrl ?? this.server.activeBaseUrl ?? this.server.externalUrl;
+    if (!baseUrl) {
+      this.emitAll({ type: "toast", level: "warn", text: "@openInBrowserOffline" });
+      return;
+    }
+    // 令牌**现读**会合文件：守护进程可能在我们换 cookie 之后重起过 dsh、换了一份令牌
+    const token = this.server.freshToken();
+    const url = new URL("/", baseUrl);
+    if (token) url.searchParams.set("token", token);
+    this.log(`[browser] 用默认浏览器打开 ${url.origin}/（token=${token ? "有" : "无"}）`);
+    const opened = await vscode.env.openExternal(vscode.Uri.parse(url.href));
+    if (!opened) {
+      this.log("[browser] 系统没有接受这次打开请求");
+      this.emitAll({ type: "toast", level: "warn", text: "@openInBrowserFailed" });
     }
   }
 

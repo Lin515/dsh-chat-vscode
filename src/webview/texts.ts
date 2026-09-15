@@ -14,7 +14,12 @@ export interface Texts {
   newChat: string;
   history: string;
   openInEditor: string;
-  settings: string;
+  /** 顶部那颗「在浏览器中打开」按钮的 title。 */
+  openInBrowser: string;
+  /** 还没连上服务器时点它的提示（`@key` 标记，宿主发）。 */
+  openInBrowserOffline: string;
+  /** 系统拒绝了这次打开（openExternal 返回 false）。 */
+  openInBrowserFailed: string;
 
   emptyTitle: string;
   emptyHint: string;
@@ -230,22 +235,6 @@ export interface Texts {
   mentionDrillKey: string;
   /** 对话候选没有工作目录时的占位（官方 `reference.candidate.noCwd`）。 */
   mentionNoCwd: string;
-  /** 设置面板 */
-  settingsTitle: string;
-  settingsLoading: string;
-  settingsEmpty: string;
-  settingsRestart: string;
-  settingsReset: string;
-  settingsResetDone: string;
-  /** 字段被用户层覆盖过的标记。 */
-  settingsOverridden: string;
-  settingsSaved: string;
-  settingsSecretSet: string;
-  settingsSecretUnset: string;
-  settingsSave: string;
-  settingsAdvanced: string;
-  settingsNoDocument: string;
-  settingsNamespace: (ns: string) => string;
 
   running: string;
   queued: string;
@@ -491,11 +480,6 @@ export interface Texts {
   queueSteerFailed: string;
   /** 服务端给了本扩展还不认识的状态：原样说明，不猜它已完成。 */
   jobUnknown: string;
-  /** 设置：繁忙时的发送行为。 */
-  settingBusyEnter: string;
-  settingBusyEnterDesc: string;
-  settingBusyEnterQueue: string;
-  settingBusyEnterSteer: string;
 
   /** 设置：字体大小。 */
   fontSize: string;
@@ -518,7 +502,9 @@ const zh: Texts = {
   newChat: "新建对话",
   history: "历史对话",
   openInEditor: "在编辑器中打开",
-  settings: "设置",
+  openInBrowser: "在浏览器中打开 DSH Web",
+  openInBrowserOffline: "还没有连上 DSH 服务器，暂时无法在浏览器中打开。",
+  openInBrowserFailed: "系统没有打开浏览器，可以手动访问 dsh web 打印的地址。",
 
   emptyTitle: "有什么可以帮你？",
   emptyHint: "用 @ 添加文件或选区作为上下文；Shift+Enter 换行。",
@@ -649,20 +635,6 @@ const zh: Texts = {
   mentionDrill: "进入目录",
   mentionDrillKey: "Tab",
   mentionNoCwd: "（无工作目录）",
-  settingsTitle: "设置",
-  settingsLoading: "正在读取设置…",
-  settingsEmpty: "服务器没有返回可配置项",
-  settingsRestart: "需重启生效",
-  settingsReset: "重置本组",
-  settingsResetDone: "已重置为默认值",
-  settingsOverridden: "已修改",
-  settingsSaved: "已保存",
-  settingsSecretSet: "已配置",
-  settingsSecretUnset: "未配置",
-  settingsSave: "保存",
-  settingsAdvanced: "高级（JSON）",
-  settingsNoDocument: "服务器未启用设置文档，只读展示",
-  settingsNamespace: (ns) => `命名空间 ${ns}`,
 
   running: "深度求索中",
   queued: "待发送 {n} 条",
@@ -825,10 +797,6 @@ const zh: Texts = {
   queueSteer: "插话发送",
   queueSteerUnavailable: "仅运行中可插话发送",
   queueSteerFailed: "插话发送失败，请重试。",
-  settingBusyEnter: "繁忙时的发送行为",
-  settingBusyEnterDesc: "智能体运行时 Enter 键和发送按钮的行为；Cmd/Ctrl+Enter 使用另一行为",
-  settingBusyEnterQueue: "排队发送",
-  settingBusyEnterSteer: "插话发送",
 
   fontSize: "字体大小",
   fontSizeDesc: "聊天界面的字号（整数 px）；0 跟随 VS Code。",
@@ -847,7 +815,9 @@ const en: Texts = {
   newChat: "New chat",
   history: "Chat history",
   openInEditor: "Open in editor",
-  settings: "Settings",
+  openInBrowser: "Open DSH Web in browser",
+  openInBrowserOffline: "Not connected to a DSH server yet, so it cannot be opened in the browser.",
+  openInBrowserFailed: "The browser was not opened; you can visit the URL printed by dsh web manually.",
 
   emptyTitle: "What can I help you with?",
   emptyHint: "Use @ to attach files or a selection. Shift+Enter for a new line.",
@@ -981,20 +951,6 @@ const en: Texts = {
   mentionDrill: "Browse folder",
   mentionDrillKey: "Tab",
   mentionNoCwd: "(no cwd)",
-  settingsTitle: "Settings",
-  settingsLoading: "Loading settings…",
-  settingsEmpty: "The server returned no configurable namespaces",
-  settingsRestart: "needs restart",
-  settingsReset: "Reset group",
-  settingsResetDone: "Reset to defaults",
-  settingsOverridden: "modified",
-  settingsSaved: "Saved",
-  settingsSecretSet: "configured",
-  settingsSecretUnset: "not set",
-  settingsSave: "Save",
-  settingsAdvanced: "Advanced (JSON)",
-  settingsNoDocument: "The server exposes no settings document; showing read-only values",
-  settingsNamespace: (ns) => `namespace ${ns}`,
 
   running: "Deep diving",
   queued: "{n} queued",
@@ -1158,10 +1114,6 @@ const en: Texts = {
   queueSteer: "Send as steer",
   queueSteerUnavailable: "Steering is only available while the agent is running",
   queueSteerFailed: "Steering failed. Please try again.",
-  settingBusyEnter: "Send behavior while busy",
-  settingBusyEnterDesc: "Behavior of the Enter key and the send button while the agent is running; Cmd/Ctrl+Enter uses the other behavior",
-  settingBusyEnterQueue: "Queue message",
-  settingBusyEnterSteer: "Send as steer",
 
   fontSize: "Font size",
   fontSizeDesc: "Chat UI font size (integer px); 0 follows VS Code.",
@@ -1241,10 +1193,10 @@ function resolveMarker(text: string, texts: Texts): string {
       return texts.maxTokens;
     case "copied":
       return texts.copied;
-    case "settingsSaved":
-      return texts.settingsSaved;
-    case "settingsResetDone":
-      return texts.settingsResetDone;
+    case "openInBrowserOffline":
+      return texts.openInBrowserOffline;
+    case "openInBrowserFailed":
+      return texts.openInBrowserFailed;
     case "queueAttachmentsLost":
       return texts.queueAttachmentsLost;
     case "chipFileDeleted":

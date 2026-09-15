@@ -6,6 +6,52 @@
 
 （发版时改成版本号。下面这一批是 0.5.1 之后报上来的问题与对齐工作。）
 
+### 切走再切回来，还没答复的问卷 / 审批不再丢（2026-09-15，用户报的）
+
+**现场**：等问卷的时候切去看历史会话（或别的页面），回来时卡片不见了，agent
+永久卡在 ask 节点，只能中断重问。
+
+**根因**：卡片是放进**会话域**（`SessionScope.adapter`）里的，而切会话会
+`dropViewers` → `destroyScope` 把整个适配器回收；审批 / 提问**不是 durable 事件**
+（会话日志里没有它们），重放不回，于是只活在那个适配器里的请求就永久丢了。
+`heldEvents` 原先的语义是「该会话还没有窗口时才挂起」，投递出去就删条目——挡不住
+这种「先显示、再被回收」。
+
+**修法**：`heldEvents` 改成「**还没结算**的审批 / 提问」，条目**留到真正结算**
+（本窗口答复的 `answerApproval` / `answerQuestion`，或 Host 撤回的 `cancel` 帧）；
+回放时机从「建域」（`ensureScope`）挪到「**有窗口绑上这个会话**」
+（`bindViewToSession`）——用户切回来走的正是后者。重连路径（`onConnected`，适配器
+会整个重建）同样不再删条目。回放必须幂等，所以 `addApproval` 补上了与 `addQuestion`
+同口径的 `requestId` 去重（原先无条件 push：第二个窗口绑上同一个会话会画出两张
+一样的审批卡，两张还都得分别答复）。回归断言见 `scripts/interactionSync.test.ts`
+第 9 / 9b 组。
+
+### 设置页改为「在浏览器中打开」（2026-09-15，用户口径）
+
+自绘的 DSH 服务端设置面板（抽屉式）连同协议链路一起删除，顶部那颗齿轮换成
+**「在浏览器中打开 DSH Web」**：用系统默认浏览器打开带启动令牌的首页
+（`GET /?token=` 换 cookie），Web 专属的设置（模型编辑器、插件配置、外观…）在官方
+页面里改。原因见上一轮调查：官方设置页是各功能插件用 `settings.section` 槽自绘的
+页面组合，没有任何数据契约可以复刻。图标用**地球**（`IconGlobe`，VS Code 自己的
+Simple Browser 同款）——别跟「在编辑器中打开」的方框箭头撞，两者原先长得一模一样
+（用户 2026-09-15 报），断言钉在 `scripts/styles.test.ts` 第 36 组。
+
+- **只开到首页，不能指定会话**（所以按钮不叫「打开此会话」）。Web UI 没有任何 URL
+  深链——全厂唯一读查询串的地方是 fixture 测试开关（`dsh-client-connection` 的
+  `fixtureOptionsFromLocation`）；会话选择存在浏览器本地的 `dsh.sessions.current`；
+  而且令牌换 cookie 那一步是 `303 → 裸 /`，查询串本来就会被丢掉。
+  「内嵌 Web UI」这条路也被实测否掉：VS Code webview（含 Simple Browser）是跨站
+  iframe，`SameSite=Strict` 的认证 cookie 连存都存不下 → 401。
+- **令牌**现读 supervisor 会合文件（`freshToken()`，守护进程可能刚重起过 dsh）。
+  外部服务器模式（`dshChat.url`）**刻意开裸地址**：那种模式的令牌是用户自己输进来的，
+  扩展换完 cookie 就丢掉、不落盘（令牌按进程生成、重启即失效），所以这里没得可带；
+  浏览器以前打开过那个站点就仍然可用，否则用户自己把令牌填进地址栏——他手里就有。
+- `busyEnter` 的喂入口现在只剩 `refreshImageCaps`（连模型目录时必跑 + 配置热重载）。
+  它以前还挂在 `describeSettings()` 上，那个函数随设置面板一起删了。
+- 删掉的东西：`ipc` 的 6 条设置消息与 `settings/describe` 帧、`shared/chat` 的两个设置
+  视图类型、`dsh/settingsSchema.ts`（schema → 表单转换）、`scripts/schemaDebug.ts`、
+  设置面板组件与 22 条 CSS 规则、18 条设置文案（双语，`settingBusyEnter*` 也随之作废）。
+
 ### 用户报的一批（2026-09-15，用户口径）
 
 **一、历史会话跟随工作区；没有文件夹时只给「未分组」。** 可见性判据改成按**服务端

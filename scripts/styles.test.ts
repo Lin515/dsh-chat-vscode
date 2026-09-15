@@ -1117,4 +1117,32 @@ console.log("styles: 轨迹工具栏开关的按下态（aria-pressed + --active
 }
 console.log("styles: 轨迹顶条光标 = 框选 I 字，手掌光标与 is-zoomed 已除 ✓");
 
+// ---------- 36. 顶部两颗「打开」按钮必须是两个不同的图标 ----------
+//
+// 用户 2026-09-15 报：「在浏览器中打开」的图标和在编辑区中打开的一模一样。
+// 根因是两者都画成「方框 + 右上角箭头」——`IconExternal`（文件链接行在用）与
+// `IconOpenInEditor` 只差一条斜线的长短（`M20 4l-8 8` vs `M20 4l-8.5 8.5`），
+// 15px 下分不出来。浏览器那颗改成 `IconGlobe`（VS Code 自己的 Simple Browser
+// 也是地球）。这条断言按**图标组件名**钉住两者不同——形状相似是肉眼很难复查的
+// 一类回归，而"顺手换成同一个"又极其自然（我就是这么写错的）。
+{
+  const app = readFileSync(join(process.cwd(), "src", "webview", "App.tsx"), "utf8");
+  const editorIcon = /type: "openInEditor"[\s\S]{0,160}?<(\w+)/.exec(app)?.[1];
+  const browserIcon = /type: "openInBrowser"[\s\S]{0,160}?<(\w+)/.exec(app)?.[1];
+  assert.ok(editorIcon && browserIcon, "顶部两颗「打开」按钮都应当存在");
+  assert.notStrictEqual(
+    browserIcon,
+    editorIcon,
+    `「在浏览器中打开」与「在编辑器中打开」不能用同一个图标（都是 ${browserIcon}）` +
+      "——用户报过它们看起来一模一样",
+  );
+  assert.strictEqual(editorIcon, "IconOpenInEditor", "「在编辑器中打开」的图标");
+  assert.strictEqual(
+    browserIcon,
+    "IconGlobe",
+    "「在浏览器中打开」用地球（VS Code 的 Simple Browser 同款）",
+  );
+}
+console.log("styles: 两颗「打开」按钮图标不同（编辑区=方框箭头 / 浏览器=地球）✓");
+
 console.log("\nstyles: all assertions passed");
