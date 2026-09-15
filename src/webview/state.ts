@@ -52,6 +52,11 @@ export interface AppState extends ChatState {
 
 export const initialState: AppState = {
   connection: "connecting",
+  // 语言起步值：`navigator.language`（webview 里跟随 VS Code 显示语言，与宿主
+  // `readLanguage()` 的 auto 分支同源）。它只撑「首帧快照到来之前」的渲染——
+  // 此前是 undefined，词典归一化落英文，自动连接期间整个界面都是英文；宿主
+  // 首帧会带上权威值（`dshChat.language` 固定选择优先），到了即覆盖。
+  locale: typeof navigator !== "undefined" ? navigator.language : undefined,
   messages: [],
   running: false,
   queueItems: [],

@@ -305,6 +305,30 @@ console.log("windowState: 写缓存的合并规则（最终会话一定落盘）
 }
 console.log("windowState: 控制器接线（惰性绑键 + 合并写）✓");
 
+// ---------- 4e. 结构不变量：ready 的首帧快照必须先于接回会话 ----------
+//
+// 接回会话（resumeRestoreHint → restoreViewSession）要先 ensureConnected，
+// 整个自动连接期间它不结算；首帧快照（locale/字号都在里面）若排在它后面，
+// 界面就要在词典缺省（英文）下过完整个连接期，直到连接结算才翻成中文
+// （用户报的「启动总是先英文」）。快照先行后，接回绑上时 openSession 会
+// 再推一份带会话内容的完整快照，内容回填不受影响。
+{
+  const controller = readFileSync(join(process.cwd(), "src", "dsh", "controller.ts"), "utf8");
+  const readyCase = controller.slice(
+    controller.indexOf('case "ready":'),
+    controller.indexOf('case "send":'),
+  );
+  assert.ok(
+    readyCase.includes("this.snapshotFor(viewId)") && readyCase.includes("resumeRestoreHint(viewId)"),
+    "ready 分支必须既发首帧快照、又接回会话（少一件都是功能丢了）",
+  );
+  assert.ok(
+    readyCase.indexOf("snapshotFor(viewId)") < readyCase.indexOf("resumeRestoreHint(viewId)"),
+    "ready 的首帧快照必须先于 resumeRestoreHint 发出——接回要先连接，排在后面会把语言等首帧设置拖到连接结算之后",
+  );
+}
+console.log("windowState: ready 首帧快照先于接回（语言不等待连接）✓");
+
 // ---------- 5. Store：跨「两次进程」往返 + 防抖 + dispose 刷盘 ----------
 
 {

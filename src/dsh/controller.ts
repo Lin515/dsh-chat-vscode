@@ -2851,12 +2851,15 @@ export class ChatController implements vscode.Disposable {
   async handle(message: WebviewToHost, viewId: string): Promise<void> {
     switch (message.type) {
       case "ready":
-        // 页面就绪前不推帧（webview 的监听还没挂上，推了也白推），所以工作区
-        // 打开时「这个窗口上次开着哪个会话」的接回动作放在这里：绑定完再发
-        // 快照，会话内容直接出现在它的首帧里
-        await this.resumeRestoreHint(viewId);
-        // 每个窗口拿的是**自己**的快照（它绑定的会话；未绑定 = 空态）
+        // 首帧快照**先行**：locale/字号等外观设置全在里面。接回会话要先走
+        // `ensureConnected`——整个自动连接期间快照都出不去，界面只能停在词典
+        // 缺省（英文）上，直到连接结算才翻成中文（用户报的「启动总是先英文」）。
+        // 能收到 `ready` 就说明 webview 的监听已挂上，此刻推帧不会丢。
         this.emitToView(viewId, { type: "state", state: this.snapshotFor(viewId) });
+        // 然后接回「这个窗口上次开着哪个会话」：绑上后 `openSession` 会再推一份
+        // 带会话内容的完整快照，内容照常回填。`resumeRestoreHint` 幂等，兜底
+        // 定时器先到也只是空跑一次。
+        await this.resumeRestoreHint(viewId);
         break;
 
       case "send":

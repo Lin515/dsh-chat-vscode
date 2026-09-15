@@ -287,4 +287,19 @@ console.log("i18n: package.nls 与 package.json 对齐（无缺失 / 无孤儿 /
 console.log("i18n: 已删除的配置项在各处都不再出现 ✓");
 }
 
+// ---------- 8. webview 的起步语言不得缺省成英文 ----------
+//
+// 界面词典按 `state.locale` 选（normalizeLocale：undefined → en），起步值若缺省，
+// 首帧快照到来之前整个界面都渲染英文。initialState 必须用 `navigator.language`
+// （webview 里跟随 VS Code 显示语言，与宿主 readLanguage 的 auto 分支同源）
+// 撑住第一帧；宿主首帧快照带上权威值（`dshChat.language` 固定选择优先）后覆盖。
+{
+  const state = readFileSync(join(process.cwd(), "src", "webview", "state.ts"), "utf8");
+  assert.ok(
+    /locale:\s*typeof navigator !== "undefined" \? navigator\.language : undefined/.test(state),
+    "initialState.locale 必须取 navigator.language（起步即正确语言），不能缺省成 undefined（词典会落英文）",
+  );
+}
+console.log("i18n: webview 起步语言取 navigator.language（不缺省成英文）✓");
+
 console.log("\ni18n: all assertions passed");
