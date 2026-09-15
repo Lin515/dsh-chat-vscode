@@ -205,7 +205,9 @@
       window.__buildState = function () {
         // 用 ?locale=en 预览英文界面
         const locale = new URLSearchParams(location.search).get("locale") || "zh-cn";
-        // 连接条的四种形态都能直接预览（`?conn=stopped&running=1&reconnecting=1`）：
+        // 连接条的形态都能直接预览（`?conn=stopped&running=1&reconnecting=1`）：
+        // `conn=connecting` 就够看到「停止连接」了——那个按钮绑的是 `connecting` 本身，
+        // 不需要额外给 `reconnecting=1`（见 src/webview/App.tsx 的 ConnectionBar）。
         // 这些字段就是宿主真的会下发的那些（见 src/shared/chat.ts 的 ChatState）
         const query = new URLSearchParams(location.search);
         const connection = query.get("conn") || "ready";

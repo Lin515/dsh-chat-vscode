@@ -123,6 +123,14 @@ export class SupervisorConnection {
       onState: (state: SupervisorState | null, clients: number | undefined) => void;
       onGoodbye: (reason: "idle" | "stop" | "replaced") => void;
       onClosed: (reason: string) => void;
+      /**
+       * 守护进程上报的**内部异常**（协议 `t:"error"`）。
+       *
+       * 转发进 VS Code 输出通道「DSH Chat」——守护进程自己的日志在
+       * `~/.dsh-chat/supervisors/<分组>/supervisor.log`，用户不会去翻那个文件，
+       * 而"守护进程内部出错"过去的表现就是"后台莫名不重启"。
+       */
+      onError?: (kind: string, message: string) => void;
       log: (line: string) => void;
     },
     private readonly hello: { hostId: string; pid?: number; workspace?: string },
@@ -194,6 +202,7 @@ export class SupervisorConnection {
       const message = decodeServerMessage(line);
       if (!message) continue;
       if (message.t === "state") this.handlers.onState(message.state, message.clients);
+      else if (message.t === "error") this.handlers.onError?.(message.kind, message.message);
       else if (message.t === "goodbye") {
         this.closed = true;
         this.handlers.onGoodbye(message.reason);

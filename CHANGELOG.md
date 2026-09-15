@@ -68,7 +68,52 @@ Enter（或点击行）= 载入整条候选（目录 → `@dir/`）；**Tab = �
 - 删掉配置项 `dshChat.openPanelOnStartup`（连同两份 `package.nls*`、README 中英两表、
   以及 `extension.ts` 里的读取点）。
 
-**验证与一条已知的探针问题**：`npm run typecheck`、`npm test`（49 套，新增
+**八、连接条按钮：只要在连接就能停，「尝试重连」改名「尝试连接」，「查看日志」恒显。**
+- 「停止连接」原来只在 `reconnecting`（重连循环在跑）时出现——首轮连接、外部地址等待这些
+  "正在连接"的档位反而没有停止入口，而等待本身**没有时长上限**（用户 2026-09-14 口径）。
+  现在它绑 `connection === "connecting"`；宿主侧 `stopReconnect()` 的守卫从
+  `if (!this.reconnecting) return` 改成"当前处于 `connecting`/`disconnected` 才动手"，
+  免得出现"按钮点了没反应"。语义不变：只中止在途那一轮 + 关掉自动重连，**后台一个字不动**。
+- 「尝试重连」→「尝试连接」（英文 `Reconnect` → `Connect`），`reconnectStopped` 文案同步；
+  `reconnecting` 字段保留，但降级为**只描述"循环还在不在跑"**（连接条文案用），不再是按钮开关。
+- 「查看日志」不再只在 `error`/`stopped`/重连时出现，而是**连接条上恒显**。
+- 空出的那条断言补上了：`scripts/styles.test.ts` 第 34 组按源码钉住"停止连接绑 `connecting`、
+  日志按钮不包三元"（改回去就是功能消失，而 typecheck 与既有断言都看不出来）。
+
+**九、守护进程：dsh 崩了却永远不再被拉起（判据用错对象）。** 主循环原来写
+`if (!serverStarting && !server.child && clients.size > 0)`，而 `server.child` 是 `spawn`
+返回的 **ChildProcess 对象**——进程死了它不会变成 `undefined`（`exit` 处理器只记日志，
+没人清这个字段）。于是 dsh 一死 `!server.child` 永远为假，重启分支再也进不去：实测日志里
+`exit` 事件到了，之后每拍打印的 `server.child` 都停在那具死 pid 上，窗口侧表现是"连着连着
+没了，再也接不回来"。改成问进程本身（`exitCode`/`signalCode` 已置位，或
+`isProcessAlive(child.pid)` 为假，见 `src/supervisor/main.ts` 的 `childGone()`）。
+新增端到端探针 `scripts/supervisor-child-exit-probe.mjs`（杀真 node / 强杀 / 卡死三种形态，
+按假 dsh 自述的 boot 记录数重启次数，含反向验证）。
+
+**已知边界（未做）**：判据只覆盖"进程消失"。**卡死**（进程在、但不再应答）不会被重启——
+守护进程与 dsh 之间只有那条启动时读公告行的管道，没有任何探活。用户那侧要靠
+「重启服务器」恢复。详见 `docs/design-supervisor.md` §8.6。
+
+**十、守护进程内部抛错不再"静默死掉"，错误会被发进 VS Code 的日志。**
+起因是一次自伤：我在 `child.on("exit")` 里加的一行诊断引用了不存在的变量，
+`ReferenceError` 从事件回调冒到顶层 → 守护进程以 code=1 消失（窗口侧只看到"连不上"）。
+- **不让它死**：所有事件回调/处理器套守卫，`process.on("uncaughtException"|"unhandledRejection")`
+  兜底——原则是"记下来、活下去"（守护进程死了没有任何东西能接替它）。顺带修掉两处**真死锁**：
+  `bringUp` 抛错会让 `serverStarting` 卡死（"崩了重起"与"空闲退场"同时瘫痪）→ `try/finally`；
+  `startServer` 的轮询回调一抛，promise **永不 settle** → 出错即按"本轮失败"终结。
+- **让错误看得见**：新增协议报文 `{"t":"error","kind","message"}`；守护进程把错误
+  **写进日志（底线，写不进去退 stderr）+ 经 socket 广播给窗口**，扩展侧转发进输出通道
+  「DSH Chat」。用户不用再去翻 `~/.dsh-chat/supervisors/<分组>/supervisor.log`。
+- **补发**：最要命的错误恰恰发生在"一个窗口都还没连上"的时候（刚起、日志不可写、dsh 起来就退），
+  那一刻广播给的是空集合。上报器保留最近 16 条，新连接先补发历史错误再推状态
+  （探针第一次跑就抓到了这条丢消息）。
+- 顺带修掉一个**自己引入的回归**：加 `try/finally` 时把 `serverStarting = false` 挪到了
+  `publish()` 之后，会合文件里**永远写着 `starting: true`**，新窗口会一直等一个"正在启动"的后台。
+- 断言/探针：`scripts/supervisorErrors.test.ts`（上报器本体，离线）、
+  `supervisorProtocol.test.ts` 第 5.5 组（报文往返 + 旧扩展兼容）、
+  `node build/supervisor-error-bridge-probe.mjs`（端到端）、`supervisorChildExitProbe`（真故障下仍活着）。
+
+**验证与一条已知的探针问题**：`npm run typecheck`、`npm test`（50 套，新增
 `scripts/interactionSync.test.ts`（多窗口收发场判据 + `@` 对话引用接线）与
 `scripts/questionRender.test.ts`（用 `react-dom/server` 真渲染问卷卡））、`npm run build`
 全绿；`npm run smoke` 除 **9c（停止：期望 `session/cancel` 后收到 `turn/end`

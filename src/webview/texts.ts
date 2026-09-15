@@ -314,11 +314,18 @@ export interface Texts {
 
   connecting: string;
   connectionFailed: string;
+  /** 连接条按钮：手动去连一次（只接上已在跑的后台/外部地址，不负责拉起）。 */
   reconnect: string;
   restartServer: string;
   /** 连接条按钮：用户显式拉起后台（关掉 `dshChat.autoStart` 时的主要入口）。 */
   startServer: string;
-  /** 连接条按钮：停掉自动重连循环（重连没有总超时，必须能停）。 */
+  /**
+   * 连接条按钮：停掉**正在进行的连接**。
+   *
+   * 它绑定的是"界面正在连接"（`connection === "connecting"`，含首轮连接与失败后的重连循环），
+   * **不绑定 `reconnecting`**——那个字段只描述"循环还在不在跑"（见 `ChatState.reconnecting`）。
+   * 用户 2026-09-15 口径：只要在连接，就得有个按钮能停下来。
+   */
   stopReconnect: string;
   /** 连接条按钮：打开扩展的输出通道看原因。 */
   showLogs: string;
@@ -328,7 +335,7 @@ export interface Texts {
   serverStopped: string;
   /** 连接条：正在一轮轮重连（没有总超时）。 */
   reconnecting: string;
-  /** 连接条：用户按了「停止连接」，而后台还在跑（可以再点「尝试重连」）。 */
+  /** 连接条：用户按了「停止连接」，而后台还在跑（可以再点「尝试连接」）。 */
   reconnectStopped: string;
   /** 外部服务器要求授权时的「输入令牌」按钮。 */
   enterToken: string;
@@ -700,7 +707,7 @@ const zh: Texts = {
 
   connecting: "正在连接…",
   connectionFailed: "无法连接 DSH 服务器",
-  reconnect: "尝试重连",
+  reconnect: "尝试连接",
   restartServer: "重启服务器",
   startServer: "启动服务器",
   stopReconnect: "停止连接",
@@ -708,7 +715,7 @@ const zh: Texts = {
   serverNotRunning: "后台服务器没有在运行。点「启动服务器」拉起一套。",
   serverStopped: "DSH 服务器已停止。",
   reconnecting: "正在连接…",
-  reconnectStopped: "已停止连接。可点「尝试重连」重新连接。",
+  reconnectStopped: "已停止连接。可点「尝试连接」重新连接。",
   enterToken: "输入令牌",
   authNeedsToken:
     "外部 DSH 服务器需要访问令牌：请点「输入令牌」填入 dsh web 启动时打印的 token（或命令面板「DSH: 输入访问令牌」）。",
@@ -1031,7 +1038,7 @@ const en: Texts = {
 
   connecting: "Connecting…",
   connectionFailed: "Cannot reach the DSH server",
-  reconnect: "Reconnect",
+  reconnect: "Connect",
   restartServer: "Restart server",
   startServer: "Start server",
   stopReconnect: "Stop connecting",
@@ -1039,7 +1046,7 @@ const en: Texts = {
   serverNotRunning: "The DSH server is not running. Click “Start server” to launch one.",
   serverStopped: "The DSH server has been stopped.",
   reconnecting: "Connecting…",
-  reconnectStopped: "Stopped connecting. Click “Reconnect” to try again.",
+  reconnectStopped: "Stopped connecting. Click “Connect” to try again.",
   enterToken: "Enter token",
   authNeedsToken:
     "The external DSH server requires an access token: click “Enter token” and paste the token printed by dsh web (or run “DSH: Enter Access Token” from the Command Palette).",

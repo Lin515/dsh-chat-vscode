@@ -34,6 +34,7 @@ const {
   writeState,
 } = await import("../src/dsh/supervisorProtocol");
 const { resolveNodeRuntime, runRuntimeSelfCheck, runtimeEnv } = await import("../src/dsh/runtimeResolve");
+const { decodeServerMessage, encodeMessage } = await import("../src/dsh/supervisorWire");
 
 let failures = 0;
 function check(label: string, ok: boolean, detail = ""): void {
@@ -132,6 +133,32 @@ function stateOf(patch: Record<string, unknown> = {}) {
   check("上限夹紧", clampIdleSec(99999) === IDLE_SEC_MAX);
   check("非法值回落默认", clampIdleSec("abc") === IDLE_SEC_DEFAULT && clampIdleSec(NaN) === IDLE_SEC_DEFAULT);
   check("合法值原样（含小数四舍五入）", clampIdleSec(30) === 30 && clampIdleSec(30.6) === 31);
+}
+
+// ---------- 5.5 协议：守护进程的内部错误上报（`t:"error"`，2026-09-15 加） ----------
+
+{
+  // 编码 → 解码往返
+  const line = encodeMessage({ t: "error", kind: "tick", message: "TypeError: x @ at foo" });
+  const decoded = decodeServerMessage(line.trim());
+  check(
+    "`t:error` 能被解出来（kind/message 原样）",
+    decoded?.t === "error" && decoded.kind === "tick" && decoded.message === "TypeError: x @ at foo",
+    JSON.stringify(decoded),
+  );
+
+  // 缺字段 / 类型不对都不认（协议"读不懂就忽略"）
+  check("缺 kind 不认", decodeServerMessage(JSON.stringify({ t: "error", message: "x" })) === undefined);
+  check("缺 message 不认", decodeServerMessage(JSON.stringify({ t: "error", kind: "tick" })) === undefined);
+  check("kind 不是字符串不认", decodeServerMessage(JSON.stringify({ t: "error", kind: 1, message: "x" })) === undefined);
+
+  // 向后兼容：旧扩展见到不认识的 `t` 必须拿到 undefined（而不是抛/误判）
+  check(
+    "读不懂的消息返回 undefined（旧扩展遇到新报文只忽略，不弄坏连接）",
+    decodeServerMessage(JSON.stringify({ t: "some-future-message", payload: 1 })) === undefined,
+  );
+  // 反过来：新扩展遇到旧守护进程（没有这条消息）当然也不受影响——它只是永远收不到 error
+  check("旧的 goodbye/state 仍然照旧解出来", decodeServerMessage(encodeMessage({ t: "goodbye", reason: "idle" }).trim())?.t === "goodbye");
 }
 
 // ---------- 6. 启动锁：独占、只删自己的、持有者已死可回收 ----------

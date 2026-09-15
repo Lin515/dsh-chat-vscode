@@ -12,6 +12,7 @@
  *                       {"t":"control","action":"restart"|"stop"}
  * supervisor → 客户端 : {"t":"state","state":{…}|null}      ← 连接建立时回一份 + 状态变化时推
  *                       {"t":"goodbye","reason":"idle"|"stop"}   ← 退场前通知（界面可提示）
+ *                       {"t":"error","kind":"tick","message":"…"} ← 守护进程内部异常（转发进输出通道）
  * ```
  * 这份编解码**纯函数、可离线断言**；真正的连接在 `supervisorClient.ts` 与 `src/supervisor/main.ts`。
  */
@@ -36,7 +37,18 @@ export type ServerMessage =
        */
       clients?: number;
     }
-  | { t: "goodbye"; reason: "idle" | "stop" | "replaced" };
+  | { t: "goodbye"; reason: "idle" | "stop" | "replaced" }
+  /**
+   * 守护进程**捕获到内部异常**，如实上报（2026-09-15 加）。
+   *
+   * 用途：守护进程是独立进程，它自己的日志在 `~/.dsh-chat/supervisors/<分组>/supervisor.log`
+   * ——用户看不到那个文件，所以"守护进程内部出错了"此前表现为**后台莫名不重启**。
+   * 这条消息让窗口把错误转发进 VS Code 输出通道「DSH Chat」。
+   *
+   * 宽容是必须的：**旧扩展不认识 `t:"error"`**（`decodeServerMessage` 返回 undefined 并忽略），
+   * 所以加这条消息不会让旧扩展出错——这正是协议里"读不懂就忽略"的价值。
+   */
+  | { t: "error"; kind: string; message: string };
 
 /** 一行一行地切分流入的文本（TCP 不保证消息边界，必须自己攒缓冲）。 */
 export class LineDecoder {
@@ -88,6 +100,11 @@ export function decodeServerMessage(line: string): ServerMessage | undefined {
     const reason = value.reason;
     if (reason === "idle" || reason === "stop" || reason === "replaced") return { t: "goodbye", reason };
     return { t: "goodbye", reason: "stop" };
+  }
+  if (value.t === "error") {
+    // 只有两样都是字符串才认（守护进程侧用 `kind` 标来源，扩展侧只负责转进输出通道）
+    if (typeof value.kind !== "string" || typeof value.message !== "string") return undefined;
+    return { t: "error", kind: value.kind, message: value.message };
   }
   if (value.t === "state") {
     // 状态本身由 `readState` 的宽容规则把关；这里只保证"是个对象或 null"

@@ -126,11 +126,12 @@ function BrandMark() {
 /**
  * 连接条：**未就绪时**显示在所有内容上方（就绪时不占位置）。
  *
- * 三种"没好"的状态要给出**不同的下一步**（用户 2026-09-14 口径）：
+ * 三种"没好"的状态要给出**不同的下一步**（用户 2026-09-14 口径，2026-09-15 微调）：
  * - `stopped`：后台没在跑（关掉 `dshChat.autoStart` 的常态）→ 「启动服务器」；
- *   外部服务器不由本扩展启动 → 「尝试重连」；
- * - `connecting` + `reconnecting`：扩展在一轮轮重连（**没有总超时**）→ 「停止连接」；
- * - `error`：连不上 → 原因 + 「尝试重连」（+ 外部模式的「输入令牌」、内部模式的「重启服务器」）。
+ *   外部服务器不由本扩展启动 → 「尝试连接」；
+ * - `connecting`：正在连（首轮连接、掉线后的重连循环、外部地址的等待都算）→ 「停止连接」；
+ *   这个按钮**绑 `connecting` 本身，不绑 `reconnecting`**——只要在连接就得能停（用户口径）；
+ * - `error`：连不上 → 原因 + 「尝试连接」（+ 外部模式的「输入令牌」、内部模式的「重启服务器」）。
  *
  * 三种状态下都留一个「查看日志」：失败原因写进扩展的输出通道，用户得有个入口去看。
  */
@@ -139,8 +140,9 @@ function ConnectionBar({ state }: { state: ChatState }) {
   if (state.connection === "ready") return null;
   const isError = state.connection === "error";
   const isStopped = state.connection === "stopped";
+  const isConnecting = state.connection === "connecting";
   const external = state.externalServer === true;
-  // 详情优先：`stopped` 也可能是"用户按了停止重连"，那时条上的原因是上一轮的失败原因
+  // 详情优先：`stopped` 也可能是"用户按了停止连接"，那时条上的原因是上一轮的失败原因
   const detail = state.connectionDetail ? resolveText(state.connectionDetail, texts) : undefined;
   const text = isError
     ? (detail ?? texts.connectionFailed)
@@ -151,7 +153,7 @@ function ConnectionBar({ state }: { state: ChatState }) {
         : `${texts.connecting}${state.serverUrl ? ` ${state.serverUrl}` : ""}`;
   return (
     <div className={`conn-bar${isError ? " is-error" : ""}${isStopped ? " is-stopped" : ""}`}>
-      {state.connection === "connecting" ? <Spinner size={11} /> : null}
+      {isConnecting ? <Spinner size={11} /> : null}
       <span className="conn-text" title={text}>
         {text}
       </span>
@@ -173,8 +175,8 @@ function ConnectionBar({ state }: { state: ChatState }) {
           <IconRefresh size={12} /> {texts.reconnect}
         </button>
       ) : null}
-      {/* 重连循环在跑：必须能停（它没有总超时） */}
-      {state.reconnecting ? (
+      {/* 正在连接：必须能停（重连没有总超时，首轮连接也可能卡在等就绪上） */}
+      {isConnecting ? (
         <button className="btn" onClick={() => post({ type: "stopReconnect" })}>
           {texts.stopReconnect}
         </button>
@@ -185,11 +187,11 @@ function ConnectionBar({ state }: { state: ChatState }) {
           <IconRefresh size={12} /> {texts.restartServer}
         </button>
       ) : null}
-      {isError || isStopped || state.reconnecting ? (
-        <button className="btn btn-ghost" data-mini="hide" onClick={() => post({ type: "showLogs" })}>
-          {texts.showLogs}
-        </button>
-      ) : null}
+      {/* 查看日志：**连接条上恒显**（用户 2026-09-15 口径）——上面每一种状态都可能是
+          "连不上但说不清"，用户得随时有个入口去看扩展的输出通道 */}
+      <button className="btn btn-ghost" data-mini="hide" onClick={() => post({ type: "showLogs" })}>
+        {texts.showLogs}
+      </button>
     </div>
   );
 }

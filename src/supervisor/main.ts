@@ -40,6 +40,8 @@ import {
   type SupervisorState,
 } from "../dsh/supervisorProtocol";
 import { LineDecoder, decodeClientMessage, encodeMessage } from "../dsh/supervisorWire";
+import { isProcessAlive } from "../dsh/processRegistry";
+import { createErrorReporter, type SupervisorErrorKind } from "../dsh/supervisorErrors";
 
 interface Options {
   directory: string;
@@ -218,6 +220,16 @@ export function startServer(options: {
   marker: string;
   graceMs?: number;
   log: (line: string) => void;
+  /**
+   * 回调里出错时的上报（`runSupervisor` 传 `reportFailure`）。
+   *
+   * **为什么非要有它**：这个 promise 只在"解析到公告行"或"到点"时 settle，
+   * 一旦轮询回调或 `child.on(...)` 里抛了错，promise 就**永远不 settle**，
+   * 调用方 `bringUp` 永远卡在 `await` 上、`serverStarting` 也永远复位不了——
+   * 主循环的"崩了要重起"和"没人用要退场"两条路全部瘫痪。所以这里的原则是
+   * **出错就当本轮失败终结**（`finish(undefined)`），而不是让错误冒出去。
+   */
+  onError?: (error: unknown) => void;
 }): Promise<RunningServer | undefined> {
   return new Promise((resolve) => {
     const child = spawn(options.command, [], {
@@ -234,9 +246,14 @@ export function startServer(options: {
       clearInterval(timer);
       resolve(value);
     };
+    /** 出错即"本轮失败"，绝不让错误把 promise 挂死。 */
+    const fail = (error: unknown) => {
+      options.onError?.(error);
+      finish(undefined);
+    };
     const timer = setInterval(() => {
-      if (options.logPath) {
-        try {
+      try {
+        if (options.logPath) {
           // 每次都从**整个文件的尾部窗口**里找（不再维护偏移量）：偏移量会因"文件被同时追加"
           // 而漂移，而带 marker 的窗口查找没有这个状态，重起多少次都不会看错。
           const whole = readFileSync(options.logPath, "utf8");
@@ -245,29 +262,38 @@ export function startServer(options: {
             options.log(`[supervisor] dsh 就绪：${parsed.baseUrl}（token=${parsed.token ? "有" : "无"}）`);
             finish({ child, baseUrl: parsed.baseUrl, token: parsed.token });
           }
-        } catch {
-          // 日志还没建出来
         }
-      }
-      if (Date.now() > deadline) {
-        options.log(`[supervisor] dsh 在 ${Math.round((options.graceMs ?? SPAWN_GRACE_MS) / 1000)}s 内没有宣布地址`);
-        finish(undefined);
+        if (Date.now() > deadline) {
+          options.log(`[supervisor] dsh 在 ${Math.round((options.graceMs ?? SPAWN_GRACE_MS) / 1000)}s 内没有宣布地址`);
+          finish(undefined);
+        }
+      } catch (error) {
+        fail(error);
       }
     }, 300);
     timer.unref?.();
     child.on("error", (error) => {
-      options.log(`[supervisor] dsh 启动失败：${error.message}`);
+      try {
+        options.log(`[supervisor] dsh 启动失败：${error.message}`);
+      } catch (logged) {
+        options.onError?.(logged);
+      }
       finish(undefined);
     });
     child.on("exit", (code) => {
-      options.log(`[supervisor] dsh 进程退出：code=${code ?? "?"}`);
-      // 退出时把日志尾部带进 supervisor 日志：dsh 自己崩了的话，原因只在它的 stderr 里，
-      // 而那个文件是"运行日志"（会被追加），排查时不翻它就只剩 code=1 这种无用信息
+      // 注意：**这里不能吞错**。`readFileSync` 在日志被删/被占用时会抛，而这段代码跑的
+      // 正是"dsh 死了"这个关键时刻——它的诊断信息（日志尾部）没了，等于把最后的线索丢了。
+      // 所以日志尾部的读取失败要走 `onError` 上报（2026-09-15：改成可复现的真实故障路径）。
       try {
+        options.log(`[supervisor] dsh 进程退出：code=${code ?? "?"}`);
+        // 退出时把日志尾部带进 supervisor 日志：dsh 自己崩了的话，原因只在它的 stderr 里，
+        // 而那个文件是"运行日志"（会被追加），排查时不翻它就只剩 code=1 这种无用信息
         const tail = readFileSync(options.logPath, "utf8").split(/\r?\n/).filter(Boolean).slice(-6).join(" | ");
         if (tail) options.log(`[supervisor] dsh 日志尾部：${tail}`);
-      } catch {
-        // 日志还没建出来
+      } catch (error) {
+        // 日志尾部读不到（文件被删/被占用）时**不能吞**：这段代码跑的正是"dsh 死了"这个
+        // 关键时刻，把它的诊断丢了等于把最后的线索丢了。走 onError 上报。
+        options.onError?.(error);
       }
       finish(undefined);
     });
@@ -281,8 +307,15 @@ export async function runSupervisor(options: Options): Promise<number> {
   const log = (line: string): void => {
     try {
       appendFileSync(logPath, `[${new Date().toLocaleTimeString()}] ${line}\n`, "utf8");
-    } catch {
-      // 日志写不进去绝不影响主流程
+    } catch (error) {
+      // 日志写不进去绝不影响主流程——但**不能连消息一起吞掉**：Windows 上文件被占用/
+      // 目录被清理时 appendFileSync 会抛，而那正是最需要留证据的时刻。退到 stderr
+      // （Windows 上由父进程/cmd 的窗口接住，也可能进 supervisor 自己的 stderr 捕获）。
+      try {
+        process.stderr.write(`[supervisor] 日志写入失败（${String(error)}）：${line}\n`);
+      } catch {
+        // 连 stderr 都写不进去就只能丢弃了
+      }
     }
   };
 
@@ -292,6 +325,85 @@ export async function runSupervisor(options: Options): Promise<number> {
   let idleSec = clampIdleSec(options.idleSec);
   let stopping = false;
   let serverStarting = false;
+
+  /**
+   * 捕获到异常的次数由上报器维护（`reporter.count`）。
+   *
+   * **刻意不做"错太多次就退出"**：这是一台守护进程，它死了以后没有任何东西能接替它
+   * （窗口只会连不上、dsh 崩了也不会再被拉起）。宁可带着一条错误日志继续活着。
+   */
+
+  /** 各窗口的连接（连接本身 = "我在用"）。 */
+  const clients = new Set<Socket>();
+  /** 每个连接上攒的半行数据。 */
+  const decoders = new WeakMap<Socket, LineDecoder>();
+  /** 最近一次"还有人在用"的时刻。 */
+  let lastActiveAt = Date.now();
+  const touch = (): void => {
+    lastActiveAt = Date.now();
+  };
+
+  /**
+   * 错误上报器（策略见 `src/dsh/supervisorErrors.ts`，可离线断言）：
+   * 一条错误同时进 **supervisor.log**（底线）与 **socket 广播**（扩展侧转发进
+   * VS Code 输出通道「DSH Chat」）。`publish` 放进来的取连接的函数见下面的 `clients`。
+   */
+  const reporter = createErrorReporter(log);
+  reporter.publish(() => clients);
+  const reportFailure = (kind: SupervisorErrorKind, error: unknown): void => reporter.report(kind, error);
+
+  /**
+   * **启动自检**：确认这个进程能把自己的日志写下去。
+   *
+   * 守护进程是 detached 启动的（`stdio: "ignore"`），它的 stderr 落在**没人看的地方**——
+   * 一旦日志不可写（目录被 ACL 挡了、盘满、目录被换成文件），后面的错误就全都没了证据，
+   * 用户看到的现象只会是"后台不重启/连不上"。所以起来第一件事就是自己写一行自检，
+   * 写不进去立刻上报（文件那条路走不通时，`log` 会退到 stderr，网络那条路由 `reportFailure` 走）。
+   */
+  try {
+    appendFileSync(logPath, `[${new Date().toLocaleTimeString()}] [supervisor] 启动自检（pid=${process.pid}）\n`, "utf8");
+  } catch (error) {
+    reportFailure("shutdown", new Error(`日志不可写（${logPath}）：${error instanceof Error ? error.message : String(error)}`));
+  }
+
+  /**
+   * **最后一道网**：进程级未捕获异常与未处理 rejection。
+   *
+   * 事件回调还会被 `guard` 逐个包住，但总有漏网的（第三方 API 里的异步回调、
+   * 我们没预料到的路径）。Node 默认行为是打印后 `exit(1)`——对守护进程来说这是
+   * 最坏的结局：**它一死，没有任何东西会把它拉回来**，而 dsh 也没人管了。
+   * 所以这里的原则是"记下来、活下去"：写日志 + 广播给窗口，进程不倒。
+   *
+   * 副作用要说清楚：`uncaughtException` 之后进程状态可能已经不干净。这里的安全前提是
+   * 本进程的职责很窄（转发状态、看住子进程、按空闲退场），而且所有对外写入都在 try 里；
+   * 退场路径（`shutdown`）仍会照常按空闲阈值或用户 stop 走，不会赖着不走。
+   */
+  process.on("uncaughtException", (error) => reportFailure("global", error));
+  process.on("unhandledRejection", (reason) => reportFailure("global", reason));
+
+  /**
+   * 包一层事件回调/handler：**个别回调抛错绝不弄死守护进程**。
+   *
+   * 这正是一个真实 bug 的形状：2026-09-15 我在 `child.on("exit")` 里加了一行诊断，
+   * 里面引用了不存在的变量 → `ReferenceError` 从事件回调冒到顶层 → 整个守护进程
+   * 以 code=1 静默消失（窗口侧只看到"连不上"）。同步回调在这里兜；返回 Promise 的
+   * （`bringUp` 是 async）另用 `settle` 兜 rejection。
+   */
+  const guard =
+    <A extends unknown[]>(kind: SupervisorErrorKind, fn: (...args: A) => void) =>
+    (...args: A): void => {
+      try {
+        fn(...args);
+      } catch (error) {
+        reportFailure(kind, error);
+      }
+    };
+
+  /** 兜住 async 调用的 rejection（`void bringUp()` 漏掉的那一半）。 */
+  const settle = <T>(kind: SupervisorErrorKind, promise: Promise<T>): void => {
+    promise.catch((error: unknown) => reportFailure(kind, error));
+  };
+
   /**
    * 至少活到这一刻之前不做空闲判定。
    *
@@ -302,16 +414,6 @@ export async function runSupervisor(options: Options): Promise<number> {
    * 代价是"起了但从没人连"时多活 10 秒；收益是"任何阈值下都不会自我拆台"。
    */
   const idleGraceUntil = startedAt + (idleSec + 10) * 1_000;
-
-  /** 各窗口的连接（连接本身 = "我在用"）。 */
-  const clients = new Set<Socket>();
-  /** 每个连接上攒的半行数据。 */
-  const decoders = new WeakMap<Socket, LineDecoder>();
-  /** 最近一次"还有人在用"的时刻。 */
-  const touch = (): void => {
-    lastActiveAt = Date.now();
-  };
-  let lastActiveAt = Date.now();
 
   const stateOf = (): SupervisorState => ({
     version: STATE_VERSION,
@@ -344,52 +446,76 @@ export async function runSupervisor(options: Options): Promise<number> {
     }
   };
 
-  /** 拉起 dsh（或重新拉起），并把结果广播出去。 */
+  /**
+   * 拉起 dsh（或重新拉起），并把结果广播出去。
+   *
+   * `try/finally` 不是装饰：`serverStarting` 卡在 `true` 的后果是**静默瘫痪**——
+   * 主循环里"崩了要重起"和"没人用要退场"两条路都以 `!serverStarting` 为前提，
+   * 一旦这里中途抛错而没复位，守护进程就永远不再重启 dsh、也永远不退场
+   * （表现和 §8.6 那个 bug 一样："后台没了，谁都救不回来"）。所以无论走哪条路都要复位。
+   */
   const bringUp = async (): Promise<void> => {
     serverStarting = true;
-    // 重起时先把**旧的那个 dsh 带走**（否则会留下一个占着端口的孤儿——它不在会合文件里，
-    // 谁也看不见）。放在清连接信息之前杀，这样按端口兜底的判据还能用上旧地址。
-    if (server.child || server.baseUrl) {
-      killServer(server.child?.pid, server.baseUrl, log);
-    }
-    // **先把旧的连接信息清掉再宣布"正在启动"**：不清的话会合文件里留着上一次的
-    // baseUrl/serverPid，扩展看到"地址有、token 有、starting=false"就会以为后台还活着，
-    // 于是永远发现不了它已经换了（实测：restart 之后扩展一直连旧地址）。
-    server = {};
-    publish();
-    // **起新的之前，先收拾上一次留下的孤儿**：supervisor 被强杀时会话文件没了，
-    // 但它拉起的 dsh 可能还在监听（地址只留在日志里）。不收拾的话，固定端口场景下
-    // 新 dsh 必然 EADDRINUSE —— 这正是用户报过的"连不上、要手动清理"。
-    const stale = lastAnnouncedUrl(logPath);
-    const stalePort = portOf(stale);
-    if (stalePort !== undefined) {
-      const owners = listeningPids(stalePort).filter((pid) => pid !== process.pid);
-      if (owners.length) {
-        log(`[supervisor] 发现上次遗留的 dsh 还占着端口 ${stalePort}（pid=${owners.join(",")}），先回收它`);
-        for (const pid of owners) killTree(pid);
-        const until = Date.now() + 10_000;
-        while (Date.now() < until && listeningPids(stalePort).some((pid) => pid !== process.pid)) {
-          await new Promise((resolve) => setTimeout(resolve, 200));
-        }
-      }
-    }
-    // 本次尝试的唯一标记：写在 spawn **之前**，于是"标记之后的公告行"必定属于这一次
-    const marker = `--- dsh attempt ${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)} ---`;
     try {
-      appendFileSync(logPath, `${marker}\n`, "utf8");
-    } catch {
-      // 标记写不进去就退化成普通解析（`announcementAfterMarker` 找不到时返回 undefined）
-    }
-    const next = await startServer({ command: options.command, logFd, logPath, marker, log });
-    serverStarting = false;
-    if (!next) {
+      // 重起时先把**旧的那个 dsh 带走**（否则会留下一个占着端口的孤儿——它不在会合文件里，
+      // 谁也看不见）。放在清连接信息之前杀，这样按端口兜底的判据还能用上旧地址。
+      if (server.child || server.baseUrl) {
+        killServer(server.child?.pid, server.baseUrl, log);
+      }
+      // **先把旧的连接信息清掉再宣布"正在启动"**：不清的话会合文件里留着上一次的
+      // baseUrl/serverPid，扩展看到"地址有、token 有、starting=false"就会以为后台还活着，
+      // 于是永远发现不了它已经换了（实测：restart 之后扩展一直连旧地址）。
       server = {};
       publish();
-      return;
+      // **起新的之前，先收拾上一次留下的孤儿**：supervisor 被强杀时会话文件没了，
+      // 但它拉起的 dsh 可能还在监听（地址只留在日志里）。不收拾的话，固定端口场景下
+      // 新 dsh 必然 EADDRINUSE —— 这正是用户报过的"连不上、要手动清理"。
+      const stale = lastAnnouncedUrl(logPath);
+      const stalePort = portOf(stale);
+      if (stalePort !== undefined) {
+        const owners = listeningPids(stalePort).filter((pid) => pid !== process.pid);
+        if (owners.length) {
+          log(`[supervisor] 发现上次遗留的 dsh 还占着端口 ${stalePort}（pid=${owners.join(",")}），先回收它`);
+          for (const pid of owners) killTree(pid);
+          const until = Date.now() + 10_000;
+          while (Date.now() < until && listeningPids(stalePort).some((pid) => pid !== process.pid)) {
+            await new Promise((resolve) => setTimeout(resolve, 200));
+          }
+        }
+      }
+      // 本次尝试的唯一标记：写在 spawn **之前**，于是"标记之后的公告行"必定属于这一次
+      const marker = `--- dsh attempt ${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)} ---`;
+      try {
+        appendFileSync(logPath, `${marker}\n`, "utf8");
+      } catch {
+        // 标记写不进去就退化成普通解析（`announcementAfterMarker` 找不到时返回 undefined）
+      }
+      const next = await startServer({
+        command: options.command,
+        logFd,
+        logPath,
+        marker,
+        log,
+        onError: (error) => reportFailure("dsh-exit", error),
+      });
+      if (!next) {
+        server = {};
+        serverStarting = false;
+        publish();
+        return;
+      }
+      server = next;
+      touch();
+      // **这一行必须在 publish() 之前**（2026-09-15 探针实测抓到回归）：`stateOf()` 里的
+      // `starting` 直接取 `serverStarting`，而扩展侧"能不能用这个后台"靠的就是会合文件里
+      // `starting !== true`。先 publish 再复位的话，文件里永远是 `starting:true`——
+      // 新窗口/重载后的窗口会一直等一个"正在启动"的后台，直到下一轮 bringUp 才可能翻过来。
+      // 复位本身仍由 finally 兜住（异常路径也要清），这里只是把"正常路径"的顺序摆正。
+      serverStarting = false;
+      publish();
+    } finally {
+      serverStarting = false;
     }
-    server = next;
-    touch();
-    publish();
   };
 
   const goodbye = (reason: "idle" | "stop" | "replaced"): void => {
@@ -412,72 +538,85 @@ export async function runSupervisor(options: Options): Promise<number> {
   const shutdown = (reason: "idle" | "stop"): void => {
     if (stopping) return;
     stopping = true;
-    log(`[supervisor] 退场（${reason}）：没有人再使用这个后台`);
-    killServer(server.child?.pid, server.baseUrl, log);
-    server = {};
-    goodbye(reason);
-    clearState(options.directory);
-    removeSocketNode(socketPath);
-    try {
-      closeSync(logFd);
-    } catch {
-      // 忽略
-    }
-    // 给 socket 一点时间把 goodbye 发出去
-    setTimeout(() => process.exit(0), 150).unref?.();
+    // 收尾路径也套守卫：这里抛错会让进程**退到一半**（dsh 没杀干净、会合文件没删），
+    // 比直接退出更糟——残留下来的东西下一个窗口还接手不了。
+    guard("shutdown", () => {
+      log(`[supervisor] 退场（${reason}）：没有人再使用这个后台`);
+      killServer(server.child?.pid, server.baseUrl, log);
+      server = {};
+      goodbye(reason);
+      clearState(options.directory);
+      removeSocketNode(socketPath);
+      try {
+        closeSync(logFd);
+      } catch {
+        // 忽略
+      }
+      // 给 socket 一点时间把 goodbye 发出去
+      setTimeout(() => process.exit(0), 150).unref?.();
+    });
   };
 
   // ---- socket 服务 ----
-  const netServer: Server = createServer((socket: Socket) => {
-    clients.add(socket);
-    decoders.set(socket, new LineDecoder());
-    touch();
-    socket.setEncoding("utf8");
-    // 连上就先给一份当前状态（扩展据此决定"直接接上"还是"等启动"）
-    try {
-      socket.write(encodeMessage({ t: "state", state: stateOf(), clients: clients.size }));
-      // 连接数变了也要让**其它**窗口知道（它们拿这个数字显示"几个窗口在共用"）
-      const notice = encodeMessage({ t: "state", state: stateOf(), clients: clients.size });
-      for (const other of clients) {
-        if (other === socket) continue;
-        try {
-          other.write(notice);
-        } catch {
-          // 忽略
-        }
-      }
-    } catch {
-      // 忽略
-    }
-    socket.on("data", (chunk: string) => {
+  const netServer: Server = createServer(
+    guard("socket", (socket: Socket) => {
+      clients.add(socket);
+      decoders.set(socket, new LineDecoder());
       touch();
-      const decoder = decoders.get(socket) ?? new LineDecoder();
-      decoders.set(socket, decoder);
-      for (const line of decoder.push(chunk)) {
-        const message = decodeClientMessage(line);
-        if (!message) continue;
-        if (message.t === "control") {
-          if (message.action === "stop") {
-            log("[supervisor] 收到客户端的 stop 请求");
-            shutdown("stop");
-          } else {
-            log("[supervisor] 收到客户端的 restart 请求：重起 dsh");
-            // 直接 bringUp：它开头会把旧连接信息清掉并宣布"正在启动"，
-            // 旧的 dsh 由 bringUp 里的孤儿回收按端口带走（不必在这里先杀一次）
-            void bringUp();
+      socket.setEncoding("utf8");
+      // **先补发最近的内部错误**，再推状态：这个窗口之所以到现在才连上，很可能正是因为
+      // 守护进程前面出过错（日志不可写、dsh 起来就退……）。晚一步补发的话，用户看到的
+      // 是一份"一切正常"的状态，问题只能去翻 supervisor.log（探针实测到的丢消息）。
+      reporter.replayTo(socket);
+      // 连上就先给一份当前状态（扩展据此决定"直接接上"还是"等启动"）
+      try {
+        socket.write(encodeMessage({ t: "state", state: stateOf(), clients: clients.size }));
+        // 连接数变了也要让**其它**窗口知道（它们拿这个数字显示"几个窗口在共用"）
+        const notice = encodeMessage({ t: "state", state: stateOf(), clients: clients.size });
+        for (const other of clients) {
+          if (other === socket) continue;
+          try {
+            other.write(notice);
+          } catch {
+            // 忽略
           }
         }
+      } catch {
+        // 忽略
       }
-    });
-    const drop = (): void => {
-      clients.delete(socket);
-      decoders.delete(socket);
-      // 少了一个窗口：把新的连接数广播出去（其余窗口的"几个窗口在共用"要跟着变）
-      if (!stopping) publish();
-    };
-    socket.on("close", drop);
-    socket.on("error", drop);
-  });
+      socket.on(
+        "data",
+        guard("protocol", (chunk: string) => {
+          touch();
+          const decoder = decoders.get(socket) ?? new LineDecoder();
+          decoders.set(socket, decoder);
+          for (const line of decoder.push(chunk)) {
+            const message = decodeClientMessage(line);
+            if (!message) continue;
+            if (message.t === "control") {
+              if (message.action === "stop") {
+                log("[supervisor] 收到客户端的 stop 请求");
+                shutdown("stop");
+              } else {
+                log("[supervisor] 收到客户端的 restart 请求：重起 dsh");
+                // 直接 bringUp：它开头会把旧连接信息清掉并宣布"正在启动"，
+                // 旧的 dsh 由 bringUp 里的孤儿回收按端口带走（不必在这里先杀一次）
+                settle("bringUp", bringUp());
+              }
+            }
+          }
+        }),
+      );
+      const drop = (): void => {
+        clients.delete(socket);
+        decoders.delete(socket);
+        // 少了一个窗口：把新的连接数广播出去（其余窗口的"几个窗口在共用"要跟着变）
+        if (!stopping) publish();
+      };
+      socket.on("close", guard("socket", drop));
+      socket.on("error", guard("socket", drop));
+    }),
+  );
 
   await new Promise<void>((resolve, reject) => {
     netServer.once("error", (error) => {
@@ -494,34 +633,57 @@ export async function runSupervisor(options: Options): Promise<number> {
   await bringUp();
 
   // ---- 主循环：空闲判定 / dsh 崩溃重启 / 热读阈值 ----
-  const tick = setInterval(() => {
-    if (stopping) return;
-    // 热读阈值（用户改配置后不必重启 supervisor）
-    const current = readState(options.directory);
-    if (current && current.idleSec !== idleSec) {
-      idleSec = clampIdleSec(current.idleSec);
-      log(`[supervisor] 空闲阈值改为 ${idleSec}s`);
-    }
-    // dsh 崩了：还有人用就重起，没人用就等下一轮空闲判定
-    if (!serverStarting && !server.child && clients.size > 0) {
-      log("[supervisor] dsh 不在了，但还有窗口在用：重起");
-      void bringUp();
-    }
-    // 空闲判定：所有连接都断了（或从来没有过）且持续超过阈值。
-    // `idleGraceUntil` 是"刚起来还没人来得及连"的保护，见它的注释。
-    if (
-      !serverStarting &&
-      clients.size === 0 &&
-      Date.now() >= idleGraceUntil &&
-      Date.now() - lastActiveAt >= idleSec * 1000
-    ) {
-      shutdown("idle");
-    }
-  }, Math.min(PING_INTERVAL_MS, 1_000));
+  /**
+   * `server.child` 里那个句柄对应的进程还在不在。
+   *
+   * **不能只看 `!server.child`**（2026-09-15 实测修）：`server.child` 是 `spawn` 返回的
+   * ChildProcess 对象，**进程死了它也不会自动变成 undefined**——`exit` 处理器只负责
+   * 记日志，没人清这个字段。于是 dsh 一死，`!server.child` 永远为假，重启分支再也走不到：
+   * 实测（`node build/supervisor-child-exit-probe.mjs`）杀掉 dsh 的 node 之后，
+   * `server.child` 一直停在那具"尸体"上（日志里 tick#5…tick#80 都是同一个死 pid），
+   * 窗口侧只能看到连接永远接不回来。
+   *
+   * 句柄判活用 `exitCode/signalCode`（Node 在子进程终结时置位，最权威），
+   * 再补一道 `isProcessAlive`（防"句柄在、进程早已不在"的僵死形态）。
+   */
+  const childGone = (): boolean => {
+    const child = server.child;
+    if (!child) return true;
+    if (child.exitCode !== null || child.signalCode !== null) return true;
+    return !isProcessAlive(child.pid);
+  };
+
+  const tick = setInterval(
+    guard("tick", () => {
+      if (stopping) return;
+      // 热读阈值（用户改配置后不必重启 supervisor）
+      const current = readState(options.directory);
+      if (current && current.idleSec !== idleSec) {
+        idleSec = clampIdleSec(current.idleSec);
+        log(`[supervisor] 空闲阈值改为 ${idleSec}s`);
+      }
+      // dsh 崩了：还有人用就重起，没人用就等下一轮空闲判定
+      if (!serverStarting && childGone() && clients.size > 0) {
+        log(`[supervisor] dsh 不在了，但还有窗口在用：重起（旧 pid=${server.child?.pid ?? "（无）"}）`);
+        settle("bringUp", bringUp());
+      }
+      // 空闲判定：所有连接都断了（或从来没有过）且持续超过阈值。
+      // `idleGraceUntil` 是"刚起来还没人来得及连"的保护，见它的注释。
+      if (
+        !serverStarting &&
+        clients.size === 0 &&
+        Date.now() >= idleGraceUntil &&
+        Date.now() - lastActiveAt >= idleSec * 1000
+      ) {
+        shutdown("idle");
+      }
+    }),
+    Math.min(PING_INTERVAL_MS, 1_000),
+  );
   tick.unref?.();
 
-  process.on("SIGTERM", () => shutdown("stop"));
-  process.on("SIGINT", () => shutdown("stop"));
+  process.on("SIGTERM", guard("shutdown", () => shutdown("stop")));
+  process.on("SIGINT", guard("shutdown", () => shutdown("stop")));
 
   return 0;
 }

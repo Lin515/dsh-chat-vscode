@@ -378,7 +378,7 @@ export class ChatController implements vscode.Disposable {
   /** 心跳触发的共享后台切换正在跑（去重，见 `reconnectPeer`）。 */
   private peerReconnect = false;
   /**
-   * 自动重连是开着的（用户可点「停止连接」关掉，点「尝试重连」再打开）。
+   * 自动重连是开着的（用户可点「停止连接」关掉，点「尝试连接」再打开）。
    *
    * 重连**没有总超时**（用户 2026-09-14 口径），但只对"后台真的在跑"生效：
    * 后台不在了就切到 `stopped`（界面给「启动服务器」），不会无限空转。
@@ -478,7 +478,7 @@ export class ChatController implements vscode.Disposable {
       return;
     }
     // 连接失败/断开中：后台还在就一轮一轮重试（**没有总超时**），
-    // 用户点了「停止连接」就安静等着（界面仍有「尝试重连」）。
+    // 用户点了「停止连接」就安静等着（界面仍有「尝试连接」）。
     if (!this.reconnecting) return;
     await this.ensureConnected({ start: false });
   }
@@ -606,9 +606,9 @@ export class ChatController implements vscode.Disposable {
       connectionDetail: this.connectionDetail,
       /** 重连循环在跑：界面给「停止连接」（重连没有总超时，得让用户能停）。 */
       reconnecting: this.reconnecting || undefined,
-      /** 后台在不在跑：`stopped` 时决定给「启动服务器」还是「尝试重连」。 */
+      /** 后台在不在跑：`stopped` 时决定给「启动服务器」还是「尝试连接」。 */
       serverRunning: this.serverRunning || undefined,
-      /** 外部服务器不由本扩展启动：`stopped` 时同样给「尝试重连」。 */
+      /** 外部服务器不由本扩展启动：`stopped` 时同样给「尝试连接」。 */
       externalServer: this.server.externalUrl !== undefined || undefined,
       /** 外部服务器缺令牌：界面给「输入令牌」按钮。 */
       needsToken: this.needsToken || undefined,
@@ -1047,9 +1047,9 @@ export class ChatController implements vscode.Disposable {
         return;
       }
       // 用户按了「停止连接」/「停止服务器」：等待被主动中止，这不是失败。
-      // 界面停在"已停止"（可再点「尝试重连」），也不写错误详情。
+      // 界面停在"已停止"（可再点「尝试连接」），也不写错误详情。
       if (error instanceof WaitCancelledError) {
-        this.log("[connect] 等待就绪被用户中止（界面给「尝试重连」）");
+        this.log("[connect] 等待就绪被用户中止（界面给「尝试连接」）");
         this.setConnection("stopped", this.connectionDetail);
         return;
       }
@@ -1073,7 +1073,7 @@ export class ChatController implements vscode.Disposable {
     return !this.autoReconnect && !this.connectMayStart;
   }
 
-  /** 用户叫停后放弃这一轮：切到"已停止"（界面给「尝试重连」），不写错误详情。 */
+  /** 用户叫停后放弃这一轮：切到"已停止"（界面给「尝试连接」），不写错误详情。 */
   private abandonRound(): void {
     this.log("[connect] 用户已点「停止连接」：本轮不再建连");
     this.setConnection("stopped", this.connectionDetail);
@@ -1320,7 +1320,7 @@ export class ChatController implements vscode.Disposable {
   /**
    * 后台在不在跑（心跳巡检的结论）变了就推给界面。
    *
-   * `stopped` 态的按钮由它决定：在跑 → 「尝试重连」，不在 → 「启动服务器」。
+   * `stopped` 态的按钮由它决定：在跑 → 「尝试连接」，不在 → 「启动服务器」。
    */
   private setServerRunning(running: boolean): void {
     if (this.serverRunning === running) return;
@@ -1433,28 +1433,35 @@ export class ChatController implements vscode.Disposable {
     await this.ensureConnected({ start: true });
   }
 
-  /** 「尝试重连」：只接上已经在跑的后台（后台不在就还是 `stopped`，不会顺手起一套）。 */
+  /** 「尝试连接」：只接上已经在跑的后台（后台不在就还是 `stopped`，不会顺手起一套）。 */
   async reconnectNow(): Promise<void> {
     this.autoReconnect = true;
-    this.log("[connect] 用户点了「尝试重连」");
+    this.log("[connect] 用户点了「尝试连接」");
     if (this.connection === "stopped") this.setConnection("connecting");
     await this.ensureConnected({ start: false });
   }
 
   /**
-   * 「停止连接」：停掉自动重连循环。
+   * 「停止连接」：停掉**正在进行的连接**——中止在途那一轮，并关掉自动重连。
+   *
+   * 触发条件绑的是**界面正在连接**（`connecting` / `disconnected` 都渲染成"正在连接…"），
+   * **不绑 `reconnecting`**（2026-09-15 用户口径：只要在连接就得能停）。`reconnecting`
+   * 只回答"重连循环还在不在跑"，那是文案用的信息，不是这个按钮的开关。
    *
    * 后台**一个字都不动**（这正是 supervisor 架构的分工：dsh 的生死归守护进程，
    * 它按"还有几条活连接"自己裁决；本窗口只是不再反复尝试连接）。
+   *
+   * 用户叫停**不挡住显式动作**：`userAskedToStop()` 对"用户自己发起的那一轮"放行
+   * （发消息 /「启动服务器」/「重启服务器」），只有自动路径才该在叫停后放弃。
    */
   stopReconnect(): void {
-    if (!this.reconnecting) return;
+    if (this.connection !== "connecting" && this.connection !== "disconnected") return;
     this.autoReconnect = false;
     this.log("[connect] 用户点了「停止连接」");
     // **在途的那一轮等待也要真的停下**：等待没有时长上限（只有用户能结束它），
     // 不断开这一半的话，"停止连接"只是把界面改了个样子，后台一起来照样会接上。
     this.server.cancelWaiting();
-    // 切到 `stopped`（而不是继续 `connecting`）：界面据此给出「尝试重连」，
+    // 切到 `stopped`（而不是继续 `connecting`）：界面据此给出「尝试连接」，
     // 同时保留 `connectionDetail`——"为什么没连上"仍然显示在条上
     this.setConnection("stopped", this.connectionDetail);
   }

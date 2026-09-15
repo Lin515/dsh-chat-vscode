@@ -4,6 +4,8 @@ docs/**
 scripts/**
 test/**
 build/**
+# 探针夹具（假 dsh）；`.cjs` 不在下面的 `**/*.ts` 过滤里，会整份进包
+shared/**
 .vscode/**
 .npm-cache/**
 .tmp/**

@@ -741,8 +741,8 @@ console.log("styles: 工具栏按实测宽度分配、测量层约束完整 ✓"
 
 // ---------- 16. 连接条：按钮不裁切，文字可以让位（2026-09-14 新增四种状态与按钮） ----------
 //
-// 连接条现在最多有四个按钮（启动服务器 / 尝试重连 / 停止重连 / 查看日志），而英文文案
-// 比中文长 1.5~2 倍。三件事必须同时成立，否则窄侧栏下会裁掉按钮（不是"难看"，是点不到）：
+// 连接条整行按钮会随状态变（启动服务器 / 尝试连接 / 停止连接 / 重启服务器 / 查看日志，
+// 满配时四个同现），而英文文案比中文长 1.5~2 倍。三件事必须同时成立，否则窄侧栏下会裁掉按钮（不是"难看"，是点不到）：
 // 1. 按钮自己不换行（继承 `.btn` 的 nowrap）——换行由容器负责；
 // 2. 容器允许换行（flex-wrap: wrap），放不下就折到第二行，**不裁**；
 // 3. 说明文字可以被压缩（min-width: 0 + 省略号），但按钮不参与压缩。
@@ -978,5 +978,40 @@ console.log("styles: 轨迹取历史同链路、概述摊开后几张卡片 ✓"
   );
 }
 console.log("styles: 轨迹配色对齐官方（输入绿 / 模型紫）✓");
+
+// ---------- 34. 连接条按钮矩阵：绑定的是「在不在连接」，不是「重连循环在不在跑」 ----------
+//
+// 用户 2026-09-15 口径（三条）：
+// 1) 「停止连接」只要**正在连接**就得显示（首轮连接同样可能卡在"等就绪"上，重连没有总超时）；
+// 2) 「尝试重连」改名为「尝试连接」；
+// 3) 「查看日志」在连接条上恒显——每一档都可能是"连不上但说不清"。
+//
+// 这一组是**渲染条件的源码断言**：只有两个按钮的显示条件容易在后续改动里被"顺手"改回去，
+// 而它一改回去就是功能消失（用户点不到停止）。断言按"配对出现"钉：条件与按钮同段。
+// 注意：这个块注释里不能出现 `星号加斜杠` 这种序列（哪怕写在反引号里也会提前闭合注释，
+// esbuild 会报一个指向很远行的 Syntax error）——所以下面把正则拆成字符串拼接。
+{
+  const app = readFileSync(join(process.cwd(), "src", "webview", "App.tsx"), "utf8");
+  const flat = app.replace(/\s+/gu, " ");
+
+  assert.ok(
+    /\{isConnecting \? \( <button className="btn" onClick=\{\(\) => post\(\{ type: "stopReconnect" \}\)\}>/.test(flat),
+    "「停止连接」必须由 `isConnecting` 控制显示（改回 `state.reconnecting` = 首轮连接时点不到停止）",
+  );
+  assert.ok(
+    !/\{state\.reconnecting \? \( <button[^>]*stopReconnect/.test(flat),
+    "「停止连接」不许再挂 `state.reconnecting`（那个字段只用于连接条文案）",
+  );
+  // 恒显：`showLogs` 那个按钮直接是 JSX 子节点，不再包在三元里。
+  // 正则里的 JSX 注释锚点用 `\{/` + 通配拼出来，避免在块注释里出现提前闭合的序列。
+  const logButtonPrompt = new RegExp(
+    "\\{/" + "\\* 查看日志[\\s\\S]{0,120}?\\*/\\} <button className=\"btn btn-ghost\" data-mini=\"hide\" onClick=\\{\\(\\) => post\\(\\{ type: \"showLogs\" \\}\\)\\}>",
+  );
+  assert.ok(
+    logButtonPrompt.test(flat),
+    "「查看日志」在连接条上必须恒显（不包 `isError || isStopped || reconnecting` 的三元）",
+  );
+}
+console.log("styles: 连接条按钮矩阵（停止连接绑 connecting / 日志恒显）✓");
 
 console.log("\nstyles: all assertions passed");

@@ -22,7 +22,7 @@
  * - `options.autoStart`（配置项）：**自动**路径（激活期、心跳自检）的许可，默认 true；
  * - `ensure({ start: true })`：**用户显式**动作（点「启动服务器」、发消息、重启服务器）的许可，
  *   它覆盖配置——用户要后台的时候不该被配置挡住；
- * - `ensure({ start: false })`：只接上已经在跑的（「尝试重连」用）。
+ * - `ensure({ start: false })`：只接上已经在跑的（「尝试连接」用）。
  *
  * ## 2026-09-14：等待**不再由时长决定**（用户口径，见 `docs/design-supervisor.md` §8.4）
  *
@@ -117,7 +117,7 @@ export class ServerNotRunningError extends Error {
  * 用户点了「停止连接」/「停止服务器」：**在途的等待立刻让位**。
  *
  * 这不是失败（对方没坏），也不是"后台没在跑"（对方可能正在起）：它是一条
- * **用户指令**的产物，所以调用方只把界面切回 `stopped`（给「尝试重连」），
+ * **用户指令**的产物，所以调用方只把界面切回 `stopped`（给「尝试连接」），
  * 不报错误详情、也不重试。
  */
 export class WaitCancelledError extends Error {
@@ -636,6 +636,12 @@ export class SupervisorManager {
         onClosed: (reason) => {
           this.options.log(`[supervisor] 与 supervisor 的连接断开：${reason}`);
           this.connection = undefined;
+        },
+        onError: (kind, message) => {
+          // 守护进程内部异常：它自己的日志用户在
+          // `~/.dsh-chat/supervisors/<分组>/supervisor.log`——不翻那个文件就看不见。
+          // 这里转发进输出通道「DSH Chat」，用户点连接条的「查看日志」就能看到。
+          this.options.log(`[supervisor] 守护进程内部错误（${kind}）：${message}`);
         },
         log: this.options.log,
       },

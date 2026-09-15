@@ -189,12 +189,18 @@ VS Code 窗口 3 ─┘                                          │
       ① 活连接计数：socket 上还有几条连接 → 有人用（连接断开立即反映，无需等超时）
       ② 若连续 idleSec（默认 10）无活连接，且没有"正在拉起 dsh"在途：
            → 收尾：按端口把 dsh 整棵树杀掉 → 通知各连接 → 删 supervisor.json 与 socket → exit
-      ③ 若 dsh 子进程退出（崩了）：
+      ③ 若 dsh 子进程**真的死了**（判据见下）：
            - 仍有活连接 → 重新 spawn 并重新解析公告行（端口可能变，`--port 0` 时必变）→ 广播
            - 没有连接   → 自己退场
       ④ 热读 supervisor.json 的 idleSec（用户改配置后不必重启 supervisor）
       ⑤ 处理连接上的控制请求：ping / restart / stop / state
 ```
+
+**"dsh 死了"的判据不是 `!server.child`**（2026-09-15 实测修，见 §8.6）：
+`server.child` 是 `spawn` 返回的 ChildProcess 对象，**进程死了它也不会自己变成 undefined**
+（`exit` 处理器只管记日志，没人清这个字段）。所以判活必须问进程本身：
+`exitCode/signalCode` 已置位，或 `isProcessAlive(child.pid)` 为假。用 `!server.child` 的后果是
+**dsh 崩掉之后再也不会被拉起**（重启分支永远进不去），而这一条恰恰是守护进程存在的理由。
 
 **supervisor 自己绝不能没有出口**：任何"没人在用"的判定都必须以"连续 N 秒无活连接"且
 "当前没有正在进行的启动"为前提；宁可可多活几秒，也不允许在窗口重载的空档里误退场
@@ -226,7 +232,7 @@ VS Code 窗口 3 ─┘                                          │
 | 扩展宿主被杀、窗口还在（重载） | 连接中断 1~3 秒 | **不触发退场**（阈值 10s 远大于空档） |
 | **所有**窗口崩溃 | 连接全断 | 10s 后 supervisor 关 dsh 并退出 → 机器回到干净状态（R3） |
 | supervisor 崩溃 | 状态文件还在、pid 已死、socket 断开 | 任一窗口自检发现 → 按端口回收遗留 dsh → 重新起 supervisor（R5） |
-| dsh 自己崩了 | 端口没了、子进程退出 | supervisor 重新拉起（还有连接）或退场（没有连接）；端口变化经 socket 广播给所有窗口 |
+| dsh 自己崩了 | 端口没了、子进程退出 | supervisor 重新拉起（还有连接）或退场（没有连接）；端口变化经 socket 广播给所有窗口。**前提是判据正确**——2026-09-15 之前用 `!server.child` 判，句柄不清就永远判不出死亡，实际表现是"崩了不重启"（见 §8.6） |
 | 启动 supervisor 的窗口中途关掉 | 锁被持有、supervisor 可能起了一半 | supervisor 是 detached 的、与窗口生命周期无关：它照常完成启动并写状态文件，其余窗口接手使用 |
 
 ### 4.3 与"外部服务器"（`dshChat.url`）的关系
@@ -387,9 +393,9 @@ supervisor → 连 socket 并 ping → 退出时关连接），行为与扩展�
 |---|---|
 | 后台（守护进程 + dsh）在跑 | **自动接上**，并且一轮一轮重试到成功为止（**没有任何时长判定**；等待只由"真的就绪"或「停止连接」结束，见 §8.4） |
 | 后台不在跑 | **什么都不启动**，连接条显示「启动服务器」；守护进程后来起来了（别的窗口拉的）会自动接上 |
-| 用户点「停止连接」 | 停掉重试循环，**并中断在途的那一轮等待**（否则"无上限等待"会变成点了停止还在等），后台**一个字都不动**（杀 dsh 永远是守护进程的事），条上给「尝试重连」 |
+| 用户点「停止连接」 | 停掉**正在进行的连接**（中止在途那一轮 + 关掉自动重连），后台**一个字都不动**（杀 dsh 永远是守护进程的事），条上给「尝试连接」 |
 | 外部服务器（`dshChat.url`） | 不判进程，只重连（那条地址不归本扩展管，"启动"这个动作不存在）；**同样等到底**（没有"到点报连不上"），一次都没应答过就把 `@serverUnreachable` 摆在条上 |
-| 连不上 | 条上显示原因 + 「尝试重连」/「重启服务器」/「查看日志」（输出通道「DSH Chat」） |
+| 连不上 | 条上显示原因 + 「尝试连接」/「重启服务器」/「查看日志」（输出通道「DSH Chat」） |
 
 **"能不能启动"是一条显式许可**（`SupervisorManager` 的 `autoStart` + `ensure({start})`）：
 
@@ -433,7 +439,7 @@ controller 的认证链此前按 `info.owned`（"是不是本窗口拉起的"）
 - `waitForReadyState` 不再有 deadline：等到**真的就绪**，或 `AbortSignal` 被 abort；
 - 「停止连接」/「停止服务器」调用 `SupervisorManager.cancelWaiting()` **中断在途的那一轮
   等待**（只中断等待，不碰任何进程）。中断抛 `WaitCancelledError`，controller 把它当
-  "用户叫停"：界面停在 `stopped`（给「尝试重连」），**不写错误详情**；
+  "用户叫停"：界面停在 `stopped`（给「尝试连接」），**不写错误详情**；
 - 「重启服务器」等新地址同样没有 deadline（原来 90 秒后报 `@serverStartTimeout`）；
 - 顺手补掉两处"按钮说了不算"的洞（都属于同一条口径：**开关只由按钮翻**）：
   ① `handleHeartbeat` 在 `stopped` 那一支原本不读 `autoReconnect`，于是「停止连接」
@@ -453,11 +459,104 @@ controller 的认证链此前按 `info.owned`（"是不是本窗口拉起的"）
 "等多久就放弃"的状态判定。
 
 ### 8.5 验证
-
 | 断言 / 探针 | 覆盖 |
 |---|---|
 | `scripts/supervisorPolicy.test.ts`（`npm test`） | 没有许可时 `ensure()` 抛 `ServerNotRunningError` 且**启动器调用 0 次**；有许可才拉起；守护进程活着时不重复拉起（peer）；地址/令牌来自会合文件；`probeRunning()` 的三个事实判据；**第 5 组**：等就绪没有时长上限、期间一次 spawn 都没有、`cancelWaiting()` 后立刻以 `WaitCancelledError` 结束；**第 6 组**：外部地址没人应答时同样一直等（详情 `@serverUnreachable:<url>`）、叫停同样立刻生效 |
 | `node build/auth-chain-probe.mjs` | **真实 dsh**：启动者与接入者各走一遍 `authenticate()` + `listSessions()`（= controller 的认证链） |
 | `scripts/styles.test.ts`（第 16 组） | 连接条允许换行、按钮 nowrap、说明文字可省略——窄侧栏下按钮不会被裁掉 |
 | `test/preview.html?conn=…&running=1&locale=en` | 六种连接状态的按钮组合可直接肉眼核对（中英各一遍） |
+| `node build/supervisor-child-exit-probe.mjs` | **dsh 死了会不会被自动拉起**（§8.6）：杀真 node / 强杀 / 卡死三种形态，各起一套隔离的 supervisor + 假 dsh，按假 dsh 自述的 boot 记录数重启次数 |
+| `scripts/supervisorErrors.test.ts`（`npm test`） | 上报器：两处都发（文件 + 广播）、任何一处炸了都不外抛、累计提示、**给晚连上的窗口补发**（§8.8） |
+| `scripts/supervisorProtocol.test.ts` 第 5.5 组 | `t:"error"` 的编解码往返与坏数据丢弃；**旧扩展遇到新报文只忽略、连接不受影响** |
+| `node build/supervisor-error-bridge-probe.mjs` | 这条桥的端到端：迷你 socket 服务端按 supervisor 的报文形状发 error，用**真的** `SupervisorConnection` 收（§8.8） |
+
+### 8.7 连接条按钮矩阵（2026-09-15 用户口径调整）
+
+连接条只在**未就绪**时渲染（`ready` 时整条消失），所以按钮只在"没连上"的语境里讨论。
+三档状态 + 四个标志（`serverRunning` / `externalServer` / `reconnecting` / `needsToken`）决定给哪几个：
+
+| 状态 | 什么时候 | 按钮 |
+|---|---|---|
+| `stopped` + 后台不在跑 | 关掉 `autoStart` 的常态、「停止服务器」、守护进程退场 | **启动服务器** |
+| `stopped` + 后台在跑（或外部地址） | 用户点过「停止连接」；或「停止服务器」但后台还在 | **尝试连接** |
+| `connecting` | 首轮连接、掉线后的重连循环、外部地址的等待 | **停止连接** |
+| `error` | 连不上（客户端断开、认证失败、守护进程 failed） | **尝试连接** + 内部模式的**重启服务器** |
+| 任意分支持续 | 外部服务器缺令牌 | **输入令牌** |
+| 任意分支 | — | **查看日志**（恒显） |
+
+两条与 2026-09-14 那版不同的口径：
+
+1. **「停止连接」绑 `connecting`，不绑 `reconnecting`**。`reconnecting` 只回答"重连循环还在不在跑"，
+   是连接条**文案**用的；而用户在意的是一件事——**只要还在连，我就得能停下来**
+   （首轮连接同样可能卡在"等就绪"上没有时长上限）。宿主侧 `stopReconnect()` 的守卫
+   也从 `if (!this.reconnecting) return` 改成"当前是 `connecting`/`disconnected` 才动手"。
+2. **「尝试重连」→「尝试连接」**（英文 `Reconnect` → `Connect`），并且**「查看日志」恒显**：
+   连接条上任何一档都可能是"连不上但说不清"，日志入口不该只在部分状态下出现。
+
+界面侧的对应实现与断言：`src/webview/App.tsx` 的 `ConnectionBar`、`scripts/styles.test.ts` 第 16 组、
+`test/preview.html?conn=…&locale=…`（六种连接状态 × 中英各一遍，肉眼可核对按钮组合）。
+
+### 8.6 dsh 崩了却不再被拉起：`!server.child` 判不出死亡（2026-09-15 修）
+
+起因是用户问"守护进程能不能自动重启卡死/卡退消失的 node.exe"。查下去发现两件事，
+一件是**真 bug**，另一件是**能力边界**：
+
+1. **真 bug（已修）**：主循环原来写 `if (!serverStarting && !server.child && clients.size > 0)`。
+   `server.child` 是 `spawn(..., {shell:true})` 返回的 **ChildProcess 对象**，
+   **进程死了它不会变成 undefined**——`exit` 处理器只记日志、没人清这个字段。
+   于是 dsh 一死，`!server.child` 永远为假：**重启分支再也进不去**。
+   实测证据（修复前的 supervisor.log）：`exit` 事件确实到了、之后 tick#5…tick#80
+   里 `server.child` 一直停在那具死掉的 pid 上，窗口侧表现就是"连着连着没了，再也接不回来"。
+   修法：判活问进程本身（`exitCode/signalCode` 已置位，或 `isProcessAlive(child.pid)` 为假），
+   见 `src/supervisor/main.ts` 的 `childGone()`。
+   反向验证：把判据退回旧写法，探针 A/B 两组立刻转红。
+
+2. **能力边界（尚未做，用户未表态）**：判据只覆盖"进程消失"。
+   **卡死**（进程在、外壳也在、但不再应答、端口可能还占着）**不会**被重启——
+   supervisor 与 dsh 之间只有那条启动时读公告行的管道，没有任何探活。
+   用户那侧看到的是连接轮一轮失败、点「重启服务器」才恢复。
+
+3. 顺带记两条平台事实（探针实测，别再重新猜）：
+   - `spawn(command, [], {shell:true})` 返回的句柄**是 cmd.exe 外壳**，真 dsh 是它的子进程
+     （本机：supervisor `Code.exe` → `cmd.exe /d /s /c "dsh web …"` → `node.exe bin.js web …`）；
+   - **杀掉真 node，外壳会跟着退出**（约 100ms 内），`exit` 事件随之到达，`code=1`。
+     也就是说"只杀 node 不动外壳"这个担心不成立；`killServer` 里"按端口兜底"那道仍然值得留着
+     （外壳先死、node 成孤儿的情形确实存在，例如 supervisor 被强杀）。
+
+### 8.8 守护进程内部抛错：从"静默死掉"到"有处可看"（2026-09-15）
+
+起因是一次自伤：我在 `child.on("exit")` 里加了一行诊断，引用了不存在的变量，
+`ReferenceError` 从事件回调冒到顶层 → **守护进程以 code=1 消失**（窗口侧只看到"连不上"）。
+用户随即要求："抛错可以捕获，并将错误发回 VSCode 的日志吗？"
+
+**两层问题要分开看**：
+
+1. **错误会弄死守护进程**（已修）：所有事件回调/处理器（tick、socket、dsh 的 exit/error、
+   control 请求、shutdown、SIGTERM）都套了守卫，`process.on("uncaughtException" |
+   "unhandledRejection")` 兜底；原则是**记下来、活下去**——守护进程死了没有任何东西能接替它。
+   两处**真死锁**一并修掉：
+   - `bringUp` 中途抛错会让 `serverStarting` 卡在 `true`，主循环"崩了要重起"与"没人用要退场"
+     两条路**同时瘫痪** → 改成 `try/finally` 复位；
+   - `startServer` 的轮询回调一抛，那个 promise **永不 settle**，`bringUp` 永远挂着 →
+     出错即 `finish(undefined)`（"本轮失败"），并把异常交给 `onError`。
+
+2. **错误没人看得见**（已修）：守护进程是独立进程，它的日志在
+   `~/.dsh-chat/supervisors/<分组>/supervisor.log`——用户不会去翻。现在两级上报：
+   - **文件**是底线（没有窗口连着时唯一的收件人），写不进去退 stderr（此前会被静默吞掉）；
+   - **socket 广播**（协议新增 `{"t":"error","kind","message"}`）→ 扩展侧转发进
+     输出通道「DSH Chat」，连接条的「查看日志」就是入口。
+   两个实现细节是**实测踩出来的**：
+   - **补发**：最要命的错误恰恰发生在"一个窗口都还没连上"的时候（刚起、日志不可写、
+     dsh 起来就退），那一刻广播给的是空集合。所以上报器保留最近 16 条，新连接先补发再推状态；
+   - **向后兼容**：旧扩展不认识 `t:"error"`，协议"读不懂就忽略"这条纪律保证了它不受影响
+     （有专门断言钉住）。
+
+**顺带修掉一个我自己引入的回归**（探针抓到）：加 `try/finally` 时，`serverStarting = false`
+从 `publish()` 之前被挪到了之后，于是会合文件里**永远写着 `starting: true`**——
+新窗口/重载后的窗口会一直等一个"正在启动"的后台。正常路径的复位必须排在 `publish()` **之前**。
+
+**验证**：`scripts/supervisorErrors.test.ts`（上报器本体，离线）、
+`scripts/supervisorProtocol.test.ts` 第 5.5 组（报文往返与坏数据处理）、
+`node build/supervisor-error-bridge-probe.mjs`（这条桥的端到端）、
+以及 `supervisorChildExitProbe`（真守护进程 + 真故障下仍然活着并重启 dsh）。
 
