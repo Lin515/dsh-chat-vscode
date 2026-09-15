@@ -125,6 +125,15 @@ export interface ApprovalView {
   state: "waiting" | "approved" | "rejected" | "expired";
   /** 是否允许「始终允许」。 */
   allowAlways?: boolean;
+  /**
+   * 这次审批针对的**工具调用 id**（`approval/request` 与 `approval/asked` 都带它）。
+   *
+   * 用途只有一个：把会话日志里的 `approval/asked {id, callId}` 与随后那条
+   * `approval/decided {id, outcome}` 对回本窗口这张卡（另一个窗口答的审批，
+   * 本窗口只能从会话日志知道结果，见 `adapter.applyEvent`）。
+   * asker 没给 callId 时缺失，那种情况按「本会话唯一在等的审批」兜底。
+   */
+  callId?: string;
 }
 
 export interface ToolCallView {
@@ -194,12 +203,34 @@ export interface QuestionItemView {
   multiSelect?: boolean;
 }
 
+/** 一道题的回答（`AskUserQuestionAnswerItem` 的界面投影）。 */
+export interface QuestionAnswerView {
+  /** 选中的选项 label（单选 + 自定义文本时为空数组，官方口径）。 */
+  selected: string[];
+  /** 自由文本「其它」答案。 */
+  custom?: string;
+}
+
 export interface QuestionView {
   requestId: string;
   items: QuestionItemView[];
-  state: "waiting" | "answered";
-  /** 已回答的选项，按问题 id 归档。 */
-  answers?: Record<string, string[]>;
+  /**
+   * `waiting`：正在等回答（卡片接管输入区）。
+   * `answered`：已答完（本窗口提交、另一个窗口提交、或会话监听判定完成了）。
+   * `cancelled`：请求被撤回（Host 取消了这次提问 / 轮次被中止），**没人回答过**。
+   *
+   * 后两者都表示「不再是待处理交互」——输入区据此把位置让出来（见
+   * `pendingInteraction.isTakenOverByComposer`）。
+   */
+  state: "waiting" | "answered" | "cancelled";
+  /**
+   * 用户提交的回答，按问题 id 归档。
+   *
+   * **展开记录要显示「用户当时选了什么」只能靠它**：卡片自己的本地 state 在
+   * 重挂载（换会话回来、另一个窗口答的）时是空的（用户 2026-09-15 报的就是
+   * 「答完的问题展开后没有显示用户的回答」）。
+   */
+  answers?: Record<string, QuestionAnswerView>;
 }
 
 /** 上下文注入条目里按 form 各自解析出来的结构化字段（见 `shared/injectedSource.ts`）。 */
@@ -559,6 +590,29 @@ export interface FileRefView {
    * 拼写（工作区根目录是空串），选中它就回到那一层。服务端从不产出这个标记。
    */
   parent?: boolean;
+}
+
+/**
+ * 对话引用候选（`sessionReferenceResolver/candidates`）。
+ *
+ * 官方的 `@` 源是**文件与对话共用同一个列表**（`dsh-client-ui-reference` 的
+ * `candidates()` 并行取 `fileReferences.list` 与
+ * `sessionReferenceResolver.candidates`，按 `section.files` / `section.sessions`
+ * 分两组渲染）。选中一条就是把 `mention`（`@[标题](dsh-session:…)`）插进正文——
+ * 服务端在用户消息进入模型前把它换成被引用会话的快照，客户端不做任何读取。
+ */
+export interface SessionRefView {
+  sessionId: string;
+  /** 候选标题（最近一次会话标题，没有标题时是会话 id）。 */
+  label: string;
+  /** 规范 mention token（`@[label](dsh-session:…)`），插入正文用。 */
+  mention: string;
+  /** 源会话的工作目录（没记录时缺失）。 */
+  cwd?: string;
+  /** `cwd` 与**当前会话**的工作目录相同（服务端算好的，客户端不比较路径）。 */
+  sameWorkspace?: boolean;
+  /** 源会话时间（服务端候选给的是创建时间，epoch ms）；仅用于列表显示。 */
+  updatedAt?: number;
 }
 
 /** 设置页的一个字段（由 schema 推导）。 */

@@ -1272,6 +1272,27 @@
   color: var(--description);
 }
 
+/* 自定义回答那一行：**和普通选项行长得一模一样**（同一套边框 / 悬停 / 选中态），
+   唯一的区别是行里是一个编辑框而不是一段标签文字（官方 `customRow` 也是这个形态：
+   普通选项 `.option` 与自定义 `.customRow` 共用背景、边框、圆角、内边距）。
+   点这一行即「选中它」；单选时选中它会取消其它选项（见 Rows.tsx 的 QuestionCard）。 */
+.question-custom {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  cursor: text;
+}
+
+/* 行内的编辑框填满剩余宽度：边框与内边距由行提供，输入框自己不要再套一层，
+   否则会出现「框里还有一个框」 */
+.question-custom .question-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: none;
+}
+
 .question-input {
   border: 1px solid var(--input-border);
   border-radius: var(--radius-sm);
@@ -2328,6 +2349,30 @@
   color: var(--muted);
 }
 
+/* 分组标题栏带右侧提示时的一行布局（「文件」+ 靠右的 `Tab 进入目录`） */
+.popover-section-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.popover-section-row .spacer {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* 分组标题栏右侧的键盘提示：**不进大写转换**（标题栏是 uppercase，
+   键帽与说明被转成 `TAB / BROWSE FOLDER` 就不是键名了），字距也还原 */
+.popover-drill-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  text-transform: none;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+
 .popover-item {
   display: flex;
   align-items: center;
@@ -2723,8 +2768,10 @@
   text-align: left;
 }
 
-/* 候选行右侧的独立动作（目录的「整个目录」）。与主体分开是因为两者的**语义不同**：
-   点主体是「打开这个目录」，点这里是「把目录本身载入」。合成一个按钮就没法表达两件事。 */
+/* 候选行右侧的独立动作（目录的「Tab 进入目录」）。与主体分开是因为两者的**语义不同**：
+   点主体（或按 Enter）是「引用这个目录」，点这里（或按 Tab）是「进去浏览」。
+   合成一个按钮就没法表达两件事。
+   形态照官方 `dsw` 菜单的 drill 徽标：`Tab` 一个键帽 + 文字说明。 */
 .popover-item-action {
   display: inline-flex;
   align-items: center;
@@ -2736,6 +2783,19 @@
   color: var(--muted);
   font-size: var(--font-size-2xs);
   white-space: nowrap;
+}
+
+/* 键帽：等宽字体 + 底色，与说明文字区分开（官方 `.drillHint` 同形态） */
+.popover-item-key {
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--hover);
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: var(--font-size-2xs);
+  line-height: 1.5;
+  /* 键帽在 uppercase 的分组标题栏里也要显示成 `Tab`（键名不跟着大写） */
+  text-transform: none;
 }
 
 .popover-item-action:hover {

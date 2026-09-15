@@ -119,7 +119,7 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 
   // 第二部分：启动期收尾——清残留进程、自动连接、按需打开面板
-  startup(config, controller, provider);
+  startup(config, controller);
 }
 
 /** 激活期需要交给命令注册使用的对象。 */
@@ -338,11 +338,10 @@ async function promptServerReload(): Promise<void> {
   if (picked) void vscode.commands.executeCommand("workbench.action.reloadWindow");
 }
 
-/** 启动期收尾：清理上次未正常关闭的残留服务器、按配置自动连接、按需打开面板。 */
+/** 启动期收尾：清理上次未正常关闭的残留服务器、按配置自动连接。 */
 function startup(
   config: () => vscode.WorkspaceConfiguration,
   controller: ChatController,
-  provider: ChatViewProvider,
 ): void {
   // 启动初期的残留处置：
   //
@@ -378,10 +377,6 @@ function startup(
       //   不在就只切到"已停止"，界面显示「启动服务器」，扩展绝不自己拉起一套。
       void controller.autoConnect(autoStart);
     });
-
-  if (config().get<boolean>("openPanelOnStartup")) {
-    provider.openPanel();
-  }
 }
 
 /** VS Code ≥ 1.106 才有辅助侧栏（secondarySidebar 视图容器贡献点）。 */

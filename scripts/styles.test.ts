@@ -260,7 +260,8 @@ console.log("styles: 鲸鱼蓝色独属、各节点有专属色 ✓");
   );
 
   // 组件里两处主文字必须真的挂上标记：
-  //   - 命令名（挂到文件路径上会让长路径撑破弹层，所以按 isCommand 区分）；
+  //   - 命令名、对话标题（挂到文件路径上会让长路径撑破弹层，所以按 isCommand /
+  //     isSession 区分）；
   //   - 「..」那行（它就是两个字符，绝不能被右侧的说明挤没）；
   //   - 权限档位名（英文 Read Only / Workspace Write 曾被长描述挤成 `Read O…`）。
   const composer = readFileSync(
@@ -268,8 +269,8 @@ console.log("styles: 鲸鱼蓝色独属、各节点有专属色 ✓");
     "utf8",
   );
   assert.ok(
-    /isCommand \|\| isParent \? " is-priority" : ""/.test(composer),
-    "Composer 的候选行必须按 isCommand / isParent 加 .is-priority（普通文件路径不加）",
+    /isCommand \|\| isParent \|\| isSession \? " is-priority" : ""/.test(composer),
+    "Composer 的候选行必须按 isCommand / isParent / isSession 加 .is-priority（普通文件路径不加）",
   );
   assert.ok(
     /popover-item-main is-priority">\{item\.label\}/.test(composer),

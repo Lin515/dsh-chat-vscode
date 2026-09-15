@@ -37,6 +37,9 @@
 - 审批与提问卡片：允许 / 拒绝；未识别的交互事件一律放行，避免把 Agent 挂住。
   **问卷**（`ask_user_question`）默认一次展开全部题目，题目多于 `dshChat.questionBatch`
   时改成依次问答（上一题 / 下一题），答完**自动收缩**成一行，可再点开复看
+  **当时的题目与用户选了什么**；**自定义回答和普通选项一样可以选**（单选时与选项互斥），
+  只是它带一个编辑框。同一个会话在多个窗口打开时，一个窗口答完，其余窗口的卡片
+  会跟着收场（依据服务端的 `cancel` 帧与会话日志里的工具结果，不看本窗口的状态）
 - 代码块卡片：复制、插入当前编辑器、语言标注、长块折叠
 - 停止生成（按钮或 Esc）；**队列非空时，Esc 会中止当前轮并把队首消息接着发出去**
   （提示文案随之变为「按 ESC 可中止并发出排队消息」）；排队消息逐条列出，可直接
@@ -46,9 +49,16 @@
 
 - 输入 `/` 弹出斜杠命令菜单（含**技能**，技能带「技能」标记——它不是可执行的命令，
   选中只是把名字写进正文），继续输入即过滤，↑↓ 选择（选中项自动滚进视野）、Enter 确认
-- 输入 `@` 弹出文件候选（含目录）。**选中目录默认是打开它**（继续下钻）；
-  只有点右侧的「整个目录」按钮才是把目录本身作为 `@dir/` 引用载入。
+- 输入 `@` 弹出候选：**文件 / 目录 + 历史对话**两组（与官方 `@` 同源同序）。
+  **Enter（或点击该行）把整条候选作为引用载入**——文件是 `@path`、目录是 `@dir/`；
+  **Tab 才是进入目录**继续下钻，这个提示显示在「文件」分组标题栏的最右侧。
+  目录行右侧仍是原来的「整个目录」按钮（与 Enter 同一个动作）。
   进了子目录之后列表**顶部**多出 `..` 一行，点它回到上一层
+- **`@` 可以引用对话**：候选里的「对话」组取自服务端 `sessionReferenceResolver/candidates`
+  （与官方 Web 同一个数据源，按工作目录亲缘排序），选中即把官方那条
+  `@[标题](dsh-session:…)` mention 写进正文；服务端在消息进入模型前把它换成被引用
+  会话的快照，客户端不做任何读取。转写里显示的是可读的 `@标题`（宿主按官方同一套
+  规则折回来，不会看到一长串会话 id）
 - **`@` 是纯路径引用**：选中文件后，`@path`（目录是 `@dir/`）**直接写进输入框正文**，
   发送出去的就是这串 token——系统提示段告诉模型「这是用户显式引用的工作区路径，
   需要内容就用 `read` 工具读」。它**不进附件栏**，一眼就能和「上传的附件」分开
@@ -117,7 +127,8 @@
 
 **面板**
 
-- **历史对话**：分组、搜索、当前会话高亮
+- **历史对话**：只显示**属于当前工作区**的会话（跟随 VS Code 打开的文件夹；没打开文件夹
+  时显示**未分组**的那些），分组、搜索、当前会话高亮
 - **子代理**：列出当前会话的子代理，点进去查看它的完整对话记录。
   （与官方 Web 的差距见 `docs/audit-summary.md`：`subagentTiming` 耗时列、`hasChildren`
   树、诊断行、只读输入框都还没做——数据是齐的，缺的是呈现）
@@ -130,7 +141,8 @@
   「请求 → 结果」；生成中的步骤会出一行「正在生成」（面板开着时每 3 秒刷新）；
   工具栏可切换**等宽 / 按耗时**成条、一键折叠所有轮次 / 所有调用、可搜索；上方是
   **时间线**（三条泳道：输入 / 模型 / 工具，轮次边界竖线，点一条跳到对应记录、
-  拖动框选一段会在账本里高亮，**滚轮以光标为锚缩放、右键拖动平移**、双击复位，
+  拖动框选一段会在账本里高亮，**滚轮以光标为锚缩放、右键拖动平移**（时间线上右键
+  不会弹出原生菜单）、双击复位，
   左端 `…` 加载更早）；选中任意一行打开**详情检查器**（页签按记录种类派生：
   概述 / 参数 / 结果 / Schema / 计时 / 预览 / 原始内容 / 来源 / 系统提示词 / 工具 /
   差异……；默认宽度按官方 `clamp(320px,38%,440px)`，左边缘可拖宽，窄面板下变成
@@ -151,7 +163,8 @@
 - 中英双语界面，跟随 VS Code 显示语言（也可用 `dshChat.language` 固定）
 - 活动栏与辅助侧栏两种容器，另可在编辑器区打开独立面板
 - **各对话窗口的状态跟着工作区走**：上次关掉这个文件夹时开着的窗口（主侧栏 / 辅助侧栏 /
-  编辑区面板）与它们各自的会话，下次打开时自动回到原样；最近活动的那个窗口也记得，
+  编辑区面板）与它们**当时**的会话，下次打开时自动回到原样（窗口中途用历史对话切过会话，
+  记下的就是切完的那个）；最近活动的那个窗口也记得，
   命令面板入口仍指向它。记录存放在 **VS Code 自己的工作区缓存**里
   （`workspaceState`，即 `workspaceStorage` 下的 `state.vscdb`），**不往项目目录写文件**；
   会话已被删除或归档时该窗口回落空态
@@ -218,7 +231,6 @@ npm run watch          # 增量构建
 | `dshChat.url` | 空 | 已运行的 `dsh web` 地址；留空则由扩展自行启动并管理服务器 |
 | `dshChat.autoStart` | `true` | 启动 VS Code 时自动连接 |
 | `dshChat.command` | `dsh` | 启动命令（找不到时回退 `npx`） |
-| `dshChat.openPanelOnStartup` | `false` | 启动时在编辑器区打开对话面板 |
 | `dshChat.diffLayout` | `auto` | 编辑类节点的 diff 排版：`auto`（窄单栏 / 宽双栏）、`unified`（固定单栏）、`split`（固定双栏） |
 | `dshChat.language` | `auto` | 聊天界面语言：`auto` 跟随 VS Code、`zh-cn` 固定中文、`en` 固定英文 |
 | `dshChat.fontSize` | `0` | 聊天界面字号（整数 px，≥8）；`0` 跟随 VS Code 的字号 |
@@ -480,7 +492,11 @@ question cards (unknown interaction events are always
 passed through so the agent never hangs) — a **questionnaire** opens with every question at
 once, switches to one-at-a-time paging (Previous / Next) when it has more questions than
 `dshChat.questionBatch`, and **collapses into a single row once answered**, expandable again
-to review what was asked; code blocks with copy/insert, language label and
+to review what was asked **and what the user picked**; the **custom answer is selectable like
+any other option** (mutually exclusive with them for single-select questions) and differs only
+by carrying an editor; when one session is open in several windows, answering in one closes
+the card in the others as well (driven by the server's `cancel` frame and the tool result in
+the session log, never by this window's own state); code blocks with copy/insert, language label and
 collapsing for long blocks; stop generation (button or Esc) — when messages are queued, Esc
 also stops the current turn and sends the frontmost queued message; queued messages are
 listed individually so each can be taken back into the composer for editing (text and
@@ -489,9 +505,14 @@ attachments restored) or cancelled on its own.
 **Input and context** — type `/` for a slash-command menu that filters as you type
 (↑↓ to move, Enter to confirm); it also lists **skills**, tagged as such because a skill is
 not an executable command — picking one just writes its name into the message. Type `@` for
-file mentions (files *and* folders): **selecting a folder opens it** (drills in); only the
-"whole folder" button on the right of the row loads the folder itself as an `@dir/`
-reference; once you have drilled into a folder, a `..` row appears **at the top** of the
+mentions: **files and folders** plus **past sessions**, in two sections (the same source and
+order as the official client). **Enter (or clicking the row) loads the whole candidate as a
+reference** — `@path` for a file, `@dir/` for a folder — while **Tab is what descends into the
+folder**, with that hint shown at the far right of the "Files" section title; a folder row
+keeps its original **"whole folder" button** (the same action as Enter). Past sessions insert the official
+`@[title](dsh-session:…)` mention, which the server turns into a snapshot of the referenced
+session before the message reaches the model (the transcript shows the readable `@title`, not
+the raw token). Once you have drilled into a folder, a `..` row appears **at the top** of the
 list to climb back one level; adding a file, a folder or an editor selection from the context
 menu (or `Alt+Shift+2`) always inserts a **plain `@` reference** into the composer — a selection
 carries its line range as a GitHub-style anchor (`@src/config.ts#L12-L40`, `#L7` for one line) —
@@ -557,7 +578,9 @@ only on positive evidence (`stat` counts `FileNotFound` alone as deletion; permi
 offline shares and the like are treated as "unknown" and left unmarked). That is information
 the official UI does not offer (its chips only distinguish file type).
 
-**Panels** — **History** (grouped, searchable), **Subagents** (list the session's
+**Panels** — **History** (only the sessions belonging to the current workspace, following the
+folder VS Code has open; with no folder open it lists the **ungrouped** ones — grouped,
+searchable), **Subagents** (list the session's
 subagents and open their full transcripts), **Background jobs** (state, start/end, duration
 and detail), **Settings** (every namespace rendered from the server schema: string/number/
 boolean/enum forms, JSON editing for complex structures, per-field save, per-group reset,
@@ -584,7 +607,9 @@ highlighting are **deliberately out** (they would pull in KaTeX / Shiki — see
 `THIRD-PARTY-NOTICES.md`); activity bar and secondary
 sidebar containers plus a standalone editor-area panel, and **each chat window's state
 travels with the workspace**: the windows that were open when you last closed the folder
-(activity bar / secondary sidebar / editor-area panel) reopen on their own sessions, and
+(activity bar / secondary sidebar / editor-area panel) reopen on the session they were
+**showing at that moment** (switch sessions from the history list mid-run and the new one is
+what gets remembered), and
 the most recently active window is remembered so command-palette entries still target it —
 the record lives in **VS Code's own per-workspace cache** (`workspaceState`, i.e. the
 `state.vscdb` under `workspaceStorage`), never in a file inside your project, and a window
@@ -614,7 +639,6 @@ bar is used); `dsh` runnable locally (falls back to `npx`); model credentials co
 | `dshChat.url` | empty | Address of an already-running `dsh web`; leave empty to let the extension manage its own server |
 | `dshChat.autoStart` | `true` | Connect automatically when VS Code starts |
 | `dshChat.command` | `dsh web --port 0 --no-open` | Launch command for the internal server |
-| `dshChat.openPanelOnStartup` | `false` | Open the panel in the editor area on startup |
 | `dshChat.diffLayout` | `auto` | Diff layout for edit calls: `auto` (single column when narrow, side-by-side when wide), `unified`, `split` |
 | `dshChat.language` | `auto` | Chat UI language: `auto` follows VS Code, `zh-cn`, `en` |
 | `dshChat.fontSize` | `0` | Chat UI font size in integer px (≥ 8); `0` follows the VS Code font size |

@@ -684,7 +684,8 @@
               ts: now - 12000,
               model: "DeepSeek-V4-Pro",
               segments: [
-                // 已答完的问卷：**默认收缩成一行**（点行头可再展开看当时的问题）
+                // 已答完的问卷：**默认收缩成一行**（点行头可再展开看当时的问题
+                // 与用户当时选了什么——答案来自 answers，不是组件 state）
                 { id: "ask0", kind: "question", question: { requestId: "ev0", state: "answered", items: [
                   { id: "scope", header: "范围", question: "这次改动覆盖到哪一层？", options: [
                     { label: "只改入口文件" },
@@ -694,7 +695,10 @@
                     { label: "要" },
                     { label: "不要" }
                   ] }
-                ] } },
+                ], answers: {
+                  scope: { selected: ["连同配置读取一起收敛"] },
+                  docs: { selected: [], custom: "顺手把 CHANGELOG 的分节标题也统一一下" }
+                } } },
                 { id: "ask1", kind: "question", question: { requestId: "ev2", state: "waiting", items: [
                   { id: "mode", header: "确认", question: "重构范围要覆盖到哪一层？", options: [
                     { label: "只改入口文件", description: "风险最小，先把重复初始化去掉" },

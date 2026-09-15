@@ -34,6 +34,7 @@ export interface Texts {
   noModels: string;
   /** 通用附件按钮（图片与普通文件同一入口）。 */
   attachFile: string;
+  /** `@` 列表里目录行右侧的按钮：把整个目录作为引用载入。 */
   attachFolder: string;
   cancel: string;
   toggleThinking: string;
@@ -212,9 +213,23 @@ export interface Texts {
   uploadNoSession: string;
   /** @ 提及 */
   mentionFiles: string;
+  /** @ 列表里**对话候选**那一组的标题（官方 `reference.section.sessions`）。 */
+  mentionSessions: string;
   mentionEmpty: string;
   mentionHint: string;
   /** @ 列表里「返回上一层目录」那一行的无障碍标题与悬停说明。 */  mentionParent: string;
+  /**
+   * 目录行右侧的「Tab 进入目录」提示（官方 `reference.drill.*`：徽标写 `Tab`，
+   * 文字说明「进入目录」）。Enter / 点击该行是**引用整个目录**，两者口径不同。
+   */
+  mentionDrill: string;
+  /**
+   * 「进入目录」那个键的键帽文字（官方 `reference.drill.key`，中英都是 `Tab`——
+   * 键名不翻译，但按双语规则仍走词典，免得在组件里写死字符串）。
+   */
+  mentionDrillKey: string;
+  /** 对话候选没有工作目录时的占位（官方 `reference.candidate.noCwd`）。 */
+  mentionNoCwd: string;
   /** 设置面板 */
   settingsTitle: string;
   settingsLoading: string;
@@ -286,6 +301,10 @@ export interface Texts {
   questionNext: string;
   /** 答完收缩后的摘要（「已作答 N 题」）。 */
   questionAnswered: (count: number) => string;
+  /** 被撤回的提问（Host 取消了这次提问 / 轮次中止）的摘要（「已取消 N 题」）。 */
+  questionCancelled: (count: number) => string;
+  /** 自定义回答那一行的无障碍说明（它和普通选项一样可以选，只是带编辑框）。 */
+  questionCustomAria: string;
 
   copy: string;
   copied: string;
@@ -614,9 +633,13 @@ const zh: Texts = {
     `有 ${count} 个文件没能上传（${names}），本次只发送了就绪的附件`,
   uploadNoSession: "还没有连上服务器，附件传不上去",
   mentionFiles: "文件",
+  mentionSessions: "对话",
   mentionEmpty: "没有匹配的文件",
-  mentionHint: "↑↓ 选择 · Enter 确认 · Esc 取消",
+  mentionHint: "↑↓ 选择 · Enter 引用 · Tab 进入目录 · Esc 取消",
   mentionParent: "返回上一层目录",
+  mentionDrill: "进入目录",
+  mentionDrillKey: "Tab",
+  mentionNoCwd: "（无工作目录）",
   settingsTitle: "设置",
   settingsLoading: "正在读取设置…",
   settingsEmpty: "服务器没有返回可配置项",
@@ -666,6 +689,8 @@ const zh: Texts = {
   questionPrev: "上一题",
   questionNext: "下一题",
   questionAnswered: (count) => `已作答 ${count} 题`,
+  questionCancelled: (count) => `已取消 ${count} 题`,
+  questionCustomAria: "自定义回答（选中后其它选项会被取消）",
 
   copy: "复制",
   copied: "已复制到剪贴板",
@@ -939,9 +964,13 @@ const en: Texts = {
     `${count} file(s) could not be uploaded (${names}); only the ready attachments were sent`,
   uploadNoSession: "Not connected to the server yet; the attachment cannot be uploaded",
   mentionFiles: "Files",
+  mentionSessions: "Sessions",
   mentionEmpty: "No matching files",
-  mentionHint: "↑↓ select · Enter confirm · Esc cancel",
+  mentionHint: "↑↓ select · Enter reference · Tab browse folder · Esc cancel",
   mentionParent: "Go to the parent folder",
+  mentionDrill: "Browse folder",
+  mentionDrillKey: "Tab",
+  mentionNoCwd: "(no cwd)",
   settingsTitle: "Settings",
   settingsLoading: "Loading settings…",
   settingsEmpty: "The server returned no configurable namespaces",
@@ -991,6 +1020,8 @@ const en: Texts = {
   questionPrev: "Previous",
   questionNext: "Next",
   questionAnswered: (count) => (count === 1 ? "1 question answered" : `${count} questions answered`),
+  questionCancelled: (count) => (count === 1 ? "1 question withdrawn" : `${count} questions withdrawn`),
+  questionCustomAria: "Custom answer (selecting it clears the other options)",
 
   copy: "Copy",
   copied: "Copied to clipboard",

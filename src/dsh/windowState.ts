@@ -236,6 +236,21 @@ export class WindowRestore {
   }
 
   /**
+   * 已经被认领过的面板条数（= 下次 `claimPanel` 会取的下标）。
+   *
+   * 写缓存时要它：**尚未认领**的那一段（`cache.panels[claimed..]`）属于还没露面的
+   * 窗口，必须原样保留在原位上（见 `mergeWindowCache`）。
+   */
+  get claimedPanelCount(): number {
+    return this.panelCursor;
+  }
+
+  /** 这个侧栏槽位这一代**有没有被问过话**（问过 = 它已经在内存里有最新状态）。 */
+  isSlotClaimed(slot: SidebarSlot): boolean {
+    return this.slotsClaimed.has(slot);
+  }
+
+  /**
    * 一次性日志：缓存里的面板都被认领完时打一行。
    *
    * 只在**认领完最后一个面板**时打，不是每个面板都打——否则输出通道会被刷屏。
@@ -250,6 +265,52 @@ export class WindowRestore {
       `[restore] 编辑区面板认领完毕：${this.panelCursor} 个（缓存里空态 ${blanks} 个）`,
     );
   }
+}
+
+/**
+ * 把「内存里的最新窗口状态」与「还没被认领的旧缓存」合成一份要落盘的缓存。
+ *
+ * 恢复**不是一次做完的**：VS Code 只在 webview「第一次变为可见」时回调序列化器，
+ * 侧栏容器折叠着时它的视图根本不会被实例化。所以恢复期内**不能**拿内存状态整份
+ * 覆写——那会把还没露面的窗口连同它们的会话一起抹掉。
+ *
+ * 但也不能像早先那样「整个恢复窗口内都不写」：`pending` 可能**永远为真**
+ * （某个缓存过的窗口这一代再也没露面），于是这一轮的每一次变更都被押后，
+ * 关掉 VS Code 时缓存还停在启动时读到的那份旧值上。用户 2026-09-15 报的
+ * 「编辑区窗口从会话 A 切到 B，重启后还是打开 A」正是这个：
+ * 工作区缓存里保存的是**初始会话**，不是最终会话。
+ *
+ * 折中就是这里：**已认领的部分**一律用内存里的最新状态，**尚未认领的**按原位接在后面。
+ *
+ * @param options.memory 内存里那几张表的投影（`persistWindowState` 的产物）。
+ * @param options.previous 启动时读到的缓存（尚未认领的条目从这里取）。
+ * @param options.claimedPanels 已经被认领过的面板条数。
+ * @param options.restorePending 恢复窗口是否还没结束。
+ * @param options.slotClaimed 某个侧栏槽位这一代有没有被问过话。
+ */
+export function mergeWindowCache(options: {
+  memory: WindowCache;
+  previous: WindowCache;
+  claimedPanels: number;
+  restorePending: boolean;
+  slotClaimed: (slot: SidebarSlot) => boolean;
+}): WindowCache {
+  const { memory, previous, claimedPanels, restorePending, slotClaimed } = options;
+  if (!restorePending) return memory;
+  const merged: WindowCache = { ...memory, panels: [...memory.panels] };
+  // 面板：内存里已经超过认领数（用户在这次恢复窗口里新开了一个面板）时不再补，
+  // 否则同一条会话会被写两遍、下次恢复还会错位。
+  if (merged.panels.length <= claimedPanels) {
+    for (const entry of previous.panels.slice(claimedPanels)) merged.panels.push(entry);
+  }
+  // 侧栏：这一代没被问过话的槽位保留旧值（它的视图还没被 VS Code 实例化）。
+  // 已认领的槽位即使内存里是 `null`（空态）也照写——那是「用户把它清空了」。
+  for (const slot of ["primary", "secondary"] as const) {
+    if (merged[slot] !== undefined || slotClaimed(slot)) continue;
+    const entry = previous[slot];
+    if (entry) merged[slot] = entry;
+  }
+  return merged;
 }
 
 /** 一份缓存最多记多少个窗口——防手改状态文件塞进来一个巨大的数组。 */

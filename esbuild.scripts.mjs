@@ -41,6 +41,7 @@ const entries = {
   "build/turn-process.test.mjs": "scripts/turnProcess.test.ts",
   "build/injected-source.test.mjs": "scripts/injectedSource.test.ts",
   "build/pending-interaction.test.mjs": "scripts/pendingInteraction.test.ts",
+  "build/interaction-sync.test.mjs": "scripts/interactionSync.test.ts",
   "build/diff.test.mjs": "scripts/diff.test.ts",
   "build/attachments.test.mjs": "scripts/attachments.test.ts",
   "build/queue-view.test.mjs": "scripts/queueView.test.ts",
@@ -80,6 +81,7 @@ const entries = {
   "build/config-changes.test.mjs": "scripts/configChanges.test.ts",
   "build/footnotes.test.mjs": "scripts/footnotes.test.ts",
   "build/question-flow.test.mjs": "scripts/questionFlow.test.ts",
+  "build/question-render.test.mjs": "scripts/questionRender.test.ts",
   "build/mention-nav.test.mjs": "scripts/mentionNav.test.ts",
   "build/selection.test.mjs": "scripts/selection.test.ts",
   "build/workspace-probe.mjs": "scripts/workspaceProbe.ts",
@@ -115,6 +117,10 @@ await Promise.all(
       target: "node20",
       logLevel: "info",
       banner,
+      // 断言脚本里也有渲染断言（`scripts/questionRender.test.ts` 用
+      // `react-dom/server` 真渲染问卷卡）：与 webview 那份产物同一个转换器，
+      // 否则 TSX 会退回经典转换、要求一个不存在的 React 全局变量。
+      jsx: "automatic",
     }),
   ),
 );

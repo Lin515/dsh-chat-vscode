@@ -12,6 +12,8 @@
  * 运行：npm test
  */
 import assert from "node:assert";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { SessionWireEvent } from "../src/dsh/protocol";
 import { deriveTrajectoryModel, trajectorySummary } from "../src/dsh/trajectory";
 import { deriveTrajectoryTimeline } from "../src/shared/trajectory";
@@ -368,5 +370,41 @@ console.log("trajectory: 单行摘要 ✓");
   assert.strictEqual(untimed.spans.length, 0);
 }
 console.log("trajectory: 时间线的三种模式 ✓");
+
+// ---------- 10. 时间线顶部条：右键是平移手势，不是弹菜单 ----------
+//
+// 用户 2026-09-15 报的：官方 Web 的时间线条上右键能拖动（平移视口），扩展里右键
+// 只会弹出 VS Code 的原生菜单、拖不动。官方 `TrajectoryTimeline` 的做法是
+// `onContextMenu: (event) => event.preventDefault()`（**无条件**吃掉菜单），
+// 右键按下则进 pan（`pannable: viewport !== null`，即已缩放时）。
+// 这里钉住这条接线：去掉 preventDefault，或把它重新塞回 `if (zoom > 1)` 里，
+// 「右键拖动」就又会被原生菜单挡住。
+{
+  const source = readFileSync(join(process.cwd(), "src", "webview", "components", "Trajectory.tsx"), "utf8");
+  assert.ok(
+    /className="trajectory-timeline"[\s\S]{0,400}onContextMenu=\{\(event\) => \{[\s\S]{0,400}event\.preventDefault\(\);/u.test(
+      source,
+    ),
+    "时间线容器必须在 contextmenu 里**无条件** preventDefault（官方同款）",
+  );
+  assert.ok(
+    !/onContextMenu=\{\(event\) => \{[\s\S]{0,200}if \(zoom > 1\) event\.preventDefault\(\)/.test(source),
+    "不能再把 preventDefault 塞回 `if (zoom > 1)` 里——未缩放时右键就会弹菜单",
+  );
+  assert.ok(
+    /if \(event\.button === 2\) \{[\s\S]{0,200}if \(zoom > 1\) startPan\(event\.clientX\)/.test(source),
+    "右键按下要起平移（已缩放时），与官方的 `pannable` 同口径",
+  );
+  // 平移监听挂在 document 上：拖出时间线（甚至拖出窗口）要继续跟手
+  assert.ok(
+    /document\.addEventListener\("mousemove", onMove\)/.test(source) &&
+      /document\.addEventListener\("mouseup", onUp\)/.test(source),
+    "平移期间要在 document 上监听移动 / 抬起，否则一拖出元素就断",
+  );
+  // span 与「加载更早」只拦左键：拦右键会让「在时间线任意位置右键拖动」失效
+  const guards = source.match(/if \(event\.button === 0\) event\.stopPropagation\(\);/g) ?? [];
+  assert.strictEqual(guards.length, 2, "时间线里两处（span 与 earlier）只拦左键，右键要放行给平移");
+}
+console.log("trajectory: 顶部条右键平移（不吃菜单、跟手到底）✓");
 
 console.log("\ntrajectory: all assertions passed");

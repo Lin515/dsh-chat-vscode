@@ -767,6 +767,10 @@ selectedRequestInfo !== undefined
 
 - 左键拖动 = 选区（`onRangeChange`，`:6627-6660`）；
 - 右键拖动 = 平移视口（仅已缩放时 `pannable`，`:6627-6640` + `:6668-6678`）；
+  **`contextmenu` 无条件 `preventDefault`（`:6776-6778`）**——右键在这条时间线上是手势，
+  不该弹出宿主菜单。本扩展原先只在 `zoom > 1` 时拦截，于是未缩放时右键弹菜单、
+  看着像「拖不动」（用户 2026-09-15 报的）；现在整条时间线都拦截，并且平移监听挂在
+  `document` 上（官方用 pointer capture），拖出元素也继续跟手；
 - 滚轮 = 以光标为锚缩放（`Math.exp(deltaY * 0.0015)`，`:6561-6580`）；
 - `Escape` 或双击 = 清空选区（`:6740-6744`、`:6772-6775`）；
 - 点击 span = 选中该记录（`onRecordSelect`）；点空白 = 聚焦最近记录（`onRecordFocus`）；

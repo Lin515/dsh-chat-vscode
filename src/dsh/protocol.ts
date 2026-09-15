@@ -140,7 +140,19 @@ export interface RemoteEventReady {
   host?: { home?: string };
 }
 
-export type RemoteEventFrame = RemoteEventReady | RemoteEventWaterfall | { type: "emit"; event: string; args?: unknown[] };
+export type RemoteEventFrame =
+  | RemoteEventReady
+  | RemoteEventWaterfall
+  | { type: "emit"; event: string; args?: unknown[] }
+  /**
+   * Host 撤回某条 waterfall（另一个客户端答了 / 轮次中止 / Agent Context 释放）。
+   *
+   * 契约（`dsh-api-gateway` 的 `parseRemoteEventFrame` 与 `finishRemoteEvent`）：
+   * 只带 `eventId`，收到后**不要回复**——请求已经结算，再回一条等于放行。
+   * 网关在**结算之后**把它推给所有还没答复的投递方，所以它同时是
+   * 「另一个窗口替我答了」的通知。
+   */
+  | { type: "cancel"; eventId: string };
 
 export type RemoteEventOutcome =
   | { kind: "next" }

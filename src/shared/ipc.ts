@@ -3,6 +3,7 @@ import type {
   CommandView,
   FileRefView,
   JobItemView,
+  SessionRefView,
   SettingsSectionView,
   SubagentView,
 } from "./chat";
@@ -56,7 +57,7 @@ export type HostToWebview =
   /** 斜杠命令目录（输入框输入 / 时弹出）。 */
   | { type: "commands/list"; commands: CommandView[] }
   /** 文件引用候选（输入框输入 @ 时弹出）。 */
-  | { type: "files/list"; query: string; items: FileRefView[] }
+  | { type: "files/list"; query: string; items: FileRefView[]; sessions?: SessionRefView[] }
   /** 设置各命名空间（设置面板）。 */
   | { type: "settings/describe"; sections: SettingsSectionView[]; writable: boolean }
   /** 指定子代理的会话内容（复用 message 帧之外的单帧快照）。 */

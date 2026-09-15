@@ -8,6 +8,8 @@
  * 运行：npm test（记得登记到 esbuild.scripts.mjs 的 entries）
  */
 import assert from "node:assert";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { BAR_ORDER, pickVariants, type ToolbarVariant } from "../src/webview/toolbarFit";
 
 /** 一份贴近真实的宽度样本（px）：模型名较长、权限文字是中文口径。 */
@@ -197,5 +199,36 @@ console.log("toolbarFit: 同槽位档位互斥 ✓");
   );
 }
 console.log("toolbarFit: 间距计入可用宽度 ✓");
+
+// ---------- 7. 结构不变量：tps 胶囊与明细里的「平均输出速度」同源同格式 ----------
+//
+// 用户 2026-09-15 口径：编辑框下方那个 tps「始终显示为详细信息中的平均输出速度」，
+// 以便和 Web 对齐。此前它取的是「最近一条助手消息的解码窗口吞吐」
+// （`usage.tokensPerSecond`，回退宿主保留的 `lastSpeed`）——那是**另一个数**，
+// 与悬停明细里写的对不上。这里钉住两件事：唯一来源是会话统计，且两处用同一个
+// 格式化函数与同一个词典 key。
+{
+  const source = readFileSync(join(process.cwd(), "src", "webview", "components", "Composer.tsx"), "utf8");
+  assert.ok(
+    /const tps =\s*stats && stats\.decodeMs > 0 && stats\.decodeTokens > 0\s*\?\s*stats\.decodeTokens \/ \(stats\.decodeMs \/ 1000\)/.test(
+      source,
+    ),
+    "tps 必须取会话统计的平均输出速度（Σ输出 ÷ Σ解码窗口）",
+  );
+  assert.ok(
+    !/state\.lastSpeed/.test(source),
+    "界面不该再直接读 lastSpeed（那是「最近一条消息的窗口吞吐」，与明细不是同一个数）",
+  );
+  assert.ok(
+    /const speedValue = tps !== undefined \? formatTps\(tps\) : undefined;/.test(source),
+    "胶囊与明细必须共用 formatTps（否则同一个数会显示成 1.2 和 1)",
+  );
+  const speedUses = source.match(/texts\.tokensPerSecond\(speedValue\)/g) ?? [];
+  assert.ok(
+    speedUses.length >= 2,
+    "胶囊与悬停明细都要用 texts.tokensPerSecond(speedValue)（同文案、双语齐备）",
+  );
+}
+console.log("toolbarFit: tps 与明细同源同格式 ✓");
 
 console.log("\ntoolbarFit: all assertions passed");

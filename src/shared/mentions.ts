@@ -57,3 +57,28 @@ export function formatFileMentionWithLines(
   if (!mention.startsWith('@"')) return `${mention}${range}`;
   return `${mention.slice(0, -1)}${range}"`;
 }
+
+/**
+ * 把正文里的**对话引用 mention** 还原成可读的 `@标题`（只用于**显示**）。
+ *
+ * 用户在 `@` 列表里选中一个历史对话时，插进正文的是官方那条规范 token
+ * （`@[标题](dsh-session:…)`，见 `SessionRefView.mention`）。它是**给服务端看的**：
+ * 服务端在消息进入模型前把它换成被引用会话的快照，并顺手把正文里的 token 换成
+ * 可读的 `@标题`（`dsh-session-reference` 的 `parseSessionReferenceText`）。
+ *
+ * 但**落盘的 durable 事件里仍是原始 token**（`prepareDirectMessages` 只产出给模型
+ * 用的那一份副本），所以聊天转写直接渲染正文就会显示一长串
+ * `@[标题](dsh-session:eyJ…)`。这里按官方同一个正则折成 `@标题`——
+ * 只认严格形态，普通文本里的 `@[...]` 一个字节都不动。
+ */
+export function displaySessionMentions(text: string): string {
+  return text.replace(
+    /@\[((?:\\.|[^\\\]])*)\]\((dsh-session:[^\s)]*)\)|(dsh-session:[A-Za-z0-9_-]+)/gu,
+    (_match, rawLabel: string | undefined, markdownUri: string | undefined, bareUri: string | undefined) => {
+      const uri = markdownUri ?? bareUri;
+      if (uri === undefined) return _match;
+      const label = rawLabel === undefined ? uri.slice("dsh-session:".length) : rawLabel.replace(/\\(.)/gu, "$1");
+      return `@${label}`;
+    },
+  );
+}

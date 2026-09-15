@@ -222,7 +222,69 @@ console.log("i18n: 未知 @ 文本原样透传 ✓");
     `宿主发出了未登记的标记（补进 MARKERS，再在 texts.ts 三处登记）：\n` +
       [...found].map(([key, where]) => `  @${key}  ${where}`).join("\n"),
   );
-  console.log(`i18n: 宿主源码里的标记均已登记（扫了 ${hostSources(join(process.cwd(), "src")).length} 个文件）✓`);
+  console.log("i18n: 宿主源码里的标记均已登记（扫了 " + hostSources(join(process.cwd(), "src")).length + " 个文件）✓");
+
+// ---------- 6. VS Code 原生 UI 的文案（package.nls*）与 package.json 对齐 ----------
+//
+// 三类漂移都会让用户**直接看到 `%config.xxx%`** 或者留下一条永远不显示的条目：
+// - 清单引用了 `%key%`，两份 nls 里却没有；
+// - 中英两份 nls 的键集合不一致（改文案时只改了半边）；
+// - **删掉配置项却留着 nls 条目**（用户 2026-09-15 要求删 `dshChat.openPanelOnStartup`，
+//   这类删除最容易只删 `package.json` 那一处）。
+{
+  const en = JSON.parse(readFileSync(join(process.cwd(), "package.nls.json"), "utf8")) as Record<string, string>;
+  const zh = JSON.parse(readFileSync(join(process.cwd(), "package.nls.zh-cn.json"), "utf8")) as Record<string, string>;
+  const manifest = readFileSync(join(process.cwd(), "package.json"), "utf8");
+
+  const referenced = new Set([...manifest.matchAll(/%([A-Za-z0-9_.]+)%/g)].map((match) => match[1]));
+  const missingEn = [...referenced].filter((key) => !(key in en));
+  const missingZh = [...referenced].filter((key) => !(key in zh));
+  assert.deepStrictEqual(missingEn, [], `package.json 引用了但英文 nls 里没有：${missingEn.join("、")}`);
+  assert.deepStrictEqual(missingZh, [], `package.json 引用了但中文 nls 里没有：${missingZh.join("、")}`);
+
+  const orphanEn = Object.keys(en).filter((key) => !referenced.has(key));
+  const orphanZh = Object.keys(zh).filter((key) => !referenced.has(key));
+  assert.deepStrictEqual(
+    orphanEn,
+    [],
+    `英文 nls 里有 package.json 不再引用的键（删配置项时漏删了？）：${orphanEn.join("、")}`,
+  );
+  assert.deepStrictEqual(
+    orphanZh,
+    [],
+    `中文 nls 里有 package.json 不再引用的键（删配置项时漏删了？）：${orphanZh.join("、")}`,
+  );
+
+  assert.deepStrictEqual(
+    Object.keys(en).sort(),
+    Object.keys(zh).sort(),
+    "中英两份 nls 的键集合必须一致（改了中文别忘了英文）",
+  );
+  // 中文那份的值不该是英文原文（漏翻的典型信号：直接复制了英文行）
+  const untranslated = Object.keys(zh).filter(
+    (key) => zh[key] === en[key] && /[A-Za-z]{4}/.test(en[key]) && !/^DSH/.test(en[key]),
+  );
+  assert.deepStrictEqual(untranslated, [], `中文 nls 里疑似漏翻的键：${untranslated.join("、")}`);
+}
+console.log("i18n: package.nls 与 package.json 对齐（无缺失 / 无孤儿 / 中英同键）✓");
+
+// ---------- 7. 已删除的配置项不能再出现（`dshChat.openPanelOnStartup`） ----------
+{
+  const files = ["package.json", "package.nls.json", "package.nls.zh-cn.json", "README.md"];
+  for (const file of files) {
+    const text = readFileSync(join(process.cwd(), file), "utf8");
+    assert.ok(
+      !text.includes("openPanelOnStartup"),
+      `${file} 里还留着 dshChat.openPanelOnStartup（用户 2026-09-15 要求删除这条配置项）`,
+    );
+  }
+  const extension = readFileSync(join(process.cwd(), "src", "extension.ts"), "utf8");
+  assert.ok(
+    !/openPanelOnStartup/.test(extension),
+    "extension.ts 不能再读这条配置（删了配置项却留着读取点 = 一处静默死代码）",
+  );
+}
+console.log("i18n: 已删除的配置项在各处都不再出现 ✓");
 }
 
 console.log("\ni18n: all assertions passed");

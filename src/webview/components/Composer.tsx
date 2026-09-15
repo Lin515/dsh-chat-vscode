@@ -1,4 +1,5 @@
 import {
+  Fragment,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -8,7 +9,7 @@ import {
   type CSSProperties,
   type ReactNode,
 } from "react";
-import type { CommandView, FileRefView, GoalView } from "../../shared/chat";
+import type { CommandView, FileRefView, GoalView, SessionRefView } from "../../shared/chat";
 import type { AppState } from "../state";
 import { post } from "../bridge";
 import {
@@ -31,8 +32,8 @@ import {
   IconTarget,
 } from "../icons";
 import { formatFileMention } from "../../shared/mentions";
-import { CtxText, Ellipsis, Popover, Spinner, contextNumbers, formatDuration } from "./primitives";
-import { ApprovalCard, QuestionCard } from "./Rows";
+import { CtxText, Ellipsis, Popover, Spinner, contextNumbers, formatClock, formatDuration } from "./primitives";
+import { ApprovalCard, QuestionCard, formatTps } from "./Rows";
 import type { PendingInteraction } from "../pendingInteraction";
 import { insertAtCaret } from "../insert";
 import { mentionParent } from "../mentionNav";
@@ -84,13 +85,21 @@ function permissionMeta(
   ];
 }
 
-/** 输入框里正在编辑的触发词（`/` 命令或 `@` 文件提及）。 */
+/** 输入框里正在编辑的触发词（`/` 命令或 `@` 文件/对话提及）。 */
 interface Trigger {
   kind: "command" | "mention";
   /** 触发词在文本里的起始下标。 */
   start: number;
   query: string;
 }
+
+/**
+ * `@` 候选的一条：命令、文件 / 目录、或对话引用。
+ *
+ * 三者在同一个扁平数组里（键盘上下要在**整张列表**里走，不能分组各走各的），
+ * 渲染时按形状分派（见 `isSessionCandidate`）。
+ */
+type MentionCandidate = CommandView | FileRefView | SessionRefView;
 
 /**
  * 找出光标前正在输入的触发词。
@@ -296,13 +305,42 @@ export function Composer({
       const query = trigger.query.toLowerCase();
       return state.commands.filter((command) => command.name.toLowerCase().includes(query));
     }
-    const items = state.fileRefs.items;
+    const files: MentionCandidate[] = state.fileRefs.items;
     // 「..」永远排在最前（文件浏览器的惯例），键盘上下也能选中它。
     // 只在查询已经进入某个子目录时才有这一行（根目录没有上一层）。
-    if (parentQuery === undefined) return items;
+    //
+    // 对话候选排在文件之后（官方 `reference` 源就是这个顺序：`fileItems` 在前、
+    // `sessionItems` 在后，各自一组；查询本身由服务端按标题/路径过滤）。
+    // 注：官方在 `@"引号路径"` 里不给对话候选，本扩展的触发词还不认识引号形式
+    // （见 findTrigger），所以这里没有那一道分叉。
+    const sessions: MentionCandidate[] = state.fileRefs.sessions;
+    if (parentQuery === undefined) return [...files, ...sessions];
     const up: FileRefView = { path: parentQuery, kind: "directory", parent: true };
-    return [up, ...items];
+    return [up, ...files, ...sessions];
   }, [trigger, state.commands, state.fileRefs, parentQuery]);
+
+  /** 这一条候选是不是「对话引用」（有 `mention`，没有文件那样的 `kind`）。 */
+  const isSessionCandidate = (candidate: MentionCandidate): candidate is SessionRefView =>
+    typeof (candidate as SessionRefView).mention === "string";
+
+  /** 候选分组标题：命令一条、`@` 的文件 / 对话各一条（官方按 `section` 分组渲染）。 */
+  const sectionOf = (candidate: MentionCandidate): string => {
+    if (trigger?.kind === "command") return texts.commands;
+    return isSessionCandidate(candidate) ? texts.mentionSessions : texts.mentionFiles;
+  };
+
+  /**
+   * 这一批候选里有没有**可以进去浏览的目录**（`..` 不算：它是回上一层，Tab 对它没有意义）。
+   *
+   * 决定「文件」分组标题栏右侧要不要显示 `Tab 进入目录` 的提示——一个目录都没有时
+   * 显示它只会让人以为按了有用。
+   */
+  const hasFolderCandidate = candidates.some(
+    (candidate) =>
+      !isSessionCandidate(candidate) &&
+      (candidate as FileRefView).kind === "directory" &&
+      (candidate as FileRefView).parent !== true,
+  );
 
   /**
    * 能不能发送。
@@ -356,8 +394,21 @@ export function Composer({
     setTrigger(undefined);
   };
 
-  /** 把触发词替换成选中的命令 / 文件。 */
-  const applyCandidate = (index: number, drill = false) => {
+  /**
+   * 把触发词替换成选中的命令 / 文件 / 对话。
+   *
+   * `action` 只在 `@` 的**目录行**上有区别（官方 `input-trigger` 的 `pick` 与 `drill`）：
+   * - `"pick"`（Enter / 点击行 / 文件 / 对话）：把路径或 mention **作为引用 token
+   *   插进正文**；
+   * - `"drill"`（Tab / 行右侧的「进入目录」徽标）：下钻到该目录，列表换成它的内容。
+   *
+   * 与官方逐字对齐：官方 `onPick({candidate, action})` 只在
+   * `fileKind === "directory" && action === "drill"` 时 `continue: true`（下钻），
+   * 其余一律 `insert`（`dsh-client-ui-reference/lib/client.js`）；键盘上只有
+   * **Tab** 会带上 `drill`（`dsh-client-ui-input-trigger` 的 `case "tab"` 先看
+   * `item.drill === true`），**Enter 永远是普通 pick**（`case "enter"`）。
+   */
+  const applyCandidate = (index: number, action: "pick" | "drill" = "pick") => {
     const candidate = candidates[index];
     if (!candidate || !trigger) return;
     const before = draft.slice(0, trigger.start);
@@ -386,6 +437,16 @@ export function Composer({
       return;
     }
 
+    // 对话引用：把服务端铸好的 mention 原样插进正文（`@[标题](dsh-session:…)`）。
+    // 服务端在用户消息进入模型前把它换成被引用会话的快照，客户端不做任何读取；
+    // 与文件引用不同，它**没有**目录概念，也不参与下钻。
+    if (isSessionCandidate(candidate)) {
+      const mention = candidate.mention.trim();
+      if (!mention) return;
+      insertMentionText(mention);
+      return;
+    }
+
     const file = candidate as FileRefView;
     // 「..」：回到上一层目录。正文里只留 `@<上一层>`（上一层就是工作区根目录时
     // 是裸 `@`），光标停在末尾——服务端按结尾斜杠当目录查询，列表于是变成那一层
@@ -405,10 +466,10 @@ export function Composer({
       post({ type: "queryFiles", query: file.path });
       return;
     }
-    // 目录：**默认打开**它（下钻），不是把它本身载入——这是用户明确的口径。
+    // 目录 + Tab（drill）：**打开**它（下钻），不是把它本身载入。
     // 下钻 = 把触发词替换成 `@<path>/` 并继续留在候选态；服务端按结尾斜杠
     // 把它当目录查询，于是列表变成该目录的内容。
-    if (file.kind === "directory" && !drill) {
+    if (file.kind === "directory" && action === "drill") {
       const next = `${before}@${file.path}/${after}`;
       onDraft(next);
       post({ type: "setDraft", text: next });
@@ -424,24 +485,36 @@ export function Composer({
       post({ type: "queryFiles", query: `${file.path}/` });
       return;
     }
-    // 文件（或用户点了「整个目录」按钮）：把路径**作为纯引用 token 插进正文**。
+    // 文件 / 目录（pick）：把路径**作为纯引用 token 插进正文**。
     //
     // 用户口径（2026-09-14）：`@` 的语义就是「纯路径引用，交给 agent 自己读」，
     // 与「附件上传」是两条不同的通道，界面上也要一眼可分。所以这里**不再**生成
     // 附件栏里的引用芯片（那会让 @ 和「添加文件」看起来一模一样），而是把官方的
     // `@path` token 直接写进输入框——这正是官方客户端发出去的那串文本
     // （见 shared/mentions.ts 的文件头）。
-    post({ type: "queryFiles", query: "" });
+    //
+    // 目录走同一条路（2026-09-15 与官方对齐）：Enter / 点击目录行 = 引用整个目录，
+    // 想进去浏览按 Tab（见 `drill` 分支与 `applyCandidate` 的注释）。
     const mention = formatFileMention(file.path, file.kind);
-    const next = mention
-      ? `${before}${mention}${after}`
-      : `${before}"${file.path}"${after}`; // 不可引用（含控制字符/引号）→ 退回带引号路径
+    insertMentionText(mention ?? `"${file.path}"`); // 不可引用（含控制字符/引号）→ 退回带引号路径
+  };
+
+  /**
+   * 把一段 mention 文本插进正文并**关掉候选弹层**（文件引用与对话引用共用）。
+   *
+   * 「已关闭」标记必须记：否则随后那次 keyup 的重新探测会在同一个位置再命中
+   * `@path`，弹层关了又弹（与 `/` 命令选中后同一套处理，见 refreshTrigger）。
+   */
+  const insertMentionText = (mention: string) => {
+    if (!trigger) return;
+    const before = draft.slice(0, trigger.start);
+    const after = draft.slice(trigger.start + 1 + trigger.query.length);
+    post({ type: "queryFiles", query: "" });
+    const next = `${before}${mention}${after}`;
     onDraft(next);
     post({ type: "setDraft", text: next });
     setTrigger(undefined);
-    const caret = before.length + (mention ?? `"${file.path}"`).length;
-    // 记下「已关闭」：否则随后那次 keyup 的重新探测会在同一个位置再命中 `@path`，
-    // 弹层关了又弹（与 `/` 命令选中后同一套处理，见 refreshTrigger）
+    const caret = before.length + mention.length;
     dismissedRef.current = { value: next, caret };
     requestAnimationFrame(() => {
       const node = textareaRef.current;
@@ -481,9 +554,17 @@ export function Composer({
           setHighlight((value) => (value - 1 + candidates.length) % candidates.length);
           return;
         }
-        if (event.key === "Enter" || event.key === "Tab") {
+        // Enter = 选中（目录就是「引用整个目录」）；Tab = 目录下钻，非目录退回选中。
+        // 与官方一致（见 `applyCandidate` 的注释）：Esc/↑↓/Tab 之外，Tab 是唯一
+        // 会「进入目录」的键。
+        if (event.key === "Enter") {
           event.preventDefault();
-          applyCandidate(highlight);
+          applyCandidate(highlight, "pick");
+          return;
+        }
+        if (event.key === "Tab") {
+          event.preventDefault();
+          applyCandidate(highlight, "drill");
           return;
         }
       }
@@ -518,29 +599,33 @@ export function Composer({
   const currentPermission =
     permissions.find((item) => item.id === state.permission) ?? permissions[1];
 
-  // 生成速度：优先取最近一条助手消息的 usage.tokensPerSecond（由宿主从 dsh 协议
-  // 流式帧时间戳折叠得出：decode 窗口 = 首个 token delta → 最终消息，等价于
-  // dsh web 客户端 `turn-metrics` 的 decode 吞吐口径，不含 prefill/工具等待）。
-  // 新一轮刚发出时最新消息还没有 usage，退回宿主保留的上一次已知值
-  // （state.lastSpeed），避免数字闪没。
+  // 生成速度：**始终**显示明细里那条「平均输出速度」——全会话累计
+  // （Σ 输出 token ÷ Σ 解码窗口，`sessionStats` 投影），与 Web 的会话统计同口径。
+  //
+  // 此前取的是「最近一条助手消息的解码窗口吞吐」（逐 token 帧时间戳折出来的
+  // `usage.tokensPerSecond`，回退宿主保留的 `lastSpeed`）：那是**另一个数**，
+  // 与悬停明细里写的「平均输出速度」对不上，用户看到的就是「胶囊上的数字和
+  // 明细里的不一样」（2026-09-15 口径：以明细为准，两边同一个数）。
+  const stats = state.sessionStats;
   const lastMessage = state.messages.at(-1);
-  const tps = lastMessage?.usage?.tokensPerSecond ?? state.lastSpeed;
+  const tps =
+    stats && stats.decodeMs > 0 && stats.decodeTokens > 0
+      ? stats.decodeTokens / (stats.decodeMs / 1000)
+      : undefined;
+  const speedValue = tps !== undefined ? formatTps(tps) : undefined;
 
   // 速度值的悬停明细：全日志会话统计（`sessionStats` 投影），口径对齐
   // Web 的「会话统计」对话框；未知项省略，无数据则不显示 tooltip。
-  // 第一行是**标题**：明细里的「平均输出速度」是全会话累计（Σ 输出 token ÷
-  // Σ 解码窗口），而胶囊上直接显示的那个数取最近一条助手消息的解码窗口——
-  // 两者本来就不是同一个数，不写清口径就会被当成同一个值对不上。
-  const stats = state.sessionStats;
+  // 第一行是**标题**；「平均输出速度」这一行与胶囊上的数字**同源同格式**
+  // （同一个 `formatTps` + 同一个词典 key），否则「显示的是不是同一个值」
+  // 又要靠人眼比对。
   const statsTitle = stats
     ? [
         texts.statsTitle,
         stats.llmMs > 0 ? `${texts.statsLlmTime} ${formatDuration(stats.llmMs)}` : null,
         stats.toolMs > 0 ? `${texts.statsToolTime} ${formatDuration(stats.toolMs)}` : null,
         stats.ttftSteps > 0 ? `${texts.statsTtft} ${formatDuration(stats.ttftMs / stats.ttftSteps)}` : null,
-        stats.decodeMs > 0 && stats.decodeTokens > 0
-          ? `${texts.statsSpeed} ${Math.round(stats.decodeTokens / (stats.decodeMs / 1000))} tok/s`
-          : null,
+        speedValue !== undefined ? `${texts.statsSpeed} ${texts.tokensPerSecond(speedValue)}` : null,
       ]
         .filter((line): line is string => line !== null)
         .join("\n")
@@ -642,9 +727,9 @@ export function Composer({
   );
 
   const speedText =
-    tps !== undefined ? (
+    speedValue !== undefined ? (
       <span className="ctx-speed" title={statsTitle || undefined}>
-        {tps.toFixed(1)} tps
+        {texts.tokensPerSecond(speedValue)}
       </span>
     ) : null;
 
@@ -747,73 +832,124 @@ export function Composer({
       {/* 触发词候选：浮在输入框上方 */}
       {trigger && (candidates.length > 0 || trigger.kind === "mention") ? (
         <div className="popover trigger-popover" role="listbox" ref={popoverRef}>
-          <div className="popover-section">
-            {trigger.kind === "command" ? texts.commands : texts.mentionFiles}
-          </div>
           {candidates.length === 0 ? (
-            <div className="popover-empty">
-              {trigger.kind === "command" ? texts.commandsEmpty : texts.mentionEmpty}
-            </div>
+            <>
+              <div className="popover-section">
+                {trigger.kind === "command" ? texts.commands : texts.mentionFiles}
+              </div>
+              <div className="popover-empty">
+                {trigger.kind === "command" ? texts.commandsEmpty : texts.mentionEmpty}
+              </div>
+            </>
           ) : (
             candidates.slice(0, 40).map((candidate, index) => {
               const isCommand = trigger.kind === "command";
-              const row = candidate as CommandView & FileRefView;
-              // 「..」也算目录行，但不是服务端给的目录：它不该有「整个目录」按钮
-              const isParent = !isCommand && row.parent === true;
-              const isFolder = !isCommand && row.kind === "directory" && !isParent;
+              const isSession = !isCommand && isSessionCandidate(candidate);
+              const row = candidate as CommandView & FileRefView & SessionRefView;
+              // 「..」也算目录行，但不是服务端给的目录：它是「回上一层」——右侧不该有
+              // 「整个目录」按钮，也不算「这一组有可下钻的目录」（标题栏那个 Tab 提示）
+              const isParent = !isCommand && !isSession && row.parent === true;
+              const isFolder = !isCommand && !isSession && row.kind === "directory" && !isParent;
+              // 分组标题在**组的第一行**前面渲染（官方 MenuView 按 `section` 变更加标题）：
+              // `@` 于是有「文件」「对话」两组，命令只有一组。
+              const section = sectionOf(candidate);
+              const showSection = index === 0 || sectionOf(candidates[index - 1]) !== section;
               return (
-                <div
-                  key={isCommand ? row.name : row.path}
-                  className={`popover-item${index === highlight ? " is-selected" : ""}`}
-                  onMouseEnter={() => setHighlight(index)}
-                >
-                  {/* 主体：点它选中。目录在 `@` 列表里**默认是打开该目录**（下钻），
-                      只有右侧的「整个目录」按钮才是把目录本身载入——用户明确的口径。
-                      「..」一行的语义是回到上一层，同样是「选中即生效」。 */}
-                  <button
-                    className="popover-item-hit"
-                    title={isParent ? texts.mentionParent : undefined}
-                    onMouseDown={(event) => {
-                      event.preventDefault();
-                      applyCandidate(index);
-                    }}
+                <Fragment key={isCommand ? `c:${row.name}` : isSession ? `s:${row.sessionId}` : `f:${row.path}`}>
+                  {showSection ? (
+                    <div className="popover-section popover-section-row">
+                      <span>{section}</span>
+                      {/* 「Tab 进入目录」提示挂在**文件分组标题栏的最右侧**（靠右）：
+                          它是这一组目录行的键盘说明，不是某一行的动作按钮——
+                          行右侧那个位置留给「整个目录」按钮（见下面）。 */}
+                      {!isCommand && section === texts.mentionFiles && hasFolderCandidate ? (
+                        <>
+                          <span className="spacer" />
+                          <span className="popover-drill-hint">
+                            <kbd className="popover-item-key">{texts.mentionDrillKey}</kbd>
+                            {texts.mentionDrill}
+                          </span>
+                        </>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  <div
+                    className={`popover-item${index === highlight ? " is-selected" : ""}`}
+                    onMouseEnter={() => setHighlight(index)}
                   >
-                    {/* 命令名走「优先完整」那档样式（`.is-priority`）：宽度不够时
-                        先省略右边的描述，绝不把命令截成 `/git-guard…`（用户口径）。
-                        文件路径不做这个标记——长路径必须能省略。 */}
-                    <span
-                      className={`popover-item-main${
-                        isCommand || isParent ? " is-priority" : ""
-                      }`}
-                    >
-                      {isCommand ? `/${row.name}` : isParent ? ".." : row.path}
-                    </span>
-                    {isParent ? (
-                      <span className="popover-item-sub">
-                        {/* 上一层就是根目录时没有路径可显示，退回说明文案 */}
-                        {row.path || texts.mentionParent}
-                      </span>
-                    ) : isCommand && row.description ? (
-                      <span className="popover-item-sub">{row.description}</span>
-                    ) : null}
-                    {isCommand && row.skill ? (
-                      <span className="popover-item-tag">{texts.skillTag}</span>
-                    ) : null}
-                  </button>
-                  {isFolder ? (
+                    {/* 主体：点它 = 选中（等于 Enter）。文件 / 对话插入引用 token；
+                        目录插入 `@dir/`（**引用整个目录**）；「..」回上一层。
+                        下钻只走右侧的 Tab 徽标（见下面的按钮），与官方一致。 */}
                     <button
-                      className="popover-item-action"
-                      title={texts.attachFolder}
+                      className="popover-item-hit"
+                      title={isParent ? texts.mentionParent : undefined}
                       onMouseDown={(event) => {
                         event.preventDefault();
-                        applyCandidate(index, true);
+                        applyCandidate(index, "pick");
                       }}
                     >
-                      <IconFolder size={11} />
-                      {texts.attachFolder}
+                      {/* 命令名与对话标题走「优先完整」那档样式（`.is-priority`）：宽度不够时
+                          先省略右边的描述，绝不把命令截成 `/git-guard…`、把对话截成半个标题。
+                          文件路径不做这个标记——长路径必须能省略。 */}
+                      <span
+                        className={`popover-item-main${
+                          isCommand || isParent || isSession ? " is-priority" : ""
+                        }`}
+                      >
+                        {isCommand
+                          ? `/${row.name}`
+                          : isSession
+                            ? row.label
+                            : isParent
+                              ? ".."
+                              : row.path}
+                      </span>
+                      {isParent ? (
+                        <span className="popover-item-sub">
+                          {/* 上一层就是根目录时没有路径可显示，退回说明文案 */}
+                          {row.path || texts.mentionParent}
+                        </span>
+                      ) : isCommand && row.description ? (
+                        <span className="popover-item-sub">{row.description}</span>
+                      ) : isSession ? (
+                        // 对话候选的次要说明照官方 `sessionCandidate`：非同工作区时给
+                        // 工作目录（没有记录给「无工作目录」占位），再接时间。
+                        <span className="popover-item-sub">
+                          {[
+                            row.sameWorkspace
+                              ? undefined
+                              : row.cwd
+                                ? row.cwd
+                                : texts.mentionNoCwd,
+                            row.updatedAt !== undefined ? formatClock(row.updatedAt) : undefined,
+                          ]
+                            .filter((part): part is string => Boolean(part))
+                            .join(" · ")}
+                        </span>
+                      ) : null}
+                      {isCommand && row.skill ? (
+                        <span className="popover-item-tag">{texts.skillTag}</span>
+                      ) : null}
                     </button>
-                  ) : null}
-                </div>
+                    {/* 目录行右侧：**整个目录**（原样保留的按钮）——点它就是把目录本身
+                        作为 `@dir/` 引用载入。它与点行主体（Enter）是**同一个动作**，
+                        按钮只是把这件事显式摆出来；「进入目录」是 Tab 的事，
+                        提示在分组标题栏右侧（见上）。 */}
+                    {isFolder ? (
+                      <button
+                        className="popover-item-action"
+                        title={texts.attachFolder}
+                        onMouseDown={(event) => {
+                          event.preventDefault();
+                          applyCandidate(index, "pick");
+                        }}
+                      >
+                        <IconFolder size={11} />
+                        {texts.attachFolder}
+                      </button>
+                    ) : null}
+                  </div>
+                </Fragment>
               );
             })
           )}

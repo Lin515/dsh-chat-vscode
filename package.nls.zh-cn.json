@@ -17,7 +17,6 @@
   "config.command": "未填写外部 DSH 服务 URL 时，用它启动内部 DSH。**重载窗口后生效。**",
   "config.url": "已运行的 `dsh web` 服务地址（例如 `http://127.0.0.1:3080`）。**填了就完全接管**：`dshChat.command` 与 `dshChat.autoStart` 都不再生效，扩展直接连这个地址。\n\n**改完需要重载窗口才生效。**",
   "config.autoStart": "VSCode启动时，自动启动 DSH 后台服务。使用外部 URL 时，本配置项无效",
-  "config.openPanelOnStartup": "VS Code 启动时在编辑器区打开对话面板。",
   "config.supervisorIdleSec": "最后一个窗口关掉之后，后台再等多少秒没人用才自动关闭（秒）。设得太小会在窗口重载的空档里把后台关掉。",
   "config.diffLayout": "编辑类工具调用的改动怎么排版：单栏还是左右对照。",
   "config.diffLayout.auto": "自适应：窄面板单栏，宽面板双栏。",

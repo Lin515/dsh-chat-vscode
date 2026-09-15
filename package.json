@@ -172,11 +172,6 @@
           "default": "",
           "markdownDescription": "%config.url%"
         },
-        "dshChat.openPanelOnStartup": {
-          "type": "boolean",
-          "default": false,
-          "description": "%config.openPanelOnStartup%"
-        },
         "dshChat.diffLayout": {
           "type": "string",
           "enum": [

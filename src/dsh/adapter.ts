@@ -9,6 +9,7 @@ import type {
   InjectedView,
   MessageView,
   ModelSelectionView,
+  QuestionAnswerView,
   QuestionView,
   Segment,
   SessionSummaryView,
@@ -25,6 +26,7 @@ import {
   parseSnapshotSections,
 } from "../shared/injectedSource";
 import { classifyTool, parseExitStatus, summaryKeys, terminalFailed } from "../shared/toolMeta";
+import { displaySessionMentions } from "../shared/mentions";
 import { readRangeFromMeta, readRangeFromOutput } from "./readRange";
 import { producedPath } from "./produced";
 import type { HostToWebview } from "../shared/ipc";
@@ -39,6 +41,55 @@ import {
   type TokenUsage,
   type WireMessage,
 } from "./protocol";
+
+/**
+ * 一份问卷的**身份**：它的题目 id 集合（排序后拼接）。
+ *
+ * 用来把「已经拿到的答案」与「还没建卡的提问」对上——工具结果里只有题目 id
+ * 与答案，没有提问本身的身份（见 `answeredQuestions`）。
+ */
+function questionKey(items: readonly { id: string }[]): string {
+  return items
+    .map((item) => item.id)
+    .sort()
+    .join("\u0000");
+}
+
+/**
+ * 解析 `ask_user_question` 的工具结果文本。
+ *
+ * 工具把答案渲染成 `JSON.stringify({answers:[{id, selected, custom?}]})`
+ * （`dsh-tool-ask-user` 的 `output.render`），所以正文就是一个 JSON 对象；
+ * 这里只做**保守**解析：解析不出来或形状不对就返回 undefined（宁可少一次
+ * 收场，也不能把别的工具结果误当成答案）。`parseToolResult` 之外的包装
+ * （例如前后有别的行）靠首尾花括号截取兜住。
+ */
+function parseQuestionAnswers(text: string): { id: string; selected: string[]; custom?: string }[] | undefined {
+  const trimmed = text.trim();
+  if (!trimmed) return undefined;
+  const start = trimmed.indexOf("{");
+  const end = trimmed.lastIndexOf("}");
+  if (start < 0 || end <= start) return undefined;
+  let value: unknown;
+  try {
+    value = JSON.parse(trimmed.slice(start, end + 1));
+  } catch {
+    return undefined;
+  }
+  const answers = (value as { answers?: unknown })?.answers;
+  if (!Array.isArray(answers)) return undefined;
+  const parsed: { id: string; selected: string[]; custom?: string }[] = [];
+  for (const item of answers as { id?: unknown; selected?: unknown; custom?: unknown }[]) {
+    if (!item || typeof item.id !== "string" || !item.id) return undefined;
+    if (!Array.isArray(item.selected)) return undefined;
+    parsed.push({
+      id: item.id,
+      selected: item.selected.filter((label): label is string => typeof label === "string"),
+      ...(typeof item.custom === "string" && item.custom ? { custom: item.custom } : {}),
+    });
+  }
+  return parsed;
+}
 
 /** 从内容块里取出纯文本（含工具结果里的嵌套文本）。 */
 export function blocksToText(content: unknown): string {
@@ -464,6 +515,23 @@ export class SessionAdapter {
    * 会话、以及页面重载后正确显示（重放只发生在 follow 流开窗那一刻）。
    */
   private hasMore = false;
+
+  /**
+   * `approval/asked` 的 id → 该次审批针对的工具调用 id。
+   *
+   * 会话日志里审计对是 `approval/asked {id, toolName, callId?}` 与
+   * `approval/decided {id, outcome}`；卡片手里只有 waterfall 的 eventId 与
+   * `callId`，靠这张表把 decided 对回卡片（见 `resolveApprovalByCallId`）。
+   */
+  private readonly approvalCallIds = new Map<string, string | undefined>();
+
+  /**
+   * 已经拿到答案、但本窗口还没有对应卡片的问卷（键 = 题目 id 集合）。
+   *
+   * 场景：窗口重连后服务端先重投递了工具结果、水瀑才到；或者答案属于更早的
+   * 提问。卡片补建时按这个直接建成「已答完」并带上答案（见 `addQuestion`）。
+   */
+  private readonly answeredQuestions = new Map<string, Record<string, QuestionAnswerView>>();
 
   /**
    * 重放期间**不发帧**（见 `refold`）。
@@ -900,7 +968,10 @@ export class SessionAdapter {
       case "user/message": {
         const message = data as WireMessage;
         const kind = message?.source?.kind;
-        const text = blocksToText(message?.content);
+        // 对话引用（`@[标题](dsh-session:…)`）在落盘事件里是**原始 token**：服务端
+        // 只给模型那一份副本做替换（`prepareDirectMessages`），转写要自己折成
+        // 可读的 `@标题`，否则用户看到一长串带着 base64 会话 id 的 token。
+        const text = displaySessionMentions(blocksToText(message?.content));
         if (kind === "user" || kind === "user-rpc") {
           // 非文本块（图片 / 文件）**不能丢**：此前的 `if (!text) break;` 会
           // 让「纯图片用户消息」整条不渲染——用户发了张图，界面上什么都没有
@@ -981,7 +1052,36 @@ export class SessionAdapter {
           Boolean(data.error) ||
           (Array.isArray(message?.content) &&
             (message!.content as ContentBlock[]).some((b) => b.type === "tool-result" && b.isError));
+        const toolName = this.toolNameOf(callId);
         this.finishToolCall(event.time, callId, text, isError, data.meta, resultContent);
+        // 问卷的**权威收场信号**：结果里就是用户答案（不论哪个窗口答的）。
+        // 权限审批不需要在这里处理：它有专门的 `approval/decided` 审计事件。
+        if (toolName === "ask_user_question") this.applyQuestionAnswers(text);
+        break;
+      }
+
+      /**
+       * 审批的审计对（`dsh-user-approval`）：`asked` 记 id↔callId，
+       * `decided` 带上四个收场值之一（`allowed-once` / `rejected` / `cancelled` /
+       * `unavailable`）。审批卡的收场靠它——**另一个窗口**答的审批，本窗口只会从
+       * 会话日志知道结果（那条 waterfall 是别人答的）。
+       */
+      case "approval/asked": {
+        const id = String(data.id ?? "");
+        if (!id) break;
+        this.approvalCallIds.set(id, typeof data.callId === "string" ? data.callId : undefined);
+        break;
+      }
+
+      case "approval/decided": {
+        const id = String(data.id ?? "");
+        const callId = this.approvalCallIds.get(id);
+        this.approvalCallIds.delete(id);
+        const outcome = String(data.outcome ?? "");
+        this.resolveApprovalByCallId(
+          callId,
+          outcome === "allowed-once" ? "approved" : outcome === "rejected" ? "rejected" : "expired",
+        );
         break;
       }
 
@@ -1716,6 +1816,16 @@ export class SessionAdapter {
     this.emit({ type: "message/append", messageId: message.id, segment: { ...segment, tool: { ...tool } } as Segment });
   }
 
+  /** 这次工具调用的工具名（结果到达时用来判定「是不是问卷工具」）。 */
+  private toolNameOf(callId: string): string | undefined {
+    const entry = this.toolSegments.get(callId);
+    if (!entry) return undefined;
+    const segment = this.byId
+      .get(entry.messageId)
+      ?.segments.find((candidate) => candidate.id === entry.segmentId);
+    return segment?.kind === "tool" ? segment.tool.name : undefined;
+  }
+
   private finishToolCall(
     ts: number,
     callId: string,
@@ -1934,20 +2044,172 @@ export class SessionAdapter {
     }
   }
 
+  /**
+   * 按工具调用 id 收掉一张审批卡（会话日志 `approval/decided` 的入口，见
+   * `applyEvent`）：另一个窗口答的审批，本窗口只能从会话日志知道结果。
+   *
+   * `callId` 缺失（asker 没给）时退化成「本会话唯一在等的那张」——Agent 一轮
+   * 只会挂起一次审批，这个兜底不会张冠李戴。
+   */
+  resolveApprovalByCallId(callId: string | undefined, state: ApprovalView["state"]): void {
+    let fallback: string | undefined;
+    for (const message of this.messages) {
+      for (const segment of message.segments) {
+        if (segment.kind !== "approval" || segment.approval.state !== "waiting") continue;
+        if (callId !== undefined && segment.approval.callId === callId) {
+          this.resolveApproval(segment.approval.requestId, state);
+          return;
+        }
+        if (segment.approval.callId === undefined) fallback = segment.approval.requestId;
+      }
+    }
+    if (callId === undefined && fallback) this.resolveApproval(fallback, state);
+  }
+
+  /**
+   * 本会话里**还没有答案**、且题目 id 被 `ids` 全覆盖的那张问卷卡（从后往前找）。
+   *
+   * 不要求它还在 `waiting`：另一个窗口答完时，网关先把请求撤回（本窗口那张卡
+   * 已经是 `cancelled`），工具结果带着答案随后才进会话日志——它仍然是「这次提问
+   * 对应的那张卡」。
+   */
+  private unansweredQuestionCoveredBy(ids: readonly string[]): Extract<Segment, { kind: "question" }> | undefined {
+    const wanted = new Set(ids);
+    for (let index = this.messages.length - 1; index >= 0; index -= 1) {
+      const segments = this.messages[index].segments;
+      for (let at = segments.length - 1; at >= 0; at -= 1) {
+        const segment = segments[at];
+        if (segment.kind !== "question" || segment.question.answers) continue;
+        if (segment.question.items.every((item) => wanted.has(item.id))) return segment;
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * 从 `ask_user_question` 的工具结果里取出用户答案，收掉对应的问卷卡。
+   *
+   * **这是「问卷答完了」的权威判据之一**（会话监听侧）：工具的返回值就是
+   * `{answers:[{id, selected, custom?}]}` 的 JSON 文本（见 `dsh-tool-ask-user`
+   * 的 `output.render`），与是哪个窗口答的无关。本窗口没在等这张卡（水瀑重投递
+   * 前就处理过答案，或答案属于更早的提问）时按「题目 id 集合」记下来，卡片补建
+   * 时直接建成已答完（见 `addQuestion`）。
+   */
+  private applyQuestionAnswers(text: string): void {
+    const parsed = parseQuestionAnswers(text);
+    if (!parsed || parsed.length === 0) return;
+    const answers: Record<string, QuestionAnswerView> = {};
+    for (const item of parsed) {
+      answers[item.id] = {
+        selected: item.selected,
+        // 没写自定义回答时**不留这个键**：过线时 undefined 会被丢掉，
+        // 留一个 `custom: undefined` 只会让两边的形状对不上
+        ...(item.custom ? { custom: item.custom } : {}),
+      };
+    }
+    const target = this.unansweredQuestionCoveredBy(Object.keys(answers));
+    // 只在答案**覆盖了这道题的全部题目 id**时才认领（见
+    // `unansweredQuestionCoveredBy`）：跟随窗口里可能混着更早一轮的提问结果，
+    // 光看「有没有在等的卡」会张冠李戴。
+    if (target) {
+      this.resolveQuestion(target.question.requestId, answers);
+      return;
+    }
+    this.answeredQuestions.set(questionKey(Object.keys(answers).map((id) => ({ id }))), answers);
+  }
+
   /** 追加一个提问卡片到当前回合。 */
   addQuestion(question: QuestionView): void {
     const message = this.ensureAssistantMessage(Date.now());
-    const segment: Segment = { kind: "question", id: `q:${question.requestId}`, question };
+    const id = `q:${question.requestId}`;
+    const existing = message.segments.find((segment) => segment.id === id);
+    if (existing && existing.kind === "question") {
+      // 已经收场的卡片不被重投递改回 waiting（服务端只在请求**还没结算**时重投递，
+      // 这一步是純防御；真出现只会把用户答完的卡片又变回可编辑）
+      if (existing.question.state !== "waiting") return;
+      existing.question = question;
+      this.emit({ type: "message/segment", messageId: message.id, segment: { ...existing, question: { ...question } } as Segment });
+      return;
+    }
+    // 会话监听已经判定这次提问答过了（服务端重投递 waterfall 与本窗口收到
+    // 工具结果有先后）：直接建成「已答完」，别再把输入区占住。
+    const known = this.answeredQuestions.get(questionKey(question.items));
+    const resolved: QuestionView = known
+      ? { ...question, state: "answered", answers: known }
+      : question;
+    if (known) this.answeredQuestions.delete(questionKey(question.items));
+    const segment: Segment = { kind: "question", id, question: resolved };
     this.pushSegment(message, segment);
     this.emit({ type: "message/append", messageId: message.id, segment });
   }
 
-  resolveQuestion(requestId: string): void {
+  /**
+   * 收掉一张提问卡片。`answers` 是**用户当时选了什么**（展开记录要显示它）。
+   *
+   * 三种到达方式共用这里（见 `controller.onEventFrame` 的 `cancel` 与
+   * `applyEvent` 的 `tool/result`）：本窗口提交、另一个窗口提交后 Host 撤回、
+   * 以及会话日志里这次 `ask_user_question` 工具的结果回来。
+   */
+  resolveQuestion(requestId: string, answers?: Record<string, QuestionAnswerView>): void {
     for (const message of this.messages) {
-      const segment = message.segments.find((s) => s.kind === "question" && s.question.requestId === requestId);
-      if (segment && segment.kind === "question") {
+      const segment = message.segments.find(
+        (s) => s.kind === "question" && s.question.requestId === requestId,
+      );
+      if (!segment || segment.kind !== "question") continue;
+      if (answers) {
+        // **有答案就是答过了**，哪怕先收到过 `cancel`：另一个窗口答完之后，网关
+        // 先撤回请求（本窗口只看到「被撤回」），工具结果带着答案随后进会话日志。
+        // 这里要把状态从 `cancelled` 纠正回 `answered`，否则记录里会写着
+        // 「已取消」却列着一堆答案。
         segment.question.state = "answered";
-        this.emit({ type: "message/segment", messageId: message.id, segment: { ...segment, question: { ...segment.question } } as Segment });
+        segment.question.answers = answers;
+      } else if (segment.question.state === "waiting") {
+        segment.question.state = "answered";
+      }
+      this.emit({
+        type: "message/segment",
+        messageId: message.id,
+        segment: { ...segment, question: { ...segment.question } } as Segment,
+      });
+      return;
+    }
+  }
+
+  /**
+   * 把一次**被撤回**的交互收场（Host 撤回 waterfall：另一个客户端答了、
+   * 轮次中止、Agent Context 释放）。
+   *
+   * 撤回不等于「答过了」：提问标成 `cancelled`（没人回答过），审批标成
+   * `expired`。两者都必须离开 `waiting`，否则输入区一直挂着一张永远等不到
+   * 结果的卡片（用户 2026-09-15 报的多窗口问卷问题）。
+   */
+  cancelEvent(requestId: string): void {
+    for (const message of this.messages) {
+      const segment = message.segments.find(
+        (s) =>
+          (s.kind === "question" && s.question.requestId === requestId) ||
+          (s.kind === "approval" && s.approval.requestId === requestId),
+      );
+      if (!segment) continue;
+      if (segment.kind === "question") {
+        if (segment.question.state !== "waiting") return;
+        segment.question.state = "cancelled";
+        this.emit({
+          type: "message/segment",
+          messageId: message.id,
+          segment: { ...segment, question: { ...segment.question } } as Segment,
+        });
+        return;
+      }
+      if (segment.kind === "approval") {
+        if (segment.approval.state !== "waiting") return;
+        segment.approval.state = "expired";
+        this.emit({
+          type: "message/segment",
+          messageId: message.id,
+          segment: { ...segment, approval: { ...segment.approval } } as Segment,
+        });
+        return;
       }
     }
   }

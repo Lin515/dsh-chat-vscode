@@ -523,6 +523,26 @@ export interface SessionSummaryWire {
   projections?: { asOfSeq: number; values: Record<string, unknown> };
 }
 
+/**
+ * 对话引用候选（`sessionReferenceResolver/candidates` 的线格式）。
+ *
+ * 契约：`@deepseek-ai/dsh-session-reference/lib/types/types.d.ts` 的
+ * `SessionReferenceMentionCandidate`——`mention` 是服务端铸好的规范 token
+ * （`@[label](dsh-session:…)`），客户端原样插进正文即可，服务端在消息进入
+ * 模型前把它换成被引用会话的快照。
+ */
+export interface SessionReferenceCandidateWire {
+  sessionId: string;
+  label: string;
+  cwd?: string;
+  /** 与发起会话同一工作目录（服务端算好的，客户端不比较路径）。 */
+  sameWorkspace?: boolean;
+  /** 源会话创建时间（epoch ms）。 */
+  createdAt?: number;
+  /** 规范 mention token。 */
+  mention: string;
+}
+
 export interface ModelGroupWire {
   id: string;
   name: string;

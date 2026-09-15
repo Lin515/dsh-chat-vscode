@@ -66,10 +66,34 @@ console.log("questionFlow: 提交闸门覆盖全部题目 ✓");
 {
   const rows = readFileSync(join(process.cwd(), "src", "webview", "components", "Rows.tsx"), "utf8");
   assert.ok(/questionMode\(items\.length, batch\)/.test(rows), "QuestionCard 必须用 questionMode 决定形态");
-  assert.ok(/canSubmit\(items, selected, custom\)/.test(rows), "提交按钮的可用性走 canSubmit");
+  assert.ok(
+    /canSubmit\(items, effectiveSelected, effectiveCustom\)/.test(rows),
+    "提交按钮的可用性走 canSubmit（喂的是「宿主答案 + 本地草稿」折出来的两张表）",
+  );
+  // 已答完的卡片必须**优先读宿主的 answers**：本地 state 在重挂载 / 另一个窗口答的
+  // 情况下是空的，只看它就复现「展开后没有用户的回答」（用户 2026-09-15 报的）
+  assert.ok(
+    /question\.answers\?\.\[itemId\]\?\.selected/.test(rows) &&
+      /question\.answers\?\.\[itemId\]\?\.custom/.test(rows),
+    "已答完的问卷要以 question.answers 为准（本地 state 只作回退）",
+  );
   assert.ok(
     /if \(!waiting\)[\s\S]{0,400}open=\{expanded\}/.test(rows),
     "已答完的问卷必须默认收缩成一行（可再展开）",
+  );
+  // 自定义回答与普通选项**同一列表**：它必须是 `.question-option` 那一行，
+  // 单选点它时清空已选（互斥），选普通选项时清掉自定义回答（官方 choose/draftCustom）
+  assert.ok(
+    /className=\{`question-option question-custom\$\{customActive \? " is-selected" : ""\}`\}/.test(rows),
+    "自定义回答必须是选项列表里的一行（.question-option.question-custom）",
+  );
+  assert.ok(
+    /if \(!multi\) setCustom\(\(prev\) => \(\{ \.\.\.prev, \[itemId\]: "" \}\)\)/.test(rows),
+    "单选：选中普通选项要清掉自定义回答（两者是同一问题的两种答法）",
+  );
+  assert.ok(
+    /if \(!multi\) setSelected\(\(prev\) => \(\{ \.\.\.prev, \[itemId\]: \[\] \}\)\)/.test(rows),
+    "单选：写自定义回答 / 点它都要清掉已选选项（互斥）",
   );
   const composer = readFileSync(join(process.cwd(), "src", "webview", "components", "Composer.tsx"), "utf8");
   assert.ok(

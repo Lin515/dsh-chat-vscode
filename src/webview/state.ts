@@ -6,6 +6,7 @@ import type {
   FileRefView,
   MessageView,
   Segment,
+  SessionRefView,
   SessionSummaryView,
   SettingsSectionView,
   SubagentView,
@@ -32,7 +33,7 @@ export interface AppState extends ChatState {
   archivedSessions: SessionSummaryView[];
   panel: PanelKind;
   commands: CommandView[];
-  fileRefs: { query: string; items: FileRefView[] };
+  fileRefs: { query: string; items: FileRefView[]; sessions: SessionRefView[] };
   subagentEntries: SubagentView[];
   /**
    * 轨迹账本（宿主折叠后下发，见 `src/dsh/trajectory.ts`）。
@@ -68,7 +69,7 @@ export const initialState: AppState = {
   archivedSessions: [],
   panel: "none",
   commands: [],
-  fileRefs: { query: "", items: [] },
+  fileRefs: { query: "", items: [], sessions: [] },
   subagentEntries: [],
   settingsSections: [],
   settingsWritable: false,
@@ -204,7 +205,10 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, commands: action.commands };
 
     case "files/list":
-      return { ...state, fileRefs: { query: action.query, items: action.items } };
+      return {
+        ...state,
+        fileRefs: { query: action.query, items: action.items, sessions: action.sessions ?? [] },
+      };
 
     case "settings/describe":
       return {

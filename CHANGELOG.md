@@ -6,6 +6,78 @@
 
 （发版时改成版本号。下面这一批是 0.5.1 之后报上来的问题与对齐工作。）
 
+### 用户报的一批（2026-09-15，用户口径）
+
+**一、历史会话跟随工作区；没有文件夹时只给「未分组」。** 可见性判据改成按**服务端
+工作区注册表**（`workspace/follow` 的 `items[].sessionIds`）——`session/list` 的
+`SessionSummary` **不带 workspaceId**，所以「这条会话属于哪个工作区」只能从注册表读，
+不在任何工作区里的就是未分组。两条兜底：会话 cwd == 当前工作区路径（新会话的 `upsert`
+增量可能比这次查询晚到）、以及**任何已打开域**的 cwd（恢复窗口时不能因为路径写法差异
+把要接回的会话滤掉）。此前没有文件夹时拿 `process.cwd()` 当工作区，未分组的会话一条
+都看不见。判据抽成 `sessionList.visibleForWorkspace`（纯函数，带断言）。
+
+**二、答完的问卷展开后要显示用户当时选了什么。** `QuestionView` 补 `answers`
+（按题目 id 归档的 `{selected, custom}`），来源两处：本窗口提交时宿主立刻回填、
+会话日志里 `ask_user_question` 的工具结果（`{answers:[{id,selected,custom?}]}`）。
+卡片渲染**以 `question.answers` 为准**，组件本地 state 只作回退——重挂载、换会话回来、
+另一个窗口答的，本地 state 都是空的，只看它就复现「展开后一片空白」。
+
+**三、多窗口下问卷 / 审批要跟着收场。** 判据改成**与会话无关的两条权威信号**
+（这正是用户问的「检测标准」）：
+1. `$events` 的 `cancel` 帧——网关 `finishRemoteEvent` 在请求被**结算**（另一个客户端
+   答了 / 轮次中止 / Agent Context 释放）后推给所有还没答复的投递方，收到它什么都不要回，
+   只把本窗口那张卡收场（提问 → `cancelled`，审批 → `expired`；还在 `heldEvents` 里
+   挂着的直接丢掉，否则下次打开会话会凭空弹一张过期的卡）。
+2. 会话日志：审批有 `approval/asked {id, callId?}` / `approval/decided {id, outcome}`
+   审计对（按 `callId` 对回卡片，四档 outcome 映射到 approved / rejected / expired）；
+   提问则从问卷工具的结果里取答案。
+先收到 `cancel`、随后才拿到答案时，状态要从 `cancelled` **纠正回 `answered`**——
+记录里不能一边写「已取消」一边列着答案。回归断言见 `scripts/interactionSync.test.ts`。
+
+**四、问卷的自定义回答与普通选项同权。** 它是选项列表里的最后一行（同一套
+`.question-option` 外观），点它即选中；单选时**与选项互斥**（选它清空已选项、选选项
+清掉它，官方 `choose` / `draftCustom` 就是这么互相清空的），唯一区别是它带编辑框。
+
+**五、`@` 的按键语义与官方对齐（Enter 引用 / Tab 进入目录），并补上引用对话。**
+Enter（或点击行）= 载入整条候选（目录 → `@dir/`）；**Tab = 进入目录**。界面**不动既有
+按钮**：目录行右侧仍是「整个目录」（同一件事的显式入口——用户 2026-09-15 更正不要占
+那个位置），`Tab 进入目录`的键帽提示挂在**「文件」分组标题栏的最右侧**（只在这一组
+真有可下钻的目录时显示，`..` 不算）。候选列表另补上
+**「对话」组**，取自官方的 `sessionReferenceResolver/candidates`（确认过生成式描述符：
+`scope.wire = 'agentId'`、参数 `agentId + query`，与已经在用的 `fileReferences/list`
+同一套约定），选中把服务端铸好的 `@[标题](dsh-session:…)` mention 写进正文，服务端在
+消息进入模型前换成被引用会话的快照。**转写里看到的仍是可读的 `@标题`**：落盘的 durable
+事件保留原始 token（服务端只给模型那一份副本做替换），所以宿主按官方同一个正则把它折
+回去（`shared/mentions.ts` 的 `displaySessionMentions`）。
+
+**六、工作区缓存保存的是「当时的会话」，不是「初始会话」。** 根因：恢复期内**整个不写**
+（旧实现只记「待写」标记，等最后一个窗口认领），而 `pending` 可能永远为真——侧栏容器
+折叠着时它的视图这一代根本不会被实例化，于是这一轮的变更加起来一次都没落盘，
+`dispose()` 时 store 里还是启动时读到的那份旧缓存（用户报的「A 切到 B，重启还是 A」）。
+改成**合并写**（`windowState.mergeWindowCache`，纯函数）：已认领的部分用内存里的最新
+状态，尚未认领的按原位接在后面；写之前**惰性绑一次工作区身份**（只用编辑区面板、
+从没有侧栏被实例化时，键不绑就一个字节都写不出去）。
+
+**七、界面上的三处对齐。**
+- 轨迹时间线的右键是**平移手势**：`contextmenu` 无条件 `preventDefault`（此前只在
+  `zoom > 1` 时拦，未缩放时右键弹宿主菜单、看着像拖不动），平移监听挂在 `document`
+  上，拖出元素也继续跟手；span 与「加载更早」只拦左键。
+- 编辑框下方的 tps **始终**取明细里那条「平均输出速度」（会话统计的 Σ输出 ÷ Σ解码
+  窗口），与 Web 同口径；此前取「最近一条助手消息的解码窗口吞吐」，与明细里写的本来就
+  不是同一个数。两处共用同一个格式化函数与词典 key。
+- 删掉配置项 `dshChat.openPanelOnStartup`（连同两份 `package.nls*`、README 中英两表、
+  以及 `extension.ts` 里的读取点）。
+
+**验证与一条已知的探针问题**：`npm run typecheck`、`npm test`（49 套，新增
+`scripts/interactionSync.test.ts`（多窗口收发场判据 + `@` 对话引用接线）与
+`scripts/questionRender.test.ts`（用 `react-dom/server` 真渲染问卷卡））、`npm run build`
+全绿；`npm run smoke` 除 **9c（停止：期望 `session/cancel` 后收到 `turn/end`
+reason=`aborted`）** 外全部通过。9c 不是本次改动引入的：用 `git worktree` 在**改动前的
+HEAD**（77cd70a）上原样复跑 `npm run smoke`，在同一个断言上以同样的形态失败
+（`turn/end = undefined`，30 秒等不到事件），而它前面的 1–9b 全部通过。判定为探针 /
+当前服务端环境的问题（`session/cancel` 后本轮不再补发 `turn/end`），与本次的适配器改动
+无关——`client.cancel` / `followSession` 这两条路径本次一行未动。
+
 ### 输入通道、历史加载、轮尾与面板的一批对齐（2026-09-14，用户口径）
 
 **零、「轨迹」与官方对齐（账本 + 详情检查器 + 工具栏 + 时间线）。**

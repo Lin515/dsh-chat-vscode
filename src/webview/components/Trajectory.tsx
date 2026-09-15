@@ -485,7 +485,6 @@ function TrajectoryTimeline({
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const dragging = useRef<number | null>(null);
-  const panning = useRef<{ x: number; offset: number } | null>(null);
   /**
    * 视口：`zoom` = 放大倍数（1 = 全部铺满），`offset` = 左边界在 0..1 里的位置。
    *
@@ -497,6 +496,28 @@ function TrajectoryTimeline({
 
   const maxOffset = Math.max(0, 1 - 1 / zoom);
   const clampOffset = (value: number) => Math.min(maxOffset, Math.max(0, value));
+
+  /**
+   * 右键盘平移：监听挂在 `document` 上，拖出时间线（甚至拖到窗口外）都继续跟手。
+   *
+   * 为什么不用 pointer capture：span 是 `<button>`，它们的选中靠 `onClick`；
+   * 在容器上捕获指针会把 click 重定向到容器，选中就点不动了。document 监听
+   * 对既有左键路径零影响。
+   */
+  const startPan = (startX: number) => {
+    const width = ref.current?.getBoundingClientRect().width ?? 0;
+    const startOffset = offset;
+    const startZoom = zoom;
+    const onMove = (event: MouseEvent) => {
+      if (width > 0) setOffset(clampOffset(startOffset - (event.clientX - startX) / width / startZoom));
+    };
+    const onUp = () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  };
   /** 归一化位置 → 屏幕位置（0..1）。 */
   const screen = (value: number) => (value - offset) * zoom;
 
@@ -543,7 +564,16 @@ function TrajectoryTimeline({
   };
 
   return (
-    <div className="trajectory-timeline">
+    <div
+      className="trajectory-timeline"
+      onContextMenu={(event) => {
+        // 整条时间线上右键都是**平移**手势，不是弹菜单（官方 `onContextMenu:
+        // e => e.preventDefault()`，无条件吃掉）。此前只拦了绘图区、且只在
+        // `zoom > 1` 时拦，于是右键会弹出 VS Code 的原生菜单、把「右键拖动」
+        // 整个挡住（用户 2026-09-15 报的就是这个）。
+        event.preventDefault();
+      }}
+    >
       <div className="trajectory-lanes" aria-hidden>
         <span>{texts.columnInput}</span>
         <span>{texts.columnModel}</span>
@@ -555,14 +585,12 @@ function TrajectoryTimeline({
         role="group"
         aria-label={texts.timelineAria}
         onWheel={onWheel}
-        onContextMenu={(event) => {
-          // 右键是**平移**手势（官方 `pannable`）：不弹原生菜单
-          if (zoom > 1) event.preventDefault();
-        }}
         onMouseDown={(event) => {
-          // 右键 + 已缩放 → 平移视口（官方同款）
-          if (event.button === 2 && zoom > 1) {
-            panning.current = { x: event.clientX, offset };
+          // 右键 + 已缩放 → 平移视口（官方同款 `pannable: viewport !== null`）。
+          // 拖到时间线外面也要跟手，所以监听挂在 document 上（官方用 pointer capture，
+          // 同样的目的；这里用 document 是为了不打断 span 的点击选中）。
+          if (event.button === 2) {
+            if (zoom > 1) startPan(event.clientX);
             return;
           }
           if (event.button !== 0) return;
@@ -571,13 +599,6 @@ function TrajectoryTimeline({
           onRange({ start: at, end: at });
         }}
         onMouseMove={(event) => {
-          const pan = panning.current;
-          if (pan) {
-            const el = ref.current;
-            const width = el?.getBoundingClientRect().width ?? 0;
-            if (width > 0) setOffset(clampOffset(pan.offset - (event.clientX - pan.x) / width / zoom));
-            return;
-          }
           const start = dragging.current;
           if (start === null) return;
           const at = positionOf(event.clientX);
@@ -585,11 +606,9 @@ function TrajectoryTimeline({
         }}
         onMouseUp={() => {
           dragging.current = null;
-          panning.current = null;
         }}
         onMouseLeave={() => {
           dragging.current = null;
-          panning.current = null;
         }}
         onDoubleClick={() => {
           // 双击：先清空选区；已经没选区了就把缩放复位（官方双击是清选区，这里多一步
@@ -637,7 +656,11 @@ function TrajectoryTimeline({
                 width: `${Math.max(width * 100, 0.5)}%`,
               }}
               title={tooltipOf(span)}
-              onMouseDown={(event) => event.stopPropagation()}
+              // 只拦左键：右键拖动平移要能从这个 span 上起手（拦掉右键会让
+              // 「时间线任意位置右键拖动」在 span 上失效）
+              onMouseDown={(event) => {
+                if (event.button === 0) event.stopPropagation();
+              }}
               onClick={() => onSelect(span.cellIndex)}
             />
           );
@@ -663,7 +686,9 @@ function TrajectoryTimeline({
             aria-label={loadingEarlier ? texts.loadingEarlier : texts.loadEarlier}
             aria-disabled={loadingEarlier || undefined}
             disabled={loadingEarlier}
-            onMouseDown={(event) => event.stopPropagation()}
+            onMouseDown={(event) => {
+              if (event.button === 0) event.stopPropagation();
+            }}
             onClick={(event) => {
               event.stopPropagation();
               onLoadEarlier();

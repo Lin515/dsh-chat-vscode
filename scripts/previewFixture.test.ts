@@ -142,6 +142,37 @@ const must = [
   ["stopped 工具行", () => state.messages.some((m) => m.segments.some((s) => s.kind === "tool" && s.tool.status === "stopped"))],
   ["非零退出码工具行", () => state.messages.some((m) => m.segments.some((s) => s.kind === "tool" && s.tool.exitCode))],
   ["重试提示", () => state.messages.some((m) => m.segments.some((s) => s.kind === "notice" && s.text.startsWith("@llmRetry")))],
+  // 问卷的两种形态都要在夹具里：**已答完**那张必须带 `answers`（展开记录显示
+  // 「用户当时选了什么」只能靠它，用户 2026-09-15 报的就是它空着）；**待回答**
+  // 那张要有带选项的题，预览页才能看到「自定义回答与普通选项同一列表」。
+  [
+    "问卷：已答完带用户答案（含自定义回答）",
+    () => {
+      const answered = state.messages.flatMap((m) =>
+        m.segments.flatMap((s) =>
+          s.kind === "question" && s.question.state !== "waiting" ? [s.question] : [],
+        ),
+      );
+      return answered.some(
+        (q) =>
+          Object.values(q.answers ?? {}).some((a) => (a.selected?.length ?? 0) > 0) &&
+          Object.values(q.answers ?? {}).some((a) => Boolean(a.custom)),
+      );
+    },
+  ],
+  [
+    "问卷：待回答（含多选与带描述的选项）",
+    () =>
+      state.messages.some((m) =>
+        m.segments.some(
+          (s) =>
+            s.kind === "question" &&
+            s.question.state === "waiting" &&
+            s.question.items.some((item) => item.multiSelect === true) &&
+            s.question.items.some((item) => item.options.some((option) => option.description)),
+        ),
+      ),
+  ],
 ];
 
 let failed = 0;

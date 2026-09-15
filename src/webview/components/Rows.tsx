@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import type { MouseEvent } from "react";
 import { post } from "../bridge";
 import type {
@@ -581,13 +581,22 @@ export function ApprovalCard({ approval }: { approval: ApprovalView }) {
 /**
  * 问卷卡片（`ask_user_question`）。
  *
- * 三种形态：
+ * 四种形态：
  * 1. **待回答 · 一次展开**（题目数不超过 `dshChat.questionBatch`）：与原来一样，
  *    所有题目一起铺开，全部作答后才能提交；
  * 2. **待回答 · 依次问答**（题目数更多）：一次一道，带「第 N / M 题」与上一题 /
  *    下一题；单选点一下就前进（官方 `choose` 同口径），最后一题变成提交；
  * 3. **已答完**：默认**收缩成一行**（`已作答 N 题`），点行头可再展开看当时的题目
- *    ——用户 2026-09-14 的口径，免得答过的问卷常驻在对话流里占满屏。
+ *    与**用户当时选了什么**——答案取自 `question.answers`（宿主写进卡片的数据），
+ *    不是组件自己的 state：换会话回来、另一个窗口答的、页面重载之后，本地 state
+ *    都是空的（用户 2026-09-15 报的「展开后没有显示用户的回答」就是这个）；
+ * 4. **已撤回**（`cancelled`，没人回答过）：同样收缩成一行（`已取消 N 题`）。
+ *
+ * 自定义回答与其他选项**行为一致**（用户 2026-09-15 口径）：
+ * - 它是选项列表里的一行（同一个 `.question-option` 外观），点它即选中它；
+ * - 单选时它与其它选项互斥：选中它清空已选项，选中别的选项清空它（官方
+ *   `choose` / `draftCustom` 正是这么互相清空的）；
+ * - 唯一的不同是它带一个编辑框。
  *
  * `batch` 由宿主下发（webview 读不到 VS Code 配置），缺省用默认阈值。
  */
@@ -605,6 +614,7 @@ export function QuestionCard({
   // 已答完的问卷默认收缩；用户点开看记录后不再自动收起
   const [expanded, setExpanded] = useState(false);
   const waiting = question.state === "waiting";
+  const cancelled = question.state === "cancelled";
   const items = question.items;
   const mode = questionMode(items.length, batch);
   const stepped = waiting && mode === "stepped";
@@ -612,6 +622,33 @@ export function QuestionCard({
   // 免得 `items[current]` 变成 undefined 把整张卡渲染成空白
   const current = stepped ? Math.min(index, Math.max(0, items.length - 1)) : 0;
   const shown = stepped ? items.slice(current, current + 1) : items;
+
+  /**
+   * 收场后的答案**以宿主写进卡片的那份为准**。
+   *
+   * 本地 state 只在「本窗口刚提交、工具结果还没回来」的窗口里有意义；一旦
+   * `question.answers` 到了（本窗口提交时宿主立刻回填，或会话监听从工具结果里
+   * 取到），它就是权威值。
+   */
+  const selectedOf = (itemId: string): string[] =>
+    question.answers?.[itemId]?.selected ?? selected[itemId] ?? [];
+  const customOf = (itemId: string): string =>
+    question.answers?.[itemId]?.custom ?? custom[itemId] ?? "";
+
+  // 折成两个「按题目 id 归档」的表再交给 `questionFlow` 那几个纯函数：
+  // 判据（选了没选、能不能提交）只有一份，断言也钉在那边。
+  // 依赖就是这三样——`selectedOf` / `customOf` 是每次渲染重建的闭包，
+  // 把它们列进依赖等于每帧重算，所以按「数据源」列。
+  const effectiveSelected = useMemo(() => {
+    const map: Record<string, string[]> = {};
+    for (const item of items) map[item.id] = selectedOf(item.id);
+    return map;
+  }, [items, question.answers, selected]);
+  const effectiveCustom = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const item of items) map[item.id] = customOf(item.id);
+    return map;
+  }, [items, question.answers, custom]);
 
   const toggle = (itemId: string, label: string, multi?: boolean) => {
     setSelected((prev) => {
@@ -623,34 +660,62 @@ export function QuestionCard({
         : [label];
       return { ...prev, [itemId]: next };
     });
+    // 单选：选了普通选项就清掉自定义回答（官方 `choose` 的
+    // `{selected:[label], custom:""}`）——两者是同一个问题的两种答法
+    if (!multi) setCustom((prev) => ({ ...prev, [itemId]: "" }));
     // 单选：选中即前进（官方 `choose` 对非多选项就是 index + 1），
     // 最后一题不动——它下面是提交按钮
     if (stepped && !multi && current < items.length - 1) setIndex(current + 1);
+  };
+
+  /** 写自定义回答：单选时它顶掉已选选项（官方 `draftCustom`）。 */
+  const writeCustom = (itemId: string, value: string, multi?: boolean) => {
+    setCustom((prev) => ({ ...prev, [itemId]: value }));
+    if (!multi) setSelected((prev) => ({ ...prev, [itemId]: [] }));
   };
 
   const submit = () => {
     post({
       type: "answerQuestion",
       requestId: question.requestId,
-      answers: items.map((item) => ({
-        id: item.id,
-        selected: selected[item.id] ?? [],
-        custom: custom[item.id]?.trim() || undefined,
-      })),
+      answers: items.map((item) => {
+        const custom = effectiveCustom[item.id]?.trim() ?? "";
+        return {
+          id: item.id,
+          // 单选 + 自定义文本 ⇒ custom 覆盖、selected 为空（官方口径）
+          selected: custom === "" || item.multiSelect === true ? (effectiveSelected[item.id] ?? []) : [],
+          custom: custom || undefined,
+        };
+      }),
     });
   };
 
+  /**
+   * 在自定义回答的编辑框里按 Enter：依次问答时「答完就前进 / 最后一题提交」
+   * （官方 `continueFromCustom` → `continueFlow` 的同一条语义）。
+   *
+   * 一次展开的模式下什么都不做——那时提交按钮就在下面，Enter 不该有隐藏语义。
+   */
+  const continueFromCustom = (itemId: string) => {
+    if (!stepped) return;
+    if (!isAnswered(effectiveSelected[itemId], effectiveCustom[itemId])) return;
+    if (current < items.length - 1) setIndex(current + 1);
+    else if (canSubmit(items, effectiveSelected, effectiveCustom)) submit();
+  };
+
   /** 题目正文（两种形态共用）。 */
-  const renderItem = (item: QuestionView["items"][number]) => (
-    <div className="question-item" key={item.id}>
-      <div className="question-head">
-        <IconQuestion size={11} /> {item.header ?? texts.questionHead}
-      </div>
-      <div className="question-text">{item.question}</div>
-      {item.options.length ? (
+  const renderItem = (item: QuestionView["items"][number]) => {
+    const customValue = customOf(item.id);
+    const customActive = customValue.trim().length > 0;
+    return (
+      <div className="question-item" key={item.id}>
+        <div className="question-head">
+          <IconQuestion size={11} /> {item.header ?? texts.questionHead}
+        </div>
+        <div className="question-text">{item.question}</div>
         <div className="question-options">
           {item.options.map((option) => {
-            const isSelected = (selected[item.id] ?? []).includes(option.label);
+            const isSelected = selectedOf(item.id).includes(option.label);
             return (
               <button
                 key={option.label}
@@ -665,21 +730,45 @@ export function QuestionCard({
               </button>
             );
           })}
+          {/* 自定义回答：列表里的最后一行（官方把 `customRow` 放在选项之后、
+              同一个容器里）。记录态只在**当时真写过**时才补这一行（空的编辑框
+              在记录里只是噪音）。 */}
+          {waiting ? (
+            <label
+              className={`question-option question-custom${customActive ? " is-selected" : ""}`}
+              title={texts.questionCustomAria}
+              // 点这一行（含输入框之外的部分）= 选中它：单选先把其它选项清掉，
+              // 焦点交给输入框（label 包裹输入框，浏览器自己会把焦点送进去）
+              onMouseDown={() => {
+                if (!item.multiSelect) setSelected((prev) => ({ ...prev, [item.id]: [] }));
+              }}
+            >
+              <input
+                className="question-input"
+                aria-label={texts.questionCustomAria}
+                placeholder={texts.questionPlaceholder}
+                value={customValue}
+                onChange={(event) => writeCustom(item.id, event.target.value, item.multiSelect)}
+                onKeyDown={(event) => {
+                  // 输入法组字中的 Enter 是在选字，不是提交
+                  if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
+                  event.preventDefault();
+                  continueFromCustom(item.id);
+                }}
+              />
+            </label>
+          ) : customActive ? (
+            <div className="question-option question-custom is-selected">
+              <span className="question-option-label">{customValue}</span>
+            </div>
+          ) : null}
         </div>
-      ) : null}
-      {waiting ? (
-        <input
-          className="question-input"
-          placeholder={texts.questionPlaceholder}
-          value={custom[item.id] ?? ""}
-          onChange={(event) => setCustom((prev) => ({ ...prev, [item.id]: event.target.value }))}
-        />
-      ) : null}
-    </div>
-  );
+      </div>
+    );
+  };
 
-  // 已答完：收缩成一行（行头可点开复看题目）。用与工具行同一套 `Row`，
-  // 视觉语言不分家：这同样是「对话里发生过的一件事」。
+  // 已答完 / 已撤回：收缩成一行（行头可点开复看题目与当时的回答）。用与工具行
+  // 同一套 `Row`，视觉语言不分家：这同样是「对话里发生过的一件事」。
   if (!waiting) {
     return (
       <Row
@@ -689,7 +778,11 @@ export function QuestionCard({
           </span>
         }
         title={texts.questionHead}
-        detail={texts.questionAnswered(items.length)}
+        detail={
+          cancelled && !question.answers
+            ? texts.questionCancelled(items.length)
+            : texts.questionAnswered(items.length)
+        }
         open={expanded}
         onToggle={() => setExpanded(!expanded)}
       >
@@ -698,8 +791,11 @@ export function QuestionCard({
     );
   }
 
-  const currentAnswered = isAnswered(selected[items[current]?.id ?? ""], custom[items[current]?.id ?? ""]);
-  const ready = canSubmit(items, selected, custom);
+  const currentAnswered = isAnswered(
+    effectiveSelected[items[current]?.id ?? ""],
+    effectiveCustom[items[current]?.id ?? ""],
+  );
+  const ready = canSubmit(items, effectiveSelected, effectiveCustom);
 
   return (
     <div className="question">
@@ -812,7 +908,7 @@ export function TurnStatsButton({ stats }: { stats: TurnStatsView }) {
 }
 
 /** 输出速度的数值：官方 `formatTokensPerSecond` 的口径（一位小数）。 */
-function formatTps(value: number): string {
+export function formatTps(value: number): string {
   return value >= 100 ? String(Math.round(value)) : value.toFixed(1);
 }
 

@@ -12,7 +12,9 @@ import type {
   FileChangeKind,
   ModelSelectionView,
   ProviderGroupView,
+  QuestionAnswerView,
   QuestionView,
+  SessionRefView,
   SessionSummaryView,
   UploadState,
 } from "../shared/chat";
@@ -25,7 +27,7 @@ import { shouldContinuePaging } from "./historyPaging";
 import { composeWithReferences, formatFileMention } from "./references";
 import { formatFileMentionWithLines } from "../shared/mentions";
 import { resolveForVsCode } from "./hostText";
-import { DshApiError, DshAuthError, DshClient, type SessionSummaryWire } from "./client";
+import { DshApiError, DshAuthError, DshClient, type SessionReferenceCandidateWire, type SessionSummaryWire } from "./client";
 import type { RemoteEventFrame, RemoteEventWaterfall, SessionControlFrame } from "./protocol";
 import {
   ServerNotRunningError,
@@ -39,9 +41,9 @@ import { SessionScope } from "./scope";
 import { queueItems, type QueueOrigin } from "./queueView";
 import { goalFromProjection, planModeFromProjection, subagentsFromCatalog, subagentsFromList } from "./projections";
 import { deriveTrajectoryModel } from "./trajectory";
-import { lineageDepths, visibleSessionRows } from "./sessionList";
+import { lineageDepths, normalizePath, visibleForWorkspace, visibleSessionRows } from "./sessionList";
 import { buildSettingsSection } from "./settingsSchema";
-import { isBlank, WindowRestore, WorkspaceWindowStateStore, type SidebarSlot, type WindowCache, type WindowKind } from "./windowState";
+import { isBlank, mergeWindowCache, WindowRestore, WorkspaceWindowStateStore, type SidebarSlot, type WindowCache, type WindowKind } from "./windowState";
 
 /**
  * SecretStorage 里存「外部服务器会话 cookie」的 key 前缀。
@@ -134,6 +136,65 @@ function numberOr(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
+/** `workspace/follow` 的线格式（只取本地用得到的字段）。 */
+interface WorkspaceFollowFrameWire {
+  type?: string;
+  value?: {
+    items?: { workspaceId?: unknown; path?: unknown; sessionIds?: unknown }[];
+    archivedSessionIds?: string[];
+  };
+  workspace?: { workspaceId?: unknown; path?: unknown; sessionIds?: unknown };
+  workspaceId?: string;
+  archivedSessionIds?: string[];
+}
+
+/** 一条工作区记录的形状校验（坏数据逐条丢弃，不整份丢）。 */
+function workspaceRow(value: { workspaceId?: unknown; path?: unknown; sessionIds?: unknown } | undefined):
+  | { workspaceId: string; path: string; sessionIds: string[] }
+  | undefined {
+  const workspaceId = typeof value?.workspaceId === "string" ? value.workspaceId : "";
+  if (!workspaceId) return undefined;
+  return {
+    workspaceId,
+    path: typeof value?.path === "string" ? value.path : "",
+    sessionIds: Array.isArray(value?.sessionIds)
+      ? value.sessionIds.filter((id): id is string => typeof id === "string" && id.length > 0)
+      : [],
+  };
+}
+
+function workspaceRows(
+  items: { workspaceId?: unknown; path?: unknown; sessionIds?: unknown }[] | undefined,
+): { workspaceId: string; path: string; sessionIds: string[] }[] {
+  if (!Array.isArray(items)) return [];
+  const rows: { workspaceId: string; path: string; sessionIds: string[] }[] = [];
+  for (const item of items) {
+    const row = workspaceRow(item);
+    if (row) rows.push(row);
+  }
+  return rows;
+}
+
+/**
+ * 界面提交的答案数组 → 卡片展开记录用的「按题目 id 归档」形状。
+ *
+ * 界面发的是官方线格式的数组（`AskUserQuestionAnswerItem[]`，顺序就是题目顺序），
+ * 卡片要按题目 id 取用，所以在这里折一次。
+ */
+function answersByQuestionId(
+  answers: readonly { id: string; selected: string[]; custom?: string }[],
+): Record<string, QuestionAnswerView> {
+  const map: Record<string, QuestionAnswerView> = {};
+  for (const answer of answers ?? []) {
+    if (!answer?.id) continue;
+    map[answer.id] = {
+      selected: Array.isArray(answer.selected) ? answer.selected : [],
+      ...(answer.custom ? { custom: answer.custom } : {}),
+    };
+  }
+  return map;
+}
+
 /** 同上，但没有回退值：缺字段/坏值一律 undefined（用于「可缺」的投影字段）。 */
 function optionalNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
@@ -202,11 +263,6 @@ export class ChatController implements vscode.Disposable {
    */
   private readonly restoreHints = new Map<string, string>();
   /**
-   * 恢复窗口（还有缓存里的窗口没来认领）期间攒下的「要写缓存」标记。
-   * 见 `persistWindowState` 与 `settleRestoreWindow`。
-   */
-  private restoreWritePending = false;
-  /**
    * 工作区身份还没就绪时排队的**编辑区面板**认领（按 VS Code 的恢复顺序入队）。
    * 顺序就是位置，所以必须按原序补（见 `flushRestoreClaims`）。
    */
@@ -261,6 +317,16 @@ export class ChatController implements vscode.Disposable {
    * 新建会话都发一次注册请求；换个服务器（新 client）时清空重取。
    */
   private workspaceId: string | undefined;
+  /**
+   * 服务端工作区注册表的**本地镜像**（`workspace/follow` 的 baseline + upsert/remove）。
+   *
+   * `session/list` 的 `SessionSummary` **不带 workspaceId**（契约里只有 sessionId /
+   * cwd / parentSessionId / origin），所以「这条会话属于哪个工作区」只能从注册表
+   * 自己的 `sessionIds` 读——这也正是 Web 端分组的权威口径（会话被 `session/create`
+   * 带 `workspaceId` 建出来时才记进某个工作区；否则它落在「未分组」）。
+   * 历史列表的可见性判据据此写（见 `refreshSessions`）。
+   */
+  private workspaces: { workspaceId: string; path: string; sessionIds: string[] }[] = [];
   /** 已归档会话的权威集合（来自 workspace/follow 流）。 */
   private archivedSessionIds = new Set<string>();
   /**
@@ -661,7 +727,6 @@ export class ChatController implements vscode.Disposable {
       return;
     }
     this.applyRestoreHint(viewId, this.windowRestore.claimPanel());
-    this.settleRestoreWindow();
   }
 
   /** 侧栏恢复会话的认领（固定槽位）。 */
@@ -675,7 +740,6 @@ export class ChatController implements vscode.Disposable {
       }
     }
     this.applyRestoreHint(viewId, this.windowRestore.slot(slot));
-    this.settleRestoreWindow();
   }
 
   /** 该窗口有没有待接回的会话（`ChatViewProvider` 发 `ready` 前用它决定等多久）。 */
@@ -714,7 +778,6 @@ export class ChatController implements vscode.Disposable {
       this.restoreAwaiting.delete(viewId);
       if (!this.viewKinds.has(viewId)) continue;
       this.applyRestoreHint(viewId, this.windowRestore.claimPanel());
-      this.settleRestoreWindow();
     }
   }
 
@@ -730,8 +793,6 @@ export class ChatController implements vscode.Disposable {
     if (!sessionId) return;
     this.restoreHints.delete(viewId);
     await this.restoreViewSession(viewId, sessionId);
-    // 接回会话会落一次缓存；若这是最后一个待恢复的窗口，恢复窗口就此结束
-    this.settleRestoreWindow();
   }
 
   /** 注册「把这个窗口带到前台」的动作（见 `revealers`）。 */
@@ -785,19 +846,24 @@ export class ChatController implements vscode.Disposable {
    * `viewOrder` 里出现过的先后（= 创建顺序），与 VS Code 恢复编辑器的
    * 顺序一致（都是「当初的排布顺序」）。
    *
-   * **恢复未完时不写**：VS Code 是「面板第一次变为可见时」才认领会话的
-   * （见 `WindowRestore.pending`），那一刻之前活着的窗口只是**已经恢复的**那部分
-   * ——此时按内存状态覆写，缓存里还没露面的面板就会被抹掉（它们的会话随之失联）。
-   * 所以恢复窗口内只记「待写」，等最后一个槽位问过话再一次性落盘；
-   * 用户在恢复窗口里真关掉一个窗口也走这条路（关窗会调 `markDirty`），
-   * 不会因为延后而丢。
+   * **恢复未完时用「合并」而不是「跳过」**：VS Code 是「面板第一次变为可见时」才
+   * 认领会话的（见 `WindowRestore.pending`），那一刻之前活着的窗口只是**已经恢复的**
+   * 那部分——按内存状态整份覆写，缓存里还没露面的面板就会被抹掉（它们的会话随之失联）。
+   * 所以这里把**尚未认领**的那一段（`unclaimedPanels` / 还没问过话的侧栏槽位）
+   * 原样接在后面，已认领的部分一律用内存里的最新状态覆盖。
+   *
+   * 为什么不再「整个恢复窗口内都不写」：那样等于把这一轮的窗口状态交给「最后一个窗口
+   * 什么时候认领」决定——侧栏容器折叠着（VS Code 根本不会实例化它的视图）或某个面板
+   * 一直没被点开时，`pending` 永远为真，**这一整轮的所有变更都写不进去**，缓存停在
+   * 上一次运行的值上。用户 2026-09-15 报的「编辑区窗口从会话 A 切到 B，重启后还是
+   * 打开 A」正是这个：写盘被无限期押后，`dispose()` 时 store 里还是启动时读到的那份
+   * 旧缓存。
    */
   private persistWindowState(): void {
+    // 工作区身份可能还没绑（只有编辑区面板、从没有侧栏被实例化的用法）：
+    // 惰性补绑一次，否则这条路径永远写不出任何东西（缓存里也就永远没有最终会话）。
+    if (!this.windowState.key) this.ensureWindowState();
     if (!this.windowState.key) return;
-    if (this.pendingRestore) {
-      this.restoreWritePending = true;
-      return;
-    }
     const now = Date.now();
     const cache: WindowCache = { panels: [], activeOrder: [...this.viewOrder] };
     // 编辑区面板：按 `viewOrder` 里出现的先后（= 创建顺序）逐条记，
@@ -810,6 +876,21 @@ export class ChatController implements vscode.Disposable {
       if (kind === "panel") continue;
       cache[kind] = { sessionId: this.viewSessions.get(viewId) ?? null, lastActiveAt: now };
     }
+    if (this.pendingRestore) {
+      // 恢复未完：内存里那部分照写，**还没认领的**按原位接在后面。
+      // 合并规则是纯函数、带断言（`mergeWindowCache`），这里只喂材料。
+      const previous = this.windowState.snapshot();
+      const merged = mergeWindowCache({
+        memory: cache,
+        previous,
+        claimedPanels: this.windowRestore.claimedPanelCount,
+        restorePending: true,
+        slotClaimed: (slot) => this.windowRestore.isSlotClaimed(slot),
+      });
+      cache.panels = merged.panels;
+      cache.primary = merged.primary;
+      cache.secondary = merged.secondary;
+    }
     this.windowState.load(cache);
     this.windowState.markDirty();
   }
@@ -817,18 +898,10 @@ export class ChatController implements vscode.Disposable {
   /**
    * 恢复窗口是否还没结束（还有缓存里的窗口没来认领）。
    *
-   * 恢复一结束就把期间攒下的变更补写一次——否则「恢复窗口里的最后一次变更」
-   * 要等到下一次窗口活动才落盘，中间关掉 VS Code 就白改了。
+   * 只用于写缓存时决定「尚未认领的那一段要不要保留」（见 `persistWindowState`）。
    */
   private get pendingRestore(): boolean {
     return this.windowRestore.pending;
-  }
-
-  private settleRestoreWindow(): void {
-    if (this.pendingRestore || !this.restoreWritePending) return;
-    this.restoreWritePending = false;
-    this.log("[restore] 恢复窗口结束，补写窗口缓存");
-    this.persistWindowState();
   }
 
   /** 最近活动的窗口（命令面板入口都指向它）。 */
@@ -1396,30 +1469,53 @@ export class ChatController implements vscode.Disposable {
     else this.emitAll({ type: "ui/openPanel", panel: "history" });
   }
 
+  /**
+   * 历史会话列表 = **本窗口该看见的那些会话**。
+   *
+   * 用户 2026-09-15 的设计口径：
+   *
+   * 1. **打开了文件夹** → 跟随 VS Code，只显示**这个工作区**的会话（dsh web 可能
+   *    为多个项目开过会话，跨项目混进来既占列表、又因 cwd 不匹配导致 resume 失败）；
+   * 2. **没有打开文件夹** → 视作未分组，显示**未分组**里的会话（不属于任何服务端
+   *    工作区注册记录的那些）。
+   *
+   * 判据按**服务端注册表**（`workspaces` 的 `sessionIds`）而不是自己比较 cwd：
+   * `session/list` 不带 workspaceId，而分组本身就是注册表说了算（会话被
+   * `session/create` 带 `workspaceId` 建出来时才记进某个工作区）。两条兜底：
+   *
+   * - 会话 cwd == 当前工作区路径：新会话的 `upsert` 增量可能比这次查询晚到，
+   *   只看注册表会让「刚建好的会话」从列表里闪一下；
+   * - **任何已打开域**的 cwd：工作区目录与历史会话目录的写法（大小写/分隔符）
+   *   可能不一致，恢复窗口时不能因为这点差异把要接回的会话滤掉。
+   */
   async refreshSessions(): Promise<void> {
     if (!this.client) return;
     try {
       const value = await this.client.listSessions();
-      // 只显示属于**当前工作区**的会话（dsh web 可能为多个项目开过会话，
-      // 跨项目会话混进来会既占列表又会因 cwd 不匹配导致 resume 失败）
-      const workspace = this.workspacePath().replace(/\\/g, "/").toLowerCase();
-      // 基准放宽到**任何打开的域**的 cwd：工作区目录与历史会话目录的写法
-      // （大小写/分隔符）可能不一致，只看当前工作区会漏掉它们
+      const folder = vscode.workspace.workspaceFolders?.[0];
+      const workspacePath = folder ? normalizePath(folder.uri.fsPath) : undefined;
+      // 服务端注册表：这条会话被记在哪个工作区里（同一会话只属于一个工作区）
+      const grouped = new Set<string>();
+      let ownIds: Set<string> | undefined;
+      for (const row of this.workspaces) {
+        for (const id of row.sessionIds) grouped.add(id);
+        if (workspacePath !== undefined && normalizePath(row.path) === workspacePath) {
+          ownIds = new Set(row.sessionIds);
+        }
+      }
+      // 基准放宽到**任何打开的域**的 cwd（见 `visibleForWorkspace` 的注释）
       const openCwds: string[] = [];
       for (const scope of this.scopes.values()) {
-        const cwd = this.sessions.find((s) => s.id === scope.sessionId)?.cwd?.replace(/\\/g, "/").toLowerCase();
+        const cwd = normalizePath(this.sessions.find((s) => s.id === scope.sessionId)?.cwd);
         if (cwd) openCwds.push(cwd);
       }
-      const views = visibleSessionRows(value.items ?? [])
-        // 本地删过的会话若被当前 dsh 进程打开过，仍会留在服务端内存里被
-        // session/list 列出——按持久化的删除集合过滤，保证界面干净
-        .filter((item) => !this.deletedSessionIds.has(item.sessionId))
-        .filter((item) => {
-          if (!item.cwd) return false;
-          const cwd = item.cwd.replace(/\\/g, "/").toLowerCase();
-          return cwd === workspace || openCwds.includes(cwd);
-        })
-        .map((item) => this.toSessionView(item));
+      const views = visibleForWorkspace(
+        visibleSessionRows(value.items ?? [])
+          // 本地删过的会话若被当前 dsh 进程打开过，仍会留在服务端内存里被
+          // session/list 列出——按持久化的删除集合过滤，保证界面干净
+          .filter((item) => !this.deletedSessionIds.has(item.sessionId)),
+        { workspacePath, workspaceSessionIds: ownIds, groupedSessionIds: grouped, openCwds },
+      ).map((item) => this.toSessionView(item));
       // 血缘深度：分支缩进显示在源会话下面（否则「分支继承了源标题」会看成两条重复项）
       const depths = lineageDepths(views);
       this.sessions = views.map((view) => ({ ...view, depth: depths.get(view.id) ?? 0 }));
@@ -1987,39 +2083,63 @@ export class ChatController implements vscode.Disposable {
       "workspace/follow",
       {},
       {
-        onItem: (value) =>
-          this.onWorkspaceFrame(
-            value as { type?: string; value?: { archivedSessionIds?: string[] }; archivedSessionIds?: string[] },
-          ),
+        onItem: (value) => this.onWorkspaceFrame(value as WorkspaceFollowFrameWire),
       },
     );
   }
 
   /**
-   * 工作区状态流承载已归档会话的权威集合：每代以一个 `baseline` 开场，
-   * 其后是 `archived` 增量（每次都是**完整集合**）。`session/list` 不分
-   * 归档与否，归档过滤在客户端做。
+   * 工作区状态流承载两样东西，都是历史列表的权威判据：
+   *
+   * 1. **工作区注册表**（baseline 的 `items` + `upsert` / `remove` 增量）：每条
+   *    记录带 `sessionIds`，是「这条会话属于哪个工作区」的唯一来源（`session/list`
+   *    不带 workspaceId，见 `workspaces` 字段的注释）；不在任何工作区里的会话就是
+   *    「未分组」。
+   * 2. **已归档会话集合**：每代以一个 `baseline` 开场，其后是 `archived` 增量
+   *    （每次都是**完整集合**）。`session/list` 不分归档与否，归档过滤在客户端做。
    */
-  private onWorkspaceFrame(
-    frame: { type?: string; value?: { archivedSessionIds?: string[] }; archivedSessionIds?: string[] },
-  ): void {
-    let next: string[] | undefined;
-    if (frame?.type === "baseline") next = frame.value?.archivedSessionIds;
-    else if (frame?.type === "archived") next = frame.archivedSessionIds;
-    if (!Array.isArray(next)) return;
-    const nextSet = new Set(next);
-    let changed = nextSet.size !== this.archivedSessionIds.size;
-    if (!changed) {
-      for (const id of nextSet) {
-        if (!this.archivedSessionIds.has(id)) {
-          changed = true;
-          break;
+  private onWorkspaceFrame(frame: WorkspaceFollowFrameWire): void {
+    // 先消化注册表增量：`upsert` 换一条记录、`remove` 去掉一条、`order` 只影响
+    // 顺序（界面上不展示工作区本身，忽略）。`items` 是完整集合，直接替换。
+    let workspacesChanged = false;
+    if (frame?.type === "baseline") {
+      this.workspaces = workspaceRows(frame.value?.items);
+      workspacesChanged = true;
+    } else if (frame?.type === "upsert" && frame.workspace) {
+      const row = workspaceRow(frame.workspace);
+      if (row) {
+        const index = this.workspaces.findIndex((item) => item.workspaceId === row.workspaceId);
+        if (index >= 0) this.workspaces[index] = row;
+        else this.workspaces.push(row);
+        workspacesChanged = true;
+      }
+    } else if (frame?.type === "remove" && frame.workspaceId) {
+      const before = this.workspaces.length;
+      this.workspaces = this.workspaces.filter((item) => item.workspaceId !== frame.workspaceId);
+      workspacesChanged = this.workspaces.length !== before;
+    }
+
+    let archivedChanged = false;
+    const next = frame?.type === "baseline" ? frame.value?.archivedSessionIds : frame?.type === "archived" ? frame.archivedSessionIds : undefined;
+    if (Array.isArray(next)) {
+      const nextSet = new Set(next);
+      archivedChanged = nextSet.size !== this.archivedSessionIds.size;
+      if (!archivedChanged) {
+        for (const id of nextSet) {
+          if (!this.archivedSessionIds.has(id)) {
+            archivedChanged = true;
+            break;
+          }
         }
       }
+      if (archivedChanged) this.archivedSessionIds = nextSet;
     }
-    if (!changed) return;
-    this.archivedSessionIds = nextSet;
-    this.emitSessionLists();
+
+    if (!workspacesChanged && !archivedChanged) return;
+    // 注册表变了**整份重算**：新会话被记进工作区（或工作区被删）会直接改变
+    // 「这条会话该不该出现在这个工作区的历史列表里」，光重发旧列表是不够的。
+    if (workspacesChanged) void this.refreshSessions();
+    else this.emitSessionLists();
   }
 
   /**
@@ -2371,6 +2491,15 @@ export class ChatController implements vscode.Disposable {
       this.configChanges.handle(frame.event, frame.args ?? []);
       return;
     }
+    if (frame.type === "cancel") {
+      // **Host 撤回了这次 waterfall**（网关 `finishRemoteEvent`）：另一个客户端
+      // 答了、轮次被中止、或 Agent Context 释放。这是「这次询问已经不需要本窗口
+      // 回答了」的权威信号——收到它**什么都不要回**（回了等于放行），只把本窗口
+      // 那张卡收场（用户 2026-09-15：多窗口同时开着，一个窗口答了问卷，别的窗口
+      // 还在继续生成，问卷却一直停在页面上）。
+      this.cancelHeldEvent(frame.eventId);
+      return;
+    }
     if (frame.type !== "waterfall") return;
     const waterfall = frame as RemoteEventWaterfall;
     if (this.handledEvents.has(waterfall.eventId)) {
@@ -2409,6 +2538,24 @@ export class ChatController implements vscode.Disposable {
     await this.replyEvent(waterfall.eventId, { kind: "next" });
   }
 
+  /**
+   * Host 撤回一条挂起 / 已展示的审批或提问（`$events` 的 `cancel` 帧）。
+   *
+   * 两种情形都要处理：卡片已经在某个窗口上（交给适配器收场），或者请求还挂在
+   * `heldEvents` 里等会话被打开（**直接丢掉**——它已经不需要人回答了，留着只会在
+   * 用户下次打开这个会话时凭空弹一张过期的卡）。
+   */
+  private cancelHeldEvent(eventId: string): void {
+    const held = this.heldEvents.get(eventId);
+    if (held) {
+      this.heldEvents.delete(eventId);
+      this.log(`[$events] 挂起的${held.kind === "approval" ? "审批" : "提问"}被 Host 撤回：${eventId}`);
+    }
+    const sessionId = this.eventSessions.get(eventId);
+    const scope = sessionId ? this.scopes.get(sessionId) : undefined;
+    scope?.adapter?.cancelEvent(eventId);
+  }
+
   /** 把一条审批/提问事件交给域的适配器（即时到达与挂起回放共用）。 */
   private deliverEventToScope(
     eventId: string,
@@ -2424,6 +2571,9 @@ export class ChatController implements vscode.Disposable {
         reason: request.reason,
         detail: request.callId ? `@callId:${request.callId}` : undefined,
         state: "waiting",
+        // callId 同时单独记一份：会话日志的 `approval/decided` 靠它把结果
+        // 对回这张卡（另一个窗口答的审批，本窗口只能从会话日志知道结果）
+        ...(request.callId ? { callId: request.callId } : {}),
       });
       return;
     }
@@ -2818,7 +2968,10 @@ export class ChatController implements vscode.Disposable {
         });
         const sessionId = this.eventSessions.get(eventId);
         const scope = sessionId ? this.scopes.get(sessionId) : undefined;
-        scope?.adapter?.resolveQuestion(eventId);
+        // 回答一并落到卡片上：展开记录要显示「用户当时选了什么」。本窗口自己
+        // 答的那份只有界面知道（服务端的答案要等 `ask_user_question` 的工具
+        // 结果回来才进日志），所以这里先写进去，工具结果到了再覆盖成权威值。
+        scope?.adapter?.resolveQuestion(eventId, answersByQuestionId(message.answers));
         break;
       }
 
@@ -4273,19 +4426,48 @@ export class ChatController implements vscode.Disposable {
   private async queryFiles(viewId: string, query: string): Promise<void> {
     const scope = this.scopeOfView(viewId);
     if (!this.client || !scope) {
-      this.emitToView(viewId, { type: "files/list", query, items: [] });
+      this.emitToView(viewId, { type: "files/list", query, items: [], sessions: [] });
       return;
     }
-    try {
-      const rows = await this.client.request<{ path: string; kind: "file" | "directory" }[]>(
-        "fileReferences/list",
-        { agentId: scope.sessionId, query },
-      );
-      this.emitToView(viewId, { type: "files/list", query, items: rows ?? [] });
-    } catch (error) {
-      this.log(`[files] 查询失败：${this.describeError(error)}`);
-      this.emitToView(viewId, { type: "files/list", query, items: [] });
-    }
+    // 官方的 `@` 是**一个源、两组候选**（`dsh-client-ui-reference`）：
+    // 文件（`fileReferences/list`）与对话（`sessionReferenceResolver/candidates`）
+    // 并行取、各自成组。对话那条失败（老版本服务器没有这个 remote）不该把文件
+    // 候选一起拖下水，所以单独兜住。
+    const [files, sessions] = await Promise.all([
+      this.client
+        .request<{ path: string; kind: "file" | "directory" }[]>("fileReferences/list", {
+          agentId: scope.sessionId,
+          query,
+        })
+        .catch((error: unknown) => {
+          this.log(`[files] 查询失败：${this.describeError(error)}`);
+          return [] as { path: string; kind: "file" | "directory" }[];
+        }),
+      this.client
+        .request<SessionReferenceCandidateWire[]>("sessionReferenceResolver/candidates", {
+          agentId: scope.sessionId,
+          query,
+        })
+        .catch((error: unknown) => {
+          this.log(`[files] 对话引用查询失败：${this.describeError(error)}`);
+          return [] as SessionReferenceCandidateWire[];
+        }),
+    ]);
+    this.emitToView(viewId, {
+      type: "files/list",
+      query,
+      items: files ?? [],
+      sessions: (sessions ?? []).map(
+        (row): SessionRefView => ({
+          sessionId: String(row?.sessionId ?? ""),
+          label: String(row?.label ?? row?.sessionId ?? ""),
+          mention: String(row?.mention ?? ""),
+          ...(typeof row?.cwd === "string" && row.cwd ? { cwd: row.cwd } : {}),
+          sameWorkspace: row?.sameWorkspace === true,
+          ...(typeof row?.createdAt === "number" ? { updatedAt: row.createdAt } : {}),
+        }),
+      ),
+    });
   }
 
   // ---------- 设置（部署级配置，所有窗口共享同一份） ----------

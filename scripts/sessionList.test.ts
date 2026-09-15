@@ -11,7 +11,7 @@
 import assert from "node:assert";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { lineageDepths, visibleSessionRows } from "../src/dsh/sessionList";
+import { lineageDepths, visibleForWorkspace, visibleSessionRows } from "../src/dsh/sessionList";
 
 // ---------- 1. 分支必须留着，子代理必须藏起来 ----------
 //
@@ -57,12 +57,77 @@ console.log("sessionList: 分支可见、子代理隐藏 ✓");
 }
 console.log("sessionList: 血缘深度（含孤儿与成环）✓");
 
-// ---------- 3. 结构不变量：控制器必须走这两个函数，不能自己写过滤 ----------
+// ---------- 3. 工作区可见性：打开文件夹跟随工作区；没有文件夹只给未分组 ----------
+//
+// 用户 2026-09-15 的设计口径。判据按**服务端工作区注册表**（会话不在任何工作区
+// 记录里 = 未分组），路径比较只做兜底。
+{
+  const rows = [
+    { sessionId: "own", cwd: "D:/dev/dsh-chat" },
+    { sessionId: "own-late", cwd: "d:\\dev\\DSH-Chat\\" }, // 大小写/斜杠写法不同
+    { sessionId: "other-project", cwd: "D:/dev/other" },
+    { sessionId: "ungrouped", cwd: "C:/tmp/scratch" },
+    { sessionId: "own-registry", cwd: "D:/somewhere/else" }, // 注册表记账（cwd 不同）
+    { sessionId: "no-cwd" },
+  ];
+  const grouped = new Set(["own-registry"]);
+  const withFolder = visibleForWorkspace(rows, {
+    workspacePath: "d:/dev/dsh-chat",
+    workspaceSessionIds: new Set(["own-registry"]),
+    groupedSessionIds: grouped,
+    openCwds: [],
+  }).map((row) => row.sessionId);
+  assert.deepStrictEqual(
+    withFolder,
+    ["own", "own-late", "own-registry"],
+    "打开了文件夹：只显示本工作区的会话（路径兜底 + 注册表记账），未分组与别的项目都不显示",
+  );
+
+  const noFolder = visibleForWorkspace(rows, {
+    groupedSessionIds: grouped,
+    openCwds: [],
+  }).map((row) => row.sessionId);
+  assert.deepStrictEqual(
+    noFolder,
+    ["own", "own-late", "other-project", "ungrouped"],
+    "没有打开文件夹：显示未分组（含 dsh web 直接建的、别的目录的），但不显示任何工作区记账的会话",
+  );
+
+  const withOpenScope = visibleForWorkspace(rows, {
+    workspacePath: undefined,
+    groupedSessionIds: grouped,
+    openCwds: ["d:\\dev\\other\\"],
+  }).map((row) => row.sessionId);
+  assert.ok(
+    withOpenScope.includes("other-project"),
+    "**任何已打开域**的 cwd 一律放行：恢复窗口时不能因为路径写法差异把要接回的会话滤掉",
+  );
+  assert.ok(
+    !withOpenScope.includes("own-registry"),
+    "没有打开文件夹时，注册表记账的会话**不**显示（它属于别的工作区）；" +
+      "放行只靠「已打开域的 cwd」这一条",
+  );
+  assert.ok(
+    !withOpenScope.includes("no-cwd"),
+    "没有 cwd 的会话不显示（服务端建会话时必给 cwd 或 workspaceId）",
+  );
+}
+console.log("sessionList: 工作区可见性（有文件夹 / 无文件夹 / 已打开域兜底）✓");
+
+// ---------- 4. 结构不变量：控制器必须走这两个函数，不能自己写过滤 ----------
 {
   const controller = readFileSync(join(process.cwd(), "src", "dsh", "controller.ts"), "utf8");
   assert.ok(
-    /const views = visibleSessionRows\(value\.items \?\? \[\]\)/.test(controller),
-    "refreshSessions 必须用 visibleSessionRows 过滤（判据在 sessionList.ts 里注释着）",
+    /visibleSessionRows\(value\.items \?\? \[\]\)/.test(controller),
+    "refreshSessions 必须用 visibleSessionRows 过滤子代理（判据在 sessionList.ts 里注释着）",
+  );
+  assert.ok(
+    /visibleForWorkspace\(/.test(controller),
+    "refreshSessions 的工作区可见性必须走 visibleForWorkspace（它带断言、也是设计口径的落点）",
+  );
+  assert.ok(
+    !/return cwd === workspace \|\| openCwds\.includes\(cwd\)/.test(controller),
+    "不能再回到「cwd == 当前工作区」的老判据——没有文件夹时它会把未分组会话全滤掉",
   );
   assert.ok(
     !/\.filter\(\(item\) => !item\.origin && !item\.parentSessionId\)/.test(controller),

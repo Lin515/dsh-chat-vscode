@@ -57,6 +57,13 @@ const message = (segments: MessageView["segments"]): MessageView => ({
     undefined,
     "已回答的提问也不算待处理",
   );
+  // 被 Host 撤回的提问（另一个窗口答了 / 轮次中止）：同样必须让出输入区，
+  // 否则多窗口下这张卡会永远停在页面上（用户 2026-09-15 报的）
+  assert.strictEqual(
+    pendingInteractionOf([message([{ kind: "question", id: "s", question: question("r", "cancelled") }])]),
+    undefined,
+    "已撤回的提问不算待处理",
+  );
 }
 
 // ---------- 2. 提问优先于审批（官方的注册优先级 1 > 0） ----------

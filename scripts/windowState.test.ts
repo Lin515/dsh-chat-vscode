@@ -17,8 +17,11 @@
  * 运行：npm test
  */
 import assert from "node:assert";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   isBlank,
+  mergeWindowCache,
   parseWindowCache,
   serializeWindowCache,
   trimCache,
@@ -206,6 +209,101 @@ console.log("windowState: 恢复期的槽位与顺序对位 ✓");
   assert.strictEqual(restore.pending, false);
 }
 console.log("windowState: 恢复窗口的结束判据 ✓");
+
+// ---------- 4c. 写缓存的合并规则：已认领的用内存、未认领的按原位保留 ----------
+//
+// 用户 2026-09-15 报的：编辑区窗口从会话 A 切到 B，重启后打开的还是 A。
+// 根因是恢复期内**整个不写**（旧实现只记「待写」标记，等最后一个窗口认领），
+// 而 `pending` 可能永远为真（侧栏容器折叠着 → 它的视图这一代不会被实例化），
+// 于是这一轮的变更加起来一次都没落盘，缓存停在启动时那份旧值上。
+{
+  const previous = cacheOf({
+    primary: { sessionId: "sidebar-old" },
+    secondary: { sessionId: "sidebar-2" },
+    panels: [{ sessionId: "A" }, { sessionId: "B" }],
+  });
+  const memory: WindowCache = {
+    panels: [{ sessionId: "B-final", lastActiveAt: 1 }],
+    primary: { sessionId: "B-final" },
+    activeOrder: ["v1"],
+  };
+
+  // 恢复未完：第一个面板已认领（内存里是切过会话之后的最终值），第二个还没露面
+  const merged = mergeWindowCache({
+    memory,
+    previous,
+    claimedPanels: 1,
+    restorePending: true,
+    slotClaimed: (slot) => slot === "primary",
+  });
+  assert.deepStrictEqual(
+    merged.panels.map((panel) => panel.sessionId),
+    ["B-final", "B"],
+    "已认领的面板写最终会话；还没认领的按**原位**留在它那一格（顺序就是恢复对位）",
+  );
+  assert.strictEqual(merged.primary?.sessionId, "B-final", "问过话的侧栏槽位以内存为准");
+  assert.deepStrictEqual(
+    merged.secondary,
+    { sessionId: "sidebar-2" },
+    "这一代没露面的侧栏槽位保留旧值（否则它的会话永久失联）",
+  );
+
+  // 恢复结束（或本来就没有待认领的窗口）：旧的残留一律丢掉
+  const settled = mergeWindowCache({
+    memory,
+    previous,
+    claimedPanels: 2,
+    restorePending: false,
+    slotClaimed: () => false,
+  });
+  assert.deepStrictEqual(settled.panels.map((panel) => panel.sessionId), ["B-final"]);
+  assert.strictEqual(settled.secondary, undefined, "恢复结束后不再保留未认领的旧槽位");
+
+  // 用户在恢复窗口里新开了一个面板：内存里比认领数多，不能再补旧的（会重复/错位）
+  const extra = mergeWindowCache({
+    memory: { panels: [{ sessionId: "new" }, { sessionId: "B-final" }], activeOrder: [] },
+    previous,
+    claimedPanels: 1,
+    restorePending: true,
+    slotClaimed: () => true,
+  });
+  assert.deepStrictEqual(
+    extra.panels.map((panel) => panel.sessionId),
+    ["new", "B-final"],
+    "内存里的面板已经超过认领数时，后面的旧条目让位给新面板",
+  );
+
+  // 已认领的槽位即使内存里是空态（null）也照写：那是「用户把它清空了」
+  const cleared = mergeWindowCache({
+    memory: { panels: [], primary: { sessionId: null }, activeOrder: [] },
+    previous,
+    claimedPanels: 0,
+    restorePending: true,
+    slotClaimed: (slot) => slot === "primary",
+  });
+  assert.deepStrictEqual(cleared.primary, { sessionId: null }, "空态（null）是明确状态，不能被旧值盖回");
+}
+console.log("windowState: 写缓存的合并规则（最终会话一定落盘）✓");
+
+// ---------- 4d. 结构不变量：控制器必须按这套规则写，不再「整个恢复期不写」 ----------
+{
+  const controller = readFileSync(join(process.cwd(), "src", "dsh", "controller.ts"), "utf8");
+  assert.ok(
+    /mergeWindowCache\(\{/.test(controller),
+    "persistWindowState 必须走 mergeWindowCache（纯函数、带断言）",
+  );
+  assert.ok(
+    !/restoreWritePending/.test(controller),
+    "不能再回到「恢复期只记待写、等最后一个窗口认领再落盘」——pending 可能永远为真，" +
+      "那样缓存会停在初始会话上（用户 2026-09-15 报的就是这个）",
+  );
+  assert.ok(
+    /if \(!this\.windowState\.key\) this\.ensureWindowState\(\);/.test(controller),
+    "写缓存前要惰性绑一次工作区身份：只用编辑区面板、从没有侧栏被实例化时，" +
+      "键不绑就一个字节都写不出去",
+  );
+}
+console.log("windowState: 控制器接线（惰性绑键 + 合并写）✓");
 
 // ---------- 5. Store：跨「两次进程」往返 + 防抖 + dispose 刷盘 ----------
 

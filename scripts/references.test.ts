@@ -11,6 +11,7 @@
  */
 import assert from "node:assert";
 import { composeWithReferences, formatFileMention } from "../src/dsh/references";
+import { displaySessionMentions } from "../src/shared/mentions";
 
 // ---------- 1. mention 文本：逐字对齐官方 formatFileMention ----------
 
@@ -86,5 +87,33 @@ console.log("references: 引用拼进正文（引用在前，空正文只剩引�
   assert.strictEqual(composed, "@good.ts\n正文", "坏引用被丢掉，好引用与正文都保留");
 }
 console.log("references: 非法引用单独跳过，不影响其余内容 ✓");
+
+// ---------- 6. 对话引用 mention 的**显示**形态（`@标题`） ----------
+//
+// 用户 2026-09-15 加了「`@` 可以引用对话」。插进正文的是官方那条规范 token
+// （`@[标题](dsh-session:…)`）——它是给服务端看的；落盘的 durable 事件里仍是原始
+// token（服务端只给模型那一份副本做替换），转写要自己折成 `@标题`，否则用户会在
+// 自己的消息里看到一长串带 base64 会话 id 的东西。
+{
+  const token = "@[修复连接超时](dsh-session:eyJpZCI6IjAxSiJ9)";
+  assert.strictEqual(displaySessionMentions(token), "@修复连接超时");
+  assert.strictEqual(
+    displaySessionMentions(`看看这个 ${token} 的结论`),
+    "看看这个 @修复连接超时 的结论",
+    "正文里的其它部分一个字节都不动",
+  );
+  assert.strictEqual(
+    displaySessionMentions(`${token}\n${token}`),
+    "@修复连接超时\n@修复连接超时",
+    "多个引用逐个还原",
+  );
+  // 标题里的转义（`\[` / `\\`）按官方 unescape 规则还原
+  assert.strictEqual(displaySessionMentions("@[a\\[b\\]](dsh-session:x)"), "@a[b]");
+  // 不是对话引用的方括号文本、裸 http 链接、普通 @path 一律不动
+  for (const raw of ["@[不是引用](https://x)", "@src/dsh/controller.ts", "看 [这里](a.md)", "@[x](other:y)"]) {
+    assert.strictEqual(displaySessionMentions(raw), raw, `${raw} 不该被改动`);
+  }
+}
+console.log("references: 对话引用的显示形态（@标题）✓");
 
 console.log("\nreferences: all assertions passed");

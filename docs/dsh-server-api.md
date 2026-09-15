@@ -1254,7 +1254,7 @@ const answer = { answers: questions.map((item, itemIndex) => {
 
 **取消有两个方向，编码不同**：
 
-1. **Host 撤回**（轮次中止 / Agent Context 释放 / 事件源撤回）：客户端收到 `{type:'cancel',eventId}` 且本地 `signal` 中止。**此时什么都不要回**。参考实现在此路径上跳过 POST（`⟨P⟩\dsh-api-gateway\lib\types\client\remote-events.js:137-138`）。
+1. **Host 撤回**：客户端收到 `{type:'cancel',eventId}` 且本地 `signal` 中止。**此时什么都不要回**。参考实现在此路径上跳过 POST（`⟨P⟩\dsh-api-gateway\lib\types\client\remote-events.js:137-138`）。触发撤回的三种情形（`⟨P⟩\dsh-api-gateway\lib\index.js` 的 `startRemoteEvent` / `receiveRemoteEventResult` / `finishRemoteEvent`）：轮次中止、Agent Context 释放，以及**另一个客户端先答了**（结算 `settleRemoteEvent` → `finishRemoteEvent` 给剩余投递方推 `cancel`）——最后这条是多窗口下「问卷 / 审批该跟着一起收场」的权威信号。
 2. **用户主动取消**：客户端发 `rejected`：
 
 ```json
@@ -2067,7 +2067,7 @@ await post('commands/execute', { agentId: sessionId, line: '/plan off',         
 
 1. **`team/*` 事件的实际 data 形状**：`KNOWN_SESSION_EVENT_TYPES`（`⟨P⟩\dsh-session\lib\types\known-event-types.js:61-64`）收录了 `team/member`、`team/message/delivered`、`team/message/queued`、`team/task`，但安装树里**没有任何 `.d.ts` 声明它们的 payload**（推测属于未随本安装发布的 experimental agent-team 包）。客户端应按 §6.1 的 `ignorable` 规则保守处理：未知类型且无 `ignorable: true` 时明确降级。
 2. **`--port 0` 的端口发现**：`WebServer.port` 会返回 OS 分配的实际端口（`⟨P⟩\dsh-host-webserver\lib\types\index.d.ts` 的 `get port()`），`dsh web` 打印的 URL 里也应含该端口——但我**没有实测** `--port 0` 场景下的日志样式（截稿时无法在不干扰用户会话的前提下再起一个服务）。第三方实现目前使用固定端口。**建议**：把「解析日志行」当作唯一端口来源，不要假设任何默认值。
-3. **多客户端抢占 waterfall**：协议允许同一 `eventId` 投递给多个客户端（`⟨P⟩\dsh-api-gateway\lib\index.js:673`），先回的生效、其余会收到 `cancel`。我**没有实测**两个客户端同时连同一服务端时的实际投递/抢占行为，也未确认 `{kind:'next'}` 与 `{kind:'result'}` 混用时的精确竞态。
+3. **多客户端抢占 waterfall**：协议允许同一 `eventId` 投递给多个客户端（`⟨P⟩\dsh-api-gateway\lib\index.js:673`），先回的生效、其余会收到 `cancel`。扩展**已按这条实现**（`$events` 的 `cancel` 帧 → 把本窗口那张审批 / 问卷卡收场，见 `controller.onEventFrame` 与 `adapter.cancelEvent`）。代码路径逐行确认过：`receiveRemoteEventResult` 先把**答复方**从投递集合里移除、再 `settleRemoteEvent` → `finishRemoteEvent` 给**剩余投递方**推 `{type:'cancel',eventId}`（所以答复方自己不会收到）。仍未实测的只有 `{kind:'next'}` 与 `{kind:'result'}` 混用时的精确竞态。
 4. **`dsh web --help` 未能在受限沙箱里执行**：沙箱禁止写 `<home>/.dsh/profiles/web/cordis.yml`，
    `dsh web --help` 在 `prepareProfile` 阶段就以 `EPERM` 退出。选项清单因此**全部取自源码**
    `⟨P⟩\dsh-web-app\lib\startup.js:31-44`，与运行时一致（commander 的选项定义就是该函数），
