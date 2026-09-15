@@ -88,10 +88,12 @@ export interface Texts {
    * 轮级过程折叠那枚按钮的文案（官方 `message.turnProcess.*`）。
    *
    * 官方是「N 次工具调用 · M 条消息 · K 个 subagent」三段拼起来（各自单复数），
-   * 三者皆 0 时读「已思考」。**整句交给词典**而不是在组件里拼：中文没有复数变化、
-   * 英文有，分隔符两语言也可能不同（官方 zh/en 都是「 · 」，但仍由词典定义）。
+   * 三者皆 0 时读「已思考」。**我们只折机器噪声**（见 `turnProcess.ts` 的文件头），
+   * 正文不进按钮，所以这里没有「M 条消息」那一段；两段皆 0（一轮只有思考）时照旧
+   * 读「已思考」。**整句交给词典**而不是在组件里拼：中文没有复数变化、英文有，
+   * 分隔符两语言也可能不同（官方 zh/en 都是「 · 」，但仍由词典定义）。
    */
-  turnProcessLabel: (counts: { toolCalls: number; messages: number; subagents: number }) => string;
+  turnProcessLabel: (counts: { toolCalls: number; subagents: number }) => string;
   /** 轮尾的用时与速度（`TurnStatsView` 的展示文案）。 */
   turnRanFor: (duration: string) => string;
   /** 用时胶囊点开后的明细（官方 `message.turnTime.*`）。 */
@@ -565,10 +567,9 @@ const zh: Texts = {
       : `${seconds}秒`;
   },
   turnRanFor: (duration) => `用时 ${duration}`,
-  turnProcessLabel: ({ toolCalls, messages, subagents }) => {
+  turnProcessLabel: ({ toolCalls, subagents }) => {
     const parts: string[] = [];
     if (toolCalls > 0) parts.push(`${toolCalls} 次工具调用`);
-    if (messages > 0) parts.push(`${messages} 条消息`);
     if (subagents > 0) parts.push(`${subagents} 个 subagent`);
     return parts.length ? parts.join(" · ") : "已思考";
   },
@@ -878,11 +879,10 @@ const en: Texts = {
       : `${seconds}s`;
   },
   turnRanFor: (duration) => `Ran for ${duration}`,
-  turnProcessLabel: ({ toolCalls, messages, subagents }) => {
+  turnProcessLabel: ({ toolCalls, subagents }) => {
     const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`;
     const parts: string[] = [];
     if (toolCalls > 0) parts.push(plural(toolCalls, "tool call"));
-    if (messages > 0) parts.push(plural(messages, "message"));
     if (subagents > 0) parts.push(plural(subagents, "subagent"));
     return parts.length ? parts.join(" · ") : "Thought for a while";
   },

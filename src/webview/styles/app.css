@@ -347,7 +347,8 @@
 }
 
 /* 轮级过程折叠按钮（官方 TurnProcessNodeView）：一枚无边框的文字行，
-   文案「N 次工具调用 · M 条消息 · K 个 subagent」，右侧 chevron，展开后转 180° */
+   文案「N 次工具调用 · K 个 subagent」（只折机器噪声，正文不进按钮），
+   右侧 chevron，展开后转 180° */
 .turn-process {
   display: flex;
   align-items: center;

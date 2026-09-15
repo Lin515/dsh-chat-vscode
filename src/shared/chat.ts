@@ -273,10 +273,10 @@ export interface InjectedView {
 /**
  * 助手消息里的一个显示段。
  *
- * 外面套一层 `{ step?: number }`：**该段所属的 step**（轮内从 0 起）。轮级过程折叠
- * 要用它区分「过程」与「答案」——官方按节点锚点把答案步之前的成员折起来，
- * 我们的显示段没有节点锚点，step 就是那条边界的依据（见 `webview/turnProcess.ts`）。
- * 拿不到 step 时（历史里缺 `step/start`）**不折叠**：宁可平铺，也不要折错。
+ * 外面套一层 `{ step?: number }`：**该段所属的 step**（轮内从 0 起），供轮级统计与
+ * 时序判断使用。**轮级过程折叠不看 step**：它按段的**性质**分派（正文 / 提示永不折，
+ * 只折思考、工具与非 system 的上下文注入），所以历史里缺 `step/start` 时同样折得对
+ * （见 `webview/turnProcess.ts`）。
  */
 export type Segment = { step?: number } & (
   | { kind: "text"; id: string; text: string; streaming?: boolean }

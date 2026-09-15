@@ -128,7 +128,7 @@ console.log("historyReplay: 重放静默（只发 hasMoreHistory + messages/rese
   assert.ok(older, `更早那一轮的助手消息要出现，实际：${messages.map((m) => m.id).join(", ")}`);
   assert.strictEqual(older!.streaming, false, "旧轮次不能被标成 streaming（那会让界面按「实时」画它）");
   const fold = foldTurnProcess(older!.segments, !older!.streaming);
-  assert.strictEqual(fold.foldable, true, "旧轮次应当可折叠（过程 + 答案步都在）");
+  assert.strictEqual(fold.foldable, true, "旧轮次应当可折叠（过程段都在）");
   assert.ok(fold.folded.length > 0, "过程段要进折叠集合");
   assert.ok(
     fold.folded.some((s) => s.kind === "tool"),
@@ -136,8 +136,8 @@ console.log("historyReplay: 重放静默（只发 hasMoreHistory + messages/rese
   );
   assert.deepStrictEqual(
     fold.visible.filter((s): s is Extract<Segment, { kind: "text" }> => s.kind === "text").map((s) => s.text),
-    ["第 1 轮的答案"],
-    "折叠后可见的只有答案步正文（旧轮次一出现就是折叠态）",
+    ["第 1 轮的过程话", "第 1 轮的答案"],
+    "折叠后正文全在（中途的过程话与答案都留），旧轮次一出现就是折叠态",
   );
 }
 console.log("historyReplay: 更早的一轮落盘即折叠态 ✓");

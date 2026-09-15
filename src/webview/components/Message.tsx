@@ -183,8 +183,10 @@ export const Message = memo(function Message({
     (file) => file.path,
   );
 
-  // 轮级过程折叠（官方默认的 compact 转写模式）：一轮**结束后**，把答案步之前的一切
-  // 折成一枚按钮。流式期间不折（官方要求 turnClosed）。口径与边界见 turnProcess.ts。
+  // 轮级过程折叠（官方默认的 compact 转写模式）：一轮**结束后**，把机器噪声（思考 /
+  // 工具 / 非 system 的上下文注入）折成一枚按钮，**正文与提示永不折**——中途那些
+  // 说明性的长消息也因此不会被藏起来。流式期间不折（官方要求 turnClosed）。
+  // 口径与与官方的差异见 turnProcess.ts 的文件头。
   const fold = foldTurnProcess(message.segments, !message.streaming);
   const foldedIds = new Set(fold.folded.map((segment) => segment.id));
 
@@ -231,7 +233,7 @@ export const Message = memo(function Message({
   // 折叠时：在**第一个被折住的成员**那里放一枚按钮，其余成员整段略过。
   // 展开后按钮留在原位（官方 `turn-process` 节点就是流里的一个普通节点，成员在它
   // 下面展开），只是成员照原顺序铺回来。
-  // 不参与折叠的段（自动载入的上下文、中止/截断提示）原地保留——它们折进去
+  // 不参与折叠的段（正文、中止/截断提示、交互卡）原地保留，位置不变——折进去
   // 就是信息损失（官方 `TURN_PROCESS_INDEPENDENT_KINDS` 同理）。
   const rendered: ReactNode[] = [];
   let processRowPlaced = false;

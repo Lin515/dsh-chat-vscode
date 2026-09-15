@@ -984,9 +984,10 @@ export function formatTps(value: number): string {
 /**
  * 轮级过程折叠按钮（官方 `TurnProcessNodeView`）。
  *
- * 一轮关闭后，把「答案步之前的一切」折成这一枚按钮：标签是
- * 「N 次工具调用 · M 条消息 · K 个 subagent」（皆 0 时「已思考」），右侧一个
- * 朝下的 chevron，点开把成员铺回来。官方是 `<button aria-expanded>`，
+ * 一轮关闭后，把**机器噪声**（思考 / 工具 / 非 system 的上下文注入）折成这一枚按钮：
+ * 标签是「N 次工具调用 · K 个 subagent」（皆 0 时「已思考」），右侧一个朝下的
+ * chevron，点开把成员铺回来。正文与提示不在成员里，永远留在流里（口径见
+ * `../turnProcess.ts` 的文件头）。官方是 `<button aria-expanded>`，
  * 这里照做——键盘可达、无障碍状态正确。
  */
 export function TurnProcessRow({
