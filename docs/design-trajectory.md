@@ -5,6 +5,11 @@
 > `src/webview/components/Trajectory.tsx`（工具栏 / 账本 / 时间线 / 检查器）、
 > `src/webview/trajectoryTexts.ts`（官方文案）、`scripts/trajectory.test.ts`（断言）。
 > 时间线的滚轮缩放与右键平移、检查器拖宽与窄屏抽屉、运行中的占位行也都做了。
+> **时间线选谁，账本就滚到谁**（点某一条、框选结束都算，2026-09-15 补）；选区的坐标
+> **存的是归一化域位置**（与账本的 `left`/`width`、`inRange` 同一套），绘制与命中各过一次
+> 互逆换算 `trajectoryScreenFraction` / `trajectoryDomainPosition`——缩放之后这两套坐标
+> 不再相等，混用就是「框选的区域与手划的对不上」（2026-09-15 用户报的，见
+> `src/shared/trajectory.ts`）。
 > **视图形态与官方一致**：轨迹是**整页视图**（`App` 里会话页整块让位、输入区留在
 > 原地），不是盖在会话上的抽屉——官方也是把视图注册进 `conversation.view` 槽后整块
 > 换掉（`dsh-client-ui-conversation lib/client.js:15122-15129`）。所以这里没有标题栏

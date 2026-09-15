@@ -399,6 +399,19 @@ export async function runSupervisor(options: Options): Promise<number> {
       }
     };
 
+  /**
+   * 「**现在就跑**这段收尾/副作用代码，抛错也别弄死守护进程」。
+   *
+   * 为什么不直接写 `guard(kind, fn)()`：`guard` 是**工厂**（返回包装函数），在语句位置
+   * 写成 `guard(kind, fn);` 编译器不报错、回调却永远不会执行——2026-09-15 的 `shutdown`
+   * 就是这么坏的（收尾体一行都没跑，`stopping` 却已置真 → 守护进程变僵尸：不退场、
+   * 也不再重起 dsh）。多一个显式名字，这种写法就再也写不出来。
+   */
+  const runGuarded = (kind: SupervisorErrorKind, fn: () => void): void => {
+    // 泛型要显式给 `[]`：`guard` 的参数列表类型推断不出零参调用
+    guard<[]>(kind, fn)();
+  };
+
   /** 兜住 async 调用的 rejection（`void bringUp()` 漏掉的那一半）。 */
   const settle = <T>(kind: SupervisorErrorKind, promise: Promise<T>): void => {
     promise.catch((error: unknown) => reportFailure(kind, error));
@@ -540,7 +553,13 @@ export async function runSupervisor(options: Options): Promise<number> {
     stopping = true;
     // 收尾路径也套守卫：这里抛错会让进程**退到一半**（dsh 没杀干净、会合文件没删），
     // 比直接退出更糟——残留下来的东西下一个窗口还接手不了。
-    guard("shutdown", () => {
+    //
+    // 必须用 `runGuarded`（= 立即执行）：写成 `guard("shutdown", …)` 的话那个回调
+    // 永远不会跑，而 `stopping` 已经置真，守护进程就变成了僵尸（不退场、`tick` 从此
+    // 直接 return，连"dsh 崩了要重起"都不再做）。2026-09-15 实测：`npm run smoke`
+    // 打印「端到端通过」后，它拉起的 supervisor 收到 stop 请求却一直活着、会合文件
+    // 也没清（日志停在「收到客户端的 stop 请求」那一行）。上一轮加 `guard` 时漏掉了调用。
+    runGuarded("shutdown", () => {
       log(`[supervisor] 退场（${reason}）：没有人再使用这个后台`);
       killServer(server.child?.pid, server.baseUrl, log);
       server = {};

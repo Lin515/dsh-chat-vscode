@@ -81,19 +81,37 @@ console.log("questionFlow: 提交闸门覆盖全部题目 ✓");
     /if \(!waiting\)[\s\S]{0,400}open=\{expanded\}/.test(rows),
     "已答完的问卷必须默认收缩成一行（可再展开）",
   );
-  // 自定义回答与普通选项**同一列表**：它必须是 `.question-option` 那一行，
-  // 单选点它时清空已选（互斥），选普通选项时清掉自定义回答（官方 choose/draftCustom）
+  // 自定义回答与普通选项**同一列表**：它必须是 `.question-option` 那一行。
+  // 用户 2026-09-15 口径：那一行是一个**组合组件**（标题「自定义回答」+ 多行输入框），
+  // 整行可选中 / 可取消选中；**选中别的选项不清空输入框里的内容**（官方 `choose` /
+  // `draftCustom` 是互相清空的，这里刻意不照做）。
   assert.ok(
-    /className=\{`question-option question-custom\$\{customActive \? " is-selected" : ""\}`\}/.test(rows),
+    /className=\{`question-option question-custom\$\{customSelected \? " is-selected" : ""\}`\}/.test(rows),
     "自定义回答必须是选项列表里的一行（.question-option.question-custom）",
   );
+  assert.ok(/questionCustomTitle/.test(rows), "自定义回答那一行要有标题（走词典，不写死文字）");
+  assert.ok(/<textarea/.test(rows), "自定义回答的输入框要支持多行（textarea 而不是 input）");
   assert.ok(
-    /if \(!multi\) setCustom\(\(prev\) => \(\{ \.\.\.prev, \[itemId\]: "" \}\)\)/.test(rows),
-    "单选：选中普通选项要清掉自定义回答（两者是同一问题的两种答法）",
+    /map\[item\.id\] = customChosenOf\(item\.id\) \? customOf\(item\.id\) : ""/.test(rows),
+    "只有选中了自定义回答，输入框里的文字才算这一题的答案",
+  );
+  assert.ok(
+    /if \(!multi\) setCustomChosen\(\(prev\) => \(\{ \.\.\.prev, \[itemId\]: false \}\)\)/.test(rows),
+    "单选：选中普通选项只取消自定义回答的**选中态**",
+  );
+  assert.ok(
+    !/setCustom\(\(prev\) => \(\{ \.\.\.prev, \[itemId\]: "" \}\)\)/.test(rows),
+    "选中别的选项**不许**清空自定义回答的内容（用户 2026-09-15 口径）",
+  );
+  assert.ok(
+    /const toggleCustom = \(itemId: string, multi\?: boolean\) => \{[\s\S]{0,300}if \(next && !multi\) setSelected/.test(
+      rows,
+    ),
+    "自定义回答可选中 / 可取消选中；单选选中它时清掉已选选项（互斥）",
   );
   assert.ok(
     /if \(!multi\) setSelected\(\(prev\) => \(\{ \.\.\.prev, \[itemId\]: \[\] \}\)\)/.test(rows),
-    "单选：写自定义回答 / 点它都要清掉已选选项（互斥）",
+    "单选：写自定义回答 / 选中它都要清掉已选选项（互斥）",
   );
   const composer = readFileSync(join(process.cwd(), "src", "webview", "components", "Composer.tsx"), "utf8");
   assert.ok(

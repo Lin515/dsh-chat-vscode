@@ -5,8 +5,10 @@
  * `~/.dsh-chat/supervisors` 共用，两边会互相接入、互相清理——结论不可信，还可能把
  * 用户的后台带走。
  *
- * 关键：**环境变量必须在 `supervisorProtocol` 求值之前设好**（它在模块初始化时读一次）。
- * ESM 的 import 按出现顺序求值，所以探针文件的第一行必须是 import 本模块。
+ * 关键：环境变量必须在**任何一次目录计算之前**设好（`supervisorRoot()` 是每次调用现读
+ * `process.env`，不是模块初始化时读一次；探针里最早的一次就是构造 `SupervisorManager`）。
+ * ESM 的 import 按出现顺序求值，所以探针文件的第一行必须是 import 本模块——这样它一定
+ * 早于任何目录计算。
  * 父进程已指定则**沿用**（子进程会执行同一个模块，无条件另建会让父子各看各的目录）。
  */
 import { mkdtempSync } from "node:fs";

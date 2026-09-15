@@ -192,4 +192,51 @@ console.log("invariants: 不误报（不同 switch / 注释） ✓");
   console.log(`invariants: 扫了 ${files.length} 个源文件，无重复 case ✓`);
 }
 
+// ---------- 4. `guard(kind, fn)` 是**工厂**：语句位置漏掉调用 = 那段代码永远不执行 ----------
+//
+// 2026-09-15 的真实事故：守护进程的 `shutdown` 收尾体被写成 `guard("shutdown", () => {…});`
+// ——`guard` 返回的是包装函数，不调用它，收尾体一行都不会跑，而 `stopping` 已经置真，
+// 守护进程就变成僵尸：不退场、`tick` 从此直接 return（连「dsh 崩了要重起」都不再做）。
+// TypeScript 与所有测试**都不报错**（回调没人接是合法代码），只能靠这条断言。
+//
+// 口径：要么把包装函数交给别人（`setInterval(guard(…))` / `socket.on(…, guard(…))`），
+// 要么显式用 `runGuarded(…)`（= 立即执行）。**裸语句的 `guard(…)` 一律不许出现**。
+{
+  const file = join(process.cwd(), "src", "supervisor", "main.ts");
+  const source = readFileSync(file, "utf8");
+  const lines = source.split("\n");
+  // 「语句位置」的判据：整行以 `guard(` 开头，且**上一条实质行**不是以 `(` / `,` 结尾
+  // ——那种结尾说明它是某个外层调用的实参（`createServer(…, guard(…))` 这类换行写法）。
+  // 这个启发式正好覆盖当初出事的位置：`shutdown` 里那行的上一行是 `stopping = true;`。
+  const statementish: string[] = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i].trim();
+    if (!/^guard\(/.test(line)) continue;
+    let prev = "";
+    for (let j = i - 1; j >= 0; j -= 1) {
+      const candidate = lines[j].trim();
+      if (!candidate || candidate.startsWith("//") || candidate.startsWith("*") || candidate.startsWith("/*")) continue;
+      prev = candidate;
+      break;
+    }
+    if (!/[,(]$/.test(prev)) {
+      statementish.push(`src/supervisor/main.ts:${i + 1} ${line}（上一行：${prev}）`);
+    }
+  }
+  assert.deepStrictEqual(
+    statementish,
+    [],
+    `guard 的返回值在语句位置被丢掉了（那段回调永远不会执行）：\n${statementish.join("\n")}`,
+  );
+  assert.ok(
+    /guard<\[\]>\(kind, fn\)\(\)/.test(source),
+    "runGuarded 必须真的调用 guard 返回的包装函数（否则它自己就是同一个坑）",
+  );
+  assert.ok(
+    /runGuarded\("shutdown", \(\) => \{/.test(source),
+    "收尾体（shutdown）必须走 runGuarded——写成裸 guard(…) 的话收尾永远不会执行",
+  );
+}
+console.log("invariants: guard 工厂的返回值不被丢弃（收尾体真的会跑）✓");
+
 console.log("\ninvariants: all assertions passed");

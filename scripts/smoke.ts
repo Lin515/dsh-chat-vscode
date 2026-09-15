@@ -519,5 +519,13 @@ try {
   fail(error instanceof Error ? `${error.message}\n${error.stack ?? ""}` : String(error));
 } finally {
   client?.dispose();
+  // 先请 supervisor 连 dsh 一起收场（它自己会退出），再**收掉本进程的定时器**。
+  //
+  // `stop()` 有意保留心跳（扩展语义：别的窗口把后台重新起来时本窗口要能自动接上），
+  // 探针却因此**永远不退出**：那个 `setInterval` 让 Node 的事件循环一直活着，
+  // 连带 supervisor 与它拉起的 dsh 也一直留在机器上（2026-09-15 实测：打印完
+  // 「端到端通过」之后三个进程还挂着）。`dispose()` 关连接 + 停心跳，
+  // 本进程才能真正结束（这个坑以前看不出来——探针此前根本走不到这一步）。
   server.stop();
+  server.dispose();
 }

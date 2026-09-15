@@ -9,7 +9,7 @@
  */
 import assert from "node:assert";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 // 必须排在最前面：把会合根目录指到本次断言专用的临时目录（模块求值期读一次）
 const TEST_ROOT = mkdtempSync(join(tmpdir(), "dsh-chat-supervisor-"));
@@ -75,6 +75,50 @@ function stateOf(patch: Record<string, unknown> = {}) {
     process.platform === "win32" ? socket.startsWith("\\\\.\\pipe\\") : socket.endsWith("sup.sock"),
     socket,
   );
+
+  // 隔离目录必须连**管道名**一起隔离（2026-09-15）。
+  //
+  // Windows 的管道名是全局命名空间里的名字，与目录无关：只看分组的话，探针那套
+  // （`DSH_CHAT_SUPERVISOR_DIR` 指到临时目录）会和用户正在用的那套撞名，探针的
+  // supervisor 一起来就 `EADDRINUSE` 退出、无限重起（`npm run smoke` 卡住就是这个）。
+  // 两条一起钉：**默认根目录的管道名一字不变**（生产零影响）、隔离目录另有一个后缀。
+  {
+    const defaultRoot = join(homedir(), ".dsh-chat", "supervisors");
+    const production = socketPathIn(join(defaultRoot, "group-a"), "group-a");
+    const isolated = socketPathIn(DIR, "group-a");
+    const other = socketPathIn(mkdtempSync(join(tmpdir(), "dsh-chat-sup-probe-")), "group-a");
+    if (process.platform === "win32") {
+      check(
+        "生产（默认会合根）的管道名与从前逐字节相同",
+        production === "\\\\.\\pipe\\dsh-chat-group-a",
+        production,
+      );
+      check(
+        "隔离目录的管道名带自己的后缀（不再和用户那套撞名）",
+        isolated.startsWith("\\\\.\\pipe\\dsh-chat-group-a-") &&
+          isolated !== production &&
+          /-[0-9a-f]{8}$/.test(isolated),
+        isolated,
+      );
+      check(
+        "两个不同的隔离目录 → 两个不同的管道名（探针之间也不撞）",
+        other !== isolated && other.startsWith("\\\\.\\pipe\\dsh-chat-group-a-"),
+        other,
+      );
+      check("同一目录反复算 → 同一个名字（两侧算法必须一致）", socketPathIn(DIR, "group-a") === isolated);
+      // 大小写 / 尾部分隔符不该改变判定（Windows 路径不敏感）
+      check(
+        "尾部分隔符与大小写不影响判定",
+        socketPathIn(`${DIR}\\`, "group-a") === isolated && socketPathIn(DIR.toUpperCase(), "group-a") === isolated,
+      );
+    } else {
+      check(
+        "Unix 的 socket 就在隔离目录里（无需额外后缀）",
+        isolated.endsWith("sup.sock") && isolated.startsWith(TEST_ROOT) && other !== isolated,
+        isolated,
+      );
+    }
+  }
 }
 
 // ---------- 2. 原子写：不留临时文件、内容完整可读 ----------

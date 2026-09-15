@@ -168,9 +168,20 @@ function registerContributions(context: vscode.ExtensionContext, host: Contribut
       "dshChat.openInEditor",
       (sessionId?: string) => {
         log(`[cmd] openInEditor session=${sessionId ?? "（无来源窗口，取活动窗口）"}`);
-        return provider.openPanel(sessionId ?? controller.activeSessionId());
+        return provider.openPanel(sessionId ?? controller.activeSessionId()).panel;
       },
     ),
+    // 编辑器标题栏（`editor/title` 贡献点）那颗「打开 DSH 窗口」按钮的落点：
+    // 与上面那条**刻意不同**——它固定开在**用户当前所在的编辑器分组**里
+    // （`ViewColumn.Active`，不是旁边新开一个分组），并且直接起一个**新会话**
+    // （用户 2026-09-15 口径：在编辑窗口右上角点一下，本分组里多一个 DSH 新会话
+    // 标签页并跳过去）。新会话是用户显式动作，允许拉起后台（见 supervisorManager
+    // 的口径），`newSession` 内部就是按 `{ start: true }` 连的。
+    vscode.commands.registerCommand("dshChat.newSessionInGroup", async () => {
+      const { viewId } = provider.openPanel(undefined, vscode.ViewColumn.Active, true);
+      log(`[cmd] newSessionInGroup viewId=${viewId}`);
+      await controller.newSession(viewId);
+    }),
     // 「停止生成」停最近活动窗口正在跑的这一轮（后台继续）
     vscode.commands.registerCommand("dshChat.stop", () => controller.stopActive()),
     // 「启动服务器」：**用户显式要求**，允许在后台不存在时拉起一套

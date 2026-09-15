@@ -210,3 +210,24 @@ a {
 ::-webkit-scrollbar-track {
   background: transparent;
 }
+
+/* 右下角那个「可拉动」的角，以及滚动条拐角。
+   Chromium 在深色主题下给这一小块画的是一块**实心白底**（实测 #efefef），本项目的
+   滚动条轨道又是透明的，所以元素一出现垂直滚动条，右下角就冒出一块白方块（用户
+   2026-09-15 报的「问卷自定义回答的编辑框一出现滚动条，右下角的可拉动标志就变成
+   白底」就是它）。
+   底色一律清成透明——**但清掉之后 UA 那点提示也没了**（那一块本来就是它画的），
+   所以拉伸角用主题色自己补两道斜线：看得见能拉，又没有白底。 */
+::-webkit-scrollbar-corner {
+  background-color: transparent;
+}
+
+::-webkit-resizer {
+  background-color: transparent;
+  background-image:
+    linear-gradient(135deg, transparent 40%, var(--muted) 40% 52%, transparent 52%),
+    linear-gradient(135deg, transparent 40%, var(--muted) 40% 52%, transparent 52%);
+  background-repeat: no-repeat, no-repeat;
+  background-position: right bottom, right bottom;
+  background-size: 10px 10px, 6px 6px;
+}

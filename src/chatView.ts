@@ -94,12 +94,29 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     );
   }
 
-  /** 在编辑器区打开一个独立面板；指定会话时面板打开那个会话。 */
-  openPanel(sessionId?: string): vscode.WebviewPanel {
+  /**
+   * 在编辑器区打开一个独立面板；指定会话时面板打开那个会话。
+   *
+   * `column` 默认 `ViewColumn.Beside`（「在编辑器中打开」＝新开一个分组，与用户正在看的
+   * 文件并排）；`focus` 默认 false——**只有编辑器标题栏那条**「在本分组新建对话窗口」
+   * 要 `focus: true`（用户 2026-09-15 口径：点了要「跳转」过去）。
+   *
+   * 返回 `viewId`：调用方可能要往这个新窗口里塞一个**新会话**
+   * （`newSessionInGroup` 走 `controller.newSession(viewId)`）。页面还没加载完也没关系
+   * ——界面发 `ready` 时宿主会补一份完整快照。
+   */
+  openPanel(
+    sessionId?: string,
+    column: vscode.ViewColumn = vscode.ViewColumn.Beside,
+    focus = false,
+  ): { panel: vscode.WebviewPanel; viewId: string } {
     const panel = vscode.window.createWebviewPanel(
       ChatViewProvider.panelViewType,
       "DSH",
-      vscode.ViewColumn.Beside,
+      // 只有明确要求「跳转」时才显式写 `preserveFocus: false`；其余调用方照旧直接传一个
+      // `ViewColumn`——那种写法的默认聚焦行为没有写进类型声明，别在这条路径上顺手改掉
+      // 「在编辑器中打开」原来的行为。
+      focus ? { viewColumn: column, preserveFocus: false } : column,
       this.webviewOptions(),
     );
     const viewId = this.attachPanel(panel);
@@ -110,7 +127,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     if (sessionId) void this.controller.openSession(viewId, sessionId);
     // 新面板刻意**不认领**缓存里的会话：缓存属于「上次退出时还开着的那些窗口」，
     // 用户此刻新开一个，就该是空态
-    return panel;
+    return { panel, viewId };
   }
 
   /** 挂一个编辑区面板：与侧栏共用 attach，额外登记种类与可见性。 */

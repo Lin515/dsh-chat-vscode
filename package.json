@@ -82,6 +82,11 @@
         "icon": "$(open-preview)"
       },
       {
+        "command": "dshChat.newSessionInGroup",
+        "title": "%cmd.newSessionInGroup.title%",
+        "icon": "$(comment-discussion)"
+      },
+      {
         "command": "dshChat.stop",
         "title": "%cmd.stop.title%",
         "icon": "$(debug-stop)"
@@ -128,6 +133,12 @@
       }
     ],
     "menus": {
+      "editor/title": [
+        {
+          "command": "dshChat.newSessionInGroup",
+          "group": "navigation@9"
+        }
+      ],
       "editor/context": [
         {
           "command": "dshChat.addToChat",

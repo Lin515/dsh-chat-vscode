@@ -34,9 +34,14 @@
 先收到 `cancel`、随后才拿到答案时，状态要从 `cancelled` **纠正回 `answered`**——
 记录里不能一边写「已取消」一边列着答案。回归断言见 `scripts/interactionSync.test.ts`。
 
-**四、问卷的自定义回答与普通选项同权。** 它是选项列表里的最后一行（同一套
-`.question-option` 外观），点它即选中；单选时**与选项互斥**（选它清空已选项、选选项
-清掉它，官方 `choose` / `draftCustom` 就是这么互相清空的），唯一区别是它带编辑框。
+**四、问卷的自定义回答是一个组合组件，与普通选项同权。** 它是选项列表里的最后一行
+（同一套 `.question-option` 外观），行里两件东西：标题「自定义回答」+ **多行**输入框
+（`textarea`，Enter 换行、Ctrl/Cmd+Enter 才是「答完前进 / 提交」）。整行是一个整体：
+点它（或在里面打字）即选中它，单选时与选项互斥，**再点一下取消选中**；**选中别的选项
+只取消它的选中态、不清空已经写好的内容**（用户 2026-09-15 口径；官方 `choose` /
+`draftCustom` 是互相清空的，这里刻意不照做——「选中态」与「有没有字」因此是两件事，
+`Rows.tsx` 里由 `customChosen` 单独记）。断言见 `scripts/questionRender.test.ts`
+（渲染出「标题 + textarea」这一行）与 `scripts/questionFlow.test.ts`（选中态与内容分开）。
 
 **五、`@` 的按键语义与官方对齐（Enter 引用 / Tab 进入目录），并补上引用对话。**
 Enter（或点击行）= 载入整条候选（目录 → `@dir/`）；**Tab = 进入目录**。界面**不动既有
@@ -113,15 +118,100 @@ Enter（或点击行）= 载入整条候选（目录 → `@dir/`）；**Tab = �
   `supervisorProtocol.test.ts` 第 5.5 组（报文往返 + 旧扩展兼容）、
   `node build/supervisor-error-bridge-probe.mjs`（端到端）、`supervisorChildExitProbe`（真故障下仍活着）。
 
-**验证与一条已知的探针问题**：`npm run typecheck`、`npm test`（50 套，新增
-`scripts/interactionSync.test.ts`（多窗口收发场判据 + `@` 对话引用接线）与
-`scripts/questionRender.test.ts`（用 `react-dom/server` 真渲染问卷卡））、`npm run build`
-全绿；`npm run smoke` 除 **9c（停止：期望 `session/cancel` 后收到 `turn/end`
-reason=`aborted`）** 外全部通过。9c 不是本次改动引入的：用 `git worktree` 在**改动前的
-HEAD**（77cd70a）上原样复跑 `npm run smoke`，在同一个断言上以同样的形态失败
-（`turn/end = undefined`，30 秒等不到事件），而它前面的 1–9b 全部通过。判定为探针 /
-当前服务端环境的问题（`session/cancel` 后本轮不再补发 `turn/end`），与本次的适配器改动
-无关——`client.cancel` / `followSession` 这两条路径本次一行未动。
+**十一、轨迹顶条：缩放后框选错位、选中后账本不跟过去。**
+- **框选区域与手划的区域不符（缩放之后）**：选区存的是**归一化域位置**（与账本的
+  `left`/`width`、`inRange` 同一套坐标），而左键框选当时是直接拿**屏幕比例**当域位置记的，
+  画的时候又过一次缩放变换——不缩放时两套坐标重合（所以此前看着没问题），一放大就偏，
+  偏得越大越离谱。修法是把换算抽成一对互逆的纯函数
+  （`trajectoryScreenFraction` / `trajectoryDomainPosition`，`shared/trajectory.ts`），
+  绘制与命中各走一侧；断言钉了往返一致 + 「屏幕正中 = 视口正中」。
+- **顶条点了谁、框了哪一段，下方账本要跟着跳过去**：账本行加 `data-cell-index`，
+  点某一条 → 滚到那一行；框选**结束**（鼠标抬起 / 拖出绘图区）→ 滚到选区里的第一条
+  （用 `inRange` 挑，保证「跳到的就是高亮的」）。滚动是「最少滚动」、只动账本自己；
+  拖动过程中不滚（每移动一像素就滚一次会把账本晃坏）。同一条记录反复点也要重新滚，
+  所以请求里带 `nonce`（state 不变 effect 不跑，看起来就像「点了没反应」）。
+- 头部那颗「轨迹 ⇄ 会话」按钮**不再显示选中态**：轨迹视图下它画的是「会话」图标，
+  选中态属于「当前显示的视图」，而当前显示的是轨迹——图标与选中态必须指同一件事。
+- 工具栏那三个开关（时长 / 轮次 / 调用）**按下要有按下的样子**：状态本来就挂在
+  `aria-pressed` 上（无障碍树一直是对的），但画面上**什么都没有**——按下去分不出
+  生效没（用户 2026-09-15 报的）。按下态用与 `.icon-btn.is-active`、账本选中行同一套
+  `--active`；`:hover` 再显式写一条（同特异性下后者胜，不靠源码顺序兜底）。断言见
+  `scripts/styles.test.ts` 第 36 组。
+
+**十二、编辑器标题栏新增「在本分组新建对话窗口」**（`editor/title` 贡献点，任何文件 /
+标签页打开时都在编辑器右上角，命令面板里同一条）。它与「在编辑器中打开」**刻意不同**：
+`openPanel` 现在接受 `ViewColumn` 并返回 `viewId`，这条命令传 `ViewColumn.Active`
+（**就在用户当前所在的分组里**开一个标签页，不另开分组）并接着 `controller.newSession(viewId)`
+起一个新会话——用户 2026-09-15 口径是「点一下，本分组里多一个 DSH 新会话窗口并跳过去」。
+新会话是显式动作，允许拉起后台（与既有口径一致）。
+
+**十三、滚动条拐角 / 右下角拉伸角的白底。** 用户 2026-09-15 报的：问卷自定义回答的
+编辑框一出现垂直滚动条，右下角那块「可拉动」的标志就变成白底。实测预览页取像素，
+修复前那一块是 **`#efefef` 实心方块**（Chromium 在深色主题下给 resizer 画的就是它，
+而本项目的滚动条轨道是透明的，所以特别扎眼）。修法两条一起：`::-webkit-scrollbar-corner`
+与 `::-webkit-resizer` 底色清成透明（自定义了 `::-webkit-scrollbar` 却不给拐角清底，
+就是一块白方块），**再用主题色自己画两道斜线**当拉伸标记——只清底的话那个角会彻底
+看不见，等于把「可以拉」这个提示删掉。断言见 `scripts/styles.test.ts` 第 35 组。
+
+**十四、插话发送的消息排在排队发送的消息上方。** 服务端给的队列顺序是**提交先后**，
+于是「先排三条队、最后插一句」时插话显示在最下面，看着像插话还没生效。口径（用户
+2026-09-15）：`steering`（马上进当前轮）排在 `queued`（等下一轮）上面，两组内部各自
+保持原顺序。**只改显示顺序**——宿主「ESC 中止并把队首发出去」是按 `scope.queueItems`
+的原顺序重发的（`controller.stopRunning`），所以排序放在界面侧的纯函数
+`src/webview/queueOrder.ts` 里，映射层 `dsh/queueView.ts` 的数据顺序一字不动；
+断言见 `scripts/queueOrder.test.ts`（含「入参数组不许被改动」）。
+
+**开发侧（本批）：三个坑——守护进程退不了场、探针撞管道名、探针跑完不退。**
+- **守护进程收到 stop / 空闲也永不退场（最严重，用户能直接感觉到）**：`guard(kind, fn)`
+  是**工厂**（返回包装函数），而 `shutdown` 的收尾体被写成了语句位置的
+  `guard("shutdown", () => {…});`——回调没人调用，收尾一行都没跑，`stopping` 却已置真：
+  守护进程变成僵尸，`tick` 从此直接 return（连「dsh 崩了要重起」都不再做），
+  会合文件与 socket 也都不清。「停止服务器」/关掉所有窗口之后后台一直留着，就是这个。
+  上一轮加 `guard` 时漏掉的调用（c7ef97b，2026-09-15 21:05）。
+  修法不只是补一个 `()`：加一个**显式名字** `runGuarded`（= 立即执行）把这种写法变得
+  写不出来，断言钉在 `invariants.test.ts` 第 4 组（**语句位置**的 `guard(…)` 一律不许
+  出现——`createServer(guard(…))` 这类实参写法照旧允许；`runGuarded` 必须真的调用
+  `guard` 返回的包装函数）。这条断言用**注入**验过：把 `runGuarded` 改回裸
+  `guard("shutdown", …)`，它以 `src/supervisor/main.ts:562 …（上一行：stopping = true;）`
+  变红。验证：
+  `node build/supervisor-idle-probe.mjs` 全绿（关窗后阈值内照旧活着 → 阈值后 6 秒左右
+  端口、会合文件、supervisor 三者清干净）；`npm run smoke` 的 supervisor 日志里出现了
+  完整的「退场（stop）→ 收尾：停止 dsh → dsh 进程退出」。
+- **管道名没被隔离**：`DSH_CHAT_SUPERVISOR_DIR` 只隔离了会合**目录**，而 socket 在
+  Windows 上是全局命名空间里的 `\\.\pipe\dsh-chat-<分组>`（`socketPathIn` 从前只看分组）。
+  于是只要用户窗口里那套 supervisor 在跑（本机常态），探针的 supervisor 一起来就
+  `EADDRINUSE` 退出、被无限重起，`npm run smoke` 卡在「1) 启动服务器」刷屏
+  （日志：`%TEMP%\dsh-chat-sup-probe-*\*\supervisor.log`）。
+  修法：目录**不是默认会合根**时，把规范化后的目录哈希 8 位接在管道名后面
+  （`isolatedScope`）；默认根算出来的名字与从前**逐字节相同**，生产零影响。
+  断言见 `supervisorProtocol.test.ts` 第 1 组（生产名字不变 / 隔离目录带后缀 /
+  两个隔离目录互不相同 / 大小写与尾斜杠不影响判定）。顺带把
+  `supervisorProbeEnv.ts` 里「环境变量必须在模块求值前设好，因为它只在模块初始化时读
+  一次」这句过时注释改成事实（`supervisorRoot()` 是每次调用现读）。
+- **探针跑完不退**：`server.stop()` **有意保留心跳**（扩展语义：别的窗口把后台重新起来
+  时本窗口要能自动接上），而心跳是个 `setInterval`——探针因而永远退不出去：打印完
+  「端到端通过」之后，探针、supervisor、它拉起的 dsh 三个进程还挂在机器上（实测，
+  只能手工杀）。`smoke.ts` 的 finally 补一句 `server.dispose()`（关连接 + 停心跳）。
+  这个坑以前看不到：探针此前根本走不到那一步。
+
+**验证（含一条不稳定的探针断言）**：`npm run typecheck`、`npm test`（51 套，本批新增
+`scripts/interactionSync.test.ts`（多窗口收发场判据 + `@` 对话引用接线）、
+`scripts/questionRender.test.ts`（用 `react-dom/server` 真渲染问卷卡）与
+`scripts/queueOrder.test.ts`（待发队列的显示顺序））、`npm run build`
+全绿；十一~十三这一轮另在 `npm run preview` 的预览页上**用浏览器实测**过（不是看源码
+推断）：缩放后左键框选出的 `.trajectory-range` 与手划区间逐点一致（屏幕 30%→70% 拖出来
+就是 30%/40%）、点最后一条 span 后账本 `scrollTop` 从 70 走到 174 且那一行完整可见、
+问卷自定义回答的四种交互（打字即选中 / 点普通选项**内容仍在**且取消选中 / 点标题选回 /
+再点一次取消）逐条核对，以及拉伸角**取像素对照**：修复前是 `#efefef` 实心方块，修复后
+与所在行底色一致且右下角有两道 `--muted` 斜线；工具栏三个开关按下前后的底色取像素
+对照是 `[30,30,30]` → `[35,49,71]`（按下后再悬停仍是 `[35,49,71]`，没被 hover 吃掉）；
+待发队列的渲染顺序也核过：夹具里排在最后的 `steering` 那条显示在**最上面**，条数仍是
+「待发送 3 条」（只换顺序、不增删）。
+`npm run smoke` 端到端**全部通过**（1–12 全绿，含此前一轮判为环境问题的 **9c**：这次
+`turn/end = {"kind":"aborted","reason":{"kind":"user"}}`）。**9c 仍按不稳定处理**：上一轮
+在改动前的 HEAD（77cd70a）上复跑时它以 `turn/end = undefined`（30 秒等不到事件）失败，
+这次同样的断言过了——两次观察结论相反，所以不写硬断言，只记观察。
+在此之前它在本机**根本起不来**：探针的 supervisor 与用户那套撞管道名、无限重起（见上）。
 
 ### 输入通道、历史加载、轮尾与面板的一批对齐（2026-09-14，用户口径）
 

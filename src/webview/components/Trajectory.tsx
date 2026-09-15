@@ -17,12 +17,15 @@
  *   `detailTabs()` 同一套分支。
  *
  * 与官方**刻意的差异**（见 `docs/design-trajectory.md` 与 `dsh/trajectory.ts` 的
- * 文件头）：流式中的助手正文不出行、系统提示词按 `request/header` 变化合并、
- * 时间线**没有滚轮缩放与右键平移**（官方有；这两样是纯交互糖，数据层已经齐了）。
+ * 文件头）：流式中的助手正文不出行、系统提示词按 `request/header` 变化合并。
+ * 时间线的交互与官方同款（滚轮以光标为锚缩放、右键拖动平移、双击复位，见
+ * `TrajectoryTimeline`）。
  */
-import { useMemo, useRef, useState } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   deriveTrajectoryTimeline,
+  trajectoryDomainPosition,
+  trajectoryScreenFraction,
   type TrajectoryCell,
   type TrajectoryModel,
   type TrajectoryTimelineMode,
@@ -450,10 +453,14 @@ function Inspector({
 }
 
 /**
- * 时间线：三条泳道 + 轮次边界 + 点选 / 拖动选区 + 左端「加载更早」。
+ * 时间线：三条泳道 + 轮次边界 + 点选 / 拖动选区 + 滚轮缩放 / 右键平移 + 左端「加载更早」。
  *
- * 官方那条是 50px 高的概览条（`.plot` 左侧 44px 放泳道标签）。**没有**滚轮缩放与
- * 右键平移——那两样是纯交互糖，先不做（数据层已齐，随时能补）。
+ * 官方那条是 50px 高的概览条（`.plot` 左侧 44px 放泳道标签）。
+ *
+ * **坐标有两套，别混**：绘制用的是**归一化域位置**（`screen()`，与账本的
+ * `left`/`width` 同一套），而鼠标给的是**屏幕比例**——缩放之后两者不等，
+ * 左键框选必须把屏幕比例换算回域位置（`positionOf`），否则选出来的区域与手划的
+ * 对不上（2026-09-15 用户报的），见 `shared/trajectory.ts` 里那对互逆的纯函数。
  *
  * 泳道归属（官方 `laneFor` 逐字）：工具/子工具 → 工具道；助手/压缩 → 模型道；
  * 其余（系统/用户/上下文）→ 输入道。
@@ -468,6 +475,7 @@ function TrajectoryTimeline({
   range,
   onSelect,
   onRange,
+  onRangeCommit,
   onLoadEarlier,
   loadingEarlier,
   hasOlder,
@@ -478,6 +486,8 @@ function TrajectoryTimeline({
   range: { start: number; end: number } | null;
   onSelect: (index: number) => void;
   onRange: (range: { start: number; end: number } | null) => void;
+  /** 框选**结束**（鼠标抬起 / 拖出绘图区）：让下方账本滚到选区里第一条记录。 */
+  onRangeCommit: () => void;
   onLoadEarlier: () => void;
   loadingEarlier: boolean;
   hasOlder: boolean;
@@ -518,11 +528,11 @@ function TrajectoryTimeline({
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);
   };
-  /** 归一化位置 → 屏幕位置（0..1）。 */
-  const screen = (value: number) => (value - offset) * zoom;
+  /** 归一化**域位置** → 屏幕比例（0..1；渲染时乘 100% 就是 CSS 位置）。 */
+  const screen = (value: number) => trajectoryScreenFraction(value, offset, zoom);
 
-  /** 客户端 x → 0..1 的归一化位置（夹到两端）。 */
-  const positionOf = (clientX: number): number => {
+  /** 客户端 x → 绘图区内的 0..1 **屏幕比例**（夹到两端）。 */
+  const screenFractionOf = (clientX: number): number => {
     const el = ref.current;
     if (!el) return 0;
     const rect = el.getBoundingClientRect();
@@ -530,9 +540,18 @@ function TrajectoryTimeline({
     return Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
   };
 
+  /**
+   * 客户端 x → 归一化**域位置**（夹到两端）。
+   *
+   * 缩放之后屏幕比例与域位置**不是一回事**：选区、`inRange` 与 span 的 `left`/`width`
+   * 全在域坐标里，所以命中判定必须反向换算回来（见 `trajectoryDomainPosition`）。
+   */
+  const positionOf = (clientX: number): number =>
+    trajectoryDomainPosition(screenFractionOf(clientX), offset, zoom);
+
   /** 滚轮缩放：**以光标为锚**（光标下那条记录不动）。 */
   const onWheel = (event: React.WheelEvent<HTMLDivElement>) => {
-    const anchorScreen = positionOf(event.clientX);
+    const anchorScreen = screenFractionOf(event.clientX);
     // 屏幕位置 → 域位置（缩放前）
     const anchorDomain = offset + anchorScreen / zoom;
     // 官方那行是 `Math.exp(deltaY * 0.0015)`，乘在**域跨度**上：向上滚（deltaY<0）
@@ -543,6 +562,13 @@ function TrajectoryTimeline({
     if (next === zoom) return;
     setZoom(next);
     setOffset(Math.min(Math.max(0, 1 - 1 / next), Math.max(0, anchorDomain - anchorScreen / next)));
+  };
+
+  /** 鼠标抬起 / 拖出绘图区 = 框选结束（拖动过程中不滚账本，见 `onRangeCommit`）。 */
+  const endDrag = () => {
+    const wasDragging = dragging.current !== null;
+    dragging.current = null;
+    if (wasDragging && range && range.end > range.start) onRangeCommit();
   };
 
   const tooltipOf = (span: (typeof timeline.spans)[number]): string => {
@@ -604,12 +630,8 @@ function TrajectoryTimeline({
           const at = positionOf(event.clientX);
           onRange({ start: Math.min(start, at), end: Math.max(start, at) });
         }}
-        onMouseUp={() => {
-          dragging.current = null;
-        }}
-        onMouseLeave={() => {
-          dragging.current = null;
-        }}
+        onMouseUp={endDrag}
+        onMouseLeave={endDrag}
         onDoubleClick={() => {
           // 双击：先清空选区；已经没选区了就把缩放复位（官方双击是清选区，这里多一步
           // 「回到全部」，否则缩进去之后没有别的出路）
@@ -745,6 +767,37 @@ export function TrajectoryView({
   const [range, setRange] = useState<{ start: number; end: number } | null>(null);
   /** 检查器宽度（官方那套 clamp(320, 38%, 440) 的初值 + 可拖到 280–720）。 */
   const [inspectorWidth, setInspectorWidth] = useState(() => defaultInspectorWidth());
+  /** 账本的滚动容器（时间线上的点选 / 框选要把对应的行滚进视野）。 */
+  const ledgerRef = useRef<HTMLDivElement>(null);
+  /**
+   * 「时间线选了谁 → 账本跳过去」的请求。
+   *
+   * `nonce` 是刻意的：同一条记录被反复点也要重新滚一次——state 不变的话 effect
+   * 不会再跑，用户看着就像「点了没反应」。带 `nonce` 的请求才重新滚。
+   */
+  const [reveal, setReveal] = useState<{ index: number; nonce: number } | undefined>(undefined);
+  const revealNonce = useRef(0);
+  const revealRow = (index: number) => {
+    revealNonce.current += 1;
+    setReveal({ index, nonce: revealNonce.current });
+  };
+
+  /**
+   * 把请求里那一行滚进账本的视野。
+   *
+   * 用「最少滚动」（只补上超出视野的那一段）而不是 `scrollIntoView`：后者会把外层
+   * 容器也一起滚，而这里只想动账本自己（同 Composer 的候选列表）。
+   */
+  useLayoutEffect(() => {
+    if (!reveal) return;
+    const ledger = ledgerRef.current;
+    const row = ledger?.querySelector<HTMLElement>(`tr[data-cell-index="${reveal.index}"]`);
+    if (!ledger || !row) return;
+    const box = ledger.getBoundingClientRect();
+    const rect = row.getBoundingClientRect();
+    if (rect.top < box.top) ledger.scrollTop -= box.top - rect.top;
+    else if (rect.bottom > box.bottom) ledger.scrollTop += rect.bottom - box.bottom;
+  }, [reveal]);
 
   const turns = model?.turns ?? [];
   const allCells = useMemo(() => turns.flatMap((turn) => turn.cells), [turns]);
@@ -759,6 +812,17 @@ export function TrajectoryView({
     }
     return set;
   }, [range, timeline]);
+  /**
+   * 框选结束后滚到选区里**第一条**记录。
+   *
+   * 用 `inRange`（高亮那一套）挑行，而不是另算一遍：高亮的规则与跳转的规则必须是
+   * 同一条，否则会出现「跳到了一行看起来没高亮的行」。
+   */
+  const revealRange = () => {
+    if (!inRange) return;
+    const hit = timeline.spans.find((span) => inRange.has(span.cellIndex));
+    if (hit) revealRow(hit.cellIndex);
+  };
   /** 可折叠的轮次（`turn.turn !== null`）与「后跟工具」的助手行。 */
   const collapsibleTurns = useMemo(
     () => turns.filter((turn) => turnCollapsible(turn)).map((turn) => turn.turn as number),
@@ -862,6 +926,8 @@ export function TrajectoryView({
       rows.push(
         <tr
           key={`${cell.kind}-${cell.index}`}
+          // 时间线上的点选 / 框选按这个属性找行（见 `reveal`）
+          data-cell-index={cell.index}
           className={`trajectory-row${cell.status === "error" ? " is-error" : ""}${
             selected?.index === cell.index ? " is-selected" : ""
           }${inRange?.has(cell.index) ? " is-in-range" : ""}${needle && !isMatch ? " is-dimmed" : ""}${
@@ -976,8 +1042,14 @@ export function TrajectoryView({
           timeline={timeline}
           selected={selected?.index}
           range={range}
-          onSelect={(index) => setSelected({ index })}
+          onSelect={(index) => {
+            setSelected({ index });
+            // 点时间线上的某一条 = 把账本滚到它那一行（用户 2026-09-15 口径：
+            // 上方选了谁，下方要跟着跳过去）
+            revealRow(index);
+          }}
           onRange={setRange}
+          onRangeCommit={revealRange}
           onLoadEarlier={onLoadEarlier}
           loadingEarlier={loadingEarlier}
           hasOlder={model.hasOlder}
@@ -986,7 +1058,7 @@ export function TrajectoryView({
       ) : null}
 
       <div className="trajectory-body">
-        <div className="trajectory-ledger">
+        <div className="trajectory-ledger" ref={ledgerRef}>
           {model === undefined ? (
             <div className="popover-empty">{tt.loading}</div>
           ) : turns.length === 0 ? (

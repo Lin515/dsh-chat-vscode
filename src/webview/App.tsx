@@ -80,10 +80,13 @@ function Header({
       <button
         // 轨迹是**整页**视图（不是抽屉），这颗按钮就是进出它的唯一开关：
         // 会话视图下它是「轨迹」图标，切过去之后变成「会话」图标（点回来）。
+        // 它**不显示选中态**（用户 2026-09-15 口径）：轨迹视图下这颗按钮上画的是
+        // 「会话」图标，选中态属于**当前显示的那个视图**，而当前显示的是轨迹——
+        // 图标与选中态指的必须是同一件事，否则看着像「我现在在会话页」。
         // 迷你模式下别的按钮都收起来，唯独这颗在轨迹视图里必须留着——
         // 否则把侧栏拖窄之后就出不来了（`data-mini` 只在不显示轨迹时生效）。
         data-mini={state.panel === "trajectory" ? undefined : "hide"}
-        className={`icon-btn${state.panel === "trajectory" ? " is-active" : ""}`}
+        className="icon-btn"
         title={state.panel === "trajectory" ? texts.backToChat : texts.trajectory}
         onClick={() => toggle("trajectory", () => post({ type: "listTrajectory" }))}
       >

@@ -37,6 +37,7 @@ import { ApprovalCard, QuestionCard, formatTps } from "./Rows";
 import type { PendingInteraction } from "../pendingInteraction";
 import { insertAtCaret } from "../insert";
 import { mentionParent } from "../mentionNav";
+import { queueDisplayOrder } from "../queueOrder";
 import { segmentColumns } from "../segment";
 import { fill, resolveText, useTexts } from "../texts";
 import { BAR_ORDER, pickVariants, type ToolbarVariant } from "../toolbarFit";
@@ -1455,10 +1456,14 @@ function Lump({ state }: { state: AppState }) {
   if (state.queueItems.length > 0) {
     // 排队中（尚未发送）的消息逐条列出，每条可单独取消。
     // 不套状态条边框：做成淡化版用户消息气泡，和上方对话同一视觉语言
+    //
+    // **显示顺序**：插话（`steering`，马上进当前轮）排在排队（`queued`，等下一轮）上方
+    // （用户 2026-09-15 口径；只动显示，数据顺序留给宿主重发用，见 `queueOrder.ts`）
+    const items = queueDisplayOrder(state.queueItems);
     return (
       <div className="queue">
-        <span className="queue-head">{fill(texts.queued, { n: state.queueItems.length })}</span>
-        {state.queueItems.map((item) => (
+        <span className="queue-head">{fill(texts.queued, { n: items.length })}</span>
+        {items.map((item) => (
           <div className="queue-item" key={item.id}>
             <span className="queue-text">{item.text || texts.queueMediaOnly}</span>
             {/* 「插话发送」（官方 queue 行的第三个动作 `{kind:'steer'}`）：

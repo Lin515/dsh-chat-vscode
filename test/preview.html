@@ -154,13 +154,16 @@
         });
       };
       window.__composer = function () {
-        // 待发消息队列：一条纯文本、一条只有附件（文本为空）
+        // 待发消息队列：一条纯文本、一条只有附件（文本为空）、一条**插话发送**
+        // （`placement: "steering"`，服务端顺序是提交先后，所以它排在最后——
+        //   界面要把它显示到排队消息**上方**，见 `src/webview/queueOrder.ts`）
         window.__push({
           type: "patch",
           patch: {
             queueItems: [
               { id: "q1", text: "把入口文件里的重复初始化也一起去掉，顺带补一段说明注释", placement: "queued" },
               { id: "q2", text: "", hasMedia: true, attachments: 2, placement: "queued" },
+              { id: "s1", text: "插一句：先别动配置读取那块", placement: "steering" },
             ],
           },
         });

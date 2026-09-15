@@ -303,6 +303,8 @@ export interface Texts {
   questionAnswered: (count: number) => string;
   /** 被撤回的提问（Host 取消了这次提问 / 轮次中止）的摘要（「已取消 N 题」）。 */
   questionCancelled: (count: number) => string;
+  /** 自定义回答那一行的**标题**（它是个「标题 + 输入框」的组合组件）。 */
+  questionCustomTitle: string;
   /** 自定义回答那一行的无障碍说明（它和普通选项一样可以选，只是带编辑框）。 */
   questionCustomAria: string;
 
@@ -697,6 +699,7 @@ const zh: Texts = {
   questionNext: "下一题",
   questionAnswered: (count) => `已作答 ${count} 题`,
   questionCancelled: (count) => `已取消 ${count} 题`,
+  questionCustomTitle: "自定义回答",
   questionCustomAria: "自定义回答（选中后其它选项会被取消）",
 
   copy: "复制",
@@ -1028,6 +1031,7 @@ const en: Texts = {
   questionNext: "Next",
   questionAnswered: (count) => (count === 1 ? "1 question answered" : `${count} questions answered`),
   questionCancelled: (count) => (count === 1 ? "1 question withdrawn" : `${count} questions withdrawn`),
+  questionCustomTitle: "Custom answer",
   questionCustomAria: "Custom answer (selecting it clears the other options)",
 
   copy: "Copy",

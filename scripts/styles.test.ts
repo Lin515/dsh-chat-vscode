@@ -1014,4 +1014,78 @@ console.log("styles: 轨迹配色对齐官方（输入绿 / 模型紫）✓");
 }
 console.log("styles: 连接条按钮矩阵（停止连接绑 connecting / 日志恒显）✓");
 
+// ---------- 35. 滚动条拐角 / 右下角拉伸角不许是白底 ----------
+//
+// 用户 2026-09-15 报的：问卷自定义回答的编辑框一出现垂直滚动条，右下角那块「可拉动」
+// 的标志就变成白底。实测（预览页取像素）修复前那一块是 **#efefef 实心方块**——Chromium
+// 在深色主题下给 resizer 画的就是这个，而本项目的滚动条轨道是透明的，所以特别扎眼。
+// 修法两条一起看：**底色清成透明** + **自己用主题色画两道斜线**（只清底的话那个角
+// 就彻底看不见了，等于把「可以拉」这个提示删掉）。
+{
+  const tokens = readFileSync(
+    join(process.cwd(), "src", "webview", "styles", "tokens.css"),
+    "utf8",
+  );
+  const block = (selector: string): string => {
+    const match = new RegExp(`${selector}\\s*\\{([^}]*)\\}`).exec(tokens);
+    assert.ok(match, `tokens.css 里要有 ${selector} 这条规则`);
+    return (match as RegExpExecArray)[1];
+  };
+  assert.ok(
+    /background-color:\s*transparent/.test(block("::-webkit-scrollbar-corner")),
+    "滚动条拐角必须清成透明（自定义了 ::-webkit-scrollbar 却不给拐角清底 = 一块白方块）",
+  );
+  const resizer = block("::-webkit-resizer");
+  assert.ok(
+    /background-color:\s*transparent/.test(resizer),
+    "右下角的拉伸角必须清成透明底（用户 2026-09-15 报的白底就是它）",
+  );
+  assert.ok(
+    /background-image:[\s\S]*?var\(--muted\)/.test(resizer) &&
+      /background-size:/.test(resizer) &&
+      /background-position:\s*right bottom/.test(resizer),
+    "清底之后要自己画拉伸标记（主题色斜线、贴右下角），否则那个角什么都看不见",
+  );
+}
+console.log("styles: 滚动条拐角与拉伸角透明 + 自绘拉伸标记 ✓");
+
+// ---------- 36. 轨迹工具栏的开关按钮必须有「按下」的样子 ----------
+//
+// 用户 2026-09-15 口径：轨迹里的「时长 / 轮次 / 调用」按下去要有**被按下的选中效果**。
+// 三个按钮的状态本来就在 `aria-pressed` 上（无障碍树一直是对的），但画面上**什么都没有**
+// ——按下去分不出生效没，这正是被报的那件事。这里钉三样：
+// 1. 三个按钮的状态确实挂在 `aria-pressed` 上（不是各写一个 class）；
+// 2. `.btn[aria-pressed="true"]` 有按下态的底色（与其它「选中」同一套 `--active`）；
+// 3. 那条规则排在 `.btn-ghost:hover` **之后**——同特异性下后者胜，顺序反了悬停就会
+//    把按下态吃掉（`is-stop` 压过 `:hover` 就是踩过的同一个坑）。
+{
+  const component = readFileSync(
+    join(process.cwd(), "src", "webview", "components", "Trajectory.tsx"),
+    "utf8",
+  );
+  assert.ok(/aria-pressed=\{mode !== "sequence"\}/.test(component), "时长开关的状态要挂在 aria-pressed 上");
+  assert.ok(/aria-pressed=\{allTurnsCollapsed\}/.test(component), "「轮次」折叠开关同理");
+  assert.ok(/aria-pressed=\{allCallsCollapsed\}/.test(component), "「调用」折叠开关同理");
+
+  const pressed = /\.btn\[aria-pressed="true"\]\s*\{([^}]*)\}/.exec(css);
+  assert.ok(pressed, 'app.css 必须有 `.btn[aria-pressed="true"]` 的按下态样式');
+  assert.ok(
+    /background:\s*var\(--active\)/.test((pressed as RegExpExecArray)[1]),
+    "按下态要有底色（与 .icon-btn.is-active / 账本选中行同一套 --active）",
+  );
+  const pressedAt = css.indexOf('.btn[aria-pressed="true"]');
+  const ghostHoverAt = css.indexOf(".btn-ghost:hover");
+  assert.ok(ghostHoverAt > 0, "`.btn-ghost:hover` 应该在（按下态的排序基准）");
+  assert.ok(
+    pressedAt > ghostHoverAt,
+    "按下态必须写在 `.btn-ghost:hover` 之后：同特异性后者胜，写在前面会被悬停吃掉",
+  );
+  // 悬停时也要看得出是按下（显式写一条，不靠源码顺序兜底）
+  assert.ok(
+    /\.btn\[aria-pressed="true"\]:hover\s*\{[^}]*var\(--active\)/.test(css),
+    "悬停一条也要显式写：否则顺序一变，按下的按钮悬停时又变回 hover 底色",
+  );
+}
+console.log("styles: 轨迹工具栏开关的按下态（aria-pressed + --active，压在 hover 之后）✓");
+
 console.log("\nstyles: all assertions passed");

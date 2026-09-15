@@ -5,6 +5,7 @@
   "cmd.newSession.title": "DSH: New Chat",
   "cmd.history.title": "DSH: Chat History",
   "cmd.openInEditor.title": "DSH: Open Chat in Editor",
+  "cmd.newSessionInGroup.title": "DSH: New Chat in This Editor Group",
   "cmd.stop.title": "DSH: Stop Generating",
   "cmd.addToChat.title": "DSH: Add File (or Selection) to Chat",
   "cmd.addFolder.title": "DSH: Add Folder to Chat",

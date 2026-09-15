@@ -16,7 +16,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { SessionWireEvent } from "../src/dsh/protocol";
 import { deriveTrajectoryModel, trajectorySummary } from "../src/dsh/trajectory";
-import { deriveTrajectoryTimeline } from "../src/shared/trajectory";
+import { deriveTrajectoryTimeline, trajectoryDomainPosition, trajectoryScreenFraction } from "../src/shared/trajectory";
 
 let seq = 0;
 const at = (offset: number) => 1_700_000_000_000 + offset * 1000;
@@ -406,5 +406,97 @@ console.log("trajectory: 时间线的三种模式 ✓");
   assert.strictEqual(guards.length, 2, "时间线里两处（span 与 earlier）只拦左键，右键要放行给平移");
 }
 console.log("trajectory: 顶部条右键平移（不吃菜单、跟手到底）✓");
+
+// ---------- 11. 缩放后的坐标换算：选区存的是**域位置**，不是屏幕比例 ----------
+//
+// 用户 2026-09-15 报的：顶条缩放之后左键框选，手划的区域与实际选中的区域对不上。
+// 根因就是这里——选区曾经按**屏幕比例**记下来、又当**域位置**画出去（`inRange` 与
+// span 的 `left`/`width` 都在域坐标里），缩放越大偏得越离谱。
+// 两个方向必须严格互逆：画（域→屏幕）与命中（屏幕→域）。
+{
+  // 未缩放时两套坐标重合（这也是当初漏掉换算却「不缩放时看着没问题」的原因）
+  assert.strictEqual(trajectoryScreenFraction(0.25, 0, 1), 0.25);
+  assert.strictEqual(trajectoryDomainPosition(0.25, 0, 1), 0.25);
+
+  // 放大 4 倍、视口左边界在域 0.5：屏幕左缘 = 域 0.5，屏幕右缘 = 域 0.75
+  const zoom = 4;
+  const offset = 0.5;
+  assert.strictEqual(trajectoryScreenFraction(0.5, offset, zoom), 0, "视口左边界贴在屏幕左缘");
+  assert.strictEqual(trajectoryScreenFraction(0.75, offset, zoom), 1, "视口右边界贴在屏幕右缘");
+
+  // 往返：屏幕比例 → 域 → 屏幕比例 必须回到原值（框选与绘制用同一对函数）
+  for (const fraction of [0, 0.1, 0.5, 0.9, 1]) {
+    const domain = trajectoryDomainPosition(fraction, offset, zoom);
+    assert.ok(
+      Math.abs(trajectoryScreenFraction(domain, offset, zoom) - fraction) < 1e-9,
+      `屏幕比例 ${fraction} 往返之后必须不变（域=${domain}）`,
+    );
+  }
+  // 「手划到屏幕正中」在缩放后对应的是**视口正中**的域位置，不是域正中
+  assert.strictEqual(
+    trajectoryDomainPosition(0.5, offset, zoom),
+    0.625,
+    "屏幕正中 = 视口正中（域 0.625），不是整个域的正中（0.5）",
+  );
+  // 越界的鼠标位置夹回 0..1 的域内（拖到绘图区外面时不该算出域外的位置）
+  // 域位置夹在 0..1：屏幕比例在 `screenFractionOf` 里已经夹过一次，这里再把**域**
+  // 夹一次——视口右端贴到域末尾时，锚点算出来会略微越过 1
+  assert.strictEqual(
+    trajectoryDomainPosition(0.5, 0.9, 4),
+    1,
+    "0.9 + 0.125 = 1.025 → 夹回 1（不许给出域外的位置）",
+  );
+  assert.strictEqual(trajectoryDomainPosition(0.5, 0, 1), 0.5, "未缩放时屏幕比例就是域位置");
+
+  // 结构不变量：顶条那两处（框选与绘制）必须走这两个函数，不许再各写一份换算
+  const source = readFileSync(join(process.cwd(), "src", "webview", "components", "Trajectory.tsx"), "utf8");
+  assert.ok(
+    /const screen = \(value: number\) => trajectoryScreenFraction\(value, offset, zoom\)/.test(source),
+    "绘制（域 → 屏幕）走 trajectoryScreenFraction",
+  );
+  assert.ok(
+    /const positionOf = \(clientX: number\): number =>\s*\n?\s*trajectoryDomainPosition\(screenFractionOf\(clientX\), offset, zoom\)/.test(
+      source,
+    ),
+    "左键框选（屏幕 → 域）走 trajectoryDomainPosition——直接拿屏幕比例当域位置就是那个缺陷",
+  );
+  assert.ok(
+    /trajectoryDomainPosition\(screenFractionOf\(clientX\), offset, zoom\)/.test(source),
+    "框选的域位置由屏幕比例换算而来",
+  );
+}
+console.log("trajectory: 缩放后的选区坐标换算（域 ⇄ 屏幕）✓");
+
+// ---------- 12. 顶条选谁，账本跳谁 ----------
+//
+// 用户 2026-09-15 报的：在顶条里点一个节点、或左键框一块区域，下方账本不会跟着跳。
+// 接线有两处，缺一处就少一半：
+// - 点某一条 → `onSelect` 里 `revealRow(index)`；
+// - 框选结束 → `onRangeCommit={revealRange}`（拖动过程中不滚，见 `endDrag`）；
+// - 行上要有 `data-cell-index` 供定位，容器是 `.trajectory-ledger`。
+{
+  const source = readFileSync(join(process.cwd(), "src", "webview", "components", "Trajectory.tsx"), "utf8");
+  assert.ok(/data-cell-index=\{cell\.index\}/.test(source), "账本行要带 data-cell-index（滚到哪一行靠它定位）");
+  assert.ok(
+    /onSelect=\{\(index\) => \{[\s\S]{0,300}revealRow\(index\);/.test(source),
+    "点时间线上的一条要请求把账本滚过去",
+  );
+  assert.ok(/onRangeCommit=\{revealRange\}/.test(source), "框选结束要请求把账本滚到选区第一条");
+  assert.ok(
+    /const endDrag = \(\) => \{[\s\S]{0,300}if \(wasDragging && range && range\.end > range\.start\) onRangeCommit\(\)/.test(
+      source,
+    ),
+    "框选是在**鼠标抬起 / 拖出绘图区**时提交的（拖动过程中每动一下就滚会把账本晃坏）",
+  );
+  assert.ok(
+    /const revealRange = \(\) => \{[\s\S]{0,300}inRange\.has\(span\.cellIndex\)/.test(source),
+    "跳转的目标用 inRange（高亮那一套）挑，规则与高亮同一条",
+  );
+  assert.ok(
+    /const ledger = ledgerRef\.current;[\s\S]{0,400}ledger\.scrollTop/.test(source),
+    "滚动落在账本容器自己身上（不用 scrollIntoView——那会把外层容器一起滚）",
+  );
+}
+console.log("trajectory: 顶条选中 → 账本跳转 ✓");
 
 console.log("\ntrajectory: all assertions passed");

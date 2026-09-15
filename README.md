@@ -37,13 +37,21 @@
 - 审批与提问卡片：允许 / 拒绝；未识别的交互事件一律放行，避免把 Agent 挂住。
   **问卷**（`ask_user_question`）默认一次展开全部题目，题目多于 `dshChat.questionBatch`
   时改成依次问答（上一题 / 下一题），答完**自动收缩**成一行，可再点开复看
-  **当时的题目与用户选了什么**；**自定义回答和普通选项一样可以选**（单选时与选项互斥），
-  只是它带一个编辑框。同一个会话在多个窗口打开时，一个窗口答完，其余窗口的卡片
+  **当时的题目与用户选了什么**；**自定义回答是一个「标题 + 多行输入框」的组合**，
+  与普通选项同权：点它（或直接在里面打字）即选中它、单选时与选项互斥，**再点一下取消
+  选中**；**选中别的选项不会清空已经写好的内容**（只取消它的选中态，想换回来再点它
+  一下即可）。同一个会话在多个窗口打开时，一个窗口答完，其余窗口的卡片
   会跟着收场（依据服务端的 `cancel` 帧与会话日志里的工具结果，不看本窗口的状态）
 - 代码块卡片：复制、插入当前编辑器、语言标注、长块折叠
 - 停止生成（按钮或 Esc）；**队列非空时，Esc 会中止当前轮并把队首消息接着发出去**
-  （提示文案随之变为「按 ESC 可中止并发出排队消息」）；排队消息逐条列出，可直接
+  （提示文案随之变为「按 ESC 可中止并发出排队消息」）；排队消息逐条列出——**插话发送的
+  排在排队发送的上面**（插话是马上进当前轮的那条，等着下一轮的排它后面；只改显示顺序，
+  宿主按原顺序重发的那条链路不动，见 `src/webview/queueOrder.ts`），可直接
   「取回重新编辑」（内容回到输入框，附件一并还原）或单独取消
+- **在编辑窗口右上角开一个新的 DSH 窗口**：编辑器标题栏（任何文件/标签页打开时都在
+  右上角，命令面板里是同一条命令）那颗「在本分组新建对话窗口」会在**你当前所在的
+  编辑器分组**里新开一个 DSH 标签页、直接起一个新会话并跳过去——不另开分组，也不动
+  侧栏里正在看的那个会话
 
 **输入与上下文**
 
@@ -140,10 +148,10 @@
   已压缩 / 助手 / 工具 / 子工具，每行带种类标签、`#N` 与单行摘要，工具行摊成
   「请求 → 结果」；生成中的步骤会出一行「正在生成」（面板开着时每 3 秒刷新）；
   工具栏可切换**等宽 / 按耗时**成条、一键折叠所有轮次 / 所有调用、可搜索；上方是
-  **时间线**（三条泳道：输入 / 模型 / 工具，轮次边界竖线，点一条跳到对应记录、
-  拖动框选一段会在账本里高亮，**滚轮以光标为锚缩放、右键拖动平移**（时间线上右键
-  不会弹出原生菜单）、双击复位，
-  左端 `…` 加载更早）；选中任意一行打开**详情检查器**（页签按记录种类派生：
+  **时间线**（三条泳道：输入 / 模型 / 工具，轮次边界竖线，点一条跳到对应记录**并把账本滚到那一行**、
+  拖动框选一段会在账本里高亮**并跳到选区里的第一条**、**滚轮以光标为锚缩放、右键拖动平移**
+  （时间线上右键不会弹出原生菜单）、双击复位，左端 `…` 加载更早）；选中任意一行打开**详情检查器**
+  （页签按记录种类派生：
   概述 / 参数 / 结果 / Schema / 计时 / 预览 / 原始内容 / 来源 / 系统提示词 / 工具 /
   差异……；默认宽度按官方 `clamp(320px,38%,440px)`，左边缘可拖宽，窄面板下变成
   盖在账本上的抽屉）。
@@ -492,15 +500,25 @@ question cards (unknown interaction events are always
 passed through so the agent never hangs) — a **questionnaire** opens with every question at
 once, switches to one-at-a-time paging (Previous / Next) when it has more questions than
 `dshChat.questionBatch`, and **collapses into a single row once answered**, expandable again
-to review what was asked **and what the user picked**; the **custom answer is selectable like
-any other option** (mutually exclusive with them for single-select questions) and differs only
-by carrying an editor; when one session is open in several windows, answering in one closes
+to review what was asked **and what the user picked**; the **custom answer is a composite row
+— a "Custom answer" title plus a multi-line box** that behaves like any other option: clicking
+it (or typing in it) selects it, single-select questions keep it mutually exclusive with the
+other options, clicking it again deselects it, and **picking another option never wipes what
+you typed** (it only clears the custom row's selected state, so one click brings it back);
+when one session is open in several windows, answering in one closes
 the card in the others as well (driven by the server's `cancel` frame and the tool result in
 the session log, never by this window's own state); code blocks with copy/insert, language label and
 collapsing for long blocks; stop generation (button or Esc) — when messages are queued, Esc
 also stops the current turn and sends the frontmost queued message; queued messages are
-listed individually so each can be taken back into the composer for editing (text and
-attachments restored) or cancelled on its own.
+listed individually — **steering messages above the queued ones**, since a steering message is
+the one going into the running turn while a queued one waits for the next (`src/webview/queueOrder.ts`;
+only the display order changes, the host still resubmits the queue in its original order) — so
+each can be taken back into the composer for editing (text and
+attachments restored) or cancelled on its own; **the editor title bar carries an "open a DSH
+window" button** (top right, whenever any file or tab is open — the same command is in the
+command palette): it opens a new DSH tab **in the editor group you are in**, starts a fresh
+session there and jumps to it, without splitting a new group or touching the session the
+sidebar is showing.
 
 **Input and context** — type `/` for a slash-command menu that filters as you type
 (↑↓ to move, Enter to confirm); it also lists **skills**, tagged as such because a skill is

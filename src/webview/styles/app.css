@@ -1273,24 +1273,34 @@
 }
 
 /* 自定义回答那一行：**和普通选项行长得一模一样**（同一套边框 / 悬停 / 选中态），
-   唯一的区别是行里是一个编辑框而不是一段标签文字（官方 `customRow` 也是这个形态：
-   普通选项 `.option` 与自定义 `.customRow` 共用背景、边框、圆角、内边距）。
-   点这一行即「选中它」；单选时选中它会取消其它选项（见 Rows.tsx 的 QuestionCard）。 */
+   里面是一个**组合组件**——标题 + 多行输入框，整行一起被选中 / 取消选中
+   （用户 2026-09-15 口径：选中别的选项不清空输入框，所以「选中态」与「有没有字」
+   是两件事，见 Rows.tsx 的 QuestionCard）。
+   官方 `customRow` 也是这个形态（普通选项 `.option` 与自定义 `.customRow` 共用背景、
+   边框、圆角、内边距），只是它的编辑框没有标题。 */
 .question-custom {
-  flex-direction: row;
-  align-items: center;
-  gap: 8px;
-  cursor: text;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  cursor: pointer;
 }
 
-/* 行内的编辑框填满剩余宽度：边框与内边距由行提供，输入框自己不要再套一层，
-   否则会出现「框里还有一个框」 */
+/* 标题：与普通选项的标签同一档字号，它是这一行的「选项名」 */
+.question-custom-title {
+  font-size: var(--font-size-sm);
+}
+
+/* 行内的编辑框：边框与内边距由行提供，输入框自己不要再套一层，
+   否则会出现「框里还有一个框」；高度给两行起步，允许往下拉 */
 .question-custom .question-input {
-  flex: 1 1 auto;
+  width: 100%;
   min-width: 0;
   padding: 0;
   border: none;
   background: none;
+  font: inherit;
+  color: inherit;
+  resize: vertical;
 }
 
 .question-input {
@@ -1523,6 +1533,21 @@
 .btn-ghost:hover {
   background: var(--hover);
   color: var(--fg);
+}
+
+/* 「开关」按钮的按下态（轨迹工具栏的 时长 / 轮次 / 调用）：它们的状态本来就写在
+   `aria-pressed` 上（无障碍树是对的），但此前**画面上什么都没有**，按下去分不出
+   生效没（用户 2026-09-15 报的）。底色用与其它「选中」一致的 `--active`。
+   两条规则都写在 `.btn-ghost:hover` **之后**（同特异性下后者胜），并且再显式写一条
+   `:hover`：光靠源码顺序的话，后面谁插一条 `.btn-ghost:hover` 就会把按下态吃掉。 */
+.btn[aria-pressed="true"] {
+  background: var(--active);
+  color: var(--active-fg);
+}
+
+.btn[aria-pressed="true"]:hover {
+  background: var(--active);
+  color: var(--active-fg);
 }
 
 .btn:disabled {

@@ -227,6 +227,28 @@ export interface TrajectoryTimeline {
 }
 
 /**
+ * 时间线视口的坐标换算：**归一化域位置 ⇄ 屏幕比例**。
+ *
+ * `zoom` 是放大倍数（1 = 整个域正好铺满绘图区），`offset` 是视口左边界在域里的位置；
+ * `screen = (value - offset) * zoom`。
+ *
+ * 缩放过之后这两套坐标**不再相等**：选区存的是**域位置**（与账本行、与 `left`/`width`
+ * 同一套坐标），画的时候过一次 `trajectoryScreenFraction`，而左键框选是从鼠标位置反向
+ * 算出域位置。**必须**这么分——2026-09-15 用户报的「缩放后左键框选的区域与手划的区域
+ * 对不上」就是漏了这一步：选区按屏幕比例记下来、又当域位置画出去，缩放越大偏得越离谱。
+ *
+ * 纯函数，断言见 `scripts/trajectory.test.ts`。
+ */
+export function trajectoryScreenFraction(value: number, offset: number, zoom: number): number {
+  return (value - offset) * zoom;
+}
+
+/** 屏幕比例 → 归一化域位置（上面那个的逆运算，夹在 0..1 的域内）。 */
+export function trajectoryDomainPosition(fraction: number, offset: number, zoom: number): number {
+  return Math.min(1, Math.max(0, offset + fraction / zoom));
+}
+
+/**
  * 把账本折成时间线（官方 `deriveTrajectoryTimeline` / `deriveTimedTimeline` 的等价物）。
  *
  * 四种模式（官方工具栏的两个开关组合出来的）：

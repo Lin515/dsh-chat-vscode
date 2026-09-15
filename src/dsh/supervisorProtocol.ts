@@ -17,10 +17,15 @@
  * ```
  * `<根>` 默认 `~/.dsh-chat/supervisors`；`DSH_CHAT_SUPERVISOR_DIR` 可整体改掉
  * （探针与断言用：起真实 dsh 时绝不能和用户那套混在一起）。
+ *
+ * **Windows 上隔离必须连管道名一起隔离**：目录算出来的只是文件位置，socket 却是
+ * `\\.\pipe\…` 这个**全局命名空间**里的名字——只看分组的话，隔离目录里的探针会和
+ * 用户正在用的那套撞名（见 `socketPathIn` 的 `isolatedScope`）。
  */
+import { createHash } from "node:crypto";
 import { closeSync, existsSync, linkSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 
 /** 会合文件格式版本。字段不兼容时整份当"没有"。 */
 export const STATE_VERSION = 1;
@@ -75,10 +80,15 @@ export function clampIdleSec(value: unknown): number {
   return Math.min(IDLE_SEC_MAX, Math.max(IDLE_SEC_MIN, Math.round(n)));
 }
 
+/** 默认会合根目录（`supervisorRoot` 的缺省值）。 */
+function defaultSupervisorRoot(): string {
+  return join(homedir(), ".dsh-chat", "supervisors");
+}
+
 /** 会合根目录（`DSH_CHAT_SUPERVISOR_DIR` 可覆盖）。 */
 export function supervisorRoot(): string {
   const configured = process.env.DSH_CHAT_SUPERVISOR_DIR?.trim();
-  return configured ? configured : join(homedir(), ".dsh-chat", "supervisors");
+  return configured ? configured : defaultSupervisorRoot();
 }
 
 /** 某个配置分组的目录。 */
@@ -109,13 +119,48 @@ export function logFileIn(directory: string): string {
  *   管道名更稳；Node 的 `net` 在 win32 上对 `\\.\pipe\` 是原生支持）；
  * - 其它平台：`<目录>/sup.sock`，注意 AF_UNIX 路径长度上限（约 100 字节），
  *   所以目录短、文件名短——分组名已做过文件系统安全过滤。
+ *
+ * **Windows 还要把「隔离目录」算进管道名**（`isolatedScope`）：管道名活在**全局命名
+ * 空间**里，只看分组的话，探针那套（`DSH_CHAT_SUPERVISOR_DIR` 指到临时目录）会和用户
+ * 正在用的那套撞名——探针的 supervisor 一起来就 `EADDRINUSE` 退出、被无限重起，
+ * `npm run smoke` 就是这么卡住的（2026-09-15 实测）。Unix 侧不需要这一手：
+ * socket 本来就在隔离目录里。
  */
 export function socketPathIn(directory: string, group: string): string {
   if (process.platform === "win32") {
     const safe = group.trim().replace(/[^\w.-]/g, "_") || "default";
-    return `\\\\.\\pipe\\dsh-chat-${safe}`;
+    return `\\\\.\\pipe\\dsh-chat-${safe}${isolatedScope(directory)}`;
   }
   return join(directory, "sup.sock");
+}
+
+/**
+ * 管道名的隔离后缀：**只有目录不是默认会合根时**才加，生产返回空串
+ * （默认路径算出来的管道名与从前**逐字节相同**）。
+ *
+ * 为什么按「目录是不是默认那个」判、而不是看 `DSH_CHAT_SUPERVISOR_DIR` 设没设：
+ * 管道名要由参与的双方各自算出来还得一致（扩展拉起 supervisor 时传 `--directory`，
+ * 两边拿的是同一个目录），而"目录是不是默认那个"是它们都看得到的**纯函数**——
+ * 有人手工起 supervisor 只给 `--directory` 时也能对上号。后缀取目录的哈希，
+ * 于是不同临时目录之间不会互相撞（这正是隔离要的效果）。
+ */
+function isolatedScope(directory: string): string {
+  // `directory` 是 `<根>/<分组>`（见 `supervisorDirectory`），所以「是不是默认那套」
+  // 看的是它的**父目录**——拿完整目录去比根目录永远不会相等，那会让生产也带上后缀。
+  if (canonicalPath(dirname(directory)) === canonicalPath(defaultSupervisorRoot())) return "";
+  return `-${createHash("sha256").update(canonicalPath(directory)).digest("hex").slice(0, 8)}`;
+}
+
+/**
+ * 路径的规范形式：去掉结尾分隔符；Windows 上再折叠大小写。
+ *
+ * 两侧（扩展与 supervisor）本来是同一个字符串，用不着规范化；这里做是因为哈希一旦
+ * 吃进"大小写不同 / 多个尾斜杠"的写法差异，同一个目录就会算出两个管道名——
+ * 那是"两个后台"级别的故障，代价远大于这一行。
+ */
+function canonicalPath(value: string): string {
+  const trimmed = value.replace(/[\\/]+$/, "");
+  return process.platform === "win32" ? trimmed.toLowerCase() : trimmed;
 }
 
 /**

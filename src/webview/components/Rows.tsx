@@ -592,11 +592,16 @@ export function ApprovalCard({ approval }: { approval: ApprovalView }) {
  *    都是空的（用户 2026-09-15 报的「展开后没有显示用户的回答」就是这个）；
  * 4. **已撤回**（`cancelled`，没人回答过）：同样收缩成一行（`已取消 N 题`）。
  *
- * 自定义回答与其他选项**行为一致**（用户 2026-09-15 口径）：
- * - 它是选项列表里的一行（同一个 `.question-option` 外观），点它即选中它；
- * - 单选时它与其它选项互斥：选中它清空已选项，选中别的选项清空它（官方
- *   `choose` / `draftCustom` 正是这么互相清空的）；
- * - 唯一的不同是它带一个编辑框。
+ * 自定义回答是一个**组合组件**（用户 2026-09-15 口径）：一行两件东西——标题
+ * 「自定义回答」+ 一个**可多行**的输入框。整行**是一个整体**，与普通选项同权：
+ * - 它是选项列表的最后一行（同一个 `.question-option` 外观）；
+ * - 点它（标题或行的空白处）= 选中它，**再点一下 = 取消选中**；单选时选中它会取消
+ *   已选选项（互斥），多选时与其它已选项并存；
+ * - 在输入框里打字同样算选中它（官方 `draftCustom` 同口径）；
+ * - **选中别的选项不会清空输入框里的内容**：只取消它的选中态，文字留着，想换回来
+ *   再点它一下即可（与官方 `choose` / `draftCustom` 的刻意差异——官方是互相清空的，
+ *   用户明确要保留内容）；
+ * - 输入框里 Enter 是换行（多行输入需要它），**Ctrl/Cmd+Enter** 才是「答完前进 / 提交」。
  *
  * `batch` 由宿主下发（webview 读不到 VS Code 配置），缺省用默认阈值。
  */
@@ -610,6 +615,13 @@ export function QuestionCard({
   const texts = useTexts();
   const [selected, setSelected] = useState<Record<string, string[]>>({});
   const [custom, setCustom] = useState<Record<string, string>>({});
+  /**
+   * 自定义回答**这个组合组件被选中了没有**。
+   *
+   * 它与「输入框里有没有字」是两件事（用户 2026-09-15 口径）：选中别的选项只取消
+   * 它的选中态、**不清空**输入框，所以光看文字判断「选没选它」是不对的。
+   */
+  const [customChosen, setCustomChosen] = useState<Record<string, boolean>>({});
   const [index, setIndex] = useState(0);
   // 已答完的问卷默认收缩；用户点开看记录后不再自动收起
   const [expanded, setExpanded] = useState(false);
@@ -635,6 +647,18 @@ export function QuestionCard({
   const customOf = (itemId: string): string =>
     question.answers?.[itemId]?.custom ?? custom[itemId] ?? "";
 
+  /**
+   * 自定义回答这一行**选中了没有**。
+   *
+   * 宿主已有答案时以答案为准：答案里那串自定义文本非空就说明当时选的就是它
+   * （本地 state 在重挂载 / 另一个窗口答的情况下是空的，只能靠 answers）。
+   */
+  const customChosenOf = (itemId: string): boolean => {
+    const answered = question.answers?.[itemId];
+    if (answered) return (answered.custom ?? "").trim() !== "";
+    return customChosen[itemId] === true;
+  };
+
   // 折成两个「按题目 id 归档」的表再交给 `questionFlow` 那几个纯函数：
   // 判据（选了没选、能不能提交）只有一份，断言也钉在那边。
   // 依赖就是这三样——`selectedOf` / `customOf` 是每次渲染重建的闭包，
@@ -646,9 +670,11 @@ export function QuestionCard({
   }, [items, question.answers, selected]);
   const effectiveCustom = useMemo(() => {
     const map: Record<string, string> = {};
-    for (const item of items) map[item.id] = customOf(item.id);
+    // 只有**选中了**它，输入框里的字才算这一题的答案：取消选中之后文字还在，
+    // 但它已经不是用户选的答法了（见 `customChosen` 的注释）
+    for (const item of items) map[item.id] = customChosenOf(item.id) ? customOf(item.id) : "";
     return map;
-  }, [items, question.answers, custom]);
+  }, [items, question.answers, custom, customChosen]);
 
   const toggle = (itemId: string, label: string, multi?: boolean) => {
     setSelected((prev) => {
@@ -660,17 +686,31 @@ export function QuestionCard({
         : [label];
       return { ...prev, [itemId]: next };
     });
-    // 单选：选了普通选项就清掉自定义回答（官方 `choose` 的
-    // `{selected:[label], custom:""}`）——两者是同一个问题的两种答法
-    if (!multi) setCustom((prev) => ({ ...prev, [itemId]: "" }));
+    // 单选：选了普通选项 = 自定义回答不再是这一题的答案 → 只取消它的**选中态**。
+    // **不清空输入框**（用户 2026-09-15 口径）：文字留着，想换回来再点它一下
+    if (!multi) setCustomChosen((prev) => ({ ...prev, [itemId]: false }));
     // 单选：选中即前进（官方 `choose` 对非多选项就是 index + 1），
     // 最后一题不动——它下面是提交按钮
     if (stepped && !multi && current < items.length - 1) setIndex(current + 1);
   };
 
-  /** 写自定义回答：单选时它顶掉已选选项（官方 `draftCustom`）。 */
+  /**
+   * 自定义回答那一行的「选中 / 取消选中」。
+   *
+   * 与普通选项同一套语义：单选选中它会取消已选选项（互斥），多选与其它选项并存；
+   * 再次点它是取消选中（用户 2026-09-15 明确要「可以被选中和被取消选中」）。
+   * 取消选中**不动输入框里的文字**。
+   */
+  const toggleCustom = (itemId: string, multi?: boolean) => {
+    const next = !customChosenOf(itemId);
+    setCustomChosen((prev) => ({ ...prev, [itemId]: next }));
+    if (next && !multi) setSelected((prev) => ({ ...prev, [itemId]: [] }));
+  };
+
+  /** 写自定义回答：**打字即选中它**（官方 `draftCustom` 同口径）。 */
   const writeCustom = (itemId: string, value: string, multi?: boolean) => {
     setCustom((prev) => ({ ...prev, [itemId]: value }));
+    setCustomChosen((prev) => ({ ...prev, [itemId]: true }));
     if (!multi) setSelected((prev) => ({ ...prev, [itemId]: [] }));
   };
 
@@ -691,10 +731,13 @@ export function QuestionCard({
   };
 
   /**
-   * 在自定义回答的编辑框里按 Enter：依次问答时「答完就前进 / 最后一题提交」
+   * 自定义回答的编辑框里按 **Ctrl/Cmd+Enter**：依次问答时「答完就前进 / 最后一题提交」
    * （官方 `continueFromCustom` → `continueFlow` 的同一条语义）。
    *
-   * 一次展开的模式下什么都不做——那时提交按钮就在下面，Enter 不该有隐藏语义。
+   * 与官方的差异只有快捷键：官方的编辑框是**自增高但仍单行语义**的（Enter 直接提交），
+   * 而这里的输入框要支持多行，Enter 必须留给换行。
+   *
+   * 一次展开的模式下什么都不做——那时提交按钮就在下面，快捷键不该有隐藏语义。
    */
   const continueFromCustom = (itemId: string) => {
     if (!stepped) return;
@@ -706,7 +749,7 @@ export function QuestionCard({
   /** 题目正文（两种形态共用）。 */
   const renderItem = (item: QuestionView["items"][number]) => {
     const customValue = customOf(item.id);
-    const customActive = customValue.trim().length > 0;
+    const customSelected = customChosenOf(item.id);
     return (
       <div className="question-item" key={item.id}>
         <div className="question-head">
@@ -731,34 +774,60 @@ export function QuestionCard({
             );
           })}
           {/* 自定义回答：列表里的最后一行（官方把 `customRow` 放在选项之后、
-              同一个容器里）。记录态只在**当时真写过**时才补这一行（空的编辑框
-              在记录里只是噪音）。 */}
+              同一个容器里）。它是一个**组合组件**——标题 + 多行输入框，整行一起
+              被选中 / 取消选中（见组件头的注释）。记录态只在**当时真选了它**时才
+              补这一行（没选过的空编辑框在记录里只是噪音）。 */}
           {waiting ? (
-            <label
-              className={`question-option question-custom${customActive ? " is-selected" : ""}`}
-              title={texts.questionCustomAria}
-              // 点这一行（含输入框之外的部分）= 选中它：单选先把其它选项清掉，
-              // 焦点交给输入框（label 包裹输入框，浏览器自己会把焦点送进去）
-              onMouseDown={() => {
-                if (!item.multiSelect) setSelected((prev) => ({ ...prev, [item.id]: [] }));
+            <div
+              className={`question-option question-custom${customSelected ? " is-selected" : ""}`}
+              // 点这一行的**输入框之外**部分 = 选中 / 取消选中它；点输入框是去编辑
+              // （打字本身就会选中它，见 writeCustom），所以那种点击要放行给输入框
+              onMouseDown={(event) => {
+                if ((event.target as Element).closest(".question-input")) return;
+                event.preventDefault();
+                const next = !customSelected;
+                toggleCustom(item.id, item.multiSelect);
+                // 选中之后把光标送进输入框：这一步的目的就是去写回答
+                if (next) {
+                  event.currentTarget.querySelector<HTMLTextAreaElement>(".question-input")?.focus();
+                }
               }}
             >
-              <input
+              <span
+                className="question-custom-title"
+                role="button"
+                tabIndex={0}
+                aria-pressed={customSelected}
+                onKeyDown={(event) => {
+                  // 键盘上同一件事：Enter / 空格 = 选中或取消选中
+                  if (event.key !== "Enter" && event.key !== " ") return;
+                  event.preventDefault();
+                  toggleCustom(item.id, item.multiSelect);
+                }}
+              >
+                {texts.questionCustomTitle}
+              </span>
+              <textarea
                 className="question-input"
+                // 多行输入：Enter 换行（见下面的 onKeyDown），框本身给两行高、可往下拉
+                rows={2}
                 aria-label={texts.questionCustomAria}
                 placeholder={texts.questionPlaceholder}
                 value={customValue}
                 onChange={(event) => writeCustom(item.id, event.target.value, item.multiSelect)}
                 onKeyDown={(event) => {
-                  // 输入法组字中的 Enter 是在选字，不是提交
-                  if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
+                  // 输入法组字中的 Enter 是在选字，不是快捷键
+                  if (event.nativeEvent.isComposing) return;
+                  // 多行输入：Enter（含 Shift+Enter）留给换行，Ctrl/Cmd+Enter 才继续
+                  if (event.key !== "Enter" || !(event.ctrlKey || event.metaKey)) return;
                   event.preventDefault();
                   continueFromCustom(item.id);
                 }}
               />
-            </label>
-          ) : customActive ? (
+            </div>
+          ) : customSelected ? (
             <div className="question-option question-custom is-selected">
+              <span className="question-custom-title">{texts.questionCustomTitle}</span>
               <span className="question-option-label">{customValue}</span>
             </div>
           ) : null}
