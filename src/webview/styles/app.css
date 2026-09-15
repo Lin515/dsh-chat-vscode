@@ -3622,7 +3622,11 @@
   height: 42px;
   border-radius: var(--radius-sm);
   background: var(--code-bg);
-  cursor: crosshair;
+  /* 框选区域是这条顶条的主交互，光标用文本选区的 I 字（用户 2026-09-15 口径）：
+     「框一段时间」的隐喻就是选文本。此前未缩放时是十字线、缩放后是手掌（grab），
+     手掌本意是右键平移的暗示，但压在「想框选」的手势上只会误导——平移手势保留，
+     只是不再有光标提示。 */
+  cursor: text;
   overflow: hidden;
 }
 
@@ -3750,14 +3754,8 @@
   background: var(--hover);
 }
 
-/* 时间线放大后：右键拖动平移（官方 `pannable`），光标给出可拖的暗示 */
-.trajectory-plot.is-zoomed {
-  cursor: grab;
-}
-
-.trajectory-plot.is-zoomed:active {
-  cursor: grabbing;
-}
+/* 时间线放大后：右键拖动平移（官方 `pannable`）仍可用，但**不再用手掌光标**暗示——
+   顶条上唯一的光标是框选的 I 字（用户 2026-09-15 口径，见 .trajectory-plot 的注释）。 */
 
 /* 运行中的账本行：状态点与种类标签之间留一点距离（点复用聊天区那套 .dot） */
 .trajectory-event-inner .dot {

@@ -606,7 +606,9 @@ function TrajectoryTimeline({
         <span>{texts.columnTools}</span>
       </div>
       <div
-        className={`trajectory-plot${zoom > 1 ? " is-zoomed" : ""}`}
+        // 曾有的「缩放后」修饰类只服务于「缩放后给手掌光标」，光标已按用户
+        // 2026-09-15 口径统一成框选的 I 字（见 app.css .trajectory-plot 的注释），类随之删掉。
+        className="trajectory-plot"
         ref={ref}
         role="group"
         aria-label={texts.timelineAria}
@@ -783,10 +785,15 @@ export function TrajectoryView({
   };
 
   /**
-   * 把请求里那一行滚进账本的视野。
+   * 把请求里那一行**置顶**对齐（用户 2026-09-15 二次口径）：目标行的顶边贴住
+   * 账本视口的顶边，不管它本来在不在视野里都对齐一次。框选时「那一行」是选区里
+   * 的第一条（`revealRange` 挑的），点选时就是点的那条。
    *
-   * 用「最少滚动」（只补上超出视野的那一段）而不是 `scrollIntoView`：后者会把外层
-   * 容器也一起滚，而这里只想动账本自己（同 Composer 的候选列表）。
+   * 尾部最后几行下面没有足够的内容，贴不了顶——`scrollTop` 的赋值会被浏览器夹回
+   * `[0, scrollHeight - clientHeight]`，效果就是「尽量靠上」，不必自己再写 clamp。
+   *
+   * 直接动账本自己的 `scrollTop`，不用 `scrollIntoView`：后者会把外层容器也一起
+   * 滚，而这里只想动账本（同 Composer 的候选列表）。
    */
   useLayoutEffect(() => {
     if (!reveal) return;
@@ -795,8 +802,7 @@ export function TrajectoryView({
     if (!ledger || !row) return;
     const box = ledger.getBoundingClientRect();
     const rect = row.getBoundingClientRect();
-    if (rect.top < box.top) ledger.scrollTop -= box.top - rect.top;
-    else if (rect.bottom > box.bottom) ledger.scrollTop += rect.bottom - box.bottom;
+    ledger.scrollTop += rect.top - box.top;
   }, [reveal]);
 
   const turns = model?.turns ?? [];

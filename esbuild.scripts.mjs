@@ -107,6 +107,7 @@ const entries = {
   "build/jobs-order.test.mjs": "scripts/jobsOrder.test.ts",
   "build/queue-order.test.mjs": "scripts/queueOrder.test.ts",
   "build/trajectory.test.mjs": "scripts/trajectory.test.ts",
+  "build/manifest.test.mjs": "scripts/manifest.test.ts",
 
 };
 

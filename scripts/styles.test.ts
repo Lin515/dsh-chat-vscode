@@ -806,7 +806,7 @@ console.log("styles: 连接条按钮不被裁切、文字可让位 ✓");
   );
 
   // 「…」在绘图区**内部**、贴左缘（官方 earlierHistory）
-  const plotStart = flatTrajectory.indexOf("className={`trajectory-plot");
+  const plotStart = flatTrajectory.indexOf('className="trajectory-plot"');
   assert.ok(plotStart > 0, "找不到时间线绘图区");
   const resetAt = flatTrajectory.indexOf('className="trajectory-more"');
   assert.ok(resetAt > plotStart, "绘图区之后应当还有右侧的缩放复位按钮");
@@ -1087,5 +1087,34 @@ console.log("styles: 滚动条拐角与拉伸角透明 + 自绘拉伸标记 ✓"
   );
 }
 console.log("styles: 轨迹工具栏开关的按下态（aria-pressed + --active，压在 hover 之后）✓");
+
+// ---------- 37. 轨迹顶条的光标：框选区域用文本 I 字，不许再有手掌 ----------
+//
+// 用户 2026-09-15 口径：轨迹顶条选中区域应当用输入光标的 I 字，而不是手掌。
+// 此前未缩放时是十字线（crosshair）、缩放后是 grab/grabbing（手掌）——手掌正是
+// 被点名的那个。这里钉三件事：
+// 1. `.trajectory-plot` 的光标是 `text`（I 字，框选 = 文本选区的隐喻）；
+// 2. app.css 里不许再有 grab/grabbing（手掌不许回来；右键平移保留、无光标暗示）；
+// 3. TSX 里也不再发 `is-zoomed` 修饰类——它只为那颗手掌光标而存在，删了光标就该删它。
+{
+  const plot = rule(".trajectory-plot");
+  assert.ok(
+    /cursor:\s*text/.test(plot),
+    "轨迹顶条的光标必须是 text（I 字；用户 2026-09-15 口径：框选区域用文本光标）",
+  );
+  assert.ok(
+    !/cursor:\s*(grab|grabbing)/.test(css),
+    "app.css 不许再有 grab/grabbing 手掌光标（用户点名的就是它）",
+  );
+  const trajectory = readFileSync(
+    join(process.cwd(), "src", "webview", "components", "Trajectory.tsx"),
+    "utf8",
+  );
+  assert.ok(
+    !trajectory.includes("is-zoomed"),
+    "Trajectory.tsx 不许再发 is-zoomed 修饰类——它只服务过那颗手掌光标",
+  );
+}
+console.log("styles: 轨迹顶条光标 = 框选 I 字，手掌光标与 is-zoomed 已除 ✓");
 
 console.log("\nstyles: all assertions passed");

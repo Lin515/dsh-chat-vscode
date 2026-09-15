@@ -496,6 +496,15 @@ console.log("trajectory: 缩放后的选区坐标换算（域 ⇄ 屏幕）✓")
     /const ledger = ledgerRef\.current;[\s\S]{0,400}ledger\.scrollTop/.test(source),
     "滚动落在账本容器自己身上（不用 scrollIntoView——那会把外层容器一起滚）",
   );
+  assert.ok(
+    /ledger\.scrollTop \+= rect\.top - box\.top/.test(source),
+    "跳转的落点是**置顶对齐**（目标行顶边贴住账本视口顶边；用户 2026-09-15 二次口径），" +
+      "不是「最少滚动」——最少滚动从账本顶部点下去目标行总贴着底边",
+  );
+  assert.ok(
+    !/rect\.top < box\.top|rect\.bottom > box\.bottom/.test(source),
+    "「最少滚动」的两条分支不许回来（贴边就是被换掉的落点行为）",
+  );
 }
 console.log("trajectory: 顶条选中 → 账本跳转 ✓");
 

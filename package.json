@@ -84,7 +84,10 @@
       {
         "command": "dshChat.newSessionInGroup",
         "title": "%cmd.newSessionInGroup.title%",
-        "icon": "$(comment-discussion)"
+        "icon": {
+          "light": "media/whale-light.svg",
+          "dark": "media/whale-dark.svg"
+        }
       },
       {
         "command": "dshChat.stop",
