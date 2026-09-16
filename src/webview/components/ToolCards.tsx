@@ -9,7 +9,10 @@
  *
  * 数据形状与判据在 `src/shared/toolCard.ts`（宿主侧折好，见那里的文件头逐条对照）。
  * 这里只负责画，并保持官方的三条交互口径：
- * 1. 卡片横幅：左标签（读：路径；搜索：计数摘要）、右侧「语言 / 计数 / 复制」；
+ * 1. 卡片横幅：左标签（读：路径；搜索：计数摘要）、右侧「语言 / 计数 / 复制」。
+ *    **每张有内容的卡都有复制按钮**（用户 2026-09-17 口径）：读/搜索/终端在横幅
+ *    右侧，网页搜索卡原本没有、补在内容右上角；不给的是**工具串**——整轮没有
+ *    正文的那种消息，轮尾不给复制按钮（见 `Message.tsx`），单卡内容照常可复制；
  * 2. 正文超长时**只显示头尾两半**（官方 `K6`：头 `ceil(max/2)`、尾 `max - 头`），
  *    中间一枚展开钮（「… 其余 N 行」），点开铺满；
  * 3. 终端卡在会话行里**不截断**（官方 `maxLines: Infinity`），没输出时给「无输出」。
@@ -28,22 +31,9 @@ const CHAT_CARD_MAX_LINES = 8;
 const COPIED_MS = 1000;
 
 /**
- * 官方 `K6`：把 N 行切成「头 + 尾」两半，中间那 `hidden` 行由展开钮回收。
- * `expanded` 时不截断。头部取 `ceil(max/2)`，尾部取剩下的——两头都露一点，
- * 用户既看到开头也看到结尾。
+ * 复制按钮：点了把正文交给宿主写剪贴板（`post({type:"copy"})`，与代码块同一入口）。
+ * 宿主侧**不发**「已复制」toast（用户 2026-09-17 口径），按钮自己换 1s 文案作反馈。
  */
-function capRows<T>(rows: readonly T[], expanded: boolean): { head: T[]; tail: T[]; hidden: number } {
-  const hidden = rows.length - CHAT_CARD_MAX_LINES;
-  if (hidden <= 0 || expanded) return { head: [...rows], tail: [], hidden: 0 };
-  const headCount = Math.ceil(CHAT_CARD_MAX_LINES / 2);
-  return {
-    head: rows.slice(0, headCount),
-    tail: rows.slice(rows.length - (CHAT_CARD_MAX_LINES - headCount)),
-    hidden,
-  };
-}
-
-/** 复制按钮：点了把正文交给宿主写剪贴板（`post({type:"copy"})`，与代码块同一入口）。 */
 function CopyButton({ text }: { text: string }) {
   const texts = useTexts();
   const [copied, setCopied] = useState(false);
@@ -63,6 +53,22 @@ function CopyButton({ text }: { text: string }) {
       <span>{copied ? texts.copied : texts.copy}</span>
     </button>
   );
+}
+
+/**
+ * 官方 `K6`：把 N 行切成「头 + 尾」两半，中间那 `hidden` 行由展开钮回收。
+ * `expanded` 时不截断。头部取 `ceil(max/2)`，尾部取剩下的——两头都露一点，
+ * 用户既看到开头也看到结尾。
+ */
+function capRows<T>(rows: readonly T[], expanded: boolean): { head: T[]; tail: T[]; hidden: number } {
+  const hidden = rows.length - CHAT_CARD_MAX_LINES;
+  if (hidden <= 0 || expanded) return { head: [...rows], tail: [], hidden: 0 };
+  const headCount = Math.ceil(CHAT_CARD_MAX_LINES / 2);
+  return {
+    head: rows.slice(0, headCount),
+    tail: rows.slice(rows.length - (CHAT_CARD_MAX_LINES - headCount)),
+    hidden,
+  };
 }
 
 /** 中间那枚展开钮（官方 `ExpandRow`）：`aria-expanded` + 「… 其余 N 行」/「收起」。 */
@@ -345,8 +351,21 @@ function WebCard({ card }: { card: Extract<ToolCardView, { kind: "web_search" | 
     );
   }
   const empty = (card.answer === undefined || card.answer === "") && card.sources.length === 0;
+  // 复制内容 = 答案 + 编号的来源（标题 + 链接）；摘要片段与发布时间是展示细节，不进剪贴板
+  const webCopyText = [
+    ...(card.answer !== undefined && card.answer !== "" ? [card.answer] : []),
+    ...card.sources.map((source, index) => `${index + 1}. ${sourceLabel(source.url, source.title)} ${source.url}`),
+  ].join("\n\n");
   return (
     <div className="tool-card is-web">
+      {/* 网页搜索卡没有横幅（官方 `WebBlock` 就没有）。复制按钮是补全的（用户
+          2026-09-17 口径「缺少复制按钮的补全一个，放在内容窗口的右上角」）：
+          借横幅这一行把按钮顶到内容右上角，与读/搜索/终端卡的按钮同一套样式。 */}
+      <div className="tool-card-banner">
+        <span className="tool-card-actions">
+          {!empty ? <CopyButton text={webCopyText} /> : null}
+        </span>
+      </div>
       {card.answer !== undefined && card.answer !== "" ? (
         <div className="tool-card-answer">
           <Markdown text={card.answer} />

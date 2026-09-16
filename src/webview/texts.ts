@@ -300,6 +300,7 @@ export interface Texts {
   questionCustomAria: string;
 
   copy: string;
+  /** 复制按钮的 1s 瞬时反馈（按钮文案自换；宿主不再发「已复制」toast）。 */
   copied: string;
   insertToEditor: string;
   openFile: string;
@@ -1298,8 +1299,6 @@ function resolveMarker(text: string, texts: Texts): string {
     }
     case "maxTokens":
       return texts.maxTokens;
-    case "copied":
-      return texts.copied;
     case "openInBrowserOffline":
       return texts.openInBrowserOffline;
     case "openInBrowserFailed":

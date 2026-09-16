@@ -827,6 +827,40 @@ console.log("styles: 连接条按钮不被裁切、文字可让位 ✓");
 }
 console.log("styles: 工具卡只有一层滚动条 ✓");
 
+// ---------- 16b'. 复制按钮的归属：工具卡内容有、工具串没有（用户 2026-09-17 口径） ----------
+//
+// 这条口径澄清过一轮（第一轮误读成「工具卡一律不给复制」），钉死完整版：
+// - 每张**有内容**的工具卡都有复制按钮：读/搜索/终端在横幅右侧，网页搜索卡
+//   借横幅行补在内容右上角；web_fetch 只有链接没有内容体，不给。
+// - 「工具串」不给：整轮只有连续工具调用、没有正文的消息，轮尾复制按钮
+//   必须包在 `fullText !== ""` 条件里。
+// - 生成过程中整条操作行（时间/分支/复制）都不画。
+{
+  const toolCards = readFileSync(join(process.cwd(), "src", "webview", "components", "ToolCards.tsx"), "utf8");
+  assert.strictEqual(
+    (toolCards.match(/<CopyButton /g) ?? []).length,
+    4,
+    "工具卡应有 4 处复制按钮（读/搜索/终端横幅 + 网页搜索卡内容右上角）；web_fetch 无内容体不给",
+  );
+
+  const message = readFileSync(join(process.cwd(), "src", "webview", "components", "Message.tsx"), "utf8");
+  const assistant = message.slice(message.indexOf("const fullText"));
+  assert.ok(assistant.length > 0, "应当能找到助手消息分支");
+  const copyAt = assistant.indexOf('post({ type: "copy", text: fullText })');
+  assert.ok(copyAt > 0, "轮尾复制按钮应把 fullText 发给宿主");
+  assert.ok(
+    /fullText !== "" \? \(/.test(assistant.slice(Math.max(0, copyAt - 800), copyAt)),
+    "轮尾复制按钮必须包在「有正文」的条件里——工具串（无正文的整轮）不给复制",
+  );
+  const actionsAt = assistant.indexOf('className="msg-actions"');
+  assert.ok(actionsAt > 0, "助手消息应有操作行");
+  assert.ok(
+    /!message\.streaming/.test(assistant.slice(Math.max(0, actionsAt - 200), actionsAt)),
+    "操作行（时间/分支/复制/用时）必须包在 !message.streaming 里：生成过程中右下角不画",
+  );
+}
+console.log("styles: 复制按钮归属（工具卡内容有 / 工具串没有 / 生成中不画） ✓");
+
 // ---------- 16c. 节点展开后，滚动位置默认在**顶部** ----------
 //
 // 用户 2026-09-16 口径：「各类节点打开后，如果有垂直滚动条，默认应当居于最顶部」。

@@ -65,7 +65,7 @@ const MARKERS: string[] = [
   "dropUnreadable",
   "dropTooLarge",
   // 剪贴板 / 浏览器
-  "copied",
+  // （`copied` 已随「复制成功不弹信息条」的口径一起删掉：复制按钮不再发 toast）
   "openInBrowserOffline",
   "openInBrowserFailed",
   // 审批

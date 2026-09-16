@@ -303,30 +303,40 @@ export const Message = memo(function Message({
           />
         ) : null}
       </div>
-      <div className="msg-actions">
-        <span className="msg-time">{formatClock(message.ts)}</span>
-        {/* 分支：复制按钮**左侧**（用户指定）。运行中不能分支——`session/fork`
-            的锚点必须落在 `turn/end` 上，开放轮里锚定会被宿主拒绝而不是往前裁剪。 */}
-        <button
-          className="icon-btn"
-          title={canBranch ? texts.branchFromHere : texts.branchRunning}
-          disabled={!canBranch}
-          onClick={() => post({ type: "branchFrom", messageId: message.id })}
-        >
-          <IconBranch size={14} />
-        </button>
-        <button
-          className="icon-btn"
-          title={texts.copy}
-          onClick={() => post({ type: "copy", text: fullText })}
-        >
-          <IconCopy size={14} />
-        </button>
-        {/* 轮尾「用时 X」胶囊：官方把它挂在操作条的 usageAction 槽里（最新一轮常显、
-            其余轮悬停出现），点开是「本轮总用时 / 输出速度 / 首 token 用时」明细。
-            只在轮次结束后有数据（`turnStats` 由 turn/end 写入）。 */}
-        {message.turnStats ? <TurnStatsButton stats={message.turnStats} /> : null}
-      </div>
+      {/* 轮尾操作行（时间 / 分支 / 复制 / 用时）。**生成过程中整行不画**（用户
+          2026-09-17 口径）：流式期间时间在跳、分支不可点、复制的内容也没定稿，
+          右下角这一排是噪音；轮次结束（`streaming === false`）才出现。 */}
+      {!message.streaming ? (
+        <div className="msg-actions">
+          <span className="msg-time">{formatClock(message.ts)}</span>
+          {/* 分支：复制按钮**左侧**（用户指定）。运行中不能分支——`session/fork`
+              的锚点必须落在 `turn/end` 上，开放轮里锚定会被宿主拒绝而不是往前裁剪。 */}
+          <button
+            className="icon-btn"
+            title={canBranch ? texts.branchFromHere : texts.branchRunning}
+            disabled={!canBranch}
+            onClick={() => post({ type: "branchFrom", messageId: message.id })}
+          >
+            <IconBranch size={14} />
+          </button>
+          {/* 复制不给「工具串」（用户 2026-09-17 澄清口径）：整轮只有连续工具调用、
+              一段正文都没有时，这条消息没有可复制的正文，按钮不出现；单张工具卡
+              展开的内容仍有各自的复制按钮（见 ToolCards.tsx）。 */}
+          {fullText !== "" ? (
+            <button
+              className="icon-btn"
+              title={texts.copy}
+              onClick={() => post({ type: "copy", text: fullText })}
+            >
+              <IconCopy size={14} />
+            </button>
+          ) : null}
+          {/* 轮尾「用时 X」胶囊：官方把它挂在操作条的 usageAction 槽里（最新一轮常显、
+              其余轮悬停出现），点开是「本轮总用时 / 输出速度 / 首 token 用时」明细。
+              只在轮次结束后有数据（`turnStats` 由 turn/end 写入）。 */}
+          {message.turnStats ? <TurnStatsButton stats={message.turnStats} /> : null}
+        </div>
+      ) : null}
     </div>
   );
 });

@@ -3086,8 +3086,9 @@ export class ChatController implements vscode.Disposable {
         break;
 
       case "copy":
+        // 只写剪贴板，**不发「已复制」toast**（用户 2026-09-17 口径：复制成功从
+        // 界面上就能感知——按钮/选中内容还在，信息条反而是打扰）。
         await vscode.env.clipboard.writeText(message.text);
-        this.emitToView(viewId, { type: "toast", level: "info", text: "@copied" });
         break;
 
       case "listSubagents":
