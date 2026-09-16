@@ -280,12 +280,33 @@ export interface QuestionOption {
   description?: string;
 }
 
+/**
+ * 题目的**展示意图**（`AskUserQuestionIntent` 的界面投影）。
+ *
+ * 线格式里 `intent` 是「这道题该用哪种界面画」的声明，目前只有一种：
+ * `plan-review`——`exit_plan_mode` 拿计划正文当 `detail` 来征求确认。
+ * 官方据此把请求路由到计划审阅卡而不是通用问卷流程（见 `webview/planReview.ts`）。
+ */
+export interface QuestionIntentView {
+  kind: string;
+  /** 意图点名的「批准」选项 label（判定必须逐字等于它，见 `planReviewOf`）。 */
+  approve?: string;
+}
+
 export interface QuestionItemView {
   id: string;
   header?: string;
   question: string;
+  /**
+   * 题目的**补充正文**（markdown）。
+   *
+   * 此前被适配器整个丢掉，界面上只剩一句问句：`exit_plan_mode` 的**计划正文**
+   * 正是走这个字段（`detail`），丢了就等于「审批一张看不见内容的计划」。
+   */
+  detail?: string;
   options: QuestionOption[];
   multiSelect?: boolean;
+  intent?: QuestionIntentView;
 }
 
 /** 一道题的回答（`AskUserQuestionAnswerItem` 的界面投影）。 */

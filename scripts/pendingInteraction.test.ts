@@ -3,10 +3,13 @@
  *
  * 官方把审批卡与提问卡注册进 `conversation.composer` 槽，`select` 拿到的是**待处理**
  * 的那个 → 卡片接管输入区。规则里唯一有取舍的是**同时有多张待处理卡时给谁**：
- * 官方按注册优先级（`dsh-client-ui-user-questions` 注册 1、plan-review 注册 2；
- * `dsh-client-ui-approval` 注册 0），所以**提问优先于审批**。
- * 我们分不出 plan-review 提问（线格式里没有这个标记），只实现「提问 > 审批」；
- * 同优先级取最后一条。这些口径在这里钉住。
+ * 官方按注册优先级（`dsh-client-ui-user-questions` 里 plan-review 注册 2、普通提问
+ * 注册 1；`dsh-client-ui-approval` 注册 0），所以 **plan-review > 提问 > 审批**。
+ *
+ * plan-review 与普通提问是**同一条线格式**（都走 `user-questions/request`），
+ * 区分它的是题目上的 `intent.kind === "plan-review"`（收窄规则见
+ * `scripts/planReview.test.ts`）：所以这里也要一起钉住「认得出」与「认不出就退回
+ * 普通提问」两条。同优先级取最后一条。这些口径在这里钉住。
  *
  * 运行：npm test
  */
@@ -24,6 +27,21 @@ const question = (id: string, state: QuestionView["state"]): QuestionView => ({
   requestId: id,
   state,
   items: [{ id: "q1", header: "确认", question: "继续吗？", options: [{ label: "继续" }] }],
+});
+/** `exit_plan_mode` 形状的待处理请求（真实形状见 `scripts/planReview.test.ts`）。 */
+const planReview = (id: string, state: QuestionView["state"]): QuestionView => ({
+  requestId: id,
+  state,
+  items: [
+    {
+      id: "plan-review",
+      header: "Plan review",
+      question: "Approve this plan and leave plan mode?",
+      detail: "# 计划\n\n做这件事。",
+      options: [{ label: "Approve" }, { label: "Keep planning" }],
+      intent: { kind: "plan-review", approve: "Approve" },
+    },
+  ],
 });
 
 const message = (segments: MessageView["segments"]): MessageView => ({
@@ -108,6 +126,67 @@ const message = (segments: MessageView["segments"]): MessageView => ({
   ]);
   assert.strictEqual(pending?.kind, "question", "要扫完整个消息流，不能只看最后一条");
 }
+
+// ---------- 4b. plan-review 认得出、且优先级最高 ----------
+//
+// plan-review 与普通提问走同一条线格式，只有 `intent.kind` 不同——认不出来
+// 就会把「计划审阅」画成一张普通问卷（计划正文也看不见）。
+{
+  const pending = pendingInteractionOf([
+    message([{ kind: "question", id: "q", question: planReview("r", "waiting") }]),
+  ]);
+  assert.strictEqual(pending?.kind, "plan-review", "intent 是 plan-review 的提问要单独当选");
+  assert.strictEqual(
+    pending?.kind === "plan-review" ? pending.review.plan : undefined,
+    "# 计划\n\n做这件事。",
+    "选举结果里要带上收窄后的计划（界面直接用，不再自己判一次）",
+  );
+  assert.strictEqual(
+    pending?.kind === "plan-review" ? pending.review.approve.label : undefined,
+    "Approve",
+    "批准项要一起带过来",
+  );
+
+  // 优先级：plan-review > 普通提问 > 审批（官方注册优先级 2 / 1 / 0）
+  const all = pendingInteractionOf([
+    message([
+      { kind: "approval", id: "a", approval: approval("ra", "waiting") },
+      { kind: "question", id: "q", question: question("rq", "waiting") },
+      { kind: "question", id: "p", question: planReview("rp", "waiting") },
+    ]),
+  ]);
+  assert.strictEqual(all?.kind, "plan-review", "三张同待处理时给 plan-review（官方优先级 2）");
+
+  // 认不出来的（这里：多给了一个选项，两个按钮表达不完）退回普通提问
+  const notNarrowable = pendingInteractionOf([
+    message([
+      {
+        kind: "question",
+        id: "p",
+        question: {
+          ...planReview("rp", "waiting"),
+          items: [
+            {
+              ...planReview("rp", "waiting").items[0],
+              options: [{ label: "Approve" }, { label: "Keep planning" }, { label: "再说" }],
+            },
+          ],
+        },
+      },
+    ]),
+  ]);
+  assert.strictEqual(notNarrowable?.kind, "question", "收窄不了就退回通用问卷流程，不能丢答案");
+
+  // 已答完的 plan-review 同样不占输入区
+  assert.strictEqual(
+    pendingInteractionOf([
+      message([{ kind: "question", id: "p", question: planReview("rp", "answered") }]),
+    ]),
+    undefined,
+    "已答完的计划审阅不是待处理交互",
+  );
+}
+console.log("pendingInteraction: plan-review 优先级最高、收窄不了退回问卷 ✓");
 
 // ---------- 5. 界面对齐：待处理的在流里**不渲染**，已答过的照常渲染 ----------
 {

@@ -146,6 +146,15 @@ export type WebviewToHost =
   | { type: "answerApproval"; requestId: string; approved: boolean; always?: boolean }
   /** 回答模型提问。 */
   | { type: "answerQuestion"; requestId: string; answers: { id: string; selected: string[]; custom?: string }[] }
+  /**
+   * **撤回**一次还在等的提问（用户主动关掉，不是回答）。
+   *
+   * 服务端的编码是 `rejected` + `UserQuestionError`/`ASK_CANCELLED`
+   * （`dsh-api-gateway` 的 `parseRemoteEventRejection` 只认这三个键），
+   * 与「答完了」是两种结算——`exit_plan_mode` 的「去聊天里说」正走这条：
+   * 它让等待方带着「用户想直接说话」的语义收场，而不是收到一份答案。
+   */
+  | { type: "cancelQuestion"; requestId: string }
   /** 选择文件 / 文件夹加入上下文（图片按图片发送，其余文件上传，目录做引用）。 */
   | { type: "addFiles" }
   /**

@@ -197,6 +197,27 @@ const must = [
         ),
       ),
   ],
+  // 计划审阅（`exit_plan_mode`）：夹具里必须留一份**带计划正文**的请求
+  // （`intent.kind === "plan-review"` + `detail`）。审阅卡的识别全靠这两个字段，
+  // 夹具里没有它，预览页就永远看不到那张卡（`__planReview()` 只是把这张已答完的
+  // 翻成 `waiting`，好预览输入区接管时的排版）；计划正文里要有围栏代码块，
+  // 否则卡里的 CodeBlock 这条路没人验过。
+  [
+    "计划审阅请求（intent + 计划正文 + 代码块）",
+    () =>
+      state.messages.some((m) =>
+        m.segments.some(
+          (s) =>
+            s.kind === "question" &&
+            s.question.items.some(
+              (item) =>
+                item.intent?.kind === "plan-review" &&
+                typeof item.detail === "string" &&
+                item.detail.includes("```"),
+            ),
+        ),
+      ),
+  ],
 ];
 
 let failed = 0;

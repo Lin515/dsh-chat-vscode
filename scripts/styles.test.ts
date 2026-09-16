@@ -644,7 +644,7 @@ console.log("styles: 代码块自动换行（官方 pre-wrap） ✓");
     "utf8",
   );
   assert.ok(
-    /className="composer-interaction"/.test(composer),
+    /className=\{`composer-interaction/.test(composer),
     "输入区要有承载这张卡的容器（与目标条同一条 dock 带）",
   );
   assert.ok(
@@ -1455,5 +1455,73 @@ console.log("styles: 两颗「打开」按钮图标不同（编辑区=方框箭�
   );
 }
 console.log("styles: 贴底（意愿只由手势定 + 幂等钉底；几何推断与展开豁免已除；回底胶囊）✓");
+
+// ---------- 19. 计划审阅卡：只有一个滚动层，且决定按钮不会被滚走 ----------
+//
+// 官方 `PlanReviewPanel` 是「条带 + 可滚动的计划正文 + 底部决定行」，卡片自己有
+// `max-height: min(60vh, 520px)`。而输入区那个容器本来就限高内滚
+// （`.composer-interaction`，为多题问卷设的）——两层叠起来会出现两条滚动条，
+// 而且**决定按钮会被外层滚走**（计划几百行时，用户得先滚到底才能点「确认执行」）。
+// 所以这个形态下外层让位（不设限、不滚动），限高只有卡片自己一处。
+{
+  const body = rule(".plan-review-body");
+  assert.ok(
+    /overflow-y:\s*auto/.test(body) && /min-height:\s*0/.test(body),
+    "计划正文必须自己内滚（flex 子项要配 min-height: 0，否则它会被内容撑开、根本滚不起来）",
+  );
+  const card = rule(".plan-review");
+  assert.ok(
+    /max-height:\s*min\(60vh/.test(card) && /overflow:\s*hidden/.test(card),
+    "卡片按官方口径限高（min(60vh, 520px)）并裁掉溢出，滚动交给正文那一段",
+  );
+  assert.ok(
+    /max-height:\s*none/.test(rule(".composer-interaction.is-plan-review")) ||
+      /overflow:\s*visible/.test(rule(".composer-interaction.is-plan-review")),
+    "计划审阅形态下外层容器必须让位（不限高 / 不滚动），否则决定按钮会被外层滚走",
+  );
+
+  const composer = readFileSync(
+    join(process.cwd(), "src", "webview", "components", "Composer.tsx"),
+    "utf8",
+  );
+  assert.ok(
+    /pending\.kind === "plan-review" \? " is-plan-review" : ""/.test(composer),
+    "Composer 要按 pending 的种类给外层挂 .is-plan-review",
+  );
+  assert.ok(
+    /pending\.kind === "plan-review" \? \(\s*<PlanReviewCard/.test(composer),
+    "计划审阅卡在输入区渲染（与审批 / 问卷同一个接管位）",
+  );
+
+  // 底部决定行：英文文案比中文长，窄侧栏里必须能折行而不是把按钮挤出边界
+  const footer = rule(".plan-review-footer");
+  assert.ok(
+    /flex-wrap:\s*wrap/.test(footer),
+    "决定行必须允许折行（`Chat about it` / `Refuse` / `Approve` 在窄侧栏里放不下）",
+  );
+
+  // 按钮上显示界面语言、发出去提问方的 label：文案必须全部走词典
+  const rows = readFileSync(
+    join(process.cwd(), "src", "webview", "components", "Rows.tsx"),
+    "utf8",
+  );
+  const panel = rows.slice(rows.indexOf("export function PlanReviewCard"));
+  assert.ok(
+    /decide\(review\.approve\.label\)/.test(panel) && /decide\(decline\.label\)/.test(panel),
+    "两个决定提交的是**提问方的 label**（显示语言 ≠ 答案，判定是逐字比较）",
+  );
+  assert.ok(
+    /post\(\{ type: "cancelQuestion", requestId: question\.requestId \}\)/.test(panel),
+    "「去聊天里说」发 cancelQuestion（撤回，不是答案）",
+  );
+  assert.ok(
+    /texts\.planReviewHeader/.test(panel) &&
+      /texts\.planReviewApprove/.test(panel) &&
+      /texts\.planReviewDecline/.test(panel) &&
+      /texts\.planReviewDiscuss/.test(panel),
+    "四个文案都走词典（双语规则）",
+  );
+}
+console.log("styles: 计划审阅卡单层滚动 + 决定按钮常驻 ✓");
 
 console.log("\nstyles: all assertions passed");

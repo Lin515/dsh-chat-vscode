@@ -156,6 +156,21 @@
           ],
         });
       };
+      // 计划审阅**待处理**时的形态：把夹具里那张已答完的计划审阅翻回 `waiting`——
+      // 此时它接管输入区（`pendingInteractionOf` 的选举：plan-review 优先级最高），
+      // 卡是「warn 条带 + 内滚计划正文 + 底部决定行」，与记录态完全是两套排版。
+      // 计划正文直接复用夹具里那份（不另写一份，免得两处漂移）。
+      window.__planReview = function () {
+        const state = window.__buildState();
+        for (const message of state.messages) {
+          for (const segment of message.segments) {
+            if (segment.kind !== "question" || segment.id !== "ask2") continue;
+            segment.question = Object.assign({}, segment.question, { state: "waiting" });
+            delete segment.question.answers;
+          }
+        }
+        window.__push({ type: "state", state: state });
+      };
     </script>
     <script src="../dist/webview.js"></script>
     <script>
@@ -711,7 +726,50 @@
                     { label: "补单元测试" },
                     { label: "补冒烟测试" }
                   ] }
-                ] } }
+                ] } },
+                // 计划审阅（`exit_plan_mode`）：**已答完**的形态留在流里（记录卡
+                // 展开能看到整份计划）；**待处理**的形态用 `__planReview()` 翻出来看
+                // （那时它在输入区接管，排版是另一套）。
+                // 字段逐字取自提问方 `dsh-plan-mode/lib/index.js:259-278`
+                // （id/header/question 是英文原文，options 与 intent 同源）。
+                { id: "ask2", kind: "question", question: { requestId: "evPR", state: "answered", items: [
+                  { id: "plan-review", header: "Plan review",
+                    question: "Approve this plan and leave plan mode?",
+                    // 计划正文是长 markdown（带标题 / 有序列表 / 围栏代码块）：
+                    // 审阅卡要能内滚、代码块要走 CodeBlock
+                    detail: [
+                      "# 重构 server 启动流程",
+                      "",
+                      "## 目标",
+                      "端口读取与中间件注册各自收敛到一处，`index.ts` 只做装配。",
+                      "",
+                      "## 改动",
+                      "1. 新增 `src/config.ts`：端口 / host / 超时从环境变量读**一次**；",
+                      "2. `src/server/index.ts` 只管注册中间件与 `listen`；",
+                      "3. `src/bootstrap.ts` 复用同一份配置，不再各自读 `process.env`；",
+                      "4. 补 `test/smoke.test.ts`，覆盖「端口只 listen 一次」。",
+                      "",
+                      "## 关键片段",
+                      "```ts",
+                      "export function readConfig(env = process.env) {",
+                      "  return { port: Number(env.PORT ?? 3000), host: env.HOST ?? \"127.0.0.1\" };",
+                      "}",
+                      "```",
+                      "",
+                      "## 不做",
+                      "- 不动 `public/` 下的静态资源；",
+                      "- 不引入新的依赖。",
+                      "",
+                      "## 风险",
+                      "`bootstrap.ts` 目前被旧的 `index.ts` 直接 import，收敛后要先跑一遍冒烟测试；",
+                      "端口只 listen 一次的断言是这次改动的核心回归点。"
+                    ].join("\n"),
+                    options: [
+                      { label: "Approve", description: "Leave plan mode; the plan is carried out from the next step." },
+                      { label: "Keep planning", description: "Stay in plan mode; feedback goes back to the model." }
+                    ],
+                    intent: { kind: "plan-review", approve: "Approve" } }
+                ], answers: { "plan-review": { selected: ["Approve"] } } } }
               ]
             },
             // 运行中的一轮：`streaming: true` + 已经攒下来的 produced。轮尾文件两行

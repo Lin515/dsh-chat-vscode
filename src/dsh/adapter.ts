@@ -2296,8 +2296,11 @@ export class SessionAdapter {
   }
 
   /**
-   * 把一次**被撤回**的交互收场（Host 撤回 waterfall：另一个客户端答了、
-   * 轮次中止、Agent Context 释放）。
+   * 把一次**没被回答**的交互收场。
+   *
+   * 两条到达方式共用这里：Host 撤回 waterfall（另一个客户端答了、轮次中止、
+   * Agent Context 释放），以及**用户自己撤掉**（计划审阅卡的「去聊天里说」→
+   * 控制器回 `ASK_CANCELLED`，见 `controller.ts` 的 `cancelQuestion`）。
    *
    * 撤回不等于「答过了」：提问标成 `cancelled`（没人回答过），审批标成
    * `expired`。两者都必须离开 `waiting`，否则输入区一直挂着一张永远等不到

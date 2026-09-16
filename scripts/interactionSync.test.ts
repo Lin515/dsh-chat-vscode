@@ -348,7 +348,8 @@ console.log("interactionSync: @ 对话引用的接线 ✓");
 // 适配器里，而切会话会 `dropViewers` → `destroyScope` 把整个适配器回收；审批/提问
 // **不是 durable 事件**（会话日志里没有它们），重放不回，于是只存在于被回收的适配器里
 // 的那份请求就永久丢了。修法是把「还没结算的审批/提问」留在宿主的 `heldEvents` 里，
-// 直到有人答复（`answerApproval` / `answerQuestion`）或 Host 撤回（`cancel` 帧），
+// 直到有人答复（`answerApproval` / `answerQuestion`）、用户自己撤回
+// （`cancelQuestion`，计划审阅卡的「去聊天里说」）或 Host 撤回（`cancel` 帧），
 // 并在**有窗口绑上这个会话**时回放。
 //
 // 这一组按源码结构钉住这条生命周期（域的生命周期只能在真宿主里跑，这里是接线断言）。
@@ -392,18 +393,25 @@ console.log("interactionSync: @ 对话引用的接线 ✓");
   const ensure = controller.slice(ensureStart, controller.indexOf("private ensureDefaultModelApplied(", ensureStart));
   assert.ok(!/heldEvents/.test(ensure), "ensureScope 不该回放（域建成时还没有窗口绑定）");
 
-  // (5) 结算点只有三个：本窗口答复两处 + Host 撤回一处。多一处少一处都要在这里说清楚
+  // (5) 结算点只有四个：本窗口答复两处 + **用户自己撤回**一处 + Host 撤回一处。
+  // 多一处少一处都要在这里说清楚
   const deletes = controller.match(/this\.heldEvents\.delete\(/g) ?? [];
   assert.strictEqual(
     deletes.length,
-    3,
-    `heldEvents 的结算点应当正好 3 处（answerApproval / answerQuestion / cancelHeldEvent），` +
-      `现在是 ${deletes.length} 处——少一处会让卡片永远复原不回来，多一处会让它在切回来时丢`,
+    4,
+    `heldEvents 的结算点应当正好 4 处（answerApproval / answerQuestion / cancelQuestion / ` +
+      `cancelHeldEvent），现在是 ${deletes.length} 处——少一处会让卡片永远复原不回来，` +
+      `多一处会让它在切回来时丢`,
   );
   assert.ok(
     /case "answerApproval":[\s\S]{0,200}?this\.heldEvents\.delete\(eventId\);/.test(controller) &&
       /case "answerQuestion":[\s\S]{0,200}?this\.heldEvents\.delete\(eventId\);/.test(controller),
     "本窗口答复后要结算掉（否则下次切回来会弹一张已经答过的卡）",
+  );
+  // 用户自己撤回（计划审阅卡的「去聊天里说」）同样是一次结算：请求已经回掉了
+  assert.ok(
+    /case "cancelQuestion":[\s\S]{0,400}?this\.heldEvents\.delete\(eventId\);/.test(controller),
+    "用户撤回也要结算掉——留着它下次切回会话会凭空弹一张过期的计划审阅卡",
   );
 }
 console.log("interactionSync: 未结算的问卷/审批随「绑定窗口」回放 ✓");

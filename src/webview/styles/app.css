@@ -591,6 +591,14 @@
   scrollbar-gutter: stable;
 }
 
+/* 计划审阅卡自己就是「条带 + 内滚正文 + 底部决定行」，限高也归它
+   （`min(60vh, 520px)`）：外层若再限一次，决定按钮会被外层的滚动条滚走，
+   而且出现两层嵌套滚动。这里只让它当个不滚的容器。 */
+.composer-interaction.is-plan-review {
+  max-height: none;
+  overflow: visible;
+}
+
 /* 上下文条目的 per-form 正文（官方 ContextBody）：标题 + 条目列表。
    窄侧栏里「名字 + 说明」不能挤成一行——名字不压缩、说明换行。 */
 .ctx-body {
@@ -1665,6 +1673,91 @@
   background: none;
   padding: 0;
   margin: 0;
+}
+
+/* 题目的补充正文（`detail`，官方 `QuestionComposer` 的 `.detail`）：排在选项**上方**，
+   与助手正文同一个 markdown 渲染器。计划审阅的计划正文也走这里（记录态展开时）。
+   **不自己限高**：等待态的外层 `.composer-interaction` 与记录态的外层 `.row-body`
+   都已经是一个滚动容器，这里再加一层就是两层滚动条。 */
+.question-detail {
+  margin: 2px 0 4px;
+  font-size: var(--font-size-sm);
+  line-height: 1.7;
+}
+
+/* 计划审阅卡（`exit_plan_mode`）——官方 `PlanReviewPanel` 的三段式：
+   warn 条带 + **可滚动的计划正文** + 固定可见的底部决定行。
+   计划动辄几百行，所以滚的只有中间那段：条带与「确认执行」绝不能被滚走。 */
+.plan-review {
+  border: 1px solid var(--warning);
+  border-radius: var(--radius);
+  background: var(--editor-bg);
+  display: flex;
+  flex-direction: column;
+  /* 限高与官方同口径（`max-height: min(60vh, 520px)`）：外层对这个形态让位
+     （见 `.composer-interaction.is-plan-review`），限高只有这一处 */
+  max-height: min(60vh, 520px);
+  overflow: hidden;
+  margin: 4px 0;
+}
+
+.plan-review-strip {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  font-size: var(--font-size-xs);
+  color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 16%, transparent);
+}
+
+.plan-review-dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--warning);
+}
+
+.plan-review-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  padding: 8px 12px 4px;
+  font-size: var(--font-size-sm);
+  line-height: 1.7;
+}
+
+/* 底部决定行：「去聊天里说」在左、两个决定在右。
+   `flex-wrap` 是英文文案的保命条款——`Chat about it` / `Refuse` / `Approve`
+   在窄侧栏里要能折到第二行，而不是把按钮挤出边界（按钮自己 nowrap）。
+   `margin-left: auto` 让决定组即便折行也靠右。 */
+.plan-review-footer {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 6px 12px 10px;
+}
+
+.plan-review-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+/* 「去聊天里说」是次要出口（它撤掉这次审阅，让用户直接说话），
+   所以是 ghost 且用次级文字色 */
+.plan-review-discuss {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--description);
 }
 
 /* notices */

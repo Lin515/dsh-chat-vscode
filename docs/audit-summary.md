@@ -143,7 +143,7 @@ dsh 会按 `PROFILE_TEMPLATES` 自动初始化 web profile）起真实 `dsh web`
 | markdown | ✅ 任务列表复选框（白名单放行 + 钩子只放行 checkbox）、软换行改 CommonMark（`breaks: false`） |
 | 未知内容块 | ✅ 官方 default 分支的「未知内容块」记录（同时补掉 V6：`file` 块） |
 | 上下文条目 | ✅ 按 form 分派正文（instructions 的变更列表 / catalog 的条目 / snapshot 的分节 / relay 的会话 / recall 的计数），形状判据**全有或全无** |
-| 审批 / 提问卡 | ✅ 待处理的**接管输入区**（官方 `conversation.composer` 槽 + `pendingInteraction` 选举，提问优先于审批）；已答过的留在对话流里当记录。**卡片不是 durable 事件**（会话日志里没有它们），所以适配器单独留一份（`interactionCards`）并在每次 `refold()` 后补回去——重连快照 / 切会话回来 / 窗口重载都靠它，见 CHANGELOG 2026-09-16。卡区**限高内滚**（`min(50vh, 360px)`）：不限高时一张多题问卷会把会话 / 轨迹压成一条缝（本扩展的信息增量，官方没这层约束） |
+| 审批 / 提问卡 | ✅ 待处理的**接管输入区**（官方 `conversation.composer` 槽 + `pendingInteraction` 选举，**计划审阅 > 提问 > 审批**，官方注册优先级 2/1/0；计划审阅见 CHANGELOG 2026-09-17）；已答过的留在对话流里当记录。**卡片不是 durable 事件**（会话日志里没有它们），所以适配器单独留一份（`interactionCards`）并在每次 `refold()` 后补回去——重连快照 / 切会话回来 / 窗口重载都靠它，见 CHANGELOG 2026-09-16。卡区**限高内滚**（`min(50vh, 360px)`；计划审阅卡自带内滚，外层对它让位）：不限高时一张多题问卷会把会话 / 轨迹压成一条缝（本扩展的信息增量，官方没这层约束） |
 | 目标条 | ✅ 正文默认一行截断 + 展开按钮切全文、内联编辑（`/goal edit`）、展开时正文与按钮垂直居中、悬停给「目标 + 受阻原因」 |
 | 文件芯片 | ✅ `[新增]` / 删除线（官方没有改动词类记号，这是本扩展的信息增量） |
 

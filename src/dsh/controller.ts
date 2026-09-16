@@ -2630,8 +2630,13 @@ export class ChatController implements vscode.Disposable {
         id: item.id,
         header: item.header,
         question: item.question,
+        // `detail` 是题目的补充正文（`exit_plan_mode` 拿它装**计划正文**），
+        // `intent` 声明这道题该用哪种界面（`plan-review`）：两个都原样透传，
+        // 界面侧才可能认出「这是一张计划审阅卡」并画出计划来
+        detail: item.detail,
         options: item.options ?? [],
         multiSelect: item.multiSelect,
+        intent: item.intent,
       })),
       state: "waiting",
     });
@@ -3025,6 +3030,30 @@ export class ChatController implements vscode.Disposable {
         // 答的那份只有界面知道（服务端的答案要等 `ask_user_question` 的工具
         // 结果回来才进日志），所以这里先写进去，工具结果到了再覆盖成权威值。
         scope?.adapter?.resolveQuestion(eventId, answersByQuestionId(message.answers));
+        break;
+      }
+
+      case "cancelQuestion": {
+        const eventId = message.requestId;
+        if (!eventId) break;
+        // 用户主动撤回（计划审阅卡的「去聊天里说」）：**不是回答**，回 `rejected`
+        // 而不是一份空答案——等待方据此抛「用户想直接说话」那条错误。
+        // `error` 的形状是网关逐键校验的（`parseRemoteEventRejection`：只认
+        // name/message/code/details），照官方客户端的 `UserQuestionError` 发。
+        this.heldEvents.delete(eventId);
+        await this.replyEvent(eventId, {
+          kind: "rejected",
+          error: {
+            name: "UserQuestionError",
+            message: "the user cancelled ask_user_question",
+            code: "ASK_CANCELLED",
+          },
+        });
+        const sessionId = this.eventSessions.get(eventId);
+        const scope = sessionId ? this.scopes.get(sessionId) : undefined;
+        // 卡片收场（标成「已取消」）：与 Host 撤回走同一条路径，两边都不再是
+        // 「待处理」，输入区把位置让出来
+        scope?.adapter?.cancelEvent(eventId);
         break;
       }
 

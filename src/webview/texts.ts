@@ -298,6 +298,15 @@ export interface Texts {
   questionCustomTitle: string;
   /** 自定义回答那一行的无障碍说明（它和普通选项一样可以选，只是带编辑框）。 */
   questionCustomAria: string;
+  /**
+   * 计划审阅卡（`exit_plan_mode`）的文案，与官方 `dsh-client-ui-user-questions`
+   * 的 `plan.*` 词条逐字对齐：条带「计划待审」+ 三个决定
+   * （确认执行 / 拒绝 / 去聊天里说）。
+   */
+  planReviewHeader: string;
+  planReviewApprove: string;
+  planReviewDecline: string;
+  planReviewDiscuss: string;
 
   copy: string;
   /** 复制按钮的 1s 瞬时反馈（按钮文案自换；宿主不再发「已复制」toast）。 */
@@ -729,6 +738,10 @@ const zh: Texts = {
   questionCancelled: (count) => `已取消 ${count} 题`,
   questionCustomTitle: "自定义回答",
   questionCustomAria: "自定义回答（选中后其它选项会被取消）",
+  planReviewHeader: "计划待审",
+  planReviewApprove: "确认执行",
+  planReviewDecline: "拒绝",
+  planReviewDiscuss: "去聊天里说",
 
   copy: "复制",
   copied: "已复制到剪贴板",
@@ -1071,6 +1084,10 @@ const en: Texts = {
   questionCancelled: (count) => (count === 1 ? "1 question withdrawn" : `${count} questions withdrawn`),
   questionCustomTitle: "Custom answer",
   questionCustomAria: "Custom answer (selecting it clears the other options)",
+  planReviewHeader: "Plan review",
+  planReviewApprove: "Approve",
+  planReviewDecline: "Refuse",
+  planReviewDiscuss: "Chat about it",
 
   copy: "Copy",
   copied: "Copied to clipboard",

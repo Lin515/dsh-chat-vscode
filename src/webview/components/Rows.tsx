@@ -16,8 +16,10 @@ import { classifyTool, toolTitleKey } from "../../shared/toolMeta";
 import { MAX_CATALOG_ENTRIES } from "../../shared/injectedSource";
 import { formatDuration, Popover, Row, useElapsed, useSelectionFreeze, useStickyBody } from "./primitives";
 import { canSubmit, isAnswered, questionMode } from "../questionFlow";
+import { planReviewAnswer, planReviewOf, type PlanReviewView } from "../planReview";
 import { DiffView } from "./Diff";
 import { CodeBlock } from "./CodeBlock";
+import { Markdown } from "./Markdown";
 import { ToolCardBody } from "./ToolCards";
 import { fill, useTexts, resolveText } from "../texts";
 import {
@@ -634,6 +636,85 @@ export function ApprovalCard({ approval }: { approval: ApprovalView }) {
 }
 
 /**
+ * 计划审阅卡（`exit_plan_mode`）。
+ *
+ * 模型在计划模式里把整份计划交上来请你放行，服务端把它变成一次普通提问
+ * （`user-questions/request` + `intent.kind === "plan-review"`、计划正文在
+ * `detail` 里，见 `webview/planReview.ts`）。官方给它一套**专属布局**
+ * （`dsh-client-ui-user-questions` 的 `PlanReviewPanel`）：
+ *
+ * - 顶部一条 warn 色**条带**（「计划待审」），
+ * - 中间是**可滚动的计划正文**（markdown，与助手正文同一个渲染器），
+ * - 底部一行决定：`去聊天里说` / `拒绝` / `确认执行`。
+ *
+ * 两条与官方逐字对齐、且**不能想当然**的口径：
+ *
+ * 1. **按钮上显示的是界面语言，发出去的是提问方的 label**。官方三个按钮的
+ *    文案全部走 locale（`plan.approve` / `plan.decline` / `plan.discuss`），
+ *    而 `onClick` 提交的是 `review.approve.label` / `review.decline.label`——
+ *    判定在 `dsh-plan-mode` 那边是「逐字等于意图点名的 label」的严格比较，
+ *    把界面语言当答案发回去，模型只会收到「用户选择继续规划」。
+ * 2. **「去聊天里说」不是答案，是撤回**：发 `ASK_CANCELLED` 的 `rejected`，
+ *    让等待方带着「用户想直接说话」的语义收场（编辑器归位）。
+ *
+ * 条带与底部决定行**不参与滚动**，中间正文自己滚（外层输入区的限高对这张卡
+ * 让位，见 `Composer.tsx` 的 `is-plan-review`）：计划动辄几百行，决定按钮
+ * 绝不能被滚走。
+ */
+export function PlanReviewCard({
+  question,
+  review,
+}: {
+  question: QuestionView;
+  review: PlanReviewView;
+}) {
+  const texts = useTexts();
+  const decide = (label: string) =>
+    post({
+      type: "answerQuestion",
+      requestId: question.requestId,
+      answers: [planReviewAnswer(review, label)],
+    });
+  // 提到局部变量里：`review.decline` 在 JSX 的条件分支里 TS 收不窄，
+  // 直接写 `review.decline.label` 得挂个 `!`（官方那边也是先取出来）
+  const decline = review.decline;
+  return (
+    <section className="plan-review" aria-label={review.question}>
+      <div className="plan-review-strip">
+        <span className="plan-review-dot" aria-hidden />
+        {texts.planReviewHeader}
+      </div>
+      <div className="plan-review-body">
+        <Markdown text={review.plan} />
+      </div>
+      <div className="plan-review-footer">
+        <button
+          className="btn btn-ghost plan-review-discuss"
+          onClick={() => post({ type: "cancelQuestion", requestId: question.requestId })}
+        >
+          <IconPencil size={14} />
+          {texts.planReviewDiscuss}
+        </button>
+        <div className="plan-review-actions">
+          {decline ? (
+            <button className="btn" title={decline.description} onClick={() => decide(decline.label)}>
+              {texts.planReviewDecline}
+            </button>
+          ) : null}
+          <button
+            className="btn btn-primary"
+            title={review.approve.description}
+            onClick={() => decide(review.approve.label)}
+          >
+            {texts.planReviewApprove}
+          </button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/**
  * 问卷卡片（`ask_user_question`）。
  *
  * 四种形态：
@@ -811,6 +892,14 @@ export function QuestionCard({
           <IconQuestion size={11} /> {item.header ?? texts.questionHead}
         </div>
         <div className="question-text">{item.question}</div>
+        {/* 题目的补充正文（`detail`）：官方把它排在选项**上方**、用与助手正文同一个
+            markdown 渲染器（`QuestionComposer` 的 `.detail`）。计划审阅的计划正文
+            就走这里；此前适配器把这个字段整个丢了，界面上只剩一句问句。 */}
+        {item.detail ? (
+          <div className="question-detail">
+            <Markdown text={item.detail} />
+          </div>
+        ) : null}
         <div className="question-options">
           {item.options.map((option) => {
             const isSelected = selectedOf(item.id).includes(option.label);
@@ -893,6 +982,8 @@ export function QuestionCard({
 
   // 已答完 / 已撤回：收缩成一行（行头可点开复看题目与当时的回答）。用与工具行
   // 同一套 `Row`，视觉语言不分家：这同样是「对话里发生过的一件事」。
+  // 计划审阅的记录换个标题：它那次不是「提问」而是「把计划交给人放行」，
+  // 展开体里除了选项还有整份计划（`detail`）。
   if (!waiting) {
     return (
       <Row
@@ -901,7 +992,7 @@ export function QuestionCard({
             <IconQuestion size={13} />
           </span>
         }
-        title={texts.questionHead}
+        title={planReviewOf(items) ? texts.planReviewHeader : texts.questionHead}
         detail={
           cancelled && !question.answers
             ? texts.questionCancelled(items.length)

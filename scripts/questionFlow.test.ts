@@ -77,8 +77,11 @@ console.log("questionFlow: 提交闸门覆盖全部题目 ✓");
       /question\.answers\?\.\[itemId\]\?\.custom/.test(rows),
     "已答完的问卷要以 question.answers 为准（本地 state 只作回退）",
   );
+  // 记录的标题按种类给（计划审阅读「计划待审」），所以 `if (!waiting)` 到
+  // `open={expanded}` 之间的窗口比原来长一点——窗口大小不是判据，`Row` + 默认收起
+  // 才是（展开态只有用户点开才会出现）
   assert.ok(
-    /if \(!waiting\)[\s\S]{0,400}open=\{expanded\}/.test(rows),
+    /if \(!waiting\)[\s\S]{0,700}?open=\{expanded\}/.test(rows),
     "已答完的问卷必须默认收缩成一行（可再展开）",
   );
   // 自定义回答与普通选项**同一列表**：它必须是 `.question-option` 那一行。

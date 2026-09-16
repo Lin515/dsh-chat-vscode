@@ -6,6 +6,51 @@
 
 （发版时改成版本号。下面这一批是 0.5.1 之后报上来的问题与对齐工作。）
 
+### 渲染 `exit_plan_mode` 请求（计划审阅卡）（2026-09-17）
+
+**现场**：计划模式里模型把整份计划交上来请人放行（`exit_plan_mode`），界面上只有一句
+英文问句「Approve this plan and leave plan mode?」和两个按钮——**计划正文一个字都看不到**，
+也没法把这张卡与普通问卷区分开。
+
+**根因**：确认走的是**普通提问**那条线（`user-questions/request`），而宿主
+`deliverEventToScope` 按 `id/header/question/options/multiSelect` 白名单重建题目对象，
+把两个关键字段整个丢掉了：`detail`（计划正文）与 `intent`（`kind: "plan-review"`）。
+界面既没有正文可画，也没有标记可判。
+
+**修法**（语义全部对官方 `dsh-client-ui-user-questions` + `dsh-plan-mode`）：
+
+- **契约**：`QuestionItemView` 补 `detail` / `intent`；`ipc.ts` 补 `cancelQuestion`。
+- **宿主**：两个字段原样透传；新增 `cancelQuestion` → `rejected` +
+  `UserQuestionError`/`ASK_CANCELLED`（网关 `parseRemoteEventRejection` 逐键校验，
+  形状不能自创）。用户撤回**也是一次结算**：`heldEvents` 一并删掉，否则切走再切回来
+  会凭空弹一张过期的审阅卡。
+- **界面**：`webview/planReview.ts` 逐字移植官方 `planReviewOf` 的收窄规则——恰好一题、
+  `intent.kind = "plan-review"`、`detail` 存在、非多选、选项 ≤ 2、批准 label 逐字存在；
+  任一条不成立就退回通用问卷流程（意图只换布局，不改可达的答案）。
+  `pendingInteractionOf` 按官方注册优先级认它（plan-review 2 > 普通提问 1 > 审批 0）。
+  `Composer` 渲染 `PlanReviewCard`（warn 条带 + 内滚计划正文 + 底部决定行），
+  并给外层容器挂 `is-plan-review` 让限高只有一处（否则决定按钮会被外层滚走）。
+  `QuestionCard` 顺带补上 `detail` 渲染（对所有问卷生效，此前这个字段被整个丢掉）。
+- **两条容易读反的口径**：按钮上显示**界面语言**、提交的是**提问方自己的 label**
+  （`dsh-plan-mode` 那边是逐字严格比较，把「确认执行」发回去只会被读成「继续规划」）；
+  「去聊天里说」是**撤回**（`ASK_CANCELLED`）而不是一份空答案。
+
+**证据**（Playwright 驱动 `test/preview.html`，真实浏览器 + 真 DOMPurify）：
+
+- 记录卡展开：整份计划按 markdown 渲染（`h1`/`h2`/有序列表 + `CodeBlock` 代码卡），
+  选项高亮落在 `Approve`。
+- 待处理卡（`__planReview()`）：卡片 `max-height: 520px`、正文内滚
+  （`scrollHeight 653 > clientHeight 445`）、外层 `max-height: none` / `overflow: visible`
+  （单层滚动），底部决定行仍在视口内。
+- 三个动作发出的帧逐字核对：`确认执行` → `{answerQuestion, answers:[{id:"plan-review",
+  selected:["Approve"]}]}`（**不带 custom**）、`拒绝` → `["Keep planning"]`、
+  `去聊天里说` → `{cancelQuestion, requestId}`。
+- 双语版面：英文 420px / 300px 不溢出，240px 时决定行折到第二行且不裁。
+
+验证：`npm run typecheck` ✓；`npm test` 54/54 套 ✓；`npm run build` ✓ 且无 esbuild 警告。
+新增断言 `scripts/planReview.test.ts`（收窄规则 + 答案形状 + 两端接线）；`pendingInteraction`、
+`styles`（第 19 组）、`interactionSync`（结算点 3 → 4）、`previewFixture` 同步更新。
+
 ### 拖放文件：整页接取，不再被 VS Code「打开文件」抢走（2026-09-16，用户报的）
 
 **现场**：把文件拖进会话页面，总被 VS Code 捕获为「打开文件」，而不是被会话识别为
@@ -1197,7 +1242,9 @@ required`），于是 supervisor 每秒重起一次 dsh、两分钟后只报"启
   dock 带），永远在视野里，界面看起来就是「在等你回答」——此前作为一段画在对话流里，
   滚上去就看不见了。选举口径沿官方：**提问优先于审批**（官方注册优先级 1 / 2 对 0），
   同优先级取最后一条。**已经答过的卡仍留在对话流里当记录**，两边不重复也不丢。
-  （我们分不出 plan-review 提问——线格式里没有这个标记，所以只实现「提问 > 审批」。）
+  （当时分不出 plan-review 提问——线格式里没有这个标记，所以只实现了「提问 > 审批」；
+  2026-09-17 起按题目上的 `intent.kind` 分辨得出，优先级补成「计划审阅 > 提问 > 审批」，
+  见本文件顶部「渲染 `exit_plan_mode` 请求」。）
 - **对齐官方：上下文条目按 form 分派正文**（官方 `ContextBody` 的 `switch (form)`）：
   之前只留了 `{来源, 插件, form}` 与正文，`source` 里的结构化字段**整个丢掉**，
   界面上只有一段文字、看不出「这轮的指令是新增的还是移除的」。现在按官方谓词逐条解析

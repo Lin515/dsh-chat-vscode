@@ -33,7 +33,7 @@ import {
 } from "../icons";
 import { formatFileMention } from "../../shared/mentions";
 import { CtxText, Ellipsis, Popover, Spinner, contextNumbers, formatClock, formatDuration } from "./primitives";
-import { ApprovalCard, QuestionCard, formatTps } from "./Rows";
+import { ApprovalCard, PlanReviewCard, QuestionCard, formatTps } from "./Rows";
 import type { PendingInteraction } from "../pendingInteraction";
 import { insertAtCaret } from "../insert";
 import { mentionParent } from "../mentionNav";
@@ -790,11 +790,17 @@ export function Composer({
       <GoalBar goal={state.goal} />
       {/* 待处理的审批 / 提问接管输入区（官方 `conversation.composer` 的 `pendingInteraction`
           选举）：卡片常驻视野、就在你敲字的地方，而不是滚上去就看不见。
-          已答过的卡不在这里——它们留在对话流里当记录（见 Message.tsx）。 */}
+          已答过的卡不在这里——它们留在对话流里当记录（见 Message.tsx）。
+          计划审阅卡自带「条带 + 内滚正文 + 底部决定行」，限高交给它自己
+          （见 `is-plan-review`），否则外层再限一次就成了两层滚动条。 */}
       {pending ? (
-        <div className="composer-interaction">
+        <div
+          className={`composer-interaction${pending.kind === "plan-review" ? " is-plan-review" : ""}`}
+        >
           {pending.kind === "approval" ? (
             <ApprovalCard approval={pending.approval} />
+          ) : pending.kind === "plan-review" ? (
+            <PlanReviewCard question={pending.question} review={pending.review} />
           ) : (
             <QuestionCard question={pending.question} batch={state.questionBatch} />
           )}
