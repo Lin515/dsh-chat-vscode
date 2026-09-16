@@ -445,6 +445,57 @@ export interface Texts {
   toolStatusStopped: string;
   /** 失败（官方 `row.failed`）。 */
   toolStatusFailed: string;
+
+  // ---------- 工具卡（官方 `ReadBlock` / `SearchBlock` / `TerminalBlock` / `WebBlock`）
+  //
+  // 有卡片时展开区**不再渲染 IN/OUT**（参数 JSON 不进界面），所以这些标签与
+  // 计数文案必须齐全：读了多少行、命中多少处、退出码是多少、来源截断没有。
+  /** 卡片的通用「收起」（官方 `collapse`）。 */
+  toolCollapse: string;
+  /** 读取卡：只读了一段时的「显示 X / Y 行」（官方 `read.window`）。 */
+  readWindow: (shown: number, total: number) => string;
+  /** 读取卡：中间那枚展开钮的文案（官方 `read.expandRest`）。 */
+  readExpandRest: (count: number) => string;
+  /** 读取卡：展开钮的无障碍名（官方 `read.expandAria`）。 */
+  readExpandAria: (count: number) => string;
+  /** 读取卡：收起钮的无障碍名（官方 `read.collapseAria`）。 */
+  readCollapseAria: string;
+  /** 搜索卡：路径结果的计数（官方 `search.paths`）。 */
+  searchPaths: (shown: number) => string;
+  /** 搜索卡：路径结果被截断时的计数（官方 `search.paths.truncated`）。 */
+  searchPathsTruncated: (shown: number, total: number) => string;
+  /** 搜索卡：命中结果的计数（官方 `search.matches`）。 */
+  searchMatches: (shown: number, files: number) => string;
+  /** 搜索卡：命中结果被截断时的计数（官方 `search.matches.truncated`）。 */
+  searchMatchesTruncated: (shown: number, total: number, files: number) => string;
+  /** 搜索卡：没有结果（官方 `search.noResults`）。 */
+  searchNoResults: string;
+  /** 搜索卡：展开 / 收起钮的无障碍名（官方 `search.expandAria` / `collapseAria`）。 */
+  searchExpandAria: (count: number) => string;
+  searchCollapseAria: string;
+  /** 搜索卡：展开钮的文案（官方 `search.expandRest`）。 */
+  searchExpandRest: (count: number) => string;
+  /** 网页搜索卡：没有结果（官方 `web.noResults`）。 */
+  webNoResults: string;
+  /** 网页卡：来源列表被截断（官方 `web.sourcesTruncated`）。 */
+  webSourcesTruncated: string;
+  /** 网页获取卡：HTTP 状态码前缀（官方 `web.http`）。 */
+  webHttp: string;
+  /** 网页获取卡：正文被截断（官方 `web.contentTruncated`）。 */
+  webContentTruncated: string;
+  /** 终端卡：运行中 / 已完成 / 失败（官方 `terminal.running` / `done` / `failed`）。 */
+  terminalRunning: string;
+  terminalDone: string;
+  terminalFailed: string;
+  /** 终端卡：没有输出（官方 `terminal.noOutput`）。 */
+  terminalNoOutput: string;
+  /** 终端卡：输出区的展开 / 收起钮（官方 `terminal.expandAria` / `collapseAria`）。 */
+  terminalExpandAria: (count: number) => string;
+  terminalCollapseAria: string;
+  /** 待办工具行的标题（官方 `todo.rowTitle`）。 */
+  toolTodoTitle: string;
+  /** 待办进度：`{done}/{total} 已完成`（官方 `todo.completed`）。 */
+  toolTodoProgress: (done: number, total: number) => string;
   /** 达到输出 token 上限、回答被截断（官方 `turn-max-tokens` 节点）。 */
   maxTokens: string;
 
@@ -780,6 +831,31 @@ const zh: Texts = {
   toolStatusRunning: "运行中",
   toolStatusStopped: "已停止",
   toolStatusFailed: "失败",
+  toolCollapse: "收起",
+  readWindow: (shown, total) => `显示 ${shown} / ${total} 行`,
+  readExpandRest: (count) => `… 其余 ${count} 行`,
+  readExpandAria: (count) => `展开其余 ${count} 行`,
+  readCollapseAria: "收起内容",
+  searchPaths: (shown) => `${shown} 个路径`,
+  searchPathsTruncated: (shown, total) => `显示 ${shown} / 共 ${total} 个路径`,
+  searchMatches: (shown, files) => `${shown} 处匹配 · ${files} 个文件`,
+  searchMatchesTruncated: (shown, total, files) => `显示 ${shown} / 共 ${total} 处匹配 · ${files} 个文件`,
+  searchNoResults: "无结果",
+  searchExpandAria: (count) => `展开其余 ${count} 行结果`,
+  searchCollapseAria: "收起结果",
+  searchExpandRest: (count) => `… 其余 ${count} 行`,
+  webNoResults: "未找到结果",
+  webSourcesTruncated: "来源列表已截断",
+  webHttp: "HTTP",
+  webContentTruncated: "内容已截断",
+  terminalRunning: "运行中",
+  terminalDone: "已完成",
+  terminalFailed: "失败",
+  terminalNoOutput: "无输出",
+  terminalExpandAria: (count) => `展开其余 ${count} 行输出`,
+  terminalCollapseAria: "收起输出",
+  toolTodoTitle: "更新任务清单",
+  toolTodoProgress: (done, total) => `${done}/${total} 已完成`,
   maxTokens: "已达到输出 token 上限，回答被截断。发送「继续」可接着写。",
 
   branchFromHere: "从这里分支",
@@ -1096,6 +1172,31 @@ const en: Texts = {
   toolStatusRunning: "Running",
   toolStatusStopped: "Stopped",
   toolStatusFailed: "Failed",
+  toolCollapse: "Collapse",
+  readWindow: (shown, total) => `Showing ${shown} of ${total} lines`,
+  readExpandRest: (count) => `… ${count} more lines`,
+  readExpandAria: (count) => `Expand ${count} more lines`,
+  readCollapseAria: "Collapse content",
+  searchPaths: (shown) => `${shown} paths`,
+  searchPathsTruncated: (shown, total) => `Showing ${shown} of ${total} paths`,
+  searchMatches: (shown, files) => `${shown} matches · ${files} files`,
+  searchMatchesTruncated: (shown, total, files) => `Showing ${shown} of ${total} matches · ${files} files`,
+  searchNoResults: "No results",
+  searchExpandAria: (count) => `Expand ${count} more result lines`,
+  searchCollapseAria: "Collapse results",
+  searchExpandRest: (count) => `… ${count} more lines`,
+  webNoResults: "No results found",
+  webSourcesTruncated: "Source list truncated",
+  webHttp: "HTTP",
+  webContentTruncated: "Content truncated",
+  terminalRunning: "Running",
+  terminalDone: "Done",
+  terminalFailed: "Failed",
+  terminalNoOutput: "No output",
+  terminalExpandAria: (count) => `Expand ${count} more output lines`,
+  terminalCollapseAria: "Collapse output",
+  toolTodoTitle: "Update to-do list",
+  toolTodoProgress: (done, total) => `${done}/${total} completed`,
   maxTokens: "Output token limit reached; the answer was truncated. Send “continue” to resume.",
 
   branchFromHere: "Branch from here",

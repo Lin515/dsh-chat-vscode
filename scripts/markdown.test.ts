@@ -52,7 +52,9 @@ const source = readFileSync(join(process.cwd(), "src", "webview", "markdown.ts")
     );
   }
   assert.ok(
-    /DOMPurify\.addHook\(\s*"uponSanitizeElement"/.test(source),
+    // 实例按环境解析（`resolvePurify()`：浏览器里默认导出就是实例，Node 下要现造），
+    // 所以这里只钉「挂上了这个钩子」，不钉接收者叫什么名字
+    /\.addHook\(\s*"uponSanitizeElement"/.test(source),
     "必须有 uponSanitizeElement 钩子：白名单允许了 input，就得把非 checkbox 的挡掉",
   );
   assert.ok(
@@ -77,7 +79,9 @@ const source = readFileSync(join(process.cwd(), "src", "webview", "markdown.ts")
 // 这几条是本文件的「净化真的生效」证据；Node 侧跑不了不是遗漏，是没有 DOM。
 {
   assert.ok(
-    /DOMPurify\.sanitize\(/.test(source),
+    // 用解析出来的实例（`purify`）调用，而不是直接 `DOMPurify.sanitize`：Node 下
+    // 默认导出是工厂函数，没有 DOM 时 `sanitize()` 会显式报错而不是放行
+    /purify\.sanitize\(/.test(source),
     "渲染前必须经 DOMPurify.sanitize（模型输出不可信）",
   );
   console.log("markdown: 净化链路存在（真实浏览器实测记录见本文件注释） ✓");

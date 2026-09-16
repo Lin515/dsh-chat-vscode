@@ -246,6 +246,253 @@
   background: var(--border);
 }
 
+/* ==================== 工具卡（官方 ReadBlock / SearchBlock / TerminalBlock / WebBlock）
+   展开区的「卡片」形态：读取给行号 + 内容、搜索给文件 + 命中行、终端给命令 + 输出、
+   网页给答案 + 来源。**有卡片时不再渲染 IN/OUT**，参数 JSON 因此不出现在界面上。
+   布局与官方一致的三段：横幅（标签 + 语言/计数/复制）→ 正文（行）→ 可选展开钮。 */
+
+.tool-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--editor-bg);
+  padding: 5px 7px;
+}
+
+.tool-card-banner {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: var(--font-size-2xs);
+  color: var(--muted);
+}
+
+.tool-card-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-card-actions {
+  margin-left: auto;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tool-card-count,
+.tool-card-lang {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.tool-card-copy {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: var(--font-size-2xs);
+  padding: 0 2px;
+  cursor: pointer;
+}
+
+.tool-card-copy:hover {
+  color: var(--fg);
+}
+
+.tool-card-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  font-size: var(--font-size-xs);
+  color: var(--description);
+}
+
+/* 行：左侧行号槽（等宽数字，右对齐）+ 正文。读取卡与搜索卡的命中行共用。 */
+.tool-card-line {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+}
+
+.tool-card-gutter {
+  flex: 0 0 auto;
+  min-width: 2.2em;
+  text-align: right;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
+
+.tool-card-text,
+.tool-card-textline {
+  min-width: 0;
+  flex: 1 1 auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* 搜索卡的文件头：路径 + 命中条数，整行可点（折叠这一文件的命中） */
+.tool-card-file {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  padding: 1px 0;
+  cursor: pointer;
+}
+
+.tool-card-filepath {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg);
+}
+
+.tool-card-filecount {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 中间那枚展开钮（「… 其余 N 行」）：与卡片同宽的一条文字行，不做成按钮外观 */
+.tool-card-expand {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border: none;
+  background: none;
+  color: var(--link);
+  font: inherit;
+  font-size: var(--font-size-2xs);
+  text-align: left;
+  padding: 1px 0;
+  cursor: pointer;
+}
+
+.tool-card-expand:hover {
+  text-decoration: underline;
+}
+
+.tool-card-empty {
+  color: var(--muted);
+  font-size: var(--font-size-2xs);
+}
+
+/* 搜索被截断时正文里那条「完整结果在哪」的说明 */
+.tool-card-recovery {
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: var(--font-size-2xs);
+  border-top: 1px solid var(--border);
+  padding-top: 4px;
+}
+
+/* ---- 终端卡：提示符行 + 状态胶囊 + 输出 ---- */
+
+.tool-card-prompt {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.tool-card-state {
+  color: var(--muted);
+}
+
+.tool-card-promptline {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+}
+
+.tool-card-cwd {
+  flex: 0 0 auto;
+  color: var(--muted);
+  user-select: none;
+}
+
+.tool-card-command {
+  min-width: 0;
+  color: var(--fg);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.tool-card-pill {
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0 4px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+/* 终端卡的输出**不要**自己再限高滚动：外层 `.row-body` 已经是那个滚动容器
+   （`max-height: 320px; overflow: auto`），里面再来一层就是**两条垂直滚动条**
+   ——用户 2026-09-16 报的「命令行节点怎么会出现两层垂直滚动条」。官方在会话行里
+   也把 TerminalBlock 的 maxLines 设成 Infinity，只留外面那一层。 */
+
+/* ---- 网页卡：答案 + 来源列表 ---- */
+
+.tool-card-answer {
+  min-width: 0;
+  font-size: var(--font-size-xs);
+  color: var(--fg);
+}
+
+.tool-card-sources {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  font-size: var(--font-size-xs);
+}
+
+.tool-card-link {
+  color: var(--link);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: inline-block;
+  max-width: 100%;
+  vertical-align: bottom;
+}
+
+.tool-card-snippet {
+  color: var(--description);
+  font-size: var(--font-size-2xs);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.tool-card-published {
+  color: var(--muted);
+  font-size: var(--font-size-2xs);
+}
+
 /* 折叠行右侧的改动统计 `+N -M`（官方 diffStat）：不可压缩，紧挨 detail */
 .row-diffstat {
   flex: 0 0 auto;
@@ -274,9 +521,20 @@
   text-decoration: underline;
 }
 /* 待处理的审批 / 提问卡：接管输入区时贴在输入框上方（官方 `conversation.composer` 槽）。
-   与目标条同一条 dock 带，左右留同样的边距。 */
+   与目标条同一条 dock 带，左右留同样的边距。
+
+   **限高内滚**：`.composer` 是 `flex: 0 0 auto`，一张多题问卷能长到 1500+px——
+   不限高就把上面的内容压成一条缝，自己还会从面板底部溢出去（`.app` 自己不滚动，
+   溢出的部分够不着）。420×900 实测（6 题全展开）：不加限高时问卷卡 1538px、
+   `.composer` 1695px、**轨迹视图 0px**、输入框被顶到 top 1603（面板只有 900）；
+   限高后卡片自己在内部滚动，会话 / 轨迹 / 输入区都照常可用。这就是用户
+   2026-09-15 报的「问卷出来时点轨迹，轨迹页显示不正常」。 */
 .composer-interaction {
   margin: 0 7px 4px;
+  max-height: min(50vh, 360px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 
 /* 上下文条目的 per-form 正文（官方 ContextBody）：标题 + 条目列表。
@@ -1802,6 +2060,25 @@
   display: flex;
   flex-direction: column;
   padding: 0 8px 8px;
+}
+
+/* 轨迹视图下**输入区让位**：轨迹是整页视图，打开就占用整个会话窗口
+   （用户 2026-09-16 口径：待答问卷不该一直占着会话底部空间，切回会话时它照常还在）。
+
+   让位方式是「**移出布局 + 隐藏**」，不是 `display: none`、更不是卸载组件：
+   - 待答问卷里**填了一半的选择**（选项 / 自定义文本 / 展开态）是 `QuestionCard` 的
+     本地 state，卸载或 `display: none`（会跳过布局、让输入框自增高算出 0 高）都会
+     把这些丢掉或弄坏；
+   - `position: absolute` 只把它移出文档流（宽度仍与面板一致，工具栏的宽度测量、
+     输入框的 `scrollHeight` 自增高照常有效），`visibility: hidden` 顺带把它移出
+     无障碍树与 Tab 序列（`pointer-events: none` 让轨迹区不被它挡住点击）。 */
+.app.is-trajectory .composer {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  visibility: hidden;
+  pointer-events: none;
 }
 
 /* notched status bar: 6px narrower on each side than the box, top corners only */

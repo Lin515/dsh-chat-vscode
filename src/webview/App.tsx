@@ -471,7 +471,11 @@ export function App() {
 
   return (
     <TextsContext.Provider value={texts}>
-      <div ref={appRef} className={`app${mini ? " is-mini" : ""}`} style={fontStyle}>
+      <div
+        ref={appRef}
+        className={`app${mini ? " is-mini" : ""}${state.panel === "trajectory" ? " is-trajectory" : ""}`}
+        style={fontStyle}
+      >
         <Header state={state} dispatch={dispatch} />
         <ConnectionBar state={state} />
         <NoticeBar
@@ -480,8 +484,11 @@ export function App() {
         />
 
         {/* 轨迹是**整页**视图（和官方 Web UI 一样），不是盖在会话上的抽屉：
-            它顶掉的是会话页本身（消息列表 + 待办），输入区留在原地——官方的轨迹
-            视图同样在底部给输入区留位（`--dsh-trajectory-bottom-clearance`）。
+            它顶掉的是会话页本身（消息列表 + 待办），并且**输入区也一起让位**——
+            轨迹打开时就该占用整个会话窗口（用户 2026-09-16 口径：待答问卷不该一直
+            占着底部，切回来时它照常还在）。
+            输入区由 `.app.is-trajectory` 用「移出布局 + 隐藏」的方式让位，**不卸载**：
+            待答问卷里填了一半的选择是 `QuestionCard` 的本地 state，卸载就没了。
             注意两个滚动监听挂在 `chat-scroll` 上，它被卸载后必须能在回来时重挂，
             所以下面两个 hook 都吃一个 `active`（见 `useAutoScroll`）。 */}
         {state.panel === "trajectory" ? (

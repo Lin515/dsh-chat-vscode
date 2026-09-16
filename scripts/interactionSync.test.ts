@@ -435,4 +435,111 @@ console.log("interactionSync: 未结算的问卷/审批随「绑定窗口」回�
 }
 console.log("interactionSync: 审批卡重复投递去重 ✓");
 
+// ---------- 9c. 重折（跟随快照 / 重连 / 加载更早）不能吃掉还没答复的卡片 ----------
+//
+// 上一组钉的是「请求留在宿主手里」；这一组钉的是**卡片重建之后又被打回来**的那一步：
+// 审批 / 提问不是 durable 事件（会话日志里没有），而 `refold()` 会把消息流整体折成
+// 会话日志的产物 —— 宿主 `replayHeldEvents` 是紧跟 `ensureScope` 同步跑的，跟随流
+// 那份 `snapshot` 要等一个网络往返才到，到了就把整袋消息重折一遍，刚补回来的卡片
+// 正好被折掉。用户 2026-09-15 在上一轮修复之后仍然报「切走再切回来问卷不见了」，
+// 以及「VSCode 窗口重载后问卷丢了」，同一条路径（重载 = 重连 + 服务端重投递水瀑）。
+{
+  const { adapter, messages } = harness();
+  const t = Date.now();
+  /** 一轮已经结束的会话：重折时消息会被整袋重建，卡片只能靠锚点补回来。 */
+  const endedTurn = (): unknown[] => [
+    { type: "event", event: { type: "turn/start", seq: 1, time: t, data: { turn: 1 } } },
+    {
+      type: "event",
+      event: {
+        type: "assistant/message",
+        seq: 2,
+        time: t + 1,
+        data: {
+          turn: 1,
+          step: 0,
+          message: { id: "m1", role: "assistant", content: [{ type: "text", text: "我看看" }] },
+        },
+      },
+    },
+    { type: "event", event: { type: "turn/end", seq: 3, time: t + 2, data: { turn: 1, reason: { kind: "stop" } } } },
+  ];
+  const reopen = () =>
+    adapter.applyFrame({ type: "snapshot", cursor: 3, hasMore: false, records: endedTurn() } as never);
+
+  reopen();
+  askTwo(adapter);
+  adapter.addApproval({ requestId: "ev-a10", toolName: "pwsh", callId: "call_10", state: "waiting" });
+  assert.ok(questionSegment(messages), "先确认问卷卡已经在页面上");
+  assert.ok(approvalSegment(messages), "审批卡同理");
+
+  // 再开一次窗（socket 重连 / 切走再切回来 / 窗口重载后服务端重投递）
+  reopen();
+
+  const question = questionSegment(messages);
+  assert.ok(question, "重折之后待答问卷必须还在——不在就是「agent 永久卡在 ask 节点」");
+  assert.strictEqual(question!.question.state, "waiting", "重折不该改动它的状态");
+  assert.strictEqual(pendingInteractionOf(messages)?.kind, "question", "它仍然接管输入区");
+  const approval = approvalSegment(messages);
+  assert.ok(approval, "审批卡同样不能被重折吃掉");
+  assert.strictEqual(approval!.approval.state, "waiting", "审批的状态也不该被改动");
+  assert.strictEqual(
+    messages.flatMap((m) => m.segments).filter((s) => s.kind === "question").length,
+    1,
+    "补回来的是同一张卡，不能变成两张",
+  );
+
+  // 答完之后再重折：补回来的是**记录**（带答案），不能又变回一张等答复的卡
+  adapter.resolveQuestion("ev-q1", { scope: { selected: ["一起收敛"] }, docs: { selected: ["要"] } });
+  adapter.resolveApproval("ev-a10", "approved");
+  reopen();
+  const answered = questionSegment(messages);
+  assert.strictEqual(answered?.question.state, "answered", "已答完的问卷重折后仍是记录");
+  assert.deepStrictEqual(
+    answered?.question.answers?.scope,
+    { selected: ["一起收敛"] },
+    "记录里要留着用户当时选了什么（重折不能把答案抹掉）",
+  );
+  assert.strictEqual(approvalSegment(messages)?.approval.state, "approved", "已收场的审批同理");
+  assert.strictEqual(pendingInteractionOf(messages), undefined, "收场之后不再占输入区");
+}
+console.log("interactionSync: 重折（快照/重连/重载）后待答卡片仍在 ✓");
+
+// ---------- 9d. 重投递落到**另一条**消息上，也不能变成两张卡 ----------
+//
+// 去重不能只看「当前回合那条消息」：请求重投时那个回合往往早已结束，而
+// `ensureAssistantMessage` 给出的是**新回合**的消息——在那里找不到旧卡就会
+// 再画一张，而旧的那张永远没人点（多窗口 / 重连后重投递都会走到这里）。
+{
+  const { adapter, messages } = harness();
+  const t = Date.now();
+  adapter.applyEvent({ type: "turn/start", seq: 1, time: t, data: { turn: 1 } } as never);
+  adapter.addApproval({ requestId: "ev-a11", toolName: "pwsh", callId: "call_11", state: "waiting" });
+  askTwo(adapter, "ev-q11");
+  const ownerOf = (id: string) =>
+    messages.find((m) => m.segments.some((s) => s.id === id))?.id;
+  assert.strictEqual(ownerOf("ap:ev-a11"), "a:1", "卡片落在第 1 轮的助手消息上");
+  assert.strictEqual(ownerOf("q:ev-q11"), "a:1", "问卷同理");
+
+  // 这一轮结束、下一轮开始（并且没有重折）：重投递落到新回合的消息上
+  adapter.applyEvent({ type: "turn/end", seq: 2, time: t + 1, data: { turn: 1, reason: { kind: "stop" } } } as never);
+  adapter.applyEvent({ type: "turn/start", seq: 3, time: t + 2, data: { turn: 2 } } as never);
+  adapter.addApproval({ requestId: "ev-a11", toolName: "pwsh", callId: "call_11", state: "waiting" });
+  askTwo(adapter, "ev-q11");
+
+  assert.strictEqual(
+    messages.flatMap((m) => m.segments).filter((s) => s.id === "ap:ev-a11").length,
+    1,
+    "重投递的审批仍然只有一张卡",
+  );
+  assert.strictEqual(ownerOf("ap:ev-a11"), "a:1", "而且是原来那张（不搬家）");
+  assert.strictEqual(
+    messages.flatMap((m) => m.segments).filter((s) => s.id === "q:ev-q11").length,
+    1,
+    "问卷同理：重投递不能变成两张",
+  );
+  assert.strictEqual(ownerOf("q:ev-q11"), "a:1", "问卷也不搬家");
+}
+console.log("interactionSync: 跨消息的重投递去重 ✓");
+
 console.log("\ninteractionSync: all assertions passed");

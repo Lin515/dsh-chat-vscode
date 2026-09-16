@@ -556,11 +556,23 @@ console.log("styles: 思考段恒折叠 + 摘要口径对齐官方 ✓");
 {
   const rows = readFileSync(join(process.cwd(), "src", "webview", "components", "Rows.tsx"), "utf8");
   assert.ok(
-    /!hasDiff && \(inputText \|\| showOutput\)/.test(rows),
-    "IN/OUT 只在**没有 diff** 时渲染（官方 diff 类工具直接给 DiffBlock，套 IN/OUT 会重复）",
+    /!hasDiff && !hasCard && \(\(inputText && !codeCard\) \|\| showOutput\)/.test(rows),
+    "IN/OUT 只在**既没有 diff 也没有卡片**时渲染（官方 diff 类给 DiffBlock、读取/搜索/终端/网页给各自的卡，再套 IN/OUT 就是重复）",
   );
   assert.ok(/className="io-label">\{texts\.toolInput\}/.test(rows), "输入段要有标签");
   assert.ok(/className="io-label">\{texts\.toolOutput\}/.test(rows), "输出段要有标签");
+  assert.ok(
+    /hasCard && card \? \(/.test(rows) && /<ToolCardBody card=\{card\} \/>/.test(rows),
+    "有卡片时要渲染工具卡（用户 2026-09-16：工具的展开区重在与可读性与输出，不显示完整参数）",
+  );
+  assert.ok(
+    /codeCard \? \([\s\S]{0,120}?<CodeBlock lang="typescript" code=\{codeCard\.code\}/.test(rows),
+    "run_code 的正文用 CodeBlock（官方 `formatToolBody` 的 code 分支）",
+  );
+  assert.ok(
+    /\(inputText && !codeCard\) \|\| showOutput/.test(rows),
+    "run_code 只省掉 IN 段：输出照常渲染（官方对 code 变体 `cardBody = null`，OUT 仍在）",
+  );
   assert.ok(
     /diffStat=\{diffStat\}/.test(rows),
     "编辑类工具的折叠行要带 `+N -M`（官方 diffStat）",
@@ -572,6 +584,10 @@ console.log("styles: 思考段恒折叠 + 摘要口径对齐官方 ✓");
   assert.ok(
     /onDetailActivate=\{[\s\S]*?!tool\.command[\s\S]*?openFile/.test(rows),
     "路径类 detail 可点开预览（官方 fileLink）；命令行类的 detail 不能当路径打开",
+  );
+  assert.ok(
+    /<DiffView hunks=\{diff\} layout=\{diffLayout\} unified=\{classifyTool\(tool\.name\) === "write"\}/.test(rows),
+    "写入节点固化单栏（双栏对整篇新建没有意义——用户 2026-09-16 口径）",
   );
 
   const primitives = readFileSync(
@@ -636,6 +652,21 @@ console.log("styles: 代码块自动换行（官方 pre-wrap） ✓");
     "审批卡在这里渲染",
   );
   assert.ok(/<QuestionCard question=\{pending\.question\}/.test(composer), "提问卡同理");
+
+  // 卡片必须**限高内滚**：`.composer` 是 `flex: 0 0 auto`，一张多题问卷会长到
+  // 1500+px，把上面的会话 / 轨迹压成 0 高、自己还从面板底部溢出去（420×900 实测
+  // 6 题全展开：问卷卡 1538px、轨迹视图 0px、输入框 top 1603——用户 2026-09-15 报的
+  // 「问卷出来时点轨迹，轨迹页显示不正常」）。限高用视口单位：窄面板下也要按比例收。
+  const interaction = rule(".composer-interaction");
+  const cap = /max-height:\s*([^;]+);/.exec(interaction)?.[1]?.trim();
+  assert.ok(
+    cap && /vh|%/.test(cap),
+    `.composer-interaction 必须限高且视口感知（现在是 "${cap}"）——不限高会把会话 / 轨迹挤成一条缝`,
+  );
+  assert.ok(
+    /overflow-y:\s*auto/.test(interaction),
+    "限高之后卡片要能在内部滚动，否则下半截题目点不到",
+  );
 
   const message = readFileSync(
     join(process.cwd(), "src", "webview", "components", "Message.tsx"),
@@ -775,6 +806,113 @@ console.log("styles: 工具栏按实测宽度分配、测量层约束完整 ✓"
   );
 }
 console.log("styles: 连接条按钮不被裁切、文字可让位 ✓");
+
+// ---------- 16b. 滚动容器只能有一层：工具卡自己不再限高 ----------
+//
+// 用户 2026-09-16 报的「命令行节点怎么会出现两层垂直滚动条」：外层 `.row-body`
+// 本来就有 `max-height: 320px; overflow: auto`（所有工具行共用的那个滚动区），
+// 终端卡若再给自己的 `.tool-card-body` 加一层 max-height，就会出现两条滚动条
+// （实测：80 行输出下两个可滚动容器嵌套）。官方在会话行里把 TerminalBlock 的
+// maxLines 设成 Infinity，只留外面一层。
+{
+  const body = rule(".tool-card-body");
+  assert.ok(
+    !/max-height|overflow-y\s*:\s*(auto|scroll)/.test(body),
+    `.tool-card-body 不许自己限高/滚动（已有的滚动容器是外层 .row-body），现在是 "${body.trim()}"`,
+  );
+  assert.ok(
+    !/\.tool-card\.is-terminal \.tool-card-body/.test(css),
+    "终端卡不许再给自己加一层滚动区——那就是「两层垂直滚动条」的来源",
+  );
+}
+console.log("styles: 工具卡只有一层滚动条 ✓");
+
+// ---------- 16c. 节点展开后，滚动位置默认在**顶部** ----------
+//
+// 用户 2026-09-16 口径：「各类节点打开后，如果有垂直滚动条，默认应当居于最顶部」。
+// 此前 `useStickyBody` 一律 `scrollTop = scrollHeight`（贴底）——一张长 diff、一段长
+// 输出打开后停在末尾，得自己往上翻。唯一例外是**还在逐 token 增长**的思考节点，
+// 且只在「盒子还装得下」时跟随（否则新 token 掉到折叠线以下，什么都看不见）。
+{
+  const primitives = readFileSync(
+    join(process.cwd(), "src", "webview", "components", "primitives.tsx"),
+    "utf8",
+  );
+  assert.ok(
+    /el\.scrollTop = 0;/.test(primitives),
+    "展开节点时 body 区要回到**顶部**（默认从第一行读起）",
+  );
+  assert.ok(
+    // 跟随用的那处 `scrollTop = scrollHeight` 只能留在 `pin()` 里（贴底跟随），
+    // 展开那一刻不能再用它——那是旧行为
+    /el\.scrollTop = 0;[\s\S]{0,400}?if \(!streaming\) return;/.test(primitives),
+    "展开时先回到顶部，且静态内容不再往下走（旧的「展开即贴底」不能回来）",
+  );
+  assert.ok(
+    // 跟随态只能由「滚动到底部」或「装得下」这两条判据进入；
+    // 展开那一刻不能无条件进入（旧写法就是那一步把位置钉在底部）
+    /stickRef\.current = streaming && el\.scrollHeight - el\.clientHeight < 40;/.test(primitives) &&
+      !/stickRef\.current = true;\s*\n\s*lastTopRef\.current = 0;/.test(primitives),
+    "展开时不再无条件进入跟随态（旧写法就是这一句把位置钉在底部）",
+  );
+  assert.ok(
+    /stickRef\.current = streaming && el\.scrollHeight - el\.clientHeight < 40;/.test(primitives),
+    "只有「还在增长 + 盒子装得下」才跟随；装得下时本来就看不到滚动条，跟着长才对",
+  );
+  assert.ok(
+    /if \(!streaming\) return;/.test(primitives),
+    "静态内容不注册观察者——否则后续更新会抢用户的滚动位置",
+  );
+
+  const rows = readFileSync(join(process.cwd(), "src", "webview", "components", "Rows.tsx"), "utf8");
+  assert.ok(
+    /useStickyBody\(bodyRef, open, streaming === true\)/.test(rows),
+    "思考节点是唯一传 streaming 的（它逐 token 增长）；工具 / 注入 / 命令节点都是静态内容",
+  );
+  const calls = rows.match(/useStickyBody\(bodyRef,[^;]*\)/g) ?? [];
+  assert.strictEqual(
+    calls.filter((call) => call.includes("streaming")).length,
+    1,
+    `四处可展开节点的 body（工具 / 思考 / 注入 / 命令）只有思考那一处传 streaming，实际：${JSON.stringify(calls)}`,
+  );
+}
+console.log("styles: 节点展开后默认停在顶部（只有流式思考跟随） ✓");
+
+// ---------- 16d. 轨迹是整页视图：打开就占用整个会话窗口，输入区让位 ----------
+//
+// 用户 2026-09-16 口径：「轨迹页面应当打开就是占用整个会话窗口，但是切换回会话时要能
+// 将问卷正常显示出来，以及在有问卷显示时点击轨迹也能正常显示为占用整个会话的轨迹页面，
+// 而不是现在这样的问卷始终占用会话底部空间」。
+//
+// 做法上有一条硬约束：输入区**不能卸载、也不能 `display: none`**——待答问卷里填了一半
+// 的选择是 `QuestionCard` 的本地 state，卸载就没了；`display: none` 还会跳过布局，
+// 让输入框的自增高算出 0 高。所以是「绝对定位（不占高度）+ visibility: hidden」。
+{
+  const app = readFileSync(join(process.cwd(), "src", "webview", "App.tsx"), "utf8");
+  assert.ok(
+    /is-trajectory" : ""\}/.test(app) && /state\.panel === "trajectory" \? " is-trajectory"/.test(app),
+    "轨迹视图下 .app 要带 is-trajectory（输入区据此让位）",
+  );
+
+  const hidden = rule(".app.is-trajectory .composer");
+  assert.ok(
+    /position:\s*absolute/.test(hidden),
+    `.app.is-trajectory .composer 必须**移出文档流**（position: absolute），否则它还占着高度，轨迹拿不到整个窗口；现在是 "${hidden.trim()}"`,
+  );
+  assert.ok(
+    /visibility:\s*hidden/.test(hidden),
+    "隐藏方式必须是 visibility: hidden",
+  );
+  assert.ok(
+    !/display:\s*none/.test(hidden),
+    "**不能**用 display: none：那会跳过布局（输入框自增高算成 0 高），卸载组件更会丢掉问卷里填了一半的选择",
+  );
+  assert.ok(
+    /pointer-events:\s*none/.test(hidden),
+    "隐藏的输入区不能挡住轨迹区的点击（它绝对定位在底部，与账本重叠）",
+  );
+}
+console.log("styles: 轨迹整页占用会话窗口（输入区移出布局但不卸载） ✓");
 
 // ---------- 17. 轨迹是整页视图（不是抽屉），「加载更早」贴在时间线左端 ----------
 //

@@ -184,11 +184,96 @@ export interface ToolCallView {
   signal?: string;
   /** 该工具产生的可交付文件。 */
   files?: { path: string; description?: string }[];
+  /**
+   * 展开区要渲染的**卡片**（官方 `ToolRow` 的 `card` 槽位）。
+   *
+   * 官方对一类工具**不用通用 IN/OUT 两段**，而是画一张按工具语义折好的卡：
+   * 读取给「行号 + 内容」、搜索给「文件 + 命中行」、终端给「命令 + 输出 + 退出码」、
+   * 网页给「答案 + 来源」、`run_code` 给代码块。这就是用户 2026-09-16 报的
+   * 「工具不需要显示 agent 的完整具体输入内容」——**有卡片就不渲染 IN/OUT**，
+   * 参数 JSON 不再出现在展开区（官方同一条规则：`card !== null` 时 `bodyText` 为 null）。
+   *
+   * 拿不到权威元数据时（例如 `read` 的结果没带 `meta`）一律不给卡片，退回通用
+   * IN/OUT——宁可难看，也不要凭猜测编一张缺内容的卡。
+   */
+  card?: ToolCardView;
+  /**
+   * `todo_write` 的进度摘要（官方 `TodoRow`）：`{done}/{total} 已完成 · 正在做 X`。
+   *
+   * 只给数字与正文，文案由界面按当前语言渲染（与工具行动词同一条口径）。
+   */
+  todo?: { done: number; total: number; active?: string; extra?: number };
   startedAt?: number;
   endedAt?: number;
   /** 用户手动折叠状态；undefined 表示按运行状态自动决定。 */
   open?: boolean;
 }
+
+/** 网页搜索结果里的一条来源（官方 `WebBlock` 的 source）。 */
+export interface WebSourceView {
+  url: string;
+  title?: string;
+  snippet?: string;
+  publishedAt?: string;
+}
+
+/**
+ * 展开区的工具卡（官方 `tool.call.toolview` 各卡片的数据投影）。
+ *
+ * 只放**语言中立**的数据：标签、计数文案、空态文案都由界面按当前语言渲染
+ * （官方在渲染层用 `t("read.window")` 这类 key 拼，本扩展对应 `webview/texts.ts`）。
+ */
+export type ToolCardView =
+  | {
+      kind: "read";
+      /** 卡片横幅上的路径（原样，界面按「保住文件名」的规则省略前段）。 */
+      label: string;
+      /** 本次读到的行（工具给的权威行号 + 正文）。 */
+      lines: { number: number; text: string }[];
+      /** 文件总行数（`lines.length < totalLines` 时横幅显示「显示 X / Y 行」）。 */
+      totalLines: number;
+      /** 语法高亮语言（工具认出来时给）。 */
+      lang?: string;
+    }
+  | {
+      kind: "search";
+      shape: "matches";
+      files: { path: string; matches: { lineNumber: number; line: string }[] }[];
+      /** 命中总数（截断前）。 */
+      total: number;
+      truncated: boolean;
+      /** 结果被截断时正文里那条「完整结果在哪」的说明。 */
+      recovery?: string;
+    }
+  | {
+      kind: "search";
+      shape: "paths";
+      paths: string[];
+      total: number;
+      truncated: boolean;
+      recovery?: string;
+    }
+  | {
+      kind: "terminal";
+      /** 命令行原文（可多行）。 */
+      command: string;
+      /** 工作目录（调用方给的原样路径；界面只显示末段，见官方 `xm()`）。 */
+      cwd?: string;
+      /** 去掉退出标记之后的输出。运行中为空。 */
+      output: string;
+      exitCode?: number;
+      signal?: string;
+      /** 运行中：只画命令与「运行中」，不画输出区。 */
+      running?: boolean;
+    }
+  | {
+      kind: "web_search";
+      answer?: string;
+      sources: WebSourceView[];
+      truncated: boolean;
+    }
+  | { kind: "web_fetch"; url: string; statusCode: number; truncated: boolean }
+  | { kind: "code"; code: string };
 
 export interface QuestionOption {
   label: string;

@@ -72,12 +72,16 @@ const LONG_BUILD = "cmake --build build-agent --config RelWithDebInfo --target d
 console.log("toolView: others 变体不编造文件语义；路径语义只给 read/write/edit ✓");
 console.log("toolView: build 完整命令 ✓");
 
-// 2. pwsh/bash：同样带出完整命令（标题截断、展开区完整）
+// 2. pwsh/bash：标题给完整命令（截断交给界面），展开区拿到的也是同一份原文
+//
+// 2026-09-16 对齐官方 `deriveSummary`：**宿主不再自己截断**（旧实现把 bash 摘要砍到
+// 72 字符）。窄侧栏里的省略由 CSS 做（`.row-detail` 的 ellipsis），宽面板因此能看全；
+// 而且带 `description` 的调用展开后是终端卡，命令原文就在卡里。
 {
   const long = `python -c "${"x".repeat(200)}"`;
   const tool = toolFrom("pwsh", { command: long });
   assert.strictEqual(tool.command, long);
-  assert.notStrictEqual(tool.detail, long, "标题应被截断，展开区才是完整命令");
+  assert.strictEqual(tool.detail, long, "摘要取完整命令原文，省略交给界面按宽度做");
 }
 console.log("toolView: pwsh 完整命令 ✓");
 
@@ -94,16 +98,26 @@ console.log("toolView: pwsh 完整命令 ✓");
 }
 console.log("toolView: 读文件完整路径（省略交给界面） ✓");
 
-// 4. 认不出参数的未知工具：不编造命令，但仍要给到 startedAt（界面才能发光/计时）
+// 4. 认不出参数的未知工具：摘要是原始参数的首行（官方 `deriveSummary` 的最后一级兜底）
+//
+// 官方对未知工具（`SUMMARY_KEYS.others` 空表）的顺序是「参数里第一个非空字符串 →
+// 原始参数首行」，所以 `{whatever: 42}` 会显示成 `{"whatever": 42}`。旧实现到这里
+// 给 undefined（什么都不显示），比官方少一档。`command` 跟着摘要走，界面因此**不会**
+// 把这段 JSON 当成可打开的文件路径。
 {
   const tool = toolFrom("some_external_tool", { whatever: 42 });
-  assert.strictEqual(tool.command, undefined, "认不出就不该编一个命令出来");
+  assert.strictEqual(tool.detail, '{"whatever":42}', "兜底显示原始参数首行（官方同口径）");
+  assert.strictEqual(tool.command, tool.detail, "认不出字段时 command 就是摘要，不会被当成文件路径");
   assert.strictEqual(tool.status, "running");
   assert.ok(tool.startedAt && tool.startedAt > 0);
 }
 console.log("toolView: 未知工具不编造命令 ✓");
 
 // 5. 参数是半截 JSON（流式期）：不能抛错，仍建立 running 行
+//
+// 摘要落到官方 `deriveSummary` 的最后一级兜底（原始参数首行），所以运行中的行会显示
+// `{"command":"cmake --bu` 这样一截——那正是「参数还在流式传」的如实反映；原始载荷
+// 仍完整保留在 `input` 里，补全后会被下一次 upsert 覆盖。
 {
   const frames: HostToWebview[] = [];
   const adapter = new SessionAdapter((frame) => frames.push(frame));
@@ -117,7 +131,7 @@ console.log("toolView: 未知工具不编造命令 ✓");
   assert.ok(appended && appended.type === "message/append");
   const segment = appended.segment as Extract<typeof appended.segment, { kind: "tool" }>;
   assert.strictEqual(segment.tool.status, "running");
-  assert.strictEqual(segment.tool.command, undefined, "半截 JSON 解析不出命令");
+  assert.strictEqual(segment.tool.command, '{"command":"cmake --bu', "半截 JSON 按原文当摘要");
   assert.strictEqual(segment.tool.input, '{"command":"cmake --bu', "原始载荷仍保留");
 }
 console.log("toolView: 半截 JSON 不崩 ✓");

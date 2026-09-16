@@ -138,12 +138,12 @@ dsh 会按 `PROFILE_TEMPLATES` 自动初始化 web profile）起真实 `dsh web`
 | 运行中文案 | ✅ 「生成中」→「深度求索中」。**不加**官方那套扫光 + ≥15s 实时用时：鲸鱼发光已是活动证据，工具行本就各自显示耗时（用户 2026-09-14 拍板） |
 | 中断 | ✅ 不再画成红色报错（官方是冻结正文末尾的 tertiary 色小胶囊） |
 | 轮尾用时 | ✅ 「用时 X」胶囊 + 明细（本轮总用时 / TPS / TTFT）。速度为**整轮累加**（官方 `deriveStats` 口径），TTFT 取第一步、十秒内一位小数（官方 `formatLatencySeconds`） |
-| 工具行 | ✅ IN/OUT 分区（仅非 diff 工具，官方的 diff 类直接给 DiffBlock）、折叠行 `+N -M`（官方 `diffTotals`）、路径可点（官方 `fileLink`） |
+| 工具行 | ✅ IN/OUT 分区（**仅通用工具**）、折叠行 `+N -M`（官方 `diffTotals`）、路径可点（官方 `fileLink`）。**2026-09-16 对齐**：读取 / 搜索 / 终端 / 网页 / `run_code` / `todo_write` 各有官方那张卡（`ReadBlock` / `SearchBlock` / `TerminalBlock` / `WebBlock` / `CodeBlock` / `TodoRow`），**有卡片时不再渲染 IN/OUT**（官方 `card !== null` ⇒ `bodyText` 为 null）；判据与两处刻意偏离见 `src/shared/toolCard.ts` 的文件头与 CHANGELOG |
 | 代码块 | ✅ 自动换行（官方 `pre-wrap` + `break-all`），不再横向滚动 |
 | markdown | ✅ 任务列表复选框（白名单放行 + 钩子只放行 checkbox）、软换行改 CommonMark（`breaks: false`） |
 | 未知内容块 | ✅ 官方 default 分支的「未知内容块」记录（同时补掉 V6：`file` 块） |
 | 上下文条目 | ✅ 按 form 分派正文（instructions 的变更列表 / catalog 的条目 / snapshot 的分节 / relay 的会话 / recall 的计数），形状判据**全有或全无** |
-| 审批 / 提问卡 | ✅ 待处理的**接管输入区**（官方 `conversation.composer` 槽 + `pendingInteraction` 选举，提问优先于审批）；已答过的留在对话流里当记录 |
+| 审批 / 提问卡 | ✅ 待处理的**接管输入区**（官方 `conversation.composer` 槽 + `pendingInteraction` 选举，提问优先于审批）；已答过的留在对话流里当记录。**卡片不是 durable 事件**（会话日志里没有它们），所以适配器单独留一份（`interactionCards`）并在每次 `refold()` 后补回去——重连快照 / 切会话回来 / 窗口重载都靠它，见 CHANGELOG 2026-09-16。卡区**限高内滚**（`min(50vh, 360px)`）：不限高时一张多题问卷会把会话 / 轨迹压成一条缝（本扩展的信息增量，官方没这层约束） |
 | 目标条 | ✅ 正文默认一行截断 + 展开按钮切全文、内联编辑（`/goal edit`）、展开时正文与按钮垂直居中、悬停给「目标 + 受阻原因」 |
 | 文件芯片 | ✅ `[新增]` / 删除线（官方没有改动词类记号，这是本扩展的信息增量） |
 

@@ -1,5 +1,5 @@
 import assert from "node:assert";
-import { diffLines, hunkFromTexts, hunksFromMeta, hunksFromToolArgs } from "../src/shared/diff";
+import { diffLines, hunkFromTexts, hunksFromMeta, hunksFromToolArgs, splitDiffEnabled } from "../src/shared/diff";
 
 // 1. 新文件（oldText = null）：整体算新增
 assert.deepStrictEqual(diffLines(null, "a\nb"), [
@@ -111,5 +111,52 @@ const longHunk = hunkFromTexts("big.txt", null, longText);
 assert.strictEqual(longHunk.truncated, true);
 assert.strictEqual(longHunk.lines.length, 800);
 assert.strictEqual(longHunk.added, 1200);
+
+// 16. 双栏只在「左右可比」时成立（用户 2026-09-16 报的写入节点双栏没有意义）
+//
+// 用户现场：宽面板（831px）里写入节点的 8 个格子里 4 个是空的——`write` 是整篇新建，
+// 左栏整列空白。所以两条硬性否决：写入节点、以及整段没有任何删除行的差异。
+{
+  const replaced = hunkFromTexts("a.ts", "a\nb\nc", "a\nB\nc");
+  const created = hunkFromTexts("new.ts", null, "a\nb");
+  const unchanged = hunkFromTexts("same.ts", "x", "x");
+  const wide = { wide: true };
+
+  assert.strictEqual(
+    splitDiffEnabled({ hunks: [replaced], layout: "auto", ...wide }),
+    true,
+    "有增有删且容器够宽 → 双栏（正常对照）",
+  );
+  assert.strictEqual(
+    splitDiffEnabled({ hunks: [created], layout: "auto", ...wide }),
+    false,
+    "纯新增的差异（`write` / `str_replace_editor` create）双栏有一整列是空的 → 单栏",
+  );
+  assert.strictEqual(
+    splitDiffEnabled({ hunks: [unchanged], layout: "auto", ...wide }),
+    false,
+    "没有任何改动行时也不需要左右对照",
+  );
+  assert.strictEqual(
+    splitDiffEnabled({ hunks: [replaced], layout: "auto", wide: false }),
+    false,
+    "窄容器（侧栏）单栏——`auto` 由宽度决定",
+  );
+  assert.strictEqual(
+    splitDiffEnabled({ hunks: [replaced], layout: "split", wide: false }),
+    true,
+    "显式选了双栏：窄容器也照做（那是用户自己的选择）",
+  );
+  assert.strictEqual(
+    splitDiffEnabled({ hunks: [replaced], layout: "split", ...wide, unified: true }),
+    false,
+    "写入节点固化单栏：连显式 `split` 设置也不覆盖（用户口径）",
+  );
+  assert.strictEqual(
+    splitDiffEnabled({ hunks: [created], layout: "split", ...wide, unified: true }),
+    false,
+    "写入节点 + 纯新增：两条否决同时成立",
+  );
+}
 
 console.log("diff: all assertions passed");

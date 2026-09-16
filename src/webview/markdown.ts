@@ -25,6 +25,27 @@ const marked = new Marked({
 });
 
 /**
+ * 解析出可用的 DOMPurify 实例（两种环境各一条路）。
+ *
+ * - **浏览器**：默认导出就是实例（带 `addHook`），直接用；
+ * - **Node**：默认导出是工厂函数，要喂一个真 window 才拿得到实例；喂进去的
+ *   window 是假的（无头断言里那种最小 stub）时会拿到一个没有 `addHook` 的东西，
+ *   那就当作「没有净化能力」，`sanitize()` 会显式报错而不是默默放行未净化的 HTML。
+ *
+ * 为什么需要这层：本模块此前假定「只有 webview 会 import 它」，而工具卡要用
+ * `Markdown` 渲染网页搜索的答案，`Rows.tsx` 于是被无头渲染断言
+ * （`scripts/questionRender.test.ts`）间接引入。
+ */
+function resolvePurify(): typeof DOMPurify | undefined {
+  if (typeof (DOMPurify as { addHook?: unknown }).addHook === "function") return DOMPurify;
+  if (typeof window === "undefined") return undefined;
+  const created = (DOMPurify as unknown as (root: Window) => typeof DOMPurify)(window);
+  return typeof created?.addHook === "function" ? created : undefined;
+}
+
+const purify = resolvePurify();
+
+/**
  * `input` 只放行 GFM 任务列表的**复选框**。
  *
  * 白名单一旦允许 `input` 标签，模型输出里的 `<input type="text">`、`type="file"`
@@ -32,9 +53,9 @@ const marked = new Marked({
  * 所以这里挂一个 DOMPurify 钩子把 type 不是 checkbox 的 input 整个删掉。
  *
  * 钩子在模块加载时注册**一次**（DOMPurify 的钩子是全局的，每次渲染都 addHook
- * 会不断累积）。这个模块只进 webview bundle，Node 侧的断言不会 import 它。
+ * 会不断累积）。
  */
-DOMPurify.addHook("uponSanitizeElement", (node, data) => {
+purify?.addHook("uponSanitizeElement", (node, data) => {
   if (data.tagName !== "input") return;
   const type = (node as Element).getAttribute?.("type");
   if (type !== "checkbox") node.parentNode?.removeChild(node);
@@ -56,7 +77,10 @@ const DEFAULT_FOOTNOTE_LABEL = "Footnotes";
 
 /** 一份 HTML 走一遍白名单。脚注区（`section` / `sup` / `id` / `data-footnotes`）在列。 */
 function sanitize(html: string): string {
-  return DOMPurify.sanitize(html, {
+  // 没有 DOM 就没有净化能力：宁可显式失败，也不要「默默放行未净化的 HTML」——
+  // 这条路径只可能在无头环境里被走到（webview 里 window 必然存在）
+  if (!purify) throw new Error("markdown: 当前环境没有 DOM，无法净化 HTML");
+  return purify.sanitize(html, {
     ALLOWED_TAGS: [
       "p", "br", "strong", "em", "del", "code", "pre", "blockquote",
       "ul", "ol", "li", "h1", "h2", "h3", "h4", "h5", "h6",

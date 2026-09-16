@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 import type { DiffHunkView, DiffLayout, DiffLineView } from "../../shared/chat";
+import { splitDiffEnabled } from "../../shared/diff";
 import { useTexts } from "../texts";
 
 /**
@@ -10,6 +11,8 @@ import { useTexts } from "../texts";
  * - 双栏（split）：左旧右新，同一处改动上下对齐（连续删除块与新增块配对）。
  *
  * `auto` 由容器宽度决定：窄对话框（侧栏）单栏，宽（编辑器面板）双栏。
+ * **例外**见 `shared/diff.splitDiffEnabled`：写入节点（整篇新建）与任何「没有删除
+ * 行」的差异一律单栏——双栏在那种形状下有一整列是空的（用户 2026-09-16 口径）。
  */
 const SPLIT_MIN_WIDTH = 640;
 
@@ -116,10 +119,19 @@ function Hunk({ hunk, split }: { hunk: DiffHunkView; split: boolean }) {
   );
 }
 
-export function DiffView({ hunks, layout }: { hunks: DiffHunkView[]; layout?: DiffLayout }) {
+export function DiffView({
+  hunks,
+  layout,
+  unified,
+}: {
+  hunks: DiffHunkView[];
+  layout?: DiffLayout;
+  /** 调用方固化单栏（写入节点传 true，见 `splitDiffEnabled`）。 */
+  unified?: boolean;
+}) {
   const ref = useRef<HTMLDivElement>(null);
   const wide = useWideEnough(ref);
-  const split = layout === "split" || (layout !== "unified" && wide);
+  const split = splitDiffEnabled({ hunks, layout, wide, unified });
   return (
     <div ref={ref} className={`diff${split ? " is-split" : ""}`}>
       {hunks.map((hunk, index) => (

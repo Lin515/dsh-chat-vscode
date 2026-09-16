@@ -26,6 +26,7 @@ import {
   parseSnapshotSections,
 } from "../shared/injectedSource";
 import { classifyTool, parseExitStatus, summaryKeys, terminalFailed } from "../shared/toolMeta";
+import { deriveToolSummary, parseToolArgs, todoProgressOf, toolCardOf } from "../shared/toolCard";
 import { displaySessionMentions } from "../shared/mentions";
 import { readRangeFromMeta, readRangeFromOutput } from "./readRange";
 import { producedPath } from "./produced";
@@ -89,6 +90,18 @@ function parseQuestionAnswers(text: string): { id: string; selected: string[]; c
     });
   }
   return parsed;
+}
+
+/**
+ * 这张（非 durable 的）交互卡是不是还在等人回答。
+ *
+ * `refold` 之后的补回位置看它：等答复的卡无论如何都要回到页面上（agent 正卡在
+ * 那里），已收场的记录只在锚点还在时按原位补——挂错轮次比少一条记录更容易误导。
+ */
+function isWaitingInteraction(segment: Segment): boolean {
+  if (segment.kind === "question") return segment.question.state === "waiting";
+  if (segment.kind === "approval") return segment.approval.state === "waiting";
+  return false;
 }
 
 /** 从内容块里取出纯文本（含工具结果里的嵌套文本）。 */
@@ -352,23 +365,13 @@ function sameOccupancy(
 function summarizeTool(
   name: string,
   argsRaw: string,
-): { detail?: string; input?: string; command?: string; diff?: DiffHunkView[] } {
-  let args: Record<string, unknown> = {};
-  try {
-    const parsed = JSON.parse(argsRaw || "{}");
-    if (parsed && typeof parsed === "object") args = parsed as Record<string, unknown>;
-  } catch {
-    return { input: argsRaw };
-  }
-  const pick = (...keys: string[]): string | undefined => {
-    for (const key of keys) {
-      const value = args[key];
-      if (typeof value === "string" && value.trim()) return value.trim();
-    }
-    return undefined;
-  };
-  const firstLine = (text: string) => text.split("\n")[0].slice(0, 120);
-
+): { detail?: string; input?: string; command?: string; diff?: DiffHunkView[]; todo?: { done: number; total: number; active?: string; extra?: number } } {
+  const args = parseToolArgs(argsRaw) ?? {};
+  // 摘要口径完全交给 `shared/toolCard.deriveToolSummary`（官方 `deriveSummary` 的
+  // 逐条对齐）：queries 数组拼接 → 变体字段表 → 参数里第一个非空字符串 → 原始首行。
+  // `command` 只表示「展开区要显示的完整原文」，它非空时界面**不把 detail 当文件路径**
+  // （见 Rows.tsx 的 onDetailActivate），所以按变体给：文件类给路径、其余给摘要本身。
+  const detail = deriveToolSummary(name, argsRaw);
   const variant = classifyTool(name);
   if (variant === "read" || variant === "write" || variant === "edit") {
     // 文件类变体：参数里就能推出 diff（结果回来后再用 meta.diffs 的真实 hunk 覆盖）。
@@ -379,39 +382,18 @@ function summarizeTool(
     //
     // 注意 `read` 变体含 `web_fetch`，它用的是 `url`：官方**刻意**不把 `url` 当
     // 路径键（`FILE_PATH_KEYS = [path, file_path]`），否则 URL 会被当成可打开的文件。
-    const path = pick(...summaryKeys(variant));
+    const path = summaryKeys(variant)
+      .map((key) => args[key])
+      .find((value): value is string => typeof value === "string" && value.trim() !== "");
     return {
-      detail: path ? firstLine(path) : undefined,
+      detail,
       command: path,
       input: argsRaw,
       diff: hunksFromToolArgs(name, argsRaw),
+      todo: todoProgressOf(argsRaw),
     };
   }
-  if (variant === "bash") {
-    const command = pick(...summaryKeys(variant));
-    // 命令名（首个 token）完整保留，过长的其余部分折叠
-    return {
-      detail: command
-        ? firstLine(command).length > 72
-          ? `${firstLine(command).slice(0, 72)}…`
-          : firstLine(command)
-        : undefined,
-      command,
-      input: argsRaw,
-    };
-  }
-  if (variant === "search") {
-    const query = pick(...summaryKeys(variant));
-    return { detail: query, command: query, input: argsRaw };
-  }
-  if (variant === "code") {
-    const description = pick(...summaryKeys(variant));
-    return { detail: description?.slice(0, 120), command: description, input: argsRaw };
-  }
-  // `others`：官方不猜字段（`SUMMARY_KEYS.others` 是空表），退回「参数里第一个非空
-  // 字符串」。认不出就不给 command，展开区退化为只显示状态，不编造内容。
-  const generic = pick("command", "cmd", "script", "description", "query", "url", "file_path", "path");
-  return { detail: generic ? firstLine(generic).slice(0, 120) : undefined, command: generic, input: argsRaw };
+  return { detail, command: detail, input: argsRaw, todo: todoProgressOf(argsRaw) };
 }
 
 /**
@@ -532,6 +514,24 @@ export class SessionAdapter {
    * 提问。卡片补建时按这个直接建成「已答完」并带上答案（见 `addQuestion`）。
    */
   private readonly answeredQuestions = new Map<string, Record<string, QuestionAnswerView>>();
+
+  /**
+   * 水瀑投递进来的**交互卡**（审批 / 提问），键 = 段 id（`ap:<eventId>` / `q:<eventId>`）。
+   *
+   * 这两类卡**不是 durable 事件**——会话日志里没有它们，唯一来源是 `$events` 的
+   * waterfall（重连后由服务端重投递，宿主的 `heldEvents` 负责回放）。而
+   * `refold()`（跟随流快照、socket 重连、加载更早的历史）会把消息流整体折成
+   * durable 事件的产物，于是**刚投进来的卡会在下一次重折时静默消失**：
+   * 宿主 `replayHeldEvents` 是紧跟着 `ensureScope` 同步执行的，而那份跟随快照
+   * 要等一个网络往返才到——到了就把整袋消息重折一遍，卡片正好被折掉。
+   * 用户 2026-09-15 报的「切走再切回来问卷不见了、agent 卡在 ask 节点」在上一轮
+   * 修完 `heldEvents` 之后仍然复现，就是它（窗口重载同理：重连后服务端重投递，
+   * 卡刚显示就被快照折掉）。
+   *
+   * 所以卡片在这里单独留一份（含它当初落在哪条助手消息上），`refold` 结束时
+   * 按锚点补回消息流——见 `restoreInteractionCards`。
+   */
+  private readonly interactionCards = new Map<string, { segment: Segment; messageId: string }>();
 
   /**
    * 重放期间**不发帧**（见 `refold`）。
@@ -864,6 +864,46 @@ export class SessionAdapter {
       for (const event of events) this.applyEvent(event);
     } finally {
       this.replaying = false;
+    }
+    // durable 事件折完再把**非 durable** 的交互卡补回去（见 `interactionCards`）：
+    // 它们不在会话日志里，重折不出来，只能在这里按锚点复原。
+    this.restoreInteractionCards();
+  }
+
+  /**
+   * 记下（或刷新）一张非 durable 的交互卡：`refold` 之后靠它把卡片补回消息流。
+   *
+   * 存的是一份**快照**（而不是消息里那个对象）：重折会把消息整袋换掉，届时
+   * 只能靠这份副本重建。收场（答复 / 撤回）时同样走这里刷新，记录里才不会
+   * 留下「已答完却又变回等待」的卡片。
+   */
+  private rememberInteraction(segment: Segment, messageId: string): void {
+    this.interactionCards.set(segment.id, {
+      segment: { ...segment } as Segment,
+      messageId,
+    });
+  }
+
+  /**
+   * 把非 durable 的交互卡补回重折后的消息流（`refold` 末尾调用）。
+   *
+   * 锚点优先用卡片当初所在的那条助手消息（`a:<turn>`，重折按同一套规则重建，
+   * id 一致）。锚点不在重折结果里时（卡片属于跟随窗口之外的更早一轮）**只有还在
+   * 等待答复的卡**才改挂到当前轮的助手消息上——那是一张必须被看见的卡，而已经
+   * 收场的记录挂错轮次只会让人误以为它发生在当前这一轮。
+   *
+   * 补回的**位置**一律是该消息的末尾：等答复的卡后面本来就没有内容（agent 正卡在
+   * 那里，直到有人回答），已收场的记录则可能落到同一轮后续正文之后——次序上这么
+   * 一点偏差，换的是「重折之后卡片一定还在」，这个取舍是有意的。
+   */
+  private restoreInteractionCards(): void {
+    for (const { segment, messageId } of this.interactionCards.values()) {
+      const waiting = isWaitingInteraction(segment);
+      const target = this.byId.get(messageId) ?? (waiting ? this.ensureAssistantMessage(Date.now()) : undefined);
+      if (!target) continue;
+      if (target.segments.some((existing) => existing.id === segment.id)) continue;
+      const restored = { ...segment } as Segment;
+      this.pushSegment(target, restored);
     }
   }
 
@@ -1783,6 +1823,15 @@ export class SessionAdapter {
   private upsertToolCall(ts: number, callId: string, name: string, argsRaw: string, messageId?: string): void {
     const message = (messageId ? this.byId.get(messageId) : undefined) ?? this.ensureAssistantMessage(ts);
     const summary = summarizeTool(name, argsRaw);
+    // 运行中也要算卡片：终端类在跑的时候官方就画「命令 + 运行中」（`terminalCardModel`
+    // 的 running 分支），`run_code` 的参数也在同一刻就能给出代码正文。
+    const runningCard = toolCardOf({
+      name,
+      argsRaw,
+      isError: false,
+      interrupted: false,
+      settled: false,
+    });
     const existing = this.toolSegments.get(callId);
     if (existing) {
       const target = this.byId.get(existing.messageId);
@@ -1793,6 +1842,10 @@ export class SessionAdapter {
         segment.tool.command = summary.command;
         segment.tool.input = argsRaw;
         segment.tool.diff = summary.diff;
+        segment.tool.todo = summary.todo;
+        // 唯一在这里能拿到运行中卡片的时刻：结算时会按结果重算（可能变成 undefined，
+        // 例如带 description 的 bash 调用出错 → 官方退回通用 IN/OUT）
+        segment.tool.card = runningCard;
         this.emit({ type: "message/segment", messageId: target.id, segment: { ...segment } });
       }
       return;
@@ -1808,6 +1861,8 @@ export class SessionAdapter {
       status: "running",
       input: argsRaw,
       diff: summary.diff,
+      todo: summary.todo,
+      card: runningCard,
       startedAt: ts,
     };
     const segment: Segment = { kind: "tool", id: segmentId, tool };
@@ -1876,6 +1931,21 @@ export class SessionAdapter {
     }
     const failed = isError || (terminal !== undefined && terminalFailed(terminal));
     tool.status = options.interrupted ? "stopped" : failed ? "error" : "ok";
+    // 展开区的卡片按**结算后**的事实重算（可能从有变无：出错 / 持久 shell / spill 预览
+    // 都退回通用 IN/OUT，官方同口径）。终端卡片的输出用**剥掉退出标记**的那一份，
+    // 搜索结果被截断时的 recovery 用原始正文（官方 `flattenContent`）。
+    tool.card = toolCardOf({
+      name: tool.name,
+      argsRaw: tool.input ?? "",
+      output: terminal ? terminal.output : output,
+      content: options.content,
+      meta,
+      exitCode: terminal?.exitCode,
+      signal: terminal?.signal,
+      isError,
+      interrupted: options.interrupted === true,
+      settled: true,
+    });
     // 结果里的真实 hunk（3 行上下文，由工具自己算）优先于参数推导的预览
     const fromMeta = hunksFromMeta(meta);
     if (fromMeta) tool.diff = fromMeta;
@@ -2027,6 +2097,21 @@ export class SessionAdapter {
   }
 
   /**
+   * 按段 id 找一张交互卡——**跨消息**找，不只看当前回合那条。
+   *
+   * 重投递的落点不一定是当初那条消息：请求重投时那个回合可能早已结束
+   * （`ensureAssistantMessage` 会给出新回合的消息）。只在那一条里找就会
+   * 画出第二张卡，而第一张永远没人点。审批与提问共用这个入口去重。
+   */
+  private findInteractionCard(id: string): { message: MessageView; segment: Segment } | undefined {
+    for (const message of this.messages) {
+      const segment = message.segments.find((candidate) => candidate.id === id);
+      if (segment) return { message, segment };
+    }
+    return undefined;
+  }
+
+  /**
    * 追加一个审批卡片到当前回合。
    *
    * 同一个 `requestId` **重复投递只更新、不重加**（与 `addQuestion` 同口径）：
@@ -2035,23 +2120,26 @@ export class SessionAdapter {
    * 而且两张都得分别答复（另一张永远没人点）。
    */
   addApproval(approval: ApprovalView): void {
-    const message = this.ensureAssistantMessage(Date.now());
     const id = `ap:${approval.requestId}`;
-    const existing = message.segments.find((segment) => segment.id === id);
-    if (existing && existing.kind === "approval") {
+    const existing = this.findInteractionCard(id);
+    if (existing && existing.segment.kind === "approval") {
       // 已经收场的卡片不被重投递改回 waiting（服务端只在请求**还没结算**时重投递，
       // 这一步是纯防御；真出现只会把用户答完的卡片又变回可编辑）
-      if (existing.approval.state !== "waiting") return;
-      existing.approval = approval;
+      if (existing.segment.approval.state !== "waiting") return;
+      existing.segment.approval = approval;
+      const updated = { ...existing.segment, approval: { ...approval } } as Segment;
+      this.rememberInteraction(updated, existing.message.id);
       this.emit({
         type: "message/segment",
-        messageId: message.id,
-        segment: { ...existing, approval: { ...approval } } as Segment,
+        messageId: existing.message.id,
+        segment: updated,
       });
       return;
     }
+    const message = this.ensureAssistantMessage(Date.now());
     const segment: Segment = { kind: "approval", id, approval };
     this.pushSegment(message, segment);
+    this.rememberInteraction(segment, message.id);
     this.emit({ type: "message/append", messageId: message.id, segment });
   }
 
@@ -2060,7 +2148,11 @@ export class SessionAdapter {
       const segment = message.segments.find((s) => s.kind === "approval" && s.approval.requestId === requestId);
       if (segment && segment.kind === "approval") {
         segment.approval.state = state;
-        this.emit({ type: "message/segment", messageId: message.id, segment: { ...segment, approval: { ...segment.approval } } as Segment });
+        const updated = { ...segment, approval: { ...segment.approval } } as Segment;
+        // 收场同样要刷新那份副本：重折补回来的必须是「已收场」的记录，
+        // 不能又变回一张等着答复的卡
+        this.rememberInteraction(updated, message.id);
+        this.emit({ type: "message/segment", messageId: message.id, segment: updated });
       }
     }
   }
@@ -2141,15 +2233,16 @@ export class SessionAdapter {
 
   /** 追加一个提问卡片到当前回合。 */
   addQuestion(question: QuestionView): void {
-    const message = this.ensureAssistantMessage(Date.now());
     const id = `q:${question.requestId}`;
-    const existing = message.segments.find((segment) => segment.id === id);
-    if (existing && existing.kind === "question") {
+    const existing = this.findInteractionCard(id);
+    if (existing && existing.segment.kind === "question") {
       // 已经收场的卡片不被重投递改回 waiting（服务端只在请求**还没结算**时重投递，
       // 这一步是純防御；真出现只会把用户答完的卡片又变回可编辑）
-      if (existing.question.state !== "waiting") return;
-      existing.question = question;
-      this.emit({ type: "message/segment", messageId: message.id, segment: { ...existing, question: { ...question } } as Segment });
+      if (existing.segment.question.state !== "waiting") return;
+      existing.segment.question = question;
+      const updated = { ...existing.segment, question: { ...question } } as Segment;
+      this.rememberInteraction(updated, existing.message.id);
+      this.emit({ type: "message/segment", messageId: existing.message.id, segment: updated });
       return;
     }
     // 会话监听已经判定这次提问答过了（服务端重投递 waterfall 与本窗口收到
@@ -2159,8 +2252,10 @@ export class SessionAdapter {
       ? { ...question, state: "answered", answers: known }
       : question;
     if (known) this.answeredQuestions.delete(questionKey(question.items));
+    const message = this.ensureAssistantMessage(Date.now());
     const segment: Segment = { kind: "question", id, question: resolved };
     this.pushSegment(message, segment);
+    this.rememberInteraction(segment, message.id);
     this.emit({ type: "message/append", messageId: message.id, segment });
   }
 
@@ -2187,10 +2282,14 @@ export class SessionAdapter {
       } else if (segment.question.state === "waiting") {
         segment.question.state = "answered";
       }
+      const updated = { ...segment, question: { ...segment.question } } as Segment;
+      // 记录「已经答过」也要进那份副本：重折补回来的必须是记录，
+      // 不能又变成一张等着答复的卡（见 `interactionCards`）
+      this.rememberInteraction(updated, message.id);
       this.emit({
         type: "message/segment",
         messageId: message.id,
-        segment: { ...segment, question: { ...segment.question } } as Segment,
+        segment: updated,
       });
       return;
     }
@@ -2215,20 +2314,24 @@ export class SessionAdapter {
       if (segment.kind === "question") {
         if (segment.question.state !== "waiting") return;
         segment.question.state = "cancelled";
+        const updated = { ...segment, question: { ...segment.question } } as Segment;
+        this.rememberInteraction(updated, message.id);
         this.emit({
           type: "message/segment",
           messageId: message.id,
-          segment: { ...segment, question: { ...segment.question } } as Segment,
+          segment: updated,
         });
         return;
       }
       if (segment.kind === "approval") {
         if (segment.approval.state !== "waiting") return;
         segment.approval.state = "expired";
+        const updated = { ...segment, approval: { ...segment.approval } } as Segment;
+        this.rememberInteraction(updated, message.id);
         this.emit({
           type: "message/segment",
           messageId: message.id,
-          segment: { ...segment, approval: { ...segment.approval } } as Segment,
+          segment: updated,
         });
         return;
       }

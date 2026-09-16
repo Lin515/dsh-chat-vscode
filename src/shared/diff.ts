@@ -9,7 +9,36 @@
  * 这里只做「行序列 + 增删计数」，排版（单栏/双栏）交给界面，
  * 因为自适应要看对话框宽度。
  */
-import type { DiffHunkView, DiffLineView } from "./chat";
+import type { DiffHunkView, DiffLayout, DiffLineView } from "./chat";
+
+/**
+ * 这一段 diff 该不该用**双栏**（左右对照）。
+ *
+ * 双栏要有「左右两边可比」才成立，所以有两条硬性否决（用户 2026-09-16 报的：
+ * 「如果是写入节点，固化为单栏，因为是写入节点必定是新建文件吧？双栏没有意义」）：
+ *
+ * 1. `write` 节点一律单栏——它是整篇新建 / 覆盖，左栏整列空白（实测 831px 宽的面板里
+ *    写入节点的 8 个格子里有 4 个是空的），双栏只是把内容挤掉一半；
+ * 2. **整段没有任何删除行**时同样单栏——「纯新增」的差异都是这种形状，理由与第 1 条
+ *    相同（`write` 的新建预览、以及结果 meta 里 `oldText: null` 的那些 hunk）。
+ *
+ * 其余情况才按 `layout` 设置与容器宽度决定（`auto` 时由界面按 `SPLIT_MIN_WIDTH` 量宽）。
+ */
+export function splitDiffEnabled(options: {
+  hunks: readonly DiffHunkView[];
+  /** 用户设置（`dshChat.diffLayout`）：auto / unified / split。 */
+  layout?: DiffLayout;
+  /** 容器是否够宽（`auto` 由它决定；由界面量出来）。 */
+  wide: boolean;
+  /** 调用方显式固化单栏（写入节点）。 */
+  unified?: boolean;
+}): boolean {
+  if (options.unified) return false;
+  if (!options.hunks.some((hunk) => hunk.lines.some((line) => line.kind === "del"))) return false;
+  return options.layout === "split" || (options.layout !== "unified" && options.wide);
+}
+
+/** 两段文本的行级 diff（LCS）。`oldText` 为 null 表示新文件：整体算新增。 */
 
 /**
  * 行 diff 的规模上限（前后缀裁剪之后的中段，n × m 个格子）。

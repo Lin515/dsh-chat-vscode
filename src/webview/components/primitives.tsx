@@ -407,8 +407,18 @@ export function Spinner({ size = 12 }: { size?: number }) {
 }
 
 /**
- * 折叠 body 区（`.row-body`）的自动滚动：节点展开时贴住最新内容——
- * 内容超出 `max-height` 出现垂直滚动条时自动滚到最新一行。
+ * 折叠 body 区（`.row-body`）的滚动位置：**展开即回到顶部**，只有还在增长的内容
+ * 才谈得上「跟随最新」。
+ *
+ * 用户 2026-09-16 口径：各类节点打开后，如果有垂直滚动条，默认应当居于**最顶部**
+ * ——节点内容基本都是成型后一次性呈现的（工具的 diff / 卡片 / IN-OUT、注入的提示词、
+ * 命令结果），打开就该从第一行读起。此前这里一律 `scrollTop = scrollHeight`（贴底），
+ * 于是一张长 diff、一段长输出打开后停在末尾，得自己往上翻。
+ *
+ * `streaming`（只有思考节点会传 true）是唯一的例外，且**只在盒子还装得下时**跟随：
+ * 内容还在逐 token 增长、又没超出可见高度时跟着长（否则新 token 会掉到折叠线以下，
+ * 用户什么都看不到）；一旦已经装不下，就不抢用户的滚动——用户自己滑到底部即恢复跟随
+ * （与主对话区同一套「贴底判定」）。
  *
  * 粘性语义与主对话区一致：只有「scrollTop 真正变小」（用户上滑）才脱离跟随，
  * 滚回底部重新跟随。body 区自身是滚动容器（max-height 固定，盒子尺寸不变，
@@ -417,17 +427,21 @@ export function Spinner({ size = 12 }: { size?: number }) {
 export function useStickyBody(
   ref: RefObject<HTMLDivElement | null>,
   enabled: boolean,
+  streaming = false,
 ): void {
-  const stickRef = useRef(true);
+  const stickRef = useRef(false);
   const lastTopRef = useRef(0);
 
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el || !enabled) return;
-    stickRef.current = true;
+    // 打开即从第一行开始
+    el.scrollTop = 0;
     lastTopRef.current = 0;
-    // 展开即从最新内容开始
-    el.scrollTop = el.scrollHeight;
+    // 装得下才算「跟随」（此时没有滚动条，跟不跟是同一件事——跟着长才是对的）
+    stickRef.current = streaming && el.scrollHeight - el.clientHeight < 40;
+    // 内容不会再变：不需要观察者，更不该在后续更新时抢用户的滚动位置
+    if (!streaming) return;
 
     const onScroll = () => {
       const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
@@ -449,7 +463,7 @@ export function useStickyBody(
       observer.disconnect();
       el.removeEventListener("scroll", onScroll);
     };
-  }, [enabled]);
+  }, [enabled, streaming]);
 }
 
 /** 元素内是否存在非折叠选区（用户正在其中划选文字）。 */

@@ -475,12 +475,30 @@
               segments: [
                 { step: 0, id: "r1", kind: "thinking", text: "先看两个文件各自的初始化路径。\nindex.ts 里创建了 server 并调用了 listen，config.ts 又从环境变量里读了一遍端口，两处会打架。", streaming: false },
                 { step: 0, id: "t1", kind: "text", text: "我看了两个文件，重复初始化的根因是端口和中间件被注册了两次。" },
-                { step: 0, id: "tool1", kind: "tool", tool: { id: "call_1", name: "read", title: "", detail: "src/server/index.ts", status: "ok", input: '{"file_path":"src/server/index.ts"}', output: "export function bootstrap() {…}", startedAt: now - 234000, endedAt: now - 233400 } },
-                // 读取节点：只读了一段 → 行号缀在文件名后（含一个很长的路径，验证窄侧栏下不被截掉）
-                { step: 0, id: "tool1b", kind: "tool", tool: { id: "call_1b", name: "read", title: "", detail: "…/dsh/controller.ts", command: "d:\\dev\\dsh-chat\\src\\dsh\\controller.ts", readLines: { start: 3201, end: 3220 }, status: "ok", input: '{"file_path":"d:\\\\dev\\\\dsh-chat\\\\src\\\\dsh\\\\controller.ts","offset":3201,"limit":20}', output: "3201: …", startedAt: now - 233900, endedAt: now - 233500 } },
-                { step: 0, id: "tool2", kind: "tool", tool: { id: "call_2", name: "grep", title: "", detail: "listen(", status: "ok", input: '{"pattern":"listen\\\\("}', output: "src/server/index.ts:24\nsrc/config.ts:11", startedAt: now - 233300, endedAt: now - 233000 } },
-                // code 变体（run_code）：摘要取 description，图标是代码括号
-                { step: 0, id: "tool2b", kind: "tool", tool: { id: "call_2b", name: "run_code", title: "", detail: "抽出 bootstrap()", status: "ok", input: '{"description":"抽出 bootstrap()"}', output: "extracted", startedAt: now - 232900, endedAt: now - 232600 } },
+                { step: 0, id: "tool1", kind: "tool", tool: { id: "call_1", name: "read", title: "", detail: "src/server/index.ts", status: "ok", input: '{"file_path":"src/server/index.ts"}', output: "export function bootstrap() {…}", card: { kind: "read", label: "src/server/index.ts", lang: "typescript", totalLines: 6, lines: [
+                  { number: 1, text: "import { createServer } from \"./server\";" },
+                  { number: 2, text: "import { loadConfig } from \"./config\";" },
+                  { number: 3, text: "" },
+                  { number: 4, text: "export function bootstrap() {" },
+                  { number: 5, text: "  const config = loadConfig();" },
+                  { number: 6, text: "}" }
+                ] }, startedAt: now - 234000, endedAt: now - 233400 } },
+                // 读取节点：只读了一段 → 行号缀在文件名后（含一个很长的路径，验证窄侧栏下不被截掉），
+                // 展开区是读取卡：行号槽 + 内容，20 行超过 8 行上限 → 中间出现「… 其余 12 行」
+                { step: 0, id: "tool1b", kind: "tool", tool: { id: "call_1b", name: "read", title: "", detail: "…/dsh/controller.ts", command: "d:\\dev\\dsh-chat\\src\\dsh\\controller.ts", readLines: { start: 3201, end: 3220 }, status: "ok", input: '{"file_path":"d:\\\\dev\\\\dsh-chat\\\\src\\\\dsh\\\\controller.ts","offset":3201,"limit":20}', output: "3201: …", card: { kind: "read", label: "d:\\dev\\dsh-chat\\src\\dsh\\controller.ts", lang: "typescript", totalLines: 4610, lines: Array.from({ length: 20 }, (_, i) => ({ number: 3201 + i, text: i === 0 ? "  private async handle(message: WebviewToHost, viewId: string): Promise<void> {" : i === 19 ? "  }" : `    // 第 ${3201 + i} 行：真实会话里的源码行` })) }, startedAt: now - 233900, endedAt: now - 233500 } },
+                // 搜索卡（grep）：命中按文件分组、每组带条数，超过 8 行时中间给展开钮
+                { step: 0, id: "tool2", kind: "tool", tool: { id: "call_2", name: "grep", title: "", detail: "listen(", status: "ok", input: '{"pattern":"listen\\\\("}', output: "src/server/index.ts:24\nsrc/config.ts:11", card: { kind: "search", shape: "matches", total: 4, truncated: false, files: [
+                  { path: "src/server/index.ts", matches: [{ lineNumber: 24, line: "  server.listen(options.port);" }, { lineNumber: 31, line: "  server.listen(3080);" }] },
+                  { path: "src/config.ts", matches: [{ lineNumber: 11, line: "export const port = Number(process.env.PORT ?? 3080);" }] },
+                  { path: "src/legacy/server.js", matches: [{ lineNumber: 4, line: "app.listen(8080, () => console.log('up'));" }] }
+                ] }, startedAt: now - 233300, endedAt: now - 233000 } },
+                // code 变体（run_code）：展开区是代码块 + 输出（官方对 code 只省掉 IN 段）
+                { step: 0, id: "tool2b", kind: "tool", tool: { id: "call_2b", name: "run_code", title: "", detail: "抽出 bootstrap()", status: "ok", input: '{"description":"抽出 bootstrap()"}', output: "extracted 3 symbols", card: { kind: "code", code: "export function bootstrap() {\n  const config = loadConfig();\n  return createServer(config);\n}" }, startedAt: now - 232900, endedAt: now - 232600 } },
+                // 网页搜索卡：答案（markdown）+ 来源列表，第二条没有标题时显示主机名
+                { step: 0, id: "tool2c", kind: "tool", tool: { id: "call_2c", name: "web_search", title: "", detail: "vscode icon svg mask, editor title color", status: "ok", input: '{"queries":["vscode icon svg mask","editor title color"]}', output: "…", card: { kind: "web_search", answer: "VS Code 的 `editor/title` 图标走 **mask** 着色：图标只提供 alpha 形状，颜色由主题的 `icon.foreground` 决定。", truncated: false, sources: [
+                  { url: "https://code.visualstudio.com/api/references/contribution-points", title: "Contribution Points | Visual Studio Code Extension API", snippet: "### Command icon specifications" },
+                  { url: "https://example.com/plain-note", snippet: "没有标题时显示主机名" }
+                ] }, startedAt: now - 232500, endedAt: now - 232200 } },
                 // 编辑类节点：结构化 diff（结果 meta 里的 hunk）
                 { step: 1, id: "tool3", kind: "tool", tool: { id: "call_3", name: "edit", title: "", detail: "…/server/index.ts", status: "ok",
                   input: '{"file_path":"D:/dev/app/src/server/index.ts"}',
@@ -517,8 +535,20 @@
                   startedAt: now - 74000 } },
                 // 运行中的终端行：bash 变体（pwsh）——行首图标以橙色（--node-bash）呼吸发光
                 { step: 1, id: "tool6b", kind: "tool", tool: { id: "call_6b", name: "pwsh", title: "", detail: "npm run build", status: "running", command: "npm run build", input: '{"command":"npm run build"}', startedAt: now - 30000 } },
+                // 终端卡：带 description 的一次性命令，结算后是「状态 + 提示符行 + 退出码 + 输出」。
+                // 输出给足 40 行：这样展开时 body 一定出现垂直滚动条——用来验证
+                // 「打开节点默认停在最顶部」（`useStickyBody` 的 `scrollTop = 0`）
+                { id: "tool6c", kind: "tool", tool: { id: "call_6c", name: "pwsh", title: "", status: "ok",
+                  detail: "Show repo state",
+                  command: "git status --short",
+                  input: '{"command":"git status --short","description":"Show repo state"}',
+                  output: [" M src/dsh/adapter.ts", " M src/webview/styles/app.css", ...Array.from({ length: 38 }, (_, i) => `?? build/tmp-${i + 1}.log`)].join("\n"),
+                  exitCode: 0,
+                  card: { kind: "terminal", command: "git status --short", cwd: "d:\\dev\\dsh-chat", output: [" M src/dsh/adapter.ts", " M src/webview/styles/app.css", ...Array.from({ length: 38 }, (_, i) => `?? build/tmp-${i + 1}.log`)].join("\n"), exitCode: 0 },
+                  startedAt: now - 125000, endedAt: now - 124000 } },
                 // 终端失败：非零退出码。bash/pwsh **不**把非零退出标成 isError，
-                // 失败靠 `parseExitStatus` 自己判（`[exit code: N]` 已从正文剥掉）
+                // 失败靠 `parseExitStatus` 自己判（`[exit code: N]` 已从正文剥掉）。
+                // 这一条**没有 description** → 官方按持久 shell 处理，退回通用 IN/OUT
                 { id: "tool6", kind: "tool", tool: { id: "call_6", name: "pwsh", title: "", status: "error",
                   detail: "npm run typecheck",
                   command: "npm run typecheck",

@@ -17,6 +17,8 @@ import { MAX_CATALOG_ENTRIES } from "../../shared/injectedSource";
 import { formatDuration, Popover, Row, useElapsed, useSelectionFreeze, useStickyBody } from "./primitives";
 import { canSubmit, isAnswered, questionMode } from "../questionFlow";
 import { DiffView } from "./Diff";
+import { CodeBlock } from "./CodeBlock";
+import { ToolCardBody } from "./ToolCards";
 import { fill, useTexts, resolveText } from "../texts";
 import {
   IconAlert,
@@ -103,13 +105,29 @@ export function ToolRow({ tool, diffLayout }: { tool: ToolCallView; diffLayout?:
   // 编辑类工具：结构化 diff（结果里的 hunk，或结果未回时参数推导的预览）
   const diff = tool.diff?.filter((hunk) => hunk.lines.length > 0);
   const hasDiff = Boolean(diff?.length);
+  /**
+   * 工具卡（官方 `ToolRow` 的 card 槽位）：读取 / 搜索 / 终端 / 网页。
+   *
+   * **有卡片就不再渲染 IN/OUT**——官方同一条规则（`card !== null` 时 `bodyText` 为
+   * null），参数 JSON 因此不会出现在展开区（用户 2026-09-16 口径）。
+   * 运行中仍用本扩展自己的「运行中 + 实时耗时 + 完整命令」那一段：官方在跑的时候
+   * 只有命令，而长任务里那个计时是「还活着」的唯一证据。
+   *
+   * `run_code` 的代码卡**不在**这条规则里：官方对 code 变体把正文（代码）交给
+   * CodeBlock、同时保留 OUT 段（`cardBody = variant === "code" ? null : bodyText`
+   * ——IN 段不渲染，OUT 照常）。跑一段代码最该看的就是它的输出。
+   */
+  const card = running ? undefined : tool.card;
+  const codeCard = card?.kind === "code" ? card : undefined;
+  const hasCard = Boolean(card) && codeCard === undefined;
   // 出错时结果文本（失败原因）比 diff 更有用，两者都显示
   const showOutput = Boolean(tool.output) && (!hasDiff || tool.status === "error");
   // 运行中还没有结果，但展开区仍有东西可看：实时耗时 +（认得出的话）完整命令。
   // 一律可展开——任何正在跑的节点都该能点开确认「它还活着」，这正是长任务的需要。
   const runningBody = running;
-  // 展开且有内容时 body 区贴住最新内容：超出出现滚动条就自动滚到最新一行
-  useStickyBody(bodyRef, open && (hasDiff || showOutput));
+  // 工具展开区（diff / 卡片 / IN-OUT）打开时回到顶部：内容基本都已成型，
+  // 打开就该从第一行读起；后续到达的更新也不该抢用户的滚动位置（用户 2026-09-16 口径）
+  useStickyBody(bodyRef, open && (hasDiff || showOutput || hasCard));
   // 结果行仍可能被后续更新刷新；用户在其中划选时冻结渲染，保住选区
   const shownOutput = useSelectionFreeze(bodyRef, tool.output ?? "");
 
@@ -165,12 +183,29 @@ export function ToolRow({ tool, diffLayout }: { tool: ToolCallView; diffLayout?:
   // 运行中也要可展开：长任务（构建）要能看见完整命令与「还在跑」的计时。
   const hasBody =
     hasDiff ||
+    hasCard ||
+    Boolean(codeCard) ||
     showOutput ||
     Boolean(inputText) ||
     runningBody ||
     Boolean(exitMeta) ||
     (tool.images?.length ?? 0) > 0 ||
     (tool.files?.length ?? 0) > 0;
+
+  // `todo_write`：官方 `TodoRow` 的标题与进度摘要（`{done}/{total} 已完成 · 正在做 X`，
+  // 右侧 `+N` 是其余进行中条目的条数）。它没有卡片，正文仍是 IN/OUT。
+  const todo = tool.todo;
+  const rowTitle = todo ? texts.toolTodoTitle : tool.title || verb;
+  const rowDetail = todo
+    ? [texts.toolTodoProgress(todo.done, todo.total), todo.active].filter(Boolean).join(" · ")
+    : tool.detail;
+  const rowDetailSuffix = todo
+    ? todo.extra
+      ? `+${todo.extra}`
+      : undefined
+    : tool.readLines
+      ? `:${tool.readLines.start}-${tool.readLines.end}`
+      : undefined;
 
   return (
     <Row
@@ -185,10 +220,11 @@ export function ToolRow({ tool, diffLayout }: { tool: ToolCallView; diffLayout?:
       tone={tone}
       // 节点名（动词）完整显示，路径/命令/查询等次要标题进 detail 列，
       // 过长时由 CSS 省略——思考/工具/用量行同一布局
-      title={tool.title || verb}
-      detail={tool.detail}
-      // 只读了一段时把行号缀在文件名后；该片段不可压缩，窄侧栏也看得见
-      detailSuffix={tool.readLines ? `:${tool.readLines.start}-${tool.readLines.end}` : undefined}
+      title={rowTitle}
+      detail={rowDetail}
+      // 只读了一段时把行号缀在文件名后；待办行则是「其余 N 条进行中」。该片段
+      // 不可压缩，窄侧栏也看得见
+      detailSuffix={rowDetailSuffix}
       diffStat={diffStat}
       // detail 是文件路径时可点：官方把摘要做成 `fileLink`，点了用侧栏预览打开。
       // 这里只在路径确实存在（不是命令行/查询串）时才挂链接——`tool.command` 类
@@ -220,23 +256,39 @@ export function ToolRow({ tool, diffLayout }: { tool: ToolCallView; diffLayout?:
       ) : null}
       {hasDiff && diff ? (
         <div ref={bodyRef} className="row-body diff-body">
-          <DiffView hunks={diff} layout={diffLayout} />
+          {/* 写入节点固化单栏：整篇新建，双栏会有一整列是空的（用户 2026-09-16 口径） */}
+          <DiffView hunks={diff} layout={diffLayout} unified={classifyTool(tool.name) === "write"} />
         </div>
       ) : null}
-      {/* 非 diff 工具的展开体按官方的 IN/OUT 两段呈现：
-          「输入」= 模型实际传的参数（缩进后的 JSON，官方 cardBody 同义），
+      {/* 工具卡（官方 `ToolRow` 的 card 槽）：读取 / 搜索 / 终端 / 网页。
+          有卡片时**不渲染 IN/OUT**——参数 JSON 就此不再出现在展开区，这与用户
+          2026-09-16 的口径一致（工具的展开区重在与可读性 + 输出内容）。 */}
+      {hasCard && card ? (
+        <div ref={bodyRef} className="row-body card-body">
+          <ToolCardBody card={card} />
+        </div>
+      ) : null}
+      {/* `run_code`：正文是代码块，**下面照旧给 OUT**（官方对 code 变体只省掉 IN） */}
+      {codeCard ? (
+        <div ref={bodyRef} className="row-body card-body">
+          <CodeBlock lang="typescript" code={codeCard.code} />
+        </div>
+      ) : null}
+      {/* 通用工具（官方 GenericToolCard）的展开体按 IN/OUT 两段呈现：
+          「输入」= 模型实际传的参数（缩进后的 JSON，官方 `formatToolBody` 同义），
           「输出」= 工具返回的正文（出错时整段染红）。
-          官方对 diff 类工具直接给 DiffBlock、不套 IN/OUT，所以这里也只在**没有 diff**
-          时分开渲染——否则同一份改动会既在 IN 里露参数、又在下面出 diff，重复。 */}
-      {!hasDiff && (inputText || showOutput) ? (
+          官方对 diff 类工具直接给 DiffBlock、对上面那些给了卡片的工具也给各自的卡，
+          所以这里只在**两者都没有**时渲染——否则同一份内容会出现两次；
+          `run_code` 例外：它的输入已经是上面的代码块（官方同样不再渲染 IN）。 */}
+      {!hasDiff && !hasCard && ((inputText && !codeCard) || showOutput) ? (
         <div className="row-body io-card">
-          {inputText ? (
+          {inputText && !codeCard ? (
             <div className="io-section">
               <span className="io-label">{texts.toolInput}</span>
               <span className="io-text mono">{inputText}</span>
             </div>
           ) : null}
-          {inputText && showOutput ? <span className="io-divider" aria-hidden /> : null}
+          {inputText && !codeCard && showOutput ? <span className="io-divider" aria-hidden /> : null}
           {showOutput ? (
             <div className="io-section">
               <span className="io-label">{texts.toolOutput}</span>
@@ -252,8 +304,10 @@ export function ToolRow({ tool, diffLayout }: { tool: ToolCallView; diffLayout?:
           {shownOutput}
         </div>
       ) : null}
-      {/* 退出状态单独一行：只有非零退出码 / 信号才出现，正常退出不占位置 */}
-      {exitMeta ? (
+      {/* 退出状态单独一行：只有非零退出码 / 信号才出现，正常退出不占位置。
+          终端卡自己带状态胶囊（官方 `TerminalBlock` 的 status pill），
+          所以有卡时不再重复画这一行。 */}
+      {exitMeta && card?.kind !== "terminal" ? (
         <div className={`row-exit${tool.status === "error" ? " is-error" : ""}`}>{exitMeta}</div>
       ) : null}
       {tool.images?.length ? (
@@ -296,8 +350,9 @@ export function ThinkingRow({
   // 长思考会把正文顶出屏幕，而思考本身只要一行摘要就够——要看全文点开。
   const open = manual ?? false;
   const bodyRef = useRef<HTMLDivElement>(null);
-  // 思考是流式增长的：展开时 body 区贴住最新内容
-  useStickyBody(bodyRef, open);
+  // 思考是**流式增长**的：展开先回到顶部；只有盒子还装得下时才跟着长
+  // （装不下就不抢用户的滚动位置，见 useStickyBody 的文件头）
+  useStickyBody(bodyRef, open, streaming === true);
   // 流式期间用户划选正文时冻结渲染，否则每来一个 token 选区就没了
   const shownText = useSelectionFreeze(bodyRef, text);
   /**

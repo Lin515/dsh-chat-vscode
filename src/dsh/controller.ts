@@ -994,9 +994,16 @@ export class ChatController implements vscode.Disposable {
    * 随时可能随着域被回收而消失（切会话就是），留一份原始请求才能在切回来时复原。
    */
   private replayHeldEvents(sessionId: string, scope: SessionScope): void {
+    let replayed = 0;
     for (const [eventId, held] of [...this.heldEvents]) {
       if (held.sessionId !== sessionId) continue;
       this.deliverEventToScope(eventId, held, scope);
+      replayed += 1;
+    }
+    // 只投递，**不删条目**（见上）。回放了哪些也留一行日志：卡片「回来了没有」
+    // 与「是不是又被重折吃掉」在输出通道里能分辨（见 `interactionCards`）
+    if (replayed > 0) {
+      this.log(`[bind] 回放未结算的审批/提问 ${replayed} 条 → 会话=${sessionId}`);
     }
   }
 
@@ -2563,6 +2570,13 @@ export class ChatController implements vscode.Disposable {
       // 有域就先投进适配器（卡片立刻显示）；没域就只挂着——**不能回**：
       // 回了等于放行，请求就丢了。回放由 `bindViewToSession` 负责。
       if (scope) this.deliverEventToScope(waterfall.eventId, held, scope);
+      // 这条日志是给「问卷丢了」这类现场留证据的：四种到达（首次投递 / 重连重投递 /
+      // 窗口重载后重投递 / 另一窗口绑上时的回放）都会在输出通道留一行，能一眼看出
+      // 请求到底有没有回到宿主（用户 2026-09-15 / 09-16 两次报的都是这条链路）
+      this.log(
+        `[$events] 收到${held.kind === "approval" ? "审批" : "提问"} ${waterfall.eventId}` +
+          `（会话=${sessionId}，${scope ? "已投递到域" : "先挂起，等窗口绑上再回放"}）`,
+      );
       return;
     }
 
