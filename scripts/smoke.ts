@@ -6,7 +6,7 @@
  *   npm run smoke
  */
 // 必须排在最前面：把会合目录指到本次冒烟专用的临时目录（模块求值期读一次）。
-// 少了它，冒烟会往**用户的真实** `~/.dsh-chat/supervisors` 里起一套后台。
+// 少了它，冒烟会往**用户的真实** `~/.dsh/dsh-chat-vscode/supervisors` 里起一套后台。
 import { PROBE_SUPERVISOR_ROOT } from "./supervisorProbeEnv";
 import { SessionAdapter } from "../src/dsh/adapter";
 import { DshClient } from "../src/dsh/client";

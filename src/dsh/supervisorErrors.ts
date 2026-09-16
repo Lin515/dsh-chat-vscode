@@ -14,7 +14,7 @@
  * 所以：
  * - **文件**（`supervisor.log`）是底线：不管有没有人在看，证据都留在那儿；
  * - **socket 广播**是实时通道：有窗口连着就顺手送过去，扩展侧转发进输出通道「DSH Chat」，
- *   用户不用去翻 `~/.dsh-chat/supervisors/<分组>/supervisor.log`。
+ *   用户不用去翻 `~/.dsh/dsh-chat-vscode/supervisors/<分组>/supervisor.log`。
  *
  * 本模块**只依赖 node 内置能力与纯函数**（`encodeMessage`），可以被打进 supervisor 产物，
  * 也能在断言里直接跑。

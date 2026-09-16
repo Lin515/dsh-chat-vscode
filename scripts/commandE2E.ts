@@ -16,7 +16,7 @@
  */
 import { randomUUID } from "node:crypto";
 // 必须排在最前面：把会合目录指到本次探针专用的临时目录（模块求值期读一次）。
-// 少了它，探针会往**用户的真实** `~/.dsh-chat/supervisors` 里起一套后台
+// 少了它，探针会往**用户的真实** `~/.dsh/dsh-chat-vscode/supervisors` 里起一套后台
 // （2026-09-14 实测：命令写错时留下一个 2MB 的 supervisor.log 与一个目录）。
 import { PROBE_SUPERVISOR_ROOT } from "./supervisorProbeEnv";
 import { SessionAdapter } from "../src/dsh/adapter";

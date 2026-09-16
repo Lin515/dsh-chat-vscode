@@ -208,7 +208,8 @@
   定义收进文末的 `section.footnotes`）；公式与代码高亮**刻意不做**（要引入 KaTeX / Shiki，
   见 `THIRD-PARTY-NOTICES.md` 的取舍记录）
 - dsh 特有信息（token 用量、回合耗时）收进折叠行，默认不打扰
-- VS Code 非正常关闭留下的 dsh 残留进程会在下次启动时被识别并清理；
+- 后台由独立 supervisor 守护：VS Code 崩溃或强杀不会留下孤儿 dsh——
+  没有窗口连接时 supervisor 按空闲阈值自动收场（默认 10 秒，可配）；
   **崩溃遗留的文件锁**（`~/.dsh/*.yaml.lock`）同样会在启动前清掉——
   否则 `dsh web` 会因等锁 30 秒而整个启动失败
 
@@ -271,24 +272,19 @@ npm run watch          # 增量构建
 
 > 实测记录见 `scripts/cookieSurvivesRestart.ts`：同一端口重启后旧令牌失效、旧 cookie 仍可鉴权。
 
-### 残留进程检测
+### 后台进程的守护与收场
 
-VS Code 正常关闭时扩展会连带结束自己拉起的 `dsh web` 进程树；但崩溃或强杀时
-退出钩子不会执行，Windows 上就会留下 `node.exe` 孤儿进程。扩展每次启动服务器
-都会写一张进程租约（`~/.dsh-chat/servers/`），下次激活时扫描：宿主进程已经
-消失、而 dsh 进程还在的，确认命令行后自动清理并提示。手动入口是命令面板的
-**DSH: 清理残留进程**，**DSH: 显示诊断信息** 会列出当前发现的残留进程。
+早期版本用「进程租约 + 残留进程扫描」处理 VS Code 崩溃后的孤儿 `dsh web`；
+supervisor 架构落地后这套机制整体删除了——按命令行匹配的判定分不清「在用」与
+「没人管」，实测会把正在用的后台也报成残留，不准确的判定不如不要（见
+`src/dsh/processRegistry.ts` 文件头）。现在的口径：
 
-两个实现要点：
-
-- **判定「是不是 dsh」要起 PowerShell，所以整条链路是异步的**。Windows 上一次
-  PowerShell 启动约 1.5s，用同步调用会把扩展宿主的主线程整个卡住（启动时表现为
-  界面迟滞）。现在同步段只读租约文件，进程查询与 `taskkill` 一律 await；
-  并发的扫描共享同一次在途查询，不会因为异步化而起两倍解释器。
-- **只有确认命令行里确实是 dsh 才会杀**。拿不到命令行时按「不杀」处理——
-  那恰好是最无法排除「pid 已被系统回收」的情形，此时动手等于闭着眼睛杀进程。
-  判定写成「肯定证据才杀」（`=== true`）而不是「否定证据才跳过」（`!== false`），
-  因为后者会让「拿不到命令行」这一态漏过去。
+- **dsh 的生死由 supervisor 管**：它是独立守护进程，对 VS Code 的崩溃/强杀免疫；
+  连接数归零后按空闲阈值自动收场（默认 10 秒，可配），不会留孤儿。
+- **排查线索**是 `~/.dsh/dsh-chat-vscode/supervisors/<分组>/supervisor.log`——
+  进程没了之后的唯一事后线索，守护进程的内部异常也会实时转发进输出通道
+  「DSH Chat」（连接条的「查看日志」），不必手动翻文件。
+- 「肯定证据才动手」（`=== true`）的纪律保留在孤儿锁清理里（见下一节）。
 
 ### 崩溃遗留的文件锁
 
@@ -377,7 +373,6 @@ node scripts/bench.mjs # 开发循环耗时分解（哪一步慢）
 > 而每次查询的代价几乎全在解释器启动上（实测单查一个 pid ≈1600ms，
 > 一次查全部进程 ≈1800ms）。改成「一次取回全部进程的命令行」并取消固定 sleep、
 > 再并行化之后，`npm test` 从约 14.6s 降到约 6s。
-> 同样的问题也会拖慢扩展启动时的残留进程清理，所以这是产品与开发共同受益的改动。
 
 ### 验证手段
 
@@ -652,9 +647,11 @@ the record lives in **VS Code's own per-workspace cache** (`workspaceState`, i.e
 falls back to its empty state if its session has since been deleted or archived;
 dsh-specific stats (token usage,
 turn duration) tucked into collapsible rows;
-leftover `dsh web` processes from an unclean VS Code shutdown are detected and cleaned up on
-the next launch, and so are **orphaned writer locks** (`~/.dsh/*.yaml.lock`) — without that
-cleanup `dsh web` fails to boot after waiting 30s for a lock whose owner is long gone.
+the backend is guarded by a standalone supervisor, so a crashed or force-killed VS Code leaves no
+orphaned `dsh web` behind — once no window is connected the supervisor retires everything after
+the idle timeout (10s by default, configurable), and **orphaned writer locks**
+(`~/.dsh/*.yaml.lock`) are still cleaned before launch — without that cleanup `dsh web` fails to
+boot after waiting 30s for a lock whose owner is long gone.
 
 ## Install
 
@@ -705,22 +702,18 @@ credential store and survives restarts (30 days by default, the server's
 `cookieMaxAgeDays`). Restarting your own `dsh web` therefore does not ask for the token
 again.
 
-Leftover processes: every launch writes a process lease under `~/.dsh-chat/servers/`; on the
-next activation the extension looks for dsh processes whose owning VS Code window is gone,
-confirms the command line and kills the tree, and reports what it found. **DSH: Clean Up
-Leftover Processes** does it on demand, and **DSH: Show Diagnostics** lists what is
-currently detected.
-
-Two things worth knowing about the implementation. The whole chain is **asynchronous**,
-because deciding "is this command line dsh?" needs PowerShell and a single Windows PowerShell
-start-up costs about 1.5s — a synchronous call would freeze the extension host's main thread
-(visible as UI lag during activation), so only the lease-file reads are synchronous and every
-process query and `taskkill` is awaited; concurrent scans share one in-flight query so
-becoming async does not double the number of interpreters. And a process is killed **only when
-its command line is positively confirmed to be dsh**: when the command line cannot be read the
-extension does not kill, since that is exactly the case where the PID may already have been
-recycled, which is why the check is written as "kill on positive evidence"
-(`confirmed === true`) rather than "skip on negative evidence" (`confirmed !== false`).
+Backend guardian: an early version handled orphaned `dsh web` processes with a "process lease +
+leftover scan"; that mechanism was removed entirely when the supervisor architecture landed — a
+command-line match cannot tell "in use" from "unguarded" and in practice flagged the running
+backend too, and an unreliable verdict is worse than none (see the header of
+`src/dsh/processRegistry.ts`). The rules now: the supervisor, a standalone daemon immune to VS
+Code crashes, owns the backend's life — once no window is connected it retires everything after
+the idle timeout (10s by default), leaving no orphans. For post-mortem diagnosis read
+`~/.dsh/dsh-chat-vscode/supervisors/<group>/supervisor.log`, the only clue left after a process
+is gone; internal supervisor errors are also relayed live into the **DSH Chat** output channel
+("View Log" on the connection pill), so there is no need to open that file by hand. The "act on
+positive evidence only" discipline (`confirmed === true`) survives in the orphaned-lock cleanup
+below.
 
 Orphaned writer locks: killing `dsh` (or VS Code) mid-write leaves `~/.dsh/.credentials.yaml.lock`
 behind, because `dsh-atomic-write` creates `<file>.lock` with `wx` and relies on `finally` to

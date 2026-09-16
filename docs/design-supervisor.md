@@ -60,7 +60,7 @@
 1. supervisor 未起 → 连不上是**正常态**：按 §3.3 的"读文件 → 连 socket → 失败则拉起"走；
 2. supervisor 崩了 → socket 立刻断开（比超时快得多）→ 就地重拉，并**按端口回收遗留 dsh**（R5）；
 3. socket 残留文件（AF_UNIX 会在磁盘留下节点）→ 先探活再删，**不许盲删**（沿用 `isKillable` 的"按肯定证据"纪律）；
-4. 路径长度：Windows 的 pipe/AF_UNIX 名有长度上限 → socket 放 `~/.dsh-chat/run/<分组>/sup.sock`（短路径，不复用长哈希目录）；
+4. 路径长度：AF_UNIX 路径有长度上限 → 非 Windows 上 socket 放分组目录内（`<分组>/sup.sock`）；Windows 直接用命名管道 `\\.\pipe\dsh-chat-<分组>`（全局命名空间，与目录无关——探针隔离时须另带后缀）；
 5. **兜底**：socket 连续失败但 supervisor 进程还活着 → 退化成"读 supervisor.json 的新鲜度"再判一次，避免把自己困死。
 
 ### 3.0.1 supervisor 用哪个运行时？——**固定用 VS Code 自带的 Node**（用户 2026-09-13 定）
@@ -125,10 +125,10 @@ VS Code 窗口 3 ─┘                                          │
   创建/销毁/崩溃/重载完全免疫。这也让探针可以在**完全不启动 VS Code** 的情况下测
   （用脚本当 pinger 连接即可）。
 
-### 3.2 磁盘协议（沿用现有目录，只留会合信息）
+### 3.2 磁盘协议（只留会合信息）
 
 ```
-~/.dsh-chat/servers/<配置指纹>/            ← 配置指纹沿用现有 leaseGroupKey（按有效配置算）
+<DSH_HOME>/dsh-chat-vscode/supervisors/<配置指纹>/   ← 配置指纹沿用 leaseGroupKey（按有效配置算）；DSH_HOME 缺省 ~/.dsh
   supervisor.json                          ← 由 supervisor 原子写；扩展只读
     { "version": 1, "supervisorPid": 1234, "serverPid": 5678,
       "baseUrl": "http://127.0.0.1:20000", "token": "…",
@@ -541,7 +541,7 @@ controller 的认证链此前按 `info.owned`（"是不是本窗口拉起的"）
      出错即 `finish(undefined)`（"本轮失败"），并把异常交给 `onError`。
 
 2. **错误没人看得见**（已修）：守护进程是独立进程，它的日志在
-   `~/.dsh-chat/supervisors/<分组>/supervisor.log`——用户不会去翻。现在两级上报：
+   `~/.dsh/dsh-chat-vscode/supervisors/<分组>/supervisor.log`——用户不会去翻。现在两级上报：
    - **文件**是底线（没有窗口连着时唯一的收件人），写不进去退 stderr（此前会被静默吞掉）；
    - **socket 广播**（协议新增 `{"t":"error","kind","message"}`）→ 扩展侧转发进
      输出通道「DSH Chat」，连接条的「查看日志」就是入口。

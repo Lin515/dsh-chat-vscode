@@ -15,7 +15,8 @@
  *   supervisor.log    supervisor 与 dsh 的输出（进程没了之后的唯一线索）
  *   sup.sock          socket（Windows 上是命名管道路径 \\.\pipe\…）
  * ```
- * `<根>` 默认 `~/.dsh-chat/supervisors`；`DSH_CHAT_SUPERVISOR_DIR` 可整体改掉
+ * `<根>` 默认 `<DSH_HOME>/dsh-chat-vscode/supervisors`（`DSH_HOME` 缺省 `~/.dsh`）；
+ * `DSH_CHAT_SUPERVISOR_DIR` 可整体改掉
  * （探针与断言用：起真实 dsh 时绝不能和用户那套混在一起）。
  *
  * **Windows 上隔离必须连管道名一起隔离**：目录算出来的只是文件位置，socket 却是
@@ -24,8 +25,8 @@
  */
 import { createHash } from "node:crypto";
 import { closeSync, existsSync, linkSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join, dirname } from "node:path";
+import { dshHome } from "./dshLocks";
 
 /** 会合文件格式版本。字段不兼容时整份当"没有"。 */
 export const STATE_VERSION = 1;
@@ -80,9 +81,10 @@ export function clampIdleSec(value: unknown): number {
   return Math.min(IDLE_SEC_MAX, Math.max(IDLE_SEC_MIN, Math.round(n)));
 }
 
-/** 默认会合根目录（`supervisorRoot` 的缺省值）。 */
+/** 默认会合根目录（`supervisorRoot` 的缺省值）：扩展数据统一放在 DSH 家目录下
+ * （`$DSH_HOME/dsh-chat-vscode/`，缺省 `~/.dsh/dsh-chat-vscode/`，2026-09-16 起）。 */
 function defaultSupervisorRoot(): string {
-  return join(homedir(), ".dsh-chat", "supervisors");
+  return join(dshHome(), "dsh-chat-vscode", "supervisors");
 }
 
 /** 会合根目录（`DSH_CHAT_SUPERVISOR_DIR` 可覆盖）。 */

@@ -44,7 +44,7 @@ const DIRECTORY = supervisorDirectory(GROUP);
  *
  * 这一条是踩出来的：`supervisorProbeEnv` 只靠副作用设环境变量，而 esbuild 会把
  * "没有用到处方导出"的模块整份摇掉 —— 于是环境变量根本没设上，探针静默跑到了
- * 用户的真实目录（`~/.dsh-chat/supervisors`）里去起后台、甚至可能把用户的后台带走。
+ * 用户的真实目录（`~/.dsh/dsh-chat-vscode/supervisors`）里去起后台、甚至可能把用户的后台带走。
  * 所以这里既**用一下**那个导出（保住副作用），又把它当作硬前置条件断言。
  */
 const isolated = PROBE_SUPERVISOR_ROOT;

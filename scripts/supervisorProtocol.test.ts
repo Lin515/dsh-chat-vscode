@@ -83,7 +83,7 @@ function stateOf(patch: Record<string, unknown> = {}) {
   // supervisor 一起来就 `EADDRINUSE` 退出、无限重起（`npm run smoke` 卡住就是这个）。
   // 两条一起钉：**默认根目录的管道名一字不变**（生产零影响）、隔离目录另有一个后缀。
   {
-    const defaultRoot = join(homedir(), ".dsh-chat", "supervisors");
+    const defaultRoot = join(homedir(), ".dsh", "dsh-chat-vscode", "supervisors");
     const production = socketPathIn(join(defaultRoot, "group-a"), "group-a");
     const isolated = socketPathIn(DIR, "group-a");
     const other = socketPathIn(mkdtempSync(join(tmpdir(), "dsh-chat-sup-probe-")), "group-a");

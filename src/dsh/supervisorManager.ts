@@ -639,7 +639,7 @@ export class SupervisorManager {
         },
         onError: (kind, message) => {
           // 守护进程内部异常：它自己的日志用户在
-          // `~/.dsh-chat/supervisors/<分组>/supervisor.log`——不翻那个文件就看不见。
+          // `~/.dsh/dsh-chat-vscode/supervisors/<分组>/supervisor.log`——不翻那个文件就看不见。
           // 这里转发进输出通道「DSH Chat」，用户点连接条的「查看日志」就能看到。
           this.options.log(`[supervisor] 守护进程内部错误（${kind}）：${message}`);
         },

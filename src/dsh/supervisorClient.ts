@@ -127,7 +127,7 @@ export class SupervisorConnection {
        * 守护进程上报的**内部异常**（协议 `t:"error"`）。
        *
        * 转发进 VS Code 输出通道「DSH Chat」——守护进程自己的日志在
-       * `~/.dsh-chat/supervisors/<分组>/supervisor.log`，用户不会去翻那个文件，
+       * `~/.dsh/dsh-chat-vscode/supervisors/<分组>/supervisor.log`，用户不会去翻那个文件，
        * 而"守护进程内部出错"过去的表现就是"后台莫名不重启"。
        */
       onError?: (kind: string, message: string) => void;

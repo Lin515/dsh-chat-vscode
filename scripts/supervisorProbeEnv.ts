@@ -2,7 +2,7 @@
  * 让 supervisor 的无头探针跑在**自己的会合目录**里（与 `sharedServerProbeEnv` 同一手法）。
  *
  * 为什么必须隔离：探针会起真实 `dsh web` 与真实 supervisor。若与用户正在跑的
- * `~/.dsh-chat/supervisors` 共用，两边会互相接入、互相清理——结论不可信，还可能把
+ * `~/.dsh/dsh-chat-vscode/supervisors` 共用，两边会互相接入、互相清理——结论不可信，还可能把
  * 用户的后台带走。
  *
  * 关键：环境变量必须在**任何一次目录计算之前**设好（`supervisorRoot()` 是每次调用现读

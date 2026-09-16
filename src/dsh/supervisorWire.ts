@@ -41,7 +41,7 @@ export type ServerMessage =
   /**
    * 守护进程**捕获到内部异常**，如实上报（2026-09-15 加）。
    *
-   * 用途：守护进程是独立进程，它自己的日志在 `~/.dsh-chat/supervisors/<分组>/supervisor.log`
+   * 用途：守护进程是独立进程，它自己的日志在 `~/.dsh/dsh-chat-vscode/supervisors/<分组>/supervisor.log`
    * ——用户看不到那个文件，所以"守护进程内部出错了"此前表现为**后台莫名不重启**。
    * 这条消息让窗口把错误转发进 VS Code 输出通道「DSH Chat」。
    *
