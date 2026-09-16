@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import type { ChatState } from "../shared/chat";
 import type { HostToWebview } from "../shared/ipc";
-import { post, subscribe } from "./bridge";
+import { onHostFrame, post, subscribe } from "./bridge";
 import { Composer } from "./components/Composer";
 import { HistoryPanel } from "./components/History";
 import { Message } from "./components/Message";
 import { JobsPanel, SubagentTranscriptPanel, SubagentsPanel } from "./components/Panels";
 import { TrajectoryView } from "./components/Trajectory";
-import { Spinner, hasSelectionInside } from "./components/primitives";
+import { Spinner } from "./components/primitives";
 import { AppState, useAppState, type PanelKind } from "./state";
 import { pendingInteractionOf } from "./pendingInteraction";
 import { attachDroppedFiles, dragHasFiles } from "./dropAttach";
@@ -380,42 +380,61 @@ function NoticeBar({
 }
 
 /**
- * 展开某个节点之后，多久内的高度变化算「用户正在查看」（ms）。
+ * 自动滚动（2026-09-16 三次修订）：**不再从滚动几何里推断意愿**。
  *
- * 展开 → 重排 → ResizeObserver 回调都在同一帧里，几毫秒的事；给足余量是为了覆盖
- * 卡顿，以及「一次展开触发多处高度变化」（展开的节点里有自己会长高的卡片时，回调
- * 会来好几次）。
+ * 机制只有两条：
+ *
+ * 1. **意愿（`followRef`）只由输入决定**：距底超过阈值 **且** 近期有滚动手势
+ *    （滚轮 / 触摸 / 键盘 / 拖滚动条）才算"用户要看上面"；位置回到距底容差内、或用户
+ *    显式要最新（发消息、切会话、点胶囊）就重新贴上。
+ *
+ *    为什么不能省掉这一条：`scroll` 事件是**异步**派发的，处理器当场读到的 `scrollTop`
+ *    可能来自**已经过去的布局**（位置被浏览器夹过），而 `scrollHeight` 来自**当前布局**
+ *    ——两份不同布局的数据在同一个判断里对不上。旧实现用"`scrollTop` 变小 ⇒ 用户上滑了"
+ *    来翻贴底标志，于是浏览器自己夹一下位置（生成期间任何一次"瞬态塌缩 → 恢复"的重渲染：
+ *    过程折叠、中途插消息搬 DOM、消息整体替换…）就被误判成用户上滑；而一旦 `stick=false`
+ *    **再没有任何东西会翻回来**，症状是"最新内容留在视野下方 + 胶囊亮着 + 永不恢复"，
+ *    且**用户根本没有操作**（2026-09-16 实测复现，正是用户报的"生成中突然不贴底"，
+ *    见 `test/scroll-probe.html` 的 P1）。同一类还有端口变矮（插话排队条 / 待办面板 /
+ *    提示条：`scrollTop` 不变、连 `scroll` 事件都没有）。
+ *
+ * 2. **只要想跟，就把视口钉在底部**：任何"内容 / 端口 / 可见性可能变了"的信号都只置一个
+ *    脏标记，rAF 里**幂等**重贴一次。没有"之前是否在底部"这个记忆值，因此不存在
+ *    "某次判定被跳过之后永久停在错误一侧"（旧实现在展开后 500ms 内跳过所有跟随，窗口过后
+ *    没有任何东西再触发判定——实测点了工具行就永久不恢复，见 P3；面板隐藏期间推帧再显示
+ *    也被误判成用户上滑，见 P6）。
+ *
+ * 判据是"距底 ≤ `STICK_THRESHOLD_PX`"：内容不足一屏时 `dist ≤ 0`，天然算贴底，
+ * `scrollTop` 赋值被浏览器夹回 0，是 no-op（用户口径里"还没出现滚动条"那种情况）。
  */
-const EXPAND_READ_GRACE_MS = 500;
+const STICK_THRESHOLD_PX = 40;
+/** 手势之后多久内算"用户正在滚动"（ms）：滚轮有惯性、键盘会连发，给足余量。 */
+const GESTURE_WINDOW_MS = 400;
 
-/**
- * 自动滚动：仅当用户本来就贴在底部时才跟随，否则不打断阅读。
- *
- * 贴底判定只由「scrollTop 真正变小」（用户上滑）推翻：贴底时内容先长高、
- * 滚动事件后结算会让距离超过阈值，但那不是用户移动，不能据此脱离跟随。
- * 内容高度变化（新行、流式文本、图片加载）由 ResizeObserver 主动跟随，
- * 不依赖滚动事件时序。
- *
- * **展开某个节点 = 用户要看内容**（用户 2026-09-16 口径）：
- *
- * 1. 展开那一次高度变化**不跟随**——否则贴底时跟随立刻把 scrollTop 拉回底部，刚展开
- *    的那块被顶到视野上方（用户报的「展开工具调用后向上挤」）；
- * 2. 同时**取消贴底**——他正在看展开的内容，生成中的新输出不该把他强行拽回底部；
- *    想恢复跟随就滚回底部（`onScroll` 会重新贴上）。
- *
- * 判据是「刚点了某个**当前还没展开**的 `[aria-expanded]` 控件」：工具行、思考行、折叠
- * 按钮、注入行、问卷卡…全是这种控件，不必各自接线。**收起**（`aria-expanded` 已经是
- * `"true"`）不算「要看内容」，复制 / 分支 / 划选这类不改高度的点击也不影响跟随。
- */
-function useAutoScroll(active: boolean) {
+function useAutoScroll(active: boolean, sessionId: string | undefined) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
-  const stickRef = useRef(true);
+  /** 是否跟着最新（意愿）。置假只有一条路：手势 + 确实离底。 */
+  const followRef = useRef(true);
+  /** "内容/端口可能变了"的脏标记：任何信号只置位，rAF 里统一处理一次。 */
+  const pendingRef = useRef(true);
+  /**
+   * 滚轮与键盘各自记最近一次手势时刻。
+   *
+   * **初始值必须是 `-Infinity` 而不是 0**：`performance.now()` 在新文档里从 0 附近开始，
+   * 用 0 当"还没发生过"会让页面刚加载的头 400ms 里 `now - 0 < GESTURE_WINDOW_MS` 恒真
+   * ——那段时间任何一次离底都被当成"用户上滑"（探针 P1 就是这么红的）。
+   */
+  const wheelAtRef = useRef(-Infinity);
+  const keyAtRef = useRef(-Infinity);
+  /** 触摸、拖滚动条这类"有开始有结束"的手势：按住期间算活跃。 */
+  const gestureActiveRef = useRef(false);
+  /** 最近一次滚动位置：**只用于**从轨迹视图回来时复原阅读位置，不参与意愿判断。 */
   const lastTopRef = useRef(0);
-  /** 最近一次「展开某个节点」的时刻（`performance.now()`；0 = 还没展开过）。 */
-  const expandedAtRef = useRef(0);
   /** 是否已经挂过一次：用来区分「首次挂载」与「从轨迹视图回来」。 */
   const attachedRef = useRef(false);
+  /** 脱贴且距底超过阈值：亮出「回到最新」胶囊。 */
+  const [showJump, setShowJump] = useState(false);
 
   useLayoutEffect(() => {
     const el = scrollRef.current;
@@ -423,69 +442,159 @@ function useAutoScroll(active: boolean) {
     if (!el || !content) return;
     if (attachedRef.current) {
       // 从轨迹视图回来：这是一个**新元素**，旧元素连同滚动位置一起没了
-      // （新元素 scrollTop 一律是 0，不补一下就会把用户丢回会话开头、
-      // 而且贴底状态也没了）。按离开前的状态复原：贴着底就跟到底，
-      // 否则回到原来的位置。
-      el.scrollTop = stickRef.current
+      // （新元素 scrollTop 一律是 0，不补一下就会把用户丢回会话开头）。
+      // 按意愿复原：贴着底就跟到底，否则回到原来的阅读位置。
+      el.scrollTop = followRef.current
         ? el.scrollHeight
         : Math.min(lastTopRef.current, Math.max(0, el.scrollHeight - el.clientHeight));
     } else {
       attachedRef.current = true;
-      // 初始贴底按实际位置定（内容不足一屏即贴底）
-      stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
       lastTopRef.current = el.scrollTop;
     }
 
+    const gap = () => el.scrollHeight - el.scrollTop - el.clientHeight;
+    const gestureRecently = () =>
+      gestureActiveRef.current ||
+      performance.now() - wheelAtRef.current < GESTURE_WINDOW_MS ||
+      performance.now() - keyAtRef.current < GESTURE_WINDOW_MS;
+
+    /** 想跟就把视口钉到底（幂等）；不跟就只按实测距离同步胶囊。 */
+    const settle = () => {
+      const dist = gap();
+      if (followRef.current) {
+        if (dist > 0) el.scrollTop = el.scrollHeight;
+        setShowJump(false);
+      } else {
+        setShowJump(dist > STICK_THRESHOLD_PX);
+      }
+    };
+    /**
+     * 置脏 + 合并到下一帧。
+     *
+     * 所有信号（宿主帧、内容 RO、端口 RO、可见性）都只走这里：rAF 在绘制之前跑，
+     * 钉底不会闪；同一帧的多个信号合并成一次判定。
+     */
+    let scheduled = false;
+    const schedule = () => {
+      pendingRef.current = true;
+      if (scheduled) return;
+      scheduled = true;
+      requestAnimationFrame(() => {
+        scheduled = false;
+        if (!pendingRef.current) return;
+        pendingRef.current = false;
+        settle();
+      });
+    };
+
     const onScroll = () => {
-      const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
-      if (distance < 40) {
-        stickRef.current = true;
-      } else if (el.scrollTop < lastTopRef.current) {
-        stickRef.current = false; // 用户真的上滑了
-      }
       lastTopRef.current = el.scrollTop;
-    };
-    const onTranscriptClick = (event: MouseEvent) => {
-      const control = (event.target as Element | null)?.closest?.("[aria-expanded]");
-      // 只有**展开**（当前还不是展开态）才算「用户在查看内容」；收起 / 复制 / 分支
-      // / 点链接都不改变跟随。
-      if (!control || control.getAttribute("aria-expanded") === "true") return;
-      expandedAtRef.current = performance.now();
-    };
-    const pin = () => {
-      // 用户刚展开节点在查看：这次高度变化是他造成的（不跟随，免得把展开的那块顶上去），
-      // 并且**取消贴底**——后续生成的新输出也停在他的视野之外，不再强行拽回底部。
-      if (performance.now() - expandedAtRef.current < EXPAND_READ_GRACE_MS) {
-        stickRef.current = false;
-        return;
+      const dist = gap();
+      if (dist < STICK_THRESHOLD_PX) {
+        followRef.current = true; // 回到（近）底部即恢复跟随
+      } else if (gestureRecently()) {
+        // **只有**"用户手势 + 确实离底"才算要看上面。没有手势的离底（位置被浏览器夹走、
+        // 重排、端口变矮）一律按布局事故处理：不动意愿，下一次 settle 把它钉回底部。
+        followRef.current = false;
       }
-      // 用户正在对话区划选时不要跟着滚：会把选区内容推出视野
-      if (stickRef.current && !hasSelectionInside(el)) el.scrollTop = el.scrollHeight;
+      schedule();
     };
-    const observer = new ResizeObserver(pin);
+    const onWheel = (event: WheelEvent) => {
+      if (event.deltaY < 0) wheelAtRef.current = performance.now();
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "PageUp" || event.key === "Home" || event.key === "ArrowUp") {
+        keyAtRef.current = performance.now();
+      }
+    };
+    /** 滚动条：`clientWidth` 右边那一条（滑块与轨道都算），按下到松开算手势活跃。 */
+    const onPointerDown = (event: PointerEvent) => {
+      if (event.clientX - el.getBoundingClientRect().left > el.clientWidth) {
+        gestureActiveRef.current = true;
+      }
+    };
+    const onPointerUp = () => {
+      gestureActiveRef.current = false;
+    };
+    const onTouchStart = () => {
+      gestureActiveRef.current = true;
+    };
+    const onTouchEnd = () => {
+      gestureActiveRef.current = false;
+    };
+    const onVisibility = () => {
+      if (!document.hidden) schedule();
+    };
+
+    const observer = new ResizeObserver(schedule);
     observer.observe(content);
+    // 端口自身变矮也要重新判定：插话排队条 / 提示条 / 待办面板 / 变高的输入框都是从下面
+    // 把 `.chat-scroll` 挤矮——此时 `scrollTop` 不变、连 `scroll` 事件都没有。
+    observer.observe(el);
+    // 宿主来过一帧 = 内容可能变了（"新生成"到达的信号，不依赖 RO 时序）
+    const offFrame = onHostFrame(schedule);
     el.addEventListener("scroll", onScroll, { passive: true });
-    // 用**捕获**：React 的 onClick 挂在根节点上（冒泡阶段），这里要抢在它更新状态、
-    // 重排之前记下时刻
-    el.addEventListener("click", onTranscriptClick, true);
+    el.addEventListener("wheel", onWheel, { passive: true });
+    el.addEventListener("keydown", onKeyDown);
+    window.addEventListener("pointerdown", onPointerDown, true);
+    window.addEventListener("pointerup", onPointerUp, true);
+    el.addEventListener("touchstart", onTouchStart, { passive: true });
+    el.addEventListener("touchend", onTouchEnd, { passive: true });
+    el.addEventListener("touchcancel", onTouchEnd, { passive: true });
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("focus", schedule);
+    schedule();
     return () => {
       observer.disconnect();
+      offFrame();
       el.removeEventListener("scroll", onScroll);
-      el.removeEventListener("click", onTranscriptClick, true);
+      el.removeEventListener("wheel", onWheel);
+      el.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("pointerdown", onPointerDown, true);
+      window.removeEventListener("pointerup", onPointerUp, true);
+      el.removeEventListener("touchstart", onTouchStart);
+      el.removeEventListener("touchend", onTouchEnd);
+      el.removeEventListener("touchcancel", onTouchEnd);
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("focus", schedule);
     };
     // `active`：轨迹视图会把会话页整块卸载（元素换了一个），回来时必须重挂
   }, [active]);
 
-  return { scrollRef, contentRef };
+  // 切会话 = 要看最新：恢复贴底并回到底部（意愿不跨会话继承——上个会话滚到中间的阅读
+  // 位置对新会话没有意义，继承过去的表现是「切过来不跟最新」）。
+  // 首次挂载也会跑一次，此时内容通常还没到，scrollTop 赋值是 no-op，无副作用。
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    followRef.current = true;
+    pendingRef.current = true;
+    el.scrollTop = el.scrollHeight;
+    setShowJump(false);
+  }, [sessionId]);
+
+  /** 用户显式要最新：点胶囊、发消息（见 `App` 传给 `Composer` 的 `onFollowLatest`）。 */
+  const jumpToLatest = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    followRef.current = true;
+    pendingRef.current = true;
+    el.scrollTop = el.scrollHeight;
+    setShowJump(false);
+  }, []);
+
+  return { scrollRef, contentRef, showJump, jumpToLatest };
 }
 
 export function App() {
   const { state, dispatch } = useAppState();
   // 会话页是否在场：轨迹视图下它整块卸载，两个滚动 hook 都要能重挂
   const chatActive = state.panel !== "trajectory";
+  // 当前会话 id：进 useAutoScroll（切会话时恢复贴底、回最新）与轨迹刷新（下方）
+  const sessionId = state.session?.id;
   // 全页拖放：拖文件进会话页的任何位置都算添加附件（dragActive 时亮出浮层）
   const dragActive = usePageFileDrop();
-  const { scrollRef, contentRef } = useAutoScroll(chatActive);
+  const { scrollRef, contentRef, showJump, jumpToLatest } = useAutoScroll(chatActive, sessionId);
   // 滚到顶附近自动取更早的历史；手动按钮走同一个入口（取到轮次边界为止）
   const { loadEarlier, loading: loadingEarlier } = useHistoryPaging(scrollRef, state, chatActive);
   // 迷你模式：.app 宽度 < 220px 时收成图标条（滞回 ≥232 恢复），由 Composer 测宽后同步到这里
@@ -524,7 +633,6 @@ export function App() {
   //
   // 会话 id 也进依赖：切会话 / 新建时宿主推的是**整份快照**，而轨迹模型不在快照里
   // （只有 `listTrajectory` 现折），不跟着重取就会一直显示上一个会话的账本。
-  const sessionId = state.session?.id;
   useEffect(() => {
     if (state.panel !== "trajectory") return;
     if (!state.running) {
@@ -594,8 +702,9 @@ export function App() {
             loadingEarlier={loadingEarlier}
           />
         ) : (
-          <>
-            <div className="chat-scroll" ref={scrollRef}>
+          <div className="chat-area">
+            <div className="chat-pane">
+              <div className="chat-scroll" ref={scrollRef}>
               <div className="chat-list" ref={contentRef}>
                 {state.messages.length === 0 ? (
                   <EmptyState />
@@ -638,26 +747,37 @@ export function App() {
               </div>
             </div>
 
-            {state.todos.length ? (
-              <div className="todos">
-                {state.todos.map((todo) => (
-                  <div
-                    key={todo.id}
-                    className={`todo-item${todo.status === "completed" ? " is-completed" : ""}`}
-                  >
-                    <span className="todo-glyph">
-                      <span
-                        className={`dot ${
-                          todo.status === "completed" ? "dot-ok" : todo.status === "in_progress" ? "dot-running" : ""
-                        }`}
-                      />
-                    </span>
-                    <span className="todo-content">{todo.content}</span>
-                  </div>
-                ))}
-              </div>
+            {/* 「回到最新」胶囊：脱贴（用户上滑）后内容继续增长时的兜底入口。
+                点击回底并重新贴上（恢复跟随）；贴底时永不出现。锚在只包滚动区的
+                .chat-pane 上——待办面板在 .chat-area 里更靠下，不能让胶囊叠上去。 */}
+            {showJump ? (
+              <button type="button" className="jump-latest" onClick={jumpToLatest}>
+                <span aria-hidden="true">↓</span>
+                {texts.jumpToLatest}
+              </button>
             ) : null}
-          </>
+          </div>
+
+          {state.todos.length ? (
+            <div className="todos">
+              {state.todos.map((todo) => (
+                <div
+                  key={todo.id}
+                  className={`todo-item${todo.status === "completed" ? " is-completed" : ""}`}
+                >
+                  <span className="todo-glyph">
+                    <span
+                      className={`dot ${
+                        todo.status === "completed" ? "dot-ok" : todo.status === "in_progress" ? "dot-running" : ""
+                      }`}
+                    />
+                  </span>
+                  <span className="todo-content">{todo.content}</span>
+                </div>
+              ))}
+            </div>
+          ) : null}
+          </div>
         )}
 
         {/* 待处理的审批 / 提问**接管输入区**（官方把两者注册进 `conversation.composer` 槽）：
@@ -667,6 +787,7 @@ export function App() {
           state={state}
           pending={pendingInteractionOf(state.messages)}
           onDraft={(text) => dispatch({ type: "ui/setDraft", text })}
+          onFollowLatest={jumpToLatest}
         />
 
         {state.panel === "history" ? (

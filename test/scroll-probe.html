@@ -1,0 +1,472 @@
+<!doctype html>
+<html lang="zh-cn">
+  <head>
+    <meta charset="utf-8" />
+    <title>DSH Chat — 贴底不变量探针</title>
+    <style>
+      body { margin: 0; padding: 12px; background: #1e1e1e; color: #ddd;
+             font: 13px/1.5 Consolas, monospace; display: flex; gap: 16px; }
+      #chat { width: 420px; height: 900px; border: 1px solid #444; flex: 0 0 auto; }
+      #side { flex: 1 1 auto; min-width: 0; }
+      h1 { font-size: 14px; margin: 0 0 8px; }
+      table { border-collapse: collapse; width: 100%; }
+      td, th { border-bottom: 1px solid #333; padding: 3px 6px; text-align: left; vertical-align: top; }
+      .pass { color: #4ec9b0; } .fail { color: #f48771; font-weight: bold; }
+      .detail { color: #999; white-space: pre-wrap; }
+      #summary { margin-top: 10px; font-weight: bold; }
+    </style>
+  </head>
+  <body>
+    <!--
+      贴底不变量探针（自驱动、无依赖）。
+
+      三条不变量：
+        I1 想跟期间：最新一行必须可见（距底 <= 40px）——每一步都查；
+        I2 脱贴期间：位置绝不被程序化改动（锚点元素位移 = 0）；
+        I3 任何时刻胶囊都能一键回底。
+
+      每个场景用**真实帧形状**驱动夹具（`window.__push`，与宿主同形）；场景之间重载 iframe，
+      并且**等到新文档把首帧状态渲染出来**（否则测的是一个半初始化的界面——这坑踩过一次）。
+      用法：`npm run preview` 起静态服务，打开
+      http://127.0.0.1:8777/test/scroll-probe.html 看右侧表格；同一份结果在
+      `window.__probeResults`（供 Playwright 之类读取），失败场景带逐帧轨迹。
+
+      场景来历（前三条都是实测过的真故障）：
+        P1 位置被浏览器夹走（异步 scroll 事件 + 处理器当场读的 scrollHeight，两份布局错位）
+           ——旧机制把它误判成"用户上滑"，此后永不恢复（最新内容留在视野下方、胶囊亮着）。
+        P2 端口变矮（插话排队条 / 待办面板 / 提示条）——scrollTop 不变、连 scroll 事件都没有。
+        P3 贴底点开工具行——旧机制的时间豁免把整批增长吞掉且不恢复。
+        P4/P5 真手势的**负面**场景：必须脱贴，且脱贴后位置不被程序化改动（I2）。
+        P6 面板隐藏期间宿主照常推帧，再显示——旧机制回来时也被误判成"用户上滑"。
+        P7 正常生成对照：逐条 / 同 tick 突发 / 切会话都必须跟随。
+    -->
+    <iframe id="chat" src="./preview.html"></iframe>
+    <div id="side">
+      <h1>贴底不变量探针</h1>
+      <table><thead><tr><th>场景</th><th>结果</th><th>失败断言 / 轨迹</th></tr></thead><tbody id="rows"></tbody></table>
+      <div id="summary">运行中…</div>
+    </div>
+    <script>
+      const chat = document.getElementById("chat");
+      const rows = document.getElementById("rows");
+      const summary = document.getElementById("summary");
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+      /**
+       * 重载夹具并等到**新文档**把首帧状态渲染出来。
+       *
+       * 两个坑（都踩过，都会让断言全绿或全红但与被测代码无关）：
+       * 1. `onload` 必须在改 `src` **之前**挂上（否则可能给上一份文档的 load 事件收尸）；
+       * 2. 光等 `.chat-scroll` 存在不够——它在新文档里可能先于首帧状态出现（`messages`
+       *    还是空的），必须等到真的渲染出消息，界面才是被测的那一份。
+       */
+      async function reload() {
+        const gen = "gen" + Math.random().toString(36).slice(2);
+        const loaded = new Promise((resolve) => { chat.onload = () => resolve(); });
+        chat.src = "./preview.html?probe=" + gen;
+        await loaded;
+        const win = chat.contentWindow;
+        for (let i = 0; i < 400; i += 1) {
+          try {
+            const doc = win.document;
+            const msgs = doc.querySelectorAll(".chat-list > .msg").length;
+            if (doc.readyState === "complete" && win.location.search.includes(gen) &&
+                doc.querySelector(".chat-scroll") && msgs > 0) {
+              await sleep(200);
+              return win;
+            }
+          } catch {}
+          await sleep(25);
+        }
+        throw new Error("夹具没就绪（新文档/首帧状态）");
+      }
+
+      function ui(win) {
+        // **按需取元素**：轨迹视图往返会把会话页整块卸载/重挂，`.chat-scroll` 是**新元素**。
+        // 开局抓一次引用的话，往返之后所有断言都在一个游离节点上量（dist 恒 0），
+        // 既会假绿也会假红——探针自己踩过一次。
+        const scroller = () => win.document.querySelector(".chat-scroll");
+        const content = () => win.document.querySelector(".chat-list");
+        const history = [];
+        const settle = async () => {
+          await new Promise((r) => win.requestAnimationFrame(r));
+          await new Promise((r) => win.requestAnimationFrame(r));
+          await sleep(80);
+        };
+        const dist = () => {
+          const el = scroller();
+          return el ? Math.round(el.scrollHeight - el.scrollTop - el.clientHeight) : -1;
+        };
+        const jump = () => Boolean(win.document.querySelector(".jump-latest"));
+        const mark = (label) => {
+          const el = scroller();
+          history.push({
+            label,
+            top: el ? Math.round(el.scrollTop) : null,
+            sh: el ? Math.round(el.scrollHeight) : null,
+            ch: el ? Math.round(el.clientHeight) : null,
+            dist: dist(),
+            jump: jump(),
+          });
+        };
+        const bottom = async () => { const el = scroller(); el.scrollTop = el.scrollHeight; await settle(); };
+        const push = (frame) => win.__push(frame);
+        const appendTool = async (id, messageId = "a:3") => {
+          push({ type: "message/append", messageId, segment: { id: "probe-" + id, kind: "tool", tool: { id: "pc-" + id, name: "pwsh", title: "", detail: "探针工具 " + id, status: "running", input: '{"command":"npm run build"}', output: "", startedAt: Date.now() } } });
+          await settle();
+        };
+        /**
+         * 当前完整可见的一条消息（I2 的锚点）。
+         *
+         * 用**文本前缀当身份**、每次重新查节点：轨迹视图往返会把整棵树重挂，抓着旧节点
+         * 引用量出来的位移是假的（游离节点 rect 全 0，会得到 -视口高 这种数字）。
+         */
+        const anchor = () => {
+          const el = scroller();
+          const box = el.getBoundingClientRect();
+          const hit = [...content().querySelectorAll(":scope > .msg")].find((m) => {
+            const r = m.getBoundingClientRect();
+            return r.top >= box.top && r.bottom <= box.bottom;
+          });
+          if (!hit) return null;
+          const key = (hit.textContent ?? "").slice(0, 40);
+          return {
+            key,
+            top: () => {
+              const node = [...content().querySelectorAll(":scope > .msg")].find((m) => (m.textContent ?? "").slice(0, 40) === key);
+              if (!node) return null;
+              return Math.round(node.getBoundingClientRect().top - scroller().getBoundingClientRect().top);
+            },
+          };
+        };
+        /** 真实滚轮手势（合成 wheel 不会真的滚动，位置变化由设置 scrollTop 代演）。 */
+        const wheelUp = (deltaY = -250) => scroller().dispatchEvent(new win.WheelEvent("wheel", { deltaY, bubbles: true, cancelable: true }));
+        const dragScrollbar = () => {
+          const el = scroller();
+          const box = el.getBoundingClientRect();
+          const x = box.left + el.clientWidth + 4;
+          el.dispatchEvent(new win.PointerEvent("pointerdown", { clientX: x, clientY: box.top + 40, bubbles: true }));
+        };
+        const releaseScrollbar = () => {
+          const el = scroller();
+          const box = el.getBoundingClientRect();
+          el.dispatchEvent(new win.PointerEvent("pointerup", { clientX: box.left + el.clientWidth + 4, clientY: box.top + 40, bubbles: true }));
+        };
+        return {
+          win,
+          settle, dist, jump, mark, bottom, push, appendTool, anchor, wheelUp, dragScrollbar, releaseScrollbar, history,
+          get el() { return scroller(); },
+          get list() { return content(); },
+        };
+      }
+
+      const results = [];
+      function makeChecker() {
+        const notes = [];
+        const check = (label, ok, detail) => { notes.push({ label, ok, detail }); return ok; };
+        return { check, notes };
+      }
+
+      const SCENARIOS = [
+        {
+          name: "P1 位置被夹（无手势的布局塌缩→恢复）：必须仍贴底",
+          async run() {
+            const u = ui(await reload());
+            const { check, notes } = makeChecker(u.history);
+            await u.bottom();
+            u.mark("起始贴底");
+            check("起始贴底", u.dist() <= 40, "dist=" + u.dist());
+            // 一次与用户无关的塌缩：中间读一次几何（本仓库多处 layout 里读 scrollHeight），
+            // 位置会被浏览器夹成 0；DOM 恢复后异步 scroll 事件才派发
+            try {
+              u.list.style.display = "none";
+              void u.el.scrollHeight;
+              u.list.style.display = "";
+            } finally {
+              u.list.style.display = "";
+            }
+            await u.settle();
+            u.mark("塌缩恢复后");
+            check("恢复后仍贴底（I1）", u.dist() <= 40, "dist=" + u.dist());
+            check("不误亮胶囊（I3 反向）", u.jump() === false, "jump=" + u.jump());
+            for (let i = 0; i < 3; i += 1) await u.appendTool("p1-" + i);
+            u.mark("追加 3 条后");
+            check("后续工具行继续跟随（I1）", u.dist() <= 40, "dist=" + u.dist());
+            return { notes, history: u.history };
+          },
+        },
+        {
+          name: "P2 端口变矮（排队条/待办/提示条）：必须立刻补滚",
+          async run() {
+            const u = ui(await reload());
+            const { check, notes } = makeChecker(u.history);
+            await u.bottom();
+            const before = u.el.clientHeight;
+            u.mark("起始贴底");
+            u.push({ type: "patch", patch: { queueItems: [{ id: "pq", text: "插话：先别动配置读取那块", placement: "steering" }] } });
+            await u.settle();
+            u.mark("排队条出现后");
+            check("端口确实变矮了（前提成立）", u.el.clientHeight < before, "ch " + before + " → " + u.el.clientHeight);
+            check("变矮后仍贴底（I1）", u.dist() <= 40, "dist=" + u.dist());
+            u.push({ type: "patch", patch: { todos: [{ id: "pt", content: "待办", status: "in_progress" }] } });
+            await u.settle();
+            u.mark("待办面板出现后");
+            check("待办面板出现后仍贴底（I1）", u.dist() <= 40, "dist=" + u.dist());
+            u.push({ type: "toast", level: "warn", text: "@uploadIncomplete:report.pdf" });
+            await u.settle();
+            u.mark("提示条出现后");
+            check("提示条出现后仍贴底（I1）", u.dist() <= 40, "dist=" + u.dist());
+            await u.appendTool("p2");
+            u.mark("追加一条后");
+            check("后续工具行继续跟随（I1）", u.dist() <= 40, "dist=" + u.dist());
+            return { notes, history: u.history };
+          },
+        },
+        {
+          name: "P3 贴底点开工具行：展开那一次也必须继续跟随",
+          async run() {
+            const u = ui(await reload());
+            const { check, notes } = makeChecker(u.history);
+            await u.bottom();
+            u.mark("起始贴底");
+            const controls = [...u.list.querySelectorAll('[aria-expanded="false"]')];
+            const target = controls.find((c) => c.closest(".row")) ?? controls[0];
+            check("找得到可展开的收起控件（前提成立）", Boolean(target), target ? target.className : "none");
+            if (target) target.click();
+            await u.settle();
+            u.mark("展开后");
+            check("展开后仍贴底（I1）", u.dist() <= 40, "dist=" + u.dist());
+            for (let i = 0; i < 3; i += 1) await u.appendTool("p3-" + i);
+            u.mark("追加 3 条后");
+            check("展开后继续跟随（I1）", u.dist() <= 40, "dist=" + u.dist());
+            return { notes, history: u.history };
+          },
+        },
+        {
+          name: "P4 真手势上滑（负面）：必须脱贴且位置不被抢（I2）",
+          async run() {
+            const u = ui(await reload());
+            const { check, notes } = makeChecker(u.history);
+            await u.bottom();
+            u.mark("起始贴底");
+            u.wheelUp(-260);
+            u.el.scrollTop = Math.max(0, u.el.scrollTop - 260);
+            await u.settle();
+            u.mark("上滑后");
+            check("上滑后脱贴（I2 前提）", u.dist() > 40, "dist=" + u.dist());
+            check("胶囊亮（I3）", u.jump() === true, "jump=" + u.jump());
+            const a = u.anchor();
+            const top0 = a ? a.top() : null;
+            for (let i = 0; i < 3; i += 1) await u.appendTool("p4-" + i);
+            u.mark("脱贴后追加 3 条");
+            const top1 = a ? a.top() : null;
+            check("脱贴期间位置不被改动（I2）", top0 !== null && Math.abs(top1 - top0) <= 1, "锚点 " + top0 + " → " + top1);
+            check("脱贴期间不追最新（I1 反向）", u.dist() > 40, "dist=" + u.dist());
+            const pill = u.win.document.querySelector(".jump-latest");
+            if (pill) pill.click();
+            await u.settle();
+            u.mark("点胶囊后");
+            check("点胶囊回底（I3）", u.dist() <= 40 && !u.jump(), "dist=" + u.dist() + " jump=" + u.jump());
+            await u.appendTool("p4-after");
+            u.mark("回底后追加一条");
+            check("回底后恢复跟随（I1）", u.dist() <= 40, "dist=" + u.dist());
+            return { notes, history: u.history };
+          },
+        },
+        {
+          name: "P5 滚动条拖动（负面）：必须脱贴但不抢位置（I2）",
+          async run() {
+            const u = ui(await reload());
+            const { check, notes } = makeChecker(u.history);
+            await u.bottom();
+            u.mark("起始贴底");
+            u.dragScrollbar();
+            u.el.scrollTop = Math.max(0, u.el.scrollTop - 300);
+            await u.settle();
+            u.mark("拖动后");
+            check("拖滚动条后脱贴（I2 前提）", u.dist() > 40, "dist=" + u.dist());
+            check("胶囊亮（I3）", u.jump() === true, "jump=" + u.jump());
+            const a = u.anchor();
+            const top0 = a ? a.top() : null;
+            await u.appendTool("p5");
+            u.mark("脱贴后追加一条");
+            const top1 = a ? a.top() : null;
+            check("脱贴期间位置不被改动（I2）", top0 !== null && Math.abs(top1 - top0) <= 1, "锚点 " + top0 + " → " + top1);
+            u.releaseScrollbar();
+            return { notes, history: u.history };
+          },
+        },
+        {
+          name: "P6 面板隐藏期间推帧，再显示：回来必须贴底",
+          async run() {
+            const u = ui(await reload());
+            const { check, notes } = makeChecker(u.history);
+            await u.bottom();
+            u.mark("隐藏前贴底");
+            chat.style.display = "none";
+            await sleep(300);
+            for (let i = 0; i < 6; i += 1) u.push({ type: "message/append", messageId: "a:3", segment: { id: "p6-" + i, kind: "tool", tool: { id: "p6c-" + i, name: "pwsh", title: "", detail: "隐藏期间 " + i, status: "running", input: '{"command":"echo hi"}', output: "", startedAt: Date.now() } } });
+            u.push({ type: "message/append", messageId: "a:3", segment: { id: "p6-text", kind: "text", text: "隐藏期间生成的长正文。".repeat(80), streaming: true } });
+            await sleep(400);
+            chat.style.display = "";
+            await u.settle();
+            await sleep(250);
+            u.mark("显示回来后");
+            check("显示回来后贴底（I1）", u.dist() <= 40, "dist=" + u.dist());
+            check("不误亮胶囊（I3 反向）", u.jump() === false, "jump=" + u.jump());
+            await u.appendTool("p6-after");
+            u.mark("回来后追加一条");
+            check("回来后继续跟随（I1）", u.dist() <= 40, "dist=" + u.dist());
+            return { notes, history: u.history };
+          },
+        },
+        {
+          name: "P7 正常生成（对照）：逐条 / 突发 / 切会话都必须跟随",
+          async run() {
+            const u = ui(await reload());
+            const { check, notes } = makeChecker(u.history);
+            await u.bottom();
+            u.mark("起始贴底");
+            for (let i = 0; i < 3; i += 1) await u.appendTool("p7-" + i);
+            u.mark("逐条追加 3 条后");
+            check("逐条追加跟随（I1）", u.dist() <= 40, "dist=" + u.dist());
+            for (let i = 0; i < 12; i += 1) u.push({ type: "message/append", messageId: "a:3", segment: { id: "p7b-" + i, kind: "tool", tool: { id: "p7bc-" + i, name: "pwsh", title: "", detail: "突发 " + i, status: "running", input: '{"command":"echo hi"}', output: "", startedAt: Date.now() } } });
+            await u.settle();
+            u.mark("同 tick 突发 12 条后");
+            check("同 tick 突发 12 条跟随（I1）", u.dist() <= 40, "dist=" + u.dist());
+            u.push({ type: "patch", patch: { session: { id: "s2", title: "另一个会话", updatedAt: Date.now() } } });
+            await u.settle();
+            u.mark("切会话后");
+            check("切会话落底（I1）", u.dist() <= 40, "dist=" + u.dist());
+            return { notes, history: u.history };
+          },
+        },
+        {
+          name: "P8 生成期间的重排/折叠/切段（无手势）：必须继续跟随",
+          async run() {
+            const u = ui(await reload());
+            const { check, notes } = makeChecker();
+            await u.bottom();
+            u.mark("起始贴底");
+            // ① 中途插消息：宿主 messages/reset，把用户提问插进本轮助手消息**之前**（DOM 搬移）
+            const base = u.win.__buildState().messages;
+            const withPrompt = base.slice();
+            withPrompt.splice(withPrompt.length - 1, 0, { id: "u:late", role: "user", ts: Date.now(), text: "（迟到的本轮提问）把端口读取收敛到一处", segments: [] });
+            u.push({ type: "messages/reset", messages: withPrompt });
+            await u.settle();
+            u.mark("中途插消息后");
+            check("中途插消息后仍贴底（I1）", u.dist() <= 40, "dist=" + u.dist());
+            // ② 插话切段：新一段助手消息 a:3:2 接管后续生成
+            const tool = (id) => ({ id, kind: "tool", tool: { id: "c" + id, name: "pwsh", title: "", detail: "折叠样本 " + id, status: "ok", input: '{"command":"npm run build"}', output: "ok", startedAt: Date.now() - 900, endedAt: Date.now() } });
+            const partSegs = [];
+            for (let i = 0; i < 6; i += 1) partSegs.push(tool("p8t" + i));
+            u.push({ type: "message/upsert", message: { id: "a:3:2", role: "assistant", ts: Date.now(), streaming: true, model: "DeepSeek-V4-Pro", segments: partSegs } });
+            await u.settle();
+            u.mark("切段后");
+            check("切段（新助手消息）后仍贴底（I1）", u.dist() <= 40, "dist=" + u.dist());
+            // ③ 轮次结束折叠：同一批段落以 streaming=false 重发 → 界面把连续过程折成一枚按钮（大幅收缩）
+            u.push({ type: "message/upsert", message: { id: "a:3:2", role: "assistant", ts: Date.now(), streaming: false, model: "DeepSeek-V4-Pro", segments: partSegs.map((s) => ({ ...s })) } });
+            await u.settle();
+            u.mark("轮次结束折叠后");
+            check("折叠（大幅收缩）后仍贴底（I1）", u.dist() <= 40, "dist=" + u.dist());
+            // ④ 收缩之后继续长：仍然要跟
+            await u.appendTool("p8-after", "a:3:2");
+            u.mark("折叠后追加一条");
+            check("折叠后继续跟随（I1）", u.dist() <= 40, "dist=" + u.dist());
+            // ⑤ 流式叠加层被 durable 内容替换（先补一个段，再用更短的列表整体替换）
+            u.push({ type: "message/upsert", message: { id: "a:3:2", role: "assistant", ts: Date.now(), streaming: true, model: "DeepSeek-V4-Pro", segments: [{ id: "p8-live", kind: "text", text: "流式草稿。".repeat(40), streaming: true }] } });
+            await u.settle();
+            u.push({ type: "message/upsert", message: { id: "a:3:2", role: "assistant", ts: Date.now(), streaming: false, model: "DeepSeek-V4-Pro", segments: [{ id: "p8-final", kind: "text", text: "最终正文。" }] } });
+            await u.settle();
+            u.mark("叠加层被替换后");
+            check("叠加层被替换（收缩）后仍贴底（I1）", u.dist() <= 40, "dist=" + u.dist());
+            await u.appendTool("p8-last", "a:3:2");
+            u.mark("替换后追加一条");
+            check("替换后继续跟随（I1）", u.dist() <= 40, "dist=" + u.dist());
+            return { notes, history: u.history };
+          },
+        },
+        {
+          name: "P9 轨迹视图往返：跟随时回来必须贴底，脱贴时回来必须保持脱贴",
+          async run() {
+            const u = ui(await reload());
+            const { check, notes } = makeChecker();
+            const inTrajectory = () => Boolean(u.win.document.querySelector(".app.is-trajectory"));
+            /**
+             * 点一下轨迹开关并确认真的切过去了。
+             *
+             * 这颗按钮没有稳定标识（图标与 title 都随面板状态变），所以先按 title 提示找，
+             * 找不到就逐个试 header 里的按钮——判据是 `.app.is-trajectory` 真的翻转了，
+             * 这样文案改了也只会得到一条"前提不成立"的失败，而不是悄悄测了个假场景。
+             */
+            const toggleTrajectory = async () => {
+              const before = inTrajectory();
+              const buttons = [...u.win.document.querySelectorAll(".header button")];
+              const hint = buttons.find((b) => /轨迹|Trajectory/i.test(b.getAttribute("title") ?? ""));
+              for (const button of hint ? [hint, ...buttons.filter((b) => b !== hint)] : buttons) {
+                button.click();
+                await u.settle();
+                if (inTrajectory() !== before) return true;
+              }
+              return false;
+            };
+            await u.bottom();
+            for (let i = 0; i < 3; i += 1) await u.appendTool("p9-" + i);
+            u.mark("起始贴底");
+            check("切得进轨迹视图（前提成立）", await toggleTrajectory(), "is-trajectory=" + inTrajectory());
+            u.mark("进轨迹视图");
+            check("切得回会话视图（前提成立）", await toggleTrajectory(), "is-trajectory=" + inTrajectory());
+            u.mark("回到会话");
+            check("跟随时往返回来仍贴底（I1）", u.dist() <= 40, "dist=" + u.dist() + " jump=" + u.jump());
+            // 脱贴后往返：回来必须还在原来的阅读位置（不被抢到底部）
+            u.wheelUp(-300);
+            u.el.scrollTop = Math.max(0, u.el.scrollTop - 300);
+            await u.settle();
+            const a = u.anchor();
+            const top0 = a ? a.top() : null;
+            u.mark("上滑脱贴");
+            await toggleTrajectory();
+            await toggleTrajectory();
+            u.mark("脱贴后往返回来");
+            check("脱贴往返回来不贴底（I1 反向）", u.dist() > 40, "dist=" + u.dist());
+            const top1 = a ? a.top() : null;
+            check("脱贴往返回来位置基本不动（I2）", top0 !== null && Math.abs(top1 - top0) <= 40, "锚点 " + top0 + " → " + top1);
+            return { notes, history: u.history };
+          },
+        },
+      ];
+
+      const trace = (history) => history.map((h) => h.label + " top=" + h.top + " sh=" + h.sh + " ch=" + h.ch + " dist=" + h.dist + " jump=" + h.jump).join("\n");
+
+      async function main() {
+        for (const scenario of SCENARIOS) {
+          let notes;
+          let history = [];
+          try {
+            const out = await scenario.run();
+            notes = out.notes;
+            history = out.history ?? [];
+          } catch (error) {
+            notes = [{ label: "未跑完", ok: false, detail: String(error && error.stack ? error.stack : error) }];
+          }
+          const failed = notes.filter((n) => !n.ok);
+          results.push({ name: scenario.name, pass: failed.length === 0, notes, history });
+          const tr = document.createElement("tr");
+          const bad = failed.map((n) => n.label + "：" + n.detail).join("\n");
+          tr.innerHTML =
+            "<td>" + scenario.name + "</td>" +
+            "<td class='" + (failed.length ? "fail" : "pass") + "'>" + (failed.length ? "FAIL" : "PASS") + "</td>" +
+            "<td class='detail'>" + (failed.length ? bad + "\n" + trace(history) : notes.map((n) => n.label).join("\n")) + "</td>";
+          rows.appendChild(tr);
+        }
+        const bad = results.filter((r) => !r.pass);
+        summary.textContent = bad.length ? "✗ " + bad.length + "/" + results.length + " 个场景失败" : "✓ " + results.length + " 个场景全部通过";
+        summary.className = bad.length ? "fail" : "pass";
+        window.__probeResults = results;
+        window.__probeDone = true;
+      }
+      window.__probeDone = false;
+      main();
+    </script>
+  </body>
+</html>

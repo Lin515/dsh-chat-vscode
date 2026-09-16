@@ -185,11 +185,19 @@ export function Composer({
   state,
   pending,
   onDraft,
+  onFollowLatest,
 }: {
   state: AppState;
   /** 正在等用户回答的交互（审批 / 提问）：有它时**接管**输入区（官方 `conversation.composer` 槽）。 */
   pending?: PendingInteraction;
   onDraft: (text: string) => void;
+  /**
+   * 用户显式"要看最新"时回调（发消息 / 插话）：恢复贴底并回到底部。
+   *
+   * 官方 `useAutoScroll` 同口径（用户消息数变化即重新打开跟随）。脱贴只看**滚动手势**，
+   * 而"发出去"本身就是"我要看回答"——不该还停在旧的阅读位置。
+   */
+  onFollowLatest?: () => void;
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [modelOpen, setModelOpen] = useState(false);
@@ -368,6 +376,8 @@ export function Composer({
     // `ui-conversation.busyEnter` + 「按下的那一刻 agent 在不在跑」解析
     // （官方 resolveSubmitMode）。界面自己算会算错——它拿到的是上一帧的 running。
     post({ type: "send", text: draft.trim(), attachments: state.attachments, gesture });
+    // 发出去了就是要看回答：脱贴状态下也贴回最新（与切会话同一条规则）
+    onFollowLatest?.();
     onDraft("");
     dismissedRef.current = null;
     setTrigger(undefined);
@@ -790,7 +800,7 @@ export function Composer({
           )}
         </div>
       ) : null}
-      <Lump state={state} />
+      <Lump state={state} onFollowLatest={onFollowLatest} />
 
       {/* 运行状态：会话底部一行无边框文字；等待审批/提问时 agent 暂停，
           不该说「生成中」；队列消息与它并存（不再互相覆盖）。
@@ -1384,7 +1394,14 @@ function GoalBar({ goal }: { goal: GoalView | undefined }) {
  * 注意状态条空着不代表 agent 一定在跑：等待审批/提问时 agent 其实是暂停的，
  * 那两种情况由 `running-line` 的抑制条件负责，不在这里表达。
  */
-function Lump({ state }: { state: AppState }) {
+function Lump({
+  state,
+  onFollowLatest,
+}: {
+  state: AppState;
+  /** 把排队的那条立刻发出去 = 要看回答：与 `send` 同一条"贴回最新"规则（见 `Composer`）。 */
+  onFollowLatest?: () => void;
+}) {
   const texts = useTexts();
   if (state.queueItems.length > 0) {
     // 排队中（尚未发送）的消息逐条列出，每条可单独取消。
@@ -1408,7 +1425,11 @@ function Lump({ state }: { state: AppState }) {
                 className="queue-action"
                 disabled={!state.running}
                 title={state.running ? texts.queueSteer : texts.queueSteerUnavailable}
-                onClick={() => post({ type: "queueSteer", id: item.id })}
+                onClick={() => {
+                  post({ type: "queueSteer", id: item.id });
+                  // 把排队的那条立刻发出去 = 要看回答：同 `send`，脱贴也贴回最新
+                  onFollowLatest?.();
+                }}
               >
                 <IconSend size={12} />
               </button>

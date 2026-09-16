@@ -7,7 +7,7 @@
  * 运行：npm test
  */
 import assert from "node:assert";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const css = readFileSync(join(process.cwd(), "src", "webview", "styles", "app.css"), "utf8");
@@ -1283,22 +1283,21 @@ console.log("styles: 轨迹顶条光标 = 框选 I 字，手掌光标与 is-zoom
 }
 console.log("styles: 两颗「打开」按钮图标不同（编辑区=方框箭头 / 浏览器=地球）✓");
 
-// ---------- 37. 展开节点不抢滚动：关掉浏览器滚动锚定 + 展开即「用户在看内容」 ----------
+// ---------- 37. 贴底：意愿只由手势决定，几何只负责续跟 ----------
 //
-// 用户 2026-09-16 报：「会话滚动条在最底部时，展开工具调用会向上挤」，并明确口径：
-// **展开是用户操作、他此刻就是要看内容**——所以展开那一下视口不许被拽，并且应当
-// **取消贴底**（此后生成中的新输出也不该把他强行拽回底部）；而**没人点东西时**，贴底
-// 状态下的自动下滚必须一行都不变。
+// 用户 2026-09-16 报：「正常贴底生成着，突然就不知道为什么不贴底了」——实测四点：
+// 最新内容留在视野下方、胶囊亮着、没有任何面板/排队条变化、永不恢复要手动滚。
+// 根因：`scroll` 事件是**异步**派发的，处理器当场读的 `scrollTop` 可能来自已经过去的
+// 布局（位置被浏览器夹过），而 `scrollHeight` 来自当前布局。旧实现那条
+// 「`scrollTop` 变小 ⇒ 用户上滑了」的推断把"浏览器自己夹一下位置"误判成用户操作，
+// `stick=false` 之后没有任何东西会翻回来（探针 P1 复现；同类还有端口变矮 P2、
+// 展开豁免 P3、面板隐藏/恢复 P6）。
 //
-// 实测（Playwright 驱动 `test/preview.html`）是**两条**机制在做同一件坏事：
-//   1. **浏览器滚动锚定**（`overflow-anchor: auto`，默认值）：往视口上方插内容时它自动
-//      加大 scrollTop 以「保持可见内容不动」，刚展开的那一块就被顶到视野外——贴不贴底
-//      都一样（贴底展开 5 行工具：scrollTop +120、按钮上移 120px）；
-//   2. `useAutoScroll` 的贴底跟随：任何高度变化都 `scrollTop = scrollHeight`。
-// 修法：`.chat-scroll` 关掉锚定（顺带修好 `useHistoryPaging` 那段「浏览器保持 scrollTop
-// 不变」的假设——实测顶部插 200px 浏览器自己就加 200，补偿会叠加成双份）；跟随则把
-// 「展开」识别出来：刚点过**尚未展开**的 `[aria-expanded]` 控件 → 那一次高度变化不跟随
-// **并且取消贴底**。
+// 新机制两条，本组逐条钉住：
+//   ① 意愿（followRef）只由**输入**改：置假必须"手势 + 确实离底"同时成立；置真是
+//      位置回到容差内、或用户显式要最新（发消息 / 切会话 / 点胶囊）。几何推断不许回来。
+//   ② 想跟就把视口**幂等**钉到底：任何信号（宿主帧 / 内容 RO / 端口 RO / 可见性）
+//      只置脏标记，rAF 里合并成一次判定。没有"之前是否在底部"的记忆值。
 {
   const css = readFileSync(join(process.cwd(), "src", "webview", "styles", "app.css"), "utf8");
   const scroller = /\.chat-scroll \{[\s\S]*?\n\}/.exec(css)?.[0] ?? "";
@@ -1309,35 +1308,118 @@ console.log("styles: 两颗「打开」按钮图标不同（编辑区=方框箭�
   );
 
   const app = readFileSync(join(process.cwd(), "src", "webview", "App.tsx"), "utf8");
+  const hook = /function useAutoScroll[\s\S]*?(?=export function App)/.exec(app)?.[0] ?? "";
+  assert.ok(hook, "App.tsx 里必须有 useAutoScroll");
+
+  // ① 几何推断与时间豁免整个不许再出现
   assert.ok(
-    /closest\?\.\("\[aria-expanded\]"\)/.test(app),
-    "跟随要能认出「用户展开了某个节点」（展开控件都带 aria-expanded）",
+    !/stickRef/.test(app),
+    "不许再有 stickRef（从滚动几何推断意愿的旧记忆值）：`scroll` 事件与 `scrollHeight` 可能来自两份不同布局，它就是误判源",
   );
   assert.ok(
-    /control\.getAttribute\("aria-expanded"\) === "true"\) return;/.test(app),
-    "只有**展开**（点下去之前还不是展开态）才算「他要看内容」；收起 / 复制 / 分支都不改跟随",
+    !/EXPAND_READ_GRACE_MS|expandedAtRef|onTranscriptClick/.test(app),
+    "展开豁免（500ms 时间窗 + aria-expanded 点击捕获）必须删除：跳过之后没有任何东西会再触发判定，实测「点了工具行就永久不恢复」",
+  );
+  const followWrites = (hook.match(/followRef\.current = false/g) ?? []).length;
+  assert.strictEqual(followWrites, 1, "脱离跟随只允许一个入口");
+  assert.ok(
+    /} else if \(gestureRecently\(\)\) \{[\s\S]{0,600}?followRef\.current = false;/.test(hook),
+    "脱贴必须同时满足「近期有手势 + 确实离底」：没有手势的离底（位置被浏览器夹走 / 重排 / 端口变矮）是布局事故，不许写成脱贴",
   );
   assert.ok(
-    /if \(performance\.now\(\) - expandedAtRef\.current < EXPAND_READ_GRACE_MS\) \{\s*\n\s*stickRef\.current = false;\s*\n\s*return;\s*\n\s*\}/.test(app),
-    "展开造成的高度变化**不跟随**（免得刚展开的那块被顶上去）**并取消贴底**（用户在看内容，" +
-      "生成中的新输出不该再把他拽回底部）",
+    /const gestureRecently = \(\) =>\s*\n\s*gestureActiveRef\.current \|\|/.test(hook),
+    "手势判据要包含「按下到松开」的活跃区间（触摸、拖滚动条）",
+  );
+
+  // ② 手势来源齐备：滚轮 / 键盘 / 触摸 / 滚动条
+  assert.ok(
+    /addEventListener\("wheel"/.test(hook) && /event\.deltaY < 0/.test(hook),
+    "滚轮向上要记手势（向下滚不该脱贴）",
+  );
+  assert.ok(/PageUp[\s\S]{0,80}ArrowUp/.test(hook), "键盘上翻（PageUp/Home/ArrowUp）要记手势");
+  assert.ok(
+    /clientX - el\.getBoundingClientRect\(\)\.left > el\.clientWidth/.test(hook),
+    "拖滚动条（滑块与轨道都在 clientWidth 右边）要记手势",
+  );
+  assert.ok(/"touchstart"/.test(hook) && /"touchend"/.test(hook), "触摸要记手势");
+
+  // ③ 幂等钉底：合并到 rAF，赋值只在"想跟"分支里
+  assert.ok(/requestAnimationFrame\(\(\) => \{/.test(hook), "钉底要合并到下一帧（绘制之前跑，不闪）");
+  assert.ok(
+    /if \(followRef\.current\) \{\s*\n\s*if \(dist > 0\) el\.scrollTop = el\.scrollHeight;/.test(hook),
+    "跟随本体：想跟就把视口钉到底（幂等）",
   );
   assert.ok(
-    /el\.addEventListener\("click", onTranscriptClick, true\)/.test(app) &&
-      /el\.removeEventListener\("click", onTranscriptClick, true\)/.test(app),
-    "点击用**捕获**阶段监听（React 的 onClick 挂在根节点冒泡阶段，晚了）且要随 effect 摘掉",
+    /setShowJump\(dist > STICK_THRESHOLD_PX\)/.test(hook),
+    "胶囊按**实测距离**亮：脱贴且确实离底才亮，贴底即隐（不能出现「脱贴了没胶囊」或「没脱贴却亮着」）",
   );
-  const stickWrites = (app.match(/stickRef\.current = false/g) ?? []).length;
-  assert.strictEqual(
-    stickWrites,
-    2,
-    "脱离跟随只有两个入口：用户真的上滑（onScroll）、以及展开节点在看内容（EXPAND_READ_GRACE_MS）",
+
+  // ④ 信号面：宿主帧 + 内容 RO + 端口 RO + 可见性/焦点
+  assert.ok(
+    /onHostFrame\(schedule\)/.test(hook),
+    "宿主来过一帧就要重新判定一次——这是「新生成到达」最早、且不依赖 RO 时序的信号",
   );
   assert.ok(
-    /if \(stickRef\.current && !hasSelectionInside\(el\)\) el\.scrollTop = el\.scrollHeight;/.test(app),
-    "跟随本体不能删：**没人点东西**时贴底的新内容仍要自动下滚（用户口径里这是硬要求）",
+    /observer\.observe\(content\);/.test(hook),
+    "内容（.chat-list）长高是跟随的主入口，不能删",
+  );
+  assert.ok(
+    /observer\.observe\(el\);/.test(hook),
+    "滚动端口自身（.chat-scroll）变矮也要重新判定：插话排队条/提示条/待办面板挤矮它时不会触发 scroll 事件",
+  );
+  assert.ok(
+    /addEventListener\("visibilitychange"/.test(hook) && /addEventListener\("focus", schedule\)/.test(hook),
+    "可见性 / 焦点变化要重新判定（面板隐藏期间推帧、再显示时必须贴回底部）",
+  );
+
+  // ⑤ re-arm：切会话 / 点胶囊 / 发消息 三条都要在场
+  assert.ok(
+    /followRef\.current = true;\s*\n\s*pendingRef\.current = true;/.test(hook),
+    "切会话与点胶囊要恢复跟随（意愿不跨会话继承）",
+  );
+  const composer = readFileSync(
+    join(process.cwd(), "src", "webview", "components", "Composer.tsx"),
+    "utf8",
+  );
+  assert.ok(/onFollowLatest\?: \(\) => void;/.test(composer), "Composer 要接「用户要看最新」回调");
+  assert.ok(
+    /post\(\{ type: "send"[\s\S]{0,400}?onFollowLatest\?\.\(\)/.test(composer),
+    "发消息 = 要看最新（官方 useAutoScroll 同口径）：脱贴状态下发出去也要贴回底部",
+  );
+  assert.ok(
+    /post\(\{ type: "queueSteer"[\s\S]{0,200}?onFollowLatest\?\.\(\)/.test(composer),
+    "把排队消息立刻发出去同样是「要看最新」",
+  );
+  assert.ok(/onFollowLatest=\{jumpToLatest\}/.test(app), "App 要把回底动作接到 Composer");
+
+  // ⑥ 划选豁免按口径保持删除（贴底下滚不检查选区）
+  assert.ok(
+    !/hasSelectionInside/.test(hook),
+    "划选豁免已按口径删除：贴底下滚不做选区检查（不想被顶走就自己上滑脱贴）",
+  );
+
+  // ⑦ 不变量探针必须在仓库里：这一类故障（位置被夹 / 端口变矮 / 展开 / 隐藏恢复）
+  //    没有别的回归锁，靠人肉想场景一定漏（它已经漏了三轮）。
+  assert.ok(
+    existsSync(join(process.cwd(), "test", "scroll-probe.html")),
+    "贴底不变量探针 test/scroll-probe.html 必须在场（npm run preview 打开即可跑）",
+  );
+
+  // 「回到最新」胶囊：脱贴兜底（旧实现 stick 被打掉后无任何恢复途径）
+  assert.ok(
+    /className="jump-latest"/.test(app) && /\.jump-latest \{/.test(css),
+    "脱贴后必须有「回到最新」胶囊（界面 + 样式都在场）",
+  );
+  assert.ok(
+    /const \{ scrollRef, contentRef, showJump, jumpToLatest \} = useAutoScroll\(chatActive, sessionId\);/.test(app),
+    "App 要从 useAutoScroll 取胶囊状态与回底动作，且把 sessionId 传进去（切会话重置贴底）",
+  );
+  const texts = readFileSync(join(process.cwd(), "src", "webview", "texts.ts"), "utf8");
+  assert.ok(
+    /jumpToLatest: "回到最新"/.test(texts) && /jumpToLatest: "Jump to latest"/.test(texts),
+    "胶囊文案必须中英双语都在词典里",
   );
 }
-console.log("styles: 展开不抢滚动（关锚定 + 展开取消贴底；正常生成的下滚不变）✓");
+console.log("styles: 贴底（意愿只由手势定 + 幂等钉底；几何推断与展开豁免已除；回底胶囊）✓");
 
 console.log("\nstyles: all assertions passed");

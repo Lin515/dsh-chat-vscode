@@ -87,6 +87,23 @@
 
 /* ============================ message list ============================ */
 
+/* 会话区（消息区 + 待办）的纵向容器。 */
+.chat-area {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 滚动区的定位壳：回底胶囊 absolute 在这里，只贴**消息区**底缘——待办面板在
+   .chat-area 里更靠下，锚到 .chat-area 会让胶囊叠在待办上。 */
+.chat-pane {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+}
+
 .chat-scroll {
   flex: 1 1 auto;
   min-height: 0;
@@ -111,6 +128,34 @@
   min-width: 0;
   /* 空态容器靠 min-height:100% 居中，需要父级有确定高度 */
   min-height: 100%;
+}
+
+/* 「回到最新」胶囊：用户上滑脱贴且距底超过阈值时出现（流式输出追不上 / 看完
+   展开节点想回去，都点它一键回底并恢复跟随）。中英文案都短，nowrap 防换行；
+   固定宽度不设——窄侧栏下靠 min-width 收着，left 50% + translate 居中不溢出。 */
+.jump-latest {
+  position: absolute;
+  bottom: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 6;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px;
+  border: 1px solid var(--command-border);
+  border-radius: var(--radius-pill);
+  background: var(--editor-bg);
+  color: var(--fg);
+  font-size: var(--font-size-xs);
+  white-space: nowrap;
+  cursor: pointer;
+  box-shadow: 0 2px 10px rgb(0 0 0 / 0.4);
+}
+
+.jump-latest:hover,
+.jump-latest:focus-visible {
+  border-color: var(--command-border-focus);
 }
 
 .msg {

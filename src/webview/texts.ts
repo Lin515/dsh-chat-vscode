@@ -517,6 +517,8 @@ export interface Texts {
   historyLoading: string;
   /** 生成中不能翻历史（重折会让流式正文重来）。 */
   historyBusy: string;
+  /** 「回到最新」胶囊：脱贴后内容继续增长时的兜底入口（点击回底并恢复贴底）。 */
+  jumpToLatest: string;
   /** 用户消息过长时默认折叠：展开。 */
   userMessageExpand: string;
   /** 用户消息过长时默认折叠：收起。 */
@@ -867,6 +869,7 @@ const zh: Texts = {
   branchTag: "分支",
   historyMore: "加载全部历史",
   historyLoading: "正在加载全部历史…",
+  jumpToLatest: "回到最新",
   historyBusy: "生成中不能加载历史，请等这一轮结束",
   userMessageExpand: "展开",
   userMessageCollapse: "收起",
@@ -1209,6 +1212,7 @@ const en: Texts = {
   branchTag: "Branch",
   historyMore: "Load all history",
   historyLoading: "Loading all history…",
+  jumpToLatest: "Jump to latest",
   historyBusy: "Cannot load history while generating — wait for this turn to finish",
   userMessageExpand: "Expand",
   userMessageCollapse: "Collapse",
