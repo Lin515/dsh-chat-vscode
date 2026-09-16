@@ -359,9 +359,9 @@ export interface InjectedView {
  * 助手消息里的一个显示段。
  *
  * 外面套一层 `{ step?: number }`：**该段所属的 step**（轮内从 0 起），供轮级统计与
- * 时序判断使用。**轮级过程折叠不看 step**：它按段的**性质**分派（正文 / 提示永不折，
- * 只折思考、工具与非 system 的上下文注入），所以历史里缺 `step/start` 时同样折得对
- * （见 `webview/turnProcess.ts`）。
+ * 时序判断使用。**连续过程折叠不看 step**：一轮里只有**最后那段正文**留在流里，其余
+ * 一切折进按钮（按最后那段正文切成前后两段、各判阈值），所以历史里缺 `step/start` 时
+ * 同样折得对（见 `webview/turnProcess.ts`）。
  */
 export type Segment = { step?: number } & (
   | { kind: "text"; id: string; text: string; streaming?: boolean }

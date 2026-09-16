@@ -29,7 +29,11 @@
 - **自动载入的提示词可见**：系统提示词、上下文注入（插件注入、MCP 状态、记忆召回…）、
   项目指令（AGENTS.md）、技能目录都作为节点出现在对话里，默认收起、标注来源与字数，
   点开看全文；标签用官方词汇（「上下文注入」/「跨会话召回」/「系统提示词」），
-  并随上下文注入一起进「轮级过程」折叠（只有系统提示词那一条与中止/截断提示不折）
+  一轮结束后**只留最后那段正文（你读的回答），其余全折成一枚按钮**——按钮照官方口径报
+  **「N 次工具调用 · M 条消息 · K 个 subagent」**（连着 ≥5 次才折）——中途那些进度说明
+  也进按钮，所以折完读作「按钮 → 回答」，不会
+  出现「两段不相邻的话被并成一段」的错觉；被中断 / 报错的轮没有最终回答时，模型最后说的
+  那段话就是留下的那段
 - 运行中的节点（构建等长任务）：圆点与思考节点同样呼吸发光，展开区显示完整命令与
   **每秒跳动的实时耗时**，随时能确认它还在跑
 - 编辑类节点（`edit` / `write` / `str_replace`）展开时渲染为**结构化 diff**：
@@ -244,8 +248,8 @@ npm run watch          # 增量构建
 | `dshChat.fontSize` | `0` | 聊天界面字号（整数 px，≥8）；`0` 跟随 VS Code 的字号 |
 | `dshChat.questionBatch` | `3` | 一份问卷一次展开几道题；题目多于它时改为**依次问答**。`0` = 始终一次展开全部 |
 
-> 语言、字号与问卷题数改完**即时生效**，不需要重载窗口（它们只影响词典与几个数字，
-> 重载反而会丢掉滚动位置与展开状态）。
+> 语言、字号与问卷题数改完**即时生效**，不需要重载窗口（它们只影响
+> 词典与几个数字，重载反而会丢掉滚动位置与展开状态）。
 
 ### 外部服务器与访问令牌
 
@@ -488,7 +492,14 @@ token-by-token streaming with reasoning
 in its own collapsible block; **auto-loaded prompts are visible** — the system prompt,
 plugin injections (MCP status, memory recall …), workspace instructions (AGENTS.md) and the
 skill catalog each appear as a node labelled by origin with its size, collapsed by default
-and expandable to the full text; tool calls collapsed to one line with full arguments and
+and expandable to the full text; once a turn ends, **only its last piece of message text
+stays in the stream — everything else collapses into one button** labelled, exactly as
+upstream does, **"N tool calls · M messages · K subagents"** (five or more tool calls by
+default). Mid-turn progress
+notes go into the button too, so the collapsed transcript reads "button → answer" and two
+non-adjacent messages never look like one; when a turn is interrupted or fails there is no
+final answer, and the last thing the model said is what stays; tool calls collapsed
+to one line with full arguments and
 results on click — a `read` that covered only part of a file shows the line range after the
 filename (`…/controller.ts:100-120`), and that suffix never shrinks, so a narrow sidebar
 truncates the path rather than the range; a call that is still running (a build, say) keeps
@@ -662,8 +673,8 @@ bar is used); `dsh` runnable locally (falls back to `npx`); model credentials co
 | `dshChat.fontSize` | `0` | Chat UI font size in integer px (≥ 8); `0` follows the VS Code font size |
 | `dshChat.questionBatch` | `3` | How many questions of one questionnaire to show at once; more than this many are asked **one at a time**. `0` always shows every question at once |
 
-Language and font size apply **immediately** — no window reload, which would cost you the
-scroll position and every expanded row for no reason.
+Language, font size and question batch apply **immediately** — no window
+reload, which would cost you the scroll position and every expanded row for no reason.
 
 ## How it works
 

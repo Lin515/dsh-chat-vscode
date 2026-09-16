@@ -499,6 +499,9 @@
                   { url: "https://code.visualstudio.com/api/references/contribution-points", title: "Contribution Points | Visual Studio Code Extension API", snippet: "### Command icon specifications" },
                   { url: "https://example.com/plain-note", snippet: "没有标题时显示主机名" }
                 ] }, startedAt: now - 232500, endedAt: now - 232200 } },
+                // 中途正文：它是**折叠段的硬边界**（连续工具调用按段各折一枚按钮，
+                // 正文夹在两枚按钮之间——折叠后不会被并进最后那段回答，见 turnProcess.ts）。
+                { step: 1, id: "t1b", kind: "text", text: "根因找到了：端口被读了两遍，配置和入口各读一次。" },
                 // 编辑类节点：结构化 diff（结果 meta 里的 hunk）
                 { step: 1, id: "tool3", kind: "tool", tool: { id: "call_3", name: "edit", title: "", detail: "…/server/index.ts", status: "ok",
                   input: '{"file_path":"D:/dev/app/src/server/index.ts"}',

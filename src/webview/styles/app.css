@@ -94,6 +94,14 @@
   overflow-x: hidden;
   padding-top: 8px;
   scrollbar-gutter: stable;
+  /* **关掉浏览器的滚动锚定**（用户 2026-09-16 报的「展开工具调用后内容向上挤」）。
+     它的语义是「可见内容保持不动」：往视口上方插内容时它自动加大 scrollTop，于是刚
+     展开的那一块被顶到视野外（实测：贴底展开 5 行工具，scrollTop +120、按钮上移 120px，
+     而且**与贴不贴底无关**）。它还会和 `useHistoryPaging` 自己按高度差补的 scrollTop
+     叠加——那段代码的注释就写着「浏览器保持 scrollTop 不变」这个假设（实测不成立：
+     顶部插 200px，浏览器自己就把 scrollTop 加了 200）。
+     跟随滚动由 `useAutoScroll` 自己管（且只跟新内容），这里不需要浏览器再插手。 */
+  overflow-anchor: none;
 }
 
 .chat-list {
@@ -604,9 +612,9 @@
   color: var(--muted);
 }
 
-/* 轮级过程折叠按钮（官方 TurnProcessNodeView）：一枚无边框的文字行，
-   文案「N 次工具调用 · K 个 subagent」（只折机器噪声，正文不进按钮），
-   右侧 chevron，展开后转 180° */
+/* 连续过程折叠按钮（官方 TurnProcessNodeView）：一枚无边框的文字行，
+   文案「N 次工具调用 · K 个 subagent」，右侧 chevron，展开后转 180°。
+   一轮里最多两枚（最后那段正文之前 / 之后各一段），各自开合。 */
 .turn-process {
   display: flex;
   align-items: center;

@@ -326,18 +326,40 @@ function NoticeBar({
 }
 
 /**
+ * 展开某个节点之后，多久内的高度变化算「用户正在查看」（ms）。
+ *
+ * 展开 → 重排 → ResizeObserver 回调都在同一帧里，几毫秒的事；给足余量是为了覆盖
+ * 卡顿，以及「一次展开触发多处高度变化」（展开的节点里有自己会长高的卡片时，回调
+ * 会来好几次）。
+ */
+const EXPAND_READ_GRACE_MS = 500;
+
+/**
  * 自动滚动：仅当用户本来就贴在底部时才跟随，否则不打断阅读。
  *
  * 贴底判定只由「scrollTop 真正变小」（用户上滑）推翻：贴底时内容先长高、
  * 滚动事件后结算会让距离超过阈值，但那不是用户移动，不能据此脱离跟随。
- * 内容高度变化（新行、工具/思考展开、流式文本、图片加载）由 ResizeObserver
- * 主动跟随，不依赖滚动事件时序。
+ * 内容高度变化（新行、流式文本、图片加载）由 ResizeObserver 主动跟随，
+ * 不依赖滚动事件时序。
+ *
+ * **展开某个节点 = 用户要看内容**（用户 2026-09-16 口径）：
+ *
+ * 1. 展开那一次高度变化**不跟随**——否则贴底时跟随立刻把 scrollTop 拉回底部，刚展开
+ *    的那块被顶到视野上方（用户报的「展开工具调用后向上挤」）；
+ * 2. 同时**取消贴底**——他正在看展开的内容，生成中的新输出不该把他强行拽回底部；
+ *    想恢复跟随就滚回底部（`onScroll` 会重新贴上）。
+ *
+ * 判据是「刚点了某个**当前还没展开**的 `[aria-expanded]` 控件」：工具行、思考行、折叠
+ * 按钮、注入行、问卷卡…全是这种控件，不必各自接线。**收起**（`aria-expanded` 已经是
+ * `"true"`）不算「要看内容」，复制 / 分支 / 划选这类不改高度的点击也不影响跟随。
  */
 function useAutoScroll(active: boolean) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
   const lastTopRef = useRef(0);
+  /** 最近一次「展开某个节点」的时刻（`performance.now()`；0 = 还没展开过）。 */
+  const expandedAtRef = useRef(0);
   /** 是否已经挂过一次：用来区分「首次挂载」与「从轨迹视图回来」。 */
   const attachedRef = useRef(false);
 
@@ -369,16 +391,33 @@ function useAutoScroll(active: boolean) {
       }
       lastTopRef.current = el.scrollTop;
     };
+    const onTranscriptClick = (event: MouseEvent) => {
+      const control = (event.target as Element | null)?.closest?.("[aria-expanded]");
+      // 只有**展开**（当前还不是展开态）才算「用户在查看内容」；收起 / 复制 / 分支
+      // / 点链接都不改变跟随。
+      if (!control || control.getAttribute("aria-expanded") === "true") return;
+      expandedAtRef.current = performance.now();
+    };
     const pin = () => {
+      // 用户刚展开节点在查看：这次高度变化是他造成的（不跟随，免得把展开的那块顶上去），
+      // 并且**取消贴底**——后续生成的新输出也停在他的视野之外，不再强行拽回底部。
+      if (performance.now() - expandedAtRef.current < EXPAND_READ_GRACE_MS) {
+        stickRef.current = false;
+        return;
+      }
       // 用户正在对话区划选时不要跟着滚：会把选区内容推出视野
       if (stickRef.current && !hasSelectionInside(el)) el.scrollTop = el.scrollHeight;
     };
     const observer = new ResizeObserver(pin);
     observer.observe(content);
     el.addEventListener("scroll", onScroll, { passive: true });
+    // 用**捕获**：React 的 onClick 挂在根节点上（冒泡阶段），这里要抢在它更新状态、
+    // 重排之前记下时刻
+    el.addEventListener("click", onTranscriptClick, true);
     return () => {
       observer.disconnect();
       el.removeEventListener("scroll", onScroll);
+      el.removeEventListener("click", onTranscriptClick, true);
     };
     // `active`：轨迹视图会把会话页整块卸载（元素换了一个），回来时必须重挂
   }, [active]);

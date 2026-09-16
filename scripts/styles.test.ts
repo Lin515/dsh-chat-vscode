@@ -1283,4 +1283,61 @@ console.log("styles: 轨迹顶条光标 = 框选 I 字，手掌光标与 is-zoom
 }
 console.log("styles: 两颗「打开」按钮图标不同（编辑区=方框箭头 / 浏览器=地球）✓");
 
+// ---------- 37. 展开节点不抢滚动：关掉浏览器滚动锚定 + 展开即「用户在看内容」 ----------
+//
+// 用户 2026-09-16 报：「会话滚动条在最底部时，展开工具调用会向上挤」，并明确口径：
+// **展开是用户操作、他此刻就是要看内容**——所以展开那一下视口不许被拽，并且应当
+// **取消贴底**（此后生成中的新输出也不该把他强行拽回底部）；而**没人点东西时**，贴底
+// 状态下的自动下滚必须一行都不变。
+//
+// 实测（Playwright 驱动 `test/preview.html`）是**两条**机制在做同一件坏事：
+//   1. **浏览器滚动锚定**（`overflow-anchor: auto`，默认值）：往视口上方插内容时它自动
+//      加大 scrollTop 以「保持可见内容不动」，刚展开的那一块就被顶到视野外——贴不贴底
+//      都一样（贴底展开 5 行工具：scrollTop +120、按钮上移 120px）；
+//   2. `useAutoScroll` 的贴底跟随：任何高度变化都 `scrollTop = scrollHeight`。
+// 修法：`.chat-scroll` 关掉锚定（顺带修好 `useHistoryPaging` 那段「浏览器保持 scrollTop
+// 不变」的假设——实测顶部插 200px 浏览器自己就加 200，补偿会叠加成双份）；跟随则把
+// 「展开」识别出来：刚点过**尚未展开**的 `[aria-expanded]` 控件 → 那一次高度变化不跟随
+// **并且取消贴底**。
+{
+  const css = readFileSync(join(process.cwd(), "src", "webview", "styles", "app.css"), "utf8");
+  const scroller = /\.chat-scroll \{[\s\S]*?\n\}/.exec(css)?.[0] ?? "";
+  assert.ok(scroller, "app.css 里必须有 .chat-scroll 规则");
+  assert.ok(
+    /overflow-anchor:\s*none/.test(scroller),
+    ".chat-scroll 必须关掉浏览器滚动锚定——否则「展开」把上方内容顶到视野外（用户报的向上挤）",
+  );
+
+  const app = readFileSync(join(process.cwd(), "src", "webview", "App.tsx"), "utf8");
+  assert.ok(
+    /closest\?\.\("\[aria-expanded\]"\)/.test(app),
+    "跟随要能认出「用户展开了某个节点」（展开控件都带 aria-expanded）",
+  );
+  assert.ok(
+    /control\.getAttribute\("aria-expanded"\) === "true"\) return;/.test(app),
+    "只有**展开**（点下去之前还不是展开态）才算「他要看内容」；收起 / 复制 / 分支都不改跟随",
+  );
+  assert.ok(
+    /if \(performance\.now\(\) - expandedAtRef\.current < EXPAND_READ_GRACE_MS\) \{\s*\n\s*stickRef\.current = false;\s*\n\s*return;\s*\n\s*\}/.test(app),
+    "展开造成的高度变化**不跟随**（免得刚展开的那块被顶上去）**并取消贴底**（用户在看内容，" +
+      "生成中的新输出不该再把他拽回底部）",
+  );
+  assert.ok(
+    /el\.addEventListener\("click", onTranscriptClick, true\)/.test(app) &&
+      /el\.removeEventListener\("click", onTranscriptClick, true\)/.test(app),
+    "点击用**捕获**阶段监听（React 的 onClick 挂在根节点冒泡阶段，晚了）且要随 effect 摘掉",
+  );
+  const stickWrites = (app.match(/stickRef\.current = false/g) ?? []).length;
+  assert.strictEqual(
+    stickWrites,
+    2,
+    "脱离跟随只有两个入口：用户真的上滑（onScroll）、以及展开节点在看内容（EXPAND_READ_GRACE_MS）",
+  );
+  assert.ok(
+    /if \(stickRef\.current && !hasSelectionInside\(el\)\) el\.scrollTop = el\.scrollHeight;/.test(app),
+    "跟随本体不能删：**没人点东西**时贴底的新内容仍要自动下滚（用户口径里这是硬要求）",
+  );
+}
+console.log("styles: 展开不抢滚动（关锚定 + 展开取消贴底；正常生成的下滚不变）✓");
+
 console.log("\nstyles: all assertions passed");

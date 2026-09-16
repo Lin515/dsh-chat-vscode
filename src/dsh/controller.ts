@@ -1285,7 +1285,7 @@ export class ChatController implements vscode.Disposable {
    * 配置里改了语言、字号或问卷一次展开的题数：推给界面。
    *
    * 三者都**不需要**重载 webview：语言是纯词典切换（界面用 `locale` 选字典），
-   * 字号与题数是几个数字。重载会丢掉滚动位置与展开状态，代价不成比例。
+   * 其余是两个数字。重载会丢掉滚动位置与展开状态，代价不成比例。
    */
   refreshAppearance(): void {
     this.emitAll({

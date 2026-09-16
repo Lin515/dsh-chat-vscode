@@ -95,8 +95,9 @@ export const Message = memo(function Message({
   canBranch?: boolean;
 }) {
   const texts = useTexts();
-  // 轮级过程折叠的展开态。hooks 必须在早退之前（顺序固定）
-  const [processOpen, setProcessOpen] = useState(false);
+  // 连续过程折叠的展开态，**按段记**（键 = 那一段首段的 id）：一轮里可能有好几枚
+  // 按钮（一段连续工具调用一枚），各自开合。hooks 必须在早退之前（顺序固定）
+  const [openRuns, setOpenRuns] = useState<ReadonlySet<string>>(() => new Set());
   // 用户消息的收缩态与「内容比 5 行高」这个事实（同上，必须在早退之前）。
   // 按钮画在操作行里、气泡在它上面，所以状态只能由这里持有。
   const bubbleRef = useRef<HTMLDivElement>(null);
@@ -183,12 +184,19 @@ export const Message = memo(function Message({
     (file) => file.path,
   );
 
-  // 轮级过程折叠（官方默认的 compact 转写模式）：一轮**结束后**，把机器噪声（思考 /
-  // 工具 / 非 system 的上下文注入）折成一枚按钮，**正文与提示永不折**——中途那些
-  // 说明性的长消息也因此不会被藏起来。流式期间不折（官方要求 turnClosed）。
-  // 口径与与官方的差异见 turnProcess.ts 的文件头。
+  // 连续过程折叠：一轮**结束后**，把最后那段正文之外的一切折成按钮（中途正文也在里面），
+  // 折完读作「按钮 → 回答」——中途的话不会再跟回答贴到一起（用户 2026-09-16 最终口径）。
+  // 流式期间不折（官方要求 turnClosed）；阈值固定 5（配置项已删）。口径与官方的差异见
+  // turnProcess.ts 的文件头。
   const fold = foldTurnProcess(message.segments, !message.streaming);
-  const foldedIds = new Set(fold.folded.map((segment) => segment.id));
+
+  const toggleRun = (anchorId: string) =>
+    setOpenRuns((prev) => {
+      const next = new Set(prev);
+      if (next.has(anchorId)) next.delete(anchorId);
+      else next.add(anchorId);
+      return next;
+    });
 
   const renderSegment = (segment: Segment) => {
     switch (segment.kind) {
@@ -230,27 +238,27 @@ export const Message = memo(function Message({
     }
   };
 
-  // 折叠时：在**第一个被折住的成员**那里放一枚按钮，其余成员整段略过。
-  // 展开后按钮留在原位（官方 `turn-process` 节点就是流里的一个普通节点，成员在它
-  // 下面展开），只是成员照原顺序铺回来。
-  // 不参与折叠的段（正文、中止/截断提示、交互卡）原地保留，位置不变——折进去
+  // 每一段连续过程在它的**首段**位置放一枚按钮，其余成员略过；展开后按钮留在原位
+  // （官方 `turn-process` 节点就是流里的一个普通节点，成员在它下面展开），成员照原序
+  // 铺回来。不参与折叠的段（正文、中止/截断提示、交互卡）原地保留，位置不变——折进去
   // 就是信息损失（官方 `TURN_PROCESS_INDEPENDENT_KINDS` 同理）。
   const rendered: ReactNode[] = [];
-  let processRowPlaced = false;
   for (const segment of message.segments) {
-    const isMember = fold.foldable && foldedIds.has(segment.id);
-    if (isMember && !processRowPlaced) {
-      processRowPlaced = true;
-      rendered.push(
-        <TurnProcessRow
-          key="turn-process"
-          label={texts.turnProcessLabel(fold.counts)}
-          open={processOpen}
-          onToggle={() => setProcessOpen(!processOpen)}
-        />,
-      );
+    const run = fold.bySegment.get(segment.id);
+    if (run) {
+      const open = openRuns.has(run.anchorId);
+      if (segment.id === run.anchorId) {
+        rendered.push(
+          <TurnProcessRow
+            key={`turn-process-${run.anchorId}`}
+            label={texts.turnProcessLabel(run.counts)}
+            open={open}
+            onToggle={() => toggleRun(run.anchorId)}
+          />,
+        );
+      }
+      if (!open) continue;
     }
-    if (isMember && !processOpen) continue;
     rendered.push(renderSegment(segment));
   }
 

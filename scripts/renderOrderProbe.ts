@@ -20,6 +20,7 @@ import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { SessionAdapter } from "../src/dsh/adapter";
 import { decodeSessionLog, type SessionLogRow } from "./sessionLog";
+import { TURN_PROCESS_FOLD_THRESHOLD, foldTurnProcess } from "../src/webview/turnProcess";
 
 const SESSIONS_ROOT = join(process.env.USERPROFILE ?? process.env.HOME ?? ".", ".dsh", "sessions");
 const args = process.argv.slice(2);
@@ -145,5 +146,27 @@ console.log(`\n=== 适配器折出的段顺序（${target?.id ?? "没找到该�
 if (target) {
   target.segments.forEach((segment, index) => {
     console.log(`  [${String(index).padStart(2, " ")}] ${segmentLabel(segment as never)}`);
+  });
+}
+
+// 连续过程折叠的实算：真实一轮会折出几枚按钮、有多少工具行留在外面。
+// 阈值口径见 `src/webview/turnProcess.ts`（固定 5；单次工具永不折）。
+if (target) {
+  const fold = foldTurnProcess(target.segments, true);
+  const foldedTools = fold.runs.reduce(
+    (sum, run) => sum + run.counts.toolCalls + run.counts.subagents,
+    0,
+  );
+  const toolRows = target.segments.filter((segment) => segment.kind === "tool").length;
+  console.log(
+    `\n=== 连续过程折叠（阈值 ${TURN_PROCESS_FOLD_THRESHOLD}）===`,
+  );
+  console.log(
+    `  段 ${target.segments.length} 个（工具 ${toolRows} 行）→ 按钮 ${fold.runs.length} 枚，折进去 ${foldedTools} 次工具调用，留在外面 ${toolRows - foldedTools} 行`,
+  );
+  fold.runs.forEach((run, index) => {
+    console.log(
+      `  [按钮 ${index + 1}] 段 #${target.segments.findIndex((segment) => segment.id === run.anchorId)} 起，成员 ${run.segments.length} 段 = 工具 ${run.counts.toolCalls} + subagent ${run.counts.subagents}`,
+    );
   });
 }

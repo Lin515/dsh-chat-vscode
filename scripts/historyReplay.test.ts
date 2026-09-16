@@ -128,19 +128,25 @@ console.log("historyReplay: 重放静默（只发 hasMoreHistory + messages/rese
   assert.ok(older, `更早那一轮的助手消息要出现，实际：${messages.map((m) => m.id).join(", ")}`);
   assert.strictEqual(older!.streaming, false, "旧轮次不能被标成 streaming（那会让界面按「实时」画它）");
   const fold = foldTurnProcess(older!.segments, !older!.streaming);
-  assert.strictEqual(fold.foldable, true, "旧轮次应当可折叠（过程段都在）");
-  assert.ok(fold.folded.length > 0, "过程段要进折叠集合");
+  assert.deepStrictEqual(
+    fold.runs,
+    [],
+    "这一段只有**一次**工具调用 → 不折（用户口径：单次工具折成一枚按钮没有意义，直接显示）",
+  );
   assert.ok(
-    fold.folded.some((s) => s.kind === "tool"),
-    "工具行是折叠成员——它们正是「x 次工具调用」里的那些",
+    older!.segments.some((s) => s.kind === "tool"),
+    "工具段本身在流里（不折不等于丢）",
   );
   assert.deepStrictEqual(
-    fold.visible.filter((s): s is Extract<Segment, { kind: "text" }> => s.kind === "text").map((s) => s.text),
+    older!.segments
+      .filter((s) => !fold.bySegment.has(s.id))
+      .filter((s): s is Extract<Segment, { kind: "text" }> => s.kind === "text")
+      .map((s) => s.text),
     ["第 1 轮的过程话", "第 1 轮的答案"],
-    "折叠后正文全在（中途的过程话与答案都留），旧轮次一出现就是折叠态",
+    "这一段没折（只有一次工具调用），两段正文都在；折起来时留在流里的会是**最后**那段",
   );
 }
-console.log("historyReplay: 更早的一轮落盘即折叠态 ✓");
+console.log("historyReplay: 更早的一轮落盘即最终态 ✓");
 
 // ---------- A3. 打开一个**正在生成**的会话：running 必须照样到达界面 ----------
 //

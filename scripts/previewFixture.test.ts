@@ -5,6 +5,7 @@
 // 后者覆盖前者）或语法错都会让预览静默显示旧内容——调样式时照着假数据调，
 // 这正是文档里记过的坑（`test/preview.html` 曾编过 5 个思考档位）。
 import { readFileSync } from "node:fs";
+import { foldTurnProcess } from "../src/webview/turnProcess";
 
 const html = readFileSync("test/preview.html", "utf8");
 
@@ -101,11 +102,34 @@ const must = [
   ],
   // 轮尾「用时 X」胶囊：turn/end 才写入的 turnStats
   ["轮尾用时胶囊", () => state.messages.some((m) => (m.turnStats?.ranForMs ?? 0) > 0)],
-  // 轮级过程折叠要有 step 才能算边界：夹具里必须有带 step 的段，否则预览页永远
-  // 看不到折叠（保守降级成平铺），这条断言防止「改了折叠但预览看不出」
+  // 连续过程折叠：预览页必须真能看到折叠按钮，否则调样式时看不出效果。
+  // 判定直接跑界面侧的纯函数（不是「有没有带 step 的段」那种间接证据）：用户 2026-09-16
+  // 收敛后的口径是「**只留本轮最后一段正文**，其余全折」——a:0 里最后那段正文是脚注那段
+  // （`fn1`），它前面的一切（中途正文 t1 / t1b / t2 / c1、提示 retry1、六条上下文注入、
+  // 两条命令节点、12 次工具调用）合成一枚按钮；`fn1` 之后的图片段只有 0 次工具 → 平铺。
+  // 按钮文案要同时报出工具调用数与**中途消息条数**（用户当天又报「只显示工具调用次数」）。
+  // 夹具必须留住这个形态，否则预览页看不到折叠效果。
   [
-    "轮级过程折叠（段带 step）",
-    () => state.messages.some((m) => m.segments.some((s) => typeof s.step === "number")),
+    "连续过程折叠（只留最后一段正文 + 三段计数）",
+    () => {
+      const message = state.messages.find((m: { id: string }) => m.id === "a:0");
+      if (!message) return false;
+      const fold = foldTurnProcess(message.segments, !message.streaming);
+      const run = fold.runs[0];
+      return (
+        fold.runs.length === 1 &&
+        run?.anchorId === "r1" &&
+        run.segments.length === 27 &&
+        run.counts.toolCalls === 12 &&
+        run.counts.messages === 4 &&
+        run.counts.subagents === 0 &&
+        // 中途正文、提示、注入、命令都在按钮里
+        ["t1", "t1b", "t2", "c1", "retry1", "inj1", "cmd1"].every((id) => fold.bySegment.has(id)) &&
+        // 最后那段正文留在流里；它后面的图片段（0 次工具）平铺
+        !fold.bySegment.has("fn1") &&
+        !fold.bySegment.has("img1")
+      );
+    },
   ],
   // 认不出的内容块（官方 default 分支）：夹具要留一个，否则预览页看不到它
   ["未知内容块记录", () => state.messages.some((m) => m.segments.some((s) => s.kind === "unknown"))],

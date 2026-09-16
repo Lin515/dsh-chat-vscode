@@ -2,114 +2,142 @@ import type { Segment } from "../shared/chat";
 import { isSubagentDelegationTool } from "../shared/toolMeta";
 
 /**
- * 轮级过程折叠——官方默认的 compact 转写模式（`DEFAULT_TRANSCRIPT_VIEW_MODE =
- * "compact"`，`dsh-client-ui-chat/lib/client.js`）。
+ * 连续过程折叠——一轮里**只留最后那段正文**，其余全折进按钮。
  *
- * ## 本扩展的口径：**只折机器噪声，正文永不折**
+ * ## 唯一留下的是「最后一段正文」（用户 2026-09-16 拍板，两轮收敛）
  *
- * 折叠成员只有三类：`thinking`、`tool`、以及**非 system 的 `injected`**
- * （插件注入 / 项目指令 / 技能目录 / 运行时上下文）。**助手正文一律留在流里**，
- * 包括过程中途那些说明性的话（"Now let me implement item 9…" 这类）。理由：
+ * 折叠一开始是「整轮一枚按钮」（0513070）：噪声全藏起来，留在流里的中途正文彼此贴到
+ * 一起，看起来像被并进了最后那段回答（用户报「中间的 agent 消息会被塞进回答正文」）。
+ * 中间试过「正文是边界、按连续段各折一枚」——穿插关系对了，但一轮变成「正文／按钮／
+ * 正文／按钮」交替，读起来又碎。用户最终的判断是：**中途那些话大多是进度叙述，真有价值
+ * 的信息会在最终回答里复述**；要保证的只有一件事——**用户读的那段回答留在流里**。
  *
- * 1. 折叠的目的是压掉机器噪声；正文是模型特意写给用户看的内容，折起来就是信息损失
- *    （用户 2026-09-16 报：「中间的长消息也会被折叠掉，容易被忽略」）。
- * 2. **免阈值**：「多长算长」是会漂的判据（239 字的重要说明和 240 字的长旁白没区别），
- *    而「是不是正文」是硬的。
- * 3. **不依赖 `step`**：官方的边界靠「答案步」，那要求历史里有 `step/start`；按性质
- *    分派之后，缺 step 的历史窗口同样折得对（此前只能整轮平铺）。
+ * 所以口径收敛成一条：
  *
- * ## 与官方的**有意**差异
+ * - **边界 = 本轮最后一段 `text`**。哪怕它出现在中途（被中断 / 报错的轮没有最终回答，
+ *   那时的「最后一段正文」就是模型留下的最后的话），它也必须留在流里。
+ * - **其余一切都是成员**：中途正文、思考、工具、subagent、上下文注入（含系统提示词）、
+ *   轮级提示（已停止 / 被截断 / 重试）、交互卡、命令节点、图片块、未知内容块。
+ * - 边界把这把刀切成**前后两段**，每段按**段内工具调用次数**判阈值
+ *   （固定 5，单次工具永不折；不设配置项——没有用户需要调它的场景，
+ *   固定值让行为可预期）。
  *
- * 官方把「最后一个定稿答案步」之前的**所有**节点都折起来，**中间正文也算成员**，
- * 于是按钮读「N 次工具调用 · M 条消息 · K 个 subagent」（`processSpec` 的
- * `answerAnchorSeq` / `messageCount`，见 client.js:6756-6786、1555-1557）。我们保留
- * 它的计数与豁免口径，只把**正文**移出成员集合，按钮因此只报「N 次工具调用 ·
- * K 个 subagent」。两个副作用都是想要的：
+ * 于是折完读作「按钮 → 回答」（尾段够长时后面再跟一枚按钮）：中途正文要么在按钮里、
+ * 要么整轮平铺，不会再有「两段不相邻的话被并成一段」的错觉。
  *
- * - 中途正文（可能很长）永远不会被藏起来；
- * - 「边界之后的过程没人回收」这类缺口不存在了——官方在尾步不是答案时整轮不折，
- *   而按性质分派没有边界，被中断轮尾部的工具行照样折进按钮（用户 2026-09-16 报的
- *   「大量工具没有折叠进去」）。
+ * **失败原因不受影响**：它是 `message.error`（含 `@interrupted`），由消息尾部的
+ * NoticeRow 单独渲染，本来就不在段集合里。
  *
- * ## 保留的官方口径
- *
- * - **流式期间不折**（官方 `turnClosed`）：成员还在长，折了会闪。
- * - **豁免**（官方 `TURN_PROCESS_INDEPENDENT_KINDS` 里对得上的那几类）：中止 / 截断 /
- *   失败提示（`notice`）与**系统提示词**（`injected` 且 `sourceKind === "system"`）
- *   永不折——把「回答被截断了」折进按钮是绝不能接受的信息损失。其余上下文注入照折
- *   （官方那个集合里没有 context 一类）。
- * - 子代理派发单独计数（官方 `isSubagentDelegationTool`）。
- *
- * 纯函数、不引 React：断言见 `scripts/turnProcess.test.ts`。
+ * 分段不看 `step`（历史里缺 `step/start` 时同样折得对），流式期间不折。纯函数、
+ * 不引 React：断言见 `scripts/turnProcess.test.ts`。
  */
 
 /**
- * 这一段算不算机器噪声（= 折叠成员）。
- *
- * 判据是**段的性质**，不是它在轮里的位置：正文 / 提示 / 交互卡 / 图片 / 命令行
- * 一律留在流里（折起一张问卷卡或一条失败提示都是信息损失）。
+ * 折叠阈值（固定值）：一段过程里连着 ≥5 次工具调用（subagent 派发也算）才折成一枚
+ * 按钮。不设配置项（2026-09-17 拍板）：没有用户需要调它的场景，固定值让折叠行为
+ * 可预期。
  */
-function isNoise(segment: Segment): boolean {
-  if (segment.kind === "thinking" || segment.kind === "tool") return true;
-  if (segment.kind === "injected") return segment.injected.sourceKind !== "system";
-  return false;
+export const TURN_PROCESS_FOLD_THRESHOLD = 5;
+
+/**
+ * 本轮最后一段正文的下标（`-1` = 整轮没有正文）。
+ *
+ * 找不到正文时**没有任何边界**：整轮合成一段——这正是想要的（没有回答可读的轮，
+ * 折叠按钮就是它的全部）。
+ */
+function lastTextIndex(segments: readonly Segment[]): number {
+  for (let index = segments.length - 1; index >= 0; index -= 1) {
+    if (segments[index].kind === "text") return index;
+  }
+  return -1;
 }
 
 export interface TurnProcessCounts {
   toolCalls: number;
+  /** 折进去的**中途消息**（正文段）条数——按钮文案的第二段（官方 `messageCount`）。 */
+  messages: number;
   subagents: number;
 }
 
-export interface TurnProcessFold {
-  /** 留在流里的段（正文、提示、交互卡…按原序）。 */
-  visible: Segment[];
-  /** 折进按钮的成员（展开后按原顺序插回流里的位置）。 */
-  folded: Segment[];
+/** 一段连续过程：折成一枚按钮的那些段。 */
+export interface TurnProcessRun {
+  /**
+   * 按钮的锚点 = 这段的**首段 id**。
+   *
+   * 按钮画在流里这个位置（展开后成员从这里铺回去），同时它也是 React key 与界面
+   * 展开状态的键：段的 id 在轮内唯一且稳定，不必再造一套编号。
+   */
+  anchorId: string;
+  /** 折进这一枚按钮的段（按原序）。 */
+  segments: readonly Segment[];
+  /** 这一段的计数（按钮文案用）。 */
   counts: TurnProcessCounts;
-  /** 是否有可折的东西（false 时界面按原样平铺，不画按钮）。 */
-  foldable: boolean;
 }
 
-/** 没什么可折：原样返回。 */
-function noFold(segments: readonly Segment[]): TurnProcessFold {
-  return {
-    visible: [...segments],
-    folded: [],
-    counts: { toolCalls: 0, subagents: 0 },
-    foldable: false,
-  };
+export interface TurnProcessFold {
+  /** 可折的段（按出现顺序，最多两段：最后那段正文之前 / 之后）。没折的段不在这里。 */
+  runs: readonly TurnProcessRun[];
+  /** 段 id → 它所属的可折段；查不到 = 这一段留在流里。 */
+  bySegment: ReadonlyMap<string, TurnProcessRun>;
+}
+
+const NOTHING: TurnProcessFold = { runs: [], bySegment: new Map() };
+
+/** 一段过程从零开始计数（三段：工具调用 / 中途消息 / subagent，官方口径）。 */
+function emptyCounts(): TurnProcessCounts {
+  return { toolCalls: 0, messages: 0, subagents: 0 };
 }
 
 /**
- * 一轮的显示段 → 「哪些折起来、哪些留着」。
+ * 一轮的显示段 → 「哪几段折起来、各自折成一枚按钮」。
  *
  * @param segments 该轮助手消息的全部显示段（按到达顺序）。
- * @param closed 这一轮是否已结束（官方只在 `turnClosed` 时折叠；流式期间不折）。
+ * @param closed 这一轮是否已结束（流式期间**不折**：成员还在长，折了会闪）。
  */
-export function foldTurnProcess(
-  segments: readonly Segment[],
-  closed: boolean,
-): TurnProcessFold {
-  if (!closed) return noFold(segments);
+export function foldTurnProcess(segments: readonly Segment[], closed: boolean): TurnProcessFold {
+  if (!closed) return NOTHING;
+  const at = TURN_PROCESS_FOLD_THRESHOLD;
+  const keep = lastTextIndex(segments);
 
-  const visible: Segment[] = [];
-  const folded: Segment[] = [];
-  const counts: TurnProcessCounts = { toolCalls: 0, subagents: 0 };
+  const runs: TurnProcessRun[] = [];
+  const bySegment = new Map<string, TurnProcessRun>();
+  /** 正在积累的这一段（遇到最后那段正文就结算）。 */
+  let pending: Segment[] = [];
+  let counts: TurnProcessCounts = emptyCounts();
 
-  for (const segment of segments) {
-    if (!isNoise(segment)) {
-      visible.push(segment);
+  const settle = () => {
+    if (!pending.length) return;
+    // subagent 派发也是工具调用：一样算进阈值（只在按钮文案里分开报）
+    if (counts.toolCalls + counts.subagents >= at) {
+      const run: TurnProcessRun = { anchorId: pending[0].id, segments: pending, counts };
+      runs.push(run);
+      for (const segment of pending) bySegment.set(segment.id, run);
+    }
+    pending = [];
+    counts = emptyCounts();
+  };
+
+  for (let index = 0; index < segments.length; index += 1) {
+    const segment = segments[index];
+    // 唯一留在流里的段：本轮最后那段正文
+    if (index === keep) {
+      settle();
       continue;
     }
-    folded.push(segment);
+    pending.push(segment);
     countInto(counts, segment);
   }
+  settle();
 
-  if (!folded.length) return noFold(segments);
-  return { visible, folded, counts, foldable: true };
+  return { runs, bySegment };
 }
 
 function countInto(counts: TurnProcessCounts, segment: Segment): void {
+  if (segment.kind === "text") {
+    // 中途消息（最后那段正文是边界、不进成员，所以这里数到的都是「折起来的过程话」）
+    counts.messages += 1;
+    return;
+  }
   if (segment.kind !== "tool") return;
   // 子代理派发单独计数（官方 `isSubagentDelegationTool`）
   if (isSubagentDelegationTool(segment.tool.name)) counts.subagents += 1;
