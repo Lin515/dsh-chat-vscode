@@ -93,13 +93,15 @@
     根本读不到、`@path` 的语义被抹掉、队列「取回重新编辑」退化成几百行文件内容
 - 回形针按钮是**通用文件入口**，按内容分派；读不出来的（选择到读取之间被删的竞态）
   与「模型不收图片」这两种情形才把带引号的路径插到光标处，并弹条说明
-- **拖放文件到输入框**即可加入附件：界面只能拿到**字节和文件名**（VS Code 不给
+- **拖放文件到会话页任何位置**都能加入附件（整页都是投放目标，拖到消息区也行；
+  拖拽期间整页亮出「松开即添加」浮层）：界面只能拿到**字节和文件名**（VS Code 不给
   webview 拖拽资源的路径，`File.path` 自 Electron 32 起也已移除），所以拖放走
   base64 字节上传，单文件上限 8 MB（这条上限只关于 webview 那条通道；回形针那条路
   是宿主直读 + 原始字节 POST，不设限）。
-  **注意：从 VS Code 资源管理器往外拖时，要按住 `Shift` 才能拖进 webview** ——
-  webview 是 iframe，拖拽期间被 VS Code 用 `pointer-events` 挡住，不按 `Shift`
-  时事件根本到不了界面（文件会在编辑器里被打开）。从系统资源管理器拖不受此限。
+  **注意：拖入 webview 必须按住 `Shift`** —— webview 是 iframe，VS Code 在主窗口
+  上盯着拖拽，没按 `Shift` 就用 `pointer-events` 挡住 iframe，事件根本到不了界面
+  （文件会在编辑器里被打开）。**从系统资源管理器拖同样受影响**：只要拖拽路径扫过
+  任何 VS Code 界面（标题栏、活动栏、视图头……），阻塞就会激活。
   目录不能拖放（读不出字节），请用回形针或 `@` 引用
 - 目录单独入口（命令面板「添加文件夹到对话」或资源管理器右键文件夹）：
   VS Code 的文件对话框在 Windows/Linux 上**不能同时**选文件与目录，同时开只会
@@ -441,11 +443,13 @@ npm run preview        # 打开 http://127.0.0.1:8777/test/preview.html
   队列项」则**不稳定**（同一脚本两次运行得到 0/3 与 3/3 两种相反结果）。
   所以本扩展仍是「摘空队列 → cancel → 等空闲 → 按原序重发」：它让 ESC 的行为**由客户端
   决定**，不依赖服务端那个测不准的分支。这是实测与契约冲突时的取舍，不是遗漏。
-- **从 VS Code 资源管理器拖文件进输入框必须先按 `Shift`**：webview 是 iframe，
-  拖拽期间 VS Code 用 `pointer-events` 挡住它，不按 `Shift` 事件到不了界面。
-  这是 VS Code 的既有行为（`workbench.desktop.main.js` 的 `windowDidDragStart`），
-  本扩展无法绕过；从系统资源管理器拖不受此限。拖放按字节上传，单文件上限 8 MB，
-  目录不支持（读不出字节）。
+- **拖文件进 webview 必须先按 `Shift`**：webview 是 iframe，VS Code 在主窗口 DOM
+  上监听 drag/dragover，没按 `Shift` 就给 iframe 挂 `pointer-events: none`
+  （`workbench.desktop.main.js` 的 `windowDidDragStart`），事件到不了界面。
+  这是 VS Code 的既有行为（VS Code 1.138 逐字核对过，没有按 webview 的豁免开关），
+  本扩展无法绕过；**从系统资源管理器拖同样受影响**——监听在主窗口上，拖拽路径扫过
+  任何 workbench 界面就激活阻塞（「从资源管理器拖不受限」只在路径全程不碰这些界面
+  时成立，别指望）。拖放按字节上传，单文件上限 8 MB，目录不支持（读不出字节）。
 
 ## 归属与许可
 
@@ -560,16 +564,19 @@ the caret** rather than becoming an attachment chip whose contents could never b
 images go that way too when the active model takes no image input. Selections and
 drag-and-drop land in the same attachment list; the binary/non-UTF-8 test is the same one
 dsh's own `read` tool applies (a NUL byte in the first 8 KB means binary, otherwise strict
-UTF-8 is required). **Dropping files onto the composer** attaches them: the webview can only
-ever get the **bytes and the file name** (VS Code never hands a webview the paths of dragged
-resources, and `File.path` was removed in Electron 32), so a drop uploads base64 bytes, with
-a 8 MB per-file limit (use the paperclip for anything larger — that path reads from disk in
-the extension host). **Dragging from the VS Code Explorer requires holding `Shift`**: the
-webview is an iframe and VS Code blocks its pointer events for the duration of the drag
-(`windowDidDragStart` in `workbench.desktop.main.js`), so without `Shift` the events never
-arrive and the file opens in the editor instead. Drags from the OS file manager are not
-affected. Folders cannot be dropped (their bytes cannot be read) — use the paperclip or an
-`@` reference. Folders have their own entry point (the **DSH: Add Folder to Chat**
+UTF-8 is required). **Dropping files anywhere on the session page** attaches them (the whole
+page is a drop target, with a "release to attach" overlay while dragging): the webview can
+only ever get the **bytes and the file name** (VS Code never hands a webview the paths of
+dragged resources, and `File.path` was removed in Electron 32), so a drop uploads base64
+bytes, with a 8 MB per-file limit (use the paperclip for anything larger — that path reads
+from disk in the extension host). **Dragging into the webview requires holding `Shift`**:
+the webview is an iframe and VS Code blocks its pointer events for the duration of any drag
+unless `Shift` is held (`windowDidDragStart` in `workbench.desktop.main.js`), so without
+`Shift` the events never arrive and the file opens in the editor instead. This applies to
+drags from the OS file manager too: the monitor sits on the main window, so the block
+engages as soon as the drag passes over any workbench surface (title bar, activity bar,
+view headers…). Folders cannot be dropped (their bytes cannot be read) — use the paperclip
+or an `@` reference. Folders have their own entry point (the **DSH: Add Folder to Chat**
 command, or right-clicking a folder in the Explorer), because VS Code's file dialog
 **cannot** be both a file and a folder selector on Windows/Linux — enabling both silently
 degenerates into a folder picker and filters every file out. Model and thinking-effort

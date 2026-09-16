@@ -136,14 +136,33 @@ console.log("attachments: 目录探测 / id / 错误上报 ✓");
 
   // 上限：界面按它拦掉超大文件（读了再 base64 是白烧内存），宿主侧同值
   assert.strictEqual(DROP_BYTES_LIMIT, 8 * 1024 * 1024, "拖放上限 8 MB");
+  // 拖放逻辑在 dropAttach.ts（App 的全页监听用它），不在 Composer——
+  // Composer 里若再留一份 attachBytes，同一份文件会被接两次、出两条附件
   const composer = readFileSync(join(process.cwd(), "src", "webview", "components", "Composer.tsx"), "utf8");
   assert.ok(
-    /const DROP_BYTES_LIMIT = 8 \* 1024 \* 1024;/.test(composer),
+    !/post\(\{\s*type:\s*"attachBytes"/.test(composer),
+    "Composer 里不得再发 attachBytes：全页统一由 App 的 window 监听接 drop，留在输入框会双发",
+  );
+  const dropAttach = readFileSync(join(process.cwd(), "src", "webview", "dropAttach.ts"), "utf8");
+  assert.ok(
+    /const DROP_BYTES_LIMIT = 8 \* 1024 \* 1024;/.test(dropAttach),
     "界面侧的上限必须与宿主同值：不一致时要么白读，要么发过去被拒",
   );
   assert.ok(
-    /post\(\{ type: "attachBytes", files: payload, unreadable, tooLarge \}\)/.test(composer),
+    /post\(\{ type: "attachBytes", files: payload, unreadable, tooLarge \}\)/.test(dropAttach),
     "拖放结果必须走 attachBytes（只有字节，没有路径）",
+  );
+  // 全页接取的钉子：dragover/drop 的 preventDefault 是「本页接受投放」的声明，
+  // 缺了浏览器走默认行为（导航到文件）= VS Code 把文件在编辑器里打开
+  const app = readFileSync(join(process.cwd(), "src", "webview", "App.tsx"), "utf8");
+  assert.ok(
+    /window\.addEventListener\("dragover", onDragOver\)/.test(app) &&
+      /window\.addEventListener\("drop", onDrop\)/.test(app),
+    "拖放监听必须挂 window（整页都是 drop 目标）——只挂输入框时拖到消息区会被 VS Code 打开文件",
+  );
+  assert.ok(
+    /const onDrop = \(event: DragEvent\) => \{\s*\n\s*if \(!dragHasFiles\(event\)\) return;\s*\n\s*event\.preventDefault\(\);/.test(app),
+    "onDrop 必须 preventDefault（且只拦文件拖拽）：文本拖拽要放行给 textarea 的原生插入",
   );
   console.log("attachments: 拖放字节归类 ✓");
 }

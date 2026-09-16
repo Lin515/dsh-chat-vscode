@@ -10,8 +10,10 @@ import { TrajectoryView } from "./components/Trajectory";
 import { Spinner, hasSelectionInside } from "./components/primitives";
 import { AppState, useAppState, type PanelKind } from "./state";
 import { pendingInteractionOf } from "./pendingInteraction";
+import { attachDroppedFiles, dragHasFiles } from "./dropAttach";
 import {
   IconAgents,
+  IconAttach,
   IconChat,
   IconGlobe,
   IconHistory,
@@ -292,6 +294,58 @@ function useHistoryPaging(scrollRef: React.RefObject<HTMLDivElement>, state: App
 }
 
 /**
+ * 全页拖放接取：拖文件进会话页 = 添加附件。
+ *
+ * 之前只有输入框接 drop，拖到消息区（页面的大头）没有任何 drop 目标，浏览器走
+ * 默认行为——导航到被拖的文件，在 VS Code 里表现为「文件被打开」而不是附件。
+ * 现在整页都是目标：**dragover 的 preventDefault 就是「本页接受文件投放」的声明**，
+ * 缺了它松手必被 VS Code 捕获；drop 统一走 `attachDroppedFiles`（字节上传，
+ * 见 `dropAttach.ts`）。
+ *
+ * 只拦**文件**拖拽（`dragHasFiles`）：文本拖拽不 preventDefault，textarea 的
+ * 原生插入照常工作。overlay 显隐用 enter/leave 计数（元素间移动会成对触发这对
+ * 事件，计数不闪）；drop 后清零。监听挂在 window 上且只注册一次。
+ */
+function usePageFileDrop() {
+  const [dragActive, setDragActive] = useState(false);
+  useEffect(() => {
+    let depth = 0;
+    const onDragEnter = (event: DragEvent) => {
+      if (!dragHasFiles(event)) return;
+      depth += 1;
+      setDragActive(true);
+    };
+    const onDragOver = (event: DragEvent) => {
+      if (!dragHasFiles(event)) return;
+      event.preventDefault();
+    };
+    const onDragLeave = (event: DragEvent) => {
+      if (!dragHasFiles(event)) return;
+      depth = Math.max(0, depth - 1);
+      if (depth === 0) setDragActive(false);
+    };
+    const onDrop = (event: DragEvent) => {
+      if (!dragHasFiles(event)) return;
+      event.preventDefault();
+      depth = 0;
+      setDragActive(false);
+      attachDroppedFiles([...(event.dataTransfer?.files ?? [])]);
+    };
+    window.addEventListener("dragenter", onDragEnter);
+    window.addEventListener("dragover", onDragOver);
+    window.addEventListener("dragleave", onDragLeave);
+    window.addEventListener("drop", onDrop);
+    return () => {
+      window.removeEventListener("dragenter", onDragEnter);
+      window.removeEventListener("dragover", onDragOver);
+      window.removeEventListener("dragleave", onDragLeave);
+      window.removeEventListener("drop", onDrop);
+    };
+  }, []);
+  return dragActive;
+}
+
+/**
  * 一次性轻提示条（复制成功、设置已保存、图片被跳过…）。
  *
  * 宿主用语言中立的 `@key:arg` 传文案，这里按当前语言翻译（`resolveText`）。
@@ -429,6 +483,8 @@ export function App() {
   const { state, dispatch } = useAppState();
   // 会话页是否在场：轨迹视图下它整块卸载，两个滚动 hook 都要能重挂
   const chatActive = state.panel !== "trajectory";
+  // 全页拖放：拖文件进会话页的任何位置都算添加附件（dragActive 时亮出浮层）
+  const dragActive = usePageFileDrop();
   const { scrollRef, contentRef } = useAutoScroll(chatActive);
   // 滚到顶附近自动取更早的历史；手动按钮走同一个入口（取到轮次边界为止）
   const { loadEarlier, loading: loadingEarlier } = useHistoryPaging(scrollRef, state, chatActive);
@@ -643,6 +699,18 @@ export function App() {
         ) : null}
 
         {state.panel === "jobs" ? <JobsPanel jobs={state.jobs} onClose={closePanel} /> : null}
+
+        {/* 全页拖放浮层：文件拖进会话页时整页亮起「松手即添加」。aria-hidden 的
+            纯视觉层，pointer-events: none（不能自己变成 drop 目标，事件要落到
+            页面上、冒泡到 window 统一处理，见 usePageFileDrop）。 */}
+        {dragActive ? (
+          <div className="page-drop-overlay" aria-hidden>
+            <div className="page-drop-pill">
+              <IconAttach size={12} />
+              {texts.dropHint}
+            </div>
+          </div>
+        ) : null}
       </div>
     </TextsContext.Provider>
   );

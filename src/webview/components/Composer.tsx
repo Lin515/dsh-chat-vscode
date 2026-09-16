@@ -43,29 +43,8 @@ import { fill, resolveText, useTexts } from "../texts";
 import { BAR_ORDER, pickVariants, type ToolbarVariant } from "../toolbarFit";
 
 /**
- * 拖放的字节上限，与宿主 `attachments.ts` 的 `DROP_BYTES_LIMIT` 同值。
- *
- * 界面侧先按它拦一道：超限的**根本不读**（读了再 base64 是白烧内存），
- * 只把名字报给宿主去提示。两处常量必须一致——不一致时界面要么白读，
- * 要么把宿主会拒的东西发过去。
+ * 权限模式的展示定义：图标固定用盾牌（WebUI 未提供专用图标），文案与 WebUI 对齐。
  */
-const DROP_BYTES_LIMIT = 8 * 1024 * 1024;
-
-/** 一份 `File` 的字节 → base64（`postMessage` 两端的序列化都吃不掉字符串）。 */
-function fileToBase64(file: File): Promise<string> {
-  return file.arrayBuffer().then((buffer) => {
-    const bytes = new Uint8Array(buffer);
-    let binary = "";
-    // 分块拼接：一次 apply 传十万级参数会栈溢出
-    const CHUNK = 0x8000;
-    for (let i = 0; i < bytes.length; i += CHUNK) {
-      binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
-    }
-    return btoa(binary);
-  });
-}
-
-/** 权限模式的展示定义：图标固定用盾牌（WebUI 未提供专用图标），文案与 WebUI 对齐。 */
 function permissionMeta(
   texts: ReturnType<typeof useTexts>,
 ): { id: string; label: string; desc: string; icon: ReactNode }[] {
@@ -215,7 +194,6 @@ export function Composer({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [modelOpen, setModelOpen] = useState(false);
   const [modeOpen, setModeOpen] = useState(false);
-  const [dragOver, setDragOver] = useState(false);
   // 模型按钮 toggle 标志：标记「这次关闭是按钮触发的」，让 Popover 的
   // mousedown 外部检测跳过它（选中模型后弹层不关，再点按钮需能关闭）
   const modelToggleRef = useRef(false);
@@ -959,57 +937,12 @@ export function Composer({
       ) : null}
 
       <div className="composer-shell">
-        <div
-          className={`composer-box${dragOver ? " is-drop-target" : ""}`}
-          onDragOver={(event) => {
-            event.preventDefault();
-            setDragOver(true);
-          }}
-          onDragLeave={() => setDragOver(false)}
-          /*
-           * 拖放添加附件。
-           *
-           * **只能拿字节**：VS Code 不把拖拽的资源注入 webview 的 DataTransfer
-           * （没有 `ResourceURLs`、没有 `text/uri-list`），而 `File.path` 自 Electron 32
-           * 起已被移除（本机 VS Code 是 Electron 42），webview 侧的 `window.vscode`
-           * 也只有 `acquireVsCodeApi`、拿不到 `webUtils.getPathForFile`——所以路径
-           * 这条路根本不存在，字节是唯一通道（见 `shared/ipc.ts` 的 `attachBytes`）。
-           *
-           * 注意：**从 VS Code 资源管理器拖进来要先按住 Shift**。webview 是 iframe，
-           * 拖拽期间被 workbench 用 `pointer-events: none` 挡住，只有按了 Shift 才放行
-           * 事件（`workbench.desktop.main.js` 的 `windowDidDragStart`）；不按 Shift 时
-           * 这里连 dragover 都收不到，文件会在编辑器里被打开。从系统资源管理器拖
-           * 不受此限。这是 VS Code 的行为，不是本扩展能绕过的，故写进 README 说明。
-           */
-          onDrop={(event) => {
-            event.preventDefault();
-            setDragOver(false);
-            const files = [...(event.dataTransfer?.files ?? [])];
-            if (!files.length) return;
-            const accepted = files.filter((file) => file.size <= DROP_BYTES_LIMIT);
-            const tooLarge = files.filter((file) => file.size > DROP_BYTES_LIMIT).map((f) => f.name);
-            void (async () => {
-              const payload: { name: string; base64: string }[] = [];
-              const unreadable: string[] = [];
-              for (const file of accepted) {
-                try {
-                  payload.push({ name: file.name, base64: await fileToBase64(file) });
-                } catch {
-                  // 目录拖进来就是一个读不出字节的 File（arrayBuffer 抛 IO 错误）
-                  unreadable.push(file.name);
-                }
-              }
-              if (!payload.length && !unreadable.length && !tooLarge.length) return;
-              post({ type: "attachBytes", files: payload, unreadable, tooLarge });
-            })();
-          }}
-        >
-          {dragOver ? (
-            <div className="composer-drop-hint" aria-hidden>
-              <IconAttach size={12} />
-              {texts.dropHint}
-            </div>
-          ) : null}
+        {/*
+          拖放接取**不在这里**：全页由 App 的 usePageFileDrop 统一接（window 监听），
+          输入框自己不再处理 drop——两处都接会双发 attachBytes（同一份文件两条附件）。
+          平台限制（拖入必须按住 Shift，否则 VS Code 把文件打开）见 `dropAttach.ts`。
+        */}
+        <div className="composer-box">
           {state.attachments.length ? (
             <div className="composer-chips">
               {state.attachments.map((attachment) => (

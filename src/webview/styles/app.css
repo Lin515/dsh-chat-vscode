@@ -2389,8 +2389,6 @@
 .composer-box {
   display: flex;
   flex-direction: column;
-  /* 拖放提示是绝对定位的浮层，靠这个做定位基准 */
-  position: relative;
   border: 1px solid var(--command-border);
   border-radius: var(--radius);
   background: var(--input-bg);
@@ -2402,28 +2400,38 @@
   border-color: var(--command-border-focus);
 }
 
-.composer-box.is-drop-target {
-  border-color: var(--accent);
-  border-style: dashed;
-}
-
-/* 拖放高亮时的提示。从**资源管理器**往 webview 里拖必须先按住 Shift
-   （webview 是 iframe，拖拽期间被 workbench 用 pointer-events 挡住，事件根本
-   到不了这里），所以这条提示只在事件真到了的时候才显示：它说明「松开就会添加」，
-   避免高亮看起来像装饰。从系统资源管理器拖不受此限。 */
-.composer-drop-hint {
-  position: absolute;
+/* 全页拖放浮层：文件拖进会话页时整页亮起「松手即添加」（App 的 usePageFileDrop）。
+   只在拖拽事件真的到达 webview 时出现——从 VS Code 内拖入必须按住 Shift，
+   不按时事件根本到不了这里（平台行为，见 dropAttach.ts 的注释）。
+   pointer-events 必须为 none：浮层不能自己变成 drop 目标（drop 要落到页面
+   本身、冒泡到 window 统一处理）；z-index 要盖过各面板（30/31）。 */
+.page-drop-overlay {
+  position: fixed;
   inset: 0;
-  z-index: 1;
+  z-index: 40;
   display: flex;
   align-items: center;
   justify-content: center;
+  padding: 10px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  pointer-events: none;
+}
+
+.page-drop-pill {
+  display: flex;
+  align-items: center;
   gap: 6px;
-  border-radius: var(--radius);
+  max-width: 100%;
+  padding: 5px 12px;
+  border: 1px dashed var(--accent);
+  border-radius: 999px;
   background: var(--input-bg);
   color: var(--accent);
   font-size: var(--font-size-2xs);
-  pointer-events: none;
+  /* 英文 "Release to attach" 比中文长：不换行、放不下先省略 */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .composer-chips {

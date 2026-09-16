@@ -6,6 +6,36 @@
 
 （发版时改成版本号。下面这一批是 0.5.1 之后报上来的问题与对齐工作。）
 
+### 拖放文件：整页接取，不再被 VS Code「打开文件」抢走（2026-09-16，用户报的）
+
+**现场**：把文件拖进会话页面，总被 VS Code 捕获为「打开文件」，而不是被会话识别为
+附件上传。
+
+**根因**（两层叠加）：
+
+1. **平台门（改不掉，要按 Shift）**：webview 是 iframe，VS Code 在**主窗口 DOM** 上
+   监听 drag/dragover，没按 `Shift` 就给 iframe 挂 `pointer-events: none`
+   （`workbench.desktop.main.js` 的 `windowDidDragStart`），事件根本到不了界面；
+   按住 `Shift` 才放行。监听在主窗口上，所以**从系统资源管理器拖同样会中招**——
+   只要拖拽路径扫过任何 workbench 界面（标题栏 / 活动栏 / 视图头，甚至被阻塞的
+   iframe 本身），阻塞就激活并持续到 dragend。旧文档写的「系统资源管理器拖不受此限」
+   只在路径全程不碰这些界面时才成立。
+2. **接取面太小（本轮修的）**：此前只有输入框接 drop，拖到消息区（页面的大头）没有
+   任何 drop 目标，浏览器走默认行为——导航到被拖的文件，被 VS Code 拦下变成「打开」。
+   Playwright 合成拖拽实测（改前）：拖到消息区 `dragover.defaultPrevented === false`、
+   `attachBytes` 发出 0 条。
+
+**修法**：拖放逻辑迁到 `src/webview/dropAttach.ts`，App 挂 window 级
+dragenter/dragover/dragleave/drop 监听（`usePageFileDrop`）：**整页**都是投放目标，
+任何位置松手都进附件；dragover 的 `preventDefault` 是「本页接受投放」的声明，缺了它
+必被 VS Code 捕获。只拦文件拖拽（`dataTransfer.types` 含 `Files`），文本拖拽不再被
+劫持（textarea 的原生插入恢复）。拖拽期间整页亮出「松开即添加」浮层；输入框自己的
+drop 处理移除——两处都接会双发 `attachBytes`（同一份文件出两条附件）。
+
+**证据**（Playwright 驱动 `test/preview.html`，合成 DragEvent + 真实 DataTransfer）：
+改后拖到消息区 `dragover`/`drop` 均 preventDefault、overlay 显隐正确、`attachBytes`
+恰好 1 条；拖到输入框同样恰好 1 条（无双发）。
+
 ### 展开工具调用不再把内容「向上挤」（2026-09-16，用户报的）
 
 **现场**：会话滚动条在最底部时，展开工具调用（或任何节点）会让内容向上挤——刚展开的
