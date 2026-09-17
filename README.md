@@ -1,6 +1,6 @@
 # DSH Chat
 
-![DSH Chat 在 VS Code 里的样子](docs/演示.png)
+![DSH Chat 在 VS Code 里的样子](docs/demo.png)
 
 在 VS Code 里用 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（`dsh`）对话的第三方扩展。
 
@@ -140,7 +140,7 @@ Continue 的视觉与交互取向（Apache-2.0），**未拷贝其源码**，如
 
 # DSH Chat
 
-![DSH Chat inside VS Code](docs/演示.png)
+![DSH Chat inside VS Code](docs/demo.png)
 
 A third-party VS Code extension for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`).
 

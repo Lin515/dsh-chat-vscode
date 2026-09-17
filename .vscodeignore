@@ -4,6 +4,8 @@ docs/**
 scripts/**
 test/**
 build/**
+# README 引用的演示截图必须在包里，否则扩展详情页裂图（其余 docs 仍是开发资料）
+!docs/demo.png
 # 探针夹具（假 dsh）；`.cjs` 不在下面的 `**/*.ts` 过滤里，会整份进包
 shared/**
 .vscode/**
