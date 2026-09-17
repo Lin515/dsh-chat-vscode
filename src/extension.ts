@@ -316,14 +316,15 @@ function registerContributions(context: vscode.ExtensionContext, host: Contribut
       controller.revealActiveView();
     }),
 
-    // 界面相关配置（diff 排版 / 语言 / 字号 / 问卷题数）改了即时生效，
+    // 界面相关配置（diff 排版 / 语言 / 字号 / 问卷题数 / 折叠阈值）改了即时生效，
     // 不必重载窗口。它们都是纯显示层：重载会丢掉滚动位置与展开状态，代价不成比例。
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (event.affectsConfiguration("dshChat.diffLayout")) controller.refreshDiffLayout();
       if (
         event.affectsConfiguration("dshChat.language") ||
         event.affectsConfiguration("dshChat.fontSize") ||
-        event.affectsConfiguration("dshChat.questionBatch")
+        event.affectsConfiguration("dshChat.questionBatch") ||
+        event.affectsConfiguration("dshChat.turnProcessThreshold")
       ) {
         controller.refreshAppearance();
       }

@@ -20,7 +20,8 @@ import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { SessionAdapter } from "../src/dsh/adapter";
 import { decodeSessionLog, type SessionLogRow } from "./sessionLog";
-import { TURN_PROCESS_FOLD_THRESHOLD, foldTurnProcess } from "../src/webview/turnProcess";
+import { DEFAULT_TURN_PROCESS_THRESHOLD } from "../src/shared/turnProcessThreshold";
+import { foldTurnProcess } from "../src/webview/turnProcess";
 
 const SESSIONS_ROOT = join(process.env.USERPROFILE ?? process.env.HOME ?? ".", ".dsh", "sessions");
 const args = process.argv.slice(2);
@@ -150,7 +151,8 @@ if (target) {
 }
 
 // 连续过程折叠的实算：真实一轮会折出几枚按钮、有多少工具行留在外面。
-// 阈值口径见 `src/webview/turnProcess.ts`（固定 5；单次工具永不折）。
+// 阈值口径见 `src/shared/turnProcessThreshold.ts`（默认 5；0 = 永不折，
+// 1–2 = 永远折但仅 1 次工具调用的段平铺）。
 if (target) {
   const fold = foldTurnProcess(target.segments, true);
   const foldedTools = fold.runs.reduce(
@@ -159,7 +161,7 @@ if (target) {
   );
   const toolRows = target.segments.filter((segment) => segment.kind === "tool").length;
   console.log(
-    `\n=== 连续过程折叠（阈值 ${TURN_PROCESS_FOLD_THRESHOLD}）===`,
+    `\n=== 连续过程折叠（默认阈值 ${DEFAULT_TURN_PROCESS_THRESHOLD}）===`,
   );
   console.log(
     `  段 ${target.segments.length} 个（工具 ${toolRows} 行）→ 按钮 ${fold.runs.length} 枚，折进去 ${foldedTools} 次工具调用，留在外面 ${toolRows - foldedTools} 行`,

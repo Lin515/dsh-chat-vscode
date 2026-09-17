@@ -787,6 +787,15 @@ export interface ChatState {
    * 宿主只下发用户填的数，界面不再自己读配置（webview 读不到 VS Code 配置）。
    */
   questionBatch?: number;
+  /**
+   * 连续过程折叠的阈值（对应 `dshChat.turnProcessThreshold`，整数 ≥0）。
+   *
+   * 一轮结束后，过程段内工具调用（含 subagent 派发）达到它才折成一枚按钮；
+   * `0` = 永不折叠，`1–2` = 永远折叠（只有 1 次工具调用的段照旧平铺）。
+   * 语义只写在 `shared/turnProcessThreshold.ts` 一份里；宿主归一化后下发，
+   * 界面不做自己的判定。
+   */
+  turnProcessThreshold?: number;
   /** 排队中（尚未发送）的消息列表，来自 session/control 的 queue 帧。 */
   queueItems: QueuedMessageView[];
   attachments: Attachment[];

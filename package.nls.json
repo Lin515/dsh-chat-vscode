@@ -15,8 +15,8 @@
   "cmd.setToken.title": "DSH: Enter Access Token",
   "cmd.showLogs.title": "DSH: Show Logs",
   "cmd.showDiagnostics.title": "DSH: Show Diagnostics",
-  "config.command": "Command used to start the internal DSH background service. Executed verbatim, through a shell. User-level setting (a workspace cannot override it); changing it requires reloading the window. VS Code windows using the same command share one background service.",
-  "config.url": "Address of the external DSH service, e.g. http://127.0.0.1:3080. When set, the extension does NOT start its own DSH and all internal-DSH options stop applying. User-level setting (a workspace cannot override it); changing it requires reloading the window.",
+  "config.command": "Command used to start the internal DSH background service. Executed as-is; the extension appends no arguments.",
+  "config.url": "Address of the external DSH service, e.g. http://127.0.0.1:3080. When set, the extension does NOT start its own DSH and all internal-DSH options stop applying.",
   "config.autoStart": "When VS Code starts, the internal DSH background service is started automatically with the command from the Command setting.",
   "config.supervisorIdleSec": "How many seconds the internal DSH background waits before shutting down automatically after the last VS Code window closes. Recommended: no less than 10 seconds. This option has no effect when an external Url is configured.",
   "config.diffLayout": "How edit tool calls render their change: single column or side-by-side.",
@@ -28,5 +28,6 @@
   "config.language.zh": "Always Simplified Chinese.",
   "config.language.en": "Always English.",
   "config.fontSize": "Font size of the chat UI in integer pixels (>= 8). `0` follows the VS Code font size.",
-  "config.questionBatch": "How many questions of one questionnaire to show at once. A questionnaire with more questions than this is asked one question at a time. `0` always shows every question at once."
+  "config.questionBatch": "How many questions of one questionnaire to show at once. A questionnaire with more questions than this is asked one question at a time. `0` always shows every question at once.",
+  "config.turnProcessThreshold": "Fold a finished turn's consecutive tool calls (subagent dispatches included) once it reaches this many. 0 = never fold; 1–2 = always fold."
 }

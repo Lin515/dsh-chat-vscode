@@ -760,6 +760,7 @@ export function App() {
                         diffLayout={state.diffLayout}
                         fileKinds={state.fileKinds}
                         questionBatch={state.questionBatch}
+                        turnProcessThreshold={state.turnProcessThreshold}
                         // 只有非最后一条（= 不是正在跑的那一轮）才能作为分支锚点
                         canBranch={!state.running || index < state.messages.length - 1}
                       />

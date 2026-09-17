@@ -1,4 +1,5 @@
 import type { Segment } from "../shared/chat";
+import { effectiveFoldThreshold } from "../shared/turnProcessThreshold";
 import { isSubagentDelegationTool } from "../shared/toolMeta";
 
 /**
@@ -19,8 +20,8 @@ import { isSubagentDelegationTool } from "../shared/toolMeta";
  * - **其余一切都是成员**：中途正文、思考、工具、subagent、上下文注入（含系统提示词）、
  *   轮级提示（已停止 / 被截断 / 重试）、交互卡、命令节点、图片块、未知内容块。
  * - 边界把这把刀切成**前后两段**，每段按**段内工具调用次数**判阈值
- *   （固定 5，单次工具永不折；不设配置项——没有用户需要调它的场景，
- *   固定值让行为可预期）。
+ *   （配置项 `dshChat.turnProcessThreshold`，默认 5；`0` 永不折、`1–2` 永远折
+ *   但只有一次工具调用的段照旧平铺，语义见 `shared/turnProcessThreshold.ts`）。
  *
  * 于是折完读作「按钮 → 回答」（尾段够长时后面再跟一枚按钮）：中途正文要么在按钮里、
  * 要么整轮平铺，不会再有「两段不相邻的话被并成一段」的错觉。
@@ -33,11 +34,10 @@ import { isSubagentDelegationTool } from "../shared/toolMeta";
  */
 
 /**
- * 折叠阈值（固定值）：一段过程里连着 ≥5 次工具调用（subagent 派发也算）才折成一枚
- * 按钮。不设配置项（2026-09-17 拍板）：没有用户需要调它的场景，固定值让折叠行为
- * 可预期。
+ * 折叠阈值（配置项 `dshChat.turnProcessThreshold`，默认 5）→ 实际生效值的换算
+ * 在 `shared/turnProcessThreshold.ts`（0 = 永不折；1–2 = 永远折，但只有 1 次工具
+ * 调用的段落地为不折）。这里只消费换算结果。
  */
-export const TURN_PROCESS_FOLD_THRESHOLD = 5;
 
 /**
  * 本轮最后一段正文的下标（`-1` = 整轮没有正文）。
@@ -93,10 +93,16 @@ function emptyCounts(): TurnProcessCounts {
  *
  * @param segments 该轮助手消息的全部显示段（按到达顺序）。
  * @param closed 这一轮是否已结束（流式期间**不折**：成员还在长，折了会闪）。
+ * @param threshold 配置阈值（`dshChat.turnProcessThreshold`）。缺省/首帧未到时
+ *   用默认 5；归一化与特殊值语义见 `shared/turnProcessThreshold.ts`。
  */
-export function foldTurnProcess(segments: readonly Segment[], closed: boolean): TurnProcessFold {
+export function foldTurnProcess(
+  segments: readonly Segment[],
+  closed: boolean,
+  threshold?: number,
+): TurnProcessFold {
   if (!closed) return NOTHING;
-  const at = TURN_PROCESS_FOLD_THRESHOLD;
+  const at = effectiveFoldThreshold(threshold);
   const keep = lastTextIndex(segments);
 
   const runs: TurnProcessRun[] = [];

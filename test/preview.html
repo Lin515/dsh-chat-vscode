@@ -246,6 +246,8 @@
           // 问卷一次展开几道题（`dshChat.questionBatch`）：题目多于它时依次问答。
           // 夹具里的待答问卷是 2 题 → 走「一次展开」（默认阈值 3）。
           questionBatch: 3,
+          // 连续过程折叠的阈值（`dshChat.turnProcessThreshold`）：默认 5。
+          turnProcessThreshold: 5,
           // 界面字号（整数 px，`dshChat.fontSize`）：undefined = auto（配置为 0 或坏值）
           fontSizePx: undefined,
           // 「加载更早」：跟随窗口只带 60 条，更早的内容从没进过客户端

@@ -46,10 +46,11 @@ VS Code → 扩展 → `…` → 从 VSIX 安装 → 重载窗口。
 
 再补三条容易踩的口径：
 
-- **多个 VS Code 实例共用一个后端**：有效配置（`url` + `command`）相同的窗口算同一组，
-  它们共用同一套守护进程与同一个 `dsh web`，不会各起一个。守护进程按**活连接数**决定
-  何时收场（默认空闲 10 秒，可配）。所以「重载窗口 / 重开 VS Code」不会杀掉后台，
-  正在跑的会话也不会因此中断。
+- **多个 VS Code 窗口共用同一个后台**：扩展按**有效配置**（`url` + `command`）给窗口分组，
+  同一组的窗口共用一套守护进程与同一个 `dsh web`——不是每个窗口各起一个。同一份用户设置
+  下所有窗口天然同组；远端窗口、不同配置档（Profile）、Insiders/Stable 各写各的 `command`
+  时是**不同的组**，各用各的后台。守护进程按**活连接数**决定何时收场（默认空闲 10 秒，
+  可配），所以「重载窗口 / 重开 VS Code」不会杀掉后台，正在跑的会话也不会因此中断。
 - **`url` 与 `command` 是 `machine` 作用域**：只能在**用户设置**里改，工作区的
   `.vscode/settings.json` 覆盖不了它们（`command` 是经 shell 执行的命令、`url` 决定
   凭据发往哪个服务器——这两件事不该由克隆来的仓库决定）。
@@ -67,6 +68,7 @@ VS Code → 扩展 → `…` → 从 VSIX 安装 → 重载窗口。
 | `dshChat.language` | `auto` | 聊天界面语言：`auto` 跟随 VS Code、`zh-cn`、`en` |
 | `dshChat.fontSize` | `0` | 聊天界面字号（整数 px，≥8）；`0` 跟随 VS Code 字号 |
 | `dshChat.questionBatch` | `3` | 一份问卷一次展开几道题；更多题目改为依次问答，`0` = 始终全部展开 |
+| `dshChat.turnProcessThreshold` | `5` | 一轮结束后，过程段内工具调用（含 subagent 派发）达到该数量才折成一枚按钮；`0` = 永不折叠，`1–2` = 永远折叠（仅 1 次调用的段照旧平铺） |
 
 ## 用法要点
 
@@ -179,10 +181,12 @@ Then in VS Code: Extensions → `…` → Install from VSIX → reload. To hack 
 
 Three rules worth knowing:
 
-- **Multiple VS Code windows share one backend**: windows whose effective `url` + `command`
-  match belong to the same group and share a single guardian + `dsh web`. The guardian retires
-  it once nobody is connected (10s idle by default, configurable), so reloading a window or
-  restarting VS Code never kills a running backend.
+- **Multiple VS Code windows share one backend**: windows are grouped by their **effective**
+  `url` + `command`, and one group shares a single guardian + `dsh web` — not one per window.
+  With a single set of user settings every window lands in the same group; remote windows,
+  different profiles, or Insiders/Stable with their own `command` form **separate** groups with
+  separate backends. The guardian retires a backend once nobody is connected (10s idle by
+  default, configurable), so reloading a window or restarting VS Code never kills it.
 - **`url` and `command` are `machine`-scoped**: they can only be set in *user* settings; a
   workspace's `.vscode/settings.json` cannot override them (`command` is executed through a
   shell and `url` decides where credentials go — a cloned repository must not decide either).
@@ -201,6 +205,7 @@ Three rules worth knowing:
 | `dshChat.language` | `auto` | Chat UI language: `auto` (follow VS Code), `zh-cn`, `en` |
 | `dshChat.fontSize` | `0` | Chat UI font size in px (≥8); `0` follows VS Code |
 | `dshChat.questionBatch` | `3` | Questions shown at once; more than this are asked one at a time; `0` = always all |
+| `dshChat.turnProcessThreshold` | `5` | Fold a finished turn's consecutive process into one button once it holds this many tool calls (subagent dispatches count); `0` = never fold, `1–2` = always fold (a run with a single call stays flat) |
 
 ## Using it
 

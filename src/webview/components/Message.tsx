@@ -77,6 +77,7 @@ export const Message = memo(function Message({
   diffLayout,
   fileKinds,
   questionBatch,
+  turnProcessThreshold,
   canBranch = false,
 }: {
   message: MessageView;
@@ -86,6 +87,11 @@ export const Message = memo(function Message({
   fileKinds?: Record<string, FileChangeKind>;
   /** 问卷一次展开几道题（`dshChat.questionBatch`；缺省用默认阈值）。 */
   questionBatch?: number;
+  /**
+   * 连续过程折叠的阈值（`dshChat.turnProcessThreshold`；缺省用默认 5）。
+   * `0` = 永不折叠；`1–2` = 永远折叠（只有 1 次工具调用的段照旧平铺）。
+   */
+  turnProcessThreshold?: number;
   /**
    * 这条消息能否作为分支锚点（只有**已结束**的那一轮可以）。
    *
@@ -186,9 +192,9 @@ export const Message = memo(function Message({
 
   // 连续过程折叠：一轮**结束后**，把最后那段正文之外的一切折成按钮（中途正文也在里面），
   // 折完读作「按钮 → 回答」——中途的话不会再跟回答贴到一起（用户 2026-09-16 最终口径）。
-  // 流式期间不折（官方要求 turnClosed）；阈值固定 5（配置项已删）。口径与官方的差异见
-  // turnProcess.ts 的文件头。
-  const fold = foldTurnProcess(message.segments, !message.streaming);
+  // 流式期间不折（官方要求 turnClosed）；阈值来自 `dshChat.turnProcessThreshold`
+  // （默认 5，0 = 永不折）。口径与官方的差异见 turnProcess.ts 的文件头。
+  const fold = foldTurnProcess(message.segments, !message.streaming, turnProcessThreshold);
 
   const toggleRun = (anchorId: string) =>
     setOpenRuns((prev) => {
@@ -240,8 +246,11 @@ export const Message = memo(function Message({
 
   // 每一段连续过程在它的**首段**位置放一枚按钮，其余成员略过；展开后按钮留在原位
   // （官方 `turn-process` 节点就是流里的一个普通节点，成员在它下面展开），成员照原序
-  // 铺回来。不参与折叠的段（正文、中止/截断提示、交互卡）原地保留，位置不变——折进去
-  // 就是信息损失（官方 `TURN_PROCESS_INDEPENDENT_KINDS` 同理）。
+  // 铺回来。除「本轮最后一段正文」外的一切都是成员——已答复的交互卡、轮级提示、
+  // 命令、图片、未知块也照样折进去（成员清单见 `turnProcess.ts` 文件头；官方
+  // `TURN_PROCESS_INDEPENDENT_KINDS` 那套豁免在本扩展口径里不存在）。待处理的
+  // 审批/提问卡不是折不折的问题：它由输入区接管，renderSegment 里直接渲染成 null。
+  // `message.error` 不在段集合里，由消息尾部的 NoticeRow 单独渲染，同样不进按钮。
   const rendered: ReactNode[] = [];
   for (const segment of message.segments) {
     const run = fold.bySegment.get(segment.id);

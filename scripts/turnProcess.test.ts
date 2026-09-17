@@ -5,7 +5,9 @@
  * 交互卡、命令、图片、未知块）都是折叠成员；边界把这把刀切成前后两段，每段按
  * **段内工具调用次数**判阈值。所以这里钉的是：
  *
- * 1. 阈值固定 5：正好 5 才折；**只有 1 次的工具调用永不折**（不设配置项，没有可调阈值）；
+ * 1. 阈值是配置项 `dshChat.turnProcessThreshold`（默认 5）：达到才折；
+ *    **只有 1 次工具调用的段永不折**（`1–2` 的「永远折」落地为生效 2），
+ *    `0` = 永不折——语义只写在 `src/shared/turnProcessThreshold.ts` 一份里；
  * 2. 唯一留在流里的是**最后一段 `text`**——中途正文照样折进去（不会再出现「两段
  *    不相邻的话被并成一段」的错觉）；被中断的轮没有最终回答时，最后那段话就是它；
  * 3. 判定不看 `step`（历史里缺 `step/start` 时照样折得对）、流式期间不折；
@@ -17,9 +19,15 @@
  * 运行：npm test
  */
 import assert from "node:assert";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { Segment } from "../src/shared/chat";
 import {
-  TURN_PROCESS_FOLD_THRESHOLD,
+  DEFAULT_TURN_PROCESS_THRESHOLD,
+  effectiveFoldThreshold,
+  normalizeTurnProcessThreshold,
+} from "../src/shared/turnProcessThreshold";
+import {
   foldTurnProcess,
   type TurnProcessFold,
 } from "../src/webview/turnProcess";
@@ -57,13 +65,13 @@ const visibleIds = (segments: readonly Segment[], fold: TurnProcessFold): string
 const runs = (fold: TurnProcessFold) =>
   fold.runs.map((run) => ({ anchor: run.anchorId, members: run.segments.map((s) => s.id), counts: run.counts }));
 
-// ---------- 1. 阈值固定 5：正好 5 才折；4 不折；单次工具永不折 ----------
+// ---------- 1. 默认阈值 5：正好 5 才折；4 不折；单次工具永不折 ----------
 {
   const four = tools(4);
   assert.deepStrictEqual(
     foldTurnProcess(four, true).runs,
     [],
-    `阈值 ${TURN_PROCESS_FOLD_THRESHOLD}：连着 4 次还不够，这一段原样平铺`,
+    `默认阈值 ${DEFAULT_TURN_PROCESS_THRESHOLD}：连着 4 次还不够，这一段原样平铺`,
   );
   const five = tools(5);
   assert.deepStrictEqual(
@@ -305,6 +313,63 @@ const runs = (fold: TurnProcessFold) =>
     "Thought for a while",
   );
 }
+
+// ---------- 13. 阈值配置项（`dshChat.turnProcessThreshold`）的归一化与生效值 ----------
+{
+  assert.strictEqual(normalizeTurnProcessThreshold(undefined), 5, "缺省（首帧未到）用默认 5");
+  assert.strictEqual(normalizeTurnProcessThreshold("7"), 5, "非数字回退默认");
+  assert.strictEqual(normalizeTurnProcessThreshold(2.5), 5, "小数回退默认（手写 settings.json 能绕开设置页校验）");
+  assert.strictEqual(normalizeTurnProcessThreshold(-1), 5, "负数不是任何合法语义，回退默认");
+  assert.strictEqual(normalizeTurnProcessThreshold(0), 0, "0 是合法值：永不折叠");
+  assert.strictEqual(normalizeTurnProcessThreshold(9), 9, "合法整数原样通过");
+
+  assert.strictEqual(effectiveFoldThreshold(0), Number.POSITIVE_INFINITY, "0 = 永不折（∞ 谁也够不到）");
+  assert.strictEqual(effectiveFoldThreshold(1), 2, "1 的「永远折」落地为 ≥2：仅 1 次工具调用的段平铺");
+  assert.strictEqual(effectiveFoldThreshold(2), 2, "2 原样生效（也是 1 的落地值，两者同义）");
+  assert.strictEqual(effectiveFoldThreshold(5), 5, "≥3 原样生效");
+  assert.strictEqual(effectiveFoldThreshold(undefined), 5, "缺省走默认");
+}
+console.log("turnProcess: 阈值配置项的归一化与生效值（0 永不折 / 1–2 永远折落地 ≥2） ✓");
+
+// ---------- 14. 配置阈值驱动 foldTurnProcess：0 永不折 / 1·2 等价（单次调用平铺） ----------
+{
+  assert.deepStrictEqual(foldTurnProcess(tools(15), true, 0).runs, [], "阈值 0：15 次调用也不折（永不折叠）");
+  assert.deepStrictEqual(
+    foldTurnProcess(tools(1), true, 1).runs,
+    [],
+    "阈值 1（永远折）：只有 1 次工具调用的段照旧平铺——一枚按钮只包一行没有意义",
+  );
+  assert.deepStrictEqual(
+    runs(foldTurnProcess(tools(2), true, 1)),
+    [{ anchor: "t0", members: ["t0", "t1"], counts: { toolCalls: 2, messages: 0, subagents: 0 } }],
+    "阈值 1：2 次调用就折（「永远折」的实际下限）",
+  );
+  assert.deepStrictEqual(foldTurnProcess(tools(1), true, 2).runs, [], "阈值 2：1 次不折");
+  assert.ok(foldTurnProcess(tools(2), true, 2).runs.length === 1, "阈值 2：2 次折");
+  assert.deepStrictEqual(foldTurnProcess(tools(2), true, 3).runs, [], "阈值 3：2 次不够");
+  assert.ok(foldTurnProcess(tools(3), true, 3).runs.length === 1, "阈值 3：3 次折");
+  // 阈值只数工具调用：阈值 1 的「永远折」也不折纯中途正文的段
+  const textsOnly: Segment[] = [text("m0", "先说一句。", 0), text("m1", "再说一句。", 1)];
+  assert.deepStrictEqual(
+    foldTurnProcess(textsOnly, true, 1).runs,
+    [],
+    "没有工具调用的段永远不折（阈值是工具调用次数，不是段长）",
+  );
+}
+console.log("turnProcess: 配置阈值驱动折叠（0 永不折 / 1·2 等价 / ≥3 按值） ✓");
+
+// ---------- 15. package.json 的配置项声明与代码里的默认值对拍（questionBatch 同款） ----------
+{
+  const pkg = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf8")) as {
+    contributes?: { configuration?: { properties?: Record<string, { type?: string; minimum?: number; default?: unknown }> } };
+  };
+  const config = pkg.contributes?.configuration?.properties?.["dshChat.turnProcessThreshold"];
+  assert.ok(config, "package.json 必须有 dshChat.turnProcessThreshold 配置项");
+  assert.strictEqual(config.type, "integer", "配置项是整数");
+  assert.strictEqual(config.minimum, 0, "限定参数 >= 0");
+  assert.strictEqual(config.default, DEFAULT_TURN_PROCESS_THRESHOLD, "默认值与代码里的缺省阈值一致");
+}
+console.log("turnProcess: package.json 配置项声明与默认值对拍 ✓");
 
 console.log("turnProcess: 连续过程折叠（只留最后正文 / 阈值 / 计数 / 文案 / 不折的情形） ✓");
 console.log("\nturnProcess: all assertions passed");

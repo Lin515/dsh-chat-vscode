@@ -27,6 +27,7 @@ import { shouldContinuePaging } from "./historyPaging";
 import { composeWithReferences, formatFileMention } from "./references";
 import { formatFileMentionWithLines } from "../shared/mentions";
 import { resolveForVsCode } from "./hostText";
+import { normalizeTurnProcessThreshold } from "../shared/turnProcessThreshold";
 import { DshApiError, DshAuthError, DshClient, type SessionReferenceCandidateWire, type SessionSummaryWire } from "./client";
 import type { RemoteEventFrame, RemoteEventWaterfall, SessionControlFrame } from "./protocol";
 import {
@@ -128,6 +129,20 @@ function readQuestionBatch(): number {
   const value = vscode.workspace.getConfiguration("dshChat").get<number>("questionBatch");
   if (typeof value === "number" && Number.isInteger(value) && value >= 0) return value;
   return DEFAULT_QUESTION_BATCH;
+}
+
+/**
+ * 连续过程折叠的阈值（`dshChat.turnProcessThreshold`）。
+ *
+ * 合法域是**整数 ≥0**：`0` = 永不折叠；`1–2` = 永远折叠（只有 1 次工具调用的段
+ * 照旧平铺）；`≥3` = 达到该次数才折。坏值（负数、小数、非数字）回退默认 5——
+ * 与 `readQuestionBatch` 同一条判据纪律。归一化与特殊值语义都收在
+ * `shared/turnProcessThreshold.ts`（宿主、界面共用一份，默认值不会两边漂移）。
+ */
+function readTurnProcessThreshold(): number {
+  return normalizeTurnProcessThreshold(
+    vscode.workspace.getConfiguration("dshChat").get<unknown>("turnProcessThreshold"),
+  );
 }
 
 /** 把投影里的未知值收成数字（缺字段/坏值一律用回退值）。 */
@@ -660,6 +675,8 @@ export class ChatController implements vscode.Disposable {
       fontSizePx: readFontSize(),
       /** 问卷一次展开几道题（多于它就依次问答；0 = 始终全部展开）。 */
       questionBatch: readQuestionBatch(),
+      /** 连续过程折叠的阈值（0 = 永不折；1–2 = 永远折，仅一次调用的段除外）。 */
+      turnProcessThreshold: readTurnProcessThreshold(),
       session: sessionId ? this.sessions.find((session) => session.id === sessionId) : undefined,
       messages: scope?.adapter?.snapshotMessages() ?? [],
       running: scope?.running ?? false,
@@ -1318,10 +1335,10 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
-   * 配置里改了语言、字号或问卷一次展开的题数：推给界面。
+   * 配置里改了语言、字号、问卷一次展开的题数或折叠阈值：推给界面。
    *
-   * 三者都**不需要**重载 webview：语言是纯词典切换（界面用 `locale` 选字典），
-   * 其余是两个数字。重载会丢掉滚动位置与展开状态，代价不成比例。
+   * 四者都**不需要**重载 webview：语言是纯词典切换（界面用 `locale` 选字典），
+   * 其余是三个数字。重载会丢掉滚动位置与展开状态，代价不成比例。
    */
   refreshAppearance(): void {
     this.emitAll({
@@ -1331,6 +1348,7 @@ export class ChatController implements vscode.Disposable {
         /** 0（auto）时为 undefined，过线成 null，界面清掉 `--font-size` 回到 VS Code 字号 */
         fontSizePx: readFontSize(),
         questionBatch: readQuestionBatch(),
+        turnProcessThreshold: readTurnProcessThreshold(),
       },
     });
   }
