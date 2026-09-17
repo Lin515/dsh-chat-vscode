@@ -1524,4 +1524,50 @@ console.log("styles: 贴底（意愿只由手势定 + 幂等钉底；几何推�
 }
 console.log("styles: 计划审阅卡单层滚动 + 决定按钮常驻 ✓");
 
+// ---------- 38. 多行草稿打字不闪：自适应量高的瞬态必须在同一帧内消化 ----------
+//
+// 用户 2026-09-17 报：「输入框大于 1 行时，打字会造成会话页面闪烁」。实测（preview
+// 探针逐帧采样）：贴底时 scrollTop 随每个按键在 1021 ↔ 1000 来回振荡，Δ 恰为一行高。
+// 根因：Composer 的自适应 effect 先把 textarea 塌回 `height: auto` 再量 `scrollHeight`
+// ——塌回的一瞬输入区矮一行，`.chat-scroll` 可视端口**变高**，浏览器立刻把 scrollTop
+// **夹小**（贴底 1021→1000）；量完把高度设回去、端口复原，但 scrollTop 不会自己弹回，
+// 要等下一帧 rAF 的 settle 才钉回——每敲一个字就落进「底部缺一条 → 钉回」的振荡。
+// 一行草稿塌回 auto 高度不变，所以只在 >1 行时出现，与报告一致。
+// 锁：量高前先记贴底距离与 scrollTop；量完（仍在同一 effect、绘制之前）把被夹走的
+// scrollTop 补回，原本贴底而端口变矮时直接钉底。补回动作不许推迟到 rAF/定时器。
+{
+  const composer = readFileSync(
+    join(process.cwd(), "src", "webview", "components", "Composer.tsx"),
+    "utf8",
+  );
+  const autoAt = composer.indexOf('el.style.height = "auto";');
+  const restoreAt = composer.indexOf("pane.scrollTop = prevTop;");
+  const pinAt = composer.indexOf("pane.scrollTop = pane.scrollHeight;");
+  assert.ok(autoAt >= 0, "自适应量高（塌回 auto 再量）必须还在");
+  assert.ok(
+    /const distBefore = pane \? pane\.scrollHeight - pane\.scrollTop - pane\.clientHeight : 0;/.test(composer) &&
+      /const prevTop = pane\?\.scrollTop \?\? 0;/.test(composer) &&
+      composer.indexOf("const distBefore") < autoAt,
+    "量高前必须先记贴底距离与 scrollTop（瞬态基线），否则无从补回",
+  );
+  assert.ok(
+    restoreAt > autoAt && pinAt > restoreAt,
+    "量完必须在同一 effect 里先补回被夹走的 scrollTop，贴底时再钉底（顺序不可反）",
+  );
+  assert.ok(
+    !/requestAnimationFrame|setTimeout/.test(composer.slice(autoAt, restoreAt)),
+    "补回不许推迟到 rAF/定时器：晚一帧就是用户看到的那一下闪烁",
+  );
+  assert.ok(
+    /\}, \[draft, chatScrollRef\]\);/.test(composer),
+    "自适应 effect 的依赖要带上 chatScrollRef（ref 恒定，不会多跑）",
+  );
+  const app = readFileSync(join(process.cwd(), "src", "webview", "App.tsx"), "utf8");
+  assert.ok(
+    /chatScrollRef=\{scrollRef\}/.test(app),
+    "App 要把会话滚动区的 ref 传给 Composer（瞬态补回需要它）",
+  );
+}
+console.log("styles: 多行草稿打字不闪（量高瞬态同帧消化）✓");
+
 console.log("\nstyles: all assertions passed");

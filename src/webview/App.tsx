@@ -809,6 +809,7 @@ export function App() {
         <Composer
           state={state}
           pending={pendingInteractionOf(state.messages)}
+          chatScrollRef={scrollRef}
           onDraft={(text) => dispatch({ type: "ui/setDraft", text })}
           onFollowLatest={jumpToLatest}
         />

@@ -184,12 +184,18 @@ function useToolbarFit(barRef: React.RefObject<HTMLDivElement>, variants: Toolba
 export function Composer({
   state,
   pending,
+  chatScrollRef,
   onDraft,
   onFollowLatest,
 }: {
   state: AppState;
   /** 正在等用户回答的交互（审批 / 提问）：有它时**接管**输入区（官方 `conversation.composer` 槽）。 */
   pending?: PendingInteraction;
+  /**
+   * 会话滚动区（`.chat-scroll`）。自适应量高的瞬态会把它的高度与 scrollTop
+   * 各动一次（见下方 effect 的注释），补回动作要在绘制之前做，所以得拿到它。
+   */
+  chatScrollRef?: React.RefObject<HTMLDivElement>;
   onDraft: (text: string) => void;
   /**
    * 用户显式"要看最新"时回调（发消息 / 插话）：恢复贴底并回到底部。
@@ -230,12 +236,38 @@ export function Composer({
   );
 
   // 自适应高度
+  //
+  // 「塌回 auto 再量」有一帧内的瞬态，必须在这里一并消化掉，否则多行草稿打字时
+  // 整个会话内容会跟着每次按键上下弹一行高（用户 2026-09-17 报的「输入大于 1 行时
+  // 打字会话页闪烁」；实测探针：贴底 scrollTop 1021 ↔ 1000 来回振荡）：
+  // - textarea 塌回一行 → 输入区变矮 → `.chat-scroll` 可视端口**变高** → 浏览器
+  //   立刻把 scrollTop **夹小**（贴底时 1021→1000）；随后量完把高度设回去，端口
+  //   复原，但 scrollTop 不会自己弹回来——下一帧 rAF 的 settle 才钉回底部。
+  //   于是每个按键都落进「底部缺一条 → 钉回」的一帧振荡。
+  // - 输入框**长高**的那次（换行）则相反：端口变矮裁掉底部一条，同样要等下一帧。
+  // 两者的修复都是「绘制之前」在本 effect 里补：先记量高前的贴底距离与 scrollTop，
+  // 量完把被夹走的 scrollTop 补回；原本贴底而端口变矮时直接钉底（与 settle 的
+  // 裁定一致，只是提前到同一帧）。一行草稿塌回 auto 高度不变，天然无此问题。
   useLayoutEffect(() => {
     const el = textareaRef.current;
     if (!el) return;
+    const pane = chatScrollRef?.current ?? null;
+    const distBefore = pane ? pane.scrollHeight - pane.scrollTop - pane.clientHeight : 0;
+    const prevTop = pane?.scrollTop ?? 0;
     el.style.height = "auto";
     el.style.height = `${Math.min(el.scrollHeight, window.innerHeight * 0.7)}px`;
-  }, [draft]);
+    if (!pane) return;
+    if (pane.scrollTop !== prevTop) {
+      // auto 瞬态把端口撑高、scrollTop 被浏览器夹小：补回原位。
+      // （赋值超上限时浏览器自动夹住 = 恰好贴底，与「无瞬态」的理想布局一致。）
+      pane.scrollTop = prevTop;
+    } else if (distBefore <= 1) {
+      // 原本贴底而这次量高让端口变矮：settle 要到下一帧才钉，那一帧底部缺一条
+      // ——直接在这里钉住（贴底 ≤1px 时意愿必为跟随，与 onScroll 的裁定同源）。
+      const dist = pane.scrollHeight - pane.scrollTop - pane.clientHeight;
+      if (dist > 0) pane.scrollTop = pane.scrollHeight;
+    }
+  }, [draft, chatScrollRef]);
 
   // 运行结束后把焦点还给输入框
   useEffect(() => {
