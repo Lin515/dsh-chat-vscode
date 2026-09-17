@@ -21,7 +21,7 @@
  * 时间线的交互与官方同款（滚轮以光标为锚缩放、右键拖动平移、双击复位，见
  * `TrajectoryTimeline`）。
  */
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   deriveTrajectoryTimeline,
   trajectoryDomainPosition,
@@ -35,6 +35,15 @@ import { IconChevronRight, IconSearch } from "../icons";
 import { Markdown } from "./Markdown";
 import { Spinner } from "./primitives";
 import { useTexts } from "../texts";
+
+/**
+ * 空轮次列表的**稳定**引用。
+ *
+ * `model?.turns ?? []` 每次渲染都会新建一个数组，而它正是下面两个 `useMemo`
+ * 的依赖——数组每次都是新身份，`allCells` / `timeline` 于是每渲染必重算
+ * （时间线几百条记录，流式期间每帧都白烧一遍）。
+ */
+const NO_TURNS: TrajectoryTurn[] = [];
 import {
   formatDurationMs,
   formatElapsedSeconds,
@@ -70,7 +79,7 @@ function tabsFor(cell: TrajectoryCell, texts: TrajectoryTexts): Tab[] {
       // 只有系统提示词（拿不到请求配置/工具目录）→ 官方也只给一个页签
       if (cell.systemPromptDetail !== undefined && cell.optionsDetail === undefined) return [prompt];
       return cell.previousSystemPromptDetail !== undefined
-        ? [{ id: "diff", label: "Diff" }, prompt, tools]
+        ? [{ id: "diff", label: texts.tabDiff }, prompt, tools]
         : [prompt, tools];
     }
     case "compacted":
@@ -288,13 +297,14 @@ function Inspector({
                 : texts.timingNotAvailable,
             )}
             {row(
+              // 「输出」是**token 数**，不是时长：这一行从前拿 `timeSeconds` 当值画了一串
+              // 时间（`formatDurationMs`），而下面那段 `outputTokens === null` 的判据
+              // 说明本意就是输出 token 数（官方用量区同样是计数）。同页 400 行处的
+              // usage 行就是 `String(cell.usage.output)`，口径一致。
               texts.usageOutput,
-              formatDurationMs(
-                cell.assistantMetrics.outputTokens === null || cell.timeSeconds === null
-                  ? null
-                  : cell.timeSeconds * 1000,
-                texts,
-              ),
+              cell.assistantMetrics.outputTokens === null || cell.timeSeconds === null
+                ? texts.timingNotAvailable
+                : String(cell.assistantMetrics.outputTokens),
             )}
           </>
         ) : null}
@@ -495,6 +505,9 @@ function TrajectoryTimeline({
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const dragging = useRef<number | null>(null);
+  /** 正在进行的平移的收尾函数（卸载时兜底摘掉 document 监听，见 `startPan`）。 */
+  const panCleanup = useRef<(() => void) | undefined>(undefined);
+  useEffect(() => () => panCleanup.current?.(), []);
   /**
    * 视口：`zoom` = 放大倍数（1 = 全部铺满），`offset` = 左边界在 0..1 里的位置。
    *
@@ -524,9 +537,13 @@ function TrajectoryTimeline({
     const onUp = () => {
       document.removeEventListener("mousemove", onMove);
       document.removeEventListener("mouseup", onUp);
+      panCleanup.current = undefined;
     };
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);
+    // 记下来给卸载用：拖动中切走视图（`panel` 换掉、会话切换）时这两个监听还挂在
+    // document 上，它们引用着已经卸载组件的 setState——跟手到底那个 `onUp` 永远等不到。
+    panCleanup.current = onUp;
   };
   /** 归一化**域位置** → 屏幕比例（0..1；渲染时乘 100% 就是 CSS 位置）。 */
   const screen = (value: number) => trajectoryScreenFraction(value, offset, zoom);
@@ -805,7 +822,7 @@ export function TrajectoryView({
     ledger.scrollTop += rect.top - box.top;
   }, [reveal]);
 
-  const turns = model?.turns ?? [];
+  const turns = model?.turns ?? NO_TURNS;
   const allCells = useMemo(() => turns.flatMap((turn) => turn.cells), [turns]);
   const timeline = useMemo(() => deriveTrajectoryTimeline(allCells, mode), [allCells, mode]);
   /** 落在时间线选区里的记录（账本行加 `is-in-range`）。 */
@@ -940,6 +957,15 @@ export function TrajectoryView({
             isMatch ? " is-match" : ""
           }`}
           aria-selected={selected?.index === cell.index}
+          // 键盘可达：详情检查器（参数 / 结果 / Schema / 计时）只从这里进，
+          // 只有 onClick 的话键盘用户永远看不到那些页签。
+          tabIndex={0}
+          role="button"
+          onKeyDown={(event) => {
+            if (event.key !== "Enter" && event.key !== " ") return;
+            event.preventDefault();
+            setSelected({ index: cell.index });
+          }}
           onClick={() => setSelected({ index: cell.index })}
           onDoubleClick={() => {
             if (turnId !== null && turnCollapsible(turn)) {

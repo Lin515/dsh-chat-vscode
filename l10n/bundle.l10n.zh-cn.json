@@ -7,7 +7,6 @@
   "The DSH server is not running. Click “Start server” to launch one.": "后台服务器没有在运行。请点「启动服务器」拉起一套。",
   "The DSH server has been stopped.": "DSH 服务器已停止。",
   "Log tail:\n{0}": "日志尾部：\n{0}",
-  "The dsh web process exited (code={0} signal={1})": "dsh web 进程已退出（code={0} signal={1}）",
 
   "Access token rejected": "访问令牌无效",
   "The DSH server requires an access token": "DSH 服务器需要访问令牌",

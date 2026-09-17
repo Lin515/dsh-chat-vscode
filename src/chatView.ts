@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import * as vscode from "vscode";
 import type { HostToWebview, WebviewToHost } from "./shared/ipc";
 import { jsonSafeFrame } from "./shared/wire";
@@ -198,7 +198,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       webview.onDidReceiveMessage((message: WebviewToHost) => {
         // 任何来自窗口的消息都算它的活动；指令按这个窗口路由
         this.controller.noteActiveView(viewId);
-        void this.controller.handle(message, viewId);
+        // **接住异常**：`handle` 是 async，帧又来自 webview（形状不受类型系统约束），
+        // 一条残缺的帧不该变成扩展宿主里的 unhandled rejection——那既没有全局处理器，
+        // 用户也只会看到"某个功能莫名不动了"。记日志、继续服务下一条消息。
+        this.controller.handle(message, viewId).catch((error: unknown) => {
+          this.log(`[view] 处理界面消息失败（type=${String((message as { type?: unknown })?.type)}）：${String(error)}`);
+        });
       }),
       onDispose(() => {
         this.viewWebviews.delete(viewId);
@@ -274,8 +279,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 const RESTORE_READY_TIMEOUT_MS = 8_000;
 
 function makeNonce(): string {
-  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-  let text = "";
-  for (let i = 0; i < 32; i += 1) text += chars.charAt(Math.floor(Math.random() * chars.length));
-  return text;
+  // CSP nonce 是安全令牌，用密码学随机源而不是 `Math.random()`
+  // （后者的内部状态可从少量输出反推，虽然本页 HTML 是静态模板、当前无可注入点）
+  return randomBytes(16).toString("base64");
 }

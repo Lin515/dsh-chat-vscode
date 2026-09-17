@@ -10,7 +10,7 @@
 import assert from "node:assert";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 // 必须排在最前面：把会合根目录指到本次断言专用的临时目录（模块求值期读一次）
 const TEST_ROOT = mkdtempSync(join(tmpdir(), "dsh-chat-supervisor-"));
 process.env.DSH_CHAT_SUPERVISOR_DIR = TEST_ROOT;
@@ -203,6 +203,49 @@ function stateOf(patch: Record<string, unknown> = {}) {
   );
   // 反过来：新扩展遇到旧守护进程（没有这条消息）当然也不受影响——它只是永远收不到 error
   check("旧的 goodbye/state 仍然照旧解出来", decodeServerMessage(encodeMessage({ t: "goodbye", reason: "idle" }).trim())?.t === "goodbye");
+}
+
+// ---------- 5.9 单行上限：对面一直发不含换行的数据，缓冲不能无限涨 ----------
+
+{
+  const { LineDecoder, MAX_LINE_CHARS } = await import("../src/dsh/supervisorWire");
+  const decoder = new LineDecoder();
+  // 正常的一行照旧切得开
+  const lines = decoder.push('{"t":"ping"}\n');
+  check("正常的一行照旧切出来", lines.length === 1 && lines[0] === '{"t":"ping"}');
+
+  // 超长半行：缓冲被丢掉、标记成 overflowed，后续 chunk 一律忽略
+  const flooded = decoder.push("x".repeat(MAX_LINE_CHARS + 1));
+  check("超长半行不返回任何行", flooded.length === 0);
+  check("超长之后标记 overflowed（调用方据此断开连接）", decoder.isOverflowed);
+  check(
+    "溢出之后不再解析后续内容（缓冲不会再涨）",
+    decoder.push('{"t":"state"}\n'.repeat(1000)).length === 0,
+  );
+  // reset 之后恢复可用（同一对象复用）
+  decoder.reset();
+  check("reset 后恢复可解析", decoder.push('{"t":"ping"}\n').length === 1);
+}
+
+// ---------- 5.10 分组名不能跳出状态根目录 ----------
+
+{
+  // 分组在生产里是 sha256 前缀，但它是**参数**：探针/手工启动也能传
+  const traversal = supervisorDirectory("..");
+  check(
+    "全点分组被折成 default（`join(root, '..')` 会跳出状态根）",
+    traversal === join(supervisorRoot(), "default"),
+    traversal,
+  );
+  check("`.` / 空串同样折成 default", supervisorDirectory(".") === join(supervisorRoot(), "default") && supervisorDirectory("") === join(supervisorRoot(), "default"));
+  // 含分隔符的分组被压成一层目录名：结果必须**正好**是 root 下的直接子项
+  const nested = supervisorDirectory("a/../b");
+  check(
+    "分组里的分隔符被过滤（结果仍是 root 的直接子项）",
+    nested.startsWith(supervisorRoot() + sep) &&
+      !nested.slice(supervisorRoot().length + 1).includes(sep),
+    nested,
+  );
 }
 
 // ---------- 6. 启动锁：独占、只删自己的、持有者已死可回收 ----------

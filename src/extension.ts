@@ -140,7 +140,11 @@ function registerContributions(context: vscode.ExtensionContext, host: Contribut
   const { controller, provider, secondaryProvider, server } = host;
 
   context.subscriptions.push(
-    output ?? vscode.window.createOutputChannel("DSH Chat"),
+    // 必须走 `outputChannel()`（它会**赋值**给模块级的 `output`）：写成
+    // `output ?? vscode.window.createOutputChannel(...)` 的话那个新建的通道不会被记住，
+    // 于是第一次真正落日志时懒加载又建一个——输出下拉里从此有**两个** 「DSH Chat」，
+    // 其中一个永远是空的（2026-09-17 修）。
+    outputChannel(),
     controller,
     provider,
     // 必须注册 server 本身：deactivate 时 dispose 会**关掉本窗口与 supervisor 的长连接**

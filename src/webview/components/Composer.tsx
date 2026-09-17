@@ -239,7 +239,13 @@ export function Composer({
 
   // 运行结束后把焦点还给输入框
   useEffect(() => {
-    if (!state.running) textareaRef.current?.focus();
+    if (state.running) return;
+    // 但**别从别人手里抢**：用户这时可能在历史抽屉的搜索框、目标编辑框里打字
+    // （这一轮结束时把焦点抽走，正在敲的字就断了）。只有焦点空闲（body）或本来
+    // 就在输入框里时才还回去。
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && active !== document.body && active !== textareaRef.current) return;
+    textareaRef.current?.focus();
   }, [state.running]);
 
   /**
@@ -1322,7 +1328,14 @@ function GoalBar({ goal }: { goal: GoalView | undefined }) {
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === "Enter") save();
-            else if (event.key === "Escape") setDraft(undefined);
+            else if (event.key === "Escape") {
+              // **必须吃掉这次 ESC**：不 stopPropagation 的话，窗口层那个
+              // 「ESC = 停止生成」的兜底监听会跟着触发——用户只是想取消改目标，
+              // 结果把正在跑的这一轮也中止了（ESC 优先级链见 App.tsx）。
+              event.preventDefault();
+              event.stopPropagation();
+              setDraft(undefined);
+            }
           }}
         />
         <button className="goal-action" title={texts.goalSave} onClick={save}>

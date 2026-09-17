@@ -50,18 +50,46 @@ export type ServerMessage =
    */
   | { t: "error"; kind: string; message: string };
 
-/** 一行一行地切分流入的文本（TCP 不保证消息边界，必须自己攒缓冲）。 */
+/**
+ * 一行一行地切分流入的文本（TCP 不保证消息边界，必须自己攒缓冲）。
+ *
+ * **缓冲有上限**（`MAX_LINE_CHARS`）：对面（同一台机器上的任意进程，或版本不匹配的
+ * 另一端）只要一直发不含换行的数据，`buffer` 就会无限长，把**长期存活的守护进程**
+ * 或扩展宿主拖到内存耗尽。超限时丢弃半行并以 `overflowed` 标记，由调用方决定
+ * 断开连接（见 `supervisorClient` 与 `src/supervisor/main.ts`）。
+ */
 export class LineDecoder {
   private buffer = "";
+  private overflowed = false;
 
   /** 喂进一段文本，返回其中**完整**的行（不含换行符）。 */
   push(chunk: string): string[] {
+    if (this.overflowed) return [];
     this.buffer += chunk;
     const lines = this.buffer.split("\n");
     this.buffer = lines.pop() ?? "";
+    if (this.buffer.length > MAX_LINE_CHARS) {
+      // 半行超限：丢掉它并进入"溢出"状态（后续 chunk 直接忽略，直到 `reset`）
+      this.buffer = "";
+      this.overflowed = true;
+      return [];
+    }
     return lines.map((line) => line.replace(/\r$/, "")).filter((line) => line.length > 0);
   }
+
+  /** 缓冲是否已经因单行超长而失效（调用方据此断开这条连接）。 */
+  get isOverflowed(): boolean {
+    return this.overflowed;
+  }
+
+  reset(): void {
+    this.buffer = "";
+    this.overflowed = false;
+  }
 }
+
+/** 单行上限：协议报文都是几百字节级，1 MiB 已经远超任何合法消息。 */
+export const MAX_LINE_CHARS = 1024 * 1024;
 
 /** 编码一条消息（含行尾换行）。 */
 export function encodeMessage(message: ClientMessage | ServerMessage): string {
@@ -107,14 +135,73 @@ export function decodeServerMessage(line: string): ServerMessage | undefined {
     return { t: "error", kind: value.kind, message: value.message };
   }
   if (value.t === "state") {
-    // 状态本身由 `readState` 的宽容规则把关；这里只保证"是个对象或 null"
+    // 形状**逐字段校验**，不只判"是个对象"：这份状态来自 socket 的另一端，而它会
+    // 决定客户端接下来把启动令牌与 cookie 发到哪个 origin（`onStatePush` → `baseUrl`）。
+    // `readState` 那套宽容规则管的是**文件**那条路，这条路得自己把住。
     const state = value.state;
     const clients = typeof value.clients === "number" && value.clients >= 0 ? value.clients : undefined;
     if (state === null) return { t: "state", state: null, clients };
-    if (state && typeof state === "object") return { t: "state", state: state as SupervisorState, clients };
-    return undefined;
+    const checked = checkState(state);
+    return checked ? { t: "state", state: checked, clients } : undefined;
   }
   return undefined;
+}
+
+/**
+ * 校验 socket 推来的状态形状（不认识就整条丢掉）。
+ *
+ * 只做**形状**收窄，不改写语义：`baseUrl` 必须是 http(s) 且能解析，`token` 必须是
+ * 字符串，pid/时刻必须是整数。**刻意不限制 host 必须是回环**——用户完全可以让自己的
+ * `dsh web` 绑到局域网地址（`--host`），那种配置是合法的；能写这两个文件/连这条管道的
+ * 攻击者本来就已经以同一用户身份运行了。
+ */
+function checkState(value: unknown): SupervisorState | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const raw = value as Record<string, unknown>;
+  const supervisorPid = raw.supervisorPid;
+  const startedAt = raw.startedAt;
+  const command = raw.command;
+  const socket = raw.socket;
+  if (typeof supervisorPid !== "number" || !Number.isInteger(supervisorPid) || supervisorPid <= 0) return undefined;
+  if (typeof startedAt !== "number" || !Number.isFinite(startedAt)) return undefined;
+  if (typeof command !== "string" || typeof socket !== "string") return undefined;
+  const baseUrl = typeof raw.baseUrl === "string" ? raw.baseUrl : undefined;
+  if (baseUrl !== undefined && !isHttpUrl(baseUrl)) return undefined;
+  const token = typeof raw.token === "string" ? raw.token : undefined;
+  const serverPid = typeof raw.serverPid === "number" && Number.isInteger(raw.serverPid) ? raw.serverPid : undefined;
+  const idleSec = typeof raw.idleSec === "number" ? raw.idleSec : undefined;
+  const runtimeRaw = raw.runtime as Record<string, unknown> | undefined;
+  const runtime =
+    runtimeRaw && typeof runtimeRaw.execPath === "string" && typeof runtimeRaw.node === "string"
+      ? {
+          execPath: runtimeRaw.execPath,
+          node: runtimeRaw.node,
+          electron: typeof runtimeRaw.electron === "string" ? runtimeRaw.electron : undefined,
+        }
+      : undefined;
+  return {
+    version: typeof raw.version === "number" ? raw.version : 1,
+    supervisorPid,
+    startedAt,
+    serverPid,
+    baseUrl,
+    token,
+    command,
+    idleSec: idleSec ?? 0,
+    socket,
+    serverStartedAt: typeof raw.serverStartedAt === "number" ? raw.serverStartedAt : undefined,
+    starting: raw.starting === true,
+    runtime,
+  };
+}
+
+function isHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
 }
 
 function parseObject(line: string): Record<string, unknown> | undefined {

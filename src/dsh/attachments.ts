@@ -87,6 +87,15 @@ export interface ClassifyInput {
   directory?: boolean;
   /** 当前模型是否接受图片输入；false 时图片无法内嵌。 */
   acceptsImage: boolean;
+  /**
+   * 图片**内联**上限（字节）：超过它就不读字节、改按普通文件上传。
+   *
+   * 为什么要有：图片走的是「读成字节 → base64 → 内容块」，`readFileSync` 是**同步**的
+   * 且 base64 再胀 4/3——一张几百 MB 的图会把扩展宿主冻住并把内存顶爆，而服务端
+   * 本来也会按自己的 `maxImageBytes` 拒绝它（那份上限由 `imageLimits` 投影给出，
+   * 界面侧由调用方传入；缺省时调用方给一个保守的硬上限）。
+   */
+  maxImageBytes?: number;
   /** 读取失败时的回调（默认静默）。 */
   onError?: (message: string) => void;
 }
@@ -106,6 +115,12 @@ export function classifyPath(input: ClassifyInput): ClassifyOutcome {
   if (mediaType) {
     if (!acceptsImage) return { kind: "path", reason: "image-unsupported" };
     try {
+      // 先量大小再读字节：超大图不进内容块，改按普通文件上传（调用方据此提示原因）
+      const size = statSync(path).size;
+      if (input.maxImageBytes !== undefined && size > input.maxImageBytes) {
+        onError?.(`图片超过内联上限（${size} > ${input.maxImageBytes} 字节），改按文件上传：${path}`);
+        return { kind: "attachment", attachment: { id: randomUUID(), kind: "file", path, name } };
+      }
       const bytes = readFileSync(path);
       return {
         kind: "attachment",

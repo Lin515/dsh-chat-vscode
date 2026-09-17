@@ -9,8 +9,6 @@ import type { HostToWebview, WebviewToHost } from "../shared/ipc";
 
 interface VsCodeApi {
   postMessage(message: unknown): void;
-  getState(): unknown;
-  setState(state: unknown): void;
 }
 
 declare function acquireVsCodeApi(): VsCodeApi;
@@ -25,15 +23,6 @@ function getApi(): VsCodeApi {
 /** 向宿主发送一条请求。 */
 export function post(message: WebviewToHost): void {
   getApi().postMessage(message);
-}
-
-/** 读取 VS Code 为 webview 保留的会话状态（面板重建后恢复草稿等）。 */
-export function getPersistedState<T>(): T | undefined {
-  return getApi().getState() as T | undefined;
-}
-
-export function setPersistedState(state: unknown): void {
-  getApi().setState(state);
 }
 
 type Listener = (message: HostToWebview) => void;

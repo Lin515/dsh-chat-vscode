@@ -129,7 +129,13 @@ export function ToolRow({ tool, diffLayout }: { tool: ToolCallView; diffLayout?:
   const runningBody = running;
   // 工具展开区（diff / 卡片 / IN-OUT）打开时回到顶部：内容基本都已成型，
   // 打开就该从第一行读起；后续到达的更新也不该抢用户的滚动位置（用户 2026-09-16 口径）
-  useStickyBody(bodyRef, open && (hasDiff || showOutput || hasCard));
+  //
+  // **两份 ref，不是一份**（2026-09-17 修）：diff 段与「结果 / 卡片」段会**同时**存在
+  // （编辑类出错时 `hasDiff && showOutput`）。从前它们共用 `bodyRef`，而 React 只保留
+  // 最后绑上的那个元素——于是 diff 那一段永远拿不到「打开回顶」与「划选冻结」。
+  const diffRef = useRef<HTMLDivElement>(null);
+  useStickyBody(diffRef, open && hasDiff);
+  useStickyBody(bodyRef, open && !hasDiff && (showOutput || hasCard || Boolean(codeCard)));
   // 结果行仍可能被后续更新刷新；用户在其中划选时冻结渲染，保住选区
   const shownOutput = useSelectionFreeze(bodyRef, tool.output ?? "");
 
@@ -257,7 +263,7 @@ export function ToolRow({ tool, diffLayout }: { tool: ToolCallView; diffLayout?:
         </div>
       ) : null}
       {hasDiff && diff ? (
-        <div ref={bodyRef} className="row-body diff-body">
+        <div ref={diffRef} className="row-body diff-body">
           {/* 写入节点固化单栏：整篇新建，双栏会有一整列是空的（用户 2026-09-16 口径） */}
           <DiffView hunks={diff} layout={diffLayout} unified={classifyTool(tool.name) === "write"} />
         </div>
@@ -962,6 +968,16 @@ export function QuestionCard({
                 onKeyDown={(event) => {
                   // 输入法组字中的 Enter 是在选字，不是快捷键
                   if (event.nativeEvent.isComposing) return;
+                  // ESC：**先归问卷管**。它是「取消这次自定义回答」，不是「停止生成」——
+                  // 不拦的话窗口层那个兜底监听会把正在跑的这一轮直接中止，用户
+                  // 正在写的半截答案连同卡片一起被结算掉。文字按既有口径保留
+                  // （与再点一下取消选中同一条规则：只取消选中，不清空内容）。
+                  if (event.key === "Escape") {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    if (customSelected) toggleCustom(item.id, item.multiSelect);
+                    return;
+                  }
                   // 多行输入：Enter（含 Shift+Enter）留给换行，Ctrl/Cmd+Enter 才继续
                   if (event.key !== "Enter" || !(event.ctrlKey || event.metaKey)) return;
                   event.preventDefault();

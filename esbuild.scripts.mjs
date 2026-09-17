@@ -47,7 +47,6 @@ const entries = {
   "build/session-cookie.test.mjs": "scripts/sessionCookie.test.ts",
   "build/tool-view.test.mjs": "scripts/toolView.test.ts",
   "build/tool-card.test.mjs": "scripts/toolCard.test.ts",
-  "build/text-file.test.mjs": "scripts/textFile.test.ts",
   "build/thinking-stream.test.mjs": "scripts/thinkingStream.test.ts",
   "build/injected.test.mjs": "scripts/injected.test.ts",
   "build/unknown-event.test.mjs": "scripts/unknownEvent.test.ts",

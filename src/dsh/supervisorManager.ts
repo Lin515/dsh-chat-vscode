@@ -52,7 +52,6 @@ import {
 } from "./supervisorProtocol";
 import {
   SupervisorConnection,
-  connectToSupervisor,
   ensureSupervisor,
   waitForReadyState,
   type SupervisorLauncher,
@@ -275,11 +274,13 @@ export class SupervisorManager {
   logTail(lines = 12): string {
     try {
       const text = readFileSync(this.logPath, "utf8");
-      return text
-        .split(/\r?\n/)
-        .filter(Boolean)
-        .slice(-lines)
-        .join("\n");
+      return redactSecrets(
+        text
+          .split(/\r?\n/)
+          .filter(Boolean)
+          .slice(-lines)
+          .join("\n"),
+      );
     } catch {
       return "";
     }
@@ -469,7 +470,11 @@ export class SupervisorManager {
   }
 
   private async bringUp(): Promise<ServerInfo> {
-    this.disposed = false;
+    // **不重置 `disposed`**（2026-09-17 修）：从前这里写的是 `this.disposed = false`，
+    // 于是"窗口已经 dispose、但有一轮心跳正卡在 await 里"时，那一轮会把管理器**复活**
+    // ——重开 supervisor 长连接、重挂 5 秒心跳，还会让后台因为"还有人在用"而不按空闲退场。
+    // dispose 是单向的：复活只能由新建一个管理器来做。
+    if (this.disposed) throw new WaitCancelledError();
     this.stoppedByUser = false;
     this.setStatus({ state: "starting" });
     const wait = this.beginWait();
@@ -535,8 +540,12 @@ export class SupervisorManager {
       usable: (state) => this.usable(state),
     });
     if (ensured.error) {
-      this.setStatus({ state: "failed", detail: ensured.error });
-      throw new Error(ensured.error);
+      // 走 `@serverSpawnFailed` 标记而不是直接写文案：这条详情既进连接条（界面词典
+      // 按 `dshChat.language` 翻），也会经 `resolveForVsCode` 进 VS Code 原生通知
+      // （按 VS Code 自己的语言翻）——直接拼中文的话英文用户看到的是中文。
+      const detail = `@serverSpawnFailed:${ensured.error}`;
+      this.setStatus({ state: "failed", detail });
+      throw new Error(detail);
     }
     this.launched = ensured.launched;
     // 已经就绪的话直接用；否则等（supervisor 正在起 dsh）
@@ -650,6 +659,12 @@ export class SupervisorManager {
     const ok = await connection.open();
     if (!ok) {
       this.options.log("[supervisor] 连不上 supervisor 的 socket，将在心跳里重试");
+      return;
+    }
+    // 连接是异步建立的：等回来时窗口可能已经退出了。那就**别挂上去**——
+    // 挂上就等于"本窗口还在用"，后台会因此不按空闲退场，而这条连接已经没人会关它。
+    if (this.disposed) {
+      connection.close();
       return;
     }
     this.connection = connection;
@@ -880,10 +895,14 @@ export class SupervisorManager {
 /** 心跳节拍：与旧实现一致（5s）。 */
 const HEARTBEAT_MS = 5_000;
 
-/** 只有 socket 连不上、且 supervisor 进程也活着时，等它一次（避免立刻重起一套）。 */
-export async function waitForSocket(socketPath: string, timeoutMs = 3_000): Promise<boolean> {
-  const socket = await connectToSupervisor(socketPath, timeoutMs);
-  if (!socket) return false;
-  socket.destroy();
-  return true;
+/**
+ * 把日志尾巴里的**启动令牌**抹掉再给人看。
+ *
+ * `supervisor.log` 里同时有 supervisor 自己的行和 dsh 的 stdout/stderr，而 dsh 启动时
+ * 会把 `dsh web: http://127.0.0.1:<port>/?token=<启动令牌>` 打在那一行上（supervisor
+ * 正是靠解析它拿到端口与令牌的）。日志尾巴会进连接条的错误详情、诊断弹窗与输出通道，
+ * 令牌因此会**顺手**跟着露出去——它是换会话 cookie 的凭据，不该出现在界面上。
+ */
+function redactSecrets(text: string): string {
+  return text.replace(/([?&]token=)[^\s&"']+/gi, "$1<已隐去>");
 }

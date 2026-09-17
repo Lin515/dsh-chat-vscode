@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join, relative } from "node:path";
+import { basename, join, relative, resolve, sep } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import * as vscode from "vscode";
 import type {
@@ -20,7 +20,7 @@ import type {
 } from "../shared/chat";
 import type { HostToWebview, WebviewToHost } from "../shared/ipc";
 import { SessionAdapter, type ImageRef } from "./adapter";
-import { classifyDroppedBytes, classifyPath, formatPathList, isDirectoryPath, isImagePath } from "./attachments";
+import { classifyDroppedBytes, classifyPath, DROP_BYTES_LIMIT, formatPathList, isDirectoryPath, isImagePath } from "./attachments";
 import { ConfigChangeRouter } from "./configChanges";
 import { fileChangeKind, hasWorkingChange, isNotFoundError, resolveChipPath, type FileExistence, type GitChangeStateLike } from "./fileChange";
 import { shouldContinuePaging } from "./historyPaging";
@@ -198,6 +198,36 @@ function answersByQuestionId(
 function optionalNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
+
+/**
+ * 会话 id 能不能当一个**纯目录名**用。
+ * 会话日志目录名就是会话 id（`~/.dsh/sessions/<工作区>/<会话id>`），而这个 id 是
+ * **服务端给的**——`dshChat.url` 指向别人的服务器时，那份列表由对方决定。删除会话
+ * 要拿它 `rmSync(recursive)`，所以这里按肯定证据收窄：只有「不含路径分隔符、不是
+ * `.`/`..`、不含 Windows 非法字符」的 id 才放行（dsh 的 id 是 `randomUUID()` 一类的
+ * 不透明串，正常值天然满足）。
+ */
+function isSafeSessionId(sessionId: string): boolean {
+  if (!sessionId || sessionId === "." || sessionId === "..") return false;
+  if (sessionId.length > 200) return false;
+  return !/[\\/:*?"<>|]/.test(sessionId);
+}
+
+/**
+ * `DROP_BYTES_LIMIT` 对应的 base64 字符数上限（+3 给 padding 波动留余量）。
+ *
+ * 界面发来的 base64 先比长度再解码：解码一个几百 MB 的字符串本身就要先分配一份
+ * 同量级的内存，而"它超限"这件事只看长度就够了。
+ */
+const MAX_BASE64_CHARS = Math.ceil(DROP_BYTES_LIMIT / 3) * 4 + 3;
+
+/**
+ * 图片**内联**（读成字节做内容块）的保守硬上限：64 MB。
+ *
+ * 只在服务端没给出 `imageLimits.maxImageBytes` 时用。真实的服务端上限通常远小于
+ * 此值；这条只是为了兜住「同步读一个巨大文件」的最坏情况。
+ */
+const IMAGE_INLINE_HARD_CAP = 64 * 1024 * 1024;
 
 /**
  * 内建 git 扩展导出对象的**结构**视图。
@@ -655,6 +685,12 @@ export class ChatController implements vscode.Disposable {
       // 「加载更早」的可用性：重放只在 follow 流开窗那一刻发过一次 patch，
       // 第二个窗口绑上已有会话 / 页面重载后要靠快照补回
       hasMoreHistory: scope?.adapter?.hasMoreHistory() ?? false,
+      // **「正在加载更早」也必须进快照**（2026-09-17 修）：它此前只有 `loadMore` 那条
+      // 链会发 patch（`true` → 取完再 `false`），而 patch 是**按会话定向投递**的——
+      // 取历史的途中切走会话，那条 `false` 发给了旧会话（那儿已经没有窗口），
+      // 新会话的快照又不带这个键（`mergeWirePatch` 只在收到 `null` 时才删键），
+      // 于是界面永远停在「正在加载更早消息…」，按钮不可点、滚动加载也不再触发。
+      historyLoading: scope?.historyLoading ?? false,
       contextBreakdown: scope?.contextBreakdown,
       sessionStats: scope?.sessionStats,
       tokenUsage: scope?.tokenUsage,
@@ -1610,6 +1646,15 @@ export class ChatController implements vscode.Disposable {
       this.log(`[sessions] 删除失败：列表中不存在会话 ${sessionId}`);
       return;
     }
+    // **会话 id 必须是一个纯目录名**：它来自服务端列表（`dshChat.url` 指向别人
+    // 的服务器时那份列表是对方给的），而下面要拿它拼路径去 `rmSync(recursive)`。
+    // 不拦的话 `..\..\..\Desktop` 这种 id 会删掉会话根目录之外的任意目录
+    // （`findSessionDir` 的 containment 是第二道，这里是不该让脏 id 走到那里的第一道）。
+    if (!isSafeSessionId(sessionId)) {
+      this.log(`[sessions] 拒绝删除：会话 id 不是安全目录名（${sessionId}）`);
+      this.reportError(vscode.l10n.t("Failed to delete the session"), new Error("unsafe session id"));
+      return;
+    }
     if (session.running) {
       void vscode.window.showWarningMessage(
         vscode.l10n.t("This session is running and cannot be deleted."),
@@ -1660,6 +1705,7 @@ export class ChatController implements vscode.Disposable {
 
   /** 在 `~/.dsh/sessions` 的各工作区子目录里找会话日志目录（目录名=会话 id）。 */
   private findSessionDir(sessionId: string): string | undefined {
+    if (!isSafeSessionId(sessionId)) return undefined;
     const root = join(homedir(), ".dsh", "sessions");
     let entries: string[];
     try {
@@ -1667,8 +1713,12 @@ export class ChatController implements vscode.Disposable {
     } catch {
       return undefined;
     }
+    const rootResolved = resolve(root);
     for (const entry of entries) {
-      const candidate = join(root, entry, sessionId);
+      const candidate = resolve(root, entry, sessionId);
+      // 第二道：拼出来的路径必须**真的在会话根目录里面**（`..`、绝对路径、
+      // Windows 的盘符跳转都靠这一条兜住）。宁可删不掉，也不删错地方。
+      if (candidate !== rootResolved && !candidate.startsWith(rootResolved + sep)) continue;
       try {
         if (statSync(candidate).isDirectory()) return candidate;
       } catch {
@@ -2600,6 +2650,8 @@ export class ChatController implements vscode.Disposable {
     const sessionId = this.eventSessions.get(eventId);
     const scope = sessionId ? this.scopes.get(sessionId) : undefined;
     scope?.adapter?.cancelEvent(eventId);
+    // 结算过的事件不再需要「事件 → 会话」这条映射（见 `eventSessions` 的字段注释）
+    this.eventSessions.delete(eventId);
   }
 
   /** 把一条审批/提问事件交给域的适配器（即时到达与挂起回放共用）。 */
@@ -3012,6 +3064,8 @@ export class ChatController implements vscode.Disposable {
         const sessionId = this.eventSessions.get(eventId);
         const scope = sessionId ? this.scopes.get(sessionId) : undefined;
         scope?.adapter?.resolveApproval(eventId, message.approved ? "approved" : "rejected");
+        // 结算完就忘掉这条映射（`eventSessions` 从前只增不删，跨会话累积）
+        this.eventSessions.delete(eventId);
         break;
       }
 
@@ -3030,6 +3084,8 @@ export class ChatController implements vscode.Disposable {
         // 答的那份只有界面知道（服务端的答案要等 `ask_user_question` 的工具
         // 结果回来才进日志），所以这里先写进去，工具结果到了再覆盖成权威值。
         scope?.adapter?.resolveQuestion(eventId, answersByQuestionId(message.answers));
+        // 同上：结算过的事件不再需要这条映射
+        this.eventSessions.delete(eventId);
         break;
       }
 
@@ -3054,6 +3110,7 @@ export class ChatController implements vscode.Disposable {
         // 卡片收场（标成「已取消」）：与 Host 撤回走同一条路径，两边都不再是
         // 「待处理」，输入区把位置让出来
         scope?.adapter?.cancelEvent(eventId);
+        this.eventSessions.delete(eventId);
         break;
       }
 
@@ -3066,26 +3123,8 @@ export class ChatController implements vscode.Disposable {
         await this.applyBytesForView(viewId, message.files, message.unreadable, message.tooLarge);
         break;
 
-      case "addMention": {
-        // `@` 选中一律是**引用芯片**，不上传、不读内容（官方 dsh-client-ui-reference：
-        // @ 只发 `@path` / `@dir/` token，模型自己用 read 工具读；逐字节上传只归
-        // 附件按钮 / 拖拽入口）。目录靠结尾斜杠标记（`@dir/`）。
-        this.addReference(viewId, message.path, message.kind);
-        break;
-      }
-
-      case "addFolderReference":
-        // 用户明确要求「整个目录作为引用」（`@` 列表右侧的按钮）
-        this.addReference(viewId, message.path, "directory");
-        break;
-
       case "retryUpload":
         this.retryUpload(viewId, message.id);
-        break;
-
-      case "runCommandLine":
-        // 命令面板里点的一条命令（不是手打的正文）
-        await this.runCommand(viewId, message.line);
         break;
 
       case "branchFrom":
@@ -3563,6 +3602,9 @@ export class ChatController implements vscode.Disposable {
         ...item,
         // 未拿到模型能力时按「支持」处理，与服务端最终校验一致
         acceptsImage,
+        // 图片内联上限：优先用服务端自己的 `imageLimits.maxImageBytes`（这正是那份
+        // 投影的用途），拿不到时给一个保守硬上限——同步读一张几百 MB 的图会冻住宿主
+        maxImageBytes: this.scopeOfView(viewId)?.imageLimits?.maxImageBytes ?? IMAGE_INLINE_HARD_CAP,
         onError: (message) => this.log(`[attach] ${message}`),
       });
       if (outcome.kind === "attachment") {
@@ -3571,6 +3613,10 @@ export class ChatController implements vscode.Disposable {
           const attachment = outcome.attachment;
           list.push(attachment);
           this.uploadAttachment(viewId, attachment);
+          // 图片被降级成文件上传时说明原因（否则用户只看到「我加的是图，怎么成了文件」）
+          if (isImagePath(item.path)) {
+            this.emitToView(viewId, { type: "toast", level: "warn", text: `@imageTooLarge:${item.name}` });
+          }
           continue;
         }
         list.push(outcome.attachment);
@@ -3619,13 +3665,28 @@ export class ChatController implements vscode.Disposable {
     const list = this.attachmentsBySession.get(key) ?? [];
     const acceptsImage = this.scopeOfView(viewId)?.model?.acceptsImage !== false;
     const pending: { attachment: Attachment; bytes: Uint8Array }[] = [];
+    const rejected: string[] = [];
 
     for (const file of files) {
+      // **宿主这一侧也要拦**：`DROP_BYTES_LIMIT` 原本只在界面里判（`dropAttach.ts`），
+      // 而帧是界面发来的、形状不受类型系统约束——没有这一道，一条超大的 base64
+      // 会让宿主先分配一份解码后的字节再发现它太大。按 base64 长度先判，
+      // 连解码都不做（4/3 关系，留 3 字节余量给 padding）。
+      if (file.base64.length > MAX_BASE64_CHARS) {
+        this.log(`[attach] 拖放的文件超过 ${DROP_BYTES_LIMIT} 字节，已拒绝：${file.name}`);
+        rejected.push(file.name);
+        continue;
+      }
       let bytes: Uint8Array;
       try {
         bytes = new Uint8Array(Buffer.from(file.base64, "base64"));
       } catch (error) {
         this.log(`[attach] 拖放解码失败 ${file.name}：${this.describeError(error)}`);
+        continue;
+      }
+      if (bytes.length > DROP_BYTES_LIMIT) {
+        this.log(`[attach] 拖放的文件超过 ${DROP_BYTES_LIMIT} 字节，已拒绝：${file.name}`);
+        rejected.push(file.name);
         continue;
       }
       const outcome = classifyDroppedBytes({ name: file.name, bytes, acceptsImage });
@@ -3644,7 +3705,7 @@ export class ChatController implements vscode.Disposable {
     for (const name of unreadable) {
       this.emitToView(viewId, { type: "toast", level: "warn", text: `@dropUnreadable:${name}` });
     }
-    for (const name of tooLarge) {
+    for (const name of [...tooLarge, ...rejected]) {
       this.emitToView(viewId, { type: "toast", level: "warn", text: `@dropTooLarge:${name}` });
     }
   }
@@ -3739,25 +3800,6 @@ export class ChatController implements vscode.Disposable {
     fn(list);
     this.attachmentsBySession.set(key, list);
     this.pushAttachmentsForView(viewId, list);
-  }
-
-  /** 加一个 `@path` 引用芯片（不内联、不上传，正文里只出现路径 token）。 */
-  private addReference(viewId: string, path: string, kind: "file" | "directory"): void {
-    // 含控制字符或引号的路径无法构成合法 mention：退回把路径插到光标处
-    if (formatFileMention(path, kind) === undefined) {
-      this.emitToView(viewId, { type: "ui/insertText", text: `"${path}"` });
-      return;
-    }
-    this.mutateAttachmentsForView(viewId, (list) => {
-      if (list.some((a) => a.path === path && a.kind === "reference")) return;
-      list.push({
-        id: randomUUID(),
-        kind: "reference",
-        path,
-        name: kind === "directory" ? `${basename(path)}/` : this.relativePath(path),
-        referenceKind: kind,
-      });
-    });
   }
 
   /** 重传一个失败的文件附件。 */
@@ -4602,7 +4644,4 @@ export class ChatController implements vscode.Disposable {
  * 队列里「用户等待发送的消息」的视图：纯映射，见 dsh/queueView.ts。
  * 放在那边是为了让冒烟测试能直接验证，不必启动扩展宿主。
  */
-
-/** 供日志通道使用的时间戳；实现已移到 `dsh/hostLog.ts`（日志写入器之家），这里只做转出。 */
-export { stamp } from "./hostLog";
 

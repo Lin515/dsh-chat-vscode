@@ -82,29 +82,6 @@ export function connectToSupervisor(socketPath: string, timeoutMs = 3_000): Prom
   });
 }
 
-/** 连接建立后 supervisor 一定会先回一份状态；等它（拿不到返回 undefined）。 */
-export function awaitFirstState(socket: Socket, timeoutMs = 3_000): Promise<SupervisorState | null | undefined> {
-  return new Promise((resolve) => {
-    const decoder = new LineDecoder();
-    let settled = false;
-    const finish = (value: SupervisorState | null | undefined) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      socket.off("data", onData);
-      resolve(value);
-    };
-    const onData = (chunk: Buffer) => {
-      for (const line of decoder.push(chunk.toString("utf8"))) {
-        const message = decodeServerMessage(line);
-        if (message?.t === "state") finish(message.state);
-      }
-    };    const timer = setTimeout(() => finish(undefined), timeoutMs);
-    socket.on("data", onData);
-    socket.once("close", () => finish(undefined));
-  });
-}
-
 /**
  * 一条常驻连接：负责 ping、接收状态推送、接收 goodbye。
  *
@@ -207,6 +184,15 @@ export class SupervisorConnection {
         this.closed = true;
         this.handlers.onGoodbye(message.reason);
       }
+    }
+    // 对面一直发不含换行的数据：这条连接已经没有意义（半行被丢弃、后续全忽略），
+    // 关掉它让心跳按节拍重连，而不是让缓冲无限长。
+    if (this.decoder.isOverflowed) {
+      this.handlers.log("[supervisor] socket 单行超长，断开这条连接");
+      this.close();
+      // `close()` 已置 `closed`，socket 的 close 事件不会再回调；这里显式告诉上层，
+      // 免得管理器留着一条"对象在、其实没连着"的连接（心跳下个节拍会重连）。
+      this.handlers.onClosed("单行超长");
     }
   }
 

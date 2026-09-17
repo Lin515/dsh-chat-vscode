@@ -239,4 +239,66 @@ console.log("invariants: 不误报（不同 switch / 注释） ✓");
 }
 console.log("invariants: guard 工厂的返回值不被丢弃（收尾体真的会跑）✓");
 
+// ---------- 5. 安全不变量（2026-09-17 全项目审计立的口径） ----------
+//
+// 这几条都有同一个性质：**改错了什么都不会报错**。类型系统看不见清单里的 `scope`，
+// 也看不见"删目录之前先验 id"这种顺序要求；而它们的代价都是安全级别的
+// （工作区里的一行设置就能执行命令 / 一个服务端给的 id 就能删掉别的目录）。
+{
+  // 5.1 `dshChat.command` 是要**经 shell 执行**的字符串，`dshChat.url` 决定
+  //     令牌与聊天内容发到哪个 origin。两者都必须是 `machine` 作用域：
+  //     工作区（尤其是克隆来的别人的仓库）不许覆盖它们。
+  const manifest = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf8")) as {
+    contributes?: { configuration?: { properties?: Record<string, { scope?: string }> } };
+  };
+  const properties = manifest.contributes?.configuration?.properties ?? {};
+  for (const key of ["dshChat.command", "dshChat.url"]) {
+    assert.strictEqual(
+      properties[key]?.scope,
+      "machine",
+      `${key} 必须是 "scope": "machine"——否则工作区的 .vscode/settings.json 就能覆盖它` +
+        `（command 是经 shell 执行的命令，url 决定凭据发到哪个服务器）`,
+    );
+  }
+  console.log("invariants: 会执行命令 / 决定凭据去向的配置项锁在 machine 作用域 ✓");
+
+  // 5.2 删除会话 = `rmSync(recursive)`，而会话 id 是**服务端给的**。
+  const controller = readFileSync(join(process.cwd(), "src", "dsh", "controller.ts"), "utf8");
+  assert.ok(
+    /function isSafeSessionId\(/.test(controller) && /if \(!isSafeSessionId\(sessionId\)\)/.test(controller),
+    "deleteSession 必须先按 isSafeSessionId 收窄会话 id（纯目录名），否则 `..\\..\\x` 这类 id 能删到会话根之外",
+  );
+  assert.ok(
+    /const rootResolved = resolve\(root\);/.test(controller) &&
+      /candidate\.startsWith\(rootResolved \+ sep\)/.test(controller),
+    "findSessionDir 必须做包含性检查（resolve 之后必须在会话根目录里面）——这是第二道",
+  );
+  console.log("invariants: 删会话前有 id 形状校验 + 路径包含性检查 ✓");
+
+  // 5.3 按端口兜底杀进程之前必须有身份证据（端口可能已被无关程序接管）
+  const supervisorMain = readFileSync(join(process.cwd(), "src", "supervisor", "main.ts"), "utf8");
+  assert.ok(
+    /export function looksLikeDsh\(/.test(supervisorMain) &&
+      /if \(!looksLikeDsh\(pid\)\) \{/.test(supervisorMain),
+    "killServer 在杀「监听某端口的 pid」之前必须用 looksLikeDsh 确认身份（拿不到证据就不动手）",
+  );
+  console.log("invariants: 端口兜底杀进程前先验身份 ✓");
+
+  // 5.4 日志尾巴会进界面与输出通道，而 dsh 的启动公告行里带着启动令牌
+  const supervisorManager = readFileSync(join(process.cwd(), "src", "dsh", "supervisorManager.ts"), "utf8");
+  assert.ok(
+    /function redactSecrets\(/.test(supervisorManager) && /redactSecrets\(\s*text/.test(supervisorManager),
+    "logTail 必须过 redactSecrets：日志里那一行 dsh 公告带着 `?token=…`，它会印到连接条/诊断弹窗里",
+  );
+  console.log("invariants: 日志尾巴里的启动令牌被隐去 ✓");
+
+  // 5.5 并发 bringUp 必须合并（两次同时跑会 spawn 两个 dsh，前一个的 pid 再也找不回来）
+  assert.ok(
+    /const bringUp = \(\): Promise<void> => \{/.test(supervisorMain) &&
+      /if \(bringUpInFlight\) \{/.test(supervisorMain),
+    "supervisor 的 bringUp 必须合并并发调用（否则 restart 撞上崩溃重起会留下一个谁也看不见的孤儿 dsh）",
+  );
+  console.log("invariants: supervisor 的 bringUp 合并并发调用 ✓");
+}
+
 console.log("\ninvariants: all assertions passed");

@@ -22,8 +22,7 @@
     "harness",
     "dsh",
     "agent",
-    "chat",
-    "continue"
+    "chat"
   ],
   "main": "./dist/extension.js",
   "l10n": "./l10n",
@@ -171,6 +170,7 @@
         },
         "dshChat.command": {
           "type": "string",
+          "scope": "machine",
           "default": "dsh web --port 0 --no-open",
           "markdownDescription": "%config.command%"
         },
@@ -183,6 +183,7 @@
         },
         "dshChat.url": {
           "type": "string",
+          "scope": "machine",
           "default": "",
           "markdownDescription": "%config.url%"
         },

@@ -24,7 +24,7 @@
  * 用户正在用的那套撞名（见 `socketPathIn` 的 `isolatedScope`）。
  */
 import { createHash } from "node:crypto";
-import { closeSync, existsSync, linkSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { linkSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { dshHome } from "./dshLocks";
 
@@ -93,10 +93,23 @@ export function supervisorRoot(): string {
   return configured ? configured : defaultSupervisorRoot();
 }
 
-/** 某个配置分组的目录。 */
+/**
+ * 某个配置分组的目录。
+ *
+ * 分组名在生产里是 `groupForConfig` 算出的 12 位十六进制（见 `supervisorManager`），
+ * 但它是**参数**，探针与手工启动也能传：过滤掉路径分隔符之后仍要挡住「只由点组成」
+ * 的段（`..` 会让 `join` 直接跳出状态根目录），所以这里显式拦一道。
+ */
 export function supervisorDirectory(group: string): string {
-  const safe = group.trim().replace(/[^\w.-]/g, "_") || "default";
+  const safe = filterGroupName(group);
   return join(supervisorRoot(), safe);
+}
+
+/** 分组名 → 安全的**单层目录名**（空/全是点/含分隔符都收敛成 `default`）。 */
+function filterGroupName(group: string): string {
+  const cleaned = group.trim().replace(/[^\w.-]/g, "_");
+  if (!cleaned || /^\.+$/.test(cleaned)) return "default";
+  return cleaned;
 }
 
 /** 会合文件路径。 */
@@ -130,7 +143,7 @@ export function logFileIn(directory: string): string {
  */
 export function socketPathIn(directory: string, group: string): string {
   if (process.platform === "win32") {
-    const safe = group.trim().replace(/[^\w.-]/g, "_") || "default";
+    const safe = filterGroupName(group);
     return `\\\\.\\pipe\\dsh-chat-${safe}${isolatedScope(directory)}`;
   }
   return join(directory, "sup.sock");
@@ -170,13 +183,23 @@ function canonicalPath(value: string): string {
  *
  * 为什么必须原子：读方在"另一个进程正在写"时可能读到半个 JSON，而它据此决定
  * "有没有可用的后台"——读崩的后果是多起一个后台并抢端口。rename 在同一文件系统内是原子的。
+ *
+ * **权限**：会合文件里有**启动令牌**（`token` 字段，服务端每次启动随机生成）。
+ * 令牌 = 换会话 cookie 的凭据，所以文件按 `0o600`、目录按 `0o700` 创建——多用户
+ * 主机上同机其它账号不该读得到（Windows 上用户 profile 的 ACL 本来就挡住了，
+ * `mode` 在那边是空操作）。
  */
 export function writeFileAtomic(path: string, text: string): void {
   const temp = `${path}.tmp-${process.pid}-${Date.now().toString(36)}`;
-  mkdirSync(join(path, ".."), { recursive: true });
-  writeFileSync(temp, text, "utf8");
+  mkdirSync(join(path, ".."), { recursive: true, mode: PRIVATE_DIR_MODE });
+  writeFileSync(temp, text, { encoding: "utf8", mode: PRIVATE_FILE_MODE });
   renameSync(temp, path);
 }
+
+/** 私有目录/文件权限（POSIX；Windows 忽略）。 */
+const PRIVATE_DIR_MODE = 0o700;
+const PRIVATE_FILE_MODE = 0o600;
+export { PRIVATE_DIR_MODE, PRIVATE_FILE_MODE };
 
 /** 原子写会合文件（内容由调用方给全，避免"读-改-写"丢字段）。 */
 export function writeState(directory: string, state: SupervisorState): boolean {
@@ -263,9 +286,9 @@ export function acquireStartLock(directory: string): boolean {
   const lockPath = lockFileIn(directory);
   const temp = `${lockPath}.acquire-${process.pid}`;
   try {
-    mkdirSync(directory, { recursive: true });
+    mkdirSync(directory, { recursive: true, mode: PRIVATE_DIR_MODE });
     rmSync(temp, { force: true });
-    writeFileSync(temp, `${process.pid} ${Date.now()}`, "utf8");
+    writeFileSync(temp, `${process.pid} ${Date.now()}`, { encoding: "utf8", mode: PRIVATE_FILE_MODE });
     linkSync(temp, lockPath);
     return true;
   } catch {
@@ -325,12 +348,6 @@ export function dropStaleStartLock(directory: string, alive: (pid: number) => bo
   }
 }
 
-/** socket 节点是否还在磁盘上（Windows 命名管道没有对应文件，恒为 false）。 */
-export function socketNodeExists(socket: string): boolean {
-  if (process.platform === "win32") return false;
-  return existsSync(socket);
-}
-
 /** 删掉 socket 节点（只在确认没人监听后调用；Windows 上无操作）。 */
 export function removeSocketNode(socket: string): void {
   if (process.platform === "win32") return;
@@ -338,31 +355,5 @@ export function removeSocketNode(socket: string): void {
     rmSync(socket, { force: true });
   } catch {
     // 忽略
-  }
-}
-
-/**
- * 以 `wx` 独占方式创建并立即关闭一个文件——给"标记/凭证"类小文件用。
- *
- * 单独抽出来是因为它必须在**同一次调用**里完成"创建并关闭"，
- * 否则 Windows 上句柄泄漏会让后续删除失败。
- */
-export function createExclusive(path: string, text: string): boolean {
-  let fd: number | undefined;
-  try {
-    mkdirSync(join(path, ".."), { recursive: true });
-    fd = openSync(path, "wx");
-    writeFileSync(fd, text, "utf8");
-    return true;
-  } catch {
-    return false;
-  } finally {
-    if (fd !== undefined) {
-      try {
-        closeSync(fd);
-      } catch {
-        // 忽略
-      }
-    }
   }
 }

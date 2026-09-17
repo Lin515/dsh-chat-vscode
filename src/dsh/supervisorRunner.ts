@@ -9,7 +9,7 @@
  * 否则窗口一关它就陪葬——整个架构的前提就没了。
  */
 import { closeSync, mkdirSync, openSync } from "node:fs";
-import { logFileIn } from "./supervisorProtocol";
+import { PRIVATE_DIR_MODE, PRIVATE_FILE_MODE, logFileIn } from "./supervisorProtocol";
 import { findSupervisorScript, resolveNodeRuntime, spawnDetached, runRuntimeSelfCheck, type NodeRuntime } from "./runtimeResolve";
 import type { LaunchOutcome, SupervisorLauncher } from "./supervisorClient";
 
@@ -53,7 +53,7 @@ export function createSupervisorLauncherForScript(script: string, options: Launc
     async launch(input): Promise<LaunchOutcome> {
       const runtime: NodeRuntime = resolveNodeRuntime(options.appRoot);
       try {
-        mkdirSync(input.directory, { recursive: true });
+        mkdirSync(input.directory, { recursive: true, mode: PRIVATE_DIR_MODE });
       } catch (error) {
         return { ok: false, reason: `创建会合目录失败：${error instanceof Error ? error.message : String(error)}` };
       }
@@ -75,7 +75,7 @@ export function createSupervisorLauncherForScript(script: string, options: Launc
 
       let logFd: number;
       try {
-        logFd = openSync(logFileIn(input.directory), "a");
+        logFd = openSync(logFileIn(input.directory), "a", PRIVATE_FILE_MODE);
       } catch (error) {
         return { ok: false, reason: `打开 supervisor 日志失败：${error instanceof Error ? error.message : String(error)}` };
       }

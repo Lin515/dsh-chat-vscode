@@ -64,8 +64,19 @@ export function SubagentsPanel({
           <button key={entry.id} className="session-item" onClick={() => onOpen(entry.id)}>
             <span className="session-item-title">{entry.label}</span>
             <span className="session-item-sub">
-              <span className={`dot ${entry.activity === "running" ? "dot-running" : ""}`} />
-              {entry.activity === "running" ? texts.jobRunning : texts.subagentInactive}
+              {entry.activity ? (
+                <>
+                  <span className={`dot ${entry.activity === "running" ? "dot-running" : ""}`} />
+                  {entry.activity === "running" ? texts.jobRunning : texts.subagentInactive}
+                </>
+              ) : (
+                // `activity` 只有 RPC 列表行才有（投影没有这个字段，见 `SubagentView`
+                // 的注释）——不知道就**不画状态点**，更不能把"不知道"画成「未运行」。
+                // 这时改显示**生命周期模式**（那个字段恒有），也是一条有用的信息。
+                <span className="session-item-mode">
+                  {entry.mode === "one-shot" ? texts.subagentOneShot : texts.subagentContinuable}
+                </span>
+              )}
             </span>
           </button>
         ))

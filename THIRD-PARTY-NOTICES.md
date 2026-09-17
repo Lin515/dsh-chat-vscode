@@ -42,8 +42,8 @@ MIT 许可证全文见本文末「附录 A」。
 
 **复用方式：协议知识 + 传输层的结构继承。这是本项目最主要的外部借鉴，需明确披露。**
 
-该项目是另一个面向 DSH 的 VS Code 扩展，界面风格是 dsh 网页端的复刻（与本项目的
-Continue 风格取向不同）。本项目在开发初期阅读了它的以下文件以理解 DSH 客户端接入方式：
+该项目是另一个面向 DSH 的 VS Code 扩展，界面风格是 dsh 网页端的复刻。本项目在开发初期
+阅读了它的以下文件以理解 DSH 客户端接入方式：
 
 | 文件 | 用途 |
 | --- | --- |
@@ -54,7 +54,9 @@ Continue 风格取向不同）。本项目在开发初期阅读了它的以下�
 
 **具体的结构继承（诚实清单）：**
 
-1. 传输层类名与错误类型：`DshApiError`、`DshAuthError`、`ServerManager`。
+1. 传输层类名与错误类型：`DshApiError`、`DshAuthError`（当时的 `ServerManager` 已在
+   2026-09 的 supervisor 架构里整份替换为本项目自己的 `SupervisorManager` +
+   `src/supervisor/main.ts`，见 `docs/design-supervisor.md`）。
 2. 流注册表模式：`streams` Map + `pendingOpens` 队列（连接建立前排队补发 open 帧）。
 3. 重连退避：`retryDelay` 从 1s 起、翻倍、上限 15s；断线时以
    `stream/socket-closed` 结束所有逻辑流。
@@ -65,8 +67,7 @@ Continue 风格取向不同）。本项目在开发初期阅读了它的以下�
 
 **未复用的部分：** 界面层完全没有采用该项目的实现——它使用自研的 DOM 渲染
 （`ui.ts` 约 6000 行 + `chat.css` 约 4000 行，网页端 1:1 复刻），本项目改用
-React + 自有 CSS 组件实现 Continue 风格界面。会话管理、面板、设置页、
-子代理/后台任务视图、设置 schema 表单化等均为本项目独立实现。
+React + 自有 CSS 组件实现。会话管理、面板、子代理/后台任务视图等均为本项目独立实现。
 
 **代码层面的实际差异：** 本项目的 `client.ts` 是独立重写的——认证更简化
 （不做懒认证重试）、`request()` 重写、流句柄与错误传播重新组织、注释与结构不同。
@@ -78,39 +79,32 @@ MIT 许可证全文见本文末「附录 A」。
 
 ---
 
-## 3. Continue — Apache-2.0
+## 3. Continue — Apache-2.0（**早期设计参考，现已不再是本扩展的定位**）
 
 - 上游：https://github.com/continuedev/continue
 - 版权：Copyright 2023 Continue Dev, Inc.
 - 许可：Apache License 2.0
 
-**复用方式：仅视觉与交互设计规格，未拷贝任何代码。**
+**复用方式：早期仅参考视觉与交互取向，未拷贝任何代码。**
 
-Continue 使用 React + Redux Toolkit + Tailwind + styled-components + TipTap；
-本项目界面使用 React + 手写 CSS（无 Tailwind、无 Redux、无 styled-components、
-无 TipTap），组件与类名均为自建。设计规格由 `docs/continue-ui-spec.md` 逐条记录
-（含上游文件路径与行号），实现按该规格重写。
+2026-09 之前，本扩展的界面刻意朝着 Continue 的视觉取向做，并写了一份逐条记录
+其 px 级规格的文档（`docs/continue-ui-spec.md`）。那份文档与"复刻 Continue"的定位
+**已随 2026-09-17 的清理一并删除**：界面早就按本项目自己的设计 token 与组件演进
+（无 Tailwind、无 Redux、无 styled-components、无 TipTap），把它继续当作类比会误导。
 
-**借鉴的具体设计值：**
+留在代码里的、**至今仍可追溯到那次参考**的具体值（都会在注释里注明来源）：
 
-- 语义色板到 `--vscode-*` 变量的回退映射思路（`gui/src/styles/theme.ts` 的
-  `THEME_COLORS` + `varWithFallback`）。本项目的 `src/webview/styles/tokens.css`
-  用同样的「CSS 变量优先、硬编码回退」方式定义了自有的 token 集合。
-- 几何尺度：全局圆角 `0.5rem`、最小标签字号 `11px`、代码块用 `outline` 而非
-  `border`（`outline-offset: -0.5px`）、消息最后一条 `min-height: 200px`、
-  缺口条（Lump）比输入框每侧窄 `7px` 且只保留上圆角。
-- 招牌视觉：流式时输入框外壳的七彩渐变描边——渐变值逐字取自上游
-  `repeating-linear-gradient(101.79deg, #1BBE84 0%, #331BBE 16%, #BE1B55 33%,
-  #A6BE1B 55%, #BE1B55 67%, #331BBE 85%, #1BBE84 99%)`，6s 一圈。
-- 交互模式：消息操作条悬停才淡入、过程信息压成单行可折叠行、
-  「仅在贴底时才自动跟随滚动」。
+- 语义色板到 `--vscode-*` 变量的「变量优先、硬编码回退」映射思路
+  （`src/webview/styles/tokens.css`）；
+- 少数几何尺度：全局圆角 `0.5rem`、最小标签字号 11px、代码块用 `outline` 而非
+  `border`、消息最后一条的 `min-height`、缺口状态条（Lump）比输入框窄几像素且只保留上圆角；
+- 交互模式：过程信息压成单行可折叠行、「仅在贴底时才自动跟随滚动」。
 
 Apache-2.0 的义务说明：
 
 - 本项目**未拷贝 Continue 的源代码文件**，因此不涉及「修改过的文件需显著标注」；
-- 未使用 Continue 的名称、Logo 或其它商标（Apache-2.0 §6 不授予商标许可）。
-  「Continue 风格」在本项目中仅用于描述视觉取向，不代表与 Continue 项目的任何关联；
-- 上文列出的设计值属于事实性数值，其出处已在 `docs/continue-ui-spec.md` 中逐条标注。
+- 未使用 Continue 的名称、Logo 或其它商标（Apache-2.0 §6 不授予商标许可），
+  也不再以「Continue 风格」描述自己；上一条列出的是事实性的设计数值，不是关联声明。
 
 ---
 

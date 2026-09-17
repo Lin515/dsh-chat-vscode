@@ -56,13 +56,6 @@ function resolveMarker(text: string): string {
       return vscode.l10n.t("The DSH server has been stopped.");
     case "serverLogTail":
       return vscode.l10n.t("Log tail:\n{0}", arg);
-    case "serverExited": {
-      // 参数形如 `<code>:<signal>`，两者都可能是 `?`
-      const separator = arg.indexOf(":");
-      const code = separator < 0 ? arg : arg.slice(0, separator);
-      const signal = separator < 0 ? "" : arg.slice(separator + 1);
-      return vscode.l10n.t("The dsh web process exited (code={0} signal={1})", code, signal);
-    }
     default:
       return text;
   }

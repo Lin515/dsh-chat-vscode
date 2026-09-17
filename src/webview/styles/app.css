@@ -1,11 +1,8 @@
 /*
  * Application chrome for the DSH chat panel.
  *
- * Geometry and colour choices follow Continue's chat UI (see
- * docs/continue-ui-spec.md): an icon-only header, bubble-less assistant
- * messages, a user message styled like the composer, one-line collapsible
- * process rows, and a composer with a notched status bar plus a rainbow
- * outline while streaming.
+ * 本扩展自绘的聊天界面：图标式顶栏、无气泡的消息流、用户消息与输入框同形、
+ * 单行可折叠的过程行、带缺口状态条的输入框。设计 token 见 tokens.css。
  */
 
 /* ============================ shell ============================ */
@@ -3505,6 +3502,12 @@
   background: var(--active);
 }
 
+/* 键盘选中账本行（检查器的唯一入口）时给一个可见的焦点环 */
+.trajectory-row:focus-visible {
+  outline: 1px solid var(--border-focus);
+  outline-offset: -1px;
+}
+
 .trajectory-row.is-dimmed {
   opacity: 0.45;
 }
@@ -3527,6 +3530,11 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  /* 事件列是**固定宽度**（窄面板下 50px），而里面是「kind 标签 + #N」这一串，
+     英文标签（`COMPACTED` / `ASSISTANT`）比中文长得多。不给收缩下限的话，
+     标签会顶出列、压到内容列上（2026-09-17 审计）。 */
+  max-width: 100%;
+  min-width: 0;
 }
 
 .trajectory-index {
@@ -3553,6 +3561,11 @@
   font-size: 10px;
   font-weight: 650;
   letter-spacing: 0.02em;
+  /* 列宽固定 + 英文标签更长：允许收缩并以省略号收尾，不顶出列（见上一条注释） */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* 七种记录的配色：逐条对齐官方 `kindTag` 的七个色调（用户 2026-09-14：

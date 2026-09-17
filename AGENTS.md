@@ -55,12 +55,14 @@ this.emit({ type: "toast", level: "warn", text: "@uploadIncomplete:report.pdf" }
 就是这类，**不要**去翻译它们）。
 
 现有标记见 `src/webview/texts.ts` 的 `resolveText()`——**加新标记时同步加 case**，
-否则用户会看到 `@yourNewKey`。`scripts/i18n.test.ts` 会检查每个标记在两种语言下
-都能解析出内容（不会原样返回）。
+否则用户会看到 `@yourNewKey`。`scripts/i18n.test.ts` 双向检查：宿主发出的每个标记
+都要登记（`MARKERS`）、**登记过的每个标记也必须真有发射点**（只存在于词典里的
+「死文案」和裸 key 一样是缺陷，`serverExited` / `switchingServer` 就这么残留了两轮）。
 
 ## 与官方 dsh web 前端保持一致
 
-本扩展是 `dsh web` 的**自绘前端**，不是它的复刻：界面按 Continue 的设计取向走，
+本扩展是 `dsh web` 的**自绘前端**，不是它的复刻，也不拿别的产品当类比：
+界面是一套标准的 Chat 界面（token 与组件都是本仓库自己的），
 但**能力与数据语义必须与官方一致**。判断某一处该怎么实现时：
 
 1. 先读官方类型声明 `%APPDATA%\npm\node_modules\@deepseek-ai\dsh\node_modules\@deepseek-ai\<包>\lib\types\**\*.d.ts`
@@ -68,7 +70,8 @@ this.emit({ type: "toast", level: "warn", text: "@uploadIncomplete:report.pdf" }
 2. 再回 `lib/client.js` grep 确认实现（直接读动辄几百 KB，很痛苦）；
 3. 有疑问就写探针实测，**不要按猜测的形状写代码**。
 
-`docs/audit-summary.md` 记录了逐条对照的结论与证据等级，动相关代码前先看它。
+`docs/audit-summary.md` 记录了逐条对照的结论与证据等级（含 2026-09-17 第二轮
+全项目审计的漏洞 / BUG / 死代码清单），动相关代码前先看它。
 已经踩过的两个坑（`goal` 投影的嵌套形状、`plan` 投影的 `pending` 字段）都源于
 「没读契约、按猜测的形状写」。
 
@@ -80,8 +83,8 @@ this.emit({ type: "toast", level: "warn", text: "@uploadIncomplete:report.pdf" }
 
 ## 构建与验证
 
-- **一律用 `build` 工具跑构建/测试**。`pwsh` 沙箱下 esbuild 会 `spawn EPERM`、
-  探针写 `~/.dsh` 会 `EPERM`。
+- **直接在 `pwsh` 里跑 npm 脚本**（会话沙箱需 `danger-full-access`；受限模式下
+  esbuild 会 `spawn EPERM`、探针写 `~/.dsh` 会 `EPERM`）。构建姿势见 `build` skill。
 - 标准命令：`npm run typecheck`、`npm test`、`npm run build`、`npm run smoke`；
   端到端探针：`node build/command-e2e.mjs`、`node build/queue-continue-probe.mjs`。
 - **新增测试必须登记到 `esbuild.scripts.mjs` 的 `entries`**，否则 `npm test`
@@ -96,8 +99,7 @@ this.emit({ type: "toast", level: "warn", text: "@uploadIncomplete:report.pdf" }
   动发布相关内容时核对一遍。
 - **动 plan / goal / subagent / 工具行之前先取基线**：`node build/command-e2e.mjs`
   （约 1 分钟）跑一遍，改完再跑一遍对拍。
-- **`build` 工具不认 `run_in_background`**：长探针只能前台跑并给足 `timeoutMs`
-  （`queue-continue-probe` 单轮约 3 分钟）。
+- **长探针前台跑并给足 `timeoutMs`**（`queue-continue-probe` 单轮约 3 分钟）。
 
 ## 代码约定
 
@@ -127,6 +129,25 @@ this.emit({ type: "toast", level: "warn", text: "@uploadIncomplete:report.pdf" }
   `:hover` 就是实例）。改样式后除了看看，还要给**同语义元素**补一条
   「待遇一致性」断言（例如两个活性指示器的动画开关必须同步），否则下次改一个
   忘另一个。
+
+## 安全口径（2026-09-17 全项目审计后立）
+
+- **会执行代码 / 决定凭据去向的配置项必须是 `machine` 作用域**：`dshChat.command`
+  经 shell 原样执行、`dshChat.url` 决定令牌与内容发往哪个 origin。默认的 `window`
+  作用域允许工作区覆盖——克隆来的仓库里一行 `.vscode/settings.json` 就能执行命令。
+  断言在 `scripts/invariants.test.ts`。
+- **服务端给的值不可信**：会话 id 会被拿去拼路径删目录（`deleteSession` 两道：
+  `isSafeSessionId` + `resolve()` 包含性检查）；socket 推来的状态要逐字段验形状
+  （`decodeServerMessage` 的 `checkState`）而不是只判"是个对象"。
+- **拿不到证据就不动手**：按端口兜底杀进程前先确认身份（`looksLikeDsh`）；
+  孤儿锁、pid 复用同理。端口会被无关程序接管，`taskkill /T /F` 一棵无关进程树
+  是不可逆的事故。
+- **长期存活的进程要把住内存**：socket 行缓冲有上限（`LineDecoder`），超限就断开；
+  按会话/事件为键的 Map 必须有清理路径（`eventSessions` 曾只增不删）。
+- **日志里会有秘密**：`supervisor.log` 含 dsh 的 stdout（启动公告带 `?token=`），
+  凡是把它展示给人看的地方都要先过 `redactSecrets`。
+- **并发入口要合并**：`ensure()`/`bringUp()` 这类"拉起一套"的入口必须幂等，
+  否则两个窗口同时重启会 spawn 出两个 dsh，前一个的 pid 再也找不回来。
 
 ## 协作与交付纪律
 

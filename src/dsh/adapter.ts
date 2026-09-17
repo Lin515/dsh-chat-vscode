@@ -1899,7 +1899,16 @@ export class SessionAdapter {
     }
     const message = this.byId.get(entry.messageId);
     const segment = message?.segments.find((s) => s.id === entry.segmentId);
-    if (!message || !segment || segment.kind !== "tool") return;
+    if (!message || !segment || segment.kind !== "tool") {
+      // 记录里**有**这条调用，但它的消息/段落已经找不到了（`refold()` 重建了
+      // `byId`，或流式期间用的是合成 callId，见 `applyAssistantStream` 的
+      // `live-tool-<id>`）。这里从前是直接 `return`——静默丢结果，那一行就永远停在
+      // 「运行中」（鲸鱼一直发光，看着像任务卡死）。整份文件的纪律是"宁可显示一条
+      // 信息不全的记录，也不要静默丢弃"，所以退回占位卡片那条路（与"call 落在
+      // 跟随窗口之外"同一种收场）。
+      this.orphanToolCall(ts, callId, output, isError, meta, content);
+      return;
+    }
     this.settleTool(message, segment, ts, output, isError, meta, { content });
   }
 

@@ -64,6 +64,8 @@ const MARKERS: string[] = [
   // 拖放
   "dropUnreadable",
   "dropTooLarge",
+  // 图片内联上限（超限改按文件上传）
+  "imageTooLarge",
   // 剪贴板 / 浏览器
   // （`copied` 已随「复制成功不弹信息条」的口径一起删掉：复制按钮不再发 toast）
   "openInBrowserOffline",
@@ -76,13 +78,11 @@ const MARKERS: string[] = [
   "authNeedsToken",
   "authTokenRejected",
   "serverSpawnFailed",
-  "serverExited",
   "serverNotReady",
   "serverUnreachable",
   "serverNotRunning",
   "serverStopped",
   "serverLogTail",
-  "switchingServer",
   // 多窗口共享后台
   "sharedRestarted",
 ];
@@ -122,7 +122,6 @@ console.log(`i18n: ${MARKERS.length} 个标记 × ${LOCALES.length} 种语言均
     commandFailed: "@commandFailed:/foo",
     unknownEvent: "@unknownEvent:weird/event",
     callId: "@callId:call_abc123",
-    serverExited: "@serverExited:1:SIGTERM",
     serverUnreachable: "@serverUnreachable:http://127.0.0.1:8080",
     serverSpawnFailed: "@serverSpawnFailed:ENOENT",
     serverLogTail: "@serverLogTail:dsh web: ready",
@@ -223,6 +222,28 @@ console.log("i18n: 未知 @ 文本原样透传 ✓");
       [...found].map(([key, where]) => `  @${key}  ${where}`).join("\n"),
   );
   console.log("i18n: 宿主源码里的标记均已登记（扫了 " + hostSources(join(process.cwd(), "src")).length + " 个文件）✓");
+
+  // **反方向**：登记了但从来没人发的标记同样是缺陷——它有词典条目、有 resolveText
+  // 分支，甚至还有 hostText / l10n 译文，看起来"做完了"，实际上那句话永远不会出现在
+  // 任何界面上（`serverExited` / `switchingServer` 就是这么留了两轮）。
+  // 只做**字面量**比对（与上面的扫描同一套正则）：模板拼出来的标记这里不认，
+  // 那类标记请在发出处写成字面量。
+  const emitted = new Set<string>();
+  for (const file of hostSources(join(process.cwd(), "src"))) {
+    for (const line of readFileSync(file, "utf8").split("\n")) {
+      const trimmed = line.trim();
+      if (trimmed.startsWith("//") || trimmed.startsWith("*") || trimmed.startsWith("/*")) continue;
+      for (const match of line.matchAll(EMITTED)) emitted.add(match[1]);
+    }
+  }
+  const neverEmitted = MARKERS.filter((key) => !emitted.has(key));
+  assert.deepStrictEqual(
+    neverEmitted,
+    [],
+    "MARKERS 里登记了却没有任何发射点的标记（删掉词典条目 + resolveText 分支 + hostText/l10n，或补上发射点）：\n" +
+      neverEmitted.map((key) => `  @${key}`).join("\n"),
+  );
+  console.log("i18n: MARKERS 里的每个标记都有真实发射点 ✓");
 
 // ---------- 6. VS Code 原生 UI 的文案（package.nls*）与 package.json 对齐 ----------
 //

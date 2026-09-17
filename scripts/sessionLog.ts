@@ -51,29 +51,3 @@ export interface SessionLogRow {
   time?: number;
   data?: Record<string, any>;
 }
-
-/**
- * 日志文件 → 行。
- *
- * 日志可能还没落盘（刚建会话）、或读到一半：都当「解不出来」跳过，
- * 不能让单个坏文件炸掉整个扫描（queueLogInspect 引用本文件时同样受益）。
- */
-export function readSessionLogRows(file: string): SessionLogRow[] | undefined {
-  let text: string | undefined;
-  try {
-    text = decodeSessionLog(file);
-  } catch {
-    return undefined;
-  }
-  if (!text) return undefined;
-  const rows: SessionLogRow[] = [];
-  for (const line of text.split("\n")) {
-    if (!line.trim()) continue;
-    try {
-      rows.push(JSON.parse(line) as SessionLogRow);
-    } catch {
-      // 半截行（写到一半被杀）跳过即可
-    }
-  }
-  return rows;
-}

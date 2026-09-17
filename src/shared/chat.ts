@@ -888,7 +888,10 @@ export interface ChatState {
   /**
    * 图片准入上限（`imageLimits` 投影）。
    *
-   * 有它就能在**发送前**拦住超限的图并说明原因；没有就只能等服务端拒绝。
+   * **`maxImageBytes` 已被消费**（`classifyPath` 的内联上限）：超过它的图不再读成字节
+   * 做内容块，改为按普通文件上传并提示原因——同步读一张巨图会冻住扩展宿主。
+   * `maxImagesPerMessage` / `maxMessageImageBytes` 还没有消费点（发送前的整批校验
+   * 未实现），超限时仍由服务端拒绝。
    */
   imageLimits?: {
     maxImagesPerMessage?: number;

@@ -53,12 +53,18 @@ export function tcpReachableSync(baseUrl: string, timeoutMs = 1_500): boolean {
     // 非 Windows：用 node 自己的同步 socket 探（没有 PowerShell 开销）
     return tcpReachableNode(host, port, timeoutMs);
   }
+  // 目标主机走**环境变量**传，不拼进脚本正文：`new URL().hostname` 允许 `'` 与 `;`
+  // （两者都不是 URL 的禁用主机码点），拼字符串就等于把 `http://x';calc;'y:80` 这类
+  // 地址变成一段可执行代码。端口是数字、可以安全内联。
   const script =
     `$c = New-Object Net.Sockets.TcpClient; ` +
-    `try { $null = $c.BeginConnect('${host}', ${port}, $null, $null); ` +
+    `try { $null = $c.BeginConnect($env:DSH_CHAT_PROBE_HOST, ${port}, $null, $null); ` +
     `if ($c.Connected) { 'yes' } } catch { } finally { $c.Close() }`;
   const args = ["-NoProfile", "-NonInteractive", "-Command", script];
-  const out = spawnSyncQuiet("pwsh.exe", args, timeoutMs + 3_000) ?? spawnSyncQuiet("powershell.exe", args, timeoutMs + 3_000);
+  const env = { ...process.env, DSH_CHAT_PROBE_HOST: host };
+  const out =
+    spawnSyncQuiet("pwsh.exe", args, timeoutMs + 3_000, env) ??
+    spawnSyncQuiet("powershell.exe", args, timeoutMs + 3_000, env);
   if (out === undefined) return tcpReachableNode(host, port, timeoutMs);
   return out.includes("yes");
 }
@@ -82,12 +88,18 @@ function tcpReachableNode(host: string, port: number, timeoutMs: number): boolea
   return ok;
 }
 
-function spawnSyncQuiet(command: string, args: string[], timeoutMs: number): string | undefined {
+function spawnSyncQuiet(
+  command: string,
+  args: string[],
+  timeoutMs: number,
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
   const result = spawnSync(command, args, {
     windowsHide: true,
     timeout: timeoutMs,
     maxBuffer: 16 * 1024 * 1024,
     encoding: "utf8",
+    env,
   });
   if (result.error || result.status !== 0 || typeof result.stdout !== "string") return undefined;
   return result.stdout;

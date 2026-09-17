@@ -31,8 +31,6 @@ export type HostToWebview =
   | { type: "patch"; patch: WirePatch }
   /** 新增或整体替换一条消息。 */
   | { type: "message/upsert"; message: MessageView }
-  /** 删除一条消息（回退/重放时使用）。 */
-  | { type: "message/remove"; messageId: string }
   /** 整体替换消息列表（切换会话、回放历史）。 */
   | { type: "messages/reset"; messages: MessageView[] }
   /** 在消息尾部追加一个段落。 */
@@ -172,19 +170,8 @@ export type WebviewToHost =
    * IO 错误）与超限文件。宿主据此明确提示，而不是静默丢弃。
    */
   | { type: "attachBytes"; files: { name: string; base64: string }[]; unreadable: string[]; tooLarge: string[] }
-  /** @ 提及选中的文件 / 目录，作为 `@path` / `@dir/` 参考芯片加入（不上传）。 */
-  | { type: "addMention"; path: string; kind: "file" | "directory" }
-  /**
-   * 把一个**目录**作为 `@dir/` 引用加入（不是下钻打开）。
-   *
-   * 用户口径：`@` 列表里选中目录默认是**打开该目录**（继续下钻），
-   * 只有点右侧的「整个目录」才是把目录本身载入。
-   */
-  | { type: "addFolderReference"; path: string }
   /** 重传一个上传失败的文件附件。 */
   | { type: "retryUpload"; id: string }
-  /** 直接执行一条命令（命令面板里点的，不是手打的正文）。 */
-  | { type: "runCommandLine"; line: string }
   /**
    * 从某条助手消息**创建分支**：以该轮为界开一个新会话，原会话不动。
    *

@@ -359,11 +359,17 @@ function NoticeBar({
   onDismiss: () => void;
 }) {
   const texts = useTexts();
+  // `onDismiss` 是父组件每次渲染新建的箭头函数（流式期间每帧都重渲染），把它写进
+  // 依赖数组会让**每个 token**都重开一次计时器——提示条于是永不消失，直到这一轮
+  // 生成结束（2026-09-17 全项目审计发现）。用 ref 拿最新的回调，
+  // 计时只跟 `notice.id` 走：同一条提示靠 id 变化重新计时（连点两次复制也能再闪一次）。
+  const dismissRef = useRef(onDismiss);
+  dismissRef.current = onDismiss;
   useEffect(() => {
     if (!notice) return;
-    const timer = setTimeout(onDismiss, NOTICE_MS);
+    const timer = setTimeout(() => dismissRef.current(), NOTICE_MS);
     return () => clearTimeout(timer);
-  }, [notice?.id, onDismiss]);
+  }, [notice?.id]);
 
   if (!notice) return null;
   const cls =
@@ -642,6 +648,22 @@ export function App() {
     const timer = setInterval(() => post({ type: "listTrajectory" }), 3000);
     return () => clearInterval(timer);
   }, [state.panel, state.running, sessionId]);
+
+  // 子代理面板开着时切会话：**重新拉一次这个会话的子代理**。
+  // 打开面板那一下已经拉过一次（见头部按钮的 `toggle`），所以这里只处理"开着的时候换了
+  // 会话"——否则列表会停在上一个会话上。宿主快照里的 `subagents` 只是投影（可能不如
+  // RPC 列表全），所以补的是 RPC，而不是只靠快照。
+  const subagentPanelSession = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (state.panel !== "subagents") {
+      subagentPanelSession.current = undefined;
+      return;
+    }
+    const previous = subagentPanelSession.current;
+    subagentPanelSession.current = sessionId;
+    if (previous === undefined || previous === sessionId) return;
+    post({ type: "listSubagents" });
+  }, [state.panel, sessionId]);
 
   // 轨迹里的「加载更早」与会话页**共用同一条链路**（都发 `loadMore`，宿主一次取到底、
   // 逐页回填消息）。但宿主只回填会话侧，不会顺手重推账本，所以取完

@@ -51,16 +51,16 @@ export interface TrajectoryTexts {
   tabTiming: string;
   tabSystemPrompt: string;
   tabTools: string;
+  /** 系统提示词变更时的对照页签（官方 `diff` 页签）。 */
+  tabDiff: string;
 
   /** 布局 / 摘要 */
   compacting: string;
   compactionFailed: string;
   compacted: string;
-  compactionInterrupted: string;
   toolCallOnly: string;
   initialSystemPrompt: string;
   systemPromptUpdated: string;
-  toolsUpdated: string;
   systemPromptAndToolsUpdated: string;
 
   /** 详情 */
@@ -71,13 +71,8 @@ export interface TrajectoryTexts {
   detailsModel: string;
   detailsError: string;
   detailsRetry: string;
-  detailsRetryDelay: string;
   detailsSource: string;
-  detailsToolCall: string;
-  detailsToolCalls: string;
-  detailsSubtoolCalls: string;
   detailsCompacted: string;
-  detailsAssistantMessage: string;
   /** 检查器可拖宽（官方 `details.resize` / `details.resizeTitle`）。 */
   detailsResize: string;
   detailsResizeTitle: string;
@@ -99,33 +94,24 @@ export interface TrajectoryTexts {
   sourcePluginNamed: (plugin: string) => string;
   sourceGoal: string;
   sourceGoalRound: (round: number) => string;
-  sourceUnknown: string;
   sourceNotRecorded: string;
 
   /** 用量 / 计时 */
-  usageNotReported: string;
-  usageTokens: string;
   usageInput: string;
   usageCached: string;
   usageCacheCreated: string;
   usageOutput: string;
   usageReasoning: string;
-  usageOther: string;
-  usageThisRequest: string;
   timingStarted: string;
   timingTotalDuration: string;
   timingTtft: string;
   timingGeneration: string;
-  timingThroughput: string;
   timingNotAvailable: string;
   timingNotRecorded: string;
-  timingRequest: string;
 
   /** 单位（带参数） */
   unitMs: (value: number) => string;
   unitSeconds: (value: number) => string;
-  unitTokens: (value: number) => string;
-  unitTokensPerSecond: (value: number) => string;
 
   /** 请求 */
   requestLabel: (request: number) => string;
@@ -133,7 +119,6 @@ export interface TrajectoryTexts {
   requestRetryProgress: (retry: number, maximum: number) => string;
   /** 折叠行：官方 `request.collapsedSummary` + `request.collapsedTurn/Assistant` */
   collapsedTurn: string;
-  collapsedAssistant: string;
   collapsedSummary: (kind: string, summary: string) => string;
 
   /** 历史 */
@@ -195,15 +180,14 @@ const zh: TrajectoryTexts = {
   tabTiming: "计时",
   tabSystemPrompt: "系统提示词",
   tabTools: "工具",
+  tabDiff: "差异",
 
   compacting: "正在压缩上下文…",
   compactionFailed: "上下文压缩失败",
   compacted: "上下文已压缩",
-  compactionInterrupted: "上下文压缩在完成前被中断。",
   toolCallOnly: "仅工具调用",
   initialSystemPrompt: "初始系统提示词",
   systemPromptUpdated: "系统提示词已更新",
-  toolsUpdated: "工具已更新",
   systemPromptAndToolsUpdated: "系统提示词和工具已更新",
 
   detailsEvent: "事件详情",
@@ -213,13 +197,8 @@ const zh: TrajectoryTexts = {
   detailsModel: "模型",
   detailsError: "错误",
   detailsRetry: "重试",
-  detailsRetryDelay: "重试延迟",
   detailsSource: "来源",
-  detailsToolCall: "工具调用",
-  detailsToolCalls: "工具调用",
-  detailsSubtoolCalls: "子工具调用",
   detailsCompacted: "已压缩",
-  detailsAssistantMessage: "助手消息",
   detailsResize: "调整事件详情宽度",
   detailsResizeTitle: "拖动调整大小；双击恢复默认值。",
 
@@ -238,37 +217,27 @@ const zh: TrajectoryTexts = {
   sourcePluginNamed: (plugin) => `插件 · ${plugin}`,
   sourceGoal: "目标",
   sourceGoalRound: (round) => `目标 · Round ${round}`,
-  sourceUnknown: "未知",
   sourceNotRecorded: "未记录来源",
 
-  usageNotReported: "未报告用量",
-  usageTokens: "Token",
   usageInput: "输入",
   usageCached: "缓存读取",
   usageCacheCreated: "缓存写入",
   usageOutput: "输出",
   usageReasoning: "推理",
-  usageOther: "其他",
-  usageThisRequest: "本次请求",
   timingStarted: "开始时间",
   timingTotalDuration: "总时长",
   timingTtft: "首 token 延迟",
   timingGeneration: "生成",
-  timingThroughput: "吞吐量",
   timingNotAvailable: "不可用",
   timingNotRecorded: "未记录",
-  timingRequest: "请求计时",
 
   unitMs: (value) => `${value} 毫秒`,
   unitSeconds: (value) => `${value} 秒`,
-  unitTokens: (value) => `${value} tok`,
-  unitTokensPerSecond: (value) => `${value} tok/s`,
 
   requestLabel: (request) => `请求 #${request}`,
   requestLabelCompaction: (request) => `请求 #${request} · 压缩`,
   requestRetryProgress: (retry, maximum) => `${retry}/${maximum}`,
   collapsedTurn: "轮次",
-  collapsedAssistant: "助手",
   collapsedSummary: (kind, summary) => `已收起的${kind}概述，${summary}`,
 
   loadEarlier: "加载更早的历史",
@@ -326,15 +295,14 @@ const en: TrajectoryTexts = {
   tabTiming: "Timing",
   tabSystemPrompt: "System Prompt",
   tabTools: "Tools",
+  tabDiff: "Diff",
 
   compacting: "Compacting context…",
   compactionFailed: "Compaction failed",
   compacted: "Context compacted",
-  compactionInterrupted: "Compaction was interrupted before completion.",
   toolCallOnly: "Tool call only",
   initialSystemPrompt: "Initial System Prompt",
   systemPromptUpdated: "System Prompt Updated",
-  toolsUpdated: "Tools Updated",
   systemPromptAndToolsUpdated: "System Prompt and Tools Updated",
 
   detailsEvent: "Event details",
@@ -344,13 +312,8 @@ const en: TrajectoryTexts = {
   detailsModel: "Model",
   detailsError: "Error",
   detailsRetry: "Retry",
-  detailsRetryDelay: "Retry delay",
   detailsSource: "Source",
-  detailsToolCall: "Tool Call",
-  detailsToolCalls: "Tool calls",
-  detailsSubtoolCalls: "Subtool calls",
   detailsCompacted: "Compacted",
-  detailsAssistantMessage: "Assistant Message",
   detailsResize: "Resize event details",
   detailsResizeTitle: "Drag to resize. Double-click to reset.",
 
@@ -369,37 +332,27 @@ const en: TrajectoryTexts = {
   sourcePluginNamed: (plugin) => `Plugin · ${plugin}`,
   sourceGoal: "Goal",
   sourceGoalRound: (round) => `Goal · Round ${round}`,
-  sourceUnknown: "Unknown",
   sourceNotRecorded: "Source not recorded",
 
-  usageNotReported: "Usage not reported",
-  usageTokens: "Tokens",
   usageInput: "Input",
   usageCached: "Cached",
   usageCacheCreated: "Cache created",
   usageOutput: "Output",
   usageReasoning: "Reasoning",
-  usageOther: "Other",
-  usageThisRequest: "This request",
   timingStarted: "Started",
   timingTotalDuration: "Total duration",
   timingTtft: "TTFT",
   timingGeneration: "Generation",
-  timingThroughput: "Throughput",
   timingNotAvailable: "Not available",
   timingNotRecorded: "Not recorded",
-  timingRequest: "Request Timing",
 
   unitMs: (value) => `${value} ms`,
   unitSeconds: (value) => `${value} s`,
-  unitTokens: (value) => `${value} tok`,
-  unitTokensPerSecond: (value) => `${value} tok/s`,
 
   requestLabel: (request) => `Request #${request}`,
   requestLabelCompaction: (request) => `Request #${request} · Compaction`,
   requestRetryProgress: (retry, maximum) => `${retry} of ${maximum}`,
   collapsedTurn: "turn",
-  collapsedAssistant: "assistant",
   collapsedSummary: (kind, summary) => `Collapsed ${kind} summary, ${summary}`,
 
   loadEarlier: "Load earlier history",

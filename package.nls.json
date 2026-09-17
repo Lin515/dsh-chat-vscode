@@ -1,6 +1,6 @@
 {
   "container.title": "DSH Chat",
-  "description": "Continue-style chat UI for DeepSeek Harness (dsh) inside VS Code. Runs `dsh web` in the background and renders the conversation natively in VS Code (bilingual UI).",
+  "description": "Self-drawn chat UI for DeepSeek Harness (dsh) inside VS Code (bilingual). Requires dsh to be installed.",
   "view.chat.name": "Chat",
   "cmd.newSession.title": "DSH: New Chat",
   "cmd.history.title": "DSH: Chat History",
@@ -15,8 +15,8 @@
   "cmd.setToken.title": "DSH: Enter Access Token",
   "cmd.showLogs.title": "DSH: Show Logs",
   "cmd.showDiagnostics.title": "DSH: Show Diagnostics",
-  "config.command": "Command used to start the internal DSH background service.",
-  "config.url": "Address of the external DSH service, e.g. http://127.0.0.1:3080. When set, the extension connects to the external DSH service, and all options related to the internal DSH background stop applying.",
+  "config.command": "Command used to start the internal DSH background service. Executed verbatim, through a shell. User-level setting (a workspace cannot override it); changing it requires reloading the window. VS Code windows using the same command share one background service.",
+  "config.url": "Address of the external DSH service, e.g. http://127.0.0.1:3080. When set, the extension does NOT start its own DSH and all internal-DSH options stop applying. User-level setting (a workspace cannot override it); changing it requires reloading the window.",
   "config.autoStart": "When VS Code starts, the internal DSH background service is started automatically with the command from the Command setting.",
   "config.supervisorIdleSec": "How many seconds the internal DSH background waits before shutting down automatically after the last VS Code window closes. Recommended: no less than 10 seconds. This option has no effect when an external Url is configured.",
   "config.diffLayout": "How edit tool calls render their change: single column or side-by-side.",

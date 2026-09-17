@@ -127,9 +127,8 @@ dsh 会按 `PROFILE_TEMPLATES` 自动初始化 web profile）起真实 `dsh web`
 
 ### 已修复（第四批：会话内容绘制对齐 DSH Web，2026-09-14）
 
-背景：把「一轮对话在界面上怎么画」按官方逐条对齐。原始差异清单在
-`docs/continue-ui-spec.md` 之外的审计记录里（本轮由子代理逐条对照官方包产出，
-高 4 / 中 6 / 低 3），下表是结果。
+背景：把「一轮对话在界面上怎么画」按官方逐条对齐。原始差异清单来自本轮的分报告
+（由子代理逐条对照官方包产出，高 4 / 中 6 / 低 3），下表是结果。
 
 | 维度 | 结论 |
 |---|---|
@@ -452,3 +451,74 @@ Ctrl+Enter 也未区分（`Composer.tsx:241` 只判 `!shiftKey`）。
 4. 本部署 `permission-presets.presets` 的实际配置（故「read-only 是否真不存在」不确定）。
 5. VS Code webview 的拖放/粘贴文件能力（可证「扩展未实现」，不可证「官方做法可否等价实现」）。
 6. `images` 参数名是否曾在历史版本被接受（只能证明当前唯一出现处在 fixture）。
+
+---
+
+## 七、第二轮全项目审计（2026-09-17：漏洞 / BUG / 死代码）
+
+范围与前几轮不同：这轮不对比官方，而是**对本仓库自己**做一次全量审计（宿主安全、
+会话管线、webview 三层，三路并行），并当场修复。下面是修完之后的清单——
+每条都在代码或断言里有落点，便于复核。
+
+### 7.1 安全
+
+| # | 问题 | 处置 | 落点 |
+|---|---|---|---|
+| S1 | `dshChat.command` 是默认 `window` 作用域，且经 `shell` 原样执行：**已信任**的工作区里，一个 `.vscode/settings.json` 就能在激活时执行任意命令（`url` 同理会把凭据指向别的服务器） | 两项都改 `"scope": "machine"` | `package.json`；断言 `scripts/invariants.test.ts` §5.1 |
+| S2 | 会话 id 由服务端给出，却直接拼进 `~/.dsh/sessions/<ws>/<id>` 去 `rmSync(recursive)`（`..\..\..\Desktop` 这类 id 能删到根之外） | 加 `isSafeSessionId`（纯目录名）+ `resolve()` 包含性检查两道 | `controller.deleteSession` / `findSessionDir`；断言 §5.2 |
+| S3 | `killServer` 的端口兜底会 `taskkill /T /F` **端口上任何监听者**，而端口来自上一次公告（`--port 0` 是临时端口，可能已被无关程序接管） | 先查身份（`tasklist` / `/proc/<pid>/cmdline` → `looksLikeDsh`），拿不到证据就不动手 | `src/supervisor/main.ts`；断言 §5.3 |
+| S4 | 会合文件（含启动令牌）按默认权限落盘 | 目录 `0o700`、文件 `0o600`（POSIX；Windows 由 profile ACL 兜） | `supervisorProtocol.PRIVATE_*`、`supervisorRunner`、`supervisor/main.ts` |
+| S5 | socket 推来的状态只判"是个对象"，`baseUrl`/`token` 原样被采用（决定后续令牌与 cookie 发往哪个 origin） | `decodeServerMessage` 逐字段验形状（`checkState`） | `src/dsh/supervisorWire.ts` |
+| S6 | 启动令牌会顺着"日志尾巴"（`supervisor.log` 里有 dsh 的 stdout 公告行）印进连接条、诊断弹窗与输出通道 | `logTail()` 过 `redactSecrets` | `supervisorManager.ts`；断言 §5.4 |
+| S7 | 对端可一直发不含换行的数据 → 行缓冲无限增长（守护进程是长期存活的） | `LineDecoder` 加 1 MiB 上限 + 溢出标记，两侧据此断开连接 | `supervisorWire.ts`、`supervisorClient.ts`、`supervisor/main.ts`；断言在 `supervisorProtocol.test.ts` |
+| S8 | `control:restart` 未防重入：两个窗口同时重启（或撞上崩溃重起）会 spawn 两个 dsh，前一个的 pid 再也找不回来 | `bringUp` 合并并发调用（在飞 promise） | `src/supervisor/main.ts`；断言 §5.5 |
+| S9 | 扩展被 dispose 后，在途的心跳仍能"复活"管理器（重开连接 + 重挂心跳） | `bringUp` 不再重置 `disposed`；`connect()` 在 await 回来后再查一次 | `supervisorManager.ts` |
+| S10 | CSP nonce 用 `Math.random()`；webview 帧无 try/catch（残缺帧 → 未处理 rejection）；宿主侧没有拖放字节上限 | `randomBytes`；`handle()` 加 catch + 日志；宿主按 base64 长度先拦 8 MB | `chatView.ts`、`controller.applyBytesForView` |
+| S11 | `tcpReachableSync` 把 URL 主机名插进 PowerShell `-Command`（`'`、`;` 都是合法主机码点） | 主机改走环境变量传入 | `processRegistry.ts` |
+| S12 | 图片内联走同步 `readFileSync`，无上限；`imageLimits` 投影解析了却没人消费 | 用 `imageLimits.maxImageBytes`（缺省 64 MB 硬上限）作内联上限，超限改按文件上传并提示 | `attachments.classifyPath` + `controller`；新 `@imageTooLarge` 标记 |
+
+### 7.2 功能 BUG
+
+| # | 现象 | 处置 |
+|---|---|---|
+| B1 | 「加载更早」永久卡死：`historyLoading` 只在取历史那条链上发 patch，**会话切换后**新会话的快照不带这个键（`mergeWirePatch` 只在收到 `null` 时删键），界面于是永远显示「正在加载更早消息…」 | `snapshotFor()` 带上 `historyLoading` |
+| B2 | `cordis_*` 工具行显示裸 id：`TOOL_TITLE_KEYS` 映射出的 4 个词典键在 `texts.ts` 里根本不存在，界面侧 `as unknown as Record<...>` + `?? name` 把失效吞掉了 | 补 `toolInspect` / `toolRunCordis` / `toolStopCordis` / `toolRemoveCordis` 两语言条目 |
+| B3 | `tool/result` 找不到对应调用记录时被**静默丢弃**，那一行永远停在「运行中」（`refold()` 重建 `byId`、流式合成 callId 都会触发） | 退回孤立结果卡片（与"call 落在窗口外"同一种收场） |
+| B4 | 提示条永不消失：`NoticeBar` 的计时器依赖里有一个每次渲染都新建的 `onDismiss`，流式期间每个 token 都重开计时 | 计时只跟 `notice.id`，回调走 ref |
+| B5 | 目标条里按 `Esc` 取消编辑时把**正在跑的这一轮也中止**了（ESC 优先级链没被消费）；问卷自定义答案框同理 | 两处都 `preventDefault` + `stopPropagation`（问卷的 Esc = 取消选中该自定义答案） |
+| B6 | `eventSessions`（事件 → 会话）只增不删，跨会话累积；结算过的事件不再需要它 | 结算/撤回的四处一并删除 |
+| B7 | 开着子代理面板切换会话，列表停在上一个会话（宿主快照键 `subagents` 与界面读的 `subagentEntries` 不是同一个名字） | 切会话时用快照重置 + 面板开着时按会话重拉 |
+| B8 | `activity` 未知（投影没有这个字段）时界面画成确定的「未运行」，与"不知道就不画状态点"的契约相反 | 未知时改显示生命周期模式（`one-shot` / `continuable`） |
+| B9 | 工具展开区最多 5 个元素共用同一个 `ref`，React 只保留最后一个 → diff 段拿不到「打开回顶」与「划选冻结」 | diff 段用独立的 `diffRef` |
+| B10 | 轨迹：概述里「输出」画的是时长而不是 token 数；`Diff` 页签是硬编码英文；平移的 document 监听在卸载时不摘；`model?.turns ?? []` 每次新数组使两个 `useMemo` 失效 | 逐条修（`usageOutput` 给 token 数、新增 `tabDiff`、卸载兜底摘监听、稳定空数组常量） |
+| B11 | 扩展输出通道在第一次落日志后会变成**两个**「DSH Chat」（`output ?? create()` 的返回值没有回写） | 改走会赋值的 `outputChannel()` |
+| B12 | 一轮结束后无条件抢焦点（用户正在历史搜索框 / 目标编辑框里打字时被打断） | 焦点不在输入框且不空闲时不抢 |
+
+### 7.3 死代码（已删）
+
+- **整份模块**：`src/dsh/textFile.ts`（"附件按 UTF-8 内联进提示词"时代的字节判定）及其测试与 esbuild 条目。
+- **未用导出**：`bridge.getPersistedState/setPersistedState`（那条"面板重建后恢复草稿"的能力从未实现，
+  文档承诺一并删掉）、`icons.IconSettings/IconUndo/IconBulb/IconList`（自绘设置页的残留）、
+  `supervisorClient.awaitFirstState`、`supervisorProtocol.socketNodeExists/createExclusive`、
+  `supervisorManager.waitForSocket`、`controller` 里 `stamp` 的转出、
+  `shared/trajectory.TrajectorySpan`、`scripts/sessionLog.readSessionLogRows`。
+- **死 IPC 帧 + 处理器**：`message/remove`、`addMention`、`addFolderReference`、`runCommandLine`
+  （`@` 改成写正文 token 之后，界面上再也没有发射点）；随之删掉只被它们调用的 `controller.addReference`。
+- **死词典键**：`texts.ts` 29 个 + `trajectoryTexts.ts` 17 个（自绘设置页与早期对齐的残留）。
+- **死文案标记**：`serverExited`、`switchingServer`（有词典、有 `resolveText` 分支、有 `hostText`
+  译文，但没有任何发射点）。同时**新增反方向断言**：`MARKERS` 里每个标记都必须真有发射点，
+  避免这类"看起来做完了"的死文案再攒起来。
+- **死 CSS 自定义属性**：`tokens.css` 7 个（`--command-bg/-fg`、`--terminal`、`--radius-lg`、
+  `--gap`、`--pad`、`--font-size-lg`）。
+- `docs/continue-ui-spec.md`（1128 行的"复刻 Continue 界面"规格）整份删除：界面早已按自己的
+  token 与组件演进，留着这份文档才是误导；许可归属的说明保留在 `THIRD-PARTY-NOTICES.md` §3。
+
+### 7.4 明确不改（记录取舍）
+
+- **CSP 仍允许 `img-src https:`**（用户 2026-09-17 拍板）：宿主自己产生的图片全是 `data:` URL，
+  这条只对**模型输出里的外链图片**生效；去掉它就能堵住"提示注入把内容编进图片 URL"的外传通道，
+  但回答里的外链图也就不显示了。取舍是"保留渲染能力"。
+- **回形针选图仍可能一次读入大文件**：现在的上限来自服务端 `imageLimits`（缺省 64 MB），
+  没有做像素级校验——服务端最终也会拒，但宿主这一读仍是同步的。
+- `imageLimits` 的另外两个字段（`maxImagesPerMessage` / `maxMessageImageBytes`）仍未消费：
+  发送前的整批校验还没做。

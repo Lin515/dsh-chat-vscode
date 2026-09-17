@@ -10,7 +10,6 @@ import { createContext, useContext } from "react";
 export type Locale = "zh" | "en";
 
 export interface Texts {
-  brand: string;
   newChat: string;
   history: string;
   openInEditor: string;
@@ -21,18 +20,13 @@ export interface Texts {
   /** 系统拒绝了这次打开（openExternal 返回 false）。 */
   openInBrowserFailed: string;
 
-  emptyTitle: string;
   emptyHint: string;
 
   placeholderFirst: string;
   placeholderFollowUp: string;
   send: string;
   sendTitle: string;
-  stop: string;
   stopTitle: string;
-  mode: string;
-  modeAgent: string;
-  modePlan: string;
   thinkingDepth: string;
   models: string;
   defaultModel: string;
@@ -42,7 +36,6 @@ export interface Texts {
   /** `@` 列表里目录行右侧的按钮：把整个目录作为引用载入。 */
   attachFolder: string;
   cancel: string;
-  toggleThinking: string;
   remove: string;
   /** 抽屉标题栏的「关闭」/「返回」（此前这两个是写死的中文，双语规则不允许）。 */
   close: string;
@@ -57,7 +50,6 @@ export interface Texts {
   permFullAccessDesc: string;
   permConfirmTitle: string;
   permConfirmBody: string;
-  permConfirmAck: string;
   permConfirmEnable: string;
   enterPlanMode: string;
   exitPlanMode: string;
@@ -131,7 +123,6 @@ export interface Texts {
   toolInput: string;
   toolOutput: string;
   /** 可点路径的无障碍/悬停说明（官方把摘要做成 fileLink，点了预览该文件）。 */
-  toolOpenFile: string;
   /** 认不出的内容块的标签（官方 `message.unknownBlock` 逐字）。 */
   unknownBlock: string;
   /** 上下文条目的 per-form 正文文案（官方 `message.context.*` 逐字）。 */
@@ -179,6 +170,8 @@ export interface Texts {
   dropUnreadable: (name: string) => string;
   /** 拖放里超过大小上限的项的 toast（宿主 `@dropTooLarge:name`）。 */
   dropTooLarge: (name: string) => string;
+  /** 图片超过服务端内联上限、被降级成文件上传时的 toast（宿主 `@imageTooLarge:name`）。 */
+  imageTooLarge: (name: string) => string;
   /** 拖放区高亮时显示的提示（松开即添加）。 */
   dropHint: string;
 
@@ -312,7 +305,6 @@ export interface Texts {
   /** 复制按钮的 1s 瞬时反馈（按钮文案自换；宿主不再发「已复制」toast）。 */
   copied: string;
   insertToEditor: string;
-  openFile: string;
   stopped: string;
 
   connecting: string;
@@ -350,19 +342,12 @@ export interface Texts {
   connectionLost: string;
   /** 连接失败条：dsh 进程起不来（原因来自 spawn）。 */
   serverSpawnFailed: (detail: string) => string;
-  /** 连接失败条：dsh web 进程退出（退出码 / 信号，取不到时是 `?`）。 */
-  serverExited: (code: string, signal: string) => string;
   /** 连接失败条：后台没能就绪（缺地址或令牌；**不再有"等超时"这一档**）。 */
   serverNotReady: string;
   /** 连接条：该地址上一次都没应答过（**仍在重试**，直到连通或用户点「停止连接」）。 */
   serverUnreachable: (baseUrl: string) => string;
   /** 连接失败条末段：服务器日志尾部（原文照贴，不翻译）。 */
   serverLogTail: (tail: string) => string;
-  /**
-   * toast：`dshChat.url` / `dshChat.command` 改了，扩展已中止当前后台并按新配置重连
-   * （参数是当时开着几个会话——用户在意的正是「我的对话是不是断了」）。
-   */
-  switchingServer: (sessions: number) => string;
   /** toast：在共享后台的窗口里执行「重启服务器」，后台已由本窗口接管重起。 */
   sharedRestarted: string;
 
@@ -432,14 +417,21 @@ export interface Texts {
   toolEdit: string;
   toolRun: string;
   toolSearch: string;
-  toolGlob: string;
-  toolWeb: string;
-  toolTodo: string;
-  toolDelegate: string;
-  toolPresent: string;
   /** 官方 `TOOL_TITLE_KEYS` 里各工具的**自有标题**（不套用变体名）。 */
   toolPwsh: string;
   toolReadImage: string;
+  /**
+   * cordis（插件运行时）那几只工具的自有标题。
+   *
+   * 它们由 `shared/toolMeta.ts` 的 `TOOL_TITLE_KEYS` 按名字映射过来，而界面侧是
+   * **动态查表**（`Rows.tsx` 里 `texts[titleKey]`）——字典缺键时 TS 不会报错，
+   * 界面会把工具 id 原样（`cordis_run`）画成标题。所以 `scripts/i18n.test.ts`
+   * 有一条断言逐个核对这张表里的键在两份字典里都存在。
+   */
+  toolInspect: string;
+  toolRunCordis: string;
+  toolStopCordis: string;
+  toolRemoveCordis: string;
   /** `others` 变体的兜底标题（官方 `tool.title.generic`）。 */
   toolGeneric: string;
   toolCode: string;
@@ -450,11 +442,8 @@ export interface Texts {
   /** 工具结果里图片的替代文本。 */
   toolImageAlt: string;
   /** 运行中工具行的状态点标签（官方 `row.running`）。 */
-  toolStatusRunning: string;
   /** 已停止（官方 `row.stopped`：中断，不是失败）。 */
-  toolStatusStopped: string;
   /** 失败（官方 `row.failed`）。 */
-  toolStatusFailed: string;
 
   // ---------- 工具卡（官方 `ReadBlock` / `SearchBlock` / `TerminalBlock` / `WebBlock`）
   //
@@ -500,8 +489,6 @@ export interface Texts {
   /** 终端卡：没有输出（官方 `terminal.noOutput`）。 */
   terminalNoOutput: string;
   /** 终端卡：输出区的展开 / 收起钮（官方 `terminal.expandAria` / `collapseAria`）。 */
-  terminalExpandAria: (count: number) => string;
-  terminalCollapseAria: string;
   /** 待办工具行的标题（官方 `todo.rowTitle`）。 */
   toolTodoTitle: string;
   /** 待办进度：`{done}/{total} 已完成`（官方 `todo.completed`）。 */
@@ -520,7 +507,6 @@ export interface Texts {
   /** 分支按钮的禁用说明（运行中不能分支）。 */
   branchRunning: string;
   /** 会话列表里「这是分支」的角标。 */
-  branchTag: string;
   /** 历史：把窗口外的历史**一次全部**取回来（不再按「上一条用户消息」分段）。 */
   historyMore: string;
   /** 正在取更早的历史（按钮在此期间是不可点的）。 */
@@ -542,20 +528,12 @@ export interface Texts {
   /** 插话按钮的禁用说明（非运行中）。 */
   queueSteerUnavailable: string;
   /** 插话失败（服务端拒绝）。 */
-  queueSteerFailed: string;
   /** 服务端给了本扩展还不认识的状态：原样说明，不猜它已完成。 */
   jobUnknown: string;
 
   /** 设置：字体大小。 */
-  fontSize: string;
-  fontSizeDesc: string;
 
   /** 设置：界面语言。 */
-  language: string;
-  languageDesc: string;
-  languageAuto: string;
-  languageZh: string;
-  languageEn: string;
   /** 运行中的工具行展开后：`运行中 · 已用 {duration}`。 */
   toolRunning: string;
   /** 运行中的工具行展开后：说明为什么现在还没有输出。 */
@@ -563,7 +541,6 @@ export interface Texts {
 }
 
 const zh: Texts = {
-  brand: "DSH",
   newChat: "新建对话",
   history: "历史对话",
   openInEditor: "在编辑器中打开",
@@ -571,18 +548,13 @@ const zh: Texts = {
   openInBrowserOffline: "还没有连上 DSH 服务器，暂时无法在浏览器中打开。",
   openInBrowserFailed: "系统没有打开浏览器，可以手动访问 dsh web 打印的地址。",
 
-  emptyTitle: "有什么可以帮你？",
   emptyHint: "用 @ 添加文件或选区作为上下文；Shift+Enter 换行。",
 
   placeholderFirst: "问点什么，或用 @ 添加上下文",
   placeholderFollowUp: "继续追问…",
   send: "发送",
   sendTitle: "发送（Enter）",
-  stop: "停止",
   stopTitle: "停止生成",
-  mode: "模式与权限",
-  modeAgent: "Agent",
-  modePlan: "Plan",
   thinkingDepth: "思考深度",
   models: "模型",
   defaultModel: "默认模型",
@@ -590,7 +562,6 @@ const zh: Texts = {
   attachFile: "添加文件",
   attachFolder: "整个目录",
   cancel: "取消",
-  toggleThinking: "切换思考深度",
   remove: "移除",
   close: "关闭",
   back: "返回",
@@ -605,7 +576,6 @@ const zh: Texts = {
   permConfirmTitle: "确认启用完全权限？",
   permConfirmBody:
     "启用后新会话将减少确认步骤，可直接执行更多操作，包括敏感操作、文件修改或外部命令。仅建议在你信任后续任务时使用。",
-  permConfirmAck: "我已了解风险，并愿意继续",
   permConfirmEnable: "启用完全权限",
   enterPlanMode: "进入计划模式",
   exitPlanMode: "退出计划模式",
@@ -666,6 +636,7 @@ const zh: Texts = {
   chipPathUnresolved: "暂时拿不到会话工作目录，无法定位这个文件；稍后再点一次试试",
   dropUnreadable: (name) => `${name} 读不出来，没有加进来（目录暂不支持拖放，请用「添加文件」或 @ 引用）`,
   dropTooLarge: (name) => `${name} 太大，拖放上限 8 MB；请改用「添加文件」`,
+  imageTooLarge: (name) => `${name} 超过服务端的图片上限，已改为按文件上传`,
   dropHint: "松开即添加为附件",
 
   subagents: "子代理",
@@ -746,7 +717,6 @@ const zh: Texts = {
   copy: "复制",
   copied: "已复制到剪贴板",
   insertToEditor: "插入到当前编辑器",
-  openFile: "打开文件",
   stopped: "已停止",
 
   connecting: "正在连接…",
@@ -767,14 +737,9 @@ const zh: Texts = {
     "服务器要求授权，且自动获取的令牌未被接受。请用命令面板「DSH: 重启服务器」重启它。",
   connectionLost: "与服务器的连接已断开，正在重连…",
   serverSpawnFailed: (detail) => `启动 dsh 进程失败：${detail}`,
-  serverExited: (code, signal) => `dsh web 进程已退出（code=${code} signal=${signal}）`,
   serverNotReady: "后台没有就绪（会合文件里还没有地址或令牌）。可点「重启服务器」重试，或用「查看日志」看原因。",
   serverUnreachable: (baseUrl) => `连不上 ${baseUrl}（会一直重试，可点「停止连接」）。请确认该地址上运行着 dsh web。`,
   serverLogTail: (tail) => `日志尾部：\n${tail}`,
-  switchingServer: (sessions) =>
-    sessions > 0
-      ? `服务器配置已更改：已中止上一个后台并按新配置重连，${sessions} 个进行中的会话已中断。`
-      : "服务器配置已更改：已中止上一个后台并按新配置重连。",
   sharedRestarted: "共享后台已由本窗口接管并重启，其它窗口会自动重新接入。",
 
   searchSessions: "搜索历史对话",
@@ -818,13 +783,12 @@ const zh: Texts = {
   toolEdit: "编辑",
   toolRun: "运行",
   toolSearch: "搜索",
-  toolGlob: "查找文件",
-  toolWeb: "访问网络",
-  toolTodo: "更新待办",
-  toolDelegate: "委派子代理",
-  toolPresent: "交付文件",
   toolPwsh: "Pwsh",
   toolReadImage: "读取图片",
+  toolInspect: "查看插件",
+  toolRunCordis: "运行插件",
+  toolStopCordis: "停止插件",
+  toolRemoveCordis: "移除插件",
   toolGeneric: "工具调用",
   toolCode: "代码",
   toolExitCode: (code) => `退出码 ${code}`,
@@ -833,7 +797,6 @@ const zh: Texts = {
   messageImageAlt: "消息里的图片",
   toolInput: "输入",
   toolOutput: "输出",
-  toolOpenFile: "点击预览这个文件",
   unknownBlock: "未知内容块",
   contextInstructions: "上下文指令",
   contextAdded: "已新增",
@@ -845,9 +808,6 @@ const zh: Texts = {
   contextRelayFrom: (session) => `来自会话 ${session}`,
   contextRecallCounts: (retained, omitted) => `保留 ${retained} 条 · 省略 ${omitted} 条`,
   contextRecallTruncated: "已截断",
-  toolStatusRunning: "运行中",
-  toolStatusStopped: "已停止",
-  toolStatusFailed: "失败",
   toolCollapse: "收起",
   readWindow: (shown, total) => `显示 ${shown} / ${total} 行`,
   readExpandRest: (count) => `… 其余 ${count} 行`,
@@ -869,8 +829,6 @@ const zh: Texts = {
   terminalDone: "已完成",
   terminalFailed: "失败",
   terminalNoOutput: "无输出",
-  terminalExpandAria: (count) => `展开其余 ${count} 行输出`,
-  terminalCollapseAria: "收起输出",
   toolTodoTitle: "更新任务清单",
   toolTodoProgress: (done, total) => `${done}/${total} 已完成`,
   maxTokens: "已达到输出 token 上限，回答被截断。发送「继续」可接着写。",
@@ -880,7 +838,6 @@ const zh: Texts = {
   branchCreated: (title) => `已创建分支：${title}`,
   branchNoAnchor: "这条消息还取不到分支锚点（本轮尚未收尾），暂时不能分支",
   branchRunning: "生成中不能分支",
-  branchTag: "分支",
   historyMore: "加载全部历史",
   historyLoading: "正在加载全部历史…",
   jumpToLatest: "回到最新",
@@ -891,22 +848,13 @@ const zh: Texts = {
   sendSteer: "插话发送",
   queueSteer: "插话发送",
   queueSteerUnavailable: "仅运行中可插话发送",
-  queueSteerFailed: "插话发送失败，请重试。",
 
-  fontSize: "字体大小",
-  fontSizeDesc: "聊天界面的字号（整数 px）；0 跟随 VS Code。",
 
-  language: "界面语言",
-  languageDesc: "聊天界面的显示语言（默认跟随 VS Code）。",
-  languageAuto: "跟随 VS Code",
-  languageZh: "简体中文",
-  languageEn: "English",
   toolRunning: "运行中 · 已用 {duration}",
   toolRunningHint: "输出会在执行结束后显示",
 };
 
 const en: Texts = {
-  brand: "DSH",
   newChat: "New chat",
   history: "Chat history",
   openInEditor: "Open in editor",
@@ -914,18 +862,13 @@ const en: Texts = {
   openInBrowserOffline: "Not connected to a DSH server yet, so it cannot be opened in the browser.",
   openInBrowserFailed: "The browser was not opened; you can visit the URL printed by dsh web manually.",
 
-  emptyTitle: "What can I help you with?",
   emptyHint: "Use @ to attach files or a selection. Shift+Enter for a new line.",
 
   placeholderFirst: "Ask anything, or use @ to add context",
   placeholderFollowUp: "Ask a follow-up",
   send: "Send",
   sendTitle: "Send (Enter)",
-  stop: "Stop",
   stopTitle: "Stop generating",
-  mode: "Mode and permissions",
-  modeAgent: "Agent",
-  modePlan: "Plan",
   thinkingDepth: "Thinking depth",
   models: "Models",
   defaultModel: "Default model",
@@ -933,7 +876,6 @@ const en: Texts = {
   attachFile: "Attach file",
   attachFolder: "whole folder",
   cancel: "Cancel",
-  toggleThinking: "Cycle thinking depth",
   remove: "Remove",
   close: "Close",
   back: "Back",
@@ -948,7 +890,6 @@ const en: Texts = {
   permConfirmTitle: "Enable full access?",
   permConfirmBody:
     "New sessions will skip most confirmations and may run sensitive operations, modify files or run external commands. Only use it when you trust the work that follows.",
-  permConfirmAck: "I understand the risk and want to continue",
   permConfirmEnable: "Enable full access",
   enterPlanMode: "Enter plan mode",
   exitPlanMode: "Exit plan mode",
@@ -1012,6 +953,7 @@ const en: Texts = {
   dropUnreadable: (name) =>
     `${name} could not be read and was not attached (folders cannot be dropped; use the attach button or an @ reference)`,
   dropTooLarge: (name) => `${name} is too large to drop (limit 8 MB); use the attach button instead`,
+  imageTooLarge: (name) => `${name} is over the server's image limit and was uploaded as a file instead`,
   dropHint: "Release to attach",
 
   subagents: "Subagents",
@@ -1092,7 +1034,6 @@ const en: Texts = {
   copy: "Copy",
   copied: "Copied to clipboard",
   insertToEditor: "Insert into the active editor",
-  openFile: "Open file",
   stopped: "Stopped",
 
   connecting: "Connecting…",
@@ -1113,16 +1054,11 @@ const en: Texts = {
     "The server requires authentication and the token obtained automatically was rejected. Restart it with “DSH: Restart Server” from the Command Palette.",
   connectionLost: "Lost the connection to the server; reconnecting…",
   serverSpawnFailed: (detail) => `Could not start the dsh process: ${detail}`,
-  serverExited: (code, signal) => `The dsh web process exited (code=${code} signal=${signal})`,
   serverNotReady:
     "The background server did not become ready (the rendezvous file has no address or token yet). Try “Restart Server”, or check the logs.",
   serverUnreachable: (baseUrl) =>
     `Cannot reach ${baseUrl} yet (retrying until it answers or you click “Stop connecting”). Make sure dsh web is running there.`,
   serverLogTail: (tail) => `Log tail:\n${tail}`,
-  switchingServer: (sessions) =>
-    sessions > 0
-      ? `Server settings changed: the previous background server was stopped and a new one started; ${sessions} conversation(s) in progress were interrupted.`
-      : "Server settings changed: the previous background server was stopped and a new one started.",
   sharedRestarted: "This window took over the shared server and restarted it; the other windows reconnect automatically.",
 
   searchSessions: "Search past sessions",
@@ -1165,13 +1101,12 @@ const en: Texts = {
   toolEdit: "Edit",
   toolRun: "Run",
   toolSearch: "Search",
-  toolGlob: "Find files",
-  toolWeb: "Web",
-  toolTodo: "Update to-dos",
-  toolDelegate: "Delegate",
-  toolPresent: "Deliver",
   toolPwsh: "Pwsh",
   toolReadImage: "Read image",
+  toolInspect: "Inspect plugin",
+  toolRunCordis: "Run plugin",
+  toolStopCordis: "Stop plugin",
+  toolRemoveCordis: "Remove plugin",
   toolGeneric: "Tool call",
   toolCode: "Code",
   toolExitCode: (code) => `exit code ${code}`,
@@ -1180,7 +1115,6 @@ const en: Texts = {
   messageImageAlt: "Image in the message",
   toolInput: "IN",
   toolOutput: "OUT",
-  toolOpenFile: "Click to preview this file",
   unknownBlock: "Unknown content block",
   contextInstructions: "Context instructions",
   contextAdded: "Added",
@@ -1192,9 +1126,6 @@ const en: Texts = {
   contextRelayFrom: (session) => `From session ${session}`,
   contextRecallCounts: (retained, omitted) => `${retained} kept · ${omitted} omitted`,
   contextRecallTruncated: "Truncated",
-  toolStatusRunning: "Running",
-  toolStatusStopped: "Stopped",
-  toolStatusFailed: "Failed",
   toolCollapse: "Collapse",
   readWindow: (shown, total) => `Showing ${shown} of ${total} lines`,
   readExpandRest: (count) => `… ${count} more lines`,
@@ -1216,8 +1147,6 @@ const en: Texts = {
   terminalDone: "Done",
   terminalFailed: "Failed",
   terminalNoOutput: "No output",
-  terminalExpandAria: (count) => `Expand ${count} more output lines`,
-  terminalCollapseAria: "Collapse output",
   toolTodoTitle: "Update to-do list",
   toolTodoProgress: (done, total) => `${done}/${total} completed`,
   maxTokens: "Output token limit reached; the answer was truncated. Send “continue” to resume.",
@@ -1227,7 +1156,6 @@ const en: Texts = {
   branchCreated: (title) => `Branch created: ${title}`,
   branchNoAnchor: "No branch anchor for this message yet (the turn has not finished)",
   branchRunning: "Cannot branch while generating",
-  branchTag: "Branch",
   historyMore: "Load all history",
   historyLoading: "Loading all history…",
   jumpToLatest: "Jump to latest",
@@ -1238,16 +1166,8 @@ const en: Texts = {
   sendSteer: "Send as steer",
   queueSteer: "Send as steer",
   queueSteerUnavailable: "Steering is only available while the agent is running",
-  queueSteerFailed: "Steering failed. Please try again.",
 
-  fontSize: "Font size",
-  fontSizeDesc: "Chat UI font size (integer px); 0 follows VS Code.",
 
-  language: "Language",
-  languageDesc: "Language of the chat UI (follows VS Code by default).",
-  languageAuto: "Follow VS Code",
-  languageZh: "简体中文",
-  languageEn: "English",
   toolRunning: "Running · {duration} elapsed",
   toolRunningHint: "Output appears once the call finishes",
 };
@@ -1330,6 +1250,8 @@ function resolveMarker(text: string, texts: Texts): string {
       return texts.dropUnreadable(arg);
     case "dropTooLarge":
       return texts.dropTooLarge(arg);
+    case "imageTooLarge":
+      return texts.imageTooLarge(arg);
     case "queueContentLost":
       return texts.queueContentLost;
     case "queueDispatchFailed":
@@ -1372,17 +1294,6 @@ function resolveMarker(text: string, texts: Texts): string {
       return texts.serverLogTail(arg);
     case "serverNotReady":
       return texts.serverNotReady;
-    case "serverExited": {
-      // 参数形如 `<code>:<signal>`，两者都可能是 `?`
-      const separator = arg.indexOf(":");
-      const code = separator < 0 ? arg : arg.slice(0, separator);
-      const signal = separator < 0 ? "" : arg.slice(separator + 1);
-      return texts.serverExited(code, signal);
-    }
-    case "switchingServer": {
-      const sessions = Number(arg);
-      return texts.switchingServer(Number.isFinite(sessions) ? sessions : 0);
-    }
     case "sharedRestarted":
       return texts.sharedRestarted;
     case "uploadIncomplete": {

@@ -186,7 +186,7 @@ export class WindowRestore {
     private readonly log: (line: string) => void = () => {},
   ) {}
 
-  /** 当前缓存（解析后的形状，调用方不要改）。 */
+  /** 当前缓存（解析后的形状，调用方不要改；断言用它核对认领结果）。 */
   get value(): WindowCache {
     return this.cache;
   }

@@ -150,23 +150,6 @@ export interface TrajectoryTurn {
 /** 时间线的泳道（官方只用了三条，且只有标签用到了「输入/模型/工具」）。 */
 export type TrajectoryLane = 0 | 1 | 2;
 
-/** 时间线上一段。 */
-export interface TrajectorySpan {
-  cellIndex: number;
-  kind: TrajectoryCellKind;
-  lane: TrajectoryLane;
-  /** 归一化区间（0..1，相对整个时间线域）。 */
-  start: number;
-  end: number;
-  /** 真正的时间（ms），tooltip 用。 */
-  startedAt: number | null;
-  timeSeconds: number | null;
-  error: boolean;
-  /** 助手记录的 TTFT / 解码时长（ms），tooltip 用。 */
-  ttftMs?: number | null;
-  decodingMs?: number | null;
-}
-
 /** 宿主推给界面的整份轨迹模型。 */
 export interface TrajectoryModel {
   turns: TrajectoryTurn[];

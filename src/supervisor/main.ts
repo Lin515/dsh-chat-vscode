@@ -28,6 +28,7 @@ import { createServer, type Server, type Socket } from "node:net";
 import {
   IDLE_SEC_DEFAULT,
   PING_INTERVAL_MS,
+  PRIVATE_FILE_MODE,
   SPAWN_GRACE_MS,
   STATE_VERSION,
   clampIdleSec,
@@ -190,19 +191,64 @@ export function killTree(pid: number | undefined): void {
  *
  * **两道**（沿用本仓库既有教训）：先按记录的 pid 杀整棵树（常规路径，连 shell 一起），
  * 再按端口把真正在监听的进程杀掉（外壳先死、node 成孤儿时的兜底）。
- * 只杀"端口上的监听者"，不碰别的进程。
+ *
+ * **第二道必须有身份证据**（2026-09-17 修）：端口是从日志里上一次的公告行取的，
+ * 而默认命令用 `--port 0`（系统分配端口）——dsh 死后那个端口完全可能被**别的程序**
+ * 拿走，照着端口杀就是 `taskkill /T /F` 一棵无关的进程树（还可能连带它的子进程）。
+ * 所以只杀"命令行看得出是 dsh/node"的那种；拿不到证据就**不动手**——
+ * 这与 `processRegistry.isKillable`、清锁那套是同一条纪律（拿不到证据时不动）。
  */
 export function killServer(serverPid: number | undefined, baseUrl: string | undefined, log: (line: string) => void): void {
   const port = portOf(baseUrl);
   log(`[supervisor] 收尾：停止 dsh（pid=${serverPid ?? "?"} 端口=${port ?? "?"}）`);
   killTree(serverPid);
-  if (port !== undefined) {
-    for (const pid of listeningPids(port)) {
-      if (pid === process.pid) continue;
-      log(`[supervisor] 端口 ${port} 上还在监听的是 pid=${pid}，一并带走`);
+  if (port === undefined) return;
+  for (const pid of listeningPids(port)) {
+    if (pid === process.pid) continue;
+    if (pid === serverPid) {
       killTree(pid);
+      continue;
+    }
+    if (!looksLikeDsh(pid)) {
+      log(`[supervisor] 端口 ${port} 上的 pid=${pid} 身份不明（不是 dsh/node），不带走它`);
+      continue;
+    }
+    log(`[supervisor] 端口 ${port} 上还在监听的是 dsh/node（pid=${pid}），一并带走`);
+    killTree(pid);
+  }
+}
+
+/**
+ * 这个 pid 看起来是不是 dsh / node（**肯定证据**，拿不到就说"不是"）。
+ *
+ * - Windows：`tasklist` 取映像名（约几十毫秒，比 PowerShell 的 CIM 查询快一个数量级），
+ *   只认 `node.exe` / `dsh*.exe`；
+ * - Linux：读 `/proc/<pid>/cmdline` 的第一个字段取 basename；
+ * - 其它平台（含 macOS，没有 /proc）：返回 false —— 宁可不杀。
+ */
+export function looksLikeDsh(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  if (process.platform === "win32") {
+    const result = spawnSync("tasklist", ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"], {
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 10_000,
+    });
+    if (result.error || typeof result.stdout !== "string") return false;
+    const name = /^"([^"]+)"/.exec(result.stdout.trim())?.[1]?.toLowerCase();
+    if (!name) return false;
+    return name === "node.exe" || /^dsh[-\w]*\.exe$/.test(name);
+  }
+  if (process.platform === "linux") {
+    try {
+      const first = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0")[0] ?? "";
+      const base = first.split("/").pop()?.toLowerCase() ?? "";
+      return base === "node" || base === "dsh" || /^dsh[-\w]*$/.test(base);
+    } catch {
+      return false;
     }
   }
+  return false;
 }
 
 export interface RunningServer {
@@ -303,7 +349,7 @@ export function startServer(options: {
 /** 跑起来（供 `dist/supervisor.js` 的入口调用；导出是为了能被探针直接驱动）。 */
 export async function runSupervisor(options: Options): Promise<number> {
   const logPath = logFileIn(options.directory);
-  const logFd = openSync(logPath, "a");
+  const logFd = openSync(logPath, "a", PRIVATE_FILE_MODE);
   const log = (line: string): void => {
     try {
       appendFileSync(logPath, `[${new Date().toLocaleTimeString()}] ${line}\n`, "utf8");
@@ -467,7 +513,7 @@ export async function runSupervisor(options: Options): Promise<number> {
    * 一旦这里中途抛错而没复位，守护进程就永远不再重启 dsh、也永远不退场
    * （表现和 §8.6 那个 bug 一样："后台没了，谁都救不回来"）。所以无论走哪条路都要复位。
    */
-  const bringUp = async (): Promise<void> => {
+  const bringUpOnce = async (): Promise<void> => {
     serverStarting = true;
     try {
       // 重起时先把**旧的那个 dsh 带走**（否则会留下一个占着端口的孤儿——它不在会合文件里，
@@ -486,12 +532,16 @@ export async function runSupervisor(options: Options): Promise<number> {
       const stale = lastAnnouncedUrl(logPath);
       const stalePort = portOf(stale);
       if (stalePort !== undefined) {
-        const owners = listeningPids(stalePort).filter((pid) => pid !== process.pid);
+        // 同样按**身份证据**收：老地址的端口可能早被别的程序拿走了（见 `killServer`）
+        const owners = listeningPids(stalePort).filter((pid) => pid !== process.pid && looksLikeDsh(pid));
         if (owners.length) {
           log(`[supervisor] 发现上次遗留的 dsh 还占着端口 ${stalePort}（pid=${owners.join(",")}），先回收它`);
           for (const pid of owners) killTree(pid);
           const until = Date.now() + 10_000;
-          while (Date.now() < until && listeningPids(stalePort).some((pid) => pid !== process.pid)) {
+          while (
+            Date.now() < until &&
+            listeningPids(stalePort).some((pid) => pid !== process.pid && looksLikeDsh(pid))
+          ) {
             await new Promise((resolve) => setTimeout(resolve, 200));
           }
         }
@@ -529,6 +579,29 @@ export async function runSupervisor(options: Options): Promise<number> {
     } finally {
       serverStarting = false;
     }
+  };
+
+  /** 在飞的 `bringUp`（并发合并用，见 `bringUp`）。 */
+  let bringUpInFlight: Promise<void> | undefined;
+
+  /**
+   * 拉起/重起 dsh：**并发调用合并成同一次**。
+   *
+   * 不合并的后果实测过：两个窗口先后按「重启服务器」（或一次重启撞上主循环的
+   * "dsh 崩了要重起"）会让两次 `bringUpOnce` 同时跑——两个 dsh 被 spawn 出来，
+   * 而 `server = next` 只记得后一个，前一个的 pid/baseUrl 就此丢失，
+   * `killServer` 再也找不到它（它成了占着端口的孤儿）。合并之后，第二次请求
+   * 只是等第一次的结果。
+   */
+  const bringUp = (): Promise<void> => {
+    if (bringUpInFlight) {
+      log("[supervisor] 已经有一次启动/重起在跑，合并这次请求");
+      return bringUpInFlight;
+    }
+    bringUpInFlight = bringUpOnce().finally(() => {
+      bringUpInFlight = undefined;
+    });
+    return bringUpInFlight;
   };
 
   const goodbye = (reason: "idle" | "stop" | "replaced"): void => {
@@ -618,10 +691,19 @@ export async function runSupervisor(options: Options): Promise<number> {
                 shutdown("stop");
               } else {
                 log("[supervisor] 收到客户端的 restart 请求：重起 dsh");
-                // 直接 bringUp：它开头会把旧连接信息清掉并宣布"正在启动"，
-                // 旧的 dsh 由 bringUp 里的孤儿回收按端口带走（不必在这里先杀一次）
+                // `bringUp()` 自己会合并并发调用（见那里的 `inFlight`），这里直接排进去
                 settle("bringUp", bringUp());
               }
+            }
+          }
+          // 对面发了一行超过上限的数据：半行已丢弃、缓冲不再增长，直接断开这条连接
+          // （守护进程是长期存活的，不能被一条坏连接拖到内存耗尽）。
+          if (decoder.isOverflowed) {
+            log("[supervisor] 客户端消息单行超长，断开该连接");
+            try {
+              socket.destroy();
+            } catch {
+              // 忽略
             }
           }
         }),

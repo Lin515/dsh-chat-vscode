@@ -6,6 +6,50 @@
 
 （发版时改成版本号。下面这一批是 0.5.1 之后报上来的问题与对齐工作。）
 
+### 全项目审计：安全加固、BUG 修复、死代码清理 + 用户手册重写（2026-09-17）
+
+这轮不对比官方，而是对**本仓库自己**做了一次全量审计（宿主安全 / 会话管线 / webview
+三路并行），逐条修复并在断言里留了落点。完整清单与取舍见
+`docs/audit-summary.md` 的「七、第二轮全项目审计」。
+
+**安全**（每条都有回归断言）：
+
+- `dshChat.command` / `dshChat.url` 改为 **`machine` 作用域**：`command` 经 shell 原样
+  执行、`url` 决定凭据发往哪个 origin，而它们此前可被**工作区**（克隆来的仓库里的
+  `.vscode/settings.json`）覆盖——在已信任的工作区里等于一行配置换一次任意命令执行。
+  ⚠️ 如果你此前把这两项写在**工作区设置**里，升级后它们会被忽略（VS Code 会在设置页
+  标出来），请改到**用户设置**。
+- 删除会话前先验证会话 id 是**纯目录名**，并对拼出的路径做 `resolve()` 包含性检查
+  （服务端给的 id 以前能直接 `..\..\` 出去，而下一步是 `rmSync(recursive)`）。
+- `killServer` 的端口兜底先验身份（`looksLikeDsh`）：端口是上一次公告里的临时端口，
+  可能已被无关程序接管，`taskkill /T /F` 一棵无关进程树是不可逆的事故。
+- 会合文件（含启动令牌）按 `0o700`/`0o600` 落盘；socket 推来的状态逐字段验形状；
+  日志尾巴里的 `?token=` 一律隐去；行缓冲加 1 MiB 上限；`control:restart` 合并并发调用
+  （同时重启会 spawn 两个 dsh，前一个的 pid 再也找不回来）；dispose 后不再被在途心跳复活。
+- CSP nonce 改 `randomBytes`；webview 帧处理加 try/catch；宿主侧补拖放字节上限；
+  图片内联改用服务端 `imageLimits.maxImageBytes`（缺省 64 MB 硬上限），超限改按文件上传
+  并提示（新标记 `@imageTooLarge`）。
+
+**BUG**：`historyLoading` 缺在快照里导致切会话后「加载更早」永久卡死；`cordis_*` 工具行
+显示裸 id（4 个 `TOOL_TITLE_KEYS` 目标键在词典里不存在）；`tool/result` 找不到调用记录时
+被静默丢弃（那一行永远停在「运行中」）；提示条因计时器依赖不稳定而永不消失；目标条与
+问卷里的 `Esc` 会连带中止正在跑的这一轮；`eventSessions` 只增不删；子代理面板跨会话不刷新
+且把「未知状态」画成「未运行」；工具展开区多个元素共用同一个 `ref`；轨迹的「输出」行画的是
+时长、「Diff」页签硬编码英文、平移监听卸载不摘、空数组使 `useMemo` 失效；输出通道会变成两份；
+一轮结束后无条件抢焦点。
+
+**死代码**：`src/dsh/textFile.ts` 整份模块（含测试与 esbuild 条目）、`bridge` 的
+持久化包装、4 个自绘设置页残留图标、`awaitFirstState` / `socketNodeExists` /
+`createExclusive` / `waitForSocket` / `TrajectorySpan` / `readSessionLogRows` 等未用导出、
+4 条死 IPC 帧与处理器、46 个死词典键、7 个死 CSS 变量、2 条"有词典没发射点"的死文案标记。
+`scripts/i18n.test.ts` 新增**反方向**断言（登记过的标记必须有真实发射点），这类死文案不会再攒。
+
+**文档**：`README.md` 重写为面向用户的精简手册（前置条件明确写出"必须先装 dsh"并给出官方
+地址；`url` 留空 = 自管理内部 DSH、填了 = 只连外部，以及多窗口共用同一后端的关键口径；
+界面自绘、与 Web UI 对齐一句话带过），并入演示截图；不再用 Continue 作类比——
+`docs/continue-ui-spec.md`（1128 行的"复刻规格"）整份删除，许可归属说明保留在
+`THIRD-PARTY-NOTICES.md`。`AGENTS.md` 补「安全口径」一节并修正构建姿势描述。
+
 ### 渲染 `exit_plan_mode` 请求（计划审阅卡）（2026-09-17）
 
 **现场**：计划模式里模型把整份计划交上来请人放行（`exit_plan_mode`），界面上只有一句
