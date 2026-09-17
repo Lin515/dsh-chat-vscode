@@ -12,6 +12,14 @@
 > （当前状态见 `audit-summary.md` 的「零、修复状态」），**不要照着本文去重复修一遍**。
 > 它的价值是证据（官方 `path:line` 引用）与仍未处理的差异（§16 `schedule`、§17
 > `agentPreset` 等仍未消费，与 `audit-summary.md`「仍未修复」一致）。
+>
+> **2026-09-18 状态更新**：§13 开头那句「扩展**并不消费 `inbox` 投影**」**已过期**——
+> 服务端 2026-09-09 起删掉了 `session/control` 的队列通道，队列只剩 `inbox` 投影这一条
+> 来源；扩展当时只读旧通道，于是**待发列表整体消失**（用户 2026-09-18 报的）。
+> 现在扩展**双读**：`inbox` 投影 + 旧的 `queues`/`queue` 帧都读，折算在
+> `src/dsh/queueView.ts`（`queueItemsFromInbox` / `queueItemsFromWire`），
+> 接线在 `src/dsh/controller.ts` 的 `onControlFrame` 与 `applyProjection` 的
+> `case "inbox"`。本节其余判定（官方呈现面、steering 位置、`context` 丢弃）仍然有效。
 
 审计范围：仅 **projections & panels**。官方源码为只读权威，路径记为 `@dsh/<pkg>/...`，
 其中 `@dsh` = `C:\Users\Cueio\AppData\Roaming\npm\node_modules\@deepseek-ai\dsh\node_modules\@deepseek-ai\`。
@@ -537,7 +545,10 @@
 
 ## 13. `inbox`（排队消息）与 steering 呈现
 
-**关于任务描述的一处更正**：扩展**并不消费 `inbox` 投影**，`inbox` 键在 `applyProjection` 中没有 case。
+> ⚠️ **2026-09-18：本节开头那句「扩展并不消费 `inbox` 投影」已过期**（服务端删掉了旧的
+> 队列帧通道，扩展改为双读，见文首状态更新）。下面关于官方呈现面与过滤口径的判定不变。
+
+**关于任务描述的一处更正**：审计当时扩展**并不消费 `inbox` 投影**，`inbox` 键在 `applyProjection` 中没有 case；
 `queued`/`steering`/`context` 的过滤发生在 **`session/control` 的 `queue` 帧**上
 （`src/dsh/controller.ts:797-800` → `src/dsh/queueView.ts`）。
 

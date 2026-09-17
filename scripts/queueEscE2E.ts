@@ -13,6 +13,7 @@
 import { randomUUID } from "node:crypto";
 import { DshClient } from "../src/dsh/client";
 import { SupervisorManager } from "../src/dsh/supervisorManager";
+import { queueItemsFromInbox, queueItemsFromWire } from "../src/dsh/queueView";
 
 const log = (line: string) => console.log(`[e2e] ${line}`);
 const server = new SupervisorManager({ url: "", command: "dsh", log });
@@ -37,15 +38,24 @@ function observe(client: DshClient, sessionId: string) {
       const frame = value as {
         type?: string;
         sessionId?: string;
-        items?: { id?: string }[];
-        value?: { queues?: Record<string, { id?: string }[]> };
+        items?: unknown[];
+        key?: string;
+        value?: {
+          queues?: Record<string, unknown[]>;
+          projections?: Record<string, { values?: Record<string, unknown> }>;
+        };
       };
-      if (frame?.type === "queue" && frame.sessionId === sessionId && Array.isArray(frame.items)) {
-        queue = frame.items.map((item) => String(item?.id));
-      }
-      const baseline = frame?.value?.queues?.[sessionId];
-      if (frame?.type === "baseline" && Array.isArray(baseline)) {
-        queue = baseline.map((item) => String(item?.id));
+      // 队列有两条通道，都认（与宿主侧 controller.onControlFrame 同一套映射）：
+      // 旧服务端用 `queues` baseline + `queue` 帧，2026-09-09 起改用 `inbox` 投影。
+      if (frame?.type === "queue" && frame.sessionId === sessionId) {
+        queue = queueItemsFromWire(frame.items).map((entry) => entry.view.id);
+      } else if (frame?.type === "projection" && frame.sessionId === sessionId && frame.key === "inbox") {
+        queue = queueItemsFromInbox(frame.value).map((entry) => entry.view.id);
+      } else if (frame?.type === "baseline") {
+        const legacy = frame.value?.queues?.[sessionId];
+        if (Array.isArray(legacy)) queue = queueItemsFromWire(legacy).map((entry) => entry.view.id);
+        const inbox = frame.value?.projections?.[sessionId]?.values?.inbox;
+        if (inbox !== undefined) queue = queueItemsFromInbox(inbox).map((entry) => entry.view.id);
       }
     },
   });

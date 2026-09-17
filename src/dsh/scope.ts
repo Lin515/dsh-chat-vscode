@@ -43,7 +43,7 @@ export class SessionScope {
    * 并发请求多次，白白重折一遍历史）。
    */
   historyLoading = false;
-  /** 排队中的消息（session/control 的 queue 帧）。 */
+  /** 排队中的消息（`inbox` 投影；旧服务端是 session/control 的队列帧）。 */
   queueItems: QueuedMessageView[] = [];
   /** 队列项 id → 它的原始输入（每次队列帧到达时按 rpcId 重建）。 */
   readonly queueOrigin = new Map<string, QueueOrigin>();

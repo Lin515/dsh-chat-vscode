@@ -81,9 +81,17 @@ export type AssistantStreamFrame =
   | { type: "chunk"; attemptId: string; revision: number; index: number; time: number; chunk: StreamChunk }
   | { type: "end"; attemptId: string; revision: number; index: number; outcome: { kind: "committed"; eventType: string; seq: number } | { kind: "abandoned" } };
 
+/**
+ * `session/control` 的帧（宽形状，逐字段在消费处校验）。
+ *
+ * `type: "queue"` 与 `items` 是**兼容**用的：2026-09-09（提交 `72f2e71070`）之前
+ * 的服务端用它们下发队列，之后队列改由 `inbox` 投影承载（走 `projection` 帧的
+ * `key: "inbox"`）。两条通道都读，见 controller 的 `onControlFrame`。
+ */
 export interface SessionControlFrame {
   type: "baseline" | "queue" | "jobs" | "projection";
   sessionId?: string;
+  /** 旧通道（`type: "queue"`）的 `SessionQueuedItem[]`。 */
   items?: unknown[];
   jobs?: unknown[];
   key?: string;

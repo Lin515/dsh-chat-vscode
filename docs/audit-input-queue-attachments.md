@@ -22,6 +22,12 @@
 > - §3.4「拖放 / 粘贴文件不落地」→ **已过期**：`Composer.tsx` 的 `onDrop` 现在真的读字节
 >   上传（`attachBytes`）；**粘贴**仍不落地。
 >
+> **2026-09-18 状态更新**：本文多处把队列的唯一来源写成 `session/control` 的
+> `SessionQueuedItem` 帧（§2.3、§6.1 等）。服务端 2026-09-09 起删掉了那条通道，队列改由
+> **`inbox` 投影**承载（`{'next-turn':…,'next-step':…}`）；扩展当时只读旧帧，表现为
+> **待发列表整体消失**（用户 2026-09-18 报的）。现在扩展**双读**：新投影与旧帧都读，
+> 折算见 `src/dsh/queueView.ts`。本节关于「停止/取消与队列」的语义结论不受影响。
+>
 > 主线实测补充（本报告未覆盖）：`scripts/planCommandProbe.ts` 用真实服务器证实了
 > 「`/plan` 走 prompt 正文无效、必须走 `commands/execute`」，见 `audit-summary.md` §3.1。
 

@@ -40,7 +40,7 @@ import {
   type ServerStatus,
 } from "./supervisorManager";
 import { SessionScope } from "./scope";
-import { queueItems, type QueueOrigin } from "./queueView";
+import { queueItemsFromInbox, queueItemsFromWire, type QueuedItemEntry, type QueueOrigin } from "./queueView";
 import { goalFromProjection, planModeFromProjection, subagentsFromCatalog, subagentsFromList } from "./projections";
 import { deriveTrajectoryModel } from "./trajectory";
 import { lineageDepths, normalizePath, visibleForWorkspace, visibleSessionRows } from "./sessionList";
@@ -2253,7 +2253,19 @@ export class ChatController implements vscode.Disposable {
    *
    * 投影是会话整体状态的折叠值（模型选择、权限预设、待办、计划模式、标题…），
    * 比客户端自己重放日志省事得多。每次重连以一个 `baseline` 开场，其后是逐条
-   * `projection` 增量；两者都按「seq 更小者不覆盖」的规则消费。
+   * `projection` 增量。
+   *
+   * **队列有两条通道，都认**（2026-09-18）：
+   * - `inbox` 投影（当前服务端）：baseline 的 `projections[sid].values.inbox`
+   *   与 `{type:'projection', key:'inbox'}` 增量，走 `applyProjection` 的
+   *   `case "inbox"`；
+   * - `queues` / `queue` 帧（2026-09-09 之前的服务端，提交 `72f2e71070` 删掉了它）：
+   *   baseline 的 `value.queues[sid]` 与 `{type:'queue', items}`，走下面两个
+   *   兼容分支与 `queueItemsFromWire`。
+   *
+   * 两条通道**各自只出现在对应版本上**，所以不需要探测版本；过渡版同时出现时两者
+   * 同源同值（旧帧当年就是由 `inbox` 投影派生的），因此「后到者覆盖」是安全的。
+   * baseline 里先套 `queues` 再套 `projections`：同时有两份时让新通道权威。
    */
   private onControlFrame(frame: SessionControlFrame): void {
     if (!frame || typeof frame !== "object") return;
@@ -2263,16 +2275,17 @@ export class ChatController implements vscode.Disposable {
       if (!value) return;
       // baseline 是**全量**集合（按会话分键）：逐个套用到已打开的域上。
       // 没打开的会话不建域——它们的状态等窗口打开时由新 snapshot/baseline 重建。
+      // 顺序有意为之：旧的 `queues` 在前、新的投影在后（同值时新通道胜）。
+      for (const [sessionId, queue] of Object.entries(value.queues ?? {})) {
+        const scope = this.scopes.get(sessionId);
+        if (scope) this.syncQueue(scope, queueItemsFromWire(queue, (rpcId) => this.originFor(rpcId)));
+      }
       for (const [sessionId, projections] of Object.entries(value.projections ?? {})) {
         const scope = this.scopes.get(sessionId);
         if (!scope) continue;
         for (const [key, projectionValue] of Object.entries((projections as { values?: Record<string, unknown> })?.values ?? {})) {
           this.applyProjection(scope, key, projectionValue);
         }
-      }
-      for (const [sessionId, queue] of Object.entries(value.queues ?? {})) {
-        const scope = this.scopes.get(sessionId);
-        if (scope) this.syncQueue(scope, queue);
       }
       for (const [sessionId, jobs] of Object.entries(value.jobs ?? {})) {
         const scope = this.scopes.get(sessionId);
@@ -2285,7 +2298,8 @@ export class ChatController implements vscode.Disposable {
     if (!scope) return;
 
     if (frame.type === "queue") {
-      this.syncQueue(scope, frame.items);
+      // 兼容 2026-09-09 之前的服务端：那条通道已被 `inbox` 投影取代。
+      this.syncQueue(scope, queueItemsFromWire(frame.items, (rpcId) => this.originFor(rpcId)));
       return;
     }
 
@@ -2300,11 +2314,13 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
-   * 队列帧进来到界面状态：同时重建「队列项 id → 原始输入 / 可重发内容」的索引，
-   * 供「重新编辑」与「ESC 中止并把队首发出去」使用。
+   * 队列（两条通道的任一条）→ 界面状态：同时重建「队列项 id → 原始输入 /
+   * 可重发内容」的索引，供「重新编辑」与「ESC 中止并把队首发出去」使用。
+   *
+   * 传进来的是**已折好的条目**（`queueItemsFromInbox` / `queueItemsFromWire`）——
+   * 两条通道在这里合流，下游只认一个视图模型。
    */
-  private syncQueue(scope: SessionScope, items: unknown[] | undefined): void {
-    const entries = queueItems(items, (rpcId) => this.originFor(rpcId));
+  private syncQueue(scope: SessionScope, entries: QueuedItemEntry[]): void {
     scope.queueOrigin.clear();
     for (const entry of entries) {
       scope.queueOrigin.set(entry.view.id, {
@@ -2320,6 +2336,14 @@ export class ChatController implements vscode.Disposable {
   /** 单个投影值 → 界面状态。未知 key 直接忽略（插件没加载 = 能力缺失，不是错误）。 */
   private applyProjection(scope: SessionScope, key: string, value: unknown): void {
     switch (key) {
+      case "inbox": {
+        // 队列的权威来源（当前服务端）：`{'next-turn':…,'next-step':…}`。
+        // 走到这里的入口有三个——控制流 baseline 的投影、`projection` 增量帧、
+        // 以及 `openScopeFollow` 快照的 `projections.values`（重开会话时重建）。
+        this.syncQueue(scope, queueItemsFromInbox(value, (rpcId) => this.originFor(rpcId)));
+        break;
+      }
+
       case "modelSelection":
         this.applyModelSelection(scope, value);
         break;

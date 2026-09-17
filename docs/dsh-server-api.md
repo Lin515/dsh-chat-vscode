@@ -465,7 +465,7 @@ export type PromptContentPart = {
 语义要点：
 
 - `mode: 'queue'` 追加一轮；`mode: 'steer'` 打断当前轮并插话（`⟨P⟩\dsh-api-session-controller\lib\types\client\contract\session.d.ts` 的 `prompt(content, mode, signal, requestId)`）。
-- `requestId` 是**客户端铸造**的关联身份：Host 把它写进 durable `user/message` 的 `source.rpcId`（`MessageSourceMap['user-rpc']`，`⟨P⟩\dsh-api-session-controller\lib\types\types.d.ts:346-355`），队列项也带（`SessionQueuedItem.rpcId`）。**重试同一个 `requestId` 不会重复插入消息**（README：「Prompt retries whose `requestId` is already queued or logged return the original acceptance without inserting another message」）。
+- `requestId` 是**客户端铸造**的关联身份：Host 把它写进 durable `user/message` 的 `source.rpcId`（`MessageSourceMap['user-rpc']`，`⟨P⟩\dsh-api-session-controller\lib\types\types.d.ts:346-355`）。队列里的那一条也带它——当前版本是 `inbox` 投影消息的 `source.rpcId`，2026-09-09 之前是 `SessionQueuedItem.rpcId`。**重试同一个 `requestId` 不会重复插入消息**（README：「Prompt retries whose `requestId` is already queued or logged return the original acceptance without inserting another message」）。
 - 内容既无空白以外的文本也无附件 → 直接拒绝（不唤起 Agent）。
 - `clientTimeZone` 非法 → `session/invalid-time-zone`（details `{value}`）。
 - 端点有 `cancellation: {parameter:'signal'}`（`⟨P⟩\dsh-api-session-controller\lib\typert.host.js:1006`）——`signal` 是**描述符元数据，不是线上参数**，HTTP 客户端断连即取消。
@@ -628,33 +628,39 @@ export interface SessionPage { readonly records: readonly SessionHistoryRecord[]
 
 分页按**消息对齐**：默认 50 条消息（`DEFAULT_MAX_MESSAGES = 50`），只保留 `user/message` / `assistant/message` 中 `surfaceOp === 'append'` 的（`⟨P⟩\dsh-api-session-controller\lib\index.js:1329, 1602-1623`），并按 `sourceEventSeqs` 分组——所以一页返回的 `records` 条数 ≠ 消息条数。
 
-### 3.8 `session/control` —— 全局控制流（队列 / 后台任务 / 投影）
+### 3.8 `session/control` —— 全局控制流（后台任务 / 投影；队列经 `inbox` 投影）
 
 WS 逻辑流，`endpoint: "session/control"`，`payload: {"args":{}}`（无参数）。
 
-`SessionControlFrame`（逐字，`⟨P⟩\dsh-api-session-controller\lib\types\types.d.ts:509-536`）：
+**当前版本**（逐字，`packages/api/session-controller/src/types.ts`——即本地构建 `dsh.bat`
+所跑的那份）：
 
 ```ts
 export interface SessionControlBaseline {
-    readonly queues: Readonly<Record<SessionId, readonly SessionQueuedItem[]>>;
     readonly jobs: Readonly<Record<SessionId, readonly SessionJob[]>>;
     readonly projections: Readonly<Record<SessionId, SessionProjectionBaseline>>;
 }
-export type SessionControlFrame = {
-    readonly type: 'baseline';
-    readonly value: SessionControlBaseline;
-} | {
-    readonly type: 'queue';
-    readonly sessionId: SessionId;
-    readonly items: readonly SessionQueuedItem[];
-} | {
-    readonly type: 'jobs';
-    readonly sessionId: SessionId;
-    readonly jobs: readonly SessionJob[];
-} | ({
-    readonly type: 'projection';
-} & SessionProjectionUpdate);
+export type SessionControlFrame =
+  | { readonly type: 'baseline'; readonly value: SessionControlBaseline }
+  | { readonly type: 'jobs'; readonly sessionId: SessionId; readonly jobs: readonly SessionJob[] }
+  | ({ readonly type: 'projection' } & SessionProjectionUpdate);
 ```
+
+**队列没有自己的帧**：待发消息在 **`inbox` 投影**里——baseline 的
+`projections[sid].values.inbox` 全量下发，之后是 `{type:'projection', key:'inbox', value}`
+增量。值的形状是 `{'next-turn': UserMessage[], 'next-step': UserMessage[]}`
+（`packages/core/agent-loop/src/inbox.ts` 的 `inboxProjectionDefinition`）：
+`next-turn` = 排队等下一轮，`next-step` = 等下一个 step 的插话。消息体自带
+`id` / `content` / `source:{kind,rpcId?}`——其中 `next-step` 里 `source.kind !== 'user'`
+的是插件注入的环境上下文，不是用户消息。
+
+> **2026-09-09 之前**（提交 `72f2e71070` 删除）的版本另有一条队列通道，扩展**同时兼容**：
+> baseline 里多一个 `queues: Readonly<Record<SessionId, readonly SessionQueuedItem[]>>`，
+> 增量是 `{readonly type:'queue'; sessionId; items}`；`SessionQueuedItem` =
+> `{id, placement:'queued'|'steering'|'context', rpcId?, message:{id, content}}`。
+> 两者**同源同值**（旧帧当年就是由 `inbox` 投影派生的，见 `8b0ea3e461` 的
+> `queueItemsFromInbox()`），只是形状不同。扩展双读的实现在 `src/dsh/queueView.ts` 与
+> `src/dsh/controller.ts` 的 `onControlFrame`。
 
 **每一代（每次重连）必定以恰好一个 `baseline` 开始**，其后是增量帧。进程本地的队列/任务状态因此可安全重建。
 

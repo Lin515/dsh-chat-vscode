@@ -5,6 +5,7 @@
  *   node esbuild.probe.mjs && node build/probe.mjs <baseUrl> <token>
  */
 import { DshClient } from "../src/dsh/client";
+import { queueItemsFromInbox } from "../src/dsh/queueView";
 
 const [baseUrl, token] = process.argv.slice(2);
 if (!baseUrl) {
@@ -57,12 +58,20 @@ await new Promise<void>((resolve) => {
       const queues = value.value?.queues ?? {};
       const jobs = value.value?.jobs ?? {};
       const projections = value.value?.projections ?? {};
-      console.log(`  queues 里有 ${Object.keys(queues).length} 个会话有排队项：`);
+      // 队列有两条通道：旧服务端的 baseline `queues`（2026-09-09 之前），
+      // 当前服务端的 `inbox` 投影。两个都打印——排查「列表怎么没了」时，
+      // 第一条要看的就是服务端到底发哪条。
+      console.log(`  [旧通道] queues 里有 ${Object.keys(queues).length} 个会话有排队项：`);
       for (const [sessionId, items] of Object.entries<any>(queues)) {
         console.log(`    ${sessionId}: ${items.length} 项 → ${JSON.stringify(items).slice(0, 200)}`);
       }
       console.log(`  jobs 里有 ${Object.keys(jobs).length} 个会话有后台任务`);
       const forNewest = projections[newest?.sessionId]?.values ?? {};
+      const inbox = queueItemsFromInbox(forNewest.inbox);
+      console.log(`  [新通道] inbox 投影：${inbox.length} 项待发`);
+      for (const entry of inbox) {
+        console.log(`    ${entry.view.placement} ${entry.view.id} rpc=${entry.view.rpcId ?? "-"} → ${entry.view.text.slice(0, 40)}`);
+      }
       console.log(`  最新会话投影键 ${Object.keys(forNewest).length} 个`);
       console.log(`    modelSelection = ${JSON.stringify(forNewest.modelSelection)}`);
       console.log(`    permissions = ${JSON.stringify(forNewest.permissions)}`);

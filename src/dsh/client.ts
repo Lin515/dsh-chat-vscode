@@ -354,7 +354,9 @@ export class DshClient {
    * 提交一轮对话。
    *
    * `requestId` 由客户端铸造，是**唯一的关联身份**：Host 会把它写进 durable
-   * `user/message` 的 `source.rpcId`，队列项也带 `SessionQueuedItem.rpcId`。
+   * `user/message` 的 `source.rpcId`，队列里的那一条也带（当前服务端是
+   * `inbox` 投影消息的 `source.rpcId`，2026-09-09 之前是
+   * `SessionQueuedItem.rpcId`，见 `queueView.ts`）。
    * 调用方因此能凭它把「服务端队列里的这一条」对回「用户当时真正输入的文本」——
    * 这里的内容块已经把文件上下文内联进正文了，队列回显不足以还原输入框。
    */
@@ -385,7 +387,7 @@ export class DshClient {
 
   /**
    * 移除一条排队 / 插话消息（`SessionUpdateQueueRequest`，action `{kind:'remove'}`）。
-   * 服务端队列帧随后会重发剩余项，界面以队列帧为准。
+   * 服务端随后会重发队列（当前服务端重发 `inbox` 投影），界面以它为准。
    */
   updateQueueRemove(sessionId: string, itemId: string): Promise<{ accepted: true }> {
     return this.request(METHODS.sessionUpdateQueue, {
@@ -398,7 +400,7 @@ export class DshClient {
    * `dsh-api-session-controller` 的 `SessionQueueAction`。
    *
    * 服务端要求 agent 正在运行，否则报 `session/steer-unavailable`——调用方按官方
-   * 口径把这一类拒绝当**静默 no-op**（队列帧本来就是权威，拒绝意味着状态没变）。
+   * 口径把这一类拒绝当**静默 no-op**（队列本身就是权威，拒绝意味着状态没变）。
    */
   updateQueueSteer(sessionId: string, itemId: string): Promise<{ accepted: true }> {
     return this.request(METHODS.sessionUpdateQueue, {

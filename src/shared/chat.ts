@@ -667,15 +667,17 @@ export interface JobItemView {
 /**
  * 排队中（尚未发送）的消息。
  *
- * 线格式是 `SessionQueuedItem`：`placement` 有 `queued`（排队）/ `steering`
- * （插话）/ `context`（插件注入的环境上下文）三种——后一种是服务器自己放的，
- * 不算用户消息，宿主不下发。
+ * 两种线格式都折到这里（见 `dsh/queueView.ts`）：当前服务端是 `inbox` 投影的
+ * `next-turn` / `next-step` 两列，旧服务端是 `SessionQueuedItem` 的
+ * `placement`（`queued` / `steering` / `context`，后者是插件注入的环境上下文，
+ * 不算用户消息，宿主不下发）。
  */
 export interface QueuedMessageView {
-  /** 线格式消息 id；取消 / 重新编辑时经 session/updateQueue 带回。 */
+  /** 消息 id；取消 / 重新编辑时经 session/updateQueue 带回。 */
   id: string;
   /**
-   * 提交这批内容时客户端铸造的 requestId（`SessionQueuedItem.rpcId`）。
+   * 提交这批内容时客户端铸造的 requestId（当前服务端在 inbox 消息的
+   * `source.rpcId` 上，旧服务端是 `SessionQueuedItem.rpcId`）。
    * 用于把队列项对回用户原始输入——线上正文含内联的文件上下文，不是原样。
    */
   rpcId?: string;
@@ -814,7 +816,12 @@ export interface ChatState {
    * 界面不做自己的判定。
    */
   turnProcessThreshold?: number;
-  /** 排队中（尚未发送）的消息列表，来自 session/control 的 queue 帧。 */
+  /**
+   * 排队中（尚未发送）的消息列表。
+   *
+   * 来源有两条通道（扩展都读）：当前服务端的 `inbox` 投影，以及 2026-09-09 之前
+   * 服务端的 `session/control` 队列帧；折算见 `dsh/queueView.ts`。
+   */
   queueItems: QueuedMessageView[];
   attachments: Attachment[];
   draft: string;
