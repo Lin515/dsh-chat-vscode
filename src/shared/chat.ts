@@ -58,6 +58,24 @@ export interface Attachment {
   dataUrl?: string;
   /** 图片字节数。 */
   bytes?: number;
+  /**
+   * 图片的 **durable 句柄**（`sha256:…`）：只在**回放的消息**里有值，草稿附件没有。
+   *
+   * 用户消息里的图片块落盘时已经是这种不透明引用（发送时内联的 base64 由服务端
+   * `admitPromptContent` 提升掉），所以想看回放里的图只能拿它去换字节——
+   * 与助手/工具图片同一条 `session/attachment` 通道。
+   */
+  attachmentId?: string;
+  /**
+   * 图片的媒体类型（由句柄给出，**别按文件名猜**）。
+   *
+   * 服务端会归一化图片格式：实测用户发的是 `.png` 而句柄里是 `image/jpeg`，
+   * 按扩展名拼 data URL 会得到一个浏览器认不出 MIME 的 data URL。
+   */
+  mediaType?: string;
+  /** 图片固有宽高：字节到达前按它预留位置，避免图加载完把消息顶一下。 */
+  width?: number;
+  height?: number;
   /** 该文件附件的上传状态（`kind === "file"` 时）。 */
   upload?: UploadState;
   /** `@` 引用的目标类型（`kind === "reference"` 时）。 */

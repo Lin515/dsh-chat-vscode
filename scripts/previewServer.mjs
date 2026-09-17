@@ -21,7 +21,13 @@ createServer(async (req, res) => {
       return;
     }
     const body = await readFile(path);
-    res.writeHead(200, { "content-type": types[extname(path)] ?? "application/octet-stream" });
+    res.writeHead(200, {
+      "content-type": types[extname(path)] ?? "application/octet-stream",
+      // 预览页改完 `npm run build` 立刻要能看到新产物：不给缓存头时浏览器会用
+      // 启发式缓存，于是"改了没生效"——本项目真踩过（挪了图片渲染位置后，
+      // 预览里还是旧的折叠布局，白排查一轮）。
+      "cache-control": "no-store",
+    });
     res.end(body);
   } catch {
     res.writeHead(404).end("not found");

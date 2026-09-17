@@ -20,6 +20,7 @@ import { planReviewAnswer, planReviewOf, type PlanReviewView } from "../planRevi
 import { DiffView } from "./Diff";
 import { CodeBlock } from "./CodeBlock";
 import { Markdown } from "./Markdown";
+import { ImageGallery } from "./Images";
 import { ToolCardBody } from "./ToolCards";
 import { fill, useTexts, resolveText } from "../texts";
 import {
@@ -189,6 +190,9 @@ export function ToolRow({ tool, diffLayout }: { tool: ToolCallView; diffLayout?:
   // 展开区只显示「解析后的有价值信息」：编辑类给 diff，其余给 IN/OUT 两段
   // （读取出的文本 / 运行输出 / 搜索结果等）。
   // 运行中也要可展开：长任务（构建）要能看见完整命令与「还在跑」的计时。
+  //
+  // **图片不算 body 成员**：它渲染在行下方（见文件末尾的 `tool.images`），
+  // 折叠态就能看见——把它算进来会让「只有图、没有文本」的调用多出一个空展开区。
   const hasBody =
     hasDiff ||
     hasCard ||
@@ -197,7 +201,6 @@ export function ToolRow({ tool, diffLayout }: { tool: ToolCallView; diffLayout?:
     Boolean(inputText) ||
     runningBody ||
     Boolean(exitMeta) ||
-    (tool.images?.length ?? 0) > 0 ||
     (tool.files?.length ?? 0) > 0;
 
   // `todo_write`：官方 `TodoRow` 的标题与进度摘要（`{done}/{total} 已完成 · 正在做 X`，
@@ -215,7 +218,7 @@ export function ToolRow({ tool, diffLayout }: { tool: ToolCallView; diffLayout?:
       ? `:${tool.readLines.start}-${tool.readLines.end}`
       : undefined;
 
-  return (
+  const row = (
     <Row
       // 运行中的节点：行首图标呼吸发光（.icon-glow，与思考鲸鱼同节奏），
       // 光色跟随节点自己的颜色（.node-*）；结束保持静态彩色图标
@@ -318,13 +321,6 @@ export function ToolRow({ tool, diffLayout }: { tool: ToolCallView; diffLayout?:
       {exitMeta && card?.kind !== "terminal" ? (
         <div className={`row-exit${tool.status === "error" ? " is-error" : ""}`}>{exitMeta}</div>
       ) : null}
-      {tool.images?.length ? (
-        <div className="row-body-images">
-          {tool.images.map((src, index) => (
-            <img key={index} src={src} alt={texts.toolImageAlt} />
-          ))}
-        </div>
-      ) : null}
       {tool.files?.length ? (
         <div className="row-body">
           {tool.files.map((file) => (
@@ -340,6 +336,20 @@ export function ToolRow({ tool, diffLayout }: { tool: ToolCallView; diffLayout?:
         </div>
       ) : null}
     </Row>
+  );
+
+  // 结果里的图片**不放进展开体**：图片是这次调用的产出，不是可以折叠的细节。
+  // `read_image` / 截图这类调用**唯一**的产出就是图——放在默认收起的展开体里，
+  // 等于「agent 发来的图看不到」（用户 2026-09-18 报的正是它；日志依据：本仓库
+  // 会话里 `read_image` 的 tool/result 块类型就是 `["text","image"]`）。
+  // 挪到行**下方**之后折叠态就能看见缩略图，点开仍是原图；展开体里不再重复一份。
+  return (
+    <>
+      {row}
+      {tool.images?.length ? (
+        <ImageGallery alt={texts.toolImageAlt} sources={tool.images.map((src) => ({ src }))} />
+      ) : null}
+    </>
   );
 }
 
@@ -1067,21 +1077,13 @@ export function QuestionCard({
 /**
  * 助手消息里的图片块（模型输出 / 工具回带的图）。
  *
- * 与工具结果的图库同一种呈现（`.row-body-images` 的样式），但它是**消息正文的一部分**，
- * 不是某个工具行的展开体，所以单独一个行组件。加载中 `images` 为空 → 不渲染任何东西，
- * 避免先闪一个 `src=""` 的碎图图标。
+ * 与工具结果的图库同一种呈现（共用 `ImageGallery`），但它是**消息正文的一部分**，
+ * 不是某个工具行的展开体，所以单独一个行组件。加载中 `images` 全是空串 →
+ * 组件自己返回 null，避免先闪一个 `src=""` 的碎图图标。
  */
 export function MessageImages({ images }: { images: string[] }) {
   const texts = useTexts();
-  const shown = images.filter((src) => src);
-  if (!shown.length) return null;
-  return (
-    <div className="row-body-images">
-      {shown.map((src, index) => (
-        <img key={index} src={src} alt={texts.messageImageAlt} />
-      ))}
-    </div>
-  );
+  return <ImageGallery alt={texts.messageImageAlt} sources={images.map((src) => ({ src }))} />;
 }
 
 /**

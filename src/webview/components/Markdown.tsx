@@ -1,11 +1,38 @@
-import { memo, useMemo } from "react";
+import { memo, useLayoutEffect, useMemo, useRef } from "react";
 import { splitMarkdownBlocks, type MarkdownBlock } from "../markdown";
 import { useTexts } from "../texts";
+import { hydrateLocalImages } from "../localImages";
 import { CodeBlock } from "./CodeBlock";
+import { openImagePreview } from "./Images";
 
 const HtmlBlock = memo(function HtmlBlock({ html }: { html: string }) {
-  // html 已在 markdown.ts 里经 DOMPurify 过滤
-  return <div className="md" dangerouslySetInnerHTML={{ __html: html }} />;
+  const texts = useTexts();
+  const ref = useRef<HTMLDivElement>(null);
+  // html 已在 markdown.ts 里经 DOMPurify 过滤。
+  //
+  // `useLayoutEffect` 而不是 `useEffect`：正文里的本地图片要**在绘制前**换成
+  // data URL。等到 paint 之后才换，浏览器会先画一帧破图；流式期间 html 每个
+  // token 都变（innerHTML 被 React 整体重置），这一帧每帧都会出现。
+  useLayoutEffect(() => {
+    const root = ref.current;
+    if (!root) return;
+    return hydrateLocalImages(root, texts.imageLoadFailed);
+  }, [html, texts.imageLoadFailed]);
+  return (
+    <div
+      ref={ref}
+      className="md"
+      // 正文里的图片（外链、本地图、解析后的 data URL）都点得开：注入的 HTML
+      // 不在任何组件的 props 树里，只能用事件委托把点击接回浮层。
+      onClick={(event) => {
+        const target = event.target;
+        if (target instanceof HTMLImageElement && target.src) {
+          openImagePreview(target.src, target.alt || texts.messageImageAlt);
+        }
+      }}
+      dangerouslySetInnerHTML={{ __html: html }}
+    />
+  );
 });
 
 /**

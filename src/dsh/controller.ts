@@ -23,6 +23,7 @@ import { SessionAdapter, type ImageRef } from "./adapter";
 import { classifyDroppedBytes, classifyPath, DROP_BYTES_LIMIT, formatPathList, isDirectoryPath, isImagePath } from "./attachments";
 import { ConfigChangeRouter } from "./configChanges";
 import { fileChangeKind, hasWorkingChange, isNotFoundError, resolveChipPath, type FileExistence, type GitChangeStateLike } from "./fileChange";
+import { readLocalImages } from "./localImages";
 import { shouldContinuePaging } from "./historyPaging";
 import { composeWithReferences, formatFileMention } from "./references";
 import { formatFileMentionWithLines } from "../shared/mentions";
@@ -1954,7 +1955,8 @@ export class ChatController implements vscode.Disposable {
    *
    * `session/attachment` 返回 `{attachment, data: <base64>}`——`attachmentId` 是
    * 不透明存储标识（`sha256:…`），既不是路径也不是 URL，只能用这条 RPC 取字节。
-   * 失败时不抛：一张图取不到不该影响整条消息的渲染，退回空数组（界面不显示图）。
+   * 失败时不抛：一张图取不到不该影响整条消息的渲染，**该位留空串**（不是过滤掉——
+   * 用户消息的附件按位对齐，见 `SessionAdapter.loadImages` 的契约）。
    */
   private async loadAttachmentImages(
     sessionId: string,
@@ -1962,7 +1964,7 @@ export class ChatController implements vscode.Disposable {
     done: (dataUrls: string[]) => void,
   ): Promise<void> {
     if (!this.client) {
-      done([]);
+      done(refs.map(() => ""));
       return;
     }
     const results = await Promise.all(
@@ -1984,7 +1986,7 @@ export class ChatController implements vscode.Disposable {
         }
       }),
     );
-    done(results.filter((url) => url !== ""));
+    done(results);
   }
 
   /**
@@ -3210,6 +3212,33 @@ export class ChatController implements vscode.Disposable {
       case "queryFiles":
         await this.queryFiles(viewId, message.query);
         break;
+
+      case "resolveImages": {
+        // 正文里的本地图（`![](out/chart.png)`）：按**该窗口会话**的工作目录解析。
+        // 跨目录一律不读（白名单在 `dsh/localImages.ts`）。
+        //
+        // 会话 cwd 拿不到时（窗口刚起来、会话还没进列表）**退回当前工作区**：那仍是
+        // 用户明确打开的目录，白名单的边界没有放宽，只是基准从「会话目录」换成
+        // 「工作区目录」——而两者在绝大多数情况下就是同一个目录。不兜底的话，
+        // 这一类失败是**全有全无**的：一张图都显示不出来，且完全静默。
+        const scope = this.scopeOfView(viewId);
+        const sessionCwd = scope ? this.cwdOf(scope) : undefined;
+        const cwd = sessionCwd ?? vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        const urls = await readLocalImages(cwd, message.paths);
+        const missed = message.paths.filter((path) => !(path in urls));
+        if (missed.length) {
+          // 这条日志是**诊断的落点**：界面只有一句「图片加载失败」，看不出是
+          // 拿不到基准目录、路径越界、扩展名不在图片表里，还是读盘失败。
+          this.log(
+            `[images] 本地图片未解析 ${missed.length}/${message.paths.length} 张：` +
+              `基准=${cwd ?? "（没有会话 cwd，也没有打开的工作区）"}` +
+              `${sessionCwd ? "" : "（会话 cwd 缺失，已退回工作区路径）"}；` +
+              `未解析：${missed.join(", ")}`,
+          );
+        }
+        this.emitToView(viewId, { type: "images/resolved", requestId: message.requestId, urls });
+        break;
+      }
 
       case "openInBrowser":
         await this.openInBrowser();

@@ -119,6 +119,12 @@ export interface Texts {
   openChangesAria: (name: string) => string;
   /** 助手消息里图片块的无障碍文本（工具结果图片另有一份，见 `toolImageAlt`）。 */
   messageImageAlt: string;
+  /** 点开原图（缩略图的悬停说明与浮层的无障碍标题）。 */
+  imagePreview: string;
+  /** 关闭原图浮层。 */
+  imagePreviewClose: string;
+  /** 图片加载失败的降级文案（外链被拦、本地文件被删、字节取不回来）。 */
+  imageLoadFailed: string;
   /** 工具行展开体的两段标签（官方 `row.input` / `row.output`：zh「输入/输出」、en「IN/OUT」）。 */
   toolInput: string;
   toolOutput: string;
@@ -795,6 +801,9 @@ const zh: Texts = {
   toolSignal: (signal) => `被信号 ${signal} 终止`,
   toolImageAlt: "工具返回的图片",
   messageImageAlt: "消息里的图片",
+  imagePreview: "查看原图",
+  imagePreviewClose: "关闭原图预览",
+  imageLoadFailed: "图片加载失败",
   toolInput: "输入",
   toolOutput: "输出",
   unknownBlock: "未知内容块",
@@ -1113,6 +1122,9 @@ const en: Texts = {
   toolSignal: (signal) => `killed by signal ${signal}`,
   toolImageAlt: "Image returned by the tool",
   messageImageAlt: "Image in the message",
+  imagePreview: "View original",
+  imagePreviewClose: "Close original image preview",
+  imageLoadFailed: "Image failed to load",
   toolInput: "IN",
   toolOutput: "OUT",
   unknownBlock: "Unknown content block",

@@ -60,6 +60,15 @@ export type HostToWebview =
   /** 一次性提示。 */
   | { type: "toast"; level: "info" | "warn" | "error"; text: string }
   /**
+   * 正文里本地图片引用的解析结果（`resolveImages` 的回帧）。
+   *
+   * 键是**引用原文**（`out/chart.png` 这样），值是 data URL；读不到的不在表里。
+   * `requestId` 原样回带：界面按它把结果配给发起的那次请求——缓存按会话隔离，
+   * 切会话后旧请求的响应必须丢掉，不能按路径盲配（不同会话的同名相对路径
+   * 是两个文件）。
+   */
+  | { type: "images/resolved"; requestId: number; urls: Record<string, string> }
+  /**
    * 把一段文本插到输入框的**光标处**（不是替换整个草稿）。
    *
    * 用途：最后兜底——选了读不出来的文件、或模型不收图片时，把
@@ -234,4 +243,11 @@ export type WebviewToHost =
   /** 请求斜杠命令目录。 */
   | { type: "listCommands" }
   /** 查询文件引用候选（@ 提及）。 */
-  | { type: "queryFiles"; query: string };
+  | { type: "queryFiles"; query: string }
+  /**
+   * 解析正文里的**本地图片引用**（`![](out/chart.png)`）。
+   *
+   * webview 读不了磁盘，只能把引用原文交给宿主：宿主按会话工作目录解析、
+   * 校验在工作目录内、读成 data URL 回帧（见 `dsh/localImages.ts`）。
+   */
+  | { type: "resolveImages"; requestId: number; paths: string[] };

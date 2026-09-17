@@ -4,6 +4,7 @@ import type { HostToWebview } from "../shared/ipc";
 import { onHostFrame, post, subscribe } from "./bridge";
 import { Composer } from "./components/Composer";
 import { HistoryPanel } from "./components/History";
+import { ImagePreviewLayer } from "./components/Images";
 import { Message } from "./components/Message";
 import { JobsPanel, SubagentTranscriptPanel, SubagentsPanel } from "./components/Panels";
 import { TrajectoryView } from "./components/Trajectory";
@@ -11,6 +12,7 @@ import { Spinner } from "./components/primitives";
 import { AppState, useAppState, type PanelKind } from "./state";
 import { pendingInteractionOf } from "./pendingInteraction";
 import { attachDroppedFiles, dragHasFiles } from "./dropAttach";
+import { setLocalImageScope } from "./localImages";
 import {
   IconAgents,
   IconAttach,
@@ -598,6 +600,11 @@ export function App() {
   const chatActive = state.panel !== "trajectory";
   // 当前会话 id：进 useAutoScroll（切会话时恢复贴底、回最新）与轨迹刷新（下方）
   const sessionId = state.session?.id;
+  // 正文里本地图片的解析缓存按会话隔离：相对路径的基准是会话工作目录，
+  // 切了会话之后同名路径是另一个文件（见 webview/localImages.ts）
+  useEffect(() => {
+    setLocalImageScope(sessionId ?? "");
+  }, [sessionId]);
   // 全页拖放：拖文件进会话页的任何位置都算添加附件（dragActive 时亮出浮层）
   const dragActive = usePageFileDrop();
   const { scrollRef, contentRef, showJump, jumpToLatest } = useAutoScroll(chatActive, sessionId);
@@ -857,6 +864,10 @@ export function App() {
           </div>
         ) : null}
       </div>
+      {/* 原图浮层：**所有**来源的图片共用（缩略图、markdown 注入的外链图与本地图）。
+          挂在 `.app` 之外：浮层是 position: fixed 的全屏层，不该受 app 容器的
+          布局/裁剪影响。 */}
+      <ImagePreviewLayer />
     </TextsContext.Provider>
   );
 }

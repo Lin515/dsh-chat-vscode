@@ -141,6 +141,16 @@ function toolResultContent(content: unknown): ContentBlock[] {
  */
 const UNKNOWN_BLOCK_LIMIT = 4000;
 
+/**
+ * 同时最多有几批图片字节在取（每批内部仍然并行）。
+ *
+ * 打开一个塞满图片的历史会话时，回放会对**每条**消息各发一次
+ * `session/attachment`：不设闸门就是几十个并发 RPC 加几十 MB base64 一起涌进来，
+ * 界面在图片到齐之前一直卡。按批限流（而不是逐张）几乎不增加总时长——
+ * 瓶颈是那条 socket，不是并发度。
+ */
+const IMAGE_LOAD_CONCURRENCY = 2;
+
 function boundedJson(block: unknown): string {
   let text: string;
   try {
@@ -275,9 +285,11 @@ function toUsage(
  * `blocksToText` 只认文本，于是「纯图片消息」渲染成空、`text` 也为空 →
  * 整条消息被 `if (!text) break;` 跳掉，用户看不到自己发过什么。
  *
- * 图片句柄是不透明的 `attachmentId`（不是路径也不是 URL），所以这里**不取字节**，
- * 只把「这是一张图/一个文件」的事实与它的元数据带出来——用户消息的图片展示不需要
- * 再拉一次字节（发送时就是用户自己选的），文件显示名字与大小即可。
+ * 图片句柄是不透明的 `attachmentId`（不是路径也不是 URL），但它**足以换回字节**
+ * （`session/attachment`，与助手/工具图片同一个回调）：所以这里把句柄与元数据一起
+ * 带上，字节由 `hydrateUserMedia` 异步补，界面拿到就画缩略图——用户发过的图，
+ * 回放时要看得见（此前只显示一个文件名芯片）。
+ * 文件没有可显示的字节，显示名字与大小即可。
  */
 function userMedia(content: unknown): Attachment[] {
   if (!Array.isArray(content)) return [];
@@ -288,11 +300,16 @@ function userMedia(content: unknown): Attachment[] {
     if (block.type === "image") {
       const attachment = (block as { attachment?: Record<string, unknown> }).attachment ?? {};
       const name = typeof attachment.name === "string" && attachment.name ? attachment.name : "image";
+      const attachmentId = typeof attachment.attachmentId === "string" ? attachment.attachmentId : undefined;
       media.push({
         id: `m${index++}`,
         kind: "image",
         name,
         bytes: typeof attachment.bytes === "number" ? attachment.bytes : undefined,
+        ...(attachmentId ? { attachmentId } : {}),
+        ...(typeof attachment.mediaType === "string" ? { mediaType: attachment.mediaType } : {}),
+        ...(typeof attachment.width === "number" ? { width: attachment.width } : {}),
+        ...(typeof attachment.height === "number" ? { height: attachment.height } : {}),
       });
       continue;
     }
@@ -568,12 +585,42 @@ export class SessionAdapter {
    * 图片句柄 → 可显示字节的装载回调（由控制器注入）。
    *
    * 适配器刻意不持有网络客户端：它只把「这里有哪几张图」交出去，
-   * 字节由控制器用 `session/attachment` 换取后回调。拿不到就回空数组，
-   * 界面退化为不显示图（而不是显示一个坏掉的 `<img>`）。
+   * 字节由控制器用 `session/attachment` 换取后回调。
+   *
+   * **回调数组与 `refs` 等长**（取不到的位是空串）：图库少一张无所谓，但用户消息的
+   * 附件是按位挂的，一旦过滤掉失败项，后面几张就会错位贴到别人的位置上。
+   * 显示方各自决定怎么处理空串（图库跳过，附件退回文件名芯片）。
    */
   loadImages:
     | ((refs: ImageRef[], done: (dataUrls: string[]) => void) => void)
     | undefined;
+
+  /** 正在取字节的批数，以及排队等闸门的批（见 `IMAGE_LOAD_CONCURRENCY`）。 */
+  private imageLoadsActive = 0;
+  private readonly imageLoadsWaiting: (() => void)[] = [];
+
+  /**
+   * 带上限的 `loadImages`：语义与直接调用完全一致（回调数组与 `refs` 等长），
+   * 只是同时最多放 `IMAGE_LOAD_CONCURRENCY` 批进去。
+   *
+   * 未注入 `loadImages` 时直接返回、不调回调——调用方各自都已经判过空，
+   * 这里再判一次是为了让「没有客户端」只有一处落点。
+   */
+  private loadImagesThrottled(refs: ImageRef[], done: (dataUrls: string[]) => void): void {
+    const load = this.loadImages;
+    if (!load) return;
+    const start = () => {
+      this.imageLoadsActive += 1;
+      load(refs, (dataUrls) => {
+        this.imageLoadsActive -= 1;
+        // 先放下一批进来，再回调界面：闸门空着的时间越短越好
+        this.imageLoadsWaiting.shift()?.();
+        done(dataUrls);
+      });
+    };
+    if (this.imageLoadsActive < IMAGE_LOAD_CONCURRENCY) start();
+    else this.imageLoadsWaiting.push(start);
+  }
 
   /**
    * 文件芯片的分类回调（由控制器注入，像 `loadImages` 一样）。
@@ -1052,6 +1099,8 @@ export class SessionAdapter {
             // currentTurn 未定（首轮之前）没有「本轮」可言，不切。
             if (assistant) this.turnPart += 1;
           }
+          // 图是真图：句柄换字节是异步的，视图先落地再补（见 hydrateUserMedia）
+          this.hydrateUserMedia(view);
           break;
         }
         // 其余来源（system prompt / agent instructions / goal / skill / 插件注入）
@@ -1363,6 +1412,39 @@ export class SessionAdapter {
   }
 
   /**
+   * 用户消息里的图片附件：durable 句柄 → data URL（异步补）。
+   *
+   * 与助手/工具图片走**同一条** `session/attachment` 通道。两个要点：
+   * - **顺序必须对齐**：一张取不到就留空串占位（`loadAttachmentImages` 因此不
+   *   再过滤空值），否则后面几张会整体前移，把 A 的图贴到 B 的芯片上；
+   * - 补完发 `message/upsert` 整体替换：附件挂在消息上（不是 segment），
+   *   没有更细的帧可用。
+   */
+  private hydrateUserMedia(message: MessageView): void {
+    const refs = (message.attachments ?? [])
+      .filter((attachment) => attachment.kind === "image" && attachment.attachmentId)
+      .map((attachment) => ({
+        attachmentId: attachment.attachmentId as string,
+        mediaType: attachment.mediaType,
+        name: attachment.name,
+      }));
+    if (!refs.length || !this.loadImages) return;
+    this.loadImagesThrottled(refs, (dataUrls) => {
+      let index = 0;
+      let changed = false;
+      for (const attachment of message.attachments ?? []) {
+        if (attachment.kind !== "image" || !attachment.attachmentId) continue;
+        const url = dataUrls[index++] ?? "";
+        if (url && url !== attachment.dataUrl) {
+          attachment.dataUrl = url;
+          changed = true;
+        }
+      }
+      if (changed) this.emit({ type: "message/upsert", message: { ...message } });
+    });
+  }
+
+  /**
    * 助手消息里的图片块 → 一个 `images` 段，字节异步补。
    *
    * 与工具结果里的图片同一套机制（`loadImages` 由控制器注入，做
@@ -1381,7 +1463,7 @@ export class SessionAdapter {
     const id = `img${seq}:${this.sequence++}`;
     const segment: Segment = { kind: "images", id, images: [] };
     this.pushSegment(message, segment, step, at);
-    this.loadImages(refs, (dataUrls) => {
+    this.loadImagesThrottled(refs, (dataUrls) => {
       const holder = message.segments.find((item) => item.id === id);
       if (!holder || holder.kind !== "images") return;
       holder.images = dataUrls;
@@ -1968,7 +2050,7 @@ export class SessionAdapter {
       // 先占位再替换：段落在这一帧就要带上 images（界面据此展开图库位），
       // 字节到达后由回调再发一次 message/segment 覆盖。
       tool.images = refs.map(() => "");
-      this.loadImages?.(refs, (dataUrls) => {
+      this.loadImagesThrottled(refs, (dataUrls) => {
         tool.images = dataUrls;
         this.emit({
           type: "message/segment",

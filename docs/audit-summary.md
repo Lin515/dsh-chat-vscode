@@ -518,6 +518,24 @@ Ctrl+Enter 也未区分（`Composer.tsx:241` 只判 `!shiftKey`）。
 - **CSP 仍允许 `img-src https:`**（用户 2026-09-17 拍板）：宿主自己产生的图片全是 `data:` URL，
   这条只对**模型输出里的外链图片**生效；去掉它就能堵住"提示注入把内容编进图片 URL"的外传通道，
   但回答里的外链图也就不显示了。取舍是"保留渲染能力"。
+  **2026-09-18 补上三条加固**（`markdown.ts` 的 `afterSanitizeAttributes` 钩子 + CSP）：
+  外链图一律带 `referrerpolicy="no-referrer"`（不带来源）与 `loading="lazy"`（不滚到的图不拉），
+  且**明文 `http:` 不放行**（`img-src` 只列 `data:` 与 `https:`）——外传面因此收窄到
+  "https 且真的显示出来"的那几张，渲染能力不受影响。
+- **正文里的本地图片按会话工作目录白名单读**（2026-09-18）：模型写的 `![](out/chart.png)`
+  由宿主读成 data URL。这是**模型可控的路径**，所以判据全按肯定证据写：解析后的绝对路径
+  必须落在会话 cwd 内（`relative` 结果以 `..` 开头、是绝对路径或为空一律拒）、扩展名必须是
+  图片、先 `stat` 再读、单张 8 MB、单次最多 24 张。越界的引用不读，界面退回原样文本。
+  断言在 `scripts/localImages.test.ts`。
+  扩展名表**含 `svg`**（`shared/imageRef.ts`），与服务端附件准入那张表分开：那张管
+  "模型能不能读字节"，这张管"浏览器能不能画"；`<img>` 里的 SVG 不执行脚本，
+  所以不引入 XSS 面。同一套解析也服务于 `present` 申报 / 本轮生成的图片文件
+  （`LocalImageGallery`）——agent 交付图片走的就是这条路，不经过 markdown。
+  **失败不再静默**：宿主把基准目录与未解析的路径写进输出通道，界面的降级文案也带
+  原始路径（悬停可见）。定位「图一直显示不出来」那次时，病根**不在**这条链路里
+  （探针实测 cwd 与解析全程正常），而是**宿主侧装的是旧产物**：webview 发了
+  `resolveImages`，宿主旧代码没有这个分支，请求落进 `default` 静默无响应，
+  界面只剩自己那句「加载失败」。教训记在 `AGENTS.md` 的「构建与验证」节。
 - **回形针选图仍可能一次读入大文件**：现在的上限来自服务端 `imageLimits`（缺省 64 MB），
   没有做像素级校验——服务端最终也会拒，但宿主这一读仍是同步的。
 - `imageLimits` 的另外两个字段（`maxImagesPerMessage` / `maxMessageImageBytes`）仍未消费：

@@ -869,6 +869,8 @@
 .md img {
   max-width: 100%;
   border-radius: var(--radius-sm);
+  /* 正文里的图点得开（点击委托在 Markdown.tsx 的 HtmlBlock 上）：光标要给提示 */
+  cursor: zoom-in;
 }
 
 /* ---- footnotes（官方 `markdown.footnotes`，结构与官方渲染器一致） ---- */
@@ -1412,6 +1414,89 @@
   border-radius: var(--radius-sm);
   outline: 1px solid var(--border);
   outline-offset: -0.5px;
+}
+
+/* 缩略图是按钮（点开原图）：去掉按钮的一切装饰，只留下图片本身 */
+.image-thumb {
+  padding: 0;
+  border: 0;
+  background: none;
+  line-height: 0;
+  cursor: zoom-in;
+  border-radius: var(--radius-sm);
+}
+
+.image-thumb:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+}
+
+.image-thumb img {
+  display: block;
+}
+
+/* 加载失败（外链被拦 / 本地文件被删 / 字节取不回来）：给一句话，不给碎图图标 */
+.image-failed {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 8px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  font-size: var(--font-size-2xs);
+}
+
+/* 用户消息的附件区：图在上、芯片在下，顺着气泡一侧排 */
+.msg-media {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+/* 用户消息里的图库不带工具行正文那 18px 左缩进（那是给工具展开体对齐用的） */
+.msg-user .row-body-images {
+  margin: 4px 0 0;
+}
+
+/* 原图浮层：App 根部挂一次，所有来源的图共用 */
+.image-preview {
+  position: fixed;
+  inset: 0;
+  z-index: 45;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.72);
+  cursor: zoom-out;
+}
+
+.image-preview img {
+  max-width: 100%;
+  max-height: 100%;
+  border-radius: var(--radius-sm);
+  cursor: default;
+}
+
+.image-preview-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+  cursor: pointer;
+}
+
+.image-preview-close:hover {
+  background: rgba(255, 255, 255, 0.26);
 }
 
 /* status dot for tool rows */

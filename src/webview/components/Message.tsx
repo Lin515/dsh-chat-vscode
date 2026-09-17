@@ -1,8 +1,10 @@
 import { memo, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
 import type { DiffLayout, FileChangeKind, MessageView, Segment } from "../../shared/chat";
+import { localImageMediaType } from "../../shared/imageRef";
 import { post } from "../bridge";
 import { IconBranch, IconCopy } from "../icons";
 import { Markdown } from "./Markdown";
+import { ImageGallery, LocalImageGallery, type ImageSource } from "./Images";
 import { formatClock, useSelectionFreeze } from "./primitives";
 import { ApprovalCard, CommandRow, FileChips, InjectedRow, MessageImages, NoticeRow, QuestionCard, ThinkingRow, ToolRow, TurnProcessRow, TurnStatsButton, UnknownBlockRow } from "./Rows";
 import { useTexts } from "../texts";
@@ -127,16 +129,34 @@ export const Message = memo(function Message({
   }, [message.role, message.text, bubbleOpen]);
 
   if (message.role === "user") {
+    // 附件分两路：图片附件一旦拿到字节（服务端 durable 句柄换的 data URL）就画成
+    // 缩略图；还没到 / 取不回来、以及文件附件，退回文件名芯片——用户至少能确认
+    // 「我发出去的是哪些东西」，而不是一片空白或一个碎图图标。
+    const attachments = message.attachments ?? [];
+    const images: ImageSource[] = attachments
+      .filter((attachment) => attachment.kind === "image" && attachment.dataUrl)
+      .map((attachment) => ({
+        src: attachment.dataUrl as string,
+        alt: attachment.name,
+        width: attachment.width,
+        height: attachment.height,
+      }));
+    const chips = attachments.filter((attachment) => attachment.kind !== "image" || !attachment.dataUrl);
     return (
       <div className="msg msg-user">
         <UserBubble text={message.text ?? ""} expanded={bubbleOpen} nodeRef={bubbleRef} />
-        {message.attachments?.length ? (
-          <div className="composer-chips">
-            {message.attachments.map((attachment) => (
-              <span className="chip" key={attachment.id}>
-                <span className="chip-name">{attachment.name}</span>
-              </span>
-            ))}
+        {attachments.length ? (
+          <div className="msg-media">
+            {images.length ? <ImageGallery alt={texts.messageImageAlt} sources={images} /> : null}
+            {chips.length ? (
+              <div className="composer-chips">
+                {chips.map((attachment) => (
+                  <span className="chip" key={attachment.id}>
+                    <span className="chip-name">{attachment.name}</span>
+                  </span>
+                ))}
+              </div>
+            ) : null}
           </div>
         ) : null}
         {/* 用户消息也有操作行：官方 `MessageIconActions` 是用户与助手**共用**的，
@@ -189,6 +209,14 @@ export const Message = memo(function Message({
     fileKinds,
     (file) => file.path,
   );
+
+  // 本轮**生成或申报交付**的图片文件：这是 agent 表达「给你一张图」最常用的方式
+  // （`present` 申报、或直接 write 出来），而它此前只长成一行文件芯片——用户在界面上
+  // 永远看不到图（2026-09-18 实测：agent 下载一张 jpg、写一张 svg 再 present，
+  // 界面上一张都看不见）。非图片路径仍走芯片，一个路径只画一遍。
+  const imageFiles = [
+    ...new Set([...producedFiles, ...deliverables.map((file) => file.path)]),
+  ].filter((path) => localImageMediaType(path));
 
   // 连续过程折叠：一轮**结束后**，把最后那段正文之外的一切折成按钮（中途正文也在里面），
   // 折完读作「按钮 → 回答」——中途的话不会再跟回答贴到一起（用户 2026-09-16 最终口径）。
@@ -288,6 +316,9 @@ export const Message = memo(function Message({
             准的（见 `adapter.refreshFiles`）。
 
             申报过交付的文件不再在本行重复，只留在下面的交付行。 */}
+        {!message.streaming && imageFiles.length ? (
+          <LocalImageGallery paths={imageFiles} />
+        ) : null}
         {!message.streaming && producedFiles.length ? (
           <FileChips
             label={texts.producedLabel}

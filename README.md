@@ -84,6 +84,10 @@ VS Code → 扩展 → `…` → 从 VSIX 安装 → 重载窗口。
 - 回形针与拖放是**附件**通道：图片按内容块发送，其余文件逐字节上传（芯片上显示进度）。
   编辑器里选中代码后 **Alt+Shift+2** 加的是 `@path#L12-L40` 这样的**选区引用**。
   拖放进 webview **必须按住 `Shift`**（VS Code 的 iframe 拖拽门，见「已知限制」）。
+- 会话里**看得见图**：你发出的图片显示为缩略图，模型或工具回带的图（含 `read_image`）
+  同样；agent **交付或生成**的图片文件（`present` 申报的、本轮写出来的 `.png`/`.jpg`/`.svg`）
+  也画成图；正文里引用的图片同样会渲染——工作目录内的本地路径由扩展读成图（越界路径不读），
+  `https://` 外链按原样加载但不带来源信息。点任意一张图可看原图，`Esc` 关闭。
 
 **过程与交互**：工具调用压成单行（点开看完整参数、结果、结构化 diff），运行中的节点
 有呼吸效果与实时耗时；审批、问卷（题多时依次问答）、计划审阅（`exit_plan_mode`）各有
@@ -219,6 +223,12 @@ The paperclip and drag-and-drop are the *attachment* channel: images go as conte
 everything else uploads byte-by-byte with progress on the chip. `Alt+Shift+2` adds the
 selected lines as a `@path#L12-L40` reference. **Dropping files into the webview requires
 holding `Shift`** (a VS Code iframe-drag gate, see Limitations).
+Conversation images are visible: your own images render as thumbnails, and so do images the
+model or a tool returns (including `read_image`). Image files the agent **delivers or generates**
+(declared via `present`, or written this turn as `.png`/`.jpg`/`.svg`) are drawn as images too,
+as are images referenced in the answer — a local path inside the session working directory is read
+by the extension (paths outside it are not), while `https://` links load as-is with no referrer.
+Click any image to view the original; `Esc` closes it.
 
 **During a turn** — tool calls collapse to one line (expand for arguments, results, a
 structured diff), running calls glow and show a live elapsed timer; approvals, questionnaires

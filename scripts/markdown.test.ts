@@ -135,4 +135,57 @@ const source = readFileSync(join(process.cwd(), "src", "webview", "markdown.ts")
   console.log("markdown: 未知内容块有落点 ✓");
 }
 
+// ---------- 5. 正文里的图片：外链放行，但三件加固必须都在 ----------
+//
+// 模型写的 `![](https://…)` 是一张浏览器**真的会去拉**的图。用户 2026-09-17 拍板
+// 保留这个显示能力（去掉 `img-src https:` 就能堵住外传通道，但回答里的外链图
+// 也就没了），代价用三条加固来压：不带来源、不急着拉、明文 http 不放行。
+// 这三条一旦被「顺手清理」掉，界面看不出任何异常——只是悄悄开始把信息带出去。
+{
+  const marked = new Marked({ gfm: true, breaks: false });
+  const html = marked.parse("![图](https://example.com/a.png)", { async: false }) as string;
+  assert.ok(
+    /<img[^>]*src="https:\/\/example\.com\/a\.png"/.test(html),
+    `marked 会把图片渲染成 <img>，实际：${html}`,
+  );
+  assert.ok(
+    /ALLOWED_TAGS:\s*\[[\s\S]*?"img"/.test(source),
+    "ALLOWED_TAGS 必须放行 img：否则正文里的图整块消失（静默）",
+  );
+  assert.ok(
+    /\.addHook\(\s*"afterSanitizeAttributes"/.test(source),
+    "必须有 afterSanitizeAttributes 钩子给图片加固",
+  );
+  assert.ok(
+    /node\.nodeName !== "IMG"/.test(source),
+    "加固钩子只对 IMG 生效（别顺手改到其它标签上）",
+  );
+  for (const attr of ["referrerpolicy", "loading", "decoding"]) {
+    assert.ok(
+      new RegExp(`ALLOWED_ATTR:\\s*\\[[^\\]]*"${attr}"`).test(source),
+      `ALLOWED_ATTR 必须允许 ${attr}（图片加固用的属性）`,
+    );
+  }
+  assert.ok(
+    /setAttribute\("referrerpolicy", "no-referrer"\)/.test(source),
+    "外链图片必须带 no-referrer：否则每个外链图都会把「谁在什么来源下打开了它」带出去",
+  );
+  assert.ok(
+    /setAttribute\("loading", "lazy"\)/.test(source),
+    "外链图片必须 lazy：不滚到的图不该在打开消息时就全拉一遍",
+  );
+
+  // CSP 是最后一道：明文 http 不放行（会被拦下 → 界面按「加载失败」降级）
+  const chatView = readFileSync(join(process.cwd(), "src", "chatView.ts"), "utf8");
+  assert.ok(
+    /img-src \$\{webview\.cspSource\} data: https:/.test(chatView),
+    "CSP 的 img-src 必须只放行 data: 与 https:（宿主产生的图是 data URL）",
+  );
+  assert.ok(
+    !/img-src[^`]*http:(?!\/)/.test(chatView),
+    "img-src 不能放行明文 http:（可被中间人替换，且和 https 一样带外传面）",
+  );
+  console.log("markdown: 外链图片放行 + 三条加固（no-referrer / lazy / 只 https）✓");
+}
+
 console.log("\nmarkdown: all assertions passed");

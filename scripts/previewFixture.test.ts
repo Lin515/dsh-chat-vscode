@@ -43,16 +43,20 @@ const source = html.slice(bodyStart, end + 1);
 // `now` / `codeSample` / `locale` 是 script 顶层的变量：一并求值。
 // `locale` 来自 `location.search`（预览页支持 `?locale=en` 切换语言），
 // 无头环境里没有 location，所以这里也把它参数化——顺带能**两种语言都体检一遍**。
+// `previewImageDataUrl` 同理：夹具里图片附件的 data URL 在预览页由一段内联 SVG 算出来，
+// 而 `__buildState` 在 Node 里求值时不带那段脚本（所以它**不能**引用 window）。
 const codeSample = "export function bootstrap() {\n  // …\n}";
+const previewImageDataUrl = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciLz4=";
 const build = new Function(
   "now",
   "codeSample",
   "location",
+  "previewImageDataUrl",
   `return (function () ${source})();`,
 );
 
 function buildState(locale: "zh-cn" | "en") {
-  return build(Date.now(), codeSample, { search: `?locale=${locale}` });
+  return build(Date.now(), codeSample, { search: `?locale=${locale}` }, previewImageDataUrl);
 }
 
 const state = buildState("zh-cn");
@@ -68,8 +72,49 @@ const must = [
   ["命令节点", () => state.messages.some((m) => m.segments.some((s) => s.kind === "command"))],
   ["轮尾 produced", () => state.messages.some((m) => m.produced?.length)],
   ["轮尾 deliverables", () => state.messages.some((m) => m.deliverables?.length)],
+  // 用户消息里的图片：**两种形态都要有**——拿到字节的画缩略图，没拿到的退回文件名
+  // 芯片。只有一种的话，预览页看不出「字节未到时不画碎图」这条降级
+  [
+    "用户消息里的图片（真图 + 字节未到）",
+    () =>
+      state.messages.some((m) => m.attachments?.some((a) => a.kind === "image" && a.dataUrl)) &&
+      state.messages.some((m) => m.attachments?.some((a) => a.kind === "image" && !a.dataUrl)),
+  ],
+  // 正文里的图片：本地路径（交给宿主读盘）与外链（浏览器直连）两种引用，
+  // 外加一条读不到的路径（验证降级文案）
+  [
+    "正文里的图片引用（本地 + 外链）",
+    () => {
+      const texts = state.messages.flatMap((m) =>
+        m.segments.flatMap((s) => (s.kind === "text" ? [s.text] : [])),
+      );
+      return (
+        texts.some((text) => /!\[[^\]]*\]\(\.\/out\/chart\.png\)/.test(text)) &&
+        texts.some((text) => /!\[[^\]]*\]\(https:\/\//.test(text))
+      );
+    },
+  ],
+  // agent 交付的图片文件（present 申报 / 本轮 write 出来）：这两条路**没有** markdown
+  // 引用，界面上要另外画成图——用户 2026-09-18 报的「agent 发来的图看不到」正是这个
+  [
+    "交付/生成的图片文件",
+    () =>
+      state.messages.some((m) =>
+        (m.deliverables ?? []).some((file) => /\.(png|jpe?g|webp|gif|svg)$/i.test(file.path)),
+      ),
+  ],
   // 助手消息里的图片块（`images` 段）：此前 image 块被静默丢弃，夹具要留住这个形态
   ["助手消息里的图片", () => state.messages.some((m) => m.segments.some((s) => s.kind === "images"))],
+  // **工具结果里的图片**（`read_image` / 截图回带的 image 块，落在 `tool.images`）：
+  // 这条渲染路径此前在预览页**没有任何样例**，于是「图藏在工具行展开体里」这件事
+  // 一直没被看见（用户 2026-09-18 报「agent 发来的我看不到」）
+  [
+    "工具结果里的图片",
+    () =>
+      state.messages.some((m) =>
+        m.segments.some((s) => s.kind === "tool" && (s.tool.images?.length ?? 0) > 0),
+      ),
+  ],
   // 用户消息的操作行（时钟 + 复制）：**常驻**显示（不再靠悬停揭示），DOM 里必须在
   ["用户消息操作行", () => state.messages.some((m) => m.role === "user")],
   // 超过 5 行的用户消息：默认收缩 + 「展开 / 收起」。夹具要留一条长的，

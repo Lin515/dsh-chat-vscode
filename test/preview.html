@@ -56,6 +56,23 @@
       // webview 通过 acquireVsCodeApi 与宿主通信；预览里复刻真实握手：
       // webview 发 ready → 宿主回 state 快照
       window.__sent = [];
+      // 正文/附件里的占位图（真实链路给的是服务端字节的 data URL）：一张内联 SVG，
+      // 形状一致、看得见。放在函数外、`__buildState` 也能引用（`scripts/previewFixture.test.ts`
+      // 会把 `__buildState` 抽出来在 Node 里求值，所以那个函数体**不能**引用 window）。
+      var previewImageDataUrl =
+        "data:image/svg+xml;base64," +
+        btoa(
+          '<svg xmlns="http://www.w3.org/2000/svg" width="360" height="200">' +
+            '<rect width="360" height="200" fill="#2b3a2f"/>' +
+            '<rect x="20" y="24" width="150" height="14" rx="7" fill="#8b949e"/>' +
+            '<rect x="20" y="56" width="320" height="10" rx="5" fill="#5a6068"/>' +
+            '<rect x="20" y="78" width="260" height="10" rx="5" fill="#5a6068"/>' +
+            '<rect x="20" y="112" width="320" height="66" rx="8" fill="#1f2621"/>' +
+            "</svg>",
+        );
+      // 正文里本地图片的解析（真实链路里由宿主读盘，白名单见 src/dsh/localImages.ts）。
+      // 预览页没有宿主，这里回同一张占位图：用来验证「本地路径 → data URL 的替换与
+      // 按会话缓存」确实工作，以及**没有响应时**（把这一段去掉）会落到「图片加载失败」。
       window.acquireVsCodeApi = function () {
         return {
           postMessage: function (message) {
@@ -65,6 +82,22 @@
               // 这里用宏任务复刻同样的时序：effect 里的 ready 发完，脚本才继续定义 __buildState
               setTimeout(function () {
                 window.__push({ type: "state", state: window.__buildState() });
+              }, 0);
+            }
+            if (message && message.type === "resolveImages") {
+              // 逐条「读盘」：`missing` 那条故意**不回**——真实宿主对工作目录里不存在
+              // 的路径也不回表，界面就落到「图片加载失败」的降级（夹具里能看到它）
+              var urls = {};
+              (message.paths || []).forEach(function (path) {
+                if (path.indexOf("missing") >= 0) return;
+                urls[path] = previewImageDataUrl;
+              });
+              setTimeout(function () {
+                window.__push({
+                  type: "images/resolved",
+                  requestId: message.requestId,
+                  urls: urls,
+                });
               }, 0);
             }
           },
@@ -475,7 +508,30 @@
               segments: [],
               attachments: [
                 { id: "a1", kind: "file", name: "src/server/index.ts" },
-                { id: "a2", kind: "selection", name: "src/config.ts" }
+                { id: "a2", kind: "selection", name: "src/config.ts" },
+                // 用户发出的图片（`user/message` 的 image 块 → 适配器取句柄 → 控制器
+                // 用 `session/attachment` 换字节）。**两条形态都要有**：
+                // 有 `dataUrl` = 画缩略图；没有 = 字节还没到 / 取不回来，退回文件名芯片。
+                // 真实数据来自会话日志里用户发的那两张图（attachmentId 是 `sha256:…`），
+                // 内容换成内联 SVG 占位：形状一致、看得见。
+                {
+                  id: "a3",
+                  kind: "image",
+                  name: "classroom_black_00001_.png",
+                  attachmentId: "sha256:034860c5e3d8f568e6b4b47a559a77c54059449eb6e6cb4557731449218f196b",
+                  mediaType: "image/jpeg",
+                  width: 1024,
+                  height: 1024,
+                  dataUrl: previewImageDataUrl,
+                },
+                {
+                  id: "a4",
+                  kind: "image",
+                  name: "xhs_250_00218_.png",
+                  attachmentId: "sha256:6fb9b03d0000000000000000000000000000000000000000000000000000000000",
+                  mediaType: "image/jpeg",
+                  bytes: 119989,
+                },
               ]
             },
             {
@@ -622,6 +678,15 @@
                 // markdown 脚注（官方 `markdown.footnotes`）：引用是上标数字，定义收进
                 // 文末的 `section.footnotes`。**净化链能否保住这个容器**只有真实浏览器
                 // 里看得出来（DOMPurify 需要 DOM），所以夹具里必须有一段。
+                //
+                // 这一段同时也是**正文里的图片**那三种来源的落点（它是一轮里最后那段正文，
+                // 默认不会被折进按钮，预览页直接看得见）：
+                // 1. **本地路径** `![](./out/chart.png)`——webview 读不了盘，引用交给宿主读成
+                //    data URL（白名单与上限见 src/dsh/localImages.ts；预览页由 stub 代答）；
+                // 2. **外链**——模型写的 https 图，渲染时加了 `referrerpolicy="no-referrer"`
+                //    与 `loading="lazy"`（markdown.ts 的 afterSanitizeAttributes 钩子）。
+                //    离线时它会加载失败，正好能看到「图片加载失败」的降级；
+                // 3. **读不到的本地路径**——同上一条，走同一个降级。
                 {
                   step: 3,
                   id: "fn1",
@@ -629,7 +694,11 @@
                   text:
                     "合并方案见脚注[^plan]，端口冲突的来源在另一条注里[^port]，`[^not-a-note]` 是行内代码不该生效。\n\n" +
                     "[^plan]: 来自 `docs/merge-plan.md` 的三步收敛：先去重、再收口、最后补测试。\n" +
-                    "[^port]: `config.ts` 与 `index.ts` 各读了一次 `process.env.PORT`。\n",
+                    "[^port]: `config.ts` 与 `index.ts` 各读了一次 `process.env.PORT`。\n\n" +
+                    "方案图：\n\n" +
+                    "![本地生成的图表](./out/chart.png)\n\n" +
+                    "![外链示例](https://www.w3.org/Icons/w3c_home.png)\n\n" +
+                    "![读不到的图](./out/missing.png)\n",
                   streaming: false,
                 },
                 // 助手消息里的图片块（契约里 `assistant/message` 的 content 联合含
@@ -651,6 +720,29 @@
                           "</svg>",
                       ),
                   ],
+                },
+                // **工具结果里的图片**（`read_image` / 截图工具回带的 image 块）：
+                // 适配器把 durable 句柄换成 data URL 后落在 `tool.images` 上。
+                // 此前夹具里**没有**这个形态，于是「agent 用 read_image 发来的图」
+                // 这条渲染路径在预览页从来没被验证过（用户 2026-09-18 报
+                // 「agent 发来的我看不到」）。真实一次调用见本仓库会话日志：
+                // tool/result 的块类型 `["text","image"]`、句柄是 `sha256:…`。
+                {
+                  step: 3,
+                  id: "tool-img",
+                  kind: "tool",
+                  tool: {
+                    id: "call_img",
+                    name: "read_image",
+                    title: "",
+                    detail: "demo-photo.jpg",
+                    status: "ok",
+                    input: '{"file_path":"demo-photo.jpg"}',
+                    output: "<path>demo-photo.jpg</path>\n<type>image</type>\n<content>…</content>",
+                    images: [previewImageDataUrl],
+                    startedAt: now - 233000,
+                    endedAt: now - 232400,
+                  },
                 }
               ],
               // 轮尾文件两行：`produced` 从成功的 write/edit 推导，`deliverables`
@@ -671,7 +763,13 @@
               deliverables: [
                 { path: "D:/dev/app/docs/merge-plan.md", description: "合并方案" },
                 { path: "D:/dev/app/docs/merge-plan.md.bak" },
-                { path: "D:/dev/app/src/config.ts", description: "收敛后的配置读取" }
+                { path: "D:/dev/app/src/config.ts", description: "收敛后的配置读取" },
+                // agent「交付图片」的两种表达之一（另一种是正文里写 `![](…)`）：
+                // present 申报一个图片文件。它要**画成图**而不是只留一枚芯片——
+                // 用户 2026-09-18 报的「agent 发来的图看不到」就是这个形态
+                // （那次 agent 下载了一张 jpg、写了一张 svg，再 present 两者）。
+                { path: "D:/dev/app/docs/generated-image.svg", description: "生成的 SVG 场景图" },
+                { path: "D:/dev/app/docs/web-photo.jpg", description: "下载的网络照片" }
               ]
             },
             {

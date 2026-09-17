@@ -104,6 +104,12 @@ this.emit({ type: "toast", level: "warn", text: "@uploadIncomplete:report.pdf" }
 - **动 plan / goal / subagent / 工具行之前先取基线**：`node build/command-e2e.mjs`
   （约 1 分钟）跑一遍，改完再跑一遍对拍。
 - **长探针前台跑并给足 `timeoutMs`**（`queue-continue-probe` 单轮约 3 分钟）。
+- **跨 webview ↔ 宿主的改动要把两边都装上**：`dist/webview.js` 与 `dist/extension.js`
+  是两份产物，只更新一半时那条 IPC 会**静默失效**——webview 发了新帧类型，宿主侧
+  旧产物里没有对应分支，请求落进 `default` 无响应，界面只显示自己的降级态，
+  宿主日志里**一行都没有**（2026-09-18 实测：本地图片一直「加载失败」，代价是两轮排查）。
+  判据：改完 `npm run package && npm run install:vsix`，再确认安装目录下两份产物的时间戳
+  都是新的。
 
 ## 代码约定
 

