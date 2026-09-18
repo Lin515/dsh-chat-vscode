@@ -19,8 +19,6 @@
 npm i -g @deepseek-ai/dsh     # 官方仓库：https://github.com/deepseek-ai/deepseek-harness
 ```
 
-- 没装时扩展会回退到 `npx --yes @deepseek-ai/dsh@latest`；但 `npx` 对这个包有已知的
-  依赖解析卡死问题（见官方 discussion #982），**推荐全局安装**。
 - dsh 自己的模型凭据要配好（`dsh` 首次使用会引导，或直接改 `~/.dsh` 下的配置）。
 - VS Code ≥ 1.101（辅助侧栏容器需要 ≥ 1.106，旧版本自动回退到活动栏）。
 
@@ -160,9 +158,7 @@ DSH Chat is a **frontend**; it has no model access of its own. Install `dsh` fir
 npm i -g @deepseek-ai/dsh     # official repo: https://github.com/deepseek-ai/deepseek-harness
 ```
 
-Without it the extension falls back to `npx --yes @deepseek-ai/dsh@latest`, but `npx` has a
-known dependency-resolution hang for this package (upstream discussion #982) — a global install
-is recommended. Configure your model credentials for `dsh` as usual.
+Configure your model credentials for `dsh` as usual.
 VS Code ≥ 1.101 (the secondary-sidebar container needs ≥ 1.106; older versions fall back to the
 activity bar).
 
