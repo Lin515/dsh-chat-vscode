@@ -13,6 +13,8 @@ import { AppState, useAppState, type PanelKind } from "./state";
 import { pendingInteractionOf } from "./pendingInteraction";
 import { attachDroppedFiles, dragHasFiles } from "./dropAttach";
 import { setLocalImageScope } from "./localImages";
+import { TurnRail } from "./components/TurnRail";
+import { useTurnRailItems, useTurnRailNav } from "./turnRailNav";
 import {
   IconAgents,
   IconAttach,
@@ -443,6 +445,16 @@ function useAutoScroll(active: boolean, sessionId: string | undefined) {
   const attachedRef = useRef(false);
   /** 脱贴且距底超过阈值：亮出「回到最新」胶囊。 */
   const [showJump, setShowJump] = useState(false);
+  /**
+   * 显式放掉跟随（由轮次横条的跳转调用，见 useAutoScroll 返回的 `releaseFollow`）。
+   *
+   * 程序化滚动**不算手势**（onScroll 里 `gestureRecently()` 为假时意愿不动），
+   * 所以跳到历史位置必须有一条显式通道把意愿置假——否则下一次 settle 会把
+   * 视口钉回底部，跳转等于没跳。置假后走一次 settle：胶囊按实测距离亮出来，
+   * 用户随时可以一键回底。
+   */
+  const releaseRef = useRef<(() => void) | null>(null);
+  const releaseFollow = useCallback(() => releaseRef.current?.(), []);
 
   useLayoutEffect(() => {
     const el = scrollRef.current;
@@ -493,6 +505,10 @@ function useAutoScroll(active: boolean, sessionId: string | undefined) {
         pendingRef.current = false;
         settle();
       });
+    };
+    releaseRef.current = () => {
+      followRef.current = false;
+      schedule();
     };
 
     const onScroll = () => {
@@ -591,7 +607,7 @@ function useAutoScroll(active: boolean, sessionId: string | undefined) {
     setShowJump(false);
   }, []);
 
-  return { scrollRef, contentRef, showJump, jumpToLatest };
+  return { scrollRef, contentRef, showJump, jumpToLatest, releaseFollow };
 }
 
 export function App() {
@@ -607,9 +623,24 @@ export function App() {
   }, [sessionId]);
   // 全页拖放：拖文件进会话页的任何位置都算添加附件（dragActive 时亮出浮层）
   const dragActive = usePageFileDrop();
-  const { scrollRef, contentRef, showJump, jumpToLatest } = useAutoScroll(chatActive, sessionId);
+  const { scrollRef, contentRef, showJump, jumpToLatest, releaseFollow } = useAutoScroll(chatActive, sessionId);
   // 滚到顶附近自动取更早的历史；手动按钮走同一个入口（取到轮次边界为止）
   const { loadEarlier, loading: loadingEarlier } = useHistoryPaging(scrollRef, state, chatActive);
+  // 右侧轮次横条（官方 TurnNavigator 的移植）：刻度 = turnOutline 投影 ∪ 已加载
+  // 窗口的锚点/预览；激活轮与跳转的滚动语义见 turnRailNav.ts。
+  const railItems = useTurnRailItems(state.messages, state.turnOutline);
+  const { activeTurn, busyTurn, navigate } = useTurnRailNav({
+    scrollRef,
+    listRef: contentRef,
+    items: railItems,
+    releaseFollow,
+    active: chatActive,
+    sessionId,
+    running: state.running,
+    hasMoreHistory: state.hasMoreHistory === true,
+    historyLoading: state.historyLoading === true,
+    loadEarlier,
+  });
   // 迷你模式：.app 宽度 < 220px 时收成图标条（滞回 ≥232 恢复），由 Composer 测宽后同步到这里
   const appRef = useRef<HTMLDivElement>(null);
   const [mini, setMini] = useState(false);
@@ -734,6 +765,10 @@ export function App() {
           <div className="chat-area">
             <div className="chat-pane">
               <div className="chat-scroll" ref={scrollRef}>
+              {/* 右侧轮次横条：sticky 零高度槽位浮在正文右缘，不占布局、不撑长
+                  scrollHeight（官方 TurnNavigator 的挂法一致）。轨迹视图下整块
+                  会话页卸载，它自然不在。 */}
+              <TurnRail items={railItems} activeTurn={activeTurn} busyTurn={busyTurn} onNavigate={navigate} />
               <div className="chat-list" ref={contentRef}>
                 {state.messages.length === 0 ? (
                   <EmptyState />

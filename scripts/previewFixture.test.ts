@@ -149,7 +149,7 @@ const must = [
   ["轮尾用时胶囊", () => state.messages.some((m) => (m.turnStats?.ranForMs ?? 0) > 0)],
   // 连续过程折叠：预览页必须真能看到折叠按钮，否则调样式时看不出效果。
   // 判定直接跑界面侧的纯函数（不是「有没有带 step 的段」那种间接证据）：用户 2026-09-16
-  // 收敛后的口径是「**只留本轮最后一段正文**，其余全折」——a:0 里最后那段正文是脚注那段
+  // 收敛后的口径是「**只留本轮最后一段正文**，其余全折」——a:1 里最后那段正文是脚注那段
   // （`fn1`），它前面的一切（中途正文 t1 / t1b / t2 / c1、提示 retry1、六条上下文注入、
   // 两条命令节点、12 次工具调用）合成一枚按钮；`fn1` 之后的图片段只有 0 次工具 → 平铺。
   // 按钮文案要同时报出工具调用数与**中途消息条数**（用户当天又报「只显示工具调用次数」）。
@@ -157,7 +157,7 @@ const must = [
   [
     "连续过程折叠（只留最后一段正文 + 三段计数）",
     () => {
-      const message = state.messages.find((m: { id: string }) => m.id === "a:0");
+      const message = state.messages.find((m: { id: string }) => m.id === "a:1");
       if (!message) return false;
       const fold = foldTurnProcess(message.segments, !message.streaming);
       const run = fold.runs[0];
@@ -347,8 +347,24 @@ for (const [label, check] of must) {
   }
 }
 
+// 3c) 轮次横条的边界形态（`?rail=one`）：单条用户消息 + 首个 turn/start 之前拼出来的
+// 幻影 `a:0`。这条夹具存在的唯一理由就是钉住用户 2026-09-18 报的那个 bug
+// （「即便用户只发了一次消息也有第0轮」）——横条必须整个不出现，所以浏览器侧的
+// 验证（`npm run preview` 加 `?rail=one`）需要一个形状正确的入口。
+{
+  const one = build(Date.now(), codeSample, { search: "?locale=zh-cn&rail=one" }, previewImageDataUrl);
+  const users = one.messages.filter((m: { role: string }) => m.role === "user").length;
+  const ok =
+    one.messages.length === 3 &&
+    one.messages[0].id === "a:0" &&
+    users === 1 &&
+    one.turnOutline?.length === 1 &&
+    one.turnOutline[0].turn === 1;
+  console.log(`  ${ok ? "✓" : "✗"} ?rail=one：单条用户消息 + 幻影 a:0（真实服务端轮号从 1 起）`);
+  if (!ok) failed += 1;
+}
+
 // 4) 语言：夹具必须两种语言都能构造出来（预览页支持 `?locale=en`）
-//
 // 这条不是形式主义：`?locale=en` 是唯一能**肉眼**检查英文下排版会不会溢出的入口，
 // 它一旦坏掉，双语改动就失去了自查手段。
 {

@@ -421,15 +421,18 @@ console.log("styles: 会话历史屏蔽默认右键菜单 ✓");
     /white-space:\s*nowrap/.test(objective) && /text-overflow:\s*ellipsis/.test(objective),
     ".goal-objective 默认必须是一行截断（省略号）",
   );
-  assert.ok(
-    !/-webkit-line-clamp/.test(css) && !/\bline-clamp:/.test(css),
-    "不许用「最多两行」的钳制（用户明确否决的中间态）：要么一行截断、要么全文",
-  );
 
   const expanded = rule(".goal-bar.is-expanded .goal-objective");
   assert.ok(
     /white-space:\s*normal/.test(expanded),
     "展开态必须允许换行，否则「看了全文」还是被截",
+  );
+  // 「最多两行」的禁令钉在**目标条**上（那是被否决的中间态）。全文件的宽域检查
+  // 会误伤轮次横条的预览卡——那里的 line-clamp 是官方 TurnNavigator 的口径
+  // （提示词 1 行 + 响应 3 行，滚出去的内容本来就不该在预览里全展开）。
+  assert.ok(
+    !/-webkit-line-clamp/.test(objective) && !/-webkit-line-clamp/.test(expanded),
+    "目标条不许用「最多两行」的钳制（用户明确否决的中间态）：要么一行截断、要么全文",
   );
   assert.ok(
     /overflow-wrap:\s*anywhere/.test(expanded),
@@ -1355,7 +1358,10 @@ console.log("styles: 两颗「打开」按钮图标不同（编辑区=方框箭�
     "展开豁免（500ms 时间窗 + aria-expanded 点击捕获）必须删除：跳过之后没有任何东西会再触发判定，实测「点了工具行就永久不恢复」",
   );
   const followWrites = (hook.match(/followRef\.current = false/g) ?? []).length;
-  assert.strictEqual(followWrites, 1, "脱离跟随只允许一个入口");
+  // 恰好两个入口：① 手势 + 确实离底（onScroll）；② 轮次横条的显式跳转
+  // （releaseFollow——程序化滚动不算手势，不显式放掉的话 settle 会把视口钉回底部，
+  // 跳转等于没跳）。出现第三个就是几何推断回来了。
+  assert.strictEqual(followWrites, 2, "脱离跟随只允许「手势离底」与「轮次跳转显式释放」两个入口");
   assert.ok(
     /} else if \(gestureRecently\(\)\) \{[\s\S]{0,600}?followRef\.current = false;/.test(hook),
     "脱贴必须同时满足「近期有手势 + 确实离底」：没有手势的离底（位置被浏览器夹走 / 重排 / 端口变矮）是布局事故，不许写成脱贴",
@@ -1445,7 +1451,7 @@ console.log("styles: 两颗「打开」按钮图标不同（编辑区=方框箭�
     "脱贴后必须有「回到最新」胶囊（界面 + 样式都在场）",
   );
   assert.ok(
-    /const \{ scrollRef, contentRef, showJump, jumpToLatest \} = useAutoScroll\(chatActive, sessionId\);/.test(app),
+    /const \{ scrollRef, contentRef, showJump, jumpToLatest, releaseFollow \} = useAutoScroll\(chatActive, sessionId\);/.test(app),
     "App 要从 useAutoScroll 取胶囊状态与回底动作，且把 sessionId 传进去（切会话重置贴底）",
   );
   const texts = readFileSync(join(process.cwd(), "src", "webview", "texts.ts"), "utf8");
@@ -1569,5 +1575,133 @@ console.log("styles: 计划审阅卡单层滚动 + 决定按钮常驻 ✓");
   );
 }
 console.log("styles: 多行草稿打字不闪（量高瞬态同帧消化）✓");
+
+// ---------- 39. 右侧轮次横条：官方 TurnNavigator 的移植，关键几何不可回归 ----------
+//
+// 与官方 `TurnNavigator.module.css` 对照（packages/client/ui-chat），本扩展有两处
+// **有意偏离**官方：横条占的宽度是**让出来的**（官方浮在正文右缘之上，会把内容盖住），
+// 过窄阈值按侧栏尺度定（官方的 900px 是整页 Web 的尺度，照搬会让侧栏永远不显示）。
+// 五件事靠肉眼很难每次改动后复查，坏了却很要命：
+//   1. 槽位 sticky + 零高度——**不**撑长 scrollHeight（撑长了会话区就多出一段
+//      永远滚不到头的空白）；
+//   2. 槽位 pointer-events: none、框 auto——槽位横跨整个滚动区，不关掉的话
+//      正文右缘一整列都点不了、选不了；
+//   3. 正文按 --turn-rail-gutter 让出右内边距（横条不覆盖内容，用户 2026-09-18 口径）；
+//   4. 过窄自动关闭（容器查询）——阈值不许回到过窄的值，且**预留条与横条同生共死**；
+//   5. 减少动画时横条的动效同样被抑制（与 3b 的「待遇一致」同一性质）。
+{
+  const slot = rule(".turn-rail-slot");
+  assert.ok(
+    /position:\s*sticky/.test(slot) && /height:\s*0/.test(slot),
+    `槽位必须是 sticky 零高度（现在是 "${slot.trim()}"）——否则横条把 scrollHeight 撑长，正文下方多出一段空白`,
+  );
+  assert.ok(
+    /pointer-events:\s*none/.test(slot),
+    "槽位必须 pointer-events: none——它横跨整个滚动区，不能拦选择与点击",
+  );
+  const frame = rule(".turn-rail-frame");
+  assert.ok(
+    /pointer-events:\s*auto/.test(frame),
+    "框必须 pointer-events: auto（整列的点击 / 悬停都在框上，刻线本体是 none）",
+  );
+  assert.ok(
+    /top:\s*calc\(var\(--turn-rail-band, 100vh\) \/ 2\)/.test(frame),
+    "横条要垂直居中在滚动区的可视高度里（带高由 ResizeObserver 实测写入）",
+  );
+  const mark = rule(".turn-rail-mark");
+  assert.ok(
+    /pointer-events:\s*none/.test(mark),
+    "刻线本体必须 pointer-events: none——悬停预览与点击都按 Y 坐标在框上换算（官方同款）",
+  );
+
+  // 容器查询的基准与关闭规则必须成对存在：基准没了查询永远不命中（横条挤死窄栏），
+  // 规则没了基准白设
+  const pane = rule(".chat-pane");
+  assert.ok(
+    /container-type:\s*inline-size/.test(pane),
+    ".chat-pane 必须是容器查询基准（过窄自动关闭量的是它的宽度）",
+  );
+
+  // **预留空间**（用户 2026-09-18 口径：「给目录条预留空间，不覆盖在会话内容上显示」）：
+  // 正文列表按 --turn-rail-gutter 让出右内边距，横条落在这条空档里。
+  assert.ok(
+    /--turn-rail-gutter:\s*\d+px/.test(pane),
+    ".chat-pane 必须定义 --turn-rail-gutter（横条占的宽度）",
+  );
+  const reserved = rule(".chat-pane .chat-list");
+  assert.ok(
+    /padding-right:\s*calc\(6px \+ var\(--turn-rail-gutter/.test(reserved),
+    `正文列表必须按 --turn-rail-gutter 让出右内边距，否则横条会盖在会话内容上；现在是 "${reserved.trim()}"`,
+  );
+
+  // 关闭规则：阈值不许回到过窄的值（用户 2026-09-18 报「触发关闭的宽度太窄了」），
+  // 而且**预留条必须与横条同生共死**——只藏横条不还空间，正文会留一条无端空档。
+  const hide = /@container \(max-width:\s*(\d+)px\)\s*\{([\s\S]*?)\n\}/.exec(css);
+  assert.ok(hide, "必须存在 @container (max-width: …px) 的自动关闭规则");
+  const threshold = Number(hide[1]);
+  assert.ok(
+    threshold >= 340,
+    `自动关闭的阈值必须在 340px 以上（现在是 ${threshold}px）——正文要保住约 300px 才读得下去`,
+  );
+  assert.ok(
+    /\.turn-rail-slot/.test(hide[2]) && /display:\s*none/.test(hide[2]),
+    "自动关闭规则要把 .turn-rail-slot 整个 display: none",
+  );
+  assert.ok(
+    /\.chat-pane \.chat-list/.test(hide[2]) && /padding-right:\s*6px/.test(hide[2]),
+    "自动关闭时预留条要一起撤掉（把 40px 还给正文），不能只藏横条",
+  );
+
+  // 减少动画：横条的入场淡入 / 脉冲 / 预览滑入 / 缓动都在抑制名单里
+  const reduced = /@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{([\s\S]*?)\n\}/.exec(css);
+  assert.ok(reduced, "应当存在 prefers-reduced-motion 媒体查询");
+  for (const selector of [".turn-rail-mark-pos", ".turn-rail-preview", ".turn-rail-frame"]) {
+    assert.ok(
+      reduced[1].includes(selector),
+      `减少动画时 ${selector} 也要被抑制（横条的动效全是装饰性的）`,
+    );
+  }
+
+  // 数据层在 App 上接线：条目来源、跳转导航、激活轮都要挂上
+  const app = readFileSync(join(process.cwd(), "src", "webview", "App.tsx"), "utf8");
+  assert.ok(
+    /<TurnRail items=\{railItems\} activeTurn=\{activeTurn\} busyTurn=\{busyTurn\} onNavigate=\{navigate\} \/>/.test(app),
+    "TurnRail 要渲染在 .chat-scroll 里（App.tsx）",
+  );
+  assert.ok(
+    /useTurnRailItems\(state\.messages, state\.turnOutline\)/.test(app),
+    "条目要由 turnOutline 投影 ∪ 已加载窗口合并而来（useTurnRailItems）",
+  );
+  assert.ok(
+    /data-msg-id=\{message\.id\}/.test(
+      readFileSync(join(process.cwd(), "src", "webview", "components", "Message.tsx"), "utf8"),
+    ),
+    "消息根节点必须带 data-msg-id（跳转锚点与激活轮的命中测试都靠它）",
+  );
+
+  // 显示判据：**用户消息 ≥ 2**（不是"轮次 ≥ 2"）——一条消息的会话没有可导航的东西，
+  // 而且适配器在首个 turn/start 之前拼出来的幻影轮 a:0 会让"轮次 ≥ 2"误判为有得导航。
+  // 判据换掉时这条断言变红是有意的：它同时钉住「组件用 userPromptCount 而非 items.length」。
+  const turnRail = readFileSync(
+    join(process.cwd(), "src", "webview", "components", "TurnRail.tsx"),
+    "utf8",
+  );
+  assert.ok(
+    /const rendered = userPromptCount\(items\) >= 2;/.test(turnRail),
+    "横条的显示判据必须是「用户消息 ≥ 2」（userPromptCount），宽度那一半由 CSS 容器查询负责",
+  );
+  assert.ok(
+    !/if \(items\.length < 2\) return null;/.test(turnRail),
+    "旧的「轮次 ≥ 2」判据不许回来：幻影轮 a:0 会让它把单消息会话也显示出来",
+  );
+
+  // 文案双语
+  const texts = readFileSync(join(process.cwd(), "src", "webview", "texts.ts"), "utf8");
+  assert.ok(
+    /turnRailLabel: "轮次导航"/.test(texts) && /turnRailLabel: "Turn navigation"/.test(texts),
+    "横条的 aria 标签必须中英双语都在词典里",
+  );
+}
+console.log("styles: 右侧轮次横条（零高度槽位 + 点击穿透 + 过窄自动关闭） ✓");
 
 console.log("\nstyles: all assertions passed");

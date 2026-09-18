@@ -143,7 +143,7 @@ export const Message = memo(function Message({
       }));
     const chips = attachments.filter((attachment) => attachment.kind !== "image" || !attachment.dataUrl);
     return (
-      <div className="msg msg-user">
+      <div className="msg msg-user" data-msg-id={message.id}>
         <UserBubble text={message.text ?? ""} expanded={bubbleOpen} nodeRef={bubbleRef} />
         {attachments.length ? (
           <div className="msg-media">
@@ -300,7 +300,7 @@ export const Message = memo(function Message({
   }
 
   return (
-    <div className="msg msg-assistant">
+    <div className="msg msg-assistant" data-msg-id={message.id}>
       <div className="segments">
         {rendered}
         {/* 轮尾文件：先「本轮改动」（从成功的写类调用推导），再「交付文件」

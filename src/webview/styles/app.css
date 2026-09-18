@@ -99,6 +99,14 @@
   flex: 1 1 auto;
   min-height: 0;
   display: flex;
+  /* 容器查询基准：右侧轮次横条「过窄自动关闭」量的是这里的宽度（.chat-scroll
+     及其内部都能对它做 @container 查询）。inline-size 轴只约束"宽度不依赖内容"
+     ——本元素的宽度来自父级拉伸，容器化不改变布局。 */
+  container-type: inline-size;
+  /* 右侧轮次横条占住的那一条：框宽 28 + 距右缘 12。正文照它让出右内边距，
+     横条因此**不覆盖**在会话内容上（用户 2026-09-18 口径）。过窄时这条与横条
+     一起撤（见下方的容器查询），空间原样还给正文。 */
+  --turn-rail-gutter: 40px;
 }
 
 .chat-scroll {
@@ -153,6 +161,262 @@
 .jump-latest:hover,
 .jump-latest:focus-visible {
   border-color: var(--command-border-focus);
+}
+
+/* ==================== 右侧轮次横条（官方 TurnNavigator） ====================
+   一列右缘对齐的短刻线，每一轮一枚：悬停出预览卡（一行提示词 + 三行响应），
+   点击跳到那一轮的用户消息；未加载的轮次（turnOutline 投影里有、分页窗口外）
+   刻线更短、先取历史再落位。结构语义见 components/TurnRail.tsx。
+
+   **横条占的宽度是让出来的**（不压在正文上）：正文列表按 `--turn-rail-gutter`
+   留出右内边距，横条就落在这条空档里（用户 2026-09-18 口径：「给目录条预留空间，
+   不覆盖在会话内容上显示」）。 */
+.chat-pane .chat-list {
+  padding-right: calc(6px + var(--turn-rail-gutter, 40px));
+}
+
+/* 槽位：sticky + 零高度——横条浮在预留条里，但**不**把 scrollHeight 撑长
+   （与「回到最新」胶囊同一条手法）。槽位自身 pointer-events: none：
+   它横跨整个滚动区，绝不能拦住正文的选择与点击。 */
+.turn-rail-slot {
+  position: sticky;
+  top: 0;
+  /* 与回底胶囊同一档（6）：要盖过正文的代码块等常规层，低于浮层 */
+  z-index: 6;
+  height: 0;
+  pointer-events: none;
+}
+
+.turn-rail-frame {
+  /* 预览卡限高（提示词 1 行 + 响应 3 行的钳制由 line-clamp 负责） */
+  --turn-preview-height: 100px;
+
+  position: absolute;
+  /* 垂直居中在**滚动区的可视高度**里（`--turn-rail-band` 由 TurnRail 的
+     ResizeObserver 实测 .chat-scroll 的 clientHeight 写到槽位上；100vh 的
+     回退只存在于首帧布局效果跑完之前）。带高不含下方输入区——它不在滚动区内。 */
+  top: calc(var(--turn-rail-band, 100vh) / 2);
+  /* 落在正文让出的预留条里（右缘 12px + 框宽 28 = --turn-rail-gutter） */
+  right: 12px;
+  width: 28px;
+  /* 刻线是固定间距的，永远不压缩：阶梯比带高长时在框内滚（见 .turn-rail-scroller），
+     高度取「自然高度 / 带高减 64 的余量 / 420px」三者的最小值。 */
+  height: min(
+    var(--turn-natural-height),
+    max(0px, calc(var(--turn-rail-band, 100vh) - 64px)),
+    420px
+  );
+  cursor: pointer;
+  pointer-events: auto;
+  transform: translateY(-50%);
+  transition: height 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+/* 框的内滚层：不显示滚动条、不把滚动链给到正文，两端可滚方向用渐隐提示 */
+.turn-rail-scroller {
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+}
+
+.turn-rail-scroller::-webkit-scrollbar {
+  display: none;
+}
+
+.turn-rail-scroller.is-fade-top {
+  mask-image: linear-gradient(to bottom, transparent 0, #000 24px, #000 100%);
+}
+
+.turn-rail-scroller.is-fade-bottom {
+  mask-image: linear-gradient(to bottom, #000 0, #000 calc(100% - 24px), transparent 100%);
+}
+
+.turn-rail-scroller.is-fade-top.is-fade-bottom {
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 24px,
+    #000 calc(100% - 24px),
+    transparent 100%
+  );
+}
+
+.turn-rail-marks {
+  position: relative;
+  height: var(--turn-natural-height);
+}
+
+/* 刻点的定位盒：绝对定位到阶梯位置上（`--turn-natural-position` 由组件按序号
+   写入），高度即固定间距（10px）。新增刻点有 150ms 的淡入。 */
+.turn-rail-mark-pos {
+  position: absolute;
+  top: calc(var(--turn-natural-position) + var(--turn-rail-inset));
+  right: 0;
+  left: 0;
+  height: 10px;
+  transform: translateY(-50%);
+  transition: top 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  animation: turn-rail-mark-enter 150ms ease-out;
+}
+
+/* 刻线本体：**整列**的指针输入在框上（按 Y 坐标换算刻点），所以刻线自己
+   pointer-events: none，只是键盘焦点的一个落点。宽度比框窄，右缘对齐——
+   焦点圈包住的是刻线而不是整列指针热区。 */
+.turn-rail-mark {
+  position: absolute;
+  inset: 0 0 0 auto;
+  width: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+  pointer-events: none;
+}
+
+/* 短横线（刻线本体） */
+.turn-rail-mark::before {
+  position: absolute;
+  top: 50%;
+  right: 0;
+  width: 12px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--muted);
+  content: "";
+  transform: translateY(-50%);
+  transition: width 140ms ease, background-color 140ms ease;
+}
+
+/* 未加载的轮次：更短、更淡——「这个位置有内容，但还没取回来」 */
+.turn-rail-mark.is-unloaded::before {
+  width: 8px;
+  opacity: 0.6;
+}
+
+/* 悬停中的刻线：拉长一档（排在 active 之前，激活态保持更强的那条） */
+.turn-rail-mark.is-preview::before {
+  width: 18px;
+  background: var(--description);
+}
+
+/* 正在取历史的跳转目标：脉冲提示「还没落位」 */
+.turn-rail-mark.is-busy::before {
+  animation: turn-rail-mark-busy 1s ease-in-out infinite;
+}
+
+/* 当前轮：最长最亮 */
+.turn-rail-mark.is-active::before {
+  width: 20px;
+  background: var(--fg);
+}
+
+/* 键盘焦点盖过一切悬停态：焦点环 + 焦点色 */
+.turn-rail-mark:focus-visible::before {
+  width: 20px;
+  background: var(--border-focus);
+}
+
+.turn-rail-mark:focus-visible {
+  outline: 1px solid var(--border-focus);
+  outline-offset: 2px;
+}
+
+/* 预览卡：贴着横条左侧浮出，垂直居中在悬停刻线上（clamp 保证不出框两端） */
+.turn-rail-preview {
+  position: absolute;
+  top: clamp(
+    0px,
+    calc(
+      var(--turn-natural-position) + var(--turn-rail-inset)
+      - var(--turn-scroll-top, 0px) - var(--turn-preview-height) / 2
+    ),
+    calc(100% - var(--turn-preview-height))
+  );
+  right: calc(100% + 10px);
+  box-sizing: border-box;
+  /* 上限 300px；容器比它宽裕得多时按「容器宽 − 120」收着（100cqw = 容器宽，
+     即 .chat-pane 的 inline-size），窄侧栏里永远不出左边界 */
+  width: min(300px, calc(100cqw - 120px));
+  max-height: var(--turn-preview-height);
+  overflow: hidden;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 10px;
+  color: var(--fg);
+  background: var(--editor-bg);
+  box-shadow: 0 2px 10px rgb(0 0 0 / 0.4);
+  pointer-events: none;
+  animation: turn-rail-preview-enter 120ms ease-out;
+  transition: top 140ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.turn-rail-preview-prompt,
+.turn-rail-preview-response {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  overflow-wrap: anywhere;
+}
+
+.turn-rail-preview-prompt {
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  -webkit-line-clamp: 1;
+}
+
+.turn-rail-preview-response {
+  margin-top: 4px;
+  color: var(--description);
+  font-size: var(--font-size-2xs);
+  -webkit-line-clamp: 3;
+}
+
+/* **过窄自动关闭**：会话区窄于 360px 时横条整个撤掉，并把预留的那 40px 原样
+   还给正文（两者必须同生共死——只藏横条不还空间，正文会无端留着一条空档）。
+   360 这条线的算法：横条自己占 40px，正文要保住约 300px 才读得下去（代码块
+   换行、diff 双栏、用户气泡都吃宽度）；量的是 .chat-pane 的 inline-size。
+   用户 2026-09-18 口径：原来的 280 太窄了——那时正文已经被挤成一条。 */
+@container (max-width: 360px) {
+  .turn-rail-slot {
+    display: none;
+  }
+
+  .chat-pane .chat-list {
+    padding-right: 6px;
+  }
+}
+
+@keyframes turn-rail-mark-enter {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes turn-rail-preview-enter {
+  from {
+    opacity: 0;
+    transform: translateX(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes turn-rail-mark-busy {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
 }
 
 .msg {
@@ -2604,6 +2868,16 @@
   /* 展开按钮的箭头翻转也是装饰性动效 */
   .goal-expand svg {
     transition: none;
+  }
+
+  /* 轮次横条的入场淡入 / 刻线脉冲 / 预览卡滑入 / 高度与位置的缓动全是装饰 */
+  .turn-rail-mark-pos,
+  .turn-rail-mark.is-busy::before,
+  .turn-rail-preview,
+  .turn-rail-frame {
+    transition: none;
+    animation: none;
+    scroll-behavior: auto;
   }
 }
 

@@ -521,6 +521,14 @@ export interface Texts {
   historyBusy: string;
   /** 「回到最新」胶囊：脱贴后内容继续增长时的兜底入口（点击回底并恢复贴底）。 */
   jumpToLatest: string;
+  /** 右侧轮次横条：整条导航的 aria 标签（官方 chat.turnNavigation.label）。 */
+  turnRailLabel: string;
+  /** 轮次横条的刻度：跳到第 {turn} 轮（已加载，官方 chat.turnNavigation.jump）。 */
+  turnRailJump: (turn: number) => string;
+  /** 轮次横条的刻度：先取历史再跳到第 {turn} 轮（窗口外，官方 chat.turnNavigation.jumpLoad）。 */
+  turnRailJumpLoad: (turn: number) => string;
+  /** 轮次横条的预览卡：没有提示词可预览时的兜底标题（官方 chat.turnNavigation.turn）。 */
+  turnRailTurn: (turn: number) => string;
   /** 用户消息过长时默认折叠：展开。 */
   userMessageExpand: string;
   /** 用户消息过长时默认折叠：收起。 */
@@ -850,6 +858,10 @@ const zh: Texts = {
   historyMore: "加载全部历史",
   historyLoading: "正在加载全部历史…",
   jumpToLatest: "回到最新",
+  turnRailLabel: "轮次导航",
+  turnRailJump: (turn) => `跳到第 ${turn} 轮`,
+  turnRailJumpLoad: (turn) => `加载并跳到第 ${turn} 轮`,
+  turnRailTurn: (turn) => `第 ${turn} 轮`,
   historyBusy: "生成中不能加载历史，请等这一轮结束",
   userMessageExpand: "展开",
   userMessageCollapse: "收起",
@@ -1171,6 +1183,10 @@ const en: Texts = {
   historyMore: "Load all history",
   historyLoading: "Loading all history…",
   jumpToLatest: "Jump to latest",
+  turnRailLabel: "Turn navigation",
+  turnRailJump: (turn) => `Jump to turn ${turn}`,
+  turnRailJumpLoad: (turn) => `Load and jump to turn ${turn}`,
+  turnRailTurn: (turn) => `Turn ${turn}`,
   historyBusy: "Cannot load history while generating — wait for this turn to finish",
   userMessageExpand: "Expand",
   userMessageCollapse: "Collapse",

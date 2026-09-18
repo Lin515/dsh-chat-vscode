@@ -227,7 +227,7 @@
         const query = new URLSearchParams(location.search);
         const connection = query.get("conn") || "ready";
         const flag = (name) => (query.get(name) === "1" ? true : undefined);
-        return {
+        const state = {
           locale,
           connection,
           connectionDetail: query.get("detail") || undefined,
@@ -285,15 +285,18 @@
           fontSizePx: undefined,
           // 「加载更早」：跟随窗口只带 60 条，更早的内容从没进过客户端
           hasMoreHistory: true,
-          // 轮次大纲（`turnOutline` 投影）当前**没有消费者**：右侧轮次横条那个设计
-          // 已被用户否掉（「有点违和，先删掉，后续再考虑别的设计」），但形状按契约
-          // 是**对的**（`{turn, seq, prompt, response}`，见 TurnOutlineEntry），
-          // 留着给后续的导航设计直接用。
+          // 轮次大纲（`turnOutline` 投影）：右侧轮次横条的数据源，形状按契约
+          // 逐字（`{turn, seq, prompt, response}`，见 TurnOutlineEntry）。夹具里
+          // 四轮的消息（u:1/a:1 … u:4/a:4）全部在窗口内 → 四枚「已加载」刻线；
+          // 想看「未加载」的短刻线，把某一条的 turn 改成窗口里没有的轮号即可。
+          // 轮号**从 1 起**，与真实服务端一致（harness 投影 spec 的第一轮就是
+          // `turn/start {turn: 1}`）；0 号只可能是首个 turn/start 之前拼出来的
+          // 幻影轮，见下面 `?rail=one` 那段。
           turnOutline: [
-            { turn: 0, seq: 0, prompt: "把这两个文件的启动逻辑合并到一个入口，并去掉重复初始化。", response: "我看了两个文件，重复初始化的根因是端口和中间件被注册了两次。" },
-            { turn: 1, seq: 12, prompt: "先跑一遍现有测试，确认基线是绿的。", response: "" },
-            { turn: 2, seq: 24, prompt: "重构范围要覆盖到哪一层？", response: "" },
-            { turn: 3, seq: 36, prompt: "按你选的方案改吧，顺便把回归测试补上。", response: "" }
+            { turn: 1, seq: 0, prompt: "把这两个文件的启动逻辑合并到一个入口，并去掉重复初始化。", response: "我看了两个文件，重复初始化的根因是端口和中间件被注册了两次。" },
+            { turn: 2, seq: 12, prompt: "先跑一遍现有测试，确认基线是绿的。", response: "" },
+            { turn: 3, seq: 24, prompt: "重构范围要覆盖到哪一层？", response: "" },
+            { turn: 4, seq: 36, prompt: "按你选的方案改吧，顺便把回归测试补上。", response: "" }
           ],
           // 轨迹账本（宿主折叠后按需下发；形状 = `src/shared/trajectory.ts` 的
           // `TrajectoryModel`，内容对着本夹具的故事线手写，覆盖七种记录里的六种 +
@@ -535,7 +538,7 @@
               ]
             },
             {
-              id: "a:0",
+              id: "a:1",
               role: "assistant",
               ts: now - 235000,
               model: "DeepSeek-V4-Pro",
@@ -780,7 +783,7 @@
               segments: []
             },
             {
-              id: "a:1",
+              id: "a:2",
               role: "assistant",
               ts: now - 20000,
               model: "DeepSeek-V4-Pro",
@@ -796,7 +799,7 @@
               segments: []
             },
             {
-              id: "a:2",
+              id: "a:3",
               role: "assistant",
               ts: now - 12000,
               model: "DeepSeek-V4-Pro",
@@ -895,7 +898,7 @@
               segments: []
             },
             {
-              id: "a:3",
+              id: "a:4",
               role: "assistant",
               ts: now - 42000,
               streaming: true,
@@ -907,6 +910,48 @@
             }
           ]
         };
+
+        // 右侧轮次横条的边界形态（`?rail=one`）：**用户只发了一条消息**，且首个
+        // `turn/start` 之前有一条命令行拼出来的幻影助手消息 `a:0`——适配器
+        // `ensureAssistantMessage` 的 `currentTurn ?? 0` 兜底的**真实产物**
+        // （`command/run` / 系统提示词注入在首轮之前到达就会拼出它）。
+        // 这条夹具钉住用户 2026-09-18 报的「只发了一次消息也有第0轮」：
+        // 幻影轮被 `turnOutline` 挡掉（轮次边界的权威在大纲），剩下的 1 条用户
+        // 消息又够不上显示判据（用户消息 ≥ 2），横条必须**整个不出现**。
+        // 真实服务端的轮号**从 1 起**（harness 投影 spec 的第一轮就是
+        // `turn/start {turn: 1}`）；主故事里那套 0 起编号只是这份夹具自己的写法。
+        if (query.get("rail") === "one") {
+          state.messages = [
+            {
+              id: "a:0",
+              role: "assistant",
+              ts: now - 60000,
+              segments: [
+                { id: "cmd0", kind: "command", command: { commandId: "cmd-rail-0", name: "plan", state: "ok", text: "Plan mode on. Use /plan off to leave." } }
+              ]
+            },
+            {
+              id: "u:1",
+              role: "user",
+              ts: now - 40000,
+              text: "把这两个文件的启动逻辑合并到一个入口，并去掉重复初始化。",
+              segments: []
+            },
+            {
+              id: "a:1",
+              role: "assistant",
+              ts: now - 30000,
+              model: "DeepSeek-V4-Pro",
+              segments: [
+                { id: "t1", kind: "text", text: "我看了两个文件，重复初始化的根因是端口和中间件被注册了两次。" }
+              ]
+            }
+          ];
+          state.turnOutline = [
+            { turn: 1, seq: 3, prompt: "把这两个文件的启动逻辑合并到一个入口，并去掉重复初始化。", response: "我看了两个文件，重复初始化的根因是端口和中间件被注册了两次。" }
+          ];
+        }
+        return state;
       };
       // 文件芯片的种类表（`patch.fileKinds`）：形状与真实宿主一致（键 = 芯片上的
       // 原样路径，值 = "new" | "edited" | "deleted"，见 src/dsh/fileChange.ts）。
