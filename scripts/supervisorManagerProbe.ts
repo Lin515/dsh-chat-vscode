@@ -12,11 +12,15 @@
  *   3) `sharedSummary().hostCount` 从 supervisor 报的活连接数来（两个窗口 = 2）；
  *   4) 关掉第一个窗口（`dispose()`）**不杀后台**；第二个窗口继续可用；
  *   5) `restart()` 能换一个新的 dsh（端口可能变），本窗口跟着换地址；
- *   6) `stopAndExit()` 让 supervisor 收场（端口关闭、会合文件消失）。
+ *   6) `stopAndExit()` 让 supervisor 收场（端口关闭、会合文件消失）；
+ *   7) **切到外部之后，内部那套必须自己退场**（2026-09-19 修的那个 bug 的端到端验收）：
+ *      起一套内部后台 → 目标切到外部 → 本窗口一断开，守护进程就没有活连接了，于是它按
+ *      空闲阈值连 dsh 一起收场（会合文件消失、端口关闭）。判据全是真事件，不看日志。
  *
  * 用法：node build/supervisor-manager-probe.mjs [日志文件]
  */
 import { appendFileSync, writeFileSync } from "node:fs";
+import { createServer as createHttpServer } from "node:http";
 import { setTimeout as delay } from "node:timers/promises";
 // 必须排在最前面：会合目录指到本次探针专用目录
 import { PROBE_SUPERVISOR_ROOT } from "./supervisorProbeEnv";
@@ -45,10 +49,10 @@ const COMMAND = "dsh web --port 0 --no-open";
 const GROUP = "manager-probe";
 
 /** 造一个"窗口"：与扩展里完全同构（同一份 SupervisorManager + 同一个真实启动器）。 */
-function makeWindow(tag: string): SupervisorManager {
+function makeWindow(tag: string, url = ""): SupervisorManager {
   return new SupervisorManager({
     group: GROUP,
-    url: "",
+    url,
     command: COMMAND,
     // 阈值取下限：探针十几秒出结论；默认值的正确性由离线断言覆盖
     idleSec: 5,
@@ -58,8 +62,32 @@ function makeWindow(tag: string): SupervisorManager {
   });
 }
 
+/** 第 7 步用的"外部 DSH"：一个**会应答**的本地 HTTP 服务（可达性探测认的就是应答）。 */
+async function fakeExternal(): Promise<{ baseUrl: string; close: () => Promise<void> }> {
+  const server = createHttpServer((_request, response) => {
+    response.statusCode = 200;
+    response.end("ok");
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  const port = typeof address === "object" && address ? address.port : 0;
+  return {
+    baseUrl: `http://127.0.0.1:${port}`,
+    close: () =>
+      new Promise<void>((resolve) => {
+        // keep-alive 连接会让 close() 的回调一直等（fetch 留下的）
+        server.closeAllConnections();
+        server.close(() => resolve());
+      }),
+  };
+}
+
 let windowA: SupervisorManager | undefined;
 let windowB: SupervisorManager | undefined;
+let windowC: SupervisorManager | undefined;
+let windowD: SupervisorManager | undefined;
+let windowE: SupervisorManager | undefined;
+let externalProbe: { close: () => Promise<void> } | undefined;
 let url: string | undefined;
 
 try {
@@ -131,21 +159,114 @@ try {
     }
     return false;
   })();
-  windowB = undefined;
   check("会合文件消失、端口关闭", cleaned, `端口 ${stopPort}`);
+  // **必须真的 dispose**（原来只是把引用置空）：不 dispose 的话它的心跳还活着，而心跳里
+  // "会合文件里那一套还在就接上"是**设计行为**（别的窗口把后台重新起起来时本窗口要能接上）
+  // ——第 6 步 C 起的新后台会被这个"已经没人管的 B"自动接上，于是数不出"没人用"，
+  // 内部后台当然不会退场（实测：日志里出现 `[B] 在用的窗口数：1 → 2`）。
+  windowB.dispose();
+  windowB = undefined;
+
+  say("\n6) 窗口 C：连内部 → 切到外部 → **内部那套必须自己退场**（2026-09-19 修的场景）…");
+  // 用户实测的 bug：本来是内部那套，切到「连接外部 DSH」之后，那条守护进程 socket 还开着，
+  // 守护进程就永远认为"还有人用"——它自动拉起来的内部 DSH 一直存在。现在切目标时会断开，
+  // 于是守护进程按空闲阈值连 dsh 一起收场。这一格验的就是这条**真事件**链。
+  const external = await fakeExternal();
+  externalProbe = external;
+  const winC = makeWindow("C", external.baseUrl);
+  windowC = winC;
+  const infoC = await winC.ensure({ start: true, target: "internal" });
+  check("C 又拉起一套内部后台", Boolean(infoC.baseUrl && infoC.token), infoC.baseUrl ?? "");
+  const cPort = Number(new URL(infoC.baseUrl).port);
+
+  const toExternal = await winC.ensure({ start: false, target: "external" });
+  check("切到外部：拿到外部地址", toExternal.baseUrl === external.baseUrl, toExternal.baseUrl);
+  check(
+    "切到外部：本窗口不再报内部那套后台（peekState 为空）",
+    winC.peekState() === undefined,
+    String(winC.peekState()),
+  );
+  check(
+    "切到外部：状态里的地址是外部那个（没有被内部推送改回去）",
+    winC.getStatus().info?.baseUrl === external.baseUrl,
+    winC.getStatus().info?.baseUrl ?? "（无）",
+  );
+
+  // 本窗口断了 ⇒ 守护进程没有活连接 ⇒ 空闲阈值（这里 5s，另有"刚起来还没人连"的宽限）
+  // 到点后它连 dsh 一起收场：会合文件消失、端口关闭。这正是"内部 DSH 不再一直存在"。
+  const retired = await (async () => {
+    const deadline = Date.now() + 45_000;
+    while (Date.now() < deadline) {
+      if (readState(supervisorDirectory(GROUP)) === undefined && !(await portListening(cPort))) return true;
+      await delay(500);
+    }
+    return false;
+  })();
+  check("切到外部之后：内部后台自己退场（会合文件消失、dsh 端口关闭）", retired, `端口 ${cPort}`);
+
+  say("\n7) 窗口 D：连内部 → 用户点「停止连接」→ 内部后台同样必须自己退场…");
+  // 用户 2026-09-19 口径：**不连就不占用**。交还之后心跳**不许**把连接接回来（否则 5 秒后
+  // 又连上了，"停止"等于没停），而没有别的窗口连着时后台就按空闲阈值退场。
+  const winD = makeWindow("D");
+  windowD = winD;
+  const infoD = await winD.ensure({ start: true, target: "internal" });
+  check("D 拉起一套内部后台", Boolean(infoD.baseUrl && infoD.token), infoD.baseUrl ?? "");
+  const dPort = Number(new URL(infoD.baseUrl).port);
+
+  winD.releaseInternal(); // = 界面上的「停止连接」在管理器侧做的那件事
+  check("「停止连接」：本窗口不再报内部那套后台（peekState 为空）", winD.peekState() === undefined);
+
+  const retiredAfterStop = await (async () => {
+    const deadline = Date.now() + 45_000;
+    while (Date.now() < deadline) {
+      if (readState(supervisorDirectory(GROUP)) === undefined && !(await portListening(dPort))) return true;
+      await delay(500);
+    }
+    return false;
+  })();
+  check("「停止连接」之后：内部后台自己退场（会合文件消失、dsh 端口关闭）", retiredAfterStop, `端口 ${dPort}`);
+
+  say("\n8) 窗口 E：交还占用之后再点「重启内部 DSH」→ 必须**真的重起 dsh**（不是只接上）…");
+  // 这条路径在"用户点过「停止连接」"之后是常态（连接是空的）。从前的实现只接上、一个控制帧
+  // 都不发，界面却照旧弹"已重启"；判据用**令牌变了**（dsh 每次启动新铸随机值，见第 4 步）。
+  const winE = makeWindow("E");
+  windowE = winE;
+  const infoE = await winE.ensure({ start: true, target: "internal" });
+  check("E 拉起一套内部后台", Boolean(infoE.baseUrl && infoE.token), infoE.baseUrl ?? "");
+
+  winE.releaseInternal(); // =「停止连接」
+  const beforeRestartDetached = readState(supervisorDirectory(GROUP));
+  const restarted = await winE.restart({ target: "internal" });
+  const afterRestartDetached = readState(supervisorDirectory(GROUP));
+  check(
+    "交还占用之后再重启：dsh 确实换了新进程（令牌变了）",
+    Boolean(beforeRestartDetached?.token) &&
+      Boolean(afterRestartDetached?.token) &&
+      beforeRestartDetached?.token !== afterRestartDetached?.token,
+    `token ${beforeRestartDetached?.token ? "旧有" : "旧无"} → ${afterRestartDetached?.token ? "新有" : "新无"}`,
+  );
+  check("交还占用之后再重启：新地址在服务", await portListening(Number(new URL(restarted.baseUrl).port)), restarted.baseUrl);
 } catch (error) {
   failures++;
   say(`探针失败：${error instanceof Error ? `${error.message}\n${error.stack ?? ""}` : String(error)}`);
 } finally {
   windowA?.dispose();
   windowB?.dispose();
+  windowC?.dispose();
+  windowD?.dispose();
+  windowE?.dispose();
+  await externalProbe?.close().catch(() => undefined);
   const state = readState(supervisorDirectory(GROUP));
   if (state) {
     const { spawn } = await import("node:child_process");
     spawn("taskkill", ["/pid", String(state.supervisorPid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
     if (state.serverPid) spawn("taskkill", ["/pid", String(state.serverPid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
   }
-  say(failures === 0 ? "\n✓ 扩展侧管理器（ensure/接入/心跳/重启/停止）全通" : `\n✗ ${failures} 项未通过`);
+  say(
+    failures === 0
+      ? "\n✓ 扩展侧管理器（ensure/接入/心跳/重启/停止/切到外部与停止连接后内部退场/交还后重启仍是真重启）全通"
+      : `\n✗ ${failures} 项未通过`,
+  );
   process.exitCode = failures === 0 ? 0 : 1;
 }
 void url;

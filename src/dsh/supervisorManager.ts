@@ -20,6 +20,20 @@
  * 否则外部配了且可达 → 外部；都没有 → 拉起一套内部），结果是**粘性**的：
  * 本文件只负责"把这一轮连到指定目标上"，**不做**选路、也不在重试时换目标。
  *
+ * ## 2026-09-19：换目标是**彻底**的（连接跟着目标走，不留旧目标的东西）
+ *
+ * 上面那条只说了"决策"跟着目标走，**没说"手里握着的东西"也跟着走**——于是留下过一个
+ * 用户实测的 bug：本来是内部那套，切到外部之后那条守护进程 socket 还开着，守护进程照样
+ * 算本窗口"在用"，它自动拉起来的 dsh 永远不退场，诊断里也还是内部那一套。
+ * 现在的不变量（`detachInternal` 是唯一落点）：
+ *
+ * - **目标不是内部时，本窗口与守护进程之间没有任何连接、也没有任何内部状态记忆**：
+ *   换目标的入口（`ensure` 的外部分支）与心跳各断一次，连接回调再按目标守一道；
+ * - 断开**不碰进程**：内部后台退不退场由守护进程按"还有没有活连接"自己裁决
+ *   （这正是"切到外部后内部该消失、别的窗口还在用就该继续"的正确答案）；
+ * - 「停止内部 DSH」在分离态下**短暂接入**一次发请求就走（`stopDetachedInternal`），
+ *   外部那条连接一个字都不动。
+ *
  * "能不能启动"仍是一条**显式许可**，但 `autoStart` 已改名为 `dshChat.autoConnect`
  * （含义也变了：关掉 = 激活期完全不自动连，只显示按钮）：
  *
@@ -226,6 +240,19 @@ export class SupervisorManager {
    * 主动停的"——心跳要继续跑，别的窗口把后台重新起起来时这边要能自动接上。
    */
   private stoppedByUser = false;
+  /**
+   * 用户点了「停止连接」：本窗口**主动放弃**内部后台的使用权，心跳**不许**再把它接回来
+   * （2026-09-19 用户口径：不连就不占用）。
+   *
+   * 与 `stoppedByUser` 刻意分开，两者管的是不同的动作：
+   * - `stoppedByUser`（「停止内部 DSH」）不许的是"**拉起**一套"，但别的窗口把后台重新
+   *   起起来时本窗口仍要自动接上——那正是它存在的用途（见它的注释）；
+   * - 这个不许的是"**接入**已经在跑的那一套"：用户明确说了不连，就不能过 5 秒又被接回去
+   *   （`heartbeatTick` 的接入分支排在 `stoppedByUser` 检查**之前**，只靠那个标志挡不住）。
+   *
+   * 任何显式动作（发消息 / 三个连接按钮 / 重启 / 激活期选路）都经 `bringUp` 清掉它。
+   */
+  private detachedByUser = false;
   private state: SupervisorState | undefined;
   /**
    * 当前这一轮要连的目标（**粘性**，见文件头）。
@@ -444,8 +471,9 @@ export class SupervisorManager {
    * 确保连上**这一轮的目标**。
    *
    * 两个分支由 `target` 决定（不是由"配没配 url"决定——那正是 2026-09-18 作废的旧口径）：
-   * 外部目标只探测那个地址；内部目标"守护进程还在就接入，不在才（有许可时）拉起"。
-   * 全程幂等（`ensurePromise` 合并并发调用，许可按最宽的那个算）。
+   * 外部目标**先彻底断开内部那一套**（见 `detachInternal`）再探测那个地址；内部目标
+   * "守护进程还在就接入，不在才（有许可时）拉起"。全程幂等（`ensurePromise` 合并并发
+   * 调用，许可按最宽的那个算）。
    *
    * `options.start` 决定"后台不存在时允不允许拉一套"；省略时取 `dshChat.autoConnect`。
    * 不允许时会抛 `ServerNotRunningError`（界面据此切到按钮态，而不是当成连接失败去重试）。
@@ -461,6 +489,10 @@ export class SupervisorManager {
         this.setStatus({ state: "stopped", detail: "external target without url" });
         throw new ServerNotRunningError();
       }
+      // **彻底切换**（2026-09-19 修，见 `detachInternal`）：目标一变成外部，本窗口与
+      // 内部守护进程之间就不能再有任何联系。要在**这里**断，而不是等外部连上之后——
+      // 用户按下「连接外部 DSH」的那一刻，当前连接就已经不是内部那套了。
+      this.detachInternal("目标切到外部");
       this.setStatus({ state: "starting", detail: `connecting ${external}` });
       // 外部地址**同样等到底**（没有"到点就报连不上"这一档）：连上，或用户点「停止连接」。
       // 口径与内部模式一致——状态只由真实事件与用户按钮改变（用户 2026-09-14 口径）。
@@ -492,6 +524,62 @@ export class SupervisorManager {
       this.startAllowed = false;
     });
     return this.ensurePromise;
+  }
+
+  /**
+   * **目标切走（内部 → 外部）：把本窗口与内部守护进程之间的一切收掉。**
+   *
+   * 2026-09-19 修（用户实测）：从前换目标只换"**决策**"，不换"手里握着的东西"——
+   * 那条常驻 socket 照旧开着，于是"切到外部了却还在跟内部守护进程打交道"：
+   *
+   * 1. **守护进程仍把本窗口算作"还有人在用"**：它的空闲判据就是"socket 上还有没有活连接"，
+   *    于是它（因为还有连接而）自动拉起来的那个 dsh **永远不退场**——用户报的
+   *    "切到外部之后，守护进程自动重启的内部 DSH 一直存在"就是这条；
+   * 2. 它继续往这条连接推 `state`，`onStatePush` 把 `status` 改回内部那一套，
+   *    而诊断命令读的正是这几项——用户看到的是"连着外部、诊断里写着内部地址与内部进程"。
+   *
+   * 断开**不碰任何进程**：内部后台退不退场是守护进程自己的裁决（没人连着 → 空闲阈值后
+   * 连 dsh 一起收场），这正是"换到外部之后内部该消失"的正确路径；别的窗口还连着时它
+   * 当然继续服务——那时它本来就该在。
+   *
+   * `status.info` 一并作废：它是"内部那一套就绪"的记忆，留着会让诊断与 `serverUrl`
+   * 继续报内部地址（与上面第 2 条是同一个症状的两条来路）。
+   */
+  private detachInternal(reason: string): void {
+    const held = this.connection !== undefined || this.state !== undefined;
+    this.connection?.close();
+    this.connection = undefined;
+    this.state = undefined;
+    this.launched = false;
+    this.clientCount = 1;
+    if (this.status.info && this.status.info.ownership !== "external") {
+      this.setStatus({ state: "stopped", detail: "internal detached" });
+    }
+    if (held) {
+      this.options.log(
+        `[supervisor] ${reason}：已断开与守护进程的连接（内部后台交回守护进程按"有没有人用"自己裁决）`,
+      );
+    }
+  }
+
+  /**
+   * 用户点了「停止连接」：本窗口**不再占用**内部后台。
+   *
+   * 收掉与守护进程的连接，并让心跳**不许**再把它接回来（`detachedByUser`）。两条都必要：
+   * 只断不挡的话，5 秒后的心跳会发现"会合文件里那套还活着"并立刻重新接上——用户看到的
+   * 是"点了停止，过一会儿又连上了"；只挡不断的话，守护进程仍把本窗口算作"还有人在用"，
+   * 内部 dsh 就永远不按空闲退场（用户 2026-09-19 口径：不连就不占用）。
+   *
+   * **不碰任何进程**：内部后台退不退场是守护进程自己的裁决（没有别的窗口连着 → 空闲阈值后
+   * 连 dsh 一起收场）；别的窗口还在用，它就继续服务——那正是正确结果。
+   *
+   * 用户随后的显式动作（发消息 / 点连接按钮 / 重启 / 激活期选路）经 `bringUp` 清掉这个
+   * 标记，重新接上；「连接内部 DSH」若发现守护进程已经空闲退场了，会如实回到按钮态
+   * （它是"只接不启动"那一档）。
+   */
+  releaseInternal(): void {
+    this.detachedByUser = true;
+    this.detachInternal("用户点了「停止连接」");
   }
 
   // ---------- 等待的中断（用户按钮） ----------
@@ -526,6 +614,9 @@ export class SupervisorManager {
     // dispose 是单向的：复活只能由新建一个管理器来做。
     if (this.disposed) throw new WaitCancelledError();
     this.stoppedByUser = false;
+    // 走到这里 = 有人**显式**要这套后台了（点连接按钮 / 发消息 / 重启 / 激活期选路）：
+    // 「停止连接」那道闸随之撤销（见 `detachedByUser`）
+    this.detachedByUser = false;
     this.setStatus({ state: "starting" });
     const wait = this.beginWait();
     try {
@@ -686,14 +777,26 @@ export class SupervisorManager {
     const connection = new SupervisorConnection(
       state.socket,
       {
-        onState: (next, clients) => this.onStatePush(next, clients),
+        /**
+         * **回调只代表"这一条连接"，且只在目标是内部时才算数**（2026-09-19）：
+         * 换目标时那条连接已经不该存在（见 `detachInternal`），但收尾帧可能正好在
+         * 断开过程中到达——它若照旧写状态，界面就会从"连着外部"被推回
+         * "内部后台退场/换地址"，看起来又像在跟内部守护进程打交道。
+         */
+        onState: (next, clients) => {
+          if (this.target !== "internal" || this.connection !== connection) return;
+          this.onStatePush(next, clients);
+        },
         onGoodbye: (reason) => {
           this.options.log(`[supervisor] supervisor 告别（${reason}）`);
+          if (this.connection !== connection) return;
           this.connection = undefined;
+          if (this.target !== "internal") return;
           this.setStatus({ state: "stopped", detail: `supervisor ${reason}` });
         },
         onClosed: (reason) => {
           this.options.log(`[supervisor] 与 supervisor 的连接断开：${reason}`);
+          if (this.connection !== connection) return;
           this.connection = undefined;
         },
         onError: (kind, message) => {
@@ -778,10 +881,23 @@ export class SupervisorManager {
     } catch (error) {
       this.options.log(`[supervisor] 心跳自检失败：${error instanceof Error ? error.message : String(error)}`);
     }
-    if (this.connection?.connected) return;
     // 目标不是内部（外部备用、或还没定过）→ **一个手指头都不碰 supervisor**：
     // "要不要重试外部"是控制器那侧按粘性目标决定的（本文件只有内部那套的运维知识）。
-    if (this.target !== "internal") return;
+    // 而且手里**一条内部连接都不该留**（见 `detachInternal`）——这条是兜底：换目标的
+    // 入口已经会断开，但"还没连上那一轮"、`dshChat.autoConnect` 关掉这类路径也可能留下
+    // 一条陈旧的连接，而它只要在，守护进程就会一直把 dsh 拎着不放。
+    //
+    // **这一道必须排在 `connection.connected` 之前**（踩过）：留着一条"连着"的内部
+    // socket 而目标已经是外部，恰恰就是本次要修的那个状态——排在后面等于兜底永远不生效。
+    if (this.target !== "internal") {
+      this.detachInternal("当前目标不是内部");
+      return;
+    }
+    // 用户点过「停止连接」：**连"接上已经在跑的那一套"都不做**（见 `detachedByUser`）。
+    // 这一道同样必须排在下面那句 `connection.connected` 之前——它管的是"要不要重新连"，
+    // 排在后面就等于用户叫停完 5 秒又被接回去。
+    if (this.detachedByUser) return;
+    if (this.connection?.connected) return;
     // 连接没了：先看会合文件里那一套还在不在；在就接上（连接本身就是"我在用"）
     const state = readState(this.directory);
     if (state && isProcessAlive(state.supervisorPid)) {
@@ -832,12 +948,26 @@ export class SupervisorManager {
       if (this.status.info) return this.status.info;
       throw new Error("restart is only available for the internal DSH");
     }
-    const previous = this.state?.serverPid;
+    // **连接不在时：先接上，再照旧把重启请求发出去**（2026-09-19 修）。
+    //
+    // 这条路径在"用户点过「停止连接」"之后是**常态**（那时占用已经交还，`connection` 是空的），
+    // 而「重启内部 DSH」是**用户显式动作**——它必须真的把 dsh 重起一个。从前这里直接
+    // `return this.ensure(...)`：只接上、**一个控制帧都没发**，而控制器与扩展照旧弹
+    // "DSH 服务器已重启。"——一句谎话。
     if (!this.connection?.connected) {
-      this.options.log("[supervisor] 重启请求：连接不在，先重新确保一套");
+      this.options.log("[supervisor] 重启请求：连接不在（可能刚被「停止连接」交还占用），先接上再交给 supervisor 执行");
       // 「重启服务器」是**用户显式动作**：允许拉起一套（关掉自动连接时也算数）
-      return this.ensure({ start: true, target: "internal" });
+      await this.ensure({ start: true, target: "internal" });
     }
+    if (!this.connection?.connected) {
+      // 还是没连上（例如用户在这中间又点了「停止连接」）：如实报"没起来"，别谎称已重启
+      throw this.startFailure(this.state);
+    }
+    // **`previous` 必须在接上之后读**（同一次修）：早读的话 `this.state` 还是空的，
+    // `previous` 就是 undefined，下面那句"还没开始重起就接着等"的判据
+    // （`state.serverPid === previous`）永远不成立，于是会把**旧地址**当成"重启完成"报出去
+    // （症状：令牌没变、地址照旧）。
+    const previous = this.state?.serverPid;
     this.options.log("[supervisor] 重启请求：交给 supervisor 执行");
     this.setStatus({ state: "starting", detail: "restarting server" });
     this.connection.control("restart");
@@ -878,24 +1008,74 @@ export class SupervisorManager {
   }
 
   /**
-   * 「停止服务器」：请 supervisor 连 dsh 一起收场并退出。
+   * 「停止内部 DSH」：请 supervisor 连 dsh 一起收场并退出。
    *
    * 本窗口只发请求 + 关连接；**不自己 taskkill**（那条纪律的落点）。
+   *
+   * 手里**没有**内部连接时（目标是外部、用户点过「停止连接」把占用交还了、或本窗口压根
+   * 没连过）走 `stopDetachedInternal()`：**短暂接入**一次把请求发出去——判据是"有没有
+   * 活连接"而不是"目标是不是内部"：**"没连着"不等于"没有可停的东西"**（守护进程可能
+   * 正被别的窗口用着，也可能刚刚被本窗口交还、还在空闲窗口里活着）。
+   * 少了这一条，命令面板上写着「停止内部 DSH」却什么都不做，回执还会谎报"没有在运行"。
+   *
+   * 返回"停止请求有没有真的发出去"：调用方据此给用户哪句回执。
    */
-  async stopAndExit(): Promise<void> {
+  async stopAndExit(): Promise<boolean> {
     // **心跳继续跑**（不 stopHeartbeat）：别的窗口把后台重新起起来时，本窗口要能自动接上。
     // 抑制"自动拉起"改用 `stoppedByUser`（见字段注释）。
     this.stoppedByUser = true;
     // 在途的"等就绪/等新地址"立刻让位：用户已经明确要停了，不需要再等出结果
     this.cancelWaiting();
     const connection = this.connection;
-    if (connection?.connected) {
-      this.options.log("[supervisor] 停止请求：交给 supervisor 执行");
-      connection.control("stop");
-    }
-    connection?.close();
+    if (connection?.connected !== true) return this.stopDetachedInternal();
+    this.options.log("[supervisor] 停止请求：交给 supervisor 执行");
+    connection.control("stop");
+    connection.close();
     this.connection = undefined;
+    // 后台已经被要求收场了：手里那份"内部就绪"的记忆一并作废（否则 `peekState()` 与诊断
+    // 还会把它当成现行的后台列出来，而它马上就不在了）
+    this.state = undefined;
+    this.launched = false;
     this.setStatus({ state: "stopped", detail: "stopped by user" });
+    return true;
+  }
+
+  /**
+   * 分离态下「停止内部 DSH」的落点：**短暂接入**内部守护进程，把 stop 请求发出去就立刻断开。
+   *
+   * 为什么要接入：内部后台的生死只有守护进程能执行，而本窗口此刻手里没有任何连接。
+   * 不接入的话，这条命令只能记一条日志、什么也停不掉。
+   *
+   * 为什么必须断开：这条连接只是"去发一个请求"，**不是"我在用"**——留着它，守护进程又会
+   * 被本窗口拎住不放（正是本次要修的那个 bug）。所以它不写进 `this.connection`、
+   * `onState` 也是空实现：一条临时连接不许改任何状态。
+   */
+  private async stopDetachedInternal(): Promise<boolean> {
+    const state = readState(this.directory);
+    if (!state || !isProcessAlive(state.supervisorPid)) {
+      this.options.log("[supervisor] 「停止内部 DSH」：内部守护进程不在，没有可停的东西");
+      return false;
+    }
+    const connection = new SupervisorConnection(
+      state.socket,
+      {
+        onState: () => undefined,
+        onGoodbye: (reason) => this.options.log(`[supervisor] 「停止内部 DSH」：守护进程告别（${reason}）`),
+        onClosed: (reason) => this.options.log(`[supervisor] 「停止内部 DSH」：临时连接断开（${reason}）`),
+        log: this.options.log,
+      },
+      { hostId: this.hostId, workspace: this.options.workspace },
+    );
+    if (!(await connection.open())) {
+      this.options.log("[supervisor] 「停止内部 DSH」：连不上守护进程的 socket，停止请求没能发出去");
+      return false;
+    }
+    this.options.log("[supervisor] 「停止内部 DSH」：临时接入守护进程并发 stop（本窗口不保留这条连接）");
+    connection.control("stop");
+    // 让对面先把请求读走再断：控制帧是刚写进 socket 的，立刻 destroy 有可能把它丢掉
+    await delay(300);
+    connection.close();
+    return true;
   }
 
   /** 旧接口名（扩展里 `dispose()` 语义）：**只关自己的连接**，不杀任何进程。 */
@@ -909,12 +1089,24 @@ export class SupervisorManager {
   }
 
   /** 旧接口名：显式停止（命令用）。 */
-  async stop(): Promise<void> {
-    await this.stopAndExit();
+  async stop(): Promise<boolean> {
+    return this.stopAndExit();
   }
 
-  /** 供断言/探针：当前会合状态。 */
+  /**
+   * 供断言/探针：**本窗口正在用的那一套**的会合状态。
+   *
+   * 两种情况返回 undefined，**都不读磁盘**：
+   * - 目标不是内部：磁盘上那份（如果还在）是别人的后台，不是本窗口连着的那个；
+   * - 用户点过「停止连接」：占用已经交还了，它随时会退场——这时再报它的 pid 就是在说
+   *   "我在用它"（用户 2026-09-19 口径：不连就不占用）。
+   *
+   * 从前这里无条件 `this.state ?? readState(...)`，于是连着外部、或刚点过停止时，诊断里
+   * 照样列出内部守护进程与它的 dsh（用户报的"诊断显示用的是内部 DSH"就是它）。
+   */
   peekState(): SupervisorState | undefined {
+    if (this.target !== "internal") return undefined;
+    if (this.detachedByUser) return undefined;
     return this.state ?? readState(this.directory);
   }
 

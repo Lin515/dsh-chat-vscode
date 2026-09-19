@@ -40,6 +40,10 @@
   "{0}: {1}": "{0}：{1}",
 
   "Server state: {0}": "服务器状态：{0}",
+  "Connection target: {0}": "当前连接目标：{0}",
+  "external DSH (dshChat.url)": "外部 DSH（dshChat.url）",
+  "internal DSH (supervisor)": "内部 DSH（守护进程）",
+  "Connection target: not chosen yet": "当前连接目标：尚未选定",
   "Address: {0}": "地址：{0}",
   "Started by this extension: {0}": "由本扩展启动：{0}",
   "yes, by this window": "是，本窗口启动的",
@@ -56,5 +60,6 @@
   "Cleared the file lock left behind by the last abnormal exit (otherwise the dsh server would fail to start while waiting for it).": "已清理上次异常退出留下的文件锁（否则 dsh 服务器会因等待该锁而启动失败）。",
   "Server settings changed. Reload the window to apply them.": "服务器设置已更改，重载窗口后生效。",
   "Reload Window": "重载窗口",
-  "Stopped the DSH server and its supervisor process.": "已停止 dsh 服务器及其守护进程。"
+  "Stopped the DSH server and its supervisor process.": "已停止 dsh 服务器及其守护进程。",
+  "The internal DSH server is not running.": "内部 DSH 没有在运行。"
 }

@@ -554,6 +554,16 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
+   * 当前粘性目标（诊断命令用；`autoConnect` 关掉且用户还没点过按钮时为 undefined）。
+   *
+   * 诊断必须读**这一份**而不是"配没配 url"：内部优先之后，配了 url 也可能正连着内部，
+   * 而用户打开诊断要回答的恰恰是"我现在连的到底是哪一个"。
+   */
+  get connectTarget(): DshTarget | undefined {
+    return this.target?.kind;
+  }
+
+  /**
    * 心跳的一次体检：两轴探测结论刷新 + 连接还活着吗？不活就按**粘性目标**接着试。
    *
    * 完全异步（探测本身要发 HTTP），所以它**不阻塞** manager 的心跳节拍：
@@ -585,13 +595,15 @@ export class ChatController implements vscode.Disposable {
   /**
    * 只读探测两个轴（内部守护进程在不在、外部地址可不可达）。
    *
-   * 外部那一次 HTTP 探测只在**未连接**时值得做（连上之后连接条根本不显示，
-   * 而且"连上了"本身就是可达证据），调用方按这个口径调。
+   * 外部那一次 HTTP 探测**只在未连接时做**（2026-09-19 落实到函数内部）：连上之后连接条
+   * 根本不显示，而"连上了"本身就是可达证据——不跳的话每 5 秒都会朝那个地址发一次 GET。
+   * 跳的时候**沿用上一次的结论**，不要改写成"不可达"（那是假的：我们正连着它）。
    */
   private async probeFacts(): Promise<TargetFacts> {
     const snapshot = await this.server.probeRunning();
     const externalConfigured = this.server.externalUrl !== undefined;
-    const externalReachable = externalConfigured ? await this.server.probeExternal() : false;
+    const externalReachable =
+      externalConfigured && this.connection !== "connected" ? await this.server.probeExternal() : this.externalReachable;
     return { internalRunning: snapshot.supervisorAlive, externalConfigured, externalReachable };
   }
 
@@ -1329,6 +1341,11 @@ export class ChatController implements vscode.Disposable {
     this.log("[connect] 用户已点「停止连接」：本轮不再建连");
     this.retryable = false;
     this.setConnection("stopped");
+    // 这一轮可能**刚刚**（或正在）把管理器的内部连接建起来——再收一次。少了它，"用户叫停"
+    // 会被一轮排队/重试的连接偷偷翻过去：`bringUp` 会清掉 `detachedByUser`（那是"显式动作"
+    // 的通行证），而这一轮随后在控制器侧被放弃、连接却留在了管理器手里（2026-09-19）。
+    // 幂等：没连着的时候它只是把标记再置一次。
+    this.server.releaseInternal();
   }
 
   /** 自管服务器：启动令牌来自会合文件，认证失败只能如实报错。 */
@@ -1686,6 +1703,13 @@ export class ChatController implements vscode.Disposable {
 
   /** 服务器状态变化时同步给界面。 */
   onServerStatus(status: ServerStatus): void {
+    // **当前目标是外部时，管理器的内部那套状态一律不影响界面**（2026-09-19）：
+    // 我们连的不是它。内部那套可能仍在跑（别的窗口在用），但它的换地址 / 退场与本窗口
+    // 这条连接无关——从前这里会把界面从"连着外部"拉回按钮态或错误态，看起来就像
+    // "切到外部之后还在跟内部守护进程打交道"。内部那一轴（按钮文案用）由 5 秒心跳的
+    // 探测结论刷新，不靠这条推送（`detachInternal` 之后管理器还会报一次 stopped，
+    // 那只是"我断开了"，不是"内部后台不在了"）。
+    if (this.target?.kind === "external") return;
     if (status.state === "failed" && status.detail) {
       // 启动类失败（spawn 不起来、等不出可用状态）：**不自动重试**，退回按钮态 + 原因
       this.retryable = false;
@@ -1781,17 +1805,36 @@ export class ChatController implements vscode.Disposable {
     // 否则旧客户端的回调会把界面拉回"连接中"（见 `prepareRound`）
     this.prepareRound();
     this.setConnection("connecting");
+    // 立刻重探两轴，别让按钮态挂着上一轮的结论：`onServerStatus` 在目标为外部时不再改
+    // 内部那一轴（那是另一套后台的事），等 5 秒心跳就会有一段"显示的是旧的"窗口
+    // （2026-09-19：用户点的按钮正是按这两轴显示的，它得是此刻的事实）
+    void this.refreshFacts();
+  }
+
+  /** 立刻重探两轴（内部守护进程在不在、外部地址可不可达），并把结论推给界面。 */
+  private async refreshFacts(): Promise<void> {
+    try {
+      this.setFacts(await this.probeFacts());
+    } catch (error) {
+      this.log(`[connect] 两轴探测失败：${this.describeError(error)}`);
+    }
   }
 
   /**
-   * 「停止连接」：停掉**正在进行的连接**——中止在途那一轮，并关掉自动重连。
+   * 「停止连接」：停掉**正在进行的连接**——中止在途那一轮、关掉自动重连，并且
+   * **不再占用内部后台**（断开与守护进程的连接）。
    *
    * 触发条件绑的是**界面正在连接**（`connecting` / `disconnected` 都渲染成"正在连接…"）。
    * 连接条上它**是连接中唯一的按钮**（另一个是「查看日志」，用户 2026-09-18 口径）——
    * 连接没有总超时，能不能结束只由它说了算。
    *
-   * 后台**一个字都不动**（这正是 supervisor 架构的分工：dsh 的生死归守护进程，
-   * 它按"还有几条活连接"自己裁决；本窗口只是不再反复尝试连接）。
+   * 进程**一个字都不动**（dsh 的生死归守护进程，它按"还有几条活连接"自己裁决），但
+   * **占用的那条连接要交还**（用户 2026-09-19 口径：不连就不占用）：留着它，守护进程
+   * 就永远认为还有人用——内部 dsh 不会按空闲退场，而它的推送还能把界面从"已停止"拉回
+   * "连接中/错误"。交还之后若没有别的窗口在连，后台在空闲阈值（默认 10 秒）后自己退场；
+   * 别的窗口还在用就继续服务（那正是正确结果）。
+   *
+   * 代价说清楚：后台真退场之后，下一次发消息会走"拉起一套"（冷启动 5~8 秒）。
    *
    * 用户叫停**不挡住显式动作**：`userAskedToStop()` 对"用户自己发起的那一轮"放行
    * （发消息 /「启动内部 DSH」/「重启内部 DSH」），只有自动路径才该在叫停后放弃。
@@ -1805,24 +1848,38 @@ export class ChatController implements vscode.Disposable {
     // 无限重连）。只改这两个布尔量是不够的——`DshClient` 断线后会自动重连，它的回调
     // 会把界面反复拉回"连接中"，用户看到的就是"点了停止还在连"（2026-09-19 实测）。
     this.prepareRound();
+    // 交还内部后台的占用（断开与守护进程的连接，并挡住心跳的自动接回）
+    this.server.releaseInternal();
     // 切回按钮态：条上写的是两轴探测结论（"内部 DSH：… · 外部 DSH：…"），
-    // 上一轮为什么没连上在日志里
+    // 上一轮为什么没连上在日志里。**顺带重探一次两轴**：刚交还之后"内部还在不在"的
+    // 结论已经变了（它可能马上就空闲退场），不能等 5 秒心跳
+    void this.refreshFacts();
     this.setConnection("stopped");
   }
 
   /**
    * 「停止内部 DSH」（命令面板 `dshChat.stopServer`）：请守护进程连 dsh 一起收场并退出。
    *
-   * 顺带**收掉本窗口的连接**：只发停止请求、不收连接的话，客户端会在 dsh 消失后
-   * 一直重连、界面反复跳回"连接中"。后台的生死照旧归守护进程，这里只收自己的连接
-   * （`prepareRound` 不碰任何进程）。
+   * 顺带**收掉本窗口与内部那套的连接**：只发停止请求、不收连接的话，客户端会在 dsh
+   * 消失后一直重连、界面反复跳回"连接中"。后台的生死照旧归守护进程，这里只收自己的
+   * 连接（`prepareRound` 不碰任何进程）。
+   *
+   * **当前目标是外部时例外**（2026-09-19）：这条命令停的是**内部**那套，与外部服务器
+   * 无关——本窗口连着外部的那条连接（客户端 + 跟随流）一个字都不动，界面也不该被拉回
+   * 按钮态。管理器会临时接入内部守护进程把请求发出去（`stopDetachedInternal`）。
+   *
+   * 返回"停止请求有没有真的发出去"：调用方据此给用户哪句回执。
    */
-  async stopServer(): Promise<void> {
+  async stopServer(): Promise<boolean> {
+    if (this.target?.kind === "external") {
+      this.log("[server] 当前目标是外部 DSH：「停止内部 DSH」只停内部后台，这条连接不动");
+      return this.server.stopAndExit();
+    }
     this.autoReconnect = false;
     this.retryable = false;
     this.prepareRound();
     this.setConnection("stopped");
-    await this.server.stopAndExit();
+    return this.server.stopAndExit();
   }
 
   // ---------- 会话 ----------

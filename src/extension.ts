@@ -196,9 +196,13 @@ function registerContributions(context: vscode.ExtensionContext, host: Contribut
     // 同时收掉本窗口的连接——只发停止请求不收连接的话，客户端会在 dsh 消失后一直重连，
     // 界面反复跳回"连接中"（见 `ChatController.stopServer`）
     vscode.commands.registerCommand("dshChat.stopServer", async () => {
-      await controller.stopServer();
+      const stopped = await controller.stopServer();
+      // 回执必须**如实**：目标是外部时这条命令停的是内部那套，而内部守护进程不在时
+      // 其实什么都没停——这时说"已停止"就是在骗人（2026-09-19）
       await vscode.window.showInformationMessage(
-        vscode.l10n.t("Stopped the DSH server and its supervisor process."),
+        stopped
+          ? vscode.l10n.t("Stopped the DSH server and its supervisor process.")
+          : vscode.l10n.t("The internal DSH server is not running."),
       );
     }),
     // 外部服务器（dshChat.url）要求授权时，令牌从这里输入
@@ -210,8 +214,17 @@ function registerContributions(context: vscode.ExtensionContext, host: Contribut
       const status = server.getStatus();
       const shared = server.sharedSummary();
       const state = server.peekState();
+      const target = controller.connectTarget;
       const message = [
         vscode.l10n.t("Server state: {0}", status.state),
+        // 「我现在连的到底是哪一个」——这一行就是诊断要回答的首要问题（2026-09-19 加）：
+        // 从前它只能从"地址/是不是本扩展启动的"间接推，内部优先之后配了 url 也可能连内部，
+        // 光看那两行会读错（用户实测：连着外部，诊断里却写着内部那一套）。
+        target === "external"
+          ? vscode.l10n.t("Connection target: {0}", vscode.l10n.t("external DSH (dshChat.url)"))
+          : target === "internal"
+            ? vscode.l10n.t("Connection target: {0}", vscode.l10n.t("internal DSH (supervisor)"))
+            : vscode.l10n.t("Connection target: not chosen yet"),
         status.info ? vscode.l10n.t("Address: {0}", status.info.baseUrl) : undefined,
         // 「是不是本扩展启动的」**只在外部模式下才是否**：内部后台一律由本扩展拉起，
         // 区别只在于"是不是**这个窗口**拉起的"。原来写成 yes / no(用 url) 会误导用户

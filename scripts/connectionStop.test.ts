@@ -17,6 +17,10 @@
  * 真的 `DshClient`），所以按"函数体里必须出现什么"来钉。改动这些方法时如果删掉了某一句，
  * 这里会直接红——而不是等到用户又发现"停止按钮没用"。
  *
+ * 第 5 组补的是**同一天用户实测的另一半**：换目标只换了"决策"，没换"手里握着的东西"——
+ * 切到外部之后内部那套的状态推送照样改界面（见 `SupervisorManager.detachInternal`，
+ * 管理器侧由 `supervisorPolicy.test.ts` 第 7 组用真的 socket 数活连接钉住）。
+ *
  * 运行：npm test（记得登记到 esbuild.scripts.mjs 的 entries）
  */
 import assert from "node:assert";
@@ -24,6 +28,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const source = readFileSync(join(process.cwd(), "src", "dsh", "controller.ts"), "utf8");
+/** 管理器那一份（第 6 组用：判断的**顺序**也是要钉的事实）。 */
+const managerSource = readFileSync(join(process.cwd(), "src", "dsh", "supervisorManager.ts"), "utf8");
 
 /**
  * 取一个方法的**完整函数体**。
@@ -32,30 +38,30 @@ const source = readFileSync(join(process.cwd(), "src", "dsh", "controller.ts"), 
  * 都会命中朴素正则，取到的就不是函数体了（这一条被 `prepareRound` 的字段注释验证过——
  * 注释里就提到了它的名字）。
  */
-function bodyOf(name: string): string {
+function bodyOf(name: string, text = source): string {
   const definition = new RegExp(`^  (?:private |public )?(?:async )?${name}\\s*\\(`, "u");
   let offset = 0;
-  for (const line of source.split("\n")) {
+  for (const line of text.split("\n")) {
     if (definition.test(line)) {
       // 函数体的开括号总在**定义行的最后**（签名里可能还有别的 `{`，例如
       // `restart(options: { target?: DshTarget } = {})`），所以取行内最后一个
       const lineEnd = offset + line.length;
-      const open = source.lastIndexOf("{", lineEnd);
+      const open = text.lastIndexOf("{", lineEnd);
       assert.ok(open >= offset, `${name} 的函数体开括号不在定义行（改了代码风格就同步改这条断言）`);
       let depth = 0;
-      for (let index = open; index < source.length; index += 1) {
-        const char = source[index];
+      for (let index = open; index < text.length; index += 1) {
+        const char = text[index];
         if (char === "{") depth += 1;
         else if (char === "}") {
           depth -= 1;
-          if (depth === 0) return source.slice(open, index + 1);
+          if (depth === 0) return text.slice(open, index + 1);
         }
       }
       throw new Error(`${name} 的函数体花括号不配对`);
     }
     offset += line.length + 1;
   }
-  throw new Error(`controller.ts 里找不到方法 ${name}（改了名字就同步改这条断言）`);
+  throw new Error(`找不到方法 ${name}（改了名字就同步改这条断言）`);
 }
 
 let failures = 0;
@@ -127,10 +133,117 @@ for (const [name, why] of [
   );
 }
 
+// ---------- 5. 目标是外部时，**内部那套一个字都不许动界面**（2026-09-19） ----------
+//
+// 用户实测：本来是内部那套，切到「连接外部 DSH」之后，内部那套的状态推送照样在改界面
+// （被拉回按钮态/错误态），点「停止内部 DSH」还会把外部那条连接一起收掉——看起来就像
+// "连的是外部，其实还在跟内部守护进程打交道"。管理器那侧的断开由
+// `scripts/supervisorPolicy.test.ts` 第 7 组用真的 socket 数活连接钉住；这里钉控制器这侧
+// 的两道闸（它依赖 vscode，离线跑不起实例，只能按"函数体里必须出现什么"）。
+{
+  const body = bodyOf("onServerStatus");
+  check(
+    "onServerStatus 在目标为外部时提前返回（内部那套的退场/失败不许改写界面）",
+    /if\s*\(this\.target\?\.kind\s*===\s*"external"\)\s*return;/u.test(body),
+    "少了它：内部守护进程退场/换地址会把界面从'连着外部'拉回按钮态",
+  );
+
+  const stop = bodyOf("stopServer");
+  const externalAt = stop.indexOf('this.target?.kind === "external"');
+  const prepareAt = stop.indexOf("prepareRound(");
+  check(
+    "stopServer 认出「当前目标是外部」这一支",
+    externalAt >= 0,
+    "少了它：停内部 DSH 会连外部那条连接一起 dispose",
+  );
+  check(
+    "stopServer 在外部目标下**先返回**，不 prepareRound（外部连接一个字都不动）",
+    externalAt >= 0 && prepareAt >= 0 && externalAt < prepareAt,
+    `external@${externalAt} prepareRound@${prepareAt}`,
+  );
+  check(
+    "stopServer 把「请求有没有真的发出去」交回调用方（回执才能如实）",
+    /return this\.server\.stopAndExit\(\)/u.test(stop),
+  );
+}
+
+// ---------- 6. 心跳里那道「目标不是内部就断开」的兜底**必须排在「连接还在」之前** ----------
+//
+// 这不是风格问题，是这次 bug 的**形状本身**：要修的状态恰恰是"目标已经是外部、socket 却
+// 还连着"。把兜底写在 `if (this.connection?.connected) return;` **后面**，它就永远不生效
+// ——而 typecheck、行为断言、真机探针都不会红（我这次就是这么写反的，写完当场读出来才改）。
+// 管理器的行为断言覆盖的是 `ensure()` 那条主路径，兜底这一道只能这样钉。
+{
+  const tick = bodyOf("heartbeatTick", managerSource);
+  const guardAt = tick.indexOf('this.target !== "internal"');
+  const connectedAt = tick.indexOf("this.connection?.connected");
+  check(
+    "heartbeatTick 里有「目标不是内部就 detach」这道兜底",
+    guardAt >= 0 && /detachInternal\s*\(/u.test(tick),
+    "少了它：只有换目标那条主路径会断开，别的路径留下的陈旧连接会把 dsh 一直拎住",
+  );
+  check(
+    "这道兜底排在 `this.connection?.connected` 之前（写反 = 兜底永远不生效）",
+    guardAt >= 0 && connectedAt >= 0 && guardAt < connectedAt,
+    `guard@${guardAt} connected@${connectedAt}`,
+  );
+
+  // 「停止连接」那道闸同理：它管的是"要不要**重新连**"，所以也得排在"连接还在"之前
+  const detachedAt = tick.indexOf("this.detachedByUser");
+  check(
+    "「停止连接」之后心跳不许自动接回（detachedByUser 排在 connection.connected 之前）",
+    detachedAt >= 0 && connectedAt >= 0 && detachedAt < connectedAt,
+    `detached@${detachedAt} connected@${connectedAt}`,
+  );
+}
+
+// ---------- 7. 用户点「停止连接」= **不再占用内部后台**（2026-09-19 口径） ----------
+//
+// 用户明确选了"不连就不占用"。管理器那侧的行为由 `supervisorPolicy.test.ts` 第 8 组用真的
+// socket 数活连接钉住（含"心跳跑一轮也不许接回来"）；这里钉控制器与标志位这三处接线：
+// 少任何一处，"停止连接"就会退化成"只是界面上不连了、后台还被本窗口拎着"。
+{
+  const release = bodyOf("releaseInternal", managerSource);
+  check(
+    "releaseInternal 同时做两件事：断开连接 + 置位 detachedByUser（只断不挡 = 5 秒后被接回去）",
+    /this\.detachedByUser = true/u.test(release) && /this\.detachInternal\s*\(/u.test(release),
+  );
+  check(
+    "bringUp 清掉 detachedByUser（显式动作必须能重新接上）",
+    /this\.detachedByUser = false/u.test(bodyOf("bringUp", managerSource)),
+  );
+
+  const stop = bodyOf("stopReconnect");
+  check(
+    "stopReconnect 交还内部后台的占用（releaseInternal）",
+    /this\.server\.releaseInternal\(\)/u.test(stop),
+    "少了它：连接一直留着，守护进程永远认为有人用，内部 dsh 不会空闲退场",
+  );
+  check("stopReconnect 顺带重探两轴（刚交还，结论已经变了）", /refreshFacts\(\)/u.test(stop));
+
+  const probe = bodyOf("probeFacts");
+  check(
+    "probeFacts 已连上时不再探外部（落实它自己注释里的口径，少一次周期 GET）",
+    /this\.connection !== "connected"/u.test(probe),
+    "少了它：每 5 秒朝外部地址发一次无意义的请求",
+  );
+
+  // 「停止内部 DSH」的判据必须是"手里有没有活连接"，不是"目标是不是内部"：
+  // 用户点过「停止连接」之后目标仍是内部（粘性），但连接已经交还了——按目标判就会把
+  // "交还后守护进程还在空闲窗口里活着"误当成"没有可停的东西"，一句"没有在运行"骗人。
+  check(
+    "stopAndExit 按「手里有没有活连接」决定要不要短暂接入（不是按目标）",
+    /connection\?\.connected !== true/u.test(bodyOf("stopAndExit", managerSource)),
+    "少了它：交还占用后「停止内部 DSH」会静默空转并谎报没有在运行",
+  );
+}
+
 if (failures > 0) {
   console.error(`\n✗ 连接的收场（停止 / 换目标真的停得下来）：${failures} 项未通过`);
   process.exitCode = 1;
 } else {
-  console.log("\n✓ 连接的收场（停止连接真的停 / 换目标先收旧连接 / 旧客户端不许写状态）全通过");
+  console.log(
+    "\n✓ 连接的收场（停止连接真的停 / 换目标先收旧连接 / 旧客户端不许写状态 / 外部目标不碰内部那套 / 停止连接交还占用）全通过",
+  );
   assert.ok(true);
 }
