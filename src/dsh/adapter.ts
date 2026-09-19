@@ -810,10 +810,13 @@ export class SessionAdapter {
       // 历史里可能有旧轮次的文件芯片：回放完安排一次分类（旧文件多已定型，
       // 这一批通常一次 fs.stat + 一次 git 状态读取就出结果）
       this.scheduleFileKinds();
-      const title = frame.projections?.values?.title;
-      if (typeof title === "string" && title) {
-        this.emit({ type: "patch", patch: { session: this.sessionWithTitle(title) } });
-      }
+      // 标题**不在这里读投影**：投影值统一由宿主侧的摄入层（`dsh/projectionStore.ts` +
+      // `dsh/projectionIngest.ts`）接住，先按「higher seq wins」判新旧，再由控制器的
+      // 标题效果写进会话列表并下发 `patch {session}`。这里直接读
+      // `projections.values.title` 会绕过那层水位判断——而且同一个跟随开帧里，标题
+      // 以前会被应用两次（适配器一次、控制器的投影循环一次）、发两帧同样的 patch。
+      // 注意：`session/title` **事件**那条路（下面的 `applyEvent`）不受影响，
+      // 那是 durable 事件，不是投影。
       this.emit({ type: "messages/reset", messages: this.messages });
       return;
     }

@@ -4,6 +4,29 @@
 
 ## 未发布
 
+### 投影摄入补上水位契约，形状解析独立成表（2026-09-19）
+
+投影是三次「按猜测的形状写」的现场（`goal` / `subagentCatalog` / `turnOutline`），而解析一直内联在
+没有任何测试接缝的 `controller.ts` 里；同时线上带的 `seq` / `asOfSeq` 在三个调用点上全被丢掉，
+契约那句「重放的旧帧不能把值顶回去」没有落点。这次一并收掉：
+
+- **形状解析**搬进 `src/dsh/projections.ts` 的读取表（14 个消费键，承重字段与容忍度逐行照搬）；
+- **水位**搬进 `src/dsh/projectionStore.ts`：higher seq wins（同 seq 也算负）、baseline 在它的
+  截止水位上播种、替换型 baseline 先截断。**拿不到水位时不比较也不清空**（按肯定证据写）；
+- **一个键一条**：`src/dsh/projectionIngest.ts` 的 `ProjectionHandlers` 是映射类型，少一个键编译不过；
+  键集合与契约 19 键双向对拍（5 个有意不消费的在断言里显式登记）；
+- 适配器不再直接读 `projections.values.title`（绕过水位的第二个读点，同一个开帧里标题以前被应用两次）。
+
+**可能被看见的行为差异**（都只在异常路径上）：陈旧的 baseline 不再能把界面拉回旧值（跨两条流交叉
+到达时按水位判）；某个投影键从 wire 上消失时界面**清空**而不是保留旧值——目标条、权限胶囊、待办、
+用量、轮次横条、上下文构成、会话统计都会跟着「能力缺失」消失。占用条（`contextPressure`）与历史
+抽屉的标题**刻意保留旧值**，口径不变。实测真实 baseline 是全量的（18 个键），所以清空那条平时走不到。
+
+实测取证：`scripts/projectionSeqProbe.ts`（baseline `asOfSeq=3`、增量帧 `seq=4/5/6`、开帧
+`asOfSeq === cursor === 6`）；断言 `scripts/projectionStore.test.ts` / `scripts/projectionIngest.test.ts`；
+`npm test` 61 → 63 套，`command-e2e` A/B/C 与改动前逐条一致。领域词表见新增的 `CONTEXT.md`，
+「列表标题不走 store」这条有意偏离记在 `docs/adr/0001-projection-value-store.md`。
+
 ### `dshChat.autoConnect` 改动即时生效，不再弹「重载窗口」（2026-09-19 用户口径）
 
 原来 `url` / `command` / `autoConnect` 三项改动都提示重载窗口。收紧为只有 `url` /

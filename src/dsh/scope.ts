@@ -7,6 +7,7 @@ import type {
   TodoView,
 } from "../shared/chat";
 import type { SessionAdapter } from "./adapter";
+import { ProjectionStore } from "./projectionStore";
 import type { QueueOrigin } from "./queueView";
 
 /**
@@ -48,6 +49,15 @@ export class SessionScope {
   /** 队列项 id → 它的原始输入（每次队列帧到达时按 rpcId 重建）。 */
   readonly queueOrigin = new Map<string, QueueOrigin>();
 
+  /**
+   * 本会话的**投影值存储**（`key → {value, seq}`，契约见 `dsh/projectionStore.ts`）。
+   *
+   * 它是这个域里所有投影键的权威表：谁的值算数、块里没带的键要不要清，都由它按
+   * 「higher seq wins」判。下面的 `todos` / `goal` / `planMode`… 是它**解析后的视图缓存**
+   * （唯一写入者是 `dsh/projectionIngest.ts` 派发的效果），读点保持不变。
+   */
+  readonly projections = new ProjectionStore();
+
   /** 会话内投影：待办 / 子代理目录 / 后台任务 / 目标条 / 计划模式 / 权限。 */
   todos: TodoView[] = [];
   subagents: SubagentView[] = [];
@@ -63,8 +73,6 @@ export class SessionScope {
   model: ModelSelectionView | undefined;
   /** UI 切换模型时只记到这里，下次发送前才真正 selectModel（与旧单值同机制）。 */
   pendingModel: ModelSelectionView | undefined;
-  /** 最近一次收到的 modelSelection 原始投影，模型目录就绪后用于重放。 */
-  lastModelSelection: unknown;
 
   /** 粘性投影值：上下文构成 / 会话统计 / 全日志用量 / 轮次导航 / 图片准入。 */
   contextBreakdown: ChatState["contextBreakdown"];

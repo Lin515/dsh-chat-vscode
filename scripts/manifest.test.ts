@@ -67,3 +67,19 @@ for (const [name, fill] of [
 }
 
 console.log("manifest: newSessionInGroup = 鲸鱼图标（两份单色 SVG，与品牌鲸同形）✓");
+
+// ---------- 3. 开发者资料不进发布包 ----------
+//
+// `.vscodeignore` 是**黑名单**：没列的东西一律进包。这条踩过一次——`AGENTS.md`
+// 自己被打进过 vsix（5.5 KB），而这类文件既不该发布、也不会有人注意到。
+// 新增根目录的开发者文档时，顺手在这里钉一条。
+{
+  const ignore = readFileSync(join(process.cwd(), ".vscodeignore"), "utf8");
+  for (const name of ["AGENTS.md", "CONTEXT.md"]) {
+    assert.ok(
+      ignore.split("\n").some((line) => line.trim() === name),
+      `.vscodeignore 必须整行列出 ${name}：它是开发者资料，不列就会被打进 vsix`,
+    );
+  }
+}
+console.log("manifest: 开发者资料（AGENTS.md / CONTEXT.md）不进发布包 ✓");

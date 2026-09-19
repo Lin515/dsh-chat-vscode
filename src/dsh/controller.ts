@@ -13,12 +13,14 @@ import type {
   DshTarget,
   ExternalState,
   FileChangeKind,
+  GoalView,
   ModelSelectionView,
   ProviderGroupView,
   QuestionAnswerView,
   QuestionView,
   SessionRefView,
   SessionSummaryView,
+  TodoView,
   UploadState,
 } from "../shared/chat";
 import type { HostToWebview, WebviewToHost } from "../shared/ipc";
@@ -34,7 +36,13 @@ import { resolveForVsCode } from "./hostText";
 import { normalizeTurnProcessThreshold } from "../shared/turnProcessThreshold";
 import { chooseTarget, describeFacts, type TargetFacts } from "./connectTarget";
 import { DshApiError, DshAuthError, DshClient, type SessionReferenceCandidateWire, type SessionSummaryWire } from "./client";
-import type { RemoteEventFrame, RemoteEventWaterfall, SessionControlFrame } from "./protocol";
+import type { ProjectionBlockWire } from "./projectionStore";
+import type {
+  RemoteEventFrame,
+  RemoteEventWaterfall,
+  SessionControlFrame,
+  SessionFollowFrame,
+} from "./protocol";
 import {
   ServerNotRunningError,
   SupervisorManager,
@@ -45,7 +53,15 @@ import {
 } from "./supervisorManager";
 import { SessionScope } from "./scope";
 import { queueItemsFromInbox, queueItemsFromWire, type QueuedItemEntry, type QueueOrigin } from "./queueView";
-import { goalFromProjection, planModeFromProjection, subagentsFromCatalog, subagentsFromList } from "./projections";
+import { mergeSubagentActivity, modelSelectionFromProjection, subagentsFromList } from "./projections";
+import type { ModelSelectionDecoded, SubagentCatalogEntryView } from "./projections";
+import {
+  ingestControlBaseline,
+  ingestFollowSnapshot,
+  ingestProjection,
+  replayFollowSnapshot,
+  type ProjectionHandlers,
+} from "./projectionIngest";
 import { deriveTrajectoryModel } from "./trajectory";
 import { lineageDepths, normalizePath, visibleForWorkspace, visibleSessionRows } from "./sessionList";
 import { isBlank, mergeWindowCache, WindowRestore, WorkspaceWindowStateStore, type SidebarSlot, type WindowCache, type WindowKind } from "./windowState";
@@ -153,11 +169,6 @@ function readTurnProcessThreshold(): number {
   );
 }
 
-/** 把投影里的未知值收成数字（缺字段/坏值一律用回退值）。 */
-function numberOr(value: unknown, fallback: number): number {
-  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
-}
-
 /** `workspace/follow` 的线格式（只取本地用得到的字段）。 */
 interface WorkspaceFollowFrameWire {
   type?: string;
@@ -215,11 +226,6 @@ function answersByQuestionId(
     };
   }
   return map;
-}
-
-/** 同上，但没有回退值：缺字段/坏值一律 undefined（用于「可缺」的投影字段）。 */
-function optionalNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 /**
@@ -2288,19 +2294,14 @@ export class ChatController implements vscode.Disposable {
     scope.adapter = adapter;
     scope.followHandle = this.client.followSession(sessionId, {
       onItem: (value) => {
-        const frame = value as { type?: string; projections?: { values?: Record<string, unknown> } };
-        // **顺序很重要**：先让适配器回放历史记录，再铺开投影值。
-        // 投影是「截至 asOfSeq 的折叠结果」，永远比记录里的事件新；反过来先铺投影
-        // 再回放，历史里最后一个事件会把折叠值**覆盖回旧状态**——`plan` 就是活例：
-        // 一次轮次进行中发出的 `/plan` 只留下 `pending`，日志里没有对应的
-        // `plan/mode`，于是回放末尾那条旧的 `plan/mode` 会把界面上的计划模式关掉，
-        // 每次重开会话都复现。
-        adapter.applyFrame(value as never);
-        if (frame?.type === "snapshot") {
-          for (const [key, projectionValue] of Object.entries(frame.projections?.values ?? {})) {
-            this.applyProjection(scope, key, projectionValue);
-          }
-        }
+        // **顺序在 `replayFollowSnapshot` 里**：先让适配器回放历史记录，再铺开投影值。
+        // 投影是「截至 asOfSeq 的折叠结果」，永远比记录里的事件新；反过来先铺投影再回放，
+        // 历史里最后一个事件会把折叠值**覆盖回旧状态**——`plan` 就是活例（见
+        // `docs/audit-summary.md` 的「快照回放会覆盖投影折叠值」）。这条顺序以前只能靠
+        // 正则去比两个 `indexOf` 的大小，现在是一个可以被直接调用的函数。
+        replayFollowSnapshot(value as SessionFollowFrame, adapter, (block) => {
+          ingestFollowSnapshot(this.projectionHandlers, scope, block);
+        });
       },
       onError: () => {
         // socket 断开重连后会由 onConnected 重开
@@ -2472,50 +2473,6 @@ export class ChatController implements vscode.Disposable {
     }
   }
 
-  /**
-   * 从 `modelSelection` 投影同步模型胶囊。
-   *
-   * 投影形如 `{lastUsed, next}`：`lastUsed` 是上一轮实际用的，`next` 是下一轮将要
-   * 用的（新会话里用户选了模型就落在这）。胶囊显示「下一次会用什么」，所以优先 `next`。
-   * 两者都为空（全新会话还没跑过）时，退回部署默认模型。
-   *
-   * 模型选择是**会话**级的：每个域各自缓存自己的投影与当前模型，互不覆盖。
-   */
-  private applyModelSelection(scope: SessionScope, selection: unknown): void {
-    scope.lastModelSelection = selection;
-    const value = selection as
-      | {
-          lastUsed?: { provider?: string; model?: string; reasoningEffort?: string } | null;
-          next?: { provider?: string; model?: string; reasoningEffort?: string } | null;
-        }
-      | null
-      | undefined;
-    const used = value?.next ?? value?.lastUsed;
-    if (!used?.provider || !used.model) {
-      // 新会话还没有选择：若部署默认已就绪直接套用，否则异步读设置
-      if (this.defaultModel) {
-        scope.model = this.defaultModel;
-        this.deliver(scope.sessionId, { type: "patch", patch: { model: scope.model } });
-      } else {
-        void this.loadDefaultModel();
-      }
-      return;
-    }
-    const group = this.models.find((g) => g.id === used.provider);
-    const model = group?.models.find((m) => m.id === used.model);
-
-    scope.model = {
-      provider: used.provider,
-      model: used.model,
-      label: model?.name ?? used.model,
-      reasoningEffort: used.reasoningEffort || undefined,
-      efforts: model?.efforts,
-      contextWindow: model?.contextWindow ?? scope.model?.contextWindow,
-      acceptsImage: this.acceptsImageFor(used.provider, used.model),
-    };
-    this.deliver(scope.sessionId, { type: "patch", patch: { model: scope.model } });
-  }
-
   private teardownStreams(): void {
     // 每个域的 follow 流单独取消（域本身保留，重连时由 onConnected 重开）
     for (const scope of this.scopes.values()) {
@@ -2629,7 +2586,7 @@ export class ChatController implements vscode.Disposable {
     if (!frame || typeof frame !== "object") return;
 
     if (frame.type === "baseline") {
-      const value = (frame as { value?: { queues?: Record<string, unknown[]>; jobs?: Record<string, unknown[]>; projections?: Record<string, { values?: Record<string, unknown> }> } }).value;
+      const value = (frame as { value?: { queues?: Record<string, unknown[]>; jobs?: Record<string, unknown[]>; projections?: Record<string, ProjectionBlockWire> } }).value;
       if (!value) return;
       // baseline 是**全量**集合（按会话分键）：逐个套用到已打开的域上。
       // 没打开的会话不建域——它们的状态等窗口打开时由新 snapshot/baseline 重建。
@@ -2638,12 +2595,11 @@ export class ChatController implements vscode.Disposable {
         const scope = this.scopes.get(sessionId);
         if (scope) this.syncQueue(scope, queueItemsFromWire(queue, (rpcId) => this.originFor(rpcId)));
       }
-      for (const [sessionId, projections] of Object.entries(value.projections ?? {})) {
+      for (const [sessionId, block] of Object.entries(value.projections ?? {})) {
         const scope = this.scopes.get(sessionId);
-        if (!scope) continue;
-        for (const [key, projectionValue] of Object.entries((projections as { values?: Record<string, unknown> })?.values ?? {})) {
-          this.applyProjection(scope, key, projectionValue);
-        }
+        // 替换型 baseline：内部是 `truncate(asOfSeq)` + `seed({asOfSeq, values})`，
+        // 块里没带、且不新于该截止水位的键**清掉**（官方 ProjectionValueStore 的口径）。
+        if (scope) ingestControlBaseline(this.projectionHandlers, scope, block);
       }
       for (const [sessionId, jobs] of Object.entries(value.jobs ?? {})) {
         const scope = this.scopes.get(sessionId);
@@ -2667,7 +2623,10 @@ export class ChatController implements vscode.Disposable {
     }
 
     if (frame.type === "projection") {
-      this.applyProjection(scope, String(frame.key ?? ""), frame.value);
+      // `frame.seq` 是官方投影单元送出这个值时的水位（`protocol.ts` 的
+      // `SessionControlFrame.seq`）：契约要求「lower-or-equal seq loses」，重放的旧帧
+      // 不能把新值顶回去——跟着流与控制流分居两条 socket，重连后这种交错是真的。
+      ingestProjection(this.projectionHandlers, scope, String(frame.key ?? ""), frame.value, frame.seq);
     }
   }
 
@@ -2691,233 +2650,261 @@ export class ChatController implements vscode.Disposable {
     this.deliver(scope.sessionId, { type: "patch", patch: { queueItems: scope.queueItems } });
   }
 
-  /** 单个投影值 → 界面状态。未知 key 直接忽略（插件没加载 = 能力缺失，不是错误）。 */
-  private applyProjection(scope: SessionScope, key: string, value: unknown): void {
-    switch (key) {
-      case "inbox": {
-        // 队列的权威来源（当前服务端）：`{'next-turn':…,'next-step':…}`。
-        // 走到这里的入口有三个——控制流 baseline 的投影、`projection` 增量帧、
-        // 以及 `openScopeFollow` 快照的 `projections.values`（重开会话时重建）。
-        this.syncQueue(scope, queueItemsFromInbox(value, (rpcId) => this.originFor(rpcId)));
-        break;
+  // ---------- 投影摄入：一个键一条登记 ----------
+
+  /**
+   * 投影键 → 效果。**加一个投影键就在这里加一条**。
+   *
+   * `ProjectionHandlers` 是映射类型（`dsh/projectionIngest.ts`），少一个键**编译不过**——
+   * 这就是「一个键一条」的强制手段：改造前这里是一个 226 行的 switch，同时干三件事
+   * （解析线格式、判新旧、写状态+发帧），而形状解析那半没有任何测试接缝（`scripts/`
+   * 里没有文件 import 本文件）。
+   *
+   * 现在三件事各有归属：形状解析在 `projections.ts` 的读取表（纯函数、契约驱动、
+   * 离线可断言），新旧与清空在 `ProjectionStore`（`dsh/projectionStore.ts`），
+   * 这里只回答「这个键的值——或者它的缺失——对界面意味着什么」。
+   *
+   * `present === false` 表示这个键此刻不在 store 里（能力缺失，或被替换型 baseline 清掉）。
+   * 每个键对「没有值」的处置不同，所以它必须单独传进来：
+   * - 清空视图：`permissions` / `plan` / `todos` / `tokenUsage` / `turnOutline` /
+   *   `contextBreakdown` / `sessionStats` / `goal` / `subagentCatalog` / `imageLimits`；
+   * - **保留旧值**：`contextPressure`（占用条按用户口径常驻，拿不到就保留旧值）；
+   * - **什么都不做**：`title`（历史抽屉那一行有自己的标题兜着）。
+   */
+  private readonly projectionHandlers: ProjectionHandlers = {
+    inbox: (scope, value) => this.applyInboxProjection(scope, value),
+    modelSelection: (scope, value, present) => this.applyModelSelectionProjection(scope, value, present),
+    permissions: (scope, value, present) => this.applyPermissionProjection(scope, value, present),
+    plan: (scope, value, present) => this.applyPlanProjection(scope, value, present),
+    todos: (scope, value) => this.applyTodosProjection(scope, value),
+    contextPressure: (scope, value, present) => this.applyContextPressureProjection(scope, value, present),
+    tokenUsage: (scope, value, present) => this.applyTokenUsageProjection(scope, value, present),
+    turnOutline: (scope, value, present) => this.applyTurnOutlineProjection(scope, value, present),
+    imageLimits: (scope, value, present) => this.applyImageLimitsProjection(scope, value, present),
+    title: (scope, value) => this.applyTitleProjection(scope, value),
+    contextBreakdown: (scope, value, present) => this.applyContextBreakdownProjection(scope, value, present),
+    sessionStats: (scope, value, present) => this.applySessionStatsProjection(scope, value, present),
+    subagentCatalog: (scope, value, present) => this.applySubagentCatalogProjection(scope, value, present),
+    goal: (scope, value, present) => this.applyGoalProjection(scope, value, present),
+  };
+
+  /**
+   * 队列的权威来源（当前服务端）：`{'next-turn':…,'next-step':…}`。
+   *
+   * 三个入口都可能走到这里——控制流 baseline 的投影、`projection` 增量帧、以及跟随开帧
+   * 的 `projections`（重开会话时重建）。折算要查「这一项是谁提交的」（`submissions` 索引，
+   * 供「重新编辑」与 ESC 重发用），那是控制器知识，所以解码留在效果这一半。
+   */
+  private applyInboxProjection(scope: SessionScope, value: unknown): void {
+    this.syncQueue(scope, queueItemsFromInbox(value, (rpcId) => this.originFor(rpcId)));
+  }
+
+  /**
+   * `modelSelection` 投影 → 模型胶囊。
+   *
+   * 生效值是 `next ?? lastUsed`（`next` 是「下一轮生效」的待提交值），解析见
+   * `projections.modelSelectionFromProjection`。**目录查找与「没有选择时退回部署默认」
+   * 留在这里**：id → 展示名/上下文窗口/是否收图要模型目录，退回默认要设置命名空间、
+   * 还可能发一次异步请求——都不是形状问题。
+   *
+   * 没有选择（新会话的投影就是 `{lastUsed:null,next:null}`）与键不存在走同一条路：
+   * 部署默认就绪就直接套用，否则异步读一次。
+   */
+  private applyModelSelectionProjection(
+    scope: SessionScope,
+    value: ModelSelectionDecoded | undefined,
+    present: boolean,
+  ): void {
+    if (!present || !value) {
+      if (this.defaultModel) {
+        scope.model = this.defaultModel;
+        this.deliver(scope.sessionId, { type: "patch", patch: { model: scope.model } });
+      } else {
+        void this.loadDefaultModel();
       }
-
-      case "modelSelection":
-        this.applyModelSelection(scope, value);
-        break;
-
-      case "permissions": {
-        // {options:[{value,name}], currentValue}：用它初始化权限胶囊
-        const current = (value as { currentValue?: string } | null)?.currentValue;
-        if (typeof current === "string" && current) {
-          scope.permission = current;
-          this.deliver(scope.sessionId, { type: "patch", patch: { permission: current } });
-        }
-        break;
-      }
-
-      case "plan": {
-        // 生效状态是 `pending ? !active : active`，不是裸 `active`：轮次进行中发出的
-        // `/plan` 只会把选择挂起（`active` 仍为 false），只读 active 会让「进入计划
-        // 模式」看起来没反应。见 projections.planModeFromProjection。
-        const active = planModeFromProjection(value);
-        scope.planMode = active;
-        this.deliver(scope.sessionId, { type: "patch", patch: { planMode: active } });
-        break;
-      }
-
-      case "todos": {
-        const items = Array.isArray(value) ? value : [];
-        scope.todos = items.map((todo, index) => {
-          const item = todo as { id?: string; content?: string; text?: string; status?: string };
-          return {
-            id: String(item?.id ?? index),
-            content: String(item?.content ?? item?.text ?? ""),
-            status:
-              item?.status === "completed"
-                ? ("completed" as const)
-                : item?.status === "in_progress"
-                  ? ("in_progress" as const)
-                  : ("pending" as const),
-          };
-        });
-        this.deliver(scope.sessionId, { type: "todos", todos: scope.todos });
-        break;
-      }
-
-      case "contextPressure": {
-        // 占用条的权威来源（官方 `ContextPressureProjection`）：
-        // `usedTokens = projectedTokens ?? pressureTokens`，分子**不含 output**，
-        // 且 `projectedTokens` 会跟着压缩下降。见 adapter.refreshOccupancy。
-        //
-        // 这里同时把 `contextWindow` 同步到模型胶囊：官方把「最新请求的压力」与
-        // 「最新已知的路由容量」放在**同一个投影**里（两个槽各自 last-wins，
-        // 刻意不保证是一次请求的原子观测），所以两件事必须一起处理。
-        const pressure = (value ?? {}) as Record<string, unknown>;
-        const pressureTokens = optionalNumber(pressure.pressureTokens);
-        const projectedTokens = optionalNumber(pressure.projectedTokens);
-        const contextWindow = optionalNumber(pressure.contextWindow);
-        scope.adapter?.applyContextPressure({ pressureTokens, projectedTokens, contextWindow });
-        if (contextWindow !== undefined && contextWindow > 0 && scope.model) {
-          scope.model = { ...scope.model, contextWindow };
-          this.deliver(scope.sessionId, { type: "patch", patch: { model: scope.model } });
-        }
-        break;
-      }
-
-      case "tokenUsage": {
-        // 全日志累计的四桶用量（互不重叠：reasoning 已含在 outputTokens 里）。
-        // 界面用它显示「这次会话一共花了多少」，与占用条（prompt 侧）不是一回事。
-        const usage = (value ?? {}) as {
-          uncachedInputTokens?: unknown;
-          outputTokens?: unknown;
-          cacheReadTokens?: unknown;
-          cacheWriteTokens?: unknown;
-        };
-        scope.tokenUsage = {
-          uncachedInputTokens: numberOr(usage.uncachedInputTokens, 0),
-          outputTokens: numberOr(usage.outputTokens, 0),
-          cacheReadTokens: numberOr(usage.cacheReadTokens, 0),
-          cacheWriteTokens: numberOr(usage.cacheWriteTokens, 0),
-        };
-        this.deliver(scope.sessionId, { type: "patch", patch: { tokenUsage: scope.tokenUsage } });
-        break;
-      }
-
-      case "turnOutline": {
-        // 轮次横条的数据源：每轮的序号、`turn/start` 的 seq 与两段有界预览。
-        //
-        // 形状**逐字按契约**（`dsh-session-turn-outline` 的 `TurnOutlineEntry`）：
-        // `{turn, seq, prompt, response}`。此前读的是 `summary`/`startedAt`——投影里
-        // 没有这两个字段，于是恒为空串/0，而真正的 `prompt`/`response` 从没被读过。
-        //
-        // 容忍度与官方客户端 `outlineEntry` 同口径：`turn`/`seq` 是**承重字段**
-        // （没有它们横条既画不出记号也跳不了），坏了就整条丢弃；两段预览只是装饰，
-        // 类型不对退化成空串，轮次照样可按序号导航。
-        const rounds = Array.isArray(value) ? value : [];
-        scope.turnOutline = rounds.flatMap((round) => {
-          const item = round as { turn?: unknown; seq?: unknown; prompt?: unknown; response?: unknown };
-          const turn = numberOr(item.turn, -1);
-          const seq = numberOr(item.seq, -1);
-          if (!Number.isSafeInteger(turn) || turn < 0) return [];
-          if (!Number.isSafeInteger(seq) || seq < 0) return [];
-          return [
-            {
-              turn,
-              seq,
-              prompt: typeof item.prompt === "string" ? item.prompt : "",
-              response: typeof item.response === "string" ? item.response : "",
-            },
-          ];
-        });
-        this.deliver(scope.sessionId, { type: "patch", patch: { turnOutline: scope.turnOutline } });
-        break;
-      }
-
-      case "imageLimits": {
-        // 图片准入上限：发送前就能拦住超限的图，而不是等服务端拒绝
-        const limits = (value ?? {}) as {
-          maxImagesPerMessage?: unknown;
-          maxImageBytes?: unknown;
-          maxMessageImageBytes?: unknown;
-        };
-        scope.imageLimits = {
-          maxImagesPerMessage: numberOr(limits.maxImagesPerMessage, 0) || undefined,
-          maxImageBytes: numberOr(limits.maxImageBytes, 0) || undefined,
-          maxMessageImageBytes: numberOr(limits.maxMessageImageBytes, 0) || undefined,
-        };
-        break;
-      }
-
-      case "title": {
-        if (typeof value === "string" && value) {
-          const existing = this.sessions.find((s) => s.id === scope.sessionId);
-          const session: SessionSummaryView = existing
-            ? { ...existing, title: value }
-            : {
-                id: scope.sessionId,
-                title: value,
-                updatedAt: Date.now(),
-                running: false,
-              };
-          if (existing) existing.title = value;
-          scope.adapter?.setSession(session);
-          this.deliver(scope.sessionId, { type: "patch", patch: { session } });
-        }
-        break;
-      }
-
-      case "contextBreakdown": {
-        // {systemTokens, toolsTokens, messageTokens}：上下文构成的启发式估算
-        const bd = value as { systemTokens?: number; toolsTokens?: number; messageTokens?: number } | null;
-        if (
-          bd &&
-          typeof bd.systemTokens === "number" &&
-          typeof bd.toolsTokens === "number" &&
-          typeof bd.messageTokens === "number"
-        ) {
-          scope.contextBreakdown = {
-            systemTokens: bd.systemTokens,
-            toolsTokens: bd.toolsTokens,
-            messageTokens: bd.messageTokens,
-          };
-          this.deliver(scope.sessionId, { type: "patch", patch: { contextBreakdown: scope.contextBreakdown } });
-        }
-        break;
-      }
-
-      case "sessionStats": {
-        // 全日志墙钟统计：{turns, steps, llmMs, toolMs, ttftMs, ttftSteps, decodeMs, decodeTokens}
-        const st = value as {
-          turns?: number;
-          steps?: number;
-          llmMs?: number;
-          toolMs?: number;
-          ttftMs?: number;
-          ttftSteps?: number;
-          decodeMs?: number;
-          decodeTokens?: number;
-        } | null;
-        if (st && typeof st.llmMs === "number" && typeof st.toolMs === "number") {
-          scope.sessionStats = {
-            turns: st.turns ?? 0,
-            steps: st.steps ?? 0,
-            llmMs: st.llmMs,
-            toolMs: st.toolMs,
-            ttftMs: st.ttftMs ?? 0,
-            ttftSteps: st.ttftSteps ?? 0,
-            decodeMs: st.decodeMs ?? 0,
-            decodeTokens: st.decodeTokens ?? 0,
-          };
-          this.deliver(scope.sessionId, { type: "patch", patch: { sessionStats: scope.sessionStats } });
-        }
-        break;
-      }
-
-      case "subagentCatalog": {
-        // 投影里已经带着子代理目录，界面无需再单独请求一次。
-        // 形状解析见 projections.ts（投影**没有** kind/activity，与 RPC 行不同）。
-        scope.subagents = subagentsFromCatalog(value, scope.subagents);
-        this.deliver(scope.sessionId, {
-          type: "subagents/list",
-          entries: scope.subagents,
-          parentAvailable: scope.subagents.length > 0,
-        });
-        break;
-      }
-
-      case "goal": {
-        // 投影是**嵌套**的，轮次计数在外层（见 projections.goalFromProjection）。
-        // 以前按扁平的 `{objective, phase, rounds, maxRounds}` 读，两个字段都取不到，
-        // 于是 goal 恒被清空、目标条从未渲染（docs/audit-summary.md §3）。
-        scope.goal = goalFromProjection(value);
-        this.deliver(scope.sessionId, { type: "patch", patch: { goal: scope.goal } });
-        break;
-      }
-
-      default:
-        break;
+      return;
     }
+    const group = this.models.find((g) => g.id === value.provider);
+    const model = group?.models.find((m) => m.id === value.model);
+    scope.model = {
+      provider: value.provider,
+      model: value.model,
+      label: model?.name ?? value.model,
+      reasoningEffort: value.reasoningEffort || undefined,
+      efforts: model?.efforts,
+      contextWindow: model?.contextWindow ?? scope.model?.contextWindow,
+      acceptsImage: this.acceptsImageFor(value.provider, value.model),
+    };
+    this.deliver(scope.sessionId, { type: "patch", patch: { model: scope.model } });
+  }
+
+  /**
+   * `{options:[{value,name}], currentValue}`：初始化权限胶囊。
+   *
+   * 只读 `currentValue`——`options` 至今没有消费点（界面读的是 `scope.permission`），
+   * 解析一份没人用的目录只会攒出「解析了但没人用」的死代码。
+   * 键不存在时清空：能力缺失，界面不该继续显示上一次的预设。
+   */
+  private applyPermissionProjection(scope: SessionScope, value: string | undefined, present: boolean): void {
+    const next = present ? value : undefined;
+    if (scope.permission === next) return;
+    scope.permission = next;
+    this.deliver(scope.sessionId, { type: "patch", patch: { permission: next } });
+  }
+
+  /**
+   * 生效状态是 `pending ? !active : active`，不是裸 `active`：轮次进行中发出的 `/plan`
+   * 只会把选择挂起（`active` 仍为 false），只读 active 会让「进入计划模式」看起来没反应
+   * （见 `projections.planModeFromProjection`）。键不存在 = 不在计划模式。
+   */
+  private applyPlanProjection(scope: SessionScope, value: boolean, present: boolean): void {
+    const active = present ? value : false;
+    scope.planMode = active;
+    this.deliver(scope.sessionId, { type: "patch", patch: { planMode: active } });
+  }
+
+  /** 待办清单。`todos` 在 `ChatState` 里是必填数组，所以「没有值」就是空表。 */
+  private applyTodosProjection(scope: SessionScope, value: TodoView[]): void {
+    scope.todos = value;
+    this.deliver(scope.sessionId, { type: "todos", todos: scope.todos });
+  }
+
+  /**
+   * 占用条的权威来源（官方 `ContextPressureProjection`）：`usedTokens = projectedTokens ??
+   * pressureTokens`，分子**不含 output**，且 `projectedTokens` 会跟着压缩下降
+   * （见 `adapter.refreshOccupancy`）。
+   *
+   * 同时把 `contextWindow` 同步到模型胶囊：官方把「最新请求的压力」与「最新已知的路由容量」
+   * 放在**同一个投影**里（两个槽各自 last-wins，刻意不保证是一次请求的原子观测），
+   * 所以两件事一起处理。
+   *
+   * 键不存在时**什么都不做**：占用条按用户口径常驻显示，三个来源都拿不到时保留旧值。
+   */
+  private applyContextPressureProjection(
+    scope: SessionScope,
+    value: { pressureTokens?: number; projectedTokens?: number; contextWindow?: number },
+    present: boolean,
+  ): void {
+    if (!present) return;
+    scope.adapter?.applyContextPressure(value);
+    const contextWindow = value.contextWindow;
+    if (contextWindow !== undefined && contextWindow > 0 && scope.model) {
+      scope.model = { ...scope.model, contextWindow };
+      this.deliver(scope.sessionId, { type: "patch", patch: { model: scope.model } });
+    }
+  }
+
+  /**
+   * 全日志累计的四桶用量（互不重叠：reasoning 已含在 outputTokens 里）。界面用它显示
+   * 「这次会话一共花了多少」，与占用条（prompt 侧）不是一回事。
+   *
+   * 键不存在时要清空而不是发四个 0：读取器对**坏值**给 0（那是它的容忍度），
+   * 「用量未知」与「用量为零」在界面上是两件事——`present` 就是为这个区分而传的。
+   */
+  private applyTokenUsageProjection(
+    scope: SessionScope,
+    value: NonNullable<ChatState["tokenUsage"]>,
+    present: boolean,
+  ): void {
+    scope.tokenUsage = present ? value : undefined;
+    this.deliver(scope.sessionId, { type: "patch", patch: { tokenUsage: scope.tokenUsage } });
+  }
+
+  /** 轮次横条的数据源（形状与容忍度见 `projections.turnOutlineFromProjection`）。 */
+  private applyTurnOutlineProjection(
+    scope: SessionScope,
+    value: NonNullable<ChatState["turnOutline"]>,
+    present: boolean,
+  ): void {
+    scope.turnOutline = present ? value : undefined;
+    this.deliver(scope.sessionId, { type: "patch", patch: { turnOutline: scope.turnOutline } });
+  }
+
+  /**
+   * 图片准入上限（发送前拦截超限的图，而不是等服务端拒绝）。
+   *
+   * **不下发给界面**：只有宿主消费它（`attachments.classifyPath` 的内联上限），
+   * 这条与改造前一致。
+   */
+  private applyImageLimitsProjection(
+    scope: SessionScope,
+    value: NonNullable<ChatState["imageLimits"]>,
+    present: boolean,
+  ): void {
+    scope.imageLimits = present ? value : undefined;
+  }
+
+  /**
+   * 会话标题（`session/title` 事件是另一条路，见适配器）。
+   *
+   * 键不存在时**什么都不做**：历史抽屉那一行有自己的标题（来自 `session/list`，契约里
+   * 明说那可能是陈旧提示），由它兜着；把标题清成空串反而会把抽屉抹掉。
+   */
+  private applyTitleProjection(scope: SessionScope, value: string | undefined): void {
+    if (!value) return;
+    const existing = this.sessions.find((s) => s.id === scope.sessionId);
+    const session: SessionSummaryView = existing
+      ? { ...existing, title: value }
+      : {
+          id: scope.sessionId,
+          title: value,
+          updatedAt: Date.now(),
+          running: false,
+        };
+    if (existing) existing.title = value;
+    scope.adapter?.setSession(session);
+    this.deliver(scope.sessionId, { type: "patch", patch: { session } });
+  }
+
+  /** 上下文构成（启发式估算；三个字段全有或全无，见 `projections.contextBreakdownFromProjection`）。 */
+  private applyContextBreakdownProjection(
+    scope: SessionScope,
+    value: NonNullable<ChatState["contextBreakdown"]> | undefined,
+    present: boolean,
+  ): void {
+    scope.contextBreakdown = present ? value : undefined;
+    this.deliver(scope.sessionId, { type: "patch", patch: { contextBreakdown: scope.contextBreakdown } });
+  }
+
+  /** 全日志墙钟统计（`llmMs` / `toolMs` 是承重字段，见 `projections.sessionStatsFromProjection`）。 */
+  private applySessionStatsProjection(
+    scope: SessionScope,
+    value: NonNullable<ChatState["sessionStats"]> | undefined,
+    present: boolean,
+  ): void {
+    scope.sessionStats = present ? value : undefined;
+    this.deliver(scope.sessionId, { type: "patch", patch: { sessionStats: scope.sessionStats } });
+  }
+
+  /**
+   * 子代理目录。
+   *
+   * 投影里已经带着目录，界面无需再单独请求一次。投影**没有** `kind`/`activity`
+   * （那两个字段属于 `subagents/list` RPC 行），所以形状解析在 `projections.ts`，
+   * 与已知 RPC 列表的合并（保留 `activity`）在这里——投影不与 RPC 争这个字段。
+   * 键不存在 → 空目录。
+   */
+  private applySubagentCatalogProjection(
+    scope: SessionScope,
+    value: SubagentCatalogEntryView[],
+    present: boolean,
+  ): void {
+    scope.subagents = present ? mergeSubagentActivity(value, scope.subagents) : [];
+    this.deliver(scope.sessionId, {
+      type: "subagents/list",
+      entries: scope.subagents,
+      parentAvailable: scope.subagents.length > 0,
+    });
+  }
+
+  /**
+   * 目标条。投影是**嵌套**的、轮次计数在外层（见 `projections.goalFromProjection`）。
+   * 以前按扁平形状读，两个字段都取不到，于是 goal 恒被清空、目标条从未渲染
+   * （`docs/audit-summary.md` §3）。键不存在 → 清空目标条。
+   */
+  private applyGoalProjection(scope: SessionScope, value: GoalView | undefined, present: boolean): void {
+    scope.goal = present ? value : undefined;
+    this.deliver(scope.sessionId, { type: "patch", patch: { goal: scope.goal } });
   }
 
   /** 后台任务帧 → 界面状态。 */
@@ -3244,10 +3231,16 @@ export class ChatController implements vscode.Disposable {
       // 没有选择的域（全新会话）退回部署默认模型。
       let replayed = false;
       for (const scope of this.scopes.values()) {
-        if (scope.lastModelSelection) {
-          this.applyModelSelection(scope, scope.lastModelSelection);
-          replayed = true;
-        }
+        if (!scope.projections.has("modelSelection")) continue;
+        // 这是**同一次投影的再消费**（目录刚到，把 id 换成名字），不是新值：直接调效果，
+        // 不经过 store 的水位比较——同 seq 会被判负（契约：lower-or-equal seq loses），
+        // 值就永远换不上名字了。
+        this.applyModelSelectionProjection(
+          scope,
+          modelSelectionFromProjection(scope.projections.get("modelSelection")),
+          true,
+        );
+        replayed = true;
       }
       if (!replayed) await this.loadDefaultModel();
     } catch (error) {
@@ -3291,9 +3284,9 @@ export class ChatController implements vscode.Disposable {
   /**
    * 把部署默认**填进或刷新到**「没有自己选择」的各域。
    *
-   * 判据是「投影里有没有 `next`/`lastUsed`」，不是「域上有没有 model」：
+   * 判据是「投影里有没有选择」，不是「域上有没有 model」：
    * 新会话的投影是 `{lastUsed:null,next:null}`（**不是** undefined），
-   * 胶囊此时显示的就是部署默认——按旧判据（`scope.model || lastModelSelection`
+   * 胶囊此时显示的就是部署默认——按旧判据（`scope.model || 原始投影`
    * 就跳过）它永远不会被刷新，于是改 `settings.yaml` 里的档位后，
    * 新会话的档位列表停在旧目录上（用户 2026-09-12 报的现场之一）。
    *
@@ -3304,12 +3297,9 @@ export class ChatController implements vscode.Disposable {
     if (!this.defaultModel) return;
     for (const scope of this.scopes.values()) {
       if (scope.pendingModel) continue;
-      const shown = scope.lastModelSelection as
-        | { lastUsed?: { provider?: string } | null; next?: { provider?: string } | null }
-        | null
-        | undefined;
-      const used = shown?.next ?? shown?.lastUsed;
-      if (used?.provider) continue; // 该域有自己的选择，默认值管不着它
+      // 原始投影在 store 里（`modelSelection` 行的值），解析成「选中的那一份」；
+      // 解析不出选择（含「provider 有、model 缺」的半截选择）就走默认值。
+      if (modelSelectionFromProjection(scope.projections.get("modelSelection"))) continue;
       scope.model = this.defaultModel;
       this.deliver(scope.sessionId, { type: "patch", patch: { model: scope.model } });
     }

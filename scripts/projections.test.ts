@@ -15,14 +15,24 @@
  * 运行：npm test
  */
 import assert from "node:assert";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import {
+  contextBreakdownFromProjection,
+  contextPressureFromProjection,
   goalFromProjection,
+  imageLimitsFromProjection,
+  modelSelectionFromProjection,
+  permissionFromProjection,
   planModeFromProjection,
+  sessionStatsFromProjection,
+  subagentCatalogFromProjection,
   subagentsFromCatalog,
   subagentsFromList,
+  titleFromProjection,
+  todosFromProjection,
+  tokenUsageFromProjection,
+  turnOutlineFromProjection,
 } from "../src/dsh/projections";
+import { replayFollowSnapshot } from "../src/dsh/projectionIngest";
 
 // ---------- 0. plan：生效状态要算上 pending，不是裸 active ----------
 //
@@ -71,27 +81,45 @@ import {
 }
 console.log("projections: plan 生效状态 = pending ? !active : active（与官方一致） ✓");
 
-// ---------- 0b. 源码级不变量：快照必须先回放记录、再铺投影 ----------
+// ---------- 0b. 快照必须先回放记录、再铺投影（**行为断言**） ----------
 //
 // 投影是「截至 asOfSeq 的折叠结果」，永远比记录里的历史事件新。反过来先铺投影、
 // 再回放记录，历史里最后一个事件会把折叠值覆盖回旧状态——`plan` 就是活例：
 // 一次轮次进行中发出的 `/plan` 只留下 `pending`，日志里没有对应的 `plan/mode`，
 // 于是回放末尾那条旧的 `plan/mode` 会把界面上的计划模式关掉。
-// 这类顺序问题读代码很容易看漏，用源码级断言钉住（与 styles.test.ts 同一手法）。
+//
+// 这条顺序以前只能靠正则去 `controller.ts` 里比两个 `indexOf` 的大小（同一个手法
+// 也出现在 styles.test.ts）。那是「测试面是文件字符」：换行、提取成具名函数、包一层
+// try 都会打碎它，而失败信息指向的是「找不到 onItem 回调」，不是「顺序错了」。
+// 现在顺序住在一个可以被直接调用的函数里（`replayFollowSnapshot`）。
 {
-  const source = readFileSync(join(process.cwd(), "src", "dsh", "controller.ts"), "utf8");
-  const follow = /followSession\([\s\S]*?onItem:\s*\(value\)\s*=>\s*\{([\s\S]*?)\n {6}\},/.exec(source);
-  assert.ok(follow, "controller.ts 里找不到 follow() 的 onItem 回调");
-  const body = follow[1];
-  const replayAt = body.indexOf("adapter.applyFrame");
-  const projectionAt = body.indexOf("this.applyProjection");
-  assert.ok(replayAt >= 0 && projectionAt >= 0, "onItem 里应当既有回放也有投影铺开");
-  assert.ok(
-    replayAt < projectionAt,
-    "快照到达时必须**先回放记录、再铺投影**：反过来的话历史事件会覆盖折叠值（plan 的 pending 会丢）",
+  const calls: string[] = [];
+  const adapter = { applyFrame: () => calls.push("replay") };
+  const snapshot = {
+    type: "snapshot",
+    cursor: 7,
+    records: [],
+    hasMore: false,
+    projections: { asOfSeq: 7, values: { plan: { active: true, pending: false } } },
+  };
+  replayFollowSnapshot(snapshot as never, adapter, () => calls.push("projections"));
+  assert.deepStrictEqual(
+    calls,
+    ["replay", "projections"],
+    "跟随开帧必须先回放记录、再铺投影：反过来历史事件会覆盖折叠值（plan 的 pending 会丢）",
   );
+
+  // 只有开帧才铺投影：增量帧没有 `projections` 块，硬铺只会把状态清成空
+  calls.length = 0;
+  replayFollowSnapshot({ type: "event" } as never, adapter, () => calls.push("projections"));
+  assert.deepStrictEqual(calls, ["replay"], "事件帧只回放，不铺投影");
+
+  // 帧形状残缺（webview 侧来的东西不可信）也不能抛：`undefined` 只回放
+  calls.length = 0;
+  replayFollowSnapshot(undefined, adapter, () => calls.push("projections"));
+  assert.deepStrictEqual(calls, ["replay"], "残缺帧不该抛，也不该铺投影");
 }
-console.log("projections: 快照先回放记录、再铺投影（否则折叠值会被历史覆盖） ✓");
+console.log("projections: 快照先回放记录、再铺投影（行为断言） ✓");
 
 // ---------- 1. goal：嵌套形状（目标本体在 goal 里，轮次计数在外层） ----------
 //
@@ -228,5 +256,199 @@ console.log("projections: 投影刷新保留已知 activity，并按投影收敛
   );
 }
 console.log("projections: subagents/list RPC 行过滤诊断项并带上 mode ✓");
+
+// ---------- 7. 其余投影键的形状（2026-09-19 从 controller.applyProjection 搬进来） ----------
+//
+// 每个值都按契约构造（`docs/dsh-server-api.md` §6.10 的键表），断言的是「线格式 →
+// 视图值」这一层；效果（写哪个 scope 字段、发哪一帧）在 `scripts/projectionIngest.test.ts`。
+//
+// 这一节存在的理由就是那三次「按猜测的形状写」：形状读错不报错，只会恒为空，
+// 界面上表现为「这个功能没有」（`docs/audit-summary.md` §3、§4）。
+
+// 7.1 permissions：只读 currentValue（options 没有消费点，不解析）
+{
+  assert.strictEqual(
+    permissionFromProjection({
+      options: [{ value: "read-only", name: "只读" }],
+      currentValue: "workspace-write",
+    }),
+    "workspace-write",
+  );
+  assert.strictEqual(permissionFromProjection({ currentValue: "" }), undefined, "空串 = 没有权限信息");
+  assert.strictEqual(permissionFromProjection({ options: [] }), undefined);
+  assert.strictEqual(permissionFromProjection(null), undefined);
+}
+console.log("projections: permissions 只取 currentValue ✓");
+
+// 7.2 todos：`content` / `text` 两种拼写、状态词表、坏值兜底
+{
+  const view = todosFromProjection([
+    { id: "t1", content: "写文档", status: "in_progress" },
+    { id: "t2", text: "跑测试", status: "completed" },
+    { content: "没有 id 也没有状态" },
+    { id: "t4", content: "词表外的状态", status: "cancelled" },
+  ]);
+  assert.deepStrictEqual(view, [
+    { id: "t1", content: "写文档", status: "in_progress" },
+    { id: "t2", content: "跑测试", status: "completed" },
+    { id: "2", content: "没有 id 也没有状态", status: "pending" },
+    { id: "t4", content: "词表外的状态", status: "pending" },
+  ]);
+  assert.deepStrictEqual(todosFromProjection(null), [], "契约允许 null（= 没有待办）");
+  assert.deepStrictEqual(todosFromProjection("坏了"), []);
+}
+console.log("projections: todos 形状与状态词表 ✓");
+
+// 7.3 contextPressure：三个水位各自可选（缺哪个就是哪个缺失，**不折成 0**）
+{
+  assert.deepStrictEqual(
+    contextPressureFromProjection({ pressureTokens: 19206, projectedTokens: 19844, contextWindow: 65536 }),
+    { pressureTokens: 19206, projectedTokens: 19844, contextWindow: 65536 },
+  );
+  assert.deepStrictEqual(
+    contextPressureFromProjection({ contextWindow: 65536 }),
+    { pressureTokens: undefined, projectedTokens: undefined, contextWindow: 65536 },
+    "实测分子后到：先只有分母时分子必须是 undefined，不是 0",
+  );
+  assert.deepStrictEqual(contextPressureFromProjection({ pressureTokens: "19206" }).pressureTokens, undefined);
+  assert.deepStrictEqual(contextPressureFromProjection(undefined), {
+    pressureTokens: undefined,
+    projectedTokens: undefined,
+    contextWindow: undefined,
+  });
+}
+console.log("projections: contextPressure 三个水位各自可选 ✓");
+
+// 7.4 tokenUsage：四桶互不重叠，坏值补 0（这个键永远给得出完整对象）
+{
+  assert.deepStrictEqual(
+    tokenUsageFromProjection({
+      uncachedInputTokens: 1,
+      outputTokens: 2,
+      cacheReadTokens: 3,
+      cacheWriteTokens: 4,
+    }),
+    { uncachedInputTokens: 1, outputTokens: 2, cacheReadTokens: 3, cacheWriteTokens: 4 },
+  );
+  assert.deepStrictEqual(tokenUsageFromProjection({ outputTokens: 2 }), {
+    uncachedInputTokens: 0,
+    outputTokens: 2,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+  });
+}
+console.log("projections: tokenUsage 四桶 ✓");
+
+// 7.5 turnOutline：承重字段（turn/seq）坏了整条丢弃，两段预览坏了退化成空串
+{
+  const view = turnOutlineFromProjection([
+    { turn: 0, seq: 12, prompt: "问", response: "答" },
+    { turn: 1, seq: 40, prompt: 42, response: null },
+    { seq: 60, prompt: "缺 turn", response: "x" },
+    { turn: 3, prompt: "缺 seq", response: "x" },
+    { turn: -1, seq: 70, prompt: "坏 turn", response: "x" },
+    { turn: 4, seq: 2.5, prompt: "非整数 seq", response: "x" },
+  ]);
+  assert.deepStrictEqual(
+    view,
+    [
+      { turn: 0, seq: 12, prompt: "问", response: "答" },
+      { turn: 1, seq: 40, prompt: "", response: "" },
+    ],
+    "只有带合法 turn+seq 的条目留下；预览字段类型不对就是空串",
+  );
+  assert.deepStrictEqual(turnOutlineFromProjection(null), []);
+}
+console.log("projections: turnOutline 承重字段与预览的容忍度 ✓");
+
+// 7.6 imageLimits：0 与缺失同义（不能当成「零字节上限」）
+{
+  assert.deepStrictEqual(imageLimitsFromProjection({ maxImageBytes: 8388608, maxImagesPerMessage: 24 }), {
+    maxImagesPerMessage: 24,
+    maxImageBytes: 8388608,
+    maxMessageImageBytes: undefined,
+  });
+  assert.deepStrictEqual(imageLimitsFromProjection({ maxImageBytes: 0 }), {
+    maxImagesPerMessage: undefined,
+    maxImageBytes: undefined,
+    maxMessageImageBytes: undefined,
+  });
+}
+console.log("projections: imageLimits 上限取值 ✓");
+
+// 7.7 title：`null` / 空串 / 非字符串都是「没有标题」
+{
+  assert.strictEqual(titleFromProjection("部署默认模型"), "部署默认模型");
+  assert.strictEqual(titleFromProjection(null), undefined);
+  assert.strictEqual(titleFromProjection(""), undefined);
+  assert.strictEqual(titleFromProjection(42), undefined);
+}
+console.log("projections: title 取值 ✓");
+
+// 7.8 contextBreakdown：三个字段**全有或全无**（半份构成画出来的占比是错的）
+{
+  assert.deepStrictEqual(
+    contextBreakdownFromProjection({ systemTokens: 1, toolsTokens: 2, messageTokens: 3 }),
+    { systemTokens: 1, toolsTokens: 2, messageTokens: 3 },
+  );
+  assert.strictEqual(contextBreakdownFromProjection({ systemTokens: 1, toolsTokens: 2 }), undefined);
+  assert.strictEqual(contextBreakdownFromProjection(null), undefined);
+}
+console.log("projections: contextBreakdown 全有或全无 ✓");
+
+// 7.9 sessionStats：`llmMs` / `toolMs` 承重，其余缺失补 0
+{
+  assert.deepStrictEqual(sessionStatsFromProjection({ turns: 3, steps: 9, llmMs: 1200, toolMs: 300 }), {
+    turns: 3,
+    steps: 9,
+    llmMs: 1200,
+    toolMs: 300,
+    ttftMs: 0,
+    ttftSteps: 0,
+    decodeMs: 0,
+    decodeTokens: 0,
+  });
+  assert.strictEqual(sessionStatsFromProjection({ turns: 3, steps: 9 }), undefined);
+}
+console.log("projections: sessionStats 承重字段 ✓");
+
+// 7.10 modelSelection：`next ?? lastUsed`；半截选择按「没有选择」处理
+{
+  assert.deepStrictEqual(
+    modelSelectionFromProjection({
+      lastUsed: { provider: "p", model: "m1" },
+      next: { provider: "p", model: "m2", reasoningEffort: "high" },
+    }),
+    { provider: "p", model: "m2", reasoningEffort: "high" },
+    "胶囊显示「下一次会用什么」，所以 next 优先",
+  );
+  assert.deepStrictEqual(modelSelectionFromProjection({ lastUsed: { provider: "p", model: "m1" }, next: null }), {
+    provider: "p",
+    model: "m1",
+    reasoningEffort: undefined,
+  });
+  assert.strictEqual(
+    modelSelectionFromProjection({ lastUsed: null, next: null }),
+    undefined,
+    "新会话的投影**存在**但没有选择——这正是「套部署默认」的判据，不能与「投影缺失」混为一谈",
+  );
+  assert.strictEqual(modelSelectionFromProjection({ next: { provider: "p" } }), undefined);
+  assert.strictEqual(modelSelectionFromProjection(undefined), undefined);
+}
+console.log("projections: modelSelection 取 next ?? lastUsed ✓");
+
+// 7.11 subagentCatalog 的纯解析（与 RPC 列表的合并见第 6 节）
+{
+  const entries = subagentCatalogFromProjection([
+    { id: "s-1", mode: "continuable", label: "A" },
+    { id: "s-2", mode: "one-shot" },
+  ]);
+  assert.deepStrictEqual(entries, [
+    { id: "s-1", label: "A", mode: "continuable" },
+    { id: "s-2", label: "s-2", mode: "one-shot" },
+  ]);
+  assert.ok(!("activity" in entries[0]), "投影里没有 activity——它是 RPC 行的字段（第 4 节的 bug 就是这个）");
+}
+console.log("projections: subagentCatalog 纯解析（无 activity）✓");
 
 console.log("\nprojections: all assertions passed");

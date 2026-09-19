@@ -16,6 +16,8 @@ node_modules/**
 
 # 给 AI 会话用的项目约束文档：是仓库的开发者资料，不是扩展的一部分
 AGENTS.md
+# 领域词表（同上：开发者资料；不列就会整份进 vsix）
+CONTEXT.md
 
 # 开发期日志（曾经被打进包：装完在扩展目录里躺着一个 130B 的 debug.log）
 debug.log

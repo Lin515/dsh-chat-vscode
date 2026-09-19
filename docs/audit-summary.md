@@ -156,6 +156,38 @@ dsh 会按 `PROFILE_TEMPLATES` 自动初始化 web profile）起真实 `dsh web`
   本扩展按**最终结果**统计（只算真正变化的行）。用户 2026-09-14 确认本扩展的口径更贴近
   直觉，**保持不动**——不要为了「跟 Web 一致」而改（这是本扩展的信息增量之一）。
 
+### 已修复（第五批：投影摄入的水位与形状，2026-09-19）
+
+背景：投影是**三次「按猜测的形状写」的现场**（`goal` / `subagentCatalog` / `turnOutline`），
+而解析内联在一个 5080 行、**没有任何测试接缝**的 `controller.ts` 里（`scripts/` 里没有一个文件
+import 它，形状只能靠源码正则去钉）；与此同时线上带的 `seq` / `asOfSeq` 在三个调用点上**全被丢掉**，
+契约那句「重放的旧帧不能把值顶回去」没有任何东西拦得住。
+
+| 项 | 结论 |
+|---|---|
+| 逐键形状解析 | ✅ 14 个消费键全部搬进 `src/dsh/projections.ts` 的读取表（承重字段与容忍度逐行照搬，解析行为不变）；断言 `scripts/projections.test.ts` 第 7 节按契约逐条构造值 |
+| 水位契约 | ✅ 新增 `src/dsh/projectionStore.ts`：higher seq wins（**同 seq 也算负**）、baseline 在 `asOfSeq` 上播种并清掉块里没带的键、替换型 baseline 先 `truncate`；**拿不到水位时不比较、也不清空**（按肯定证据写）。断言 `scripts/projectionStore.test.ts` |
+| 一个键一条 | ✅ `src/dsh/projectionIngest.ts` 的 `ProjectionHandlers` 是映射类型——**少一个键编译不过**；键集合与契约双向对拍，5 个有意不消费的（`agentPreset` / `schedule` / `subagent` / `subagentTiming` / `sessionListMetadata`）在测试里显式登记 |
+| 顺序规则可断言 | ✅ 「先回放记录、再铺投影」从 `readFileSync` + 两个 `indexOf` 比大小，改成 `replayFollowSnapshot` 的行为断言 |
+| 适配器里的第二个读点 | ✅ 删掉适配器直接读 `projections.values.title`（同一个跟随开帧里，标题以前被应用两次、发两帧）；`session/title` **事件**那条路不动 |
+| 列表标题（有意偏离） | 历史抽屉的标题（`session/list` 行的 `projections`）**不走 store**，仍 last-wins——那份数据契约自己就说是「可能是缓存的陈旧提示」。见 `docs/adr/0001-projection-value-store.md` |
+
+**实测取证**（真实 `dsh web`，探针 `scripts/projectionSeqProbe.ts`，隔离的临时 `DSH_HOME`）：
+
+```
+✓ baseline 里带这个会话的投影块 — 键 18 个；块里带 asOfSeq=3（number）
+✓ 增量帧带 seq — plan:seq=4  plan:seq=5  plan:seq=6
+✓ 跟随开帧 projections.asOfSeq=6 === cursor=6
+观察：增量帧 seq ≥ baseline.asOfSeq（差 1）—— 同一个序空间
+```
+
+注意实测里 baseline 是**全量**的（18 个键都在），所以「块里没带的键清掉」这条路平时走不到：
+它只在 Host 丢掉某个投影单元之后的**替换型** baseline 上生效。这条是设计里刻意保留的能力，
+不是当前的主路径。
+
+**回归对拍**：`npm test` 61 → 63 套（新增 store 与 ingest 两套断言），`command-e2e` 的 A/B/C
+三组与改动前**逐条一致**（plan 的 pending/active、command 节点折叠、goal 嵌套形状）。
+
 ### 段顺序（2026-09-14 修的活路径缺陷）
 
 `applyAssistantMessage` 此前把 durable 的思考/正文**追加到消息末尾**。模型是边说边吐

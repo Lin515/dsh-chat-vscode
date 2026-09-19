@@ -116,6 +116,9 @@ const entries = {
   "build/trajectory.test.mjs": "scripts/trajectory.test.ts",
   "build/turn-rail.test.mjs": "scripts/turnRail.test.ts",
   "build/manifest.test.mjs": "scripts/manifest.test.ts",
+  "build/projection-store.test.mjs": "scripts/projectionStore.test.ts",
+  "build/projection-ingest.test.mjs": "scripts/projectionIngest.test.ts",
+  "build/projection-seq-probe.mjs": "scripts/projectionSeqProbe.ts",
 
 };
 
