@@ -101,6 +101,7 @@ const entries = {
   "build/supervisor-policy.test.mjs": "scripts/supervisorPolicy.test.ts",
   "build/connect-target.test.mjs": "scripts/connectTarget.test.ts",
   "build/connection-stop.test.mjs": "scripts/connectionStop.test.ts",
+  "build/auto-connect-config.test.mjs": "scripts/autoConnectConfig.test.ts",
   "build/client-dispose.test.mjs": "scripts/clientDispose.test.ts",
   "build/pinger.mjs": "scripts/pinger.ts",
   "build/supervisor-reload-probe.mjs": "scripts/supervisorReloadProbe.ts",

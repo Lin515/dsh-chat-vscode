@@ -377,6 +377,16 @@ export class SupervisorManager {
   }
 
   /**
+   * 配置监听（`dshChat.autoConnect` 改动）用：**即时更新**自动路径的许可，不必重载窗口。
+   *
+   * 只影响自动路径（心跳"自己拉一套"、省略 `start` 的 `ensure()`）；用户显式动作仍走
+   * `ensure({ start: true })` 覆盖它。已建立的连接不打断。
+   */
+  setAutoConnect(value: boolean): void {
+    this.options.autoConnect = value;
+  }
+
+  /**
    * 后台现在在不在跑。
    *
    * **异步**（不像旧的 5 秒心跳里那个 `tcpReachableSync`）：Windows 上那个同步探测

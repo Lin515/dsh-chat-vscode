@@ -343,18 +343,23 @@ function registerContributions(context: vscode.ExtensionContext, host: Contribut
       ) {
         controller.refreshAppearance();
       }
-      // 连接行为这三项（`dshChat.url` / `dshChat.command` / `dshChat.autoConnect`）改了要
-      // **重载窗口**：它们只在激活期读一次，不重载的话用户改了 `dshChat.url`（或启动命令、
-      // 或自动连接开关）却仍连着旧目标。**连接配置不再就地热切换**（用户口径 2026-09-14：
-      // 太复杂，改成重载窗口生效）。原地切需要"断干净 + 按新配置接上 + 换分组 + 别把别人的
-      // 后台带走"一整套时序，收益却只是省一次窗口重载——不值得。这里的提示是**唯一**的
-      // 生效入口，配置项说明里也写明了「改完需要重载窗口」。
+      // 连接行为：`dshChat.url` / `dshChat.command` 改了要**重载窗口**（它们只在激活期读
+      // 一次，不重载的话用户改了 `dshChat.url`（或启动命令）却仍连着旧目标。**连接配置
+      // 不再就地热切换**（用户口径 2026-09-14：太复杂，改成重载窗口生效）。原地切需要
+      // "断干净 + 按新配置接上 + 换分组 + 别把别人的后台带走"一整套时序，收益却只是省一次
+      // 窗口重载——不值得。这里的提示是**唯一**的生效入口（README 里写明了这一条；
+      // 配置项说明只写作用，不写"改完需重载"这类套话，见 AGENTS.md）。
       if (
         event.affectsConfiguration("dshChat.url") ||
-        event.affectsConfiguration("dshChat.command") ||
-        event.affectsConfiguration("dshChat.autoConnect")
+        event.affectsConfiguration("dshChat.command")
       ) {
         void promptServerReload();
+      }
+      // `dshChat.autoConnect` 例外（用户 2026-09-19 口径）：它只是"自动路径的许可"，
+      // 改动**即时生效、不必重载窗口**——更新管理器的许可；若当前正停在按钮态
+      // （没在连、没连过），立即按新值选一次路连上。
+      if (event.affectsConfiguration("dshChat.autoConnect")) {
+        controller.applyAutoConnect(host.config().get<boolean>("autoConnect") ?? true);
       }
     }),
   );

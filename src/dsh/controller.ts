@@ -1766,6 +1766,35 @@ export class ChatController implements vscode.Disposable {
     await this.ensureConnected({ start: plan.start, target: plan.target });
   }
 
+  /**
+   * 配置监听（`dshChat.autoConnect` 改动）用：**即时应用新值，不必重载窗口**
+   * （用户 2026-09-19 口径：改 autoConnect 不该弹「重载窗口」，只有 `url` / `command` 要）。
+   *
+   * - **改开**（false → true）：更新自动路径许可；若当前正停在**按钮态且从没定过目标**
+   *   （就是"关掉后只显示按钮"的那一档），立即按激活期那套**选一次路**连上——用户改完
+   *   开关马上能看到效果。正在连接 / 已连上 / 用户点过按钮（有粘性目标）都不动：
+   *   那些是既成事实，配置改动不该打断正在跑的会话，也不该替用户收回他显式停过的连接。
+   * - **改关**（true → false）：只更新许可。已建立的连接不打断；之后的自动路径
+   *   （心跳"自己拉一套"）按新许可走。
+   */
+  applyAutoConnect(value: boolean): void {
+    this.server.setAutoConnect(value);
+    if (!value) {
+      this.log("[connect] dshChat.autoConnect 改为关：只影响之后的自动路径，现有连接不动");
+      return;
+    }
+    if (this.connection === "stopped" || this.connection === "error") {
+      if (!this.target) {
+        this.log("[connect] dshChat.autoConnect 改为开：当前在按钮态，立即按自动选路连接");
+        void this.autoConnect(true);
+      } else {
+        this.log("[connect] dshChat.autoConnect 改为开：已有粘性目标，保持现状");
+      }
+    } else {
+      this.log("[connect] dshChat.autoConnect 改为开：正在连接/已连接，保持现状");
+    }
+  }
+
   /** 「启动内部 DSH」：**用户显式要求**拉起一套内部后台（内部不在时的主动作）。 */
   async startInternal(): Promise<void> {
     this.beginConnect("internal", true, "starting");

@@ -255,7 +255,10 @@ VS Code 窗口 3 ─┘                                          │
 那个口径随"内部优先、外部备用"作废——否则配了 `url` 的窗口会去另一个会合目录找内部后台、
 判定"内部不存在"再起一套，用户改一次 `url` 也会与既有后台失联。
 
-配置改了 → 现有"提示重载窗口"的口径不变（改配置不再就地热切换，这条已经定了）。
+配置改了 → 现有"提示重载窗口"的口径不变（改配置不再就地热切换，这条已经定了），
+**但 `dshChat.autoConnect` 例外**（用户 2026-09-19 口径）：它只是"自动路径的许可"，
+改动**即时生效、不必重载窗口**——更新管理器许可；停在按钮态时会立刻按新值自动连接
+（见 §9.10）。只有 `dshChat.url` / `dshChat.command` 改了才需要重载窗口。
 
 > 名字里的 "lease" 是个历史包袱：它与被删掉的会合租约**没有关系**，只是"会合目录的分组键"。
 
@@ -815,4 +818,31 @@ DSH」（只接不启动，守护进程已退场时如实回按钮态）、「�
 `connectionStop.test.ts` 第 7 组按源码结构钉住这三处接线；端到端
 `node build/supervisor-manager-probe.mjs` 第 7/8 步（真 supervisor + 真 dsh：`releaseInternal()`
 之后内部后台自己退场；交还之后再 `restart()` 拿到**变了的新令牌**）。
+
+### 9.10 `autoConnect` 改动**即时生效**，只有 `url` / `command` 要重载窗口（2026-09-19 用户口径）
+
+此前 `url` / `command` / `autoConnect` 三项改动都提示重载窗口（改配置不再就地热切换那条
+纪律，§4.4）。用户 2026-09-19 收紧：`autoConnect` 只是**自动路径的许可**，改完不该弹
+「重载窗口」——它不像 `url` / `command` 那样决定"连哪个服务器、怎么拉起"（那才是真正要
+重载的：它们只在激活期读一次，见 §4.4 与 R7）。
+
+现在的生效路径：
+
+- **配置监听拆开**（`extension.ts`）：`dshChat.url` / `dshChat.command` 改动 → 照旧
+  `promptServerReload()`；`dshChat.autoConnect` 改动 → `ChatController.applyAutoConnect()`，
+  即时应用，不再提示重载窗口。
+- **`applyAutoConnect(value)`**：
+  - 先 `SupervisorManager.setAutoConnect(value)` 更新自动路径许可（`canStart()` 即时反映，
+    心跳"自己拉一套"、省略 `start` 的 `ensure()` 立刻按新值走）；
+  - **改开**（false → true）：若当前正停在**按钮态且从没定过目标**（`stopped`/`error` 且
+    `target` 未定——正是"关掉后只显示按钮"的那一档），按激活期那套**选一次路**连上，改完
+    开关马上生效；正在连接 / 已连上 / 用户点过按钮（有粘性目标）都不动——配置改动不该打断
+    正在跑的会话，也不该替用户收回他显式停过的连接；
+  - **改关**（true → false）：只更新许可，**已建立的连接一个字都不动**；之后的自动路径
+    （心跳自己拉一套）按新许可走。用户想立即断开照旧用「停止连接」（§9.9）。
+
+**验证**：`scripts/autoConnectConfig.test.ts`（新）按源码结构钉住——`applyAutoConnect` 的
+三件事（先 `setAutoConnect`、按钮态且无目标才 `autoConnect(true)`、其余分支只记日志）、
+`setAutoConnect` 写的就是 `options.autoConnect`、`extension.ts` 里 `autoConnect` 不再与
+`url`/`command` 一起触发 `promptServerReload`。
 

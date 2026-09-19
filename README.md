@@ -60,8 +60,9 @@ VS Code → 扩展 → `…` → 从 VSIX 安装 → 重载窗口。
   不会杀掉后台，正在跑的会话也不会因此中断。
 - **`url` 与 `command` 是 `machine` 作用域**：只能在**用户设置**里改，工作区的
   `.vscode/settings.json` 覆盖不了它们（`command` 是经 shell 执行的命令、`url` 决定
-  凭据发往哪个服务器——这两件事不该由克隆来的仓库决定）。**`url`、`command`、
-  `autoConnect` 改完要重载窗口**才生效（扩展会弹提示）；其余配置项改完即时生效。
+  凭据发往哪个服务器——这两件事不该由克隆来的仓库决定）。**`url`、`command`
+  改完要重载窗口**才生效（扩展会弹提示）；**`autoConnect` 改完即时生效**（停在按钮态
+  时会立刻按新值自动连接）；其余配置项改完即时生效。
 
 ## 配置
 
@@ -211,8 +212,9 @@ Four rules worth knowing:
 - **`url` and `command` are `machine`-scoped**: they can only be set in *user* settings; a
   workspace's `.vscode/settings.json` cannot override them (`command` is executed through a
   shell and `url` decides where credentials go — a cloned repository must not decide either).
-  **`url`, `command` and `autoConnect` require a window reload** (the extension offers to do
-  it); every other setting applies immediately.
+  **`url` and `command` require a window reload** (the extension offers to do it);
+  **`autoConnect` applies immediately** (when idle, it re-routes right away); every other
+  setting applies immediately.
 
 ## Settings
 
