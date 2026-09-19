@@ -5,7 +5,8 @@
  * 路径段很自然）。本扩展的输入框是纯文本 textarea，用户下钻到 `@src/webview/`
  * 之后想回上一层只能手工删字符——用户 2026-09-14 要求列表顶部给一个 `..`。
  *
- * 这里只算**目标查询串**（回到哪一层），渲染与键盘行为在 `Composer.tsx`。
+ * 这里只算**目标查询串**（回到哪一层），渲染与键盘行为在
+ * `composerCompletion.tsx`（`rankCandidates` 把 `..` 排在最前）。
  *
  * 纯函数、不引 React：断言见 `scripts/mentionNav.test.ts`。
  */

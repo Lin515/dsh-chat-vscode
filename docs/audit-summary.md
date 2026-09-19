@@ -188,6 +188,40 @@ import 它，形状只能靠源码正则去钉）；与此同时线上带的 `se
 **回归对拍**：`npm test` 61 → 63 套（新增 store 与 ingest 两套断言），`command-e2e` 的 A/B/C
 三组与改动前**逐条一致**（plan 的 pending/active、command 节点折叠、goal 嵌套形状）。
 
+### 已修复（第六批：架构评审的同族收敛，2026-09-19）
+
+背景：2026-09-19 的一轮架构评审给出 8 条候选（诊断与逐条方案在评审报告里，报告本身不随仓库发布），
+按**文件所有权分批**由子代理逐一落地。这里收的都是同一类病——**同一件事在多处各写一遍**
+（值被抽出来、控制流留在原地，再用「读源码 + 正则」补断言）。逐条落点与证据：
+
+| 项 | 结论 | 落点 |
+|---|---|---|
+| 待处理交互的选举与抑制 | ✅ 合成一次计算：`resolveInteractions(messages) → { pending, takenOver }`；`takenOver` 是**段 id 集合**、最多一个元素；只撤下被接管的那一条（两张 waiting 并存时另一张留在流里可答） | `src/webview/pendingInteraction.ts`；断言 `scripts/pendingInteraction.test.ts`、`scripts/questionRender.test.ts` 第 7 节（真实 `Message` 渲染 + 变异验证） |
+| 未结算的审批 / 提问 | ✅ 三个集合 + 六个方法收进 `PendingInteractions`（去重 / 回放不删 / 只有两个结算出口由封装保证，"恰好 4 个结算点"由封装 + 调用点断言共同钉住） | `src/dsh/pendingInteractions.ts`；断言 `scripts/pendingInteractions.test.ts`（7 节）+ `interactionSync.test.ts` |
+| 停止入口与连接状态 | ✅ 管理器侧：`stop({release,cancelWait,askSupervisor})` 唯一入口 + 只读 `snapshot()`（旧入口全是薄壳、方法名未删）；控制器侧改为只渲染快照 | `src/dsh/supervisorManager.ts`（§9.11）、`controller.ts`；断言 `supervisorPolicy.test.ts` 第 10 组 + `connectSnapshot.test.ts` |
+| 会合状态与路径 | ✅ 一个 `decodeState(value, opts)` 供两条读路共用（逐字段校验只收紧）、`rendezvousPaths()` 一处产出、socket 名只由目录派生；四个探针改走真 `SupervisorManager` | `supervisorProtocol.ts` / `supervisorWire.ts` / `supervisorRunner.ts` / `supervisor/main.ts`（§3.8）；断言 `supervisorProtocol.test.ts` 第 3.5 组 |
+| `@key` 文案登记 | ✅ 7 处 → 1 处（`MESSAGES` 唯一消息表，两份词典与 `resolveText()` 由它派生）；VS Code 通知那层补上「key 集合 = `vscode: true` 条目 + 英文源串存在于 l10n」断言 | `src/webview/messages.ts`、`hostText.ts`；断言 `scripts/i18n.test.ts`；行为对拍 1598 条标记级 + 572 条字典级（zh 零差异） |
+| `@` / `/` 补全规则集 | ✅ 触发词判定、候选取用与优先级、`pick`/`drill`、光标落点、弹层键盘导航与弹层 JSX 全部收进一个 module；光标算术抽成纯函数（此前**零覆盖**，`scripts/` 里 grep `insertRequest\|setSelectionRange` 无命中） | `src/webview/composerCompletion.tsx`（`Composer.tsx` 1508 → 1031 行，`insert.ts` 删除）；断言 `scripts/mentionNav.test.ts`（3 块源码正则换成真实调用 + `react-dom/server` 渲 hook，含「光标在 rAF 里落」）、`scripts/pathInsert.test.ts` |
+| 会话状态面 | ✅ 首帧快照 / 增量 patch / 切会话专帧共用**一个**构造器与一张字段表（`satisfies` 强制键集完整）；跨名桥 `subagents` → `subagentEntries` 拆掉；同一次刷新少投一条重复 `jobs/list` | `src/dsh/sessionView.ts`；断言 `scripts/sessionView.test.ts`（三路键集合 + 值 + 顺序全等，两次注入验证） |
+| `.chat-scroll` 端口 | ✅ 贴底 / 放跟随 / 回底胶囊整条链路收进一个 module，组件只接一个端口对象（`Composer` 的两个滚动 prop 合成一个；`App.tsx` 920 → 703 行）；行为断言从源码正则换成真调用（纯状态机 + 假宿主环境真派发事件） | `src/webview/autoScroll.ts`；断言 `scripts/autoScroll.test.ts`（10 组 65 条）、`styles.test.ts` §37 只留接线、`turnRail.test.ts` §11 |
+
+**踩过的坑（本批新增）**：① **探针要确认「产物看得见」**——`i18n.test.ts` 的 l10n 是 **JSON import**，
+esbuild 在打包时内联，改磁盘文件后不重建产物，「注入验证」会得到假绿（正确做法：改文件 → 重建 → 跑）；
+② **无头跑 webview 模块要先补桩再动态 import**（静态 import 会被提升到补桩之前，报 `window is not
+defined` / `acquireVsCodeApi is not defined`）；③ `scripts/pinger.ts` 的手抄流程删掉时**别忘了环境变量交接**
+（`DSH_FAKE_BOOT_LOG` 经「探针 → 启动器 `runtimeEnv(process.env)` → 守护进程 → 假 dsh」四跳），
+漏了会让探针里两条断言**空过**；④ `queue-continue-probe` **不 import `supervisorProbeEnv`**，即它会连
+**生产会合目录**下用户真实的后台（其余探针都隔离）——本次它挂住 31 分钟无输出，未查明原因，**未修**；
+⑤ **别拿会变的文本当元素身份**：`scroll-probe.html` 的 I2 锚点原用「消息文本前 40 字」找节点，
+而场景会往**被锚定的那条消息**追加工具段，工具行文字一挤进窗口身份就失配 → `top()` 返回 null →
+误报成「锚点 79 → null」（P4 追 3 条必现、P5 追 1 条侥幸通过）。改用 `data-msg-id` 这类**稳定属性**，
+并把身份写进失败文案；夹具的问题也可能长得像产品缺陷，先分清是哪一侧再动手。
+
+**回归对拍**：`npm test`（全量）与 `npm run build`（看 `[duplicate-case]` 一类警告）；真机探针
+`supervisor-manager-probe` / `reload` / `idle` / `scenarios` / `child-exit` / `error-bridge` / `auth-chain`
+——其中 `child-exit` 在本次收敛后**真的红过一次**：探针改写时丢了 `DSH_FAKE_BOOT_LOG` 的环境交接，
+假 dsh 不再记账，三条断言里两条还**空过**（"✓ 真 node 已消失"其实从没找到 node）。补一行后 A/B/C 全绿。
+
 ### 段顺序（2026-09-14 修的活路径缺陷）
 
 `applyAssistantMessage` 此前把 durable 的思考/正文**追加到消息末尾**。模型是边说边吐
@@ -519,7 +553,7 @@ Ctrl+Enter 也未区分（`Composer.tsx:241` 只判 `!shiftKey`）。
 | B4 | 提示条永不消失：`NoticeBar` 的计时器依赖里有一个每次渲染都新建的 `onDismiss`，流式期间每个 token 都重开计时 | 计时只跟 `notice.id`，回调走 ref |
 | B5 | 目标条里按 `Esc` 取消编辑时把**正在跑的这一轮也中止**了（ESC 优先级链没被消费）；问卷自定义答案框同理 | 两处都 `preventDefault` + `stopPropagation`（问卷的 Esc = 取消选中该自定义答案） |
 | B6 | `eventSessions`（事件 → 会话）只增不删，跨会话累积；结算过的事件不再需要它 | 结算/撤回的四处一并删除 |
-| B7 | 开着子代理面板切换会话，列表停在上一个会话（宿主快照键 `subagents` 与界面读的 `subagentEntries` 不是同一个名字） | 切会话时用快照重置 + 面板开着时按会话重拉 |
+| B7 | 开着子代理面板切换会话，列表停在上一个会话（宿主快照键 `subagents` 与界面读的 `subagentEntries` 不是同一个名字） | **已修（2026-09-19，会话状态面单一生产者）**：线格式与视图模型统一叫 `subagentEntries`，跨名桥拆掉；字段清单收进 `src/dsh/sessionView.ts` |
 | B8 | `activity` 未知（投影没有这个字段）时界面画成确定的「未运行」，与"不知道就不画状态点"的契约相反 | 未知时改显示生命周期模式（`one-shot` / `continuable`） |
 | B9 | 工具展开区最多 5 个元素共用同一个 `ref`，React 只保留最后一个 → diff 段拿不到「打开回顶」与「划选冻结」 | diff 段用独立的 `diffRef` |
 | B10 | 轨迹：概述里「输出」画的是时长而不是 token 数；`Diff` 页签是硬编码英文；平移的 document 监听在卸载时不摘；`model?.turns ?? []` 每次新数组使两个 `useMemo` 失效 | 逐条修（`usageOutput` 给 token 数、新增 `tabDiff`、卸载兜底摘监听、稳定空数组常量） |

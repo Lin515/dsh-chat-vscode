@@ -124,7 +124,7 @@ console.log("planReview: 答案恰好一项、不带 custom ✓");
     "「去聊天里说」必须回 rejected + ASK_CANCELLED（不是一份空答案）",
   );
   assert.ok(
-    /this\.heldEvents\.delete\(eventId\);/.test(branch),
+    /this\.interactions\.settle\(eventId\);/.test(branch),
     "撤回同样要结算掉未结算请求，否则下次切回来会凭空弹一张过期的卡",
   );
 

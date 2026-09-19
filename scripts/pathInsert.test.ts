@@ -21,7 +21,18 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { classifyPath, formatPathList, quotePath } from "../src/dsh/attachments";
-import { insertAtCaret } from "../src/webview/insert";
+
+// `composerCompletion` 连带 `bridge.ts` 在模块求值期挂 `window.addEventListener`：
+// 无头环境先补最小 window（外加 `acquireVsCodeApi`）、再动态 import
+// （理由见 `mentionNav.test.ts` 同一处注释）。
+(globalThis as { window?: unknown }).window = {
+  addEventListener: () => {},
+  removeEventListener: () => {},
+};
+(globalThis as { acquireVsCodeApi?: unknown }).acquireVsCodeApi = () => ({
+  postMessage: () => undefined,
+});
+const { caretAfterInsert, insertToken } = await import("../src/webview/composerCompletion");
 
 const dir = mkdtempSync(join(tmpdir(), "dsh-classify-"));
 try {
@@ -109,15 +120,15 @@ try {
 
 // 末尾追加：前面有文字 → 补一个空格
 {
-  const result = insertAtCaret("看一下", '"C:\\a.exe"', 3);
+  const result = insertToken("看一下", '"C:\\a.exe"', 3);
   assert.strictEqual(result.value, '看一下 "C:\\a.exe"');
   assert.strictEqual(result.caret, result.value.length);
 }
 // 已有空白结尾 → 不重复补空格
-assert.strictEqual(insertAtCaret("看一下 ", '"C:\\a.exe"', 4).value, '看一下 "C:\\a.exe"');
+assert.strictEqual(insertToken("看一下 ", '"C:\\a.exe"', 4).value, '看一下 "C:\\a.exe"');
 // 中间插入：前后都补空格，光标落在插入内容之后（而不是留在插入点）
 {
-  const result = insertAtCaret("读取然后继续", '"C:\\a b.txt"', 2);
+  const result = insertToken("读取然后继续", '"C:\\a b.txt"', 2);
   assert.strictEqual(result.value, '读取 "C:\\a b.txt" 然后继续');
   // 光标正好落在「插入内容 + 补的那个空格」之后：用户接着打字会接在空格后，
   // 不会与后面的文字粘连
@@ -126,26 +137,69 @@ assert.strictEqual(insertAtCaret("看一下 ", '"C:\\a.exe"', 4).value, '看一�
 }
 // 插入点在开头：前面没东西 → 不补前导空格；后面有字 → 补尾随空格
 {
-  const result = insertAtCaret("后续文字", '"C:\\x"', 0);
+  const result = insertToken("后续文字", '"C:\\x"', 0);
   assert.strictEqual(result.value, '"C:\\x" 后续文字');
   assert.strictEqual(result.value.slice(0, result.caret), '"C:\\x" ', "光标在插入内容+空格之后");
 }
 // 空草稿：前后都没东西 → 不补空格
 {
-  const result = insertAtCaret("", '"C:\\x"', 0);
+  const result = insertToken("", '"C:\\x"', 0);
   assert.strictEqual(result.value, '"C:\\x"');
   assert.strictEqual(result.caret, result.value.length, "空草稿插入后光标在末尾");
 }
 // 越界光标夹到两端，不抛错（调用方可能传来过期位置）
-assert.strictEqual(insertAtCaret("abc", '"p"', 999).value, 'abc "p"');
-assert.strictEqual(insertAtCaret("abc", '"p"', -5).value, '"p" abc');
-assert.strictEqual(insertAtCaret("abc", '"p"', Number.NaN).value, 'abc "p"', "NaN 应按末尾处理");
+assert.strictEqual(insertToken("abc", '"p"', 999).value, 'abc "p"');
+assert.strictEqual(insertToken("abc", '"p"', -5).value, '"p" abc');
+assert.strictEqual(insertToken("abc", '"p"', Number.NaN).value, 'abc "p"', "NaN 应按末尾处理");
 // 连续插两次：第二次不会把第一次的结果弄乱
 {
-  const first = insertAtCaret("看看", '"C:\\a"', 2);
-  const second = insertAtCaret(first.value, '"C:\\b"', first.caret);
+  const first = insertToken("看看", '"C:\\a"', 2);
+  const second = insertToken(first.value, '"C:\\b"', first.caret);
   assert.strictEqual(second.value, '看看 "C:\\a" "C:\\b"');
 }
 console.log("insert: 光标处插入 ✓");
+
+// ---------- 5. 补全的落点算术（触发词整段替换） ----------
+//
+// 这一段此前**零覆盖**：`@` 选完之后的文本与光标位置全在 Composer 里现算，
+// 算错了表现为「插进来的路径落在别处 / 后面的字被吃掉 / 光标跑回原处」，
+// 而没有任何断言会红。现在它是纯函数 `caretAfterInsert`（`replaceToken` 的实现）。
+{
+  // 触发词在中间：替换掉 `@src`（start=0、end=4），后面的字一个都不能少
+  const middle = caretAfterInsert("看看@src然后继续", 2, 6, "@src/webview/");
+  assert.strictEqual(middle.text, "看看@src/webview/然后继续", "触发词整段被换掉、其余字节不动");
+  assert.strictEqual(middle.caret, 2 + "@src/webview/".length, "光标落在插入内容之后");
+  assert.strictEqual(middle.text.slice(0, middle.caret), "看看@src/webview/");
+  assert.strictEqual(middle.text.slice(middle.caret), "然后继续", "后面的字没被吃掉");
+
+  // 「..」：正文里只留 `@<上一层>`（上一层是工作区根目录时是裸 `@`）
+  const up = caretAfterInsert("@src/webview/", 0, "@src/webview/".length, "@src/");
+  assert.strictEqual(up.text, "@src/");
+  assert.strictEqual(up.caret, 5);
+
+  // 命令：`/git` → `/git-guard`，光标在名字之后（接下来直接打参数）
+  const command = caretAfterInsert("/git 现在提交", 0, 4, "/git-guard");
+  assert.strictEqual(command.text, "/git-guard 现在提交");
+  assert.strictEqual(command.caret, 10);
+
+  // 段落里的 `@`（前面有空白）同样只换触发词那一段
+  const inSentence = caretAfterInsert("看一下 @src 这个目录", 4, 8, "@src/webview/");
+  assert.strictEqual(inSentence.text, "看一下 @src/webview/ 这个目录");
+  assert.strictEqual(inSentence.caret, 4 + "@src/webview/".length);
+  assert.strictEqual(inSentence.text.slice(inSentence.caret), " 这个目录");
+
+  // 末尾触发（后面什么都没有）
+  const atEnd = caretAfterInsert("读 @src", 2, 6, "@src/dsh/");
+  assert.strictEqual(atEnd.text, "读 @src/dsh/");
+  assert.strictEqual(atEnd.caret, atEnd.text.length);
+
+  // 区间会被夹到合法范围：过期的下标不抛错、也不吃掉字符
+  assert.strictEqual(caretAfterInsert("abc", 99, 99, "@x").text, "abc@x");
+  assert.strictEqual(caretAfterInsert("abc", -5, 1, "@x").text, "@xbc", "起点按 0 夹");
+  // `to` 早于 `from` 时按「不删任何东西」处理（夹成 to = from），不是在中间吃掉一段
+  assert.strictEqual(caretAfterInsert("abc", 2, 1, "@x").text, "ab@xc", "终点不早于起点（空区间插入）");
+  assert.strictEqual(caretAfterInsert("abc", Number.NaN, Number.NaN, "@x").text, "abc@x");
+}
+console.log("completion: 触发词替换的落点算术 ✓");
 
 console.log("\nclassify/insert: all assertions passed");

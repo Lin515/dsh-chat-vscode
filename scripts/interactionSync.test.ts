@@ -19,9 +19,11 @@ import assert from "node:assert";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { SessionAdapter } from "../src/dsh/adapter";
+import { PendingInteractions, type HeldInteraction } from "../src/dsh/pendingInteractions";
 import type { MessageView, QuestionAnswerView, Segment } from "../src/shared/chat";
 import type { HostToWebview } from "../src/shared/ipc";
-import { isTakenOverByComposer, pendingInteractionOf } from "../src/webview/pendingInteraction";
+import { resolveInteractions } from "../src/webview/pendingInteraction";
+import { dictionaryFor } from "../src/webview/texts";
 
 const DRAFT = "src/webview/components/Composer.tsx";
 
@@ -99,17 +101,22 @@ const toolResult = (callId: string, text: string, seq: number) => ({
 {
   const { adapter, messages } = harness();
   askTwo(adapter);
-  assert.strictEqual(pendingInteractionOf(messages)?.kind, "question", "刚开始是待回答，接管输入区");
+  assert.strictEqual(resolveInteractions(messages).pending?.kind, "question", "刚开始是待回答，接管输入区");
 
   adapter.cancelEvent("ev-q1");
   const segment = questionSegment(messages);
   assert.strictEqual(segment?.question.state, "cancelled", "Host 撤回 → cancelled（没人回答过）");
+  const taken = resolveInteractions(messages).takenOver;
   assert.strictEqual(
-    isTakenOverByComposer({ kind: "question", question: segment!.question }, "ev-q1"),
-    false,
+    taken.size,
+    0,
     "撤回之后必须把输入区让出来（这就是用户报的「问卷还停在页面上」）",
   );
-  assert.strictEqual(pendingInteractionOf(messages), undefined, "不再是待处理交互");
+  assert.ok(
+    !taken.has(segment!.id),
+    "撤回的那一段也不该再从流里撤下（按段 id 判，它要留在流里当记录）",
+  );
+  assert.strictEqual(resolveInteractions(messages).pending, undefined, "不再是待处理交互");
 }
 console.log("interactionSync: cancel 帧收掉问卷 ✓");
 
@@ -184,7 +191,7 @@ console.log("interactionSync: 工具结果回填答案并收场 ✓");
   const segment = questionSegment(messages);
   assert.strictEqual(segment?.question.state, "answered", "答案先到、卡片后建 → 直接是已答完");
   assert.deepStrictEqual(segment?.question.answers?.docs, { selected: ["要"] });
-  assert.strictEqual(pendingInteractionOf(messages), undefined, "不会再占住输入区");
+  assert.strictEqual(resolveInteractions(messages).pending, undefined, "不会再占住输入区");
 }
 console.log("interactionSync: 重投递顺序颠倒也不弹过期问卷 ✓");
 
@@ -216,10 +223,9 @@ console.log("interactionSync: 不误认领无关结果 ✓");
   const segment = questionSegment(messages);
   assert.strictEqual(segment?.question.state, "answered");
   assert.strictEqual(segment?.question.answers?.docs?.custom, "写一段就行", "展开记录要显示用户写下的自定义回答");
-  assert.strictEqual(
-    isTakenOverByComposer({ kind: "question", question: segment!.question }, "ev-q2"),
-    false,
-  );
+  const taken = resolveInteractions(messages).takenOver;
+  assert.strictEqual(taken.size, 0, "答完之后那段不再由输入区渲染（它留在流里当记录）");
+  assert.ok(!taken.has(segment!.id), "按段 id 判：没有待处理交互时一段都不撤");
 }
 console.log("interactionSync: 本窗口提交后记录里有答案 ✓");
 
@@ -227,7 +233,7 @@ console.log("interactionSync: 本窗口提交后记录里有答案 ✓");
 {
   const { adapter, messages } = harness();
   adapter.addApproval({ requestId: "ev-a1", toolName: "pwsh", callId: "call_9", state: "waiting" });
-  assert.strictEqual(pendingInteractionOf(messages)?.kind, "approval", "待审批接管输入区");
+  assert.strictEqual(resolveInteractions(messages).pending?.kind, "approval", "待审批接管输入区");
 
   adapter.applyEvent({
     type: "approval/asked",
@@ -242,7 +248,7 @@ console.log("interactionSync: 本窗口提交后记录里有答案 ✓");
     data: { id: "ap-1", outcome: "rejected" },
   } as never);
   assert.strictEqual(approvalSegment(messages)?.approval.state, "rejected", "另一个窗口拒绝 → 本窗口跟着收场");
-  assert.strictEqual(pendingInteractionOf(messages), undefined, "不再占输入区");
+  assert.strictEqual(resolveInteractions(messages).pending, undefined, "不再占输入区");
 
   // 三档 outcome 的映射：allowed-once → approved，其余（cancelled / unavailable）→ expired
   for (const [outcome, expected] of [
@@ -276,25 +282,41 @@ console.log("interactionSync: 本窗口提交后记录里有答案 ✓");
   cancelled.adapter.addApproval({ requestId: "ev-a3", toolName: "pwsh", callId: "call_7", state: "waiting" });
   cancelled.adapter.cancelEvent("ev-a3");
   assert.strictEqual(approvalSegment(cancelled.messages)?.approval.state, "expired", "撤回的审批标 expired");
-  assert.strictEqual(pendingInteractionOf(cancelled.messages), undefined);
+  assert.strictEqual(resolveInteractions(cancelled.messages).pending, undefined);
 }
 console.log("interactionSync: 审批按 approval/decided 与撤回收场 ✓");
 
 // ---------- 7. 结构不变量：宿主真的接了这两条信号 ----------
+//
+// 这一节只剩**确实只能在源码层表达**的接线（`$events` 的帧分支、IPC 类型、
+// adapter 的分支名）——它们没有可调用的 API 接缝。请求本身的记账规则（去重 /
+// 回放不删 / 结算才删）已经搬进 `src/dsh/pendingInteractions.ts`，断言改在
+// `scripts/pendingInteractions.test.ts` 里**调用真 API**，不再对 5000 行的
+// `controller.ts` 做字符切片（见 `docs/audit-summary.md` 第五批的结论）。
 {
   const controller = readFileSync(join(process.cwd(), "src", "dsh", "controller.ts"), "utf8");
   assert.ok(
-    /if \(frame\.type === "cancel"\) \{/.test(controller) && /this\.cancelHeldEvent\(frame\.eventId\)/.test(controller),
-    "$events 的 cancel 帧必须被处理（这是「另一个窗口答了」的权威信号）",
-  );
-  assert.ok(
-    /this\.heldEvents\.delete\(eventId\)/.test(controller),
-    "还挂着的请求被撤回时要直接丢掉——否则用户下次打开会话会凭空弹一张过期的卡",
+    /if \(frame\.type === "cancel"\) \{/.test(controller) &&
+      /this\.interactions\.withdraw\(frame\.eventId\)/.test(controller),
+    "$events 的 cancel 帧必须被处理（「另一个窗口答了」的权威信号）——" +
+      "而且要走账本的撤回出口，不能只把界面上的卡收掉、账还挂着",
   );
   assert.ok(
     /answersByQuestionId\(message\.answers\)/.test(controller),
     "本窗口提交后要立刻把答案写进卡片（展开记录靠它）",
   );
+  // 「回放」这个动作本身只能在源码层确认：它是 `bindViewToSession` 里的一次调用
+  // （域的生命周期要真宿主才跑得起来）。`forSession` 是读、条目不删，由
+  // `pendingInteractions.test.ts` 的真 API 断言钉住。
+  assert.ok(
+    /this\.replayHeldToScope\(sessionId, scope\);/.test(controller),
+    "绑定窗口时必须回放未结算的审批/提问——用户切回来的那一刻卡片要回来",
+  );
+  // 建域时**不**回放：那一刻还没有窗口绑上来，投递出去没人收
+  const ensureStart = controller.indexOf("private ensureScope(");
+  const ensure = controller.slice(ensureStart, controller.indexOf("private ensureDefaultModelApplied(", ensureStart));
+  assert.ok(ensureStart > 0, "取不到 ensureScope");
+  assert.ok(!/interactions\./.test(ensure), "ensureScope 不该回放（域建成时还没有窗口绑定）");
 
   const protocol = readFileSync(join(process.cwd(), "src", "dsh", "protocol.ts"), "utf8");
   assert.ok(
@@ -323,19 +345,47 @@ console.log("interactionSync: 宿主侧接线正确 ✓");
     "文件与对话候选并行取（与官方 reference 源同构）",
   );
 
-  const composer = readFileSync(join(process.cwd(), DRAFT), "utf8");
-  assert.ok(
-    /const sessions: MentionCandidate\[\] = state\.fileRefs\.sessions/.test(composer),
-    "界面要把对话候选接进同一个候选列表",
+  // 界面侧那三样（候选进同一条列表 / mention 插入 / 分组标题）**不再 grep Composer 源码**：
+  // 规则已经搬进 `src/webview/composerCompletion.tsx`，直接调它 + 用词典断言
+  // （理由见仓库结论：测试面不该是文件字符）。它连带 `bridge.ts` 会在模块求值期挂
+  // `window.addEventListener`，所以先补桩再**动态** import（同 `questionRender.test.ts`）。
+  (globalThis as { window?: unknown }).window = {
+    addEventListener: () => {},
+    removeEventListener: () => {},
+  };
+  const { candidateRows, isSessionCandidate, rankCandidates } = await import(
+    "../src/webview/composerCompletion"
+  );
+  const fileCandidate = { path: "src/a.ts", kind: "file" as const };
+  const sessionCandidate = {
+    sessionId: "s1",
+    label: "s1",
+    mention: "@[s1](dsh-session:s1)",
+  };
+  const ranked = rankCandidates(
+    { kind: "mention", start: 0, query: "" },
+    [],
+    [fileCandidate],
+    [sessionCandidate],
+  );
+  assert.deepStrictEqual(
+    [ranked.length, isSessionCandidate(ranked[0]), isSessionCandidate(ranked[1])],
+    [2, false, true],
+    "界面要把对话候选接进同一个候选列表（文件在前、对话在后，与官方 reference 源同序）",
   );
   assert.ok(
-    /if \(isSessionCandidate\(candidate\)\) \{/.test(composer) && /insertMentionText\(mention\)/.test(composer),
-    "选中对话候选要把服务端铸好的 mention 插进正文",
+    sessionCandidate.mention.startsWith("@["),
+    "选中对话候选插入的是服务端铸好的 mention（`@[标题](dsh-session:…)`）",
   );
-  assert.ok(
-    /texts\.mentionSessions/.test(composer),
-    "对话候选要有自己的分组标题（词典 key，中英各一份）",
-  );
+  const rows = candidateRows(ranked, "mention", {
+    mentionFiles: "文件",
+    mentionSessions: "对话",
+    commands: "命令",
+  });
+  assert.strictEqual(rows[1].section, "对话", "对话候选要有自己的分组标题（词典 key，中英各一份）");
+  assert.strictEqual(rows[1].showSection, true, "换了分组要显示分组标题");
+  assert.strictEqual(dictionaryFor("zh").mentionSessions, "对话");
+  assert.strictEqual(dictionaryFor("en").mentionSessions, "Sessions");
 
   const ipc = readFileSync(join(process.cwd(), "src", "shared", "ipc.ts"), "utf8");
   assert.ok(/sessions\?: SessionRefView\[\]/.test(ipc), "files/list 帧要带上对话候选");
@@ -350,70 +400,67 @@ console.log("interactionSync: @ 对话引用的接线 ✓");
 // 根因是**请求的存放位置**：`addQuestion` / `addApproval` 把卡片放进域（scope）的
 // 适配器里，而切会话会 `dropViewers` → `destroyScope` 把整个适配器回收；审批/提问
 // **不是 durable 事件**（会话日志里没有它们），重放不回，于是只存在于被回收的适配器里
-// 的那份请求就永久丢了。修法是把「还没结算的审批/提问」留在宿主的 `heldEvents` 里，
-// 直到有人答复（`answerApproval` / `answerQuestion`）、用户自己撤回
-// （`cancelQuestion`，计划审阅卡的「去聊天里说」）或 Host 撤回（`cancel` 帧），
-// 并在**有窗口绑上这个会话**时回放。
+// 的那份请求就永久丢了。修法是把「还没结算的审批/提问」留在宿主的账本里，直到有人
+// 答复（`answerApproval` / `answerQuestion`）、用户自己撤回（`cancelQuestion`，
+// 计划审阅卡的「去聊天里说」）或 Host 撤回（`cancel` 帧），并在**有窗口绑上这个会话**
+// 时回放。
 //
-// 这一组按源码结构钉住这条生命周期（域的生命周期只能在真宿主里跑，这里是接线断言）。
+// 账本从 `controller.ts` 的 `heldEvents` / `eventSessions` / `handledEvents` 收成了
+// `src/dsh/pendingInteractions.ts` 的 `PendingInteractions`。所以这一节改成两步：
+//
+//   (a) **调真 API** 钉住账本自己的生命周期（回放不删、结算才删、只按会话分桶）；
+//   (b) 源码层**只留确实只能在那里表达的**接线（4 个结算点挂在哪、建域时不回放）。
+//
+// 改造前这里是「读 5000 行源码 → 找字符串位置 → 数 `this.heldEvents.delete(` 出现几次」，
+// 改个注释或挪一行就假红/假绿（见 `docs/audit-summary.md` 第五批的结论）。
 {
+  // ---------- (a) 账本的生命周期（真 API） ----------
+  const ledger = new PendingInteractions();
+  const held: HeldInteraction = {
+    eventId: "ev-held",
+    kind: "approval",
+    sessionId: "s1",
+    request: { toolName: "pwsh", callId: "call_1" },
+  };
+  assert.strictEqual(ledger.hold(held), "new", "第一次收下一条请求");
+  assert.strictEqual(ledger.hold(held), "duplicate", "同一条重投递只收一次（重连/窗口重载都会重投）");
+
+  // 切走再切回来 = 对同一个会话连续回放两次；卡片必须都还在（回放是读，不删条目）
+  assert.deepStrictEqual(ledger.forSession("s1"), [held], "回放要把未结算的条目交出来");
+  assert.deepStrictEqual(ledger.forSession("s1"), [held], "第二次回放同一条（切走又切回来）");
+  assert.deepStrictEqual(ledger.forSession("s2"), [], "别的会话不拿这条");
+  assert.ok(ledger.hasSeen("ev-held"), "重投递判据在回放之后依然成立");
+
+  // Host 撤回（cancel 帧）是**结算**：之后不再回放，而且调用方拿到原始请求去收场卡片
+  assert.deepStrictEqual(ledger.withdraw("ev-held"), held, "撤回要把那条记录交还给调用方");
+  assert.deepStrictEqual(ledger.forSession("s1"), [], "撤回之后不再回放（否则下次打开会话弹一张过期的卡）");
+  assert.strictEqual(ledger.withdraw("ev-held"), undefined, "再撤一次是空操作");
+
+  // 结算之后**重投递**不能被重新收下：账目的是「这次询问结束了」，与服务端还会不会
+  // 重投递无关（结算掉的那条留着会让卡片「回来了」并永远占着输入区）
+  assert.strictEqual(ledger.hold(held), "duplicate", "结算过的 eventId 仍然算「见过」");
+
+  // 只有 4 个结算点：本窗口答复两处 + 用户自己撤回一处 + Host 撤回一处。
+  // 这一条**只能在源码层表达**（控制器起不来，它要 vscode + 一个真连接），所以按
+  // 「调用点的条数」数——不按变量的拼写，改个局部名不该让它假红。
   const controller = readFileSync(join(process.cwd(), "src", "dsh", "controller.ts"), "utf8");
-
-  // (1) waterfall 分支：先记「未结算」，再投递；不能是「投递了就不留」
-  const branchStart = controller.indexOf('waterfall.event === "user-questions/request") {');
-  const branchEnd = controller.indexOf("// 不认识的事件", branchStart);
-  assert.ok(branchStart > 0 && branchEnd > branchStart, "取不到审批/提问的 waterfall 分支");
-  const branch = controller.slice(branchStart, branchEnd);
-  const setAt = branch.indexOf("this.heldEvents.set(waterfall.eventId, held);");
-  const deliverAt = branch.indexOf("deliverEventToScope(waterfall.eventId, held, scope)");
-  assert.ok(setAt >= 0, "waterfall 必须把请求记成「未结算」（否则切会话就丢）");
-  assert.ok(deliverAt > setAt, "顺序必须是：先记未结算 → 再投递（投递只是显示，不是记账）");
-  assert.ok(
-    !/else\s*\{\s*\/\/[^\n]*\n\s*this\.heldEvents\.set/.test(branch),
-    "不能是「有域就直接投递、只把没域的挂起」——那正是丢请求的写法",
-  );
-
-  // (2) 有窗口绑上会话时要回放（切走再切回来的唯一时刻）
-  const bindStart = controller.indexOf("private bindViewToSession(");
-  const bindEnd = controller.indexOf("private replayHeldEvents(", bindStart);
-  assert.ok(bindStart > 0 && bindEnd > bindStart, "取不到 bindViewToSession");
-  const bind = controller.slice(bindStart, bindEnd);
-  assert.ok(
-    /this\.replayHeldEvents\(sessionId, scope\);/.test(bind),
-    "绑定窗口时必须回放未结算的审批/提问——用户切回来的那一刻卡片要回来",
-  );
-
-  // (3) 回放本身**不删条目**：删了下次切走再回来又没了
-  const replay = controller.slice(bindEnd, controller.indexOf("// ---------- 连接 ----------", bindEnd));
-  assert.ok(
-    /private replayHeldEvents\(sessionId: string, scope: SessionScope\)/.test(replay) &&
-      !/heldEvents\.delete/.test(replay),
-    "回放只投递、不删条目（条目要留到真正结算）",
-  );
-
-  // (4) 建域时**不**回放：那一刻还没有窗口绑上来，投递出去没人收
-  const ensureStart = controller.indexOf("private ensureScope(");
-  const ensure = controller.slice(ensureStart, controller.indexOf("private ensureDefaultModelApplied(", ensureStart));
-  assert.ok(!/heldEvents/.test(ensure), "ensureScope 不该回放（域建成时还没有窗口绑定）");
-
-  // (5) 结算点只有四个：本窗口答复两处 + **用户自己撤回**一处 + Host 撤回一处。
-  // 多一处少一处都要在这里说清楚
-  const deletes = controller.match(/this\.heldEvents\.delete\(/g) ?? [];
+  const settleCalls = controller.match(/this\.interactions\.settle\(/g) ?? [];
+  const withdrawCalls = controller.match(/this\.interactions\.withdraw\(/g) ?? [];
   assert.strictEqual(
-    deletes.length,
+    settleCalls.length + withdrawCalls.length,
     4,
-    `heldEvents 的结算点应当正好 4 处（answerApproval / answerQuestion / cancelQuestion / ` +
-      `cancelHeldEvent），现在是 ${deletes.length} 处——少一处会让卡片永远复原不回来，` +
-      `多一处会让它在切回来时丢`,
+    `结算点应当正好 4 处（answerApproval / answerQuestion / cancelQuestion 各一次 settle，` +
+      `cancel 帧一次 withdraw），现在是 ${settleCalls.length} + ${withdrawCalls.length}——` +
+      "少一处会让卡片永远复原不回来，多一处会让它在切回来时丢",
   );
   assert.ok(
-    /case "answerApproval":[\s\S]{0,200}?this\.heldEvents\.delete\(eventId\);/.test(controller) &&
-      /case "answerQuestion":[\s\S]{0,200}?this\.heldEvents\.delete\(eventId\);/.test(controller),
+    /case "answerApproval":[\s\S]{0,300}?this\.interactions\.settle\(eventId\)/.test(controller) &&
+      /case "answerQuestion":[\s\S]{0,300}?this\.interactions\.settle\(eventId\)/.test(controller),
     "本窗口答复后要结算掉（否则下次切回来会弹一张已经答过的卡）",
   );
   // 用户自己撤回（计划审阅卡的「去聊天里说」）同样是一次结算：请求已经回掉了
   assert.ok(
-    /case "cancelQuestion":[\s\S]{0,400}?this\.heldEvents\.delete\(eventId\);/.test(controller),
+    /case "cancelQuestion":[\s\S]{0,500}?this\.interactions\.settle\(eventId\)/.test(controller),
     "用户撤回也要结算掉——留着它下次切回会话会凭空弹一张过期的计划审阅卡",
   );
 }
@@ -442,7 +489,7 @@ console.log("interactionSync: 未结算的问卷/审批随「绑定窗口」回�
   adapter.addApproval({ requestId: "ev-a9", toolName: "pwsh", callId: "call_9", state: "waiting" });
   assert.strictEqual(approvalsNow()[0].approval.state, "approved", "已答完的审批不能被重投递改回等待");
   assert.strictEqual(approvalsNow().length, 1, "重投递也不该再加一张");
-  assert.strictEqual(pendingInteractionOf(messages), undefined, "也不会重新占住输入区");
+  assert.strictEqual(resolveInteractions(messages).pending, undefined, "也不会重新占住输入区");
 }
 console.log("interactionSync: 审批卡重复投递去重 ✓");
 
@@ -450,7 +497,7 @@ console.log("interactionSync: 审批卡重复投递去重 ✓");
 //
 // 上一组钉的是「请求留在宿主手里」；这一组钉的是**卡片重建之后又被打回来**的那一步：
 // 审批 / 提问不是 durable 事件（会话日志里没有），而 `refold()` 会把消息流整体折成
-// 会话日志的产物 —— 宿主 `replayHeldEvents` 是紧跟 `ensureScope` 同步跑的，跟随流
+// 会话日志的产物 —— 宿主 `replayHeldToScope` 是紧跟 `ensureScope` 同步跑的，跟随流
 // 那份 `snapshot` 要等一个网络往返才到，到了就把整袋消息重折一遍，刚补回来的卡片
 // 正好被折掉。用户 2026-09-15 在上一轮修复之后仍然报「切走再切回来问卷不见了」，
 // 以及「VSCode 窗口重载后问卷丢了」，同一条路径（重载 = 重连 + 服务端重投递水瀑）。
@@ -490,7 +537,11 @@ console.log("interactionSync: 审批卡重复投递去重 ✓");
   const question = questionSegment(messages);
   assert.ok(question, "重折之后待答问卷必须还在——不在就是「agent 永久卡在 ask 节点」");
   assert.strictEqual(question!.question.state, "waiting", "重折不该改动它的状态");
-  assert.strictEqual(pendingInteractionOf(messages)?.kind, "question", "它仍然接管输入区");
+  assert.strictEqual(resolveInteractions(messages).pending?.kind, "question", "它仍然接管输入区");
+  assert.ok(
+    resolveInteractions(messages).takenOver.has(question!.id),
+    "接管输入区的是**那一段**本身（takenOver 的键是段 id）——它才该从流里撤下",
+  );
   const approval = approvalSegment(messages);
   assert.ok(approval, "审批卡同样不能被重折吃掉");
   assert.strictEqual(approval!.approval.state, "waiting", "审批的状态也不该被改动");
@@ -512,7 +563,7 @@ console.log("interactionSync: 审批卡重复投递去重 ✓");
     "记录里要留着用户当时选了什么（重折不能把答案抹掉）",
   );
   assert.strictEqual(approvalSegment(messages)?.approval.state, "approved", "已收场的审批同理");
-  assert.strictEqual(pendingInteractionOf(messages), undefined, "收场之后不再占输入区");
+  assert.strictEqual(resolveInteractions(messages).pending, undefined, "收场之后不再占输入区");
 }
 console.log("interactionSync: 重折（快照/重连/重载）后待答卡片仍在 ✓");
 

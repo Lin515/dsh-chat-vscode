@@ -12,6 +12,7 @@ import assert from "node:assert";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { lineageDepths, visibleForWorkspace, visibleSessionRows } from "../src/dsh/sessionList";
+import { dictionaryFor } from "../src/webview/texts";
 
 // ---------- 1. 分支必须留着，子代理必须藏起来 ----------
 //
@@ -154,9 +155,9 @@ console.log("sessionList: 工作区可见性（有文件夹 / 无文件夹 / 已
 
   // 词典：中英都要有，且都带标题参数（TS 会强制，这里顺带钉住形态）
   // 两种语言统一「半角冒号 + 一个空格」（用户口径）
-  const texts = readFileSync(join(process.cwd(), "src", "webview", "texts.ts"), "utf8");
-  assert.ok(/forkedTitle: \(title\) => `分支: \$\{title\}`/.test(texts), "中文前缀是「分支: 」");
-  assert.ok(/forkedTitle: \(title\) => `Fork: \$\{title\}`/.test(texts), "英文前缀是「Fork: 」");
+  // 词典断言（连参数一起验），不 grep 源文件里的字面量——文案表现在住在 messages.ts
+  assert.strictEqual(dictionaryFor("zh").forkedTitle("x"), "分支: x", "中文前缀是「分支: 」");
+  assert.strictEqual(dictionaryFor("en").forkedTitle("x"), "Fork: x", "英文前缀是「Fork: 」");
 }
 console.log("sessionList: 控制器与界面都接上了 ✓");
 

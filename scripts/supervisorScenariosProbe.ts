@@ -5,24 +5,25 @@
  * - **R2 多窗口共享**：三个窗口同时在线时仍只有 1 个 dsh；关掉其中两个，第三个不受影响；
  * - **R5 supervisor 崩了能自愈**：强杀 supervisor（**不加 /T**，留下孤儿 dsh）→
  *   新一轮窗口必须能重新起一套并接上，且**遗留的 dsh 被回收**（端口不乱占）；
- * - **R6 用户能立刻停**：任一窗口发 `stop` 控制请求 → supervisor 与 dsh 都干净退出、会合文件与 socket 清掉。
+ * - **R6 用户能立刻停**：任一窗口请守护进程停（`stopAndExit()` = 命令面板「停止内部 DSH」那条路）
+ *   → supervisor 与 dsh 都干净退出、会合文件清掉。
  *
- * 用法：node build/supervisor-scenarios-probe.mjs [日志文件]
+ * **窗口就是扩展真正用的那个管理器**（`SupervisorManager`）：三个"窗口"是三个管理器实例，
+ * 并发的 `ensure()` 走的就是扩展激活期那一步——从前的 pinger 手抄了一遍流程，
+ * 那时这几个验收探针验的是副本。
  */
 import { appendFileSync, writeFileSync } from "node:fs";
 // 必须排在最前面：会合目录指到本次探针专用目录
 import { PROBE_SUPERVISOR_ROOT } from "./supervisorProbeEnv";
-import { readState, supervisorDirectory } from "../src/dsh/supervisorProtocol";
-import { SupervisorConnection } from "../src/dsh/supervisorClient";
+import { readState } from "../src/dsh/supervisorProtocol";
 import { isProcessAlive } from "../src/dsh/processRegistry";
 import {
-  closePinger,
-  killPinger,
-  killTree,
+  ProbeWindow,
+  alive,
+  killProcess,
   portListening,
-  startPinger,
+  stopAllProbeProcesses,
   waitUntil,
-  type StartedPinger,
 } from "./supervisorPingerHarness";
 
 const LOG = process.argv[2] ?? ".tmp/supervisor-scenarios.log";
@@ -36,8 +37,6 @@ function check(label: string, ok: boolean, detail = ""): void {
 }
 
 const COMMAND = "dsh web --port 0 --no-open";
-const GROUP = require("node:crypto").createHash("sha256").update(`internal:${COMMAND}`).digest("hex").slice(0, 12);
-const DIRECTORY = supervisorDirectory(GROUP);
 
 /**
  * 隔离自检：**必须**跑在临时目录里。
@@ -54,8 +53,26 @@ if (!isolated || !/dsh-chat-sup-probe-/.test(isolated)) {
 }
 
 /** 记下探针起过的一切，收尾时全部带走（绝不留给用户机器）。 */
-const started: StartedPinger[] = [];
-const extraPids: number[] = [];
+const windows: ProbeWindow[] = [];
+
+function makeWindow(tag: string): ProbeWindow {
+  const window = new ProbeWindow({ tag, command: COMMAND }, say);
+  windows.push(window);
+  return window;
+}
+
+/**
+ * 会合目录（分组由 `groupForConfig` 算，与扩展同构）。
+ *
+ * 只借一个窗口实例问一次，**马上关掉它**：它的心跳会继续跑（"别的窗口把后台起起来就接上"
+ * 正是扩展的行为），留着它会让 R5 的"新一轮"判据变糊。
+ */
+const DIRECTORY = (() => {
+  const holder = new ProbeWindow({ tag: "group-probe", command: COMMAND }, say);
+  const directory = holder.directory;
+  holder.dispose();
+  return directory;
+})();
 
 try {
   say(`会合根目录（隔离）：${isolated}`);
@@ -63,29 +80,25 @@ try {
 
   // ---------- R4：三个窗口同时激活 ----------
   say("\n【R4】三个窗口同时激活 → 只能有一套 supervisor + 一个 dsh…");
-  const trio = await Promise.all([
-    startPinger("race-a", COMMAND),
-    startPinger("race-b", COMMAND),
-    startPinger("race-c", COMMAND),
-  ]);
-  started.push(...trio);
-  const urls = trio.map((item) => item.info.baseUrl);
-  const supervisorPids = trio.map((item) => item.info.supervisorPid);
-  const serverPids = trio.map((item) => item.info.serverPid);
+  const trio = [makeWindow("race-a"), makeWindow("race-b"), makeWindow("race-c")];
+  await Promise.all(trio.map((window) => window.ensure({ start: true })));
+  const urls = trio.map((window) => window.baseUrl);
+  const supervisorPids = trio.map((window) => window.state()?.supervisorPid);
+  const serverPids = trio.map((window) => window.state()?.serverPid);
   check("三个窗口都拿到了地址", urls.every(Boolean), urls.join(" / "));
   check("三个窗口拿到的是**同一个**后台", new Set(urls).size === 1, JSON.stringify(urls));
   check("只有一套 supervisor", new Set(supervisorPids).size === 1, JSON.stringify(supervisorPids));
   check("只有一个 dsh 进程", new Set(serverPids).size === 1, JSON.stringify(serverPids));
-  const launchers = trio.filter((item) => item.info.launched === true).length;
+  const launchers = trio.filter((window) => window.launched).length;
   check("只有一个窗口是「启动者」（并发靠锁串行化）", launchers === 1, `启动者数=${launchers}`);
 
   // ---------- R2：多窗口共享 ----------
   say("\n【R2】关掉其中两个窗口 → 第三个必须不受影响…");
   const survivor = trio[2];
-  const survivorUrl = survivor.info.baseUrl ?? "";
-  const survivorPort = Number(new URL(survivorUrl).port);
-  await closePinger(trio[0]);
-  await closePinger(trio[1]);
+  const survivorUrl = survivor.baseUrl ?? "";
+  const survivorPort = survivor.port ?? 0;
+  trio[0].dispose();
+  trio[1].dispose();
   const stillServing = await waitUntil("后台仍在服务", async () => {
     const state = readState(DIRECTORY);
     return state?.baseUrl === survivorUrl && (await portListening(survivorPort));
@@ -93,62 +106,54 @@ try {
   check("后台没被带走（还有人在用）", stillServing, `${survivorUrl}（api=${await portListening(survivorPort)}）`);
   check(
     "会合文件里还是同一套（supervisor 没重启）",
-    readState(DIRECTORY)?.serverPid === survivor.info.serverPid,
+    readState(DIRECTORY)?.serverPid === serverPids[2],
     `server=${readState(DIRECTORY)?.serverPid ?? "?"}`,
   );
 
-  // ---------- R6：stop 控制请求 ----------
-  say("\n【R6】发 stop 控制请求 → supervisor 与 dsh 都干净退出…");
+  // ---------- R6：「停止内部 DSH」 ----------
+  say("\n【R6】请守护进程停（「停止内部 DSH」那条路）→ supervisor 与 dsh 都干净退出…");
   const stateBeforeStop = readState(DIRECTORY);
-  const connection = new SupervisorConnection(
-    stateBeforeStop?.socket ?? "",
-    {
-      onState: () => undefined,
-      onGoodbye: (reason) => say(`   （收到 goodbye：${reason}）`),
-      onClosed: () => undefined,
-      log: say,
-    },
-    { hostId: `stopper-${process.pid}`, workspace: "D:/dev/dsh-chat#stopper" },
+  const supervisorPidBeforeStop = stateBeforeStop?.supervisorPid;
+  const stopped = await survivor.stopAndExit();
+  check("停止请求真的发出去了（回执不撒谎）", stopped, String(stopped));
+  const cleaned = await waitUntil("干净退场", async () => {
+    return (
+      readState(DIRECTORY) === undefined &&
+      !(await portListening(survivorPort)) &&
+      !alive(supervisorPidBeforeStop)
+    );
+  }, 30_000);
+  check(
+    "stop 之后：会合文件、端口、supervisor 全部清干净",
+    cleaned,
+    `pid=${supervisorPidBeforeStop} port=${survivorPort}`,
   );
-  const connected = await connection.open();
-  check("stop 连接建立", connected);
-  if (connected && stateBeforeStop) {
-    const supervisorPid = stateBeforeStop.supervisorPid;
-    extraPids.push(supervisorPid);
-    connection.control("stop");
-    const cleaned = await waitUntil("干净退场", async () => {
-      const state = readState(DIRECTORY);
-      return state === undefined && !(await portListening(survivorPort)) && !isProcessAlive(supervisorPid);
-    }, 30_000);
-    check("stop 之后：会合文件、端口、supervisor 全部清干净", cleaned, `pid=${supervisorPid} port=${survivorPort}`);
-  }
-  connection.close();
-  await closePinger(survivor);
 
   // ---------- R5：强杀 supervisor，留孤儿 dsh ----------
   say("\n【R5】强杀 supervisor（**不加 /T**）→ 留下孤儿 dsh → 新一轮窗口必须能自愈…");
-  const first = await startPinger("crash-a", COMMAND);
-  started.push(first);
-  const crashedUrl = first.info.baseUrl ?? "";
-  const crashedPort = Number(new URL(crashedUrl).port);
-  const crashedSupervisor = first.info.supervisorPid;
+  const first = makeWindow("crash-a");
+  await first.ensure({ start: true });
+  const crashedUrl = first.baseUrl ?? "";
+  const crashedPort = first.port ?? 0;
+  const crashedSupervisor = first.state()?.supervisorPid;
   check("先有一套可用后台", Boolean(crashedUrl), `${crashedUrl}（supervisor=${crashedSupervisor}）`);
 
   // 窗口也一起关掉：确保"没人用"，只有孤儿 dsh 留在端口上
-  await closePinger(first);
-  killPinger(crashedSupervisor);
-  const supervisorGone = await waitUntil("supervisor 已死", async () => !isProcessAlive(crashedSupervisor), 15_000);
+  first.dispose();
+  killProcess(crashedSupervisor);
+  const supervisorGone = await waitUntil("supervisor 已死", async () => !alive(crashedSupervisor), 15_000);
   check("supervisor 已被强杀（会合文件随之变成陈旧/消失）", supervisorGone, `pid=${crashedSupervisor}`);
   const orphanStillListening = await portListening(crashedPort);
   say(`   （现场）孤儿 dsh 是否还在监听 ${crashedPort}：${orphanStillListening}`);
 
-  const second = await startPinger("crash-b", COMMAND);
-  started.push(second);
-  check("新一轮窗口拿到了可用后台", Boolean(second.info.baseUrl), second.info.baseUrl ?? "");
+  const second = makeWindow("crash-b");
+  await second.ensure({ start: true });
+  const secondSupervisor = second.state()?.supervisorPid;
+  check("新一轮窗口拿到了可用后台", Boolean(second.baseUrl), second.baseUrl ?? "");
   check(
     "新一轮是一套**新的** supervisor（旧的确实死了）",
-    second.info.supervisorPid !== crashedSupervisor,
-    `旧=${crashedSupervisor} 新=${second.info.supervisorPid}`,
+    secondSupervisor !== crashedSupervisor && !isProcessAlive(crashedSupervisor),
+    `旧=${crashedSupervisor} 新=${secondSupervisor}`,
   );
   if (orphanStillListening) {
     const reclaimed = await waitUntil("孤儿被回收", async () => !(await portListening(crashedPort)), 20_000);
@@ -162,15 +167,7 @@ try {
   failures++;
   say(`探针失败：${error instanceof Error ? `${error.message}\n${error.stack ?? ""}` : String(error)}`);
 } finally {
-  for (const pinger of started) {
-    if (pinger.child.pid !== undefined) killTree(pinger.child.pid);
-  }
-  const state = readState(DIRECTORY);
-  if (state) {
-    killTree(state.supervisorPid);
-    killTree(state.serverPid);
-  }
-  for (const pid of extraPids) killTree(pid);
+  await stopAllProbeProcesses({ windows, directory: DIRECTORY });
   say(failures === 0 ? "\n✓ 并发/共享/崩溃自愈/立刻停 四条都成立" : `\n✗ ${failures} 项未通过`);
   process.exitCode = failures === 0 ? 0 : 1;
 }

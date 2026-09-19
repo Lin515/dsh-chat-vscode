@@ -10,7 +10,6 @@ import { ApprovalCard, CommandRow, FileChips, InjectedRow, MessageImages, Notice
 import { useTexts } from "../texts";
 import { producedOnly, withoutVanished } from "../turnFiles";
 import { foldTurnProcess } from "../turnProcess";
-import { isTakenOverByComposer } from "../pendingInteraction";
 
 /**
  * 助手正文块。流式期间正文每个 token 都在变，用户划选时冻结渲染保住选区
@@ -81,7 +80,7 @@ export const Message = memo(function Message({
   questionBatch,
   turnProcessThreshold,
   canBranch = false,
-  takenOverId,
+  takenOver,
 }: {
   message: MessageView;
   /** 编辑类节点的 diff 排版（来自设置；缺省自适应）。 */
@@ -103,12 +102,15 @@ export const Message = memo(function Message({
    */
   canBranch?: boolean;
   /**
-   * 被输入区接管的那个交互的 `requestId`（`pendingRequestId(pending)`）。
+   * 要**交给输入区渲染**的那些段的 id（`resolveInteractions(...).takenOver`）。
    *
-   * **只有这一条** waiting 段要从流里撤下（由输入区渲染）；其余的留在流里。
-   * 缺省（`undefined`）表示当前没有待处理交互，卡片一律留在流里。
+   * **只有被选中的那一条** waiting 段要从流里撤下（由输入区渲染）；其余的留在流里。
+   * 集合里的段 id 天然满足「还在等」（`resolveInteractions` 只收 `waiting` 的段），
+   * 所以这里按段 id 判一次就够。
+   * 缺省（`undefined`）表示当前没有待处理交互，卡片一律留在流里——子代理转写面板
+   * （`Panels.tsx`）里的消息流没有这个上下文。
    */
-  takenOverId?: string;
+  takenOver?: ReadonlySet<string>;
 }) {
   const texts = useTexts();
   // 连续过程折叠的展开态，**按段记**（键 = 那一段首段的 id）：一轮里可能有好几枚
@@ -258,14 +260,14 @@ export const Message = memo(function Message({
       case "approval":
         // 待处理的审批卡由**输入区**渲染（官方 `conversation.composer` 接管），这里跳过
         // 免得同一张卡出现两次；已经答过的留在流里当记录。
-        // **只跳过被选中的那一条**（`takenOverId`）：万一同一个会话出现两张 waiting 卡
-        // （框架层不合法，但宿主侧的卡片补投有机会造出来），被撤下的那张必须留在流里，
-        // 否则输入区只画一张、这张谁也渲染不了（见 pendingInteraction.ts 文件头）。
-        return isTakenOverByComposer(segment, takenOverId) ? null : (
+        // **只跳过被选中的那一条**（`takenOver` 里那一个段 id）：万一同一个会话出现两张
+        // waiting 卡（框架层不合法，但宿主侧的卡片补投有机会造出来），没被选中的那张必须
+        // 留在流里，否则输入区只画一张、这张谁也渲染不了（见 pendingInteraction.ts 文件头）。
+        return takenOver?.has(segment.id) ? null : (
           <ApprovalCard key={segment.id} approval={segment.approval} />
         );
       case "question":
-        return isTakenOverByComposer(segment, takenOverId) ? null : (
+        return takenOver?.has(segment.id) ? null : (
           <QuestionCard key={segment.id} question={segment.question} batch={questionBatch} />
         );
       case "injected":

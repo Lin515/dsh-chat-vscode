@@ -4,7 +4,7 @@
  * 为什么单独一个文件：`@path` 这个 token 有**两个**产生方——
  * 1. 宿主把引用芯片拼进正文（`dsh/references.ts` 的 `composeWithReferences`）；
  * 2. 界面在候选列表里选中文件时**直接把它插进输入框**（纯路径引用，见
- *    `Composer.tsx` 的 `applyCandidate`）。
+ *    `src/webview/composerCompletion.tsx` 的 `outcomeFor` / `applyCandidate`）。
  *
  * 两处必须产出**一模一样**的拼写，否则同一次引用会随入口不同而变成两种 token
  * （带不带引号、目录带不带尾斜杠都会变），模型看到的语义也就跟着变。所以规则

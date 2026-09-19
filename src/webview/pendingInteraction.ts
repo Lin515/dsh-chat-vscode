@@ -27,6 +27,14 @@ import { planReviewOf, type PlanReviewView } from "./planReview";
  * 所以抑制规则收窄成「**只撤下被选中的那一条**」：万一真出现两张，另一张留在对话流里
  * 照样能答，而不是谁也渲染不了它（`Message` 撤下 + `Composer` 只画一张 = 那张卡彻底消失）。
  *
+ * ## 选举与抑制合成**一次计算**
+ *
+ * 从前这里是两个公开入口：`pendingInteractionOf` 选「谁接管输入区」，
+ * `isTakenOverByComposer(段, requestId)` 判断「某段撤不撤」——调用方得把选举结果
+ * **正确传进来**（传漏、传了过期的 id，症状是同一张卡两边都画、或两边都不画）。
+ * 现在合成 `resolveInteractions` 一次扫描同时给出两者：两者出自同一次遍历，
+ * 对不上这件事从结构上就不可能发生。
+ *
  * 纯函数、不引 React：断言见 `scripts/pendingInteraction.test.ts`。
  */
 export type PendingInteraction =
@@ -34,63 +42,65 @@ export type PendingInteraction =
   | { kind: "question"; question: QuestionView }
   | { kind: "plan-review"; question: QuestionView; review: PlanReviewView };
 
-/** 消息流里**当前待处理**的交互；没有就返回 undefined。 */
-export function pendingInteractionOf(
-  messages: readonly MessageView[],
-): PendingInteraction | undefined {
-  let approval: ApprovalView | undefined;
-  let question: QuestionView | undefined;
-  let pendingReview: { question: QuestionView; review: PlanReviewView } | undefined;
+/**
+ * 没有任何交互接管输入区时的空集合。
+ *
+ * **模块级常量**：`Message` 是 `memo` 的，流式期间 App 每帧都重渲染——没有待处理交互
+ * 是绝大多数帧的状态，这里每次都新建 `Set` 会让所有消息的 props 每帧都变，memo 白做。
+ */
+const NO_TAKEN_OVER: ReadonlySet<string> = new Set();
+
+/**
+ * 一次算出「谁接管输入区」与「哪些段交给输入区渲染」。
+ *
+ * - `pending`：与旧的 `pendingInteractionOf` **完全同语义**——plan-review > 普通提问 >
+ *   审批，同级取最后一条；没有待处理交互时 `undefined`。
+ * - `takenOver`：要**交给输入区渲染**的那些段的 id。键是 **`segment.id`**，不是
+ *   `requestId`——抑制是按段做的（同一张卡的 `requestId` 与段 id 是两回事）。
+ *   最多一个元素：官方框架按会话只留一个待处理交互（见文件头）。
+ *   判据仍然是两条一起要：「**还在等**（`state === "waiting"`）且**就是被选中的那一条**」
+ *   ——前一条由下面的候选收集保证（只有 `waiting` 的段才进得来），后一条由选举保证。
+ *   所以已答过（`answered` / `cancelled`）的段**永远不会**出现在集合里，
+ *   调用方用 `takenOver.has(segment.id)` 直接判即可。
+ */
+export function resolveInteractions(messages: readonly MessageView[]): {
+  pending: PendingInteraction | undefined;
+  takenOver: ReadonlySet<string>;
+} {
+  // 选举的候选：交互视图 + 它所在**那一段**的 id（抑制按段做，所以这里就要一起记）
+  let approval: { segmentId: string; approval: ApprovalView } | undefined;
+  let question: { segmentId: string; question: QuestionView } | undefined;
+  let pendingReview: { segmentId: string; question: QuestionView; review: PlanReviewView } | undefined;
   for (const message of messages) {
     for (const segment of message.segments) {
-      // 同优先级取最后一条：一轮里先后来了两张卡，用户在等的是后到的那张
+      // 同优先级取最后一条：一轮里先后来了两张卡，用户在等的是后到的那张。
+      // 只有 `waiting` 进候选——「还在等」这半条判据就是在这里落地的。
       if (segment.kind === "approval" && segment.approval.state === "waiting") {
-        approval = segment.approval;
+        approval = { segmentId: segment.id, approval: segment.approval };
       } else if (segment.kind === "question" && segment.question.state === "waiting") {
         const narrowed = planReviewOf(segment.question.items);
-        if (narrowed) pendingReview = { question: segment.question, review: narrowed };
-        else question = segment.question;
+        if (narrowed) pendingReview = { segmentId: segment.id, question: segment.question, review: narrowed };
+        else question = { segmentId: segment.id, question: segment.question };
       }
     }
   }
   if (pendingReview) {
-    return { kind: "plan-review", question: pendingReview.question, review: pendingReview.review };
+    return {
+      pending: { kind: "plan-review", question: pendingReview.question, review: pendingReview.review },
+      takenOver: new Set([pendingReview.segmentId]),
+    };
   }
-  if (question) return { kind: "question", question };
-  if (approval) return { kind: "approval", approval };
-  return undefined;
-}
-
-/** 被选中的那条交互的 `requestId`——只有它该从消息流里撤下。 */
-export function pendingRequestId(pending: PendingInteraction | undefined): string | undefined {
-  if (!pending) return undefined;
-  return pending.kind === "approval" ? pending.approval.requestId : pending.question.requestId;
-}
-
-/**
- * 这条段是否应当**由输入区**渲染（而不是留在对话流里）。
- *
- * 判据是「它**就是**被选中的那一条」，**不是**「它是 waiting」——后者会在两张卡并存时
- * 把两张都撤下，而输入区只画一张（见文件头「每个会话只有一张」那节）。
- *
- * @param electedRequestId 选举结果（`pendingRequestId(pending)`）；没有待处理交互时传 `undefined`
- */
-export function isTakenOverByComposer(
-  segment: {
-    kind: string;
-    approval?: ApprovalView;
-    question?: QuestionView;
-  },
-  electedRequestId: string | undefined,
-): boolean {
-  if (electedRequestId === undefined) return false;
-  // 两个条件都要：**还在等**（`waiting`）且**就是被选中的那一条**。
-  // 只看 `requestId` 会在调用方给了一个过期的 id 时把已答过的卡撤下——那条记录就丢了。
-  if (segment.kind === "approval") {
-    return segment.approval?.state === "waiting" && segment.approval.requestId === electedRequestId;
+  if (question) {
+    return {
+      pending: { kind: "question", question: question.question },
+      takenOver: new Set([question.segmentId]),
+    };
   }
-  if (segment.kind === "question") {
-    return segment.question?.state === "waiting" && segment.question.requestId === electedRequestId;
+  if (approval) {
+    return {
+      pending: { kind: "approval", approval: approval.approval },
+      takenOver: new Set([approval.segmentId]),
+    };
   }
-  return false;
+  return { pending: undefined, takenOver: NO_TAKEN_OVER };
 }

@@ -120,11 +120,14 @@ function publishState(
 async function listenDaemon(
   path: string,
   onControl?: (action: string) => void,
-): Promise<{ close: () => Promise<void>; clients: () => number; controls: () => string[] }> {
+): Promise<{ close: () => Promise<void>; clients: () => number; opened: () => number; controls: () => string[] }> {
   let live = 0;
+  /** 累计**开过**几条连接（不只是"现在几条"）：第 10 组要靠它区分"用手里那条"与"新开一条临时连接"。 */
+  let opened = 0;
   const controls: string[] = [];
   const server: Server = createServer((socket) => {
     live += 1;
+    opened += 1;
     let buffer = "";
     socket.on("data", (chunk: string) => {
       buffer += chunk;
@@ -150,6 +153,7 @@ async function listenDaemon(
   });
   return {
     clients: () => live,
+    opened: () => opened,
     controls: () => [...controls],
     close: () =>
       new Promise<void>((resolve) => {
@@ -543,6 +547,213 @@ try {
     await oldUrl.close();
     await newUrl.close();
   }
+  // ---------- 10. 停止入口收敛：一个 `stop(options)`，旧入口全是薄壳（2026-09-19 第二轮） ----------
+  //
+  // 这一组钉的是**收敛后的映射与并发**，不是"某一句写在哪个函数里"：
+  // 判据仍然是"对面（真 socket 服务端）看到几条活连接、收到几条 `stop` 控制帧"。
+  //
+  // 三个 flag 各自的必要性与"少了它会怎样"见 `StopOptions` 的注释；这里逐条走一遍：
+  // 只取消等待不收连接、收连接不发帧、置闸、连点只发一条帧。
+  {
+    const group = "policy-stop-entry";
+    const directory = supervisorDirectory(group);
+    const socket = socketPathIn(directory, group);
+    const url = await listen();
+    // 先摆成"守护进程在跑、dsh 还没就绪"：`ensure()` 会连上 socket 然后**等就绪**
+    // （没有时长上限）——这正是 `cancelWait` 那一档要打断的那一轮。
+    publishState(group, { starting: true, socket });
+    const daemon = await listenDaemon(socket);
+    const manager = new SupervisorManager({
+      group,
+      url: "",
+      command: "dsh web --port 0 --no-open",
+      autoConnect: false,
+      launcher: fakeLauncher().launcher as never,
+      log: () => undefined,
+    });
+    managers.push(manager);
+    /** 对面收到的 `stop` 控制帧条数：**并发合并**的唯一判据。 */
+    const stopFrames = () => daemon.controls().filter((action) => action === "stop").length;
+    /**
+     * 数"对面收到几条 `stop` 帧"。
+     *
+     * 必须**等事件到达**再数：控制帧是写进 socket 的，对面读到它要等自己的读循环跑起来
+     * （下一个 tick）。刚 `await stop()` 就数，数到的是 0；而那条帧随后会在**下一段**里冒出来
+     * ——上一条迟到，后面的差值全错（这是我写第一版时踩的坑，实测 4 条红）。
+     *
+     * 判据没有放松：等到它到达（最多 1s），再多等 300ms 让**重复帧**也有机会冒头，然后要求
+     * 恰好 `expected` 条——"一条没发"与"发了两条"都会红。
+     */
+    const expectStopFrames = async (expected: number): Promise<number> => {
+      await waitFor(() => stopFrames() >= expected, 1_000);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      return stopFrames();
+    };
+
+    // ① `cancelWaiting()` = `stop({ cancelWait: true })`：只中止等待，**不收连接**
+    let waitError: unknown;
+    const waiting = manager.ensure({ start: false, target: "internal" }).catch((error: unknown) => {
+      waitError = error;
+    });
+    await waitFor(() => daemon.clients() === 1);
+    check("前置：等就绪那一轮已经把 socket 连上（对面 1 条）", daemon.clients() === 1, `clients=${daemon.clients()}`);
+    manager.cancelWaiting();
+    await waiting;
+    check(
+      "cancelWaiting()：在途等待立刻以 WaitCancelledError 结束（不是超时失败）",
+      waitError instanceof WaitCancelledError,
+      String(waitError),
+    );
+    check(
+      "cancelWaiting() **不收连接**（对面仍是 1 条：这一档必须留着 socket）",
+      daemon.clients() === 1,
+      `clients=${daemon.clients()}`,
+    );
+    check("cancelWaiting() 一条控制帧都不发", (await expectStopFrames(0)) === 0, `stop 帧=${stopFrames()}`);
+
+    // ② `stop({})` = 旧 `detachInternal()` 那一档：收连接、清掉本窗口的记忆、**不碰进程、不发帧**
+    const detached = await manager.stop({});
+    await waitFor(() => daemon.clients() === 0);
+    check(
+      "stop({}) 收掉连接（对面 0 条）且**不发控制帧**（收连接不是请求）",
+      daemon.clients() === 0 && (await expectStopFrames(0)) === 0,
+      `clients=${daemon.clients()} stop 帧=${stopFrames()}`,
+    );
+    check("stop({}) 返回 false（没有请求可发——返回值的语义是「请求有没有真的发出去」）", detached === false, String(detached));
+    const afterDetach = manager.snapshot();
+    check(
+      "stop({}) 之后快照如实：手里没有连接，且**本窗口不再记着这一套**（remembered / generation 都空）",
+      afterDetach.connected === false && afterDetach.remembered === false && afterDetach.generation === undefined,
+      `connected=${afterDetach.connected} remembered=${afterDetach.remembered} generation=${String(afterDetach.generation)}`,
+    );
+    check(
+      "stop({}) **不置任何闸**（置闸与杀进程都不做，那是老 detachInternal 的定义）",
+      afterDetach.detachedByUser === false && afterDetach.stoppedByUser === false,
+      `detached=${afterDetach.detachedByUser} stopped=${afterDetach.stoppedByUser}`,
+    );
+    // 口径写清（这是新 API 的语义）：`state` 沿用 `peekState()`，**含磁盘回退**——"我交还了"
+    // 不等于"磁盘上没有这一套"（别的窗口还在用、或它刚被交还还没退场，会合文件都还在）。
+    // 所以判"本窗口还占不占用"要看 `connected` / `remembered`，不要看 `state`。
+    check(
+      "口径：stop({}) 之后 `state` 仍指向磁盘上那套还活着的后台（peekState 含磁盘回退）",
+      manager.peekState()?.supervisorPid === process.pid,
+      `peekState.supervisorPid=${manager.peekState()?.supervisorPid ?? "（空）"}`,
+    );
+
+    // ③ 显式动作要能把这一套**重新接上**（薄壳/入口都不许把这条路焊死）
+    publishState(group, { baseUrl: url.baseUrl, token: "stop-token", socket });
+    const info = await manager.ensure({ start: false, target: "internal" });
+    await waitFor(() => daemon.clients() === 1);
+    check(
+      "显式动作重新接上（stop({}) 之后没有被焊死）",
+      info.baseUrl === url.baseUrl && daemon.clients() === 1,
+      `${info.baseUrl} clients=${daemon.clients()}`,
+    );
+
+    // ④ `stop({ release: true })` = 旧 `releaseInternal()`：置 `detachedByUser` 闸 + 收连接
+    await manager.stop({ release: true });
+    await waitFor(() => daemon.clients() === 0);
+    const afterRelease = manager.snapshot();
+    check(
+      "stop({release:true})：交还占用（对面 0 条）+ 置起 detachedByUser 闸",
+      daemon.clients() === 0 && afterRelease.detachedByUser === true,
+      `clients=${daemon.clients()} detachedByUser=${afterRelease.detachedByUser}`,
+    );
+    check("stop({release:true})：不再报内部那套后台（peekState 为空）", manager.peekState() === undefined);
+    check(
+      "stop({release:true}) 之后状态是 stopped（按钮态），详情是 internal detached",
+      manager.getStatus().state === "stopped" && manager.getStatus().detail === "internal detached",
+      `${manager.getStatus().state} / ${manager.getStatus().detail ?? "（无）"}`,
+    );
+    check("stop({release:true}) 同样不发控制帧", (await expectStopFrames(0)) === 0, `stop 帧=${stopFrames()}`);
+
+    // ⑤ `stop()`（**不给 options**）= 旧 `stopAndExit()`：请守护进程连 dsh 一起收场
+    await manager.ensure({ start: false, target: "internal" });
+    await waitFor(() => daemon.clients() === 1);
+    const beforeLegacy = stopFrames();
+    const openedBeforeLegacy = daemon.opened();
+    const legacyFirst = manager.stop();
+    const stoppingInFlight = manager.snapshot().stopping;
+    const legacySecond = manager.stop();
+    const [legacyA, legacyB] = await Promise.all([legacyFirst, legacySecond]);
+    const framesLegacy = await expectStopFrames(beforeLegacy + 1);
+    check(
+      "stop()（不给 options）请守护进程收场：对面收到恰好一条 stop 帧，返回 true",
+      framesLegacy === beforeLegacy + 1 && legacyA === true && legacyB === true,
+      `帧=${framesLegacy - beforeLegacy} a=${legacyA} b=${legacyB}`,
+    );
+    check(
+      "这一帧走的是**手里那条连接**，不是新开的临时连接（对面一条新连接都没开）",
+      daemon.opened() === openedBeforeLegacy,
+      `opened=${daemon.opened() - openedBeforeLegacy}`,
+    );
+    check(
+      "并发连点被合并：在飞时快照的 stopping 为真、事后复位，且只发了一条帧",
+      stoppingInFlight === true && manager.snapshot().stopping === false && framesLegacy === beforeLegacy + 1,
+      `在飞=${stoppingInFlight} 事后=${manager.snapshot().stopping} 帧=${framesLegacy - beforeLegacy}`,
+    );
+    check(
+      "stop()（旧语义）也置 stoppedByUser、状态回按钮态",
+      manager.snapshot().stoppedByUser === true && manager.getStatus().state === "stopped",
+      `${manager.snapshot().stoppedByUser} / ${manager.getStatus().state}`,
+    );
+
+    // ⑥ 分离态下的 `askSupervisor`：走**临时接入**那条路（旧 `stopDetachedInternal()`）
+    const beforeTemp = stopFrames();
+    const openedBeforeTemp = daemon.opened();
+    const temp = await manager.stop({ askSupervisor: true });
+    const framesTemp = await expectStopFrames(beforeTemp + 1);
+    check(
+      "分离态下 stop({askSupervisor:true}) 新开一条临时连接，并真的发出 stop",
+      temp === true && framesTemp === beforeTemp + 1 && daemon.opened() === openedBeforeTemp + 1,
+      `ret=${temp} 帧=${framesTemp - beforeTemp} opened=${daemon.opened() - openedBeforeTemp}`,
+    );
+    await waitFor(() => daemon.clients() === 0);
+    check("临时接入发完就断（本窗口不保留它：对面 0 条）", daemon.clients() === 0, `clients=${daemon.clients()}`);
+
+    // 这一支是**真的异步**（要开连接 + 等 300ms）：没有在飞标记就会开出两条连接、发出两条帧
+    const beforeDouble = stopFrames();
+    const openedBeforeDouble = daemon.opened();
+    const [doubleA, doubleB] = await Promise.all([
+      manager.stop({ askSupervisor: true }),
+      manager.stop({ askSupervisor: true }),
+    ]);
+    const framesDouble = await expectStopFrames(beforeDouble + 1);
+    check(
+      "分离态下连点两次只开一条临时连接、只发**一条**控制帧（并发合并；两个调用拿到同一个结论）",
+      framesDouble === beforeDouble + 1 &&
+        daemon.opened() === openedBeforeDouble + 1 &&
+        doubleA === true &&
+        doubleB === true,
+      `帧=${framesDouble - beforeDouble} opened=${daemon.opened() - openedBeforeDouble} a=${doubleA} b=${doubleB}`,
+    );
+
+    // ⑦ `stop({ cancelWait: true })` 单独给出时**不收连接**（连接着也一样）
+    await manager.ensure({ start: false, target: "internal" });
+    await waitFor(() => daemon.clients() === 1);
+    const onlyWait = await manager.stop({ cancelWait: true });
+    check(
+      "stop({cancelWait:true}) 单独给出：不收连接（对面仍是 1 条）、返回 false",
+      onlyWait === false && daemon.clients() === 1,
+      `ret=${onlyWait} clients=${daemon.clients()}`,
+    );
+
+    // ⑧ 旧名字 `stopAndExit()` 仍然能用（薄壳走同一档）
+    const beforeShell = stopFrames();
+    const shell = await manager.stopAndExit();
+    const framesShell = await expectStopFrames(beforeShell + 1);
+    check(
+      "旧名字 stopAndExit() 仍是真停止（薄壳不改变行为）",
+      shell === true && framesShell === beforeShell + 1,
+      `ret=${shell} 帧=${framesShell - beforeShell}`,
+    );
+
+    // 这一组自己收掉心跳：上面几处刻意制造的"连接断了但会合文件还在"正是心跳会自己接回的
+    // 形状（那一档没有闸），别让它在下一次心跳里把这个断言环境改掉。
+    manager.dispose();
+    await daemon.close();
+    await url.close();
+  }
 } finally {
   for (const manager of managers) manager.dispose();
   await background.close().catch(() => undefined);
@@ -554,7 +765,7 @@ if (failures > 0) {
   process.exitCode = 1;
 } else {
   console.log(
-    "\n✓ supervisor 启动/重连决策（许可 / 复用 / 令牌来自会合文件 / 只读探测 / 等待可中断 / 外部也等到底 / 换目标彻底断开 / 停止连接交还占用且心跳不接回 / 交还后重启仍是真重启）全通过",
+    "\n✓ supervisor 启动/重连决策（许可 / 复用 / 令牌来自会合文件 / 只读探测 / 等待可中断 / 外部也等到底 / 换目标彻底断开 / 停止连接交还占用且心跳不接回 / 交还后重启仍是真重启 / 停止入口收敛且连点只发一条控制帧）全通过",
   );
   assert.ok(true);
 }

@@ -190,7 +190,7 @@
         });
       };
       // 计划审阅**待处理**时的形态：把夹具里那张已答完的计划审阅翻回 `waiting`——
-      // 此时它接管输入区（`pendingInteractionOf` 的选举：plan-review 优先级最高），
+      // 此时它接管输入区（`resolveInteractions` 的选举：plan-review 优先级最高），
       // 卡是「warn 条带 + 内滚计划正文 + 底部决定行」，与记录态完全是两套排版。
       // 计划正文直接复用夹具里那份（不另写一份，免得两处漂移）。
       window.__planReview = function () {

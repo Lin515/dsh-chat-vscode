@@ -23,6 +23,7 @@ import assert from "node:assert";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Marked } from "marked";
+import { dictionaryFor } from "../src/webview/texts";
 
 const source = readFileSync(join(process.cwd(), "src", "webview", "markdown.ts"), "utf8");
 
@@ -129,9 +130,8 @@ const source = readFileSync(join(process.cwd(), "src", "webview", "markdown.ts")
     /\{ kind: "unknown"; id: string; type: string; json: string \}/.test(segment),
     "Segment 要有 unknown 变体（type + json）",
   );
-  const texts = readFileSync(join(process.cwd(), "src", "webview", "texts.ts"), "utf8");
-  assert.ok(/unknownBlock: "未知内容块"/.test(texts), "标签与官方逐字一致（中文）");
-  assert.ok(/unknownBlock: "Unknown content block"/.test(texts), "标签与官方逐字一致（英文）");
+  assert.strictEqual(dictionaryFor("zh").unknownBlock, "未知内容块", "标签与官方逐字一致（中文）");
+  assert.strictEqual(dictionaryFor("en").unknownBlock, "Unknown content block", "标签与官方逐字一致（英文）");
   console.log("markdown: 未知内容块有落点 ✓");
 }
 

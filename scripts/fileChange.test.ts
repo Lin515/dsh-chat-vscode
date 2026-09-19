@@ -174,6 +174,9 @@ console.log("fileChange: 相邻路径不误判 ✓");
   );
 
   const controller = readFileSync(join(process.cwd(), "src", "dsh", "controller.ts"), "utf8");
+  // 会话状态字段的取值与折返收在 `dsh/sessionView.ts`（`sessionSourceOf` + 字段表）：
+  // 「首帧快照带没带上某个字段」这类断言现在要同时看那个文件。
+  const sessionViewModule = readFileSync(join(process.cwd(), "src", "dsh", "sessionView.ts"), "utf8");
   assert.ok(
     /await this\.openFile\(message\.path, message\.diff, viewId, scope \? this\.cwdOf\(scope\) : undefined\)/.test(
       controller,
@@ -243,8 +246,10 @@ console.log("fileChange: 相邻路径不误判 ✓");
     "适配器要暴露分类表给宿主快照用",
   );
   assert.ok(
-    /fileKinds: scope\?\.adapter\?\.fileKindsState\(\)/.test(controller),
-    "首帧快照必须带上 fileKinds（重载 / 第二窗口否则永远拿不到记号）",
+    /fileKinds: scope\?\.adapter\?\.fileKindsState\(\)/.test(controller) ||
+      /fileKinds: \(\) => adapter\?\.fileKindsState\(\)/.test(sessionViewModule),
+    "首帧快照必须带上 fileKinds（重载 / 第二窗口否则永远拿不到记号）——取值处现在在" +
+      "`dsh/sessionView.ts` 的 `sessionSourceOf`（快照与 patch 共用同一份来源）",
   );
   assert.ok(
     /kinds = paths\.length \? await classify\(paths\) : \{\}/.test(adapter),

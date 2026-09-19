@@ -238,6 +238,36 @@ dsh 的启动/重启/收场**只有守护进程会做**。以后别为了"更灵
 > 与「停止连接」分清：「停止连接」（连接条按钮）只交还本窗口的占用、断开 socket，
 > **一个进程都不碰**（见 §9.9）；「停止内部 DSH」（命令面板）才是上面第 3 条，整套收场。
 
+### 3.8 一份状态、一处路径、一个探针入口（2026-09-19 收敛）
+
+同一份 `SupervisorState` 从前被解码**三遍**（文件路 `readState`、管道路 `supervisorWire.checkState`、
+写侧 `supervisor/main.ts` 的 `stateOf`），宽容规则互不一致：文件路要求 `version === STATE_VERSION`、
+管道路缺省成 1；文件路把 `idleSec` 收敛到 5~600、管道路原样取用。三处各写一份字段表的代价不是啰嗦，
+而是**改一处忘两处**——加一个字段时只有一处认得它，另一条路静默丢掉。现在：
+
+- **一个解码器**：`supervisorProtocol.decodeState(value, { requireVersion?, idleSecWhenMissing? })`。
+  两条读路都调它；**逐字段校验只有一份，而且只许收紧**——`baseUrl` 必须 http(s) 且能解析、
+  `token` 必须非空字符串、pid 与时刻必须是整数、`command`/`socket` 必须非空（这是安全边界：
+  socket 推来的 `baseUrl`/`token` 决定凭据发往哪个 origin）。两条路的差异只剩两个显式参数：
+  文件路 `requireVersion: STATE_VERSION`（旧世代的文件整份作废）、管道路 `idleSecWhenMissing: 0`
+  （对面不做空闲判定时用 0，而不是替它编一个默认 10）。**唯一的行为收紧**：管道路的 `idleSec`
+  现在也过 `clampIdleSec`（以前原样取用），只影响被推送状态的记录值。
+- **一处路径**：`rendezvousPaths(directory) => { directory, state, lock, log, socket }` 是唯一产出，
+  `stateFileIn`/`lockFileIn`/`logFileIn` 转调它；socket 名**只由会合目录派生**（`socketPathIn(directory)`
+  取目录最后一段），启动器不再切目录字符串反推分组，`--group` 也不再从扩展侧传（只剩日志用途）。
+  判据：`src/` 下产生 `\\.\pipe\dsh-chat-…` / `sup.sock` 字面量的只有 `socketPathIn` 一个函数
+  （`socketPathIn` 的第二个参数只为断言与手工排查保留，测试断言它与省略分组时同值）。
+- **`goodbye.reason` 联合类型一份**：`supervisorWire.GoodbyeReason`，`supervisorClient` 与
+  `src/supervisor/main.ts` 都 import 它。
+- **探针走真入口**：`scripts/pinger.ts` 那套"读会合文件 → 抢锁/拉起 → 等就绪 → 连 socket → ping"
+  的手抄流程整段删除，现在只是一个手工排查薄壳；四个验收探针（R1/R3/R4/R5）改成直接构造
+  `SupervisorManager`（`scripts/supervisorPingerHarness.ts` 的 `ProbeWindow` 内部就是
+  `new SupervisorManager({…createDefaultSupervisorLauncher…})`）。从前它们验的是**副本**，
+  副本漂移了探针照样全绿。分组指纹 3 份、`usable()` 2 份、`PingerInfo`/`startPinger` 3 份全部收敛。
+  **已知未覆盖**：R1 那一格的间隔仍是 3 秒，而守护进程的启动宽限是 `idleSec + 10 = 15s`，
+  所以它其实没考到"空闲退场"——要严格版的 R1 应改成"关 A 后等 `idleSec + 1` 秒再起 B，
+  仍必须接上同一个 dsh"。这一条**没做**，记在这里免得被当成已验证。
+
 ## 4. 时序与边界
 
 ### 4.1 正常流程
@@ -346,14 +376,15 @@ dsh 的启动/重启/收场**只有守护进程会做**。以后别为了"更灵
 
 | 探针（实际文件名） | 覆盖 | 实际判据 |
 |---|---|---|
-| `supervisor-reload-probe` | **R1**：pinger A 起 → 强杀 A → 隔 3 秒 B 起 | dsh `pid` 与地址**完全不变**、世代不变、B 非启动者；末了会合文件与端口都清干净 |
+| `supervisor-reload-probe` | **R1**：窗口 A（真 `SupervisorManager`）起 → 关 A → 隔 3 秒窗口 B 起 | dsh 地址、`serverPid` 与世代**完全不变**、B 非启动者；末了会合文件与端口都清干净 |
 | `supervisor-idle-probe` | **R3** | 阈值内会合文件/端口/进程三者都在；过阈值后三者全清 |
 | `supervisor-scenarios-probe` | **R2/R4/R5/R6** | 3 窗口并发**启动者=1**、同一地址；关两个不影响第三个；`stop` 干净退场；强杀 supervisor 后**遗留 dsh 被回收**（端口释放） |
 | `supervisor-manager-probe` | 扩展**真正用的那个管理器** | 拉起 / 接入（peer）/ 活连接数=2 / `restart()` 换新 dsh（令牌变）/ `stopAndExit()` 清场 / **切到外部之后内部后台自己退场**（§9.8）/ **「停止连接」之后同样退场**（§9.9）——都是真 supervisor + 真 dsh |
 
-`pinger` 的实现方式：一个脚本走 §3.3/§3.4 的扩展侧流程（读会合文件 → 需要则拉起
-supervisor → 连 socket 并 ping → 退出时关连接），行为与扩展一致——所以探针**全部无头可跑**，
-这是新形态比旧的好验的地方。
+探针的"窗口"**就是扩展真正用的那个管理器**（`SupervisorManager`，见 `scripts/supervisorPingerHarness.ts`
+的 `ProbeWindow`）——四个探针直接构造它，不再经过任何手抄的副本（见 §3.8）。只有"窗口被**强杀**"（R1）
+与"守护进程被**强杀**、留下孤儿 dsh"（R5）这两格仍靠杀真进程复现，那是探针才需要的能力。
+`scripts/pinger.ts` 现在只是一个手工排查薄壳。所以探针**全部无头可跑**，这是新形态比旧的好验的地方。
 
 > **踩过的坑（写下来免得再犯）**：探针的会合目录必须隔离，而隔离模块只靠"副作用设环境变量"
 > 时会被 esbuild **摇掉**（导出没被使用 → 整份删除），于是探针静默跑进用户的真实目录。
@@ -670,9 +701,13 @@ controller 的认证链此前按 `info.owned`（"是不是本窗口拉起的"）
 | `connecting` | 首轮连接、掉线后的重试、外部地址的等待 | 目标 + 阶段（"正在启动内部 DSH…"/"正在连接内部 DSH…"/"正在连接外部 DSH（地址）…"）；有失败详情时详情优先 | **停止连接** + **查看日志** |
 | 按钮态（`stopped` / `error`） | 关掉自动连接、用户点过停止、内部不在而外部不可用（stopped）；启动/认证类失败（error，文案改用原因） | 两轴短语併一行：`内部 DSH：未运行 · 外部 DSH：可达`（分隔符 ` · `） | 内部在跑 → **连接内部 DSH**，不在 → **启动内部 DSH**；**连接外部 DSH**（恒显，没配 `url` 时置灰 + 悬停提示）；内部在跑时 **重启内部 DSH**；`needsToken` 时 **输入令牌**；**查看日志**（恒显） |
 
-界面侧实现：`App.tsx` 的 `ConnectionBar` / `statusText` / `connectingText`，状态字段
-（`internalRunning` / `externalState` / `externalAddress` / `connectTarget` / `connectPhase`）
-由控制器的 `connectionPatch()` 统一推送（首帧快照与增量 patch 同源，避免两处漂移）。
+界面侧实现：**一个纯函数** `src/webview/connectView.ts` 的 `connectViewOf(state, texts, resolve)`
+给出三类状态、那行文案与**按钮集合**（顺序即渲染顺序，`disabled` 与悬停提示也在里面）；
+`App.tsx` 的 `ConnectionBar` 只渲染它的结论（"哪颗按钮发哪条指令"留在 `App.tsx` 的 `CONNECT_POST`）。
+状态字段（`internalRunning` / `externalState` / `externalAddress` / `connectTarget` / `connectPhase`）
+由控制器的 `connectionFieldsOf(snapshot, facts, round)` 统一推送（首帧快照与增量 patch 同源，避免两处
+漂移），其中**外部地址来自 `SupervisorManager.snapshot()`**。断言：`scripts/connectView.test.ts`
+（三类 × 每种标志）、`scripts/connectionStop.test.ts` 第 9 组。
 
 **「启动内部 DSH」与「连接内部 DSH」是同一套逻辑**（用户 2026-09-19 口径）：两个都传
 `mayStart: true`，即"有就接上、没有就起一套"。之所以保留两个按钮而不是合并：界面显示的是
@@ -702,7 +737,7 @@ controller 的认证链此前按 `info.owned`（"是不是本窗口拉起的"）
 |---|---|
 | `scripts/connectTarget.test.ts`（`npm test`） | 选路六种组合、外部三态、`describeFacts` 区分"未配置/不可达"、纯函数（同输入同输出） |
 | `scripts/supervisorPolicy.test.ts` | 没许可不 spawn、有许可才拉起、守护进程活着只接入；外部那一轮必须显式传 `target`（配了 url ≠ 这一轮连外部）；**第 7 组：换目标彻底断开**（§9.8——真的 socket 服务端数活连接） |
-| `scripts/styles.test.ts` 第 34 组 | **连接中只有停止 + 日志**（不许出现三个目标按钮）、四个按钮真的存在于按钮态分支、`state.reconnecting` 已删除、查看日志恒显 |
+| `scripts/connectView.test.ts` | **连接条的三类状态 × 每种标志**：`ready` 整条不渲染；连接中只有「停止连接」+「查看日志」；按钮态的文案来源（详情优先）与按钮集合/顺序/图标/置灰/悬停提示；`needsToken` 给「输入令牌」；内部在跑给「重启内部 DSH」；查看日志恒显；纯函数（同输入同输出、不改 state）。`scripts/styles.test.ts` 第 34 组只留"界面不再自己判两轴、四颗目标按钮仍有指令"两条 |
 | `scripts/i18n.test.ts` | 标记清单与源码发射点双向对齐（删掉的两个标记不许复活） |
 | `scripts/connectionStop.test.ts` | **连接的收场**（见 §9.7）：`prepareRound` 的四件事、三个入口都走它、客户端回调的身份守卫与轮次号、心跳不为外部并发建第二个客户端；**第 5 组**：目标为外部时 `onServerStatus` 提前返回、`stopServer` 不 `prepareRound`（§9.8） |
 | `scripts/clientDispose.test.ts` | 被依赖的那个事实：客户端对连不上的地址**确实会自己重连**，而 `dispose()` 之后**一次状态变化都没有**（真实 ws，不用假实现） |
@@ -877,4 +912,48 @@ DSH」/「启动内部 DSH」（这两个是**同一套逻辑**：有就接上�
 三件事（先 `setAutoConnect`、按钮态且无目标才 `autoConnect(true)`、其余分支只记日志）、
 `setAutoConnect` 写的就是 `options.autoConnect`、`extension.ts` 里 `autoConnect` 不再与
 `url`/`command` 一起触发 `promptServerReload`。
+
+### 9.11 停止入口收敛 + 只读快照：管理器一份状态，控制器只渲染（2026-09-19）
+
+同一个"收掉/停止"此前散在六个方法里（`detachInternal` / `releaseInternal` / `cancelWaiting` /
+`stopAndExit` / `stopDetachedInternal` / `stop`），各自做"断开 socket / 置闸 / 取消在途等待 / 请守护
+进程收场 / 清状态"的不同**子集**，正确性靠**配对**：漏置闸 → 5 秒后心跳自己接回来；漏 `cancelWaiting`
+→ 用户点了停止还在等一个永不来的就绪；漏断连接 → 守护进程以为还有人用、dsh 不按空闲退场。现在管理器
+只有**一个**入口 `stop(options?: { release?, cancelWait?, askSupervisor? })`：
+
+| flag | 含义 | 少了它会怎样 |
+|---|---|---|
+| `release` | 交还本窗口的占用（「停止连接」那一档）：置 `detachedByUser` 闸，再收连接 | 守护进程永远认为有人用，内部 dsh 不按空闲退场 |
+| `cancelWait` | 中止**所有**在途等待（**单独给出时不收连接**） | 用户点了停止还在等一个不会来的就绪 |
+| `askSupervisor` | 请守护进程连 dsh 一起收场（**没有活连接时走临时接入**） | 命令面板上的「停止内部 DSH」只能记一条日志 |
+
+**不给 `options` 时按旧 `stopAndExit()` 走**（`cancelWait + askSupervisor`）——`scripts/smoke.ts` 与
+若干探针还写着 `server.stop()`，要"只收连接"必须显式写 `stop({})`。旧名字一个都没删（薄壳，方法名与
+签名不变，供探针继续调用）；连点合并（在飞标记）只覆盖"发控制帧"那一支，两道闸与中止等待在合并**之前**
+落地，所以第二次调用不会漏掉自己那组 flag。
+
+**控制器侧四个落点各调哪一档**（调错档不报错，只会在用户那里表现为"点了没反应"）：
+
+| 控制器落点 | 调哪一档 | 少了它会怎样 |
+|---|---|---|
+| `prepareRound()`（换目标 / 重开一轮 / 并发补跑）与 `ensureConnected()` 换目标那一支 | `stop({ cancelWait: true })` | 那一轮还挂在旧目标**没有时长上限**的等待里。**这一档不收连接**：马上要重新接上的是**同一个**后台（§9.9），收掉 socket 等于交还占用、`ownership` 从 self 掉成 peer |
+| `abandonRound()`（用户叫停后放弃这一轮） | `stop({ release: true })` | 一轮排队/重试可能在叫停**之后**才走到 `bringUp`（它会清掉 `detachedByUser`）并把连接建起来，而控制器随后放弃了这一轮 |
+| `stopReconnect()`（「停止连接」） | `stop({ release: true })` | 只断不挡 → 5 秒后被接回；只挡不断 → 内部 dsh 不按空闲退场 |
+| `stopServer()`（「停止内部 DSH」，两条分支） | `stop({ cancelWait: true, askSupervisor: true })` | 请求都发出去了再等就绪没有意义；没有活连接时管理器走临时接入那条路 |
+
+配套的另一半是只读快照 `snapshot()`（17 个字段，全部取自既有读法，断言见 `connectSnapshot.test.ts`）：
+控制器**不再镜像**管理器。连接那组界面字段由 `controller.ts` 的模块级纯函数
+`connectionFieldsOf(snapshot, facts, round)` 一次算出——管理器那一半（外部地址）读快照、本窗口那一半
+（客户端状态机：连上没有、详情、令牌入口）读 `round`、两轴探测结论（内部守护进程在不在、外部可不可达）
+读 `facts`（**它们不在快照里**：§9.1 的判据是 `probeRunning()` 与一次 HTTP GET，都是异步探测）。
+于是 `internalRunning` / `externalReachable` 两个镜像字段合成一份 `facts`，`externalState()` /
+`viewConnection()` 两个判定删除；`autoReconnect` / `target` / `connectRoundId` / `retryable` /
+`needsToken` **留下**，理由逐条写在字段注释里（最关键两条：① `detachedByUser` 只挡"接回内部那套"，
+不挡"重试外部那条连接"——用户点过「停止连接」后再点「连接外部 DSH」时 `ensure()` 的外部分支**不经过
+`bringUp`**，闸仍是 true；② 快照的 `target` 回不到 `undefined`，而 `autoConnect` 改关时控制器要清空它、
+改开时靠"从没定过目标"重新选路）。
+
+界面侧同样只有一处判定：`src/webview/connectView.ts` 的 `connectViewOf(state, texts, resolve)`
+（见 §9.4）。断言：`scripts/connectView.test.ts`、`scripts/connectionStop.test.ts` 第 8/9 组、
+`scripts/connectSnapshot.test.ts`、`scripts/supervisorPolicy.test.ts` 第 10 组。
 

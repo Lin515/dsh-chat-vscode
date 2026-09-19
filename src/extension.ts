@@ -188,7 +188,9 @@ function registerContributions(context: vscode.ExtensionContext, host: Contribut
     // 「启动内部 DSH」：**用户显式要求**，允许在内部后台不存在时拉起一套
     // （关掉 `dshChat.autoConnect` 时，这就是界面上那枚按钮的落点）
     vscode.commands.registerCommand("dshChat.startServer", () => controller.startInternal()),
-    // 两个「连接…」：只接上已经在跑的那一套，绝不顺手拉起（外部地址没配时后者报一条日志）
+    // 「连接内部 DSH」与上一条**同一套逻辑**（有就接上、没有就起一套，见
+    // docs/design-supervisor.md §3.7/§9.4）；「连接外部 DSH」只接已经在跑的外部地址，
+    // 从不拉起任何东西（地址没配时报一条日志）
     vscode.commands.registerCommand("dshChat.connectInternal", () => controller.connectInternal()),
     vscode.commands.registerCommand("dshChat.connectExternal", () => controller.connectExternal()),
     vscode.commands.registerCommand("dshChat.restartServer", () => controller.restart()),

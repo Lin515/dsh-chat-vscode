@@ -4,9 +4,8 @@
  * 起因（用户 2026-09-15 提问）："守护进程如果发现跑 dsh 服务的 node.exe 卡死或者已经
  * 卡退消失了，能自动重启它吗？"
  *
- * 判据在 `src/supervisor/main.ts` 的主循环里：
- *   `if (!serverStarting && !server.child && clients.size > 0) bringUp()`
- * 而 `server.child` 是 `spawn(..., { shell: true })` 返回的 **cmd.exe 外壳**，
+ * 判据在 `src/supervisor/main.ts` 的主循环里：`!serverStarting && childGone() && clients.size > 0`。
+ * `server.child` 是 `spawn(..., { shell: true })` 返回的 **cmd.exe 外壳**，
  * 真 dsh 是外壳的子进程（本机实测链路：
  *   `Code.exe`(supervisor) → `cmd.exe /d /s /c "dsh web …"` → `node.exe bin.js web …`）。
  * 所以能验的就三件事：
@@ -14,23 +13,27 @@
  *   B. 真 node 被强杀（taskkill /F，外壳**在不在**）→ 同上；
  *   C. 真 node 卡死（进程在、端口不再响应）→ 判据**没有探活**，重启不了。
  *
+ * **窗口 = 扩展真正用的 `SupervisorManager`**（从前的 pinger 手抄了扩展侧流程，
+ * 于是这条探针验的是副本；现在客户端这一侧就是扩展那一份代码）。
+ * 起守护进程仍走真产物 `dist/supervisor.js`（扩展拉起的也正是它）。
+ *
  * 计数用假 dsh 自己往 `DSH_FAKE_BOOT_LOG` 追加的 `boot pid=…`：
  * 数日志里的 `--- dsh attempt` marker 是不够的——marker 是**每次 bringUp 尝试**都写，
  * 里面那次 dsh 可能起来就退（第一版探针正是栽在这里，得出过假结论）。
  *
  * 用法：node build/supervisor-child-exit-probe.mjs [日志文件]
  */
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 // 必须排在最前面：会合目录指到本次探针专用目录（模块求值期读一次）
 import { PROBE_SUPERVISOR_ROOT } from "./supervisorProbeEnv";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
-import { readState, supervisorDirectory } from "../src/dsh/supervisorProtocol";
-import { SupervisorConnection } from "../src/dsh/supervisorClient";
+import { readState } from "../src/dsh/supervisorProtocol";
 import { isProcessAlive } from "../src/dsh/processRegistry";
 import { killTree, listeningPids } from "../src/supervisor/main";
+import { ProbeWindow, alive, killProcess, stopAllProbeProcesses, waitUntil } from "./supervisorPingerHarness";
 
 const LOG = process.argv[2] ?? ".tmp/supervisor-child-exit.log";
 writeFileSync(LOG, "", "utf8");
@@ -54,6 +57,16 @@ const REPO = "D:/dev/dsh-chat";
 const fakeDir = mkdtempSync(join(tmpdir(), "dsh-chat-fakedsh-"));
 const fakeScript = join(fakeDir, "fakeDsh.cjs");
 const bootLog = join(fakeDir, "boots.log");
+/**
+ * 假 dsh 的记账文件**靠环境变量传给它**，而它要经过三跳才到：
+ * 探针进程 → （启动器 `spawnDetached` 用 `runtimeEnv(process.env)`）→ 守护进程 →
+ * （`spawn(command, {shell:true})` 继承自身环境）→ 假 dsh。
+ *
+ * **必须在 `ProbeWindow` 构造之前设**（构造时就 `resolveNodeRuntime()` 把 env 取走了）。
+ * 2026-09-19 探针改写时漏了这一行：假 dsh 照样跑、照样公告地址，但一行记账都不写，
+ * 于是 `真 node pid=undefined`、A/B/C 三档全崩——而"✓ 真 node 已消失"还空过了。
+ */
+process.env.DSH_FAKE_BOOT_LOG = bootLog;
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 // 探针驱动的是**真产物** `dist/supervisor.js`：它可能比 src 旧（`npm run build:scripts`
@@ -76,45 +89,6 @@ function freePort(): Promise<number> {
   });
 }
 
-async function waitUntil(label: string, predicate: () => boolean | Promise<boolean>, timeoutMs: number): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await predicate()) return true;
-    await sleep(150);
-  }
-  say(`   …等待超时（${label}，${timeoutMs}ms）`);
-  return false;
-}
-
-/** 起一个 detached 的 supervisor（用真产物 `dist/supervisor.js`）。 */
-function startSupervisor(directory: string, group: string, command: string, idleSec: number) {
-  const child = spawn(process.execPath, [
-    `${REPO}/dist/supervisor.js`,
-    "--directory", directory,
-    "--group", group,
-    "--command-b64", Buffer.from(command, "utf8").toString("base64"),
-    "--idle-sec", String(idleSec),
-  ], {
-    detached: true,
-    // **不能是 ignore**：supervisor 自己崩掉时，原因只在它的 stderr 里。
-    // 探针要能看见那条原因，否则"supervisor 也死了"就变成无解之谜。
-    stdio: ["ignore", "ignore", "pipe"],
-    windowsHide: true,
-    env: { ...process.env, DSH_CHAT_SUPERVISOR_DIR: isolated, DSH_FAKE_BOOT_LOG: bootLog },
-  });
-  child.stderr?.setEncoding("utf8");
-  child.stderr?.on("data", (chunk: string) => {
-    for (const line of chunk.split(/\r?\n/).filter(Boolean)) say(`   [supervisor stderr] ${line}`);
-  });
-  child.on("exit", (code, signal) => {
-    say(`   [supervisor 退出] code=${code ?? "?"} signal=${signal ?? "-"}`);
-  });
-  child.unref();
-  // stderr 是 pipe，unref 不会替我们放掉它；这里让它别拖住探针退出
-  child.stderr?.unref?.();
-  return child;
-}
-
 /**
  * 假 dsh 的启动记录（由它自己写进 `DSH_FAKE_BOOT_LOG`，supervisor 原样透传环境变量）。
  *
@@ -133,27 +107,29 @@ function bootRecords(): { pid: number; shell: number; port: number }[] {
   }
 }
 
-/** 起一个新的探针场景（自己的会合目录、自己的 supervisor）。 */
+/** 起一个新的探针场景（自己的会合目录、自己的守护进程 + 假 dsh，窗口走真管理器）。 */
 async function startScenario(name: string, hangAfterMs: number) {
   const port = await freePort();
   const command = `node "${fakeScript}" ${port} probe-token${hangAfterMs > 0 ? ` --hang-after ${hangAfterMs}` : ""}`;
-  const group = `probe-${name}-${port}`;
-  const directory = supervisorDirectory(group);
-  const socket = `\\\\.\\pipe\\dsh-chat-${group}`;
-  // 会合目录平时由扩展侧 launcher 建；探针直接 spawn 产物，所以自己建
-  mkdirSync(directory, { recursive: true });
+  const window = new ProbeWindow({ tag: `child-exit-${name}`, command, idleSec: 60 }, say);
+  // **先登记再启动**：`ensure()` 可能中途抛错，那时这个窗口（以及它拉起的守护进程）只能靠
+  // 收尾清单带走——漏登记就等于给机器留下一个后台。
+  scenarios.push(window);
   const bootIndex = bootRecords().length;
-  const supervisor = startSupervisor(directory, group, command, 60);
-  const ready = await waitUntil(`${name} 就绪`, () => {
-    const state = readState(directory);
-    return state?.baseUrl !== undefined && state.starting !== true;
-  }, 25_000);
-  const state = readState(directory);
+  const info = await window.ensure({ start: true });
+  const state = readState(window.directory);
   const boot = bootRecords()[bootIndex];
   return {
-    name, port, group, directory, socket,
-    supervisorPid: supervisor.pid ?? 0,
-    ready, state, boot, bootIndex,
+    name,
+    port,
+    window,
+    directory: window.directory,
+    socket: state?.socket,
+    supervisorPid: state?.supervisorPid ?? 0,
+    ready: info.baseUrl !== undefined && state?.starting !== true,
+    state,
+    boot,
+    bootIndex,
     /** 真正在跑的 node（真 dsh 的那个进程） */
     nodePid: boot?.pid,
     /** spawn 句柄（= 外壳 cmd.exe） */
@@ -161,9 +137,9 @@ async function startScenario(name: string, hangAfterMs: number) {
   };
 }
 
-const cleanup: { directory: string; port: number; supervisorPid: number }[] = [];
-let connection: SupervisorConnection | undefined;
-
+const cleanup: { directory: string; port: number; supervisorPid: number; window: ProbeWindow }[] = [];
+/** 本探针起过的**全部**窗口（收尾时交给 `stopAllProbeProcesses`，中途抛错也不漏）。 */
+const scenarios: ProbeWindow[] = [];
 /** 这个场景的 dsh 被重新拉起了几次（0 = 首次之后没有任何重启）。 */
 const restarts = (scenario: { bootIndex: number }): number => Math.max(0, bootRecords().length - scenario.bootIndex - 1);
 
@@ -174,20 +150,15 @@ try {
   // ================= 场景 A：只杀真 node（温和），外壳留着 =================
   say("\n【A】杀掉真 dsh 的 node（`process.kill`），看守护进程认不认、重启不重启…");
   const a = await startScenario("a", 0);
-  cleanup.push({ directory: a.directory, port: a.port, supervisorPid: a.supervisorPid });
+  cleanup.push({ directory: a.directory, port: a.port, supervisorPid: a.supervisorPid, window: a.window });
   check("守护进程拉起了 dsh 并写出会合文件", a.ready, `baseUrl=${a.state?.baseUrl ?? "（无）"}`);
   const aNode = a.nodePid;
   const aShell = a.shellPid;
   say(`   会合文件 serverPid=${aShell}（spawn 句柄）；真 node pid=${aNode}`);
   check("spawn 句柄记的是 cmd.exe 外壳、真 dsh 是它的子进程", aShell !== aNode, `shell=${aShell} node=${aNode}`);
 
-  // 连上 socket = "有窗口在用"：主循环只在 clients.size > 0 时才重启 dsh
-  connection = new SupervisorConnection(
-    a.socket,
-    { onState: () => {}, onGoodbye: () => {}, onClosed: () => {}, log: (line) => say(`   [conn] ${line}`) },
-    { hostId: `probe-${process.pid}`, workspace: `${REPO}#probe` },
-  );
-  check("探针作为客户端连上了 supervisor 的 socket（否则它不会重启 dsh）", await connection.open());
+  // 窗口（= 真管理器）已经连着 socket = "有窗口在用"：主循环只在 clients.size > 0 时才重启 dsh
+  check("窗口连着守护进程的 socket（否则它不会重启 dsh）", a.window.manager.getStatus().state === "ready", a.window.manager.getStatus().state);
 
   if (aNode !== undefined) process.kill(aNode);
   check("真 node 已消失", await waitUntil("node 消失", () => !isProcessAlive(aNode), 5_000));
@@ -203,22 +174,15 @@ try {
       ? `新 node pid=${aLast?.pid}（外壳 ${aLast?.shell}），新地址=${aState?.baseUrl}`
       : `没有重启：boots=${bootRecords().length}，会合文件 serverPid=${aState?.serverPid ?? "?"}`,
   );
-  connection.close();
-  connection = undefined;
+  a.window.dispose();
 
   // ================= 场景 B：强杀真 node（taskkill /F） =================
   say("\n【B】强杀真 node（`taskkill /F`，即任务管理器「结束任务」的等价物）…");
   const b = await startScenario("b", 0);
-  cleanup.push({ directory: b.directory, port: b.port, supervisorPid: b.supervisorPid });
+  cleanup.push({ directory: b.directory, port: b.port, supervisorPid: b.supervisorPid, window: b.window });
   const bNode = b.nodePid;
   const bShell = b.shellPid;
   say(`   会合文件 serverPid=${bShell}；真 node pid=${bNode}`);
-  connection = new SupervisorConnection(
-    b.socket,
-    { onState: () => {}, onGoodbye: () => {}, onClosed: () => {}, log: (line) => say(`   [conn] ${line}`) },
-    { hostId: `probe-${process.pid}`, workspace: `${REPO}#probe` },
-  );
-  check("探针连上了 socket", await connection.open());
   if (bNode !== undefined) {
     spawn("taskkill", ["/pid", String(bNode), "/F"], { windowsHide: true, stdio: "ignore" });
   }
@@ -236,20 +200,13 @@ try {
       ? `新 node pid=${bLast?.pid}（外壳 ${bLast?.shell}），新地址=${bState?.baseUrl}`
       : `没有重启：boots=${bootRecords().length}，会合文件 serverPid=${bState?.serverPid ?? "?"}`,
   );
-  connection.close();
-  connection = undefined;
+  b.window.dispose();
 
   // ================= 场景 C：卡死（进程在、端口不再响应） =================
   say("\n【C】让 dsh「卡死」：进程还在、端口不再响应（不杀任何进程）…");
   const c = await startScenario("c", 3_000);
-  cleanup.push({ directory: c.directory, port: c.port, supervisorPid: c.supervisorPid });
+  cleanup.push({ directory: c.directory, port: c.port, supervisorPid: c.supervisorPid, window: c.window });
   const cNode = c.nodePid;
-  connection = new SupervisorConnection(
-    c.socket,
-    { onState: () => {}, onGoodbye: () => {}, onClosed: () => {}, log: (line) => say(`   [conn] ${line}`) },
-    { hostId: `probe-${process.pid}`, workspace: `${REPO}#probe` },
-  );
-  check("探针连上了 socket", await connection.open());
   await sleep(5_000); // 等它进入卡死形态
   const answers = await fetch(`http://127.0.0.1:${c.port}/`, { signal: AbortSignal.timeout(1_500) })
     .then(() => true)
@@ -265,22 +222,23 @@ try {
     !restartedC,
     `重启次数=${restarts(c)}`,
   );
-  connection.close();
-  connection = undefined;
+  c.window.dispose();
 
   // ================= 收尾 =================
   say("\n【收尾】带走本探针起的一切…");
-  for (const item of cleanup) killTree(item.supervisorPid);
+  // 交给共用收尾（原来是这里手抄一遍"请守护进程收场 + 按端口兜底"，与别的探针各写一份）
+  await stopAllProbeProcesses({
+    windows: scenarios,
+    extraPids: bootRecords().map((boot) => boot.pid),
+  });
   for (const item of cleanup) {
-    const state = readState(item.directory);
-    if (state?.serverPid) killTree(state.serverPid);
+    // 假 dsh 那个端口是探针自己选的（不一定是 dsh 宣布的那个），按端口再兜一道
     for (const pid of listeningPids(item.port)) {
       if (pid !== process.pid) killTree(pid);
     }
   }
-  for (const boot of bootRecords()) killTree(boot.pid);
   await sleep(800);
-  say(`   残留的假 dsh 进程：${bootRecords().filter((boot) => isProcessAlive(boot.pid)).map((boot) => boot.pid).join(",") || "（无）"}`);
+  say(`   残留的假 dsh 进程：${bootRecords().filter((boot) => alive(boot.pid)).map((boot) => boot.pid).join(",") || "（无）"}`);
   say(`\n结论：${failures === 0 ? "全部符合预期（见上）" : `${failures} 条不符合预期`}`);
   // 假 dsh 自己的启动/退出记录：**必须留到日志里**（它是"到底谁把 dsh 弄死的"
   // 唯一直接证据；只留在临时目录里会被 finally 删掉）
@@ -294,12 +252,9 @@ try {
 } catch (error) {
   say(`[probe] 异常：${error instanceof Error ? `${error.message}\n${error.stack ?? ""}` : String(error)}`);
   failures++;
+  // 中途抛错时也要把起过的东西带走（**绝不能留给用户机器**）
+  await stopAllProbeProcesses({ windows: scenarios, extraPids: bootRecords().map((boot) => boot.pid) }).catch(() => undefined);
 } finally {
-  try {
-    connection?.close();
-  } catch {
-    // 忽略
-  }
   try {
     rmSync(fakeDir, { recursive: true, force: true });
   } catch {

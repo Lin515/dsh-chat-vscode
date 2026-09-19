@@ -21,6 +21,11 @@
  * 切到外部之后内部那套的状态推送照样改界面（见 `SupervisorManager.detachInternal`，
  * 管理器侧由 `supervisorPolicy.test.ts` 第 7 组用真的 socket 数活连接钉住）。
  *
+ * 第 8、9 组是 2026-09-19 第二轮收敛的接线：管理器只剩**一个**停止入口
+ * `stop({ release?, cancelWait?, askSupervisor? })`，控制器四个落点各调哪一档（调错档不会
+ * 报错、只会"点了没反应"，所以按 flag 逐条钉）；以及连接那组字段只读**只读快照**
+ * （`snapshot()`），控制器不再存 `internalRunning` / `externalReachable` 这类镜像。
+ *
  * 运行：npm test（记得登记到 esbuild.scripts.mjs 的 entries）
  */
 import assert from "node:assert";
@@ -70,7 +75,7 @@ function check(label: string, ok: boolean, detail = ""): void {
   if (!ok) failures++;
 }
 
-// ---------- 1. prepareRound：换目标/停止共用的收场，三件事一件都不能少 ----------
+// ---------- 1. prepareRound：换目标/停止共用的收场，四件事一件都不能少 ----------
 {
   const body = bodyOf("prepareRound");
   check(
@@ -79,9 +84,9 @@ function check(label: string, ok: boolean, detail = ""): void {
     "少了它：换目标后旧轮苏醒照样建 client、写状态",
   );
   check(
-    "prepareRound 中止管理器的在途等待（cancelWaiting）",
-    /cancelWaiting\s*\(/u.test(body),
-    "少了它：那一轮还挂在旧目标**没有时长上限**的等待里",
+    "prepareRound 只走「中止在途等待」那一档（stop({ cancelWait: true })）",
+    /this\.server\.stop\(\{\s*cancelWait:\s*true\s*\}\)/u.test(body),
+    "少了它：那一轮还挂在旧目标**没有时长上限**的等待里；写成收连接那一档则占用被交还，与同一个后台重连时 ownership 从 self 掉成 peer",
   );
   check(
     "prepareRound **dispose 客户端**（连带停掉它自己的无限重连）",
@@ -163,7 +168,7 @@ for (const [name, why] of [
   );
   check(
     "stopServer 把「请求有没有真的发出去」交回调用方（回执才能如实）",
-    /return this\.server\.stopAndExit\(\)/u.test(stop),
+    /return this\.server\.stop\(\{\s*cancelWait:\s*true,\s*askSupervisor:\s*true\s*\}\)/u.test(stop),
   );
 }
 
@@ -205,8 +210,16 @@ for (const [name, why] of [
 {
   const release = bodyOf("releaseInternal", managerSource);
   check(
-    "releaseInternal 同时做两件事：断开连接 + 置位 detachedByUser（只断不挡 = 5 秒后被接回去）",
-    /this\.detachedByUser = true/u.test(release) && /this\.detachInternal\s*\(/u.test(release),
+    "releaseInternal 是薄壳：走新入口的 release 那一档（交还占用）",
+    /this\.stop\(\s*\{\s*release:\s*true\s*\}\s*\)/u.test(release),
+    "少了它：「停止连接」没走统一入口，停止那几件事又会散回各处",
+  );
+  // 这两句按定稿搬进了唯一的停止入口（`stop()`）：只断不挡 = 5 秒后被接回去。
+  const stopEntry = bodyOf("stop", managerSource);
+  check(
+    "release 那一档同时做两件事：置位 detachedByUser + 收连接（只断不挡 = 5 秒后被接回去）",
+    /if\s*\(release\)\s*this\.detachedByUser\s*=\s*true;/u.test(stopEntry) &&
+      /detachConnection\s*\(/u.test(stopEntry),
   );
   check(
     "bringUp 清掉 detachedByUser（显式动作必须能重新接上）",
@@ -215,8 +228,8 @@ for (const [name, why] of [
 
   const stop = bodyOf("stopReconnect");
   check(
-    "stopReconnect 交还内部后台的占用（releaseInternal）",
-    /this\.server\.releaseInternal\(\)/u.test(stop),
+    "stopReconnect 交还内部后台的占用（stop({ release: true })）",
+    /this\.server\.stop\(\{\s*release:\s*true\s*\}\)/u.test(stop),
     "少了它：连接一直留着，守护进程永远认为有人用，内部 dsh 不会空闲退场",
   );
   check("stopReconnect 顺带重探两轴（刚交还，结论已经变了）", /refreshFacts\(\)/u.test(stop));
@@ -231,10 +244,100 @@ for (const [name, why] of [
   // 「停止内部 DSH」的判据必须是"手里有没有活连接"，不是"目标是不是内部"：
   // 用户点过「停止连接」之后目标仍是内部（粘性），但连接已经交还了——按目标判就会把
   // "交还后守护进程还在空闲窗口里活着"误当成"没有可停的东西"，一句"没有在运行"骗人。
+  // 这一句按定稿搬进了「请守护进程收场」的执行体（`askSupervisorToStop`），旧名字
+  // `stopAndExit` 变成薄壳。行为断言在 supervisorPolicy.test.ts 第 10 组。
   check(
-    "stopAndExit 按「手里有没有活连接」决定要不要短暂接入（不是按目标）",
-    /connection\?\.connected !== true/u.test(bodyOf("stopAndExit", managerSource)),
+    "stopAndExit 是薄壳：走新入口的 askSupervisor + cancelWait 那一档",
+    /this\.stop\(\s*\{\s*cancelWait:\s*true,\s*askSupervisor:\s*true\s*\}\s*\)/u.test(
+      bodyOf("stopAndExit", managerSource),
+    ),
+  );
+  check(
+    "「请守护进程收场」按「手里有没有活连接」决定要不要短暂接入（不是按目标）",
+    /connection\?\.connected !== true/u.test(bodyOf("askSupervisorToStop", managerSource)),
     "少了它：交还占用后「停止内部 DSH」会静默空转并谎报没有在运行",
+  );
+}
+
+// ---------- 8. 「谁该调哪一档」：四个停止落点各调 `stop({...})` 的哪一档（2026-09-19 定稿） ----------
+//
+// 管理器收敛成**一个**停止入口（三个 flag 可以叠加）之后，"调错档"不会报任何错，只会在
+// 用户那里表现为"点了没反应"（少了 `cancelWait` → 还在等一个永不来的就绪）或"过一会儿又
+// 连上了"（多收/漏挡连接 → 占用被交还、5 秒后心跳又接回来）。所以每一档按 **flag** 钉住，
+// 而不是按"调了某个旧方法名"；对照表就写在 `controller.ts` 的 `prepareRound` 顶上。
+{
+  check(
+    "prepareRound（换目标/重开一轮）只中止在途等待，**不收连接**",
+    /this\.server\.stop\(\{\s*cancelWait:\s*true\s*\}\)/u.test(bodyOf("prepareRound")),
+    "这一档收了连接，马上要重连的**同一个**后台就被交还了占用（ownership: self → peer）",
+  );
+  check(
+    "abandonRound（用户叫停后放弃这一轮）交还占用 + 收连接（release）",
+    /this\.server\.stop\(\{\s*release:\s*true\s*\}\)/u.test(bodyOf("abandonRound")),
+    "少了它：排队/重试的那一轮会在叫停之后把连接留在管理器手里",
+  );
+  check(
+    "stopReconnect（用户点「停止连接」）交还占用 + 收连接（release）",
+    /this\.server\.stop\(\{\s*release:\s*true\s*\}\)/u.test(bodyOf("stopReconnect")),
+    "少了它：守护进程永远认为有人用，内部 dsh 不按空闲退场",
+  );
+  {
+    const server = bodyOf("stopServer");
+    const asks = server.match(/stop\(\{\s*cancelWait:\s*true,\s*askSupervisor:\s*true\s*\}\)/gu) ?? [];
+    check(
+      "stopServer（「停止内部 DSH」）请守护进程收场（askSupervisor + cancelWait），两条分支都这样",
+      asks.length === 2,
+      `匹配到 ${asks.length} 处（外部目标那一支 + 内部目标那一支）`,
+    );
+  }
+  check(
+    "ensureConnected 连接中换目标时同样只中止等待（不收连接）",
+    /this\.server\.stop\(\{\s*cancelWait:\s*true\s*\}\)/u.test(bodyOf("ensureConnected")),
+    "写成收连接那一档 = 换目标顺带把占用交还了，而新目标可能还是同一个后台",
+  );
+  for (const retired of ["cancelWaiting", "releaseInternal", "stopAndExit"]) {
+    check(
+      `控制器不再直接调旧入口 ${retired}（停止只剩一个入口，旧名字留给探针）`,
+      !source.includes(`this.server.${retired}(`),
+      `控制器里还有 this.server.${retired}(…)：停止那几件事又会散回各处`,
+    );
+  }
+}
+
+// ---------- 9. 控制器不再镜像管理器：连接那组字段读**只读快照**（2026-09-19 第二轮收敛） ----------
+//
+// 快照（`SupervisorManager.snapshot()`）是"本窗口与这一套后台现在是什么关系"的唯一来源。
+// 控制器此前存着 9 个镜像字段，两处状态各说各话；现在能由快照/探测推出的都不再存字段，
+// 由 `connectionFieldsOf`（模块级纯函数）一次映射成界面那组字段。
+{
+  check("控制器没有 internalRunning 字段（并进了 facts）", !/private internalRunning/u.test(source));
+  check("控制器没有 externalReachable 字段（并进了 facts）", !/private externalReachable/u.test(source));
+  check(
+    "两轴只剩一份观测（private facts: TargetFacts）",
+    /private facts: TargetFacts/u.test(source),
+    "两个字段各自赋值 = 改了内部忘了外部，按钮态的文案与按钮集就开始各说各话",
+  );
+  check(
+    "connectionPatch 读管理器快照（不再自己拼那 9 个字段）",
+    /snapshot: this\.server\.snapshot\(\)/u.test(bodyOf("connectionPatch")),
+  );
+  check(
+    "界面那组字段的判定在一个纯函数里（connectionFieldsOf）",
+    /^function connectionFieldsOf\(/mu.test(source),
+    "散回组件/方法里就没有单一来源可言了",
+  );
+  check(
+    "外部地址来自快照（snapshot.externalUrl），不再直接问管理器 getter",
+    /externalAddress: snapshot\.externalUrl/u.test(source),
+  );
+  check(
+    "外部两态复用 connectTarget 的 externalStateOf（一份实现，不重写「没配地址」的判据）",
+    /externalState: externalStateOf\(facts\)/u.test(source),
+  );
+  check(
+    "控制器读管理器状态只剩快照一条路（不再调 getStatus()）",
+    !/this\.server\.getStatus\(/u.test(source),
+    "两处读同一份状态 = 两处状态各说各话；`getStatus()` 留给探针与旧调用点",
   );
 }
 
@@ -243,7 +346,7 @@ if (failures > 0) {
   process.exitCode = 1;
 } else {
   console.log(
-    "\n✓ 连接的收场（停止连接真的停 / 换目标先收旧连接 / 旧客户端不许写状态 / 外部目标不碰内部那套 / 停止连接交还占用）全通过",
+    "\n✓ 连接的收场（停止连接真的停 / 换目标先收旧连接 / 旧客户端不许写状态 / 外部目标不碰内部那套 / 停止连接交还占用 / 四个停止落点各调对那一档 / 连接那组字段读快照）全通过",
   );
   assert.ok(true);
 }

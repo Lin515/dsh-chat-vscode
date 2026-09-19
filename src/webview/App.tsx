@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import type { ChatState } from "../shared/chat";
 import type { HostToWebview } from "../shared/ipc";
-import { onHostFrame, post, subscribe } from "./bridge";
+import { post, subscribe } from "./bridge";
+import { useAutoScroll } from "./autoScroll";
 import { Composer } from "./components/Composer";
 import { HistoryPanel } from "./components/History";
 import { ImagePreviewLayer } from "./components/Images";
@@ -10,7 +11,7 @@ import { JobsPanel, SubagentTranscriptPanel, SubagentsPanel } from "./components
 import { TrajectoryView } from "./components/Trajectory";
 import { Spinner } from "./components/primitives";
 import { AppState, useAppState, type PanelKind } from "./state";
-import { pendingInteractionOf, pendingRequestId } from "./pendingInteraction";
+import { resolveInteractions } from "./pendingInteraction";
 import { attachDroppedFiles, dragHasFiles } from "./dropAttach";
 import { setLocalImageScope } from "./localImages";
 import { TurnRail } from "./components/TurnRail";
@@ -28,6 +29,7 @@ import {
   IconRefresh,
   IconTrajectory,
 } from "./icons";
+import { connectViewOf, type ConnectButton, type ConnectButtonId } from "./connectView";
 import { TextsContext, dictionaryFor, normalizeLocale, resolveText, useTexts } from "./texts";
 
 /**
@@ -139,112 +141,81 @@ function BrandMark() {
 }
 
 /**
- * 连接条：**未就绪时**显示在所有内容上方（就绪时不占位置）。
- *
- * 两档（用户 2026-09-18 口径，取代 2026-09-14/15 那套「启动服务器 / 尝试连接」矩阵）：
- *
- * - **连接中**（`connecting`）：只给「停止连接」+「查看日志」。目标由系统自己选
- *   （内部优先、外部备用），所以连接条**不摆**启动/连接按钮——选了哪个、在启动还是在
- *   连接，写在文案里。连接没有自动停止的时间限制，能不能结束只由用户点。
- * - **按钮态**（`stopped` / `error`）：文案是**两轴探测结论**
- *   （「内部 DSH：未运行 · 外部 DSH：可达」），`error`（启动类 / 认证类失败）时优先
- *   显示失败原因。按钮按结论给：「内部在跑 → 连接内部 DSH，否则 → 启动内部 DSH」，
- *   外加恒显的「连接外部 DSH」（没配 `dshChat.url` 时置灰）、内部在跑时的
- *   「重启内部 DSH」、需要令牌时的「输入令牌」，以及恒显的「查看日志」。
+ * 连接条按钮各自的**指令**：纯函数只说"这一档给哪几个按钮"，点它发哪条指令是界面的事。
  */
-function ConnectionBar({ state }: { state: ChatState }) {
-  const texts = useTexts();
-  if (state.connection === "ready") return null;
-  const isConnecting = state.connection === "connecting";
-  const isError = state.connection === "error";
-  const internalRunning = state.internalRunning === true;
-  const externalConfigured = state.externalState !== "unconfigured";
-  // 详情优先：`error` 或是连接中被判定"连不上"时，原因是用户最需要看的东西
-  const detail = state.connectionDetail ? resolveText(state.connectionDetail, texts) : undefined;
-  const text = isConnecting ? connectingText(state, texts, detail) : (detail ?? statusText(state, texts));
+const CONNECT_POST: Record<ConnectButtonId, () => void> = {
+  stopReconnect: () => post({ type: "stopReconnect" }),
+  startInternal: () => post({ type: "startInternal" }),
+  connectInternal: () => post({ type: "connectInternal" }),
+  connectExternal: () => post({ type: "connectExternal" }),
+  restartInternal: () => post({ type: "restartInternal" }),
+  enterToken: () => post({ type: "setToken" }),
+  showLogs: () => post({ type: "showLogs" }),
+};
+
+/** 按钮上的图标（纯函数只说该用哪个，画哪一个由这里定）。 */
+function ConnectIcon({ icon }: { icon: ConnectButton["icon"] }) {
+  if (icon === "key") return <IconKey size={12} />;
+  if (icon === "plus") return <IconPlus size={12} />;
+  if (icon === "refresh") return <IconRefresh size={12} />;
+  return null;
+}
+
+/** 一颗连接条按钮（含「无图标」与「提示挂外层 span」这两种形态）。 */
+function ConnectButtonNode({ button }: { button: ConnectButton }) {
+  const node = (
+    <button
+      className={`btn${button.variant === "primary" ? " btn-primary" : button.variant === "ghost" ? " btn-ghost" : ""}`}
+      data-mini={button.miniHide ? "hide" : undefined}
+      disabled={button.disabled === true ? true : undefined}
+      onClick={CONNECT_POST[button.id]}
+    >
+      {button.icon ? (
+        <>
+          <ConnectIcon icon={button.icon} />{" "}
+        </>
+      ) : null}
+      {button.label}
+    </button>
+  );
+  // 「连接外部 DSH」置灰时的提示挂在**外层 span**上（`disabled` 的元素收不到鼠标事件，
+  // title 不会显示）。这一层**恒在**（配了地址时只是没有 title），与从前的 DOM 逐字一致。
+  if (button.id !== "connectExternal") return node;
   return (
-    <div className={`conn-bar${isError ? " is-error" : ""}${!isConnecting && !isError ? " is-stopped" : ""}`}>
-      {isConnecting ? <Spinner size={11} /> : null}
-      <span className="conn-text" title={text}>
-        {text}
-      </span>
-      <span className="spacer" />
-      {isConnecting ? (
-        <>
-          {/* 连接中**唯一**的主动作：停下来由用户说了算（重连没有总超时） */}
-          <button className="btn" onClick={() => post({ type: "stopReconnect" })}>
-            {texts.stopReconnect}
-          </button>
-        </>
-      ) : (
-        <>
-          {state.needsToken ? (
-            <button className="btn" onClick={() => post({ type: "setToken" })}>
-              <IconKey size={12} /> {texts.enterToken}
-            </button>
-          ) : null}
-          {internalRunning ? (
-            <button className="btn btn-primary" onClick={() => post({ type: "connectInternal" })}>
-              <IconRefresh size={12} /> {texts.connectInternal}
-            </button>
-          ) : (
-            <button className="btn btn-primary" onClick={() => post({ type: "startInternal" })}>
-              <IconPlus size={12} /> {texts.startInternal}
-            </button>
-          )}
-          {/* 恒显：显示与否**不看可达性**（连接失败会写进日志与条上）；只有没配地址时置灰。
-              title 挂在外层 span 上——disabled 的元素收不到 hover，提示会不显示 */}
-          <span className="conn-tip" title={externalConfigured ? undefined : texts.externalDisabledHint}>
-            <button
-              className="btn"
-              disabled={!externalConfigured}
-              onClick={() => post({ type: "connectExternal" })}
-            >
-              <IconRefresh size={12} /> {texts.connectExternal}
-            </button>
-          </span>
-          {internalRunning ? (
-            <button className="btn" onClick={() => post({ type: "restartInternal" })}>
-              <IconRefresh size={12} /> {texts.restartInternal}
-            </button>
-          ) : null}
-        </>
-      )}
-      {/* 查看日志：**连接条上恒显**（用户 2026-09-15 口径）——上面每一种状态都可能是
-          "连不上但说不清"，用户得随时有个入口去看扩展的输出通道 */}
-      <button className="btn btn-ghost" data-mini="hide" onClick={() => post({ type: "showLogs" })}>
-        {texts.showLogs}
-      </button>
-    </div>
+    <span className="conn-tip" title={button.tip}>
+      {node}
+    </span>
   );
 }
 
-/** 按钮态那行：两轴短语併一行（「内部 DSH：未运行 · 外部 DSH：可达」）。 */
-function statusText(state: ChatState, texts: ReturnType<typeof useTexts>): string {
-  const internal = state.internalRunning === true ? texts.statusInternalRunning : texts.statusInternalNotRunning;
-  const external =
-    state.externalState === "reachable"
-      ? texts.statusExternalReachable
-      : state.externalState === "unreachable"
-        ? texts.statusExternalUnreachable
-        : texts.statusExternalUnconfigured;
-  return `${internal}${texts.statusSeparator}${external}`;
-}
-
 /**
- * 连接中那行：写明**目标与阶段**（用户 2026-09-18 口径）。
+ * 连接条：**未就绪时**显示在所有内容上方（就绪时不占位置）。
  *
- * 有失败详情时（外部地址连不上、与服务器断线）原因优先——那才是用户想知道的东西。
+ * 三档状态、那行文案、按钮集合**全部由 `connectViewOf` 判定**（纯函数，见
+ * `connectView.ts` 的文件头）——这里只渲染它的结论：`kind` 决定配色与转圈、`text` 直接
+ * 落字、`buttons` 按序渲染。判定为什么搬出去：这套矩阵是用户口径
+ * （`docs/design-supervisor.md` §8.7 / §9.4），从前它散在这个组件、`statusText` /
+ * `connectingText` 与宿主的 `connectionPatch` 三处各写一遍，改一处忘两处；搬进纯函数后
+ * 三类 × 每种标志的组合可以离线逐条断言（`scripts/connectView.test.ts`）。
  */
-function connectingText(state: ChatState, texts: ReturnType<typeof useTexts>, detail: string | undefined): string {
-  if (detail) return detail;
-  if (state.connectTarget === "internal") {
-    return state.connectPhase === "starting" ? texts.startingInternal : texts.connectingInternal;
-  }
-  if (state.connectTarget === "external") {
-    return state.externalAddress ? texts.connectingExternal(state.externalAddress) : texts.connecting;
-  }
-  return `${texts.connecting}${state.serverUrl ? ` ${state.serverUrl}` : ""}`;
+function ConnectionBar({ state }: { state: ChatState }) {
+  const texts = useTexts();
+  const view = connectViewOf(state, texts, (text) => resolveText(text, texts));
+  if (view.kind === "hidden") return null;
+  return (
+    <div
+      className={`conn-bar${view.kind === "error" ? " is-error" : ""}${view.kind === "stopped" ? " is-stopped" : ""}`}
+    >
+      {view.kind === "connecting" ? <Spinner size={11} /> : null}
+      <span className="conn-text" title={view.text}>
+        {view.text}
+      </span>
+      <span className="spacer" />
+      {view.buttons.map((button) => (
+        <ConnectButtonNode key={button.id} button={button} />
+      ))}
+    </div>
+  );
 }
 
 /** 空态：只留一行提示，不要问候语与起始卡片。 */
@@ -425,227 +396,6 @@ function NoticeBar({
   );
 }
 
-/**
- * 自动滚动（2026-09-16 三次修订）：**不再从滚动几何里推断意愿**。
- *
- * 机制只有两条：
- *
- * 1. **意愿（`followRef`）只由输入决定**：距底超过阈值 **且** 近期有滚动手势
- *    （滚轮 / 触摸 / 键盘 / 拖滚动条）才算"用户要看上面"；位置回到距底容差内、或用户
- *    显式要最新（发消息、切会话、点胶囊）就重新贴上。
- *
- *    为什么不能省掉这一条：`scroll` 事件是**异步**派发的，处理器当场读到的 `scrollTop`
- *    可能来自**已经过去的布局**（位置被浏览器夹过），而 `scrollHeight` 来自**当前布局**
- *    ——两份不同布局的数据在同一个判断里对不上。旧实现用"`scrollTop` 变小 ⇒ 用户上滑了"
- *    来翻贴底标志，于是浏览器自己夹一下位置（生成期间任何一次"瞬态塌缩 → 恢复"的重渲染：
- *    过程折叠、中途插消息搬 DOM、消息整体替换…）就被误判成用户上滑；而一旦 `stick=false`
- *    **再没有任何东西会翻回来**，症状是"最新内容留在视野下方 + 胶囊亮着 + 永不恢复"，
- *    且**用户根本没有操作**（2026-09-16 实测复现，正是用户报的"生成中突然不贴底"，
- *    见 `test/scroll-probe.html` 的 P1）。同一类还有端口变矮（插话排队条 / 待办面板 /
- *    提示条：`scrollTop` 不变、连 `scroll` 事件都没有）。
- *
- * 2. **只要想跟，就把视口钉在底部**：任何"内容 / 端口 / 可见性可能变了"的信号都只置一个
- *    脏标记，rAF 里**幂等**重贴一次。没有"之前是否在底部"这个记忆值，因此不存在
- *    "某次判定被跳过之后永久停在错误一侧"（旧实现在展开后 500ms 内跳过所有跟随，窗口过后
- *    没有任何东西再触发判定——实测点了工具行就永久不恢复，见 P3；面板隐藏期间推帧再显示
- *    也被误判成用户上滑，见 P6）。
- *
- * 判据是"距底 ≤ `STICK_THRESHOLD_PX`"：内容不足一屏时 `dist ≤ 0`，天然算贴底，
- * `scrollTop` 赋值被浏览器夹回 0，是 no-op（用户口径里"还没出现滚动条"那种情况）。
- */
-const STICK_THRESHOLD_PX = 40;
-/** 手势之后多久内算"用户正在滚动"（ms）：滚轮有惯性、键盘会连发，给足余量。 */
-const GESTURE_WINDOW_MS = 400;
-
-function useAutoScroll(active: boolean, sessionId: string | undefined) {
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const contentRef = useRef<HTMLDivElement>(null);
-  /** 是否跟着最新（意愿）。置假只有一条路：手势 + 确实离底。 */
-  const followRef = useRef(true);
-  /** "内容/端口可能变了"的脏标记：任何信号只置位，rAF 里统一处理一次。 */
-  const pendingRef = useRef(true);
-  /**
-   * 滚轮与键盘各自记最近一次手势时刻。
-   *
-   * **初始值必须是 `-Infinity` 而不是 0**：`performance.now()` 在新文档里从 0 附近开始，
-   * 用 0 当"还没发生过"会让页面刚加载的头 400ms 里 `now - 0 < GESTURE_WINDOW_MS` 恒真
-   * ——那段时间任何一次离底都被当成"用户上滑"（探针 P1 就是这么红的）。
-   */
-  const wheelAtRef = useRef(-Infinity);
-  const keyAtRef = useRef(-Infinity);
-  /** 触摸、拖滚动条这类"有开始有结束"的手势：按住期间算活跃。 */
-  const gestureActiveRef = useRef(false);
-  /** 最近一次滚动位置：**只用于**从轨迹视图回来时复原阅读位置，不参与意愿判断。 */
-  const lastTopRef = useRef(0);
-  /** 是否已经挂过一次：用来区分「首次挂载」与「从轨迹视图回来」。 */
-  const attachedRef = useRef(false);
-  /** 脱贴且距底超过阈值：亮出「回到最新」胶囊。 */
-  const [showJump, setShowJump] = useState(false);
-  /**
-   * 显式放掉跟随（由轮次横条的跳转调用，见 useAutoScroll 返回的 `releaseFollow`）。
-   *
-   * 程序化滚动**不算手势**（onScroll 里 `gestureRecently()` 为假时意愿不动），
-   * 所以跳到历史位置必须有一条显式通道把意愿置假——否则下一次 settle 会把
-   * 视口钉回底部，跳转等于没跳。置假后走一次 settle：胶囊按实测距离亮出来，
-   * 用户随时可以一键回底。
-   */
-  const releaseRef = useRef<(() => void) | null>(null);
-  const releaseFollow = useCallback(() => releaseRef.current?.(), []);
-
-  useLayoutEffect(() => {
-    const el = scrollRef.current;
-    const content = contentRef.current;
-    if (!el || !content) return;
-    if (attachedRef.current) {
-      // 从轨迹视图回来：这是一个**新元素**，旧元素连同滚动位置一起没了
-      // （新元素 scrollTop 一律是 0，不补一下就会把用户丢回会话开头）。
-      // 按意愿复原：贴着底就跟到底，否则回到原来的阅读位置。
-      el.scrollTop = followRef.current
-        ? el.scrollHeight
-        : Math.min(lastTopRef.current, Math.max(0, el.scrollHeight - el.clientHeight));
-    } else {
-      attachedRef.current = true;
-      lastTopRef.current = el.scrollTop;
-    }
-
-    const gap = () => el.scrollHeight - el.scrollTop - el.clientHeight;
-    const gestureRecently = () =>
-      gestureActiveRef.current ||
-      performance.now() - wheelAtRef.current < GESTURE_WINDOW_MS ||
-      performance.now() - keyAtRef.current < GESTURE_WINDOW_MS;
-
-    /** 想跟就把视口钉到底（幂等）；不跟就只按实测距离同步胶囊。 */
-    const settle = () => {
-      const dist = gap();
-      if (followRef.current) {
-        if (dist > 0) el.scrollTop = el.scrollHeight;
-        setShowJump(false);
-      } else {
-        setShowJump(dist > STICK_THRESHOLD_PX);
-      }
-    };
-    /**
-     * 置脏 + 合并到下一帧。
-     *
-     * 所有信号（宿主帧、内容 RO、端口 RO、可见性）都只走这里：rAF 在绘制之前跑，
-     * 钉底不会闪；同一帧的多个信号合并成一次判定。
-     */
-    let scheduled = false;
-    const schedule = () => {
-      pendingRef.current = true;
-      if (scheduled) return;
-      scheduled = true;
-      requestAnimationFrame(() => {
-        scheduled = false;
-        if (!pendingRef.current) return;
-        pendingRef.current = false;
-        settle();
-      });
-    };
-    releaseRef.current = () => {
-      followRef.current = false;
-      schedule();
-    };
-
-    const onScroll = () => {
-      lastTopRef.current = el.scrollTop;
-      const dist = gap();
-      if (dist < STICK_THRESHOLD_PX) {
-        followRef.current = true; // 回到（近）底部即恢复跟随
-      } else if (gestureRecently()) {
-        // **只有**"用户手势 + 确实离底"才算要看上面。没有手势的离底（位置被浏览器夹走、
-        // 重排、端口变矮）一律按布局事故处理：不动意愿，下一次 settle 把它钉回底部。
-        followRef.current = false;
-      }
-      schedule();
-    };
-    const onWheel = (event: WheelEvent) => {
-      if (event.deltaY < 0) wheelAtRef.current = performance.now();
-    };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "PageUp" || event.key === "Home" || event.key === "ArrowUp") {
-        keyAtRef.current = performance.now();
-      }
-    };
-    /** 滚动条：`clientWidth` 右边那一条（滑块与轨道都算），按下到松开算手势活跃。 */
-    const onPointerDown = (event: PointerEvent) => {
-      if (event.clientX - el.getBoundingClientRect().left > el.clientWidth) {
-        gestureActiveRef.current = true;
-      }
-    };
-    const onPointerUp = () => {
-      gestureActiveRef.current = false;
-    };
-    const onTouchStart = () => {
-      gestureActiveRef.current = true;
-    };
-    const onTouchEnd = () => {
-      gestureActiveRef.current = false;
-    };
-    const onVisibility = () => {
-      if (!document.hidden) schedule();
-    };
-
-    const observer = new ResizeObserver(schedule);
-    observer.observe(content);
-    // 端口自身变矮也要重新判定：插话排队条 / 提示条 / 待办面板 / 变高的输入框都是从下面
-    // 把 `.chat-scroll` 挤矮——此时 `scrollTop` 不变、连 `scroll` 事件都没有。
-    observer.observe(el);
-    // 宿主来过一帧 = 内容可能变了（"新生成"到达的信号，不依赖 RO 时序）
-    const offFrame = onHostFrame(schedule);
-    el.addEventListener("scroll", onScroll, { passive: true });
-    el.addEventListener("wheel", onWheel, { passive: true });
-    el.addEventListener("keydown", onKeyDown);
-    window.addEventListener("pointerdown", onPointerDown, true);
-    window.addEventListener("pointerup", onPointerUp, true);
-    el.addEventListener("touchstart", onTouchStart, { passive: true });
-    el.addEventListener("touchend", onTouchEnd, { passive: true });
-    el.addEventListener("touchcancel", onTouchEnd, { passive: true });
-    document.addEventListener("visibilitychange", onVisibility);
-    window.addEventListener("focus", schedule);
-    schedule();
-    return () => {
-      observer.disconnect();
-      offFrame();
-      el.removeEventListener("scroll", onScroll);
-      el.removeEventListener("wheel", onWheel);
-      el.removeEventListener("keydown", onKeyDown);
-      window.removeEventListener("pointerdown", onPointerDown, true);
-      window.removeEventListener("pointerup", onPointerUp, true);
-      el.removeEventListener("touchstart", onTouchStart);
-      el.removeEventListener("touchend", onTouchEnd);
-      el.removeEventListener("touchcancel", onTouchEnd);
-      document.removeEventListener("visibilitychange", onVisibility);
-      window.removeEventListener("focus", schedule);
-    };
-    // `active`：轨迹视图会把会话页整块卸载（元素换了一个），回来时必须重挂
-  }, [active]);
-
-  // 切会话 = 要看最新：恢复贴底并回到底部（意愿不跨会话继承——上个会话滚到中间的阅读
-  // 位置对新会话没有意义，继承过去的表现是「切过来不跟最新」）。
-  // 首次挂载也会跑一次，此时内容通常还没到，scrollTop 赋值是 no-op，无副作用。
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    followRef.current = true;
-    pendingRef.current = true;
-    el.scrollTop = el.scrollHeight;
-    setShowJump(false);
-  }, [sessionId]);
-
-  /** 用户显式要最新：点胶囊、发消息（见 `App` 传给 `Composer` 的 `onFollowLatest`）。 */
-  const jumpToLatest = useCallback(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    followRef.current = true;
-    pendingRef.current = true;
-    el.scrollTop = el.scrollHeight;
-    setShowJump(false);
-  }, []);
-
-  return { scrollRef, contentRef, showJump, jumpToLatest, releaseFollow };
-}
-
 export function App() {
   const { state, dispatch } = useAppState();
   // 会话页是否在场：轨迹视图下它整块卸载，两个滚动 hook 都要能重挂
@@ -659,7 +409,10 @@ export function App() {
   }, [sessionId]);
   // 全页拖放：拖文件进会话页的任何位置都算添加附件（dragActive 时亮出浮层）
   const dragActive = usePageFileDrop();
-  const { scrollRef, contentRef, showJump, jumpToLatest, releaseFollow } = useAutoScroll(chatActive, sessionId);
+  // 自动滚动（贴底 / 放跟随 / 回底胶囊）：整套规则在 `autoScroll.ts` 里，
+  // 这里只把它的结果接给组件——端口一个（`chatScroll`），滚动手势与贴底判定不在这里。
+  const chatScroll = useAutoScroll(chatActive, sessionId);
+  const scrollRef = chatScroll.port.scrollEl;
   // 滚到顶附近自动取更早的历史；手动按钮走同一个入口（取到轮次边界为止）
   const { loadEarlier, loading: loadingEarlier } = useHistoryPaging(scrollRef, state, chatActive);
   // 右侧轮次横条（官方 TurnNavigator 的移植）：刻度 = turnOutline 投影 ∪ 已加载
@@ -667,9 +420,9 @@ export function App() {
   const railItems = useTurnRailItems(state.messages, state.turnOutline);
   const { activeTurn, busyTurn, navigate } = useTurnRailNav({
     scrollRef,
-    listRef: contentRef,
+    listRef: chatScroll.port.contentEl,
     items: railItems,
-    releaseFollow,
+    releaseFollow: chatScroll.releaseFollow,
     active: chatActive,
     sessionId,
     running: state.running,
@@ -725,8 +478,8 @@ export function App() {
 
   // 子代理面板开着时切会话：**重新拉一次这个会话的子代理**。
   // 打开面板那一下已经拉过一次（见头部按钮的 `toggle`），所以这里只处理"开着的时候换了
-  // 会话"——否则列表会停在上一个会话上。宿主快照里的 `subagents` 只是投影（可能不如
-  // RPC 列表全），所以补的是 RPC，而不是只靠快照。
+  // 会话"——否则列表会停在上一个会话上。宿主快照里的 `subagentEntries` 只是投影（可能
+  // 不如 RPC 列表全），所以补的是 RPC，而不是只靠快照。
   const subagentPanelSession = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (state.panel !== "subagents") {
@@ -768,10 +521,10 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 待处理的交互：输入区渲染**被选中的那一条**，消息流里跳过**同一条**——两处读同一个
-  // 选举结果，才不会出现「两边都画」或「两边都不画」（见 pendingInteraction.ts 文件头）
-  const pending = pendingInteractionOf(state.messages);
-  const takenOverId = pendingRequestId(pending);
+  // 待处理的交互：输入区渲染**被选中的那一条**，消息流里跳过**同一条**——选举与抑制
+  // 由 `resolveInteractions` **一次**算出（`pending` 给 Composer、`takenOver` 给 Message），
+  // 才不会出现「两边都画」或「两边都不画」（见 pendingInteraction.ts 文件头）
+  const { pending, takenOver } = resolveInteractions(state.messages);
 
   return (
     <TextsContext.Provider value={texts}>
@@ -805,12 +558,12 @@ export function App() {
         ) : (
           <div className="chat-area">
             <div className="chat-pane">
-              <div className="chat-scroll" ref={scrollRef}>
+              <div className="chat-scroll" ref={chatScroll.port.scrollEl}>
               {/* 右侧轮次横条：sticky 零高度槽位浮在正文右缘，不占布局、不撑长
                   scrollHeight（官方 TurnNavigator 的挂法一致）。轨迹视图下整块
                   会话页卸载，它自然不在。 */}
               <TurnRail items={railItems} activeTurn={activeTurn} busyTurn={busyTurn} onNavigate={navigate} />
-              <div className="chat-list" ref={contentRef}>
+              <div className="chat-list" ref={chatScroll.port.contentEl}>
                 {state.messages.length === 0 ? (
                   <EmptyState />
                 ) : (
@@ -846,7 +599,7 @@ export function App() {
                         turnProcessThreshold={state.turnProcessThreshold}
                         // 只有非最后一条（= 不是正在跑的那一轮）才能作为分支锚点
                         canBranch={!state.running || index < state.messages.length - 1}
-                        takenOverId={takenOverId}
+                        takenOver={takenOver}
                       />
                     ))}
                   </>
@@ -857,8 +610,8 @@ export function App() {
             {/* 「回到最新」胶囊：脱贴（用户上滑）后内容继续增长时的兜底入口。
                 点击回底并重新贴上（恢复跟随）；贴底时永不出现。锚在只包滚动区的
                 .chat-pane 上——待办面板在 .chat-area 里更靠下，不能让胶囊叠上去。 */}
-            {showJump ? (
-              <button type="button" className="jump-latest" onClick={jumpToLatest}>
+            {chatScroll.showJump ? (
+              <button type="button" className="jump-latest" onClick={chatScroll.jumpToLatest}>
                 <span aria-hidden="true">↓</span>
                 {texts.jumpToLatest}
               </button>
@@ -893,9 +646,9 @@ export function App() {
         <Composer
           state={state}
           pending={pending}
-          chatScrollRef={scrollRef}
+          chatScroll={chatScroll.port}
           onDraft={(text) => dispatch({ type: "ui/setDraft", text })}
-          onFollowLatest={jumpToLatest}
+          onFollowLatest={chatScroll.jumpToLatest}
         />
 
         {state.panel === "history" ? (

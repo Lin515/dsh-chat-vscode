@@ -38,6 +38,8 @@ import { TextsContext, dictionaryFor } from "../src/webview/texts";
 const { QuestionCard } = await import("../src/webview/components/Rows");
 // 整条消息（含审批 / 提问两种交互段）：用来钉「只撤下被接管的那一条」（第 7 节）
 const { Message } = await import("../src/webview/components/Message");
+// 第 7 节的 `takenOver` 由公开入口现算（不手写段 id），选举 → 抑制 → 渲染一条链路都过一遍
+const { resolveInteractions } = await import("../src/webview/pendingInteraction");
 
 /** 渲染成 HTML；语言按真实链路给（`useTexts` 的默认是英文，这里显式喂词典）。 */
 const render = (question: QuestionView, locale: "zh" | "en" = "zh"): string =>
@@ -204,17 +206,19 @@ console.log("questionRender: 英文渲染同一条链路 ✓");
     segments: [approvalSegment, questionSegment],
   };
 
-  const html = (takenOverId: string | undefined): string =>
+  const html = (takenOver: ReadonlySet<string>): string =>
     renderToStaticMarkup(
       createElement(
         TextsContext.Provider,
         { value: dictionaryFor("zh") },
-        createElement(Message!, { message: message as never, takenOverId }),
+        createElement(Message!, { message: message as never, takenOver }),
       ),
     );
 
-  // 被选中的是问卷：问卷卡撤下（输入区渲染它），**审批卡必须留在流里**
-  const electedQuestion = html("ev-question");
+  // 两张 waiting 并存：`takenOver` 由公开入口 `resolveInteractions` 从**同一份消息流**
+  // 现算（真实链路：选举 → 抑制 → 渲染）。当选的是问卷（官方优先级 1 > 0），
+  // 问卷卡撤下（输入区渲染它），**审批卡必须留在流里**
+  const electedQuestion = html(resolveInteractions([message as never]).takenOver);
   assert.ok(
     !/question-option/.test(electedQuestion),
     "被选中的问卷卡不该出现在流里（由输入区渲染）",
@@ -224,13 +228,14 @@ console.log("questionRender: 英文渲染同一条链路 ✓");
     `没被选中的审批卡必须留在流里、能被回答：${electedQuestion.slice(0, 400)}`,
   );
 
-  // 反过来：被选中的是审批 → 问卷卡留在流里
-  const electedApproval = html("ev-approval");
+  // 反过来：被选中的是审批 → 问卷卡留在流里（两张都还是 waiting，这里把「当选的是审批」
+  // 直接交给渲染层——选举本身选不出这个结果，优先级永远是问卷在前）
+  const electedApproval = html(new Set(["seg-approval"]));
   assert.ok(!/class="approval"/.test(electedApproval), "被选中的审批卡不在流里");
   assert.ok(/question-option/.test(electedApproval), "没被选中的问卷卡留在流里");
 
   // 没有待处理交互：两张都留在流里
-  const none = html(undefined);
+  const none = html(new Set());
   assert.ok(/class="approval"/.test(none) && /question-option/.test(none), "没有待处理交互时两张都留在流里");
 }
 console.log("questionRender: 只撤下被输入区接管的那一条 ✓");

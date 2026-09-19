@@ -20,6 +20,7 @@ import { SessionAdapter } from "../src/dsh/adapter";
 import type { MessageView, Segment } from "../src/shared/chat";
 import type { HostToWebview } from "../src/shared/ipc";
 import { foldTurnProcess } from "../src/webview/turnProcess";
+import { dictionaryFor } from "../src/webview/texts";
 import { MAX_HISTORY_PAGES, shouldContinuePaging } from "../src/dsh/historyPaging";
 
 /** 收集帧（与 thinkingStream.test.ts 同一套：深拷贝，模拟 postMessage）。 */
@@ -244,9 +245,17 @@ console.log("historyReplay: 一次触发取回全部历史 ✓");
   );
 
   const controller = readFileSync(join(process.cwd(), "src", "dsh", "controller.ts"), "utf8");
+  // 帧的字段名与折返口径已收进 `dsh/sessionView.ts` 的字段表（`sessionPatch`），
+  // 所以这条断言钉的是「取一页前后各发一次 patch」+「字段名走那张表」，不再是
+  // 手写的 `patch: { historyLoading: … }` 字面量（那个字面量正是刚拆掉的漂移来源）。
+  assert.strictEqual(
+    [...controller.matchAll(/sessionPatch\(this\.sessionSource\(scope\), \["historyLoading"\]\)/g)].length,
+    2,
+    "宿主取一页前后要各发一帧 historyLoading（两处，都走同一张字段表）",
+  );
   assert.ok(
-    /patch: \{ historyLoading: true \}/.test(controller) && /patch: \{ historyLoading: false \}/.test(controller),
-    "宿主取一页前后要各发一帧 historyLoading",
+    /scope\.historyLoading = true;/.test(controller) && /scope\.historyLoading = false;/.test(controller),
+    "域上的闸门要真的置位/复位（界面拿到的是同一个值）",
   );
   assert.ok(
     /shouldContinuePaging\(added, Boolean\(page\.hasMore\), pages\)/.test(controller),
@@ -257,16 +266,19 @@ console.log("historyReplay: 一次触发取回全部历史 ✓");
     /prependRecords\(records: readonly SessionHistoryRecord\[\], hasMore: boolean\): number/.test(adapter),
     "prependRecords 要返回新并入的事件条数（进展判据的唯一真凭据）",
   );
-  const texts = readFileSync(join(process.cwd(), "src", "webview", "texts.ts"), "utf8");
-  assert.ok(/historyLoading: "正在加载全部历史…"/.test(texts), "中文文案");
-  assert.ok(/historyLoading: "Loading all history…"/.test(texts), "英文文案");
+  // 文案走**词典断言**，不去 grep 源文件里的字面量：文案表搬到 `messages.ts` 之后，
+  // 「某个文件里有这行字」只会随文件布局漂移（见 docs/audit-summary.md 第五批的结论）。
+  assert.strictEqual(dictionaryFor("zh").historyLoading, "正在加载全部历史…", "中文文案");
+  assert.strictEqual(dictionaryFor("en").historyLoading, "Loading all history…", "英文文案");
   assert.ok(/this\.replaying = true;/.test(adapter) && /if \(this\.replaying\) return;/.test(adapter), "适配器要有重放静默开关");
-  const composer = readFileSync(
-    join(process.cwd(), "src", "webview", "components", "Composer.tsx"),
+  // 候选弹层（`ref` + 键盘导航要把选中行滚进视野）已收进 `composerCompletion.tsx`：
+  // 这条断言跟着搬（它钉的是行为，不是「Composer 里有这行字」）。
+  const completion = readFileSync(
+    join(process.cwd(), "src", "webview", "composerCompletion.tsx"),
     "utf8",
   );
   assert.ok(
-    /ref=\{popoverRef\}/.test(composer) && /popover-item\.is-selected/.test(composer),
+    /ref=\{popoverRef\}/.test(completion) && /popover-item\.is-selected/.test(completion),
     "候选弹层要接上「把选中行滚进视野」（键盘上下键导航）",
   );
 }

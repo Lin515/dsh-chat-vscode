@@ -9,6 +9,7 @@
 import assert from "node:assert";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { dictionaryFor } from "../src/webview/texts";
 
 const css = readFileSync(join(process.cwd(), "src", "webview", "styles", "app.css"), "utf8");
 
@@ -264,13 +265,21 @@ console.log("styles: 鲸鱼蓝色独属、各节点有专属色 ✓");
   //     isSession 区分）；
   //   - 「..」那行（它就是两个字符，绝不能被右侧的说明挤没）；
   //   - 权限档位名（英文 Read Only / Workspace Write 曾被长描述挤成 `Read O…`）。
+  //
+  // 候选行的形状现在由 `composerCompletion.tsx` 的 `candidateRows` 算出（`.is-priority`
+  // 也在那个 module 的 JSX 里），所以这一条改读那个文件；权限档位名仍在本组件。
   const composer = readFileSync(
     join(process.cwd(), "src", "webview", "components", "Composer.tsx"),
     "utf8",
   );
+  const completion = readFileSync(
+    join(process.cwd(), "src", "webview", "composerCompletion.tsx"),
+    "utf8",
+  );
   assert.ok(
-    /isCommand \|\| isParent \|\| isSession \? " is-priority" : ""/.test(composer),
-    "Composer 的候选行必须按 isCommand / isParent / isSession 加 .is-priority（普通文件路径不加）",
+    /isCommand \|\| isParent \|\| isSession/.test(completion) &&
+      /shape\.priority \? " is-priority" : ""/.test(completion),
+    "候选行必须按 isCommand / isParent / isSession 加 .is-priority（普通文件路径不加）",
   );
   assert.ok(
     /popover-item-main is-priority">\{item\.label\}/.test(composer),
@@ -506,13 +515,14 @@ console.log("styles: 用户消息操作行（时钟 + 复制，无分支） ✓"
     !/turn-status-shimmer/.test(css) && !/\.turn-status\b/.test(css),
     "不应再有 TurnStatus 的扫光状态行（用户明确去掉：鲸鱼发光已足够）",
   );
-  const texts = readFileSync(join(process.cwd(), "src", "webview", "texts.ts"), "utf8");
-  assert.ok(
-    /running: "深度求索中"/.test(texts),
+  // 文案走词典断言（文案表已搬进 messages.ts，见 docs/audit-summary.md 第六批）
+  assert.strictEqual(
+    dictionaryFor("zh").running,
+    "深度求索中",
     "运行中的文案应当是「深度求索中」（原来写的是「生成中」）",
   );
   assert.ok(
-    !/deepDiving/.test(texts),
+    !("deepDiving" in dictionaryFor("zh")),
     "不再保留 deepDiving 词条（那是被去掉的扫光行专用文案）",
   );
 }
@@ -610,8 +620,8 @@ console.log("styles: 思考段恒折叠 + 摘要口径对齐官方 ✓");
     "链接不能用嵌套 <button>：行头本身已经是按钮",
   );
 
-  const texts = readFileSync(join(process.cwd(), "src", "webview", "texts.ts"), "utf8");
-  assert.ok(/toolInput: "输入"/.test(texts) && /toolInput: "IN"/.test(texts), "两段标签要双语且与官方一致");
+  assert.strictEqual(dictionaryFor("zh").toolInput, "输入", "两段标签要双语且与官方一致（中文）");
+  assert.strictEqual(dictionaryFor("en").toolInput, "IN", "两段标签要双语且与官方一致（英文）");
 }
 console.log("styles: 工具行 IN/OUT + 改动统计 + 可点路径 ✓");
 
@@ -642,12 +652,12 @@ console.log("styles: 代码块自动换行（官方 pre-wrap） ✓");
     "App 要把待处理交互交给 Composer（接管输入区）",
   );
   assert.ok(
-    /const pending = pendingInteractionOf\(state\.messages\)/.test(app),
-    "选举结果要在 App 里算**一次**：Composer 渲染它、Message 跳过同一条（两处读同一个值）",
+    /const \{ pending, takenOver \} = resolveInteractions\(state\.messages\)/.test(app),
+    "选举与抑制要合成**一次**计算：Composer 渲染当选那张、Message 跳过同一段（两处读同一个结果）",
   );
   assert.ok(
-    /takenOverId=\{takenOverId\}/.test(app),
-    "同一条的 requestId 也要交给 Message，否则可能出现「两边都画」或「两边都不画」",
+    /takenOver=\{takenOver\}/.test(app),
+    "要交给输入区渲染的那些**段**（段 id 集合）也要给 Message，否则可能出现「两边都画」或「两边都不画」",
   );
 
   const composer = readFileSync(
@@ -1155,48 +1165,38 @@ console.log("styles: 轨迹取历史同链路、概述摊开后几张卡片 ✓"
 }
 console.log("styles: 轨迹配色对齐官方（输入绿 / 模型紫）✓");
 
-// ---------- 34. 连接条按钮矩阵：连接中只有「停止连接 + 查看日志」，按钮态才有目标按钮 ----------
+// ---------- 34. 连接条按钮矩阵：判定在纯函数里，界面只渲染 ----------
 //
-// 用户 2026-09-18 口径（取代 2026-09-14/15 那套三态矩阵）：
-// 1) **连接中只显示**「停止连接」+「查看日志」——启动内部 / 连接内部 / 连接外部一律不摆
-//    （目标由系统按"内部优先、外部备用"选好，写在文案里）；
-// 2) 「停止连接」只要**正在连接**就得显示（首轮连接同样可能卡在"等就绪"上，重连没有总超时）；
-// 3) 「查看日志」在连接条上恒显——每一档都可能是"连不上但说不清"。
-//
-// 这一组是**渲染条件的源码断言**：这几个条件的显示关系容易在后续改动里被"顺手"改回去，
-// 而它一改回去就是功能消失（用户点不到停止，或连接中又冒出按钮）。
+// （2026-09-19）判定搬进 `src/webview/connectView.ts` 的 `connectViewOf` 之后，原先按渲染分支
+// 形状写的两条正则（`{isConnecting ? ( … ) : ( … )}` 与查看日志按钮的 JSX）不再成立，而且其中
+// 一条会退化成**空断言**（取到的分支为空串 → 恒真，防线静默消失）。矩阵本身改由
+// `scripts/connectView.test.ts` 逐条断言（三类状态 × 每种标志、按钮顺序、置灰与悬停提示）。
+// 这一组只留三件别处没人管的事：界面**没有**再自己判两轴/再塞回按钮、四颗目标按钮仍然真的有指令、
+// `state.reconnecting` 没有复活。
 // 注意：这个块注释里不能出现 `星号加斜杠` 这种序列（哪怕写在反引号里也会提前闭合注释，
 // esbuild 会报一个指向很远行的 Syntax error）——所以下面把正则拆成字符串拼接。
 {
   const app = readFileSync(join(process.cwd(), "src", "webview", "App.tsx"), "utf8");
   const flat = app.replace(/\s+/gu, " ");
 
-  // 连接中那一支：`{isConnecting ? ( ... ) : ( ... )}`，取中间那段（非贪婪到 `) : (`）
-  const connectingBranch = /\{isConnecting \? \(([\s\S]*?)\) : \(/u.exec(flat)?.[1] ?? "";
-  assert.ok(connectingBranch.includes('type: "stopReconnect"'), "「停止连接」必须在连接中那一支里（否则首轮连接时点不到停止）");
   assert.ok(
-    !/type: "(startInternal|connectInternal|connectExternal|restartInternal)"/u.test(connectingBranch),
-    "连接中不许出现启动/连接内部、连接外部、重启内部按钮（用户 2026-09-18 口径：连接中只有停止连接 + 查看日志）",
+    flat.includes("connectViewOf(state, texts"),
+    "连接条必须渲染纯函数的结论（判定不在组件里）——否则「连接中只有停止+日志」这条又回到现场代码里",
+  );
+  assert.ok(
+    !/state\.internalRunning\s*===|state\.externalState\s*===/u.test(flat),
+    "界面不再自己判两轴（判定在 connectViewOf 里）",
   );
   assert.ok(
     !/\{state\.reconnecting/u.test(flat),
     "`state.reconnecting` 已随新机制删除（连接条文案改由 connectTarget / connectPhase 决定）",
   );
-  // 三个目标按钮必须真的存在于按钮态那一支（别只在 IPC 类型里存在）
+  // 四个目标按钮必须真的存在于界面（别只在 IPC 类型里存在）
   for (const kind of ["startInternal", "connectInternal", "connectExternal", "restartInternal"]) {
     assert.ok(flat.includes(`type: "${kind}"`), `按钮态缺少 ${kind}（界面漏了入口）`);
   }
-  // 恒显：`showLogs` 那个按钮直接是 JSX 子节点，不再包在三元里。
-  // 正则里的 JSX 注释锚点用 `\{/` + 通配拼出来，避免在块注释里出现提前闭合的序列。
-  const logButtonPrompt = new RegExp(
-    "\\{/" + "\\* 查看日志[\\s\\S]{0,160}?\\*/\\} <button className=\"btn btn-ghost\" data-mini=\"hide\" onClick=\\{\\(\\) => post\\(\\{ type: \"showLogs\" \\}\\)\\}>",
-  );
-  assert.ok(
-    logButtonPrompt.test(flat),
-    "「查看日志」在连接条上必须恒显（不包任何三元的条件里）",
-  );
 }
-console.log("styles: 连接条按钮矩阵（连接中只有停止+日志 / 按钮态三个目标按钮 / 日志恒显）✓");
+console.log("styles: 连接条按钮矩阵（判定在纯函数里 / 四颗目标按钮仍有指令）✓");
 
 // ---------- 35. 滚动条拐角 / 右下角拉伸角不许是白底 ----------
 //
@@ -1331,19 +1331,16 @@ console.log("styles: 两颗「打开」按钮图标不同（编辑区=方框箭�
 
 // ---------- 37. 贴底：意愿只由手势决定，几何只负责续跟 ----------
 //
-// 用户 2026-09-16 报：「正常贴底生成着，突然就不知道为什么不贴底了」——实测四点：
-// 最新内容留在视野下方、胶囊亮着、没有任何面板/排队条变化、永不恢复要手动滚。
-// 根因：`scroll` 事件是**异步**派发的，处理器当场读的 `scrollTop` 可能来自已经过去的
-// 布局（位置被浏览器夹过），而 `scrollHeight` 来自当前布局。旧实现那条
-// 「`scrollTop` 变小 ⇒ 用户上滑了」的推断把"浏览器自己夹一下位置"误判成用户操作，
+// 用户 2026-09-16 报：「正常贴底生成着，突然就不知道为什么就不贴底了」。根因是
+// **从滚动几何里推断意愿**：`scroll` 事件是异步派发的，处理器当场读的 `scrollTop`
+// 可能来自已经过去的布局（位置被浏览器夹过），而 `scrollHeight` 来自当前布局。
+// 旧实现那条「`scrollTop` 变小 ⇒ 用户上滑了」把"浏览器自己夹一下位置"误判成用户操作，
 // `stick=false` 之后没有任何东西会翻回来（探针 P1 复现；同类还有端口变矮 P2、
 // 展开豁免 P3、面板隐藏/恢复 P6）。
 //
-// 新机制两条，本组逐条钉住：
-//   ① 意愿（followRef）只由**输入**改：置假必须"手势 + 确实离底"同时成立；置真是
-//      位置回到容差内、或用户显式要最新（发消息 / 切会话 / 点胶囊）。几何推断不许回来。
-//   ② 想跟就把视口**幂等**钉到底：任何信号（宿主帧 / 内容 RO / 端口 RO / 可见性）
-//      只置脏标记，rAF 里合并成一次判定。没有"之前是否在底部"的记忆值。
+// 2026-09-19：整条链路收进 `src/webview/autoScroll.ts`。**行为断言搬去了
+// `scripts/autoScroll.test.ts`**（真调用状态机 + 假 DOM 真派发事件），这里只留
+// **接线**那一层——那是另一种事实（跨文件的数据流），正则恰好是合适的工具。
 {
   const css = readFileSync(join(process.cwd(), "src", "webview", "styles", "app.css"), "utf8");
   const scroller = /\.chat-scroll \{[\s\S]*?\n\}/.exec(css)?.[0] ?? "";
@@ -1354,83 +1351,95 @@ console.log("styles: 两颗「打开」按钮图标不同（编辑区=方框箭�
   );
 
   const app = readFileSync(join(process.cwd(), "src", "webview", "App.tsx"), "utf8");
-  const hook = /function useAutoScroll[\s\S]*?(?=export function App)/.exec(app)?.[0] ?? "";
-  assert.ok(hook, "App.tsx 里必须有 useAutoScroll");
+  const module = readFileSync(join(process.cwd(), "src", "webview", "autoScroll.ts"), "utf8");
 
-  // ① 几何推断与时间豁免整个不许再出现
+  // ① 规则只在一个地方：`App.tsx` 里不许再有这条链路的实现痕迹
   assert.ok(
-    !/stickRef/.test(app),
-    "不许再有 stickRef（从滚动几何推断意愿的旧记忆值）：`scroll` 事件与 `scrollHeight` 可能来自两份不同布局，它就是误判源",
+    /import \{ useAutoScroll \} from "\.\/autoScroll";/.test(app),
+    "App.tsx 要从 autoScroll 模块取 hook（接线），而不是自己实现",
   );
   assert.ok(
-    !/EXPAND_READ_GRACE_MS|expandedAtRef|onTranscriptClick/.test(app),
-    "展开豁免（500ms 时间窗 + aria-expanded 点击捕获）必须删除：跳过之后没有任何东西会再触发判定，实测「点了工具行就永久不恢复」",
+    !/function useAutoScroll/.test(app),
+    "App.tsx 里不许再有 useAutoScroll 的实现：规则跨文件散着放，加一处端口就得动所有调用点",
   );
-  const followWrites = (hook.match(/followRef\.current = false/g) ?? []).length;
-  // 恰好两个入口：① 手势 + 确实离底（onScroll）；② 轮次横条的显式跳转
-  // （releaseFollow——程序化滚动不算手势，不显式放掉的话 settle 会把视口钉回底部，
+  assert.ok(
+    !/followRef|stickRef/.test(app),
+    "App.tsx 里不许再有意愿状态（followRef）或几何推断的记忆值（stickRef）——它们全在 autoScroll 模块里",
+  );
+  assert.ok(
+    !/EXPAND_READ_GRACE_MS|expandedAtRef|onTranscriptClick|hasSelectionInside/.test(app),
+    "展开豁免（500ms 时间窗 + aria-expanded 点击捕获）与划选豁免不许回来：跳过之后没有任何东西会再触发判定（实测「点了工具行就永久不恢复」）",
+  );
+  assert.ok(
+    !/addEventListener\("wheel"|addEventListener\("touchstart"|gestureRecently|requestAnimationFrame/.test(app),
+    "App.tsx 不许自己接线滚动信号（滚轮 / 触摸 / 手势判定 / rAF 合并都在 autoScroll 模块里）；它只留「滚到顶取更早历史」那一条监听",
+  );
+
+  // 意愿置假只有两个入口：① 手势 + 确实离底（onScroll）；② 轮次横条的显式释放
+  // （`release()`——程序化滚动不算手势，不显式放掉的话 settle 会把视口钉回底部，
   // 跳转等于没跳）。出现第三个就是几何推断回来了。
-  assert.strictEqual(followWrites, 2, "脱离跟随只允许「手势离底」与「轮次跳转显式释放」两个入口");
+  const followWrites = (module.match(/following = false;/g) ?? []).length;
+  assert.strictEqual(
+    followWrites,
+    2,
+    "脱离跟随只允许「手势离底」与「显式 release」两个入口（模块里两处写入），出现第三个就是几何推断回来了",
+  );
   assert.ok(
-    /} else if \(gestureRecently\(\)\) \{[\s\S]{0,600}?followRef\.current = false;/.test(hook),
+    /else if \(this\.gestures\.recently\(now\)\)/.test(module),
     "脱贴必须同时满足「近期有手势 + 确实离底」：没有手势的离底（位置被浏览器夹走 / 重排 / 端口变矮）是布局事故，不许写成脱贴",
   );
   assert.ok(
-    /const gestureRecently = \(\) =>\s*\n\s*gestureActiveRef\.current \|\|/.test(hook),
+    /recently\(now: number\): boolean \{\s*\n\s*return active \|\|/.test(module),
     "手势判据要包含「按下到松开」的活跃区间（触摸、拖滚动条）",
   );
 
-  // ② 手势来源齐备：滚轮 / 键盘 / 触摸 / 滚动条
+  // ③ 模块里：信号面齐备（少一个就会在真实场景里丢一次钉底）
   assert.ok(
-    /addEventListener\("wheel"/.test(hook) && /event\.deltaY < 0/.test(hook),
+    /addEventListener\("wheel"/.test(module) && /deltaY < 0/.test(module),
     "滚轮向上要记手势（向下滚不该脱贴）",
   );
-  assert.ok(/PageUp[\s\S]{0,80}ArrowUp/.test(hook), "键盘上翻（PageUp/Home/ArrowUp）要记手势");
+  assert.ok(/PageUp[\s\S]{0,80}ArrowUp/.test(module), "键盘上翻（PageUp/Home/ArrowUp）要记手势");
   assert.ok(
-    /clientX - el\.getBoundingClientRect\(\)\.left > el\.clientWidth/.test(hook),
+    /clientX - rectLeft > clientWidth/.test(module),
     "拖滚动条（滑块与轨道都在 clientWidth 右边）要记手势",
   );
-  assert.ok(/"touchstart"/.test(hook) && /"touchend"/.test(hook), "触摸要记手势");
-
-  // ③ 幂等钉底：合并到 rAF，赋值只在"想跟"分支里
-  assert.ok(/requestAnimationFrame\(\(\) => \{/.test(hook), "钉底要合并到下一帧（绘制之前跑，不闪）");
+  assert.ok(/"touchstart"/.test(module) && /"touchend"/.test(module), "触摸要记手势");
+  assert.ok(/onHostFrame\(schedule\)/.test(module), "宿主来过一帧就要重新判定一次（「新生成到达」最早、且不依赖 RO 时序的信号）");
+  assert.ok(/observeResize\(content, schedule\)/.test(module), "内容（.chat-list）长高是跟随的主入口，不能删");
   assert.ok(
-    /if \(followRef\.current\) \{\s*\n\s*if \(dist > 0\) el\.scrollTop = el\.scrollHeight;/.test(hook),
-    "跟随本体：想跟就把视口钉到底（幂等）",
-  );
-  assert.ok(
-    /setShowJump\(dist > STICK_THRESHOLD_PX\)/.test(hook),
-    "胶囊按**实测距离**亮：脱贴且确实离底才亮，贴底即隐（不能出现「脱贴了没胶囊」或「没脱贴却亮着」）",
-  );
-
-  // ④ 信号面：宿主帧 + 内容 RO + 端口 RO + 可见性/焦点
-  assert.ok(
-    /onHostFrame\(schedule\)/.test(hook),
-    "宿主来过一帧就要重新判定一次——这是「新生成到达」最早、且不依赖 RO 时序的信号",
-  );
-  assert.ok(
-    /observer\.observe\(content\);/.test(hook),
-    "内容（.chat-list）长高是跟随的主入口，不能删",
-  );
-  assert.ok(
-    /observer\.observe\(el\);/.test(hook),
+    /observeResize\(el, schedule\)/.test(module),
     "滚动端口自身（.chat-scroll）变矮也要重新判定：插话排队条/提示条/待办面板挤矮它时不会触发 scroll 事件",
   );
   assert.ok(
-    /addEventListener\("visibilitychange"/.test(hook) && /addEventListener\("focus", schedule\)/.test(hook),
+    /addEventListener\("visibilitychange"/.test(module) && /addEventListener\("focus", schedule\)/.test(module),
     "可见性 / 焦点变化要重新判定（面板隐藏期间推帧、再显示时必须贴回底部）",
   );
 
-  // ⑤ re-arm：切会话 / 点胶囊 / 发消息 三条都要在场
+  // ④ 幂等钉底：合并到 rAF，赋值只在「想跟」分支里；胶囊按实测距离亮
+  assert.ok(/requestAnimationFrame\(callback\)/.test(module), "钉底要合并到下一帧（绘制之前跑，不闪）");
   assert.ok(
-    /followRef\.current = true;\s*\n\s*pendingRef\.current = true;/.test(hook),
-    "切会话与点胶囊要恢复跟随（意愿不跨会话继承）",
+    /if \(state\.following\) \{\s*\n\s*if \(dist > 0\) el\.scrollTop = el\.scrollHeight;/.test(module),
+    "跟随本体：想跟就把视口钉到底（幂等）",
+  );
+  assert.ok(
+    /setShowJump\(dist > STICK_THRESHOLD_PX\)/.test(module),
+    "胶囊按**实测距离**亮：脱贴且确实离底才亮，贴底即隐（不能出现「脱贴了没胶囊」或「没脱贴却亮着」）",
+  );
+
+  // ⑤ 「显式要最新」只有一处实现：切会话 / 点胶囊 / 发消息共用 `rearm()`
+  assert.ok(
+    /rearm\(\): void \{\s*\n\s*following = true;/.test(module),
+    "「显式要最新」只能有一处实现（`rearm`）：切会话、点胶囊、发消息三条入口共用它，谁都不会各自漂移",
   );
   const composer = readFileSync(
     join(process.cwd(), "src", "webview", "components", "Composer.tsx"),
     "utf8",
   );
-  assert.ok(/onFollowLatest\?: \(\) => void;/.test(composer), "Composer 要接「用户要看最新」回调");
+  assert.ok(/chatScroll\?: AutoScrollPort;/.test(composer), "Composer 要接滚动端口的**唯一对象**（不再各接一半）");
+  assert.ok(
+    /chatScroll\?\.scrollEl\.current/.test(composer),
+    "Composer 从端口取滚动容器（自适应量高的瞬态补回要用它）",
+  );
   assert.ok(
     /post\(\{ type: "send"[\s\S]{0,400}?onFollowLatest\?\.\(\)/.test(composer),
     "发消息 = 要看最新（官方 useAutoScroll 同口径）：脱贴状态下发出去也要贴回底部",
@@ -1439,12 +1448,29 @@ console.log("styles: 两颗「打开」按钮图标不同（编辑区=方框箭�
     /post\(\{ type: "queueSteer"[\s\S]{0,200}?onFollowLatest\?\.\(\)/.test(composer),
     "把排队消息立刻发出去同样是「要看最新」",
   );
-  assert.ok(/onFollowLatest=\{jumpToLatest\}/.test(app), "App 要把回底动作接到 Composer");
-
-  // ⑥ 划选豁免按口径保持删除（贴底下滚不检查选区）
+  assert.ok(/onFollowLatest\?: \(\) => void;/.test(composer), "Composer 要接「用户要看最新」回调");
   assert.ok(
-    !/hasSelectionInside/.test(hook),
-    "划选豁免已按口径删除：贴底下滚不做选区检查（不想被顶走就自己上滑脱贴）",
+    /<Lump state=\{state\} onFollowLatest=\{onFollowLatest\} \/>/.test(composer),
+    "排队条（Lump）的「立刻发出」也要能要最新：Composer 必须把同一份动作透传下去（这是组件内部的接线，端口收敛动不到它）",
+  );
+  assert.ok(
+    /onFollowLatest=\{chatScroll\.jumpToLatest\}/.test(app),
+    "App 要把回底动作从 module 的绑定里接给 Composer",
+  );
+
+  // ⑥ 布局阶段钉底：切会话 / 从轨迹视图回来必须在 layout effect 里完成
+  //    （挪到 useEffect 就会先画一帧旧位置，用户看到的就是一次闪）
+  assert.ok(
+    /useLayoutEffect\(\(\) => \{\s*\n\s*port\.pin\(\);/.test(module),
+    "切会话的贴底必须在 useLayoutEffect 里（`port.pin()` 是那个 effect 的第一件事）",
+  );
+  assert.ok(
+    /useLayoutEffect\(\(\) => \{\s*\n\s*const handle = setupAutoScroll/.test(module),
+    "从轨迹视图回来时的挂载与按意愿复原也要在 useLayoutEffect 里",
+  );
+  assert.ok(
+    /\}, \[sessionId, port, state\]\);/.test(module),
+    "切会话那条 effect 要依赖 sessionId（切会话重置贴底并回最新）",
   );
 
   // ⑦ 不变量探针必须在仓库里：这一类故障（位置被夹 / 端口变矮 / 展开 / 隐藏恢复）
@@ -1454,22 +1480,33 @@ console.log("styles: 两颗「打开」按钮图标不同（编辑区=方框箭�
     "贴底不变量探针 test/scroll-probe.html 必须在场（npm run preview 打开即可跑）",
   );
 
-  // 「回到最新」胶囊：脱贴兜底（旧实现 stick 被打掉后无任何恢复途径）
+  // ⑧ 「回到最新」胶囊：脱贴兜底（旧实现 stick 被打掉后无任何恢复途径）
   assert.ok(
     /className="jump-latest"/.test(app) && /\.jump-latest \{/.test(css),
     "脱贴后必须有「回到最新」胶囊（界面 + 样式都在场）",
   );
   assert.ok(
-    /const \{ scrollRef, contentRef, showJump, jumpToLatest, releaseFollow \} = useAutoScroll\(chatActive, sessionId\);/.test(app),
-    "App 要从 useAutoScroll 取胶囊状态与回底动作，且把 sessionId 传进去（切会话重置贴底）",
+    /chatScroll\.showJump \? \(/.test(app) && /onClick=\{chatScroll\.jumpToLatest\}/.test(app),
+    "胶囊的显隐与点击都从 module 的绑定取（App 不再自己算）",
   );
-  const texts = readFileSync(join(process.cwd(), "src", "webview", "texts.ts"), "utf8");
+  assert.strictEqual(dictionaryFor("zh").jumpToLatest, "回到最新", "胶囊文案必须中英双语都在词典里（中文）");
+  assert.strictEqual(dictionaryFor("en").jumpToLatest, "Jump to latest", "胶囊文案必须中英双语都在词典里（英文）");
+
+  // ⑨ App 只剩接线：两个 ref + 一个端口对象交给组件，历史翻页仍走同一个滚动容器
   assert.ok(
-    /jumpToLatest: "回到最新"/.test(texts) && /jumpToLatest: "Jump to latest"/.test(texts),
-    "胶囊文案必须中英双语都在词典里",
+    /const chatScroll = useAutoScroll\(chatActive, sessionId\);/.test(app),
+    "App 调 hook（吃 active + sessionId），拿到的就是全部",
+  );
+  assert.ok(
+    /const \{ loadEarlier, loading: loadingEarlier \} = useHistoryPaging\(scrollRef, state, chatActive\);/.test(app),
+    "历史翻页仍用同一个滚动容器（端口不改变这条链路的入口）",
+  );
+  assert.ok(
+    /ref=\{chatScroll\.port\.scrollEl\}/.test(app) && /ref=\{chatScroll\.port\.contentEl\}/.test(app),
+    ".chat-scroll / .chat-list 的 ref 来自端口（谁拥有容器谁就拥有这条链路）",
   );
 }
-console.log("styles: 贴底（意愿只由手势定 + 幂等钉底；几何推断与展开豁免已除；回底胶囊）✓");
+console.log("styles: 贴底（规则在 autoScroll.ts；App 只剩接线；回底胶囊）✓");
 
 // ---------- 19. 计划审阅卡：只有一个滚动层，且决定按钮不会被滚走 ----------
 //
@@ -1560,10 +1597,10 @@ console.log("styles: 计划审阅卡单层滚动 + 决定按钮常驻 ✓");
   const pinAt = composer.indexOf("pane.scrollTop = pane.scrollHeight;");
   assert.ok(autoAt >= 0, "自适应量高（塌回 auto 再量）必须还在");
   assert.ok(
-    /const distBefore = pane \? pane\.scrollHeight - pane\.scrollTop - pane\.clientHeight : 0;/.test(composer) &&
+    /const distBefore = pane \? bottomGap\(pane\) : 0;/.test(composer) &&
       /const prevTop = pane\?\.scrollTop \?\? 0;/.test(composer) &&
       composer.indexOf("const distBefore") < autoAt,
-    "量高前必须先记贴底距离与 scrollTop（瞬态基线），否则无从补回",
+    "量高前必须先记贴底距离与 scrollTop（瞬态基线），否则无从补回；距离走 `autoScroll` 的 `bottomGap`（同一份定义）",
   );
   assert.ok(
     restoreAt > autoAt && pinAt > restoreAt,
@@ -1574,13 +1611,13 @@ console.log("styles: 计划审阅卡单层滚动 + 决定按钮常驻 ✓");
     "补回不许推迟到 rAF/定时器：晚一帧就是用户看到的那一下闪烁",
   );
   assert.ok(
-    /\}, \[draft, chatScrollRef\]\);/.test(composer),
-    "自适应 effect 的依赖要带上 chatScrollRef（ref 恒定，不会多跑）",
+    /\}, \[draft, chatScroll\]\);/.test(composer),
+    "自适应 effect 的依赖要带上滚动端口（对象恒定，不会多跑）",
   );
   const app = readFileSync(join(process.cwd(), "src", "webview", "App.tsx"), "utf8");
   assert.ok(
-    /chatScrollRef=\{scrollRef\}/.test(app),
-    "App 要把会话滚动区的 ref 传给 Composer（瞬态补回需要它）",
+    /chatScroll=\{chatScroll\.port\}/.test(app),
+    "App 要把会话滚动端口的唯一对象传给 Composer（瞬态补回需要它）",
   );
 }
 console.log("styles: 多行草稿打字不闪（量高瞬态同帧消化）✓");
@@ -1705,11 +1742,8 @@ console.log("styles: 多行草稿打字不闪（量高瞬态同帧消化）✓")
   );
 
   // 文案双语
-  const texts = readFileSync(join(process.cwd(), "src", "webview", "texts.ts"), "utf8");
-  assert.ok(
-    /turnRailLabel: "轮次导航"/.test(texts) && /turnRailLabel: "Turn navigation"/.test(texts),
-    "横条的 aria 标签必须中英双语都在词典里",
-  );
+  assert.strictEqual(dictionaryFor("zh").turnRailLabel, "轮次导航", "横条的 aria 标签必须中英双语都在词典里（中文）");
+  assert.strictEqual(dictionaryFor("en").turnRailLabel, "Turn navigation", "横条的 aria 标签必须中英双语都在词典里（英文）");
 }
 console.log("styles: 右侧轮次横条（零高度槽位 + 点击穿透 + 过窄自动关闭） ✓");
 

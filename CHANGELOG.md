@@ -4,6 +4,112 @@
 
 ## 未发布
 
+### `.chat-scroll` 的端口收成一个 module（2026-09-19）
+
+- **收敛**：自动滚动（贴底 / 放跟随 / 回底胶囊）整条链路从 `App.tsx` + `Composer.tsx` 两处手工穿线收进
+  `src/webview/autoScroll.ts` 一个 module：`AutoScrollPort`（`scrollEl`/`contentEl`/`release`/`pin`）是唯一
+  端口，`App.tsx` 只剩接线（920 → 703 行），`Composer` 的两个滚动 prop 合成一个 `chatScroll`。
+  行为逐条不变（意愿只由手势决定、切会话重置贴底、胶囊按实测距离、轮次跳转显式放跟随、发消息/点胶囊显式
+  要最新、钉底仍在 `useLayoutEffect`）。行为断言从 `styles.test.ts` 的源码正则换成真调用（新增
+  `scripts/autoScroll.test.ts`：纯状态机 + 假宿主环境真派发事件）。
+- **修**：`test/scroll-probe.html` 的 P4/P9 误报失败（2026-09-19 当天修）。那条 I2 断言用
+  「消息文本前 40 字」当锚点身份，而场景会往**被锚定的那条消息**追加工具段（`appendTool` 默认发给
+  `a:3`），工具行的文字落进消息文本靠前位置就把这个窗口顶掉 → `top()` 找不到节点返回 null →
+  报成「锚点 79 → null」。实测同一步里按 `data-msg-id` 找得到、按文本前缀找不到。改身份为
+  `data-msg-id`（文本前缀只作兜底），并把身份写进失败文案。修后 **9/9 全过**；并做了一次环境级注入
+  （把 `wheel` 监听掐掉）确认**牙齿仍在**：P4/P9 立刻变红，其余 7 个不受影响。夹具本身的问题，
+  产品侧无改动。
+
+### 会话状态面收敛为一个生产者（2026-09-19）
+
+- **一个字段表**：新增 `src/dsh/sessionView.ts` —— `SessionView`（23 个字段）+ `SESSION_VIEW_KEYS`
+  （声明顺序 = 帧里键的顺序，与原快照逐字一致）+ `SESSION_FIELDS`（唯一字段表，`satisfies` 强制键集完整）
+  + 三个入口 `sessionView()`（首帧 / 切会话专帧）、`sessionPatch()`（增量 patch，24 处）、`appearanceView()`。
+  以前首帧快照、增量 patch、切会话专帧**各拼一份**，加一个字段只改其中一处会让它在切换会话后
+  **静默复旧/丢失**（`goal` 清不掉、「加载更早」卡死都是这一族）。`undefined → null` 的过线折返也只在
+  构造器里做一次。
+- **修**：子代理目录在宿主与界面两侧**同名**（`subagentEntries`）。此前宿主发 `subagents`、界面读
+  `subagentEntries`，改一侧忘另一侧没有任何编译期或断言保护（开着子代理面板切会话时列表停在上一个会话上）。
+- **修**：后台任务面板的一次刷新**少投一条重复帧**（同一份数据曾连发 `jobs/list` + `patch.jobs`，面板会闪
+  一下）；按需请求（打开面板）那条 `jobs/list` 保留。
+- 新增断言 `scripts/sessionView.test.ts`：三个生产者的字段键集合做**通用**比较（同一份输入走三条路，
+  `Object.keys` 必须全等 + 值全等 + 键顺序），并对宿主侧接线做反漂移扫描；两次注入验证（字段清单层 /
+  生产者层）都确认过「只改一处必然红」。
+
+### `@key` 文案的登记从 7 处收成 1 处（2026-09-19）
+
+新增 `src/webview/messages.ts` 作为**唯一消息表**（286 个键，每条自带中英两份，带参数的登记成函数、
+不带参数的登记成字符串）。两份界面词典、`resolveText()` 的解析、宿主标记清单都由这张表派生；
+`resolveText` 里那个 37 个 `case` 的长 `switch` 改为查表，不再有「重复 `case` = 后者不可达」这类
+工具链看不见的静默故障。
+
+**行为逐字不变**：1598 条标记级 + 572 条字典级快照对拍，zh 侧零差异；3 条英文串是有意对齐
+`vscode.l10n` 的英文源串（key 就是英文源串，两处必须一致）——`authTokenRejected` / `serverNotReady`
+的 “DSH: Restart Server” 改为 “DSH: Restart Internal DSH”，`serverUnreachable` 改为
+“Cannot reach the DSH server at {0} yet…”。同时修掉两处中文指向**已改名/不存在**的命令
+（`authTokenRejected` 的「DSH: 重启服务器」→「DSH: 重启内部 DSH」、`serverNotReady` 的「重启服务器」→
+「重启内部 DSH」；「查看日志」是 webview 自己的按钮名，**没动**）。
+
+**VS Code 原生通知那一层补上断言**（此前零覆盖）：`hostText` 覆盖的 key 集合必须等于消息表里标了
+`vscode: true` 的 6 条、源代码扫描证明英文源串没有手写副本、每条的英文源串在
+`l10n/bundle.l10n.zh-cn.json` 里都有**不同**的中文译文。断言在 `scripts/i18n.test.ts`。
+
+### 未结算的审批 / 提问收成一个模块（2026-09-19）
+
+宿主侧「还没结算的审批 / 提问」此前散在 `controller.ts` 的三个集合（`heldEvents` / `eventSessions` /
+`handledEvents`）与六个方法里：去重、回放不删、结算清哪些集合全靠调用方记得配对，其中 `eventSessions`
+曾经只增不删（跨会话累积），补齐后 Host 撤回那条路仍然漏清。现在四条规则收进
+`src/dsh/pendingInteractions.ts` 的 `PendingInteractions`：`hold()` 收下并去重、`forSession()` 只读回放、
+`settle()` / `withdraw()` 是**仅有的**两个结算出口（返回原始记录，会话 id 就在记录里，因此不再需要第二份
+「事件 → 会话」索引）。控制器只剩「收帧 → 记账 → 投递」与「答复 / 撤回 → 结算 → 回 Host」。
+
+行为一个字没变（重复投递去重、回放不删条目、结算点仍是 `answerApproval` / `answerQuestion` /
+`cancelQuestion` / Host 撤回四处、`ensureScope` 仍然不回放、`bindViewToSession` 仍然回放）。
+原来靠「读 5000 行源码 + 数字符串」钉住这套生命周期的断言换成了对模块的真 API 断言
+（新增 `scripts/pendingInteractions.test.ts`，7 节）。
+
+### 架构收敛：交互选举、停止入口、会合状态（2026-09-19，架构评审落地）
+
+三条都是「同一件事在多处各写一遍」的收敛，**用户可见行为不变**（各自注明例外）：
+
+- **待处理交互的选举与抑制合成一次计算**：`src/webview/pendingInteraction.ts` 现在只暴露
+  `resolveInteractions(messages) → { pending, takenOver }`。`pending`（谁接管输入区）仍按官方注册优先级
+  plan-review > 普通提问 > 审批、同级取最后一条；`takenOver` 是要交给输入区渲染的**段 id 集合**
+  （键是 `segment.id`、不是 `requestId`，最多一个元素）。`App.tsx` 只算这一次，`Composer` 渲染当选那张、
+  `Message` 跳过同一段（子代理转写面板不传集合 = 卡片留在流里，那是另一个会话的东西）；`Composer` 里
+  「有没有在等审批/提问」的第三份 `.some(...)` 推导随之删除（判据改为 `!pending`，与原条件等价）。
+  断言：`scripts/pendingInteraction.test.ts`、`scripts/questionRender.test.ts` 第 7 节（用真实 `Message`
+  渲染「两张 waiting 并存」，没被选中的那张必须在 HTML 里）。
+- **窗口侧管理器收敛「停止」入口**：新增 `stop({ release, cancelWait, askSupervisor })` 与只读快照
+  `snapshot()`（17 个字段，全部取自既有读法）；`detachInternal` / `releaseInternal` / `cancelWaiting` /
+  `stopAndExit` / `stopDetachedInternal` 全部变成薄壳（方法名与签名不变，供探针继续调用），连点「停止内部
+  DSH」不再重复发控制帧。**不给 `options` 时按旧 `stopAndExit()` 走**（`scripts/smoke.ts` 等仍写
+  `server.stop()`），要"只收连接"显式写 `stop({})`。语义与 2026-09-19 口径零改动，设计记在
+  `docs/design-supervisor.md` §9.11；断言 `scripts/supervisorPolicy.test.ts` 第 10 组 +
+  新增 `scripts/connectSnapshot.test.ts`。
+- **连接条的三类状态与按钮矩阵收成一个纯函数**：新增 `src/webview/connectView.ts` 的
+  `connectViewOf(state, texts, resolve) → { kind, text, buttons }`（不依赖 React，`resolve` 由界面注入）。
+  `App.tsx` 的 `ConnectionBar` 只渲染它的结论，`statusText` / `connectingText` 两个局部判定与
+  `state.internalRunning === true` / `state.externalState === …` 的现场判断一并删除（"哪颗按钮发哪条
+  指令"留在 `App.tsx` 的 `CONNECT_POST`，界面 DOM 不变）。文案与按钮矩阵**逐字不变**（§9.4 是权威）。
+  断言：新增 `scripts/connectView.test.ts`（46 条，三类 × 每种标志逐条）；`scripts/styles.test.ts`
+  第 34 组里按渲染分支形状写的两条源码断言迁到了这个新文件。
+- **控制器不再镜像管理器**：`internalRunning` / `externalReachable` 两个字段合并成一份两轴观测
+  `facts`（两轴是**异步探测**，快照里没有这两个值），`externalState()` / `viewConnection()` 两个私有
+  判定删除，连接那组界面字段由模块级纯函数 `connectionFieldsOf(snapshot, facts, round)` 一次算出
+  （`externalAddress` 取自 `snapshot().externalUrl`；控制器不再调 `getStatus()`）。四个停止落点改为
+  直调 `SupervisorManager.stop({…})` 的对应档（表写在 `controller.ts` 的 `prepareRound` 顶上）：
+  `prepareRound` 与 `ensureConnected` 换目标 → `{ cancelWait: true }`（**不收连接**：那一轮要重连
+  同一个后台）、`abandonRound` / `stopReconnect` → `{ release: true }`、
+  `stopServer` → `{ cancelWait: true, askSupervisor: true }`。断言：`scripts/connectionStop.test.ts`
+  第 8、9 组。
+- **会合状态一个解码器、一处路径、探针走真入口**：`supervisorProtocol.decodeState(value, opts)` 成为
+  文件路与管道公共用的**唯一**份逐字段校验（安全边界只收紧：`baseUrl` 仍必须 http(s)、`command`/`socket`
+  收紧成非空、`serverPid` 收紧成正整数）；`rendezvousPaths(directory)` 成为四处路径的唯一产出，socket 名
+  只由会合目录派生（删掉了启动器里"切目录字符串反推分组"那段）；四个验收探针改成直接构造
+  `SupervisorManager`，不再验手抄副本。唯一的行为收紧：管道路的 `idleSec` 现在也过 `clampIdleSec`。
+  见 `docs/design-supervisor.md` §3.8；断言 `scripts/supervisorProtocol.test.ts` 第 3.5 组。
+
 ### 两个内部按钮统一为「有就接上、没有就起一套」（2026-09-19 用户口径）
 
 「连接内部 DSH」以前是**只接不启动**：内部不在时它只能回按钮态；而缺省 `autoConnect: true`

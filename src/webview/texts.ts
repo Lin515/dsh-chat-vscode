@@ -1,14 +1,33 @@
 import { createContext, useContext } from "react";
+import { asMessageTable, MESSAGES } from "./messages";
+import type { Marker } from "./messages";
 
 /**
  * 界面文案：跟随 VS Code 显示语言。
  *
  * 宿主把语言标识放进 state，webview 用它选词典。只做中英两套；
  * 其余语言一律回落英文（而不是显示中文），避免出现半截翻译。
+ *
+ * **文案本体在 `messages.ts` 的唯一一份消息表里**（以 `@key` 标记为键，每条自带
+ * 中英两份）。本文件只做三件事：
+ * 1. `Texts`——给「视图字段名 → 文案」定形的接口（下面逐个成员带注释）；
+ * 2. 由消息表派生出 zh / en 两份字典；
+ * 3. `resolveText()`——查表 + 按冒号拆参数（宿主发来的 `@key` / `@key:arg`）。
+ *
+ * 于是「加一条用户可见文案」从前要改的 4 处（接口 / zh / en / switch）收成**一条**：
+ * 在 `messages.ts` 的表里加一条。带参数的登记成函数、不带参数的登记成字符串，
+ * 所以「把裸字符串当函数调用」由 `tsc` 拦住。
  */
 
 export type Locale = "zh" | "en";
 
+/**
+ * 界面词典的形状（**键名即消息表的键名**，`scripts/i18n.test.ts` 逐个核对）。
+ *
+ * 这里是文档与契约：每个成员在哪个界面出现、带什么参数。文案的**取值**不写在这里，
+ * 写 `messages.ts`；`dictionaryFor()` 的返回值按本接口收窄，所以
+ * `dictionaryFor("zh").copied` 这类调用点编译期仍然受约束（缺键直接报错）。
+ */
 export interface Texts {
   newChat: string;
   history: string;
@@ -568,665 +587,28 @@ export interface Texts {
   toolRunningHint: string;
 }
 
-const zh: Texts = {
-  newChat: "新建对话",
-  history: "历史对话",
-  openInEditor: "在编辑器中打开",
-  openInBrowser: "在浏览器中打开 DSH Web",
-  openInBrowserOffline: "还没有连上 DSH 服务器，暂时无法在浏览器中打开。",
-  openInBrowserFailed: "系统没有打开浏览器，可以手动访问 dsh web 打印的地址。",
+/**
+ * 由消息表派生一份词典：把每条消息的对应语言取出来（函数原样引用，不包一层，
+ * 保住参数类型与 `Function.length`）。
+ *
+ * 返回值按 `Texts` 收窄，所以 `dictionaryFor("zh").xxx` 的调用点编译期仍然受约束。
+ * 表与接口的一致性由 `scripts/i18n.test.ts` 断言：**键集合必须一致**——表里多一个
+ * `Texts` 没登记的键，或者接口比表多写了一个键（界面上就会显示裸 key），都在那里
+ * 报出来；成员类型也对了一遍（导出类型，没有运行时开销）。
+ */
+function derive(locale: Locale): Texts {
+  const out: Record<string, string | ((...args: never[]) => string)> = {};
+  for (const key of Object.keys(MESSAGES) as Marker[]) {
+    out[key] = MESSAGES[key][locale];
+  }
+  return out as unknown as Texts;
+}
 
-  emptyHint: "用 @ 添加文件或选区作为上下文；Shift+Enter 换行。",
+const zh: Texts = derive("zh");
+const en: Texts = derive("en");
 
-  placeholderFirst: "问点什么，或用 @ 添加上下文",
-  placeholderFollowUp: "继续追问…",
-  send: "发送",
-  sendTitle: "发送（Enter）",
-  stopTitle: "停止生成",
-  thinkingDepth: "思考深度",
-  models: "模型",
-  defaultModel: "默认模型",
-  noModels: "未获取到模型目录",
-  attachFile: "添加文件",
-  attachFolder: "整个目录",
-  cancel: "取消",
-  remove: "移除",
-  close: "关闭",
-  back: "返回",
-
-  permission: "权限",
-  permReadOnly: "仅可查看",
-  permReadOnlyDesc: "只能读取，不做任何修改",
-  permWorkspaceWrite: "工作区内修改",
-  permWorkspaceWriteDesc: "可在工作区内读写，越界需授权",
-  permFullAccess: "完全权限",
-  permFullAccessDesc: "不受工作区限制，含敏感操作（危险）",
-  permConfirmTitle: "确认启用完全权限？",
-  permConfirmBody:
-    "启用后新会话将减少确认步骤，可直接执行更多操作，包括敏感操作、文件修改或外部命令。仅建议在你信任后续任务时使用。",
-  permConfirmEnable: "启用完全权限",
-  enterPlanMode: "进入计划模式",
-  exitPlanMode: "退出计划模式",
-
-  goalActive: "进行中的目标",
-  goalPaused: "已暂停的目标",
-  goalBlocked: "受阻的目标",
-  goalPause: "暂停目标",
-  goalResume: "恢复目标",
-  goalClear: "清除目标",
-  goalEdit: "编辑目标",
-  goalSave: "保存",
-  goalCancel: "取消",
-  goalExpand: "展开目标全文",
-  goalCollapse: "收起目标全文",
-  turnClock: (ms) => {
-    const total = Math.max(0, Math.floor(ms / 1000));
-    const minutes = Math.floor(total / 60);
-    const seconds = total % 60;
-    return minutes > 0
-      ? `${minutes}分${String(seconds).padStart(2, "0")}秒`
-      : `${seconds}秒`;
-  },
-  turnRanFor: (duration) => `用时 ${duration}`,
-  turnProcessLabel: ({ toolCalls, messages, subagents }) => {
-    const parts: string[] = [];
-    if (toolCalls > 0) parts.push(`${toolCalls} 次工具调用`);
-    if (messages > 0) parts.push(`${messages} 条消息`);
-    if (subagents > 0) parts.push(`${subagents} 个 subagent`);
-    return parts.length ? parts.join(" · ") : "已思考";
-  },
-  turnTimeTitle: "本轮用时和速度",
-  turnTimeDuration: "本轮总用时",
-  turnTimeSpeed: "输出速度（TPS）",
-  turnTimeTtft: "首 token 用时（TTFT）",
-  tokensPerSecond: (tps) => `${tps} tok/s`,
-  turnLatency: (ms) => {
-    const seconds = Math.max(0, ms) / 1000;
-    return `${seconds < 10 ? seconds.toFixed(1) : String(Math.round(seconds))}秒`;
-  },
-
-  commandRunning: "执行中",
-  commandFailed: "执行失败",
-  unknownCommand: (line) => `没有这条命令：${line}`,
-  commandDispatchFailed: (line) => `命令 ${line} 没能发出去`,
-  producedLabel: "本轮文件改动",
-  presentedLabel: "交付文件",
-  producedMore: (count) => `+ ${count} 个文件`,
-  openChangesAria: (name) => `查看 ${name} 的改动`,
-  openChangesHint: "点击查看改动对比；按住 Alt 直接打开文件",
-  filesExpandAria: (count) => `展开全部 ${count} 个文件`,
-  filesCollapse: "收起",
-  filesCollapseAria: "收起文件列表",
-  fileNewTag: "[新增]",
-  fileDeletedHint: "文件已从磁盘删除；点击尝试查看删除前的内容",
-  deletedFileAria: (name) => `已删除的文件 ${name}`,
-  chipFileDeleted: "文件已删除，内容找不回来了",
-  chipPathUnresolved: "暂时拿不到会话工作目录，无法定位这个文件；稍后再点一次试试",
-  dropUnreadable: (name) => `${name} 读不出来，没有加进来（目录暂不支持拖放，请用「添加文件」或 @ 引用）`,
-  dropTooLarge: (name) => `${name} 太大，拖放上限 8 MB；请改用「添加文件」`,
-  imageTooLarge: (name) => `${name} 超过服务端的图片上限，已改为按文件上传`,
-  dropHint: "松开即添加为附件",
-
-  subagents: "子代理",
-  subagentsEmpty: "当前会话没有子代理",
-  subagentOneShot: "一次性",
-  subagentContinuable: "可继续",
-  subagentInactive: "未运行",
-  trajectory: "轨迹",
-  trajectoryEmpty: "本会话还没有工具调用",
-  backToChat: "返回会话",
-  jobs: "后台任务",
-  jobsEmpty: "当前会话没有后台任务",
-  jobRunning: "运行中",
-  jobStopping: "正在停止",
-  jobCompleted: "已完成",
-  jobKilled: "已取消",
-  jobUnknown: "未知状态",
-  jobFailed: "失败",
-  commands: "命令",
-  commandsEmpty: "没有可用命令",
-  skillTag: "技能",
-  uploadFailed: "上传失败，点击重试",
-  uploadFailedReason: (reason) => `${reason}\n点击重试`,
-  uploadIncomplete: (names, count) =>
-    `有 ${count} 个文件没能上传（${names}），本次只发送了就绪的附件`,
-  uploadNoSession: "还没有连上服务器，附件传不上去",
-  mentionFiles: "文件",
-  mentionSessions: "对话",
-  mentionEmpty: "没有匹配的文件",
-  mentionHint: "↑↓ 选择 · Enter 引用 · Tab 进入目录 · Esc 取消",
-  mentionParent: "返回上一层目录",
-  mentionDrill: "进入目录",
-  mentionDrillKey: "Tab",
-  mentionNoCwd: "（无工作目录）",
-
-  running: "深度求索中",
-  queued: "待发送 {n} 条",
-  queueRemove: "取消这条消息",
-  queueEdit: "取回重新编辑",
-  queueMediaOnly: "（附件）",
-  runningHint: "按 ESC 可中止",
-  runningHintQueue: "按 ESC 可中止并发出排队消息",
-
-  thinking: "思考",
-  diffTruncated: "… 内容过长，已截断",
-
-  injectedSystemPrompt: "系统提示词",
-  injectedRuntimeContext: "运行时上下文",
-  injectedAgentInstructions: "项目指令",
-  injectedSkillCatalog: "技能目录",
-  injectedContext: "上下文注入",
-  injectedRecall: "跨会话召回",
-  injectedChars: (chars) => `${chars} 字符`,
-
-  approvalTitle: "需要你的许可",
-  approvalApproved: "已允许",
-  approvalRejected: "已拒绝",
-  approvalExpired: "已失效",
-  allow: "允许",
-  allowAlways: "始终允许",
-  reject: "拒绝",
-  callId: (id) => `调用标识：${id}`,
-  questionHead: "问题",
-  questionPlaceholder: "或直接输入回答…",
-  submit: "提交",
-  questionStep: (index, total) => `第 ${index} / ${total} 题`,
-  questionPrev: "上一题",
-  questionNext: "下一题",
-  questionAnswered: (count) => `已作答 ${count} 题`,
-  questionCancelled: (count) => `已取消 ${count} 题`,
-  questionCustomTitle: "自定义回答",
-  questionCustomAria: "自定义回答（选中后其它选项会被取消）",
-  planReviewHeader: "计划待审",
-  planReviewApprove: "确认执行",
-  planReviewDecline: "拒绝",
-  planReviewDiscuss: "去聊天里说",
-
-  copy: "复制",
-  copied: "已复制到剪贴板",
-  insertToEditor: "插入到当前编辑器",
-  stopped: "已停止",
-
-  connecting: "正在连接…",
-  connectionFailed: "无法连接 DSH 服务器",
-  startInternal: "启动内部 DSH",
-  connectInternal: "连接内部 DSH",
-  connectExternal: "连接外部 DSH",
-  restartInternal: "重启内部 DSH",
-  externalDisabledHint: "未配置 dshChat.url，没有可连的外部 DSH",
-  startingInternal: "正在启动内部 DSH…",
-  connectingInternal: "正在连接内部 DSH…",
-  connectingExternal: (baseUrl) => `正在连接外部 DSH（${baseUrl}）…`,
-  stopReconnect: "停止连接",
-  showLogs: "查看日志",
-  statusInternalRunning: "内部 DSH：运行中",
-  statusInternalNotRunning: "内部 DSH：未运行",
-  statusExternalReachable: "外部 DSH：可达",
-  statusExternalUnreachable: "外部 DSH：不可达",
-  statusExternalUnconfigured: "外部 DSH：未配置",
-  statusSeparator: " · ",
-  enterToken: "输入令牌",
-  authNeedsToken:
-    "外部 DSH 服务器需要访问令牌：请点「输入令牌」填入 dsh web 启动时打印的 token（或命令面板「DSH: 输入访问令牌」）。",
-  authTokenRejected:
-    "服务器要求授权，且自动获取的令牌未被接受。请用命令面板「DSH: 重启服务器」重启它。",
-  connectionLost: "与服务器的连接已断开，正在重连…",
-  serverSpawnFailed: (detail) => `启动 dsh 进程失败：${detail}`,
-  serverNotReady: "后台没有就绪（会合文件里还没有地址或令牌）。可点「重启服务器」重试，或用「查看日志」看原因。",
-  serverUnreachable: (baseUrl) => `连不上 ${baseUrl}（会一直重试，可点「停止连接」）。请确认该地址上运行着 dsh web。`,
-  serverLogTail: (tail) => `日志尾部：\n${tail}`,
-  sharedRestarted: "共享后台已由本窗口接管并重启，其它窗口会自动重新接入。",
-
-  searchSessions: "搜索历史对话",
-  today: "今天",
-  earlier: "更早",
-  noSessions: "还没有历史对话",
-  untitled: "未命名对话",
-  runningTag: "运行中",
-  forkedTitle: (title) => `分支: ${title}`,
-  archive: "归档（从工作区列表移出）",
-  archiveList: "归档列表",
-  deleteSession: "删除（删除本地日志文件）",
-  deleteSessionConfirm: "再次点击确认删除",
-  noArchivedSessions: "暂无归档会话",
-
-  contextUsed: (percent, used, total) => `上下文已用 ${percent}%（${used} / ${total}）`,
-  ctxDetailCached: "缓存命中",
-  ctxDetailSystem: "系统提示词",
-  ctxDetailTools: "工具定义",
-  ctxDetailMessages: "对话消息",
-  statsLlmTime: "模型用时",
-  statsToolTime: "工具调用用时",
-  statsTtft: "首 token 平均（TTFT）",
-  statsSpeed: "平均输出速度（TPS）",
-  statsTitle: "会话统计（全日志累计）",
-  markdownFootnotes: "脚注",
-  turnFailed: "本轮执行失败",
-  interrupted: "本轮被中断",
-  compacted: "上下文已压缩",
-  llmRetry: (attempt, max) => `模型调用失败，正在重试（第 ${attempt} / ${max} 次）`,
-  llmRetryAlways: (attempt) => `模型调用失败，正在重试（第 ${attempt} 次）`,
-  /** 当前模型不支持图片输入时的提示（模型名作为变量）。 */
-  imagePathsInserted: (count, model) =>
-    `模型「${model}」不支持图片输入，已把 ${count} 个路径插入输入框`,
-  queueAttachmentsLost: "这条消息的附件无法还原，请重新添加（正文已放回输入框）",
-  queueContentLost: "排队消息的内容无法还原，已只中止当前轮",
-  queueDispatchFailed: "排队消息没能自动发出，内容已放回输入框",
-  unknownEvent: (type) => `遇到了本客户端不认识的事件「${type}」，已跳过其内容。`,
-  toolRead: "读取",
-  toolWrite: "写入",
-  toolEdit: "编辑",
-  toolRun: "运行",
-  toolSearch: "搜索",
-  toolPwsh: "Pwsh",
-  toolReadImage: "读取图片",
-  toolInspect: "查看插件",
-  toolRunCordis: "运行插件",
-  toolStopCordis: "停止插件",
-  toolRemoveCordis: "移除插件",
-  toolGeneric: "工具调用",
-  toolCode: "代码",
-  toolExitCode: (code) => `退出码 ${code}`,
-  toolSignal: (signal) => `被信号 ${signal} 终止`,
-  toolImageAlt: "工具返回的图片",
-  messageImageAlt: "消息里的图片",
-  imagePreview: "查看原图",
-  imagePreviewClose: "关闭原图预览",
-  imageLoadFailed: "图片加载失败",
-  toolInput: "输入",
-  toolOutput: "输出",
-  unknownBlock: "未知内容块",
-  contextInstructions: "上下文指令",
-  contextAdded: "已新增",
-  contextUpdated: "已更新",
-  contextRemoved: "已移除",
-  contextCatalogReplaced: "替换目录",
-  contextCatalogMore: (count) => `…还有 ${count} 条`,
-  contextSnapshotSupersedes: "取代先前的快照",
-  contextRelayFrom: (session) => `来自会话 ${session}`,
-  contextRecallCounts: (retained, omitted) => `保留 ${retained} 条 · 省略 ${omitted} 条`,
-  contextRecallTruncated: "已截断",
-  toolCollapse: "收起",
-  readWindow: (shown, total) => `显示 ${shown} / ${total} 行`,
-  readExpandRest: (count) => `… 其余 ${count} 行`,
-  readExpandAria: (count) => `展开其余 ${count} 行`,
-  readCollapseAria: "收起内容",
-  searchPaths: (shown) => `${shown} 个路径`,
-  searchPathsTruncated: (shown, total) => `显示 ${shown} / 共 ${total} 个路径`,
-  searchMatches: (shown, files) => `${shown} 处匹配 · ${files} 个文件`,
-  searchMatchesTruncated: (shown, total, files) => `显示 ${shown} / 共 ${total} 处匹配 · ${files} 个文件`,
-  searchNoResults: "无结果",
-  searchExpandAria: (count) => `展开其余 ${count} 行结果`,
-  searchCollapseAria: "收起结果",
-  searchExpandRest: (count) => `… 其余 ${count} 行`,
-  webNoResults: "未找到结果",
-  webSourcesTruncated: "来源列表已截断",
-  webHttp: "HTTP",
-  webContentTruncated: "内容已截断",
-  terminalRunning: "运行中",
-  terminalDone: "已完成",
-  terminalFailed: "失败",
-  terminalNoOutput: "无输出",
-  toolTodoTitle: "更新任务清单",
-  toolTodoProgress: (done, total) => `${done}/${total} 已完成`,
-  maxTokens: "已达到输出 token 上限，回答被截断。发送「继续」可接着写。",
-
-  branchFromHere: "从这里分支",
-  branchFailed: "创建分支失败",
-  branchCreated: (title) => `已创建分支：${title}`,
-  branchNoAnchor: "这条消息还取不到分支锚点（本轮尚未收尾），暂时不能分支",
-  branchRunning: "生成中不能分支",
-  historyMore: "加载全部历史",
-  historyLoading: "正在加载全部历史…",
-  jumpToLatest: "回到最新",
-  turnRailLabel: "轮次导航",
-  turnRailJump: (turn) => `跳到第 ${turn} 轮`,
-  turnRailJumpLoad: (turn) => `加载并跳到第 ${turn} 轮`,
-  turnRailTurn: (turn) => `第 ${turn} 轮`,
-  historyBusy: "生成中不能加载历史，请等这一轮结束",
-  userMessageExpand: "展开",
-  userMessageCollapse: "收起",
-  sendQueue: "排队发送",
-  sendSteer: "插话发送",
-  queueSteer: "插话发送",
-  queueSteerUnavailable: "仅运行中可插话发送",
-
-
-  toolRunning: "运行中 · 已用 {duration}",
-  toolRunningHint: "输出会在执行结束后显示",
-};
-
-const en: Texts = {
-  newChat: "New chat",
-  history: "Chat history",
-  openInEditor: "Open in editor",
-  openInBrowser: "Open DSH Web in browser",
-  openInBrowserOffline: "Not connected to a DSH server yet, so it cannot be opened in the browser.",
-  openInBrowserFailed: "The browser was not opened; you can visit the URL printed by dsh web manually.",
-
-  emptyHint: "Use @ to attach files or a selection. Shift+Enter for a new line.",
-
-  placeholderFirst: "Ask anything, or use @ to add context",
-  placeholderFollowUp: "Ask a follow-up",
-  send: "Send",
-  sendTitle: "Send (Enter)",
-  stopTitle: "Stop generating",
-  thinkingDepth: "Thinking depth",
-  models: "Models",
-  defaultModel: "Default model",
-  noModels: "No model catalog available",
-  attachFile: "Attach file",
-  attachFolder: "whole folder",
-  cancel: "Cancel",
-  remove: "Remove",
-  close: "Close",
-  back: "Back",
-
-  permission: "Permission",
-  permReadOnly: "Read Only",
-  permReadOnlyDesc: "Can read but never modify anything",
-  permWorkspaceWrite: "Workspace Write",
-  permWorkspaceWriteDesc: "Can read and write inside the workspace; beyond it needs approval",
-  permFullAccess: "Full Access",
-  permFullAccessDesc: "Unrestricted, including sensitive operations (dangerous)",
-  permConfirmTitle: "Enable full access?",
-  permConfirmBody:
-    "New sessions will skip most confirmations and may run sensitive operations, modify files or run external commands. Only use it when you trust the work that follows.",
-  permConfirmEnable: "Enable full access",
-  enterPlanMode: "Enter plan mode",
-  exitPlanMode: "Exit plan mode",
-
-  goalActive: "Ongoing Goal",
-  goalPaused: "Paused Goal",
-  goalBlocked: "Blocked Goal",
-  goalPause: "Pause goal",
-  goalResume: "Resume goal",
-  goalClear: "Clear goal",
-  goalEdit: "Edit goal",
-  goalSave: "Save",
-  goalCancel: "Cancel",
-  goalExpand: "Show the full goal",
-  goalCollapse: "Collapse the goal",
-  turnClock: (ms) => {
-    const total = Math.max(0, Math.floor(ms / 1000));
-    const minutes = Math.floor(total / 60);
-    const seconds = total % 60;
-    return minutes > 0
-      ? `${minutes}m ${String(seconds).padStart(2, "0")}s`
-      : `${seconds}s`;
-  },
-  turnRanFor: (duration) => `Ran for ${duration}`,
-  turnProcessLabel: ({ toolCalls, messages, subagents }) => {
-    const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`;
-    const parts: string[] = [];
-    if (toolCalls > 0) parts.push(plural(toolCalls, "tool call"));
-    if (messages > 0) parts.push(plural(messages, "message"));
-    if (subagents > 0) parts.push(plural(subagents, "subagent"));
-    return parts.length ? parts.join(" · ") : "Thought for a while";
-  },
-  turnTimeTitle: "Turn time and speed",
-  turnTimeDuration: "Total run time",
-  turnTimeSpeed: "Tokens per second (TPS)",
-  turnTimeTtft: "Time to first token (TTFT)",
-  tokensPerSecond: (tps) => `${tps} tok/s`,
-  turnLatency: (ms) => {
-    const seconds = Math.max(0, ms) / 1000;
-    return `${seconds < 10 ? seconds.toFixed(1) : String(Math.round(seconds))}s`;
-  },
-
-  commandRunning: "Running",
-  commandFailed: "Failed",
-  unknownCommand: (line) => `No such command: ${line}`,
-  commandDispatchFailed: (line) => `Could not dispatch ${line}`,
-  producedLabel: "Files changed",
-  presentedLabel: "Presented files",
-  producedMore: (count) => `+ ${count} file${count === 1 ? "" : "s"}`,
-  openChangesAria: (name) => `View changes in ${name}`,
-  openChangesHint: "Click to view changes; hold Alt to open the file",
-  filesExpandAria: (count) => `Show all ${count} file${count === 1 ? "" : "s"}`,
-  filesCollapse: "Collapse",
-  filesCollapseAria: "Collapse file list",
-  fileNewTag: "[new]",
-  fileDeletedHint: "This file is no longer on disk; click to try to view its content before deletion",
-  deletedFileAria: (name) => `Deleted file ${name}`,
-  chipFileDeleted: "The file was deleted; its content is no longer available",
-  chipPathUnresolved:
-    "The session working directory is not available yet, so this file cannot be located; try again in a moment",
-  dropUnreadable: (name) =>
-    `${name} could not be read and was not attached (folders cannot be dropped; use the attach button or an @ reference)`,
-  dropTooLarge: (name) => `${name} is too large to drop (limit 8 MB); use the attach button instead`,
-  imageTooLarge: (name) => `${name} is over the server's image limit and was uploaded as a file instead`,
-  dropHint: "Release to attach",
-
-  subagents: "Subagents",
-  subagentsEmpty: "This session has no subagents",
-  subagentOneShot: "one-shot",
-  subagentContinuable: "continuable",
-  subagentInactive: "not running",
-  trajectory: "Trajectory",
-  trajectoryEmpty: "No tool calls in this session yet",
-  backToChat: "Back to chat",
-  jobs: "Background jobs",
-  jobsEmpty: "This session has no background jobs",
-  jobRunning: "running",
-  jobStopping: "stopping",
-  jobCompleted: "completed",
-  jobKilled: "cancelled",
-  jobUnknown: "unknown status",
-  jobFailed: "failed",
-  commands: "Commands",
-  commandsEmpty: "No commands available",
-  skillTag: "Skill",
-  uploadFailed: "Upload failed — click to retry",
-  uploadFailedReason: (reason) => `${reason}\nClick to retry`,
-  uploadIncomplete: (names, count) =>
-    `${count} file(s) could not be uploaded (${names}); only the ready attachments were sent`,
-  uploadNoSession: "Not connected to the server yet; the attachment cannot be uploaded",
-  mentionFiles: "Files",
-  mentionSessions: "Sessions",
-  mentionEmpty: "No matching files",
-  mentionHint: "↑↓ select · Enter reference · Tab browse folder · Esc cancel",
-  mentionParent: "Go to the parent folder",
-  mentionDrill: "Browse folder",
-  mentionDrillKey: "Tab",
-  mentionNoCwd: "(no cwd)",
-
-  running: "Deep diving",
-  queued: "{n} queued",
-  queueRemove: "Remove this message",
-  queueEdit: "Take back to edit",
-  queueMediaOnly: "(attachment)",
-  runningHint: "Press ESC to stop",
-  runningHintQueue: "Press ESC to stop and send the queued message",
-
-  thinking: "Thinking",
-  diffTruncated: "… truncated",
-
-  injectedSystemPrompt: "System prompt",
-  injectedRuntimeContext: "Runtime context",
-  injectedAgentInstructions: "Workspace instructions",
-  injectedSkillCatalog: "Skill catalog",
-  injectedContext: "Context injection",
-  injectedRecall: "Session recall",
-  injectedChars: (chars) => `${chars} chars`,
-
-  approvalTitle: "Permission required",
-  approvalApproved: "Allowed",
-  approvalRejected: "Rejected",
-  approvalExpired: "Expired",
-  allow: "Allow",
-  allowAlways: "Always allow",
-  reject: "Reject",
-  callId: (id) => `Call ID: ${id}`,
-  questionHead: "Question",
-  questionPlaceholder: "Or type your own answer…",
-  submit: "Submit",
-  questionStep: (index, total) => `Question ${index} of ${total}`,
-  questionPrev: "Previous",
-  questionNext: "Next",
-  questionAnswered: (count) => (count === 1 ? "1 question answered" : `${count} questions answered`),
-  questionCancelled: (count) => (count === 1 ? "1 question withdrawn" : `${count} questions withdrawn`),
-  questionCustomTitle: "Custom answer",
-  questionCustomAria: "Custom answer (selecting it clears the other options)",
-  planReviewHeader: "Plan review",
-  planReviewApprove: "Approve",
-  planReviewDecline: "Refuse",
-  planReviewDiscuss: "Chat about it",
-
-  copy: "Copy",
-  copied: "Copied to clipboard",
-  insertToEditor: "Insert into the active editor",
-  stopped: "Stopped",
-
-  connecting: "Connecting…",
-  connectionFailed: "Cannot reach the DSH server",
-  startInternal: "Start internal DSH",
-  connectInternal: "Connect to internal DSH",
-  connectExternal: "Connect to external DSH",
-  restartInternal: "Restart internal DSH",
-  externalDisabledHint: "dshChat.url is not set, so there is no external DSH to connect to",
-  startingInternal: "Starting the internal DSH…",
-  connectingInternal: "Connecting to the internal DSH…",
-  connectingExternal: (baseUrl) => `Connecting to the external DSH (${baseUrl})…`,
-  stopReconnect: "Stop connecting",
-  showLogs: "Show logs",
-  statusInternalRunning: "Internal DSH: running",
-  statusInternalNotRunning: "Internal DSH: not running",
-  statusExternalReachable: "External DSH: reachable",
-  statusExternalUnreachable: "External DSH: unreachable",
-  statusExternalUnconfigured: "External DSH: not configured",
-  statusSeparator: " · ",
-  enterToken: "Enter token",
-  authNeedsToken:
-    "The external DSH server requires an access token: click “Enter token” and paste the token printed by dsh web (or run “DSH: Enter Access Token” from the Command Palette).",
-  authTokenRejected:
-    "The server requires authentication and the token obtained automatically was rejected. Restart it with “DSH: Restart Server” from the Command Palette.",
-  connectionLost: "Lost the connection to the server; reconnecting…",
-  serverSpawnFailed: (detail) => `Could not start the dsh process: ${detail}`,
-  serverNotReady:
-    "The background server did not become ready (the rendezvous file has no address or token yet). Try “Restart Server”, or check the logs.",
-  serverUnreachable: (baseUrl) =>
-    `Cannot reach ${baseUrl} yet (retrying until it answers or you click “Stop connecting”). Make sure dsh web is running there.`,
-  serverLogTail: (tail) => `Log tail:\n${tail}`,
-  sharedRestarted: "This window took over the shared server and restarted it; the other windows reconnect automatically.",
-
-  searchSessions: "Search past sessions",
-  today: "Today",
-  earlier: "Earlier",
-  noSessions: "No past sessions yet",
-  untitled: "Untitled chat",
-  runningTag: "running",
-  forkedTitle: (title) => `Fork: ${title}`,
-  archive: "Archive (move out of workspace list)",
-  archiveList: "Archived sessions",
-  deleteSession: "Delete (remove local log files)",
-  deleteSessionConfirm: "Click again to confirm",
-  noArchivedSessions: "No archived sessions",
-
-  contextUsed: (percent, used, total) => `Context used ${percent}% (${used} / ${total})`,
-  ctxDetailCached: "Cache hit",
-  ctxDetailSystem: "System prompt",
-  ctxDetailTools: "Tool definitions",
-  ctxDetailMessages: "Conversation messages",
-  statsLlmTime: "LLM time",
-  statsToolTime: "Tool time",
-  statsTtft: "Avg time to first token (TTFT)",
-  statsSpeed: "Average tokens per second (TPS)",
-  statsTitle: "Session stats (whole log)",
-  markdownFootnotes: "Footnotes",
-  turnFailed: "This turn failed",
-  interrupted: "This turn was interrupted",
-  compacted: "Context compacted",
-  llmRetry: (attempt, max) => `The model call failed; retrying (attempt ${attempt} of ${max})`,
-  llmRetryAlways: (attempt) => `The model call failed; retrying (attempt ${attempt})`,
-  imagePathsInserted: (count, model) =>
-    `Model "${model}" does not accept image input; inserted ${count} path(s) into the box`,
-  queueAttachmentsLost: "Attachments could not be restored; please re-attach them (text is back in the box)",
-  queueContentLost: "Could not restore the queued message; only the current turn was stopped",
-  queueDispatchFailed: "The queued message could not be sent; its content is back in the box",
-  unknownEvent: (type) => `Skipped an event this client does not understand: "${type}".`,
-  toolRead: "Read",
-  toolWrite: "Write",
-  toolEdit: "Edit",
-  toolRun: "Run",
-  toolSearch: "Search",
-  toolPwsh: "Pwsh",
-  toolReadImage: "Read image",
-  toolInspect: "Inspect plugin",
-  toolRunCordis: "Run plugin",
-  toolStopCordis: "Stop plugin",
-  toolRemoveCordis: "Remove plugin",
-  toolGeneric: "Tool call",
-  toolCode: "Code",
-  toolExitCode: (code) => `exit code ${code}`,
-  toolSignal: (signal) => `killed by signal ${signal}`,
-  toolImageAlt: "Image returned by the tool",
-  messageImageAlt: "Image in the message",
-  imagePreview: "View original",
-  imagePreviewClose: "Close original image preview",
-  imageLoadFailed: "Image failed to load",
-  toolInput: "IN",
-  toolOutput: "OUT",
-  unknownBlock: "Unknown content block",
-  contextInstructions: "Context instructions",
-  contextAdded: "Added",
-  contextUpdated: "Updated",
-  contextRemoved: "Removed",
-  contextCatalogReplaced: "Catalog replaced",
-  contextCatalogMore: (count) => `…and ${count} more`,
-  contextSnapshotSupersedes: "Supersedes the previous snapshot",
-  contextRelayFrom: (session) => `From session ${session}`,
-  contextRecallCounts: (retained, omitted) => `${retained} kept · ${omitted} omitted`,
-  contextRecallTruncated: "Truncated",
-  toolCollapse: "Collapse",
-  readWindow: (shown, total) => `Showing ${shown} of ${total} lines`,
-  readExpandRest: (count) => `… ${count} more lines`,
-  readExpandAria: (count) => `Expand ${count} more lines`,
-  readCollapseAria: "Collapse content",
-  searchPaths: (shown) => `${shown} paths`,
-  searchPathsTruncated: (shown, total) => `Showing ${shown} of ${total} paths`,
-  searchMatches: (shown, files) => `${shown} matches · ${files} files`,
-  searchMatchesTruncated: (shown, total, files) => `Showing ${shown} of ${total} matches · ${files} files`,
-  searchNoResults: "No results",
-  searchExpandAria: (count) => `Expand ${count} more result lines`,
-  searchCollapseAria: "Collapse results",
-  searchExpandRest: (count) => `… ${count} more lines`,
-  webNoResults: "No results found",
-  webSourcesTruncated: "Source list truncated",
-  webHttp: "HTTP",
-  webContentTruncated: "Content truncated",
-  terminalRunning: "Running",
-  terminalDone: "Done",
-  terminalFailed: "Failed",
-  terminalNoOutput: "No output",
-  toolTodoTitle: "Update to-do list",
-  toolTodoProgress: (done, total) => `${done}/${total} completed`,
-  maxTokens: "Output token limit reached; the answer was truncated. Send “continue” to resume.",
-
-  branchFromHere: "Branch from here",
-  branchFailed: "Could not create the branch",
-  branchCreated: (title) => `Branch created: ${title}`,
-  branchNoAnchor: "No branch anchor for this message yet (the turn has not finished)",
-  branchRunning: "Cannot branch while generating",
-  historyMore: "Load all history",
-  historyLoading: "Loading all history…",
-  jumpToLatest: "Jump to latest",
-  turnRailLabel: "Turn navigation",
-  turnRailJump: (turn) => `Jump to turn ${turn}`,
-  turnRailJumpLoad: (turn) => `Load and jump to turn ${turn}`,
-  turnRailTurn: (turn) => `Turn ${turn}`,
-  historyBusy: "Cannot load history while generating — wait for this turn to finish",
-  userMessageExpand: "Expand",
-  userMessageCollapse: "Collapse",
-  sendQueue: "Queue message",
-  sendSteer: "Send as steer",
-  queueSteer: "Send as steer",
-  queueSteerUnavailable: "Steering is only available while the agent is running",
-
-
-  toolRunning: "Running · {duration} elapsed",
-  toolRunningHint: "Output appears once the call finishes",
-};
+/** 表的「契约视角」：读 `argParts` / `swapArgs` 这类可选元数据时用它。 */
+const TABLE = asMessageTable(MESSAGES);
 
 const DICTIONARIES: Record<Locale, Texts> = { zh, en };
 
@@ -1259,6 +641,15 @@ export function fill(template: string, values: Record<string, string | number>):
  * 连接失败条的说明是**多行**拼接的（原因 + 遗留锁提示 + 服务器日志尾部），
  * 所以按行解析：每一行各自是一个标记，不认识的 key 原样保留——这样宿主
  * 拼进日志原文也不会被误伤。
+ *
+ * 解析口径（**不许改**，宿主按这套口径拼参数）：
+ * - `text.slice(1).split(":")`：冒号只切第一段当 key，其余**全部**是参数
+ *   （参数里含冒号不会被截断，例如 Windows 路径 `C:\tools\dsh\bin`）；
+ * - 表里标了 `argParts: 2` 的三条（`llmRetry` 的「第几次:共几次」、
+ *   `uploadIncomplete` 的「个数:文件名预览」、`imagePathsInserted` 的「张数:模型名」）
+ *   再按参数串里的**第一段**冒号切一次，切法与从前的 `switch` 逐字一致；
+ * - `@key`（没有冒号）时参数串为空串：`Number("")` = 0、
+ *   `Number.isFinite(count) ? count : 0` 这两条缺参兜底照旧。
  */
 export function resolveText(text: string, texts: Texts): string {
   if (!text.includes("@")) return text;
@@ -1268,101 +659,87 @@ export function resolveText(text: string, texts: Texts): string {
     .join("\n");
 }
 
+/**
+ * 查表解析一行标记：**表就是那唯一一份登记**（从前这里是一个 37 个 `case` 的长
+ * `switch`，加一条文案要在这台机器上再抄一遍）。
+ *
+ * 「不认识的 `@` 文本原样透传」靠 `text` 兜底：不在表里（或表里那条被删了）就
+ * 原样返回——模型 / 服务端的原始报错就是这类。
+ *
+ * **切参数的口径与从前的 switch 逐字一致**（`text.slice(1).split(":")` 后，
+ * `parts[0]` 是 key、`parts.slice(1).join(":")` 是参数串 `arg`）：
+ * - 缺省：`arg` 整段给第一个形参（`@serverLogTail:a:b` 这种含冒号的原文不被截断）；
+ * - 表里标了 `argParts: 2` 的那三条（`llmRetry` / `uploadIncomplete` /
+ *   `imagePathsInserted`）按 **`arg` 里的第一段冒号**再切一次，与从前逐字相同；
+ * - `@key`（没有冒号）时 `arg` = ""：`Number("")` = 0、
+ *   `Number.isFinite(count) ? count : 0` 这两条缺参兜底照旧（`".indexOf(":")` = -1）。
+ */
 function resolveMarker(text: string, texts: Texts): string {
   if (!text.startsWith("@")) return text;
-  const [key, ...rest] = text.slice(1).split(":");
-  const arg = rest.join(":");
-  switch (key) {
-    case "turnFailed":
-      return texts.turnFailed;
-    case "interrupted":
-      return texts.interrupted;
-    case "stopped":
-      return texts.stopped;
-    case "compacted":
-      return texts.compacted;
-    case "llmRetryAlways":
-      return texts.llmRetryAlways(Number(arg));
-    case "llmRetry": {
-      // 参数形如 `<第几次>:<共几次>`
-      const separator = arg.indexOf(":");
-      const attempt = Number(separator < 0 ? arg : arg.slice(0, separator));
-      const max = Number(separator < 0 ? "" : arg.slice(separator + 1));
-      return texts.llmRetry(attempt, max);
-    }
-    case "maxTokens":
-      return texts.maxTokens;
-    case "openInBrowserOffline":
-      return texts.openInBrowserOffline;
-    case "openInBrowserFailed":
-      return texts.openInBrowserFailed;
-    case "queueAttachmentsLost":
-      return texts.queueAttachmentsLost;
-    case "chipFileDeleted":
-      return texts.chipFileDeleted;
-    case "chipPathUnresolved":
-      return texts.chipPathUnresolved;
-    case "dropUnreadable":
-      return texts.dropUnreadable(arg);
-    case "dropTooLarge":
-      return texts.dropTooLarge(arg);
-    case "imageTooLarge":
-      return texts.imageTooLarge(arg);
-    case "queueContentLost":
-      return texts.queueContentLost;
-    case "queueDispatchFailed":
-      return texts.queueDispatchFailed;
-    case "uploadNoSession":
-      return texts.uploadNoSession;
-    case "historyBusy":
-      return texts.historyBusy;
-    case "branchNoAnchor":
-      return texts.branchNoAnchor;
-    case "branchFailed":
-      return texts.branchFailed;
-    case "branchCreated":
-      return texts.branchCreated(arg);
-    case "unknownEvent":
-      return texts.unknownEvent(arg);
-    case "unknownCommand":
-      return texts.unknownCommand(arg);
-    case "commandFailed":
-      return texts.commandDispatchFailed(arg);
-    case "callId":
-      return texts.callId(arg);
-    case "toolGeneric":
-      return texts.toolGeneric;
-    case "connectionLost":
-      return texts.connectionLost;
-    case "authNeedsToken":
-      return texts.authNeedsToken;
-    case "authTokenRejected":
-      return texts.authTokenRejected;
-    case "serverSpawnFailed":
-      return texts.serverSpawnFailed(arg);
-    case "serverUnreachable":
-      return texts.serverUnreachable(arg);
-    case "serverLogTail":
-      return texts.serverLogTail(arg);
-    case "serverNotReady":
-      return texts.serverNotReady;
-    case "sharedRestarted":
-      return texts.sharedRestarted;
-    case "uploadIncomplete": {
-      // 参数形如 `<个数>:<文件名预览>`：个数在前，文件名里可能含冒号，所以按第一段切
-      const separator = arg.indexOf(":");
-      const count = Number(separator < 0 ? arg : arg.slice(0, separator));
-      const names = separator < 0 ? "" : arg.slice(separator + 1);
-      return texts.uploadIncomplete(names, Number.isFinite(count) ? count : 0);
-    }
-    case "imagePathsInserted": {
-      // 参数形如 `<张数>:<模型名>`：张数在前，模型名里可能含冒号，所以按第一段切
-      const separator = arg.indexOf(":");
-      const count = Number(separator < 0 ? arg : arg.slice(0, separator));
-      const model = separator < 0 ? "" : arg.slice(separator + 1);
-      return texts.imagePathsInserted(Number.isFinite(count) ? count : 0, model);
-    }
-    default:
-      return text;
-  }
+  // 与从前 `text.slice(1).split(":")` 同一口径：冒号只切第一段当 key
+  const parts = text.slice(1).split(":");
+  const key = parts[0];
+  if (!Object.hasOwn(MESSAGES, key)) return text;
+  const entry = TABLE[key as Marker];
+  const message = entry[localeKey(texts)];
+  // 带参数的登记成函数、不带参数的登记成字符串：字符串那支直接返回
+  // （「裸字符串当函数调用」由这张表的结构拦住）。
+  if (typeof message === "string") return message;
+  // 参数串 = 第一段冒号之后的**全部**内容（`@key` / `@key:` 都是 ""）。
+  // 含冒号的原文整段保留，所以 Windows 路径这类参数不会被截断。
+  const arg = parts.length > 1 ? parts.slice(1).join(":") : "";
+  const separator = arg.indexOf(":");
+  // 两个参数时按 `arg` 的第一段冒号切（个数/张数在前，文件名/模型名在后），
+  // 再按表里声明的 `swapArgs` 对调成函数的形参顺序。
+  const parsed =
+    entry.argParts === 2
+      ? [arg.slice(0, separator < 0 ? undefined : separator), separator < 0 ? "" : arg.slice(separator + 1)]
+      : [arg];
+  if (entry.swapArgs) parsed.reverse();
+  // 数字形参（`llmRetry` 的「第几次 / 共几次」等）在这里转：
+  // 从前那几条 `case` 里各自写的 `Number(...)` / `Number.isFinite(c) ? c : 0`
+  // 就在这个位置，逐条对应见 `NUMERIC_ARG`。
+  const args = convertArgs(key as Marker, parsed);
+  // 逐支调用：形态与从前的 `texts.xxx(a)` / `texts.xxx(a, b)` 一一对应。
+  return (message as MessageFn)(args[0], args[1]);
+}
+
+/**
+ * 哪些标记的形参是**数字**，以及要不要走 `Number.isFinite(c) ? c : 0` 那条兜底。
+ *
+ * 这是「结构声明」而不是文案：从前它散在 `resolveText` 的几个 `case` 里
+ * （`Number(arg)` 与 `Number.isFinite(count) ? count : 0` 两种写法）。
+ */
+const NUMERIC_ARG: Partial<Record<Marker, readonly ("string" | "number" | "finite")[]>> = {
+  llmRetry: ["number", "number"], // 从前 `Number(attempt)` / `Number(max)`
+  llmRetryAlways: ["number"],
+  uploadIncomplete: ["string", "finite"], // 形参顺序是 (names, count)
+  imagePathsInserted: ["finite", "string"], // 形参顺序是 (count, model)
+};
+
+/** 按 `NUMERIC_ARG` 把字符串参数转成数字（缺参时 `Number("")` = 0，与从前一致）。 */
+function convertArgs(key: Marker, parsed: string[]): unknown[] {
+  const plan = NUMERIC_ARG[key];
+  if (!plan) return parsed;
+  return plan.map((rule, index) => {
+    if (rule === "string") return parsed[index];
+    const number = Number(parsed[index]);
+    return rule === "finite" && !Number.isFinite(number) ? 0 : number;
+  });
+}
+
+/**
+ * 带参数的文案在表里的登记形态：`(参数…) => string`。
+ *
+ * 调用点传进去的是宿主发来的字符串，而各条形参有的收字符串、有的收数字
+ * （`llmRetry` 的「第几次 / 共几次」），所以**转换由 `NUMERIC_ARG` / `argParts` /
+ * `swapArgs` 声明**、由 `resolveMarker` 完成；这里的 `any` 就是「按那几个声明摆好
+ * 位置后调用」的落点——它不做逐参数类型检查，**表本身**的形参类型才是契约
+ * （`Texts` 接口由表派生，写错类型在 `messages.ts` 那一行就会报错）。
+ */
+type MessageFn = (first?: any, second?: any) => string;
+
+/** `Texts` 本身不带语言标识，而解析只能查表——用引用相等认出是哪一本词典。 */
+function localeKey(texts: Texts): Locale {
+  return texts === zh ? "zh" : "en";
 }

@@ -358,7 +358,7 @@ export interface QuestionView {
    * `cancelled`：请求被撤回（Host 取消了这次提问 / 轮次被中止），**没人回答过**。
    *
    * 后两者都表示「不再是待处理交互」——输入区据此把位置让出来（见
-   * `pendingInteraction.isTakenOverByComposer`）。
+   * `pendingInteraction.resolveInteractions` 的 `takenOver`：只有 `waiting` 的段才进集合）。
    */
   state: "waiting" | "answered" | "cancelled";
   /**
@@ -837,7 +837,17 @@ export interface ChatState {
   planMode?: boolean;
   todos: TodoView[];
   goal?: GoalView;
-  subagents: SubagentView[];
+  /**
+   * 子代理目录（子代理面板的清单）。
+   *
+   * **只叫这一个名字**：早先宿主帧里叫 `subagents`、界面状态里叫 `subagentEntries`，
+   * 同一条数据在两侧各一个名字，改一侧忘另一侧时既没有编译期报错、也没有断言保护
+   * （`docs/audit-summary.md` B7：开着面板切会话，列表停在上一个会话上）。现在线格式
+   * 与视图模型都叫 `subagentEntries`（字段清单见 `dsh/sessionView.ts`）。
+   *
+   * 两个来源的字段集**不一样**，别互相套用（见 `SubagentView` 的注释）。
+   */
+  subagentEntries: SubagentView[];
   /** 后台任务（bash / pwsh / 子代理等），来自 session/control 的 jobs 帧。 */
   jobs: JobItemView[];
   /** 历史是否还有更早的内容可加载。 */

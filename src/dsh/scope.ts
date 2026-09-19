@@ -60,7 +60,12 @@ export class SessionScope {
 
   /** 会话内投影：待办 / 子代理目录 / 后台任务 / 目标条 / 计划模式 / 权限。 */
   todos: TodoView[] = [];
-  subagents: SubagentView[] = [];
+  /**
+   * 子代理目录。名字与线格式 / 视图模型**逐字相同**（`subagentEntries`）：
+   * 此前宿主侧叫 `subagents`、界面读 `subagentEntries`，跨名桥没有任何保护
+   * （见 `docs/audit-summary.md` B7）。
+   */
+  subagentEntries: SubagentView[] = [];
   jobs: JobItemView[] = [];
   goal: ChatState["goal"];
   planMode = false;

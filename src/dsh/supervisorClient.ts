@@ -19,11 +19,11 @@ import {
   clampIdleSec,
   readState,
   releaseStartLock,
-  socketPathIn,
+  rendezvousPaths,
   supervisorDirectory,
   type SupervisorState,
 } from "./supervisorProtocol";
-import { LineDecoder, decodeServerMessage, encodeMessage } from "./supervisorWire";
+import { LineDecoder, decodeServerMessage, encodeMessage, type GoodbyeReason } from "./supervisorWire";
 
 /** 拉起 supervisor 的结果：成功（已写会合文件）或失败原因（人话，直接进界面/日志）。 */
 export type LaunchOutcome = { ok: true } | { ok: false; reason: string };
@@ -47,18 +47,22 @@ export interface SupervisorLauncher {
   launch(input: { directory: string; command: string; idleSec: number; socket: string }): Promise<LaunchOutcome>;
 }
 
-/** 写入会合文件所需的最小集合（supervisor 起来后自己是权威，这些只是"起跑参数"）。 */
+/**
+ * 写入会合文件所需的最小集合（supervisor 起来后自己是权威，这些只是"起跑参数"）。
+ *
+ * **socket 地址只由 `rendezvousPaths` 算一处**（见 `supervisorProtocol`）：它由会合目录
+ * 决定，与传不传分组无关——分组只用来找目录（`supervisorDirectory`）。
+ */
 export function initialStartInput(options: {
   directory: string;
   command: string;
   idleSec?: number;
-  group: string;
 }): { directory: string; command: string; idleSec: number; socket: string } {
   return {
     directory: options.directory,
     command: options.command,
     idleSec: clampIdleSec(options.idleSec ?? IDLE_SEC_DEFAULT),
-    socket: socketPathIn(options.directory, options.group),
+    socket: rendezvousPaths(options.directory).socket,
   };
 }
 
@@ -98,7 +102,7 @@ export class SupervisorConnection {
     private readonly socketPath: string,
     private readonly handlers: {
       onState: (state: SupervisorState | null, clients: number | undefined) => void;
-      onGoodbye: (reason: "idle" | "stop" | "replaced") => void;
+      onGoodbye: (reason: GoodbyeReason) => void;
       onClosed: (reason: string) => void;
       /**
        * 守护进程上报的**内部异常**（协议 `t:"error"`）。
@@ -254,7 +258,7 @@ export async function ensureSupervisor(options: {
     }
     options.log("[supervisor] 本窗口负责启动 supervisor");
     const outcome = await options.launcher.launch(
-      initialStartInput({ directory, command: options.command, idleSec: options.idleSec, group: options.group }),
+      initialStartInput({ directory, command: options.command, idleSec: options.idleSec }),
     );
     if (!outcome.ok) return { launched: false, error: outcome.reason };
     return { launched: true };

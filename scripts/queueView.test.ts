@@ -198,8 +198,9 @@ console.log("queueView: 原始内容块选择 ✓");
     "旧通道：baseline 的 queues 也必须保留（冷启动只有它）",
   );
   assert.ok(
-    /patch: \{ queueItems: scope\.queueItems \}/.test(controller),
-    "两条通道都要汇到同一个 patch（下游只认一个视图模型）",
+    /sessionPatch\(this\.sessionSource\(scope\), \["queueItems"\]\)/.test(controller),
+    "两条通道都要汇到同一个 patch（下游只认一个视图模型）——字段名与折返口径走 " +
+      "`dsh/sessionView.ts` 的字段表，不再是手写的 `patch: { queueItems: … }`",
   );
 }
 console.log("queueView: 宿主侧两条通道接线 ✓");

@@ -11,18 +11,28 @@
  *                       {"t":"ping"}                       ← 保活，1s 一次
  *                       {"t":"control","action":"restart"|"stop"}
  * supervisor → 客户端 : {"t":"state","state":{…}|null}      ← 连接建立时回一份 + 状态变化时推
- *                       {"t":"goodbye","reason":"idle"|"stop"}   ← 退场前通知（界面可提示）
+ *                       {"t":"goodbye","reason":"idle"|"stop"|"replaced"} ← 退场前通知（界面可提示）
  *                       {"t":"error","kind":"tick","message":"…"} ← 守护进程内部异常（转发进输出通道）
  * ```
  * 这份编解码**纯函数、可离线断言**；真正的连接在 `supervisorClient.ts` 与 `src/supervisor/main.ts`。
  */
-import type { SupervisorState } from "./supervisorProtocol";
+import { decodeState, type SupervisorState } from "./supervisorProtocol";
 
 /** 客户端 → supervisor。 */
 export type ClientMessage =
   | { t: "hello"; hostId: string; pid: number; workspace?: string }
   | { t: "ping" }
   | { t: "control"; action: "restart" | "stop" };
+
+/**
+ * 守护进程**告别的原因**——**全仓唯一一份**。
+ *
+ * 从前这个联合类型写了三遍（本文件、`supervisorClient` 的 `onGoodbye`、
+ * `src/supervisor/main.ts` 的 `goodbye()`），三处各写一遍的代价是加一个新原因
+ * （例如 `"replaced"`）时只在两处生效，第三处静默把它当别的值处理。
+ * 现在谁都 `import type { GoodbyeReason }`。
+ */
+export type GoodbyeReason = "idle" | "stop" | "replaced";
 
 /** supervisor → 客户端。 */
 export type ServerMessage =
@@ -37,7 +47,7 @@ export type ServerMessage =
        */
       clients?: number;
     }
-  | { t: "goodbye"; reason: "idle" | "stop" | "replaced" }
+  | { t: "goodbye"; reason: GoodbyeReason }
   /**
    * 守护进程**捕获到内部异常**，如实上报（2026-09-15 加）。
    *
@@ -137,71 +147,18 @@ export function decodeServerMessage(line: string): ServerMessage | undefined {
   if (value.t === "state") {
     // 形状**逐字段校验**，不只判"是个对象"：这份状态来自 socket 的另一端，而它会
     // 决定客户端接下来把启动令牌与 cookie 发到哪个 origin（`onStatePush` → `baseUrl`）。
-    // `readState` 那套宽容规则管的是**文件**那条路，这条路得自己把住。
+    // 校验本体在 `supervisorProtocol.decodeState`（**唯一那一份**），这里只补两条本路特有的口径：
+    // - 不要求版本严格等于 `STATE_VERSION`（对面可能是旧守护进程，`state` 帧里没写版本；
+    //   协议纪律是"读不懂就忽略"，但状态本身要照收，否则连旧守护进程都接不上）；
+    // - `idleSec` 缺失时按 **0** 记（守护进程每次推状态都会带它；缺了说明对面不做空闲判定，
+    //   用 0 表示"没有可用阈值"而不是替它编一个默认值 10）。
     const state = value.state;
     const clients = typeof value.clients === "number" && value.clients >= 0 ? value.clients : undefined;
     if (state === null) return { t: "state", state: null, clients };
-    const checked = checkState(state);
+    const checked = decodeState(state, { idleSecWhenMissing: 0 });
     return checked ? { t: "state", state: checked, clients } : undefined;
   }
   return undefined;
-}
-
-/**
- * 校验 socket 推来的状态形状（不认识就整条丢掉）。
- *
- * 只做**形状**收窄，不改写语义：`baseUrl` 必须是 http(s) 且能解析，`token` 必须是
- * 字符串，pid/时刻必须是整数。**刻意不限制 host 必须是回环**——用户完全可以让自己的
- * `dsh web` 绑到局域网地址（`--host`），那种配置是合法的；能写这两个文件/连这条管道的
- * 攻击者本来就已经以同一用户身份运行了。
- */
-function checkState(value: unknown): SupervisorState | undefined {
-  if (!value || typeof value !== "object") return undefined;
-  const raw = value as Record<string, unknown>;
-  const supervisorPid = raw.supervisorPid;
-  const startedAt = raw.startedAt;
-  const command = raw.command;
-  const socket = raw.socket;
-  if (typeof supervisorPid !== "number" || !Number.isInteger(supervisorPid) || supervisorPid <= 0) return undefined;
-  if (typeof startedAt !== "number" || !Number.isFinite(startedAt)) return undefined;
-  if (typeof command !== "string" || typeof socket !== "string") return undefined;
-  const baseUrl = typeof raw.baseUrl === "string" ? raw.baseUrl : undefined;
-  if (baseUrl !== undefined && !isHttpUrl(baseUrl)) return undefined;
-  const token = typeof raw.token === "string" ? raw.token : undefined;
-  const serverPid = typeof raw.serverPid === "number" && Number.isInteger(raw.serverPid) ? raw.serverPid : undefined;
-  const idleSec = typeof raw.idleSec === "number" ? raw.idleSec : undefined;
-  const runtimeRaw = raw.runtime as Record<string, unknown> | undefined;
-  const runtime =
-    runtimeRaw && typeof runtimeRaw.execPath === "string" && typeof runtimeRaw.node === "string"
-      ? {
-          execPath: runtimeRaw.execPath,
-          node: runtimeRaw.node,
-          electron: typeof runtimeRaw.electron === "string" ? runtimeRaw.electron : undefined,
-        }
-      : undefined;
-  return {
-    version: typeof raw.version === "number" ? raw.version : 1,
-    supervisorPid,
-    startedAt,
-    serverPid,
-    baseUrl,
-    token,
-    command,
-    idleSec: idleSec ?? 0,
-    socket,
-    serverStartedAt: typeof raw.serverStartedAt === "number" ? raw.serverStartedAt : undefined,
-    starting: raw.starting === true,
-    runtime,
-  };
-}
-
-function isHttpUrl(value: string): boolean {
-  try {
-    const url = new URL(value);
-    return url.protocol === "http:" || url.protocol === "https:";
-  } catch {
-    return false;
-  }
 }
 
 function parseObject(line: string): Record<string, unknown> | undefined {

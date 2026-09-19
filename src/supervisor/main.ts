@@ -16,9 +16,10 @@
  * 启动方式（扩展侧负责，见 `supervisorClient.createSupervisorLauncher`）：
  * 用 VS Code 自带的 Node 跑本文件，参数是起跑配置：
  * ```
- *   --directory <会合目录> --group <分组> --command <启动命令> --idle-sec <秒>
+ *   --directory <会合目录> [--command <启动命令>] [--idle-sec <秒>]
  * ```
- * 会合文件与日志都写在 `<会合目录>` 下；socket 路径由协议模块给出。
+ * 会合文件与日志都写在 `<会合目录>` 下；socket 路径**由会合目录唯一决定**
+ * （`supervisorProtocol.rendezvousPaths`，扩展侧拉起它时会把同一个字符串经 `--socket` 传进来）。
  *
  * 本文件被 `esbuild.mjs` 打成 `dist/supervisor.js`（CJS，随扩展分发，只依赖 node 内置模块）。
  */
@@ -35,12 +36,17 @@ import {
   clearState,
   logFileIn,
   readState,
-  socketPathIn,
+  rendezvousPaths,
   removeSocketNode,
   writeState,
   type SupervisorState,
 } from "../dsh/supervisorProtocol";
-import { LineDecoder, decodeClientMessage, encodeMessage } from "../dsh/supervisorWire";
+import {
+  LineDecoder,
+  decodeClientMessage,
+  encodeMessage,
+  type GoodbyeReason,
+} from "../dsh/supervisorWire";
 import { isProcessAlive } from "../dsh/processRegistry";
 import { createErrorReporter, type SupervisorErrorKind } from "../dsh/supervisorErrors";
 
@@ -84,7 +90,10 @@ export function parseOptions(argv: string[]): Options | undefined {
     group,
     command,
     idleSec: clampIdleSec(value("--idle-sec") ?? IDLE_SEC_DEFAULT),
-    socket: value("--socket") ?? socketPathIn(directory, group),
+    // socket 地址**一处算**（`rendezvousPaths`）：它由会合目录唯一决定，与 `--group` 无关。
+    // `--socket` 仍可显式给（手工排查时方便）；正常启动由扩展侧从同一个函数取出来再传进来，
+    // 于是两侧拿到的必然是同一个字符串。
+    socket: value("--socket") ?? rendezvousPaths(directory).socket,
   };
 }
 
@@ -604,7 +613,7 @@ export async function runSupervisor(options: Options): Promise<number> {
     return bringUpInFlight;
   };
 
-  const goodbye = (reason: "idle" | "stop" | "replaced"): void => {
+  const goodbye = (reason: GoodbyeReason): void => {
     const message = encodeMessage({ t: "goodbye", reason });
     for (const client of clients) {
       try {

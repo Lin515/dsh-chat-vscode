@@ -15,6 +15,8 @@
  * 运行：npm test
  */
 import assert from "node:assert";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { MessageView } from "../src/shared/chat";
 import {
   anchorTurnIndex,
@@ -291,3 +293,47 @@ console.log("turnRail: 幻影轮 0 被大纲挡掉、单消息会话不显示 �
   );
 }
 console.log("turnRail: 显示判据的用户消息计数 ✓");
+
+// ---------- 11. 跳转的滚动语义：显式放跟随 —— 接线 ----------
+//
+// 跳进历史位置 = 离开实况尾部。**程序化滚动不算手势**（`autoScroll.ts` 的意愿只由
+// 手势翻），所以跳转必须有一条显式通道把"跟随最新"放掉：不放的话下一次 settle 会把
+// 视口钉回底部，跳转等于没跳（官方 TurnNavigator 同一条注释）。
+//
+// 「放掉之后确实不钉底」的行为断言在 `scripts/autoScroll.test.ts`（真调用）；
+// 这里只钉**接线**：横条拿到的是 `autoScroll` 模块产出的那个动作，且两个分支都先放后跳。
+{
+  const nav = readFileSync(join(process.cwd(), "src", "webview", "turnRailNav.ts"), "utf8");
+  const app = readFileSync(join(process.cwd(), "src", "webview", "App.tsx"), "utf8");
+
+  assert.ok(
+    /releaseFollow: \(\) => void;/.test(nav),
+    "横条的胶水要接一个「放掉跟随」的入口（程序化滚动不算手势，不给这条通道就跳不动）",
+  );
+  assert.ok(
+    /releaseFollow: chatScroll\.releaseFollow,/.test(app),
+    "App 要从 autoScroll 模块的绑定里取放跟随动作给横条（不再自己拼一个 useCallback）",
+  );
+
+  // 两个跳转分支：① 窗口外先放跟随再取历史；② 已加载先放跟随再落位。
+  // 放跟随必须在**落位之前**（顺序反了的话，落位那一下又被钉回底部）。
+  const unloadedAt = nav.indexOf("if (item.anchor.kind === \"unloaded\")");
+  const releaseInUnloaded = nav.indexOf("releaseRef.current?.();", unloadedAt);
+  const loadAt = nav.indexOf("loadEarlierRef.current?.();", unloadedAt);
+  assert.ok(unloadedAt > 0 && releaseInUnloaded > unloadedAt, "窗口外那个分支要先显式放跟随");
+  assert.ok(
+    releaseInUnloaded < loadAt,
+    "窗口外的跳转顺序必须是：放跟随 → 取历史（反了的话连取期间的 prepend 补偿会被 settle 当成布局事故拉回底部）",
+  );
+
+  const loadedAt = nav.indexOf("const row = anchorElement(list, item.anchor.messageId);", releaseInUnloaded);
+  const releaseInLoaded = nav.indexOf("releaseRef.current?.();", loadedAt);
+  const landAt = nav.indexOf("landOnRow(el, row, item.turn, setActiveTurnStable);", loadedAt);
+  assert.ok(loadedAt > 0 && releaseInLoaded > loadedAt && landAt > releaseInLoaded, "已加载那个分支要先显式放跟随再落位");
+
+  assert.ok(
+    nav.indexOf("if (running || !hasMoreHistory) return;", unloadedAt) < releaseInUnloaded,
+    "no-op 的点击（生成中 / 没有更早历史）不许顺手把实况跟开关掉：防御判断必须在放跟随**之前**",
+  );
+}
+console.log("turnRail: 跳转先放跟随再落位（接线）✓");

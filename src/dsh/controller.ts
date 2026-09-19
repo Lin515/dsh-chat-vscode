@@ -11,7 +11,6 @@ import type {
   ConnectPhase,
   DiffLayout,
   DshTarget,
-  ExternalState,
   FileChangeKind,
   GoalView,
   ModelSelectionView,
@@ -34,9 +33,10 @@ import { composeWithReferences, formatFileMention } from "./references";
 import { formatFileMentionWithLines } from "../shared/mentions";
 import { resolveForVsCode } from "./hostText";
 import { normalizeTurnProcessThreshold } from "../shared/turnProcessThreshold";
-import { chooseTarget, describeFacts, type TargetFacts } from "./connectTarget";
+import { chooseTarget, describeFacts, externalStateOf, type TargetFacts } from "./connectTarget";
 import { DshApiError, DshAuthError, DshClient, type SessionReferenceCandidateWire, type SessionSummaryWire } from "./client";
 import type { ProjectionBlockWire } from "./projectionStore";
+import { PendingInteractions, type HeldInteraction } from "./pendingInteractions";
 import type {
   RemoteEventFrame,
   RemoteEventWaterfall,
@@ -47,11 +47,21 @@ import {
   ServerNotRunningError,
   SupervisorManager,
   WaitCancelledError,
+  type ConnectSnapshot,
   type EnsureOptions,
   type ServerInfo,
   type ServerStatus,
 } from "./supervisorManager";
 import { SessionScope } from "./scope";
+import {
+  appearanceView,
+  sessionPatch,
+  sessionSourceOf,
+  sessionView,
+  type AppearanceViewSource,
+  type SessionViewSource,
+  type WireChatState,
+} from "./sessionView";
 import { queueItemsFromInbox, queueItemsFromWire, type QueuedItemEntry, type QueueOrigin } from "./queueView";
 import { mergeSubagentActivity, modelSelectionFromProjection, subagentsFromList } from "./projections";
 import type { ModelSelectionDecoded, SubagentCatalogEntryView } from "./projections";
@@ -287,6 +297,90 @@ interface GitExtensionExportsLike {
   getAPI(version: number): GitApiLike;
 }
 
+/**
+ * 连接那组界面字段的输入：**管理器只读快照** + **本窗口自己的观测** + **本轮的结算**。
+ *
+ * 三者刻意分开，因为它们的所有权不同（见 `ChatController` 里那几个字段的注释）：
+ * 快照是"本窗口与这一套后台现在是什么关系"（管理器的权威），`facts` 是"本窗口刚探到的
+ * 两轴结论"（管理器的快照里没有这两个值：它们是**异步探测**，见 §9.1），
+ * `round` 是"本窗口这一轮连到哪一步了"（客户端状态机，管理器不知道）。
+ */
+interface ConnectionFieldsInput {
+  /** `SupervisorManager.snapshot()`：目标、外部地址、两道闸、活连接数…… */
+  snapshot: ConnectSnapshot;
+  /** 两轴探测结论（5 秒心跳 / 显式动作时刷新）。 */
+  facts: TargetFacts;
+  /** 本窗口那一轮的状态机（`DshClient` 回调与失败分类写进来的）。 */
+  round: {
+    /** 五值内部态；界面只看得到三档（见 `connection` 字段注释）。 */
+    connection: "connecting" | "connected" | "disconnected" | "error" | "stopped";
+    detail: string | undefined;
+    phase: ConnectPhase;
+    target: DshTarget | undefined;
+    needsToken: boolean;
+  };
+  /** 当前客户端连着的地址（连上时界面兜底文案用）。 */
+  serverUrl: string | undefined;
+}
+
+/** 连接那组字段（首帧快照与增量 patch 共用的那一份）。 */
+type ConnectionFields = Pick<
+  ChatState,
+  | "connection"
+  | "connectionDetail"
+  | "internalRunning"
+  | "externalState"
+  | "externalAddress"
+  | "connectTarget"
+  | "connectPhase"
+  | "needsToken"
+  | "serverUrl"
+>;
+
+/**
+ * **连接那组界面字段 = 上面三个输入的纯函数映射**（首帧快照与增量 patch 共用这一份，
+ * 两处各写一遍必然漂移）。
+ *
+ * 两种"单一来源"各归各位：
+ * - **管理器那一半**（外部地址、目标、后台在不在）只读 `snapshot()`——控制器不再存一份镜像。
+ *   删掉的那两个镜像字段（`internalRunning` / `externalReachable`）在这里由 `facts` 出，
+ *   而 `facts` 是**本窗口的探测结论**（快照里没有：内部那一轴要问"守护进程进程还在吗"、
+ *   外部那一轴要发一次 HTTP，都是异步探测，见 §9.1）；
+ * - **本窗口那一半**（客户端连到哪一步、详情、令牌入口）由 `round` 出——那是 `DshClient`
+ *   的状态机，管理器根本不知道（它对"连着外部那个地址的 ws 通不通"没有任何知识）。
+ */
+function connectionFieldsOf(input: ConnectionFieldsInput): ConnectionFields {
+  const { snapshot, facts, round } = input;
+  return {
+    /**
+     * 内部五值态 → 界面三档：`connected` → `ready`；`error` / `stopped` 各自成一档
+     * （`stopped` = 按钮态、`error` = 要用户动作的失败）；其余（`connecting` /
+     * `disconnected`）都是"正在连接…"。
+     */
+    connection:
+      round.connection === "connected"
+        ? "ready"
+        : round.connection === "error"
+          ? "error"
+          : round.connection === "stopped"
+            ? "stopped"
+            : "connecting",
+    connectionDetail: round.detail,
+    /** 内部后台在不在跑：按钮态据此给「启动内部 DSH」还是「连接内部 DSH」。 */
+    internalRunning: facts.internalRunning || undefined,
+    /** 外部备用地址的状态：`unconfigured` 时「连接外部 DSH」置灰。 */
+    externalState: externalStateOf(facts),
+    /** 外部地址本身（连接中那条文案要写出"在连哪个地址"）——**来自快照**。 */
+    externalAddress: snapshot.externalUrl,
+    /** 粘性目标（连接中条上写"内部/外部"）；没选过时为 undefined（过线成 null → 界面清键）。 */
+    connectTarget: round.target,
+    /** 阶段只在连接中有意义，其余状态清掉（否则按钮态还挂着"正在启动…"）。 */
+    connectPhase: round.connection === "connecting" ? round.phase : undefined,
+    needsToken: round.needsToken || undefined,
+    serverUrl: input.serverUrl,
+  };
+}
+
 /** 服务器 → webview 的会话内容总控。 */
 export class ChatController implements vscode.Disposable {
   private client: DshClient | undefined;
@@ -348,7 +442,6 @@ export class ChatController implements vscode.Disposable {
   private controlHandle: { cancel(): void } | undefined;
   private eventsHandle: { cancel(): void } | undefined;
   private eventsClientId: string | undefined;
-  private readonly handledEvents = new Set<string>();
   /**
    * 配置文件热重载：宿主侧的 watcher（`settings.yaml` / `cordis.patch.yml` /
    * `.credentials.yaml`）改了什么，这里就按服务端转发的 emit 帧重读什么。
@@ -356,26 +449,22 @@ export class ChatController implements vscode.Disposable {
    */
   private readonly configChanges: ConfigChangeRouter;
   /**
-   * **还没结算**的审批 / 提问：`eventId` → 原始请求。
+   * **还没结算**的审批 / 提问的账本（`eventId` → 请求 / 去重记账）。
    *
-   * 「结算」= 有人答复了（本窗口 `answerApproval` / `answerQuestion`）或 Host 撤回了
-   * （`$events` 的 `cancel` 帧）——那两处会把它删掉。条目**投递出去也留着**，因为
-   * 卡片可能随时被回收：用户切到别的会话会把域连同适配器一起丢掉
-   * （`dropViewers` → `destroyScope`），而审批/提问**不是 durable 事件**
-   * （会话日志里没有它们，重放不回），只留适配器里就会永久丢失——agent 卡在 ask 节点。
+   * 规则（去重、回放不删、结算才删）全在 `PendingInteractions` 里，控制器只负责
+   * 投递与回复 Host：
    *
-   * 于是它有两个作用：
-   * 1. 会话从没被打开过 → 只挂着，**不能回**（回了等于放行，请求就丢了）；
-   * 2. 会话被打开 / 被切回来 → 由 `bindViewToSession` 回放进适配器
-   *    （重复投递安全：适配器按 `requestId` 去重）。
+   * - 收到 waterfall → `hold()`，`"new"` 就投进域（有域的话；没域就只挂着——**不能回**：
+   *   回了等于放行，请求就丢了）；
+   * - 窗口绑上会话（`bindViewToSession`）→ `forSession()` 逐条回放；
+   * - 本窗口答复 / 用户撤回（`handle` 的三个 arm）→ `settle()`；
+   * - Host 撤回（`$events` 的 cancel 帧）→ `withdraw()` 收场本窗口那张卡。
    *
-   * `eventId → 会话` 另记在 `eventSessions`，回答时据此路由回域。
+   * 条目**投递出去也留着**：卡片会随域被回收（切会话就是），而审批 / 提问不是 durable
+   * 事件（会话日志里没有它们，重放不回），只留适配器里就会永久丢失——agent 卡在 ask
+   * 节点。详见 `pendingInteractions.ts` 文件头。
    */
-  private readonly heldEvents = new Map<
-    string,
-    { kind: "approval" | "question"; sessionId: string; request: unknown }
-  >();
-  private readonly eventSessions = new Map<string, string>();
+  private readonly interactions = new PendingInteractions();
   private workspaceHandle: { cancel(): void } | undefined;
   /**
    * 服务端**工作区注册表**里当前项目那条记录的 id（`workspace/create` 幂等返回）。
@@ -434,17 +523,22 @@ export class ChatController implements vscode.Disposable {
     { text: string; attachments: Attachment[]; content: unknown[]; at: number }
   >();
   /**
-   * 连接状态。
+   * 连接状态（**本窗口自己那一轮**的状态机）。
    *
    * `"stopped"` 与 `"error"` 分开是 2026-09-14 定的，2026-09-18 重新划了界：
    * `"stopped"` = **按钮态**（没连、也没在试：关掉自动连接、用户点过停止、
    * 或内部那套不在），界面给启动/连接按钮；`"error"` = **需要用户动作的失败**
    * （启动类、认证类），界面给原因 + 同一组按钮。连接类失败不进这两档——
    * 它留在 `"connecting"` 里一轮轮重试，直到连上或用户点「停止连接」。
+   *
+   * **它不是管理器那份快照的镜像**：快照里"后台在不在、手里握着什么"与这里
+   * "本窗口的 ws 连上没有"是两件事（例如目标是外部时，快照的 `connected` 恒为假——
+   * 管理器与外部服务器之间没有任何连接可言，而本窗口可能正连着它）。三档的判定在
+   * `connectionFieldsOf` 里一次做完，界面侧再由 `connectViewOf` 渲染。
    */
   private connection: "connecting" | "connected" | "disconnected" | "error" | "stopped" = "connecting";
   private connectionDetail: string | undefined;
-  /** 上次连接因缺少/拒绝令牌失败：界面据此给出「输入令牌」入口。 */
+  /** 上次连接因缺少/拒绝令牌失败：界面据此给出「输入令牌」入口（本窗口的鉴权状态）。 */
   private needsToken = false;
   /** 心跳触发的共享后台切换正在跑（去重，见 `reconnectPeer`）。 */
   private peerReconnect = false;
@@ -453,21 +547,39 @@ export class ChatController implements vscode.Disposable {
    *
    * 重连**没有总超时**（用户 2026-09-14 口径），但只对"还能接着试"的目标生效：
    * 启动类/认证类失败要用户动作，`retryable` 会被置假，不再空转。
+   *
+   * **为什么它不是快照字段**（管理器那两道闸回答的不是这个问题）：`detachedByUser` /
+   * `stoppedByUser` 管的是"**不许自动拉起 / 不许自动接回内部那套**"，而这里管的是
+   * "**本窗口还重不重试自己那条连接**"。两者在外部目标上会分叉——「停止连接」之后点
+   * 「连接外部 DSH」：控制器把重连重新打开（用户显式动作），而管理器那条外部分支
+   * **不经过 `bringUp`**、`detachedByUser` 仍是 true。按闸推导 `autoReconnect` 的话，
+   * 外部连接一掉线就再也不重试（`DshClient` 自己也带退避重连，§9.7）。
    */
   private autoReconnect = true;
   /**
-   * 内部后台（守护进程）此刻在不在跑——连接条左半句与"启动还是连接"的判据。
-   * 探测是只读的（`probeRunning`），每 5 秒心跳刷新一次。
+   * **两轴探测结论**：内部守护进程在不在跑、外部备用地址可不可达（同一次心跳刷新）。
+   *
+   * 这是**本窗口的观测**，不是管理器快照的镜像：快照里没有这两个值（内部那一轴要
+   * `probeRunning()` 问"守护进程进程还在吗"、外部那一轴要发一次 HTTP，都是异步的，
+   * 见 §9.1）。它们只在 `probeFacts()` / `setFacts()` / `setInternalRunning()` 三处写入，
+   * 界面侧由 `connectionFieldsOf` 一次映射成 `internalRunning` / `externalState`。
+   *
+   * 此前是两个字段（`internalRunning` / `externalReachable`）各自被赋值的：一个值两处
+   * 镜像，"改了内部忘了外部"就会让按钮态那半句与按钮集各说各话。现在只有这一份，
+   * 且只有 `externalStateOf(facts)` 一个读法（它本来就在 `connectTarget` 里）。
    */
-  private internalRunning = false;
-  /** 外部备用地址的探测结论（同一次心跳刷新）。 */
-  private externalReachable = false;
+  private facts: TargetFacts = { internalRunning: false, externalConfigured: false, externalReachable: false };
   /**
-   * **粘性目标**：这一轮连内部还是外部。
+   * **粘性目标**：这一轮连内部还是外部，以及本轮允不允许"内部不存在就拉起一套"。
    *
    * 用户 2026-09-18 口径：自动路径**选一次就不再换**（换目标 = 换服务器、换会话列表、
    * 丢掉正在跑的轮次），只有用户点按钮才换。`undefined` = 还没选过
    * （`dshChat.autoConnect` 关掉且用户没点过按钮时就是这一档，此时心跳不许自动连）。
+   *
+   * **为什么它不读快照的 `target`**：管理器那份是"上一轮 `ensure()` 记下的目标"，
+   * 它**回不到 `undefined`**；而控制器这份有一个管理器表达不了的状态——`autoConnect`
+   * 改关时把它清空（"界面给按钮、心跳什么都不做"），改开时靠"还没定过目标"重新选一次路
+   * （见 `applyAutoConnect`）。读快照的话，这个"从没定过"的判据永远是假，改开关就不生效了。
    */
   private target?: { kind: DshTarget; mayStart: boolean };
   /**
@@ -486,14 +598,22 @@ export class ChatController implements vscode.Disposable {
    * 用户 2026-09-19 实测的 bug 正是缺了这一道：连着外部时外部服务被关掉，用户点
    * 「启动内部 DSH」，上一轮（还挂在外部那个地址的等待里）苏醒后照样建 client、写状态，
    * 界面又被拉回"连接中"，看着像"点了启动也停不下来"。
+   *
+   * **为什么它不进管理器快照**：它回答的是"**在途的那一轮还算不算数**"——这是发起方的
+   * 记账，管理器没有"轮次"这个概念（它的 `ensure()` 是幂等合并的，被合并掉的调用方根本
+   * 不知道自己那一轮是不是还算数）。作废也不等于收连接：`prepareRound` 会把号 +1 之后
+   * 仍然要用**同一个**后台（见那张「谁该调哪一档」的表）。
    */
   private connectRoundId = 0;
   /**
-   * 本轮允不允许自动重试。
+   * 本轮允不允许自动重试（**这一轮的结算**，不是后台的属性）。
    *
    * 连接类失败（地址连不上、socket 断）→ 真：一轮轮重试到连上或用户点「停止连接」；
    * 启动类（spawn 失败、dsh 起不来）与认证类（要令牌、令牌被拒）→ 假：
    * 重试解决不了，退回按钮态等用户动作（用户 2026-09-18 口径）。
+   *
+   * 管理器那边没有对应的东西可读：它的 `status.state === "failed"` 只在启动类失败时出现，
+   * 而认证类失败（`DshAuthError`）是**控制器这侧**换 cookie 时的产物，管理器一个字都不知道。
    */
   private retryable = false;
   /** 连接阶段：条上"正在启动内部 DSH…"与"正在连接内部 DSH…"的区别。 */
@@ -542,6 +662,17 @@ export class ChatController implements vscode.Disposable {
     );
     // 早期版本存过启动令牌；令牌每次启动都会刷新，留着只会误导，直接清掉
     void this.secrets.delete(LEGACY_TOKEN_SECRET);
+
+    // 两轴结论的**初值**：外部那一轴现在就能从配置断定（配没配 `dshChat.url` 是配置事实，
+    // 不必等一次 HTTP 探测），内部那一轴要等第一次探测——在它之前按"未运行"渲染
+    // （按钮态给的是「启动内部 DSH」，点它与「连接内部 DSH」是同一套逻辑，见 §9.4）。
+    // 少了这一句，配了外部地址的窗口在首帧快照里会显示"外部 DSH：未配置"
+    // 并把「连接外部 DSH」置灰，直到第一轮探测回来。
+    this.facts = {
+      internalRunning: false,
+      externalConfigured: this.server.externalUrl !== undefined,
+      externalReachable: false,
+    };
 
     // 心跳自检：只有控制器知道"当前连接还活着吗"。ServerManager 每 5 秒问一次，
     // 这里回答两件事：连接还在吗；不在的话该连哪儿（共享后台的地址可能已经被
@@ -609,7 +740,7 @@ export class ChatController implements vscode.Disposable {
     const snapshot = await this.server.probeRunning();
     const externalConfigured = this.server.externalUrl !== undefined;
     const externalReachable =
-      externalConfigured && this.connection !== "connected" ? await this.server.probeExternal() : this.externalReachable;
+      externalConfigured && this.connection !== "connected" ? await this.server.probeExternal() : this.facts.externalReachable;
     return { internalRunning: snapshot.supervisorAlive, externalConfigured, externalReachable };
   }
 
@@ -623,7 +754,8 @@ export class ChatController implements vscode.Disposable {
    * 由 manager 通过长连接推给我们），不再需要"去租约里找别的窗口的后台"。
    */
   private async probeConnection(active: string | undefined): Promise<{ alive: boolean; info?: ServerInfo }> {
-    const info = this.server.getStatus().info;
+    // 后台那一份信息读**快照**（与 `connectionPatch` 同一个来源：不再有第二条读法）
+    const info = this.server.snapshot().status.info;
     if (!active || !info) return { alive: false };
     return { alive: await this.reachable(active), info: { ...info } };
   }
@@ -713,61 +845,64 @@ export class ChatController implements vscode.Disposable {
   }
 
   /** 给新连接的窗口（`ready`）的首帧快照：它绑定的会话（未绑定 = 空态）。 */
-  snapshotFor(viewId: string | undefined): ChatState {
+  snapshotFor(viewId: string | undefined): WireChatState {
     const sessionId = viewId ? this.viewSessions.get(viewId) : undefined;
     const scope = sessionId ? this.scopes.get(sessionId) : undefined;
+    /**
+     * **整份状态帧只有这一个生产者**。
+     *
+     * 三处「切会话要换掉哪些字段」的现场（首帧快照、增量 patch、切会话专帧）以前各写
+     * 一份，加一个字段只改其中一处，后果是**那个字段在切换后静默复旧/丢失**（`goal`
+     * 清不掉、`historyLoading` 永久卡死都是这一族，见 `docs/audit-summary.md`）。
+     * 现在字段清单只有 `dsh/sessionView.ts` 一份：外观态（与会话无关的设置）与
+     * 会话态（域 + 适配器）各由自己的构造器出，两边都带全字段，`undefined` 折成
+     * `null`（`shared/wire.ts` 的过线口径）只在那两个构造器里做。
+     */
     return {
-      /** 连接那组字段与增量 patch 同源（两轴探测结论、粘性目标、阶段、令牌入口）。 */
+      // 首帧快照的**键顺序**刻意保持与原实现一致（连接 → 外观 → 会话 → 输入区）：
+      // 键集合与取值由两个构造器决定，但帧的 JSON 形态（`JSON.stringify` 的顺序）
+      // 不该因为这次收敛而变——对拍线上帧时那是最容易白费一轮的噪声。
       ...this.connectionPatch(),
-      locale: readLanguage(),
-      /** 编辑类节点的 diff 排版（auto / unified / split）。 */
-      diffLayout: readDiffLayout(),
-      /** 界面字号（px）；undefined = auto，跟随 VS Code 注入的字号。 */
-      fontSizePx: readFontSize(),
-      /** 问卷一次展开几道题（多于它就依次问答；0 = 始终全部展开）。 */
-      questionBatch: readQuestionBatch(),
-      /** 连续过程折叠的阈值（0 = 永不折；1–2 = 永远折，仅一次调用的段除外）。 */
-      turnProcessThreshold: readTurnProcessThreshold(),
-      session: sessionId ? this.sessions.find((session) => session.id === sessionId) : undefined,
-      messages: scope?.adapter?.snapshotMessages() ?? [],
-      running: scope?.running ?? false,
-      queueItems: scope?.queueItems ?? [],
+      ...appearanceView(this.appearanceSource()),
+      ...sessionView(
+        sessionSourceOf(
+          scope,
+          sessionId ? this.sessions.find((session) => session.id === sessionId) : undefined,
+          this.models,
+        ),
+      ),
+      // 输入区那两个字段按**窗口**存（未绑会话时）/ 按会话键存，不属于会话状态片段：
+      // 它们由输入框那条链单独维护，这里只补进快照（见 `keyForView`）。
       attachments: this.attachmentsBySession.get(sessionId ?? viewId ?? "") ?? [],
       draft: this.drafts.get(sessionId ?? viewId ?? "") ?? "",
-      models: this.models,
-      model: scope?.model,
-      permission: scope?.permission,
-      planMode: scope?.planMode ?? false,
-      todos: scope?.todos ?? [],
-      subagents: scope?.subagents ?? [],
-      jobs: scope?.jobs ?? [],
-      goal: scope?.goal,
-      // 会话内的粘性显示值：首帧快照必须带上，否则 webview 一重载，上下文占用/
-      // 速度/构成/统计就空到下一轮才有数据（表现为「时有时无」）
-      ...(scope?.adapter?.stickyState() ?? {}),
-      // 文件芯片的记号表同理**必须在首帧里**：patch 侧有「没变化不重发」的去重，
-      // 而重载 / 第二个窗口一来就重算出的表与缓存相同 → 那个 patch 永远不会发，
-      // 新窗口的 [新增] / 删除线就会一直是空的（用户 2026-09-14 报的「重载后
-      // 记号全没了」）。undefined 会过线成 null → 界面折回「没有这张表」。
-      fileKinds: scope?.adapter?.fileKindsState(),
-      // 「加载更早」的可用性：重放只在 follow 流开窗那一刻发过一次 patch，
-      // 第二个窗口绑上已有会话 / 页面重载后要靠快照补回
-      hasMoreHistory: scope?.adapter?.hasMoreHistory() ?? false,
-      // **「正在加载更早」也必须进快照**（2026-09-17 修）：它此前只有 `loadMore` 那条
-      // 链会发 patch（`true` → 取完再 `false`），而 patch 是**按会话定向投递**的——
-      // 取历史的途中切走会话，那条 `false` 发给了旧会话（那儿已经没有窗口），
-      // 新会话的快照又不带这个键（`mergeWirePatch` 只在收到 `null` 时才删键），
-      // 于是界面永远停在「正在加载更早消息…」，按钮不可点、滚动加载也不再触发。
-      historyLoading: scope?.historyLoading ?? false,
-      contextBreakdown: scope?.contextBreakdown,
-      sessionStats: scope?.sessionStats,
-      tokenUsage: scope?.tokenUsage,
-      turnOutline: scope?.turnOutline,
-      imageLimits: scope?.imageLimits,
-      // 「繁忙时的发送行为」是**全局部署设置**（不是会话态），但界面要按它显示
-      // 运行中发送按钮的文案，所以首帧也得带上——否则重载后按钮文案退回默认，
-      // 直到 `refreshImageCaps` 把它重读出来（连上模型目录时那一次）。
-      busyEnter: this.busyEnter === "steer" ? "steer" : "queue",
+    };
+  }
+
+  /**
+   * 增量 patch 用的取值来源：与首帧快照**同一个** `sessionSourceOf`，只是这里不需要
+   * 会话摘要（patch 从不改 `session` 本身，标题那条路有自己的 `sessionWithTitle`）。
+   */
+  private sessionSource(scope: SessionScope | undefined): SessionViewSource {
+    return sessionSourceOf(scope, undefined, this.models);
+  }
+
+  /** 首帧快照里「与会话无关」的那一半（语言 / 排版 / 字号 / 批次 / 阈值 / 发送行为）。 */
+  private appearanceSource(): AppearanceViewSource {
+    return {
+      locale: () => readLanguage(),
+      diffLayout: () => readDiffLayout(),
+      /** 界面字号（px）；undefined = auto，跟随 VS Code 注入的字号。 */
+      fontSizePx: () => readFontSize(),
+      /** 问卷一次展开几道题（多于它就依次问答；0 = 始终全部展开）。 */
+      questionBatch: () => readQuestionBatch(),
+      /** 连续过程折叠的阈值（0 = 永不折；1–2 = 永远折，仅一次调用的段除外）。 */
+      turnProcessThreshold: () => readTurnProcessThreshold(),
+      /**
+       * 「繁忙时的发送行为」是**全局部署设置**（不是会话态），但界面要按它显示运行中
+       * 发送按钮的文案，所以首帧也得带上——否则重载后按钮文案退回默认，直到
+       * `refreshImageCaps` 把它重读出来（连上模型目录时那一次）。
+       */
+      busyEnter: () => (this.busyEnter === "steer" ? "steer" : "queue"),
     };
   }
 
@@ -1081,31 +1216,32 @@ export class ChatController implements vscode.Disposable {
     }
     this.viewSessions.set(viewId, sessionId);
     scope.viewers += 1;
-    // 有窗口盯上这个会话了：把**还没结算**的审批 / 提问交出去（见 `heldEvents`）。
+    // 有窗口盯上这个会话了：把**还没结算**的审批 / 提问交出去（账本见 `interactions`）。
     // 位置很关键——放在这里而不是 `ensureScope`：用户切走又切回来时域早就存在、
     // 不会重新建域（`ensureScope` 直接返回），而这正是卡片必须回来的时刻。
     // 重复投递安全：适配器按 `requestId` 去重（`addQuestion` / `addApproval`
     // 的 existing 分支只更新、不重加）。
-    this.replayHeldEvents(sessionId, scope);
+    this.replayHeldToScope(sessionId, scope);
     this.log(`[bind] 窗口=${viewId} → 会话=${sessionId}（原=${previous ?? "空态"}）`);
     this.persistWindowState();
   }
 
   /**
-   * 把某个会话**还没结算**的审批 / 提问回放进它的适配器（`bindViewToSession` 用）。
+   * 把某个会话**还没结算**的审批 / 提问投进它的适配器（`bindViewToSession` 与
+   * 重连后的 `onConnected` 共用）。
    *
-   * 只投递，**不删条目**：条目要一直留到真正结算（答复或 Host 撤回）。因为卡片
-   * 随时可能随着域被回收而消失（切会话就是），留一份原始请求才能在切回来时复原。
+   * 取条目走 `PendingInteractions.forSession`，它是**读**：条目要一直留在账上到真正
+   * 结算（答复或 Host 撤回）。卡片随时可能随域被回收而消失（切会话就是），留一份
+   * 原始请求才能在切回来时复原。
    */
-  private replayHeldEvents(sessionId: string, scope: SessionScope): void {
+  private replayHeldToScope(sessionId: string, scope: SessionScope): void {
     let replayed = 0;
-    for (const [eventId, held] of [...this.heldEvents]) {
-      if (held.sessionId !== sessionId) continue;
-      this.deliverEventToScope(eventId, held, scope);
+    for (const held of this.interactions.forSession(sessionId)) {
+      this.deliverEventToScope(held, scope);
       replayed += 1;
     }
-    // 只投递，**不删条目**（见上）。回放了哪些也留一行日志：卡片「回来了没有」
-    // 与「是不是又被重折吃掉」在输出通道里能分辨（见 `interactionCards`）
+    // 回放了哪些留一行日志：卡片「回来了没有」与「是不是又被重折吃掉」在输出通道里
+    // 能分辨（见 `interactionCards`）
     if (replayed > 0) {
       this.log(`[bind] 回放未结算的审批/提问 ${replayed} 条 → 会话=${sessionId}`);
     }
@@ -1137,7 +1273,8 @@ export class ChatController implements vscode.Disposable {
       const targetChanged = wanted !== undefined && wanted !== this.connectRoundTarget;
       // 目标变了（连接中从命令面板换了入口）：在途那一轮可能正卡在**没有时长上限**的
       // 等待里，先中止它让它让位，再按新目标补跑一轮——否则那一轮会一直等旧目标。
-      if (targetChanged) this.server.cancelWaiting();
+      // 同样是「只中止等待、不收连接」那一档（见 `prepareRound` 顶上那张表）
+      if (targetChanged) this.server.stop({ cancelWait: true });
       if ((options.start && !this.connectMayStart) || targetChanged) {
         await inFlight;
         return this.ensureConnected(options);
@@ -1159,7 +1296,7 @@ export class ChatController implements vscode.Disposable {
     // 阶段：这一轮允许"内部不存在就拉起一套"、而内部此刻确实不在 → 在**启动**它
     // （发消息这类显式动作也会走到这里，文案得说实话，而不是笼统地"正在连接"）
     this.connectPhase =
-      roundTarget === "internal" && this.connectMayStart && !this.internalRunning ? "starting" : "connecting";
+      roundTarget === "internal" && this.connectMayStart && !this.facts.internalRunning ? "starting" : "connecting";
     this.setConnection("connecting");
     try {
       // 许可按"这一轮里最宽的那个请求"算；目标按粘性目标（见 ensureConnected）
@@ -1246,20 +1383,37 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
-   * 开始新一轮连接前的收场：**作废在途轮 + 收掉上一条连接**。
+   * 开始新一轮连接前的收场：**作废在途轮 + 中止在途等待 + 收掉上一条连接**。
    *
    * 三件事缺一不可（2026-09-19 修「停止连接停不下来」）：
    * 1. `connectRoundId + 1` —— 让在途轮苏醒后静默让位；
-   * 2. `cancelWaiting()` —— 中止管理器那侧在途的等待（它可能挂在旧目标的地址上）；
+   * 2. `stop({ cancelWait: true })` —— 中止管理器那侧在途的等待（它可能挂在旧目标的地址上）；
    * 3. `client.dispose()` —— **杀掉客户端自己的无限重连**。`DshClient` 在 ws 断开后
    *    会按 1s→2s→…→15s 一直重连，且每次 close/connect 都回调状态；不 dispose 它，
    *    界面就会在"已停止"与"连接中"之间反复跳，用户点了停止也停不下来。
    *
    * 后台（守护进程 + dsh）**一个字都不动**——收掉的只是本窗口的连接。
+   *
+   * ## 「谁该调哪一档」——控制器四个停止落点对照表（定稿，改之前先看这张）
+   *
+   * 管理器只有**一个**停止入口（见 `supervisorManager` 文件头「停止入口收敛」）：
+   * `stop(options?: { release?, cancelWait?, askSupervisor? })`。下面四处各调其中一档，
+   * 而**调错档不会报任何错**，只会在用户那里表现为"点了没反应"或"过一会儿又连上了"：
+   *
+   * | 控制器落点 | 调哪一档 | 少了它会怎样 |
+   * |---|---|---|
+   * | `prepareRound()`（换目标 / 重开一轮 / 并发补跑共用） | `stop({ cancelWait: true })` | 那一轮还挂在旧目标**没有时长上限**的等待里，等于没换目标。**这一档不收连接**：马上要重新接上的是**同一个**后台（§9.9），收掉 socket 等于交还占用，`ownership` 从 self 掉成 peer、诊断里"是不是本窗口拉起的"开始说谎 |
+   * | `abandonRound()`（用户叫停后放弃这一轮） | `stop({ release: true })` | 一轮排队/重试可能在叫停**之后**才走到 `bringUp`（它会清掉 `detachedByUser`）并在管理器侧把连接建起来，而控制器随后放弃了这一轮——连接就留在管理器手里（幂等，所以再收一次） |
+   * | `stopReconnect()`（用户点「停止连接」） | `stop({ release: true })` | 只断不挡 → 5 秒后心跳又接回来；只挡不断 → 守护进程永远认为有人用，内部 dsh 不按空闲退场 |
+   * | `stopServer()`（「停止内部 DSH」） | `stop({ cancelWait: true, askSupervisor: true })` | 请求都发出去了，再等一个不会来的就绪没有意义；没有活连接时管理器自己走**临时接入**那条路，回执才不会谎报"没有在运行" |
+   *
+   * 三个 flag 的完整语义与"少了它会怎样"另见 `StopOptions` 的注释；`askSupervisor` 天然
+   * 蕴含 `cancelWait`（管理器里就是这样定的），这里两档都显式写出来，与旧 `stopAndExit()` 同形。
    */
   private prepareRound(): void {
     this.connectRoundId += 1;
-    this.server.cancelWaiting();
+    // 只中止在途等待、**不收连接**：这一轮马上要重新接上同一个后台
+    void this.server.stop({ cancelWait: true });
     this.teardownStreams();
     this.client?.dispose();
     this.client = undefined;
@@ -1347,11 +1501,11 @@ export class ChatController implements vscode.Disposable {
     this.log("[connect] 用户已点「停止连接」：本轮不再建连");
     this.retryable = false;
     this.setConnection("stopped");
-    // 这一轮可能**刚刚**（或正在）把管理器的内部连接建起来——再收一次。少了它，"用户叫停"
-    // 会被一轮排队/重试的连接偷偷翻过去：`bringUp` 会清掉 `detachedByUser`（那是"显式动作"
-    // 的通行证），而这一轮随后在控制器侧被放弃、连接却留在了管理器手里（2026-09-19）。
-    // 幂等：没连着的时候它只是把标记再置一次。
-    this.server.releaseInternal();
+    // 这一轮可能**刚刚**（或正在）把管理器的内部连接建起来——再收一次（档位见 `prepareRound`
+    // 顶上那张表）。少了它，"用户叫停"会被一轮排队/重试的连接偷偷翻过去：`bringUp` 会清掉
+    // `detachedByUser`（那是"显式动作"的通行证），而这一轮随后在控制器侧被放弃、连接却留在了
+    // 管理器手里（2026-09-19）。幂等：没连着的时候它只是把标记再置一次。
+    void this.server.stop({ release: true });
   }
 
   /** 自管服务器：启动令牌来自会合文件，认证失败只能如实报错。 */
@@ -1543,70 +1697,36 @@ export class ChatController implements vscode.Disposable {
     // socket 重建后长活流都要重开：每个打开的域重新跟随（适配器整个重建，
     // 新快照会重放最近 60 条），全局流重开一次
     for (const scope of this.scopes.values()) this.openScopeFollow(scope);
-    // 适配器刚被整个重建，卡片要重新回放一遍。**不删 `heldEvents` 条目**——
-    // 条目留到真正结算（见 `heldEvents` 的注释），否则「重连 → 切会话 → 切回来」
-    // 这条路上卡片又会消失。服务端重连后重投递的 waterfall 会被 `handledEvents`
-    // 幂等放行（回 `next`），不会重复弹卡片；回放本身也按 requestId 去重。
-    for (const scope of this.scopes.values()) this.replayHeldEvents(scope.sessionId, scope);
+    // 适配器刚被整个重建，卡片要重新回放一遍。**不删账本条目**——条目留到真正结算
+    // （见 `interactions` 的注释），否则「重连 → 切会话 → 切回来」这条路上卡片又会
+    // 消失。服务端重连后重投递的 waterfall 会被去重记账幂等放行，不会重复弹卡片；
+    // 回放本身也按 requestId 去重。
+    for (const scope of this.scopes.values()) this.replayHeldToScope(scope.sessionId, scope);
     this.openControlStream();
     this.openEventsStream();
     this.openWorkspaceStream();
   }
 
-  /** 内部连接状态 → 界面可见的状态（见 `connection` 字段注释）。 */
-  private viewConnection(): ChatState["connection"] {
-    switch (this.connection) {
-      case "connected":
-        return "ready";
-      case "error":
-        return "error";
-      case "stopped":
-        return "stopped";
-      default:
-        return "connecting";
-    }
-  }
-
   /**
    * 连接相关的整组字段（首帧快照与增量 patch **共用这一份**，两处各写一遍必然漂移）。
    *
-   * 界面按钮态的两轴文案、按钮集、以及连接中"正在连哪个目标/在启动还是在连接"
-   * 全部由这几个字段驱动（见 `App.tsx` 的 `ConnectionBar`）。
+   * 判定在 `connectionFieldsOf`（模块级纯函数）里一次做完：**管理器那一半读 `snapshot()`**
+   * （外部地址、目标、后台在不在——控制器不再存镜像），**本窗口那一半读 `facts` 与
+   * `round`**（两轴探测结论、客户端状态机）。这里只负责把三份输入摆好。
    */
-  private connectionPatch(): Pick<
-    ChatState,
-    | "connection"
-    | "connectionDetail"
-    | "internalRunning"
-    | "externalState"
-    | "externalAddress"
-    | "connectTarget"
-    | "connectPhase"
-    | "needsToken"
-    | "serverUrl"
-  > {
-    return {
-      connection: this.viewConnection(),
-      connectionDetail: this.connectionDetail,
-      /** 内部后台在不在跑：按钮态据此给「启动内部 DSH」还是「连接内部 DSH」。 */
-      internalRunning: this.internalRunning || undefined,
-      /** 外部备用地址的状态：`unconfigured` 时「连接外部 DSH」置灰。 */
-      externalState: this.externalState(),
-      /** 外部地址本身（连接中那条文案要写出"在连哪个地址"）。 */
-      externalAddress: this.server.externalUrl,
-      /** 粘性目标（连接中条上写"内部/外部"）；没选过时为 undefined（过线成 null → 界面清键）。 */
-      connectTarget: this.target?.kind,
-      /** 阶段只在连接中有意义，其余状态清掉（否则按钮态还挂着"正在启动…"）。 */
-      connectPhase: this.connection === "connecting" ? this.connectPhase : undefined,
-      needsToken: this.needsToken || undefined,
+  private connectionPatch(): ConnectionFields {
+    return connectionFieldsOf({
+      snapshot: this.server.snapshot(),
+      facts: this.facts,
+      round: {
+        connection: this.connection,
+        detail: this.connectionDetail,
+        phase: this.connectPhase,
+        target: this.target?.kind,
+        needsToken: this.needsToken,
+      },
       serverUrl: this.client?.baseUrl,
-    };
-  }
-
-  /** 当前外部轴的状态（没配地址 = `unconfigured`，不产生任何探测）。 */
-  private externalState(): ExternalState {
-    if (this.server.externalUrl === undefined) return "unconfigured";
-    return this.externalReachable ? "reachable" : "unreachable";
+    });
   }
 
   private setConnection(state: "connecting" | "connected" | "disconnected" | "error" | "stopped", detail?: string): void {
@@ -1625,18 +1745,21 @@ export class ChatController implements vscode.Disposable {
    * 两轴探测结论（内部在不在跑、外部可不可达）变了就推给界面。
    *
    * 按钮态的按钮集与那半句状态文案都靠它：内部在跑 → 「连接内部 DSH」，不在 → 「启动内部 DSH」。
+   * **只在这里整份换掉 `facts`**（外部轴的 `unconfigured` 判定也由它出，见 `externalStateOf`）。
    */
   private setFacts(facts: TargetFacts): void {
-    const changed = this.internalRunning !== facts.internalRunning || this.externalReachable !== facts.externalReachable;
-    this.internalRunning = facts.internalRunning;
-    this.externalReachable = facts.externalReachable;
+    const changed =
+      this.facts.internalRunning !== facts.internalRunning ||
+      this.facts.externalConfigured !== facts.externalConfigured ||
+      this.facts.externalReachable !== facts.externalReachable;
+    this.facts = facts;
     if (changed) this.emitConnection();
   }
 
   /** 只更新内部轴（守护进程退场这类"确定"事件用，不必再探一次外部）。 */
   private setInternalRunning(running: boolean): void {
-    if (this.internalRunning === running) return;
-    this.internalRunning = running;
+    if (this.facts.internalRunning === running) return;
+    this.facts = { ...this.facts, internalRunning: running };
     this.emitConnection();
   }
 
@@ -1679,7 +1802,7 @@ export class ChatController implements vscode.Disposable {
     this.connectPhase = "connecting";
     // 接入的是**别的窗口**拉起的后台时，「重启内部 DSH」会打断所有窗口（supervisor 杀 dsh
     // 再拉起一个，端口通常会变）——那是一次对所有人的中断，必须说出来，不能静默
-    const wasPeer = this.server.getStatus().info?.ownership === "peer";
+    const wasPeer = this.server.snapshot().status.info?.ownership === "peer";
     this.log(wasPeer ? "[server] 重启（后台由别的窗口拉起，会打断所有窗口）" : "[server] 重启");
     this.teardownStreams();
     this.client?.dispose();
@@ -1893,8 +2016,11 @@ export class ChatController implements vscode.Disposable {
     // 无限重连）。只改这两个布尔量是不够的——`DshClient` 断线后会自动重连，它的回调
     // 会把界面反复拉回"连接中"，用户看到的就是"点了停止还在连"（2026-09-19 实测）。
     this.prepareRound();
-    // 交还内部后台的占用（断开与守护进程的连接，并挡住心跳的自动接回）
-    this.server.releaseInternal();
+    // 交还内部后台的占用（断开与守护进程的连接，并挡住心跳的自动接回）。
+    // 档位是 `release`（见 `prepareRound` 顶上那张表）：那一档做两件事——置 `detachedByUser`
+    // 闸 + 收连接，缺任何一件都等于没做（只断不挡 → 5 秒后被接回；只挡不断 → 内部 dsh
+    // 永不按空闲退场）。
+    void this.server.stop({ release: true });
     // 切回按钮态：条上写的是两轴探测结论（"内部 DSH：… · 外部 DSH：…"），
     // 上一轮为什么没连上在日志里。**顺带重探一次两轴**：刚交还之后"内部还在不在"的
     // 结论已经变了（它可能马上就空闲退场），不能等 5 秒心跳
@@ -1913,18 +2039,19 @@ export class ChatController implements vscode.Disposable {
    * 无关——本窗口连着外部的那条连接（客户端 + 跟随流）一个字都不动，界面也不该被拉回
    * 按钮态。管理器会临时接入内部守护进程把请求发出去（`stopDetachedInternal`）。
    *
-   * 返回"停止请求有没有真的发出去"：调用方据此给用户哪句回执。
+   * 返回"停止请求有没有真的发出去"：调用方据此给用户哪句回执（档位见 `prepareRound`
+   * 顶上那张表——`askSupervisor` 是唯一会发控制帧的一档）。
    */
   async stopServer(): Promise<boolean> {
     if (this.target?.kind === "external") {
       this.log("[server] 当前目标是外部 DSH：「停止内部 DSH」只停内部后台，这条连接不动");
-      return this.server.stopAndExit();
+      return this.server.stop({ cancelWait: true, askSupervisor: true });
     }
     this.autoReconnect = false;
     this.retryable = false;
     this.prepareRound();
     this.setConnection("stopped");
-    return this.server.stopAndExit();
+    return this.server.stop({ cancelWait: true, askSupervisor: true });
   }
 
   // ---------- 会话 ----------
@@ -2393,14 +2520,20 @@ export class ChatController implements vscode.Disposable {
     // 一次只跑一条链：滚动事件会在「historyLoading 帧回到界面」之前连发好几个
     if (scope.historyLoading) return;
     scope.historyLoading = true;
-    this.deliver(scope.sessionId, { type: "patch", patch: { historyLoading: true } });
+    this.deliver(scope.sessionId, {
+      type: "patch",
+      patch: sessionPatch(this.sessionSource(scope), ["historyLoading"]),
+    });
     try {
       await this.pageBackwards(scope);
     } catch (error) {
       this.reportError(vscode.l10n.t("Failed to load earlier history"), error);
     } finally {
       scope.historyLoading = false;
-      this.deliver(scope.sessionId, { type: "patch", patch: { historyLoading: false } });
+      this.deliver(scope.sessionId, {
+        type: "patch",
+        patch: sessionPatch(this.sessionSource(scope), ["historyLoading"]),
+      });
     }
   }
 
@@ -2424,7 +2557,10 @@ export class ChatController implements vscode.Disposable {
       const beforeSeq = scope.adapter?.earliestSeq();
       if (!scope.adapter || throughSeq === undefined || beforeSeq === undefined) {
         this.log("[history] 拿不到分页锚点（缺 snapshot.cursor 或本地无事件）");
-        this.deliver(scope.sessionId, { type: "patch", patch: { hasMoreHistory: false } });
+        this.deliver(scope.sessionId, {
+          type: "patch",
+          patch: sessionPatch(this.sessionSource(scope), ["hasMoreHistory"]),
+        });
         return;
       }
       const page = await this.client!.page(scope.sessionId, throughSeq, beforeSeq);
@@ -2496,7 +2632,8 @@ export class ChatController implements vscode.Disposable {
     this.eventsHandle = undefined;
     this.workspaceHandle = undefined;
     this.eventsClientId = undefined;
-    this.handledEvents.clear();
+    // 连接收掉了，旧的去重记账不作数；**未结算的审批 / 提问照旧留着**（见 `interactions`）
+    this.interactions.resetDedupe();
   }
 
   private openControlStream(): void {
@@ -2657,7 +2794,11 @@ export class ChatController implements vscode.Disposable {
       });
     }
     scope.queueItems = entries.map((entry) => entry.view);
-    this.deliver(scope.sessionId, { type: "patch", patch: { queueItems: scope.queueItems } });
+    // patch 的字段名与折返口径与首帧快照**同一张字段表**（`dsh/sessionView.ts`）
+    this.deliver(scope.sessionId, {
+      type: "patch",
+      patch: sessionPatch(this.sessionSource(scope), ["queueItems"]),
+    });
   }
 
   // ---------- 投影摄入：一个键一条登记 ----------
@@ -2728,7 +2869,10 @@ export class ChatController implements vscode.Disposable {
     if (!present || !value) {
       if (this.defaultModel) {
         scope.model = this.defaultModel;
-        this.deliver(scope.sessionId, { type: "patch", patch: { model: scope.model } });
+        this.deliver(scope.sessionId, {
+      type: "patch",
+      patch: sessionPatch(this.sessionSource(scope), ["model"]),
+    });
       } else {
         void this.loadDefaultModel();
       }
@@ -2745,7 +2889,10 @@ export class ChatController implements vscode.Disposable {
       contextWindow: model?.contextWindow ?? scope.model?.contextWindow,
       acceptsImage: this.acceptsImageFor(value.provider, value.model),
     };
-    this.deliver(scope.sessionId, { type: "patch", patch: { model: scope.model } });
+    this.deliver(scope.sessionId, {
+      type: "patch",
+      patch: sessionPatch(this.sessionSource(scope), ["model"]),
+    });
   }
 
   /**
@@ -2759,7 +2906,10 @@ export class ChatController implements vscode.Disposable {
     const next = present ? value : undefined;
     if (scope.permission === next) return;
     scope.permission = next;
-    this.deliver(scope.sessionId, { type: "patch", patch: { permission: next } });
+    this.deliver(scope.sessionId, {
+      type: "patch",
+      patch: sessionPatch(this.sessionSource(scope), ["permission"]),
+    });
   }
 
   /**
@@ -2770,7 +2920,10 @@ export class ChatController implements vscode.Disposable {
   private applyPlanProjection(scope: SessionScope, value: boolean, present: boolean): void {
     const active = present ? value : false;
     scope.planMode = active;
-    this.deliver(scope.sessionId, { type: "patch", patch: { planMode: active } });
+    this.deliver(scope.sessionId, {
+      type: "patch",
+      patch: sessionPatch(this.sessionSource(scope), ["planMode"]),
+    });
   }
 
   /** 待办清单。`todos` 在 `ChatState` 里是必填数组，所以「没有值」就是空表。 */
@@ -2800,7 +2953,10 @@ export class ChatController implements vscode.Disposable {
     const contextWindow = value.contextWindow;
     if (contextWindow !== undefined && contextWindow > 0 && scope.model) {
       scope.model = { ...scope.model, contextWindow };
-      this.deliver(scope.sessionId, { type: "patch", patch: { model: scope.model } });
+      this.deliver(scope.sessionId, {
+      type: "patch",
+      patch: sessionPatch(this.sessionSource(scope), ["model"]),
+    });
     }
   }
 
@@ -2817,7 +2973,10 @@ export class ChatController implements vscode.Disposable {
     present: boolean,
   ): void {
     scope.tokenUsage = present ? value : undefined;
-    this.deliver(scope.sessionId, { type: "patch", patch: { tokenUsage: scope.tokenUsage } });
+    this.deliver(scope.sessionId, {
+      type: "patch",
+      patch: sessionPatch(this.sessionSource(scope), ["tokenUsage"]),
+    });
   }
 
   /** 轮次横条的数据源（形状与容忍度见 `projections.turnOutlineFromProjection`）。 */
@@ -2827,7 +2986,10 @@ export class ChatController implements vscode.Disposable {
     present: boolean,
   ): void {
     scope.turnOutline = present ? value : undefined;
-    this.deliver(scope.sessionId, { type: "patch", patch: { turnOutline: scope.turnOutline } });
+    this.deliver(scope.sessionId, {
+      type: "patch",
+      patch: sessionPatch(this.sessionSource(scope), ["turnOutline"]),
+    });
   }
 
   /**
@@ -2873,7 +3035,10 @@ export class ChatController implements vscode.Disposable {
     present: boolean,
   ): void {
     scope.contextBreakdown = present ? value : undefined;
-    this.deliver(scope.sessionId, { type: "patch", patch: { contextBreakdown: scope.contextBreakdown } });
+    this.deliver(scope.sessionId, {
+      type: "patch",
+      patch: sessionPatch(this.sessionSource(scope), ["contextBreakdown"]),
+    });
   }
 
   /** 全日志墙钟统计（`llmMs` / `toolMs` 是承重字段，见 `projections.sessionStatsFromProjection`）。 */
@@ -2883,7 +3048,10 @@ export class ChatController implements vscode.Disposable {
     present: boolean,
   ): void {
     scope.sessionStats = present ? value : undefined;
-    this.deliver(scope.sessionId, { type: "patch", patch: { sessionStats: scope.sessionStats } });
+    this.deliver(scope.sessionId, {
+      type: "patch",
+      patch: sessionPatch(this.sessionSource(scope), ["sessionStats"]),
+    });
   }
 
   /**
@@ -2899,11 +3067,13 @@ export class ChatController implements vscode.Disposable {
     value: SubagentCatalogEntryView[],
     present: boolean,
   ): void {
-    scope.subagents = present ? mergeSubagentActivity(value, scope.subagents) : [];
+    // 名字与界面状态字段逐字相同（`subagentEntries`，见 shared/chat.ts 与
+    // dsh/sessionView.ts）：不再有「宿主一个名、界面另一个名」的跨名桥
+    scope.subagentEntries = present ? mergeSubagentActivity(value, scope.subagentEntries) : [];
     this.deliver(scope.sessionId, {
       type: "subagents/list",
-      entries: scope.subagents,
-      parentAvailable: scope.subagents.length > 0,
+      entries: scope.subagentEntries,
+      parentAvailable: scope.subagentEntries.length > 0,
     });
   }
 
@@ -2914,10 +3084,24 @@ export class ChatController implements vscode.Disposable {
    */
   private applyGoalProjection(scope: SessionScope, value: GoalView | undefined, present: boolean): void {
     scope.goal = present ? value : undefined;
-    this.deliver(scope.sessionId, { type: "patch", patch: { goal: scope.goal } });
+    this.deliver(scope.sessionId, {
+      type: "patch",
+      patch: sessionPatch(this.sessionSource(scope), ["goal"]),
+    });
   }
 
-  /** 后台任务帧 → 界面状态。 */
+  /**
+   * 后台任务帧 → 界面状态。
+   *
+   * **只投递一条**：以前这里连着发两条（`jobs/list` 与 `patch.jobs`），同一次刷新的
+   * 同一份数据走了两条路，而面板的键集合在 `snapshotFor` / 切会话帧 / 历史 patch
+   * 那几条路上**各写一份**——多投的那条不会带来任何新信息（界面侧 `jobs/list` 与
+   * `patch.jobs` 落到同一个状态字段），却会让面板按两条帧各渲染一次（闪一下）。
+   * 留着 `patch` 那条：它与其它会话字段（队列、目标、模型……）走**同一个字段表**
+   * （`dsh/sessionView.ts`），字段名与 `undefined → null` 的折返不再有第二处实现。
+   * （`jobs/list` 帧本身没删：面板打开时按需请求的那条路 `case "listJobs"` 仍然发它，
+   * 删掉的只是同一次刷新里的第二次投递。）
+   */
   private applyJobs(scope: SessionScope, jobs: unknown): void {
     const list = Array.isArray(jobs) ? jobs : [];
     scope.jobs = list.map((job) => {
@@ -2943,8 +3127,10 @@ export class ChatController implements vscode.Disposable {
         finishedAt: item.finishedAt,
       };
     });
-    this.deliver(scope.sessionId, { type: "jobs/list", jobs: scope.jobs });
-    this.deliver(scope.sessionId, { type: "patch", patch: { jobs: scope.jobs } });
+    this.deliver(scope.sessionId, {
+      type: "patch",
+      patch: sessionPatch(this.sessionSource(scope), ["jobs"]),
+    });
   }
 
   // ---------- 主机事件（审批 / 提问） ----------
@@ -2982,12 +3168,23 @@ export class ChatController implements vscode.Disposable {
       // 回答了」的权威信号——收到它**什么都不要回**（回了等于放行），只把本窗口
       // 那张卡收场（用户 2026-09-15：多窗口同时开着，一个窗口答了问卷，别的窗口
       // 还在继续生成，问卷却一直停在页面上）。
-      this.cancelHeldEvent(frame.eventId);
+      //
+      // 「撤回」= 一次结算，走账本的 `withdraw`：账上有这条就把原始请求拿回来
+      // （会话 id 在记录里）→ 收场那张卡；账上没有（请求压根没投递到任何域，或
+      // 本窗口早结算过）就什么都不做——它已经不需要人回答了，留着只会在用户下次
+      // 打开这个会话时凭空弹一张过期的卡。
+      const withdrawn = this.interactions.withdraw(frame.eventId);
+      if (withdrawn) {
+        this.log(
+          `[$events] 未结算的${withdrawn.kind === "approval" ? "审批" : "提问"}被 Host 撤回：${frame.eventId}`,
+        );
+        this.scopes.get(withdrawn.sessionId)?.adapter?.cancelEvent(frame.eventId);
+      }
       return;
     }
     if (frame.type !== "waterfall") return;
     const waterfall = frame as RemoteEventWaterfall;
-    if (this.handledEvents.has(waterfall.eventId)) {
+    if (this.interactions.hasSeen(waterfall.eventId)) {
       // 重投递：直接放行给链上的下一个处理器，避免重复弹卡片
       await this.replyEvent(waterfall.eventId, { kind: "next" });
       return;
@@ -3002,23 +3199,23 @@ export class ChatController implements vscode.Disposable {
         return;
       }
       const scope = this.scopes.get(sessionId);
-      const held = {
-        kind: waterfall.event === "approval/request" ? ("approval" as const) : ("question" as const),
-        sessionId,
-        request: waterfall.request,
-      };
-      this.handledEvents.add(waterfall.eventId);
-      this.eventSessions.set(waterfall.eventId, sessionId);
       // 先记成「未结算」再投递，而且**一直留到结算**（本窗口答复 / Host 撤回），
       // 不是投递出去就删。这是用户 2026-09-15 现场的根因：卡片已经在一个窗口上
       // 显示着，用户切去看别的会话 → `bindViewToSession` 把上一个会话的域回收掉
       // （`dropViewers` → `destroyScope`，适配器一起丢），这条请求就只剩下在被回收的
       // 适配器里。切回来时域是新建的、卡片没了，而审批/提问**不是 durable 事件**
       // （会话日志里没有它们），重放不回 —— agent 永久卡在 ask 节点，只能中断重问。
-      this.heldEvents.set(waterfall.eventId, held);
+      // 账本与去重记账都在 `PendingInteractions` 里（见它的文件头）。
+      const held = {
+        eventId: waterfall.eventId,
+        kind: waterfall.event === "approval/request" ? ("approval" as const) : ("question" as const),
+        sessionId,
+        request: waterfall.request,
+      };
+      this.interactions.hold(held);
       // 有域就先投进适配器（卡片立刻显示）；没域就只挂着——**不能回**：
       // 回了等于放行，请求就丢了。回放由 `bindViewToSession` 负责。
-      if (scope) this.deliverEventToScope(waterfall.eventId, held, scope);
+      if (scope) this.deliverEventToScope(held, scope);
       // 这条日志是给「问卷丢了」这类现场留证据的：四种到达（首次投递 / 重连重投递 /
       // 窗口重载后重投递 / 另一窗口绑上时的回放）都会在输出通道留一行，能一眼看出
       // 请求到底有没有回到宿主（用户 2026-09-15 / 09-16 两次报的都是这条链路）
@@ -3034,31 +3231,13 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
-   * Host 撤回一条未结算的审批或提问（`$events` 的 `cancel` 帧）。
+   * 把一条审批 / 提问事件交给域的适配器（即时到达与挂起回放共用）。
    *
-   * 两种情形都要处理：卡片已经在某个窗口上（交给适配器收场），或者请求还没被投递
-   * 到任何域（**直接从 `heldEvents` 丢掉**——它已经不需要人回答了，留着只会在
-   * 用户下次打开这个会话时凭空弹一张过期的卡）。
+   * **只管投递**：账目（未结算、去重）的进出全在 `PendingInteractions` 里；
+   * 这里连 `eventId` 都不用另传，它就是 `held.eventId`（卡片主键靠它）。
    */
-  private cancelHeldEvent(eventId: string): void {
-    const held = this.heldEvents.get(eventId);
-    if (held) {
-      this.heldEvents.delete(eventId);
-      this.log(`[$events] 未结算的${held.kind === "approval" ? "审批" : "提问"}被 Host 撤回：${eventId}`);
-    }
-    const sessionId = this.eventSessions.get(eventId);
-    const scope = sessionId ? this.scopes.get(sessionId) : undefined;
-    scope?.adapter?.cancelEvent(eventId);
-    // 结算过的事件不再需要「事件 → 会话」这条映射（见 `eventSessions` 的字段注释）
-    this.eventSessions.delete(eventId);
-  }
-
-  /** 把一条审批/提问事件交给域的适配器（即时到达与挂起回放共用）。 */
-  private deliverEventToScope(
-    eventId: string,
-    held: { kind: "approval" | "question"; sessionId: string; request: unknown },
-    scope: SessionScope,
-  ): void {
+  private deliverEventToScope(held: HeldInteraction, scope: SessionScope): void {
+    const eventId = held.eventId;
     if (held.kind === "approval") {
       const request = held.request as { toolName?: string; callId?: string; reason?: string };
       scope.adapter?.addApproval({
@@ -3196,7 +3375,10 @@ export class ChatController implements vscode.Disposable {
       for (const scope of this.scopes.values()) {
         if (!scope.model) continue;
         scope.model = { ...scope.model, acceptsImage: this.acceptsImageFor(scope.model.provider, scope.model.model) };
-        this.deliver(scope.sessionId, { type: "patch", patch: { model: scope.model } });
+        this.deliver(scope.sessionId, {
+      type: "patch",
+      patch: sessionPatch(this.sessionSource(scope), ["model"]),
+    });
       }
       if (this.defaultModel) {
         this.defaultModel = {
@@ -3311,7 +3493,10 @@ export class ChatController implements vscode.Disposable {
       // 解析不出选择（含「provider 有、model 缺」的半截选择）就走默认值。
       if (modelSelectionFromProjection(scope.projections.get("modelSelection"))) continue;
       scope.model = this.defaultModel;
-      this.deliver(scope.sessionId, { type: "patch", patch: { model: scope.model } });
+      this.deliver(scope.sessionId, {
+      type: "patch",
+      patch: sessionPatch(this.sessionSource(scope), ["model"]),
+    });
     }
   }
 
@@ -3431,7 +3616,10 @@ export class ChatController implements vscode.Disposable {
           contextWindow: scope.pendingModel.contextWindow,
           acceptsImage: scope.pendingModel.acceptsImage,
         };
-        this.deliver(scope.sessionId, { type: "patch", patch: { model: scope.model } });
+        this.deliver(scope.sessionId, {
+      type: "patch",
+      patch: sessionPatch(this.sessionSource(scope), ["model"]),
+    });
         break;
       }
 
@@ -3457,37 +3645,32 @@ export class ChatController implements vscode.Disposable {
       case "answerApproval": {
         const eventId = message.requestId;
         if (!eventId) break;
-        // 结算掉：这条请求不再需要回放（见 `heldEvents` 的注释）
-        this.heldEvents.delete(eventId);
+        // 结算掉：这条请求不再需要回放（见 `interactions` 的注释）。答复照旧先回 Host
+        // ——`settle` 拿到的是那条记录（含会话 id），据此把卡片状态落回对的域。
+        const settled = this.interactions.settle(eventId);
         await this.replyEvent(eventId, {
           kind: "result",
           value: message.approved ? "allowed-once" : "rejected",
         });
-        const sessionId = this.eventSessions.get(eventId);
-        const scope = sessionId ? this.scopes.get(sessionId) : undefined;
+        const scope = settled ? this.scopes.get(settled.sessionId) : undefined;
         scope?.adapter?.resolveApproval(eventId, message.approved ? "approved" : "rejected");
-        // 结算完就忘掉这条映射（`eventSessions` 从前只增不删，跨会话累积）
-        this.eventSessions.delete(eventId);
         break;
       }
 
       case "answerQuestion": {
         const eventId = message.requestId;
         if (!eventId) break;
-        // 结算掉：这条请求不再需要回放（见 `heldEvents` 的注释）
-        this.heldEvents.delete(eventId);
+        // 结算掉：这条请求不再需要回放（见 `interactions` 的注释）
+        const settled = this.interactions.settle(eventId);
         await this.replyEvent(eventId, {
           kind: "result",
           value: { answers: message.answers },
         });
-        const sessionId = this.eventSessions.get(eventId);
-        const scope = sessionId ? this.scopes.get(sessionId) : undefined;
+        const scope = settled ? this.scopes.get(settled.sessionId) : undefined;
         // 回答一并落到卡片上：展开记录要显示「用户当时选了什么」。本窗口自己
         // 答的那份只有界面知道（服务端的答案要等 `ask_user_question` 的工具
         // 结果回来才进日志），所以这里先写进去，工具结果到了再覆盖成权威值。
         scope?.adapter?.resolveQuestion(eventId, answersByQuestionId(message.answers));
-        // 同上：结算过的事件不再需要这条映射
-        this.eventSessions.delete(eventId);
         break;
       }
 
@@ -3498,7 +3681,7 @@ export class ChatController implements vscode.Disposable {
         // 而不是一份空答案——等待方据此抛「用户想直接说话」那条错误。
         // `error` 的形状是网关逐键校验的（`parseRemoteEventRejection`：只认
         // name/message/code/details），照官方客户端的 `UserQuestionError` 发。
-        this.heldEvents.delete(eventId);
+        const settled = this.interactions.settle(eventId);
         await this.replyEvent(eventId, {
           kind: "rejected",
           error: {
@@ -3507,12 +3690,9 @@ export class ChatController implements vscode.Disposable {
             code: "ASK_CANCELLED",
           },
         });
-        const sessionId = this.eventSessions.get(eventId);
-        const scope = sessionId ? this.scopes.get(sessionId) : undefined;
         // 卡片收场（标成「已取消」）：与 Host 撤回走同一条路径，两边都不再是
         // 「待处理」，输入区把位置让出来
-        scope?.adapter?.cancelEvent(eventId);
-        this.eventSessions.delete(eventId);
+        if (settled) this.scopes.get(settled.sessionId)?.adapter?.cancelEvent(eventId);
         break;
       }
 
@@ -3770,7 +3950,10 @@ export class ChatController implements vscode.Disposable {
       // `mode:"steer"`（审计确认的缺陷，见 resolveSubmitMode 的注释）。
       const wasRunning = scope.running;
       scope.running = true;
-      this.deliver(scope.sessionId, { type: "patch", patch: { attachments: [], draft: "", running: true } });
+      this.deliver(scope.sessionId, {
+        type: "patch",
+        patch: { ...sessionPatch(this.sessionSource(scope), ["running"]), attachments: [], draft: "" },
+      });
       // requestId 由这里铸造：队列帧会把同一个 id 作为 rpcId 带回来，
       // 「重新编辑」凭它还原成用户当时输入的文本与附件
       const requestId = randomUUID();
@@ -3782,7 +3965,10 @@ export class ChatController implements vscode.Disposable {
       if (notUploaded.length) this.warnUploadIncomplete(viewId, notUploaded);
     } catch (error) {
       scope.running = false;
-      this.deliver(scope.sessionId, { type: "patch", patch: { running: false } });
+      this.deliver(scope.sessionId, {
+        type: "patch",
+        patch: sessionPatch(this.sessionSource(scope), ["running"]),
+      });
       this.reportError(vscode.l10n.t("Failed to send"), error);
     }
   }
@@ -4380,7 +4566,13 @@ export class ChatController implements vscode.Disposable {
   private async finishCancelOnly(scope: SessionScope): Promise<void> {
     await this.cancelTurn(scope);
     if (!(await this.waitUntilIdle(scope))) {
-      this.deliver(scope.sessionId, { type: "patch", patch: { running: false } });
+      // 界面上那盏「生成中」以**域**为准（`deliver` 的 patch 与这里写的是同一个值，
+      // 但域是权威：下一个读 `scope.running` 的地方不该看到与界面不一致的旧值）
+      scope.running = false;
+      this.deliver(scope.sessionId, {
+        type: "patch",
+        patch: sessionPatch(this.sessionSource(scope), ["running"]),
+      });
     }
   }
 
@@ -4395,12 +4587,18 @@ export class ChatController implements vscode.Disposable {
         this.rememberSubmission(requestId, origin.text, origin.content ?? [], origin.attachments);
         if (index === 0) {
           scope.running = true;
-          this.deliver(scope.sessionId, { type: "patch", patch: { running: true } });
+          this.deliver(scope.sessionId, {
+            type: "patch",
+            patch: sessionPatch(this.sessionSource(scope), ["running"]),
+          });
         }
         await this.client.prompt(scope.sessionId, origin.content ?? [], "queue", requestId);
       } catch (error) {
         scope.running = false;
-        this.deliver(scope.sessionId, { type: "patch", patch: { running: false } });
+        this.deliver(scope.sessionId, {
+          type: "patch",
+          patch: sessionPatch(this.sessionSource(scope), ["running"]),
+        });
         this.reportError(
           vscode.l10n.t("Failed to send the queued message (its content is back in the box)"),
           error,
@@ -4806,11 +5004,11 @@ export class ChatController implements vscode.Disposable {
       // `subagents/list` 返回的是 RPC 行 `SubagentListEntry`：`kind:'child'` 才是
       // 可用子代理，`kind:'diagnostic'` 是「有候选但读不出身份」的诊断行——这里
       // 过滤掉是对的（**投影**那边没有这个字段，别把这段照搬过去）。
-      scope.subagents = subagentsFromList(result.entries);
+      scope.subagentEntries = subagentsFromList(result.entries);
       this.deliver(scope.sessionId, {
         type: "subagents/list",
-        entries: scope.subagents,
-        parentAvailable: result.parentAvailable ?? scope.subagents.length > 0,
+        entries: scope.subagentEntries,
+        parentAvailable: result.parentAvailable ?? scope.subagentEntries.length > 0,
       });
     } catch (error) {
       this.log(`[subagents] 列表获取失败：${this.describeError(error)}`);
@@ -4827,7 +5025,7 @@ export class ChatController implements vscode.Disposable {
   private async openSubagent(viewId: string, childSessionId: string): Promise<void> {
     if (!this.client) return;
     const scope = this.scopeOfView(viewId);
-    const child = scope?.subagents.find((item) => item.id === childSessionId);
+    const child = scope?.subagentEntries.find((item) => item.id === childSessionId);
     if (!child) {
       this.log(`[subagents] 目录里没有 ${childSessionId}，不打开`);
       return;

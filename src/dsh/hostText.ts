@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import { englishSource, VSCODE_FACING_MARKERS } from "../webview/messages";
 
 /**
  * 把宿主产生的 `@key` / `@key:arg` 标记翻成 **VS Code 原生 UI** 用的文本。
@@ -15,6 +16,12 @@ import * as vscode from "vscode";
  *
  * 多行文本按行解析：连接失败条是「原因 + 遗留锁提示 + 日志尾部」拼起来的，
  * 每一行各自是一个标记，夹在中间的日志原文保持不动。
+ *
+ * **哪些 key 要翻不在这里手抄**：见下面的 `VSCODE_FACING_MARKERS`——它是
+ * **消息表里标了 `vscode: true` 的那些键**（唯一的登记处仍是 `messages.ts`）。
+ * 这一层的完整性由 `scripts/i18n.test.ts` 断言：
+ * ① 这套 key ⊆ 消息表的键；② 本文件的 `LOCALIZED` 恰好覆盖这套 key；
+ * ③ 每条的英文源串在 `l10n/bundle.l10n.zh-cn.json` 里都有**不同**的中文译文。
  */
 export function resolveForVsCode(text: string): string {
   if (!text.includes("@")) return text;
@@ -24,33 +31,47 @@ export function resolveForVsCode(text: string): string {
     .join("\n");
 }
 
+/**
+ * VS Code 原生 UI 面向的标记 = 消息表里 `vscode: true` 的那些键。
+ *
+ * 清单在 `src/webview/messages.ts`（那里能被离线测试读到，本文件依赖 `vscode`）。
+ * `scripts/i18n.test.ts` 会核对这份集合与下面的 `LOCALIZED` 完全一致：
+ * 表里新标一条 `vscode: true` 却忘了在这儿加处理，测试立刻炸（而不是等用户
+ * 在某条通知里看到裸 `@key`）。
+ */
+export { VSCODE_FACING_MARKERS };
+
+interface Handler {
+  /** `vscode.l10n.t` 的 key —— **英文源串**（不是自定义 id）。 */
+  key: string;
+  /** 要不要把标记的参数填进 `{0}`。 */
+  arg?: boolean;
+}
+
+/**
+ * 每个 VS Code 面向标记的 `l10n` key（英文源串即消息表里那一条的 `en`）。
+ *
+ * 取值直接来自消息表：**英文只有一份**，webview 的英文界面与 VS Code 的英文通知
+ * 从此是同一句话（从前两份手抄的英文已经漂了：`serverNotReady` 一边写
+ * 「Restart Server」一边写「Restart Internal DSH」）。
+ * 中文仍由 `l10n/bundle.l10n.zh-cn.json` 提供（那是 VS Code 自己的 l10n 机制，
+ * 与界面词典的中文未必逐字相同，不合并）。
+ */
+const LOCALIZED: Record<string, Handler> = {
+  authNeedsToken: { key: englishSource("authNeedsToken") },
+  authTokenRejected: { key: englishSource("authTokenRejected") },
+  serverSpawnFailed: { key: englishSource("serverSpawnFailed"), arg: true },
+  serverNotReady: { key: englishSource("serverNotReady") },
+  serverUnreachable: { key: englishSource("serverUnreachable"), arg: true },
+  serverLogTail: { key: englishSource("serverLogTail"), arg: true },
+};
+
 function resolveMarker(text: string): string {
   if (!text.startsWith("@")) return text;
-  const [key, ...rest] = text.slice(1).split(":");
-  const arg = rest.join(":");
-  switch (key) {
-    case "authNeedsToken":
-      return vscode.l10n.t(
-        "The external DSH server requires an access token: click “Enter token” and paste the token printed by dsh web (or run “DSH: Enter Access Token” from the Command Palette).",
-      );
-    case "authTokenRejected":
-      return vscode.l10n.t(
-        "The server requires authentication and the token obtained automatically was rejected. Restart it with “DSH: Restart Internal DSH” from the Command Palette.",
-      );
-    case "serverSpawnFailed":
-      return vscode.l10n.t("Could not start the dsh process: {0}", arg);
-    case "serverNotReady":
-      return vscode.l10n.t(
-        "The background server did not become ready (the rendezvous file has no address or token yet). Try “Restart Internal DSH”, or check the logs.",
-      );
-    case "serverUnreachable":
-      return vscode.l10n.t(
-        "Cannot reach the DSH server at {0} yet (retrying until it answers or you stop connecting). Make sure dsh web is running there.",
-        arg,
-      );
-    case "serverLogTail":
-      return vscode.l10n.t("Log tail:\n{0}", arg);
-    default:
-      return text;
-  }
+  // 与 `texts.ts` 的 `resolveMarker` 同一口径：冒号只切第一段当 key，其余是参数
+  const parts = text.slice(1).split(":");
+  const handler = Object.hasOwn(LOCALIZED, parts[0]) ? LOCALIZED[parts[0]] : undefined;
+  if (!handler) return text;
+  const arg = parts.length > 1 ? parts.slice(1).join(":") : "";
+  return handler.arg ? vscode.l10n.t(handler.key, arg) : vscode.l10n.t(handler.key);
 }

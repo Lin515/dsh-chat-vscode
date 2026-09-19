@@ -13,7 +13,7 @@
 
 | 载体 | 语言来源 | 放哪里 |
 |---|---|---|
-| **webview 界面**（聊天区、输入框、面板、目标条…） | `dshChat.language` 设置（`auto` 跟随 VS Code 显示语言） | `src/webview/texts.ts` 的 `zh` / `en` 两个字典 |
+| **webview 界面**（聊天区、输入框、面板、目标条…） | `dshChat.language` 设置（`auto` 跟随 VS Code 显示语言） | `src/webview/messages.ts` 的 `MESSAGES`（唯一登记表；`texts.ts` 的两本词典由它派生） |
 | **VS Code 原生 UI**（通知、输入框标题、错误弹窗、命令名、配置项描述） | **VS Code 自己的显示语言**（与上面的设置无关） | `package.nls.json`（英文，源语言）/ `package.nls.zh-cn.json`（中文） |
 | **宿主 → webview 的文案**（toast、连接说明、错误详情） | 由 webview 决定 | 见下方「`@key` 标记」 |
 
@@ -28,10 +28,10 @@
      中文照旧（排查时读起来更快）——「用户可见」指的是界面与弹窗。
    - **`vscode.l10n` 的 key 是英文源串**（不是自定义 id），且 `package.json` 里
      必须有 `"l10n": "./l10n"`——缺这一项 bundle 根本不加载，译文会静默不生效。
-2. **加了 `@key` 就必须补齐三个地方**，缺一个界面就会显示成原始 key：
-   - `src/webview/texts.ts` 的 `Texts` 接口；
-   - 同文件的 `zh` 与 `en` **两个**字典（TS 会强制，别绕过去）；
-   - 同文件 `resolveText()` 的 `switch`（带参数的 key 必须在这里拆参数）。
+2. **加了 `@key` 只需在 `src/webview/messages.ts` 的 `MESSAGES` 里加一条**（`zh`/`en` 缺一不可，
+   TS 会强制；带参数的登记成函数、不带参数的登记成字符串，于是「裸字符串被当函数调用」编译期就报）。
+   两份界面词典与 `resolveText()` 都由这张表派生，**不需要再改别处**；`scripts/i18n.test.ts`
+   会核对表与 `Texts` 接口、与宿主发射点、与 VS Code 那两层的一致性。
 3. **加了 VS Code 命令或配置项**，必须在 `package.nls.json`（英文）与
    `package.nls.zh-cn.json`（中文）里各加一条，`package.json` 里写 `%key%`。
 4. **配置项说明只写作用**：nls 里的描述说清「这个选项干什么、特殊值是什么效果」
@@ -39,7 +39,7 @@
    不写「这是用户级设置（工作区覆盖不了）；改完需重载窗口」这类套话；也不用
    `**` 加粗（设置页里并不渲染成粗体）。
 5. **文案不要拼字符串**。中文与英文的语序不同，`"已清理 " + n + " 个进程"` 翻不准。
-   带变量的文案写成 `(n) => ...` 形式的函数（见 `texts.ts` 里 `imagePathsInserted`
+   带变量的文案写成 `(n) => ...` 形式的函数（见 `messages.ts` 里 `imagePathsInserted`
    这类），或 `@key:arg` 标记 + 词典里的函数。
 6. **新增界面元素先想「英文下会不会溢出」**。英文通常比中文长 1.5~2 倍：
    - 按钮/胶囊/标签一律 `white-space: nowrap` + `text-overflow: ellipsis`，
@@ -58,10 +58,14 @@ this.emit({ type: "toast", level: "warn", text: "@uploadIncomplete:report.pdf" }
 界面侧由 `resolveText()` 翻译；不以 `@` 开头的文本原样显示（模型/服务端的原始报错
 就是这类，**不要**去翻译它们）。
 
-现有标记见 `src/webview/texts.ts` 的 `resolveText()`——**加新标记时同步加 case**，
-否则用户会看到 `@yourNewKey`。`scripts/i18n.test.ts` 双向检查：宿主发出的每个标记
-都要登记（`MARKERS`）、**登记过的每个标记也必须真有发射点**（只存在于词典里的
-「死文案」和裸 key 一样是缺陷，`serverExited` / `switchingServer` 就这么残留了两轮）。
+现有标记见 `src/webview/messages.ts` 的 `MESSAGES`——那是**唯一一份登记**（以 marker 为键、
+每条自带中英两份；带参数的登记成函数、不带参数的登记成字符串）。两份界面词典与
+`resolveText()` 都由它派生，不再需要在别处补 `case`。`scripts/i18n.test.ts` 双向检查：
+宿主发出的每个标记都要登记（清单由表的键派生）、**登记过的每个标记也必须真有发射点**
+（只存在于词典里的「死文案」和裸 key 一样是缺陷，`serverExited` / `switchingServer`
+就这么残留了两轮）。可能外溢到 VS Code 原生通知的条目加 `vscode: true`（可选 `l10n:`
+给位置占位符），`hostText.ts` 与 `l10n/bundle.l10n.zh-cn.json` 按这套清单对齐，
+缺译文/漏处理都会被断言抓住。
 
 ## 与官方 dsh web 前端保持一致
 
@@ -140,6 +144,10 @@ this.emit({ type: "toast", level: "warn", text: "@uploadIncomplete:report.pdf" }
   编译器**不会**帮你拦住喂错的那个——`toUsage` 只认线格式的 `cacheReadTokens`，
   喂视图模型的 `cachedTokens` 会被静默忽略（不报错、值为空）。跨这层边界时
   对着官方 `.d.ts` 逐字核字段名。
+- **一条交互链路只开一个端口对象**：容器 ref 与该链路的动作合成**一个**对象交给组件
+  （`src/webview/autoScroll.ts` 的 `AutoScrollPort` 是范例），不要把同一条链路的端口拆成多个 prop
+  ——规则会跟着端口散到多个文件，加一处端口就得动所有调用点；行为的回归断言也就只能写成
+  「读源码正则」而不是真调用。
 - **CSS 同特异性下后者胜**：新加的类可能悄悄吃掉既有伪类（`.is-stop` 压过
   `:hover` 就是实例）。改样式后除了看看，还要给**同语义元素**补一条
   「待遇一致性」断言（例如两个活性指示器的动画开关必须同步），否则下次改一个

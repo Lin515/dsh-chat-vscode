@@ -118,8 +118,14 @@
         /**
          * 当前完整可见的一条消息（I2 的锚点）。
          *
-         * 用**文本前缀当身份**、每次重新查节点：轨迹视图往返会把整棵树重挂，抓着旧节点
+         * 身份用 **`data-msg-id`**，每次重新查节点：轨迹视图往返会把整棵树重挂，抓着旧节点
          * 引用量出来的位移是假的（游离节点 rect 全 0，会得到 -视口高 这种数字）。
+         *
+         * **为什么不用文本前缀当身份**（2026-09-19 修）：场景会往**被锚定的那条消息**
+         * 追加工具段（`appendTool` 默认就发给 `a:3`），而工具行的文字落在消息文本的靠前位置，
+         * 一追就把它顶出「前 40 字」那个窗口——于是 `top()` 找不到节点返回 null，I2 判定
+         * 变成「锚点 79 → null」而误报失败（P4 追 3 条必现、P5 追 1 条侥幸通过）。
+         * 实测：同一步里 `data-msg-id` 找得到、文本前缀找不到。
          */
         const anchor = () => {
           const el = scroller();
@@ -129,11 +135,17 @@
             return r.top >= box.top && r.bottom <= box.bottom;
           });
           if (!hit) return null;
+          const id = hit.getAttribute("data-msg-id");
+          // 兜底：没有 `data-msg-id` 时（形状变了）才退回文本前缀，代价是追段后可能失配
           const key = (hit.textContent ?? "").slice(0, 40);
           return {
             key,
+            id,
             top: () => {
-              const node = [...content().querySelectorAll(":scope > .msg")].find((m) => (m.textContent ?? "").slice(0, 40) === key);
+              const nodes = [...content().querySelectorAll(":scope > .msg")];
+              const node = id
+                ? nodes.find((m) => m.getAttribute("data-msg-id") === id)
+                : nodes.find((m) => (m.textContent ?? "").slice(0, 40) === key);
               if (!node) return null;
               return Math.round(node.getBoundingClientRect().top - scroller().getBoundingClientRect().top);
             },
@@ -260,7 +272,7 @@
             for (let i = 0; i < 3; i += 1) await u.appendTool("p4-" + i);
             u.mark("脱贴后追加 3 条");
             const top1 = a ? a.top() : null;
-            check("脱贴期间位置不被改动（I2）", top0 !== null && Math.abs(top1 - top0) <= 1, "锚点 " + top0 + " → " + top1);
+            check("脱贴期间位置不被改动（I2）", top0 !== null && Math.abs(top1 - top0) <= 1, "锚点 " + top0 + " → " + top1 + "（身份 " + (a ? a.id ?? a.key : "取不到锚点") + "）");
             check("脱贴期间不追最新（I1 反向）", u.dist() > 40, "dist=" + u.dist());
             const pill = u.win.document.querySelector(".jump-latest");
             if (pill) pill.click();
@@ -291,7 +303,7 @@
             await u.appendTool("p5");
             u.mark("脱贴后追加一条");
             const top1 = a ? a.top() : null;
-            check("脱贴期间位置不被改动（I2）", top0 !== null && Math.abs(top1 - top0) <= 1, "锚点 " + top0 + " → " + top1);
+            check("脱贴期间位置不被改动（I2）", top0 !== null && Math.abs(top1 - top0) <= 1, "锚点 " + top0 + " → " + top1 + "（身份 " + (a ? a.id ?? a.key : "取不到锚点") + "）");
             u.releaseScrollbar();
             return { notes, history: u.history };
           },
@@ -430,7 +442,7 @@
             u.mark("脱贴后往返回来");
             check("脱贴往返回来不贴底（I1 反向）", u.dist() > 40, "dist=" + u.dist());
             const top1 = a ? a.top() : null;
-            check("脱贴往返回来位置基本不动（I2）", top0 !== null && Math.abs(top1 - top0) <= 40, "锚点 " + top0 + " → " + top1);
+            check("脱贴往返回来位置基本不动（I2）", top0 !== null && Math.abs(top1 - top0) <= 40, "锚点 " + top0 + " → " + top1 + "（身份 " + (a ? a.id ?? a.key : "取不到锚点") + "）");
             return { notes, history: u.history };
           },
         },

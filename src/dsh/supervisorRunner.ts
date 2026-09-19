@@ -9,7 +9,7 @@
  * 否则窗口一关它就陪葬——整个架构的前提就没了。
  */
 import { closeSync, mkdirSync, openSync } from "node:fs";
-import { PRIVATE_DIR_MODE, PRIVATE_FILE_MODE, logFileIn } from "./supervisorProtocol";
+import { PRIVATE_DIR_MODE, PRIVATE_FILE_MODE, rendezvousPaths } from "./supervisorProtocol";
 import { findSupervisorScript, resolveNodeRuntime, spawnDetached, runRuntimeSelfCheck, type NodeRuntime } from "./runtimeResolve";
 import type { LaunchOutcome, SupervisorLauncher } from "./supervisorClient";
 
@@ -75,20 +75,19 @@ export function createSupervisorLauncherForScript(script: string, options: Launc
 
       let logFd: number;
       try {
-        logFd = openSync(logFileIn(input.directory), "a", PRIVATE_FILE_MODE);
+        logFd = openSync(rendezvousPaths(input.directory).log, "a", PRIVATE_FILE_MODE);
       } catch (error) {
         return { ok: false, reason: `打开 supervisor 日志失败：${error instanceof Error ? error.message : String(error)}` };
       }
       try {
-        // 分组名 = 会合目录的最后一段（目录本身就是按分组算出来的，见 `supervisorDirectory`）。
-        // socket 路径用 `initialStartInput` 已经算好的那个，**不要在这里重算**：两处算法一旦漂移，
-        // 扩展会连到一个没人监听的地址上。
-        const group = input.directory.split(/[\\/]/).filter(Boolean).pop() ?? "default";
+        // 会合路径**一处算**（`rendezvousPaths`）：从前这里靠**切目录字符串**把分组名反推回来，
+        // 再自己拼一遍 socket 路径（那时就注定与 `initialStartInput` 的算法会漂移，
+        // 而漂移的后果是"扩展连到一个没人监听的地址上"）。现在目录就是分组的唯一来源，
+        // socket 地址由 `rendezvousPaths(input.directory)` 给出，**不在这里重算**。
+        // `--socket` 仍然显式传：supervisor 那边也用它，两侧拿的是同一个字符串。
         const args = [
           "--directory",
           input.directory,
-          "--group",
-          group,
           // 命令走 base64：明文的"带空格一整串"会被中间层（shell / Start-Process / cmd）
           // 按空格拆开，supervisor 就只剩 `dsh` 了（实测：dsh 报 `--profile <name> is required`）
           "--command-b64",
@@ -96,7 +95,7 @@ export function createSupervisorLauncherForScript(script: string, options: Launc
           "--idle-sec",
           String(input.idleSec),
           "--socket",
-          input.socket,
+          rendezvousPaths(input.directory).socket,
         ];
         spawnDetached(runtime, script, args, logFd);
         options.log(`[supervisor] 已拉起 supervisor（脚本 ${script}）`);

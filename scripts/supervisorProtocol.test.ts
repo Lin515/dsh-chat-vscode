@@ -22,11 +22,13 @@ const {
   acquireStartLock,
   clampIdleSec,
   clearState,
+  decodeState,
   dropStaleStartLock,
   generationOf,
   lockHolder,
   readState,
   releaseStartLock,
+  rendezvousPaths,
   socketPathIn,
   stateFileIn,
   supervisorDirectory,
@@ -75,6 +77,28 @@ function stateOf(patch: Record<string, unknown> = {}) {
     process.platform === "win32" ? socket.startsWith("\\\\.\\pipe\\") : socket.endsWith("sup.sock"),
     socket,
   );
+  // **分组只由目录派生**（2026-09-19 收敛）：socket 名必须与目录一一对应，否则
+  // "同一个目录、两个名字"就会出现（从前 `supervisorRunner` 切字符串反推分组，正是这条）。
+  check(
+    "socket 名由目录最后一段派生（不传分组也一样）",
+    socketPathIn(DIR) === socketPathIn(DIR, "group-a"),
+    `${socketPathIn(DIR)} vs ${socketPathIn(DIR, "group-a")}`,
+  );
+
+  // 会合路径**唯一产出**：四个路径同一份形状（生产各方都问它，不再各拼一遍）
+  {
+    const paths = rendezvousPaths(DIR);
+    check(
+      "rendezvousPaths 给出四处路径（会合文件/锁/日志/socket）",
+      paths.directory === DIR &&
+        paths.state === join(DIR, "supervisor.json") &&
+        paths.lock === join(DIR, "supervisor.lock") &&
+        paths.log === join(DIR, "supervisor.log") &&
+        paths.socket === socket,
+      JSON.stringify(paths),
+    );
+    check("stateFileIn 与它同源", stateFileIn(DIR) === paths.state);
+  }
 
   // 隔离目录必须连**管道名**一起隔离（2026-09-15）。
   //
@@ -158,6 +182,98 @@ function stateOf(patch: Record<string, unknown> = {}) {
   check("idleSec 坏值收敛到默认", readState(DIR)?.idleSec === IDLE_SEC_DEFAULT, String(readState(DIR)?.idleSec));
   rmSync(file, { force: true });
   check("文件不在 → undefined", readState(DIR) === undefined);
+}
+
+// ---------- 3.5 唯一解码器：文件路与管道路共用同一套逐字段校验（安全边界） ----------
+//
+// 2026-09-19 收敛：同一份状态从前有三份解码（文件路 / 管道路 / 写侧），宽容规则互不一致。
+// 现在两条读路都调 `decodeState`，差异只剩"版本要不要严格"与"缺 idleSec 用什么"两个显式参数。
+//
+// **这一组是安全边界**（`docs/design-supervisor.md` §3.0、AGENTS.md「服务端给的值不可信」）：
+// 管道推来的 `baseUrl`/`token` 决定凭据发往哪个 origin，所以逐字段校验**只许收紧**。
+// 从前这些校验只长在管道路上，文件路那份是另一套写法——收敛之后两个方向都由这一组钉住。
+
+{
+  const good = { ...stateOf(), baseUrl: "http://127.0.0.1:1234", token: "tok" };
+
+  check("完整的一份解出来（字段原样）", (() => {
+    const state = decodeState(good);
+    return state?.supervisorPid === 1234 && state.baseUrl === "http://127.0.0.1:1234" && state.token === "tok";
+  })());
+
+  // 逐条：**每一条从前都只长在管道路的 `checkState` 上**，现在两条路都过这一套
+  const rejected: [string, unknown][] = [
+    ["不是对象", "x"],
+    ["null", null],
+    ["supervisorPid 不是整数", { ...good, supervisorPid: 1.5 }],
+    ["supervisorPid 是 0", { ...good, supervisorPid: 0 }],
+    ["supervisorPid 是字符串", { ...good, supervisorPid: "1234" }],
+    ["startedAt 是 NaN", { ...good, startedAt: Number.NaN }],
+    ["startedAt 是字符串", { ...good, startedAt: "1700000000000" }],
+    ["command 不是字符串", { ...good, command: 7 }],
+    ["command 是空串", { ...good, command: "" }],
+    ["socket 不是字符串", { ...good, socket: 1 }],
+    ["socket 是空串", { ...good, socket: "" }],
+    // **安全边界那一条**：baseUrl 决定令牌与 cookie 发往哪个 origin
+    ["baseUrl 不是 http(s)", { ...good, baseUrl: "file:///etc/passwd" }],
+    ["baseUrl 是 javascript: 伪协议", { ...good, baseUrl: "javascript:alert(1)" }],
+    ["baseUrl 解析不了", { ...good, baseUrl: "127.0.0.1:1234" }],
+  ];
+  for (const [label, value] of rejected) {
+    check(`decodeState 拒绝：${label}`, decodeState(value) === undefined);
+  }
+
+  // 缺省（"还没就绪"或"没这个信息"）→ 保留为 undefined，**不因为缺它们丢掉整份状态**
+  const sparse = decodeState({ version: STATE_VERSION, supervisorPid: 5, startedAt: 1, command: "c", socket: "s" });
+  check(
+    "缺 baseUrl/token/serverPid/runtime → 仍然是一份可用状态（只是还没就绪）",
+    sparse !== undefined &&
+      sparse.baseUrl === undefined &&
+      sparse.token === undefined &&
+      sparse.serverPid === undefined &&
+      sparse.runtime === undefined &&
+      sparse.starting === false,
+    JSON.stringify(sparse),
+  );
+  check("serverPid 必须是正整数（0 / 小数都按「没有」处理）", (() => {
+    const zero = decodeState({ ...good, serverPid: 0 });
+    const half = decodeState({ ...good, serverPid: 2.5 });
+    return zero?.serverPid === undefined && half?.serverPid === undefined;
+  })());
+  check("runtime 两样关键的字符串都在才认", (() => {
+    const partial = decodeState({ ...good, runtime: { execPath: "x" } });
+    const full = decodeState({ ...good, runtime: { execPath: "x", node: "v20", electron: "42" } });
+    return partial?.runtime === undefined && full?.runtime?.execPath === "x" && full?.runtime?.electron === "42";
+  })());
+
+  // ---- 两条路的**显式差异**（不各写一遍字段表） ----
+  check(
+    "文件路（requireVersion）：版本必须是当前这一份",
+    decodeState({ ...good, version: 99 }, { requireVersion: STATE_VERSION }) === undefined &&
+      decodeState(good, { requireVersion: STATE_VERSION }) !== undefined,
+  );
+  check(
+    "管道路：不校验版本（对面可能是旧守护进程，state 帧里没写版本）",
+    decodeState({ ...good, version: 99 })?.version === 99 &&
+      decodeState({ ...good, version: undefined })?.version === STATE_VERSION,
+  );
+  // **真的缺这个键**（不是"键在、值是 undefined"）：`{...good, idleSec: undefined}` 与"没有这个键"
+  // 对 `??` 是等价的，但这里刻意用 delete 把"键不存在"这件事写死，免得日后有人把它改成
+  // "键存在但为 undefined 就算有值"那种写法时，这条断言还显示绿的。
+  const withoutIdle = { ...good };
+  delete (withoutIdle as { idleSec?: unknown }).idleSec;
+  check(
+    "缺 idleSec：文件路取默认 10、管道路取 0（两条路各自的口径，由参数表达）",
+    decodeState(withoutIdle)?.idleSec === IDLE_SEC_DEFAULT &&
+      decodeState(withoutIdle, { idleSecWhenMissing: 0 })?.idleSec === 0,
+    `${decodeState(withoutIdle)?.idleSec} / ${decodeState(withoutIdle, { idleSecWhenMissing: 0 })?.idleSec}`,
+  );
+  // 反向：**不许**把管道路收紧成"必须有 baseUrl/token"——守护进程刚起、dsh 还没宣布地址时，
+  // 推来的就是这种状态，丢了它扩展就只剩"连不上"这一种表现（第 3 组的 `starting` 同理）。
+  check(
+    "管道路的口径：没有地址/令牌的 `starting` 状态照样解得出来",
+    decodeState({ ...good, baseUrl: undefined, token: undefined }, { idleSecWhenMissing: 0 })?.starting === true,
+  );
 }
 
 // ---------- 4. 世代：pid 或启动时刻变了就是"换了新的一套" ----------

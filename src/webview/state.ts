@@ -8,7 +8,6 @@ import type {
   Segment,
   SessionRefView,
   SessionSummaryView,
-  SubagentView,
   ContextWindowView,
   ContextOccupancyView,
 } from "../shared/chat";
@@ -33,7 +32,6 @@ export interface AppState extends ChatState {
   panel: PanelKind;
   commands: CommandView[];
   fileRefs: { query: string; items: FileRefView[]; sessions: SessionRefView[] };
-  subagentEntries: SubagentView[];
   /**
    * 轨迹账本（宿主折叠后下发，见 `src/dsh/trajectory.ts`）。
    *
@@ -64,14 +62,13 @@ export const initialState: AppState = {
   draft: "",
   models: [],
   todos: [],
-  subagents: [],
+  subagentEntries: [],
   jobs: [],
   sessions: [],
   archivedSessions: [],
   panel: "none",
   commands: [],
   fileRefs: { query: "", items: [], sessions: [] },
-  subagentEntries: [],
 };
 
 function replaceSegment(message: MessageView, segment: Segment): MessageView {
@@ -136,16 +133,9 @@ export function reducer(state: AppState, action: Action): AppState {
       // 判据要「先前有会话 + id 变了」：首帧从「还没有会话」绑到 s1 时不能清，
       // 那一帧本身就是全量快照（清掉等于把随帧来的账本一起扔了）。
       const switched = state.session !== undefined && merged.session?.id !== state.session.id;
-      // 子代理面板列表**跟着会话换**：`subagentEntries` 只在收到 `subagents/list`
-      // （打开面板那一下拉的）时更新，而打开着面板切会话不会重新拉——不换的话
-      // 点「新建对话」后面板还列着上一个会话的子代理（宿主快照里的 `subagents`
-      // 就是新会话的投影，两个名字指的是同一件事，见 `shared/chat.ts`）。
-      // 切换时以快照为准；没切则保持现值（快照里的空数组不该抹掉 RPC 拉到的清单）。
-      const subagentEntries = switched ? (merged.subagents ?? []) : state.subagentEntries;
       return {
         ...merged,
         panel: state.panel,
-        subagentEntries,
         ...(switched ? { trajectory: undefined } : {}),
       };
     }

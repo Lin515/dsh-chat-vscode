@@ -34,13 +34,45 @@
  * - 「停止内部 DSH」在分离态下**短暂接入**一次发请求就走（`stopDetachedInternal`），
  *   外部那条连接一个字都不动。
  *
+ * ## 2026-09-19（同日第二轮）：停止入口收敛为一处 + 一份只读快照
+ *
+ * 同一个"收掉/停止"此前散在六个方法里（`detachInternal` / `releaseInternal` / `cancelWaiting` /
+ * `stopAndExit` / `stopDetachedInternal` / `stop`），各自做"断开 socket / 置闸 / 取消在途等待 /
+ * 请守护进程收场 / 清状态"的不同**子集**，正确性靠**配对**：漏置闸 → 5 秒后心跳自己接回来；
+ * 漏 `cancelWaiting` → 用户点了停止还在等一个永不来的就绪；漏断连接 → 守护进程以为还有人用、
+ * dsh 不按空闲退场。现在只有一个入口：
+ *
+ * ```
+ * stop(options?: { release?: boolean; cancelWait?: boolean; askSupervisor?: boolean }): Promise<boolean>
+ * ```
+ *
+ * | flag | 含义 | 少了它会怎样 |
+ * |---|---|---|
+ * | `release` | 交还本窗口的占用（「停止连接」那一档）：置 `detachedByUser` 闸，再收连接 | 守护进程永远认为有人用，内部 dsh 不按空闲退场 |
+ * | `cancelWait` | 中止**所有**在途等待 | 用户点了停止还在等一个不会来的就绪 |
+ * | `askSupervisor` | 请守护进程连 dsh 一起收场并退出（**没有活连接时走临时接入那条路**） | 命令面板上的「停止内部 DSH」只能记一条日志 |
+ *
+ * 三条纪律一条都没放松：**断开不碰任何进程**（`detachInternal` / `cancelWaiting` / `dispose`
+ * 都不杀进程）、`askSupervisor` 的判据是"**手里有没有活连接**"而不是"目标是不是内部"、
+ * 收连接与置闸必须成对（见 §9.8 / §9.9）。
+ *
+ * 旧名字**一个都没删**（并行的探针重写还在调它们，删名会在类型层打架），全部收敛成薄壳；
+ * 唯一要留意的是 `stop` 自己：**不给 options 时按旧 `stopAndExit()` 走**（= `cancelWait` +
+ * `askSupervisor`），因为 `scripts/smoke.ts` 与若干探针还写着 `server.stop()`——把没给参数的调用
+ * 静默改成"只收连接"，等于把它们"请守护进程连 dsh 一起收场"那一步悄悄删掉。
+ *
+ * `snapshot()` 是配套的另一半：控制器将来只渲染它、不再自己镜像 `status` / `connection` /
+ * `target` / 两道闸这些字段（镜像的代价是两处状态各说各话）。
+ *
  * "能不能启动"仍是一条**显式许可**，但 `autoStart` 已改名为 `dshChat.autoConnect`
  * （含义也变了：关掉 = 激活期完全不自动连，只显示按钮）：
  *
  * - `options.autoConnect`（配置项）：**自动**路径（激活期、心跳自检）的许可，默认 true；
- * - `ensure({ start: true, target: "internal" })`：**用户显式**动作（点「启动内部 DSH」、
- *   发消息、重启）的许可，它覆盖配置——用户要后台的时候不该被配置挡住；
- * - `ensure({ start: false, target })`：只接上已经在跑的那一套（「连接内部/外部 DSH」用）。
+ * - `ensure({ start: true, target: "internal" })`：**用户显式**动作（点「启动内部 DSH」或
+ *   「连接内部 DSH」、发消息、重启）的许可，它覆盖配置——用户要后台的时候不该被配置挡住。
+ *   两个内部按钮**同一套逻辑**（有就接上、没有就起一套），见 `docs/design-supervisor.md` §3.7/§9.4；
+ * - `ensure({ start: false, target: "external" })`：只接上已经在跑的那一套（「连接外部 DSH」用，
+ *   外部目标从来不由扩展拉起）。
  *
  * ## 2026-09-14：等待**不再由时长决定**（用户口径，见 `docs/design-supervisor.md` §8.4）
  *
@@ -162,6 +194,87 @@ export interface ServerStatus {
   detail?: string;
 }
 
+/**
+ * `stop()` 的三个选项——**收敛后的唯一停止入口**（见文件头「停止入口收敛」）。
+ *
+ * 三个 flag 默认都是 `false`，并且**可以叠加**（`stop({ release: true, askSupervisor: true })`
+ * = 先交还占用，再请守护进程连 dsh 一起收场）。
+ */
+export interface StopOptions {
+  /** 交还本窗口的占用（「停止连接」那一档）：置 `detachedByUser` 闸，然后收掉连接。 */
+  release?: boolean;
+  /**
+   * 中止**所有**在途等待（「别等了」那一档）。
+   *
+   * **单独给出时它不收连接**：那一档就是旧 `cancelWaiting()` 的全部语义，而它的调用点
+   * （控制器 `prepareRound`：换目标 / 重连共享后台）必须留着那条 socket——收掉就等于把占用
+   * 交还，而那一轮马上要重新接上**同一个**后台（`launched` 会从 self 掉成 peer，诊断里那句
+   * "是不是本窗口拉起的"随之说谎）。
+   */
+  cancelWait?: boolean;
+  /**
+   * 请守护进程连 dsh 一起收场并退出（「停止内部 DSH」那一档）。
+   *
+   * 它**天然要求** `cancelWait` 与"收掉本窗口连接"：请求都发出去了，再等一个不会来的就绪
+   * 没有意义；而那条连接留着就等于"我在用"（守护进程据此不肯退场）。手里没有活连接时走
+   * **临时接入**那条路（见 `stopDetachedInternal`），判据是"有没有活连接"而不是"目标是不是内部"。
+   */
+  askSupervisor?: boolean;
+}
+
+/**
+ * **本窗口与「这一套后台」现在是什么关系**的只读快照（`snapshot()`）。
+ *
+ * 全是普通值、没有方法：调用方（控制器）只渲染它，不必再去镜像 `status` / `target` /
+ * 两道闸这些字段——镜像的代价是两处状态各说各话（2026-09-19 的第二轮收敛）。
+ *
+ * 每个字段都是**已有读法的同一份值**，不是第二份实现：见各自的注释与 `snapshot()` 的实现。
+ * `status` 与 `status.info` 是**浅拷贝**：拿到快照的人改它不会改坏管理器手里的那一份。
+ */
+export interface ConnectSnapshot {
+  /** 粘性目标；`undefined` = 还没定过（`autoConnect` 关掉且用户还没点过按钮）。= 旧 `target` 字段。 */
+  target?: DshTarget;
+  /** 后台状态（沿用现有 `ServerStatus` 形状）= `getStatus()`。 */
+  status: ServerStatus;
+  /** 本窗口**手里握着**与守护进程的长连接吗。= `connection?.connected === true`。 */
+  connected: boolean;
+  /** 本窗口此刻允不允许**自动**拉起一套。= `canStart()`（`dshChat.autoConnect`）。 */
+  startAllowed: boolean;
+  /** 「停止内部 DSH」那道闸：不许自动拉起，但别的窗口起了仍会接上（= 旧 `stoppedByUser`）。 */
+  stoppedByUser: boolean;
+  /** 「停止连接」那道闸：**不再占用**内部后台，心跳不许自动接回（= 旧 `detachedByUser`）。 */
+  detachedByUser: boolean;
+  /** 一次「请守护进程收场」正在飞（连点已被合并）。 */
+  stopping: boolean;
+  /**
+   * **本窗口自己记着这一套吗**（内存里的 `state` 非空）。
+   *
+   * 它与 `state` 是两件事，必须分开给：`state` 用的是 `peekState()` 的口径，**含磁盘回退**
+   * ——"我交还了占用"不等于"磁盘上没有这一套"（别的窗口还在用、或它刚被交还、还在空闲窗口里
+   * 活着，会合文件都还在）。`state` 有值而它是 `false`，就是"磁盘上还有一套后台，但本窗口
+   * 已经不记它了"（刚 `stop({})` / `stop({release:true})` 之后的常态）。
+   */
+  remembered: boolean;
+  /** 本窗口正在用的那一套的会合状态。= `peekState()`（目标是外部、或已交还占用时为空）。 */
+  state?: SupervisorState;
+  /** 当前生效的地址。= `activeBaseUrl`（也就是 `status.info?.baseUrl`）。 */
+  activeBaseUrl?: string;
+  /** 用户配置的外部备用地址。= `externalUrl`。 */
+  externalUrl?: string;
+  /** 这一套上还有几个窗口在用（守护进程报的活连接数）。= `sharedSummary()?.hostCount`。 */
+  hostCount?: number;
+  /** 本窗口与这一套的关系（self / peer / external）。= `sharedSummary()?.ownership`。 */
+  ownership?: Ownership;
+  /** 这一套的世代（pid@启动时刻）。= `generation`。 */
+  generation?: string;
+  /** 本窗口要走了（心跳已停）。= 旧 `disposed` 字段。 */
+  disposed: boolean;
+  /** 会合目录（诊断展示用）。 */
+  rendezvousDirectory: string;
+  /** 与本窗口共用的 supervisor 日志（诊断展示用）。 */
+  logPath: string;
+}
+
 export interface ManagerOptions {
   /** 用户配置的外部地址（`dshChat.url`）；非空即外部模式。 */
   url: string;
@@ -211,6 +324,15 @@ export class SupervisorManager {
   private heartbeatHook: (() => void) | undefined;
   private heartbeatTimer: NodeJS.Timeout | undefined;
   private ensurePromise: Promise<ServerInfo> | undefined;
+  /**
+   * 在飞的「请守护进程收场」（`stop({ askSupervisor: true })`）：**连点合并**。
+   *
+   * 没有它就会重复发控制帧，而且第二次调用还会**改错回执**：第一条 `stop` 已经把连接关了、
+   * 守护进程也收到了，第二条走的是"手里没有活连接"那一支 → 临时接入 → 对面此时可能已经开始
+   * 收场 → 连不上或收不到回应 → 如实报 `false`，于是命令面板对一次**成功**的停止说
+   * 「内部 DSH 没有在运行」。有它在，第二条直接复用同一个 promise 与同一个结论。
+   */
+  private stopPromise: Promise<boolean> | undefined;
   /**
    * 在途的"等就绪/等新地址"（`beginWait` 登记、`endWait` 注销）。
    *
@@ -286,6 +408,43 @@ export class SupervisorManager {
 
   getStatus(): ServerStatus {
     return this.status;
+  }
+
+  /**
+   * **一份只读快照**：本窗口与这一套后台现在是什么关系，一次给全（全是普通值，无方法）。
+   *
+   * 它是**已有读法的汇总**，不是第二份状态：`status` / `startAllowed` / `state` /
+   * `activeBaseUrl` / `hostCount` / `ownership` / `generation` 分别就是 `getStatus()` /
+   * `canStart()` / `peekState()` / `activeBaseUrl` / `sharedSummary()` / `generation` 的值
+   * ——那些老读法**都保留**（控制器、扩展诊断与探针还在用），只是控制器将来可以只读这一份，
+   * 不必再自己镜像"连接在不在、目标是什么、用户叫停过没有"。
+   *
+   * `status` 与 `status.info` 是浅拷贝：快照的持有者改它，不会改坏管理器手里的那一份
+   * （`setStatus` 本来也是整体替换，这条只是把"只读"落实到值上）。
+   */
+  snapshot(): ConnectSnapshot {
+    const shared = this.sharedSummary();
+    return {
+      target: this.target,
+      // 浅拷贝（`info` 在不在都照原样带）：形状与 `getStatus()` **逐键一致**，
+      // 这样"快照 == 老读法"可以用 deepStrictEqual 直接钉住。
+      status: this.status.info ? { ...this.status, info: { ...this.status.info } } : { ...this.status },
+      connected: this.connection?.connected === true,
+      startAllowed: this.canStart(),
+      stoppedByUser: this.stoppedByUser,
+      detachedByUser: this.detachedByUser,
+      stopping: this.stopPromise !== undefined,
+      remembered: this.state !== undefined,
+      state: this.peekState(),
+      activeBaseUrl: this.activeBaseUrl,
+      externalUrl: this.externalUrl,
+      hostCount: shared?.hostCount,
+      ownership: shared?.ownership,
+      generation: this.generation,
+      disposed: this.disposed,
+      rendezvousDirectory: this.directory,
+      logPath: this.logPath,
+    };
   }
 
   onDidChangeStatus(listener: (status: ServerStatus) => void): { dispose(): void } {
@@ -554,8 +713,14 @@ export class SupervisorManager {
    *
    * `status.info` 一并作废：它是"内部那一套就绪"的记忆，留着会让诊断与 `serverUrl`
    * 继续报内部地址（与上面第 2 条是同一个症状的两条来路）。
+   *
+   * **本方法是"收连接"这件事的唯一落点**（`stop()` 与旧入口 `detachInternal` 都调它，见文件头
+   * 「停止入口收敛」）。`detail` 开放成参数只为一件事：旧 `stopAndExit()` 那一档报的是
+   * `stopped by user`，别的档报 `internal detached`——两者的**可见性**相同（都不带 `@`、
+   * 都不进连接条：`ChatController.onServerStatus` 只在 `failed` 与 `@` 开头的 `starting` 里读它），
+   * 保留它们只是为了不给"排查时读日志/诊断"添堵。
    */
-  private detachInternal(reason: string): void {
+  private detachConnection(reason: string, detail = "internal detached"): void {
     const held = this.connection !== undefined || this.state !== undefined;
     this.connection?.close();
     this.connection = undefined;
@@ -563,13 +728,21 @@ export class SupervisorManager {
     this.launched = false;
     this.clientCount = 1;
     if (this.status.info && this.status.info.ownership !== "external") {
-      this.setStatus({ state: "stopped", detail: "internal detached" });
+      this.setStatus({ state: "stopped", detail });
     }
     if (held) {
       this.options.log(
         `[supervisor] ${reason}：已断开与守护进程的连接（内部后台交回守护进程按"有没有人用"自己裁决）`,
       );
     }
+  }
+
+  /**
+   * 旧接口名（**薄壳**）：与 `stop()` 三个 flag 全 `false` 那一档是同一件事，只是 `reason`
+   * 由调用点给（新入口的签名按定稿只有三个 flag，放不进这个诊断用的字符串）。
+   */
+  private detachInternal(reason: string): void {
+    this.detachConnection(reason);
   }
 
   /**
@@ -584,12 +757,14 @@ export class SupervisorManager {
    * 连 dsh 一起收场）；别的窗口还在用，它就继续服务——那正是正确结果。
    *
    * 用户随后的显式动作（发消息 / 点连接按钮 / 重启 / 激活期选路）经 `bringUp` 清掉这个
-   * 标记，重新接上；「连接内部 DSH」若发现守护进程已经空闲退场了，会如实回到按钮态
-   * （它是"只接不启动"那一档）。
+   * 标记，重新接上；「连接内部 DSH」本身也允许拉起一套（2026-09-19 起两个内部按钮同一套
+   * 逻辑），所以守护进程已经空闲退场时点它，同样会把这一套重新起起来。
+   *
+   * **薄壳**：本体就是 `stop({ release: true })`——"置闸 + 收连接"这两件事由那一个入口按
+   * flag 组合做（见文件头「停止入口收敛」）。
    */
   releaseInternal(): void {
-    this.detachedByUser = true;
-    this.detachInternal("用户点了「停止连接」");
+    void this.stop({ release: true });
   }
 
   // ---------- 等待的中断（用户按钮） ----------
@@ -606,15 +781,25 @@ export class SupervisorManager {
   }
 
   /**
-   * 用户点了「停止连接」/「停止服务器」：让**所有在途的等待**立刻让位。
+   * 让**所有在途的等待**立刻让位（底层小函数：`cancelWaiting`、`stop()`、`dispose()` 共用）。
    *
    * **不碰任何进程**（本文件那条纪律）：守护进程与 dsh 的生死照旧归 supervisor。
    * 界面侧把这件事当"用户叫停"，不当失败（见 `WaitCancelledError`）。
    */
-  cancelWaiting(): void {
+  private abortWaits(): void {
     const live = [...this.waits];
     this.waits.clear();
     for (const controller of live) controller.abort();
+  }
+
+  /**
+   * 用户点了「停止连接」/「停止服务器」：让**所有在途的等待**立刻让位。
+   *
+   * **薄壳**：本体是 `stop({ cancelWait: true })`——那一档只中止等待、**不收连接**
+   * （理由见 `StopOptions.cancelWait` 的注释）。
+   */
+  cancelWaiting(): void {
+    void this.stop({ cancelWait: true });
   }
 
   private async bringUp(): Promise<ServerInfo> {
@@ -1017,8 +1202,68 @@ export class SupervisorManager {
     }
   }
 
+  // ---------- 停止入口（**唯一一处**） ----------
+
   /**
-   * 「停止内部 DSH」：请 supervisor 连 dsh 一起收场并退出。
+   * **收掉 / 停止的唯一入口**（见文件头「停止入口收敛」）。
+   *
+   * 三个 flag 的语义与"少了它会怎样"都在 `StopOptions` 的注释里；这里只说三件实现上的事：
+   *
+   * 1. **不给 `options` 时按旧 `stopAndExit()` 走**（`cancelWait + askSupervisor`）。那个名字
+   *    今天还有调用点（`scripts/smoke.ts`、若干探针的 `server.stop()`），而它的语义是"请守护进程
+   *    连 dsh 一起收场"——新签名把 `options` 设成可选，若把"不给参数"也按三个默认 `false` 解释，
+   *    等于把这些调用点请守护进程收场的那一步**静默删掉**。要"只收连接"请显式写 `stop({})`；
+   * 2. **闸与等待先落，且不受并发合并影响**：它们都不发控制帧、都幂等，所以无论这一轮是被合并
+   *    掉的还是真正执行的那一个，`detachedByUser` / `stoppedByUser` / 中止等待都一定生效
+   *    （否则"连点两次、第二次只复用 promise"会漏掉第二组 flag）；
+   * 3. **返回值的语义与旧 `stopAndExit()` 是同一句**："停止请求有没有真的发出去"。不收连接、
+   *    也没请守护进程收场的那些档没有请求可发，如实给 `false`。
+   *
+   * **`stop({})`（三个 flag 全 false）在快照上的口径**（这是新 API 的语义，写下来免得靠猜）：
+   * 它就是旧 `detachInternal()` 那一档——**收连接，但不置任何闸**（"置闸与杀进程都不做"是那个
+   * 方法原本的定义）。于是 `snapshot()` 上是这样一套组合：
+   * `connected === false`（手里确实没连接了）、`remembered === false` 且 `generation === undefined`
+   * （本窗口不再记着这一套）、但 **`state` 可能仍有值**——`state` 沿用 `peekState()` 的口径，含
+   * **磁盘回退**："我交还了占用"不等于"磁盘上没有这一套"（别的窗口还在用、或它刚被交还、还在
+   * 空闲窗口里活着，会合文件都还在）。要"我既不占用、也不许心跳接回来"那一档，用
+   * `stop({ release: true })`（它置 `detachedByUser`，`peekState()` 才会连同磁盘一起报空）。
+   *
+   * **不碰任何进程**：`release` / 默认档只关自己的连接；`askSupervisor` 是**请求**，由守护进程
+   * 动手（这条纪律见文件头）。
+   */
+  async stop(options?: StopOptions): Promise<boolean> {
+    const resolved: StopOptions = options ?? { cancelWait: true, askSupervisor: true };
+    const release = resolved.release === true;
+    const askSupervisor = resolved.askSupervisor === true;
+    // `askSupervisor` **天然要求**取消在途等待（定稿语义）：请求都发出去了，再等一个不会来的
+    // 就绪没有意义。
+    const cancelWait = resolved.cancelWait === true || askSupervisor;
+
+    // ① 两道闸 + 在途等待：幂等、不发控制帧，先落（见上面第 2 条）。
+    if (askSupervisor) this.stoppedByUser = true;
+    if (release) this.detachedByUser = true;
+    if (cancelWait) this.abortWaits();
+
+    // ② 「请守护进程收场」：唯一会发控制帧的一支，**整段合并**（连点只发一条，理由见
+    //    `stopPromise` 字段注释）。合并只覆盖这一段，所以第 ① 步不会因为被合并而漏掉。
+    if (askSupervisor) {
+      this.stopPromise ??= this.askSupervisorToStop().finally(() => {
+        this.stopPromise = undefined;
+      });
+      return this.stopPromise;
+    }
+
+    // ③ **只**中止等待那一档（旧 `cancelWaiting()` 的全部语义）：**不收连接**——理由见
+    //    `StopOptions.cancelWait`（那一档的调用点是控制器 `prepareRound`，它必须留着 socket）。
+    if (cancelWait) return false;
+
+    // ④ 收连接那一档（旧 `detachInternal()` / `releaseInternal()`）：**不碰任何进程**。
+    this.detachConnection(release ? "用户点了「停止连接」" : "收掉与守护进程的连接");
+    return false;
+  }
+
+  /**
+   * 「请守护进程收场」的执行体（`stop({ askSupervisor: true })`，也就是旧 `stopAndExit()` 的本体）。
    *
    * 本窗口只发请求 + 关连接；**不自己 taskkill**（那条纪律的落点）。
    *
@@ -1027,15 +1272,10 @@ export class SupervisorManager {
    * 活连接"而不是"目标是不是内部"：**"没连着"不等于"没有可停的东西"**（守护进程可能
    * 正被别的窗口用着，也可能刚刚被本窗口交还、还在空闲窗口里活着）。
    * 少了这一条，命令面板上写着「停止内部 DSH」却什么都不做，回执还会谎报"没有在运行"。
-   *
-   * 返回"停止请求有没有真的发出去"：调用方据此给用户哪句回执。
    */
-  async stopAndExit(): Promise<boolean> {
+  private async askSupervisorToStop(): Promise<boolean> {
     // **心跳继续跑**（不 stopHeartbeat）：别的窗口把后台重新起起来时，本窗口要能自动接上。
-    // 抑制"自动拉起"改用 `stoppedByUser`（见字段注释）。
-    this.stoppedByUser = true;
-    // 在途的"等就绪/等新地址"立刻让位：用户已经明确要停了，不需要再等出结果
-    this.cancelWaiting();
+    // 抑制"自动拉起"用 `stoppedByUser`（由 `stop()` 置位，见字段注释）。
     const connection = this.connection;
     if (connection?.connected !== true) return this.stopDetachedInternal();
     this.options.log("[supervisor] 停止请求：交给 supervisor 执行");
@@ -1051,6 +1291,16 @@ export class SupervisorManager {
   }
 
   /**
+   * 「停止内部 DSH」：请 supervisor 连 dsh 一起收场并退出。
+   *
+   * **薄壳**：本体就是 `stop({ cancelWait: true, askSupervisor: true })`（= 旧 `stopAndExit()`）；
+   * 行为语义、返回值与"没有活连接时走临时接入"那一支都在 `stop()` / `askSupervisorToStop()` 里。
+   */
+  async stopAndExit(): Promise<boolean> {
+    return this.stop({ cancelWait: true, askSupervisor: true });
+  }
+
+  /**
    * 分离态下「停止内部 DSH」的落点：**短暂接入**内部守护进程，把 stop 请求发出去就立刻断开。
    *
    * 为什么要接入：内部后台的生死只有守护进程能执行，而本窗口此刻手里没有任何连接。
@@ -1059,6 +1309,9 @@ export class SupervisorManager {
    * 为什么必须断开：这条连接只是"去发一个请求"，**不是"我在用"**——留着它，守护进程又会
    * 被本窗口拎住不放（正是本次要修的那个 bug）。所以它不写进 `this.connection`、
    * `onState` 也是空实现：一条临时连接不许改任何状态。
+   *
+   * 它就是 `stop({ askSupervisor: true })` 在"手里没有活连接"那一支的**执行体**
+   * （`askSupervisorToStop` 直接调它）；旧名字原样保留，并行进行的探针重写还在用它。
    */
   private async stopDetachedInternal(): Promise<boolean> {
     const state = readState(this.directory);
@@ -1088,19 +1341,20 @@ export class SupervisorManager {
     return true;
   }
 
-  /** 旧接口名（扩展里 `dispose()` 语义）：**只关自己的连接**，不杀任何进程。 */
+  /**
+   * 旧接口名（扩展里 `dispose()` 语义）：**只关自己的连接**，不杀任何进程。
+   *
+   * 与 `stop()` 分开是刻意的：`dispose` 是"**窗口走了**"（心跳停、之后一轮都不许复活），
+   * 而 `stop` 是"停止与这一套后台的关系"（心跳继续跑，别的窗口把后台重新起起来时本窗口
+   * 还要能自动接上）。底层那件小事（中止在途等待）与 `stop` 共用 `abortWaits()`。
+   */
   dispose(): void {
     this.disposed = true;
     // 在途的等待没有时长上限：本窗口要走了就别再留着它空转（只停等待，不碰后台）
-    this.cancelWaiting();
+    this.abortWaits();
     this.stopHeartbeat();
     this.connection?.close();
     this.connection = undefined;
-  }
-
-  /** 旧接口名：显式停止（命令用）。 */
-  async stop(): Promise<boolean> {
-    return this.stopAndExit();
   }
 
   /**
