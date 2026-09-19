@@ -370,10 +370,10 @@ export function Composer({
   /**
    * 能不能发送。
    *
-   * `stopped`（关掉 `dshChat.autoStart` 且后台没在跑）**也算能发**：用户口径
-   * （2026-09-14）是"发消息这类显式动作照旧允许拉起后台"——输入了一句话却发不出去、
-   * 还得先去点「启动服务器」，是把 autoStart 的语义读成了"什么都不许做"。
-   * `connecting` / `error` 不给发：后台正在起或起不来，发出去只会失败。
+   * `stopped`（按钮态：关掉 `dshChat.autoConnect`、用户点过停止、或内部那套不在）
+   * **也算能发**：用户口径（2026-09-14，2026-09-18 沿用）是"发消息这类显式动作照旧
+   * 允许拉起后台"——输入了一句话却发不出去、还得先去点按钮，是把自动连接的语义读成了
+   * "什么都不许做"。`connecting` / `error` 不给发：正在连或连不上，发出去只会失败。
    */
   const canSend = draft.trim().length > 0 && (state.connection === "ready" || state.connection === "stopped");
 

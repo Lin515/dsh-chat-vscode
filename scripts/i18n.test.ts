@@ -80,8 +80,6 @@ const MARKERS: string[] = [
   "serverSpawnFailed",
   "serverNotReady",
   "serverUnreachable",
-  "serverNotRunning",
-  "serverStopped",
   "serverLogTail",
   // 多窗口共享后台
   "sharedRestarted",

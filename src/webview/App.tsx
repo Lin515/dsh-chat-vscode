@@ -141,67 +141,75 @@ function BrandMark() {
 /**
  * 连接条：**未就绪时**显示在所有内容上方（就绪时不占位置）。
  *
- * 三种"没好"的状态要给出**不同的下一步**（用户 2026-09-14 口径，2026-09-15 微调）：
- * - `stopped`：后台没在跑（关掉 `dshChat.autoStart` 的常态）→ 「启动服务器」；
- *   外部服务器不由本扩展启动 → 「尝试连接」；
- * - `connecting`：正在连（首轮连接、掉线后的重连循环、外部地址的等待都算）→ 「停止连接」；
- *   这个按钮**绑 `connecting` 本身，不绑 `reconnecting`**——只要在连接就得能停（用户口径）；
- * - `error`：连不上 → 原因 + 「尝试连接」（+ 外部模式的「输入令牌」、内部模式的「重启服务器」）。
+ * 两档（用户 2026-09-18 口径，取代 2026-09-14/15 那套「启动服务器 / 尝试连接」矩阵）：
  *
- * 三种状态下都留一个「查看日志」：失败原因写进扩展的输出通道，用户得有个入口去看。
+ * - **连接中**（`connecting`）：只给「停止连接」+「查看日志」。目标由系统自己选
+ *   （内部优先、外部备用），所以连接条**不摆**启动/连接按钮——选了哪个、在启动还是在
+ *   连接，写在文案里。连接没有自动停止的时间限制，能不能结束只由用户点。
+ * - **按钮态**（`stopped` / `error`）：文案是**两轴探测结论**
+ *   （「内部 DSH：未运行 · 外部 DSH：可达」），`error`（启动类 / 认证类失败）时优先
+ *   显示失败原因。按钮按结论给：「内部在跑 → 连接内部 DSH，否则 → 启动内部 DSH」，
+ *   外加恒显的「连接外部 DSH」（没配 `dshChat.url` 时置灰）、内部在跑时的
+ *   「重启内部 DSH」、需要令牌时的「输入令牌」，以及恒显的「查看日志」。
  */
 function ConnectionBar({ state }: { state: ChatState }) {
   const texts = useTexts();
   if (state.connection === "ready") return null;
-  const isError = state.connection === "error";
-  const isStopped = state.connection === "stopped";
   const isConnecting = state.connection === "connecting";
-  const external = state.externalServer === true;
-  // 详情优先：`stopped` 也可能是"用户按了停止连接"，那时条上的原因是上一轮的失败原因
+  const isError = state.connection === "error";
+  const internalRunning = state.internalRunning === true;
+  const externalConfigured = state.externalState !== "unconfigured";
+  // 详情优先：`error` 或是连接中被判定"连不上"时，原因是用户最需要看的东西
   const detail = state.connectionDetail ? resolveText(state.connectionDetail, texts) : undefined;
-  const text = isError
-    ? (detail ?? texts.connectionFailed)
-    : isStopped
-      ? (detail ?? (state.serverRunning || external ? texts.reconnectStopped : texts.serverNotRunning))
-      : state.reconnecting
-        ? (detail && detail !== resolveText("@connectionLost", texts) ? detail : texts.reconnecting)
-        : `${texts.connecting}${state.serverUrl ? ` ${state.serverUrl}` : ""}`;
+  const text = isConnecting ? connectingText(state, texts, detail) : (detail ?? statusText(state, texts));
   return (
-    <div className={`conn-bar${isError ? " is-error" : ""}${isStopped ? " is-stopped" : ""}`}>
+    <div className={`conn-bar${isError ? " is-error" : ""}${!isConnecting && !isError ? " is-stopped" : ""}`}>
       {isConnecting ? <Spinner size={11} /> : null}
       <span className="conn-text" title={text}>
         {text}
       </span>
       <span className="spacer" />
-      {state.needsToken ? (
-        <button className="btn" onClick={() => post({ type: "setToken" })}>
-          <IconKey size={12} /> {texts.enterToken}
-        </button>
-      ) : null}
-      {/* 后台没在跑（且不是外部服务器）→ 用户显式拉起一套 */}
-      {isStopped && !state.serverRunning && !external ? (
-        <button className="btn btn-primary" onClick={() => post({ type: "startServer" })}>
-          <IconPlus size={12} /> {texts.startServer}
-        </button>
-      ) : null}
-      {/* 连不上 / 已停止但后台还在 → 只接上已经在跑的那一套 */}
-      {isError || (isStopped && (state.serverRunning || external)) ? (
-        <button className="btn" onClick={() => post({ type: "reconnectNow" })}>
-          <IconRefresh size={12} /> {texts.reconnect}
-        </button>
-      ) : null}
-      {/* 正在连接：必须能停（重连没有总超时，首轮连接也可能卡在等就绪上） */}
       {isConnecting ? (
-        <button className="btn" onClick={() => post({ type: "stopReconnect" })}>
-          {texts.stopReconnect}
-        </button>
-      ) : null}
-      {/* 内部后台连不上时，「重启服务器」是最有效的一招（守护进程重起 dsh） */}
-      {isError && !external ? (
-        <button className="btn" onClick={() => post({ type: "restartServer" })}>
-          <IconRefresh size={12} /> {texts.restartServer}
-        </button>
-      ) : null}
+        <>
+          {/* 连接中**唯一**的主动作：停下来由用户说了算（重连没有总超时） */}
+          <button className="btn" onClick={() => post({ type: "stopReconnect" })}>
+            {texts.stopReconnect}
+          </button>
+        </>
+      ) : (
+        <>
+          {state.needsToken ? (
+            <button className="btn" onClick={() => post({ type: "setToken" })}>
+              <IconKey size={12} /> {texts.enterToken}
+            </button>
+          ) : null}
+          {internalRunning ? (
+            <button className="btn btn-primary" onClick={() => post({ type: "connectInternal" })}>
+              <IconRefresh size={12} /> {texts.connectInternal}
+            </button>
+          ) : (
+            <button className="btn btn-primary" onClick={() => post({ type: "startInternal" })}>
+              <IconPlus size={12} /> {texts.startInternal}
+            </button>
+          )}
+          {/* 恒显：显示与否**不看可达性**（连接失败会写进日志与条上）；只有没配地址时置灰。
+              title 挂在外层 span 上——disabled 的元素收不到 hover，提示会不显示 */}
+          <span className="conn-tip" title={externalConfigured ? undefined : texts.externalDisabledHint}>
+            <button
+              className="btn"
+              disabled={!externalConfigured}
+              onClick={() => post({ type: "connectExternal" })}
+            >
+              <IconRefresh size={12} /> {texts.connectExternal}
+            </button>
+          </span>
+          {internalRunning ? (
+            <button className="btn" onClick={() => post({ type: "restartInternal" })}>
+              <IconRefresh size={12} /> {texts.restartInternal}
+            </button>
+          ) : null}
+        </>
+      )}
       {/* 查看日志：**连接条上恒显**（用户 2026-09-15 口径）——上面每一种状态都可能是
           "连不上但说不清"，用户得随时有个入口去看扩展的输出通道 */}
       <button className="btn btn-ghost" data-mini="hide" onClick={() => post({ type: "showLogs" })}>
@@ -209,6 +217,34 @@ function ConnectionBar({ state }: { state: ChatState }) {
       </button>
     </div>
   );
+}
+
+/** 按钮态那行：两轴短语併一行（「内部 DSH：未运行 · 外部 DSH：可达」）。 */
+function statusText(state: ChatState, texts: ReturnType<typeof useTexts>): string {
+  const internal = state.internalRunning === true ? texts.statusInternalRunning : texts.statusInternalNotRunning;
+  const external =
+    state.externalState === "reachable"
+      ? texts.statusExternalReachable
+      : state.externalState === "unreachable"
+        ? texts.statusExternalUnreachable
+        : texts.statusExternalUnconfigured;
+  return `${internal}${texts.statusSeparator}${external}`;
+}
+
+/**
+ * 连接中那行：写明**目标与阶段**（用户 2026-09-18 口径）。
+ *
+ * 有失败详情时（外部地址连不上、与服务器断线）原因优先——那才是用户想知道的东西。
+ */
+function connectingText(state: ChatState, texts: ReturnType<typeof useTexts>, detail: string | undefined): string {
+  if (detail) return detail;
+  if (state.connectTarget === "internal") {
+    return state.connectPhase === "starting" ? texts.startingInternal : texts.connectingInternal;
+  }
+  if (state.connectTarget === "external") {
+    return state.externalAddress ? texts.connectingExternal(state.externalAddress) : texts.connecting;
+  }
+  return `${texts.connecting}${state.serverUrl ? ` ${state.serverUrl}` : ""}`;
 }
 
 /** 空态：只留一行提示，不要问候语与起始卡片。 */

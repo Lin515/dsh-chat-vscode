@@ -3496,10 +3496,16 @@
   font-size: var(--font-size-xs);
   color: var(--warning);
   border-bottom: 1px solid var(--border);
-  /* 这一条现在最多有四个按钮（启动 / 尝试重连 / 停止连接 / 查看日志），而英文
-     文案比中文长 1.5~2 倍：窄侧栏下与其裁掉按钮，不如让它们换到第二行。
+  /* 按钮态最多五个按钮（启动/连接内部、连接外部、重启内部、输入令牌、查看日志），
+     而英文文案比中文长 1.5~2 倍：窄侧栏下与其裁掉按钮，不如让它们换到第二行。
      按钮自己一律 `nowrap`（`.btn`），所以换行是唯一的兜底。 */
   flex-wrap: wrap;
+}
+
+/* 置灰按钮的悬停提示载体：`disabled` 的元素收不到鼠标事件、title 不会显示，
+   所以提示文字挂在这层 span 上 */
+.conn-tip {
+  display: inline-flex;
 }
 
 .conn-bar.is-error {

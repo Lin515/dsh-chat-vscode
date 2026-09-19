@@ -35,33 +35,42 @@ VS Code → 扩展 → `…` → 从 VSIX 安装 → 重载窗口。
 
 **从源码调试**：`npm install && npm run watch`，用 VS Code 打开本仓库按 `F5`。
 
-## 关键：内部自管理的 DSH，还是连外部 DSH
+## 关键：内部 DSH 优先，外部 DSH 备用
 
-| `dshChat.url` | 行为 |
+| 情形 | 行为 |
 | --- | --- |
-| **留空**（默认） | 扩展按 `dshChat.command` **启动并托管一套内部 DSH**（`dsh web` 子进程 + 一个独立守护进程）。启动令牌由扩展自行解析，不需要手动填。 |
-| **填了地址** | 扩展**不启动任何 DSH**，只连这个地址。服务器要授权时弹框输入访问令牌（`dsh web` 启动 URL 里 `?token=` 之后那段），也可以用命令面板 **DSH: 输入访问令牌**。 |
+| **内部在跑** | 连内部那套（守护进程 + `dsh web`，由扩展按 `dshChat.command` 启动并托管，启动令牌自动解析，不用手填）。 |
+| **内部没在跑，外部可达** | 连 `dshChat.url` 那个地址（备用）。服务器要授权时弹框输入访问令牌（`dsh web` 启动 URL 里 `?token=` 之后那段），也可以用命令面板 **DSH: 输入访问令牌**。 |
+| **都没有** | **启动一套内部 DSH**（`dshChat.autoConnect` 开着时自动做；关掉则只显示按钮等你点）。 |
 
-再补三条容易踩的口径：
+再补四条容易踩的口径：
 
-- **多个 VS Code 窗口共用同一个后台**：扩展按**有效配置**（`url` + `command`）给窗口分组，
-  同一组的窗口共用一套守护进程与同一个 `dsh web`——不是每个窗口各起一个。同一份用户设置
-  下所有窗口天然同组；远端窗口、不同配置档（Profile）、Insiders/Stable 各写各的 `command`
-  时是**不同的组**，各用各的后台。守护进程按**活连接数**决定何时收场（默认空闲 10 秒，
-  可配），所以「重载窗口 / 重开 VS Code」不会杀掉后台，正在跑的会话也不会因此中断。
+- **目标选一次就粘住**：自动路径只在启动时选一次（内部 → 外部 → 启动内部），此后重连永远
+  重试同一个目标，**不会**因为另一个后来起来了就换（换目标 = 换服务器、换会话列表、
+  丢掉正在跑的轮次）。要换只能自己点按钮：连接条上的「启动内部 DSH」/「连接内部 DSH」/
+  「连接外部 DSH」。**内部** DSH 在跑时给「连接内部 DSH」，不在时给「启动内部 DSH」；
+  「连接外部 DSH」恒显（没配 `dshChat.url` 时置灰）。
+- **连接中只给「停止连接」+「查看日志」**：连接（含一轮轮重试）**没有**自动停止的时间限制，
+  停在什么时候由你点。启动失败（命令写错、dsh 起不来）与认证失败不自动重试——退回按钮态，
+  原因写在连接条上，日志里有详情。
+- **多个 VS Code 窗口共用同一个后台**：扩展按 `command` 给窗口分组，同一组的窗口共用一套
+  守护进程与同一个 `dsh web`——不是每个窗口各起一个。同一份用户设置下所有窗口天然同组；
+  `command` 不同（远端窗口、不同配置档、Insiders/Stable）就是**不同的组**，各用各的后台。
+  守护进程按**活连接数**决定何时收场（默认空闲 10 秒，可配），所以「重载窗口 / 重开 VS Code」
+  不会杀掉后台，正在跑的会话也不会因此中断。
 - **`url` 与 `command` 是 `machine` 作用域**：只能在**用户设置**里改，工作区的
   `.vscode/settings.json` 覆盖不了它们（`command` 是经 shell 执行的命令、`url` 决定
-  凭据发往哪个服务器——这两件事不该由克隆来的仓库决定）。
-- **改这两项要重载窗口**才生效（扩展会弹提示）；其余配置项改完即时生效。
+  凭据发往哪个服务器——这两件事不该由克隆来的仓库决定）。**`url`、`command`、
+  `autoConnect` 改完要重载窗口**才生效（扩展会弹提示）；其余配置项改完即时生效。
 
 ## 配置
 
 | 键 | 默认 | 说明 |
 | --- | --- | --- |
-| `dshChat.url` | 空 | 外部 `dsh web` 地址；留空则由扩展自己启动并托管一套（见上表） |
-| `dshChat.command` | `dsh web --port 0 --no-open` | 启动内部服务器的命令，**原样执行**、扩展不追加任何参数 |
+| `dshChat.url` | 空 | 外部 `dsh web` 的**备用**地址；只在内部 DSH 没在跑、且这个地址有应答时才连它 |
+| `dshChat.command` | `dsh web --port 0 --no-open` | 启动内部 DSH 的命令，**原样执行**、扩展不追加任何参数 |
 | `dshChat.supervisorIdleSec` | `10` | 没有窗口连着之后，守护进程隔多久收场（5–600 秒） |
-| `dshChat.autoStart` | `true` | 启动 VS Code 时自动连接；关掉后后台不存在时只显示「启动服务器」按钮，扩展绝不自己拉起 |
+| `dshChat.autoConnect` | `true` | VSCode 启动时是否自动连接（内部优先、外部备用、都没有则启动内部）；关掉后只显示连接按钮 |
 | `dshChat.diffLayout` | `auto` | 编辑类节点的 diff 排版：`auto`（窄单栏 / 宽双栏）、`unified`、`split` |
 | `dshChat.language` | `auto` | 聊天界面语言：`auto` 跟随 VS Code、`zh-cn`、`en` |
 | `dshChat.fontSize` | `0` | 聊天界面字号（整数 px，≥8）；`0` 跟随 VS Code 字号 |
@@ -172,35 +181,47 @@ npm run package        # produces Releases/dsh-chat-<version>.vsix
 Then in VS Code: Extensions → `…` → Install from VSIX → reload. To hack on it:
 `npm install && npm run watch`, open this repo in VS Code and press `F5`.
 
-## The key setting: managed vs external DSH
+## The key mechanism: internal DSH first, external DSH as fallback
 
-| `dshChat.url` | Behaviour |
+| Situation | Behaviour |
 | --- | --- |
-| **empty** (default) | The extension starts and supervises its own DSH (`dsh web` child plus a standalone guardian process). The launch token is parsed automatically. |
-| **set** | The extension starts **no** DSH at all; it only connects to that address. If the server requires authorization it prompts for the access token (the `?token=` value from the `dsh web` launch URL), or use **DSH: Enter Access Token** from the Command Palette. |
+| **Internal DSH is running** | Connect to it (guardian + `dsh web`, started and supervised by the extension from `dshChat.command`; the launch token is parsed automatically). |
+| **No internal DSH, external answers** | Connect to `dshChat.url` (the fallback). If the server requires authorization it prompts for the access token (the `?token=` value from the `dsh web` launch URL), or use **DSH: Enter Access Token** from the Command Palette. |
+| **Neither** | **Start an internal DSH** (done automatically while `dshChat.autoConnect` is on; when off, the buttons are shown and nothing happens until you click). |
 
-Three rules worth knowing:
+Four rules worth knowing:
 
-- **Multiple VS Code windows share one backend**: windows are grouped by their **effective**
-  `url` + `command`, and one group shares a single guardian + `dsh web` — not one per window.
-  With a single set of user settings every window lands in the same group; remote windows,
-  different profiles, or Insiders/Stable with their own `command` form **separate** groups with
-  separate backends. The guardian retires a backend once nobody is connected (10s idle by
-  default, configurable), so reloading a window or restarting VS Code never kills it.
+- **The target is chosen once and then sticks**: the automatic path picks it at startup
+  (internal → external → start internal) and later retries always retry that same target — it
+  never switches because the other one came up (switching means another server, another session
+  list, and losing a running turn). Switch by hand if you want to: **Start internal DSH** /
+  **Connect to internal DSH** / **Connect to external DSH** on the connection bar. The internal
+  button reads "connect" while an internal backend is running and "start" when it is not; the
+  external button is always there (greyed out when `dshChat.url` is empty).
+- **While connecting, only "Stop connecting" and "Show logs" are offered**: connecting (including
+  the retry loop) has **no** automatic time limit — only you stop it. Start failures (bad
+  command, dsh never comes up) and auth failures are not retried automatically: they fall back to
+  the button state with the reason on the bar and details in the log.
+- **Multiple VS Code windows share one backend**: windows are grouped by `command`, and one group
+  shares a single guardian + `dsh web` — not one per window. With a single set of user settings
+  every window lands in the same group; a different `command` (remote windows, different profiles,
+  Insiders/Stable) forms **separate** groups with separate backends. The guardian retires a
+  backend once nobody is connected (10s idle by default, configurable), so reloading a window or
+  restarting VS Code never kills it.
 - **`url` and `command` are `machine`-scoped**: they can only be set in *user* settings; a
   workspace's `.vscode/settings.json` cannot override them (`command` is executed through a
   shell and `url` decides where credentials go — a cloned repository must not decide either).
-- **Changing them requires a window reload** (the extension offers to do it); every other
-  setting applies immediately.
+  **`url`, `command` and `autoConnect` require a window reload** (the extension offers to do
+  it); every other setting applies immediately.
 
 ## Settings
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `dshChat.url` | empty | Address of an external `dsh web`; empty = manage our own (see above) |
-| `dshChat.command` | `dsh web --port 0 --no-open` | Launch command for the internal server, executed verbatim |
+| `dshChat.url` | empty | **Fallback** address of an external `dsh web`; used only when no internal DSH is running and that address answers |
+| `dshChat.command` | `dsh web --port 0 --no-open` | Launch command for the internal DSH, executed verbatim |
 | `dshChat.supervisorIdleSec` | `10` | Idle seconds before the guardian retires the backend (5–600) |
-| `dshChat.autoStart` | `true` | Connect on start; when off, the extension never launches a backend by itself — it just offers a "Start server" button |
+| `dshChat.autoConnect` | `true` | Connect automatically when VS Code starts (internal first, external as fallback, internal is started when neither is available); when off, only the connect buttons are shown |
 | `dshChat.diffLayout` | `auto` | Diff layout for edit calls: `auto`, `unified`, `split` |
 | `dshChat.language` | `auto` | Chat UI language: `auto` (follow VS Code), `zh-cn`, `en` |
 | `dshChat.fontSize` | `0` | Chat UI font size in px (≥8); `0` follows VS Code |

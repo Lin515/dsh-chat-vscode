@@ -102,6 +102,14 @@
         "title": "%cmd.addFolder.title%"
       },
       {
+        "command": "dshChat.connectInternal",
+        "title": "%cmd.connectInternal.title%"
+      },
+      {
+        "command": "dshChat.connectExternal",
+        "title": "%cmd.connectExternal.title%"
+      },
+      {
         "command": "dshChat.startServer",
         "title": "%cmd.startServer.title%"
       },
@@ -163,10 +171,10 @@
     "configuration": {
       "title": "DSH Chat",
       "properties": {
-        "dshChat.autoStart": {
+        "dshChat.autoConnect": {
           "type": "boolean",
           "default": true,
-          "description": "%config.autoStart%"
+          "description": "%config.autoConnect%"
         },
         "dshChat.command": {
           "type": "string",

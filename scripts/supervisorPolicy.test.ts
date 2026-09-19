@@ -1,20 +1,22 @@
 /**
- * 离线断言：**启动/重连的决策**（`SupervisorManager` 的 `autoStart` 许可与"复用优先"）。
+ * 离线断言：**启动/重连的决策**（`SupervisorManager` 的 `autoConnect` 许可与"复用优先"）。
  *
- * 为什么单独一条（2026-09-14）：这是用户在"关掉自动启动"场景下的核心验收标准——
+ * 为什么单独一条（2026-09-14，2026-09-18 随 `autoStart`→`autoConnect` 改名调整口径）：
  *
- * - **没许可就不许拉起**：`dshChat.autoStart` 关掉、后台又不在时，`ensure()` 只能抛
- *   `ServerNotRunningError`（界面据此显示「启动服务器」），**一次 spawn 都不能发生**；
+ * - **没许可就不许拉起**：`dshChat.autoConnect` 关掉、内部后台又不在时，`ensure()` 只能抛
+ *   `ServerNotRunningError`（界面据此回到按钮态），**一次 spawn 都不能发生**；
  * - **有许可才拉起**：用户显式动作（`ensure({start:true})`）必须能起一套，不管配置；
  * - **守护进程还活着就只接入、不另起**（重复 spawn 出来的 supervisor 会因管道被占用
  *   自杀，而父进程的 spawn 开销已经付掉了）；
+ * - **目标由调用方给定**（选路在控制器那侧，见 `connectTarget.ts`）：配了 `url` 不再
+ *   等于"这一轮连外部"——内部优先、外部备用，所以外部那一轮必须显式传 `target`；
  * - **令牌/地址来自会合文件**：这是"多窗口复用同一个后台"的唯一凭据（认证链部分由
  *   `build/auth-chain-probe.mjs` 用真实 dsh 覆盖，这里覆盖"值有没有传出来"）；
  * - **等就绪没有时长上限、且用户能中断**（用户 2026-09-14 口径）：后台在起的时候
  *   `ensure()` 一直等（状态不会被时钟改写成"失败"），只有 `cancelWaiting()`
- *   （= 界面「停止连接」/「停止服务器」）能让它结束，结束方式是 `WaitCancelledError`。
+ *   （= 界面「停止连接」）能让它结束，结束方式是 `WaitCancelledError`。
  *   这一条是"删掉 `startTimeoutSec`"之后**唯一**保证等待不会变成"点了停止还在等"的防线；
- *   外部服务器（`dshChat.url`）走**同一条口径**：没人应答就一直探，不再"5 秒到点报错"。
+ *   外部目标走**同一条口径**：没人应答就一直探，不再"5 秒到点报错"。
  *
  * 全程不 spawn 任何真实进程：启动器是假的，会合文件由断言自己写，端口用本地
  * `net.createServer` 真监听（"服务在不在"必须用事实判据，不能用假函数）。
@@ -86,12 +88,12 @@ function fakeLauncher(onLaunch?: () => void) {
   };
 }
 
-function makeManager(group: string, autoStart: boolean, launcher: { launch: (input: never) => Promise<{ ok: true }> }): SupervisorManager {
+function makeManager(group: string, autoConnect: boolean, launcher: { launch: (input: never) => Promise<{ ok: true }> }): SupervisorManager {
   return new SupervisorManager({
     group,
     url: "",
     command: "dsh web --port 0 --no-open",
-    autoStart,
+    autoConnect,
     launcher: launcher as never,
     log: () => undefined,
   });
@@ -112,12 +114,12 @@ try {
     } catch (caught) {
       error = caught;
     }
-    check("autoStart=false 时 ensure() 抛 ServerNotRunningError", error instanceof ServerNotRunningError, String(error));
+    check("autoConnect=false 时 ensure() 抛 ServerNotRunningError", error instanceof ServerNotRunningError, String(error));
     check("没有拉起任何一条后台（启动器调用次数 0）", launcher.calls() === 0, `calls=${launcher.calls()}`);
-    check("状态是 stopped（界面据此给「启动服务器」）", manager.getStatus().state === "stopped", manager.getStatus().state);
+    check("状态是 stopped（界面据此给按钮态）", manager.getStatus().state === "stopped", manager.getStatus().state);
     check(
-      "详情是 @serverNotRunning（界面文案的标记）",
-      manager.getStatus().detail === "@serverNotRunning",
+      "详情不再带 `@`（按钮态的文案由界面按两轴探测结论拼）",
+      manager.getStatus().detail === "server not running",
       manager.getStatus().detail ?? "（无）",
     );
     // 「尝试重连」也是同一档：只接上已经在跑的，不启动
@@ -236,13 +238,15 @@ try {
     const manager = new SupervisorManager({
       url: dead.baseUrl,
       command: "dsh web --port 0 --no-open",
-      autoStart: false,
+      autoConnect: false,
       launcher: fakeLauncher().launcher as never,
       log: () => undefined,
     });
     managers.push(manager);
     let settled: Error | "resolved" | undefined;
-    const pending = manager.ensure().then(
+    // 目标必须显式给"外部"：配了 url 不再等于"这一轮就连外部"（2026-09-18 新口径，
+    // 内部优先、外部备用），选路是控制器的事，管理器只执行给定目标。
+    const pending = manager.ensure({ target: "external" }).then(
       () => {
         settled = "resolved";
       },

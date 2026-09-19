@@ -13,16 +13,20 @@
  * **本文件不杀任何进程**（唯一例外：`restart()`/`stop()` 是把"请求"交给 supervisor 执行，
  * 由它动手）。这条纪律是本次架构改动的核心：今天所有麻烦都源于"扩展也在杀 dsh"。
  *
- * ## 2026-09-14：启动决策（`autoStart` 关掉之后）
+ * ## 2026-09-18：内部优先 + 外部备用（选路与"能不能启动"是两件事）
  *
- * 用户口径：**关掉 `dshChat.autoStart` 时，后台不存在就只显示「启动服务器」按钮，
- * 扩展不许自作主张拉起一套**；但后台（守护进程 + dsh）真的在跑时，要**自动接上**
- * 并且一直重试（没有总超时）。因此这里把"能不能启动"变成一条**显式许可**：
+ * 用户口径：**内部 DSH 优先，外部 DSH 是备用**——旧的"`url` 非空即外部模式、内部配置
+ * 全失效"作废。选路由控制器按 `connectTarget.chooseTarget` 定一次（内部在跑 → 内部；
+ * 否则外部配了且可达 → 外部；都没有 → 拉起一套内部），结果是**粘性**的：
+ * 本文件只负责"把这一轮连到指定目标上"，**不做**选路、也不在重试时换目标。
  *
- * - `options.autoStart`（配置项）：**自动**路径（激活期、心跳自检）的许可，默认 true；
- * - `ensure({ start: true })`：**用户显式**动作（点「启动服务器」、发消息、重启服务器）的许可，
- *   它覆盖配置——用户要后台的时候不该被配置挡住；
- * - `ensure({ start: false })`：只接上已经在跑的（「尝试连接」用）。
+ * "能不能启动"仍是一条**显式许可**，但 `autoStart` 已改名为 `dshChat.autoConnect`
+ * （含义也变了：关掉 = 激活期完全不自动连，只显示按钮）：
+ *
+ * - `options.autoConnect`（配置项）：**自动**路径（激活期、心跳自检）的许可，默认 true；
+ * - `ensure({ start: true, target: "internal" })`：**用户显式**动作（点「启动内部 DSH」、
+ *   发消息、重启）的许可，它覆盖配置——用户要后台的时候不该被配置挡住；
+ * - `ensure({ start: false, target })`：只接上已经在跑的那一套（「连接内部/外部 DSH」用）。
  *
  * ## 2026-09-14：等待**不再由时长决定**（用户口径，见 `docs/design-supervisor.md` §8.4）
  *
@@ -58,6 +62,7 @@ import {
 } from "./supervisorClient";
 import { createDefaultSupervisorLauncher } from "./supervisorRunner";
 import { isProcessAlive } from "./processRegistry";
+import type { DshTarget } from "./connectTarget";
 
 /** 后台连接信息（沿用旧形状，controller 与界面不必跟着改）。 */
 export interface ServerInfo {
@@ -83,7 +88,7 @@ export type ServerState = "stopped" | "starting" | "ready" | "failed";
  * 后台**现在到底在不在跑**（只读探测，绝不启动任何东西）。
  *
  * 单独一个类型是因为"要不要自动重连"完全由它决定（用户 2026-09-14 口径）：
- * 守护进程还在 → 自动接上并重试到成功；不在 → 界面只给「启动服务器」按钮。
+ * 守护进程还在 → 自动接上并重试到成功；不在 → 界面给按钮（内部在不在的那一轴）。
  */
 export interface RunningSnapshot {
   /** 会合目录里有会合文件（诊断用：没有 = 从没起过，或被 supervisor 收尾删掉了）。 */
@@ -102,12 +107,15 @@ export interface RunningSnapshot {
 /**
  * 后台没有在跑，而本次调用**不允许**启动一套。
  *
- * 调用方据此把界面切到"已停止 + 启动服务器按钮"，而不是当成连接失败
- * （那是两件不同的事：失败要重试，没启动要用户点头）。
+ * 调用方据此把界面切到**按钮态**（按两轴探测结论给启动/连接按钮），而不是当成连接失败
+ * （那是两件不同的事：失败要重试，没有可连的目标要用户点头）。
  */
 export class ServerNotRunningError extends Error {
   constructor() {
-    super("@serverNotRunning");
+    // 刻意**不带 `@`**：这条 message 只是给日志看的（界面按钮态的文案由控制器按
+    // 内部/外部两轴的探测结论拼，见 `connectTarget`），带 `@` 会被 i18n 断言
+    // 当成"宿主发射的标记"，而那已经不是界面文案了。
+    super("server not running");
     this.name = "ServerNotRunningError";
   }
 }
@@ -116,7 +124,7 @@ export class ServerNotRunningError extends Error {
  * 用户点了「停止连接」/「停止服务器」：**在途的等待立刻让位**。
  *
  * 这不是失败（对方没坏），也不是"后台没在跑"（对方可能正在起）：它是一条
- * **用户指令**的产物，所以调用方只把界面切回 `stopped`（给「尝试连接」），
+ * **用户指令**的产物，所以调用方只把界面切回按钮态，
  * 不报错误详情、也不重试。
  */
 export class WaitCancelledError extends Error {
@@ -126,10 +134,12 @@ export class WaitCancelledError extends Error {
   }
 }
 
-/** `ensure()` 的许可参数（见文件头「启动决策」）。省略时取 `options.autoStart`。 */
+/** `ensure()` 的许可参数（见文件头「启动决策」）。省略 `start` 时取 `options.autoConnect`。 */
 export interface EnsureOptions {
   /** true = 允许在后台不存在时拉起一套；false = 只接上已经在跑的。 */
   start?: boolean;
+  /** 这一轮连哪个目标。省略时沿用上一次的目标（默认内部）。 */
+  target?: DshTarget;
 }
 
 export interface ServerStatus {
@@ -146,12 +156,12 @@ export interface ManagerOptions {
   /** 空闲阈值（秒）：写进会合文件，supervisor 热读。 */
   idleSec?: number;
   /**
-   * `dshChat.autoStart`：**自动**路径是否允许"后台不存在时自己拉起一套"（默认 true）。
+   * `dshChat.autoConnect`：**自动**路径是否允许"后台不存在时自己拉起一套"（默认 true）。
    *
    * 只约束自动路径（激活期的自动连接、5 秒一次的心跳自检）。用户显式动作走
    * `ensure({ start: true })`，一律覆盖它。
    */
-  autoStart?: boolean;
+  autoConnect?: boolean;
   workspace?: string;
   /** 配置分组（由有效配置算出的指纹）。**省缺时按命令算**（与扩展的 `leaseGroupKey` 同构）。 */
   group?: string;
@@ -167,13 +177,15 @@ export interface ManagerOptions {
 /**
  * 分组指纹：由**有效配置**算出来（与 `extension.ts` 的 `leaseGroupKey` 同构）。
  *
+ * 2026-09-18 起**只按 `command`**：`url` 已经退化成"外部备用地址"，不再参与内部后台的
+ * 身份。若还把 url 算进去，配了 url 的窗口会去另一个会合目录找内部后台 → 判成"内部不存在"
+ * → 自己再起一套（同一台机器上就有了两个内部 dsh）；用户改一次 url 也会与既有后台失联。
+ *
  * 单独放这里是为了让探针也能用同一套算法——它们只给命令而不给分组，
  * 而"分组算错"的后果是两个窗口互相看不见对方的后台（各起一个）。
  */
-export function groupForConfig(url: string, command: string): string {
-  const trimmed = (url ?? "").trim().replace(/\/+$/, "");
-  const identity = trimmed ? `external:${trimmed}` : `internal:${command}`;
-  return createHash("sha256").update(identity).digest("hex").slice(0, 12);
+export function groupForConfig(command: string): string {
+  return createHash("sha256").update(`internal:${command}`).digest("hex").slice(0, 12);
 }
 
 /** 连接状态的推送里带的"有多少个窗口在用"。 */
@@ -202,19 +214,27 @@ export class SupervisorManager {
    * 本轮 `bringUp` 有没有拿到"可以拉起一套"的许可（见文件头的启动决策）。
    *
    * 它是**本轮**的暂态而不是配置快照：并发调用会合并到同一次 `bringUp`，
-   * 许可按最宽的那个算（用户点「启动服务器」时，正好在跑的心跳自检不该把它降级掉）。
+   * 许可按最宽的那个算（用户点「启动内部 DSH」时，正好在跑的心跳自检不该把它降级掉）。
    */
   private startAllowed = false;
   private disposed = false;
   /**
    * 用户按过「停止服务器」：**不许**自动重连、也不许自动拉起，直到用户显式要求
-   * （点「启动服务器」/发消息/重启服务器，任何一条都会走 `bringUp` 清掉它）。
+   * （点「启动内部 DSH」/发消息/重启，任何一条都会走 `bringUp` 清掉它）。
    *
    * 与 `disposed` 分开：`disposed` 是"本窗口退出了"（心跳也停），这个是"后台是用户
    * 主动停的"——心跳要继续跑，别的窗口把后台重新起起来时这边要能自动接上。
    */
   private stoppedByUser = false;
   private state: SupervisorState | undefined;
+  /**
+   * 当前这一轮要连的目标（**粘性**，见文件头）。
+   *
+   * 本文件不做选路：`ensure({ target })` 把它记下来，供心跳（"要不要重连内部"）
+   * 与 `restart()`（只对内部有意义）判断。`"external"` 时本文件完全不碰 supervisor，
+   * **`undefined`（还没定过）同样不碰**——`autoConnect` 关掉且用户还没点过按钮时就是这一档。
+   */
+  private target: DshTarget | undefined;
   private launched = false;
   /** supervisor 报的**活连接数**（它才是"还有几个人在用"的唯一裁决者）。 */
   private clientCount = 1;
@@ -224,7 +244,7 @@ export class SupervisorManager {
   private readonly launcher: SupervisorLauncher;
 
   constructor(private readonly options: ManagerOptions) {
-    this.group = options.group ?? groupForConfig(options.url ?? "", options.command);
+    this.group = options.group ?? groupForConfig(options.command);
     this.directory = supervisorDirectory(this.group);
     this.launcher =
       options.launcher ??
@@ -296,7 +316,7 @@ export class SupervisorManager {
   staleLockHint(): string | undefined {
     const tail = this.logTail(20);
     if (/writer lock|timed out waiting/i.test(tail)) {
-      return "hint: dsh 可能在等一把遗留的 writer 锁（.credentials.yaml），用「DSH: 启动服务器」重试一次通常就好了";
+      return "hint: dsh 可能在等一把遗留的 writer 锁（.credentials.yaml），用「DSH: 重启内部 DSH」重试一次通常就好了";
     }
     return undefined;
   }
@@ -308,7 +328,7 @@ export class SupervisorManager {
    * `ownership` 只表示"这套是不是本窗口拉起的"，与"谁负责杀"无关。
    */
   sharedSummary(): { ownership: Ownership; serverPid?: number; hostCount: number } | undefined {
-    if (this.externalUrl) return { ownership: "external", hostCount: 1 };
+    if (this.target === "external") return this.externalUrl ? { ownership: "external", hostCount: 1 } : undefined;
     const state = this.state;
     if (!state) return undefined;
     return {
@@ -324,9 +344,9 @@ export class SupervisorManager {
 
   // ---------- 只读探测（绝不启动任何东西） ----------
 
-  /** 自动路径允许拉起一套吗（`dshChat.autoStart`，缺省 true）。 */
+  /** 自动路径允许拉起一套吗（`dshChat.autoConnect`，缺省 true）。 */
   canStart(): boolean {
-    return this.options.autoStart ?? true;
+    return this.options.autoConnect ?? true;
   }
 
   /**
@@ -351,6 +371,19 @@ export class SupervisorManager {
       supervisorPid: state.supervisorPid,
       serverPid: state.serverPid,
     };
+  }
+
+  /**
+   * 外部地址**此刻有没有人应答**（选路与连接条上"外部 DSH：可达/不可达"的唯一判据）。
+   *
+   * 与内部那套不同：外部服务器不归本扩展管，既没有进程可查、也没有会合文件可读，
+   * 所以判据只能是"这个地址上有没有 HTTP 服务"（401/403 也算有——见 `reachable`）。
+   * 没配地址时恒为 false，不产生任何网络请求。
+   */
+  async probeExternal(): Promise<boolean> {
+    const url = this.externalUrl;
+    if (!url) return false;
+    return this.reachable(url);
   }
 
   /**
@@ -408,18 +441,26 @@ export class SupervisorManager {
   // ---------- 主流程 ----------
 
   /**
-   * 确保有一个可用后台。
+   * 确保连上**这一轮的目标**。
    *
-   * 三条分支：外部模式只探测；内部模式"守护进程还在就接入，不在才（有许可时）拉起"。
+   * 两个分支由 `target` 决定（不是由"配没配 url"决定——那正是 2026-09-18 作废的旧口径）：
+   * 外部目标只探测那个地址；内部目标"守护进程还在就接入，不在才（有许可时）拉起"。
    * 全程幂等（`ensurePromise` 合并并发调用，许可按最宽的那个算）。
    *
-   * `options.start` 决定"后台不存在时允不允许拉一套"；省略时取 `dshChat.autoStart`。
-   * 不允许时会抛 `ServerNotRunningError`（界面据此切到"已停止 + 启动服务器"，
-   * 而不是当成连接失败去重试）。
+   * `options.start` 决定"后台不存在时允不允许拉一套"；省略时取 `dshChat.autoConnect`。
+   * 不允许时会抛 `ServerNotRunningError`（界面据此切到按钮态，而不是当成连接失败去重试）。
    */
   async ensure(options: EnsureOptions = {}): Promise<ServerInfo> {
+    this.target = options.target ?? this.target ?? "internal";
     const external = this.externalUrl;
-    if (external) {
+    if (this.target === "external") {
+      // 防御路径：界面上「连接外部 DSH」在没配地址时是置灰的，正常到不了这里。
+      // 真到了就按"没有可连的目标"处理（调用方切按钮态），而不是随便找个别的东西连。
+      if (!external) {
+        this.options.log("[supervisor] 目标选了外部，但没有配置 dshChat.url");
+        this.setStatus({ state: "stopped", detail: "external target without url" });
+        throw new ServerNotRunningError();
+      }
       this.setStatus({ state: "starting", detail: `connecting ${external}` });
       // 外部地址**同样等到底**（没有"到点就报连不上"这一档）：连上，或用户点「停止连接」。
       // 口径与内部模式一致——状态只由真实事件与用户按钮改变（用户 2026-09-14 口径）。
@@ -434,8 +475,17 @@ export class SupervisorManager {
       return info;
     }
     // 已经就绪**且长连接还在**才算数：只看状态会在"地址还在、连接没了"时误判成已完成
-    // （实测：restart 之后状态是 ready、连接却没重建，于是再也收不到状态推送）
-    if (this.status.state === "ready" && this.status.info && this.connection?.connected) return this.status.info;
+    // （实测：restart 之后状态是 ready、连接却没重建，于是再也收不到状态推送）。
+    // 还要确认这份就绪信息**就是内部那一套**：目标刚被用户从外部切回内部时，
+    // 旧状态里那份 external 的 info 不能当数（它没有 socket 长连接可言）。
+    if (
+      this.status.state === "ready" &&
+      this.status.info &&
+      this.status.info.ownership !== "external" &&
+      this.connection?.connected
+    ) {
+      return this.status.info;
+    }
     if (options.start ?? this.canStart()) this.startAllowed = true;
     this.ensurePromise ??= this.bringUp().finally(() => {
       this.ensurePromise = undefined;
@@ -526,8 +576,8 @@ export class SupervisorManager {
 
     // ② 守护进程不在：**只有拿到许可**才拉一套
     if (!this.startAllowed) {
-      this.options.log("[supervisor] 后台没有在跑，且本次调用不允许启动（dshChat.autoStart 关掉时只显示启动按钮）");
-      this.setStatus({ state: "stopped", detail: "@serverNotRunning" });
+      this.options.log("[supervisor] 后台没有在跑，且本次调用不允许启动（dshChat.autoConnect 关掉时只显示按钮）");
+      this.setStatus({ state: "stopped", detail: "server not running" });
       throw new ServerNotRunningError();
     }
 
@@ -704,8 +754,8 @@ export class SupervisorManager {
    * 心跳：只做"连接还在吗 / 该不该重连"。
    *
    * **不做**旧实现那套"判还有没有别的窗口、决定要不要杀"——那件事已经由 supervisor
-   * 按连接数自己裁决了。也**不做**"后台不在就自己拉一套"，除非 `autoStart` 允许
-   * （见文件头的启动决策）：关掉自动启动的用户要的是"没启动就显示按钮"。
+   * 按连接数自己裁决了。也**不做**"后台不在就自己拉一套"，除非 `autoConnect` 允许
+   * （见文件头的启动决策）：关掉自动连接的用户要的是"没连就没连，界面给按钮"。
    */
   private startHeartbeat(): void {
     this.stopHeartbeat();
@@ -729,7 +779,9 @@ export class SupervisorManager {
       this.options.log(`[supervisor] 心跳自检失败：${error instanceof Error ? error.message : String(error)}`);
     }
     if (this.connection?.connected) return;
-    if (this.externalUrl) return;
+    // 目标不是内部（外部备用、或还没定过）→ **一个手指头都不碰 supervisor**：
+    // "要不要重试外部"是控制器那侧按粘性目标决定的（本文件只有内部那套的运维知识）。
+    if (this.target !== "internal") return;
     // 连接没了：先看会合文件里那一套还在不在；在就接上（连接本身就是"我在用"）
     const state = readState(this.directory);
     if (state && isProcessAlive(state.supervisorPid)) {
@@ -737,22 +789,22 @@ export class SupervisorManager {
       await this.connect(state);
       return;
     }
-    // 守护进程不在了：关掉自动启动、或用户刚按过「停止服务器」时，**不许**自己拉一套
+    // 守护进程不在了：关掉自动连接、或用户刚按过「停止服务器」时，**不许**自己拉一套
     if (this.stoppedByUser || !this.canStart()) {
       if (this.status.state !== "stopped") {
         this.options.log(
           this.stoppedByUser
-            ? "[supervisor] 用户已停止服务器：不自动拉起（界面给「启动服务器」）"
-            : "[supervisor] 守护进程不在了；已关闭自动启动，不自行拉起（界面给「启动服务器」）",
+            ? "[supervisor] 用户已停止服务器：不自动拉起（界面给按钮）"
+            : "[supervisor] 守护进程不在了；已关闭自动连接，不自行拉起（界面给按钮）",
         );
-        this.setStatus({ state: "stopped", detail: "@serverNotRunning" });
+        this.setStatus({ state: "stopped", detail: "server not running" });
       }
       return;
     }
     this.options.log("[supervisor] 会合文件不在了（或 supervisor 已退出），重新确保一套");
     this.setStatus({ state: "stopped" });
     try {
-      await this.ensure({ start: true });
+      await this.ensure({ start: true, target: "internal" });
     } catch (error) {
       this.options.log(`[supervisor] 重新确保后台失败：${error instanceof Error ? error.message : String(error)}`);
     }
@@ -766,17 +818,25 @@ export class SupervisorManager {
    * 与旧实现的关键差别：旧的是扩展自己 `taskkill` + 自己起进程；现在是**请求**，
    * 由唯一持有者执行。代价是其余窗口会短暂断连（它们的心跳会发现新地址并重连）。
    */
-  async restart(): Promise<ServerInfo> {
-    if (this.externalUrl) {
-      const info = { baseUrl: this.externalUrl, owned: false, ownership: "external" as const };
-      this.setStatus({ state: "ready", info });
-      return info;
+  async restart(options: { target?: DshTarget } = {}): Promise<ServerInfo> {
+    // 判据是**当前目标**而不是"配没配 url"：新机制下配了 url 也可能正跑着内部那套
+    // （内部优先），那时「重启」照样该重起内部 dsh。反过来，目标是外部时本扩展
+    // 没有任何可重启的东西（那台服务器不归它管），如实记一条日志就好。
+    //
+    // `options.target` 由控制器显式传入：界面上「重启内部 DSH」在**内部那套在跑**时就给，
+    // 哪怕当前连的是外部备用——点它就是"切到内部并把它重起一个"。不接这个参数的话，
+    // 管理器记的上一次目标（external）会把这次重启变成静默空转。
+    this.target = options.target ?? this.target;
+    if (this.target !== "internal") {
+      this.options.log("[supervisor] 当前目标不是内部 DSH，「重启」不适用（外部服务器不归本扩展管）");
+      if (this.status.info) return this.status.info;
+      throw new Error("restart is only available for the internal DSH");
     }
     const previous = this.state?.serverPid;
     if (!this.connection?.connected) {
       this.options.log("[supervisor] 重启请求：连接不在，先重新确保一套");
-      // 「重启服务器」是**用户显式动作**：允许拉起一套（关掉自动启动时也算数）
-      return this.ensure({ start: true });
+      // 「重启服务器」是**用户显式动作**：允许拉起一套（关掉自动连接时也算数）
+      return this.ensure({ start: true, target: "internal" });
     }
     this.options.log("[supervisor] 重启请求：交给 supervisor 执行");
     this.setStatus({ state: "starting", detail: "restarting server" });
@@ -807,7 +867,7 @@ export class SupervisorManager {
         const serving = await this.usable(state);
         if (serving) {
           this.options.log(`[supervisor] 重启完成：${state.baseUrl}（server=${state.serverPid ?? "?"}）`);
-          return this.ensure({ start: true });
+          return this.ensure({ start: true, target: "internal" });
         }
       }
       this.options.log("[supervisor] 等新地址被用户中止（「停止连接」）");
@@ -835,7 +895,7 @@ export class SupervisorManager {
     }
     connection?.close();
     this.connection = undefined;
-    this.setStatus({ state: "stopped", detail: "@serverStopped" });
+    this.setStatus({ state: "stopped", detail: "stopped by user" });
   }
 
   /** 旧接口名（扩展里 `dispose()` 语义）：**只关自己的连接**，不杀任何进程。 */

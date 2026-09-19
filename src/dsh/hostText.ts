@@ -35,25 +35,19 @@ function resolveMarker(text: string): string {
       );
     case "authTokenRejected":
       return vscode.l10n.t(
-        "The server requires authentication and the token obtained automatically was rejected. Restart it with “DSH: Restart Server” from the Command Palette.",
+        "The server requires authentication and the token obtained automatically was rejected. Restart it with “DSH: Restart Internal DSH” from the Command Palette.",
       );
     case "serverSpawnFailed":
       return vscode.l10n.t("Could not start the dsh process: {0}", arg);
     case "serverNotReady":
       return vscode.l10n.t(
-        "The background server did not become ready (the rendezvous file has no address or token yet). Try “Restart Server”, or check the logs.",
+        "The background server did not become ready (the rendezvous file has no address or token yet). Try “Restart Internal DSH”, or check the logs.",
       );
     case "serverUnreachable":
       return vscode.l10n.t(
         "Cannot reach the DSH server at {0} yet (retrying until it answers or you stop connecting). Make sure dsh web is running there.",
         arg,
       );
-    // 这一对会经「DSH: 显示诊断信息」的 `Detail:` 那一行外溢到 VS Code 原生弹窗，
-    // 所以也要在这里登记（否则用户看到的是裸 `@serverNotRunning`）
-    case "serverNotRunning":
-      return vscode.l10n.t("The DSH server is not running. Click “Start server” to launch one.");
-    case "serverStopped":
-      return vscode.l10n.t("The DSH server has been stopped.");
     case "serverLogTail":
       return vscode.l10n.t("Log tail:\n{0}", arg);
     default:

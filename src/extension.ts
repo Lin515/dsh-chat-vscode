@@ -26,24 +26,21 @@ let output: vscode.OutputChannel | undefined;
 const DEFAULT_COMMAND = "dsh web --port 0 --no-open";
 
 /**
- * 这台机器上"共享同一个后台"的分组键：**由有效服务器配置算出来**。
+ * 这台机器上"共享同一个后台"的分组键：**只按内部启动命令算**（`dshChat.command`）。
  *
  * 为什么需要它：VS Code 的设置是有作用域的（默认 / 工作区 / 工作区文件夹），所以
- * **不同窗口的 `dshChat.url` / `dshChat.command` 可能不同**——例如 A、B 两个工作区
- * 各自写了"用内部 dsh"，而全局用户设置是"用外部 URL"，其余窗口就该走外部。
- * 若所有窗口共用一份会合信息，配置不同的窗口会互相抢后台（配置外部的那位会无视
- * 自己那份配置，去接入别人起的内部后台）。
+ * **不同窗口的 `dshChat.command` 可能不同**——那就该各用各的内部后台，不能互相抢。
  *
- * 所以按**有效配置**分组：有效配置相同的窗口（包括"来源不同但有效值相同"）共用一个后台；
- * 不同的各管各的。`url` 非空时只按 url 分组——那时 `command` 与超时本来就不生效。
+ * `dshChat.url`（外部备用地址）**不进分组键**（2026-09-18 改）：它只是内部不可用时的
+ * 备用目标，而会合目录是**内部后台**的身份。若还算进去，配了 url 的窗口会去另一个目录
+ * 找内部后台 → 判成"内部不存在" → 自己再起一套；用户改一次 url 也会与既有后台失联。
  *
  * **算法只有一份**（`groupForConfig`）：探针也要算同一个键，两处漂移就会变成
  * "两个窗口互相看不见对方的后台、各起一个"。
  */
 function leaseGroupKey(config: () => vscode.WorkspaceConfiguration): string {
-  const url = (config().get<string>("url") ?? "").trim().replace(/\/+$/, "");
   const command = config().get<string>("command") || DEFAULT_COMMAND;
-  return groupForConfig(url, command);
+  return groupForConfig(command);
 }
 
 function outputChannel(): vscode.OutputChannel {
@@ -78,9 +75,9 @@ export function activate(context: vscode.ExtensionContext): void {
     url: config().get<string>("url") ?? "",
     command: config().get<string>("command") || DEFAULT_COMMAND,
     idleSec: config().get<number>("supervisorIdleSec") ?? IDLE_SEC_DEFAULT,
-    // `autoStart` 关掉时，扩展**不许**自己拉起后台（只在后台已在跑时自动接上）；
-    // 用户显式动作（发消息 / 点「启动服务器」）不受它约束，见 supervisorManager 文件头
-    autoStart: config().get<boolean>("autoStart") ?? true,
+    // `autoConnect` 关掉时，扩展**不许**自动选路连上（激活期只探测、显示按钮）；
+    // 用户显式动作（发消息 / 点「启动内部 DSH」）不受它约束，见 supervisorManager 文件头
+    autoConnect: config().get<boolean>("autoConnect") ?? true,
     workspace: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
     launcher,
     log,
@@ -188,13 +185,18 @@ function registerContributions(context: vscode.ExtensionContext, host: Contribut
     }),
     // 「停止生成」停最近活动窗口正在跑的这一轮（后台继续）
     vscode.commands.registerCommand("dshChat.stop", () => controller.stopActive()),
-    // 「启动服务器」：**用户显式要求**，允许在后台不存在时拉起一套
-    // （关掉 `dshChat.autoStart` 时，这就是界面上那个「启动服务器」按钮的落点）
-    vscode.commands.registerCommand("dshChat.startServer", () => controller.startServer()),
+    // 「启动内部 DSH」：**用户显式要求**，允许在内部后台不存在时拉起一套
+    // （关掉 `dshChat.autoConnect` 时，这就是界面上那枚按钮的落点）
+    vscode.commands.registerCommand("dshChat.startServer", () => controller.startInternal()),
+    // 两个「连接…」：只接上已经在跑的那一套，绝不顺手拉起（外部地址没配时后者报一条日志）
+    vscode.commands.registerCommand("dshChat.connectInternal", () => controller.connectInternal()),
+    vscode.commands.registerCommand("dshChat.connectExternal", () => controller.connectExternal()),
     vscode.commands.registerCommand("dshChat.restartServer", () => controller.restart()),
-    // 「停止服务器」：请 supervisor 把 dsh 一起收场并退出（**扩展自己不 taskkill**）
+    // 「停止内部 DSH」：请 supervisor 把 dsh 一起收场并退出（**扩展自己不 taskkill**），
+    // 同时收掉本窗口的连接——只发停止请求不收连接的话，客户端会在 dsh 消失后一直重连，
+    // 界面反复跳回"连接中"（见 `ChatController.stopServer`）
     vscode.commands.registerCommand("dshChat.stopServer", async () => {
-      await server.stopAndExit();
+      await controller.stopServer();
       await vscode.window.showInformationMessage(
         vscode.l10n.t("Stopped the DSH server and its supervisor process."),
       );
@@ -328,16 +330,16 @@ function registerContributions(context: vscode.ExtensionContext, host: Contribut
       ) {
         controller.refreshAppearance();
       }
-      // 服务器两件套（`dshChat.url` / `dshChat.command`）改了要**真正换一个后台**：
-      // 配置项只在启动时读一次，不重连的话用户改了 `dshChat.url`（或启动命令）
-      // 却仍连着旧服务器。
-      // **服务器配置不再就地热切换**（用户口径 2026-09-14：太复杂，改成重载窗口生效）。
-      // 原地切需要"断干净 + 按新配置接上 + 换分组 + 别把别人的后台带走"一整套时序，
-      // 收益却只是省一次窗口重载——不值得。这里的提示是**唯一**的生效入口，
-      // 配置项说明里也写明了「改完需要重载窗口」。
+      // 连接行为这三项（`dshChat.url` / `dshChat.command` / `dshChat.autoConnect`）改了要
+      // **重载窗口**：它们只在激活期读一次，不重载的话用户改了 `dshChat.url`（或启动命令、
+      // 或自动连接开关）却仍连着旧目标。**连接配置不再就地热切换**（用户口径 2026-09-14：
+      // 太复杂，改成重载窗口生效）。原地切需要"断干净 + 按新配置接上 + 换分组 + 别把别人的
+      // 后台带走"一整套时序，收益却只是省一次窗口重载——不值得。这里的提示是**唯一**的
+      // 生效入口，配置项说明里也写明了「改完需要重载窗口」。
       if (
         event.affectsConfiguration("dshChat.url") ||
-        event.affectsConfiguration("dshChat.command")
+        event.affectsConfiguration("dshChat.command") ||
+        event.affectsConfiguration("dshChat.autoConnect")
       ) {
         void promptServerReload();
       }
@@ -369,7 +371,7 @@ function startup(
   // `dsh web` 的 boot 会去锁 `.credentials.yaml`，等 30 秒拿不到就把整个进程带走
   // （用户实测的 `atomic-write: timed out waiting for the writer lock`）。
   // 库本身刻意不回收孤儿锁，所以这一步是扩展的责任。
-  const autoStart = config().get<boolean>("autoStart") ?? true;
+  const autoConnect = config().get<boolean>("autoConnect") ?? true;
   void clearStaleDocumentLocks(log)
     .then((result) => {
       if (result.cleared.length) {
@@ -387,11 +389,11 @@ function startup(
       log(`[lock] 残留锁检测失败：${error instanceof Error ? error.message : String(error)}`);
     })
     .finally(() => {
-      // 自动连接的决策全在控制器里（用户 2026-09-14 口径）：
-      // - `autoStart` 开着：没有就起一套、有就复用（原行为）；
-      // - 关着：**先判断后台在不在跑**——在跑（守护进程 + dsh）才自动重连，
-      //   不在就只切到"已停止"，界面显示「启动服务器」，扩展绝不自己拉起一套。
-      void controller.autoConnect(autoStart);
+      // 自动连接的决策全在控制器里（用户 2026-09-18 改）：
+      // - `autoConnect` 开着：**选一次路**（内部在跑 → 内部；否则外部配了且可达 → 外部；
+      //   都没有 → 拉起一套内部），此后目标粘住不放；
+      // - 关着：完全不自动连——只探测两轴、把连接条切到按钮态等用户点。
+      void controller.autoConnect(autoConnect);
     });
 }
 

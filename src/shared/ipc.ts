@@ -207,20 +207,26 @@ export type WebviewToHost =
   /** 复制到剪贴板（webview 里 navigator.clipboard 受限，交给宿主）。 */
   | { type: "copy"; text: string }
   | { type: "showLogs" }
-  | { type: "restartServer" }
+  | { type: "restartInternal" }
   /**
-   * 「启动服务器」：**用户显式**要求拉起一套后台（关掉 `dshChat.autoStart` 时界面上的按钮）。
+   * 「启动内部 DSH」：**用户显式**要求拉起一套内部后台（按钮态里内部不在时的主动作）。
    *
-   * 与 `reconnectNow` 的分工：这个允许"后台不存在就起一套"，那个只允许"接上已经在跑的"。
+   * 与两个「连接…」的分工：只有这个允许"内部不存在就起一套"，那两个只接上已经在跑的。
    */
-  | { type: "startServer" }
-  /** 「尝试连接」：只去接上**已经在跑**的后台，绝不顺手拉起一套。 */
-  | { type: "reconnectNow" }
+  | { type: "startInternal" }
+  /** 「连接内部 DSH」：只去接上**已经在跑**的内部后台，绝不顺手拉起一套。 */
+  | { type: "connectInternal" }
+  /**
+   * 「连接外部 DSH」：去连 `dshChat.url`（备用地址）。
+   *
+   * 地址没配时界面上这枚按钮是置灰的（点击不会到宿主），连接失败只进日志与连接条。
+   */
+  | { type: "connectExternal" }
   /**
    * 「停止连接」：停掉**正在进行的连接**（中止在途那一轮 + 关掉自动重连）。
    *
    * 界面在**任何**连接中的状态都会给这个按钮（`connection === "connecting"`），
-   * 不限于"重连循环在跑"——用户 2026-09-15 口径。后台不动，可随时再点尝试连接。
+   * 不限于"重连循环在跑"——用户 2026-09-15 口径。后台不动，可随时再点连接按钮。
    */
   | { type: "stopReconnect" }
   /** 输入 / 替换外部服务器的访问令牌（服务端要求授权时使用）。 */

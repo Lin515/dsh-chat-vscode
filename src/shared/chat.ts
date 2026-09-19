@@ -16,15 +16,29 @@ import type {
 /**
  * 界面可见的连接状态。
  *
- * `stopped` 与 `error` 的区别是**要不要用户动手**：
- * - `stopped` = 后台根本没在跑（关掉自动启动后的常态）→ 界面显示「启动服务器」；
- * - `error` = 后台在跑/尝试过，但这次连不上 → 界面显示原因 + 「尝试连接」。
+ * `stopped` 与 `error` 的区别是**要不要用户动手**（2026-09-18 重新划界）：
+ * - `stopped` = **按钮态**：没连、也没在试（关掉自动连接、用户点过停止、内部那套不在）
+ *   → 界面按两轴探测结论给「启动内部 DSH」/「连接内部 DSH」/「连接外部 DSH」；
+ * - `error` = **需要用户动作的失败**（启动类：spawn 失败；认证类：要令牌/令牌被拒）
+ *   → 界面显示原因 + 同一组按钮，**不自动重试**。
  *
- * 两者分开是用户 2026-09-14 的口径：关掉 `dshChat.autoStart` 之后，扩展**不许**在
- * 后台不存在时自己拉起一套，界面上要明明白白给一个「启动服务器」的按钮，
- * 而不是把"没启动"渲染成"正在连接…"（那样用户只会以为卡住了）。
+ * 连接类失败（地址连不上、socket 断）**不进这两档**：它留在 `connecting` 里一轮轮重试
+ * （没有自动停止的时间限制，只由用户点「停止连接」结束）。
  */
 export type ConnectionState = "connecting" | "ready" | "error" | "stopped";
+
+/**
+ * 这一轮连哪个 DSH（用户 2026-09-18 口径：**内部优先、外部备用**）。
+ *
+ * 判定与"粘性"（自动路径选一次就不再换）见 `dsh/connectTarget.ts` 与 `design-supervisor.md` §9。
+ */
+export type DshTarget = "internal" | "external";
+
+/** 外部轴的探测结论（连接条右半句"外部 DSH：…"）。 */
+export type ExternalState = "unconfigured" | "reachable" | "unreachable";
+
+/** 连接阶段：正在**拉起**一套内部 DSH，还是正在**连**已有的那一个。 */
+export type ConnectPhase = "starting" | "connecting";
 
 /**
  * 附件种类。
@@ -753,29 +767,20 @@ export interface ChatState {
   /** 连接失败/服务器异常时的说明文本。 */
   connectionDetail?: string;
   /**
-   * 自动重连循环正在跑（`connection === "connecting"` 时的补充信息）。
+   * 内部后台（守护进程）此刻是不是在跑。
    *
-   * 重连**没有总超时**（用户 2026-09-14 口径：只要守护进程与 dsh 还在，就一直试）。
-   *
-   * **它不是「停止连接」按钮的开关**（2026-09-15 改）：那个按钮绑的是
-   * `connection === "connecting"`——首轮连接、掉线后的循环、外部地址的等待，都属于
-   * "正在连接"，用户都得能停下。这个字段只回答"循环还在不在跑"，用于连接条的文案。
+   * 与 `connection` 正交：按钮态 + `internalRunning` 表示"内部那套在跑，但没连，
+   * 用户可以点「连接内部 DSH」"；不在了就是「启动内部 DSH」。
    */
-  reconnecting?: boolean;
-  /**
-   * 后台（守护进程 + dsh）此刻是不是真的在跑。
-   *
-   * 与 `connection` 正交：`stopped` + `serverRunning` 表示"后台在跑，但用户按了停止重连"，
-   * 界面据此给「尝试连接」而不是「启动服务器」。
-   */
-  serverRunning?: boolean;
-  /**
-   * 当前是**外部服务器**模式（`dshChat.url` 非空）。
-   *
-   * 界面靠它决定"没连上时给哪个按钮"：外部服务器不由本扩展启动，所以 `stopped` 态下
-   * 给的是「尝试连接」而不是「启动服务器」。
-   */
-  externalServer?: boolean;
+  internalRunning?: boolean;
+  /** 外部备用地址的探测结论（决定连接条右半句与「连接外部 DSH」是否可点）。 */
+  externalState?: ExternalState;
+  /** 配置里的外部地址（连接中条上写"正在连接外部 DSH（<地址>）…"用）。 */
+  externalAddress?: string;
+  /** 当前粘性目标（连接中条上据此写"内部/外部"）；未选定（`autoConnect` 关掉且没点过）时不下发。 */
+  connectTarget?: DshTarget;
+  /** 连接阶段（连接中才有）：正在拉起内部 DSH，还是正在连已有的。 */
+  connectPhase?: ConnectPhase;
   /** 外部服务器要求授权且尚未拿到有效令牌：界面显示「输入令牌」入口。 */
   needsToken?: boolean;
   serverUrl?: string;

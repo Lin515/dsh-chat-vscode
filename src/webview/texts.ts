@@ -315,11 +315,22 @@ export interface Texts {
 
   connecting: string;
   connectionFailed: string;
-  /** 连接条按钮：手动去连一次（只接上已在跑的后台/外部地址，不负责拉起）。 */
-  reconnect: string;
-  restartServer: string;
-  /** 连接条按钮：用户显式拉起后台（关掉 `dshChat.autoStart` 时的主要入口）。 */
-  startServer: string;
+  /** 连接条按钮：用户显式拉起一套**内部**后台（内部不存在时的主动作）。 */
+  startInternal: string;
+  /** 连接条按钮：接上**已经在跑**的内部后台（不负责拉起）。 */
+  connectInternal: string;
+  /** 连接条按钮：连 `dshChat.url` 那个备用地址。 */
+  connectExternal: string;
+  /** 连接条按钮：让守护进程把内部 dsh 重起一个（外部目标没有"重启"可言）。 */
+  restartInternal: string;
+  /** 「连接外部 DSH」置灰时的悬停提示（没配 `dshChat.url`）。 */
+  externalDisabledHint: string;
+  /** 连接条：正在**拉起**一套内部后台。 */
+  startingInternal: string;
+  /** 连接条：正在连已经在跑的内部后台。 */
+  connectingInternal: string;
+  /** 连接条：正在连外部备用地址（带地址）。 */
+  connectingExternal: (baseUrl: string) => string;
   /**
    * 连接条按钮：停掉**正在进行的连接**。
    *
@@ -330,14 +341,17 @@ export interface Texts {
   stopReconnect: string;
   /** 连接条按钮：打开扩展的输出通道看原因。 */
   showLogs: string;
-  /** 连接条：后台（守护进程 + dsh）没有在运行。 */
-  serverNotRunning: string;
-  /** 连接条：用户刚停止过服务器。 */
-  serverStopped: string;
-  /** 连接条：正在一轮轮重连（没有总超时）。 */
-  reconnecting: string;
-  /** 连接条：用户按了「停止连接」，而后台还在跑（可以再点「尝试连接」）。 */
-  reconnectStopped: string;
+  /**
+   * 连接条（按钮态）的**两轴**状态短语：左轴内部、右轴外部，拼成
+   * 「内部 DSH：未运行 · 外部 DSH：可达」这样一行（见 `App.tsx` 的 `ConnectionBar`）。
+   */
+  statusInternalRunning: string;
+  statusInternalNotRunning: string;
+  statusExternalReachable: string;
+  statusExternalUnreachable: string;
+  statusExternalUnconfigured: string;
+  /** 两轴之间的分隔符（中英都是 ` · `）。 */
+  statusSeparator: string;
   /** 外部服务器要求授权时的「输入令牌」按钮。 */
   enterToken: string;
   /** 连接失败条：外部服务器要令牌，而自动获取的那个没被接受。 */
@@ -735,15 +749,22 @@ const zh: Texts = {
 
   connecting: "正在连接…",
   connectionFailed: "无法连接 DSH 服务器",
-  reconnect: "尝试连接",
-  restartServer: "重启服务器",
-  startServer: "启动服务器",
+  startInternal: "启动内部 DSH",
+  connectInternal: "连接内部 DSH",
+  connectExternal: "连接外部 DSH",
+  restartInternal: "重启内部 DSH",
+  externalDisabledHint: "未配置 dshChat.url，没有可连的外部 DSH",
+  startingInternal: "正在启动内部 DSH…",
+  connectingInternal: "正在连接内部 DSH…",
+  connectingExternal: (baseUrl) => `正在连接外部 DSH（${baseUrl}）…`,
   stopReconnect: "停止连接",
   showLogs: "查看日志",
-  serverNotRunning: "后台服务器没有在运行。点「启动服务器」拉起一套。",
-  serverStopped: "DSH 服务器已停止。",
-  reconnecting: "正在连接…",
-  reconnectStopped: "已停止连接。可点「尝试连接」重新连接。",
+  statusInternalRunning: "内部 DSH：运行中",
+  statusInternalNotRunning: "内部 DSH：未运行",
+  statusExternalReachable: "外部 DSH：可达",
+  statusExternalUnreachable: "外部 DSH：不可达",
+  statusExternalUnconfigured: "外部 DSH：未配置",
+  statusSeparator: " · ",
   enterToken: "输入令牌",
   authNeedsToken:
     "外部 DSH 服务器需要访问令牌：请点「输入令牌」填入 dsh web 启动时打印的 token（或命令面板「DSH: 输入访问令牌」）。",
@@ -1059,15 +1080,22 @@ const en: Texts = {
 
   connecting: "Connecting…",
   connectionFailed: "Cannot reach the DSH server",
-  reconnect: "Connect",
-  restartServer: "Restart server",
-  startServer: "Start server",
+  startInternal: "Start internal DSH",
+  connectInternal: "Connect to internal DSH",
+  connectExternal: "Connect to external DSH",
+  restartInternal: "Restart internal DSH",
+  externalDisabledHint: "dshChat.url is not set, so there is no external DSH to connect to",
+  startingInternal: "Starting the internal DSH…",
+  connectingInternal: "Connecting to the internal DSH…",
+  connectingExternal: (baseUrl) => `Connecting to the external DSH (${baseUrl})…`,
   stopReconnect: "Stop connecting",
   showLogs: "Show logs",
-  serverNotRunning: "The DSH server is not running. Click “Start server” to launch one.",
-  serverStopped: "The DSH server has been stopped.",
-  reconnecting: "Connecting…",
-  reconnectStopped: "Stopped connecting. Click “Connect” to try again.",
+  statusInternalRunning: "Internal DSH: running",
+  statusInternalNotRunning: "Internal DSH: not running",
+  statusExternalReachable: "External DSH: reachable",
+  statusExternalUnreachable: "External DSH: unreachable",
+  statusExternalUnconfigured: "External DSH: not configured",
+  statusSeparator: " · ",
   enterToken: "Enter token",
   authNeedsToken:
     "The external DSH server requires an access token: click “Enter token” and paste the token printed by dsh web (or run “DSH: Enter Access Token” from the Command Palette).",
@@ -1306,10 +1334,6 @@ function resolveMarker(text: string, texts: Texts): string {
       return texts.toolGeneric;
     case "connectionLost":
       return texts.connectionLost;
-    case "serverNotRunning":
-      return texts.serverNotRunning;
-    case "serverStopped":
-      return texts.serverStopped;
     case "authNeedsToken":
       return texts.authNeedsToken;
     case "authTokenRejected":

@@ -1,11 +1,9 @@
 {
   "The external DSH server requires an access token: click “Enter token” and paste the token printed by dsh web (or run “DSH: Enter Access Token” from the Command Palette).": "外部 DSH 服务器需要访问令牌：请点「输入令牌」填入 dsh web 启动时打印的 token（或命令面板「DSH: 输入访问令牌」）。",
-  "The server requires authentication and the token obtained automatically was rejected. Restart it with “DSH: Restart Server” from the Command Palette.": "服务器要求授权，且自动获取的令牌未被接受。请用命令面板「DSH: 重启服务器」重启它。",
+  "The server requires authentication and the token obtained automatically was rejected. Restart it with “DSH: Restart Internal DSH” from the Command Palette.": "服务器要求授权，且自动获取的令牌未被接受。请用命令面板「DSH: 重启内部 DSH」重启它。",
   "Could not start the dsh process: {0}": "启动 dsh 进程失败：{0}",
-  "The background server did not become ready (the rendezvous file has no address or token yet). Try “Restart Server”, or check the logs.": "后台没有就绪（会合文件里还没有地址或令牌）。可点「重启服务器」重试，或用「查看日志」看原因。",
+  "The background server did not become ready (the rendezvous file has no address or token yet). Try “Restart Internal DSH”, or check the logs.": "后台没有就绪（会合文件里还没有地址或令牌）。可点「重启内部 DSH」重试，或用「查看日志」看原因。",
   "Cannot reach the DSH server at {0} yet (retrying until it answers or you stop connecting). Make sure dsh web is running there.": "连不上 {0} 上的 DSH 服务器（会一直重试，直到它应答或你点「停止连接」）。请确认该地址上运行着 dsh web。",
-  "The DSH server is not running. Click “Start server” to launch one.": "后台服务器没有在运行。请点「启动服务器」拉起一套。",
-  "The DSH server has been stopped.": "DSH 服务器已停止。",
   "Log tail:\n{0}": "日志尾部：\n{0}",
 
   "Access token rejected": "访问令牌无效",

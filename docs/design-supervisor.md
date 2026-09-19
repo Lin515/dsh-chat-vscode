@@ -40,8 +40,8 @@
 | R4 | 找不到就启动、启动不重复 | 首个窗口启动 supervisor（并发时靠 OS 锁保证只有一个赢）；后续窗口只连接 |
 | R5 | supervisor 崩了能自愈 | 强杀 supervisor 后，任一窗口在下一次自检时发现并重新拉起；强杀后遗留的 dsh 被回收（不占端口） |
 | R6 | 用户仍能掌控 | `DSH: 停止服务器`（立刻停 dsh+supervisor）、`DSH: 重启服务器`、`DSH: 清理残留进程`、诊断命令都保留 |
-| R7 | 配置生效路径不变 | `dshChat.command` / `url` / `supervisorIdleSec` 语义不变；`autoStart` 的**语义在 2026-09-14 被明确并收紧**（见 §8，用户口径） |
-| R8 | **关掉自动启动时不乱启动**（§8） | 扩展激活后先判断后台在不在跑：在跑就一直重连（**没有总超时、也没有单次超时**，用户按「停止连接」才停），没跑就只显示「启动服务器」按钮 |
+| R7 | 配置生效路径不变 | `dshChat.command` / `url` / `supervisorIdleSec` 语义不变；`autoStart` 的**语义在 2026-09-14 被明确并收紧**（见 §8，用户口径），**2026-09-18 改名 `autoConnect` 并再次收紧**（见 §9） |
+| R8 | **关掉自动连接时不乱启动**（§8，§9 调整了按钮口径） | 扩展激活后先判断两条轴（内部在不在跑、外部可不可达）：**`autoConnect` 开着**就按 §9.2 选一次路；**关着**则只显示按钮，一个进程都不起 |
 | R9 | **多窗口复用会合文件里的令牌**（§8.2） | 非启动窗口（peer）也用 `supervisor.json` 里的 `token` 换 cookie，不再弹「输入令牌」 |
 
 ## 3. 形态与协议
@@ -239,13 +239,18 @@ VS Code 窗口 3 ─┘                                          │
 
 ### 4.3 与"外部服务器"（`dshChat.url`）的关系
 
-完全不变：`url` 非空 = 外部模式，**不启动 supervisor、不写状态文件、不连 socket、
-不参与空闲判定**，只连用户给的地址。supervisor 只服务"内部后台"这一种情形。
+> **2026-09-18 已改写**（原文：`url` 非空 = 外部模式，不启动 supervisor、只连用户给的地址）。
+> 现在 `url` 只是**备用地址**，是否走外部由**选路**决定，详见 §9；本文件的 supervisor 只服务
+> "内部后台"这一种情形这条不变——`target === "external"` 时管理器的内部那套逻辑一步都不跑
+> （心跳、`restart()`、socket 全部门在目标判据后面）。
 
 ### 4.4 配置分组
 
-沿用原 `leaseGroupKey` 的算法，但现在住在 `supervisorManager.groupForConfig`（按有效
-`url`/`command` 算 sha256 前 12 位）：有效配置不同的窗口用不同的目录、各自一个 supervisor。
+分组键**只按 `command`**（`supervisorManager.groupForConfig`，sha256 前 12 位）：
+它是**内部后台**的身份。2026-09-18 之前还把 `url` 算进去（`url` 非空时只按 url 分组），
+那个口径随"内部优先、外部备用"作废——否则配了 `url` 的窗口会去另一个会合目录找内部后台、
+判定"内部不存在"再起一套，用户改一次 `url` 也会与既有后台失联。
+
 配置改了 → 现有"提示重载窗口"的口径不变（改配置不再就地热切换，这条已经定了）。
 
 > 名字里的 "lease" 是个历史包袱：它与被删掉的会合租约**没有关系**，只是"会合目录的分组键"。
@@ -382,6 +387,10 @@ supervisor → 连 socket 并 ping → 退出时关连接），行为与扩展�
 
 ## 8. 启动决策、自动重连与多窗口令牌（2026-09-14 实现）
 
+> **按钮口径与"外部服务器"这一段已被 §9 取代**（2026-09-18：内部优先 / 外部备用、
+> `autoStart` 改名 `autoConnect`、连接条按钮换成内部/外部 DSL）。本节保留的是当时
+> 实测出来的机制结论（令牌来自会合文件、只接入不另起、等待没有时长上限），它们仍然成立。
+
 > 用户口径（原文要点）：**"扩展启动后，不要无脑重连，而是应当先判断后台 dsh 是否已经
 > 启动；若没有启动，则应直接显示启动服务器按钮……在有守护进程和 DSH 后台进程在的时候，
 > 才自动尝试重连（去掉重连超时时间，并提供停止重连/尝试重连按钮，由用户手动调整）。
@@ -466,13 +475,17 @@ controller 的认证链此前按 `info.owned`（"是不是本窗口拉起的"）
 | `scripts/supervisorPolicy.test.ts`（`npm test`） | 没有许可时 `ensure()` 抛 `ServerNotRunningError` 且**启动器调用 0 次**；有许可才拉起；守护进程活着时不重复拉起（peer）；地址/令牌来自会合文件；`probeRunning()` 的三个事实判据；**第 5 组**：等就绪没有时长上限、期间一次 spawn 都没有、`cancelWaiting()` 后立刻以 `WaitCancelledError` 结束；**第 6 组**：外部地址没人应答时同样一直等（详情 `@serverUnreachable:<url>`）、叫停同样立刻生效 |
 | `node build/auth-chain-probe.mjs` | **真实 dsh**：启动者与接入者各走一遍 `authenticate()` + `listSessions()`（= controller 的认证链） |
 | `scripts/styles.test.ts`（第 16 组） | 连接条允许换行、按钮 nowrap、说明文字可省略——窄侧栏下按钮不会被裁掉 |
-| `test/preview.html?conn=…&running=1&locale=en` | 六种连接状态的按钮组合可直接肉眼核对（中英各一遍） |
+| `test/preview.html?conn=…&internal=1&external=reachable&locale=en` | 连接条的按钮组合可直接肉眼核对（中英各一遍）；**§9 的新矩阵**用 `internal` / `external` / `target` / `phase` 四个参数拼出来 |
 | `node build/supervisor-child-exit-probe.mjs` | **dsh 死了会不会被自动拉起**（§8.6）：杀真 node / 强杀 / 卡死三种形态，各起一套隔离的 supervisor + 假 dsh，按假 dsh 自述的 boot 记录数重启次数 |
 | `scripts/supervisorErrors.test.ts`（`npm test`） | 上报器：两处都发（文件 + 广播）、任何一处炸了都不外抛、累计提示、**给晚连上的窗口补发**（§8.8） |
 | `scripts/supervisorProtocol.test.ts` 第 5.5 组 | `t:"error"` 的编解码往返与坏数据丢弃；**旧扩展遇到新报文只忽略、连接不受影响** |
 | `node build/supervisor-error-bridge-probe.mjs` | 这条桥的端到端：迷你 socket 服务端按 supervisor 的报文形状发 error，用**真的** `SupervisorConnection` 收（§8.8） |
 
 ### 8.7 连接条按钮矩阵（2026-09-15 用户口径调整）
+
+> **本节已被 §9 取代**（2026-09-18：按钮换成内部/外部 DSL 口径，"连接中只有停止+日志"）。
+> 留在这里是因为下面两条口径仍然成立——「停止连接」绑"在不在连接"而不是别的标志、
+> 「查看日志」恒显——它们在新矩阵里同样是硬约束（`scripts/styles.test.ts` 第 34 组钉着）。
 
 连接条只在**未就绪**时渲染（`ready` 时整条消失），所以按钮只在"没连上"的语境里讨论。
 三档状态 + 四个标志（`serverRunning` / `externalServer` / `reconnecting` / `needsToken`）决定给哪几个：
@@ -561,4 +574,129 @@ controller 的认证链此前按 `info.owned`（"是不是本窗口拉起的"）
 `scripts/supervisorProtocol.test.ts` 第 5.5 组（报文往返与坏数据处理）、
 `node build/supervisor-error-bridge-probe.mjs`（这条桥的端到端）、
 以及 `supervisorChildExitProbe`（真守护进程 + 真故障下仍然活着并重启 dsh）。
+
+## 9. 内部优先 / 外部备用：选路、粘性目标与按钮矩阵（2026-09-18 实现）
+
+> 用户口径（原文要点）：**"启动后，如果 autoStart 为 true，则先判断是否有内部 DSH，如果有，
+> 则自动连接至内部 DSH；如果没有内部 DSH，有外部 DSH，则自动连接至外部 DSH。如果二者都没有，
+> 则启动内部 DSH。如果 autoStart 为 false，则在启动后检查内部与外部 DSH 是否存在，如果内部
+> DSH 不存在，则显示启动内部 DSH 按钮，如果内部 DSH 存在，则显示连接内部 DSH；外部 DSH 不管
+> 存不存在，均显示连接外部 DSH 按钮，反正连接失败会输出到日志。……配置了外部 DSH 则内部 DSH
+> 相关配置均无效的逻辑便失效了，内部 DSH 为优先，外部 DSH 相当于备用。"**
+
+### 9.1 两条存在性判据
+
+| 轴 | 判据 | 为什么 |
+|---|---|---|
+| **内部** | **守护进程进程活着**（`probeRunning().supervisorAlive`） | dsh 正在起或刚崩也算"内部存在"：接上去等它就好，守护进程会自己把 dsh 拉回来。反过来用"dsh 在监听"判，会把正在重启的内部后台误判成不存在，于是去起第二套（Windows 命名管道只允许一个监听者）或误连外部 |
+| **外部** | **`dshChat.url` 配了 且 那个地址此刻有应答** | 配了地址 ≠ 那个服务器活着，而"备用"只有在能用的时候才算数。探测就是一次 HTTP GET（401/403 也算有东西），单次 2 秒超时 |
+
+探测频率：**未连接时随 5 秒心跳刷新**（内部那次本来就跑；外部那次只在未连接时做——连上之后
+连接条根本不显示，"连上了"本身就是可达证据）。选中内部时**不**探外部（选路那一刻的结论够用）。
+
+### 9.2 选路是纯函数、目标粘住不放
+
+`src/dsh/connectTarget.ts` 的 `chooseTarget(facts)`：内部在跑 → 内部；否则外部配了且可达 →
+外部；否则内部 + `start: true`（拉起一套）。六种组合在 `scripts/connectTarget.test.ts` 里逐条钉住。
+
+**粘性**（用户明确选了"自动路径永不换目标"）：目标只在**激活期选路**或**用户点按钮**时改变，
+心跳/重试永远重试同一个目标。理由是换目标的代价被低估了：另一台服务器有自己的一套会话，
+一次切换 = 换会话列表 + 丢掉正在跑的轮次。代价是"备用"只在启动那一刻生效——内部崩了也不会
+自动走外部，要用户点「连接外部 DSH」。
+
+控制器侧 `target: { kind, mayStart }`（`mayStart` = 这一轮允不允许"内部不存在就拉起一套"）：
+
+| 来源 | 目标 | `mayStart` |
+|---|---|---|
+| 激活期选路（`autoConnect` 开着） | `chooseTarget` 的结论 | 仅"都没有"那一支为真 |
+| 「启动内部 DSH」 | internal | true |
+| 「连接内部 DSH」 | internal | **false**（只接不启动） |
+| 「连接外部 DSH」 | external | false |
+| 发消息 / 新建 / 切会话（显式动作） | 沿用当前目标（没定过就是 internal） | true（"用户要后台时不该被配置挡住"这条纪律不变） |
+
+### 9.3 失败分三类，只有"还能接着试"的那类自动重试
+
+| 类别 | 例子 | 界面 | 自动重试 |
+|---|---|---|---|
+| 连接类 | 地址连不上、socket 断、客户端掉线 | 仍在**连接中** + 原因 | **是**（没有自动停止的时间限制，只由用户点「停止连接」） |
+| 启动类 | `@serverSpawnFailed`、`@serverNotReady`（命令写错、dsh 起不来） | 按钮态 + 原因 | 否 |
+| 认证类 | `DshAuthError`（要令牌 / 令牌被拒） | 按钮态 + 原因（外部再给「输入令牌」） | 否 |
+
+后两类不重试的理由是**重试解决不了**：命令写错时每 5 秒 spawn 一个必死进程、日志被刷爆；
+凭据不对更是重试一万次也一样。识别方式是错误身份（`DshAuthError`）与 detail 前缀
+（controller 的 `isStartFailure`）；拿不到明确证据时按**连接类**处理（多试几次的代价只是日志）。
+
+### 9.4 连接条按钮矩阵（取代 §8.7）
+
+| 状态 | 什么时候 | 文案 | 按钮 |
+|---|---|---|---|
+| `ready` | 连上了 | — | 整条不渲染 |
+| `connecting` | 首轮连接、掉线后的重试、外部地址的等待 | 目标 + 阶段（"正在启动内部 DSH…"/"正在连接内部 DSH…"/"正在连接外部 DSH（地址）…"）；有失败详情时详情优先 | **停止连接** + **查看日志** |
+| 按钮态（`stopped` / `error`） | 关掉自动连接、用户点过停止、内部不在而外部不可用（stopped）；启动/认证类失败（error，文案改用原因） | 两轴短语併一行：`内部 DSH：未运行 · 外部 DSH：可达`（分隔符 ` · `） | 内部在跑 → **连接内部 DSH**，不在 → **启动内部 DSH**；**连接外部 DSH**（恒显，没配 `url` 时置灰 + 悬停提示）；内部在跑时 **重启内部 DSH**；`needsToken` 时 **输入令牌**；**查看日志**（恒显） |
+
+界面侧实现：`App.tsx` 的 `ConnectionBar` / `statusText` / `connectingText`，状态字段
+（`internalRunning` / `externalState` / `externalAddress` / `connectTarget` / `connectPhase`）
+由控制器的 `connectionPatch()` 统一推送（首帧快照与增量 patch 同源，避免两处漂移）。
+
+### 9.5 配置与命名的连带改动
+
+- `dshChat.autoStart` → **`dshChat.autoConnect`**（含义也变了：关掉 = 完全不自动连，只给按钮）。
+  发布不久，**不做旧键兼容**（用户 2026-09-18 定）。
+- `dshChat.url` 的描述改成"备用地址"；`supervisorIdleSec` 去掉"配了外部 Url 时无作用"。
+- 命令面板：`启动服务器/重启服务器/停止服务器` → `启动内部 DSH/重启内部 DSH/停止内部 DSH`
+  （**命令 ID 不动**），新增 `dshChat.connectInternal` / `dshChat.connectExternal`。
+- 判定"要不要令牌"的判据从 `externalUrl 非空` 改成 **当前目标是不是 external**
+  （`describeError`、`setNeedsToken`）：内部优先之后，配了 `url` 也可能正连着内部，
+  那时按 url 判会把内部失败说成"要输入令牌"。
+- `@serverNotRunning` / `@serverStopped` 两个标记**删除**：按钮态文案改由两轴字段拼，
+  管理器内部改用普通英文串（不再有界面发射点，留着会被 i18n 断言判成死文案）。
+
+### 9.6 验证
+
+| 断言 | 覆盖 |
+|---|---|
+| `scripts/connectTarget.test.ts`（`npm test`） | 选路六种组合、外部三态、`describeFacts` 区分"未配置/不可达"、纯函数（同输入同输出） |
+| `scripts/supervisorPolicy.test.ts` | 没许可不 spawn、有许可才拉起、守护进程活着只接入；外部那一轮必须显式传 `target`（配了 url ≠ 这一轮连外部） |
+| `scripts/styles.test.ts` 第 34 组 | **连接中只有停止 + 日志**（不许出现三个目标按钮）、四个按钮真的存在于按钮态分支、`state.reconnecting` 已删除、查看日志恒显 |
+| `scripts/i18n.test.ts` | 标记清单与源码发射点双向对齐（删掉的两个标记不许复活） |
+| `scripts/connectionStop.test.ts` | **连接的收场**（见 §9.7）：`prepareRound` 的四件事、三个入口都走它、客户端回调的身份守卫与轮次号、心跳不为外部并发建第二个客户端 |
+| `scripts/clientDispose.test.ts` | 被依赖的那个事实：客户端对连不上的地址**确实会自己重连**，而 `dispose()` 之后**一次状态变化都没有**（真实 ws，不用假实现） |
+
+### 9.7 连接的收场：停止与换目标必须**收掉客户端**（2026-09-19 修）
+
+用户实测的 bug：连着外部 DSH 时把外部服务关掉 → 界面一直反复自动连接；点「停止连接」
+停不下来；甚至点「启动内部 DSH」也停不下来。三处叠加，都属于"点了没反应"那一类：
+
+1. **`DshClient` 自己带无限重连**（`ws.on("close")` → 1s→2s→…→15s 一直重连），并且每次
+   `close`/`connect` 都回调状态。从前的「停止连接」只做了"两个布尔量置假 + `cancelWaiting()`"，
+   **没有 dispose 客户端**——它照样重连、照样回调，界面就被反复拉回"连接中"。
+   `cancelWaiting()` 停的是**管理器那侧**的等待（`waitForHttp` / `waitForReadyState`），
+   与客户端自己的 ws 重连是两条独立的循环，只停一条等于没停。
+2. **换目标没收旧连接**：`beginConnect` 只改了目标与显示状态。上一条客户端仍然活着：它的
+   回调继续写 `connection`/`retryable`（回调里没有"这个 client 还是不是当前的"守卫），
+   而它被 `this.client = client` 覆盖之后再也没人 dispose——一条永远重试旧地址的循环留在后台。
+3. **心跳为外部目标并发建第二个客户端**：客户端自己会重连，心跳的"未连接就再 ensure 一轮"
+   又建一个；两个客户端各带一套跟随流，互相打断。
+
+现在的纪律（`scripts/connectionStop.test.ts` 逐条钉住）：
+
+- **`prepareRound()`** = 作废在途轮（`connectRoundId + 1`）+ `cancelWaiting()` +
+  `teardownStreams()` + `client.dispose()`；`stopReconnect` / `beginConnect` / `autoConnect` /
+  `reconnectPeer` **统一走它**。后台（守护进程 + dsh）一个字都不动——收掉的只是本窗口的连接。
+- **轮次号**：`connectOnce` 每次取自己的号，苏醒后 `roundStale(roundId)` 为真就**静默让位**
+  （不能只靠"用户叫停"判据：换目标时用户并没有叫停，但那一轮已经不作数了）。作废方不等旧轮
+  结束——它可能正挂在没有时长上限的等待里，等它等于不换目标。
+- **客户端回调属于某个客户端**：回调第一句是 `if (this.client !== client) return;`；
+  掉线回调在 `autoReconnect` 为假（用户叫停）时不复活 `retryable`/状态。
+- **外部目标的掉线交给客户端自己重连**（地址固定，退避重连就能恢复），心跳不再插一脚；
+  内部目标必须由扩展重建客户端——守护进程重起 dsh 后**端口与令牌都变了**。
+- **命令面板「DSH: 停止内部 DSH」**也经控制器收连接（`ChatController.stopServer`）：
+  只发停止请求不收连接的话，dsh 消失后客户端会一直重连。
+
+**已知的取舍 / 遗留**：
+- 粘性目标 = 内部崩了不会自动降级到外部（用户明确选择），只给按钮；
+- 分组键改成只按 `command` 后，升级前用旧版本起过的内部后台会落在旧分组目录里，
+  新版本看不见它（那套后台没人连着，会在空闲阈值后自己退场），不需要人工清理；
+- 外部可达性是"有 HTTP 应答"，不验证它是不是 dsh（沿用旧口径：地址填错时用户从连接失败
+  的日志里看出来）。
 
