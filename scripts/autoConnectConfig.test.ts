@@ -128,5 +128,41 @@ function check(label: string, ok: boolean, detail = ""): void {
   );
 }
 
+// ---------- 4. 用户点按钮永远不受 autoConnect 约束；两个内部按钮同一套逻辑 ----------
+//
+// 用户 2026-09-19 口径：「`autoConnect` 只是决定 VSCode 启动后是否自动连接，不影响任何用户
+// 主动点击按钮的逻辑」；并且「启动内部 DSH」与「连接内部 DSH」是**同一套逻辑**（有就接上、
+// 没有就起一套）——界面显示哪个按钮是按两轴探测给的措辞，与后台真实状态会有偏差，语义相同
+// 才不会出现「点对了按钮却什么都没发生」。
+//
+// 这一条只能是源码级断言：`ChatController` 还没有能被测试调用的接缝（`scripts/` 里没有文件
+// import 它，见 docs/audit-summary.md 第五批的背景）。所以这里钉的是**许可这个值**，
+// 而不是某个函数的实现形状：两个内部入口都必须传 true，外部入口必须传 false。
+{
+  check(
+    "「启动内部 DSH」允许拉起（mayStart=true）",
+    /beginConnect\("internal",\s*true/.test(bodyOf("startInternal", controller)),
+    "内部不存在时这个按钮就是主动作",
+  );
+  check(
+    "「连接内部 DSH」同样允许拉起（mayStart=true）",
+    /beginConnect\("internal",\s*true/.test(bodyOf("connectInternal", controller)),
+    "与「启动内部 DSH」同一套逻辑：显示「连接」时后台也可能还没起",
+  );
+  check(
+    "「连接外部 DSH」不拉起任何东西（mayStart=false）",
+    /beginConnect\("external",\s*false/.test(bodyOf("connectExternal", controller)),
+    "外部目标从来不由扩展拉起",
+  );
+  // 显式动作一路把 start 传下去：不许在中途被 autoConnect 改写
+  for (const name of ["startInternal", "connectInternal"]) {
+    check(
+      `「${name === "startInternal" ? "启动" : "连接"}内部 DSH」把 start: true 传给了 ensureConnected`,
+      /ensureConnected\(\{\s*start:\s*true/.test(bodyOf(name, controller)),
+      "传 false 会被管理器的 startAllowed 挡成 ServerNotRunningError（回按钮态）",
+    );
+  }
+}
+
 console.log(failures === 0 ? "\nautoConnectConfig: 全部通过 ✓" : `\nautoConnectConfig: ${failures} 项未通过 ✗`);
 process.exit(failures === 0 ? 0 : 1);

@@ -81,6 +81,7 @@ export const Message = memo(function Message({
   questionBatch,
   turnProcessThreshold,
   canBranch = false,
+  takenOverId,
 }: {
   message: MessageView;
   /** 编辑类节点的 diff 排版（来自设置；缺省自适应）。 */
@@ -101,6 +102,13 @@ export const Message = memo(function Message({
    * 以 `OPEN_TURN` 拒绝，而不是往前裁剪——所以按钮在这里就要禁用。
    */
   canBranch?: boolean;
+  /**
+   * 被输入区接管的那个交互的 `requestId`（`pendingRequestId(pending)`）。
+   *
+   * **只有这一条** waiting 段要从流里撤下（由输入区渲染）；其余的留在流里。
+   * 缺省（`undefined`）表示当前没有待处理交互，卡片一律留在流里。
+   */
+  takenOverId?: string;
 }) {
   const texts = useTexts();
   // 连续过程折叠的展开态，**按段记**（键 = 那一段首段的 id）：一轮里可能有好几枚
@@ -248,13 +256,16 @@ export const Message = memo(function Message({
       case "tool":
         return <ToolRow key={segment.id} tool={segment.tool} diffLayout={diffLayout} />;
       case "approval":
-        // 待处理的审批卡由**输入区**渲染（官方 `conversation.composer` 接管），
-        // 这里跳过免得同一张卡出现两次；已经答过的留在流里当记录。
-        return isTakenOverByComposer(segment) ? null : (
+        // 待处理的审批卡由**输入区**渲染（官方 `conversation.composer` 接管），这里跳过
+        // 免得同一张卡出现两次；已经答过的留在流里当记录。
+        // **只跳过被选中的那一条**（`takenOverId`）：万一同一个会话出现两张 waiting 卡
+        // （框架层不合法，但宿主侧的卡片补投有机会造出来），被撤下的那张必须留在流里，
+        // 否则输入区只画一张、这张谁也渲染不了（见 pendingInteraction.ts 文件头）。
+        return isTakenOverByComposer(segment, takenOverId) ? null : (
           <ApprovalCard key={segment.id} approval={segment.approval} />
         );
       case "question":
-        return isTakenOverByComposer(segment) ? null : (
+        return isTakenOverByComposer(segment, takenOverId) ? null : (
           <QuestionCard key={segment.id} question={segment.question} batch={questionBatch} />
         );
       case "injected":

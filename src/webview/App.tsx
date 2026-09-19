@@ -10,7 +10,7 @@ import { JobsPanel, SubagentTranscriptPanel, SubagentsPanel } from "./components
 import { TrajectoryView } from "./components/Trajectory";
 import { Spinner } from "./components/primitives";
 import { AppState, useAppState, type PanelKind } from "./state";
-import { pendingInteractionOf } from "./pendingInteraction";
+import { pendingInteractionOf, pendingRequestId } from "./pendingInteraction";
 import { attachDroppedFiles, dragHasFiles } from "./dropAttach";
 import { setLocalImageScope } from "./localImages";
 import { TurnRail } from "./components/TurnRail";
@@ -768,6 +768,11 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // 待处理的交互：输入区渲染**被选中的那一条**，消息流里跳过**同一条**——两处读同一个
+  // 选举结果，才不会出现「两边都画」或「两边都不画」（见 pendingInteraction.ts 文件头）
+  const pending = pendingInteractionOf(state.messages);
+  const takenOverId = pendingRequestId(pending);
+
   return (
     <TextsContext.Provider value={texts}>
       <div
@@ -841,6 +846,7 @@ export function App() {
                         turnProcessThreshold={state.turnProcessThreshold}
                         // 只有非最后一条（= 不是正在跑的那一轮）才能作为分支锚点
                         canBranch={!state.running || index < state.messages.length - 1}
+                        takenOverId={takenOverId}
                       />
                     ))}
                   </>
@@ -883,10 +889,10 @@ export function App() {
 
         {/* 待处理的审批 / 提问**接管输入区**（官方把两者注册进 `conversation.composer` 槽）：
             卡片永远在视野里，界面看起来就是「在等你回答」；已经答过的仍留在对话流里当记录
-            （见 Message.tsx 里对 waiting 段的跳过）。 */}
+            （见 Message.tsx 里对**被选中那一条**的跳过）。 */}
         <Composer
           state={state}
-          pending={pendingInteractionOf(state.messages)}
+          pending={pending}
           chatScrollRef={scrollRef}
           onDraft={(text) => dispatch({ type: "ui/setDraft", text })}
           onFollowLatest={jumpToLatest}

@@ -15,7 +15,7 @@
  */
 import assert from "node:assert";
 import type { ApprovalView, MessageView, QuestionView } from "../src/shared/chat";
-import { isTakenOverByComposer, pendingInteractionOf } from "../src/webview/pendingInteraction";
+import { isTakenOverByComposer, pendingInteractionOf, pendingRequestId } from "../src/webview/pendingInteraction";
 
 const approval = (id: string, state: ApprovalView["state"]): ApprovalView => ({
   requestId: id,
@@ -188,27 +188,38 @@ const message = (segments: MessageView["segments"]): MessageView => ({
 }
 console.log("pendingInteraction: plan-review 优先级最高、收窄不了退回问卷 ✓");
 
-// ---------- 5. 界面对齐：待处理的在流里**不渲染**，已答过的照常渲染 ----------
+// ---------- 5. 界面对齐：**只有被选中的那一条**在流里不渲染 ----------
+//
+// 官方框架按会话只留一个 pending interaction（`SessionPendingInteractionSnapshot =
+// ReadonlyMap<SessionId, …>`），所以正常只有一张卡。这里仍然覆盖「两张 waiting 并存」：
+// 那是框架层不合法、但宿主侧的卡片补投**造得出来**的状态——那时必须**只撤下被选中的那一张**，
+// 否则 Composer 只画一张、另一张谁也渲染不了（= 用户看不到也答不了）。
 {
+  const waitingApproval = { kind: "approval", approval: approval("r-a", "waiting") };
+  const waitingQuestion = { kind: "question", question: question("r-q", "waiting") };
+  const elected = pendingRequestId({ kind: "question", question: question("r-q", "waiting") });
+
   assert.strictEqual(
-    isTakenOverByComposer({ kind: "approval", approval: approval("r", "waiting") }),
+    isTakenOverByComposer(waitingQuestion, elected),
     true,
-    "待处理 → 由输入区渲染（流里跳过，避免同一张卡出现两次）",
+    "被选中的那张由输入区渲染（流里跳过，避免同一张卡出现两次）",
   );
   assert.strictEqual(
-    isTakenOverByComposer({ kind: "approval", approval: approval("r", "approved") }),
+    isTakenOverByComposer(waitingApproval, elected),
     false,
-    "已答过 → 留在流里当记录",
+    "**没被选中的那张必须留在流里**：一起撤下就等于那张卡彻底消失",
+  );
+  assert.strictEqual(isTakenOverByComposer(waitingApproval, undefined), false, "没有待处理交互时一张都不跳过");
+  assert.strictEqual(
+    isTakenOverByComposer({ kind: "approval", approval: approval("r-a", "approved") }, "r-a"),
+    false,
+    "已答过 → 留在流里当记录（哪怕 requestId 与选举结果相同）",
   );
   assert.strictEqual(
-    isTakenOverByComposer({ kind: "question", question: question("r", "waiting") }),
-    true,
-  );
-  assert.strictEqual(
-    isTakenOverByComposer({ kind: "question", question: question("r", "answered") }),
+    isTakenOverByComposer({ kind: "question", question: question("r-q", "answered") }, "r-q"),
     false,
   );
-  assert.strictEqual(isTakenOverByComposer({ kind: "text" }), false, "其它段不受影响");
+  assert.strictEqual(isTakenOverByComposer({ kind: "text" }, "r-a"), false, "其它段不受影响");
 }
 
 console.log("pendingInteraction: 待处理交互的选举与接管 ✓");

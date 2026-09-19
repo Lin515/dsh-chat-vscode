@@ -36,6 +36,8 @@ import { TextsContext, dictionaryFor } from "../src/webview/texts";
 };
 
 const { QuestionCard } = await import("../src/webview/components/Rows");
+// 整条消息（含审批 / 提问两种交互段）：用来钉「只撤下被接管的那一条」（第 7 节）
+const { Message } = await import("../src/webview/components/Message");
 
 /** 渲染成 HTML；语言按真实链路给（`useTexts` 的默认是英文，这里显式喂词典）。 */
 const render = (question: QuestionView, locale: "zh" | "en" = "zh"): string =>
@@ -176,5 +178,61 @@ console.log("questionRender: 多选问卷同样可选自定义回答 ✓");
   );
 }
 console.log("questionRender: 英文渲染同一条链路 ✓");
+
+// ---------- 7. 待处理的卡片：只撤下**被输入区接管的那一条** ----------
+//
+// 官方框架按会话只留一个 pending interaction（`SessionPendingInteractionSnapshot =
+// ReadonlyMap<SessionId, …>`），但宿主侧的卡片补投（`heldEvents` 回放、重连时重放进适配器）
+// **有机会**造出「两张 waiting 并存」。那时如果按「凡是 waiting 就撤下」处理，输入区只画一张、
+// 另一张谁也渲染不了——用户看不到它，也就答不了它，而 agent 正在等那次审批。
+// 2026-09-19 用这个渲染口实测过那个丢卡现场，所以这里钉住它。
+{
+  const approvalSegment = {
+    kind: "approval",
+    id: "seg-approval",
+    approval: { requestId: "ev-approval", toolName: "pwsh", state: "waiting", detail: "rm -rf build" },
+  };
+  const questionSegment = {
+    kind: "question",
+    id: "seg-question",
+    question: { requestId: "ev-question", state: "waiting", items: [items[0]] },
+  };
+  const message = {
+    id: "a:1",
+    role: "assistant",
+    ts: 1_700_000_000_000,
+    segments: [approvalSegment, questionSegment],
+  };
+
+  const html = (takenOverId: string | undefined): string =>
+    renderToStaticMarkup(
+      createElement(
+        TextsContext.Provider,
+        { value: dictionaryFor("zh") },
+        createElement(Message!, { message: message as never, takenOverId }),
+      ),
+    );
+
+  // 被选中的是问卷：问卷卡撤下（输入区渲染它），**审批卡必须留在流里**
+  const electedQuestion = html("ev-question");
+  assert.ok(
+    !/question-option/.test(electedQuestion),
+    "被选中的问卷卡不该出现在流里（由输入区渲染）",
+  );
+  assert.ok(
+    /class="approval"/.test(electedQuestion) && electedQuestion.includes("rm -rf build"),
+    `没被选中的审批卡必须留在流里、能被回答：${electedQuestion.slice(0, 400)}`,
+  );
+
+  // 反过来：被选中的是审批 → 问卷卡留在流里
+  const electedApproval = html("ev-approval");
+  assert.ok(!/class="approval"/.test(electedApproval), "被选中的审批卡不在流里");
+  assert.ok(/question-option/.test(electedApproval), "没被选中的问卷卡留在流里");
+
+  // 没有待处理交互：两张都留在流里
+  const none = html(undefined);
+  assert.ok(/class="approval"/.test(none) && /question-option/.test(none), "没有待处理交互时两张都留在流里");
+}
+console.log("questionRender: 只撤下被输入区接管的那一条 ✓");
 
 console.log("\nquestionRender: all assertions passed");

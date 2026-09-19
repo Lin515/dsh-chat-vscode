@@ -638,8 +638,16 @@ console.log("styles: 代码块自动换行（官方 pre-wrap） ✓");
 {
   const app = readFileSync(join(process.cwd(), "src", "webview", "App.tsx"), "utf8");
   assert.ok(
-    /pending=\{pendingInteractionOf\(state\.messages\)\}/.test(app),
+    /pending=\{pending\}/.test(app),
     "App 要把待处理交互交给 Composer（接管输入区）",
+  );
+  assert.ok(
+    /const pending = pendingInteractionOf\(state\.messages\)/.test(app),
+    "选举结果要在 App 里算**一次**：Composer 渲染它、Message 跳过同一条（两处读同一个值）",
+  );
+  assert.ok(
+    /takenOverId=\{takenOverId\}/.test(app),
+    "同一条的 requestId 也要交给 Message，否则可能出现「两边都画」或「两边都不画」",
   );
 
   const composer = readFileSync(
@@ -671,18 +679,10 @@ console.log("styles: 代码块自动换行（官方 pre-wrap） ✓");
     "限高之后卡片要能在内部滚动，否则下半截题目点不到",
   );
 
-  const message = readFileSync(
-    join(process.cwd(), "src", "webview", "components", "Message.tsx"),
-    "utf8",
-  );
-  assert.ok(
-    /isTakenOverByComposer\(segment\) \? null : \(\s*<ApprovalCard/.test(message),
-    "流里要跳过**待处理**的卡（否则同一张卡出现两次），已答过的照常渲染",
-  );
-  assert.ok(
-    /isTakenOverByComposer\(segment\) \? null : \(\s*<QuestionCard/.test(message),
-    "提问卡同理",
-  );
+  // 「流里只跳过**被输入区接管的那一条**」这条行为不在这里断言：它是纯逻辑 + 渲染结果，
+  // 现在钉在 `scripts/pendingInteraction.test.ts`（判据）与 `scripts/questionRender.test.ts`
+  // （用真实 Message 渲染出 HTML）里。这里原来那两条源码正则只证明「代码里有这行字」，
+  // 换个参数就失效，而且失败信息指向的是调用形状而不是行为。
 }
 console.log("styles: 待处理交互接管输入区（流里跳过、答过留档） ✓");
 

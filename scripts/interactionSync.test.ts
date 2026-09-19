@@ -105,7 +105,7 @@ const toolResult = (callId: string, text: string, seq: number) => ({
   const segment = questionSegment(messages);
   assert.strictEqual(segment?.question.state, "cancelled", "Host 撤回 → cancelled（没人回答过）");
   assert.strictEqual(
-    isTakenOverByComposer({ kind: "question", question: segment!.question }),
+    isTakenOverByComposer({ kind: "question", question: segment!.question }, "ev-q1"),
     false,
     "撤回之后必须把输入区让出来（这就是用户报的「问卷还停在页面上」）",
   );
@@ -216,7 +216,10 @@ console.log("interactionSync: 不误认领无关结果 ✓");
   const segment = questionSegment(messages);
   assert.strictEqual(segment?.question.state, "answered");
   assert.strictEqual(segment?.question.answers?.docs?.custom, "写一段就行", "展开记录要显示用户写下的自定义回答");
-  assert.strictEqual(isTakenOverByComposer({ kind: "question", question: segment!.question }), false);
+  assert.strictEqual(
+    isTakenOverByComposer({ kind: "question", question: segment!.question }, "ev-q2"),
+    false,
+  );
 }
 console.log("interactionSync: 本窗口提交后记录里有答案 ✓");
 

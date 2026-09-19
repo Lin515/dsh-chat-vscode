@@ -1270,7 +1270,7 @@ export class ChatController implements vscode.Disposable {
    *
    * | 类别 | 例子 | 界面 | 自动重试 |
    * |---|---|---|---|
-   * | 没目标 | `ServerNotRunningError`（只连不启动，而内部不在） | 按钮态 | 否（等用户点） |
+   * | 没目标 | `ServerNotRunningError`（外部目标没配地址；或本轮不许启动） | 按钮态 | 否（等用户点） |
    * | 用户叫停 | `WaitCancelledError` | 按钮态 | 否 |
    * | 认证类 | `DshAuthError`（要令牌 / 令牌被拒） | 按钮态 + 「输入令牌」（外部） | 否——重试解决不了凭据问题 |
    * | 启动类 | `@serverSpawnFailed` / `@serverNotReady`（命令错、dsh 起不来） | 按钮态 + 原因 | 否——否则每 5 秒 spawn 一个必死进程、日志被刷爆 |
@@ -1801,16 +1801,26 @@ export class ChatController implements vscode.Disposable {
     }
   }
 
-  /** 「启动内部 DSH」：**用户显式要求**拉起一套内部后台（内部不在时的主动作）。 */
+  /**
+   * 「启动内部 DSH」：**用户显式要一套内部后台**（内部不在时按钮态里的主动作）。
+   *
+   * 与「连接内部 DSH」是**同一套逻辑**（都传 `mayStart: true`）：用户点哪一个，得到的都是
+   * 「内部后台可用」这个结果。保留两个按钮是因为界面的两轴状态与后台的真实状态之间会有偏差
+   * （守护进程刚退场、另一个窗口刚拉起）——显示「启动」时可能其实已经起来，显示「连接」时
+   * 可能其实还没起。让它们语义相同，就不会出现「点对了按钮却什么都没发生」。
+   *
+   * 拉起这条路**不需要扩展额外发指令**：守护进程自己起来就 `bringUp()` 把 dsh 拉起
+   * （`supervisor/main.ts`），扩展只要连上它的 socket 并等就绪（见 `bringUpWith`）。
+   */
   async startInternal(): Promise<void> {
     this.beginConnect("internal", true, "starting");
     await this.ensureConnected({ start: true, target: "internal" });
   }
 
-  /** 「连接内部 DSH」：只接上**已经在跑**的那一套（不顺手拉起）。 */
+  /** 「连接内部 DSH」：有就接上、没有就起一套——与「启动内部 DSH」同一套逻辑（见上）。 */
   async connectInternal(): Promise<void> {
-    this.beginConnect("internal", false, "connecting");
-    await this.ensureConnected({ start: false, target: "internal" });
+    this.beginConnect("internal", true, "connecting");
+    await this.ensureConnected({ start: true, target: "internal" });
   }
 
   /**
