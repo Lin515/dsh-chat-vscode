@@ -240,66 +240,58 @@ function EmptyState() {
 const NOTICE_MS = 4000;
 
 /**
- * 「滚到顶就自动取更早的历史」的触发距离（px）。
+ * 「加载更早的历史」的两个入口（`session/page`）——**与官方同构的两档语义**
+ * （判据在宿主侧，见 `dsh/historyPaging.ts`）：
  *
- * 不写成 0：滚动条贴到最顶上才算的话，稍快一点的滚轮/拖动会一下子冲到 0 再被
- * 浏览器回弹，用户得停在极窄的一条里才触发。几十像素是「已经在看开头了」。
- */
-const HISTORY_TOP_PX = 64;
-
-/**
- * 滚动到接近顶部时**自动加载**更早的历史（`session/page`）。
+ * - `loadEarlier()`：**单页档**（官方 `ISession.loadOlder()`），取一页就停。会话页的
+ *   「加载更早的历史」按钮与轨迹视图的同一枚按钮走这里；
+ * - `loadThrough(seq)`：**到目标档**（官方 `ISession.loadThrough(seq)`），循环取到
+ *   窗口覆盖该 seq 为止。右侧轮次横条上那些「未加载」的刻点走这里，取完再由
+ *   `turnRailNav` 的 pendingJump 落位到那一轮。
  *
- * 此前只有一枚「加载更早的消息」按钮：跟随窗口只带 60 条，用户想往回看就得先
- * 意识到「上面还有东西」并准确点到按钮（用户 2026-09-14 要求按滚动条位置自动加载）。
+ * **没有滚动自动加载**：官方**会话页**只有那枚按钮（`ChatView` 的滚动触发属于官方
+ * **轨迹表格** `TrajectoryTable`，不是会话页）。用户 2026-09-20 口径：只看按钮。
  *
- * 分工（2026-09-14 定稿）：
- * - **连取由宿主驱动**：界面只发一次 `loadMore`，宿主一页一页往前取，直到取到
- *   用户的上一条消息（一轮的开头）或没有更早的了——「到没到一轮的开头」「这一页
- *   有没有带来新事件」只有宿主有真凭据（见 `dsh/historyPaging.ts` 的注释：
- *   界面侧拿「首条消息 id 变没变」猜，会在旧事件只是把第一条助手消息补长时提前收手）；
- * - **界面只管两件事**：把视口钉住（每落一页就补一次高度差），以及按钮的加载态
+ * 分工：
+ * - **连取由宿主驱动**：界面只发一次 `loadMore`，由宿主按档位决定取一页还是取到目标
+ *   ——「这一页有没有带来新事件」「窗口盖住目标没有」只有宿主有真凭据（见
+ *   `dsh/historyPaging.ts` 的注释：界面侧拿「首条消息 id 变没变」猜，会在旧事件只是
+ *   把第一条助手消息补长时提前收手）；
+ * - **界面只管两件事**：把视口钉住（结算落定时补一次高度差），以及按钮的加载态
  *   （读宿主发的 `historyLoading`）。
  *
  * 视口钉住的细节：更早的内容插在**上面**，浏览器保持 scrollTop 不变，于是正文整体
- * 下滑。加载前记下 scrollHeight，每落一页把差值补回 scrollTop——按高度差补，**不**按
+ * 下滑。加载前记下 scrollHeight，落定后把差值补回 scrollTop——按高度差补，**不**按
  * 「首条消息变没变」判断（同一条消息被补长时首条 id 不变，但上面的内容确实变多了）。
- * 手动按钮走同一个入口。
+ * 宿主在连取多页时只**结算一次**（只发一份 `messages/reset`），所以这里一次就把各页
+ * 的高度差补回来。
  */
-function useHistoryPaging(scrollRef: React.RefObject<HTMLDivElement>, state: AppState, active: boolean) {
-  /** 本次加载开始时的内容高度（每落一页后更新成新高度）。 */
+function useHistoryPaging(scrollRef: React.RefObject<HTMLDivElement>, state: AppState) {
+  /** 本次加载开始时的内容高度（结算后更新成新高度）。 */
   const height = useRef<number | null>(null);
-  // 监听器只注册一次（流式期间每次渲染都重挂/摘监听器是白烧）
+  // 回调里读到的必须是最新值（state 每次渲染都是新对象）
   const latest = useRef(state);
   latest.current = state;
 
-  const loadEarlier = useCallback(() => {
-    const current = latest.current;
-    if (!current.hasMoreHistory) return;
-    // 已经在取（宿主说了算）：滚动事件一秒来几十个也不会重复发
-    if (current.historyLoading) return;
-    // 视口锚点只有会话页在的时候才有得记：轨迹视图里聊天区是卸载的
-    // （入口仍然要能用——那就是轨迹时间线左端那个 `…`）
-    const el = scrollRef.current;
-    height.current = el ? el.scrollHeight : null;
-    post({ type: "loadMore" });
-  }, [scrollRef]);
-
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const onScroll = () => {
-      if (el.scrollTop > HISTORY_TOP_PX) return;
+  const start = useCallback(
+    (targetSeq?: number) => {
       const current = latest.current;
-      if (current.historyLoading || !current.hasMoreHistory || current.running) return;
-      loadEarlier();
-    };
-    el.addEventListener("scroll", onScroll, { passive: true });
-    return () => el.removeEventListener("scroll", onScroll);
-    // `active`：会话页被轨迹视图顶掉又回来时，元素是新的，监听必须重新挂上
-  }, [scrollRef, loadEarlier, active]);
+      if (!current.hasMoreHistory) return;
+      // 已经在取（宿主说了算）：连点不会重复发
+      if (current.historyLoading) return;
+      // 视口锚点只有会话页在的时候才有得记：轨迹视图里聊天区是卸载的
+      // （入口仍然要能用——那就是轨迹时间线左端那个 `…`）
+      const el = scrollRef.current;
+      height.current = el ? el.scrollHeight : null;
+      post(targetSeq === undefined ? { type: "loadMore" } : { type: "loadMore", targetSeq });
+    },
+    [scrollRef],
+  );
 
-  // 每落一页：把视口钉回加载前那一行；取完（宿主说落定）就丢掉锚点
+  const loadEarlier = useCallback(() => start(), [start]);
+  const loadThrough = useCallback((seq: number) => start(seq), [start]);
+
+  // 结算落定：把视口钉回加载前那一行；取完（宿主说落定）就丢掉锚点
   useLayoutEffect(() => {
     const el = scrollRef.current;
     if (el && height.current !== null) {
@@ -309,7 +301,7 @@ function useHistoryPaging(scrollRef: React.RefObject<HTMLDivElement>, state: App
     if (!state.historyLoading) height.current = null;
   }, [state.messages, state.historyLoading, scrollRef]);
 
-  return { loadEarlier, loading: state.historyLoading === true };
+  return { loadEarlier, loadThrough, loading: state.historyLoading === true };
 }
 
 /**
@@ -435,11 +427,14 @@ export function App() {
   // 这里只把它的结果接给组件——端口一个（`chatScroll`），滚动手势与贴底判定不在这里。
   const chatScroll = useAutoScroll(chatActive, sessionId);
   const scrollRef = chatScroll.port.scrollEl;
-  // 滚到顶附近自动取更早的历史；手动按钮走同一个入口（取到轮次边界为止）
-  const { loadEarlier, loading: loadingEarlier } = useHistoryPaging(scrollRef, state, chatActive);
+  // 「加载更早」按钮（单页档）与轮次横条的跨轮跳转（到目标档）两个入口；
+  // 没有滚动自动加载（与官方会话页一致）
+  const { loadEarlier, loadThrough, loading: loadingEarlier } = useHistoryPaging(scrollRef, state);
   // 右侧轮次横条（官方 TurnNavigator 的移植）：刻度 = turnOutline 投影 ∪ 已加载
   // 窗口的锚点/预览；激活轮与跳转的滚动语义见 turnRailNav.ts。
-  const railItems = useTurnRailItems(state.messages, state.turnOutline);
+  // `hasMoreHistory` 传下去：窗口第一轮的用户消息常被条数切点切在窗口外，该刻点要按
+  // 「可加载」呈现（点击取回用户消息），而不是退化成助手消息（见 `mergeTurnRailItems`）。
+  const railItems = useTurnRailItems(state.messages, state.turnOutline, state.hasMoreHistory === true);
   const { activeTurn, busyTurn, navigate } = useTurnRailNav({
     scrollRef,
     listRef: chatScroll.port.contentEl,
@@ -450,7 +445,7 @@ export function App() {
     running: state.running,
     hasMoreHistory: state.hasMoreHistory === true,
     historyLoading: state.historyLoading === true,
-    loadEarlier,
+    loadThrough,
   });
   // 迷你模式：.app 宽度 < 220px 时收成图标条（滞回 ≥232 恢复），由 Composer 测宽后同步到这里
   const appRef = useRef<HTMLDivElement>(null);
@@ -514,8 +509,8 @@ export function App() {
     post({ type: "listSubagents" });
   }, [state.panel, sessionId]);
 
-  // 轨迹里的「加载更早」与会话页**共用同一条链路**（都发 `loadMore`，宿主一次取到底、
-  // 逐页回填消息）。但宿主只回填会话侧，不会顺手重推账本，所以取完
+  // 轨迹里的「加载更早」与会话页**共用同一条链路**（都发 `loadMore`；不带目标 = 单页档，
+  // 取一页 50 条）。但宿主只回填会话侧，不会顺手重推账本，所以取完
   // （`historyLoading` 从 true 落回 false）由界面自己再要一份账本——
   // 这就是「点轨迹的『加载更早』→ 会话去取历史 → 取完轨迹自己刷新」。
   const historyWasLoading = useRef(state.historyLoading === true);
@@ -590,11 +585,12 @@ export function App() {
                   <EmptyState />
                 ) : (
                   <>
-                    {/* 「加载全部历史」：跟随窗口只带 60 条，更早的内容从没进过客户端。
+                    {/* 「加载更早的历史」：跟随窗口只带 60 条，更早的内容从没进过客户端。
                         按钮只在服务端说「还有更早的」时出现——空按钮比没有按钮更烦人。
-                        滚到顶会自动取，这个按钮是同一个入口；**取的过程中**它自己变成
-                        「正在加载全部历史…」的不可点状态（可能连取多页），这样
-                        「点了没反应」与「还在取」一眼可分。 */}
+                        这是**单页档**（官方 `loadOlder`）：点一次取一页，没有滚动自动加载
+                        （跨轮跳转走轮次横条那条「到目标档」）；取的过程中它自己变成
+                        「正在加载更早的历史…」的不可点状态，这样「点了没反应」与
+                        「还在取」一眼可分。 */}
                     {state.hasMoreHistory ? (
                       <button
                         className="history-more"

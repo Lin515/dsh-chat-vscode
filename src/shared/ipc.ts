@@ -144,8 +144,15 @@ export type WebviewToHost =
   | { type: "archiveSession"; sessionId: string }
   /** 删除会话（服务端没有删除 API：本地删除会话日志文件目录）。 */
   | { type: "deleteSession"; sessionId: string }
-  /** 加载更早的历史。 */
-  | { type: "loadMore" }
+  /**
+   * 加载更早的历史（`session/page`）。
+   *
+   * **两档语义**（与官方 `loadOlder` / `loadThrough` 同构，判据在宿主侧）：
+   * - 不带 `targetSeq`：单页档，取一页就停——会话页与轨迹视图的「加载更早」按钮；
+   * - 带 `targetSeq`：到目标档，循环取到窗口覆盖该 seq 为止——轮次横条上那些
+   *   「未加载」的刻点，取完再落位到那一轮。
+   */
+  | { type: "loadMore"; targetSeq?: number }
   /** 切换模型 / 思考深度。 */
   | { type: "setModel"; provider: string; model: string; reasoningEffort?: string }
   /** 切换权限模式。 */

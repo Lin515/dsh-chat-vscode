@@ -10,7 +10,11 @@
  * 3. 插话切分的第二段助手消息（`a:<turn>:<n>`）**不**给下一轮当锚点——
  *    它上方的用户消息是同轮插话（这是最容易写错的一条，专门断言）；
  * 4. 承重字段（turn/seq）损坏的大纲条目整条丢弃，预览损坏退空串；
- * 5. 合并时内容相同的项保引用稳定（流式期间 memo 不空转）。
+ * 5. 合并时内容相同的项保引用稳定（流式期间 memo 不空转）；
+ * 6. **「部分加载」的轮次不退化成助手消息锚点**：窗口按消息条数切，切点常落在某轮的
+ *    助手消息上（一轮里助手消息比用户消息多一个数量级），此时该轮的用户消息不在窗口里。
+ *    这类轮次保持 `unloaded`，点击时先走「到目标档」把用户消息取回来再落位——
+ *    用户 2026-09-20 口径：目录节点点击**永远转到用户消息处**（见第 8b 段）。
  *
  * 运行：npm test
  */
@@ -215,6 +219,77 @@ console.log("turnRail: 相同内容保引用稳定（流式不空转） ✓");
 }
 console.log("turnRail: 无用户消息的轮次锚到助手消息 ✓");
 
+// ---------- 8b. 部分加载的轮次：不退化成助手消息，点它仍去用户消息处 ----------
+//
+// 跟随窗口按**消息条数**切（`maxMessages: 60`），而一轮里助手消息比用户消息多一个
+// 数量级（本机实测 1125 : 109），所以切点十有八九落在某轮的助手消息上——窗口第一轮
+// 的用户消息不在窗口里。此前这种轮次的锚点会退化成 `a:<turn>` 且刻点被标「已加载」：
+// 点击只落到该轮**已加载的最早内容**，永远到不了用户消息处（用户 2026-09-20 报的
+// 正是这个，而且它是常态不是边界）。
+//
+// 判据：大纲说这轮有提示词（全日志里确有 `user/message`）+ 窗口里找不到它 +
+// 还有更早的历史可取 → 保持大纲那条 `unloaded`，点击走「到目标档」取回用户消息。
+{
+  // 窗口从第 1 轮的助手消息开始：第 1 轮的用户消息被切在窗口外
+  const partial: MessageView[] = [
+    assistant("a:1", ["第一答"]),
+    user("u:9", "第二问"),
+    assistant("a:2", ["第二答"]),
+  ];
+  const outline = [
+    { turn: 1, seq: 3, prompt: "第一问", response: "第一答" },
+    { turn: 2, seq: 20, prompt: "第二问", response: "第二答" },
+  ];
+
+  const nav = mergeTurnRailItems(partial, outline, true);
+  assert.deepStrictEqual(
+    nav[0].anchor,
+    { kind: "unloaded", seq: 3 },
+    "第 1 轮的用户消息没加载出来 → 该刻点按「可加载」呈现（带 turn/start 的 seq），不退化成 a:1",
+  );
+  assert.deepStrictEqual(
+    nav[1].anchor,
+    { kind: "loaded", messageId: "u:9" },
+    "第 2 轮的用户消息在窗口里 → 照常是已加载锚点",
+  );
+
+  // 命中测试：跳转锚点虽是 unloaded，但该轮在窗口里的助手行必须能被认出来——
+  // 否则读者滚到这一轮时 `turnAtLine` 找不到它，横条会把激活轮点亮成前一轮
+  const index = anchorTurnIndex(nav);
+  assert.strictEqual(index.get("a:1"), 1, "部分加载的轮次要进激活轮索引");
+  assert.strictEqual(index.get("u:9"), 2, "已加载轮次照旧");
+  assert.strictEqual(index.size, 2, "索引里只有窗口里看得见的行");
+
+  // 没有更早的历史可取了 → 窗口已到日志开头，这轮是真的没有用户消息，才允许退化
+  assert.deepStrictEqual(
+    mergeTurnRailItems(partial, outline, false)[0].anchor,
+    { kind: "loaded", messageId: "a:1" },
+    "取无可取时必须退化到该轮第一条助手消息，否则刻点永远点不动",
+  );
+
+  // 大纲说这轮本来就没有提示词（自动轮）→ 没有「用户消息处」可去，退到助手消息
+  assert.deepStrictEqual(
+    mergeTurnRailItems(
+      partial,
+      [
+        { turn: 1, seq: 3, prompt: "", response: "自动轮的回答" },
+        { turn: 2, seq: 20, prompt: "第二问", response: "第二答" },
+      ],
+      true,
+    )[0].anchor,
+    { kind: "loaded", messageId: "a:1" },
+    "大纲说这轮没有用户消息（自动轮）→ 与「部分加载」区分开，照旧退化",
+  );
+
+  // 无大纲（老服务端没挂投影）时无从判断 → 保持既有兜底
+  assert.deepStrictEqual(
+    mergeTurnRailItems(partial, undefined, true)[0].anchor,
+    { kind: "loaded", messageId: "a:1" },
+    "无大纲时不知道这轮该不该有用户消息，保持既有兜底",
+  );
+}
+console.log("turnRail: 部分加载的轮次点它仍去用户消息处 ✓");
+
 // ---------- 9. 幻影轮 0 被挡掉：大纲是轮次边界的权威 ----------
 //
 // 用户 2026-09-18 报的 bug：「即便用户只发了一次消息也有第0轮」。
@@ -319,11 +394,15 @@ console.log("turnRail: 显示判据的用户消息计数 ✓");
   // 放跟随必须在**落位之前**（顺序反了的话，落位那一下又被钉回底部）。
   const unloadedAt = nav.indexOf("if (item.anchor.kind === \"unloaded\")");
   const releaseInUnloaded = nav.indexOf("releaseRef.current?.();", unloadedAt);
-  const loadAt = nav.indexOf("loadEarlierRef.current?.();", unloadedAt);
+  const loadAt = nav.indexOf("loadThroughRef.current?.(item.anchor.seq);", unloadedAt);
   assert.ok(unloadedAt > 0 && releaseInUnloaded > unloadedAt, "窗口外那个分支要先显式放跟随");
   assert.ok(
     releaseInUnloaded < loadAt,
     "窗口外的跳转顺序必须是：放跟随 → 取历史（反了的话连取期间的 prepend 补偿会被 settle 当成布局事故拉回底部）",
+  );
+  assert.ok(
+    /loadThroughRef\.current\?\.\(item\.anchor\.seq\)/.test(nav),
+    "窗口外的跳转要带上目标 seq（官方 loadThrough 语义：取到窗口覆盖这一轮为止）",
   );
 
   const loadedAt = nav.indexOf("const row = anchorElement(list, item.anchor.messageId);", releaseInUnloaded);
@@ -332,8 +411,68 @@ console.log("turnRail: 显示判据的用户消息计数 ✓");
   assert.ok(loadedAt > 0 && releaseInLoaded > loadedAt && landAt > releaseInLoaded, "已加载那个分支要先显式放跟随再落位");
 
   assert.ok(
-    nav.indexOf("if (running || !hasMoreHistory) return;", unloadedAt) < releaseInUnloaded,
-    "no-op 的点击（生成中 / 没有更早历史）不许顺手把实况跟开关掉：防御判断必须在放跟随**之前**",
+    nav.indexOf("if (running || !hasMoreHistory || historyLoading) return;", unloadedAt) < releaseInUnloaded,
+    "no-op 的点击（生成中 / 没有更早历史 / 已在取历史）不许顺手把实况跟开关掉：防御判断必须在放跟随**之前**",
   );
+
+  // 用户 2026-09-20 口径：**目录第一枚刻点一律置顶**。它是唯一需要取历史的那个，
+  // 取回后目标行上方还会插入异步变高的内容，「对齐到阅读线」实战里总差一点
+  // （停在目标行的尾部）；`scrollTop = 0` 不受任何后续高度变化影响。
+  assert.ok(
+    /const jumpToTop = itemsRef\.current\[0\]\?\.turn === item\.turn;/.test(nav),
+    "按「是不是目录第一枚刻点」决定置顶",
+  );
+  assert.ok(
+    /if \(pendingJumpTopRef\.current\) \{[\s\S]{0,500}?el\.scrollTop = 0;/s.test(nav) ||
+      /if \(!pendingJumpTopRef\.current\) return;[\s\S]{0,500}?el\.scrollTop = 0;/.test(nav),
+    "取回历史后的首枚刻点直接置顶",
+  );
+  assert.ok(
+    /\}, \[historyLoading, scrollRef\]\);/.test(nav),
+    "置顶等的是 `historyLoading` 落回 false（宿主对「取完了」的直接声明），不看该轮是否 loaded",
+  );
+  assert.ok(
+    /if \(running \|\| !hasMoreHistory \|\| historyLoading\) return;/.test(nav),
+    "点击闸门要含 historyLoading：否则会挂上「永远等不到落位」的脉冲（用户看到的「点了没反应」）",
+  );
+  // **取历史之后的那一次定位，必须先放掉跟随**：补偿会让视口落在（近）底部，
+  // `scroll()` 的「回到近底部即恢复跟随」把意愿翻回 true，rAF 里的 settle 随即
+  // `scrollTop = scrollHeight`，把刚算好的位置整个吃掉（实测：置顶到 0 又被钉回 5816）。
+  // 这也解释了用户「再点一次就好了」——第二次走已加载分支，那条路径本来就有放跟随。
+  assert.ok(
+    /releaseRef\.current\?\.\(\);[\s\S]{0,300}?el\.scrollTop = 0;/.test(nav),
+    "置顶前必须放一次跟随（否则 settle 会把它钉回底部）",
+  );
+  assert.ok(
+    /releaseRef\.current\?\.\(\);[\s\S]{0,300}?landOnRow\(el, row, item\.turn, setActiveTurnStable\);/.test(nav),
+    "落位前必须放一次跟随（同上）",
+  );
+
+  // 落位**之后**要继续跟踪到布局稳定（用户 2026-09-20 报的「中间都能跳、第一条大概率
+  // 不对」）：需要加载历史的那些轮次，目标行**上方**会插入内容，其中一部分（代码高亮 /
+  // Markdown / 图片 / 折叠）是**异步变高**的，落位只做一次就会被它们推走。
+  assert.ok(
+    /landOnRow\(el, row, item\.turn, setActiveTurnStable\);[\s\S]{0,140}?trackLanding\(el, list, item\.turn, item\.anchor\.messageId, row\);/.test(nav),
+    "落位之后要起落位跟踪（否则「需要加载历史」的轮次会落到位又被推走）",
+  );
+  assert.ok(
+    /Math\.abs\(drift\) > 1/.test(nav) && /requestAnimationFrame\(tick\)/.test(nav),
+    "跟踪逐帧读目标行位置，偏差才写 scrollTop（已对齐就不动，不跟用户抢）",
+  );
+  assert.ok(
+    /if \(frames >= TRACK_FRAMES\) \{/.test(nav) && /const TRACK_FRAMES = 300;/.test(nav),
+    "收手只看观察窗（不因「已对齐」提前收手：那会漏掉一两秒后才撑开的异步内容）",
+  );
+  assert.ok(
+    /el\.addEventListener\("wheel", onGesture/.test(nav) && /function onGesture/.test(nav),
+    "用户一有滚动手势就停止跟踪（跟踪不能跟用户抢方向盘）",
+  );
+  const navigateAt = nav.indexOf("const navigate = useCallback(");
+  const stopInNavigate = nav.indexOf("stopTracking();", navigateAt);
+  assert.ok(
+    navigateAt > 0 && stopInNavigate > navigateAt && stopInNavigate < unloadedAt,
+    "新的一次跳转要取消上一次的落位跟踪（它盯的是旧目标）",
+  );
+  assert.ok(/\[sessionId, stopTracking\]/.test(nav), "切会话也要停掉落位跟踪");
 }
 console.log("turnRail: 跳转先放跟随再落位（接线）✓");

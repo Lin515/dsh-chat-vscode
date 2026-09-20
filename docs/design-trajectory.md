@@ -17,7 +17,8 @@
 > `…`（官方 `earlierHistory` 的位置：贴绘图区左缘、向右渐隐），
 > 不是排在绘图区右侧；标题栏里那个重复入口已经删掉。
 > **取历史的链路与官方同一条**：轨迹的「加载更早」不发自己的请求，它走会话页那条
-> `loadMore`（宿主一次取到底），宿主把 `historyLoading` 落回 false 之后由界面自己
+> `loadMore`（单页档：宿主取一页 50 条，官方 `loadOlder`），宿主把 `historyLoading`
+> 落回 false 之后由界面自己
 > 重取账本（`App` 里那个 true→false 收尾的 effect）；账本最上面另有官方那行
 > `historyLoadRow`（取的过程中显示 spinner）。检查器的「概述」页**直接摊开后几张卡片**
 > （官方 `overviewSections`）：工具/子工具 = 参数 / 结果 / Schema / 计时，markdown
@@ -599,7 +600,13 @@ export declare function TrajectoryView({ useSession, useTrajectory, useDuration,
   请求 `SessionPageRequest = {address, throughSeq, beforeSeq?, maxMessages?}`，
   响应 `SessionPage = {records, hasMore}`。
   `throughSeq` **只能**取自同一次 `session/follow` 开帧的 `snapshot.cursor`。
-- 本扩展现状：`src/dsh/client.ts:422-426` 已实现 `page()`；`src/dsh/controller.ts:1780-1810` 是 `pageBackwards()`；
+- 本扩展现状：`src/dsh/client.ts` 已实现 `page()`；`src/dsh/controller.ts` 的 `loadMore` / `pageBackwards`
+  走**与官方同构的两档**：不带 `targetSeq` = 单页档（官方 `loadOlder`，取一页即停），带 `targetSeq` =
+  到目标档（官方 `loadThrough`，取到窗口覆盖该 seq；跳转目标由界面经 `loadMore.targetSeq` 下发）。
+  **会话页没有滚动自动加载**（与官方 `ChatView` 一致——官方会话页只有「加载更早」按钮，下一节那句
+  `OLDER_LOAD_THRESHOLD_PX` 是官方**轨迹表** `TrajectoryTable` 的行为）。
+  每页只 `absorbRecords`、不结算；循环结束（或中止）由 `loadMore` 的 `finally` 调一次 `settleHistory`
+  ——连取 N 页只重折一次、只发一份 `messages/reset`（消息列表没有虚拟滚动，逐页结算会退化成 N 次全量重渲染）。
   策略注释与停止条件见 `src/dsh/historyPaging.ts`。
 
 ---
@@ -807,6 +814,9 @@ CSS 变量 `--trajectory-span-left / -width / -gap / -lane / -assistant-ttft`。
   只渲染最后 `HISTORY_PAGE_NODES = 50` 个**节点**（`:7836-7840`）。
 - 向上滚动自动加载更早：`OLDER_LOAD_THRESHOLD_PX = 48`（`:3819`、`:5315-5335`）；
   prepend 后用 `scrollHeight` 差补偿 `scrollTop`（`:5336-5345`）避免视口跳动。
+  **注意这是官方「轨迹表」的行为**：官方**会话页**（`ChatView`）没有滚动自动加载，只有
+  「加载更早」按钮；本扩展会话页与之一致（2026-09-20 取消了原先的滚动触发），
+  轨迹视图同样只有按钮。
 - 虚拟化：`records.length > 100 || hasOlderRecords` 时启用（`:5079`），
   `VIRTUAL_OVERSCAN_ROWS = 12`、`VIRTUAL_INITIAL_VIEWPORT_HEIGHT_PX = 600`（`:3822-3823`）；
   `groupTrajectoryVirtualRows`（`:3616-3642`）把零高的 `requestOnly` 行挂到下一条内容行上。
@@ -1189,7 +1199,7 @@ CSS 变量 `--trajectory-span-left / -width / -gap / -lane / -assistant-ttft`。
 | `partial`（流式中） | ⚠️ | 我们有流式叠加层（`liveSegments`，`src/dsh/adapter.ts:394`），语义与官方 `AssistantLiveChunkEvent`（`dsh-api-session-controller lib/types/client/contract/events.d.ts:6-16`，按 `attemptId/revision/index/chunk` 组织、可被 durable settlement 原子替换，`:31-34`）**不同**。映射不对会出现重复行 |
 | 时间线 | ✅ 数据够 | 需 `startedAt` + `timeSeconds` + `assistantMetrics`（TTFT / decoding）。`startedAt`/`endedAt` 已有，TTFT 有 `stepFirstTokenAt - stepStartedAt` |
 | 工具栏搜索 | ✅ | 纯本地；要搜的字段清单见 B.6（照抄官方 `:7663-7690`） |
-| 「加载更早」 | ✅ | `session.loadOlder()` 已实现（`src/dsh/client.ts:422-426`）；官方另加本地节点窗口（`HISTORY_PAGE_NODES = 50`）+ 时间线左端 `…` 按钮 |
+| 「加载更早」 | ✅ | 两档都已接上：**单页档** = 官方 `session.loadOlder()`（`PAGE_MESSAGES = 50`，本扩展 `loadMore` 不带目标）；**到目标档** = 官方 `session.loadThrough(seq)`（跳转目标经 `loadMore.targetSeq` 下发，宿主循环取到窗口覆盖该 seq，见 `src/dsh/historyPaging.ts`）；官方另加本地节点窗口（`HISTORY_PAGE_NODES = 50`）+ 时间线左端 `…` 按钮 |
 
 **结论：数据层面约 8 成可达**（user / context / message / tool / subtool / compacted / 请求 / 时间线 / 搜索）；
 **system 与 callSchemas 需额外实现 surface 语义**；**流式 partial 需一次语义映射**。

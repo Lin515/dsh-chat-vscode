@@ -2,17 +2,19 @@
  * 【探针定位】工具型 · 零 token —— 只读分页推演（不开写路径），不发消息，
  *   可自由运行。
  *
- * 「加载更早的历史」分页循环的真实推演（用户 2026-09-14 报的「没取到上一条用户
- * 消息就停了」）。
+ * 「加载更早的历史」分页循环的真实推演（两档语义：官方 `loadOlder` / `loadThrough`）。
  *
- *   node build/page-loop-probe.mjs --session ff34f000 [--pages 8]
+ *   node build/page-loop-probe.mjs --session ff34f000 [--pages 8] [--target <seq>]
  *
  * 做的事与扩展**完全一致**（同一份适配器代码、同一个 `session/page` 调用序列）：
  *   1. `session/follow`（`maxMessages: 60`，与扩展同值）开窗；
- *   2. 反复 `session/page(cursor, earliestSeq)` 并 `prependRecords(...)`；
- *   3. 每页打印：这一页加进来多少事件、`hasMore`、消息数与**首条消息**的角色/id，
- *      以及界面那条「顶部还是助手消息 → 接着取」的判据结论。
- * 停在哪、为什么停，一眼可见。
+ *   2. 反复 `session/page(cursor, earliestSeq)` 并 `absorbRecords(...)`——每页只**吸收**
+ *      不结算（与宿主一致），循环结束后调一次 `settleHistory()`；
+ *   3. 每页打印：这一页加进来多少事件、`hasMore`、`earliestSeq`，以及停止判据的结论；
+ *      结算后打印最终的消息数与首条消息的角色/id。
+ *
+ * 两档：不带 `--target` = **单页档**（取一页即停）；带 `--target <seq>` = **到目标档**
+ * （取到窗口覆盖该 seq 为止）。停在哪、为什么停，一眼可见。
  *
  * 只读：只开跟随流与分页，不发消息、不建会话。
  */
@@ -36,6 +38,8 @@ const opt = (name: string): string | undefined => {
 const want = opt("--session") ?? "ff34f000";
 const maxPages = Number(opt("--pages") ?? 8);
 const maxMessages = Number(opt("--max-messages") ?? 60);
+/** 目标档的落点（缺省 = 单页档）。 */
+const targetSeq = opt("--target") === undefined ? undefined : Number(opt("--target"));
 
 const log = (line: string) => console.log(line);
 const server = new SupervisorManager({ url: "", command: "dsh", log: () => {} });
@@ -75,7 +79,8 @@ try {
   const first = adapter.snapshotMessages()[0];
   console.log(
     `开窗：消息 ${adapter.snapshotMessages().length} 条；首条 = ${first?.role} ${first?.id ?? "?"}；` +
-      `hasMore=${adapter.hasMoreHistory()}；cursor=${adapter.cursor()}；earliestSeq=${adapter.earliestSeq()}`,
+      `hasMore=${adapter.hasMoreHistory()}；cursor=${adapter.cursor()}；earliestSeq=${adapter.earliestSeq()}；` +
+      `档位=${targetSeq === undefined ? "单页档" : `到目标档 seq=${targetSeq}`}`,
   );
 
   for (let page = 1; page <= maxPages; page += 1) {
@@ -87,29 +92,44 @@ try {
     }
     const answer = await client.page(target.sessionId, cursor, beforeSeq);
     const before = adapter.snapshotMessages();
-    const beforeFirst = before[0]?.id;
-    const added = adapter.prependRecords((answer.records ?? []) as never[], Boolean(answer.hasMore));
-    const after = adapter.snapshotMessages();
-    const top = after[0];
+    // 与宿主同一条路径：每页只**吸收**，循环结束后才结算一次
+    // （`absorbRecords` / `settleHistory`，见 `src/dsh/adapter.ts`）
+    const added = adapter.absorbRecords(
+      (answer.records ?? []) as never[],
+      Boolean(answer.hasMore),
+    );
     console.log(
       `第 ${page} 页：records=${(answer.records ?? []).length} → **新并入 ${added} 条事件**；` +
-        `消息 ${before.length} → ${after.length}；首条 ${beforeFirst ?? "?"} → ${top?.id ?? "?"}（${top?.role ?? "?"}）；` +
+        `消息仍 ${before.length} 条（吸收不结算，故不变）；` +
         `hasMore=${adapter.hasMoreHistory()}；earliestSeq=${adapter.earliestSeq()}`,
     );
-    // 宿主侧的停止判据（与 `src/dsh/historyPaging.ts` 同一份逻辑）：
-    // 现在是「一次取到底」——只有服务端说没有了、或这一页没进展才停。
-    if (!shouldContinuePaging(added, adapter.hasMoreHistory(), page)) {
+    // 宿主侧的停止判据（与 `src/dsh/historyPaging.ts` 同一份逻辑）
+    const stopTarget =
+      targetSeq === undefined
+        ? undefined
+        : { seq: targetSeq, earliest: adapter.earliestSeq() ?? beforeSeq };
+    if (!shouldContinuePaging(added, adapter.hasMoreHistory(), page, stopTarget)) {
       const why =
         added <= 0
           ? "这一页没有带来新事件 → 再取也没意义"
           : !adapter.hasMoreHistory()
-            ? "服务端说没有更早的了（= 已取回全部历史）"
-            : `到页数安全阀 ${MAX_HISTORY_PAGES} 页`;
+            ? "服务端说没有更早的了"
+            : targetSeq === undefined
+              ? "单页档：取满一页即停（官方 loadOlder）"
+              : `到目标档：窗口已覆盖 seq=${targetSeq}（或到页数安全阀 ${MAX_HISTORY_PAGES} 页）`;
       console.log(`   ■ 停止：${why}`);
       break;
     }
-    console.log(`   · 还有更早的历史 → 继续取下一页`);
+    console.log(`   · 窗口还没覆盖目标 seq=${targetSeq} → 继续取下一页`);
   }
+
+  // 结算一次（宿主在 loadMore 的 finally 里做的同一件事）
+  adapter.settleHistory();
+  const finalMessages = adapter.snapshotMessages();
+  console.log(
+    `结算后：消息 ${finalMessages.length} 条；首条 = ${finalMessages[0]?.role ?? "?"} ${finalMessages[0]?.id ?? "?"}；` +
+      `hasMore=${adapter.hasMoreHistory()}；earliestSeq=${adapter.earliestSeq()}`,
+  );
 } catch (error) {
   console.log(`探针失败：${error instanceof Error ? error.message : String(error)}`);
 } finally {

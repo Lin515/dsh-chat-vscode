@@ -1523,8 +1523,8 @@ console.log("styles: 两颗「打开」按钮图标不同（编辑区=方框箭�
     "App 调 hook（吃 active + sessionId），拿到的就是全部",
   );
   assert.ok(
-    /const \{ loadEarlier, loading: loadingEarlier \} = useHistoryPaging\(scrollRef, state, chatActive\);/.test(app),
-    "历史翻页仍用同一个滚动容器（端口不改变这条链路的入口）",
+    /const \{ loadEarlier, loadThrough, loading: loadingEarlier \} = useHistoryPaging\(scrollRef, state\);/.test(app),
+    "历史翻页仍用同一个滚动容器（端口不改变这条链路的入口）；两个档位都从这一个 hook 取",
   );
   assert.ok(
     /ref=\{chatScroll\.port\.scrollEl\}/.test(app) && /ref=\{chatScroll\.port\.contentEl\}/.test(app),
@@ -1772,8 +1772,8 @@ console.log("styles: 多行草稿打字不闪（量高瞬态同帧消化）✓")
     "TurnRail 要渲染在 .chat-scroll 里（App.tsx）",
   );
   assert.ok(
-    /useTurnRailItems\(state\.messages, state\.turnOutline\)/.test(app),
-    "条目要由 turnOutline 投影 ∪ 已加载窗口合并而来（useTurnRailItems）",
+    /useTurnRailItems\(state\.messages, state\.turnOutline, state\.hasMoreHistory === true\)/.test(app),
+    "条目要由 turnOutline 投影 ∪ 已加载窗口合并而来；hasMoreHistory 一并传下去，供「部分加载」判定（见 turnRail.ts）",
   );
   assert.ok(
     /data-msg-id=\{message\.id\}/.test(

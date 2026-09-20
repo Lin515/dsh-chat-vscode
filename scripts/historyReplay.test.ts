@@ -8,8 +8,13 @@
  *    「加载时把旧轮次实时渲染了一遍」。现在重放静默，界面只收到
  *    「hasMoreHistory 变了」+ 一整份 `messages/reset`。
  *
- * B. **取到轮次边界为止**：服务端按条数分页、不认轮次，一页会切在半轮中间。
- *    判据在 `src/webview/historyPaging.ts`（纯函数），这里一并钉住。
+ * B. **两档语义**（2026-09-20 用户口径）：服务端按条数分页、不认轮次，一页会切在
+ *    半轮中间；加载更早因此改为**按需**——不带目标取一页即停（官方 `loadOlder`），
+ *    带目标取到窗口覆盖该 seq 为止（官方 `loadThrough`）。判据在
+ *    `src/dsh/historyPaging.ts`（纯函数），这里一并钉住。
+ *
+ * C. **连取多页只结算一次**：每页只 `absorbRecords`，循环结束后 `settleHistory` 一次
+ *    ——逐页重折 + 逐页整份 reset 会让一次跨轮跳转变成十几次全量重渲染。
  *
  * 运行：npm test
  */
@@ -191,44 +196,119 @@ console.log("historyReplay: 更早的一轮落盘即最终态 ✓");
 }
 console.log("historyReplay: 正在跑的会话靠显式一帧报 running ✓");
 
-// ---------- B. 一次触发把窗口外的历史**全部**取回来（判据在宿主侧） ----------
+// ---------- B. 分页判据：两档语义（与官方 loadOlder / loadThrough 同构） ----------
 //
-// 用户口径（2026-09-14）：不再按「用户的上一条消息」分段取，**直接加载全部历史**。
-// 原因（见 `src/dsh/historyPaging.ts`）：`session/page` 按固定消息条数分页，切点与
-// 轮次边界无关，「顶部变成用户消息」这个判据只在页边界碰巧落在一轮开头时才成立——
-// 一轮几十条消息、一页固定 50 条，切点几乎总落在上一轮中间，于是循环一路取到底。
-// 既然真实行为就是这样、用户也认可，就把它定成设计。
+// 用户口径（2026-09-20）：取消「一次触发取完整个历史」，加载更早改为**按需**——
+// 单页档取一页即停（官方 `ISession.loadOlder()`），跨轮跳转走「到目标档」取到窗口
+// 覆盖目标 seq 为止（官方 `ISession.loadThrough(seq)`）。两档都不再一路取到底。
 //
-// 只剩两条停止条件：服务端说没有更早的 / 这一页没带来新事件。第三参数是**页数**
-// （防病态的安全阀），不再是消息流。
+// 停止条件：没进展 / 服务端说没有了 / 页数安全阀；到目标档另加「窗口已覆盖目标」，
+// 单页档则取满一页即停。
 {
-  assert.strictEqual(shouldContinuePaging(250, true, 1), true, "还有更早的且这一页有进展 → 接着取");
-  assert.strictEqual(shouldContinuePaging(12, false, 1), false, "服务端说没有了 → 停");
-  assert.strictEqual(shouldContinuePaging(0, true, 1), false, "零进展 → 停（防死循环）");
+  const target = { seq: 24, earliest: 60 };
   assert.strictEqual(
-    shouldContinuePaging(12, true, MAX_HISTORY_PAGES),
+    shouldContinuePaging(12, true, 1, undefined),
+    false,
+    "单页档（不带目标）取满一页就停——不再一路取到底",
+  );
+  assert.strictEqual(
+    shouldContinuePaging(12, true, 1, target),
+    true,
+    "到目标档：窗口最早 seq(60) 还没盖住目标(24) → 接着取",
+  );
+  assert.strictEqual(
+    shouldContinuePaging(12, true, 1, { seq: 60, earliest: 60 }),
+    false,
+    "到目标档：窗口已经盖住目标（earliest === seq）→ 停",
+  );
+  assert.strictEqual(
+    shouldContinuePaging(12, true, 1, { seq: 24, earliest: 12 }),
+    false,
+    "已经越过目标（earliest < seq）→ 停",
+  );
+  assert.strictEqual(
+    shouldContinuePaging(12, false, 1, target),
+    false,
+    "服务端说没有了 → 停（两档都适用）",
+  );
+  assert.strictEqual(shouldContinuePaging(0, true, 1, target), false, "零进展 → 停（防死循环）");
+  assert.strictEqual(
+    shouldContinuePaging(12, true, MAX_HISTORY_PAGES, target),
     false,
     "到页数安全阀 → 停（服务端病态时不至于把宿主拖死）",
   );
   assert.strictEqual(
     shouldContinuePaging.length,
-    3,
-    "只吃 (added, hasMore, pages)——判据里不再有「消息流顶部角色」",
+    4,
+    "判据吃 (added, hasMore, pages, target)——target 缺席就是单页档",
   );
 }
-console.log("historyReplay: 一次触发取回全部历史 ✓");
+console.log("historyReplay: 分页两档语义（单页 / 到目标）✓");
 
-// ---------- C. 结构不变量：宿主连取、界面只管视口与按钮 ----------
+// ---------- C. 连取多页只结算一次（重折不逐页做） ----------
+//
+// 「到目标档」可能连取十几页。逐页结算（重折 + 整份 reset）会让一次跨轮跳转变
+// 十几次全量重折 + 十几次全量重渲染——消息列表没有虚拟滚动，那个代价直接吃掉
+// 「跨轮跳转」的可用性。所以宿主每页只 `absorbRecords`，循环结束后 `settleHistory`。
+{
+  const { adapter, frames, messages } = harness();
+  const t = Date.now();
+  for (const event of turnEvents(3, 200, t)) adapter.applyEvent(event);
+  frames.length = 0;
+  const olderPage = (turn: number, base: number) =>
+    turnEvents(turn, base, t - (10 - turn) * 10_000).map((event) => ({ type: "event", event }));
+
+  // 两页：每页只吸收
+  const added2 = adapter.absorbRecords(olderPage(2, 100) as never[], true);
+  const added1 = adapter.absorbRecords(olderPage(1, 1) as never[], true);
+  assert.ok(added2 > 0 && added1 > 0, "两页都要有进展，才谈得上「连取」");
+  assert.deepStrictEqual(
+    frames,
+    [],
+    "吸收期间**一帧都不发**（连取 N 页不该有 N 次重折、N 份 reset）",
+  );
+  assert.ok(
+    !messages.some((m) => m.id === "a:1"),
+    "未结算时消息流里还没有更早那一轮（重折只在结算时发生）",
+  );
+
+  adapter.settleHistory();
+  assert.deepStrictEqual(
+    frames.map((frame) => frame.type),
+    ["patch", "messages/reset"],
+    `连取两页后只结算一次：一帧 hasMoreHistory + 一份 reset，实际：${JSON.stringify(frames.map((f) => f.type))}`,
+  );
+  assert.ok(messages.some((m) => m.id === "a:1"), "结算后更早那一轮出现");
+
+  // 幂等：没有新吸收时再结算，不再重折、不再发 reset
+  frames.length = 0;
+  adapter.settleHistory();
+  assert.deepStrictEqual(
+    frames.map((frame) => frame.type),
+    ["patch"],
+    "结算幂等：没有新吸收就只补一帧 hasMoreHistory",
+  );
+}
+console.log("historyReplay: 连取多页只结算一次（幂等）✓");
+
+// ---------- D. 结构不变量：宿主连取、界面只管视口与按钮 ----------
 {
   const app = readFileSync(join(process.cwd(), "src", "webview", "App.tsx"), "utf8");
-  assert.ok(/post\(\{ type: "loadMore" \}\)/.test(app), "界面只发一次 loadMore（连取由宿主驱动）");
+  assert.ok(
+    /post\(targetSeq === undefined \? \{ type: "loadMore" \} : \{ type: "loadMore", targetSeq \}\)/.test(app),
+    "界面只发一次 loadMore：不带 targetSeq = 单页档，带 = 到目标档（两档共用同一个 start）",
+  );
+  assert.ok(
+    !/HISTORY_TOP_PX/.test(app),
+    "会话页没有「滚到顶自动加载」这条链路（2026-09-20 口径：只看按钮，与官方会话页一致）",
+  );
   assert.ok(
     !/shouldContinuePaging|chaining/.test(app),
     "界面侧不再自己判断要不要接着取（判据只有宿主有真凭据）",
   );
   assert.ok(
     /el\.scrollTop \+= el\.scrollHeight - height\.current/.test(app),
-    "每落一页要按**高度差**把视口钉回去（不按首条消息 id 判断）",
+    "落定要按**高度差**把视口钉回去（不按首条消息 id 判断）",
   );
   assert.ok(
     /onClick=\{\(\) => loadEarlier\(\)\}/.test(app),
@@ -258,8 +338,13 @@ console.log("historyReplay: 一次触发取回全部历史 ✓");
     "域上的闸门要真的置位/复位（界面拿到的是同一个值）",
   );
   assert.ok(
-    /shouldContinuePaging\(added, Boolean\(page\.hasMore\), pages\)/.test(controller),
-    "宿主用「真实新增事件数 + hasMore + 页数安全阀」决定要不要继续取",
+    /shouldContinuePaging\(added, Boolean\(page\.hasMore\), pages, target\)/.test(controller),
+    "宿主用「真实新增事件数 + hasMore + 页数安全阀 + 目标」决定要不要继续取",
+  );
+  assert.ok(
+    /scope\.adapter\.absorbRecords\(/.test(controller) &&
+      /scope\.adapter\?\.settleHistory\(\)/.test(controller),
+    "宿主每页只吸收、最后结算一次（连取 N 页 → 一次重折 + 一份 reset）",
   );
   const adapter = readFileSync(join(process.cwd(), "src", "dsh", "adapter.ts"), "utf8");
   assert.ok(
@@ -268,8 +353,8 @@ console.log("historyReplay: 一次触发取回全部历史 ✓");
   );
   // 文案走**词典断言**，不去 grep 源文件里的字面量：文案表搬到 `messages.ts` 之后，
   // 「某个文件里有这行字」只会随文件布局漂移（见 docs/audit-summary.md 第五批的结论）。
-  assert.strictEqual(dictionaryFor("zh").historyLoading, "正在加载全部历史…", "中文文案");
-  assert.strictEqual(dictionaryFor("en").historyLoading, "Loading all history…", "英文文案");
+  assert.strictEqual(dictionaryFor("zh").historyLoading, "正在加载更早的历史…", "中文文案");
+  assert.strictEqual(dictionaryFor("en").historyLoading, "Loading earlier history…", "英文文案");
   assert.ok(/this\.replaying = true;/.test(adapter) && /if \(this\.replaying\) return;/.test(adapter), "适配器要有重放静默开关");
   // 候选弹层（`ref` + 键盘导航要把选中行滚进视野）已收进 `composerCompletion.tsx`：
   // 这条断言跟着搬（它钉的是行为，不是「Composer 里有这行字」）。

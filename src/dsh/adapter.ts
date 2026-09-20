@@ -514,7 +514,7 @@ export class SessionAdapter {
    * 已见过的 durable 事件（seq → 事件），按需整体重折。
    *
    * 「加载更早」把窗口外的记录并进来后要重新折叠一遍——折叠本身是确定性的，
-   * 重放比手工往前面插消息可靠得多（见 `prependRecords`）。
+   * 重放比手工往前面插消息可靠得多（见 `settleHistory`）。
    */
   private readonly seen = new Map<number, SessionWireEvent>();
   /**
@@ -549,6 +549,11 @@ export class SessionAdapter {
    * 会话、以及页面重载后正确显示（重放只发生在 follow 流开窗那一刻）。
    */
   private hasMore = false;
+  /**
+   * 自上次 `settleHistory()` 以来是否吸收过历史（决定要不要重折 + 发整份 reset）。
+   * 「到目标档」连取多页时只吸收不结算，取完一次结清（见 `absorbRecords`）。
+   */
+  private pendingSettle = false;
 
   /**
    * `approval/asked` 的 id → 该次审批针对的工具调用 id。
@@ -885,7 +890,35 @@ export class SessionAdapter {
   }
 
   /**
-   * 合并一批**更早**的历史记录，并整体重折消息流。
+   * 吸收一批**更早**的历史记录，但**不结算**（不重折、不发帧）。
+   *
+   * 与 `settleHistory()` 配对：「到目标档」连取多页时每页只吸收，取完（或中止）再
+   * 结算一次。为什么要拆——`refold()` 会把全部已见事件从头折一遍，并发一份**整份**
+   * `messages/reset`；界面那侧又是一次全量重渲染（消息列表没有虚拟滚动）。逐页结算
+   * 的话，连取 N 页就是 N 次全量重折 + N 次全量重渲染，跳到很靠前的轮次时要翻十几页，
+   * 那个代价会直接吃掉「跨轮跳转」这个功能的可用性。单页档只有一页，拆与不拆一个样。
+   *
+   * @returns **新并入的事件条数**（0 = 这一页没带来新东西）。调用方（控制器）据此
+   *   判断要不要接着取下一页——不能拿「首条消息 id 变没变」当判据：更早的事件常常
+   *   只是**把现有的第一条助手消息补长**（它的 id 是按轮次派生的 `a:<turn>`，不会变），
+   *   于是「没换首条」会被误判成「没进展」而在半轮中间停下（2026-09-14 的缺陷现场，
+   *   见 `scripts/pageLoopProbe.ts`）。
+   */
+  absorbRecords(records: readonly SessionHistoryRecord[], hasMore: boolean): number {
+    let added = 0;
+    for (const record of records ?? []) {
+      if (record?.type !== "event") continue;
+      if (typeof record.event?.seq !== "number" || this.seen.has(record.event.seq)) continue;
+      this.seen.set(record.event.seq, record.event);
+      added += 1;
+    }
+    this.hasMore = hasMore;
+    if (added > 0) this.pendingSettle = true;
+    return added;
+  }
+
+  /**
+   * 结算自上次结算以来吸收的历史：重折一次，并把结果与 `hasMoreHistory` 发出去。
    *
    * 为什么是「整体重折」而不是「往前面插消息」：消息 id 是按轮次派生的
    * （`a:<turn>` / `u:<seq>`），而这个折叠过程**天然有序**——把旧事件并进集合后
@@ -900,28 +933,26 @@ export class SessionAdapter {
    * `messages/reset`，于是新加载的旧轮次**一出现就是折叠好的最终态**，不会先被画成
    * 「运行中 / 展开」再收起来。
    *
-   * @returns **新并入的事件条数**（0 = 这一页没带来新东西）。调用方（控制器）据此
-   *   判断要不要接着取下一页——不能拿「首条消息 id 变没变」当判据：更早的事件常常
-   *   只是**把现有的第一条助手消息补长**（它的 id 是按轮次派生的 `a:<turn>`，不会变），
-   *   于是「没换首条」会被误判成「没进展」而在半轮中间停下（2026-09-14 的缺陷现场，
-   *   见 `scripts/pageLoopProbe.ts`）。
+   * 幂等：自上次结算以来没吸收过内容时不重折、不发 `messages/reset`（只补一帧
+   * `hasMoreHistory`，与「服务端说没有了」那条路径同形）。调用方必须在发
+   * `historyLoading: false` **之前**调它，界面才会「先拿到内容、再看到取完了」。
    */
-  prependRecords(records: readonly SessionHistoryRecord[], hasMore: boolean): number {
-    let added = 0;
-    for (const record of records ?? []) {
-      if (record?.type !== "event") continue;
-      if (typeof record.event?.seq !== "number" || this.seen.has(record.event.seq)) continue;
-      this.seen.set(record.event.seq, record.event);
-      added += 1;
-    }
-    if (added > 0) this.refold();
-    this.hasMore = hasMore;
+  settleHistory(): void {
+    const changed = this.pendingSettle;
+    this.pendingSettle = false;
+    if (changed) this.refold();
     this.emit({ type: "patch", patch: { hasMoreHistory: this.hasMore } });
-    if (added > 0) {
+    if (changed) {
       this.emit({ type: "messages/reset", messages: this.messages });
       // 更早的历史里也有芯片：同样安排分类
       this.scheduleFileKinds();
     }
+  }
+
+  /** 吸收一页并立刻结算（单页档与既有调用点用，等价于 `absorbRecords` + `settleHistory`）。 */
+  prependRecords(records: readonly SessionHistoryRecord[], hasMore: boolean): number {
+    const added = this.absorbRecords(records, hasMore);
+    this.settleHistory();
     return added;
   }
 
@@ -955,7 +986,7 @@ export class SessionAdapter {
     this.stepFirstTokenAt = undefined;
     this.sequence = 0;
     // 重放期间静默：中间态会被调用方随后的 `messages/reset` 整体覆盖（见 `replaying`）。
-    // 两个调用方（follow 开窗快照、prependRecords）都在重放之后立刻发 reset。
+    // 两个调用方（follow 开窗快照、settleHistory）都在重放之后立刻发 reset。
     this.replaying = true;
     try {
       for (const event of events) this.applyEvent(event);

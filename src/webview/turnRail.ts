@@ -15,6 +15,12 @@
  *   被它确认**——本地消息流里存在首个 `turn/start` 之前拼出来的幻影轮 `a:0`
  *   （斜杠命令行 / 系统提示词注入），拿大纲当轮次边界的权威正好把它挡掉。
  *
+ * **「部分加载」的轮次不退化**：窗口按消息条数切，切点常落在某轮的助手消息上（一轮里
+ * 助手消息比用户消息多一个数量级），于是窗口第一轮的用户消息不在窗口里。这类轮次的
+ * 锚点**不许**退化成该轮第一条助手消息——那会让刻点看着「已加载」，点击却只落到该轮
+ * 已加载的最早内容，永远到不了用户消息处。它们按「未加载」呈现，点击时先取回用户消息
+ * 再落位（见 `mergeTurnRailItems` 里的判据）。
+ *
  * 纯函数、不引 react：断言见 `scripts/turnRail.test.ts`。
  */
 
@@ -30,6 +36,14 @@ export interface TurnRailItem {
   response: string;
   /** 怎么到达这一轮：已加载 → 滚到锚点行；未加载 → 先取历史。 */
   anchor: { kind: "loaded"; messageId: string } | { kind: "unloaded"; seq: number };
+  /**
+   * 窗口里**看得见**的这一轮的行（只用于「阅读线上是哪一轮」的命中测试）。
+   *
+   * 只有「部分加载」的轮次带它：那时跳转锚点是 `unloaded`（用户消息还没取回来），
+   * 但该轮的助手消息确实在窗口里——不记下来的话，读者滚到这一轮时命中测试找不到它，
+   * 横条会把激活轮点亮成前一轮。
+   */
+  visibleMessageId?: string;
 }
 
 /** 提示词预览的字符上限（与官方 `turnOutline` 投影的 preview() 同口径）。 */
@@ -117,6 +131,7 @@ export function sameTurnRailItem(left: TurnRailItem, right: TurnRailItem): boole
   if (left.turn !== right.turn || left.prompt !== right.prompt || left.response !== right.response) {
     return false;
   }
+  if (left.visibleMessageId !== right.visibleMessageId) return false;
   if (left.anchor.kind !== right.anchor.kind) return false;
   return left.anchor.kind === "loaded"
     ? left.anchor.messageId === (right.anchor as { messageId: string }).messageId
@@ -144,6 +159,8 @@ export function mergeTurnRailItems(
   outline:
     | readonly { turn: number; seq: number; prompt: string; response: string }[]
     | undefined,
+  /** 服务端是否还有更早的记录（决定「部分加载」的轮次能否被取回来，见下方判据）。 */
+  hasMoreHistory = false,
 ): TurnRailItem[] {
   const byTurn = new Map<number, TurnRailItem>();
   const outlinePresent = outline !== undefined;
@@ -167,6 +184,32 @@ export function mergeTurnRailItems(
     const anchor = entry.anchorMessageId ?? entry.lastAssistantId;
     if (anchor === undefined) continue;
     const previous = byTurn.get(turn);
+    // **部分加载的轮次不许把锚点退化成助手消息**。
+    //
+    // 跟随窗口按**消息条数**切（`maxMessages: 60`），而一轮里助手消息比用户消息多一个
+    // 数量级（本机实测 1125 : 109），所以切点十有八九落在某轮的助手消息上——窗口第一轮
+    // 的用户消息于是不在窗口里。此前这种轮次会被标成 `loaded` 且锚点退化成 `a:<turn>`：
+    // 刻点看着是「已加载」，点击只落到该轮**已加载的最早内容**，永远到不了用户消息处
+    // （用户 2026-09-20 报的正是这个，而且它是常态不是边界）。
+    //
+    // 判据：大纲说这轮有提示词（= 全日志里该轮确有 `user/message`），而已加载窗口里
+    // 找不到它 → 保持大纲那条 `unloaded`，点击时走「到目标档」把用户消息取回来。
+    // 宿主取到 `earliestSeq <= 该轮 turn/start 的 seq` 就停，而用户消息的 seq 在其
+    // **之后**，所以覆盖到 `turn/start` 必然覆盖到用户消息（`shared/ipc.ts` 的
+    // `loadMore.targetSeq`）。
+    //
+    // 只有「还有更早的历史可取」时才这么标：`hasMoreHistory === false` 说明窗口已经
+    // 到日志开头，那这轮是真的没有用户消息（自动轮 / 纯注入），只能退化到助手消息。
+    if (
+      entry.anchorMessageId === undefined &&
+      (previous?.prompt ?? "") !== "" &&
+      hasMoreHistory
+    ) {
+      // 跳转锚点保持大纲那条 `unloaded`，但把窗口里看得见的那行记给命中测试用
+      // （否则读者滚到这一轮时激活轮会点亮成前一轮）
+      if (previous !== undefined) byTurn.set(turn, { ...previous, visibleMessageId: anchor });
+      continue;
+    }
     const prompt = preview(
       messageById.get(entry.anchorMessageId ?? "")?.text ?? "",
       PROMPT_PREVIEW_LIMIT,
@@ -207,6 +250,8 @@ export function anchorTurnIndex(items: readonly TurnRailItem[]): Map<string, num
   const index = new Map<string, number>();
   for (const item of items) {
     if (item.anchor.kind === "loaded") index.set(item.anchor.messageId, item.turn);
+    // 「部分加载」的轮次：跳转锚点是未加载，但内容已经在窗口里，激活轮要认得出它
+    if (item.visibleMessageId !== undefined) index.set(item.visibleMessageId, item.turn);
   }
   return index;
 }

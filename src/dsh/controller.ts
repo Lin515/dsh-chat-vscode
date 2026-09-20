@@ -2558,7 +2558,15 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
-   * 加载更早的历史（`session/page`）。
+   * 加载更早的历史（`session/page`）——**两档语义**（与官方同构，判据见
+   * `dsh/historyPaging.ts`）：
+   *
+   * - 不带 `targetSeq`（**单页档**，对应官方 `ISession.loadOlder()`）：取一页就停。
+   *   会话页与轨迹视图的「加载更早」按钮走这一档；
+   * - 带 `targetSeq`（**到目标档**，对应官方 `ISession.loadThrough(seq)`）：一页一页
+   *   往前取，直到窗口最早的事件覆盖该 seq 为止。右侧轮次横条上「未加载」的刻点走
+   *   这一档——点它先把那段历史取回来，锚点行渲染出来后再落位
+   *   （见 `webview/turnRailNav.ts` 的 pendingJump）。
    *
    * 为什么需要它：跟随流开窗只带 `maxMessages` 条（默认 60），更早的内容**根本
    * 没进过客户端**——不是被清理了，而是从来没取过。此前这个入口在协议层有
@@ -2571,17 +2579,11 @@ export class ChatController implements vscode.Disposable {
    * - `beforeSeq` 取当前已折叠事件的最小 seq，服务端只回它之前的那一页。
    *
    * `historyLoading` 由**宿主**发：界面据此把「加载更早」按钮变成不可点的
-   * 「正在加载更早消息…」，也据它判断一页是否落定。发帧顺序必须是
-   * `true` →（prependRecords 的 hasMoreHistory / messages/reset）→ `false`：
-   * 界面先拿到内容，再看到「取完了」。
-   *
-   * **连取由宿主驱动，且一次取到底**（界面只发一次请求）：服务端按固定消息条数
-   * 分页，页边界与轮次无关，因此「取到用户的上一条消息就停」这个判据在真实数据上
-   * 几乎从不成立（切点总落在某一轮中间），实际表现就是**一次触发把整个历史取完**
-   * ——那正是现在的设计（用户 2026-09-14 拍板）。判据只留「服务端说没有了」与
-   * 「这一页没进展」两条，外加一个防病态的页数安全阀（见 `dsh/historyPaging.ts`）。
+   * 「正在加载更早的历史…」，也据它判断一页是否落定。发帧顺序必须是
+   * `true` →（结算：hasMoreHistory / messages/reset）→ `false`：界面先拿到内容，
+   * 再看到「取完了」。所以结算放在 `finally` 里、发 `false` 之前。
    */
-  private async loadMore(viewId: string): Promise<void> {
+  private async loadMore(viewId: string, targetSeq?: number): Promise<void> {
     const scope = this.scopeOfView(viewId);
     if (!this.client || !scope || !scope.adapter) return;
     if (scope.running) {
@@ -2589,7 +2591,8 @@ export class ChatController implements vscode.Disposable {
       this.emitToView(viewId, { type: "toast", level: "warn", text: "@historyBusy" });
       return;
     }
-    // 一次只跑一条链：滚动事件会在「historyLoading 帧回到界面」之前连发好几个
+    // 一次只跑一条链：滚动式连点与横条连点都会在「historyLoading 帧回到界面」之前
+    // 连发好几个请求
     if (scope.historyLoading) return;
     scope.historyLoading = true;
     this.deliver(scope.sessionId, {
@@ -2597,10 +2600,13 @@ export class ChatController implements vscode.Disposable {
       patch: sessionPatch(this.sessionSource(scope), ["historyLoading"]),
     });
     try {
-      await this.pageBackwards(scope);
+      await this.pageBackwards(scope, targetSeq);
     } catch (error) {
       this.reportError(vscode.l10n.t("Failed to load earlier history"), error);
     } finally {
+      // 先结算再报「取完了」：已吸收的页（哪怕中途客户端抛错、或新一轮抢先生成）
+      // 必须显示出来，帧序才是「先内容、后取完」
+      scope.adapter?.settleHistory();
       scope.historyLoading = false;
       this.deliver(scope.sessionId, {
         type: "patch",
@@ -2610,14 +2616,15 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
-   * 一页一页往前取，**直到把窗口外的历史全部取回来**（不再停在「用户的上一条
-   * 消息」那个轮次边界上——服务端按固定条数分页，切点与轮次无关，那个判据只在
-   * 页边界碰巧落在一轮开头时才成立；见 `dsh/historyPaging.ts` 的完整说明）。
+   * 一页一页往前取。**单页档取一页就停；到目标档取到窗口覆盖目标 seq 为止**
+   * （官方 `loadOlder` / `loadThrough` 两条入口，停止条件见 `dsh/historyPaging.ts`）。
    *
-   * 每页都会单独发一份 `messages/reset`：界面逐页把视口钉回原处（见 App 的
-   * `useHistoryPaging`），所以用户看到的是「内容在上面长出来、自己没被推走」。
+   * 每页只**吸收**不结算（见 `SessionAdapter.absorbRecords`）：重折与整份
+   * `messages/reset` 由调用方在 `finally` 里做一次。逐页结算的话，一次跨轮跳转
+   * （可能连取十几页）就是十几次全量重折 + 十几次全量重渲染——消息列表没有虚拟
+   * 滚动，那个代价会直接吃掉跨轮跳转的可用性。
    */
-  private async pageBackwards(scope: SessionScope): Promise<void> {
+  private async pageBackwards(scope: SessionScope, targetSeq?: number): Promise<void> {
     let pages = 0;
     for (;;) {
       // 生成开始了就停：分页与流式叠加层互斥
@@ -2629,23 +2636,25 @@ export class ChatController implements vscode.Disposable {
       const beforeSeq = scope.adapter?.earliestSeq();
       if (!scope.adapter || throughSeq === undefined || beforeSeq === undefined) {
         this.log("[history] 拿不到分页锚点（缺 snapshot.cursor 或本地无事件）");
-        this.deliver(scope.sessionId, {
-          type: "patch",
-          patch: sessionPatch(this.sessionSource(scope), ["hasMoreHistory"]),
-        });
         return;
       }
       const page = await this.client!.page(scope.sessionId, throughSeq, beforeSeq);
-      const added = scope.adapter.prependRecords(
+      const added = scope.adapter.absorbRecords(
         (page.records ?? []) as never[],
         Boolean(page.hasMore),
       );
       pages += 1;
-      if (shouldContinuePaging(added, Boolean(page.hasMore), pages)) {
+      // 目标档的「覆盖」判据要在**吸收之后**取：earliest 正是这一步被推小的
+      const target =
+        targetSeq === undefined
+          ? undefined
+          : { seq: targetSeq, earliest: scope.adapter.earliestSeq() ?? beforeSeq };
+      if (shouldContinuePaging(added, Boolean(page.hasMore), pages, target)) {
         continue;
       }
       this.log(
-        `[history] 共取 ${pages} 页停：本页新并入 ${added} 条事件、hasMore=${Boolean(page.hasMore)}、` +
+        `[history] ${targetSeq === undefined ? "单页档" : `到目标档 seq=${targetSeq}`}共取 ` +
+          `${pages} 页停：本页新并入 ${added} 条事件、hasMore=${Boolean(page.hasMore)}、` +
           `消息 ${scope.adapter.snapshotMessages().length} 条`,
       );
       return;
@@ -3786,7 +3795,7 @@ export class ChatController implements vscode.Disposable {
         break;
 
       case "loadMore":
-        await this.loadMore(viewId);
+        await this.loadMore(viewId, message.targetSeq);
         break;
 
       case "removeAttachment":

@@ -96,6 +96,7 @@ const entries = {
   "build/render-order.test.mjs": "scripts/renderOrder.test.ts",
   "build/live-order-probe.mjs": "scripts/liveOrderProbe.ts",
   "build/page-loop-probe.mjs": "scripts/pageLoopProbe.ts",
+  "build/rail-jump-probe.mjs": "scripts/railJumpProbe.ts",
   "build/config-reload-probe.mjs": "scripts/configReloadProbe.ts",
   "build/window-state.test.mjs": "scripts/windowState.test.ts",
   "build/host-log.test.mjs": "scripts/hostLog.test.ts",

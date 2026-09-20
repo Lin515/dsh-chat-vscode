@@ -983,6 +983,56 @@
             { turn: 1, seq: 3, prompt: "把这两个文件的启动逻辑合并到一个入口，并去掉重复初始化。", response: "我看了两个文件，重复初始化的根因是端口和中间件被注册了两次。" }
           ];
         }
+
+        // 右侧轮次横条的「部分加载」形态（`?rail=partial`）：跟随窗口按**消息条数**切，
+        // 切点落在某轮的助手消息上，于是**窗口第一轮的用户消息不在窗口里**。
+        // 这是本机实测的常态而非边界：可翻页会话里 91%（128/140）打开时窗口首条消息是
+        // 助手消息，且这些轮的 `user/message` **100%** 确实存在于全日志（只是被切点切在
+        // 窗口外）。数据取自真实会话 `43a9fabc-94d0-439a-8e10-2ac3d85288d5`：
+        // turn 6 的 `turn/start` seq = 315879、其 `user/message` seq = 315882、
+        // 窗口首条助手消息 seq = 318489（即用户消息被切掉，turn 6 只加载了后半段）。
+        // 期望：turn 6 刻点**不退化成已加载锚点 `a:6`**，而是「未加载」呈现
+        // （更短更淡 + aria-label「加载并跳到第 6 轮」）——点击时先取回用户消息再落位，
+        // 与 turn 5（真·窗口外）同一种形态；turn 7 的用户消息在窗口里，是正常刻点。
+        if (query.get("rail") === "partial") {
+          state.messages = [
+            {
+              id: "a:6",
+              role: "assistant",
+              ts: now - 30000,
+              model: "DeepSeek-V4-Pro",
+              segments: [
+                { id: "t6", kind: "text", text: "我看了两个文件，重复初始化的根因是端口和中间件被注册了两次。" }
+              ]
+            },
+            {
+              id: "u:7",
+              role: "user",
+              ts: now - 20000,
+              text: "那就按你的方案改，改完顺手跑一遍测试。",
+              segments: []
+            },
+            {
+              id: "a:7",
+              role: "assistant",
+              ts: now - 10000,
+              model: "DeepSeek-V4-Pro",
+              segments: [
+                { id: "t7", kind: "text", text: "改完了，两处初始化合并到 bootstrap，测试全绿。" }
+              ]
+            }
+          ];
+          state.turnOutline = [
+            { turn: 5, seq: 311889, prompt: "先看看这两处初始化为什么会重复。", response: "端口和中间件各注册了一次。" },
+            { turn: 6, seq: 315879, prompt: "把这两个文件的启动逻辑合并到一个入口，并去掉重复初始化。", response: "我看了两个文件，重复初始化的根因是端口和中间件被注册了两次。" },
+            { turn: 7, seq: 318500, prompt: "那就按你的方案改，改完顺手跑一遍测试。", response: "改完了，两处初始化合并到 bootstrap，测试全绿。" }
+          ];
+          state.hasMoreHistory = true;
+          // 主故事是「运行中」的会话（`state.running = true`），而生成中宿主会拒绝翻历史
+          // （`turnRailNav` 的那条防御 + 按钮 disabled）——这一场要演的是**空闲时**点刻点，
+          // 所以必须把它置回来，否则点击会被正确地拒掉，看不到加载与落位。
+          state.running = false;
+        }
         return state;
       };
       // 文件芯片的种类表（`patch.fileKinds`）：形状与真实宿主一致（键 = 芯片上的
