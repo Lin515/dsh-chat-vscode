@@ -16,6 +16,8 @@
  * 运行：npm test
  */
 import assert from "node:assert";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { SessionAdapter } from "../src/dsh/adapter";
 import { RENDERED_EVENT_TYPES, SILENT_EVENT_TYPES } from "../src/dsh/protocol";
 
@@ -79,14 +81,20 @@ const DSH_KNOWN_EVENT_TYPES = [
   "turn/start",
   "user/message",
   "web/deepseek-search-llm-request",
+  // 0.1.6-alpha 新增（`feat(web): record turn file changes with git snapshots and
+  // render the changed-files card`）：顶层轮次停止时宣告本轮改了哪些文件。
+  "workspace/changes",
 ];
 
 function harness() {
   const toasts: string[] = [];
+  const lines: string[] = [];
   const adapter = new SessionAdapter((frame) => {
     if (frame.type === "toast") toasts.push(frame.text);
   });
-  return { adapter, toasts };
+  // 宿主日志落点（控制器在真实链路上注入的是 `[event] 会话=… ` 前缀的 log）
+  adapter.log = (line) => lines.push(line);
+  return { adapter, toasts, lines };
 }
 
 /** 造一条最简事件：data 为空也要不崩（真实事件字段远多于此）。 */
@@ -159,3 +167,82 @@ console.log("unknownEvent: 未知但 ignorable → 静默跳过 ✓");
   assert.deepStrictEqual(toasts, [], "inbox 队列簿记不该弹「不认识的事件」");
 }
 console.log("unknownEvent: agent/inbox/spliced 不再告警 ✓");
+
+// ---------- 6. 未知事件同时记进宿主日志（可追溯） ----------
+//
+// 告警在界面上是一闪而过的提示条，日志才是事后能回看的那一份；协议文档
+// （docs/dsh-server-api.md §6.1）要求的降级纪律也是「至少在输出通道里报一次」。
+
+{
+  const { adapter, toasts, lines } = harness();
+  adapter.applyEvent(wire("kernel/other-new-thing", { data: { turn: 1 } }) as never);
+  assert.deepStrictEqual(toasts, ["@unknownEvent:kernel/other-new-thing"]);
+  assert.strictEqual(lines.length, 1, `未知事件应记一行日志，实际：${JSON.stringify(lines)}`);
+  assert.ok(lines[0]!.includes("type=kernel/other-new-thing"), lines[0]);
+  assert.ok(lines[0]!.includes("turn"), `日志里应带上 data：${lines[0]}`);
+  assert.ok(!lines[0]!.includes("\n"), "日志必须单行（多行会把时间戳前缀截在中间）");
+}
+console.log("unknownEvent: 未知事件记进宿主日志，含 seq 与 data ✓");
+
+{
+  // 回归点：`workspace/changes` 曾每轮弹一次告警（内核 0.1.6-alpha 新增、本客户端
+  // 名单还停在 0.1.5-rc.1，且它没标 ignorable）。它现在是**渲染**的一员（轮尾改动
+  // 文件卡片），所以既不告警也不该进那条「未知事件」日志。
+  const { adapter, toasts, lines } = harness();
+  adapter.applyEvent(wire("workspace/changes", { data: { turn: 1 } }) as never);
+  assert.deepStrictEqual(toasts, [], "改动文件卡片的事件不该再弹「不认识的事件」");
+  assert.deepStrictEqual(lines, [], "已知类型不记「未知事件」日志");
+}
+console.log("unknownEvent: workspace/changes 不再告警也不进未知事件日志 ✓");
+
+{
+  // 重放/重连会把同一类型重折很多遍：日志长度只跟「新词汇的种类数」有关
+  const { adapter, lines } = harness();
+  for (let turn = 0; turn < 5; turn++) {
+    adapter.applyEvent(wire("kernel/other-new-thing", { data: { turn } }) as never);
+  }
+  assert.strictEqual(lines.length, 1, `同一类型只该记首见一条，实际 ${lines.length} 条`);
+}
+console.log("unknownEvent: 同一类型只记首见一条（重放不刷日志） ✓");
+
+{
+  const { adapter, toasts, lines } = harness();
+  adapter.applyEvent(wire("tool/call", { data: {} }) as never);
+  adapter.applyEvent(wire("agent/inbox/spliced", { data: {} }) as never);
+  assert.deepStrictEqual(lines, [], "已知类型（渲染的 ∪ 静默的）不该记日志");
+  // ignorable 的未知事件界面上完全无声，但同样要留痕
+  adapter.applyEvent(wire("plugin/out-of-tree", { ignorable: true }) as never);
+  assert.deepStrictEqual(toasts, [], "ignorable 的未知事件不提示（既有行为）");
+  assert.strictEqual(lines.length, 1, "ignorable 的未知事件仍要记日志");
+  assert.ok(lines[0]!.includes("ignorable"), `日志应写明按 ignorable 跳过：${lines[0]}`);
+}
+console.log("unknownEvent: 已知类型不记日志；ignorable 的未知类型记但界面无声 ✓");
+
+{
+  const { adapter, lines } = harness();
+  adapter.applyEvent(wire("kernel/huge", { data: { blob: "x".repeat(5000) } }) as never);
+  assert.strictEqual(lines.length, 1);
+  assert.ok(lines[0]!.includes("已截断"), "超长 data 应截断，避免一行撑爆日志");
+  assert.ok(!lines[0]!.includes("\n"), "截断后仍必须单行");
+}
+console.log("unknownEvent: 超长 data 截断且保持单行 ✓");
+
+// ---------- 7. 结构不变量：控制器必须把日志落点接上 ----------
+//
+// 只测适配器是不够的：接线漏了，`log` 永远是 undefined，上面几组断言照样绿，
+// 而真实链路上一个字都不会写进输出通道（本仓库「测试绿、功能缺」的经典形态）。
+
+{
+  const controller = readFileSync(join(process.cwd(), "src", "dsh", "controller.ts"), "utf8");
+  const wired = controller.match(/adapter\.log = \(line\) => this\.log\(/g) ?? [];
+  assert.strictEqual(
+    wired.length,
+    2,
+    `会话域与子代理两处适配器都要注入日志落点，实际接了 ${wired.length} 处`,
+  );
+  assert.ok(
+    /adapter\.log = \(line\) => this\.log\(`\[event\] 会话=\$\{sessionId\} /.test(controller),
+    "会话域的日志行要带会话 id：多会话并存时才知道是哪个会话冒出的未知事件",
+  );
+}
+console.log("unknownEvent: 控制器两处适配器都接上了日志落点 ✓");

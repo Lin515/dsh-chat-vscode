@@ -1,4 +1,4 @@
-import type { Attachment, ChatState, MessageView, ModelSelectionView, ProviderGroupView, Segment, SessionSummaryView, TodoView } from "./chat";
+import type { Attachment, ChatState, ChangesSummaryView, MessageView, ModelSelectionView, ProviderGroupView, Segment, SessionSummaryView, TodoView } from "./chat";
 import type {
   CommandView,
   FileRefView,
@@ -41,6 +41,15 @@ export type HostToWebview =
   | { type: "message/segment"; messageId: string; segment: Segment }
   /** 会话列表（历史抽屉）。 */
   | { type: "sessions"; sessions: SessionSummaryView[] }
+  /**
+   * 一条 `workspace/changes` 宣告的改动清单（`/api/changes.summary` 的结果）。
+   *
+   * `summary: null` = Host **明确说没有**这份清单（404：Host 重启过、Session 已
+   * 释放）。它必须与「还没问过」区分开，所以走独立帧而不是 `patch`——`patch` 里
+   * `null` 的语义是「清空这个键」（见 `shared/wire.ts`），界面就再也分不出
+   * 「问过了、没有」与「还没问」了。
+   */
+  | { type: "changes/summary"; sessionId: string; seq: number; summary: ChangesSummaryView | null }
   /** 归档会话列表（历史抽屉的归档视图）。 */
   | { type: "archivedSessions"; sessions: SessionSummaryView[] }
   /** 模型目录。 */
@@ -200,6 +209,14 @@ export type WebviewToHost =
    * （判定见 `dsh/fileChange.ts`）。
    */
   | { type: "openFile"; path: string; diff?: boolean }
+  /**
+   * 请求一条 `workspace/changes` 宣告的改动清单。
+   *
+   * **按需**（卡片真要渲染时）而不是事件到达即推：清单要经一次 HTTP 往返，而用户
+   * 完全可能在等待期间切走再切回来——那时推的帧已经丢了。按需请求能把缺的补回来，
+   * 宿主侧按 `seq` 做 fetch-once 缓存（见 controller 的 `loadChangesSummary`）。
+   */
+  | { type: "requestChanges"; sessionId: string; seq: number }
   /** 在编辑器区打开一个独立的聊天面板。 */
   | { type: "openInEditor" }
   /** 把代码块内容插入当前编辑器。 */

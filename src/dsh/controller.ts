@@ -6,6 +6,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import * as vscode from "vscode";
 import type {
   Attachment,
+  ChangesSummaryView,
   ChatState,
   CommandView,
   ConnectPhase,
@@ -24,6 +25,8 @@ import type {
 } from "../shared/chat";
 import type { HostToWebview, WebviewToHost } from "../shared/ipc";
 import { SessionAdapter, type ImageRef } from "./adapter";
+import { decodeChangesSummary } from "./changes";
+import { changesSummaryKey } from "../shared/changesSummary";
 import { classifyDroppedBytes, classifyPath, DROP_BYTES_LIMIT, formatPathList, isDirectoryPath, isImagePath } from "./attachments";
 import { ConfigChangeRouter } from "./configChanges";
 import { fileChangeKind, hasWorkingChange, isNotFoundError, resolveChipPath, type FileExistence, type GitChangeStateLike } from "./fileChange";
@@ -502,6 +505,25 @@ export class ChatController implements vscode.Disposable {
    */
   private readonly drafts = new Map<string, string>();
   private readonly attachmentsBySession = new Map<string, Attachment[]>();
+  /**
+   * 改动文件清单的 **fetch-once 缓存**（键 = 会话 id + 事件 seq，见 `changesSummaryKey`）。
+   *
+   * 缓存**成功与「Host 明确说没有」两种结果**（后者存 `null`）：清单要经一次 HTTP
+   * 往返，而同一份清单会被反复问到——打开会话时的重放、加载更早的历史、切走再切回
+   * 都会再问一次（见 `shared/ipc.ts` 的 `requestChanges`）。`null` 也缓存，是为了
+   * 别对着一份 Host 早就没有的清单反复打请求（旧会话里每一轮都会问一次）。
+   *
+   * 网络 / 认证类失败**不进缓存**：那类失败重试是有意义的（Host 可能只是忙）。
+   */
+  private readonly changesSummaries = new Map<string, ChangesSummaryView | null>();
+  /**
+   * 上面那份缓存属于哪条连接。
+   *
+   * seq 只在**同一条连接**的会话里有意义：换了目标 / Host 之后，同一个 seq 可能是
+   * 别的东西。用「取用时发现 client 换了就整体清空」而不是在每个 `this.client = …`
+   * 附近各写一句 clear——赋值点有七八处，漏一处就是拿旧 Host 的清单渲染新 Host 的会话。
+   */
+  private changesSummaryOwner: DshClient | undefined;
   private models: ProviderGroupView[] = [];
   /**
    * 部署默认模型（`agent-default-model` 设置命名空间）。
@@ -834,7 +856,54 @@ export class ChatController implements vscode.Disposable {
     }
   }
 
+  /**
+   * 取一条 `workspace/changes` 宣告的改动清单，并回帧给**正在看这个会话**的窗口。
+   *
+   * 清单不在会话事件里（事件只有轮号）：Host 按 `(sessionId, seq)` 在内存里提供，
+   * 走认证路由 `GET /api/changes.summary`（`dsh-client-ui-deliverables` 是同一份
+   * 契约）。Host 重启过 / Session 已释放 → 404 → 回 `summary: null`：界面据此
+   * 不显示卡片（官方同样如此），并且不会再来问。
+   *
+   * 并发重复（打开会话时的重放与卡片渲染同时问同一个 seq）只是多一次内存读，
+   * 不做 in-flight 合并——那点开销不值得再加一张表。
+   */
+  private async loadChangesSummary(sessionId: string, seq: number): Promise<void> {
+    const client = this.client;
+    if (!client) return;
+    // 换了连接（换目标 / Host）：seq 的含义变了，旧缓存整体作废（见字段注释）
+    if (this.changesSummaryOwner !== client) {
+      this.changesSummaryOwner = client;
+      this.changesSummaries.clear();
+    }
+    const key = changesSummaryKey(sessionId, seq);
+    if (this.changesSummaries.has(key)) {
+      this.deliver(sessionId, {
+        type: "changes/summary",
+        sessionId,
+        seq,
+        summary: this.changesSummaries.get(key) ?? null,
+      });
+      return;
+    }
+    let summary: ChangesSummaryView | null;
+    try {
+      const raw = await client.getJson(
+        `/api/changes.summary?${new URLSearchParams({ sessionId, seq: String(seq) })}`,
+      );
+      summary = raw === undefined ? null : decodeChangesSummary(raw);
+    } catch (error) {
+      // 网络 / 认证类失败：**不缓存**，下次重放（切回会话、加载更早）会再试一次
+      this.log(`[changes] 改动清单读取失败 seq=${seq}：${this.describeError(error)}`);
+      return;
+    }
+    // 期间换了连接：这份结果属于上一个 Host，丢掉
+    if (this.changesSummaryOwner !== client) return;
+    this.changesSummaries.set(key, summary);
+    this.deliver(sessionId, { type: "changes/summary", sessionId, seq, summary });
+  }
+
   private workspacePath(): string {
+
     const folder = vscode.workspace.workspaceFolders?.[0];
     return folder ? folder.uri.fsPath : process.cwd();
   }
@@ -2417,6 +2486,9 @@ export class ChatController implements vscode.Disposable {
     // 文件芯片种类（[新增] / 删除线）的分类回调：适配器交路径，宿主查 git 与磁盘。
     // 带上会话 cwd：芯片路径可能是相对会话工作目录的拼写，解析不了会误判 deleted
     adapter.classifyFiles = (paths) => this.classifyFiles(this.cwdOf(scope), paths);
+    // 未知事件（内核冒出的新词汇）记进输出通道：界面上那条提示条一闪而过，
+    // 日志是唯一能回看的落点。带会话 id——多会话并存时要知道是哪个会话冒出来的。
+    adapter.log = (line) => this.log(`[event] 会话=${sessionId} ${line}`);
     // 轮次结束时先推一次 Git 重扫：否则刚写完的文件还没进改动清单，用户第一次
     // 点芯片看到的是完整文件而不是 diff（见 refreshGitState 的注释）
     adapter.refreshFiles = () => this.refreshGitState();
@@ -3731,6 +3803,13 @@ export class ChatController implements vscode.Disposable {
         break;
       }
 
+      case "requestChanges": {
+        // 卡片要渲染时才问（见 shared/ipc.ts 的 requestChanges）：宿主按 seq 缓存，
+        // 命中直接回帧，没命中才去 Host 读一次
+        void this.loadChangesSummary(message.sessionId, message.seq);
+        break;
+      }
+
       case "insertText":
         await this.insertIntoEditor(message.text);
         break;
@@ -5037,6 +5116,8 @@ export class ChatController implements vscode.Disposable {
     const mode = child.mode;
     const parentSessionId = scope!.sessionId;
     const adapter = new SessionAdapter(() => {});
+    // 子代理记录没有界面出口（`sendFrame` 是空的），日志更是唯一能追溯未知事件的落点
+    adapter.log = (line) => this.log(`[event] 子代理=${childSessionId} ${line}`);
     adapter.setSession({
       id: childSessionId,
       title: childSessionId,

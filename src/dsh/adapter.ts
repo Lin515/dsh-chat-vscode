@@ -164,6 +164,32 @@ function boundedJson(block: unknown): string {
 }
 
 /**
+ * 未知事件的 `data` 在日志里最多留多少字符。
+ *
+ * 比 `UNKNOWN_BLOCK_LIMIT` 小得多：未知事件常常是内核新加的簿记类事件
+ * （`{"turn":1}` 这种），日志的价值是「这个类型长什么样」，不是完整载荷。
+ */
+const UNKNOWN_EVENT_DATA_LIMIT = 600;
+
+/**
+ * 未知事件 `data` 的**单行**摘要（日志用）。
+ *
+ * 与 `boundedJson` 的唯一区别是紧凑格式：日志一条事件占一行，多行 JSON 会把
+ * 「[时间] 」前缀只打在第一行上，回看时几行 JSON 混在别的日志之间分不清归属。
+ */
+function summarizeEventData(data: unknown): string {
+  let text: string;
+  try {
+    text = JSON.stringify(data) ?? String(data);
+  } catch {
+    text = String(data);
+  }
+  return text.length > UNKNOWN_EVENT_DATA_LIMIT
+    ? `${text.slice(0, UNKNOWN_EVENT_DATA_LIMIT)}…（已截断）`
+    : text;
+}
+
+/**
  * 按 `form` 解析上下文条目的结构化字段（官方 `ContextBody` 的分派口径）。
  *
  * 每种 form 读的是 `source` 上不同的字段与形状，认不出就整项不填——
@@ -491,6 +517,15 @@ export class SessionAdapter {
    * 重放比手工往前面插消息可靠得多（见 `prependRecords`）。
    */
   private readonly seen = new Map<number, SessionWireEvent>();
+  /**
+   * 已经往日志里报过的**未知事件类型**（见 `log` 与 `noteUnknownEvent`）。
+   *
+   * 按类型而不是按 seq 去重：`refold()` 会把已记录的事件整体重折（跟随流开窗、
+   * socket 重连、加载更早的历史都会走它），同一类型会被重放很多遍；而这条记录的
+   * 价值是「内核冒出了哪种新词汇、长什么样」，与它出现了多少次无关——一次会话里
+   * 几十轮 `workspace/changes` 只该在日志里占一行。
+   */
+  private readonly notedUnknownTypes = new Set<string>();
   /** 跟随开帧的 `snapshot.cursor`：`session/page` 的 `throughSeq` 唯一合法来源。 */
   private throughSeq: number | undefined;
   /** 最近一次 `request/context` 事件给出的上下文窗口（**仅供别处显示**，占用条只用投影）。 */
@@ -594,6 +629,18 @@ export class SessionAdapter {
   loadImages:
     | ((refs: ImageRef[], done: (dataUrls: string[]) => void) => void)
     | undefined;
+
+  /**
+   * 宿主日志落点（由控制器注入）：把「本客户端不认识的事件」记进输出通道。
+   *
+   * 为什么需要它：那条告警在界面上是**一闪而过的提示条**，用户看到时已经点不到，
+   * 而它恰好是内核升级信号——dsh 冒出了本客户端名单里没有的词汇（会话里第一条
+   * 真实案例就是 `workspace/changes`，见 `noteUnknownEvent`）。协议文档
+   * （docs/dsh-server-api.md §6.1 的降级纪律）要求的正是「至少在输出通道里报一次」。
+   *
+   * 注入方式与 `loadImages` 一致：适配器不持有 vscode，日志由控制器带会话前缀转交。
+   */
+  log: ((line: string) => void) | undefined;
 
   /** 正在取字节的批数，以及排队等闸门的批（见 `IMAGE_LOAD_CONCURRENCY`）。 */
   private imageLoadsActive = 0;
@@ -964,6 +1011,26 @@ export class SessionAdapter {
     if (event.surfaceOp && typeof event.surfaceOp === "object") return;
 
     const data = (event.data ?? {}) as Record<string, any>;
+
+    // 轮号归位：首帧（`session/follow` 只带最近 N 条）**可能从一轮中间开始**——那时
+    // 还没有 `turn/start`，`currentTurn` 是 undefined，于是这一轮的内容会被挂到凭空
+    // 建出来的 `a:0` 上（`ensureAssistantMessage` 的 `currentTurn ?? 0` 兜底）。用户
+    // 往上翻、加载更早的历史之后整体重折，这些内容归并回真正的 `a:N`——界面上就是
+    // 「同一轮先显示成两条消息（一条带本轮改动/交付、一条带改动文件卡片），加载全
+    // 历史后又少了一条」（用户 2026-09-21 报告的乱象）。
+    //
+    // `assistant/message`、`step/*`、`tool/*`、`system/message` 这些事件都自带
+    // 数字 `turn`（真实日志实测），拿它把轮号补上即可。只在**当前轮号未知**时归位：
+    // 正常顺序里 `turn/start` 先到、这条分支不参与，也避免「属于上一轮但迟到」的事件
+    // 把轮号拉回去（那会把后续内容挂错轮）。
+    //
+    // `a:0` 本身仍然保留：`command/run`、注入这类**轮前**事件不带 `turn`（或 turn 为
+    // 0），它们拼出来的幻影轮是 turnRail 的既有语义（见 `webview/turnRail.ts`）。
+    if (this.currentTurn === undefined && typeof data.turn === "number") {
+      this.currentTurn = data.turn;
+      this.turnPart = 1;
+    }
+
     switch (event.type) {
       case "turn/start": {
         // 新轮次：显示分段归位。轮号没变时（同轮重复事件）不动分段。
@@ -1290,6 +1357,25 @@ export class SessionAdapter {
         break;
       }
 
+      case "workspace/changes": {
+        // 本轮改动文件的**卡片坐标**（官方 `deliverables` 定义里的 `role: 'update'`）：
+        // 事件只有轮号，清单与逐文件对比留在 Host 内存里按 seq 提供（见
+        // `MessageView.changes` 与 `dsh/changes.ts`）。同一轮**后来的宣告替代先前的**，
+        // 所以这里覆盖字段、不追加节点——追加会在一轮里堆出好几张卡片。
+        //
+        // 挂到**该轮最后一段**助手消息上（插话会把一轮切成多段）：卡片属于这一轮，
+        // 不属于被插话中断的那一段。
+        const turn = typeof data.turn === "number" ? data.turn : this.currentTurn;
+        if (turn !== undefined) {
+          const message = this.messageForTurn(turn) ?? this.createMessageForTurn(turn, event.time);
+          message.changes = { turn, seq: event.seq };
+          this.emit({ type: "message/upsert", message: { ...message } });
+        }
+        // `turn` 缺失或不是数字：这条宣告定位不到轮次，直接跳过——挂到当前轮上
+        // 会在界面上把「别的轮改了什么」说成这一轮改的，比少一张卡片更难排查。
+        break;
+      }
+
       case "compaction/summary": {
         const message = this.ensureAssistantMessage(event.time);
         this.pushSegment(message, {
@@ -1306,16 +1392,39 @@ export class SessionAdapter {
         // 未知事件：有 ignorable 才允许安全跳过，否则明确提示（协议要求）。
         // 「未知」= 本客户端与 dsh 词汇表都不认识；已知但有意不渲染的类型
         // （SILENT_EVENT_TYPES）不算，否则簿记事件会把告警刷成噪音。
-        if (!isKnownEventType(event.type) && !event.ignorable) {
-          this.emit({
-            type: "toast",
-            level: "warn",
-            text: `@unknownEvent:${event.type}`,
-          });
+        if (!isKnownEventType(event.type)) {
+          // 日志**先于**告警且不受重放静默影响：提示条看完就没了，日志才是可追溯的
+          // 那一份（ignorable 的未知事件界面上完全无声，同样记）
+          this.noteUnknownEvent(event);
+          if (!event.ignorable) {
+            this.emit({
+              type: "toast",
+              level: "warn",
+              text: `@unknownEvent:${event.type}`,
+            });
+          }
         }
         break;
       }
     }
+  }
+
+  /**
+   * 把一条未知事件记进宿主日志（每种类型只记首见的一条，见 `notedUnknownTypes`）。
+   *
+   * 与告警分开是有意的：`ignorable` 的未知事件会被安全跳过、界面上**没有任何提示**，
+   * 但它同样是「内核冒出了新词汇」的证据——排查时最需要的那种线索，只是不该打扰用户。
+   */
+  private noteUnknownEvent(event: SessionWireEvent): void {
+    const log = this.log;
+    if (!log || this.notedUnknownTypes.has(event.type)) return;
+    this.notedUnknownTypes.add(event.type);
+    const verdict = event.ignorable
+      ? "已按 ignorable 静默跳过"
+      : "已跳过其内容并向用户提示";
+    log(
+      `未知会话事件 type=${event.type} seq=${event.seq} ${verdict} data=${summarizeEventData(event.data ?? {})}`,
+    );
   }
 
   private applyAssistantMessage(event: SessionWireEvent, data: Record<string, any>): void {
@@ -1731,6 +1840,39 @@ export class SessionAdapter {
   private currentAssistantMessage(): MessageView | undefined {
     if (this.currentTurn === undefined) return undefined;
     return this.byId.get(this.currentAssistantId());
+  }
+
+  /**
+   * 某一轮**最后一段**的助手消息（插话把一轮切成多段，见 `turnPart`）。
+   *
+   * 轮级附加信息（目前是改动文件卡片的坐标）挂在它上面：卡片属于这一轮，不属于
+   * 被插话中断的那一段。找不到（这一轮没有任何助手消息）时返回 undefined。
+   */
+  private messageForTurn(turn: number): MessageView | undefined {
+    for (let part = this.turnPart; part >= 1; part--) {
+      const message = this.byId.get(this.assistantIdFor(turn, part));
+      if (message) return message;
+    }
+    return undefined;
+  }
+
+  /**
+   * 为某一轮建一条（还没有任何助手消息时的）助手消息。
+   *
+   * 正常顺序里 `turn/start` 先到、消息早就建好了；这里兜的是「只有轮级附加信息先到」
+   * 的异常顺序（例如重放时窗口正好从 `workspace/changes` 开始）。**按真实轮号建**
+   * 而不是走 `ensureAssistantMessage`：后者用的是 `currentTurn`，那会把这条信息挂到
+   * 别的轮上——界面上就是「另一轮改的文件显示在这一轮」。
+   */
+  private createMessageForTurn(turn: number, ts: number): MessageView {
+    const message: MessageView = {
+      id: this.assistantIdFor(turn, 1),
+      role: "assistant",
+      ts,
+      segments: [],
+    };
+    this.appendMessage(message);
+    return message;
   }
 
   /** 某（轮, 段）的助手消息 id：第 1 段 `a:N`，后续段 `a:N:2`、`a:N:3`… */

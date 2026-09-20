@@ -223,6 +223,10 @@ export const RENDERED_EVENT_TYPES: ReadonlySet<string> = new Set([
   "request/context",
   "session/end-seed",
   "agent-preset/selected",
+  // 顶层轮次停止时宣告「本轮改了哪些文件」（dsh 0.1.6-alpha 新增的 log-only 事件）。
+  // 渲染它不需要事件本身带内容——它只有轮号，清单由 Host 按 seq 另供，见
+  // `MessageView.changes` 与 `dsh/changes.ts`。
+  "workspace/changes",
 ]);
 
 /**

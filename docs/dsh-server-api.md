@@ -1450,8 +1450,26 @@ export type TurnEndReason =
 | `hook/invoked` / `hook/result` | `{turn, point, dialect, matcher?, handlerId}` / `{...}` | `⟨P⟩\dsh-hook-protocol\lib\types\types.d.ts:8-39` |
 | `agent-preset/selected` | `{agentPreset: string}` | `⟨P⟩\dsh-agent-presets\lib\types\session.d.ts:18-28` |
 | `deliverables/presented` | `{turn, callId, files: PresentedFile[]}` | `⟨P⟩\dsh-tool-present\lib\types\types.d.ts:11-18` |
+| `workspace/changes` | `{turn}`（清单**不在**事件里，经 `/api/changes.summary` 另取） | `⟨P⟩\dsh-workspace-changes\lib\types\types.d.ts:99-108` |
 
-权威名称集合（56 个）在 `⟨P⟩\dsh-session\lib\types\known-event-types.js:21-78` 的 `KNOWN_SESSION_EVENT_TYPES`。
+权威名称集合在 `⟨P⟩\dsh-session\lib\types\known-event-types.js` 的
+`KNOWN_SESSION_EVENT_TYPES`：0.1.5-rc.1 是 56 个，0.1.6-alpha 起新增
+`workspace/changes`（提交 `f937f4e23b`，log-only：只宣告「这一轮改了文件」，
+清单与逐文件对比留在 Host 内存里按 `workspaceChanges.summary(sessionId, seq)` /
+`diff(...)` 提供，Session 释放或 Host 重启后就没有了）。客户端按它渲染轮尾的
+**改动文件卡片**（见下文「改动清单路由」）。
+
+**改动清单路由**（`dsh-client-ui-deliverables` 注册在 Connection 的认证围栏内）：
+
+| 路由 | 方法 | 参数 | 返回 |
+|---|---|---|---|
+| `/api/changes.summary` | GET | `sessionId`, `seq` | `{turn, files[], total, added, deleted}`；Host 不再持有该清单时 **404** |
+| `/api/changes.diff` | GET | `sessionId`, `seq`, `index` | `WorkspaceFileDiff`（`text` / `binary` / `oversized`）；清单或下标不在时 404 |
+| `/api/changes.open` | POST | `sessionId`, `seq`, `index` | 在 Host 桌面上打开该文件；204 |
+
+`files[]` 每一项是 `{path, display, added, deleted, binary?, oversized?}`，Host 已按
+`display` 排好序；`total` / `added` / `deleted` 是**含被 Host 上限截掉的文件**在内的
+完整合计。认证与其它 `/api/*` 相同（cookie，由 `GET /?token=` 换取）。
 
 > **未确认**：`team/member`、`team/message/delivered`、`team/message/queued`、`team/task` 在 `KNOWN_SESSION_EVENT_TYPES` 里，但**安装树里没有任何 `.d.ts` 声明它们的 data 形状**。推测属于未安装的 experimental agent-team 包。客户端应按 `ignorable` 规则处理。
 

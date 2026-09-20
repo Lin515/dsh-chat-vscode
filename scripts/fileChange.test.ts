@@ -263,8 +263,10 @@ console.log("fileChange: 相邻路径不误判 ✓");
   // 不一致，也让「本轮改了什么」看起来像已经定稿。
   const message = readFileSync(join(process.cwd(), "src", "webview", "components", "Message.tsx"), "utf8");
   assert.ok(
-    /\{!message\.streaming && producedFiles\.length \? \(/.test(message),
-    "「本轮文件改动」必须等轮次结束（streaming=false）再显示",
+    /\{!message\.streaming && !changesCardShown && producedFiles\.length \? \(/.test(message),
+    "「本轮文件改动」必须等轮次结束（streaming=false）再显示——外加「改动文件卡片没显示出来」" +
+      "（卡片是 Host 的权威清单，两者同时出现等于同一个文件说两遍；拿不到清单时这一行还留着，" +
+      "见 changesCard.test.ts）",
   );
   assert.ok(
     /\{!message\.streaming && deliverables\.length \? \(/.test(message),

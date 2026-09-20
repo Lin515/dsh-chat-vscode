@@ -190,6 +190,30 @@ export class DshClient {
     };
   }
 
+  /**
+   * 读一条认证的 Host HTTP 路由（`GET /api/…`）。
+   *
+   * `404` 返回 `undefined`：这是「Host 现在不提供这份东西」（Host 重启过、Session
+   * 已释放），属于**正常结果**而不是错误——调用方据此决定界面上不显示，而不是
+   * 把它当失败反复重试。其余非 2xx 抛错（401/403 抛 `DshAuthError`，上层的认证链
+   * 据此回退到启动令牌）。
+   */
+  async getJson(path: string, timeoutMs = 30_000): Promise<unknown | undefined> {
+    const headers: Record<string, string> = { accept: "application/json" };
+    if (this.cookie) headers.cookie = this.cookie;
+    const res = await fetch(`${this.baseUrl}${path}`, {
+      method: "GET",
+      headers,
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (res.status === 404) return undefined;
+    if (res.status === 401 || res.status === 403) {
+      throw new DshAuthError(`服务器要求授权（HTTP ${res.status}）。`);
+    }
+    if (!res.ok) throw new DshApiError("host/get", `GET ${path} 失败：HTTP ${res.status}`, undefined);
+    return (await res.json().catch(() => undefined)) as unknown;
+  }
+
   async request<T>(method: string, args: Record<string, unknown>, timeoutMs = 60_000): Promise<T> {
     const attempt = async () => {
       const message: ClientRequest = {

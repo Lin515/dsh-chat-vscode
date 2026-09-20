@@ -2194,12 +2194,108 @@
 /* 轮尾文件行：标签 + 可点开的文件芯片。与官方 ProducedFiles 同构——
    窄侧栏下文件芯片允许换行，标签不被压缩 */
 .file-chips {
+
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 4px 6px;
   margin-top: 4px;
   font-size: var(--font-size-2xs);
+}
+
+/* 改动文件卡片（官方 changed-files card）：标题一行 + 文件行（展示路径 + 增删行数）。
+   路径可以很长（英文的 display 路径更长），所以路径那一格允许省略、行数那一格不压缩
+   ——窄侧栏下被挤坏的会是行数，而它正是这张卡片相对文件芯片多出来的信息。 */
+.changes-card {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--command-border);
+  border-radius: var(--radius-sm);
+  background: var(--input-bg);
+  font-size: var(--font-size-2xs);
+}
+
+.changes-card-files {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.changes-card-head,
+.changes-card-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--description);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.changes-card-head:hover,
+.changes-card-row:hover {
+  color: var(--fg);
+}
+
+.changes-card-title,
+.changes-card-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.changes-card-title {
+  color: var(--fg);
+  opacity: 0.9;
+}
+
+/* 增删行数 / 「二进制」「过大」：等宽数字，几行扫下来能对齐着看。
+   `+N` / `−N` 用与 diff 视图同一对类名（`.diff-add` 绿 / `.diff-del` 红），
+   两个数字之间留一点缝——贴在一起会读成一个数。 */
+.changes-card-counts,
+.changes-card-delta {
+  display: inline-flex;
+  gap: 6px;
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* `+N` / `−N` 必须**在这里显式上色**：diff 视图那两条（`.diff-stat .diff-add`）
+   是限定作用域的，光复用类名不会把颜色带过来——第一版就是这么灰着的（绿/红只在
+   diff 视图里生效）。颜色变量与 diff 视图同一对，两处不会各自漂。 */
+.changes-card .diff-add {
+  color: var(--success);
+}
+
+.changes-card .diff-del {
+  color: var(--error);
+}
+
+/* 折叠后的「+ N 个文件」/ 展开后的「收起」：与文件芯片行的按钮同一形态 */
+.changes-card-more {
+  align-self: flex-start;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.changes-card-more:hover {
+  color: var(--fg);
 }
 
 .file-chips-label {

@@ -132,6 +132,22 @@ export interface Texts {
   producedLabel: string;
   /** 轮尾申报交付文件行的标签。 */
   presentedLabel: string;
+  /** 改动文件卡片的标题（参数是 Host 报的完整文件数，可能大于卡片铺出来的行数）。 */
+  changesCardTitle: (files: number) => string;
+  /** 改动行 / 卡片标题右侧的**新增**行数（`+N`，界面上走绿色）。 */
+  changesCardAdded: (added: number) => string;
+  /** 改动行 / 卡片标题右侧的**删除**行数（`−N`，界面上走红色）。 */
+  changesCardDeleted: (deleted: number) => string;
+  /** 二进制文件（Host 没有行数）的替代文案。 */
+  changesCardBinary: string;
+  /** 超过 Host 捕获上限、没有对比的文件。 */
+  changesCardOversized: string;
+  /** 卡片折叠后「展开其余 N 个文件」的按钮文案。 */
+  changesCardMore: (count: number) => string;
+  /** 卡片「展开全部」按钮的无障碍标题。 */
+  changesCardExpandAria: (count: number) => string;
+  /** 卡片「收起」按钮的无障碍标题。 */
+  changesCardCollapseAria: string;
   /** 产出文件超出展示上限时的剩余计数（也是「展开全部」按钮的文案）。 */
   producedMore: (count: number) => string;
   /** 文件芯片的无障碍标题（点击查看该文件的改动）。 */

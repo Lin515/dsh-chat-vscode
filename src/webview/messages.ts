@@ -200,6 +200,36 @@ export const MESSAGES = {
   commandDispatchFailed: { zh: (line: string) => `命令 ${line} 没能发出去`, en: (line: string) => `Could not dispatch ${line}` },
   producedLabel: { zh: "本轮文件改动", en: "Files changed" },
   presentedLabel: { zh: "交付文件", en: "Presented files" },
+  // 改动文件卡片（官方 ui-deliverables 的 changed-files card）。标题里的数字是 Host
+  // 报的**完整文件数**，可能大于卡片实际铺出来的行数（Host 自己有个上限）。
+  changesCardTitle: {
+    zh: (files: number) => `改动 ${files} 个文件`,
+    en: (files: number) => `${files} file${files === 1 ? "" : "s"} changed`,
+  },
+  // 增删行数拆成两条：界面上 `+` 走绿色、`−` 走红色（与 diff 视图的统计同配色），
+  // 拼成一整串就没法分别上色了。
+  changesCardAdded: {
+    zh: (added: number) => `+${added}`,
+    en: (added: number) => `+${added}`,
+  },
+  changesCardDeleted: {
+    zh: (deleted: number) => `−${deleted}`,
+    en: (deleted: number) => `−${deleted}`,
+  },
+  changesCardBinary: { zh: "二进制", en: "binary" },
+  changesCardOversized: { zh: "过大", en: "too large" },
+  changesCardMore: {
+    zh: (count: number) => `+ ${count} 个文件`,
+    en: (count: number) => `+ ${count} more`,
+  },
+  changesCardExpandAria: {
+    zh: (count: number) => `展开全部 ${count} 个改动文件`,
+    en: (count: number) => `Show all ${count} changed files`,
+  },
+  changesCardCollapseAria: {
+    zh: "收起改动文件列表",
+    en: "Collapse the changed-file list",
+  },
   producedMore: { zh: (count: number) => `+ ${count} 个文件`, en: (count: number) => `+ ${count} file${count === 1 ? "" : "s"}` },
   openChangesAria: { zh: (name: string) => `查看 ${name} 的改动`, en: (name: string) => `View changes in ${name}` },
   openChangesHint: { zh: "点击查看改动对比；按住 Alt 直接打开文件", en: "Click to view changes; hold Alt to open the file" },

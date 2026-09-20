@@ -244,6 +244,27 @@
           needsToken: flag("token"),
           serverUrl: "http://127.0.0.1:3080",
           session: { id: "s1", title: "重构 server 启动流程", updatedAt: now, running: false },
+          // 改动文件卡片（`workspace/changes`）：键是 `${sessionId}\u0000${seq}`
+          // （见 src/shared/changesSummary.ts），值是 Host 那条认证路由回来的清单
+          // （turn / files / total / added / deleted；binary 与 oversized 是可选标记）。
+          // 7 个文件 > 折叠上限 3 → 能看到「+ 4 个文件」与展开/收起。
+          changesSummaries: {
+            "s1\u000041": {
+              turn: 1,
+              files: [
+                { path: "src/server/index.ts", display: "src/server/index.ts", added: 42, deleted: 7 },
+                { path: "src/config.ts", display: "src/config.ts", added: 12, deleted: 12 },
+                { path: "docs/merge-plan.md", display: "docs/merge-plan.md", added: 88, deleted: 0 },
+                { path: "assets/logo.png", display: "assets/logo.png", added: 0, deleted: 0, binary: true },
+                { path: "D:/dev/app/fixtures/huge.json", display: "D:/dev/app/fixtures/huge.json", added: 0, deleted: 0, oversized: true },
+                { path: "src/util/retry.ts", display: "src/util/retry.ts", added: 5, deleted: 1 },
+                { path: "package.json", display: "package.json", added: 2, deleted: 1 }
+              ],
+              total: 9,
+              added: 149,
+              deleted: 21
+            }
+          },
           running: true,
           queue: 0,
           // 附件芯片的四种形态（对齐官方 FileCard）：`@` 引用（文件 / 目录）、
@@ -759,6 +780,10 @@
               // 是 present 工具的显式申报（两条独立来源，界面上分行、各有标签）。
               // `config.ts` 两边都有——这正是「申报的通常就是刚改过的文件」那一种，
               // 「本轮文件改动」行里不该再重复列它。
+              // 改动文件卡片的数据坐标：这一轮最新一条 `workspace/changes` 的 seq。
+              // 清单在 state.changesSummaries 里按 `${sessionId}\u0000${seq}` 查。
+              // 卡片显示出来时下面那行「本轮文件改动」让位（同一个文件不说两遍）。
+              changes: { turn: 1, seq: 41 },
               // 8 个改动文件 > 展示上限 6：末尾多出「+ 2 个文件」展开按钮
               produced: [
                 "D:/dev/app/src/server/index.ts",

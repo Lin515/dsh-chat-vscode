@@ -491,6 +491,49 @@ export interface DeliverableView {
   description?: string;
 }
 
+/**
+ * 一条 `workspace/changes` 宣告的改动清单里的一项。
+ *
+ * 形状照抄 Host 的 `WorkspaceChangedFile`（`dsh-workspace-changes/lib/types`），
+ * 经认证路由 `/api/changes.summary` 原样取回（见 `dsh/changes.ts` 的校验）。
+ */
+export interface ChangedFileView {
+  /** 会话工作目录内的相对路径；目录之外是绝对路径（点击时按会话 cwd 解析）。 */
+  path: string;
+  /**
+   * 展示路径：工作目录内为相对路径，仓库内位于工作目录之上的为 `../` 路径，
+   * 家目录下的为 `~` 路径，其余为绝对路径。**Host 已按它排好序**，界面照序铺。
+   */
+  display: string;
+  /** 新增行数；二进制或过大文件为 0。 */
+  added: number;
+  /** 删除行数；二进制或过大文件为 0。 */
+  deleted: number;
+  /** git 报为二进制、或某一侧含 NUL 字节：没有行数，界面显示「二进制」。 */
+  binary?: boolean;
+  /** 某一侧超过 Host 的字节上限：没有行数与对比，界面显示「过大」。 */
+  oversized?: boolean;
+}
+
+/**
+ * Host 为一条 `workspace/changes` 宣告提供的**本轮改动清单**。
+ *
+ * **不在会话日志里**：事件本身只带轮号，清单与逐文件对比留在 Host 内存中，按
+ * `workspaceChanges.summary(sessionId, seq)` 提供。所以 Host 重启过、或 Session
+ * 已释放（打开旧会话）时就没有这份清单——官方 web 端在那时同样**不显示卡片**，
+ * 而不是显示一张空卡。
+ */
+export interface ChangesSummaryView {
+  turn: number;
+  /** Host 上限内的改动文件，已按 `display` 排好序。 */
+  files: ChangedFileView[];
+  /** 完整改动文件数，含被上限截掉、没进 `files` 的那些。 */
+  total: number;
+  /** 全部改动文件的增删行合计，同样含被截掉的那些。 */
+  added: number;
+  deleted: number;
+}
+
 export interface MessageView {
   id: string;
   role: "user" | "assistant";
@@ -518,6 +561,15 @@ export interface MessageView {
    * 的 `producedForClosing`）。界面在轮尾列出它们。
    */
   produced?: string[];
+  /**
+   * 本轮**改动文件卡片**的坐标：该轮最新一条 `workspace/changes` 宣告。
+   *
+   * 卡片内容不在这条事件里（它的 `data` 只有轮号）：宿主持有坐标后按 `seq` 去
+   * Host 读清单（`/api/changes.summary`），界面按 `seq` 查表（见
+   * `webview/state.ts` 的 `changesSummaries`）。同一轮后来的宣告**替代**先前的
+   * （官方 `DeliverablesTurnData.changes` 同口径），所以这里直接覆盖。
+   */
+  changes?: { turn: number; seq: number };
   /** 出错时的提示文本。 */
   error?: string;
 }

@@ -2,6 +2,7 @@ import { useCallback, useMemo, useReducer } from "react";
 import type { TrajectoryModel } from "../shared/trajectory";
 import type {
   ChatState,
+  ChangesSummaryView,
   CommandView,
   FileRefView,
   MessageView,
@@ -13,6 +14,7 @@ import type {
 } from "../shared/chat";
 import type { HostToWebview } from "../shared/ipc";
 import { mergeWirePatch } from "../shared/wire";
+import { changesSummaryKey } from "../shared/changesSummary";
 
 /**
  * webview 侧状态归约：把宿主的增量帧合并成可渲染的聊天状态。
@@ -46,6 +48,14 @@ export interface AppState extends ChatState {
   contextOccupancy?: ContextOccupancyView;
   /** 正在查看的子代理对话（只读）。`loading` 为真时抽屉里显示「正在读取…」。 */
   subagent?: { id: string; messages: MessageView[]; loading?: boolean };
+  /**
+   * 改动文件清单的缓存，键 = `changesSummaryKey(sessionId, seq)`。
+   *
+   * `null` = Host **明确说没有**这份清单（Host 重启过 / Session 已释放），界面据此
+   * 不显示卡片、也不再来问；**键不存在** = 还没问过（卡片渲染时发 `requestChanges`）。
+   * 两者必须分开，所以这张表的值类型是 `ChangesSummaryView | null`。
+   */
+  changesSummaries?: Record<string, ChangesSummaryView | null>;
 }
 
 export const initialState: AppState = {
@@ -138,6 +148,9 @@ export function reducer(state: AppState, action: Action): AppState {
         ...merged,
         panel: state.panel,
         ...(switched ? { trajectory: undefined } : {}),
+        // 清单缓存同理：键里带会话 id，理论上不会串，但换会话后旧会话那些条目再也
+        // 用不上（一张会话几十轮就是几十条），跟着一起丢掉
+        ...(switched ? { changesSummaries: undefined } : {}),
       };
     }
 
@@ -151,6 +164,19 @@ export function reducer(state: AppState, action: Action): AppState {
 
     case "messages/reset":
       return { ...state, messages: action.messages };
+
+    case "changes/summary": {
+      // 只收**当前会话**的清单：切会话瞬间在途的那一帧不能落进新会话的表里
+      // （帧本身带 sessionId，就是为这一下）
+      if (state.session?.id !== action.sessionId) return state;
+      return {
+        ...state,
+        changesSummaries: {
+          ...state.changesSummaries,
+          [changesSummaryKey(action.sessionId, action.seq)]: action.summary,
+        },
+      };
+    }
 
     case "message/append":
       return mapMessage(state, action.messageId, (m) => ({

@@ -1,5 +1,5 @@
 import { memo, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
-import type { DiffLayout, FileChangeKind, MessageView, Segment } from "../../shared/chat";
+import type { ChangesSummaryView, DiffLayout, FileChangeKind, MessageView, Segment } from "../../shared/chat";
 import { localImageMediaType } from "../../shared/imageRef";
 import { post } from "../bridge";
 import { IconBranch, IconCopy } from "../icons";
@@ -10,6 +10,7 @@ import { ApprovalCard, CommandRow, FileChips, InjectedRow, MessageImages, Notice
 import { useTexts } from "../texts";
 import { producedOnly, withoutVanished } from "../turnFiles";
 import { foldTurnProcess } from "../turnProcess";
+import { ChangesCard } from "./ChangesCard";
 
 /**
  * 助手正文块。流式期间正文每个 token 都在变，用户划选时冻结渲染保住选区
@@ -82,6 +83,9 @@ export const Message = memo(function Message({
   canBranch = false,
   takenOver,
   readOnly = false,
+  sessionId,
+  changesSummary,
+  changesCardShown = false,
 }: {
   message: MessageView;
   /** 编辑类节点的 diff 排版（来自设置；缺省自适应）。 */
@@ -118,6 +122,26 @@ export const Message = memo(function Message({
    * （用户 2026-09-19 口径「仅可查看不可发送消息」）。
    */
   readOnly?: boolean;
+  /**
+   * 这条消息所属的会话 id（改动文件卡片按它发 `requestChanges`）。
+   *
+   * 缺省 = 不渲染卡片、也不发请求：子代理记录面板（`Panels.tsx`）的消息流属于
+   * **另一个会话**，在它里面请求主会话的清单是错位的。
+   */
+  sessionId?: string;
+  /**
+   * 本轮改动文件卡片的数据：`undefined` = 还没问到（卡片会自己发请求），
+   * `null` = Host 说没有（不显示卡片）。见 `ChangesCard`。
+   */
+  changesSummary?: ChangesSummaryView | null;
+  /**
+   * **本轮**会不会显示改动文件卡片（由 App 按轮算好，见
+   * `shared/changesSummary.ts` 的 `turnsWithChangesCard`）。
+   *
+   * 为什么是轮级而不是本消息级：一轮被插话切成多段时，卡片挂在最后一段、`produced`
+   * 往往挂在前一段，按消息判定就会让两样在同一轮尾部并排（用户 2026-09-21 报告）。
+   */
+  changesCardShown?: boolean;
 }) {
   const texts = useTexts();
   // 连续过程折叠的展开态，**按段记**（键 = 那一段首段的 id）：一轮里可能有好几枚
@@ -344,7 +368,14 @@ export const Message = memo(function Message({
         {!message.streaming && imageFiles.length ? (
           <LocalImageGallery paths={imageFiles} />
         ) : null}
-        {!message.streaming && producedFiles.length ? (
+        {/* 改动文件卡片（官方 changed-files card）：数据来自 Host 的改动清单，
+            比从写类调用推导的 `produced` 更全（含 bash 等工具改的文件与增删行数）。
+            **它显示出来了才让下面那行让位**——清单拿不到（Host 重启过 / 还没读到）
+            时，「本轮改动」行照旧，信息不会两头都丢。 */}
+        {!message.streaming && message.changes && sessionId ? (
+          <ChangesCard sessionId={sessionId} coordinates={message.changes} summary={changesSummary} />
+        ) : null}
+        {!message.streaming && !changesCardShown && producedFiles.length ? (
           <FileChips
             label={texts.producedLabel}
             paths={producedFiles.map((path) => ({ path }))}

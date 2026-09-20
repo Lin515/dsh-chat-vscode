@@ -54,6 +54,8 @@ const entries = {
   "build/thinking-stream.test.mjs": "scripts/thinkingStream.test.ts",
   "build/injected.test.mjs": "scripts/injected.test.ts",
   "build/unknown-event.test.mjs": "scripts/unknownEvent.test.ts",
+  "build/changes-card.test.mjs": "scripts/changesCard.test.ts",
+  "build/tail-rows-probe.mjs": "scripts/tailRowsProbe.ts",
   "build/projections.test.mjs": "scripts/projections.test.ts",
   "build/produced.test.mjs": "scripts/produced.test.ts",
   "build/command-node.test.mjs": "scripts/commandNode.test.ts",

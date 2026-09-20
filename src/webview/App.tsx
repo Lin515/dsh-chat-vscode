@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import type { ChatState } from "../shared/chat";
 import type { HostToWebview } from "../shared/ipc";
 import { post, subscribe } from "./bridge";
@@ -11,6 +11,7 @@ import { JobsPanel, SubagentTranscriptPanel, SubagentsPanel } from "./components
 import { TrajectoryView } from "./components/Trajectory";
 import { Spinner } from "./components/primitives";
 import { AppState, useAppState, type PanelKind } from "./state";
+import { changesSummaryKey, turnsWithChangesCard } from "../shared/changesSummary";
 import { resolveInteractions } from "./pendingInteraction";
 import { attachDroppedFiles, dragHasFiles } from "./dropAttach";
 import { setLocalImageScope } from "./localImages";
@@ -409,6 +410,20 @@ export function App() {
   const chatActive = state.panel !== "trajectory";
   // 当前会话 id：进 useAutoScroll（切会话时恢复贴底、回最新）与轨迹刷新（下方）
   const sessionId = state.session?.id;
+  /**
+   * 哪些**轮次**真的会显示改动文件卡片（判据与卡片自己的渲染条件一致）。
+   *
+   * 按轮而不是按消息：一轮被插话切成多段时（`a:N` / `a:N:2`…），卡片挂在最后一段、
+   * `produced` 往往挂在前一段，按消息判定就会让「卡片」与「本轮改动」在同一轮尾部
+   * 并排（用户 2026-09-21 报告的混乱，见 `shared/changesSummary.ts`）。
+   */
+  const changesCardTurns = useMemo(
+    () =>
+      turnsWithChangesCard(state.messages, (seq) =>
+        sessionId ? state.changesSummaries?.[changesSummaryKey(sessionId, seq)] : undefined,
+      ),
+    [state.messages, state.changesSummaries, sessionId],
+  );
   // 正文里本地图片的解析缓存按会话隔离：相对路径的基准是会话工作目录，
   // 切了会话之后同名路径是另一个文件（见 webview/localImages.ts）
   useEffect(() => {
@@ -604,6 +619,20 @@ export function App() {
                         fileKinds={state.fileKinds}
                         questionBatch={state.questionBatch}
                         turnProcessThreshold={state.turnProcessThreshold}
+                        // 改动文件卡片：坐标在消息上，清单在 state 的缓存里（键带会话 id，
+                        // 见 shared/changesSummary.ts）。没绑会话（空态）时不传，卡片不渲染。
+                        sessionId={state.session?.id}
+                        changesSummary={
+                          message.changes && state.session
+                            ? state.changesSummaries?.[
+                                changesSummaryKey(state.session.id, message.changes.seq)
+                              ]
+                            : undefined
+                        }
+                        // 让位按**轮**判定（卡片可能在同轮的另一段上）
+                        changesCardShown={
+                          message.changes ? changesCardTurns.has(message.changes.turn) : false
+                        }
                         // 只有非最后一条（= 不是正在跑的那一轮）才能作为分支锚点
                         canBranch={!state.running || index < state.messages.length - 1}
                         takenOver={takenOver}
