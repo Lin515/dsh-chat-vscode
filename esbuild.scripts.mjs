@@ -124,6 +124,8 @@ const entries = {
   "build/projection-store.test.mjs": "scripts/projectionStore.test.ts",
   "build/projection-ingest.test.mjs": "scripts/projectionIngest.test.ts",
   "build/projection-seq-probe.mjs": "scripts/projectionSeqProbe.ts",
+  "build/activity.test.mjs": "scripts/activity.test.ts",
+  "build/subagent-panel.test.mjs": "scripts/subagentPanel.test.ts",
 
 };
 

@@ -14,39 +14,14 @@
  * 实测（`scripts/sessionListProbe.ts`）fork 出来的子会话是
  * `parentSessionId=<源会话>`、`origin=undefined`。
  *
- * 深度用来把分支缩进显示在自己的源会话下面（官方 `flattenLineage` 的
- * `SessionListEntry.depth` 等价物：root = 0，界面乘一个缩进宽度即可）。
- * 分支会**继承源会话的标题**，不做缩进的话两行标题一模一样、看着像重复条目。
+ * 分支会**继承源会话的标题**，所以列表里靠标题前缀区分（`texts.forkedTitle`，
+ * 界面读 `parentSessionId`）。这里曾经还算过一份血缘深度用来缩进显示，
+ * 用户 2026-09-19 改成「分支和普通会话同级」，深度随之删掉——它唯一的用途就是缩进。
  */
 
 /** 只藏**子代理**会话；分支（有 parent、`origin` 为空）必须留着。 */
 export function visibleSessionRows<T extends { origin?: string }>(rows: readonly T[]): T[] {
   return rows.filter((row) => row.origin !== "subagent");
-}
-
-/**
- * 会话 id → 血缘深度（root = 0，子会话按 `parentSessionId` 链递增）。
- *
- * 源会话不在这一批行里时（被归档、属于别的工作区）按 root 处理；
- * 链上万一出现环，就地截断，绝不无限循环。
- */
-export function lineageDepths<T extends { id: string; parentSessionId?: string }>(
-  rows: readonly T[],
-): Map<string, number> {
-  const parentOf = new Map(rows.map((row) => [row.id, row.parentSessionId]));
-  const depths = new Map<string, number>();
-  for (const row of rows) {
-    let depth = 0;
-    let cursor = row.parentSessionId;
-    const seen = new Set<string>([row.id]);
-    while (cursor && parentOf.has(cursor) && !seen.has(cursor)) {
-      seen.add(cursor);
-      depth += 1;
-      cursor = parentOf.get(cursor);
-    }
-    depths.set(row.id, depth);
-  }
-  return depths;
 }
 
 /**

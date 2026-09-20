@@ -82,6 +82,19 @@
   color: var(--active-fg);
 }
 
+/* 面板入口的「有东西在跑」态（用户 2026-09-19 口径）：图标亮成活动色并呼吸，
+   与运行中的圆点 / 思考鲸鱼**同一组关键帧**（呼吸节奏必须一致，断言在
+   `scripts/styles.test.ts`）。规则写在 `.is-active` **之后**：同一特异性下后者胜，
+   面板开着且有人在跑时两颗都得亮。熄火靠组件摘掉这个类（判据见 `activity.ts`）。 */
+.icon-btn.is-busy,
+.icon-btn.is-busy:hover {
+  color: var(--info);
+}
+
+.icon-btn.is-busy > svg {
+  animation: icon-glow 1.6s ease-in-out infinite;
+}
+
 /* ============================ message list ============================ */
 
 /* 会话区（消息区 + 待办）的纵向容器。 */
@@ -1347,6 +1360,10 @@
    差了 3px，看起来像没对齐；居中后圆点的中心与图标中心落在同一条竖线上。 */
 .row-icon-status {
   min-width: 13px;
+  /* 圆点在这格里**水平垂直都居中**（用户 2026-09-19 口径）：只给 min-width 与
+     justify-content 时，圆点靠的是行盒的顶——格子被拉高（行高比 7px 大）就看得出偏上。
+     圆点自带 7px 固定高，`stretch` 撑不开它，所以这里必须显式 center。 */
+  align-items: center;
   justify-content: center;
 }
 
@@ -2855,10 +2872,11 @@
 }
 
 /* 降低动效偏好：只抑制**装饰性**动画（转圈、省略号）。
-   活性指示器（思考鲸鱼的 .icon-glow、运行节点的 .dot-running）**刻意不抑制**：
-   它们是长任务里「还在跑」的唯一信号，属于功能性动效而非装饰；而且两者必须同等对待
-   ——曾经这里只列了 .dot-running 而漏了 .icon-glow，在开启「减少动画」的系统上
-   就变成「鲸鱼在呼吸、圆点纹丝不动」，用户会以为任务卡死了。 */
+   活性指示器（思考鲸鱼的 .icon-glow、运行节点的 .dot-running、面板入口的
+   .icon-btn.is-busy 呼吸）**刻意不抑制**：它们是长任务里「还在跑」的唯一信号，
+   属于功能性动效而非装饰；而且这些必须同等对待——曾经这里只列了 .dot-running
+   而漏了 .icon-glow，在开启「减少动画」的系统上就变成「鲸鱼在呼吸、圆点纹丝不动」，
+   用户会以为任务卡死了。 */
 @media (prefers-reduced-motion: reduce) {
   .spinner,
   .ellipsis::after {
@@ -3253,6 +3271,16 @@
   color: var(--muted);
 }
 
+/* 抽屉里「正在读」的占位行（子代理记录）：转圈与文字对齐同一行 */
+.drawer-loading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 6px;
+  font-size: var(--font-size-xs);
+  color: var(--muted);
+}
+
 .popover-sep {
   height: 1px;
   margin: 4px 2px;
@@ -3385,20 +3413,8 @@
   width: 100%;
   margin-bottom: 2px;
   padding: 4px 2px;
-  /* 分支会话缩进（`--session-indent` 由 History.tsx 按血缘深度算好）：
-     分支继承源会话的标题，不缩进会看成两条重复项 */
-  padding-left: var(--session-indent, 2px);
   border-radius: var(--radius);
   text-align: left;
-}
-
-/* 分支行左侧一道细竖线，让「它挂在上面那条下面」一眼可见 */
-.session-item.is-child .session-item-main {
-  border-left: 1px solid var(--border);
-}
-
-.session-item.is-child .session-item-title {
-  color: var(--description);
 }
 
 .session-item:hover {
@@ -3470,6 +3486,20 @@
 /* 删除两步确认：首次点击后行内显示红色提示，取代时间文本 */
 .session-item-delete-hint {
   color: var(--error);
+}
+
+/* 子代理行左侧的状态点：**独享一格**（格内水平垂直都居中），自带左外边距把它与
+   标题隔开。此前它是紧跟在标题末尾的一个裸圆点（行的 gap 只有 2px），窄侧栏下
+   看着像贴在/压在标题上（用户 2026-09-19 报「太靠左、被标题盖住一点」）。
+   格子是 inline-flex，圆点（`.dot` 的 `flex: 0 0 auto`）不会把格子撑变形。 */
+.session-item-state {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  margin-left: 4px;
 }
 
 .session-group {
@@ -3707,12 +3737,12 @@
   overflow: auto;
 }
 
+/* 子代理记录面板里的消息（只读）：比正文紧一点。
+   面板里**没有** `.chat-list` 那一层，所以正文那条 `.chat-list > .msg:last-child`
+   的 200px 留白本来就不会落进来——此前这里抄了一条 `.subagent-transcript .chat-list
+   > .msg:last-child { min-height: 0 }` 兜它，是永远匹配不上的死规则，已删。 */
 .subagent-transcript .msg {
   padding: 4px 0;
-}
-
-.subagent-transcript .chat-list > .msg:last-child {
-  min-height: 0;
 }
 
 /* ============================ to-do panel ============================ */

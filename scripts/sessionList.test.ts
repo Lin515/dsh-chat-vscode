@@ -1,17 +1,17 @@
 /**
- * 会话列表行的可见性与血缘深度。
+ * 会话列表行的可见性与分支的呈现。
  *
  * 用户 2026-09-12 反馈：「创建了分支，但新分支会话不会在会话历史里显示」。
  * 根因是过滤判据写错——契约里 `parentSessionId` 分支与子代理**都有**，
- * 只有 `origin` 能区分（`'subagent'`）。这组断言把判据钉死，
- * 并覆盖血缘深度这个把分支缩进到源会话下面的依据。
+ * 只有 `origin` 能区分（`'subagent'`）。这组断言把判据钉死，并覆盖分支行
+ * 与普通会话**同级**（不缩进、靠标题前缀「分支: 」区分，用户 2026-09-19 口径）。
  *
  * 运行：npm test
  */
 import assert from "node:assert";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { lineageDepths, visibleForWorkspace, visibleSessionRows } from "../src/dsh/sessionList";
+import { visibleForWorkspace, visibleSessionRows } from "../src/dsh/sessionList";
 import { dictionaryFor } from "../src/webview/texts";
 
 // ---------- 1. 分支必须留着，子代理必须藏起来 ----------
@@ -39,24 +39,41 @@ import { dictionaryFor } from "../src/webview/texts";
 }
 console.log("sessionList: 分支可见、子代理隐藏 ✓");
 
-// ---------- 2. 血缘深度：分支缩进到源会话下面 ----------
+// ---------- 2. 分支与普通会话**同级**：不缩进，靠标题前缀区分 ----------
+//
+// 用户 2026-09-12 的诉求是「分支要看得见」，2026-09-19 追加口径：**不缩进**，
+// 和普通会话一样平铺，新会话的名字读作「分支: 原会话标题」。所以这里钉住
+// 「界面按 `parentSessionId` 判断是不是分支」+「没有缩进那套东西」。
 {
-  const rows = [
-    { id: "root" },
-    { id: "branch", parentSessionId: "root" },
-    { id: "branch2", parentSessionId: "branch" },
-    { id: "orphan", parentSessionId: "archived-parent" },
-    { id: "loop-a", parentSessionId: "loop-b" },
-    { id: "loop-b", parentSessionId: "loop-a" },
-  ];
-  const depths = lineageDepths(rows);
-  assert.strictEqual(depths.get("root"), 0, "根会话 depth = 0");
-  assert.strictEqual(depths.get("branch"), 1, "分支 = 1");
-  assert.strictEqual(depths.get("branch2"), 2, "分支的分支 = 2");
-  assert.strictEqual(depths.get("orphan"), 0, "源会话不在列表里时按根处理（不炸、不猜）");
-  assert.ok(Number.isFinite(depths.get("loop-a")), "成环时也不能死循环");
+  const history = readFileSync(
+    join(process.cwd(), "src", "webview", "components", "History.tsx"),
+    "utf8",
+  );
+  assert.ok(
+    /const forked = session\.parentSessionId !== undefined;/.test(history),
+    "History 必须按 parentSessionId 判断分支（depth 已随缩进一起删掉）",
+  );
+  assert.ok(
+    /\{forked \? texts\.forkedTitle\(title\) : title\}/.test(history),
+    "分支行的标题必须走词典的 forkedTitle（「分支: 」/「Fork: 」两套文案）",
+  );
+  assert.ok(
+    !/session-indent|is-child/.test(history),
+    "分支行不再缩进（用户 2026-09-19 口径）：History 里不该再有缩进类或缩进变量",
+  );
+  const styles = readFileSync(join(process.cwd(), "src", "webview", "styles", "app.css"), "utf8");
+  assert.ok(
+    !/session-indent|\.session-item\.is-child/.test(styles),
+    "缩进与分支竖线的样式必须一起删掉（留着就是死样式，下次改样式会被它误导）",
+  );
+
+  // 词典：中英都要有，且都带标题参数（TS 会强制，这里顺带钉住形态）
+  // 两种语言统一「半角冒号 + 一个空格」（用户口径）
+  // 词典断言（连参数一起验），不 grep 源文件里的字面量——文案表现在住在 messages.ts
+  assert.strictEqual(dictionaryFor("zh").forkedTitle("x"), "分支: x", "中文前缀是「分支: 」");
+  assert.strictEqual(dictionaryFor("en").forkedTitle("x"), "Fork: x", "英文前缀是「Fork: 」");
 }
-console.log("sessionList: 血缘深度（含孤儿与成环）✓");
+console.log("sessionList: 分支与普通会话同级（标题前缀区分）✓");
 
 // ---------- 3. 工作区可见性：打开文件夹跟随工作区；没有文件夹只给未分组 ----------
 //
@@ -135,29 +152,9 @@ console.log("sessionList: 工作区可见性（有文件夹 / 无文件夹 / 已
     "不能再回到「有 parent 就滤掉」的老判据——那会把分支会话一起藏了",
   );
   assert.ok(
-    /const depths = lineageDepths\(views\)/.test(controller),
-    "refreshSessions 必须算血缘深度，否则分支不会缩进到源会话下面",
+    !/lineageDepths/.test(controller),
+    "血缘深度已随缩进一起删掉（用户 2026-09-19：分支和普通会话同级）",
   );
-
-  // 界面侧：缩进 + 「分支:」前缀
-  const history = readFileSync(
-    join(process.cwd(), "src", "webview", "components", "History.tsx"),
-    "utf8",
-  );
-  assert.ok(
-    /"--session-indent": `\$\{2 \+ depth \* 14\}px`/.test(history),
-    "History 必须按 depth 算缩进（分支继承源标题，不缩进会看成重复条目）",
-  );
-  assert.ok(
-    /\{depth > 0 \? texts\.forkedTitle\(title\) : title\}/.test(history),
-    "分支行的标题必须走词典的 forkedTitle（「分支:」/「Fork:」两套文案）",
-  );
-
-  // 词典：中英都要有，且都带标题参数（TS 会强制，这里顺带钉住形态）
-  // 两种语言统一「半角冒号 + 一个空格」（用户口径）
-  // 词典断言（连参数一起验），不 grep 源文件里的字面量——文案表现在住在 messages.ts
-  assert.strictEqual(dictionaryFor("zh").forkedTitle("x"), "分支: x", "中文前缀是「分支: 」");
-  assert.strictEqual(dictionaryFor("en").forkedTitle("x"), "Fork: x", "英文前缀是「Fork: 」");
 }
 console.log("sessionList: 控制器与界面都接上了 ✓");
 

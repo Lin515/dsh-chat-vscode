@@ -101,12 +101,13 @@ console.log("styles: 5 档以上用 grid 定列 ✓");
 }
 console.log("styles: 运行中圆点与思考节点共用发光 ✓");
 
-// ---------- 3b. 两个活性指示器在「减少动画」下必须同等对待 ----------
+// ---------- 3b. 几个活性指示器在「减少动画」下必须同等对待 ----------
 //
 // 真实 bug：@media (prefers-reduced-motion) 里只列了 .dot-running 而漏了 .icon-glow，
 // 于是开启「减少动画」的系统上出现「思考鲸鱼在呼吸、执行圆点纹丝不动」——
 // 用户合理地以为任务卡死了。这属于两者的**待遇不一致**，而不是抑制与不抑制的选择，
 // 所以断言写成「要么都在名单里，要么都不在」，任一种都比现在这种好。
+// 2026-09-20 加入第三个同类指示器：面板入口的呼吸（`.icon-btn.is-busy`）。
 {
   const reduced = /@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{([\s\S]*?)\n\}/.exec(css);
   assert.ok(reduced, "应当存在 prefers-reduced-motion 媒体查询");
@@ -114,14 +115,21 @@ console.log("styles: 运行中圆点与思考节点共用发光 ✓");
   const body = reduced[1];
   const hasDot = /\.dot-running/.test(body);
   const hasGlow = /\.icon-glow/.test(body);
+  // 面板入口的呼吸（`.icon-btn.is-busy`）是**第三个**同类指示器：同样不许被抑制
+  const hasBusy = /\.icon-btn\.is-busy/.test(body);
   assert.strictEqual(
     hasDot,
     hasGlow,
     `\`.dot-running\` 与 \`.icon-glow\` 必须在减少动画时同等对待，` +
       `现在是 圆点${hasDot ? "被抑制" : "保留"}、鲸鱼${hasGlow ? "被抑制" : "保留"}：\n${body.trim()}`,
   );
+  assert.strictEqual(
+    hasBusy,
+    false,
+    "面板入口的呼吸（.icon-btn.is-busy）不能被「减少动画」抑制——它也是「还在跑」的功能性信号",
+  );
 }
-console.log("styles: 减少动画下两个活性指示器待遇一致 ✓");
+console.log("styles: 减少动画下几个活性指示器待遇一致 ✓");
 
 // ---------- 4. 思考结束后的鲸鱼必须是蓝色，不能灰 ----------
 //
@@ -203,6 +211,23 @@ console.log("styles: 思考结束后的鲸鱼仍为蓝色 ✓");
   );
 }
 console.log("styles: 运行中节点呼吸发光与图标同色、完成态保色 ✓");
+
+// ---------- 4d. 顶栏两颗面板入口的「有东西在跑」态与运行圆点同一节奏 ----------
+//
+// 用户 2026-09-19 口径：有子代理 / 后台任务在跑时，右上角那两颗按钮要亮起来并呼吸。
+// 判据与接线在 `scripts/activity.test.ts`；这里只钉样式本身，避免下次有人另写一套
+// 关键帧（呼吸节奏不一致比不呼吸更难发现）。
+{
+  const busy = rule(".icon-btn.is-busy > svg");
+  assert.ok(/animation:\s*icon-glow/.test(busy), ".icon-btn.is-busy 必须复用 icon-glow 关键帧");
+
+  // 子代理行的状态点有**独享一格**：格内水平垂直居中 + 与标题留距（用户同日口径）
+  const state = rule(".session-item-state");
+  assert.ok(/align-items:\s*center/.test(state), ".session-item-state 里圆点垂直居中");
+  assert.ok(/justify-content:\s*center/.test(state), ".session-item-state 里圆点水平居中");
+  assert.ok(/margin-left:/.test(state), ".session-item-state 与标题之间要有间距");
+}
+console.log("styles: 面板入口的活性态与状态点格子 ✓");
 
 // ---------- 4c. 鲸鱼的品牌蓝是独属色：其它节点色不得用它 ----------
 //

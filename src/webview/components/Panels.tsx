@@ -1,6 +1,7 @@
+import { useLayoutEffect, useRef } from "react";
 import type { JobItemView, SubagentView } from "../../shared/chat";
 import { IconAgents, IconChevronLeft, IconClose, IconJobs } from "../icons";
-import { formatClock, formatDuration } from "./primitives";
+import { formatClock, formatDuration, Spinner } from "./primitives";
 import { compareJobs } from "../jobsOrder";
 import { useTexts } from "../texts";
 import { Message } from "./Message";
@@ -12,12 +13,15 @@ function Drawer({
   onClose,
   children,
   onBack,
+  bodyRef,
 }: {
   title: string;
   icon: JSX.Element;
   onClose: () => void;
   children: React.ReactNode;
   onBack?: () => void;
+  /** 滚动容器的 ref（子代理记录要能**默认停在最新一条**，见下方面板）。 */
+  bodyRef?: React.RefObject<HTMLDivElement>;
 }) {
   const texts = useTexts();
   return (
@@ -38,10 +42,24 @@ function Drawer({
             <IconClose size={14} />
           </button>
         </div>
-        <div className="drawer-body">{children}</div>
+        <div className="drawer-body" ref={bodyRef}>
+          {children}
+        </div>
       </div>
     </>
   );
+}
+
+/**
+ * 子代理一行左侧那个状态点的色调。
+ *
+ * `inactive` = **已完成**（绿灯）：这条子代理已经领过任务、现在不在跑。目录里
+ * 一条子代理要么是 one-shot（带着 prompt 建出来的），要么是 continuable
+ * （`startContinuable` 的返回值注释写着「initial prompt 被接受后」），所以
+ * 「列出来了 + 不在跑」= 跑完了。用户 2026-09-19 的口径就是这条。
+ */
+function subagentTone(activity: SubagentView["activity"]): string {
+  return activity === "running" ? "dot-running" : "dot-ok";
 }
 
 /** 子代理面板：列出当前会话的子代理，点进去看它的对话记录。 */
@@ -66,12 +84,17 @@ export function SubagentsPanel({
             <span className="session-item-sub">
               {entry.activity ? (
                 <>
-                  <span className={`dot ${entry.activity === "running" ? "dot-running" : ""}`} />
-                  {entry.activity === "running" ? texts.jobRunning : texts.subagentInactive}
+                  {/* 状态点**独享一格**（格内水平垂直居中）并自带左外边距：
+                      以前它紧跟在标题末尾（行的 gap 只有 2px），窄侧栏下看着像贴在
+                      标题上（用户 2026-09-19 报「太靠左、被标题盖住一点」）。 */}
+                  <span className="session-item-state">
+                    <span className={`dot ${subagentTone(entry.activity)}`} />
+                  </span>
+                  {entry.activity === "running" ? texts.jobRunning : texts.subagentCompleted}
                 </>
               ) : (
                 // `activity` 只有 RPC 列表行才有（投影没有这个字段，见 `SubagentView`
-                // 的注释）——不知道就**不画状态点**，更不能把"不知道"画成「未运行」。
+                // 的注释）——不知道就**不画状态点**，更不能把"不知道"画成「已完成」。
                 // 这时改显示**生命周期模式**（那个字段恒有），也是一条有用的信息。
                 <span className="session-item-mode">
                   {entry.mode === "one-shot" ? texts.subagentOneShot : texts.subagentContinuable}
@@ -85,27 +108,48 @@ export function SubagentsPanel({
   );
 }
 
-/** 单个子代理的对话记录（只读查看）。 */
+/**
+ * 单个子代理的对话记录（**只读**查看，没有输入区）。
+ *
+ * 打开时**默认停在最新一条**（用户 2026-09-19 口径）：这是一份「它最后做了什么」
+ * 的记录，抽屉一开就落在开头等于让用户先滚一段。内容到达后再落一次底——
+ * 快照是攒完一次性下发的，中间那次空渲染不该让滚动位置留在顶上。
+ */
 export function SubagentTranscriptPanel({
   id,
   messages,
+  loading,
   onClose,
   onBack,
 }: {
   id: string;
   messages: import("../../shared/chat").MessageView[];
+  loading: boolean;
   onClose: () => void;
   onBack: () => void;
 }) {
   const texts = useTexts();
+  const body = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = body.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [id, messages]);
   return (
-    <Drawer title={id} icon={<IconAgents size={14} />} onClose={onClose} onBack={onBack}>
+    <Drawer title={id} icon={<IconAgents size={14} />} onClose={onClose} onBack={onBack} bodyRef={body}>
       {messages.length === 0 ? (
-        <div className="popover-empty">{texts.subagentsEmpty}</div>
+        loading ? (
+          <div className="drawer-loading">
+            <Spinner size={11} /> {texts.subagentLoading}
+          </div>
+        ) : (
+          <div className="popover-empty">{texts.subagentTranscriptEmpty}</div>
+        )
       ) : (
         <div className="subagent-transcript">
           {messages.map((message) => (
-            <Message key={message.id} message={message} />
+            // `readOnly`：这份记录属于另一个会话——问卷 / 审批卡只画内容，
+            // 不给任何能发出去的控件（用户 2026-09-19 口径「仅可查看不可发送消息」）
+            <Message key={message.id} message={message} readOnly />
           ))}
         </div>
       )}

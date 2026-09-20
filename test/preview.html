@@ -119,25 +119,28 @@
       };
       // 面板数据按需推给界面，便于逐个预览
       window.__panels = function () {
-        // 会话历史：含一条**分支**会话（`parentSessionId` + `depth: 1`）。
-        // 字段形状来自真实 `session/list`（scripts/sessionListProbe.ts 实测）：
-        // fork 出来的子会话带 parentSessionId、`origin` 为空；标题继承源会话，
-        // 所以界面必须靠缩进把两条区分开。
+        // 会话历史：含一条**分支**会话（`parentSessionId`）。字段形状来自真实
+        // `session/list`（scripts/sessionListProbe.ts 实测）：fork 出来的子会话带
+        // parentSessionId、`origin` 为空；标题继承源会话，所以界面必须靠标题前缀
+        // 「分支: 」把它与源会话区分开——**同级显示，不缩进**（用户 2026-09-19 口径）。
         window.__push({
           type: "sessions",
           sessions: [
-            { id: "s1", title: "重构 server 启动流程", updatedAt: Date.now() - 7200000, running: false, depth: 0 },
-            { id: "s1-fork", title: "重构 server 启动流程", updatedAt: Date.now() - 1800000, running: false, parentSessionId: "s1", depth: 1 },
-            { id: "s2", title: "清理残留进程", updatedAt: Date.now() - 10800000, running: false, depth: 0 },
-            { id: "s3", title: "会话历史里的分支显示", updatedAt: Date.now() - 60000, running: true, depth: 0 },
+            { id: "s1", title: "重构 server 启动流程", updatedAt: Date.now() - 7200000, running: false },
+            { id: "s1-fork", title: "重构 server 启动流程", updatedAt: Date.now() - 1800000, running: false, parentSessionId: "s1" },
+            { id: "s2", title: "清理残留进程", updatedAt: Date.now() - 10800000, running: false },
+            { id: "s3", title: "会话历史里的分支显示", updatedAt: Date.now() - 60000, running: true },
           ],
         });
+        // 子代理目录：一条在跑（蓝点呼吸）、一条跑完了（`inactive` = **已完成**绿灯），
+        // 一条只有投影（没有 `activity`，此时不画点、改显示模式）。
         window.__push({
           type: "subagents/list",
           parentAvailable: true,
           entries: [
             { id: "sub-1", label: "调研 MCP 工具清单", activity: "running" },
             { id: "sub-2", label: "扫描未使用导出", activity: "inactive" },
+            { id: "sub-3", label: "补齐投影的字段表", mode: "continuable" },
           ],
         });
         window.__push({

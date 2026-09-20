@@ -233,7 +233,15 @@ export const MESSAGES = {
   subagentsEmpty: { zh: "当前会话没有子代理", en: "This session has no subagents" },
   subagentOneShot: { zh: "一次性", en: "one-shot" },
   subagentContinuable: { zh: "可继续", en: "continuable" },
-  subagentInactive: { zh: "未运行", en: "not running" },
+  // 目录里 `activity: 'inactive'` 的那一条（用户 2026-09-19 口径）：**已完成**，
+  // 不是「未运行」。子代理一旦列在目录里就必然领过初始任务（one-shot 与
+  // continuable 都是带着 prompt 建出来的），所以「现在不在跑」= 跑完了。
+  subagentCompleted: { zh: "已完成", en: "completed" },
+  subagentLoading: { zh: "正在读取子代理会话…", en: "Loading subagent session…" },
+  subagentTranscriptEmpty: {
+    zh: "这个子代理没有可显示的内容",
+    en: "Nothing to show for this subagent",
+  },
   trajectory: { zh: "轨迹", en: "Trajectory" },
   trajectoryEmpty: { zh: "本会话还没有工具调用", en: "No tool calls in this session yet" },
   backToChat: { zh: "返回会话", en: "Back to chat" },

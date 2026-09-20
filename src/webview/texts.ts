@@ -205,7 +205,12 @@ export interface Texts {
   subagentsEmpty: string;
   subagentOneShot: string;
   subagentContinuable: string;
-  subagentInactive: string;
+  /** 「现在不在跑」的子代理：读作**已完成**（用户 2026-09-19 口径），不再读作「未运行」。 */
+  subagentCompleted: string;
+  /** 子代理对话记录还没到时的占位（宿主那份快照要几百毫秒到几秒）。 */
+  subagentLoading: string;
+  /** 记录到了但一条都没有。 */
+  subagentTranscriptEmpty: string;
   /** 轨迹面板 */
   trajectory: string;
   trajectoryEmpty: string;

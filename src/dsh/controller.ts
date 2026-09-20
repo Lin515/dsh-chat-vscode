@@ -73,7 +73,7 @@ import {
   type ProjectionHandlers,
 } from "./projectionIngest";
 import { deriveTrajectoryModel } from "./trajectory";
-import { lineageDepths, normalizePath, visibleForWorkspace, visibleSessionRows } from "./sessionList";
+import { normalizePath, visibleForWorkspace, visibleSessionRows } from "./sessionList";
 import { isBlank, mergeWindowCache, WindowRestore, WorkspaceWindowStateStore, type SidebarSlot, type WindowCache, type WindowKind } from "./windowState";
 
 /**
@@ -2111,9 +2111,9 @@ export class ChatController implements vscode.Disposable {
           .filter((item) => !this.deletedSessionIds.has(item.sessionId)),
         { workspacePath, workspaceSessionIds: ownIds, groupedSessionIds: grouped, openCwds },
       ).map((item) => this.toSessionView(item));
-      // 血缘深度：分支缩进显示在源会话下面（否则「分支继承了源标题」会看成两条重复项）
-      const depths = lineageDepths(views);
-      this.sessions = views.map((view) => ({ ...view, depth: depths.get(view.id) ?? 0 }));
+      // 分支不再缩进（用户 2026-09-19 口径：和普通会话同级，靠标题前缀「分支: 」区分），
+      // 所以这里不再算血缘深度——那个字段的唯一用途就是缩进。
+      this.sessions = views;
       this.emitSessionLists();
     } catch (error) {
       this.log(`[sessions] 列表获取失败：${this.describeError(error)}`);
@@ -5027,7 +5027,11 @@ export class ChatController implements vscode.Disposable {
     const scope = this.scopeOfView(viewId);
     const child = scope?.subagentEntries.find((item) => item.id === childSessionId);
     if (!child) {
-      this.log(`[subagents] 目录里没有 ${childSessionId}，不打开`);
+      // 目录里查不到（列表刚刷新过 / 子代理已经不在目录里）：**也要回一帧空的**。
+      // 界面点开时已经把抽屉开到这个 id 并置了 loading，不回帧它就永远停在
+      // 「正在读取…」（用户 2026-09-19：点进去看不到内容）。
+      this.log(`[subagents] 目录里没有 ${childSessionId}，回一帧空记录`);
+      this.emitToView(viewId, { type: "subagent/transcript", id: childSessionId, messages: [] });
       return;
     }
     const mode = child.mode;

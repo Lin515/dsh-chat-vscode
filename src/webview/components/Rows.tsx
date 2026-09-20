@@ -598,7 +598,14 @@ function formatChars(chars: number): string {
   return String(chars);
 }
 
-export function ApprovalCard({ approval }: { approval: ApprovalView }) {
+export function ApprovalCard({
+  approval,
+  readOnly = false,
+}: {
+  approval: ApprovalView;
+  /** 只读（子代理记录面板）：不画放行 / 拒绝——那份记录属于另一个会话。 */
+  readOnly?: boolean;
+}) {
   const texts = useTexts();
   const waiting = approval.state === "waiting";
   const verdict =
@@ -621,7 +628,7 @@ export function ApprovalCard({ approval }: { approval: ApprovalView }) {
       {approval.detail ? (
         <div className="approval-detail">{resolveText(approval.detail, texts)}</div>
       ) : null}
-      {waiting ? (
+      {waiting && !readOnly ? (
         <div className="approval-actions">
           <button
             className="btn btn-primary"
@@ -760,9 +767,16 @@ export function PlanReviewCard({
 export function QuestionCard({
   question,
   batch,
+  readOnly = false,
 }: {
   question: QuestionView;
   batch?: number;
+  /**
+   * **只读**（子代理记录面板用，用户 2026-09-19 口径「仅可查看不可发送消息」）：
+   * 题目照旧铺开，但选项不可点、不给自定义输入框、没有提交行——那份记录属于
+   * 另一个会话，在这里作答只会把答复发到别处。
+   */
+  readOnly?: boolean;
 }) {
   const texts = useTexts();
   const [selected, setSelected] = useState<Record<string, string[]>>({});
@@ -781,7 +795,9 @@ export function QuestionCard({
   const cancelled = question.state === "cancelled";
   const items = question.items;
   const mode = questionMode(items.length, batch);
-  const stepped = waiting && mode === "stepped";
+  // 只读（子代理记录）：一律**平铺全部题目**、不给交互，见 `readOnly` 的注释
+  const interactive = waiting && !readOnly;
+  const stepped = interactive && mode === "stepped";
   // 依次问答只渲染当前这一题；题目被服务端更新（数组变短）时夹住下标，
   // 免得 `items[current]` 变成 undefined 把整张卡渲染成空白
   const current = stepped ? Math.min(index, Math.max(0, items.length - 1)) : 0;
@@ -859,6 +875,20 @@ export function QuestionCard({
     if (next && !multi) setSelected((prev) => ({ ...prev, [itemId]: [] }));
   };
 
+  /**
+   * 「去写自定义回答」那条路：**只补上选中，绝不取消**（用户 2026-09-19 口径）。
+   *
+   * 点（或 Tab 进）编辑区是去写回答，不是去取消；已经在选中态时什么都不做。
+   * 用**函数式更新**读最新值：Focus 与 MouseDown 可能前后脚到，读渲染闭包里的
+   * 旧值会把「刚选中」又翻回去（与 `toggleCustom` 的切换语义不同，这里只置真）。
+   */
+  const chooseCustom = (itemId: string, multi?: boolean) => {
+    setCustomChosen((prev) => (prev[itemId] === true ? prev : { ...prev, [itemId]: true }));
+    if (!multi) {
+      setSelected((prev) => ((prev[itemId]?.length ?? 0) === 0 ? prev : { ...prev, [itemId]: [] }));
+    }
+  };
+
   /** 写自定义回答：**打字即选中它**（官方 `draftCustom` 同口径）。 */
   const writeCustom = (itemId: string, value: string, multi?: boolean) => {
     setCustom((prev) => ({ ...prev, [itemId]: value }));
@@ -923,7 +953,7 @@ export function QuestionCard({
               <button
                 key={option.label}
                 className={`question-option${isSelected ? " is-selected" : ""}`}
-                disabled={!waiting}
+                disabled={!interactive}
                 onClick={() => toggle(item.id, option.label, item.multiSelect)}
               >
                 <span className="question-option-label">{option.label}</span>
@@ -938,12 +968,19 @@ export function QuestionCard({
               被选中 / 取消选中（见组件头的注释）。记录态只在**当时真选了它**时才
               补这一行（没选过的空编辑框在记录里只是噪音）。 */}
           {waiting ? (
-            <div
-              className={`question-option question-custom${customSelected ? " is-selected" : ""}`}
-              // 点这一行的**输入框之外**部分 = 选中 / 取消选中它；点输入框是去编辑
-              // （打字本身就会选中它，见 writeCustom），所以那种点击要放行给输入框
+            interactive ? (
+              <div
+                className={`question-option question-custom${customSelected ? " is-selected" : ""}`}
+              // 点这一行的**输入框之外**部分 = 选中 / 取消选中它；点输入框是去编辑。
+              // 编辑区那条路**也要选中它**（用户 2026-09-19 口径）：以前这里直接放行，
+              // 于是「点进编辑区」不会选中该自定义回答（只有打字才选中，见 writeCustom），
+              // 单选时它看着像没被选上。现在点进去先补上选中，再放行给输入框
+              // （放行 = 不 preventDefault，光标才会落到点击处）。
               onMouseDown={(event) => {
-                if ((event.target as Element).closest(".question-input")) return;
+                if ((event.target as Element).closest(".question-input")) {
+                  chooseCustom(item.id, item.multiSelect);
+                  return;
+                }
                 event.preventDefault();
                 const next = !customSelected;
                 toggleCustom(item.id, item.multiSelect);
@@ -975,6 +1012,9 @@ export function QuestionCard({
                 placeholder={texts.questionPlaceholder}
                 value={customValue}
                 onChange={(event) => writeCustom(item.id, event.target.value, item.multiSelect)}
+                // 焦点进到编辑区同样算「选了它」（键盘 Tab、程序性 focus 都走这里）。
+                // 只置真不切换，见 `chooseCustom`。
+                onFocus={() => chooseCustom(item.id, item.multiSelect)}
                 onKeyDown={(event) => {
                   // 输入法组字中的 Enter 是在选字，不是快捷键
                   if (event.nativeEvent.isComposing) return;
@@ -994,7 +1034,14 @@ export function QuestionCard({
                   continueFromCustom(item.id);
                 }}
               />
-            </div>
+              </div>
+            ) : customSelected ? (
+              // 只读：不给输入框，但**真选过**的自定义回答照旧当记录显示
+              <div className="question-option question-custom is-selected">
+                <span className="question-custom-title">{texts.questionCustomTitle}</span>
+                <span className="question-option-label">{customValue}</span>
+              </div>
+            ) : null
           ) : customSelected ? (
             <div className="question-option question-custom is-selected">
               <span className="question-custom-title">{texts.questionCustomTitle}</span>
@@ -1041,35 +1088,38 @@ export function QuestionCard({
   return (
     <div className="question">
       {shown.map(renderItem)}
-      <div className="question-footer">
-        {stepped ? (
-          <div className="question-pager">
-            <span className="question-step">{texts.questionStep(current + 1, items.length)}</span>
-            <button
-              className="btn btn-ghost"
-              disabled={current === 0}
-              onClick={() => setIndex(Math.max(0, current - 1))}
-            >
-              {texts.questionPrev}
-            </button>
-            {/* 最后一题的「下一题」就是提交，不再单独放一个按钮（与官方
-                `submit`/`action.next` 同一个按钮同一条语义） */}
-            {current < items.length - 1 ? (
+      {/* 只读（子代理记录）：不画提交行——那份记录属于另一个会话 */}
+      {interactive ? (
+        <div className="question-footer">
+          {stepped ? (
+            <div className="question-pager">
+              <span className="question-step">{texts.questionStep(current + 1, items.length)}</span>
               <button
-                className="btn"
-                disabled={!currentAnswered}
-                onClick={() => setIndex(Math.min(items.length - 1, current + 1))}
+                className="btn btn-ghost"
+                disabled={current === 0}
+                onClick={() => setIndex(Math.max(0, current - 1))}
               >
-                {texts.questionNext}
+                {texts.questionPrev}
               </button>
-            ) : null}
-          </div>
-        ) : null}
-        <span className="spacer" />
-        <button className="btn btn-primary" disabled={!ready} onClick={submit}>
-          {texts.submit}
-        </button>
-      </div>
+              {/* 最后一题的「下一题」就是提交，不再单独放一个按钮（与官方
+                  `submit`/`action.next` 同一个按钮同一条语义） */}
+              {current < items.length - 1 ? (
+                <button
+                  className="btn"
+                  disabled={!currentAnswered}
+                  onClick={() => setIndex(Math.min(items.length - 1, current + 1))}
+                >
+                  {texts.questionNext}
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+          <span className="spacer" />
+          <button className="btn btn-primary" disabled={!ready} onClick={submit}>
+            {texts.submit}
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }

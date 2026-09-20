@@ -116,6 +116,25 @@ console.log("questionFlow: 提交闸门覆盖全部题目 ✓");
     /if \(!multi\) setSelected\(\(prev\) => \(\{ \.\.\.prev, \[itemId\]: \[\] \}\)\)/.test(rows),
     "单选：写自定义回答 / 选中它都要清掉已选选项（互斥）",
   );
+  // 点编辑区也要选中它（用户 2026-09-19 口径）：以前这里直接 `return` 放行给输入框，
+  // 于是点进去不会选中该自定义回答（只有打字才选中，见 writeCustom）；单选时
+  // 看着像「这一题没作答」。现在先补上选中再放行（不 preventDefault，光标才落得准）。
+  assert.ok(
+    /if \(\(event\.target as Element\)\.closest\("\.question-input"\)\) \{\s*chooseCustom\(item\.id, item\.multiSelect\);\s*return;\s*\}/.test(
+      rows,
+    ),
+    "点自定义回答的**编辑区**同样要选中它（先 chooseCustom 再放行给输入框）",
+  );
+  assert.ok(
+    /const chooseCustom = \(itemId: string, multi\?: boolean\) => \{\s*setCustomChosen\(\(prev\) => \(prev\[itemId\] === true \? prev : \{ \.\.\.prev, \[itemId\]: true \}\)\)/.test(
+      rows,
+    ),
+    "chooseCustom 只置真、不切换（Focus 与 MouseDown 前后脚到，切换语义会把它翻回去）",
+  );
+  assert.ok(
+    /onFocus=\{\(\) => chooseCustom\(item\.id, item\.multiSelect\)\}/.test(rows),
+    "焦点进到编辑区（Tab / 程序性 focus）同样算选了它",
+  );
   const composer = readFileSync(join(process.cwd(), "src", "webview", "components", "Composer.tsx"), "utf8");
   assert.ok(
     /<QuestionCard question=\{pending\.question\} batch=\{state\.questionBatch\} \/>/.test(composer),

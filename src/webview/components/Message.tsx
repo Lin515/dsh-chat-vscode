@@ -81,6 +81,7 @@ export const Message = memo(function Message({
   turnProcessThreshold,
   canBranch = false,
   takenOver,
+  readOnly = false,
 }: {
   message: MessageView;
   /** 编辑类节点的 diff 排版（来自设置；缺省自适应）。 */
@@ -111,6 +112,12 @@ export const Message = memo(function Message({
    * （`Panels.tsx`）里的消息流没有这个上下文。
    */
   takenOver?: ReadonlySet<string>;
+  /**
+   * **只读**渲染（子代理记录面板，见 `Panels.tsx`）：问卷 / 审批卡照旧把内容画出来，
+   * 但不给任何能发出去的控件——那份记录属于另一个会话，在这里作答会把答复发到别处
+   * （用户 2026-09-19 口径「仅可查看不可发送消息」）。
+   */
+  readOnly?: boolean;
 }) {
   const texts = useTexts();
   // 连续过程折叠的展开态，**按段记**（键 = 那一段首段的 id）：一轮里可能有好几枚
@@ -264,11 +271,16 @@ export const Message = memo(function Message({
         // waiting 卡（框架层不合法，但宿主侧的卡片补投有机会造出来），没被选中的那张必须
         // 留在流里，否则输入区只画一张、这张谁也渲染不了（见 pendingInteraction.ts 文件头）。
         return takenOver?.has(segment.id) ? null : (
-          <ApprovalCard key={segment.id} approval={segment.approval} />
+          <ApprovalCard key={segment.id} approval={segment.approval} readOnly={readOnly} />
         );
       case "question":
         return takenOver?.has(segment.id) ? null : (
-          <QuestionCard key={segment.id} question={segment.question} batch={questionBatch} />
+          <QuestionCard
+            key={segment.id}
+            question={segment.question}
+            batch={questionBatch}
+            readOnly={readOnly}
+          />
         );
       case "injected":
         return <InjectedRow key={segment.id} injected={segment.injected} />;

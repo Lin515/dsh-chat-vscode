@@ -30,6 +30,7 @@ import {
   IconTrajectory,
 } from "./icons";
 import { connectViewOf, type ConnectButton, type ConnectButtonId } from "./connectView";
+import { jobsBusy, subagentsBusy } from "./activity";
 import { TextsContext, dictionaryFor, normalizeLocale, resolveText, useTexts } from "./texts";
 
 /**
@@ -57,6 +58,12 @@ function Header({
     dispatch({ type: "ui/setPanel", panel: next });
   };
 
+  // 「现在有东西在跑吗」（用户 2026-09-19 口径）：判据是纯函数，见 `activity.ts`。
+  // 两颗按钮各自呼吸：子代理在跑亮子代理、后台任务在跑亮后台任务（子代理派发本身
+  // 也是一条后台任务，所以它同时也让后台任务那颗亮起来——那是事实，不是串台）。
+  const agentsBusy = subagentsBusy(state.subagentEntries, state.jobs);
+  const jobsRunning = jobsBusy(state.jobs);
+
   return (
     <div className="header">
       <span className="header-brand" title="DeepSeek Harness">
@@ -77,7 +84,7 @@ function Header({
       </button>
       <button
         data-mini="hide"
-        className={`icon-btn${state.panel === "subagents" ? " is-active" : ""}`}
+        className={`icon-btn${state.panel === "subagents" ? " is-active" : ""}${agentsBusy ? " is-busy" : ""}`}
         title={texts.subagents}
         onClick={() => toggle("subagents", () => post({ type: "listSubagents" }))}
       >
@@ -85,7 +92,7 @@ function Header({
       </button>
       <button
         data-mini="hide"
-        className={`icon-btn${state.panel === "jobs" ? " is-active" : ""}`}
+        className={`icon-btn${state.panel === "jobs" ? " is-active" : ""}${jobsRunning ? " is-busy" : ""}`}
         title={texts.jobs}
         onClick={() => toggle("jobs", () => post({ type: "listJobs" }))}
       >
@@ -666,7 +673,9 @@ export function App() {
             onClose={closePanel}
             onOpen={(id) => {
               post({ type: "openSubagent", id });
-              dispatch({ type: "ui/setPanel", panel: "subagent" });
+              // 面板与状态一起切：先把抽屉开到这个 id（内容是空的、带 loading），
+              // 宿主那份只读快照到了再由 `subagent/transcript` 填进来
+              dispatch({ type: "ui/openSubagent", id });
             }}
           />
         ) : null}
@@ -675,6 +684,7 @@ export function App() {
           <SubagentTranscriptPanel
             id={state.subagent.id}
             messages={state.subagent.messages}
+            loading={state.subagent.loading === true}
             onClose={closePanel}
             onBack={() => dispatch({ type: "ui/setPanel", panel: "subagents" })}
           />

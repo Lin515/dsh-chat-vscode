@@ -79,17 +79,14 @@ export function HistoryPanel({
         {items.map((session) => {
           // 已被占用（运行中）或当前正在查看的会话：不显示归档 / 删除按钮
           const locked = session.running || session.id === currentId;
-          const depth = session.depth ?? 0;
+          // 分支（fork）会话：**和普通会话同级**（用户 2026-09-19 口径，不再缩进）——
+          // 它继承源会话的标题，所以靠标题前缀「分支: 」区分，不靠缩进。
+          const forked = session.parentSessionId !== undefined;
           const title = session.title || texts.untitled;
           return (
             <div
               key={session.id}
-              className={`session-item${session.id === currentId ? " is-current" : ""}${
-                depth > 0 ? " is-child" : ""
-              }`}
-              // 分支会话缩进挂在源会话下面：它继承源会话的标题（官方 fork 的
-              // 行为），不缩进就会被看成两条一模一样的重复条目。
-              style={{ "--session-indent": `${2 + depth * 14}px` } as React.CSSProperties}
+              className={`session-item${session.id === currentId ? " is-current" : ""}`}
             >
               <button
                 className="session-item-main"
@@ -98,10 +95,10 @@ export function HistoryPanel({
                   onClose();
                 }}
               >
-                {/* 分支标题加「分支:」前缀：它继承源会话的标题，光靠缩进
-                    仍可能被当成同一条重复项（文案在词典里，中英各一份） */}
+                {/* 分支标题加「分支:」前缀：它继承源会话的标题，不加前缀会看成
+                    同一条重复项（文案在词典里，中英各一份） */}
                 <span className="session-item-title">
-                  {depth > 0 ? texts.forkedTitle(title) : title}
+                  {forked ? texts.forkedTitle(title) : title}
                 </span>
                 <span className="session-item-sub">
                   {armedDelete === session.id ? (
