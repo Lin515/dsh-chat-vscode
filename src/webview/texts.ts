@@ -322,6 +322,11 @@ export interface Texts {
   /** 自定义回答那一行的无障碍说明（它和普通选项一样可以选，只是带编辑框）。 */
   questionCustomAria: string;
   /**
+   * 待答卡上的「放弃整组问题」（官方 `nav.cancel` 逐字）：点了不是回答，宿主回
+   * `rejected` + `ASK_CANCELLED` 把整份等待收场（见 `Rows.tsx` 的 `dismiss`）。
+   */
+  questionDismissAll: string;
+  /**
    * 计划审阅卡（`exit_plan_mode`）的文案，与官方 `dsh-client-ui-user-questions`
    * 的 `plan.*` 词条逐字对齐：条带「计划待审」+ 三个决定
    * （确认执行 / 拒绝 / 去聊天里说）。

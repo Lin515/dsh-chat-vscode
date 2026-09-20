@@ -317,6 +317,9 @@ export const MESSAGES = {
   },
   questionCustomTitle: { zh: "自定义回答", en: "Custom answer" },
   questionCustomAria: { zh: "自定义回答（选中后其它选项会被取消）", en: "Custom answer (selecting it clears the other options)" },
+  // 官方 `nav.cancel` 逐字：关掉整份还没答的问卷（官方 `QuestionComposer` 头部的 ✕），
+  // 不是「跳过某道题」——服务端收到的是 `ASK_CANCELLED` 拒绝，等待方据此收场
+  questionDismissAll: { zh: "放弃整组问题", en: "Dismiss all questions" },
   planReviewHeader: { zh: "计划待审", en: "Plan review" },
   planReviewApprove: { zh: "确认执行", en: "Approve" },
   planReviewDecline: { zh: "拒绝", en: "Refuse" },

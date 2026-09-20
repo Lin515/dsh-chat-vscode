@@ -27,6 +27,7 @@ import {
   IconAlert,
   IconChevronDown,
   IconClock,
+  IconClose,
   IconCode,
   IconDsh,
   IconExternal,
@@ -791,6 +792,14 @@ export function QuestionCard({
   const [index, setIndex] = useState(0);
   // 已答完的问卷默认收缩；用户点开看记录后不再自动收起
   const [expanded, setExpanded] = useState(false);
+  /**
+   * 「放弃整组问题」已点下（官方 `cancelFlow` 的 busy='cancel' 同一刻）：
+   * 收场 patch 回来之前先把提交 / 放弃两个按钮按住，免得这段窗口里重复发帧、
+   * 或「放弃」之后又补了一刀提交。宿主侧对这条链路是无条件收场（见 controller
+   * 的 `cancelQuestion`：`settle` 命中就 `cancelEvent`），所以不做失败恢复——
+   * 万一收场真的没来，切走再切回来（组件重挂载）这个状态就重置了。
+   */
+  const [closing, setClosing] = useState(false);
   const waiting = question.state === "waiting";
   const cancelled = question.state === "cancelled";
   const items = question.items;
@@ -910,6 +919,18 @@ export function QuestionCard({
         };
       }),
     });
+  };
+
+  /**
+   * 主动放弃整份问卷（官方 `QuestionComposer` 头部的 ✕ / `nav.cancel`，2026-09-21
+   * 用户要求与 web 端同步）。**不是回答**：宿主照官方客户端的形状回
+   * `rejected` + `UserQuestionError`/`ASK_CANCELLED`（见 controller 的
+   * `cancelQuestion`——计划审阅卡的「去聊天里说」走的就是同一条结算），
+   * 等待方带着「用户放弃了」收场，卡片经 `cancelEvent` 落成「已取消 N 题」的记录行。
+   */
+  const dismiss = () => {
+    setClosing(true);
+    post({ type: "cancelQuestion", requestId: question.requestId });
   };
 
   /**
@@ -1091,6 +1112,20 @@ export function QuestionCard({
       {/* 只读（子代理记录）：不画提交行——那份记录属于另一个会话 */}
       {interactive ? (
         <div className="question-footer">
+          {/* 放弃整组问题（官方卡头 ✕ 的同一条结算，放这里是因为收场语义对**整份**
+              问卷生效——放在题头旁边会被误读成「只关这一题」）。点下后输入区让位、
+              卡片落成「已取消 N 题」的记录行。 */}
+          <button
+            type="button"
+            className="btn btn-ghost question-dismiss"
+            title={texts.questionDismissAll}
+            aria-label={texts.questionDismissAll}
+            disabled={closing}
+            onClick={dismiss}
+          >
+            <IconClose size={12} />
+            {texts.questionDismissAll}
+          </button>
           {stepped ? (
             <div className="question-pager">
               <span className="question-step">{texts.questionStep(current + 1, items.length)}</span>
@@ -1115,7 +1150,7 @@ export function QuestionCard({
             </div>
           ) : null}
           <span className="spacer" />
-          <button className="btn btn-primary" disabled={!ready} onClick={submit}>
+          <button className="btn btn-primary" disabled={!ready || closing} onClick={submit}>
             {texts.submit}
           </button>
         </div>

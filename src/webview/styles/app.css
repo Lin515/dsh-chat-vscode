@@ -2000,12 +2000,26 @@
   border-color: var(--border-focus);
 }
 
-/* 底部一行：左边是「第 N / M 题 + 上一题 / 下一题」（依次问答时），右边是提交。
-   一次展开时左边整块不渲染，`spacer` 把提交按钮顶到右端——与工具行的操作区同侧。 */
+/* 底部一行：最左是「放弃整组问题」（次要出口，ghost + 次级文字色，与计划审阅卡的
+   「去聊天里说」同一个观感），然后是「第 N / M 题 + 上一题 / 下一题」（依次问答时），
+   右边是提交。一次展开时中间那块不渲染，`spacer` 把提交按钮顶到右端——与工具行的
+   操作区同侧。**允许折行**：英文的 Dismiss all questions / Previous / Next 都比中文
+   宽一截，窄侧栏下折行也远好于溢出。 */
 .question-footer {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
+}
+
+/* 「放弃整组问题」：整份问卷的次要出口。文案与图标都不缩——它承担着「不答了也要
+   让 agent 收场」的职责，但作为 ghost 按钮放行首不与主操作抢眼。 */
+.question-dismiss {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--description);
+  white-space: nowrap;
 }
 
 .question-footer .spacer {

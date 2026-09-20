@@ -1601,6 +1601,38 @@ console.log("styles: 贴底（规则在 autoScroll.ts；App 只剩接线；回�
 }
 console.log("styles: 计划审阅卡单层滚动 + 决定按钮常驻 ✓");
 
+// ---------- 37b. 问卷的「放弃整组问题」：次要出口的观感与折行待遇 ----------
+//
+// 与官方 web 端同步（2026-09-21）：待答问卷卡的 footer 加「放弃整组问题」（官方卡头
+// ✕ / `nav.cancel` 的同一条结算，见 Rows.tsx 的 dismiss）。它是**次要出口**——ghost +
+// 次级文字色，与计划审阅卡的「去聊天里说」同一个观感；footer 必须允许折行（英文
+// Dismiss all questions / Previous / Next 都比中文宽一截，与 37 组同一条纪律）。
+{
+  const css = readFileSync(join(process.cwd(), "src", "webview", "styles", "app.css"), "utf8");
+  const footer = rule(".question-footer");
+  assert.ok(
+    /flex-wrap:\s*wrap/.test(footer),
+    "问卷 footer 必须允许折行（Dismiss all questions / Previous / Next 在窄侧栏里放不下）",
+  );
+  const dismiss = rule(".question-dismiss");
+  assert.ok(
+    /white-space:\s*nowrap/.test(dismiss) && /var\(--description\)/.test(dismiss),
+    "放弃按钮自身文案不折行、用次级文字色（与 plan-review-discuss 同待遇）",
+  );
+
+  const rows = readFileSync(join(process.cwd(), "src", "webview", "components", "Rows.tsx"), "utf8");
+  const card = rows.slice(rows.indexOf("export function QuestionCard"));
+  assert.ok(
+    /className="btn btn-ghost question-dismiss"/.test(card) && /texts\.questionDismissAll/.test(card),
+    "放弃按钮走 ghost 次级观感、文案走词典（双语规则）",
+  );
+  assert.ok(
+    /disabled=\{closing\}/.test(card) && /disabled=\{!ready \|\| closing\}/.test(card),
+    "放弃点下后提交 / 放弃两个按钮都按住到收场（防重复发帧 / 防放弃后再提交）",
+  );
+}
+console.log("styles: 问卷可放弃整组问题（次要出口观感 + 折行待遇）✓");
+
 // ---------- 38. 多行草稿打字不闪：自适应量高的瞬态必须在同一帧内消化 ----------
 //
 // 用户 2026-09-17 报：「输入框大于 1 行时，打字会造成会话页面闪烁」。实测（preview

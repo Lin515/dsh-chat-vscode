@@ -4,6 +4,18 @@
 
 ## 未发布
 
+### 问卷可以主动放弃了（2026-09-21，与官方 web 端同步）
+
+- **待答问卷卡的 footer 新增「放弃整组问题」**（官方 `QuestionComposer` 卡头 ✕ /
+  `nav.cancel` 的同一条能力，文案逐字对齐）：点了**不是回答**——宿主照官方客户端的形状回
+  `rejected` + `UserQuestionError`/`ASK_CANCELLED`（`controller.ts` 的 `cancelQuestion`
+  分支，计划审阅卡的「去聊天里说」一直在用），等待方带着「用户放弃了」收场，卡片经
+  `cancelEvent` 落成「已取消 N 题」的记录行、输入区让位。按钮放在 footer 行首而不是
+  题头旁——放题头旁边会被误读成「只关这一题」，而收场语义对**整份**问卷生效；点下后
+  提交 / 放弃两个按钮按住到收场 patch 回来（宿主这条链路无条件收场，不做失败恢复）。
+  只读卡（子代理面板）与已收场的卡没有这个出口。断言 `scripts/questionRender.test.ts`
+  第 5b 组；`.question-footer` 随之允许折行（英文 Dismiss all questions 窄侧栏不溢出）。
+
 ### 子代理面板与历史列表的六条口径（2026-09-20，用户口径）
 
 - **跑完的子代理读作「已完成」**（绿灯），不再读作「未运行」：`subagents/list` 的
