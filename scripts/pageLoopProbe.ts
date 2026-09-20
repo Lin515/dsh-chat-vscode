@@ -1,4 +1,7 @@
 /**
+ * 【探针定位】工具型 · 零 token —— 只读分页推演（不开写路径），不发消息，
+ *   可自由运行。
+ *
  * 「加载更早的历史」分页循环的真实推演（用户 2026-09-14 报的「没取到上一条用户
  * 消息就停了」）。
  *
@@ -13,6 +16,13 @@
  *
  * 只读：只开跟随流与分页，不发消息、不建会话。
  */
+// 必须排在最前：会合目录与 DSH_HOME 都指到本次探针专用的临时目录（见 supervisorProbeEnv）。
+// 自检放这里还有一层作用：真的用到导出值，esbuild 才不会把副作用 import 摇掉。
+import { PROBE_SUPERVISOR_ROOT } from "./supervisorProbeEnv";
+if (!PROBE_SUPERVISOR_ROOT || !/dsh-chat-sup-probe-/.test(PROBE_SUPERVISOR_ROOT)) {
+  process.stderr.write(`[page-loop] 隔离失效：会合根目录=${PROBE_SUPERVISOR_ROOT}\n`);
+  process.exit(2);
+}
 import { SessionAdapter } from "../src/dsh/adapter";
 import { DshClient } from "../src/dsh/client";
 import { MAX_HISTORY_PAGES, shouldContinuePaging } from "../src/dsh/historyPaging";

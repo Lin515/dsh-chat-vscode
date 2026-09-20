@@ -1,7 +1,16 @@
 /**
+ * 【探针定位】工具型 · 零 token —— 只读拉取面板数据源形状，不发消息，可自由运行。
+ *
  * 新面板数据源验证：对真实服务器拉取各面板依赖的接口。
  *   node build/panels-probe.mjs
  */
+// 必须排在最前：会合目录与 DSH_HOME 都指到本次探针专用的临时目录（见 supervisorProbeEnv）。
+// 自检放这里还有一层作用：真的用到导出值，esbuild 才不会把副作用 import 摇掉。
+import { PROBE_SUPERVISOR_ROOT } from "./supervisorProbeEnv";
+if (!PROBE_SUPERVISOR_ROOT || !/dsh-chat-sup-probe-/.test(PROBE_SUPERVISOR_ROOT)) {
+  process.stderr.write(`[panels] 隔离失效：会合根目录=${PROBE_SUPERVISOR_ROOT}\n`);
+  process.exit(2);
+}
 import { DshClient } from "../src/dsh/client";
 import { SupervisorManager } from "../src/dsh/supervisorManager";
 

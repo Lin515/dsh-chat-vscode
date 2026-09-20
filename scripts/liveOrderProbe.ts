@@ -1,4 +1,9 @@
 /**
+ * 【探针定位】勘察型 · 耗 token —— 钉「流式路径上 tool-call-delta 先于 durable
+ *   assistant/message 到达」这条帧序事实，结论固化在适配器的段排序；只在重开
+ *   「思考/正文与工具行错位」问题时跑。按 AGENTS.md 硬约束，每次运行前须获用户
+ *   批准，不得随构建自动执行。
+ *
  * 段顺序的**活路径**端到端证据（用户 2026-09-14 报的「思考/正文与工具行错位」）。
  *
  *   node build/render-order-probe.mjs --live
@@ -13,6 +18,13 @@
  *
  * 会往本机 DSH 里建一条测试会话并真发一次模型请求（与 smoke / commandE2E 同口径）。
  */
+// 必须排在最前：会合目录与 DSH_HOME 都指到本次探针专用的临时目录（见 supervisorProbeEnv）。
+// 自检放这里还有一层作用：真的用到导出值，esbuild 才不会把副作用 import 摇掉。
+import { PROBE_SUPERVISOR_ROOT } from "./supervisorProbeEnv";
+if (!PROBE_SUPERVISOR_ROOT || !/dsh-chat-sup-probe-/.test(PROBE_SUPERVISOR_ROOT)) {
+  process.stderr.write(`[live] 隔离失效：会合根目录=${PROBE_SUPERVISOR_ROOT}\n`);
+  process.exit(2);
+}
 import { SessionAdapter } from "../src/dsh/adapter";
 import { DshClient } from "../src/dsh/client";
 import { SupervisorManager } from "../src/dsh/supervisorManager";

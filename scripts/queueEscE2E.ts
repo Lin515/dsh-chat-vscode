@@ -1,4 +1,8 @@
 /**
+ * 【探针定位】防线型 · 耗 token —— 对拍「ESC 中止并把队首消息发出」的端到端语义
+ *   （复刻 controller.stopRunning 三步）。动 stopRunning/队列链路或 dsh 升级时才有
+ *   价值。按 AGENTS.md 硬约束，不得随构建自动执行，每次运行前须获用户批准。
+ *
  * 端到端验证「ESC 中止并把队首消息发出」。
  *
  * 复刻 ChatController.stopRunning 的三步（摘队首 → cancel → 等空闲 → 重发），
@@ -10,6 +14,13 @@
  *
  * 运行：npm run build:scripts && node build/queue-esc-e2e.mjs
  */
+// 必须排在最前：会合目录与 DSH_HOME 都指到本次探针专用的临时目录（见 supervisorProbeEnv）。
+// 自检放这里还有一层作用：真的用到导出值，esbuild 才不会把副作用 import 摇掉。
+import { PROBE_SUPERVISOR_ROOT } from "./supervisorProbeEnv";
+if (!PROBE_SUPERVISOR_ROOT || !/dsh-chat-sup-probe-/.test(PROBE_SUPERVISOR_ROOT)) {
+  process.stderr.write(`[queue-esc] 隔离失效：会合根目录=${PROBE_SUPERVISOR_ROOT}\n`);
+  process.exit(2);
+}
 import { randomUUID } from "node:crypto";
 import { DshClient } from "../src/dsh/client";
 import { SupervisorManager } from "../src/dsh/supervisorManager";

@@ -1,4 +1,8 @@
 /**
+ * 【探针定位】勘察型 · 耗 token —— 钉「队列自动派发的落盘/到达帧序」这条事实，
+ *   结论固化在适配器折叠与 queueOrder.test 的合成帧序；只在重开「队列消息错位」
+ *   问题时跑。按 AGENTS.md 硬约束，每次运行前须获用户批准，不得随构建自动执行。
+ *
  * 探针：队列消息被服务端自动派发时，帧的**真实到达顺序**与适配器的折叠结果。
  *
  * 背景（用户 2026-09-14 报告）：队列消息自动发出后，「生成内容在用户消息上方继续
@@ -14,6 +18,13 @@
  *
  * 运行：npm run build:scripts && node build/queue-order-probe.mjs
  */
+// 必须排在最前：会合目录与 DSH_HOME 都指到本次探针专用的临时目录（见 supervisorProbeEnv）。
+// 自检放这里还有一层作用：真的用到导出值，esbuild 才不会把副作用 import 摇掉。
+import { PROBE_SUPERVISOR_ROOT } from "./supervisorProbeEnv";
+if (!PROBE_SUPERVISOR_ROOT || !/dsh-chat-sup-probe-/.test(PROBE_SUPERVISOR_ROOT)) {
+  process.stderr.write(`[queue-order] 隔离失效：会合根目录=${PROBE_SUPERVISOR_ROOT}\n`);
+  process.exit(2);
+}
 import { randomUUID } from "node:crypto";
 import { DshClient } from "../src/dsh/client";
 import { SupervisorManager } from "../src/dsh/supervisorManager";

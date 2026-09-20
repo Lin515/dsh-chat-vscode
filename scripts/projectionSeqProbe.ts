@@ -1,4 +1,9 @@
 /**
+ * 【探针定位】勘察型 · 耗 token —— 钉「baseline 带 asOfSeq / 增量帧带 seq / 开帧
+ *   asOfSeq==cursor」三条线上事实，结论固化在 projectionStore/projectionIngest；
+ *   只在重开投影水位问题时跑。按 AGENTS.md 硬约束，每次运行前须获用户批准，
+ *   不得随构建自动执行。
+ *
  * 投影水位（seq / asOfSeq）在真实线上的形状 —— 对 `dsh/ProjectionStore` 那条设计的取证。
  *
  * `src/dsh/projectionStore.ts` 与 `projectionIngest.ts` 的整套「higher seq wins / baseline

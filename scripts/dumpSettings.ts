@@ -1,8 +1,18 @@
 /**
+ * 【探针定位】工具型 · 零 token —— 只读转储设置 schema；schedule / agentPreset /
+ *   subagentTiming 三个设置面板重做时还要用它。不发消息，可自由运行。
+ *
  * 转储各设置命名空间的 schema JSON，用于设计设置页的表单渲染。
  *   node build/dump-settings.mjs [baseUrl] [token]
  * 不给参数时自行拉起一个临时服务器。
  */
+// 必须排在最前：会合目录与 DSH_HOME 都指到本次探针专用的临时目录（见 supervisorProbeEnv）。
+// 自检放这里还有一层作用：真的用到导出值，esbuild 才不会把副作用 import 摇掉。
+import { PROBE_SUPERVISOR_ROOT } from "./supervisorProbeEnv";
+if (!PROBE_SUPERVISOR_ROOT || !/dsh-chat-sup-probe-/.test(PROBE_SUPERVISOR_ROOT)) {
+  process.stderr.write(`[dump-settings] 隔离失效：会合根目录=${PROBE_SUPERVISOR_ROOT}\n`);
+  process.exit(2);
+}
 import { DshClient } from "../src/dsh/client";
 import { SupervisorManager } from "../src/dsh/supervisorManager";
 import { writeFileSync } from "node:fs";

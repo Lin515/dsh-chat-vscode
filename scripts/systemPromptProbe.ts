@@ -1,4 +1,8 @@
 /**
+ * 【探针定位】勘察型 · 耗 token —— 钉「自动载入的提示词有几条、每轮是否重发」
+ *   这条事实，结论固化在系统提示词段的呈现设计；只在重开系统提示词显示问题时跑。
+ *   按 AGENTS.md 硬约束，每次运行前须获用户批准，不得随构建自动执行。
+ *
  * 探针：dump 一个真实会话里的 `system/message` 事件，看清「自动载入的提示词」
  * 到底长什么样、有多少、每次是否重复。
  *
@@ -6,6 +10,13 @@
  *
  * 运行：npm run build:scripts && node build/system-prompt-probe.mjs
  */
+// 必须排在最前：会合目录与 DSH_HOME 都指到本次探针专用的临时目录（见 supervisorProbeEnv）。
+// 自检放这里还有一层作用：真的用到导出值，esbuild 才不会把副作用 import 摇掉。
+import { PROBE_SUPERVISOR_ROOT } from "./supervisorProbeEnv";
+if (!PROBE_SUPERVISOR_ROOT || !/dsh-chat-sup-probe-/.test(PROBE_SUPERVISOR_ROOT)) {
+  process.stderr.write(`[sys-prompt] 隔离失效：会合根目录=${PROBE_SUPERVISOR_ROOT}\n`);
+  process.exit(2);
+}
 import { DshClient } from "../src/dsh/client";
 import { SupervisorManager } from "../src/dsh/supervisorManager";
 

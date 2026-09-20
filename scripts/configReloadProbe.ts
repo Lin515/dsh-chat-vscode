@@ -1,4 +1,8 @@
 /**
+ * 【探针定位】勘察型 · 零模型 token —— 钉「settings/credentials 外部编辑以转发帧
+ *   到达客户端」这条链路证据，结论固化在 configChanges 的处理；只在重开配置热重载
+ *   问题时跑（自管临时 DSH_HOME，不发模型消息）。
+ *
  * 配置文件热重载的端到端证据。
  *
  *   node build/config-reload-probe.mjs
@@ -25,6 +29,13 @@
  * （`loadProfile` 找不到 profile 目录时用 `PROFILE_TEMPLATES` 建一个），
  * bundle 从安装锚点解析，不需要装依赖。
  */
+// 必须排在最前：supervisor 会合目录指到本次探针专用的临时目录（见 supervisorProbeEnv）。
+// DSH_HOME 由本文件自管（下文要预放配置文件并保持空凭据），这里只隔离会合目录。
+import { PROBE_SUPERVISOR_ROOT } from "./supervisorProbeEnv";
+if (!PROBE_SUPERVISOR_ROOT || !/dsh-chat-sup-probe-/.test(PROBE_SUPERVISOR_ROOT)) {
+  process.stderr.write(`[config-reload] 隔离失效：会合根目录=${PROBE_SUPERVISOR_ROOT}\n`);
+  process.exit(2);
+}
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

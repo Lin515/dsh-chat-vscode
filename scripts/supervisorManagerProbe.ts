@@ -1,4 +1,8 @@
 /**
+ * 【探针定位】防线型 · 零模型 token —— 验「扩展真正用的 SupervisorManager」端到端
+ *   行为（会合/接入/心跳/就绪），发的是协议帧不是模型消息；动 supervisor 链路后跑，
+ *   可自由运行。
+ *
  * 端到端探针：**扩展真正用的那个管理器**（`SupervisorManager`）能不能跑通。
  *
  * 为什么单独一条：`supervisorReloadProbe` / `IdleProbe` / `ScenariosProbe` 都是拿

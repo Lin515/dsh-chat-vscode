@@ -1,4 +1,8 @@
 /**
+ * 【探针定位】勘察型 · 耗 token —— 复现「切换模型失败」的条件（四种真实操作序列）；
+ *   结论固化在模型切换链路的修复里。只在重开切模型问题时跑。按 AGENTS.md 硬约束，
+ *   每次运行前须获用户批准，不得随构建自动执行。
+ *
  * 模型切换专项复现：找出「切换模型失败」的确切条件。
  *
  *   node build/model-switch.mjs
@@ -12,6 +16,13 @@
  * 注意：`session/selectModel` 会写回 `agent-default-model` 设置，所以脚本结束前
  * 会把部署默认模型还原，避免污染本机默认。
  */
+// 必须排在最前：会合目录与 DSH_HOME 都指到本次探针专用的临时目录（见 supervisorProbeEnv）。
+// 自检放这里还有一层作用：真的用到导出值，esbuild 才不会把副作用 import 摇掉。
+import { PROBE_SUPERVISOR_ROOT } from "./supervisorProbeEnv";
+if (!PROBE_SUPERVISOR_ROOT || !/dsh-chat-sup-probe-/.test(PROBE_SUPERVISOR_ROOT)) {
+  process.stderr.write(`[model] 隔离失效：会合根目录=${PROBE_SUPERVISOR_ROOT}\n`);
+  process.exit(2);
+}
 import { DshApiError, DshClient } from "../src/dsh/client";
 import { SupervisorManager } from "../src/dsh/supervisorManager";
 

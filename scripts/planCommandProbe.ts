@@ -1,4 +1,8 @@
 /**
+ * 【探针定位】勘察型 · 耗 token —— 钉「/plan 走命令通道、正文前缀无效」这条事实；
+ *   结论已被 commandE2E 的 A 组断言收编为防线，本探针只在需要看原始反应时跑。
+ *   按 AGENTS.md 硬约束，每次运行前须获用户批准，不得随构建自动执行。
+ *
  * 探针：`/plan` 到底是「命令」还是「普通消息」？
  *
  * 背景：扩展的「进入计划模式」是给消息正文加 `/plan ` 前缀后按普通 prompt 发出，
@@ -10,6 +14,13 @@
  *
  * 运行：npm run build:scripts && node build/plan-command-probe.mjs
  */
+// 必须排在最前：会合目录与 DSH_HOME 都指到本次探针专用的临时目录（见 supervisorProbeEnv）。
+// 自检放这里还有一层作用：真的用到导出值，esbuild 才不会把副作用 import 摇掉。
+import { PROBE_SUPERVISOR_ROOT } from "./supervisorProbeEnv";
+if (!PROBE_SUPERVISOR_ROOT || !/dsh-chat-sup-probe-/.test(PROBE_SUPERVISOR_ROOT)) {
+  process.stderr.write(`[plan-probe] 隔离失效：会合根目录=${PROBE_SUPERVISOR_ROOT}\n`);
+  process.exit(2);
+}
 import { randomUUID } from "node:crypto";
 import { DshClient } from "../src/dsh/client";
 import { SupervisorManager } from "../src/dsh/supervisorManager";

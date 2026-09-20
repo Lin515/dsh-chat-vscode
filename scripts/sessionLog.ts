@@ -1,4 +1,7 @@
 /**
+ * 【探针定位】工具型 · 零 token —— 被 sessionLogScan 等探针 import 的解码库
+ *   （非 CLI），可自由使用。
+ *
  * 会话日志解码（多帧 zstd → JSONL 文本）。
  *
  * 单独一个模块而不是塞在 `sessionLogScan.ts`：那个文件**既是库也是 CLI**（顶层就是

@@ -93,8 +93,25 @@ this.emit({ type: "toast", level: "warn", text: "@uploadIncomplete:report.pdf" }
 
 - **直接在 `pwsh` 里跑 npm 脚本**（会话沙箱需 `danger-full-access`；受限模式下
   esbuild 会 `spawn EPERM`、探针写 `~/.dsh` 会 `EPERM`）。构建姿势见 `build` skill。
-- 标准命令：`npm run typecheck`、`npm test`、`npm run build`、`npm run smoke`；
-  端到端探针：`node build/command-e2e.mjs`、`node build/queue-continue-probe.mjs`。
+- 标准命令：`npm run typecheck`、`npm test`、`npm run build` —— **每次改动跑这三个就够**，
+  它们不起真实 dsh、不发真实消息、不花 token、不产生测试会话。
+- **`npm run smoke` 与各探针是重验证，只在对应链路被改动时才跑**。它们会对真实服务端
+  建会话、发真实消息——每次都消耗真实 token（2026-09-20 起，探针环境已通过
+  `scripts/supervisorProbeEnv.ts` 全隔离：supervisor 会合目录与 `DSH_HOME` 都指到一次性
+  临时目录、收尾整体删除，**不再**把测试会话留在用户列表里；但 token 照花，「少跑」
+  仍是第一道）：
+  - `npm run smoke`：只在动了 `SupervisorManager` / `DshClient` / `SessionAdapter` /
+    supervisor 连接链路时跑；
+  - 探针（`node build/command-e2e.mjs`、`node build/queue-continue-probe.mjs` 等）：
+    只在动了 plan / goal / subagent / 工具行 / 队列 / 投影契约时跑，改前改后各一遍对拍；
+  - 纯界面 / 文案 / 样式 / webview 改动**不要**跑 smoke 与探针——那些链路没动，
+    断言与改动无关，纯属烧 token。
+- **（硬约束，用户 2026-09-20 立）禁止自动执行任何消耗 token 的验证**：smoke、探针、
+  e2e 一律**不得**在未经用户**当次明确批准**的情况下运行——即使用户要求"验证构建/改动"，
+  默认也只跑 `typecheck` + `test` + `build` 三个零 token 命令。确有必要跑某个探针时，
+  先向用户说明「跑哪个、为什么非跑不可（钉哪条语义）、预计耗时」，**获批后再跑**；
+  一次批准只对那一次运行有效。每个探针的定位（防线型/勘察型/工具型）与是否耗 token
+  见各文件头部的「探针定位」块。
 - **新增测试必须登记到 `esbuild.scripts.mjs` 的 `entries`**，否则 `npm test`
   静默不跑（runner 只发现 `build/*.test.mjs`）。
 - 改动界面后跑 `npm run preview` 看一眼：`test/preview.html` 的夹具覆盖了

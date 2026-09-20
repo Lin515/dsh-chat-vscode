@@ -1,4 +1,8 @@
 /**
+ * 【探针定位】勘察型 · 零模型 token —— 钉「工作区分组要用 workspaceId 建会话」
+ *   这条契约事实，结论固化在 createSession 的调用方式；只在重开分组问题时跑
+ *   （自管临时 DSH_HOME，不发模型消息）。
+ *
  * 工作区分组的端到端证据（用户 2026-09-14 报的「会话在 DSH Web 上都是未分组」）。
  *
  *   node build/workspace-probe.mjs
@@ -20,6 +24,13 @@
  *
  * 为什么要独立 home：这个探针会注册工作区并真的建会话，不能落到用户的历史里。
  */
+// 必须排在最前：supervisor 会合目录指到本次探针专用的临时目录（见 supervisorProbeEnv）。
+// DSH_HOME 由本文件自管（下文要预放内容），这里只隔离会合目录。
+import { PROBE_SUPERVISOR_ROOT } from "./supervisorProbeEnv";
+if (!PROBE_SUPERVISOR_ROOT || !/dsh-chat-sup-probe-/.test(PROBE_SUPERVISOR_ROOT)) {
+  process.stderr.write(`[workspace] 隔离失效：会合根目录=${PROBE_SUPERVISOR_ROOT}\n`);
+  process.exit(2);
+}
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

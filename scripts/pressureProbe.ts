@@ -1,4 +1,9 @@
 /**
+ * 【探针定位】勘察型 · 耗 token —— 钉「contextPressure 投影按轮推送且内容变化」
+ *   这条事实，结论已固化在上下文占用的投影读法（projectedTokens ?? pressureTokens）；
+ *   只在重开占用条问题时跑。按 AGENTS.md 硬约束，每次运行前须获用户批准，
+ *   不得随构建自动执行。
+ *
  * 探针：`contextPressure` 投影到底会不会随每轮更新？
  *
  * 背景（用户 2026-09-12 反馈）：重启 VS Code 后打开历史会话继续对话，上下文占用
@@ -14,6 +19,13 @@
  *
  * 运行：npm run build:scripts && node build/pressure-probe.mjs
  */
+// 必须排在最前：会合目录与 DSH_HOME 都指到本次探针专用的临时目录（见 supervisorProbeEnv）。
+// 自检放这里还有一层作用：真的用到导出值，esbuild 才不会把副作用 import 摇掉。
+import { PROBE_SUPERVISOR_ROOT } from "./supervisorProbeEnv";
+if (!PROBE_SUPERVISOR_ROOT || !/dsh-chat-sup-probe-/.test(PROBE_SUPERVISOR_ROOT)) {
+  process.stderr.write(`[probe] 隔离失效：会合根目录=${PROBE_SUPERVISOR_ROOT}\n`);
+  process.exit(2);
+}
 import { randomUUID } from "node:crypto";
 import { DshClient } from "../src/dsh/client";
 import { SupervisorManager } from "../src/dsh/supervisorManager";
