@@ -203,6 +203,17 @@ this.emit({ type: "toast", level: "warn", text: "@uploadIncomplete:report.pdf" }
   （例如 `Set-Content -NoNewline` 没写成），后面的「通过」是假的——先读回文件确认。
 - **多个子代理并行改同一批文件前先划文件所有权**。子代理不受本仓库的观察规则约束，
   彼此读到的是中间态；同一文件交给一个代理写，其余只读。
+- **改了用户可见面就更新 `CHANGELOG.md`，其余改动可跳过**。它是用户读到的那一份
+  （vsce 把它作为扩展的「更新日志」打进 vsix，VS Code 扩展页与商店页渲染的就是它）。
+  断言 `scripts/changelogGuard.test.ts`（`npm test` 里跑）：`<最近 tag>..HEAD` 中动过
+  `src/**`、`package.json`、`package.nls*.json` 的提交必须同时动过 `CHANGELOG.md`。
+  只改 `docs/**`、`scripts/**`、`AGENTS.md`、测试 / 探针 / 工具链不在此列，不必写；
+  动了上述路径但用户看不见的（纯重构、只改注释），在提交信息里写 `Changelog: none` 豁免
+  ——要显式写，「用户看不看得见」只有作者知道。
+- **发布**：`## 未发布` → `## <版本>（日期）`；`npm version x.y.z --no-git-tag-version`；
+  跑三件套；提交；`git tag -a v<x.y.z>`；`npm run package`（产物在 `Releases/`）。
+  注意 `git describe --tags --abbrev=0` 取的是「从 HEAD 可达的最近 tag」，打完 tag 后区间
+  为空——防漏断言要么在打 tag 前跑、要么用 `HEAD^`。
 
 ## git
 
