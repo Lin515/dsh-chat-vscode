@@ -1,4 +1,5 @@
 import type { HostToWebview, WebviewToHost } from "../shared/ipc";
+import type { PersistedState } from "../shared/chat";
 
 /**
  * webview 侧 IPC 客户端。
@@ -9,6 +10,7 @@ import type { HostToWebview, WebviewToHost } from "../shared/ipc";
 
 interface VsCodeApi {
   postMessage(message: unknown): void;
+  setState(state: unknown): void;
 }
 
 declare function acquireVsCodeApi(): VsCodeApi;
@@ -23,6 +25,22 @@ function getApi(): VsCodeApi {
 /** 向宿主发送一条请求。 */
 export function post(message: WebviewToHost): void {
   getApi().postMessage(message);
+}
+
+/**
+ * 把「这个窗口开着哪条会话」存进 VS Code 的 webview state。
+ *
+ * 这是**身份**，不是界面状态：宿主恢复编辑区面板时（`deserializeWebviewPanel` 的
+ * `state`）据此认回自己的会话，而不是靠 VS Code 恢复面板的顺序去猜——顺序对不上
+ * 就是两个标签的会话交叉（用户 2026-09-21 报的）。webview 无从得知 host 侧的绑定，
+ * 所以由界面把当前会话 id 写下来（`App.tsx` 在会话变化时调它）。
+ *
+ * 存成 `{ identity: { sessionId } }` 而不是裸字符串：以后要加字段（比如草稿）时
+ * 旧数据仍能被识别成同一个形状。
+ */
+export function persistIdentity(sessionId: string | undefined): void {
+  const state: PersistedState = { identity: { sessionId: sessionId ?? null } };
+  getApi().setState(state);
 }
 
 type Listener = (message: HostToWebview) => void;

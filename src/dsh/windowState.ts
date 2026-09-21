@@ -164,20 +164,25 @@ export function isBlank(entry: WindowEntry | undefined): boolean {
  *
  * 侧栏用固定槽位（`primary`/`secondary`）：一个容器只有一个实例，谈不上顺序。
  *
- * 编辑区面板**按顺序认领**：`deserializeWebviewPanel(panel, state)` 的 `state` 是
- * webview 自己用 `setState` 存下来的，而我们的 webview 侧没有存过会话 id（界面不
- * 需要知道它，会话是宿主侧的绑定），所以那个 `state` 指望不上。好在契约里 VS Code
- * 恢复的是**当初的编辑器布局**，序列化器就按那个顺序被逐个调用——把「缓存里的第 N 条」
- * 给「第 N 个来认领的面板」，就是当初那个面板。
+ * 编辑区面板**优先按 webview 自己存的会话 id 认领**：`deserializeWebviewPanel(panel, state)`
+ * 的 `state` 是 webview 用 `acquireVsCodeApi().setState()` 存的（界面把当前会话 id
+ * 写进去，见 `webview/bridge.ts` 的 `persistIdentity`）。这是**身份**，不是顺序——
+ * 用户 2026-09-21 报的「重载后两个标签的会话交叉了」正是顺序认领的固有缺陷：
+ * `activeOrder` 记的是创建顺序，而复用的是「上次的编辑器排布」，两者在重载/重排
+ * 之后并不保证一致，对不上位就张冠李戴（Claude Code 的
+ * [issue #35022](https://github.com/anthropics/claude-code/issues/35022) 是同一个坑的
+ * 另一种表现：序列化器拿到了 state 里的 sessionId 却没用）。
  *
- * 代价写在明处：顺序对不上（用户在两次运行之间重新排布过标签页之类）时可能张冠李戴。
- * 真要做得更准，得让界面把会话 id 存进 `setState` 再在序列化器里读回来——那需要改
- * webview 侧的产物，眼下这点收益不值得（对比：Claude Code 的
- * [issue #35022](https://github.com/anthropics/claude-code/issues/35022) 正是「序列化器
- * 拿到了 state 里的 sessionId 却没用」导致恢复出来的标签页内容错乱）。
+ * 没拿到身份时（旧版本写的面板、用户手工调过状态、身份与缓存对不上）**退回按下标认领**：
+ * 谁也不认领的那几个面板仍按 VS Code 的恢复顺序对位，能救一个是一个。两条路都记日志
+ * （`classifyPanel`），「这次是按身份还是按顺序接的」在输出通道里看得见。
  */
 export class WindowRestore {
   private panelCursor = 0;
+  /** 已经被认领过的面板下标（按身份跳着认领时下标不是连续的）。 */
+  private readonly claimedIndices = new Set<number>();
+  /** 「认领完毕」那一行日志打过了没有（只打一次，见 `reportLeftovers`）。 */
+  private reported = false;
   /** 问过话的侧栏槽位（认领过就不再计入「还没恢复完」）。 */
   private readonly slotsClaimed = new Set<SidebarSlot>();
 
@@ -195,6 +200,8 @@ export class WindowRestore {
   replace(cache: WindowCache): void {
     this.cache = cache;
     this.panelCursor = 0;
+    this.claimedIndices.clear();
+    this.reported = false;
     this.slotsClaimed.clear();
   }
 
@@ -204,7 +211,7 @@ export class WindowRestore {
    * 恢复**不是一次做完的**：契约（`vscode.d.ts` 的 `WebviewPanelSerializer`）写的是
    * 「webview 重启后**第一次变为可见**时」才回调序列化器——用户没点到的面板标签页
    * 可能过很久才认领，甚至直到关窗都没认领。所以「恢复窗口」结束的判据不是某个
-   * 超时，而是**槽位都问过了**（侧栏各一个槽位 + 面板逐条对位）。
+   * 超时，而是**缓存里的窗口都被问过了**（侧栏按槽位、面板按条，见 `classifyPanel`）。
    */
   get pending(): boolean {
     return this.remaining > 0;
@@ -212,7 +219,7 @@ export class WindowRestore {
 
   /** 还剩几个缓存窗口没被认领（侧栏按槽位算、面板按条数算）。 */
   get remaining(): number {
-    let count = Math.max(0, this.cache.panels.length - this.panelCursor);
+    let count = this.remainingPanels;
     for (const slot of ["primary", "secondary"] as const) {
       if (!this.slotsClaimed.has(slot) && !isBlank(this.cache[slot])) count += 1;
     }
@@ -227,22 +234,51 @@ export class WindowRestore {
     return isBlank(entry) ? undefined : entry?.sessionId ?? undefined;
   }
 
-  /** 认领下一个编辑区面板的会话（按 VS Code 的恢复顺序对位）。 */
+  /**
+   * 认领一个编辑区面板的会话，并说清是**按身份**还是**按下标**认领的。
+   *
+   * `known` 是面板自己存下来的会话 id（`deserializeWebviewPanel` 的 `state` 里读回）。
+   * 能对上缓存里一条**还没被认领**的记录就用它；对不上退回下标。返回值里的 `by`
+   * 只用于日志与断言——调用方（控制器）拿 `sessionId` 去做接回。
+   */
+  classifyPanel(known?: string): { sessionId: string | undefined; by: "identity" | "cursor" } {
+    if (known) {
+      const index = this.cache.panels.findIndex(
+        (entry, at) => entry.sessionId === known && !this.claimedIndices.has(at),
+      );
+      if (index >= 0) {
+        this.claimedIndices.add(index);
+        this.reportLeftovers();
+        return { sessionId: known, by: "identity" };
+      }
+    }
+    return { sessionId: this.claimPanel(), by: "cursor" };
+  }
+
+  /** 认领下一个编辑区面板的会话（按下标；没被认领过的第一条）。 */
   claimPanel(): string | undefined {
-    const entry = this.cache.panels[this.panelCursor];
-    this.panelCursor += 1;
+    while (this.panelCursor < this.cache.panels.length) {
+      const index = this.panelCursor;
+      this.panelCursor += 1;
+      if (this.claimedIndices.has(index)) continue;
+      this.claimedIndices.add(index);
+      this.reportLeftovers();
+      const entry = this.cache.panels[index];
+      return isBlank(entry) ? undefined : entry?.sessionId ?? undefined;
+    }
     this.reportLeftovers();
-    return isBlank(entry) ? undefined : entry?.sessionId ?? undefined;
+    return undefined;
   }
 
   /**
-   * 已经被认领过的面板条数（= 下次 `claimPanel` 会取的下标）。
+   * 这个下标的面板有没有被认领过（按身份或按下标都算）。
    *
-   * 写缓存时要它：**尚未认领**的那一段（`cache.panels[claimed..]`）属于还没露面的
-   * 窗口，必须原样保留在原位上（见 `mergeWindowCache`）。
+   * 写缓存要它：**尚未认领**的那几条属于还没露面的窗口，必须按原位保留
+   * （见 `mergeWindowCache`）。用「按条问」而不是一个总数——按身份认领时下标是
+   * 跳着的，总数分不出是哪几条。
    */
-  get claimedPanelCount(): number {
-    return this.panelCursor;
+  panelClaimed(index: number): boolean {
+    return this.claimedIndices.has(index);
   }
 
   /** 这个侧栏槽位这一代**有没有被问过话**（问过 = 它已经在内存里有最新状态）。 */
@@ -259,11 +295,21 @@ export class WindowRestore {
    * 下一次写缓存时会自然收敛掉。
    */
   private reportLeftovers(): void {
-    if (this.panelCursor !== this.cache.panels.length) return;
+    if (this.reported || this.remainingPanels > 0) return;
+    this.reported = true;
     const blanks = this.cache.panels.filter((panel) => isBlank(panel)).length;
     this.log(
-      `[restore] 编辑区面板认领完毕：${this.panelCursor} 个（缓存里空态 ${blanks} 个）`,
+      `[restore] 编辑区面板认领完毕：${this.claimedIndices.size} 个（缓存里空态 ${blanks} 个）`,
     );
+  }
+
+  /** 还没被认领的面板条数（`remaining` 与日志共用）。 */
+  private get remainingPanels(): number {
+    let count = 0;
+    for (let index = 0; index < this.cache.panels.length; index += 1) {
+      if (!this.claimedIndices.has(index)) count += 1;
+    }
+    return count;
   }
 }
 
@@ -282,26 +328,36 @@ export class WindowRestore {
  *
  * 折中就是这里：**已认领的部分**一律用内存里的最新状态，**尚未认领的**按原位接在后面。
  *
+ * 面板用**按条问**（`panelClaimed(index)`）而不是拿一个认领总数去切：按身份认领时
+ * 下标是跳着的（第 2 个面板可能先认领），拿「认领了几条」当游标会把还没露面的那条
+ * 当成已认领而丢掉。
+ *
  * @param options.memory 内存里那几张表的投影（`persistWindowState` 的产物）。
  * @param options.previous 启动时读到的缓存（尚未认领的条目从这里取）。
- * @param options.claimedPanels 已经被认领过的面板条数。
+ * @param options.panelClaimed 某个下标的面板这一代有没有被认领过。
  * @param options.restorePending 恢复窗口是否还没结束。
  * @param options.slotClaimed 某个侧栏槽位这一代有没有被问过话。
  */
 export function mergeWindowCache(options: {
   memory: WindowCache;
   previous: WindowCache;
-  claimedPanels: number;
+  panelClaimed: (index: number) => boolean;
   restorePending: boolean;
   slotClaimed: (slot: SidebarSlot) => boolean;
 }): WindowCache {
-  const { memory, previous, claimedPanels, restorePending, slotClaimed } = options;
+  const { memory, previous, panelClaimed, restorePending, slotClaimed } = options;
   if (!restorePending) return memory;
   const merged: WindowCache = { ...memory, panels: [...memory.panels] };
-  // 面板：内存里已经超过认领数（用户在这次恢复窗口里新开了一个面板）时不再补，
+  // 面板：内存里已经比「认领过的条数」多（用户在这次恢复窗口里新开了一个面板）时不再补，
   // 否则同一条会话会被写两遍、下次恢复还会错位。
-  if (merged.panels.length <= claimedPanels) {
-    for (const entry of previous.panels.slice(claimedPanels)) merged.panels.push(entry);
+  const claimed = previous.panels.reduce(
+    (count, _entry, index) => (panelClaimed(index) ? count + 1 : count),
+    0,
+  );
+  if (merged.panels.length <= claimed) {
+    previous.panels.forEach((entry, index) => {
+      if (!panelClaimed(index)) merged.panels.push(entry);
+    });
   }
   // 侧栏：这一代没被问过话的槽位保留旧值（它的视图还没被 VS Code 实例化）。
   // 已认领的槽位即使内存里是 `null`（空态）也照写——那是「用户把它清空了」。

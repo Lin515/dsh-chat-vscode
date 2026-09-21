@@ -1016,3 +1016,51 @@ export interface ChatState {
     decodeTokens: number;
   };
 }
+
+/**
+ * 编辑区标签的标题（用户 2026-09-21 口径）。
+ *
+ * - 会话**已经有标题** → 直接显示标题，不再顶一个 `DSH` 前缀（多开几条时标签本身就
+ *   是会话名，前缀只会吃掉宽度）；
+ * - 会话**还没有标题**（新会话、只有空白名的会话）→ 显示 `DSH`。
+ *
+ * 标签上**不带任何运行状态**（用户 2026-09-21 二次口径：标题后缀与图标标识都撤掉，
+ * 保持纯静态）。「在不在生成」由会话界面自身表达（输入区的运行行），标签不参与。
+ */
+export function panelTabTitle(title?: string): string {
+  return title?.trim() ? title.trim() : "DSH";
+}
+
+/**
+ * 界面存进 VS Code webview state 的**窗口身份**。
+ *
+ * 编辑区面板的恢复要「这个标签上次开着哪条会话」，而宿主在
+ * `deserializeWebviewPanel(panel, state)` 里拿到的 `state` **只能由 webview 自己
+ * 用 `acquireVsCodeApi().setState()` 写**（宿主侧没有 setState）。所以形状由界面写、
+ * 宿主读，写在共享层各取一半（`webview/bridge.ts` 的 `persistIdentity` 写，
+ * `chatView.ts` 的 `parsePanelIdentity` 读）——两处对不上的症状是**恢复静默退回按
+ * 顺序对位**（标签与会话交叉），所以形状在这里定死、由断言钉住。
+ */
+export interface PersistedIdentity {
+  sessionId: string | null;
+}
+
+/** 存进 webview state 的整体形状（带一个包装层，将来加字段不必改读法）。 */
+export interface PersistedState {
+  identity: PersistedIdentity;
+}
+
+/**
+ * 从 webview state 里读出会话 id。
+ *
+ * 认不出的一律当「没存过」返回 undefined（旧版本写的面板、用户手改过的状态、
+ * 别的扩展用同一个 viewType 留下的垃圾）：那时由 `WindowRestore` 退回按下标认领，
+ * 而不是让宿主拿着一个来路不明的字符串去猜。
+ */
+export function parsePanelIdentity(state: unknown): string | undefined {
+  if (!state || typeof state !== "object") return undefined;
+  const identity = (state as { identity?: unknown }).identity;
+  if (!identity || typeof identity !== "object") return undefined;
+  const sessionId = (identity as { sessionId?: unknown }).sessionId;
+  return typeof sessionId === "string" && sessionId.length > 0 ? sessionId : undefined;
+}

@@ -101,6 +101,7 @@ const entries = {
   "build/rail-jump-probe.mjs": "scripts/railJumpProbe.ts",
   "build/config-reload-probe.mjs": "scripts/configReloadProbe.ts",
   "build/window-state.test.mjs": "scripts/windowState.test.ts",
+  "build/panel-title.test.mjs": "scripts/panelTitle.test.ts",
   "build/host-log.test.mjs": "scripts/hostLog.test.ts",
   "build/supervisor-protocol.test.mjs": "scripts/supervisorProtocol.test.ts",
   "build/supervisor-errors.test.mjs": "scripts/supervisorErrors.test.ts",

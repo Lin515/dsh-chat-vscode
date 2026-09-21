@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import type { ChatState } from "../shared/chat";
 import type { HostToWebview } from "../shared/ipc";
-import { post, subscribe } from "./bridge";
+import { persistIdentity, post, subscribe } from "./bridge";
 import { useAutoScroll } from "./autoScroll";
 import { Composer } from "./components/Composer";
 import { HistoryPanel } from "./components/History";
@@ -429,6 +429,17 @@ export function App() {
   const chatActive = state.panel !== "trajectory";
   // 当前会话 id：进 useAutoScroll（切会话时恢复贴底、回最新）与轨迹刷新（下方）
   const sessionId = state.session?.id;
+  /**
+   * 把当前会话 id 写进 VS Code 的 webview state。
+   *
+   * 宿主恢复编辑区面板时读它来认回自己的会话（**身份**，不是顺序）：只按 VS Code
+   * 恢复面板的顺序对位，两个标签的会话会交叉（用户 2026-09-21 报的）。
+   * 每次会话变化都写——空态也写（`sessionId: null`），于是「这个标签当时是新建的空窗口」
+   * 与「它上次开的是会话 X」在宿主那边分得开。
+   */
+  useEffect(() => {
+    persistIdentity(sessionId);
+  }, [sessionId]);
   /**
    * 哪些**轮次**真的会显示改动文件卡片（判据与卡片自己的渲染条件一致）。
    *

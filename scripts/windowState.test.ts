@@ -164,6 +164,66 @@ console.log("windowState: 空态过 JSON 不丢（null 而不是 undefined） �
 }
 console.log("windowState: 恢复期的槽位与顺序对位 ✓");
 
+// ---------- 4a. 面板按**身份**认领（webview 存下来的会话 id） ----------
+//
+// 用户 2026-09-21 报：重载后两个标签的会话交叉了。根因是恢复**只用顺序**——
+// `activeOrder` 记的是创建顺序，而 VS Code 复用的是上次的编辑器排布，两者不保证
+// 一致。现在 webview 把当前会话 id 存进 `setState`，序列化器读回来按身份认领。
+{
+  const cache = cacheOf({
+    panels: [{ sessionId: "A" }, { sessionId: "B" }],
+  });
+  // 第二个面板先来（VS Code 的恢复顺序与当初相反）：按身份仍然各就各位
+  const restore = new WindowRestore(cache);
+  assert.deepStrictEqual(
+    restore.classifyPanel("B"),
+    { sessionId: "B", by: "identity" },
+    "第二个面板按身份认回 B，而不是被顺序认领成 A",
+  );
+  assert.deepStrictEqual(restore.classifyPanel("A"), { sessionId: "A", by: "identity" });
+  assert.strictEqual(restore.pending, false, "两条都认领完了：恢复窗口结束");
+  assert.ok(restore.panelClaimed(0) && restore.panelClaimed(1), "按身份认领同样算「已认领」");
+}
+// 身份缺失 / 对不上 / 撞车：退回按下标认领（能救一条是一条）
+{
+  // 没存过（旧版本写的面板）：按下标
+  const legacy = new WindowRestore(cacheOf({ panels: [{ sessionId: "A" }, { sessionId: "B" }] }));
+  assert.deepStrictEqual(legacy.classifyPanel(undefined), { sessionId: "A", by: "cursor" });
+  assert.deepStrictEqual(legacy.classifyPanel(undefined), { sessionId: "B", by: "cursor" });
+
+  // 存的会话不在缓存里（用户手工调过状态）：退回下标，不错认
+  const stale = new WindowRestore(cacheOf({ panels: [{ sessionId: "A" }, { sessionId: "B" }] }));
+  assert.deepStrictEqual(
+    stale.classifyPanel("已被删掉的会话"),
+    { sessionId: "A", by: "cursor" },
+    "身份对不上缓存时按顺序接，而不是把窗口留成空态",
+  );
+
+  // 两个面板存了同一个会话（同一会话被两个窗口打开过）：都用一次，不重复认领
+  const dup = new WindowRestore(cacheOf({ panels: [{ sessionId: "A" }, { sessionId: "A" }] }));
+  assert.deepStrictEqual(dup.classifyPanel("A"), { sessionId: "A", by: "identity" });
+  assert.deepStrictEqual(
+    dup.classifyPanel("A"),
+    { sessionId: "A", by: "identity" },
+    "缓存里有两条 A 时第二个窗口也认 A（两边本来就开着同一条会话）",
+  );
+  assert.strictEqual(dup.pending, false);
+
+  // 跳着认领之后的顺序认领不会重复吃掉同一条
+  const mixed = new WindowRestore(
+    cacheOf({ panels: [{ sessionId: "A" }, { sessionId: "B" }, { sessionId: "C" }] }),
+  );
+  assert.deepStrictEqual(mixed.classifyPanel("C"), { sessionId: "C", by: "identity" });
+  assert.deepStrictEqual(mixed.classifyPanel(undefined), { sessionId: "A", by: "cursor" });
+  assert.deepStrictEqual(mixed.classifyPanel(undefined), { sessionId: "B", by: "cursor" });
+  assert.deepStrictEqual(
+    mixed.classifyPanel(undefined),
+    { sessionId: undefined, by: "cursor" },
+    "缓存用完了：多出来的面板保持空态",
+  );
+}
+console.log("windowState: 面板按身份认领（退回顺序）✓");
+
 // ---------- 4b. 「恢复还没完」的判据：不能拿内存里的窗口覆写缓存 ----------
 //
 // 契约（vscode.d.ts 的 WebviewPanelSerializer）：webview 重启后**第一次变为可见**
@@ -232,7 +292,7 @@ console.log("windowState: 恢复窗口的结束判据 ✓");
   const merged = mergeWindowCache({
     memory,
     previous,
-    claimedPanels: 1,
+    panelClaimed: (index) => index === 0,
     restorePending: true,
     slotClaimed: (slot) => slot === "primary",
   });
@@ -252,7 +312,7 @@ console.log("windowState: 恢复窗口的结束判据 ✓");
   const settled = mergeWindowCache({
     memory,
     previous,
-    claimedPanels: 2,
+    panelClaimed: () => true,
     restorePending: false,
     slotClaimed: () => false,
   });
@@ -263,7 +323,7 @@ console.log("windowState: 恢复窗口的结束判据 ✓");
   const extra = mergeWindowCache({
     memory: { panels: [{ sessionId: "new" }, { sessionId: "B-final" }], activeOrder: [] },
     previous,
-    claimedPanels: 1,
+    panelClaimed: (index) => index === 0,
     restorePending: true,
     slotClaimed: () => true,
   });
@@ -277,11 +337,25 @@ console.log("windowState: 恢复窗口的结束判据 ✓");
   const cleared = mergeWindowCache({
     memory: { panels: [], primary: { sessionId: null }, activeOrder: [] },
     previous,
-    claimedPanels: 0,
+    panelClaimed: () => false,
     restorePending: true,
     slotClaimed: (slot) => slot === "primary",
   });
   assert.deepStrictEqual(cleared.primary, { sessionId: null }, "空态（null）是明确状态，不能被旧值盖回");
+  // **按身份认领时下标是跳着的**（第 2 个面板先露面）：拿「认领了几条」当游标的话，
+  // 会把还没露面的第 1 条也算成已认领而丢掉它的会话
+  const byIdentity = mergeWindowCache({
+    memory: { panels: [{ sessionId: "B-final" }], activeOrder: [] },
+    previous,
+    panelClaimed: (index) => index === 1,
+    restorePending: true,
+    slotClaimed: () => true,
+  });
+  assert.deepStrictEqual(
+    byIdentity.panels.map((panel) => panel.sessionId),
+    ["B-final", "A"],
+    "内存里补上认领到的那条，**没认领的那条按原位**接在后面（按条问，不拿总数切）",
+  );
 }
 console.log("windowState: 写缓存的合并规则（最终会话一定落盘）✓");
 
@@ -301,6 +375,19 @@ console.log("windowState: 写缓存的合并规则（最终会话一定落盘）
     /if \(!this\.windowState\.key\) this\.ensureWindowState\(\);/.test(controller),
     "写缓存前要惰性绑一次工作区身份：只用编辑区面板、从没有侧栏被实例化时，" +
       "键不绑就一个字节都写不出去",
+  );
+  // 面板那一段必须**按条问**（按身份认领时下标是跳着的，拿认领总数当游标会丢会话）
+  assert.ok(
+    /panelClaimed: \(index\) => this\.windowRestore\.panelClaimed\(index\)/.test(controller),
+    "persistWindowState 要把「某个下标认领过没有」交给 mergeWindowCache（按条问）",
+  );
+  // 认领必须是**按身份优先**：只按顺序对位就是用户 2026-09-21 报的标签交叉
+  assert.ok(
+    /classifyPanel\(known\)/.test(controller) &&
+      /deserializeWebviewPanel: \(panel: vscode\.WebviewPanel, state: unknown\)/.test(
+        readFileSync(join(process.cwd(), "src", "chatView.ts"), "utf8"),
+      ),
+    "面板认领要走 classifyPanel（webview 存的身份优先，顺序兜底）",
   );
 }
 console.log("windowState: 控制器接线（惰性绑键 + 合并写）✓");

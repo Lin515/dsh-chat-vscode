@@ -1,5 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import * as vscode from "vscode";
+import { parsePanelIdentity } from "./shared/chat";
 import type { HostToWebview, WebviewToHost } from "./shared/ipc";
 import { jsonSafeFrame } from "./shared/wire";
 import type { ChatController } from "./dsh/controller";
@@ -82,10 +83,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   registerPanelSerializer(owner: ChatViewProvider = this): void {
     this.disposables.push(
       vscode.window.registerWebviewPanelSerializer(ChatViewProvider.panelViewType, {
-        deserializeWebviewPanel: (panel: vscode.WebviewPanel) => {
+        deserializeWebviewPanel: (panel: vscode.WebviewPanel, state: unknown) => {
           const viewId = owner.attachPanel(panel);
-          // 按 VS Code 的恢复顺序对位认领会话（见 dsh/windowState.ts）
-          owner.controller.claimPanelRestore(viewId);
+          // 认领会话：优先用 webview 存下的身份（`state`），认不出才按 VS Code 的恢复
+          // 顺序对位（见 dsh/windowState.ts——只看顺序就是标签与会话交叉的那个缺陷）
+          owner.controller.claimPanelRestore(viewId, parsePanelIdentity(state));
           owner.armRestoreFallback(viewId);
           owner.log(`[view] 恢复编辑区面板 viewId=${viewId}`);
           return Promise.resolve();
@@ -135,6 +137,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     const viewId = this.attach(panel.webview, panel.onDidDispose, () =>
       panel.reveal(undefined, false),
     );
+    // 图标是纯静态的鲸鱼，不随会话 / 生成状态变（用户 2026-09-21 口径：标签保持静态）
+    panel.iconPath = vscode.Uri.joinPath(this.context.extensionUri, "media", "icon.svg");
+    // 标签标题由宿主算（它才知道这个窗口开着哪条会话，见 `syncPanelTitle`）：
+    // 会话有标题就显示标题，还没有标题的空会话显示 DSH
+    this.controller.registerTitleSetter(viewId, (title) => {
+      if (panel.title !== title) panel.title = title;
+    });
     this.controller.bindViewKind(viewId, "panel");
     // 面板变可见时视作活动（命令面板入口「最近活动的窗口」靠它定位）
     this.disposables.push(
@@ -142,7 +151,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         if (event.webviewPanel.visible) this.controller.noteActiveView(viewId);
       }),
     );
-    panel.iconPath = vscode.Uri.joinPath(this.context.extensionUri, "media", "icon.svg");
     return viewId;
   }
 

@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { basename, join, relative, resolve, sep } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import * as vscode from "vscode";
+import { panelTabTitle } from "../shared/chat";
 import type {
   Attachment,
   ChangesSummaryView,
@@ -439,9 +440,10 @@ export class ChatController implements vscode.Disposable {
   private readonly restoreHints = new Map<string, string>();
   /**
    * 工作区身份还没就绪时排队的**编辑区面板**认领（按 VS Code 的恢复顺序入队）。
-   * 顺序就是位置，所以必须按原序补（见 `flushRestoreClaims`）。
+   * 顺序就是位置，所以必须按原序补（见 `flushRestoreClaims`）；`known` 是面板
+   * 自己存下来的会话 id（身份认领用，见 `claimPanelRestore`）。
    */
-  private readonly panelClaimsQueued: string[] = [];
+  private readonly panelClaimsQueued: { viewId: string; known?: string }[] = [];
   /** 上面那批窗口（`ChatViewProvider` 据此决定是否留等 `ready` 的兜底）。 */
   private readonly restoreAwaiting = new Set<string>();
   /**
@@ -462,6 +464,15 @@ export class ChatController implements vscode.Disposable {
    * 面板时，加完引用视线被硬拽到侧栏——用户 2026-09-14 报的正是这条。
    */
   private readonly revealers = new Map<string, () => void>();
+  /**
+   * 窗口（viewId）→ 写编辑区标签标题的动作（只有面板注册）。
+   *
+   * 与 `revealers` 同一套口径：控制器不知道窗口是侧栏还是面板，由 `ChatViewProvider`
+   * 挂窗口时注册；标签标题只在**面板**上有意义（侧栏没有标签）。
+   * 附带一张「上次写下去的标题」表，避免同一标题反复写（`panel.title` 会重画标签）。
+   */
+  private readonly panelTitles = new Map<string, (title: string) => void>();
+  private readonly panelTitleValues = new Map<string, string>();
   private controlHandle: { cancel(): void } | undefined;
   private eventsHandle: { cancel(): void } | undefined;
   private eventsClientId: string | undefined;
@@ -865,6 +876,11 @@ export class ChatController implements vscode.Disposable {
       const scope = this.scopes.get(sessionId);
       if (scope) scope.running = frame.patch.running;
     }
+    // 会话标题变了：编辑区标签跟着更新。放在投递之前——即使此刻没有任何窗口绑着
+    // 这条会话，标签也该跟着走
+    if (frame.type === "patch" && frame.patch.session !== undefined) {
+      this.syncPanelTitle(sessionId);
+    }
     const targets: string[] = [];
     for (const [viewId, bound] of this.viewSessions) {
       if (bound === sessionId) targets.push(viewId);
@@ -1009,6 +1025,10 @@ export class ChatController implements vscode.Disposable {
    */
   bindViewKind(viewId: string, kind: WindowKind): void {
     this.viewKinds.set(viewId, kind);
+    // 面板的标签标题要跟着它的会话走：标题设定器在挂窗口时注册（kind 可能晚一步登记），
+    // 所以这里补推一次——恢复路径上面板先 `bindViewKind` 再认领会话，也不会漏
+    const sessionId = this.viewSessions.get(viewId);
+    if (kind === "panel" && sessionId) this.syncPanelTitle(sessionId);
     this.persistWindowState();
   }
 
@@ -1051,19 +1071,34 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
-   * 面板恢复会话的认领（按下标对位，见 `WindowRestore.claimPanel`）。
+   * 面板恢复会话的认领（优先按 webview 存的会话 id，退回按下标，见 `WindowRestore`）。
    *
    * 缓存键还没绑上时**先排队**：位置就是这个面板的恢复顺序，等键绑好再按序补
    * （见 `flushRestoreClaims`）——提前认领会把顺序用掉，后面的窗口就接错了。
+   *
+   * `known` 来自 `deserializeWebviewPanel(panel, state)` 的 `state`（webview 用
+   * `setState` 存下的会话 id，见 `webview/bridge.ts`）。它是**身份**：即使 VS Code
+   * 恢复面板的顺序与当初不一致，也能各自接回自己的会话（用户 2026-09-21 报的
+   * 「标签 1/2 的会话交叉」就是只靠顺序对位的固有缺陷）。
    */
-  claimPanelRestore(viewId: string): void {
+  claimPanelRestore(viewId: string, known?: string): void {
     if (!this.windowState.key) {
-      this.panelClaimsQueued.push(viewId);
+      this.panelClaimsQueued.push({ viewId, known });
       this.restoreAwaiting.add(viewId);
       this.log(`[restore] 工作区身份未就绪，面板 ${viewId} 的认领先排队`);
       return;
     }
-    this.applyRestoreHint(viewId, this.windowRestore.claimPanel());
+    this.applyPanelClaim(viewId, known);
+  }
+
+  /** 面板认领的落点：按身份 / 按下标取会话，记一行日志（排查错位全看它）。 */
+  private applyPanelClaim(viewId: string, known?: string): void {
+    const claimed = this.windowRestore.classifyPanel(known);
+    this.log(
+      `[restore] 面板 ${viewId} 认领：${claimed.by === "identity" ? "按身份" : "按顺序"}` +
+        `（webview 存的是 ${known ?? "无"}）→ ${claimed.sessionId ?? "空态"}`,
+    );
+    this.applyRestoreHint(viewId, claimed.sessionId);
   }
 
   /** 侧栏恢复会话的认领（固定槽位）。 */
@@ -1111,10 +1146,10 @@ export class ChatController implements vscode.Disposable {
   /** 把排队中的认领按原顺序补上（顺序就是这个窗口在恢复序列里的位置）。 */
   private flushRestoreClaims(): void {
     if (!this.windowState.key) return;
-    for (const viewId of this.panelClaimsQueued.splice(0)) {
-      this.restoreAwaiting.delete(viewId);
-      if (!this.viewKinds.has(viewId)) continue;
-      this.applyRestoreHint(viewId, this.windowRestore.claimPanel());
+    for (const claim of this.panelClaimsQueued.splice(0)) {
+      this.restoreAwaiting.delete(claim.viewId);
+      if (!this.viewKinds.has(claim.viewId)) continue;
+      this.applyPanelClaim(claim.viewId, claim.known);
     }
   }
 
@@ -1135,6 +1170,45 @@ export class ChatController implements vscode.Disposable {
   /** 注册「把这个窗口带到前台」的动作（见 `revealers`）。 */
   registerRevealer(viewId: string, reveal: () => void): void {
     this.revealers.set(viewId, reveal);
+  }
+
+  /**
+   * 注册「设置编辑区标签标题」的动作（只有面板注册，侧栏没有标签可写）。
+   *
+   * 宿主是唯一知道「这个窗口开着哪条会话」的一侧，标题因此由宿主算好再交出去
+   * （见 `syncPanelTitle`）；`chatView.ts` 只负责把它写给 `panel.title`。
+   */
+  registerTitleSetter(viewId: string, setTitle: (title: string) => void): void {
+    this.panelTitles.set(viewId, setTitle);
+  }
+
+  /**
+   * 编辑区标签的标题：会话标题（还没有标题的空会话显示 `DSH`）。
+   *
+   * 为什么要它：重载后两条标签都只写 `DSH`，谁是谁只能靠点开看（用户 2026-09-21 口径）。
+   * **标签上不带运行状态**（同一天的二次口径：状态后缀与图标标识都撤掉，保持纯静态
+   * ——「在不在生成」由会话界面自身表达）。
+   *
+   * 只在标题真的变了才写（`panel.title` 会重画标签）。
+   */
+  private syncPanelTitle(sessionId: string): void {
+    const title = panelTabTitle(
+      this.sessions.find((session) => session.id === sessionId)?.title,
+    );
+    for (const [viewId, bound] of this.viewSessions) {
+      if (bound !== sessionId) continue;
+      if (this.viewKinds.get(viewId) !== "panel") continue;
+      this.setPanelTitle(viewId, title);
+    }
+  }
+
+  /** 把算好的标题交给面板（同一个标题不重复写；调用方保证 `viewId` 是面板）。 */
+  private setPanelTitle(viewId: string, title: string): void {
+    const setter = this.panelTitles.get(viewId);
+    if (!setter) return;
+    if (this.panelTitleValues.get(viewId) === title) return;
+    this.panelTitleValues.set(viewId, title);
+    setter(title);
   }
 
   /**
@@ -1165,6 +1239,10 @@ export class ChatController implements vscode.Disposable {
     this.viewSessions.delete(viewId);
     this.revealers.delete(viewId);
     this.viewKinds.delete(viewId);
+    // 标签设定器与「上次写下去的标题」跟着窗口一起清：长期存活的扩展宿主里，
+    // 关掉又重开窗口会不断累积这两张按 viewId 建的表
+    this.panelTitles.delete(viewId);
+    this.panelTitleValues.delete(viewId);
     this.restoreHints.delete(viewId);
     const index = this.viewOrder.indexOf(viewId);
     if (index >= 0) this.viewOrder.splice(index, 1);
@@ -1220,7 +1298,7 @@ export class ChatController implements vscode.Disposable {
       const merged = mergeWindowCache({
         memory: cache,
         previous,
-        claimedPanels: this.windowRestore.claimedPanelCount,
+        panelClaimed: (index) => this.windowRestore.panelClaimed(index),
         restorePending: true,
         slotClaimed: (slot) => this.windowRestore.isSlotClaimed(slot),
       });
@@ -1310,6 +1388,8 @@ export class ChatController implements vscode.Disposable {
     // 重复投递安全：适配器按 `requestId` 去重（`addQuestion` / `addApproval`
     // 的 existing 分支只更新、不重加）。
     this.replayHeldToScope(sessionId, scope);
+    // 编辑区标签跟着换成这条会话（标题，见 `syncPanelTitle`）
+    if (this.viewKinds.get(viewId) === "panel") this.syncPanelTitle(sessionId);
     this.log(`[bind] 窗口=${viewId} → 会话=${sessionId}（原=${previous ?? "空态"}）`);
     this.persistWindowState();
   }
@@ -2203,6 +2283,9 @@ export class ChatController implements vscode.Disposable {
       // 所以这里不再算血缘深度——那个字段的唯一用途就是缩进。
       this.sessions = views;
       this.emitSessionLists();
+      // 会话列表是**标题的权威**（服务端 `session/list`）：恢复窗口时面板先绑上会话、
+      // 这一份才到，标签要在这里补一次；删掉的会话也从标签上退掉
+      for (const sessionId of new Set(this.viewSessions.values())) this.syncPanelTitle(sessionId);
     } catch (error) {
       this.log(`[sessions] 列表获取失败：${this.describeError(error)}`);
     }
