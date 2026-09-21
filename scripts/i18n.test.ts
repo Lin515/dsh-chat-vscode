@@ -71,7 +71,6 @@ const HOST_MARKERS: string[] = [
   "unknownCommand",
   "commandFailed",
   // 历史 / 分支
-  "historyBusy",
   "branchNoAnchor",
   "branchFailed",
   "branchCreated",

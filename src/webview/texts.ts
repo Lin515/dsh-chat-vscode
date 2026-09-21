@@ -576,8 +576,6 @@ export interface Texts {
   historyMore: string;
   /** 正在取更早的历史（按钮在此期间是不可点的）。 */
   historyLoading: string;
-  /** 生成中不能翻历史（重折会让流式正文重来）。 */
-  historyBusy: string;
   /** 「回到最新」胶囊：脱贴后内容继续增长时的兜底入口（点击回底并恢复贴底）。 */
   jumpToLatest: string;
   /** 右侧轮次横条：整条导航的 aria 标签（官方 chat.turnNavigation.label）。 */

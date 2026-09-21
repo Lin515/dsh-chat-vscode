@@ -2684,15 +2684,14 @@ export class ChatController implements vscode.Disposable {
    * 「正在加载更早的历史…」，也据它判断一页是否落定。发帧顺序必须是
    * `true` →（结算：hasMoreHistory / messages/reset）→ `false`：界面先拿到内容，
    * 再看到「取完了」。所以结算放在 `finally` 里、发 `false` 之前。
+   *
+   * **生成中也能取**（与官方 Web 端一致：它的「加载更早」只在取的那一下禁用，不看
+   * running）。代价只有一次重折——在飞的流式正文/思考与运行中的工具行会在重折前后被
+   * 抄送一次，不会塌掉也不会消失（见 `SessionAdapter` 的 `CarriedLiveOverlay`）。
    */
   private async loadMore(viewId: string, targetSeq?: number): Promise<void> {
     const scope = this.scopeOfView(viewId);
     if (!this.client || !scope || !scope.adapter) return;
-    if (scope.running) {
-      // 分页与流式叠加层互斥：重折历史会让当前这段流式正文重来一次
-      this.emitToView(viewId, { type: "toast", level: "warn", text: "@historyBusy" });
-      return;
-    }
     // 一次只跑一条链：滚动式连点与横条连点都会在「historyLoading 帧回到界面」之前
     // 连发好几个请求
     if (scope.historyLoading) return;
@@ -2729,11 +2728,6 @@ export class ChatController implements vscode.Disposable {
   private async pageBackwards(scope: SessionScope, targetSeq?: number): Promise<void> {
     let pages = 0;
     for (;;) {
-      // 生成开始了就停：分页与流式叠加层互斥
-      if (scope.running) {
-        this.log(`[history] 取到第 ${pages + 1} 页前发现新一轮已开始，停下`);
-        return;
-      }
       const throughSeq = scope.adapter?.cursor();
       const beforeSeq = scope.adapter?.earliestSeq();
       if (!scope.adapter || throughSeq === undefined || beforeSeq === undefined) {

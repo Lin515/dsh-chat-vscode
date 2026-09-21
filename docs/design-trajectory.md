@@ -608,6 +608,11 @@ export declare function TrajectoryView({ useSession, useTrajectory, useDuration,
   每页只 `absorbRecords`、不结算；循环结束（或中止）由 `loadMore` 的 `finally` 调一次 `settleHistory`
   ——连取 N 页只重折一次、只发一份 `messages/reset`（消息列表没有虚拟滚动，逐页结算会退化成 N 次全量重渲染）。
   策略注释与停止条件见 `src/dsh/historyPaging.ts`。
+  **生成中也能取**（与官方一致：官方那枚按钮是 `disabled={loadingOlder}`，`session.loadOlder()` 也不看
+  running）。本扩展此前在宿主与界面各设了一道「生成中不许翻历史」的闸门（重折会毁掉在飞的流式正文），
+  2026-09-21 撤掉：`refold()` 现在会在重折前后抄送一次**在飞叠加层**——流式正文/思考与参数还在流里的
+  工具行（含段 id，界面节点不重挂），外加在飞 step 的「首个 token 时刻」（本轮 TTFT / tokens/s 的基准）。
+  见 `src/dsh/adapter.ts` 的 `CarriedLiveOverlay`。
 
 ---
 

@@ -472,6 +472,47 @@ interface ReclaimedSegments {
 }
 
 /**
+ * `refold()` 之前抄下来的**在飞叠加层**：流式正文/思考，以及参数还在流里的工具行。
+ *
+ * 为什么需要：`refold` 从 durable 事件整体重建模型，而这两样**都不在 durable 事件里**
+ * ——正文/思考来自逐 token 的 `assistant-stream` 帧，在飞的工具行来自 `tool-call-delta`。
+ * 生成中加载更早的历史（与官方 Web 端一致：它的「加载更早」只在取的那一下禁用）必然要在
+ * 生成中重折一次，不先抄一份就会：正文塌回最后一个增量（后续增量找不到叠加层、只能拿
+ * 自己那几十个字另开一段）、在飞的工具行整行消失。
+ *
+ * 抄的是**段落本身**（连段 id 一起）而不是「重放增量」：id 不变，界面上那条节点的 React
+ * key 就不变——用户手动展开的节点、选区与滚动位置都不会被这次重折收回（与
+ * `reclaimLiveSegments` 就地接管同一个理由），而重放增量还得自己管「哪些 step 已被
+ * durable 接管、不能重画一遍」。
+ */
+interface CarriedLiveOverlay {
+  /** 按原段内下标升序（同一条消息里的相对次序照旧）。 */
+  entries: {
+    messageId: string;
+    /** 消息在折完的结果里找不到时按它补一条（窗口截断了本轮的 `turn/start`）。 */
+    ts: number;
+    /** 抄下来时在这条消息里的下标：折完插回原位附近。 */
+    index: number;
+    segment: Segment;
+    /** 正文/思考：`liveSegments` 的键与归属（后续增量与 durable 结算都靠它）。 */
+    live?: { key: string; turn: number | undefined; step: number | undefined };
+    /** 工具行：`toolSegments` 的键（`tool:<callId>`，结算时要按它找回这一行）。 */
+    callId?: string;
+  }[];
+  /** 折完要补回 `streaming` 的消息（鲸鱼发光与过程段折不折都看它）。 */
+  streaming: { id: string; ts: number }[];
+  /**
+   * 在飞 step 的「首个 token 时刻」——重折会把它清掉（`stepFirstTokenAt`），而它正是本
+   * step 解码窗口的基准：durable 消息到达时算 tokens/s 与 TTFT 都用它（见
+   * `applyAssistantMessage` 末尾）。附上记下它时的 step 号，折完对得上才恢复。
+   *
+   * 重折的**重放期间**必须让它保持 `undefined`（否则每条重放的 durable 消息都会拿它算一次
+   * 窗口 → 累计指标翻倍），所以只在重放结束后恢复。
+   */
+  stepFirstTokenAt: { at: number; step: number | undefined } | undefined;
+}
+
+/**
  * 把 durable 的正文写回**被接管的流式叠加层**（原地改写，段 id 不动）。
  *
  * `streaming` 整键删掉而不是置 `false`：durable 段落本来就没有这个键，保持形状一致
@@ -964,9 +1005,10 @@ export class SessionAdapter {
    * 从头走一遍，顺序、去重、附件置顶都由同一套逻辑保证；手工做「前置插入」要
    * 重新实现一遍这些规则，且极易在边界上错位（用户消息要落在本轮助手消息之前）。
    *
-   * 代价是丢掉流式叠加层（`liveSegments`）——所以只在**空闲时**调用：
-   * 正在生成时往前翻页会让当前这段流式正文重来一次，而且服务端也不会在这种情况下
-   * 给出稳定的分页结果。
+   * 重折会把消息流整体换成 durable 事件的产物——**在飞叠加层（流式正文/思考、参数还在
+   * 流里的工具行）不在 durable 事件里**，所以重折前后要抄送一次（见 `CarriedLiveOverlay`
+   * 与 `refold`）。生成中加载更早的历史因此也是安全的：与官方 Web 端一致（它的「加载
+   * 更早」只在取的那一下禁用，不看有没有在生成）。
    *
    * **重折过程不发帧**（见 `replaying`）：界面只收到「hasMoreHistory 变了」与一整份
    * `messages/reset`，于是新加载的旧轮次**一出现就是折叠好的最终态**，不会先被画成
@@ -1011,6 +1053,9 @@ export class SessionAdapter {
 
   /** 按 seq 顺序把已记录的事件重新折叠成消息流（清空后重放）。 */
   private refold(): void {
+    // 在飞叠加层不会被折出来（它不在 durable 事件里）：先抄一份，折完挂回去
+    // （见 `CarriedLiveOverlay`）。空转时这一步只是两次空遍历。
+    const carried = this.captureLiveOverlay();
     const events = [...this.seen.values()].sort((left, right) => left.seq - right.seq);
     // 只清消息相关的折叠状态，**不动**粘性显示值（上下文窗口 / 速度 / 占用）：
     // 那是显示用的记忆，重折历史不该把它们抹掉
@@ -1035,6 +1080,118 @@ export class SessionAdapter {
     // durable 事件折完再把**非 durable** 的交互卡补回去（见 `interactionCards`）：
     // 它们不在会话日志里，重折不出来，只能在这里按锚点复原。
     this.restoreInteractionCards();
+    // 同理，非 durable 的**在飞叠加层**也要挂回去：生成中加载更早的历史正走这条路。
+    this.restoreLiveOverlay(carried);
+  }
+
+  /**
+   * 抄下当前的流式正文/思考与运行中的工具行（`refold` 前调用）。
+   *
+   * 只抄 `liveSegments` / `toolSegments` 这两张登记表指向的段落——它们正是**还没被
+   * durable 接管**的那些：接管时 `reclaimLiveSegments` 会把登记摘掉（段 id 被 durable
+   * 段落沿用），所以留在表里的东西在 `seen` 里必然还没有对应内容，挂回去不会重复。
+   */
+  private captureLiveOverlay(): CarriedLiveOverlay {
+    const entries: CarriedLiveOverlay["entries"] = [];
+    const streaming = new Map<string, number>();
+    const carry = (
+      message: MessageView,
+      index: number,
+      segment: Segment,
+      extra: { live?: NonNullable<CarriedLiveOverlay["entries"][number]["live"]>; callId?: string },
+    ): void => {
+      entries.push({ messageId: message.id, ts: message.ts, index, segment, ...extra });
+      if (message.streaming === true) streaming.set(message.id, message.ts);
+    };
+    const at = (messageId: string, segmentId: string): { message: MessageView; index: number } | undefined => {
+      const message = this.byId.get(messageId);
+      const index = message?.segments.findIndex((segment) => segment.id === segmentId) ?? -1;
+      return message && index >= 0 ? { message, index } : undefined;
+    };
+
+    for (const [key, value] of this.liveSegments) {
+      const found = at(value.messageId, value.segmentId);
+      if (!found) continue;
+      carry(found.message, found.index, found.message.segments[found.index]!, {
+        live: { key, turn: value.turn, step: value.step },
+      });
+    }
+    for (const [callId, value] of this.toolSegments) {
+      const found = at(value.messageId, value.segmentId);
+      if (!found) continue;
+      const segment = found.message.segments[found.index]!;
+      // 只搬**还在跑**的工具行：已结算的行 durable 事件折得回来，在跑的（参数还在流里）
+      // durable 里还没有，不搬就整行消失
+      if (segment.kind !== "tool" || segment.tool.status !== "running") continue;
+      carry(found.message, found.index, segment, { callId });
+    }
+    entries.sort((left, right) => left.index - right.index);
+    return {
+      entries,
+      streaming: [...streaming].map(([id, ts]) => ({ id, ts })),
+      stepFirstTokenAt:
+        this.stepFirstTokenAt === undefined
+          ? undefined
+          : { at: this.stepFirstTokenAt, step: this.liveStep },
+    };
+  }
+
+  /**
+   * 把 `captureLiveOverlay` 抄走的段落挂回折完的模型（`refold` 末尾调用）。
+   *
+   * 位置按**原来的段内下标**插回：折完的模型里 durable 段落已经就位，在飞的那几段按原位
+   * 落回去，正文与工具行的相对次序就与重折前一致。durable 重放已经造出同一个段 id 的
+   * （工具行的 id 恒为 `tool:<callId>`，重折会照 durable `tool/call` 重建）**留 durable
+   * 那份**——否则界面上是两条同 key 的节点。
+   */
+  private restoreLiveOverlay(carried: CarriedLiveOverlay): void {
+    // `streaming` 只会随 `entries` 一起被记下，所以要判的就是这两样
+    if (!carried.entries.length && carried.stepFirstTokenAt === undefined) return;
+    // 与其它重折一样**静默**：这些小动作由调用方随后发的那份整份 `messages/reset` 带出去
+    const wasReplaying = this.replaying;
+    this.replaying = true;
+    try {
+      for (const entry of carried.entries) {
+        const message = this.byId.get(entry.messageId) ?? this.recreateMessage(entry.messageId, entry.ts);
+        if (message.segments.some((segment) => segment.id === entry.segment.id)) continue;
+        this.pushSegment(message, entry.segment, undefined, Math.min(entry.index, message.segments.length));
+        if (entry.live) {
+          this.liveSegments.set(entry.live.key, {
+            messageId: message.id,
+            segmentId: entry.segment.id,
+            turn: entry.live.turn,
+            step: entry.live.step,
+          });
+        }
+        if (entry.callId !== undefined) {
+          this.toolSegments.set(entry.callId, { messageId: message.id, segmentId: entry.segment.id });
+        }
+      }
+      for (const item of carried.streaming) {
+        (this.byId.get(item.id) ?? this.recreateMessage(item.id, item.ts)).streaming = true;
+      }
+      // 重放已经结束（replaying 只护着上面这段静默），这时才把在飞 step 的窗口基准放回去；
+      // step 号对不上说明重折的时间里那一步已经换人了，宁可不恢复也不要算错窗口
+      const timing = carried.stepFirstTokenAt;
+      if (timing && (timing.step === undefined || timing.step === this.currentStep)) {
+        this.stepFirstTokenAt = timing.at;
+      }
+    } finally {
+      this.replaying = wasReplaying;
+    }
+  }
+
+  /**
+   * 按 id 补一条助手消息（`restoreLiveOverlay` 专用）。
+   *
+   * 需要它的情况很窄：跟随窗口从本轮的 `turn/start` **之后**开始（`maxMessages` 截断），
+   * 折完的模型里于是没有这条消息。id 沿用界面侧那套 `a:<turn>[:<part>]`，所以接下来
+   * `ensureAssistantMessage` 找的是同一条，不会分裂成两条。
+   */
+  private recreateMessage(id: string, ts: number): MessageView {
+    const message: MessageView = { id, role: "assistant", ts, segments: [] };
+    this.appendMessage(message);
+    return message;
   }
 
   /**

@@ -570,7 +570,6 @@ export const MESSAGES = {
   turnRailJump: { zh: (turn: number) => `跳到第 ${turn} 轮`, en: (turn: number) => `Jump to turn ${turn}` },
   turnRailJumpLoad: { zh: (turn: number) => `加载并跳到第 ${turn} 轮`, en: (turn: number) => `Load and jump to turn ${turn}` },
   turnRailTurn: { zh: (turn: number) => `第 ${turn} 轮`, en: (turn: number) => `Turn ${turn}` },
-  historyBusy: { zh: "生成中不能加载历史，请等这一轮结束", en: "Cannot load history while generating — wait for this turn to finish" },
   userMessageExpand: { zh: "展开", en: "Expand" },
   userMessageCollapse: { zh: "收起", en: "Collapse" },
   sendQueue: { zh: "排队发送", en: "Queue message" },

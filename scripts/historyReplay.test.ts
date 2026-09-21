@@ -291,9 +291,155 @@ console.log("historyReplay: 分页两档语义（单页 / 到目标）✓");
 }
 console.log("historyReplay: 连取多页只结算一次（幂等）✓");
 
-// ---------- D. 结构不变量：宿主连取、界面只管视口与按钮 ----------
+// ---------- D. 生成中加载更早：在飞的流式正文与工具行要活过重折 ----------
+//
+// 用户 2026-09-21 口径：官方 Web 端的「加载更早」在生成中照常可点（`ChatView` 的
+// `disabled={loadingOlder}`），本扩展此前是「生成中按钮置灰 + @historyBusy toast」。
+// 那条闸门撤掉的**前提**是重折不再毁掉在飞的内容——流式正文/思考来自逐 token 的
+// `assistant-stream` 帧、在飞的工具行来自 `tool-call-delta`，两样都不在 durable 事件里，
+// 所以 `refold()` 必须先把它们抄下来、折完挂回去（见 `CarriedLiveOverlay`）。
+{
+  const { adapter, frames, messages } = harness();
+  const t = Date.now();
+  const attempt = "att-live";
+  const olderPage = (turn: number, base: number) =>
+    turnEvents(turn, base, t - (10 - turn) * 10_000).map((event) => ({ type: "event", event }));
+
+  // 一轮正在跑：durable 的 turn/start 已在窗口里，正文与工具参数还在流里。
+  // durable 事件走 `applyFrame`（那才是「记进 `seen`、重折得出来」的那条路）。
+  const feed = (event: Record<string, unknown>): void =>
+    adapter.applyFrame({ type: "event", event } as never);
+  feed({ type: "turn/start", seq: 300, time: t, data: { turn: 5 } });
+  adapter.applyFrame({
+    type: "assistant-stream",
+    frame: { type: "start", attemptId: attempt, revision: 0, turn: 5, step: 0 },
+  } as never);
+  const chunk = (index: number, value: Record<string, unknown>): void =>
+    adapter.applyFrame({
+      type: "assistant-stream",
+      frame: {
+        type: "chunk",
+        attemptId: attempt,
+        revision: 0,
+        index,
+        // 首个 token 比 `turn/start` 晚 100ms：TTFT 断言要一个非零、可分辨的值
+        time: t + 100 + index,
+        chunk: value,
+      },
+    } as never);
+  chunk(0, { type: "text-delta", index: 0, text: "正在写" });
+  chunk(0, { type: "text-delta", index: 0, text: "……" });
+  chunk(1, {
+    type: "tool-call-delta",
+    index: 1,
+    id: "live-call",
+    name: "read",
+    argumentsDelta: '{"file_path":"a.ts"}',
+  });
+
+  const segmentsOf = (id: string): Segment[] =>
+    messages.find((message) => message.id === id)?.segments ?? [];
+  const textsOf = (id: string): string[] =>
+    segmentsOf(id)
+      .filter((segment): segment is Extract<Segment, { kind: "text" }> => segment.kind === "text")
+      .map((segment) => segment.text);
+  const toolsOf = (id: string): Extract<Segment, { kind: "tool" }>[] =>
+    segmentsOf(id).filter(
+      (segment): segment is Extract<Segment, { kind: "tool" }> => segment.kind === "tool",
+    );
+
+  // 生成中取回一页更早的历史 = 生成中重折一次
+  adapter.prependRecords(olderPage(1, 1) as never[], false);
+  assert.deepStrictEqual(
+    textsOf("a:5"),
+    ["正在写……"],
+    `在飞的流式正文（含已收到的全部增量）必须活过重折，实际：${JSON.stringify(textsOf("a:5"))}`,
+  );
+  assert.strictEqual(
+    toolsOf("a:5").filter((segment) => segment.tool.id === "live-call").length,
+    1,
+    "参数还在流里的工具行也要活过重折（durable 里还没有它，不搬就整行消失）",
+  );
+  assert.ok(
+    messages.find((message) => message.id === "a:5")?.streaming === true,
+    "重折后这一轮仍是「生成中」（鲸鱼发光与过程段折不折都看它）",
+  );
+
+  // 再折一次（横条连点、跨轮跳转都可能连折）：不能变成两条
+  adapter.prependRecords(olderPage(2, 100) as never[], false);
+  assert.deepStrictEqual(
+    textsOf("a:5"),
+    ["正在写……"],
+    "第二次重折同样只有一条正文（抄送不是复制）",
+  );
+
+  // durable 结算之后：叠加层被就地接管，重折要从 durable 事件重折出**唯一**一条
+  feed({
+    type: "assistant/message",
+    seq: 310,
+    time: t + 5,
+    data: {
+      turn: 5,
+      step: 0,
+      message: { id: "m5", role: "assistant", content: [{ type: "text", text: "正在写……完成了" }] },
+    },
+  });
+  feed({
+    type: "tool/call",
+    seq: 311,
+    time: t + 6,
+    data: { callId: "live-call", name: "read", arguments: '{"file_path":"a.ts"}' },
+  });
+  // durable 到的那一刻要**就地接管**抄回来的那一段（段 id 不变）：否则界面上会多一条
+  // 「只有一个字」的残留节点（用户 2026-09-21 报过的形态）
+  const adopted = frames
+    .filter(
+      (frame): frame is Extract<HostToWebview, { type: "message/upsert" }> =>
+        frame.type === "message/upsert",
+    )
+    .filter((frame) => frame.message.id === "a:5")
+    .at(-1);
+  assert.deepStrictEqual(
+    (adopted?.message.segments ?? [])
+      .filter((segment): segment is Extract<Segment, { kind: "text" }> => segment.kind === "text")
+      .map((segment) => segment.text),
+    ["正在写……完成了"],
+    "durable 结算就地接管抄回来的那一段（不是另推一条，旧的那条也不会留下）",
+  );
+  adapter.prependRecords(olderPage(3, 200) as never[], false);
+  assert.deepStrictEqual(
+    textsOf("a:5"),
+    ["正在写……完成了"],
+    "已被 durable 接管的那一段由 durable 事件重折（不是叠加层再挂一遍 → 不会重复）",
+  );
+  assert.strictEqual(
+    toolsOf("a:5").filter((segment) => segment.tool.id === "live-call").length,
+    1,
+    "工具行 id 恒为 `tool:<callId>`：durable 折出来的那份要赢，抄回来的那份不能再挂一条",
+  );
+
+  // 在飞 step 的**解码窗口基准**（首个 token 时刻）同样要活过重折：durable 消息到达时
+  // 算 tokens/s 与 TTFT 都用它，丢了这一步的指标就整块没有（本轮 TTFT 更是直接空）
+  feed({ type: "turn/end", seq: 312, time: t + 200, data: { turn: 5, reason: { kind: "stop" } } });
+  const ended = frames
+    .filter(
+      (frame): frame is Extract<HostToWebview, { type: "message/upsert" }> =>
+        frame.type === "message/upsert",
+    )
+    .filter((frame) => frame.message.id === "a:5")
+    .at(-1);
+  assert.strictEqual(
+    ended?.message.turnStats?.ttftMs,
+    100,
+    "在飞 step 的首个 token 时刻要活过重折：本轮的 TTFT 才不是空（turn/start 之后 100ms）",
+  );
+}
+console.log("historyReplay: 生成中加载更早，在飞内容活过重折 ✓");
+
+// ---------- E. 结构不变量：宿主连取、界面只管视口与按钮 ----------
 {
   const app = readFileSync(join(process.cwd(), "src", "webview", "App.tsx"), "utf8");
+  const controller = readFileSync(join(process.cwd(), "src", "dsh", "controller.ts"), "utf8");
   assert.ok(
     /post\(targetSeq === undefined \? \{ type: "loadMore" \} : \{ type: "loadMore", targetSeq \}\)/.test(app),
     "界面只发一次 loadMore：不带 targetSeq = 单页档，带 = 到目标档（两档共用同一个 start）",
@@ -315,16 +461,19 @@ console.log("historyReplay: 连取多页只结算一次（幂等）✓");
     "手动「加载更早」按钮走同一个入口",
   );
   assert.ok(
-    /disabled=\{state\.running \|\| loadingEarlier\}/.test(app) &&
+    /disabled=\{loadingEarlier\}/.test(app) &&
       /loadingEarlier \? texts\.historyLoading : texts\.historyMore/.test(app),
-    "加载期间按钮必须禁用并改文案（点了没反应 vs 还在取，要一眼可分）",
+    "按钮只在**取历史**期间禁用并改文案（生成中照常可点，与官方同一枚按钮一致）",
+  );
+  assert.ok(
+    !/historyBusy/.test(app) && !/historyBusy/.test(controller),
+    "生成中拦历史的那一套（按钮置灰 + @historyBusy toast）要整体撤掉，不留半条",
   );
   assert.ok(
     /loading: state\.historyLoading === true/.test(app),
     "按钮的加载态必须读宿主的 historyLoading",
   );
 
-  const controller = readFileSync(join(process.cwd(), "src", "dsh", "controller.ts"), "utf8");
   // 帧的字段名与折返口径已收进 `dsh/sessionView.ts` 的字段表（`sessionPatch`），
   // 所以这条断言钉的是「取一页前后各发一次 patch」+「字段名走那张表」，不再是
   // 手写的 `patch: { historyLoading: … }` 字面量（那个字面量正是刚拆掉的漂移来源）。

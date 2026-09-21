@@ -482,7 +482,6 @@ export function App() {
     releaseFollow: chatScroll.releaseFollow,
     active: chatActive,
     sessionId,
-    running: state.running,
     hasMoreHistory: state.hasMoreHistory === true,
     historyLoading: state.historyLoading === true,
     loadThrough,
@@ -630,18 +629,13 @@ export function App() {
                         这是**单页档**（官方 `loadOlder`）：点一次取一页，没有滚动自动加载
                         （跨轮跳转走轮次横条那条「到目标档」）；取的过程中它自己变成
                         「正在加载更早的历史…」的不可点状态，这样「点了没反应」与
-                        「还在取」一眼可分。 */}
+                        「还在取」一眼可分。**生成中也照常可点**——官方的同一枚按钮同样
+                        只在取的那一下禁用（`ChatView` 的 `disabled={loadingOlder}`）。 */}
                     {state.hasMoreHistory ? (
                       <button
                         className="history-more"
-                        disabled={state.running || loadingEarlier}
-                        title={
-                          loadingEarlier
-                            ? texts.historyLoading
-                            : state.running
-                              ? texts.historyBusy
-                              : texts.historyMore
-                        }
+                        disabled={loadingEarlier}
+                        title={loadingEarlier ? texts.historyLoading : texts.historyMore}
                         onClick={() => loadEarlier()}
                       >
                         {loadingEarlier ? texts.historyLoading : texts.historyMore}

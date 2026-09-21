@@ -411,8 +411,8 @@ console.log("turnRail: 显示判据的用户消息计数 ✓");
   assert.ok(loadedAt > 0 && releaseInLoaded > loadedAt && landAt > releaseInLoaded, "已加载那个分支要先显式放跟随再落位");
 
   assert.ok(
-    nav.indexOf("if (running || !hasMoreHistory || historyLoading) return;", unloadedAt) < releaseInUnloaded,
-    "no-op 的点击（生成中 / 没有更早历史 / 已在取历史）不许顺手把实况跟开关掉：防御判断必须在放跟随**之前**",
+    nav.indexOf("if (!hasMoreHistory || historyLoading) return;", unloadedAt) < releaseInUnloaded,
+    "no-op 的点击（没有更早历史 / 已在取历史）不许顺手把实况跟开关掉：防御判断必须在放跟随**之前**",
   );
 
   // 用户 2026-09-20 口径：**目录第一枚刻点一律置顶**。它是唯一需要取历史的那个，
@@ -432,8 +432,12 @@ console.log("turnRail: 显示判据的用户消息计数 ✓");
     "置顶等的是 `historyLoading` 落回 false（宿主对「取完了」的直接声明），不看该轮是否 loaded",
   );
   assert.ok(
-    /if \(running \|\| !hasMoreHistory \|\| historyLoading\) return;/.test(nav),
+    /if \(!hasMoreHistory \|\| historyLoading\) return;/.test(nav),
     "点击闸门要含 historyLoading：否则会挂上「永远等不到落位」的脉冲（用户看到的「点了没反应」）",
+  );
+  assert.ok(
+    !/running: boolean;/.test(nav) && !/running \|\|/.test(nav),
+    "生成中不再拦「跳到未加载的轮次」（官方同一枚刻点也不看 running）：在飞的流式内容由宿主的抄送保住",
   );
   // **取历史之后的那一次定位，必须先放掉跟随**：补偿会让视口落在（近）底部，
   // `scroll()` 的「回到近底部即恢复跟随」把意愿翻回 true，rAF 里的 settle 随即

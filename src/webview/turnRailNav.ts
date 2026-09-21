@@ -106,7 +106,6 @@ export function useTurnRailNav({
   releaseFollow,
   active,
   sessionId,
-  running,
   hasMoreHistory,
   historyLoading,
   loadThrough,
@@ -119,7 +118,6 @@ export function useTurnRailNav({
   /** 会话页是否在场（轨迹视图顶掉它时所有监听都要歇）。 */
   active: boolean;
   sessionId: string | undefined;
-  running: boolean;
   hasMoreHistory: boolean;
   historyLoading: boolean;
   /** 取到目标 seq 为止（官方 `loadThrough`）：点未加载刻点时用它先补历史。 */
@@ -365,10 +363,12 @@ export function useTurnRailNav({
       // 用户 2026-09-20 口径：**目录第一枚刻点一律置顶**（不论它加载了没有）。
       const jumpToTop = itemsRef.current[0]?.turn === item.turn;
       if (item.anchor.kind === "unloaded") {
-        // 生成中 / 没有更早历史 / **已经有一次取历史在飞**：一律不动。
+        // 没有更早的历史 / **已经有一次取历史在飞**：一律不动。
         // 最后一条尤其重要——`historyLoading` 同时也是 `start()` 的闸门，不在这里判就会
         // 挂上一个「永远等不到落位」的脉冲，用户看到的就是「点了没反应」。
-        if (running || !hasMoreHistory || historyLoading) return;
+        // **生成中不再拦**：官方点未加载刻点也不看 running，宿主那边的重折会把在飞的
+        // 流式正文与工具行抄送回去（见 `CarriedLiveOverlay`）。
+        if (!hasMoreHistory || historyLoading) return;
         releaseRef.current?.();
         if (jumpToTop) {
           // 第一枚刻点不进「落位」那条链，只挂「等宿主说取完了就置顶」（见上面那个 effect）
@@ -397,7 +397,7 @@ export function useTurnRailNav({
       releaseRef.current?.();
       landOnRow(el, row, item.turn, setActiveTurnStable);
     },
-    [scrollRef, listRef, running, hasMoreHistory, historyLoading, setActiveTurnStable, stopTracking],
+    [scrollRef, listRef, hasMoreHistory, historyLoading, setActiveTurnStable, stopTracking],
   );
 
   return { activeTurn, busyTurn, navigate };
