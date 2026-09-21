@@ -10,7 +10,7 @@
  * 1. **用户发出的图**（durable 附件 → `session/attachment` → data URL）；
  * 2. **助手消息里的 image 块**（`images` 段）；
  * 3. **工具结果里的图**（`tool.images`，由 `toolView.test.ts` 覆盖数据侧，
- *    这里只钉「空位不画碎图」这一条）。
+ *    这里钉「折叠态一个 `<img>` 都不渲染、展开态才渲染」这一条，2026-09-21 口径）。
  *
  * 以及两条降级口径：
  * - 字节还没回来（`dataUrl` 为空）→ 退回文件名芯片，**不画** `<img>`；
@@ -19,9 +19,11 @@
  * 运行：npm test（已登记到 esbuild.scripts.mjs 的 entries）
  */
 import assert from "node:assert";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { MessageView } from "../src/shared/chat";
+import type { MessageView, ToolCallView } from "../src/shared/chat";
 import { TextsContext, dictionaryFor } from "../src/webview/texts";
 
 // `bridge.ts` 在模块求值期就挂了 `window.addEventListener`（webview 里那是真实存在的
@@ -155,47 +157,71 @@ const userMessage = (attachments: MessageView["attachments"]): MessageView => ({
   console.log("image: 图库空位不渲染 ✓");
 }
 
-// ---------- 6. 工具结果里的图：**折叠态**就看得见 ----------
+// ---------- 6. 工具结果里的图：**折叠态不渲染，展开才渲染** ----------
 //
-// `read_image` / 截图这类调用**唯一**的产出就是图。它此前渲染在工具行的展开体里，
-// 而展开体默认收起（`Row` 只在 open 时挂 children）——用户 2026-09-18 报的
-// 「agent 发来的我看不到」就是这个：图确实渲染了，但要点开那行才出现。
-// SSR 渲染的正是**默认收起**态，所以这条断言直接钉住「不展开也看得见」。
+// 用户 2026-09-21 口径：结果里的图（`read_image` / 截图这类调用的产出）跟着展开态走。
+// 这条**取代** 2026-09-18 的「图渲染在行下方、折叠态就看得见」——当时是「agent 发来的图
+// 看不到」，现在要的正是折叠态不渲染（图多的时候收起的一片图占地方、也要解码）。
+// 所以这里两个态都渲染一遍，把双向都钉住：
+// - 收起（`open: undefined`，行收到的默认态）→ 连 `<img>` 都不许有；
+// - 展开（`open: true`）→ 图库要出现在展开体里。
 {
-  const html = quietly(() =>
-    renderToStaticMarkup(
-      createElement(
-        TextsContext.Provider,
-        { value: dictionaryFor("zh") },
-        createElement(ToolRow, {
-          // 展开态平时由 `Message` 持有（见 src/webview/nodeOpen.ts）；
-          // 这里单独渲染一行，给一份「默认收起、没人点过」的端口。
-          node: { open: undefined, openedWhileActive: false, setOpen: () => undefined },
-          tool: {
-            id: "call_img",
-            name: "read_image",
-            title: "",
-            detail: "demo-photo.jpg",
-            status: "ok",
-            input: '{"file_path":"demo-photo.jpg"}',
-            output: "<path>demo-photo.jpg</path>",
-            images: [PNG],
-          },
-        }),
+  const tool: ToolCallView = {
+    id: "call_img",
+    name: "read_image",
+    title: "",
+    detail: "demo-photo.jpg",
+    status: "ok",
+    input: '{"file_path":"demo-photo.jpg"}',
+    output: "<path>demo-photo.jpg</path>",
+    images: [PNG],
+  };
+  const renderTool = (open: boolean | undefined): string =>
+    quietly(() =>
+      renderToStaticMarkup(
+        createElement(
+          TextsContext.Provider,
+          { value: dictionaryFor("zh") },
+          createElement(ToolRow, {
+            // 展开态平时由 `Message` 持有（见 src/webview/nodeOpen.ts）；
+            // 这里单独渲染一行，给一份指定的端口。
+            node: { open, openedWhileActive: false, setOpen: () => undefined },
+            tool,
+          }),
+        ),
       ),
-    ),
-  );
+    );
+
+  const closed = renderTool(undefined);
   assert.ok(
-    html.includes(`<img src="${PNG}"`),
-    `工具结果的图必须在**折叠态**就渲染（图库是工具行的兄弟，不是展开体的内容），实际：${html}`,
+    !closed.includes("<img") && !closed.includes("row-body-images"),
+    `折叠态不许渲染图片（这条口径要的就是它），实际：${closed}`,
   );
-  assert.ok(html.includes("row-body-images"), "与其它来源共用同一套图库呈现");
+  assert.ok(closed.includes("demo-photo.jpg"), "折叠态至少要有这行的标题（读的是哪个文件）");
+
+  const opened = renderTool(true);
+  assert.ok(opened.includes(`<img src="${PNG}"`), `展开态必须画这张图，实际：${opened}`);
+  assert.ok(opened.includes("row-body-images"), "与其它来源共用同一套图库呈现");
   assert.ok(
-    !html.includes("io-section"),
-    "折叠态不该渲染展开体的 IN/OUT（说明这张图确实被挪出了展开体）",
+    opened.indexOf("row-body-images") > opened.indexOf("</button>"),
+    "图库要在行头**之下**的展开体里，而不是行头里面",
   );
-  console.log("image: 工具结果里的图折叠态可见 ✓");
+  console.log("image: 工具结果里的图折叠态不渲染、展开才渲染 ✓");
 }
+
+// ---------- 6b. 只有图的调用仍可展开（否则图永远看不见） ----------
+//
+// `Row` 的展开由 `hasBody` 把关：图片不算进去的话，「只有图、没有别的正文」的调用
+// 会变成一行点不开的节点——图渲染得出、但用户永远打不开，是最难发现的那种失效。
+// 这里对源码下断言（SSR 渲染不到点击行为）。
+{
+  const rows = readFileSync(join(process.cwd(), "src", "webview", "components", "Rows.tsx"), "utf8");
+  assert.ok(
+    /\(tool\.images\?\.length \?\? 0\) > 0 \|\|/.test(rows),
+    "图片必须算进 hasBody：只有图的调用也要点得开",
+  );
+}
+console.log("image: 只有图的调用可展开 ✓");
 
 // ---------- 7. 两语文案都在（加载失败 / 原图预览） ----------
 {

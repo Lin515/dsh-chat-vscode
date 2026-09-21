@@ -223,8 +223,10 @@ export function ToolRow({
   // （读取出的文本 / 运行输出 / 搜索结果等）。
   // 运行中也要可展开：长任务（构建）要能看见完整命令与「还在跑」的计时。
   //
-  // **图片不算 body 成员**：它渲染在行下方（见文件末尾的 `tool.images`），
-  // 折叠态就能看见——把它算进来会让「只有图、没有文本」的调用多出一个空展开区。
+  // **图片是展开体的成员**（用户 2026-09-21 口径）：结果里的图跟着展开态走——
+  // 折叠态一张都不渲染，展开才画（见下面 children 里的图库）。
+  // 所以它必须算进 `hasBody`：否则「只有图、没有别的正文」的调用会变成一行**点不开**
+  // 的节点，那条路正好把图片彻底锁死（比难看严重得多）。
   const hasBody =
     hasDiff ||
     hasCard ||
@@ -233,6 +235,7 @@ export function ToolRow({
     Boolean(inputText) ||
     runningBody ||
     Boolean(exitMeta) ||
+    (tool.images?.length ?? 0) > 0 ||
     (tool.files?.length ?? 0) > 0;
 
   // `todo_write`：官方 `TodoRow` 的标题与进度摘要（`{done}/{total} 已完成 · 正在做 X`，
@@ -353,6 +356,14 @@ export function ToolRow({
       {exitMeta && card?.kind !== "terminal" ? (
         <div className={`row-exit${tool.status === "error" ? " is-error" : ""}`}>{exitMeta}</div>
       ) : null}
+      {/* 结果里的图：**只在展开态渲染**（用户 2026-09-21 口径）。
+          这里挂的是 `Row` 的 children，`Row` 只在展开时渲染 children，所以「收起不渲染」
+          是结构本身保证的，不靠额外的条件判断——也正因为如此，收起态连 `<img>` 都不存在，
+          不会替一个看不见的盒子解码图片（`read_image` 多的会话里这是几十张图）。
+          来源含 `read_image`、截图等任何工具回带的 image 块（`tool.images`）。 */}
+      {tool.images?.length ? (
+        <ImageGallery alt={texts.toolImageAlt} sources={tool.images.map((src) => ({ src }))} />
+      ) : null}
       {tool.files?.length ? (
         <div className="row-body">
           {tool.files.map((file) => (
@@ -370,19 +381,11 @@ export function ToolRow({
     </Row>
   );
 
-  // 结果里的图片**不放进展开体**：图片是这次调用的产出，不是可以折叠的细节。
-  // `read_image` / 截图这类调用**唯一**的产出就是图——放在默认收起的展开体里，
-  // 等于「agent 发来的图看不到」（用户 2026-09-18 报的正是它；日志依据：本仓库
-  // 会话里 `read_image` 的 tool/result 块类型就是 `["text","image"]`）。
-  // 挪到行**下方**之后折叠态就能看见缩略图，点开仍是原图；展开体里不再重复一份。
-  return (
-    <>
-      {row}
-      {tool.images?.length ? (
-        <ImageGallery alt={texts.toolImageAlt} sources={tool.images.map((src) => ({ src }))} />
-      ) : null}
-    </>
-  );
+  // 图片已在展开体里（上面的 children）。历史沿革：2026-09-18 用户报「agent 发来的图
+  // 看不到」（`read_image` / 截图这类调用的 tool/result 块就是 `["text","image"]`），
+  // 当时把图挪到行**下方**、不经展开态就能看见；2026-09-21 用户改口径为**折叠态不渲染**，
+  // 于是挪回展开体——两条口径的差别只在「折叠时渲不渲染」，展开态都要画。
+  return row;
 }
 
 export function ThinkingRow({
