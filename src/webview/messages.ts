@@ -102,7 +102,7 @@ export const MESSAGES = {
     en: "Use @ to attach files or a selection, or paste an image, file or folder directly. Shift+Enter for a new line.",
   },
 
-  placeholderFirst: { zh: "问点什么，或用 @ 添加上下文", en: "Ask anything, or use @ to add context" },
+  placeholderFirst: { zh: "发消息或创建任务，/ 调用指令，@ 文件或对话", en: "Send a message or start a task; / for commands, @ for files or chats" },
   placeholderFollowUp: { zh: "继续追问…", en: "Ask a follow-up" },
   send: { zh: "发送", en: "Send" },
   sendTitle: { zh: "发送（Enter）", en: "Send (Enter)" },
