@@ -35,7 +35,7 @@ import {
   type TextareaHTMLAttributes,
 } from "react";
 import type { CommandView, FileRefView, SessionRefView } from "../shared/chat";
-import { formatFileMention } from "../shared/mentions";
+import { formatFileMention, normalizeMentionPath } from "../shared/mentions";
 import { post } from "./bridge";
 import { IconFolder } from "./icons";
 import { mentionParent } from "./mentionNav";
@@ -257,9 +257,9 @@ export type CandidateOutcome =
   | { type: "session"; token: string }
   /** `..`：回到上一层（正文只留上一层查询串）。 */
   | { type: "parent"; path: string }
-  /** 目录（点主体 / Enter）：引用**整个目录**。 */
+  /** 目录（Enter / 行右侧「整个目录」按钮）：引用**整个目录**。 */
   | { type: "insert"; token: string }
-  /** 目录 + drill（Tab / 行右侧徽标）：**打开**它。 */
+  /** 目录 + drill（Tab / **点行主体**）：**打开**它，列表换成下一层的内容。 */
   | { type: "drill"; path: string };
 
 /** 某条候选带某个动作时的结果；命令通道忽略 `action`。 */
@@ -284,6 +284,20 @@ export function outcomeFor(
 /** 弹层要不要渲染：有触发词，并且要么有候选、要么是 `@`（空结果也要给个「没有文件」）。 */
 export function popoverVisible(trigger: Trigger | undefined, count: number): boolean {
   return Boolean(trigger && (count > 0 || trigger.kind === "mention"));
+}
+
+/**
+ * **鼠标点行主体**时的动作（用户 2026-09-21 口径）。
+ *
+ * 目录行点进去（下钻到该目录的候选），其余一律选中。用户的原话：「鼠标点击目录的默认
+ * 行为应该是打开该目录，而不是直接选中该目录，如果是选中该目录，尾部已有整个目录按钮
+ * 用于满足该需求了」——所以行右侧那枚「整个目录」按钮才是鼠标的「选中」入口。
+ *
+ * 键盘分工**不动**（官方口径）：Enter = 选中、Tab = 下钻。两边各有一条路：
+ * 想引用整个目录，鼠标点按钮、键盘按 Enter，谁都不会被挤掉。
+ */
+export function clickAction(shape: CandidateRow): CandidateAction {
+  return shape.folder ? "drill" : "pick";
 }
 
 /* ============================ hook ============================ */
@@ -563,10 +577,14 @@ function useCompletion(
   );
 
   /**
-   * 选中一条候选（Enter / 点击行 = `pick`；Tab = `drill`）。
+   * 选中一条候选。三条通道的差别全在 `outcomeFor` 里，这里只执行：
+   * - **Enter** = `pick`（目录就是「引用整个目录」）；
+   * - **Tab** = `drill`（目录下钻，非目录退回 `pick`）；
+   * - **鼠标点行主体** = 目录下钻、其余 `pick`（行右侧「整个目录」按钮才是选中目录）。
    *
-   * 与官方逐字对齐：`drill` 只在 `fileKind === "directory"` 上有意义（下钻），
-   * 其余一律把 token 插进正文。三条通道的差别全在 `outcomeFor` 里，这里只执行。
+   * 与官方的差别只有一处：官方鼠标点行 = `pick`（与 Enter 同义），这里改成「点目录
+   * 就进去」（用户 2026-09-21 口径）。键盘分工不动，所以「引用整个目录」在键盘上
+   * 仍是 Enter、鼠标上是那枚按钮——两条都有路可走，谁也不会被挤掉。
    */
   const applyCandidate = useCallback(
     (index: number, action: CandidateAction = "pick") => {
@@ -605,13 +623,22 @@ function useCompletion(
       }
       if (outcome.type === "parent") {
         // 「..」：回到上一层目录，与 drill 同一条链路、方向相反。
-        replace(`@${outcome.path}`, outcome.path);
+        // 分隔符归一（用户 2026-09-21 口径）：用户手输 `src\webview\` 时上一层是
+        // `src\`，写成 `@src/` 才和引用文本的语法一致（见 `shared/mentions.ts`）。
+        const parent = normalizeMentionPath(outcome.path);
+        replace(`@${parent}`, parent);
         return;
       }
       if (outcome.type === "drill") {
-        // 目录 + Tab：**打开**它（下钻），不是把它本身载入。正文里补上结尾斜杠，
-        // 服务端按它当目录查询，列表于是换成该目录的内容。
-        replace(`@${outcome.path}/`, `${outcome.path}/`);
+        // 目录 + Tab / 点行主体：**打开**它（下钻），不是把它本身载入。正文里补上
+        // 结尾斜杠，服务端按它当目录查询，列表于是换成该目录的内容。
+        //
+        // 分隔符同样归一：候选路径可能来自 Windows 侧（`src\webview`），
+        // 不归一就会在正文里留下 `@src\webview/`（用户 2026-09-21 报的）。
+        // 这里写的是**查询形态**（还没选中任何东西），所以不加引号——带空格的路径
+        // 本来就无法用触发词继续下钻（查询按空白切段），引号只属于最终引用。
+        const path = normalizeMentionPath(outcome.path);
+        replace(`@${path}/`, `${path}/`);
         return;
       }
       // 文件 / 目录（pick）：把路径**作为纯引用 token 插进正文**。
@@ -762,15 +789,17 @@ function useCompletion(
                     className={`popover-item${index === highlight ? " is-selected" : ""}`}
                     onMouseEnter={() => setHighlight(index)}
                   >
-                    {/* 主体：点它 = 选中（等于 Enter）。文件 / 对话插入引用 token；
-                        目录插入 `@dir/`（**引用整个目录**）；「..」回上一层。
-                        下钻只走 Tab（见 onKeyDown），与官方一致。 */}
+                    {/* 主体：**目录行点它就是打开该目录**（下钻进下一层），
+                        文件 / 对话插入引用 token，「..」回上一层。
+                        选中**整个目录**由行右侧那枚「整个目录」按钮负责（用户 2026-09-21
+                        口径：鼠标点行 = 进目录，想引用整个目录有专门的按钮）；
+                        键盘那边仍是官方分工——Enter 选中、Tab 下钻。 */}
                     <button
                       className="popover-item-hit"
-                      title={shape.parent ? texts.mentionParent : undefined}
+                      title={shape.parent ? texts.mentionParent : shape.folder ? texts.mentionDrill : undefined}
                       onMouseDown={(event) => {
                         event.preventDefault();
-                        applyCandidate(index, "pick");
+                        applyCandidate(index, clickAction(shape));
                       }}
                     >
                       {/* 命令名与对话标题走「优先完整」那档样式（`.is-priority`）：宽度不够时
@@ -812,10 +841,10 @@ function useCompletion(
                         <span className="popover-item-tag">{texts.skillTag}</span>
                       ) : null}
                     </button>
-                    {/* 目录行右侧：**整个目录**（原样保留的按钮）——点它就是把目录本身
-                        作为 `@dir/` 引用载入。它与点行主体（Enter）是**同一个动作**，
-                        按钮只是把这件事显式摆出来；「进入目录」是 Tab 的事，
-                        提示在分组标题栏右侧（见上）。 */}
+                    {/* 目录行右侧：**整个目录**——点它就是把目录本身作为 `@dir/` 引用载入。
+                        它现在是**鼠标唯一的「选中整个目录」入口**（点行主体是下钻），
+                        键盘对应 Enter（见 onKeyDown）；「进入目录」键盘上是 Tab，
+                        鼠标上就是点行主体，提示在分组标题栏右侧（见上）。 */}
                     {shape.folder ? (
                       <button
                         className="popover-item-action"

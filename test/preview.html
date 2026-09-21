@@ -644,7 +644,7 @@
                 { step: 1, id: "tool6b", kind: "tool", tool: { id: "call_6b", name: "pwsh", title: "", detail: "npm run build", status: "running", command: "npm run build", input: '{"command":"npm run build"}', startedAt: now - 30000 } },
                 // 终端卡：带 description 的一次性命令，结算后是「状态 + 提示符行 + 退出码 + 输出」。
                 // 输出给足 40 行：这样展开时 body 一定出现垂直滚动条——用来验证
-                // 「打开节点默认停在最顶部」（`useStickyBody` 的 `scrollTop = 0`）
+                // 「**已结束**的节点打开后停在最顶部」（`useStickyBody` 的置顶分支）
                 { id: "tool6c", kind: "tool", tool: { id: "call_6c", name: "pwsh", title: "", status: "ok",
                   detail: "Show repo state",
                   command: "git status --short",
@@ -937,6 +937,34 @@
               model: "DeepSeek-V4-Pro",
               produced: ["D:/dev/app/src/server/index.ts", "D:/dev/app/src/bootstrap.ts"],
               segments: [
+                // 还在跑的一轮里两个**内容比盒子高**的节点（用户 2026-09-20 报的场景）：
+                // 展开它们应当停在**底部**——最新一行才是点开要看的东西；对照上面那些
+                // 已结束的节点（tool6c 那份 40 行输出）展开仍停在顶部。
+                { id: "r2", kind: "thinking", streaming: true, text: [
+                  "先把入口的两处 listen 找出来：",
+                  "1. index.ts 第 42 行 server.listen(3080)",
+                  "2. config.ts 第 17 行从 process.env.PORT 读了一次",
+                  "两处都会 listen，谁后跑谁生效——这就是端口打架的根因。",
+                  "收敛方案：bootstrap() 里读一次配置，把 options 往下传。",
+                  "接着核对中间件的注册点：",
+                  "1. index.ts 里 register(middleware) 一次",
+                  "2. routes.ts 里又 register 了一次",
+                  "3. metrics.ts 里还有一次",
+                  "三次注册会让日志打三遍、限流计数翻三倍。",
+                  "还要确认旧的 index.ts 能不能直接复用 bootstrap()——它现在自己",
+                  "建了 server，改造时要把它改成调用 bootstrap() 并返回 server。",
+                  "最后补冒烟测试：断言 listen 只被调用一次。",
+                  "现在开始改第一个文件……"
+                ].join("\n") },
+                // 运行中的工具行：IN 段就有二十多行（展开必然出现滚动条）
+                { id: "tool8", kind: "tool", tool: { id: "call_8", name: "pwsh", title: "", status: "running",
+                  detail: "cmake --build build-agent --target dsh_chat_plugin",
+                  command: "cmake --build build-agent --target dsh_chat_plugin",
+                  input: JSON.stringify({
+                    command: "cmake --build build-agent --target dsh_chat_plugin",
+                    env: Object.fromEntries(Array.from({ length: 20 }, (_, i) => [`DSH_STEP_${i + 1}`, `value-${i + 1}`]))
+                  }, null, 2),
+                  startedAt: now - 12000 } },
                 { id: "t3", kind: "text", text: "正在收敛入口……", streaming: true }
               ]
             }

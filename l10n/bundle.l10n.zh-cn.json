@@ -17,8 +17,8 @@
   "This session is running and cannot be deleted.": "该会话正在运行，无法删除。",
   "Cannot delete the session you are currently viewing; switch to another session first.": "不能删除当前正在查看的会话，请先切换到其他会话。",
   "No editor is open; the code was copied to the clipboard.": "没有打开的编辑器，代码已复制到剪贴板。",
-  "Add as context": "添加为上下文",
-  "Add folder as context": "添加目录为上下文",
+  "Add attachments": "添加附件",
+  "Add folder reference": "添加目录引用",
 
   "Failed to archive the session": "归档会话失败",
   "Failed to delete the session": "删除会话失败",

@@ -89,6 +89,9 @@ const HOST_MARKERS: string[] = [
   // 拖放
   "dropUnreadable",
   "dropTooLarge",
+  // 粘贴（剪贴板里的文件 / 图片：准入判据与拖放相同，措辞另有一套）
+  "pasteUnreadable",
+  "pasteTooLarge",
   // 图片内联上限（超限改按文件上传）
   "imageTooLarge",
   // 剪贴板 / 浏览器
@@ -182,6 +185,8 @@ console.log("i18n: 消息表每条都有中英两份，带参的登记成函数�
     // 单参数：整段保留
     ["dropUnreadable", "@dropUnreadable:notes.pdf", ["notes.pdf"]],
     ["dropTooLarge", "@dropTooLarge:big.zip", ["big.zip"]],
+    ["pasteUnreadable", "@pasteUnreadable:notes.pdf", ["notes.pdf"]],
+    ["pasteTooLarge", "@pasteTooLarge:big.zip", ["big.zip"]],
     ["imageTooLarge", "@imageTooLarge:a.png", ["a.png"]],
     ["serverSpawnFailed", "@serverSpawnFailed:ENOENT", ["ENOENT"]],
     ["serverUnreachable", "@serverUnreachable:C:\\tools\\dsh\\dsh\\bin", ["C:\\tools\\dsh\\dsh\\bin"]],

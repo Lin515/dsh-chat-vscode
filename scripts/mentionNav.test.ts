@@ -35,6 +35,7 @@ import { dictionaryFor } from "../src/webview/texts";
 });
 const {
   candidateRows,
+  clickAction,
   ComposerCompletionState,
   findTrigger,
   hasDrillableFolder,
@@ -267,6 +268,28 @@ console.log("completion: 分组标题 / 优先完整 / 目录按钮的判据 ✓
     outcomeFor("mention", { path: 'a"b.txt', kind: "file" }, "pick"),
     { type: "insert", token: '"a"b.txt"' },
   );
+
+  // ---------- 鼠标点行主体的动作（用户 2026-09-21 口径） ----------
+  //
+  // 「@ 列表中，鼠标点击目录的默认行为应该是打开该目录，而不是直接选中该目录，
+  //   如果是选中该目录，尾部已有整个目录按钮用于满足该需求了」。
+  // 所以：目录行点主体 = drill（打开），文件 / 对话 / `..` = pick；
+  // 右下那枚「整个目录」按钮仍是 pick（它在 JSX 里写死，见 styles.test 的接线断言）。
+  // 键盘分工不动：Enter = pick、Tab = drill（上面那批用例钉的就是它）。
+  {
+    const dirRow = candidateRows([...rankCandidates({ kind: "mention", start: 0, query: "src" }, [], [dir], [])], "mention", TEXTS).find(
+      (row) => row.folder,
+    );
+    assert.ok(dirRow, "候选里应当有一行是「可进目录」");
+    assert.strictEqual(clickAction(dirRow), "drill", "点目录行主体 = 打开该目录（不是选中它）");
+    const fileRow = candidateRows([file], "mention", TEXTS)[0];
+    assert.strictEqual(clickAction(fileRow), "pick", "点文件行 = 选中（文件没有「打开」这一说）");
+    const upRow = candidateRows([up], "mention", TEXTS)[0];
+    assert.strictEqual(clickAction(upRow), "pick", "「..」行仍是 pick（它的 outcome 本来就是回上一层）");
+    const sessionRow = candidateRows([session], "mention", TEXTS)[0];
+    assert.strictEqual(clickAction(sessionRow), "pick", "对话行 = 选中");
+    console.log("completion: 点目录行 = 进目录（选中整个目录留给尾部按钮 / Enter） ✓");
+  }
 }
 console.log("completion: Tab 进入目录 / Enter 引用整个目录 ✓");
 
@@ -608,6 +631,34 @@ console.log("completion(hook): ESC 优先级链（弹层先消费、其余放行
   assert.strictEqual(tabbed.node.lastSelection, "@src/dsh/".length, "光标落在新查询串之后");
 }
 console.log("completion(hook): Enter / Tab 的接线 ✓");
+
+// ---------- 13b. 引用文本的归一化（用户 2026-09-21 口径） ----------
+//
+// 两条口径：「引用进目录时，将 `\` 统一换成 `/`」「引进带空格目录时，只有头部有引号、
+// 尾部没有」。判据本身在 `shared/mentions.ts`（逐字断言见 `scripts/references.test.ts`），
+// 这里钉的是**两个写入口真的都归一了**：
+// - 下钻 / 回上一层是**直接改正文**（不走 token 生成），必须自己调 `normalizeMentionPath`；
+// - 选中（pick）走 `formatFileMention`，引号成对与分隔符归一都在那里。
+{
+  // 候选路径来自 Windows 侧（反斜杠）时，下钻写进正文的必须是正斜杠
+  const winDir: FileRefView[] = [{ path: "src\\dsh", kind: "directory" }];
+  const drilled = frame("@s", 2, { fileRefs: { query: "@s", items: winDir, sessions: [] } });
+  press(drilled, "Tab");
+  assert.strictEqual(drilled.draft, "@src/dsh/", "下钻：候选里的反斜杠要归一（不许写成 `@src\\dsh/`）");
+
+  // 「..」那行同理：用户手输反斜杠时，上一层也要归一再写回正文
+  const back = frame("@src\\dsh\\we", 11, { fileRefs: { query: "@src\\dsh\\we", items: winDir, sessions: [] } });
+  assert.ok(back.html.includes(".."), "进到子目录后，「..」那行必须在");
+  press(back, "Enter");
+  assert.strictEqual(back.draft, "@src/", "回上一层：`src\\` 也要写成 `@src/`");
+
+  // 选中带空格的目录：引号成对，且尾斜杠留在引号**内**（目录标记不能丢）
+  const spaced: FileRefView[] = [{ path: "docs\\my dir", kind: "directory" }];
+  const picked = frame("@d", 2, { fileRefs: { query: "@d", items: spaced, sessions: [] } });
+  press(picked, "Enter");
+  assert.strictEqual(picked.draft, '@"docs/my dir/"', "选中带空格目录：引号成对 + 分隔符归一");
+  console.log("completion(hook): 引用文本归一化（分隔符 / 成对引号） ✓");
+}
 
 // ---------- 14. 弹层**没**接管时的 Enter = 发送（回归锁） ----------
 //

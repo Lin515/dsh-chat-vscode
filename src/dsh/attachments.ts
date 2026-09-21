@@ -166,16 +166,16 @@ export function formatPathList(paths: string[]): string {
 }
 
 /**
- * 拖放单个文件的字节上限。
+ * webview 字节通道（拖放 / 粘贴）的单文件上限。
  *
- * 拖放走 base64 过线（见 `shared/ipc.ts` 的 `attachBytes`），4/3 的体积放大加上
+ * 那条路走 base64 过线（见 `shared/ipc.ts` 的 `attachBytes`），4/3 的体积放大加上
  * webview RPC 的字符串拷贝，太大就会卡住界面。超限的直接提示改用「添加文件」
  * 按钮——那条路是宿主 `readFileSync` + 原始字节 POST，不经过 webview。
  *
  * 这条限制**只关于 webview 这条通道**，不是「附件判据」：回形针 / 资源管理器
  * 右键那条路不限大小（官方也不限）。
  */
-export const DROP_BYTES_LIMIT = 8 * 1024 * 1024;
+export const ATTACH_BYTES_LIMIT = 8 * 1024 * 1024;
 
 export interface DroppedBytesInput {
   /** 文件名（webview 侧 `File.name`，只有名字，没有路径）。 */

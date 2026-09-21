@@ -13,7 +13,7 @@ import { Spinner } from "./components/primitives";
 import { AppState, useAppState, type PanelKind } from "./state";
 import { changesSummaryKey, turnsWithChangesCard } from "../shared/changesSummary";
 import { resolveInteractions } from "./pendingInteraction";
-import { attachDroppedFiles, dragHasFiles } from "./dropAttach";
+import { attachDroppedFiles, attachPastedFiles, clipboardFiles, dragHasFiles } from "./attachIntake";
 import { setLocalImageScope } from "./localImages";
 import { TurnRail } from "./components/TurnRail";
 import { useTurnRailItems, useTurnRailNav } from "./turnRailNav";
@@ -311,7 +311,7 @@ function useHistoryPaging(scrollRef: React.RefObject<HTMLDivElement>, state: App
  * 默认行为——导航到被拖的文件，在 VS Code 里表现为「文件被打开」而不是附件。
  * 现在整页都是目标：**dragover 的 preventDefault 就是「本页接受文件投放」的声明**，
  * 缺了它松手必被 VS Code 捕获；drop 统一走 `attachDroppedFiles`（字节上传，
- * 见 `dropAttach.ts`）。
+ * 见 `attachIntake.ts`）。
  *
  * 只拦**文件**拖拽（`dragHasFiles`）：文本拖拽不 preventDefault，textarea 的
  * 原生插入照常工作。overlay 显隐用 enter/leave 计数（元素间移动会成对触发这对
@@ -354,6 +354,33 @@ function usePageFileDrop() {
     };
   }, []);
   return dragActive;
+}
+
+/**
+ * 全页粘贴接取：`Ctrl+V` 贴进来的是图片 / 文件 = 添加附件。
+ *
+ * 与拖放同一套判据、同一个落点（只有字节，见 `attachIntake.ts` 的文件头）：
+ * `clipboardFiles` 认出文件才 `preventDefault`，**纯文本一律放行**给 textarea 的
+ * 原生插入。
+ *
+ * 为什么挂 window 而不是输入框：粘贴事件从焦点元素冒泡到 window，一处接住就够
+ * ——挂两处会双发 `attachBytes`（同一张图两条附件），而且焦点不在输入框时
+ * （比如刚点开一条消息）粘贴也该能加附件。VS Code 桌面版对 `Ctrl+V` 的处理
+ * （`preventDefault` + 由宿主补发 `execCommand("paste")`）见模块文件头：**paste
+ * 事件照样会到 webview**，所以这条路不需要自己抢按键。
+ */
+function usePagePaste() {
+  useEffect(() => {
+    const onPaste = (event: ClipboardEvent) => {
+      const files = clipboardFiles(event.clipboardData);
+      if (!files.length) return;
+      // 认出了文件才劫持：否则文本粘贴会被吃掉（textarea 拿不到原生插入）
+      event.preventDefault();
+      attachPastedFiles(files);
+    };
+    window.addEventListener("paste", onPaste);
+    return () => window.removeEventListener("paste", onPaste);
+  }, []);
 }
 
 /**
@@ -423,6 +450,8 @@ export function App() {
   }, [sessionId]);
   // 全页拖放：拖文件进会话页的任何位置都算添加附件（dragActive 时亮出浮层）
   const dragActive = usePageFileDrop();
+  // 全页粘贴：Ctrl+V 贴图片 / 文件同样算添加附件（没有浮层可亮，纯文本仍走原生）
+  usePagePaste();
   // 自动滚动（贴底 / 放跟随 / 回底胶囊）：整套规则在 `autoScroll.ts` 里，
   // 这里只把它的结果接给组件——端口一个（`chatScroll`），滚动手势与贴底判定不在这里。
   const chatScroll = useAutoScroll(chatActive, sessionId);

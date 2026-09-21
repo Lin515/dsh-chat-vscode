@@ -306,6 +306,19 @@ console.log("styles: 鲸鱼蓝色独属、各节点有专属色 ✓");
       /shape\.priority \? " is-priority" : ""/.test(completion),
     "候选行必须按 isCommand / isParent / isSession 加 .is-priority（普通文件路径不加）",
   );
+  // 鼠标两个入口必须分工（用户 2026-09-21 口径）：**点行主体**按 `clickAction`
+  // （目录 = 进目录），**尾部「整个目录」按钮**固定 `pick`。两处都写 `pick` 时
+  // 那枚按钮就是多余的，用户报的正是这个；两处都写 `clickAction` 则键盘之外的
+  // 「选中整个目录」会整个消失。判据在 `scripts/mentionNav.test.ts`（真调 `clickAction`），
+  // 这里只钉接线。
+  assert.ok(
+    /applyCandidate\(index, clickAction\(shape\)\)/.test(completion),
+    "点行主体必须走 clickAction(shape)：目录进目录、其余选中",
+  );
+  assert.ok(
+    /onMouseDown=\{\(event\) => \{\s*\n\s*event\.preventDefault\(\);\s*\n\s*applyCandidate\(index, "pick"\);/.test(completion),
+    "尾部「整个目录」按钮必须仍是 pick（鼠标唯一「选中整个目录」的入口）",
+  );
   assert.ok(
     /popover-item-main is-priority">\{item\.label\}/.test(composer),
     "权限弹层的档位名也要 .is-priority（否则英文长描述会把档位名挤成 `Read O…`）",
@@ -594,7 +607,9 @@ console.log("styles: 思考段恒折叠 + 摘要口径对齐官方 ✓");
 {
   const rows = readFileSync(join(process.cwd(), "src", "webview", "components", "Rows.tsx"), "utf8");
   assert.ok(
-    /!hasDiff && !hasCard && \(\(inputText && !codeCard\) \|\| showOutput\)/.test(rows),
+    // 判据抽成 `showIoCard` 一份（渲染与滚动定位共用它，见第 16c 段）
+    /const showIoCard = !hasDiff && !hasCard && \(\(Boolean\(inputText\) && !codeCard\) \|\| showOutput\);/.test(rows) &&
+      /\{showIoCard \? \(/.test(rows),
     "IN/OUT 只在**既没有 diff 也没有卡片**时渲染（官方 diff 类给 DiffBlock、读取/搜索/终端/网页给各自的卡，再套 IN/OUT 就是重复）",
   );
   assert.ok(/className="io-label">\{texts\.toolInput\}/.test(rows), "输入段要有标签");
@@ -608,7 +623,7 @@ console.log("styles: 思考段恒折叠 + 摘要口径对齐官方 ✓");
     "run_code 的正文用 CodeBlock（官方 `formatToolBody` 的 code 分支）",
   );
   assert.ok(
-    /\(inputText && !codeCard\) \|\| showOutput/.test(rows),
+    /\(Boolean\(inputText\) && !codeCard\) \|\| showOutput/.test(rows),
     "run_code 只省掉 IN 段：输出照常渲染（官方对 code 变体 `cardBody = null`，OUT 仍在）",
   );
   assert.ok(
@@ -900,56 +915,113 @@ console.log("styles: 工具卡只有一层滚动条 ✓");
 }
 console.log("styles: 复制按钮归属（工具卡内容有 / 工具串没有 / 生成中不画） ✓");
 
-// ---------- 16c. 节点展开后，滚动位置默认在**顶部** ----------
+// ---------- 16c. 节点展开后：还在跑的贴底，已结束的置顶 ----------
 //
-// 用户 2026-09-16 口径：「各类节点打开后，如果有垂直滚动条，默认应当居于最顶部」。
-// 此前 `useStickyBody` 一律 `scrollTop = scrollHeight`（贴底）——一张长 diff、一段长
-// 输出打开后停在末尾，得自己往上翻。唯一例外是**还在逐 token 增长**的思考节点，
-// 且只在「盒子还装得下」时跟随（否则新 token 掉到折叠线以下，什么都看不见）。
+// 用户 2026-09-16 口径：「各类节点打开后，如果有垂直滚动条，默认应当居于最顶部」——
+// 那时一律 `scrollTop = 0`，只有**还在逐 token 增长且盒子装得下**的思考节点跟随。
+// 用户 2026-09-20 修正：**未结束、还在执行中的节点打开后滚动条应当在底部**（最新
+// 信息才是有用的），已结束的节点维持置顶。旧实现的两处不合口径之处因此都要改：
+//   ① 运行中的工具行 / 命令节点当时根本不传「进行中」（只有思考传 streaming）；
+//   ② 思考节点的跟随被「盒子装得下（<40px 溢出）」卡住——一长就退回置顶。
 {
   const primitives = readFileSync(
     join(process.cwd(), "src", "webview", "components", "primitives.tsx"),
     "utf8",
   );
   assert.ok(
-    /el\.scrollTop = 0;/.test(primitives),
-    "展开节点时 body 区要回到**顶部**（默认从第一行读起）",
+    /el\.scrollTop = active \? el\.scrollHeight : 0;/.test(primitives),
+    "展开那一刻的定位必须两分：进行中贴底（看最新），已结束置顶（从第一行读起）",
   );
   assert.ok(
-    // 跟随用的那处 `scrollTop = scrollHeight` 只能留在 `pin()` 里（贴底跟随），
-    // 展开那一刻不能再用它——那是旧行为
-    /el\.scrollTop = 0;[\s\S]{0,400}?if \(!streaming\) return;/.test(primitives),
-    "展开时先回到顶部，且静态内容不再往下走（旧的「展开即贴底」不能回来）",
+    !/el\.scrollTop = 0;\s*\n\s*lastTopRef\.current = 0;/.test(primitives),
+    "旧的「一律回顶」写法不能回来",
   );
   assert.ok(
-    // 跟随态只能由「滚动到底部」或「装得下」这两条判据进入；
-    // 展开那一刻不能无条件进入（旧写法就是那一步把位置钉在底部）
-    /stickRef\.current = streaming && el\.scrollHeight - el\.clientHeight < 40;/.test(primitives) &&
-      !/stickRef\.current = true;\s*\n\s*lastTopRef\.current = 0;/.test(primitives),
-    "展开时不再无条件进入跟随态（旧写法就是这一句把位置钉在底部）",
+    // 「装得下才跟随」那条限制正是用户这次报的现象：长一点就退回顶部
+    !/scrollHeight - el\.clientHeight < 40;/.test(primitives),
+    "跟随不再以「盒子装得下」为条件——进行中的节点一律贴底跟随",
   );
   assert.ok(
-    /stickRef\.current = streaming && el\.scrollHeight - el\.clientHeight < 40;/.test(primitives),
-    "只有「还在增长 + 盒子装得下」才跟随；装得下时本来就看不到滚动条，跟着长才对",
+    /if \(!active\) return;/.test(primitives),
+    "静态（已结束）内容不注册观察者——否则后续更新会抢用户的滚动位置",
   );
   assert.ok(
-    /if \(!streaming\) return;/.test(primitives),
-    "静态内容不注册观察者——否则后续更新会抢用户的滚动位置",
+    /stickRef\.current = active;/.test(primitives),
+    "跟随态直接等于「还在进行中」（打开那一刻不再要求先滑到底）",
+  );
+  // 打开那一刻只定位一次：`active` 由真翻假（跑完了）时不许再动滚动位置，
+  // 否则用户盯着末尾看输出、节点一结束就被拽回顶部
+  assert.ok(
+    /if \(!openedRef\.current\) \{[\s\S]{0,200}?el\.scrollTop = active \? el\.scrollHeight : 0;/.test(primitives),
+    "展开定位必须包在「刚打开」分支里（`openedRef`），结束后不许重定位",
+  );
+  assert.ok(
+    /if \(!el \|\| !enabled\) \{\s*\n\s*openedRef\.current = false;/.test(primitives),
+    "收起时要复位「刚打开」标记，否则再展开不会重新定位",
+  );
+  assert.ok(
+    /lastTopRef\.current = el\.scrollTop;/.test(primitives),
+    "记录基线要记**定位之后**的位置（贴底时的基线是底部，不是 0）",
   );
 
   const rows = readFileSync(join(process.cwd(), "src", "webview", "components", "Rows.tsx"), "utf8");
+  // 工具行：`running` = status 还在跑（running / pending）
+  assert.ok(
+    /useStickyBody\(diffRef, open && hasDiff, running\)/.test(rows) &&
+      /useStickyBody\(bodyRef, open && !hasDiff && \(showOutput \|\| hasCard \|\| Boolean\(codeCard\)\), running\)/.test(rows),
+    "工具行的两个 body（diff 段 / 结果-卡片段）都要传 `running`：跑着就贴底看最新输出",
+  );
+  // 运行中的工具行**唯一的**滚动盒子是 IN 卡（卡片在跑的时候不渲染），它此前压根没有
+  // ref，于是永远停在顶部——用户报的正是这个形态。渲染判据与定位判据必须是同一份
+  // `showIoCard`，两处各写一份必然漂移。
+  assert.ok(
+    /const showIoCard = !hasDiff && !hasCard && \(\(Boolean\(inputText\) && !codeCard\) \|\| showOutput\);/.test(rows),
+    "IN/OUT 卡的渲染判据只留一份（showIoCard），渲染与滚动定位共用它",
+  );
+  assert.ok(
+    /useStickyBody\(ioRef, open && showIoCard, running\)/.test(rows) &&
+      /\{showIoCard \? \(\s*\n\s*<div ref=\{ioRef\} className="row-body io-card">/.test(rows),
+    "IN 卡要真的绑上 ioRef 并传 running（少了 ref，那条滚动条永远停在顶部）",
+  );
+  assert.ok(
+    /useStickyBody\(runningRef, open && runningBody, running\)/.test(rows) &&
+      /<div ref=\{runningRef\} className="row-body mono row-running">/.test(rows),
+    "「运行中」那块自己也是滚动盒子（长命令会撑开），同样要贴底——一个展开区里两条滚动条不该各朝一头",
+  );
   assert.ok(
     /useStickyBody\(bodyRef, open, streaming === true\)/.test(rows),
-    "思考节点是唯一传 streaming 的（它逐 token 增长）；工具 / 注入 / 命令节点都是静态内容",
+    "思考节点传 streaming（它逐 token 增长）",
   );
-  const calls = rows.match(/useStickyBody\(bodyRef,[^;]*\)/g) ?? [];
+  assert.ok(
+    /useStickyBody\(bodyRef, open, command\.state === "running"\)/.test(rows),
+    "命令节点与工具同口径：running 时贴底",
+  );
+  assert.ok(
+    /useStickyBody\(bodyRef, open\);/.test(rows),
+    "注入节点（系统提示词等）永远不会「进行中」，保持默认置顶",
+  );
+  // 七处可展开节点：工具行 4 个滚动盒子（diff / 卡片-结果 / IN 卡 / 运行状态块）
+  // + 思考 + 命令 + 注入；只有注入那一处不传「进行中」
+  const calls = rows.match(/useStickyBody\([^;]*\)/g) ?? [];
   assert.strictEqual(
-    calls.filter((call) => call.includes("streaming")).length,
-    1,
-    `四处可展开节点的 body（工具 / 思考 / 注入 / 命令）只有思考那一处传 streaming，实际：${JSON.stringify(calls)}`,
+    calls.length,
+    7,
+    `Rows.tsx 里应当有 7 处 useStickyBody，实际：${JSON.stringify(calls)}`,
+  );
+  const withActive = calls.filter((call) => (call.match(/,/g) ?? []).length >= 2);
+  const withoutActive = calls.filter((call) => (call.match(/,/g) ?? []).length < 2);
+  assert.strictEqual(
+    withActive.length,
+    6,
+    `应当有六处传「进行中」（工具 4 + 思考 + 命令），实际：${JSON.stringify(withActive)}`,
+  );
+  assert.deepStrictEqual(
+    withoutActive,
+    ["useStickyBody(bodyRef, open)"],
+    "不传「进行中」的只能有注入节点那一处",
   );
 }
-console.log("styles: 节点展开后默认停在顶部（只有流式思考跟随） ✓");
+console.log("styles: 节点展开后——进行中的贴底、已结束的置顶（跑完不重定位） ✓");
 
 // ---------- 16d. 轨迹是整页视图：打开就占用整个会话窗口，输入区让位 ----------
 //

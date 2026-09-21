@@ -9,3 +9,5 @@ Releases/
 *.log
 .vscode-test/
 .dsh/
+# AI 会话的临时文件目录（全局约定：临时文件放这里，不塞进项目）
+.agent/

@@ -181,20 +181,31 @@ export type WebviewToHost =
   /** 选择文件 / 文件夹加入上下文（图片按图片发送，其余文件上传，目录做引用）。 */
   | { type: "addFiles" }
   /**
-   * 拖放进来的文件。**只有字节和文件名，没有路径**——这是 webview 的能力边界，
+   * 拖放 / 粘贴进来的文件。**只有字节和文件名，没有路径**——这是 webview 的能力边界，
    * 不是偷懒：VS Code 不把拖拽的资源注入 webview 的 `DataTransfer`
    * （既没有 `ResourceURLs`，也没有 `text/uri-list`），而 `File.path` 自 Electron 32
    * 起已被移除（本机 VS Code 用 Electron 42），webview 侧的 `window.vscode` 也只有
-   * `acquireVsCodeApi`、拿不到 `webUtils.getPathForFile`。字节因此是**唯一**通道。
+   * `acquireVsCodeApi`、拿不到 `webUtils.getPathForFile`。字节因此是**唯一**通道
+   * （粘贴这条路为什么也走字节、以及 `Ctrl+V` 在桌面版是怎么被 VS Code 接管又补发的，
+   * 见 `webview/attachIntake.ts` 的文件头）。
    *
    * `base64` 而不是 `Uint8Array`：webview → 宿主的消息不保证是结构化克隆
    * （`Uint8Array` 过一遍 JSON 会烂成 `{"0":…}`），base64 在两种序列化下都对。
-   * 代价是 4/3 体积，所以调用方在**读字节之前**先按 `DROP_BYTES_LIMIT` 拦掉超大文件。
+   * 代价是 4/3 体积，所以调用方在**读字节之前**先按 `ATTACH_BYTES_LIMIT` 拦掉超大文件。
    *
    * `unreadable` / `tooLarge` 是这一批里**没进来**的名字：目录（`File` 读字节会抛
-   * IO 错误）与超限文件。宿主据此明确提示，而不是静默丢弃。
+   * IO 错误）与超限文件。宿主据此明确提示，而不是静默丢弃——提示文案按 `source`
+   * 分「拖放 / 粘贴」两套措辞（只影响措辞，准入判据完全相同）。
+   *
+   * `source` 缺省当 `"drop"`（旧帧只有拖放这一条路）。
    */
-  | { type: "attachBytes"; files: { name: string; base64: string }[]; unreadable: string[]; tooLarge: string[] }
+  | {
+      type: "attachBytes";
+      source?: "drop" | "paste";
+      files: { name: string; base64: string }[];
+      unreadable: string[];
+      tooLarge: string[];
+    }
   /** 重传一个上传失败的文件附件。 */
   | { type: "retryUpload"; id: string }
   /**

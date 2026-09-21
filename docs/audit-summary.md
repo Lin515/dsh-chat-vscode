@@ -515,7 +515,11 @@ Ctrl+Enter 也未区分（`Composer.tsx:241` 只判 `!shiftKey`）。
 2. turn-process 折叠在用户真实 transcript-view 设置下的视觉体量。
 3. 官方工作区列表对 `depth`/`completed` 的渲染器位置（未在已安装产物中定位）。
 4. 本部署 `permission-presets.presets` 的实际配置（故「read-only 是否真不存在」不确定）。
-5. VS Code webview 的拖放/粘贴文件能力（可证「扩展未实现」，不可证「官方做法可否等价实现」）。
+5. VS Code webview 的拖放/粘贴文件能力：**已实测**（2026-09-21，Playwright + 真实 Windows
+   剪贴板）。粘贴的 `clipboardData.types` 只有 `["Files"]`，`text/uri-list` 与 `text/plain`
+   都是空串 → **webview 侧拿不到路径**；目录是 `size=0`、`type=""`、字节读不出来的 File。
+   因此实现是「宿主去系统剪贴板取真路径 → 走添加文件那条路」，取不到才退回字节通道
+   （`src/dsh/clipboardPaths.ts`；证据表见 `audit-input-queue-attachments.md` §3.4）。
 6. `images` 参数名是否曾在历史版本被接受（只能证明当前唯一出现处在 fixture）。
 
 ---

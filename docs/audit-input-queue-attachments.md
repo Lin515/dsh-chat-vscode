@@ -20,7 +20,9 @@
 > - §3.1「官方从不内联文件正文」→ 已对齐；**2026-09-14 进一步细化**：`@` 变成正文里的
 >   `@path` token（不再生成附件栏芯片），上传只留给「模型可直接读的文本」。
 > - §3.4「拖放 / 粘贴文件不落地」→ **已过期**：`Composer.tsx` 的 `onDrop` 现在真的读字节
->   上传（`attachBytes`）；**粘贴**仍不落地。
+>   上传（`attachBytes`）；**2026-09-21 粘贴也落地了**：全页 `paste` 监听接住剪贴板里的
+>   文件 / 图片，与拖放同一个字节通道（`src/webview/attachIntake.ts`）。本节现在只剩
+>   「官方还有图片数量/大小校验、有 DropOverlay」这类细节差异。
 >
 > **2026-09-18 状态更新**：本文多处把队列的唯一来源写成 `session/control` 的
 > `SessionQueuedItem` 帧（§2.3、§6.1 等）。服务端 2026-09-09 起删掉了那条通道，队列改由
@@ -54,7 +56,7 @@
 | 3.1 | 文件内容内联成文本 vs 上传回执 / `@` 路径 | **不一致** | 高 |
 | 3.2 | 内容块顺序：图片在文本之后 vs 之前 | **不一致** | 低 |
 | 3.3 | 仅附件（无文本）不能发送 | **不一致** | 中 |
-| 3.4 | 拖放/粘贴文件不落地 | **不一致** | 中 |
+| 3.4 | 拖放/粘贴文件不落地 | **不一致**（2026-09-21 两条路都已落地） | 中 |
 | 4.1 | 「选区」内联文本：官方无对应表示 | **不一致** | 中 |
 | 5.1 | 用户手打 `/xxx` 走 prompt 而不是 `commands/execute` | **不一致** | 高 |
 | 5.2 | `commands/execute` 第三参数名 | **一致**（`submittedAttachments`）；`images` 回退是死代码 | 低 |
@@ -320,20 +322,46 @@ const canSend = draft.trim().length > 0 && state.connection === "ready";
 **后果**：想"只发一张图/一个文件"的用户在扩展里做不到（除非随便打一个字）。官方可以。
 **置信度**：高。
 
-### 3.4 拖放 / 粘贴文件不落地 —— **不一致**
+### 3.4 拖放 / 粘贴文件不落地 —— **不一致**（2026-09-21 起两条路都已落地）
 
 **官方**：拖放与粘贴文件都进 `intakeFiles`：`client.js:15920-15941`（含图片数量/大小校验）、keymap 的 `intakeFiles: (files) => gate.current.intakeFiles(files)`（`client.js:15997-15999`，`keymap.d.ts:29-30`）；并有专门的 `DropOverlay`（`$DSH\dsh-client-ui-attachment\lib\types\DropOverlay.d.ts`）。
-**扩展**：`src\webview\components\Composer.tsx:382-392`
-```tsx
-onDragOver={(event) => { event.preventDefault(); setDragOver(true); }}
-onDrop={(event) => {
-  event.preventDefault();
-  setDragOver(false);
-}}
-```
-只高亮、不读 `event.dataTransfer.files`；`textarea` 也没有 `onPaste`（`:411-432`）。
+**扩展（审计当时）**：`src\webview\components\Composer.tsx:382-392` 只高亮、不读 `event.dataTransfer.files`；`textarea` 也没有 `onPaste`。
 **后果**：扩展会显示拖放高亮（`app.css:1228` `.composer-box.is-drop-target`），但松手后什么都没发生——比不支持拖放更容易误导。粘贴图片同理无入口。
-**置信度**：高（代码直读）。**无法确认**：VS Code webview 对 `dataTransfer.files` / 图片粘贴的实际投递能力（未实测），所以"官方能做到的扩展是否技术上也能"我不断言；这里确定的是扩展**没有实现**这条路径。
+**置信度**：高（代码直读）。
+
+**2026-09-21 复修**：两条路都接上了，落点在 `src/webview/attachIntake.ts`（App 的
+`usePageFileDrop` / `usePagePaste` 各挂一个 window 监听）。粘贴这条路的关键机制
+（本机 VS Code `resources/app/out` 逐行读过）：桌面版 `webview/browser/pre/index.html` 的
+`handleInnerKeydown` 对 `Ctrl+C/V/X`（含 `Shift+Insert`）**一律 `preventDefault()`**，再把
+按键交给宿主；宿主 `WebviewElement.handleKeyEvent` 把它重新派发到主窗口，键位解析到
+`paste` → `WebviewElement.paste()` → `_send("execCommand","paste")`；webview 的 pre 脚本收到后
+对**内容文档**执行 `execCommand("paste")`（iframe 上的 `allow="clipboard-read; clipboard-write"`
+就是这条权限），于是 webview 文档里真的触发一次 `paste` 事件。所以**不要自己挂 keydown 抢
+`Ctrl+V`**——那会在宿主之前吃掉按键，反而让它不再补发。
+
+**粘贴时剪贴板到底给了什么（2026-09-21 实测，Playwright + 真实 Windows 剪贴板，
+复制目录 / 无扩展名文件 / png 各一遍）**：
+
+| 复制的东西 | `types` | `text/uri-list` | `text/plain` | `files[0]` |
+|---|---|---|---|---|
+| 目录 `docs` | `["Files"]` | **空串** | **空串** | `{name:"docs", type:"", size:0}`，字节读不出来（`A requested file or directory could not be found…`） |
+| 文件 `LICENSE` | `["Files"]` | **空串** | **空串** | `{name:"LICENSE", type:"", size:2001}` |
+| 图片 `icon.png` | `["Files"]` | **空串** | **空串** | `{name:"icon.png", type:"image/png", size:15471}` |
+
+结论：**webview 侧没有路径**（`text/uri-list` 这条最常用的路子在这里是空的），
+`File.name` 只有 basename、`File.path` 自 Electron 32 起已移除。所以「目录 → 路径、
+大文件 → 与添加附件同样不限大小」只能由宿主去**系统剪贴板**取真路径：新增
+`src/dsh/clipboardPaths.ts`（Windows：`powershell.exe -Sta` + WinForms
+`Clipboard.GetFileDropList()`；显式 UTF-8 输出、5 秒超时、`windowsHide`；非 Windows
+或读不到返回空）。取到路径后按**类别**分流：**目录 → `insertMention` 的 `@目录/` 引用**
+（写进正文的路径，与资源管理器右键文件夹同一条路；用户 2026-09-21 第二轮明确
+「粘贴文件夹不该变成附件」）、**文件 → 附件通道**（图片内容块 / 其余不限大小地上传）；
+取不到路径才退回字节通道（截图那类）。顺序在 `controller.handle` 的 `attachBytes` 分支里，
+`scripts/attachments.test.ts` 有断言。
+
+**仍未对齐的细节**：官方 `intakeFiles` 自带图片数量/大小校验、有整屏 `DropOverlay`；
+本扩展的字节通道（**拖放**、以及粘贴里剪贴板只有位图的那些）仍受单文件 8 MB 限制
+（`ATTACH_BYTES_LIMIT`），浮层只有拖放那一条路有。路径读取目前**只在 Windows** 可用。
 
 ---
 
@@ -503,6 +531,7 @@ if (attachment.kind === "selection" && attachment.text) {
 1. **`cancel` 之后队列是否自动 FIFO 续跑**：官方契约明确说会（`contract\session.d.ts:102-109`），扩展注释说不会且给了探针脚本名字（`controller.ts:1741` 提到 `scripts/queueContinueProbe.ts`）。**该脚本在本仓库不存在**（`scripts/` 下只有 `queueEscE2E.ts`、`probe.ts` 等，grep 无 `queueContinueProbe`）。仓库里唯一的 E2E（`scripts\queueEscE2E.ts:126-159`）只验证了扩展自己那套"先摘空"的流程，**没有**验证"只 cancel"这一分支（注释 `:4` 也只是说"复刻 stopRunning 的三步"）。所以扩展侧那个关键前提目前**在本仓库里没有可复现的证据**。我没有跑起服务器做实测。
 2. **用户手打 `/plan` 是否真的不进模型**：我从"Host 无正文命令解析"（`parseCommand` 只在 `dsh-commands` 内）+"/plan 状态只在命令 handler 里置位"推断出"扩展的 plan 模式不会真正激活"。这是代码推断，未运行验证。
 3. **VS Code webview 的拖放/图片粘贴能力**：扩展没有实现这条路径（可证），但"官方那条路径在 VS Code webview 里能否等价实现"我未验证。
+   → **2026-09-21 部分解决**：机制已在 VS Code 源码里读到（`Ctrl+V` 被 `preventDefault` 后由宿主补发 `execCommand("paste")`，见 §3.4），实现已接上；但「剪贴板里的**文件**（CF_HDROP）在 Electron 的 `execCommand("paste")` 里会不会被投递成 `clipboardData.files`」**仍未实测**——图片那条有先例（VS Code 里 Jupyter 笔记本能粘贴截图），文件那条只有浏览器侧的先例。
 4. **`images` 是否曾在某个历史版本被接受**：我只能证明当前安装树中唯一出现处是 fixture 替身（`dsh-client-connection\lib\client.js:5949`），无法回溯历史版本。
 5. **跨会话编辑竞态**（§2.1 第 5 点）与 **8 秒 waitUntilIdle 超时**的具体发生率：代码路径可读，未实测。
 6. 我没有逐个核对扩展的 `Attachment.kind === "context"`（`shared\chat.ts:17`）在发送路径里的处理——`buildContextText`（`controller.ts:1502-1537`）只处理 `selection` 与 `file`，`context` 既不内联也不报错，属于静默忽略；但我在源码里没找到任何创建 `context` 附件的地方，因此**无法确认该分支是否有实际入口**。
@@ -519,6 +548,7 @@ if (attachment.kind === "selection" && attachment.text) {
 4. **停止语义与官方相反**（§6.1）：ESC/停止变成了"停止+摘空队列+按序重发"，多 RPC、8 秒等待、有有损窗口，并把在途插话降级成排队；且扩展赖以成立的关键前提（cancel 不续跑）在本仓库没有可复现证据。
 5. **队列编辑的落点与官方不同**（§2.1）：官方原地改、不碰输入框、服务端丢附件；扩展摘掉队列项、把内容（和附件）追加进当前草稿、位置改到队尾——用户可能得到"顺序变了"和"草稿被拼了东西"两种意外。且 `steering` 行被当作"排队中"展示（§2.3）。
 6. **只有附件不能发**（§3.3）与**拖放/粘贴文件不落地**（§3.4）：都是"看起来支持、其实无声失败"的形态。
+   → **§3.4 已于 2026-09-21 修好**（拖放 + 粘贴都落地，`src/webview/attachIntake.ts`）；§3.3（只挂附件不能发）仍待处理。
 
 **B. 有差异但影响很小 / 基本无害**
 

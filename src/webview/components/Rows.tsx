@@ -129,15 +129,12 @@ export function ToolRow({ tool, diffLayout }: { tool: ToolCallView; diffLayout?:
   // 运行中还没有结果，但展开区仍有东西可看：实时耗时 +（认得出的话）完整命令。
   // 一律可展开——任何正在跑的节点都该能点开确认「它还活着」，这正是长任务的需要。
   const runningBody = running;
-  // 工具展开区（diff / 卡片 / IN-OUT）打开时回到顶部：内容基本都已成型，
-  // 打开就该从第一行读起；后续到达的更新也不该抢用户的滚动位置（用户 2026-09-16 口径）
-  //
-  // **两份 ref，不是一份**（2026-09-17 修）：diff 段与「结果 / 卡片」段会**同时**存在
-  // （编辑类出错时 `hasDiff && showOutput`）。从前它们共用 `bodyRef`，而 React 只保留
-  // 最后绑上的那个元素——于是 diff 那一段永远拿不到「打开回顶」与「划选冻结」。
-  const diffRef = useRef<HTMLDivElement>(null);
-  useStickyBody(diffRef, open && hasDiff);
-  useStickyBody(bodyRef, open && !hasDiff && (showOutput || hasCard || Boolean(codeCard)));
+  /**
+   * 「运行中」那一块自己也是一个 `.row-body`（max-height 320 + overflow auto），
+   * 长命令一样会撑出滚动条——所以它必须跟着一起定位，否则同一个展开区里会出现
+   * 「上面那条滚动条在顶部、下面那条在底部」的怪相。
+   */
+  const runningRef = useRef<HTMLDivElement>(null);
   // 结果行仍可能被后续更新刷新；用户在其中划选时冻结渲染，保住选区
   const shownOutput = useSelectionFreeze(bodyRef, tool.output ?? "");
 
@@ -188,6 +185,28 @@ export function ToolRow({ tool, diffLayout }: { tool: ToolCallView; diffLayout?:
       return tool.input;
     }
   })();
+  /**
+   * IN / OUT 卡的渲染判据，**只有这一份**：同一个式子既决定它渲不渲染，也决定要不要
+   * 给它做滚动定位——两处各写一份必然漂移（改了渲染忘了定位，那条滚动条就永远停在
+   * 顶部，用户 2026-09-21 报的正是这个形态）。
+   *
+   * 它同时是**运行中工具行的主滚动盒子**：卡片在跑的时候不渲染
+   * （`card = running ? undefined : tool.card`），跑 `run_code` / 长命令这类调用时，
+   * 展开区里唯一能撑出滚动条的就是这段 IN（参数 JSON）。
+   */
+  const showIoCard = !hasDiff && !hasCard && ((Boolean(inputText) && !codeCard) || showOutput);
+  const ioRef = useRef<HTMLDivElement>(null);
+  // 工具展开区（diff / 卡片 / IN-OUT / 运行状态）：**还在跑就贴底**（最新输出才是要看的），
+  // 跑完则回到顶部（成型的内容从第一行读起）——判据与理由见 `useStickyBody` 的文件头。
+  //
+  // **一个滚动盒子一个 ref**（2026-09-17 起的口径）：同一次展开里可能同时存在两段
+  // （编辑类出错时 `hasDiff && showOutput`；运行时「状态块 + IN 卡」），共用一个 ref 时
+  // React 只保留最后绑上的那个元素，另一段就永远拿不到定位。
+  const diffRef = useRef<HTMLDivElement>(null);
+  useStickyBody(diffRef, open && hasDiff, running);
+  useStickyBody(bodyRef, open && !hasDiff && (showOutput || hasCard || Boolean(codeCard)), running);
+  useStickyBody(ioRef, open && showIoCard, running);
+  useStickyBody(runningRef, open && runningBody, running);
   // 展开区只显示「解析后的有价值信息」：编辑类给 diff，其余给 IN/OUT 两段
   // （读取出的文本 / 运行输出 / 搜索结果等）。
   // 运行中也要可展开：长任务（构建）要能看见完整命令与「还在跑」的计时。
@@ -253,7 +272,7 @@ export function ToolRow({ tool, diffLayout }: { tool: ToolCallView; diffLayout?:
       }}
     >
       {runningBody ? (
-        <div className="row-body mono row-running">
+        <div ref={runningRef} className="row-body mono row-running">
           <div className="row-running-head">
             {/* 与思考节点同一个发光标记：一眼看出「还在跑」
                 （.icon-brand 提供鲸鱼的独属蓝，.icon-glow 只负责呼吸） */}
@@ -292,8 +311,8 @@ export function ToolRow({ tool, diffLayout }: { tool: ToolCallView; diffLayout?:
           官方对 diff 类工具直接给 DiffBlock、对上面那些给了卡片的工具也给各自的卡，
           所以这里只在**两者都没有**时渲染——否则同一份内容会出现两次；
           `run_code` 例外：它的输入已经是上面的代码块（官方同样不再渲染 IN）。 */}
-      {!hasDiff && !hasCard && ((inputText && !codeCard) || showOutput) ? (
-        <div className="row-body io-card">
+      {showIoCard ? (
+        <div ref={ioRef} className="row-body io-card">
           {inputText && !codeCard ? (
             <div className="io-section">
               <span className="io-label">{texts.toolInput}</span>
@@ -369,8 +388,8 @@ export function ThinkingRow({
   // 长思考会把正文顶出屏幕，而思考本身只要一行摘要就够——要看全文点开。
   const open = manual ?? false;
   const bodyRef = useRef<HTMLDivElement>(null);
-  // 思考是**流式增长**的：展开先回到顶部；只有盒子还装得下时才跟着长
-  // （装不下就不抢用户的滚动位置，见 useStickyBody 的文件头）
+  // 思考是**流式增长**的：还在流就贴底跟着长（那正是「最新的一句」所在），
+  // 流完就不再动位置（见 useStickyBody 的文件头）
   useStickyBody(bodyRef, open, streaming === true);
   // 流式期间用户划选正文时冻结渲染，否则每来一个 token 选区就没了
   const shownText = useSelectionFreeze(bodyRef, text);
@@ -1300,7 +1319,8 @@ export function CommandRow({ command }: { command: CommandRunView }) {
   const [open, setOpen] = useState(false);
   const failed = command.state === "error";
   const bodyRef = useRef<HTMLDivElement>(null);
-  useStickyBody(bodyRef, open);
+  // 命令与工具同口径：还在跑就贴底（结果一行行在写），跑完回到顶部
+  useStickyBody(bodyRef, open, command.state === "running");
   return (
     <Row
       // 运行中的命令与工具行同等待遇：行首图标呼吸发光（同节点色），

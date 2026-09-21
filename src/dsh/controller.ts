@@ -27,7 +27,8 @@ import type { HostToWebview, WebviewToHost } from "../shared/ipc";
 import { SessionAdapter, type ImageRef } from "./adapter";
 import { decodeChangesSummary } from "./changes";
 import { changesSummaryKey } from "../shared/changesSummary";
-import { classifyDroppedBytes, classifyPath, DROP_BYTES_LIMIT, formatPathList, isDirectoryPath, isImagePath } from "./attachments";
+import { ATTACH_BYTES_LIMIT, classifyDroppedBytes, classifyPath, formatPathList, isDirectoryPath, isImagePath } from "./attachments";
+import { readClipboardPaths } from "./clipboardPaths";
 import { ConfigChangeRouter } from "./configChanges";
 import { fileChangeKind, hasWorkingChange, isNotFoundError, resolveChipPath, type FileExistence, type GitChangeStateLike } from "./fileChange";
 import { readLocalImages } from "./localImages";
@@ -256,12 +257,12 @@ function isSafeSessionId(sessionId: string): boolean {
 }
 
 /**
- * `DROP_BYTES_LIMIT` 对应的 base64 字符数上限（+3 给 padding 波动留余量）。
+ * `ATTACH_BYTES_LIMIT` 对应的 base64 字符数上限（+3 给 padding 波动留余量）。
  *
  * 界面发来的 base64 先比长度再解码：解码一个几百 MB 的字符串本身就要先分配一份
  * 同量级的内存，而"它超限"这件事只看长度就够了。
  */
-const MAX_BASE64_CHARS = Math.ceil(DROP_BYTES_LIMIT / 3) * 4 + 3;
+const MAX_BASE64_CHARS = Math.ceil(ATTACH_BYTES_LIMIT / 3) * 4 + 3;
 
 /**
  * 图片**内联**（读成字节做内容块）的保守硬上限：64 MB。
@@ -3782,8 +3783,47 @@ export class ChatController implements vscode.Disposable {
         break;
 
       case "attachBytes":
-        // 拖放进来的文件（只有字节和名字，见 shared/ipc.ts 的 attachBytes）
-        await this.applyBytesForView(viewId, message.files, message.unreadable, message.tooLarge);
+        // 拖放 / 粘贴进来的文件（只有字节和名字，见 shared/ipc.ts 的 attachBytes）。
+        // **粘贴优先问系统剪贴板要真路径**：webview 侧拿不到路径（实测 types 只有
+        // "Files"，text/uri-list 与 text/plain 都是空的），而路径这条路才做得到
+        // 「目录 → 路径引用、文件 → 与回形针同样不限大小」（用户 2026-09-21 口径）。
+        // 拿不到路径（非 Windows / 剪贴板里没有文件——截图就是这样）才退回字节通道。
+        //
+        // 走这一支时界面送来的字节**被丢掉**（它并不知道宿主能拿到路径）。代价是
+        // 这一批文件的字节白读了一遍（≤ `ATTACH_BYTES_LIMIT`，超大条目界面侧本来就不读），
+        // 换来的是不必再加一轮「先问路径、再要字节」的往返协议——不值得为几百毫秒
+        // 把粘贴改成两阶段。
+        //
+        // 两类路径去向不同（用户 2026-09-21 两次口径合起来）：
+        // - **目录 → `@dir/` 引用**（写进正文的**路径**，与资源管理器右键文件夹、
+        //   命令面板「添加文件夹」同一条路）——用户第二次明确「粘贴文件夹不该变成附件」；
+        // - **文件 → 附件通道**（图片内容块 / 其余上传，不限大小）——第一次的口径是
+        //   「粘贴文件要和添加附件一样」。
+        if (message.source === "paste") {
+          const paths = await readClipboardPaths();
+          if (paths.length) {
+            const directories: string[] = [];
+            const files: string[] = [];
+            // 一次 stat 分流：`isDirectoryPath` 拿不到证据时按「不是目录」处理
+            for (const path of paths) (isDirectoryPath(path) ? directories : files).push(path);
+            this.log(
+              `[attach] 粘贴：系统剪贴板里有 ${paths.length} 个路径（目录 ${directories.length} / 文件 ${files.length}）`,
+            );
+            for (const directory of directories) {
+              this.insertMention(viewId, formatFileMention(this.relativePath(directory), "directory"));
+            }
+            if (files.length) await this.addPaths(viewId, files);
+            break;
+          }
+        }
+        // `source` 只影响剩余提示与日志措辞；缺省当拖放（旧帧只有那一条路）
+        await this.applyBytesForView(
+          viewId,
+          message.files,
+          message.unreadable,
+          message.tooLarge,
+          message.source === "paste" ? "paste" : "drop",
+        );
         break;
 
       case "retryUpload":
@@ -4227,7 +4267,10 @@ export class ChatController implements vscode.Disposable {
       canSelectMany: true,
       canSelectFiles: true,
       canSelectFolders: false,
-      openLabel: vscode.l10n.t("Add as context"),
+      // 确认按钮的文案说的是**选完会发生什么**：这些文件变成输入框上方的附件芯片
+      // （图片按内容块发送、其余逐字节上传），不是插进正文的引用——所以不叫
+      // 「添加为上下文」（用户 2026-09-21 指出那句话不准确）
+      openLabel: vscode.l10n.t("Add attachments"),
     });
     if (!picked?.length) return;
     await this.addPaths(viewId, picked.map((uri) => uri.fsPath));
@@ -4244,7 +4287,9 @@ export class ChatController implements vscode.Disposable {
       canSelectMany: true,
       canSelectFiles: false,
       canSelectFolders: true,
-      openLabel: vscode.l10n.t("Add folder as context"),
+      // 目录与文件不同：它插进正文成为 `@dir/` **引用**（不是附件芯片），
+      // 所以这句保留「引用」的说法
+      openLabel: vscode.l10n.t("Add folder reference"),
     });
     if (!picked?.length) return;
     for (const uri of picked) {
@@ -4346,21 +4391,24 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
-   * 拖放进来的文件：**只有字节和文件名**（webview 拿不到路径，理由见
+   * 拖放 / 粘贴进来的文件：**只有字节和文件名**（webview 拿不到路径，理由见
    * `shared/ipc.ts` 的 `attachBytes`）。与 `applyPathsForView` 同口径，只是信息更少：
    * - 图片且模型收图 → 图片附件（内容块，与官方内联图片字节一致）；
    * - 其余（含模型不收图的图片）→ 文件附件并**立即上传字节**。上传路径本来就
    *   按字节发、不挑类型，图片当普通文件传也比丢掉强——"模型不收图"时退回
-   *   路径文本对拖放根本不可行（没有路径可插）。
+   *   路径文本对这两条路根本不可行（既没有路径可插，字节也没法给模型读）。
    *
    * `unreadable` / `tooLarge` 是这一批里没进来的名字（目录 / 超限），逐个提示，
    * 不静默丢弃——拖了一堆文件却少进来几个，用户必须知道是哪个、为什么。
+   * 提示文案按 `source` 分「拖放 / 粘贴」两套措辞：准入判据完全相同，但
+   * 「拖放上限 8 MB，请改用添加文件」对粘贴来的东西说不通（用户手上没有那个文件）。
    */
   private async applyBytesForView(
     viewId: string,
     files: readonly { name: string; base64: string }[],
     unreadable: readonly string[],
     tooLarge: readonly string[],
+    source: "drop" | "paste",
   ): Promise<void> {
     // 上传需要会话：与 addFiles 一样，空态时先建一个
     if (!this.scopeOfView(viewId)) {
@@ -4373,14 +4421,17 @@ export class ChatController implements vscode.Disposable {
     const acceptsImage = this.scopeOfView(viewId)?.model?.acceptsImage !== false;
     const pending: { attachment: Attachment; bytes: Uint8Array }[] = [];
     const rejected: string[] = [];
+    // 日志里区分「拖放 / 粘贴」：两条路的排查线索不同（拖放的常见问题是 Shift 门，
+    // 粘贴的是剪贴板里根本没有文件格式），同一句日志会把人带偏
+    const label = source === "paste" ? "粘贴" : "拖放";
 
     for (const file of files) {
-      // **宿主这一侧也要拦**：`DROP_BYTES_LIMIT` 原本只在界面里判（`dropAttach.ts`），
+      // **宿主这一侧也要拦**：`ATTACH_BYTES_LIMIT` 原本只在界面里判（`attachIntake.ts`），
       // 而帧是界面发来的、形状不受类型系统约束——没有这一道，一条超大的 base64
       // 会让宿主先分配一份解码后的字节再发现它太大。按 base64 长度先判，
       // 连解码都不做（4/3 关系，留 3 字节余量给 padding）。
       if (file.base64.length > MAX_BASE64_CHARS) {
-        this.log(`[attach] 拖放的文件超过 ${DROP_BYTES_LIMIT} 字节，已拒绝：${file.name}`);
+        this.log(`[attach] ${label}的文件超过 ${ATTACH_BYTES_LIMIT} 字节，已拒绝：${file.name}`);
         rejected.push(file.name);
         continue;
       }
@@ -4388,11 +4439,11 @@ export class ChatController implements vscode.Disposable {
       try {
         bytes = new Uint8Array(Buffer.from(file.base64, "base64"));
       } catch (error) {
-        this.log(`[attach] 拖放解码失败 ${file.name}：${this.describeError(error)}`);
+        this.log(`[attach] ${label}解码失败 ${file.name}：${this.describeError(error)}`);
         continue;
       }
-      if (bytes.length > DROP_BYTES_LIMIT) {
-        this.log(`[attach] 拖放的文件超过 ${DROP_BYTES_LIMIT} 字节，已拒绝：${file.name}`);
+      if (bytes.length > ATTACH_BYTES_LIMIT) {
+        this.log(`[attach] ${label}的文件超过 ${ATTACH_BYTES_LIMIT} 字节，已拒绝：${file.name}`);
         rejected.push(file.name);
         continue;
       }
@@ -4409,11 +4460,14 @@ export class ChatController implements vscode.Disposable {
     for (const item of pending) {
       this.uploadBytes(viewId, item.attachment, item.bytes);
     }
+    // 两条路各一套措辞（字面量写在这里，`scripts/i18n.test.ts` 靠它核对发射点）
+    const unreadableKey = source === "paste" ? "@pasteUnreadable" : "@dropUnreadable";
+    const tooLargeKey = source === "paste" ? "@pasteTooLarge" : "@dropTooLarge";
     for (const name of unreadable) {
-      this.emitToView(viewId, { type: "toast", level: "warn", text: `@dropUnreadable:${name}` });
+      this.emitToView(viewId, { type: "toast", level: "warn", text: `${unreadableKey}:${name}` });
     }
     for (const name of [...tooLarge, ...rejected]) {
-      this.emitToView(viewId, { type: "toast", level: "warn", text: `@dropTooLarge:${name}` });
+      this.emitToView(viewId, { type: "toast", level: "warn", text: `${tooLargeKey}:${name}` });
     }
   }
 

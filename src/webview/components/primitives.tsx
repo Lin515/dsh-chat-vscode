@@ -407,18 +407,26 @@ export function Spinner({ size = 12 }: { size?: number }) {
 }
 
 /**
- * 折叠 body 区（`.row-body`）的滚动位置：**展开即回到顶部**，只有还在增长的内容
- * 才谈得上「跟随最新」。
+ * 折叠 body 区（`.row-body`）的滚动位置：**还在跑的贴底，已结束的置顶**。
  *
- * 用户 2026-09-16 口径：各类节点打开后，如果有垂直滚动条，默认应当居于**最顶部**
- * ——节点内容基本都是成型后一次性呈现的（工具的 diff / 卡片 / IN-OUT、注入的提示词、
- * 命令结果），打开就该从第一行读起。此前这里一律 `scrollTop = scrollHeight`（贴底），
- * 于是一张长 diff、一段长输出打开后停在末尾，得自己往上翻。
+ * 两条口径合起来看（后者是用户 2026-09-20 的修正，覆盖前者的适用范围）：
  *
- * `streaming`（只有思考节点会传 true）是唯一的例外，且**只在盒子还装得下时**跟随：
- * 内容还在逐 token 增长、又没超出可见高度时跟着长（否则新 token 会掉到折叠线以下，
- * 用户什么都看不到）；一旦已经装不下，就不抢用户的滚动——用户自己滑到底部即恢复跟随
- * （与主对话区同一套「贴底判定」）。
+ * - **已结束的节点**（用户 2026-09-16）：打开后垂直滚动条默认居于**最顶部**——内容
+ *   都是成型后一次性呈现的（工具的 diff / 卡片 / IN-OUT、注入的提示词、命令结果），
+ *   打开就该从第一行读起。此前一律 `scrollTop = scrollHeight`（贴底），于是一张长
+ *   diff、一段长输出打开后停在末尾，得自己往上翻。
+ * - **未结束、还在执行中的节点**（用户 2026-09-20）：打开后滚动条应当在**底部**。
+ *   思考在逐 token 长、工具在持续吐输出，最新的一行才是用户点开要看的东西；停在
+ *   顶部等于「每次都先看一遍开头再手滑到底」。所以 `active` 为真时**打开即贴底**，
+ *   并且一直跟着新内容走。
+ *
+ * `active` = 「这个节点还在执行 / 内容还在增长」：思考节点传 `streaming`，工具行与
+ * 命令节点传「status 还在跑」。注意它**不是**「有没有滚动条」——装不装得下都贴底，
+ * 新的判据不再要求「盒子还装得下」（旧口径那条限制正是用户这次报的现象）。
+ *
+ * **打开那一刻只定位一次**：`active` 从真翻到假（节点跑完了）时**不动滚动位置**。
+ * 否则用户正盯着末尾看输出，节点一结束就被拽回顶部——那是最糟的打断。后续节点若
+ * 重新变成进行中（罕见），跟随态恢复、内容一变即回到末尾。
  *
  * 粘性语义与主对话区一致：只有「scrollTop 真正变小」（用户上滑）才脱离跟随，
  * 滚回底部重新跟随。body 区自身是滚动容器（max-height 固定，盒子尺寸不变，
@@ -427,21 +435,28 @@ export function Spinner({ size = 12 }: { size?: number }) {
 export function useStickyBody(
   ref: RefObject<HTMLDivElement | null>,
   enabled: boolean,
-  streaming = false,
+  active = false,
 ): void {
   const stickRef = useRef(false);
   const lastTopRef = useRef(0);
+  /** 这一次 `enabled` 是不是「刚打开」（上一次 effect 跑时还没开）。 */
+  const openedRef = useRef(false);
 
   useLayoutEffect(() => {
     const el = ref.current;
-    if (!el || !enabled) return;
-    // 打开即从第一行开始
-    el.scrollTop = 0;
-    lastTopRef.current = 0;
-    // 装得下才算「跟随」（此时没有滚动条，跟不跟是同一件事——跟着长才是对的）
-    stickRef.current = streaming && el.scrollHeight - el.clientHeight < 40;
+    if (!el || !enabled) {
+      openedRef.current = false;
+      return;
+    }
+    if (!openedRef.current) {
+      openedRef.current = true;
+      // 展开那一刻的定位：进行中的停在最新一行，已结束的从第一行读起
+      el.scrollTop = active ? el.scrollHeight : 0;
+      lastTopRef.current = el.scrollTop;
+    }
+    stickRef.current = active;
     // 内容不会再变：不需要观察者，更不该在后续更新时抢用户的滚动位置
-    if (!streaming) return;
+    if (!active) return;
 
     const onScroll = () => {
       const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
@@ -463,7 +478,7 @@ export function useStickyBody(
       observer.disconnect();
       el.removeEventListener("scroll", onScroll);
     };
-  }, [enabled, streaming]);
+  }, [enabled, active]);
 }
 
 /** 元素内是否存在非折叠选区（用户正在其中划选文字）。 */

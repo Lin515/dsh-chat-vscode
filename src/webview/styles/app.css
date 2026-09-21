@@ -3025,7 +3025,7 @@
 
 /* 全页拖放浮层：文件拖进会话页时整页亮起「松手即添加」（App 的 usePageFileDrop）。
    只在拖拽事件真的到达 webview 时出现——从 VS Code 内拖入必须按住 Shift，
-   不按时事件根本到不了这里（平台行为，见 dropAttach.ts 的注释）。
+   不按时事件根本到不了这里（平台行为，见 attachIntake.ts 的注释）。
    pointer-events 必须为 none：浮层不能自己变成 drop 目标（drop 要落到页面
    本身、冒泡到 window 统一处理）；z-index 要盖过各面板（30/31）。 */
 .page-drop-overlay {

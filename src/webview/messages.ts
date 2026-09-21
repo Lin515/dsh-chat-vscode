@@ -95,7 +95,12 @@ export const MESSAGES = {
     en: "The browser was not opened; you can visit the URL printed by dsh web manually.",
   },
 
-  emptyHint: { zh: "用 @ 添加文件或选区作为上下文；Shift+Enter 换行。", en: "Use @ to attach files or a selection. Shift+Enter for a new line." },
+  // 空态提示同时是**能力公告**：粘贴这条路没有任何按钮可点，不在这里说一句，
+  // 用户不会知道它存在（`usePagePaste` 是窗口级监听）
+  emptyHint: {
+    zh: "用 @ 添加文件或选区作为上下文；也可以直接粘贴图片、文件或目录；Shift+Enter 换行。",
+    en: "Use @ to attach files or a selection, or paste an image, file or folder directly. Shift+Enter for a new line.",
+  },
 
   placeholderFirst: { zh: "问点什么，或用 @ 添加上下文", en: "Ask anything, or use @ to add context" },
   placeholderFollowUp: { zh: "继续追问…", en: "Ask a follow-up" },
@@ -252,6 +257,21 @@ export const MESSAGES = {
   dropTooLarge: {
     zh: (name: string) => `${name} 太大，拖放上限 8 MB；请改用「添加文件」`,
     en: (name: string) => `${name} is too large to drop (limit 8 MB); use the attach button instead`,
+  },
+  // 粘贴这条路分两截：宿主能从**系统剪贴板取到真路径**时走与「添加文件」完全同一条
+  // （目录 → 路径引用、图片 → 内容块、其余 → 不限大小地上传）；取不到路径才退回字节
+  // 通道（截图那类剪贴板里本来就没有文件的形态）。下面两条只在**退回字节通道**后出现，
+  // 所以措辞按那个场景写：读不出来 = 剪贴板只给了空条目 / 目录条目；
+  // 太大 = 字节要过内存通道，8 MB 是它的上限（文件那条路没有这个限制）。
+  pasteUnreadable: {
+    zh: (name: string) => `${name} 读不出来，没有加进来（目录用 @ 引用即可，那是路径）`,
+    en: (name: string) =>
+      `${name} could not be read and was not attached (reference a folder with @ instead — that goes in as a path)`,
+  },
+  pasteTooLarge: {
+    zh: (name: string) => `${name} 太大（超过 8 MB），没有加进来；存成文件后用「添加文件」——那条路不限大小`,
+    en: (name: string) =>
+      `${name} is too large (over 8 MB) and was not attached; save it as a file and use the attach button, which has no size limit`,
   },
   imageTooLarge: {
     zh: (name: string) => `${name} 超过服务端的图片上限，已改为按文件上传`,

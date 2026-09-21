@@ -543,9 +543,11 @@ export function Composer({
 
       <div className="composer-shell">
         {/*
-          拖放接取**不在这里**：全页由 App 的 usePageFileDrop 统一接（window 监听），
-          输入框自己不再处理 drop——两处都接会双发 attachBytes（同一份文件两条附件）。
-          平台限制（拖入必须按住 Shift，否则 VS Code 把文件打开）见 `dropAttach.ts`。
+          拖放 / 粘贴接取**都不在这里**：全页由 App 的 usePageFileDrop + usePagePaste
+          统一接（window 监听），输入框自己不再处理——两处都接会双发 attachBytes
+          （同一份文件两条附件）。
+          平台限制（拖入必须按住 Shift，否则 VS Code 把文件打开）与「Ctrl+V 被 VS Code
+          接管、它再补发一次 paste」这两条机制都见 `attachIntake.ts`。
         */}
         <div className="composer-box">
           {state.attachments.length ? (

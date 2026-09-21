@@ -13,8 +13,10 @@ import assert from "node:assert";
 import { composeWithReferences, formatFileMention } from "../src/dsh/references";
 import { displaySessionMentions } from "../src/shared/mentions";
 
-// ---------- 1. mention 文本：逐字对齐官方 formatFileMention ----------
-
+// ---------- 1. mention 文本：目录补尾斜杠、分隔符统一成 `/` ----------
+//
+// 分隔符归一与「引号成对」是**刻意偏离官方**的两条（用户 2026-09-21 口径，理由写在
+// `src/shared/mentions.ts` 的文件头）：官方保留调用方给的反斜杠、且目录只写开引号。
 {
   assert.strictEqual(formatFileMention("src/dsh/controller.ts"), "@src/dsh/controller.ts");
   // 目录补结尾斜杠——系统提示段用它区分「这是目录，要内容就 list」
@@ -22,26 +24,33 @@ import { displaySessionMentions } from "../src/shared/mentions";
   // 已带尾斜杠时不重复追加（`@dir//` 语义不变但很难看；
   // 官方那行是无条件拼接，因为它的调用方从不传带尾斜杠的路径）
   assert.strictEqual(formatFileMention("src/dsh/", "directory"), "@src/dsh/");
-  assert.strictEqual(formatFileMention("src\\dsh\\", "directory"), "@src\\dsh\\");
+  // **反斜杠统一换成 `/`**（偏离官方）：Windows 侧 `path.relative()` 给的是 `\`，
+  // 而 `@` 引用是正斜杠语法，混着写会得到 `@src\webview/`（用户报的正是它）
+  assert.strictEqual(formatFileMention("src\\dsh\\", "directory"), "@src/dsh/", "目录：反斜杠归一 + 尾斜杠只留一个");
+  assert.strictEqual(formatFileMention("src\\dsh\\adapter.ts"), "@src/dsh/adapter.ts", "文件同样归一（两处产生方要一致）");
+  assert.strictEqual(formatFileMention("D:\\dev\\app\\a.ts"), "@D:/dev/app/a.ts", "绝对路径也归一");
   // **文件**不补斜杠，哪怕路径以斜杠结尾也不动它
   assert.strictEqual(formatFileMention("src/dsh/", "file"), "@src/dsh/");
 }
-console.log("references: 普通路径与目录的 mention（不重复补斜杠） ✓");
+console.log("references: 普通路径与目录的 mention（分隔符归一 / 不重复补斜杠） ✓");
 
-// ---------- 2. 含空白的路径要加引号；目录只加**开**引号 ----------
+// ---------- 2. 含空白的路径：引号**成对**（目录也一样） ----------
 //
-// 目录只加开引号是官方刻意的：那个形式在输入框里仍是「未闭合」的引用，
-// 用户继续往下打字（下钻）时语法仍然成立。
+// 官方对目录只写开引号（`@"dir/`，为了「未闭合还能继续往下打字」）。用户 2026-09-21
+// 报「引进带空格目录时，只有头部有引号、尾部没有」：那个未闭合形态一旦被发出去就是
+// 半截 token。而带空格的路径本来就没法用触发词继续下钻（查询按空白切段），
+// 所以官方的理由在这里不成立，改成成对引号。
 {
   assert.strictEqual(formatFileMention("my file.txt"), '@"my file.txt"');
-  assert.strictEqual(formatFileMention("my dir", "directory"), '@"my dir/');
+  assert.strictEqual(formatFileMention("my dir", "directory"), '@"my dir/"');
   assert.ok(
-    !formatFileMention("my dir", "directory")!.endsWith('"'),
-    "目录的 mention 不能闭合引号——否则用户没法继续往下打",
+    formatFileMention("my dir", "directory")!.endsWith('/"'),
+    "目录的 mention 也要闭合引号（尾斜杠在引号**内**，目录标记不能丢）",
   );
+  assert.strictEqual(formatFileMention("my\\dir with space", "directory"), '@"my/dir with space/"', "归一与引号一起生效");
   assert.ok(!formatFileMention("plain.ts")!.includes('"'), "无空格的路径不加引号");
 }
-console.log("references: 含空白路径加引号，目录只加开引号 ✓");
+console.log("references: 含空白路径加引号（目录也成对） ✓");
 
 // ---------- 3. 含控制字符或 `"` 的路径无法引用 ----------
 

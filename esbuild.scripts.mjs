@@ -47,6 +47,7 @@ const entries = {
   "build/pending-interactions.test.mjs": "scripts/pendingInteractions.test.ts",
   "build/diff.test.mjs": "scripts/diff.test.ts",
   "build/attachments.test.mjs": "scripts/attachments.test.ts",
+  "build/clipboard-paths.test.mjs": "scripts/clipboardPaths.test.ts",
   "build/queue-view.test.mjs": "scripts/queueView.test.ts",
   "build/session-cookie.test.mjs": "scripts/sessionCookie.test.ts",
   "build/tool-view.test.mjs": "scripts/toolView.test.ts",

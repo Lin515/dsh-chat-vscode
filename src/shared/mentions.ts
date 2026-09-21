@@ -10,26 +10,43 @@
  * （带不带引号、目录带不带尾斜杠都会变），模型看到的语义也就跟着变。所以规则
  * 只写在这里一份。
  *
- * 规则逐字对齐官方 `formatFileMention`：
+ * 规则以官方 `formatFileMention` 为底，**两处刻意偏离**（用户 2026-09-21 口径，
+ * 原话：「引用进目录时，将 `\` 统一换成 `/`」「引进带空格目录时，只有头部有引号、
+ * 尾部没有」）：
  * - 目录补结尾 `/`（`@src/`）——系统提示段用它区分文件与目录；
- * - 路径含空白时整体加引号（`@"my file.txt"`），否则不加；
- * - 含控制字符或 `"` 的路径**不可引用**（返回 undefined，调用方退回普通文本）；
- * - 目录带引号时只写**开引号**（`@"dir/`）：那个形式在输入框里还是一个「未闭合」
- *   的引用，用户继续往下打字（drill）时语法仍然成立。
+ * - **分隔符统一成 `/`**：Windows 侧的路径来源五花八门（`path.relative()` 给 `\`、
+ *   服务端候选多半给 `/`），不归一就会写出 `@src\webview/` 这种混合形态。
+ *   反斜杠在 Windows 上就是分隔符，改成正斜杠指向同一个文件（fs 两边都认），
+ *   而 `@` 引用本身就是正斜杠语法（官方系统提示段的例子全是 `/`）。POSIX 上名字里
+ *   含 `\` 的文件是极端个例，这次刻意不为它保留原样；
+ * - 含空白的路径整体加**成对**引号（`@"my dir/"`）。官方对目录只写开引号
+ *   （`@"dir/`，为了「未闭合还能继续打字」），但那个未闭合形态一旦被发出去就是
+ *   半截 token，用户看到的就是「只有头部有引号」——而带空格的路径**本来就没法**
+ *   用触发词继续下钻（查询按空白切段），所以那个理由在这里不成立；
+ * - 含控制字符或 `"` 的路径**不可引用**（返回 undefined，调用方退回普通文本）。
  */
+
+/**
+ * 把路径里的分隔符统一成 `/`（`@` 引用只认正斜杠，见文件头）。
+ *
+ * 导出给**不经过 `formatFileMention` 的写入口**用：`@` 列表里的「下钻 / 回上一层」
+ * 是直接改写正文里的查询串（`@src\webview/`），不走 token 生成那条路。
+ */
+export function normalizeMentionPath(path: string): string {
+  return path.replaceAll("\\", "/");
+}
 
 /** 生成 `@` 引用的模型可见文本；不可引用时返回 undefined。 */
 export function formatFileMention(path: string, kind: "file" | "directory" = "file"): string | undefined {
-  // 目录补结尾 `/`——系统提示段靠它区分「这是目录，要内容就 list」。
-  // 已经带分隔符时不重复追加：官方那行是无条件 `` `${path}/` ``（调用方从不传带
-  // 尾斜杠的路径），而我们的路径可能来自用户手输或工具回传，`@dir//` 虽然语义
-  // 不变但很难看。归一化只影响这一个退化输入，正确输入一个字节都不变。
-  const needsSlash = kind === "directory" && !/[/\\]$/u.test(path);
-  const full = needsSlash ? `${path}/` : path;
+  // 先归一化分隔符，再谈尾斜杠：`src\dsh\` 归一后就是 `src/dsh/`，不必再补
+  const normalized = normalizeMentionPath(path);
+  const needsSlash = kind === "directory" && !normalized.endsWith("/");
+  const full = needsSlash ? `${normalized}/` : normalized;
   // eslint-disable-next-line no-control-regex -- 官方逐字如此：控制字符会让 token 无法解析
   if (/[\u0000-\u001f\u007f-\u009f"]/u.test(full)) return undefined;
   if (!/\s/u.test(full)) return `@${full}`;
-  return kind === "directory" ? `@"${full}` : `@"${full}"`;
+  // 引号**成对**：文件和目录一视同仁（见文件头的偏离说明）
+  return `@"${full}"`;
 }
 
 /**
