@@ -2,7 +2,7 @@
 
 > 状态：**已实现并生效**（写于 2026-09-13，2026-09-14 落地；此后 §8 记录了历次实测修正）。
 > 取代 `docs/design-shared-server.md`（那份描述的是"窗口之间自己协商"的会合租约模型，
-> 本文 §1 说明它为什么必须被换掉；那份文档保留作历史记录，不再作为实现依据）。
+> 本文 §1 说明它为什么必须被换掉；那份文档已于 2026-09-21 删除，不再作为实现依据）。
 > 代码落点：守护进程 `src/supervisor/main.ts`；客户端侧
 > `src/dsh/supervisor{Manager,Client,Runner,Protocol,Wire,Errors}.ts`。
 >

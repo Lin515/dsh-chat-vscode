@@ -2,7 +2,37 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## 未发布
+## 0.9.0（2026-09-21）
+
+### 生成中也能加载更早的历史（2026-09-21，与官方 Web 端对齐）
+
+用户报：生成中点「加载更早的历史」按钮是灰的，提示「生成中不能加载历史，请等这一轮结束」，
+而官方 Web 端同一枚按钮在生成中照常可点。
+
+- **那条闸门是我们自己的架构限制，不是服务端约束**：官方 `ChatView` 的按钮是
+  `disabled={loadingOlder}`、`session.loadOlder()` 只守 open / hasMore / loadingOlder，从不看
+  running；服务端 `session/page` 也只校验 `throughSeq` 不超过当前 cursor，与有没有在生成无关。
+  当初留下的注释把两者混着写了（「服务端也不会给出稳定的分页结果」查不到任何支撑）。
+- **根因**：`refold()` 从 durable 事件整体重建模型，而生成中的内容**不在 durable 事件里**
+  ——流式正文/思考来自逐 token 的 `assistant-stream` 帧、参数还在流里的工具行来自
+  `tool-call-delta`（`remember()` 只记 durable 事件）。生成中重折一次就会：正文塌回最后一个
+  增量（后续增量找不到叠加层、只能拿自己那几十个字另开一段）、在飞的工具行整行消失。
+- **做法**：适配器新增 `CarriedLiveOverlay`——`refold()` 前把 `liveSegments` / `toolSegments`
+  指向的段落**连段 id** 抄一份，折完按原段内下标挂回去。抄段落而不是重放增量：接管时
+  `reclaimLiveSegments` 会摘掉登记，所以「还在册」精确等价于「`seen` 里还没有对应内容」，挂回
+  去不可能重复；段 id 不变则界面上那条节点的 React key 不变，你手动展开的节点、盒子里的滚动
+  位置、正在划的选区都不会被这次重折收回。工具行 id 恒为 `tool:<callId>`，会和 durable 折出
+  来的那份撞——撞了留 durable。在飞 step 的「首个 token 时刻」（本轮 TTFT / tokens/s 的基准）
+  也一并保住，且只在重放**结束后**恢复：重放期间必须保持 `undefined`，否则每条重放的 durable
+  消息都会算一次窗口、累计指标翻倍。
+- **四处闸门一起撤**：宿主 `loadMore` 的 running 拦截与 `@historyBusy` toast、`pageBackwards`
+  的「新一轮开始就停」、会话页按钮的 `state.running`、轮次横条未加载刻点的 running 判断
+  （`running` prop 随之移除）。文案 `historyBusy` 按 i18n 规则从消息表、`Texts` 与宿主标记清单
+  三处一并删除。
+- 断言：`scripts/historyReplay.test.ts` 新增「生成中加载更早，在飞内容活过重折」（正文仍是完整
+  增量拼接、运行中的工具行仍在且在册、连折两次不变成两条、durable 到达时就地接管抄回的那一段、
+  本轮 TTFT 取到 `turn/start` 之后 100ms）；`scripts/turnRail.test.ts` 反向钉住「点击闸门必须含
+  `historyLoading`、`running` 不许回来」。口径写进 `docs/design-trajectory.md` §A.5。
 
 ### 修复：重载后编辑区标签的会话会「交叉」；标签改为显示会话标题（2026-09-21）
 
@@ -25,6 +55,12 @@
 - 断言：`scripts/windowState.test.ts` 新增 §4a（身份优先、跳着认领、重复会话、身份对不上
   退回顺序、按条问的合并规则）、`scripts/panelTitle.test.ts`（标签标题两态 + 身份形状逐字
   对拍 + 写/读两侧接线 + 「标签上不许有状态标识」的反向断言）。无新增用户可见文案。
+
+### 空输入框的占位文案：三条入口都点到（2026-09-21）
+
+占位从「问点什么，或用 @ 添加上下文」改为「发消息或创建任务，/ 调用指令，@ 文件或对话」
+（英文同步为 `Send a message or start a task; / for commands, @ for files or chats`）。原来那句
+只提了 `@`，而直接发一条消息就是派任务、`/` 是斜杠指令——两条主要入口都没露脸。
 
 ### 修复：生成中离开会话再回来，思考节点会「分裂成两条」（2026-09-21）
 
@@ -560,6 +596,28 @@
 `command`（激活期只读一次）需要重载；`autoConnect` 只是自动路径的许可，改动即时应用——
 停在按钮态且没定过目标时立即按新值选一次路，已连上的不动。断言见新增
 `scripts/autoConnectConfig.test.ts`；README 中英两版与 design-supervisor §4.4/§9.10 同步。
+
+### 删掉已过期的会合模型设计文档（2026-09-21，文档）
+
+`docs/design-shared-server.md`（408 行）删除：它描述的是「窗口之间自己协商」的会合租约模型，
+自 supervisor 架构落地后已由 `docs/design-supervisor.md` 取代，此前以「保留作历史记录」的名义
+留着——实际效果只是让新会话有概率照着一份作废的模型去理解连接机制。
+`design-supervisor.md` 头部那句「取代 …」随之改成陈述删除事实。
+
+### 探针治理：测试会话不再留在你的 `~/.dsh` 里（2026-09-20，开发侧）
+
+每次改动验证都会对真实服务端建会话、发真实消息，而探针最多只做 `archiveSession`（归档不等于
+删除），17 个探针连隔离都没有——本项目工作区下积了 226 个测试会话。
+
+- **双重隔离**：`scripts/supervisorProbeEnv.ts` 把 supervisor 的会合目录与 `DSH_HOME` 都指向
+  一次性临时目录（复制 `.credentials.yaml` 供真实模型调用），退出时整体删除，启动时清扫超
+  6 小时的残留目录。实测：跑一次 smoke 全绿，真实会话数 226 → 226（零新增），229 个历史遗留
+  临时目录被一并清掉。
+- 17 个未接入的探针补上隔离 import（含防 esbuild 摇树的强自检）。
+- 35 个探针/工具文件头标注「探针定位」：防线型 9（契约对拍，其中 3 个耗 token）、勘察型 13
+  （结论已固化，红 ≠ 产品坏）、工具型 13（零 token 可自由跑）。
+- `AGENTS.md` 同时立了一条硬约束：**禁止自动执行任何消耗 token 的验证**（smoke / 探针 / e2e），
+  须逐次申请、一次批准一次有效；标准三件套是 `typecheck` + `test` + `build`（零 token）。
 
 ## 0.8.2（2026-09-19）
 
