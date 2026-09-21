@@ -226,6 +226,36 @@ defined` / `acquireVsCodeApi is not defined`）；③ `scripts/pinger.ts` 的手
 ——其中 `child-exit` 在本次收敛后**真的红过一次**：探针改写时丢了 `DSH_FAKE_BOOT_LOG` 的环境交接，
 假 dsh 不再记账，三条断言里两条还**空过**（"✓ 真 node 已消失"其实从没找到 node）。补一行后 A/B/C 全绿。
 
+### 已修复（第七批：中途挂上的流式叠加层，2026-09-21）
+
+用户 2026-09-21 报：**生成中离开会话**（历史抽屉点别的会话、或重载 VS Code 窗口），回来时
+那一轮「分裂成两条思考节点」——前一条只剩一个字的思考、还一直显示在跑（实际早已停），
+后一条才是完整思考；跑完再打开该会话则一切正常（所以它不是渲染问题）。
+
+根因是漏读了契约（`docs/dsh-server-api.md` §6.7 已补记）：为**已经在跑的 attempt** 重开
+follow 时，服务端**不重发 `start` 帧、也不重发已发过的增量**，进行中的内容只在开帧的
+`snapshot.assistantStream.activeAttempt`（`{attemptId, turn, step, nextIndex, stream}`）里。
+适配器此前只声明了这个字段、从不消费它，于是：
+
+| 症状 | 成因 |
+|---|---|
+| 回来后的思考只剩「一个字」 | 基线没重建 → 叠加层正文只有挂上之后收到的增量；折叠摘要取**最后一行**，看着就是一个字 |
+| durable 结算后**分裂成两条** | 没有 `start` 帧 ⇒ `liveTurn/liveStep` 停在 0 ⇒ `reclaimLiveSegments` 匹配不上 ⇒ durable 另推一条 |
+| 前一条**一直在跑** | 那条叠加层没被接管（也就没清 `streaming`），`liveSegments` 里也一直留着 |
+| 跑完再打开就正常 | 那时没有活跃 attempt，也就没有叠加层可分裂 |
+
+四处改动：① 新增 `src/dsh/assistantStream.ts`（官方 `expandAssistantStream` 的等价实现，
+把紧凑记录展开回 timed chunk，形状不可信的记录跳过）；② 适配器新增 `replayActiveAttempt`，
+在开帧后、`messages/reset` 前把基线折回模型（静默，不逐条发帧）并认领 attempt 的 turn/step；
+③ 增量**落到模型上**（`appendLiveDelta`）——此前只发帧不改模型，任何一次整条下发（usage 帧、
+durable 结算）都会把界面已经长好的节点打回**第一个增量**；④ `reclaimLiveSegments` 对认不出
+turn/step 的叠加层按通配认领，`reset()` 作废上一窗的活跃身份。
+
+回归锁：`scripts/thinkingStream.test.ts` A3d（展开器逐类 + 坏记录跳过）、A4（带基线的开帧 +
+无 `start` 的增量 + durable 结算）、A4b（基线缺失也不分裂）、A4c（截断窗口里「这一轮在跑」
+由基线补回）。改前红：两条节点、`streaming` 未清；变异验证过（撤掉通配认领 → A4b 红；
+撤掉轮号/在跑认领 → A4c 红）。
+
 ### 段顺序（2026-09-14 修的活路径缺陷）
 
 `applyAssistantMessage` 此前把 durable 的思考/正文**追加到消息末尾**。模型是边说边吐

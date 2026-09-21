@@ -29,6 +29,7 @@ import { classifyTool, parseExitStatus, summaryKeys, terminalFailed } from "../s
 import { deriveToolSummary, parseToolArgs, todoProgressOf, toolCardOf } from "../shared/toolCard";
 import { displaySessionMentions } from "../shared/mentions";
 import { readRangeFromMeta, readRangeFromOutput } from "./readRange";
+import { expandAssistantStream } from "./assistantStream";
 import { producedPath } from "./produced";
 import type { HostToWebview } from "../shared/ipc";
 import {
@@ -36,6 +37,7 @@ import {
   type AssistantStreamFrame,
   type ContentBlock,
   type SessionFollowFrame,
+  type SessionFollowSnapshot,
   type SessionHistoryRecord,
   type SessionWireEvent,
   type StreamChunk,
@@ -489,7 +491,10 @@ export class SessionAdapter {
   private messages: MessageView[] = [];
   private readonly byId = new Map<string, MessageView>();
   private readonly toolSegments = new Map<string, { messageId: string; segmentId: string }>();
-  private readonly liveSegments = new Map<string, { messageId: string; segmentId: string; turn: number; step: number }>();
+  private readonly liveSegments = new Map<
+    string,
+    { messageId: string; segmentId: string; turn: number | undefined; step: number | undefined }
+  >();
   private currentTurn: number | undefined;
   private currentStep = 0;
   /**
@@ -528,9 +533,17 @@ export class SessionAdapter {
    * 只是最后一步的速度，不能当整轮用。
    */
   private readonly turnMetrics = new Map<string, { decodeMs: number; decodeTokens: number; ttftMs?: number }>();
-  /** 当前活跃 attempt 的 turn/step，由 assistant-stream 的 start 帧给出。 */
-  private liveTurn = 0;
-  private liveStep = 0;
+  /**
+   * 当前活跃 attempt 的 turn/step。
+   *
+   * 只由 `assistant-stream` 的 `start` 帧给出——而**中途挂上**（切走再回来、重载窗口）
+   * 时服务端不会重发 `start`（attempt 是进程内累积的），那份线索只在跟随开帧的
+   * `snapshot.assistantStream.activeAttempt` 里。所以这里可以为 `undefined`：认不出
+   * 归属的叠加层按「当前消息 + 类型」就地认领，而不是留在流里当半截节点
+   * （见 `reclaimLiveSegments` 与 `scripts/thinkingStream.test.ts` A4/A4b）。
+   */
+  private liveTurn: number | undefined;
+  private liveStep: number | undefined;
   private sequence = 0;
   /**
    * 已见过的 durable 事件（seq → 事件），按需整体重折。
@@ -877,6 +890,10 @@ export class SessionAdapter {
       this.refold();
       this.hasMore = Boolean(frame.hasMore);
       this.emit({ type: "patch", patch: { hasMoreHistory: this.hasMore } });
+      // 中途挂上时那份「正在长的块」：服务端不会重发 `start` 帧，进行中的内容只在
+      // 开帧的 `assistantStream.activeAttempt` 里。必须在下面的 `running` 帧与
+      // `messages/reset` **之前**折回模型（重放期间静默，见 replayActiveAttempt）。
+      this.replayActiveAttempt(frame.assistantStream);
       // 重放静默（见 `replaying`），所以「这一轮还在跑」要**显式**补一帧：
       // 打开一个正在生成的会话时，这是 running 的唯一来源（`snapshotFor` 里那份
       // 首帧快照读的是 `scope.running`，而它同样只由这一类帧更新）。
@@ -1755,6 +1772,67 @@ export class SessionAdapter {
 
   // ---------- 瞬态流式帧 ----------
 
+  /**
+   * 认领跟随开帧基线里的活跃 attempt（重连 / 中途挂上时唯一的进行中来源）。
+   *
+   * 服务端不会为已经在跑的 attempt 重发 `start` 帧：那份线索只在这里。做四件事——
+   * 记下 attempt 的 turn/step（叠加层的归属判据）、给 `currentTurn` / `turnRunning` /
+   * 消息的 `streaming` 兜底（跟随窗口截断了本轮的 `turn/start` 时它们是唯一的来源：
+   * 缺了这三个，生成中会被当成已结束——过程段提前折叠、输入区也不给停止）、把已经发过的
+   * 增量重放回模型。
+   *
+   * 重放**静默**（`replaying`）：基线可能有上千条增量，逐条发帧纯属白刷界面——折进模型
+   * 即可，紧随其后的 `messages/reset` 会整份带给界面。
+   */
+  private replayActiveAttempt(baseline: SessionFollowSnapshot["assistantStream"]): void {
+    const attempt = baseline?.activeAttempt;
+    if (!attempt || typeof attempt.attemptId !== "string") return;
+    const turn = typeof attempt.turn === "number" ? attempt.turn : undefined;
+    const step = typeof attempt.step === "number" ? attempt.step : undefined;
+    this.liveTurn = turn;
+    this.liveStep = step;
+    if (turn !== undefined) {
+      // 日志窗口里没有本轮的 `turn/start`（轮次很长、跟随窗口只带最近 N 条）：基线
+      // 是这一轮唯一的权威线索。轮号已定时**不动**——durable 重放比基线更权威。
+      if (this.currentTurn === undefined) {
+        this.currentTurn = turn;
+        this.turnPart = 1;
+        if (step !== undefined) this.currentStep = step;
+      }
+      // 基线说这个 attempt 还在跑 ⇒ 这一轮确实在跑、这条消息还在长。`turnRunning`
+      // 决定输入区给不给「停止」、消息的 `streaming` 决定过程段折不折（两者缺一，
+      // 生成中的会话就会被渲染成已结束）。
+      if (this.currentTurn === turn) {
+        this.ensureAssistantMessage(Date.now()).streaming = true;
+        this.turnRunning = true;
+      }
+    }
+    const chunks = expandAssistantStream(attempt.stream);
+    // `nextIndex` = 服务端已经发过的增量条数；它之后的由随后的实时帧补齐
+    const limit =
+      typeof attempt.nextIndex === "number"
+        ? Math.max(0, Math.min(attempt.nextIndex, chunks.length))
+        : chunks.length;
+    if (limit === 0) return;
+    const wasReplaying = this.replaying;
+    this.replaying = true;
+    try {
+      for (let index = 0; index < limit; index += 1) {
+        const item = chunks[index]!;
+        this.applyAssistantStream({
+          type: "chunk",
+          attemptId: attempt.attemptId,
+          revision: typeof baseline?.revision === "number" ? baseline.revision : 0,
+          index,
+          time: item.time,
+          chunk: item.chunk,
+        });
+      }
+    } finally {
+      this.replaying = wasReplaying;
+    }
+  }
+
   applyAssistantStream(frame: AssistantStreamFrame): void {
     if (frame.type === "start") {
       // 轮号变化才算新轮（插话切分后同轮的后续 start 帧不能重置分段，
@@ -1791,7 +1869,7 @@ export class SessionAdapter {
         if (this.stepFirstTokenAt === undefined) this.stepFirstTokenAt = frame.time;
         const existing = this.liveSegments.get(liveId);
         if (existing) {
-          this.emit({ type: "message/delta", messageId: message.id, segmentId: existing.segmentId, delta: chunk.text });
+          this.appendLiveDelta(existing.messageId, existing.segmentId, chunk.text);
           break;
         }
         // durable 已经接管了这条叠加层（它沿用了这个 id）：迟到的增量丢掉，
@@ -1814,7 +1892,7 @@ export class SessionAdapter {
         if (this.stepFirstTokenAt === undefined) this.stepFirstTokenAt = frame.time;
         const existing = this.liveSegments.get(liveId);
         if (existing) {
-          this.emit({ type: "message/delta", messageId: message.id, segmentId: existing.segmentId, delta: chunk.text });
+          this.appendLiveDelta(existing.messageId, existing.segmentId, chunk.text);
           break;
         }
         // 同 text-delta：durable 接管后迟到的增量丢掉（它已经是权威版本）
@@ -1884,6 +1962,10 @@ export class SessionAdapter {
     this.turnPart = 1;
     this.currentStep = 0;
     this.stepFirstTokenAt = undefined;
+    // 活跃 attempt 的身份同样作废：新开窗里它由开帧基线重新给出（没有基线就是
+    // 「认不出」，见 `liveTurn`），留着上一次的 turn/step 会把新叠加层记到错的归属上
+    this.liveTurn = undefined;
+    this.liveStep = undefined;
     this.turnRunning = false;
     this.sequence = 0;
     // 刻意不清 contextWindow / contextOccupancy / lastSpeed：
@@ -2109,6 +2191,11 @@ export class SessionAdapter {
    * 为什么非要就地接管而不是「删掉叠加层 + 推一条新 id 的 durable 段」：段 id 就是
    * 界面上节点的 React key，换 id = 组件重挂，用户手动展开的节点会自己收回去
    * （见 `applyAssistantMessage` 里的长注释）。
+   *
+   * 归属判据里的 turn/step **认不出来时按通配**：中途挂上时既没有 `start` 帧、基线也
+   * 可能缺（服务端的 attempt 累积器在 revision 对不上时就会丢掉它），这类记录只可能属于
+   * **当前**这一次尝试。不认领的代价不是「少一条」，而是留下一条永远停在半截、`streaming`
+   * 永不清的节点（`scripts/thinkingStream.test.ts` A4/A4b）。
    */
   private reclaimLiveSegments(
     turn: number,
@@ -2117,7 +2204,8 @@ export class SessionAdapter {
   ): ReclaimedSegments {
     const reclaimed: ReclaimedSegments = { text: [], thinking: [] };
     for (const [key, value] of [...this.liveSegments]) {
-      if (value.turn !== turn || value.step !== step) continue;
+      if (value.turn !== undefined && value.turn !== turn) continue;
+      if (value.step !== undefined && value.step !== step) continue;
       this.liveSegments.delete(key);
       const holder = this.byId.get(value.messageId);
       const index = holder?.segments.findIndex((segment) => segment.id === value.segmentId) ?? -1;
@@ -2144,6 +2232,24 @@ export class SessionAdapter {
   }
 
   /**
+   * 增量**落到模型上**，再把同一个增量发给界面。
+   *
+   * 只发帧、不改模型是不行的：模型是 `state` / `messages/reset` / 任何一次整条
+   * `message/upsert` 的内容来源。叠加层的正文若一直停在**第一个**增量上，那么每一次
+   * 整条下发都会把界面已经长好的节点打回一个字——durable 结算正好是其中一次，于是
+   * 现场看起来是「分裂出一条只有一个字的思考」（用户 2026-09-21 报的正是它）。
+   *
+   * 目标按**记录里的 messageId**取，不用调用方那条「当前消息」：运行中插话把轮切开后，
+   * 叠加层可能留在旧段里，按当前消息发帧会让界面在错误的段上补一条半截节点。
+   */
+  private appendLiveDelta(messageId: string, segmentId: string, delta: string): void {
+    const holder = this.byId.get(messageId);
+    const segment = holder?.segments.find((item) => item.id === segmentId);
+    if (segment && (segment.kind === "text" || segment.kind === "thinking")) segment.text += delta;
+    this.emit({ type: "message/delta", messageId, segmentId, delta });
+  }
+
+  /**
    * 这条叠加层 id 是不是已经被 durable 内容接管了（`reclaimLiveSegments` 让 durable
    * 段落**沿用**叠加层的 id）。
    *
@@ -2158,14 +2264,15 @@ export class SessionAdapter {
   /** 收掉该轮**全部**流式叠加层（轮被放弃时）。同样跨段。 */
   private dropLiveSegmentsForTurn(turn: number): void {
     for (const [key, value] of [...this.liveSegments]) {
-      if (value.turn !== turn) continue;
+      // 认不出轮号的记录一并收：它属于当前这次尝试，而「放弃」正是它唯一的收场
+      if (value.turn !== undefined && value.turn !== turn) continue;
       this.removeLiveSegment(key, value);
     }
   }
 
   private removeLiveSegment(
     key: string,
-    value: { messageId: string; segmentId: string; turn: number; step: number },
+    value: { messageId: string; segmentId: string; turn: number | undefined; step: number | undefined },
   ): void {
     this.liveSegments.delete(key);
     const holder = this.byId.get(value.messageId);

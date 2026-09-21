@@ -1594,6 +1594,8 @@ export type SessionAssistantStreamFrame = {
 
 开窗基线（`SessionAssistantStreamBaseline` / `SessionAssistantStreamAttempt`，同文件 `:423-439`）：`{revision, activeAttempt?: {attemptId, startedAfterSeq, turn, step, nextIndex, stream: JsonValue[]}}`。
 
+**中途挂上的语义（`[契约]`，2026-09-21 因一次真实缺陷补记）**：为**已经在跑的 attempt** 重开 follow 时，服务端**不会重发 `start` 帧，也不会重发已经发过的增量**——进行中的内容全在开帧的这份基线里：`stream` 是打包过的紧凑记录（`text-chunks` / `reasoning-chunks` / `tool-call-chunks` / 原样 `chunk`，见 `dsh-llm` 的 `AssistantStreamRecord`），`nextIndex` 是**已经发过的增量条数**，其后接续的实时 `chunk` 帧从 `index === nextIndex` 开始（`history.ts` 按 `ordinal > assistantStreamOrdinalCut` 只转发开帧之后的帧）。所以客户端必须自己 `expandAssistantStream(stream)` 取前 `nextIndex` 条重建进行中的块，并从 `activeAttempt` 取 `attemptId` / `turn` / `step`——官方 Web 端走的正是这步（`ClientAssistantStream.replace`）。漏了这步的症状：进行中的节点没有归属（或只剩挂上之后的尾巴），durable 结算时与它**分裂成两条节点**。等价实现见本仓库 `src/dsh/assistantStream.ts` + 适配器的 `replayActiveAttempt`。
+
 **如何把 chunk 折成 UI**（参考实现 `⟨P⟩\dsh-client-ui-chat\lib\client.js` 的 `updateChunk`，逐字摘录）：
 
 ```js

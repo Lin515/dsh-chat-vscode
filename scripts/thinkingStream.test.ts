@@ -15,6 +15,7 @@ import assert from "node:assert";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { SessionAdapter } from "../src/dsh/adapter";
+import { expandAssistantStream } from "../src/dsh/assistantStream";
 import type { HostToWebview } from "../src/shared/ipc";
 import type { MessageView, Segment } from "../src/shared/chat";
 
@@ -27,12 +28,17 @@ import type { MessageView, Segment } from "../src/shared/chat";
  */
 function harness() {
   const messages: MessageView[] = [];
+  /** 收下 patch 帧（`running` / `hasMoreHistory` 这类状态面）：按顺序记，供断言查。 */
+  const patches: Record<string, unknown>[] = [];
   const adapter = new SessionAdapter((original) => {
     const frame = structuredClone(original);
     switch (frame.type) {
       case "messages/reset":
         messages.length = 0;
         messages.push(...frame.messages);
+        break;
+      case "patch":
+        patches.push(frame.patch as Record<string, unknown>);
         break;
       case "message/upsert": {
         const index = messages.findIndex((m) => m.id === frame.message.id);
@@ -64,7 +70,7 @@ function harness() {
         break;
     }
   });
-  return { adapter, messages };
+  return { adapter, messages, patches };
 }
 
 const thinkingSegments = (messages: MessageView[]): Extract<Segment, { kind: "thinking" }>[] =>
@@ -441,6 +447,188 @@ console.log("thinkingStream: 跨段叠加层不就地接管（内容仍落在插
   assert.strictEqual(after[0].text, "完整思考", "durable 内容才是权威版本");
 }
 console.log("thinkingStream: 多余/迟到的叠加层不打折（不造重复 id） ✓");
+
+// ---------- A3d. 基线紧凑记录的展开（新增模块的纯函数一侧） ----------
+//
+// 展开器吃的是**服务端给的值**：打包记录的形状不认识就跳过（不能让一条坏记录带走整份
+// 基线），坏掉的间隔按 0 计（少一点时间精度好过丢内容）。这里逐类钉住，别只靠 A4 那条
+// 端到端。
+{
+  const packed = expandAssistantStream([
+    // 打包的正文/思考串：第 0 个成员的时刻是 time0，其后按 dt 累加
+    { type: "text-chunks", time0: 100, index: 0, dt: [5, 5], texts: ["a", "b", "c"] },
+    { type: "reasoning-chunks", time0: 200, index: 1, dt: [7], texts: ["想", "完"] },
+    // 打包的工具参数串（name 可选）
+    { type: "tool-call-chunks", time0: 300, index: 2, id: "c1", name: "read", dt: [1], args: ["{", "}"] },
+    // 原样 chunk（block-end / usage 这类不打包的）
+    { type: "chunk", time: 400, chunk: { type: "usage", usage: { inputTokens: 1, outputTokens: 2 } } },
+    // 认不出的记录 / 坏形状：跳过，不影响前面已经展开的
+    { type: "未来记录", time0: 1, index: 0, texts: ["x"] },
+    { type: "text-chunks", time0: "坏的", index: 0, dt: [], texts: ["y"] },
+    null,
+  ]);
+  assert.deepStrictEqual(
+    packed.map((item) => [item.time, item.chunk.type]),
+    [[100, "text-delta"], [105, "text-delta"], [110, "text-delta"], [200, "reasoning-delta"], [207, "reasoning-delta"], [300, "tool-call-delta"], [301, "tool-call-delta"], [400, "usage"]],
+    "打包记录要按原始增量边界逐条展开（时刻按 dt 累加），认不出的记录跳过",
+  );
+  assert.deepStrictEqual(
+    packed[5]!.chunk,
+    { type: "tool-call-delta", index: 2, id: "c1", name: "read", argumentsDelta: "{" },
+    "工具参数串要还原成 tool-call-delta（含 id / name）",
+  );
+  assert.deepStrictEqual(expandAssistantStream(undefined), [], "没有基线时是空表，不是异常");
+}
+console.log("thinkingStream: 基线紧凑记录展开（坏记录跳过） ✓");
+
+// ---------- A4. 中途挂上（切走再回来 / 重载窗口）：没有 start 帧，要跟基线认领 attempt ----------
+//
+// 现场（用户 2026-09-21 报）：生成中离开这个会话，回来时那一轮会「分裂成两条思考
+// 节点」——前一条只剩开头的字、还一直显示在跑（实际早已停），后一条才是完整思考；
+// 等这一轮跑完再打开会话却一切正常。
+//
+// 服务端重开 follow 时**不会重发 `start` 帧**：attempt 是进程内累积的，重连基线走
+// `snapshot.assistantStream.activeAttempt`（`{attemptId, turn, step, nextIndex, stream}`，
+// 官方 Web 客户端就靠它把进行中的块重建成原样，见 `ClientAssistantStream.replace`）。
+// 适配器不认这份基线时：叠加层被记成 (turn 0, step 0)，durable 到达时
+// `reclaimLiveSegments` 匹配不上 → 叠加层留在原地（`streaming` 永不清、文字只剩挂上
+// 之后收到的增量，界面折叠摘要取「最后一行」所以看着只有一个字），而 durable 另推一条。
+{
+  const { adapter, messages } = harness();
+  const t = Date.now();
+  // 挂上之前：本轮的 step 0 已结算，step 1 的思考正在流（基线里有 3 个增量）
+  adapter.applyFrame({
+    type: "snapshot",
+    header: { version: 3, id: "s1", createdAt: t },
+    cursor: 3,
+    hasMore: false,
+    projections: { asOfSeq: 3, values: {} },
+    records: [
+      { type: "event", event: { type: "turn/start", seq: 1, time: t, data: { turn: 1 } } },
+      {
+        type: "event",
+        event: {
+          type: "assistant/message", seq: 2, time: t + 10,
+          data: { turn: 1, step: 0, message: { id: "m1", role: "assistant", content: [{ type: "text", text: "第一步" }] } },
+        },
+      },
+      { type: "event", event: { type: "step/start", seq: 3, time: t + 20, data: { turn: 1, step: 1 } } },
+    ],
+    assistantStream: {
+      revision: 4,
+      activeAttempt: {
+        attemptId: "att2", turn: 1, step: 1, nextIndex: 3,
+        stream: [{ type: "reasoning-chunks", time0: t + 30, index: 0, dt: [5, 5], texts: ["先看", "入口", "再决定"] }],
+      },
+    },
+  } as never);
+
+  // 之后只有增量帧，**没有 start**——重连后进行中的内容全靠基线
+  adapter.applyAssistantStream({
+    type: "chunk", attemptId: "att2", revision: 4, index: 3, time: t + 50,
+    chunk: { type: "reasoning-delta", index: 0, text: "怎么合并。" },
+  });
+
+  const during = thinkingSegments(messages);
+  assert.strictEqual(during.length, 1, `重连后进行中的思考应只有一条，实际 ${during.length} 条`);
+  assert.strictEqual(
+    during[0].text,
+    "先看入口再决定怎么合并。",
+    "基线里的增量要重建成正文（否则节点只剩挂上之后的尾巴，界面上看着只有一个字）",
+  );
+  assert.strictEqual(during[0].streaming, true, "还在流：标记载荷要保住（界面据此发光/贴底）");
+
+  // durable 结算这一 step：必须**就地接管**那条叠加层
+  adapter.applyEvent({
+    type: "assistant/message", seq: 4, time: t + 60,
+    data: {
+      turn: 1, step: 1,
+      message: { id: "m2", role: "assistant", content: [{ type: "reasoning", text: "先看入口，再决定怎么合并。" }] },
+    },
+  });
+  const after = thinkingSegments(messages);
+  assert.strictEqual(after.length, 1, `durable 结算后不许分裂成两条思考节点，实际 ${after.length} 条`);
+  assert.strictEqual(after[0].text, "先看入口，再决定怎么合并。", "正文换成 durable 的权威版本");
+  assert.notStrictEqual(after[0].streaming, true, "结算后不能再标记 streaming（否则那条节点看起来一直在跑）");
+}
+console.log("thinkingStream: 重连基线接管活跃 attempt（不分裂成两条思考） ✓");
+
+// ---------- A4b. 基线里没有活跃 attempt：认不出 turn/step 时也不能分裂 ----------
+//
+// 服务端的 attempt 累积器在 revision 对不上时会丢掉 activeAttempt，但**增量帧照发**
+// （follow 按 ordinal 转发）。这时客户端拿不到任何 turn/step 线索，叠加层只能按
+// 「当前消息 + 类型」认领——否则就是同一种分裂。
+{
+  const { adapter, messages } = harness();
+  const t = Date.now();
+  adapter.applyFrame({
+    type: "snapshot",
+    header: { version: 3, id: "s1", createdAt: t },
+    cursor: 2,
+    hasMore: false,
+    projections: { asOfSeq: 2, values: {} },
+    records: [
+      { type: "event", event: { type: "turn/start", seq: 1, time: t, data: { turn: 1 } } },
+      { type: "event", event: { type: "step/start", seq: 2, time: t + 5, data: { turn: 1, step: 0 } } },
+    ],
+    assistantStream: { revision: 0 },
+  } as never);
+  // 没有基线也没有 start：只能用「当前消息里那条叠加层」认领
+  adapter.applyAssistantStream({
+    type: "chunk", attemptId: "att9", revision: 1, index: 7, time: t + 10,
+    chunk: { type: "reasoning-delta", index: 0, text: "半个字的思考" },
+  });
+  adapter.applyEvent({
+    type: "assistant/message", seq: 3, time: t + 20,
+    data: {
+      turn: 1, step: 0,
+      message: { id: "m1", role: "assistant", content: [{ type: "reasoning", text: "完整的思考。" }] },
+    },
+  });
+  const after = thinkingSegments(messages);
+  assert.strictEqual(after.length, 1, `没有基线时也不许分裂，实际 ${after.length} 条`);
+  assert.notStrictEqual(after[0].streaming, true, "结算后不能还留着 streaming");
+  assert.strictEqual(after[0].text, "完整的思考。", "durable 内容才是权威版本");
+}
+console.log("thinkingStream: 没有基线也能认领叠加层（不分裂） ✓");
+
+// ---------- A4c. 窗口截断了本轮的 turn/start：基线还要把「这一轮在跑」补回来 ----------
+//
+// 跟随窗口只带最近 N 条时，重放里可能**没有本轮的 `turn/start`**。这时 `currentTurn`
+// 是 undefined（内容会挂到幻影轮 `a:0`）、`turnRunning` 与消息的 `streaming` 都是假——
+// 界面据前者给不给「停止」、据后者折不折过程段，于是生成中的会话会被画成已结束。
+// 唯一能给出这三个事实的就是开帧基线里的活跃 attempt。
+{
+  const { adapter, messages, patches } = harness();
+  const t = Date.now();
+  adapter.applyFrame({
+    type: "snapshot",
+    header: { version: 3, id: "s1", createdAt: t },
+    cursor: 40,
+    hasMore: true,
+    projections: { asOfSeq: 40, values: {} },
+    records: [],
+    assistantStream: {
+      revision: 9,
+      activeAttempt: {
+        attemptId: "att3", turn: 7, step: 0, nextIndex: 1,
+        stream: [{ type: "reasoning-chunks", time0: t + 10, index: 0, dt: [], texts: ["正在长"] }],
+      },
+    },
+  } as never);
+
+  const live = messages.find((m) => m.role === "assistant");
+  assert.strictEqual(live?.id, "a:7", `轮号要从基线归位（否则挂到幻影轮 a:0），实际 ${live?.id}`);
+  assert.strictEqual(live?.streaming, true, "基线说 attempt 在跑：消息必须仍是 streaming（否则过程段提前折叠）");
+  assert.ok(
+    live?.segments.some((s) => s.kind === "thinking" && s.text === "正在长"),
+    "进行中的思考同样要由基线重建",
+  );
+  // 「在跑」这件事还要过线（输入区的停止按钮读 `running`）：这一帧由开帧路径显式补发，
+  // 值必须取自基线认领**之后**的状态，所以这一条同时钉住了顺序
+  assert.ok(patches.some((patch) => patch.running === true), "开帧后补发的 running 必须是 true");
+}
+console.log("thinkingStream: 基线补回「这一轮在跑」（截断窗口不误判成已结束） ✓");
 
 // ---------- A2. turn/end 之后也绝不能残留 streaming ----------
 
