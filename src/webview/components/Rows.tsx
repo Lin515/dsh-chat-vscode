@@ -23,6 +23,7 @@ import { Markdown } from "./Markdown";
 import { ImageGallery } from "./Images";
 import { ToolCardBody } from "./ToolCards";
 import { fill, useTexts, resolveText } from "../texts";
+import type { NodeOpenPort } from "../nodeOpen";
 import {
   IconAlert,
   IconChevronDown,
@@ -94,12 +95,23 @@ function useDescribeTool(): (name: string) => { icon: JSX.Element; iconClass: st
   };
 }
 
-export function ToolRow({ tool, diffLayout }: { tool: ToolCallView; diffLayout?: DiffLayout }) {
+export function ToolRow({
+  tool,
+  diffLayout,
+  node,
+}: {
+  tool: ToolCallView;
+  diffLayout?: DiffLayout;
+  /**
+   * 展开态与展开意图（由 `Message` 持有，见 `../nodeOpen.ts`）：**不在行里自持**，
+   * 否则过程折叠把这一段卸载后状态就丢了。
+   */
+  node: NodeOpenPort;
+}) {
   // 工具调用默认收起（不自动展开），用户手动开合优先
-  const [manual, setManual] = useState<boolean | undefined>(undefined);
+  const open = node.open ?? false;
   const describeTool = useDescribeTool();
   const texts = useTexts();
-  const open = manual ?? false;
   const { icon, iconClass, verb } = describeTool(tool.name);
   const bodyRef = useRef<HTMLDivElement>(null);
   const running = tool.status === "running" || tool.status === "pending";
@@ -203,10 +215,10 @@ export function ToolRow({ tool, diffLayout }: { tool: ToolCallView; diffLayout?:
   // （编辑类出错时 `hasDiff && showOutput`；运行时「状态块 + IN 卡」），共用一个 ref 时
   // React 只保留最后绑上的那个元素，另一段就永远拿不到定位。
   const diffRef = useRef<HTMLDivElement>(null);
-  useStickyBody(diffRef, open && hasDiff, running);
-  useStickyBody(bodyRef, open && !hasDiff && (showOutput || hasCard || Boolean(codeCard)), running);
-  useStickyBody(ioRef, open && showIoCard, running);
-  useStickyBody(runningRef, open && runningBody, running);
+  useStickyBody(diffRef, open && hasDiff, running, node.openedWhileActive);
+  useStickyBody(bodyRef, open && !hasDiff && (showOutput || hasCard || Boolean(codeCard)), running, node.openedWhileActive);
+  useStickyBody(ioRef, open && showIoCard, running, node.openedWhileActive);
+  useStickyBody(runningRef, open && runningBody, running, node.openedWhileActive);
   // 展开区只显示「解析后的有价值信息」：编辑类给 diff，其余给 IN/OUT 两段
   // （读取出的文本 / 运行输出 / 搜索结果等）。
   // 运行中也要可展开：长任务（构建）要能看见完整命令与「还在跑」的计时。
@@ -268,7 +280,7 @@ export function ToolRow({ tool, diffLayout }: { tool: ToolCallView; diffLayout?:
       meta={meta}
       open={open}
       onToggle={() => {
-        if (hasBody) setManual(!open);
+        if (hasBody) node.setOpen(!open, running);
       }}
     >
       {runningBody ? (
@@ -377,20 +389,22 @@ export function ThinkingRow({
   text,
   streaming,
   durationMs,
+  node,
 }: {
   text: string;
   streaming?: boolean;
   durationMs?: number;
+  /** 展开态与展开意图（由 `Message` 持有，见 `../nodeOpen.ts`）。 */
+  node: NodeOpenPort;
 }) {
-  const [manual, setManual] = useState<boolean | undefined>(undefined);
   const texts = useTexts();
   // **恒默认折叠**（官方 `ReasoningRow` 就是 `useState(false)`，运行中也不展开）：
   // 长思考会把正文顶出屏幕，而思考本身只要一行摘要就够——要看全文点开。
-  const open = manual ?? false;
+  const open = node.open ?? false;
   const bodyRef = useRef<HTMLDivElement>(null);
   // 思考是**流式增长**的：还在流就贴底跟着长（那正是「最新的一句」所在），
   // 流完就不再动位置（见 useStickyBody 的文件头）
-  useStickyBody(bodyRef, open, streaming === true);
+  useStickyBody(bodyRef, open, streaming === true, node.openedWhileActive);
   // 流式期间用户划选正文时冻结渲染，否则每来一个 token 选区就没了
   const shownText = useSelectionFreeze(bodyRef, text);
   /**
@@ -416,7 +430,7 @@ export function ThinkingRow({
       detail={summary}
       meta={durationMs ? formatDuration(durationMs) : undefined}
       open={open}
-      onToggle={() => setManual(!open)}
+      onToggle={() => node.setOpen(!open, streaming === true)}
     >
       <div ref={bodyRef} className="row-body">
         {shownText}
@@ -484,12 +498,14 @@ function useDescribeInjected(): (injected: InjectedView) => { label: string; det
  * 收起时给出标签 + 字数 + 首行摘要，既能一眼看出「这轮被喂了什么」，
  * 又需要点开才占用注意力。
  */
-export function InjectedRow({ injected }: { injected: InjectedView }) {
-  const [open, setOpen] = useState(false);
+export function InjectedRow({ injected, node }: { injected: InjectedView; node: NodeOpenPort }) {
+  const open = node.open ?? false;
   const texts = useTexts();
   const describe = useDescribeInjected();
   const { label, detail } = describe(injected);
   const bodyRef = useRef<HTMLDivElement>(null);
+  // 注入节点永远不会「进行中」（它是轮次开始时一次性到达的），所以没有第 4 个参数：
+  // 打开即置顶
   useStickyBody(bodyRef, open);
   const shownText = useSelectionFreeze(bodyRef, injected.text);
   const firstLine = injected.text.split("\n").find((line) => line.trim())?.trim() ?? "";
@@ -505,7 +521,7 @@ export function InjectedRow({ injected }: { injected: InjectedView }) {
       detail={detail ?? firstLine}
       meta={texts.injectedChars(formatChars(injected.text.length))}
       open={open}
-      onToggle={() => setOpen(!open)}
+      onToggle={() => node.setOpen(!open)}
     >
       {/* 按 form 分派的**结构化正文**（官方 `ContextBody` 的 switch (form)）：
           指令逐条列「文件 + 已新增/已更新/已移除」，目录列条目，快照列分节，
@@ -1282,9 +1298,16 @@ export function TurnProcessRow({
  * 展开后是内容本身。默认收起——正常轮次里它不该出现，出现了就该是一条**看得见的
  * 记录**而不是消失在界面上。
  */
-export function UnknownBlockRow({ block }: { block: { type: string; json: string } }) {
+export function UnknownBlockRow({
+  block,
+  node,
+}: {
+  block: { type: string; json: string };
+  /** 展开态与展开意图（由 `Message` 持有，见 `../nodeOpen.ts`）。 */
+  node: NodeOpenPort;
+}) {
   const texts = useTexts();
-  const [open, setOpen] = useState(false);
+  const open = node.open ?? false;
   return (
     <Row
       icon={
@@ -1295,7 +1318,7 @@ export function UnknownBlockRow({ block }: { block: { type: string; json: string
       title={texts.unknownBlock}
       detail={block.type}
       open={open}
-      onToggle={() => setOpen(!open)}
+      onToggle={() => node.setOpen(!open)}
     >
       <div className="row-body mono">{block.json}</div>
     </Row>
@@ -1314,13 +1337,13 @@ export function NoticeRow({ level, text }: { level: "info" | "warn" | "error"; t
  * 用与工具行同一套 `Row`：命令和工具一样是「做了一件事」，视觉语言不该分家。
  * 图标复用 `IconSlash`；结果文案来自处理器（服务端给的英文原文），出错时染红。
  */
-export function CommandRow({ command }: { command: CommandRunView }) {
+export function CommandRow({ command, node }: { command: CommandRunView; node: NodeOpenPort }) {
   const texts = useTexts();
-  const [open, setOpen] = useState(false);
+  const open = node.open ?? false;
   const failed = command.state === "error";
   const bodyRef = useRef<HTMLDivElement>(null);
   // 命令与工具同口径：还在跑就贴底（结果一行行在写），跑完回到顶部
-  useStickyBody(bodyRef, open, command.state === "running");
+  useStickyBody(bodyRef, open, command.state === "running", node.openedWhileActive);
   return (
     <Row
       // 运行中的命令与工具行同等待遇：行首图标呼吸发光（同节点色），
@@ -1336,7 +1359,7 @@ export function CommandRow({ command }: { command: CommandRunView }) {
       detail={command.args}
       meta={failed ? texts.commandFailed : command.state === "running" ? texts.commandRunning : undefined}
       open={open}
-      onToggle={() => setOpen(!open)}
+      onToggle={() => node.setOpen(!open, command.state === "running")}
     >
       <div ref={bodyRef} className="row-body mono row-command">
         <div className="row-command-line">{`/${command.name}${command.args ? ` ${command.args}` : ""}`}</div>

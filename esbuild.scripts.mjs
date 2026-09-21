@@ -54,6 +54,7 @@ const entries = {
   "build/tool-card.test.mjs": "scripts/toolCard.test.ts",
   "build/thinking-stream.test.mjs": "scripts/thinkingStream.test.ts",
   "build/injected.test.mjs": "scripts/injected.test.ts",
+  "build/node-open.test.mjs": "scripts/nodeOpen.test.ts",
   "build/unknown-event.test.mjs": "scripts/unknownEvent.test.ts",
   "build/changes-card.test.mjs": "scripts/changesCard.test.ts",
   "build/tail-rows-probe.mjs": "scripts/tailRowsProbe.ts",

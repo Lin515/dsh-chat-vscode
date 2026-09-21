@@ -409,7 +409,8 @@ export function Spinner({ size = 12 }: { size?: number }) {
 /**
  * 折叠 body 区（`.row-body`）的滚动位置：**还在跑的贴底，已结束的置顶**。
  *
- * 两条口径合起来看（后者是用户 2026-09-20 的修正，覆盖前者的适用范围）：
+ * 两条口径合起来看（后者是用户 2026-09-20 的修正，覆盖前者的适用范围；第三条是
+ * 用户 2026-09-21 补的边界）：
  *
  * - **已结束的节点**（用户 2026-09-16）：打开后垂直滚动条默认居于**最顶部**——内容
  *   都是成型后一次性呈现的（工具的 diff / 卡片 / IN-OUT、注入的提示词、命令结果），
@@ -428,6 +429,11 @@ export function Spinner({ size = 12 }: { size?: number }) {
  * 否则用户正盯着末尾看输出，节点一结束就被拽回顶部——那是最糟的打断。后续节点若
  * 重新变成进行中（罕见），跟随态恢复、内容一变即回到末尾。
  *
+ * **盒子是跑完之后才出现的**（工具行跑的时候只有「运行状态块 + 输入卡」，跑完才换成
+ * 结果卡 / 终端卡，那是新元素）时，定位按 `openedWhileActive` 分：用户**在它还跑着的
+ * 时候**点开的，就贴底（延续运行中的「跟着最新一行」，用户 2026-09-21 口径）；用户是
+ * 结束后才点开的，就置顶（从第一行读起）。
+ *
  * 粘性语义与主对话区一致：只有「scrollTop 真正变小」（用户上滑）才脱离跟随，
  * 滚回底部重新跟随。body 区自身是滚动容器（max-height 固定，盒子尺寸不变，
  * ResizeObserver 不会触发），内容增长改由 MutationObserver 捕获后主动跟随。
@@ -436,6 +442,7 @@ export function useStickyBody(
   ref: RefObject<HTMLDivElement | null>,
   enabled: boolean,
   active = false,
+  openedWhileActive = active,
 ): void {
   const stickRef = useRef(false);
   const lastTopRef = useRef(0);
@@ -450,8 +457,9 @@ export function useStickyBody(
     }
     if (!openedRef.current) {
       openedRef.current = true;
-      // 展开那一刻的定位：进行中的停在最新一行，已结束的从第一行读起
-      el.scrollTop = active ? el.scrollHeight : 0;
+      // 出现那一刻的定位：进行中（或用户是跑着的时候点开的）停在最新一行，
+      // 已结束的从第一行读起
+      el.scrollTop = active || openedWhileActive ? el.scrollHeight : 0;
       lastTopRef.current = el.scrollTop;
     }
     stickRef.current = active;
@@ -478,7 +486,7 @@ export function useStickyBody(
       observer.disconnect();
       el.removeEventListener("scroll", onScroll);
     };
-  }, [enabled, active]);
+  }, [enabled, active, openedWhileActive]);
 }
 
 /** 元素内是否存在非折叠选区（用户正在其中划选文字）。 */

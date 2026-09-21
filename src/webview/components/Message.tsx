@@ -9,7 +9,8 @@ import { formatClock, useSelectionFreeze } from "./primitives";
 import { ApprovalCard, CommandRow, FileChips, InjectedRow, MessageImages, NoticeRow, QuestionCard, ThinkingRow, ToolRow, TurnProcessRow, TurnStatsButton, UnknownBlockRow } from "./Rows";
 import { useTexts } from "../texts";
 import { producedOnly, withoutVanished } from "../turnFiles";
-import { foldTurnProcess } from "../turnProcess";
+import { foldTurnProcess, type TurnProcessRun } from "../turnProcess";
+import { hasUserOpenedNode, useNodeOpen } from "../nodeOpen";
 import { ChangesCard } from "./ChangesCard";
 
 /**
@@ -144,9 +145,14 @@ export const Message = memo(function Message({
   changesCardShown?: boolean;
 }) {
   const texts = useTexts();
-  // 连续过程折叠的展开态，**按段记**（键 = 那一段首段的 id）：一轮里可能有好几枚
-  // 按钮（一段连续工具调用一枚），各自开合。hooks 必须在早退之前（顺序固定）
-  const [openRuns, setOpenRuns] = useState<ReadonlySet<string>>(() => new Set());
+  // 折叠节点的展开态，**按段 id 记在这里**（不在各行里）：过程折叠会把整段成员卸载，
+  // 状态放行里就丢了；而「这一段有没有用户点开过的节点」也只有消息能判定
+  // （用户 2026-09-21 口径）。口径与纯逻辑见 `../nodeOpen.ts`。
+  const nodeOpen = useNodeOpen();
+  // 过程折叠：**用户点过按钮的选择**按段记（键 = 那一整段首段的 id）——一轮里可能有好几枚
+  // 按钮（一段连续工具调用一枚），各自开合；没点过时按 `runOpen` 的默认判据（这一段里有
+  // 用户点开的节点就不折）。hooks 必须在早退之前（顺序固定）
+  const [runChoice, setRunChoice] = useState<ReadonlyMap<string, boolean>>(() => new Map());
   // 用户消息的收缩态与「内容比 5 行高」这个事实（同上，必须在早退之前）。
   // 按钮画在操作行里、气泡在它上面，所以状态只能由这里持有。
   const bubbleRef = useRef<HTMLDivElement>(null);
@@ -265,15 +271,24 @@ export const Message = memo(function Message({
   // （默认 5，0 = 永不折）。口径与官方的差异见 turnProcess.ts 的文件头。
   const fold = foldTurnProcess(message.segments, !message.streaming, turnProcessThreshold);
 
-  const toggleRun = (anchorId: string) =>
-    setOpenRuns((prev) => {
-      const next = new Set(prev);
-      if (next.has(anchorId)) next.delete(anchorId);
-      else next.add(anchorId);
-      return next;
-    });
+  /**
+   * 这一段过程展不展开：**用户点过按钮就听他的**，没点过则看这一段里有没有
+   * **用户主动点开、且还开着**的节点——有就不自动折它（用户 2026-09-21 口径）。
+   *
+   * 为什么要这一条：一轮结束时自动折叠会把整段成员**卸载**，用户生成中点开的那个节点
+   * 会跟着消失、再展开时变回收起态。按钮照旧在（`TurnProcessRow`），
+   * 用户想收起这一整段随时可以点。
+   */
+  const runOpen = (run: TurnProcessRun) =>
+    runChoice.get(run.anchorId) ?? hasUserOpenedNode(nodeOpen.state, run.segments);
+
+  const toggleRun = (run: TurnProcessRun) =>
+    setRunChoice((prev) => new Map(prev).set(run.anchorId, !runOpen(run)));
 
   const renderSegment = (segment: Segment) => {
+    // 每一行都接**同一个端口对象**（展开态与「点开时在不在跑」都由消息持有，
+    // 见 `../nodeOpen.ts`）：行自己不存状态，这样过程折叠卸载再挂回来也不丢
+    const node = nodeOpen.portOf(segment.id);
     switch (segment.kind) {
       case "text":
         return <StreamText key={segment.id} text={segment.text} />;
@@ -281,13 +296,14 @@ export const Message = memo(function Message({
         return (
           <ThinkingRow
             key={segment.id}
+            node={node}
             text={segment.text}
             streaming={segment.streaming}
             durationMs={segment.durationMs}
           />
         );
       case "tool":
-        return <ToolRow key={segment.id} tool={segment.tool} diffLayout={diffLayout} />;
+        return <ToolRow key={segment.id} node={node} tool={segment.tool} diffLayout={diffLayout} />;
       case "approval":
         // 待处理的审批卡由**输入区**渲染（官方 `conversation.composer` 接管），这里跳过
         // 免得同一张卡出现两次；已经答过的留在流里当记录。
@@ -307,15 +323,15 @@ export const Message = memo(function Message({
           />
         );
       case "injected":
-        return <InjectedRow key={segment.id} injected={segment.injected} />;
+        return <InjectedRow key={segment.id} node={node} injected={segment.injected} />;
       case "command":
-        return <CommandRow key={segment.id} command={segment.command} />;
+        return <CommandRow key={segment.id} node={node} command={segment.command} />;
       case "notice":
         return <NoticeRow key={segment.id} level={segment.level} text={segment.text} />;
       case "images":
         return <MessageImages key={segment.id} images={segment.images} />;
       case "unknown":
-        return <UnknownBlockRow key={segment.id} block={segment} />;
+        return <UnknownBlockRow key={segment.id} node={node} block={segment} />;
       default:
         return null;
     }
@@ -332,14 +348,14 @@ export const Message = memo(function Message({
   for (const segment of message.segments) {
     const run = fold.bySegment.get(segment.id);
     if (run) {
-      const open = openRuns.has(run.anchorId);
+      const open = runOpen(run);
       if (segment.id === run.anchorId) {
         rendered.push(
           <TurnProcessRow
             key={`turn-process-${run.anchorId}`}
             label={texts.turnProcessLabel(run.counts)}
             open={open}
-            onToggle={() => toggleRun(run.anchorId)}
+            onToggle={() => toggleRun(run)}
           />,
         );
       }

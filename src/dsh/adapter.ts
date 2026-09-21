@@ -463,6 +463,28 @@ function readLinesOf(tool: ToolCallView, output: string, meta: unknown): { start
   return { start: range.start, end: range.end };
 }
 
+/** 就地接管用的两个队列：流式叠加层里能被 durable 正文改写的两类段落。 */
+interface ReclaimedSegments {
+  text: Extract<Segment, { kind: "text" }>[];
+  thinking: Extract<Segment, { kind: "thinking" }>[];
+}
+
+/**
+ * 把 durable 的正文写回**被接管的流式叠加层**（原地改写，段 id 不动）。
+ *
+ * `streaming` 整键删掉而不是置 `false`：durable 段落本来就没有这个键，保持形状一致
+ * （两条路径在界面上等价——消费方判的都是 `=== true`）。
+ */
+function adoptDurableText(
+  segment: Extract<Segment, { kind: "text" | "thinking" }>,
+  text: string,
+  step: number,
+): void {
+  segment.step = step;
+  segment.text = text;
+  delete segment.streaming;
+}
+
 export class SessionAdapter {
   private messages: MessageView[] = [];
   private readonly byId = new Map<string, MessageView>();
@@ -1464,8 +1486,19 @@ export class SessionAdapter {
     const message = this.ensureAssistantMessage(event.time);
     const wire = data.message as WireMessage | undefined;
 
-    // 丢弃该 step 的流式叠加层，改用 durable 内容，避免重复
-    this.dropLiveSegmentsForStep(turn, step);
+    /**
+     * 本 step 的流式叠加层：**能就地接管的就地接管**，而不是「先删叠加层、再推一条
+     * 新 id 的 durable 段」。
+     *
+     * 段 id 就是界面上那条节点的 React key。换 id = 组件重挂：用户手动展开的节点会
+     * 自己收回去，盒子里的滚动位置与正在划的选区也一起丢——用户 2026-09-21 报的
+     * 「思考节点生成中展开、跑完自己缩回去」正是它（工具行没这个毛病：它的段 id 恒为
+     * `tool:<callId>`，从流式到结算都不变，所以看起来像两类节点行为不同）。
+     *
+     * 跨消息段的叠加层（运行中插话把轮切开后叠加层留在旧段里）**不**就地接管：
+     * 那样 durable 内容会留在旧段、跑到插话上方去，分派见 `reclaimLiveSegments`。
+     */
+    const reclaimed = this.reclaimLiveSegments(turn, step, message);
 
     /**
      * durable 的思考/正文插在**本 step 最早的工具行之前**，而不是追加到末尾。
@@ -1486,19 +1519,27 @@ export class SessionAdapter {
     const content = Array.isArray(wire?.content) ? (wire!.content as ContentBlock[]) : [];
     for (const block of content) {
       if (block.type === "text" && block.text.trim()) {
-        this.pushSegment(
-          message,
-          { kind: "text", id: `t${event.seq}:${this.sequence++}`, text: block.text },
-          step,
-          at++,
-        );
+        // 有叠加层就地接管（段 id 不动，界面组件不重挂）；没有（重放、没开流式）
+        // 才另推一条 durable 段
+        const live = reclaimed.text.shift();
+        if (live) adoptDurableText(live, block.text, step);
+        else
+          this.pushSegment(
+            message,
+            { kind: "text", id: `t${event.seq}:${this.sequence++}`, text: block.text },
+            step,
+            at++,
+          );
       } else if (block.type === "reasoning" && block.text.trim()) {
-        this.pushSegment(
-          message,
-          { kind: "thinking", id: `r${event.seq}:${this.sequence++}`, text: block.text },
-          step,
-          at++,
-        );
+        const live = reclaimed.thinking.shift();
+        if (live) adoptDurableText(live, block.text, step);
+        else
+          this.pushSegment(
+            message,
+            { kind: "thinking", id: `r${event.seq}:${this.sequence++}`, text: block.text },
+            step,
+            at++,
+          );
       } else if (block.type === "image") {
         // 助手消息里的图片块：此前整块被丢掉，用户看不到模型给的图。
         // 句柄要换字节（一次 RPC），所以先挂一个空段、拿到 data URL 再补发。
@@ -1522,6 +1563,10 @@ export class SessionAdapter {
         );
       }
     }
+
+    // durable 内容没接管的叠加层（对应块是空白被跳过、或块数比叠加层少）：摘掉——
+    // 它已经不会再更新，留着就是一条永远停在半截的节点。不补帧，下面整条 upsert 带走。
+    this.dropReclaimed(message, reclaimed);
 
     // decode 窗口：本 step 首个 token delta → 该 durable 消息（均为服务端时钟）
     const firstTokenAt = this.stepFirstTokenAt;
@@ -1749,6 +1794,9 @@ export class SessionAdapter {
           this.emit({ type: "message/delta", messageId: message.id, segmentId: existing.segmentId, delta: chunk.text });
           break;
         }
+        // durable 已经接管了这条叠加层（它沿用了这个 id）：迟到的增量丢掉，
+        // 否则会再造一条**同 id** 的段落（React key 重复 + 界面上多一条半截节点）
+        if (this.claimedByDurable(message, liveId)) break;
         const segmentId = liveId;
         this.liveSegments.set(liveId, {
           messageId: message.id,
@@ -1769,6 +1817,8 @@ export class SessionAdapter {
           this.emit({ type: "message/delta", messageId: message.id, segmentId: existing.segmentId, delta: chunk.text });
           break;
         }
+        // 同 text-delta：durable 接管后迟到的增量丢掉（它已经是权威版本）
+        if (this.claimedByDurable(message, liveId)) break;
         const segmentId = liveId;
         this.liveSegments.set(liveId, {
           messageId: message.id,
@@ -2043,17 +2093,66 @@ export class SessionAdapter {
   }
 
   /**
-   * 收掉该轮该 step 的流式叠加层，durable 内容到达时去重。
+   * 摘掉该 step 的流式叠加层记录，并把**能就地接管**的段落按类型交回调用方
+   * （`text` / `thinking` 各一队，按叠加顺序，与 durable 内容块的顺序一一对应）。
    *
-   * **跨段清理**：叠加层记录在哪一段就从哪一段摘。运行中插话把轮切分后，
-   * 同一个 (turn, step) 的 durable 内容可能落在与叠加层不同的段
-   * （切分发生在叠加层与其 durable 替换之间），按 message 过滤会漏。
+   * 就地接管的判据有两条，缺一不可：段落**就在 `target` 这条消息里**、且类型是
+   * text / thinking。不满足的（跨消息段、类型对不上的）一律摘掉——就地接管会让
+   * durable 内容留在旧的消息段里，也就是跑到插话**上方**去。
+   *
+   * **跨段清理**：叠加层记录在哪一段就从哪一段摘。运行中插话把轮切分后，同一个
+   * (turn, step) 的 durable 内容可能落在与叠加层不同的段（切分发生在叠加层与其
+   * durable 替换之间），按 message 过滤会漏。摘跨消息那条时要**立刻补一帧**
+   * （否则旧段上会留下一条再也不会更新的叠加层）；摘本消息里的不用补，调用方最后
+   * 会整条 upsert。
+   *
+   * 为什么非要就地接管而不是「删掉叠加层 + 推一条新 id 的 durable 段」：段 id 就是
+   * 界面上节点的 React key，换 id = 组件重挂，用户手动展开的节点会自己收回去
+   * （见 `applyAssistantMessage` 里的长注释）。
    */
-  private dropLiveSegmentsForStep(turn: number, step: number): void {
+  private reclaimLiveSegments(
+    turn: number,
+    step: number,
+    target: MessageView,
+  ): ReclaimedSegments {
+    const reclaimed: ReclaimedSegments = { text: [], thinking: [] };
     for (const [key, value] of [...this.liveSegments]) {
       if (value.turn !== turn || value.step !== step) continue;
-      this.removeLiveSegment(key, value);
+      this.liveSegments.delete(key);
+      const holder = this.byId.get(value.messageId);
+      const index = holder?.segments.findIndex((segment) => segment.id === value.segmentId) ?? -1;
+      if (!holder || index < 0) continue;
+      const segment = holder.segments[index];
+      if (holder === target && (segment.kind === "text" || segment.kind === "thinking")) {
+        // **留在原位**（不 splice 再插回）：位置动一下都可能让 React 重建 DOM 节点
+        if (segment.kind === "text") reclaimed.text.push(segment);
+        else reclaimed.thinking.push(segment);
+        continue;
+      }
+      holder.segments.splice(index, 1);
+      if (holder !== target) this.emit({ type: "message/upsert", message: { ...holder } });
     }
+    return reclaimed;
+  }
+
+  /** 摘掉 `reclaimLiveSegments` 交回来、但没被 durable 内容接管的那几条（不补帧）。 */
+  private dropReclaimed(message: MessageView, reclaimed: ReclaimedSegments): void {
+    for (const segment of [...reclaimed.text, ...reclaimed.thinking]) {
+      const index = message.segments.findIndex((candidate) => candidate.id === segment.id);
+      if (index >= 0) message.segments.splice(index, 1);
+    }
+  }
+
+  /**
+   * 这条叠加层 id 是不是已经被 durable 内容接管了（`reclaimLiveSegments` 让 durable
+   * 段落**沿用**叠加层的 id）。
+   *
+   * 接管之后可能还有**迟到**的增量帧（同一 attempt 的尾包、重连重放）：那时
+   * `liveSegments` 里已经没有记录，再按「新叠加层」处理就会推出一条与 durable 段
+   * **同 id** 的重复节点。durable 内容本身就是权威版本，丢掉迟到的增量即可。
+   */
+  private claimedByDurable(message: MessageView, liveId: string): boolean {
+    return message.segments.some((segment) => segment.id === liveId);
   }
 
   /** 收掉该轮**全部**流式叠加层（轮被放弃时）。同样跨段。 */

@@ -575,11 +575,11 @@ console.log("styles: 运行中文案（无扫光/无秒表） ✓");
 {
   const rows = readFileSync(join(process.cwd(), "src", "webview", "components", "Rows.tsx"), "utf8");
   assert.ok(
-    /const open = manual \?\? false;/.test(rows),
-    "思考段必须恒默认折叠（官方 useState(false)，运行中也不展开）",
+    /const open = node\.open \?\? false;/.test(rows),
+    "思考段必须恒默认折叠（官方 useState(false)，运行中也不展开）——展开态只来自消息持有的端口",
   );
   assert.ok(
-    !/manual \?\? Boolean\(streaming\)/.test(rows),
+    !/open \?\? Boolean\(streaming\)/.test(rows),
     "不再有「流式期间默认展开」那条旧口径",
   );
   assert.ok(
@@ -929,8 +929,8 @@ console.log("styles: 复制按钮归属（工具卡内容有 / 工具串没有 /
     "utf8",
   );
   assert.ok(
-    /el\.scrollTop = active \? el\.scrollHeight : 0;/.test(primitives),
-    "展开那一刻的定位必须两分：进行中贴底（看最新），已结束置顶（从第一行读起）",
+    /el\.scrollTop = active \|\| openedWhileActive \? el\.scrollHeight : 0;/.test(primitives),
+    "出现那一刻的定位必须两分：进行中（或用户是跑着的时候点开的）贴底，已结束的置顶",
   );
   assert.ok(
     !/el\.scrollTop = 0;\s*\n\s*lastTopRef\.current = 0;/.test(primitives),
@@ -952,23 +952,29 @@ console.log("styles: 复制按钮归属（工具卡内容有 / 工具串没有 /
   // 打开那一刻只定位一次：`active` 由真翻假（跑完了）时不许再动滚动位置，
   // 否则用户盯着末尾看输出、节点一结束就被拽回顶部
   assert.ok(
-    /if \(!openedRef\.current\) \{[\s\S]{0,200}?el\.scrollTop = active \? el\.scrollHeight : 0;/.test(primitives),
-    "展开定位必须包在「刚打开」分支里（`openedRef`），结束后不许重定位",
+    /if \(!openedRef\.current\) \{[\s\S]{0,220}?el\.scrollTop = active \|\| openedWhileActive \? el\.scrollHeight : 0;/.test(primitives),
+    "出现定位必须包在「刚出现」分支里（`openedRef`），结束后不许重定位",
   );
   assert.ok(
     /if \(!el \|\| !enabled\) \{\s*\n\s*openedRef\.current = false;/.test(primitives),
-    "收起时要复位「刚打开」标记，否则再展开不会重新定位",
+    "收起时要复位「刚出现」标记，否则再展开不会重新定位",
   );
   assert.ok(
     /lastTopRef\.current = el\.scrollTop;/.test(primitives),
     "记录基线要记**定位之后**的位置（贴底时的基线是底部，不是 0）",
   );
+  // 第 4 个参数 = 「用户点开它的时候它还在跑」（用户 2026-09-21 口径）：默认取 `active`
+  // （旧行为不变），行的展开意图由 `Message` 持有并随展开态一起记
+  assert.ok(
+    /openedWhileActive = active,/.test(primitives) && /\[enabled, active, openedWhileActive\]/.test(primitives),
+    "第 4 个参数要有默认值，并且是 effect 的依赖（改了它要重新定位）",
+  );
 
   const rows = readFileSync(join(process.cwd(), "src", "webview", "components", "Rows.tsx"), "utf8");
   // 工具行：`running` = status 还在跑（running / pending）
   assert.ok(
-    /useStickyBody\(diffRef, open && hasDiff, running\)/.test(rows) &&
-      /useStickyBody\(bodyRef, open && !hasDiff && \(showOutput \|\| hasCard \|\| Boolean\(codeCard\)\), running\)/.test(rows),
+    /useStickyBody\(diffRef, open && hasDiff, running, node\.openedWhileActive\)/.test(rows) &&
+      /useStickyBody\(bodyRef, open && !hasDiff && \(showOutput \|\| hasCard \|\| Boolean\(codeCard\)\), running, node\.openedWhileActive\)/.test(rows),
     "工具行的两个 body（diff 段 / 结果-卡片段）都要传 `running`：跑着就贴底看最新输出",
   );
   // 运行中的工具行**唯一的**滚动盒子是 IN 卡（卡片在跑的时候不渲染），它此前压根没有
@@ -979,21 +985,21 @@ console.log("styles: 复制按钮归属（工具卡内容有 / 工具串没有 /
     "IN/OUT 卡的渲染判据只留一份（showIoCard），渲染与滚动定位共用它",
   );
   assert.ok(
-    /useStickyBody\(ioRef, open && showIoCard, running\)/.test(rows) &&
+    /useStickyBody\(ioRef, open && showIoCard, running, node\.openedWhileActive\)/.test(rows) &&
       /\{showIoCard \? \(\s*\n\s*<div ref=\{ioRef\} className="row-body io-card">/.test(rows),
     "IN 卡要真的绑上 ioRef 并传 running（少了 ref，那条滚动条永远停在顶部）",
   );
   assert.ok(
-    /useStickyBody\(runningRef, open && runningBody, running\)/.test(rows) &&
+    /useStickyBody\(runningRef, open && runningBody, running, node\.openedWhileActive\)/.test(rows) &&
       /<div ref=\{runningRef\} className="row-body mono row-running">/.test(rows),
     "「运行中」那块自己也是滚动盒子（长命令会撑开），同样要贴底——一个展开区里两条滚动条不该各朝一头",
   );
   assert.ok(
-    /useStickyBody\(bodyRef, open, streaming === true\)/.test(rows),
+    /useStickyBody\(bodyRef, open, streaming === true, node\.openedWhileActive\)/.test(rows),
     "思考节点传 streaming（它逐 token 增长）",
   );
   assert.ok(
-    /useStickyBody\(bodyRef, open, command\.state === "running"\)/.test(rows),
+    /useStickyBody\(bodyRef, open, command\.state === "running", node\.openedWhileActive\)/.test(rows),
     "命令节点与工具同口径：running 时贴底",
   );
   assert.ok(
@@ -1001,7 +1007,7 @@ console.log("styles: 复制按钮归属（工具卡内容有 / 工具串没有 /
     "注入节点（系统提示词等）永远不会「进行中」，保持默认置顶",
   );
   // 七处可展开节点：工具行 4 个滚动盒子（diff / 卡片-结果 / IN 卡 / 运行状态块）
-  // + 思考 + 命令 + 注入；只有注入那一处不传「进行中」
+  // + 思考 + 命令 + 注入；只有注入那一处不传「进行中」（也不传展开意图）
   const calls = rows.match(/useStickyBody\([^;]*\)/g) ?? [];
   assert.strictEqual(
     calls.length,
@@ -1020,8 +1026,14 @@ console.log("styles: 复制按钮归属（工具卡内容有 / 工具串没有 /
     ["useStickyBody(bodyRef, open)"],
     "不传「进行中」的只能有注入节点那一处",
   );
+  const withIntent = calls.filter((call) => /node\.openedWhileActive\)$/.test(call.trim()));
+  assert.strictEqual(
+    withIntent.length,
+    6,
+    `传「进行中」的六处都要把展开意图一起传下去（跑完那一刻新出现的盒子按它定位），实际：${JSON.stringify(withIntent)}`,
+  );
 }
-console.log("styles: 节点展开后——进行中的贴底、已结束的置顶（跑完不重定位） ✓");
+console.log("styles: 节点展开后——进行中的贴底、已结束的置顶（跑完不重定位；运行中点开的贴底） ✓");
 
 // ---------- 16d. 轨迹是整页视图：打开就占用整个会话窗口，输入区让位 ----------
 //

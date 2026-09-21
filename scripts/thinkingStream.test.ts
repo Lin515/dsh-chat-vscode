@@ -300,6 +300,148 @@ console.log("thinkingStream: 轮尾用时/速度按整轮累加（官方 deriveS
 }
 console.log("thinkingStream: durable 消息清掉流式标记 ✓");
 
+// ---------- A3. 流式 → durable：同一个逻辑节点必须保持同一个段 id ----------
+//
+// 段 id 就是界面上那条节点的 React key。旧实现里叠加层叫 `live:<attempt>:<index>`、
+// durable 段叫 `r<seq>:<n>`，durable 一到就是「删掉一条 + 新增一条」：组件被重挂，
+// 用户手动展开的节点会自己收回去（用户 2026-09-21 报的正是它，而且只在思考/正文上
+// 出现——工具行的段 id 恒为 `tool:<callId>`，从流式到结算都不变，所以看起来像
+// 「两类节点行为不同」）。
+{
+  const { adapter, messages } = harness();
+  const t = Date.now();
+  adapter.applyEvent({ type: "turn/start", seq: 1, time: t, data: { turn: 1 } });
+  adapter.applyAssistantStream({ type: "start", attemptId: "att1", revision: 1, turn: 1, step: 0 });
+  adapter.applyAssistantStream({
+    type: "chunk", attemptId: "att1", revision: 1, index: 0, time: t + 10,
+    chunk: { type: "reasoning-delta", index: 0, text: "先看入口" },
+  });
+  // 本 step 的工具行由流式帧先建出来（durable 的思考要排在它**前面**）
+  adapter.applyAssistantStream({
+    type: "chunk", attemptId: "att1", revision: 1, index: 1, time: t + 20,
+    chunk: { type: "tool-call-delta", index: 1, id: "c1", name: "read", argumentsDelta: '{"file_path":"a.ts"}' },
+  });
+  const liveId = thinkingSegments(messages)[0]?.id;
+  assert.ok(liveId, "流式思考应当先有一条叠加层段落");
+
+  adapter.applyEvent({
+    type: "assistant/message", seq: 2, time: t + 100,
+    data: {
+      turn: 1, step: 0,
+      message: { id: "m1", role: "assistant", content: [{ type: "reasoning", text: "先看入口，再收敛端口。" }] },
+    },
+  });
+
+  const after = thinkingSegments(messages);
+  assert.strictEqual(after.length, 1, `durable 替换后仍应只有一条思考段落，实际 ${after.length} 条`);
+  assert.strictEqual(
+    after[0].id,
+    liveId,
+    "durable 必须**沿用**叠加层的段 id：换 id = 界面组件重挂 = 用户手动展开的节点自己收回去",
+  );
+  assert.strictEqual(after[0].text, "先看入口，再收敛端口。", "正文要换成 durable 的权威版本");
+  assert.notStrictEqual(after[0].streaming, true, "收掉流式标记（鲸鱼不再发光）");
+  const order = messages.find((m) => m.id === "a:1")?.segments.map((s) => s.kind);
+  assert.deepStrictEqual(
+    order,
+    ["thinking", "tool"],
+    `就地接管不许打乱顺序：思考仍在本 step 的工具行之前，实际 ${JSON.stringify(order)}`,
+  );
+}
+console.log("thinkingStream: 流式→durable 段 id 稳定（组件不重挂） ✓");
+
+// ---------- A3b. 跨消息段：叠加层留在旧段时不许就地接管 ----------
+//
+// 运行中插话把轮切成 a:1 / a:1:2 时，叠加层可能留在**旧段**里。就地接管会让 durable
+// 内容留在旧段——界面上就是「回答跑到插话上方」。这种必须照旧摘掉、把 durable 段
+// 推进当前段。
+{
+  const { adapter, messages } = harness();
+  const t = Date.now();
+  adapter.applyEvent({ type: "turn/start", seq: 1, time: t, data: { turn: 1 } });
+  adapter.applyEvent({
+    type: "user/message", seq: 2, time: t + 1,
+    data: { id: "u1", role: "user", content: [{ type: "text", text: "第一问" }], source: { kind: "user" } },
+  });
+  adapter.applyAssistantStream({ type: "start", attemptId: "att1", revision: 1, turn: 1, step: 0 });
+  adapter.applyAssistantStream({
+    type: "chunk", attemptId: "att1", revision: 1, index: 0, time: t + 10,
+    chunk: { type: "reasoning-delta", index: 0, text: "思考前半" },
+  });
+  // 运行中插话：轮切到 a:1:2，叠加层留在 a:1
+  adapter.applyEvent({
+    type: "user/message", seq: 3, time: t + 20,
+    data: { id: "u2", role: "user", content: [{ type: "text", text: "【QUEUED】插话" }], source: { kind: "user" } },
+  });
+  adapter.applyEvent({
+    type: "assistant/message", seq: 4, time: t + 100,
+    data: {
+      turn: 1, step: 0,
+      message: { id: "m1", role: "assistant", content: [{ type: "reasoning", text: "完整思考" }] },
+    },
+  });
+
+  const part1 = messages.find((m) => m.id === "a:1");
+  const part2 = messages.find((m) => m.id === "a:1:2");
+  assert.ok(
+    !part1?.segments.some((s) => s.kind === "thinking"),
+    "留在旧段的叠加层必须摘掉——不能两段各留一份",
+  );
+  assert.ok(
+    part2?.segments.some((s) => s.kind === "thinking" && s.text === "完整思考"),
+    "durable 思考必须落到当前段（插话下方）",
+  );
+}
+console.log("thinkingStream: 跨段叠加层不就地接管（内容仍落在插话下方） ✓");
+
+// ---------- A3c. durable 里没有对应块 / 迟到的增量：都不许留下第二条段 ----------
+
+{
+  const { adapter, messages } = harness();
+  const t = Date.now();
+  adapter.applyEvent({ type: "turn/start", seq: 1, time: t, data: { turn: 1 } });
+  adapter.applyAssistantStream({ type: "start", attemptId: "att1", revision: 1, turn: 1, step: 0 });
+  adapter.applyAssistantStream({
+    type: "chunk", attemptId: "att1", revision: 1, index: 0, time: t + 10,
+    chunk: { type: "reasoning-delta", index: 0, text: "只有流式、durable 里是空白" },
+  });
+  // durable 的 reasoning 是空白（会被跳过）：叠加层必须摘掉，不能留在流里当半截节点
+  adapter.applyEvent({
+    type: "assistant/message", seq: 2, time: t + 100,
+    data: {
+      turn: 1, step: 0,
+      message: { id: "m1", role: "assistant", content: [{ type: "reasoning", text: "   " }] },
+    },
+  });
+  assert.strictEqual(thinkingSegments(messages).length, 0, "durable 里没有对应块时叠加层必须摘掉");
+}
+{
+  const { adapter, messages } = harness();
+  const t = Date.now();
+  adapter.applyEvent({ type: "turn/start", seq: 1, time: t, data: { turn: 1 } });
+  adapter.applyAssistantStream({ type: "start", attemptId: "att1", revision: 1, turn: 1, step: 0 });
+  adapter.applyAssistantStream({
+    type: "chunk", attemptId: "att1", revision: 1, index: 0, time: t + 10,
+    chunk: { type: "reasoning-delta", index: 0, text: "流式" },
+  });
+  adapter.applyEvent({
+    type: "assistant/message", seq: 2, time: t + 100,
+    data: {
+      turn: 1, step: 0,
+      message: { id: "m1", role: "assistant", content: [{ type: "reasoning", text: "完整思考" }] },
+    },
+  });
+  // durable 接管之后迟到的增量：绝不能再造一条**同 id** 的段（key 重复 + 半截节点）
+  adapter.applyAssistantStream({
+    type: "chunk", attemptId: "att1", revision: 1, index: 0, time: t + 110,
+    chunk: { type: "reasoning-delta", index: 0, text: "（迟到）" },
+  });
+  const after = thinkingSegments(messages);
+  assert.strictEqual(after.length, 1, `迟到增量不许再造段落，实际 ${after.length} 条`);
+  assert.strictEqual(after[0].text, "完整思考", "durable 内容才是权威版本");
+}
+console.log("thinkingStream: 多余/迟到的叠加层不打折（不造重复 id） ✓");
+
 // ---------- A2. turn/end 之后也绝不能残留 streaming ----------
 
 {

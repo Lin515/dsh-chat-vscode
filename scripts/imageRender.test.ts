@@ -168,6 +168,9 @@ const userMessage = (attachments: MessageView["attachments"]): MessageView => ({
         TextsContext.Provider,
         { value: dictionaryFor("zh") },
         createElement(ToolRow, {
+          // 展开态平时由 `Message` 持有（见 src/webview/nodeOpen.ts）；
+          // 这里单独渲染一行，给一份「默认收起、没人点过」的端口。
+          node: { open: undefined, openedWhileActive: false, setOpen: () => undefined },
           tool: {
             id: "call_img",
             name: "read_image",
