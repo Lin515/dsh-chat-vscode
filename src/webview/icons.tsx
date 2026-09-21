@@ -199,13 +199,6 @@ export const IconChat = (p: IconProps) => (
   </Icon>
 );
 
-export const IconAt = (p: IconProps) => (
-  <Icon {...p}>
-    <circle cx="12" cy="12" r="4" />
-    <path d="M16 8v5a3 3 0 0 0 5.1 2.1A9 9 0 1 0 17.6 20" />
-  </Icon>
-);
-
 export const IconFile = (p: IconProps) => (
   <Icon {...p}>
     <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />

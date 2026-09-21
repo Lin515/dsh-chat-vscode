@@ -63,8 +63,18 @@ console.log("selection: 空选区返回 undefined ✓");
     "选区要插成带行号的 `@` 引用",
   );
   assert.ok(
-    /formatFileMention\(this\.relativePath\(path\), kind\)/.test(controller),
-    "文件/目录右键也要插成 `@` 引用（目录用结尾斜杠标记）",
+    /this\.insertMention\(viewId, formatFileMention\(this\.relativePath\(path\), "file"\)\)/.test(controller),
+    "文件右键也要插成 `@` 引用",
+  );
+  assert.ok(
+    /private addDirectoryReference\(viewId: string, path: string\): void \{\s*\n\s*this\.insertMention\(viewId, formatFileMention\(this\.relativePath\(path\), "directory"\)\)/.test(
+      controller,
+    ),
+    "目录（右键 / 粘贴 / 接入管线）走唯一的目录落点，插成带结尾斜杠的 `@` 引用",
+  );
+  assert.ok(
+    /if \(isDirectoryPath\(path\)\) \{\s*\n\s*this\.addDirectoryReference\(viewId, path\);/.test(controller),
+    "addFileContext 要按目录/文件分流到上面两条（同一条 `@` 引用规则）",
   );
   assert.ok(
     !/kind: "selection"/.test(controller),

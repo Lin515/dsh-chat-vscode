@@ -363,6 +363,15 @@ const canSend = draft.trim().length > 0 && state.connection === "ready";
 本扩展的字节通道（**拖放**、以及粘贴里剪贴板只有位图的那些）仍受单文件 8 MB 限制
 （`ATTACH_BYTES_LIMIT`），浮层只有拖放那一条路有。路径读取目前**只在 Windows** 可用。
 
+**2026-09-21 补记（当天复查 + 修复）**：这条链路上发现一个真 BUG——字节通道进来的
+**文件附件没有 `path`**，而发送装配按 `path` 过滤，于是上传照做、prompt 里却没有它，
+连"没传上去"的提示也不发（`B13`）。已修（装配改看上传回执），并把路径 / 字节两条平行
+通道合成一条（`planIntake` + `ingestAttachments`）。另外核实：**拖放拿不到 OS 路径**
+（webview pre 脚本不转发、宿主只切换 iframe 的 `pointer-events`、Electron 32+ 移除
+`File.path`），所以**拖放文件夹作废**（只剩提示），拖放文件不受影响。完整设计见
+`docs/design-attachments.md`。**仍未对齐的还有**：图片整批预检（数量 / 总量 / 像素）
+与上传进度——官方都有，扩展没有（同文档 §5.2）。
+
 ---
 
 ## 4. 选区上下文

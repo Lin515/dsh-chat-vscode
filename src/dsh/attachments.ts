@@ -177,32 +177,80 @@ export function formatPathList(paths: string[]): string {
  */
 export const ATTACH_BYTES_LIMIT = 8 * 1024 * 1024;
 
+/**
+ * 一个条目的**图片判据**：有浏览器 MIME 就先认 MIME，没有才退回文件名后缀。
+ *
+ * 为什么两套：官方在浏览器里判图只认 MIME（`isImageMediaType(file.type)`，见
+ * `packages/client/ui-conversation/src/client/service.ts:597-600`），扩展的**路径**
+ * 那条路拿不到 MIME（VS Code 的文件对话框只给路径），只能看后缀；而拖放 / 粘贴
+ * 这条路 webview 手上**有** `File.type`，丢掉了就会与官方分道扬镳（`shot.jfif`、
+ * 后缀与 MIME 不一致的条目会归类不同）。所以帧里带上 `mimeType`，这里优先采信。
+ *
+ * 只认官方那张表（png / jpeg / webp / gif）：MIME 说是 `image/bmp`、`image/svg+xml`
+ * 的一律**当普通文件上传**——官方同样不把它们当图片（`imageMediaType` 对表外的值
+ * 直接抛 `UnsupportedImageMediaTypeError`），这条不能放宽。
+ */
+export function imageMediaTypeForEntry(mimeType: string | undefined, name: string): string | undefined {
+  if (mimeType) {
+    const normalized = mimeType.split(";", 1)[0]!.trim().toLowerCase();
+    for (const accepted of Object.values(IMAGE_MEDIA_TYPES)) {
+      if (accepted === normalized) return accepted;
+    }
+    // MIME 在表外（哪怕是别的 image/*）：按**文件**走，不再看后缀——
+    // 否则一个 `a.png` 的文本文件会被当成图片内联，提交时被服务端整批拒掉
+    if (normalized) return undefined;
+  }
+  return imageMediaTypeFor(name);
+}
+
 export interface DroppedBytesInput {
   /** 文件名（webview 侧 `File.name`，只有名字，没有路径）。 */
   name: string;
   bytes: Uint8Array;
   /** 当前模型是否接受图片输入；false 时图片不能内嵌，改走上传。 */
   acceptsImage: boolean;
+  /** 浏览器声明的 MIME（`File.type`），可能与后缀不一致；有就优先采信。 */
+  mimeType?: string;
+  /** 图片**内联**上限（字节）：超过它就不内联、改按普通文件上传（与 `classifyPath` 同口径）。 */
+  maxImageBytes?: number;
+  /** 读取 / 降级原因的回调（默认静默）。 */
+  onError?: (message: string) => void;
+}
+
+export interface DroppedBytesOutcome {
+  kind: "attachment";
+  attachment: Attachment;
+  /** 图片超过内联上限、已改按文件上传（调用方据此提示，与路径通道同一条文案）。 */
+  degraded?: "image-over-limit";
 }
 
 /**
- * 归类一份**只有字节和文件名**的附件（拖放进来的文件没有路径）。
+ * 归类一份**只有字节和文件名**的附件（拖放 / 剪贴板里没有真路径的那些）。
  *
- * 判据与 `classifyPath` 同口径，只是能用的信息更少：
+ * 判据与 `classifyPath` 同口径，只是信息更少：
  * - **图片且模型收图** → 图片附件（内容块，与官方内联图片字节一致），
- *   `dataUrl` 由字节直接拼，无需路径；
+ *   `dataUrl` 由字节直接拼，无需路径；超过 `maxImageBytes` 则**降级为文件上传**
+ *   （与路径通道一样，不能让一张超大图以内联块发出去、到提交时被服务端整批拒）；
  * - **其余**（含模型不收图的图片）→ 文件附件，调用方**立即上传字节**
  *   （上传路径按字节发、不挑类型，图片当普通文件上传也比丢掉强——模型仍能用
- *   工具处理它，而"模型不收图"时退回路径文本对拖放根本不可行：没有路径可插）。
+ *   工具处理它，而"模型不收图"时退回路径文本对这两条路根本不可行：没有路径可插）。
  *
  * 刻意不读盘、不引 `vscode`：冒烟测试能直接验证归类结果。
  */
-export function classifyDroppedBytes(
-  input: DroppedBytesInput,
-): { kind: "attachment"; attachment: Attachment } {
-  const { name, bytes, acceptsImage } = input;
-  const mediaType = imageMediaTypeFor(name);
+export function classifyDroppedBytes(input: DroppedBytesInput): DroppedBytesOutcome {
+  const { name, bytes, acceptsImage, mimeType } = input;
+  const mediaType = imageMediaTypeForEntry(mimeType, name);
   if (mediaType && acceptsImage) {
+    if (input.maxImageBytes !== undefined && bytes.length > input.maxImageBytes) {
+      input.onError?.(
+        `图片超过内联上限（${bytes.length} > ${input.maxImageBytes} 字节），改按文件上传：${name}`,
+      );
+      return {
+        kind: "attachment",
+        attachment: { id: randomUUID(), kind: "file", name },
+        degraded: "image-over-limit",
+      };
+    }
     return {
       kind: "attachment",
       attachment: {
@@ -215,4 +263,198 @@ export function classifyDroppedBytes(
     };
   }
   return { kind: "attachment", attachment: { id: randomUUID(), kind: "file", name } };
+}
+
+/**
+ * 一个待接入的条目：**路径**（按钮 / 粘贴拿到的真路径）或**字节**（拖放 / 剪贴板位图）。
+ *
+ * 这是三个入口唯一的输入形态——它们只是同一件事的不同来源，所以接入必须只有一份
+ * 实现（见 `planIntake`）。`name` 由调用方按各自的显示口径给出（图片与目录取
+ * basename，其余取工作区相对路径，见 controller 的 `attachmentName`）。
+ */
+export type IntakeItem =
+  | { from: "path"; path: string; name: string; directory?: boolean }
+  | { from: "bytes"; name: string; bytes: Uint8Array; mimeType?: string };
+
+/** 这一批里没进来的条目（界面已判出来的，以及宿主自己判出来的）。 */
+export interface IntakeRejection {
+  name: string;
+  /** `unreadable`：目录条目（拖放不支持）/ 0 字节 / 读不出来；`too-large`：超过字节通道上限。 */
+  reason: "unreadable" | "too-large";
+}
+
+export interface IntakePlanInput {
+  items: readonly IntakeItem[];
+  /** 当前模型是否接受图片输入；false 时图片不内联。 */
+  acceptsImage: boolean;
+  /** 图片内联上限（缺省时调用方给一个保守硬上限）。 */
+  maxImageBytes?: number;
+  /** 已经在附件列表里的路径：**路径项**按它去重（同一份文件加两次没有意义）。 */
+  existingPaths?: readonly string[];
+  /** 目录探测（默认 `isDirectoryPath`，测试可注入）。 */
+  directory?: (path: string) => boolean;
+  /** 界面侧已经判掉的条目（0 字节目录条目、超 8 MB 的文件）。 */
+  rejected?: readonly IntakeRejection[];
+  onError?: (message: string) => void;
+}
+
+/** 一份附件的上传来源：有路径的重读磁盘，只有字节的用手上这一份。 */
+export interface IntakeUpload {
+  id: string;
+  source: { kind: "path"; path: string } | { kind: "bytes"; bytes: Uint8Array };
+}
+
+export interface IntakePlan {
+  /** 新增的附件（文件带 upload 状态由调用方随后写入；图片已内联成 data URL）。 */
+  attachments: Attachment[];
+  /** 需要立即上传的文件附件。 */
+  uploads: IntakeUpload[];
+  /** 目录 → 调用方插 `@dir/` **引用**（附件列表里不出现目录）。 */
+  directories: string[];
+  /** 读不出来 / 模型不收图 → 调用方把带引号的路径插进正文（最后一道兜底）。 */
+  pathOnly: string[];
+  /** 没进来的条目（含界面报来的）。 */
+  rejected: IntakeRejection[];
+  /** 图片超过内联上限、已改按文件上传（提示用）。 */
+  degradedImages: string[];
+  /** 模型不收图的图片条数（调用方提示「路径已插入」用）。 */
+  unsupportedImages: number;
+}
+
+/**
+ * 三个入口（添加文件 / 拖放 / 粘贴）**唯一**的接入决策：条目 → 附件 / 目录引用 / 拒绝。
+ *
+ * 为什么收成一个纯函数：路径与字节两条路曾经各写一遍（分类、上限、去重、提示都各一套），
+ * 于是漂移出了真 BUG——字节通道的附件没有 `path`，发送装配按 `path` 过滤，
+ * 上传成功的文件**根本没进 prompt**（2026-09-21）。同一件事只留一份实现，
+ * 这类漂移就没有落脚点。
+ *
+ * 判据（与官方一致）：
+ * - **目录** → 引用（官方靠结尾斜杠标记，模型自己决定要不要 list）；
+ * - **图片**（模型收图、且不超内联上限）→ 图片附件；
+ * - **其余** → 文件附件 + 立即上传；
+ * - 读不出来 / 模型不收图 → 路径文本兜底（字节条目没有路径可插，只能上传）。
+ *
+ * 不读 vscode、不写界面：调用方负责把结果落到视图上。
+ */
+export function planIntake(input: IntakePlanInput): IntakePlan {
+  const isDirectory = input.directory ?? isDirectoryPath;
+  const plan: IntakePlan = {
+    attachments: [],
+    uploads: [],
+    directories: [],
+    pathOnly: [],
+    rejected: [...(input.rejected ?? [])],
+    degradedImages: [],
+    unsupportedImages: 0,
+  };
+  const seen = new Set(input.existingPaths ?? []);
+
+  for (const item of input.items) {
+    if (item.from === "bytes") {
+      // 0 字节条目读不出内容（复制目录时 Chromium 给的就是这种），界面上游已拦，
+      // 宿主这一侧再拦一道：按 base64 长度判到的超大条目同样在这里拒绝
+      if (item.bytes.length === 0) {
+        plan.rejected.push({ name: item.name, reason: "unreadable" });
+        continue;
+      }
+      const outcome = classifyDroppedBytes({
+        name: item.name,
+        bytes: item.bytes,
+        mimeType: item.mimeType,
+        acceptsImage: input.acceptsImage,
+        maxImageBytes: input.maxImageBytes,
+        onError: input.onError,
+      });
+      plan.attachments.push(outcome.attachment);
+      if (outcome.attachment.kind === "file") {
+        plan.uploads.push({ id: outcome.attachment.id, source: { kind: "bytes", bytes: item.bytes } });
+        if (outcome.degraded === "image-over-limit") plan.degradedImages.push(item.name);
+      }
+      continue;
+    }
+
+    // 附件按路径去重；路径型结果（目录引用、兜底路径文本）不去重——
+    // 用户每次明确选择都应该在光标处再插一份
+    if (seen.has(item.path)) continue;
+    seen.add(item.path);
+
+    if (item.directory ?? isDirectory(item.path)) {
+      plan.directories.push(item.path);
+      continue;
+    }
+
+    const outcome = classifyPath({
+      path: item.path,
+      name: item.name,
+      acceptsImage: input.acceptsImage,
+      maxImageBytes: input.maxImageBytes,
+      onError: input.onError,
+    });
+    if (outcome.kind === "attachment") {
+      plan.attachments.push(outcome.attachment);
+      if (outcome.attachment.kind === "file") {
+        plan.uploads.push({ id: outcome.attachment.id, source: { kind: "path", path: item.path } });
+        if (imageMediaTypeFor(item.path)) plan.degradedImages.push(item.name);
+      }
+      continue;
+    }
+    plan.pathOnly.push(item.path);
+    if (outcome.reason === "image-unsupported") plan.unsupportedImages++;
+  }
+  return plan;
+}
+
+/** 随 prompt 发出的内容块（官方 `PromptContentPart` 的三态）。 */
+export type PromptContentPart =
+  | { type: "file"; receiptId: string }
+  | { type: "image"; mediaType: string; data: string; name: string }
+  | { type: "text"; text: string };
+
+export interface PromptContentPlan {
+  content: PromptContentPart[];
+  /** 没能随消息发出的文件附件（上传中 / 失败 / 没有回执）——调用方要提示用户。 */
+  notUploaded: string[];
+  /** 表示不出来而被丢掉的（图片没有可解析的 data URL）——调用方至少记日志。 */
+  dropped: string[];
+}
+
+/**
+ * 把「正文 + 附件列表」装配成 prompt 的内容块。
+ *
+ * **官方的顺序**：`content = [...attachments, text]`，且附件之间保持列表顺序
+ * （`packages/client/ui-conversation/src/client/service.ts:259-263`、`:288`）——
+ * 所以这里一趟遍历、按附件顺序出块，`text` 块永远在最后。
+ *
+ * 文件附件只看**上传回执**，不看有没有路径：拖放 / 粘贴进来的字节附件没有 `path`，
+ * 早先那道 `!attachment.path` 的门会把它们整批丢掉（上传照做、prompt 里却没有），
+ * 而且因为同一道门连"没传上去"的提示都不会发。回执才是唯一判据。
+ */
+export function buildPromptContent(
+  text: string,
+  attachments: readonly Attachment[],
+): PromptContentPlan {
+  const content: PromptContentPart[] = [];
+  const notUploaded: string[] = [];
+  const dropped: string[] = [];
+
+  for (const attachment of attachments) {
+    if (attachment.kind === "file") {
+      if (attachment.upload?.status === "ready") {
+        content.push({ type: "file", receiptId: attachment.upload.receiptId });
+      } else {
+        notUploaded.push(attachment.name);
+      }
+      continue;
+    }
+    if (attachment.kind === "image") {
+      const match = attachment.dataUrl ? /^data:([^;]+);base64,(.*)$/.exec(attachment.dataUrl) : null;
+      if (match) content.push({ type: "image", mediaType: match[1]!, data: match[2]!, name: attachment.name });
+      else dropped.push(attachment.name);
+    }
+  }
+
+  const body = text.trim();
+  if (body) content.push({ type: "text", text: body });
+  return { content, notUploaded, dropped };
 }

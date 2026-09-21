@@ -1,8 +1,11 @@
 /**
- * 附件新模型：`@path` 引用 + 文件上传（对齐官方，取代早期的「内联正文」）。
+ * `@path` **引用文本**的规则（对齐官方 `formatFileMention`）。
  *
- * 为什么改：早期版本把文件内容读进 prompt（上限 512KB）。官方从不这么做，代价是
- * 实打实的——token 成本高、二进制读不到、`@path` 的语义消失、队列「重新编辑」退化。
+ * 引用只有一个落点：**正文**（界面在 `@` 候选里选中时插、宿主把目录插成 `@dir/`）。
+ * 早先还有一条「引用芯片」线——附件列表里的一条，发送时由 `composeWithReferences`
+ * 拼到正文之前——自 `@` 改成写正文 token 之后就没有生产方了，2026-09-21 连同它一起
+ * 删掉（见 docs/design-attachments.md）。所以这个文件只剩 mention 文本本身的断言。
+ *
  * 官方两条路（证据见 docs/audit-summary.md §19 与 `dsh/references.ts` 的文件头）：
  * 1. `@path` 引用：只发路径 token，目录以结尾 `/` 标记；
  * 2. 文件上传：拿 `receiptId`，随 prompt 作为 `{type:'file', receiptId}` 发出。
@@ -10,7 +13,7 @@
  * 运行：npm test
  */
 import assert from "node:assert";
-import { composeWithReferences, formatFileMention } from "../src/dsh/references";
+import { formatFileMention } from "../src/dsh/references";
 import { displaySessionMentions } from "../src/shared/mentions";
 
 // ---------- 1. mention 文本：目录补尾斜杠、分隔符统一成 `/` ----------
@@ -62,42 +65,7 @@ console.log("references: 含空白路径加引号（目录也成对） ✓");
 }
 console.log("references: 含控制字符/引号的路径拒绝引用 ✓");
 
-// ---------- 4. 引用拼进正文：引用在前、正文在后，空正文只剩引用 ----------
-
-{
-  assert.strictEqual(
-    composeWithReferences("看看这个", [{ path: "a.ts", kind: "file" }]),
-    "@a.ts\n看看这个",
-  );
-  assert.strictEqual(
-    composeWithReferences("  ", [{ path: "a.ts", kind: "file" }]),
-    "@a.ts",
-    "正文为空时只留引用（单独发一个引用是合法提示词）",
-  );
-  assert.strictEqual(composeWithReferences("没有引用", []), "没有引用");
-  assert.strictEqual(
-    composeWithReferences("多个", [
-      { path: "a.ts", kind: "file" },
-      { path: "src", kind: "directory" },
-    ]),
-    "@a.ts\n@src/\n多个",
-    "多个引用各占一行、保持顺序",
-  );
-}
-console.log("references: 引用拼进正文（引用在前，空正文只剩引用） ✓");
-
-// ---------- 5. 非法引用被跳过，正文照发（不能因为一个坏路径整条发不出去） ----------
-
-{
-  const composed = composeWithReferences("正文", [
-    { path: 'bad"quote.ts', kind: "file" },
-    { path: "good.ts", kind: "file" },
-  ]);
-  assert.strictEqual(composed, "@good.ts\n正文", "坏引用被丢掉，好引用与正文都保留");
-}
-console.log("references: 非法引用单独跳过，不影响其余内容 ✓");
-
-// ---------- 6. 对话引用 mention 的**显示**形态（`@标题`） ----------
+// ---------- 4. 对话引用 mention 的**显示**形态（`@标题`） ----------
 //
 // 用户 2026-09-15 加了「`@` 可以引用对话」。插进正文的是官方那条规范 token
 // （`@[标题](dsh-session:…)`）——它是给服务端看的；落盘的 durable 事件里仍是原始

@@ -2,7 +2,8 @@
  * `@` 引用的**文本形态**（宿主与界面共用）。
  *
  * 为什么单独一个文件：`@path` 这个 token 有**两个**产生方——
- * 1. 宿主把引用芯片拼进正文（`dsh/references.ts` 的 `composeWithReferences`）；
+ * 1. 宿主把**目录**引用插进正文（`controller.addDirectoryReference`：粘贴的剪贴板
+ *    真路径、文件选择器返回的目录联接、以及接入管线判出来的目录条目）；
  * 2. 界面在候选列表里选中文件时**直接把它插进输入框**（纯路径引用，见
  *    `src/webview/composerCompletion.tsx` 的 `outcomeFor` / `applyCandidate`）。
  *

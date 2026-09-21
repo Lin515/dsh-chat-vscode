@@ -4,6 +4,50 @@
 
 ## 未发布
 
+### 修复：拖放 / 粘贴进来的文件附件没进 prompt；两条附件通道收敛为一条（2026-09-21）
+
+上一节（剪贴板附件）落地后复查发现的**真 BUG**，外加同一条链路上的一批不一致。
+
+- **BUG**：拖放、以及剪贴板里只有位图时的粘贴，进来的**文件**附件上传成功后**不进 prompt**。
+  字节通道的附件没有 `path`，而发送装配当时要求 `attachment.path`——上传照做、内容块一个
+  都没有；而且因为门在同一处，连「有附件没传上去」的提示也一起被吞掉。根因是字节通道
+  （`attachBytes`）在后一轮才加，没接进老的路径管线。**修法**：内容块装配抽成纯函数
+  `attachments.buildPromptContent`——文件只认 `upload.status === "ready"`（与有没有 `path`
+  无关），未就绪的进 `notUploaded` 照提示；顺手把顺序恢复成官方的「附件按列表顺序在前、
+  `text` 块最后」。
+- **两条通道收敛为一条**（这才是 BUG 的土壤）：路径通道（回形针对话框 / 粘贴拿到的真路径）
+  与字节通道（拖放 / 位图粘贴）此前各有一套分类、上限、去重、提示与上传函数。现在统一为
+  `attachments.planIntake`（纯函数，唯一决策）+ `controller.ingestAttachments`（落视图）+
+  `startUpload` / `runUpload`（一条上传实现）；`applyPathsForView` / `applyBytesForView` /
+  `runUploadBytes` 删除。粘贴的目录与文件也一起进同一入口，宿主不再自己按类别分流。
+- **图片判据改为 MIME 优先**：`attachBytes` 帧新增 `mimeType`（浏览器声明的 `File.type`），
+  宿主 `imageMediaTypeForEntry` 先认 MIME、没有才退回文件名后缀，表外的 `image/*`（bmp / svg）
+  一律按普通文件上传——这正是官方 `isImageMediaType(file.type)` 的口径。此前拖放 / 粘贴时
+  MIME 在手却被丢掉，`.jfif` 之类会被当成普通文件传上去。帧扩展双向兼容（旧宿主忽略该字段
+  即退回后缀判定，新宿主遇到旧界面同样退回后缀）。
+- **图片内联上限两条通道都判**：字节通道此前不判 `imageLimits.maxImageBytes`，超大图会以内联
+  块发出去、到提交时被服务端整批拒；现在与路径通道一样降级为上传，并发同一条
+  `@imageTooLarge` 提示。
+- **拖放文件夹明确不支持**（核实后作废）：VS Code 不把 OS 路径交给 webview——pre 脚本只转发
+  `shiftKey`、宿主只切换 iframe 的 `pointer-events` 再合成一个不带 dataTransfer 的 DragEvent、
+  Electron 32+ 又移除了 `File.path`。拖放**文件**不受影响（字节通道本来就不需要路径）；
+  要引用目录请用 `@` 或「添加目录」。
+- **删除「引用芯片」整条死链**：`AttachmentKind` 收缩为 `file | image`，
+  `dsh/references.composeWithReferences` 与 `Reference`、芯片渲染分支、`.chip-glyph`、`IconAt`
+  以及预览夹具里的两条 `reference` 条目一并删除。目录一律是正文里的 `@dir/` 引用文本，
+  落点唯一（`controller.addDirectoryReference`：接入管线、选目录对话框、右键 / 命令面板）。
+  另外：添加文件对话框在 Windows/Linux 上不可能返回目录，所以那条路不做文件夹 / 文件分类。
+- **文档**：新增 `docs/design-attachments.md`（入口矩阵、官方口径逐条证据、平台事实、
+  实现地图、14 条不变量 ↔ 断言、待办），`docs/audit-summary.md` 记 `B13` 与本次删除的死代码，
+  `docs/audit-input-queue-attachments.md` §3.4 加当日补记。
+- **断言**：`scripts/attachments.test.ts` 新增 §7（发送装配真调用：无路径附件进 prompt /
+  未就绪有提示 / 官方顺序 / `dropped`）与 §8（`planIntake` 真调用：两通道同判据 / MIME 优先 /
+  上限与拒绝 / 目录进引用 / 0 字节拒绝），§1 与 §5 补 MIME，§6 改为钉「只有一条管线」；
+  `selection` / `previewFixture` / `references` 随形态更新。
+- 未新增用户可见文案（全部复用既有标记），所以本次没有 i18n 变更。
+- **仍未对齐**（记在设计文档 §5.2）：图片整批准入预检（`maxImagesPerMessage` /
+  `maxMessageImageBytes` / 像素）与上传进度——官方都有，扩展没有。
+
 ### 剪贴板附件：粘贴图片 / 文件（2026-09-21，用户需求）
 
 - **会话页任意位置 `Ctrl+V`，剪贴板里的图片（截图）与文件（资源管理器里复制的）直接进

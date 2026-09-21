@@ -4,7 +4,7 @@ import { post } from "./bridge";
  * 附件接取（拖放 + 剪贴板粘贴）—— 全页共享的**字节**通道。
  *
  * 两条入口，一个落点：都读成字节后发 `attachBytes`（见 `shared/ipc.ts`），
- * 宿主再按「文件名 + 模型收不收图」归类（`dsh/attachments.ts` 的 `classifyDroppedBytes`）。
+ * 宿主再按「MIME / 文件名 + 模型收不收图」归类（`dsh/attachments.ts` 的 `planIntake`）。
  * 名字里带 `source` 只为**提示文案**分口径（「拖放上限 8 MB」/「粘贴上限 8 MB」）。
  *
  * ## 为什么只能拿字节
@@ -46,6 +46,27 @@ import { post } from "./bridge";
  * `execCommand`）。
  *
  * 剪贴板里的**目录**读不出字节（`arrayBuffer` 抛 IO 错误）→ 归到 `unreadable` 由宿主提示。
+ *
+ * ## 拖放与粘贴的唯一差别：粘贴能拿到真路径，拖放不能
+ *
+ * 两条路在这里做的事**完全一样**（读成字节 → `attachBytes`），差别只有一个：
+ * 粘贴时宿主会先向系统剪贴板要**真路径**（`dsh/clipboardPaths.ts`，Windows），
+ * 拿到就改走路径通道（目录 → `@dir/` 引用、文件 → 与「添加文件」同一条上传）；
+ * 拖放**没有这一步，也不可能有**——OS 路径在 webview 侧根本拿不到（三重证据）：
+ * 1. webview 的 pre 脚本只把 `drag` / `drag-start` 连同 `shiftKey` 报给宿主
+ *    （`resources/app/out/vs/workbench/contrib/webview/browser/pre/index.html` 的
+ *    `handleInnerDragEvent`），不注入 ResourceURLs / `text/uri-list`；
+ * 2. 宿主那侧只做两件事：`_startBlockingIframeDragEvents()` 把 iframe 设成
+ *    `pointer-events: none`，以及 `new DragEvent(type, {shiftKey})` 派发到主窗口
+ *    （`workbench.desktop.main.js` 的 webview element）——合成事件**不带 dataTransfer**；
+ * 3. iframe 里只剩 Chromium 给的标准文件拖拽载荷，而 `File.path` 自 Electron 32
+ *    起已被移除（本机 VS Code 是 Electron 42），webview 的 `window.vscode` 只有
+ *    `acquireVsCodeApi`；扩展 API 里能拿到 URI 的 drop 入口
+ *    （`DocumentDropEditProvider`）只对 **TextDocument** 生效，够不着这里的 textarea。
+ *
+ * 所以：**拖放文件 = 附件**（走字节通道，修好宿主侧发送装配后与按钮完全同收场）；
+ * **拖放文件夹 = 不支持**（0 字节条目 → `unreadable` → 提示改用 `@` 引用或「添加文件」）。
+ * 不要用 `webkitGetAsEntry()` 拿目录名去猜工作区里的目录——猜错就是把引用指到别的目录。
  */
 
 /**
@@ -176,7 +197,7 @@ export function attachFiles(files: File[], source: AttachSource): void {
   const accepted = files.filter((file) => file.size <= ATTACH_BYTES_LIMIT);
   const tooLarge = files.filter((file) => file.size > ATTACH_BYTES_LIMIT).map((f) => f.name);
   void (async () => {
-    const payload: { name: string; base64: string }[] = [];
+    const payload: { name: string; mimeType?: string; base64: string }[] = [];
     const unreadable: string[] = [];
     for (const file of accepted) {
       if (file.size === 0) {
@@ -184,7 +205,14 @@ export function attachFiles(files: File[], source: AttachSource): void {
         continue;
       }
       try {
-        payload.push({ name: file.name, base64: await fileToBase64(file) });
+        payload.push({
+          name: file.name,
+          // 浏览器声明的类型：宿主**优先**按它判图片（与官方同口径，
+          // 见 `dsh/attachments.ts` 的 `imageMediaTypeForEntry`）。空串=没声明，
+          // 宿主退回按文件名后缀判——所以这个字段不能省。
+          ...(file.type ? { mimeType: file.type } : {}),
+          base64: await fileToBase64(file),
+        });
       } catch {
         unreadable.push(file.name);
       }

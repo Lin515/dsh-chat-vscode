@@ -10,16 +10,20 @@
  * 运行：npm test
  */
 import assert from "node:assert";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Attachment } from "../src/shared/chat";
 import {
   ATTACH_BYTES_LIMIT,
+  buildPromptContent,
   classifyDroppedBytes,
   classifyPath,
   imageMediaTypeFor,
+  imageMediaTypeForEntry,
   isDirectoryPath,
   isImagePath,
+  planIntake,
 } from "../src/dsh/attachments";
 
 // ---------- 1. 扩展名 → mediaType ----------
@@ -36,6 +40,16 @@ assert.strictEqual(imageMediaTypeFor("a.png.txt"), undefined);
 assert.strictEqual(imageMediaTypeFor("archive.tar.gz"), undefined);
 assert.strictEqual(isImagePath("logo.webp"), true);
 assert.strictEqual(isImagePath("logo.svg"), false, "svg 不在支持列表内");
+// MIME 优先（官方 `isImageMediaType(file.type)`）：有 MIME 就只看 MIME，
+// 表外的 `image/*` 一律按普通文件走——否则一个 `a.png` 的文本文件会被当图片内联，
+// 提交时被服务端整批拒掉
+assert.strictEqual(imageMediaTypeForEntry("image/png", "a.bin"), "image/png", "MIME 说了算");
+assert.strictEqual(imageMediaTypeForEntry("image/jpeg; charset=x", "a.jfif"), "image/jpeg", "带参数也认");
+assert.strictEqual(imageMediaTypeForEntry("image/bmp", "a.bmp"), undefined, "表外的 image/* 不当图片");
+assert.strictEqual(imageMediaTypeForEntry("text/plain", "a.png"), undefined, "MIME 与后缀冲突时听 MIME");
+assert.strictEqual(imageMediaTypeForEntry("", "a.png"), "image/png", "没声明 MIME 才退回后缀");
+assert.strictEqual(imageMediaTypeForEntry(undefined, "a.PNG"), "image/png");
+assert.strictEqual(imageMediaTypeForEntry("", "Makefile"), undefined);
 console.log("attachments: 扩展名归类 ✓");
 
 // ---------- 2. 目录静态探测 + 附件 id 唯一 ----------
@@ -260,7 +274,7 @@ console.log("attachments: 目录探测 / id / 错误上报 ✓");
   const frame = posted[0] as {
     type: string;
     source: string;
-    files: { name: string; base64: string }[];
+    files: { name: string; mimeType?: string; base64: string }[];
     unreadable: string[];
     tooLarge: string[];
   };
@@ -271,8 +285,11 @@ console.log("attachments: 目录探测 / id / 错误上报 ✓");
   assert.strictEqual(
     frame.files[0].base64,
     Buffer.from([0x89, 0x50, 0x4e, 0x47]).toString("base64"),
-    "字节要原样 base64 过线（宿主据此判图片 / 上传）",
+    "字节要原样 base64 过线（宿主据此上传 / 内联）",
   );
+  // **MIME 必须过线**：宿主优先按它判图片（与官方 `isImageMediaType(file.type)` 同口径），
+  // 丢掉的话后缀认不出来的图（`.jfif`、无后缀）就会被当成普通文件传上去
+  assert.strictEqual(frame.files[0].mimeType, "image/png", "浏览器声明的 MIME 要带给宿主");
   assert.deepStrictEqual(frame.unreadable, []);
   assert.deepStrictEqual(frame.tooLarge, []);
 
@@ -319,11 +336,15 @@ console.log("attachments: 目录探测 / id / 错误上报 ✓");
   console.log("attachments: 粘贴接取（纯文本放行 / files 与 items / 只给图片补后缀 / 0 字节报 unreadable / source / 超限）✓");
 }
 
-// ---------- 6. 宿主侧分源措辞 + 粘贴优先走真路径 ----------
+// ---------- 6. 宿主侧：三个入口一条管线（源码形态） ----------
 //
 // `scripts/i18n.test.ts` 只保证「登记过的标记有字面量发射点」，但**分派对不对**
 // （source === "paste" 时用的是哪一条）它看不到。这里把那段三元表达式钉住：
 // 粘贴来的东西被拒时不许说「拖放上限」——用户手上根本没有那个可拖的文件。
+//
+// 另外钉住**只有一份接入实现**：路径通道与字节通道曾经各写一遍
+// （`applyPathsForView` / `applyBytesForView`），于是漂移出「字节附件发送时被丢掉」
+// 的 BUG（行为断言在 §7，这里是结构断言）。
 {
   const controller = readFileSync(join(process.cwd(), "src", "dsh", "controller.ts"), "utf8");
   for (const [key, fallback] of [
@@ -340,36 +361,264 @@ console.log("attachments: 目录探测 / id / 错误上报 ✓");
     "帧里的 source 要按肯定证据判 paste，其余一律当拖放（旧帧没有这个字段）",
   );
   // **粘贴优先真路径**（用户 2026-09-21 口径④）：webview 拿不到路径，宿主去系统
-  // 剪贴板取；取到就按**路径的类别**分流（用户当天两次口径合起来）：
-  // **目录 → `@dir/` 引用**（写进正文的路径，不是附件——用户第二次明确「粘贴文件夹
-  // 不该变成附件」）、**文件 → 附件通道**（图片内容块 / 其余不限大小地上传）。
-  // 取不到路径才退回字节通道。顺序**不可反**：先走字节通道的话目录又变 0 字节附件、
-  // 大文件又被 8 MB 挡掉。
+  // 剪贴板取；取到的路径**不分流**，整批交给接入管线（目录 → `@dir/` 引用、
+  // 文件 → 附件，由 `planIntake` 一处决定）。顺序**不可反**：先走字节通道的话
+  // 目录又变 0 字节附件、大文件又被 8 MB 挡掉。
   assert.ok(
-    /if \(message\.source === "paste"\) \{\s*\n\s*const paths = await readClipboardPaths\(\);/.test(controller),
-    "粘贴必须先在宿主侧取剪贴板真路径，再谈字节通道",
-  );
-  assert.ok(
-    /for \(const path of paths\) \(isDirectoryPath\(path\) \? directories : files\)\.push\(path\)/.test(
+    /const clipboardPaths = message\.source === "paste" \? await readClipboardPaths\(\) : \[\]/.test(
       controller,
     ),
-    "取到的路径要按「是不是目录」一次分流（stat 一次）",
+    "粘贴必须先在宿主侧取剪贴板真路径（非粘贴一律不取），再谈字节通道",
   );
   assert.ok(
-    /this\.insertMention\(viewId, formatFileMention\(this\.relativePath\(directory\), "directory"\)\)/.test(
+    /if \(clipboardPaths\.length\) \{[\s\S]{0,400}?await this\.addPaths\(viewId, clipboardPaths, "paste"\)/.test(
       controller,
     ),
-    "目录必须是 `@dir/` 引用（写进正文），不许再落成附件芯片",
+    "取到路径就整批（含目录）交给接入管线，宿主不再自己按类别分流",
   );
   assert.ok(
-    /if \(files\.length\) await this\.addPaths\(viewId, files\)/.test(controller),
-    "文件走附件通道（与回形针同一条：图片内容块 / 其余上传，不限大小）",
+    /private addDirectoryReference\(viewId: string, path: string\): void \{\s*\n\s*this\.insertMention\(viewId, formatFileMention\(this\.relativePath\(path\), "directory"\)\)/.test(
+      controller,
+    ),
+    "目录只有一个落点：`@dir/` 引用文本（分隔符归一与尾斜杠在 formatFileMention 里）",
   );
   assert.ok(
-    /readClipboardPaths\(\)[\s\S]{0,900}?applyBytesForView/.test(controller),
-    "两条路的先后顺序：readClipboardPaths →（有路径就分流并结束）→ applyBytesForView",
+    (controller.match(/this\.addDirectoryReference\(/g) ?? []).length >= 3,
+    "目录落点要覆盖三个入口：接入管线、选目录对话框、右键/命令面板的 addFileContext",
   );
-  console.log("attachments: 宿主按 source 分「拖放 / 粘贴」两套提示、粘贴按类别分流真路径 ✓");
+  assert.ok(
+    !/applyPathsForView|applyBytesForView|runUploadBytes/.test(controller),
+    "两条平行通道必须已经收成一条（`ingestAttachments` + `planIntake` + `startUpload`）",
+  );
+  assert.ok(
+    /private async ingestAttachments\(/.test(controller) &&
+      /const plan = planIntake\(\{/.test(controller),
+    "路径与字节都走同一个 ingestAttachments → planIntake",
+  );
+  console.log("attachments: 宿主按 source 分「拖放 / 粘贴」两套提示、三入口一条管线 ✓");
+}
+
+// ---------- 7. 发送装配：字节附件（没有路径）不许被丢掉 ----------
+//
+// **真调用**（不读源码）：2026-09-21 的 BUG 就出在这里——发送装配要求 `attachment.path`，
+// 而拖放 / 粘贴进来的字节附件没有 path，于是上传照做、prompt 里却没有它，连
+// 「有附件没传上去」的提示也被同一道门吞掉了。
+{
+  const file = (id: string, name: string, upload?: Attachment["upload"], path?: string): Attachment => ({
+    id,
+    kind: "file",
+    name,
+    ...(path ? { path } : {}),
+    ...(upload ? { upload } : {}),
+  });
+  const image = (id: string, name: string, dataUrl?: string): Attachment =>
+    ({ id, kind: "image", name, ...(dataUrl ? { dataUrl } : {}) });
+
+  // ① 没有路径 + 上传成功 → 必须进 content（这条就是那个 BUG 的回归防线）
+  const ready = buildPromptContent("看这个", [file("b1", "shot.pdf", { status: "ready", receiptId: "r1" })]);
+  assert.deepStrictEqual(
+    ready.content,
+    [
+      { type: "file", receiptId: "r1" },
+      { type: "text", text: "看这个" },
+    ],
+    "无路径的文件附件上传成功后必须随消息发出（判据是上传回执，不是 path）",
+  );
+  assert.deepStrictEqual(ready.notUploaded, [], "传上去了就不该出现在「没发出去」清单里");
+
+  // ② 有路径的附件同样按回执走（不许因为多了个 path 就换判据）
+  const withPath = buildPromptContent("", [
+    file("b2", "a.ts", { status: "ready", receiptId: "r2" }, "D:/app/a.ts"),
+  ]);
+  assert.deepStrictEqual(withPath.content, [{ type: "file", receiptId: "r2" }], "正文为空时只留附件");
+
+  // ③ 未就绪（上传中 / 失败 / 状态丢了）→ 不进 content，但必须报出名字让宿主提示
+  const pending = buildPromptContent("x", [
+    file("b3", "uploading.bin", { status: "uploading", loaded: 10 }),
+    file("b4", "failed.bin", { status: "error", message: "HTTP 413" }),
+    file("b5", "lost.bin"),
+    file("b6", "ok.bin", { status: "ready", receiptId: "r6" }),
+  ]);
+  assert.deepStrictEqual(
+    pending.notUploaded,
+    ["uploading.bin", "failed.bin", "lost.bin"],
+    "没传上去的（含上传中）都要报名字——静默丢附件是这个 BUG 的另一半",
+  );
+  assert.deepStrictEqual(pending.content, [
+    { type: "file", receiptId: "r6" },
+    { type: "text", text: "x" },
+  ]);
+
+  // ④ 顺序 = 附件顺序，`text` 永远在最后（官方 `[...attachments, text]`）
+  const ordered = buildPromptContent("正文", [
+    file("o1", "a.bin", { status: "ready", receiptId: "ra" }),
+    image("o2", "shot.png", "data:image/png;base64,QUJD"),
+    file("o3", "b.bin", { status: "ready", receiptId: "rb" }),
+  ]);
+  assert.deepStrictEqual(
+    ordered.content.map((part) => part.type),
+    ["file", "image", "file", "text"],
+    "附件之间保持列表顺序，正文最后（官方同序）",
+  );
+  assert.deepStrictEqual(
+    ordered.content[1],
+    { type: "image", mediaType: "image/png", data: "QUJD", name: "shot.png" },
+    "图片内容块由 data URL 拆出 mediaType 与 base64",
+  );
+
+  // ⑤ 图片没有可解析的 data URL → 进 `dropped`（不再静默跳过）
+  const broken = buildPromptContent("x", [image("i1", "broken.png")]);
+  assert.deepStrictEqual(broken.dropped, ["broken.png"], "表示不出来的附件要报出来（宿主记日志）");
+  assert.deepStrictEqual(broken.content, [{ type: "text", text: "x" }]);
+  assert.deepStrictEqual(buildPromptContent("   ", []).content, [], "什么都没有时 content 为空（不发这条消息）");
+  console.log("attachments: 发送装配（无路径附件进 prompt / 未就绪有提示 / 官方顺序）✓");
+}
+
+// ---------- 8. 三个入口一条决策：planIntake ----------
+//
+// 判据、上限、去重、拒绝全部收在纯函数里（**真调用**）：路径项与字节项只是同一条
+// 规则的两种输入。这一段就是「两条平行通道合成一条」的行为防线。
+{
+  const dir = mkdtempSync(join(tmpdir(), "dsh-intake-"));
+  try {
+    const pngPath = join(dir, "a.png");
+    const bigPath = join(dir, "big.png");
+    const txtPath = join(dir, "a.ts");
+    const subdir = join(dir, "src");
+    mkdirSync(subdir, { recursive: true });
+    const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+    writeFileSync(pngPath, pngBytes);
+    writeFileSync(bigPath, new Uint8Array(9));
+    writeFileSync(txtPath, "export {};\n");
+
+    // ① 同一张图：路径项与字节项给出同一种内容块（同判据才谈得上同管线）
+    const byPath = planIntake({
+      items: [{ from: "path", path: pngPath, name: "a.png" }],
+      acceptsImage: true,
+    });
+    const byBytes = planIntake({
+      items: [{ from: "bytes", name: "a.png", bytes: pngBytes, mimeType: "image/png" }],
+      acceptsImage: true,
+    });
+    assert.strictEqual(byPath.attachments[0].kind, "image");
+    assert.strictEqual(byBytes.attachments[0].kind, "image");
+    assert.strictEqual(
+      byPath.attachments[0].dataUrl,
+      byBytes.attachments[0].dataUrl,
+      "两条通道对同一份 png 必须给出同一个 data URL",
+    );
+    assert.deepStrictEqual(byPath.uploads, [], "图片不进上传队列");
+    assert.deepStrictEqual(byBytes.uploads, [], "字节来的图片也不进上传队列");
+
+    // ② MIME 优先（官方 `isImageMediaType(file.type)`）：后缀认不出来也按图片走；
+    //    表外的 `image/*`（官方同样不当图片）一律按普通文件上传
+    const jfif = planIntake({
+      items: [{ from: "bytes", name: "shot.jfif", bytes: pngBytes, mimeType: "image/jpeg" }],
+      acceptsImage: true,
+    });
+    assert.strictEqual(jfif.attachments[0].kind, "image", "MIME 说了是图片就按图片走");
+    assert.ok(jfif.attachments[0].dataUrl?.startsWith("data:image/jpeg;base64,"), "mediaType 用 MIME 本身");
+    const bmp = planIntake({
+      items: [{ from: "bytes", name: "a.bmp", bytes: pngBytes, mimeType: "image/bmp" }],
+      acceptsImage: true,
+    });
+    assert.strictEqual(bmp.attachments[0].kind, "file", "表外的图片类型按普通文件上传（官方同口径）");
+    assert.deepStrictEqual(
+      bmp.uploads,
+      [{ id: bmp.attachments[0].id, source: { kind: "bytes", bytes: pngBytes } }],
+      "文件附件要带上上传来源（字节来源没有路径可读）",
+    );
+
+    // ③ 图片内联上限：**两条通道都**降级为文件上传（此前只有路径那条会判）
+    const pathOver = planIntake({
+      items: [{ from: "path", path: bigPath, name: "big.png" }],
+      acceptsImage: true,
+      maxImageBytes: 8,
+      onError: () => {},
+    });
+    assert.strictEqual(pathOver.attachments[0].kind, "file", "路径来的超大图降级为上传");
+    assert.deepStrictEqual(pathOver.degradedImages, ["big.png"], "降级要报出来（提示 @imageTooLarge）");
+    assert.deepStrictEqual(
+      pathOver.uploads,
+      [{ id: pathOver.attachments[0].id, source: { kind: "path", path: bigPath } }],
+    );
+    const bytesOver = planIntake({
+      items: [{ from: "bytes", name: "big.png", bytes: new Uint8Array(9), mimeType: "image/png" }],
+      acceptsImage: true,
+      maxImageBytes: 8,
+      onError: () => {},
+    });
+    assert.strictEqual(bytesOver.attachments[0].kind, "file", "字节来的超大图同样降级（此前这里不判）");
+    assert.deepStrictEqual(bytesOver.degradedImages, ["big.png"]);
+
+    // ④ 模型不收图：字节通道只能上传（没有路径可插）；路径通道退回路径文本
+    const noImageBytes = planIntake({
+      items: [{ from: "bytes", name: "a.png", bytes: pngBytes, mimeType: "image/png" }],
+      acceptsImage: false,
+    });
+    assert.strictEqual(noImageBytes.attachments[0].kind, "file", "模型不收图时字节通道按文件上传");
+    const noImagePath = planIntake({
+      items: [{ from: "path", path: pngPath, name: "a.png" }],
+      acceptsImage: false,
+    });
+    assert.deepStrictEqual(noImagePath.attachments, [], "路径通道没有内容块可给");
+    assert.deepStrictEqual(noImagePath.pathOnly, [pngPath], "退回把路径插到光标处（最后一道兜底）");
+    assert.strictEqual(noImagePath.unsupportedImages, 1, "并计数以便提示");
+
+    // ⑤ 目录 → **引用**（附件列表里不出现目录），同一路径只插一次
+    const dirs = planIntake({
+      items: [
+        { from: "path", path: subdir, name: "src" },
+        { from: "path", path: subdir, name: "src" },
+        { from: "path", path: txtPath, name: "a.ts" },
+      ],
+      acceptsImage: true,
+    });
+    assert.deepStrictEqual(dirs.directories, [subdir], "目录进引用清单（重复粘贴只插一次）");
+    assert.deepStrictEqual(
+      dirs.attachments.map((attachment) => attachment.path),
+      [txtPath],
+      "附件列表里只有文件，没有目录芯片",
+    );
+    assert.strictEqual(dirs.attachments[0].kind, "file", "文本文件按文件上传（内容不做可读性判定）");
+
+    // ⑥ 路径去重按**已有列表**判；字节项没有身份可比，不去重（官方也不去重）
+    const dedup = planIntake({
+      items: [
+        { from: "path", path: txtPath, name: "a.ts" },
+        { from: "bytes", name: "a.ts", bytes: pngBytes },
+        { from: "bytes", name: "a.ts", bytes: pngBytes },
+      ],
+      acceptsImage: true,
+      existingPaths: [txtPath],
+    });
+    assert.strictEqual(dedup.attachments.length, 2, "已在列表里的路径跳过；字节条目各自成一条");
+
+    // ⑦ 0 字节条目（拖进来的目录就是这个形状）→ 拒绝，不是 0 字节假附件
+    const empty = planIntake({
+      items: [{ from: "bytes", name: "docs", bytes: new Uint8Array(0) }],
+      acceptsImage: true,
+    });
+    assert.deepStrictEqual(empty.attachments, [], "0 字节条目不许变成假附件");
+    assert.deepStrictEqual(empty.rejected, [{ name: "docs", reason: "unreadable" }], "要报出来让用户知道");
+
+    // ⑧ 界面报来的拒绝项原样带出去（提示只由调用方那一处发）
+    const carried = planIntake({
+      items: [],
+      acceptsImage: true,
+      rejected: [
+        { name: "huge.bin", reason: "too-large" },
+        { name: "docs", reason: "unreadable" },
+      ],
+    });
+    assert.deepStrictEqual(
+      carried.rejected.map((item) => item.reason),
+      ["too-large", "unreadable"],
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  console.log("attachments: planIntake（两通道同判据 / MIME 优先 / 上限与拒绝 / 目录进引用）✓");
 }
 
 console.log("\nattachments: all assertions passed");

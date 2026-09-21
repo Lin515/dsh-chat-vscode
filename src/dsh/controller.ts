@@ -27,13 +27,23 @@ import type { HostToWebview, WebviewToHost } from "../shared/ipc";
 import { SessionAdapter, type ImageRef } from "./adapter";
 import { decodeChangesSummary } from "./changes";
 import { changesSummaryKey } from "../shared/changesSummary";
-import { ATTACH_BYTES_LIMIT, classifyDroppedBytes, classifyPath, formatPathList, isDirectoryPath, isImagePath } from "./attachments";
+import {
+  ATTACH_BYTES_LIMIT,
+  buildPromptContent,
+  formatPathList,
+  isDirectoryPath,
+  isImagePath,
+  planIntake,
+  type IntakeItem,
+  type IntakeRejection,
+  type IntakeUpload,
+} from "./attachments";
 import { readClipboardPaths } from "./clipboardPaths";
 import { ConfigChangeRouter } from "./configChanges";
 import { fileChangeKind, hasWorkingChange, isNotFoundError, resolveChipPath, type FileExistence, type GitChangeStateLike } from "./fileChange";
 import { readLocalImages } from "./localImages";
 import { shouldContinuePaging } from "./historyPaging";
-import { composeWithReferences, formatFileMention } from "./references";
+import { formatFileMention } from "./references";
 import { formatFileMentionWithLines } from "../shared/mentions";
 import { resolveForVsCode } from "./hostText";
 import { normalizeTurnProcessThreshold } from "../shared/turnProcessThreshold";
@@ -271,6 +281,15 @@ const MAX_BASE64_CHARS = Math.ceil(ATTACH_BYTES_LIMIT / 3) * 4 + 3;
  * 此值；这条只是为了兜住「同步读一个巨大文件」的最坏情况。
  */
 const IMAGE_INLINE_HARD_CAP = 64 * 1024 * 1024;
+
+/**
+ * 这一批附件是从哪条路进来的。
+ *
+ * 只影响**提示措辞与日志**：准入判据、上限、上传通道完全相同（三个入口共用
+ * `ingestAttachments`）。`"button"` 是添加文件按钮——对话框只给读得出来的路径，
+ * 所以那条路不会有「读不出来 / 太大」的拒绝。
+ */
+type IngestSource = "button" | "drop" | "paste";
 
 /**
  * 内建 git 扩展导出对象的**结构**视图。
@@ -535,10 +554,9 @@ export class ChatController implements vscode.Disposable {
   /**
    * 已提交但可能还排在队列里的消息：requestId → 用户当时真正输入的内容。
    *
-   * 为什么不能直接用队列回显：提交给服务端的正文里已经把 `@path` 引用拼在正文
-   * 前面（见 `composeWithReferences`），上传文件变成 `{type:'file', receiptId}`
-   * 内容块、图片是独立内容块——回显文本里看不到这些结构。用回显「重新编辑」
-   * 会丢掉附件芯片。这里按 requestId 存原文，队列帧带回 `rpcId` 时就能对回去。
+   * 为什么不能直接用队列回显：提交给服务端的正文里，`@path` 引用**就在用户正文
+   * 里**（界面插的 token），上传文件变成 `{type:'file', receiptId}` 内容块、图片是
+   * 独立内容块——回显文本里看不到这些结构。用回显「重新编辑」会丢掉附件芯片。这里按 requestId 存原文，队列帧带回 `rpcId` 时就能对回去。
    * requestId 全局唯一，跨会话共享一份表即可。
    */
   private readonly submissions = new Map<
@@ -3789,42 +3807,50 @@ export class ChatController implements vscode.Disposable {
         // 「目录 → 路径引用、文件 → 与回形针同样不限大小」（用户 2026-09-21 口径）。
         // 拿不到路径（非 Windows / 剪贴板里没有文件——截图就是这样）才退回字节通道。
         //
-        // 走这一支时界面送来的字节**被丢掉**（它并不知道宿主能拿到路径）。代价是
+        // 走路径那一支时界面送来的字节**被丢掉**（它并不知道宿主能拿到路径）。代价是
         // 这一批文件的字节白读了一遍（≤ `ATTACH_BYTES_LIMIT`，超大条目界面侧本来就不读），
         // 换来的是不必再加一轮「先问路径、再要字节」的往返协议——不值得为几百毫秒
         // 把粘贴改成两阶段。
         //
-        // 两类路径去向不同（用户 2026-09-21 两次口径合起来）：
-        // - **目录 → `@dir/` 引用**（写进正文的**路径**，与资源管理器右键文件夹、
-        //   命令面板「添加文件夹」同一条路）——用户第二次明确「粘贴文件夹不该变成附件」；
-        // - **文件 → 附件通道**（图片内容块 / 其余上传，不限大小）——第一次的口径是
-        //   「粘贴文件要和添加附件一样」。
-        if (message.source === "paste") {
-          const paths = await readClipboardPaths();
-          if (paths.length) {
-            const directories: string[] = [];
-            const files: string[] = [];
-            // 一次 stat 分流：`isDirectoryPath` 拿不到证据时按「不是目录」处理
-            for (const path of paths) (isDirectoryPath(path) ? directories : files).push(path);
-            this.log(
-              `[attach] 粘贴：系统剪贴板里有 ${paths.length} 个路径（目录 ${directories.length} / 文件 ${files.length}）`,
-            );
-            for (const directory of directories) {
-              this.insertMention(viewId, formatFileMention(this.relativePath(directory), "directory"));
-            }
-            if (files.length) await this.addPaths(viewId, files);
+        // 路径里的**目录与文件一起**交给同一条接入管线（`ingestAttachments`）：
+        // 目录 → `@dir/` 引用、文件 → 附件，由 `planIntake` 一处决定，这里不再自己分流。
+        //
+        // **拖放没有路径分支**：VS Code 不把 OS 路径交给 webview——pre 脚本
+        // （`webview/browser/pre/index.html` 的 `handleInnerDragEvent`）只转发 shiftKey，
+        // 宿主（workbench 的 webview element）只切换 iframe 的 `pointer-events` 再合成
+        // 一个不带 dataTransfer 的 DragEvent，Electron 32+ 又移除了 `File.path`。
+        // 所以拖放**不支持文件夹**（0 字节条目 → 明确提示），文件走字节通道——
+        // 与按钮 / 粘贴最终同一条上传。
+        {
+          const clipboardPaths = message.source === "paste" ? await readClipboardPaths() : [];
+          if (clipboardPaths.length) {
+            this.log(`[attach] 粘贴：系统剪贴板里有 ${clipboardPaths.length} 个路径`);
+            await this.addPaths(viewId, clipboardPaths, "paste");
             break;
           }
+          // `source` 只影响这一批的提示措辞与日志：准入判据完全相同（缺省当拖放，旧帧没有该字段）
+          const source: IngestSource = message.source === "paste" ? "paste" : "drop";
+          const items: IntakeItem[] = [];
+          const rejected: IntakeRejection[] = [
+            ...message.unreadable.map((name) => ({ name, reason: "unreadable" as const })),
+            ...message.tooLarge.map((name) => ({ name, reason: "too-large" as const })),
+          ];
+          for (const file of message.files) {
+            const decoded = this.decodeAttachBytes(file.base64, file.name, source);
+            if (typeof decoded === "string") {
+              // `invalid` 只可能是帧被改坏（界面侧的 base64 由 btoa 产出），不提示用户；
+              // 超限则是真事，报给用户（界面侧同值拦过，这里是宿主侧的兜底那一半）
+              if (decoded === "too-large") rejected.push({ name: file.name, reason: "too-large" });
+              continue;
+            }
+            items.push({ from: "bytes", name: file.name, mimeType: file.mimeType, bytes: decoded });
+          }
+          this.log(
+            `[attach] ${source === "paste" ? "粘贴" : "拖放"}：字节通道 ${items.length} 个条目（拒绝 ${rejected.length}）`,
+          );
+          await this.ingestAttachments(viewId, source, items, rejected);
+          break;
         }
-        // `source` 只影响剩余提示与日志措辞；缺省当拖放（旧帧只有那一条路）
-        await this.applyBytesForView(
-          viewId,
-          message.files,
-          message.unreadable,
-          message.tooLarge,
-          message.source === "paste" ? "paste" : "drop",
-        );
-        break;
 
       case "retryUpload":
         this.retryUpload(viewId, message.id);
@@ -4021,42 +4047,18 @@ export class ChatController implements vscode.Disposable {
       return;
     }
 
-    const content: unknown[] = [];
-    // 内容块按**官方顺序**装配：附件在前、正文在后
-    // （`content = [...attachments, {type:'text', text}]`）。
-    // 文件不再内联正文：引用变成正文里的 `@path`，上传文件变成 `{type:'file', receiptId}`。
-    const references = attachments.filter(
-      (attachment): attachment is Attachment & { path: string } =>
-        attachment.kind === "reference" && Boolean(attachment.path),
-    );
-    const uploaded: { receiptId: string }[] = [];
-    const notUploaded: string[] = [];
-    for (const attachment of attachments) {
-      if (attachment.kind !== "file" || !attachment.path) continue;
-      if (attachment.upload?.status === "ready") {
-        uploaded.push({ receiptId: attachment.upload.receiptId });
-      } else {
-        notUploaded.push(attachment.name);
-      }
+    // 内容块装配收在 `buildPromptContent`（纯函数，断言在 scripts/attachments.test.ts）：
+    // 附件在前、正文最后，附件之间保持列表顺序（官方 `content = [...attachments, text]`）。
+    //
+    // 文件附件的唯一判据是**上传回执**，不能再看 `path`：拖放 / 粘贴（剪贴板里没有真
+    // 路径的那些）进来的字节附件本来就没有路径，早先那道 `!attachment.path` 的门会把
+    // 上传成功的文件**整批丢掉**，而且因为门在同一处，连「有附件没传上去」的提示
+    // 也不会发（2026-09-21 修）。
+    const { content, notUploaded, dropped } = buildPromptContent(text, attachments);
+    if (dropped.length) {
+      // 表示不出来（图片没有可解析的 data URL）：不再静默，至少留一条日志
+      this.log(`[submit] 这些附件无法表示成内容块，已跳过：${dropped.join("、")}`);
     }
-    for (const file of uploaded) content.push({ type: "file", receiptId: file.receiptId });
-    for (const attachment of attachments) {
-      if (attachment.kind === "image" && attachment.dataUrl) {
-        const match = /^data:([^;]+);base64,(.*)$/.exec(attachment.dataUrl);
-        if (match) {
-          content.push({ type: "image", mediaType: match[1], data: match[2], name: attachment.name });
-        }
-      }
-    }
-    // 正文最后：引用 token 拼在用户输入之前（同一条 text 块，官方也是单一 text 块）
-    const body = composeWithReferences(
-      text,
-      references.map((attachment) => ({
-        path: attachment.path,
-        kind: attachment.referenceKind ?? "file",
-      })),
-    );
-    if (body) content.push({ type: "text", text: body });
     if (content.length === 0) return;
 
     try {
@@ -4257,7 +4259,11 @@ export class ChatController implements vscode.Disposable {
    * folder selector, so if you set both `canSelectFiles` and `canSelectFolders`
    * to `true` on these platforms, a folder selector will be shown.」——同时置 true
    * 会让 Windows/Linux 上**只**弹目录选择器，文件全被过滤掉（这正是之前的 bug）。
-   * 目录改由 `pickFolder`（命令面板 / 资源管理器右键文件夹）负责。
+   * 目录的显式入口是 `pickFolder`（命令面板 / 资源管理器右键文件夹）。
+   *
+   * 所以这条路**不需要**文件夹/文件分类：对话框在 Windows/Linux 上不可能返回目录，
+   * 选了什么都直接当附件。macOS 的 bundle（`.app`）与目录联接是例外——它们会被
+   * 当成"文件"返回，那由接入管线按目录规则收场（`@dir/` 引用），不会有目录芯片。
    *
    * 刻意不再有「只选图片」的对话框：同一个按钮既能给图片也能给代码/日志，
    * 由文件本身决定走哪条路，用户不必先想清楚该点哪个按钮。
@@ -4273,7 +4279,7 @@ export class ChatController implements vscode.Disposable {
       openLabel: vscode.l10n.t("Add attachments"),
     });
     if (!picked?.length) return;
-    await this.addPaths(viewId, picked.map((uri) => uri.fsPath));
+    await this.addPaths(viewId, picked.map((uri) => uri.fsPath), "button");
   }
 
   /**
@@ -4292,125 +4298,49 @@ export class ChatController implements vscode.Disposable {
       openLabel: vscode.l10n.t("Add folder reference"),
     });
     if (!picked?.length) return;
-    for (const uri of picked) {
-      this.insertMention(viewId, formatFileMention(this.relativePath(uri.fsPath), "directory"));
-    }
-  }
-
-  /** 把一批路径交给 `applyPathsForView` 分派（图片 / 上传）——**附件**入口专用。 */
-  private async addPaths(viewId: string, paths: string[]): Promise<void> {
-    await this.applyPathsForView(viewId, paths.map((path) => ({ path, name: this.attachmentName(path) })));
+    for (const uri of picked) this.addDirectoryReference(viewId, uri.fsPath);
   }
 
   /**
-   * 把一批路径并入当前会话的输入（附件入口：文件选择器 / 资源管理器右键 /
-   * 命令面板「添加文件夹」）。
+   * 把一批路径交给接入管线（**附件**入口专用：文件选择器 / 剪贴板真路径）。
    *
-   * 三条去向，与官方一致（判据在 `attachments.classifyPath`）：
+   * `@` 那条路不走这里：`@` 选中的文件/目录是正文里的 `@path` **引用** token
+   * （纯路径，官方 `@` 的语义），真正逐字节上传只从附件入口发生。
+   */
+  private async addPaths(viewId: string, paths: readonly string[], source: IngestSource): Promise<void> {
+    const items: IntakeItem[] = paths.map((path) => ({
+      from: "path",
+      path,
+      name: this.attachmentName(path),
+    }));
+    await this.ingestAttachments(viewId, source, items, []);
+  }
+
+  /**
+   * **三个入口唯一的接入执行层**：添加文件按钮 / 拖放 / 粘贴。
+   *
+   * 决策全部在纯函数 `attachments.planIntake` 里（条目 → 附件 / 目录引用 / 拒绝），
+   * 这里只把结果落到视图上。之所以收成一份：路径与字节两条路曾经各写一遍，
+   * 于是漂移出了真 BUG——字节通道的附件没有 `path`，发送装配按 `path` 过滤，
+   * 上传成功的文件**根本没进 prompt**，而且连提示都不发（2026-09-21 修）。
+   *
+   * 三条去向（与官方一致，理由见 `attachments.ts` 文件头）：
    * - **图片** → 图片附件（内容块，官方同样内联图片字节）；
-   * - **目录** → `@dir/` **引用芯片**（官方靠结尾斜杠标记目录，模型自己决定
-   *   要不要 list；目录不是「读不出来的文件」，不走路径文本兜底）；
+   * - **目录** → `@dir/` **引用文本**（不是附件芯片，见 `addDirectoryReference`）；
    * - **其余文件** → 文件附件并**立即上传**（官方 upload-on-pick：选完就开始传，
-   *   大文件在按下发送前就能看到进度，发送时只带 `receiptId`；上传路径按字节发，
-   *   类型与大小都不挑——官方也不挑，**不要**在这里加可读性/大小筛子，
-   *   理由见 `attachments.ts` 的文件头）。
+   *   发送时只带 `receiptId`；上传按字节发，类型与大小都不挑——官方也不挑，
+   *   **不要**在这里加可读性/大小筛子）。
    *
-   * 只有文件读不出来（选择到读取之间被删的竞态）、或模型不收图片，才退回把带
-   * 引号的路径插到光标处——那是最后一道兜底，不再假装「已作为上下文加入」。
-   *
-   * 分工与 `@` 入口不同：`@` 选中的文件/目录变成正文里的 `@path` token
-   * （纯路径引用，官方 @ 的语义），真正逐字节上传只从这里发生。
+   * 读不出来（选择到读取之间被删的竞态）、或模型不收图片，才退回把带引号的路径插到
+   * 光标处——那是最后一道兜底，不再假装「已作为上下文加入」。
    */
-  private async applyPathsForView(viewId: string, items: { path: string; name: string; directory?: boolean }[]): Promise<void> {
-    // 文件上传需要会话：窗口还是空态时先建（附件按键是常见的第一步动作）
-    if (!this.scopeOfView(viewId)) {
-      if (this.client || this.connection === "connected") {
-        await this.newSession(viewId);
-      }
-    }
-    const key = this.keyForView(viewId);
-    const list = this.attachmentsBySession.get(key) ?? [];
-    // 图片能力取自该窗口会话的模型；空态（还没会话）按「支持」处理
-    const acceptsImage = this.scopeOfView(viewId)?.model?.acceptsImage !== false;
-    const pathOnly: string[] = [];
-    let unsupportedImages = 0;
-
-    for (const item of items) {
-      // 附件按路径去重（同一张图加两次没有意义）；路径型结果不去重——
-      // 用户每次明确选择都应该在光标处再插一份
-      if (list.some((a) => a.path === item.path)) continue;
-      // 目录 → 引用芯片（与 `@` 的「整个目录」同形；官方靠结尾斜杠区分）
-      if (item.directory ?? isDirectoryPath(item.path)) {
-        list.push({
-          id: randomUUID(),
-          kind: "reference",
-          path: item.path,
-          name: `${basename(item.path)}/`,
-          referenceKind: "directory",
-        });
-        continue;
-      }
-      const outcome = classifyPath({
-        ...item,
-        // 未拿到模型能力时按「支持」处理，与服务端最终校验一致
-        acceptsImage,
-        // 图片内联上限：优先用服务端自己的 `imageLimits.maxImageBytes`（这正是那份
-        // 投影的用途），拿不到时给一个保守硬上限——同步读一张几百 MB 的图会冻住宿主
-        maxImageBytes: this.scopeOfView(viewId)?.imageLimits?.maxImageBytes ?? IMAGE_INLINE_HARD_CAP,
-        onError: (message) => this.log(`[attach] ${message}`),
-      });
-      if (outcome.kind === "attachment") {
-        if (outcome.attachment.kind === "file" && outcome.attachment.path) {
-          // 上传是异步的：先把芯片放进列表（带 uploading 状态），字节到了再更新
-          const attachment = outcome.attachment;
-          list.push(attachment);
-          this.uploadAttachment(viewId, attachment);
-          // 图片被降级成文件上传时说明原因（否则用户只看到「我加的是图，怎么成了文件」）
-          if (isImagePath(item.path)) {
-            this.emitToView(viewId, { type: "toast", level: "warn", text: `@imageTooLarge:${item.name}` });
-          }
-          continue;
-        }
-        list.push(outcome.attachment);
-        continue;
-      }
-      pathOnly.push(item.path);
-      if (outcome.reason === "image-unsupported") unsupportedImages++;
-    }
-
-    this.attachmentsBySession.set(key, list);
-    this.pushAttachmentsForView(viewId, list);
-    if (pathOnly.length) {
-      this.emitToView(viewId, { type: "ui/insertText", text: formatPathList(pathOnly) });
-    }
-    if (unsupportedImages > 0) {
-      const model = this.scopeOfView(viewId)?.model;
-      const label = model?.label ?? model?.model ?? "";
-      this.emitToView(viewId, { type: "toast", level: "warn", text: `@imagePathsInserted:${unsupportedImages}:${label}` });
-    }
-  }
-
-  /**
-   * 拖放 / 粘贴进来的文件：**只有字节和文件名**（webview 拿不到路径，理由见
-   * `shared/ipc.ts` 的 `attachBytes`）。与 `applyPathsForView` 同口径，只是信息更少：
-   * - 图片且模型收图 → 图片附件（内容块，与官方内联图片字节一致）；
-   * - 其余（含模型不收图的图片）→ 文件附件并**立即上传字节**。上传路径本来就
-   *   按字节发、不挑类型，图片当普通文件传也比丢掉强——"模型不收图"时退回
-   *   路径文本对这两条路根本不可行（既没有路径可插，字节也没法给模型读）。
-   *
-   * `unreadable` / `tooLarge` 是这一批里没进来的名字（目录 / 超限），逐个提示，
-   * 不静默丢弃——拖了一堆文件却少进来几个，用户必须知道是哪个、为什么。
-   * 提示文案按 `source` 分「拖放 / 粘贴」两套措辞：准入判据完全相同，但
-   * 「拖放上限 8 MB，请改用添加文件」对粘贴来的东西说不通（用户手上没有那个文件）。
-   */
-  private async applyBytesForView(
+  private async ingestAttachments(
     viewId: string,
-    files: readonly { name: string; base64: string }[],
-    unreadable: readonly string[],
-    tooLarge: readonly string[],
-    source: "drop" | "paste",
+    source: IngestSource,
+    items: readonly IntakeItem[],
+    rejected: readonly IntakeRejection[],
   ): Promise<void> {
-    // 上传需要会话：与 addFiles 一样，空态时先建一个
+    // 上传需要会话：窗口还是空态时先建（附件按键是常见的第一步动作）
     if (!this.scopeOfView(viewId)) {
       if (this.client || this.connection === "connected") {
         await this.newSession(viewId);
@@ -4418,57 +4348,103 @@ export class ChatController implements vscode.Disposable {
     }
     const key = this.keyForView(viewId);
     const list = this.attachmentsBySession.get(key) ?? [];
-    const acceptsImage = this.scopeOfView(viewId)?.model?.acceptsImage !== false;
-    const pending: { attachment: Attachment; bytes: Uint8Array }[] = [];
-    const rejected: string[] = [];
-    // 日志里区分「拖放 / 粘贴」：两条路的排查线索不同（拖放的常见问题是 Shift 门，
-    // 粘贴的是剪贴板里根本没有文件格式），同一句日志会把人带偏
-    const label = source === "paste" ? "粘贴" : "拖放";
+    const scope = this.scopeOfView(viewId);
+    const plan = planIntake({
+      items,
+      // 未拿到模型能力时按「支持」处理，与服务端最终校验一致
+      acceptsImage: scope?.model?.acceptsImage !== false,
+      // 图片内联上限：优先用服务端自己的 `imageLimits.maxImageBytes`（这正是那份
+      // 投影的用途），拿不到时给一个保守硬上限——同步读一张几百 MB 的图会冻住宿主
+      maxImageBytes: scope?.imageLimits?.maxImageBytes ?? IMAGE_INLINE_HARD_CAP,
+      // 附件按路径去重（同一张图加两次没有意义）；字节条目没有身份可比，不去重
+      existingPaths: list.flatMap((attachment) => (attachment.path ? [attachment.path] : [])),
+      rejected,
+      onError: (message) => this.log(`[attach] ${message}`),
+    });
 
-    for (const file of files) {
-      // **宿主这一侧也要拦**：`ATTACH_BYTES_LIMIT` 原本只在界面里判（`attachIntake.ts`），
-      // 而帧是界面发来的、形状不受类型系统约束——没有这一道，一条超大的 base64
-      // 会让宿主先分配一份解码后的字节再发现它太大。按 base64 长度先判，
-      // 连解码都不做（4/3 关系，留 3 字节余量给 padding）。
-      if (file.base64.length > MAX_BASE64_CHARS) {
-        this.log(`[attach] ${label}的文件超过 ${ATTACH_BYTES_LIMIT} 字节，已拒绝：${file.name}`);
-        rejected.push(file.name);
-        continue;
-      }
-      let bytes: Uint8Array;
-      try {
-        bytes = new Uint8Array(Buffer.from(file.base64, "base64"));
-      } catch (error) {
-        this.log(`[attach] ${label}解码失败 ${file.name}：${this.describeError(error)}`);
-        continue;
-      }
-      if (bytes.length > ATTACH_BYTES_LIMIT) {
-        this.log(`[attach] ${label}的文件超过 ${ATTACH_BYTES_LIMIT} 字节，已拒绝：${file.name}`);
-        rejected.push(file.name);
-        continue;
-      }
-      const outcome = classifyDroppedBytes({ name: file.name, bytes, acceptsImage });
-      list.push(outcome.attachment);
-      if (outcome.attachment.kind === "file") {
-        pending.push({ attachment: outcome.attachment, bytes });
-      }
-    }
-
+    // 先把芯片落进列表（带 uploading，由 startUpload 写）再起上传：上传是异步的
+    // 一条日志把这一批的去向说清楚（排查「我加的东西怎么没进来」全靠它）
+    this.log(
+      `[attach] ${source}：附件 ${plan.attachments.length}（其中上传 ${plan.uploads.length}）` +
+        ` / 目录引用 ${plan.directories.length} / 路径兜底 ${plan.pathOnly.length} / 拒绝 ${plan.rejected.length}`,
+    );
+    list.push(...plan.attachments);
     this.attachmentsBySession.set(key, list);
     this.pushAttachmentsForView(viewId, list);
 
-    for (const item of pending) {
-      this.uploadBytes(viewId, item.attachment, item.bytes);
+    for (const directory of plan.directories) this.addDirectoryReference(viewId, directory);
+    for (const upload of plan.uploads) this.startUpload(viewId, upload);
+    if (plan.pathOnly.length) {
+      this.emitToView(viewId, { type: "ui/insertText", text: formatPathList(plan.pathOnly) });
     }
-    // 两条路各一套措辞（字面量写在这里，`scripts/i18n.test.ts` 靠它核对发射点）
+    // 图片被降级成文件上传时说明原因（否则用户只看到「我加的是图，怎么成了文件」）——
+    // 两条通道同一条文案，不再只有路径那条会提示
+    for (const name of plan.degradedImages) {
+      this.emitToView(viewId, { type: "toast", level: "warn", text: `@imageTooLarge:${name}` });
+    }
+    if (plan.unsupportedImages > 0) {
+      const model = scope?.model;
+      const label = model?.label ?? model?.model ?? "";
+      this.emitToView(viewId, {
+        type: "toast",
+        level: "warn",
+        text: `@imagePathsInserted:${plan.unsupportedImages}:${label}`,
+      });
+    }
+    // 两条路各一套措辞（字面量写在这里，`scripts/i18n.test.ts` 靠它核对发射点）：
+    // 准入判据完全相同，但「拖放上限 8 MB，请改用添加文件」对粘贴来的东西说不通
+    // （用户手上没有那个文件）。按钮那条路不会有拒绝（对话框只给读得出来的路径），
+    // 所以这里的兜底措辞用不到它。
     const unreadableKey = source === "paste" ? "@pasteUnreadable" : "@dropUnreadable";
     const tooLargeKey = source === "paste" ? "@pasteTooLarge" : "@dropTooLarge";
-    for (const name of unreadable) {
-      this.emitToView(viewId, { type: "toast", level: "warn", text: `${unreadableKey}:${name}` });
+    for (const item of plan.rejected) {
+      const marker = item.reason === "too-large" ? tooLargeKey : unreadableKey;
+      this.emitToView(viewId, { type: "toast", level: "warn", text: `${marker}:${item.name}` });
     }
-    for (const name of [...tooLarge, ...rejected]) {
-      this.emitToView(viewId, { type: "toast", level: "warn", text: `${tooLargeKey}:${name}` });
+  }
+
+  /**
+   * 把一条目录**引用**插到输入框光标处 —— 目录的唯一落点。
+   *
+   * 附件入口（文件选择器返回的目录联接 / macOS bundle）、粘贴的剪贴板真路径、
+   * 以及接入管线判出来的目录条目都走这里：目录**永远**是正文里的 `@dir/` token，
+   * 不是附件芯片（用户 2026-09-21 口径：「粘贴文件夹不该变成附件」）。
+   * 分隔符归一（`\` → `/`）与结尾斜杠都在 `formatFileMention` 里。
+   */
+  private addDirectoryReference(viewId: string, path: string): void {
+    this.insertMention(viewId, formatFileMention(this.relativePath(path), "directory"));
+  }
+
+  /**
+   * 界面送来的 base64 → 字节（`attachBytes` 专用）；超限或解不开时给出原因字符串。
+   *
+   * **宿主这一侧也要拦**：`ATTACH_BYTES_LIMIT` 在界面里判过一次（`attachIntake.ts`），
+   * 而帧是界面发来的、形状不受类型系统约束——没有这一道，一条超大的 base64 会让宿主
+   * 先分配一份解码后的字节再发现它太大。按 base64 长度先判，连解码都不做
+   * （4/3 关系，留 3 字节余量给 padding）。
+   */
+  private decodeAttachBytes(
+    base64: string,
+    name: string,
+    source: IngestSource,
+  ): Uint8Array | "too-large" | "invalid" {
+    const label = source === "paste" ? "粘贴" : "拖放";
+    if (base64.length > MAX_BASE64_CHARS) {
+      this.log(`[attach] ${label}的文件超过 ${ATTACH_BYTES_LIMIT} 字节，已拒绝：${name}`);
+      return "too-large";
     }
+    let bytes: Uint8Array;
+    try {
+      bytes = new Uint8Array(Buffer.from(base64, "base64"));
+    } catch (error) {
+      this.log(`[attach] ${label}解码失败 ${name}：${this.describeError(error)}`);
+      return "invalid";
+    }
+    if (bytes.length > ATTACH_BYTES_LIMIT) {
+      this.log(`[attach] ${label}的文件超过 ${ATTACH_BYTES_LIMIT} 字节，已拒绝：${name}`);
+      return "too-large";
+    }
+    return bytes;
   }
 
   /** 把窗口的附件列表推给界面：绑了会话走会话投递，空态直接发给这个窗口。 */
@@ -4481,34 +4457,38 @@ export class ChatController implements vscode.Disposable {
     }
   }
 
-  /** 上传一个文件附件并把 `receiptId` 写回芯片（失败标 error，可重试）。 */
-  private uploadAttachment(viewId: string, attachment: Attachment): void {
-    void this.runUpload(viewId, attachment.id, attachment.path, attachment.name);
-  }
-
   /**
-   * 上传**拖放进来**的字节（没有路径可读）。
+   * 起一次上传（路径来源重读磁盘，字节来源用手上这一份），并把 `receiptId` 写回芯片。
    *
-   * 字节先存进 `droppedBytes`：上传失败后芯片上的「重试」要能再传一次，而拖放的
-   * 字节没有任何别的来源（列表里只有名字）。上传成功后立刻丢掉，失败则留到用户
-   * 重试或删掉芯片——内存占用因此只跟「在飞 + 失败」的条目走。
+   * 字节先存进 `droppedBytes`：上传失败后芯片上的「重试」要能再传一次，而字节那条路
+   * 没有任何别的来源（列表里只有名字）。上传成功后立刻丢掉，失败则留到用户重试或
+   * 删掉芯片——内存占用因此只跟「在飞 + 失败」的条目走。
    */
-  private uploadBytes(viewId: string, attachment: Attachment, bytes: Uint8Array): void {
-    this.droppedBytes.set(attachment.id, bytes);
-    this.setStateForUpload(viewId, attachment.id, { status: "uploading", loaded: 0 });
-    void this.runUploadBytes(viewId, attachment.id, attachment.name, bytes);
+  private startUpload(viewId: string, upload: IntakeUpload): void {
+    const key = this.keyForView(viewId);
+    const attachment = (this.attachmentsBySession.get(key) ?? []).find((a) => a.id === upload.id);
+    if (!attachment) return;
+    if (upload.source.kind === "bytes") this.droppedBytes.set(upload.id, upload.source.bytes);
+    this.setStateForUpload(viewId, upload.id, { status: "uploading", loaded: 0 });
+    void this.runUpload(viewId, upload.id, attachment.name, upload.source);
   }
 
-  /** 拖放字节的暂存（键 = 附件 id）：只为「上传失败后重试」而留。 */
+  /** 拖放 / 粘贴字节的暂存（键 = 附件 id）：只为「上传失败后重试」而留。 */
   private readonly droppedBytes = new Map<string, Uint8Array>();
 
-  private async runUploadBytes(viewId: string, id: string, name: string, bytes: Uint8Array): Promise<void> {
+  private async runUpload(
+    viewId: string,
+    id: string,
+    name: string,
+    source: IntakeUpload["source"],
+  ): Promise<void> {
     const sessionId = this.viewSessions.get(viewId);
     if (!this.client || !sessionId) {
       this.setStateForUpload(viewId, id, { status: "error", message: "@uploadNoSession" });
       return;
     }
     try {
+      const bytes = source.kind === "bytes" ? source.bytes : new Uint8Array(readFileSync(source.path));
       const value = await this.client.uploadFile(sessionId, bytes, name);
       this.droppedBytes.delete(id);
       this.setStateForUpload(viewId, id, { status: "ready", receiptId: value.receiptId });
@@ -4526,34 +4506,6 @@ export class ChatController implements vscode.Disposable {
     });
   }
 
-  private async runUpload(
-    viewId: string,
-    id: string,
-    path: string | undefined,
-    name: string,
-  ): Promise<void> {
-    const setState = (state: UploadState) => {
-      this.mutateAttachmentsForView(viewId, (list) => {
-        const target = list.find((a) => a.id === id);
-        if (target) target.upload = state;
-      });
-    };
-    const sessionId = this.viewSessions.get(viewId);
-    if (!this.client || !sessionId || !path) {
-      setState({ status: "error", message: "@uploadNoSession" });
-      return;
-    }
-    try {
-      setState({ status: "uploading", loaded: 0 });
-      const bytes = readFileSync(path);
-      const value = await this.client.uploadFile(sessionId, new Uint8Array(bytes), name);
-      setState({ status: "ready", receiptId: value.receiptId });
-    } catch (error) {
-      this.log(`[upload] ${name} 上传失败：${this.describeError(error)}`);
-      setState({ status: "error", message: this.describeError(error) });
-    }
-  }
-
   /** 修改**指定窗口**的附件并下发（键为会话 id；空态窗口用 viewId 做键）。 */
   private mutateAttachmentsForView(viewId: string, fn: (list: Attachment[]) => void): void {
     const key = this.keyForView(viewId);
@@ -4563,19 +4515,19 @@ export class ChatController implements vscode.Disposable {
     this.pushAttachmentsForView(viewId, list);
   }
 
-  /** 重传一个失败的文件附件。 */
+  /** 重传一个失败的文件附件（字节来源用手上那份暂存，路径来源重读磁盘）。 */
   private retryUpload(viewId: string, id: string): void {
     const key = this.keyForView(viewId);
     const attachment = (this.attachmentsBySession.get(key) ?? []).find((a) => a.id === id);
     if (!attachment) return;
-    // 拖放进来的附件没有路径，字节存在 `droppedBytes` 里（见 uploadBytes）
+    // 拖放 / 粘贴来的附件没有路径，字节存在 `droppedBytes` 里（见 startUpload）
     const dropped = this.droppedBytes.get(id);
     if (dropped) {
-      void this.runUploadBytes(viewId, id, attachment.name, dropped);
+      this.startUpload(viewId, { id, source: { kind: "bytes", bytes: dropped } });
       return;
     }
     if (!attachment.path) return;
-    void this.runUpload(viewId, attachment.id, attachment.path, attachment.name);
+    this.startUpload(viewId, { id, source: { kind: "path", path: attachment.path } });
   }
 
   /**
@@ -4876,8 +4828,12 @@ export class ChatController implements vscode.Disposable {
   async addFileContext(path: string): Promise<void> {
     const viewId = this.activeViewId();
     if (!viewId) return;
-    const kind = isDirectoryPath(path) ? "directory" : "file";
-    this.insertMention(viewId, formatFileMention(this.relativePath(path), kind));
+    // 目录与文件都插成 `@` 引用；目录走唯一的目录落点（与附件入口、粘贴同一条规则）
+    if (isDirectoryPath(path)) {
+      this.addDirectoryReference(viewId, path);
+      return;
+    }
+    this.insertMention(viewId, formatFileMention(this.relativePath(path), "file"));
   }
 
   /** 命令面板 / 右键文件夹：选目录加为最近活动窗口的 `@dir/` 引用。 */

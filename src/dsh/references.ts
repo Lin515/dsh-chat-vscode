@@ -20,35 +20,15 @@
  */
 import { formatFileMention } from "../shared/mentions";
 
-/** 一个待发送的 `@` 引用。 */
-export interface Reference {
-  /** 工作区相对（或绝对）路径，原样保留用户选中的拼写。 */
-  path: string;
-  kind: "file" | "directory";
-}
-
 /**
  * 生成 `@` 引用的**模型可见文本**（官方 `formatFileMention`）。
  *
  * 实现在 `shared/mentions.ts`——界面在 `@` 候选里选中文件时直接用同一个函数
  * 把 token 插进输入框（纯路径引用），两边必须逐字一致，所以规则只有一份。
+ *
+ * **引用只活在一个地方：正文**。早先还有一个"引用芯片"（附件列表里的一条，
+ * 发送时由 `composeWithReferences` 拼到正文之前），那条线自 `@` 改成写正文 token
+ * 之后就没有生产方了，2026-09-21 连同 `composeWithReferences` 一起删掉——
+ * 目录也走 `@dir/` 文本（见 controller 的 `addDirectoryReference`）。
  */
 export { formatFileMention };
-
-/**
- * 把一批引用拼进用户正文。
- *
- * 官方把引用**就地**拼在用户打字的位置（chip 的 offset 处），本扩展没有富文本
- * 编辑器，所以统一放在正文**之前**、每条一行——与官方「引用是这段话的上下文前提」
- * 的读法一致，且用户能一眼看到自己引了什么。
- *
- * 正文为空时只留引用（`@src/a.ts` 单独发出去是完全合法的提示词）。
- */
-export function composeWithReferences(text: string, references: readonly Reference[]): string {
-  const mentions = references
-    .map((reference) => formatFileMention(reference.path, reference.kind))
-    .filter((mention): mention is string => mention !== undefined);
-  const body = text.trim();
-  if (mentions.length === 0) return body;
-  return [...mentions, body].filter((part) => part !== "").join("\n");
-}

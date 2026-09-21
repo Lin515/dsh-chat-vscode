@@ -12,13 +12,11 @@ import type { GoalView } from "../../shared/chat";
 import type { AppState } from "../state";
 import { post } from "../bridge";
 import {
-  IconAt,
   IconAttach,
   IconCheck,
   IconChevronDown,
   IconClose,
   IconDsh,
-  IconFolder,
   IconPause,
   IconPencil,
   IconPlay,
@@ -579,10 +577,6 @@ export function Composer({
                     >
                       <IconRefresh size={11} />
                     </button>
-                  ) : attachment.kind === "reference" ? (
-                    <span className="chip-glyph" aria-hidden>
-                      {attachment.referenceKind === "directory" ? <IconFolder size={11} /> : <IconAt size={11} />}
-                    </span>
                   ) : null}
                   <span className="chip-name">{attachment.name}</span>
                   <button

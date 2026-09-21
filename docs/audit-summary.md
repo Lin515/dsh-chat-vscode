@@ -14,6 +14,10 @@
 - `docs/audit-input-queue-attachments.md`（输入 / 提交 / 队列 / 附件）
 - `docs/audit-projections-panels.md`（投影 / 面板）
 
+设计规格（已落地的口径，改相关代码前先读）：
+- `docs/design-attachments.md`（附件与引用接入：按钮 / 拖放 / 粘贴 / `@`）
+- `docs/design-supervisor.md`、`docs/design-trajectory.md`
+
 ---
 
 ## 零、修复状态（2026-09-12 更新）
@@ -563,6 +567,7 @@ Ctrl+Enter 也未区分（`Composer.tsx:241` 只判 `!shiftKey`）。
 | B10 | 轨迹：概述里「输出」画的是时长而不是 token 数；`Diff` 页签是硬编码英文；平移的 document 监听在卸载时不摘；`model?.turns ?? []` 每次新数组使两个 `useMemo` 失效 | 逐条修（`usageOutput` 给 token 数、新增 `tabDiff`、卸载兜底摘监听、稳定空数组常量） |
 | B11 | 扩展输出通道在第一次落日志后会变成**两个**「DSH Chat」（`output ?? create()` 的返回值没有回写） | 改走会赋值的 `outputChannel()` |
 | B12 | 一轮结束后无条件抢焦点（用户正在历史搜索框 / 目标编辑框里打字时被打断） | 焦点不在输入框且不空闲时不抢 |
+| B13 | **拖放 / 粘贴进来的文件附件上传成功后不进 prompt**（2026-09-21）：字节通道的附件没有 `path`，而发送装配按 `attachment.path` 过滤，于是上传照做、内容块却一个都没有；同一道门还吞掉了「有附件没传上去」的提示。根因是字节通道（`attachBytes`）在后一轮才加，没接进老的路径管线 | 内容块装配抽成纯函数 `attachments.buildPromptContent`：文件只认 `upload.status === "ready"`（与 `path` 无关），未就绪进 `notUploaded`；顺手把两条平行通道合并（`planIntake` + `ingestAttachments`）。断言 `scripts/attachments.test.ts` §7。详见 `docs/design-attachments.md` |
 
 ### 7.3 死代码（已删）
 
@@ -574,6 +579,11 @@ Ctrl+Enter 也未区分（`Composer.tsx:241` 只判 `!shiftKey`）。
   `shared/trajectory.TrajectorySpan`、`scripts/sessionLog.readSessionLogRows`。
 - **死 IPC 帧 + 处理器**：`message/remove`、`addMention`、`addFolderReference`、`runCommandLine`
   （`@` 改成写正文 token 之后，界面上再也没有发射点）；随之删掉只被它们调用的 `controller.addReference`。
+- **引用芯片整条链（2026-09-21 删）**：`AttachmentKind` 的 `reference` / `context`、
+  `Attachment.referenceKind`、`dsh/references.composeWithReferences` 与 `Reference`、
+  `controller.applyPathsForView` 里的目录分支、`Composer.tsx` 的芯片分支、`.chip-glyph`、
+  `icons.IconAt`、`test/preview.html` 里的两条 `reference` 夹具。目录现在一律是正文里的
+  `@dir/` 引用文本（唯一落点 `controller.addDirectoryReference`），附件里只有 `file` / `image`。
 - **死词典键**：`texts.ts` 29 个 + `trajectoryTexts.ts` 17 个（自绘设置页与早期对齐的残留）。
 - **死文案标记**：`serverExited`、`switchingServer`（有词典、有 `resolveText` 分支、有 `hostText`
   译文，但没有任何发射点）。同时**新增反方向断言**：`MARKERS` 里每个标记都必须真有发射点，

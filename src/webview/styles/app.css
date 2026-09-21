@@ -3106,8 +3106,7 @@
   outline-offset: -1px;
 }
 
-.chip-spinner,
-.chip-glyph {
+.chip-spinner {
   display: inline-flex;
   align-items: center;
   flex: 0 0 auto;

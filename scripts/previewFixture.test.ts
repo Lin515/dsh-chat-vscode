@@ -66,7 +66,7 @@ const must = [
   ["goal 目标条", () => state.goal?.objective],
   ["contextOccupancy 占用环", () => state.contextOccupancy?.percent],
   ["hasMoreHistory 加载更早", () => state.hasMoreHistory === true],
-  ["附件：引用", () => state.attachments?.some((a) => a.kind === "reference")],
+  ["附件：图片内容块", () => state.attachments?.some((a) => a.kind === "image" && a.dataUrl)],
   ["附件：上传中", () => state.attachments?.some((a) => a.upload?.status === "uploading")],
   ["附件：上传失败", () => state.attachments?.some((a) => a.upload?.status === "error")],
   ["命令节点", () => state.messages.some((m) => m.segments.some((s) => s.kind === "command"))],

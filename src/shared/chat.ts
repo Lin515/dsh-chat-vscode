@@ -45,15 +45,15 @@ export type ConnectPhase = "starting" | "connecting";
  *
  * 与官方客户端的两条路一一对应（见 `dsh/references.ts` 的文件头说明）：
  * - `image`：图片按内容块发送（官方同样内联图片字节）；
- * - `file`：**上传**后拿 `receiptId` 发送，不再内联正文；
- * - `reference`：`@path` 引用，正文里只出现路径 token；
- * - `context`：纯文本上下文（插件注入等）。
+ * - `file`：**上传**后拿 `receiptId` 发送，不再内联正文。
  *
- * **没有 `selection`**：编辑器选区、文件、目录现在**一律走 `@` 引用**（用户
- * 2026-09-14 口径：「不论是目录、文件、文件某行，均以 @ 引用形式而不是附件形式
- * 添加」）——引用是由宿主把 token 插进输入框正文的，不经过附件列表。
+ * **没有 `selection` / `reference` / `context`**：编辑器选区、文件、目录**一律走
+ * `@` 引用**（用户 2026-09-14 口径：「不论是目录、文件、文件某行，均以 @ 引用形式
+ * 而不是附件形式添加」）——引用是宿主把 token 插进输入框**正文**的，不经过附件
+ * 列表，所以附件里不该有"引用芯片"这种形态（曾经有过，2026-09-21 删掉：那条线
+ * 没有任何生产方，见 docs/design-attachments.md）。
  */
-export type AttachmentKind = "file" | "image" | "context" | "reference";
+export type AttachmentKind = "file" | "image";
 
 /** 文件附件的上传生命周期（官方 `DraftFileUpload`）。 */
 export type UploadState =
@@ -92,8 +92,6 @@ export interface Attachment {
   height?: number;
   /** 该文件附件的上传状态（`kind === "file"` 时）。 */
   upload?: UploadState;
-  /** `@` 引用的目标类型（`kind === "reference"` 时）。 */
-  referenceKind?: "file" | "directory";
 }
 
 /**

@@ -194,15 +194,24 @@ export type WebviewToHost =
    * 代价是 4/3 体积，所以调用方在**读字节之前**先按 `ATTACH_BYTES_LIMIT` 拦掉超大文件。
    *
    * `unreadable` / `tooLarge` 是这一批里**没进来**的名字：目录（`File` 读字节会抛
-   * IO 错误）与超限文件。宿主据此明确提示，而不是静默丢弃——提示文案按 `source`
-   * 分「拖放 / 粘贴」两套措辞（只影响措辞，准入判据完全相同）。
+   * IO 错误）/ 0 字节 / 超限文件。宿主据此明确提示，而不是静默丢弃——提示文案按
+   * `source` 分「拖放 / 粘贴」两套措辞（只影响措辞，准入判据完全相同）。
+   *
+   * **拖放不支持文件夹**：VS Code 不把 OS 路径交给 webview（pre 脚本只转发
+   * `shiftKey`、宿主只切换 iframe 的 `pointer-events`、Electron 32+ 又移除了
+   * `File.path`），所以拖进来的目录只能落成 `unreadable`。粘贴那条路另有宿主侧的
+   * 系统剪贴板真路径（`dsh/clipboardPaths.ts`），目录在那里才成得了 `@dir/` 引用。
+   *
+   * `mimeType` 是浏览器声明的类型（`File.type`）：宿主**优先**按它判图片（官方
+   * 同样按 MIME 判定，见 `dsh/attachments.ts` 的 `imageMediaTypeForEntry`），
+   * 拿不到（旧帧 / 空串）才退回文件名后缀。
    *
    * `source` 缺省当 `"drop"`（旧帧只有拖放这一条路）。
    */
   | {
       type: "attachBytes";
       source?: "drop" | "paste";
-      files: { name: string; base64: string }[];
+      files: { name: string; mimeType?: string; base64: string }[];
       unreadable: string[];
       tooLarge: string[];
     }

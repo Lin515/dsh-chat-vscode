@@ -267,15 +267,14 @@
           },
           running: true,
           queue: 0,
-          // 附件芯片的四种形态（对齐官方 FileCard）：`@` 引用（文件 / 目录）、
-          // 上传中（带进度）、上传失败（可重试）。引用**不内联正文**。
+          // 附件芯片的三种形态（对齐官方 FileCard）：图片（随消息走内容块）、
+          // 上传中（带进度）、上传失败（可重试）。**没有"引用芯片"**：文件与目录的
+          // 引用都是正文里的 `@path` token（目录是 `@dir/`），不占附件位。
+          // 失败那条故意**没有 path**（拖放 / 粘贴的字节附件就是这样）。
           attachments: [
-            { id: "at-ref", kind: "reference", path: "src/dsh/adapter.ts", name: "src/dsh/adapter.ts", referenceKind: "file" },
-            { id: "at-dir", kind: "reference", path: "src/webview", name: "webview/", referenceKind: "directory" },
-            // 编辑器右键加进来的**部分引用**：带行号（芯片上 `:640-690` 那一段不可压缩）
-            { id: "at-sel", kind: "selection", name: "src/webview/Composer.tsx", lines: { start: 640, end: 690 } },
+            { id: "at-img", kind: "image", name: "shot.png", dataUrl: previewImageDataUrl, bytes: 15471 },
             { id: "at-up", kind: "file", path: "D:/dev/app/docs/spec.pdf", name: "docs/spec.pdf", upload: { status: "uploading", loaded: 42000, total: 180000 } },
-            { id: "at-err", kind: "file", path: "D:/dev/app/big.bin", name: "big.bin", upload: { status: "error", message: "HTTP 413" } }
+            { id: "at-err", kind: "file", name: "big.bin", upload: { status: "error", message: "HTTP 413" } }
           ],
           draft: "把这两个文件的启动逻辑合并到一个入口",
           models: [
