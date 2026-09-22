@@ -53,6 +53,8 @@ export interface Texts {
   agentPresetLabel: string;
   /** 预设胶囊的 title（官方 `seatHint` 同一句话）。 */
   agentPresetSeat: string;
+  /** 工具栏那枚只读预设标签的 title（带预设名）。 */
+  agentPresetRunning: (name: string) => string;
   /** 预设没有发布描述时那一行的替代文案。 */
   agentPresetNoDescription: string;
   /** 切换预设被拒（`@key` 标记，宿主发）。 */

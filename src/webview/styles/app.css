@@ -2434,8 +2434,10 @@
   cursor: default;
 }
 
-/* mode pill: 默认只显示盾牌图标 + 下拉箭头；工具栏宽度宽裕时（最低优先级那一档）
-   才补上权限名。悬停 title 显示当前权限名，点开弹层可切换 */
+/* mode pill: 默认只显示盾牌图标；工具栏宽度宽裕时（最低优先级那一档）
+   才补上权限名。悬停 title 显示当前权限名，点开弹层可切换。
+   用户 2026-09-22：不再带下箭头——工具栏上的两个弹层入口（权限、模型）
+   都去掉了它，箭头那 8px + 间距 4px 同时也是响应式阶梯的一部分宽度。 */
 .pill-mode {
   display: inline-flex;
   align-items: center;
@@ -2478,6 +2480,19 @@
   max-width: 96px;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* agent 预设标签（位置在思考强度与附件之间）：工具栏里唯一的**纯文字只读**元素，
+   会话开始后才有（空态页的预设是可点的下拉框，见 EmptyMeta）。
+   **显不显示**由 toolbarFit 按实测宽度决定，这里的 max-width 是它显出来之后的上限：
+   用户自己写的预设名可以是任意长度、英文名也比中文长，所以要自己收窄出省略号，
+   不折行、也不挣开工具栏。完整名字在 title 里。 */
+.bar-preset {
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
 }
 
 /* ============================ 迷你模式（窄边栏收成图标条） ============================

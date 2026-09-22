@@ -32,6 +32,7 @@ import { CtxText, Ellipsis, Popover, Spinner, contextNumbers, formatDuration } f
 import { ApprovalCard, PlanReviewCard, QuestionCard, formatTps } from "./Rows";
 import type { PendingInteraction } from "../pendingInteraction";
 import { useComposerCompletion } from "../composerCompletion";
+import { presetDisplayText } from "../presetDisplay";
 import { bottomGap, type AutoScrollPort } from "../autoScroll";
 import { queueDisplayOrder } from "../queueOrder";
 import { segmentColumns } from "../segment";
@@ -363,7 +364,6 @@ export function Composer({
     >
       {currentPermission.icon}
       {withLabel ? <span className="pill-mode-label">{currentPermission.label}</span> : null}
-      <IconChevronDown size={8} />
     </button>
   );
 
@@ -385,7 +385,6 @@ export function Composer({
       }}
     >
       <span className="pill-label">{state.model?.label ?? texts.defaultModel}</span>
-      <IconChevronDown size={8} />
     </button>
   );
 
@@ -415,6 +414,29 @@ export function Composer({
       {effort.name}
     </button>
   ) : null;
+
+  // agent 预设标签：**只读**（不可点、不可改）——用户口径 2026-09-22「会话开始后，
+  // 在思考强度与附件之间显示当前会话的 agent 预设名」。
+  //
+  // 「会话开始后」的判据与 App 的空态页同一条（`messages.length === 0` 就是空态）：
+  // 空态页上那个可选的下拉框（`EmptyMeta` 的 AgentPresetChip）已经承担了「用哪套组装」，
+  // 而会话一旦开始，服务端就锁死了预设（`agent-preset/locked`），这里只剩「它叫什么」可读。
+  //
+  // 展示名的折叠与空态页共用 `presetDisplayText`（随产品交付的四个走词典、用户自写的用原文），
+  // 认不出 id（预设被删）时退回 id：它是唯一还认得出的身份。
+  const presetOption = state.agentPresets?.options.find((item) => item.id === state.agentPreset);
+  const presetName =
+    state.agentPreset && state.agentPresets?.options.length
+      ? presetOption
+        ? presetDisplayText(presetOption, texts).name
+        : state.agentPreset
+      : undefined;
+  const presetLabel =
+    state.messages.length > 0 && presetName ? (
+      <span className="bar-preset" title={texts.agentPresetRunning(presetName)}>
+        {presetName}
+      </span>
+    ) : null;
 
   // 附件按钮是通用入口：图片按图片发送，其余文件逐字节上传
   // （@ 只产生引用，真正上传只从这里发生），所以它不随模型是否支持图片而隐藏。
@@ -477,6 +499,7 @@ export function Composer({
     "model:full": modelPill,
     "send:full": sendPill,
     "effort:full": effortPill,
+    "preset:full": presetLabel,
     "attach:full": attachPill,
     "tps:full": speedText,
     "context:ring": ctxNumbers ? <CtxText {...ctxProps} /> : null,
@@ -773,6 +796,10 @@ export function Composer({
 
             {/* 思考强度：次优先级，紧挨在模型右侧（点它开模型弹层）。 */}
             {bar.effort}
+
+            {/* agent 预设：最低优先级，位置就在思考强度与附件之间（用户 2026-09-22 口径）。
+                只读文字标签——会话开始后预设已经锁定，没有可点的东西。 */}
+            {bar.preset}
 
             {/* / 与 @ 直接在输入框里打符号即可触发，不再放按钮。
                 附件按钮是通用入口：图片按图片发送，其余文件逐字节上传

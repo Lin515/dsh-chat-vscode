@@ -65,6 +65,12 @@ const state = buildState("zh-cn");
 const must = [
   ["goal 目标条", () => state.goal?.objective],
   ["contextOccupancy 占用环", () => state.contextOccupancy?.percent],
+  // 工具栏那枚 tps 胶囊的样例：没有会话统计时它整个不进候选表（缺数据的档位不进表），
+  // 预览页就永远看不到 P1 里那一档，宽度阶梯也就少一级。
+  [
+    "会话统计（tps 胶囊）",
+    () => (state.sessionStats?.decodeTokens ?? 0) > 0 && (state.sessionStats?.decodeMs ?? 0) > 0,
+  ],
   ["hasMoreHistory 加载更早", () => state.hasMoreHistory === true],
   ["附件：图片内容块", () => state.attachments?.some((a) => a.kind === "image" && a.dataUrl)],
   ["附件：上传中", () => state.attachments?.some((a) => a.upload?.status === "uploading")],
@@ -211,6 +217,13 @@ const must = [
   ["stopped 工具行", () => state.messages.some((m) => m.segments.some((s) => s.kind === "tool" && s.tool.status === "stopped"))],
   ["非零退出码工具行", () => state.messages.some((m) => m.segments.some((s) => s.kind === "tool" && s.tool.exitCode))],
   ["重试提示", () => state.messages.some((m) => m.segments.some((s) => s.kind === "notice" && s.text.startsWith("@llmRetry")))],
+  // 工具栏那枚只读预设标签的样例（用户 2026-09-22 口径：会话开始后显示当前会话的
+  // agent 预设名）。主故事是**已开始**的会话，必须有预设目录 + 当前预设 id，
+  // 否则预览页里那枚标签永远不出现、宽度分配也看不到它那一档。
+  [
+    "工具栏 agent 预设标签（已开始的会话）",
+    () => state.agentPreset === "ptc" && (state.agentPresets?.options?.length ?? 0) >= 5,
+  ],
   // 问卷的两种形态都要在夹具里：**已答完**那张必须带 `answers`（展开记录显示
   // 「用户当时选了什么」只能靠它，用户 2026-09-15 报的就是它空着）；**待回答**
   // 那张要有带选项的题，预览页才能看到「自定义回答与普通选项同一列表」。

@@ -122,6 +122,11 @@ export const MESSAGES = {
     zh: "即将开始的这个会话所用的 Agent 预设",
     en: "Agent preset for the session you are about to start",
   },
+  /** 工具栏上那枚只读预设标签的 title：会话已经开始，预设只剩「它叫什么」可读。 */
+  agentPresetRunning: {
+    zh: (name: string) => `本次会话使用的 Agent 预设：${name}`,
+    en: (name: string) => `Agent preset used by this session: ${name}`,
+  },
   agentPresetNoDescription: { zh: "暂无描述", en: "No description" },
   /**
    * 随产品交付的四个 agent 预设的展示名与描述。

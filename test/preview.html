@@ -231,6 +231,22 @@
         const query = new URLSearchParams(location.search);
         const connection = query.get("conn") || "ready";
         const flag = (name) => (query.get(name) === "1" ? true : undefined);
+        // agent 预设目录（`agentPresets/list` 的 roster，形状照抄真实输出：随产品交付的四个
+        // 是 `trust: "system"`、**不带 name/description**——展示名由客户端按语言给，
+        // 见 src/webview/presetDisplay.ts；另加一条用户自己写的（带原文名字与描述）
+        // 与一条没名字的，把三条展示路径都留在预览页）。
+        // 主故事（会话已开始 → 工具栏那枚只读预设标签）与空态页（可点的下拉框）共用这一份。
+        const presetRoster = {
+          selectable: true,
+          options: [
+            { id: "standard", trust: "system", isDefault: true },
+            { id: "ptc", trust: "system" },
+            { id: "minimal", trust: "system" },
+            { id: "cordis", trust: "system" },
+            { id: "release-notes", trust: "user", name: "写发版说明", description: "只读仓库，产出 CHANGELOG 条目。" },
+            { id: "bare", trust: "user" }
+          ]
+        };
         const state = {
           locale,
           connection,
@@ -244,6 +260,10 @@
           needsToken: flag("token"),
           serverUrl: "http://127.0.0.1:3080",
           session: { id: "s1", title: "重构 server 启动流程", updatedAt: now, running: false },
+          // 主故事是**已开始**的会话（有消息）→ 工具栏在思考强度与附件之间显示这枚
+          // 只读预设标签；空态页（`?empty=1`）由下面的分支接管成可点的下拉框。
+          agentPresets: presetRoster,
+          agentPreset: "ptc",
           // 改动文件卡片（`workspace/changes`）：键是 `${sessionId}\u0000${seq}`
           // （见 src/shared/changesSummary.ts），值是 Host 那条认证路由回来的清单
           // （turn / files / total / added / deleted；binary 与 oversized 是可选标记）。
@@ -507,6 +527,20 @@
           // 占用条（圆环）的数据源。真实部署长这样：`projectedTokens` 优先于
           // `pressureTokens`（前者会跟着压缩下降），分母来自 `contextWindow`。
           contextOccupancy: { percent: 34, usedTokens: 43520, contextWindow: 128000 },
+          // 会话统计（`sessionStats` 投影，形状见 src/shared/chat.ts）：工具栏那枚 tps
+          // 胶囊取它的「平均输出速度」（Σ 输出 ÷ Σ 解码窗口），悬停明细也读同一份。
+          // 数字按本夹具这一轮的量级给（1180 输出 ÷ 27.6s ≈ 42.8 tok/s）；注意它与
+          // a:1 上的 `turnStats.tokensPerSecond` 不是同一个字段（那是**单轮**解码吞吐）。
+          sessionStats: {
+            turns: 1,
+            steps: 3,
+            llmMs: 96000,
+            toolMs: 12500,
+            ttftMs: 1850,
+            ttftSteps: 3,
+            decodeMs: 27600,
+            decodeTokens: 1180
+          },
           tokenUsage: {
             uncachedInputTokens: 18240,
             outputTokens: 3120,
@@ -1071,11 +1105,6 @@
         // - `?lock=1`（跟随 VS Code 打开的文件夹）：静态文字，没有下箭头；
         // - `?none=1`（没打开文件夹也没选过目录）：占位「未选择工作区」——**不是**
         //   拿宿主的 cwd（VS Code 安装路径）冒充一个目录（用户 2026-09-22 口径）。
-        //
-        // roster 照抄真实输出的形状（`agentPresets/list` 的 `AgentPresetRoster`）：
-        // 随产品交付的四个是 `trust: "system"`、**不带 name/description**——它们的
-        // 展示名由客户端按语言给（见 src/webview/presetDisplay.ts）；另加一条用户
-        // 自己写的（带原文名字与描述）与一条没名字的，把三条展示路径都留在预览页。
         if (query.get("empty") === "1") {
           state.messages = [];
           state.session = null;
@@ -1085,17 +1114,7 @@
                 path: query.get("lock") === "1" ? "D:\\dev\\dsh-chat" : "C:\\Users\\me\\Projects\\dsh-chat",
                 locked: query.get("lock") === "1"
               };
-          state.agentPresets = {
-            selectable: true,
-            options: [
-              { id: "standard", trust: "system", isDefault: true },
-              { id: "ptc", trust: "system" },
-              { id: "minimal", trust: "system" },
-              { id: "cordis", trust: "system" },
-              { id: "release-notes", trust: "user", name: "写发版说明", description: "只读仓库，产出 CHANGELOG 条目。" },
-              { id: "bare", trust: "user" }
-            ]
-          };
+          state.agentPresets = presetRoster;
           state.agentPreset = "ptc";
         }
         return state;

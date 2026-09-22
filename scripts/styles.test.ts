@@ -740,14 +740,16 @@ console.log("styles: 待处理交互接管输入区（流里跳过、答过留�
 //
 // 用户 2026-09-14 口径：底部工具栏「根据窗口宽度与优先级调整显示」——
 // P0 权限/模型/发送（始终显示）、P1 思考强度/附件/tps/上下文环、
-// P2 权限文字与上下文精确数值。宽度是**量**出来的（Composer 的 useToolbarFit
+// P2 权限文字/agent 预设标签/上下文精确数值（同档内按从左至右，用户 2026-09-22）。
+// 宽度是**量**出来的（Composer 的 useToolbarFit
 // 把候选档位渲染进测量层读 getBoundingClientRect），所以文案长短（中英差异）、
 // 模型名、字号变化都能自动跟上——固定阈值做不到这件事。
 //
-// 这里钉住三件靠肉眼很难复查、坏了却很难看出来的事：
+// 这里钉住四件靠肉眼很难复查、坏了却很难看出来的事：
 //   1. 测量层的三条硬约束（零尺寸 / 裁剪 / 不被压缩）；
 //   2. 工具栏（.composer-bar）必须是测量层的定位基准；
-//   3. 旧的固定阈值通道没有回来（`.app.is-mini` 不再决定工具栏显示谁）。
+//   3. 旧的固定阈值通道没有回来（`.app.is-mini` 不再决定工具栏显示谁）；
+//   4. 预设标签这个纯文字元素自己收窄出省略号（名字长度不受控）。
 {
   const measure = rule(".composer-measure");
   assert.ok(
@@ -787,6 +789,14 @@ console.log("styles: 待处理交互接管输入区（流里跳过、答过留�
     "工具栏的元素显示不能再用 220px 的迷你模式阈值决定（那是固定值，中英文字宽不同就会错）",
   );
 
+  // agent 预设标签：工具栏里唯一的纯文字只读元素。用户自己写的预设名长度不受控、
+  // 英文名也比中文长，所以它必须自己收窄出省略号——折行会顶高工具栏，不裁则会挤走别人。
+  const presetBar = rule(".bar-preset");
+  assert.ok(
+    /white-space:\s*nowrap/.test(presetBar) && /text-overflow:\s*ellipsis/.test(presetBar),
+    `预设标签必须 nowrap + ellipsis（现在是 "${presetBar.trim()}"）`,
+  );
+
   // 环内百分比按用户口径去掉：只留环，精确数值改到环右侧（最低优先级那一档）
   const primitives = readFileSync(
     join(process.cwd(), "src", "webview", "components", "primitives.tsx"),
@@ -820,6 +830,22 @@ console.log("styles: 待处理交互接管输入区（流里跳过、答过留�
     /modelToggleRef\.current = true/.test(effortPill),
     "思考强度胶囊也要在 mousedown 打标记，否则会被弹层的外部点击检测先关掉再打开（闪一下）",
   );
+
+  // 权限与模型两个胶囊不带下箭头（用户 2026-09-22 精简 UI）。箭头不只是装饰：
+  // 它是 8px 图标 + 4px 间距的宽度来源之一，加回来等于把整条响应式阶梯一起右移，
+  // 所以这里连「它没回来」一起钉住。
+  const permissionPill = /const permissionPill = \(withLabel: boolean\) => \(([\s\S]*?)\n  \);/.exec(composer)?.[1] ?? "";
+  const modelPill = /const modelPill = \(([\s\S]*?)\n  \);/.exec(composer)?.[1] ?? "";
+  assert.ok(
+    permissionPill.length > 100 && modelPill.length > 100,
+    "取不到 permissionPill / modelPill 的定义（组件结构变了？下面的断言会空转）",
+  );
+  for (const [name, source] of [
+    ["权限", permissionPill],
+    ["模型", modelPill],
+  ] as [string, string][]) {
+    assert.ok(!/Chevron/.test(source), `${name}胶囊不该再带下箭头（用户 2026-09-22 精简 UI）`);
+  }
 }
 console.log("styles: 工具栏按实测宽度分配、测量层约束完整 ✓");
 
