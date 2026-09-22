@@ -50,45 +50,26 @@ dsh web [options] [args...]
   -h, --help
 ```
 
-> 上面的选项清单**取自源码而非 `dsh web --help` 输出**——在受限沙箱里 `dsh web --help`
-> 会在 profile 准备阶段以 `EPERM: operation not permitted, open '<用户 home>/.dsh/profiles/web/cordis.yml'`
-> 退出（沙箱禁止写用户 home），拿不到帮助文本。commander 的选项定义就是下面这段，
-> 与运行时同源，故可信；但**未做命令行实测**。在普通终端里 `dsh web --help` 可正常输出。
-
-证据：`⟨P⟩\dsh-web-app\lib\startup.js:31-44`（`webCommand()` 的选项定义，逐字）：
-
-```js
-function webCommand() {
-	return new Command().name("dsh --profile web").description("Serve the DeepSeek Harness browser UI.").helpOption("-h, --help", "show this help").option("--host <host>", "bind host").option("--no-open", "do not open the Web UI in the default browser").option("--port <port>", "listen port; pass 0 to let the OS pick a free one").option("--trusted-host <authority...>", "extra authority the /api browser-trust fence accepts (host or host:port; repeatable)").addHelpText("after", `...`);
-}
-```
+> 选项清单**取自源码而非 `dsh web --help` 输出**：commander 选项定义在
+> `⟨P⟩\dsh-web-app\lib\startup.js:31-44`（`webCommand()`，与运行时同源，故可信），但**未做
+> 命令行实测**——在受限沙箱里 `dsh web --help` 会在 profile 准备阶段以
+> `EPERM: operation not permitted, open '<用户 home>/.dsh/profiles/web/cordis.yml'` 退出
+> （沙箱禁止写用户 home），拿不到帮助文本；普通终端里可正常输出。
 
 约束（`⟨P⟩\dsh-web-app\lib\startup.js:47-56`）：
 
 - `--host 0.0.0.0` **被显式拒绝**，错误信息：`error: --host 0.0.0.0 is intentionally not supported yet for safety: it would expose remote code execution to the network; use 127.0.0.1 instead`。
 - `--port` 必须是纯数字：`error: --port must be a number, got ${JSON.stringify(options.port)}`。
 
-默认值来自 profile 补丁层 `⟨P⟩\dsh-web-app\cordis.patch.yml:135-141`：
+默认值来自 profile 补丁层 `⟨P⟩\dsh-web-app\cordis.patch.yml:135-141`：`webserver` 条目里
+`host: ctx.webStartup.host ?? '127.0.0.1'`、`port: ctx.webStartup.port ?? 3080`。
+**用户 profile 可以覆盖端口**——`<用户 home>/.dsh/profiles/web/cordis.patch.yml` 里若写了
+`port: !!js ctx.webStartup.port ?? <其他端口>`，默认端口就会被改掉（某些部署还会顺便调大
+`cookieMaxAgeDays`）。**第三方扩展不要硬编码 3080**，必须从启动日志解析实际端口。
 
-```yaml
-- id: webserver
-  name: '@deepseek-ai/dsh-host-webserver'
-  config:
-    host: !!js ctx.webStartup.host ?? '127.0.0.1'
-    port: !!js ctx.webStartup.port ?? 3080
-```
-
-> 注意：**用户 profile 可以覆盖端口**。`<用户 home>/.dsh/profiles/web/cordis.patch.yml`
-> 里若写了 `port: !!js ctx.webStartup.port ?? <其他端口>`，默认端口就会被改掉
-> （某些部署还会顺便调大 `cookieMaxAgeDays`）。
-> **第三方扩展不要硬编码 3080**，必须从启动日志解析实际端口。
-
-**没有 `--print-url` 开关**，但 URL 行总是打印（`printUrl: true` 硬编码在补丁里，见 `⟨P⟩\dsh-web-app\cordis.patch.yml:159`）。`⟨P⟩\dsh-web-app\lib\index.js:198-203`：
-
-```js
-if (config.printUrl) console.log(`dsh web: ${authenticatedUrl}${lanUrl === void 0 ? "" : ` (LAN: ${lanUrl})`}`);
-```
-
+**没有 `--print-url` 开关**，但 URL 行总是打印（`printUrl: true` 硬编码在补丁里，见
+`⟨P⟩\dsh-web-app\cordis.patch.yml:159`；打印实现在 `⟨P⟩\dsh-web-app\lib\index.js:198-203`，
+形如 `console.log(\`dsh web: ${authenticatedUrl}${lanUrl === void 0 ? "" : \` (LAN: ${lanUrl})\`}\`)`）。
 期望输出形如（**由源码推导**——外部启动的实例拿不到 stdout，故未做端到端实测）：
 
 ```
@@ -910,7 +891,7 @@ update: (ns: string, patch: Record<string, JsonValue>, expectedRevision: number 
   source: 'json',
   acceptsUndefined: true,
   codec: { mode: 'strict', typeSymbol: '...settings/mutate:expectedRevision', schema: ... },
-},
+}
 ```
 
 `assertExactArguments` 对这些参数放行缺失（`acceptsMissing`，`⟨P⟩\dsh-api-gateway\lib\index.js:1045`），所以 `{"ns":..., "patch":...}` 与 `{"ns":..., "patch":..., "expectedRevision":null}` 都合法。传具体数字才能获得乐观并发保护（冲突 → `settings/conflict`）。
@@ -1702,7 +1683,7 @@ export interface TokenUsageProjection {
 
 > *"a baseline seeds rows at its cut, a push frame updates one row, and in both paths a lower-or-equal seq loses — a replayed frame cannot regress a value, a stale baseline cannot overwrite a newer frame. A key the store has never seen reads `undefined` (capability absence)."*
 
-**全部客户端可见的投影键**（本机安装树里 18 个）：
+**全部客户端可见的投影键**（本机安装树里 19 个）：
 
 | key | 值类型 | 用途 |
 |---|---|---|
@@ -1794,193 +1775,69 @@ export interface TokenUsageProjection {
 
 ---
 
-## 8. 最小可用客户端流程（伪代码）
+## 8. 最小可用客户端流程（要点）
 
-```ts
-// ── 1. 启动并授权 ────────────────────────────────────────────────
-const child = spawn('dsh', ['web', '--no-open', '--port', '0'], { stdio: ['ignore','pipe','pipe'] })
-const { origin, token } = await waitFor(/^dsh web: (http:\/\/\S+?)\/\?token=([A-Za-z0-9_-]+)$/m, child.stdout)
+原稿此节是约 170 行的逐行伪代码，压缩为按调用顺序排列的要点；每一步的契约细节以
+§5–§7 与 §9.2–§9.4 对应小节为准。
 
-const res = await fetch(`${origin}/?token=${token}`, { redirect: 'manual' })   // 303
-const cookie = res.headers.get('set-cookie')!.split(';')[0]                    // "dsh-auth-<h>=<v>"
-
-const post = async (method: string, args: unknown) => {
-  const rpcId = randomUUID()
-  const r = await fetch(`${origin}/api/${method}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', cookie },
-    body: JSON.stringify({ type: 'client-request', rpcId, method, payload: { args } }),
-  })
-  if (r.status === 401 || r.status === 403) throw new Error('unauthorized — token rotated?')
-  const body = await r.json()
-  if (body.rpcId !== rpcId) throw new Error('rpcId mismatch')
-  if (!body.result.ok) throw Object.assign(new Error(body.result.error.message), { code: body.result.error.code })
-  return body.result.value
-}
-
-// ── 2. 打开流多路复用 socket ─────────────────────────────────────
-const ws = new WebSocket(`${origin.replace('http','ws')}/api/remote.mux`, { headers: { cookie } })
-const streams = new Map<string, (msg: any) => void>()
-let pendingOpens: string[] = []
-ws.on('open', () => { pendingOpens.splice(0).forEach(m => ws.send(m)) })
-ws.on('message', raw => {
-  const f = JSON.parse(String(raw))
-  if (f.type === 'item') streams.get(f.streamId)?.(f.value)
-  else if (f.type === 'end')  streams.delete(f.streamId)
-  else if (f.type === 'error') { streams.delete(f.streamId); reopen(f.streamId, f.error) }
-})
-const openStream = (endpoint: string, args: unknown, onItem: (v:any)=>void) => {
-  const streamId = randomUUID()
-  streams.set(streamId, onItem)
-  const msg = JSON.stringify({ type: 'open', streamId, endpoint, payload: { args } })
-  if (ws.readyState === 1) ws.send(msg); else pendingOpens.push(msg)
-  return streamId
-}
-const cancelStream = (streamId: string) => {
-  streams.delete(streamId)
-  if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'cancel', streamId }))
-}
-
-// ── 3. 先挂 $events（唯一的人机交互入口，必须最先就绪） ────────────
-let clientId = ''
-openStream('$events', {}, async frame => {
-  if (frame.type === 'ready') { clientId = frame.clientId; return }
-  if (frame.type === 'cancel') { pendingInteractions.delete(frame.eventId); return }
-  if (frame.type !== 'waterfall') return
-
-  let outcome
-  try {
-    if (frame.event === 'approval/request') {
-      // request = { toolName, callId?, reason? }
-      const choice = await vscode.window.showWarningMessage(
-        `${frame.request.toolName}: ${frame.request.reason ?? '需要授权'}`,
-        { modal: true }, '允许一次', '拒绝')
-      outcome = { kind: 'result', value: choice === '允许一次' ? 'allowed-once' : 'rejected' }
-    } else if (frame.event === 'user-questions/request') {
-      const answers = []
-      for (const q of frame.request.questions) {
-        if (q.intent?.kind === 'plan-review') {
-          // 计划确认：严格形状 —— 恰好一个选项，且必须等于 intent.approve
-          const ok = await vscode.window.showInformationMessage(q.question, { modal: true, detail: q.detail },
-            ...[q.intent.approve, ...q.options!.map(o => o.label).filter(l => l !== q.intent!.approve)])
-          answers.push({ id: q.id, selected: [ok!] })          // 注意：必须不带 custom
-        } else {
-          const picked = await vscode.window.showQuickPick(
-            (q.options ?? []).map(o => ({ label: o.label, description: o.description })),
-            { placeHolder: q.question, canPickMany: q.multiSelect === true })
-          answers.push({ id: q.id, selected: [picked].flat().filter(Boolean).map((p:any) => p.label) })
-        }
-      }
-      outcome = { kind: 'result', value: { answers } }
-    } else {
-      outcome = { kind: 'next' }        // 未知 waterfall：委托，绝不静默
-    }
-  } catch (e) {
-    // 用户主动取消提问 → rejected + ASK_CANCELLED
-    outcome = { kind: 'rejected', error: { name: 'UserQuestionError', message: 'user cancelled', code: 'ASK_CANCELLED' } }
-  }
-  // 关键：每一个 waterfall 都必须回；Host 会一直等
-  await post('$events/result', { clientId, eventId: frame.eventId, outcome }).catch(() => {})
-})
-
-// ── 4. 建会话 ───────────────────────────────────────────────────
-const { sessionId } = await post('session/create', { request: { cwd: workspaceFolder, agentPreset: 'standard' } })
-
-// ── 5. 打开会话事件流（同时拿到开窗快照 + 实时增量） ──────────────
-let cursor = -1, seen = new Set<number>()
-openStream('session/follow', {
-  request: { address: { kind: 'session', sessionId }, maxMessages: 50, assistantStream: true },
-}, frame => {
-  if (frame.type === 'snapshot') {
-    cursor = frame.cursor
-    transcript.reset()
-    for (const rec of frame.records) applyDurable(rec.event)
-    projections.seed(frame.projections)                 // {asOfSeq, values}，高 seq 胜
-    if (frame.assistantStream?.activeAttempt) liveAttempt.seed(frame.assistantStream.activeAttempt)
-    return
-  }
-  if (frame.type === 'event') { applyDurable(frame.event); cursor = frame.event.seq; return }
-  if (frame.type === 'assistant-stream') applyLiveFrame(frame.frame)   // start/chunk/end
-})
-
-const applyDurable = (ev) => {
-  if (seen.has(ev.seq)) return; seen.add(ev.seq)
-  if (ev.ignorable !== true && !KNOWN_EVENT_TYPES.has(ev.type)) markUnsupported(ev.type)
-  switch (ev.type) {
-    case 'turn/start': transcript.beginTurn(ev.data.turn); break
-    case 'turn/end':   transcript.endTurn(ev.data.turn, ev.data.reason); break
-    case 'user/message':
-      if (ev.surfaceOp === 'append') transcript.pushUser(ev)         // 只认 append：不要用 surface 折叠
-      if (ev.data.source.kind === 'user-rpc') pendingEchoes.retire(ev.data.source.rpcId)
-      break
-    case 'assistant/message':
-      if (ev.surfaceOp === 'append') transcript.pushAssistant(ev.data.message, ev.data.usage, ev.data.stream)
-      break
-    case 'tool/call':   transcript.pushToolCall(ev.data); break
-    case 'tool/result': transcript.pushToolResult(ev.data); break
-    case 'session/title': /* 已由 projections.title 覆盖 */ break
-    default: /* 其余安全忽略（但非 ignorable 的未知类型要报） */ break
-  }
-}
-
-// ── 6. 发消息，流式渲染 ─────────────────────────────────────────
-const requestId = randomUUID()
-pendingEchoes.add(requestId, text)                      // 本地乐观回显
-await post('session/prompt', { request: {
-  requestId, sessionId, mode: 'queue',
-  content: [{ type: 'text', text }],
-  clientTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-}})
-
-const applyLiveFrame = (f) => {
-  switch (f.type) {
-    case 'start': liveAttempt.begin(f.attemptId, f.turn, f.step, f.startedAfterSeq); break
-    case 'chunk': {
-      const c = f.chunk                                   // 就是 StreamChunk
-      if (c.type === 'text-delta')       liveAttempt.appendText(c.index, c.text)
-      else if (c.type === 'reasoning-delta') liveAttempt.appendReasoning(c.index, c.text)
-      else if (c.type === 'tool-call-delta') liveAttempt.appendToolCall(c.index, c.id, c.name, c.argumentsDelta)
-      else if (c.type === 'block-start') liveAttempt.beginBlock(c.index, c.blockType)
-      else if (c.type === 'block-end')   liveAttempt.endBlock(c.index, c.block)
-      else if (c.type === 'usage')       liveAttempt.setUsage(c.usage)
-      liveAttempt.expectNextIndex(f.index + 1)            // index 是稠密的；断口 ⇒ 重开 follow
-      break
-    }
-    case 'end':
-      if (f.outcome.kind === 'abandoned') liveAttempt.discard()
-      else liveAttempt.stageForSettlement(f.outcome.seq, f.outcome.eventType)
-      break
-  }
-}
-
-// ── 7. 打断 ─────────────────────────────────────────────────────
-await post('session/cancel', { request: { sessionId } })
-
-// ── 8. 策略：切换模型 / 权限 / 计划模式 ──────────────────────────
-await post('session/selectModel', { request: { sessionId, provider, model, reasoningEffort } })
-await post('commands/execute', { agentId: sessionId, line: '/permission workspace-write', submittedAttachments: [] })
-await post('commands/execute', { agentId: sessionId, line: '/plan off',                 submittedAttachments: [] })
-```
+1. **启动与授权**：spawn `dsh web --no-open --port 0`，从 stdout 按正则
+   `^dsh web: (http\S+)/\?token=([A-Za-z0-9_-]+)$` 解析 origin 与 token（端口唯一来源，
+   不得假设 3080，见 §7.3）；`GET <origin>/?token=`（`redirect:'manual'`，期待 303），
+   取 `set-cookie` 首段 `dsh-auth-<h>=<v>` 作为后续全部请求的 cookie；token 失效表现为
+   401/403。
+2. **HTTP RPC 信封**：每个调用 `POST /api/<method>`，体为
+   `{type:'client-request', rpcId, method, payload:{args}}`；校验响应 `rpcId` 一致且
+   `result.ok`，失败抛 `result.error.{message, code}`。
+3. **WS 多路复用**：连 `<origin 换 ws>/api/remote.mux`（带 cookie 头）；socket 就绪前先把
+   open 帧缓冲起来，就绪后补发。必须处理的帧：`item`（按 `streamId` 派发）、`end`
+   （移除该流）、`error`（移除该流并重开）；取消流发 `{type:'cancel', streamId}`。
+4. **先挂 `$events` 再做任何事**（唯一人机交互入口，必须最先就绪；`payload.args` 必须是
+   `{}`，见 §5.1）。必须处理的帧类别：
+   - `ready` → 记住 `clientId`（回复时要用）；
+   - `cancel` → 把对应审批/问卷收场，**不回 POST**（§5.5）；
+   - `waterfall` → **每一帧都必须回**：`approval/request` 弹模态回
+     `allowed-once`/`rejected`；`user-questions/request` 逐题收集、**一次性回整批**
+     `{answers}`；计划确认认 `intent.kind==='plan-review'`，答案严格为
+     `[intent.approve]` 且**不带 `custom`**（§5.6）；未知事件回 `{kind:'next'}`，绝不静默；
+   - 用户主动取消提问 → `{kind:'rejected', error:{name:'UserQuestionError',
+     code:'ASK_CANCELLED'}}`；
+   - 回复走 `POST $events/result`（`clientId` + `eventId` + `outcome`）。
+5. **建会话**：`session/create`（`request.cwd` + `agentPreset`）。
+6. **开 `session/follow`**（同时拿开窗快照与实时增量；`request.address` 指向会话 +
+   `maxMessages` + `assistantStream:true`）：
+   - `snapshot` → 重置视图、逐条应用 durable 记录、以 `{asOfSeq, values}` 种下投影
+     （高 seq 胜，§6.10）、有 `assistantStream.activeAttempt` 则用开窗基线重建进行中的块
+     （先展开紧凑 `stream` 取前 `nextIndex` 条，再接实时增量，§6.7）；
+   - `event` → 按 `seq` 去重后应用；未知类型且无 `ignorable` 必须明确降级（§6.1）；
+     人类对话记录只认 `surfaceOp === 'append'` 的表层事件（§6.11）；
+     `source.kind === 'user-rpc'` 时按 `rpcId` 回收本地乐观回显。
+7. **发消息**：`session/prompt`（`requestId` 供乐观回显配对、`mode:'queue'`、`content` 为
+   ContentBlock 数组、`clientTimeZone`）；流式渲染走 `assistant-stream` 帧：`start` 起行、
+   `chunk` 按 `index` 折块（稠密计数，出现断口 ⇒ 重开 follow）、`end` 的
+   `abandoned` 丢弃瞬时行 / `committed` 暂存等 durable 结算（settle 规则见 §6.7）。
+8. **打断**：`session/cancel`。
+9. **策略操作**：`session/selectModel`（provider/model/reasoningEffort）；
+   `commands/execute`（`agentId` + `line` + `submittedAttachments`，0.1.2→0.1.5 参数改名
+   需双名回退，§7.2）发 `/permission …`、`/plan off` 这类斜杠命令。
 
 ---
 
 ## 9. 附录
 
-### 9.1 环境与实测事实
+### 9.1 环境与实测事实（要点）
 
-| 事实 | 值 |
-|---|---|
-| `dsh --version` | `0.1.5-rc.1` |
-| `dsh --help` 顶层命令 | `web`（`--profile web` 别名）、`plugin` |
-| 顶层选项 | `--profile`、`--from-default-profile`、`--patch`、`--dump-config`、`--dump-default-config`、`-V/--version` |
-| `dsh web --help` | 在受限沙箱里会因无法写 `<home>/.dsh/profiles/web/cordis.yml` 而报 `EPERM`（`node:fs` `writeFileSync` ← `prepareProfile`）；选项清单取自 `⟨P⟩\dsh-web-app\lib\startup.js:31-44`。普通终端下可正常输出 |
-| 默认端口 | 3080，**但用户 profile 可覆盖**（用 `cordis.patch.yml` 的 `port`），因此客户端必须从启动日志解析 |
-| `cookieMaxAgeDays` 默认 | 30（同样可被用户补丁覆盖） |
-| `GET /`（无 cookie） | 401 |
-| `GET /favicon.svg` | 200（静态资源公开） |
-| `GET /api/session/list`（无 cookie，方法错） | 401 |
-| 前端 bundle | `assets/index-*.js` + `assets/vendor-*.js`（哈希随版本变化） |
-| `$DSH_HOME` | `~/.dsh`（`DSH_HOME` 环境变量可覆盖统一根） |
+- `dsh --version`：`0.1.5-rc.1`。顶层命令 `web`（`--profile web` 别名）与 `plugin`；
+  顶层选项 `--profile` / `--from-default-profile` / `--patch` / `--dump-config` /
+  `--dump-default-config` / `-V/--version`。
+- 默认端口 3080，但用户 profile 可用 `cordis.patch.yml` 的 `port` 覆盖 ⇒ 客户端必须从
+  启动日志解析端口；`cookieMaxAgeDays` 默认 30，同样可被用户补丁覆盖。
+- `dsh web --help` 在受限沙箱里因无法写 `<home>/.dsh/profiles/web/cordis.yml` 报 `EPERM`
+  （`prepareProfile` 的 `node:fs` `writeFileSync`）；普通终端可正常输出，选项清单取自
+  `⟨P⟩\dsh-web-app\lib\startup.js`。
+- 未带 cookie 的 `GET /` 与 `GET /api/session/list`（方法也不对）均 401；
+  `GET /favicon.svg` 200（静态资源公开）。
+- 官方前端 bundle 为 `assets/index-*.js` + `assets/vendor-*.js`（哈希随版本变化）。
+- `$DSH_HOME` 默认 `~/.dsh`，`DSH_HOME` 环境变量可覆盖统一根。
 
 ### 9.2 端点位置参数名总表（严格校验用）
 
@@ -2091,15 +1948,15 @@ await post('commands/execute', { agentId: sessionId, line: '/plan off',         
 
 所有 `RemoteErrorDetailsMap` 的声明散落在各包 `lib/types/*.d.ts` 的 `declare module '@deepseek-ai/dsh-typert-protocol'` 块里，可 grep `RemoteErrorDetailsMap` 复核。
 
-### 9.5 官方 README（本机同一份产物里的权威文档）
+### 9.5 官方 README（权威文档指针）
 
-| 包 | 路径 |
-|---|---|
-| 传输与鉴权 | `⟨P⟩\dsh-client-connection\README.md` |
-| WS 多路复用 / 网关 | `⟨P⟩\dsh-api-gateway\README.md` |
-| 会话控制器（最详细） | `⟨P⟩\dsh-api-session-controller\README.md` |
-| 事件转发选择 | `⟨P⟩\dsh-api-remotes\README.md` |
-| 持久化与格式 | `⟨P⟩\dsh-session-persistence-jsonl\README.md` |
+与客户端契约有关的权威说明随包分发、与运行产物同版本，都在本机安装树
+`node_modules\@deepseek-ai\dsh\node_modules\@deepseek-ai\<包名>\README.md` 下：
+`dsh-client-connection`（传输与鉴权）、`dsh-api-gateway`（WS 多路复用/网关）、
+`dsh-api-session-controller`（会话控制器，最详细的一份）、`dsh-api-remotes`（事件转发
+选择）、`dsh-session-persistence-jsonl`（持久化与格式）。排查扩展的连接与鉴权链路先读
+`dsh-client-connection`；follow / 投影 / 流式等会话行为以 `dsh-api-session-controller`
+为准。
 
 ---
 
