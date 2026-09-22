@@ -354,6 +354,39 @@ console.log("invariants: guard 工厂的返回值不被丢弃（收尾体真的�
     /newSessionCwd \?\? ""/.test(workspaceView),
     "没选过目录时 `path` 必须是空串（界面显示「未选择工作区」），不能用 process.cwd() 兜底",
   );
+
+  // 空态页显示的权限 / 模型必须是「用户点过的 > 配置文件里的部署默认」。缺了默认
+  // 兜底，权限胶囊会退到界面词典的硬编码档位（用户报的现场：配置默认
+  // danger-full-access，空态页却显示 workspace-write），模型与思考强度则整枚消失。
+  const pendingFields = bodyOf("private pendingViewFields(");
+  assert.ok(
+    /viewModel\.get\(viewId\) \?\? this\.defaultModel/.test(pendingFields),
+    "空态页的模型预览必须回退到部署默认（defaultModel，读自 agent-default-model 配置）",
+  );
+  assert.ok(
+    /viewPermission\.get\(viewId\) \?\? this\.defaultPermission/.test(pendingFields),
+    "空态页的权限预览必须回退到配置文件的默认预设（defaultPermission，读自 permission.defaultPreset）",
+  );
+
+  // 空态页点权限与点模型同一口径：记成待建会话的选择，**不**就地建会话。
+  const setPermission = controller.match(/case "setPermission": \{[\s\S]*?\n      \}/)?.[0] ?? "";
+  assert.ok(setPermission, "controller.ts 里找不到 setPermission 分支");
+  assert.ok(
+    /viewPermission\.set\(viewId/.test(setPermission),
+    "空态页点权限要记成待建会话的选择（viewPermission）",
+  );
+  assert.ok(
+    !/ensureSession/.test(setPermission),
+    "空态页点权限不许就地建会话（没有第一条消息就不留记录）",
+  );
+
+  // 会话启动时按界面显示的设定运行：空态页选过的权限与部署默认不同，建会话后要落实。
+  const createSession = bodyOf("private async createSession(");
+  assert.ok(
+    /wantedPermission && wantedPermission !== this\.defaultPermission/.test(createSession) &&
+      /runCommand\(viewId, `\/permission \$\{wantedPermission\}`\)/.test(createSession),
+    "空态页选过且不同于部署默认的权限必须在建会话后落实（否则实际与 UI 错位）",
+  );
   console.log("invariants: 第一条消息之前不建会话，且会话必须先有工作目录 ✓");
 }
 

@@ -314,7 +314,7 @@ console.log("interactionSync: 审批按 approval/decided 与撤回收场 ✓");
   );
   // 建域时**不**回放：那一刻还没有窗口绑上来，投递出去没人收
   const ensureStart = controller.indexOf("private ensureScope(");
-  const ensure = controller.slice(ensureStart, controller.indexOf("private ensureDefaultModelApplied(", ensureStart));
+  const ensure = controller.slice(ensureStart, controller.indexOf("private ensureDefaultsApplied(", ensureStart));
   assert.ok(ensureStart > 0, "取不到 ensureScope");
   assert.ok(!/interactions\./.test(ensure), "ensureScope 不该回放（域建成时还没有窗口绑定）");
 

@@ -557,6 +557,15 @@ export class ChatController implements vscode.Disposable {
   private readonly viewAgentPreset = new Map<string, string>();
   private readonly viewModel = new Map<string, ModelSelectionView>();
   /**
+   * **待建会话**的权限预设选择（按窗口）：会话还没建出来，但用户已经在空态页的
+   * 权限菜单里点过一次。
+   *
+   * 与 `viewModel` 同一口径：值只喂给 `sessionSourceOf` 的 `pending` 那一路（空态页的
+   * 预览），建会话时一次性落到新会话上然后忘掉（与部署默认相同就不发，见
+   * `createSession`）。绑到一个**已有**会话时也清（那笔选择不再有意义）。
+   */
+  private readonly viewPermission = new Map<string, string>();
+  /**
    * 部署提供的 agent 预设目录（`agentPresets/list`），连上后取一次。
    *
    * 空表 = 这个部署没有预设（插件没装、或根目录里一个都没有），界面据此什么都不
@@ -627,6 +636,18 @@ export class ChatController implements vscode.Disposable {
    * 全局一份：它是部署配置，不是会话状态。
    */
   private defaultModel: ModelSelectionView | undefined;
+  /**
+   * 部署默认的权限预设（配置文件 `permission.defaultPreset`，经 `settings/describe`）。
+   * 空态页的权限胶囊在会话建出来之前退回这个值——它正是服务端给新会话装的初始预设，
+   * 所以「界面显示什么」与「新会话实际以什么权限启动」同源。全局一份：它是部署配置。
+   */
+  private defaultPermission: string | undefined;
+  /**
+   * 上面两个部署级默认是否已经读过（一次 `settings/describe` 同时取两样）。
+   * 读过了就不再发 RPC；配置热重载（`reloadSettings`）清掉它强制重读。
+   * 没有这道闸，「配置里恰好没有 `agent-default-model`」的部署会每次建域都白打一次 RPC。
+   */
+  private defaultsLoaded = false;
   /**
    * 已提交但可能还排在队列里的消息：requestId → 用户当时真正输入的内容。
    *
@@ -1057,17 +1078,23 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
-   * 还没有会话的窗口要显示的那两个**待建会话**预览值（喂给 `sessionSourceOf` 的
+   * 还没有会话的窗口要显示的那几项**待建会话**预览值（喂给 `sessionSourceOf` 的
    * `pending` 那一路）。
    *
-   * 只有这两项：预设与模型在会话建出来之前就该显示用户刚点的东西，否则空态页上
-   * 点完像没反应。别的字段一个都不掺——它们要么不属于窗口（工作目录走外观态），
-   * 要么离开会话就没有意义。
+   * 只有会话建出来之前就有意义的三项：
+   * - **预设 / 模型**：用户点过的优先——否则点完像没反应；
+   * - **权限 / 模型**：没有用户选择时退回部署默认（配置文件读出来的
+   *   `defaultPermission` / `defaultModel`）——空态页显示的就是新会话将要以什么
+   *   权限、什么模型、什么思考强度启动，而不是词典里编出来的某个档位。
+   *
+   * 别的字段一个都不掺——它们要么不属于窗口（工作目录走外观态），要么离开会话
+   * 就没有意义。
    */
   private pendingViewFields(viewId: string | undefined): Parameters<typeof sessionSourceOf>[3] {
     if (!viewId) return undefined;
     return {
-      model: () => this.viewModel.get(viewId),
+      model: () => this.viewModel.get(viewId) ?? this.defaultModel,
+      permission: () => this.viewPermission.get(viewId) ?? this.defaultPermission,
       agentPreset: () => this.agentPresetFor(viewId),
     };
   }
@@ -1513,6 +1540,7 @@ export class ChatController implements vscode.Disposable {
     // 下次「新建对话」重新从配置项开始（见 `viewAgentPreset` 的字段注释）
     this.viewAgentPreset.delete(viewId);
     this.viewModel.delete(viewId);
+    this.viewPermission.delete(viewId);
     if (previous) {
       this.dropViewers(previous);
     } else {
@@ -2877,9 +2905,10 @@ export class ChatController implements vscode.Disposable {
   /**
    * 真正建一条会话并绑到窗口（`session/create`）。
    *
-   * 待建会话的三样参数在这里一次性落实：**工作目录**（`workspacePath()`）、
+   * 待建会话的几样参数在这里一次性落实：**工作目录**（`workspacePath()`）、
    * **agent 预设**（用户点过的 > 配置项 > 服务端默认，见 `agentPresetFor`）、
-   * **模型**（记成域上的 `pendingModel`，由第一次发送前的 `selectModel` 提交）。
+   * **模型**（记成域上的 `pendingModel`，由第一次发送前的 `selectModel` 提交）、
+   * **权限**（空态页选过的、与部署默认不同的那笔，绑定后补发一次 `/permission`）。
    * 落实完就把待建状态清掉——下一次「新建对话」重新从配置项开始。
    */
   private async createSession(viewId: string): Promise<SessionScope | undefined> {
@@ -2890,11 +2919,17 @@ export class ChatController implements vscode.Disposable {
       const created = await this.createSessionInWorkspace(workspaceId, preset);
       // 域是「窗口打开会话」的产物：这里总是有窗口要绑
       const scope = this.ensureScope(created.sessionId);
+      // 空态页选过的权限在**绑定前**读走（`bindViewToSession` 会清掉它）
+      const wantedPermission = scope ? this.viewPermission.get(viewId) : undefined;
       // 投影帧要晚一点才到，先用创建结果给域一个初值（`agentPreset` 那条路见
       // `applyAgentPresetProjection`）
       if (scope) {
         scope.agentPreset = created.agentPreset;
-        const model = this.viewModel.get(viewId);
+        // 界面上显示的模型在这里落实：用户点过的优先；没点过就是空态页展示着的
+        // 部署默认（`agent-default-model` 配置）——记成 `pendingModel` 后第一次发送
+        // 前由 `selectModel` 提交，会话实际用的就是胶囊上那一个，而不是「服务端
+        // 自己再默认一次」。
+        const model = this.viewModel.get(viewId) ?? this.defaultModel;
         if (model) {
           scope.pendingModel = model;
           scope.model = model;
@@ -2903,6 +2938,12 @@ export class ChatController implements vscode.Disposable {
       await this.refreshSessions();
       if (scope) {
         this.bindViewToSession(viewId, created.sessionId, scope);
+        // 待建会话的权限选择到此落实（会话启动后以界面显示的设定运行）。与部署默认
+        // 相同就不发：那个值服务端建会话时本来就会装上，再发一次只会在新会话里留下
+        // 一条没人点的 `/permission` 命令节点
+        if (wantedPermission && wantedPermission !== this.defaultPermission) {
+          await this.runCommand(viewId, `/permission ${wantedPermission}`);
+        }
         this.emitToView(viewId, { type: "state", state: this.snapshotFor(viewId) });
       }
       return scope;
@@ -3058,21 +3099,22 @@ export class ChatController implements vscode.Disposable {
     void this.listCommandsFor(scope);
     // 新建的域没有 `modelSelection` 投影（首次对话前），给它填部署默认模型；
     // 服务端真给了投影时，baseline 到达会覆盖这里的默认值
-    this.ensureDefaultModelApplied();
+    this.ensureDefaultsApplied();
     return scope;
   }
 
   /**
-   * 确保部署默认模型已读取并填进仍缺选择的域。
-   * 连接路径与建域路径都要调：`loadModels` 只在连接时跑一次，其后新建的域
-   * 不会再被 `applyDefaultModelToScopes` 覆盖。
+   * 确保部署默认（模型与权限）已读取并铺开：模型填进仍缺选择的域，两个默认一起
+   * 推给空态窗口。连接路径与建域路径都要调：`loadModels` 只在连接时跑一次，其后
+   * 新建的域不会再被 `applyDefaultModelToScopes` 覆盖。
    */
-  private ensureDefaultModelApplied(): void {
-    if (this.defaultModel) {
+  private ensureDefaultsApplied(): void {
+    if (this.defaultsLoaded) {
       this.applyDefaultModelToScopes();
+      this.refreshPendingDefaults();
       return;
     }
-    void this.loadDefaultModel();
+    void this.loadDefaults();
   }
 
   /** 给域开（或 socket 重连后重开）`session/follow` 流；适配器整个重建。 */
@@ -3564,7 +3606,7 @@ export class ChatController implements vscode.Disposable {
       patch: sessionPatch(this.sessionSource(scope), ["model"]),
     });
       } else {
-        void this.loadDefaultModel();
+        void this.loadDefaults();
       }
       return;
     }
@@ -4067,12 +4109,15 @@ export class ChatController implements vscode.Disposable {
    * 图片输入能力、部署默认模型、以及顺带喂进去的 `busyEnter`（见 `refreshImageCaps`）。
    */
   private async reloadSettings(): Promise<void> {
-    // 部署默认模型是**有缓存**的（`agent-default-model` 设置）：不清掉就永远读不到新值
+    // 部署默认是**有缓存**的（`agent-default-model` 与 `permission` 两个命名空间）：
+    // 不清掉就永远读不到新值
     this.defaultModel = undefined;
+    this.defaultPermission = undefined;
+    this.defaultsLoaded = false;
     await this.refreshImageCaps();
     // 模型目录还没到（首连的那一小段窗口）时不读默认模型：标签会退化成裸 id
     // 并被缓存住；那次连接流程自己会在 loadModels 之后读一遍。
-    if (this.models.length > 0) await this.loadDefaultModel();
+    if (this.models.length > 0) await this.loadDefaults();
   }
 
   /**
@@ -4193,6 +4238,15 @@ export class ChatController implements vscode.Disposable {
       this.emitAll({ type: "models", groups: this.models });
       // 图片能力来自设置命名空间，在选定默认/当前模型前刷新
       await this.refreshImageCaps();
+      // 部署默认模型可能早已被读成「裸 id、没有档位表」的缓存——`loadDefaults` 不挑
+      // 时机（重载窗口恢复会话的 baseline 那条路就会在目录到达前触发），而
+      // `defaultsLoaded` 一旦置位就不再重读。目录到手就在这里把展示名 / 思考档位 /
+      // 上下文窗口重新折一遍，再铺给仍缺选择的域与空态窗口，裸 id 不会一直挂着。
+      if (this.defaultModel) {
+        this.defaultModel = this.resolveModelView(this.defaultModel);
+        this.applyDefaultModelToScopes();
+        this.refreshPendingDefaults();
+      }
       // 投影可能先于模型目录到达（WS 一开就推 baseline），那时只能显示模型 id；
       // 目录就绪后用原始投影重放一次，把 id 换成人类可读的名字。
       // 没有选择的域（全新会话）退回部署默认模型。
@@ -4209,42 +4263,87 @@ export class ChatController implements vscode.Disposable {
         );
         replayed = true;
       }
-      if (!replayed) await this.loadDefaultModel();
+      if (!replayed) await this.loadDefaults();
     } catch (error) {
       this.log(`[models] 目录获取失败：${this.describeError(error)}`);
     }
   }
 
   /**
-   * 新会话在首次对话前没有 modelSelection，但 agent 仍会用部署默认值。
-   * 从 `agent-default-model` 设置命名空间读出来，开场就显示真实模型。
-   * 结果缓存到 `defaultModel`（部署级配置，全局一份），再填给还没有选择的各域。
+   * 用模型目录把一份模型选择折成「人类可读」的展示形态：展示名、思考档位表、
+   * 上下文窗口、图片输入能力都从目录对应条目来。目录里认不出（provider/model
+   * 拼错、目录还没到、模型被删）时保留原值——裸 id 至少还是可辨认的身份。
    */
-  private async loadDefaultModel(): Promise<void> {
+  private resolveModelView(selection: ModelSelectionView): ModelSelectionView {
+    const group = this.models.find((item) => item.id === selection.provider);
+    const model = group?.models.find((item) => item.id === selection.model);
+    return {
+      ...selection,
+      label: model?.name ?? selection.label,
+      efforts: model?.efforts,
+      contextWindow: model?.contextWindow,
+      acceptsImage: this.acceptsImageFor(selection.provider, selection.model),
+    };
+  }
+
+  /**
+   * 部署默认（配置文件 `~/.dsh/settings.yaml`）的统一读取口，一次
+   * `settings/describe` 取两样：
+   *
+   * - `agent-default-model` 命名空间 → `defaultModel`：新会话在首次对话前没有
+   *   modelSelection，但 agent 仍会用部署默认值，开场就显示真实模型与思考强度；
+   * - `permission` 命名空间的 `defaultPreset` → `defaultPermission`：空态页的权限
+   *   胶囊在会话建出来之前退回它，而不是界面词典里的某个硬编码档位。
+   *
+   * 两个默认同源同读（`defaultsLoaded` 闸住重复 RPC），读完各自铺开：
+   * 域走 `applyDefaultModelToScopes`，空态窗口走 `refreshPendingDefaults`。
+   */
+  private async loadDefaults(): Promise<void> {
     if (!this.client) return;
-    if (this.defaultModel) {
+    if (this.defaultsLoaded) {
       this.applyDefaultModelToScopes();
+      this.refreshPendingDefaults();
       return;
     }
     try {
       const described = await this.client.settingsDescribe();
+      this.defaultsLoaded = true;
       const section = described.namespaces?.find((item) => item.ns === "agent-default-model");
       const value = section?.value as { provider?: string; model?: string; reasoningEffort?: string } | undefined;
-      if (!value?.provider || !value.model) return;
-      const group = this.models.find((g) => g.id === value.provider);
-      const model = group?.models.find((m) => m.id === value.model);
-      this.defaultModel = {
-        provider: value.provider,
-        model: value.model,
-        label: model?.name ?? value.model,
-        reasoningEffort: value.reasoningEffort,
-        efforts: model?.efforts,
-        contextWindow: model?.contextWindow,
-        acceptsImage: this.acceptsImageFor(value.provider, value.model),
-      };
+      if (value?.provider && value.model) {
+        this.defaultModel = this.resolveModelView({
+          provider: value.provider,
+          model: value.model,
+          // 初始 label 先放裸 id：目录里找得着就由 resolveModelView 换成展示名，
+          // 找不着（provider/model 拼错、目录缺失）时裸 id 至少还是可辨认的身份
+          label: value.model,
+          reasoningEffort: value.reasoningEffort,
+        });
+      }
+      const permissionSection = described.namespaces?.find((item) => item.ns === "permission");
+      const preset = (permissionSection?.value as { defaultPreset?: unknown } | undefined)?.defaultPreset;
+      this.defaultPermission = typeof preset === "string" && preset ? preset : undefined;
       this.applyDefaultModelToScopes();
+      this.refreshPendingDefaults();
     } catch (error) {
-      this.log(`[models] 默认模型读取失败：${this.describeError(error)}`);
+      this.log(`[models] 部署默认读取失败：${this.describeError(error)}`);
+    }
+  }
+
+  /**
+   * 部署默认到位 / 热重载后，刷新**空态窗口**的预览胶囊（权限、模型、思考强度）。
+   *
+   * 空态页没有域，`pendingViewFields` 的兜底正是刚读到的两个默认；默认值是异步到的
+   * （连接后才发 RPC），不补这一下的话首帧快照里那两枚胶囊是空的，直到下次重绑才出现。
+   * 已绑定会话的窗口不在这里管：真实状态压过预览值（`sessionSourceOf` 的口径）。
+   */
+  private refreshPendingDefaults(): void {
+    for (const viewId of this.viewKinds.keys()) {
+      if (this.viewSessions.has(viewId)) continue;
+      this.emitToView(viewId, {
+        type: "patch",
+        patch: sessionPatch(this.pendingSessionSource(viewId), ["model", "permission"]),
+      });
     }
   }
 
@@ -4418,9 +4517,22 @@ export class ChatController implements vscode.Disposable {
         break;
       }
 
-      case "setPermission":
+      case "setPermission": {
+        const scope = this.scopeOfView(viewId);
+        if (!scope) {
+          // 空态：**不建会话**（与模型选择同一口径——没有第一条消息就不留记录），
+          // 把这次选择记成「待建会话」的一部分，界面上立刻显示；建会话时与部署默认
+          // 不同的那笔会被落实（见 `createSession`）
+          this.viewPermission.set(viewId, message.permission);
+          this.emitToView(viewId, {
+            type: "patch",
+            patch: sessionPatch(this.pendingSessionSource(viewId), ["permission"]),
+          });
+          break;
+        }
         await this.runCommand(viewId, `/permission ${message.permission}`);
         break;
+      }
 
       case "runCommand": {
         // 界面上的按钮化命令（权限预设、进入/退出计划模式）。成功与失败都靠

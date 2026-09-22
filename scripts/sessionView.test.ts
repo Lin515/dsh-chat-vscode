@@ -344,27 +344,47 @@ console.log("sessionView: 子代理目录只剩一个名字（subagentEntries）
 
 // ---------- 7. 空态窗口的「待建会话」预览值（pending） ----------
 //
-// 会话在第一条消息之前不存在（用户 2026-09-22 口径），但预设与模型两枚胶囊在空态页
-// 上就得显示用户刚点的选择。那两项目前只有这一条读法（`sessionSourceOf` 的 `pending`），
-// 所以在这里钉两件事：**没有域时**它生效；**有域时**真实状态压过预览值。
+// 会话在第一条消息之前不存在（用户 2026-09-22 口径），但预设 / 模型 / 权限三枚胶囊
+// 在空态页上就得显示用户刚点的选择。那三项只有这一条读法（`sessionSourceOf` 的
+// `pending`），所以在这里钉两件事：**没有域时**它生效；**有域时**真实状态压过预览值。
 {
   const pending = {
     model: () => ({ provider: "p", model: "m", label: "M" }),
+    permission: () => "danger-full-access",
     agentPreset: () => "ptc",
   };
   const unbound = sessionSourceOf(undefined, undefined, [], pending);
   assert.strictEqual(unbound.agentPreset?.(), "ptc", "空态窗口要显示待建会话的预设");
   assert.deepStrictEqual(unbound.model?.(), { provider: "p", model: "m", label: "M" });
+  assert.strictEqual(
+    unbound.permission?.(),
+    "danger-full-access",
+    "空态窗口要显示待建会话的权限（用户点过的，或配置文件的默认预设）",
+  );
   // 没有 pending 时是 undefined（界面据此不渲染那枚胶囊）
   assert.strictEqual(sessionSourceOf(undefined, undefined, []).agentPreset?.(), undefined);
+  assert.strictEqual(
+    sessionSourceOf(undefined, undefined, []).permission?.(),
+    undefined,
+    "没有 pending 时权限也是 undefined（不渲染成任何具体档位）",
+  );
 
   // 有域：pending 一律不参与——真实会话的状态永远压过预览值
   const scope = new SessionScope("s-1");
   scope.agentPreset = "standard";
   scope.model = { provider: "p", model: "real", label: "Real" };
+  scope.permission = "workspace-write";
   const bound = sessionSourceOf(scope, undefined, [], pending);
   assert.strictEqual(bound.agentPreset?.(), "standard", "绑着会话时不许被预览值顶掉");
   assert.strictEqual(bound.model?.()?.model, "real");
+  assert.strictEqual(bound.permission?.(), "workspace-write");
+
+  // 有域但该字段还没有真实值时也不许拿预览值补：投影没到的窗口里胶囊显示空，
+  // 等 `applyDefaultModelToScopes` / 投影帧来填——预览值只属于「会话还不存在」的窗口
+  const scope2 = new SessionScope("s-2");
+  const bound2 = sessionSourceOf(scope2, undefined, [], pending);
+  assert.strictEqual(bound2.permission?.(), undefined, "有域时权限的预览值一律不参与");
+  assert.strictEqual(bound2.model?.(), undefined);
 }
 console.log("sessionView: 空态预览值（pending）只在没有会话时生效 ✓");
 

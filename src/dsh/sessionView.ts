@@ -354,24 +354,27 @@ export function appearanceView(source: AppearanceViewSource): WireAppearanceView
  * - `session` 是会话列表里的那一行摘要（域本身只有 id）。
  *
  * `pending` 是第三个例外，只对**还没有会话**的窗口有意义（空态页）：用户在会话建出来
- * 之前就点好的预设 / 模型，要在界面上立刻显示出来（否则点完像没反应），而那两个字段
- * 的值仍然只有这一条读法。有域时 pending 一律**不参与**——真实状态永远压过预览值。
+ * 之前就点好的预设 / 模型 / 权限，要在界面上立刻显示出来（否则点完像没反应），而那三个
+ * 字段的值仍然只有这一条读法。有域时 pending 一律**不参与**——真实状态永远压过它。
  */
 export function sessionSourceOf(
   scope: SessionScope | undefined,
   session: SessionView["session"],
   models: SessionView["models"],
-  pending?: Partial<Pick<SessionViewSource, "model" | "agentPreset">>,
+  pending?: Partial<Pick<SessionViewSource, "model" | "permission" | "agentPreset">>,
 ): SessionViewSource {
   const adapter: SessionAdapter | undefined = scope?.adapter;
   return {
+    // 三条预览读法都是**结构性**的「有域就不看 pending」：生产代码里 snapshotFor 对
+    // 两者二选一（有域不传 pending），这里再把口径钉死在源头——将来有人同时传了
+    // 两份，真实状态也压得过预览值，而不是靠 `??` 的次序碰巧正确
     session: () => session,
     messages: () => adapter?.snapshotMessages(),
     running: () => scope?.running,
     queueItems: () => scope?.queueItems,
     models: () => models,
-    model: () => scope?.model ?? pending?.model?.(),
-    permission: () => scope?.permission,
+    model: () => (scope ? scope.model : pending?.model?.()),
+    permission: () => (scope ? scope.permission : pending?.permission?.()),
     planMode: () => scope?.planMode,
     todos: () => scope?.todos,
     subagentEntries: () => scope?.subagentEntries,
@@ -389,6 +392,6 @@ export function sessionSourceOf(
     tokenUsage: () => scope?.tokenUsage,
     turnOutline: () => scope?.turnOutline,
     imageLimits: () => scope?.imageLimits,
-    agentPreset: () => scope?.agentPreset ?? pending?.agentPreset?.(),
+    agentPreset: () => (scope ? scope.agentPreset : pending?.agentPreset?.()),
   };
 }
