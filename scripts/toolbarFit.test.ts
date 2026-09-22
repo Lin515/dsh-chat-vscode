@@ -20,6 +20,8 @@ import { BAR_ORDER, pickVariants, type ToolbarVariant } from "../src/webview/too
 const WIDTHS: Record<string, number> = {
   "permission:icon": 22,
   "model:full": 120,
+  // `提供商/模型名` 全格式档：模型名之外再挂一个提供商展示名（如「火山方舟/」）
+  "model:provider": 190,
   "send:full": 52,
   "effort:full": 26,
   "attach:full": 22,
@@ -49,7 +51,8 @@ const ALL = [
   "attach:full",
   "context:text",
   "effort:full",
-  "model:full",
+  // model 槽位在宽度充裕时停在最高档（`提供商/模型名`），裸模型名档被它替换
+  "model:provider",
   "permission:label",
   "preset:full",
   "send:full",
@@ -81,14 +84,14 @@ const ALL = [
 
   const rankOf = (key: string) => BAR_ORDER.find((s) => `${s.slot}:${s.level}` === key)?.rank;
   const p1 = ["effort:full", "attach:full", "tps:full", "context:ring"].map(rankOf);
-  const p2 = ["permission:label", "preset:full", "context:text"].map(rankOf);
+  const p2 = ["permission:label", "preset:full", "context:text", "model:provider"].map(rankOf);
   assert.ok(
     p1.every((rank) => rank !== undefined) && p2.every((rank) => rank !== undefined),
-    "P1/P2 的档位都要在表里（含 agent 预设标签）",
+    "P1/P2 的档位都要在表里（含 agent 预设标签与模型全格式档）",
   );
   for (const [tier, ranks] of [
     ["P1（思考强度 → 附件 → tps → 上下文环）", p1],
-    ["P2（权限文字 → 预设标签 → 上下文数值）", p2],
+    ["P2（权限文字 → 预设标签 → 上下文数值 → 模型全格式）", p2],
   ] as [string, (number | undefined)[]][]) {
     assert.ok(
       ranks.every((rank, index) => index === 0 || (rank as number) > (ranks[index - 1] as number)),
@@ -97,13 +100,15 @@ const ALL = [
   }
   assert.ok(
     Math.max(...(p1 as number[])) < Math.min(...(p2 as number[])),
-    "P1（思考强度/附件/tps/上下文环）必须整体优先于 P2（权限文字/预设/上下文数值）",
+    "P1（思考强度/附件/tps/上下文环）必须整体优先于 P2（权限文字/预设/上下文数值/模型全格式）",
   );
 
   const perm = BAR_ORDER.filter((spec) => spec.slot === "permission").map((spec) => spec.level);
   const ctx = BAR_ORDER.filter((spec) => spec.slot === "context").map((spec) => spec.level);
+  const mdl = BAR_ORDER.filter((spec) => spec.slot === "model").map((spec) => spec.level);
   assert.deepStrictEqual(perm, ["icon", "label"], "权限槽位必须是「先图标、后图标+文字」");
   assert.deepStrictEqual(ctx, ["ring", "text"], "上下文槽位必须是「先环、后环+数值」");
+  assert.deepStrictEqual(mdl, ["full", "provider"], "模型槽位必须是「先模型名、后提供商+模型名」");
 
   // 左右次序的**来源**：Composer 里 `{bar.槽位}` 的先后就是工具栏的左右布局
   // （`.composer-bar` 是 flex 行）。它一变，「哪一项先被挤掉」就跟着变。
@@ -117,15 +122,19 @@ const ALL = [
     ["permission", "model", "effort", "preset", "attach", "tps", "context", "send"],
     "工具栏的渲染次序（= 从左至右）变了：同档内的优先级就是按它定的，改位置要同步改 rank",
   );
+  assert.ok(
+    /"model:provider": modelPill\(true\)/.test(composer),
+    "Composer 必须把「提供商/模型名」档接进节点表（表里有档、节点表没节点 = 该档永远不渲染）",
+  );
 }
 console.log("toolbarFit: 优先级表符合用户口径 ✓");
 
-// ---------- 2. 宽度充裕：全部都显示（含 P2 三档） ----------
+// ---------- 2. 宽度充裕：全部都显示（含 P2 各档） ----------
 //
-// 10 个档位落在 8 个槽位上（权限与上下文各占一个槽位的两档），
-// 所以「全显示」= 8 项，且两处都是最高档。
+// 11 个档位落在 8 个槽位上（权限、上下文、模型各占一个槽位的两档），
+// 所以「全显示」= 8 项，且三处都停在最高档。
 {
-  const shown = say(600);
+  const shown = say(620);
   assert.deepStrictEqual(shown, ALL, `宽度充裕时应当全显示，实际 ${shown.join(" ")}`);
 }
 console.log("toolbarFit: 宽度充裕时全部显示 ✓");
@@ -150,8 +159,10 @@ console.log("toolbarFit: 极窄时只剩 P0（pinned 保底） ✓");
 //   → 416 权限图标升成图标+文字（换档只花差价 +58）
 //   → 496 +预设标签（新开一个槽位：+72 自身 +8 间距）
 //   → 542 上下文环升成环+数值（+46，同槽位只花差价）
+//   → 612 模型胶囊升成 `提供商/模型名`（+70，同槽位只花差价）
 // 写死这几个边界是有意的：它们同时钉住「间距计入」与「换档只花差价」两件事，
-// 也钉住 P2 内部「左端的权限文字 → 中段的预设标签 → 右端的上下文数值」这一次序。
+// 也钉住 P2 内部「左端的权限文字 → 中段的预设标签 → 右端的上下文数值 →
+// 最末的模型全格式」这一次序。
 {
   const P0 = ["model:full", "permission:icon", "send:full"];
   const L3 = ["effort:full", ...P0].sort();
@@ -160,7 +171,9 @@ console.log("toolbarFit: 极窄时只剩 P0（pinned 保底） ✓");
   const L6 = ["context:ring", ...L5].sort();
   const L7 = ["permission:label", ...L6.filter((key) => key !== "permission:icon")].sort();
   const L8 = ["preset:full", ...L7].sort();
-  const L9 = ALL;
+  // 同槽位升级是替换：上下文环换成环+数值，模型名换成提供商/模型名
+  const L9 = [...L8.filter((key) => key !== "context:ring"), "context:text"].sort();
+  const L10 = ALL;
 
   const steps: [number, string[]][] = [
     [218, P0],
@@ -171,6 +184,7 @@ console.log("toolbarFit: 极窄时只剩 P0（pinned 保底） ✓");
     [416, L7],
     [496, L8],
     [542, L9],
+    [612, L10],
   ];
   for (const [available, expected] of steps) {
     assert.deepStrictEqual(
@@ -184,6 +198,7 @@ console.log("toolbarFit: 极窄时只剩 P0（pinned 保底） ✓");
   assert.deepStrictEqual(say(415), L6, "415px 还放不下权限文字");
   assert.deepStrictEqual(say(495), L7, "495px 还放不下预设标签");
   assert.deepStrictEqual(say(541), L8, "541px 还放不下上下文数值");
+  assert.deepStrictEqual(say(611), L9, "611px 还升不上模型全格式档");
 }
 
 // ---------- 4b. 单调性：宽度只增不减时，显示的档位只进不出 ----------
@@ -210,9 +225,10 @@ console.log("toolbarFit: 极窄时只剩 P0（pinned 保底） ✓");
     }
     previousSlots = slots;
   }
-  // 一路撑到最后，两处「可升级的槽位」都必须停在最高档
+  // 一路撑到最后，三处「可升级的槽位」都必须停在最高档
   assert.strictEqual(levels.get("permission"), 7, "权限槽位最终应停在「图标+文字」档");
   assert.strictEqual(levels.get("context"), 9, "上下文槽位最终应停在「环+数值」档");
+  assert.strictEqual(levels.get("model"), 10, "模型槽位最终应停在「提供商/模型名」档");
 }
 console.log("toolbarFit: 逐级降级 + 宽度变大只进不出 ✓");
 
@@ -220,7 +236,7 @@ console.log("toolbarFit: 逐级降级 + 宽度变大只进不出 ✓");
 {
   for (let available = 600; available >= 0; available -= 1) {
     const shown = say(available);
-    for (const slot of ["permission", "context"]) {
+    for (const slot of ["permission", "context", "model"]) {
       const hits = shown.filter((key) => key.startsWith(`${slot}:`));
       assert.ok(hits.length <= 1, `宽度 ${available}px 时 ${slot} 槽位选了 ${hits.join(" + ")}`);
     }

@@ -367,8 +367,14 @@ export function Composer({
     </button>
   );
 
-  /** 模型切换按钮（P0）。 */
-  const modelPill = (
+  /**
+   * 模型切换按钮（P0）。`withProvider` 是同槽位的最低优先级档：宽度充裕时把
+   * 提供商展示名加在模型名前面（`提供商/模型名`，用户口径）；目录里认不出该
+   * 提供商（找不到分组）就保持裸模型名。
+   */
+  const providerGroup = state.models.find((group) => group.id === state.model?.provider);
+  const modelLabelText = state.model?.label ?? texts.defaultModel;
+  const modelPill = (withProvider: boolean) => (
     <button
       className="pill"
       title={texts.thinkingDepth}
@@ -384,7 +390,9 @@ export function Composer({
         setModelOpen((v) => !v);
       }}
     >
-      <span className="pill-label">{state.model?.label ?? texts.defaultModel}</span>
+      <span className="pill-label">
+        {withProvider && providerGroup ? `${providerGroup.name}/${modelLabelText}` : modelLabelText}
+      </span>
     </button>
   );
 
@@ -496,7 +504,8 @@ export function Composer({
   const barNodes: Record<string, ReactNode> = {
     "permission:icon": permissionPill(false),
     "permission:label": permissionPill(true),
-    "model:full": modelPill,
+    "model:full": modelPill(false),
+    "model:provider": modelPill(true),
     "send:full": sendPill,
     "effort:full": effortPill,
     "preset:full": presetLabel,
