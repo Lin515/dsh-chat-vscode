@@ -30,11 +30,13 @@ import {
   SESSION_VIEW_KEYS,
   appearanceView,
   sessionPatch,
+  sessionSourceOf,
   sessionView,
   wireOf,
   type AppearanceViewSource,
   type SessionViewSource,
 } from "../src/dsh/sessionView";
+import { SessionScope } from "../src/dsh/scope";
 
 /**
  * 声明的会话字段清单（**手写**）。
@@ -68,6 +70,7 @@ const EXPECTED_SESSION_KEYS = [
   "tokenUsage",
   "turnOutline",
   "imageLimits",
+  "agentPreset",
 ];
 
 /** 声明的外观态字段清单（手写，同上）。 */
@@ -78,6 +81,8 @@ const EXPECTED_APPEARANCE_KEYS = [
   "questionBatch",
   "turnProcessThreshold",
   "busyEnter",
+  "workspace",
+  "agentPresets",
 ];
 
 /** 一份完整的会话取值来源（形状与 `sessionSourceOf` 的返回值一致）。 */
@@ -106,6 +111,7 @@ function fullSessionSource(): SessionViewSource {
     tokenUsage: () => undefined,
     turnOutline: () => undefined,
     imageLimits: () => undefined,
+    agentPreset: () => undefined,
   };
 }
 
@@ -228,6 +234,8 @@ console.log("sessionView: undefined → null 的折返只在构造器里 ✓");
     questionBatch: () => 0,
     turnProcessThreshold: () => 3,
     busyEnter: () => "queue",
+    workspace: () => ({ path: "D:\\dev\\app", locked: false }),
+    agentPresets: () => ({ options: [{ id: "standard" }], selectable: true }),
   };
   const view = appearanceView(source);
   assert.deepStrictEqual(
@@ -333,5 +341,31 @@ console.log("sessionView: 宿主侧接线（只走构造器 + 每个字段有取
   );
 }
 console.log("sessionView: 子代理目录只剩一个名字（subagentEntries）✓");
+
+// ---------- 7. 空态窗口的「待建会话」预览值（pending） ----------
+//
+// 会话在第一条消息之前不存在（用户 2026-09-22 口径），但预设与模型两枚胶囊在空态页
+// 上就得显示用户刚点的选择。那两项目前只有这一条读法（`sessionSourceOf` 的 `pending`），
+// 所以在这里钉两件事：**没有域时**它生效；**有域时**真实状态压过预览值。
+{
+  const pending = {
+    model: () => ({ provider: "p", model: "m", label: "M" }),
+    agentPreset: () => "ptc",
+  };
+  const unbound = sessionSourceOf(undefined, undefined, [], pending);
+  assert.strictEqual(unbound.agentPreset?.(), "ptc", "空态窗口要显示待建会话的预设");
+  assert.deepStrictEqual(unbound.model?.(), { provider: "p", model: "m", label: "M" });
+  // 没有 pending 时是 undefined（界面据此不渲染那枚胶囊）
+  assert.strictEqual(sessionSourceOf(undefined, undefined, []).agentPreset?.(), undefined);
+
+  // 有域：pending 一律不参与——真实会话的状态永远压过预览值
+  const scope = new SessionScope("s-1");
+  scope.agentPreset = "standard";
+  scope.model = { provider: "p", model: "real", label: "Real" };
+  const bound = sessionSourceOf(scope, undefined, [], pending);
+  assert.strictEqual(bound.agentPreset?.(), "standard", "绑着会话时不许被预览值顶掉");
+  assert.strictEqual(bound.model?.()?.model, "real");
+}
+console.log("sessionView: 空态预览值（pending）只在没有会话时生效 ✓");
 
 console.log("\nsessionView: all assertions passed");

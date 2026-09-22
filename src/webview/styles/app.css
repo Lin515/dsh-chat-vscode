@@ -2650,6 +2650,144 @@
   color: var(--muted);
 }
 
+/* 空态页的两行元信息：新会话落在哪个目录、用哪套 agent 组装。
+   **一行一个**（用户 2026-09-22 口径）：这一页上下都是空的，两段信息挤在一行
+   只会互相抢宽度——分开之后各自都能完整读，英文下也不会互相挤省略。
+   `position: relative` 是给预设弹层用的**定位祖先**：菜单比那枚胶囊宽得多，
+   要对齐的是这一整块（见 primitives.tsx 的 `Popover`）。 */
+.empty-meta {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  /* 内容宽度由 `min(100%, 340px)` 定：两行元信息自己只占得下这么宽，但**预设菜单
+     要借这块宽度**（它是绝对定位的，`max-width: 100%` 量的是这里）。所以这一块刻意
+     比它的内容宽——菜单因此能铺满内容列，卡片里的描述不必挤成一行一个词。
+     高度仍然是两行本身（`top: 100%` 的落点靠的是它，不能撑高）。 */
+  width: min(100%, 340px);
+  max-width: 100%;
+  min-width: 0;
+}
+
+/* 一行元信息：文件夹 / 预设图标 + 一段可收缩的文字（+ 可改时的下箭头）。
+   字号按**正文尺度**给（原来是 2xs，空态页上小得难读——用户 2026-09-22 口径）。
+   文字段的收缩口径见 `.meta-dir` / `.meta-name`。 */
+.meta-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  /* 宽度由内容决定，但**上限**是这一块：两行各自可以被压窄，而不是把页面撑宽 */
+  max-width: 100%;
+  min-width: 0;
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  color: var(--muted);
+  font-size: var(--font-size-sm);
+  white-space: nowrap;
+}
+
+button.meta-chip:hover {
+  background: var(--hover);
+  color: var(--fg);
+}
+
+/* 不可改的那一行（工作目录跟随 VS Code）：静态文字，没有悬停态。
+   光标保持默认——它看起来就不该是能点的。 */
+.meta-chip.is-static {
+  cursor: default;
+}
+
+.meta-label {
+  display: inline-flex;
+  align-items: baseline;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* 路径的目录前缀：唯一可收缩的一段，从左被裁掉（与 `.row-detail-dir` 同一口径——
+   保住用户真正在看的那个目录名）。 */
+.meta-dir {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+/* 末段（目录名 / 预设名）：不参与收缩 */
+.meta-name {
+  flex: 0 0 auto;
+}
+
+/* ---- agent 预设菜单（空态页那枚下拉框里的卡片） ---- */
+
+/* 卡片而不是单行候选：预设名下面那段描述是**选择依据**，挤成一行省略号等于没有
+   （官方菜单就是「名字一行 + 描述折行」的卡片，见用户 2026-09-22 的截图口径）。
+   为什么不用 `.popover-item`：那一套是输入区候选（`@` 文件、斜杠命令）的口径——
+   单行、`nowrap` + `ellipsis`，正是这里要去掉的行为。 */
+.preset-card {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: 6.4px;
+  border: 1px solid transparent;
+  text-align: left;
+}
+
+.preset-card:hover,
+.preset-card.is-selected {
+  background: var(--active);
+  color: var(--active-fg);
+}
+
+.preset-card-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 名字是这一行的**身份**：不可收缩到看不见，太长才省略（它通常很短） */
+.preset-card-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+}
+
+/* 选中的那一条右侧一枚对勾（官方菜单同款）：选中态除了底色还有一个**不依赖颜色**的
+   记号，色觉差异下也分得出选的是哪一条 */
+.preset-card-check {
+  flex: 0 0 auto;
+  display: inline-flex;
+}
+
+/* 简述：最多三行，多出来的省略（用户 2026-09-22 口径）。`line-clamp` 是 webview 那个
+   Chromium 里的标准做法；`title` 上挂着全文，悬停仍能读全（见 EmptyMeta.tsx）。 */
+.preset-card-desc {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: var(--font-size-xs);
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+/* 悬停 / 选中的那一条底色变了，副文字不能还挂着「正文底色上的灰」——跟着行的前景色
+   走、压一档透明度，对比度才在同一档。 */
+.preset-card:hover .preset-card-desc,
+.preset-card.is-selected .preset-card-desc {
+  color: inherit;
+  opacity: 0.78;
+}
+
 /* ============================ composer ============================ */
 
 /* 「加载更早的消息」：跟随窗口之外的更早内容从没进过客户端，
@@ -3280,6 +3418,31 @@
 
 .popover.right {
   right: 0;
+}
+
+/* 居中对齐：相对**最近的定位祖先**居中（不一定是触发按钮——空态页那一块就是
+   整块，因为菜单比那枚胶囊宽得多）。宽度按**包含块**两头钳住：居中就是相对它做的，
+   只要不超过它，就不会越出内容列——用 `100vw` 会错，包含块可能比视口窄
+   （外层还有内边距、或它本身只占内容宽度）。
+   高度也在这里放宽：输入区那一排弹层按 330px 调的（单行候选够用），而这一份是
+   **带三行描述的卡片**，330px 只装得下三张卡——空态页上下都是空的，没必要那么紧。 */
+.popover.center {
+  left: 50%;
+  right: auto;
+  transform: translateX(-50%);
+  /* 宽度就是这一块的宽度（居中也是相对它做的）：绝对定位元素默认按内容收缩，
+     而卡片里的中文随时可断行——收缩出来只有 `min-width` 那么窄，描述会被挤成
+     一行两三个词。铺满这一块才是「卡片」该有的样子。 */
+  width: 100%;
+  min-width: min(224px, 100%);
+  max-width: 100%;
+  max-height: min(70vh, 520px);
+}
+
+/* 向下展开：触发器上方没有空间时用它（空态页的元信息行在页面中间） */
+.popover.is-down {
+  top: calc(100% + 6px);
+  bottom: auto;
 }
 
 .popover-section {

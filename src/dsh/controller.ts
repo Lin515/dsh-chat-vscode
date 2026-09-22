@@ -79,7 +79,7 @@ import {
   type WireChatState,
 } from "./sessionView";
 import { queueItemsFromInbox, queueItemsFromWire, type QueuedItemEntry, type QueueOrigin } from "./queueView";
-import { mergeSubagentActivity, modelSelectionFromProjection, subagentsFromList } from "./projections";
+import { mergeSubagentActivity, modelSelectionFromProjection, subagentsFromList, agentPresetsFromList } from "./projections";
 import type { ModelSelectionDecoded, SubagentCatalogEntryView } from "./projections";
 import {
   ingestControlBaseline,
@@ -194,6 +194,24 @@ function readTurnProcessThreshold(): number {
   return normalizeTurnProcessThreshold(
     vscode.workspace.getConfiguration("dshChat").get<unknown>("turnProcessThreshold"),
   );
+}
+
+/**
+ * 新会话默认使用的 agent 预设（`dshChat.agentPreset`）。
+ *
+ * 空串 / 空白 / 非字符串一律当「没配」——那时**不往 `session/create` 里传
+ * `agentPreset`**，由服务端按它自己的默认预设组装（部署配置里那一个）。传一个
+ * 空串会被服务端当非法 id 拒绝，所以这里必须收窄而不是原样透传。
+ *
+ * 这条配置在 `package.json` 里是 `machine` 作用域（与 `dshChat.command` 同一条口径）：
+ * 预设决定一个会话组装哪些插件，也就是**执行哪段代码**；克隆来的仓库里一行
+ * `.vscode/settings.json` 不该能替用户挑一个别的组装。
+ */
+function readAgentPreset(): string | undefined {
+  const value = vscode.workspace.getConfiguration("dshChat").get<unknown>("agentPreset");
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : undefined;
 }
 
 /** `workspace/follow` 的线格式（只取本地用得到的字段）。 */
@@ -511,6 +529,33 @@ export class ChatController implements vscode.Disposable {
    * 新建会话都发一次注册请求；换个服务器（新 client）时清空重取。
    */
   private workspaceId: string | undefined;
+  /**
+   * 用户在新会话页上选定的工作目录（**只在 VS Code 没有打开文件夹时有意义**）。
+   *
+   * 打开文件夹时一律跟随 VS Code（`workspacePath()` 先看 folder），这个值被忽略；
+   * 没有文件夹时才用它——没有它的话 `workspacePath()` 是扩展宿主的 `process.cwd()`，
+   * 那是个用户既没选、也无从知道的目录。**刻意不持久化**：它是这一次窗口里的选择，
+   * 重载窗口后回到与今天一致的行为（没有文件夹就按宿主 cwd 建会话）。
+   */
+  private newSessionCwd: string | undefined;
+  /**
+   * **待建会话**的界面选择（按窗口）：会话还没建出来，但用户已经点过预设 / 模型。
+   *
+   * 值只喂给 `sessionSourceOf` 的 `pending` 那一路（空态页的预览），建会话时一次性
+   * 落到新会话上然后忘掉——「新会话从配置项重新开始」这条口径（见 CHANGELOG）靠的就是
+   * 这里的删除，而不是别处的判断。绑到一个**已有**会话时也清（那笔选择不再有意义）。
+   */
+  private readonly viewAgentPreset = new Map<string, string>();
+  private readonly viewModel = new Map<string, ModelSelectionView>();
+  /**
+   * 部署提供的 agent 预设目录（`agentPresets/list`），连上后取一次。
+   *
+   * 空表 = 这个部署没有预设（插件没装、或根目录里一个都没有），界面据此什么都不
+   * 渲染。服务端允许不允许选择由 `agentPresetSelectable` 单独表示（roster 的
+   * `modeSelectionEnabled`），两者合成界面上的那份外观态。
+   */
+  private agentPresetOptions: NonNullable<ChatState["agentPresets"]>["options"] = [];
+  private agentPresetSelectable = false;
   /**
    * 服务端工作区注册表的**本地镜像**（`workspace/follow` 的 baseline + upsert/remove）。
    *
@@ -939,10 +984,78 @@ export class ChatController implements vscode.Disposable {
     this.deliver(sessionId, { type: "changes/summary", sessionId, seq, summary });
   }
 
+  /**
+   * 新会话落在哪个目录。
+   *
+   * **只用在「已经确定有目录」的时刻**：建会话之前 `ensureSession` 已经问过了
+   * （打开着文件夹、或用户选过一个）。最后那一级 `process.cwd()` 是兜底——它是
+   * 扩展宿主的 cwd（VS Code 的安装路径），**不该**被当成用户的工作目录，所以
+   * 新会话那条路绝不会走到它（见 `askWorkspaceDir`）；这里留着只是给别的调用点
+   * （会话 cwd 解析等）一个字符串。
+   */
   private workspacePath(): string {
-
     const folder = vscode.workspace.workspaceFolders?.[0];
-    return folder ? folder.uri.fsPath : process.cwd();
+    if (folder) return folder.uri.fsPath;
+    return this.newSessionCwd ?? process.cwd();
+  }
+
+  /**
+   * 空态页上那一行工作目录提示（`locked` = 跟随 VS Code 打开的文件夹，不可改）。
+   *
+   * `locked` 为真时**没有可选目录**；为假时 `path` 可能还是空的（用户没打开文件夹、
+   * 也没选过目录）——那时界面显示「未选择工作区」，不再拿宿主的 `process.cwd()` 冒充
+   * （那会变成 VS Code 的安装路径，用户 2026-09-22 报的现场）。
+   */
+  private workspaceView(): NonNullable<ChatState["workspace"]> {
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (folder) return { path: folder.uri.fsPath, locked: true };
+    // 没有打开文件夹：用户选过的那个目录；**没选过就是空串**——界面显示
+    // 「未选择工作区」。绝不拿宿主的 `process.cwd()`（= VS Code 安装路径）冒充一个
+    // 工作目录（用户 2026-09-22 报的现场）。
+    return { path: this.newSessionCwd ?? "", locked: false };
+  }
+
+  /** 部署的 agent 预设目录（外观态那一份；空表表示这个部署没有可选项）。 */
+  private agentPresetsView(): NonNullable<ChatState["agentPresets"]> {
+    return { options: this.agentPresetOptions, selectable: this.agentPresetSelectable };
+  }
+
+  /**
+   * 一个窗口要建的会话用哪个 agent 预设：**用户点过的 > 配置项 > 服务端默认**。
+   *
+   * 没有窗口（命令面板等）时只认后两级。返回 undefined 表示「不指定」——调用方
+   * 整个字段都不传，由服务端组装它自己的默认预设。
+   */
+  private agentPresetFor(viewId: string | undefined): string | undefined {
+    if (viewId) {
+      const picked = this.viewAgentPreset.get(viewId);
+      if (picked) return picked;
+    }
+    const configured = readAgentPreset();
+    if (configured) return configured;
+    // 服务端在 roster 里标了哪个是默认（`isDefault`）；认不出就不指定
+    return this.agentPresetOptions.find((option) => option.isDefault)?.id;
+  }
+
+  /**
+   * 还没有会话的窗口要显示的那两个**待建会话**预览值（喂给 `sessionSourceOf` 的
+   * `pending` 那一路）。
+   *
+   * 只有这两项：预设与模型在会话建出来之前就该显示用户刚点的东西，否则空态页上
+   * 点完像没反应。别的字段一个都不掺——它们要么不属于窗口（工作目录走外观态），
+   * 要么离开会话就没有意义。
+   */
+  private pendingViewFields(viewId: string | undefined): Parameters<typeof sessionSourceOf>[3] {
+    if (!viewId) return undefined;
+    return {
+      model: () => this.viewModel.get(viewId),
+      agentPreset: () => this.agentPresetFor(viewId),
+    };
+  }
+
+  /** 未绑定窗口的会话片段来源（推补丁时用：域必然为空，只有待建预览值）。 */
+  private pendingSessionSource(viewId: string): SessionViewSource {
+    return sessionSourceOf(undefined, undefined, this.models, this.pendingViewFields(viewId));
   }
 
   /** 窗口的草稿 / 附件键：已绑定用会话 id，未绑定用 viewId 自身（见字段注释）。 */
@@ -975,6 +1088,9 @@ export class ChatController implements vscode.Disposable {
           scope,
           sessionId ? this.sessions.find((session) => session.id === sessionId) : undefined,
           this.models,
+          // 空态（未绑定窗口）：预设与模型两枚胶囊显示**待建会话**的预览值，
+          // 因为那时会话还不存在（见 `pendingViewFields`）
+          scope ? undefined : this.pendingViewFields(viewId),
         ),
       ),
       // 输入区那两个字段按**窗口**存（未绑会话时）/ 按会话键存，不属于会话状态片段：
@@ -992,7 +1108,7 @@ export class ChatController implements vscode.Disposable {
     return sessionSourceOf(scope, undefined, this.models);
   }
 
-  /** 首帧快照里「与会话无关」的那一半（语言 / 排版 / 字号 / 批次 / 阈值 / 发送行为）。 */
+  /** 首帧快照里「与会话无关」的那一半（语言 / 排版 / 字号 / 批次 / 阈值 / 发送行为 / 新会话页）。 */
   private appearanceSource(): AppearanceViewSource {
     return {
       locale: () => readLanguage(),
@@ -1009,6 +1125,10 @@ export class ChatController implements vscode.Disposable {
        * `refreshImageCaps` 把它重读出来（连上模型目录时那一次）。
        */
       busyEnter: () => (this.busyEnter === "steer" ? "steer" : "queue"),
+      /** 新会话的工作目录：空态页那一行提示（没有打开文件夹时界面可改）。 */
+      workspace: () => this.workspaceView(),
+      /** 部署的 agent 预设目录（空表 = 没有可选项，界面什么都不渲染）。 */
+      agentPresets: () => this.agentPresetsView(),
     };
   }
 
@@ -1368,6 +1488,10 @@ export class ChatController implements vscode.Disposable {
   private bindViewToSession(viewId: string, sessionId: string, scope: SessionScope): void {
     const previous = this.viewSessions.get(viewId);
     if (previous === sessionId) return;
+    // 「待建会话」的参数到此为止：绑定之后预设/模型都由这条会话自己的状态说话，
+    // 下次「新建对话」重新从配置项开始（见 `viewAgentPreset` 的字段注释）
+    this.viewAgentPreset.delete(viewId);
+    this.viewModel.delete(viewId);
     if (previous) {
       this.dropViewers(previous);
     } else {
@@ -1863,6 +1987,111 @@ export class ChatController implements vscode.Disposable {
     });
   }
 
+  /**
+   * VS Code 打开 / 关掉了文件夹：空态页那一行工作目录要跟着变（含「可不可改」）。
+   *
+   * 目录本身由 `workspacePath()` 现读，所以这里只推一帧；**不**去动已经建好的会话
+   * ——会话 header 的 cwd 是创建事实，换文件夹不该改写既有会话。
+   */
+  refreshWorkspace(): void {
+    this.emitAll({ type: "patch", patch: { workspace: this.workspaceView() } });
+  }
+
+  /**
+   * 取一次部署的 agent 预设目录（`agentPresets/list`），推给所有窗口。
+   *
+   * 两条口径：
+   * - 插件没装（`gateway/invocation-unavailable`）时**当成空目录**而不是错误：
+   *   「这个部署不提供预设」是合法部署，界面该什么都不显示，而不是弹一个失败提示；
+   * - 其他失败只记日志、同样落成空目录：目录是**装饰性**的（拿不到就不给选择入口），
+   *   为它打断连接流程或弹错误都不成比例。
+   */
+  private async loadAgentPresets(): Promise<void> {
+    if (!this.client) return;
+    let value: unknown;
+    try {
+      value = await this.client.listAgentPresets();
+    } catch (error) {
+      if (error instanceof DshApiError && error.code === "gateway/invocation-unavailable") {
+        this.agentPresetOptions = [];
+        this.agentPresetSelectable = false;
+        this.emitAll({ type: "patch", patch: { agentPresets: this.agentPresetsView() } });
+        this.pushPendingPresets();
+        return;
+      }
+      this.log(`[preset] 预设目录获取失败：${this.describeError(error)}`);
+      return;
+    }
+    const view = agentPresetsFromList(value);
+    this.agentPresetOptions = view.options;
+    this.agentPresetSelectable = view.selectable;
+    this.log(`[preset] 预设目录：${view.selectable ? `${view.options.length} 个` : "服务端未开放选择"}`);
+    this.emitAll({ type: "patch", patch: { agentPresets: this.agentPresetsView() } });
+    this.pushPendingPresets();
+  }
+
+  /**
+   * 给每个**空态**窗口补一帧 `agentPreset`。
+   *
+   * 空态页上那枚胶囊显示的是「待建会话会用哪个预设」，而它的最后一级是 roster 里标了
+   * `isDefault` 的那条——目录没到之前算不出来（首帧快照发的是 null，之后又没有别的
+   * 机会重推）。所以目录一到就把这份结论补发给还没绑定会话的窗口。
+   */
+  private pushPendingPresets(): void {
+    for (const viewId of this.unboundViews()) {
+      this.emitToView(viewId, {
+        type: "patch",
+        patch: sessionPatch(this.pendingSessionSource(viewId), ["agentPreset"]),
+      });
+    }
+  }
+
+  /** 当前处于空态（没有绑定会话）的窗口。 */
+  private unboundViews(): string[] {
+    return this.viewOrder.filter((viewId) => !this.viewSessions.has(viewId));
+  }
+
+  /**
+   * 给当前**空白会话**换 agent 预设（`agentPresets/select`）。
+   *
+   * 失败一律如实报出来（服务端对已开始的会话回 `agent-preset/locked`，对不存在的
+   * id 回 `agent-preset/not-found`，两者都带 `details.reason`）：这是用户刚刚做的
+   * 一次明确选择，静默回退会让标签莫名其妙地弹回原值（官方也因此把拒绝做成横幅）。
+   */
+  private async selectAgentPreset(viewId: string, id: string): Promise<void> {
+    const scope = this.scopeOfView(viewId);
+    if (!scope) {
+      // 还没有会话：这是**待建会话**的参数（用户 2026-09-22 口径），不建记录、
+      // 也不发 RPC——建会话时随 `session/create` 一起指定（见 `createSession`）。
+      this.viewAgentPreset.set(viewId, id);
+      this.emitToView(viewId, {
+        type: "patch",
+        patch: sessionPatch(this.pendingSessionSource(viewId), ["agentPreset"]),
+      });
+      return;
+    }
+    if (scope.agentPreset === id) return;
+    if (!this.client) return;
+    try {
+      const applied = await this.client.selectAgentPreset(scope.sessionId, id);
+      scope.agentPreset = applied;
+      this.deliver(scope.sessionId, {
+        type: "patch",
+        patch: sessionPatch(this.sessionSource(scope), ["agentPreset"]),
+      });
+    } catch (error) {
+      const details = error instanceof DshApiError ? error.details : undefined;
+      const reason =
+        details && typeof (details as { reason?: unknown }).reason === "string"
+          ? (details as { reason: string }).reason
+          : error instanceof Error
+            ? error.message
+            : String(error);
+      this.log(`[preset] 切换失败（${id}）：${reason}`);
+      this.emitToView(viewId, { type: "toast", level: "warn", text: `@agentPresetFailed:${reason}` });
+    }
+  }
+
   private async onConnected(): Promise<void> {
     // socket 重建后长活流都要重开：每个打开的域重新跟随（适配器整个重建，
     // 新快照会重放最近 60 条），全局流重开一次
@@ -1875,6 +2104,10 @@ export class ChatController implements vscode.Disposable {
     this.openControlStream();
     this.openEventsStream();
     this.openWorkspaceStream();
+    // 预设目录与工作目录提示都是空态页要用的东西，连上就取一次（目录是部署级的，
+    // 与具体会话无关；工作目录直接现读 VS Code，不发请求）
+    void this.loadAgentPresets();
+    this.refreshWorkspace();
     // 顺便把 running 与会话列表对齐一次：掉线期间本轮可能已经收尾，而那段时间的状态位
     // 边缘（`api-session/status`）我们没收到；这也是「一切都从服务端重算」的一部分
     // （新的适配器认不出时会保留这里的结论，见 `applyFrame`）。
@@ -2510,8 +2743,10 @@ export class ChatController implements vscode.Disposable {
   private async ensureWorkspace(): Promise<string | undefined> {
     if (this.workspaceId) return this.workspaceId;
     if (!this.client) return undefined;
-    // 没有打开文件夹时不注册：那种情况下 `workspacePath()` 是扩展宿主的 cwd，
-    // 把 VS Code 自己所在目录注册成一个工作区不是用户的意思（会话照旧按 cwd 建）
+    // 只有**VS Code 打开的文件夹**才注册成工作区：没有文件夹时用户挑的那个目录
+    // （`newSessionCwd`）只是个落脚点，把它注册进服务端的工作区注册表是另一回事
+    // （那会长期留在 Web 的侧栏里），会话按 cwd 建、落在「未分组」——与用户口径
+    // 「和以前一样，是未分组会话」一致。
     const folder = vscode.workspace.workspaceFolders?.[0];
     if (!folder) return undefined;
     const path = folder.uri.fsPath;
@@ -2532,32 +2767,115 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
-   * 新建一个会话。指定窗口时把**那个窗口**绑上去（其他窗口保持各自会话，
-   * 互不同步）；不指定窗口（命令面板入口且无活动窗口）时只建会话，不挂域。
+   * 「新建对话」：把这个窗口**退回空态**，**不建会话记录**。
+   *
+   * 用户 2026-09-22 口径：没有发出第一条消息之前不该在列表/服务端留下会话记录——
+   * 此前点一次「+」就建一条空会话，选个目录又建一条，列表里攒一串没人用过的空会话。
+   * 现在会话在**第一次真正需要它**的时候才建（发消息、加附件、跑命令，见 `ensureSession`），
+   * 预设 / 模型 / 工作目录这些空态页上的选择都只是**待建会话的参数**。
+   *
+   * 没有窗口可退（命令面板入口且没有活动窗口）时什么都不做：没有窗口就没有「下一次
+   * 发送」，建出来的记录没人用得上。
    */
   async newSession(viewId?: string): Promise<void> {
+    if (!viewId) {
+      this.log("[new] 没有活动窗口，「新建对话」不建会话（会话在发第一条消息时建）");
+      return;
+    }
+    this.detachView(viewId);
+    // 整份快照：空态要把上一个会话的消息/队列/目标/计划模式/投影一次归零
+    // （增量 patch 没覆盖 model/goal/jobs/planMode/permission，残留会漏过去）
+    this.emitToView(viewId, { type: "state", state: this.snapshotFor(viewId) });
+  }
+
+  /**
+   * 把窗口落到一条**真实会话**上（已经有就原样返回，没有就建一条并绑上）。
+   *
+   * 只有真正要跟服务端打交道的地方才调它——发消息、加附件、执行命令。空态页上的
+   * 预览型选择（预设、模型）**不**走这里，它们只记进 `viewAgentPreset` / `viewModel`。
+   *
+   * 建会话要先有工作目录：打开着文件夹就是它，否则用用户选过的那个；两个都没有时
+   * **就地弹一次目录选择器**（用户 2026-09-22 拍板：不编造默认路径，也不封死发送）。
+   * 这一步是**用户显式动作**的一环，允许拉起后台。
+   *
+   * @returns 会话域；用户取消了目录选择、或客户端不可用 → undefined（调用方什么都不做，
+   *          草稿留在输入框里）。
+   */
+  private async ensureSession(viewId: string): Promise<SessionScope | undefined> {
+    const existing = this.scopeOfView(viewId);
+    if (existing) return existing;
     if (!this.client || this.connection !== "connected") {
-      // 用户显式动作（点「新建对话」）：允许拉起后台
       await this.ensureConnected({ start: true });
     }
-    if (!this.client) return;
+    if (!this.client) return undefined;
+    if (!(await this.askWorkspaceDir())) return undefined;
+    return await this.createSession(viewId);
+  }
+
+  /**
+   * 真正建一条会话并绑到窗口（`session/create`）。
+   *
+   * 待建会话的三样参数在这里一次性落实：**工作目录**（`workspacePath()`）、
+   * **agent 预设**（用户点过的 > 配置项 > 服务端默认，见 `agentPresetFor`）、
+   * **模型**（记成域上的 `pendingModel`，由第一次发送前的 `selectModel` 提交）。
+   * 落实完就把待建状态清掉——下一次「新建对话」重新从配置项开始。
+   */
+  private async createSession(viewId: string): Promise<SessionScope | undefined> {
+    if (!this.client) return undefined;
     try {
+      const preset = this.agentPresetFor(viewId);
       const workspaceId = await this.ensureWorkspace();
-      const created = await this.createSessionInWorkspace(workspaceId);
-      // 域是「窗口打开会话」的产物：没有窗口要绑（命令面板且无活动窗口）就不建域，
-      // 会话只进列表，等某个窗口打开它时再开 follow 流
-      const scope = viewId ? this.ensureScope(created.sessionId) : undefined;
+      const created = await this.createSessionInWorkspace(workspaceId, preset);
+      // 域是「窗口打开会话」的产物：这里总是有窗口要绑
+      const scope = this.ensureScope(created.sessionId);
+      // 投影帧要晚一点才到，先用创建结果给域一个初值（`agentPreset` 那条路见
+      // `applyAgentPresetProjection`）
+      if (scope) {
+        scope.agentPreset = created.agentPreset;
+        const model = this.viewModel.get(viewId);
+        if (model) {
+          scope.pendingModel = model;
+          scope.model = model;
+        }
+      }
       await this.refreshSessions();
-      if (scope && viewId) {
+      if (scope) {
         this.bindViewToSession(viewId, created.sessionId, scope);
-        // 推**完整状态快照**而不是增量 patch：新会话的域天然是空的，快照把
-        // 消息/队列/目标/计划模式/投影一次归零——旧 patch 没覆盖 model/goal/
-        // jobs/planMode/permission，上一会话的残留会漏进新窗口
         this.emitToView(viewId, { type: "state", state: this.snapshotFor(viewId) });
       }
+      return scope;
     } catch (error) {
       this.reportError(vscode.l10n.t("Failed to create a session"), error);
+      return undefined;
     }
+  }
+
+  /**
+   * 把窗口退回空态（「新建对话」的第一步）：只解绑会话，窗口本身照旧活着
+   * （与 `unbindView` 的「窗口下线」是两件事——那个连窗口的登记一起清）。
+   *
+   * 与会话域的最后一个观察者解绑时域被回收（状态从服务端重算），草稿与附件按
+   * **窗口键**搬回去——与 `bindViewToSession` 的迁移严格对称，否则输入框里的话
+   * 会在点「+」的那一刻消失（它们跟着会话键走了）。编辑区标签的标题也回到 `DSH`。
+   */
+  private detachView(viewId: string): void {
+    const previous = this.viewSessions.get(viewId);
+    if (previous === undefined) return;
+    this.viewSessions.delete(viewId);
+    const draft = this.drafts.get(previous);
+    if (draft !== undefined) {
+      this.drafts.set(viewId, draft);
+      this.drafts.delete(previous);
+    }
+    const attachments = this.attachmentsBySession.get(previous);
+    if (attachments) {
+      this.attachmentsBySession.set(viewId, attachments);
+      this.attachmentsBySession.delete(previous);
+    }
+    this.dropViewers(previous);
+    if (this.viewKinds.get(viewId) === "panel") this.setPanelTitle(viewId, panelTabTitle(undefined));
+    this.log(`[bind] 窗口=${viewId} → 空态（原=${previous}，会话记录保留）`);
+    this.persistWindowState();
   }
 
   /**
@@ -2566,16 +2884,64 @@ export class ChatController implements vscode.Disposable {
    */
   private async createSessionInWorkspace(
     workspaceId: string | undefined,
+    agentPreset: string | undefined,
   ): Promise<{ sessionId: string; agentPreset?: string }> {
     if (!this.client) throw new Error("no client");
-    if (!workspaceId) return this.client.createSession({ cwd: this.workspacePath() });
+    // 预设只在**创建时**能指定（之后换要走 `agentPresets/select`，且只在会话还没有
+    // 轮次时有效）。没有就不传这个字段——服务端按它自己的默认预设组装。
+    const target = agentPreset ? { agentPreset } : {};
+    if (!workspaceId) return this.client.createSession({ cwd: this.workspacePath(), ...target });
     try {
-      return await this.client.createSession({ workspaceId });
+      return await this.client.createSession({ workspaceId, ...target });
     } catch (error) {
       this.workspaceId = undefined;
       this.log(`[workspace] 按工作区建会话失败，回退 cwd：${this.describeError(error)}`);
-      return this.client.createSession({ cwd: this.workspacePath() });
+      return this.client.createSession({ cwd: this.workspacePath(), ...target });
     }
+  }
+
+  /**
+   * 空态页上改工作目录：弹系统目录选择器并记下来。
+   *
+   * **不建会话**（用户 2026-09-22 口径）：会话要等第一条消息才建，选目录只是把
+   * 「新会话落在哪儿」定下来。已绑定的会话也不动——它的 cwd 是创建事实。
+   *
+   * 只在没有打开文件夹时才可能被调用（界面那行在 locked 时不发这条指令）；这里仍
+   * 再判一次——界面状态可能滞后于 VS Code 的实际文件夹。
+   */
+  private async pickWorkspace(viewId: string): Promise<void> {
+    if (vscode.workspace.workspaceFolders?.[0]) {
+      this.refreshWorkspace();
+      return;
+    }
+    // viewId 用不上：会话要等第一条消息才建，选目录只改「新会话落在哪儿」
+    void viewId;
+    await this.askWorkspaceDir();
+  }
+
+  /**
+   * 问一次工作目录（系统目录选择器），选中就记下来并推一帧。
+   *
+   * 两个入口共用：空态页上点那行目录，以及**要建会话却还没有目录时**（见
+   * `ensureSession`——那时弹的也是同一个对话框，用户只需要面对一种问法）。
+   *
+   * @returns 现在有目录了（本来就打开着文件夹、或选了一个）就是 true；用户取消 → false。
+   */
+  private async askWorkspaceDir(): Promise<boolean> {
+    if (vscode.workspace.workspaceFolders?.[0]) return true;
+    if (this.newSessionCwd) return true;
+    const picked = await vscode.window.showOpenDialog({
+      canSelectFiles: false,
+      canSelectFolders: true,
+      canSelectMany: false,
+      title: vscode.l10n.t("Select the working directory for new sessions"),
+      openLabel: vscode.l10n.t("Use This Folder"),
+    });
+    const path = picked?.[0]?.fsPath;
+    if (!path) return false;
+    this.newSessionCwd = path;
+    this.emitAll({ type: "patch", patch: { workspace: this.workspaceView() } });
+    return true;
   }
 
   /** 把指定窗口切到给定会话（域不存在则创建；其他窗口不受影响）。 */
@@ -3065,7 +3431,8 @@ export class ChatController implements vscode.Disposable {
    * `present === false` 表示这个键此刻不在 store 里（能力缺失，或被替换型 baseline 清掉）。
    * 每个键对「没有值」的处置不同，所以它必须单独传进来：
    * - 清空视图：`permissions` / `plan` / `todos` / `tokenUsage` / `turnOutline` /
-   *   `contextBreakdown` / `sessionStats` / `goal` / `subagentCatalog` / `imageLimits`；
+   *   `contextBreakdown` / `sessionStats` / `goal` / `subagentCatalog` / `imageLimits` /
+   *   `agentPreset`；
    * - **保留旧值**：`contextPressure`（占用条按用户口径常驻，拿不到就保留旧值）；
    * - **什么都不做**：`title`（历史抽屉那一行有自己的标题兜着）。
    */
@@ -3084,6 +3451,7 @@ export class ChatController implements vscode.Disposable {
     sessionStats: (scope, value, present) => this.applySessionStatsProjection(scope, value, present),
     subagentCatalog: (scope, value, present) => this.applySubagentCatalogProjection(scope, value, present),
     goal: (scope, value, present) => this.applyGoalProjection(scope, value, present),
+    agentPreset: (scope, value) => this.applyAgentPresetProjection(scope, value),
   };
 
   /**
@@ -3114,6 +3482,12 @@ export class ChatController implements vscode.Disposable {
     present: boolean,
   ): void {
     if (!present || !value) {
+      // 界面上有一笔**还没提交**的选择（用户刚点的模型，见 `setModel`）：投影说
+      // 「没有选择」不等于该把它抹掉——那笔选择会在下一次发送前真正提交。少了这道
+      // 判断，会话刚建出来（跟随开帧铺投影）时胶囊会弹回部署默认，用户刚点的那下
+      // 看起来被吞了。与 `applyDefaultModelToScopes` 里 `if (scope.pendingModel) continue`
+      // 是同一条口径：待提交值在提交之前不动它。
+      if (scope.pendingModel) return;
       if (this.defaultModel) {
         scope.model = this.defaultModel;
         this.deliver(scope.sessionId, {
@@ -3334,6 +3708,21 @@ export class ChatController implements vscode.Disposable {
     this.deliver(scope.sessionId, {
       type: "patch",
       patch: sessionPatch(this.sessionSource(scope), ["goal"]),
+    });
+  }
+
+  /**
+   * 本会话运行的 agent 预设（`agentPreset` 投影）。
+   *
+   * 与 `permissions` 同口径：键不存在（插件没装 / 被 baseline 清掉）时**清空**——
+   * 界面据此不渲染那个下拉框，而不是继续显示上一次的预设名。
+   */
+  private applyAgentPresetProjection(scope: SessionScope, value: string | undefined): void {
+    if (scope.agentPreset === value) return;
+    scope.agentPreset = value;
+    this.deliver(scope.sessionId, {
+      type: "patch",
+      patch: sessionPatch(this.sessionSource(scope), ["agentPreset"]),
     });
   }
 
@@ -3818,6 +4207,14 @@ export class ChatController implements vscode.Disposable {
         await this.newSession(viewId);
         break;
 
+      case "pickWorkspace":
+        await this.pickWorkspace(viewId);
+        break;
+
+      case "setAgentPreset":
+        await this.selectAgentPreset(viewId, message.id);
+        break;
+
       case "openSession":
         await this.openSession(viewId, message.sessionId);
         break;
@@ -3837,17 +4234,29 @@ export class ChatController implements vscode.Disposable {
       case "setModel": {
         // 延迟到下一次发送时生效（与 UI 进入计划模式同机制）：
         // 避免正在生成时切模型导致本轮中途换模型，也让界面立刻反映选择
-        let scope = this.scopeOfView(viewId);
-        if (!scope) {
-          // 窗口还是空态：先建会话，选择才有地方挂
-          if (this.client || this.connection === "connected") {
-            await this.newSession(viewId);
-            scope = this.scopeOfView(viewId);
-          }
-        }
-        if (!scope) break;
         const group = this.models.find((g) => g.id === message.provider);
         const model = group?.models.find((m) => m.id === message.model);
+        const scope = this.scopeOfView(viewId);
+        if (!scope) {
+          // 窗口还是空态：**不建会话**（用户 2026-09-22 口径：没有第一条消息就不该留
+          // 记录），只把这次选择记成「待建会话」的一部分，界面上立刻显示；
+          // 建会话时它会落到域上，再由发送前的 `selectModel` 提交。
+          const pending: ModelSelectionView = {
+            provider: message.provider,
+            model: message.model,
+            reasoningEffort: message.reasoningEffort,
+            label: model?.name ?? message.model,
+            efforts: model?.efforts,
+            contextWindow: model?.contextWindow,
+            acceptsImage: this.acceptsImageFor(message.provider, message.model),
+          };
+          this.viewModel.set(viewId, pending);
+          this.emitToView(viewId, {
+            type: "patch",
+            patch: sessionPatch(this.pendingSessionSource(viewId), ["model"]),
+          });
+          break;
+        }
         scope.pendingModel = {
           provider: message.provider,
           model: message.model,
@@ -4169,11 +4578,11 @@ export class ChatController implements vscode.Disposable {
     gesture: "enter" | "accelerated" = "enter",
   ): Promise<void> {
     if (!this.client) return;
-    // 窗口还没有会话（空态）：首条消息就建立它
+    // 窗口还没有会话（空态）：**首条消息才建立它**。没有工作目录时会先问一次
+    // （取消 → 不建会话也不发送，草稿留在输入框里）
     let scope = this.scopeOfView(viewId);
     if (!scope) {
-      await this.newSession(viewId);
-      scope = this.scopeOfView(viewId);
+      scope = await this.ensureSession(viewId);
     }
     if (!scope) return;
 
@@ -4331,11 +4740,11 @@ export class ChatController implements vscode.Disposable {
    */
   private async runCommand(viewId: string, line: string): Promise<{ ok: boolean; text?: string } | undefined> {
     if (!this.client) return undefined;
-    // 命令按会话执行：还没有会话时先建一个（点按钮时用户并没有先发过消息）
+    // 命令按会话执行：还没有会话时先建一个（点按钮时用户并没有先发过消息；
+    // 没有工作目录时会先问一次，取消则整条命令不执行）
     let scope = this.scopeOfView(viewId);
     if (!scope) {
-      await this.newSession(viewId);
-      scope = this.scopeOfView(viewId);
+      scope = await this.ensureSession(viewId);
     }
     if (!scope) return undefined;
     const agentId = scope.sessionId;
@@ -4420,6 +4829,10 @@ export class ChatController implements vscode.Disposable {
    * 由文件本身决定走哪条路，用户不必先想清楚该点哪个按钮。
    */
   private async pickFiles(viewId: string): Promise<void> {
+    // 先把会话落下来再弹文件框：附件要上传到某个会话（回执是按会话铸造的），
+    // 而建会话可能还要先问一次工作目录——那个对话框必须**先**出来，否则用户会连着
+    // 面对两个框，还不知道第二个在问什么（见 `ensureSession`）。
+    if (!this.scopeOfView(viewId) && !(await this.ensureSession(viewId))) return;
     const picked = await vscode.window.showOpenDialog({
       canSelectMany: true,
       canSelectFiles: true,
@@ -4491,11 +4904,10 @@ export class ChatController implements vscode.Disposable {
     items: readonly IntakeItem[],
     rejected: readonly IntakeRejection[],
   ): Promise<void> {
-    // 上传需要会话：窗口还是空态时先建（附件按键是常见的第一步动作）
+    // 上传需要会话：窗口还是空态时先建（附件按键是常见的第一步动作；
+    // 没有工作目录时会先问一次，取消则整批附件都不接）
     if (!this.scopeOfView(viewId)) {
-      if (this.client || this.connection === "connected") {
-        await this.newSession(viewId);
-      }
+      await this.ensureSession(viewId);
     }
     const key = this.keyForView(viewId);
     const list = this.attachmentsBySession.get(key) ?? [];

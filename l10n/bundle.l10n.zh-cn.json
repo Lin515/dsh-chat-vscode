@@ -23,6 +23,8 @@
   "Failed to archive the session": "归档会话失败",
   "Failed to delete the session": "删除会话失败",
   "Failed to create a session": "新建会话失败",
+  "Select the working directory for new sessions": "选择新会话的工作目录",
+  "Use This Folder": "使用该目录",
   "Failed to load earlier history": "加载更早的历史失败",
   "Failed to create the branch": "创建分支失败",
   "Failed to cancel the queued message": "取消排队消息失败",

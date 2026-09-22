@@ -31,5 +31,6 @@
   "config.language.en": "始终使用英文。",
   "config.fontSize": "聊天界面的字体大小（整数像素，≥8）。`0` 跟随 VS Code 的字号。",
   "config.questionBatch": "一份问卷一次展开几道题。题目多于这个数时改为依次问答（一题一题来）。`0` 表示始终一次展开全部题目。",
-  "config.turnProcessThreshold": "一轮结束后，连续工具调用（含 subagent 派发）达到这个数量时将默认折叠。0 = 永不折叠；1–2 = 永远折叠"
+  "config.turnProcessThreshold": "一轮结束后，连续工具调用（含 subagent 派发）达到这个数量时将默认折叠。0 = 永不折叠；1–2 = 永远折叠",
+  "config.agentPreset": "新会话使用的 agent 预设。留空时跟随 DSH 服务端自己的默认预设。仅在服务端允许选择预设时生效。"
 }

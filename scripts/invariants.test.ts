@@ -301,4 +301,60 @@ console.log("invariants: guard 工厂的返回值不被丢弃（收尾体真的�
   console.log("invariants: supervisor 的 bringUp 合并并发调用 ✓");
 }
 
+// ---------- 6. 没有第一条消息就不建会话（用户 2026-09-22 口径） ----------
+//
+// 这条规则是**行为**，而它的失败方式很安静：谁把 `newSession` 改回「点一下就建一条」，
+// 类型系统与所有断言都不说话，只是列表里又开始攒没人用过的空会话（用户报的现场）。
+// 所以按源码钉住三点：
+//  1. `newSession` 只退回空态（`detachView`），**不许**碰 `session/create`；
+//  2. 需要真会话的三个入口（发消息 / 加附件 / 跑命令）走 `ensureSession`（惰性建立），
+//     不再借 `newSession` 来建；
+//  3. `ensureSession` 在建之前先要工作目录（`askWorkspaceDir`）——目录是会话的
+//     创建事实，用户没打开文件夹也没选过时**问一次**，而不是拿宿主的 cwd 冒充。
+{
+  const controller = readFileSync(join(process.cwd(), "src", "dsh", "controller.ts"), "utf8");
+
+  /** 抠出一个方法体：从签名到下一个同缩进的注释/成员声明（够用的边界判据）。 */
+  const bodyOf = (signature: string): string => {
+    const start = controller.indexOf(signature);
+    assert.ok(start >= 0, `controller.ts 里找不到 ${signature}`);
+    const rest = controller.slice(start + signature.length);
+    const end = rest.search(/\n  \/\*\*|\n  (?:private|public|protected|async|readonly|get|set) /);
+    return end < 0 ? rest : rest.slice(0, end);
+  };
+
+  const newSession = bodyOf("async newSession(");
+  assert.ok(/this\.detachView\(viewId\)/.test(newSession), "「新建对话」必须把窗口退回空态");
+  assert.ok(
+    !/createSession/.test(newSession),
+    "「新建对话」不许建会话记录——会话在发第一条消息时才建（见 ensureSession）",
+  );
+
+  for (const [signature, label] of [
+    ["private async send(", "发消息"],
+    ["private async runCommand(", "跑命令"],
+    ["private async ingestAttachments(", "加附件"],
+  ] as const) {
+    const body = bodyOf(signature);
+    assert.ok(/ensureSession\(viewId\)/.test(body), `${label}必须先走 ensureSession（惰性建会话）`);
+    assert.ok(!/this\.newSession\(/.test(body), `${label}不该再借 newSession 建会话（它只退回空态）`);
+  }
+
+  const ensure = bodyOf("private async ensureSession(");
+  assert.ok(
+    /askWorkspaceDir\(\)/.test(ensure),
+    "建会话之前必须先确定工作目录：没有打开文件夹、也没选过目录时问一次" +
+      "（拿宿主的 cwd 冒充会得到 VS Code 的安装路径，用户 2026-09-22 报的现场）",
+  );
+
+  // 空态页那一行目录的两种非锁定形态：选过 → 显示路径；没选过 → 空串（界面显示
+  // 「未选择工作区」）。空串是真的过线的值，所以这里也钉一下它不会被回退成 cwd。
+  const workspaceView = bodyOf("private workspaceView(");
+  assert.ok(
+    /newSessionCwd \?\? ""/.test(workspaceView),
+    "没选过目录时 `path` 必须是空串（界面显示「未选择工作区」），不能用 process.cwd() 兜底",
+  );
+  console.log("invariants: 第一条消息之前不建会话，且会话必须先有工作目录 ✓");
+}
+
 console.log("\ninvariants: all assertions passed");

@@ -67,6 +67,13 @@ export interface SessionView {
   tokenUsage?: ChatState["tokenUsage"];
   turnOutline?: ChatState["turnOutline"];
   imageLimits?: ChatState["imageLimits"];
+  /**
+   * 本会话运行的 agent 预设（`agentPreset` 投影）。
+   *
+   * 放在会话片段里而不是外观态：它**按会话**不同（每个会话各自组装），切会话时
+   * 必须跟着换——外观态那一半在切会话时是不动的。
+   */
+  agentPreset?: ChatState["agentPreset"];
 }
 
 /**
@@ -111,6 +118,7 @@ export const SESSION_VIEW_KEYS = [
   "tokenUsage",
   "turnOutline",
   "imageLimits",
+  "agentPreset",
 ] as const satisfies readonly (keyof SessionView)[];
 
 /** 键清单里那个「字段名」的类型（`SESSION_VIEW_KEYS` 与字段表必须键集相同）。 */
@@ -225,6 +233,9 @@ export const SESSION_FIELDS = {
   imageLimits: {
     read: (source) => source.imageLimits?.() as SessionView["imageLimits"],
   },
+  agentPreset: {
+    read: (source) => source.agentPreset?.() as SessionView["agentPreset"],
+  },
 } satisfies SessionFields;
 
 /** 会话状态片段：全字段，值已按线格式折返（`undefined` → `null`）。 */
@@ -284,6 +295,10 @@ export interface AppearanceView {
   questionBatch?: ChatState["questionBatch"];
   turnProcessThreshold?: ChatState["turnProcessThreshold"];
   busyEnter?: ChatState["busyEnter"];
+  /** 新会话的工作目录（空态页的提示行；没有打开文件夹时界面可改）。 */
+  workspace?: ChatState["workspace"];
+  /** 部署提供的 agent 预设目录（空态页的下拉框）。 */
+  agentPresets?: ChatState["agentPresets"];
 }
 
 export type AppearanceViewSource = Record<keyof AppearanceView, () => unknown>;
@@ -295,6 +310,8 @@ export const APPEARANCE_VIEW_KEYS = [
   "questionBatch",
   "turnProcessThreshold",
   "busyEnter",
+  "workspace",
+  "agentPresets",
 ] as const satisfies readonly (keyof AppearanceView)[];
 
 export type AppearanceViewKey = (typeof APPEARANCE_VIEW_KEYS)[number];
@@ -310,6 +327,8 @@ export const APPEARANCE_FIELDS = {
     read: (source) => source.turnProcessThreshold?.() as AppearanceView["turnProcessThreshold"],
   },
   busyEnter: { read: (source) => source.busyEnter?.() as AppearanceView["busyEnter"] },
+  workspace: { read: (source) => source.workspace?.() as AppearanceView["workspace"] },
+  agentPresets: { read: (source) => source.agentPresets?.() as AppearanceView["agentPresets"] },
 } satisfies AppearanceFields;
 
 export type WireAppearanceView = {
@@ -333,11 +352,16 @@ export function appearanceView(source: AppearanceViewSource): WireAppearanceView
  * 两个例外**不是会话域的东西**，由调用方补进这一份来源（都是控制器持有的全局值）：
  * - `models` 是**模型目录**（跨会话共享，来自 `models` 帧 / 首帧）；
  * - `session` 是会话列表里的那一行摘要（域本身只有 id）。
+ *
+ * `pending` 是第三个例外，只对**还没有会话**的窗口有意义（空态页）：用户在会话建出来
+ * 之前就点好的预设 / 模型，要在界面上立刻显示出来（否则点完像没反应），而那两个字段
+ * 的值仍然只有这一条读法。有域时 pending 一律**不参与**——真实状态永远压过预览值。
  */
 export function sessionSourceOf(
   scope: SessionScope | undefined,
   session: SessionView["session"],
   models: SessionView["models"],
+  pending?: Partial<Pick<SessionViewSource, "model" | "agentPreset">>,
 ): SessionViewSource {
   const adapter: SessionAdapter | undefined = scope?.adapter;
   return {
@@ -346,7 +370,7 @@ export function sessionSourceOf(
     running: () => scope?.running,
     queueItems: () => scope?.queueItems,
     models: () => models,
-    model: () => scope?.model,
+    model: () => scope?.model ?? pending?.model?.(),
     permission: () => scope?.permission,
     planMode: () => scope?.planMode,
     todos: () => scope?.todos,
@@ -365,5 +389,6 @@ export function sessionSourceOf(
     tokenUsage: () => scope?.tokenUsage,
     turnOutline: () => scope?.turnOutline,
     imageLimits: () => scope?.imageLimits,
+    agentPreset: () => scope?.agentPreset ?? pending?.agentPreset?.(),
   };
 }

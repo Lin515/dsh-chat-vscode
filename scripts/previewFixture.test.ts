@@ -364,6 +364,37 @@ for (const [label, check] of must) {
   if (!ok) failed += 1;
 }
 
+// 3c) 空态（`?empty=1`）：新会话的初始页面。主故事有消息，空态在预览页里就永远
+// 看不到，而那两行元信息（工作目录 / agent 预设）正是双语排版最容易出事的地方。
+// 三种形态都要在：选过目录（可改）、跟随 VS Code 的静态行（`?lock=1`）、以及
+// **没打开文件夹也没选过目录**（`?none=1`，占位「未选择工作区」——绝不能是路径）。
+{
+  const empty = build(Date.now(), codeSample, { search: "?locale=zh-cn&empty=1" }, previewImageDataUrl);
+  const locked = build(Date.now(), codeSample, { search: "?locale=zh-cn&empty=1&lock=1" }, previewImageDataUrl);
+  const none = build(Date.now(), codeSample, { search: "?locale=zh-cn&empty=1&none=1" }, previewImageDataUrl);
+  const ok =
+    empty.messages.length === 0 &&
+    empty.workspace?.path &&
+    empty.workspace.locked === false &&
+    locked.workspace?.locked === true &&
+    locked.workspace?.path &&
+    // 没选目录时 `path` 是**空串**（界面显示占位文案），不是回退到 cwd
+    none.workspace?.path === "" &&
+    none.workspace?.locked === false &&
+    empty.agentPresets?.selectable === true &&
+    (empty.agentPresets?.options?.length ?? 0) >= 5 &&
+    // 三条展示路径都要留样例：随产品交付的（走词典）、用户自己写的（用原文）、
+    // 没有名字的（退回 id）。少一条，预览页就看不出那条路径长什么样。
+    (empty.agentPresets?.options ?? []).some((o: { trust?: string }) => o.trust === "system") &&
+    (empty.agentPresets?.options ?? []).some((o: { trust?: string; name?: string }) => o.trust === "user" && o.name) &&
+    (empty.agentPresets?.options ?? []).some((o: { trust?: string; name?: string }) => o.trust === "user" && !o.name) &&
+    empty.agentPreset === "ptc" &&
+    // 空态**没有会话**（会话要等第一条消息才建，宿主侧的不变量见 scripts/invariants.test.ts）
+    empty.session == null;
+  console.log(`  ${ok ? "✓" : "✗"} ?empty=1：空态夹具（目录三种形态 + 预设目录 + 无会话）`);
+  if (!ok) failed += 1;
+}
+
 // 4) 语言：夹具必须两种语言都能构造出来（预览页支持 `?locale=en`）
 // 这条不是形式主义：`?locale=en` 是唯一能**肉眼**检查英文下排版会不会溢出的入口，
 // 它一旦坏掉，双语改动就失去了自查手段。
@@ -372,6 +403,17 @@ for (const [label, check] of must) {
   const ok = Boolean(en.goal?.objective && en.messages?.length);
   console.log(`  ${ok ? "✓" : "✗"} 英文（?locale=en）也能构造出完整状态`);
   if (!ok) failed += 1;
+  // 空态也要能构造：英文下的目录行与预设名/描述都长得多，那是唯一能**肉眼**
+  // 检查它会不会溢出的入口（`?locale=en&empty=1`）
+  const enEmpty = build(
+    Date.now(),
+    codeSample,
+    { search: "?locale=en&empty=1" },
+    previewImageDataUrl,
+  );
+  const emptyOk = enEmpty.messages.length === 0 && Boolean(enEmpty.workspace?.path) && enEmpty.agentPreset === "ptc";
+  console.log(`  ${emptyOk ? "✓" : "✗"} 英文空态（?locale=en&empty=1）也能构造`);
+  if (!emptyOk) failed += 1;
 }
 
 console.log(failed === 0 ? "\npreview: 夹具结构完整" : `\npreview: ${failed} 项不合规`);

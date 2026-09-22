@@ -364,6 +364,10 @@ function registerContributions(context: vscode.ExtensionContext, host: Contribut
         controller.applyAutoConnect(host.config().get<boolean>("autoConnect") ?? true);
       }
     }),
+    // 打开 / 关掉文件夹会改「新会话落在哪个目录」（空态页那一行提示，含它可不可改）
+    vscode.workspace.onDidChangeWorkspaceFolders(() => {
+      controller.refreshWorkspace();
+    }),
   );
 }
 

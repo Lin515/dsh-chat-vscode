@@ -102,6 +102,61 @@ export const MESSAGES = {
     en: "Use @ to attach files or a selection, or paste an image, file or folder directly. Shift+Enter for a new line.",
   },
 
+  // 空态页的两行元信息（新会话落在哪个目录、用哪套 agent 组装）
+  workspaceChange: { zh: "更改工作目录", en: "Change working directory" },
+  workspaceChoose: { zh: "选择工作目录", en: "Choose a working directory" },
+  /**
+   * 没有打开文件夹、也还没选目录时的占位。
+   *
+   * 绝不拿宿主的 cwd（= VS Code 的安装路径）冒充工作目录（用户 2026-09-22 口径）：
+   * 没选就是没选，会话会一直在「未分组」里，直到用户挑一个目录（发第一条消息时也会
+   * 问一次，见 `controller.ensureSession`）。
+   */
+  workspaceNone: { zh: "未选择工作区", en: "No workspace selected" },
+  workspaceLocked: {
+    zh: "工作目录跟随 VS Code 打开的文件夹",
+    en: "Working directory follows the folder open in VS Code",
+  },
+  agentPresetLabel: { zh: "Agent 预设", en: "Agent preset" },
+  agentPresetSeat: {
+    zh: "即将开始的这个会话所用的 Agent 预设",
+    en: "Agent preset for the session you are about to start",
+  },
+  agentPresetNoDescription: { zh: "暂无描述", en: "No description" },
+  /**
+   * 随产品交付的四个 agent 预设的展示名与描述。
+   *
+   * **逐字抄官方**（`dsh-client-ui-agent-preset` 的 `locales.ts`）：这几个预设的名字
+   * 不由服务端发布，而是客户端按当前语言给（官方 `presetDisplayText` 只对
+   * `trust === 'system'` 的已知 id 走词典），所以译文必须与官方一致——同一个部署在
+   * 官方 Web UI 与本扩展里该显示同一个名字。用户自己写的预设名不翻译。
+   */
+  presetStandardName: { zh: "标准模式", en: "Standard mode" },
+  presetStandardDescription: {
+    zh: "功能完整的编码 Agent，支持文件编辑、Shell、文件与网页检索、Skills、计划、目标、子代理和工作流。",
+    en: "Full coding agent with file editing, shell, file and web search, skills, planning, goals, subagents, and workflows.",
+  },
+  presetPtcName: { zh: "PTC 模式", en: "PTC mode" },
+  presetPtcDescription: {
+    zh: "功能完整的编码 Agent，但默认不提供 workflow 工具；其他工具通过 PTC 模式 SDK 呈现，让模型用一个 TypeScript 程序组合多步操作。",
+    en: "Full coding agent without the workflow tool; other tools are exposed through the PTC mode SDK so the model can combine multi-step operations in one TypeScript program.",
+  },
+  presetMinimalName: { zh: "极简模式", en: "Minimal mode" },
+  presetMinimalDescription: {
+    zh: "仅提供持久 shell 的单工具编码 Agent。",
+    en: "Single-tool coding agent with a persistent shell.",
+  },
+  presetCordisName: { zh: "创造模式", en: "Creator mode" },
+  presetCordisDescription: {
+    zh: "用于创建自定义 Agent preset：具备标准模式的全部能力，并提供运行时检查、持久化插件管理和 preset 创作指导。",
+    en: "Built for creating custom agent presets, with all Standard mode capabilities plus runtime inspection, persistent plugin management, and preset-authoring guidance.",
+  },
+  /** 切换预设被服务端拒绝（已开始的会话、id 不存在…）；`reason` 是服务端给的原因。 */
+  agentPresetFailed: {
+    zh: (reason: string) => `切换 Agent 预设失败：${reason}`,
+    en: (reason: string) => `Could not switch the agent preset: ${reason}`,
+  },
+
   placeholderFirst: { zh: "发消息或创建任务，/ 调用指令，@ 文件或对话", en: "Send a message or start a task; / for commands, @ for files or chats" },
   placeholderFollowUp: { zh: "继续追问…", en: "Ask a follow-up" },
   send: { zh: "发送", en: "Send" },

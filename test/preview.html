@@ -1060,6 +1060,44 @@
           // 所以必须把它置回来，否则点击会被正确地拒掉，看不到加载与落位。
           state.running = false;
         }
+
+        // 空态（`?empty=1`）：新会话的初始页面——一行能力提示 + 两行元信息
+        // （工作目录、agent 预设）。主故事有消息，空态在预览页就永远看不到，
+        // 而这两行正是「窄侧栏下英文会不会溢出」最容易出事的地方（长路径 +
+        // 英文预设名 + 描述同处一行）。
+        //
+        // 工作目录那一行的三种形态各留一个入口：
+        // - 默认（选过目录，可改）：显示路径 + 下箭头，点了才弹系统对话框；
+        // - `?lock=1`（跟随 VS Code 打开的文件夹）：静态文字，没有下箭头；
+        // - `?none=1`（没打开文件夹也没选过目录）：占位「未选择工作区」——**不是**
+        //   拿宿主的 cwd（VS Code 安装路径）冒充一个目录（用户 2026-09-22 口径）。
+        //
+        // roster 照抄真实输出的形状（`agentPresets/list` 的 `AgentPresetRoster`）：
+        // 随产品交付的四个是 `trust: "system"`、**不带 name/description**——它们的
+        // 展示名由客户端按语言给（见 src/webview/presetDisplay.ts）；另加一条用户
+        // 自己写的（带原文名字与描述）与一条没名字的，把三条展示路径都留在预览页。
+        if (query.get("empty") === "1") {
+          state.messages = [];
+          state.session = null;
+          state.workspace = query.get("none") === "1"
+            ? { path: "", locked: false }
+            : {
+                path: query.get("lock") === "1" ? "D:\\dev\\dsh-chat" : "C:\\Users\\me\\Projects\\dsh-chat",
+                locked: query.get("lock") === "1"
+              };
+          state.agentPresets = {
+            selectable: true,
+            options: [
+              { id: "standard", trust: "system", isDefault: true },
+              { id: "ptc", trust: "system" },
+              { id: "minimal", trust: "system" },
+              { id: "cordis", trust: "system" },
+              { id: "release-notes", trust: "user", name: "写发版说明", description: "只读仓库，产出 CHANGELOG 条目。" },
+              { id: "bare", trust: "user" }
+            ]
+          };
+          state.agentPreset = "ptc";
+        }
         return state;
       };
       // 文件芯片的种类表（`patch.fileKinds`）：形状与真实宿主一致（键 = 芯片上的

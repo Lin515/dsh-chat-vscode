@@ -526,6 +526,11 @@
   用户可见后果：每次 `newSession`（`controller.ts:570-576` 立刻 `refreshSessions`）后，
   历史列表里会插入一条空标题会话，且不会像官方那样等它被使用后才出现。
   置信度：高（代码级确定该字段未被使用）。
+  > **2026-09-22 已修**（用户报的正是这个现场）：会话改为**惰性建立**——「新建对话」
+  > 只把窗口退回空态（`controller.detachView`），第一条真正需要会话的动作（发消息 /
+  > 加附件 / 跑命令）才 `session/create`。于是不再有「点一下就多一条空会话」，
+  > 官方那条「blank 会话只有当前那个可见」的语义在本扩展里变得不必要。不变量见
+  > `scripts/invariants.test.ts` §6。
 - **一致（子代理会话过滤）**：官方 `session.origin !== "subagent"`（同上），扩展 `controller.ts:440`
   `.filter((item) => !item.origin && !item.parentSessionId)`。**一致**。
 - **不一致（归档与工作区过滤）**：官方归档由 `archived` 集合控制（同 `:339`），
@@ -697,7 +702,7 @@
 
 ## 17. `agentPreset`
 
-**不一致（完全丢弃）**
+**✅ 已修（2026-09-22）** —— 当时的状态是「完全丢弃」，下面是原始结论；末尾是本轮的落地。
 
 - 官方：`agentPreset: string | null`（`@dsh/dsh-agent-presets/lib/types/types.d.ts:69-73`，投影定义见
   `session.d.ts` `agentPresetProjectionDefinition`），注释强调
@@ -714,6 +719,19 @@
   （虽然它在 `RENDERED_EVENT_TYPES` 里，`protocol.ts:201`，但 `adapter.ts:299-503` 的 switch 没有该 case
   → 落到 `default` 且因为在渲染白名单里所以不报警）。
 - 用户可见后果：用户无法看到当前会话运行在哪个 agent preset 下，也无法在新建时选择。置信度：高。
+
+**2026-09-22 落地**：投影进登记表（`src/dsh/projectionIngest.ts` 的 `agentPreset` +
+`projections.agentPresetFromProjection`），域名段 `SessionScope.agentPreset`，线格式字段
+`ChatState.agentPreset`（会话片段）。界面是空态页上的一枚下拉框（`components/EmptyMeta.tsx`），
+目录来自 `agentPresets/list`（`agentPresetsFromList`，坏预设与未开放选择都在那里滤掉），
+选择走 `agentPresets/select`，新会话的默认预设由 `dshChat.agentPreset` 决定并在
+`session/create` 里带上（留空则不传、由服务端组装它自己的默认预设）。展示名照官方折叠：
+`trust === 'system'` 的四个用客户端词典，其余用原文（`src/webview/presetDisplay.ts`，
+断言 `scripts/presetDisplay.test.ts`）。
+
+`agent-preset/selected` **事件**仍然不进适配器的 switch（它留在 `RENDERED_EVENT_TYPES`
+里只是为了不报「不认识的事件」）：这条状态走投影帧，切换成功后宿主也自己写一次域字段
+（`selectAgentPreset`），两条路不会打架；命令目录的失效另由 `configChanges` 处理。
 
 ---
 
@@ -803,7 +821,7 @@
 | `turnOutline` | 轮次导航轨（`dsh-client-ui-chat/lib/client.js:2076-2077`） | 无 |
 | `imageLimits` | 附件入队前张数/大小校验与错误文案（`dsh-client-ui-conversation/lib/client.js:15923-15931`、`:15840`） | 无（改用设置里的模型模态） |
 | `schedule` | 定时提醒目录（`dsh-client-ui-schedule/lib/client.js:125`）；工作区列表活跃提醒指示（`dsh-client-ui-workspace/lib/client.js:349-351`） | 无 |
-| `agentPreset` | preset 标签（`dsh-client-ui-agent-preset/lib/client.js:191`）、新会话 preset 选择位 | 无（仅声明未用的字段） |
+| `agentPreset` | preset 标签（`dsh-client-ui-agent-preset/lib/client.js:191`）、新会话 preset 选择位 | ✅ 已消费（2026-09-22）：空态页的预设下拉框 + `session/create` 的 `agentPreset`；展示名走 `src/webview/presetDisplay.ts`（`trust:'system'` 的四个用客户端词典，其余用原文） |
 | `sessionListMetadata` | 冷会话列表的 `blank` / `lastPromptAt` 提示源（`dsh-api-session-controller/lib/types/list.js:63-67`、`:94`、`:284-286`） | 无（用服务端已折算的 `SessionSummary.blank`，但该字段本身在 webview 未被使用） |
 | `inbox` | `next-step` 认领集用于把 `user/message` 分类为 steering（`dsh-client-ui-chat/lib/client.js:6058-6076`） | 无 |
 | `subagentTiming` | 子代理面板的运行时长（`dsh-client-ui-subagent/lib/client.js:106-111`、`:288`） | 无 |

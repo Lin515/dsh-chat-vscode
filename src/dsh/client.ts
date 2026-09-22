@@ -365,14 +365,39 @@ export class DshClient {
    * 那些脚本要的是「按 cwd 建一条临时会话」，与工作区分组无关。
    */
   createSession(
-    target: string | { workspaceId?: string; cwd?: string },
+    target: string | { workspaceId?: string; cwd?: string; agentPreset?: string },
     sessionId?: string,
   ): Promise<{ sessionId: string; agentPreset?: string }> {
     const wanted = typeof target === "string" ? { cwd: target } : target;
+    // `agentPreset` 与 `workspaceId`/`cwd` **可以同时给**（契约
+    // `SessionCreateRequest` 里它们是并列的可选字段）：一个决定会话落哪个目录、
+    // 一个决定它用哪套组装。没给就由服务端按自己的默认预设组装。
+    const preset = wanted.agentPreset ? { agentPreset: wanted.agentPreset } : {};
     const request = wanted.workspaceId
-      ? { workspaceId: wanted.workspaceId, ...(sessionId ? { sessionId } : {}) }
-      : { cwd: wanted.cwd ?? "", ...(sessionId ? { sessionId } : {}) };
+      ? { workspaceId: wanted.workspaceId, ...preset, ...(sessionId ? { sessionId } : {}) }
+      : { cwd: wanted.cwd ?? "", ...preset, ...(sessionId ? { sessionId } : {}) };
     return this.request(METHODS.sessionCreate, { request });
+  }
+
+  /**
+   * 部署提供的 agent 预设名单（`agentPresets/list`）。
+   *
+   * 返回值**刻意是 `unknown`**：形状由 `dsh/projections.ts` 的
+   * `agentPresetsFromList` 逐字段收窄（那是个纯函数，离线可断言）——客户端这一层
+   * 只负责把线格式原样带回来，不猜形状。
+   */
+  listAgentPresets(): Promise<unknown> {
+    return this.request("agentPresets/list", {});
+  }
+
+  /**
+   * 给某个**空白会话**换 agent 预设（`agentPresets/select`）。
+   *
+   * 参数名 `agentId` 是网关对「Agent 形参」的统一接线（会话 id 就是 agent 身份）。
+   * 返回**生效的 preset id**（服务端可能按 id 归一）。
+   */
+  selectAgentPreset(agentId: string, agentPreset: string): Promise<string> {
+    return this.request("agentPresets/select", { agentId, agentPreset });
   }
 
   /**

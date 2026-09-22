@@ -8,7 +8,7 @@
  * 裸 key）与 `serverExited` / `switchingServer` 那两条死文案。投影键若也拆成「读取表一处、
  * 效果 switch 一处」，就是第三次——而加一个键本来只需要**一条**。
  *
- * 于是：`ProjectionHandlers` 用映射类型把 14 个键写成必填，控制器实现它（少一个键
+ * 于是：`ProjectionHandlers` 用映射类型把 15 个键写成必填，控制器实现它（少一个键
  * **编译不过**），`READERS` 同表提供解析。两条信息在同一个文件里对齐，加键时改一处。
  *
  * ## 分工
@@ -32,6 +32,7 @@ import type { SessionFollowFrame } from "./protocol";
 import type { SessionScope } from "./scope";
 import type { ProjectionBlockWire } from "./projectionStore";
 import {
+  agentPresetFromProjection,
   contextBreakdownFromProjection,
   contextPressureFromProjection,
   goalFromProjection,
@@ -87,9 +88,11 @@ export interface ProjectionViewMap {
   subagentCatalog: SubagentCatalogEntryView[];
   /** `goal`：目标条数据（嵌套形状，轮次计数在外层）。 */
   goal: GoalView | undefined;
+  /** `agentPreset`：本会话运行的预设 id（空会话可以换，换过之后 header 不再代表它）。 */
+  agentPreset: string | undefined;
 }
 
-/** 本扩展**消费**的投影键。契约里其余的键（`schedule` / `agentPreset` / `subagent` …）不在这里。 */
+/** 本扩展**消费**的投影键。契约里其余的键（`schedule` / `subagent` …）不在这里。 */
 export type ProjectionKey = keyof ProjectionViewMap;
 
 /**
@@ -129,6 +132,7 @@ const READERS: { [K in ProjectionKey]: (value: unknown) => ProjectionViewMap[K] 
   sessionStats: sessionStatsFromProjection,
   subagentCatalog: subagentCatalogFromProjection,
   goal: goalFromProjection,
+  agentPreset: agentPresetFromProjection,
 };
 
 /**

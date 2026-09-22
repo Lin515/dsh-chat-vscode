@@ -70,6 +70,13 @@ export class SessionScope {
   goal: ChatState["goal"];
   planMode = false;
   permission: string | undefined;
+  /**
+   * 本会话运行的 agent 预设（`agentPreset` 投影；空会话换过预设后 header 不再代表它）。
+   *
+   * 初值由 `newSession` 从 `session/create` 的返回值补上（投影帧要晚一点才到），
+   * 之后由投影帧与切换成功的返回值接管。
+   */
+  agentPreset: string | undefined;
 
   /**
    * 本会话下一轮将用的模型（`modelSelection` 投影，新会话没有选择时是部署默认）。

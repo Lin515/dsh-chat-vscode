@@ -56,6 +56,22 @@ export const IconPlay = (p: IconProps) => (
   </Icon>
 );
 
+/**
+ * agent 预设（三个节点两两相连）。
+ *
+ * 形状与官方 `IconAgentPresetOutline16` 同义：预设就是「一个会话组装了哪些插件」，
+ * 那三个节点是组装里的角色。本仓库的图标是描边家族，所以按 24 视窗重画，不搬它的
+ * 填充路径。
+ */
+export const IconAgentPreset = (p: IconProps) => (
+  <Icon {...p}>
+    <circle cx="12" cy="5.2" r="2.2" />
+    <circle cx="6" cy="18" r="2.2" />
+    <circle cx="18" cy="18" r="2.2" />
+    <path d="M10.8 7.1 7.2 15.8M13.2 7.1l3.6 8.7M8.2 18h7.6" />
+  </Icon>
+);
+
 /** 代码类工具（`run_code`）。 */
 export const IconCode = (p: IconProps) => (
   <Icon {...p}>

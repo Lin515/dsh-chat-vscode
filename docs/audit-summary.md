@@ -169,9 +169,9 @@ import 它，形状只能靠源码正则去钉）；与此同时线上带的 `se
 
 | 项 | 结论 |
 |---|---|
-| 逐键形状解析 | ✅ 14 个消费键全部搬进 `src/dsh/projections.ts` 的读取表（承重字段与容忍度逐行照搬，解析行为不变）；断言 `scripts/projections.test.ts` 第 7 节按契约逐条构造值 |
+| 逐键形状解析 | ✅ 15 个消费键全部搬进 `src/dsh/projections.ts` 的读取表（承重字段与容忍度逐行照搬，解析行为不变）；断言 `scripts/projections.test.ts` 第 7 节按契约逐条构造值 |
 | 水位契约 | ✅ 新增 `src/dsh/projectionStore.ts`：higher seq wins（**同 seq 也算负**）、baseline 在 `asOfSeq` 上播种并清掉块里没带的键、替换型 baseline 先 `truncate`；**拿不到水位时不比较、也不清空**（按肯定证据写）。断言 `scripts/projectionStore.test.ts` |
-| 一个键一条 | ✅ `src/dsh/projectionIngest.ts` 的 `ProjectionHandlers` 是映射类型——**少一个键编译不过**；键集合与契约双向对拍，5 个有意不消费的（`agentPreset` / `schedule` / `subagent` / `subagentTiming` / `sessionListMetadata`）在测试里显式登记 |
+| 一个键一条 | ✅ `src/dsh/projectionIngest.ts` 的 `ProjectionHandlers` 是映射类型——**少一个键编译不过**；键集合与契约双向对拍，4 个有意不消费的（`schedule` / `subagent` / `subagentTiming` / `sessionListMetadata`）在测试里显式登记（`agentPreset` 于 2026-09-22 起被消费：新会话页的预设下拉框） |
 | 顺序规则可断言 | ✅ 「先回放记录、再铺投影」从 `readFileSync` + 两个 `indexOf` 比大小，改成 `replayFollowSnapshot` 的行为断言 |
 | 适配器里的第二个读点 | ✅ 删掉适配器直接读 `projections.values.title`（同一个跟随开帧里，标题以前被应用两次、发两帧）；`session/title` **事件**那条路不动 |
 | 列表标题（有意偏离） | 历史抽屉的标题（`session/list` 行的 `projections`）**不走 store**，仍 last-wins——那份数据契约自己就说是「可能是缓存的陈旧提示」。见 `docs/adr/0001-projection-value-store.md` |
@@ -322,9 +322,9 @@ A4e（截断窗口里有 `turn/end` ⇒ 仍须发 false）、A4f（完整窗口�
   且「之后再提交会不会唤醒队列项」**不稳定**（同一脚本两次运行 0/3 vs 3/3）。
   这是实测与契约冲突，**刻意保留**现有实现（摘空 → cancel → 重发），
   因为官方做法在本机实测下会让队列卡住。取舍已记入 README 的「已知限制」。
-- §四 #16（本表 #18「未消费的投影」）的余项：`schedule`、`agentPreset`、
+- §四 #16（本表 #18「未消费的投影」）的余项：`schedule`、
   `subagentTiming`、`permissions.options`
-  （前三个是面板/展示层功能，未做；`permissions.options` 目前只取 `currentValue`）。
+  （前两个是面板/展示层功能，未做；`permissions.options` 目前只取 `currentValue`）。
 - **markdown 的能力缺口**：脚注**已补**（2026-09-14）——官方 `markdown.footnotes` 真实
   存在，我们补的是自家的 marked 扩展（`src/webview/footnotes.ts`，无需新依赖），结构
   逐字对齐官方渲染器，见 CHANGELOG 的「markdown 脚注」一节与 `scripts/footnotes.test.ts`。
@@ -523,8 +523,10 @@ webview 不渲染它；`ToolCallView.files` 有渲染分支（`Rows.tsx:135`）�
 
 > **2026-09-14 补**：`turnOutline` 虽然早有 `case`，但**字段名读错了**（见下一节），
 > 而且从来没有消费者。现在按契约解析并由右侧轮次横条使用。
+> **2026-09-22 补**：`agentPreset` 已消费（新会话页的预设下拉框 + `session/create` 的
+> `agentPreset`，见 §17 的落地记录）。
 > 仍未做的还有：`subagentTiming`（成对字段，子代理面板的「活跃耗时」列）、
-> `subagent`（身份投影，决定子代理会话的只读输入框）、`schedule`、`agentPreset`、
+> `subagent`（身份投影，决定子代理会话的只读输入框）、`schedule`、
 > `permissions.options`、`modelCatalog` 的另外三个字段。
 
 ### 17. 提交模式：用户设置 `busyEnter: steer` 被忽略 **[契约][实测环境]**

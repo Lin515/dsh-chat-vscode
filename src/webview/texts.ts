@@ -41,6 +41,35 @@ export interface Texts {
 
   emptyHint: string;
 
+  /** 空态页：点目录那一行的 title（可以改，点了弹系统目录选择器）。 */
+  workspaceChange: string;
+  /** 空态页：还没选过目录时的 title（点了弹系统目录选择器）。 */
+  workspaceChoose: string;
+  /** 空态页：没打开文件夹也没选目录时的占位文案。 */
+  workspaceNone: string;
+  /** 空态页：目录那一行不可改时的 title（跟随 VS Code 打开的文件夹）。 */
+  workspaceLocked: string;
+  /** 预设下拉框的分组标题。 */
+  agentPresetLabel: string;
+  /** 预设胶囊的 title（官方 `seatHint` 同一句话）。 */
+  agentPresetSeat: string;
+  /** 预设没有发布描述时那一行的替代文案。 */
+  agentPresetNoDescription: string;
+  /** 切换预设被拒（`@key` 标记，宿主发）。 */
+  agentPresetFailed: (reason: string) => string;
+  /**
+   * 随产品交付的四个预设的展示名与描述（逐字抄官方，见 `presetDisplay.ts`）。
+   * 用户自己写的预设名不走这里。
+   */
+  presetStandardName: string;
+  presetStandardDescription: string;
+  presetPtcName: string;
+  presetPtcDescription: string;
+  presetMinimalName: string;
+  presetMinimalDescription: string;
+  presetCordisName: string;
+  presetCordisDescription: string;
+
   placeholderFirst: string;
   placeholderFollowUp: string;
   send: string;

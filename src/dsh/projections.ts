@@ -179,6 +179,66 @@ export function permissionFromProjection(value: unknown): string | undefined {
   return typeof current === "string" && current ? current : undefined;
 }
 
+/**
+ * `agentPreset` 投影 → 本会话运行的预设 id。契约：`string | null`；
+ * `null`（与空串）都表示「这个部署没有组装任何预设」，与「还没拿到」同义。
+ *
+ * 官方注释强调 *"Reconstruction reads the `agentPreset` Session projection, never
+ * the header alone."*——创建时的 header 只是**起始**事实，空白会话换过预设之后
+ * header 不会变，所以界面标签必须读投影（见 `dsh/agent-presets` 的 session.ts）。
+ */
+export function agentPresetFromProjection(value: unknown): string | undefined {
+  return typeof value === "string" && value ? value : undefined;
+}
+
+/**
+ * `agentPresets/list` 的 roster → 界面要的那个目录（纯函数，离线可断言）。
+ *
+ * 契约（`@deepseek-ai/dsh-agent-presets` 的 `AgentPresetRoster`）：
+ * ```
+ * { presets: { id, trust, isDefault, name?, description?, broken? }[],
+ *   authorable: boolean, modeSelectionEnabled: boolean }
+ * ```
+ * 两条口径：
+ * - **坏掉的预设不进目录**（`broken` 非空）：它组装不出会话，列进去只会把
+ *   「这个预设不可用」这件事推迟到一次失败的会话上（官方 `presetOptions` 同口径）；
+ * - `modeSelectionEnabled` 为假 = 这个部署不让客户端选，目录给空表——界面据此
+ *   什么都不渲染（可选性与目录合成一件事，免得界面自己判两次）。
+ *
+ * 缺字段（旧服务端 / 另一个实现）一律按「没有」处理，不猜。
+ */
+export function agentPresetsFromList(value: unknown): NonNullable<ChatState["agentPresets"]> {
+  const roster = (value ?? {}) as { presets?: unknown; modeSelectionEnabled?: unknown };
+  const selectable = roster.modeSelectionEnabled === true;
+  const rows = Array.isArray(roster.presets) ? roster.presets : [];
+  const options: NonNullable<ChatState["agentPresets"]>["options"] = [];
+  if (!selectable) return { options, selectable };
+  for (const row of rows) {
+    const preset = row as {
+      id?: unknown;
+      trust?: unknown;
+      isDefault?: unknown;
+      name?: unknown;
+      description?: unknown;
+      broken?: unknown;
+    };
+    const id = typeof preset.id === "string" ? preset.id : "";
+    // id 是承重字段（选中、切换、展示兜底都用它），没有就整条丢弃
+    if (!id) continue;
+    if (typeof preset.broken === "string" && preset.broken) continue;
+    options.push({
+      id,
+      ...(preset.trust === "system" || preset.trust === "user" ? { trust: preset.trust } : {}),
+      ...(typeof preset.name === "string" && preset.name ? { name: preset.name } : {}),
+      ...(typeof preset.description === "string" && preset.description
+        ? { description: preset.description }
+        : {}),
+      ...(preset.isDefault === true ? { isDefault: true } : {}),
+    });
+  }
+  return { options, selectable };
+}
+
 /** `todos` 投影 → 待办列表。契约：`TodoItem[] | null`（`null` 与 `[]` 同义）。 */
 export function todosFromProjection(value: unknown): TodoView[] {
   const items = Array.isArray(value) ? value : [];

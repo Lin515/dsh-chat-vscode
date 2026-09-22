@@ -242,6 +242,12 @@
           "default": 5,
           "minimum": 0,
           "markdownDescription": "%config.turnProcessThreshold%"
+        },
+        "dshChat.agentPreset": {
+          "type": "string",
+          "scope": "machine",
+          "default": "",
+          "markdownDescription": "%config.agentPreset%"
         }
       }
     }

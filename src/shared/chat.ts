@@ -812,6 +812,53 @@ export interface ContextWindowView {
   model: string;
 }
 
+/**
+ * 新会话落在哪个工作目录（空态页上的那一行提示）。
+ *
+ * `locked` 为真表示**跟随 VS Code 打开的文件夹**，界面上不可改——那是用户自己
+ * 在 VS Code 里选定的项目，扩展不提供第二个口径。没有打开文件夹时目录由扩展
+ * 记录（`newSessionCwd`），界面可以改。
+ */
+export interface WorkspaceView {
+  /** 绝对路径（新会话的 cwd）。 */
+  path: string;
+  /** true = 跟随 VS Code 打开的文件夹，不可更改。 */
+  locked: boolean;
+}
+
+/** 一个可选的 agent 预设（roster 一行的界面形态，`broken` 的已在宿主侧滤掉）。 */
+export interface AgentPresetOptionView {
+  /** 预设 id，同时也是没有展示名时的标签。 */
+  id: string;
+  /**
+   * 预设来自随产品交付的根目录（`system`）还是用户自己写的（`user`）。
+   *
+   * 界面靠它决定展示名**要不要走本地词典**：随产品交付的那几个（standard / ptc /
+   * minimal / cordis）的名字与描述由客户端按当前语言给（官方
+   * `dsh-agent-presets/display` 的 `presetDisplayText` 就是这条口径），
+   * 用户自己写的预设名**不翻译**（那是作者写下的字）。
+   */
+  trust?: "system" | "user";
+  /** 预设发布的展示名。 */
+  name?: string;
+  /** 一句话说明这个预设是干什么的。 */
+  description?: string;
+  /** 没有指定预设时，服务端组装的默认预设就是它。 */
+  isDefault?: boolean;
+}
+
+/**
+ * 部署提供的 agent 预设目录（空态页上那个下拉框）。
+ *
+ * 值来自 `agentPresets/list`（roster），跟会话无关，所以走外观态那一半。
+ */
+export interface AgentPresetsView {
+  /** 可选预设（roster 顺序，坏掉的已滤掉）。 */
+  options: AgentPresetOptionView[];
+  /** 服务端是否允许在界面上选择预设（roster 的 `modeSelectionEnabled`）。 */
+  selectable: boolean;
+}
+
 export interface ChatState {
   connection: ConnectionState;
   /** 连接失败/服务器异常时的说明文本。 */
@@ -840,6 +887,29 @@ export interface ChatState {
   messages: MessageView[];
   /** 当前会话是否正在生成。 */
   running: boolean;
+  /**
+   * 新会话将使用的工作目录（空态页的提示行）。
+   *
+   * 与会话无关（是宿主/窗口级的事实），所以它在**外观态**那一份里，不在
+   * `SessionView` 里——切会话不该动它。
+   */
+  workspace?: WorkspaceView;
+  /**
+   * 部署提供的 agent 预设目录（`agentPresets/list` 的 roster）。
+   *
+   * 同样是外观态：容器起来时取一次，与当前会话无关。服务端没装 preset 插件
+   * （`gateway/invocation-unavailable`）时是空目录——界面据此**什么都不显示**，
+   * 而不是显示一个空的下拉框。
+   */
+  agentPresets?: AgentPresetsView;
+  /**
+   * 本会话运行的 agent 预设 id（`agentPreset` 投影：`string | null`）。
+   *
+   * 只有**空白会话**还能换（服务端在有过轮次后回 `agent-preset/locked`），所以
+   * 选择入口只出现在空态页上。拿不到（插件没装 / 还没到）时不下发，界面据此
+   * 不渲染那个下拉框——与官方 chip 同口径（`current === ''` 就不渲染）。
+   */
+  agentPreset?: string;
   /** 编辑类节点的 diff 排版（对应 dshChat.diffLayout）。 */
   diffLayout?: DiffLayout;
   /**

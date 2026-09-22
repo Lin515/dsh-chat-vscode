@@ -4,6 +4,7 @@ import type { HostToWebview } from "../shared/ipc";
 import { persistIdentity, post, subscribe } from "./bridge";
 import { useAutoScroll } from "./autoScroll";
 import { Composer } from "./components/Composer";
+import { EmptyMeta } from "./components/EmptyMeta";
 import { HistoryPanel } from "./components/History";
 import { ImagePreviewLayer } from "./components/Images";
 import { Message } from "./components/Message";
@@ -226,12 +227,20 @@ function ConnectionBar({ state }: { state: ChatState }) {
   );
 }
 
-/** 空态：只留一行提示，不要问候语与起始卡片。 */
-function EmptyState() {
+/**
+ * 空态：一行能力提示 + 两行新会话的元信息（落在哪个目录、用哪套 agent 组装）。
+ * 不要问候语与起始卡片。
+ */
+function EmptyState({ state }: { state: AppState }) {
   const texts = useTexts();
   return (
     <div className="empty">
       <div className="empty-hint">{texts.emptyHint}</div>
+      <EmptyMeta
+        workspace={state.workspace}
+        agentPresets={state.agentPresets}
+        agentPreset={state.agentPreset}
+      />
     </div>
   );
 }
@@ -621,7 +630,7 @@ export function App() {
               <TurnRail items={railItems} activeTurn={activeTurn} busyTurn={busyTurn} onNavigate={navigate} />
               <div className="chat-list" ref={chatScroll.port.contentEl}>
                 {state.messages.length === 0 ? (
-                  <EmptyState />
+                  <EmptyState state={state} />
                 ) : (
                   <>
                     {/* 「加载更早的历史」：跟随窗口只带 60 条，更早的内容从没进过客户端。

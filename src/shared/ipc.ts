@@ -129,6 +129,20 @@ export type WebviewToHost =
   | { type: "queueSteer"; id: string }
   /** 新建会话。 */
   | { type: "newSession" }
+  /**
+   * 更改**新会话的工作目录**（空态页那一行，只在 VS Code 没有打开文件夹时可用）。
+   *
+   * 宿主弹系统目录选择器；选定后这个目录成为新会话的 cwd——已绑定的那个空白会话
+   * 会在新目录里**重建**（会话 header 的 cwd 是创建事实，改不了）。
+   */
+  | { type: "pickWorkspace" }
+  /**
+   * 给当前**空白会话**切换 agent 预设（`agentPresets/select`）。
+   *
+   * 只在会话还没有产生任何轮次时有效：服务端对已经开始的会话回
+   * `agent-preset/locked`，宿主把它当一次明确的失败提示出来。
+   */
+  | { type: "setAgentPreset"; id: string }
   /** 切换到某个会话。 */
   | { type: "openSession"; sessionId: string }
   /** 请求会话列表。 */

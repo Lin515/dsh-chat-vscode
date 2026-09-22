@@ -184,17 +184,29 @@ export function Row({
   );
 }
 
-/** 触发器旁的浮层；点击外部或按 Esc 关闭。 */
+/**
+ * 触发器旁的浮层；点击外部或按 Esc 关闭。
+ *
+ * 展开方向的默认值是**向上**（`bottom: 100%`，输入区工具栏那一排就是它：触发器贴着
+ * 底边，下方没有空间）。空态页的元信息行在页面中间，那里要 `drop="down"`。
+ *
+ * `align="center"` 是给「弹层比触发按钮宽得多、而按钮又不在页面边缘」的场合：
+ * 左右对齐在这种位置必然裁掉一边，居中并把自己钳进视口才是要的结果（居中相对的是
+ * **最近的定位祖先**，所以调用方要保证那一层就是它要对齐的那一行）。
+ */
 export function Popover({
   open,
   onClose,
   align = "left",
+  drop = "up",
   children,
   style,
 }: {
   open: boolean;
   onClose: () => void;
-  align?: "left" | "right";
+  align?: "left" | "right" | "center";
+  /** 向上（缺省）还是向下展开。 */
+  drop?: "up" | "down";
   children: ReactNode;
   style?: CSSProperties;
 }) {
@@ -202,12 +214,13 @@ export function Popover({
   const [flipUp, setFlipUp] = useState(false);
 
   useLayoutEffect(() => {
-    if (!open) return;
+    // 向下展开的浮层不做翻转判定：它的方向是调用方按所在页面位置定死的
+    if (!open || drop === "down") return;
     const el = ref.current;
     if (!el) return;
     const rect = el.getBoundingClientRect();
     setFlipUp(rect.bottom > window.innerHeight && rect.height < rect.top);
-  }, [open]);
+  }, [open, drop]);
 
   useEffect(() => {
     if (!open) return;
@@ -235,7 +248,7 @@ export function Popover({
   return (
     <div
       ref={ref}
-      className={`popover ${align}`}
+      className={`popover ${align}${drop === "down" ? " is-down" : ""}`}
       style={{ ...placement, ...style }}
       role="dialog"
     >

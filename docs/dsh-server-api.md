@@ -791,6 +791,8 @@ export interface AgentPresetRow {
 export interface AgentPresetRoster {
     readonly presets: readonly AgentPresetRow[];
     readonly authorable: boolean;
+    /** 是否允许客户端在新会话上**选择**预设（关掉时 isDefault 恒为部署默认）。 */
+    readonly modeSelectionEnabled: boolean;
 }
 export interface AgentPresetDocument {
     readonly agentPreset: string;
@@ -801,9 +803,14 @@ export interface AgentPresetDocument {
 }
 ```
 
+> 展示名：`trust === 'system'` 且 id 是随产品交付的那四个（`standard` / `ptc` / `minimal` /
+> `cordis`）时，名字与描述由**客户端**按当前语言给（官方 `dsh-agent-presets/display` 的
+> `presetDisplayText` 走词典），行里的 `name` / `description` 是**不翻译**的文件元数据。
+> 本扩展照这一条实现（`src/webview/presetDisplay.ts`）。
+
 **关键约束**：`select` **只在会话「仍为空白」时有效**（未产生任何轮次），否则 `agent-preset/locked`（details `{sessionId, agentPreset}`）。其他错误：`agent-preset/not-found`（details `{agentPreset, available: string[]}`）、`agent-preset/invalid`（details `{agentPreset, reason}`）、`agent-preset/read-only`（details `{agentPreset, reason}`）。
 
-创建时也可以直接指定：`session/create` 的 `request.agentPreset`。
+创建时也可以直接指定：`session/create` 的 `request.agentPreset`（与 `workspaceId` / `cwd` 并列，可同时给）。
 
 ### 4.4 权限模式（read-only / workspace-write / full-access）
 

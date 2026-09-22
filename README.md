@@ -78,6 +78,7 @@ VS Code → 扩展 → `…` → 从 VSIX 安装 → 重载窗口。
 | `dshChat.fontSize` | `0` | 聊天界面字号（整数 px，≥8）；`0` 跟随 VS Code 字号 |
 | `dshChat.questionBatch` | `3` | 一份问卷一次展开几道题；更多题目改为依次问答，`0` = 始终全部展开 |
 | `dshChat.turnProcessThreshold` | `5` | 一轮结束后，过程段内工具调用（含 subagent 派发）达到该数量才折成一枚按钮；`0` = 永不折叠，`1–2` = 永远折叠（仅 1 次调用的段照旧平铺） |
+| `dshChat.agentPreset` | 空 | 新会话使用的 agent 预设（填预设 id）；留空跟随 DSH 服务端的默认预设 |
 
 ## 用法要点
 
@@ -241,6 +242,7 @@ Four rules worth knowing:
 | `dshChat.fontSize` | `0` | Chat UI font size in px (≥8); `0` follows VS Code |
 | `dshChat.questionBatch` | `3` | Questions shown at once; more than this are asked one at a time; `0` = always all |
 | `dshChat.turnProcessThreshold` | `5` | Fold a finished turn's consecutive process into one button once it holds this many tool calls (subagent dispatches count); `0` = never fold, `1–2` = always fold (a run with a single call stays flat) |
+| `dshChat.agentPreset` | empty | Agent preset new sessions run (a preset id); empty follows the DSH server's own default preset |
 
 ## Using it
 

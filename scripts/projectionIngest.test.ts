@@ -13,7 +13,7 @@
  *    `shared/wire.ts` 那套 `null` 语义踩过的坑。
  *
  * 「少一个键编译不过」这条由 `ProjectionHandlers` 的映射类型保证（类型层，不是运行时），
- * 所以这里的手写 handlers 必须列全 14 个——它同时也是接口的一份活文档。
+ * 所以这里的手写 handlers 必须列全 15 个——它同时也是接口的一份活文档。
  *
  * 运行：npm test
  */
@@ -36,7 +36,7 @@ interface Recorded {
   present: boolean;
 }
 
-/** 记录每一次派发的假 handlers（14 个键一个不少）。 */
+/** 记录每一次派发的假 handlers（15 个键一个不少）。 */
 function recorder(): { handlers: ProjectionHandlers; seen: Recorded[] } {
   const seen: Recorded[] = [];
   const track =
@@ -59,6 +59,7 @@ function recorder(): { handlers: ProjectionHandlers; seen: Recorded[] } {
     sessionStats: track("sessionStats"),
     subagentCatalog: track("subagentCatalog"),
     goal: track("goal"),
+    agentPreset: track("agentPreset"),
   };
   return { handlers, seen };
 }
@@ -82,20 +83,21 @@ function recorder(): { handlers: ProjectionHandlers; seen: Recorded[] } {
     "inbox",
     "subagentCatalog",
     "imageLimits",
+    "agentPreset",
   ];
   assert.deepStrictEqual([...PROJECTION_KEYS].sort(), [...CONSUMED].sort(), "登记表与这份清单必须逐键对齐");
 
   // 契约里存在、但本扩展**有意不消费**的键。它们不是「忘了做」：
-  // - `agentPreset` / `subagent` / `subagentTiming` / `schedule` 是四个还没做的面板
+  // - `subagent` / `subagentTiming` / `schedule` 是三个还没做的面板
   //   （见 docs/audit-summary.md「仍未修复」），解析一份没人用的形状只会攒死代码；
   // - `sessionListMetadata` 是冷列表提示，本扩展的列表走自己的排序。
-  const NOT_CONSUMED = ["agentPreset", "schedule", "subagent", "subagentTiming", "sessionListMetadata"];
+  const NOT_CONSUMED = ["schedule", "subagent", "subagentTiming", "sessionListMetadata"];
   for (const key of NOT_CONSUMED) {
     assert.strictEqual(isProjectionKey(key), false, `${key} 有意不消费，不该进登记表`);
     assert.strictEqual(readProjection(key, { anything: true }), undefined, `${key} 没有读取器`);
   }
 }
-console.log(`projectionIngest: 键集合 ${PROJECTION_KEYS.length} 个与契约对齐（5 个有意不消费）✓`);
+console.log(`projectionIngest: 键集合 ${PROJECTION_KEYS.length} 个与契约对齐（4 个有意不消费）✓`);
 
 // ---------- 2. 一个键一条：逐个键解析 + 派发 ----------
 
@@ -117,6 +119,7 @@ console.log(`projectionIngest: 键集合 ${PROJECTION_KEYS.length} 个与契约�
     { key: "modelSelection", wire: { lastUsed: { provider: "p", model: "m" }, next: null }, expect: { provider: "p", model: "m", reasoningEffort: undefined } },
     { key: "subagentCatalog", wire: [{ id: "s-9", mode: "one-shot" }], expect: [{ id: "s-9", label: "s-9", mode: "one-shot" }] },
     { key: "goal", wire: { goal: { objective: "目标" }, roundsStarted: 2 }, expect: { id: undefined, revision: undefined, objective: "目标", phase: "active", rounds: 2, maxRounds: undefined, blockedReason: undefined } },
+    { key: "agentPreset", wire: "standard", expect: "standard" },
     { key: "inbox", wire: { "next-turn": [] }, expect: { "next-turn": [] } },
     { key: "contextPressure", wire: { pressureTokens: 5 }, expect: { pressureTokens: 5, projectedTokens: undefined, contextWindow: undefined } },
   ];
@@ -134,7 +137,7 @@ console.log(`projectionIngest: 键集合 ${PROJECTION_KEYS.length} 个与契约�
     assert.deepStrictEqual(scope.projections.get(item.key), item.wire, `${item.key} 在 store 里应当是原始值`);
   }
 }
-console.log("projectionIngest: 14 个键各自的解析与派发 ✓");
+console.log("projectionIngest: 15 个键各自的解析与派发 ✓");
 
 // ---------- 3. 水位：旧帧被丢弃，且不派发 ----------
 

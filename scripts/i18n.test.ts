@@ -70,6 +70,8 @@ const HOST_MARKERS: string[] = [
   // 斜杠命令
   "unknownCommand",
   "commandFailed",
+  // agent 预设（切换被服务端拒绝）
+  "agentPresetFailed",
   // 历史 / 分支
   "branchNoAnchor",
   "branchFailed",
