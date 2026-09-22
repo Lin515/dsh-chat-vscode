@@ -2,7 +2,7 @@
  * 投影形状的回归防线（`goal` 与 `subagentCatalog`）。
  *
  * 两个 bug 的共同点：**形状读错**，而且失败方式是「恒为空」而不是报错——
- * 界面上看起来只是「这个功能没有」，没人会去查（docs/audit-summary.md §3、§4）。
+ * 界面上看起来只是「这个功能没有」，没人会去查（docs/audit-summary.md「goal 投影嵌套形状读错」
  * 这两段解析现在抽成纯函数（`src/dsh/projections.ts`），本文件按官方契约逐字
  * 构造投影值来钉住形状。
  *
@@ -261,11 +261,11 @@ console.log("projections: subagents/list RPC 行过滤诊断项并带上 mode �
 
 // ---------- 7. 其余投影键的形状（2026-09-19 从 controller.applyProjection 搬进来） ----------
 //
-// 每个值都按契约构造（`docs/dsh-server-api.md` §6.10 的键表），断言的是「线格式 →
+// 每个值都按契约构造（`docs/dsh-server-api.md`「投影」一节的键表），断言的是「线格式 →
 // 视图值」这一层；效果（写哪个 scope 字段、发哪一帧）在 `scripts/projectionIngest.test.ts`。
 //
 // 这一节存在的理由就是那三次「按猜测的形状写」：形状读错不报错，只会恒为空，
-// 界面上表现为「这个功能没有」（`docs/audit-summary.md` §3、§4）。
+// 界面上表现为「这个功能没有」（`docs/audit-summary.md` 三、四章对应条目）。
 
 // 7.1 permissions：只读 currentValue（options 没有消费点，不解析）
 {

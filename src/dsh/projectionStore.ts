@@ -9,7 +9,7 @@
  * > baseline cannot overwrite a newer frame. A key the store has never seen reads
  * > `undefined` (capability absent)."*
  *
- * 本仓库的副本见 `docs/dsh-server-api.md` §6.10（含客户端的消费规则那条引用）。
+ * 本仓库的副本见 `docs/dsh-server-api.md`「投影」一节（含客户端的消费规则）。
  * 存储里是 `key → {value, seq}`，**值本身不做任何解析**——形状解析在
  * `projections.ts` 的读取表里，本模块不认识任何一个具体的投影键。
  *

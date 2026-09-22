@@ -344,7 +344,7 @@ console.log("attachments: 目录探测 / id / 错误上报 ✓");
 //
 // 另外钉住**只有一份接入实现**：路径通道与字节通道曾经各写一遍
 // （`applyPathsForView` / `applyBytesForView`），于是漂移出「字节附件发送时被丢掉」
-// 的 BUG（行为断言在 §7，这里是结构断言）。
+// 的 BUG（行为断言在下面「发送装配」一节，这里是结构断言）。
 {
   const controller = readFileSync(join(process.cwd(), "src", "dsh", "controller.ts"), "utf8");
   for (const [key, fallback] of [

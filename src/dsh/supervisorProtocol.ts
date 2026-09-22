@@ -1,7 +1,7 @@
 /**
  * supervisor 的**会合协议**：状态文件、启动锁、socket 寻址。纯文件与纯函数，可离线断言。
  *
- * 设计见 `docs/design-supervisor.md` §3.0/§3.2。要点：
+ * 设计见 `docs/design-supervisor.md`「传输层」与「磁盘协议」。要点：
  * - **高频信号走 socket**（谁在用、控制请求），文件只放"跨世代会合信息"
  *   （`baseUrl`/`token`/`supervisorPid`/命令）——新窗口在 supervisor 未起或刚崩时必须读得到；
  * - 文件一律**原子写**（同目录临时文件 + rename）：读到半个 JSON 会让"有没有可用的后台"
@@ -267,7 +267,7 @@ export function writeState(directory: string, state: SupervisorState): boolean {
  * 文件路把 `idleSec` 收敛到 5~600、管道路缺省成 0。三处各写一份字段表的代价不是啰嗦，
  * 而是**改一处忘两处**：加一个字段时只有一处认得它，另一条路静默丢掉。
  *
- * ## 安全边界（`docs/design-supervisor.md` §3.0，2026-09-17 审计立的纪律）
+ * ## 安全边界（`docs/design-supervisor.md`「传输层」，2026-09-17 审计立的纪律）
  *
  * 管道路推来的 `baseUrl`/`token` 决定**凭据发往哪个 origin**，所以这份解码**只许收紧**：
  * `baseUrl` 必须是 http(s) 且能解析、`token` 必须是字符串、pid 与时刻必须是整数。

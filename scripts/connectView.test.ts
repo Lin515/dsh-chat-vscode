@@ -7,7 +7,7 @@
  * 那一组只能按**源码正则**钉（`{isConnecting ? ( ... type: "stopReconnect" ...`）。
  * 现在给一个 `ChatState` 与一份词典就能把三类 × 每种标志逐条断言，而界面只负责渲染。
  *
- * 权威是 `docs/design-supervisor.md` §9.4（取代 §8.7）那张表，逐条对应见下面各组：
+ * 权威是 `docs/design-supervisor.md`「连接条按钮矩阵」那张表，逐条对应见下面各组：
  *
  * | 状态 | 什么时候 | 文案 | 按钮 |
  * |---|---|---|---|
@@ -15,7 +15,7 @@
  * | `connecting` | 首轮、掉线重试、外部地址的等待 | 目标 + 阶段；有失败详情时详情优先 | 停止连接 + 查看日志 |
  * | 按钮态（`stopped` / `error`） | 关掉自动连接 / 用户点过停止 / 内部不在且外部不可用（stopped）；启动类、认证类失败（error，文案改用原因） | 两轴短语併一行（` · `） | 内部在跑 → 连接内部 DSH，不在 → 启动内部 DSH；连接外部 DSH（恒显，没配 url 时置灰 + 提示）；内部在跑 → 重启内部 DSH；`needsToken` → 输入令牌；查看日志（恒显） |
  *
- * 另有三条**不许动**的口径（§8.7 留的两条硬约束 + §9.9）：
+ * 另有三条**不许动**的口径（矩阵栏目留的两条硬约束 + 「停止连接」语义）：
  * 1. 「停止连接」只要正在连接就得给（首轮连接同样可能卡在"等就绪"上没有时长上限）；
  * 2. 「查看日志」恒显（每一档都可能是"连不上但说不清"）；
  * 3. 连接中**只**给这两个按钮——不许冒出启动/连接/重启按钮。
@@ -86,7 +86,7 @@ function check(label: string, ok: boolean, detail = ""): void {
   check("ready → kind=hidden、没有文案、没有按钮", ready.kind === "hidden" && ready.text === "" && ids(ready) === "", JSON.stringify(ready));
 }
 
-// ---------- 2. `connecting`：目标 + 阶段写在文案里，按钮**只有**停止 + 日志（§9.4 / §8.7） ----------
+// ---------- 2. `connecting`：目标 + 阶段写在文案里，按钮**只有**停止 + 日志（矩阵） ----------
 {
   const internalStarting = view({ connection: "connecting", connectTarget: "internal", connectPhase: "starting" });
   check("连接中 + 内部 + starting → 文案是「正在启动内部 DSH…」", internalStarting.text === TEXTS.startingInternal, internalStarting.text);

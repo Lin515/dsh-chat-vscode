@@ -5,7 +5,7 @@
  * write / edit 直接落盘的——官方因此**另外**从成功的变更调用参数里推导一份
  * 「本轮文件改动」列表（`dsh-client-ui-deliverables` 的 `producedForClosing`），
  * 不指望模型在收尾正文里点名。本扩展此前只有 `deliverables` 一条来源、且从不渲染，
- * 于是写过的文件在界面上完全不可见（docs/audit-summary.md §5）。
+ * 于是写过的文件在界面上完全不可见（docs/audit-summary.md「交付文件完全不可见」一条）。
  *
  * 判定逐字对齐官方 `mutationPath`：只认**成功的**第一方变更调用，参数残缺、
  * 读类工具、不认识的工具一律不算。

@@ -136,7 +136,7 @@ function check(label: string, ok: boolean, detail = ""): void {
 // 才不会出现「点对了按钮却什么都没发生」。
 //
 // 这一条只能是源码级断言：`ChatController` 还没有能被测试调用的接缝（`scripts/` 里没有文件
-// import 它，见 docs/audit-summary.md 第五批的背景）。所以这里钉的是**许可这个值**，
+// import 它）。所以这里钉的是**许可这个值**，
 // 而不是某个函数的实现形状：两个内部入口都必须传 true，外部入口必须传 false。
 {
   check(

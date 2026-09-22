@@ -4,7 +4,7 @@
  * 这一套规则此前散在 `Composer.tsx` 的 9 段不相邻代码里，判据只能靠「读 `Composer.tsx`
  * 源码 + 正则」钉（`applyCandidate(highlight, "drill")`、`return [up, ...files, ...sessions]`
  * 之类）。那种断言只证明「代码里有这行字」：换个参数名、把逻辑搬进 helper 就失效，
- * 而且失败信息指向的是调用形状而不是行为（`scripts/styles.test.ts` §17 里对同类
+ * 而且失败信息指向的是调用形状而不是行为（`scripts/styles.test.ts` 里对同类
  * 源码正则的判词；`src/webview/turnProcess.ts` 那种「抽的是行为」的形状才是样板）。
  *
  * 现在规则本身收进了 module：能纯函数化的直接断言函数（第 5–9 节），必须走 React 的

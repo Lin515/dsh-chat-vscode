@@ -171,7 +171,7 @@ try {
 
   // 注意：这里**不**断言「第一轮后就有分子」。实测发现分母先到、分子后到，
   // 中间存在一段「只有 contextWindow、没有 pressureTokens」的窗口——
-  // 那正是占用率会「卡着不动」的时刻（见 docs/audit-summary.md §零的新发现）。
+  // 那正是占用率会「卡着不动」的时刻（见 docs/audit-summary.md 的占用率「卡着不动」坑点）。
   // 探针的职责是把这个事实**如实地报出来**，不是断言一个我们希望的时序。
   const hasNumeratorTurn1 =
     typeof afterTurn1?.pressureTokens === "number" || typeof afterTurn1?.projectedTokens === "number";

@@ -1,5 +1,5 @@
 /**
- * supervisor 的 **socket 协议**：按行 JSON 的双向消息（设计 §3.0）。
+ * supervisor 的 **socket 协议**：按行 JSON 的双向消息（设计见 `docs/design-supervisor.md`「传输层」）。
  *
  * 为什么高频信号走 socket 而不是文件（用户口径）：连接本身就是"我在用"的信号，
  * 断开即知；控制请求是结构化消息，不需要再造"请求文件"；supervisor 退场前还能主动通知。

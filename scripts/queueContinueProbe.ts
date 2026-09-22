@@ -1,6 +1,6 @@
 /**
  * 【探针定位】勘察型 · 耗 token —— 钉「只 cancel 不会让队列接续」这条服务端事实，
- *   结论已固化在 controller.stopRunning 的设计与 docs/audit-summary.md §5；
+ *   结论已固化在 controller.stopRunning 的设计与 docs/audit-summary.md「仍未修复」的停止语义条；
  *   只在重开队列语义问题时跑。按 AGENTS.md 硬约束，每次运行前须获用户批准，
  *   不得随构建自动执行。
  *
@@ -9,7 +9,7 @@
  * 背景：`controller.stopRunning`（ESC）的做法是「摘空整条队列 → cancel → 等空闲 →
  * 按原顺序重发」，而不是「只 cancel，让服务端自己把队列接着跑完」。这个设计依赖
  * 两个服务端事实，本探针把它们重新变成可复现的证据（该脚本曾被删除，导致注释里的
- * 引用成了悬空引用，见 docs/audit-summary.md §5）：
+ * 引用成了悬空引用，见 docs/audit-summary.md 五章「悬空引用」）：
  *
  *  1. **只 cancel 不会让队列接续**——agent 因 abort 抛出而跳出轮循环，队列项保留
  *     （`cancel` 用 `keepInbox: true`）但不会被消费。这一条两轮实测都是 3/3，

@@ -7,7 +7,7 @@
  *    可见结果**；
  * 2. `deliverables/presented` 写进了 `message.deliverables` 却无人渲染；
  * 3. 从成功的 write / edit 调用推导的「本轮文件改动」（`message.produced`）
- *    这条来源根本不存在（docs/audit-summary.md §2、§5）。
+ *    这条来源根本不存在（docs/audit-summary.md「交付文件完全不可见」一条）。
  *
  * 运行：npm test
  */

@@ -4,15 +4,15 @@
  * 从这里以前，"连接条该长什么样"散在四处：`App.tsx` 的 `ConnectionBar` 自己判
  * `connection` 三档、`statusText` 拼两轴短语、`connectingText` 拼目标与阶段，而宿主侧
  * `controller.ts` 的 `viewConnection` / `connectionPatch` 又各判一遍。四处判同一件事的
- * 代价不是啰嗦，而是**改一处忘三处**：按钮矩阵是用户口径（§9.4，权威），而它在界面里
- * 是"渲染条件"，在宿主里是"字段"，两边都会漂。
+ * 代价不是啰嗦，而是**改一处忘三处**：按钮矩阵是用户口径（`docs/design-supervisor.md`
+ * 「连接条按钮矩阵」，权威），而它在界面里是"渲染条件"，在宿主里是"字段"，两边都会漂。
  *
  * 现在的纪律：**判定只有这一处**，`App.tsx` 只渲染它的结论（`kind` 决定样式与转圈、
  * `text` 直接落字、`buttons` 按序渲染）。于是这套矩阵可以**离线断言**——不需要 DOM、
  * 不需要 React，给一个 state 与一份词典就能把三类状态 × 每种标志的组合逐条钉住
  * （`scripts/connectView.test.ts`）。
  *
- * 三条不许动的东西（都是用户口径，见 `docs/design-supervisor.md` §8.7 / §9.4）：
+ * 三条不许动的东西（都是用户口径，见 `docs/design-supervisor.md`「连接条按钮矩阵」）：
  *
  * 1. **连接中只有「停止连接」+「查看日志」**，目标写在文案里（不摆启动/连接按钮）；
  * 2. **「查看日志」恒显**——每一档都可能是"连不上但说不清"；「停止连接」只在正在连接时给；
@@ -173,7 +173,7 @@ export function connectViewOf(
     buttons.push({ id: "enterToken", label: texts.enterToken, icon: "key", variant: "plain" });
   }
   // 内部那一轴：在跑 → 「连接内部 DSH」，不在 → 「启动内部 DSH」。
-  // 两个按钮**同一套逻辑**（有就接上、没有就起一套，§9.4）：界面显示的是两轴探测的结论，
+  // 两个按钮**同一套逻辑**（有就接上、没有就起一套，见文件头的矩阵口径）：界面显示的是两轴探测的结论，
   // 与后台真实状态必然有偏差，语义相同才不会出现"点对了按钮却什么都没发生"。
   buttons.push(
     internalRunning

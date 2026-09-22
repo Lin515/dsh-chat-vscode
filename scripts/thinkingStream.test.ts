@@ -917,7 +917,7 @@ console.log("thinkingStream: 重复事件去重 ✓");
 // 官方语义（`projectBlock` + `interruption(context)`）：只要 step/turn **已关闭**，
 // 所有还没结算的调用都会在视图投影阶段被合成一个 `error.code === 'interrupted'`
 // 的结果，界面渲染成 stopped（警告色）。不这么做的话，这些行永远停在「运行中」，
-// 看起来像任务卡死（docs/audit-summary.md §12）。
+// 看起来像任务卡死（docs/audit-summary.md「中止后工具行永远卡『运行中』」一条）。
 //
 // 关键：**不按收场原因分支**。官方只看「turn 是否关闭」，所以正常完成但调用没收尾
 // 的情形同样要合成（结果被截断、连接抖动都会造成它）。

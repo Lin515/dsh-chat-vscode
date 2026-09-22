@@ -501,7 +501,7 @@ console.log("historyReplay: 生成中加载更早，在飞内容活过重折 ✓
     "prependRecords 要返回新并入的事件条数（进展判据的唯一真凭据）",
   );
   // 文案走**词典断言**，不去 grep 源文件里的字面量：文案表搬到 `messages.ts` 之后，
-  // 「某个文件里有这行字」只会随文件布局漂移（见 docs/audit-summary.md 第五批的结论）。
+  // 「某个文件里有这行字」只会随文件布局漂移（AGENTS.md「断言只钉确定的事实」）。
   assert.strictEqual(dictionaryFor("zh").historyLoading, "正在加载更早的历史…", "中文文案");
   assert.strictEqual(dictionaryFor("en").historyLoading, "Loading earlier history…", "英文文案");
   assert.ok(/this\.replaying = true;/.test(adapter) && /if \(this\.replaying\) return;/.test(adapter), "适配器要有重放静默开关");

@@ -203,7 +203,7 @@ function ConnectButtonNode({ button }: { button: ConnectButton }) {
  * 三档状态、那行文案、按钮集合**全部由 `connectViewOf` 判定**（纯函数，见
  * `connectView.ts` 的文件头）——这里只渲染它的结论：`kind` 决定配色与转圈、`text` 直接
  * 落字、`buttons` 按序渲染。判定为什么搬出去：这套矩阵是用户口径
- * （`docs/design-supervisor.md` §8.7 / §9.4），从前它散在这个组件、`statusText` /
+ * （`docs/design-supervisor.md`「连接条按钮矩阵」），从前它散在这个组件、`statusText` /
  * `connectingText` 与宿主的 `connectionPatch` 三处各写一遍，改一处忘两处；搬进纯函数后
  * 三类 × 每种标志的组合可以离线逐条断言（`scripts/connectView.test.ts`）。
  */

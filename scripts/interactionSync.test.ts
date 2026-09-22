@@ -292,7 +292,7 @@ console.log("interactionSync: 审批按 approval/decided 与撤回收场 ✓");
 // adapter 的分支名）——它们没有可调用的 API 接缝。请求本身的记账规则（去重 /
 // 回放不删 / 结算才删）已经搬进 `src/dsh/pendingInteractions.ts`，断言改在
 // `scripts/pendingInteractions.test.ts` 里**调用真 API**，不再对 5000 行的
-// `controller.ts` 做字符切片（见 `docs/audit-summary.md` 第五批的结论）。
+// `controller.ts` 做字符切片。
 {
   const controller = readFileSync(join(process.cwd(), "src", "dsh", "controller.ts"), "utf8");
   assert.ok(
@@ -412,7 +412,7 @@ console.log("interactionSync: @ 对话引用的接线 ✓");
 //   (b) 源码层**只留确实只能在那里表达的**接线（4 个结算点挂在哪、建域时不回放）。
 //
 // 改造前这里是「读 5000 行源码 → 找字符串位置 → 数 `this.heldEvents.delete(` 出现几次」，
-// 改个注释或挪一行就假红/假绿（见 `docs/audit-summary.md` 第五批的结论）。
+// 改个注释或挪一行就假红/假绿（AGENTS.md「断言只钉确定的事实」）。
 {
   // ---------- (a) 账本的生命周期（真 API） ----------
   const ledger = new PendingInteractions();

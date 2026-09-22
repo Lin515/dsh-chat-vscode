@@ -63,7 +63,7 @@ export class SessionScope {
   /**
    * 子代理目录。名字与线格式 / 视图模型**逐字相同**（`subagentEntries`）：
    * 此前宿主侧叫 `subagents`、界面读 `subagentEntries`，跨名桥没有任何保护
-   * （见 `docs/audit-summary.md` B7）。
+   * （见 `docs/audit-summary.md`「7.2 功能 BUG」表 B7）。
    */
   subagentEntries: SubagentView[] = [];
   jobs: JobItemView[] = [];

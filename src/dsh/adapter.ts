@@ -729,7 +729,7 @@ export class SessionAdapter {
    * 为什么需要它：那条告警在界面上是**一闪而过的提示条**，用户看到时已经点不到，
    * 而它恰好是内核升级信号——dsh 冒出了本客户端名单里没有的词汇（会话里第一条
    * 真实案例就是 `workspace/changes`，见 `noteUnknownEvent`）。协议文档
-   * （docs/dsh-server-api.md §6.1 的降级纪律）要求的正是「至少在输出通道里报一次」。
+   * （docs/dsh-server-api.md「线上事件信封」一节的降级纪律）要求的正是「至少在输出通道里报一次」。
    *
    * 注入方式与 `loadImages` 一致：适配器不持有 vscode，日志由控制器带会话前缀转交。
    */
@@ -1373,7 +1373,7 @@ export class SessionAdapter {
         // 「step/turn 是否已关闭」（`interruption(context)`），不关心是
         // aborted / error / completed。原因是同一件事：一轮关掉之后，那些调用
         // 不会再有 `tool/result` 了，不合成它们就永远停在「运行中」，
-        // 看起来像任务卡死（docs/audit-summary.md §12）。
+        // 看起来像任务卡死（docs/audit-summary.md「中止后工具行永远卡『运行中』」一条）。
         // 「正常完成但调用没收尾」在真实会话里确实会出现（结果被截断、连接抖动）。
         this.synthesizeInterrupted(event.time);
         this.emit({ type: "message/upsert", message: { ...message } });
@@ -1402,7 +1402,7 @@ export class SessionAdapter {
         if (kind === "user" || kind === "user-rpc") {
           // 非文本块（图片 / 文件）**不能丢**：此前的 `if (!text) break;` 会
           // 让「纯图片用户消息」整条不渲染——用户发了张图，界面上什么都没有
-          // （docs/audit-summary.md §14）。
+          // （docs/audit-summary.md「用户消息的非文本内容被丢弃」一条）。
           const media = userMedia(message?.content);
           if (!text && media.length === 0) break;
           const view: MessageView = {
@@ -1890,7 +1890,7 @@ export class SessionAdapter {
    *   `pressureTokens` + 表面自那次采样以来的增减。**这是唯一会逐轮变化的那个**
    *   （实测：小对话里 `pressureTokens` 连续三轮都是 19206，而 `projectedTokens`
    *   19215 → 19844 每轮都动），且**压缩后会下降**——`pressureTokens` 做不到，
-   *   因为压缩不产生 usage 事件（docs/audit-summary.md §15）。
+   *   因为压缩不产生 usage 事件（docs/audit-summary.md「占用条分子口径错」一条）。
    *
    * **分子的来源顺序**（实测依据见 `scripts/pressureProbe.ts`）：
    * 1. 官方 `projectedTokens` / `pressureTokens`（投影）；

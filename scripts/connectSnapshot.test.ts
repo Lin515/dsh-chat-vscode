@@ -116,7 +116,7 @@ const background = await listen();
 const daemons: Array<{ close: () => Promise<void> }> = [];
 const managers: SupervisorManager[] = [];
 
-/** 会合目录必须隔离：跑进用户真实目录是本仓库踩过的坑（见 design-supervisor §6.2）。 */
+/** 会合目录必须隔离：跑进用户真实目录是本仓库踩过的坑。 */
 check(
   "会合目录在临时目录里（不碰用户的真实 ~/.dsh）",
   supervisorDirectory("snapshot-isolated").startsWith(TEST_ROOT) && statSync(TEST_ROOT).isDirectory(),

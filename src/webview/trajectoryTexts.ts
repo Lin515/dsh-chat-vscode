@@ -1,7 +1,7 @@
 /**
  * 「轨迹」视图的文案：**逐字取自官方**（`dsh-client-ui-trajectory` 的 locales，
- * key → 中文 / 英文），只收录本扩展当前真正渲染的那些；完整 175 条的清单在
- * `docs/design-trajectory.md`。
+ * key → 中文 / 英文），只收录本扩展当前真正渲染的那些——本文件就是唯一登记表
+ * （时间 / 时长格式化口径见 `docs/design-trajectory.md` 的「文案」一节）。
  *
  * 为什么单独一个文件而不是塞进 `texts.ts`：这些文案**只在 webview 内部消费**
  * （不走宿主 → 界面的 `@key` 标记），所以不需要进 `resolveText` 的 switch，

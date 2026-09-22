@@ -67,7 +67,7 @@ function recorder(): { handlers: ProjectionHandlers; seen: Recorded[] } {
 // ---------- 1. 键集合：与契约的 19 键对拍（双向） ----------
 
 {
-  // 契约里**本扩展消费**的键（`docs/dsh-server-api.md` §6.10）。
+  // 契约里**本扩展消费**的键（`docs/dsh-server-api.md`「投影」一节）。
   const CONSUMED: ProjectionKey[] = [
     "title",
     "turnOutline",

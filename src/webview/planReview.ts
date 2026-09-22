@@ -6,7 +6,7 @@ import type { QuestionItemView, QuestionOption } from "../shared/chat";
  * 模型在计划模式里调 `exit_plan_mode` 请人放行，服务端把它变成一次
  * `user-questions/request`——**不是**独立的审批事件。辨认它靠题目上的
  * `intent.kind === "plan-review"`（提问方 = `dsh-plan-mode`，见
- * `docs/dsh-server-api.md` §5.6）。
+ * `docs/dsh-server-api.md`「计划模式」一节）。
  *
  * 收窄规则（`dsh-client-ui-user-questions/lib/client.js:38-56`）：卡片只在
  * **能发出这份请求允许的每一个答案**时才接管，意图只换布局、不改可达的答案，

@@ -370,7 +370,7 @@ export const Message = memo(function Message({
         {rendered}
         {/* 轮尾文件：先「本轮改动」（从成功的写类调用推导），再「交付文件」
             （present 工具的显式申报）。两者此前都不渲染——写过的文件在界面上
-            完全不可见，只能靠模型在正文里自己说（docs/audit-summary.md §5）。
+            完全不可见，只能靠模型在正文里自己说（docs/audit-summary.md「交付文件完全不可见」一条）。
 
             **只在轮次结束后显示**（`streaming === false`）：官方把这两行挂在
             turn-tail 节点上，`publication` 只在 `turn/end` 时 immediate，其余一律

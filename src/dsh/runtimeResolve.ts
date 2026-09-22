@@ -1,5 +1,5 @@
 /**
- * supervisor 的**运行时**：固定用 VS Code 自带的那个 Node（用户口径 2026-09-13，见设计 §3.0.1）。
+ * supervisor 的**运行时**：固定用 VS Code 自带的那个 Node（用户口径 2026-09-13，见 `docs/design-supervisor.md`「运行时选型」）。
  *
  * 为什么不用 PATH 上的 `node`：dsh 是社区生态，发行形态很多——可能是 npm 装的 JS CLI
  * （那时机器上必然有 node），**也可能是别人打包好的独立可执行文件**（那时机器上可能压根没有 node）。
@@ -123,7 +123,7 @@ export function runRuntimeSelfCheck(runtime: NodeRuntime, expression: string, ti
  * - `detached: true` + `unref()`：不这么做，窗口一关 supervisor 就跟着陪葬
  *   （整个架构的前提就是"它不依赖 VS Code 活着"）；
  * - `windowsHide: true`：否则 Windows 上会闪一个控制台窗口；
- * - `stdio: ["ignore", fd, fd]`：输出直接进日志文件（管道会拖住调用方，见设计文档 §8）。
+ * - `stdio: ["ignore", fd, fd]`：输出直接进日志文件（管道会拖住调用方）。
  */
 export function spawnDetached(
   runtime: NodeRuntime,

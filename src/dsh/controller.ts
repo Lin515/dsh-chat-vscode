@@ -346,7 +346,7 @@ interface GitExtensionExportsLike {
  *
  * 三者刻意分开，因为它们的所有权不同（见 `ChatController` 里那几个字段的注释）：
  * 快照是"本窗口与这一套后台现在是什么关系"（管理器的权威），`facts` 是"本窗口刚探到的
- * 两轴结论"（管理器的快照里没有这两个值：它们是**异步探测**，见 §9.1），
+ * 两轴结论"（管理器的快照里没有这两个值：它们是**异步探测**，见 `docs/design-supervisor.md`「两条存在性判据」），
  * `round` 是"本窗口这一轮连到哪一步了"（客户端状态机，管理器不知道）。
  */
 interface ConnectionFieldsInput {
@@ -389,7 +389,7 @@ type ConnectionFields = Pick<
  * - **管理器那一半**（外部地址、目标、后台在不在）只读 `snapshot()`——控制器不再存一份镜像。
  *   删掉的那两个镜像字段（`internalRunning` / `externalReachable`）在这里由 `facts` 出，
  *   而 `facts` 是**本窗口的探测结论**（快照里没有：内部那一轴要问"守护进程进程还在吗"、
- *   外部那一轴要发一次 HTTP，都是异步探测，见 §9.1）；
+ *   外部那一轴要发一次 HTTP，都是异步探测，见 `docs/design-supervisor.md`「两条存在性判据」）；
  * - **本窗口那一半**（客户端连到哪一步、详情、令牌入口）由 `round` 出——那是 `DshClient`
  *   的状态机，管理器根本不知道（它对"连着外部那个地址的 ws 通不通"没有任何知识）。
  */
@@ -652,7 +652,7 @@ export class ChatController implements vscode.Disposable {
    * "**本窗口还重不重试自己那条连接**"。两者在外部目标上会分叉——「停止连接」之后点
    * 「连接外部 DSH」：控制器把重连重新打开（用户显式动作），而管理器那条外部分支
    * **不经过 `bringUp`**、`detachedByUser` 仍是 true。按闸推导 `autoReconnect` 的话，
-   * 外部连接一掉线就再也不重试（`DshClient` 自己也带退避重连，§9.7）。
+   * 外部连接一掉线就再也不重试（`DshClient` 自己也带退避重连）。
    */
   private autoReconnect = true;
   /**
@@ -660,7 +660,7 @@ export class ChatController implements vscode.Disposable {
    *
    * 这是**本窗口的观测**，不是管理器快照的镜像：快照里没有这两个值（内部那一轴要
    * `probeRunning()` 问"守护进程进程还在吗"、外部那一轴要发一次 HTTP，都是异步的，
-   * 见 §9.1）。它们只在 `probeFacts()` / `setFacts()` / `setInternalRunning()` 三处写入，
+   * 见 `docs/design-supervisor.md`「两条存在性判据」）。它们只在 `probeFacts()` / `setFacts()` / `setInternalRunning()` 三处写入，
    * 界面侧由 `connectionFieldsOf` 一次映射成 `internalRunning` / `externalState`。
    *
    * 此前是两个字段（`internalRunning` / `externalReachable`）各自被赋值的：一个值两处
@@ -764,7 +764,7 @@ export class ChatController implements vscode.Disposable {
 
     // 两轴结论的**初值**：外部那一轴现在就能从配置断定（配没配 `dshChat.url` 是配置事实，
     // 不必等一次 HTTP 探测），内部那一轴要等第一次探测——在它之前按"未运行"渲染
-    // （按钮态给的是「启动内部 DSH」，点它与「连接内部 DSH」是同一套逻辑，见 §9.4）。
+    // （按钮态给的是「启动内部 DSH」，点它与「连接内部 DSH」是同一套逻辑，见 `docs/design-supervisor.md`「连接条按钮矩阵」）。
     // 少了这一句，配了外部地址的窗口在首帧快照里会显示"外部 DSH：未配置"
     // 并把「连接外部 DSH」置灰，直到第一轮探测回来。
     this.facts = {
@@ -1696,7 +1696,7 @@ export class ChatController implements vscode.Disposable {
    *
    * | 控制器落点 | 调哪一档 | 少了它会怎样 |
    * |---|---|---|
-   * | `prepareRound()`（换目标 / 重开一轮 / 并发补跑共用） | `stop({ cancelWait: true })` | 那一轮还挂在旧目标**没有时长上限**的等待里，等于没换目标。**这一档不收连接**：马上要重新接上的是**同一个**后台（§9.9），收掉 socket 等于交还占用，`ownership` 从 self 掉成 peer、诊断里"是不是本窗口拉起的"开始说谎 |
+   * | `prepareRound()`（换目标 / 重开一轮 / 并发补跑共用） | `stop({ cancelWait: true })` | 那一轮还挂在旧目标**没有时长上限**的等待里，等于没换目标。**这一档不收连接**：马上要重新接上的是**同一个**后台（见 design-supervisor.md「停止连接的语义」），收掉 socket 等于交还占用，`ownership` 从 self 掉成 peer、诊断里"是不是本窗口拉起的"开始说谎 |
    * | `abandonRound()`（用户叫停后放弃这一轮） | `stop({ release: true })` | 一轮排队/重试可能在叫停**之后**才走到 `bringUp`（它会清掉 `detachedByUser`）并在管理器侧把连接建起来，而控制器随后放弃了这一轮——连接就留在管理器手里（幂等，所以再收一次） |
    * | `stopReconnect()`（用户点「停止连接」） | `stop({ release: true })` | 只断不挡 → 5 秒后心跳又接回来；只挡不断 → 守护进程永远认为有人用，内部 dsh 不按空闲退场 |
    * | `stopServer()`（「停止内部 DSH」） | `stop({ cancelWait: true, askSupervisor: true })` | 请求都发出去了，再等一个不会来的就绪没有意义；没有活连接时管理器自己走**临时接入**那条路，回执才不会谎报"没有在运行" |
@@ -3701,7 +3701,7 @@ export class ChatController implements vscode.Disposable {
   /**
    * 目标条。投影是**嵌套**的、轮次计数在外层（见 `projections.goalFromProjection`）。
    * 以前按扁平形状读，两个字段都取不到，于是 goal 恒被清空、目标条从未渲染
-   * （`docs/audit-summary.md` §3）。键不存在 → 清空目标条。
+   * （`docs/audit-summary.md`「goal 投影嵌套形状读错」一条）。键不存在 → 清空目标条。
    */
   private applyGoalProjection(scope: SessionScope, value: GoalView | undefined, present: boolean): void {
     scope.goal = present ? value : undefined;
@@ -4589,7 +4589,7 @@ export class ChatController implements vscode.Disposable {
     // 斜杠命令走命令通道，**不发给模型**：官方客户端的 enter 列把 `/xxx` 交给
     // `commands/execute`，宿主也明确「without sending it to the model」。
     // 以前只有 `/permission` 走命令通道，手打的 `/compact`、`/goal` 等一律当普通
-    // 消息发给模型（docs/audit-summary.md §2）。附带附件时仍按普通消息发：
+    // 消息发给模型（docs/audit-summary.md「手打斜杠命令全部不执行」一条）。附带附件时仍按普通消息发：
     // 命令若不能带附件，服务端会拒绝，而用户此刻显然是想发这批内容。
     const slash = attachments.length === 0 ? this.slashCommandOf(scope, text) : undefined;
     if (slash) {

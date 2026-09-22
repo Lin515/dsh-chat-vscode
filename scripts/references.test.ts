@@ -6,7 +6,7 @@
  * 拼到正文之前——自 `@` 改成写正文 token 之后就没有生产方了，2026-09-21 连同它一起
  * 删掉（见 docs/design-attachments.md）。所以这个文件只剩 mention 文本本身的断言。
  *
- * 官方两条路（证据见 docs/audit-summary.md §19 与 `dsh/references.ts` 的文件头）：
+ * 官方两条路（见 docs/audit-summary.md「附件表示」一条与 `dsh/references.ts` 的文件头）：
  * 1. `@path` 引用：只发路径 token，目录以结尾 `/` 标记；
  * 2. 文件上传：拿 `receiptId`，随 prompt 作为 `{type:'file', receiptId}` 发出。
  *

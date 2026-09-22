@@ -454,7 +454,7 @@ export function Composer({
   // - 草稿非空 → **发送**，文案按 `busyEnter` 标成「排队发送 / 插话发送」。
   //
   // 以前运行中一律是「停止」，于是设置项描述里的「发送按钮的行为」在本扩展里
-  // 根本无从生效（审计结论 §3.4）。
+  // 根本无从生效（docs/audit-input-queue-attachments.md「拖放 / 粘贴文件」一条）。
   const busySendLabel = state.busyEnter === "steer" ? texts.sendSteer : texts.sendQueue;
   const sendPill = state.running && !canSend ? (
     <button className="send-btn is-stop" title={texts.stopTitle} onClick={() => post({ type: "stop" })}>
@@ -670,7 +670,7 @@ export function Composer({
                     // 进出计划模式都必须走命令通道：把 `/plan` 拼进消息正文服务端
                     // 不认（实测 plan.active 仍为 false），而退出应当是 `/plan off`
                     // ——正文写 `/plan` 按官方语义反而是**进入**，方向会反。
-                    // 见 scripts/planCommandProbe.ts 与 docs/audit-summary.md §1。
+                    // 见 scripts/planCommandProbe.ts 与 docs/audit-summary.md「`/plan` 计划模式双向失效」一条。
                     post({ type: "runCommand", line: state.planMode ? "/plan off" : "/plan" });
                     setModeOpen(false);
                   }}

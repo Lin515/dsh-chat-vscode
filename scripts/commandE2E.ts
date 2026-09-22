@@ -108,7 +108,7 @@ async function until(check: () => boolean, timeoutMs: number, stepMs = 200): Pro
   return check();
 }
 
-/** 与控制器 `runCommand` 相同的调用形状（第三个位置参数名见 §9.2）。 */
+/** 与控制器 `runCommand` 相同的调用形状（第三个位置参数名见 docs/dsh-server-api.md「端点位置参数名总表」）。 */
 const execute = (sessionId: string, line: string) =>
   client!.request<{ result?: { kind?: string; text?: string } } | undefined>("commands/execute", {
     agentId: sessionId,

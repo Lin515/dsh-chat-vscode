@@ -189,7 +189,7 @@ function stateOf(patch: Record<string, unknown> = {}) {
 // 2026-09-19 收敛：同一份状态从前有三份解码（文件路 / 管道路 / 写侧），宽容规则互不一致。
 // 现在两条读路都调 `decodeState`，差异只剩"版本要不要严格"与"缺 idleSec 用什么"两个显式参数。
 //
-// **这一组是安全边界**（`docs/design-supervisor.md` §3.0、AGENTS.md「服务端给的值不可信」）：
+// **这一组是安全边界**（`docs/design-supervisor.md`「传输层」、AGENTS.md「服务端给的值不可信」）：
 // 管道推来的 `baseUrl`/`token` 决定凭据发往哪个 origin，所以逐字段校验**只许收紧**。
 // 从前这些校验只长在管道路上，文件路那份是另一套写法——收敛之后两个方向都由这一组钉住。
 

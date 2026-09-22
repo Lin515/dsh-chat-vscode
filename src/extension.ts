@@ -189,7 +189,7 @@ function registerContributions(context: vscode.ExtensionContext, host: Contribut
     // （关掉 `dshChat.autoConnect` 时，这就是界面上那枚按钮的落点）
     vscode.commands.registerCommand("dshChat.startServer", () => controller.startInternal()),
     // 「连接内部 DSH」与上一条**同一套逻辑**（有就接上、没有就起一套，见
-    // docs/design-supervisor.md §3.7/§9.4）；「连接外部 DSH」只接已经在跑的外部地址，
+    // docs/design-supervisor.md「同生共死」与「连接条按钮矩阵」）；「连接外部 DSH」只接已经在跑的外部地址，
     // 从不拉起任何东西（地址没配时报一条日志）
     vscode.commands.registerCommand("dshChat.connectInternal", () => controller.connectInternal()),
     vscode.commands.registerCommand("dshChat.connectExternal", () => controller.connectExternal()),

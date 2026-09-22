@@ -30,7 +30,7 @@ export type ConnectionState = "connecting" | "ready" | "error" | "stopped";
 /**
  * 这一轮连哪个 DSH（用户 2026-09-18 口径：**内部优先、外部备用**）。
  *
- * 判定与"粘性"（自动路径选一次就不再换）见 `dsh/connectTarget.ts` 与 `design-supervisor.md` §9。
+ * 判定与"粘性"（自动路径选一次就不再换）见 `dsh/connectTarget.ts` 与 `design-supervisor.md`「选路与粘性目标」。
  */
 export type DshTarget = "internal" | "external";
 
@@ -645,7 +645,7 @@ export type GoalPhase = "active" | "paused" | "blocked" | "complete";
  *    roundsStarted, createdAt, updatedAt }`
  * ——目标本体嵌在 `goal` 里，轮次计数却在**外层**。
  * 早先按扁平的 `{objective, phase, rounds, maxRounds}` 读，于是
- * `goal?.objective` 恒 undefined、状态恒被清空（docs/audit-summary.md §3）。
+ * `goal?.objective` 恒 undefined、状态恒被清空（docs/audit-summary.md「goal 投影嵌套形状读错」一条）。
  */
 export interface GoalView {
   id?: string;
@@ -670,7 +670,7 @@ export interface GoalView {
  *   label?}`——**没有 `kind`/`activity`**。
  *
  * 早先把 RPC 行的过滤（`kind === "child"`）套在投影上，于是面板每次刷新都被
- * 清空（docs/audit-summary.md §4）。
+ * 清空（docs/audit-summary.md「subagentCatalog 形状用错 + mode 硬编码」一条）。
  */
 export interface SubagentView {
   id: string;
@@ -962,7 +962,7 @@ export interface ChatState {
    *
    * **只叫这一个名字**：早先宿主帧里叫 `subagents`、界面状态里叫 `subagentEntries`，
    * 同一条数据在两侧各一个名字，改一侧忘另一侧时既没有编译期报错、也没有断言保护
-   * （`docs/audit-summary.md` B7：开着面板切会话，列表停在上一个会话上）。现在线格式
+   * （`docs/audit-summary.md`「7.2 功能 BUG」表 B7：开着面板切会话，列表停在上一个会话上）。现在线格式
    * 与视图模型都叫 `subagentEntries`（字段清单见 `dsh/sessionView.ts`）。
    *
    * 两个来源的字段集**不一样**，别互相套用（见 `SubagentView` 的注释）。

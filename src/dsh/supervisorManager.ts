@@ -54,7 +54,7 @@
  *
  * 三条纪律一条都没放松：**断开不碰任何进程**（`detachInternal` / `cancelWaiting` / `dispose`
  * 都不杀进程）、`askSupervisor` 的判据是"**手里有没有活连接**"而不是"目标是不是内部"、
- * 收连接与置闸必须成对（见 §9.8 / §9.9）。
+ * 收连接与置闸必须成对（见 `docs/design-supervisor.md`「换目标的彻底性」与「停止连接的语义」）。
  *
  * 旧名字**一个都没删**（并行的探针重写还在调它们，删名会在类型层打架），全部收敛成薄壳；
  * 唯一要留意的是 `stop` 自己：**不给 options 时按旧 `stopAndExit()` 走**（= `cancelWait` +
@@ -70,11 +70,12 @@
  * - `options.autoConnect`（配置项）：**自动**路径（激活期、心跳自检）的许可，默认 true；
  * - `ensure({ start: true, target: "internal" })`：**用户显式**动作（点「启动内部 DSH」或
  *   「连接内部 DSH」、发消息、重启）的许可，它覆盖配置——用户要后台的时候不该被配置挡住。
- *   两个内部按钮**同一套逻辑**（有就接上、没有就起一套），见 `docs/design-supervisor.md` §3.7/§9.4；
+ *   两个内部按钮**同一套逻辑**（有就接上、没有就起一套），见 `docs/design-supervisor.md`
+ *   「同生共死」与「连接条按钮矩阵」；
  * - `ensure({ start: false, target: "external" })`：只接上已经在跑的那一套（「连接外部 DSH」用，
  *   外部目标从来不由扩展拉起）。
  *
- * ## 2026-09-14：等待**不再由时长决定**（用户口径，见 `docs/design-supervisor.md` §8.4）
+ * ## 2026-09-14：等待**不再由时长决定**（用户口径，见 `docs/design-supervisor.md`「等待没有时长上限」）
  *
  * 配置项 `dshChat.startTimeoutSec`（以及 `ManagerOptions.startTimeoutMs`）已删除：
  * 等待只由两件事结束——**真的就绪**，或用户按钮（「停止连接」/「停止服务器」→

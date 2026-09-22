@@ -2,7 +2,7 @@
  * 投影值存储的契约断言（`src/dsh/projectionStore.ts`）。
  *
  * 钉的是官方 `ProjectionValueStore` 那三条语义（本仓库的契约副本在
- * `docs/dsh-server-api.md` §6.10 的客户端消费规则里逐字引过）：
+ * `docs/dsh-server-api.md`「投影」一节的客户端消费规则里逐字引过）：
  *
  * 1. **higher seq wins**：`seq <= 已存水位` 一律丢弃 —— 重放的旧帧不能把新值顶回去；
  * 2. **baseline 在它的 cut 上播种**：块里没带、且不新于该 cut 的键**清掉**；

@@ -187,7 +187,7 @@ export type RemoteEventOutcome =
   | { kind: "result"; value?: unknown }
   | { kind: "rejected"; error: { name: string; message: string; code?: string; details?: unknown } };
 
-// ---------- 端点参数名（严格校验，见 §9.2） ----------
+// ---------- 端点参数名（严格校验，见 docs/dsh-server-api.md「端点位置参数名总表」） ----------
 
 export const METHODS = {
   sessionList: "session/list",
@@ -256,7 +256,7 @@ export const RENDERED_EVENT_TYPES: ReadonlySet<string> = new Set([
  * 本客户端**认识**这个类型，因此都不该触发「不认识的事件」告警。那条告警唯一的
  * 价值是提示「内核冒出了本客户端从未见过的词汇」；一旦已知类型混进去，就退化成
  * 噪音——`agent/inbox/spliced` 每次入队/领取各来一条（新会话开场就有 3~5 条），
- * `command/*` 每次斜杠命令、`llm/retry` 每次模型重试都会命中（审计报告 §11）。
+ * `command/*` 每次斜杠命令、`llm/retry` 每次模型重试都会命中（docs/audit-summary.md「已知未处理的事件反复触发 warn」一条）。
  *
  * 名单 = dsh-session `KNOWN_SESSION_EVENT_TYPES`（0.1.5-rc.1）减去已渲染的类型。
  * 其中 `llm/retry*`、`command/*`、`tool/ptc-dispatch*` 官方 web 端是有界面的

@@ -151,7 +151,7 @@ export function ToolRow({
   const shownOutput = useSelectionFreeze(bodyRef, tool.output ?? "");
 
   // 官方 `leadingFor`：**只有** error 与 stopped 画状态点，running/ok 显示工具图标。
-  // 此前只要传了 tone 就画点，于是所有工具图标都不可见（docs/audit-summary.md §6）。
+  // 此前只要传了 tone 就画点，于是所有工具图标都不可见（docs/audit-summary.md「工具行状态点覆盖图标」一条）。
   // 运行中不画小圆点而是让图标本身呼吸（与思考鲸鱼同一组关键帧）：build/命令行
   // 这类长任务里 7px 的圆点太不显眼，图标级发光才是一眼可见的「还在跑」。
   const tone = tool.status === "error" ? "error" : stopped ? "stopped" : undefined;

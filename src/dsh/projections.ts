@@ -3,7 +3,7 @@
  *
  * 抽出来的理由很直接：`goal` 与 `subagentCatalog` 两个 bug 都是**形状读错**——
  * 按猜测的字段写、没有契约核对、也没有断言，于是「恒为空」这种失败在界面上
- * 表现为「这个功能没有」，而不是报错（docs/audit-summary.md §3、§4）。
+ * 表现为「这个功能没有」，而不是报错（docs/audit-summary.md「goal 投影嵌套形状读错」
  * 形状解析是这一层里最容易错、又最容易测的部分，所以从控制器里挪出来单测。
  */
 import type { ChatState, GoalView, SubagentView, TodoView } from "../shared/chat";
@@ -149,11 +149,11 @@ export function subagentsFromList(value: unknown): SubagentView[] {
 // 发哪一帧）仍在控制器里——见 `dsh/projectionIngest.ts` 的登记表。
 //
 // 为什么这一步值得做：这个 switch 是**三次「按猜测的形状写」的现场**（`goal` /
-// `subagentCatalog` / `turnOutline`，见 `docs/audit-summary.md` §3、§4），而它住的
+// `subagentCatalog` / `turnOutline`，见 `docs/audit-summary.md` 三、四章的对应条目），而它住的
 // 文件没有任何测试接缝（`scripts/` 里没有文件 import controller.ts）。搬进来之后，
 // 每个键都能按契约逐字构造一个值来钉形状，而不必起 VS Code、起服务器。
 //
-// 契约来源：`docs/dsh-server-api.md` §6.10 的 19 个键表（值类型逐条对照本机安装树）。
+// 契约来源：`docs/dsh-server-api.md`「投影」一节的 19 个键表（值类型逐条对照本机安装树）。
 // ---------------------------------------------------------------------------
 
 /** 形状里的数字：给了有限数就取它，否则用兜底值（与搬出来之前的 `numberOr` 逐字一致）。 */

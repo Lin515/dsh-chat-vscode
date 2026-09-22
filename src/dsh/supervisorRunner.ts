@@ -1,5 +1,5 @@
 /**
- * supervisor 的**真实启动器**（设计 §3.0.1）：用 VS Code 自带的 Node 跑 `dist/supervisor.js`。
+ * supervisor 的**真实启动器**（设计见 `docs/design-supervisor.md`「运行时选型」）：用 VS Code 自带的 Node 跑 `dist/supervisor.js`。
  *
  * 单独一个文件，是为了让"扩展宿主"与"无头探针"共用同一份启动逻辑：
  * - 扩展里 `createSupervisorLauncher()` 用 `vscode.env.appRoot` 取到 VS Code 的运行时；

@@ -1,5 +1,5 @@
 /**
- * supervisor 进程本体（设计 §3.5）——**独立于 VS Code 存在**，这是整个架构的地基。
+ * supervisor 进程本体（设计见 `docs/design-supervisor.md`「supervisor 内部」）——**独立于 VS Code 存在**，这是整个架构的地基。
  *
  * 放在 `src/supervisor/` 而不是 `src/dsh/`：它是**独立进程的入口**，
  * 由扩展以脚本方式拉起（`dist/supervisor.js`），与"扩展宿主里的代码"是两种运行环境。
@@ -520,7 +520,7 @@ export async function runSupervisor(options: Options): Promise<number> {
    * `try/finally` 不是装饰：`serverStarting` 卡在 `true` 的后果是**静默瘫痪**——
    * 主循环里"崩了要重起"和"没人用要退场"两条路都以 `!serverStarting` 为前提，
    * 一旦这里中途抛错而没复位，守护进程就永远不再重启 dsh、也永远不退场
-   * （表现和 §8.6 那个 bug 一样："后台没了，谁都救不回来"）。所以无论走哪条路都要复位。
+   * （表现和设计文档「dsh 崩了却不再被拉起」那个 bug 一样："后台没了，谁都救不回来"）。所以无论走哪条路都要复位。
    */
   const bringUpOnce = async (): Promise<void> => {
     serverStarting = true;
