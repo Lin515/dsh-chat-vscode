@@ -2676,6 +2676,13 @@
 .meta-chip {
   display: inline-flex;
   align-items: center;
+  /* 图标做**光学对齐**：`align-items: center` 只保证几何居中，而文字字形的
+     视觉重心比行盒几何中心偏下（拉丁小写悬在基线上方、基线本身偏下），
+     几何居中的图标看起来浮在文字上沿。往下挪 1.5px 抵消（预览页 6 倍放大
+     逐档试出来的：1px 对纯小写仍偏高，2px 对 CJK 标签又偏低）。 */
+  > svg {
+    transform: translateY(1.5px);
+  }
   gap: 6px;
   /* 宽度由内容决定，但**上限**是这一块：两行各自可以被压窄，而不是把页面撑宽 */
   max-width: 100%;
