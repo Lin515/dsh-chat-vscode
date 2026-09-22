@@ -256,6 +256,40 @@ turn/step 的叠加层按通配认领，`reset()` 作废上一窗的活跃身份
 由基线补回）。改前红：两条节点、`streaming` 未清；变异验证过（撤掉通配认领 → A4b 红；
 撤掉轮号/在跑认领 → A4c 红）。
 
+### 已修复（第八批：「是否在生成」的三路输入，2026-09-22）
+
+用户 2026-09-22 报：**生成中离开会话再回来**（切到别的会话、重载 VS Code 窗口、掉线重连），
+会话显示成空闲——底部没有「深度求索中」、按钮是「发送」，而发出去的消息进了队列
+（服务端那一轮其实一直在跑）。根因不是竞态，而是**「是否在生成」只有一条来源**：
+
+| 来源 | 位置 | 缺口 |
+|---|---|---|
+| durable 轮次边界（`turn/start` / `turn/end`） | `adapter.ts` 的 `turnRunning` | 跟随开窗只带最近 60 条**消息**（服务端按 `user/message`+`assistant/message` 切窗，一个 step 一条），长轮次里本轮的 `turn/start` 会被截到窗口外 |
+| 开帧基线的 `assistantStream.activeAttempt` | `adapter.ts` 的 `replayActiveAttempt` | 只在**一次 LLM 调用进行中**存在：工具执行 / 等审批 / 等子代理时没有 |
+| `api-session/status` 中继（官方前端维护 running 的正路） | 服务端经 `$events` 的 emit 帧广播 | 此前落进 `ConfigChangeRouter` 的 default，**被静默丢掉** |
+| `session/list` 的 `SessionSummary.running` | 已读进 `this.sessions` | 只用于列表渲染，从不回填域；新建域也不打底 |
+
+于是「适配器重建（切走会回收域；重连由 `onConnected` 重开 follow）× 服务端此刻没有活跃
+attempt × 本轮 `turn/start` 落在窗口外」三者同时成立时，快照硬发了一个 `running: false`，
+而且**不会自愈**——`assistant-stream` 的 `start`、`step/start`、`tool/result` 都不碰它，
+要等下一轮 `turn/start` 才恢复（用户看到的正是「正文还在流、按钮却是发送」）。四处改动：
+
+① 适配器：截断窗口且整窗没有任何轮次边界时**不发** running 帧（认不出 ≠ 没在跑）；
+② 适配器：`hasOpenTurn()` 暴露「本地有肯定证据」；
+③ 控制器：接住 `api-session/status`（`applySessionStatus`），并同步会话列表那一行；
+④ 控制器：新建域用列表 `running` 打底（官方 `manager.ts` 的 `handleRunning(summary.running)`
+同口径）、`refreshSessions` 与 `onConnected` 时对齐（官方 `ui-session` 的 `reconcileStatus` 同口径）。
+
+采纳策略是纯函数（`src/dsh/sessionStatus.ts`）：**有肯定证据就拒绝「不在跑」**——`$events` 与
+`session/follow` 两条流不同源，乱序的旧边缘会把停止按钮和 `waitUntilIdle`（等不到本轮结束
+就会把队列重新提交、那条消息此后不再自动接续）一起骗掉；反方向（本地认不出、外部说在跑）
+一律采纳，那正是这条链要修的缺口。
+
+回归锁：`scripts/thinkingStream.test.ts` A4d（截断窗口 + 无 attempt ⇒ 不发 running）、
+A4e（截断窗口里有 `turn/end` ⇒ 仍须发 false）、A4f（完整窗口无轮次边界 ⇒ 发 false）；
+`scripts/sessionStatus.test.ts`（解码逐项 + 采纳策略）。变异验证：把快照判据改回无条件发帧、
+把 `acceptSessionStatus` 改成一律采纳，两条都红。
+
 ### 段顺序（2026-09-14 修的活路径缺陷）
 
 `applyAssistantMessage` 此前把 durable 的思考/正文**追加到消息末尾**。模型是边说边吐

@@ -630,6 +630,87 @@ console.log("thinkingStream: 没有基线也能认领叠加层（不分裂） �
 }
 console.log("thinkingStream: 基线补回「这一轮在跑」（截断窗口不误判成已结束） ✓");
 
+// ---------- A4d. 截断窗口 + 没有活跃 attempt：认不出就不发 running 假话 ----------
+//
+// 用户 2026-09-22 报的现场：生成中离开会话（切走会把域整个回收，回来时适配器重建 +
+// 新开窗），回来时显示发送按钮、深度求索栏没了，发出去的消息却进了队列。成因是这一窗
+// 的两条线索**同时**缺席——服务端此刻在跑工具 / 等审批 / 等子代理，没有活跃 attempt；
+// 而跟随开窗只带最近 N 条消息，本轮的 `turn/start` 被截到窗口外。此前这里硬发
+// `running: false`，把「认不出」说成了「没在跑」。正确行为是**不发帧**，让宿主保留
+// 已有的值（域创建时由会话列表打底、之后由 `api-session/status` 中继纠偏）。
+{
+  const { adapter, patches } = harness();
+  const t = Date.now();
+  adapter.applyFrame({
+    type: "snapshot",
+    header: { version: 3, id: "s1", createdAt: t },
+    cursor: 40,
+    hasMore: true,
+    projections: { asOfSeq: 40, values: {} },
+    records: [],
+  } as never);
+  assert.strictEqual(
+    patches.some((patch) => "running" in patch),
+    false,
+    "截断窗口 + 无活跃 attempt 时不该断言 running（认不出 ≠ 没在跑）",
+  );
+  assert.strictEqual(adapter.hasOpenTurn(), false, "认不出的窗口不能冒充「这一轮开着」的肯定证据");
+  // 窗口里出现本轮的 turn/start 之后，肯定证据才成立（控制器据此拒绝外来的 false）
+  adapter.applyEvent({ type: "turn/start", seq: 50, time: t + 1, data: { turn: 9 } });
+  assert.strictEqual(adapter.hasOpenTurn(), true, "看到 turn/start 之后就是肯定证据");
+}
+console.log("thinkingStream: 截断窗口 + 无活跃 attempt 时不发 running ✓");
+
+// ---------- A4e. 截断窗口，但窗口里有本轮的 turn/end：这是结论，必须发 false ----------
+//
+// 与 A4d 成对：不能因为「窗口被截断」就永远沉默——否则收尾的那一轮会一直显示生成中。
+{
+  const { adapter, patches } = harness();
+  const t = Date.now();
+  adapter.applyFrame({
+    type: "snapshot",
+    header: { version: 3, id: "s1", createdAt: t },
+    cursor: 40,
+    hasMore: true,
+    projections: { asOfSeq: 40, values: {} },
+    records: [
+      { type: "event", event: { type: "turn/start", seq: 1, time: t, data: { turn: 1 } } },
+      {
+        type: "event",
+        event: { type: "turn/end", seq: 2, time: t + 5, data: { turn: 1, reason: { kind: "completed" } } },
+      },
+    ],
+  } as never);
+  assert.strictEqual(
+    patches.some((patch) => patch.running === false),
+    true,
+    "窗口里有 turn/end ⇒ 收尾是**结论**，必须发 false",
+  );
+}
+console.log("thinkingStream: 截断窗口里有 turn/end 时仍发 false ✓");
+
+// ---------- A4f. 完整窗口（没被截断）里没有任何轮次边界：也是结论 ----------
+//
+// 空会话 / 还没跑过任何一轮：窗口就是全量日志，没有轮次边界说明确实没在跑。
+{
+  const { adapter, patches } = harness();
+  const t = Date.now();
+  adapter.applyFrame({
+    type: "snapshot",
+    header: { version: 3, id: "s1", createdAt: t },
+    cursor: 0,
+    hasMore: false,
+    projections: { asOfSeq: 0, values: {} },
+    records: [],
+  } as never);
+  assert.strictEqual(
+    patches.some((patch) => patch.running === false),
+    true,
+    "窗口没被截断时，没有轮次边界就是「确实没在跑」，必须发 false",
+  );
+}
+console.log("thinkingStream: 完整窗口里没有轮次边界时发 false ✓");
+
 // ---------- A2. turn/end 之后也绝不能残留 streaming ----------
 
 {

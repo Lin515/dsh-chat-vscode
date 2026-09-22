@@ -203,11 +203,18 @@ console.log("config: 首轮失败不影响其余动作与后续轮次 ✓");
 // 少了这一句，前面所有断言都只是「一个没人调用的模块」。
 {
   const controller = readFileSync(join(process.cwd(), "src", "dsh", "controller.ts"), "utf8");
+  // 取 `onEventFrame` 里 emit 那一个分支的正文（缩进 6 空格的语句到 4 空格的收尾括号）
+  const emitBranch = /if \(frame\.type === "emit"\) \{([\s\S]*?)\n    \}/.exec(controller)?.[1] ?? "";
   assert.ok(
-    /if \(frame\.type === "emit"\) \{\s*\n\s*this\.configChanges\.handle\(frame\.event, frame\.args \?\? \[\]\);/.test(
-      controller,
-    ),
-    "onEventFrame 必须把 emit 帧交给 ConfigChangeRouter",
+    /this\.configChanges\.handle\(frame\.event, frame\.args \?\? \[\]\);/.test(emitBranch),
+    "onEventFrame 的 emit 分支必须把帧交给 ConfigChangeRouter",
+  );
+  // 状态位中继（`api-session/status`）要在配置路由**之前**被接住：它不是配置变更，
+  // 交给路由器只会落进 default 被丢掉（2026-09-22 之前就是这样，running 因此少了
+  // 一条权威来源）。
+  assert.ok(
+    /if \(this\.applySessionStatus\(frame\.event, frame\.args \?\? \[\]\)\) return;/.test(emitBranch),
+    "emit 分支要先接住 api-session/status（会话状态位）",
   );
   assert.ok(
     /reloadSettings: \(\) => this\.reloadSettings\(\)/.test(controller) &&

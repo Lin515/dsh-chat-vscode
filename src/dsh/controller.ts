@@ -90,6 +90,7 @@ import {
 } from "./projectionIngest";
 import { deriveTrajectoryModel } from "./trajectory";
 import { normalizePath, visibleForWorkspace, visibleSessionRows } from "./sessionList";
+import { acceptSessionStatus, decodeSessionStatus } from "./sessionStatus";
 import { isBlank, mergeWindowCache, WindowRestore, WorkspaceWindowStateStore, type SidebarSlot, type WindowCache, type WindowKind } from "./windowState";
 
 /**
@@ -1874,6 +1875,10 @@ export class ChatController implements vscode.Disposable {
     this.openControlStream();
     this.openEventsStream();
     this.openWorkspaceStream();
+    // 顺便把 running 与会话列表对齐一次：掉线期间本轮可能已经收尾，而那段时间的状态位
+    // 边缘（`api-session/status`）我们没收到；这也是「一切都从服务端重算」的一部分
+    // （新的适配器认不出时会保留这里的结论，见 `applyFrame`）。
+    await this.refreshSessions();
   }
 
   /**
@@ -2284,12 +2289,68 @@ export class ChatController implements vscode.Disposable {
       // 所以这里不再算血缘深度——那个字段的唯一用途就是缩进。
       this.sessions = views;
       this.emitSessionLists();
+      // running 的**权威打底**：列表是服务端算的（`SessionSummary.running`），域存在时
+      // 按它对齐——官方 `ui-session` 的 `reconcileStatus()` 是同一口径。适配器那一路只从
+      // durable 轮次边界推导，窗口被截断 + 工具阶段时它**不发帧**（见适配器的注释），
+      // 那个缺口就由这里与 `api-session/status` 中继补上。
+      for (const scope of [...this.scopes.values()]) {
+        const row = views.find((item) => item.id === scope.sessionId);
+        if (!row) continue;
+        if (!acceptSessionStatus(row.running, scope.adapter?.hasOpenTurn() === true)) continue;
+        this.writeScopeRunning(scope, row.running);
+      }
       // 会话列表是**标题的权威**（服务端 `session/list`）：恢复窗口时面板先绑上会话、
       // 这一份才到，标签要在这里补一次；删掉的会话也从标签上退掉
       for (const sessionId of new Set(this.viewSessions.values())) this.syncPanelTitle(sessionId);
     } catch (error) {
       this.log(`[sessions] 列表获取失败：${this.describeError(error)}`);
     }
+  }
+
+  /**
+   * 会话状态位中继（`api-session/status`，`args = [sessionId, running]`）。
+   *
+   * 官方前端就靠这条维护 running（`ui-session` 的 `observeRunning`），官方 session 层
+   * 还把它同步进会话列表的行（`manager.ts` 的 `handleSessionStatus`）——本扩展此前把
+   * 这条帧当"不认识的配置事件"丢掉，于是 running 只剩日志边缘一条来源，而那条路在
+   * 「窗口截断 + 服务端没有活跃 attempt」时给不出结论（见 `dsh/sessionStatus.ts` 的文件头）。
+   *
+   * @returns 这条帧认不认。认得就由这里消费掉，不再交给配置变更路由（它不是配置）。
+   */
+  private applySessionStatus(event: string, args: readonly unknown[]): boolean {
+    if (event !== "api-session/status") return false;
+    const status = decodeSessionStatus(args);
+    if (status === undefined) {
+      // 认得但形状不对：记一行日志（服务端换了口径时这是唯一的线索），当无事发生。
+      // **不**退化成 false——那就是又一次「不知道说成没在跑」。
+      this.log(`[status] api-session/status 参数形状不认识：${JSON.stringify(args)}`);
+      return true;
+    }
+    const scope = this.scopes.get(status.sessionId);
+    if (!acceptSessionStatus(status.running, scope?.adapter?.hasOpenTurn() === true)) return true;
+    // 列表那一行是**新域的打底值**（见 `ensureScope`），必须与域同一个口径：列表里的
+    // 「运行中」标记也靠它，不然用户切走再切回来会拿到一个过期的值。
+    this.setSessionRowRunning(status.sessionId, status.running);
+    if (scope) this.writeScopeRunning(scope, status.running);
+    return true;
+  }
+
+  /** 写域里的 running（`scope.running` 是权威副本，界面读的首帧快照/ESC 也都看它）。 */
+  private writeScopeRunning(scope: SessionScope, running: boolean): void {
+    if (scope.running === running) return;
+    scope.running = running;
+    this.deliver(scope.sessionId, {
+      type: "patch",
+      patch: sessionPatch(this.sessionSource(scope), ["running"]),
+    });
+  }
+
+  /** 会话列表某一行的 running（找不到那一行就不管：它不在本窗口的可见集合里）。 */
+  private setSessionRowRunning(sessionId: string, running: boolean): void {
+    const row = this.sessions.find((item) => item.id === sessionId);
+    if (!row || row.running === running) return;
+    this.sessions = this.sessions.map((item) => (item.id === sessionId ? { ...item, running } : item));
+    this.emitSessionLists();
   }
 
   /** 真正展示给界面的两个列表（所有窗口共享同一份会话列表）。 */
@@ -2547,6 +2608,14 @@ export class ChatController implements vscode.Disposable {
     if (existing) return existing;
     if (!this.client) return undefined;
     const scope = new SessionScope(sessionId);
+    // **running 打底**：会话列表带服务端的权威值（`SessionSummary.running`），新域先按它
+    // 起步——官方客户端的 Session 实例同样在建立时用列表摘要喂一次
+    // （`manager.ts` 的 `session.handleRunning(summary.running)`，「列表先到」时保持一致）。
+    // 这一步不能省：适配器重建后那份快照在「窗口被截断 + 没有活跃 attempt」时**不发**
+    // running 帧（见 `applyFrame`），没有打底的话域会停在 `false` 上——明明在生成却给
+    // 出发送按钮，消息被按 queue 发出去排进队列（用户 2026-09-22 报的现场）。
+    const row = this.sessions.find((item) => item.id === sessionId);
+    if (row) scope.running = row.running;
     this.scopes.set(sessionId, scope);
     this.openScopeFollow(scope);
     // 重开控制流拿新会话的 baseline（队列/任务/投影）：baseline 是全量集合，
@@ -3337,6 +3406,10 @@ export class ChatController implements vscode.Disposable {
       return;
     }
     if (frame.type === "emit") {
+      // `api-session/status` 是**会话状态位**（args = `[sessionId, running]`），不是配置
+      // 变更，所以在交给配置路由之前先接住——此前它落进 `ConfigChangeRouter` 的 default
+      // 被静默丢掉，而官方前端正是靠这条中继维护 running（见 `dsh/sessionStatus.ts`）。
+      if (this.applySessionStatus(frame.event, frame.args ?? [])) return;
       this.configChanges.handle(frame.event, frame.args ?? []);
       return;
     }

@@ -689,6 +689,18 @@ export class SessionAdapter {
    */
   private turnRunning = false;
 
+  /**
+   * 这一窗里**出现过轮次边界**吗（`turn/start` 或 `turn/end`）。
+   *
+   * 「这一轮在不在跑」的判据由它与 `turnRunning` / `hasMore` 三者组成，缺一会说谎：
+   * 跟随开窗只带最近 N 条**消息**，长轮次里本轮的 `turn/start` 会被截到窗口外，
+   * 那时 `turnRunning === false` 的含义是**认不出**，不是「已经收尾」。而服务端在
+   * 工具执行 / 等审批 / 等子代理时也没有活跃 attempt（`activeAttempt` 只覆盖一次
+   * LLM 调用），两条线索可能同时缺席——那时唯一诚实的做法是**不发**这一帧
+   * （见 `applyFrame` 里补发处的注释）。
+   */
+  private sawTurnBoundary = false;
+
   constructor(private readonly sendFrame: (frame: HostToWebview) => void) {}
 
   /** 发一帧给宿主；重放期间静默（见 `replaying`）。 */
@@ -936,9 +948,25 @@ export class SessionAdapter {
       // `messages/reset` **之前**折回模型（重放期间静默，见 replayActiveAttempt）。
       this.replayActiveAttempt(frame.assistantStream);
       // 重放静默（见 `replaying`），所以「这一轮还在跑」要**显式**补一帧：
-      // 打开一个正在生成的会话时，这是 running 的唯一来源（`snapshotFor` 里那份
-      // 首帧快照读的是 `scope.running`，而它同样只由这一类帧更新）。
-      this.emit({ type: "patch", patch: { running: this.turnRunning } });
+      // 打开一个正在生成的会话时，这（与下面那条中继）是 running 的来源
+      // （`snapshotFor` 里那份首帧快照读的是 `scope.running`，而它只由这一类帧更新）。
+      //
+      // **只有拿到结论时才发声**（2026-09-22：用户报「离开会话再回来显示发送按钮，
+      // 发出去的消息却进了队列」）。`turnRunning === false` 有两种含义：
+      // ①窗口里有本轮的 `turn/end` ⇒ 确实收尾了（结论）；②窗口被截断、本轮的
+      // `turn/start` 根本没进来 ⇒ **认不出**。后者再叠上服务端此刻没有活跃 attempt
+      // （工具执行 / 等审批 / 等子代理）时两条线索同时缺席，硬发 `false` 就是把
+      // 「不知道」说成「没在跑」——而 running 决定给不给停止按钮、消息按 queue 还是
+      // steer 发、以及 `waitUntilIdle` 等不等这一轮，代价是「发出去的消息被排进队列」。
+      //
+      // 判据：`sawTurnBoundary` 为真 ⇒ 窗口里最后一个轮次边界就是本轮的收尾——窗口是
+      // 日志**后缀**，`turn/end` 之后若还有新的 `turn/start`，它必然也在窗口里，那时
+      // `turnRunning` 已经是 true；`!hasMore` ⇒ 窗口就是全量日志，连一个轮次边界都没有
+      // 说明确实还没跑过。两者都不成立时**不发帧**，由宿主保留已有的值——那是由
+      // 会话列表打底、`api-session/status` 中继纠偏的（控制器 `applySessionStatus`）。
+      if (this.turnRunning || this.sawTurnBoundary || !this.hasMore) {
+        this.emit({ type: "patch", patch: { running: this.turnRunning } });
+      }
       // 历史里可能有旧轮次的文件芯片：回放完安排一次分类（旧文件多已定型，
       // 这一批通常一次 fs.stat + 一次 git 状态读取就出结果）
       this.scheduleFileKinds();
@@ -960,6 +988,18 @@ export class SessionAdapter {
     if (frame.type === "assistant-stream") {
       this.applyAssistantStream(frame.frame);
     }
+  }
+
+  /**
+   * 本地有没有「这一轮还开着」的**肯定证据**（窗口里 `turn/start` 之后还没等到 `turn/end`）。
+   *
+   * 只有一个用点：外部来的权威 running 里那条「不在跑」要不要采纳（采纳策略在
+   * `dsh/sessionStatus.ts` 的 `acceptSessionStatus`，控制器 `applyRunningToScope` 调用）。
+   * 按肯定证据写：拿不到证据时接受外部结论（那正是修「认不出却显示成空闲」的缺口），
+   * 有证据时不动手——真要收尾时 durable 的 `turn/end` 必然到，那一路才是权威。
+   */
+  hasOpenTurn(): boolean {
+    return this.turnRunning;
   }
 
   /** 记下一条 durable 事件（按 seq 去重、按 seq 排序），供「加载更早」重折。 */
@@ -1270,6 +1310,7 @@ export class SessionAdapter {
         const message = this.ensureAssistantMessage(event.time);
         message.streaming = true;
         this.turnRunning = true;
+        this.sawTurnBoundary = true;
         this.emit({ type: "patch", patch: { running: true } });
         this.emit({ type: "message/upsert", message: { ...message } });
         break;
@@ -1278,6 +1319,8 @@ export class SessionAdapter {
       case "turn/end": {
         // 记下这一轮的结束 seq：它是分支唯一合法的锚点（见 turnEndSeqs 注释）
         if (typeof data.turn === "number") this.turnEndSeqs.set(data.turn, event.seq);
+        // 窗口里有轮次边界了：`turnRunning` 此刻的 false 从此是**结论**（见字段注释）
+        this.sawTurnBoundary = true;
         // 该轮的**每一段**都要收尾：插话切分后同轮可能有多条助手消息，
         // 残留的 streaming 标记会让思考鲸鱼一直发蓝光
         const endTurn = typeof data.turn === "number" ? data.turn : this.currentTurn ?? 0;
@@ -2124,6 +2167,8 @@ export class SessionAdapter {
     this.liveTurn = undefined;
     this.liveStep = undefined;
     this.turnRunning = false;
+    // 新开窗 = 重新认识这一窗：轮次边界也要重新数（见字段注释）
+    this.sawTurnBoundary = false;
     this.sequence = 0;
     // 刻意不清 contextWindow / contextOccupancy / lastSpeed：
     // 适配器按会话新建，同一会话内的 snapshot（重连、重开跟随流）不该把这些

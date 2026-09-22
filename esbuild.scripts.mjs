@@ -133,6 +133,7 @@ const entries = {
   "build/activity.test.mjs": "scripts/activity.test.ts",
   "build/subagent-panel.test.mjs": "scripts/subagentPanel.test.ts",
   "build/changelog-guard.test.mjs": "scripts/changelogGuard.test.ts",
+  "build/session-status.test.mjs": "scripts/sessionStatus.test.ts",
 
 };
 
