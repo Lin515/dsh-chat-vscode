@@ -586,6 +586,11 @@ export interface SessionSummaryView {
   updatedAt: number;
   cwd?: string;
   running: boolean;
+  /**
+   * 生成完毕但还没被任何窗口打开过（「生成完毕未读」）：历史列表里标题显示蓝色，
+   * 与运行中同色。宿主维护（controller 的 `unreadSessionIds`），打开会话即清除。
+   */
+  unread?: boolean;
   blank?: boolean;
   /**
    * 源会话 id：分支（`session/fork`）出来的会话带它，列表里靠标题前缀

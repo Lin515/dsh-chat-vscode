@@ -3766,6 +3766,12 @@ button.meta-chip:hover {
   white-space: nowrap;
 }
 
+/* 运行中 / 生成完毕未读的会话：标题显示蓝色，提醒「正在生成」或「结果还没看」；
+   --info（charts-blue）是主题给的状态蓝 */
+.session-item.is-highlight .session-item-title {
+  color: var(--info);
+}
+
 .session-item-sub {
   display: flex;
   align-items: center;

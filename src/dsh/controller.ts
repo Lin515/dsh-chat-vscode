@@ -586,6 +586,15 @@ export class ChatController implements vscode.Disposable {
    */
   private readonly deletedSessionIds: Set<string>;
   /**
+   * 「生成完毕还没看过」的会话 id 集合（持久化于 globalState 的 `unreadSessionIds`）。
+   *
+   * 会话从「运行中」落到「结束」那一刻，如果没有任何窗口绑着它，就记成未读；
+   * 任一窗口打开它（`bindViewToSession`）即清除。历史列表里这些行的标题与运行中
+   * 一样显示蓝色，提醒「它已经生成完了，结果还没看」。持久化是为了跨扩展重载
+   * 保留——服务端的 `session/list` 不知道这个概念，列表整份替换时也由这里回填。
+   */
+  private readonly unreadSessionIds: Set<string>;
+  /**
    * 草稿与附件按会话隔离：切换会话时输入框文本与附件芯片一起切换。
    * 已绑定会话的窗口用会话 id 做键（同会话的多窗口共享）；**未绑定**的窗口用
    * 自己的 viewId 做键（各自暂存，建会话时迁移到会话键，见 `bindViewToSession`）。
@@ -750,6 +759,7 @@ export class ChatController implements vscode.Disposable {
     private readonly secrets: vscode.SecretStorage,
   ) {
     this.deletedSessionIds = new Set(this.state.get<string[]>("deletedSessionIds") ?? []);
+    this.unreadSessionIds = new Set(this.state.get<string[]>("unreadSessionIds") ?? []);
     // 窗口状态缓存走 **workspaceState**（VS Code 自己的工作区缓存）而不是 globalState：
     // 「这个文件夹上次开着哪几个窗口、各自是哪个会话」本来就是工作区级的，
     // 换个项目不该被带过去。读取是同步的（构造期一次），所以激活同期的
@@ -1497,6 +1507,8 @@ export class ChatController implements vscode.Disposable {
   private bindViewToSession(viewId: string, sessionId: string, scope: SessionScope): void {
     const previous = this.viewSessions.get(viewId);
     if (previous === sessionId) return;
+    // 打开即已读：历史列表里那条「生成完毕未读」的蓝标题到此结束
+    this.setSessionUnread(sessionId, false);
     // 「待建会话」的参数到此为止：绑定之后预设/模型都由这条会话自己的状态说话，
     // 下次「新建对话」重新从配置项开始（见 `viewAgentPreset` 的字段注释）
     this.viewAgentPreset.delete(viewId);
@@ -2532,6 +2544,17 @@ export class ChatController implements vscode.Disposable {
       ).map((item) => this.toSessionView(item));
       // 分支不再缩进（用户 2026-09-19 口径：和普通会话同级，靠标题前缀「分支: 」区分），
       // 所以这里不再算血缘深度——那个字段的唯一用途就是缩进。
+      // 列表整份替换也会造成 running 变化（服务端算的权威值落下来），同样要结算
+      // 「生成完毕未读」——上面的 `setSessionRowRunning` 只覆盖 `api-session/status`
+      // 中继那一条路。比较基准是替换前的旧行；启动时旧列表为空，没有可结算的。
+      const viewedIds = new Set(this.viewSessions.values());
+      const oldRunning = new Map(this.sessions.map((item) => [item.id, item.running]));
+      for (const view of views) {
+        const was = oldRunning.get(view.id);
+        if (was === undefined || was === view.running) continue;
+        if (view.running) this.setSessionUnread(view.id, false);
+        else if (!viewedIds.has(view.id)) this.setSessionUnread(view.id, true);
+      }
       this.sessions = views;
       this.emitSessionLists();
       // running 的**权威打底**：列表是服务端算的（`SessionSummary.running`），域存在时
@@ -2599,6 +2622,24 @@ export class ChatController implements vscode.Disposable {
     const row = this.sessions.find((item) => item.id === sessionId);
     if (!row || row.running === running) return;
     this.sessions = this.sessions.map((item) => (item.id === sessionId ? { ...item, running } : item));
+    // running 的结算顺带结算「生成完毕未读」：
+    // - 新一轮开始（false→true）→ 清掉旧未读：蓝色此刻由 running 负责，收尾时重判；
+    // - 收尾（true→false）且**没有任何窗口**绑着它 → 记成未读（正看着的窗口不算，
+    //   用户在屏幕上看着它结束，读完即走）。
+    if (running) {
+      this.setSessionUnread(sessionId, false);
+    } else if (![...this.viewSessions.values()].includes(sessionId)) {
+      this.setSessionUnread(sessionId, true);
+    }
+    this.emitSessionLists();
+  }
+
+  /** 记/清一条「生成完毕未读」，有变化才持久化并刷新两个列表。 */
+  private setSessionUnread(sessionId: string, unread: boolean): void {
+    if (this.unreadSessionIds.has(sessionId) === unread) return;
+    if (unread) this.unreadSessionIds.add(sessionId);
+    else this.unreadSessionIds.delete(sessionId);
+    void this.state.update("unreadSessionIds", [...this.unreadSessionIds]);
     this.emitSessionLists();
   }
 
@@ -2607,7 +2648,12 @@ export class ChatController implements vscode.Disposable {
     const active: SessionSummaryView[] = [];
     const archived: SessionSummaryView[] = [];
     for (const session of this.sessions) {
-      (this.archivedSessionIds.has(session.id) ? archived : active).push(session);
+      // unread 不落在行对象上（列表整份替换时行是新建的），按权威集合现算
+      const row: SessionSummaryView = {
+        ...session,
+        unread: this.unreadSessionIds.has(session.id),
+      };
+      (this.archivedSessionIds.has(session.id) ? archived : active).push(row);
     }
     this.emitAll({ type: "sessions", sessions: active });
     this.emitAll({ type: "archivedSessions", sessions: archived });

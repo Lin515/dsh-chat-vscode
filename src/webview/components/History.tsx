@@ -86,7 +86,10 @@ export function HistoryPanel({
           return (
             <div
               key={session.id}
-              className={`session-item${session.id === currentId ? " is-current" : ""}`}
+              className={`session-item${session.id === currentId ? " is-current" : ""}${
+                // 运行中或生成完毕还没看过的会话：标题显示蓝色（.is-highlight）
+                session.running || session.unread ? " is-highlight" : ""
+              }`}
             >
               <button
                 className="session-item-main"
