@@ -20,7 +20,7 @@ import { BAR_ORDER, pickVariants, type ToolbarVariant } from "../src/webview/too
 const WIDTHS: Record<string, number> = {
   "permission:icon": 22,
   "model:full": 120,
-  // `提供商/模型名` 全格式档：模型名之外再挂一个提供商展示名（如「火山方舟/」）
+  // `提供商/模型名` 全格式档：模型名之外再挂一个提供商展示名（如「某提供商/」）
   "model:provider": 190,
   "send:full": 52,
   "effort:full": 26,
