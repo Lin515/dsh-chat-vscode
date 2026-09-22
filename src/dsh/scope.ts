@@ -66,6 +66,14 @@ export class SessionScope {
    * （见 `docs/audit-summary.md`「7.2 功能 BUG」表 B7）。
    */
   subagentEntries: SubagentView[] = [];
+  /**
+   * 服务端说的「这个父会话的 Agent 还在」——只有 `subagents/list` RPC 会给出
+   * （`SubagentCatalog.parentAvailable`，含义是**父 Agent 是否驻留**，不是「目录非空」）。
+   *
+   * 没问过就是 `undefined`：这时下发的 `parentAvailable` 退回「目录非空」这个近似值
+   * （该字段目前没有界面消费点，别为了它编一个肯定结论出来）。
+   */
+  subagentParentAvailable: boolean | undefined;
   jobs: JobItemView[] = [];
   goal: ChatState["goal"];
   planMode = false;

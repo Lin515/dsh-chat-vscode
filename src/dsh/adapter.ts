@@ -13,6 +13,7 @@ import type {
   QuestionView,
   Segment,
   SessionSummaryView,
+  SubagentView,
   TodoView,
   ToolCallView,
   UsageView,
@@ -29,6 +30,7 @@ import { classifyTool, parseExitStatus, summaryKeys, terminalFailed } from "../s
 import { deriveToolSummary, parseToolArgs, todoProgressOf, toolCardOf } from "../shared/toolCard";
 import { displaySessionMentions } from "../shared/mentions";
 import { readRangeFromMeta, readRangeFromOutput } from "./readRange";
+import { subagentFromCatalogEvent } from "./projections";
 import { expandAssistantStream } from "./assistantStream";
 import { producedPath } from "./produced";
 import type { HostToWebview } from "../shared/ipc";
@@ -784,6 +786,30 @@ export class SessionAdapter {
    */
   refreshFiles: (() => Promise<void>) | undefined;
 
+  /**
+   * 子代理建立事实（`subagent/catalog` durable 事件）的落点（由控制器注入）。
+   *
+   * 这是「注册」这条链路的入口：父会话在子级建立成功时追加该事件（`dsh-subagent`
+   * 的 `establishCatalogChild`），**跟随流里就带着它**——直播时立刻到，重载时随
+   * 重放再走一遍。控制器据此把子代理并入目录（见 `controller.registerSubagent`），
+   * 于是列表不再依赖「用户点开面板」那一下 RPC。
+   *
+   * 与 `emit` 不同，**重放期间照样回调**（`replaying` 只压聊天流的中间态帧）：
+   * 重载窗口后重新注册正是靠重放。
+   */
+  onSubagentEstablished: ((entry: SubagentView) => void) | undefined;
+
+  /**
+   * 本会话**继承前缀**的末尾 seq（`session/end-seed` 的 seq），没有分叉种子时是 -1。
+   *
+   * 分叉（`branchFrom`）出来的会话，日志前缀是从源会话继承来的：那些
+   * `subagent/catalog` 描述的是**源会话**的子代理，不是本会话的。服务端的
+   * `subagentCatalog` 投影用 `event.seq < state.inheritedEventCount` 把它们排除，
+   * 客户端拿不到 `inheritedEventCount`，只能靠这条边界事件（种子写入时它正好是
+   * 前缀的最后一条），判据与服务端同口径。
+   */
+  private seedEndSeq = -1;
+
   /** 文件分类的去抖计时器（见 `scheduleFileKinds`）。 */
   private fileKindsTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -1113,6 +1139,15 @@ export class SessionAdapter {
     // 两个调用方（follow 开窗快照、settleHistory）都在重放之后立刻发 reset。
     this.replaying = true;
     try {
+      // **先认边界，再逐条应用**：继承切点（`session/end-seed {inherited:true}`）在日志里
+      // 排在它标记的那些事件**之后**，边走边认的话，前缀里的 `subagent/catalog` 会在
+      // 认出来之前就被当成自己的（见 `seedEndSeq`）。
+      this.seedEndSeq = -1;
+      for (const event of events) {
+        if (event.type !== "session/end-seed") continue;
+        if ((event.data as { inherited?: unknown } | undefined)?.inherited !== true) continue;
+        if (typeof event.seq === "number") this.seedEndSeq = Math.max(this.seedEndSeq, event.seq);
+      }
       for (const event of events) this.applyEvent(event);
     } finally {
       this.replaying = false;
@@ -1517,6 +1552,35 @@ export class SessionAdapter {
       case "session/title": {
         const title = typeof data.title === "string" ? data.title : undefined;
         if (title) this.emit({ type: "patch", patch: { session: this.sessionWithTitle(title) } });
+        break;
+      }
+
+      /**
+       * 分叉种子的末尾（继承前缀的边界）。**不出节点**，只记下这条边界：
+       * 分叉会话的日志前缀是源会话的，那些 `subagent/catalog` 不属于本会话
+       * （判据与服务端 `subagentCatalog` 投影的 `event.seq < inheritedEventCount` 同口径）。
+       *
+       * 只有 `data.inherited === true` 的那条是继承切点：本地写种子（例如子代理会话）
+       * 也带一条 `session/end-seed {}`，那是它**自己的**种子末尾，不能拿来排除任何事实。
+       * 取最大 seq：分叉的前缀里可能已经带着祖先的同类标记（见 `session/index.ts` 的构造注释）。
+       */
+      case "session/end-seed": {
+        if (data.inherited !== true) break;
+        if (typeof event.seq === "number") this.seedEndSeq = Math.max(this.seedEndSeq, event.seq);
+        break;
+      }
+
+      /**
+       * 子代理建立事实 → **注册进目录**（父会话写的 durable 事实，直播与重放都会到）。
+       *
+       * 与 `SubagentView` 的另两种来源区分清楚：这里只有 `{childId, mode, label?}`，
+       * **没有 `activity`**——状态由 `api-session/status` 中继与 RPC 给。继承前缀里的
+       * 事实整批忽略（见 `seedEndSeq`）。
+       */
+      case "subagent/catalog": {
+        if (typeof event.seq === "number" && event.seq <= this.seedEndSeq) break;
+        const entry = subagentFromCatalogEvent(data);
+        if (entry) this.onSubagentEstablished?.(entry);
         break;
       }
 
@@ -2169,6 +2233,8 @@ export class SessionAdapter {
     this.turnRunning = false;
     // 新开窗 = 重新认识这一窗：轮次边界也要重新数（见字段注释）
     this.sawTurnBoundary = false;
+    // 继承前缀的边界同理由新窗口的记录重新给（分叉会话的快照里必然带 `session/end-seed`）
+    this.seedEndSeq = -1;
     this.sequence = 0;
     // 刻意不清 contextWindow / contextOccupancy / lastSpeed：
     // 适配器按会话新建，同一会话内的 snapshot（重连、重开跟随流）不该把这些

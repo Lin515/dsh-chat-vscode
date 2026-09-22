@@ -99,27 +99,6 @@ export function subagentCatalogFromProjection(value: unknown): SubagentCatalogEn
 export type SubagentCatalogEntryView = Pick<SubagentView, "id" | "label" | "mode">;
 
 /**
- * 把投影目录与已知列表合并：同 id 的 `activity` 原样保留。
- *
- * 投影不带 `activity`（那是 `subagents/list` RPC 行才有的字段），所以「不知道」时
- * 保留上一次由 RPC 给出的结论；从没问过就是 `undefined`——界面据此不画状态点。
- */
-export function mergeSubagentActivity(
-  catalog: readonly SubagentCatalogEntryView[],
-  known: readonly SubagentView[] = [],
-): SubagentView[] {
-  return catalog.map((entry) => ({
-    ...entry,
-    activity: known.find((item) => item.id === entry.id)?.activity,
-  }));
-}
-
-/** 投影目录 + 已知列表 → 子代理面板的行（合并见 `mergeSubagentActivity`）。 */
-export function subagentsFromCatalog(value: unknown, known: readonly SubagentView[] = []): SubagentView[] {
-  return mergeSubagentActivity(subagentCatalogFromProjection(value), known);
-}
-
-/**
  * `subagents/list` RPC 行 → 子代理列表。
  *
  * 这里是 `SubagentListEntry`：`kind:'child'` 才是可用子代理，`kind:'diagnostic'`
@@ -139,6 +118,78 @@ export function subagentsFromList(value: unknown): SubagentView[] {
         activity: child.activity === "running" ? ("running" as const) : ("inactive" as const),
       };
     });
+}
+
+/**
+ * `subagent/catalog` **durable 事件** → 目录一条（子代理「注册」的形状读取）。
+ *
+ * 这是第三种形状，别和上面两种混：
+ * ```
+ * { version: 0, childId, childCreatedAt, mode, label? }   // SubagentCatalogEvent
+ * ```
+ * 父会话在子级建立成功时追加它（`dsh-subagent` 的 `establishCatalogChild`），
+ * 所以**跟随流里就能拿到**——不必等 RPC，也不必等投影。
+ *
+ * 两条纪律：
+ * - `version !== 0` 或 `childId` 空 → `undefined`（认不出的版本**不猜**，交给 RPC 那条完整路兜）；
+ * - **不设 `activity`**：事件里没有这个字段，状态由 `api-session/status` 中继或 RPC 给。
+ */
+export function subagentFromCatalogEvent(value: unknown): SubagentView | undefined {
+  const event = value as { version?: unknown; childId?: unknown; mode?: unknown; label?: unknown } | null | undefined;
+  if (event?.version !== 0) return undefined;
+  const id = typeof event.childId === "string" ? event.childId : "";
+  if (!id) return undefined;
+  return {
+    id,
+    label: typeof event.label === "string" && event.label ? event.label : id,
+    mode: event.mode === "continuable" ? "continuable" : "one-shot",
+  };
+}
+
+/**
+ * 把一条目录**并入**列表（注册语义：只增不删）。
+ *
+ * 三种来源（durable 事件 / 投影 / RPC）都走这里，区别只在 activity：
+ * 同 id 时更新 `label`/`mode` 并**保留已知的 `activity`**（新来源没带状态时不能把
+ * 已知结论抹成「不知道」）；新 id 追加到末尾，顺序就是发现顺序。
+ *
+ * 为什么不是整表替换：子代理会话只增不删，而三种来源的**完整度不同**——进程外
+ * provider 不写 `subagent/catalog`，投影里就没有它们；拿投影整表替换会把 RPC 刚拿到的
+ * 那些行丢掉（每次投影刷新都丢，直到下一次 RPC）。
+ */
+export function upsertSubagent(entries: readonly SubagentView[], entry: SubagentView): SubagentView[] {
+  const index = entries.findIndex((item) => item.id === entry.id);
+  if (index < 0) return [...entries, entry];
+  const next = entries.slice();
+  const previous = entries[index]!;
+  next[index] = {
+    ...previous,
+    ...entry,
+    ...(entry.activity === undefined && previous.activity !== undefined
+      ? { activity: previous.activity }
+      : {}),
+  };
+  return next;
+}
+
+/**
+ * 一条子代理的驻留状态变化（`api-session/status` 中继）→ 新的列表。
+ *
+ * 与 `upsertSubagent` 分开是**有意的**：状态是**就地覆盖**的一条，不碰 label/mode；
+ * 找不到这个 id 就原样返回（那说明它不是本会话已注册的子代理，不动手）。
+ * 官方同款见 `dsh-api-session-controller` 客户端的 `updateCatalogActivity`。
+ */
+export function withSubagentActivity(
+  entries: readonly SubagentView[],
+  childSessionId: string,
+  running: boolean,
+): { entries: SubagentView[]; changed: boolean } {
+  const activity = running ? ("running" as const) : ("inactive" as const);
+  const index = entries.findIndex((item) => item.id === childSessionId);
+  if (index < 0 || entries[index]!.activity === activity) return { entries: [...entries], changed: false };
+  const next = entries.slice();
+  next[index] = { ...entries[index]!, activity };
+  return { entries: next, changed: true };
 }
 
 // ---------------------------------------------------------------------------

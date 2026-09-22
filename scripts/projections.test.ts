@@ -10,7 +10,9 @@
  * - `@deepseek-ai/dsh-goal/lib/types/types.d.ts` 的 `GoalProjection`；
  * - `@deepseek-ai/dsh-subagent/lib/types/projection-types.d.ts` 的
  *   `SubagentCatalogEntry`；
- * - `@deepseek-ai/dsh-subagent/lib/types/control-types.d.ts` 的 `SubagentListEntry`。
+ * - `@deepseek-ai/dsh-subagent/lib/types/control-types.d.ts` 的 `SubagentListEntry`；
+ * - `@deepseek-ai/dsh-subagent` 的 `dsh-subagent/catalog` 模块：`subagent/catalog`
+ *   事件的 `SubagentCatalogEvent`（注册那条路的形状，与上面两种**都不一样**）。
  *
  * 运行：npm test
  */
@@ -27,12 +29,14 @@ import {
   planModeFromProjection,
   sessionStatsFromProjection,
   subagentCatalogFromProjection,
-  subagentsFromCatalog,
+  subagentFromCatalogEvent,
   subagentsFromList,
   titleFromProjection,
   todosFromProjection,
   tokenUsageFromProjection,
   turnOutlineFromProjection,
+  upsertSubagent,
+  withSubagentActivity,
 } from "../src/dsh/projections";
 import { replayFollowSnapshot } from "../src/dsh/projectionIngest";
 
@@ -201,7 +205,7 @@ console.log("projections: goal 的四态词表+未知值降级+blockedReason ✓
     { id: "s-1", createdAt: 1, mode: "continuable", label: "调研契约" },
     { id: "s-2", createdAt: 2, mode: "one-shot" },
   ];
-  const list = subagentsFromCatalog(wire);
+  const list = subagentCatalogFromProjection(wire);
   assert.strictEqual(list.length, 2, "投影条目必须全部保留（按 kind 过滤会得到空数组）");
   assert.deepStrictEqual(
     list.map((item) => [item.id, item.mode, item.label]),
@@ -210,8 +214,9 @@ console.log("projections: goal 的四态词表+未知值降级+blockedReason ✓
       ["s-2", "one-shot", "s-2"],
     ],
   );
-  // 投影不带 activity：不知道就不下发，界面据此不画状态点（而不是猜「正在运行」）
-  assert.strictEqual(list[0].activity, undefined);
+  // 投影不带 activity：不知道就不下发，界面据此不画状态点（而不是猜「正在运行」）。
+  // 解析出来的这一条**根本没有这个键**，activity 只能由 RPC 或状态中继补上
+  assert.ok(!("activity" in list[0]), "投影解析结果里不该凭空多出一个 activity");
   assert.ok(
     !("kind" in (wire[0] as object)),
     "投影条目里根本没有 kind 字段——这正是旧过滤必然为空的原因",
@@ -219,18 +224,86 @@ console.log("projections: goal 的四态词表+未知值降级+blockedReason ✓
 }
 console.log("projections: subagentCatalog 投影保留全部条目，不按 kind 过滤 ✓");
 
-// ---------- 5. subagentCatalog 投影：保留上一次 RPC 拿到的 activity ----------
-
+// ---------- 5. 注册语义：并入（不整表替换），activity 保留 ----------
+//
+// 2026-09-23 起目录有三种来源（`subagent/catalog` durable 事件、`subagentCatalog`
+// 投影、`subagents/list` RPC），**完整度不同**：进程外 provider 不写 catalog 事实，
+// 投影里就没有那些子代理。所以投影/事件那两路是**并入**，只有 RPC 整表替换
+// ——整表替换会让 RPC 刚拿到的行在每次投影刷新时丢掉一次。
 {
+  // 5.1 新 id 追加在末尾：顺序就是发现顺序（面板按它渲染）
+  const base = [{ id: "s-1", label: "A", mode: "continuable" as const }];
+  const grown = upsertSubagent(base, { id: "s-2", label: "B", mode: "one-shot" });
+  assert.deepStrictEqual(grown.map((item) => item.id), ["s-1", "s-2"]);
+  assert.strictEqual(base.length, 1, "并入必须是纯函数：不改原数组");
+
+  // 5.2 同 id 更新 label/mode，且**保留已知 activity**（新来源没带状态时不能抹成不知道）
   const known = [
-    { id: "s-1", label: "调研契约", mode: "continuable" as const, activity: "running" as const },
-    { id: "s-9", label: "已消失", mode: "one-shot" as const, activity: "inactive" as const },
+    { id: "s-1", label: "旧名", mode: "one-shot" as const, activity: "running" as const },
+    { id: "s-9", label: "只有 RPC 才知道的子代理", mode: "one-shot" as const, activity: "inactive" as const },
   ];
-  const list = subagentsFromCatalog([{ id: "s-1", createdAt: 1, mode: "continuable", label: "调研契约" }], known);
-  assert.strictEqual(list[0].activity, "running", "同 id 的已知驻留状态要保留（投影刷新不该把它抹掉）");
-  assert.strictEqual(list.length, 1, "投影是权威目录：已不在其中的子代理要消失");
+  const merged = upsertSubagent(known, { id: "s-1", label: "新名", mode: "continuable" });
+  assert.strictEqual(merged.length, 2, "并入不会删掉别的来源带来的行（s-9 必须留着）");
+  assert.deepStrictEqual(
+    merged.map((item) => [item.id, item.label, item.mode, item.activity]),
+    [
+      ["s-1", "新名", "continuable", "running"],
+      ["s-9", "只有 RPC 才知道的子代理", "one-shot", "inactive"],
+    ],
+    "同 id 更新 label/mode 并保留 activity",
+  );
 }
-console.log("projections: 投影刷新保留已知 activity，并按投影收敛列表 ✓");
+console.log("projections: 目录按 id 并入，保留 activity，不整表替换 ✓");
+
+// ---------- 5b. subagent/catalog durable 事件 → 目录一条（注册这条路的形状） ----------
+//
+// 契约（`dsh-subagent` 的 `SubagentCatalogEvent`，与投影条目**不是**一个形状）：
+// `{version: 0, childId, childCreatedAt, mode, label?}`。父会话在子级建立成功时追加它，
+// 所以跟随流里就有——不再依赖「点开面板」那一下 RPC。
+{
+  assert.deepStrictEqual(
+    subagentFromCatalogEvent({ version: 0, childId: "s-1", childCreatedAt: 1, mode: "continuable", label: "调研契约" }),
+    { id: "s-1", label: "调研契约", mode: "continuable" },
+  );
+  // one-shot 的 label 可省 → 退回 id（与另两种来源同口径）
+  assert.deepStrictEqual(
+    subagentFromCatalogEvent({ version: 0, childId: "s-2", childCreatedAt: 2, mode: "one-shot" }),
+    { id: "s-2", label: "s-2", mode: "one-shot" },
+  );
+  // 词表外的 mode 一律当 one-shot：拿它去 follow 不会被鉴权拒绝，反过来会
+  assert.strictEqual(
+    subagentFromCatalogEvent({ version: 0, childId: "s-3", mode: "future-mode" })?.mode,
+    "one-shot",
+  );
+  // **不猜**：版本认不出、childId 缺失就当没有（交给 RPC 那条完整路兜）
+  assert.strictEqual(subagentFromCatalogEvent({ version: 1, childId: "s-4", mode: "one-shot" }), undefined);
+  assert.strictEqual(subagentFromCatalogEvent({ version: 0, mode: "one-shot" }), undefined);
+  assert.strictEqual(subagentFromCatalogEvent(null), undefined);
+  // 事件里没有 activity：不知道就不下发（与投影同口径）
+  assert.strictEqual(subagentFromCatalogEvent({ version: 0, childId: "s-5", mode: "one-shot" })?.activity, undefined);
+}
+console.log("projections: subagent/catalog 事件的形状与不猜口径 ✓");
+
+// ---------- 5c. 状态中继：只改匹配那一条的 activity ----------
+//
+// 官方同款（`dsh-api-session-controller` 客户端的 `updateCatalogActivity`）：
+// `api-session/status` 对每个 agent 都发，子代理也在内——状态点与头部按钮的呼吸
+// 就是靠这条在「不点开面板」时也正确。
+{
+  const entries = [
+    { id: "s-1", label: "A", mode: "continuable" as const, activity: "inactive" as const },
+    { id: "s-2", label: "B", mode: "one-shot" as const, activity: "running" as const },
+  ];
+  const up = withSubagentActivity(entries, "s-1", true);
+  assert.strictEqual(up.changed, true);
+  assert.deepStrictEqual(up.entries.map((item) => item.activity), ["running", "running"]);
+  assert.strictEqual(entries[0].activity, "inactive", "必须纯函数：不改原数组");
+  // 值没变就不算变化（否则每次状态中继都会白刷一帧面板）
+  assert.strictEqual(withSubagentActivity(up.entries, "s-1", true).changed, false);
+  // 不是本会话已注册的子代理 → 不动手
+  assert.strictEqual(withSubagentActivity(entries, "s-unknown", true).changed, false);
+}
+console.log("projections: 状态中继只改匹配那一条，且按 changed 判据发帧 ✓");
 
 // ---------- 6. subagents/list RPC 行：kind 过滤在这里才是对的 ----------
 
@@ -252,9 +325,14 @@ console.log("projections: 投影刷新保留已知 activity，并按投影收敛
   // 两个来源的 mode 取值必须一致：打开子代理时按它选 address.mode，
   // 硬编码 continuable 会被宿主以 subagent/unauthorized 拒绝
   assert.deepStrictEqual(
-    subagentsFromCatalog([{ id: "s-9", mode: "one-shot" }]).map((item) => item.mode),
+    subagentCatalogFromProjection([{ id: "s-9", mode: "one-shot" }]).map((item) => item.mode),
     subagentsFromList([{ kind: "child", id: "s-9", mode: "one-shot" }]).map((item) => item.mode),
     "投影与 RPC 两条路解析出的 mode 必须相同",
+  );
+  assert.deepStrictEqual(
+    subagentFromCatalogEvent({ version: 0, childId: "s-9", mode: "one-shot" })?.mode,
+    "one-shot",
+    "durable 事件那一路的 mode 也要同口径（三条来源必须一致）",
   );
 }
 console.log("projections: subagents/list RPC 行过滤诊断项并带上 mode ✓");

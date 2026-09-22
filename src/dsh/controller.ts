@@ -21,6 +21,7 @@ import type {
   QuestionView,
   SessionRefView,
   SessionSummaryView,
+  SubagentView,
   TodoView,
   UploadState,
 } from "../shared/chat";
@@ -79,7 +80,7 @@ import {
   type WireChatState,
 } from "./sessionView";
 import { queueItemsFromInbox, queueItemsFromWire, type QueuedItemEntry, type QueueOrigin } from "./queueView";
-import { mergeSubagentActivity, modelSelectionFromProjection, subagentsFromList, agentPresetsFromList } from "./projections";
+import { modelSelectionFromProjection, subagentsFromList, upsertSubagent, withSubagentActivity, agentPresetsFromList } from "./projections";
 import type { ModelSelectionDecoded, SubagentCatalogEntryView } from "./projections";
 import {
   ingestControlBaseline,
@@ -493,6 +494,14 @@ export class ChatController implements vscode.Disposable {
    */
   private readonly panelTitles = new Map<string, (title: string) => void>();
   private readonly panelTitleValues = new Map<string, string>();
+  /**
+   * 子代理目录 RPC 的在飞请求（会话 id → promise）：**单飞**。
+   *
+   * 域创建、socket 重连、面板打开三个入口常常挨着发生，同一会话并发发两次请求既浪费
+   * 又会用两份先后到达的响应互相覆盖。条目在 `finally` 里删——它是「按会话为键的 Map」，
+   * 必须有自己的清理路径（涨上去就是永久泄漏）。
+   */
+  private readonly subagentRefreshes = new Map<string, Promise<void>>();
   private controlHandle: { cancel(): void } | undefined;
   private eventsHandle: { cancel(): void } | undefined;
   private eventsClientId: string | undefined;
@@ -2101,6 +2110,9 @@ export class ChatController implements vscode.Disposable {
     // 消失。服务端重连后重投递的 waterfall 会被去重记账幂等放行，不会重复弹卡片；
     // 回放本身也按 requestId 去重。
     for (const scope of this.scopes.values()) this.replayHeldToScope(scope.sessionId, scope);
+    // 子代理目录也跟着重拉一次（官方 `handleConnected` 同款）：掉线期间建立的子代理
+    // 在那段时间没有任何帧能到，而重放只覆盖跟随窗口——不重拉就漏掉窗口外的那些。
+    for (const scope of this.scopes.values()) void this.refreshSubagentCatalog(scope);
     this.openControlStream();
     this.openEventsStream();
     this.openWorkspaceStream();
@@ -2560,6 +2572,10 @@ export class ChatController implements vscode.Disposable {
       return true;
     }
     const scope = this.scopes.get(status.sessionId);
+    // 子代理的驻留状态**先同步**：这条中继对每个 agent 都发，子代理也在内。它与下面那条
+    // `acceptSessionStatus` 判断无关（那条规则是给「窗口绑定的会话」用的，子代理没有本地
+    // 日志证据可依），所以放在前面、不受它拦截。
+    this.syncSubagentActivity(status.sessionId, status.running);
     if (!acceptSessionStatus(status.running, scope?.adapter?.hasOpenTurn() === true)) return true;
     // 列表那一行是**新域的打底值**（见 `ensureScope`），必须与域同一个口径：列表里的
     // 「运行中」标记也靠它，不然用户切走再切回来会拿到一个过期的值。
@@ -2984,6 +3000,10 @@ export class ChatController implements vscode.Disposable {
     if (row) scope.running = row.running;
     this.scopes.set(sessionId, scope);
     this.openScopeFollow(scope);
+    // 子代理目录**打底**：投影与 durable 事件那两路只覆盖「跟随窗口里的记录」，
+    // 而 RPC 是服务端按会话语料做的完整检索（见 `refreshSubagentCatalog`）。
+    // 少了这一下，重载窗口/切会话回来必须点开面板才有列表（用户 2026-09-23 报的现场）。
+    void this.refreshSubagentCatalog(scope);
     // 重开控制流拿新会话的 baseline（队列/任务/投影）：baseline 是全量集合，
     // 多取一次是幂等的
     this.openControlStream();
@@ -3027,6 +3047,9 @@ export class ChatController implements vscode.Disposable {
     // 未知事件（内核冒出的新词汇）记进输出通道：界面上那条提示条一闪而过，
     // 日志是唯一能回看的落点。带会话 id——多会话并存时要知道是哪个会话冒出来的。
     adapter.log = (line) => this.log(`[event] 会话=${sessionId} ${line}`);
+    // 子代理「注册」：父会话的 `subagent/catalog` durable 事件（直播与重放都会到）→
+    // 立刻并入目录并发帧，不必等面板打开那一下 RPC（见 `registerSubagent`）
+    adapter.onSubagentEstablished = (entry) => this.registerSubagent(scope, entry);
     // 轮次结束时先推一次 Git 重扫：否则刚写完的文件还没进改动清单，用户第一次
     // 点芯片看到的是完整文件而不是 diff（见 refreshGitState 的注释）
     adapter.refreshFiles = () => this.refreshGitState();
@@ -3676,25 +3699,91 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
-   * 子代理目录。
+   * 子代理目录（投影那一路）。
    *
    * 投影里已经带着目录，界面无需再单独请求一次。投影**没有** `kind`/`activity`
-   * （那两个字段属于 `subagents/list` RPC 行），所以形状解析在 `projections.ts`，
-   * 与已知 RPC 列表的合并（保留 `activity`）在这里——投影不与 RPC 争这个字段。
-   * 键不存在 → 空目录。
+   * （那两个字段属于 `subagents/list` RPC 行），所以形状解析在 `projections.ts`。
+   *
+   * **并入，不整表替换**（`upsertSubagent`）：投影的完整度不如 RPC——进程外 provider
+   * 不写 `subagent/catalog`，投影里就没有那些子代理；整表替换会把 RPC 刚拿到的行丢掉，
+   * 每次投影刷新丢一次。同 id 的 `activity` 原样保留（投影没有这个字段，不知道就不动手）。
+   * 键不存在时**也不清空**：子代理会话只增不删，清空只会让面板闪空。
    */
   private applySubagentCatalogProjection(
     scope: SessionScope,
     value: SubagentCatalogEntryView[],
     present: boolean,
   ): void {
-    // 名字与界面状态字段逐字相同（`subagentEntries`，见 shared/chat.ts 与
-    // dsh/sessionView.ts）：不再有「宿主一个名、界面另一个名」的跨名桥
-    scope.subagentEntries = present ? mergeSubagentActivity(value, scope.subagentEntries) : [];
+    if (!present) return;
+    const before = scope.subagentEntries.length;
+    if (!this.mergeSubagentEntries(scope, value)) return;
+    // 只在条目数真的变了时记一行：投影刷新很频繁（每次重连/开窗），逐次记会淹掉日志
+    if (scope.subagentEntries.length !== before) {
+      this.log(`[subagents] 会话=${scope.sessionId} 投影目录 ${before} → ${scope.subagentEntries.length} 条`);
+    }
+    this.deliverSubagentList(scope);
+  }
+
+  /**
+   * 把若干目录条并入本域（`upsertSubagent` 的写回顾问点）。
+   *
+   * @returns 有没有**真的**变化。没有变化就什么都不做——重放（快照 / 加载更早）会把同一条
+   *   `subagent/catalog` 反复送进来，每次照发一帧会让面板无谓重渲染；日志同理（否则
+   *   「注册子代理」那行会在每次重连时刷一遍）。
+   */
+  private mergeSubagentEntries(scope: SessionScope, entries: readonly SubagentView[]): boolean {
+    let next = scope.subagentEntries;
+    let changed = false;
+    for (const entry of entries) {
+      const existing = next.find((item) => item.id === entry.id);
+      // 同 id 且 label/mode 都没变就是「已在册」：`upsertSubagent` 只更新这两项
+      // （`activity` 由它自己保留），所以这里可以直接跳过
+      if (existing && existing.label === entry.label && existing.mode === entry.mode) continue;
+      next = upsertSubagent(next, entry);
+      changed = true;
+    }
+    if (!changed) return false;
+    scope.subagentEntries = next;
+    return true;
+  }
+
+  /**
+   * 一条子代理建立事实（`subagent/catalog` durable 事件，适配器转交）→ 注册进目录。
+   *
+   * 这条路的**价值是即时**：事件在子代理建立那一刻就落日志，直播时立刻到，不必等
+   * RPC（用户 2026-09-23 报的「子代理启动后要点开面板才看得到」）。它没有 `activity`
+   * ——状态随后由 `api-session/status` 中继补齐（见 `syncSubagentActivity`）。
+   */
+  private registerSubagent(scope: SessionScope, entry: SubagentView): void {
+    if (!this.mergeSubagentEntries(scope, [entry])) return;
+    this.log(`[subagents] 会话=${scope.sessionId} 注册子代理 ${entry.label}（${entry.id}, ${entry.mode}）`);
+    this.deliverSubagentList(scope);
+  }
+
+  /**
+   * 子代理驻留状态（`api-session/status` 中继）→ 就地改一条的 `activity`。
+   *
+   * 官方同款（`dsh-api-session-controller` 客户端的 `updateCatalogActivity`）：这条中继
+   * 对**每个 agent** 都发，子代理也在内，所以状态点与头部按钮的呼吸可以在**不点开面板**
+   * 时就是对的。子代理没有本地日志证据，所以不走 `acceptSessionStatus` 那套「有肯定证据
+   * 就拒绝不在跑」的判断——那条规则是给窗口绑定的会话用的。
+   */
+  private syncSubagentActivity(childSessionId: string, running: boolean): void {
+    for (const scope of this.scopes.values()) {
+      const { entries, changed } = withSubagentActivity(scope.subagentEntries, childSessionId, running);
+      if (!changed) continue;
+      scope.subagentEntries = entries;
+      this.deliverSubagentList(scope);
+    }
+  }
+
+  /** 目录变了就下发（唯一的列表帧，见 `shared/ipc.ts`）。 */
+  private deliverSubagentList(scope: SessionScope): void {
     this.deliver(scope.sessionId, {
       type: "subagents/list",
       entries: scope.subagentEntries,
-      parentAvailable: scope.subagentEntries.length > 0,
+      // 服务端给过权威值就用它（RPC 那一路写进域）；没问过才退回「目录非空」这个近似值
+      parentAvailable: scope.subagentParentAvailable ?? scope.subagentEntries.length > 0,
     });
   }
 
@@ -4465,6 +4554,11 @@ export class ChatController implements vscode.Disposable {
 
       case "listJobs": {
         const scope = this.scopeOfView(viewId);
+        // 这条日志是**诊断的落点**：后台任务只有推送一条来源（控制流），面板打开这条
+        // 指令只是把宿主内存里的那份重发一遍——`[jobs]` 与界面上的条数对不上时，
+        // 一眼能看出是「宿主就没有」还是「帧没到界面」（用户 2026-09-23 报的
+        // 「要点开面板才刷新」需要这个证据才能定责）。
+        this.log(`[jobs] 面板打开：宿主侧后台任务 ${scope?.jobs.length ?? 0} 条（会话=${scope?.sessionId ?? "无"}）`);
         this.emitToView(viewId, { type: "jobs/list", jobs: scope?.jobs ?? [] });
         break;
       }
@@ -5650,31 +5744,65 @@ export class ChatController implements vscode.Disposable {
 
   // ---------- 子代理 ----------
 
-  /** 拉取子代理目录（投影里没有时按需请求；按该窗口绑定的会话）。 */
+  /**
+   * 拉取子代理目录（RPC：唯一带 `activity` 的**权威状态**那一路）。
+   *
+   * 三个入口共用它：域创建时打底（重载窗口/切会话后**不用点开面板**就有列表）、
+   * socket 重连后重拉、面板打开时按需刷新。**单飞**：同一会话同时只发一次请求
+   * （重连与域创建常常挨着发生），`finally` 里删表——它是「按会话为键的 Map」，
+   * 必须有自己的清理路径。
+   *
+   * 服务端这一路是按**会话语料**做的完整检索（`dsh-subagent` 的 `listChildren`，
+   * 不加载也不唤醒任何 Agent），但返回行**不保证是超集**（见下面的并入注释），
+   * 所以结果是并入而不是替换。
+   */
+  private refreshSubagentCatalog(scope: SessionScope): Promise<void> {
+    const client = this.client;
+    if (!client) return Promise.resolve();
+    const inflight = this.subagentRefreshes.get(scope.sessionId);
+    if (inflight) return inflight;
+    const task = (async () => {
+      try {
+        const result = await client.request<{ entries?: unknown[]; parentAvailable?: boolean }>(
+          "subagents/list",
+          { parentSessionId: scope.sessionId },
+        );
+        // `subagents/list` 返回的是 RPC 行 `SubagentListEntry`：`kind:'child'` 才是
+        // 可用子代理，`kind:'diagnostic'` 是「有候选但读不出身份」的诊断行——这里
+        // 过滤掉是对的（**投影**那边没有这个字段，别把这段照搬过去）。
+        //
+        // **也是并入，不整表替换**：这一路是唯一带 `activity` 的权威值，但它**不保证
+        // 是超集**——服务端对冷子代理逐个解析身份，读不出来（暂时失败 / 身份坏了）时
+        // 给的是我们要滤掉的诊断行（dsh-subagent 的 `listChildren` → `resolveColdIdentity`）。
+        // 整表替换会把这类行连同事件/投影那两路已有的条目一起丢掉，重载后列表又空了。
+        const entries = subagentsFromList(result.entries);
+        const listChanged = this.mergeSubagentEntries(scope, entries);
+        const available = typeof result.parentAvailable === "boolean" ? result.parentAvailable : undefined;
+        const availableChanged = available !== undefined && scope.subagentParentAvailable !== available;
+        if (available !== undefined) scope.subagentParentAvailable = available;
+        if (listChanged || availableChanged) this.deliverSubagentList(scope);
+        this.log(`[subagents] 会话=${scope.sessionId} 目录 ${scope.subagentEntries.length} 条（RPC）`);
+      } catch (error) {
+        // **保留现有列表**，不发空帧：这条 RPC 失败只是「没拿到权威值」，把面板清空
+        // 等于把一次瞬时故障说成「这个会话没有子代理」（而事件/投影那两路来的条目
+        // 本来是好的）。
+        this.log(`[subagents] 会话=${scope.sessionId} 目录获取失败：${this.describeError(error)}`);
+      }
+    })().finally(() => {
+      this.subagentRefreshes.delete(scope.sessionId);
+    });
+    this.subagentRefreshes.set(scope.sessionId, task);
+    return task;
+  }
+
+  /** 面板打开时的按需刷新（按该窗口绑定的会话）。 */
   private async refreshSubagents(viewId: string): Promise<void> {
     const scope = this.scopeOfView(viewId);
     if (!this.client || !scope) {
       this.emitToView(viewId, { type: "subagents/list", entries: [], parentAvailable: false });
       return;
     }
-    try {
-      const result = await this.client.request<{ entries?: unknown[]; parentAvailable?: boolean }>(
-        "subagents/list",
-        { parentSessionId: scope.sessionId },
-      );
-      // `subagents/list` 返回的是 RPC 行 `SubagentListEntry`：`kind:'child'` 才是
-      // 可用子代理，`kind:'diagnostic'` 是「有候选但读不出身份」的诊断行——这里
-      // 过滤掉是对的（**投影**那边没有这个字段，别把这段照搬过去）。
-      scope.subagentEntries = subagentsFromList(result.entries);
-      this.deliver(scope.sessionId, {
-        type: "subagents/list",
-        entries: scope.subagentEntries,
-        parentAvailable: result.parentAvailable ?? scope.subagentEntries.length > 0,
-      });
-    } catch (error) {
-      this.log(`[subagents] 列表获取失败：${this.describeError(error)}`);
-      this.emitToView(viewId, { type: "subagents/list", entries: [], parentAvailable: false });
-    }
+    await this.refreshSubagentCatalog(scope);
   }
 
   /**

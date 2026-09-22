@@ -56,8 +56,8 @@ import {
  * 两个键的解码**故意留在效果那一半**，因此这里是透传/半成品：
  * - `inbox` → 原样透传：折算成队列项要查「这项是谁提交的」（`submissions` 索引），
  *   那是控制器知识，见 `controller.ingestInboxProjection`；
- * - `subagentCatalog` → 只有投影自己的字段（目录条），与 RPC 列表合并（保留 `activity`）
- *   是效果那一半的事，见 `mergeSubagentActivity`。
+ * - `subagentCatalog` → 只有投影自己的字段（目录条），与已注册条目**并入**（保留 `activity`）
+ *   是效果那一半的事，见 `controller.mergeSubagentEntries` 与 `projections.upsertSubagent`。
  */
 export interface ProjectionViewMap {
   /** `inbox` 投影的原始值（两条队列通道之一，折算见 `dsh/queueView.ts`）。 */
@@ -84,7 +84,7 @@ export interface ProjectionViewMap {
   contextBreakdown: NonNullable<ChatState["contextBreakdown"]> | undefined;
   /** `sessionStats`：全日志墙钟统计（`llmMs`/`toolMs` 是承重字段）。 */
   sessionStats: NonNullable<ChatState["sessionStats"]> | undefined;
-  /** `subagentCatalog`：投影目录条（与 RPC 列表的合并见 `mergeSubagentActivity`）。 */
+  /** `subagentCatalog`：投影目录条（与已注册条目的并入见 `controller.mergeSubagentEntries`）。 */
   subagentCatalog: SubagentCatalogEntryView[];
   /** `goal`：目标条数据（嵌套形状，轮次计数在外层）。 */
   goal: GoalView | undefined;

@@ -221,4 +221,94 @@ const controller = read("src", "dsh", "controller.ts");
   );
 }
 
+// ---------- 7. 注册与打底（2026-09-23）：列表不再依赖「点开面板」那一下 ----------
+//
+// 三个来源各司其职（形状解析与并入语义在 `projections.test.ts` 钉住，这里只钉**接线**）：
+// durable 事件（`subagent/catalog`）→ 适配器 → 控制器注册；域创建/重连 → RPC 打底；
+// `api-session/status` 中继 → 就地改 activity。少接一根线，功能就整个静默消失，
+// 而离线断言照样全绿——这正是本仓库「测试绿、功能缺」的经典形态。
+{
+  const adapter = read("src", "dsh", "adapter.ts");
+  const protocol = read("src", "dsh", "protocol.ts");
+
+  // 1) 事件被认成「消费」而不是「静默」：适配器要读它的内容
+  assert.ok(
+    /export const CONSUMED_EVENT_TYPES[\s\S]{0,300}"subagent\/catalog"/.test(protocol),
+    "subagent/catalog 要在 CONSUMED_EVENT_TYPES 里（消费但不渲染）",
+  );
+  assert.ok(
+    /case "subagent\/catalog": \{[\s\S]{0,400}subagentFromCatalogEvent\(data\)[\s\S]{0,200}this\.onSubagentEstablished\?\.\(entry\)/.test(
+      adapter,
+    ),
+    "适配器要解析 subagent/catalog 并交给 onSubagentEstablished",
+  );
+  assert.ok(
+    /case "session\/end-seed": \{[\s\S]{0,200}this\.seedEndSeq = /.test(adapter),
+    "适配器要记下继承前缀的边界（分叉会话的目录事实属于源会话）",
+  );
+
+  // 2) 控制器把注册接上（漏了的话适配器那个钩子永远是 undefined）
+  assert.ok(
+    /adapter\.onSubagentEstablished = \(entry\) => this\.registerSubagent\(scope, entry\);/.test(controller),
+    "openScopeFollow 要把 onSubagentEstablished 接到 registerSubagent",
+  );
+  assert.ok(
+    /private registerSubagent\(scope: SessionScope, entry: SubagentView\): void \{[\s\S]{0,300}mergeSubagentEntries\(scope, \[entry\]\)/.test(
+      controller,
+    ),
+    "registerSubagent 要并入目录（不是整表替换）",
+  );
+
+  // 3) 打底：域创建与重连各拉一次 RPC —— 重载窗口后不点开面板也得有列表
+  const bootstraps = controller.match(/void this\.refreshSubagentCatalog\(scope\);/g) ?? [];
+  assert.ok(
+    bootstraps.length >= 2,
+    `域创建与 onConnected 都要打底（数到的调用点：${bootstraps.length} 个）`,
+  );
+  // 只看 `ensureScope` 那一段：别处（`onConnected`）也有同样的调用文本，
+  // 整文件正则会在错的地方匹配成功（本仓库「断言钉错东西」的老毛病）
+  const ensureStart = controller.indexOf("private ensureScope(");
+  const ensureBody = controller.slice(ensureStart, controller.indexOf("private ensureDefaultModelApplied("));
+  assert.ok(ensureStart >= 0, "controller 必须有 ensureScope");
+  assert.ok(
+    /this\.openScopeFollow\(scope\);[\s\S]{0,900}?void this\.refreshSubagentCatalog\(scope\);/.test(ensureBody),
+    "ensureScope 建域后要打底（这是「重载窗口零点击」的那一下）",
+  );
+  assert.ok(
+    /for \(const scope of this\.scopes\.values\(\)\) void this\.refreshSubagentCatalog\(scope\);/.test(controller),
+    "onConnected 要对所有域重拉（掉线期间建立的子代理没有任何帧能到）",
+  );
+
+  // 4) RPC 那一路带 `activity`，但**也是并入**（它不保证是超集：冷子代理身份读不出来
+  //    时服务端给的是被滤掉的诊断行，整表替换会把已有条目一起丢掉）；失败时保留现有列表
+  const refresh = controller.slice(controller.indexOf("private refreshSubagentCatalog"));
+  const refreshBody = refresh.slice(0, refresh.indexOf("private async refreshSubagents"));
+  assert.ok(
+    /const entries = subagentsFromList\(result\.entries\);[\s\S]{0,400}?this\.mergeSubagentEntries\(scope, entries\)/.test(
+      refreshBody,
+    ),
+    "RPC 行要并入（并带上它给的 activity），不是整表替换",
+  );
+  assert.ok(
+    !/entries: \[\]/.test(refreshBody),
+    "RPC 失败时不许发空列表——那会把一次瞬时故障说成「这个会话没有子代理」",
+  );
+  assert.ok(
+    /subagentRefreshes\.delete\(scope\.sessionId\)/.test(refreshBody),
+    "单飞表必须有清理路径（按会话为键的 Map 涨上去就是永久泄漏）",
+  );
+
+  // 5) 状态中继：不点开面板也要能点亮状态点与头部呼吸
+  assert.ok(
+    /this\.syncSubagentActivity\(status\.sessionId, status\.running\);/.test(controller),
+    "api-session/status 中继要同步子代理的 activity（官方 updateCatalogActivity 同款）",
+  );
+  assert.ok(
+    /private syncSubagentActivity\(childSessionId: string, running: boolean\): void \{[\s\S]{0,400}withSubagentActivity\(/.test(
+      controller,
+    ),
+    "syncSubagentActivity 要按 id 就地改一条",
+  );
+}
+
 console.log("\nsubagentPanel: all assertions passed");

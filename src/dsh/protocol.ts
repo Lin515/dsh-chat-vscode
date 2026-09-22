@@ -258,7 +258,8 @@ export const RENDERED_EVENT_TYPES: ReadonlySet<string> = new Set([
  * 噪音——`agent/inbox/spliced` 每次入队/领取各来一条（新会话开场就有 3~5 条），
  * `command/*` 每次斜杠命令、`llm/retry` 每次模型重试都会命中（docs/audit-summary.md「已知未处理的事件反复触发 warn」一条）。
  *
- * 名单 = dsh-session `KNOWN_SESSION_EVENT_TYPES`（0.1.5-rc.1）减去已渲染的类型。
+ * 名单 = dsh-session `KNOWN_SESSION_EVENT_TYPES`（0.1.5-rc.1）减去已渲染的类型、再减去
+ * `CONSUMED_EVENT_TYPES`（那些要读内容、只是不出节点）。
  * 其中 `llm/retry*`、`command/*`、`tool/ptc-dispatch*` 官方 web 端是有界面的
  * （重试提示、斜杠命令节点、`run_code` 子派发卡片），这里先静默，属于待补的
  * 功能缺口，而非永久决定。
@@ -281,8 +282,7 @@ export const SILENT_EVENT_TYPES: ReadonlySet<string> = new Set([
   "session-log-deepseek/delivery-accepted",
   // 标题生成的模型请求快照
   "session/title-llm-request",
-  // 子代理目录 / 描述符 / 模型选择策略
-  "subagent/catalog",
+  // 子代理描述符 / 模型选择策略
   "subagent/descriptor",
   "subagent/model-selection-policy",
   // 团队协作
@@ -303,9 +303,23 @@ export const SILENT_EVENT_TYPES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * 本客户端是否认识这个事件类型（渲染或知情静默）。
+ * 已知、**被消费**、但不在聊天流里出节点的 durable 事件。
+ *
+ * 第三类是必要的：`subagent/catalog` 既不该弹「不认识的事件」告警（它很常见），
+ * 也不属于「知情静默」——适配器要**读它的内容**把子代理注册进目录（见
+ * `adapter.ts` 的 `onSubagentEstablished` 与 `projections.subagentFromCatalogEvent`）。
+ * 把它塞进 `SILENT_EVENT_TYPES` 会让「静默」这个名字说谎（那里全是不读内容的簿记事件），
+ * 塞进 `RENDERED_EVENT_TYPES` 又会让它被当成「有聊天节点」，两个都不对。
+ */
+export const CONSUMED_EVENT_TYPES: ReadonlySet<string> = new Set([
+  // 父会话的子代理建立事实：读它注册目录（不发聊天节点）
+  "subagent/catalog",
+]);
+
+/**
+ * 本客户端是否认识这个事件类型（渲染的 ∪ 静默的 ∪ 消费的）。
  * 不认识、又没标 `ignorable` 的才需要告警，见 `adapter.ts` 的 default 分支。
  */
 export function isKnownEventType(type: string): boolean {
-  return RENDERED_EVENT_TYPES.has(type) || SILENT_EVENT_TYPES.has(type);
+  return RENDERED_EVENT_TYPES.has(type) || SILENT_EVENT_TYPES.has(type) || CONSUMED_EVENT_TYPES.has(type);
 }

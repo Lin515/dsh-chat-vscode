@@ -137,13 +137,29 @@ title（`string|null` 仅非空更新）、sessionStats / contextBreakdown 字�
   undefined → goal 状态恒被清空（投影里键读不到就等于清空目标条）；webview 侧 grep
   `goal` 零命中，目标面板从未渲染过。
 
-### 4. subagentCatalog 形状用错 + mode 硬编码 —— 已修（第一批；`mode` 硬编码仍未修）
+### 4. subagentCatalog 形状用错 + mode 硬编码 —— 已修（第一批；`mode` 硬编码并入 B14 那批）
 
 - 契约：投影值是 `SubagentCatalogEntry{id,createdAt,mode,label?}`——**没有** `kind` 与
   `activity`，那两个字段属于 `subagents/list` RPC 行。
 - 现状：扩展把 RPC 行的过滤（`e.kind === "child"`）套在投影上 → 结果恒为空，面板每次
   投影刷新被清空；另把 `mode` 硬编码 `"continuable"`，宿主会以 `subagent/unauthorized`
-  拒绝 one-shot 子代理。
+  拒绝 one-shot 子代理。两处都已修（`mode` 现在两路都从线上字段取）。
+- **目录是三条来源，别再混**（2026-09-23 起，见 B15）：durable 事件
+  `subagent/catalog`（建立即注册）、投影 `subagentCatalog`（并入）、RPC
+  `subagents/list`（带 `activity` 的权威状态，但**也是并入**——冷子代理身份读不出来时
+  服务端给的是会被滤掉的诊断行，不保证是超集）。三种形状**互不相同**，解析分别在
+  `projections.subagentFromCatalogEvent` / `subagentCatalogFromProjection` /
+  `subagentsFromList`。
+- **子代理检索发生在服务端，与「会话加没加载」无关**：`subagents/list {parentSessionId}`
+  由 `dsh-subagent` 的 `listChildren` 扫**全部会话语料**（`sessionQuery.listSessions()`）
+  按 `header.parentSession` + `origin:'subagent'` 过滤，冷子代理读投影缓存或做一次有界
+  observation——文件头注释逐字写着 *"no Agent is loaded or resumed"*。`session/list`
+  本身也回子代理会话行（`origin:'subagent'` + `parentSessionId`）。所以「未加载的历史
+  会话的子代理」**能被检索到**，只是扩展目前只为「窗口正打开的那条会话」发这个 RPC；
+  要预取全部历史会话需要客户端自己遍历，当前没有消费面，不做。
+- **重载时的完整性靠 RPC，不靠重放**：`session/follow` 的开窗只带最近 N 条消息
+  （实测某会话日志 775 条、窗口 `records=442`），而投影与 controls baseline 的
+  `subagentCatalog` 是与窗口无关的完整值（实测 `asOfSeq == cursor == 773`、13 条齐全）。
 
 ### 5. 交付文件完全不可见 —— 已修（第一批）
 
@@ -328,6 +344,8 @@ title（`string|null` 仅非空更新）、sessionStats / contextBreakdown 字�
 | B12 | 一轮结束后无条件抢焦点（用户正在历史搜索框 / 目标编辑框里打字时被打断） | 焦点不在输入框且不空闲时不抢 |
 | B13 | **拖放 / 粘贴进来的文件附件上传成功后不进 prompt**（2026-09-21）：字节通道的附件没有 `path`，而发送装配按 `attachment.path` 过滤，于是上传照做、内容块却一个都没有；同一道门还吞掉了「有附件没传上去」的提示。根因是字节通道（`attachBytes`）在后一轮才加，没接进老的路径管线 | 内容块装配抽成纯函数 `attachments.buildPromptContent`：文件只认 `upload.status === "ready"`（与 `path` 无关），未就绪进 `notUploaded`；顺手把两条平行通道合并（`planIntake` + `ingestAttachments`）。断言 `scripts/attachments.test.ts` §7。详见 `docs/design-attachments.md` |
 | B14 | **点开子代理永远是「这个子代理没有可显示的内容」**（用户 2026-09-22 报，从该链路上线起就没好过）：follow 请求写了 `assistantStream: false`，而契约里它是**字面量 `true`**（`readonly assistantStream?: true`）——网关边界校验把整条 request 拒掉（`gateway/input-invalid`），`onError` 立刻回一帧空记录。失败被折成**空态而不是报错**，既看不出坏了、也没有日志线索 | 请求体整条过 `satisfies SessionFollowRequest`（新类型，`assistantStream?: true` 字面量），`openStream` 收 `unknown` 的那道缝由此补上；顺手删掉 `followSession` 里没人传过的 `beforeSeq` 选项（它属于 `session/page`，同一道校验的下一个坑）。复现：同一子代理地址带 `false` → `gateway/input-invalid`，去掉后 → `snapshot(records=35)` 并折出消息。断言 `scripts/subagentPanel.test.ts` §6 |
+| B15 | **子代理列表要「点开面板」才出现，重载窗口后回到空态；运行中的子代理也不点亮状态点与头部呼吸**（用户 2026-09-23 报）：目录原来有两条来源，都不够。投影 `subagentCatalog` 与 RPC 都不带「刚建立」这个时刻（投影还要等一次刷新），而 `activity` 只有 RPC 行才有——于是状态点与 `subagentsBusy` 的呼吸都停在「不知道」 | 三条来源各司其职，全部收敛到 `scope.subagentEntries`：① `subagent/catalog` durable 事件（适配器 `onSubagentEstablished` → `controller.registerSubagent`）**建立即注册**，直播与重载重放都走；② 投影按 id **并入**（`upsertSubagent`，不再整表替换——进程外 provider 不写 catalog 事实，替换会把 RPC 拿到的行丢掉）；③ 域创建与重连各拉一次 RPC **打底**（`refreshSubagentCatalog`，单飞；同样并入，因为服务端对读不出身份的冷子代理给的是会被滤掉的诊断行、不保证是超集；失败保留现有列表，不再发空帧）。运行状态走 `api-session/status` 中继就地改一条（官方 `updateCatalogActivity` 同款）。分叉会话的继承前缀按 `session/end-seed{inherited:true}` 排除。断言 `scripts/projections.test.ts` §5/5b/5c、`scripts/unknownEvent.test.ts` §2/8、`scripts/subagentPanel.test.ts` §7 |
+| B16 | 后台任务面板被怀疑也有同款「点开才刷新」 | **不是缺陷，不改代码**：jobs 只有推送一条来源（`session/control` 的 baseline + `jobs` 帧），面板打开那条指令只是把宿主内存里的 `scope.jobs` 原样重发，拿不到任何服务端新数据——所以「点一下才刷新」在 jobs 上不可能来自点击。域创建与重连都会重开控制流拿全量 baseline（`ensureScope` / `onConnected`），已覆盖重载。只加一行诊断日志（`[jobs] 面板打开：宿主侧后台任务 n 条`），用于分辨「宿主就没有」还是「帧没到界面」 |
 
 ### 7.3 死代码（已删）
 

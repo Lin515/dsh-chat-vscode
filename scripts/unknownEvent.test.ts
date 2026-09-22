@@ -19,7 +19,7 @@ import assert from "node:assert";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { SessionAdapter } from "../src/dsh/adapter";
-import { RENDERED_EVENT_TYPES, SILENT_EVENT_TYPES } from "../src/dsh/protocol";
+import { CONSUMED_EVENT_TYPES, RENDERED_EVENT_TYPES, SILENT_EVENT_TYPES } from "../src/dsh/protocol";
 
 /** dsh 0.1.5-rc.1 的 `KNOWN_SESSION_EVENT_TYPES` 冻结快照（逐字取自
  *  `@deepseek-ai/dsh-session/lib/types/known-event-types.js`）。内核日后新增的类型
@@ -116,20 +116,21 @@ function wire(type: string, extra: Record<string, unknown> = {}) {
 }
 console.log(`unknownEvent: dsh 已知的 ${DSH_KNOWN_EVENT_TYPES.length} 种事件均不告警 ✓`);
 
-// ---------- 2. 名单完整性：已知词汇必须被两个集合覆盖 ----------
+// ---------- 2. 名单完整性：已知词汇必须被三个集合覆盖 ----------
 
 {
   const uncovered = DSH_KNOWN_EVENT_TYPES.filter(
-    (type) => !RENDERED_EVENT_TYPES.has(type) && !SILENT_EVENT_TYPES.has(type),
+    (type) =>
+      !RENDERED_EVENT_TYPES.has(type) && !SILENT_EVENT_TYPES.has(type) && !CONSUMED_EVENT_TYPES.has(type),
   );
-  assert.deepStrictEqual(uncovered, [], `以下已知类型既没渲染也没静默，会弹告警：${uncovered.join(", ")}`);
+  assert.deepStrictEqual(uncovered, [], `以下已知类型既没渲染也没静默/消费，会弹告警：${uncovered.join(", ")}`);
 
-  const both = DSH_KNOWN_EVENT_TYPES.filter(
-    (type) => RENDERED_EVENT_TYPES.has(type) && SILENT_EVENT_TYPES.has(type),
-  );
-  assert.deepStrictEqual(both, [], `同一类型不该既渲染又静默：${both.join(", ")}`);
+  const owned = (type: string): number =>
+    [RENDERED_EVENT_TYPES, SILENT_EVENT_TYPES, CONSUMED_EVENT_TYPES].filter((set) => set.has(type)).length;
+  const both = DSH_KNOWN_EVENT_TYPES.filter((type) => owned(type) > 1);
+  assert.deepStrictEqual(both, [], `同一类型只能属于一个集合：${both.join(", ")}`);
 }
-console.log("unknownEvent: 已知词汇被「渲染 ∪ 静默」完整覆盖，且两集合不相交 ✓");
+console.log("unknownEvent: 已知词汇被「渲染 ∪ 静默 ∪ 消费」完整覆盖，且三集合互斥 ✓");
 
 // ---------- 3. 真正没见过的类型：告警保留 ----------
 
@@ -246,3 +247,67 @@ console.log("unknownEvent: 超长 data 截断且保持单行 ✓");
   );
 }
 console.log("unknownEvent: 控制器两处适配器都接上了日志落点 ✓");
+
+// ---------- 8. `subagent/catalog`：被消费（注册进目录），不告警也不记未知日志 ----------
+//
+// 它是第三类（`CONSUMED_EVENT_TYPES`）：适配器要**读它的内容**把子代理注册进目录
+// （用户 2026-09-23 报的「子代理启动后要点开面板才看得到」就是缺这条注册），
+// 但它不该在聊天流里出节点，也不该退化成「内核冒出新词汇」的噪音。
+{
+  const established: string[] = [];
+  const { adapter, toasts, lines } = harness();
+  adapter.onSubagentEstablished = (entry) => established.push(`${entry.id}:${entry.mode}:${entry.label}`);
+  adapter.applyEvent({
+    type: "subagent/catalog",
+    seq: 10,
+    time: 1789147200000,
+    data: { version: 0, childId: "child-1", childCreatedAt: 1, mode: "continuable", label: "调研契约" },
+  } as never);
+  assert.deepStrictEqual(established, ["child-1:continuable:调研契约"], "建立事实要交给控制器注册");
+  assert.deepStrictEqual(toasts, [], "已消费的类型不弹「不认识的事件」");
+  assert.deepStrictEqual(lines, [], "已消费的类型不进「未知事件」日志");
+}
+console.log("unknownEvent: subagent/catalog 被消费：注册 + 不告警 ✓");
+
+{
+  // 分叉会话的继承前缀：前缀里的目录事实属于**源会话**，必须忽略（判据与服务端
+  // `subagentCatalog` 投影的 `event.seq < inheritedEventCount` 同口径）。
+  // 走**真实那条路**（快照 records → refold）：继承切点排在它标记的事件之后，
+  // 边走边认是认不出来的，`refold` 因此先扫一遍边界。
+  const established: string[] = [];
+  const { adapter } = harness();
+  adapter.onSubagentEstablished = (entry) => established.push(entry.id);
+  const ev = (seq: number, type: string, data: Record<string, unknown> = {}) =>
+    ({ type, seq, time: 1789147200000, data }) as never;
+  adapter.applyFrame({
+    type: "snapshot",
+    cursor: 9,
+    hasMore: false,
+    records: [
+      // 分叉时从源会话抄下来的前缀：里面带着源会话的子代理目录事实
+      { type: "event", event: ev(1, "subagent/catalog", { version: 0, childId: "inherited", mode: "one-shot" }) },
+      // 继承切点（源会话自己的种子末尾也在这里，同样带 inherited:true）
+      { type: "event", event: ev(2, "session/end-seed", { inherited: true }) },
+      // 本会话自己建立的子代理
+      { type: "event", event: ev(9, "subagent/catalog", { version: 0, childId: "own", mode: "continuable", label: "自己的" }) },
+    ],
+  } as never);
+  assert.deepStrictEqual(established, ["own"], "继承前缀里的目录事实不能被注册成本会话的子代理");
+
+  // 本地种子末尾（`session/end-seed {}`，例如子代理会话自己写的那条）**不是**继承切点：
+  // 拿它排除会把本会话建立子代理的事实一起吃掉
+  const local: string[] = [];
+  const { adapter: adapter2 } = harness();
+  adapter2.onSubagentEstablished = (entry) => local.push(entry.id);
+  adapter2.applyFrame({
+    type: "snapshot",
+    cursor: 3,
+    hasMore: false,
+    records: [
+      { type: "event", event: ev(1, "session/end-seed", {}) },
+      { type: "event", event: ev(2, "subagent/catalog", { version: 0, childId: "local-seed-own", mode: "one-shot" }) },
+    ],
+  } as never);
+  assert.deepStrictEqual(local, ["local-seed-own"], "本地种子末尾不是继承切点");
+}
+console.log("unknownEvent: 继承前缀的目录事实被忽略（本地种子末尾不误伤）✓");
