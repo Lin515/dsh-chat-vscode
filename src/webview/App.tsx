@@ -742,6 +742,10 @@ export function App() {
         {state.panel === "subagent" && state.subagent ? (
           <SubagentTranscriptPanel
             id={state.subagent.id}
+            // 标题用目录里那个名字（就是用户刚点的那一行），不是会话 id——一串 uuid
+            // 没法帮人确认「我看的是哪一个」。目录里查不到（列表刚刷新过 / 子代理已
+            // 不在目录里）时退回 id：那是唯一还认得出的身份。
+            label={state.subagentEntries.find((entry) => entry.id === state.subagent?.id)?.label ?? state.subagent.id}
             messages={state.subagent.messages}
             loading={state.subagent.loading === true}
             onClose={closePanel}

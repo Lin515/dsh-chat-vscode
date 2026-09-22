@@ -49,6 +49,26 @@ export type SessionAddress =
   | { kind: "session"; sessionId: string }
   | { kind: "subagent"; parentSessionId: string; childSessionId: string; mode: "one-shot" | "continuable" };
 
+/**
+ * `session/follow` 的请求体（`SessionFollowRequest`，逐字对照契约）。
+ *
+ * **`assistantStream` 是字面量 `true`，不是布尔开关**（契约里写的是
+ * `readonly assistantStream?: true`）。传 `false` 会被网关的边界校验**整条**拒掉：
+ *
+ * ```
+ * gateway/input-invalid: typert gateway: session/follow: wire field "request" failed boundary validation
+ * ```
+ *
+ * 这个类型存在的唯一理由就是让编译器拦住那一手——调用点收 `unknown`（`openStream`），
+ * 写错不会报错，只会在界面上表现为「这个子代理没有可显示的内容」（2026-09-22 实测：
+ * 子代理记录整条链路因此从上线起一直是空的）。
+ */
+export interface SessionFollowRequest {
+  address: SessionAddress;
+  maxMessages?: number;
+  assistantStream?: true;
+}
+
 export interface SessionFollowSnapshot {
   type: "snapshot";
   header: { version: number; id: string; createdAt: number; cwd?: string; agentPreset?: string };

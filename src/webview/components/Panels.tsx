@@ -117,12 +117,16 @@ export function SubagentsPanel({
  */
 export function SubagentTranscriptPanel({
   id,
+  label,
   messages,
   loading,
   onClose,
   onBack,
 }: {
+  /** 子代理的会话 id：滚动落位的身份（换一个子代理就该重新落底）。 */
   id: string;
+  /** 抽屉标题：目录里的名字（找不到目录行时由调用方退回 id）。 */
+  label: string;
   messages: import("../../shared/chat").MessageView[];
   loading: boolean;
   onClose: () => void;
@@ -135,7 +139,7 @@ export function SubagentTranscriptPanel({
     if (el) el.scrollTop = el.scrollHeight;
   }, [id, messages]);
   return (
-    <Drawer title={id} icon={<IconAgents size={14} />} onClose={onClose} onBack={onBack} bodyRef={body}>
+    <Drawer title={label} icon={<IconAgents size={14} />} onClose={onClose} onBack={onBack} bodyRef={body}>
       {messages.length === 0 ? (
         loading ? (
           <div className="drawer-loading">

@@ -28,8 +28,13 @@ const controller = read("src", "dsh", "controller.ts");
     ),
     "点子代理既要点宿主拉记录，也要把抽屉开到这个 id（见状态里那条 ui/openSubagent）",
   );
+  // 记录面板那段 JSX 的**属性块**（`<SubagentTranscriptPanel … />`）：按字符数开窗
+  // 太脆——中间加一段注释就会把断言撞红，而它想说的从来不是「这段有多长」。
+  const transcriptStart = app.indexOf("<SubagentTranscriptPanel");
+  const transcript = app.slice(transcriptStart, app.indexOf("/>", transcriptStart));
+  assert.ok(transcriptStart >= 0, "App 要渲染 SubagentTranscriptPanel");
   assert.ok(
-    /<SubagentTranscriptPanel[\s\S]{0,300}loading=\{state\.subagent\.loading === true\}/.test(app),
+    /loading=\{state\.subagent\.loading === true\}/.test(transcript),
     "记录面板要收到 loading（宿主那份快照没到之前显示「正在读取」）",
   );
   assert.ok(
@@ -47,6 +52,19 @@ const controller = read("src", "dsh", "controller.ts");
   assert.ok(
     /<Message key=\{message\.id\} message=\{message\} readOnly \/>/.test(panelBlock),
     "记录里的消息必须以 readOnly 渲染（见 Message 的同名 prop）",
+  );
+
+  // 标题是**目录里的名字**（用户刚点的那一行），不是会话 id：一串 uuid 没法帮人
+  // 确认「我看的是哪一个」。目录里查不到时退回 id（那是唯一还认得出的身份）。
+  assert.ok(
+    /<Drawer title=\{label\} /.test(panelBlock),
+    "记录抽屉的标题用 label（目录里的名字），不是会话 id",
+  );
+  assert.ok(
+    /label=\{state\.subagentEntries\.find\(\(entry\) => entry\.id === state\.subagent\?\.id\)\?\.label \?\? state\.subagent\.id\}/.test(
+      transcript,
+    ),
+    "App 从 subagentEntries 里取回当前子代理的 label，查不到时退回 id",
   );
 
   const rows = read("src", "webview", "components", "Rows.tsx");
@@ -158,6 +176,48 @@ const controller = read("src", "dsh", "controller.ts");
       controller,
     ),
     "openSubagent 在目录里查不到 id 时也要回一帧空记录",
+  );
+}
+
+// ---------- 6. follow 请求不许带 `assistantStream: false`（2026-09-22） ----------
+//
+// 症状：点开任何子代理都是「这个子代理没有可显示的内容」——**从这条链路上线起就没
+// 好过**。根因是请求里写了 `assistantStream: false`，而契约里它是**字面量 `true`**
+// （`readonly assistantStream?: true`）：网关的边界校验把整条 request 拒掉
+// （`gateway/input-invalid: wire field "request" failed boundary validation`），
+// `onError` 立刻回一帧空记录，界面于是显示空态而不是报错。
+//
+// 对真实服务器的复现（2026-09-22，只读）：同一个子代理地址，带 `assistantStream: false`
+// 报 `gateway/input-invalid`；去掉这个字段或写 `true` 都回 `snapshot(records=35)`，
+// 折出 2 条消息。所以这条断言钉的是「这个字段不许出现」，不是「值要写对」——
+// 契约只允许 `true`，不传是它的默认。
+{
+  const protocol = read("src", "dsh", "protocol.ts");
+  const client = read("src", "dsh", "client.ts");
+  const open = controller.slice(controller.indexOf("private async openSubagent"));
+  // 只看**代码行**：这段的注释成篇讲的就是 `assistantStream` 为什么不能写，
+  // 连着注释一起匹配只会匹配到注释自己（`invariants.test.ts` 那份带字符串
+  // 感知的扫描器在这里用不上——这段里没有含 `//` 的字符串字面量）
+  const request = open
+    .slice(0, open.indexOf("onItem"))
+    .split("\n")
+    .filter((line) => !line.trim().startsWith("//"))
+    .join("\n");
+  assert.ok(
+    !/assistantStream/.test(request),
+    "子代理 follow 请求里不许出现 assistantStream（契约只认字面量 `true`，写 `false` 会被网关整条拒掉）",
+  );
+  assert.ok(
+    /assistantStream\?: true;/.test(protocol) && /SessionFollowRequest/.test(protocol),
+    "线上类型里要有 `SessionFollowRequest`，且 assistantStream 必须是字面量 `true`",
+  );
+  assert.ok(
+    /satisfies SessionFollowRequest/.test(request) && /satisfies SessionFollowRequest/.test(client),
+    "两条 follow 请求都要经 `satisfies SessionFollowRequest` 过一遍编译期——openStream 收 unknown，不标就没人拦",
+  );
+  assert.ok(
+    /followSession\(sessionId: string, callbacks: StreamCallbacks\): StreamHandle/.test(client),
+    "`beforeSeq` 属于 session/page，不在 follow 请求里（它此前是个没人传过的死选项，留着就是同一道校验的下一个坑）",
   );
 }
 

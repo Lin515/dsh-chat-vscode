@@ -598,6 +598,7 @@ Ctrl+Enter 也未区分（`Composer.tsx:241` 只判 `!shiftKey`）。
 | B11 | 扩展输出通道在第一次落日志后会变成**两个**「DSH Chat」（`output ?? create()` 的返回值没有回写） | 改走会赋值的 `outputChannel()` |
 | B12 | 一轮结束后无条件抢焦点（用户正在历史搜索框 / 目标编辑框里打字时被打断） | 焦点不在输入框且不空闲时不抢 |
 | B13 | **拖放 / 粘贴进来的文件附件上传成功后不进 prompt**（2026-09-21）：字节通道的附件没有 `path`，而发送装配按 `attachment.path` 过滤，于是上传照做、内容块却一个都没有；同一道门还吞掉了「有附件没传上去」的提示。根因是字节通道（`attachBytes`）在后一轮才加，没接进老的路径管线 | 内容块装配抽成纯函数 `attachments.buildPromptContent`：文件只认 `upload.status === "ready"`（与 `path` 无关），未就绪进 `notUploaded`；顺手把两条平行通道合并（`planIntake` + `ingestAttachments`）。断言 `scripts/attachments.test.ts` §7。详见 `docs/design-attachments.md` |
+| B14 | **点开子代理永远是「这个子代理没有可显示的内容」**（用户 2026-09-22 报，从该链路上线起就没好过）：`openSubagent` 的 follow 请求写了 `assistantStream: false`，而契约里它是**字面量 `true`**（`readonly assistantStream?: true`）——网关边界校验把整条 request 拒掉（`gateway/input-invalid: wire field "request" failed boundary validation`），`onError` 立刻回一帧空记录。失败被折成**空态而不是报错**，所以既看不出坏了、也没有日志线索 | 请求体整条过 `satisfies SessionFollowRequest`（新类型，`assistantStream?: true` 字面量），`openStream` 收 `unknown` 的那道缝由此补上；顺手删掉 `followSession` 里没人传过的 `beforeSeq` 选项（它属于 `session/page`，同一道校验的下一个坑）。复现证据：同一子代理地址带 `false` → `gateway/input-invalid`，去掉后 → `snapshot(records=35)` 并折出消息。断言 `scripts/subagentPanel.test.ts` §6 |
 
 ### 7.3 死代码（已删）
 

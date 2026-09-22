@@ -57,6 +57,7 @@ import type {
   RemoteEventWaterfall,
   SessionControlFrame,
   SessionFollowFrame,
+  SessionFollowRequest,
 } from "./protocol";
 import {
   ServerNotRunningError,
@@ -5240,8 +5241,13 @@ export class ChatController implements vscode.Disposable {
             // 没有意义，所以查不到就直接不发（列表里没有的 id 本就不该被打开）。
             address: { kind: "subagent", parentSessionId, childSessionId, mode },
             maxMessages: 60,
-            assistantStream: false,
-          },
+            // `assistantStream` 在这里**整条不传**：契约里它是字面量 `true`
+            // （`readonly assistantStream?: true`）。此前写的 `false` 被网关的边界
+            // 校验整条拒掉（`gateway/input-invalid: wire field "request" failed
+            // boundary validation`），`onError` 立刻回一帧空记录——用户 2026-09-22
+            // 报的「点进去是这个子代理没有可显示的内容」就是它。类型见
+            // `SessionFollowRequest`（那条类型就是为拦住这一手而加的）。
+          } satisfies SessionFollowRequest,
         },
         {
           onItem: (value) => {

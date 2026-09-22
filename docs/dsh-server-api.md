@@ -552,6 +552,13 @@ export type SessionAddress = {
 
 **`assistantStream: true` 是拿到逐 token 流式增量的唯一途径**——不传就只有 durable 事件（`assistant/message` 一次性提交）。
 
+> **`assistantStream` 是字面量 `true`，不是布尔开关**（2026-09-22 实测）。写 `false`
+> 会被网关的边界校验把**整条** `request` 拒掉：
+> `gateway/input-invalid: typert gateway: session/follow: wire field "request" failed boundary validation`
+> （`details: {endpoint:'session/follow', field:'request'}`）。这条报错**只说明 request 整体不合法**，
+> 不点名是哪个字段——排查时按「字段名对不对得上契约」逐个试（去掉它 / 改成 `true` 各试一次即可定位）。
+> 同样的道理，`beforeSeq` 只在 `session/page` 的请求里存在，**不要**塞进 follow 请求。
+
 `SessionFollowFrame`（逐字，`⟨P⟩\dsh-api-session-controller\lib\types\types.d.ts:474-486`）——收到的每个 `item` 的 `value` 是它之一：
 
 ```ts

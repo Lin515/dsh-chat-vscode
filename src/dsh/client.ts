@@ -7,6 +7,7 @@ import {
   type RemoteEventOutcome,
   type RpcError,
   type ServerResponse,
+  type SessionFollowRequest,
 } from "./protocol";
 
 /** 业务错误（HTTP 200 里带回的 ok:false）。 */
@@ -488,12 +489,16 @@ export class DshClient {
     });
   }
 
-  /** 打开会话事件流（含逐 token 增量，必须带 assistantStream）。 */
-  followSession(
-    sessionId: string,
-    callbacks: StreamCallbacks,
-    options: { maxMessages?: number; beforeSeq?: number } = {},
-  ): StreamHandle {
+  /**
+   * 打开会话事件流（含逐 token 增量，必须带 `assistantStream: true`）。
+   *
+   * 注意**没有** `beforeSeq` 这个参数：它属于 `session/page` 的请求
+   * （`SessionPageRequest`），不在 `session/follow` 的契约里。此前这里带了一个
+   * 从没有人传过的 `beforeSeq` 选项——那种「多给一个字段」的写法一旦有人用上，
+   * 就会撞上与 `assistantStream: false` 同一道边界校验（见 `SessionFollowRequest`）。
+   * 往前翻历史走 `page()`。
+   */
+  followSession(sessionId: string, callbacks: StreamCallbacks): StreamHandle {
     return this.openStream(
       STREAMS.sessionFollow,
       {
@@ -501,11 +506,9 @@ export class DshClient {
           address: { kind: "session", sessionId },
           // 跟随窗口带多少条消息。默认 60：够渲染一屏多的上下文，又不至于每次
           // 打开会话都把整段历史搬过来。往前翻页用 session/page（见 page()）。
-          maxMessages: options.maxMessages ?? 60,
-          // 从某个 seq 之前开始（「加载更早」用）：服务端只回该点之前的窗口
-          ...(options.beforeSeq === undefined ? {} : { beforeSeq: options.beforeSeq }),
+          maxMessages: 60,
           assistantStream: true,
-        },
+        } satisfies SessionFollowRequest,
       },
       callbacks,
     );
