@@ -371,13 +371,23 @@ export function Composer({
    * 模型切换按钮（P0）。`withProvider` 是同槽位的最低优先级档：宽度充裕时把
    * 提供商展示名加在模型名前面（`提供商/模型名`，用户口径）；目录里认不出该
    * 提供商（找不到分组）就保持裸模型名。
+   *
+   * 名字**不写死显示上限**（用户 2026-09-23 口径：工具栏够长就显示全）：胶囊宽度
+   * 来自测量层的自然宽度，由 `toolbarFit` 决定为它让出多少（放不下的低优先级档位
+   * 少显示几个）；真排不下时由 flex 压缩出省略号。
+   *
+   * 悬停提示是**动作**（「选择模型」），不是「思考深度」——那个标签属于右侧的思考
+   * 强度胶囊；同一个弹层由两个入口打开，但两个入口各自是干什么的要说各自的（用户
+   * 2026-09-23 报的：悬停模型按钮也显示「思考深度」）。
    */
   const providerGroup = state.models.find((group) => group.id === state.model?.provider);
   const modelLabelText = state.model?.label ?? texts.defaultModel;
+  const modelPillText = (withProvider: boolean) =>
+    withProvider && providerGroup ? `${providerGroup.name}/${modelLabelText}` : modelLabelText;
   const modelPill = (withProvider: boolean) => (
     <button
       className="pill"
-      title={texts.thinkingDepth}
+      title={texts.selectModel}
       onMouseDown={() => {
         // 标记：接下来 Popover 的 mousedown 外部检测是「按钮触发的」，跳过
         modelToggleRef.current = true;
@@ -390,9 +400,7 @@ export function Composer({
         setModelOpen((v) => !v);
       }}
     >
-      <span className="pill-label">
-        {withProvider && providerGroup ? `${providerGroup.name}/${modelLabelText}` : modelLabelText}
-      </span>
+      <span className="pill-label">{modelPillText(withProvider)}</span>
     </button>
   );
 

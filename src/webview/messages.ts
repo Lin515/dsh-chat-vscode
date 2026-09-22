@@ -168,6 +168,7 @@ export const MESSAGES = {
   sendTitle: { zh: "发送（Enter）", en: "Send (Enter)" },
   stopTitle: { zh: "停止生成", en: "Stop generating" },
   thinkingDepth: { zh: "思考深度", en: "Thinking depth" },
+  selectModel: { zh: "选择模型", en: "Select model" },
   models: { zh: "模型", en: "Models" },
   defaultModel: { zh: "默认模型", en: "Default model" },
   noModels: { zh: "未获取到模型目录", en: "No model catalog available" },

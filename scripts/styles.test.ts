@@ -797,6 +797,20 @@ console.log("styles: 待处理交互接管输入区（流里跳过、答过留�
     `预设标签必须 nowrap + ellipsis（现在是 "${presetBar.trim()}"）`,
   );
 
+  // 模型名（模型胶囊）相反：**不许写死 max-width**（用户 2026-09-23：工具栏够长时
+  // 要把模型名显示全）。写死上限的话，宽侧栏里也会在同一个像素处截断，跟侧栏多宽无关。
+  // 它多宽由「测量层量自然宽度 → toolbarFit 分配 → 排不下时 flex 压缩」这条链决定，
+  // 所以这里只留 nowrap + ellipsis 兜底。
+  const modelLabel = rule(".pill-label");
+  assert.ok(
+    /white-space:\s*nowrap/.test(modelLabel) && /text-overflow:\s*ellipsis/.test(modelLabel),
+    `模型名胶囊要 nowrap + ellipsis（塞不下时出省略号，现在是 "${modelLabel.trim()}"）`,
+  );
+  assert.ok(
+    !/max-width/.test(modelLabel),
+    `模型名胶囊不许写死 max-width（宽工具栏下会连带截断，现在是 "${modelLabel.trim()}"）`,
+  );
+
   // 环内百分比按用户口径去掉：只留环，精确数值改到环右侧（最低优先级那一档）
   const primitives = readFileSync(
     join(process.cwd(), "src", "webview", "components", "primitives.tsx"),
@@ -846,6 +860,18 @@ console.log("styles: 待处理交互接管输入区（流里跳过、答过留�
   ] as [string, string][]) {
     assert.ok(!/Chevron/.test(source), `${name}胶囊不该再带下箭头（用户 2026-09-22 精简 UI）`);
   }
+
+  // 两个入口开的是同一个弹层，但悬停提示要说**各自是干什么的**（用户 2026-09-23：
+  // 悬停模型按钮也显示「思考深度」）。「思考深度」属于右侧的思考强度胶囊，
+  // 模型按钮是「选择模型」。
+  assert.ok(
+    /title=\{texts\.selectModel\}/.test(modelPill) && !/texts\.thinkingDepth/.test(modelPill),
+    "模型按钮的悬停提示必须是「选择模型」，不能沿用「思考深度」",
+  );
+  assert.ok(
+    /title=\{texts\.thinkingDepth\}/.test(effortPill),
+    "思考强度胶囊的悬停提示保持「思考深度」",
+  );
 }
 console.log("styles: 工具栏按实测宽度分配、测量层约束完整 ✓");
 

@@ -78,6 +78,8 @@ export interface Texts {
   sendTitle: string;
   stopTitle: string;
   thinkingDepth: string;
+  /** 模型按钮的悬停提示（动作口径）：「思考深度」是右侧思考强度胶囊的。 */
+  selectModel: string;
   models: string;
   defaultModel: string;
   noModels: string;

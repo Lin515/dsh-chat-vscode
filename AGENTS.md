@@ -148,14 +148,13 @@
   后面的「通过」是假的——先读回文件确认。
 - **多个子代理并行改同一批文件前先划文件所有权**。子代理不受本仓库的观察规则约束，彼此读到
   的是中间态；同一文件交给一个代理写，其余只读。
-- **改了用户可见面就更新 `CHANGELOG.md`，其余改动可跳过**。vsce 把它作为扩展的「更新日志」
-  打进 vsix，扩展页与商店页渲染的就是它。断言 `scripts/changelogGuard.test.ts`：动过
-  `src/**`、`package.json`、`package.nls*.json` 的提交必须同时动过 `CHANGELOG.md`；只改
-  `docs/**`、`scripts/**`、`AGENTS.md`、测试/探针/工具链不在此列；动了上述路径但用户看不见的
-  （纯重构、只改注释），提交信息写 `Changelog: none` 豁免。
-- **发布**：`## 未发布` → `## <版本>（日期）`；`npm version x.y.z --no-git-tag-version`；
-  跑三件套；提交；`git tag -a v<x.y.z>`；`npm run package`（产物在 `Releases/`）。注意打完
-  tag 后 `git describe --tags --abbrev=0` 的区间为空——防漏断言要么打 tag 前跑、要么用 `HEAD^`。
+- **普通 commit 禁止更改 `CHANGELOG.md`，仅在版本号更新时，再回溯总结所有用户可见面的更改**。
+  vsce 把它作为扩展的「更新日志」打进 vsix，扩展页与商店页渲染的就是它——它按**版本发布口径**
+  写，不跟着每个提交走：同一处改动在多次提交里反复记，用户读到的是中间态而不是最终结果。
+- **发布**：先回溯整理 `CHANGELOG.md` 的 `## 未发布`，把这一区间里同一处的多次改动合并成
+  「用户可见的最终结果」（去掉中间态、修完即废的修复记录），改标题为 `## <版本>（日期）`；
+  `npm version x.y.z --no-git-tag-version`；跑三件套；提交；`git tag -a v<x.y.z>`；
+  `npm run package`（产物在 `Releases/`）。
 
 ## git
 
