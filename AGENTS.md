@@ -98,7 +98,12 @@
 - 改动界面后 `npm run preview` 看一眼（夹具覆盖各种节点形态；**夹具数据必须来自真实输出**）。
 - **改完长 `switch` 或夹具必须看 `npm run build` 的 esbuild 警告**：`[duplicate-case]` 与
   重复对象键都不会让 typecheck 或断言变红——工具链全绿也会静默丢功能。
-- **`.vscodeignore` 没列的东西会进 vsix**（`AGENTS.md` 自己曾被打进包）。动发布相关内容时核对。
+- **发布包走 `package.json` 的 `files` 白名单，仓库里不再有 `.vscodeignore`**（两者不能共存，同时存在
+  会让 `npm run package` 直接失败）。白名单的含义是「**没列的不进包**」，所以新增要发布的东西时必须补进
+  `files`——实测漏掉过 `CHANGELOG.md` 与 `LICENSE`：vsce 的 readme / changelog / license 处理器只处理
+  **通过了过滤**的文件，漏掉时**不报错、包照出**。反过来，模式写错或过期会让 vsce 退出 1 并点名，不会静默；
+  `scripts/manifest.test.ts` 还按清单里被引用的位置（`main` / `icon` / `l10n` / `%key%` / 演示图 /
+  更新日志 / 许可证 / 第三方声明）逐条钉住了白名单。
 - **动 plan / goal / subagent / 工具行之前先取基线**：`node build/command-e2e.mjs`（约 1 分钟）
   改前改后各一遍。长探针前台跑并给足 `timeoutMs`（`queue-continue-probe` 单轮约 3 分钟）。
 - **跨 webview ↔ 宿主的改动两边都要装上**：`dist/webview.js` 与 `dist/extension.js` 是两份
@@ -179,3 +184,6 @@
     （提供商、模型、目录、会话名）——用中性说法。
 
   - **发布**：版本标题为 `## <版本>（日期）`；`npm version x.y.z --no-git-tag-version`；跑三件套；提交；`git tag -a v<x.y.z>`。
+    **推 tag 即自动发布 GitHub Release**（`.github/workflows/release.yml`：校验 tag 与清单版本一致 → 跑三件套 →
+    打包 vsix → Release 正文取 CHANGELOG 对应版本；带 `-` 的 tag 标为预发布）。**扩展商店不在该流程里**，
+    仍是手工动作——商店的对齐基准是官方 DSH 的 npm `latest`，判据见 `docs/dsh-compat.md`。

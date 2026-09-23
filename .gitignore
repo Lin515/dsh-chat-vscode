@@ -11,3 +11,10 @@ Releases/
 .dsh/
 # AI 会话的临时文件目录（全局约定：临时文件放这里，不塞进项目）
 .agent/
+
+# 显式放行 CI 工作流。**必须留着这两行**：本机全局 ignore（core.excludesFile）里有一条 `.*`，
+# 会把所有点开头的目录整份忽略，`.github/` 正好中招——被忽略的目录连 `git add .` 都进不去，
+# 工作流推不上远端就是「写了但永远不会触发」。仓库内的 .gitignore 优先级高于全局 excludesFile，
+# 所以只有这里能翻转它。加 `.github/` 下的新文件时，若 `git status` 里看不到它，先查这一条。
+!.github/
+!.github/**

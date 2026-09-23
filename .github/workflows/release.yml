@@ -1,0 +1,113 @@
+# 打包扩展并发布 GitHub Release。
+#
+# 触发方式只有两个：推 `v*` 标签（正常的发布路径），或手工指定一个**已推送**的标签补发。
+# 为什么不做成「push master 自动发」：本仓库的发版口径是「版本号 + CHANGELOG + tag 三者一起到位」
+# （见 AGENTS.md 的发布纪律），少了任何一样都不会有正确的产物与说明。
+#
+# 这里**不发布到扩展商店**：商店的对齐基准是官方 DSH 的 npm `latest`，而标签本身看不出这件事，
+# 判据与流程见 docs/dsh-compat.md 的「判定 → 动作 → 发布去向」。商店发布仍是手工动作。
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 要发布的标签（必须已推送到本仓库，例如 v0.10.0）
+        required: true
+        type: string
+
+permissions:
+  contents: write # 创建 / 更新 Release 需要写权限；其余一律不需要
+
+concurrency:
+  # 同一个 ref 串行，且不取消进行中的那一次：发布要么完整发生，要么完整不发生。
+  # 用 `github.ref` 而不是 `inputs.tag`：它在两种触发方式下都一定有值，不依赖 `inputs` 上下文
+  # 在 `concurrency` 里的可用性（那个可用性是随 GitHub 版本变的）。
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: 打包并发布
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      # `inputs` 上下文只写在**步骤**上：workflow / job 级的 `env` 里能否用它随 GitHub 版本而异，
+      # 而步骤级 `env` 一定是可用的。取不到（push 触发）时退回 `github.ref_name`。
+      - name: 校验标签与清单版本一致
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          if [ "${RELEASE_TAG}" != "v${version}" ]; then
+            echo "标签 ${RELEASE_TAG} 与 package.json 的版本 v${version} 不一致——先 npm version 再打标签。" >&2
+            exit 1
+          fi
+
+      # 三件套：与本地口径一致。断言全是离线的，不连真实服务端、不花 token。
+      - name: 类型检查
+        run: npm run typecheck
+
+      - name: 断言
+        run: npm test
+
+      # 这条同时产出 dist/ 与 Releases/dsh-chat-<版本>.vsix
+      - name: 打包 vsix
+        run: npm run package
+
+      - name: 生成 Release 正文
+        run: node scripts/releaseNotes.mjs > release-notes.md
+
+      - name: 发布 GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          vsix="Releases/dsh-chat-${version}.vsix"
+          test -f "${vsix}" || { echo "没找到 ${vsix}" >&2; exit 1; }
+
+          # 带预发布段（v0.10.0-rc.1 这类）标成预发布：GitHub 上默认不显示，与本扩展
+          # 「预览版只发 GitHub、正式线才进商店」的口径对应（docs/dsh-compat.md）。
+          prerelease=()
+          case "${RELEASE_TAG}" in
+            *-*) prerelease=(--prerelease) ;;
+          esac
+
+          # 重跑要幂等：Release 已存在时改正文 + 覆盖产物，不再新建（否则第二次必失败）
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            gh release upload "${RELEASE_TAG}" "${vsix}" --clobber
+            gh release edit "${RELEASE_TAG}" --notes-file release-notes.md
+          else
+            gh release create "${RELEASE_TAG}" "${vsix}" \
+              --title "${RELEASE_TAG}" \
+              --notes-file release-notes.md \
+              "${prerelease[@]}"
+          fi
+
+      - name: 汇总
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          {
+            echo "### 已发布 ${RELEASE_TAG}"
+            echo ""
+            echo "- 产物：\`dsh-chat-$(node -p "require('./package.json').version").vsix\`"
+            echo "- 正文：CHANGELOG.md 的对应版本一节"
+            echo "- 扩展商店：本流程不发布（见 docs/dsh-compat.md）"
+          } >> "$GITHUB_STEP_SUMMARY"

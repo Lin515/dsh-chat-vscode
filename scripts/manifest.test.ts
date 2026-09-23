@@ -13,14 +13,21 @@
  * 运行：npm test
  */
 import assert from "node:assert";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-const pkg = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf8")) as {
+const manifest = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf8")) as {
+  main: string;
+  icon: string;
+  l10n: string;
+  files?: string[];
   contributes?: {
     commands?: { command: string; icon?: unknown }[];
   };
 };
+
+// 兼容既有的 `pkg` 命名（下面第一节读的是同一次解析结果）
+const pkg = manifest;
 
 // ---------- 1. 命令图标指向鲸鱼的两份 SVG，不是 codicon ----------
 const command = pkg.contributes?.commands?.find(
@@ -68,18 +75,46 @@ for (const [name, fill] of [
 
 console.log("manifest: newSessionInGroup = 鲸鱼图标（两份单色 SVG，与品牌鲸同形）✓");
 
-// ---------- 3. 开发者资料不进发布包 ----------
+// ---------- 3. 发布包用白名单 ----------
 //
-// `.vscodeignore` 是**黑名单**：没列的东西一律进包。这条踩过一次——`AGENTS.md`
-// 自己被打进过 vsix（5.5 KB），而这类文件既不该发布、也不会有人注意到。
-// 新增根目录的开发者文档时，顺手在这里钉一条。
+// `package.json` 的 `files` 是**白名单**（没列的不进包），`.vscodeignore` 是黑名单（没列的一律进包）。
+// 黑名单已经漏过三次：`AGENTS.md`、四张测试截图、以及会话里随手写的 `ToDo.md`，每次都靠人记得补一行。
+// 两条实测事实：
+// ① vsce **不允许**两者共存——同时存在直接 exit 1（所以这个文件必须不存在）；
+// ② `files` 里写错或过期的模式会让 vsce 退出 1 并点名，所以「写错」不会静默。
+// 反过来，白名单会**静默漏掉需要的文件**：实测漏掉过 `CHANGELOG.md` 与 `LICENSE`（vsce 的
+// readme / changelog / license 处理器只处理**通过了过滤**的文件，漏掉时不报错、包照出）。
+// 所以下面按清单里真正被引用的位置逐条钉——删掉任何一条都会在这里变红。
 {
-  const ignore = readFileSync(join(process.cwd(), ".vscodeignore"), "utf8");
-  for (const name of ["AGENTS.md", "CONTEXT.md"]) {
-    assert.ok(
-      ignore.split("\n").some((line) => line.trim() === name),
-      `.vscodeignore 必须整行列出 ${name}：它是开发者资料，不列就会被打进 vsix`,
-    );
+  const root = process.cwd();
+  assert.ok(
+    !existsSync(join(root, ".vscodeignore")),
+    "仓库里不许再出现 .vscodeignore：vsce 不允许它与 files 白名单共存，同时存在会让 npm run package 直接失败",
+  );
+
+  const files = manifest.files ?? [];
+  assert.ok(files.length > 0, "package.json 必须有非空的 files 白名单，否则等于没有过滤");
+  // 白名单模式一律用 `/`（npm/vsce 的约定），而 `join()` 在 Windows 上给反斜杠——断言必须两边都对，
+  // 否则本地绿、Linux CI 红（或反之）
+  const covered = (rawTarget: string): boolean => {
+    const target = rawTarget.replace(/\\/g, "/");
+    return files.some((pattern) => pattern === target || target.startsWith(`${pattern}/`));
+  };
+
+  // 由清单自己推导出「必须进包」的位置，而不是抄一份清单（抄的那份迟早与清单脱节）
+  const required: [string, string][] = [
+    [manifest.main, "main 指向的入口"],
+    [manifest.icon, "扩展图标"],
+    [join(manifest.l10n.replace(/^\.\//, ""), "bundle.l10n.zh-cn.json"), "VS Code 原生 UI 的中文译文"],
+    ["package.nls.json", "package.json 里 %key% 的英文源串"],
+    ["package.nls.zh-cn.json", "package.json 里 %key% 的中文串"],
+    ["docs/demo.png", "README 引用的演示图（扩展详情页）"],
+    ["CHANGELOG.md", "扩展页与商店页渲染的更新日志"],
+    ["LICENSE", "许可证"],
+    ["THIRD-PARTY-NOTICES.md", "随包第三方依赖的许可归属"],
+  ];
+  for (const [target, why] of required) {
+    assert.ok(covered(target.replace(/^\.\//, "")), `files 白名单必须覆盖 ${target}（${why}）`);
   }
 }
-console.log("manifest: 开发者资料（AGENTS.md / CONTEXT.md）不进发布包 ✓");
+console.log("manifest: 发布包走 files 白名单，且清单引用的位置都被覆盖 ✓");

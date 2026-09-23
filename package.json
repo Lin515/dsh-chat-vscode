@@ -26,6 +26,17 @@
   ],
   "main": "./dist/extension.js",
   "l10n": "./l10n",
+  "files": [
+    "dist",
+    "media",
+    "l10n",
+    "docs/demo.png",
+    "package.nls.json",
+    "package.nls.zh-cn.json",
+    "THIRD-PARTY-NOTICES.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
   "activationEvents": [
     "onStartupFinished",
     "onWebviewPanel:dshChat.panel"
@@ -266,6 +277,7 @@
     "dsh:diff": "npm run build:scripts && node build/dsh-compat.mjs diff",
     "dsh:check": "npm run build:scripts && node build/dsh-compat.mjs check",
     "package": "npm run build && node scripts/package.mjs",
+    "release:notes": "node scripts/releaseNotes.mjs",
     "install:vsix": "node scripts/installVsix.mjs"
   },
   "devDependencies": {
