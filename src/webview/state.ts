@@ -56,6 +56,15 @@ export interface AppState extends ChatState {
    * 两者必须分开，所以这张表的值类型是 `ChangesSummaryView | null`。
    */
   changesSummaries?: Record<string, ChangesSummaryView | null>;
+  /**
+   * 界面自产的「引用到输入框」请求（会话正文右键菜单的「引用」）。
+   *
+   * 与宿主下发的 `insertRequest`（`insertToken` 那条路）是**同一件事的两个来源**：
+   * 那条把宿主给的路径 / 引用 token 插到光标处，这条把选中文字以**引用块**插进去。
+   * 两条都按自增 id 去重——只比对内容的话，连续两次引用同一段文字只会生效一次。
+   * 它只活在界面侧，所以不放进 `ChatState`。
+   */
+  quoteRequest?: { id: number; text: string };
 }
 
 export const initialState: AppState = {
@@ -131,7 +140,16 @@ export type Action =
   | { type: "ui/setPanel"; panel: PanelKind }
   | { type: "ui/openSubagent"; id: string }
   | { type: "ui/dismissNotice" }
-  | { type: "ui/setDraft"; text: string };
+  | { type: "ui/setDraft"; text: string }
+  /** 界面自产的「引用到输入框」（右键菜单）：文本已经是当前语言的成品，不走 `@key`。 */
+  | { type: "ui/quoteText"; text: string }
+  /**
+   * 界面自产的轻提示（如「复制图片失败」）。
+   *
+   * 这条通道原本只有宿主有（`toast` 帧），而复制图片是在界面里做的（见
+   * `imageClipboard.ts`），失败时宿主根本不知情。文案由调用方从词典取好，这里存成品。
+   */
+  | { type: "ui/notice"; level: "info" | "warn" | "error"; text: string };
 
 export function reducer(state: AppState, action: Action): AppState {
   switch (action.type) {
@@ -254,6 +272,18 @@ export function reducer(state: AppState, action: Action): AppState {
       // 同样用自增 id：连续两次插入同一段文本也要各插一次
       const previous = state.insertRequest?.id ?? 0;
       return { ...state, insertRequest: { id: previous + 1, text: action.text } };
+    }
+
+    case "ui/quoteText": {
+      // 与 `ui/insertText` 同一套去重口径（见 AppState.quoteRequest）
+      const previous = state.quoteRequest?.id ?? 0;
+      return { ...state, quoteRequest: { id: previous + 1, text: action.text } };
+    }
+
+    case "ui/notice": {
+      // 与宿主的 `toast` 帧同一个落点（`notice`），id 同样自增
+      const previous = state.notice?.id ?? 0;
+      return { ...state, notice: { id: previous + 1, level: action.level, text: action.text } };
     }
 
     case "ui/setPanel":

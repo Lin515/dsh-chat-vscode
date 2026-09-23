@@ -389,6 +389,14 @@ export interface Texts {
   /** 复制按钮的 1s 瞬时反馈（按钮文案自换；宿主不再发「已复制」toast）。 */
   copied: string;
   insertToEditor: string;
+  /** 正文右键菜单第二项：把选中文字以引用块插进输入框（引用自己占整行）。 */
+  quoteSelection: string;
+  /** 复制图片失败（跨域图污染画布 / 剪贴板写不进去）——界面自产的提示。 */
+  imageCopyFailed: string;
+  /** 图片右键菜单第二项：另存到用户选的路径（宿主弹保存对话框）。 */
+  imageSave: string;
+  /** 保存图片失败（字节取不回来 / 写盘失败）。宿主发出。 */
+  imageSaveFailed: string;
   stopped: string;
 
   connecting: string;

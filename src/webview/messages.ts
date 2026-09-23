@@ -439,6 +439,13 @@ export const MESSAGES = {
   copy: { zh: "复制", en: "Copy" },
   copied: { zh: "已复制到剪贴板", en: "Copied to clipboard" },
   insertToEditor: { zh: "插入到当前编辑器", en: "Insert into the active editor" },
+  // 会话正文右键菜单的两条（自绘，见 `webview/contextMenu.ts`）
+  quoteSelection: { zh: "引用", en: "Quote" },
+  // 复制图片失败：跨域图污染画布、剪贴板被占、浏览器不给写——都在界面里判，宿主不知情
+  imageCopyFailed: { zh: "复制图片失败", en: "Could not copy the image" },
+  // 图片右键菜单的「保存」与它的失败提示（成功不提示：路径是用户自己选的）
+  imageSave: { zh: "保存", en: "Save" },
+  imageSaveFailed: { zh: "保存图片失败", en: "Could not save the image" },
   stopped: { zh: "已停止", en: "Stopped" },
 
   connecting: { zh: "正在连接…", en: "Connecting…" },

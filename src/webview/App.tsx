@@ -7,6 +7,7 @@ import { Composer } from "./components/Composer";
 import { EmptyMeta } from "./components/EmptyMeta";
 import { HistoryPanel } from "./components/History";
 import { ImagePreviewLayer } from "./components/Images";
+import { ContextMenuLayer } from "./components/ContextMenu";
 import { Message } from "./components/Message";
 import { JobsPanel, SubagentTranscriptPanel, SubagentsPanel } from "./components/Panels";
 import { TrajectoryView } from "./components/Trajectory";
@@ -32,6 +33,7 @@ import {
   IconTrajectory,
 } from "./icons";
 import { connectViewOf, type ConnectButton, type ConnectButtonId } from "./connectView";
+import { usePageContextMenu } from "./contextMenu";
 import { jobsBusy, subagentsBusy } from "./activity";
 import { TextsContext, dictionaryFor, normalizeLocale, resolveText, useTexts } from "./texts";
 
@@ -510,6 +512,9 @@ export function App() {
   // 文案跟随 VS Code 显示语言（或 `dshChat.language` 的固定选择）；
   // 词典随语言切换而重建，界面即时更新
   const texts = dictionaryFor(normalizeLocale(state.locale));
+  // 会话正文与图片的右键菜单：换成自绘的「复制 / 引用」「复制 / 保存」
+  // （判据在 `contextMenu.ts`；输入框这类可编辑元素仍走系统菜单，否则粘贴就没了）
+  usePageContextMenu(dispatch, texts);
   // 字号：只写一个 CSS 变量，整套文本尺度从它派生（tokens.css）。
   // 0（auto）时不下发像素值，`--font-size` 继续取 VS Code 注入的 `--vscode-font-size`。
   const fontStyle = state.fontSizePx
@@ -780,6 +785,9 @@ export function App() {
           挂在 `.app` 之外：浮层是 position: fixed 的全屏层，不该受 app 容器的
           布局/裁剪影响。 */}
       <ImagePreviewLayer />
+      {/* 右键菜单浮层：同样是全屏定位层，且要盖在原图浮层之上（在原图上点右键时
+          它就是弹在原图上） */}
+      <ContextMenuLayer />
     </TextsContext.Provider>
   );
 }

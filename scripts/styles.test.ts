@@ -432,30 +432,89 @@ console.log("styles: 行号紧跟文件名、时长先让位 ✓");
 }
 console.log("styles: 路径与节点名有间距、目录渐隐只在被裁时 ✓");
 
-// ---------- 8. 会话历史里不弹 webview 的默认右键菜单 ----------
+// ---------- 8. 右键菜单的口径**只有一处**：全局接管（`webview/contextMenu.ts`） ----------
 //
-// 用户 2026-09-12：「去掉历史对话中的右键菜单」。webview 宿主把
-// `defaultPrevented` 当作「扩展已处理」的开关，所以 preventDefault 就是唯一手段；
-// 搜索框（可编辑元素）要放行，否则连粘贴都没了。
+// 用户 2026-09-12 最初只要求「历史对话里不要那个没用的右键菜单」；2026-09-23 这条
+// 升级成全局的：整个界面一律拦掉原生菜单，只有「右键压在自己选中的文字上」才放行
+// （正文 / 图片另有特化菜单）。于是抽屉**不再自己挂** `onContextMenu`——留着就是
+// 第二条口径，它会连「选中会话标题 → 右键复制」一起吃掉，两处判据还会各自漂。
 {
   const history = readFileSync(
     join(process.cwd(), "src", "webview", "components", "History.tsx"),
     "utf8",
   );
   assert.ok(
-    /event\.preventDefault\(\)/.test(history),
-    "History 必须 preventDefault 掉右键菜单",
+    !/blockContextMenu/.test(history),
+    "History 不该再自己屏蔽右键（判据全在 contextMenu.ts；留着会吃掉「选中标题 → 复制」）",
   );
   assert.ok(
-    /closest\("input, textarea, \[contenteditable='true'\]"\)/.test(history),
-    "搜索框这类可编辑元素要放行右键菜单（否则粘贴没了）",
-  );
-  assert.ok(
-    /<div className="drawer" onContextMenu=\{blockContextMenu\}>/.test(history),
-    "抽屉本体必须挂上 onContextMenu",
+    /<div className="drawer">/.test(history),
+    "抽屉本体不再挂 onContextMenu",
   );
 }
-console.log("styles: 会话历史屏蔽默认右键菜单 ✓");
+console.log("styles: 右键菜单口径只有全局一处（History 不留第二条） ✓");
+
+// ---------- 8b. 自绘右键菜单：定位 / 压层 / 文案不溢出 / 接线 ----------
+//
+// 用户 2026-09-23 口径：原生菜单全界面拦掉，正文右键换成「复制 / 引用」、图片右键换成
+// 「复制 / 保存」，只有「压在自己选中的文字上」才放行原生菜单。判据与落点算术在
+// `contextMenu.test.ts` 里逐条断言；这里钉的是**只有看 CSS 与接线才知道**的几件事——
+// 菜单是视口定位的（挂着 overflow 的正文会把 absolute 的菜单裁掉）、它要压在原图浮层
+// 之上（在原图上点右键就是弹在原图上）、接取必须挂 `document` 而不是 `window`
+// （挂 window 会排在 VS Code 自己那个监听后面，永远只能看到 defaultPrevented=true，
+// 菜单一次都不出现——而所有纯函数断言照样全绿）、以及「挂了接取却忘了挂浮层」。
+{
+  const menu = rule(".ctx-menu");
+  assert.ok(
+    /position:\s*fixed/.test(menu),
+    "右键菜单必须 position: fixed（视口坐标）：正文是滚动容器，absolute 会被裁掉",
+  );
+  const minWidth = /min-width:\s*([^;]+);/.exec(menu)?.[1]?.trim();
+  const maxWidth = /max-width:\s*([^;]+);/.exec(menu)?.[1]?.trim();
+  assert.ok(
+    minWidth && maxWidth && /vw|calc\(|min\(/.test(maxWidth),
+    `菜单宽度要视口感知（现在 min="${minWidth}" max="${maxWidth}"）——窄侧栏里固定宽度会被顶出视口`,
+  );
+  const menuZ = Number(/z-index:\s*(\d+)/.exec(menu)?.[1]);
+  const previewZ = Number(/z-index:\s*(\d+)/.exec(rule(".image-preview"))?.[1]);
+  assert.ok(menuZ > previewZ, `菜单要压在原图浮层之上（菜单 ${menuZ} vs 浮层 ${previewZ}）`);
+
+  const item = rule(".ctx-menu-item");
+  assert.ok(
+    /white-space:\s*nowrap/.test(item) && /text-overflow:\s*ellipsis/.test(item),
+    "菜单条目文字要一行截断（英文比中文长得多，窄侧栏靠它兜底）",
+  );
+
+  const app = readFileSync(join(process.cwd(), "src", "webview", "App.tsx"), "utf8");
+  assert.ok(
+    /usePageContextMenu\(dispatch, texts\)/.test(app),
+    "App 必须挂上页面级右键接取（否则原生菜单照旧弹）",
+  );
+  assert.ok(
+    /<ContextMenuLayer \/>/.test(app),
+    "App 必须挂上菜单浮层（只挂接取不挂浮层 = 菜单永远不出现，且纯函数断言全绿）",
+  );
+
+  const context = readFileSync(join(process.cwd(), "src", "webview", "contextMenu.ts"), "utf8");
+  assert.ok(
+    /document\.addEventListener\("contextmenu"/.test(context),
+    "接取必须挂 document：VS Code 自己那个监听挂在 window 上且注册得更早，" +
+      "挂 window 只会排在它后面、永远只看到 defaultPrevented=true（实测踩过：菜单一次都不弹）",
+  );
+  assert.ok(
+    !/window\.addEventListener\("contextmenu"/.test(context),
+    "不许挂 window（同上：注册顺序输给它，接取等于没有）",
+  );
+  assert.ok(
+    /closest\(EDITABLE\)/.test(context),
+    "可编辑元素必须放行给系统菜单——自绘菜单做不了粘贴，吃掉它等于把粘贴删掉",
+  );
+  assert.ok(
+    /event\.defaultPrevented/.test(context),
+    "别人处理过的右键不能抢（轨迹时间线的右键是平移手势，自己 preventDefault 声明过）",
+  );
+}
+console.log("styles: 自绘右键菜单定位 / 压层 / 接线 ✓");
 
 // ---------- 13. 目标条：默认一行截断，展开按钮切全文（不做「最多两行」） ----------
 //

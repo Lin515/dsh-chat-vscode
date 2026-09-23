@@ -9,21 +9,14 @@ import { useTexts } from "../texts";
 const DELETE_ARM_MS = 3000;
 
 /**
- * 屏蔽 webview 里的默认右键菜单。
+ * 抽屉**不再自己屏蔽**右键菜单。
  *
- * 会话历史是纯浏览/挑选的场景：右键弹出的「复制 / 全选」是噪音（用户 2026-09-12
- * 要求去掉）。webview 宿主本身把 `defaultPrevented` 当作「扩展已处理」的开关
- * （VS Code 的 `webview/browser/pre/index.html`：监听 contextmenu，`if
- * (e.defaultPrevented) return;`，否则才弹它自己的原生菜单），所以
- * `preventDefault()` 就是「别弹菜单」的唯一手段。
- *
- * 搜索框例外：那里右键要能粘贴，所以可编辑元素放行。
+ * 用户 2026-09-12 要的是「去掉历史对话里那个没用的右键菜单」，2026-09-23 这条口径升级成
+ * **全局**的：整个界面只有「右键压在自己选中的文字上」时才放行原生菜单，其余地方一律拦掉
+ * ——判据与拦法都在 `webview/contextMenu.ts`（挂 `document`，先于 VS Code 挂在 window 上
+ * 的那个监听）。这里再留一份「抽屉里禁用右键」就成了第二条口径：它会连「选中会话标题 →
+ * 右键复制」一起吃掉，而且两处判据会各自漂。
  */
-function blockContextMenu(event: React.MouseEvent<HTMLElement>): void {
-  const target = event.target as HTMLElement | null;
-  if (target?.closest("input, textarea, [contenteditable='true']")) return;
-  event.preventDefault();
-}
 
 /** 抽屉的两种视图：普通会话列表 / 归档列表。 */
 type HistoryView = "sessions" | "archived";
@@ -150,8 +143,8 @@ export function HistoryPanel({
 
   return (
     <>
-      <div className="drawer-backdrop" onClick={onClose} onContextMenu={blockContextMenu} />
-      <div className="drawer" onContextMenu={blockContextMenu}>
+      <div className="drawer-backdrop" onClick={onClose} />
+      <div className="drawer">
         <div className="drawer-head">
           <span>{archived ? texts.archiveList : texts.history}</span>
           <span className="spacer" style={{ flex: 1 }} />

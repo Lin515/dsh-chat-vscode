@@ -1780,6 +1780,42 @@
   background: rgba(255, 255, 255, 0.26);
 }
 
+/* 自绘右键菜单（会话正文「复制 / 引用」、图片「复制 / 保存」）。
+   定位用**视口坐标**（position: fixed + 行内 left/top 来自点击点）：菜单要贴着鼠标
+   出现，而正文是滚动的——挂进消息节点里会被 overflow 裁掉。z-index 要压过原图浮层
+   （45）：在原图上点右键，菜单就是弹在原图上的。 */
+.ctx-menu {
+  position: fixed;
+  z-index: 50;
+  /* 宽度按内容，但不许越过视口（窄侧栏是最容易出事的地方） */
+  min-width: 96px;
+  max-width: min(280px, calc(100vw - 8px));
+  padding: 4px;
+  border: 1px solid var(--vscode-menu-border, var(--border));
+  border-radius: var(--radius-sm);
+  background: var(--vscode-menu-background, var(--editor-bg));
+  color: var(--vscode-menu-foreground, var(--fg));
+  box-shadow: 0 2px 8px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.36));
+}
+
+.ctx-menu-item {
+  display: block;
+  width: 100%;
+  padding: 4px 10px;
+  border-radius: calc(var(--radius-sm) / 2);
+  text-align: left;
+  /* 英文比中文长得多：一律一行、按需省略号，不靠固定宽度 */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ctx-menu-item:hover,
+.ctx-menu-item:focus-visible {
+  background: var(--vscode-menu-selectionBackground, var(--active));
+  color: var(--vscode-menu-selectionForeground, var(--active-fg));
+}
+
 /* status dot for tool rows */
 .dot {
   flex: 0 0 auto;

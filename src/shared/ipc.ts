@@ -264,6 +264,21 @@ export type WebviewToHost =
   | { type: "insertText"; text: string }
   /** 复制到剪贴板（webview 里 navigator.clipboard 受限，交给宿主）。 */
   | { type: "copy"; text: string }
+  /**
+   * 把会话里的一张图**另存**到用户选的路径（图片右键菜单的「保存」）。
+   *
+   * 界面只交**图片地址原文**（`data:` / `https:`）：webview 读不了磁盘、弹不了系统
+   * 对话框，它的 CSP（`default-src 'none'`）也 fetch 不了外链图。宿主负责解析字节
+   * （data URL 直接解码、外链拉一次）、弹保存对话框、写盘（见 `dsh/imageFiles.ts`）。
+   *
+   * `name` 是界面从 `<img alt>` 摘来的**建议文件名**，可能为空、也可能根本不是
+   * 文件名（无障碍文案「消息里的图片」就是这种）——宿主只当建议，最终扩展名按
+   * 真实媒体类型定。
+   *
+   * 复制图片**不走这条**：那条路在界面里就能完成（canvas 转 PNG + `ClipboardItem`），
+   * 见 `webview/imageClipboard.ts`。
+   */
+  | { type: "saveImage"; src: string; name?: string }
   | { type: "showLogs" }
   | { type: "restartInternal" }
   /**

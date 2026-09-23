@@ -41,6 +41,7 @@ import {
   type IntakeUpload,
 } from "./attachments";
 import { readClipboardPaths } from "./clipboardPaths";
+import { saveChatImage } from "./imageFiles";
 import { ConfigChangeRouter } from "./configChanges";
 import { fileChangeKind, hasWorkingChange, isNotFoundError, resolveChipPath, type FileExistence, type GitChangeStateLike } from "./fileChange";
 import { readLocalImages } from "./localImages";
@@ -4701,6 +4702,27 @@ export class ChatController implements vscode.Disposable {
         // 界面上就能感知——按钮/选中内容还在，信息条反而是打扰）。
         await vscode.env.clipboard.writeText(message.text);
         break;
+
+      case "saveImage": {
+        // 「保存图片」（图片右键菜单）：解析字节 → 用户选路径 → 写盘。
+        // 默认目录与本地图解析同一口径（会话 cwd → 打开的工作区 → 用户目录）：
+        // 会话目录拿不到时退回工作区，仍是用户明确打开的目录，只是基准换了。
+        // 保存成功**不发 toast**（与「复制成功不弹信息条」同一条口径：结果在界面上
+        // 就能感知——路径是用户自己选的）；取不到字节 / 写盘失败才提示。
+        const scope = this.scopeOfView(viewId);
+        const defaultDir =
+          (scope ? this.cwdOf(scope) : undefined) ??
+          vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ??
+          homedir();
+        const result = await saveChatImage(message.src, message.name, defaultDir);
+        if (result.status === "failed") {
+          this.log(`[image] 保存失败：${result.reason}`);
+          this.emitToView(viewId, { type: "toast", level: "error", text: "@imageSaveFailed" });
+        } else if (result.status === "saved") {
+          this.log(`[image] 已保存：${result.path}`);
+        }
+        break;
+      }
 
       case "listSubagents":
         await this.refreshSubagents(viewId);

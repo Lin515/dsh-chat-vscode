@@ -75,6 +75,8 @@ const entries = {
   "build/read-range.test.mjs": "scripts/readRange.test.ts",
   "build/segment.test.mjs": "scripts/segment.test.ts",
   "build/path-insert.test.mjs": "scripts/pathInsert.test.ts",
+  "build/context-menu.test.mjs": "scripts/contextMenu.test.ts",
+  "build/image-files.test.mjs": "scripts/imageFiles.test.ts",
   "build/path-display.test.mjs": "scripts/pathDisplay.test.ts",
   "build/system-prompt-probe.mjs": "scripts/systemPromptProbe.ts",
   "build/effort-probe.mjs": "scripts/effortProbe.ts",

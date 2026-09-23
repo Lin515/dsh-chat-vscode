@@ -331,6 +331,13 @@ export interface UseComposerCompletionInput {
   /** 宿主下发的「插到光标处」请求（`setDraft` 帧），按 id 去重。 */
   insertRequest?: { id: number; text: string };
   /**
+   * 界面自产的「引用到输入框」请求（正文右键菜单的「引用」），按 id 去重。
+   *
+   * 与 `insertRequest` 同为「往文本域里插东西」，但拼接口径不同（块 vs 行内，
+   * 见 `quoteBlock`），所以是两条请求而不是一条带标志位的。
+   */
+  quoteRequest?: { id: number; text: string };
+  /**
    * 文本域节点的 ref。组件自己的自适应量高与「跑完把焦点还回来」也要同一个节点，
    * 传进来两边就共用**一个** ref 对象（同一个元素上挂两个 ref 属性时只有最后一个生效）。
    */
@@ -398,6 +405,7 @@ function useCompletion(
     onDraft,
     onSubmit,
     insertRequest,
+    quoteRequest,
     textareaRef,
   }: UseComposerCompletionInput,
   useStateImpl: ComposerCompletionStateHook,
@@ -481,6 +489,33 @@ function useCompletion(
     // 只依赖 id：effect 内读的草稿就是这次请求对应的那一帧
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [insertRequest?.id]);
+
+  /**
+   * 正文右键菜单的「引用」：把选中文字以**引用块**插到光标处（见 `quoteBlock`）。
+   *
+   * 与上面那条（宿主下发的插入）同一套落点口径与去重方式：读文本域的 `selectionEnd`、
+   * 插完把光标落在插入内容之后、`requestAnimationFrame` 里落光标。两条分开写而不是
+   * 合成一条带标志位的，是因为拼接规则**完全不同**（块 vs 行内），共用一个函数只会
+   * 让「这段到底补不补空格」变成运行时的分支。
+   */
+  const handledQuoteId = useRef(0);
+  useEffect(() => {
+    const request = quoteRequest;
+    if (!request || request.id === handledQuoteId.current) return;
+    handledQuoteId.current = request.id;
+
+    const el = ref.current;
+    const text = latest.current.draft;
+    const next = quoteBlock(text, request.text, el?.selectionEnd ?? caret ?? text.length);
+    writeDraft(next.value);
+    requestAnimationFrame(() => {
+      const node = ref.current;
+      if (!node) return;
+      node.focus();
+      node.setSelectionRange(next.caret, next.caret);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [quoteRequest?.id]);
 
   /** 当前这一帧的候选（命令通道取命令目录、`@` 通道取文件 + 对话 + `..`）。 */
   const candidates = useMemo(
@@ -917,4 +952,32 @@ export function insertToken(value: string, insert: string, caret: number): Inser
   const after = value.slice(at);
   const body = `${needPrefix(before) ? " " : ""}${insert}${needSuffix(after) ? " " : ""}`;
   return { value: `${before}${body}${after}`, caret: before.length + body.length };
+}
+
+/**
+ * 把一段**选中的文字**以 markdown 引用块插到 `caret` 处（正文右键菜单的「引用」）。
+ *
+ * 与 `insertToken` 是两条不同的拼接口径，别混用：
+ * - 那边是**行内**插入一段 token（前后按需补空格，插完接着写字还在同一行）；
+ * - 这边是**块**插入：引用块要自己占整行（用户 2026-09-23 口径「换行成单独的引用块」），
+ *   所以前面不在行首就补一个换行，后面再补一个换行让光标落在引用块**之外**——
+ *   否则用户接着敲的字会被并进引用里。
+ *
+ * 引用内部的空行也带上 `>`：markdown 的引用块靠连续 `>` 行界定，中间留一个裸空行
+ * 会把块切断。
+ */
+export function quoteBlock(value: string, quote: string, caret: number): InsertResult {
+  const at = clampIndex(caret, value.length);
+  const before = value.slice(0, at);
+  const after = value.slice(at);
+  const body = quote
+    .replace(/\r\n?/g, "\n")
+    .trim()
+    .split("\n")
+    .map((line) => (line.trim() ? `> ${line}` : ">"))
+    .join("\n");
+  const lead = before.length > 0 && !before.endsWith("\n") ? "\n" : "";
+  const tail = after.startsWith("\n") ? "" : "\n";
+  const inserted = `${lead}${body}${tail}`;
+  return { value: `${before}${inserted}${after}`, caret: before.length + inserted.length };
 }

@@ -217,6 +217,9 @@ export function Composer({
     // 包一层箭头：`send` 在下面才声明（它是组件自己的发送入口）。
     onSubmit: (gesture) => send(gesture),
     insertRequest: state.insertRequest,
+    // 界面自产的「引用到输入框」（正文右键菜单）：与上面那条同一套落点算术，
+    // 但拼接口径不同（引用块自己占整行），所以是另一条请求
+    quoteRequest: state.quoteRequest,
     // 补全 hook 与下面的自适应量高 / 焦点归还要用**同一个**文本域节点
     textareaRef,
   });

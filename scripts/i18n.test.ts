@@ -95,6 +95,8 @@ const HOST_MARKERS: string[] = [
   "pasteTooLarge",
   // 图片内联上限（超限改按文件上传）
   "imageTooLarge",
+  // 图片另存（右键菜单「保存」：字节取不回来 / 写盘失败才提示，成功不提示）
+  "imageSaveFailed",
   // 剪贴板 / 浏览器
   // （`copied` 已随「复制成功不弹信息条」的口径一起删掉：复制按钮不再发 toast）
   "openInBrowserOffline",
