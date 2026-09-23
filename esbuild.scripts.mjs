@@ -138,6 +138,7 @@ const entries = {
   "build/subagent-panel.test.mjs": "scripts/subagentPanel.test.ts",
   "build/session-status.test.mjs": "scripts/sessionStatus.test.ts",
   "build/preset-display.test.mjs": "scripts/presetDisplay.test.ts",
+  "build/composer-draft.test.mjs": "scripts/composerDraft.test.ts",
   "build/dsh-contract.test.mjs": "scripts/dshContract.test.ts",
   "build/dsh-compat.mjs": "scripts/dshCompat.ts",
 

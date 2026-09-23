@@ -4464,6 +4464,12 @@ export class ChatController implements vscode.Disposable {
         // **用户显式动作**（按了发送）：允许拉起内部后台（关掉自动连接时也算数，
         // 用户口径 2026-09-18：`autoConnect` 只约束扩展自己的自动行为）
         if (!this.client || this.connection !== "connected") await this.ensureConnected({ start: true });
+        // 连不上就什么都没发出去，而界面在按下发送那一刻已经乐观清空了输入框
+        // （见 `send` 顶上的 commitDraft）：把正文推回去，别让那句话凭空消失
+        if (!this.client) {
+          this.emitToView(viewId, { type: "patch", patch: { draft: message.text } });
+          break;
+        }
         await this.send(viewId, message.text, message.attachments, message.gesture ?? "enter");
         break;
 
@@ -4927,13 +4933,23 @@ export class ChatController implements vscode.Disposable {
     gesture: "enter" | "accelerated" = "enter",
   ): Promise<void> {
     if (!this.client) return;
+    // **提交即清空**，且必须早于下面任何可能推整份状态快照的 await：空态第一次发消息时
+    // `ensureSession` 会建会话，而 `createSession` 建完就推一份整份快照，快照里的 `draft`
+    // 读的正是这张表（`snapshotFor`）。晚清一步，那一帧就把刚发出去的正文塞回输入框
+    // ——界面上就是「清空 → 闪回 → 消失」（用户 2026-09-23 报的，见 docs/design-draft.md）。
+    this.commitDraft(viewId);
     // 窗口还没有会话（空态）：**首条消息才建立它**。没有工作目录时会先问一次
     // （取消 → 不建会话也不发送，草稿留在输入框里）
     let scope = this.scopeOfView(viewId);
     if (!scope) {
       scope = await this.ensureSession(viewId);
     }
-    if (!scope) return;
+    if (!scope) {
+      // 什么都没发出去，而界面在按下发送那一刻已经乐观清空了输入框（见 commitDraft）：
+      // 把正文与附件还回去，别吞掉用户那句话
+      this.appendDraft(viewId, text, attachments);
+      return;
+    }
 
     // 斜杠命令走命令通道，**不发给模型**：官方客户端的 enter 列把 `/xxx` 交给
     // `commands/execute`，宿主也明确「without sending it to the model」。
@@ -4942,9 +4958,7 @@ export class ChatController implements vscode.Disposable {
     // 命令若不能带附件，服务端会拒绝，而用户此刻显然是想发这批内容。
     const slash = attachments.length === 0 ? this.slashCommandOf(scope, text) : undefined;
     if (slash) {
-      const key = this.keyForView(viewId);
-      this.drafts.set(key, "");
-      this.deliver(scope.sessionId, { type: "patch", patch: { draft: "" } });
+      // 草稿已在 commitDraft 里清掉（提交那一刻，早于建会话），这里只剩执行命令
       const outcome = await this.runCommand(viewId, slash.line);
       if (outcome && !outcome.ok) {
         this.emitToView(viewId, {
@@ -4968,7 +4982,11 @@ export class ChatController implements vscode.Disposable {
       // 表示不出来（图片没有可解析的 data URL）：不再静默，至少留一条日志
       this.log(`[submit] 这些附件无法表示成内容块，已跳过：${dropped.join("、")}`);
     }
-    if (content.length === 0) return;
+    if (content.length === 0) {
+      // 拼不出内容块（什么都没带）＝什么都没发出去：草稿还回去
+      this.appendDraft(viewId, text, attachments);
+      return;
+    }
 
     try {
       // 发送前应用待生效的模型选择（切换即时生效于"下一轮"）
@@ -4983,6 +5001,8 @@ export class ChatController implements vscode.Disposable {
       }
       const key = this.keyForView(viewId);
       this.attachmentsBySession.set(key, []);
+      // 草稿在 commitDraft 里已清（空态那一步清的是窗口键，绑定后由 `bindViewToSession`
+      // 迁到会话键）；这里按会话键复述一次，不依赖迁移链路的细节
       this.drafts.set(key, "");
       // **先**取「发出去的那一刻 agent 还在不在跑」，再乐观置位。顺序反了的话
       // `resolveSubmitMode` 里的 `!running` 这道门永远走不进去，空闲发消息也会带
@@ -4991,7 +5011,7 @@ export class ChatController implements vscode.Disposable {
       scope.running = true;
       this.deliver(scope.sessionId, {
         type: "patch",
-        patch: { ...sessionPatch(this.sessionSource(scope), ["running"]), attachments: [], draft: "" },
+        patch: { ...sessionPatch(this.sessionSource(scope), ["running"]), attachments: [] },
       });
       // requestId 由这里铸造：队列帧会把同一个 id 作为 rpcId 带回来，
       // 「重新编辑」凭它还原成用户当时输入的文本与附件
@@ -5008,6 +5028,8 @@ export class ChatController implements vscode.Disposable {
         type: "patch",
         patch: sessionPatch(this.sessionSource(scope), ["running"]),
       });
+      // 这一轮没提交成功：草稿还回去（与队列发送失败同一条兜底口径）
+      this.appendDraft(viewId, text, attachments);
       this.reportError(vscode.l10n.t("Failed to send"), error);
     }
   }
@@ -5648,6 +5670,30 @@ export class ChatController implements vscode.Disposable {
       await delay(80);
     }
     return !scope.running;
+  }
+
+  /**
+   * 提交草稿：清空这个窗口（或它绑定的会话）的草稿，并把「清空」推给界面。
+   *
+   * **调用点必须早于任何可能推整份状态快照的 await**：空态第一次发消息时
+   * `ensureSession` → `createSession` 会在绑定窗口后推一份整份快照，而快照里的 `draft`
+   * 读的就是这张表（见 `snapshotFor`）。晚清一步，那一帧就把用户刚发出去的正文塞回
+   * 输入框——界面上是「清空 → 闪回 → 消失」。
+   *
+   * 它清掉的那份草稿本来也不该留着：界面在按下发送那一刻就乐观清空了自己的输入框，
+   * 所以「收到 `send` 帧」等价于「界面里已经是空的」。于是**没真的发出去**的每条路径
+   * 都必须用 `appendDraft` 把正文还回去，否则等于吞掉用户那句话。
+   *
+   * 顺序契约与两个键（窗口 / 会话）的迁移见 `docs/design-draft.md`。
+   */
+  private commitDraft(viewId: string): void {
+    const key = this.keyForView(viewId);
+    this.drafts.set(key, "");
+    // 绑着会话时按会话广播（草稿按会话键存，同会话的其他窗口也按今天的口径跟着清）；
+    // 还没绑（空态第一次发消息）时这个键只有这个窗口在用，定向推给它
+    const sessionId = this.viewSessions.get(viewId);
+    if (sessionId) this.deliver(sessionId, { type: "patch", patch: { draft: "" } });
+    else this.emitToView(viewId, { type: "patch", patch: { draft: "" } });
   }
 
   /** 把文本与附件追加回输入框（发送失败时的兜底，尽量不丢内容）。 */
