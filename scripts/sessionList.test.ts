@@ -11,7 +11,7 @@
 import assert from "node:assert";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { visibleForWorkspace, visibleSessionRows } from "../src/dsh/sessionList";
+import { visibleForWorkspace, visibleSessionCandidates, visibleSessionRows } from "../src/dsh/sessionList";
 import { dictionaryFor } from "../src/webview/texts";
 
 // ---------- 1. 分支必须留着，子代理必须藏起来 ----------
@@ -157,5 +157,47 @@ console.log("sessionList: 工作区可见性（有文件夹 / 无文件夹 / 已
   );
 }
 console.log("sessionList: 控制器与界面都接上了 ✓");
+
+// ---------- 5. @ 提及的「对话候选」也不显示子代理会话（用户 2026-09-22 口径） ----------
+//
+// 候选 RPC（sessionReferenceResolver/candidates）的行不带 origin（契约
+// SessionReferenceMentionCandidate 只有 sessionId/label/displayTitle/cwd/
+// sameWorkspace/createdAt/mention），子代理身份只能由客户端维护的
+// id 集合判断。集合的两个来源都必须接上，缺一路就有漏网。
+{
+  const subagentIds = new Set(["sub-a", "sub-b"]);
+  const candidates = [
+    { sessionId: "root" },
+    { sessionId: "sub-a" },
+    { sessionId: "branch", parentSessionId: "root" }, // 分支照样可见
+    { sessionId: "sub-b" },
+  ];
+  assert.deepStrictEqual(
+    visibleSessionCandidates(candidates, subagentIds).map((row) => row.sessionId),
+    ["root", "branch"],
+    "子代理会话必须从 @ 对话候选里滤掉，分支与普通会话留下",
+  );
+  assert.deepStrictEqual(
+    visibleSessionCandidates(candidates, new Set()).length,
+    candidates.length,
+    "集合为空（比如刚启动还没拉到列表）时一个候选都不能少",
+  );
+
+  // 控制器接线：queryFiles 走 visibleSessionCandidates；集合两路来源都在
+  const controller = readFileSync(join(process.cwd(), "src", "dsh", "controller.ts"), "utf8");
+  assert.ok(
+    /visibleSessionCandidates\(sessions \?\? \[\], this\.subagentSessionIds\)/.test(controller),
+    "queryFiles 必须用 visibleSessionCandidates 过滤 @ 对话候选（判据在 sessionList.ts 里注释着）",
+  );
+  assert.ok(
+    /item\.origin === "subagent"\) this\.subagentSessionIds\.add\(item\.sessionId\)/.test(controller),
+    "subagentSessionIds 必须由 session/list 原始行的 origin 打底（refreshSessions）",
+  );
+  assert.ok(
+    /this\.subagentSessionIds\.add\(entry\.id\)/.test(controller),
+    "subagentSessionIds 必须由子代理目录的并入点（mergeSubagentEntries）实时补充",
+  );
+}
+console.log("sessionList: @ 对话候选隐藏子代理会话 ✓");
 
 console.log("\nsessionList: all assertions passed");

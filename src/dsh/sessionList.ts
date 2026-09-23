@@ -17,11 +17,31 @@
  * 分支会**继承源会话的标题**，所以列表里靠标题前缀区分（`texts.forkedTitle`，
  * 界面读 `parentSessionId`）。这里曾经还算过一份血缘深度用来缩进显示，
  * 用户 2026-09-19 改成「分支和普通会话同级」，深度随之删掉——它唯一的用途就是缩进。
+ *
+ * 同样的判据也用在 **@ 提及的对话候选**上（用户 2026-09-22 口径：@ 列表不显示
+ * 子代理会话）。但候选 RPC（`sessionReferenceResolver/candidates`）的行
+ * （`SessionReferenceMentionCandidate`）**不带** `origin`，藏不掉就只能在客户端
+ * 拿「已知的子代理会话 id 集合」去对——集合由调用方维护（`controller` 的
+ * `subagentSessionIds`），这里只出纯函数。
  */
 
 /** 只藏**子代理**会话；分支（有 parent、`origin` 为空）必须留着。 */
 export function visibleSessionRows<T extends { origin?: string }>(rows: readonly T[]): T[] {
   return rows.filter((row) => row.origin !== "subagent");
+}
+
+/**
+ * @ 提及的「对话候选」里不出现子代理会话（用户 2026-09-22 口径）。
+ *
+ * 候选行不带 `origin`（见文件头），子代理身份由调用方维护的 id 集合判断：
+ * `session/list` 原始行的 `origin === 'subagent'` 打底，子代理目录（catalog 事件、
+ * RPC 与投影的并入点 `controller.mergeSubagentEntries`）实时补充。
+ */
+export function visibleSessionCandidates<T extends { sessionId: string }>(
+  rows: readonly T[],
+  subagentSessionIds: ReadonlySet<string>,
+): T[] {
+  return rows.filter((row) => !subagentSessionIds.has(row.sessionId));
 }
 
 /**

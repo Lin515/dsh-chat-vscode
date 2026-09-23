@@ -91,7 +91,7 @@ import {
   type ProjectionHandlers,
 } from "./projectionIngest";
 import { deriveTrajectoryModel } from "./trajectory";
-import { normalizePath, visibleForWorkspace, visibleSessionRows } from "./sessionList";
+import { normalizePath, visibleForWorkspace, visibleSessionCandidates, visibleSessionRows } from "./sessionList";
 import { acceptSessionStatus, decodeSessionStatus } from "./sessionStatus";
 import { isBlank, mergeWindowCache, WindowRestore, WorkspaceWindowStateStore, type SidebarSlot, type WindowCache, type WindowKind } from "./windowState";
 
@@ -587,6 +587,18 @@ export class ChatController implements vscode.Disposable {
   private workspaces: { workspaceId: string; path: string; sessionIds: string[] }[] = [];
   /** 已归档会话的权威集合（来自 workspace/follow 流）。 */
   private archivedSessionIds = new Set<string>();
+  /**
+   * 已知的**子代理会话 id** 集合（不持久化，内存即可：两路来源都会很快重建）。
+   *
+   * 用途只有 @ 提及的「对话候选」过滤（`queryFiles`，用户 2026-09-22 口径：@ 列表
+   * 不显示子代理会话）——候选 RPC 的行不带 `origin`，只能客户端自己对。两路来源：
+   *
+   * - `session/list` 原始行 `origin === 'subagent'`（`refreshSessions` 打底，
+   *   覆盖别的窗口/进程建出来的子代理）；
+   * - 子代理目录的并入点 `mergeSubagentEntries`（catalog durable 事件、
+   *   `subagents/list` RPC、`subagentCatalog` 投影都走它，实时补充）。
+   */
+  private readonly subagentSessionIds = new Set<string>();
   /**
    * 本地已删除的会话 id 集合（持久化于 globalState 的 `deletedSessionIds`）。
    *
@@ -2547,6 +2559,10 @@ export class ChatController implements vscode.Disposable {
     if (!this.client) return;
     try {
       const value = await this.client.listSessions();
+      // @ 提及候选过滤的打底（判据与用途见 `subagentSessionIds` 与 sessionList.ts）
+      for (const item of value.items ?? []) {
+        if (item.origin === "subagent") this.subagentSessionIds.add(item.sessionId);
+      }
       const folder = vscode.workspace.workspaceFolders?.[0];
       const workspacePath = folder ? normalizePath(folder.uri.fsPath) : undefined;
       // 服务端注册表：这条会话被记在哪个工作区里（同一会话只属于一个工作区）
@@ -3824,6 +3840,9 @@ export class ChatController implements vscode.Disposable {
     let next = scope.subagentEntries;
     let changed = false;
     for (const entry of entries) {
+      // catalog 的三个来源（事件 / RPC / 投影）都汇到这里：顺带记进 @ 提及候选的
+      // 过滤集合（见 `subagentSessionIds`），与「已在册」无关、每次都要记
+      this.subagentSessionIds.add(entry.id);
       const existing = next.find((item) => item.id === entry.id);
       // 同 id 且 label/mode 都没变就是「已在册」：`upsertSubagent` 只更新这两项
       // （`activity` 由它自己保留），所以这里可以直接跳过
@@ -6170,7 +6189,9 @@ export class ChatController implements vscode.Disposable {
       type: "files/list",
       query,
       items: files ?? [],
-      sessions: (sessions ?? []).map(
+      // @ 列表不显示子代理会话（用户 2026-09-22 口径）：候选行不带 origin，
+      // 按 `subagentSessionIds` 客户端自己过滤（判据见 sessionList.ts）
+      sessions: visibleSessionCandidates(sessions ?? [], this.subagentSessionIds).map(
         (row): SessionRefView => ({
           sessionId: String(row?.sessionId ?? ""),
           label: String(row?.label ?? row?.sessionId ?? ""),
