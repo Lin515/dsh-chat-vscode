@@ -261,6 +261,10 @@
     "smoke": "npm run build:scripts && node build/smoke.mjs",
     "e2e:queue-esc": "npm run build:scripts && node build/queue-esc-e2e.mjs",
     "preview": "node scripts/previewServer.mjs",
+    "dsh:watch": "npm run build:scripts && node build/dsh-compat.mjs watch",
+    "dsh:snapshot": "npm run build:scripts && node build/dsh-compat.mjs snapshot",
+    "dsh:diff": "npm run build:scripts && node build/dsh-compat.mjs diff",
+    "dsh:check": "npm run build:scripts && node build/dsh-compat.mjs check",
     "package": "npm run build && node scripts/package.mjs",
     "install:vsix": "node scripts/installVsix.mjs"
   },

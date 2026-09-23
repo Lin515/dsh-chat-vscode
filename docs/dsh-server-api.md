@@ -1,6 +1,11 @@
 # DSH 本地服务器 API 参考（供第三方客户端 / VS Code 扩展使用）
 
 > 目标版本：**`@deepseek-ai/dsh` 0.1.5-rc.1**（`dsh --version` 输出 `0.1.5-rc.1`）
+>
+> **版本追踪**：本文是某一版的逐字摘录，会随官方发版而落后。官方发新版后怎么核对、怎么判定
+> 影响面、怎么决定发扩展商店还是只发 GitHub，见 `docs/dsh-compat.md`（含 `npm run dsh:watch` /
+> `dsh:check` 两个命令与核对台账）。本文点名的类型名也算作本扩展的消费面。
+>
 > 依据：官方 npm 包 `@deepseek-ai/dsh`（含约 239 个 `@deepseek-ai/dsh-*` 子包）的安装产物，
 > 以及对一个运行中服务器的只读探测（`GET /`、`GET /favicon.svg`、`HEAD /assets/*.js`）。
 > 交叉验证：[DeepSeek-Harness-for-VS-Code](https://github.com/NEXTINDIE/DeepSeek-Harness-for-VS-Code)
