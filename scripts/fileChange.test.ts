@@ -496,19 +496,30 @@ console.log("fileChange: stat 错误判读（只认 FileNotFound）✓");
 // edit / write 调用就是）。不先解析就 Uri.file → stat 必失败 → fileChangeKind
 // 把刚改过的文件误判成 deleted（用户报的 Composer.tsx 删除线）。
 {
+  // 路径语义由 `node:path` 按**当前平台**解析，所以基准与期望都跟着平台走：
+  // 这里曾经把 Windows 形态写死（`D:\dev\app` + `\` 拼接），在 POSIX 上
+  // `isAbsolute("D:\\other\\config.ts")` 是假、`join` 也改用 `/`，断言必挂
+  // （首次跑发布流水线的 ubuntu 上就是这样红的）。
+  const win = process.platform === "win32";
+  const cwd = win ? "D:\\dev\\app" : "/srv/dev/app";
+  const other = win ? "D:\\other\\config.ts" : "/srv/other/config.ts";
+  /** 期望值自己拼（不复用 `path.join`），否则等于拿实现验证实现。 */
+  const under = (relative: string) =>
+    win ? `${cwd}\\${relative.replace(/\//g, "\\")}` : `${cwd}/${relative}`;
+
   assert.strictEqual(
-    resolveChipPath("D:\\dev\\app", "src/config.ts"),
-    "D:\\dev\\app\\src\\config.ts",
+    resolveChipPath(cwd, "src/config.ts"),
+    under("src/config.ts"),
     "相对路径必须拼到会话 cwd 下",
   );
   assert.strictEqual(
-    resolveChipPath("D:\\dev\\app", "src/webview/components/Composer.tsx"),
-    "D:\\dev\\app\\src\\webview\\components\\Composer.tsx",
+    resolveChipPath(cwd, "src/webview/components/Composer.tsx"),
+    under("src/webview/components/Composer.tsx"),
     "多级相对路径同样拼到 cwd 下",
   );
   assert.strictEqual(
-    resolveChipPath("D:\\dev\\app", "D:\\other\\config.ts"),
-    "D:\\other\\config.ts",
+    resolveChipPath(cwd, other),
+    other,
     "绝对路径原样透传（不二次拼接）",
   );
   assert.strictEqual(
@@ -516,7 +527,7 @@ console.log("fileChange: stat 错误判读（只认 FileNotFound）✓");
     undefined,
     "相对但拿不到 cwd → 解析不了（调用方退化为无记号，绝不猜 deleted）",
   );
-  assert.strictEqual(resolveChipPath("D:\\dev\\app", ""), undefined, "空路径解析不了（调用方跳过）");
+  assert.strictEqual(resolveChipPath(cwd, ""), undefined, "空路径解析不了（调用方跳过）");
 }
 console.log("fileChange: 相对路径解析（基准是会话 cwd）✓");
 
