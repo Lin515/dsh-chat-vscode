@@ -122,18 +122,30 @@ export function blocksToText(content: unknown): string {
 }
 
 /**
- * 取出 `tool/result` 的**内层内容块**（`tool-result` 块自己的 `content`）。
+ * 取出 `tool/result` 的**内容块与失败标记**——两种信封都认，**新形状优先**。
  *
- * 工具结果的信封是 `message.content = [tool-result{ content: [...] }]`，
- * 真正的内容（文本、图片句柄）在里层。`blocksToText` 只关心文本，会顺手把里层
- * 拍平；但**图片句柄**必须按块处理，拍平就丢了，所以单独取一次。
+ * - **新形状（0.1.7-alpha.1 起）**：工具结果是一等消息
+ *   （`ToolResultMessage = {role:'tool', source:{kind:'tool', callId}, toolCallId,
+ *   content: [...], isError?}`），内容块直接挂在 `message.content` 上，失败在 `message.isError`；
+ * - **旧信封（0.1.6-alpha.2 及更早）**：`message.content = [tool-result{content, isError}]`，
+ *   真正的内容在里层。旧信封只可能来自没升级的服务端——V3→V4 迁移会把历史日志抬升成
+ *   新消息（`dsh-session-format-v3-to-v4` 的 `tool-role.ts`），新格式下再出现它会被判为
+ *   退役语法。
+ *
+ * 两种形状都返回**内层内容块**：图片句柄必须按块处理，拍平成文本就丢了（见 `settleTool`）。
  */
-function toolResultContent(content: unknown): ContentBlock[] {
-  if (!Array.isArray(content)) return [];
-  for (const block of content as ContentBlock[]) {
-    if (block?.type === "tool-result" && Array.isArray(block.content)) return block.content;
+function toolResultParts(message: WireMessage | undefined): { content: ContentBlock[]; isError: boolean } {
+  const blocks = Array.isArray(message?.content) ? (message!.content as ContentBlock[]) : [];
+  for (const block of blocks) {
+    // 旧信封：认出来就用里层，且**不**再看 message.isError（那个字段那时还不存在）
+    if (block?.type === "tool-result") {
+      return {
+        content: Array.isArray(block.content) ? block.content : [],
+        isError: block.isError === true,
+      };
+    }
   }
-  return [];
+  return { content: blocks, isError: message?.isError === true };
 }
 
 /**
@@ -1507,17 +1519,14 @@ export class SessionAdapter {
 
       case "tool/result": {
         const message = data.message as WireMessage | undefined;
-        const callId = String(message?.source?.callId ?? "");
-        // 工具结果的内容块：正文取自嵌套的 tool-result 块，图片句柄也在里面。
+        const callId = String(message?.source?.callId ?? message?.toolCallId ?? "");
+        // 内容块与失败标记：新旧两种信封都在 `toolResultParts` 里认（新形状优先）。
         // 不能只把整段拍成文本——`read_image` 的 image 块拍成文本就没了（见 settleTool）。
-        const resultContent = toolResultContent(message?.content);
-        const text = blocksToText(resultContent.length ? resultContent : message?.content);
-        const isError =
-          Boolean(data.error) ||
-          (Array.isArray(message?.content) &&
-            (message!.content as ContentBlock[]).some((b) => b.type === "tool-result" && b.isError));
+        const parts = toolResultParts(message);
+        const text = blocksToText(parts.content);
+        const isError = Boolean(data.error) || parts.isError;
         const toolName = this.toolNameOf(callId);
-        this.finishToolCall(event.time, callId, text, isError, data.meta, resultContent);
+        this.finishToolCall(event.time, callId, text, isError, data.meta, parts.content);
         // 问卷的**权威收场信号**：结果里就是用户答案（不论哪个窗口答的）。
         // 权限审批不需要在这里处理：它有专门的 `approval/decided` 审计事件。
         if (toolName === "ask_user_question") this.applyQuestionAnswers(text);
@@ -2411,9 +2420,25 @@ export class SessionAdapter {
 
     const origin = (source ?? {}) as { kind?: unknown; plugin?: unknown; form?: unknown };
     const form = typeof origin.form === "string" ? origin.form : undefined;
+    const kind = typeof origin.kind === "string" && origin.kind ? origin.kind : "unknown";
+    /**
+     * 来源插件名。
+     *
+     * 0.1.7-alpha.1 起消息来源是**生产者自有**的 kind（`MessageSourceMap` 里不再有
+     * 通用 `plugin` 成员）：内置生产者用 `system-prompt` / `runtime-context` /
+     * `agent-instructions` / `skill-catalog` 这类语义 kind，没有 `plugin` 字段；
+     * 插件注入落到 `plugin:<包名>` 这个回退形态（`dsh-session-format-v3-to-v4` 的
+     * `rewritePluginSource` 对第三方插件就是这么写的）。两种形态都给出插件名，
+     * 界面上那个副标题才不会退化成「unknown」。
+     */
+    const plugin = typeof origin.plugin === "string" && origin.plugin
+      ? origin.plugin
+      : kind.startsWith("plugin:")
+        ? kind.slice("plugin:".length)
+        : undefined;
     const injected: InjectedView = {
-      sourceKind: typeof origin.kind === "string" ? origin.kind : "unknown",
-      plugin: typeof origin.plugin === "string" ? origin.plugin : undefined,
+      sourceKind: kind,
+      plugin,
       form,
       text,
       // 按 form 解析 `source` 里的结构化字段（官方 `ContextBody` 就是按 form 分派正文的）。

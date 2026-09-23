@@ -668,11 +668,13 @@ export interface GoalView {
 /**
  * 子代理（子代理面板一行）。
  *
- * 两个来源的字段集**不一样**，别互相套用：
- * - `subagents/list` RPC 返回 `SubagentListEntry`：`{kind:'child', id, activity,
- *   hasChildren, mode, label?}`；
+ * 三个来源的字段集**不一样**，别互相套用：
  * - `subagentCatalog` **投影**返回 `SubagentCatalogEntry`：`{id, createdAt, mode,
- *   label?}`——**没有 `kind`/`activity`**。
+ *   label?}`——**没有 `kind`/`activity`**（0.1.7-alpha.1 起 `mode` 还多一个 `unknown`）；
+ * - `subagent/catalog` **durable 事件**：`{version, childId, childCreatedAt, mode, label?}`；
+ * - 0.1.7-alpha.1 之前还有一条 `subagents/list` RPC（`SubagentListEntry`：
+ *   `{kind:'child'|'diagnostic', id, activity, hasChildren, mode, label?}`），
+ *   该端点在新版已删除——`activity` 现在由 `api-session/status` 中继补齐。
  *
  * 早先把 RPC 行的过滤（`kind === "child"`）套在投影上，于是面板每次刷新都被
  * 清空（docs/audit-summary.md「subagentCatalog 形状用错 + mode 硬编码」一条）。
@@ -686,9 +688,10 @@ export interface SubagentView {
    */
   mode: "one-shot" | "continuable";
   /**
-   * 是否驻留（`SubagentListEntry.activity`，仅 RPC 行有）。
+   * 是否驻留。
    *
-   * 投影没有这个字段，所以投影刷新时保留已知值、未知就**不下发**——
+   * 三个来源都没有这个字段（0.1.7-alpha.1 之前由 `subagents/list` RPC 给，
+   * 之后由 `api-session/status` 中继补）：刷新时保留已知值、未知就**不下发**——
    * 界面据此决定画不画状态点，而不是猜一个「正在运行」。
    */
   activity?: "running" | "inactive";

@@ -157,4 +157,62 @@ console.log("toolView: 半截 JSON 不崩 ✓");
 }
 console.log("toolView: 参数补全后刷新命令 ✓");
 
+// 7. 工具结果的**新形状**（0.1.7-alpha.1）：内容块直接挂在消息上，失败在 `message.isError`
+//
+// 旧形状（0.1.6-alpha.2 及更早）是 `content = [tool-result{content, isError}]`，新版把它
+// 抬升成一等 `role:'tool'` 消息并删掉了那个块。协议没有版本协商，所以两种信封都必须认，
+// 而且**新形状优先**——这一条断言就是钉住「不升级读取口径 = 工具行永远停在运行中」。
+{
+  /** 灌一条 tool/call + tool/result，取回结算后的工具视图。 */
+  function settle(resultData: unknown, name = "bash"): ToolCallView {
+    const frames: HostToWebview[] = [];
+    const adapter = new SessionAdapter((frame) => frames.push(frame));
+    const time = Date.now();
+    adapter.applyEvent({
+      type: "tool/call", seq: 1, time,
+      data: { callId: "c9", name, arguments: JSON.stringify({ command: "echo hi" }) },
+    });
+    adapter.applyEvent({ type: "tool/result", seq: 2, time: time + 5, data: resultData });
+    const segments = frames.filter((f) => f.type === "message/segment");
+    assert.ok(segments.length > 0, "结算要发 message/segment");
+    const last = segments[segments.length - 1] as Extract<HostToWebview, { type: "message/segment" }>;
+    assert.strictEqual(last.segment.kind, "tool");
+    return (last.segment as Extract<typeof last.segment, { kind: "tool" }>).tool;
+  }
+
+  const settled = settle({
+    turn: 1, step: 1,
+    message: {
+      id: "m1", role: "tool", toolCallId: "c9", isError: false,
+      content: [{ type: "text", text: "hello" }],
+      source: { kind: "tool", callId: "c9" },
+    },
+  });
+  assert.strictEqual(settled.output, "hello", "新形状的内容块直接取自 message.content");
+  assert.strictEqual(settled.status, "ok", "新形状的 isError:false 不该被读成失败");
+
+  const failed = settle({
+    turn: 1, step: 1,
+    message: {
+      id: "m2", role: "tool", toolCallId: "c9", isError: true,
+      content: [{ type: "text", text: "boom" }],
+      source: { kind: "tool", callId: "c9" },
+    },
+  });
+  assert.strictEqual(failed.status, "error", "新形状的 isError:true = 失败");
+
+  // 旧信封（没升级的服务端）仍然认：内容与 isError 都在嵌套的 tool-result 块里
+  const legacy = settle({
+    turn: 1, step: 1,
+    message: {
+      id: "m3", role: "user",
+      content: [{ type: "tool-result", toolCallId: "c9", isError: true, content: [{ type: "text", text: "老信封" }] }],
+      source: { kind: "tool", callId: "c9" },
+    },
+  });
+  assert.strictEqual(legacy.output, "老信封", "旧信封取里层内容");
+  assert.strictEqual(legacy.status, "error", "旧信封的块内 isError 仍生效");
+  console.log("toolView: 工具结果新旧两种信封都认，新形状优先 ✓");
+}
+
 console.log("\ntoolView: all assertions passed");

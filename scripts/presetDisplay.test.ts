@@ -1,13 +1,16 @@
 /**
  * agent 预设展示文案的折叠（`src/webview/presetDisplay.ts`）。
  *
- * 与官方 `@deepseek-ai/dsh-agent-presets/display` 的 `presetDisplayText` **同一套
- * 口径**，这条断言把两半都钉住：
+ * 与官方 `@deepseek-ai/dsh-agent-preset-registry/display` 的 `presetDisplayText`
+ * **同一套口径**，这条断言把两半都钉住：
  *
- * 1. 随产品交付的四个 id（`trust === "system"`）走**客户端词典**——服务端给的那几个
- *    `name`/`description` 是不翻译的文件元数据，直接用会在中文界面里显示英文；
- * 2. 其余（用户自己写的、或认不出的 system id）用它自己发布的文案，没有就用 id
+ * 1. 随产品交付的四个 id 走**客户端词典**——服务端给的那几个 `name`/`description`
+ *    是不翻译的文件元数据，直接用会在中文界面里显示英文；
+ * 2. 其余（用户自己写的、或认不出的 id）用它自己发布的文案，没有就用 id
  *    ——作者写下的字**不翻译**。
+ *
+ * 「哪几个算内置」的判据跨了两代服务端（新版删掉了 `trust`），两条分支都要钉住，
+ * 否则中文界面会安静地显示英文——正是用户 2026-09-23 报的那个现场。
  *
  * 为什么值得单独断言：映射写错（把 ptc 的名字挂到 standard 上）不会报任何错，
  * 界面上只是安静地显示另一个模式的名字；而「官方词典该长什么样」在
@@ -81,15 +84,49 @@ console.log("presetDisplay: 随产品交付的四个走词典（服务端元数�
   );
   // 没有发布名字就用 id（那是唯一还认得出的身份）
   assert.strictEqual(presetDisplayText({ id: "bare", trust: "user" }, zh).name, "bare");
-  // trust 缺失（旧服务端 / 别的实现）：**不猜**它是内置的，按原文走
+  // 自己发布了名字：**name 说了算**（两代服务端都是这条——有 `name` 的声明拥有自己的文案）
   assert.strictEqual(
     presetDisplayText({ id: "standard", name: "Server name" }, zh).name,
     "Server name",
-    "trust 缺失时不该套词典：那会让用户自己写的预设被静默改名",
+    "有 name 时不该套词典：那会让用户自己写的预设被静默改名",
   );
   // 空描述当「没有描述」（界面给替代文案），不显示一个空行
   assert.deepStrictEqual(presetDisplayText({ id: "x", trust: "user", description: "" }, zh), { name: "x" });
 }
 console.log("presetDisplay: 用户写的与认不出的走原文，trust 缺失不猜 ✓");
+
+// ---------- 3. 0.1.7-alpha.1 的 roster：**没有 `trust` 了**，判定换成官方 isBuiltInPreset ----------
+//
+// 新版 `AgentPresetRow` 删掉了 `trust`（连 `authorable` 一起），官方的判据改成
+// 「随产品交付的预设不发布 `name`，自己写了 `name` 的声明拥有自己的文案」
+// （`dsh-agent-preset-registry/src/display.ts` 的 `isBuiltInPreset`）。
+// 少了这一支，四个内置预设的 `trust` 恒为 `undefined`，于是全部退化到服务端那份
+// **不翻译**的 name / 裸 id —— 中文界面里显示英文（用户 2026-09-23 报的现场）。
+{
+  // 新版服务端的真实形状：只有 id / isDefault / broken，**没有** trust、没有 name
+  for (const [id, zhName, enName] of [
+    ["standard", "标准模式", "Standard mode"],
+    ["ptc", "PTC 模式", "PTC mode"],
+    ["minimal", "极简模式", "Minimal mode"],
+    ["cordis", "创造模式", "Creator mode"],
+  ] as const) {
+    const shipped: AgentPresetOptionView = { id, isDefault: id === "standard" };
+    assert.strictEqual(presetDisplayText(shipped, zh).name, zhName, `${id}：没有 trust 也要走中文词典`);
+    assert.strictEqual(presetDisplayText(shipped, en).name, enName, `${id}：英文同理`);
+    assert.ok(presetDisplayText(shipped, zh).description, `${id}：描述也要走词典`);
+  }
+  // 发布了自己名字的声明（用户预设）：原文优先——作者写下的字不翻译，
+  // 即便 id 撞上内置的那个（官方 `isBuiltInPreset` 就是拿 name 判的）
+  assert.deepStrictEqual(
+    presetDisplayText({ id: "standard", name: "My own standard" }, zh),
+    { name: "My own standard" },
+    "有 name 的声明拥有自己的文案",
+  );
+  // 认不出的 id、又没有名字 → 用 id（唯一还认得出的身份）
+  assert.strictEqual(presetDisplayText({ id: "in-house" }, zh).name, "in-house");
+  // 旧服务端的 `trust: "user"` 仍然是权威：那时它说了才算
+  assert.strictEqual(presetDisplayText({ id: "standard", trust: "user" }, zh).name, "standard");
+}
+console.log("presetDisplay: 新版没有 trust 时按官方 isBuiltInPreset 判内置 ✓");
 
 console.log("\npresetDisplay: all assertions passed");

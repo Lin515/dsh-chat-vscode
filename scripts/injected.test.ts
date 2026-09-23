@@ -211,4 +211,44 @@ console.log("injected: 空内容跳过 ✓");
 }
 console.log("injected: 大内容不截断 ✓");
 
+// ---------- 8. 0.1.7-alpha.1 的**生产者自有 kind** 也要读出人话 ----------
+//
+// 契约里 `MessageSourceMap` 的通用 `plugin` 成员已被删除，每个生产者声明自己的 kind：
+// 系统提示词是 `system-prompt`，沙箱/审批那类运行时上下文是 `runtime-context`，
+// 第三方插件落成 `plugin:<包名>`（`rewritePluginSource` 的回退形态，实测形态见
+// `@openviking/dsh-memory-plugin` 0.5.2 的 `capture.mjs`）。插件名必须从 kind 里取出来
+// ——否则界面副标题会退化成裸 kind，「这条上下文是谁注入的」就看不出来了。
+{
+  const { adapter, messages } = harness();
+  const t = Date.now();
+  adapter.applyEvent({ type: "turn/start", seq: 1, time: t, data: { turn: 1 } });
+  adapter.applyEvent({
+    type: "system/message", seq: 2, time: t + 1,
+    data: { turn: 1, step: 1, message: { id: "s1", role: "system", content: [{ type: "text", text: "系统提示词" }], source: { kind: "system-prompt" } } },
+  });
+  const cases = [
+    { source: { kind: "runtime-context", form: "snapshot" }, text: "<sandbox>…" },
+    // 新版记忆插件：kind 是 `plugin:<包名>`，同时仍带 plugin 字段
+    { source: { kind: "plugin:openviking-memory", plugin: "openviking-memory", form: "recall" }, text: "<openviking-context>…" },
+    // 只有 kind、没有 plugin 的第三方形态（回退成 `plugin:<包名>` 的老日志）
+    { source: { kind: "plugin:dsh-mcp-manager", form: "mcp-status" }, text: "<mcp-status>…" },
+  ];
+  let seq = 3;
+  for (const item of cases) {
+    adapter.applyEvent({
+      type: "user/message", seq: seq++, time: t + seq,
+      data: { id: `u${seq}`, role: "user", content: [{ type: "text", text: item.text }], source: item.source },
+    });
+  }
+
+  const nodes = injected(messages);
+  assert.strictEqual(nodes.length, cases.length + 1, `节点数应当等于事件数，实际 ${nodes.length}`);
+  assert.strictEqual(nodes[0].injected.sourceKind, "system-prompt", "系统提示词用自己的 kind");
+  assert.strictEqual(nodes[1].injected.sourceKind, "runtime-context");
+  assert.strictEqual(nodes[1].injected.form, "snapshot", "form 仍按生产者声明读");
+  assert.strictEqual(nodes[2].injected.plugin, "openviking-memory", "插件名从 plugin 字段取");
+  assert.strictEqual(nodes[3].injected.plugin, "dsh-mcp-manager", "只有 kind 时从 plugin:<包名> 里取");
+}
+console.log("injected: 生产者自有 kind（system-prompt / runtime-context / plugin:<包名>） ✓");
+
 console.log("\ninjected: all assertions passed");

@@ -1,7 +1,7 @@
 {
   "formatVersion": 2,
-  "version": "0.1.5-rc.3",
-  "generatedAt": "2026-09-23T15:36:52.707Z",
+  "version": "0.1.6-alpha.2",
+  "generatedAt": "2026-09-23T15:37:00.342Z",
   "packages": {
     "@deepseek-ai/dsh-api-session-controller": {
       "endpoints": {
@@ -230,6 +230,13 @@
         "SessionEventSource": [
           ";"
         ],
+        "SessionReferenceSourceMap": [
+          "controllerOperation: unknown;",
+          "gateway: unknown;"
+        ],
+        "SessionReferenceSource": [
+          ";"
+        ],
         "Config": [
           "readonly nativeOpen?: boolean;"
         ],
@@ -252,7 +259,6 @@
           "origin?: 'subagent';",
           "cwd?: string;",
           "projectionValues?: Readonly<Partial<SessionProjectionMap>>;",
-          "completed: boolean;",
           "depth: number;"
         ],
         "SessionListPhase": [
@@ -264,13 +270,11 @@
         ],
         "SessionListSnapshot": [
           "items: readonly SessionListEntry[];",
-          "current: SessionId | undefined;",
           "state: 'idle' | 'loading' | 'error';",
           "phase: SessionListPhase;",
           "error: RemoteFailure | null;",
           "subagentsByParent: Readonly<Record<SessionId, SubagentCatalogSnapshot>>;",
-          "jobsBySession: Readonly<Record<SessionId, readonly JobView[]>>;",
-          "currentAddress: SubagentAddress | undefined;"
+          "jobsBySession: Readonly<Record<SessionId, readonly JobView[]>>;"
         ],
         "SubagentCatalogSnapshot": [
           "{ readonly parentAvailable?: boolean; state: 'loading' | 'ready' | 'error'; error: RemoteFailure | null; };"
@@ -311,7 +315,7 @@
           "parentId?: SessionId;",
           "origin?: 'subagent';",
           "running: boolean;",
-          "completed?: boolean;",
+          "readonly retainedBy: SessionRetainInfo['retainedBy'];",
           "blank: boolean;",
           "updatedAt: number;",
           "projectionValues?: Readonly<Partial<SessionProjectionMap>>;"
@@ -319,11 +323,9 @@
         "SessionListState": [
           "ids: SessionId[];",
           "byId: Record<SessionId, SessionSummary>;",
-          "current: SessionId | undefined;",
           "phase: SessionListPhase;",
           "subagentsByParent: Readonly<Record<SessionId, SubagentCatalogSnapshot>>;",
-          "jobsBySession: Readonly<Record<SessionId, readonly JobView[]>>;",
-          "currentAddress: SubagentAddress | undefined;"
+          "jobsBySession: Readonly<Record<SessionId, readonly JobView[]>>;"
         ],
         "SessionBinding": [
           "readonly sessionId: SessionId;",
@@ -369,16 +371,33 @@
           "onEngaged?(session: Session): void;",
           "projections?: ProjectionValueStore;"
         ],
+        "SessionTarget": [
+          ";"
+        ],
+        "SessionReference": [
+          "readonly sessionId: SessionId;",
+          "readonly binding: SessionBinding;",
+          "readonly ready: Promise<SessionBinding>;",
+          "release(): void;"
+        ],
+        "SessionRetainOptions": [
+          "readonly source: SessionReferenceSource;",
+          "readonly signal?: AbortSignal | undefined;"
+        ],
+        "SessionRetainInfo": [
+          "readonly referenceCount: number;",
+          "readonly retainedBy: Readonly<Partial<Record<SessionReferenceSource, number>>>;"
+        ],
         "ISessions": [
           "readonly list: ObservableSnapshot<SessionListState>;",
+          "retain(target: SessionTarget, options: SessionRetainOptions): SessionReference;",
+          "using<T>(target: SessionTarget, options: SessionRetainOptions, operation: (reference: SessionReference) => T | Promise<T>): Promise<T>;",
+          "retainInfo(id: SessionId): ObservableSnapshot<SessionRetainInfo>;",
           "readonly searchResultLimit: number;",
           "create(opts?: { workspaceId?: WorkspaceId; cwd?: string; sessionId?: SessionId; }): Promise<SessionId>;",
-          "open(id: SessionId): void;",
-          "openSubagent(address: SubagentAddress): void;",
           "subagentAddress(id: SessionId): SubagentAddress | undefined;",
           "setSubagentCatalogOpen(parentSessionId: SessionId, open: boolean): void;",
           "refreshSubagents(parentSessionId: SessionId): Promise<void>;",
-          "clear(): void;",
           "refresh(): Promise<void>;",
           "search(query: string, signal: AbortSignal): Promise<RemoteResult<{ items: SessionSearchResultItem[]; hasMore: boolean; }>>;",
           "fork(opts: { sessionId: SessionId; atSeq?: number; increaseTitle?: boolean; }): Promise<SessionId>;",
@@ -386,15 +405,6 @@
           "scopeOf(ctx: Context): SessionId | undefined;",
           "sessionOf(ctx: Context): SessionFace | undefined;",
           "binding(id: SessionId): SessionBinding | undefined;"
-        ],
-        "QueuedMessage": [
-          "readonly id: MessageId;",
-          "readonly messageId: MessageId;",
-          "readonly placement: 'queued' | 'steering' | 'context';",
-          "readonly rpcId?: SessionRequestId;",
-          "readonly content: readonly ContentBlock[];",
-          "readonly preview: string;",
-          "readonly text: string | null;"
         ],
         "PendingSubmissionImage": [
           "readonly previewUrl: string;",
@@ -432,7 +442,6 @@
         ],
         "SessionSnapshot": [
           "readonly sessionId: SessionId;",
-          "readonly queue: readonly QueuedMessage[];",
           "readonly pendingSubmissions: readonly PendingSubmission[];",
           "readonly running: boolean;",
           "readonly subagent: { readonly address: SubagentAddress; readonly parentAvailable?: boolean; } | null;",
@@ -542,6 +551,7 @@
           "readonly sessionId: SessionId;"
         ],
         "SkillEntry": [
+          "readonly path?: string;",
           "readonly name: string;",
           "readonly description: string;",
           "readonly whenToUse?: string;",
@@ -702,12 +712,6 @@
         "SessionFollowFrame": [
           "{ readonly type: 'snapshot'; readonly header: SessionWireHeader; readonly cursor: number; readonly records: readonly SessionHistoryRecord[]; readonly hasMore: boolean; readonly projections: SessionProjectionBaseline; readonly assistantStream?: SessionAssistantStreamBaseline; } | SessionEventEntry | { readonly type: 'assistant-stream'; readonly frame: SessionAssistantStreamFrame; };"
         ],
-        "SessionQueuedItem": [
-          "readonly id: MessageId;",
-          "readonly placement: 'queued' | 'steering' | 'context';",
-          "readonly rpcId?: SessionRequestId;",
-          "readonly message: { readonly id: MessageId; readonly content: readonly JsonValue[]; };"
-        ],
         "SessionJob": [
           "readonly id: JobId;",
           "readonly kind: string;",
@@ -718,7 +722,6 @@
           "readonly finishedAt?: number;"
         ],
         "SessionControlBaseline": [
-          "readonly queues: Readonly<Record<SessionId, readonly SessionQueuedItem[]>>;",
           "readonly jobs: Readonly<Record<SessionId, readonly SessionJob[]>>;",
           "readonly projections: Readonly<Record<SessionId, SessionProjectionBaseline>>;"
         ],
@@ -729,7 +732,7 @@
           "readonly seq: number;"
         ],
         "SessionControlFrame": [
-          "{ readonly type: 'baseline'; readonly value: SessionControlBaseline; } | { readonly type: 'queue'; readonly sessionId: SessionId; readonly items: readonly SessionQueuedItem[]; } | { readonly type: 'jobs'; readonly sessionId: SessionId; readonly jobs: readonly SessionJob[]; } | ({ readonly type: 'projection'; } & SessionProjectionUpdate);"
+          "{ readonly type: 'baseline'; readonly value: SessionControlBaseline; } | { readonly type: 'jobs'; readonly sessionId: SessionId; readonly jobs: readonly SessionJob[]; } | ({ readonly type: 'projection'; } & SessionProjectionUpdate);"
         ],
         "SessionProjectionValue": [
           ";"
@@ -1136,6 +1139,16 @@
             "@deepseek-ai/dsh-api-workspace-controller/types#WorkspaceRenameRequest",
             "@deepseek-ai/dsh-api-workspace-controller/types#WorkspaceValue"
           ]
+        },
+        "workspace/unarchiveSession": {
+          "scope": null,
+          "params": [
+            "request"
+          ],
+          "types": [
+            "@deepseek-ai/dsh-api-workspace-controller/types#WorkspaceUnarchiveSessionRequest",
+            "@deepseek-ai/dsh-api-workspace-controller/types#WorkspaceArchiveValue"
+          ]
         }
       },
       "events": [],
@@ -1179,6 +1192,7 @@
           "delete(workspaceId: WorkspaceId): Promise<void>;",
           "insertBefore(workspaceId: WorkspaceId, beforeWorkspaceId?: WorkspaceId): Promise<void>;",
           "archiveSession(sessionId: SessionId): Promise<void>;",
+          "unarchiveSession(sessionId: SessionId): Promise<void>;",
           "insertSessionBefore(workspaceId: WorkspaceId, sessionId: SessionId, beforeSessionId?: SessionId): Promise<WorkspaceView>;"
         ],
         "WorkspaceView": [
@@ -1224,6 +1238,9 @@
         "WorkspaceArchiveSessionRequest": [
           "readonly sessionId: SessionId;"
         ],
+        "WorkspaceUnarchiveSessionRequest": [
+          "readonly sessionId: SessionId;"
+        ],
         "WorkspaceArchiveValue": [
           "readonly archivedSessionIds: readonly SessionId[];"
         ],
@@ -1261,20 +1278,6 @@
         "ConnectionGenerationSource": [
           ";"
         ],
-        "FixtureAssistantStreamFrame": [
-          "{ readonly type: 'start'; readonly attemptId: ReturnType<typeof LlmAttemptId>; readonly revision: number; readonly startedAfterSeq: SessionSeqCursor; readonly turn: number; readonly step: number; } | { readonly type: 'chunk'; readonly attemptId: ReturnType<typeof LlmAttemptId>; readonly revision: number; readonly index: number; readonly time: number; readonly chunk: JsonValue; } | { readonly type: 'end'; readonly attemptId: ReturnType<typeof LlmAttemptId>; readonly revision: number; readonly index: number; readonly outcome: { readonly kind: 'committed'; readonly eventType: 'assistant/message' | 'assistant/attempt'; readonly seq: number; } | { readonly kind: 'abandoned'; }; };"
-        ],
-        "FixtureOptions": [
-          "empty?: boolean;",
-          "rejectPrompt?: boolean;",
-          "failWorkspaceAttach?: boolean;",
-          "dropSessionCreateResponse?: boolean;",
-          "createFrameOrder?: 'session-first' | 'workspace-first';",
-          "fileChanges?: boolean;"
-        ],
-        "FixtureWorld": [
-          "readonly rpc: ClientConnectionRpc;"
-        ],
         "ConnectionGenerationState": [
           "getSnapshot(): ConnectionGeneration | undefined;",
           "subscribe(listener: () => void): () => void;"
@@ -1284,10 +1287,20 @@
           "subscribe(listener: () => void): () => void;"
         ],
         "ClientTransportHooks": [
-          "fetch: RpcFetch;",
+          "rpc?: ClientConnectionRpc;",
+          "fetch?: RpcFetch;",
           "openStream?: RpcStreamOpen;",
           "loadBundle?(url: string): Promise<void>;",
-          "ownsHost?: boolean;"
+          "ownsHost?: boolean;",
+          "streamBaseUrl?: string;"
+        ],
+        "ConnectionLocation": [
+          "readonly hostname: string;"
+        ],
+        "ConnectionInstallOptions": [
+          "readonly transport?: ClientTransportHooks;",
+          "readonly recovery?: ConnectionRecoveryConfig;",
+          "readonly location?: ConnectionLocation;"
         ],
         "ConnectionHandle": [
           "readonly isLoopback: boolean;",
@@ -1438,7 +1451,6 @@
           "readonly total?: number;"
         ],
         "FileUploadService": [
-          "readonly available: boolean;",
           "upload(sessionId: SessionId, data: Blob | Uint8Array | ReadableStream<Uint8Array>, name?: string, signal?: AbortSignal, onProgress?: (progress: FileUploadProgress) => void): Promise<RemoteResult<FileUploadValue>>;"
         ],
         "AgentResolver": [
@@ -1497,6 +1509,9 @@
         "commands/change"
       ],
       "types": {
+        "CommandDefinitionId": [
+          ";"
+        ],
         "CommandId": [
           ";"
         ],
@@ -1511,6 +1526,7 @@
           "readonly signal: AbortSignal;"
         ],
         "CommandDefinition": [
+          "readonly definitionId?: CommandDefinitionId;",
           "readonly name: string;",
           "readonly description: string;",
           "readonly input?: CommandInputDescriptor;",
@@ -1536,6 +1552,7 @@
           "readonly result: CommandResult;"
         ],
         "CommandDescriptor": [
+          "readonly definitionId?: CommandDefinitionId;",
           "readonly name: string;",
           "readonly description: string;",
           "readonly input?: CommandInputDescriptor;"
@@ -1643,7 +1660,8 @@
           "readonly description?: string;"
         ],
         "AgentPresetSettings": [
-          "default?: string;"
+          "default: string;",
+          "modeSelectionEnabled: boolean;"
         ],
         "PresetMetadata": [
           "readonly name?: string;",
@@ -1694,7 +1712,8 @@
         ],
         "AgentPresetRoster": [
           "readonly presets: readonly AgentPresetRow[];",
-          "readonly authorable: boolean;"
+          "readonly authorable: boolean;",
+          "readonly modeSelectionEnabled: boolean;"
         ],
         "AgentPresetDocument": [
           "readonly agentPreset: string;",
@@ -1706,8 +1725,18 @@
       }
     },
     "@deepseek-ai/dsh-permission-presets": {
-      "endpoints": {},
-      "events": [],
+      "endpoints": {
+        "permissionPresets/catalog": {
+          "scope": null,
+          "params": [],
+          "types": [
+            "@deepseek-ai/dsh-permission-presets/client#PermissionCatalog"
+          ]
+        }
+      },
+      "events": [
+        "permission-presets/catalog-changed"
+      ],
       "types": {
         "PresetSpec": [
           "sandbox: SandboxMode;",
@@ -1732,8 +1761,10 @@
           "name: string;",
           "description?: string;"
         ],
-        "PermissionSelect": [
-          "options: PresetOption[];",
+        "PermissionCatalog": [
+          "options: PresetOption[];"
+        ],
+        "PermissionSelection": [
           "currentValue: string;"
         ]
       }
@@ -1828,19 +1859,11 @@
         "ImageAttachmentAccessResolver": [
           ";"
         ],
-        "RequestImageOffloadPolicy": [
-          "maxImages?: number;",
-          "maxBytes?: number;",
-          "countQuantum?: number;",
-          "byteQuantum?: number;",
-          "representation: 'raw' | 'base64';",
-          "byteLength?: (ref: ImageAttachmentRef) => number;",
-          "placeholder: (ref: ImageAttachmentRef) => string;"
-        ],
         "LlmErrorOptions": [
           "status?: number;",
           "providerRetryAfterMs?: number;",
-          "requestId?: ProviderRequestId;"
+          "requestId?: ProviderRequestId;",
+          "offloadImages?: number;"
         ],
         "PreparedLlmCall": [
           "readonly config: LlmCallConfig;",
@@ -1863,7 +1886,7 @@
           "(): void;",
           "replace(entries: readonly LlmConfigurableProvider[]): void;"
         ],
-        "AssistantProvenance": [
+        "AssistantProviderMetadata": [
           "provider: string;",
           "model: string;",
           "replayState?: unknown;"
@@ -1960,7 +1983,8 @@
           "readonly code: string;",
           "readonly status?: number;",
           "readonly providerRetryAfterMs?: number;",
-          "readonly requestId?: ProviderRequestId;"
+          "readonly requestId?: ProviderRequestId;",
+          "readonly offloadImages?: number;"
         ],
         "TextBlock": [
           "type: 'text';",
@@ -1972,7 +1996,8 @@
         ],
         "ImageBlock": [
           "type: 'image';",
-          "attachment: ImageAttachmentRef;"
+          "attachment: ImageAttachmentRef;",
+          "offloaded?: true;"
         ],
         "FileBlock": [
           "type: 'file';",
@@ -2027,7 +2052,7 @@
           "text: string;"
         ],
         "LlmImageRequestPricing": [
-          "priceImages(images: readonly ImageAttachmentRef[]): readonly LlmImageRequestPrice[];"
+          "priceImages(images: readonly ImageBlock[]): readonly LlmImageRequestPrice[];"
         ],
         "LlmProviderInfo": [
           "id: string;",
@@ -2061,7 +2086,8 @@
           "id: string;",
           "name?: string;",
           "contextWindow?: number;",
-          "maxTokens?: number;"
+          "maxTokens?: number;",
+          "inputModalities?: readonly ModelModality[];"
         ],
         "LlmModelInfo": [
           "provider: string;",
@@ -2072,6 +2098,13 @@
         ],
         "LlmModelContext": [
           "contextWindow: number;"
+        ],
+        "LlmImageRequestBudget": [
+          "representation: 'raw' | 'base64';",
+          "maxBytes?: number;",
+          "maxImages?: number;",
+          "byteQuantum?: number;",
+          "countQuantum?: number;"
         ],
         "LlmReasoningEffortInfo": [
           "id: ReasoningEffortId;",
@@ -2135,6 +2168,16 @@
         "EncodedSeq": [
           ";"
         ],
+        "SessionMessageProjectionContext": [
+          "nodes: readonly SessionSeq[];",
+          "events: readonly SessionEvent[];",
+          "baseSeq: SessionLogOffset;",
+          "messages: ReadonlyMap<SessionSeq, Message>;"
+        ],
+        "SessionMessageProjection": [
+          "type: T;",
+          "project(event: SessionEvent<T>, context: SessionMessageProjectionContext): ReadonlyMap<SessionSeq, Message>;"
+        ],
         "SurfaceFoldReplacement": [
           "seq: SessionSeq;",
           "start: SessionSeq;",
@@ -2143,11 +2186,13 @@
         ],
         "SurfaceFoldResult": [
           "nodes: SessionSeq[];",
-          "replacements: SurfaceFoldReplacement[];"
+          "replacements: SurfaceFoldReplacement[];",
+          "projectedMessages: ReadonlyMap<SessionSeq, Message>;"
         ],
         "SessionSurface": [
           "readonly nodes: readonly SessionSeq[];",
-          "readonly replaceGeneration: number;"
+          "readonly replaceGeneration: number;",
+          "readonly contentGeneration: number;"
         ],
         "SessionId": [
           ";"
@@ -2233,7 +2278,7 @@
           "'assistant/message': { turn: number; step: number; message: AssistantMessage; stream: AssistantStreamRecord[]; usage?: TokenUsage; interrupted?: true; };",
           "'assistant/attempt': { turn: number; step: number; stream: AssistantStreamRecord[]; };",
           "'tool/call': { turn: number; step: number; callId: ToolCallId; name: string; arguments: string; };",
-          "'tool/result': { turn: number; step: number; message: ToolResultMessage; error?: { name: string; code: string; }; meta?: JsonValue; };",
+          "'tool/result': { turn: number; step: number; message: ToolResultMessage; error?: { name: string; code: string; reason?: string; }; meta?: JsonValue; };",
           "'request/header': { header: EpochHeader; reason: RequestHeaderReason; startsSeries?: true; };",
           "'request/context': RequestContext;",
           "'session/end-seed': { inherited?: true; };"
@@ -2566,6 +2611,7 @@
           "readonly toolFilter?: ToolRestriction | undefined;"
         ],
         "DelegatedPolicyOverrides": [
+          "readonly permissionPreset: 'auto' | 'danger-full-access' | undefined;",
           "readonly sandboxMode: SandboxMode | undefined;",
           "readonly approvalPolicy: 'never' | undefined;"
         ],
@@ -2576,6 +2622,8 @@
           "readonly lineageSeedLength: number;"
         ],
         "Activation": [
+          "readonly pool: ActivationPool;",
+          "readonly releaseSlot: () => void;",
           "readonly childId: SessionId;",
           "readonly parentSession: SessionId;",
           "readonly provider: string;",
@@ -2669,6 +2717,10 @@
         ],
         "SubagentDelivery": [
           ";"
+        ],
+        "Config": [
+          "maxActiveSubagents?: number;",
+          "maxDepth?: number;"
         ],
         "HostPromptDeliverer": [
           "[deliverSubagentPrompt](parent: Agent, childId: SessionId, content: ContentBlock[], source: MessageSource, signal: AbortSignal, delivery: SubagentDelivery): Promise<MessageId>;"

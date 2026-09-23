@@ -51,7 +51,7 @@ import { formatFileMentionWithLines } from "../shared/mentions";
 import { resolveForVsCode } from "./hostText";
 import { normalizeTurnProcessThreshold } from "../shared/turnProcessThreshold";
 import { chooseTarget, describeFacts, externalStateOf, type TargetFacts } from "./connectTarget";
-import { DshApiError, DshAuthError, DshClient, type SessionReferenceCandidateWire, type SessionSummaryWire } from "./client";
+import { DshApiError, DshAuthError, DshClient, endpointAbsent, type SessionReferenceCandidateWire, type SessionSummaryWire } from "./client";
 import type { ProjectionBlockWire } from "./projectionStore";
 import { PendingInteractions, type HeldInteraction } from "./pendingInteractions";
 import type {
@@ -61,6 +61,7 @@ import type {
   SessionFollowFrame,
   SessionFollowRequest,
 } from "./protocol";
+import { jobItemsFromWire, jobRowsFromFrame } from "./jobView";
 import {
   ServerNotRunningError,
   SupervisorManager,
@@ -503,6 +504,14 @@ export class ChatController implements vscode.Disposable {
    * 必须有自己的清理路径（涨上去就是永久泄漏）。
    */
   private readonly subagentRefreshes = new Map<string, Promise<void>>();
+  /**
+   * 这个服务端**没有** `subagents/list` 这个端点（0.1.7-alpha.1 起官方已删除它）。
+   *
+   * 判据是网关回 HTTP 404（路由不存在）——肯定证据，不是猜。记住之后目录只由
+   * `subagentCatalog` 投影与 `subagent/catalog` 事件两路承载，不再白发请求。
+   * 每次重建连接（`teardownStreams`）清零：换一个服务端就重新问一次。
+   */
+  private subagentListMissing = false;
   private controlHandle: { cancel(): void } | undefined;
   private eventsHandle: { cancel(): void } | undefined;
   private eventsClientId: string | undefined;
@@ -1534,6 +1543,8 @@ export class ChatController implements vscode.Disposable {
     this.scopes.delete(scope.sessionId);
     scope.followHandle?.cancel();
     scope.followHandle = undefined;
+    scope.jobsHandle?.cancel();
+    scope.jobsHandle = undefined;
     scope.adapter = undefined;
     this.log(`[scope] 回收域 session=${scope.sessionId}`);
   }
@@ -2157,7 +2168,10 @@ export class ChatController implements vscode.Disposable {
   private async onConnected(): Promise<void> {
     // socket 重建后长活流都要重开：每个打开的域重新跟随（适配器整个重建，
     // 新快照会重放最近 60 条），全局流重开一次
-    for (const scope of this.scopes.values()) this.openScopeFollow(scope);
+    for (const scope of this.scopes.values()) {
+      this.openScopeFollow(scope);
+      this.openScopeJobs(scope);
+    }
     // 适配器刚被整个重建，卡片要重新回放一遍。**不删账本条目**——条目留到真正结算
     // （见 `interactions` 的注释），否则「重连 → 切会话 → 切回来」这条路上卡片又会
     // 消失。服务端重连后重投递的 waterfall 会被去重记账幂等放行，不会重复弹卡片；
@@ -3104,6 +3118,7 @@ export class ChatController implements vscode.Disposable {
     if (row) scope.running = row.running;
     this.scopes.set(sessionId, scope);
     this.openScopeFollow(scope);
+    this.openScopeJobs(scope);
     // 子代理目录**打底**：投影与 durable 事件那两路只覆盖「跟随窗口里的记录」，
     // 而 RPC 是服务端按会话语料做的完整检索（见 `refreshSubagentCatalog`）。
     // 少了这一下，重载窗口/切会话回来必须点开面板才有列表（用户 2026-09-23 报的现场）。
@@ -3182,6 +3197,39 @@ export class ChatController implements vscode.Disposable {
         // socket 断开重连后会由 onConnected 重开
       },
     });
+  }
+
+  /**
+   * 给域开（或 socket 重连后重开）`job/list` 流：本会话看得见的后台任务名册。
+   *
+   * **为什么单独一条流**：0.1.7-alpha.1 把 job 观察从 `session/control` 搬到了
+   * `dsh-api-job-controller` 的 `job` 命名空间（`job/list` / `job/follow` / `job/kill`），
+   * 控制流的 `jobs` 字段与 `type:'jobs'` 帧在那版消失（`SessionJob` 类型也没了）。
+   * 旧服务端没有这条流，`onControlFrame` 里的旧通道继续读——两条通道写同一个字段。
+   */
+  private openScopeJobs(scope: SessionScope): void {
+    if (!this.client) return;
+    scope.jobsHandle?.cancel();
+    scope.jobsHandle = this.client.followJobs(scope.sessionId, {
+      onItem: (value) => this.onJobFrame(scope, value),
+      onError: () => {
+        // socket 断开重连后会由 onConnected 重开（同 follow 流）
+      },
+    });
+  }
+
+  /**
+   * `job/list` 的一帧 → 会话状态。
+   *
+   * 帧是**整表替换**（`{type:'rows', jobs}`），所以直接交给 `applyJobs`；`type` 认不出
+   * 就整帧丢掉——把未知帧当名册用会把面板清空，而「认不出」不等于「没有任务」。
+   */
+  private onJobFrame(scope: SessionScope, value: unknown): void {
+    const rows = jobRowsFromFrame(value);
+    // 认不出的帧类型返回 `undefined`（不动现有列表）：把「认不出」当成「空名册」
+    // 会让面板凭空清空——判据与兜底都在 `jobView.ts` 的读取器里。
+    if (rows === undefined) return;
+    this.applyJobs(scope, rows);
   }
 
   /**
@@ -3365,6 +3413,8 @@ export class ChatController implements vscode.Disposable {
     for (const scope of this.scopes.values()) {
       scope.followHandle?.cancel();
       scope.followHandle = undefined;
+      scope.jobsHandle?.cancel();
+      scope.jobsHandle = undefined;
     }
     this.controlHandle?.cancel();
     this.eventsHandle?.cancel();
@@ -3373,6 +3423,8 @@ export class ChatController implements vscode.Disposable {
     this.eventsHandle = undefined;
     this.workspaceHandle = undefined;
     this.eventsClientId = undefined;
+    // 换了连接（可能是另一个服务端）：端点可用性的结论作废，下次开域重新问
+    this.subagentListMissing = false;
     // 连接收掉了，旧的去重记账不作数；**未结算的审批 / 提问照旧留着**（见 `interactions`）
     this.interactions.resetDedupe();
   }
@@ -3924,7 +3976,7 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
-   * 后台任务帧 → 界面状态。
+   * 后台任务名册 → 界面状态（**两条通道共用**：`job/list` 流与旧的 `session/control` 帧）。
    *
    * **只投递一条**：以前这里连着发两条（`jobs/list` 与 `patch.jobs`），同一次刷新的
    * 同一份数据走了两条路，而面板的键集合在 `snapshotFor` / 切会话帧 / 历史 patch
@@ -3934,32 +3986,12 @@ export class ChatController implements vscode.Disposable {
    * （`dsh/sessionView.ts`），字段名与 `undefined → null` 的折返不再有第二处实现。
    * （`jobs/list` 帧本身没删：面板打开时按需请求的那条路 `case "listJobs"` 仍然发它，
    * 删掉的只是同一次刷新里的第二次投递。）
+   *
+   * 字段读取对两种线格式同时成立：0.1.7-alpha.1 的 `JobView` 与旧的 `SessionJob`
+   * 在前七个字段上同形（新的多 `progress`/`output`/`owner`，本扩展不消费）。
    */
   private applyJobs(scope: SessionScope, jobs: unknown): void {
-    const list = Array.isArray(jobs) ? jobs : [];
-    scope.jobs = list.map((job) => {
-      const item = job as {
-        id: string;
-        kind?: string;
-        label?: string;
-        status?: string;
-        detail?: string;
-        startedAt?: number;
-        finishedAt?: number;
-      };
-      // 状态**原样保留**（含服务端将来新增的取值）：以前这里把词表外的状态兜底成
-      // `"completed"`，等于对未知状态给出「已完成」这个肯定结论——正是 AGENTS.md
-      // 禁止的「按否定证据下结论」。界面按查表渲染，查不到就原样显示、不猜色调。
-      return {
-        id: item.id,
-        kind: item.kind ?? "job",
-        label: item.label ?? item.id,
-        status: typeof item.status === "string" && item.status ? item.status : "unknown",
-        detail: item.detail,
-        startedAt: item.startedAt ?? Date.now(),
-        finishedAt: item.finishedAt,
-      };
-    });
+    scope.jobs = jobItemsFromWire(jobs);
     this.deliver(scope.sessionId, {
       type: "patch",
       patch: sessionPatch(this.sessionSource(scope), ["jobs"]),
@@ -5944,7 +5976,12 @@ export class ChatController implements vscode.Disposable {
   // ---------- 子代理 ----------
 
   /**
-   * 拉取子代理目录（RPC：唯一带 `activity` 的**权威状态**那一路）。
+   * 拉取子代理目录（旧服务端的 RPC 那一路：带 `activity` 的**权威状态**）。
+   *
+   * **0.1.7-alpha.1 起官方已删除 `subagents/list`**，这条 RPC 只在旧服务端上存在；
+   * 新服务端的目录完全由 `subagentCatalog` 投影与 `subagent/catalog` 事件承载
+   * （两条路都已在用），活动状态由 `api-session/status` 中继补齐。端点不存在时
+   * 记住一次（`subagentListMissing`）就不再请求——见 `endpointAbsent`。
    *
    * 三个入口共用它：域创建时打底（重载窗口/切会话后**不用点开面板**就有列表）、
    * socket 重连后重拉、面板打开时按需刷新。**单飞**：同一会话同时只发一次请求
@@ -5958,6 +5995,9 @@ export class ChatController implements vscode.Disposable {
   private refreshSubagentCatalog(scope: SessionScope): Promise<void> {
     const client = this.client;
     if (!client) return Promise.resolve();
+    // 这一版服务端**没有**这个端点（见字段注释）：不再重复请求，目录由投影与
+    // durable 事件两路承载——每次开域/重连都白发一次 404 只会刷日志。
+    if (this.subagentListMissing) return Promise.resolve();
     const inflight = this.subagentRefreshes.get(scope.sessionId);
     if (inflight) return inflight;
     const task = (async () => {
@@ -5982,6 +6022,14 @@ export class ChatController implements vscode.Disposable {
         if (listChanged || availableChanged) this.deliverSubagentList(scope);
         this.log(`[subagents] 会话=${scope.sessionId} 目录 ${scope.subagentEntries.length} 条（RPC）`);
       } catch (error) {
+        // 0.1.7-alpha.1 起这个端点已从 dsh-subagent 删除（`subagentCatalog` 投影与
+        // `subagent/catalog` 事件成为唯一来源）。网关对不存在的路由回 HTTP 404——
+        // 那是**肯定证据**（这一版没有它），据此记住一次、不再重试，而不是每轮都报错。
+        if (endpointAbsent(error)) {
+          this.subagentListMissing = true;
+          this.log(`[subagents] 服务端没有 subagents/list（已删除的端点），目录改由投影与事件提供`);
+          return;
+        }
         // **保留现有列表**，不发空帧：这条 RPC 失败只是「没拿到权威值」，把面板清空
         // 等于把一次瞬时故障说成「这个会话没有子代理」（而事件/投影那两路来的条目
         // 本来是好的）。

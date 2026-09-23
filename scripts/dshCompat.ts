@@ -52,18 +52,26 @@ const REGISTRY = "https://registry.npmjs.org";
 /**
  * 抓哪些包。取舍：本扩展真正消费的契约都在这几个包的描述符里——会话/命令/技能/子代理在
  * `api-session-controller`，鉴权与传输在 `client-connection`，网关帧在 `api-gateway`，
- * 设置、工作区、预设、权限、模型目录各有其包。取不到的包会被记进快照的 `missing`
- * （缺证据不等于没影响，报告里会显式列出，不静默当「无变化」）。
+ * 后台任务在 `api-job-controller`，设置、工作区、预设、权限、模型目录各有其包。取不到的包
+ * 会被记进快照的 `missing`（缺证据不等于没影响，报告里会显式列出，不静默当「无变化」）。
+ *
+ * **包名会随官方重构搬家**：`agentPresets/*` 端点在 0.1.7-alpha.1 随包改名从
+ * `dsh-agent-presets` 迁到 `dsh-agent-preset-registry`（旧包不再发布）。那时报告会把
+ * 旧包报成 `package-removed`，而端点其实还在——所以这里必须跟着改名，否则会得到一条
+ * 假的 P0（0.1.7-rc.1 的核对里就撞上过）。**两个名字都留在表里**：只留新名会让旧版本
+ * 的快照丢掉那个包的全部端点与类型（它当时确实叫旧名），核对旧版本时就少了证据。
  */
 const CONTRACT_PACKAGES = [
   "@deepseek-ai/dsh-api-session-controller",
   "@deepseek-ai/dsh-api-gateway",
   "@deepseek-ai/dsh-api-settings-controller",
   "@deepseek-ai/dsh-api-workspace-controller",
+  "@deepseek-ai/dsh-api-job-controller",
   "@deepseek-ai/dsh-client-connection",
   "@deepseek-ai/dsh-client-file-upload",
   "@deepseek-ai/dsh-commands",
   "@deepseek-ai/dsh-agent-presets",
+  "@deepseek-ai/dsh-agent-preset-registry",
   "@deepseek-ai/dsh-permission-presets",
   "@deepseek-ai/dsh-llm",
   "@deepseek-ai/dsh-session",

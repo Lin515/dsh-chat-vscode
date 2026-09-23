@@ -36,7 +36,47 @@
 | 响应信封 | `{type:'server-response', rpcId, result:{ok:true,value} \| {ok:false,error:{code,message,details}}}` |
 | 流帧 | `{type:'open'\|'cancel', streamId, endpoint, payload}`（C→S）；`{type:'item'\|'end'\|'error', streamId, ...}`（S→C） |
 | 审批/提问 | 唯一的人机交互通道是 `$events` 逻辑流上的 `waterfall` 帧；回复走 `POST /api/$events/result` |
-| 版本协商 | **没有**。协议无 version 字段，只有持久化日志的 `SESSION_FORMAT_VERSION = 3` |
+| 版本协商 | **没有**。协议无 version 字段，只有持久化日志的 `SESSION_FORMAT_VERSION`（本文摘录时是 3，0.1.6 起是 4） |
+
+---
+
+## 0.5 后续版本的契约变更（本文正文按 0.1.5-rc.1 摘抄）
+
+正文与下文各节写的是 0.1.5-rc.1 的形状；本扩展已经在跟后面几版，这里是**改掉的部分**，
+逐条对照的结论与台账见 `docs/dsh-compat.md`。读下面任何一节时先扫一眼这张清单。
+
+- **后台任务换了通道**（0.1.7-alpha.1）：`session/control` 的 `jobs` 字段与 `type:'jobs'` 增量帧
+  删除（`SessionJob` 类型同去），改由 `@deepseek-ai/dsh-api-job-controller` 的 `job` 命名空间承载：
+  `job/list`（流，逐帧整表替换 `{type:'rows', jobs: JobView[]}`）、`job/follow`（流，单任务输出、
+  以 `status` 帧收尾）、`job/kill`（一元，人的停止请求，参数 `{sessionId, jobId}`）。请求体一律
+  `{request: {…}}`。
+- **消息来源不再有通用 `plugin` 成员**（0.1.7-alpha.1）：每个生产者声明自己的 kind ——
+  `user` / `model` / `tool` / `system-prompt` / `runtime-context` / `agent-instructions` /
+  `skill-catalog` / `skill-invocation` / `session-reference` / `compact-checkpoint` / `ptc-mode` /
+  `tool-jobs` / `goal` / `webhook` / `team-message` / `agent-message` / `subagent-report` /
+  `subagent-settled` / `coordinator` / `dsh-session-title-llm`；第三方插件落成 `plugin:<包名>`。
+  durable 消息的 `source` 必须是对象、`kind` 非空且**不等于 `plugin`**，否则服务端拒绝写入
+  （`format v4 message requires a producer-owned source kind`）；系统提示词插件的旧形态
+  （`{kind:'plugin', plugin:'@deepseek-ai/dsh-system-prompt'}`）被拆成 role `system` 的
+  `system-prompt` 与 role `user` 的 `runtime-context`。`form` 仍是 `ContextForm`
+  （instructions / catalog / snapshot / notice / relay / recall）。
+- **工具结果改成一等消息**（0.1.7-alpha.1）：`ToolResultMessage =
+  {role:'tool', source:{kind:'tool', callId}, toolCallId, content: ContentBlock[], isError?}`，
+  `tool/result` 事件是 `{turn, step, message, error?, meta?}`（`error` 只在 `isError` 为真时出现）。
+  内容块里的 `tool-result` 信封被删除（V3→V4 迁移会把历史日志抬升成新消息，新格式下再出现它
+  会被判退役语法）；新增的 `tool-addition` / `tool-removal` 属于 `role:'developer'` 消息，
+  官方标注「生产者与消费者一起实现之前不产生」。
+- **新增 durable 事件 `developer/message`**（`{turn, step, message, headerSeq?}`，role `developer`）。
+- **`subagents/list` 端点删除**（0.1.7-alpha.1，`SubagentCatalog` / `SubagentListEntry` 类型同去）：
+  子代理目录由 `subagentCatalog` 投影（`{id, createdAt, mode, label?}`，`mode` 多一个 `unknown`）
+  与 `subagent/catalog` durable 事件承载，端点只剩 `subagents/prompt` /
+  `subagents/interruptByParent`。
+- **预设端点随包改名**：`agentPresets/*` 从 `@deepseek-ai/dsh-agent-presets` 迁到
+  `@deepseek-ai/dsh-agent-preset-registry`（端点名与参数未变），0.1.7-rc.1 另加
+  `agentPresets/read`。
+- **`SessionSummary`**：`completed` 删除、新增 `retainedBy`；`session/control` 的 baseline 不再带
+  `queues`（0.1.6-alpha.2 起）与 `jobs`（0.1.7-alpha.1 起）——两者分别由 `inbox` 投影与
+  `job/list` 流承载。
 
 ---
 

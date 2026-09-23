@@ -33,6 +33,14 @@ export class SessionScope {
   adapter: SessionAdapter | undefined;
   /** `session/follow` 流句柄（每会话一条，remote.mux 上多路复用）。 */
   followHandle: { cancel(): void } | undefined;
+  /**
+   * `job/list` 流句柄（每会话一条，0.1.7-alpha.1 起的后台任务名册通道）。
+   *
+   * 与 `session/control` 的 `jobs` 帧是**两条同源通道**：新服务端走这条流，
+   * 旧服务端只有控制流那条（见 `controller.onControlFrame`）。两条都读、都写同一个
+   * `jobs` 字段，所以哪条先到都对。
+   */
+  jobsHandle: { cancel(): void } | undefined;
 
   /** 本会话是否正在生成（由适配器的 running patch 帧同步）。 */
   running = false;

@@ -472,25 +472,29 @@ function useDescribeInjected(): (injected: InjectedView) => { label: string; det
   return (injected) => {
     const plugin = injected.plugin;
     const form = injected.form;
+    const kind = injected.sourceKind;
 
-    if (injected.sourceKind === "system") {
+    // 0.1.7-alpha.1 起来源是**生产者自有**的 kind（旧的通用 `plugin` 成员已从契约删除）：
+    // 系统提示词是 `system-prompt`，沙箱/审批那类运行时上下文是 `runtime-context`
+    // （旧版本是 `plugin:'@deepseek-ai/dsh-system-prompt'` + `form:'snapshot'`——
+    // 两个形态都认，协议没有版本协商）。
+    if (kind === "system-prompt") {
       return { label: texts.injectedSystemPrompt, detail: plugin };
     }
     // 官方把跨会话召回单独起名（`provenance.role === "recall"`）
     const label = form === "recall" ? texts.injectedRecall : texts.injectedContext;
-    // 系统提示词插件的 snapshot 形态 = 运行时上下文（沙箱/审批策略等），
-    // 与那条完整的系统提示词区分开，副标题更准确
-    if (plugin === "@deepseek-ai/dsh-system-prompt" && form === "snapshot") {
+    if (kind === "runtime-context" || (plugin === "@deepseek-ai/dsh-system-prompt" && form === "snapshot")) {
       return { label, detail: texts.injectedRuntimeContext };
     }
-    if (injected.sourceKind === "agent-instructions") {
+    if (kind === "agent-instructions") {
       return { label, detail: texts.injectedAgentInstructions };
     }
-    if (injected.sourceKind === "skill-catalog") {
+    if (kind === "skill-catalog") {
       return { label, detail: texts.injectedSkillCatalog };
     }
-    // 其余（插件注入等）：副标题给来源插件名，与官方那个 source 位一致
-    return { label, detail: plugin ?? injected.sourceKind };
+    // 其余（插件注入等）：副标题给来源插件名，与官方那个 source 位一致；
+    // `plugin:<包名>` 的包名已在适配器里取出来（见 `adapter.pushInjected`）
+    return { label, detail: plugin ?? kind };
   };
 }
 

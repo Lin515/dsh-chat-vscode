@@ -30,6 +30,28 @@ export class DshAuthError extends Error {
   }
 }
 
+/**
+ * 「这个服务端没有这个端点」的判据（**肯定证据**，不是「请求失败」）。
+ *
+ * 网关对不存在的路由回 HTTP 404/405，而 `request()` 在非 2xx 时抛的正是
+ * `<method> 失败：HTTP <status>`（本轮之前 0.1.7-rc.1 上实测到的形态）；
+ * 若某个版本改成用信封回错误，`DshApiError` 的错误码里也带 not-found / unknown。
+ *
+ * 只用于**记住端点不存在**这一类结论：超时、断线、5xx 都不算——那些是「这次没拿到」，
+ * 下次还要再问。存在的理由：0.1.7-alpha.1 删掉了 `subagents/list`，而扩展还要兼容
+ * 旧服务端，协议没有版本协商，只能按实际回包认（见 `controller.refreshSubagentCatalog`）。
+ */
+export function endpointAbsent(error: unknown): boolean {
+  if (error instanceof DshApiError) {
+    // 只认**网关**那层的「没有这个方法/路由」。业务自己的 `session/not-found`
+    // （会话不存在）与端点缺失是两回事，把它算进来会让一次业务拒绝永久关掉这条通道。
+    return error.code.startsWith("gateway/")
+      && /not-found|unknown|unsupported|no-such/.test(error.code);
+  }
+  const text = error instanceof Error ? error.message : String(error);
+  return /\bHTTP (404|405)\b/.test(text);
+}
+
 export type ConnectionState = "connecting" | "connected" | "disconnected";
 
 export interface StreamHandle {
@@ -541,6 +563,16 @@ export class DshClient {
 
   followControl(callbacks: StreamCallbacks): StreamHandle {
     return this.openStream(STREAMS.sessionControl, {}, callbacks);
+  }
+
+  /**
+   * 跟随某个会话看得见的后台任务名册（`job/list`，0.1.7-alpha.1 起的新通道）。
+   *
+   * 帧是**整表替换**的 `{type:'rows', jobs}`：打开时一帧、之后每次生命周期变化一帧。
+   * 参数名与其它流一致，是 `request`（网关只认这一个字段名）。
+   */
+  followJobs(sessionId: string, callbacks: StreamCallbacks): StreamHandle {
+    return this.openStream(STREAMS.jobList, { request: { sessionId } }, callbacks);
   }
 
   /**

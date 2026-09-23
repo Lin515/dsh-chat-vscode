@@ -49,6 +49,7 @@ const entries = {
   "build/attachments.test.mjs": "scripts/attachments.test.ts",
   "build/clipboard-paths.test.mjs": "scripts/clipboardPaths.test.ts",
   "build/queue-view.test.mjs": "scripts/queueView.test.ts",
+  "build/job-view.test.mjs": "scripts/jobView.test.ts",
   "build/session-cookie.test.mjs": "scripts/sessionCookie.test.ts",
   "build/tool-view.test.mjs": "scripts/toolView.test.ts",
   "build/tool-card.test.mjs": "scripts/toolCard.test.ts",

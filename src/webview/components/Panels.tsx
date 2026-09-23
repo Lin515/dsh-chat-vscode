@@ -179,7 +179,7 @@ const JOB_TONE: Record<string, string> = {
   failed: "dot-error",
 };
 
-/** 后台任务面板：bash / pwsh / 子代理等，来自 session/control 的 jobs 帧。 */
+/** 后台任务面板：bash / pwsh / 子代理等，来自 `job/list` 流（旧服务端是 `session/control` 的 jobs 帧）。 */
 export function JobsPanel({ jobs, onClose }: { jobs: JobItemView[]; onClose: () => void }) {
   const texts = useTexts();
   const label: Record<string, string> = {

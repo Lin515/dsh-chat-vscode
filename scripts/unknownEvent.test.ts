@@ -132,6 +132,30 @@ console.log(`unknownEvent: dsh 已知的 ${DSH_KNOWN_EVENT_TYPES.length} 种事�
 }
 console.log("unknownEvent: 已知词汇被「渲染 ∪ 静默 ∪ 消费」完整覆盖，且三集合互斥 ✓");
 
+// ---------- 2b. 升级新增的类型：登记为已知，不误报 ----------
+//
+// 上面那张冻结表**刻意**停在 0.1.5-rc.1（新词汇正是告警该响的时候），所以内核新加的
+// 类型要单独登记。这里逐个钉住「升级时新出现、本扩展有意不渲染」的类型——漏一个，
+// 用户每次升级都会看到一条「不认识的事件」提示。
+{
+  const ADDED_KNOWN: readonly string[] = [
+    // 0.1.6-alpha：顶层轮次停止时宣告本轮改了哪些文件（已渲染，见 RENDERED_EVENT_TYPES）
+    "workspace/changes",
+    // 0.1.7-alpha.1：工具目录增量（`role:'developer'` 的消息）。官方把它的内容块标为
+    // 「保留：生产者与消费者一起实现之前，provider 与 UI 都拒绝」，即这一版没有生产者。
+    "developer/message",
+  ];
+  const uncovered = ADDED_KNOWN.filter(
+    (type) =>
+      !RENDERED_EVENT_TYPES.has(type) && !SILENT_EVENT_TYPES.has(type) && !CONSUMED_EVENT_TYPES.has(type),
+  );
+  assert.deepStrictEqual(uncovered, [], `升级新增的类型必须登记：${uncovered.join(", ")}`);
+  const { adapter, toasts } = harness();
+  for (const type of ADDED_KNOWN) adapter.applyEvent(wire(type) as never);
+  assert.deepStrictEqual(toasts.filter((t) => t.startsWith("@unknownEvent:")), []);
+}
+console.log("unknownEvent: 升级新增的类型已登记（workspace/changes、developer/message） ✓");
+
 // ---------- 3. 真正没见过的类型：告警保留 ----------
 
 {

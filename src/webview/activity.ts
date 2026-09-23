@@ -20,10 +20,10 @@ const SUBAGENT_JOB_KIND = "subagent";
  * 有子代理在跑吗。
  *
  * 两条来源，缺一不可：
- * - **目录**（`subagents/list` RPC）带 `activity`，那是权威值；
- * - **后台任务**（`session/control` 的 jobs 帧）里 `kind: 'subagent'` 的活行——
- *   目录可能只有投影（投影**没有** `activity`，见 `SubagentView` 的注释），
- *   那时角色还没问过 RPC，只看目录会漏掉正在跑的子代理。
+ * - **目录**带 `activity`（0.1.7-alpha.1 之前由 `subagents/list` RPC 给，
+ *   之后由 `api-session/status` 中继补——投影本身没有这个字段）；
+ * - **后台任务**里 `kind: 'subagent'` 的活行——目录可能只有投影那一份，
+ *   那时还没有状态中继过，只看目录会漏掉正在跑的子代理。
  */
 export function subagentsBusy(
   entries: readonly SubagentView[],

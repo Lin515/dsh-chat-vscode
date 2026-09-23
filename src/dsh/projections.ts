@@ -89,7 +89,9 @@ export function subagentCatalogFromProjection(value: unknown): SubagentCatalogEn
       id,
       label: typeof child.label === "string" && child.label ? child.label : id,
       // `SubagentCatalogEntry` 是判别联合：continuable 必带 label，one-shot 的 label 可省。
-      // 认不出就按 one-shot 处理——拿它去 follow 不会被鉴权拒绝，反过来会。
+      // 0.1.7-alpha.1 起还多一个 `{mode:'unknown', label?}`（认不出模式的候选）。认不出就按
+      // one-shot 处理——拿它去 follow 不会被鉴权拒绝，反过来会；界面据此显示「一次性」，
+      // 比显示成「持续」（点开会 `subagent/unauthorized`）安全。
       mode: child.mode === "continuable" ? ("continuable" as const) : ("one-shot" as const),
     };
   });
@@ -99,10 +101,11 @@ export function subagentCatalogFromProjection(value: unknown): SubagentCatalogEn
 export type SubagentCatalogEntryView = Pick<SubagentView, "id" | "label" | "mode">;
 
 /**
- * `subagents/list` RPC 行 → 子代理列表。
+ * `subagents/list` RPC 行 → 子代理列表（**旧服务端专用**：该端点在 0.1.7-alpha.1 被删除）。
  *
  * 这里是 `SubagentListEntry`：`kind:'child'` 才是可用子代理，`kind:'diagnostic'`
  * 是「有候选但读不出身份」的诊断行。与投影不同，这一路**带** `activity`/`mode`。
+ * 新服务端上没有这个端点（`controller.endpointAbsent` 会把 404 记成「这一版没有」）。
  */
 export function subagentsFromList(value: unknown): SubagentView[] {
   const entries = Array.isArray(value) ? value : [];
@@ -245,11 +248,20 @@ export function agentPresetFromProjection(value: unknown): string | undefined {
 /**
  * `agentPresets/list` 的 roster → 界面要的那个目录（纯函数，离线可断言）。
  *
- * 契约（`@deepseek-ai/dsh-agent-presets` 的 `AgentPresetRoster`）：
+ * 契约（`AgentPresetRoster`）**两代不同**，包名也跟着改过：
  * ```
- * { presets: { id, trust, isDefault, name?, description?, broken? }[],
- *   authorable: boolean, modeSelectionEnabled: boolean }
+ * ≤ 0.1.6-alpha.2（`@deepseek-ai/dsh-agent-presets`）：
+ *   { presets: { id, trust, isDefault, name?, description?, broken? }[],
+ *     authorable: boolean, modeSelectionEnabled: boolean }
+ * ≥ 0.1.7-alpha.1（`@deepseek-ai/dsh-agent-preset-registry`）：
+ *   { presets: { id, isDefault, name?, description?, broken? }[],
+ *     modeSelectionEnabled: boolean }
  * ```
+ * 新版**删掉了 `trust`（与 `authorable`）**，所以「哪几个是随产品交付的内置预设」不再是
+ * 服务端说了算的字段——判定挪到客户端（见 `webview/presetDisplay.ts` 的
+ * `isBuiltInPresetOption`）。这两处的口径必须一起改，只改一处会让四个内置预设把
+ * 服务端那份**不翻译**的名字显示出来（中文界面里显示英文）。
+ *
  * 两条口径：
  * - **坏掉的预设不进目录**（`broken` 非空）：它组装不出会话，列进去只会把
  *   「这个预设不可用」这件事推迟到一次失败的会话上（官方 `presetOptions` 同口径）；
@@ -279,6 +291,7 @@ export function agentPresetsFromList(value: unknown): NonNullable<ChatState["age
     if (typeof preset.broken === "string" && preset.broken) continue;
     options.push({
       id,
+      // `trust` 只在新版之前存在；新版给不出，展示层按官方 `isBuiltInPreset` 兜
       ...(preset.trust === "system" || preset.trust === "user" ? { trust: preset.trust } : {}),
       ...(typeof preset.name === "string" && preset.name ? { name: preset.name } : {}),
       ...(typeof preset.description === "string" && preset.description

@@ -127,6 +127,16 @@ export interface TextBlock { type: "text"; text: string }
 export interface ImageBlock { type: "image"; attachment: { attachmentId: string; mediaType: string; bytes?: number; name?: string; width?: number; height?: number } }
 export interface FileBlock { type: "file"; attachment: { attachmentId: string; name: string; bytes?: number } }
 export interface ToolCallBlock { type: "tool-call"; id: string; name: string; arguments: string }
+/**
+ * 工具结果的**旧信封**（`message.content = [tool-result{ content: [...] }]`）。
+ *
+ * **只有旧服务端**会发它。0.1.7-alpha.1 起 `dsh-llm` 的 `ContentBlockMap` 删掉了这个块：
+ * 工具结果改成一等消息——`ToolResultMessage = { role:'tool', source:{kind:'tool', callId},
+ * toolCallId, content: ContentBlock[], isError? }`，内容块直接挂在 `message.content` 上。
+ * V3→V4 迁移会把旧信封抬升成新消息（`dsh-session-format-v3-to-v4` 的 `tool-role.ts`，
+ * 新格式下再出现这个块会被判为「退役语法」而拒绝）。保留类型只为兼容没升级的服务端，
+ * 读取顺序永远是**新形状优先**（见 `dsh/adapter.ts` 的 `toolResultParts`）。
+ */
 export interface ToolResultBlock { type: "tool-result"; toolCallId: string; content: ContentBlock[]; isError?: boolean }
 export type ContentBlock =
   | TextBlock
@@ -145,11 +155,23 @@ export interface TokenUsage {
   reasoningTokens?: number;
 }
 
+/**
+ * 一条会话消息的线格式（0.1.7-rc.1 的 `MessageRoleMap` 判别联合）。
+ *
+ * 角色面在 0.1.7-alpha.1 变了：工具结果从「role:'user' + `tool-result` 内容块」变成
+ * 一等 `role:'tool'` 消息（带 `toolCallId`/`isError`），并新增 `role:'developer'`
+ * （工具目录增量的 `developer/message` 事件，见 `SILENT_EVENT_TYPES`）。
+ * `role` 本扩展几乎不读（判据一直是 `source.kind`），这里放宽只为形状如实。
+ */
 export interface WireMessage {
   id: string;
-  role: "system" | "user" | "assistant";
+  role: "system" | "user" | "assistant" | "tool" | "developer";
   content: ContentBlock[];
   source?: { kind: string; [key: string]: unknown };
+  /** 工具结果消息与它回答的调用（`role:'tool'` 时必有）。 */
+  toolCallId?: string;
+  /** 工具结果的失败判据（新形状把它放在消息上，旧形状放在内容块上）。 */
+  isError?: boolean;
 }
 
 // ---------- $events ----------
@@ -206,8 +228,46 @@ export const METHODS = {
 export const STREAMS = {
   sessionFollow: "session/follow",
   sessionControl: "session/control",
+  /**
+   * 某个会话看得见的后台任务名册（`dsh-api-job-controller` 的 `job.list`）。
+   *
+   * 0.1.7-alpha.1 起 job 从 `session/control` 的 `jobs` 帧搬到这里：帧是**整表替换**
+   * （`{type:'rows', jobs}`，打开时一帧、之后每次生命周期变化一帧），所以重连后
+   * 第一帧就是真值。旧服务端没有这条流，`session/control` 的 `jobs` 通道仍然读
+   * （见 `dsh/controller.ts` 的 `onControlFrame`）。
+   */
+  jobList: "job/list",
   events: "$events",
 } as const;
+
+/**
+ * `job/list` 的帧（`JobListFrame`）。
+ *
+ * 只认 `rows`：契约里这是这条路唯一的帧类型，认不出的帧整条丢掉——把未知帧当
+ * 名册用会把面板清空，而「未知」不等于「没有任务」。
+ */
+export interface JobListFrameWire {
+  type: string;
+  jobs?: unknown[];
+}
+
+/**
+ * 一条后台任务的线格式（`dsh-jobs` 的 `JobView`）。
+ *
+ * 与旧 `session/control` 里的 `SessionJob` 字段相容（`id`/`kind`/`label`/`status`/
+ * `detail`/`startedAt`/`finishedAt`），新增 `progress`/`output`/`owner` 等，本扩展
+ * 只消费前七个（见 `controller.applyJobs`）。
+ */
+export interface JobViewWire {
+  id: string;
+  kind?: string;
+  label?: string;
+  status?: string;
+  progress?: string;
+  detail?: string;
+  startedAt?: number;
+  finishedAt?: number;
+}
 
 /** 会话事件里我们主动渲染的类型；其余按下面的 `SILENT_EVENT_TYPES` / `ignorable` 规则降级。 */
 export const RENDERED_EVENT_TYPES: ReadonlySet<string> = new Set([
@@ -285,6 +345,11 @@ export const SILENT_EVENT_TYPES: ReadonlySet<string> = new Set([
   // 子代理描述符 / 模型选择策略
   "subagent/descriptor",
   "subagent/model-selection-policy",
+  // 工具目录增量（`role:'developer'` 的消息，0.1.7-alpha.1 新增）。
+  // 官方把它的内容块（`tool-addition` / `tool-removal`）标为「保留：生产者与消费者
+  // 一起实现之前，provider 与 UI 都拒绝」——即这一版还没有生产者会发它。登记为已知
+  // 只为不误报「不认识的事件」；真有内容进来时这里是待补的渲染缺口，不是永久决定。
+  "developer/message",
   // 团队协作
   "team/member",
   "team/message/delivered",

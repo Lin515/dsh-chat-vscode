@@ -29,6 +29,7 @@
 | 第六批（同族收敛，09-19） | 8 处「同一件事多处各写一遍」各收进一个模块：`pendingInteraction.ts`、`pendingInteractions.ts`、停止入口 `snapshot()`、会合 `decodeState` / `rendezvousPaths`、`MESSAGES` 唯一文案表、`composerCompletion.tsx`、`sessionView.ts`（跨名桥 `subagents` → `subagentEntries` 拆掉）、`autoScroll.ts` |
 | 第七批（流式叠加，09-21） | 生成中离开会话再回来，思考分裂成两条：根因是对在跑的 attempt 重开 follow 不重发 start 帧与已发增量，进行中内容只在开帧 `snapshot.assistantStream.activeAttempt` 里而适配器声明了不消费；修复 = 展开器 `assistantStream.ts` + `replayActiveAttempt` 重建基线 + 增量落到模型 + 通配认领 |
 | 第八批（是否在生成，09-22） | 生成中离开再回来显示成空闲且不自愈：「在跑」原只有 durable 轮次边界一条来源（长轮次 `turn/start` 会被最近 60 条消息的窗口截掉）；修复 = 截断窗口且整窗无轮次边界时不发 running 帧、接住 `api-session/status`、新建域用列表 `running` 打底，采纳策略在 `sessionStatus.ts`：有肯定证据就拒绝「不在跑」 |
+| 第九批（DSH 0.1.7 对齐，09-23） | 官方 0.1.7-rc.1 换了五处形状，逐条对齐（台账见 `docs/dsh-compat.md`）：①后台任务从 `session/control` 的帧搬去 `job/list` 流，形状读取器新增 `dsh/jobView.ts`；②消息来源改「生产者自有 kind」（通用 `plugin` 成员被删，第三方插件落成 `plugin:<包名>`），注入节点的插件名与副标题按新词表读；③工具结果改一等 `role:'tool'` 消息（内容直接挂 `message.content`、失败在 `message.isError`），新旧两种信封都认、新形状优先；④`subagents/list` 端点被删，目录回到投影与 `subagent/catalog` 事件两路（活动状态由 `api-session/status` 中继补），端点 404 只记一次（`endpointAbsent`）；⑤预设 roster 删掉 `trust`，「哪几个算内置」改用官方 `isBuiltInPreset`（不发布 `name` 的已知 id）——**这一条第一轮核对漏了**（躲在包改名后面），后果是中文界面里预设名显示英文；另有新增事件 `developer/message` 登记为已知 |
 | 段顺序（09-14 单项） | durable 思考 / 正文插到本 step 最早的工具行之前（官方按内容块顺序渲染），不再追加到消息末尾；只有真实流式会话看得出 |
 | 分页（09-14 单项） | 翻页进展判据改为适配器返回的真实新增事件数 + `hasMore` + 顶部角色、连取由宿主驱动（`src/dsh/historyPaging.ts`），不再按「首条消息 id 变没变」判进展 |
 

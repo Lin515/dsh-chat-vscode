@@ -46,6 +46,8 @@ type EventData = Record<string, unknown>;
 interface MessageLike {
   content?: unknown;
   source?: { kind?: unknown; plugin?: unknown; round?: unknown; callId?: unknown } & Record<string, unknown>;
+  /** 工具结果消息的失败标记（0.1.7-alpha.1 起在此，旧信封在内容块上）。 */
+  isError?: unknown;
 }
 
 /**
@@ -77,7 +79,12 @@ function streamFirstTime(data: EventData): number | null {
   return typeof first?.time === "number" ? first.time : null;
 }
 
-/** 工具结果正文：文本在**嵌套**的 `tool-result` 块里（与 adapter 的 `toolResultContent` 同口径）。 */
+/**
+ * 工具结果正文：**两种信封都认，新形状优先**（与 adapter 的 `toolResultParts` 同口径）。
+ *
+ * - 新形状（0.1.7-alpha.1 起）：内容块直接是 `message.content`；
+ * - 旧信封（0.1.6-alpha.2 及更早）：文本在**嵌套**的 `tool-result` 块里。
+ */
 function resultText(content: unknown): string {
   if (!Array.isArray(content)) return "";
   const nested = content.filter(
@@ -91,18 +98,35 @@ function resultText(content: unknown): string {
 /**
  * 工具结果是不是失败。
  *
- * 判据与 adapter 逐字一致：有 `data.error`，**或**嵌套的 `tool-result` 块自己标了
- * `isError: true`。曾经把「content 是数组」当成失败——那是把「有结果」读成了
- * 「有错误」，每一行工具都会红（本文件的回归断言就是为了钉住这一点）。
+ * 判据与 adapter 逐字一致：有 `data.error`，**或**消息自己/旧的嵌套 `tool-result` 块
+ * 标了 `isError: true`。0.1.7-alpha.1 起失败标记移到**消息**上（`ToolResultMessage.isError`），
+ * 旧信封把它放在内容块上——两个都读，因为协议没有版本协商。
+ * 曾经把「content 是数组」当成失败——那是把「有结果」读成了「有错误」，
+ * 每一行工具都会红（本文件的回归断言就是为了钉住这一点）。
  */
-function resultIsError(content: unknown, error: unknown): boolean {
+function resultIsError(message: MessageLike | undefined, error: unknown): boolean {
   if (error) return true;
+  if (message?.isError === true) return true;
+  const content = message?.content;
   if (!Array.isArray(content)) return false;
   return content.some(
     (block) =>
       (block as { type?: string; isError?: boolean } | undefined)?.type === "tool-result" &&
       (block as { isError?: boolean }).isError === true,
   );
+}
+
+/**
+ * 来源插件名（**两种形态**）。
+ *
+ * 0.1.7-alpha.1 起消息来源是生产者自有的 kind，内置生产者没有 `plugin` 字段，第三方
+ * 插件落成 `plugin:<包名>`（`rewritePluginSource` 的回退形态）——两处都给得出名字，
+ * 轨迹行右侧那一栏才不会退化成裸 kind。
+ */
+function sourcePluginName(source: { kind?: unknown; plugin?: unknown } | undefined): string | undefined {
+  if (typeof source?.plugin === "string" && source.plugin) return source.plugin;
+  const kind = typeof source?.kind === "string" ? source.kind : "";
+  return kind.startsWith("plugin:") ? kind.slice("plugin:".length) : undefined;
 }
 
 /** 线格式 usage（`TokenUsage`）→ 视图用量。只认线格式字段名。 */function trajectoryUsage(usage: unknown): TrajectoryUsage | undefined {
@@ -339,6 +363,7 @@ export function deriveTrajectoryModel(events: readonly SessionWireEvent[], hasOl
         // （`adapter.ts` 的 user/message 分支）口径一致——两者对真实数据的分派完全相同。
         const isHuman = kind === "user" || kind === "user-rpc";
         if (!text && !isHuman) break;
+        const messageSourcePlugin = sourcePluginName(message?.source);
         push({
           kind: isHuman ? "user" : "context",
           turn: currentTurn,
@@ -350,7 +375,7 @@ export function deriveTrajectoryModel(events: readonly SessionWireEvent[], hasOl
           ...(typeof requestNumber === "number" && requestNumber > 0 ? { requestNumber } : {}),
           messageSource: {
             ...(kind ? { kind } : {}),
-            ...(typeof message?.source?.plugin === "string" ? { plugin: message.source.plugin } : {}),
+            ...(messageSourcePlugin ? { plugin: messageSourcePlugin } : {}),
             ...(typeof message?.source?.round === "number" ? { round: message.source.round } : {}),
             ...(message?.source ? { raw: message.source } : {}),
           },
@@ -433,7 +458,7 @@ export function deriveTrajectoryModel(events: readonly SessionWireEvent[], hasOl
         const message = data.message as MessageLike | undefined;
         const callId = typeof message?.source?.callId === "string" ? (message.source.callId as string) : "";
         const text = resultText(message?.content);
-        const isError = resultIsError(message?.content, data.error);
+        const isError = resultIsError(message, data.error);
         const index = callId ? toolCells.get(callId) : undefined;
         if (index === undefined) {
           // 调用在窗口之外（分页边界）也有结果：补一行「只有结果」的记录

@@ -429,7 +429,7 @@ export function formatRecordedTime(time: number | null): string {
   return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${pad(date.getMilliseconds(), 3)}`;
 }
 
-/** 来源标签（官方 `messageSourceLabel` 的三条分支）。 */
+/** 来源标签（官方 `messageSourceLabel` 的三条分支 + 生产者自有 kind 的两种形态）。 */
 export function sourceLabel(
   source: { kind?: string; plugin?: string; round?: number } | undefined,
   texts: TrajectoryTexts,
@@ -444,6 +444,12 @@ export function sourceLabel(
     case "goal":
       return typeof source.round === "number" ? texts.sourceGoalRound(source.round) : texts.sourceGoal;
     default:
-      return source.kind;
+      // 0.1.7-alpha.1 起来源是**生产者自有**的 kind：第三方插件落成 `plugin:<包名>`
+      // （官方 `rewritePluginSource` 的回退形态），显示包名；内置生产者
+      // （`system-prompt` / `runtime-context` / `agent-instructions` / `skill-catalog`…）
+      // 没有更短的人话标签，与官方轨迹一致地显示 kind 本身。
+      return source.kind.startsWith("plugin:")
+        ? texts.sourcePluginNamed(source.kind.slice("plugin:".length))
+        : source.kind;
   }
 }
