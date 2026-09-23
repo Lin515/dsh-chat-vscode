@@ -751,6 +751,15 @@
                 //    与 `loading="lazy"`（markdown.ts 的 afterSanitizeAttributes 钩子）。
                 //    离线时它会加载失败，正好能看到「图片加载失败」的降级；
                 // 3. **读不到的本地路径**——同上一条，走同一个降级。
+                // （这一段同时是**正文里的文件链接**的落点，两种形态都要在，否则预览页
+                // 看不出「哪些文字点得开」：
+                // 1. **markdown 链接**（`[入口](src/server/index.ts#L12)`）——目标像本地
+                //    路径就点得开，带 `#L12` 时连行号一起给（`webview/fileLinks.ts` 的
+                //    `parseFileLink`）；
+                // 2. **行内代码**（`` `bootstrap.ts` ``）——只有在**本轮写过或申报交付**
+                //    的文件词表里对得上时可点；对不上的（`` `2/3` ``、`` `not-written.ts` ``）
+                //    保持惰性代码，不猜。
+                // 词表 = 这一轮的 `produced ∪ deliverables`，见下面的两行。）
                 {
                   step: 3,
                   id: "fn1",
@@ -759,6 +768,8 @@
                     "合并方案见脚注[^plan]，端口冲突的来源在另一条注里[^port]，`[^not-a-note]` 是行内代码不该生效。\n\n" +
                     "[^plan]: 来自 `docs/merge-plan.md` 的三步收敛：先去重、再收口、最后补测试。\n" +
                     "[^port]: `config.ts` 与 `index.ts` 各读了一次 `process.env.PORT`。\n\n" +
+                    "落地在 `bootstrap.ts`，入口那一处见 [index.ts](src/server/index.ts#L12)；" +
+                    "没写过的 `not-written.ts`、普通代码 `2/3` 都保持惰性。\n\n" +
                     "方案图：\n\n" +
                     "![本地生成的图表](./out/chart.png)\n\n" +
                     "![外链示例](https://www.w3.org/Icons/w3c_home.png)\n\n" +

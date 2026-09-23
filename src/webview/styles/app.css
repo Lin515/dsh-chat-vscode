@@ -1123,6 +1123,27 @@
   padding: 1px 4px;
 }
 
+/* 行内代码里的**文件链接**：命中本轮文件词表的 `` `App.tsx` `` 会被换成按钮
+   （见 webview/fileMentions.ts），样式与官方 `.fileMention` 同口径——仍然是一枚
+   代码芯片（底色/圆角/内边距都由外层 `code` 给，按钮自己不画），但按链接的样子
+   给信号：静止态**不给**下划线（等宽字的下伸部会和它打架），悬停 / 键盘聚焦时
+   才出现虚线下划线与环境色。 */
+.md code > .file-mention {
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  color: var(--link);
+  cursor: pointer;
+}
+
+.md code > .file-mention:hover,
+.md code > .file-mention:focus-visible {
+  text-decoration: underline dotted currentColor;
+  text-underline-offset: 3px;
+}
+
 .md table {
   border-collapse: collapse;
   margin: 8px 0;

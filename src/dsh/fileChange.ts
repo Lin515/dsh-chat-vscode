@@ -234,6 +234,33 @@ export function resolveChipPath(cwd: string | undefined, path: string): string |
 }
 
 /**
+ * 从「路径 + 尾部行号」里拆出行号：`src/a.ts:12`、`src/a.ts:12-40`、`src/a.ts:12:5`。
+ *
+ * 为什么需要它：**行号有两种写法，模型会把它们写混**。DSH 给模型的约定是
+ * 「链接目标里写 `#L24`（`[…](src/a.ts#L24)`），标签里才写 `:24`」，
+ * 但实际输出里 `[…](src/a.ts:24)`、`[…](src/a.ts:24-40)` 很常见（LSP 的
+ * `path:line:character` 也是这个形态）。官方客户端的 `parseFileLink` 只认 `#L`，
+ * 于是这种目标被**整个当成文件名**去查盘——必然找不到。
+ *
+ * 只做**拆分**，不做判断：调用方先在**字面路径**上查一次存在性，只有那份不存在
+ * 时才用这里的结果重试（`file:` 这类文件名在 POSIX 上是合法的，字面优先才不会
+ * 冤枉它；Windows 上文件名里根本不允许 `:`）。
+ *
+ * @param value 芯片 / 链接上的原样路径。
+ * @returns 去掉尾部行号后的路径与起始行；不像「路径:行号」时 undefined。
+ */
+export function splitPathLineSuffix(value: string): { path: string; line: number } | undefined {
+  const match = /^(.*?):(\d{1,9})(?:[-:](\d{1,9}))?$/u.exec(value);
+  if (!match) return undefined;
+  const path = match[1];
+  // 空路径、裸盘符（`C:12` 是盘符相对路径，不是「文件 C 的第 12 行」）都不算
+  if (!path || /^[A-Za-z]$/u.test(path)) return undefined;
+  const line = Number(match[2]);
+  if (!Number.isSafeInteger(line) || line < 1) return undefined;
+  return { path, line };
+}
+
+/**
  * 该文件是否在 git 眼里的「未跟踪」状态（= 模型新建、还没进过版本库）。
  *
  * **两条来路都要认**，因为 `git.untrackedChanges` 决定了清单往哪儿放（见文件头）：

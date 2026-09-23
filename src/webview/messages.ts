@@ -94,6 +94,10 @@ export const MESSAGES = {
     zh: "系统没有打开浏览器，可以手动访问 dsh web 打印的地址。",
     en: "The browser was not opened; you can visit the URL printed by dsh web manually.",
   },
+  openExternalFailed: {
+    zh: "系统没有打开这条链接。",
+    en: "The system did not open this link.",
+  },
 
   // 空态提示同时是**能力公告**：粘贴这条路没有任何按钮可点，不在这里说一句，
   // 用户不会知道它存在（`usePagePaste` 是窗口级监听）
@@ -306,6 +310,17 @@ export const MESSAGES = {
   fileDeletedHint: { zh: "文件已从磁盘删除；点击尝试查看删除前的内容", en: "This file is no longer on disk; click to try to view its content before deletion" },
   deletedFileAria: { zh: (name: string) => `已删除的文件 ${name}`, en: (name: string) => `Deleted file ${name}` },
   chipFileDeleted: { zh: "文件已删除，内容找不回来了", en: "The file was deleted; its content is no longer available" },
+  /**
+   * 正文里点的**文件链接**打不开（文件芯片那条走 `chipFileDeleted`）。
+   *
+   * 参数是宿主**按会话工作目录解析出来的绝对路径**：链接不见了十有八九是基准
+   * 不对（模型按另一个目录写的相对路径、或把行号写进了目标），把解析结果说出来，
+   * 用户一眼就能判断是路径写错了还是基准不对。
+   */
+  fileNotFound: {
+    zh: (path: string) => `找不到文件：${path}`,
+    en: (path: string) => `No such file: ${path}`,
+  },
   chipPathUnresolved: {
     zh: "暂时拿不到会话工作目录，无法定位这个文件；稍后再点一次试试",
     en: "The session working directory is not available yet, so this file cannot be located; try again in a moment",

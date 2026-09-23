@@ -43,7 +43,7 @@ import {
 import { readClipboardPaths } from "./clipboardPaths";
 import { saveChatImage } from "./imageFiles";
 import { ConfigChangeRouter } from "./configChanges";
-import { fileChangeKind, hasWorkingChange, isNotFoundError, resolveChipPath, type FileExistence, type GitChangeStateLike } from "./fileChange";
+import { fileChangeKind, hasWorkingChange, isNotFoundError, resolveChipPath, splitPathLineSuffix, type FileExistence, type GitChangeStateLike } from "./fileChange";
 import { readLocalImages } from "./localImages";
 import { shouldContinuePaging } from "./historyPaging";
 import { formatFileMention } from "./references";
@@ -126,6 +126,18 @@ const MAX_SUBMISSIONS = 50;
 function readDiffLayout(): DiffLayout {
   const value = vscode.workspace.getConfiguration("dshChat").get<string>("diffLayout");
   return value === "unified" || value === "split" ? value : "auto";
+}
+
+/**
+ * 行号是不是可用的 **1 基正整数**。
+ *
+ * 行号可能来自模型写的链接（`[…](src/a.ts#L0)`、`#Labc` 都能写出来），而
+ * `vscode.Position` 对越界值是**抛异常**而不是夹取——所以进 `Position` 之前
+ * 一律先过这里（`revealLine` 会把超出行数的夹到最后一行，但 0 / 负数 / 小数
+ * 直接当没给）。
+ */
+function isLineNumber(value: number | undefined): value is number {
+  return value !== undefined && Number.isSafeInteger(value) && value >= 1;
 }
 
 /**
@@ -4733,7 +4745,19 @@ export class ChatController implements vscode.Disposable {
 
       case "openFile": {
         const scope = this.scopeOfView(viewId);
-        await this.openFile(message.path, message.diff, viewId, scope ? this.cwdOf(scope) : undefined);
+        await this.openFile(
+          message.path,
+          message.diff,
+          viewId,
+          scope ? this.cwdOf(scope) : undefined,
+          message.line,
+          message.link === true,
+        );
+        break;
+      }
+
+      case "openExternal": {
+        await this.openExternal(message.url, viewId);
         break;
       }
 
@@ -5763,17 +5787,23 @@ export class ChatController implements vscode.Disposable {
    * 「点了什么都不发生」正是本文件反复要避免的那种失败。
    *
    * `preview: true` 是既有行为：单击芯片只是预览，不挤掉已经打开的文件。
+   *
+   * `line` 是正文里带行号的链接给的**1 基起始行**：打开后把光标落在那一行。
+   * 只有普通打开这条路才用得上（要看改动时开的是对比窗口，行号在那儿没有落点）；
+   * 不是正整数、或超出文件行数时按没给处理（越界的位置 `Position` 会抛）。
    */
   private async openFile(
     path: string,
     diff?: boolean,
     viewId?: string,
     cwd?: string,
+    line?: number,
+    fromLink = false,
   ): Promise<void> {
     // 芯片路径可能是相对会话工作目录的拼写：先解析成绝对路径再动手，
     // 不解析的话 Uri.file 拼不出可解析的 URI，「已删除」提示与打开失败
     // 都会对无辜文件发生（与 classifyFiles 同一口径，见 resolveChipPath）
-    const resolved = resolveChipPath(cwd, path);
+    let resolved = resolveChipPath(cwd, path);
     if (!resolved) {
       // 只可能发生在「相对路径 + 拿不到会话工作目录」时（会话还没进列表）。
       // 以前这里只写日志 → 用户点了完全没反应，不知道发生了什么。
@@ -5783,15 +5813,28 @@ export class ChatController implements vscode.Disposable {
       }
       return;
     }
+    let effectiveLine = line;
+    let existence = await this.fileExistence(vscode.Uri.file(resolved));
+    // **字面路径不存在时，再试一次「路径:行号」**：链接目标里的行号有两种写法，
+    // 模型常把 `#L24` 写成 `:24` / `:24-40`（标签约定串进了目标），那样整条
+    // `src/a.ts:24` 会当成文件名去查盘，必然找不到——用户看到的「文件不存在」
+    // 有一大半是这一条。**字面优先**：真有一个叫 `a:12` 的文件时先开它。
+    if (existence === "absent" && !isLineNumber(effectiveLine)) {
+      const split = splitPathLineSuffix(path);
+      const retry = split ? resolveChipPath(cwd, split.path) : undefined;
+      if (split && retry && (await this.fileExistence(vscode.Uri.file(retry))) === "present") {
+        this.log(`[open] 「${path}」按文件找不到，按「路径:行号」重试：${split.path}:${split.line}`);
+        resolved = retry;
+        effectiveLine = split.line;
+        existence = "present";
+      }
+    }
     const uri = vscode.Uri.file(resolved);
-    const existence = await this.fileExistence(uri);
     if (diff === true) {
       if (await this.openChanges(uri)) return;
       if (existence === "absent") {
         // 磁盘上没有了、git 也没有记录 → 内容找不回。明确说一声，别静默。
-        if (viewId) {
-          this.emitToView(viewId, { type: "toast", level: "warn", text: "@chipFileDeleted" });
-        }
+        this.reportMissingFile(viewId, resolved, fromLink);
         return;
       }
     } else if (existence === "absent") {
@@ -5799,16 +5842,86 @@ export class ChatController implements vscode.Disposable {
       // 打开必然失败。这里退化成和普通点击同一条链（先试改动对比），
       // 而不是静默失败：对被删除的文件来说，能看到删除前的内容已经是最好的结果。
       if (await this.openChanges(uri)) return;
-      if (viewId) {
-        this.emitToView(viewId, { type: "toast", level: "warn", text: "@chipFileDeleted" });
-      }
+      this.reportMissingFile(viewId, resolved, fromLink);
       return;
     }
     try {
       const document = await vscode.workspace.openTextDocument(uri);
-      await vscode.window.showTextDocument(document, { preview: true });
+      const position = this.revealLine(document, effectiveLine);
+      await vscode.window.showTextDocument(document, {
+        preview: true,
+        ...(position ? { selection: new vscode.Range(position, position) } : {}),
+      });
     } catch (error) {
       this.log(`[open] 打开失败 ${path}：${this.describeError(error)}`);
+    }
+  }
+
+  /**
+   * 「这个文件打不开」要说什么。
+   *
+   * **两种来路的话不一样**：芯片/交付行来自工具调用，文件确实存在过，说「已删除」
+   * 是诚实的；正文里点的**链接**却常常从一开始就没指对地方（相对的不是会话工作目录、
+   * 或者把行号写进了目标），这时说「文件已删除」是误导——用户会去 git 里找一个
+   * 根本没删过的文件。链接这条路因此**把解析出来的绝对路径说出来**：
+   * 「怎么算出来的」一眼可见，用户才能自己判断基准对不对。
+   */
+  private reportMissingFile(viewId: string | undefined, resolved: string, fromLink: boolean): void {
+    if (!viewId) return;
+    this.emitToView(viewId, {
+      type: "toast",
+      level: "warn",
+      // 带 `:` 的绝对路径照旧整条当参数（`@key:arg` 只按第一个 `:` 切，见 i18n 断言）
+      text: fromLink ? `@fileNotFound:${resolved}` : "@chipFileDeleted",
+    });
+  }
+
+  /**
+   * 把「正文里给的行号」落成一个可用的文档位置，拿不到就返回 undefined。
+   *
+   * 行号来自模型写的链接（`[…](src/a.ts#L1200)`），而文件可能比模型以为的短——
+   * 越界的 `Position` 在 VS Code 里是**抛异常**，不是夹取，所以这里先自己夹到
+   * 最后一行（打开文件本身仍然是对的，比整条链路失败强）。
+   */
+  private revealLine(document: vscode.TextDocument, line?: number): vscode.Position | undefined {
+    if (!isLineNumber(line)) return undefined;
+    const row = Math.min(line - 1, Math.max(0, document.lineCount - 1));
+    return new vscode.Position(row, 0);
+  }
+
+  /**
+   * 用系统默认程序打开一条外链（正文里点到的 http(s) / mailto 链接）。
+   *
+   * 界面侧已经按白名单判过一次（`webview/fileLinks.ts` 的 `externalLinkUrl`），
+   * 这里再判一次：webview 发来的帧不该被当成可信输入，多认一个 scheme 就等于
+   * 多开一条宿主动作（`file:` 这类会把本地路径交给系统程序）。
+   *
+   * 系统拒绝打开时**明确告知**用户（`openExternal` 返回 false），不静默——
+   * 「点了没反应」正是这条链路要避免的失败。提示只发给**点它的那个窗口**
+   * （同文件芯片：多个面板开着时，别的会话不该弹这条）。
+   */
+  private async openExternal(url: string, viewId: string): Promise<void> {
+    const refuse = (): void => {
+      this.emitToView(viewId, { type: "toast", level: "warn", text: "@openExternalFailed" });
+    };
+    const allowed = ["http:", "https:", "mailto:"];
+    let protocol: string;
+    try {
+      protocol = new URL(url).protocol;
+    } catch {
+      this.log(`[open] 链接不是合法地址，放弃打开：${url}`);
+      refuse();
+      return;
+    }
+    if (!allowed.includes(protocol)) {
+      this.log(`[open] 不打开这个 scheme 的链接：${protocol}`);
+      refuse();
+      return;
+    }
+    const opened = await vscode.env.openExternal(vscode.Uri.parse(url));
+    if (!opened) {
+      this.log(`[open] 系统没有接受这次打开请求：${url}`);
+      refuse();
     }
   }
 

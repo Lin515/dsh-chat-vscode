@@ -18,6 +18,7 @@ import {
   isNotFoundError,
   isUntracked,
   resolveChipPath,
+  splitPathLineSuffix,
   type GitChangeStateLike,
 } from "../src/dsh/fileChange";
 
@@ -178,10 +179,11 @@ console.log("fileChange: 相邻路径不误判 ✓");
   // 「首帧快照带没带上某个字段」这类断言现在要同时看那个文件。
   const sessionViewModule = readFileSync(join(process.cwd(), "src", "dsh", "sessionView.ts"), "utf8");
   assert.ok(
-    /await this\.openFile\(message\.path, message\.diff, viewId, scope \? this\.cwdOf\(scope\) : undefined\)/.test(
+    /await this\.openFile\(\s*\n\s*message\.path,\s*\n\s*message\.diff,\s*\n\s*viewId,\s*\n\s*scope \? this\.cwdOf\(scope\) : undefined,\s*\n\s*message\.line,\s*\n\s*message\.link === true,\s*\n\s*\)/.test(
       controller,
     ),
-    "openFile 分支必须把 diff、viewId（删除提示 toast 要发给对应窗口）与会话 cwd（相对路径解析基准）传下去",
+    "openFile 分支必须把 diff、viewId（删除提示 toast 要发给对应窗口）、会话 cwd（相对路径解析基准）、" +
+      "正文链接给的行号与「来自链接」这个标记一起传下去",
   );
   assert.ok(
     /adapter\.classifyFiles = \(paths\) => this\.classifyFiles\(this\.cwdOf\(scope\), paths\)/.test(controller),
@@ -517,5 +519,38 @@ console.log("fileChange: stat 错误判读（只认 FileNotFound）✓");
   assert.strictEqual(resolveChipPath("D:\\dev\\app", ""), undefined, "空路径解析不了（调用方跳过）");
 }
 console.log("fileChange: 相对路径解析（基准是会话 cwd）✓");
+
+// ---------- 9. 尾部行号：`src/a.ts:12` / `:12-40` / `:12:5` ----------
+//
+// 行号有两种写法，模型会写混：DSH 的约定是「目标写 `#L24`、标签写 `:24`」，
+// 但 `[…](src/a.ts:24)` 很常见。官方 `parseFileLink` 只认 `#L`，于是整个
+// `src/a.ts:24` 被当成文件名去查盘 → 必然找不到（用户看到的就是这条）。
+// 这里只做**拆分**：宿主先在字面路径上查一次，只有那份不存在时才用它重试。
+{
+  assert.deepStrictEqual(
+    splitPathLineSuffix("src/webview/components/Message.tsx:162"),
+    { path: "src/webview/components/Message.tsx", line: 162 },
+  );
+  assert.deepStrictEqual(
+    splitPathLineSuffix("src/dsh/controller.ts:5825"),
+    { path: "src/dsh/controller.ts", line: 5825 },
+  );
+  // 区间取起点（与 `#L12-L40` 同口径）；LSP 的 `path:line:character` 也认
+  assert.deepStrictEqual(splitPathLineSuffix("src/a.ts:12-40"), { path: "src/a.ts", line: 12 });
+  assert.deepStrictEqual(splitPathLineSuffix("src/a.ts:12:5"), { path: "src/a.ts", line: 12 });
+  // Windows 绝对路径：盘符的 `:` 不能被当成行号分隔符
+  assert.deepStrictEqual(
+    splitPathLineSuffix("D:\\dev\\app\\src\\a.ts:9"),
+    { path: "D:\\dev\\app\\src\\a.ts", line: 9 },
+  );
+  // 不像「路径:行号」的一律不动：没有行号、裸盘符、行号非法
+  assert.strictEqual(splitPathLineSuffix("src/a.ts"), undefined);
+  assert.strictEqual(splitPathLineSuffix("D:\\dev\\app\\src\\a.ts"), undefined);
+  assert.strictEqual(splitPathLineSuffix("C:12"), undefined, "裸盘符相对路径不能被拆成「文件 C 的第 12 行」");
+  assert.strictEqual(splitPathLineSuffix("src/a.ts:0"), undefined, "行号从 1 起");
+  assert.strictEqual(splitPathLineSuffix("src/a.ts:"), undefined);
+  assert.strictEqual(splitPathLineSuffix(":12"), undefined, "空路径不算");
+}
+console.log("fileChange: 尾部行号拆分（`:12` / `:12-40` / `:12:5`，盘符不误伤）✓");
 
 console.log("\nfileChange: all assertions passed");

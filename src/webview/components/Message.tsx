@@ -1,7 +1,8 @@
-import { memo, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
+import { memo, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
 import type { ChangesSummaryView, DiffLayout, FileChangeKind, MessageView, Segment } from "../../shared/chat";
 import { localImageMediaType } from "../../shared/imageRef";
 import { post } from "../bridge";
+import { fileLinkPort, type FileLinkPort } from "../fileLinks";
 import { IconBranch, IconCopy } from "../icons";
 import { Markdown } from "./Markdown";
 import { ImageGallery, LocalImageGallery, type ImageSource } from "./Images";
@@ -17,12 +18,12 @@ import { ChangesCard } from "./ChangesCard";
  * 助手正文块。流式期间正文每个 token 都在变，用户划选时冻结渲染保住选区
  * （只影响界面，后台 agent 不受影响），选区消失后立刻恢复跟随最新内容。
  */
-function StreamText({ text }: { text: string }) {
+function StreamText({ text, fileLinks }: { text: string; fileLinks?: FileLinkPort }) {
   const ref = useRef<HTMLDivElement>(null);
   const shown = useSelectionFreeze(ref, text);
   return (
     <div ref={ref} className="md-wrapper">
-      <Markdown text={shown} />
+      <Markdown text={shown} fileLinks={fileLinks} />
     </div>
   );
 }
@@ -158,6 +159,24 @@ export const Message = memo(function Message({
   const bubbleRef = useRef<HTMLDivElement>(null);
   const [bubbleOpen, setBubbleOpen] = useState(false);
   const [bubbleOverflowing, setBubbleOverflowing] = useState(false);
+  /**
+   * 正文里文件链接的词表（markdown 链接与行内代码两条路共用一份，
+   * 见 `../fileLinks.ts`）。
+   *
+   * 词表就是**本轮写过或申报交付的文件**（官方 `producedFileMentions` 同一份来源：
+   * `produced ∪ presented`），不是「看起来像路径的都算」——后者会把正文里的普通
+   * 代码变成一堆假链接。`settled` 用 `!streaming`：流式期间本地文件链接保持惰性。
+   *
+   * 只有助手消息有词表；用户消息的正文是纯文本（不经 markdown 渲染）。
+   */
+  const fileLinks = useMemo(
+    () =>
+      fileLinkPort(
+        [...(message.produced ?? []), ...(message.deliverables ?? []).map((file) => file.path)],
+        !message.streaming,
+      ),
+    [message.produced, message.deliverables, message.streaming],
+  );
 
   useLayoutEffect(() => {
     if (message.role !== "user") return;
@@ -291,7 +310,7 @@ export const Message = memo(function Message({
     const node = nodeOpen.portOf(segment.id);
     switch (segment.kind) {
       case "text":
-        return <StreamText key={segment.id} text={segment.text} />;
+        return <StreamText key={segment.id} text={segment.text} fileLinks={fileLinks} />;
       case "thinking":
         return (
           <ThinkingRow

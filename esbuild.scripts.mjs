@@ -79,6 +79,7 @@ const entries = {
   "build/context-menu.test.mjs": "scripts/contextMenu.test.ts",
   "build/image-files.test.mjs": "scripts/imageFiles.test.ts",
   "build/path-display.test.mjs": "scripts/pathDisplay.test.ts",
+  "build/file-links.test.mjs": "scripts/fileLinks.test.ts",
   "build/system-prompt-probe.mjs": "scripts/systemPromptProbe.ts",
   "build/effort-probe.mjs": "scripts/effortProbe.ts",
   "build/read-range-probe.mjs": "scripts/readRangeProbe.ts",

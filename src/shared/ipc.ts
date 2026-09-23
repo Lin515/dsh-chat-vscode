@@ -248,8 +248,25 @@ export type WebviewToHost =
    * （SCM 的「打开更改」）；拿不到改动时不会静默——文件没改过、根本不是 git 仓库
    * 由宿主回落成普通打开，未跟踪的新文件则由 git 自己解析成打开文件本身
    * （判定见 `dsh/fileChange.ts`）。
+   *
+   * `line` 是 1 基起始行（正文里 `[…](src/a.ts#L12)` 这种带行号的链接）：
+   * 打开后光标落在这一行。宿主会先验证它是不是正整数，非法就当没给。
+   *
+   * `link` 表示这次点击来自**正文里的文件链接**（不是工具行的文件芯片）：
+   * 两者「文件不在那儿」时的措辞不同——芯片的文件确实存在过，链接却常常一开始
+   * 就没指对地方（相对的不是会话工作目录、或把行号写进了目标），所以链接那条路
+   * 要把**解析出来的绝对路径**报出来（见 `controller.reportMissingFile`）。
    */
-  | { type: "openFile"; path: string; diff?: boolean }
+  | { type: "openFile"; path: string; diff?: boolean; line?: number; link?: true }
+  /**
+   * 用**系统默认程序**打开一条外链（正文里 `[说明](https://…)` 这类链接）。
+   *
+   * webview 自己没有开浏览器的能力，而让 `<a>` 自己导航会把整个聊天界面换掉。
+   * 只认 http / https / mailto（界面的白名单与宿主这一层各判一次，见
+   * `webview/fileLinks.ts` 的 `externalLinkUrl`）：模型输出不可信，多认一个
+   * scheme 就等于多开一条宿主动作。
+   */
+  | { type: "openExternal"; url: string }
   /**
    * 请求一条 `workspace/changes` 宣告的改动清单。
    *

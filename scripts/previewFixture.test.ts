@@ -6,6 +6,7 @@
 // 这正是文档里记过的坑（`test/preview.html` 曾编过 5 个思考档位）。
 import { readFileSync } from "node:fs";
 import { foldTurnProcess } from "../src/webview/turnProcess";
+import { fileLinkPort, matchFileMention } from "../src/webview/fileLinks";
 
 const html = readFileSync("test/preview.html", "utf8");
 
@@ -98,6 +99,47 @@ const must = [
         texts.some((text) => /!\[[^\]]*\]\(\.\/out\/chart\.png\)/.test(text)) &&
         texts.some((text) => /!\[[^\]]*\]\(https:\/\//.test(text))
       );
+    },
+  ],
+  // 正文里的**文件链接**：两种形态都要在夹具里，否则预览页看不出「哪些文字点得开、
+  // 哪些保持惰性代码」。判定用界面侧真的那份纯函数（不是「文本里有没有反引号」那种
+  // 间接证据）：行内代码 token 必须真能在**这一轮的词表**里命中，否则预览页上一个
+  // 可点的都没有，调样式时看到的是假象。
+  [
+    "正文里的文件链接（markdown 链接 + 命中的行内代码 + 命中的例外）",
+    () => {
+      type Seg = { kind: string; text?: string };
+      type Msg = { produced?: string[]; deliverables?: { path: string }[]; streaming?: boolean; segments: Seg[] };
+      const textsOf = (m: Msg): string[] =>
+        m.segments.flatMap((s) => (s.kind === "text" && s.text ? [s.text] : []));
+      const tokensOf = (text: string): string[] =>
+        [...text.matchAll(/`([^`\n]+)`/g)].map((match) => match[1]);
+      // 词表按**消息**算（界面就是这么算的：`produced ∪ deliverables` 去重后再判）。
+      // 全局拼一起会把别的轮次的同名文件算进来——`config.ts` 因此在两处各出现一次、
+      // 被判成「同名歧义」，判定跟着失真。
+      const portOf = (m: Msg) =>
+        fileLinkPort(
+          [...(m.produced ?? []), ...(m.deliverables ?? []).map((file) => file.path)],
+          !m.streaming,
+        );
+      const allTexts = state.messages.flatMap((m: Msg) => textsOf(m));
+      const hasLineLink = allTexts.some((text: string) => /\]\([^)\s]+#L\d+\)/.test(text));
+      const resolved = state.messages.some((m: Msg) => {
+        const port = portOf(m);
+        return (
+          port.settled &&
+          textsOf(m).some((text) =>
+            tokensOf(text).some((token) => matchFileMention(port.paths, token) !== undefined),
+          )
+        );
+      });
+      // 点不开的那些也要留着：夹具里全是可点的，就看不出「对不上就不猜」这条口径
+      const inert = state.messages.some((m: Msg) =>
+        textsOf(m).some((text) =>
+          tokensOf(text).some((token) => matchFileMention(portOf(m).paths, token) === undefined),
+        ),
+      );
+      return hasLineLink && resolved && inert;
     },
   ],
   // agent 交付的图片文件（present 申报 / 本轮 write 出来）：这两条路**没有** markdown

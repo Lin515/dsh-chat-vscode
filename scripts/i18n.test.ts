@@ -87,6 +87,8 @@ const HOST_MARKERS: string[] = [
   // 文件芯片
   "chipFileDeleted",
   "chipPathUnresolved",
+  // 正文里的文件链接（打不开时把解析出来的绝对路径报出来）
+  "fileNotFound",
   // 拖放
   "dropUnreadable",
   "dropTooLarge",
@@ -101,6 +103,8 @@ const HOST_MARKERS: string[] = [
   // （`copied` 已随「复制成功不弹信息条」的口径一起删掉：复制按钮不再发 toast）
   "openInBrowserOffline",
   "openInBrowserFailed",
+  // 正文里的外链（系统没接受这次打开请求）
+  "openExternalFailed",
   // 审批
   "toolGeneric",
   "callId",
