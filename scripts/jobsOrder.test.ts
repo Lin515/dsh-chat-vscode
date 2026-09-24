@@ -5,7 +5,7 @@
  */
 import assert from "node:assert";
 import type { JobItemView } from "../src/shared/chat";
-import { compareJobs, isLiveJob } from "../src/webview/jobsOrder";
+import { compareJobs, isLiveJob, isObservableJob } from "../src/webview/jobsOrder";
 
 const job = (id: string, status: JobItemView["status"], startedAt: number, finishedAt?: number): JobItemView => ({
   id,
@@ -51,5 +51,28 @@ console.log("jobsOrder: 排序口径 ✓");
   assert.ok(Number.isFinite(compareJobs(a, job("c", "completed", 5, 9))), "缺时间与有时间混排也要给出有限值");
 }
 console.log("jobsOrder: 缺字段兜底 ✓");
+
+// ---------- 4. 可展开性：live 恒可展开，已结束的要有保留输出 ----------
+//
+// 官方 `isObservable`：`isLive(job) || job.output.total > 0`。拿不到坐标的（老服务端
+// 的旧 `SessionJob` 就没有 `output`）**不给展开入口**——那不是「没有输出」而是
+// 「不知道有没有」，猜错的代价是一个点开只有「无输出」的面板。
+{
+  const withOutput = (id: string, total: number): JobItemView => ({
+    ...job(id, "completed", 0, 1),
+    output: { total, earliest: 0 },
+  });
+
+  assert.strictEqual(isObservableJob(job("running", "running", 0)), true, "在跑的恒可展开");
+  assert.strictEqual(isObservableJob(job("stopping", "stopping", 0)), true, "正在停止的也算 live");
+  assert.strictEqual(isObservableJob(withOutput("done", 4096)), true, "已结束但有保留输出");
+  assert.strictEqual(isObservableJob(withOutput("silent", 0)), false, "已结束且没写过输出");
+  assert.strictEqual(
+    isObservableJob(job("legacy", "completed", 0, 1)),
+    false,
+    "读不出 output（老服务端）不给展开入口，不猜",
+  );
+}
+console.log("jobsOrder: 可展开性判据（isObservable 同口径） ✓");
 
 console.log("\njobsOrder: all assertions passed");

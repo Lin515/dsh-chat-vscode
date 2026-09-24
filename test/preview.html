@@ -56,6 +56,52 @@
       // webview 通过 acquireVsCodeApi 与宿主通信；预览里复刻真实握手：
       // webview 发 ready → 宿主回 state 快照
       window.__sent = [];
+      // 后台任务实时输出：真实宿主会为展开的那一行开一条 `job/follow` 流。这里按
+      // 请求回帧（形状取自契约 `JobFollowFrame`：`opened` 锚点 → 若干 `output` 批次），
+      // 并让「在跑」的那条一直吐字——展开区的观感（自动增长、限高内滚）只有活动流
+      // 才看得出来。`jobs/opened` 的 `from`/`earliest` 是 0（没淘汰过头，不显示丢弃提示）。
+      var jobTimers = [];
+      function stopJobStream() {
+        jobTimers.forEach(function (timer) {
+          clearInterval(timer);
+        });
+        jobTimers = [];
+      }
+      function startJobStream(message) {
+        stopJobStream();
+        var lines = [
+          "$ npm run typecheck\n",
+          "> dsh-chat@0.9.3 typecheck\n",
+          "> node scripts/typecheck.mjs\n",
+          "[typecheck] tsconfig.json 通过\n",
+          "[typecheck] tsconfig.webview.json 通过\n",
+        ];
+        window.__push({
+          type: "jobs/opened",
+          jobId: message.jobId,
+          watchId: message.watchId,
+          from: 0,
+          earliest: 0,
+        });
+        var sent = 0;
+        jobTimers.push(
+          setInterval(function () {
+            if (sent >= lines.length) {
+              // 吐完就停：真实的服务端在任务收场前会一直挂着这条流，但预览里让它停在
+              // 有内容的状态即可（再看得到的是「限高内滚」而不是无限增长）
+              stopJobStream();
+              return;
+            }
+            window.__push({
+              type: "jobs/output",
+              jobId: message.jobId,
+              watchId: message.watchId,
+              text: lines[sent++],
+              gapBefore: false,
+            });
+          }, 400),
+        );
+      }
       // 正文/附件里的占位图（真实链路给的是服务端字节的 data URL）：一张内联 SVG，
       // 形状一致、看得见。放在函数外、`__buildState` 也能引用（`scripts/previewFixture.test.ts`
       // 会把 `__buildState` 抽出来在 Node 里求值，所以那个函数体**不能**引用 window）。
@@ -99,6 +145,14 @@
                   urls: urls,
                 });
               }, 0);
+            }
+            if (message && message.type === "observeJob") {
+              // 展开一行：真实宿主在这里开 `job/follow`，把帧转给界面
+              startJobStream(message);
+            }
+            if (message && message.type === "unobserveJob") {
+              // 收起 / 关面板：宿主取消那条流，帧到此为止
+              stopJobStream();
             }
           },
           getState: function () {
@@ -145,11 +199,16 @@
         window.__push({
           type: "jobs/list",
           jobs: [
-            { id: "j1", kind: "pwsh", label: "npm run typecheck", status: "running", startedAt: Date.now() - 42000 },
+            // `output: {total, earliest}` 是契约里的一对坐标：界面用它判「这一行值不值得
+            // 展开」（live 恒可展开；已结束的要有保留输出）。`progress` 是在跑那一行的
+            // 实时进度（官方显示口径是 `progress ?? detail`）。
+            { id: "j1", kind: "pwsh", label: "npm run typecheck", status: "running", startedAt: Date.now() - 42000, progress: "3/5 包", output: { total: 1280, earliest: 0 } },
             // 子代理派发也进名册（真实形状），但面板不收它（2026-09-24 口径）——
             // 留着这条正是为了在预览里看着过滤生效：面板只应出现下面三条任务
             { id: "j2", kind: "subagent", label: "调研 MCP 工具清单", status: "running", startedAt: Date.now() - 90000 },
-            { id: "j3", kind: "pwsh", label: "node build/smoke.mjs", status: "completed", startedAt: Date.now() - 600000, finishedAt: Date.now() - 545000, detail: "✓ 端到端通过" },
+            { id: "j3", kind: "pwsh", label: "node build/smoke.mjs", status: "completed", startedAt: Date.now() - 600000, finishedAt: Date.now() - 545000, detail: "✓ 端到端通过", output: { total: 4096, earliest: 0 } },
+            // 这一条**没有** `output`：老服务端的旧 `SessionJob` 就没有这个字段，
+            // 界面据此不给展开入口（不猜「可能有输出」）——预览里正好对照着看
             { id: "j4", kind: "pwsh", label: "git push origin main", status: "failed", startedAt: Date.now() - 900000, finishedAt: Date.now() - 899000, detail: "fatal: could not read Username" },
           ],
         });

@@ -408,6 +408,21 @@ export const MESSAGES = {
   jobStopConfirm: { zh: "再次点击确认停止", en: "Click again to confirm" },
   jobStopConfirmAction: { zh: "确认停止", en: "Confirm stop" },
   jobStopFailed: { zh: "停止失败", en: "Stop failed" },
+  // 展开一行看实时输出（官方 `row.expandAria` / `row.collapseAria` 同口径）
+  jobExpandAria: { zh: (label: string) => `查看 ${label} 的实时输出`, en: (label: string) => `Show live output of ${label}` },
+  jobCollapseAria: { zh: (label: string) => `收起 ${label} 的实时输出`, en: (label: string) => `Hide live output of ${label}` },
+  /**
+   * 输出开头丢了（服务端淘汰了环头、续传有洞，或本扩展的 128KB 上限截断）。
+   * 与「无输出」是两回事：这里**有输出**，只是能看到的那部分之前已经没了。
+   */
+  jobOutputGap: { zh: "……较早的输出已丢弃……", en: "… earlier output dropped …" },
+  /** 观察流中断：`detail` 是服务端 / 传输层的原样报错，不翻译。 */
+  jobOutputError: {
+    zh: (detail: string) => `实时输出流中断：${detail}`,
+    en: (detail: string) => `live output stream interrupted: ${detail}`,
+  },
+  /** 宿主连流都没能开（没连接 / 没有绑定会话）时的概括文案。 */
+  jobOutputUnavailable: { zh: "实时输出暂时不可用", en: "Live output is currently unavailable" },
   commands: { zh: "命令", en: "Commands" },
   commandsEmpty: { zh: "没有可用命令", en: "No commands available" },
   skillTag: { zh: "技能", en: "Skill" },

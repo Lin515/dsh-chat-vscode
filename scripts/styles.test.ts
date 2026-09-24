@@ -2015,4 +2015,37 @@ console.log("styles: 多行草稿打字不闪（量高瞬态同帧消化）✓")
 }
 console.log("styles: 右侧轮次横条（零高度槽位 + 点击穿透 + 过窄自动关闭） ✓");
 
+// ---------- 后台任务详情：输出区限高内滚、行主体不许溢出 ----------
+//
+// 展开区把服务端留下的**整整 128KB** 输出一次画出来（界面侧的保留上限见
+// `webview/jobObserve.ts`）。这一块坏了不是「难看」：
+//   a) 不限高 → 一条长输出把抽屉撑成几万像素，上面的行再也滚不到；
+//   b) 不换行 → 窄侧栏里每行都要横向拖到底才读得完（与代码块同一条口径）；
+//   c) 行主体不 nowrap + ellipsis → 英文长命令 / 长路径把行撑破（chevron 被挤出视野）。
+{
+  const output = rule(".job-output");
+  const cap = /max-height:\s*([^;]+);/.exec(output)?.[1]?.trim();
+  assert.ok(
+    cap !== undefined && /vh|calc\(|min\(/.test(cap),
+    `.job-output 必须限高且视口感知（现在是 "${cap}"）——128KB 输出不许把抽屉撑高`,
+  );
+  assert.ok(/overflow:\s*auto/.test(output), ".job-output 限高之后要能内部滚动（否则下半截看不到）");
+  assert.ok(
+    /white-space:\s*pre-wrap/.test(output),
+    ".job-output 必须自动换行（窄侧栏里横向滚动意味着长行要一路拖到底）",
+  );
+
+  const toggle = rule(".job-row-toggle");
+  assert.ok(/min-width:\s*0/.test(toggle), ".job-row-toggle 要能收缩（否则里面的省略号不生效）");
+  const command = rule(".job-panel-command");
+  assert.ok(
+    /white-space:\s*nowrap/.test(command) && /text-overflow:\s*ellipsis/.test(command),
+    "命令头必须一行截断（英文长命令与长路径不能把面板撑宽）",
+  );
+
+  const chevron = rule(".job-chevron.is-open");
+  assert.ok(/transform:\s*rotate/.test(chevron), "展开态的 chevron 要旋转（官方 .chevronOpen 同款）");
+}
+console.log("styles: 后台任务详情（输出限高内滚 + 行主体不溢出） ✓");
+
 console.log("\nstyles: all assertions passed");

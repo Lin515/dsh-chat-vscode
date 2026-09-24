@@ -246,6 +246,16 @@ export const STREAMS = {
    * （见 `dsh/controller.ts` 的 `onControlFrame`）。
    */
   jobList: "job/list",
+  /**
+   * 一个后台任务的**保留输出**（`dsh-api-job-controller` 的 `job.follow`）：打开时一帧
+   * `opened`（带锚点偏移），之后是合并过的 `output` 批次，任务收场且环排空后
+   * 最后一帧 `status`，随后流正常结束。
+   *
+   * 这是**非消费读**：模型自己的游标与通知状态都看不见它（人可以边跑边看，
+   * 但不影响 agent 收结果）。旧服务端没有这条流——`job` 命名空间整个是
+   * 0.1.7-alpha.1 才有的，所以展开旧服务端的行只会拿到一条错误，界面如实显示。
+   */
+  jobFollow: "job/follow",
   events: "$events",
 } as const;
 
@@ -264,8 +274,10 @@ export interface JobListFrameWire {
  * 一条后台任务的线格式（`dsh-jobs` 的 `JobView`）。
  *
  * 与旧 `session/control` 里的 `SessionJob` 字段相容（`id`/`kind`/`label`/`status`/
- * `detail`/`startedAt`/`finishedAt`），新增 `progress`/`output`/`owner` 等，本扩展
- * 只消费前七个（见 `controller.applyJobs`）。
+ * `detail`/`startedAt`/`finishedAt`），并带 `progress`/`output`/`owner` 等新成员。
+ * 本扩展消费 `id`/`kind`/`label`/`status`/`progress`/`detail`/`startedAt`/
+ * `finishedAt`/`output`（`total` 判可展开性），`owner` 与 `output.spillPaths`
+ * 不消费——形状读取在 `dsh/jobView.ts`，那是唯一落点。
  */
 export interface JobViewWire {
   id: string;
@@ -276,6 +288,39 @@ export interface JobViewWire {
   detail?: string;
   startedAt?: number;
   finishedAt?: number;
+  output?: { total?: number; earliest?: number };
+}
+
+/**
+ * `job/follow` 的 `opened` 帧（`JobFollowFrame` 的第一支）。
+ *
+ * `from` 是第一条 `output` 帧的起始偏移，`job.output.earliest` 是环里最旧的
+ * 保留字节——两者一起才判得出「要看的开头已经被淘汰」（`from > earliest`，
+ * 或第一次观察就直接锚在 `from > 0`）。
+ */
+export interface JobFollowOpenedWire {
+  type: string;
+  job?: { output?: { total?: number; earliest?: number } };
+  from?: number;
+}
+
+/**
+ * `job/follow` 的 `output` 帧：**合并过的批次**（服务端按 100ms / 64KB 合并，
+ * 不必逐字节转发），`next` 是这一帧之后的续传偏移。
+ */
+export interface JobFollowOutputWire {
+  type: string;
+  chunks?: unknown[];
+  next?: number;
+  lossy?: true;
+}
+
+/** 输出环里的一段（`JobChunk`）：偏移只用于续传，界面只消费 `text` / `gapBefore`。 */
+export interface JobChunkWire {
+  at?: number;
+  text?: string;
+  channel?: string;
+  gapBefore?: true;
 }
 
 /** 会话事件里我们主动渲染的类型；其余按下面的 `SILENT_EVENT_TYPES` / `ignorable` 规则降级。 */

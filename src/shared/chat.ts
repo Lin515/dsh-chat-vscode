@@ -771,6 +771,22 @@ export interface JobItemView {
    * 类型写成 `JobStatus | (string & {})`：既保留自动补全，又接受任意字符串。
    */
   status: JobStatus | (string & {});
+  /**
+   * 生产者的**实时进度行**（`3/10`、当前阶段），收场时服务端自己清空。
+   *
+   * 与 `detail` 是同一个位置的两代值（官方 `jobDetail(job) = progress ?? detail`）：
+   * 在跑的看进度、收场的看终态原因，界面按这个顺序取，不两个都画。
+   */
+  progress?: string;
+  /**
+   * 输出环的绝对坐标（契约里的 `output`）：`total` 是下一条 chunk 的起始偏移
+   * （没写过输出就是 0），`earliest` 是还在环里的最旧字节。
+   *
+   * 界面只用它判**这一行值不值得展开**（官方 `isObservable`：live 恒可展开，
+   * 已结束的要有保留输出）——拿不到这两个数就不给展开入口，不猜「可能有输出」。
+   * 契约里的 `spillPaths` 不消费（那是溢出文件的说明，本扩展没有对应入口）。
+   */
+  output?: { total: number; earliest: number };
   detail?: string;
   startedAt: number;
   finishedAt?: number;

@@ -836,7 +836,9 @@ button.header-title:hover {
   white-space: nowrap;
 }
 
-.tool-card-copy {
+/* 复制按钮（工具卡与后台任务详情共用，见 components/CopyButton.tsx）：
+   小号文字按钮，悬停提亮，点后 1s 换「已复制」文案作反馈（宿主不弹 toast）。 */
+.copy-btn {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
@@ -847,9 +849,10 @@ button.header-title:hover {
   font-size: var(--font-size-2xs);
   padding: 0 2px;
   cursor: pointer;
+  white-space: nowrap;
 }
 
-.tool-card-copy:hover {
+.copy-btn:hover {
   color: var(--fg);
 }
 
@@ -4254,6 +4257,105 @@ button.meta-chip:hover {
   align-items: center;
   gap: 6px;
   min-width: 0;
+}
+
+/* 行主体（可展开的行是按钮，不可展开的给同名的 span——只是没有指针手势）。
+   布局与原来的静态行完全一致，所以两种行在面板里看起来是同一种行。 */
+.job-row-toggle {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.job-row-toggle.is-static {
+  cursor: default;
+}
+
+.job-row-toggle:hover .job-label {
+  color: var(--fg);
+}
+
+.job-row-toggle:focus-visible {
+  outline: 1px solid var(--link);
+  outline-offset: 1px;
+  border-radius: 3px;
+}
+
+/* 展开入口的箭头：官方 `.chevron` / `.chevronOpen` 同款（120ms 旋转） */
+.job-chevron {
+  flex: 0 0 auto;
+  color: var(--muted);
+  transition: transform 120ms ease;
+}
+
+.job-chevron.is-open {
+  transform: rotate(180deg);
+}
+
+/* 展开区：提示条 + 命令头 + 输出。整体是行内的一段，不另开抽屉 */
+.job-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 4px 0 2px;
+}
+
+.job-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* 命令只占一行（英文长命令与长路径不许把面板撑宽）——完整内容在行的 title 里 */
+.job-panel-command {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: var(--font-size-2xs);
+  color: var(--description);
+}
+
+/* 输出区：等宽、自动换行（窄侧栏里横向滚动意味着长行要一路拖到底才读得完）、
+   限高内滚——128KB 的输出不许把抽屉撑高，也不许把上面的行挤出去。 */
+.job-output {
+  max-height: min(288px, 45vh);
+  overflow: auto;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--editor-bg);
+  font-family: var(--mono);
+  font-size: var(--font-size-2xs);
+  line-height: 1.5;
+  color: var(--description);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.job-output.is-empty {
+  color: var(--muted);
+}
+
+.job-notice {
+  font-size: var(--font-size-2xs);
+  color: var(--muted);
+}
+
+.job-notice.is-error {
+  color: var(--error);
 }
 
 .job-label {

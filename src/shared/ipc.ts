@@ -70,6 +70,29 @@ export type HostToWebview =
    * 唯一能用来结束「请求中」的信号。
    */
   | { type: "jobs/killResult"; jobId: string; ok: boolean }
+  /**
+   * 一条后台任务的实时输出**观察流已开**（`job/follow` 的 `opened` 锚点）。
+   *
+   * `from` 是第一条输出帧的起点、`earliest` 是环里最旧的保留字节：界面用这一对
+   * 判「要看的开头是不是已经被淘汰」（`from < earliest`，或第一次观察就直接锚在
+   * `from > 0`），判据在 `webview/jobObserve.ts`。
+   */
+  | { type: "jobs/opened"; jobId: string; watchId: number; from: number; earliest: number }
+  /**
+   * 一段实时输出（服务端已合并过的批次，不是逐字节）。
+   *
+   * `gapBefore` 是宿主折算好的「这段之前丢过字节」：服务端的 `lossy` 与
+   * 任一 chunk 自己的 `gapBefore` 对界面是同一件事，折算在 `dsh/jobView.ts`。
+   */
+  | { type: "jobs/output"; jobId: string; watchId: number; text: string; gapBefore: boolean }
+  /**
+   * 观察流**终态失败**（流被服务端拒绝、连接已断且不再重开、宿主没能开流）。
+   *
+   * `detail` 缺席 = 宿主连流都没能开（没连接 / 没有绑定会话），界面显示一句
+   * 概括文案；给了 `detail` 就是服务端 / 传输层的原样报错，界面套模板显示、
+   * **不翻译**（模型与服务端的原始报错一律原样露出）。
+   */
+  | { type: "jobs/observeFailed"; jobId: string; watchId: number; detail?: string }
   /** 斜杠命令目录（输入框输入 / 时弹出）。 */
   | { type: "commands/list"; commands: CommandView[] }
   /** 文件引用候选（输入框输入 @ 时弹出）。 */
@@ -364,6 +387,24 @@ export type WebviewToHost =
    * `ok: false`）——界面的「请求中」状态靠它收场，不回帧按钮会永远转下去。
    */
   | { type: "killJob"; jobId: string }
+  /**
+   * 展开一行后台任务：开始观察它的实时输出（`job/follow`）。
+   *
+   * `watchId` 由**界面**铸造、宿主原样回带：一条观察流可能被重开（断线重连、
+   * 收起后再点开），而两轮的在途帧会在界面上交错——带上这个号，界面只认自己
+   * 当前那一个，旧流的残余帧一律丢掉（判据在 `webview/jobObserve.ts`）。
+   *
+   * 宿主**不一定回帧**：正常路径由 `jobs/opened` 起头；开不了流时必须回一帧
+   * `jobs/observeFailed`（否则展开区永远停在「还没有输出」）。
+   */
+  | { type: "observeJob"; jobId: string; watchId: number }
+  /**
+   * 收起（或关面板 / 行离开名册）：释放这次观察。
+   *
+   * 观察流是**按窗口**跟踪的（同一时刻只有一行是展开的），所以释放即取消——
+   * 界面上没有第二个人在看，留着流只是白占一条 socket 多路复用通道。
+   */
+  | { type: "unobserveJob"; jobId: string }
   /** 请求斜杠命令目录。 */
   | { type: "listCommands" }
   /** 查询文件引用候选（@ 提及）。 */

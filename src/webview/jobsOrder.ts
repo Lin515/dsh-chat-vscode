@@ -9,6 +9,10 @@
  * 另有一条例外：`kind: 'subagent'` 的行**不进后台任务面板**（用户 2026-09-24 口径
  * ——子代理有自己的面板）。名册数据里仍保留它们：目录投影没有 `activity` 时，
  * 那一行是子代理按钮唯一的活性证据（见 `activity.ts` 的 `subagentsBusy`）。
+ *
+ * 除排序外还提供「哪一行可以展开看实时输出」的判据 `isObservableJob`（官方
+ * `isObservable` 同口径）——它与排序共用同一份 `JobItemView` 读法，放一起才不会
+ * 出现「能排到前面但点不开」这种两处口径打架的情况。
  */
 import type { JobItemView } from "../shared/chat";
 
@@ -23,6 +27,20 @@ export function isSubagentJob(job: JobItemView): boolean {
 /** live = 还在跑、或正在停止（官方 `isLive`）。 */
 export function isLiveJob(job: JobItemView): boolean {
   return job.status === "running" || job.status === "stopping";
+}
+
+/**
+ * 这一行的输出**值不值得展开看**（官方 `isObservable`）。
+ *
+ * live 的行恒可展开——它的输出随时可能继续来；已结束的行则要看环里还留着输出
+ * （`output.total > 0`）。
+ *
+ * `output` 读不出来（老服务端的旧 `SessionJob` 没有这个字段、或某一帧没按契约带）
+ * 时**不给展开入口**：那不是「没有输出」而是「不知道有没有」，而猜错的代价是一个
+ * 点开只有「无输出」的面板——比不给入口更像故障。
+ */
+export function isObservableJob(job: JobItemView): boolean {
+  return isLiveJob(job) || (job.output?.total ?? 0) > 0;
 }
 
 /** `Array.prototype.sort` 的比较函数（不改动入参数组）。 */

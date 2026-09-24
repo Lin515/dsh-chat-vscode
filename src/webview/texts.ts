@@ -284,6 +284,15 @@ export interface Texts {
   jobCompleted: string;
   jobKilled: string;
   jobFailed: string;
+  /** 展开 / 收起一行的无障碍标签（带任务标签）。 */
+  jobExpandAria: (label: string) => string;
+  jobCollapseAria: (label: string) => string;
+  /** 输出开头丢了（环头被淘汰 / 续传有洞 / 超出显示上限截断）。 */
+  jobOutputGap: string;
+  /** 观察流中断：`detail` 是原样报错。 */
+  jobOutputError: (detail: string) => string;
+  /** 连流都没能开（没连接 / 没有绑定会话）。 */
+  jobOutputUnavailable: string;
   /** 斜杠命令 */
   commands: string;
   commandsEmpty: string;

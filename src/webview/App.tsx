@@ -906,7 +906,13 @@ export function App() {
         ) : null}
 
         {state.panel === "jobs" ? (
-          <JobsPanel jobs={state.jobs} killResult={state.jobKill} onClose={closePanel} />
+          <JobsPanel
+            jobs={state.jobs}
+            outputs={state.jobOutputs}
+            killResult={state.jobKill}
+            dispatch={dispatch}
+            onClose={closePanel}
+          />
         ) : null}
 
         {/* 全页拖放浮层：文件拖进会话页时整页亮起「松手即添加」。aria-hidden 的

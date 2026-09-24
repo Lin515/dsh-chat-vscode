@@ -19,41 +19,13 @@
  */
 import { useState } from "react";
 import type { ToolCardView } from "../../shared/chat";
-import { post } from "../bridge";
 import { useTexts } from "../texts";
-import { IconChevronDown, IconChevronRight, IconCopy } from "../icons";
+import { IconChevronDown, IconChevronRight } from "../icons";
 import { Markdown } from "./Markdown";
+import { CopyButton } from "./CopyButton";
 
 /** 卡片正文在会话流里最多显示多少行（官方 `CHAT_READ_MAX_LINES` / `CHAT_SEARCH_MAX_LINES`）。 */
 const CHAT_CARD_MAX_LINES = 8;
-
-/** 复制按钮的短暂反馈时长（官方 1s）。 */
-const COPIED_MS = 1000;
-
-/**
- * 复制按钮：点了把正文交给宿主写剪贴板（`post({type:"copy"})`，与代码块同一入口）。
- * 宿主侧**不发**「已复制」toast（用户 2026-09-17 口径），按钮自己换 1s 文案作反馈。
- */
-function CopyButton({ text }: { text: string }) {
-  const texts = useTexts();
-  const [copied, setCopied] = useState(false);
-  return (
-    <button
-      type="button"
-      className="tool-card-copy"
-      title={texts.copy}
-      onClick={() => {
-        if (copied) return;
-        post({ type: "copy", text });
-        setCopied(true);
-        window.setTimeout(() => setCopied(false), COPIED_MS);
-      }}
-    >
-      <IconCopy size={12} />
-      <span>{copied ? texts.copied : texts.copy}</span>
-    </button>
-  );
-}
 
 /**
  * 官方 `K6`：把 N 行切成「头 + 尾」两半，中间那 `hidden` 行由展开钮回收。

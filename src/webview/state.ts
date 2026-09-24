@@ -15,6 +15,13 @@ import type {
 import type { HostToWebview } from "../shared/ipc";
 import { mergeWirePatch } from "../shared/wire";
 import { changesSummaryKey } from "../shared/changesSummary";
+import {
+  applyObservedFailed,
+  applyObservedOpened,
+  applyObservedOutput,
+  jobObserveStart,
+  type JobObserved,
+} from "./jobObserve";
 
 /**
  * webview 侧状态归约：把宿主的增量帧合并成可渲染的聊天状态。
@@ -71,6 +78,14 @@ export interface AppState extends ChatState {
    * 「来了一条新结算」，把状态机推进到 `failed` / 维持 `pending`。
    */
   jobKill?: { jobId: string; ok: boolean };
+  /**
+   * 后台任务实时输出的累积（键 = 任务 id），只活在界面侧。
+   *
+   * 条目在**展开时**建、在**收起 / 关面板 / 换会话**时删：删掉才是对的——宿主那边
+   * 收起即取消观察流，重新展开会从服务端环里最旧的保留字节重新锚起，留着旧文本
+   * 会把同一段输出接两遍。累积口径在 `jobObserve.ts`（纯函数）。
+   */
+  jobOutputs?: Record<string, JobObserved>;
 }
 
 export const initialState: AppState = {
@@ -154,7 +169,17 @@ export type Action =
    * 这条通道原本只有宿主有（`toast` 帧），而复制图片是在界面里做的（见
    * `imageClipboard.ts`），失败时宿主根本不知情。文案由调用方从词典取好，这里存成品。
    */
-  | { type: "ui/notice"; level: "info" | "warn" | "error"; text: string };
+  | { type: "ui/notice"; level: "info" | "warn" | "error"; text: string }
+  /**
+   * 展开一行后台任务：铸造这一轮的观察代号并清空旧累积（见 `AppState.jobOutputs`）。
+   *
+   * 界面自己发而不是等宿主：`watchId` 必须**先**进状态，宿主回带的帧才有号可对
+   * （`jobObserve.ts` 的守卫），所以它和 `post({type:"observeJob"})` 是同一个手势里
+   * 前后脚的两件事。
+   */
+  | { type: "ui/jobObserve"; jobId: string; watchId: number }
+  /** 收起一行（或关面板）：释放这条观察的累积；重新展开会重新锚起。 */
+  | { type: "ui/jobClose"; jobId: string };
 
 export function reducer(state: AppState, action: Action): AppState {
   switch (action.type) {
@@ -174,6 +199,9 @@ export function reducer(state: AppState, action: Action): AppState {
         // 清单缓存同理：键里带会话 id，理论上不会串，但换会话后旧会话那些条目再也
         // 用不上（一张会话几十轮就是几十条），跟着一起丢掉
         ...(switched ? { changesSummaries: undefined } : {}),
+        // 实时输出的累积也一样：换会话后旧任务的条目再也不会被渲染（面板读的是新
+        // 会话的名册），而键是全局唯一的任务 id，留着就是一堆谁也用不上的文本
+        ...(switched ? { jobOutputs: undefined } : {}),
       };
     }
 
@@ -238,6 +266,23 @@ export function reducer(state: AppState, action: Action): AppState {
       // 故意整对象替换（不按 jobId 合并）：连着两次失败的结算也要各推进一次状态机。
       return { ...state, jobKill: { jobId: action.jobId, ok: action.ok } };
 
+    case "jobs/opened":
+    case "jobs/output":
+    case "jobs/observeFailed": {
+      // 实时输出：三个累积口径都是纯函数（`jobObserve.ts`），**拿不到条目或代号
+      // 对不上就原样返回**——帧不该让界面上冒出一个没人展开的条目（那是泄漏），
+      // 也不该把另一轮观察的字节接进这一轮。
+      const entry = state.jobOutputs?.[action.jobId];
+      const next =
+        action.type === "jobs/opened"
+          ? applyObservedOpened(entry, action)
+          : action.type === "jobs/output"
+            ? applyObservedOutput(entry, action)
+            : applyObservedFailed(entry, action);
+      if (!next) return state;
+      return { ...state, jobOutputs: { ...state.jobOutputs, [action.jobId]: next } };
+    }
+
     case "trajectory": {
       // 宿主发的是一整段 JSON 字符串（不是逐键 patch）：
       // 轨迹模型里 `startedAt: null` / `timeSeconds: null` 是**有意义的空值**，
@@ -290,6 +335,22 @@ export function reducer(state: AppState, action: Action): AppState {
 
     case "ui/setPanel":
       return { ...state, panel: action.panel };
+
+    case "ui/jobObserve": {
+      // 展开：**覆盖**同 id 的旧条目（`jobObserveStart` 是空的）——上一轮的文本必须
+      // 丢掉，否则新流从环头重发的字节会接在旧尾巴后面，同一段输出出现两遍
+      return {
+        ...state,
+        jobOutputs: { ...state.jobOutputs, [action.jobId]: jobObserveStart(action.watchId) },
+      };
+    }
+
+    case "ui/jobClose": {
+      if (!state.jobOutputs || !(action.jobId in state.jobOutputs)) return state;
+      const jobOutputs = { ...state.jobOutputs };
+      delete jobOutputs[action.jobId];
+      return { ...state, jobOutputs };
+    }
 
     case "ui/openPanel":
       return { ...state, panel: action.panel as PanelKind };

@@ -61,7 +61,7 @@ import type {
   SessionControlFrame,
   SessionFollowFrame,
 } from "./protocol";
-import { jobItemsFromWire, jobRowsFromFrame } from "./jobView";
+import { jobFollowFrameFromWire, jobItemsFromWire, jobRowsFromFrame } from "./jobView";
 import {
   ServerNotRunningError,
   SupervisorManager,
@@ -411,6 +411,27 @@ type ConnectionFields = Pick<
 >;
 
 /**
+ * 一个窗口正在看的一条后台任务输出（`job/follow`）。
+ *
+ * 观察流**按窗口**跟踪，不按会话共享：界面上同一时刻只有一行是展开的
+ * （官方 `expandedKey` 也是单个键），所以「一个窗口一条流」就是精确模型——
+ * 两个窗口看同一个任务时各看各的，谁也不会把别人的续传游标推着走。
+ *
+ * `from` 是续传游标（服务端上一帧的 `next`）：断线重连时从它接着读，界面那边
+ * 已累积的文本不用清、也不会重复。第一次观察是 `undefined`（服务端从环里最旧的
+ * 保留字节锚起，`opened.from > 0` 才是「开头已淘汰」的信号）。
+ */
+interface JobWatch {
+  sessionId: string;
+  jobId: string;
+  /** 界面铸造的观察代号：每次展开都换一个，宿主原样回带（界面据此丢弃旧流残余帧）。 */
+  watchId: number;
+  handle: { cancel(): void };
+  /** 断线重连时的续传游标（最后一次收到的 `next`）。 */
+  from: number | undefined;
+}
+
+/**
  * **连接那组界面字段 = 上面三个输入的纯函数映射**（首帧快照与增量 patch 共用这一份，
  * 两处各写一遍必然漂移）。
  *
@@ -531,6 +552,15 @@ export class ChatController implements vscode.Disposable {
    * 必须有自己的清理路径（涨上去就是永久泄漏）。
    */
   private readonly subagentRefreshes = new Map<string, Promise<void>>();
+  /**
+   * 窗口（viewId）→ 它正在看的那条后台任务输出流（`job/follow`）。
+   *
+   * 一个窗口同时最多一条（面板只展开一行），所以这张表的键是**视图**而不是任务：
+   * 展开另一行、收起、关面板、关窗口、切会话都会把上一条收掉（见 `closeJobWatch`）。
+   * 按任务为键的 Map 在这里会长出一堆没人负责的条目，而观察流是长活 socket 流
+   * ——漏一条就是一条永远不结束的流。
+   */
+  private readonly jobWatches = new Map<string, JobWatch>();
   /**
    * 这个服务端**没有** `subagents/list` 这个端点（0.1.7-alpha.1 起官方已删除它）。
    *
@@ -1701,6 +1731,8 @@ export class ChatController implements vscode.Disposable {
     const sessionId = this.viewSessions.get(viewId);
     // 关掉的窗口也可能正是「看着它生成」的那个：先取状态，`dropViewers` 之后域就没了
     const wasGenerating = this.isSessionGenerating(sessionId);
+    // 窗口关掉时它那条后台任务观察流必须一起收（否则流会跟着扩展宿主一直活着）
+    this.closeJobWatch(viewId);
     this.viewSessions.delete(viewId);
     this.revealers.delete(viewId);
     this.viewKinds.delete(viewId);
@@ -1826,6 +1858,11 @@ export class ChatController implements vscode.Disposable {
     scope.followHandle = undefined;
     scope.jobsHandle?.cancel();
     scope.jobsHandle = undefined;
+    // 兜底：域回收时把这个会话下还挂着的观察流一起收（正常路径下视图离开会话时
+    // 已经收过了，这里是「表里不许留没有归属的条目」的第二道）
+    for (const [viewId, watch] of [...this.jobWatches]) {
+      if (watch.sessionId === scope.sessionId) this.closeJobWatch(viewId);
+    }
     scope.adapter = undefined;
     this.log(`[scope] 回收域 session=${scope.sessionId}`);
   }
@@ -1839,6 +1876,9 @@ export class ChatController implements vscode.Disposable {
   private bindViewToSession(viewId: string, sessionId: string, scope: SessionScope): void {
     const previous = this.viewSessions.get(viewId);
     if (previous === sessionId) return;
+    // 换会话：这个窗口的后台任务观察流是**上一个会话**的，跟着一起收
+    // （同一会话的重入在上面那行就返回了，展开中的面板不会被这次绑定打断）
+    this.closeJobWatch(viewId);
     // 打开即已读：历史列表里那条「生成完毕未读」的蓝标题到此结束
     this.setSessionUnread(sessionId, false);
     // 回来看它了：离开标记作废（哪怕它还在生成——此刻用户就盯着它，收尾时不算撇下）。
@@ -2461,6 +2501,16 @@ export class ChatController implements vscode.Disposable {
     for (const scope of this.scopes.values()) {
       this.openScopeFollow(scope);
       this.openScopeJobs(scope);
+    }
+    // 后台任务的观察流也要重开（它不是域上的流，是按窗口跟踪的）：用**原 watchId**
+    // 与**原续传游标**重开，界面那边已累积的文本接着往后长——换了号界面会把它当成
+    // 另一轮观察，先前那段输出就白看了
+    for (const [viewId, watch] of [...this.jobWatches]) {
+      if (!this.scopes.has(watch.sessionId)) {
+        this.closeJobWatch(viewId);
+        continue;
+      }
+      this.openJobWatch(viewId, watch.sessionId, watch.jobId, watch.watchId, watch.from);
     }
     // 适配器刚被整个重建，卡片要重新回放一遍。**不删账本条目**——条目留到真正结算
     // （见 `interactions` 的注释），否则「重连 → 切会话 → 切回来」这条路上卡片又会
@@ -3421,6 +3471,9 @@ export class ChatController implements vscode.Disposable {
     if (previous === undefined) return;
     // 点「新建对话」也是离开：正在生成就记一笔离开标记（域随后被回收，先取状态）
     const wasGenerating = this.isSessionGenerating(previous);
+    // 这个窗口的后台任务观察流属于**上一个会话**：留着它会让新会话的面板收到
+    // 旧任务的输出（帧里只有 jobId，界面认不出这是别人的）
+    this.closeJobWatch(viewId);
     this.viewSessions.delete(viewId);
     const draft = this.drafts.get(previous);
     if (draft !== undefined) {
@@ -3763,6 +3816,111 @@ export class ChatController implements vscode.Disposable {
     // 会让面板凭空清空——判据与兜底都在 `jobView.ts` 的读取器里。
     if (rows === undefined) return;
     this.applyJobs(scope, rows);
+  }
+
+  /**
+   * 打开（或重开）某个窗口正在看的那条后台任务输出流。
+   *
+   * 三条纪律：
+   * - **先收旧的**：一个窗口同时只有一行展开，换行/重开都先把上一条取消，
+   *   否则旧流的帧会写进新一轮（`onItem` 里还有一道「这一条还是该视图当前那条吗」
+   *   的判据，两道一起挡住交错）；
+   * - **续传只带上一帧的 `next`**：第一次观察不带 `from`（服务端从环里最旧的
+   *   保留字节锚起，`opened.from > 0` 才是「开头已淘汰」的信号）；
+   * - **失败如实回帧**：连不上 / 没绑定会话时回一句概括（不带 `detail`），
+   *   流自己报错时把原始错误当 `detail` 回给界面——展开区不能停在「还没有输出」。
+   */
+  private openJobWatch(
+    viewId: string,
+    sessionId: string,
+    jobId: string,
+    watchId: number,
+    from: number | undefined,
+  ): void {
+    this.closeJobWatch(viewId);
+    const client = this.client;
+    if (!client) {
+      this.emitToView(viewId, { type: "jobs/observeFailed", jobId, watchId });
+      return;
+    }
+    const watch: JobWatch = {
+      sessionId,
+      jobId,
+      watchId,
+      from,
+      handle: { cancel: () => {} },
+    };
+    this.jobWatches.set(viewId, watch);
+    watch.handle = client.followJob(
+      sessionId,
+      jobId,
+      {
+        onItem: (value) => {
+          // 旧流的在途帧不许写进新一轮：换行/重开时 `jobWatches` 里已经不是这一条了
+          if (this.jobWatches.get(viewId) !== watch) return;
+          const frame = jobFollowFrameFromWire(value);
+          if (frame === undefined) return;
+          if (frame.kind === "opened") {
+            watch.from = frame.from;
+            this.emitToView(viewId, {
+              type: "jobs/opened",
+              jobId,
+              watchId,
+              from: frame.from,
+              earliest: frame.earliest,
+            });
+            return;
+          }
+          if (frame.kind === "output") {
+            watch.from = frame.next;
+            this.emitToView(viewId, {
+              type: "jobs/output",
+              jobId,
+              watchId,
+              text: frame.text,
+              gapBefore: frame.gapBefore,
+            });
+            return;
+          }
+          // 终态：名册行自己会变成收场态，这里没有要转给界面的东西；
+          // 流随即正常结束，条目由 `onEnd` 收掉
+        },
+        onEnd: () => {
+          if (this.jobWatches.get(viewId) === watch) this.closeJobWatch(viewId);
+        },
+        onError: (error) => {
+          // **断线不报错**：socket 断开时所有流一起 errored，那一刻报错会让
+          // 「网络抖一下」看起来像这个任务坏了。条目留着，`onConnected` 用原
+          // watchId + 原续传游标重开，界面那边文本接着长。
+          if (this.connection !== "connected") return;
+          if (this.jobWatches.get(viewId) !== watch) return;
+          this.closeJobWatch(viewId);
+          this.log(`[jobs] 实时输出流中断（jobId=${jobId}）：${error.code} ${error.message}`);
+          this.emitToView(viewId, {
+            type: "jobs/observeFailed",
+            jobId,
+            watchId,
+            detail: `${error.code}: ${error.message}`,
+          });
+        },
+      },
+      from,
+    );
+  }
+
+  /**
+   * 收掉某个窗口的观察流（幂等）。
+   *
+   * 五条路都要到这里：收起/换行（界面指令 `unobserveJob`）、关面板（同一条指令）、
+   * 关窗口（`unbindView`）、切会话（`bindViewToSession` / `detachView`）、
+   * 回收会话域（`destroyScope`，兜底——正常路径下视图离开时已经收过了）。
+   * 另外流**正常结束**（服务端送完终态）也走这里清条目，别让表里留下死句柄。
+   */
+  private closeJobWatch(viewId: string): void {
+    const watch = this.jobWatches.get(viewId);
+    if (!watch) return;
+    this.jobWatches.delete(viewId);
+    watch.handle.cancel();
   }
 
   /**
@@ -5377,6 +5535,33 @@ export class ChatController implements vscode.Disposable {
           });
         break;
       }
+
+      case "observeJob": {
+        // 展开一行后台任务 → 开始观察它的实时输出（`job/follow`）。
+        // **三条路都必须回帧**（`jobs/opened` 起头，开不了流时回 `jobs/observeFailed`）：
+        // 展开区只认这两条帧，不回的话它会永远停在「还没有输出」。
+        const scope = this.scopeOfView(viewId);
+        if (!this.client || !scope) {
+          this.log(`[jobs] 实时输出开不了流：${this.client ? "没有绑定会话" : "未连接"}（jobId=${message.jobId}）`);
+          this.emitToView(viewId, {
+            type: "jobs/observeFailed",
+            jobId: message.jobId,
+            watchId: message.watchId,
+          });
+          break;
+        }
+        const job = scope.jobs.find((item) => item.id === message.jobId);
+        this.log(
+          `[jobs] 观察实时输出：会话=${scope.sessionId} jobId=${message.jobId}` +
+            `（名册里${job ? `有，状态=${job.status}` : "已没有这一行"}）`,
+        );
+        this.openJobWatch(viewId, scope.sessionId, message.jobId, message.watchId, undefined);
+        break;
+      }
+
+      case "unobserveJob":
+        this.closeJobWatch(viewId);
+        break;
 
       case "listTrajectory": {
         // 轨迹账本：把该窗口会话的**全部 durable 事件**折一遍（官方视图也是

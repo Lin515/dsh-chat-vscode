@@ -680,6 +680,31 @@ export class DshClient {
   }
 
   /**
+   * 跟随**一个后台任务的保留输出**（`job/follow`）：打开一帧 `opened`（锚点偏移），
+   * 之后是合并过的 `output` 批次，任务收场且环排空后一帧 `status`，随后流结束。
+   *
+   * `from` 是**续传游标**（上一帧的 `next`）：只在「断线重连接着看」时给。
+   * 第一次观察刻意**不带**它——服务端会从环里最旧的保留字节锚起，而
+   * `opened.from > 0` 正是「开头已经被淘汰」的信号（界面据此给「较早输出已丢弃」），
+   * 传 `0` 会把这个信号抹掉。
+   *
+   * 失败照旧走 `callbacks.onError`：旧服务端根本没有 `job` 命名空间（404）、
+   * 名册里已经没有这个任务（`job/not-found`）都从这里出来，调用方如实转给界面。
+   */
+  followJob(
+    sessionId: string,
+    jobId: string,
+    callbacks: StreamCallbacks,
+    from?: number,
+  ): StreamHandle {
+    return this.openStream(
+      STREAMS.jobFollow,
+      { request: { sessionId, jobId, ...(from !== undefined ? { from } : {}) } },
+      callbacks,
+    );
+  }
+
+  /**
    * 打开主机事件流。审批与提问都只从这里来，**收到 waterfall 必须回复**，
    * 否则请求会一直挂着（重连还会重投递，需按 eventId 幂等）。
    */
