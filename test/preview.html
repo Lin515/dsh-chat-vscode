@@ -924,7 +924,12 @@
               ts: now - 20000,
               model: "DeepSeek-V4-Pro",
               segments: [
-                { id: "q1", kind: "approval", approval: { requestId: "ev1", toolName: "pwsh", reason: "escalate sandbox to danger-full-access：需要在工作区外写入日志文件", detail: "调用标识：call_9f2", state: "waiting" } }
+                // 审批卡：0.1.7-rc.2 起 asker 可以附一条**只用于展示**的本地化理由
+                // （`displayReason`）。这段文案逐字取自官方沙箱升级的生产者
+                // （`dsh-sandbox` 的 `escalateSandbox`：`Allow this operation with
+                // <mode> permissions: <理由>` / `允许本次操作使用 <mode> 权限：<理由>`），
+                // 界面按 `state.locale` 挑一条，`?locale=en` 能对照看另一条。
+                { id: "q1", kind: "approval", approval: { requestId: "ev1", toolName: "pwsh", reason: "escalate sandbox to danger-full-access: 需要在工作区外写入日志文件", displayReason: { en: "Allow this operation with danger-full-access permissions: 需要在工作区外写入日志文件", zh: "允许本次操作使用 danger-full-access 权限：需要在工作区外写入日志文件" }, detail: "调用标识：call_9f2", state: "waiting" } }
               ]
             },
             {

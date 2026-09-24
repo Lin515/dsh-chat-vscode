@@ -103,7 +103,8 @@ function WorkspaceChip({ workspace }: { workspace?: WorkspaceView }) {
 /**
  * agent 预设下拉框。
  *
- * 渲染条件**一条不许少**：服务端允许在界面上选（roster 的 `modeSelectionEnabled`）、
+ * 渲染条件**一条不许少**：这条链路允许选择预设（`selectable`——老服务端看 roster 的
+ * `modeSelectionEnabled`，新服务端看宿主的偏好，合成一处见 `dsh/projections.ts`）、
  * 目录非空、且知道当前生效的是哪一个。少任何一条都整个不出现——一个点开只有
  * 「当前这一个」或点不动的控件比没有更糟。
  *

@@ -7,6 +7,7 @@
 import { readFileSync } from "node:fs";
 import { foldTurnProcess } from "../src/webview/turnProcess";
 import { fileLinkPort, matchFileMention } from "../src/webview/fileLinks";
+import { pickLocalizedText } from "../src/shared/localizedText";
 
 const html = readFileSync("test/preview.html", "utf8");
 
@@ -472,6 +473,24 @@ for (const [label, check] of must) {
     // 空态**没有会话**（会话要等第一条消息才建，宿主侧的不变量见 scripts/invariants.test.ts）
     empty.session == null;
   console.log(`  ${ok ? "✓" : "✗"} ?empty=1：空态夹具（目录三种形态 + 预设目录 + 无会话）`);
+  if (!ok) failed += 1;
+}
+
+// 3d) 审批卡的本地化文案（0.1.7-rc.2 起）：夹具里那条沙箱升级审批要带 `displayReason`，
+// 且两种语言各取得到一条——`?locale=zh-cn` / `?locale=en` 是肉眼对照这条路径的唯一入口。
+{
+  const approval = state.messages
+    .flatMap((m) => m.segments)
+    .find((s) => s.kind === "approval")?.approval;
+  const zh = approval?.displayReason?.zh;
+  const en = approval?.displayReason?.en;
+  const ok =
+    Boolean(zh && en) &&
+    pickLocalizedText(approval?.displayReason, "zh-cn") === zh &&
+    pickLocalizedText(approval?.displayReason, "en") === en &&
+    // 审计用的原文仍留在夹具里：它是取不到本地化文案时的退路
+    Boolean(approval?.reason);
+  console.log(`  ${ok ? "✓" : "✗"} 审批卡：本地化文案两种语言各一条 + 审计原文兜底`);
   if (!ok) failed += 1;
 }
 

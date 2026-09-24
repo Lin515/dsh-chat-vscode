@@ -248,7 +248,7 @@ export function agentPresetFromProjection(value: unknown): string | undefined {
 /**
  * `agentPresets/list` 的 roster → 界面要的那个目录（纯函数，离线可断言）。
  *
- * 契约（`AgentPresetRoster`）**两代不同**，包名也跟着改过：
+ * 契约（`AgentPresetRoster`）**三代不同**，包名也跟着改过：
  * ```
  * ≤ 0.1.6-alpha.2（`@deepseek-ai/dsh-agent-presets`）：
  *   { presets: { id, trust, isDefault, name?, description?, broken? }[],
@@ -256,25 +256,39 @@ export function agentPresetFromProjection(value: unknown): string | undefined {
  * ≥ 0.1.7-alpha.1（`@deepseek-ai/dsh-agent-preset-registry`）：
  *   { presets: { id, isDefault, name?, description?, broken? }[],
  *     modeSelectionEnabled: boolean }
+ * ≥ 0.1.7-rc.2：{ presets: { id, isDefault, name?, description?, broken? }[] }
  * ```
- * 新版**删掉了 `trust`（与 `authorable`）**，所以「哪几个是随产品交付的内置预设」不再是
- * 服务端说了算的字段——判定挪到客户端（见 `webview/presetDisplay.ts` 的
+ * 0.1.7-alpha.1 **删掉了 `trust`（与 `authorable`）**，所以「哪几个是随产品交付的内置预设」
+ * 不再是服务端说了算的字段——判定挪到客户端（见 `webview/presetDisplay.ts` 的
  * `isBuiltInPresetOption`）。这两处的口径必须一起改，只改一处会让四个内置预设把
  * 服务端那份**不翻译**的名字显示出来（中文界面里显示英文）。
  *
- * 两条口径：
+ * 0.1.7-rc.2 又把**选择可见性**这个策略整个搬出协议：服务端只回目录，客户端自己决定
+ * 要不要显示选择入口（官方前端的判据是「代码工作工具」开关，宿主持久化在 `ui-settings`
+ * 命名空间）。所以第二个参数就是客户端这一侧的许可，由调用方从设置命名空间读出来传进来
+ * ——判据仍然只有这一处实现，界面不自己判第二次。
+ *
+ * 三条口径：
  * - **坏掉的预设不进目录**（`broken` 非空）：它组装不出会话，列进去只会把
  *   「这个预设不可用」这件事推迟到一次失败的会话上（官方 `presetOptions` 同口径）；
- * - `modeSelectionEnabled` 为假 = 这个部署不让客户端选，目录给空表——界面据此
- *   什么都不渲染（可选性与目录合成一件事，免得界面自己判两次）。
+ * - **服务端有显式策略就以它为准**（老服务端的 `modeSelectionEnabled`），
+ *   **没有就看客户端偏好**（rc.2 起）；
+ * - 不允许选择时目录给空表——界面据此什么都不渲染（可选性与目录合成一件事）。
  *
- * 缺字段（旧服务端 / 另一个实现）一律按「没有」处理，不猜。
+ * 形状认不出（没给目录 / `presets` 不是数组）一律按「没有」处理，不猜，也不拿客户端
+ * 偏好去把一份看不出形状的东西说成「可选」。
  */
-export function agentPresetsFromList(value: unknown): NonNullable<ChatState["agentPresets"]> {
+export function agentPresetsFromList(
+  value: unknown,
+  /** 客户端这一侧的许可（宿主 `ui-settings.enabled`）。缺省 / 读不到时按「允许」。 */
+  hostSelectionEnabled = true,
+): NonNullable<ChatState["agentPresets"]> {
   const roster = (value ?? {}) as { presets?: unknown; modeSelectionEnabled?: unknown };
-  const selectable = roster.modeSelectionEnabled === true;
   const rows = Array.isArray(roster.presets) ? roster.presets : [];
   const options: NonNullable<ChatState["agentPresets"]>["options"] = [];
+  if (!Array.isArray(roster.presets)) return { options, selectable: false };
+  const selectable =
+    typeof roster.modeSelectionEnabled === "boolean" ? roster.modeSelectionEnabled : hostSelectionEnabled;
   if (!selectable) return { options, selectable };
   for (const row of rows) {
     const preset = row as {

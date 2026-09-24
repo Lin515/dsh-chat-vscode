@@ -27,8 +27,9 @@
   「官方 git tag 有、npm 上查不到」就是**仅在 GitHub 发布的测试版**（实测存在：`0.1.3-alpha.1`）。
   这是本工具的机械判据，不需要人去判断。
 - **扩展商店的对齐基准是 npm 的 `latest` 现值**。不要用版本串去推导「是不是正式版」：
-  `latest` 当前指向 `0.1.5-rc.3`（一个 rc，因为正式版还没发过），而 `alpha` 指向 `0.1.7-alpha.2`。
-  每次读 registry 的 `dist-tags` 现值即可，`npm run dsh:watch` 会把当前基准打出来。
+  `latest` 当前指向 `0.1.5-rc.3`（一个 rc，因为正式版还没发过），`next` 指向 `0.1.7-rc.2`，
+  `alpha` 指向 `0.1.7-alpha.2`。每次读 registry 的 `dist-tags` 现值即可，`npm run dsh:watch`
+  会把当前基准打出来。
 
 ---
 
@@ -82,6 +83,7 @@ CHANGELOG：某版本若含与 DSH 对齐的改动，在该版本条目里写明
 | 0.1.7-alpha.1 | alpha | 需兼容更新（P0 18：消息来源改「生产者自有 kind」、工具结果改一等消息、`session/control` 的 jobs 通道搬去 `job/*` 流、`subagents/list` 端点删除、预设 roster 删掉 `trust`、agent-presets 报 `package-removed`——实际是包改名） | 0.9.3 | 2026-09-23 | 已核对 |
 | 0.1.7-alpha.2 | alpha | 已核对，无影响（`SessionFollowRequest.maxMessages` 是继承自 `SessionPageRequest` 的 Pick，成员仍在——见第七节「继承来的成员看不见」） | 0.9.3 | 2026-09-23 | 已核对 |
 | 0.1.7-rc.1 | rc | 已核对，无影响（P0 0；P1 为新增的 `agentPresets/read` 与 `AgentPresetDocument`，未消费） | 0.9.3 | 2026-09-23 | 已核对 |
+| 0.1.7-rc.2 | rc | P0 2：预设 roster 删掉 `modeSelectionEnabled`，选择可见性改由客户端的「代码工作工具」开关决定（宿主的 `ui-settings.enabled`，缺省允许）；同版新增 `ApprovalRequestEvent.displayReason`（该包不在工具清单里，是人工读官方源码发现的）与端点 `session/initializeDefaultModel`（未消费） | 0.9.5 | 2026-09-24 | 已核对 |
 <!-- dsh-compat:ledger:end -->
 
 **0.1.7-alpha.1 的 P0 18 里，真正动了代码的是六件事**（这是把扩展从 0.1.6-alpha.2 抬到
@@ -118,6 +120,38 @@ CHANGELOG：某版本若含与 DSH 对齐的改动，在该版本条目里写明
   搬家不是消失；两个包名都留在 `scripts/dshCompat.ts` 的清单里（旧名让旧版本的快照仍带着
   当时的端点与类型，新名让新版能被跟踪），否则会得到一条假的 P0。
 
+**0.1.7-rc.2 的 P0 2 是同一件事的两半**（roster 与注册表插件 `Config` 各一条），真正要改的
+只有一处：**选择可见性整个搬出了协议**。逐条对着 tag `dsh-v0.1.7-rc.2` 的源码核过：
+
+- **`AgentPresetRoster` 只剩 `presets`，`Config.modeSelectionEnabled` 连字段一起删掉**
+  （官方 `a44534e274`「由开发者模式统一控制新任务模式选择」）。注册表不再读它、也不重写
+  它——存在 profile patch 里的旧值变成惰性数据（官方 e2e 专门钉了这一条），而且 `defaultId`
+  不再受选择开关影响，恒为 `selectedDefault ?? default`。
+- **新判据在客户端**：官方前端把「新会话能不能选预设」并进「代码工作工具」开关
+  （rc.2 之前的界面名是「开发者工具」，内部标识始终是 `ui-settings` 的 `enabled`；schema 默认
+  `true`，官方那份偏好在本地模式下缺省也是 `true`，在值到达前按 `false`）。落到本扩展就是
+  `controller.applyDeveloperTools` 从 `settings/describe` 读一次、`projections.agentPresetsFromList`
+  用第二个参数收下结论——**旧服务端仍以 roster 字段为准**（两代都读，见第五节）。落点：`src/dsh/projections.ts`、
+  `src/dsh/controller.ts`（`loadAgentPresets` / `publishAgentPresets` / `applyDeveloperTools`）。
+  刻意偏离一处：值没到之前官方按 `false`、本扩展按 `true`（fail-open），免得连接初期那枚
+  胶囊闪一下。
+- **审批多了本地化展示文案**（`ApprovalRequestEvent.displayReason`，`{en: string, [locale]}`，
+  只用于展示、不落审计）。官方 `ui-approval` 的读法是「有它就用它、没有才用审计用的
+  `reason`」。落点：`src/shared/localizedText.ts`（校验 + 按语言取一条）、
+  `controller.deliverEventToScope`（透传）、`webview/components/Rows.tsx` 的 `ApprovalCard`
+  （渲染时按界面语言挑）。**这个包不在 `CONTRACT_PACKAGES` 里**，工具报不出来——是人工读
+  官方源码发现的（见第七节）。
+- **P1 四条都不跟进**：新端点 `session/initializeDefaultModel`，以及 `dsh-llm` 的
+  `ToolUpdate` / `ToolHistory` / `ProjectedToolUpdates`——都不在消费面，也没有产品需求。
+- **行为面观察（工具看不到，未改代码）**：`permission-presets` 的 `AUTO_PRESET_SPEC.approval`
+  由 `never` 改成 `ask`（Auto 下评审拒绝会走用户审批；本扩展本来就渲染 `approval/request`，
+  没有要改的文案或判据）。
+- ⚠ **rc.2 里没有 timed 问卷**：`bb19061473`「support timed waits and late replies」确实在
+  `rc.1..rc.2` 的提交区间里，但**发布前被 revert 了**（`32905d5ab5`，PR #5174）。判据：rc.2 的
+  `tool-ask-user` 没有 `mode: timed`、`packages/interaction/user-questions/src` 只剩
+  `index.ts` / `types.ts`（没有 projection），`docs/tool-catalog.md` 那句仍是「暂停直到 UI
+  作答」。**看到「区间里有这个提交」不等于发布产物里有它**——核对要以快照与 tag 上的树为准。
+
 
 ---
 
@@ -133,6 +167,8 @@ CHANGELOG：某版本若含与 DSH 对齐的改动，在该版本条目里写明
 | `subagents/list` 端点（目录 + `parentAvailable` + `activity`） | ≤ 0.1.6-alpha.2 | `src/dsh/controller.ts` 的 `refreshSubagentCatalog`、`src/dsh/client.ts` 的 `endpointAbsent` | 2026-09-23 | 2027-03-23 | 0.1.7-alpha.1 删掉该端点（`SubagentCatalog` / `SubagentListEntry` 同去）；新服务端的目录由 `subagentCatalog` 投影与 `subagent/catalog` 事件承载、状态由 `api-session/status` 中继补齐。端点回 404 时记住一次就不再请求 |
 | `commands/execute` 第三参数改名（`images` → `submittedAttachments`） | 0.1.5 前后两代 | `src/dsh/controller.ts` 的 `runCommand`（`attachmentsParam`） | 2026-09-23 | 2027-03-23 | 网关对参数名严格校验（多一个少一个都拒），改名即整条调用失败；协议无版本协商，只能试错回退 |
 | 预设 roster 的 `trust` 字段（内置预设的判据） | ≤ 0.1.6-alpha.2 | `src/dsh/projections.ts` 的 `agentPresetsFromList`、`src/webview/presetDisplay.ts` 的 `isBuiltInPresetOption` | 2026-09-23 | 2027-03-23 | 0.1.7-alpha.1 删掉了该字段，判定改用官方 `isBuiltInPreset`（不发布 `name` 的已知 id 即内置）。有 `trust` 时仍以它为准，否则用户自写的同名预设会被静默改名 |
+| 预设选择的可见性判据（roster 的 `modeSelectionEnabled`） | ≤ 0.1.7-rc.1 | `src/dsh/projections.ts` 的 `agentPresetsFromList`、`src/dsh/controller.ts` 的 `loadAgentPresets` / `publishAgentPresets` / `applyDeveloperTools` | 2026-09-24 | 2027-03-24 | 0.1.7-rc.2 起服务端不再有这个策略（官方 `a44534e274` 把选择可见性并进客户端的「代码工作工具」开关，宿主持久化在 `ui-settings`）；旧服务端仍以 roster 字段为准，两代都读 |
+| 审批原因的旧形态（只有 `reason`） | ≤ 0.1.7-rc.1 | `src/dsh/controller.ts` 的 `deliverEventToScope`、`src/webview/components/Rows.tsx` 的 `ApprovalCard` | 2026-09-24 | 2027-03-24 | 0.1.7-rc.2 起 asker 可附只用于展示的本地化 `displayReason`（官方界面优先用它）；没有它时仍显示审计用的 `reason` |
 <!-- dsh-compat:layers:end -->
 
 ---
@@ -150,8 +186,9 @@ npm run dsh:diff -- <旧版本> <新版本>   # 只求差
 
 - 契约快照从官方 npm 产物离线抽取（每个 api 包都带 `lib/typert.host.js` 描述符与 `lib/**/*.d.ts`
   类型面），**不装 DSH、不起服务器、不花 token**。
-- 快照落在 `docs/dsh-contract/<版本>.json` 并**提交进仓库**：这样核对下一个版本时不必重新下载旧版，
-  也让「当时是怎么判的」以后可以复核。
+- 快照落在 `docs/dsh-contract/<版本>.json`，**只留在本地**（`.gitignore` 排除了这个目录，提交
+  `1ab1e29` 起不再进仓库也不进发布包）：这样核对下一个版本时不必重新下载旧版，本地也能复核
+  「当时是怎么判的」。同一台机器上换会话接着核对时，先看这个目录里有没有目标版本的快照。
 - 消费面从仓库已有的唯一登记点推出来（`projectionIngest` 的投影键、`protocol.ts` 的三个事件表、
   源码里的端点字面量），**不另立清单**。
 - 报告里出现 `⚠ 有 N 个包没取到` 时必须人工确认：缺证据不等于没影响。
@@ -165,7 +202,10 @@ npm run dsh:diff -- <旧版本> <新版本>   # 只求差
   信号，不是结论。
 - **消费面的类型名不只来自源码**：也扫 `docs/dsh-server-api.md` 里点名的类型。那份文档是逐字摘抄的
   契约参考，代码里按字段内联读值、不写类型名的地方（权限投影就是）靠它才认得出。偏保守，
-  宁可多报。
+  宁可多报。**反向也成立**：在那份文档里顺手点名一个我们**并不消费**的类型名，等于把它登记进
+  消费面——一条本来无关的 `type-removed` 会从 P2 变成 P0（0.1.7-rc.2 记 `workspace/initializeDefault`
+  的去参数化时就撞上过：写上那个被删的请求体类型名，报告立刻多一条假 P0）。写「未消费」的差异时
+  用描述代替类型名。
 - 类型面是**文本归一化后的差异**，不是语义差异：成员改名一定报，等价改写也会报（宁可多报）；
   只调成员顺序不报（接口的成员顺序不参与语义）。
 - **注释不进类型文本**：官方顺手改 JSDoc 不会被报成形状变化。
@@ -183,4 +223,13 @@ npm run dsh:diff -- <旧版本> <新版本>   # 只求差
   那个包**内部的逐字段差异一条都不会报**。所以看到这种成对的两行，必须把两边同名的类型
   **逐条对拍**（这次漏掉的后果是中文界面里预设名显示成英文，直到用户报现象才发现）。
   对拍命令：拿两个快照 JSON 的 `packages[*].types[<类型名>]` 直接比字符串数组。
+- **不在清单里的包 = 那块契约没有证据**：`approval/request` 与 `user-questions/request` 两个
+  waterfall 的载荷类型分别住在 `@deepseek-ai/dsh-user-approval` / `@deepseek-ai/dsh-user-questions`
+  里，两者都不在 `CONTRACT_PACKAGES` 中，所以它们的字段增删工具**一声不响**（0.1.7-rc.2 的
+  `ApprovalRequestEvent.displayReason` 就是这么过去的，靠人工读官方源码才发现）。每次核对除了
+  看报告，还要人工过一眼这两个 seam 的 `lib/types/*.d.ts`；要彻底解决就把包名补进清单（代价是
+  补的那一次会给已有快照报一条 `package-added`，得重抓一次对比基准）。
+- **「提交区间里有」不等于「发布产物里有」**：revert 过的提交仍留在历史里，`git log <旧>..<新>`
+  会把它们列出来（0.1.7-rc.2 的 timed 问卷就是实例：先合入、发布前被 revert）。判据要看 **tag
+  上的树**与契约快照，不要看提交列表。
 - 工具不判断「该不该跟进 P1」，也不改代码——只给证据与分级。

@@ -22,7 +22,8 @@ import { CodeBlock } from "./CodeBlock";
 import { Markdown } from "./Markdown";
 import { ImageGallery } from "./Images";
 import { ToolCardBody } from "./ToolCards";
-import { fill, useTexts, resolveText } from "../texts";
+import { fill, useLocale, useTexts, resolveText } from "../texts";
+import { pickLocalizedText } from "../../shared/localizedText";
 import type { NodeOpenPort } from "../nodeOpen";
 import {
   IconAlert,
@@ -643,6 +644,9 @@ function formatChars(chars: number): string {
 
 export function ApprovalCard({ approval }: { approval: ApprovalView }) {
   const texts = useTexts();
+  // 服务端给了本地化展示文案就用它（0.1.7-rc.2 起），否则退回审计用的原文——
+  // 与官方 `ApprovalPanel` 同口径；语言在渲染时取，切语言即时生效
+  const reason = pickLocalizedText(approval.displayReason, useLocale()) ?? approval.reason;
   const waiting = approval.state === "waiting";
   const verdict =
     approval.state === "approved"
@@ -660,7 +664,7 @@ export function ApprovalCard({ approval }: { approval: ApprovalView }) {
         <b>{waiting ? texts.approvalTitle : verdict}</b>
         <span className="row-detail">{resolveText(approval.toolName, texts)}</span>
       </div>
-      {approval.reason ? <div className="approval-detail">{approval.reason}</div> : null}
+      {reason ? <div className="approval-detail">{reason}</div> : null}
       {approval.detail ? (
         <div className="approval-detail">{resolveText(approval.detail, texts)}</div>
       ) : null}

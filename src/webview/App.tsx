@@ -36,7 +36,7 @@ import {
 import { connectViewOf, type ConnectButton, type ConnectButtonId } from "./connectView";
 import { usePageContextMenu } from "./contextMenu";
 import { jobsBusy, subagentsBusy } from "./activity";
-import { TextsContext, dictionaryFor, normalizeLocale, resolveText, useTexts } from "./texts";
+import { LocaleContext, TextsContext, dictionaryFor, normalizeLocale, resolveText, useTexts } from "./texts";
 import type { SubagentView } from "../shared/chat";
 
 /**
@@ -763,6 +763,8 @@ export function App() {
 
   return (
     <TextsContext.Provider value={texts}>
+      {/* 语言本身也下一层：服务端给的本地化文案（审批的 displayReason）要在渲染时按它挑 */}
+      <LocaleContext.Provider value={state.locale}>
       <div
         ref={appRef}
         className={`app${mini ? " is-mini" : ""}${state.panel === "trajectory" ? " is-trajectory" : ""}`}
@@ -934,6 +936,7 @@ export function App() {
       {/* 右键菜单浮层：同样是全屏定位层，且要盖在原图浮层之上（在原图上点右键时
           它就是弹在原图上） */}
       <ContextMenuLayer />
+      </LocaleContext.Provider>
     </TextsContext.Provider>
   );
 }

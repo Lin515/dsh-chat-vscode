@@ -77,6 +77,18 @@
 - **`SessionSummary`**：`completed` 删除、新增 `retainedBy`；`session/control` 的 baseline 不再带
   `queues`（0.1.6-alpha.2 起）与 `jobs`（0.1.7-alpha.1 起）——两者分别由 `inbox` 投影与
   `job/list` 流承载。
+- **预设 roster 不再带选择策略**（0.1.7-rc.2）：`AgentPresetRoster` 只剩 `presets`，
+  `modeSelectionEnabled` 删除（注册表插件配置里的同名字段一并删掉，存量的 profile patch 值变成
+  惰性数据、既不读也不重写）。**选择可见性搬到了客户端**：官方前端用「代码工作工具」开关
+  （rc.2 之前的界面名是「开发者工具」，内部标识是宿主持久化命名空间 `ui-settings` 的 `enabled`，
+  schema 默认 `true`）决定要不要显示新会话的预设选择入口；服务端的 `defaultId` 不再受该开关
+  影响，恒为 `selectedDefault ?? default`。
+- **审批请求多了本地化展示文案**（0.1.7-rc.2）：`ApprovalRequestEvent.displayReason` =
+  `{en: string, [locale]: string}`，**只用于展示、不落审计**（审计里仍是英文的 `reason`）。
+  官方界面「有它就用它、没有才用 `reason`」。
+- **新增端点 `session/initializeDefaultModel`**（0.1.7-rc.2，未消费）；**`workspace/initializeDefault`
+  改成无参**——它原来收一个请求体对象（里面那个 `request` 参数的形状）连同其类型名一起删除
+  （未消费）。
 
 ---
 
@@ -803,12 +815,11 @@ POST /api/agentPresets/copy      {"args":{"from":"standard","id":"my-preset","na
 POST /api/agentPresets/deletePreset {"args":{"id":"my-preset"}}                 → void
 ```
 
-`AgentPresetRoster` / `AgentPresetRow`（逐字，`⟨P⟩\dsh-agent-presets\lib\types\types.d.ts`）：
+`AgentPresetRoster` / `AgentPresetRow`（0.1.7-rc.2 的形状，`⟨P⟩\dsh-agent-preset-registry\lib\types\types.d.ts`）：
 
 ```ts
 export interface AgentPresetRow {
     readonly id: string;
-    readonly trust: PresetTrust;        // 'system' | 'user'
     readonly isDefault: boolean;
     readonly name?: string;
     readonly description?: string;
@@ -816,22 +827,25 @@ export interface AgentPresetRow {
 }
 export interface AgentPresetRoster {
     readonly presets: readonly AgentPresetRow[];
-    readonly authorable: boolean;
-    /** 是否允许客户端在新会话上**选择**预设（关掉时 isDefault 恒为部署默认）。 */
-    readonly modeSelectionEnabled: boolean;
 }
 export interface AgentPresetDocument {
     readonly agentPreset: string;
-    readonly trust: PresetTrust;
     readonly content: string;           // composition 原文（YAML）
     readonly name?: string;
     readonly description?: string;
 }
 ```
 
-> 展示名：`trust === 'system'` 且 id 是随产品交付的那四个（`standard` / `ptc` / `minimal` /
-> `cordis`）时，名字与描述由**客户端**按当前语言给（官方 `dsh-agent-presets/display` 的
-> `presetDisplayText` 走词典），行里的 `name` / `description` 是**不翻译**的文件元数据。
+> 版本差异（第 0.5 节）：0.1.6-alpha.2 及更早的 `AgentPresetRow` 带 `trust`、roster 带
+> `authorable` 与 `modeSelectionEnabled`；0.1.7-alpha.1 起只剩 `modeSelectionEnabled`；
+> 0.1.7-rc.2 起两个都删掉，**选择可见性改由客户端偏好决定**（宿主持久化命名空间
+> `ui-settings` 的 `enabled`）。本扩展两代都读（见 `docs/dsh-compat.md` 的兼容层登记）。
+
+> 展示名：随产品交付的那四个（`standard` / `ptc` / `minimal` / `cordis`）由**客户端**按当前
+> 语言给名与描述（官方 `dsh-agent-preset-registry/display` 的 `presetDisplayText` 走词典），
+> 行里的 `name` / `description` 是**不翻译**的文件元数据。**「哪几个是内置」的判据**：0.1.6-alpha.2
+> 及更早看行的 `trust === 'system'`，之后改用官方 `isBuiltInPreset`——**不发布 `name` 的已知 id
+> 就是内置**（否则用户自写的同名预设会被静默改名）。
 > 本扩展照这一条实现（`src/webview/presetDisplay.ts`）。
 
 **关键约束**：`select` **只在会话「仍为空白」时有效**（未产生任何轮次），否则 `agent-preset/locked`（details `{sessionId, agentPreset}`）。其他错误：`agent-preset/not-found`（details `{agentPreset, available: string[]}`）、`agent-preset/invalid`（details `{agentPreset, reason}`）、`agent-preset/read-only`（details `{agentPreset, reason}`）。
@@ -1200,8 +1214,21 @@ waterfall 帧：
   "request":{"toolName":"Bash","callId":"call_abc","reason":"escalate sandbox to danger-full-access: 需要写工作区外的文件"}}}
 ```
 
-线上 `request` 只有 **`toolName`、`callId?`、`reason?`** 三个字段——`agent` 与 `signal` 被剥离（`⟨P⟩\dsh-api-gateway\lib\types\stream-protocol.js:60-85`）。
+线上 `request` 只有 **`toolName`、`callId?`、`reason?`** 三个字段（**0.1.7-rc.2 起多一个可选的
+`displayReason?`**，见下）——`agent` 与 `signal` 被剥离（`⟨P⟩\dsh-api-gateway\lib\types\stream-protocol.js:60-85`）。
 **没有 `input`/`arguments`/`parameters`/`options`/`rationale` 字段**；`reason` 就是理由（`⟨P⟩\dsh-user-approval\README.md`：「The request carries no tool arguments」）。
+
+`displayReason`（**0.1.7-rc.2 起**）是 asker 附的本地化展示文案：
+
+```ts
+readonly displayReason?: { readonly en: string; readonly [locale: string]: string };
+```
+
+**只用于展示、不改写日志**：审计事件里存的仍是英文的 `reason`。官方 `ui-approval` 的读法是
+「有它就用它、没有才用 `reason`」（`displayReason === undefined ? reason : resolveText(displayReason)`），
+按当前语言沿「完整标识 → 主语言 → `en`」取值。产生了它的两处 asker：沙箱升级
+（`Allow this operation with <mode> permissions: <理由>` / `允许本次操作使用 <mode> 权限：<理由>`）
+与 Auto 评审拒绝（`Auto review denied this call: <理由>` / `Auto review 拒绝了此调用：<理由>`）。
 
 回答：
 

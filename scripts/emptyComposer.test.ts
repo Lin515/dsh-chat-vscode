@@ -79,7 +79,7 @@ function fakeClient() {
     async request(method: string, params?: Record<string, unknown>) {
       calls.push(method);
       if (method === "workspace/create") return { workspace: { workspaceId: "ws-1" } };
-      if (method === "agentPresets/list") return { presets: [], modeSelectionEnabled: false };
+      if (method === "agentPresets/list") return { presets: [] };
       if (method === "subagents/list") return { entries: [] };
       if (method === "session/projections") return { values: {} };
       const agentId = String(params?.agentId ?? "");

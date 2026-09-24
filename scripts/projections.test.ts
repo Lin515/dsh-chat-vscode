@@ -541,8 +541,8 @@ console.log("projections: subagentCatalog 纯解析（无 activity）✓");
   // 7.13 agentPresets/list 的 roster：坏预设滤掉、未开放选择时给空目录
   //
   // 契约逐字：`{presets:[{id,trust,isDefault,name?,description?,broken?}], authorable,
-  // modeSelectionEnabled}`。两条判据都只有一处实现（`agentPresetsFromList`），
-  // 界面不再自己判第二次。
+  // modeSelectionEnabled}`；0.1.7-rc.2 起只剩 `{presets}`，可见性判据改由客户端偏好
+  // （第二个参数）给。两条判据都只有一处实现（`agentPresetsFromList`），界面不再自己判。
   assert.deepStrictEqual(
     agentPresetsFromList({
       presets: [
@@ -571,6 +571,37 @@ console.log("projections: subagentCatalog 纯解析（无 activity）✓");
     }),
     { options: [], selectable: false },
   );
+  // 0.1.7-rc.2 起 roster 里没有这个策略：客户端偏好说了算
+  const newRoster = { presets: [{ id: "standard", isDefault: true }] };
+  assert.deepStrictEqual(
+    agentPresetsFromList(newRoster),
+    { options: [{ id: "standard", isDefault: true }], selectable: true },
+    "缺省（读不到客户端偏好）按允许——官方 schema 的默认值就是 true",
+  );
+  assert.deepStrictEqual(
+    agentPresetsFromList(newRoster, true),
+    { options: [{ id: "standard", isDefault: true }], selectable: true },
+  );
+  assert.deepStrictEqual(
+    agentPresetsFromList(newRoster, false),
+    { options: [], selectable: false },
+    "客户端关掉选择入口 = 目录给空表",
+  );
+  // 老服务端的显式策略压过客户端偏好（两代都读，新对话不改变旧行为）
+  assert.deepStrictEqual(
+    agentPresetsFromList({ presets: [{ id: "standard", isDefault: true }], modeSelectionEnabled: false }, true),
+    { options: [], selectable: false },
+    "服务端说不许选就不许选，客户端偏好改不了它",
+  );
+  assert.deepStrictEqual(
+    agentPresetsFromList({ presets: [{ id: "standard", isDefault: true }], modeSelectionEnabled: true }, false),
+    { options: [{ id: "standard", isDefault: true }], selectable: true },
+  );
+  // 策略字段形状不对（不是布尔）按「服务端没表态」处理，落回客户端偏好
+  assert.deepStrictEqual(
+    agentPresetsFromList({ presets: [{ id: "standard" }], modeSelectionEnabled: "yes" }, false),
+    { options: [], selectable: false },
+  );
   // id 是承重字段：没有它的行整条丢弃；其余字段类型不对按「没有」处理
   assert.deepStrictEqual(
     agentPresetsFromList({
@@ -580,10 +611,11 @@ console.log("projections: subagentCatalog 纯解析（无 activity）✓");
     { options: [{ id: "ok" }], selectable: true },
     "trust 只认 system / user 两个取值：别的值不猜（界面按原文展示）",
   );
-  // 缺字段 / 坏值（旧服务端、别的实现）一律按「没有」处理
+  // 形状认不出（没给目录 / 坏值）一律按「没有」处理：谈不上允许不允许，不拿客户端偏好去猜
   assert.deepStrictEqual(agentPresetsFromList(undefined), { options: [], selectable: false });
   assert.deepStrictEqual(agentPresetsFromList({ presets: "坏了" }), { options: [], selectable: false });
+  assert.deepStrictEqual(agentPresetsFromList(undefined, true), { options: [], selectable: false });
 }
-console.log("projections: agentPreset 投影 + roster 目录（坏预设与未开放选择）✓");
+console.log("projections: agentPreset 投影 + roster 目录（坏预设与选择可见性两代判据）✓");
 
 console.log("\nprojections: all assertions passed");

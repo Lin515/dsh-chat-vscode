@@ -150,6 +150,13 @@ export interface ApprovalView {
   requestId: string;
   toolName: string;
   reason?: string;
+  /**
+   * 服务端给的**本地化展示文案**（`ApprovalRequestEvent.displayReason`，0.1.7-rc.2 起）。
+   *
+   * 与 `reason` 是两回事：`reason` 是要落审计的原文（英文），这一份**只用于展示**、
+   * 不改写日志。界面按当前语言取一条（`pickLocalizedText`），取不到就退回 `reason`。
+   */
+  displayReason?: Record<string, string>;
   /** 待执行的参数预览（命令行/文件路径等）。 */
   detail?: string;
   state: "waiting" | "approved" | "rejected" | "expired";
@@ -919,7 +926,13 @@ export interface AgentPresetOptionView {
 export interface AgentPresetsView {
   /** 可选预设（roster 顺序，坏掉的已滤掉）。 */
   options: AgentPresetOptionView[];
-  /** 服务端是否允许在界面上选择预设（roster 的 `modeSelectionEnabled`）。 */
+  /**
+   * 这一链路上是否允许选择预设。
+   *
+   * 判据两代不同：老服务端在 roster 里显式表态（`modeSelectionEnabled`），
+   * 0.1.7-rc.2 起服务端只回目录、策略整个搬给客户端（宿主的 `ui-settings` 偏好，
+   * 缺省允许）。两代合成一处实现在 `dsh/projections.ts` 的 `agentPresetsFromList`。
+   */
   selectable: boolean;
 }
 

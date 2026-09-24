@@ -30,6 +30,7 @@ import type { HostToWebview, WebviewToHost } from "../shared/ipc";
 import { SessionAdapter, type ImageRef } from "./adapter";
 import { decodeChangesSummary } from "./changes";
 import { changesSummaryKey } from "../shared/changesSummary";
+import { localizedTextFrom } from "../shared/localizedText";
 import {
   ATTACH_BYTES_LIMIT,
   buildPromptContent,
@@ -664,11 +665,23 @@ export class ChatController implements vscode.Disposable {
    * 部署提供的 agent 预设目录（`agentPresets/list`），连上后取一次。
    *
    * 空表 = 这个部署没有预设（插件没装、或根目录里一个都没有），界面据此什么都不
-   * 渲染。服务端允许不允许选择由 `agentPresetSelectable` 单独表示（roster 的
-   * `modeSelectionEnabled`），两者合成界面上的那份外观态。
+   * 渲染。允许不允许选择由 `agentPresetSelectable` 单独表示，两者合成界面上的那份
+   * 外观态。
    */
   private agentPresetOptions: NonNullable<ChatState["agentPresets"]>["options"] = [];
   private agentPresetSelectable = false;
+  /** roster 的**原始值**：可见性判据有两个输入，两条到齐再折算一次（见 `publishAgentPresets`）。 */
+  private agentPresetRoster: unknown;
+  /** 上一次折算结果的签名：两个输入各自到达时都折算，结果没变就不发帧。 */
+  private agentPresetSignature = "";
+  /**
+   * 客户端这一侧的「允许选择预设」偏好（宿主 `ui-settings` 的 `enabled`，官方前端内部叫
+   * developer tools、rc.2 的界面名是「代码工作工具」）。`undefined` = 还没读到，按**允许**
+   * 处理——官方 schema 的默认值就是 `true`，而官方前端在值到达前按 `false`；本扩展刻意
+   * fail-open，免得连接初期那枚胶囊闪一下。0.1.7-rc.2 起服务端不再有选择策略，这个偏好
+   * 就是唯一还读得到的信号。
+   */
+  private developerToolsEnabled: boolean | undefined;
   /**
    * 服务端工作区注册表的**本地镜像**（`workspace/follow` 的 baseline + upsert/remove）。
    *
@@ -2408,6 +2421,9 @@ export class ChatController implements vscode.Disposable {
    *   「这个部署不提供预设」是合法部署，界面该什么都不显示，而不是弹一个失败提示；
    * - 其他失败只记日志、同样落成空目录：目录是**装饰性**的（拿不到就不给选择入口），
    *   为它打断连接流程或弹错误都不成比例。
+   *
+   * 目录只是判据的一半（另一半是客户端的开发者工具偏好），所以这里只负责把原始值
+   * 记下来，折算与发帧统一走 `publishAgentPresets`。
    */
   private async loadAgentPresets(): Promise<void> {
     if (!this.client) return;
@@ -2416,19 +2432,39 @@ export class ChatController implements vscode.Disposable {
       value = await this.client.listAgentPresets();
     } catch (error) {
       if (error instanceof DshApiError && error.code === "gateway/invocation-unavailable") {
-        this.agentPresetOptions = [];
-        this.agentPresetSelectable = false;
-        this.emitAll({ type: "patch", patch: { agentPresets: this.agentPresetsView() } });
-        this.pushPendingPresets();
+        // 插件没装 = 这个部署没有预设目录，按「空目录」折算（形状认不出时
+        // `agentPresetsFromList` 给的正是 `{options: [], selectable: false}`）
+        this.agentPresetRoster = undefined;
+        this.publishAgentPresets();
         return;
       }
       this.log(`[preset] 预设目录获取失败：${this.describeError(error)}`);
       return;
     }
-    const view = agentPresetsFromList(value);
+    this.agentPresetRoster = value;
+    this.publishAgentPresets();
+  }
+
+  /**
+   * 用当前的两个输入（roster 原始值 + 客户端偏好）折算预设目录，变了才推给窗口。
+   *
+   * 两个输入**到达顺序不定**（目录在一次 RPC 之后、偏好在 `settings/describe` 之后，
+   * 两者都由连接流程并发发起），所以两边各自到达时都调这里；判据本身只有
+   * `agentPresetsFromList` 一处实现。折算结果没变就一个帧都不发——设置热重载
+   * （`settings/document-updated` 会让偏好重新读一遍）不会无谓刷界面。
+   */
+  private publishAgentPresets(): void {
+    const view = agentPresetsFromList(this.agentPresetRoster, this.developerToolsEnabled !== false);
+    const signature = JSON.stringify(view);
+    if (signature === this.agentPresetSignature) return;
+    this.agentPresetSignature = signature;
     this.agentPresetOptions = view.options;
     this.agentPresetSelectable = view.selectable;
-    this.log(`[preset] 预设目录：${view.selectable ? `${view.options.length} 个` : "服务端未开放选择"}`);
+    this.log(
+      `[preset] 预设目录：${
+        view.selectable ? `${view.options.length} 个` : "不可选择（服务端策略或客户端偏好）"
+      }`,
+    );
     this.emitAll({ type: "patch", patch: { agentPresets: this.agentPresetsView() } });
     this.pushPendingPresets();
   }
@@ -4804,12 +4840,19 @@ export class ChatController implements vscode.Disposable {
   private deliverEventToScope(held: HeldInteraction, scope: SessionScope): void {
     const eventId = held.eventId;
     if (held.kind === "approval") {
-      const request = held.request as { toolName?: string; callId?: string; reason?: string };
+      const request = held.request as {
+        toolName?: string;
+        callId?: string;
+        reason?: string;
+        displayReason?: unknown;
+      };
       scope.adapter?.addApproval({
         requestId: eventId,
         // 工具名缺失时给标记而不是中文：审批卡按用户选的界面语言渲染
         toolName: request.toolName ?? "@toolGeneric",
         reason: request.reason,
+        // 本地化展示文案（0.1.7-rc.2 起）：形状不对就当没有，界面退回 `reason`
+        displayReason: localizedTextFrom(request.displayReason),
         detail: request.callId ? `@callId:${request.callId}` : undefined,
         state: "waiting",
         // callId 同时单独记一份：会话日志的 `approval/decided` 靠它把结果
@@ -4962,6 +5005,9 @@ export class ChatController implements vscode.Disposable {
       // 之前，`busyEnter` 恒为 undefined，用户的 `steer` 设置静默退回 queue
       // （本条修复来自审计结论，见 CHANGELOG）。设置面板已删除，入口只剩这一处。
       this.applyBusyEnter(described.namespaces ?? []);
+      // 同一份结果再喂「开发者工具」偏好（预设选择入口的可见性判据，0.1.7-rc.2 起
+      // 服务端不再表态，只剩这一条来源）。它一变会重折算预设目录并推帧。
+      this.applyDeveloperTools(described.namespaces ?? []);
     } catch (error) {
       this.log(`[models] 图片输入能力读取失败：${this.describeError(error)}`);
     }
@@ -5828,6 +5874,29 @@ export class ChatController implements vscode.Disposable {
     // 界面按它决定运行中发送按钮的文案（排队发送 / 插话发送），所以变了要推一帧；
     // 值本身仍然由**宿主**在发送时解析成 `session/prompt.mode`（见 resolveSubmitMode）。
     this.emitAll({ type: "patch", patch: { busyEnter: next === "steer" ? "steer" : "queue" } });
+  }
+
+  /**
+   * 读客户端的「代码工作工具」偏好（命名空间 `ui-settings` 的 `enabled`；官方内部标识
+   * 仍叫 developer tools，rc.2 的界面名是「代码工作工具」，它的说明里就写着会控制
+   * 「新对话中的 Agent 预设切换」）。
+   *
+   * 三条口径：
+   * - **只有显式的 `false` 才算关闭**：命名空间缺席（没有 settings provider、
+   *   老服务端、另一个实现）或值形状不对一律按「允许」——官方 schema 的默认值就是
+   *   `true`，官方的 `DeveloperToolsPreference` 在本地模式下缺省也是 `true`；
+   * - 与 `applyBusyEnter` / 图片能力 / 部署默认三处一样从同一份 `settings/describe`
+   *   结果里取，读取留在控制器、判据留在纯函数（`agentPresetsFromList`）里；
+   * - 值一变就重折算预设目录：用户在官方界面里关掉这个开关，本扩展那枚胶囊跟着消失
+   *   （`settings/document-updated` → `reloadSettings` → `refreshImageCaps` 会再读一遍）。
+   */
+  private applyDeveloperTools(settings: { ns?: string; value?: unknown }[]): void {
+    const section = settings.find((item) => item?.ns === "ui-settings");
+    const value = (section?.value ?? {}) as { enabled?: unknown };
+    const next = value.enabled === false ? false : true;
+    if (next === this.developerToolsEnabled) return;
+    this.developerToolsEnabled = next;
+    this.publishAgentPresets();
   }
 
   /** 提示：有文件附件没上传成功，发送时被跳过（内容没丢，仍在芯片上）。 */

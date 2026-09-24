@@ -723,6 +723,20 @@ export function useTexts(): Texts {
   return useContext(TextsContext);
 }
 
+/**
+ * 当前界面语言（宿主下发的 `state.locale`，如 `zh-cn` / `en`）。
+ *
+ * 词典本身已经按语言分好，所以绝大多数地方用 `useTexts()` 就够；需要**按语言取一条**
+ * 而不是查词典的地方才用它——服务端给的本地化文案（审批的 `displayReason`）属于这一类，
+ * 它不在我们的词典里，得在渲染时按语言挑（见 `shared/localizedText.ts`）。
+ * 挂在 `TextsContext` 里会让所有 `useTexts()` 调用点的类型都变，所以单独一个 context。
+ */
+export const LocaleContext = createContext<string | undefined>(undefined);
+
+export function useLocale(): string | undefined {
+  return useContext(LocaleContext);
+}
+
 export function dictionaryFor(locale: Locale): Texts {
   return DICTIONARIES[locale];
 }

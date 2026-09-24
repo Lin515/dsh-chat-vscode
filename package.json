@@ -2,7 +2,7 @@
   "name": "dsh-chat",
   "displayName": "DSH Chat",
   "description": "%description%",
-  "version": "0.9.4",
+  "version": "0.9.5",
   "publisher": "Lin515",
   "license": "MIT",
   "icon": "media/icon.png",
