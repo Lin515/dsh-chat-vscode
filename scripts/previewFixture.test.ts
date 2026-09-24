@@ -266,21 +266,46 @@ const must = [
     "工具栏 agent 预设标签（已开始的会话）",
     () => state.agentPreset === "ptc" && (state.agentPresets?.options?.length ?? 0) >= 5,
   ],
-  // 问卷的两种形态都要在夹具里：**已答完**那张必须带 `answers`（展开记录显示
+  // 问卷的几种形态都要在夹具里：**已答完**那张必须带 `answers`（展开记录显示
   // 「用户当时选了什么」只能靠它，用户 2026-09-15 报的就是它空着）；**待回答**
   // 那张要有带选项的题，预览页才能看到「自定义回答与普通选项同一列表」。
+  //
+  // 已答完的记录现在挂在 `ask_user_question` 工具节点上（用户 2026-09-24 口径：
+  // 答案与问卷合并成一个节点）——所以下面收集记录时两种落点都要认：工具节点的
+  // `tool.question`，以及计划审阅那条留在流里的 `question` 段。
   [
     "问卷：已答完带用户答案（含自定义回答）",
     () => {
-      const answered = state.messages.flatMap((m) =>
-        m.segments.flatMap((s) =>
-          s.kind === "question" && s.question.state !== "waiting" ? [s.question] : [],
+      const answered = state.messages.flatMap((m: any) =>
+        m.segments.flatMap((s: any) =>
+          s.kind === "tool" && s.tool?.question
+            ? [s.tool.question]
+            : s.kind === "question"
+              ? [s.question]
+              : [],
         ),
       );
       return answered.some(
-        (q) =>
-          Object.values(q.answers ?? {}).some((a) => (a.selected?.length ?? 0) > 0) &&
-          Object.values(q.answers ?? {}).some((a) => Boolean(a.custom)),
+        (q: any) =>
+          q.state !== "waiting" &&
+          Object.values(q.answers ?? {}).some((a: any) => (a.selected?.length ?? 0) > 0) &&
+          Object.values(q.answers ?? {}).some((a: any) => Boolean(a.custom)),
+      );
+    },
+  ],
+  // 合并后的形态必须有样例：`ask_user_question` 的工具节点带着问卷记录（已答完 +
+  // 撤回两种），否则预览页里看不到用户 2026-09-24 要的那个节点长什么样。
+  [
+    "问卷记录挂在 ask_user_question 工具节点上（已答完 + 已取消）",
+    () => {
+      const records = state.messages.flatMap((m: any) =>
+        m.segments.flatMap((s: any) =>
+          s.kind === "tool" && s.tool.name === "ask_user_question" && s.tool.question ? [s.tool.question] : [],
+        ),
+      );
+      return (
+        records.some((q: any) => q.state === "answered" && Boolean(q.answers)) &&
+        records.some((q: any) => q.state === "cancelled")
       );
     },
   ],

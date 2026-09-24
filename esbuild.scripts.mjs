@@ -97,6 +97,7 @@ const entries = {
   "build/config-changes.test.mjs": "scripts/configChanges.test.ts",
   "build/footnotes.test.mjs": "scripts/footnotes.test.ts",
   "build/question-flow.test.mjs": "scripts/questionFlow.test.ts",
+  "build/tool-question.test.mjs": "scripts/toolQuestion.test.ts",
   "build/plan-review.test.mjs": "scripts/planReview.test.ts",
   "build/question-render.test.mjs": "scripts/questionRender.test.ts",
   "build/mention-nav.test.mjs": "scripts/mentionNav.test.ts",

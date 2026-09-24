@@ -271,4 +271,81 @@ console.log("questionRender: 英文渲染同一条链路 ✓");
 }
 console.log("questionRender: 只撤下被输入区接管的那一条 ✓");
 
+// ---------- 8. `ask_user_question` 的节点就是那张问卷记录 ----------
+//
+// 用户 2026-09-24 口径：答案与问卷合并成一个节点，不再单独开一条。适配器把题目
+// （取自调用参数）与答案（取自工具结果）折进 `tool.question`，界面据此**直接画
+// 记录卡**——不画工具行的 IN/OUT（那才是「输入问句 JSON / 输出答案 JSON」的来源）。
+// 这里渲染整条消息，钉住「画的是记录卡、不是通用工具行」。
+{
+  const toolMessage = {
+    id: "a:9",
+    role: "assistant",
+    ts: 1_700_000_000_000,
+    segments: [
+      {
+        id: "tool:q1",
+        kind: "tool",
+        tool: {
+          id: "q1",
+          name: "ask_user_question",
+          title: "",
+          detail: '{"questions":[{"id":"scope"',
+          status: "ok",
+          input: '{"questions":[{"id":"scope","question":"这次改动覆盖到哪一层？","options":[{"label":"只改入口文件"},{"label":"一起收敛"}]}]}',
+          output: '{"answers":[{"id":"scope","selected":["一起收敛"]}]}',
+          question: {
+            requestId: "q1",
+            state: "answered",
+            items: [
+              {
+                id: "scope",
+                header: "范围",
+                question: "这次改动覆盖到哪一层？",
+                options: [{ label: "只改入口文件" }, { label: "一起收敛" }],
+              },
+            ],
+            answers: { scope: { selected: ["一起收敛"] } },
+          },
+        },
+      },
+    ],
+  };
+
+  const html = renderToStaticMarkup(
+    createElement(
+      TextsContext.Provider,
+      { value: dictionaryFor("zh") },
+      createElement(Message!, { message: toolMessage as never }),
+    ),
+  );
+
+  assert.ok(html.includes("已作答 1 题"), `工具节点要画成问卷记录卡：${html.slice(0, 400)}`);
+  assert.ok(!/io-card/.test(html), "不再画通用 IN/OUT（参数 JSON 与答案 JSON 都不出现）");
+  assert.ok(!html.includes("questions"), "参数 JSON 不该露出来");
+  // 记录卡默认收起（与独立记录段同一形态），展开体由 `QuestionCard` 那一层钉住
+  assert.ok(!/question-option/.test(html), "默认收起时不挂载题目正文");
+
+  // 已取消的形态同样画记录卡（撤回 / 中止之后没人回答过）
+  const cancelled = renderToStaticMarkup(
+    createElement(
+      TextsContext.Provider,
+      { value: dictionaryFor("zh") },
+      createElement(Message!, {
+        message: {
+          ...toolMessage,
+          segments: [
+            {
+              ...toolMessage.segments[0],
+              tool: { ...toolMessage.segments[0].tool, status: "stopped", question: { requestId: "q1", state: "cancelled", items: toolMessage.segments[0].tool.question.items } },
+            },
+          ],
+        } as never,
+      }),
+    ),
+  );
+  assert.ok(cancelled.includes("已取消 1 题"), `撤回/中止之后也是同一张记录卡：${cancelled.slice(0, 400)}`);
+}
+console.log("questionRender: ask_user_question 节点渲染成问卷记录 ✓");
+
 console.log("\nquestionRender: all assertions passed");

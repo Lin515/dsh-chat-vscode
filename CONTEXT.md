@@ -51,6 +51,17 @@ _Avoid_: 全量帧、初始化包
 界面据此**不显示**，而不是显示一个零值或空壳。
 _Avoid_: 空值、undefined、缺省
 
+**交互卡**：
+一次等用户答复的请求（权限审批 / 问卷 / 计划审阅）。它由 waterfall 投递、**不是**
+durable 事件，所以「还在等」的那一份要靠宿主账本回放（见 `dsh/pendingInteractions.ts`）。
+_Avoid_: 弹窗、对话框、pending interaction
+
+**问卷节点**：
+`ask_user_question` 那个工具节点，画出来就是一张问卷记录（题目来自调用参数、答案来自
+工具结果，两份都是 durable 事件）。**一份问卷只有一个节点**——答复 / 撤回之后那条
+waterfall 卡退出消息流，不要把记录再开成独立一段。
+_Avoid_: 问卷卡、提问记录段、问卷回答节点
+
 **控制流**：
 `session/control` 的长连接：baseline + 队列 / 后台任务 / 投影的增量帧。
 _Avoid_: 控制通道、control channel

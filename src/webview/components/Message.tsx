@@ -314,6 +314,14 @@ export const Message = memo(function Message({
           />
         );
       case "tool":
+        // `ask_user_question` 的节点**就是那张问卷记录**（用户 2026-09-24 口径：答案与
+        // 问卷合并到同一个节点，不再单独开一条）：题目取自调用参数、答案取自工具结果，
+        // 两份都是 durable 事件——所以重载/重连/切回会话之后记录照样在（此前那张卡只
+        // 由 waterfall 建，重载后整个节点消失）。直接复用记录卡的组件与形态。
+        // 等待回答时不走这条：那时输入区接管的是那条 `question` 段，工具行照旧画「运行中」。
+        if (segment.tool.question && segment.tool.question.state !== "waiting") {
+          return <QuestionCard key={segment.id} question={segment.tool.question} batch={questionBatch} />;
+        }
         return <ToolRow key={segment.id} node={node} tool={segment.tool} diffLayout={diffLayout} />;
       case "approval":
         // 待处理的审批卡由**输入区**渲染（官方 `conversation.composer` 接管），这里跳过

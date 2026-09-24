@@ -881,21 +881,43 @@
               ts: now - 12000,
               model: "DeepSeek-V4-Pro",
               segments: [
-                // 已答完的问卷：**默认收缩成一行**（点行头可再展开看当时的问题
-                // 与用户当时选了什么——答案来自 answers，不是组件 state）
-                { id: "ask0", kind: "question", question: { requestId: "ev0", state: "answered", items: [
-                  { id: "scope", header: "范围", question: "这次改动覆盖到哪一层？", options: [
-                    { label: "只改入口文件" },
-                    { label: "连同配置读取一起收敛" }
-                  ] },
-                  { id: "docs", header: "文档", question: "要不要同步更新 README？", options: [
-                    { label: "要" },
-                    { label: "不要" }
-                  ] }
-                ], answers: {
-                  scope: { selected: ["连同配置读取一起收敛"] },
-                  docs: { selected: [], custom: "顺手把 CHANGELOG 的分节标题也统一一下" }
-                } } },
+                // **已答完**的问卷：现在它就是 `ask_user_question` 那个工具节点本身
+                // （用户 2026-09-24 口径：答案与问卷合并成一个节点，不再单独开一条；
+                // 工具节点是 durable 事件折出来的，重载后记录照样在）。
+                // 参数 / 结果 / 记录三份逐字取自真实会话日志
+                // （多选键是下划线 `multi_select`，结果正文是 `{answers:[…]}`）。
+                { id: "tool:call_ask", kind: "tool", tool: {
+                  id: "call_ask", name: "ask_user_question", title: "",
+                  detail: "Which color do you prefer?",
+                  status: "ok",
+                  input: '{"questions":[{"id":"color","question":"Which color do you prefer?","header":"Pick one","multi_select":true,"options":[{"label":"Blue","description":"A cool recessive hue that reads as calm and trustworthy in long reading sessions and dense dashboards."},{"label":"Green","description":"A restful mid-spectrum hue with the highest perceived brightness, easiest on the eye over long sessions."}]},{"id":"notes","question":"要不要同时补测试？","header":"回归","options":[{"label":"要"},{"label":"不要"}]}]}',
+                  output: '{"answers":[{"id":"color","selected":["Blue"],"custom":"Include accessibility notes"},{"id":"notes","selected":["要"]}]}',
+                  startedAt: now - 13600, endedAt: now - 12800,
+                  question: { requestId: "call_ask", state: "answered", items: [
+                    { id: "color", header: "Pick one", question: "Which color do you prefer?", multiSelect: true, options: [
+                      { label: "Blue", description: "A cool recessive hue that reads as calm and trustworthy in long reading sessions and dense dashboards." },
+                      { label: "Green", description: "A restful mid-spectrum hue with the highest perceived brightness, easiest on the eye over long sessions." }
+                    ] },
+                    { id: "notes", header: "回归", question: "要不要同时补测试？", options: [
+                      { label: "要" }, { label: "不要" }
+                    ] }
+                  ], answers: {
+                    color: { selected: ["Blue"], custom: "Include accessibility notes" },
+                    notes: { selected: ["要"] }
+                  } } } },
+                // 撤回 / 轮次中止：没人回答过，同一张记录卡，摘要换成「已取消 N 题」
+                { id: "tool:call_ask_cancelled", kind: "tool", tool: {
+                  id: "call_ask_cancelled", name: "ask_user_question", title: "",
+                  detail: "Pick one",
+                  status: "stopped",
+                  input: '{"questions":[{"id":"scope","question":"这次改动覆盖到哪一层？","header":"范围","options":[{"label":"只改入口文件"},{"label":"一起收敛"}]}]}',
+                  output: "",
+                  startedAt: now - 12600, endedAt: now - 12400,
+                  question: { requestId: "call_ask_cancelled", state: "cancelled", items: [
+                    { id: "scope", header: "范围", question: "这次改动覆盖到哪一层？", options: [
+                      { label: "只改入口文件" }, { label: "一起收敛" }
+                    ] }
+                  ] } } },
                 { id: "ask1", kind: "question", question: { requestId: "ev2", state: "waiting", items: [
                   { id: "mode", header: "确认", question: "重构范围要覆盖到哪一层？", options: [
                     { label: "只改入口文件", description: "风险最小，先把重复初始化去掉" },

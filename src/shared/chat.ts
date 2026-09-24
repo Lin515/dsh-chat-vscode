@@ -233,6 +233,19 @@ export interface ToolCallView {
    * 只给数字与正文，文案由界面按当前语言渲染（与工具行动词同一条口径）。
    */
   todo?: { done: number; total: number; active?: string; extra?: number };
+  /**
+   * `ask_user_question` 节点的**问卷**：题目与答案的**唯一 durable 来源**。
+   *
+   * 题目取自调用参数、答案取自工具结果，两份都在会话日志里——所以刷新/重载/重连后
+   * 记录照样折得回来（此前问卷只由 waterfall 建卡，而 waterfall 不是 durable 事件，
+   * 重载后节点整个消失）。界面上它就是那张「已答完 / 已取消」的问卷记录卡，
+   * 不再单独开一个节点（见 `webview/components/Message.tsx` 的 `renderSegment`）。
+   *
+   * 只在**已收场**（`answered` / `cancelled`）时下发：等待回答时输入区接管的是那条
+   * `question` 段，工具行照旧画「运行中」。`requestId` 这里填的是**工具调用 id**——
+   * 只作稳定标识，记录态没有任何可交互的出口（不是 waterfall 的 eventId）。
+   */
+  question?: QuestionView;
   startedAt?: number;
   endedAt?: number;
   /** 用户手动折叠状态；undefined 表示按运行状态自动决定。 */

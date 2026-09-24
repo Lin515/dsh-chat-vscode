@@ -76,14 +76,27 @@ const askTwo = (adapter: SessionAdapter, requestId = "ev-q1") =>
     state: "waiting",
   });
 
-const toolCall = (callId: string, name: string, seq: number) => ({
+const toolCall = (callId: string, name: string, seq: number, args = "{}") => ({
   type: "tool/call",
   seq,
   time: 1_700_000_000_000 + seq,
-  data: { callId, name, arguments: "{}", turn: 0, step: 0 },
+  data: { callId, name, arguments: args, turn: 0, step: 0 },
 });
 
-const toolResult = (callId: string, text: string, seq: number) => ({
+/**
+ * `ask_user_question` 的**真实**调用参数与结果正文（形状逐字取自 harness 的真实会话日志：
+ * `dsh-tool-ask-user` 的参数是下划线 `multi_select`，结果正文是 `{answers:[…]}` 的 JSON）。
+ */
+const askArgs = (questions: unknown[]) => JSON.stringify({ questions });
+const askAnswers = (answers: unknown[]) => JSON.stringify({ answers });
+
+/** 按段 id 取工具段（`tool:<callId>`）。 */
+const toolSegmentById = (messages: MessageView[], segmentId: string) =>
+  messages
+    .flatMap((m) => m.segments)
+    .find((s): s is Extract<Segment, { kind: "tool" }> => s.kind === "tool" && s.id === segmentId);
+
+const toolResult = (callId: string, text: string, seq: number, error?: { name: string; code: string }) => ({
   type: "tool/result",
   seq,
   time: 1_700_000_000_000 + seq,
@@ -94,6 +107,7 @@ const toolResult = (callId: string, text: string, seq: number) => ({
       content: [{ type: "tool-result", toolCallId: callId, content: [{ type: "text", text }] }],
       source: { kind: "tool", callId },
     },
+    ...(error ? { error } : {}),
   },
 });
 
@@ -603,5 +617,305 @@ console.log("interactionSync: 重折（快照/重连/重载）后待答卡片仍
   assert.strictEqual(ownerOf("q:ev-q11"), "a:1", "问卷也不搬家");
 }
 console.log("interactionSync: 跨消息的重投递去重 ✓");
+
+// ---------- 10. 问卷记录挂在 `ask_user_question` 工具节点上（会话重载后必须还在） ----------
+//
+// 用户 2026-09-24 报的现场：会话重载之后**答过的问卷节点整个消失**，只剩一个
+// `ask_user_question` 工具行，展开是「输入 = 问句 JSON / 输出 = 答案 JSON」。
+//
+// 根因：那张卡只由 waterfall 建（`addQuestion`），而 waterfall **不是 durable 事件**
+// （会话日志里没有它）——重载后跟随流只重放日志，卡片折不出来；`interactionCards`
+// 只救得回同一个适配器实例里的那一次重折。
+//
+// 修法（用户口径：把答案和问卷合并）：题目取自**调用参数**、答案取自**工具结果**，
+// 两份都是 durable 事件，记录直接画在那个工具节点上——于是重载后自然还在，
+// 而且不用再单独开一个节点。
+//
+// 题目与答案逐字取自真实日志（`dsh-tool-ask-user` 的参数是下划线 `multi_select`，
+// 结果正文是 `{answers:[…]}`；见 harness 的 `snapshots/web/question-composer`）。
+const ASK_QUESTIONS = [
+  {
+    id: "color",
+    question: "Which color do you prefer?",
+    header: "Pick one",
+    multi_select: true,
+    options: [
+      {
+        label: "Blue",
+        description: "A cool recessive hue that reads as calm and trustworthy in long reading sessions and dense dashboards.",
+      },
+      {
+        label: "Green",
+        description: "A restful mid-spectrum hue with the highest perceived brightness, easiest on the eye over long sessions.",
+      },
+    ],
+  },
+  { id: "notes", question: "要不要同时补测试？", header: "回归", options: [{ label: "要" }, { label: "不要" }] },
+];
+const ASK_RESULT = [
+  { id: "color", selected: ["Blue"], custom: "Include accessibility notes" },
+  { id: "notes", selected: ["要"] },
+];
+
+/** 一组测试题目（与 ASK_QUESTIONS 同 id）——用来建本窗口那张待答卡。 */
+const askCard = (adapter: SessionAdapter, requestId: string) =>
+  adapter.addQuestion({
+    requestId,
+    items: ASK_QUESTIONS.map((question) => ({
+      id: question.id,
+      header: question.header,
+      question: question.question,
+      options: question.options,
+      ...(question.multi_select === undefined ? {} : { multiSelect: question.multi_select === true }),
+    })),
+    state: "waiting",
+  });
+
+{
+  // (a) **只有 durable 事件**（重载后的样子：跟随流重放日志，没有 waterfall）
+  const { adapter, messages } = harness();
+  adapter.applyEvent(toolCall("q1", "ask_user_question", 1, askArgs(ASK_QUESTIONS)) as never);
+  adapter.applyEvent(toolResult("q1", askAnswers(ASK_RESULT), 2) as never);
+
+  const tool = toolSegmentById(messages, "tool:q1");
+  assert.strictEqual(
+    tool?.tool.question?.state,
+    "answered",
+    "重载（只重放会话日志）之后，问卷记录必须挂在 ask_user_question 节点上——" +
+      "它不在了就是用户 2026-09-24 报的「问卷回答节点消失」",
+  );
+  assert.strictEqual(tool?.tool.question?.items.length, 2, "题目取自调用参数（含标题与选项）");
+  assert.strictEqual(
+    tool?.tool.question?.items[0]?.multiSelect,
+    true,
+    "参数里的 `multi_select` 要折成视图里的 `multiSelect`",
+  );
+  assert.deepStrictEqual(
+    tool?.tool.question?.answers?.color,
+    { selected: ["Blue"], custom: "Include accessibility notes" },
+    "答案取自工具结果（含自定义回答）",
+  );
+  assert.deepStrictEqual(tool?.tool.question?.answers?.notes, { selected: ["要"] });
+  assert.strictEqual(
+    messages.flatMap((m) => m.segments).filter((s) => s.kind === "question").length,
+    0,
+    "不另外开一个问卷节点：记录就在工具节点里",
+  );
+  assert.strictEqual(resolveInteractions(messages).pending, undefined, "已收场，不占输入区");
+
+  // 迟到的重放（同一条 `tool/call` 又到一次）不能把已结算的记录改写回「运行中」
+  adapter.applyEvent(toolCall("q1", "ask_user_question", 3, askArgs(ASK_QUESTIONS)) as never);
+  assert.strictEqual(
+    toolSegmentById(messages, "tool:q1")?.tool.question?.state,
+    "answered",
+    "重复的 tool/call 不清掉已折出来的记录",
+  );
+
+  // 顺序颠倒（服务端先给结果、waterfall 后到）：记录已经在工具节点上，不能再开一条
+  // 独立段、也不能重新占住输入区（旧那段「答案先到、卡片后建 → 直接建成已答完」的
+  // 口径现在由工具节点承担）
+  askCard(adapter, "ev-q1");
+  assert.strictEqual(
+    messages.flatMap((m) => m.segments).filter((s) => s.kind === "question").length,
+    0,
+    "结果先到、waterfall 后到 → 记录仍在工具节点上，不再开一条段",
+  );
+  assert.strictEqual(resolveInteractions(messages).pending, undefined, "也不会重新占住输入区");
+}
+console.log("interactionSync: 只重放 durable 事件也有问卷记录（重载后节点不消失） ✓");
+
+{
+  // (b) 本窗口答复 → 独立那一段退出消息流，记录并进工具节点
+  const { adapter, messages } = harness();
+  adapter.applyEvent(toolCall("q2", "ask_user_question", 1, askArgs(ASK_QUESTIONS)) as never);
+  askCard(adapter, "ev-q2");
+  assert.strictEqual(resolveInteractions(messages).pending?.kind, "question", "答复前由输入区接管");
+  assert.ok(questionSegment(messages), "答复前那张卡在流里（等待态）");
+
+  adapter.resolveQuestion("ev-q2", {
+    color: { selected: ["Blue"], custom: "Include accessibility notes" },
+    notes: { selected: ["要"] },
+  });
+
+  const tool = toolSegmentById(messages, "tool:q2");
+  assert.strictEqual(tool?.tool.question?.state, "answered", "本窗口答复后记录写进工具节点");
+  assert.strictEqual(
+    messages.flatMap((m) => m.segments).filter((s) => s.kind === "question").length,
+    0,
+    "原来那条独立问卷段要摘掉——同一份问卷只留一个节点",
+  );
+  assert.strictEqual(resolveInteractions(messages).pending, undefined, "答复后输入区让位");
+}
+console.log("interactionSync: 本窗口答复 → 记录并进工具节点、独立段消失 ✓");
+
+{
+  // (c) 先撤回收场（另一个窗口答了 / 用户放弃），随后 durable 结果带答案到达
+  const { adapter, messages } = harness();
+  adapter.applyEvent(toolCall("q3", "ask_user_question", 1, askArgs(ASK_QUESTIONS)) as never);
+  askCard(adapter, "ev-q3");
+  adapter.cancelEvent("ev-q3");
+  assert.strictEqual(
+    toolSegmentById(messages, "tool:q3")?.tool.question?.state,
+    "cancelled",
+    "撤回之后节点是「已取消」记录（只有题目，没有答案）",
+  );
+  assert.strictEqual(
+    messages.flatMap((m) => m.segments).filter((s) => s.kind === "question").length,
+    0,
+    "撤回同样并进工具节点",
+  );
+  assert.strictEqual(resolveInteractions(messages).pending, undefined, "撤回后不再占输入区");
+
+  // 另一个窗口答完的真实顺序：先撤回、工具结果带着答案随后到 → 纠正为「已答完」
+  adapter.applyEvent(toolResult("q3", askAnswers(ASK_RESULT), 2) as never);
+  assert.strictEqual(
+    toolSegmentById(messages, "tool:q3")?.tool.question?.state,
+    "answered",
+    "答案到了就是答过了（记录不能一边写「已取消」一边列着答案）",
+  );
+  assert.deepStrictEqual(toolSegmentById(messages, "tool:q3")?.tool.question?.answers?.notes, { selected: ["要"] });
+}
+console.log("interactionSync: 撤回收场 → durable 答案到达纠正为已答完 ✓");
+
+{
+  // (d) 本窗口答复之后立刻重折（durable 结果还没到）：记录不能被打回「运行中」
+  const { adapter, messages } = harness();
+  const t = Date.now();
+  adapter.applyEvent({ type: "turn/start", seq: 1, time: t, data: { turn: 1 } } as never);
+  adapter.applyEvent(toolCall("q4", "ask_user_question", 2, askArgs(ASK_QUESTIONS)) as never);
+  askCard(adapter, "ev-q4");
+  adapter.resolveQuestion("ev-q4", {
+    color: { selected: ["Green"] },
+    notes: { selected: ["不要"] },
+  });
+  adapter.applyFrame({
+    type: "snapshot",
+    cursor: 2,
+    hasMore: false,
+    records: [
+      { type: "event", event: { type: "turn/start", seq: 1, time: t, data: { turn: 1 } } },
+      {
+        type: "event",
+        event: toolCall("q4", "ask_user_question", 2, askArgs(ASK_QUESTIONS)),
+      },
+    ],
+  } as never);
+
+  const tool = toolSegmentById(messages, "tool:q4");
+  assert.strictEqual(tool?.tool.question?.state, "answered", "重折（还只有 tool/call）之后记录仍是已答完");
+  assert.deepStrictEqual(tool?.tool.question?.answers?.color, { selected: ["Green"] });
+  assert.strictEqual(
+    messages.flatMap((m) => m.segments).filter((s) => s.kind === "question").length,
+    0,
+    "重折也不该把那张独立卡补回来",
+  );
+}
+console.log("interactionSync: 答复后立刻重折不丢记录 ✓");
+
+{
+  // (e) 不误编卡：形状对不上、或失败码不是「没人回答」时，退回通用工具行
+  const { adapter, messages } = harness();
+  // 参数认不出题目（模型给了半截/坏 JSON）→ 没有记录，但工具行本身还在
+  adapter.applyEvent(toolCall("q5", "ask_user_question", 1, '{"questions":[]}') as never);
+  adapter.applyEvent(toolResult("q5", askAnswers(ASK_RESULT), 2) as never);
+  assert.strictEqual(toolSegmentById(messages, "tool:q5")?.tool.question, undefined, "空题目不编卡");
+
+  // 失败码不是「用户没答」：错误原文必须留在通用行里，不能被记录卡盖掉
+  adapter.applyEvent(toolCall("q6", "ask_user_question", 3, askArgs(ASK_QUESTIONS)) as never);
+  adapter.applyEvent(
+    toolResult("q6", "Error: human interaction is unavailable", 4, {
+      name: "UserQuestionError",
+      code: "DELEGATED_CALLER",
+    }) as never,
+  );
+  assert.strictEqual(
+    toolSegmentById(messages, "tool:q6")?.tool.question,
+    undefined,
+    "DELEGATED_CALLER 这类失败不编「已取消」记录（那是工具的失败，不是没人回答）",
+  );
+
+  // 轮次中止（合成 interrupted 结果）→ 「已取消」记录（与今天的文案同口径）
+  adapter.applyEvent(toolCall("q7", "ask_user_question", 5, askArgs(ASK_QUESTIONS)) as never);
+  adapter.applyEvent({ type: "turn/end", seq: 6, time: Date.now(), data: { turn: 0, reason: { kind: "aborted" } } } as never);
+  assert.strictEqual(
+    toolSegmentById(messages, "tool:q7")?.tool.question?.state,
+    "cancelled",
+    "轮次中止 → 那条问卷记录落成「已取消」",
+  );
+
+  // 已经投到界面上的那张卡 + 非「没人回答」的失败：工具节点不编卡，但那条段**不能**
+  // 被摘掉——摘了等于把这次提问从界面上抹掉（宁可留一张没人接的卡，也不丢记录）
+  adapter.applyEvent(toolCall("q8", "ask_user_question", 7, askArgs(ASK_QUESTIONS)) as never);
+  askCard(adapter, "ev-q8");
+  adapter.applyEvent(
+    toolResult("q8", "Error: no user-questions answerer accepted the request", 8, {
+      name: "UserQuestionError",
+      code: "NO_PROVIDER",
+    }) as never,
+  );
+  assert.strictEqual(toolSegmentById(messages, "tool:q8")?.tool.question, undefined, "NO_PROVIDER 不编卡");
+  assert.ok(questionSegment(messages), "那张已经投出去的卡要留着，不能被误摘");
+}
+console.log("interactionSync: 认不出题目 / 非「没人回答」的失败都不误编卡 ✓");
+
+{
+  // (f) 计划审阅（`exit_plan_mode`）不在合并范围内：它没有 `ask_user_question` 承载者，
+  // 记录照旧是流里那一段（题目的 detail/intent 只存在于 waterfall，durable 参数里只有计划正文）
+  const { adapter, messages } = harness();
+  adapter.addQuestion({
+    requestId: "ev-plan",
+    items: [
+      {
+        id: "plan-review",
+        header: "Plan review",
+        question: "Approve this plan and leave plan mode?",
+        detail: "# 计划\n\n1. 做一件事",
+        options: [{ label: "确认执行" }, { label: "拒绝" }],
+        intent: { kind: "plan-review", approve: "确认执行" },
+      },
+    ],
+    state: "waiting",
+  });
+  adapter.resolveQuestion("ev-plan", { "plan-review": { selected: ["确认执行"] } });
+  const record = questionSegment(messages);
+  assert.ok(record, "计划审阅的记录仍然留在流里（本次不合并它）");
+  assert.strictEqual(record?.question.state, "answered");
+  assert.deepStrictEqual(record?.question.answers?.["plan-review"], { selected: ["确认执行"] });
+}
+console.log("interactionSync: 计划审阅记录行为不变 ✓");
+
+// ---------- 11. 同一组题目 id 被问了第二次 ----------
+//
+// 承载者只能按**题目 id 集合**匹配（提问请求里没有 callId），所以「节点上已经有记录」
+// 这条判据必须精确：否则第二次提问会被第一次的记录挡掉——卡片永远不弹，agent 干等。
+{
+  const { adapter, messages } = harness();
+  adapter.applyEvent(toolCall("qa", "ask_user_question", 1, askArgs(ASK_QUESTIONS)) as never);
+  adapter.applyEvent(toolResult("qa", askAnswers(ASK_RESULT), 2) as never);
+
+  // 第二次提问：同一个 id 集合，新那次调用还在跑
+  adapter.applyEvent(toolCall("qb", "ask_user_question", 3, askArgs(ASK_QUESTIONS)) as never);
+  askCard(adapter, "ev-qb");
+  assert.strictEqual(resolveInteractions(messages).pending?.kind, "question", "新的一次提问照常接管输入区");
+  assert.ok(questionSegment(messages), "新的一次提问要有自己的卡（不能被旧记录的 id 集合挡掉）");
+
+  adapter.resolveQuestion("ev-qb", { color: { selected: ["Green"] }, notes: { selected: ["不要"] } });
+  assert.strictEqual(
+    toolSegmentById(messages, "tool:qb")?.tool.question?.state,
+    "answered",
+    "这次答复写进**第二次**提问的那个节点",
+  );
+  assert.deepStrictEqual(
+    toolSegmentById(messages, "tool:qa")?.tool.question?.answers?.color,
+    { selected: ["Blue"], custom: "Include accessibility notes" },
+    "上一次的记录保留它自己的答案",
+  );
+  assert.strictEqual(
+    messages.flatMap((m) => m.segments).filter((s) => s.kind === "question").length,
+    0,
+    "答复之后独立段照旧并进节点",
+  );
+}
+console.log("interactionSync: 同一组题目 id 的第二次提问不被旧记录挡掉 ✓");
 
 console.log("\ninteractionSync: all assertions passed");

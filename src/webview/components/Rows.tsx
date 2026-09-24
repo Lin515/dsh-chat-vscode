@@ -776,6 +776,13 @@ export function PlanReviewCard({
 /**
  * 问卷卡片（`ask_user_question`）。
  *
+ * **记录形态现在挂在工具节点上**（用户 2026-09-24 口径：答案与问卷合并成一个节点）：
+ * 适配器从调用参数取题目、从工具结果取答案，折进 `tool.question`，由 `Message` 直接
+ * 用这个组件把那个 `ask_user_question` 节点画成记录卡（见 `Message.renderSegment`）。
+ * 组件本身不区分「谁来渲染」——独立那条 `question` 段现在只剩两种用途：**等待回答**
+ * 时由输入区接管的那张交互卡，以及计划审阅（`exit_plan_mode`）的记录（它的题目只在
+ * waterfall 里，durable 参数里没有，所以不参与合并）。
+ *
  * 四种形态：
  * 1. **待回答 · 一次展开**（题目数不超过 `dshChat.questionBatch`）：与原来一样，
  *    所有题目一起铺开，全部作答后才能提交；

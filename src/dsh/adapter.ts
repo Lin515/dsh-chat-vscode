@@ -10,6 +10,7 @@ import type {
   MessageView,
   ModelSelectionView,
   QuestionAnswerView,
+  QuestionItemView,
   QuestionView,
   Segment,
   SessionSummaryView,
@@ -28,6 +29,11 @@ import {
 } from "../shared/injectedSource";
 import { classifyTool, parseExitStatus, summaryKeys, terminalFailed } from "../shared/toolMeta";
 import { deriveToolSummary, parseToolArgs, todoProgressOf, toolCardOf } from "../shared/toolCard";
+import {
+  questionAnswersFromResult,
+  questionItemsFromArgs,
+  questionKeyOf,
+} from "../shared/toolQuestion";
 import { displaySessionMentions } from "../shared/mentions";
 import { readRangeFromMeta, readRangeFromOutput } from "./readRange";
 import { subagentFromCatalogEvent } from "./projections";
@@ -48,55 +54,6 @@ import {
 } from "./protocol";
 
 /**
- * 一份问卷的**身份**：它的题目 id 集合（排序后拼接）。
- *
- * 用来把「已经拿到的答案」与「还没建卡的提问」对上——工具结果里只有题目 id
- * 与答案，没有提问本身的身份（见 `answeredQuestions`）。
- */
-function questionKey(items: readonly { id: string }[]): string {
-  return items
-    .map((item) => item.id)
-    .sort()
-    .join("\u0000");
-}
-
-/**
- * 解析 `ask_user_question` 的工具结果文本。
- *
- * 工具把答案渲染成 `JSON.stringify({answers:[{id, selected, custom?}]})`
- * （`dsh-tool-ask-user` 的 `output.render`），所以正文就是一个 JSON 对象；
- * 这里只做**保守**解析：解析不出来或形状不对就返回 undefined（宁可少一次
- * 收场，也不能把别的工具结果误当成答案）。`parseToolResult` 之外的包装
- * （例如前后有别的行）靠首尾花括号截取兜住。
- */
-function parseQuestionAnswers(text: string): { id: string; selected: string[]; custom?: string }[] | undefined {
-  const trimmed = text.trim();
-  if (!trimmed) return undefined;
-  const start = trimmed.indexOf("{");
-  const end = trimmed.lastIndexOf("}");
-  if (start < 0 || end <= start) return undefined;
-  let value: unknown;
-  try {
-    value = JSON.parse(trimmed.slice(start, end + 1));
-  } catch {
-    return undefined;
-  }
-  const answers = (value as { answers?: unknown })?.answers;
-  if (!Array.isArray(answers)) return undefined;
-  const parsed: { id: string; selected: string[]; custom?: string }[] = [];
-  for (const item of answers as { id?: unknown; selected?: unknown; custom?: unknown }[]) {
-    if (!item || typeof item.id !== "string" || !item.id) return undefined;
-    if (!Array.isArray(item.selected)) return undefined;
-    parsed.push({
-      id: item.id,
-      selected: item.selected.filter((label): label is string => typeof label === "string"),
-      ...(typeof item.custom === "string" && item.custom ? { custom: item.custom } : {}),
-    });
-  }
-  return parsed;
-}
-
-/**
  * 这张（非 durable 的）交互卡是不是还在等人回答。
  *
  * `refold` 之后的补回位置看它：等答复的卡无论如何都要回到页面上（agent 正卡在
@@ -106,6 +63,20 @@ function isWaitingInteraction(segment: Segment): boolean {
   if (segment.kind === "question") return segment.question.state === "waiting";
   if (segment.kind === "approval") return segment.approval.state === "waiting";
   return false;
+}
+
+/**
+ * 这个失败码是不是「**没人回答**这次提问」（而不是工具本身出错）。
+ *
+ * `ASK_CANCELLED`：用户放弃整组问题（`cancelQuestion`）；`ASK_ABORTED`：轮次中止 /
+ * provider 拆除；`interrupted`：本扩展给未结算调用合成的中断结果（见
+ * `synthesizeInterrupted`，会话日志修复也写这个码）。只有这三种才把
+ * `ask_user_question` 节点画成「已取消」的问卷记录；`DELEGATED_CALLER` /
+ * `NO_PROVIDER` / `EMPTY_QUESTIONS` / `BAD_INTENT` 是工具调用真的失败了，
+ * 错误原文必须留在通用工具行里。
+ */
+function isUnansweredQuestionCode(code: string | undefined): boolean {
+  return code === "ASK_CANCELLED" || code === "ASK_ABORTED" || code === "interrupted";
 }
 
 /** 从内容块里取出纯文本（含工具结果里的嵌套文本）。 */
@@ -661,6 +632,25 @@ export class SessionAdapter {
    * 提问。卡片补建时按这个直接建成「已答完」并带上答案（见 `addQuestion`）。
    */
   private readonly answeredQuestions = new Map<string, Record<string, QuestionAnswerView>>();
+
+  /**
+   * **本窗口自己**刚刚收场的问卷（键 = 工具调用 id `callId`）：答复或撤回之后、
+   * durable 工具结果还没回来之前的那份记忆。
+   *
+   * 为什么需要：记录现在挂在 `ask_user_question` 工具节点上，而那个节点在
+   * `refold()` 里是**从 durable 事件重折**出来的——结果还没进日志时会被折回
+   * 「运行中」，刚写进去的记录就没了（用户答完立刻切走再切回正是这条路径）。
+   * 有这份记忆，`applyToolQuestion` 在「未结算 + 本地已有判定」时照样给出记录。
+   *
+   * 键用 callId 而不是题目 id 集合：同一组 id 可能被模型问第二次，按 id 集合记
+   * 会把旧判定扣到新的那次提问上（`answeredQuestions` 那份的既有歧义不再扩散）。
+   * durable 结果一到就删（那才是权威），所以条目数与「本地已答、服务端未确认」
+   * 的提问数同阶。
+   */
+  private readonly localQuestionVerdicts = new Map<
+    string,
+    { state: "answered" | "cancelled"; answers?: Record<string, QuestionAnswerView> }
+  >();
 
   /**
    * 水瀑投递进来的**交互卡**（审批 / 提问），键 = 段 id（`ap:<eventId>` / `q:<eventId>`）。
@@ -1525,8 +1515,14 @@ export class SessionAdapter {
         const parts = toolResultParts(message);
         const text = blocksToText(parts.content);
         const isError = Boolean(data.error) || parts.isError;
+        // 失败码（`data.error = {name, code, reason?}`）单独带下去：`ask_user_question`
+        // 的「已取消 / 已中断」记录只能靠它认（官方 `AskQuestionRow` 同口径）。
+        const errorCode =
+          typeof (data.error as { code?: unknown } | undefined)?.code === "string"
+            ? (data.error as { code: string }).code
+            : undefined;
         const toolName = this.toolNameOf(callId);
-        this.finishToolCall(event.time, callId, text, isError, data.meta, parts.content);
+        this.finishToolCall(event.time, callId, text, isError, data.meta, parts.content, errorCode);
         // 问卷的**权威收场信号**：结果里就是用户答案（不论哪个窗口答的）。
         // 权限审批不需要在这里处理：它有专门的 `approval/decided` 审计事件。
         if (toolName === "ask_user_question") this.applyQuestionAnswers(text);
@@ -2639,6 +2635,9 @@ export class SessionAdapter {
         // 唯一在这里能拿到运行中卡片的时刻：结算时会按结果重算（可能变成 undefined，
         // 例如带 description 的 bash 调用出错 → 官方退回通用 IN/OUT）
         segment.tool.card = runningCard;
+        // 参数可能这一帧才补全（流式期是半截 JSON）：问卷记录跟着重算——尚未收场的
+        // 那次提问，只有 `localQuestionVerdicts` 里有本地判定时才会给出记录
+        this.applyToolQuestion(segment.tool, { settled: false, failed: false, interrupted: false });
         this.emit({ type: "message/segment", messageId: target.id, segment: { ...segment } });
       }
       return;
@@ -2658,6 +2657,7 @@ export class SessionAdapter {
       card: runningCard,
       startedAt: ts,
     };
+    this.applyToolQuestion(tool, { settled: false, failed: false, interrupted: false });
     const segment: Segment = { kind: "tool", id: segmentId, tool };
     this.pushSegment(message, segment);
     this.toolSegments.set(callId, { messageId: message.id, segmentId });
@@ -2681,13 +2681,14 @@ export class SessionAdapter {
     isError: boolean,
     meta?: unknown,
     content?: ContentBlock[],
+    errorCode?: string,
   ): void {
     const entry = this.toolSegments.get(callId);
     if (!entry) {
       // tool/call 落在跟随窗口之外（`maxMessages` 截断）：结果本身仍有价值，
       // 不能整条丢掉。官方在这种情况下回退成一张只有结果、头部显示 callId 的
       // 卡片（`rootResult` 的 `call: null`），这里同样补一个占位卡片。
-      this.orphanToolCall(ts, callId, output, isError, meta, content);
+      this.orphanToolCall(ts, callId, output, isError, meta, content, errorCode);
       return;
     }
     const message = this.byId.get(entry.messageId);
@@ -2699,10 +2700,10 @@ export class SessionAdapter {
       // 「运行中」（鲸鱼一直发光，看着像任务卡死）。整份文件的纪律是"宁可显示一条
       // 信息不全的记录，也不要静默丢弃"，所以退回占位卡片那条路（与"call 落在
       // 跟随窗口之外"同一种收场）。
-      this.orphanToolCall(ts, callId, output, isError, meta, content);
+      this.orphanToolCall(ts, callId, output, isError, meta, content, errorCode);
       return;
     }
-    this.settleTool(message, segment, ts, output, isError, meta, { content });
+    this.settleTool(message, segment, ts, output, isError, meta, { content, errorCode });
   }
 
   /**
@@ -2719,7 +2720,7 @@ export class SessionAdapter {
     output: string,
     isError: boolean,
     meta: unknown,
-    options: { interrupted?: boolean; content?: unknown } = {},
+    options: { interrupted?: boolean; content?: unknown; errorCode?: string } = {},
   ): void {
     const tool = segment.tool;
     // 终端类结果：先把尾部标记行剥掉并取出退出状态。
@@ -2771,6 +2772,18 @@ export class SessionAdapter {
       });
     }
     tool.endedAt = ts;
+    // 问卷记录：题目取自参数、答案取自结果，两份都是 durable 事件（见 applyToolQuestion）。
+    // 折出记录之后，原本那张独立问卷段（只由 waterfall 建、重载折不出来）就没用了——
+    // 摘掉它，让这次提问只剩工具节点这一个节点。**只有真折出记录才摘**：失败码不属于
+    // 「没人回答」时工具节点上没有记录（错误原文要留在通用行里），那条段也不能丢。
+    const questionItems = questionItemsFromArgs(tool.input ?? "");
+    this.applyToolQuestion(tool, {
+      settled: true,
+      failed,
+      interrupted: options.interrupted === true,
+      errorCode: options.errorCode,
+    });
+    if (questionItems && tool.question) this.dropPromotedQuestionCard(questionItems);
     this.emit({
       type: "message/segment",
       messageId: message.id,
@@ -2793,6 +2806,7 @@ export class SessionAdapter {
     isError: boolean,
     meta: unknown,
     content?: ContentBlock[],
+    errorCode?: string,
   ): void {
     const message = this.ensureAssistantMessage(ts);
     if (this.toolSegments.has(callId)) return;
@@ -2811,6 +2825,7 @@ export class SessionAdapter {
     this.emit({ type: "message/append", messageId: message.id, segment });
     this.settleTool(message, segment as Extract<Segment, { kind: "tool" }>, ts, output, isError, meta, {
       content,
+      errorCode,
     });
   }
 
@@ -3002,6 +3017,142 @@ export class SessionAdapter {
   }
 
   /**
+   * 折出/刷新 `ask_user_question` 工具节点上那份**问卷记录**。
+   *
+   * 题目来自调用参数、答案来自工具结果——两份都是 durable 事件，所以这条记录
+   * 经过任何一次 `refold()`（重载 / 重连 / 加载更早的历史）都折得回来。这正是
+   * 「会话重载后问卷节点消失」的修法：以前那张卡只由 waterfall 建，而 waterfall
+   * 不在会话日志里。
+   *
+   * 只在**已收场**时给记录（等待回答期间输入区接管的是那条 `question` 段，工具行
+   * 照旧画「运行中」）；`localQuestionVerdicts` 兜住「本窗口刚答完、结果还没到」的
+   * 那一小段。认不出题目或失败码不属于「没人回答」时一律不给记录——退回通用
+   * IN/OUT，错误原文才不会被一张记录卡盖掉（官方对非 ASK_* 的失败同样不画卡）。
+   */
+  private applyToolQuestion(
+    tool: ToolCallView,
+    facts: { settled: boolean; failed: boolean; interrupted: boolean; errorCode?: string },
+  ): void {
+    if (tool.name !== "ask_user_question") return;
+    const items = questionItemsFromArgs(tool.input ?? "");
+    if (!items) return;
+    if (facts.settled) {
+      // durable 事实到了：本地那份判定退休（同一个 callId 只会结算一次）
+      this.localQuestionVerdicts.delete(tool.id);
+      const answers = facts.failed ? undefined : questionAnswersFromResult(tool.output ?? "");
+      tool.question = answers
+        ? { requestId: tool.id, items, state: "answered", answers }
+        : facts.failed && (facts.interrupted || isUnansweredQuestionCode(facts.errorCode))
+          ? { requestId: tool.id, items, state: "cancelled" }
+          : undefined;
+      return;
+    }
+    // 已经结算过的节点不再被「运行中」的事实改写：迟到的 `tool/call` 重放（或流式
+    // 块尾）不能把刚折出来的记录清掉——那正是「节点又空了」的另一种来源。
+    if (tool.status !== "running" && tool.status !== "pending") return;
+    const local = this.localQuestionVerdicts.get(tool.id);
+    tool.question = local
+      ? {
+          requestId: tool.id,
+          items,
+          state: local.state,
+          ...(local.answers ? { answers: local.answers } : {}),
+        }
+      : undefined;
+  }
+
+  /**
+   * 这组题目由哪个 `ask_user_question` 工具调用承载（从后往前找最近的）。
+   *
+   * 提问请求里没有 callId（`ask_user_question` 那条路只传 questions），所以只能按
+   * **题目 id 集合**对上——与 `answeredQuestions` 同一种匹配口径。同一组 id 被问了
+   * 两次时取最近的那个；模型的提问 id 本应每题稳定，实践中同一会话里重问会换 id。
+   */
+  private askUserToolOwning(
+    items: readonly { id: string }[],
+  ): { message: MessageView; segment: Extract<Segment, { kind: "tool" }> } | undefined {
+    const wanted = questionKeyOf(items);
+    for (let index = this.messages.length - 1; index >= 0; index -= 1) {
+      const message = this.messages[index];
+      for (let at = message.segments.length - 1; at >= 0; at -= 1) {
+        const segment = message.segments[at];
+        if (segment.kind !== "tool" || segment.tool.name !== "ask_user_question") continue;
+        const owned = questionItemsFromArgs(segment.tool.input ?? "");
+        if (owned && questionKeyOf(owned) === wanted) return { message, segment };
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * 把一条已经收场的问卷段**并进承载它的工具节点**：记录写进工具节点的
+   * `question`，那条独立段从消息流里摘掉。
+   *
+   * 用户 2026-09-24 口径：答案与问卷是同一个节点，不再单独开一个——而且工具节点是
+   * durable 折出来的，重载之后记录照样在。没有承载者（计划审阅、工具调用落在跟随
+   * 窗口外）时返回 `false`，调用方照旧把记录留在流里，绝不静默丢记录。
+   *
+   * 工具**已结算**时不覆盖它的记录（durable 事实权威，`settleTool` 刚折过）；
+   * 还在跑才写本地那份判定，并记进 `localQuestionVerdicts` 供重折复原。
+   */
+  private promoteQuestionToTool(
+    items: readonly QuestionItemView[],
+    verdict: { state: "answered" | "cancelled"; answers?: Record<string, QuestionAnswerView> },
+  ): boolean {
+    const owner = this.askUserToolOwning(items);
+    if (!owner) return false;
+    const tool = owner.segment.tool;
+    if (tool.status === "running" || tool.status === "pending") {
+      this.localQuestionVerdicts.set(tool.id, {
+        state: verdict.state,
+        ...(verdict.answers ? { answers: verdict.answers } : {}),
+      });
+      const owned = questionItemsFromArgs(tool.input ?? "") ?? [...items];
+      tool.question = {
+        requestId: tool.id,
+        items: owned,
+        state: verdict.state,
+        ...(verdict.answers ? { answers: verdict.answers } : {}),
+      };
+      this.emit({
+        type: "message/segment",
+        messageId: owner.message.id,
+        segment: { ...owner.segment, tool: { ...tool } } as Segment,
+      });
+    }
+    // 只有一个**确实带着记录**的工具节点才能替这条段发言：已结算却是别的失败
+    // （例如 `DELEGATED_CALLER`）时工具节点上没有记录，摘掉段就等于把这次提问
+    // 从界面上抹掉——宁可留着独立那段。
+    if (!tool.question) return false;
+    this.dropPromotedQuestionCard(items);
+    return true;
+  }
+
+  /**
+   * 摘掉一条已经由工具节点承载的问卷段。
+   *
+   * 两处都要清：消息流里那一段（`message/upsert` 整条替换，界面照单接收）与
+   * `interactionCards` 里那份副本——后者是 `refold()` 末尾用来补回卡片的，不清的话
+   * 下一次重折又把独立段补回来，同一份问卷就成了两个节点。
+   */
+  private dropPromotedQuestionCard(items: readonly { id: string }[]): void {
+    const wanted = questionKeyOf(items);
+    for (const [id, entry] of [...this.interactionCards]) {
+      if (entry.segment.kind !== "question") continue;
+      if (questionKeyOf(entry.segment.question.items) === wanted) this.interactionCards.delete(id);
+    }
+    for (const message of this.messages) {
+      const index = message.segments.findIndex(
+        (segment) => segment.kind === "question" && questionKeyOf(segment.question.items) === wanted,
+      );
+      if (index < 0) continue;
+      message.segments.splice(index, 1);
+      this.emit({ type: "message/upsert", message: { ...message } });
+      return;
+    }
+  }
+
+  /**
    * 从 `ask_user_question` 的工具结果里取出用户答案，收掉对应的问卷卡。
    *
    * **这是「问卷答完了」的权威判据之一**（会话监听侧）：工具的返回值就是
@@ -3011,26 +3162,22 @@ export class SessionAdapter {
    * 时直接建成已答完（见 `addQuestion`）。
    */
   private applyQuestionAnswers(text: string): void {
-    const parsed = parseQuestionAnswers(text);
-    if (!parsed || parsed.length === 0) return;
-    const answers: Record<string, QuestionAnswerView> = {};
-    for (const item of parsed) {
-      answers[item.id] = {
-        selected: item.selected,
-        // 没写自定义回答时**不留这个键**：过线时 undefined 会被丢掉，
-        // 留一个 `custom: undefined` 只会让两边的形状对不上
-        ...(item.custom ? { custom: item.custom } : {}),
-      };
-    }
-    const target = this.unansweredQuestionCoveredBy(Object.keys(answers));
+    const answers = questionAnswersFromResult(text);
+    if (!answers) return;
+    const ids = Object.keys(answers);
     // 只在答案**覆盖了这道题的全部题目 id**时才认领（见
     // `unansweredQuestionCoveredBy`）：跟随窗口里可能混着更早一轮的提问结果，
     // 光看「有没有在等的卡」会张冠李戴。
+    const target = this.unansweredQuestionCoveredBy(ids);
     if (target) {
+      // 收场（并由 `resolveQuestion` 把它并进承载它的工具节点，见 promoteQuestionToTool）
       this.resolveQuestion(target.question.requestId, answers);
       return;
     }
-    this.answeredQuestions.set(questionKey(Object.keys(answers).map((id) => ({ id }))), answers);
+    // 没有待收场的卡：这份答案已经由 `settleTool` 折进对应的工具节点了（记录态的
+    // 唯一落点），不必再记一份「待补建」的答案。
+    if (this.askUserToolOwning(ids.map((id) => ({ id })))) return;
+    this.answeredQuestions.set(questionKeyOf(ids.map((id) => ({ id }))), answers);
   }
 
   /** 追加一个提问卡片到当前回合。 */
@@ -3047,13 +3194,25 @@ export class SessionAdapter {
       this.emit({ type: "message/segment", messageId: existing.message.id, segment: updated });
       return;
     }
+    // 这组题目已经由某个 `ask_user_question` 工具节点承载、而且**那个节点上已经有
+    // 记录**（durable 结果带回的答案，或中止 / 撤回的收场）时不再建卡：记录就在工具
+    // 节点上，再建一条独立段就是同一个提问两个节点（见 promoteQuestionToTool）。
+    //
+    // 只认「节点上确实有记录」，不看题目 id 集合本身：节点还在跑说明这是**新的一次**
+    // 提问（题目 id 恰好与前一次重合），那一次该照常建卡接管输入区。
+    const key = questionKeyOf(question.items);
+    const owned = this.askUserToolOwning(question.items)?.segment.tool.question;
+    if (owned && owned.state !== "waiting") {
+      this.answeredQuestions.delete(key);
+      return;
+    }
     // 会话监听已经判定这次提问答过了（服务端重投递 waterfall 与本窗口收到
     // 工具结果有先后）：直接建成「已答完」，别再把输入区占住。
-    const known = this.answeredQuestions.get(questionKey(question.items));
+    const known = this.answeredQuestions.get(key);
     const resolved: QuestionView = known
       ? { ...question, state: "answered", answers: known }
       : question;
-    if (known) this.answeredQuestions.delete(questionKey(question.items));
+    if (known) this.answeredQuestions.delete(key);
     const message = this.ensureAssistantMessage(Date.now());
     const segment: Segment = { kind: "question", id, question: resolved };
     this.pushSegment(message, segment);
@@ -3085,6 +3244,10 @@ export class SessionAdapter {
         segment.question.state = "answered";
       }
       const updated = { ...segment, question: { ...segment.question } } as Segment;
+      // 这组题目由某个 `ask_user_question` 工具节点承载时，记录写进那个节点、这条
+      // 独立段退出消息流（用户 2026-09-24 口径：答案与问卷合并成一个节点，而且
+      // 重载后工具节点还折得回来）。承载者不在（计划审阅、调用落在窗口外）就照旧。
+      if (this.promoteQuestionToTool(segment.question.items, { state: "answered", answers })) return;
       // 记录「已经答过」也要进那份副本：重折补回来的必须是记录，
       // 不能又变成一张等着答复的卡（见 `interactionCards`）
       this.rememberInteraction(updated, message.id);
@@ -3120,6 +3283,9 @@ export class SessionAdapter {
         if (segment.question.state !== "waiting") return;
         segment.question.state = "cancelled";
         const updated = { ...segment, question: { ...segment.question } } as Segment;
+        // 与答复同一条口径：工具节点承载的问卷并进那个节点（撤回收场在这里就落定，
+        // 随后工具结果回来时按 durable 事实再纠正一次——另一个窗口答完的顺序正是这样）
+        if (this.promoteQuestionToTool(segment.question.items, { state: "cancelled" })) return;
         this.rememberInteraction(updated, message.id);
         this.emit({
           type: "message/segment",
