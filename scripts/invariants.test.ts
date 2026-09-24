@@ -307,10 +307,11 @@ console.log("invariants: guard 工厂的返回值不被丢弃（收尾体真的�
 // 类型系统与所有断言都不说话，只是列表里又开始攒没人用过的空会话（用户报的现场）。
 // 所以按源码钉住三点：
 //  1. `newSession` 只退回空态（`detachView`），**不许**碰 `session/create`；
-//  2. 需要真会话的三个入口（发消息 / 加附件 / 跑命令）走 `ensureSession`（惰性建立），
-//     不再借 `newSession` 来建；
+//  2. 需要真会话的入口（发消息 / 加附件 / 跑命令，以及 `/`、`@` 这两个菜单，见
+//     `ensureSessionForMenu`）走 `ensureSession`（惰性建立），不借 `newSession` 来建；
 //  3. `ensureSession` 在建之前先要工作目录（`askWorkspaceDir`）——目录是会话的
-//     创建事实，用户没打开文件夹也没选过时**问一次**，而不是拿宿主的 cwd 冒充。
+//     创建事实，用户没打开文件夹也没选过时**问一次**，而不是拿宿主的 cwd 冒充；
+//     菜单那条路**不弹**这个框（用户 2026-09-24 口径）：目录没定就回空菜单。
 {
   const controller = readFileSync(join(process.cwd(), "src", "dsh", "controller.ts"), "utf8");
 
@@ -346,6 +347,27 @@ console.log("invariants: guard 工厂的返回值不被丢弃（收尾体真的�
     "建会话之前必须先确定工作目录：没有打开文件夹、也没选过目录时问一次" +
       "（拿宿主的 cwd 冒充会得到 VS Code 的安装路径，用户 2026-09-22 报的现场）",
   );
+
+  // `/` 与 `@` 两个菜单也要会话（命令目录与文件候选都是 `@RemoteScope('agent')`，
+  // 没有无会话端点），但**不许**顺手弹目录选择器：菜单是随手打开的，弹系统对话框
+  // 打断输入不合理（用户 2026-09-24 口径）。判据只认「没有任何目录时不建会话」，
+  // 目录已知时它照常走 `ensureSession`。
+  const menus = bodyOf("private async ensureSessionForMenu(");
+  assert.ok(
+    /if \(!this\.hasWorkspaceDir\(\)\) return undefined;/.test(menus) &&
+      /return await this\.ensureSession\(viewId\)/.test(menus),
+    "菜单路径必须先判目录（没有就回空菜单、不弹框），有目录才走 ensureSession",
+  );
+  for (const [signature, label] of [
+    ["private async listCommandsForView(", "`/` 命令栏"],
+    ["private async queryFiles(", "`@` 候选"],
+  ] as const) {
+    const body = bodyOf(signature);
+    assert.ok(
+      /ensureSessionForMenu\(viewId\)/.test(body),
+      `${label}在空态必须先按需建会话（否则命令目录 / 文件候选拿不到，用户 2026-09-24 报的现场）`,
+    );
+  }
 
   // 空态页那一行目录的两种非锁定形态：选过 → 显示路径；没选过 → 空串（界面显示
   // 「未选择工作区」）。空串是真的过线的值，所以这里也钉一下它不会被回退成 cwd。
@@ -387,7 +409,7 @@ console.log("invariants: guard 工厂的返回值不被丢弃（收尾体真的�
       /runCommand\(viewId, `\/permission \$\{wantedPermission\}`\)/.test(createSession),
     "空态页选过且不同于部署默认的权限必须在建会话后落实（否则实际与 UI 错位）",
   );
-  console.log("invariants: 第一条消息之前不建会话，且会话必须先有工作目录 ✓");
+  console.log("invariants: 第一条消息之前不建会话；会话必须先有工作目录；菜单按需建但不弹框 ✓");
 }
 
 console.log("\ninvariants: all assertions passed");

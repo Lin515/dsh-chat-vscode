@@ -364,6 +364,19 @@ console.log("completion: 触发词判定（`/` 行首 / `@` 提及） ✓");
     "命令没有匹配项就不弹（否则一个空框挂在那里）",
   );
   assert.strictEqual(popoverVisible({ kind: "command", start: 0, query: "zzz" }, 2), true);
+  // 还没有工作目录时两个菜单都必然是空的（宿主没有会话可查，见 controller 的
+  // `ensureSessionForMenu`）：这时必须弹，否则「未选择工作区」这句解释没地方说，
+  // 用户看到的就是「输入 / 什么都没发生」（用户 2026-09-24 报的现场）。
+  assert.strictEqual(
+    popoverVisible({ kind: "command", start: 0, query: "" }, 0, true),
+    true,
+    "还没有工作目录时 `/` 也要弹（用来说清为什么没有命令）",
+  );
+  assert.strictEqual(
+    popoverVisible({ kind: "mention", start: 0, query: "" }, 0, true),
+    true,
+    "还没有工作目录时 `@` 照常弹（换成「未选择工作区」那句）",
+  );
 }
 console.log("completion: 弹层何时出现 ✓");
 

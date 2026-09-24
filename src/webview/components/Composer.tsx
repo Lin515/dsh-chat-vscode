@@ -211,6 +211,11 @@ export function Composer({
     commands: state.commands,
     fileRefs: state.fileRefs,
     texts,
+    // 还没有工作目录：空态下 `/` 与 `@` 的候选都是会话作用域的服务端目录，宿主在没有
+    // 目录时不会就地建会话（用户 2026-09-24 口径），两个菜单必然为空——弹层要改说
+    // 「未选择工作区」而不是「没有可用命令」（`workspace.path` 空串 = 没选，
+    // 判据与空态页那一行同源；快照还没到时按「不知道」处理，不猜）。
+    noWorkspace: state.workspace !== undefined && state.workspace.path === "",
     onDraft,
     // 弹层没接管时的 Enter（含 Cmd/Ctrl+Enter 的加速手势）：键的语义住在补全 hook 里，
     // 这里只把「怎么发」交给它——分在两地时，2026-09-19 就丢过一次（回车变换行）。

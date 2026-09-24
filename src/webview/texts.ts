@@ -306,6 +306,11 @@ export interface Texts {
   /** @ 列表里**对话候选**那一组的标题（官方 `reference.section.sessions`）。 */
   mentionSessions: string;
   mentionEmpty: string;
+  /**
+   * 菜单空着、而且原因是**这个窗口还没有工作目录**时的说明（空态下 `/` 与 `@` 都是
+   * 会话作用域的服务端目录，没有目录就没有候选）。见 `messages.ts` 同名条目。
+   */
+  menuNoWorkspace: string;
   mentionHint: string;
   /** @ 列表里「返回上一层目录」那一行的无障碍标题与悬停说明。 */  mentionParent: string;
   /**

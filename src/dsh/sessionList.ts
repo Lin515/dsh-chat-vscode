@@ -23,6 +23,11 @@
  * （`SessionReferenceMentionCandidate`）**不带** `origin`，藏不掉就只能在客户端
  * 拿「已知的子代理会话 id 集合」去对——集合由调用方维护（`controller` 的
  * `subagentSessionIds`），这里只出纯函数。
+ *
+ * **历史列表也挡空会话**（服务端的 `blank` 位 = 还没开始过对话）：菜单（`/`、`@`）
+ * 会在空态按需建一条这样的会话，露在列表里就是「点一下多一条空会话」（用户
+ * 2026-09-22 报的现场）。那条过滤住在 `controller.emitSessionLists`（它要读窗口态与
+ * 未读集合），这里的 `visibleSessionCandidates` 只负责对应的 @ 候选那一侧。
  */
 
 /** 只藏**子代理**会话；分支（有 parent、`origin` 为空）必须留着。 */
@@ -31,17 +36,22 @@ export function visibleSessionRows<T extends { origin?: string }>(rows: readonly
 }
 
 /**
- * @ 提及的「对话候选」里不出现子代理会话（用户 2026-09-22 口径）。
+ * @ 提及的「对话候选」里不出现子代理会话（用户 2026-09-22 口径），也不出现**还没开始
+ * 对话**的空会话（它们连标题都没有，候选行只能拿会话 id 当名字；判据同历史列表）。
  *
- * 候选行不带 `origin`（见文件头），子代理身份由调用方维护的 id 集合判断：
- * `session/list` 原始行的 `origin === 'subagent'` 打底，子代理目录（catalog 事件、
- * RPC 与投影的并入点 `controller.mergeSubagentEntries`）实时补充。
+ * 候选行不带 `origin`、也不带 `blank`（见文件头），两种身份都由调用方维护的 id 集合
+ * 判断：`session/list` 原始行的 `origin === 'subagent'` 与 `blank` 打底，子代理目录
+ * （catalog 事件、RPC 与投影的并入点 `controller.mergeSubagentEntries`）实时补充。
  */
 export function visibleSessionCandidates<T extends { sessionId: string }>(
   rows: readonly T[],
   subagentSessionIds: ReadonlySet<string>,
+  /** 空会话 id（`SessionSummaryView.blank`，见 controller 的 `blankSessionIds`）。 */
+  blankSessionIds: ReadonlySet<string> = new Set(),
 ): T[] {
-  return rows.filter((row) => !subagentSessionIds.has(row.sessionId));
+  return rows.filter(
+    (row) => !subagentSessionIds.has(row.sessionId) && !blankSessionIds.has(row.sessionId),
+  );
 }
 
 /**

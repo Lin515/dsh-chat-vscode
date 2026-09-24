@@ -423,6 +423,18 @@ export const MESSAGES = {
   mentionFiles: { zh: "文件", en: "Files" },
   mentionSessions: { zh: "对话", en: "Sessions" },
   mentionEmpty: { zh: "没有匹配的文件", en: "No matching files" },
+  /**
+   * 菜单空着的**第二种理由**：这个窗口还没有工作目录（`workspace.path` 是空串）。
+   *
+   * 空态下 `/` 与 `@` 的候选都来自服务端的**会话作用域**目录（命令目录按 agent 的
+   * 组装、文件候选按 agent 的工作目录），而没有工作目录时不会就地建会话（用户
+   * 2026-09-24 口径：菜单不弹目录选择器）。不把原因说出来，用户看到的就是「没有可用
+   * 命令」这种误导性的空菜单。选目录的入口在页面上方那一行（`workspaceChoose`）。
+   */
+  menuNoWorkspace: {
+    zh: "未选择工作区，请先选择工作目录",
+    en: "No workspace selected — choose a working directory first",
+  },
   mentionHint: { zh: "↑↓ 选择 · Enter 引用 · Tab 进入目录 · Esc 取消", en: "↑↓ select · Enter reference · Tab browse folder · Esc cancel" },
   mentionParent: { zh: "返回上一层目录", en: "Go to the parent folder" },
   mentionDrill: { zh: "进入目录", en: "Browse folder" },

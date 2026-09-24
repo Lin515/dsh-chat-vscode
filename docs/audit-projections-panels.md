@@ -201,10 +201,19 @@ maxImageDimension, mediaTypes}`；官方 UI 用它做**入队前**校验（张�
 - `title` **一致**：RPC 列表行与投影推送两处都读。小差异：`title` 变 `null` 时扩展不清旧标题。
 - `sessionListMetadata`（`{blank, lastPromptAt}`）：扩展不读该投影键，但用的是服务端已折算
   好的 `SessionSummary.blank`——**数据本身不丢**。
-- **blank 会话可见性**：官方隐藏非当前的 blank 行并把标题本地化为「新建会话」；扩展算了
-  `blank` 但从未使用，点「新建」就往列表插一条空标题会话。**✅ 2026-09-22 已修**：会话改为
-  **惰性建立**——「新建对话」只把窗口退回空态，第一条真正需要会话的动作（发消息 / 加附件 /
-  跑命令）才 `session/create`，官方那条语义随之不再必要（不变量见 `scripts/invariants.test.ts`）。
+- **blank 会话可见性**：官方隐藏非当前的 blank 行并把标题本地化为「新建会话」。**✅ 2026-09-22
+  已修**：会话改为**惰性建立**——「新建对话」只把窗口退回空态，第一条真正需要会话的动作
+  （发消息 / 加附件 / 跑命令）才 `session/create`（不变量见 `scripts/invariants.test.ts`）。
+  **✅ 2026-09-24 补齐配套两条**：① `/` 与 `@` 菜单也要会话（命令目录与文件候选都是
+  `@RemoteScope('agent')`，没有无会话端点），所以它们进了「按需建会话」那张名单
+  （`ensureSessionForMenu`；目录没定时不建也不弹目录选择器，界面用「未选择工作区」解释空菜单）；
+  ② 服务端的 `blank` 位终于被消费——历史列表与 `@` 对话候选都挡掉没开始过对话的行
+  （`emitSessionLists` / `visibleSessionCandidates`），否则菜单按需建的那条会在列表里留一行
+  空记录（正是 2026-09-22 报的现场）。同一窗口重复建会话会**复用**自己建出来的那条空会话
+  （`reusableBlank`，官方 `ui-workspace` 的 `reuseOrCreateBlank` 同一口径）。
+  **一处有意的差异**：官方是「隐藏 blank，但显示**当前选中的**那一条」，扩展挡掉全部 blank
+  ——列表是所有窗口共享的一份（`emitAll`），「当前那条」按窗口各不相同，要那条语义就得先有
+  按窗口发出的列表；挡掉全部在观感上等价（正在编辑的会话本来就在正文里，不靠列表指认）。
 - 子代理会话过滤**一致**：官方 `origin !== "subagent"`，扩展等价。
 - 归档与 cwd 过滤：官方按 `archived` 集合；扩展是本地删除集 + 只显示 `cwd === 当前工作区`，
   其他 cwd 的会话不可见——行为确定，是否符合扩展定位属设计判断。
@@ -322,8 +331,9 @@ follow snapshot 只遍历 `values`、不读 `asOfSeq`、也不清理缺失键；
     2026-09-22 修复；subagent 身份那条的**地址路由**——follow/page/prompt/stop 按子代理
     地址——已于 2026-09-24 随会话级切换接上，`subagentTiming` 运行时长仍未消费。）
     置信度：高。
-11. **blank 会话列表策略**：官方隐藏非当前 blank 行。（✅ 2026-09-22 已修：会话惰性建立。）
-    置信度：高。
+11. **blank 会话列表策略**：官方隐藏非当前 blank 行。（✅ 2026-09-22 会话改惰性建立；
+    ✅ 2026-09-24 补齐：`blank` 位真的被消费——菜单按需建的会话不进历史列表也不进 `@`
+    对话候选，见 §12。）置信度：高。
 12. **sessionStats 只在 tps 悬停**：tps 拿不到时入口消失；不显示 turns/steps。置信度：高。
 13. **jobs 面板细节**：按钮常驻、无 live/idle 计数、stopping 用运行蓝而非警告色。置信度：高。
 14. **模型目录 default / routableProviders / failures 被丢弃**：默认模型走设置命名空间推导；
@@ -338,7 +348,7 @@ follow snapshot 只遍历 `values`、不读 `asOfSeq`、也不清理缺失键；
 | `imageLimits` | 附件入队前张数/大小校验 + 限额文案 | 无（改用设置里的模型模态判断） |
 | `schedule` | 定时提醒目录；列表「活跃提醒」指示 | 无（§15） |
 | `agentPreset` | preset 标签 + 新会话选择位 | ✅ 已消费（2026-09-22，§16） |
-| `sessionListMetadata` | 冷会话列表 blank / lastPromptAt 提示源 | 无（用服务端折算的 blank） |
+| `sessionListMetadata` | 冷会话列表 blank / lastPromptAt 提示源 | 无（读服务端已折算的 `SessionSummary.blank`：2026-09-24 起用于挡空会话） |
 | `inbox` | `'next-step'` 认领集把 user/message 分类为 steering | 无 |
 | `subagentTiming` | 子代理面板运行时长 | 无（§6） |
 | `subagent` | 宿主地址模式校验；会话身份 | 无（因此 mode 被硬编码，§6） |

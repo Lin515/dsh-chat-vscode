@@ -281,9 +281,19 @@ export function outcomeFor(
   return { type: "insert", token: formatFileMention(file.path, file.kind) ?? `"${file.path}"` };
 }
 
-/** 弹层要不要渲染：有触发词，并且要么有候选、要么是 `@`（空结果也要给个「没有文件」）。 */
-export function popoverVisible(trigger: Trigger | undefined, count: number): boolean {
-  return Boolean(trigger && (count > 0 || trigger.kind === "mention"));
+/**
+ * 弹层要不要渲染：有触发词，并且要么有候选、要么有话可说——
+ * `@` 空结果要给「没有文件」的提示；`/` 空结果本来不弹（一个空框挂在那里没有用），
+ * 但**还没有工作目录**时例外：那时两个菜单都必然是空的，弹层是唯一能把原因
+ * （`menuNoWorkspace`）说给用户的地方（用户 2026-09-24 口径：空态下 `/` 不弹命令栏
+ * 是缺陷，不是「没有命令」）。
+ */
+export function popoverVisible(
+  trigger: Trigger | undefined,
+  count: number,
+  noWorkspace = false,
+): boolean {
+  return Boolean(trigger && (count > 0 || trigger.kind === "mention" || noWorkspace));
 }
 
 /**
@@ -318,6 +328,15 @@ export interface UseComposerCompletionInput {
   };
   /** 界面文案（词典）。 */
   texts: Texts;
+  /**
+   * 这个窗口**还没有工作目录**（`workspace.path` 是空串，见 `ChatState.workspace`）。
+   *
+   * 空态下 `/` 与 `@` 的候选都来自会话作用域的服务端目录，而没有目录时宿主不会就地
+   * 建会话（用户 2026-09-24 口径：菜单不弹目录选择器）——于是两个菜单必然为空，
+   * 弹层要改说「未选择工作区」而不是「没有可用命令 / 没有匹配的文件」。
+   * `workspace` 还没下发时按 false 处理：那时「为什么空」还无从判断，不猜。
+   */
+  noWorkspace?: boolean;
   /** 草稿写回：本地 state（宿主持久化那一写由本 module 自己发）。 */
   onDraft: (text: string) => void;
   /**
@@ -402,6 +421,7 @@ function useCompletion(
     commands,
     fileRefs,
     texts,
+    noWorkspace,
     onDraft,
     onSubmit,
     insertRequest,
@@ -783,7 +803,7 @@ function useCompletion(
 
   const popover = useMemo(
     () =>
-      popoverVisible(trigger, candidates.length) ? (
+      popoverVisible(trigger, candidates.length, noWorkspace) ? (
         <div className="popover trigger-popover" role="listbox" ref={popoverRef}>
           {candidates.length === 0 ? (
             <>
@@ -791,7 +811,13 @@ function useCompletion(
                 {trigger?.kind === "command" ? texts.commands : texts.mentionFiles}
               </div>
               <div className="popover-empty">
-                {trigger?.kind === "command" ? texts.commandsEmpty : texts.mentionEmpty}
+                {/* 空的理由分两种：没有工作目录（宿主根本没去取目录）与真的没匹配项。
+                    前者说「没有可用命令」会把用户引向错误的方向（见 menuNoWorkspace）。 */}
+                {noWorkspace
+                  ? texts.menuNoWorkspace
+                  : trigger?.kind === "command"
+                    ? texts.commandsEmpty
+                    : texts.mentionEmpty}
               </div>
             </>
           ) : (
@@ -901,7 +927,7 @@ function useCompletion(
           <div className="popover-hint">{texts.mentionHint}</div>
         </div>
       ) : null,
-    [trigger, candidates, rows, hasFolderCandidate, highlight, texts, applyCandidate],
+    [trigger, candidates, rows, hasFolderCandidate, highlight, texts, noWorkspace, applyCandidate],
   );
 
   return {

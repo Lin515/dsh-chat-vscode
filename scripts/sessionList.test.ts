@@ -158,24 +158,33 @@ console.log("sessionList: 工作区可见性（有文件夹 / 无文件夹 / 已
 }
 console.log("sessionList: 控制器与界面都接上了 ✓");
 
-// ---------- 5. @ 提及的「对话候选」也不显示子代理会话（用户 2026-09-22 口径） ----------
+// ---------- 5. @ 提及的「对话候选」也不显示子代理会话（用户 2026-09-22 口径），
+//             也不显示还没开始对话的空会话（用户 2026-09-24 口径：菜单按需建的
+//             那条空会话在历史列表里被挡着，@ 候选那条路也不能漏出来） ----------
 //
-// 候选 RPC（sessionReferenceResolver/candidates）的行不带 origin（契约
+// 候选 RPC（sessionReferenceResolver/candidates）的行不带 origin、也不带 blank（契约
 // SessionReferenceMentionCandidate 只有 sessionId/label/displayTitle/cwd/
-// sameWorkspace/createdAt/mention），子代理身份只能由客户端维护的
-// id 集合判断。集合的两个来源都必须接上，缺一路就有漏网。
+// sameWorkspace/createdAt/mention），两种身份只能由客户端维护的 id 集合判断。
+// 集合的来源都必须接上，缺一路就有漏网。
 {
   const subagentIds = new Set(["sub-a", "sub-b"]);
+  const blankIds = new Set(["empty-1"]);
   const candidates = [
     { sessionId: "root" },
     { sessionId: "sub-a" },
     { sessionId: "branch", parentSessionId: "root" }, // 分支照样可见
+    { sessionId: "empty-1" },
     { sessionId: "sub-b" },
   ];
   assert.deepStrictEqual(
     visibleSessionCandidates(candidates, subagentIds).map((row) => row.sessionId),
-    ["root", "branch"],
+    ["root", "branch", "empty-1"],
     "子代理会话必须从 @ 对话候选里滤掉，分支与普通会话留下",
+  );
+  assert.deepStrictEqual(
+    visibleSessionCandidates(candidates, subagentIds, blankIds).map((row) => row.sessionId),
+    ["root", "branch"],
+    "还没开始对话的空会话也要从 @ 对话候选里滤掉（它连标题都没有，候选行只能显示会话 id）",
   );
   assert.deepStrictEqual(
     visibleSessionCandidates(candidates, new Set()).length,
@@ -183,11 +192,14 @@ console.log("sessionList: 控制器与界面都接上了 ✓");
     "集合为空（比如刚启动还没拉到列表）时一个候选都不能少",
   );
 
-  // 控制器接线：queryFiles 走 visibleSessionCandidates；集合两路来源都在
+  // 控制器接线：queryFiles 走 visibleSessionCandidates，且两个隐藏集合都传进去
   const controller = readFileSync(join(process.cwd(), "src", "dsh", "controller.ts"), "utf8");
   assert.ok(
-    /visibleSessionCandidates\(sessions \?\? \[\], this\.subagentSessionIds\)/.test(controller),
-    "queryFiles 必须用 visibleSessionCandidates 过滤 @ 对话候选（判据在 sessionList.ts 里注释着）",
+    /visibleSessionCandidates\(\s*sessions \?\? \[\],\s*this\.subagentSessionIds,\s*this\.blankSessionIds\(\),/.test(
+      controller,
+    ),
+    "queryFiles 必须用 visibleSessionCandidates 过滤 @ 对话候选，并同时传子代理 id 与空会话 id" +
+      "（判据在 sessionList.ts 里注释着）",
   );
   assert.ok(
     /item\.origin === "subagent"\)\s*\{[^}]*this\.subagentSessionIds\.add\(item\.sessionId\)/.test(controller),
@@ -197,7 +209,11 @@ console.log("sessionList: 控制器与界面都接上了 ✓");
     /this\.subagentSessionIds\.add\(entry\.id\)/.test(controller),
     "subagentSessionIds 必须由子代理目录的并入点（mergeSubagentEntries）实时补充",
   );
+  assert.ok(
+    /if \(session\.blank === true\) continue;/.test(controller),
+    "历史列表必须挡掉服务端标了 blank 的空会话（emitSessionLists）",
+  );
 }
-console.log("sessionList: @ 对话候选隐藏子代理会话 ✓");
+console.log("sessionList: @ 对话候选隐藏子代理会话与空会话 ✓");
 
 console.log("\nsessionList: all assertions passed");
