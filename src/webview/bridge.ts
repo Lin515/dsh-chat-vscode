@@ -35,11 +35,17 @@ export function post(message: WebviewToHost): void {
  * 就是两个标签的会话交叉（用户 2026-09-21 报的）。webview 无从得知 host 侧的绑定，
  * 所以由界面把当前会话 id 写下来（`App.tsx` 在会话变化时调它）。
  *
- * 存成 `{ identity: { sessionId } }` 而不是裸字符串：以后要加字段（比如草稿）时
- * 旧数据仍能被识别成同一个形状。
+ * 正在看**子代理会话**时把它的地址一起写（`subagent`）：子代理不进会话列表，
+ * 恢复只有靠这个地址才能重新进入。存成 `{ identity: { sessionId } }` 而不是裸
+ * 字符串：以后要加字段（比如草稿）时旧数据仍能被识别成同一个形状。
  */
-export function persistIdentity(sessionId: string | undefined): void {
-  const state: PersistedState = { identity: { sessionId: sessionId ?? null } };
+export function persistIdentity(
+  sessionId: string | undefined,
+  subagent?: { parentSessionId: string; mode: "one-shot" | "continuable" },
+): void {
+  const state: PersistedState = {
+    identity: { sessionId: sessionId ?? null, ...(subagent ? { subagent } : {}) },
+  };
   getApi().setState(state);
 }
 

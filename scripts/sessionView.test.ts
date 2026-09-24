@@ -57,6 +57,7 @@ const EXPECTED_SESSION_KEYS = [
   "planMode",
   "todos",
   "subagentEntries",
+  "subagent",
   "jobs",
   "goal",
   "contextWindow",
@@ -98,6 +99,7 @@ function fullSessionSource(): SessionViewSource {
     planMode: () => false,
     todos: () => [],
     subagentEntries: () => [],
+    subagent: () => undefined,
     jobs: () => [],
     goal: () => undefined,
     contextWindow: () => undefined,
@@ -305,7 +307,7 @@ console.log("sessionView: 宿主侧接线（只走构造器 + 每个字段有取
 // ---------- 6. 跨名桥已拆：会话状态那个字段只剩一个名字 ----------
 //
 // 两处**不许被这条断言误伤**的同名物（都不是会话状态字段）：
-// - 面板的种类/文案（`texts.subagents`、`panel === "subagents"`、`PanelKind`）；
+// - 导航的文案（`texts.subagents`，那是触发器的 title，不是状态字段）；
 // - 过程折叠的计数（`counts.subagents`，那是一次轮次里有几次子代理派发）。
 {
   const files = {
@@ -331,8 +333,8 @@ console.log("sessionView: 宿主侧接线（只走构造器 + 每个字段有取
 
   const app = readFileSync(files["webview/App.tsx"], "utf8");
   assert.ok(
-    /entries=\{state\.subagentEntries\}/.test(app),
-    "App.tsx 的子代理面板必须直接消费 state.subagentEntries（不再有跨名桥）",
+    /child \? child\.parentEntries : state\.subagentEntries/.test(app),
+    "App.tsx 的子代理导航必须直接消费 state.subagentEntries（不再有跨名桥）",
   );
   const chat = readFileSync(files["shared/chat.ts"], "utf8");
   assert.ok(

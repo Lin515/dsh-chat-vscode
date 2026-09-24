@@ -56,8 +56,8 @@ export type HostToWebview =
   | { type: "models"; groups: ProviderGroupView[]; current?: ModelSelectionView }
   /** 待办清单。 */
   | { type: "todos"; todos: TodoView[] }
-  /** 子代理目录（子代理面板）。 */
-  | { type: "subagents/list"; entries: SubagentView[]; parentAvailable: boolean }
+  /** 子代理目录（标题旁导航的清单）。 */
+  | { type: "subagents/list"; entries: SubagentView[] }
   /** 后台任务清单（任务面板）。 */
   | { type: "jobs/list"; jobs: JobItemView[] }
   /**
@@ -74,8 +74,6 @@ export type HostToWebview =
   | { type: "commands/list"; commands: CommandView[] }
   /** 文件引用候选（输入框输入 @ 时弹出）。 */
   | { type: "files/list"; query: string; items: FileRefView[]; sessions?: SessionRefView[] }
-  /** 指定子代理的会话内容（复用 message 帧之外的单帧快照）。 */
-  | { type: "subagent/transcript"; id: string; messages: MessageView[] }
   /** 一次性提示。 */
   | { type: "toast"; level: "info" | "warn" | "error"; text: string }
   /**
@@ -154,7 +152,16 @@ export type WebviewToHost =
    */
   | { type: "setAgentPreset"; id: string }
   /** 切换到某个会话。 */
-  | { type: "openSession"; sessionId: string }
+  | {
+      type: "openSession";
+      sessionId: string;
+      /**
+       * 会话是**子代理**时的地址：子代理不进会话列表、只能用子代理地址打开
+       * （`session/follow` 的 subagent 地址是鉴权的一部分）。面包屑返回父会话、
+       * 切到兄弟子代理、以及恢复路径都带它；普通会话没有这个字段。
+       */
+      subagent?: { parentSessionId: string; mode: "one-shot" | "continuable" };
+    }
   /** 请求会话列表。 */
   | { type: "listSessions" }
   /**
@@ -341,9 +348,12 @@ export type WebviewToHost =
    * 而且启动令牌换 cookie 是 `303 → 裸 /`，附带的查询串本来就会被丢掉。
    */
   | { type: "openInBrowser" }
-  /** 打开子代理面板（列出当前会话的子代理）。 */
+  /** 刷新当前会话的子代理目录（标题旁导航打开 / 悬停时）。 */
   | { type: "listSubagents" }
-  /** 查看某个子代理的对话记录。 */
+  /**
+   * 进入某个子代理的对话（**会话级切换**，与官方 Web 的 `openSession(address)` 同构）：
+   * 窗口整个绑到子代理会话上，消息流 / 输入框都换成它的。
+   */
   | { type: "openSubagent"; id: string }
   /** 请求后台任务清单。 */
   | { type: "listJobs" }

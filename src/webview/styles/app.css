@@ -95,6 +95,220 @@
   animation: icon-glow 1.6s ease-in-out infinite;
 }
 
+/* -------- 标题右侧的子代理导航（官方 dsh-client-ui-subagent 同款）--------
+   交互与官方 `CatalogDropdown` 逐条对齐：点击 / 悬停展开一个**固定宽度**的树形
+   列表（官方 336px 菜单），点行进入子代理；子代理页标题换成两节面包屑，点左半
+   （父会话标题）回主会话。 */
+
+/* 容器：弹出列表的定位壳（官方 .root 的 position: relative） */
+.subagent-nav {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 4px;
+  min-width: 0;
+}
+
+/* 触发器：官方 .trigger / .switcherTrigger——透明底、悬停变亮、chevron 随开合旋转 */
+.subagent-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 22px;
+  max-width: 32vw;
+  padding: 2px 5px;
+  border-radius: 6px;
+  font-size: var(--font-size-2xs);
+  color: var(--description);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.subagent-trigger:hover,
+.subagent-trigger.is-busy {
+  color: var(--fg);
+}
+
+.subagent-trigger:hover {
+  background: var(--hover);
+}
+
+/* 当前子代理标题（子代理页）：官方 .switcherTrigger——主文字色 + 500 字重 */
+.subagent-trigger.is-current {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.subagent-trigger-title,
+.subagent-trigger-count {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.subagent-trigger > svg {
+  flex: none;
+  transition: transform 120ms ease;
+}
+
+/* 开合时 chevron 翻转（官方 .triggerOpen 同款） */
+.subagent-trigger > svg.is-open {
+  transform: rotate(180deg);
+}
+
+/* 面包屑左半：主会话标题变身「返回」按钮（子代理页）。
+   同一套排版（.header-title），只补按钮复位与悬停底色（官方 button.crumb:hover
+   的可点形态：加底色、文字色不变）。 */
+button.header-title {
+  padding: 2px 5px;
+  margin-left: -5px; /* 抵消内边距，标题视觉位置与纯文本版对齐 */
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+button.header-title:hover {
+  background: var(--hover);
+}
+
+.subagent-crumb-sep {
+  flex: none;
+  color: var(--description);
+}
+
+/* 弹出的目录列表：官方 .menu 的定宽皮肤（336px、大圆角、投影），向下展开。
+   位置相对 .subagent-nav（触发器左对齐），宽度钳进视口防窄侧栏裁切。 */
+.subagent-menu {
+  position: absolute;
+  top: calc(100% + 5px);
+  left: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  width: 300px;
+  max-width: min(336px, calc(100vw - 16px));
+  max-height: min(420px, calc(100vh - 60px));
+  padding: 4px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--input-bg);
+  color: var(--fg);
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.05),
+    0 10px 24px rgba(0, 0, 0, 0.3);
+}
+
+.subagent-menu-head {
+  padding: 4px 8px 3px;
+  font-size: var(--font-size-2xs);
+  color: var(--muted);
+}
+
+.subagent-menu-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* 目录一行：官方 .row——状态点列 + 标题/副文两行内容 + 右侧箭头；
+   悬停整行铺 hover 底（圆角贴行），当前行加粗。 */
+.subagent-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 38px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  font-size: var(--font-size-xs);
+  text-align: left;
+}
+
+.subagent-row:hover {
+  background: var(--hover);
+}
+
+.subagent-row.is-current {
+  cursor: default;
+}
+
+.subagent-row.is-current:hover {
+  background: none;
+}
+
+.subagent-row.is-current .subagent-row-label {
+  font-weight: 600;
+}
+
+.subagent-row:disabled {
+  color: var(--fg);
+  opacity: 1;
+}
+
+/* 状态点格：独享一格、格内水平垂直居中（官方 rowActivitySlot 同款 14px 列） */
+.subagent-row-state {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  flex: 0 0 auto;
+}
+
+/* 标题 + 副文两行：标题一行截断，副文（状态 / 模式）小一号灰字 */
+.subagent-row-content {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.subagent-row-label,
+.subagent-row-sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.subagent-row-sub {
+  font-size: var(--font-size-2xs);
+  line-height: 1.25;
+  color: var(--muted);
+}
+
+/* 行尾的「进入」箭头：默认很淡，悬停整行时提亮（官方 sidebarButton 的提示位） */
+.subagent-row-arrow {
+  display: inline-flex;
+  flex: 0 0 auto;
+  color: var(--description);
+}
+
+.subagent-row.is-current .subagent-row-arrow {
+  visibility: hidden;
+}
+
+/* 一次性子代理的只读说明（替代整个输入区，官方 SubagentReadOnlyComposer 同款） */
+.composer-readonly {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0 8px 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--editor-bg);
+  font-size: var(--font-size-xs);
+  color: var(--muted);
+}
+
+.composer-readonly strong {
+  font-size: var(--font-size-xs);
+  color: var(--fg);
+}
+
 /* ============================ message list ============================ */
 
 /* 会话区（消息区 + 待办）的纵向容器。 */
@@ -3627,16 +3841,6 @@ button.meta-chip:hover {
   color: var(--muted);
 }
 
-/* 抽屉里「正在读」的占位行（子代理记录）：转圈与文字对齐同一行 */
-.drawer-loading {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 6px;
-  font-size: var(--font-size-xs);
-  color: var(--muted);
-}
-
 .popover-sep {
   height: 1px;
   margin: 4px 2px;
@@ -3848,20 +4052,6 @@ button.meta-chip:hover {
 /* 删除两步确认：首次点击后行内显示红色提示，取代时间文本 */
 .session-item-delete-hint {
   color: var(--error);
-}
-
-/* 子代理行左侧的状态点：**独享一格**（格内水平垂直都居中），自带左外边距把它与
-   标题隔开。此前它是紧跟在标题末尾的一个裸圆点（行的 gap 只有 2px），窄侧栏下
-   看着像贴在/压在标题上（用户 2026-09-19 报「太靠左、被标题盖住一点」）。
-   格子是 inline-flex，圆点（`.dot` 的 `flex: 0 0 auto`）不会把格子撑变形。 */
-.session-item-state {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 12px;
-  height: 12px;
-  margin-left: 4px;
 }
 
 .session-group {
@@ -4153,14 +4343,6 @@ button.meta-chip:hover {
 .job-stop-label {
   font-size: var(--font-size-2xs);
   line-height: 1;
-}
-
-/* 子代理记录面板里的消息（只读）：比正文紧一点。
-   面板里**没有** `.chat-list` 那一层，所以正文那条 `.chat-list > .msg:last-child`
-   的 200px 留白本来就不会落进来——此前这里抄了一条 `.subagent-transcript .chat-list
-   > .msg:last-child { min-height: 0 }` 兜它，是永远匹配不上的死规则，已删。 */
-.subagent-transcript .msg {
-  padding: 4px 0;
 }
 
 /* ============================ to-do panel ============================ */

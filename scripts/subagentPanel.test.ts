@@ -1,10 +1,13 @@
 /**
- * 子代理面板与它的只读记录（用户 2026-09-19 的四条口径）：
+ * 子代理导航与会话级切换（2026-09-24 口径：与官方 Web 端同构）：
  *
- * 1. **点进去能看它的会话内容**，默认停在**最新**一条，只读（没有输入区）；
- * 2. 跑完的子代理读作**已完成**（绿灯），不再读作「未运行」；
- * 3. 那一行的状态点**独享一格**、格内水平垂直居中，且与标题之间留出距离；
- * 4. 「先点 A 再点 B」时抽屉不能拿 A 的记录充数（打开即清空 + loading）。
+ * 1. **入口在标题右侧**（官方 `SubagentHeaderLineage` / `SubagentCatalogAction`），
+ *    没有独立的子代理按钮；目录为空时整个不渲染；
+ * 2. **进入子代理 = 会话级切换**（`openSession` 带子代理地址）：消息流、输入框、
+ *    生成状态全来自子代理会话本身——可继续子代理**可以接着对话**，不再只读；
+ * 3. 面包屑点**左半**返回父会话；右半（标题 + 切换图标）弹出父目录切换兄弟；
+ * 4. 一次性子代理的对话是**只读**记录（输入区换成说明）；
+ * 5. 发送与停止按地址路由（`subagents/prompt` / `subagents/interruptByParent`）。
  *
  * 运行：npm test（登记在 esbuild.scripts.mjs 的 entries）
  */
@@ -14,214 +17,287 @@ import { join } from "node:path";
 
 const read = (...parts: string[]): string => readFileSync(join(process.cwd(), ...parts), "utf8");
 
-const panels = read("src", "webview", "components", "Panels.tsx");
-const css = read("src", "webview", "styles", "app.css");
+const app = read("src", "webview", "App.tsx");
+const composer = read("src", "webview", "components", "Composer.tsx");
 const state = read("src", "webview", "state.ts");
+const client = read("src", "dsh", "client.ts");
 const controller = read("src", "dsh", "controller.ts");
+const messages = read("src", "webview", "messages.ts");
+const css = read("src", "webview", "styles", "app.css");
 
-// ---------- 1. 点进去 = 宿主拉一份只读快照 + 抽屉开到这个 id ----------
+// ---------- 1. 入口：标题右侧，没有独立按钮，无子代理时不占位 ----------
 {
-  const app = read("src", "webview", "App.tsx");
   assert.ok(
-    /onOpen=\{\(id\) => \{[\s\S]{0,200}post\(\{ type: "openSubagent", id \}\);[\s\S]{0,200}dispatch\(\{ type: "ui\/openSubagent", id \}\)/.test(
+    !/panel === "subagents"/.test(app),
+    "子代理不再有独立的抽屉面板：头部那颗按钮已随入口一起删掉",
+  );
+  assert.ok(
+    !/SubagentsPanel|SubagentTranscriptPanel/.test(app),
+    "两个子代理面板组件不再被 App 使用（入口换成标题右侧的导航）",
+  );
+  const panels = read("src", "webview", "components", "Panels.tsx");
+  assert.ok(
+    !/SubagentsPanel|SubagentTranscriptPanel/.test(panels),
+    "Panels.tsx 里不应再有两个子代理面板的实现（历史 / 后台任务仍在）",
+  );
+  // 导航组件在标题之后：面包屑读起来才是「标题 / 子代理」
+  const headerAt = app.indexOf("<span className=\"header-title\">");
+  const navAt = app.indexOf("<SubagentNav state={state} agentsBusy={agentsBusy} />");
+  const spacerAt = app.indexOf('<span className="header-spacer" />');
+  assert.ok(headerAt > 0 && navAt > headerAt && spacerAt > navAt, "导航要挂在标题右侧、弹性空隙之前");
+  // 普通会话：目录为空就整个不渲染（官方：empty catalog 隐藏触发器）。
+  // 判据统一收口在「展开用的那份清单」上——普通会话取自己的目录、子代理页取父目录。
+  assert.ok(
+    /if \(entries\.length === 0\) return null;/.test(app),
+    "目录为空时导航整个不渲染（不占位置，与官方同口径）",
+  );
+  // 触发器发一次按需刷新（下拉里的清单要拿最新的）
+  assert.ok(
+    /post\(\{ type: "listSubagents" \}\)/.test(app),
+    "打开 / 悬停触发器要发 listSubagents 刷新目录",
+  );
+}
+console.log("subagentPanel: 入口在标题右侧、空目录不渲染 ✓");
+
+// ---------- 2. 返回主会话 = 点标题栏的主会话标题；切换列表 = 点「/ 子代理标题 ▾」 ----------
+{
+  // 标题栏本身就有主会话标题：子代理页把它变成可点按钮（不重复加一节「父标题 /」）
+  assert.ok(
+    /className="header-title"\s+title=\{texts\.backToParent\(child\.parentTitle\)\}\s+onClick=\{\(\) => post\(\{ type: "openSession", sessionId: child\.parentSessionId \}\)\}/.test(
       app,
     ),
-    "点子代理既要点宿主拉记录，也要把抽屉开到这个 id（见状态里那条 ui/openSubagent）",
+    "子代理页的主会话标题要变成可点按钮（点击返回主会话，openSession 不带地址 = 普通会话）",
   );
-  // 记录面板那段 JSX 的**属性块**（`<SubagentTranscriptPanel … />`）：按字符数开窗
-  // 太脆——中间加一段注释就会把断言撞红，而它想说的从来不是「这段有多长」。
-  const transcriptStart = app.indexOf("<SubagentTranscriptPanel");
-  const transcript = app.slice(transcriptStart, app.indexOf("/>", transcriptStart));
-  assert.ok(transcriptStart >= 0, "App 要渲染 SubagentTranscriptPanel");
+  // 导航里不许再有第二份「父会话标题」（否则标题重复一节）
   assert.ok(
-    /loading=\{state\.subagent\.loading === true\}/.test(transcript),
-    "记录面板要收到 loading（宿主那份快照没到之前显示「正在读取」）",
+    !/subagent-crumb-root/.test(app),
+    "导航里不许再渲染父会话标题（返回入口就是标题栏已有的那颗标题）",
   );
   assert.ok(
-    /post\(\{ type: "openSubagent", id \}\)/.test(app),
-    "打开子代理走 openSubagent 这条 IPC（宿主用 session/follow 的 subagent 地址拉只读快照）",
+    /current=\{entry\.id === currentId\}/.test(app) && /const currentId = child \? state\.session\?\.id : undefined;/.test(app),
+    "父目录里要标出当前所在的那一行（current 行不可再点）",
   );
-
-  // 只读：记录面板里**没有**输入区（没有 Composer / textarea），
-  // 卡片也走只读渲染（问卷 / 审批只画内容，不给能发出去的控件）
-  const panelBlock = panels.slice(panels.indexOf("export function SubagentTranscriptPanel"));
+  // 清单两路合一：子代理页取父目录（兄弟行含自己），普通会话取自己的目录；
+  // 列表里 current 行标记当前所在（兄弟切换 / 下级进入共用同一份渲染）
   assert.ok(
-    !/<Composer/.test(panelBlock) && !/<textarea/.test(panelBlock),
-    "子代理记录**只读**：面板里不许出现输入区（只有查看）",
+    /const entries = child \? child\.parentEntries : state\.subagentEntries;/.test(app) &&
+      /entries\.map\(\(entry\) =>/.test(app),
+    "切换列表的数据两路合一（父目录 / 自身目录），当前行可识别",
   );
+  // 触发器标题与列表行**同源**（目录里当前那一行的 label）：子代理会话的自动标题
+  // 是另一套字段，不会出现「列表里叫 A、触发器上叫 B」（2026-09-24 报的不一致）
   assert.ok(
-    /<Message key=\{message\.id\} message=\{message\} readOnly \/>/.test(panelBlock),
-    "记录里的消息必须以 readOnly 渲染（见 Message 的同名 prop）",
-  );
-
-  // 标题是**目录里的名字**（用户刚点的那一行），不是会话 id：一串 uuid 没法帮人
-  // 确认「我看的是哪一个」。目录里查不到时退回 id（那是唯一还认得出的身份）。
-  assert.ok(
-    /<Drawer title=\{label\} /.test(panelBlock),
-    "记录抽屉的标题用 label（目录里的名字），不是会话 id",
-  );
-  assert.ok(
-    /label=\{state\.subagentEntries\.find\(\(entry\) => entry\.id === state\.subagent\?\.id\)\?\.label \?\? state\.subagent\.id\}/.test(
-      transcript,
+    /const currentLabel = child\s*\?\s*\(entries\.find\(\(entry\) => entry\.id === currentId\)\?\.label \?\? state\.session\?\.title\)/.test(
+      app,
     ),
-    "App 从 subagentEntries 里取回当前子代理的 label，查不到时退回 id",
+    "触发器的标题必须取目录里当前行的 label（与列表行同一个来源同一个值）",
   );
-
-  const rows = read("src", "webview", "components", "Rows.tsx");
+  // 词典：计数 / 返回 / 切换的提示都要中英两套（双语硬规则）
   assert.ok(
-    /const interactive = waiting && !readOnly;/.test(rows),
-    "问卷卡：只读时 interactive 为假（选项不可点、没有输入框、没有提交行）",
-  );
-  assert.ok(
-    /disabled=\{!interactive\}/.test(rows),
-    "问卷卡：选项按钮的 disabled 走 interactive（只读时点不动）",
+    /subagentCount:\s*\{\s*zh: \(count: number\)/.test(messages),
+    "计数触发器的文案（含个数）在消息表里",
   );
   assert.ok(
-    /\{interactive \? \(\s*<div className="question-footer">/.test(rows),
-    "问卷卡：只读时不画提交行",
+    /backToParent:\s*\{\s*zh: \(title: string\)/.test(messages) &&
+      /subagentSwitcher:\s*\{\s*zh: \(title: string\)/.test(messages),
+    "返回提示（主会话标题的 title）与切换提示在消息表里",
+  );
+  // 样式：可点标题 / 触发器 / 弹出列表都在（官方 CatalogDropdown 的同款皮肤）
+  assert.ok(
+    /button\.header-title \{/.test(css) && /\.subagent-trigger \{/.test(css) && /\.subagent-menu \{/.test(css),
+    "app.css 要有导航的样式（可点标题 / 触发器 / 定宽列表）",
+  );
+  // 列表是「点了展开」的固定宽度菜单（官方 .menu 同款），不是每次渲染都挂着的浮层
+  assert.ok(
+    /\{open \? \(\s*<div className="subagent-menu"/.test(app),
+    "目录列表随 open 条件渲染（点击展开，点外部 / Esc 收起）",
+  );
+  // 开合**只认点击**（用户 2026-09-24 口径：不要悬停自动展开）；再点一次关闭
+  const nav = app.slice(app.indexOf("function SubagentNav"), app.indexOf("const CONNECT_POST"));
+  assert.ok(
+    !/onMouseEnter|onMouseLeave/.test(nav),
+    "触发器不许带悬停展开 / 移开收起（用户口径：只认点击）",
   );
   assert.ok(
-    /const stepped = interactive && mode === "stepped";/.test(rows),
-    "问卷卡：只读时平铺全部题目（一次一题的分页只在能作答时有意义）",
-  );
-  assert.ok(
-    /\{waiting && !readOnly \? \(\s*<div className="approval-actions">/.test(rows),
-    "审批卡：只读时不画放行 / 拒绝",
-  );
-
-  const message = read("src", "webview", "components", "Message.tsx");
-  assert.ok(
-    /<ApprovalCard key=\{segment\.id\} approval=\{segment\.approval\} readOnly=\{readOnly\} \/>/.test(message) &&
-      /readOnly=\{readOnly\}/.test(message),
-    "Message 要把 readOnly 透传给审批卡与问卷卡",
+    /setOpen\(\(v\) => !v\)/.test(nav),
+    "触发器点击是 toggle：展开后再点一次关闭",
   );
 }
 
-// ---------- 2. 默认停在最新一条 ----------
+// ---------- 3. 会话级切换：宿主按目录行的真实模式开子代理 ----------
 {
   assert.ok(
-    /useLayoutEffect\(\(\) => \{[\s\S]{0,220}el\.scrollTop = el\.scrollHeight;[\s\S]{0,80}\}, \[id, messages\]\)/.test(
-      panels,
-    ),
-    "记录抽屉要在打开（含内容到达）后落到底部——默认看的是「它最后做了什么」",
-  );
-  assert.ok(
-    /bodyRef=\{body\}/.test(panels) && /bodyRef\?: React\.RefObject<HTMLDivElement>/.test(panels),
-    "滚动容器是 Drawer 的 .drawer-body，ref 要能传进去",
-  );
-}
-
-// ---------- 3. 跑完 = 已完成（绿灯） ----------
-{
-  assert.ok(
-    /function subagentTone\(activity: SubagentView\["activity"\]\): string \{\s*return activity === "running" \? "dot-running" : "dot-ok";/.test(
-      panels,
-    ),
-    "状态点色调：running → 蓝点，其余（inactive）→ 绿灯",
-  );
-  assert.ok(
-    /\{entry\.activity === "running" \? texts\.jobRunning : texts\.subagentCompleted\}/.test(panels),
-    "跑完的子代理显示「已完成」（subagentCompleted），不再显示「未运行」",
-  );
-
-  // 词典：两条文案都还在，且中文分别是「运行中」/「已完成」
-  const messages = read("src", "webview", "messages.ts");
-  assert.ok(
-    /subagentCompleted: \{ zh: "已完成", en: "completed" \}/.test(messages),
-    "subagentCompleted 的中英两套必须在消息表里",
-  );
-  assert.ok(
-    !/subagentInactive/.test(messages) && !/subagentInactive/.test(panels),
-    "「未运行」这条文案已随口径一起删掉（留着就是死文案）",
-  );
-}
-
-// ---------- 4. 状态点独享一格：水平垂直居中 + 与标题隔开 ----------
-{
-  assert.ok(
-    /<span className="session-item-state">\s*<span className=\{`dot \$\{subagentTone\(entry\.activity\)\}`\} \/>\s*<\/span>/.test(
-      panels,
-    ),
-    "状态点要渲染在 .session-item-state 这一格里（不再是跟在标题后的裸圆点）",
-  );
-  const at = css.indexOf(".session-item-state {");
-  assert.ok(at >= 0, "app.css 必须有 .session-item-state 规则");
-  const body = css.slice(at, css.indexOf("}", at));
-  assert.ok(/display:\s*inline-flex/.test(body), "格子是 inline-flex（圆点不会把格子撑变形）");
-  assert.ok(/align-items:\s*center/.test(body), "圆点在格内**垂直**居中（用户 2026-09-19 报的靠顶）");
-  assert.ok(/justify-content:\s*center/.test(body), "圆点在格内**水平**居中");
-  assert.ok(/margin-left:\s*\d+px/.test(body), "格子自带左外边距，把点与标题隔开（此前只有行的 2px gap）");
-  assert.ok(/width:\s*\d+px/.test(body) && /height:\s*\d+px/.test(body), "格子要有明确的边长（独享空间）");
-
-  // 工具行那个状态点坑位同样要垂直居中（同一类「独享空间」）
-  const rowIcon = css.slice(css.indexOf(".row-icon-status {"), css.indexOf("}", css.indexOf(".row-icon-status {")));
-  assert.ok(/align-items:\s*center/.test(rowIcon), ".row-icon-status 里的圆点也要垂直居中");
-}
-
-// ---------- 5. 打开就清掉上一次的记录 ----------
-{
-  assert.ok(
-    /case "ui\/openSubagent":[\s\S]{0,320}panel: "subagent", subagent: \{ id: action\.id, messages: \[\], loading: true \}/.test(
-      state,
-    ),
-    "ui/openSubagent 要把内容清空并置 loading——否则「先点 A 再点 B」会先显示 A 的记录",
-  );
-  assert.ok(
-    /case "subagent\/transcript":[\s\S]{0,200}loading: false/.test(state),
-    "宿主回帧后要落 loading",
-  );
-  // 宿主侧：目录里查不到也要回一帧空的，否则界面永远停在「正在读取…」
-  assert.ok(
-    /this\.emitToView\(viewId, \{ type: "subagent\/transcript", id: childSessionId, messages: \[\] \}\);/.test(
+    /await this\.openSession\(viewId, childSessionId, \{\s*parentSessionId: hit\.parentId,\s*mode: hit\.entry\.mode,\s*\},\s*hit\.catalog\);/.test(
       controller,
     ),
-    "openSubagent 在目录里查不到 id 时也要回一帧空记录",
+    "openSubagent 走 openSession 的子代理地址（会话级切换，与官方 openSession(address) 同构），父目录随行作种子",
   );
-}
-
-// ---------- 6. follow 请求不许带 `assistantStream: false`（2026-09-22） ----------
-//
-// 症状：点开任何子代理都是「这个子代理没有可显示的内容」——**从这条链路上线起就没
-// 好过**。根因是请求里写了 `assistantStream: false`，而契约里它是**字面量 `true`**
-// （`readonly assistantStream?: true`）：网关的边界校验把整条 request 拒掉
-// （`gateway/input-invalid: wire field "request" failed boundary validation`），
-// `onError` 立刻回一帧空记录，界面于是显示空态而不是报错。
-//
-// 对真实服务器的复现（2026-09-22，只读）：同一个子代理地址，带 `assistantStream: false`
-// 报 `gateway/input-invalid`；去掉这个字段或写 `true` 都回 `snapshot(records=35)`，
-// 折出 2 条消息。所以这条断言钉的是「这个字段不许出现」，不是「值要写对」——
-// 契约只允许 `true`，不传是它的默认。
-{
-  const protocol = read("src", "dsh", "protocol.ts");
-  const client = read("src", "dsh", "client.ts");
+  // 地址的 mode 必须来自目录行：硬编码 continuable 打开 one-shot 子代理会被
+  // `subagent/unauthorized` 拒绝（address 是鉴权的一部分，不是提示）
   const open = controller.slice(controller.indexOf("private async openSubagent"));
-  // 只看**代码行**：这段的注释成篇讲的就是 `assistantStream` 为什么不能写，
-  // 连着注释一起匹配只会匹配到注释自己（`invariants.test.ts` 那份带字符串
-  // 感知的扫描器在这里用不上——这段里没有含 `//` 的字符串字面量）
-  const request = open
-    .slice(0, open.indexOf("onItem"))
+  const openBody = open.slice(0, open.indexOf("// ---------- 斜杠命令"));
+  const requestLines = openBody
     .split("\n")
     .filter((line) => !line.trim().startsWith("//"))
     .join("\n");
   assert.ok(
-    !/assistantStream/.test(request),
-    "子代理 follow 请求里不许出现 assistantStream（契约只认字面量 `true`，写 `false` 会被网关整条拒掉）",
+    !/mode: "continuable"/.test(requestLines),
+    "openSubagent 里不许出现硬编码的 mode（一次性子代理会被鉴权整条拒绝）",
+  );
+  // follow 流按域上的地址打开（子代理地址是宿主鉴权的一部分）
+  assert.ok(
+    /\}, scope\.subagentAddress\);/.test(controller),
+    "openScopeFollow 要把域上的子代理地址传给 followSession（普通会话地址打不开子代理）",
   );
   assert.ok(
-    /assistantStream\?: true;/.test(protocol) && /SessionFollowRequest/.test(protocol),
-    "线上类型里要有 `SessionFollowRequest`，且 assistantStream 必须是字面量 `true`",
+    /subagent\?: \{ parentSessionId: string; mode: "one-shot" \| "continuable" \},\s*\): StreamHandle/.test(
+      client.replace(/\n/g, "\n"),
+    ) || /subagent\?: \{ parentSessionId: string; mode: "one-shot" \| "continuable" \},\s*\n\s*\): StreamHandle/.test(client),
+    "followSession 要能带子代理地址（地址拼装在 client 一处）",
+  );
+  // 分页同样按地址（往前翻历史用 session/page，地址错了一页都取不到）
+  assert.ok(
+    /this\.client!\.page\(scope\.sessionId, throughSeq, beforeSeq, 50, scope\.subagentAddress\)/.test(controller),
+    "分页要带上子代理地址",
+  );
+  // 一次性子代理点不进去的保护：目录里没有的 id 不切窗口
+  assert.ok(
+    /text: "@subagentNotFound"/.test(controller),
+    "目录里查不到的子代理要如实提示，不把窗口切到开不出来的会话上",
+  );
+  // **层级不能因为切换而变深**（用户 2026-09-24 口径）：子代理页上的查找空间**只有
+  // 父目录**——先查当前会话自己目录的写法会把「切换兄弟」变成「进入下级」
+  const resolveBlock = requestLines.slice(
+    requestLines.indexOf("const resolve = ()"),
+    requestLines.indexOf("let hit = resolve()"),
   );
   assert.ok(
-    /satisfies SessionFollowRequest/.test(request) && /satisfies SessionFollowRequest/.test(client),
-    "两条 follow 请求都要经 `satisfies SessionFollowRequest` 过一遍编译期——openStream 收 unknown，不标就没人拦",
+    /if \(address\) \{[\s\S]{0,300}return undefined;[\s\S]{0,80}\}/.test(resolveBlock),
+    "子代理页上的查找必须先按地址分流：只在父目录里找兄弟，查不到就放弃",
   );
   assert.ok(
-    /followSession\(sessionId: string, callbacks: StreamCallbacks\): StreamHandle/.test(client),
-    "`beforeSeq` 属于 session/page，不在 follow 请求里（它此前是个没人传过的死选项，留着就是同一道校验的下一个坑）",
+    resolveBlock.indexOf("if (address)") < resolveBlock.indexOf("scope.subagentEntries.find"),
+    "查找空间要先判「自己在子代理页」：兄弟查找优先、自身目录只在普通会话时才参与",
+  );
+  // 打开菜单 / 切换前刷新的也是「列表根部」的目录（官方 refreshProjection(parentId)）：
+  // 子代理页刷父目录，普通会话刷自己的
+  const refresh = controller.slice(
+    controller.indexOf("private async refreshSubagents"),
+    controller.indexOf("private async openSubagent"),
+  );
+  assert.ok(
+    /if \(scope\.subagentAddress\) \{[\s\S]{0,500}refreshSubagentCatalog\(parent\)|fetchParentCatalog\(scope\)/.test(
+      refresh,
+    ),
+    "子代理页打开导航要刷父目录（兄弟行的 label / activity 才是最新的）",
   );
 }
+console.log("subagentPanel: 会话级切换（真实模式 + 地址化 follow/page）✓");
 
-// ---------- 7. 注册与打底（2026-09-23）：列表不再依赖「点开面板」那一下 ----------
+// ---------- 3b. 状态打底：进入前就能亮出「生成中」 ----------
+//
+// 子代理不在会话列表里（列表是过滤过的），running 的打底来自父目录行的 activity；
+// 父域不在（恢复路径）时用 session/list 原始行的 running。
+{
+  const ensure = controller.slice(
+    controller.indexOf("private ensureScope("),
+    controller.indexOf("private openScopeFollow("),
+  );
+  assert.ok(
+    /scope\.running =/.test(ensure) && /entry\.activity === "running"|subagentRunning\.get\(/.test(ensure),
+    "ensureScope 要给子代理域一个 running 打底（正在跑的子代理开进来必须立刻是「生成中」）",
+  );
+  assert.ok(
+    /this\.subagentRunning\.set\(item\.sessionId, item\.running\)/.test(controller),
+    "refreshSessions 要把子代理行的 running 记下来（恢复路径的打底来源）",
+  );
+}
+console.log("subagentPanel: 子代理域的 running 打底 ✓");
+
+// ---------- 4. 发送与停止按地址路由 ----------
+{
+  assert.ok(
+    /await this\.client\.promptSubagent\(address\.parentSessionId, scope\.sessionId, content, mode, requestId\);/.test(
+      controller,
+    ),
+    "子代理地址的发送走 subagents/prompt（session/prompt 对子代理会话不成立）",
+  );
+  assert.ok(
+    /delivery,\s*content,/.test(client) || /delivery,/.test(client),
+    "prompt 的 mode 在 subagents/prompt 上叫 delivery（契约字段名）",
+  );
+  // 文件附件：官方硬规则（subagent/attachment-invalid）——有文件芯片就不发
+  assert.ok(
+    /address && content\.some\(\(part\) => part\.type === "file"\)/.test(controller) &&
+      /text: "@subagentFilesUnsupported"/.test(controller),
+    "子代理会话有文件附件时直接不发并提示（服务端会整轮拒绝）",
+  );
+  assert.ok(
+    /await this\.client\.interruptSubagentByParent\(scope\.sessionId, address\.parentSessionId\);/.test(
+      controller,
+    ),
+    "子代理的停止走 subagents/interruptByParent（父地址是持久事实，父不在线也停得了）",
+  );
+  // 客户端方法与线格式对齐（docs/dsh-server-api.md §9.2 的位置参数名）
+  assert.ok(
+    /"subagents\/prompt",\s*\{\s*request:\s*\{[\s\S]{0,400}delivery,/.test(client),
+    "subagents/prompt 的参数是 {request: {...}}，delivery 必填（0.1.5 起）",
+  );
+  assert.ok(
+    /"subagents\/interruptByParent",\s*\{\s*childSessionId,\s*parentSessionId,\s*mode: "continuable",\s*\}/.test(
+      client,
+    ),
+    "interruptByParent 是三个平铺位置参数（不是 request 包裹）",
+  );
+}
+console.log("subagentPanel: 发送与停止按地址路由 ✓");
+
+// ---------- 5. 一次性子代理 = 只读记录 ----------
+{
+  assert.ok(
+    /state\.subagent\?\.mode === "one-shot" \? \(\s*<div className="composer-readonly" role="status">/.test(
+      composer(),
+    ),
+    "一次性子代理的输入区整个换成只读说明（官方 SubagentReadOnlyComposer 的选举）",
+  );
+  assert.ok(
+    /subagentReadonlyTitle: \{ zh: "一次性子代理记录"/.test(messages) &&
+      /subagentReadonlyBody:\s*\{[\s\S]{0,200}一次性任务不支持后续消息/.test(messages),
+    "只读说明的中英两套在消息表里（官方 readonly.oneShot.* 同口径）",
+  );
+  assert.ok(
+    /\.composer-readonly \{/.test(css),
+    "只读说明要有样式（替代整个输入区，不是往输入框里塞 disabled）",
+  );
+  function composer(): string {
+    return read("src", "webview", "components", "Composer.tsx");
+  }
+}
+console.log("subagentPanel: 一次性子代理只读 ✓");
+
+// ---------- 6. 上下文随绑定走：切回普通会话时清掉 ----------
+{
+  // `subagent` 是会话状态片段的一个键：快照全字段下发，切回普通会话时折成 null 清掉
+  const sessionView = read("src", "dsh", "sessionView.ts");
+  assert.ok(
+    /"subagentEntries",\s*"subagent",\s*"jobs",/.test(sessionViewKeys(sessionViewText())),
+    "SessionView 的键清单里要有 subagent（切换会话时随快照整体换掉）",
+  );
+  assert.ok(
+    /subagent: \{\s*read: \(source\) => source\.subagent\?\.\(\) as SessionView\["subagent"\],\s*\}/.test(
+      sessionViewText(),
+    ),
+    "字段表里要有 subagent 的取值与折返条目（三处生产者共用一张表）",
+  );
+  function sessionViewText(): string {
+    return read("src", "dsh", "sessionView.ts");
+  }
+  function sessionViewKeys(text: string): string {
+    return text.slice(text.indexOf("export const SESSION_VIEW_KEYS"), text.indexOf("] as const"));
+  }
+}
+
+// ---------- 7. 注册与打底（2026-09-23 口径，继续有效）：列表不依赖「点开面板」 ----------
 //
 // 三个来源各司其职（形状解析与并入语义在 `projections.test.ts` 钉住，这里只钉**接线**）：
 // durable 事件（`subagent/catalog`）→ 适配器 → 控制器注册；域创建/重连 → RPC 打底；
@@ -238,12 +314,12 @@ const controller = read("src", "dsh", "controller.ts");
   );
   assert.ok(
     /case "subagent\/catalog": \{[\s\S]{0,400}subagentFromCatalogEvent\(data\)[\s\S]{0,200}this\.onSubagentEstablished\?\.\(entry\)/.test(
-      adapter,
+      read("src", "dsh", "adapter.ts"),
     ),
     "适配器要解析 subagent/catalog 并交给 onSubagentEstablished",
   );
   assert.ok(
-    /case "session\/end-seed": \{[\s\S]{0,200}this\.seedEndSeq = /.test(adapter),
+    /case "session\/end-seed": \{[\s\S]{0,200}this\.seedEndSeq = /.test(read("src", "dsh", "adapter.ts")),
     "适配器要记下继承前缀的边界（分叉会话的目录事实属于源会话）",
   );
 
@@ -259,7 +335,7 @@ const controller = read("src", "dsh", "controller.ts");
     "registerSubagent 要并入目录（不是整表替换）",
   );
 
-  // 3) 打底：域创建与重连各拉一次 RPC —— 重载窗口后不点开面板也得有列表
+  // 3) 打底：域创建与重连各拉一次 RPC —— 重载窗口后不点开导航也得有列表
   const bootstraps = controller.match(/void this\.refreshSubagentCatalog\(scope\);/g) ?? [];
   assert.ok(
     bootstraps.length >= 2,
@@ -271,12 +347,20 @@ const controller = read("src", "dsh", "controller.ts");
   const ensureBody = controller.slice(ensureStart, controller.indexOf("private ensureDefaultModelApplied("));
   assert.ok(ensureStart >= 0, "controller 必须有 ensureScope");
   assert.ok(
-    /this\.openScopeFollow\(scope\);[\s\S]{0,900}?void this\.refreshSubagentCatalog\(scope\);/.test(ensureBody),
+    /this\.openScopeFollow\(scope\);[\s\S]{0,1200}?void this\.refreshSubagentCatalog\(scope\);/.test(ensureBody),
     "ensureScope 建域后要打底（这是「重载窗口零点击」的那一下）",
   );
   assert.ok(
     /for \(const scope of this\.scopes\.values\(\)\) void this\.refreshSubagentCatalog\(scope\);/.test(controller),
     "onConnected 要对所有域重拉（掉线期间建立的子代理没有任何帧能到）",
+  );
+
+  // 3b) 恢复路径直接落到子代理页时，父目录用投影 RPC 补（单发 RPC，不开父域）
+  assert.ok(
+    /private async fetchParentCatalog\(scope: SessionScope\): Promise<void> \{[\s\S]{0,400}sessionProjections\(parentId\)/.test(
+      controller,
+    ),
+    "父会话域不在时要用 session/projections 把父目录补进来（切换下拉才有兄弟行）",
   );
 
   // 4) RPC 那一路带 `activity`，但**也是并入**（它不保证是超集：冷子代理身份读不出来
@@ -298,7 +382,7 @@ const controller = read("src", "dsh", "controller.ts");
     "单飞表必须有清理路径（按会话为键的 Map 涨上去就是永久泄漏）",
   );
 
-  // 5) 状态中继：不点开面板也要能点亮状态点与头部呼吸
+  // 5) 状态中继：不点开导航也要能点亮状态点；父目录变化要推进正在看的子代理页
   assert.ok(
     /this\.syncSubagentActivity\(status\.sessionId, status\.running\);/.test(controller),
     "api-session/status 中继要同步子代理的 activity（官方 updateCatalogActivity 同款）",
@@ -308,6 +392,12 @@ const controller = read("src", "dsh", "controller.ts");
       controller,
     ),
     "syncSubagentActivity 要按 id 就地改一条",
+  );
+  assert.ok(
+    /private deliverSubagentList\(scope: SessionScope\): void \{[\s\S]{0,500}this\.syncSubagentContext\(scope\.sessionId\);/.test(
+      controller,
+    ),
+    "目录变化的唯一扇出点要把新上下文推进正在看子代理的窗口",
   );
 }
 

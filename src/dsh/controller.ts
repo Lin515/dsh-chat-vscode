@@ -21,6 +21,7 @@ import type {
   QuestionView,
   SessionRefView,
   SessionSummaryView,
+  SubagentContextView,
   SubagentView,
   TodoView,
   UploadState,
@@ -59,7 +60,6 @@ import type {
   RemoteEventWaterfall,
   SessionControlFrame,
   SessionFollowFrame,
-  SessionFollowRequest,
 } from "./protocol";
 import { jobItemsFromWire, jobRowsFromFrame } from "./jobView";
 import {
@@ -82,7 +82,7 @@ import {
   type WireChatState,
 } from "./sessionView";
 import { queueItemsFromInbox, queueItemsFromWire, type QueuedItemEntry, type QueueOrigin } from "./queueView";
-import { modelSelectionFromProjection, subagentsFromList, upsertSubagent, withSubagentActivity, agentPresetsFromList } from "./projections";
+import { modelSelectionFromProjection, subagentCatalogFromProjection, subagentsFromList, upsertSubagent, withSubagentActivity, agentPresetsFromList } from "./projections";
 import type { ModelSelectionDecoded, SubagentCatalogEntryView } from "./projections";
 import {
   ingestControlBaseline,
@@ -116,6 +116,20 @@ const LEGACY_TOKEN_SECRET = "dshChat.externalAccessToken";
 
 function sessionSecretKey(baseUrl: string): string {
   return `${SESSION_SECRET_PREFIX}${baseUrl}`;
+}
+
+/**
+ * 恢复期暂存的一条会话认领：会话 id + 它是不是子代理（子代理带父会话与模式）。
+ * 形状与 `windowState.WindowEntry` 的可恢复字段一致。
+ */
+type RestoreHint = {
+  sessionId: string;
+  subagent?: { parentSessionId: string; mode: "one-shot" | "continuable" };
+};
+
+/** 类型守卫：这个域正在查看**子代理会话**（有子代理地址）。 */
+function selfScopeHasAddress(scope: SessionScope | undefined): boolean {
+  return scope?.subagentAddress !== undefined;
 }
 
 /** 提交记录（用于队列「重新编辑」还原原文）的保留时长与条数上限。 */
@@ -470,15 +484,16 @@ export class ChatController implements vscode.Disposable {
   /**
    * 恢复期给每个窗口暂存的「该接回哪个会话」：窗口刚挂上时可能还没连接、
    * 甚至页面还没加载，那一刻绑定会推开一个空快照；等它发 `ready` 时再绑，
-   * 正好把这个会话写进它的首帧快照里。
+   * 正好把这个会话写进它的首帧快照里。子代理会话带它的地址（不进会话列表，
+   * 只有地址能重新进入）。
    */
-  private readonly restoreHints = new Map<string, string>();
+  private readonly restoreHints = new Map<string, RestoreHint>();
   /**
    * 工作区身份还没就绪时排队的**编辑区面板**认领（按 VS Code 的恢复顺序入队）。
    * 顺序就是位置，所以必须按原序补（见 `flushRestoreClaims`）；`known` 是面板
-   * 自己存下来的会话 id（身份认领用，见 `claimPanelRestore`）。
+   * 自己存下来的窗口身份（身份认领用，见 `claimPanelRestore`）。
    */
-  private readonly panelClaimsQueued: { viewId: string; known?: string }[] = [];
+  private readonly panelClaimsQueued: { viewId: string; known?: RestoreHint }[] = [];
   /** 上面那批窗口（`ChatViewProvider` 据此决定是否留等 `ready` 的兜底）。 */
   private readonly restoreAwaiting = new Set<string>();
   /**
@@ -620,6 +635,14 @@ export class ChatController implements vscode.Disposable {
    *   `subagents/list` RPC、`subagentCatalog` 投影都走它，实时补充）。
    */
   private readonly subagentSessionIds = new Set<string>();
+  /**
+   * 子代理会话的**驻留状态**（`session/list` 原始行的 `running`，随每次刷新覆盖）。
+   *
+   * 子代理不进界面列表（`sessionList.ts` 滤掉），但「恢复到子代理页」时域的 running
+   * 打底需要它——那是唯一不依赖父会话域开着的来源（`api-session/status` 中继只在
+   * 状态变化时发，重载窗口前的最后一次变化早过去了）。
+   */
+  private readonly subagentRunning = new Map<string, boolean>();
   /**
    * 本地已删除的会话 id 集合（持久化于 globalState 的 `deletedSessionIds`）。
    *
@@ -998,9 +1021,20 @@ export class ChatController implements vscode.Disposable {
       if (scope) scope.running = frame.patch.running;
     }
     // 会话标题变了：编辑区标签跟着更新。放在投递之前——即使此刻没有任何窗口绑着
-    // 这条会话，标签也该跟着走
+    // 这条会话，标签也该跟着走。子代理面包屑的左半（父会话标题）也在这里跟进
     if (frame.type === "patch" && frame.patch.session !== undefined) {
       this.syncPanelTitle(sessionId);
+      this.syncSubagentContext(sessionId);
+      // **正在看子代理**的页面：它自己的标题（描述符 label / 自动标题）刚落进来，
+      // 它在父目录里那一行的 label、以及触发器上的名字要跟着重推——否则切换列表
+      // 与标题各显示一个名字（2026-09-24 的现场：列表 uuid、标题自动名）
+      const selfScope = this.scopes.get(sessionId);
+      if (selfScopeHasAddress(selfScope)) {
+        this.deliver(sessionId, {
+          type: "patch",
+          patch: sessionPatch(this.sessionSource(selfScope), ["subagent"]),
+        });
+      }
     }
     const targets: string[] = [];
     for (const [viewId, bound] of this.viewSessions) {
@@ -1166,11 +1200,12 @@ export class ChatController implements vscode.Disposable {
       ...sessionView(
         sessionSourceOf(
           scope,
-          sessionId ? this.sessions.find((session) => session.id === sessionId) : undefined,
+          sessionId ? this.summaryOfSession(sessionId) : undefined,
           this.models,
           // 空态（未绑定窗口）：预设与模型两枚胶囊显示**待建会话**的预览值，
           // 因为那时会话还不存在（见 `pendingViewFields`）
           scope ? undefined : this.pendingViewFields(viewId),
+          this.subagentContextOf(scope),
         ),
       ),
       // 输入区那两个字段按**窗口**存（未绑会话时）/ 按会话键存，不属于会话状态片段：
@@ -1183,9 +1218,158 @@ export class ChatController implements vscode.Disposable {
   /**
    * 增量 patch 用的取值来源：与首帧快照**同一个** `sessionSourceOf`，只是这里不需要
    * 会话摘要（patch 从不改 `session` 本身，标题那条路有自己的 `sessionWithTitle`）。
+   * 子代理上下文（`subagent` 键）由域上的地址现算：父目录 / 父标题变了，下一次
+   * patch 自然带上新值。
    */
   private sessionSource(scope: SessionScope | undefined): SessionViewSource {
-    return sessionSourceOf(scope, undefined, this.models);
+    return sessionSourceOf(scope, undefined, this.models, undefined, this.subagentContextOf(scope));
+  }
+
+  /**
+   * 会话摘要：会话列表行优先；**子代理会话不在列表里**（`sessionList.ts` 滤掉了），
+   * 用子代理目录行合成一份（标题 = 目录里的 label，父会话 id 来自地址）。
+   * 首帧快照与编辑区标签标题共用这一个读法，两者看到的子代理名字必然一致。
+   */
+  private summaryOfSession(sessionId: string): SessionSummaryView | undefined {
+    const row = this.sessions.find((session) => session.id === sessionId);
+    if (row) return row;
+    const scope = this.scopes.get(sessionId);
+    const address = scope?.subagentAddress;
+    if (!scope || !address) return undefined;
+    return {
+      id: sessionId,
+      title: this.subagentLabelOf(scope),
+      updatedAt: Date.now(),
+      running: scope.running,
+      parentSessionId: address.parentSessionId,
+    };
+  }
+
+  /** 子代理会话的显示名：目录行里的 label；目录里找不到时退回会话 id。 */
+  private subagentLabelOf(scope: SessionScope): string {
+    const siblings = this.parentCatalogOf(scope);
+    return siblings.find((entry) => entry.id === scope.sessionId)?.label ?? scope.sessionId;
+  }
+
+  /**
+   * 子代理域的**父目录**（兄弟行）：父会话域还开着时用它的实时目录，否则用进入时
+   * 抄下的快照。两者都空时至少要含自己——自己的地址必然成立（进得来就说明成立）。
+   *
+   * 兜底行的 label 用**描述符 label**（适配器记的目录条）而不是会话 id：id 是一串
+   * uuid，用户没法把它和真实标题对上（切换列表与标题不一致的现场，2026-09-24）。
+   * 描述符 label 由 follow 流重放注册进本域（`subagent/descriptor` → `selfEntry`），
+   * 它就是官方目录行显示的那个名字。
+   */
+  private parentCatalogOf(scope: SessionScope): SubagentView[] {
+    if (!scope.subagentAddress) return [];
+    const parentScope = this.scopes.get(scope.subagentAddress.parentSessionId);
+    const entries = parentScope ? parentScope.subagentEntries : scope.subagentSiblings;
+    const existing = entries.find((entry) => entry.id === scope.sessionId);
+    if (existing) {
+      // 目录行缺 label（旧事件 / 投影没带）时用本会话已知的显示名补齐——
+      // 触发器、列表行与标签标题三处读到的是同一个名字
+      if (existing.label === scope.sessionId) {
+        const known = this.subagentDisplayName(scope);
+        if (known && known !== existing.label) {
+          const next = entries.map((entry) =>
+            entry.id === scope.sessionId ? { ...entry, label: known } : entry,
+          );
+          if (parentScope) parentScope.subagentEntries = next;
+          else scope.subagentSiblings = next;
+          return next;
+        }
+      }
+      return entries;
+    }
+    return upsertSubagent(entries, {
+      id: scope.sessionId,
+      label: this.subagentDisplayName(scope) ?? scope.sessionId,
+      mode: scope.subagentAddress.mode,
+      activity: scope.running ? "running" : "inactive",
+    });
+  }
+
+  /**
+   * 当前子代理会话的**显示名**，按权威程度取：
+   * 1. **描述符 label**（本会话日志里的 `subagent/descriptor`，派生时的 `description`
+   *    ——官方目录行显示的就是它，continuable 必带）；
+   * 2. 会话标题投影 / `session/title`（自动标题）；
+   * 3. 都拿不到（刚进会话、流还没开）→ undefined，调用方退回会话 id。
+   */
+  private subagentDisplayName(scope: SessionScope): string | undefined {
+    return scope.adapter?.selfDescriptorLabel() ?? scope.adapter?.sessionTitle() ?? undefined;
+  }
+
+  /**
+   * 父会话域不在时（恢复路径直接落到子代理页），用 `session/projections` 把父目录
+   * 补进兄弟快照——那是一条**单发 RPC**，不像开父会话域那样要拉起整条 follow 流。
+   * 失败（含旧服务端没有这条路由的 404）只是下拉里少几个兄弟行，面包屑与返回
+   * 不受影响（它们靠地址本身，不靠目录）。
+   */
+  private async fetchParentCatalog(scope: SessionScope): Promise<void> {
+    const parentId = scope.subagentAddress?.parentSessionId;
+    if (!this.client || !parentId) return;
+    try {
+      const value = await this.client.sessionProjections(parentId);
+      const entries = subagentCatalogFromProjection(value?.values?.subagentCatalog);
+      if (!entries.length) return;
+      // **并入，不清表**（与目录三条来源同一条纪律）：本地已知的行（切换种子、
+      // status 中继带来的驻留状态、label 回填）投影里没有就不该丢——投影按
+      // asOfSeq 折叠，可能落后于本地刚发生的变化。投影行优先（较新），本地
+      // 多出来的行原样保留。
+      const known = scope.subagentSiblings;
+      const merged = [
+        ...entries.map((entry) => {
+          const local = known.find((item) => item.id === entry.id);
+          return local?.activity ? { ...entry, activity: local.activity } : entry;
+        }),
+        ...known.filter((item) => !entries.some((entry) => entry.id === item.id)),
+      ];
+      scope.subagentSiblings = merged;
+      this.log(`[subagents] 会话=${scope.sessionId} 父目录（投影）${entries.length} 条`);
+      // 补齐的是**本会话域**的父目录快照：把重算后的上下文直接发给看这个会话的窗口。
+      // 不能写 syncSubagentContext(本会话id)——那条的参数语义是「父会话 id」，通知的
+      // 是正在看它的**子代理**的窗口；看本会话的窗口一条都收不到，缺陷永不自愈
+      // （2026-09-25 报障的根因之二，回归见 scripts/subagentSwitch.test.ts 场景二）。
+      this.deliver(scope.sessionId, {
+        type: "patch",
+        patch: sessionPatch(this.sessionSource(scope), ["subagent"]),
+      });
+    } catch (error) {
+      this.log(`[subagents] 父目录投影读取失败：${this.describeError(error)}`);
+    }
+  }
+
+  /**
+   * 界面上的子代理上下文（`ChatState.subagent`）：普通会话恒 `undefined`，
+   * 子代理会话由地址 + 父会话摘要 + 父目录快照合成。
+   */
+  private subagentContextOf(scope: SessionScope | undefined): SubagentContextView | undefined {
+    const address = scope?.subagentAddress;
+    if (!scope || !address) return undefined;
+    return {
+      parentSessionId: address.parentSessionId,
+      parentTitle: this.sessions.find((session) => session.id === address.parentSessionId)?.title ?? address.parentSessionId,
+      mode: address.mode,
+      parentEntries: this.parentCatalogOf(scope),
+    };
+  }
+
+  /**
+   * 父会话的目录变了：把新的上下文推给**正在看它子代理**的窗口。
+   *
+   * 界面上那条切换下拉的数据就是这里推的——用户停在子代理页时，父会话新注册了
+   * 子代理（`registerSubagent`）、兄弟行跑了/停了（`syncSubagentActivity`）、投影或
+   * RPC 刷新了目录（`deliverSubagentList` 的全部调用点），下拉都要跟上。
+   */
+  private syncSubagentContext(parentSessionId: string): void {
+    for (const scope of this.scopes.values()) {
+      if (scope.subagentAddress?.parentSessionId !== parentSessionId) continue;
+      this.deliver(scope.sessionId, {
+        type: "patch",
+        patch: sessionPatch(this.sessionSource(scope), ["subagent"]),
+      });
+    }
   }
 
   /** 首帧快照里「与会话无关」的那一半（语言 / 排版 / 字号 / 批次 / 阈值 / 发送行为 / 新会话页）。 */
@@ -1242,13 +1426,35 @@ export class ChatController implements vscode.Disposable {
    * 缓存是上一次运行留下的，会话可能已经被删掉或归档（服务端没有删除 API，
    * 本地删除只记了 id）。会话不在了就什么都不做，窗口保持空态。
    */
-  async restoreViewSession(viewId: string, sessionId: string): Promise<void> {
+  /**
+   * 把一个已有的窗口绑到某个会话（恢复路径用：刷新会话列表 + 建域 + 推快照）。
+   *
+   * 与 `openSession` 的分工：那边是「用户点了历史里的一条」，只做重绑；这边是
+   * 「工作区刚打开，这个窗口上次开的就是它」，多一步**先确认会话还在**——
+   * 缓存是上一次运行留下的，会话可能已经被删掉或归档（服务端没有删除 API，
+   * 本地删除只记了 id）。会话不在了就什么都不做，窗口保持空态。
+   *
+   * `subagent` 给出时目标是**子代理会话**：它不在会话列表里（列表是过滤过的），
+   * 「还在不在」的判断跳过，能不能进由子代理地址的鉴权说了算——打不开时
+   * `openSession` 的 follow 流会报错，域里是空记录，面包屑仍能点回父会话。
+   */
+  async restoreViewSession(
+    viewId: string,
+    sessionId: string,
+    subagent?: { parentSessionId: string; mode: "one-shot" | "continuable" },
+  ): Promise<void> {
     if (this.viewSessions.get(viewId) === sessionId) return;
     // **自动路径**：跟随 `dshChat.autoConnect`——关掉自动连接时，恢复会话不该顺手
     // 把后台起起来或连上去（用户 2026-09-18 口径：那时界面只显示按钮，等用户点）
     if (!this.client || this.connection !== "connected") await this.ensureConnected({ start: readAutoConnect() });
     if (!this.client || this.connection !== "connected") {
       this.log(`[restore] 未连接，跳过 ${sessionId}`);
+      return;
+    }
+    if (subagent) {
+      // 子代理会话：没有列表可查（也查不到），地址就是全部凭据
+      this.log(`[restore] 窗口=${viewId} 接回子代理会话=${sessionId}（父会话=${subagent.parentSessionId}）`);
+      await this.openSession(viewId, sessionId, subagent);
       return;
     }
     // 会话列表是「哪些会话还在」的权威来源（它已经滤掉本地删除的、并在
@@ -1279,11 +1485,11 @@ export class ChatController implements vscode.Disposable {
    * （见 `flushRestoreClaims`）——提前认领会把顺序用掉，后面的窗口就接错了。
    *
    * `known` 来自 `deserializeWebviewPanel(panel, state)` 的 `state`（webview 用
-   * `setState` 存下的会话 id，见 `webview/bridge.ts`）。它是**身份**：即使 VS Code
+   * `setState` 存下的窗口身份，见 `webview/bridge.ts`）。它是**身份**：即使 VS Code
    * 恢复面板的顺序与当初不一致，也能各自接回自己的会话（用户 2026-09-21 报的
    * 「标签 1/2 的会话交叉」就是只靠顺序对位的固有缺陷）。
    */
-  claimPanelRestore(viewId: string, known?: string): void {
+  claimPanelRestore(viewId: string, known?: RestoreHint): void {
     if (!this.windowState.key) {
       this.panelClaimsQueued.push({ viewId, known });
       this.restoreAwaiting.add(viewId);
@@ -1294,13 +1500,16 @@ export class ChatController implements vscode.Disposable {
   }
 
   /** 面板认领的落点：按身份 / 按下标取会话，记一行日志（排查错位全看它）。 */
-  private applyPanelClaim(viewId: string, known?: string): void {
+  private applyPanelClaim(viewId: string, known?: RestoreHint): void {
     const claimed = this.windowRestore.classifyPanel(known);
     this.log(
       `[restore] 面板 ${viewId} 认领：${claimed.by === "identity" ? "按身份" : "按顺序"}` +
-        `（webview 存的是 ${known ?? "无"}）→ ${claimed.sessionId ?? "空态"}`,
+        `（webview 存的是 ${known?.sessionId ?? "无"}）→ ${claimed.sessionId ?? "空态"}`,
     );
-    this.applyRestoreHint(viewId, claimed.sessionId);
+    this.applyRestoreHint(
+      viewId,
+      claimed.sessionId ? { sessionId: claimed.sessionId, subagent: claimed.subagent } : undefined,
+    );
   }
 
   /** 侧栏恢复会话的认领（固定槽位）。 */
@@ -1313,7 +1522,11 @@ export class ChatController implements vscode.Disposable {
         return;
       }
     }
-    this.applyRestoreHint(viewId, this.windowRestore.slot(slot));
+    const entry = this.windowRestore.slot(slot);
+    this.applyRestoreHint(
+      viewId,
+      entry?.sessionId ? { sessionId: entry.sessionId, subagent: entry.subagent } : undefined,
+    );
   }
 
   /** 该窗口有没有待接回的会话（`ChatViewProvider` 发 `ready` 前用它决定等多久）。 */
@@ -1321,8 +1534,8 @@ export class ChatController implements vscode.Disposable {
     return this.restoreHints.has(viewId);
   }
 
-  private applyRestoreHint(viewId: string, sessionId: string | undefined): void {
-    if (sessionId) this.restoreHints.set(viewId, sessionId);
+  private applyRestoreHint(viewId: string, hint: RestoreHint | undefined): void {
+    if (hint?.sessionId) this.restoreHints.set(viewId, hint);
   }
 
   /**
@@ -1363,10 +1576,10 @@ export class ChatController implements vscode.Disposable {
    * 绑在这一刻，会话内容正好出现在它的首帧快照里。
    */
   async resumeRestoreHint(viewId: string): Promise<void> {
-    const sessionId = this.restoreHints.get(viewId);
-    if (!sessionId) return;
+    const hint = this.restoreHints.get(viewId);
+    if (!hint) return;
     this.restoreHints.delete(viewId);
-    await this.restoreViewSession(viewId, sessionId);
+    await this.restoreViewSession(viewId, hint.sessionId, hint.subagent);
   }
 
   /** 注册「把这个窗口带到前台」的动作（见 `revealers`）。 */
@@ -1394,9 +1607,8 @@ export class ChatController implements vscode.Disposable {
    * 只在标题真的变了才写（`panel.title` 会重画标签）。
    */
   private syncPanelTitle(sessionId: string): void {
-    const title = panelTabTitle(
-      this.sessions.find((session) => session.id === sessionId)?.title,
-    );
+    // 子代理会话不在会话列表里：`summaryOfSession` 会用目录行合成标题（label）
+    const title = panelTabTitle(this.summaryOfSession(sessionId)?.title);
     for (const [viewId, bound] of this.viewSessions) {
       if (bound !== sessionId) continue;
       if (this.viewKinds.get(viewId) !== "panel") continue;
@@ -1483,15 +1695,20 @@ export class ChatController implements vscode.Disposable {
     if (!this.windowState.key) return;
     const now = Date.now();
     const cache: WindowCache = { panels: [], activeOrder: [...this.viewOrder] };
+    // 子代理地址跟着窗口走：正在看子代理的窗口重载后只有靠它才能重新进入
+    const addressOf = (sessionId: string | undefined) =>
+      sessionId ? this.scopes.get(sessionId)?.subagentAddress : undefined;
     // 编辑区面板：按 `viewOrder` 里出现的先后（= 创建顺序）逐条记，
     // 与 VS Code 恢复编辑器时的顺序一致
     for (const viewId of this.viewOrder) {
       if (this.viewKinds.get(viewId) !== "panel") continue;
-      cache.panels.push({ sessionId: this.viewSessions.get(viewId) ?? null, lastActiveAt: now });
+      const sessionId = this.viewSessions.get(viewId);
+      cache.panels.push({ sessionId: sessionId ?? null, subagent: addressOf(sessionId), lastActiveAt: now });
     }
     for (const [viewId, kind] of this.viewKinds) {
       if (kind === "panel") continue;
-      cache[kind] = { sessionId: this.viewSessions.get(viewId) ?? null, lastActiveAt: now };
+      const sessionId = this.viewSessions.get(viewId);
+      cache[kind] = { sessionId: sessionId ?? null, subagent: addressOf(sessionId), lastActiveAt: now };
     }
     if (this.pendingRestore) {
       // 恢复未完：内存里那部分照写，**还没认领的**按原位接在后面。
@@ -2587,7 +2804,14 @@ export class ChatController implements vscode.Disposable {
       const value = await this.client.listSessions();
       // @ 提及候选过滤的打底（判据与用途见 `subagentSessionIds` 与 sessionList.ts）
       for (const item of value.items ?? []) {
-        if (item.origin === "subagent") this.subagentSessionIds.add(item.sessionId);
+        if (item.origin === "subagent") {
+          this.subagentSessionIds.add(item.sessionId);
+          // 子代理会话不在界面列表里，但它的 running 服务端照样给：
+          // 恢复到子代理页时域要拿它打底（见 ensureScope 的 running 打底注释）
+          if (typeof item.running === "boolean") {
+            this.subagentRunning.set(item.sessionId, item.running);
+          }
+        }
       }
       const folder = vscode.workspace.workspaceFolders?.[0];
       const workspacePath = folder ? normalizePath(folder.uri.fsPath) : undefined;
@@ -3090,15 +3314,27 @@ export class ChatController implements vscode.Disposable {
     return true;
   }
 
-  /** 把指定窗口切到给定会话（域不存在则创建；其他窗口不受影响）。 */
-  async openSession(viewId: string, sessionId: string): Promise<void> {
+  /**
+   * 把指定窗口切到给定会话（域不存在则创建；其他窗口不受影响）。
+   *
+   * `subagent` 给出时目标是一个**子代理会话**（不进会话列表、只能用子代理地址
+   * 打开）：面包屑返回父会话、切换下拉换兄弟、恢复路径都走这条。不带时是普通
+   * 会话——包括从子代理页点面包屑回来那一刻。
+   */
+  async openSession(
+    viewId: string,
+    sessionId: string,
+    subagent?: { parentSessionId: string; mode: "one-shot" | "continuable" },
+    /** 子代理域的父目录种子（切换时随行，见 `openSubagent` 与 `ensureScope`）。 */
+    seedSiblings?: readonly SubagentView[],
+  ): Promise<void> {
     // 已经在这个会话上（历史抽屉里点了当前选中的那条）：什么都不做，
     // 避免重绑把粘性显示值清掉后等不到回填
     if (this.viewSessions.get(viewId) === sessionId) return;
-    // 用户显式动作（点历史里的一条）：允许拉起后台
+    // 用户显式动作（点历史里的一条 / 点面包屑）：允许拉起后台
     if (!this.client || this.connection !== "connected") await this.ensureConnected({ start: true });
     if (!this.client) return;
-    const scope = this.ensureScope(sessionId);
+    const scope = this.ensureScope(sessionId, subagent, seedSiblings);
     if (!scope) return;
     this.bindViewToSession(viewId, sessionId, scope);
     // 给这个窗口推**完整状态快照**（不是增量 patch）：域可能早已存在（别的窗口
@@ -3115,19 +3351,77 @@ export class ChatController implements vscode.Disposable {
    * 挂起的审批/提问**不在这里回放**（见 `bindViewToSession`）：域建成的这一刻
    * 还没有窗口绑上来，投递出去也没人收。
    */
-  private ensureScope(sessionId: string): SessionScope | undefined {
+  /**
+   * 取（或创建）给定会话的域：建视图模型、开 follow 流、重开控制流拿该会话
+   * 的 baseline、预取命令目录。
+   *
+   * `subagent` 给出时这是一个**子代理会话**：域记下地址（follow / page / 发送 /
+   * 停止全部按它路由），`running` 用父目录里那一行的驻留状态打底（子代理不在
+   * 会话列表里，列表打不了底；正在跑的子代理开进来必须立刻是「生成中」）。
+   *
+   * 挂起的审批/提问**不在这里回放**（见 `bindViewToSession`）：域建成的这一刻
+   * 还没有窗口绑上来，投递出去也没人收。
+   */
+  private ensureScope(
+    sessionId: string,
+    subagent?: { parentSessionId: string; mode: "one-shot" | "continuable" },
+    /**
+     * 子代理域的**父目录种子**（切换时随行，见 `openSubagent`）：此刻手里最近的一份
+     * 父目录快照。父会话域**很可能已经被回收**（视图离开就回收，见 `dropViewers`），
+     * 等不到投影 RPC 回来快照就要发出去——种子让切换后的第一帧就有完整的兄弟清单。
+     */
+    seedSiblings?: readonly SubagentView[],
+  ): SessionScope | undefined {
     const existing = this.scopes.get(sessionId);
-    if (existing) return existing;
+    if (existing) {
+      // 地址是**持久事实**；与请求不一致时按调用方给的纠正（此前版本可能带着
+      // 错误层级建过域——域名下只有 id，错的地址会一直把返回/切换算错层）。
+      // 同一子代理的真实父会话不会变（durable 事实），改它只是收敛到真相。
+      if (existing.subagentAddress || subagent) existing.subagentAddress = subagent;
+      if (existing.subagentAddress && subagent) {
+        this.log(`[subagents] 会话=${sessionId} 地址对齐：父会话=${subagent.parentSessionId}（原=${existing.subagentAddress.parentSessionId}）`);
+      }
+      if (existing.subagentAddress) {
+        // 上下文是现算的：地址变了就重推（面包屑 / 切换下拉立即正确）
+        this.deliver(sessionId, {
+          type: "patch",
+          patch: sessionPatch(this.sessionSource(existing), ["subagent"]),
+        });
+      }
+      return existing;
+    }
     if (!this.client) return undefined;
     const scope = new SessionScope(sessionId);
-    // **running 打底**：会话列表带服务端的权威值（`SessionSummary.running`），新域先按它
-    // 起步——官方客户端的 Session 实例同样在建立时用列表摘要喂一次
-    // （`manager.ts` 的 `session.handleRunning(summary.running)`，「列表先到」时保持一致）。
-    // 这一步不能省：适配器重建后那份快照在「窗口被截断 + 没有活跃 attempt」时**不发**
-    // running 帧（见 `applyFrame`），没有打底的话域会停在 `false` 上——明明在生成却给
-    // 出发送按钮，消息被按 queue 发出去排进队列（用户 2026-09-22 报的现场）。
-    const row = this.sessions.find((item) => item.id === sessionId);
-    if (row) scope.running = row.running;
+    scope.subagentAddress = subagent;
+    if (subagent) {
+      const parent = this.scopes.get(subagent.parentSessionId);
+      // 父目录快照：种子（切换时随行的最新一份）优先；没有种子才读父会话域——
+      // 它此刻**多半已被回收**（视图离开就回收，见 `dropViewers`），读不到就是 []。
+      scope.subagentSiblings = seedSiblings?.length
+        ? [...seedSiblings]
+        : parent
+          ? [...parent.subagentEntries]
+          : [];
+      // **running 打底**：普通会话用会话列表里的权威值（`SessionSummary.running`）；
+      // 子代理会话不在列表里，用父目录里那一行的 `activity`（官方客户端的 Session
+      // 实例同样在建立时用列表摘要喂一次——`manager.ts` 的 `session.handleRunning`）。
+      // 这一步不能省：适配器重建后那份快照在「窗口被截断 + 没有活跃 attempt」时**不发**
+      // running 帧（见 `applyFrame`），没有打底的话域会停在 `false` 上——明明在生成却给
+      // 出发送按钮，消息被按 queue 发出去排进队列（用户 2026-09-22 报的现场）。
+      // 打底读**刚落好的兄弟快照**（种子或父域目录），不是先读后写：切进一个正在跑的
+      // 兄弟时父域已不在，唯一带驻留状态的就是种子。
+      const seeded =
+        scope.subagentSiblings.find((entry) => entry.id === sessionId)?.activity === "running"
+          ? true
+          : (this.subagentRunning.get(sessionId) ?? false);
+      scope.running = seeded;
+      // 父会话域不在（恢复路径直接落到子代理页）：用投影 RPC 把父目录补进来，
+      // 面包屑旁的切换下拉才有兄弟行（有种子时是并入补差，见 fetchParentCatalog）
+      if (!parent) void this.fetchParentCatalog(scope);
+    } else {
+      const row = this.sessions.find((item) => item.id === sessionId);
+      if (row) scope.running = row.running;
+    }
     this.scopes.set(sessionId, scope);
     this.openScopeFollow(scope);
     this.openScopeJobs(scope);
@@ -3186,7 +3480,8 @@ export class ChatController implements vscode.Disposable {
     // 点芯片看到的是完整文件而不是 diff（见 refreshGitState 的注释）
     adapter.refreshFiles = () => this.refreshGitState();
     adapter.setSession(
-      this.sessions.find((s) => s.id === sessionId) ?? {
+      // 子代理会话不在会话列表里：用目录行（label）合成头部信息，标题由此正确
+      this.summaryOfSession(sessionId) ?? {
         id: sessionId,
         title: "",
         updatedAt: Date.now(),
@@ -3208,7 +3503,7 @@ export class ChatController implements vscode.Disposable {
       onError: () => {
         // socket 断开重连后会由 onConnected 重开
       },
-    });
+    }, scope.subagentAddress);
   }
 
   /**
@@ -3358,7 +3653,7 @@ export class ChatController implements vscode.Disposable {
         this.log("[history] 拿不到分页锚点（缺 snapshot.cursor 或本地无事件）");
         return;
       }
-      const page = await this.client!.page(scope.sessionId, throughSeq, beforeSeq);
+      const page = await this.client!.page(scope.sessionId, throughSeq, beforeSeq, 50, scope.subagentAddress);
       const added = scope.adapter.absorbRecords(
         (page.records ?? []) as never[],
         Boolean(page.hasMore),
@@ -3949,14 +4244,19 @@ export class ChatController implements vscode.Disposable {
     }
   }
 
-  /** 目录变了就下发（唯一的列表帧，见 `shared/ipc.ts`）。 */
+  /**
+   * 目录变了就下发（唯一的列表帧，见 `shared/ipc.ts`）。
+   *
+   * 同时把**父目录快照**同步进正在看这个会话子代理的窗口（切换下拉的数据，
+   * 见 `syncSubagentContext`）——目录的三条来源（事件 / 投影 / RPC）都汇到
+   * `deliverSubagentList`，这里就是唯一的扇出点。
+   */
   private deliverSubagentList(scope: SessionScope): void {
     this.deliver(scope.sessionId, {
       type: "subagents/list",
       entries: scope.subagentEntries,
-      // 服务端给过权威值就用它（RPC 那一路写进域）；没问过才退回「目录非空」这个近似值
-      parentAvailable: scope.subagentParentAvailable ?? scope.subagentEntries.length > 0,
     });
+    this.syncSubagentContext(scope.sessionId);
   }
 
   /**
@@ -4520,7 +4820,7 @@ export class ChatController implements vscode.Disposable {
         break;
 
       case "openSession":
-        await this.openSession(viewId, message.sessionId);
+        await this.openSession(viewId, message.sessionId, message.subagent);
         break;
 
       case "listSessions":
@@ -5032,6 +5332,15 @@ export class ChatController implements vscode.Disposable {
       // 草稿在 commitDraft 里已清（空态那一步清的是窗口键，绑定后由 `bindViewToSession`
       // 迁到会话键）；这里按会话键复述一次，不依赖迁移链路的细节
       this.drafts.set(key, "");
+      // 子代理会话不收文件附件（官方同一条硬规则：`subagent/attachment-invalid`，
+      // 「subagent continuation does not accept files」）——有文件芯片就直接不发，
+      // 把正文还回输入框让用户去掉附件再发，而不是让服务端拒绝一整轮。
+      const address = scope.subagentAddress;
+      if (address && content.some((part) => part.type === "file")) {
+        this.emitToView(viewId, { type: "toast", level: "warn", text: "@subagentFilesUnsupported" });
+        this.appendDraft(viewId, text, attachments);
+        return;
+      }
       // **先**取「发出去的那一刻 agent 还在不在跑」，再乐观置位。顺序反了的话
       // `resolveSubmitMode` 里的 `!running` 这道门永远走不进去，空闲发消息也会带
       // `mode:"steer"`（审计确认的缺陷，见 resolveSubmitMode 的注释）。
@@ -5047,8 +5356,14 @@ export class ChatController implements vscode.Disposable {
       // 队列「重新编辑」要还原用户**原始**输入，所以记的是拼引用之前的正文
       this.rememberSubmission(requestId, text.trim(), content, attachments);
       const mode = this.resolveSubmitMode(wasRunning, gesture);
-      this.log(`[submit] 手势=${gesture} 运行中=${wasRunning} → mode=${mode}`);
-      await this.client.prompt(scope.sessionId, content, mode, requestId);
+      this.log(`[submit] 手势=${gesture} 运行中=${wasRunning} → mode=${mode}${address ? "（子代理）" : ""}`);
+      // 子代理地址走 `subagents/prompt`（普通 `session/prompt` 对子代理会话
+      // 不成立），`delivery` 就是官方 prompt `mode` 在这条端点上的名字
+      if (address) {
+        await this.client.promptSubagent(address.parentSessionId, scope.sessionId, content, mode, requestId);
+      } else {
+        await this.client.prompt(scope.sessionId, content, mode, requestId);
+      }
       if (notUploaded.length) this.warnUploadIncomplete(viewId, notUploaded);
     } catch (error) {
       scope.running = false;
@@ -5078,10 +5393,9 @@ export class ChatController implements vscode.Disposable {
    *   标成 `steering`；
    * - **主手势（回车 / 发送按钮）用设置值，Cmd/Ctrl+Enter 取反面**：设置项文案
    *   「Cmd/Ctrl+Enter 使用另一行为」说的就是这条；
-   * - `steeringAvailable` 在本扩展里**恒为真**：子代理会话不进会话列表
-   *   （`dsh/sessionList.ts` 过滤 `origin !== "subagent"`），`openSubagent` 只拉一份
-   *   只读快照、不把窗口绑到子代理会话上，所以可发送的会话都不是「一次性子代理
-   *   地址」。这是自觉的取值（不是官方等价实现），写在注释里以免将来误读。
+   * - `steeringAvailable` 在本扩展里**恒为真**：可发送的会话（含可继续子代理——
+   *   官方对它的后续消息同样进 FIFO 收件箱、同样接受 queue/steer）都不缺插话
+   *   语义；一次性子代理界面只读、根本走不到发送。
    */
   private resolveSubmitMode(running: boolean, gesture: "enter" | "accelerated"): "queue" | "steer" {
     if (!running) return "queue";
@@ -5682,10 +5996,20 @@ export class ChatController implements vscode.Disposable {
    * 让我们在本轮真正结束前就重新提交（于是那条消息被排进队列且不会自动接续）。
    * 界面上的「生成中」由服务端回 `turn/end` 时适配器发的 patch 收掉。
    */
+  /**
+   * 中止当前轮。子代理会话走 `subagents/interruptByParent`（官方对子代理地址的
+   * 停止路由：父地址是持久事实，父 Agent 不在线也停得了）；普通会话照旧
+   * `session/cancel`。
+   */
   private async cancelTurn(scope: SessionScope): Promise<void> {
     if (!this.client) return;
     try {
-      await this.client.cancel(scope.sessionId);
+      const address = scope.subagentAddress;
+      if (address) {
+        await this.client.interruptSubagentByParent(scope.sessionId, address.parentSessionId);
+      } else {
+        await this.client.cancel(scope.sessionId);
+      }
     } catch (error) {
       this.reportError(vscode.l10n.t("Failed to stop"), error);
     }
@@ -6189,7 +6513,7 @@ export class ChatController implements vscode.Disposable {
     if (inflight) return inflight;
     const task = (async () => {
       try {
-        const result = await client.request<{ entries?: unknown[]; parentAvailable?: boolean }>(
+        const result = await client.request<{ entries?: unknown[] }>(
           "subagents/list",
           { parentSessionId: scope.sessionId },
         );
@@ -6203,10 +6527,7 @@ export class ChatController implements vscode.Disposable {
         // 整表替换会把这类行连同事件/投影那两路已有的条目一起丢掉，重载后列表又空了。
         const entries = subagentsFromList(result.entries);
         const listChanged = this.mergeSubagentEntries(scope, entries);
-        const available = typeof result.parentAvailable === "boolean" ? result.parentAvailable : undefined;
-        const availableChanged = available !== undefined && scope.subagentParentAvailable !== available;
-        if (available !== undefined) scope.subagentParentAvailable = available;
-        if (listChanged || availableChanged) this.deliverSubagentList(scope);
+        if (listChanged) this.deliverSubagentList(scope);
         this.log(`[subagents] 会话=${scope.sessionId} 目录 ${scope.subagentEntries.length} 条（RPC）`);
       } catch (error) {
         // 0.1.7-alpha.1 起这个端点已从 dsh-subagent 删除（`subagentCatalog` 投影与
@@ -6229,89 +6550,95 @@ export class ChatController implements vscode.Disposable {
     return task;
   }
 
-  /** 面板打开时的按需刷新（按该窗口绑定的会话）。 */
+  /**
+   * 标题旁导航打开时的按需刷新（按该窗口绑定的会话）。
+   *
+   * **刷新的是「列表根部」的目录**（官方同款：展开行调 `refreshProjection(parentId)`）：
+   * 普通会话刷自己的目录；**正在看子代理时刷父会话的**——切换下拉列出的是父目录
+   * （兄弟行），刷当前会话（子代理）自己的目录对那份清单没有任何帮助，反而会在
+   * 子代理会话上白发一次 RPC。
+   */
   private async refreshSubagents(viewId: string): Promise<void> {
     const scope = this.scopeOfView(viewId);
     if (!this.client || !scope) {
-      this.emitToView(viewId, { type: "subagents/list", entries: [], parentAvailable: false });
+      this.emitToView(viewId, { type: "subagents/list", entries: [] });
+      return;
+    }
+    if (scope.subagentAddress) {
+      // 子代理页：清单是父目录（兄弟行），要最新就把父目录刷一遍（父域开着时
+      // RPC 那条完整检索会并入父域并回推上下文；父域不在时投影 RPC 直接补快照）
+      const parent = this.scopes.get(scope.subagentAddress.parentSessionId);
+      if (parent) await this.refreshSubagentCatalog(parent);
+      else await this.fetchParentCatalog(scope);
       return;
     }
     await this.refreshSubagentCatalog(scope);
   }
 
   /**
-   * 打开某个子代理的对话记录。
+   * 进入某个子代理的对话——**会话级切换**，与官方 Web 的 `openSession(address)`
+   * 同构：窗口整个绑到子代理会话上，消息流、生成状态、输入框都换成它的（可继续
+   * 子代理可以接着对话，不再只读）。
    *
-   * 子代理是独立会话，用 `session/follow` 的 subagent 地址打开一次快照即可
-   * （不需要长跟随：这里只是查看）。
+   * 目标子代理的**父会话**由当前视图推出——**层级不能因为切换而变深**（用户
+   * 2026-09-24 口径）：
+   * - 当前在普通会话上 → 目录里那一行的父会话就是本会话；
+   * - 当前在子代理上 → 只在**父目录**（兄弟行）里找目标，父会话还是原父会话。
+   *   刻意**不去**搜当前会话自己的目录——那是「本会话的下级」，把它当查找空间
+   *   就等于把切换变成「进入更深一层」（先查自身目录的写法就有这个歧义）。
+   *
+   * 地址的 `mode` 来自目录行：硬编码 `continuable` 打开 one-shot 子代理会被宿主以
+   * `subagent/unauthorized` 拒绝（address 是宿主鉴权的一部分，不是提示）。
    */
   private async openSubagent(viewId: string, childSessionId: string): Promise<void> {
     if (!this.client) return;
     const scope = this.scopeOfView(viewId);
-    const child = scope?.subagentEntries.find((item) => item.id === childSessionId);
-    if (!child) {
-      // 目录里查不到（列表刚刷新过 / 子代理已经不在目录里）：**也要回一帧空的**。
-      // 界面点开时已经把抽屉开到这个 id 并置了 loading，不回帧它就永远停在
-      // 「正在读取…」（用户 2026-09-19：点进去看不到内容）。
-      this.log(`[subagents] 目录里没有 ${childSessionId}，回一帧空记录`);
-      this.emitToView(viewId, { type: "subagent/transcript", id: childSessionId, messages: [] });
+    if (!scope) return;
+    // 已经在这个子代理上：什么都不做（重绑会把粘性显示值清掉后等不到回填）
+    if (scope.sessionId === childSessionId) return;
+    // 目标行与它的父会话。查找空间**只有一份**：普通会话查自己的目录（目标 = 自己
+    // 的子代理）；子代理会话查父目录（目标 = 兄弟），父会话保持不变。两条空间互斥，
+    // 「从子代理页切换」永远不可能把父会话算成当前会话（层级不变）。
+    // 命中的那份目录同时作为**父目录种子**随行（`openSession` → `ensureScope`）：
+    // 切换会回收当前域、新域建好那一刻父域多半已被回收，等不到投影 RPC 快照就要发——
+    // 种子让切换后的第一帧就有完整的兄弟清单（2026-09-25 报障的根因之一）。
+    const resolve = (): { entry: SubagentView; parentId: string; catalog: SubagentView[] } | undefined => {
+      const address = scope.subagentAddress;
+      if (address) {
+        const catalog = this.parentCatalogOf(scope);
+        const sibling = catalog.find((entry) => entry.id === childSessionId);
+        if (sibling) return { entry: sibling, parentId: address.parentSessionId, catalog };
+        return undefined;
+      }
+      const own = scope.subagentEntries.find((entry) => entry.id === childSessionId);
+      return own ? { entry: own, parentId: scope.sessionId, catalog: [...scope.subagentEntries] } : undefined;
+    };
+    let hit = resolve();
+    if (!hit) {
+      // 刷新的也是**查找空间所属**的目录（子代理页 = 父目录；见 refreshSubagents
+      // 同一条口径），而不是当前会话自己的目录——兄弟行的 label / activity 靠它补齐
+      if (scope.subagentAddress) {
+        const parent = this.scopes.get(scope.subagentAddress.parentSessionId);
+        if (parent) await this.refreshSubagentCatalog(parent);
+        else await this.fetchParentCatalog(scope);
+      } else {
+        await this.refreshSubagentCatalog(scope);
+      }
+      hit = resolve();
+    }
+    if (!hit) {
+      this.log(`[subagents] 目录里没有 ${childSessionId}，进入失败`);
+      this.emitToView(viewId, { type: "toast", level: "warn", text: "@subagentNotFound" });
       return;
     }
-    const mode = child.mode;
-    const parentSessionId = scope!.sessionId;
-    const adapter = new SessionAdapter(() => {});
-    // 子代理记录没有界面出口（`sendFrame` 是空的），日志更是唯一能追溯未知事件的落点
-    adapter.log = (line) => this.log(`[event] 子代理=${childSessionId} ${line}`);
-    adapter.setSession({
-      id: childSessionId,
-      title: childSessionId,
-      updatedAt: Date.now(),
-      running: false,
-    });
-
-    await new Promise<void>((resolve) => {
-      let settled = false;
-      const finish = () => {
-        if (settled) return;
-        settled = true;
-        handle?.cancel();
-        this.emitToView(viewId, { type: "subagent/transcript", id: childSessionId, messages: adapter.snapshotMessages() });
-        resolve();
-      };
-      const handle = this.client!.openStream(
-        "session/follow",
-        {
-          request: {
-            // 模式**必须**用这个子代理的真实模式：硬编码 `continuable` 去打开一个
-            // one-shot 子代理，宿主会以 `subagent/unauthorized` 拒绝（address 是
-            // 宿主鉴权的一部分，不是提示）。目录里查不到时退回会话地址之外的空值
-            // 没有意义，所以查不到就直接不发（列表里没有的 id 本就不该被打开）。
-            address: { kind: "subagent", parentSessionId, childSessionId, mode },
-            maxMessages: 60,
-            // `assistantStream` 在这里**整条不传**：契约里它是字面量 `true`
-            // （`readonly assistantStream?: true`）。此前写的 `false` 被网关的边界
-            // 校验整条拒掉（`gateway/input-invalid: wire field "request" failed
-            // boundary validation`），`onError` 立刻回一帧空记录——用户 2026-09-22
-            // 报的「点进去是这个子代理没有可显示的内容」就是它。类型见
-            // `SessionFollowRequest`（那条类型就是为拦住这一手而加的）。
-          } satisfies SessionFollowRequest,
-        },
-        {
-          onItem: (value) => {
-            adapter.applyFrame(value as never);
-            if ((value as { type?: string })?.type === "event") {
-              // 拿到第一条事件（或快照）后给一个小窗口收完剩余记录
-              setTimeout(finish, 800);
-            } else if ((value as { type?: string })?.type === "snapshot") {
-              setTimeout(finish, 800);
-            }
-          },
-          onError: () => finish(),
-          onEnd: () => finish(),
-        },
-      );
-      setTimeout(finish, 8_000);
-    });
+    this.log(`[subagents] 进入子代理 ${hit.entry.label}（${childSessionId}, ${hit.entry.mode}），父会话=${hit.parentId}`);
+    // 地址的 mode 来自目录行：硬编码 `continuable` 打开 one-shot 子代理会被宿主以
+    // `subagent/unauthorized` 拒绝（address 是宿主鉴权的一部分，不是提示）。
+    // 父目录随行（第四参）：新域建好那一刻父域多半已被回收，快照里就得有兄弟行。
+    await this.openSession(viewId, childSessionId, {
+      parentSessionId: hit.parentId,
+      mode: hit.entry.mode,
+    }, hit.catalog);
   }
 
   // ---------- 斜杠命令与文件提及 ----------

@@ -92,22 +92,25 @@ console.log("activity: 子代理目录的活性判据 ✓");
 }
 console.log("activity: 投影目录 + 后台任务兜底 ✓");
 
-// ---------- 4. 界面接线：两颗按钮挂的是 is-busy（CSS 里才有呼吸） ----------
+// ---------- 4. 界面接线：活性信号挂到计数触发器 / 面板按钮上（CSS 里才有呼吸） ----------
 {
   const app = readFileSync(join(process.cwd(), "src", "webview", "App.tsx"), "utf8");
   assert.ok(
     /const agentsBusy = subagentsBusy\(state\.subagentEntries, state\.jobs\);/.test(app),
-    "Header 的子代理按钮必须用 subagentsBusy（喂目录 + 后台任务两条来源）",
+    "Header 的子代理信号必须用 subagentsBusy（喂目录 + 后台任务两条来源）",
   );
   assert.ok(
     /const jobsRunning = jobsBusy\(state\.jobs\);/.test(app),
     "Header 的后台任务按钮必须用 jobsBusy",
   );
+  // 子代理没有独立按钮了：信号落在标题右侧的触发器上（.subagent-trigger）
   assert.ok(
-    /className=\{`icon-btn\$\{state\.panel === "subagents" \? " is-active" : ""\}\$\{agentsBusy \? " is-busy" : ""\}`\}/.test(
-      app,
-    ),
-    "子代理按钮要有 is-busy 态",
+    /<SubagentNav state=\{state\} agentsBusy=\{agentsBusy\} \/>/.test(app),
+    "子代理导航要挂在标题右侧（无子代理时整个不渲染，入口只有它）",
+  );
+  assert.ok(
+    /className=\{`subagent-trigger\$\{child \? " is-current" : ""\}\$\{agentsBusy \? " is-busy" : ""\}`\}/.test(app),
+    "子代理触发器要有 is-busy 态",
   );
   assert.ok(
     /className=\{`icon-btn\$\{state\.panel === "jobs" \? " is-active" : ""\}\$\{jobsRunning \? " is-busy" : ""\}`\}/.test(
@@ -146,7 +149,13 @@ console.log("activity: 投影目录 + 后台任务兜底 ✓");
     css.indexOf(".icon-btn.is-busy") > css.indexOf(".icon-btn.is-active"),
     ".icon-btn.is-busy 必须写在 .icon-btn.is-active 之后（同特异性后者胜）",
   );
+  // 触发器的状态点必须复用运行圆点那组关键帧（同语义指示器同节奏）：
+  // 组件给点挂的是 dot-running，样式里不许再为它造第二套动画
+  assert.ok(
+    !/\.subagent-trigger[^{]*\{[^}]*animation/.test(css),
+    ".subagent-trigger 不得为状态点另造动画（dot-running 自带 icon-glow）",
+  );
 }
-console.log("activity: 两颗按钮的 is-busy 接线与样式 ✓");
+console.log("activity: 触发器与按钮的 is-busy 接线与样式 ✓");
 
 console.log("\nactivity: all assertions passed");

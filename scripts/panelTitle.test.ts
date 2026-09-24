@@ -39,9 +39,9 @@ console.log("panelTitle: 标签标题（标题 / DSH，纯静态）✓");
   // 界面真正写下去的形状（bridge.persistIdentity 的产物）
   const written: PersistedState = { identity: { sessionId: "session-abc" } };
   // 真实路径会过一遍 JSON（webview state 是字符串存下来的）
-  assert.strictEqual(
+  assert.deepStrictEqual(
     parsePanelIdentity(JSON.parse(JSON.stringify(written)) as unknown),
-    "session-abc",
+    { sessionId: "session-abc" },
     "过 JSON 之后仍要读得出会话 id（webview state 就是 JSON 存的）",
   );
   assert.strictEqual(
@@ -49,6 +49,24 @@ console.log("panelTitle: 标签标题（标题 / DSH，纯静态）✓");
     undefined,
     "空态（当时是新建的空窗口）没有会话可接",
   );
+  // 正在看子代理的窗口：地址完整成立才带回来
+  assert.deepStrictEqual(
+    parsePanelIdentity({ identity: { sessionId: "child-1", subagent: { parentSessionId: "p", mode: "continuable" } } }),
+    { sessionId: "child-1", subagent: { parentSessionId: "p", mode: "continuable" } },
+    "子代理会话的地址必须原样读回（恢复路径只有它能重新进入）",
+  );
+  for (const broken of [
+    { identity: { sessionId: "child-1", subagent: { parentSessionId: "", mode: "continuable" } } },
+    { identity: { sessionId: "child-1", subagent: { parentSessionId: "p" } } },
+    { identity: { sessionId: "child-1", subagent: { parentSessionId: "p", mode: "whatever" } } },
+    { identity: { sessionId: "child-1", subagent: "p" } },
+  ]) {
+    assert.deepStrictEqual(
+      parsePanelIdentity(broken),
+      { sessionId: "child-1" },
+      `半截的子代理地址按普通会话处理：${JSON.stringify(broken)}`,
+    );
+  }
   // 认不出的形状一律 undefined：宿主据此退回按顺序认领，而不是拿垃圾去猜
   for (const broken of [
     undefined,
@@ -80,7 +98,8 @@ console.log("panelTitle: 窗口身份只认自己写的形状 ✓");
   const chatView = readFileSync(join(process.cwd(), "src", "chatView.ts"), "utf8");
   assert.ok(
     /deserializeWebviewPanel: \(panel: vscode\.WebviewPanel, state: unknown\)/.test(chatView) &&
-      /claimPanelRestore\(viewId, parsePanelIdentity\(state\)\)/.test(chatView),
+      /parsePanelIdentity\(state\)/.test(chatView) &&
+      /claimPanelRestore\(/.test(chatView),
     "序列化器必须把 state 里的身份交给认领（只看顺序就还会交叉）",
   );
   assert.ok(
@@ -101,7 +120,7 @@ console.log("panelTitle: 窗口身份只认自己写的形状 ✓");
   );
   const app = readFileSync(join(process.cwd(), "src", "webview", "App.tsx"), "utf8");
   assert.ok(
-    /persistIdentity\(sessionId\)/.test(app) && /\}, \[sessionId\]\)/.test(app),
+    /persistIdentity\(sessionId/.test(app),
     "界面必须在**会话变化时**重存身份（只在启动写一次的话，切过会话再重载就错了）",
   );
   // attachPanel 的顺序：`bindViewKind` 会顺手同步一次标签，标题写入动作必须已经就位

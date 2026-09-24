@@ -458,6 +458,63 @@ export class DshClient {
   }
 
   /**
+   * 给**可继续的子代理**续发一条人的消息（`subagents/prompt`）。
+   *
+   * 参数形状逐字对照契约（`dsh-subagent/lib/types/control-types.d.ts` 的
+   * `SubagentPromptRequest`；位置参数名见 docs/dsh-server-api.md §9.2）：
+   * `mode` 在线上**恒为 `'continuable'`**——那是地址的判别标记，不是本子代理的
+   * 模式（一次性子代理走不到这里：界面只读，宿主也不发）。
+   * `delivery` 是官方 prompt `mode` 在这条端点上的名字（`queue` / `steer`）。
+   * 父会话不在线会回 `subagent/parent-unavailable`（调用方按需提示）。
+   */
+  promptSubagent(
+    parentSessionId: string,
+    childSessionId: string,
+    content: unknown[],
+    delivery: "queue" | "steer",
+    requestId: string = randomUUID(),
+  ): Promise<{ messageId: string }> {
+    return this.request("subagents/prompt", {
+      request: {
+        requestId,
+        parentSessionId,
+        childSessionId,
+        mode: "continuable",
+        delivery,
+        content,
+        clientTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      },
+    });
+  }
+
+  /**
+   * 停止子代理的当前轮（`subagents/interruptByParent`，三个**平铺**位置参数）。
+   *
+   * 官方的停止路由（`ISession.cancel` 对子代理地址的分支）：父地址是**持久事实**，
+   * 所以父 Agent 不在线也停得了；受理 ≠ 已停（行状态由会话状态位收敛）。
+   */
+  interruptSubagentByParent(
+    childSessionId: string,
+    parentSessionId: string,
+  ): Promise<{ accepted: true }> {
+    return this.request("subagents/interruptByParent", {
+      childSessionId,
+      parentSessionId,
+      mode: "continuable",
+    });
+  }
+
+  /**
+   * 读取一个会话的投影值快照（`session/projections`，参数 `{sessionId}`）。
+   *
+   * 调用方（`controller` 的父目录补齐）只取 `values.subagentCatalog`；失败（含旧
+   * 服务端没有这条路由的 404）由调用方兜住，不抛出去。
+   */
+  sessionProjections(sessionId: string): Promise<{ asOfSeq?: number; values?: Record<string, unknown> }> {
+    return this.request("session/projections", { sessionId });
+  }
+
+  /**
    * 人的后台任务停止请求（`job/kill`，契约
    * `@deepseek-ai/dsh-api-job-controller/types` 的 `JobKillRequest` / `JobKillValue`）。
    *
@@ -506,9 +563,27 @@ export class DshClient {
     return this.request("workspace/archiveSession", { request: { sessionId } });
   }
 
-  page(sessionId: string, throughSeq: number, beforeSeq: number, maxMessages = 50): Promise<{ records: unknown[]; hasMore: boolean }> {
+  /**
+   * 往前取一页历史（`session/page`）。地址与 `followSession` 同一套：`subagent`
+   * 给出时用子代理地址（普通会话地址取不到子代理会话的分页）。
+   */
+  page(
+    sessionId: string,
+    throughSeq: number,
+    beforeSeq: number,
+    maxMessages = 50,
+    subagent?: { parentSessionId: string; mode: "one-shot" | "continuable" },
+  ): Promise<{ records: unknown[]; hasMore: boolean }> {
+    const address = subagent
+      ? {
+          kind: "subagent" as const,
+          parentSessionId: subagent.parentSessionId,
+          childSessionId: sessionId,
+          mode: subagent.mode,
+        }
+      : { kind: "session" as const, sessionId };
     return this.request(METHODS.sessionPage, {
-      request: { address: { kind: "session", sessionId }, throughSeq, beforeSeq, maxMessages },
+      request: { address, throughSeq, beforeSeq, maxMessages },
     });
   }
 
@@ -557,13 +632,29 @@ export class DshClient {
    * 从没有人传过的 `beforeSeq` 选项——那种「多给一个字段」的写法一旦有人用上，
    * 就会撞上与 `assistantStream: false` 同一道边界校验（见 `SessionFollowRequest`）。
    * 往前翻历史走 `page()`。
+   *
+   * `subagent` 给出时用**子代理地址**打开（`{kind:'subagent', …}`）：地址是宿主
+   * 鉴权的一部分，`mode` 必须是子代理的真实模式，硬编码 `continuable` 打开
+   * one-shot 子代理会被 `subagent/unauthorized` 拒绝。
    */
-  followSession(sessionId: string, callbacks: StreamCallbacks): StreamHandle {
+  followSession(
+    sessionId: string,
+    callbacks: StreamCallbacks,
+    subagent?: { parentSessionId: string; mode: "one-shot" | "continuable" },
+  ): StreamHandle {
+    const address = subagent
+      ? {
+          kind: "subagent" as const,
+          parentSessionId: subagent.parentSessionId,
+          childSessionId: sessionId,
+          mode: subagent.mode,
+        }
+      : { kind: "session" as const, sessionId };
     return this.openStream(
       STREAMS.sessionFollow,
       {
         request: {
-          address: { kind: "session", sessionId },
+          address,
           // 跟随窗口带多少条消息。默认 60：够渲染一屏多的上下文，又不至于每次
           // 打开会话都把整段历史搬过来。往前翻页用 session/page（见 page()）。
           maxMessages: 60,

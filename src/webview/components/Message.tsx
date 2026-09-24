@@ -84,7 +84,6 @@ export const Message = memo(function Message({
   turnProcessThreshold,
   canBranch = false,
   takenOver,
-  readOnly = false,
   sessionId,
   changesSummary,
   changesCardShown = false,
@@ -119,16 +118,9 @@ export const Message = memo(function Message({
    */
   takenOver?: ReadonlySet<string>;
   /**
-   * **只读**渲染（子代理记录面板，见 `Panels.tsx`）：问卷 / 审批卡照旧把内容画出来，
-   * 但不给任何能发出去的控件——那份记录属于另一个会话，在这里作答会把答复发到别处
-   * （用户 2026-09-19 口径「仅可查看不可发送消息」）。
-   */
-  readOnly?: boolean;
-  /**
    * 这条消息所属的会话 id（改动文件卡片按它发 `requestChanges`）。
    *
-   * 缺省 = 不渲染卡片、也不发请求：子代理记录面板（`Panels.tsx`）的消息流属于
-   * **另一个会话**，在它里面请求主会话的清单是错位的。
+   * 缺省 = 不渲染卡片、也不发请求：绑不进当前窗口的会话不渲染卡片，避免错位。
    */
   sessionId?: string;
   /**
@@ -330,16 +322,11 @@ export const Message = memo(function Message({
         // waiting 卡（框架层不合法，但宿主侧的卡片补投有机会造出来），没被选中的那张必须
         // 留在流里，否则输入区只画一张、这张谁也渲染不了（见 pendingInteraction.ts 文件头）。
         return takenOver?.has(segment.id) ? null : (
-          <ApprovalCard key={segment.id} approval={segment.approval} readOnly={readOnly} />
+          <ApprovalCard key={segment.id} approval={segment.approval} />
         );
       case "question":
         return takenOver?.has(segment.id) ? null : (
-          <QuestionCard
-            key={segment.id}
-            question={segment.question}
-            batch={questionBatch}
-            readOnly={readOnly}
-          />
+          <QuestionCard key={segment.id} question={segment.question} batch={questionBatch} />
         );
       case "injected":
         return <InjectedRow key={segment.id} node={node} injected={segment.injected} />;

@@ -85,9 +85,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       vscode.window.registerWebviewPanelSerializer(ChatViewProvider.panelViewType, {
         deserializeWebviewPanel: (panel: vscode.WebviewPanel, state: unknown) => {
           const viewId = owner.attachPanel(panel);
-          // 认领会话：优先用 webview 存下的身份（`state`），认不出才按 VS Code 的恢复
-          // 顺序对位（见 dsh/windowState.ts——只看顺序就是标签与会话交叉的那个缺陷）
-          owner.controller.claimPanelRestore(viewId, parsePanelIdentity(state));
+          // 认领会话：优先用 webview 存下的身份（`state`，含子代理地址），认不出才按
+          // VS Code 的恢复顺序对位（见 dsh/windowState.ts——只看顺序就是标签与会话
+          // 交叉的那个缺陷）
+          const identity = parsePanelIdentity(state);
+          owner.controller.claimPanelRestore(
+            viewId,
+            identity ? { sessionId: identity.sessionId, subagent: identity.subagent } : undefined,
+          );
           owner.armRestoreFallback(viewId);
           owner.log(`[view] 恢复编辑区面板 viewId=${viewId}`);
           return Promise.resolve();

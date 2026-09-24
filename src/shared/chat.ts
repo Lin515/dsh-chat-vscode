@@ -666,7 +666,33 @@ export interface GoalView {
 }
 
 /**
- * 子代理（子代理面板一行）。
+ * 当前窗口正在查看**子代理会话**时的上下文（普通会话没有这个字段）。
+ *
+ * 官方把「正在看子代理」建模成**会话地址**（`SubagentAddress`）：会话视图整个换成
+ * 子代理的对话，消息流、生成状态、队列全部来自子代理会话本身，只有标题旁边多出
+ * 一条「父会话 / 当前子代理」的面包屑（`dsh-client-ui-subagent` 的
+ * `SubagentHeaderLineage`）。这里带的就是那条面包屑与切换下拉要用的全部信息。
+ */
+export interface SubagentContextView {
+  /** 父会话 id：点面包屑左半返回它（`openSession` 的目标）。 */
+  parentSessionId: string;
+  /** 父会话标题（面包屑左半的文字；还没有标题时退回父会话 id）。 */
+  parentTitle: string;
+  /**
+   * 生命周期模式。`one-shot` 的对话是**只读**记录（官方 `SubagentReadOnlyComposer`
+   * 的选举：一次性子代理永远只读）；`continuable` 才有输入框。
+   */
+  mode: "one-shot" | "continuable";
+  /**
+   * 父会话的子代理目录（含当前这个）：面包屑旁那个切换下拉的第一节。
+   *
+   * 来源是父会话域的目录快照；父会话域不在时至少含当前这一个（它的地址必须成立，
+   * 否则根本进不来）。
+   */
+  parentEntries: SubagentView[];
+}
+
+/** 一条子代理（子代理目录一行）。
  *
  * 三个来源的字段集**不一样**，别互相套用：
  * - `subagentCatalog` **投影**返回 `SubagentCatalogEntry`：`{id, createdAt, mode,
@@ -966,7 +992,7 @@ export interface ChatState {
   todos: TodoView[];
   goal?: GoalView;
   /**
-   * 子代理目录（子代理面板的清单）。
+   * 子代理目录（当前会话的子代理，标题旁导航的清单）。
    *
    * **只叫这一个名字**：早先宿主帧里叫 `subagents`、界面状态里叫 `subagentEntries`，
    * 同一条数据在两侧各一个名字，改一侧忘另一侧时既没有编译期报错、也没有断言保护
@@ -976,6 +1002,13 @@ export interface ChatState {
    * 两个来源的字段集**不一样**，别互相套用（见 `SubagentView` 的注释）。
    */
   subagentEntries: SubagentView[];
+  /**
+   * 当前窗口正在查看**子代理会话**时的上下文（面包屑、切换下拉、只读判定的来源）。
+   *
+   * 绑定的是普通会话时**没有这个键**（快照里折成 `null` 清掉）；键存在即代表
+   * 「视图整个在子代理上」。形状见 `SubagentContextView`。
+   */
+  subagent?: SubagentContextView;
   /** 后台任务（bash / pwsh / 子代理等），来自 session/control 的 jobs 帧。 */
   jobs: JobItemView[];
   /** 历史是否还有更早的内容可加载。 */
@@ -1121,6 +1154,14 @@ export function panelTabTitle(title?: string): string {
  */
 export interface PersistedIdentity {
   sessionId: string | null;
+  /**
+   * 会话是**子代理**时的地址（`parentSessionId` + `mode`）。
+   *
+   * 子代理会话只能用子代理地址打开（普通 `session/follow` 会被鉴权拒绝），而它
+   * 不进会话列表——恢复路径必须靠这里带回来的地址才能重新进入（普通会话没有
+   * 这个字段，恢复走老路）。
+   */
+  subagent?: { parentSessionId: string; mode: "one-shot" | "continuable" };
 }
 
 /** 存进 webview state 的整体形状（带一个包装层，将来加字段不必改读法）。 */
@@ -1129,16 +1170,31 @@ export interface PersistedState {
 }
 
 /**
- * 从 webview state 里读出会话 id。
+ * 从 webview state 里读出窗口身份（会话 id + 它是不是子代理会话）。
  *
  * 认不出的一律当「没存过」返回 undefined（旧版本写的面板、用户手改过的状态、
  * 别的扩展用同一个 viewType 留下的垃圾）：那时由 `WindowRestore` 退回按下标认领，
- * 而不是让宿主拿着一个来路不明的字符串去猜。
+ * 而不是让宿主拿着一个来路不明的字符串去猜。子代理地址只在**完整成立**时给出
+ * （id 非空 + 模式认识），半截的按普通会话处理。
  */
-export function parsePanelIdentity(state: unknown): string | undefined {
+export function parsePanelIdentity(
+  state: unknown,
+): { sessionId: string; subagent?: { parentSessionId: string; mode: "one-shot" | "continuable" } } | undefined {
   if (!state || typeof state !== "object") return undefined;
   const identity = (state as { identity?: unknown }).identity;
   if (!identity || typeof identity !== "object") return undefined;
   const sessionId = (identity as { sessionId?: unknown }).sessionId;
-  return typeof sessionId === "string" && sessionId.length > 0 ? sessionId : undefined;
+  if (typeof sessionId !== "string" || sessionId.length === 0) return undefined;
+  const raw = (identity as { subagent?: unknown }).subagent;
+  if (raw && typeof raw === "object") {
+    const address = raw as { parentSessionId?: unknown; mode?: unknown };
+    if (
+      typeof address.parentSessionId === "string" &&
+      address.parentSessionId.length > 0 &&
+      (address.mode === "one-shot" || address.mode === "continuable")
+    ) {
+      return { sessionId, subagent: { parentSessionId: address.parentSessionId, mode: address.mode } };
+    }
+  }
+  return { sessionId };
 }

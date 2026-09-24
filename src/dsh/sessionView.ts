@@ -54,6 +54,13 @@ export interface SessionView {
    * 的名字，线格式跟着视图模型走，跨名桥就没有存在的理由。
    */
   subagentEntries: ChatState["subagentEntries"];
+  /**
+   * 正在看**子代理会话**时的上下文（面包屑 / 切换下拉 / 只读判定）。
+   *
+   * 普通会话没有这个键（线上折成 `null`，切回普通会话时由此清掉）。
+   * 值来自域的 `subagentAddress` + 父会话摘要 + 父目录快照（见 `SubagentContextView`）。
+   */
+  subagent?: ChatState["subagent"];
   jobs: ChatState["jobs"];
   goal?: ChatState["goal"];
   contextWindow?: ChatState["contextWindow"];
@@ -105,6 +112,7 @@ export const SESSION_VIEW_KEYS = [
   "planMode",
   "todos",
   "subagentEntries",
+  "subagent",
   "jobs",
   "goal",
   "contextWindow",
@@ -192,6 +200,9 @@ export const SESSION_FIELDS = {
   },
   subagentEntries: {
     read: (source) => (source.subagentEntries?.() ?? []) as SessionView["subagentEntries"],
+  },
+  subagent: {
+    read: (source) => source.subagent?.() as SessionView["subagent"],
   },
   jobs: {
     read: (source) => (source.jobs?.() ?? []) as SessionView["jobs"],
@@ -362,6 +373,8 @@ export function sessionSourceOf(
   session: SessionView["session"],
   models: SessionView["models"],
   pending?: Partial<Pick<SessionViewSource, "model" | "permission" | "agentPreset">>,
+  /** 子代理上下文：由调用方（控制器）现算——`sessionSourceOf` 够不到父会话域与列表。 */
+  subagent?: SessionView["subagent"],
 ): SessionViewSource {
   const adapter: SessionAdapter | undefined = scope?.adapter;
   return {
@@ -378,6 +391,7 @@ export function sessionSourceOf(
     planMode: () => scope?.planMode,
     todos: () => scope?.todos,
     subagentEntries: () => scope?.subagentEntries,
+    subagent: () => subagent,
     jobs: () => scope?.jobs,
     goal: () => scope?.goal,
     // 粘性显示值（上下文窗口 / 占用 / 速度）由适配器持有

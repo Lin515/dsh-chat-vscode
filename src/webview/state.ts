@@ -24,7 +24,7 @@ import { changesSummaryKey } from "../shared/changesSummary";
  */
 
 /** 右侧抽屉当前显示的页面。 */
-export type PanelKind = "none" | "history" | "subagents" | "jobs" | "trajectory" | "subagent";
+export type PanelKind = "none" | "history" | "jobs" | "trajectory";
 
 export interface AppState extends ChatState {
   /** 会话列表（历史抽屉内容）。 */
@@ -46,8 +46,6 @@ export interface AppState extends ChatState {
   contextWindow?: ContextWindowView;
   /** 当前会话的上下文占用（dsh web 客户端 `context-occupancy` 投影的等价输出）。 */
   contextOccupancy?: ContextOccupancyView;
-  /** 正在查看的子代理对话（只读）。`loading` 为真时抽屉里显示「正在读取…」。 */
-  subagent?: { id: string; messages: MessageView[]; loading?: boolean };
   /**
    * 改动文件清单的缓存，键 = `changesSummaryKey(sessionId, seq)`。
    *
@@ -146,7 +144,6 @@ function mapMessage(
 export type Action =
   | HostToWebview
   | { type: "ui/setPanel"; panel: PanelKind }
-  | { type: "ui/openSubagent"; id: string }
   | { type: "ui/dismissNotice" }
   | { type: "ui/setDraft"; text: string }
   /** 界面自产的「引用到输入框」（右键菜单）：文本已经是当前语言的成品，不走 `@key`。 */
@@ -263,14 +260,6 @@ export function reducer(state: AppState, action: Action): AppState {
         ...state,
         fileRefs: { query: action.query, items: action.items, sessions: action.sessions ?? [] },
       };
-
-    case "subagent/transcript":
-      return { ...state, subagent: { id: action.id, messages: action.messages, loading: false } };
-
-    case "ui/openSubagent":
-      // 点开某个子代理：**先清掉上一次的内容**并置 loading，再等宿主那份快照。
-      // 不清的话「先点 A、再点 B」时抽屉会拿 A 的记录充数，看起来像 B 的内容。
-      return { ...state, panel: "subagent", subagent: { id: action.id, messages: [], loading: true } };
 
     case "toast": {
       // 每次都给新的 id：同样文案连续两次也要重新计时

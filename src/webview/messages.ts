@@ -181,7 +181,6 @@ export const MESSAGES = {
   cancel: { zh: "取消", en: "Cancel" },
   remove: { zh: "移除", en: "Remove" },
   close: { zh: "关闭", en: "Close" },
-  back: { zh: "返回", en: "Back" },
 
   permission: { zh: "权限", en: "Permission" },
   permReadOnly: { zh: "仅可查看", en: "Read Only" },
@@ -356,17 +355,42 @@ export const MESSAGES = {
   dropHint: { zh: "松开即添加为附件", en: "Release to attach" },
 
   subagents: { zh: "子代理", en: "Subagents" },
-  subagentsEmpty: { zh: "当前会话没有子代理", en: "This session has no subagents" },
+  // 标题旁的计数触发器（官方 count.* 同款：总数恒显、有在跑的再亮状态点）
+  subagentCount: {
+    zh: (count: number) => `${count} 个子代理`,
+    en: (count: number) => (count === 1 ? "1 subagent" : `${count} subagents`),
+  },
+  // 切换下拉里「本级子代理」那一节的标题（正在看子代理时，它的下级）
+  subagentChildren: { zh: "下级子代理", en: "Nested subagents" },
+  // 面包屑左半（父会话标题）的 title：点了返回父会话
+  backToParent: {
+    zh: (title: string) => `返回「${title}」`,
+    en: (title: string) => `Back to "${title}"`,
+  },
+  // 面包屑右半（当前子代理标题 + 切换图标）的 aria / 语义提示（官方 switcher.aria 同句）
+  subagentSwitcher: {
+    zh: (title: string) => `切换子代理：${title}`,
+    en: (title: string) => `Switch subagent: ${title}`,
+  },
+  // 一次性子代理的只读说明（官方 readonly.oneShot.* 同口径，替代整个输入区）
+  subagentReadonlyTitle: { zh: "一次性子代理记录", en: "One-shot subagent record" },
+  subagentReadonlyBody: {
+    zh: "一次性任务不支持后续消息，可在这里查看完整执行记录。",
+    en: "One-shot tasks do not accept follow-ups; review the full execution record here.",
+  },
   subagentOneShot: { zh: "一次性", en: "one-shot" },
   subagentContinuable: { zh: "可继续", en: "continuable" },
   // 目录里 `activity: 'inactive'` 的那一条（用户 2026-09-19 口径）：**已完成**，
   // 不是「未运行」。子代理一旦列在目录里就必然领过初始任务（one-shot 与
   // continuable 都是带着 prompt 建出来的），所以「现在不在跑」= 跑完了。
   subagentCompleted: { zh: "已完成", en: "completed" },
-  subagentLoading: { zh: "正在读取子代理会话…", en: "Loading subagent session…" },
-  subagentTranscriptEmpty: {
-    zh: "这个子代理没有可显示的内容",
-    en: "Nothing to show for this subagent",
+  subagentNotFound: {
+    zh: "目录里没有这个子代理，无法进入",
+    en: "That subagent is no longer in the catalog",
+  },
+  subagentFilesUnsupported: {
+    zh: "子代理会话不支持文件附件：请移除文件芯片后再发送",
+    en: "Subagent conversations do not accept file attachments; remove the attachment and send again",
   },
   trajectory: { zh: "轨迹", en: "Trajectory" },
   trajectoryEmpty: { zh: "本会话还没有工具调用", en: "No tool calls in this session yet" },

@@ -1593,6 +1593,21 @@ export class SessionAdapter {
         break;
       }
 
+      /**
+       * 自身的子代理描述符（`subagent/descriptor`，只落日志、不进模型历史）→ **只读
+       * label / mode，不出节点**。官方目录行的显示名就是描述符 label（continuable
+       * 必带）；provider 不把 label 放进父目录条目时，这里是本会话显示名的权威来源
+       * （2026-09-24：切换列表显示 uuid 的现场）。
+       */
+      case "subagent/descriptor": {
+        const version = typeof data.version === "number" ? data.version : undefined;
+        const mode = data.mode === "continuable" ? "continuable" : "one-shot";
+        const label = typeof data.label === "string" && data.label ? data.label : undefined;
+        if (version === undefined || version < 1) break; // 认不出的格式不猜
+        this.selfDescriptor = { mode, ...(label ? { label } : {}) };
+        break;
+      }
+
       case "todo/write": {
         const todos = Array.isArray(data.todos) ? data.todos : [];
         const view: TodoView[] = todos.map((todo: any, index: number) => ({
@@ -2253,8 +2268,29 @@ export class SessionAdapter {
 
   private currentSession: SessionSummaryView | undefined;
 
+  /** 自身的子代理描述符（`subagent/descriptor` 折出的 label / mode，见事件分支）。 */
+  private selfDescriptor: { mode: "one-shot" | "continuable"; label?: string } | undefined;
+
   setSession(session: SessionSummaryView): void {
     this.currentSession = session;
+  }
+
+  /**
+   * 当前会话的**标题**（还没有标题时 undefined）：给子代理目录的兜底行补显示名用。
+   * 标题来自创建时的摘要（目录 label）或 `session/title` 事件 / 投影（自动标题）——
+   * 哪个先到读哪个，都是用户在界面上看得见的那个名字。
+   */
+  sessionTitle(): string | undefined {
+    const title = this.currentSession?.title;
+    return title && title.trim() ? title : undefined;
+  }
+
+  /**
+   * 自身子代理描述符的显示名（描述符 label）：比标题投影更权威——它是派生时的
+   * `description`，官方目录行显示的就是它。一次性子代理可能省略 label（undefined）。
+   */
+  selfDescriptorLabel(): string | undefined {
+    return this.selfDescriptor?.label;
   }
 
   /** 标题来自 session/title 事件或投影，会话本体可能还没建立。 */

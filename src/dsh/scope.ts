@@ -27,6 +27,16 @@ import type { QueueOrigin } from "./queueView";
  * 重新推快照，一切状态从服务端重算）。
  */
 export class SessionScope {
+  /**
+   * 会话是**子代理**时的地址（普通会话没有它）。
+   *
+   * `session/follow` / `session/page` 要用子代理地址打开（地址是宿主鉴权的一部分，
+   * `mode` 必须是子代理的真实模式）；发消息与停止分别走 `subagents/prompt` 与
+   * `subagents/interruptByParent`。官方把同样的信息建模在客户端 Session 的
+   * `address` 上（`dsh-api-session-controller`）。
+   */
+  subagentAddress: { parentSessionId: string; mode: "one-shot" | "continuable" } | undefined;
+
   readonly sessionId: string;
 
   /** 本会话的视图模型（消息流与粘性显示值）。socket 重连时整个重建。 */
@@ -75,13 +85,14 @@ export class SessionScope {
    */
   subagentEntries: SubagentView[] = [];
   /**
-   * 服务端说的「这个父会话的 Agent 还在」——只有 `subagents/list` RPC 会给出
-   * （`SubagentCatalog.parentAvailable`，含义是**父 Agent 是否驻留**，不是「目录非空」）。
+   * 子代理会话专用：**父会话**的子代理目录快照（兄弟行，含自己）。
    *
-   * 没问过就是 `undefined`：这时下发的 `parentAvailable` 退回「目录非空」这个近似值
-   * （该字段目前没有界面消费点，别为了它编一个肯定结论出来）。
+   * 进入子代理那一刻从父会话域抄一份，父会话目录后来变化时由控制器再推
+   * （见 `controller.syncSubagentContext`）。它只服务界面上那个切换下拉；
+   * 父会话域被回收后不再刷新，下拉里兄弟行的状态可能变旧——重新进入父会话
+   * 会话时会整体重算（状态从服务端重算的既定口径）。
    */
-  subagentParentAvailable: boolean | undefined;
+  subagentSiblings: SubagentView[] = [];
   jobs: JobItemView[] = [];
   goal: ChatState["goal"];
   planMode = false;

@@ -256,21 +256,23 @@ console.log("unknownEvent: 超长 data 截断且保持单行 ✓");
 //
 // 只测适配器是不够的：接线漏了，`log` 永远是 undefined，上面几组断言照样绿，
 // 而真实链路上一个字都不会写进输出通道（本仓库「测试绿、功能缺」的经典形态）。
+// （子代理对话在 2026-09-24 之后是**会话级切换**——域和适配器与普通会话共用
+// `openScopeFollow` 这一条装配路，所以这里只剩一处。）
 
 {
   const controller = readFileSync(join(process.cwd(), "src", "dsh", "controller.ts"), "utf8");
   const wired = controller.match(/adapter\.log = \(line\) => this\.log\(/g) ?? [];
   assert.strictEqual(
     wired.length,
-    2,
-    `会话域与子代理两处适配器都要注入日志落点，实际接了 ${wired.length} 处`,
+    1,
+    `会话域的适配器要注入日志落点，实际接了 ${wired.length} 处`,
   );
   assert.ok(
     /adapter\.log = \(line\) => this\.log\(`\[event\] 会话=\$\{sessionId\} /.test(controller),
     "会话域的日志行要带会话 id：多会话并存时才知道是哪个会话冒出的未知事件",
   );
 }
-console.log("unknownEvent: 控制器两处适配器都接上了日志落点 ✓");
+console.log("unknownEvent: 控制器的适配器接上了日志落点 ✓");
 
 // ---------- 8. `subagent/catalog`：被消费（注册进目录），不告警也不记未知日志 ----------
 //

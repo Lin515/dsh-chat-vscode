@@ -42,12 +42,12 @@ const { Message } = await import("../src/webview/components/Message");
 const { resolveInteractions } = await import("../src/webview/pendingInteraction");
 
 /** 渲染成 HTML；语言按真实链路给（`useTexts` 的默认是英文，这里显式喂词典）。 */
-const render = (question: QuestionView, locale: "zh" | "en" = "zh", readOnly = false): string =>
+const render = (question: QuestionView, locale: "zh" | "en" = "zh"): string =>
   renderToStaticMarkup(
     createElement(
       TextsContext.Provider,
       { value: dictionaryFor(locale) },
-      createElement(QuestionCard, { question, batch: 3, readOnly }),
+      createElement(QuestionCard, { question, batch: 3 }),
     ),
   );
 
@@ -170,7 +170,7 @@ console.log("questionRender: 多选问卷同样可选自定义回答 ✓");
 // 官方 `QuestionComposer` 卡头有一枚 ✕（`nav.cancel`「放弃整组问题」），点了以
 // `ASK_CANCELLED` 拒绝整份等待。宿主侧 `cancelQuestion` 分支早已就位（计划审阅卡的
 // 「去聊天里说」在用），这里钉的是**通用问卷卡真的把这枚出口画了出来**——以及它
-// 只画在能作答的卡上：只读记录（子代理面板）与已收场的卡都不给。
+// 只画在能作答的卡上：已收场的卡都是记录，不给出口。
 {
   const zh = render({ requestId: "ev-d1", state: "waiting", items });
   assert.ok(
@@ -188,17 +188,13 @@ console.log("questionRender: 多选问卷同样可选自定义回答 ✓");
   const en = render({ requestId: "ev-d2", state: "waiting", items }, "en");
   assert.ok(en.includes("Dismiss all questions"), `英文文案走词典（官方 nav.cancel 逐字）：${en.slice(0, 400)}`);
 
-  // 只读记录（子代理面板）：那份问卷属于另一个会话，在这里放弃会打到别处
-  const readonlyHtml = render({ requestId: "ev-d3", state: "waiting", items }, "zh", true);
-  assert.ok(!readonlyHtml.includes("question-dismiss"), "只读卡不渲染放弃按钮");
-
   // 已收场的卡（答完 / 撤回）都是记录，没有可点的出口
   for (const state of ["answered", "cancelled"] as const) {
     const done = render({ requestId: `ev-d-${state}`, state, items });
     assert.ok(!done.includes("question-dismiss"), `${state} 的记录卡不渲染放弃按钮`);
   }
 }
-console.log("questionRender: 待答卡可放弃整组问题、只读与收场卡没有出口 ✓");
+console.log("questionRender: 待答卡可放弃整组问题、收场卡没有出口 ✓");
 
 // ---------- 6. 英文同一条链路（双语规则：文案走词典，不写死） ----------
 {

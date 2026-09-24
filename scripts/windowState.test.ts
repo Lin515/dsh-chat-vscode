@@ -148,12 +148,13 @@ console.log("windowState: 空态过 JSON 不丢（null 而不是 undefined） �
     }),
     (line) => logs.push(line),
   );
-  assert.strictEqual(restore.slot("primary"), "sidebar-main");
+  // 子代理地址随槽位一起回来（恢复路径只有它能重新进入子代理会话）
+  assert.deepStrictEqual(restore.slot("primary"), { sessionId: "sidebar-main" });
   assert.strictEqual(restore.slot("secondary"), undefined, "缓存里是空态的槽位不接会话");
   // 面板按恢复顺序对位：第 2 个面板当初就是空态，不能被顶成 p3
-  assert.strictEqual(restore.claimPanel(), "p1");
+  assert.strictEqual(restore.claimPanel()?.sessionId, "p1");
   assert.strictEqual(restore.claimPanel(), undefined);
-  assert.strictEqual(restore.claimPanel(), "p3");
+  assert.strictEqual(restore.claimPanel()?.sessionId, "p3");
   const logsAfterLastClaim = logs.length;
   assert.ok(
     logs.some((line) => line.includes("编辑区面板认领完毕：3 个")),
@@ -176,11 +177,11 @@ console.log("windowState: 恢复期的槽位与顺序对位 ✓");
   // 第二个面板先来（VS Code 的恢复顺序与当初相反）：按身份仍然各就各位
   const restore = new WindowRestore(cache);
   assert.deepStrictEqual(
-    restore.classifyPanel("B"),
+    restore.classifyPanel({ sessionId: "B" }),
     { sessionId: "B", by: "identity" },
     "第二个面板按身份认回 B，而不是被顺序认领成 A",
   );
-  assert.deepStrictEqual(restore.classifyPanel("A"), { sessionId: "A", by: "identity" });
+  assert.deepStrictEqual(restore.classifyPanel({ sessionId: "A" }), { sessionId: "A", by: "identity" });
   assert.strictEqual(restore.pending, false, "两条都认领完了：恢复窗口结束");
   assert.ok(restore.panelClaimed(0) && restore.panelClaimed(1), "按身份认领同样算「已认领」");
 }
@@ -194,16 +195,16 @@ console.log("windowState: 恢复期的槽位与顺序对位 ✓");
   // 存的会话不在缓存里（用户手工调过状态）：退回下标，不错认
   const stale = new WindowRestore(cacheOf({ panels: [{ sessionId: "A" }, { sessionId: "B" }] }));
   assert.deepStrictEqual(
-    stale.classifyPanel("已被删掉的会话"),
+    stale.classifyPanel({ sessionId: "已被删掉的会话" }),
     { sessionId: "A", by: "cursor" },
     "身份对不上缓存时按顺序接，而不是把窗口留成空态",
   );
 
   // 两个面板存了同一个会话（同一会话被两个窗口打开过）：都用一次，不重复认领
   const dup = new WindowRestore(cacheOf({ panels: [{ sessionId: "A" }, { sessionId: "A" }] }));
-  assert.deepStrictEqual(dup.classifyPanel("A"), { sessionId: "A", by: "identity" });
+  assert.deepStrictEqual(dup.classifyPanel({ sessionId: "A" }), { sessionId: "A", by: "identity" });
   assert.deepStrictEqual(
-    dup.classifyPanel("A"),
+    dup.classifyPanel({ sessionId: "A" }),
     { sessionId: "A", by: "identity" },
     "缓存里有两条 A 时第二个窗口也认 A（两边本来就开着同一条会话）",
   );
@@ -213,7 +214,7 @@ console.log("windowState: 恢复期的槽位与顺序对位 ✓");
   const mixed = new WindowRestore(
     cacheOf({ panels: [{ sessionId: "A" }, { sessionId: "B" }, { sessionId: "C" }] }),
   );
-  assert.deepStrictEqual(mixed.classifyPanel("C"), { sessionId: "C", by: "identity" });
+  assert.deepStrictEqual(mixed.classifyPanel({ sessionId: "C" }), { sessionId: "C", by: "identity" });
   assert.deepStrictEqual(mixed.classifyPanel(undefined), { sessionId: "A", by: "cursor" });
   assert.deepStrictEqual(mixed.classifyPanel(undefined), { sessionId: "B", by: "cursor" });
   assert.deepStrictEqual(
@@ -239,10 +240,10 @@ console.log("windowState: 面板按身份认领（退回顺序）✓");
   assert.ok(restore.pending, "缓存里还有窗口时恢复未结束");
   assert.strictEqual(restore.remaining, 3, "两个面板 + 一个侧栏槽位");
 
-  assert.strictEqual(restore.slot("primary"), "sidebar-main");
+  assert.strictEqual(restore.slot("primary")?.sessionId, "sidebar-main");
   assert.strictEqual(restore.remaining, 2, "侧栏问过话就不再计入");
 
-  assert.strictEqual(restore.claimPanel(), "p1");
+  assert.strictEqual(restore.claimPanel()?.sessionId, "p1");
   assert.ok(restore.pending, "还有一个面板没露面：恢复未结束（此时写缓存会抹掉它的会话）");
   assert.strictEqual(restore.remaining, 1);
   // 关键：另一个面板还没认领时，缓存里那条记录必须还在（否则它的会话永久失联）
@@ -251,7 +252,7 @@ console.log("windowState: 面板按身份认领（退回顺序）✓");
     ["p1", "p2"],
   );
 
-  assert.strictEqual(restore.claimPanel(), "p2");
+  assert.strictEqual(restore.claimPanel()?.sessionId, "p2");
   assert.strictEqual(restore.pending, false, "槽位都问过了：恢复窗口结束");
   assert.strictEqual(restore.remaining, 0);
 }
@@ -442,8 +443,8 @@ console.log("windowState: ready 首帧快照先于接回（语言不等待连接
   const second = new WorkspaceWindowStateStore({ storage, folders: ["d:/dev/proj/"] });
   assert.strictEqual(second.key, KEY, "路径写法不同也必须命中同一份缓存");
   const restored = new WindowRestore(second.snapshot());
-  assert.strictEqual(restored.claimPanel(), "p1");
-  assert.strictEqual(restored.claimPanel(), "p2");
+  assert.strictEqual(restored.claimPanel()?.sessionId, "p1");
+  assert.strictEqual(restored.claimPanel()?.sessionId, "p2");
   assert.strictEqual(restored.claimPanel(), undefined);
 }
 console.log("windowState: 跨重启往返（写盘 → 重开读回） ✓");

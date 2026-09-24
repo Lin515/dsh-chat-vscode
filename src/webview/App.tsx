@@ -9,7 +9,7 @@ import { HistoryPanel } from "./components/History";
 import { ImagePreviewLayer } from "./components/Images";
 import { ContextMenuLayer } from "./components/ContextMenu";
 import { Message } from "./components/Message";
-import { JobsPanel, SubagentTranscriptPanel, SubagentsPanel } from "./components/Panels";
+import { JobsPanel } from "./components/Panels";
 import { TrajectoryView } from "./components/Trajectory";
 import { Spinner } from "./components/primitives";
 import { AppState, useAppState, type PanelKind } from "./state";
@@ -20,9 +20,10 @@ import { setLocalImageScope } from "./localImages";
 import { TurnRail } from "./components/TurnRail";
 import { useTurnRailItems, useTurnRailNav } from "./turnRailNav";
 import {
-  IconAgents,
   IconAttach,
   IconChat,
+  IconChevronDown,
+  IconChevronRight,
   IconGlobe,
   IconHistory,
   IconJobs,
@@ -36,11 +37,15 @@ import { connectViewOf, type ConnectButton, type ConnectButtonId } from "./conne
 import { usePageContextMenu } from "./contextMenu";
 import { jobsBusy, subagentsBusy } from "./activity";
 import { TextsContext, dictionaryFor, normalizeLocale, resolveText, useTexts } from "./texts";
+import type { SubagentView } from "../shared/chat";
 
 /**
  * 顶部只有一排图标按钮——Continue 的聊天页没有传统工具栏，
- * 这里保留最少的入口：新建、历史、子代理、后台任务、在编辑器中打开、
+ * 这里保留最少的入口：新建、历史、后台任务、在编辑器中打开、
  * 在浏览器中打开（官方 Web UI）。
+ *
+ * 子代理**没有**按钮（官方 Web 端也没有）：它的入口在标题右侧——普通会话显示
+ * 目录计数触发器、子代理页显示面包屑（见 `SubagentNav`），没有子代理时什么都不占。
  *
  * 这里曾经还有一颗**设置**按钮（自绘的 DSH 服务端设置面板）。它被删掉了：
  * Web 端的设置页是各功能插件自绘的页面组合（`settings.section` 槽），没有任何
@@ -63,18 +68,37 @@ function Header({
   };
 
   // 「现在有东西在跑吗」（用户 2026-09-19 口径）：判据是纯函数，见 `activity.ts`。
-  // 两颗按钮各自呼吸：子代理在跑亮子代理、后台任务在跑亮后台任务。子代理派发
-  // 只属于左边那颗（2026-09-24 口径：后台任务面板不收子代理，按钮信号同口径过滤）。
+  // 子代理目录上有在跑的，计数触发器会亮出状态点（同一判据）。
   const agentsBusy = subagentsBusy(state.subagentEntries, state.jobs);
   const jobsRunning = jobsBusy(state.jobs);
+  // 子代理页：标题栏显示的本来就是「主会话的标题」——把它变成可点的返回入口
+  // （官方 crumbs 左半的 openTitle 同款），后面只接 `/ 子代理标题`，不重复一节。
+  const child = state.subagent;
+  const title = child ? child.parentTitle : (state.session?.title || texts.untitled);
 
   return (
     <div className="header">
       <span className="header-brand" title="DeepSeek Harness">
         <BrandMark />
       </span>
-      {/* 侧栏容器名已经是「DSH Chat」，这里只放会话名，不再重复产品名 */}
-      <span className="header-title">{state.session?.title || texts.untitled}</span>
+      {child ? (
+        // 子代理页：标题 = 主会话标题，可点返回主会话（官方 .crumb 的可点形态）
+        <button
+          type="button"
+          className="header-title"
+          title={texts.backToParent(child.parentTitle)}
+          onClick={() => post({ type: "openSession", sessionId: child.parentSessionId })}
+        >
+          {title}
+        </button>
+      ) : (
+        // 侧栏容器名已经是「DSH Chat」，这里只放会话名，不再重复产品名
+        <span className="header-title">{title}</span>
+      )}
+      {/* 子代理导航（官方同款）：普通会话显示「N 个子代理 ▾」，子代理页只接
+          「/ 当前子代理标题 ▾」（返回主会话由左边可点的标题承担）；没有子代理时
+          整个不渲染。点击展开 / 再点关闭（不搞悬停自动展开）。 */}
+      <SubagentNav state={state} agentsBusy={agentsBusy} />
       <span className="header-spacer" />
       <button className="icon-btn" title={texts.newChat} onClick={() => post({ type: "newSession" })}>
         <IconPlus size={15} />
@@ -85,14 +109,6 @@ function Header({
         onClick={() => toggle("history", () => post({ type: "listSessions" }))}
       >
         <IconHistory size={15} />
-      </button>
-      <button
-        data-mini="hide"
-        className={`icon-btn${state.panel === "subagents" ? " is-active" : ""}${agentsBusy ? " is-busy" : ""}`}
-        title={texts.subagents}
-        onClick={() => toggle("subagents", () => post({ type: "listSubagents" }))}
-      >
-        <IconAgents size={15} />
       </button>
       <button
         data-mini="hide"
@@ -148,6 +164,169 @@ function BrandMark() {
       />
       <path d="M12 6.2l1.05 2.35L15.4 9.6l-2.35 1.05L12 13l-1.05-2.35L8.6 9.6l2.35-1.05L12 6.2Z" fill="currentColor" />
     </svg>
+  );
+}
+
+/** 官方目录行的状态点色调：在跑 = 运行色，不在跑 = 已完成色（原面板的同一口径）。 */
+function subagentTone(activity: SubagentView["activity"]): string {
+  return activity === "running" ? "dot-running" : "dot-ok";
+}
+
+/** 目录行右侧的副文字：知道驻留状态就报状态，不知道就报生命周期模式。 */
+function subagentRowSub(entry: SubagentView, texts: ReturnType<typeof useTexts>): string {
+  if (entry.activity === "running") return texts.jobRunning;
+  if (entry.activity === "inactive") return texts.subagentCompleted;
+  return entry.mode === "one-shot" ? texts.subagentOneShot : texts.subagentContinuable;
+}
+
+/**
+ * 目录树里的一行（官方 `CatalogRows` 的行结构：状态点列 + 标题/副文两行 + 右侧箭头）。
+ * 点行进入该子代理；当前所在的那一行标题加粗、不可再点（与官方 `aria-current` 同义）。
+ */
+function SubagentCatalogRow({
+  entry,
+  current,
+  onOpen,
+}: {
+  entry: SubagentView;
+  current: boolean;
+  onOpen: (id: string) => void;
+}) {
+  const texts = useTexts();
+  return (
+    <button
+      className={`subagent-row${current ? " is-current" : ""}`}
+      title={entry.label}
+      // 当前行不可再点（已经在这里了）：点别行才切换
+      disabled={current || undefined}
+      onClick={() => onOpen(entry.id)}
+    >
+      {/* 状态点**独享一格**（格内居中）：没有驻留证据时不画点，但保留同一列宽，
+          让各行标题对齐（官方每行保留同一状态列的口径一致）。 */}
+      <span className="subagent-row-state">
+        {entry.activity ? <span className={`dot ${subagentTone(entry.activity)}`} /> : null}
+      </span>
+      <span className="subagent-row-content">
+        <span className="subagent-row-label">{entry.label}</span>
+        <span className="subagent-row-sub">{subagentRowSub(entry, texts)}</span>
+      </span>
+      <span className="subagent-row-arrow" aria-hidden>
+        <IconChevronRight size={12} />
+      </span>
+    </button>
+  );
+}
+
+/**
+ * 标题右侧的子代理导航（官方 `dsh-client-ui-subagent` 目录触发的移植，按用户口径
+ * 收敛交互）：
+ *
+ * - **普通会话**：目录非空时显示一枚「N 个子代理 ▾」触发器（有在跑的先亮状态点）；
+ *   **点击展开**一个固定宽度的树形列表（官方 336px 目录菜单的同款皮肤），**再点
+ *   关闭**；点行进入该子代理（`openSubagent`，会话级切换）。目录为空（或还没拿到）
+ *   时**整个不渲染**。
+ * - **正在看子代理**：只接「/ 当前子代理标题 ▾」一节（返回主会话由左边可点的
+ *   主会话标题承担，见 `Header`）；点 ▾ 展开父目录，当前行加粗、不可再点，点
+ *   兄弟行切换。
+ *
+ * 开合**只认点击**（用户 2026-09-24 口径：不要悬停自动展开）；展开时点外部 / Esc
+ * 收起；展开那一刻补一次 `listSubagents` 刷新——投影那一路可能落后于服务端的
+ * 完整检索，打开菜单这一下就是「把最新的要一遍」。
+ */
+function SubagentNav({ state, agentsBusy }: { state: AppState; agentsBusy: boolean }) {
+  const texts = useTexts();
+  const child = state.subagent;
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLSpanElement>(null);
+
+  // 换了会话：展开着的那份内容属于上一次的上下文，收起来重开
+  useEffect(() => {
+    setOpen(false);
+  }, [child?.parentSessionId, state.session?.id]);
+
+  // 展开时点外部 / Esc 收起（悬停不参与开合——那是上一版被否掉的交互）
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (event: PointerEvent) => {
+      if (rootRef.current && !rootRef.current.contains(event.target as Node)) setOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        // 本层消费：不再落到全局「ESC 停止生成」
+        event.stopPropagation();
+        setOpen(false);
+      }
+    };
+    document.addEventListener("pointerdown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const entries = child ? child.parentEntries : state.subagentEntries;
+  const currentId = child ? state.session?.id : undefined;
+  // 触发器上的标题 = 目录里当前那一行的 label——与列表行**同一个来源同一个值**，
+  // 不会出现「列表里叫 A、标题上叫 B」（子代理会话自己的自动标题是另一套字段，
+  // 不做切换入口的显示名）。
+  const currentLabel = child
+    ? (entries.find((entry) => entry.id === currentId)?.label ?? state.session?.title)
+    : undefined;
+
+  // 目录为空（或还没拿到）时整个不渲染：没有子代理就没有这个入口（官方同口径）
+  if (entries.length === 0) return null;
+
+  return (
+    <span ref={rootRef} className="subagent-nav">
+      {/* 子代理页：标题后面只接一节「/ 子代理标题 ▾」（主会话标题在左边，可点返回） */}
+      {child ? (
+        <span className="subagent-crumb-sep" aria-hidden>
+          /
+        </span>
+      ) : null}
+      <button
+        type="button"
+        className={`subagent-trigger${child ? " is-current" : ""}${agentsBusy ? " is-busy" : ""}`}
+        aria-haspopup="true"
+        aria-expanded={open}
+        title={child ? texts.subagentSwitcher(currentLabel ?? "") : texts.subagents}
+        aria-label={child ? undefined : texts.subagentCount(entries.length)}
+        onClick={() => {
+          // 展开那一刻要最新的目录：普通会话拉自己的、子代理页拉本级的（父目录由宿主推）
+          post({ type: "listSubagents" });
+          setOpen((v) => !v);
+        }}
+      >
+        {child ? (
+          <span className="subagent-trigger-title">{currentLabel}</span>
+        ) : (
+          <>
+            {agentsBusy ? <span className="dot dot-running" /> : null}
+            <span className="subagent-trigger-count">{texts.subagentCount(entries.length)}</span>
+          </>
+        )}
+        <IconChevronDown size={12} className={open ? "is-open" : undefined} />
+      </button>
+      {open ? (
+        <div className="subagent-menu" role="menu">
+          <div className="subagent-menu-head">{texts.subagents}</div>
+          <div className="subagent-menu-body" role="tree" aria-label={texts.subagents}>
+            {entries.map((entry) => (
+              <SubagentCatalogRow
+                key={entry.id}
+                entry={entry}
+                current={entry.id === currentId}
+                onOpen={(id) => {
+                  setOpen(false);
+                  post({ type: "openSubagent", id });
+                }}
+              />
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </span>
   );
 }
 
@@ -449,8 +628,10 @@ export function App() {
    * 与「它上次开的是会话 X」在宿主那边分得开。
    */
   useEffect(() => {
-    persistIdentity(sessionId);
-  }, [sessionId]);
+    persistIdentity(sessionId, state.subagent
+      ? { parentSessionId: state.subagent.parentSessionId, mode: state.subagent.mode }
+      : undefined);
+  }, [sessionId, state.subagent?.parentSessionId, state.subagent?.mode]);
   /**
    * 哪些**轮次**真的会显示改动文件卡片（判据与卡片自己的渲染条件一致）。
    *
@@ -545,22 +726,6 @@ export function App() {
     const timer = setInterval(() => post({ type: "listTrajectory" }), 3000);
     return () => clearInterval(timer);
   }, [state.panel, state.running, sessionId]);
-
-  // 子代理面板开着时切会话：**重新拉一次这个会话的子代理**。
-  // 打开面板那一下已经拉过一次（见头部按钮的 `toggle`），所以这里只处理"开着的时候换了
-  // 会话"——否则列表会停在上一个会话上。宿主快照里的 `subagentEntries` 只是投影（可能
-  // 不如 RPC 列表全），所以补的是 RPC，而不是只靠快照。
-  const subagentPanelSession = useRef<string | undefined>(undefined);
-  useEffect(() => {
-    if (state.panel !== "subagents") {
-      subagentPanelSession.current = undefined;
-      return;
-    }
-    const previous = subagentPanelSession.current;
-    subagentPanelSession.current = sessionId;
-    if (previous === undefined || previous === sessionId) return;
-    post({ type: "listSubagents" });
-  }, [state.panel, sessionId]);
 
   // 轨迹里的「加载更早」与会话页**共用同一条链路**（都发 `loadMore`；不带目标 = 单页档，
   // 取一页 50 条）。但宿主只回填会话侧，不会顺手重推账本，所以取完
@@ -737,33 +902,6 @@ export function App() {
             archivedSessions={state.archivedSessions}
             currentId={state.session?.id}
             onClose={closePanel}
-          />
-        ) : null}
-
-        {state.panel === "subagents" ? (
-          <SubagentsPanel
-            entries={state.subagentEntries}
-            onClose={closePanel}
-            onOpen={(id) => {
-              post({ type: "openSubagent", id });
-              // 面板与状态一起切：先把抽屉开到这个 id（内容是空的、带 loading），
-              // 宿主那份只读快照到了再由 `subagent/transcript` 填进来
-              dispatch({ type: "ui/openSubagent", id });
-            }}
-          />
-        ) : null}
-
-        {state.panel === "subagent" && state.subagent ? (
-          <SubagentTranscriptPanel
-            id={state.subagent.id}
-            // 标题用目录里那个名字（就是用户刚点的那一行），不是会话 id——一串 uuid
-            // 没法帮人确认「我看的是哪一个」。目录里查不到（列表刚刷新过 / 子代理已
-            // 不在目录里）时退回 id：那是唯一还认得出的身份。
-            label={state.subagentEntries.find((entry) => entry.id === state.subagent?.id)?.label ?? state.subagent.id}
-            messages={state.subagent.messages}
-            loading={state.subagent.loading === true}
-            onClose={closePanel}
-            onBack={() => dispatch({ type: "ui/setPanel", panel: "subagents" })}
           />
         ) : null}
 

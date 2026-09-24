@@ -582,6 +582,15 @@ export function Composer({
       {/* 触发词候选弹层（`@` / `/`）：规则与 JSX 都在 composerCompletion.tsx。 */}
       {completion.popover}
 
+      {/* 一次性子代理的对话是**只读**执行记录（官方 `SubagentReadOnlyComposer` 的
+          选举：one-shot 永远只读）——输入区整个换成一段说明，不给任何能发出去的
+          东西；可继续子代理照常走下面的完整输入区。 */}
+      {state.subagent?.mode === "one-shot" ? (
+        <div className="composer-readonly" role="status">
+          <strong>{texts.subagentReadonlyTitle}</strong>
+          <span>{texts.subagentReadonlyBody}</span>
+        </div>
+      ) : (
       <div className="composer-shell">
         {/*
           拖放 / 粘贴接取**都不在这里**：全页由 App 的 usePageFileDrop + usePagePaste
@@ -855,6 +864,7 @@ export function Composer({
           </div>
         </div>
       </div>
+      )}
     </div>
   );
 

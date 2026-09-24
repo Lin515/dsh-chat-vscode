@@ -34,6 +34,11 @@ export type SidebarSlot = "primary" | "secondary";
 /** 一个窗口上次开着的会话（`sessionId` 为 null = 当时是空态）。 */
 export interface WindowEntry {
   sessionId: string | null;
+  /**
+   * 会话是**子代理**时的地址：子代理不进会话列表，恢复时只能靠这里带回来的
+   * 地址重新进入（`parentSessionId` + `mode`）。普通会话没有这个字段。
+   */
+  subagent?: { parentSessionId: string; mode: "one-shot" | "continuable" };
   /** 最近活动时间（epoch ms），仅供排查用，不参与恢复。 */
   lastActiveAt?: number;
 }
@@ -88,6 +93,17 @@ function parseEntry(value: unknown): WindowEntry | undefined {
   // `null`（当时空态）与字符串都合法；其余形状（数字/对象/undefined）当坏数据丢
   if (raw !== null && typeof raw !== "string") return undefined;
   const entry: WindowEntry = { sessionId: typeof raw === "string" && raw ? raw : null };
+  // 子代理地址只在**完整成立**时带回来：半截的（缺父 id / 模式不认识）按普通会话处理
+  if (record.subagent && typeof record.subagent === "object") {
+    const address = record.subagent as { parentSessionId?: unknown; mode?: unknown };
+    if (
+      typeof address.parentSessionId === "string" &&
+      address.parentSessionId &&
+      (address.mode === "one-shot" || address.mode === "continuable")
+    ) {
+      entry.subagent = { parentSessionId: address.parentSessionId, mode: address.mode };
+    }
+  }
   if (typeof record.lastActiveAt === "number" && Number.isFinite(record.lastActiveAt)) {
     entry.lastActiveAt = record.lastActiveAt;
   }
@@ -141,13 +157,20 @@ export function parseWindowCache(raw: unknown): { cache: WindowCache; dropped: n
  */
 export function serializeWindowCache(cache: WindowCache): Record<string, unknown> {
   const entry = (value: WindowEntry | undefined): WindowEntry | null =>
-    value ? { sessionId: value.sessionId, lastActiveAt: value.lastActiveAt } : null;
+    value
+      ? {
+          sessionId: value.sessionId,
+          ...(value.subagent ? { subagent: value.subagent } : {}),
+          lastActiveAt: value.lastActiveAt,
+        }
+      : null;
   return {
     version: WINDOW_CACHE_VERSION,
     primary: entry(cache.primary),
     secondary: entry(cache.secondary),
     panels: cache.panels.map((panel) => ({
       sessionId: panel.sessionId,
+      ...(panel.subagent ? { subagent: panel.subagent } : {}),
       lastActiveAt: panel.lastActiveAt,
     })),
     activeOrder: [...cache.activeOrder],
@@ -227,36 +250,47 @@ export class WindowRestore {
   }
 
   /** 侧栏槽位要接回的会话（没有就是空态）。 */
-  slot(slot: SidebarSlot): string | undefined {
+  slot(slot: SidebarSlot): WindowEntry | undefined {
     this.slotsClaimed.add(slot);
     const entry = this.cache[slot];
     // 空态（记录在、sessionId 为 null）与「这条记录压根没有」都返回 undefined
-    return isBlank(entry) ? undefined : entry?.sessionId ?? undefined;
+    return isBlank(entry) ? undefined : entry;
   }
 
   /**
    * 认领一个编辑区面板的会话，并说清是**按身份**还是**按下标**认领的。
    *
-   * `known` 是面板自己存下来的会话 id（`deserializeWebviewPanel` 的 `state` 里读回）。
-   * 能对上缓存里一条**还没被认领**的记录就用它；对不上退回下标。返回值里的 `by`
-   * 只用于日志与断言——调用方（控制器）拿 `sessionId` 去做接回。
+   * `known` 是面板自己存下来的窗口身份（`deserializeWebviewPanel` 的 `state` 里读回，
+   * 含子代理地址）。能对上缓存里一条**还没被认领**的记录就用它；对不上退回下标。
+   * 返回值里的 `by` 只用于日志与断言——调用方（控制器）拿 `sessionId` / `subagent`
+   * 去做接回。
    */
-  classifyPanel(known?: string): { sessionId: string | undefined; by: "identity" | "cursor" } {
-    if (known) {
+  classifyPanel(known?: WindowEntry): { sessionId: string | undefined; subagent?: WindowEntry["subagent"]; by: "identity" | "cursor" } {
+    if (known?.sessionId) {
       const index = this.cache.panels.findIndex(
-        (entry, at) => entry.sessionId === known && !this.claimedIndices.has(at),
+        (entry, at) => entry.sessionId === known.sessionId && !this.claimedIndices.has(at),
       );
       if (index >= 0) {
         this.claimedIndices.add(index);
         this.reportLeftovers();
-        return { sessionId: known, by: "identity" };
+        // 没有子代理地址时键不出现（过 JSON 才不产生无意义的 null 字段）
+        return {
+          sessionId: known.sessionId,
+          ...(known.subagent ? { subagent: known.subagent } : {}),
+          by: "identity",
+        };
       }
     }
-    return { sessionId: this.claimPanel(), by: "cursor" };
+    const claimed = this.claimPanel();
+    return {
+      sessionId: claimed?.sessionId ?? undefined,
+      ...(claimed?.subagent ? { subagent: claimed.subagent } : {}),
+      by: "cursor",
+    };
   }
 
   /** 认领下一个编辑区面板的会话（按下标；没被认领过的第一条）。 */
-  claimPanel(): string | undefined {
+  claimPanel(): WindowEntry | undefined {
     while (this.panelCursor < this.cache.panels.length) {
       const index = this.panelCursor;
       this.panelCursor += 1;
@@ -264,7 +298,7 @@ export class WindowRestore {
       this.claimedIndices.add(index);
       this.reportLeftovers();
       const entry = this.cache.panels[index];
-      return isBlank(entry) ? undefined : entry?.sessionId ?? undefined;
+      return isBlank(entry) ? undefined : entry;
     }
     this.reportLeftovers();
     return undefined;

@@ -212,7 +212,7 @@ console.log("styles: 思考结束后的鲸鱼仍为蓝色 ✓");
 }
 console.log("styles: 运行中节点呼吸发光与图标同色、完成态保色 ✓");
 
-// ---------- 4d. 顶栏两颗面板入口的「有东西在跑」态与运行圆点同一节奏 ----------
+// ---------- 4d. 面板入口的「有东西在跑」态与标题旁的子代理导航 ----------
 //
 // 用户 2026-09-19 口径：有子代理 / 后台任务在跑时，右上角那两颗按钮要亮起来并呼吸。
 // 判据与接线在 `scripts/activity.test.ts`；这里只钉样式本身，避免下次有人另写一套
@@ -221,13 +221,29 @@ console.log("styles: 运行中节点呼吸发光与图标同色、完成态保�
   const busy = rule(".icon-btn.is-busy > svg");
   assert.ok(/animation:\s*icon-glow/.test(busy), ".icon-btn.is-busy 必须复用 icon-glow 关键帧");
 
-  // 子代理行的状态点有**独享一格**：格内水平垂直居中 + 与标题留距（用户同日口径）
-  const state = rule(".session-item-state");
-  assert.ok(/align-items:\s*center/.test(state), ".session-item-state 里圆点垂直居中");
-  assert.ok(/justify-content:\s*center/.test(state), ".session-item-state 里圆点水平居中");
-  assert.ok(/margin-left:/.test(state), ".session-item-state 与标题之间要有间距");
+  // 标题旁导航的目录行：状态点**独享一格**，格内水平垂直居中（用户同日口径；
+  // 行的 gap 只有 8px，没有这一格的话点会贴在标题上）
+  const rowState = rule(".subagent-row-state");
+  assert.ok(/align-items:\s*center/.test(rowState), ".subagent-row-state 里圆点垂直居中");
+  assert.ok(/justify-content:\s*center/.test(rowState), ".subagent-row-state 里圆点水平居中");
+  assert.ok(/width:\s*\d+px/.test(rowState), ".subagent-row-state 要有明确的边长（独享空间）");
+
+  // 导航本体要存在（可点的主会话标题 / 触发器 / 弹出列表 / 只读说明）
+  for (const selector of [
+    "button.header-title",
+    ".subagent-nav",
+    ".subagent-trigger",
+    ".subagent-menu",
+    ".subagent-row",
+    ".composer-readonly",
+  ]) {
+    assert.ok(css.indexOf(selector) >= 0, `app.css 必须有 ${selector}（标题旁导航与只读说明的样式）`);
+  }
+  // 触发器的 chevron 要有开合旋转（官方 .triggerOpen 同款）
+  const chevron = rule(".subagent-trigger > svg.is-open");
+  assert.ok(/transform:\s*rotate/.test(chevron), ".subagent-trigger 的 chevron 开合要旋转（官方 triggerOpen）");
 }
-console.log("styles: 面板入口的活性态与状态点格子 ✓");
+console.log("styles: 面板入口的活性态与子代理导航样式 ✓");
 
 // ---------- 4c. 鲸鱼的品牌蓝是独属色：其它节点色不得用它 ----------
 //

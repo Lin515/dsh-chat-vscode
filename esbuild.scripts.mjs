@@ -11,6 +11,11 @@ import { mkdirSync, readdirSync, rmSync } from "node:fs";
  * 删掉的测试若留下旧产物会被继续执行，看起来像「测试还在跑但改了没生效」。
  *
  * `ws` 是 CJS 且会动态 require Node 内置模块，ESM 产物需要补一个 require。
+ *
+ * `alias.vscode`：`subagentSwitch.test.ts` 要驱动**真的** ChatController，而它
+ * `import * as vscode from "vscode"`——离线没有这个模块。alias 把它指到
+ * `scripts/vscodeTestStub.ts`（只覆盖那条场景用到的面）；不 import vscode 的
+ * 条目完全不受影响。
  */
 const banner = {
   js: "import { createRequire as __createRequire } from 'node:module'; const require = __createRequire(import.meta.url);",
@@ -141,6 +146,7 @@ const entries = {
   "build/preset-display.test.mjs": "scripts/presetDisplay.test.ts",
   "build/composer-draft.test.mjs": "scripts/composerDraft.test.ts",
   "build/dsh-contract.test.mjs": "scripts/dshContract.test.ts",
+  "build/subagent-switch.test.mjs": "scripts/subagentSwitch.test.ts",
   "build/dsh-compat.mjs": "scripts/dshCompat.ts",
 
 };
@@ -156,6 +162,7 @@ await Promise.all(
       target: "node20",
       logLevel: "info",
       banner,
+      alias: { vscode: "./scripts/vscodeTestStub.ts" },
       // 断言脚本里也有渲染断言（`scripts/questionRender.test.ts` 用
       // `react-dom/server` 真渲染问卷卡）：与 webview 那份产物同一个转换器，
       // 否则 TSX 会退回经典转换、要求一个不存在的 React 全局变量。

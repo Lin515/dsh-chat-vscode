@@ -136,7 +136,6 @@
         // 一条只有投影（没有 `activity`，此时不画点、改显示模式）。
         window.__push({
           type: "subagents/list",
-          parentAvailable: true,
           entries: [
             { id: "sub-1", label: "调研 MCP 工具清单", activity: "running" },
             { id: "sub-2", label: "扫描未使用导出", activity: "inactive" },
@@ -564,7 +563,7 @@
             { id: "t2", content: "合并入口并去掉重复初始化", status: "in_progress" },
             { id: "t3", content: "补充回归测试", status: "pending" }
           ],
-          subagents: [],
+          subagentEntries: [],
           messages: [
             {
               id: "u:1",
@@ -1129,6 +1128,43 @@
               };
           state.agentPresets = presetRoster;
           state.agentPreset = "ptc";
+        }
+
+        // 正在看子代理（`?subagent=1`）：会话级切换后的形态——标题旁是
+        // 「父会话标题 / 当前子代理标题 ⇄」的面包屑，`subagent` 带父目录快照
+        // （兄弟行含自己）。`&readonly=1` 再叠一次性模式：输入区整个换成只读说明。
+        // 目录与标题取自 `window.__panels()` 那份夹具的同一批名字（不是另编的）。
+        if (query.get("subagent") === "1") {
+          const parentEntries = [
+            { id: "sub-1", label: "调研 MCP 工具清单", mode: "continuable", activity: "running" },
+            { id: "sub-2", label: "扫描未使用导出", mode: "one-shot", activity: "inactive" },
+            { id: "sub-3", label: "补齐投影的字段表", mode: "continuable", activity: "inactive" }
+          ];
+          const oneShot = query.get("readonly") === "1";
+          const current = oneShot ? parentEntries[1] : parentEntries[0];
+          state.session = { id: current.id, title: current.label, updatedAt: now - 30000, running: current.activity === "running" };
+          state.subagent = {
+            parentSessionId: "s1",
+            parentTitle: "把这两个文件的启动逻辑合并到一个入口",
+            mode: oneShot ? "one-shot" : "continuable",
+            parentEntries
+          };
+          state.subagentEntries = oneShot ? [] : [
+            { id: "sub-1-1", label: "展开分支里的标准库调用", mode: "continuable", activity: "inactive" }
+          ];
+          state.running = current.activity === "running";
+          if (oneShot) {
+            state.messages = [
+              { id: "u:1", role: "user", ts: now - 40000, text: "扫描未使用导出。", segments: [] },
+              {
+                id: "a:1",
+                role: "assistant",
+                ts: now - 30000,
+                model: "DeepSeek-V4-Pro",
+                segments: [{ id: "t1", kind: "text", text: "共发现 3 处未使用导出，已列出在下面。" }]
+              }
+            ];
+          }
         }
         return state;
       };

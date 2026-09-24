@@ -190,7 +190,7 @@ console.log("sessionList: 控制器与界面都接上了 ✓");
     "queryFiles 必须用 visibleSessionCandidates 过滤 @ 对话候选（判据在 sessionList.ts 里注释着）",
   );
   assert.ok(
-    /item\.origin === "subagent"\) this\.subagentSessionIds\.add\(item\.sessionId\)/.test(controller),
+    /item\.origin === "subagent"\)\s*\{[^}]*this\.subagentSessionIds\.add\(item\.sessionId\)/.test(controller),
     "subagentSessionIds 必须由 session/list 原始行的 origin 打底（refreshSessions）",
   );
   assert.ok(

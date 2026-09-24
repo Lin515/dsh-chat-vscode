@@ -641,14 +641,7 @@ function formatChars(chars: number): string {
   return String(chars);
 }
 
-export function ApprovalCard({
-  approval,
-  readOnly = false,
-}: {
-  approval: ApprovalView;
-  /** 只读（子代理记录面板）：不画放行 / 拒绝——那份记录属于另一个会话。 */
-  readOnly?: boolean;
-}) {
+export function ApprovalCard({ approval }: { approval: ApprovalView }) {
   const texts = useTexts();
   const waiting = approval.state === "waiting";
   const verdict =
@@ -671,7 +664,7 @@ export function ApprovalCard({
       {approval.detail ? (
         <div className="approval-detail">{resolveText(approval.detail, texts)}</div>
       ) : null}
-      {waiting && !readOnly ? (
+      {waiting ? (
         <div className="approval-actions">
           <button
             className="btn btn-primary"
@@ -810,16 +803,9 @@ export function PlanReviewCard({
 export function QuestionCard({
   question,
   batch,
-  readOnly = false,
 }: {
   question: QuestionView;
   batch?: number;
-  /**
-   * **只读**（子代理记录面板用，用户 2026-09-19 口径「仅可查看不可发送消息」）：
-   * 题目照旧铺开，但选项不可点、不给自定义输入框、没有提交行——那份记录属于
-   * 另一个会话，在这里作答只会把答复发到别处。
-   */
-  readOnly?: boolean;
 }) {
   const texts = useTexts();
   const [selected, setSelected] = useState<Record<string, string[]>>({});
@@ -846,8 +832,7 @@ export function QuestionCard({
   const cancelled = question.state === "cancelled";
   const items = question.items;
   const mode = questionMode(items.length, batch);
-  // 只读（子代理记录）：一律**平铺全部题目**、不给交互，见 `readOnly` 的注释
-  const interactive = waiting && !readOnly;
+  const interactive = waiting;
   const stepped = interactive && mode === "stepped";
   // 依次问答只渲染当前这一题；题目被服务端更新（数组变短）时夹住下标，
   // 免得 `items[current]` 变成 undefined 把整张卡渲染成空白

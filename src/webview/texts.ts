@@ -89,9 +89,8 @@ export interface Texts {
   attachFolder: string;
   cancel: string;
   remove: string;
-  /** 抽屉标题栏的「关闭」/「返回」（此前这两个是写死的中文，双语规则不允许）。 */
+  /** 抽屉标题栏的「关闭」（此前是写死的中文，双语规则不允许）。 */
   close: string;
-  back: string;
 
   permission: string;
   permReadOnly: string;
@@ -249,17 +248,29 @@ export interface Texts {
   /** 拖放区高亮时显示的提示（松开即添加）。 */
   dropHint: string;
 
-  /** 子代理面板 */
+  /**
+   * 子代理导航（标题右侧，官方 `dsh-client-ui-subagent` 同款）。
+   *
+   * `subagents` 是触发器的 title；`subagentCount` 是计数触发器上的文字（含个数）；
+   * `subagentChildren` 是切换下拉里「本级子代理」那一节的标题；`backToParent` /
+   * `subagentSwitcher` 是面包屑两半的 title；`subagentReadonly*` 是一次性子代理
+   * 的只读说明（替代整个输入区）。
+   */
   subagents: string;
-  subagentsEmpty: string;
+  subagentCount: (count: number) => string;
+  subagentChildren: string;
+  backToParent: (title: string) => string;
+  subagentSwitcher: (title: string) => string;
+  subagentReadonlyTitle: string;
+  subagentReadonlyBody: string;
   subagentOneShot: string;
   subagentContinuable: string;
   /** 「现在不在跑」的子代理：读作**已完成**（用户 2026-09-19 口径），不再读作「未运行」。 */
   subagentCompleted: string;
-  /** 子代理对话记录还没到时的占位（宿主那份快照要几百毫秒到几秒）。 */
-  subagentLoading: string;
-  /** 记录到了但一条都没有。 */
-  subagentTranscriptEmpty: string;
+  /** 点了目录里已经不在的那条子代理（列表一闪而过时的兜底）。 */
+  subagentNotFound: string;
+  /** 子代理会话不收文件附件（官方硬规则）：去掉文件芯片再发。 */
+  subagentFilesUnsupported: string;
   /** 轨迹面板 */
   trajectory: string;
   trajectoryEmpty: string;
