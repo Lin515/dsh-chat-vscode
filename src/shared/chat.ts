@@ -600,8 +600,9 @@ export interface SessionSummaryView {
   cwd?: string;
   running: boolean;
   /**
-   * 生成完毕但还没被任何窗口打开过（「生成完毕未读」）：历史列表里标题显示蓝色，
-   * 与运行中同色。宿主维护（controller 的 `unreadSessionIds`），打开会话即清除。
+   * 「我离开时它正在生成，等我回来它已经生成完毕」：历史列表里标题显示蓝色，与运行中同色。
+   * 宿主维护（controller 的 `unreadSessionIds` 与 `leftGeneratingSessionIds`：离开时记标记，
+   * 收尾时兑现），打开会话即清除。会话在别处跑完、而本窗口从没打开过它，不算未读。
    */
   unread?: boolean;
   blank?: boolean;

@@ -80,7 +80,7 @@ export function HistoryPanel({
             <div
               key={session.id}
               className={`session-item${session.id === currentId ? " is-current" : ""}${
-                // 运行中或生成完毕还没看过的会话：标题显示蓝色（.is-highlight）
+                // 运行中，或「离开时它还在生成、回来时已经完毕」：标题显示蓝色（.is-highlight）
                 session.running || session.unread ? " is-highlight" : ""
               }`}
             >

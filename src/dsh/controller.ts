@@ -682,12 +682,33 @@ export class ChatController implements vscode.Disposable {
   /**
    * 「生成完毕还没看过」的会话 id 集合（持久化于 globalState 的 `unreadSessionIds`）。
    *
-   * 会话从「运行中」落到「结束」那一刻，如果没有任何窗口绑着它，就记成未读；
-   * 任一窗口打开它（`bindViewToSession`）即清除。历史列表里这些行的标题与运行中
-   * 一样显示蓝色，提醒「它已经生成完了，结果还没看」。持久化是为了跨扩展重载
-   * 保留——服务端的 `session/list` 不知道这个概念，列表整份替换时也由这里回填。
+   * **只有一条来路**：离开标记 `leftGeneratingSessionIds`——我离开时那条会话正在生成，
+   * 它收尾的那一刻（见 `settleRunningChange`）记成未读。任一窗口打开它
+   * （`bindViewToSession`）即清除；新一轮开始时先让位给「运行中」，那一轮收尾后再亮。
+   * 历史列表里这些行的标题与运行中一样显示蓝色，提醒「它已经生成完了，结果还没看」。
+   * 持久化是为了跨扩展重载保留——服务端的 `session/list` 不知道这个概念，列表整份替换时
+   * 也由这里回填。
    */
   private readonly unreadSessionIds: Set<string>;
+  /**
+   * 「离开标记」：**我离开过一条正在生成的会话，且还没回来看**（用户 2026-09-24 口径）。
+   *
+   * 「离开」＝一条视图与**正在生成**的会话解绑，且解绑后本窗口再没有别的视图开着它。
+   * 三个入口都走 `noteSessionLeft`：切到别的会话（`bindViewToSession`）、新建对话
+   * （`detachView`）、关闭视图（`unbindView`）。任何视图重新绑上它即作废标记——回来看过
+   * 它结束就不算撇下。
+   *
+   * **未读只有这一条来路**：没有标记就什么都不记。此前那条口径是「观察到某条会话从运行中
+   * 落到结束、且此刻没人在看」，它会把**别处跑起来（另一个窗口 / dsh web / CLI）、本窗口
+   * 从没打开过**的会话也点亮，「离开」这个动作本身反而不在判据里。
+   *
+   * 标记描述的是「我离开过这条会话的生成、且还没回来看」这件事，**一直留到用户回来**
+   * （`bindViewToSession` 里作废）：离开之后它连跑几轮，每一次收尾都还会亮蓝，直到被看过。
+   *
+   * **只在内存里，不持久化**：扩展重载后「我离开过」这件事无从谈起（那一次的收尾也没被
+   * 观察到），重载期间跑完的不补记未读。兑现的投影在 `settleRunningChange`。
+   */
+  private readonly leftGeneratingSessionIds = new Set<string>();
   /**
    * 草稿与附件按会话隔离：切换会话时输入框文本与附件芯片一起切换。
    * 已绑定会话的窗口用会话 id 做键（同会话的多窗口共享）；**未绑定**的窗口用
@@ -1678,6 +1699,8 @@ export class ChatController implements vscode.Disposable {
   /** 窗口下线：解绑，若它是该会话最后一个窗口则回收整个域。 */
   unbindView(viewId: string): void {
     const sessionId = this.viewSessions.get(viewId);
+    // 关掉的窗口也可能正是「看着它生成」的那个：先取状态，`dropViewers` 之后域就没了
+    const wasGenerating = this.isSessionGenerating(sessionId);
     this.viewSessions.delete(viewId);
     this.revealers.delete(viewId);
     this.viewKinds.delete(viewId);
@@ -1689,6 +1712,7 @@ export class ChatController implements vscode.Disposable {
     const index = this.viewOrder.indexOf(viewId);
     if (index >= 0) this.viewOrder.splice(index, 1);
     if (sessionId) this.dropViewers(sessionId);
+    if (sessionId) this.noteSessionLeft(sessionId, wasGenerating);
     // 关掉的窗口不该留在缓存里：VS Code 只恢复「上次退出时还开着」的面板，
     // 缓存里多留一条，下次启动就可能多开一个窗口（恢复未完时这次写会延后，
     // 见 `persistWindowState`，但一定会写）
@@ -1817,6 +1841,12 @@ export class ChatController implements vscode.Disposable {
     if (previous === sessionId) return;
     // 打开即已读：历史列表里那条「生成完毕未读」的蓝标题到此结束
     this.setSessionUnread(sessionId, false);
+    // 回来看它了：离开标记作废（哪怕它还在生成——此刻用户就盯着它，收尾时不算撇下）。
+    // 之后再离开会由下面那次 `noteSessionLeft` 重新记上
+    this.leftGeneratingSessionIds.delete(sessionId);
+    // 被换掉的那条会话「刚才在不在生成」必须在 `dropViewers` **之前**问：它是最后一个
+    // 观察者时域会被整个销毁，之后再问就问不到了（见 `isSessionGenerating`）
+    const previousWasGenerating = this.isSessionGenerating(previous);
     // 「待建会话」的参数到此为止：绑定之后预设/模型都由这条会话自己的状态说话，
     // 下次「新建对话」重新从配置项开始（见 `viewAgentPreset` 的字段注释）
     this.viewAgentPreset.delete(viewId);
@@ -1838,6 +1868,9 @@ export class ChatController implements vscode.Disposable {
     }
     this.viewSessions.set(viewId, sessionId);
     scope.viewers += 1;
+    // 「谁还在看哪条会话」此刻才是真相，离开标记必须在这之后判：切走时它若还在生成，
+    // 且没有别的视图接着看，就记一笔（见 `noteSessionLeft`）
+    if (previous) this.noteSessionLeft(previous, previousWasGenerating);
     // 有窗口盯上这个会话了：把**还没结算**的审批 / 提问交出去（账本见 `interactions`）。
     // 位置很关键——放在这里而不是 `ensureScope`：用户切走又切回来时域早就存在、
     // 不会重新建域（`ensureScope` 直接返回），而这正是卡片必须回来的时刻。
@@ -2870,13 +2903,11 @@ export class ChatController implements vscode.Disposable {
       // 列表整份替换也会造成 running 变化（服务端算的权威值落下来），同样要结算
       // 「生成完毕未读」——上面的 `setSessionRowRunning` 只覆盖 `api-session/status`
       // 中继那一条路。比较基准是替换前的旧行；启动时旧列表为空，没有可结算的。
-      const viewedIds = new Set(this.viewSessions.values());
       const oldRunning = new Map(this.sessions.map((item) => [item.id, item.running]));
       for (const view of views) {
         const was = oldRunning.get(view.id);
         if (was === undefined || was === view.running) continue;
-        if (view.running) this.setSessionUnread(view.id, false);
-        else if (!viewedIds.has(view.id)) this.setSessionUnread(view.id, true);
+        this.settleRunningChange(view.id, view.running);
       }
       this.sessions = views;
       // 复用名册按**服务端**的 `blank` 位清理：它一说这条会话已经开始过对话（或它
@@ -2951,16 +2982,68 @@ export class ChatController implements vscode.Disposable {
     const row = this.sessions.find((item) => item.id === sessionId);
     if (!row || row.running === running) return;
     this.sessions = this.sessions.map((item) => (item.id === sessionId ? { ...item, running } : item));
-    // running 的结算顺带结算「生成完毕未读」：
-    // - 新一轮开始（false→true）→ 清掉旧未读：蓝色此刻由 running 负责，收尾时重判；
-    // - 收尾（true→false）且**没有任何窗口**绑着它 → 记成未读（正看着的窗口不算，
-    //   用户在屏幕上看着它结束，读完即走）。
+    this.settleRunningChange(sessionId, running);
+    this.emitSessionLists();
+  }
+
+  /**
+   * running 变化时的**未读结算**（两个入口共用：`api-session/status` 中继与
+   * `refreshSessions` 的列表差分）。
+   *
+   * 未读只有一条来路——离开标记（见 `leftGeneratingSessionIds`）：
+   *
+   * - 新一轮开始（false→true）：旧未读让位给「运行中」——蓝色此刻由 running 负责。
+   *   **标记留着**：用户还没回来看过，这一轮收尾时它还得亮（离开后连跑几轮的情形，
+   *   比如离开前发了两条、后一条排在队列里自动接续）；
+   * - 收尾（true→false）：有标记、且此刻没有视图开着它，才记未读。
+   *
+   * 没有标记就什么都不做：会话在别处跑起来（另一个窗口 / dsh web / CLI）、或离开时它
+   * 本来空闲，都不该在列表里亮蓝。
+   */
+  private settleRunningChange(sessionId: string, running: boolean): void {
     if (running) {
       this.setSessionUnread(sessionId, false);
-    } else if (![...this.viewSessions.values()].includes(sessionId)) {
-      this.setSessionUnread(sessionId, true);
+      return;
     }
-    this.emitSessionLists();
+    if (!this.leftGeneratingSessionIds.has(sessionId)) return;
+    if (this.isSessionViewed(sessionId)) return;
+    this.setSessionUnread(sessionId, true);
+  }
+
+  /**
+   * 离开一条会话时的记账（在 `viewSessions` 已不再指向它之后调用）。
+   *
+   * `wasGenerating` 必须由调用方在**域被回收之前**取好：`dropViewers` 会把最后一个观察者
+   * 离开的域整个销毁，之后再问「它刚才在不在生成」就问不到了（见 `isSessionGenerating`）。
+   * 本窗口还有别的视图开着它就不算离开——那只是换了个窗口看。
+   */
+  private noteSessionLeft(sessionId: string, wasGenerating: boolean): void {
+    if (!wasGenerating || this.isSessionViewed(sessionId)) return;
+    if (this.leftGeneratingSessionIds.has(sessionId)) return;
+    this.leftGeneratingSessionIds.add(sessionId);
+    this.log(`[unread] 离开生成中的会话=${sessionId}：它收尾时记成未读`);
+  }
+
+  /**
+   * 这条会话此刻在不在生成。
+   *
+   * 域上的值优先：**发送即乐观置位**（见 `send` 里的 `scope.running = true`），那一刻
+   * 服务端的 `api-session/status` 还没到、会话列表那一行也还是 false——只读行上的值，
+   * 「发完消息立刻切走」这个最常见的场景就会漏掉离开标记。行上的值只是兜底（域不存在时：
+   * 别的窗口先开过它、或它的域已被回收）。
+   */
+  private isSessionGenerating(sessionId: string | undefined): boolean {
+    if (!sessionId) return false;
+    if (this.scopes.get(sessionId)?.running === true) return true;
+    return this.sessions.some((item) => item.id === sessionId && item.running);
+  }
+
+  /** 本窗口还有没有视图开着这条会话。 */
+  private isSessionViewed(sessionId: string): boolean {
+    for (const bound of this.viewSessions.values()) {
+      if (bound === sessionId) return true;
+    }
+    return false;
   }
 
   /** 记/清一条「生成完毕未读」，有变化才持久化并刷新两个列表。 */
@@ -3058,14 +3141,7 @@ export class ChatController implements vscode.Disposable {
       );
       return;
     }
-    let viewed = false;
-    for (const bound of this.viewSessions.values()) {
-      if (bound === sessionId) {
-        viewed = true;
-        break;
-      }
-    }
-    if (viewed) {
+    if (this.isSessionViewed(sessionId)) {
       void vscode.window.showWarningMessage(
         vscode.l10n.t("Cannot delete the session you are currently viewing; switch to another session first."),
       );
@@ -3343,6 +3419,8 @@ export class ChatController implements vscode.Disposable {
   private detachView(viewId: string): void {
     const previous = this.viewSessions.get(viewId);
     if (previous === undefined) return;
+    // 点「新建对话」也是离开：正在生成就记一笔离开标记（域随后被回收，先取状态）
+    const wasGenerating = this.isSessionGenerating(previous);
     this.viewSessions.delete(viewId);
     const draft = this.drafts.get(previous);
     if (draft !== undefined) {
@@ -3355,6 +3433,7 @@ export class ChatController implements vscode.Disposable {
       this.attachmentsBySession.delete(previous);
     }
     this.dropViewers(previous);
+    this.noteSessionLeft(previous, wasGenerating);
     if (this.viewKinds.get(viewId) === "panel") this.setPanelTitle(viewId, panelTabTitle(undefined));
     this.log(`[bind] 窗口=${viewId} → 空态（原=${previous}，会话记录保留）`);
     this.persistWindowState();

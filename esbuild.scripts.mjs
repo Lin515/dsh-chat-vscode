@@ -148,6 +148,7 @@ const entries = {
   "build/composer-draft.test.mjs": "scripts/composerDraft.test.ts",
   "build/dsh-contract.test.mjs": "scripts/dshContract.test.ts",
   "build/subagent-switch.test.mjs": "scripts/subagentSwitch.test.ts",
+  "build/unread-marker.test.mjs": "scripts/unreadMarker.test.ts",
   "build/empty-composer.test.mjs": "scripts/emptyComposer.test.ts",
   "build/dsh-compat.mjs": "scripts/dshCompat.ts",
 
