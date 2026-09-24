@@ -40,6 +40,14 @@ const entry = (patch: Partial<SubagentView>): SubagentView => ({
   }
   // 服务端将来新增的状态：不认识就不认领（不猜「已完成」也不猜「在跑」）
   assert.strictEqual(jobsBusy([job({ status: "paused" })]), false, "未知状态不点亮");
+  // 子代理那一路不点亮后台任务按钮（用户 2026-09-24 口径：面板不收子代理，
+  // 按钮信号同口径——否则「按钮亮着、面板却是空的」）
+  assert.strictEqual(jobsBusy([job({ kind: "subagent" })]), false, "只有子代理在跑 = 后台任务按钮不亮");
+  assert.strictEqual(
+    jobsBusy([job({ kind: "subagent" }), job({ id: "j2" })]),
+    true,
+    "混着时普通后台任务照样点亮",
+  );
 }
 console.log("activity: 后台任务的活性判据 ✓");
 
@@ -108,9 +116,16 @@ console.log("activity: 投影目录 + 后台任务兜底 ✓");
     "后台任务按钮要有 is-busy 态",
   );
 
+  // 后台任务面板不收子代理行（用户 2026-09-24 口径）：过滤必须真的落在面板里，
+  // 且空态判据吃的是过滤后的名单（名册里只剩子代理时显示「没有后台任务」而不是空白）
+  const panels = readFileSync(join(process.cwd(), "src", "webview", "components", "Panels.tsx"), "utf8");
+  assert.ok(
+    /\[...jobs\]\.filter\(\(job\) => !isSubagentJob\(job\)\)\.sort\(compareJobs\)/.test(panels),
+    "JobsPanel 必须先滤掉子代理行再排序（isSubagentJob 来自 jobsOrder，判据一处）",
+  );
+
   // 样式：亮色 + 与运行圆点/思考鲸鱼**同一组关键帧**（呼吸节奏必须一致）
-  const css = readFileSync(join(process.cwd(), "src", "webview", "styles", "app.css"), "utf8");
-  // 从选择器出现处取到那组规则结束（成组选择器 `.a, .a:hover {` 也一并落在里面）
+  const css = readFileSync(join(process.cwd(), "src", "webview", "styles", "app.css"), "utf8");  // 从选择器出现处取到那组规则结束（成组选择器 `.a, .a:hover {` 也一并落在里面）
   const group = (selector: string): string => {
     const at = css.indexOf(selector);
     assert.ok(at >= 0, `app.css 里找不到 ${selector}`);

@@ -222,6 +222,15 @@ export const METHODS = {
   sessionSelectModel: "session/selectModel",
   sessionUpdateQueue: "session/updateQueue",
   sessionAttachment: "session/attachment",
+  /**
+   * 人的停止请求（`dsh-api-job-controller` 的 `job.kill`，0.1.7-alpha.1 起）：
+   * 参数 `{request: {sessionId, jobId}}`，回 `{outcome: 'requested' | 'already-finished'}`——
+   * 两个取值都算「请求已被受理」（`already-finished` 只是任务恰好先收场了），
+   * 行本身的状态收敛仍靠 `job/list` 名册帧。旧服务端（≤ 0.1.6-alpha.2）没有
+   * `job` 命名空间、也没有任何等价的停止端点，请求会 404——调用方把失败
+   * 如实回给界面（「停止失败」一档），不做能力探测。
+   */
+  jobKill: "job/kill",
   eventsResult: "$events/result",
 } as const;
 

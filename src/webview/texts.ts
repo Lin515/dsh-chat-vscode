@@ -643,6 +643,16 @@ export interface Texts {
   /** 服务端给了本扩展还不认识的状态：原样说明，不猜它已完成。 */
   jobUnknown: string;
 
+  /** 后台任务停止按钮（两段式，官方 `kill.*` 同口径） */
+  /** 正常档的悬停说明，带上任务名（官方 `kill.stop`）。 */
+  jobStopTitle: (label: string) => string;
+  /** `armed` 档的悬停说明：第一下已按，等第二次确认。 */
+  jobStopConfirm: string;
+  /** `armed` 档按钮上亮出的文字（官方 `kill.confirmAction`）。 */
+  jobStopConfirmAction: string;
+  /** 请求没被受理时短暂亮出的一档（官方 `kill.failed`）。 */
+  jobStopFailed: string;
+
   /** 设置：字体大小。 */
 
   /** 设置：界面语言。 */

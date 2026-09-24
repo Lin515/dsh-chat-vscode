@@ -63,8 +63,8 @@ function Header({
   };
 
   // 「现在有东西在跑吗」（用户 2026-09-19 口径）：判据是纯函数，见 `activity.ts`。
-  // 两颗按钮各自呼吸：子代理在跑亮子代理、后台任务在跑亮后台任务（子代理派发本身
-  // 也是一条后台任务，所以它同时也让后台任务那颗亮起来——那是事实，不是串台）。
+  // 两颗按钮各自呼吸：子代理在跑亮子代理、后台任务在跑亮后台任务。子代理派发
+  // 只属于左边那颗（2026-09-24 口径：后台任务面板不收子代理，按钮信号同口径过滤）。
   const agentsBusy = subagentsBusy(state.subagentEntries, state.jobs);
   const jobsRunning = jobsBusy(state.jobs);
 
@@ -767,7 +767,9 @@ export function App() {
           />
         ) : null}
 
-        {state.panel === "jobs" ? <JobsPanel jobs={state.jobs} onClose={closePanel} /> : null}
+        {state.panel === "jobs" ? (
+          <JobsPanel jobs={state.jobs} killResult={state.jobKill} onClose={closePanel} />
+        ) : null}
 
         {/* 全页拖放浮层：文件拖进会话页时整页亮起「松手即添加」。aria-hidden 的
             纯视觉层，pointer-events: none（不能自己变成 drop 目标，事件要落到

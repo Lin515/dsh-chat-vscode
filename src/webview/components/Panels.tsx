@@ -1,8 +1,10 @@
-import { useLayoutEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { JobItemView, SubagentView } from "../../shared/chat";
-import { IconAgents, IconChevronLeft, IconClose, IconJobs } from "../icons";
+import { IconAgents, IconChevronLeft, IconClose, IconJobs, IconStop } from "../icons";
 import { formatClock, formatDuration, Spinner } from "./primitives";
-import { compareJobs } from "../jobsOrder";
+import { compareJobs, isSubagentJob } from "../jobsOrder";
+import { autoResetMs, killSettled, phaseLive, pressKill, type KillPhase } from "../jobsKill";
+import { post } from "../bridge";
 import { useTexts } from "../texts";
 import { Message } from "./Message";
 
@@ -179,9 +181,95 @@ const JOB_TONE: Record<string, string> = {
   failed: "dot-error",
 };
 
-/** 后台任务面板：bash / pwsh / 子代理等，来自 `job/list` 流（旧服务端是 `session/control` 的 jobs 帧）。 */
-export function JobsPanel({ jobs, onClose }: { jobs: JobItemView[]; onClose: () => void }) {
+/**
+ * 一行后台任务的停止按钮（两段式，官方 `dsh-client-ui-jobs` 同口径）。
+ *
+ * **只在 `running` 行渲染**：`stopping` 表示停止请求已经在路上（按钮消失本身就是
+ * 「受理了」的反馈）；已收场的行没有可停的东西。第一下进入 `armed`（亮出「确认停止」、
+ * 几秒不确认自己退回），第二下才发请求——误触保护照官方。状态流转全部在
+ * `webview/jobsKill.ts`（纯函数），这里只渲染与转发按压。
+ */
+function JobStopButton({
+  job,
+  phase,
+  onPress,
+}: {
+  job: JobItemView;
+  /** 面板当前跟踪的停止状态（只跟踪一枚按钮；别的行的状态与本行无关）。 */
+  phase: KillPhase | undefined;
+  onPress: (job: JobItemView) => void;
+}) {
   const texts = useTexts();
+  if (job.status !== "running") return null;
+  const state = phase?.key === job.id ? phase.state : "idle";
+  const title =
+    state === "armed"
+      ? texts.jobStopConfirm
+      : state === "failed"
+        ? texts.jobStopFailed
+        : texts.jobStopTitle(job.label);
+  return (
+    <button
+      type="button"
+      className={`job-stop${state === "armed" ? " is-armed" : ""}${state === "failed" ? " is-failed" : ""}`}
+      data-kill-state={state}
+      disabled={state === "pending"}
+      title={title}
+      aria-label={title}
+      onClick={() => onPress(job)}
+    >
+      <IconStop size={10} />
+      {/* armed 档亮出文字（官方 `kill.confirmAction`）；其余档只有图标，宽度不横跳 */}
+      {state === "armed" ? <span className="job-stop-label">{texts.jobStopConfirmAction}</span> : null}
+    </button>
+  );
+}
+
+/**
+ * 后台任务面板：bash / pwsh 等真实后台任务，来自 `job/list` 流（旧服务端是
+ * `session/control` 的 jobs 帧）。**子代理（`kind: 'subagent'`）不进面板**
+ * （用户 2026-09-24 口径——它有自己的面板），但名册数据里仍保留那一行：
+ * 它是子代理按钮的活性来源之一（见 `activity.ts` 的 `subagentsBusy`）。
+ */
+export function JobsPanel({
+  jobs,
+  killResult,
+  onClose,
+}: {
+  jobs: JobItemView[];
+  /** 最近一条停止请求的结算（宿主 `jobs/killResult` 帧；没有 = 还没停过任何任务）。 */
+  killResult?: { jobId: string; ok: boolean };
+  onClose: () => void;
+}) {
+  const texts = useTexts();
+  // 两段式停止按钮的状态机：同一时刻只跟踪一枚按钮（官方 killPhase 同款）
+  const [killPhase, setKillPhase] = useState<KillPhase>();
+  // armed / failed 档到点自动复位；pending 不复位——它要等名册把行推离 running
+  useEffect(() => {
+    const ms = killPhase ? autoResetMs(killPhase.state) : undefined;
+    if (ms === undefined) return;
+    const timer = setTimeout(() => setKillPhase(undefined), ms);
+    return () => clearTimeout(timer);
+  }, [killPhase]);
+  // 名册更新：目标行不再 running（已推成 stopping / killed，或整行没了）→ 状态收场。
+  // 这是「已受理」的 pending 唯一的成功收场路径（官方 rows effect 同口径）。
+  useEffect(() => {
+    setKillPhase((prev) => phaseLive(prev, jobs));
+  }, [jobs]);
+  // 宿主的结算帧：没受理 → failed；受理了维持 pending（同上，等名册收场）。
+  // 每次 jobKill 都是新对象，连着两次失败也会各推进一次。
+  useEffect(() => {
+    if (!killResult) return;
+    setKillPhase((prev) => killSettled(prev, killResult.jobId, killResult.ok));
+  }, [killResult]);
+
+  const pressStop = (job: JobItemView) => {
+    const next = pressKill(killPhase, job.id);
+    setKillPhase(next);
+    // 返回 pending = 这是对同一行的第二下确认：真的发请求
+    if (next.state === "pending") post({ type: "killJob", jobId: job.id });
+  };
+
   const label: Record<string, string> = {
     running: texts.jobRunning,
     stopping: texts.jobStopping,
@@ -192,7 +280,9 @@ export function JobsPanel({ jobs, onClose }: { jobs: JobItemView[]; onClose: () 
   // 排序照官方 `ordered()`：**在跑的（含正在停止）排在最前**、按开始时间升序，
   // 已结束的按结束时间降序。以前一律按开始时间倒序，于是一个跑了十分钟的后台任务
   // 会被刚结束的任务挤到列表下面，看起来像"不见了"。
-  const sorted = [...jobs].sort(compareJobs);
+  // 子代理行先滤掉（它有自己的面板）；空态判据吃的是**过滤后**的名单——
+  // 名册里只剩子代理在跑时，面板该显示的是「没有后台任务」，不是空白。
+  const sorted = [...jobs].filter((job) => !isSubagentJob(job)).sort(compareJobs);
 
   return (
     <Drawer title={texts.jobs} icon={<IconJobs size={14} />} onClose={onClose}>
@@ -207,6 +297,7 @@ export function JobsPanel({ jobs, onClose }: { jobs: JobItemView[]; onClose: () 
                 {job.label}
               </span>
               <span className="job-kind">{job.kind}</span>
+              <JobStopButton job={job} phase={killPhase} onPress={pressStop} />
             </div>
             <div className="job-meta">
               {label[job.status] ?? (job.status === "unknown" ? texts.jobUnknown : job.status)}

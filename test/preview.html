@@ -147,6 +147,8 @@
           type: "jobs/list",
           jobs: [
             { id: "j1", kind: "pwsh", label: "npm run typecheck", status: "running", startedAt: Date.now() - 42000 },
+            // 子代理派发也进名册（真实形状），但面板不收它（2026-09-24 口径）——
+            // 留着这条正是为了在预览里看着过滤生效：面板只应出现下面三条任务
             { id: "j2", kind: "subagent", label: "调研 MCP 工具清单", status: "running", startedAt: Date.now() - 90000 },
             { id: "j3", kind: "pwsh", label: "node build/smoke.mjs", status: "completed", startedAt: Date.now() - 600000, finishedAt: Date.now() - 545000, detail: "✓ 端到端通过" },
             { id: "j4", kind: "pwsh", label: "git push origin main", status: "failed", startedAt: Date.now() - 900000, finishedAt: Date.now() - 899000, detail: "fatal: could not read Username" },

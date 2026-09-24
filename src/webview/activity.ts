@@ -8,13 +8,7 @@
  * 纯函数、不引 React：断言见 `scripts/activity.test.ts`。
  */
 import type { JobItemView, SubagentView } from "../shared/chat";
-import { isLiveJob } from "./jobsOrder";
-
-/**
- * 后台任务里代表子代理的 `kind`（`JobKindMap` 目前只有 `bash` / `subagent` 两个键，
- * 但它是可扩展联合：别的 kind 一律按「后台任务」算，不认识就不认领）。
- */
-const SUBAGENT_JOB_KIND = "subagent";
+import { isLiveJob, isSubagentJob } from "./jobsOrder";
 
 /**
  * 有子代理在跑吗。
@@ -30,10 +24,16 @@ export function subagentsBusy(
   jobs: readonly JobItemView[],
 ): boolean {
   if (entries.some((entry) => entry.activity === "running")) return true;
-  return jobs.some((job) => job.kind === SUBAGENT_JOB_KIND && isLiveJob(job));
+  return jobs.some((job) => isSubagentJob(job) && isLiveJob(job));
 }
 
-/** 有后台任务在跑吗（含「正在停止」——那也还没结束）。 */
+/**
+ * 有后台任务在跑吗（含「正在停止」——那也还没结束）。
+ *
+ * **子代理那一路不点亮这颗按钮**（用户 2026-09-24 口径）：子代理有自己的面板、
+ * 自己的信号（上面的 `subagentsBusy`），而且后台任务面板也不收它——
+ * 若不过滤，会出现「按钮亮着、面板却是空的」的矛盾。
+ */
 export function jobsBusy(jobs: readonly JobItemView[]): boolean {
-  return jobs.some(isLiveJob);
+  return jobs.some((job) => !isSubagentJob(job) && isLiveJob(job));
 }

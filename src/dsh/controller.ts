@@ -4824,6 +4824,34 @@ export class ChatController implements vscode.Disposable {
         break;
       }
 
+      case "killJob": {
+        // 人的停止请求（后台任务面板的两段式按钮）→ `job/kill`。
+        // **每条路都要回 `jobs/killResult`**：界面的「请求中」状态只认这一帧收场，
+        // 不回帧按钮会永远禁用在那里。`sessionId` 取**当前视图绑定的会话**——
+        // 名册就是按会话投的（`applyJobs`），面板里看得到的行必然属于它。
+        const scope = this.scopeOfView(viewId);
+        if (!this.client || !scope) {
+          this.log(`[jobs] 停止请求没法发出：${this.client ? "没有绑定会话" : "未连接"}（jobId=${message.jobId}）`);
+          this.emitToView(viewId, { type: "jobs/killResult", jobId: message.jobId, ok: false });
+          break;
+        }
+        this.client
+          .killJob(scope.sessionId, message.jobId)
+          .then((value) => {
+            // 受理即成功（`requested` / `already-finished` 都算）：行状态由名册帧收敛，
+            // 这里只负责把「请求已受理」告诉界面。
+            this.log(`[jobs] 停止请求已受理（jobId=${message.jobId}，outcome=${value.outcome ?? "?"}）`);
+            this.emitToView(viewId, { type: "jobs/killResult", jobId: message.jobId, ok: true });
+          })
+          .catch((error) => {
+            // 旧服务端没有 `job` 命名空间（404）、`job/not-found`（名册里已没有这一行）
+            // 都落这里：如实回失败，界面亮「停止失败」，不做静默。
+            this.log(`[jobs] 停止请求失败（jobId=${message.jobId}）：${this.describeError(error)}`);
+            this.emitToView(viewId, { type: "jobs/killResult", jobId: message.jobId, ok: false });
+          });
+        break;
+      }
+
       case "listTrajectory": {
         // 轨迹账本：把该窗口会话的**全部 durable 事件**折一遍（官方视图也是
         // 客户端自己折的，没有对应 RPC，见 `dsh/trajectory.ts` 的文件头）。

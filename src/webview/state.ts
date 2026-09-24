@@ -65,6 +65,14 @@ export interface AppState extends ChatState {
    * 它只活在界面侧，所以不放进 `ChatState`。
    */
   quoteRequest?: { id: number; text: string };
+  /**
+   * 最近一条停止请求的结算（宿主 `jobs/killResult` 帧的落点，后台任务面板消费）。
+   *
+   * 只活在界面侧（宿主快照 / patch 里没有这个字段），所以不放进 `ChatState`。
+   * **每次结算都换新对象**（同一行连续两次失败也是两帧）——面板按引用相等识别
+   * 「来了一条新结算」，把状态机推进到 `failed` / 维持 `pending`。
+   */
+  jobKill?: { jobId: string; ok: boolean };
 }
 
 export const initialState: AppState = {
@@ -227,6 +235,11 @@ export function reducer(state: AppState, action: Action): AppState {
 
     case "jobs/list":
       return { ...state, jobs: action.jobs };
+
+    case "jobs/killResult":
+      // 一条停止请求的结算：面板把「请求中」推进到失败 / 等名册收场（jobsKill.ts）。
+      // 故意整对象替换（不按 jobId 合并）：连着两次失败的结算也要各推进一次状态机。
+      return { ...state, jobKill: { jobId: action.jobId, ok: action.ok } };
 
     case "trajectory": {
       // 宿主发的是一整段 JSON 字符串（不是逐键 patch）：

@@ -60,6 +60,16 @@ export type HostToWebview =
   | { type: "subagents/list"; entries: SubagentView[]; parentAvailable: boolean }
   /** 后台任务清单（任务面板）。 */
   | { type: "jobs/list"; jobs: JobItemView[] }
+  /**
+   * 一条停止请求的结算（`killJob` 的回帧）。
+   *
+   * `ok: true` = 服务端受理了（`requested` / `already-finished`）——界面停在
+   * 「请求中」，行状态由名册帧推成 `stopping` / `killed` 后自然收场；
+   * `ok: false` = 请求没被受理（没连接、没绑定会话、404 / `job/not-found` 等），
+   * 界面亮一小段「停止失败」。**每次结算都要发**，连失败也一样——它是界面
+   * 唯一能用来结束「请求中」的信号。
+   */
+  | { type: "jobs/killResult"; jobId: string; ok: boolean }
   /** 斜杠命令目录（输入框输入 / 时弹出）。 */
   | { type: "commands/list"; commands: CommandView[] }
   /** 文件引用候选（输入框输入 @ 时弹出）。 */
@@ -337,6 +347,13 @@ export type WebviewToHost =
   | { type: "openSubagent"; id: string }
   /** 请求后台任务清单。 */
   | { type: "listJobs" }
+  /**
+   * 停止一条后台任务（两段式按钮的第二下；`job/kill`，见 `dsh/client.killJob`）。
+   *
+   * 宿主**总是**回一帧 `jobs/killResult`（连不上、没绑定会话、请求失败都算
+   * `ok: false`）——界面的「请求中」状态靠它收场，不回帧按钮会永远转下去。
+   */
+  | { type: "killJob"; jobId: string }
   /** 请求斜杠命令目录。 */
   | { type: "listCommands" }
   /** 查询文件引用候选（@ 提及）。 */

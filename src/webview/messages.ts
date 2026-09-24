@@ -379,6 +379,11 @@ export const MESSAGES = {
   jobKilled: { zh: "已取消", en: "cancelled" },
   jobUnknown: { zh: "未知状态", en: "unknown status" },
   jobFailed: { zh: "失败", en: "failed" },
+  // 停止按钮（官方 `kill.*` 同口径：两段式——第一下待确认，第二下才发请求）
+  jobStopTitle: { zh: (label: string) => `停止任务 ${label}`, en: (label: string) => `Stop task ${label}` },
+  jobStopConfirm: { zh: "再次点击确认停止", en: "Click again to confirm" },
+  jobStopConfirmAction: { zh: "确认停止", en: "Confirm stop" },
+  jobStopFailed: { zh: "停止失败", en: "Stop failed" },
   commands: { zh: "命令", en: "Commands" },
   commandsEmpty: { zh: "没有可用命令", en: "No commands available" },
   skillTag: { zh: "技能", en: "Skill" },

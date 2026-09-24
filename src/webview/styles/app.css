@@ -4099,6 +4099,62 @@ button.meta-chip:hover {
   overflow: auto;
 }
 
+/* 停止按钮（两段式，官方 .stop / .stopArmed / .stopFailed 同语义）：
+   平常一枚小方块图标；悬停透出错误色——它是破坏性动作（官方同款配色语义）；
+   armed 档撑出「确认停止」文字并给错误色底（color-mix 的 12% 错误色与官方一致，
+   Electron 42 的 Chromium 支持）。 */
+.job-stop {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--muted);
+  /* 英文「Confirm stop」比中文长得多：按钮不折行，宽度不够时让位的永远是
+     前面的任务名（.job-label 自带省略号），不是把行撑高 */
+  white-space: nowrap;
+}
+
+.job-stop:hover,
+.job-stop:focus-visible {
+  border-color: var(--error);
+  color: var(--error);
+}
+
+.job-stop.is-armed,
+.job-stop.is-armed:hover,
+.job-stop.is-armed:focus-visible {
+  width: auto;
+  padding: 0 6px;
+  border-color: var(--error);
+  background: color-mix(in srgb, var(--error) 12%, transparent);
+  color: var(--error);
+}
+
+/* 请求没被受理：错误色亮「停止失败」那一小段（与悬停同色，容易看出是同一件事） */
+.job-stop.is-failed,
+.job-stop.is-failed:hover,
+.job-stop.is-failed:focus-visible {
+  border-color: var(--error);
+  color: var(--error);
+}
+
+/* 请求中：禁用但不要整个隐身——「转着的按钮」本身是「请求在路上」的证据 */
+.job-stop:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.job-stop-label {
+  font-size: var(--font-size-2xs);
+  line-height: 1;
+}
+
 /* 子代理记录面板里的消息（只读）：比正文紧一点。
    面板里**没有** `.chat-list` 那一层，所以正文那条 `.chat-list > .msg:last-child`
    的 200px 留白本来就不会落进来——此前这里抄了一条 `.subagent-transcript .chat-list

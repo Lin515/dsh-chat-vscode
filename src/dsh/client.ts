@@ -458,6 +458,19 @@ export class DshClient {
   }
 
   /**
+   * 人的后台任务停止请求（`job/kill`，契约
+   * `@deepseek-ai/dsh-api-job-controller/types` 的 `JobKillRequest` / `JobKillValue`）。
+   *
+   * 受理 ≠ 已停：回包只说「请求收下了」（`requested`）或「任务恰好已经收场」
+   * （`already-finished`），行状态的真正收敛仍由 `job/list` 名册帧推过来
+   * （与官方 `JobListInjected.killJob` 的注释同一口径）。失败（含旧服务端
+   * 没有 `job` 命名空间的 404、`job/not-found`）由调用方如实回给界面。
+   */
+  killJob(sessionId: string, jobId: string): Promise<{ outcome?: string }> {
+    return this.request(METHODS.jobKill, { request: { sessionId, jobId } });
+  }
+
+  /**
    * 移除一条排队 / 插话消息（`SessionUpdateQueueRequest`，action `{kind:'remove'}`）。
    * 服务端随后会重发队列（当前服务端重发 `inbox` 投影），界面以它为准。
    */
