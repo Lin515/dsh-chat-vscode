@@ -2048,4 +2048,43 @@ console.log("styles: 右侧轮次横条（零高度槽位 + 点击穿透 + 过�
 }
 console.log("styles: 后台任务详情（输出限高内滚 + 行主体不溢出） ✓");
 
+// ---------- 发送失败的回显行：红框 + 两个动作顶到最左 + 原因单行截断 ----------
+//
+// 用户 2026-09-25 口径：发送失败**不撤回显示**——那一行留在原地，气泡走错误色，
+// 操作行最左侧给「重发 / 撤回」，行尾写原因。三条都是"看着对不对"的东西，
+// 但坏掉的后果很实在：错误色走了别的颜色 = 与普通消息分不开；动作没顶到最左 =
+// 与「时间 / 复制」混在一起，用户找不到；原因不 nowrap+省略号 = 英文长报错把行撑破。
+{
+  const failedBubble = rule(".msg-user.is-failed .bubble");
+  assert.ok(
+    /border-color:\s*var\(--error\)/.test(failedBubble),
+    "失败那一行的气泡必须用错误色描边（与已发送的消息一眼可分）",
+  );
+  assert.ok(
+    /background:\s*color-mix\(in srgb, var\(--error\)/.test(failedBubble),
+    "失败气泡的底色也要走错误色（与既有错误态的 color-mix 手法一致）",
+  );
+
+  const actions = rule(".msg-failed-actions");
+  assert.ok(
+    /margin-right:\s*auto/.test(actions),
+    "「重发 / 撤回」要顶到操作行最左侧（把时间 / 复制留在右端）",
+  );
+  assert.ok(
+    /flex:\s*0 0 auto/.test(actions),
+    "两枚文字按钮不许被压扁（它们是这一行唯一的动作，英文下更容易挤；压的是后面的原因）",
+  );
+
+  const reason = rule(".msg-failed-reason");
+  assert.ok(
+    /white-space:\s*nowrap/.test(reason) && /text-overflow:\s*ellipsis/.test(reason),
+    "失败原因必须单行截断（英文报错通常比中文长一倍，撑破 28px 高的操作行就看不见时间了）",
+  );
+  assert.ok(
+    /color:\s*var\(--error\)/.test(reason),
+    "原因文字用错误色（与气泡边框同一语义）",
+  );
+}
+console.log("styles: 失败回显行的动作与原因 ✓");
+
 console.log("\nstyles: all assertions passed");

@@ -172,6 +172,24 @@ const must = [
     "长用户消息（默认收缩）",
     () => state.messages.some((m) => m.role === "user" && (m.text ?? "").split("\n").length > 5),
   ],
+  // 乐观回显（`PendingMessageView`）：两种形态都要留样例——一条还在飞的（带附件，
+  // 看的是「图片立刻画出来」）、一条失败的（红框 + 重发 / 撤回 + 原因）。
+  // 账本里只有「已经发出去」的那一类，所以这里不再有「排队中的那条不画」这一档：
+  // 排队 / 插话的消息压根不进账本（它们在下面 `__composer` 的服务端队列项里）。
+  [
+    "乐观回显（带图的一条 + 失败红框的一条）",
+    () => {
+      const transcript = state.pendingMessages.some(
+        (echo: { status?: string; attachments?: unknown[] }) =>
+          echo.status === "sending" && (echo.attachments?.length ?? 0) > 0,
+      );
+      const failed = state.pendingMessages.some(
+        (echo: { status?: string; error?: string }) =>
+          echo.status === "failed" && Boolean(echo.error),
+      );
+      return transcript && failed;
+    },
+  ],
   // 轨迹账本：七种记录要留够形态，否则预览页看不到种类标签/检查器页签/折叠行的差别
   [
     "轨迹账本（六种记录 + 系统提示词更新）",

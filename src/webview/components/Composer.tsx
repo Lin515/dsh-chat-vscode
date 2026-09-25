@@ -1057,6 +1057,10 @@ function Lump({
     //
     // **显示顺序**：插话（`steering`，马上进当前轮）排在排队（`queued`，等下一轮）上方
     // （用户 2026-09-15 口径；只动显示，数据顺序留给宿主重发用，见 `queueOrder.ts`）
+    //
+    // 这里**只**画服务端给的队列项（`state.queueItems`）：排队中的消息还没有发出去，
+    // 它在界面上唯一的去处就是这个队列（乐观回显只服务「已经发出去」的那一类，
+    // 见 `webview/pendingMessage.ts`）。
     const items = queueDisplayOrder(state.queueItems);
     return (
       <div className="queue">

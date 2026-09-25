@@ -216,7 +216,9 @@
       window.__composer = function () {
         // 待发消息队列：一条纯文本、一条只有附件（文本为空）、一条**插话发送**
         // （`placement: "steering"`，服务端顺序是提交先后，所以它排在最后——
-        //   界面要把它显示到排队消息**上方**，见 `src/webview/queueOrder.ts`）
+        //   界面要把它显示到排队消息**上方**，见 `src/webview/queueOrder.ts`）。
+        // 这三条是**服务端名册**给的真实队列项，与对话流里的 `pendingMessages`
+        // 是两回事：排队中的消息还没发出去，所以它不进账本、也不出现在对话流里。
         window.__push({
           type: "patch",
           patch: {
@@ -357,6 +359,29 @@
             { id: "at-err", kind: "file", name: "big.bin", upload: { status: "error", message: "HTTP 413" } }
           ],
           draft: "把这两个文件的启动逻辑合并到一个入口",
+          // 乐观回显（`PendingMessageView`，见 src/webview/pendingMessage.ts）：两种形态
+          // 都要留着，否则预览页看不出失败那一行的红框 / 两个动作 / 原因。
+          // 账本里只有「已经发出去」的那一类（按下发送那一刻 agent 空闲）——排队 / 插话那几条
+          // 压根不进账本，它们的归属是下面 `__composer` 推的服务端队列项。
+          pendingMessages: [
+            {
+              requestId: "echo-1",
+              ts: now,
+              text: "这张截图里的报错在启动时偶发，先按这个思路查一下",
+              attachments: [
+                { id: "echo-img", kind: "image", name: "error.png", dataUrl: previewImageDataUrl, bytes: 20480 }
+              ],
+              status: "sending"
+            },
+            {
+              requestId: "echo-3",
+              ts: now + 2,
+              text: "这条发失败了，留在这里等重发或撤回",
+              attachments: [],
+              status: "failed",
+              error: "@sendFailed:gateway/input-invalid: prompt rejected"
+            }
+          ],
           models: [
             {
               id: "deepseek-official",

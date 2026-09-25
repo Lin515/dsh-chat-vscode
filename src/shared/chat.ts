@@ -562,6 +562,27 @@ export interface MessageView {
   attachments?: Attachment[];
   streaming?: boolean;
   /**
+   * 这条用户消息对应的**提交身份**（durable `user/message` 的 `source.rpcId`）。
+   *
+   * 乐观回显靠它与真实行配对：界面按它去重（同一条不画两遍）并给两边的 React 行
+   * **同一个 key**（`p:<rpcId>`），于是 durable 行落位时 React 复用同一个 DOM 节点、
+   * 不卸载重建（用户 2026-09-25 报的「消息闪一下」有一半来自这里）。
+   * 助手消息没有它。
+   */
+  rpcId?: string;
+  /**
+   * **只对乐观回显行有意义**的发送状态（真实行没有这个键）。
+   *
+   * - `sending`：已经交给宿主，等它落地（等 durable `user/message` 的承认）；
+   * - `failed`：没发出去。行**留在对话流里**（气泡错误色 + 重发 / 撤回 + 原因）。
+   *
+   * 只有「已经发出去」的那一类才会有这个键——排队 / 插话中的消息还没发出去，
+   * 它们唯一的去处是输入框上方的排队区（见 `PendingMessageView`）。
+   */
+  sendState?: "sending" | "failed";
+  /** 失败原因（`sendState === "failed"`）：`@key:arg` 标记或服务端原文，界面 `resolveText`。 */
+  sendError?: string;
+  /**
    * 轮尾的用时与速度（`turn/end` 时写入，见 `TurnStatsView`）。
    *
    * 只在**轮次结束后**才有值：轮次进行中算不出总用时，也不该显示。
@@ -589,6 +610,54 @@ export interface MessageView {
    */
   changes?: { turn: number; seq: number };
   /** 出错时的提示文本。 */
+  error?: string;
+}
+
+/**
+ * 一条**已经按下发送、还没被服务端承认**的用户消息（乐观回显）。
+ *
+ * 官方对应物是 `ISession.beginSubmission` 塞进会话快照的 `PendingSubmission`
+ * （`dsh-api-session-controller`）：点击那一刻同步进状态，界面先画出来，等 durable
+ * `user/message` 的 `source.rpcId` 回来再收回。没有它，用户消息要等
+ * 「拉起后台 → 建会话 → prompt → 服务端落盘 → follow 流推事件」整条链走完才出现
+ * （第一条消息最慢，冷启动时是秒级）。
+ *
+ * **只收「已经发出去」的那一类**（用户 2026-09-25 口径）：按下发送那一刻 agent 空闲 =
+ * 这一次会立刻 `session/prompt`，那一条就该即刻出现在对话流里。**运行中发送（排队 /
+ * 插话）不进这个账本**——它还没发出去，唯一的去处是输入框上方的排队区，而那里由服务端
+ * 的队列名册驱动（`syncQueue` 那条老路径，本次一个字没动）。于是「这条画在哪」不需要
+ * 一个字段来表达：账本里的每一条都进对话流。
+ *
+ * 它**不并进** `messages`：未承认的回显没有轮次，混进去会给轮次横条的锚点归属
+ * 造出一个假锚点（见 `webview/turnRail.ts` 的 `collectLoadedTurns`）。
+ */
+export interface PendingMessageView {
+  /**
+   * 本次提交的 requestId。
+   *
+   * 它是回显与真实消息的**唯一关联身份**：durable `user/message` 的
+   * `source.rpcId` 带回的就是它。
+   */
+  requestId: string;
+  /** 客户端墙上时钟（消息气泡上的时间）。 */
+  ts: number;
+  /** 正文原文（拼引用之前的用户输入，与宿主 `submissions` 里记的那份同源）。 */
+  text: string;
+  /** 附件（与草稿芯片同形：图片带 `dataUrl`、文件带上传状态）。 */
+  attachments: Attachment[];
+  /**
+   * 生命周期状态：
+   * - `sending`：已交给宿主，还没听说受理（等 durable 承认）；
+   * - `failed`：没发出去。**行留在对话流里**（气泡红色 + 重发 / 撤回 + 原因），
+   *   它不进会话内容，也不参与后续任何 prompt——唯一的再发路径是那颗「重发」。
+   */
+  status: "sending" | "failed";
+  /**
+   * 失败原因（`status === "failed"`）。
+   *
+   * `@key:arg` 标记（宿主发的通用原因，界面按当前语言翻译）或服务端 / 传输层的
+   * 原始报错（原样露出，不翻译）。
+   */
   error?: string;
 }
 
@@ -962,6 +1031,17 @@ export interface ChatState {
   locale?: string;
   session?: SessionSummaryView;
   messages: MessageView[];
+  /**
+   * 还没被服务端承认的用户消息（乐观回显，见 `PendingMessageView`）。
+   *
+   * **必填**（不是可选）：它必须出现在每一份整份快照里，否则切会话时上一条会话的
+   * 回显会留在屏幕上（`WireState` 是 homomorphic 映射类型，必填字段会强制
+   * `snapshotFor` 给出取值——漏了就编译不过）。
+   *
+   * 按**窗口键**存放（与 `draft` / `attachments` 同一套：未绑定会话用 viewId、
+   * 已绑定用会话 id），所以它不在 `SessionView` 的字段表里。
+   */
+  pendingMessages: PendingMessageView[];
   /** 当前会话是否正在生成。 */
   running: boolean;
   /**

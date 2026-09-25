@@ -96,6 +96,9 @@ export const initialState: AppState = {
   // 首帧会带上权威值（`dshChat.language` 固定选择优先），到了即覆盖。
   locale: typeof navigator !== "undefined" ? navigator.language : undefined,
   messages: [],
+  // 乐观回显起步为空表：宿主首帧快照会带上权威值（见 `shared/chat.ts` 的
+  // `pendingMessages`），这里只是「快照还没到」时的空档
+  pendingMessages: [],
   running: false,
   queueItems: [],
   attachments: [],

@@ -226,7 +226,9 @@ console.log("subagentPanel: 子代理域的 running 打底 ✓");
     /delivery,\s*content,/.test(client) || /delivery,/.test(client),
     "prompt 的 mode 在 subagents/prompt 上叫 delivery（契约字段名）",
   );
-  // 文件附件：官方硬规则（subagent/attachment-invalid）——有文件芯片就不发
+  // 文件附件：官方硬规则（subagent/attachment-invalid）——有文件芯片就不发。
+  // 子代理会话**不回显**（官方 sendSession 的 subagent 分支同样绕过 beginSubmission），
+  // 所以这里没有能承载失败的那一行，沿用老口径：提示 + 正文回输入框。
   assert.ok(
     /address && content\.some\(\(part\) => part\.type === "file"\)/.test(controller) &&
       /text: "@subagentFilesUnsupported"/.test(controller),

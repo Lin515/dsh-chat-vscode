@@ -37,6 +37,7 @@ import {
 import { displaySessionMentions } from "../shared/mentions";
 import { readRangeFromMeta, readRangeFromOutput } from "./readRange";
 import { subagentFromCatalogEvent } from "./projections";
+import { includedAttachments } from "./attachments";
 import { expandAssistantStream } from "./assistantStream";
 import { producedPath } from "./produced";
 import type { HostToWebview } from "../shared/ipc";
@@ -304,8 +305,12 @@ function toUsage(
  * 回放时要看得见（此前只显示一个文件名芯片）。
  * 文件没有可显示的字节，显示名字与大小即可。
  */
-function userMedia(content: unknown): Attachment[] {
+function userMedia(content: unknown, echoAttachments?: readonly Attachment[]): Attachment[] {
   if (!Array.isArray(content)) return [];
+  // 本地那份先过一遍与装配内容块**同一个判据**：`echoAttachments` 是当时的**全量**附件，
+  // 而内容块里只有真进了块的那些（文件没传完、图片没有可解析字节的都不在）——不过这一遍
+  // 就会整体错位，把字节借给另一张图（或借不到）。
+  const local = echoAttachments ? includedAttachments(echoAttachments) : undefined;
   const media: Attachment[] = [];
   let index = 0;
   for (const block of content as ContentBlock[]) {
@@ -314,6 +319,9 @@ function userMedia(content: unknown): Attachment[] {
       const attachment = (block as { attachment?: Record<string, unknown> }).attachment ?? {};
       const name = typeof attachment.name === "string" && attachment.name ? attachment.name : "image";
       const attachmentId = typeof attachment.attachmentId === "string" ? attachment.attachmentId : undefined;
+      // 同序的回显附件里已经有本地字节（同一次提交）：借它的 dataUrl 与固有宽高，
+      // 句柄仍用 durable 的那一个（`hydrateUserMedia` 照旧会去换一次，只是不再赶时间）
+      const localEntry = local?.[index];
       media.push({
         id: `m${index++}`,
         kind: "image",
@@ -323,6 +331,9 @@ function userMedia(content: unknown): Attachment[] {
         ...(typeof attachment.mediaType === "string" ? { mediaType: attachment.mediaType } : {}),
         ...(typeof attachment.width === "number" ? { width: attachment.width } : {}),
         ...(typeof attachment.height === "number" ? { height: attachment.height } : {}),
+        ...(localEntry?.kind === "image" && localEntry.dataUrl ? { dataUrl: localEntry.dataUrl } : {}),
+        ...(typeof localEntry?.width === "number" ? { width: localEntry.width } : {}),
+        ...(typeof localEntry?.height === "number" ? { height: localEntry.height } : {}),
       });
       continue;
     }
@@ -683,6 +694,14 @@ export class SessionAdapter {
   private replaying = false;
 
   /**
+   * 重放期间攒下的「这条用户消息已经被 durable 承认了」通知（见 `notifyAdmitted`）。
+   *
+   * 攒到重放收尾那一份 `messages/reset` **发出去之后**再补发，否则收回回显的帧会跑到
+   * 落位帧前面（那一帧两边都不在 = 界面上那条消息闪一下）。
+   */
+  private admittedWhileReplaying: { rpcId?: string; text: string }[] = [];
+
+  /**
    * 当前是否有一轮在跑（`turn/start` 与 `turn/end` 之间）。
    *
    * 单独记一个字段而不是只发 `patch running`：重放期间不发帧（见 `replaying`），
@@ -711,6 +730,31 @@ export class SessionAdapter {
   private emit(frame: HostToWebview): void {
     if (this.replaying) return;
     this.sendFrame(frame);
+  }
+
+  /**
+   * 交出一条「这条用户消息已经被承认」的事实（落点是 `onUserMessage`）。
+   *
+   * **重放期间只攒着、不发**：重放里落位帧被 `emit` 压住，界面要等调用方事后那一份整份
+   * `messages/reset` 才拿得到 durable 行。此刻就通知控制器收回回显的话，界面先收到
+   * 「回显没了」、后收到那一份 reset——中间那一帧**两边都不在**，就是用户报的
+   * 「先显示 → 消失 → 再回显」。所以攒进 `admittedWhileReplaying`，由 `flushAdmitted`
+   * 在 `messages/reset` 发出之后补发（顺序与直播路径一致：先落位帧，后收回帧）。
+   */
+  private notifyAdmitted(message: { rpcId?: string; text: string }): void {
+    if (this.replaying) {
+      this.admittedWhileReplaying.push(message);
+      return;
+    }
+    this.onUserMessage?.(message);
+  }
+
+  /** 重放收尾（那一份 `messages/reset` 已发出）之后，补发攒下的承认通知。 */
+  private flushAdmitted(): void {
+    if (!this.admittedWhileReplaying.length) return;
+    const admitted = this.admittedWhileReplaying;
+    this.admittedWhileReplaying = [];
+    for (const message of admitted) this.onUserMessage?.(message);
   }
 
   /**
@@ -800,6 +844,30 @@ export class SessionAdapter {
    * 重载窗口后重新注册正是靠重放。
    */
   onSubagentEstablished: ((entry: SubagentView) => void) | undefined;
+
+  /**
+   * 一条**人的**用户消息被 durable 承认（`user/message`）时的落点（由控制器注入）。
+   *
+   * 用途只有一个：收回乐观回显（`controller.noteUserAdmitted`）。回显与真实消息的
+   * 关联身份是客户端铸造的 `requestId`——Host 把它写在 `source.rpcId` 上
+   * （见 `dsh/client.ts` 的 `prompt`）。服务端不保证回它，所以连**正文**一起交出去，
+   * 由控制器按文本兜底（否则旧服务端上回显会与真实消息永久重复一条）。
+   *
+   * 触发点刻意放在「能不能渲染这条消息」的判断**之前**：只有图片、或字节取不回来的
+   * 消息同样是一次承认，回显必须跟着收。重放（重连 / 重载窗口）期间同样要交出去——
+   * 那正是「回显对应的消息早就落盘了」的场景——但**要等那一份整份 `messages/reset`
+   * 发完**（见 `notifyAdmitted` 的注释）。
+   */
+  onUserMessage: ((message: { rpcId?: string; text: string }) => void) | undefined;
+
+  /**
+   * 按 `rpcId` 取**同一次提交的本地附件**（由控制器注入：`submissions` 里那份原文与附件）。
+   *
+   * 只有一个用途：durable 用户行的图片**借它的 dataUrl**（见 `userMedia` 的 `echoAttachments`）。
+   * 借不到（扩展重载过、提交记录被上限淘汰）就退回原路径——先画文件名芯片，
+   * 等 `hydrateUserMedia` 换回字节。
+   */
+  resolveEchoAttachments: ((rpcId: string) => readonly Attachment[] | undefined) | undefined;
 
   /**
    * 本会话**继承前缀**的末尾 seq（`session/end-seed` 的 seq），没有分叉种子时是 -1。
@@ -1006,6 +1074,9 @@ export class SessionAdapter {
       // 注意：`session/title` **事件**那条路（下面的 `applyEvent`）不受影响，
       // 那是 durable 事件，不是投影。
       this.emit({ type: "messages/reset", messages: this.messages });
+      // durable 行已经随上面那一份整份 reset 交给界面了，这时才收回乐观回显
+      // （重放期间攒下的那些，见 `notifyAdmitted`）
+      this.flushAdmitted();
       return;
     }
     if (frame.type === "event") {
@@ -1093,6 +1164,8 @@ export class SessionAdapter {
     this.emit({ type: "patch", patch: { hasMoreHistory: this.hasMore } });
     if (changed) {
       this.emit({ type: "messages/reset", messages: this.messages });
+      // 重折期间攒下的承认通知在这时补发（重折里落位帧被压住，见 `notifyAdmitted`）
+      this.flushAdmitted();
       // 更早的历史里也有芯片：同样安排分类
       this.scheduleFileKinds();
     }
@@ -1437,17 +1510,37 @@ export class SessionAdapter {
         // 可读的 `@标题`，否则用户看到一长串带着 base64 会话 id 的 token。
         const text = displaySessionMentions(blocksToText(message?.content));
         if (kind === "user" || kind === "user-rpc") {
+          const rpcId = (message?.source as { rpcId?: unknown } | undefined)?.rpcId;
+          const admitted = typeof rpcId === "string" && rpcId ? rpcId : undefined;
+          /**
+           * 承认事实交给控制器的时机是**这条落位并发帧之后**（本分支末尾），不是之前。
+           *
+           * 收回乐观回显与「durable 行出现在消息流里」是同一件事的两半：先收回后落位，
+           * 中间会有一帧两边都不在（界面表现为那条消息闪一下再回来，用户 2026-09-25 报的）。
+           * 反过来的次序配合界面的 rpcId 去重，任何一帧都至少有一行在，且行身份不变。
+           */
+          const notifyAdmitted = (): void => {
+            this.notifyAdmitted({ ...(admitted ? { rpcId: admitted } : {}), text });
+          };
           // 非文本块（图片 / 文件）**不能丢**：此前的 `if (!text) break;` 会
           // 让「纯图片用户消息」整条不渲染——用户发了张图，界面上什么都没有
           // （docs/audit-summary.md「用户消息的非文本内容被丢弃」一条）。
-          const media = userMedia(message?.content);
-          if (!text && media.length === 0) break;
+          // 图片字节顺手**借乐观回显那一份**（同一次提交，本地已有 dataUrl）：
+          // 不借的话 durable 行会先从缩略图退回文件名芯片、等 `hydrateUserMedia`
+          // 回来再变成缩略图——同一条消息在交接时闪两下。
+          const echoAttachments = admitted ? this.resolveEchoAttachments?.(admitted) : undefined;
+          const media = userMedia(message?.content, echoAttachments);
+          if (!text && media.length === 0) {
+            notifyAdmitted();
+            break;
+          }
           const view: MessageView = {
             id: `u:${event.seq}`,
             role: "user",
             ts: event.time,
             text,
             segments: [],
+            ...(admitted ? { rpcId: admitted } : {}),
             ...(media.length ? { attachments: media } : {}),
           };
           // 用户消息的落位分三种情形（服务端实测见 queueLogInspect/queue-order 探针）：
@@ -1465,7 +1558,11 @@ export class SessionAdapter {
           const assistant = this.currentAssistantMessage();
           const index = assistant ? this.messages.indexOf(assistant) : -1;
           const alreadyHasTurnPrompt = index > 0 && this.messages[index - 1].role === "user";
-          if (this.byId.has(view.id)) break; // 重连/重放时同一条事件可能再来一次
+          if (this.byId.has(view.id)) {
+            // 重连/重放时同一条事件可能再来一次：行没重画，但「已承认」的事实照样要交出去
+            notifyAdmitted();
+            break;
+          }
           if (assistant && index >= 0 && !alreadyHasTurnPrompt) {
             this.messages.splice(index, 0, view);
             this.byId.set(view.id, view);
@@ -1478,6 +1575,8 @@ export class SessionAdapter {
           }
           // 图是真图：句柄换字节是异步的，视图先落地再补（见 hydrateUserMedia）
           this.hydrateUserMedia(view);
+          // 落位帧已发出，这才收回乐观回显（见上面 `notifyAdmitted` 的注释）
+          notifyAdmitted();
           break;
         }
         // 其余来源（system prompt / agent instructions / goal / skill / 插件注入）

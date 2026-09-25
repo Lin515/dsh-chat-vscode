@@ -144,6 +144,21 @@ export type WebviewToHost =
    * 界面不自己算——它不知道「发出去的那一刻 agent 还在不在跑」。
    */
   | { type: "send"; text: string; attachments: Attachment[]; gesture?: "enter" | "accelerated" }
+  /**
+   * **撤回**一条发送失败的回显：把那一行删掉。
+   *
+   * 不把正文塞回输入框（用户 2026-09-25 口径）：失败的那条消息**留在原地**，
+   * 要重发就点它旁边的「重发」。
+   */
+  | { type: "retractPending"; requestId: string }
+  /**
+   * **重发**一条发送失败的回显：先撤回（删掉那一行），再按普通发送重走一遍。
+   *
+   * 这是失败消息唯一的再发路径——它不在会话内容里（宿主账本之外没有任何地方引用它），
+   * 所以「后续会话继续」永远不会把它带上。连点两次是安全的：第二下找不到那条回显，
+   * 宿主直接不做。
+   */
+  | { type: "resendPending"; requestId: string }
   /** 停止当前生成。 */
   | { type: "stop" }
   /** 取消一条排队中（尚未发送）的消息。 */

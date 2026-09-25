@@ -8,7 +8,7 @@ import { Markdown } from "./Markdown";
 import { ImageGallery, LocalImageGallery, type ImageSource } from "./Images";
 import { formatClock, useSelectionFreeze } from "./primitives";
 import { ApprovalCard, CommandRow, FileChips, InjectedRow, MessageImages, NoticeRow, QuestionCard, ThinkingRow, ToolRow, TurnProcessRow, TurnStatsButton, UnknownBlockRow } from "./Rows";
-import { useTexts } from "../texts";
+import { useTexts, resolveText } from "../texts";
 import { producedOnly, withoutVanished } from "../turnFiles";
 import { foldTurnProcess, type TurnProcessRun } from "../turnProcess";
 import { hasUserOpenedNode, useNodeOpen } from "../nodeOpen";
@@ -200,8 +200,43 @@ export const Message = memo(function Message({
         height: attachment.height,
       }));
     const chips = attachments.filter((attachment) => attachment.kind !== "image" || !attachment.dataUrl);
+    /**
+     * 乐观回显的行状态（真实行没有 `sendState`，这一段整块不渲染）。
+     *
+     * **只有失败态**有动作，坐在操作行**最左侧**（`margin-right: auto` 把时间 / 复制
+     * 留在右端）：重发 + 撤回 + 原因（用户 2026-09-25 口径：失败**不撤回显示**）。
+     * 排队 / 插话那几条不在对话流里（它们在输入框上方的排队区，那里本来就有三枚队列动作）。
+     *
+     * 动作凭 `rpcId` 指认那一条回显（它就是 requestId）：没有它就**不画**按钮——
+     * 发一个空身份出去只会是一次静默的空操作。
+     */
+    const failedReason = message.sendState === "failed" && message.sendError
+      ? resolveText(message.sendError, texts)
+      : undefined;
+    const echoRequestId = message.sendState === "failed" ? message.rpcId : undefined;
+    const echoActions = echoRequestId ? (
+      <span className="msg-failed-actions">
+        <button
+          className="msg-expand"
+          title={texts.resend}
+          onClick={() => post({ type: "resendPending", requestId: echoRequestId })}
+        >
+          {texts.resend}
+        </button>
+        <button
+          className="msg-expand"
+          title={texts.retract}
+          onClick={() => post({ type: "retractPending", requestId: echoRequestId })}
+        >
+          {texts.retract}
+        </button>
+      </span>
+    ) : null;
     return (
-      <div className="msg msg-user" data-msg-id={message.id}>
+      <div
+        className={`msg msg-user${message.sendState === "failed" ? " is-failed" : ""}`}
+        data-msg-id={message.id}
+      >
         <UserBubble text={message.text ?? ""} expanded={bubbleOpen} nodeRef={bubbleRef} />
         {attachments.length ? (
           <div className="msg-media">
@@ -223,8 +258,17 @@ export const Message = memo(function Message({
             想复制自己刚发的那段长 prompt 无处可点，只能手动选中。
 
             「展开 / 收起」也在这里，且**最靠右**（用户 2026-09-14 口径）：它属于
-            「这条消息的操作」，和复制同一行才顺手；放在气泡下方会另起一段空白。 */}
+            「这条消息的操作」，和复制同一行才顺手；放在气泡下方会另起一段空白。
+
+            失败 / 排队那两行回显的动作在**最左侧**（用户 2026-09-25 口径），
+            失败原因跟在它们后面。 */}
         <div className="msg-actions">
+          {echoActions}
+          {failedReason ? (
+            <span className="msg-failed-reason" title={failedReason}>
+              {failedReason}
+            </span>
+          ) : null}
           <span className="msg-time">{formatClock(message.ts)}</span>
           <button
             className="icon-btn"

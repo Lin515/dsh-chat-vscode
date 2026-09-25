@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import type { ChatState } from "../shared/chat";
+import type { ChatState, MessageView } from "../shared/chat";
 import type { HostToWebview } from "../shared/ipc";
 import { persistIdentity, post, subscribe } from "./bridge";
 import { useAutoScroll } from "./autoScroll";
@@ -15,6 +15,12 @@ import { Spinner } from "./components/primitives";
 import { AppState, useAppState, type PanelKind } from "./state";
 import { changesSummaryKey, turnsWithChangesCard } from "../shared/changesSummary";
 import { resolveInteractions } from "./pendingInteraction";
+import {
+  messageRowKey,
+  pendingAsMessage,
+  pendingPlacement,
+  pendingVisible,
+} from "./pendingMessage";
 import { attachDroppedFiles, attachPastedFiles, clipboardFiles, dragHasFiles } from "./attachIntake";
 import { setLocalImageScope } from "./localImages";
 import { TurnRail } from "./components/TurnRail";
@@ -760,6 +766,41 @@ export function App() {
   // 由 `resolveInteractions` **一次**算出（`pending` 给 Composer、`takenOver` 给 Message），
   // 才不会出现「两边都画」或「两边都不画」（见 pendingInteraction.ts 文件头）
   const { pending, takenOver } = resolveInteractions(state.messages);
+  /**
+   * 乐观回显（按下发送那一刻宿主就画出来了，见 `pendingMessage.ts` 与
+   * `shared/chat.ts` 的 `PendingMessageView`）。
+   *
+   * 它**不参与**上面那场交互选举（回显里没有审批/问卷），所以单独取一份。
+   * 账本里只有「已经发出去」的那一类；已被 durable 行承认的那些让位给真实行
+   * （`pendingVisible` 按 rpcId 去重）。
+   */
+  const visibleEchoes = useMemo(
+    () => pendingVisible(state.messages, state.pendingMessages),
+    [state.messages, state.pendingMessages],
+  );
+  /**
+   * 消息流的**行序列**：真实消息 + 乐观回显，一处拼装、下面只 map 一次。
+   *
+   * 回显行的渲染与真实行完全共用（同一个 `Message`），只有 `sendState` 让失败那行
+   * 变红并给出重发 / 撤回。插装位置见 `pendingInsertIndex`。
+   */
+  const messageRows = useMemo(() => {
+    const rows: { key: string; message: MessageView; canBranch: boolean }[] = [];
+    const pushMessage = (message: MessageView, canBranch: boolean): void => {
+      rows.push({ key: messageRowKey(message), message, canBranch });
+    };
+    state.messages.forEach((message, index) => {
+      // 只有非最后一条（= 不是正在跑的那一轮）才能作为分支锚点
+      pushMessage(message, !state.running || index < state.messages.length - 1);
+    });
+    // 回显插进上面那一串里：`before` 在本轮助手行之前，`after` 追加在末尾
+    const echoPlacement = pendingPlacement(state.messages, visibleEchoes);
+    const tail = rows.splice(echoPlacement.index);
+    for (const echo of echoPlacement.before) pushMessage(pendingAsMessage(echo), false);
+    rows.push(...tail);
+    for (const echo of echoPlacement.after) pushMessage(pendingAsMessage(echo), false);
+    return rows;
+  }, [state.messages, state.running, visibleEchoes]);
 
   return (
     <TextsContext.Provider value={texts}>
@@ -801,7 +842,11 @@ export function App() {
                   会话页卸载，它自然不在。 */}
               <TurnRail items={railItems} activeTurn={activeTurn} busyTurn={busyTurn} onNavigate={navigate} />
               <div className="chat-list" ref={chatScroll.port.contentEl}>
-                {state.messages.length === 0 ? (
+                {/* 空态页让位的判据里带上乐观回显：第一条消息发出去那一刻，会话页就该
+                    换成消息流（官方 blank → engaging 也是在这一刻翻的，见 `beginSubmission`）。
+                    发送失败**不**收回那一行（它留在原地、红框、可重发/撤回），所以空态页
+                    只在用户主动取消目录选择、正文回输入框之后才回来。 */}
+                {state.messages.length === 0 && visibleEchoes.length === 0 ? (
                   <EmptyState state={state} />
                 ) : (
                   <>
@@ -822,10 +867,12 @@ export function App() {
                         {loadingEarlier ? texts.historyLoading : texts.historyMore}
                       </button>
                     ) : null}
-                    {state.messages.map((message, index) => (
+                    {messageRows.map((row) => (
                       <Message
-                        key={message.id}
-                        message={message}
+                        // 有 rpcId 的用户消息（= 它换来的那行）与回显行**同一个 key**：
+                        // 交接时 React 复用同一个 DOM 节点，不卸载重建（见 `messageRowKey`）
+                        key={row.key}
+                        message={row.message}
                         diffLayout={state.diffLayout}
                         fileKinds={state.fileKinds}
                         questionBatch={state.questionBatch}
@@ -834,18 +881,20 @@ export function App() {
                         // 见 shared/changesSummary.ts）。没绑会话（空态）时不传，卡片不渲染。
                         sessionId={state.session?.id}
                         changesSummary={
-                          message.changes && state.session
+                          row.message.changes && state.session
                             ? state.changesSummaries?.[
-                                changesSummaryKey(state.session.id, message.changes.seq)
+                                changesSummaryKey(state.session.id, row.message.changes.seq)
                               ]
                             : undefined
                         }
                         // 让位按**轮**判定（卡片可能在同轮的另一段上）
                         changesCardShown={
-                          message.changes ? changesCardTurns.has(message.changes.turn) : false
+                          row.message.changes
+                            ? changesCardTurns.has(row.message.changes.turn)
+                            : false
                         }
                         // 只有非最后一条（= 不是正在跑的那一轮）才能作为分支锚点
-                        canBranch={!state.running || index < state.messages.length - 1}
+                        canBranch={row.canBranch}
                         takenOver={takenOver}
                       />
                     ))}

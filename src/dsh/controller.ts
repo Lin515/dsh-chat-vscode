@@ -16,6 +16,7 @@ import type {
   FileChangeKind,
   GoalView,
   ModelSelectionView,
+  PendingMessageView,
   ProviderGroupView,
   QuestionAnswerView,
   QuestionView,
@@ -41,6 +42,7 @@ import {
   type IntakeItem,
   type IntakeRejection,
   type IntakeUpload,
+  type PromptContentPart,
 } from "./attachments";
 import { readClipboardPaths } from "./clipboardPaths";
 import { saveChatImage } from "./imageFiles";
@@ -136,6 +138,25 @@ function selfScopeHasAddress(scope: SessionScope | undefined): boolean {
 /** 提交记录（用于队列「重新编辑」还原原文）的保留时长与条数上限。 */
 const SUBMISSION_TTL_MS = 30 * 60 * 1000;
 const MAX_SUBMISSIONS = 50;
+
+/**
+ * 一个键（窗口 / 会话）下同时留着的乐观回显条数上限。
+ *
+ * 回显只活到「被承认 / 被证伪」，正常情况下同一键下最多一两条；上限是给
+ * 「服务端既不承认也不报错」那类异常兜底的。淘汰**只从没失败的那些里挑**：
+ * 已经标成失败的那一行是用户正看着、要能重发 / 撤回的（用户 2026-09-25 口径），
+ * 悄悄删掉它就等于替用户撤回；全是失败行时宁可多留，也不动它们。
+ */
+const MAX_PENDING_MESSAGES = 8;
+
+/**
+ * 回显账本的**键数**上限（键 = 窗口 / 会话）。
+ *
+ * 失败的回显跨会话切换保留（切回来还能重发 / 撤回，`destroyScope` 刻意不动它们），
+ * 所以键会随用过的会话增长；超了按插入顺序丢最旧的键（最新用过的那个键在 `putPending`
+ * 里被顶到队尾，不会被自己这一轮清掉）。
+ */
+const MAX_PENDING_KEYS = 64;
 
 /** 读取编辑节点 diff 的排版设置（auto / unified / split，缺省自适应）。 */
 function readDiffLayout(): DiffLayout {
@@ -760,6 +781,25 @@ export class ChatController implements vscode.Disposable {
   private readonly drafts = new Map<string, string>();
   private readonly attachmentsBySession = new Map<string, Attachment[]>();
   /**
+   * 乐观回显账本（见 `shared/chat.ts` 的 `PendingMessageView`）。
+   *
+   * **只收「已经发出去」的那一类**：按下发送那一刻 agent 空闲 = 这一次会立刻
+   * `session/prompt`。运行中发送（排队 / 插话）不进这张表——它还没发出去，唯一的去处是
+   * 输入框上方的排队区（服务端队列名册驱动，`syncQueue` 那条路本次一个字没动），
+   * 它的成功与失败都走改动前那条老路（用户 2026-09-25 口径）。
+   *
+   * 键与草稿 / 附件**同一套**（`keyForView`）：已绑定会话的窗口用会话 id，未绑定的
+   * 用 viewId；绑定那一刻在 `bindViewToSession` 里跟着迁移——**第一条消息必须迁**，
+   * 否则 `createSession` 绑定后立刻推的那份整份快照会把回显抹掉（快照里的
+   * `pendingMessages` 读的正是这张表）。
+   *
+   * 条目在三条路上被收回（都在 `retireEcho` / `retireEchoByText` 收口）：durable
+   * `user/message` 承认、这条没能发出去、用户撤回。没有 TTL：正常寿命是「一个发送往返」，
+   * 而按时间清会把正在等承认的那一条误伤；跨会话切换**不丢**（失败的那行要能切回来
+   * 接着操作，见 `destroyScope`），只有窗口下线与上限淘汰会清。
+   */
+  private readonly pendingMessages = new Map<string, PendingMessageView[]>();
+  /**
    * 改动文件清单的 **fetch-once 缓存**（键 = 会话 id + 事件 seq，见 `changesSummaryKey`）。
    *
    * 缓存**成功与「Host 明确说没有」两种结果**（后者存 `null`）：清单要经一次 HTTP
@@ -1300,10 +1340,12 @@ export class ChatController implements vscode.Disposable {
           this.subagentContextOf(scope),
         ),
       ),
-      // 输入区那两个字段按**窗口**存（未绑会话时）/ 按会话键存，不属于会话状态片段：
+      // 输入区那三个字段按**窗口**存（未绑会话时）/ 按会话键存，不属于会话状态片段：
       // 它们由输入框那条链单独维护，这里只补进快照（见 `keyForView`）。
       attachments: this.attachmentsBySession.get(sessionId ?? viewId ?? "") ?? [],
       draft: this.drafts.get(sessionId ?? viewId ?? "") ?? "",
+      // 乐观回显同理按窗口键存：**空表也要发**，否则切会话时上一条会话的回显留在界面
+      pendingMessages: [...(this.pendingMessages.get(sessionId ?? viewId ?? "") ?? [])],
     };
   }
 
@@ -1747,6 +1789,10 @@ export class ChatController implements vscode.Disposable {
     // 窗口关掉时它那条后台任务观察流必须一起收（否则流会跟着扩展宿主一直活着）
     this.closeJobWatch(viewId);
     this.viewSessions.delete(viewId);
+    // 未绑定会话的窗口按 viewId 存回显：viewId 是每个 webview 实例现铸的（`chatView.attach`），
+    // 这个键不会再有人用，连同清掉。绑过会话的那一份挂在**会话键**上、刻意留着（用户口径：
+    // 失败的那行要能重新打开这条会话继续操作），窗口下线不构成删它的理由
+    if (!sessionId) this.pendingMessages.delete(viewId);
     this.revealers.delete(viewId);
     this.viewKinds.delete(viewId);
     // 标签设定器与「上次写下去的标题」跟着窗口一起清：长期存活的扩展宿主里，
@@ -1877,6 +1923,11 @@ export class ChatController implements vscode.Disposable {
       if (watch.sessionId === scope.sessionId) this.closeJobWatch(viewId);
     }
     scope.adapter = undefined;
+    // 乐观回显**不跟着域一起丢**（用户 2026-09-25 口径）：账本里只有「已经发出去」的那一类，
+    // 而它此刻要么还在等承认、要么已经失败——失败的那一行必须能"切走再切回来接着重发 /
+    // 撤回"，而它不在会话内容里，删了就再也回不来。
+    // 刻意**不动**状态：还在飞的那条本来就会由 live 流或重开的 durable 承认收回；凭「域没了」
+    // 就把它改写成失败是替用户下结论（那条很可能已经发出去了，用户若据此点重发，同一条会发两遍）。
     this.log(`[scope] 回收域 session=${scope.sessionId}`);
   }
 
@@ -1917,6 +1968,15 @@ export class ChatController implements vscode.Disposable {
       if (attachments) {
         this.attachmentsBySession.set(sessionId, attachments);
         this.attachmentsBySession.delete(viewId);
+      }
+      // 乐观回显跟着迁：空态发第一条消息时它先落在窗口键上，而 `createSession`
+      // 绑定之后立刻推的那份整份快照读的是**会话键**（见 `snapshotFor`）——
+      // 不迁这一下，回显就被那一帧抹掉，正是「消息闪一下又没了」。
+      // 绑定前会话键上不可能有回显（那条会话还没有窗口用过），直接搬即可。
+      const pending = this.pendingMessages.get(viewId);
+      if (pending) {
+        this.pendingMessages.set(sessionId, pending);
+        this.pendingMessages.delete(viewId);
       }
     }
     this.viewSessions.set(viewId, sessionId);
@@ -3791,6 +3851,13 @@ export class ChatController implements vscode.Disposable {
     // 子代理「注册」：父会话的 `subagent/catalog` durable 事件（直播与重放都会到）→
     // 立刻并入目录并发帧，不必等面板打开那一下 RPC（见 `registerSubagent`）
     adapter.onSubagentEstablished = (entry) => this.registerSubagent(scope, entry);
+    // 一条人的用户消息被 durable 承认：收回它的乐观回显。重放期间这条回调会被适配器
+    // **攒到那一份整份 `messages/reset` 发出去之后再补**（见 `adapter.notifyAdmitted`）
+    // ——重连 / 重载窗口后既不留下幽灵回显，也不会先收回、后落位（那就是"闪一下"）
+    adapter.onUserMessage = (message) => this.noteUserAdmitted(sessionId, message);
+    // durable 用户行的图片借**同一次提交的本地附件**（`submissions` 里那份，图片带 dataUrl）：
+    // 不借的话交接时会从缩略图退回文件名芯片、等字节换回来再变回缩略图（闪两下）
+    adapter.resolveEchoAttachments = (rpcId) => this.originFor(rpcId)?.attachments;
     // 轮次结束时先推一次 Git 重扫：否则刚写完的文件还没进改动清单，用户第一次
     // 点芯片看到的是完整文件而不是 diff（见 refreshGitState 的注释）
     adapter.refreshFiles = () => this.refreshGitState();
@@ -5189,19 +5256,35 @@ export class ChatController implements vscode.Disposable {
         break;
 
       case "send":
-        // 未连接时先恢复连接：历史会话切换后跟随流尚未建立时直接 prompt
-        // 会触发服务端 resume，冷启动竞态下 resume 可能失败。
-        // **用户显式动作**（按了发送）：允许拉起内部后台（关掉自动连接时也算数，
-        // 用户口径 2026-09-18：`autoConnect` 只约束扩展自己的自动行为）
-        if (!this.client || this.connection !== "connected") await this.ensureConnected({ start: true });
-        // 连不上就什么都没发出去，而界面在按下发送那一刻已经乐观清空了输入框
-        // （见 `send` 顶上的 commitDraft）：把正文推回去，别让那句话凭空消失
-        if (!this.client) {
-          this.emitToView(viewId, { type: "patch", patch: { draft: message.text } });
-          break;
-        }
-        await this.send(viewId, message.text, message.attachments, message.gesture ?? "enter");
+        await this.submitMessage(
+          viewId,
+          message.text,
+          message.attachments,
+          message.gesture ?? "enter",
+          "composer",
+        );
         break;
+
+      case "retractPending": {
+        // 撤回 = 把那一行删掉（不把正文塞回输入框：用户口径 2026-09-25）。
+        // 只认这个窗口自己那份账本：别的会话的 id 就算撞上了也不许动（见 `echoOfView`）
+        if (!this.echoOfView(viewId, message.requestId)) break;
+        this.retireEcho(message.requestId, "user-retract");
+        break;
+      }
+
+      case "resendPending": {
+        // 重发 = 先撤回，再按普通发送重走一遍（同一个入口，两条路的行为不可能漂）。
+        // 撤回**不推帧**：紧接着的 `submitMessage` 会推一份带最终状态的（否则中间那一帧
+        // 两行都不在，界面上就是重发时闪一下）。
+        const echo = this.echoOfView(viewId, message.requestId);
+        if (!echo) break;
+        this.removeEcho(message.requestId, "user-resend");
+        // 手势按主发送算：重发就是"再发一次"，不继承上一次的加速手势；
+        // **来源是 `retry`**：这一段内容不是输入框里的那份，绝不能顺手清掉用户正在写的草稿
+        await this.submitMessage(viewId, echo.text, echo.attachments, "enter", "retry");
+        break;
+      }
 
       case "stop":
         await this.stopRunning(viewId);
@@ -5711,18 +5794,75 @@ export class ChatController implements vscode.Disposable {
     if (viewId) await this.stopRunning(viewId);
   }
 
+  /**
+   * 一条窗口 → 宿主的「发送」：按下发送那一刻的乐观动作 + 真正提交。
+   *
+   * **这是「把一条消息发给服务端」的唯一入口**，四个调用点共用（用户按发送、失败行上的
+   * 「重发」、ESC 中止后把摘出的排队消息重新发出 / 放回队列），行为不可能漂：
+   * - `beginSend` 先做乐观动作（回显、清草稿、清附件），**早于任何 await**；
+   * - 连接（必要时拉起内部 DSH）→ `send`；
+   * - 连不上时那条回显标成 `failed`（原因写在上面），正文**不回**输入框；
+   *   这条提交本来就没有回显时（尚未发出的那条、子代理会话）退回老口径：正文回输入框。
+   *
+   * `source` 只回答一个问题：**这段内容是谁的**——输入框里的（`composer`，提交即清空）、
+   * 失败那一行里的（`retry`）、还是从排队区捞回来的（`queue`，它本来就是排队区里那条，
+   * 提交模式固定 `queue`）。后两者**不许碰输入框**：用户那里可能正打着别的字，
+   * 清它是一种数据丢失。它不是「另一条发送通道」——通道只有这一条，差别只在从哪读内容。
+   *
+   * @returns 服务端受理了没有。调用方只在需要按条继续/收场时用它（`resubmit` 的循环）。
+   */
+  private async submitMessage(
+    viewId: string,
+    text: string,
+    attachments: Attachment[],
+    gesture: "enter" | "accelerated",
+    source: "composer" | "retry" | "queue" = "composer",
+    prebuiltContent?: readonly PromptContentPart[],
+  ): Promise<boolean> {
+    const requestId = this.beginSend(viewId, text, attachments, source);
+    // 未连接时先恢复连接：历史会话切换后跟随流尚未建立时直接 prompt
+    // 会触发服务端 resume，冷启动竞态下 resume 可能失败。
+    // **用户显式动作**（按了发送）：允许拉起内部后台（关掉自动连接时也算数，
+    // 用户口径 2026-09-18：`autoConnect` 只约束扩展自己的自动行为）
+    if (!this.client || this.connection !== "connected") await this.ensureConnected({ start: true });
+    if (!this.client) {
+      if (!this.failEcho(requestId, "@sendNoConnection")) {
+        this.appendDraft(viewId, text, attachments);
+      }
+      return false;
+    }
+    return this.send(viewId, text, attachments, gesture, requestId, source, prebuiltContent);
+  }
+
+  /**
+   * 把一条**已经乐观回显过**的消息真正提交给服务端。
+   *
+   * 与 `beginSend` 的分工：乐观动作（回显、清草稿、清附件芯片）都在 `beginSend` 里、
+   * 早于任何 await 做完；本函数只负责「真的发出去，或者把那一行标成失败」。`requestId`
+   * 也由 `beginSend` 铸造（它是回显与 durable 事件的关联身份），这里只负责带给 prompt。
+   *
+   * 两条收场口径：
+   * - **没发出去** → `failEcho`（那一行留在原地、红框、可重发/撤回，见 `failEcho` 的注释）；
+   *   `failEcho` 说这条没有回显时（尚未发出的那条 / 子代理会话）退回老口径：正文回输入框 +
+   *   原生提示，别把失败咽下去；唯一不算失败的是用户主动取消目录选择（正文也回输入框）；
+   * - **发出去了** → 回显留着，等 durable `user/message` 承认再收——那才是
+   *   「这条消息已经是历史了」的证据。
+   */
   private async send(
     viewId: string,
     text: string,
     attachments: Attachment[],
-    gesture: "enter" | "accelerated" = "enter",
-  ): Promise<void> {
-    if (!this.client) return;
-    // **提交即清空**，且必须早于下面任何可能推整份状态快照的 await：空态第一次发消息时
-    // `ensureSession` 会建会话，而 `createSession` 建完就推一份整份快照，快照里的 `draft`
-    // 读的正是这张表（`snapshotFor`）。晚清一步，那一帧就把刚发出去的正文塞回输入框
-    // ——界面上就是「清空 → 闪回 → 消失」（用户 2026-09-23 报的，见 docs/design-draft.md）。
-    this.commitDraft(viewId);
+    gesture: "enter" | "accelerated",
+    requestId: string,
+    source: "composer" | "retry" | "queue",
+    prebuiltContent?: readonly PromptContentPart[],
+  ): Promise<boolean> {
+    if (!this.client) {
+      if (!this.failEcho(requestId, "@sendNoConnection")) {
+        this.appendDraft(viewId, text, attachments);
+      }
+      return false;
+    }
     // 窗口还没有会话（空态）：**首条消息才建立它**。没有工作目录时会先问一次
     // （取消 → 不建会话也不发送，草稿留在输入框里）
     let scope = this.scopeOfView(viewId);
@@ -5730,10 +5870,11 @@ export class ChatController implements vscode.Disposable {
       scope = await this.ensureSession(viewId);
     }
     if (!scope) {
-      // 什么都没发出去，而界面在按下发送那一刻已经乐观清空了输入框（见 commitDraft）：
-      // 把正文与附件还回去，别吞掉用户那句话
+      // 用户**主动取消**了目录选择：这不是"发送失败"，而是这条消息收回输入框
+      // （唯一一条不回显失败态的路径——把用户自己的取消画成红框是误导）
+      this.retireEcho(requestId, "workspace-cancelled");
       this.appendDraft(viewId, text, attachments);
-      return;
+      return false;
     }
 
     // 斜杠命令走命令通道，**不发给模型**：官方客户端的 enter 列把 `/xxx` 交给
@@ -5743,7 +5884,9 @@ export class ChatController implements vscode.Disposable {
     // 命令若不能带附件，服务端会拒绝，而用户此刻显然是想发这批内容。
     const slash = attachments.length === 0 ? this.slashCommandOf(scope, text) : undefined;
     if (slash) {
-      // 草稿已在 commitDraft 里清掉（提交那一刻，早于建会话），这里只剩执行命令
+      // 草稿与附件已在 beginSend 里清掉（提交那一刻，早于建会话），这里只剩执行命令。
+      // 回显要收回：命令不是用户消息，它的执行记录由命令节点承载。
+      this.retireEcho(requestId, "slash");
       const outcome = await this.runCommand(viewId, slash.line);
       if (outcome && !outcome.ok) {
         this.emitToView(viewId, {
@@ -5752,7 +5895,7 @@ export class ChatController implements vscode.Disposable {
           text: outcome.text ?? `@commandFailed:${slash.line}`,
         });
       }
-      return;
+      return outcome?.ok === true;
     }
 
     // 内容块装配收在 `buildPromptContent`（纯函数，断言在 scripts/attachments.test.ts）：
@@ -5762,17 +5905,32 @@ export class ChatController implements vscode.Disposable {
     // 路径的那些）进来的字节附件本来就没有路径，早先那道 `!attachment.path` 的门会把
     // 上传成功的文件**整批丢掉**，而且因为门在同一处，连「有附件没传上去」的提示
     // 也不会发（2026-09-21 修）。
-    const { content, notUploaded, dropped } = buildPromptContent(text, attachments);
-    if (dropped.length) {
+    const plan = buildPromptContent(text, attachments);
+    const { notUploaded, dropped } = plan;
+    // **排队来源自带一份内容块**（`prebuiltContent`）：那条消息当初就是这么提交的
+    // （本地提交记录没了时，这一份来自 `inbox` 投影），里面可能含内联的图片字节——
+    // 按文本重建会丢它们，所以有就原样用（与改动前的 `resubmit` 逐字相同）。
+    const content: PromptContentPart[] = prebuiltContent?.length ? [...prebuiltContent] : plan.content;
+    if (dropped.length && !prebuiltContent?.length) {
       // 表示不出来（图片没有可解析的 data URL）：不再静默，至少留一条日志
       this.log(`[submit] 这些附件无法表示成内容块，已跳过：${dropped.join("、")}`);
     }
     if (content.length === 0) {
-      // 拼不出内容块（什么都没带）＝什么都没发出去：草稿还回去
-      this.appendDraft(viewId, text, attachments);
-      return;
+      // 拼不出内容块（什么都没带）＝什么都没发出去：那一行标成失败（原因写在上面）；
+      // 这条本来就没有回显时（尚未发出的那条 / 子代理会话）照旧把正文还回去
+      if (!this.failEcho(requestId, "@sendEmpty")) {
+        this.appendDraft(viewId, text, attachments);
+      }
+      return false;
     }
 
+    /**
+     * 「这条已经交给服务端」。
+     *
+     * 留在 `false` 上的所有分支（含 `try` 里那些提前 return）都由 `finally` 收网，
+     * 把回显标成失败（`failEcho` 幂等、不覆盖 `catch` 里那条更具体的原因）。
+     */
+    let admitted = false;
     try {
       // 发送前应用待生效的模型选择（切换即时生效于"下一轮"）
       if (scope.pendingModel) {
@@ -5784,19 +5942,24 @@ export class ChatController implements vscode.Disposable {
           this.log(`[model] 发送前应用模型选择失败：${this.describeError(error)}`);
         }
       }
-      const key = this.keyForView(viewId);
-      this.attachmentsBySession.set(key, []);
-      // 草稿在 commitDraft 里已清（空态那一步清的是窗口键，绑定后由 `bindViewToSession`
-      // 迁到会话键）；这里按会话键复述一次，不依赖迁移链路的细节
-      this.drafts.set(key, "");
+      // 草稿与附件在 beginSend 里已清（空态那一步清的是窗口键，绑定后由
+      // `bindViewToSession` 迁到会话键）；这里按会话键复述一次，不依赖迁移链路的细节。
+      // **只对输入框来源做**：重发 / 排队重发的内容不是输入框里那份，清它等于擦掉用户的草稿
+      if (source === "composer") {
+        const key = this.keyForView(viewId);
+        this.attachmentsBySession.set(key, []);
+        this.drafts.set(key, "");
+      }
       // 子代理会话不收文件附件（官方同一条硬规则：`subagent/attachment-invalid`，
       // 「subagent continuation does not accept files」）——有文件芯片就直接不发，
       // 把正文还回输入框让用户去掉附件再发，而不是让服务端拒绝一整轮。
+      // （尚未发出的那条与子代理会话都**不回显**，所以这里没有能承载失败的那一行，
+      // 沿用老口径：提示 + 回填。）
       const address = scope.subagentAddress;
       if (address && content.some((part) => part.type === "file")) {
         this.emitToView(viewId, { type: "toast", level: "warn", text: "@subagentFilesUnsupported" });
         this.appendDraft(viewId, text, attachments);
-        return;
+        return false;
       }
       // **先**取「发出去的那一刻 agent 还在不在跑」，再乐观置位。顺序反了的话
       // `resolveSubmitMode` 里的 `!running` 这道门永远走不进去，空闲发消息也会带
@@ -5805,15 +5968,17 @@ export class ChatController implements vscode.Disposable {
       scope.running = true;
       this.deliver(scope.sessionId, {
         type: "patch",
-        patch: { ...sessionPatch(this.sessionSource(scope), ["running"]), attachments: [] },
+        patch: sessionPatch(this.sessionSource(scope), ["running"]),
       });
-      // requestId 由这里铸造：队列帧会把同一个 id 作为 rpcId 带回来，
-      // 「重新编辑」凭它还原成用户当时输入的文本与附件
-      const requestId = randomUUID();
-      // 队列「重新编辑」要还原用户**原始**输入，所以记的是拼引用之前的正文
+      // 队列「重新编辑」要还原用户**原始**输入，所以记的是拼引用之前的正文。
+      // requestId 是 `beginSend` 铸的那一个：队列帧把同一个 id 作为 rpcId 带回，
+      // 「重新编辑」凭它还原，乐观回显也凭它收回。
       this.rememberSubmission(requestId, text.trim(), content, attachments);
-      const mode = this.resolveSubmitMode(wasRunning, gesture);
-      this.log(`[submit] 手势=${gesture} 运行中=${wasRunning} → mode=${mode}${address ? "（子代理）" : ""}`);
+      // 排队来源**一律按 queue 提交**：它本来就是排队区里那条，摘出来重发要么是派发
+      // （那时 agent 空闲，`resolveSubmitMode` 也会给 queue），要么是回滚（agent 还在跑，
+      // 那时必须回队列，插话进当前轮不是回滚）。所以这里不猜手势，与改动前逐字相同。
+      const mode = source === "queue" ? "queue" : this.resolveSubmitMode(wasRunning, gesture);
+      this.log(`[submit] 来源=${source} 手势=${gesture} 运行中=${wasRunning} → mode=${mode}${address ? "（子代理）" : ""}`);
       // 子代理地址走 `subagents/prompt`（普通 `session/prompt` 对子代理会话
       // 不成立），`delivery` 就是官方 prompt `mode` 在这条端点上的名字
       if (address) {
@@ -5821,17 +5986,38 @@ export class ChatController implements vscode.Disposable {
       } else {
         await this.client.prompt(scope.sessionId, content, mode, requestId);
       }
-      if (notUploaded.length) this.warnUploadIncomplete(viewId, notUploaded);
+      admitted = true;
     } catch (error) {
       scope.running = false;
       this.deliver(scope.sessionId, {
         type: "patch",
         patch: sessionPatch(this.sessionSource(scope), ["running"]),
       });
-      // 这一轮没提交成功：草稿还回去（与队列发送失败同一条兜底口径）
-      this.appendDraft(viewId, text, attachments);
-      this.reportError(vscode.l10n.t("Failed to send"), error);
+      // 这一轮没提交成功：那一行标成失败并带上服务端 / 传输层的原因（**不回填输入框**，
+      // 用户口径 2026-09-25：正文留在那一行里，重发用行上的按钮）。
+      // 这条提交**没有回显**时（尚未发出的那条 / 子代理会话）没有能承载失败的那一行，
+      // 退回老口径：正文回输入框 + 原生错误提示。日志两种情况都照旧。
+      const detail = this.describeError(error);
+      this.log(`[submit] 发送失败：${detail}`);
+      if (!this.failEcho(requestId, `@sendFailed:${detail}`)) {
+        this.appendDraft(viewId, text, attachments);
+        // 排队来源这一档的正文刚被 `appendDraft` 放回输入框，报错文案就说清这一点
+        this.reportError(
+          source === "queue"
+            ? vscode.l10n.t("Failed to send the queued message (its content is back in the box)")
+            : vscode.l10n.t("Failed to send"),
+          error,
+        );
+      }
+    } finally {
+      // 兜底：`try` 里提前 return 的分支也走这里收网。`failEcho` 幂等且不覆盖更具体的
+      // 原因，所以这里用最泛的那一句；没有回显时它什么都不做（上面已经按老口径收场）。
+      if (!admitted) this.failEcho(requestId, "@sendUnconfirmed");
     }
+    // 上传不完整的提示**放在 try 之外**：它是成功之后的告知，抛在这里不该被上面的
+    // catch 当成「没发出去」（那会把已经发出去的那条标成失败，还会把 running 置回 false）
+    if (admitted && notUploaded.length) this.warnUploadIncomplete(viewId, notUploaded);
+    return admitted;
   }
 
   /**
@@ -6390,7 +6576,7 @@ export class ChatController implements vscode.Disposable {
           vscode.l10n.t("Failed to take back the queued message; only the current turn was stopped"),
           error,
         );
-        await this.requeue(viewId, scope, removed);
+        await this.requeue(viewId, removed);
         await this.finishCancelOnly(scope);
         return;
       }
@@ -6403,13 +6589,13 @@ export class ChatController implements vscode.Disposable {
         vscode.l10n.t("Timed out waiting for the current turn to finish"),
         new Error("turn did not settle"),
       );
-      await this.requeue(viewId, scope, removed);
+      await this.requeue(viewId, removed);
       this.emitToView(viewId, { type: "toast", level: "warn", text: "@queueDispatchFailed" });
       return;
     }
 
     // 3) 按原顺序重新提交（首条即是「接着发出去」的那条）
-    await this.resubmit(viewId, scope, removed);
+    await this.resubmit(viewId, removed);
   }
 
   /** 只中止，并把界面上的「生成中」收掉（服务端迟迟不回时兜底）。 */
@@ -6426,47 +6612,50 @@ export class ChatController implements vscode.Disposable {
     }
   }
 
-  /** 把一批已摘出的消息按顺序重新提交。失败时剩下的内容放回输入框。 */
-  private async resubmit(viewId: string, scope: SessionScope, entries: { origin: QueueOrigin }[]): Promise<void> {
+  /**
+   * 把一批已摘出的消息按顺序重新提交。
+   *
+   * **走 `submitMessage` 那条统一路径**（用户 2026-09-25 口径：「队列消息发出到会话」
+   * 与「用户空闲主动发出到会话」是同一条路线）——所以这一步不再自己铸 requestId、
+   * 自己调 `prompt`：
+   * - 这一刻 agent 空闲（ESC 中止后把队首接着发出去，是最常见的那一档）= 这条**真的
+   *   发出去了** ⇒ 立刻产生乐观回显并画进对话流，与用户手按发送完全一致；
+   * - agent 还在跑（`requeue` 的回滚：队列摘不动 / 等本轮结束超时）= 它**仍是排队中**，
+   *   不产生回显（唯一去处还是排队区），提交模式固定 `queue`（见 `send` 的 `source`）；
+   * - 失败时由统一收场接管：有回显 → 留在原地标成失败（红框 + 重发 / 撤回）；
+   *   没有回显 → 正文回输入框 + 原生提示。两者都不再需要这里各写一份。
+   *
+   * 这里只剩「按条继续 / 按条收场」这两件只有批处理才知道的事：**这一条**失败时后面
+   * 还没发的那些统一还回输入框（它们连提交都没走到），并提示一次。
+   */
+  private async resubmit(viewId: string, entries: { origin: QueueOrigin }[]): Promise<void> {
     for (let index = 0; index < entries.length; index++) {
       const { origin } = entries[index];
-      if (!this.client) return;
-      try {
-        // 必须用新的 requestId：旧 id 已被服务端记为已受理，复用会被当成重试而不插入
-        const requestId = randomUUID();
-        this.rememberSubmission(requestId, origin.text, origin.content ?? [], origin.attachments);
-        if (index === 0) {
-          scope.running = true;
-          this.deliver(scope.sessionId, {
-            type: "patch",
-            patch: sessionPatch(this.sessionSource(scope), ["running"]),
-          });
-        }
-        await this.client.prompt(scope.sessionId, origin.content ?? [], "queue", requestId);
-      } catch (error) {
-        scope.running = false;
-        this.deliver(scope.sessionId, {
-          type: "patch",
-          patch: sessionPatch(this.sessionSource(scope), ["running"]),
-        });
-        this.reportError(
-          vscode.l10n.t("Failed to send the queued message (its content is back in the box)"),
-          error,
-        );
-        this.emitToView(viewId, { type: "toast", level: "warn", text: "@queueDispatchFailed" });
-        // 这条以及后面还没发出的，内容都放回输入框
-        for (const rest of entries.slice(index)) {
-          this.appendDraft(viewId, rest.origin.text, rest.origin.attachments);
-        }
-        return;
+      const accepted = await this.submitMessage(
+        viewId,
+        origin.text,
+        origin.attachments,
+        "enter",
+        "queue",
+        // 内容块用**当初提交的那一份**：本地没有提交记录时（扩展重载过 / 记录被上限淘汰），
+        // 它是从 `inbox` 投影带回来的，里面可能含内联图片字节——按文本重建会丢它们
+        origin.content as PromptContentPart[] | undefined,
+      );
+      if (accepted) continue;
+      // 这一条已经由统一路径收场（`failEcho` 标失败，或正文已回输入框）：
+      // 它**后面**还没提交的那些在这里统一还回去（`submitMessage` 只管它自己那一条）
+      this.emitToView(viewId, { type: "toast", level: "warn", text: "@queueDispatchFailed" });
+      for (const rest of entries.slice(index + 1)) {
+        this.appendDraft(viewId, rest.origin.text, rest.origin.attachments);
       }
+      return;
     }
   }
 
-  /** 把已摘出的消息按顺序放回队列（回滚用）。 */
-  private async requeue(viewId: string, scope: SessionScope, entries: { origin: QueueOrigin }[]): Promise<void> {
+  /** 把已摘出的消息按顺序放回队列（回滚用：那一刻 agent 还在跑，所以走的是排队那条口径）。 */
+  private async requeue(viewId: string, entries: { origin: QueueOrigin }[]): Promise<void> {
     if (!entries.length) return;
-    await this.resubmit(viewId, scope, entries);
+    await this.resubmit(viewId, entries);
   }
 
   /**
@@ -6505,16 +6694,245 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
+   * 按下发送那一刻的**全部乐观动作**：乐观回显 + 提交即清空（草稿与附件芯片）。
+   *
+   * 这是 `send` 这条链路里唯一一个**必须早于任何 await** 的入口（官方同位置的是
+   * `ISession.beginSubmission`）：没有它，用户消息要等「拉起后台 → 建会话 → prompt →
+   * 服务端落盘 → follow 流推事件」整条链走完才出现在消息流里（第一条消息最慢）。
+   *
+   * 三件事各自的口径：
+   * - **回显**（见 `shared/chat.ts` 的 `PendingMessageView`）：**只在「这一刻 agent
+   *   空闲」时建**——那一条会立刻以 `session/prompt` 发出去。运行中发送（排队 / 插话）
+   *   不进账本：它还没发出去，唯一的去处是输入框上方的排队区，而那里由服务端名册驱动
+   *   （用户 2026-09-25 口径：本次改动只针对已经发出去的消息）。于是「插在对话流的哪个
+   *   位置」就是唯一要算的东西——真实行将来落在哪，它就插在哪，交接时不跳位。
+   *   这条判据对**四个调用点一视同仁**：ESC 中止后把排队消息摘出来重发时，agent 空闲
+   *   = 那一条真的发出去了 → 同样立刻画出来；回滚（agent 还在跑）→ 它仍是排队中的，
+   *   一个字段都不进账本（见 `submitMessage` 的 `source`）；
+   * - **草稿**：`commitDraft` 的调用点由此提前到「连接之前」——`ensureConnected` 可能要
+   *   拉起内部 DSH（秒级），期间任何一份整份快照（窗口恢复、别的窗口切会话触发的
+   *   重建）都会把刚发出去的正文塞回输入框（见 `docs/design-draft.md` 的顺序契约）；
+   * - **附件**：同理。界面在按下发送那一刻还照着宿主下发的芯片渲染（它自己不清附件），
+   *   而回显里已经带着同样的图片/文件——不清就会看到「芯片一份 + 回显一份」。
+   *
+   * 后两件事**只对输入框来源做**（`source === "composer"`）：重发 / 排队重发的那段内容
+   * 不是输入框里那份，输入框里此刻可能是用户正打着的另一句话——清它就是把那句话擦掉。
+   *
+   * @returns 本次提交的 requestId（回显与 durable 事件的关联身份，由 `send` 带给 prompt）。
+   */
+  private beginSend(
+    viewId: string,
+    text: string,
+    attachments: Attachment[],
+    source: "composer" | "retry" | "queue",
+  ): string {
+    const requestId = randomUUID();
+    const key = this.keyForView(viewId);
+    const scope = this.scopeOfView(viewId);
+    // 值为 `/xxx` 的正文大概率是斜杠命令（它走命令通道，不是用户消息）。真正的判定要
+    // 会话的命令目录（`slashCommandOf`），这里连会话都还没有，只能按长相预判：判错
+    // 只是「该回显的没回显」，而反过来（回显了又立刻收回）是一次肉眼可见的闪现。
+    const slashish = attachments.length === 0 && text.trim().startsWith("/");
+    const worthEchoing = (text.trim().length > 0 || attachments.length > 0) && !slashish;
+    // 子代理会话不回显（官方 `sendSession` 的 subagent 分支同样绕过 beginSubmission）：
+    // 子代理转写是次要视图，不为它多养一份本地状态
+    const goesOutNow = !(scope?.running ?? false);
+    if (worthEchoing && goesOutNow && !scope?.subagentAddress) {
+      const echo: PendingMessageView = {
+        requestId,
+        ts: Date.now(),
+        text,
+        attachments: [...attachments],
+        status: "sending",
+      };
+      const list = this.pendingMessages.get(key) ?? [];
+      list.push(echo);
+      // 超上限只丢**没失败**的那些：失败的行是用户正看着、要能重发 / 撤回的。
+      while (list.length > MAX_PENDING_MESSAGES) {
+        const victim = list.findIndex((entry) => entry.status !== "failed");
+        if (victim < 0) break;
+        const [dropped] = list.splice(victim, 1);
+        this.log(`[echo] 回显条数超过上限，丢弃最旧的未失败一条 requestId=${dropped?.requestId ?? ""}`);
+      }
+      this.putPending(key, list);
+      this.trimPendingKeys();
+      this.pushPending(key);
+    }
+    if (source === "composer") {
+      this.commitDraft(viewId);
+      this.commitAttachments(viewId);
+    }
+    return requestId;
+  }
+
+  /**
+   * 写账本：**先删再插**，把这个键顶到队尾。
+   *
+   * Map 对已存在的键 `set` **不改变插入序**，而插入序就是 `trimPendingKeys` 的淘汰顺序
+   * ——不刷新的话，正在用的这个键可能被当成最旧的丢掉，刚产生的回显会被自己这一轮清掉。
+   */
+  private putPending(key: string, list: PendingMessageView[]): void {
+    this.pendingMessages.delete(key);
+    this.pendingMessages.set(key, list);
+  }
+
+  /**
+   * 账本**键数**的全局上限（每键条数另有 `MAX_PENDING_MESSAGES`）。
+   *
+   * 失败的回显会跨会话切换保留（用户要能切回来接着重发 / 撤回），所以键会随
+   * 「用过的会话」增长；超了淘汰最旧的键——那些会话早就没人看了。
+   */
+  private trimPendingKeys(): void {
+    while (this.pendingMessages.size > MAX_PENDING_KEYS) {
+      const oldest = this.pendingMessages.keys().next().value;
+      if (oldest === undefined) break;
+      this.pendingMessages.delete(oldest);
+      this.log(`[echo] 回显键数超过上限，丢弃最旧的键 key=${oldest}`);
+    }
+  }
+
+  /**
+   * 「这条没能发出去」的收场：把那一行标成 `failed`。
+   *
+   * 口径（用户 2026-09-25）：失败**不撤回显示**——行留在原地、气泡红色，操作行给
+   * 「重发 / 撤回」并写出原因。所以这里**不**把正文与附件塞回输入框：
+   * 正文已经在那一行里了，回填只会变成「输入框一份 + 消息流一份」。
+   *
+   * **幂等且不覆盖具体原因**：`send` 的 `catch` 先带上服务端原文，`finally` 再用
+   * 兜底原因收一次网（`@sendUnconfirmed`），后者必须让前者赢。
+   *
+   * @returns 有没有一条回显被标成失败。`false` = 这条提交**本来就没有回显**（运行中
+   *   发送那条、子代理会话、正文长成斜杠命令但又不是命令）：那时界面上没有能承载失败的
+   *   那一行，调用方要退回老口径（正文回输入框 + 原生错误提示），别把失败咽下去。
+   */
+  private failEcho(requestId: string, reason: string): boolean {
+    for (const [key, list] of this.pendingMessages) {
+      const echo = list.find((entry) => entry.requestId === requestId);
+      if (!echo) continue;
+      if (echo.status === "failed") return true;
+      echo.status = "failed";
+      echo.error = reason;
+      this.putPending(key, list);
+      this.log(`[echo] 回显标记为失败 requestId=${requestId} 原因=${reason}`);
+      this.pushPending(key);
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * 按 requestId 取**这个窗口自己那份账本**里的一条回显（`resendPending` 要用它的正文
+   * 与附件原样重发）。
+   *
+   * **按窗口的键找，不做全局扫描**：撤回 / 重发是界面发来的指令，只有「这条回显属于
+   * 这个窗口正在看的会话」才准动它——全局按 id 找的话，一个撞上别的会话 id 的请求就能
+   * 把别人那条删掉。查找仍按 requestId 认条目（提交过程中键会从 viewId 迁到会话 id，
+   * 但那之后界面看到的每一行都来自它自己那个键）。
+   */
+  private echoOfView(viewId: string, requestId: string): PendingMessageView | undefined {
+    const key = this.keyForView(viewId);
+    return (this.pendingMessages.get(key) ?? []).find((entry) => entry.requestId === requestId);
+  }
+
+  /**
+   * 推一份乐观回显给这个键对应的窗口。
+   *
+   * `key` 是**窗口键**（未绑定会话的窗口用 viewId）或**会话键**（已绑定用会话 id）——
+   * 按域在不在分流投递，与 `pushAttachmentsForView` 同一套：已绑定的窗口按会话投递
+   * （同一会话的多窗口看到同一份回显，与草稿/附件的现行口径一致），未绑定的定向发给它自己。
+   */
+  private pushPending(key: string): void {
+    const frame: HostToWebview = {
+      type: "patch",
+      // 永远发数组（空表也是真值）：清了就是 `[]`，不需要 `null` 那套折返
+      patch: { pendingMessages: [...(this.pendingMessages.get(key) ?? [])] },
+    };
+    if (this.scopes.has(key)) this.deliver(key, frame);
+    else this.emitToView(key, frame);
+  }
+
+  /**
+   * 从账本里删掉一条回显（幂等），返回它原先挂在哪个键上。
+   *
+   * **按 requestId 全局扫**而不是按调用方给的键：提交过程中键会从 viewId 迁到会话 id
+   * （`bindViewToSession`），按 requestId 找就没有键的时序问题，调用方也不必知道当前在哪个键上。
+   * 找不到就返回 `undefined`——失败路径可以放心重复调。
+   *
+   * 只改账本、**不推帧**：调用方要么紧接着自己推（`retireEcho`），要么下一步就会推一份
+   * 带最终状态的（`resendPending`：撤回后立刻按普通发送重走一遍，`beginSend` 会推新回显）。
+   */
+  private removeEcho(requestId: string, reason: string): string | undefined {
+    for (const [key, list] of this.pendingMessages) {
+      const index = list.findIndex((echo) => echo.requestId === requestId);
+      if (index < 0) continue;
+      list.splice(index, 1);
+      this.putPending(key, list);
+      this.log(`[echo] 收回乐观回显 requestId=${requestId} 原因=${reason}`);
+      return key;
+    }
+    return undefined;
+  }
+
+  /** 收回一条乐观回显并推给界面（幂等；找不到就什么都不做）。 */
+  private retireEcho(requestId: string, reason: string): void {
+    const key = this.removeEcho(requestId, reason);
+    if (key !== undefined) this.pushPending(key);
+  }
+
+  /**
+   * 按正文收回回显（durable 承认那条路的兜底）。
+   *
+   * 服务端**不保证**把 `requestId` 回写在 `source.rpcId` 上（旧版本 / 插件差异，
+   * 见 `dsh/client.ts` 的 `prompt` 注释）。没有它就只能按内容对：收回该会话下**最旧的一条**
+   * 文本相同的回显——最旧优先是为了「同样一句话发两次」时也对得上先后。
+   * 对不上（正文里带 `@` 引用会被折写、附件消息正文为空）就不收：宁可多留一条，
+   * 也不能把另一条正在等的回显误收掉。
+   */
+  private retireEchoByText(sessionId: string, text: string): void {
+    const wanted = text.trim();
+    if (!wanted) return;
+    const list = this.pendingMessages.get(sessionId);
+    if (!list?.length) return;
+    const index = list.findIndex((echo) => echo.text.trim() === wanted);
+    if (index < 0) return;
+    const [echo] = list.splice(index, 1);
+    this.putPending(sessionId, list);
+    this.log(`[echo] 按正文收回乐观回显 requestId=${echo?.requestId ?? ""}`);
+    this.pushPending(sessionId);
+  }
+
+  /**
+   * 一条**人的**用户消息被 durable 承认（适配器的 `onUserMessage` 回调）。
+   *
+   * 有 `rpcId` 就按它收（权威、精确）；没有才退回按正文（见 `retireEchoByText`）。
+   */
+  private noteUserAdmitted(sessionId: string, message: { rpcId?: string; text: string }): void {
+    if (message.rpcId) {
+      this.retireEcho(message.rpcId, "admitted");
+      return;
+    }
+    this.retireEchoByText(sessionId, message.text);
+  }
+
+  /** 清空这个窗口（或它绑定的会话）的附件芯片，并把「清空」推给界面（与 `commitDraft` 对称）。 */
+  private commitAttachments(viewId: string): void {
+    this.attachmentsBySession.set(this.keyForView(viewId), []);
+    this.pushAttachmentsForView(viewId, []);
+  }
+
+  /**
    * 提交草稿：清空这个窗口（或它绑定的会话）的草稿，并把「清空」推给界面。
    *
    * **调用点必须早于任何可能推整份状态快照的 await**：空态第一次发消息时
    * `ensureSession` → `createSession` 会在绑定窗口后推一份整份快照，而快照里的 `draft`
    * 读的就是这张表（见 `snapshotFor`）。晚清一步，那一帧就把用户刚发出去的正文塞回
-   * 输入框——界面上是「清空 → 闪回 → 消失」。
+   * 输入框——界面上是「清空 → 闪回 → 消失」。这条顺序由 `beginSend` 保证（它排在
+   * `ensureConnected` 之前）。
    *
    * 它清掉的那份草稿本来也不该留着：界面在按下发送那一刻就乐观清空了自己的输入框，
-   * 所以「收到 `send` 帧」等价于「界面里已经是空的」。于是**没真的发出去**的每条路径
-   * 都必须用 `appendDraft` 把正文还回去，否则等于吞掉用户那句话。
+   * 所以「收到 `send` 帧」等价于「界面里已经是空的」。于是**没真的发出去**的每条路径都
+   * 必须收场，否则等于吞掉用户那句话：有回显的那条标成失败（`failEcho`，正文留在那一行里），
+   * 本来就没有回显的那条（运行中发送 / 子代理会话）用 `appendDraft` 把正文还回去。
    *
    * 顺序契约与两个键（窗口 / 会话）的迁移见 `docs/design-draft.md`。
    */

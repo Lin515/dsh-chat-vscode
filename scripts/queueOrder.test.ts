@@ -63,6 +63,11 @@ const item = (id: string, placement: QueuedMessageView["placement"]): QueuedMess
 }
 
 // ---------- 3. 接线：状态条真的按这个顺序渲染 ----------
+//
+// 2026-09-25：排队区**只**画服务端给的队列项（`state.queueItems`），与改动前逐字相同。
+// 「发出去的消息立即显示」只针对**按下那一刻 agent 空闲**的那一类（它真发出去了）；
+// 排队中的消息**还没发出去**，它压根不进乐观回显账本，在界面上唯一的去处就是这个队列
+// ——本地不另画一行、也不接管那一行的动作（取消 / 编辑 / 插话仍由真实队列项给）。
 {
   const composer = readFileSync(
     join(process.cwd(), "src", "webview", "components", "Composer.tsx"),
@@ -79,6 +84,10 @@ const item = (id: string, placement: QueuedMessageView["placement"]): QueuedMess
   assert.ok(
     /texts\.queued, \{ n: items\.length \}/.test(composer),
     "条数取排序后的长度（同一个集合，只是不许两处各读一份）",
+  );
+  assert.ok(
+    !/pendingMessages|pendingDockItems|pendingRows|localIds/.test(composer),
+    "排队区不吃乐观回显：它只画服务端给的队列项（改动前就是这么画的）",
   );
 }
 

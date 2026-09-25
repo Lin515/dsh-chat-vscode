@@ -413,10 +413,28 @@ export type PromptContentPart =
 
 export interface PromptContentPlan {
   content: PromptContentPart[];
+  /**
+   * 真的出了内容块的那些附件，**顺序与 `content` 里的附件块逐一对应**。
+   *
+   * 给「按下标对齐」的消费方用（adapter 拿它借同一次提交的本地图片字节，见
+   * `includedAttachments`）：直接拿手头那份附件列表按下标对，会因为这里被过滤掉的
+   * 那些（文件没传完 / 图片没有可解析的字节）整体错位。
+   */
+  included: Attachment[];
   /** 没能随消息发出的文件附件（上传中 / 失败 / 没有回执）——调用方要提示用户。 */
   notUploaded: string[];
   /** 表示不出来而被丢掉的（图片没有可解析的 data URL）——调用方至少记日志。 */
   dropped: string[];
+}
+
+/**
+ * 「哪些附件真的会进内容块」——同一个判据、同一个顺序的另一半（见 `PromptContentPlan.included`）。
+ *
+ * 只给「本地那份附件与线上内容块按下标对齐」的消费方用（`adapter` 的 `userMedia`）：
+ * 有了它，过滤规则仍然只有 `buildPromptContent` 这一处。
+ */
+export function includedAttachments(attachments: readonly Attachment[]): Attachment[] {
+  return buildPromptContent("", attachments).included;
 }
 
 /**
@@ -435,6 +453,7 @@ export function buildPromptContent(
   attachments: readonly Attachment[],
 ): PromptContentPlan {
   const content: PromptContentPart[] = [];
+  const included: Attachment[] = [];
   const notUploaded: string[] = [];
   const dropped: string[] = [];
 
@@ -442,6 +461,7 @@ export function buildPromptContent(
     if (attachment.kind === "file") {
       if (attachment.upload?.status === "ready") {
         content.push({ type: "file", receiptId: attachment.upload.receiptId });
+        included.push(attachment);
       } else {
         notUploaded.push(attachment.name);
       }
@@ -449,12 +469,14 @@ export function buildPromptContent(
     }
     if (attachment.kind === "image") {
       const match = attachment.dataUrl ? /^data:([^;]+);base64,(.*)$/.exec(attachment.dataUrl) : null;
-      if (match) content.push({ type: "image", mediaType: match[1]!, data: match[2]!, name: attachment.name });
-      else dropped.push(attachment.name);
+      if (match) {
+        content.push({ type: "image", mediaType: match[1]!, data: match[2]!, name: attachment.name });
+        included.push(attachment);
+      } else dropped.push(attachment.name);
     }
   }
 
   const body = text.trim();
   if (body) content.push({ type: "text", text: body });
-  return { content, notUploaded, dropped };
+  return { content, included, notUploaded, dropped };
 }

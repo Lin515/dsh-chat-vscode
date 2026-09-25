@@ -80,6 +80,11 @@ const HOST_MARKERS: string[] = [
   "uploadIncomplete",
   "uploadNoSession",
   "imagePathsInserted",
+  // 乐观回显（发送失败那一行上的原因，见 controller 的 failEcho）
+  "sendNoConnection",
+  "sendEmpty",
+  "sendUnconfirmed",
+  "sendFailed",
   // 排队
   "queueAttachmentsLost",
   "queueContentLost",
@@ -210,6 +215,9 @@ console.log("i18n: 消息表每条都有中英两份，带参的登记成函数�
     ["deletedFileAria", "@deletedFileAria:a.ts", ["a.ts"]],
     ["forkedTitle", "@forkedTitle:Title", ["Title"]],
     ["contextRelayFrom", "@contextRelayFrom:s-1", ["s-1"]],
+    // 失败原因里带的是服务端 / 传输层的原始报错，**里面常有冒号**（`gateway/xxx: …`）：
+    // 单参数标记按「第一段冒号之后整段」切，这里正是钉住那一点
+    ["sendFailed", "@sendFailed:gateway/input-invalid: bad args", ["gateway/input-invalid: bad args"]],
     // 两个参数：按第一段冒号切，第二段里的冒号整段保留
     ["llmRetry", "@llmRetry:2:5", ["2", "5"]],
     ["imagePathsInserted", "@imagePathsInserted:2:vendor:model", ["2", "vendor:model"]],

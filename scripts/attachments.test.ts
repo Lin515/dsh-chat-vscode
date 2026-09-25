@@ -21,6 +21,7 @@ import {
   classifyPath,
   imageMediaTypeFor,
   imageMediaTypeForEntry,
+  includedAttachments,
   isDirectoryPath,
   isImagePath,
   planIntake,
@@ -471,7 +472,37 @@ console.log("attachments: 目录探测 / id / 错误上报 ✓");
   assert.deepStrictEqual(broken.dropped, ["broken.png"], "表示不出来的附件要报出来（宿主记日志）");
   assert.deepStrictEqual(broken.content, [{ type: "text", text: "x" }]);
   assert.deepStrictEqual(buildPromptContent("   ", []).content, [], "什么都没有时 content 为空（不发这条消息）");
-  console.log("attachments: 发送装配（无路径附件进 prompt / 未就绪有提示 / 官方顺序）✓");
+
+  // ⑥ 「真的进了块的那些」要与内容块**同序**：按下标借本地字节的消费方（adapter 的
+  //    `userMedia`）拿它对齐，不过这一遍就会因为被过滤掉的附件而整体错位。
+  //    这里刻意把「没就绪的文件」与「表示不出来的图片」夹在中间。
+  const filtered = buildPromptContent("正文", [
+    file("f1", "uploading.bin", { status: "uploading", loaded: 1 }),
+    image("i2", "shot.png", "data:image/png;base64,QUJD"),
+    image("i3", "broken.png"),
+    file("f4", "ok.bin", { status: "ready", receiptId: "r4" }),
+  ]);
+  assert.deepStrictEqual(
+    filtered.content.map((part) => part.type),
+    ["image", "file", "text"],
+    "前置：没就绪的文件与表示不出来的图片都不进 content",
+  );
+  assert.deepStrictEqual(
+    filtered.included.map((entry) => entry.id),
+    ["i2", "f4"],
+    "included 只收真的出了块的那些，且顺序与 content 里的附件块逐一对应",
+  );
+  assert.deepStrictEqual(
+    includedAttachments([
+      file("f1", "uploading.bin", { status: "uploading", loaded: 1 }),
+      image("i2", "shot.png", "data:image/png;base64,QUJD"),
+      image("i3", "broken.png"),
+      file("f4", "ok.bin", { status: "ready", receiptId: "r4" }),
+    ]).map((entry) => entry.id),
+    ["i2", "f4"],
+    "includedAttachments 与 buildPromptContent 是同一个判据（过滤规则只有一处）",
+  );
+  console.log("attachments: 发送装配（无路径附件进 prompt / 未就绪有提示 / 官方顺序 / 进块附件同序）✓");
 }
 
 // ---------- 8. 三个入口一条决策：planIntake ----------

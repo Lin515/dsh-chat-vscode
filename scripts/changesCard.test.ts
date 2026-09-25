@@ -275,7 +275,10 @@ console.log("changesCard: 宿主按需读取（认证路由 + 按连接作废）
   );
 
   const app = readFileSync(join(SRC, "webview", "App.tsx"), "utf8");
-  assert.ok(/changesSummaryKey\(state\.session\.id, message\.changes\.seq\)/.test(app), "App 按坐标查缓存");
+  assert.ok(
+    /changesSummaryKey\(state\.session\.id, row\.message\.changes\.seq\)/.test(app),
+    "App 按坐标查缓存（行序列把消息包成 row，见 messageRows）",
+  );
   assert.ok(/sessionId=\{state\.session\?\.id\}/.test(app), "会话 id 要传给消息（卡片发请求要用）");
   assert.ok(
     /turnsWithChangesCard\(state\.messages/.test(app) && /changesCardShown=\{/.test(app),

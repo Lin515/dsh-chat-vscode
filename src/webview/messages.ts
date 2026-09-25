@@ -435,6 +435,26 @@ export const MESSAGES = {
     en: (names: string, count: number) => `${count} file(s) could not be uploaded (${names}); only the ready attachments were sent`,
   },
   uploadNoSession: { zh: "还没有连上服务器，附件传不上去", en: "Not connected to the server yet; the attachment cannot be uploaded" },
+  /**
+   * 发送失败的那一行（乐观回显的失败态）。
+   *
+   * 口径（用户 2026-09-25）：失败**不撤回显示**——那一行留在原地、气泡走错误色，
+   * 操作行最左侧给这两个动作，行尾写失败原因。正文不塞回输入框（回填会变成两份：
+   * 输入框一份 + 消息流一份），要再发就点这里这颗。
+   */
+  resend: { zh: "重发", en: "Resend" },
+  retract: { zh: "撤回", en: "Retract" },
+  /** 宿主发的失败原因：`@sendFailed:<detail>`（detail 里可能有冒号，整段保留）。 */
+  sendFailed: {
+    zh: (detail: string) => `发送失败：${detail}`,
+    en: (detail: string) => `Send failed: ${detail}`,
+  },
+  /** 连不上后台（内部那套没起来 / 目标不可达），什么都没发出去。 */
+  sendNoConnection: { zh: "没有连接到 DSH，消息没有发出去", en: "Not connected to DSH; the message was not sent" },
+  /** 拼不出任何内容块（附件表示不出来、又没有正文）。 */
+  sendEmpty: { zh: "没有可发送的内容", en: "Nothing to send" },
+  /** 会话已经关掉 / 连接断了，始终没收到服务端的确认。 */
+  sendUnconfirmed: { zh: "未收到服务端确认，这条可能没有发出去", en: "No confirmation from the server; this may not have been sent" },
   mentionFiles: { zh: "文件", en: "Files" },
   mentionSessions: { zh: "对话", en: "Sessions" },
   mentionEmpty: { zh: "没有匹配的文件", en: "No matching files" },
@@ -625,7 +645,14 @@ export const MESSAGES = {
     en: (count: number, model: string) => `Model "${model}" does not accept image input; inserted ${count} path(s) into the box`,
   },  queueAttachmentsLost: { zh: "这条消息的附件无法还原，请重新添加（正文已放回输入框）", en: "Attachments could not be restored; please re-attach them (text is back in the box)" },
   queueContentLost: { zh: "排队消息的内容无法还原，已只中止当前轮", en: "Could not restore the queued message; only the current turn was stopped" },
-  queueDispatchFailed: { zh: "排队消息没能自动发出，内容已放回输入框", en: "The queued message could not be sent; its content is back in the box" },
+  /**
+   * 排队消息没能发起（ESC 中止后接着发 / 摘不动队列时的回滚）。
+   *
+   * 刻意不说「内容已放回输入框」：那一刻 agent 若已空闲，这条是**真的发出去了**，
+   * 失败会留在对话流里（红框 + 重发 / 撤回），正文并不在输入框；只有回滚那一档才回填。
+   * 两种收场各自在界面上看得见，这里只说「没发出去」。
+   */
+  queueDispatchFailed: { zh: "排队消息没能发出", en: "The queued message could not be sent" },
   unknownEvent: {
     zh: (type: string) => `遇到了本客户端不认识的事件「${type}」，已跳过其内容。`,
     en: (type: string) => `Skipped an event this client does not understand: "${type}".`,

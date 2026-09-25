@@ -341,6 +341,22 @@ export interface Texts {
   /** 把排队消息取回输入框重新编辑。 */
   queueEdit: string;
   queueMediaOnly: string;
+  /**
+   * 发送失败那一行上的两个动作（用户 2026-09-25 口径）。
+   *
+   * 「重发」= 先删掉这一行再按普通发送重走一遍；「撤回」= 只删掉这一行（不把正文
+   * 塞回输入框）。失败原因跟在它们后面，见 `sendFailed` 那几个宿主标记。
+   */
+  resend: string;
+  retract: string;
+  /** 宿主发来的失败原因（`@sendFailed:<detail>`）。 */
+  sendFailed: (detail: string) => string;
+  /** 连不上 DSH，什么都没发出去。 */
+  sendNoConnection: string;
+  /** 没有可发送的内容（附件表示不出来、又没有正文）。 */
+  sendEmpty: string;
+  /** 会话已关 / 连接断了，始终没收到服务端确认。 */
+  sendUnconfirmed: string;
   runningHint: string;
   /** 队列非空时的运行提示：ESC 除了中止，还会把队首消息发出去。 */
   runningHintQueue: string;
@@ -533,7 +549,7 @@ export interface Texts {
   queueAttachmentsLost: string;
   /** 排队消息拿不到可重发内容时的提示。 */
   queueContentLost: string;
-  /** 排队消息没能自动发出时的提示（内容已放回输入框）。 */
+  /** 排队消息没能发出时的提示（两种收场各自在界面上看得见，见 messages.ts 的同名条目）。 */
   queueDispatchFailed: string;
   turnFailed: string;
   interrupted: string;

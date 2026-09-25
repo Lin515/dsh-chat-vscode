@@ -739,6 +739,37 @@ button.header-title:hover {
   color: var(--muted);
 }
 
+/* 发送失败的那一行（乐观回显的失败态）：气泡走错误色（用户 2026-09-25 口径：
+   失败**不撤回显示**，留在原地、红框 + 重发 / 撤回 + 原因）。 */
+.msg-user.is-failed .bubble {
+  border-color: var(--error);
+  background: color-mix(in srgb, var(--error) 10%, var(--input-bg));
+}
+
+/* 失败回显那一行的动作组：**顶到操作行最左侧**（时间 / 复制 / 展开留在右端，
+   靠 `margin-right: auto` 撑开）。两枚文字按钮**不收缩**（`flex: 0 0 auto`）——
+   它们必须完整可点；英文下要腾地方时压的是后面那段原因（见 `.msg-failed-reason`）。 */
+.msg-failed-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+  margin-right: auto;
+}
+
+/* 失败原因：跟在两个动作后面，单行 + 省略号（全文在 title 里）。
+   英文下比中文长得多，所以不靠固定宽度、也不换行——操作行只有 28px 高。 */
+.msg-failed-reason {
+  flex: 0 1 auto;
+  min-width: 0;
+  margin-right: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--font-size-2xs);
+  color: var(--error);
+}
+
 .msg-time {
   margin-right: 4px;
   font-size: var(--font-size-2xs);
