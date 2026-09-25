@@ -2529,33 +2529,56 @@ button.header-title:hover {
   gap: 2px;
 }
 
+/* 标题栏与文件行共用的排版 */
 .changes-card-head,
 .changes-card-row {
   display: flex;
   align-items: center;
   gap: 8px;
   width: 100%;
+  color: var(--description);
+  text-align: left;
+}
+
+/* 手型光标与按钮重置只给**真能点**的形态：文件行，以及有东西可折时的标题栏
+   （那时它是展开/收起入口）。文件不多时标题栏是纯表头，光标不许装作可点——
+   那张「第一个文件的触发区高到标题栏」的报告就是从这里来的。 */
+button.changes-card-head,
+.changes-card-row {
   padding: 0;
   border: none;
   background: none;
-  color: var(--description);
   font: inherit;
-  text-align: left;
   cursor: pointer;
 }
 
-.changes-card-head:hover,
+/* 悬停只对可点的形态生效：标题本身已是 --fg，行数有自己的绿/红，所以标题栏那支
+   亮起来的是展开箭头（也就它在提示「这里能点」）。 */
+button.changes-card-head:hover .changes-card-chevron,
 .changes-card-row:hover {
   color: var(--fg);
 }
 
-.changes-card-title,
+/* 标题按内容宽——展开箭头要紧跟在它右边；**行数靠右**（`margin-left: auto` 吃掉
+   中间的空当），于是「标题 + 箭头」在左、增删行数在右，与官方那张卡片的排法一致。 */
+.changes-card-title {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .changes-card-path {
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.changes-card-counts {
+  margin-left: auto;
 }
 
 .changes-card-title {
@@ -2585,6 +2608,18 @@ button.header-title:hover {
 
 .changes-card .diff-del {
   color: var(--error);
+}
+
+/* 标题栏右侧的折展箭头：朝下=还能展开，展开后转 180° 朝上（与本应用其它 chevron
+   同款 120ms 旋转，见 `.turn-process-chevron` / `.job-chevron`）。 */
+.changes-card-chevron {
+  flex: 0 0 auto;
+  color: var(--muted);
+  transition: transform 120ms ease;
+}
+
+.changes-card-head[aria-expanded="true"] .changes-card-chevron {
+  transform: rotate(180deg);
 }
 
 /* 折叠后的「+ N 个文件」/ 展开后的「收起」：与文件芯片行的按钮同一形态 */

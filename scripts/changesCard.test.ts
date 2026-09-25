@@ -312,3 +312,70 @@ console.log("changesCard: 界面按需请求、卡片取代「本轮改动」行
   );
 }
 console.log("changesCard: ± 行数分色（复用 diff 的绿/红） ✓");
+
+// ---------- 6. 标题栏：可折时是折展入口，任何形态都不打开文件 ----------
+//
+// 官方那张卡片的标题带文件类型图标、点它打开侧边栏复查面板（`ChangedFiles.tsx` 的
+// header → `openReview(0)`）；本客户端没有复查面板，先前照搬成「点标题 = 打开第一个
+// 文件的改动」——标题看着是表头，实际是第一个文件的行，用户报「第一个文件的触发区
+// 一直高到标题栏」。现在标题栏的点击只用于**开合文件列表**（与底部那枚按钮同一个
+// 动作、同一个 `expanded`），文件不多（没东西可折）时退回纯表头；打开文件只从文件行
+// 发起。
+
+{
+  const card = readFileSync(join(SRC, "webview", "components", "ChangesCard.tsx"), "utf8");
+  assert.ok(!/summary\.files\[0\]/.test(card), "标题栏不该再摸第一个文件");
+
+  assert.ok(
+    /const toggle = \(\) => setExpanded\(\(value\) => !value\)/.test(card),
+    "开合只有一处实现（两处各写一遍 setExpanded 迟早走岔）",
+  );
+  assert.strictEqual(
+    (card.match(/onClick=\{toggle\}/g) ?? []).length,
+    2,
+    "标题栏与底部那枚按钮必须共用同一个开合动作，否则「同步」只是句话",
+  );
+
+  const headButton = card.match(/<button[\s\S]{0,200}?className="changes-card-head"[\s\S]{0,200}?>/);
+  assert.ok(headButton, "有可折叠内容时标题栏要是按钮（点了要有反应）");
+  assert.ok(/aria-expanded=\{expanded\}/.test(headButton![0]), "标题栏要把开合状态暴露给无障碍");
+  assert.ok(!/openFile/.test(headButton![0]), "标题栏的点击只能开合，不能打开文件");
+  assert.ok(
+    /<div className="changes-card-head">\{heading\}<\/div>/.test(card),
+    "没有可折叠内容时标题栏退回纯表头（不做点了没反应的控件）",
+  );
+  assert.ok(
+    /\{foldable \? <IconChevronDown/.test(card),
+    "折展箭头只在真有东西可折时画",
+  );
+  assert.ok(
+    /<button[\s\S]{0,400}?className="changes-card-row"[\s\S]{0,400}?onClick/.test(card),
+    "文件行仍要可点（点它看该文件的改动）",
+  );
+
+  const css = readFileSync(join(SRC, "webview", "styles", "app.css"), "utf8");
+  const shared = css.match(/\.changes-card-head,\s*\n\.changes-card-row \{([^}]*)\}/);
+  assert.ok(shared, "标题栏与文件行的共用排版规则要还在");
+  assert.ok(!/cursor/.test(shared![1]), "光标按形态给，不写进共用排版");
+  const clickable = css.match(/button\.changes-card-head,\s*\n\.changes-card-row \{([^}]*)\}/);
+  assert.ok(clickable, "可点形态要有一条自己的规则");
+  assert.ok(/cursor:\s*pointer/.test(clickable![1]), "可点形态才给手型光标（纯表头不许装作可点）");
+  assert.ok(
+    /\.changes-card-head\[aria-expanded="true"\] \.changes-card-chevron \{[\s\S]{0,60}rotate\(180deg\)/.test(css),
+    "展开后箭头朝上：只靠 CSS 翻 180°，不换图标",
+  );
+  assert.ok(
+    /\.changes-card-chevron \{[\s\S]{0,120}transition: transform/.test(css),
+    "箭头翻转要有过渡（与 .turn-process-chevron / .job-chevron 同款）",
+  );
+  assert.ok(
+    /button\.changes-card-head:hover \.changes-card-chevron/.test(css),
+    "悬停只亮可点形态的箭头：标题本身已是 --fg，行数有自己的绿/红",
+  );
+  assert.ok(
+    /\.changes-card-row:hover \{[\s\S]{0,60}color: var\(--fg\)/.test(css),
+    "文件行的悬停高亮要留着",
+  );
+  assert.ok(/\.changes-card-counts \{[\s\S]{0,60}margin-left: auto/.test(css), "标题与箭头靠左、行数靠右");
+}
+console.log("changesCard: 标题栏可折时是折展入口、任何形态都不打开文件 ✓");

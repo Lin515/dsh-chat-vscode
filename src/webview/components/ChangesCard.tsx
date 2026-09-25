@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { ChangesSummaryView } from "../../shared/chat";
 import { CHANGES_CARD_VISIBLE, visibleChangeFiles } from "../../shared/changesSummary";
 import { post } from "../bridge";
+import { IconChevronDown } from "../icons";
 import { useTexts } from "../texts";
 
 /**
@@ -45,28 +46,39 @@ export function ChangesCard({
 
   const shown = visibleChangeFiles(summary.files, expanded);
   const hidden = summary.files.length - shown.length;
-  const first = summary.files[0]!;
-  const collapse = summary.files.length > CHANGES_CARD_VISIBLE;
+  const foldable = summary.files.length > CHANGES_CARD_VISIBLE;
+  /** 展开/收起：标题栏与底部那枚按钮共用它，两处的 `expanded` 与文案才是同一个状态。 */
+  const toggle = () => setExpanded((value) => !value);
+
+  /** 标题 + 折展箭头 + 靠右的增删行数。箭头只在真有东西可折时画（否则是在许空愿）。 */
+  const heading = (
+    <>
+      <span className="changes-card-title">{texts.changesCardTitle(summary.total)}</span>
+      {foldable ? <IconChevronDown size={12} className="changes-card-chevron" /> : null}
+      <span className="changes-card-counts">
+        <span className="diff-add">{texts.changesCardAdded(summary.added)}</span>
+        <span className="diff-del">{texts.changesCardDeleted(summary.deleted)}</span>
+      </span>
+    </>
+  );
 
   return (
     <div className="changes-card">
-      {/* 标题在**第一个文件**上打开它（官方口径；行的点击语义与文件芯片一致：
-          默认看改动、按住修饰键直接打开文件）。 */}
-      <button
-        type="button"
-        className="changes-card-head"
-        title={`${first.path}\n${texts.openChangesHint}`}
-        aria-label={texts.openChangesAria(first.display)}
-        onClick={(event) =>
-          post({ type: "openFile", path: first.path, diff: !hasModifier(event) })
-        }
-      >
-        <span className="changes-card-title">{texts.changesCardTitle(summary.total)}</span>
-        <span className="changes-card-counts">
-          <span className="diff-add">{texts.changesCardAdded(summary.added)}</span>
-          <span className="diff-del">{texts.changesCardDeleted(summary.deleted)}</span>
-        </span>
-      </button>
+      {/* 标题栏：文件多到折起来时，它自己就是展开/收起入口（右侧箭头随开合翻转，
+          与底部那枚按钮同一动作），文件不多时退回纯表头——不做点了没反应的控件。
+          **任何形态都不打开文件**：官方那张卡片的标题点开的是侧边栏复查面板
+          （`ChangedFiles.tsx` 的 header → `openReview(0)`），本客户端没有那个面板，
+          先前照搬成「点标题 = 打开第一个文件的改动」，于是看起来是表头的那一行成了
+          第一个文件的行，标题高度的点击落在第一个文件上（用户 2026-09-25 报
+          「第一个文件的触发区一直高到标题栏」）。打开文件只从下面的文件行进
+          （默认看改动、按住修饰键直接打开文件）。 */}
+      {foldable ? (
+        <button type="button" className="changes-card-head" aria-expanded={expanded} onClick={toggle}>
+          {heading}
+        </button>
+      ) : (
+        <div className="changes-card-head">{heading}</div>
+      )}
       <div className="changes-card-files">
         {shown.map((file) => (
           <button
@@ -98,13 +110,13 @@ export function ChangesCard({
           </button>
         ))}
       </div>
-      {collapse ? (
+      {foldable ? (
         <button
           type="button"
           className="changes-card-more"
           aria-expanded={expanded}
           aria-label={expanded ? texts.changesCardCollapseAria : texts.changesCardExpandAria(summary.files.length)}
-          onClick={() => setExpanded((value) => !value)}
+          onClick={toggle}
         >
           {expanded ? texts.filesCollapse : texts.changesCardMore(hidden)}
         </button>
