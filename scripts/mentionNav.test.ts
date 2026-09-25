@@ -39,6 +39,7 @@ const {
   ComposerCompletionState,
   findTrigger,
   hasDrillableFolder,
+  isSessionCandidate,
   outcomeFor,
   popoverVisible,
   rankCandidates,
@@ -133,15 +134,30 @@ console.log("mentionNav: 反斜杠写法 ✓");
     "根目录查询：文件候选在前、对话候选在后，没有 `..`",
   );
 
-  // 进了子目录：`..` 排在最前，且它指向**上一层**（`src/webview/` → `src/`）
+  // 进了子目录：`..` 排在最前，且它指向**上一层**（`src/webview/` → `src/`）。
+  // 对话候选**只在工作区根目录列**（用户 2026-09-25 口径，刻意偏离官方 `@` 源）：
+  // 进了目录那一组直接不参与排序——它是同步判掉的，不是「先渲染再消失」。
   const nested = rankCandidates({ kind: "mention", start: 0, query: "src/webview/" }, [], files, sessions);
   assert.deepStrictEqual(
     nested.map(nameOf),
-    ["src/", "src/a.ts", "src/webview", "s1"],
-    "「..」排在最前（用户口径：顶部提供返回上一层）",
+    ["src/", "src/a.ts", "src/webview"],
+    "「..」排在最前（用户口径：顶部提供返回上一层）；进了目录不再列对话候选",
   );
   assert.strictEqual((nested[0] as FileRefView).parent, true, "第一条必须是界面自己插的「..」行");
   assert.strictEqual((nested[0] as FileRefView).kind, "directory", "「..」也是一条目录候选");
+  // 反斜杠写法同样算「进了目录」（用户手输 / Windows 候选两种来源）
+  assert.ok(
+    !rankCandidates({ kind: "mention", start: 0, query: "src\\webview" }, [], files, sessions).some(
+      isSessionCandidate,
+    ),
+    "反斜杠查询也算进了目录：同样不列对话候选",
+  );
+  // 只在根目录筛（还没进任何目录）时对话候选照常参与排序
+  assert.deepStrictEqual(
+    rankCandidates({ kind: "mention", start: 0, query: "webview" }, [], files, sessions).map(nameOf),
+    ["src/a.ts", "src/webview", "s1"],
+    "根目录里打字（没进目录）时对话候选照常列",
+  );
 
   // 命令通道按名字做大小写不敏感的子串过滤
   const commands: CommandView[] = [

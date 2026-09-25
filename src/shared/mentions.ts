@@ -37,6 +37,22 @@ export function normalizeMentionPath(path: string): string {
   return path.replaceAll("\\", "/");
 }
 
+/**
+ * 这个 `@` 查询是不是**已经进了某个目录**（查询串里出现分隔符，两种写法都认）。
+ *
+ * 两处判据同源，缺一不可：
+ * - 宿主据此**不查、也不发对话候选**那一组（进了目录还说历史对话没有意义，而那一趟
+ *   要扫全部会话日志）；
+ * - 界面据此**不渲染**对话候选（下钻是同步改正文的，只靠宿主不发那批帧就会出现
+ *   「先进目录、对话条目再慢慢消失」——用户 2026-09-25 报的现场）。
+ *
+ * 正斜杠与反斜杠都算：候选路径来自 Windows 侧时可能写成 `src\webview`，用户也可能
+ * 手输反斜杠（见 `normalizeMentionPath`）。
+ */
+export function isDirectoryQuery(query: string): boolean {
+  return /[\\/]/.test(query ?? "");
+}
+
 /** 生成 `@` 引用的模型可见文本；不可引用时返回 undefined。 */
 export function formatFileMention(path: string, kind: "file" | "directory" = "file"): string | undefined {
   // 先归一化分隔符，再谈尾斜杠：`src\dsh\` 归一后就是 `src/dsh/`，不必再补

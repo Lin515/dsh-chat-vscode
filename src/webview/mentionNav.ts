@@ -10,6 +10,7 @@
  *
  * 纯函数、不引 React：断言见 `scripts/mentionNav.test.ts`。
  */
+import { isDirectoryQuery } from "../shared/mentions";
 
 /**
  * 当前 `@` 查询进入某个目录时，「上一层」应当填回的查询串。
@@ -21,11 +22,14 @@
  *
  * 例：`src/` → `""`（根）；`src/webview/` → `"src/"`；`src/webview/Com` → `"src/"`。
  * 分隔符两种都认（服务端给的是 `/`，但查询可能被用户手输成 `\`）。
+ *
+ * 「有没有进目录」这一条与候选列表的其它判据同源（`isDirectoryQuery`）：对话候选
+ * 只在根目录列，而「`..` 行」只在进了目录时出现——两条不能各写一份正则。
  */
 export function mentionParent(query: string): string | undefined {
   const text = query ?? "";
+  if (!isDirectoryQuery(text)) return undefined;
   const cut = Math.max(text.lastIndexOf("/"), text.lastIndexOf("\\"));
-  if (cut < 0) return undefined;
   const directory = text.slice(0, cut + 1); // 含尾部分隔符的当前目录
   const inner = directory.replace(/[/\\]+$/u, "");
   const up = Math.max(inner.lastIndexOf("/"), inner.lastIndexOf("\\"));

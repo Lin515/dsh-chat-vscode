@@ -193,10 +193,18 @@ console.log("sessionList: 控制器与界面都接上了 ✓");
   );
 
   // 控制器接线：queryFiles 走 visibleSessionCandidates，且两个隐藏集合都传进去
+  // （判据取 `queryFiles` 的函数体，不绑某一行的书写形状——它现在住在
+  //  `files/sessions` 那一帧的发射点里，见 `controller.queryFiles`）
   const controller = readFileSync(join(process.cwd(), "src", "dsh", "controller.ts"), "utf8");
+  const queryFilesStart = controller.indexOf("private async queryFiles(");
+  const queryFiles = controller.slice(
+    queryFilesStart,
+    controller.indexOf("\n  private ", queryFilesStart + 10),
+  );
+  assert.ok(queryFilesStart > 0, "取不到 queryFiles");
   assert.ok(
-    /visibleSessionCandidates\(\s*sessions \?\? \[\],\s*this\.subagentSessionIds,\s*this\.blankSessionIds\(\),/.test(
-      controller,
+    /visibleSessionCandidates\(\s*rows \?\? \[\],\s*this\.subagentSessionIds,\s*this\.blankSessionIds\(\),/.test(
+      queryFiles,
     ),
     "queryFiles 必须用 visibleSessionCandidates 过滤 @ 对话候选，并同时传子代理 id 与空会话 id" +
       "（判据在 sessionList.ts 里注释着）",

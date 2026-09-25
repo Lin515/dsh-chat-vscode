@@ -95,8 +95,26 @@ export type HostToWebview =
   | { type: "jobs/observeFailed"; jobId: string; watchId: number; detail?: string }
   /** 斜杠命令目录（输入框输入 / 时弹出）。 */
   | { type: "commands/list"; commands: CommandView[] }
-  /** 文件引用候选（输入框输入 @ 时弹出）。 */
-  | { type: "files/list"; query: string; items: FileRefView[]; sessions?: SessionRefView[] }
+  /**
+   * `@` 候选的**文件那一半**（输入框输入 @ 时弹出）。
+   *
+   * 与对话候选分成两条帧，因为两个源在服务端的成本差三个数量级：文件那一半是
+   * 一次 `readdir`（本机实测 0.1ms），对话候选要扫**全部**会话日志
+   * （`sessionReferenceResolver/candidates` → `sessionQuery.listSessions` →
+   * 逐个会话 stat + 读头部，本机 339 条会话实测 130ms 以上）。合成一条帧就是
+   * 「切进一个只有几个文件的目录，却要等一次全语料扫描」——用户报的
+   * 「@ 列表切换目录感觉慢」正是它。官方的 `@` 源同样是两个 source 各自结算
+   * （`dsh-client-ui-input-trigger` 的 `source-settled`），界面按同一口径合并。
+   */
+  | { type: "files/list"; query: string; items: FileRefView[] }
+  /**
+   * `@` 候选的**对话那一半**（`sessionReferenceResolver/candidates`）。
+   *
+   * `query` 说明这一批候选**属于哪一次查询**：界面只收与当前文件列表同属一次查询的
+   * 那一批，晚到的旧批次直接丢——否则会渲染出「文件是这一层的、对话是上一层筛出来的」
+   * （宿主侧更早就作废了旧查询，见 `controller.queryFiles` 的作废口径）。
+   */
+  | { type: "files/sessions"; query: string; sessions: SessionRefView[] }
   /** 一次性提示。 */
   | { type: "toast"; level: "info" | "warn" | "error"; text: string }
   /**

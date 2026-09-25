@@ -347,7 +347,7 @@ console.log("interactionSync: 审批按 approval/decided 与撤回收场 ✓");
 }
 console.log("interactionSync: 宿主侧接线正确 ✓");
 
-// ---------- 8. `@` 对话引用：候选一起取、选中插入 mention ----------
+// ---------- 8. `@` 对话引用：两个源并行取、各自发帧，选中插入 mention ----------
 {
   const controller = readFileSync(join(process.cwd(), "src", "dsh", "controller.ts"), "utf8");
   assert.ok(
@@ -357,6 +357,17 @@ console.log("interactionSync: 宿主侧接线正确 ✓");
   assert.ok(
     /Promise\.all\(/.test(controller) && /queryFiles/.test(controller),
     "文件与对话候选并行取（与官方 reference 源同构）",
+  );
+  const ipc = readFileSync(join(process.cwd(), "src", "shared", "ipc.ts"), "utf8");
+  assert.ok(
+    /\{ type: "files\/list"; query: string; items: FileRefView\[\] \}/.test(ipc) &&
+      /\{ type: "files\/sessions"; query: string; sessions: SessionRefView\[\] \}/.test(ipc),
+    "文件与对话候选要分成两条帧（各自带 query，界面按它丢旧批次）",
+  );
+  assert.ok(
+    /this\.menuQueries\.get\(viewId\)\?\.abort\(\)/.test(controller) &&
+      /isCurrentMenuQuery\(viewId, controller\)/.test(controller),
+    "每一次 @ 候选查询都要作废上一次（官方 stopFetch 同款；不作废就是十次全语料扫描 + 旧盖新）",
   );
 
   // 界面侧那三样（候选进同一条列表 / mention 插入 / 分组标题）**不再 grep Composer 源码**：
@@ -400,9 +411,6 @@ console.log("interactionSync: 宿主侧接线正确 ✓");
   assert.strictEqual(rows[1].showSection, true, "换了分组要显示分组标题");
   assert.strictEqual(dictionaryFor("zh").mentionSessions, "对话");
   assert.strictEqual(dictionaryFor("en").mentionSessions, "Sessions");
-
-  const ipc = readFileSync(join(process.cwd(), "src", "shared", "ipc.ts"), "utf8");
-  assert.ok(/sessions\?: SessionRefView\[\]/.test(ipc), "files/list 帧要带上对话候选");
 }
 console.log("interactionSync: @ 对话引用的接线 ✓");
 

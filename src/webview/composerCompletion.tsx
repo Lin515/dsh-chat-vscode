@@ -38,7 +38,7 @@ import {
   type TextareaHTMLAttributes,
 } from "react";
 import type { CommandView, FileRefView, SessionRefView } from "../shared/chat";
-import { formatFileMention, normalizeMentionPath } from "../shared/mentions";
+import { formatFileMention, isDirectoryQuery, normalizeMentionPath } from "../shared/mentions";
 import { post } from "./bridge";
 import { IconFolder } from "./icons";
 import { mentionParent } from "./mentionNav";
@@ -102,6 +102,11 @@ export function isSessionCandidate(candidate: MentionCandidate): candidate is Se
  * `@` 的顺序是官方 `reference` 源的顺序：文件在前、对话在后；查询已经进入某个
  * 子目录时，**上一层（`..`）永远排在最前**（文件浏览器的惯例，键盘上下也能选中它）。
  * 命令按名字做大小写不敏感的子串过滤。
+ *
+ * **对话候选只在工作区根目录列**（用户 2026-09-25 口径，刻意偏离官方 `@` 源：官方拿
+ * 查询串去筛历史对话，进了目录也照样列）。判据必须在这一层，不能只靠宿主不发那批帧：
+ * 下钻是同步改正文的，等事实的帧回来才消失就会出现「先进目录、对话条目再慢慢消失」
+ * ——用户报的现场。宿主侧有同一条判据（`isDirectoryQuery`），那边据此连查都不查。
  */
 export function rankCandidates(
   trigger: Trigger | undefined,
@@ -115,7 +120,7 @@ export function rankCandidates(
     return commands.filter((command) => command.name.toLowerCase().includes(query));
   }
   const files: MentionCandidate[] = [...items];
-  const refs: MentionCandidate[] = [...sessions];
+  const refs: MentionCandidate[] = isDirectoryQuery(trigger.query) ? [] : [...sessions];
   const parent = mentionParent(trigger.query);
   if (parent === undefined) return [...files, ...refs];
   const up: FileRefView = { path: parent, kind: "directory", parent: true };
@@ -478,10 +483,29 @@ function useCompletion(
     post({ type: "setDraft", text });
   }, []);
 
-  /** 触发词出现时才去拉候选列表，避免每次输入都请求。 */
+  /**
+   * 触发词出现时才去拉候选列表，避免每次输入都请求。
+   *
+   * **两条通道的重取时机不同**：
+   * - `@`：查询串就是候选的入参（服务端按它列目录、筛对话），每变一次都要重取；
+   * - `/`：命令目录与查询串**无关**（过滤在本地做，见 `rankCandidates`），所以只在
+   *   命令通道**打开**时取一次。此前它跟着 `trigger?.query` 一起重取，等于每敲一个字
+   *   换一次 `commands/list` + `skills/list`，去算一个本地就能算出来的过滤结果。
+   */
+  const commandChannel = trigger?.kind === "command";
   useEffect(() => {
-    if (trigger?.kind === "command") post({ type: "listCommands" });
+    if (commandChannel) post({ type: "listCommands" });
+  }, [commandChannel]);
+
+  /**
+   * `@` 候选的重取点，也**只有这一个**：查询串一变就发一次 `queryFiles`。
+   *
+   * 下钻 / 回上一层（`replace`）不再自己发一遍——一次导航发两遍会让服务端那趟
+   * 「扫全部会话日志」的活翻倍，而两批回答的先后也没有保证（旧批次可能后到）。
+   */
+  useEffect(() => {
     if (trigger?.kind === "mention") post({ type: "queryFiles", query: trigger.query });
+    // 换触发词 / 改查询串都要把高亮回到第一条：列表整个换了，停在旧下标上会选错行
     setHighlight(0);
   }, [trigger?.kind, trigger?.query]);
 
@@ -602,14 +626,16 @@ function useCompletion(
 
   /** 触发词整段替换 + 两次写 + 落光标（`drill` 与 `..` 共用）。 */
   const replace = useCallback(
-    (token: string, query: string) => {
+    (token: string) => {
       const current = latest.current;
       if (!trigger) return;
       const result = replaceToken(current.draft, trigger, token);
       writeDraft(result.text);
-      post({ type: "queryFiles", query });
       landCaret(result.caret);
-      // 下钻 / 回上一层**不**关弹层：列表换成新那一层的内容继续留在候选态
+      // 下钻 / 回上一层**不**关弹层：列表换成新那一层的内容继续留在候选态。
+      // 重取候选由「查询串变了就发一次」的那个 effect 负责（它读的是下一帧的
+      // trigger），这里**不再自己发一遍**——一次导航发两遍是白烧一遍服务端的
+      // 全语料扫描，而且两批回答谁先到没有保证。
       setTrigger(findTrigger(result.text, result.caret));
     },
     [trigger, writeDraft, landCaret],
@@ -620,12 +646,15 @@ function useCompletion(
    *
    * 「已关闭」标记必须记：否则随后那次 keyup 的重新探测会在同一个位置再命中
    * `@path`，弹层关了又弹。光标在 rAF 里落（同步改 DOM 会被 React 的重渲染顶掉）。
+   *
+   * 选完**不**发清空查询的帧：弹层已经关了，没有人在看那份列表；而重开 `@` 时
+   * 触发词从无到有，那个重取 effect 本来就会重取一次。多发一帧等于白烧一次
+   * 服务端的全语料扫描。
    */
   const insertMentionText = useCallback(
     (mention: string) => {
       if (!trigger) return;
       const result = replaceToken(latest.current.draft, trigger, mention);
-      post({ type: "queryFiles", query: "" });
       writeDraft(result.text);
       setTrigger(undefined);
       dismissedRef.current = { value: result.text, caret: result.caret };
@@ -684,7 +713,7 @@ function useCompletion(
         // 分隔符归一（用户 2026-09-21 口径）：用户手输 `src\webview\` 时上一层是
         // `src\`，写成 `@src/` 才和引用文本的语法一致（见 `shared/mentions.ts`）。
         const parent = normalizeMentionPath(outcome.path);
-        replace(`@${parent}`, parent);
+        replace(`@${parent}`);
         return;
       }
       if (outcome.type === "drill") {
@@ -696,7 +725,7 @@ function useCompletion(
         // 这里写的是**查询形态**（还没选中任何东西），所以不加引号——带空格的路径
         // 本来就无法用触发词继续下钻（查询按空白切段），引号只属于最终引用。
         const path = normalizeMentionPath(outcome.path);
-        replace(`@${path}/`, `${path}/`);
+        replace(`@${path}/`);
         return;
       }
       // 文件 / 目录（pick）：把路径**作为纯引用 token 插进正文**。

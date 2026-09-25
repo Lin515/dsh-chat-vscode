@@ -237,7 +237,24 @@ export class DshClient {
     return (await res.json().catch(() => undefined)) as unknown;
   }
 
-  async request<T>(method: string, args: Record<string, unknown>, timeoutMs = 60_000): Promise<T> {
+  /**
+   * 一元调用。
+   *
+   * `signal` 是**调用方**的取消信号（可选），与超时信号合成一个：
+   * `@` 候选每敲一个字符就会重取一次，新的一次必须作废上一次（官方
+   * `ui-input-trigger` 的 `stopFetch` 同款口径）。这不只是「丢掉回来的结果」——
+   * 客户端断开时网关会把 abort 接到这次请求的 `signal` 上（`client/connection`
+   * 的 http-bridge：响应 close 且没写完就 `abort()`），而会话候选扫描每一步都有
+   * `throwIfAborted`，所以作废能真正省下服务端的活。
+   */
+  async request<T>(
+    method: string,
+    args: Record<string, unknown>,
+    timeoutMs = 60_000,
+    signal?: AbortSignal,
+  ): Promise<T> {
+    const deadline = AbortSignal.timeout(timeoutMs);
+    const cancel = signal ? AbortSignal.any([deadline, signal]) : deadline;
     const attempt = async () => {
       const message: ClientRequest = {
         type: "client-request",
@@ -251,7 +268,7 @@ export class DshClient {
         method: "POST",
         headers,
         body: JSON.stringify(message),
-        signal: AbortSignal.timeout(timeoutMs),
+        signal: cancel,
       });
       const body = res.ok ? ((await res.json()) as ServerResponse) : undefined;
       return { status: res.status, rpcId: message.rpcId, body };

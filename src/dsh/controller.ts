@@ -51,7 +51,7 @@ import { fileChangeKind, hasWorkingChange, isNotFoundError, resolveChipPath, spl
 import { readLocalImages } from "./localImages";
 import { shouldContinuePaging } from "./historyPaging";
 import { formatFileMention } from "./references";
-import { formatFileMentionWithLines } from "../shared/mentions";
+import { formatFileMentionWithLines, isDirectoryQuery } from "../shared/mentions";
 import { resolveForVsCode } from "./hostText";
 import { normalizeTurnProcessThreshold } from "../shared/turnProcessThreshold";
 import { chooseTarget, describeFacts, externalStateOf, type TargetFacts } from "./connectTarget";
@@ -663,6 +663,20 @@ export class ChatController implements vscode.Disposable {
    * 因为「建会话」这件事本身就是按窗口的（草稿、待建参数都按窗口存）。
    */
   private readonly sessionEnsures = new Map<string, Promise<SessionScope | undefined>>();
+  /**
+   * 每个窗口**当前那一次** `@` 候选查询的取消句柄。
+   *
+   * `@` 候选是每敲一个字符（以及每次下钻）重取一次的，新的一次必须作废上一次：
+   *
+   * - **省服务端的活**：对话候选那一半要扫全部会话日志（本机 339 条会话实测
+   *   130ms 以上），不作废的话敲一个 10 字符的路径就会同时压出十次全语料扫描；
+   * - **防旧盖新**：两次请求的往返时间不同，旧批次后到会把新列表盖掉（混出
+   *   「文件是这一层的、对话是上一层的」）。
+   *
+   * 句柄同时是「这一次还是不是当前那一次」的判据（`isCurrentMenuQuery`），
+   * 所以不需要另开一个序号表。窗口下线时一并作废（`unbindView`）。
+   */
+  private readonly menuQueries = new Map<string, AbortController>();
   /**
    * **扩展自己建出来的空会话**（`/`、`@` 菜单在空态按需建的那条）→ 它的落脚目录与预设。
    *
@@ -1800,6 +1814,10 @@ export class ChatController implements vscode.Disposable {
     this.panelTitles.delete(viewId);
     this.panelTitleValues.delete(viewId);
     this.restoreHints.delete(viewId);
+    // 这个窗口那次 `@` 候选查询一并作废：句柄按 viewId 建，不作废就是「关掉窗口后
+    // 服务端还在为它扫会话日志」，表也跟着一直涨（见 `menuQueries`）
+    this.menuQueries.get(viewId)?.abort();
+    this.menuQueries.delete(viewId);
     const index = this.viewOrder.indexOf(viewId);
     if (index >= 0) this.viewOrder.splice(index, 1);
     if (sessionId) this.dropViewers(sessionId);
@@ -7677,60 +7695,106 @@ export class ChatController implements vscode.Disposable {
    * 与命令目录同一个前提：候选是**会话作用域**的（`fileReferences` 按 agent 的工作目录
    * 列，没有会话就没有候选），所以空态下先按需建会话——见 `ensureSessionForMenu`。
    * 目录没定、连不上时回空列表（界面据窗口快照里的空工作目录显示「未选择工作区」）。
+   *
+   * **每次查询作废上一次**（`menuQueries`）：`@` 是每敲一个字符重取一次的，不作废
+   * 就会同时压出一串全语料扫描，而且旧批次回来会把新列表盖掉。
+   *
+   * **两个源各自发帧**（官方 `dsh-client-ui-reference` 的 `@` 源同构）：文件那半是
+   * 一次 `readdir`，对话候选要扫全部会话日志，两者差三个数量级（实测见 `ipc.ts`
+   * 的 `files/list` 帧注释）。几毫秒就能画出来的目录内容不该等百毫秒级的对话候选。
+   *
+   * **对话候选只在工作区根目录列**（用户 2026-09-25 口径，刻意偏离官方 `@` 源：
+   * 官方拿查询串去筛历史对话，于是进了目录也照样列）。进了某个目录时这一组连查都不查
+   * ——那趟是全语料扫描，查了也只能丢掉；界面侧有同一条判据（`rankCandidates`），
+   * 所以已经在飞的那一批也不会渲染出来。
    */
   private async queryFiles(viewId: string, query: string): Promise<void> {
+    this.menuQueries.get(viewId)?.abort();
+    const controller = new AbortController();
+    this.menuQueries.set(viewId, controller);
+
     const scope = await this.ensureSessionForMenu(viewId);
-    if (!this.client || !scope) {
-      this.emitToView(viewId, { type: "files/list", query, items: [], sessions: [] });
+    // 建会话可能等了一会儿，期间用户又敲了字：这一次已经被作废，一个字节都不发
+    if (!this.isCurrentMenuQuery(viewId, controller)) return;
+    const client = this.client;
+    const wantsSessions = !isDirectoryQuery(query);
+    if (!client || !scope) {
+      this.emitToView(viewId, { type: "files/list", query, items: [] });
+      if (wantsSessions) this.emitToView(viewId, { type: "files/sessions", query, sessions: [] });
       return;
     }
-    // 官方的 `@` 是**一个源、两组候选**（`dsh-client-ui-reference`）：
-    // 文件（`fileReferences/list`）与对话（`sessionReferenceResolver/candidates`）
-    // 并行取、各自成组。对话那条失败（老版本服务器没有这个 remote）不该把文件
-    // 候选一起拖下水，所以单独兜住。
-    const [files, sessions] = await Promise.all([
-      this.client
-        .request<{ path: string; kind: "file" | "directory" }[]>("fileReferences/list", {
-          agentId: scope.sessionId,
-          query,
-        })
-        .catch((error: unknown) => {
-          this.log(`[files] 查询失败：${this.describeError(error)}`);
-          return [] as { path: string; kind: "file" | "directory" }[];
-        }),
-      this.client
-        .request<SessionReferenceCandidateWire[]>("sessionReferenceResolver/candidates", {
-          agentId: scope.sessionId,
-          query,
-        })
-        .catch((error: unknown) => {
-          this.log(`[files] 对话引用查询失败：${this.describeError(error)}`);
-          return [] as SessionReferenceCandidateWire[];
-        }),
-    ]);
-    this.emitToView(viewId, {
-      type: "files/list",
-      query,
-      items: files ?? [],
-      // @ 列表不显示子代理会话（用户 2026-09-22 口径）：候选行不带 origin，
-      // 按 `subagentSessionIds` 客户端自己过滤（判据见 sessionList.ts）。
-      // 还没开始对话的空会话同样不列——它在历史列表里也被挡着（`emitSessionLists`），
-      // 拿它做引用没有意义（连标题都还没有），身份只在客户端知道。
-      sessions: visibleSessionCandidates(
-        sessions ?? [],
-        this.subagentSessionIds,
-        this.blankSessionIds(),
-      ).map(
-        (row): SessionRefView => ({
-          sessionId: String(row?.sessionId ?? ""),
-          label: String(row?.label ?? row?.sessionId ?? ""),
-          mention: String(row?.mention ?? ""),
-          ...(typeof row?.cwd === "string" && row.cwd ? { cwd: row.cwd } : {}),
-          sameWorkspace: row?.sameWorkspace === true,
-          ...(typeof row?.createdAt === "number" ? { updatedAt: row.createdAt } : {}),
-        }),
-      ),
+    // 两个源并行取。对话那条失败（老版本服务器没有这个 remote）不该把文件候选
+    // 一起拖下水，所以各自兜住；作废导致的失败是**正常结果**，不进日志。
+    const files = client
+      .request<{ path: string; kind: "file" | "directory" }[]>(
+        "fileReferences/list",
+        { agentId: scope.sessionId, query },
+        60_000,
+        controller.signal,
+      )
+      .catch((error: unknown) => {
+        if (!controller.signal.aborted) this.log(`[files] 查询失败：${this.describeError(error)}`);
+        return [] as { path: string; kind: "file" | "directory" }[];
+      });
+    const sessions = !wantsSessions
+      ? undefined
+      : client
+          .request<SessionReferenceCandidateWire[]>(
+            "sessionReferenceResolver/candidates",
+            { agentId: scope.sessionId, query },
+            60_000,
+            controller.signal,
+          )
+          .catch((error: unknown) => {
+            if (!controller.signal.aborted) {
+              this.log(`[files] 对话引用查询失败：${this.describeError(error)}`);
+            }
+            return [] as SessionReferenceCandidateWire[];
+          });
+
+    // 文件那一帧是界面认「这是哪一次查询」的锚，所以它**永远先发**：这里只串起发帧
+    // 顺序，两个 RPC 仍是并行的（对话候选慢，不影响文件那一帧什么时候出去）。
+    const filesFrame = files.then((items) => {
+      if (!this.isCurrentMenuQuery(viewId, controller)) return;
+      this.emitToView(viewId, { type: "files/list", query, items: items ?? [] });
     });
+    await Promise.all([
+      filesFrame,
+      ...(sessions === undefined
+        ? []
+        : [
+            filesFrame.then(() => sessions).then((rows) => {
+              if (!this.isCurrentMenuQuery(viewId, controller)) return;
+              this.emitToView(viewId, {
+                type: "files/sessions",
+                query,
+                // @ 列表不显示子代理会话（用户 2026-09-22 口径）：候选行不带 origin，
+                // 按 `subagentSessionIds` 客户端自己过滤（判据见 sessionList.ts）。
+                // 还没开始对话的空会话同样不列——它在历史列表里也被挡着（`emitSessionLists`），
+                // 拿它做引用没有意义（连标题都还没有），身份只在客户端知道。
+                sessions: visibleSessionCandidates(
+                  rows ?? [],
+                  this.subagentSessionIds,
+                  this.blankSessionIds(),
+                ).map(
+                  (row): SessionRefView => ({
+                    sessionId: String(row?.sessionId ?? ""),
+                    label: String(row?.label ?? row?.sessionId ?? ""),
+                    mention: String(row?.mention ?? ""),
+                    ...(typeof row?.cwd === "string" && row.cwd ? { cwd: row.cwd } : {}),
+                    sameWorkspace: row?.sameWorkspace === true,
+                    ...(typeof row?.createdAt === "number" ? { updatedAt: row.createdAt } : {}),
+                  }),
+                ),
+              });
+            }),
+          ]),
+    ]);
+  }
+
+  /** 这一次 `@` 候选查询还是不是**当前那一次**（新的一次会 abort 旧的，见 `menuQueries`）。 */
+  private isCurrentMenuQuery(viewId: string, controller: AbortController): boolean {
+    return this.menuQueries.get(viewId) === controller && !controller.signal.aborted;
   }
 
   // ---------- 在浏览器中打开（官方 Web UI 的入口） ----------

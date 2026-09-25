@@ -304,9 +304,22 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, commands: action.commands };
 
     case "files/list":
+      // 只换**文件**那一半：对话候选还在路上（它要扫全部会话日志，慢得多），先把
+      // 上一批留在屏上——官方的 `@` 菜单就是 stale-while-revalidate
+      // （`ui-input-trigger` 的 `menuReduce`：新一代替换之前，旧条目继续渲染）。
+      // 这一帧也是界面认「这是哪一次查询」的锚（见下面的 `files/sessions`）。
       return {
         ...state,
-        fileRefs: { query: action.query, items: action.items, sessions: action.sessions ?? [] },
+        fileRefs: { ...state.fileRefs, query: action.query, items: action.items },
+      };
+
+    case "files/sessions":
+      // 属于**别的查询**的对话候选直接丢（敲字快时后到的那一批）：收下就会渲染出
+      // 「文件是这一层的、对话是上一层筛出来的」这种混合列表。
+      if (action.query !== state.fileRefs.query) return state;
+      return {
+        ...state,
+        fileRefs: { ...state.fileRefs, sessions: action.sessions },
       };
 
     case "toast": {

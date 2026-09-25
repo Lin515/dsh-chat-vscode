@@ -255,6 +255,32 @@
             { path: "src/webview/components", kind: "directory" },
           ],
         });
+        // 对话候选是**另一条帧**（它慢得多，见 shared/ipc.ts 的 files/list 注释）：
+        // `query` 与上面那条一致，界面才认它是同一次查询的那一批。两条都要留样例，
+        // 否则预览页里看不出「文件与对话分两组、顺序文件在前」这条。
+        // 注意这只是**根目录**的形态（查询串里没有目录分隔符）：进了目录时宿主不发
+        // 这一帧，界面也不渲染这一组（用户 2026-09-25 口径，见 docs/adr/0002）。
+        window.__push({
+          type: "files/sessions",
+          query: "ctrl",
+          sessions: [
+            {
+              sessionId: "sess-1",
+              label: "会话列表的滚动为什么会跳",
+              mention: "@[会话列表的滚动为什么会跳](dsh-session:sess-1)",
+              sameWorkspace: true,
+              updatedAt: Date.now() - 3600000,
+            },
+            {
+              sessionId: "sess-2",
+              label: "把 diff 视图换成并排",
+              mention: "@[把 diff 视图换成并排](dsh-session:sess-2)",
+              cwd: "D:\\dev\\other-project",
+              sameWorkspace: false,
+              updatedAt: Date.now() - 86400000,
+            },
+          ],
+        });
       };
       // 计划审阅**待处理**时的形态：把夹具里那张已答完的计划审阅翻回 `waiting`——
       // 此时它接管输入区（`resolveInteractions` 的选举：plan-review 优先级最高），
