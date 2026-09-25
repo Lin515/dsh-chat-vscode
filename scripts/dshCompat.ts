@@ -8,12 +8,12 @@
  *
  * ## 命令
  *
- * - `watch`：列出所有**尚未核对**的官方版本（渠道、是否已在 npm、与上一已核对版本的差），
+ * - `watch`：列出**当前对齐基准之后**尚未核对的官方版本（渠道、是否已在 npm、是否有快照），
  *   并提示已过移除期限的兼容代码。
  * - `snapshot <版本>`：抓该版本的契约面，落盘到 `docs/dsh-contract/<版本>.json`。
  * - `diff <旧版本> <新版本>`：两个快照求差，按 P0/P1/P2 分级。
  * - `check <版本>`：`snapshot` + `diff` + **发布去向判定**（只有 npm `latest` 指向的版本
- *   才推扩展商店，其余只发 GitHub Release），并打印可直接粘进台账的一行。
+ *   才推扩展商店，其余只发 GitHub Release），并提示核对完成后怎么推进基准行。
  *
  * ## 依据
  *
@@ -44,7 +44,7 @@ import { CONSUMED_EVENT_TYPES, RENDERED_EVENT_TYPES, SILENT_EVENT_TYPES } from "
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CONTRACT_DIR = join(ROOT, "docs", "dsh-contract");
-const LEDGER_PATH = join(ROOT, "docs", "dsh-compat.md");
+const COMPAT_DOC = join(ROOT, "docs", "dsh-compat.md");
 const CACHE_DIR = join(ROOT, ".agent", "temp", "dsh-contract-cache");
 const UPSTREAM_REPO = "https://github.com/deepseek-ai/deepseek-harness.git";
 const REGISTRY = "https://registry.npmjs.org";
@@ -279,36 +279,29 @@ function consumptionSurface(from: ContractSnapshot, to: ContractSnapshot): Consu
   return { endpoints, events, types };
 }
 
-// ---------------------------------------------------------------- 台账
+// ---------------------------------------------------------------- 基准行与兼容层
 
-interface LedgerRow {
-  readonly version: string;
-  readonly channel: string;
-  readonly conclusion: string;
-  readonly extension: string;
-  readonly date: string;
-  /** `已核对` 或 `未决`：报了 P0 但这轮没处理完的版本留在台账里，但不作为新基准。 */
-  readonly status: string;
-}
-
-const LEDGER_START = "<!-- dsh-compat:ledger:start -->";
-const LEDGER_END = "<!-- dsh-compat:ledger:end -->";
+const BASELINE_MARK = "<!-- dsh-compat:baseline -->";
 const LAYER_START = "<!-- dsh-compat:layers:start -->";
 const LAYER_END = "<!-- dsh-compat:layers:end -->";
-const UNRESOLVED = "未决";
 
-/** 读台账里已核对的版本（台账「没有记录」等于「没核对过」，这是本工具的核心判据）。 */
-function readLedger(): LedgerRow[] {
-  return readTable(LEDGER_START, LEDGER_END)
-    .filter((cells) => cells.length >= 5 && parseDshVersion(cells[0]) !== undefined)
-    .map((cells) => ({
-      version: cells[0],
-      channel: cells[1],
-      conclusion: cells[2],
-      extension: cells[3],
-      date: cells[4],
-      status: cells[5] === UNRESOLVED ? UNRESOLVED : "已核对",
-    }));
+/**
+ * 读「当前对齐基准」：`docs/dsh-compat.md` 里带锚点标记的那一行（反引号里是版本号）。
+ *
+ * 文档里**只记当前基准，不记历史台账**（逐版本结论归提交说明与 CHANGELOG）：本扩展是从某个版本
+ * 开始对齐的，它之前的官方版本不需要核对——从最早的 tag 补起会把二十多个历史版本全变成待办。
+ * 基准行只在「那一版的差异处理完」之后才推进，于是没处理完的版本会一直留在待办里。
+ */
+function readBaseline(): string | undefined {
+  if (!existsSync(COMPAT_DOC)) return undefined;
+  const line = readFileSync(COMPAT_DOC, "utf8")
+    .split("\n")
+    .find((candidate) => candidate.includes(BASELINE_MARK));
+  if (line === undefined) return undefined;
+  const match = /`([^`]+)`/.exec(line);
+  if (match === null) return undefined;
+  const version = match[1].trim();
+  return parseDshVersion(version) === undefined ? undefined : version;
 }
 
 interface LayerRow {
@@ -319,7 +312,7 @@ interface LayerRow {
   readonly deadline: string;
 }
 
-/** 兼容层登记：每条兼容代码都带移除期限（用户口径：加入起半年后移除）。 */
+/** 兼容层登记：每条兼容代码都带移除期限（用户口径：加入起两个月后移除）。 */
 function readLayers(): LayerRow[] {
   return readTable(LAYER_START, LAYER_END)
     .filter((cells) => cells.length >= 5 && /^\d{4}-\d{2}-\d{2}$/.test(cells[4]))
@@ -327,8 +320,8 @@ function readLayers(): LayerRow[] {
 }
 
 function readTable(start: string, end: string): string[][] {
-  if (!existsSync(LEDGER_PATH)) return [];
-  const text = readFileSync(LEDGER_PATH, "utf8");
+  if (!existsSync(COMPAT_DOC)) return [];
+  const text = readFileSync(COMPAT_DOC, "utf8");
   const from = text.indexOf(start);
   const to = text.indexOf(end);
   if (from === -1 || to === -1 || to < from) return [];
@@ -348,28 +341,16 @@ async function commandWatch(): Promise<void> {
   const registry = await fetchRegistryFacts();
   const published = new Set(registry.versions);
   const latest = registry.distTags["latest"];
-  const rows = readLedger();
-  const unresolved = rows.filter((row) => row.status === UNRESOLVED);
-  // 起点是台账里**最新**的那个「已核对」版本（基准版本），不是最早的 tag：本扩展是从某个版本
-  // 开始对齐的，它之前的版本不需要核对——从最早的 tag 补起会把 20 多个历史版本全变成待办。
-  // 标了「未决」的版本不算基准（它还有人要做的活），于是它会一直留在待办里直到被处理。
-  const baseline = rows
-    .filter((row) => row.status !== UNRESOLVED)
-    .map((row) => row.version)
-    .sort(compareDshVersions)
-    .at(-1);
+  // 基准来自 `docs/dsh-compat.md` 的「当前对齐基准」行（文档只记当前版本，不记历史台账）。
+  // 它之后的版本才是待办：本扩展从基准那一版开始对齐，之前的版本不需要核对。
+  const baseline = readBaseline();
   const pending = tags.filter((version) => baseline === undefined || compareDshVersions(version, baseline) > 0);
 
-  process.stdout.write(`官方 tag ${String(tags.length)} 个；台账基准 ${baseline ?? "（还没有，先记一行基准）"}；基准之后未核对 ${String(pending.length)} 个。\n`);
+  process.stdout.write(`官方 tag ${String(tags.length)} 个；当前对齐基准 ${baseline ?? "（未登记）"}；基准之后未核对 ${String(pending.length)} 个。\n`);
   process.stdout.write(`npm dist-tag：${Object.entries(registry.distTags).map(([tag, version]) => `${tag}=${version}`).join("  ")}\n`);
   process.stdout.write(`扩展商店对齐基准（npm latest）：${latest ?? "（无）"}\n\n`);
-  if (unresolved.length > 0) {
-    process.stdout.write(`❕ 台账里还有 ${String(unresolved.length)} 个版本结论未定（已报 P0、尚未处理）：\n`);
-    for (const row of unresolved) process.stdout.write(`  · ${row.version} — ${row.conclusion}\n`);
-    process.stdout.write("\n");
-  }
   if (pending.length === 0) {
-    process.stdout.write(baseline === undefined ? "台账是空的：先在 docs/dsh-compat.md 记一行基准版本。\n" : "基准之后没有新的官方版本。\n");
+    process.stdout.write(baseline === undefined ? "没读到基准行：在 docs/dsh-compat.md 的「当前对齐基准」一节记一行。\n" : "基准之后没有新的官方版本。\n");
   } else {
     process.stdout.write("| 版本 | 渠道 | 已在 npm | 是 latest | 已有快照 |\n| --- | --- | --- | --- | --- |\n");
     for (const version of pending.slice(0, 15)) {
@@ -414,7 +395,7 @@ async function commandDiff(from: string, to: string): Promise<void> {
 async function commandCheck(version: string): Promise<void> {
   const registry = await fetchRegistryFacts();
   const published = new Set(registry.versions);
-  const checked = readLedger().map((row) => row.version).sort(compareDshVersions);  const from = checked.filter((candidate) => compareDshVersions(candidate, version) < 0).at(-1);
+  const baseline = readBaseline();
   const after = await ensureSnapshot(version);
   const tags = fetchUpstreamTags();
   const channel = parseDshVersion(version)?.channel ?? "other";
@@ -425,26 +406,32 @@ async function commandCheck(version: string): Promise<void> {
   process.stdout.write(`  · npm：${published.has(version) ? "已发布" : "未发布（仅 GitHub）"}\n`);
   process.stdout.write(`  · 是 npm latest：${version === latest ? "是 → 扩展同步发扩展商店 + GitHub Release" : `否（latest = ${latest ?? "无"}）→ 扩展只发 GitHub Release`}\n`);
 
-  if (from === undefined) {
-    process.stdout.write("\n台账里没有更早的已核对版本，无法给差异——先把基准版本记进台账。\n");
+  if (baseline === undefined) {
+    process.stdout.write("\n没读到基准行，无法给差异——先在 docs/dsh-compat.md 的「当前对齐基准」一节记一行。\n");
+    process.exitCode = 1;
     return;
   }
-  const before = await ensureSnapshot(from);
+  if (compareDshVersions(baseline, version) >= 0) {
+    process.stdout.write(`\n当前对齐基准是 ${baseline}，不比 ${version} 更早，没有可求差的基准。\n要看两个历史版本之间的差异：npm run dsh:diff -- <旧版本> <新版本>\n`);
+    process.exitCode = 1;
+    return;
+  }
+  const before = await ensureSnapshot(baseline);
   const changes = diffSnapshots(before, after, consumptionSurface(before, after));
-  process.stdout.write(`\n基准 ${from} → ${version}\n\n`);
-  process.stdout.write(`${renderReport(from, version, changes)}\n`);
-  const conclusion = summarize(changes);
-  process.stdout.write(`结论：${conclusion}\n`);
+  process.stdout.write(`\n基准 ${baseline} → ${version}\n\n`);
+  process.stdout.write(`${renderReport(baseline, version, changes)}\n`);
+  process.stdout.write(`结论：${summarize(changes)}\n`);
   if (after.missing.length > 0) {
     process.stdout.write(`\n⚠ 有 ${String(after.missing.length)} 个包没取到（${after.missing.join(", ")}）——缺证据不等于没影响，需人工确认。\n`);
   }
   const today = new Date().toISOString().slice(0, 10);
   const hasP0 = changes.some((change) => change.level === "P0");
-  // 报了 P0 的版本记成「未决」：它留在台账里（证据不丢），但不作为下一步的基准，
-  // 于是 `watch` 会一直把它列出来，直到有人真的处理完。
-  const extension = hasP0 ? "待定" : "—";
-  const status = hasP0 ? UNRESOLVED : "已核对";
-  process.stdout.write(`\n台账行（粘进 docs/dsh-compat.md 的 ledger 段）：\n| ${version} | ${channel} | ${conclusion} | ${extension} | ${today} | ${status} |\n`);
+  // 基准行只在差异处理完之后才推进：没推进的版本会一直被 `watch` 列出来，直到有人收尾。
+  if (hasP0) {
+    process.stdout.write(`\n有 P0：先按上面的条目改代码并跑过三件套，**改完再**把 docs/dsh-compat.md 的「当前对齐基准」行推进到 ${version}。\n`);
+  } else {
+    process.stdout.write(`\n没有破坏：把 docs/dsh-compat.md 的「当前对齐基准」行改成 \`${version}\`（核对日期 ${today}）即算核对完成。\n`);
+  }
   process.exitCode = hasP0 ? 2 : 0;
 }
 
@@ -453,10 +440,10 @@ function usage(): void {
     [
       "用法：node build/dsh-compat.mjs <命令>",
       "",
-      "  watch                 列出尚未核对的官方版本、发布去向基准、已过期的兼容代码",
+      "  watch                 列出基准之后尚未核对的官方版本、发布去向基准、已过期的兼容代码",
       "  snapshot <版本>       抓该版本的契约快照（docs/dsh-contract/<版本>.json）",
       "  diff <旧> <新>        两个快照求差，按 P0/P1/P2 分级",
-      "  check <版本>          快照 + 差异 + 发布去向判定 + 可粘贴的台账行",
+      "  check <版本>          快照 + 差异 + 发布去向判定 + 基准行推进提示",
       "",
     ].join("\n"),
   );

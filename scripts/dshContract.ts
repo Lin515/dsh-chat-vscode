@@ -483,7 +483,7 @@ export function renderReport(from: string, to: string, changes: readonly Contrac
   return lines.join("\n");
 }
 
-/** 给台账直接可用的一行结论。 */
+/** 给核对结论用的一句话摘要。 */
 export function summarize(changes: readonly ContractChange[]): string {
   const count = (level: ChangeLevel) => changes.filter((change) => change.level === level).length;
   const p0 = count("P0");
