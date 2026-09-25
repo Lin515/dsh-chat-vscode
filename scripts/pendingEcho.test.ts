@@ -283,6 +283,25 @@ function userMessageEvent(seq: number, text: string, rpcId?: string) {
   };
 }
 
+/**
+ * 服务端把这一轮收掉。
+ *
+ * 真链路上适配器在 `turn/end` 时发 `running:false` 的 patch，控制器的 `deliver` 据此把
+ * 域上的 `running` 翻假（`send` 里乐观置位的那一下就是这么收场的）。测试里不摆这一步的话，
+ * 会话会一直停在「运行中」，后面那些空闲发送会全被当成排队（那是另一档语义）。
+ */
+function endTurn(client: ReturnType<typeof fakeClient>, turn = 1): void {
+  client.followers.session?.({
+    type: "event",
+    event: {
+      type: "turn/end",
+      seq: 100 + turn,
+      time: Date.now(),
+      data: { turn, reason: { kind: "completed" } },
+    },
+  });
+}
+
 console.log("pendingEcho: 用户消息乐观回显（驱动真控制器，offline stub）");
 
 // ---------- 一、空态第一条消息：回显早于建会话，且活过那一份整份快照 ----------
@@ -927,7 +946,7 @@ console.log("pendingEcho: 用户消息乐观回显（驱动真控制器，offlin
   assert.strictEqual(pendingOf(frames, "v1")?.[0]?.text, "带图的排队消息", "这一刻空闲 ⇒ 同样立刻画出回显");
 }
 
-// ---------- 六、无 rpcId 的兜底收回；斜杠命令不回显 ----------
+// ---------- 六、无 rpcId 的兜底收回；斜杠命令与技能调用的回显判据 ----------
 {
   const { c, frames, client } = makeController();
   c.bindView("v1");
@@ -940,15 +959,68 @@ console.log("pendingEcho: 用户消息乐观回显（驱动真控制器，offlin
     "没有 rpcId 时按正文兜底收回（旧服务端上不许永久重复一条）",
   );
 }
+// 六之二、**有会话**时判据是命令目录，不是正文长相（用户 2026-09-25 报的现场）：
+// `/skill-name …` 是普通消息（技能不进命令目录，见 controller.skillCommands），
+// 按「以 / 开头」一刀切会让整类技能调用都等 durable 事件才出现；真命令则照旧不回显。
 {
-  const { c, frames } = makeController();
+  const { c, frames, client } = makeController();
   c.bindView("v1");
+  // 先发一条普通消息把会话建起来（命令目录随建会话预取，见 createSession 旁的 listCommandsFor）
+  await c.handle({ type: "send", text: "建会话", attachments: [], gesture: "enter" }, "v1");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(client.calls.includes("commands/list"), "前置：命令目录已预取");
+  // 这一轮收尾（服务端 `turn/end`）：不摆的话会话一直停在「运行中」，下面的发送全算排队
+  endTurn(client);
+  // 那条 durable 承认（不带 rpcId 的旧口径）把第一条回显收掉，剩下要看的就只有后面这两条
+  client.followers.session?.(userMessageEvent(1, "建会话"));
+  assert.deepStrictEqual(c.pendingEchoesOfView("v1"), [], "前置：第一条回显已被承认收回");
+
+  frames.length = 0;
   await c.handle({ type: "send", text: "/plan", attachments: [], gesture: "enter" }, "v1");
   assert.strictEqual(
     pendingOf(frames, "v1"),
     undefined,
-    "斜杠命令不产生回显（长成 /xxx 的正文一律先按命令预判，见 beginSend）",
+    "目录里真有的命令不回显：它不是用户消息，执行记录由命令节点承载",
   );
+  assert.ok(client.calls.includes("commands/execute"), "它确实走了命令通道");
+
+  frames.length = 0;
+  await c.handle({ type: "send", text: "/build 帮我构建", attachments: [], gesture: "enter" }, "v1");
+  const echo = pendingOf(frames, "v1");
+  assert.strictEqual(echo?.length, 1, "技能调用（长成 /xxx、但不在命令目录里）按下那一刻就回显");
+  assert.strictEqual(echo?.[0]?.text, "/build 帮我构建", "回显里就是用户打的那一行（与 durable 行同文）");
+  assert.strictEqual(client.prompts.at(-1)?.content.at(-1)?.text, "/build 帮我构建", "它作为普通消息发给模型");
+  assert.strictEqual(
+    client.prompts.at(-1)?.requestId,
+    echo?.[0]?.requestId,
+    "回显身份就是交给 prompt 的 requestId（durable 承认凭它配对）",
+  );
+}
+// 六之三、**空态**第一条消息是 `/xxx`：按下那一刻还没有会话、没有命令目录，判不了——
+// 那时不猜（不画一份可能要收回的回显），改在建好会话、确认「它不是命令」之后立刻补上。
+{
+  const { c, frames, client } = makeController();
+  c.bindView("v1");
+  await c.handle({ type: "send", text: "/build 帮我构建", attachments: [], gesture: "enter" }, "v1");
+
+  const echoAt = client.timeline.indexOf("frame:echo");
+  const createAt = client.timeline.indexOf("call:session/create");
+  const promptAt = client.timeline.indexOf("call:session/prompt");
+  console.log(`  空态斜杠：建会话 ${createAt}、补回显 ${echoAt}、发出去 ${promptAt}`);
+  assert.ok(echoAt >= 0, "空态的技能调用也要回显（补判那一次）");
+  assert.ok(createAt >= 0 && createAt < echoAt, "补回显必须在建会话之后（那时才有命令目录可查）");
+  assert.ok(echoAt < promptAt, "补回显必须早于这一条真正发出去（否则还是「等发完才画」）");
+  assert.strictEqual(pendingOf(frames, "v1")?.length, 1, "补出来的恰好一条");
+  assert.strictEqual(client.prompts.at(-1)?.content.at(-1)?.text, "/build 帮我构建");
+}
+// 六之四、空态第一条消息是**真命令**：目录查得到就不补回显（一条都不许闪）
+{
+  const { c, frames, client } = makeController();
+  c.bindView("v1");
+  await c.handle({ type: "send", text: "/plan", attachments: [], gesture: "enter" }, "v1");
+  assert.strictEqual(client.timeline.includes("frame:echo"), false, "真命令连补回显那一次都不发生");
+  assert.strictEqual(pendingOf(frames, "v1"), undefined, "空态的真命令同样不进账本");
+  assert.ok(client.calls.includes("commands/execute"), "它走了命令通道（不是发给模型）");
 }
 
 console.log("pendingEcho: 预渲染时机、迁移、无闪烁交接（直播+重放）、失败留存与跨会话保留、撤回重发、排队行为不变 ✓");

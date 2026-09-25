@@ -5898,6 +5898,31 @@ export class ChatController implements vscode.Disposable {
       return outcome?.ok === true;
     }
 
+    // 空态那条 `/xxx` 的正文：按下那一刻还没有会话、没有命令目录，`beginSend` 判不了
+    // 它是不是命令，所以没画回显（见它的注释）。走到这里会话已经建好、上面刚用命令目录
+    // 确认「它不是命令、要按普通消息发出去」——**技能调用就是这一类**（`/skill-name …`，
+    // 技能不进命令目录）。补上这条回显：它在真正发出的这一刻就出现在消息流里，
+    // 而不是等 durable 事件回来。
+    //
+    // 判据用「这个 requestId 还没有回显」而不是「刚才是不是判不了」：已经有回显的那些
+    // （普通正文、带附件、重发 / 排队重发）在这里天然是空操作，两条路画不出第二条。
+    // `running` 与子代理两道门与 `beginSend` 完全同口径：运行中发出的那条还在排队，
+    // 不进账本。
+    if (
+      !this.echoOfView(viewId, requestId) &&
+      !scope.subagentAddress &&
+      !scope.running &&
+      (text.trim().length > 0 || attachments.length > 0)
+    ) {
+      this.addEcho(this.keyForView(viewId), {
+        requestId,
+        ts: Date.now(),
+        text,
+        attachments: [...attachments],
+        status: "sending",
+      });
+    }
+
     // 内容块装配收在 `buildPromptContent`（纯函数，断言在 scripts/attachments.test.ts）：
     // 附件在前、正文最后，附件之间保持列表顺序（官方 `content = [...attachments, text]`）。
     //
@@ -6729,40 +6754,62 @@ export class ChatController implements vscode.Disposable {
     const requestId = randomUUID();
     const key = this.keyForView(viewId);
     const scope = this.scopeOfView(viewId);
-    // 值为 `/xxx` 的正文大概率是斜杠命令（它走命令通道，不是用户消息）。真正的判定要
-    // 会话的命令目录（`slashCommandOf`），这里连会话都还没有，只能按长相预判：判错
-    // 只是「该回显的没回显」，而反过来（回显了又立刻收回）是一次肉眼可见的闪现。
+    // 斜杠命令走命令通道（`commands/execute`），它不是用户消息，不该占一行回显。
+    // 判据只能用**这一刻手里那份命令目录**（`slashCommandOf`，同步读域上的快照）：
+    // 会话在的时候目录就在（会话打开时预取，见 `openScopeFollow` 旁的 `listCommandsFor`），
+    // 空态第一条消息连会话都还没有，目录**无从查起**。
+    //
+    // 空态这里**不猜**（早先按「正文以 `/` 开头」一刀切，代价见下）：先不回显，
+    // 由 `send` 建好会话、用它自己的精确判据确认「这不是命令」之后再补一次。
+    // 一刀切漏掉的正是**技能调用**——`/skill-name …` 是普通消息（技能不进命令目录，
+    // 见 `skillCommands`），它整类消息因此永远要等 durable 事件才出现在消息流里
+    // （用户 2026-09-25 报的现场）；而反向的「先回显再收回」是一次肉眼可见的闪现。
     const slashish = attachments.length === 0 && text.trim().startsWith("/");
-    const worthEchoing = (text.trim().length > 0 || attachments.length > 0) && !slashish;
+    const isCommand = slashish && scope !== undefined && this.slashCommandOf(scope, text) !== undefined;
+    const commandUnknown = slashish && scope === undefined;
+    const worthEchoing =
+      (text.trim().length > 0 || attachments.length > 0) && !isCommand && !commandUnknown;
     // 子代理会话不回显（官方 `sendSession` 的 subagent 分支同样绕过 beginSubmission）：
     // 子代理转写是次要视图，不为它多养一份本地状态
     const goesOutNow = !(scope?.running ?? false);
     if (worthEchoing && goesOutNow && !scope?.subagentAddress) {
-      const echo: PendingMessageView = {
+      this.addEcho(key, {
         requestId,
         ts: Date.now(),
         text,
         attachments: [...attachments],
         status: "sending",
-      };
-      const list = this.pendingMessages.get(key) ?? [];
-      list.push(echo);
-      // 超上限只丢**没失败**的那些：失败的行是用户正看着、要能重发 / 撤回的。
-      while (list.length > MAX_PENDING_MESSAGES) {
-        const victim = list.findIndex((entry) => entry.status !== "failed");
-        if (victim < 0) break;
-        const [dropped] = list.splice(victim, 1);
-        this.log(`[echo] 回显条数超过上限，丢弃最旧的未失败一条 requestId=${dropped?.requestId ?? ""}`);
-      }
-      this.putPending(key, list);
-      this.trimPendingKeys();
-      this.pushPending(key);
+      });
     }
     if (source === "composer") {
       this.commitDraft(viewId);
       this.commitAttachments(viewId);
     }
     return requestId;
+  }
+
+  /**
+   * 往账本里放一条回显并推帧（超上限丢最旧的**未失败**一条）。
+   *
+   * 两个调用点，分工是「这条消息什么时候才**确定**要作为用户消息发出去」：
+   * - `beginSend`：按下发送那一刻就确定（正常正文、带附件、重发 / 排队重发）；
+   * - `send`：按下那一刻判不了的那一类（空态第一条 `/xxx`）——建好会话、按命令目录
+   *   确认它不是命令之后立刻补上。
+   *
+   * 超上限只丢**没失败**的那些：失败的行是用户正看着、要能重发 / 撤回的。
+   */
+  private addEcho(key: string, echo: PendingMessageView): void {
+    const list = this.pendingMessages.get(key) ?? [];
+    list.push(echo);
+    while (list.length > MAX_PENDING_MESSAGES) {
+      const victim = list.findIndex((entry) => entry.status !== "failed");
+      if (victim < 0) break;
+      const [dropped] = list.splice(victim, 1);
+      this.log(`[echo] 回显条数超过上限，丢弃最旧的未失败一条 requestId=${dropped?.requestId ?? ""}`);
+    }
+    this.putPending(key, list);
+    this.trimPendingKeys();
+    this.pushPending(key);
   }
 
   /**
