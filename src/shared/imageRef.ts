@@ -6,6 +6,9 @@
  * 这类引用要由宿主读成 data URL（见 `dsh/localImages.ts`），而
  * 「哪些引用该交给宿主」这条判断 webview 与宿主都要用，所以放在 shared。
  *
+ * 另外两件纯字符串的事也在这里：读盘要用的**路径还原**（`localImagePath`）、
+ * 加载失败时缀在降级文案后面的**引用标签**（`imageRefLabel`）。
+ *
  * 纯字符串逻辑（不碰 `node:path`、不碰 DOM）：webview 是浏览器环境，宿主是 Node。
  */
 
@@ -67,6 +70,21 @@ export function localImagePath(src: string): string | undefined {
     return undefined;
   }
   return value.trim() || undefined;
+}
+
+/**
+ * 加载失败的降级文案里要缀上的那一段「是哪一张」。
+ *
+ * 本地引用给**规整后的路径**（`file:` 外壳、百分号转义、查询串都按读盘时的口径
+ * 还原），远程引用给原样的 URL——两者都是用户用来认出「是哪张图」的东西。
+ *
+ * `data:` 与空引用返回 undefined：内联字节不是路径，而且可能有几兆。
+ * 渲染侧据此退回不带引用那一句文案。
+ */
+export function imageRefLabel(src: string): string | undefined {
+  const value = src.trim();
+  if (!value || /^data:/i.test(value)) return undefined;
+  return localImagePath(value) ?? value;
 }
 
 /**

@@ -192,6 +192,8 @@ export interface Texts {
   imagePreviewClose: string;
   /** 图片加载失败的降级文案（外链被拦、本地文件被删、字节取不回来）。 */
   imageLoadFailed: string;
+  /** 同一条降级文案，但**知道是哪一张**：参数是引用原文（本地路径或远程 URL）。 */
+  imageLoadFailedAt: (path: string) => string;
   /** 工具行展开体的两段标签（官方 `row.input` / `row.output`：zh「输入/输出」、en「IN/OUT」）。 */
   toolInput: string;
   toolOutput: string;

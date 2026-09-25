@@ -1,5 +1,6 @@
-import { isRemoteImageRef } from "../shared/imageRef";
+import { imageRefLabel, isRemoteImageRef } from "../shared/imageRef";
 import { post, subscribe } from "./bridge";
+import type { Texts } from "./texts";
 
 /**
  * 正文里**本地图片**引用的解析（webview 侧）。
@@ -14,7 +15,7 @@ import { post, subscribe } from "./bridge";
  * - **读不到的也记一笔**（空串）：否则每次重渲染（流式期间每个 token 都重渲染）
  *   都会把同一个不存在的路径再问一遍宿主；
  * - **失败要有降级**：外链被 CSP 拦、文件被删、超上限，都得说一句「图片加载失败」，
- *   而不是留一个破图图标。
+ *   而不是留一个破图图标；**知道是哪一张时把引用缀在后面**（见 `failedImageText`）。
  */
 
 /** 引用原文 → data URL；空串表示「宿主确认读不了」。 */
@@ -91,18 +92,31 @@ export function resolveLocalImages(paths: readonly string[]): Promise<Record<str
 }
 
 /**
+ * 加载失败的降级文案：**知道是哪一张时把引用缀在后面**。
+ *
+ * 正文里可能有好几张图，一句「加载失败」分不出是谁；排查时也没法把它和宿主日志
+ * 里的路径对上。引用经 `imageRefLabel` 规整（`data:` 与空引用没有可缀的东西，
+ * 退回不带路径那一句）。正文（`hydrateLocalImages`）与图库（`components/Images.tsx`）
+ * 共用这一份，免得两条路各写一套。
+ */
+export function failedImageText(texts: Texts, ref: string | undefined): string {
+  const label = ref ? imageRefLabel(ref) : undefined;
+  return label ? texts.imageLoadFailedAt(label) : texts.imageLoadFailed;
+}
+
+/**
  * 把一段注入的 HTML 里的本地图片引用换成 data URL，并给**任何**加载失败的图
  * （本地读不到、外链被 CSP 拦）挂一句降级文案。返回清理函数（调用方在
  * `<img>` 树被替换或组件卸载时调用）。
  *
  * @param root 已渲染的容器（`dangerouslySetInnerHTML` 的那个 div）。
- * @param failedText 加载失败的降级文案（走词典，渲染器不写死）。
+ * @param texts 词典：失败文案取 `imageLoadFailed` / `imageLoadFailedAt`（渲染器不写死）。
  */
-export function hydrateLocalImages(root: HTMLElement, failedText: string): () => void {
+export function hydrateLocalImages(root: HTMLElement, texts: Texts): () => void {
   let cancelled = false;
   const onError = (event: Event) => {
     const target = event.target;
-    if (target instanceof HTMLImageElement) markFailed(target, failedText);
+    if (target instanceof HTMLImageElement) markFailed(target, texts);
   };
   // 图片资源的 error **不冒泡**，只能在捕获阶段接（这是唯一能统一兜住
   // 「外链 + 本地图」两种失败的挂法）
@@ -112,10 +126,13 @@ export function hydrateLocalImages(root: HTMLElement, failedText: string): () =>
   for (const image of root.querySelectorAll("img")) {
     const src = image.getAttribute("src") ?? "";
     if (!src || isRemoteImageRef(src)) continue;
+    // 原始引用记在元素上：`src` 马上会被换成 data URL，而失败文案要缀的是
+    // **用户认得出的那个引用**（一条几兆的 data URL 缀上去毫无意义）。
+    image.dataset.imageRef = src;
     const hit = cache.get(src);
     if (hit !== undefined) {
       if (hit) image.setAttribute("src", hit);
-      else markFailed(image, failedText);
+      else markFailed(image, texts);
       continue;
     }
     const list = groups.get(src) ?? [];
@@ -130,7 +147,7 @@ export function hydrateLocalImages(root: HTMLElement, failedText: string): () =>
         const url = urls[src];
         for (const node of nodes) {
           if (url) node.setAttribute("src", url);
-          else markFailed(node, failedText);
+          else markFailed(node, texts);
         }
       }
     });
@@ -143,15 +160,15 @@ export function hydrateLocalImages(root: HTMLElement, failedText: string): () =>
 }
 
 /** 把一张加载不了的图换成一句占位文字（比破图图标可读，也不会撑出空白）。 */
-function markFailed(image: HTMLImageElement, failedText: string): void {
+function markFailed(image: HTMLImageElement, texts: Texts): void {
   if (image.dataset.imageFailed === "1") return;
   image.dataset.imageFailed = "1";
+  // 优先用换 `src` 之前记下的原始引用；外链没换过 `src`，属性本身就是引用
+  const ref = image.dataset.imageRef ?? image.getAttribute("src") ?? "";
   const fallback = document.createElement("span");
   fallback.className = "image-failed";
-  fallback.textContent = failedText;
-  // 悬停能看到**是哪一张**（正文里可能有好几张，一句「加载失败」分不出是谁，
-  // 排查时也没法把它和宿主日志里的路径对上）
-  const src = image.getAttribute("src");
-  if (src) fallback.title = src;
+  fallback.textContent = failedImageText(texts, ref);
+  // 悬停仍给**原样**的引用（规整过的路径未必能直接拿去打开）
+  if (ref) fallback.title = ref;
   image.replaceWith(fallback);
 }

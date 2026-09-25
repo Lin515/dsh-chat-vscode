@@ -67,13 +67,13 @@ const HtmlBlock = memo(function HtmlBlock({
   useLayoutEffect(() => {
     const root = ref.current;
     if (!root) return;
-    const undoImages = hydrateLocalImages(root, texts.imageLoadFailed);
+    const undoImages = hydrateLocalImages(root, texts);
     const undoMentions = hydrateFileMentions(root, fileLinks, openFile);
     return () => {
       undoImages();
       undoMentions();
     };
-  }, [html, fileLinks, texts.imageLoadFailed]);
+  }, [html, fileLinks, texts.imageLoadFailed, texts.imageLoadFailedAt]);
   return (
     <div
       ref={ref}

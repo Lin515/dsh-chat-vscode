@@ -1985,15 +1985,18 @@ button.header-title:hover {
   display: block;
 }
 
-/* 加载失败（外链被拦 / 本地文件被删 / 字节取不回来）：给一句话，不给碎图图标 */
+/* 加载失败（外链被拦 / 本地文件被删 / 字节取不回来）：给一句话，不给碎图图标。
+   文案后面缀着引用（路径可能很长）：允许折行，别把气泡撑破。 */
 .image-failed {
   display: inline-flex;
   align-items: center;
+  max-width: 100%;
   padding: 4px 8px;
   border: 1px dashed var(--border);
   border-radius: var(--radius-sm);
   color: var(--muted);
   font-size: var(--font-size-2xs);
+  overflow-wrap: anywhere;
 }
 
 /* 用户消息的附件区：图在上、芯片在下，顺着气泡一侧排 */

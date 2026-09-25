@@ -19,7 +19,7 @@ import assert from "node:assert";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { isRemoteImageRef, localImageMediaType, localImagePath } from "../src/shared/imageRef";
+import { imageRefLabel, isRemoteImageRef, localImageMediaType, localImagePath } from "../src/shared/imageRef";
 import {
   LOCAL_IMAGE_MAX_BYTES,
   LOCAL_IMAGE_MAX_REFS,
@@ -76,6 +76,26 @@ import {
   assert.strictEqual(localImageMediaType("notes.txt"), undefined);
   assert.strictEqual(localImageMediaType("archive.png.zip"), undefined, "扩展名只看最后一段");
   console.log("local-images: 图片扩展名表（含 svg）✓");
+}
+
+// ---------- 2c. 失败文案里缀的引用标签 ----------
+//
+// 加载失败的降级文案要把「是哪一张」说出来：本地引用给**规整后的路径**，远程引用
+// 给原样 URL；`data:` 与空引用没有可缀的东西（渲染侧据此退回不带引用那一句）。
+{
+  const cases: [string, string | undefined][] = [
+    ["out/chart.png", "out/chart.png"],
+    ["./out/my%20chart.png", "./out/my chart.png"],
+    ["file:///C:/shots/a.png", "C:/shots/a.png"],
+    ["https://example.com/a.png", "https://example.com/a.png"],
+    ["data:image/png;base64,AAAA", undefined],
+    ["", undefined],
+    ["   ", undefined],
+  ];
+  for (const [input, expected] of cases) {
+    assert.strictEqual(imageRefLabel(input), expected, `${input} 的失败标签不对`);
+  }
+  console.log("local-images: 失败文案的引用标签 ✓");
 }
 
 // ---------- 3. 白名单：工作目录内才读 ----------

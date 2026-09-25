@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { IconClose } from "../icons";
-import { resolveLocalImages } from "../localImages";
+import { failedImageText, resolveLocalImages } from "../localImages";
 import { useTexts } from "../texts";
 
 /**
@@ -20,6 +20,13 @@ export interface ImageSource {
   src: string;
   /** 无障碍文本；缺省用调用方给的通用文案。 */
   alt?: string;
+  /**
+   * 这张图对应的**引用**（磁盘路径 / 正文里的原文）。
+   *
+   * 只有调用方知道才给：服务端附件与工具回带的图是 `data:` URL，没有路径可缀；
+   * 本地文件图（`LocalImageGallery`）给得出来。加载失败时它缀在降级文案后面。
+   */
+  ref?: string;
   /** 固有宽高：字节到达前按它占位，免得图加载完把消息顶一下。 */
   width?: number;
   height?: number;
@@ -37,9 +44,10 @@ export function ImageGallery({ sources, alt }: { sources: ImageSource[]; alt: st
       {shown.map((source, index) =>
         failed[index] ? (
           // 外链被 CSP 拦掉、本地文件被删、字节取不回来……都落到这里。
-          // 不显示碎图图标，也不静默：说一句「加载失败」比一个灰框有用。
-          <span className="image-failed" key={index}>
-            {texts.imageLoadFailed}
+          // 不显示碎图图标，也不静默：说一句「加载失败」比一个灰框有用；
+          // 知道是哪一张（`ref`）就把引用一起说出来。
+          <span className="image-failed" key={index} title={source.ref}>
+            {failedImageText(texts, source.ref)}
           </span>
         ) : (
           <button
@@ -103,7 +111,7 @@ export function LocalImageGallery({ paths }: { paths: string[] }) {
   }, [key]);
   const sources = paths
     .filter((path) => urls[path])
-    .map((path) => ({ src: urls[path], alt: path }));
+    .map((path) => ({ src: urls[path], alt: path, ref: path }));
   return <ImageGallery alt={texts.messageImageAlt} sources={sources} />;
 }
 

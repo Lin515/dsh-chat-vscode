@@ -16,6 +16,9 @@
  * - 字节还没回来（`dataUrl` 为空）→ 退回文件名芯片，**不画** `<img>`；
  * - 助手图库的空位（空串）→ 不渲染任何东西。
  *
+ * 加载失败的降级文案（正文与图库共用同一条）另有一套：**知道是哪一张就把引用缀在
+ * 后面**，`data:` / 空引用只给一句——见第 7b 节。
+ *
  * 运行：npm test（已登记到 esbuild.scripts.mjs 的 entries）
  */
 import assert from "node:assert";
@@ -231,9 +234,41 @@ console.log("image: 只有图的调用可展开 ✓");
     assert.ok(texts.imagePreview.trim(), `${name}: 缺 imagePreview`);
     assert.ok(texts.imagePreviewClose.trim(), `${name}: 缺 imagePreviewClose`);
     assert.ok(texts.imageLoadFailed.trim(), `${name}: 缺 imageLoadFailed`);
+    assert.ok(
+      texts.imageLoadFailedAt("out/chart.png").includes("out/chart.png"),
+      `${name}: 加载失败要知道是哪一张——引用没进文案`,
+    );
   }
   assert.notStrictEqual(zh.imageLoadFailed, en.imageLoadFailed, "中英文案不能是同一串");
+  assert.notStrictEqual(
+    zh.imageLoadFailedAt("a.png"),
+    en.imageLoadFailedAt("a.png"),
+    "带引用的加载失败文案中英不能是同一串",
+  );
   console.log("image: 图片相关文案中英齐备 ✓");
+}
+
+// ---------- 7b. 降级文案按引用选：知道是哪一张就缀上，`data:` / 空引用只给一句 ----------
+//
+// 正文里的图（`hydrateLocalImages`，要 DOM）与图库共用这条纯函数，所以这里能钉住
+// 「哪种引用会进文案」这件用户看得见的事（`data:` 是几兆的内联字节，缀上去没意义）。
+{
+  const { failedImageText } = await import("../src/webview/localImages");
+  const zh = dictionaryFor("zh");
+  assert.strictEqual(
+    failedImageText(zh, "out/chart.png"),
+    zh.imageLoadFailedAt("out/chart.png"),
+    "知道引用时要缀上引用",
+  );
+  assert.strictEqual(
+    failedImageText(zh, "https://example.com/a.png"),
+    zh.imageLoadFailedAt("https://example.com/a.png"),
+    "远程引用（被 CSP 拦下的外链）也要能认出是哪一张",
+  );
+  for (const noRef of ["data:image/png;base64,AAAA", "", undefined]) {
+    assert.strictEqual(failedImageText(zh, noRef), zh.imageLoadFailed, `${String(noRef)} 没有可缀的引用`);
+  }
+  console.log("image: 加载失败文案带上「是哪一张」✓");
 }
 
 console.log("\nimage-render: all assertions passed");

@@ -690,6 +690,17 @@ export const MESSAGES = {
   imagePreview: { zh: "查看原图", en: "View original" },
   imagePreviewClose: { zh: "关闭原图预览", en: "Close original image preview" },
   imageLoadFailed: { zh: "图片加载失败", en: "Image failed to load" },
+  /**
+   * 知道是哪一张时的同一条降级文案：**引用缀在后面**。
+   *
+   * 正文里可能有好几张图，一句「加载失败」分不出是谁，排查时也没法把它和宿主
+   * 日志里的路径对上。引用可能是本地路径（`out/chart.png`）或远程 URL——都是
+   * 用户用来认出「哪张图」的东西，见 `shared/imageRef.ts` 的 `imageRefLabel`。
+   */
+  imageLoadFailedAt: {
+    zh: (path: string) => `图片加载失败：${path}`,
+    en: (path: string) => `Image failed to load: ${path}`,
+  },
   toolInput: { zh: "输入", en: "IN" },
   toolOutput: { zh: "输出", en: "OUT" },
   unknownBlock: { zh: "未知内容块", en: "Unknown content block" },
