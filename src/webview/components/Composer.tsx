@@ -34,7 +34,7 @@ import type { PendingInteraction } from "../pendingInteraction";
 import { useComposerCompletion } from "../composerCompletion";
 import { presetDisplayText } from "../presetDisplay";
 import { bottomGap, type AutoScrollPort } from "../autoScroll";
-import { queueDisplayOrder } from "../queueOrder";
+import { queueDisplayOrder, queueItemHasAttachments } from "../queueOrder";
 import { segmentColumns } from "../segment";
 import { fill, resolveText, useTexts } from "../texts";
 import { BAR_ORDER, pickVariants, type ToolbarVariant } from "../toolbarFit";
@@ -1065,43 +1065,50 @@ function Lump({
     return (
       <div className="queue">
         <span className="queue-head">{fill(texts.queued, { n: items.length })}</span>
-        {items.map((item) => (
-          <div className="queue-item" key={item.id}>
-            <span className="queue-text">{item.text || texts.queueMediaOnly}</span>
-            {/* 「插话发送」（官方 queue 行的第三个动作 `{kind:'steer'}`）：
-                只对**排队中**的那条给出（已经是 steering 的不必再来一次），
-                并且只有 agent 正在运行时可用——服务端同样要求运行中，否则回
-                `session/steer-unavailable`（宿主按官方口径静默处理）。 */}
-            {item.placement !== "steering" ? (
+        {items.map((item) => {
+          // 带附件的排队消息在**行首**标出来（用户 2026-09-25 口径）：这一行只有
+          // 正文，光看文字看不出这条还带着图片 / 文件。
+          const withAttachments = queueItemHasAttachments(item);
+          return (
+            <div className="queue-item" key={item.id}>
+              {withAttachments ? <span className="queue-tag">{texts.queueHasAttachment}</span> : null}
+              {/* 文本为空时本来用「（附件）」占位；已经有行首标记就不再重复说一遍。 */}
+              <span className="queue-text">{item.text || (withAttachments ? "" : texts.queueMediaOnly)}</span>
+              {/* 「插话发送」（官方 queue 行的第三个动作 `{kind:'steer'}`）：
+                  只对**排队中**的那条给出（已经是 steering 的不必再来一次），
+                  并且只有 agent 正在运行时可用——服务端同样要求运行中，否则回
+                  `session/steer-unavailable`（宿主按官方口径静默处理）。 */}
+              {item.placement !== "steering" ? (
+                <button
+                  className="queue-action"
+                  disabled={!state.running}
+                  title={state.running ? texts.queueSteer : texts.queueSteerUnavailable}
+                  onClick={() => {
+                    post({ type: "queueSteer", id: item.id });
+                    // 把排队的那条立刻发出去 = 要看回答：同 `send`，脱贴也贴回最新
+                    onFollowLatest?.();
+                  }}
+                >
+                  <IconSend size={12} />
+                </button>
+              ) : null}
               <button
                 className="queue-action"
-                disabled={!state.running}
-                title={state.running ? texts.queueSteer : texts.queueSteerUnavailable}
-                onClick={() => {
-                  post({ type: "queueSteer", id: item.id });
-                  // 把排队的那条立刻发出去 = 要看回答：同 `send`，脱贴也贴回最新
-                  onFollowLatest?.();
-                }}
+                title={texts.queueEdit}
+                onClick={() => post({ type: "queueEdit", id: item.id })}
               >
-                <IconSend size={12} />
+                <IconPencil size={13} />
               </button>
-            ) : null}
-            <button
-              className="queue-action"
-              title={texts.queueEdit}
-              onClick={() => post({ type: "queueEdit", id: item.id })}
-            >
-              <IconPencil size={13} />
-            </button>
-            <button
-              className="queue-action is-danger"
-              title={texts.queueRemove}
-              onClick={() => post({ type: "queueRemove", id: item.id })}
-            >
-              <IconClose size={13} />
-            </button>
-          </div>
-        ))}
+              <button
+                className="queue-action is-danger"
+                title={texts.queueRemove}
+                onClick={() => post({ type: "queueRemove", id: item.id })}
+              >
+                <IconClose size={13} />
+              </button>
+            </div>
+          );
+        })}
       </div>
     );
   }

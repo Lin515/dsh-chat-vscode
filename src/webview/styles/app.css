@@ -3416,6 +3416,14 @@ button.meta-chip:hover {
   white-space: nowrap;
 }
 
+/* 队列行行首的「[含附件]」标记：不参与收缩，正文照旧省略。
+   字号与队列标题（.queue-head）同一档，颜色随行内文字保持不变（行本身已经淡化）。 */
+.queue-tag {
+  flex: 0 0 auto;
+  font-size: var(--font-size-2xs);
+  white-space: nowrap;
+}
+
 /* 队列行的操作按钮：取回编辑 / 取消。默认与文字同色（弱化），悬停才提亮。
    点击目标做到 ~22px：这两个按钮是队列行的主要操作，15px 太难点中 */
 .queue-action {
@@ -4171,16 +4179,35 @@ button.meta-chip:hover {
 
 /* ============================ trigger popover (/ and @) ============================ */
 
-/* 输入框上方的候选列表：不相对触发器定位，直接铺在输入框顶部 */
+/* 输入框上方的候选列表：不相对触发器定位，直接铺在输入框顶部。
+   外框只负责「可滚列表 + 常驻提示栏」两行的高度分配，**自己不滚**——滚动留给
+   里面的 `.popover-list`。提示栏放在列表**外面**才谈得上常驻：留在列表里时，
+   候选多到要滚的时候它不是被顶到底部、就是得滑到底才看得见。
+   用户 2026-09-25 口径：提示栏单独一栏，始终显示。 */
 .trigger-popover {
   position: static;
   margin: 0 8px 4px;
   max-height: 260px;
   width: auto;
   align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  /* 覆盖 .popover 的 overflow-y: auto（滚动交给 .popover-list） */
+  overflow: hidden;
 }
 
+/* 真正滚的那一层。`min-height: 0` 是 flex 子项被允许收缩到内容高度以下的前提：
+   少了它，候选一多就把外框顶开，提示栏会被挤出 max-height 之外。 */
+.trigger-popover .popover-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* 键位提示栏：**不参与收缩**，列表再长也压不掉它（见 .trigger-popover）。 */
 .popover-hint {
+  flex: 0 0 auto;
   padding: 4px 8px 2px;
   border-top: 1px solid var(--border);
   margin-top: 4px;

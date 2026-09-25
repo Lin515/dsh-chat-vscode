@@ -16,7 +16,10 @@
  * 3. `pick`（引用 token / 命令名）与 `drill`（进目录）的差别；
  * 4. 选完先 `dismissed` 一次，避免弹层立刻重开；
  * 5. ESC 优先级链：弹层打开时 ESC 先关弹层并 `stopPropagation`（不能把正在跑的那一轮中止了）；
- * 6. `/` 只有在**行首或空白后**且名字在命令目录里才走命令通道（与 `@` 提及的判定不同）。
+ * 6. `/` 只有在**行首或空白后**且名字在命令目录里才走命令通道（与 `@` 提及的判定不同）；
+ * 7. 指针悬停改高亮**只认 `mousemove`**：列表为露出键盘选中的那行而滚动时，浏览器会把
+ *    `mouseenter` 补发给「刚滚到静止指针底下」的行，等于凭空抢走键盘的高亮（官方
+ *    `MenuView` 同一判词，现场与断言见行上的注释与 `scripts/mentionNav.test.ts` 第 16 节）。
  */
 import {
   Fragment,
@@ -442,7 +445,7 @@ function useCompletion(
   // ESC 关掉候选弹层后记下当时的文本与光标：只要没有真实编辑，随后的 keyup /
   // 聚焦回调不会重新探测触发词把列表弹回来（否则表现为「按 ESC 列表又弹出」）
   const dismissedRef = useRef<{ value: string; caret: number } | null>(null);
-  /** 候选行的容器（弹层本体，可滚动的那一层），键盘导航要滚它。 */
+  /** 候选行的容器（`.popover-list`，弹层里**唯一**可滚的那一层），键盘导航要滚它。 */
   const popoverRef = useRef<HTMLDivElement | null>(null);
   /** 这一次高亮变化是不是键盘导航引起的（鼠标悬停不滚动列表）。 */
   const keyboardNavRef = useRef(false);
@@ -745,7 +748,7 @@ function useCompletion(
           if (event.key === "ArrowDown") {
             event.preventDefault();
             // 标记「这次高亮是键盘来的」：只有键盘导航才把选中行滚进视野，
-            // 鼠标悬停（onMouseEnter 也会改高亮）时滚动列表会晃得没法用
+            // 鼠标悬停（`mousemove` 也会改高亮）时滚动列表会晃得没法用
             keyboardNavRef.current = true;
             setHighlight((value) => (value + 1) % candidates.length);
             return;
@@ -804,127 +807,142 @@ function useCompletion(
   const popover = useMemo(
     () =>
       popoverVisible(trigger, candidates.length, noWorkspace) ? (
-        <div className="popover trigger-popover" role="listbox" ref={popoverRef}>
-          {candidates.length === 0 ? (
-            <>
-              <div className="popover-section">
-                {trigger?.kind === "command" ? texts.commands : texts.mentionFiles}
-              </div>
-              <div className="popover-empty">
-                {/* 空的理由分两种：没有工作目录（宿主根本没去取目录）与真的没匹配项。
-                    前者说「没有可用命令」会把用户引向错误的方向（见 menuNoWorkspace）。 */}
-                {noWorkspace
-                  ? texts.menuNoWorkspace
-                  : trigger?.kind === "command"
-                    ? texts.commandsEmpty
-                    : texts.mentionEmpty}
-              </div>
-            </>
-          ) : (
-            candidates.slice(0, 40).map((candidate, index) => {
-              const isCommand = trigger?.kind === "command";
-              const row = candidate as CommandView & FileRefView & SessionRefView;
-              // 行的形状（分组、优先完整、是不是「..」/「整个目录」/对话）都由
-              // candidateRows 算好：渲染不再自己重推一遍那串 kind 判断
-              const shape = rows[index];
-              return (
-                <Fragment key={isCommand ? `c:${row.name}` : shape.session ? `s:${row.sessionId}` : `f:${row.path}`}>
-                  {shape.showSection ? (
-                    <div className="popover-section popover-section-row">
-                      <span>{shape.section}</span>
-                      {/* 「Tab 进入目录」提示挂在**文件分组标题栏的最右侧**（靠右）：
-                          它是这一组目录行的键盘说明，不是某一行的动作按钮——
-                          行右侧那个位置留给「整个目录」按钮（见下面）。 */}
-                      {!isCommand && shape.section === texts.mentionFiles && hasFolderCandidate ? (
-                        <>
-                          <span className="spacer" />
-                          <span className="popover-drill-hint">
-                            <kbd className="popover-item-key">{texts.mentionDrillKey}</kbd>
-                            {texts.mentionDrill}
-                          </span>
-                        </>
-                      ) : null}
-                    </div>
-                  ) : null}
-                  <div
-                    className={`popover-item${index === highlight ? " is-selected" : ""}`}
-                    onMouseEnter={() => setHighlight(index)}
-                  >
-                    {/* 主体：**目录行点它就是打开该目录**（下钻进下一层），
-                        文件 / 对话插入引用 token，「..」回上一层。
-                        选中**整个目录**由行右侧那枚「整个目录」按钮负责（用户 2026-09-21
-                        口径：鼠标点行 = 进目录，想引用整个目录有专门的按钮）；
-                        键盘那边仍是官方分工——Enter 选中、Tab 下钻。 */}
-                    <button
-                      className="popover-item-hit"
-                      title={shape.parent ? texts.mentionParent : shape.folder ? texts.mentionDrill : undefined}
-                      onMouseDown={(event) => {
-                        event.preventDefault();
-                        applyCandidate(index, clickAction(shape));
-                      }}
+        <div className="popover trigger-popover">
+          {/* 只有这一层滚（`.popover-list`）：底部提示栏是它的**兄弟**节点，
+              列表滑到哪儿都不影响提示常驻（用户 2026-09-25 口径）。 */}
+          <div className="popover-list" role="listbox" ref={popoverRef}>
+            {candidates.length === 0 ? (
+              <>
+                <div className="popover-section">
+                  {trigger?.kind === "command" ? texts.commands : texts.mentionFiles}
+                </div>
+                <div className="popover-empty">
+                  {/* 空的理由分两种：没有工作目录（宿主根本没去取目录）与真的没匹配项。
+                      前者说「没有可用命令」会把用户引向错误的方向（见 menuNoWorkspace）。 */}
+                  {noWorkspace
+                    ? texts.menuNoWorkspace
+                    : trigger?.kind === "command"
+                      ? texts.commandsEmpty
+                      : texts.mentionEmpty}
+                </div>
+              </>
+            ) : (
+              candidates.slice(0, 40).map((candidate, index) => {
+                const isCommand = trigger?.kind === "command";
+                const row = candidate as CommandView & FileRefView & SessionRefView;
+                // 行的形状（分组、优先完整、是不是「..」/「整个目录」/对话）都由
+                // candidateRows 算好：渲染不再自己重推一遍那串 kind 判断
+                const shape = rows[index];
+                return (
+                  <Fragment key={isCommand ? `c:${row.name}` : shape.session ? `s:${row.sessionId}` : `f:${row.path}`}>
+                    {shape.showSection ? (
+                      <div className="popover-section popover-section-row">
+                        <span>{shape.section}</span>
+                        {/* 「Tab 进入目录」提示挂在**文件分组标题栏的最右侧**（靠右）：
+                            它是这一组目录行的键盘说明，不是某一行的动作按钮——
+                            行右侧那个位置留给「整个目录」按钮（见下面）。 */}
+                        {!isCommand && shape.section === texts.mentionFiles && hasFolderCandidate ? (
+                          <>
+                            <span className="spacer" />
+                            <span className="popover-drill-hint">
+                              <kbd className="popover-item-key">{texts.mentionDrillKey}</kbd>
+                              {texts.mentionDrill}
+                            </span>
+                          </>
+                        ) : null}
+                      </div>
+                    ) : null}
+                    {/* 指针悬停改高亮**只能用 `mousemove`**，不许用 `mouseenter`（官方
+                        `MenuView` 同款，理由也一样）：列表为露出键盘选中的那一行而滚动时，
+                        浏览器会把 `mouseover` / `mouseenter` **补发**给「刚滚到静止指针底下」
+                        的某一行——那等于用一次没有发生的指针移动把键盘的高亮抢回指针那条，
+                        紧接着的下一次方向键就从那里继续走（用户 2026-09-25 报的现场：
+                        连按 12 次，第 6 次起高亮从 6 跳回指针所在的 2）。
+                        `mousemove` 只在指针**真的动了**时派发，滚动伪造不出来。
+                        已经是选中行的不用再挂：指针在行内移动会连发 `mousemove`，
+                        每次都 `setHighlight` 同一个值纯属白跑。 */}
+                    <div
+                      className={`popover-item${index === highlight ? " is-selected" : ""}`}
+                      onMouseMove={index === highlight ? undefined : () => setHighlight(index)}
                     >
-                      {/* 命令名与对话标题走「优先完整」那档样式（`.is-priority`）：宽度不够时
-                          先省略右边的描述，绝不把命令截成 `/git-guard…`、把对话截成半个标题。
-                          文件路径不做这个标记——长路径必须能省略。 */}
-                      <span className={`popover-item-main${shape.priority ? " is-priority" : ""}`}>
-                        {isCommand
-                          ? `/${row.name}`
-                          : shape.session
-                            ? row.label
-                            : shape.parent
-                              ? ".."
-                              : row.path}
-                      </span>
-                      {shape.parent ? (
-                        <span className="popover-item-sub">
-                          {/* 上一层就是根目录时没有路径可显示，退回说明文案 */}
-                          {row.path || texts.mentionParent}
-                        </span>
-                      ) : isCommand && row.description ? (
-                        <span className="popover-item-sub">{row.description}</span>
-                      ) : shape.session ? (
-                        // 对话候选的次要说明照官方 `sessionCandidate`：非同工作区时给
-                        // 工作目录（没有记录给「无工作目录」占位），再接时间。
-                        <span className="popover-item-sub">
-                          {[
-                            row.sameWorkspace
-                              ? undefined
-                              : row.cwd
-                                ? row.cwd
-                                : texts.mentionNoCwd,
-                            row.updatedAt !== undefined ? formatClock(row.updatedAt) : undefined,
-                          ]
-                            .filter((part): part is string => Boolean(part))
-                            .join(" · ")}
-                        </span>
-                      ) : null}
-                      {isCommand && row.skill ? (
-                        <span className="popover-item-tag">{texts.skillTag}</span>
-                      ) : null}
-                    </button>
-                    {/* 目录行右侧：**整个目录**——点它就是把目录本身作为 `@dir/` 引用载入。
-                        它现在是**鼠标唯一的「选中整个目录」入口**（点行主体是下钻），
-                        键盘对应 Enter（见 onKeyDown）；「进入目录」键盘上是 Tab，
-                        鼠标上就是点行主体，提示在分组标题栏右侧（见上）。 */}
-                    {shape.folder ? (
+                      {/* 主体：**目录行点它就是打开该目录**（下钻进下一层），
+                          文件 / 对话插入引用 token，「..」回上一层。
+                          选中**整个目录**由行右侧那枚「整个目录」按钮负责（用户 2026-09-21
+                          口径：鼠标点行 = 进目录，想引用整个目录有专门的按钮）；
+                          键盘那边仍是官方分工——Enter 选中、Tab 下钻。 */}
                       <button
-                        className="popover-item-action"
-                        title={texts.attachFolder}
+                        className="popover-item-hit"
+                        title={shape.parent ? texts.mentionParent : shape.folder ? texts.mentionDrill : undefined}
                         onMouseDown={(event) => {
                           event.preventDefault();
-                          applyCandidate(index, "pick");
+                          applyCandidate(index, clickAction(shape));
                         }}
                       >
-                        <IconFolder size={11} />
-                        {texts.attachFolder}
+                        {/* 命令名与对话标题走「优先完整」那档样式（`.is-priority`）：宽度不够时
+                            先省略右边的描述，绝不把命令截成 `/git-guard…`、把对话截成半个标题。
+                            文件路径不做这个标记——长路径必须能省略。 */}
+                        <span className={`popover-item-main${shape.priority ? " is-priority" : ""}`}>
+                          {isCommand
+                            ? `/${row.name}`
+                            : shape.session
+                              ? row.label
+                              : shape.parent
+                                ? ".."
+                                : row.path}
+                        </span>
+                        {shape.parent ? (
+                          <span className="popover-item-sub">
+                            {/* 上一层就是根目录时没有路径可显示，退回说明文案 */}
+                            {row.path || texts.mentionParent}
+                          </span>
+                        ) : isCommand && row.description ? (
+                          <span className="popover-item-sub">{row.description}</span>
+                        ) : shape.session ? (
+                          // 对话候选的次要说明照官方 `sessionCandidate`：非同工作区时给
+                          // 工作目录（没有记录给「无工作目录」占位），再接时间。
+                          <span className="popover-item-sub">
+                            {[
+                              row.sameWorkspace
+                                ? undefined
+                                : row.cwd
+                                  ? row.cwd
+                                  : texts.mentionNoCwd,
+                              row.updatedAt !== undefined ? formatClock(row.updatedAt) : undefined,
+                            ]
+                              .filter((part): part is string => Boolean(part))
+                              .join(" · ")}
+                          </span>
+                        ) : null}
+                        {isCommand && row.skill ? (
+                          <span className="popover-item-tag">{texts.skillTag}</span>
+                        ) : null}
                       </button>
-                    ) : null}
-                  </div>
-                </Fragment>
-              );
-            })
-          )}
-          <div className="popover-hint">{texts.mentionHint}</div>
+                      {/* 目录行右侧：**整个目录**——点它就是把目录本身作为 `@dir/` 引用载入。
+                          它现在是**鼠标唯一的「选中整个目录」入口**（点行主体是下钻），
+                          键盘对应 Enter（见 onKeyDown）；「进入目录」键盘上是 Tab，
+                          鼠标上就是点行主体，提示在分组标题栏右侧（见上）。 */}
+                      {shape.folder ? (
+                        <button
+                          className="popover-item-action"
+                          title={texts.attachFolder}
+                          onMouseDown={(event) => {
+                            event.preventDefault();
+                            applyCandidate(index, "pick");
+                          }}
+                        >
+                          <IconFolder size={11} />
+                          {texts.attachFolder}
+                        </button>
+                      ) : null}
+                    </div>
+                  </Fragment>
+                );
+              })
+            )}
+          </div>
+          <div className="popover-hint">
+            {trigger?.kind === "command" ? texts.commandHint : texts.mentionHint}
+          </div>
         </div>
       ) : null,
     [trigger, candidates, rows, hasFolderCandidate, highlight, texts, noWorkspace, applyCandidate],

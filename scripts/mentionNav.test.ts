@@ -15,7 +15,7 @@
  * 运行：npm test
  */
 import assert from "node:assert";
-import { createElement, type Dispatch, type KeyboardEvent, type SetStateAction } from "react";
+import { createElement, type Dispatch, type KeyboardEvent, type ReactNode, type SetStateAction } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { CommandView, FileRefView, SessionRefView } from "../src/shared/chat";
 import { mentionParent } from "../src/webview/mentionNav";
@@ -409,6 +409,13 @@ interface Frame {
   posted: string[];
   /** 当前这一帧渲染出来的弹层 HTML 与文本域 prop。 */
   html: string;
+  /**
+   * 这一帧返回的**弹层 React 元素**（未渲染）。
+   *
+   * `html` 只看得见渲染结果——挂在行上的事件处理器不会出现在里面，而「悬停改高亮」
+   * 这一类接线恰恰只在 props 上（第 16 节的回归锁要用它）。
+   */
+  popoverNode: ReactNode;
   props: ReturnType<typeof useComposerCompletion>["textareaProps"];
   node: FakeTextarea;
   /** 假 `useState` 的状态表（跨帧保留走它）。 */
@@ -453,6 +460,7 @@ function frame(
     written: [],
     posted: [],
     html: "",
+    popoverNode: null,
     node,
     store,
     props: {} as Frame["props"],
@@ -513,6 +521,7 @@ function frame(
   }
   assert.ok(captured, "hook 没被渲染（Probe 写错了？）");
   out.html = captured.popover ? renderToStaticMarkup(captured.popover) : "";
+  out.popoverNode = captured.popover;
   out.props = captured.textareaProps;
   return out;
 }
@@ -708,5 +717,119 @@ console.log("completion(hook): Enter / Tab 的接线 ✓");
   assert.strictEqual(open.draft, "@src/", "并且真的选走了候选（这里是「..」回上一层）");
 }
 console.log("completion(hook): 弹层没接管时的 Enter = 发送 ✓");
+
+// ---------- 15. 底部提示栏：命令菜单不说「Tab 进入目录」，且常驻在列表之外 ----------
+//
+// 用户 2026-09-25 两条口径：① `/` 照搬 `@` 那份提示，里面写着按下去没有作用的
+// 「Tab 进入目录」（命令候选是平铺列表，没有目录可进）；② 提示原来是候选列表里的
+// 最后一行，候选多到要滚时得滑到底才看得见，要它成为列表**下面**单独一栏、常驻。
+{
+  /** 提示栏所在的层数（相对弹层外框）：1 = 外框自己，2 = 外框的直接子节点。 */
+  function hintDepth(html: string): number {
+    const token = /<div\b[^>]*>|<\/div>/g;
+    let depth = 0;
+    for (let m = token.exec(html); m; m = token.exec(html)) {
+      if (m[0].startsWith("</")) {
+        depth -= 1;
+        continue;
+      }
+      depth += 1;
+      if (m[0].includes("popover-hint")) return depth;
+    }
+    return -1;
+  }
+
+  // ① 两个菜单各说各的：`/` 那份不许出现「进入目录」
+  const command = frame("/p", 2);
+  assert.ok(command.html.includes(TEXTS.commandHint), "`/` 菜单底部的提示走 commandHint");
+  assert.ok(
+    !command.html.includes(TEXTS.mentionHint) && !command.html.includes(TEXTS.mentionDrill),
+    "`/` 菜单里不许出现「Tab 进入目录」那套说明（命令候选没有目录可进）",
+  );
+
+  const mention = frame("@src", 4);
+  assert.ok(mention.html.includes(TEXTS.mentionHint), "`@` 菜单底部的提示仍是带 Tab 的那份");
+
+  // ② 提示栏是滚动列表的**兄弟**节点：层数为 2 才算「在列表之外」
+  assert.strictEqual(
+    hintDepth(command.html),
+    2,
+    "`/` 菜单的提示栏要挂在弹层外框下面（进了候选列表就会跟着滚）",
+  );
+  assert.strictEqual(hintDepth(mention.html), 2, "`@` 菜单的提示栏同样在滚动列表之外");
+  assert.ok(
+    /<div class="popover-list" role="listbox">[\s\S]*<\/div><div class="popover-hint">/.test(
+      mention.html,
+    ),
+    "候选列表闭合之后才轮到提示栏（换成列表里的最后一行就又会跟着滚）",
+  );
+}
+console.log("completion(hook): 底部提示栏（命令菜单去掉 Tab、常驻在列表之外） ✓");
+
+// ---------- 16. 候选行的高亮只许被**真实指针移动**改（滚动不许把键盘的高亮抢走） ----------
+//
+// 现场（用户 2026-09-25 报）：鼠标停在某条候选上不动，用方向键往下翻——列表为了露出
+// 键盘选中的那一行而滚动时，浏览器会把 `mouseover` / `mouseenter` **补发**给「刚滚到
+// 静止指针底下」的那一行，于是高亮被抢回指针那条，下一次按键从那里继续走（实测连按
+// 12 次：第 6 次起 6 → 2，正好是列表第一次滚动的帧）。判据：行上挂的必须是
+// `onMouseMove`（只在指针真的动了时派发），不许挂 `onMouseEnter`。
+//
+// 浏览器侧的对拍（缺陷现场是 DOM 事件，无头环境造不出来）：预览页里把鼠标停在某一行、
+// 连按方向键穿过滚动边缘，看选中行是否一路跟着走——改前第 6 次按键起失败（6 → 2），
+// 改后 12/12 通过，且真移动指针时悬停仍能接管高亮（`/` 与 `@` 两个菜单各一遍）。
+{
+  /** 弹层元素树里候选行的 props（按出现顺序）。`html` 看不见挂上去的事件，只能走元素树。 */
+  function rowPropsOf(node: ReactNode): Array<Record<string, unknown>> {
+    const rows: Array<Record<string, unknown>> = [];
+    const visit = (value: unknown): void => {
+      if (Array.isArray(value)) {
+        for (const child of value) visit(child);
+        return;
+      }
+      if (typeof value !== "object" || value === null) return;
+      const props = (value as { props?: Record<string, unknown> }).props;
+      if (!props) return;
+      if (typeof props.className === "string" && /(^|\s)popover-item(\s|$)/.test(props.className)) {
+        rows.push(props);
+      }
+      visit(props.children);
+    };
+    visit(node);
+    return rows;
+  }
+
+  /** 当前选中行是第几条（没有就是 -1）。 */
+  function selectedIndexOf(node: ReactNode): number {
+    return rowPropsOf(node).findIndex(
+      (props) => typeof props.className === "string" && props.className.includes("is-selected"),
+    );
+  }
+
+  const f = frame("@a", 2);
+  const rows = rowPropsOf(f.popoverNode);
+  assert.ok(rows.length > 1, "前提：这一帧有多条候选行");
+  assert.strictEqual(selectedIndexOf(f.popoverNode), 0, "前提：起点选中的是第 0 条");
+
+  assert.deepStrictEqual(
+    rows.filter((props) => "onMouseEnter" in props),
+    [],
+    "候选行不许挂 onMouseEnter——列表滚动会让浏览器补发 enter，把键盘的高亮抢回指针那条",
+  );
+  assert.ok(
+    rows.some((props) => typeof props.onMouseMove === "function"),
+    "非选中行要挂 onMouseMove（指针真的动了才改高亮）",
+  );
+
+  // 真调一次那一行的悬停处理器：下一帧的选中行要换成它——证明挂的确实是「改高亮」那一支，
+  // 而不是把鼠标接管整条路一起砍掉了。
+  const target = 2;
+  (rows[target].onMouseMove as () => void)();
+  assert.strictEqual(
+    selectedIndexOf(nextFrame(f).popoverNode),
+    target,
+    "悬停处理器要真的改高亮（真移动指针时鼠标仍能接管）",
+  );
+}
+console.log("completion(hook): 悬停改高亮只认真实指针移动（滚动抢不走） ✓");
 
 console.log("\nmentionNav: all assertions passed");

@@ -214,10 +214,11 @@
         });
       };
       window.__composer = function () {
-        // 待发消息队列：一条纯文本、一条只有附件（文本为空）、一条**插话发送**
-        // （`placement: "steering"`，服务端顺序是提交先后，所以它排在最后——
-        //   界面要把它显示到排队消息**上方**，见 `src/webview/queueOrder.ts`）。
-        // 这三条是**服务端名册**给的真实队列项，与对话流里的 `pendingMessages`
+        // 待发消息队列：一条纯文本、一条只有附件（文本为空）、一条**正文 + 附件**
+        // （行首要显示 `[含附件]`，见 `src/webview/queueOrder.ts` 的判据）、
+        // 一条**插话发送**（`placement: "steering"`，服务端顺序是提交先后，所以它排在
+        //   最后——界面要把它显示到排队消息**上方**，见 `queueOrder.ts` 的显示顺序）。
+        // 这些都是**服务端名册**给的真实队列项，与对话流里的 `pendingMessages`
         // 是两回事：排队中的消息还没发出去，所以它不进账本、也不出现在对话流里。
         window.__push({
           type: "patch",
@@ -225,6 +226,7 @@
             queueItems: [
               { id: "q1", text: "把入口文件里的重复初始化也一起去掉，顺带补一段说明注释", placement: "queued" },
               { id: "q2", text: "", hasMedia: true, attachments: 2, placement: "queued" },
+              { id: "q3", text: "顺便看下这张图里的报错", hasMedia: true, attachments: 1, placement: "queued" },
               { id: "s1", text: "插一句：先别动配置读取那块", placement: "steering" },
             ],
           },

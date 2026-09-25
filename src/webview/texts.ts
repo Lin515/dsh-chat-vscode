@@ -320,6 +320,11 @@ export interface Texts {
    * 会话作用域的服务端目录，没有目录就没有候选）。见 `messages.ts` 同名条目。
    */
   menuNoWorkspace: string;
+  /**
+   * `/` 命令菜单底部的键位提示：与 `mentionHint` 同一套写法，**去掉 Tab**
+   * （命令候选是平铺列表，没有可进入的目录）。见 `messages.ts` 同名条目。
+   */
+  commandHint: string;
   mentionHint: string;
   /** @ 列表里「返回上一层目录」那一行的无障碍标题与悬停说明。 */  mentionParent: string;
   /**
@@ -341,6 +346,10 @@ export interface Texts {
   /** 把排队消息取回输入框重新编辑。 */
   queueEdit: string;
   queueMediaOnly: string;
+  /**
+   * 队列行行首的「这条带附件」标记（`[含附件]`）。见 `messages.ts` 同名条目。
+   */
+  queueHasAttachment: string;
   /**
    * 发送失败那一行上的两个动作（用户 2026-09-25 口径）。
    *

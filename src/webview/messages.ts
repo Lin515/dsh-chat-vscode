@@ -470,6 +470,13 @@ export const MESSAGES = {
     zh: "未选择工作区，请先选择工作目录",
     en: "No workspace selected — choose a working directory first",
   },
+  /**
+   * **`/` 命令菜单**底部的键位提示：与 `mentionHint` 只差 `Tab`。
+   *
+   * 命令候选是一个平铺列表，没有目录概念——照搬 `@` 那份（写着「Tab 进入目录」）
+   * 等于提示一件按下去没有作用的动作（用户 2026-09-25 口径）。
+   */
+  commandHint: { zh: "↑↓ 选择 · Enter 引用 · Esc 取消", en: "↑↓ select · Enter reference · Esc cancel" },
   mentionHint: { zh: "↑↓ 选择 · Enter 引用 · Tab 进入目录 · Esc 取消", en: "↑↓ select · Enter reference · Tab browse folder · Esc cancel" },
   mentionParent: { zh: "返回上一层目录", en: "Go to the parent folder" },
   mentionDrill: { zh: "进入目录", en: "Browse folder" },
@@ -481,6 +488,12 @@ export const MESSAGES = {
   queueRemove: { zh: "取消这条消息", en: "Remove this message" },
   queueEdit: { zh: "取回重新编辑", en: "Take back to edit" },
   queueMediaOnly: { zh: "（附件）", en: "(attachment)" },
+  /**
+   * 队列行行首的「这条带附件」标记（用户 2026-09-25 口径）。
+   *
+   * 队列行只显示正文，带图片 / 文件的那条光看文字看不出来；方括号照用户给的形态。
+   */
+  queueHasAttachment: { zh: "[含附件]", en: "[with attachments]" },
   runningHint: { zh: "按 ESC 可中止", en: "Press ESC to stop" },
   runningHintQueue: { zh: "按 ESC 可中止并发出排队消息", en: "Press ESC to stop and send the queued message" },
 

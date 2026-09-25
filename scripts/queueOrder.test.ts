@@ -1,9 +1,11 @@
 /**
- * 待发送队列的**显示顺序**断言（`src/webview/queueOrder.ts`）。
+ * 待发送队列的**显示形态**断言（`src/webview/queueOrder.ts`）。
  *
- * 用户 2026-09-15 口径：**插话发送的（`steering`）要排在排队发送的（`queued`）上方**。
- * 服务端给的是提交先后，后提交的插话会被压在排队的下面，看起来像插话没生效。
- * 这里同时钉住「只改显示」：数据顺序（宿主按原顺序重发队列）不能被顺手改掉。
+ * 两条用户口径：
+ * - 2026-09-15：**插话发送的（`steering`）要排在排队发送的（`queued`）上方**。
+ *   服务端给的是提交先后，后提交的插话会被压在排队的下面，看起来像插话没生效。
+ *   这里同时钉住「只改显示」：数据顺序（宿主按原顺序重发队列）不能被顺手改掉。
+ * - 2026-09-25：带附件的排队消息要在**行首**标出 `[含附件]`。
  *
  * 运行：npm test（记得登记到 esbuild.scripts.mjs 的 entries）
  */
@@ -11,7 +13,7 @@ import assert from "node:assert";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { QueuedMessageView } from "../src/shared/chat";
-import { queueDisplayOrder, queueRank } from "../src/webview/queueOrder";
+import { queueDisplayOrder, queueItemHasAttachments, queueRank } from "../src/webview/queueOrder";
 
 const item = (id: string, placement: QueuedMessageView["placement"]): QueuedMessageView => ({
   id,
@@ -78,7 +80,7 @@ const item = (id: string, placement: QueuedMessageView["placement"]): QueuedMess
     "状态条渲染前要过一遍 queueDisplayOrder（直接 map state.queueItems = 顺序没变）",
   );
   assert.ok(
-    /\{items\.map\(\(item\) => \(/.test(composer),
+    /\{items\.map\(\(item\) => \{/.test(composer),
     "渲染的必须是排序后的那份（排完还用原数组等于没排）",
   );
   assert.ok(
@@ -88,6 +90,38 @@ const item = (id: string, placement: QueuedMessageView["placement"]): QueuedMess
   assert.ok(
     !/pendingMessages|pendingDockItems|pendingRows|localIds/.test(composer),
     "排队区不吃乐观回显：它只画服务端给的队列项（改动前就是这么画的）",
+  );
+}
+
+// ---------- 4. 队列行的「[含附件]」判据与落点 ----------
+//
+// 用户 2026-09-25 口径：带附件的消息进队列后要在**行首**标出来。
+// 两个字段是两条独立来源——本地原始输入里的附件个数、线上内容块里**当场**看到的
+// image / file 块（前者在扩展重载过、缓存被淘汰后是 undefined，所以缺一不可）；
+// 两者都没有时按「不带附件」处理（只认肯定证据，不猜）。
+{
+  const withOrigin: QueuedMessageView = { ...item("q1", "queued"), attachments: 2 };
+  const withWireMedia: QueuedMessageView = { ...item("q2", "queued"), text: "", hasMedia: true };
+  const plain = item("q3", "queued");
+  const none: QueuedMessageView = { ...item("q4", "queued"), attachments: 0, hasMedia: false };
+
+  assert.strictEqual(queueItemHasAttachments(withOrigin), true, "本地记录里有附件个数 → 标");
+  assert.strictEqual(queueItemHasAttachments(withWireMedia), true, "线上内容块里有图片 / 文件 → 标");
+  assert.strictEqual(queueItemHasAttachments(plain), false, "两样都没有 → 不标");
+  assert.strictEqual(queueItemHasAttachments(none), false, "个数 0 / hasMedia false 都不算带附件");
+
+  // 接线：标记挂在**正文之前**，判断走上面那个纯函数
+  const composer = readFileSync(
+    join(process.cwd(), "src", "webview", "components", "Composer.tsx"),
+    "utf8",
+  );
+  assert.ok(
+    /queueItemHasAttachments\(item\)/.test(composer) && /texts\.queueHasAttachment/.test(composer),
+    "队列行要用 queueItemHasAttachments 判断并渲染行首标记（词典条目 queueHasAttachment）",
+  );
+  assert.ok(
+    composer.indexOf("queue-tag") < composer.indexOf("queue-text"),
+    "「[含附件]」标记必须排在正文之前（行首），不是行尾",
   );
 }
 

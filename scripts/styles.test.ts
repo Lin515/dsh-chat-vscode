@@ -42,6 +42,39 @@ function rule(selector: string): string {
 }
 console.log("styles: 弹层宽度视口感知 ✓");
 
+// ---------- 1b. `/` `@` 候选弹层：滚的只有列表那一层，底部提示栏常驻 ----------
+//
+// 用户 2026-09-25 口径：键位提示要单独一栏、始终显示，不许跟着候选列表滚
+// （原来是列表里的最后一行，候选一多就得滑到底才看得见）。
+// 结构上提示栏是列表的兄弟节点（见 `composerCompletion.tsx`），样式上由这两条保证：
+// 外框不滚、滚的是内层列表，而提示栏不参与收缩。
+{
+  const shell = rule(".trigger-popover");
+  assert.ok(
+    /overflow:\s*hidden/.test(shell),
+    ".trigger-popover 自己不许滚（滚动要留给 .popover-list）——外框一滚，提示栏就跟着列表走了",
+  );
+  assert.ok(
+    /display:\s*flex/.test(shell) && /flex-direction:\s*column/.test(shell),
+    ".trigger-popover 要按竖排 flex 分配「列表 + 提示栏」两行的高度",
+  );
+
+  const list = rule(".trigger-popover .popover-list");
+  assert.ok(/overflow-y:\s*auto/.test(list), "候选列表那一层才是滚动容器（overflow-y: auto）");
+  assert.ok(
+    /min-height:\s*0/.test(list),
+    ".popover-list 必须 min-height: 0——否则候选一多就按内容高度把外框顶开，提示栏被挤出 max-height",
+  );
+  assert.ok(/flex:\s*1\s+1/.test(list), ".popover-list 吃掉外框剩余高度（提示栏在上面那两条约束下不被压缩）");
+
+  const hint = rule(".popover-hint");
+  assert.ok(
+    /flex:\s*0\s+0/.test(hint),
+    ".popover-hint 必须 flex: 0 0 auto（不参与收缩），否则列表一长就把提示栏压没",
+  );
+}
+console.log("styles: 候选弹层的提示栏常驻（滚动只归列表） ✓");
+
 // ---------- 2. 思考档位不能带会把一行撑破的固定最小宽度 ----------
 //
 // `min-width: 3.75em` 曾让 4 档（Off/Low/High/Max）折成 3+1 两行。
