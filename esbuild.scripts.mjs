@@ -125,6 +125,7 @@ const entries = {
   "build/connect-view.test.mjs": "scripts/connectView.test.ts",
   "build/session-view.test.mjs": "scripts/sessionView.test.ts",
   "build/auto-scroll.test.mjs": "scripts/autoScroll.test.ts",
+  "build/find.test.mjs": "scripts/find.test.ts",
   "build/client-dispose.test.mjs": "scripts/clientDispose.test.ts",
   "build/pinger.mjs": "scripts/pinger.ts",
   "build/supervisor-reload-probe.mjs": "scripts/supervisorReloadProbe.ts",

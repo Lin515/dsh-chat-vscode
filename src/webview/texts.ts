@@ -680,6 +680,16 @@ export interface Texts {
   historyLoading: string;
   /** 「回到最新」胶囊：脱贴后内容继续增长时的兜底入口（点击回底并恢复贴底）。 */
   jumpToLatest: string;
+  /** 会话查找条（Ctrl+F）的 aria 标签（查找框与整条共用）。 */
+  findInChat: string;
+  /** 会话查找框的占位文案。 */
+  findPlaceholder: string;
+  /** 会话查找：上一处命中的 title（键盘提示随文案给出）。 */
+  findPrev: string;
+  /** 会话查找：下一处命中的 title。 */
+  findNext: string;
+  /** 会话查找：关闭按钮的 title。 */
+  findClose: string;
   /** 右侧轮次横条：整条导航的 aria 标签（官方 chat.turnNavigation.label）。 */
   turnRailLabel: string;
   /** 轮次横条的刻度：跳到第 {turn} 轮（已加载，官方 chat.turnNavigation.jump）。 */

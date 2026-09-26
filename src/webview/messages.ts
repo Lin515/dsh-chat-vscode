@@ -777,6 +777,12 @@ export const MESSAGES = {
   historyMore: { zh: "加载更早的历史", en: "Load earlier history" },
   historyLoading: { zh: "正在加载更早的历史…", en: "Loading earlier history…" },
   jumpToLatest: { zh: "回到最新", en: "Jump to latest" },
+  // 会话查找条（Ctrl+F；自绘——webview 拿不到原生查找部件，见 FindBar.tsx 文件头）
+  findInChat: { zh: "在会话中查找", en: "Find in chat" },
+  findPlaceholder: { zh: "查找", en: "Find" },
+  findPrev: { zh: "上一个匹配（Shift+Enter）", en: "Previous match (Shift+Enter)" },
+  findNext: { zh: "下一个匹配（Enter）", en: "Next match (Enter)" },
+  findClose: { zh: "关闭查找（Esc）", en: "Close find (Esc)" },
   turnRailLabel: { zh: "轮次导航", en: "Turn navigation" },
   turnRailJump: { zh: (turn: number) => `跳到第 ${turn} 轮`, en: (turn: number) => `Jump to turn ${turn}` },
   turnRailJumpLoad: { zh: (turn: number) => `加载并跳到第 ${turn} 轮`, en: (turn: number) => `Load and jump to turn ${turn}` },

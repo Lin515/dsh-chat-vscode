@@ -15,6 +15,7 @@
 - `TurnRail.tsx` — 右侧轮次横条组件：固定间距刻点、悬停预览卡、点击跳轮。
 - `Panels.tsx` — 顶栏面板：后台任务详情（实时输出、停止按钮）、子代理等抽屉。
 - `History.tsx` — 会话历史抽屉：搜索、删除（二次点击确认）、归档。
+- `FindBar.tsx` — 会话查找条（Ctrl+F）：CSS Custom Highlight API 高亮 + 计数 + 上一处/下一处；纯逻辑在 `../find.ts`。
 - `EmptyMeta.tsx` — 空态页元信息：会话工作目录与 agent 预设。
 - `ContextMenu.tsx` — 自绘右键菜单浮层（根部挂一次，只管画）。
 - `CopyButton.tsx` — 复制按钮（工具卡与后台任务详情共用，1s 文案反馈）。

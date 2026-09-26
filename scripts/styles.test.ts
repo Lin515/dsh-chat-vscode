@@ -2147,4 +2147,49 @@ console.log("styles: 后台任务详情（输出限高内滚 + 行主体不溢�
 }
 console.log("styles: 失败回显行的动作与原因 ✓");
 
+// ---------- 会话查找条：高亮走 Custom Highlight API，计数格不许折行 ----------
+//
+// 高亮配色**必须**挂在 `::highlight()` 伪元素上、并直接取编辑器查找的主题变量：
+// FindBar 往 `CSS.highlights` 登记的是 Range，样式只能从这两个选择器来——登记名
+// 与选择器字面不一致时高亮会静默消失（CSS 不报错、界面只是没有颜色）。
+// 计数格的中英文长度差一倍（"3/17" ↔ "No results"），不 nowrap 就会把查找条挤折行。
+{
+  const all = rule("::highlight(dsh-find-all)");
+  assert.ok(
+    /--vscode-editor-findMatchHighlightBackground/.test(all),
+    "全部命中的高亮必须取编辑器查找的主题变量（::highlight(dsh-find-all)）——登记名与选择器对不上时高亮静默消失",
+  );
+  const current = rule("::highlight(dsh-find-current)");
+  assert.ok(
+    /--vscode-editor-findMatchBackground/.test(current),
+    "当前命中的高亮必须取编辑器查找的主题变量（::highlight(dsh-find-current)，比全部命中更深一档）",
+  );
+
+  // 两档的区分度必须是**双通道**：底色差（全部命中压淡）+ 当前命中的下划线。
+  // `::highlight()` 只放行 color / background-color / text-decoration / text-shadow
+  // 这几组属性，outline 会被静默丢弃——上一版给当前项写的描边是永不生效的死代码，
+  // 只剩同色相两档透明度（0.33 vs 0.6）在撑，用户实测"几乎一样"。
+  assert.ok(
+    /text-decoration:\s*underline/.test(current),
+    "当前命中必须有下划线（::highlight() 不支持 outline，描边是死代码；只靠底色差在多数主题里分不开）",
+  );
+  assert.ok(
+    /color-mix/.test(all),
+    "全部命中要压淡一档（color-mix 掺透明），否则与当前项的底色差拉不开",
+  );
+
+  const bar = rule(".find-bar");
+  assert.ok(
+    /display:\s*flex/.test(bar) && /flex:\s*0\s+0\s+auto/.test(bar),
+    ".find-bar 是滚动区上方的定高 chrome 行（不参与 flex 收缩）",
+  );
+
+  const count = rule(".find-count");
+  assert.ok(
+    /white-space:\s*nowrap/.test(count),
+    ".find-count 必须一行截断之外不折行（英文「No results」比中文长一倍，折行会把查找条撑高）",
+  );
+}
+console.log("styles: 会话查找条的高亮与计数格 ✓");
+
 console.log("\nstyles: all assertions passed");

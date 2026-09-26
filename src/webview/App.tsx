@@ -8,6 +8,7 @@ import { EmptyMeta } from "./components/EmptyMeta";
 import { HistoryPanel } from "./components/History";
 import { ImagePreviewLayer } from "./components/Images";
 import { ContextMenuLayer } from "./components/ContextMenu";
+import { FindBar } from "./components/FindBar";
 import { Message } from "./components/Message";
 import { JobsPanel } from "./components/Panels";
 import { TrajectoryView } from "./components/Trajectory";
@@ -835,6 +836,14 @@ export function App() {
           />
         ) : (
           <div className="chat-area">
+            {/* 会话查找条（Ctrl+F）：自绘——webview 拿不到原生查找部件（见
+                FindBar.tsx 文件头）。挂在滚动区之前、随会话页一起卸载：轨迹视图
+                打开时查找自动收掉并摘掉全局注册表里的高亮。 */}
+            <FindBar
+              scrollEl={chatScroll.port.scrollEl}
+              contentEl={chatScroll.port.contentEl}
+              releaseFollow={chatScroll.releaseFollow}
+            />
             <div className="chat-pane">
               <div className="chat-scroll" ref={chatScroll.port.scrollEl}>
               {/* 右侧轮次横条：sticky 零高度槽位浮在正文右缘，不占布局、不撑长

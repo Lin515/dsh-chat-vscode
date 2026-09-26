@@ -390,6 +390,93 @@ button.header-title:hover {
   border-color: var(--command-border-focus);
 }
 
+/* ==================== 会话查找条（Ctrl+F） ====================
+   webview 拿不到编辑器的原生查找部件（microsoft/vscode#173643 还开着），
+   与官方 Chat 1.134 的 Find in chat 一样自绘；组件与高亮机制见 FindBar.tsx。
+   高亮走 CSS Custom Highlight API：`::highlight()` 按登记名取样式，配色直接用
+   编辑器查找的主题变量（主题没给时落到自己的琥珀色回退值）。 */
+.find-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--editor-bg);
+  color: var(--description);
+}
+
+.find-bar > svg {
+  flex: 0 0 auto;
+  color: var(--input-placeholder);
+}
+
+.find-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 3px 8px;
+  border: 1px solid var(--input-border);
+  border-radius: var(--radius-sm);
+  background: var(--input-bg);
+  color: var(--input-fg);
+  outline: none;
+  font-size: var(--font-size-xs);
+}
+
+.find-input:focus {
+  border-color: var(--border-focus);
+}
+
+.find-input::placeholder {
+  color: var(--input-placeholder);
+}
+
+/* 计数格（`3/17` 或「无结果」）：tabular-nums 防数字翻动时整行抖；nowrap 防
+   「No results」在窄侧栏折行（中英文长度差一倍，靠收缩而不是定宽）。 */
+.find-count {
+  flex: 0 0 auto;
+  min-width: 30px;
+  text-align: center;
+  font-size: var(--font-size-2xs);
+  color: var(--description);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 上一处 / 下一处共用一枚 chevron：向上那颗旋转 180°，不为此多养一个图标 */
+.find-step.is-up svg {
+  transform: rotate(180deg);
+}
+
+.find-bar .icon-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+  background: none;
+}
+
+/* 全部命中与当前命中（登记名常量在 webview/find.ts）。
+   区分度刻意拉成**两条通道**，缺一不可：
+   1. 底色差——全部命中是主题查找高亮色压淡一档（color-mix 掺透明），
+      当前命中用主题的当前查找档原色（本来就是更饱和的一档）；
+   2. 下划线——当前命中叠一条 2px 焦点色下划线，任何主题下都与"底纹"拉开。
+   **不要用 outline 做第二重区分**：`::highlight()` 只放行 color /
+   background-color / text-decoration / text-emphasis / text-shadow 这几组属性，
+   outline 会被静默丢弃（上一版两档几乎同色的根因——写了个永不生效的描边）。 */
+::highlight(dsh-find-all) {
+  background-color: color-mix(
+    in srgb,
+    var(--vscode-editor-findMatchHighlightBackground, rgb(234 174 62 / 0.33)) 75%,
+    transparent
+  );
+}
+
+::highlight(dsh-find-current) {
+  background-color: var(--vscode-editor-findMatchBackground, rgb(156 96 0 / 0.75));
+  text-decoration: underline;
+  text-decoration-color: var(--vscode-focusBorder, #4d8bf0);
+  text-decoration-thickness: 2px;
+}
+
 /* ==================== 右侧轮次横条（官方 TurnNavigator） ====================
    一列右缘对齐的短刻线，每一轮一枚：悬停出预览卡（一行提示词 + 三行响应），
    点击跳到那一轮的用户消息；未加载的轮次（turnOutline 投影里有、分页窗口外）
@@ -2854,6 +2941,12 @@ button.changes-card-head:hover .changes-card-chevron,
 /* 连接条同理：极小宽度下先收起「查看日志」（命令面板里还有同一个入口，
    而启动/重连这类按钮在那一档仍然必须是可点的） */
 .app.is-mini .conn-bar [data-mini="hide"] {
+  display: none;
+}
+
+/* 查找条整个收掉：迷你模式聊天列表已经收成图标条，没有可搜的正文，
+   留着只会把那一档挤爆 */
+.app.is-mini .find-bar {
   display: none;
 }
 

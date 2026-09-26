@@ -21,6 +21,7 @@
 ## 布局与交互子系统
 
 - `autoScroll.ts` — 聊天区自动滚动（贴底 / 回底胶囊）：一个模块一个端口（`AutoScrollPort` 范例）。
+- `find.ts` — 会话查找（Ctrl+F）的纯逻辑：文本节点序列上的子串定位与激活下标环绕推进；DOM 胶水在 `components/FindBar.tsx`。
 - `composerCompletion.tsx` — 输入框 `@` / `/` 补全的唯一归属地：触发判定、候选取用与优先级、键盘导航、弹层 JSX。
 - `mentionNav.ts` — `@` 候选里的 `..` 上一层目录导航（只算目标查询串）。
 - `segment.ts` — 思考档位分段控件的列数（≤4 档一行、5/6 档均分两行）。
