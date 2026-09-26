@@ -62,3 +62,4 @@
 - `hostText.ts` — 宿主产生的 `@key` 标记 → VS Code 原生 UI 文本（通知跟随 VS Code 显示语言，与 `dshChat.language` 无关）。
 - `selection.ts` — 编辑器选区 → 行号区间（部分引用要体现行号；「下一行行首结束要少算一行」的边界在这里）。
 - `windowState.ts` — 工作区级会话窗口状态缓存（`workspaceState`）：记住上次每个窗口面板开着哪个会话。
+- `unreadStore.ts` — 「生成完毕未读」在 globalState 里的存放口径：一个会话一把键（多窗口不互相覆写），旧口径那份整份数组启动时作废。

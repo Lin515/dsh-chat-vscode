@@ -97,6 +97,7 @@ import {
 import { deriveTrajectoryModel } from "./trajectory";
 import { normalizePath, visibleForWorkspace, visibleSessionCandidates, visibleSessionRows } from "./sessionList";
 import { acceptSessionStatus, decodeSessionStatus } from "./sessionStatus";
+import { dropLegacyUnreadState, loadUnreadSessionIds, writeUnreadSession } from "./unreadStore";
 import { isBlank, mergeWindowCache, WindowRestore, WorkspaceWindowStateStore, type SidebarSlot, type WindowCache, type WindowKind } from "./windowState";
 
 /**
@@ -765,14 +766,14 @@ export class ChatController implements vscode.Disposable {
    */
   private readonly deletedSessionIds: Set<string>;
   /**
-   * 「生成完毕还没看过」的会话 id 集合（持久化于 globalState 的 `unreadSessionIds`）。
+   * 「生成完毕还没看过」的会话 id 集合（持久化于 globalState，**一个会话一把键**）。
    *
    * **只有一条来路**：离开标记 `leftGeneratingSessionIds`——我离开时那条会话正在生成，
    * 它收尾的那一刻（见 `settleRunningChange`）记成未读。任一窗口打开它
    * （`bindViewToSession`）即清除；新一轮开始时先让位给「运行中」，那一轮收尾后再亮。
    * 历史列表里这些行的标题与运行中一样显示蓝色，提醒「它已经生成完了，结果还没看」。
    * 持久化是为了跨扩展重载保留——服务端的 `session/list` 不知道这个概念，列表整份替换时
-   * 也由这里回填。
+   * 也由这里回填。存放口径（为什么按会话分键、旧集合为什么作废）在 `unreadStore.ts`。
    */
   private readonly unreadSessionIds: Set<string>;
   /**
@@ -794,6 +795,20 @@ export class ChatController implements vscode.Disposable {
    * 观察到），重载期间跑完的不补记未读。兑现的投影在 `settleRunningChange`。
    */
   private readonly leftGeneratingSessionIds = new Set<string>();
+  /**
+   * **被拒收的权威状态位**（`api-session/status` 说「不在跑」、而本地适配器还有开放轮次）。
+   *
+   * 拒收本身是对的（`$events` 与 `session/follow` 两条流不同源，乱序的旧 `false` 会把停止
+   * 按钮和 `waitUntilIdle` 一起骗掉），但**丢掉不复查**会留下一条谁也不纠正的假 true：随后
+   * durable 收尾只改域、不改会话列表那一行，于是列表显示「生成中」，离开时被误判成生成中，
+   * 下一次列表刷新把那一行翻回 false 时结算出一条假未读（用户 2026-09-30 报的现场，
+   * 真机日志里两处：收尾后 2 分 13 秒 / 85 秒仍被记成「离开生成中的会话」）。
+   *
+   * 因此拒收时把值记在这里，等「本地有没有开放轮次」这条证据消失时（域被回收，见
+   * `settlePendingStatus`）再重判一次；列表整份刷新被采纳时它也被后来的结论顶掉。
+   * 值只可能是 `false`——`true` 永远被采纳。
+   */
+  private readonly pendingStatuses = new Map<string, boolean>();
   /**
    * 草稿与附件按会话隔离：切换会话时输入框文本与附件芯片一起切换。
    * 已绑定会话的窗口用会话 id 做键（同会话的多窗口共享）；**未绑定**的窗口用
@@ -990,7 +1005,10 @@ export class ChatController implements vscode.Disposable {
     private readonly secrets: vscode.SecretStorage,
   ) {
     this.deletedSessionIds = new Set(this.state.get<string[]>("deletedSessionIds") ?? []);
-    this.unreadSessionIds = new Set(this.state.get<string[]>("unreadSessionIds") ?? []);
+    // 未读游标一个会话一把键（见 `unreadStore.ts`）：整份数组在多窗口下会互相覆写，
+    // 把别人清掉的旗标写回来。旧口径那份整份集合连同它的判据一起作废。
+    dropLegacyUnreadState(this.state);
+    this.unreadSessionIds = loadUnreadSessionIds(this.state);
     // 窗口状态缓存走 **workspaceState**（VS Code 自己的工作区缓存）而不是 globalState：
     // 「这个文件夹上次开着哪几个窗口、各自是哪个会话」本来就是工作区级的，
     // 换个项目不该被带过去。读取是同步的（构造期一次），所以激活同期的
@@ -1951,6 +1969,9 @@ export class ChatController implements vscode.Disposable {
       if (watch.sessionId === scope.sessionId) this.closeJobWatch(viewId);
     }
     scope.adapter = undefined;
+    // 适配器没了 ⇒ 「本轮还开着」这条本地证据也就没了：被拒收过的权威状态位到这里可以
+    // 定论了（见 `pendingStatuses`）。放在这一句之后——重判看的正是适配器还在不在。
+    this.settlePendingStatus(scope.sessionId);
     // 乐观回显**不跟着域一起丢**（用户 2026-09-25 口径）：账本里只有「已经发出去」的那一类，
     // 而它此刻要么还在等承认、要么已经失败——失败的那一行必须能"切走再切回来接着重发 /
     // 撤回"，而它不在会话内容里，删了就再也回不来。
@@ -3145,6 +3166,8 @@ export class ChatController implements vscode.Disposable {
         const row = views.find((item) => item.id === scope.sessionId);
         if (!row) continue;
         if (!acceptSessionStatus(row.running, scope.adapter?.hasOpenTurn() === true)) continue;
+        // 列表比中继那条更晚、也是权威：它一旦被采纳，先前拒收的那条就没有留下的理由了
+        this.pendingStatuses.delete(scope.sessionId);
         this.writeScopeRunning(scope, row.running);
       }
       // 会话列表是**标题的权威**（服务端 `session/list`）：恢复窗口时面板先绑上会话、
@@ -3179,12 +3202,36 @@ export class ChatController implements vscode.Disposable {
     // `acceptSessionStatus` 判断无关（那条规则是给「窗口绑定的会话」用的，子代理没有本地
     // 日志证据可依），所以放在前面、不受它拦截。
     this.syncSubagentActivity(status.sessionId, status.running);
-    if (!acceptSessionStatus(status.running, scope?.adapter?.hasOpenTurn() === true)) return true;
+    if (!acceptSessionStatus(status.running, scope?.adapter?.hasOpenTurn() === true)) {
+      // 拒收 ≠ 忘记：这条权威结论先记下，等本地「本轮还开着」的证据消失时再重判
+      // （见 `pendingStatuses`）。直接丢掉的话，随后 durable 收尾只会改域、不会改会话
+      // 列表那一行——假 true 活到下一次列表刷新，离开时就记出假未读。
+      this.pendingStatuses.set(status.sessionId, status.running);
+      return true;
+    }
+    this.pendingStatuses.delete(status.sessionId);
     // 列表那一行是**新域的打底值**（见 `ensureScope`），必须与域同一个口径：列表里的
     // 「运行中」标记也靠它，不然用户切走再切回来会拿到一个过期的值。
     this.setSessionRowRunning(status.sessionId, status.running);
     if (scope) this.writeScopeRunning(scope, status.running);
     return true;
+  }
+
+  /**
+   * 把一条**被拒收**的权威状态位重新过一遍采纳策略（见 `pendingStatuses`）。
+   *
+   * 调用点只有一个：域被回收时（适配器随之消失 = 本地「本轮还开着」的证据没了）。重判通过
+   * 就按它纠正会话列表那一行——**必须赶在离开标记之前**，那条纠正本身不该结算出未读
+   * （`dropViewers` 在三个离开入口里都排在 `noteSessionLeft` 前面）。
+   */
+  private settlePendingStatus(sessionId: string): void {
+    const pending = this.pendingStatuses.get(sessionId);
+    if (pending === undefined) return;
+    const scope = this.scopes.get(sessionId);
+    if (!acceptSessionStatus(pending, scope?.adapter?.hasOpenTurn() === true)) return;
+    this.pendingStatuses.delete(sessionId);
+    this.setSessionRowRunning(sessionId, pending);
+    if (scope) this.writeScopeRunning(scope, pending);
   }
 
   /** 写域里的 running（`scope.running` 是权威副本，界面读的首帧快照/ESC 也都看它）。 */
@@ -3271,7 +3318,8 @@ export class ChatController implements vscode.Disposable {
     if (this.unreadSessionIds.has(sessionId) === unread) return;
     if (unread) this.unreadSessionIds.add(sessionId);
     else this.unreadSessionIds.delete(sessionId);
-    void this.state.update("unreadSessionIds", [...this.unreadSessionIds]);
+    // 只写这一条自己的键：整份数组在多窗口下会互相覆写（见 `unreadStore.ts`）
+    writeUnreadSession(this.state, sessionId, unread);
     this.emitSessionLists();
   }
 
@@ -3320,6 +3368,10 @@ export class ChatController implements vscode.Disposable {
     try {
       await this.client.archiveSession(sessionId);
       this.archivedSessionIds.add(sessionId);
+      // 归档＝用户把这条收起来了，不再要求提醒：留着那条未读就是归档列表里一条**永远清不掉
+      // 的蓝**（只有亲手打开它才会清，而归档会话通常不会再打开）。同上，离开标记一起作废。
+      this.setSessionUnread(sessionId, false);
+      this.leftGeneratingSessionIds.delete(sessionId);
       this.emitSessionLists();
       setTimeout(() => void this.refreshSessions(), 500);
     } catch (error) {
@@ -3381,6 +3433,10 @@ export class ChatController implements vscode.Disposable {
     }
     this.sessions = this.sessions.filter((s) => s.id !== sessionId);
     this.rememberDeleted(sessionId);
+    // 删掉的会话在未读账上也不该留一条：`deletedSessionIds` 让它从列表里永远消失（连归档
+    // 列表都不进），那条旗标就成了永远不会被清掉的死重量（真机 globalState 里见过实例）。
+    this.setSessionUnread(sessionId, false);
+    this.leftGeneratingSessionIds.delete(sessionId);
     this.emitSessionLists();
     if (!removed) {
       this.log(
@@ -3909,7 +3965,19 @@ export class ChatController implements vscode.Disposable {
     const sessionId = scope.sessionId;
     if (!this.client) return;
     scope.followHandle?.cancel();
-    const adapter = new SessionAdapter((frame) => this.deliver(sessionId, frame));
+    const adapter = new SessionAdapter((frame) => {
+      // **durable 的「在不在跑」要同时落到会话列表那一行**（2026-09-30 修）：收尾的
+      // 权威状态位（`api-session/status`）可能比本轮的 durable `turn/end` **先到**，
+      // 那一刻本地还有「本轮开着」的肯定证据，它会被 `acceptSessionStatus` 拒收（那条
+      // 规则本身没错），而随后 durable 收尾只把域改回 false —— 行上的假 true 就此没人
+      // 纠正：历史列表显示「生成中」，离开时 `isSessionGenerating`（域 **or** 行）据此
+      // 记了离开标记，下一次列表刷新把那一行翻回 false 时结算成未读，就是用户报的
+      // 「明明已读却亮蓝」。列表与域从此同一个来源（对账见 `scripts/unreadMarker.test.ts`）。
+      if (frame.type === "patch" && typeof frame.patch.running === "boolean") {
+        this.setSessionRowRunning(sessionId, frame.patch.running);
+      }
+      this.deliver(sessionId, frame);
+    });
     // 图片句柄 → 字节：`read_image` 的 image 块只给不透明 attachmentId，
     // 要经 `session/attachment` 换成 base64 才能显示。适配器不持有网络客户端，
     // 所以在这里注入。

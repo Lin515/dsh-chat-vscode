@@ -93,16 +93,47 @@ const fakeServer = () => ({
   },
 });
 
-const fakeMemento = () => {
-  const map = new Map<string, unknown>();
+const fakeMemento = (seed: Record<string, unknown> = {}) => {
+  const map = new Map<string, unknown>(Object.entries(seed));
   return {
     get: (key: string, fallback?: unknown) => (map.has(key) ? map.get(key) : fallback),
+    // 删键 = 写 `undefined`（与 VS Code 的 Memento 同口径，见 `dsh/unreadStore.ts`）：
+    // 键必须真的从 `keys()` 里消失，否则「清掉」会被读侧的键扫描当成还在
     update: async (key: string, value: unknown) => {
-      map.set(key, value);
+      if (value === undefined) map.delete(key);
+      else map.set(key, value);
     },
     keys: () => [...map.keys()],
   };
 };
+
+/**
+ * 共享的 globalState（多窗口的现场）：各窗口**构造时读一份副本**，写回共享单元、此后不再
+ * 同步——VS Code 不跨窗口实时同步 `globalState`，所以「整份数组互相覆写」才会把别人清掉的
+ * 旗标写回来。按会话分键之后就没有这条通道了（见 `dsh/unreadStore.ts`）。
+ */
+function sharedGlobalState() {
+  const shared = new Map<string, unknown>();
+  return {
+    shared,
+    memento: () => {
+      const view = new Map(shared);
+      return {
+        get: (key: string, fallback?: unknown) => (view.has(key) ? view.get(key) : fallback),
+        update: async (key: string, value: unknown) => {
+          if (value === undefined) {
+            view.delete(key);
+            shared.delete(key);
+          } else {
+            view.set(key, value);
+            shared.set(key, value);
+          }
+        },
+        keys: () => [...view.keys()],
+      };
+    },
+  };
+}
 
 interface Driver {
   openSession(viewId: string, sessionId: string): Promise<void>;
@@ -113,13 +144,19 @@ interface Driver {
   send(viewId: string, text: string): Promise<void>;
   /** `$events` 流上的 `api-session/status`（`args = [sessionId, running]`）真帧。 */
   status(sessionId: string, running: boolean): Promise<void>;
+  /** durable 轮次边界（`session/follow` 上的事件），走真适配器。 */
+  turn(sessionId: string, type: "turn/start" | "turn/end", turnNo: number): void;
+  /** 会话列表那一行此刻的 `running`（界面口径）。 */
+  rowRunning(sessionId: string): boolean;
+  /** 这个窗口那份 globalState 的键（存储口径断言用）。 */
+  stateKeys(): string[];
 }
 
-function makeDriver(rows: Row[]) {
+function makeDriver(rows: Row[], options: { state?: () => ReturnType<typeof fakeMemento> } = {}) {
   const controller = new ChatController(
     fakeServer() as never,
     () => undefined,
-    fakeMemento() as never,
+    (options.state ?? fakeMemento)() as never,
     fakeMemento() as never,
     { delete: async () => undefined, get: async () => undefined, store: async () => undefined } as never,
   );
@@ -128,7 +165,8 @@ function makeDriver(rows: Row[]) {
   const internals = controller as never as {
     client: unknown;
     connection: string;
-    applySessionStatus: unknown;
+    state: { keys(): string[] };
+    scopes: Map<string, { adapter?: { applyEvent(event: unknown): void } }>;
     onEventFrame(frame: Record<string, unknown>): Promise<void>;
   };
   internals.client = fakeClient(rows) as never;
@@ -140,6 +178,7 @@ function makeDriver(rows: Row[]) {
     refreshSessions(): Promise<void>;
     send(viewId: string, text: string, attachments: never[]): Promise<void>;
   };
+  let turnSeq = 100;
   const driver: Driver = {
     openSession: (viewId, sessionId) => c.openSession(viewId, sessionId),
     unbindView: (viewId) => c.unbindView(viewId),
@@ -148,6 +187,17 @@ function makeDriver(rows: Row[]) {
     send: (viewId, text) => c.send(viewId, text, []),
     status: (sessionId, running) =>
       internals.onEventFrame({ type: "emit", event: "api-session/status", args: [sessionId, running] }),
+    turn: (sessionId, type, turnNo) => {
+      turnSeq += 1;
+      internals.scopes.get(sessionId)?.adapter?.applyEvent({
+        type,
+        seq: turnSeq,
+        time: turnSeq * 1000,
+        data: type === "turn/end" ? { turn: turnNo, reason: { kind: "completed" } } : { turn: turnNo },
+      });
+    },
+    rowRunning: (sessionId) => rowOf(frames, sessionId)?.running === true,
+    stateKeys: () => internals.state.keys(),
   };
   return { driver, frames };
 }
@@ -158,12 +208,18 @@ function makeDriver(rows: Row[]) {
  * 断言走帧而不是直接读 `unreadSessionIds`：界面看到的才是这条功能的事实，集合只是内部账。
  */
 function unreadInList(frames: Captured[], sessionId: string): boolean | undefined {
+  const row = rowOf(frames, sessionId);
+  return row ? row.unread === true : undefined;
+}
+
+/** 最近一帧会话列表里那一行（找不到说明这一代列表里没有它）。 */
+function rowOf(frames: Captured[], sessionId: string): SessionRowView | undefined {
   for (let index = frames.length - 1; index >= 0; index -= 1) {
     const { target, frame } = frames[index];
     if (target !== "all" || frame.type !== "sessions") continue;
     const rows = (frame.sessions ?? []) as SessionRowView[];
     const hit = rows.find((item) => item.id === sessionId);
-    if (hit) return hit.unread === true;
+    if (hit) return hit;
   }
   return undefined;
 }
@@ -319,6 +375,97 @@ console.log("unreadMarker: 驱动真控制器（offline stub）");
     "「发完立刻切走」必须记上离开标记：只读列表那一行会漏掉这一场景",
   );
   console.log("  ⑩ 发送后立刻切走：A 未读 ✓");
+}
+
+// ---------- ⑪ 收尾的 durable 真相必须落到会话列表那一行 ----------
+// 真机现场：收尾的权威状态位（`api-session/status`）先到、durable `turn/end` 随后到（两条流
+// 之间隔上百毫秒到上百秒都出现过）。前者那一刻被拒收（本地还有开放轮次，这条规则本身没错），
+// 后者若只改域不改**行**，列表就一直显示「生成中」——离开时被误判成生成中，下一次列表刷新
+// 翻回 false 时亮出假未读。
+{
+  const { driver, frames } = makeDriver([row(A), row(B)]);
+  await driver.refreshSessions();
+  await driver.openSession("v1", A);
+  await driver.status(A, true); // 权威中继：开始生成
+  driver.turn(A, "turn/start", 1); // durable：本轮开始
+  await driver.status(A, false); // 收尾的权威值先到——此刻本地有开放轮次，被拒收
+  assert.strictEqual(driver.rowRunning(A), true, "被拒收的那一刻那一行仍是运行中（拒收本身没错）");
+  driver.turn(A, "turn/end", 1); // durable：本轮真的收尾了
+  assert.strictEqual(driver.rowRunning(A), false, "durable 收尾必须同时把那一行改回空闲");
+  await driver.openSession("v1", B); // 用户此刻离开（界面看它是空闲的）
+  await driver.refreshSessions(); // 打开历史抽屉 → 列表整份刷新
+  assert.strictEqual(unreadInList(frames, A), false, "离开时它已经收尾：不许记未读");
+  console.log("  ⑪ 收尾后 durable 真相落到列表那一行：离开不误判 ✓");
+}
+
+// ---------- ⑫ 被拒收的权威状态位要复查，不能丢 ----------
+// 拒收那一刻的「本轮还开着」可能永远不再变化（跟随流断了、durable 收尾没到）。那条权威值
+// 留在账上，等本地证据消失（域被回收）时按它纠正那一行——否则它就是一条谁也不管的假 true。
+{
+  const { driver, frames } = makeDriver([row(A), row(B)]);
+  await driver.refreshSessions();
+  await driver.openSession("v1", A);
+  await driver.status(A, true);
+  driver.turn(A, "turn/start", 1);
+  await driver.status(A, false); // 被拒收 → 记账
+  assert.strictEqual(driver.rowRunning(A), true, "前置：那一行还停在运行中");
+  await driver.newSession("v1"); // 离开 → 域被回收，本地「本轮还开着」的证据随之消失
+  assert.strictEqual(driver.rowRunning(A), false, "域没了以后要按那条权威值纠正那一行");
+  await driver.refreshSessions();
+  assert.strictEqual(unreadInList(frames, A), false, "纠正陈旧的「运行中」不该顺带记出未读");
+  console.log("  ⑫ 被拒收的权威状态位在域回收时复查 ✓");
+}
+
+// ---------- ⑬ 存储口径：旧集合作废、按会话分键、多窗口不互相复活 ----------
+{
+  // 旧口径那份整份数组（判据改过，里面每一条都无法用新规则解释）在构造时作废
+  const legacy = fakeMemento({ unreadSessionIds: [A] });
+  const stale = makeDriver([row(A)], { state: () => legacy });
+  await stale.driver.refreshSessions();
+  assert.strictEqual(unreadInList(stale.frames, A), false, "旧口径留下的旗标不许再亮");
+  assert.deepStrictEqual(
+    stale.driver.stateKeys().filter((key) => key === "unreadSessionIds"),
+    [],
+    "旧键要真的删掉，不能只是不读它",
+  );
+
+  // 新口径：一个会话一把键（写＝建键，读掉＝删键）
+  const single = fakeMemento();
+  const one = makeDriver([row(A), row(B)], { state: () => single });
+  await one.driver.refreshSessions();
+  await one.driver.openSession("v1", A);
+  await one.driver.status(A, true);
+  await one.driver.openSession("v1", B); // 离开正在生成的 A
+  await one.driver.status(A, false); // A 收尾 → 未读
+  assert.strictEqual(unreadInList(one.frames, A), true, "前置：A 记了未读");
+  assert.strictEqual(single.get("unread:" + A), true, "未读只写它自己那把键");
+  await one.driver.openSession("v1", A); // 回来看它
+  assert.strictEqual(single.get("unread:" + A), undefined, "看过了：那把键要删掉");
+  assert.deepStrictEqual(
+    single.keys().filter((key) => key.startsWith("unread:")),
+    [],
+    "清掉之后 `keys()` 里也不许再出现它",
+  );
+
+  // 多窗口：各自只写自己刚改的那一条，别人的旗标不会被整份覆写带走或复活
+  const shared = sharedGlobalState();
+  const first = makeDriver([row(A), row(B)], { state: shared.memento });
+  const second = makeDriver([row(A), row(B)], { state: shared.memento });
+  await first.driver.refreshSessions();
+  await second.driver.refreshSessions();
+  for (const [window, target, other] of [
+    [first, A, B],
+    [second, B, A],
+  ] as const) {
+    await window.driver.openSession("v1", target);
+    await window.driver.status(target, true);
+    await window.driver.openSession("v1", other); // 离开正在生成的它
+    await window.driver.status(target, false); // 收尾 → 该窗口记未读
+    assert.strictEqual(unreadInList(window.frames, target), true, `前置：${target} 记了未读`);
+  }
+  assert.strictEqual(shared.shared.get("unread:" + A), true, "另一个窗口写盘不许把 A 那条带走");
+  assert.strictEqual(shared.shared.get("unread:" + B), true, "另一个窗口写盘不许把 B 那条带走");
+  console.log("  ⑬ 未读按会话分键：旧集合作废、多窗口互不覆写 ✓");
 }
 
 console.log("unreadMarker: 只有「离开生成中的会话」会点亮未读 ✓");
