@@ -102,6 +102,34 @@ agent 预设标签的口径（用户 2026-09-22）：
   的四个走词典、用户自写的用原文，认不出的 id 退回 id）；
 - 拿不到预设目录或当前预设 id 时整个不渲染，而不是显示一个空壳。
 
+### 权限弹层的档位列表（含实验性的 Auto review）
+
+点开权限胶囊（`permission:icon` / `permission:label`）看到的档位列表，由两段拼成：
+
+| 来源 | 档位 | 条件 |
+|---|---|---|
+| 客户端内置（文案随词典，与 WebUI 对齐） | `read-only` / `workspace-write` / `danger-full-access` | 恒有 |
+| 服务端目录 | `auto`（**Auto review**，实验） | 宿主下发的 `permissionAutoReview` 为真，**或**当前值已经是 `auto` |
+
+- **「有没有这一档」只有一个判据**：`permissionPresets/catalog` 的 `options` 里有没有 `auto`
+  （宿主 `dsh/projections.ts` 的 `permissionCatalogHasAuto`，纯函数）。它不是配置表里的一档，
+  只在 `dsh-experimental-auto-review` 集成在世时出现；集成装上/卸下会发
+  `permission-presets/catalog-changed`，宿主重读后经 `permissionAutoReview` 下发。
+  老服务端没有这个端点时**不列**（fail-closed），见 `docs/dsh-compat.md`「登记之外的口径」。
+- 当前值已经是 `auto` 时也列（**即使目录那一次请求失败**）：否则胶囊会退回显示别的档位
+  ——那不只是一个缺项，而是一个假结论（会话实际停在 Auto review 上）。
+- **文案逐字抄官方** `ui-permission-presets` 的 `accessZh` / `accessEn`，共七条：档位名、`EXP`
+  标、描述、警告标题、警告正文、勾选文案、确认按钮。注意**官方中文词典里那一档的名字仍然是
+  `Auto review`**（它没有翻译这一档），所以本扩展也不给中文另起名字。
+- **图标是自补的**：官方只给 `read-only` / `workspace-write` / `danger-full-access` 配了图形，
+  Auto 那一档没有；而本扩展工具栏的最小档位是「只有图标」，缺图标那枚胶囊会变成空的，
+  列表里那一行也会比别的行短一截。按既有口径（三种模式共用外形、内部记号不同）补了
+  `IconShieldReview`（盾牌里一只眼睛）。
+- **需要过警告的档有两档**：`danger-full-access`（历来如此）与 `auto`。确认卡在弹层内就地
+  替换列表（不是系统模态框）：标题 + 正文 + `取消` / `确认`；`auto` 多一道官方要求的勾选
+  （「我已了解这些风险，并愿意继续」），**没勾选时确认按钮不可点**——两者都逐字取官方文案。
+  确认态在关弹层 / 再点胶囊 / 换档位时复位。
+
 ## 六、极窄兜底：交给 CSS，不硬裁
 
 连 P0 三项都排不下时（约 < 190px），分配算法已经无档可退，此时由 CSS 收窄：胶囊
@@ -119,7 +147,8 @@ agent 预设标签的口径（用户 2026-09-22）：
 | `src/webview/toolbarFit.ts` | 优先级表 `BAR_ORDER` + 分配算法 `pickVariants`（纯函数，改行为就是改这张表） |
 | `src/webview/components/Composer.tsx` | 候选档位节点表 `barNodes` + `useToolbarFit`（量宽与触发）+ 工具栏的渲染次序 |
 | `src/webview/styles/app.css` | `.composer-bar`（定位基准）、`.composer-measure`（测量层三条硬约束）、各元素的收窄上限 |
-| `src/webview/messages.ts` + `texts.ts` | 新增元素若带用户可见文字，双语两条一起登记（唯一登记表） |
+| `src/webview/messages.ts` + `texts.ts` | 新增元素若带用户可见文字，双语两条一起登记（唯一登记表）；权限档位的文案（含实验档那七条）都在这里 |
+| `src/dsh/projections.ts` + `src/dsh/controller.ts` | 权限档位的**可用性判据**（`permissionCatalogHasAuto`）与目录拉取（`loadPermissionCatalog`），界面上那一档由它决定列不列 |
 | `scripts/toolbarFit.test.ts` | 表的口径、极窄保底、逐档临界宽度、单调性、同槽位互斥、间距计入、渲染次序 |
 | `scripts/styles.test.ts` | 测量层三条硬约束、定位基准、旧阈值通道未回来、纯文字元素自己出省略号 |
 | `test/preview.html` | 夹具要留样例，否则预览页里看不到那一档 |

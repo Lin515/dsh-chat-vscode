@@ -293,7 +293,7 @@ export function sessionPatch<K extends keyof SessionView>(
 
 /**
  * 全局外观态（**与会话无关**的那几项：语言、diff 排版、字号、问卷批次、过程折叠阈值、
- * 运行中发送行为）。
+ * 运行中发送行为、权限目录里有没有 Auto review 档）。
  *
  * 与 `SessionView` 同一个来源形态与同一条折返流水线；它填的是首帧快照里属于部署/窗口
  * 设置的那一半。刻意与 `SessionView` 分开：会话切换时它们**不变**，混在一起会让
@@ -306,6 +306,8 @@ export interface AppearanceView {
   questionBatch?: ChatState["questionBatch"];
   turnProcessThreshold?: ChatState["turnProcessThreshold"];
   busyEnter?: ChatState["busyEnter"];
+  /** 部署有没有实验性的 Auto review 权限档（`permissions` 目录，见 `shared/chat.ts`）。 */
+  permissionAutoReview?: ChatState["permissionAutoReview"];
   /** 新会话的工作目录（空态页的提示行；没有打开文件夹时界面可改）。 */
   workspace?: ChatState["workspace"];
   /** 部署提供的 agent 预设目录（空态页的下拉框）。 */
@@ -321,6 +323,7 @@ export const APPEARANCE_VIEW_KEYS = [
   "questionBatch",
   "turnProcessThreshold",
   "busyEnter",
+  "permissionAutoReview",
   "workspace",
   "agentPresets",
 ] as const satisfies readonly (keyof AppearanceView)[];
@@ -338,6 +341,9 @@ export const APPEARANCE_FIELDS = {
     read: (source) => source.turnProcessThreshold?.() as AppearanceView["turnProcessThreshold"],
   },
   busyEnter: { read: (source) => source.busyEnter?.() as AppearanceView["busyEnter"] },
+  permissionAutoReview: {
+    read: (source) => source.permissionAutoReview?.() as AppearanceView["permissionAutoReview"],
+  },
   workspace: { read: (source) => source.workspace?.() as AppearanceView["workspace"] },
   agentPresets: { read: (source) => source.agentPresets?.() as AppearanceView["agentPresets"] },
 } satisfies AppearanceFields;

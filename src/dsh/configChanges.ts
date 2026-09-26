@@ -8,7 +8,7 @@
  * | 文件 | 宿主侧机制 | 转发给客户端的帧 |
  * |---|---|---|
  * | `$DSH_HOME/settings.yaml`（或 `.json`） | `dsh-settings-file` chokidar 监视 → `publish` → `settings/document-updated` | `settings/document-updated(ns, revision)` |
- * | `$DSH_HOME/cordis.patch.yml`、`$DSH_HOME/profiles/<name>/cordis.patch.yml` | `watchUserPatches` + Cordis HMR 重新组合 | 无专属帧；插件行增删的**后果**经 `commands/change` / `llm/adapters-updated` 出来 |
+ * | `$DSH_HOME/cordis.patch.yml`、`$DSH_HOME/profiles/<name>/cordis.patch.yml` | `watchUserPatches` + Cordis HMR 重新组合 | 无专属帧；插件行增删的**后果**经 `commands/change` / `llm/adapters-updated` / `permission-presets/catalog-changed` 出来 |
  * | `$DSH_HOME/.credentials.yaml` | `dsh-credentials-local` chokidar 监视 → `credentials/reference-updated` | `credentials/reference-updated(ref)` |
  * | skill 根目录（`~/.dsh/skills`、`~/.agents/skills`、项目内 skill 目录） | `dsh-skill-filesystem` chokidar 监视 | **没有**（`skills/change` 不在转发白名单里） |
  *
@@ -46,6 +46,12 @@ export interface ConfigChangeActions {
   reloadModelTopology(): Promise<void>;
   /** 命令 / 技能目录变了；给了 `sessionId` 就只重取那一个会话。 */
   reloadCommandCatalogs(sessionId?: string): Promise<void>;
+  /**
+   * 权限目录变了（`permission-presets/catalog-changed`）：实验性的 Auto review
+   * 集成装上或卸下都会让 `auto` 这一档在 `permissionPresets/catalog` 里出现或消失，
+   * 界面据此决定权限列表里列不列它。
+   */
+  reloadPermissionCatalog(): Promise<void>;
 }
 
 /** 一轮重读要做的事：同一批 emit 帧合并成一轮，避免配置改一次打出一串 RPC。 */
@@ -56,10 +62,18 @@ interface Round {
   allCatalogs: boolean;
   /** 只重取这些会话的目录（技能集合随 agent preset 变）。 */
   catalogs: Set<string>;
+  /** 重取权限目录（进程级：Auto review 档在不在）。 */
+  permissionCatalog: boolean;
 }
 
 function newRound(): Round {
-  return { settings: false, topology: false, allCatalogs: false, catalogs: new Set<string>() };
+  return {
+    settings: false,
+    topology: false,
+    allCatalogs: false,
+    catalogs: new Set<string>(),
+    permissionCatalog: false,
+  };
 }
 
 export class ConfigChangeRouter {
@@ -105,6 +119,12 @@ export class ConfigChangeRouter {
         else round.catalogs.add(sessionId);
         break;
       }
+      case "permission-presets/catalog-changed":
+        // 官方 `ui-permission-presets` 收到它就作废并重读进程目录
+        // （`PermissionCatalogDirectory` 的 invalidate + refresh）：Auto review
+        // 集成装上/卸下只发这一条，不重取的话权限列表里那一档永远停在旧结论上。
+        round.permissionCatalog = true;
+        break;
       default:
         return false;
     }
@@ -143,7 +163,8 @@ export class ConfigChangeRouter {
   private async runRound(round: Round): Promise<void> {
     const catalogs = round.allCatalogs ? "all" : [...round.catalogs].join(",") || "-";
     this.log(
-      `[config] 配置热重载：settings=${round.settings} topology=${round.topology} catalogs=${catalogs}`,
+      `[config] 配置热重载：settings=${round.settings} topology=${round.topology} catalogs=${catalogs}` +
+        ` permissionCatalog=${round.permissionCatalog}`,
     );
     // **顺序**执行，不并发：重读设置时要用到刚重取的模型目录（部署默认模型的
     // 标签与档位都从目录里取，并发会让它读到旧目录）
@@ -152,6 +173,9 @@ export class ConfigChangeRouter {
     if (round.allCatalogs) await this.act("命令目录", () => this.actions.reloadCommandCatalogs());
     for (const sessionId of round.catalogs) {
       await this.act(`命令目录(${sessionId})`, () => this.actions.reloadCommandCatalogs(sessionId));
+    }
+    if (round.permissionCatalog) {
+      await this.act("权限目录", () => this.actions.reloadPermissionCatalog());
     }
   }
 

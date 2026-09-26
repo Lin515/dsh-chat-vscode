@@ -4315,6 +4315,21 @@ button.meta-chip:hover {
   font-size: var(--font-size-2xs);
 }
 
+/* 实验标记（`EXP`）：Auto review 那一档的档位名右上角（权限胶囊与权限弹层两处都用）。
+   形态照官方 `ui-permission-presets` 的 `.badge`：官方在 13px 的档位名旁边用 **8px**
+   （比它自己最小的文本档还小两档），所以这里也压到基准 −5px（基准 13px 时正是 8px），
+   而不是沿用 2xs（那与描述文字一样大，看起来像档位名的一部分而不是标记）。
+   下限 7px 是给用户把界面字号调得很小时兜底。 */
+.perm-badge {
+  margin-left: 3px;
+  color: var(--muted);
+  font-size: max(7px, calc(var(--font-size-2xs) - 3px));
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  line-height: 1;
+  vertical-align: super;
+}
+
 .confirm-block {
   display: flex;
   flex-direction: column;
@@ -4331,6 +4346,24 @@ button.meta-chip:hover {
   font-size: var(--font-size-2xs);
   color: var(--description);
   line-height: 1.55;
+}
+
+/* 风险确认卡里的勾选项（Auto review：官方 `RiskConfirmation` 要求先勾才能点确认）。
+   整行可点（label 包住 input），与弹层里其它「一行一个可点物」一致；
+   `align-items: flex-start` 让长文案换行时勾选框留在首行。 */
+.confirm-ack {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: var(--font-size-2xs);
+  color: var(--description);
+  line-height: 1.55;
+  cursor: pointer;
+}
+
+.confirm-ack input {
+  flex: 0 0 auto;
+  margin: 2px 0 0;
 }
 
 /* ============================ jobs panel ============================ */

@@ -8,7 +8,7 @@ import {
   type CSSProperties,
   type ReactNode,
 } from "react";
-import type { GoalView } from "../../shared/chat";
+import { AUTO_REVIEW_PRESET, type GoalView } from "../../shared/chat";
 import type { AppState } from "../state";
 import { post } from "../bridge";
 import {
@@ -25,6 +25,7 @@ import {
   IconShield,
   IconShieldCheck,
   IconShieldFilled,
+  IconShieldReview,
   IconStop,
   IconTarget,
 } from "../icons";
@@ -61,12 +62,44 @@ import { BAR_ORDER, pickVariants, type ToolbarVariant } from "../toolbarFit";
 const RESTORE_TOLERANCE_PX = 1;
 
 /**
+ * 一档权限在弹层里的展示定义，以及（需要拦一下的）确认卡文案。
+ *
+ * `confirm` 存在就表示「选它要先过一次警告」：完全权限（本扩展历来如此）与
+ * Auto review（官方 `RiskConfirmation`，多一道勾选）。
+ */
+interface PermissionSeat {
+  id: string;
+  label: string;
+  desc: string;
+  icon: ReactNode;
+  /** 档位名右上角的实验标记（官方 `auto.badge` = `EXP`）。 */
+  badge?: string;
+  confirm?: {
+    title: string;
+    body: string;
+    enable: string;
+    /** 需要勾选才能点确认时的那句勾选文案（官方 `auto.confirm.acknowledge`）。 */
+    acknowledge?: string;
+  };
+}
+
+/**
  * 权限模式的展示定义：图标固定用盾牌（WebUI 未提供专用图标），文案与 WebUI 对齐。
+ *
+ * `autoReview` 为真时在末尾追加**实验性的 Auto review 档**——它不是配置表里的一档，
+ * 而是 `dsh-experimental-auto-review` 集成在世时才会出现在
+ * `permissionPresets/catalog.options` 里的那一档（宿主据此下发
+ * `state.permissionAutoReview`）。所以它存在与否**只由 DSH 决定**，界面不自己猜。
+ *
+ * 七条文案（档位名 / EXP 标 / 描述 / 警告标题 / 警告正文 / 勾选 / 确认按钮）逐字抄
+ * 官方 `ui-permission-presets`：连**中文词典里那一档的名字也是 `Auto review`**
+ * （官方没有翻译它），所以这里也不给中文另起名字。
  */
 function permissionMeta(
   texts: ReturnType<typeof useTexts>,
-): { id: string; label: string; desc: string; icon: ReactNode }[] {
-  return [
+  autoReview: boolean,
+): PermissionSeat[] {
+  const seats: PermissionSeat[] = [
     { id: "read-only", label: texts.permReadOnly, desc: texts.permReadOnlyDesc, icon: <IconShield size={12} /> },
     {
       id: "workspace-write",
@@ -79,8 +112,29 @@ function permissionMeta(
       label: texts.permFullAccess,
       desc: texts.permFullAccessDesc,
       icon: <IconShieldFilled size={12} />,
+      confirm: {
+        title: texts.permConfirmTitle,
+        body: texts.permConfirmBody,
+        enable: texts.permConfirmEnable,
+      },
     },
   ];
+  if (autoReview) {
+    seats.push({
+      id: AUTO_REVIEW_PRESET,
+      label: texts.permAutoReview,
+      desc: texts.permAutoReviewDesc,
+      badge: texts.permAutoReviewBadge,
+      icon: <IconShieldReview size={12} />,
+      confirm: {
+        title: texts.permAutoReviewTitle,
+        body: texts.permAutoReviewBody,
+        enable: texts.permAutoReviewEnable,
+        acknowledge: texts.permAutoReviewAcknowledge,
+      },
+    });
+  }
+  return seats;
 }
 
 /** 一帧都没结算时的空集合（模块级常量：避免每次渲染新建 Set 触发无谓的重渲染）。 */
@@ -194,9 +248,23 @@ export function Composer({
   // 权限按钮与模型按钮同机制：弹层已开时再点按钮是关闭，而不是被外部检测
   // 「关掉」之后又被 click 翻转回来
   const modeToggleRef = useRef(false);
-  const [confirmFullAccess, setConfirmFullAccess] = useState(false);
+  /**
+   * 正在确认哪一档权限（`null` = 没在确认，弹层显示档位列表）。
+   *
+   * 存**档位 id** 而不是一个布尔：需要过警告的档有两档（完全权限、Auto review），
+   * 各自的文案与勾选要求都不同。选中它时顺带复位勾选态，避免上一档的勾选漏过来。
+   */
+  const [confirmPermission, setConfirmPermission] = useState<string | null>(null);
+  /** Auto review 警告里的「我已了解这些风险」勾选（官方 `RiskConfirmation` 要求先勾才能确认）。 */
+  const [acknowledged, setAcknowledged] = useState(false);
   const texts = useTexts();
-  const permissions = permissionMeta(texts);
+  // 目录说「这个部署有 Auto review 这一档」才列出来；当前值已经是 `auto` 时也列
+  // （目录那一次请求可能失败或还没回来，而此时会话确实停在那一档上，不列的话胶囊
+  // 会退回显示别的档位——假结论）。判据合成一处，列表与胶囊读同一份。
+  const permissions = permissionMeta(
+    texts,
+    state.permissionAutoReview === true || state.permission === AUTO_REVIEW_PRESET,
+  );
 
   const draft = state.draft;
   /**
@@ -303,8 +371,13 @@ export function Composer({
     onDraft("");
   };
 
+  // 认不出的当前值（`custom`：两个旋钮的组合不对应任何一档）退回第二档显示，
+  // 与之前一致。
   const currentPermission =
     permissions.find((item) => item.id === state.permission) ?? permissions[1];
+  /** 正在确认的那一档（弹层此时显示它的警告卡而不是档位列表）。 */
+  const confirmSeat = permissions.find((item) => item.id === confirmPermission);
+  const confirmCard = confirmSeat?.confirm;
 
   // 生成速度：**始终**显示明细里那条「平均输出速度」——全会话累计
   // （Σ 输出 token ÷ Σ 解码窗口，`sessionStats` 投影），与 Web 的会话统计同口径。
@@ -349,7 +422,12 @@ export function Composer({
   // 缺数据的档位（模型没有思考档位、还没有 tps、还没有上下文测量）直接不进表——
   // 渲染成 null 的档位会白占一个坑位和一段间距，把本来装得下的东西挤掉。
 
-  /** 权限胶囊：`withLabel` 是用户口径里最低优先级那一档（图标 + 权限名）。 */
+  /**
+   * 权限胶囊：`withLabel` 是用户口径里最低优先级那一档（图标 + 权限名）。
+   *
+   * `EXP` 标只在**带文字那一档**出现：它本身就是一段文字，而「只有图标」那一档是
+   * P0 的最小宽度形态（Auto review 用带审查之眼的盾牌图标区分，见 `IconShieldReview`）。
+   */
   const permissionPill = (withLabel: boolean) => (
     <button
       className="pill-mode"
@@ -364,14 +442,22 @@ export function Composer({
           modeToggleRef.current = false;
         }, 0);
         setModeOpen((v) => {
-          // 经按钮关闭时顺带复位完全权限确认态
-          if (v) setConfirmFullAccess(false);
+          // 经按钮关闭时顺带复位确认态（含勾选）
+          if (v) {
+            setConfirmPermission(null);
+            setAcknowledged(false);
+          }
           return !v;
         });
       }}
     >
       {currentPermission.icon}
-      {withLabel ? <span className="pill-mode-label">{currentPermission.label}</span> : null}
+      {withLabel ? (
+        <span className="pill-mode-label">
+          {currentPermission.label}
+          {currentPermission.badge ? <sup className="perm-badge">{currentPermission.badge}</sup> : null}
+        </span>
+      ) : null}
     </button>
   );
 
@@ -672,26 +758,48 @@ export function Composer({
                   // 由按钮 toggle 触发的关闭不在此处理（按钮自己已翻转状态）
                   if (modeToggleRef.current) return;
                   setModeOpen(false);
-                  setConfirmFullAccess(false);
+                  setConfirmPermission(null);
+                  setAcknowledged(false);
                 }}
               >
                 <div className="popover-section">{texts.permission}</div>
-                {confirmFullAccess ? (
+                {confirmSeat && confirmCard ? (
+                  /* 风险确认卡：文案逐字取官方（完全权限 + Auto review 两档各一套）。
+                     Auto review 那一档多一道勾选（官方 `RiskConfirmation` 同款：
+                     没勾选时确认按钮不可点），因为它不做沙箱隔离、还会花额外 token。 */
                   <div className="confirm-block">
-                    <div className="confirm-title">{texts.permConfirmTitle}</div>
-                    <div className="confirm-body">{texts.permConfirmBody}</div>
+                    <div className="confirm-title">{confirmCard.title}</div>
+                    <div className="confirm-body">{confirmCard.body}</div>
+                    {confirmCard.acknowledge ? (
+                      <label className="confirm-ack">
+                        <input
+                          type="checkbox"
+                          checked={acknowledged}
+                          onChange={(event) => setAcknowledged(event.currentTarget.checked)}
+                        />
+                        <span>{confirmCard.acknowledge}</span>
+                      </label>
+                    ) : null}
                     <div className="approval-actions">
                       <button
                         className="btn btn-primary"
+                        disabled={confirmCard.acknowledge !== undefined && !acknowledged}
                         onClick={() => {
-                          post({ type: "setPermission", permission: "danger-full-access" });
+                          post({ type: "setPermission", permission: confirmSeat.id });
                           setModeOpen(false);
-                          setConfirmFullAccess(false);
+                          setConfirmPermission(null);
+                          setAcknowledged(false);
                         }}
                       >
-                        {texts.permConfirmEnable}
+                        {confirmCard.enable}
                       </button>
-                      <button className="btn btn-ghost" onClick={() => setConfirmFullAccess(false)}>
+                      <button
+                        className="btn btn-ghost"
+                        onClick={() => {
+                          setConfirmPermission(null);
+                          setAcknowledged(false);
+                        }}
+                      >
                         {texts.cancel}
                       </button>
                     </div>
@@ -702,8 +810,11 @@ export function Composer({
                       key={item.id}
                       className={`popover-item${state.permission === item.id ? " is-selected" : ""}`}
                       onClick={() => {
-                        if (item.id === "danger-full-access" && state.permission !== item.id) {
-                          setConfirmFullAccess(true);
+                        // 需要过警告的档（完全权限、Auto review）：先弹确认卡，
+                        // 真正下发在确认按钮那一步。当前已经停在它上面时不弹（无从确认什么）。
+                        if (item.confirm && state.permission !== item.id) {
+                          setAcknowledged(false);
+                          setConfirmPermission(item.id);
                           return;
                         }
                         post({ type: "setPermission", permission: item.id });
@@ -715,7 +826,10 @@ export function Composer({
                           Full Access 曾经被长描述挤成 `Read O…`（预览页 252px 宽实测）。
                           注意下面 `/plan` 那一行**不**加这个标记——那行的副文字是命令名，
                           该让位的是左侧标签，与用户「命令要完整」的口径一致。 */}
-                      <span className="popover-item-main is-priority">{item.label}</span>
+                      <span className="popover-item-main is-priority">
+                        {item.label}
+                        {item.badge ? <sup className="perm-badge">{item.badge}</sup> : null}
+                      </span>
                       <span className="popover-item-sub">{item.desc}</span>
                     </button>
                   ))

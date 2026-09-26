@@ -29,9 +29,6 @@
   `release:verify` 强制要求当前 ref 是 `dsh-v*` tag。所以 **tag 一定先于 npm 存在**，
   「官方 git tag 有、npm 上查不到」就是**仅在 GitHub 发布的测试版**（实测存在：`0.1.3-alpha.1`）。
   这是本工具的机械判据，不需要人去判断。
-- **扩展商店的对齐基准是 npm 的 `latest` 现值**。不要用版本串去推导「是不是正式版」：
-  每次读 registry 的 `dist-tags` 现值即可（当前 `latest` 指向一个 rc，因为正式版还没发过），
-  `npm run dsh:watch` 会把当前基准打出来。
 
 ---
 
@@ -100,12 +97,21 @@ CHANGELOG：某版本若含与 DSH 对齐的改动，在该版本条目里写明
 | 审批原因的旧形态（只有 `reason`） | ≤ 0.1.7-rc.1 | `src/dsh/controller.ts` 的 `deliverEventToScope`、`src/webview/components/Rows.tsx` 的 `ApprovalCard` | 2026-09-24 | 2026-11-24 | 0.1.7-rc.2 起 asker 可附只用于展示的本地化 `displayReason`（官方界面优先用它）；没有它时仍显示审计用的 `reason` |
 <!-- dsh-compat:layers:end -->
 
-登记之外还有两条仍然有效的口径（来自核对时的取舍，不随上述条目到期）：
+登记之外还有三条仍然有效的口径（来自核对时的取舍，不随上述条目到期）：
 
 - **预设选择的可见性刻意 fail-open**：新旧两代判据合成在 `agentPresetsFromList` 的第二个参数上，
   但**开关值到达之前本扩展按 `true`、官方按 `false`**——否则连接初期那枚预设胶囊会闪一下。
+- **权限目录的 Auto review 档刻意 fail-closed**：有没有那一档只认
+  `permissionPresets/catalog` 的 `options`（`permissionCatalogHasAuto` 之外没有第二个判据）。
+  那一档来自 `dsh-app-boot` 的 `OPTIONAL_BUNDLES`（随安装交付、**默认关着**，由用户在
+  profile 的 `dsh.profile.bundles` 里打开），所以**同一版本不同部署的目录不一样**：实测
+  开着的部署 `options` 里有 `auto`，一次性新 home 的默认 web profile 里没有（后者执行
+  `/permission auto` 被服务端拒成 `unknown preset "auto"`）。老服务端没有这个端点（404）
+  或插件没装时**不列那一档**——宁可少一个入口，也不列出一个点了会被拒绝的档位；连续失败
+  里的「这次没拿到」（超时 / 断线 / 5xx）**不改结论**，只记日志。
 - **行为面变化工具看不见**：`permission-presets` 的 `AUTO_PRESET_SPEC.approval` 由 `never` 改成
-  `ask`（Auto 下评审拒绝会走用户审批）。本扩展本来就渲染 `approval/request`，没有要改的判据。
+  `ask`（Auto 下评审拒绝会走用户审批）。本扩展本来就渲染 `approval/request`（拒绝那次询问照旧
+  弹卡），权限目录这一侧没有要跟着改的判据。
 
 ---
 

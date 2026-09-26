@@ -435,6 +435,10 @@
             ]
           },
           permission: "workspace-write",
+          // 权限目录里有实验性的 Auto review 档（`permissionPresets/catalog.options`
+          // 含 `auto`）：权限弹层里多一档、带 EXP 标与官方警告卡。预览页点开权限胶囊
+          // 就能看到它；把这里改成 false 看「没有这一档」的形态。
+          permissionAutoReview: true,
           planMode: false,
           // 问卷一次展开几道题（`dshChat.questionBatch`）：题目多于它时依次问答。
           // 夹具里的待答问卷是 2 题 → 走「一次展开」（默认阈值 3）。

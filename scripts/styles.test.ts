@@ -369,8 +369,35 @@ console.log("styles: 鲸鱼蓝色独属、各节点有专属色 ✓");
     "尾部「整个目录」按钮必须仍是 pick（鼠标唯一「选中整个目录」的入口）",
   );
   assert.ok(
-    /popover-item-main is-priority">\{item\.label\}/.test(composer),
+    /popover-item-main is-priority">\s*\{item\.label\}/.test(composer),
     "权限弹层的档位名也要 .is-priority（否则英文长描述会把档位名挤成 `Read O…`）",
+  );
+
+  // 实验档（Auto review）的确认卡：官方 `RiskConfirmation` 要求**先勾选**才能点确认，
+  // 而勾选项与「确认按钮的可用性」是两处接线——只加一处就会出现「勾了没反应」或
+  // 「没勾也能开」这种假门。这里钉住两者都在，且判据读的是同一个勾选态。
+  const ack = rule(".confirm-ack");
+  assert.ok(
+    /align-items:\s*flex-start/.test(ack),
+    `.confirm-ack 的勾选框要对齐首行（长文案换行时不能飘到中间），现在是 "${ack.trim()}"`,
+  );
+  assert.ok(
+    /<input[\s\S]{0,200}checked=\{acknowledged\}/.test(composer) &&
+      /disabled=\{confirmCard\.acknowledge !== undefined && !acknowledged\}/.test(composer),
+    "Auto review 的确认按钮必须由勾选态把关（未勾选时 disabled），否则那道警告只是摆设",
+  );
+  assert.ok(
+    /const \[acknowledged, setAcknowledged\] = useState\(false\)/.test(composer),
+    "勾选态要显式复位（换档位/关弹层时清零），不能靠输入框自己记住",
+  );
+
+  // 实验标记（`EXP`）是**标记**不是文字：官方在 13px 的档位名旁边用 8px（比它自己最小的
+  // 文本档还小两档）。用 2xs 时它与描述文字同样大，看起来像档位名的一部分（用户 2026-09-26
+  // 报「有点太大」）。这里钉住它**显式算过**、不是直接取 2xs。
+  const badge = rule(".perm-badge");
+  assert.ok(
+    /font-size:[^;]*calc\(/.test(badge) && !/font-size:\s*var\(--font-size-2xs\);/.test(badge),
+    `EXP 标必须明显小于档位名（现在是 "${badge.trim()}"）——取 2xs 会与描述文字一样大`,
   );
 }
 console.log("styles: 主文字优先完整、描述先省略 ✓");

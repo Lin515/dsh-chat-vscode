@@ -42,6 +42,9 @@ function harness(gateFirstSettings = false) {
     async reloadCommandCatalogs(sessionId) {
       calls.push(`catalogs:${sessionId ?? "all"}`);
     },
+    async reloadPermissionCatalog() {
+      calls.push("permissions");
+    },
   };
   const logs: string[] = [];
   const router = new ConfigChangeRouter(actions, (line) => logs.push(line));
@@ -158,6 +161,24 @@ console.log("config: llm/adapters-updated → 目录 + 设置 ✓");
 }
 console.log("config: commands/change 与 agent-preset/selected 的目录失效 ✓");
 
+// ---------- 4b. 权限目录（Auto review 档在不在） ----------
+//
+// `permission-presets/catalog-changed` 是**载荷为空**的一条：Auto review 集成
+// （`dsh-experimental-auto-review`）装上或卸下时，`permissionPresets/catalog` 的
+// `options` 里会多出/少掉 `auto` 那一档。官方 `ui-permission-presets` 收到它就
+// 作废并重读目录，本扩展也要重取——不重取的话权限列表里那一档永远停在旧结论上。
+{
+  const h = harness();
+  assert.strictEqual(
+    h.router.handle("permission-presets/catalog-changed", []),
+    true,
+    "permission-presets/catalog-changed 必须被消费",
+  );
+  await h.router.settled();
+  assert.deepStrictEqual(h.calls, ["permissions"], "只重取权限目录，不牵连设置/模型目录");
+}
+console.log("config: permission-presets/catalog-changed → 重取权限目录 ✓");
+
 // ---------- 5. 一个动作失败不能拖垮同轮其余动作，也不能卡住下一轮 ----------
 {
   const calls: string[] = [];
@@ -219,8 +240,9 @@ console.log("config: 首轮失败不影响其余动作与后续轮次 ✓");
   assert.ok(
     /reloadSettings: \(\) => this\.reloadSettings\(\)/.test(controller) &&
       /reloadModelTopology: \(\) => this\.loadModels\(\)/.test(controller) &&
-      /reloadCommandCatalogs: \(sessionId\) => this\.reloadCommandCatalogs\(sessionId\)/.test(controller),
-    "三个重读动作必须都接上控制器",
+      /reloadCommandCatalogs: \(sessionId\) => this\.reloadCommandCatalogs\(sessionId\)/.test(controller) &&
+      /reloadPermissionCatalog: \(\) => this\.loadPermissionCatalog\(\)/.test(controller),
+    "四个重读动作必须都接上控制器",
   );
   // 部署默认模型必须能**刷新**到没有自己选择的域：旧判据 `scope.model || ...`
   // 会把新会话（投影是 {lastUsed:null,next:null}、胶囊显示部署默认）挡在门外，

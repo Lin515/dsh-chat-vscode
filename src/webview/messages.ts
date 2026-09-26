@@ -195,6 +195,30 @@ export const MESSAGES = {
     en: "New sessions will skip most confirmations and may run sensitive operations, modify files or run external commands. Only use it when you trust the work that follows.",
   },
   permConfirmEnable: { zh: "启用完全权限", en: "Enable full access" },
+  /**
+   * 实验性的 Auto review 档（`permissions` 目录里出现 `auto` 时才列出来）。
+   *
+   * 七条**逐字抄官方** `ui-permission-presets` 的 `accessZh` / `accessEn`
+   * （`auto.label` / `auto.badge` / `auto.description` / `auto.confirm.*`）：
+   * 官方中文词典里这一档的名字**本身就不翻译**（仍是 `Auto review`），
+   * 只有周围的说明与警告是中文，所以这里也不自己起中文名。
+   */
+  permAutoReview: { zh: "Auto review", en: "Auto review" },
+  permAutoReviewBadge: { zh: "EXP", en: "EXP" },
+  permAutoReviewDesc: {
+    zh: "无沙箱运行；每次原生工具调用和 PTC 内层调用前由同一模型进行实验性审查。",
+    en: "Run without a sandbox after an experimental same-model review of every native tool call and PTC inner call.",
+  },
+  permAutoReviewTitle: { zh: "确认启用 Auto review（实验）？", en: "Enable Auto review (experimental)?" },
+  permAutoReviewBody: {
+    zh: "Auto review 不使用沙箱。每次原生工具调用和 PTC 内层调用前，都会由与当前 agent 相同的模型进行审查；审查拒绝的调用由你批准或拒绝。此功能仍属实验性，可能误放行或误拒绝，并会消耗额外 token。",
+    en: "Auto review runs without a sandbox. Before every native tool call and PTC inner call, the same model as the current agent reviews whether to allow it; you approve or reject each call it denies. This feature is experimental, can falsely allow or deny actions, and uses additional tokens.",
+  },
+  permAutoReviewAcknowledge: {
+    zh: "我已了解这些风险，并愿意继续",
+    en: "I understand these risks and want to continue",
+  },
+  permAutoReviewEnable: { zh: "启用 Auto review", en: "Enable Auto review" },
   enterPlanMode: { zh: "进入计划模式", en: "Enter plan mode" },
   exitPlanMode: { zh: "退出计划模式", en: "Exit plan mode" },
 

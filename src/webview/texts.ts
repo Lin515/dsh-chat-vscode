@@ -102,6 +102,18 @@ export interface Texts {
   permConfirmTitle: string;
   permConfirmBody: string;
   permConfirmEnable: string;
+  /**
+   * 实验性的 Auto review 档（官方 `ui-permission-presets` 的 `auto.*` 七条，逐字）。
+   * 只有 DSH 装着 `dsh-experimental-auto-review`（目录里有 `auto`）时界面上才会
+   * 用到它们，但词典两侧永远齐备。
+   */
+  permAutoReview: string;
+  permAutoReviewBadge: string;
+  permAutoReviewDesc: string;
+  permAutoReviewTitle: string;
+  permAutoReviewBody: string;
+  permAutoReviewAcknowledge: string;
+  permAutoReviewEnable: string;
   enterPlanMode: string;
   exitPlanMode: string;
 

@@ -85,7 +85,7 @@ import {
   type WireChatState,
 } from "./sessionView";
 import { queueItemsFromInbox, queueItemsFromWire, type QueuedItemEntry, type QueueOrigin } from "./queueView";
-import { modelSelectionFromProjection, subagentCatalogFromProjection, subagentsFromList, upsertSubagent, withSubagentActivity, agentPresetsFromList } from "./projections";
+import { modelSelectionFromProjection, subagentCatalogFromProjection, subagentsFromList, upsertSubagent, withSubagentActivity, agentPresetsFromList, permissionCatalogHasAuto } from "./projections";
 import type { ModelSelectionDecoded, SubagentCatalogEntryView } from "./projections";
 import {
   ingestControlBaseline,
@@ -710,6 +710,13 @@ export class ChatController implements vscode.Disposable {
   /** 上一次折算结果的签名：两个输入各自到达时都折算，结果没变就不发帧。 */
   private agentPresetSignature = "";
   /**
+   * 这个部署有没有实验性的 Auto review 权限档（`permissionPresets/catalog`）。
+   *
+   * 连上后取一次，`permission-presets/catalog-changed` 再重取。`false` 是**默认值**，
+   * 也是「拿不到证据」的取值——按肯定证据写（老服务端没有这个 remote 时不列那一档）。
+   */
+  private permissionAutoReview = false;
+  /**
    * 客户端这一侧的「允许选择预设」偏好（宿主 `ui-settings` 的 `enabled`，官方前端内部叫
    * developer tools、rc.2 的界面名是「代码工作工具」）。`undefined` = 还没读到，按**允许**
    * 处理——官方 schema 的默认值就是 `true`，而官方前端在值到达前按 `false`；本扩展刻意
@@ -999,6 +1006,7 @@ export class ChatController implements vscode.Disposable {
         reloadSettings: () => this.reloadSettings(),
         reloadModelTopology: () => this.loadModels(),
         reloadCommandCatalogs: (sessionId) => this.reloadCommandCatalogs(sessionId),
+        reloadPermissionCatalog: () => this.loadPermissionCatalog(),
       },
       log,
     );
@@ -1537,6 +1545,8 @@ export class ChatController implements vscode.Disposable {
        * `refreshImageCaps` 把它重读出来（连上模型目录时那一次）。
        */
       busyEnter: () => (this.busyEnter === "steer" ? "steer" : "queue"),
+      /** 权限列表里那一档实验性的 Auto review（进程级事实，见 `loadPermissionCatalog`）。 */
+      permissionAutoReview: () => this.permissionAutoReview,
       /** 新会话的工作目录：空态页那一行提示（没有打开文件夹时界面可改）。 */
       workspace: () => this.workspaceView(),
       /** 部署的 agent 预设目录（空表 = 没有可选项，界面什么都不渲染）。 */
@@ -2524,6 +2534,50 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
+   * 取一次进程级权限目录（`permissionPresets/catalog`），把「有没有实验性的
+   * Auto review 档」这一点记下来并推给窗口。
+   *
+   * 失败分两类，和「按肯定证据写」同一条口径：
+   * - **拿得到肯定证据的「没有」**：老服务端没有这个 remote（`endpointAbsent`：
+   *   404/405）、插件没装（`gateway/invocation-unavailable`）——那时这个部署确实
+   *   没有这一档，落成「不可用」，并且**不记错误日志**（那是合法部署，不是故障）；
+   * - **这次没拿到**（超时、断线、5xx）：**保留原结论**，只记一行日志。把一次抖动
+   *   当成「没有」会让停在 Auto review 上的会话在界面上退回别的档位显示（假结论），
+   *   而 `permission-presets/catalog-changed` 之后还会再取。
+   *
+   * 判据本身只有一处实现（`permissionCatalogHasAuto`，纯函数、离线可断言）；
+   * 这里只负责取、记、推。
+   */
+  private async loadPermissionCatalog(): Promise<void> {
+    if (!this.client) return;
+    let value: unknown;
+    try {
+      value = await this.client.permissionCatalog();
+    } catch (error) {
+      const absent =
+        endpointAbsent(error) ||
+        (error instanceof DshApiError && error.code === "gateway/invocation-unavailable");
+      if (absent) this.publishPermissionCatalog(false);
+      else this.log(`[permission] 权限目录获取失败（保留上一次结论）：${this.describeError(error)}`);
+      return;
+    }
+    this.publishPermissionCatalog(permissionCatalogHasAuto(value));
+  }
+
+  /**
+   * 把「有没有 Auto review 档」推给所有窗口，**变了才发帧**。
+   *
+   * 与 `publishAgentPresets` 同款：`settings/document-updated` 这类无关刷新也会走到
+   * 这里的话，每轮都发一帧会让界面无谓重渲染。
+   */
+  private publishPermissionCatalog(available: boolean): void {
+    if (available === this.permissionAutoReview) return;
+    this.permissionAutoReview = available;
+    this.log(`[permission] Auto review 档位：${available ? "可用" : "不可用"}`);
+    this.emitAll({ type: "patch", patch: { permissionAutoReview: available } });
+  }
+
+  /**
    * 用当前的两个输入（roster 原始值 + 客户端偏好）折算预设目录，变了才推给窗口。
    *
    * 两个输入**到达顺序不定**（目录在一次 RPC 之后、偏好在 `settings/describe` 之后，
@@ -2638,8 +2692,10 @@ export class ChatController implements vscode.Disposable {
     this.openEventsStream();
     this.openWorkspaceStream();
     // 预设目录与工作目录提示都是空态页要用的东西，连上就取一次（目录是部署级的，
-    // 与具体会话无关；工作目录直接现读 VS Code，不发请求）
+    // 与具体会话无关；工作目录直接现读 VS Code，不发请求）；权限目录同理——它决定
+    // 权限列表里列不列 Auto review 那一档。
     void this.loadAgentPresets();
+    void this.loadPermissionCatalog();
     this.refreshWorkspace();
     // 顺便把 running 与会话列表对齐一次：掉线期间本轮可能已经收尾，而那段时间的状态位
     // 边缘（`api-session/status`）我们没收到；这也是「一切都从服务端重算」的一部分

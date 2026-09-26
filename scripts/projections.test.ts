@@ -25,6 +25,7 @@ import {
   goalFromProjection,
   imageLimitsFromProjection,
   modelSelectionFromProjection,
+  permissionCatalogHasAuto,
   permissionFromProjection,
   planModeFromProjection,
   sessionStatsFromProjection,
@@ -359,6 +360,45 @@ console.log("projections: subagents/list RPC 行过滤诊断项并带上 mode �
   assert.strictEqual(permissionFromProjection(null), undefined);
 }
 console.log("projections: permissions 只取 currentValue ✓");
+
+// 7.1b 权限目录：Auto review 档在不在（`permissionPresets/catalog`）
+//
+// 契约：`{options: PresetOption[]; defaultOptions: PresetOption[]; defaultPreset: string}`。
+// 判据只看 `options` 里有没有 `value === 'auto'`：
+// - 官方的 `names` = 配置表 + **在世时的 `auto`**（`registerAuto()`），所以目录就是
+//   「这个部署现在有没有这一档」的权威结论；
+// - `defaultOptions` 是「新会话默认值」的白名单，**永远不含 `auto`**——把它当判据会
+//   在真正的 Auto 部署上漏掉这一档（那正是 `agentPresetsFromList` 那次踩过的坑：
+//   拿一个不是给这条判据用的字段去判）。
+{
+  const autoOption = { value: "auto", name: "Auto review", description: "无沙箱运行…" };
+  const configured = [
+    { value: "workspace-write", name: "workspace-write" },
+    { value: "danger-full-access", name: "danger-full-access" },
+  ];
+  assert.strictEqual(
+    permissionCatalogHasAuto({ options: [...configured, autoOption], defaultOptions: configured, defaultPreset: "workspace-write" }),
+    true,
+    "options 里有 auto = 这个部署开着 Auto review 集成",
+  );
+  assert.strictEqual(
+    permissionCatalogHasAuto({ options: configured, defaultOptions: configured, defaultPreset: "workspace-write" }),
+    false,
+    "options 里没有 auto = 没有这一档",
+  );
+  assert.strictEqual(
+    permissionCatalogHasAuto({ options: [], defaultOptions: [...configured, autoOption] }),
+    false,
+    "只出现在 defaultOptions 里不算（那不是这条判据的字段）",
+  );
+  // 形状认不出 / 服务端没给目录：按「没有」处理（按肯定证据写）
+  assert.strictEqual(permissionCatalogHasAuto(undefined), false);
+  assert.strictEqual(permissionCatalogHasAuto(null), false);
+  assert.strictEqual(permissionCatalogHasAuto({}), false);
+  assert.strictEqual(permissionCatalogHasAuto({ options: "auto" }), false);
+  assert.strictEqual(permissionCatalogHasAuto({ options: [null, 7, "auto"] }), false, "元素不是对象时不猜");
+}
+console.log("projections: permissionPresets/catalog 的 auto 判据 ✓");
 
 // 7.2 todos：`content` / `text` 两种拼写、状态词表、坏值兜底
 {

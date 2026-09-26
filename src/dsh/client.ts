@@ -430,6 +430,21 @@ export class DshClient {
   }
 
   /**
+   * 进程级的权限目录（`permissionPresets/catalog`）。
+   *
+   * 契约：`PermissionCatalog` = `{options, defaultOptions, defaultPreset}`，**零形参**
+   * （`⟨C⟩` 快照里 `params: []`，与 `agentPresets/list` 同形）。官方前端只把它当
+   * 「当前可选档位」的来源：`options` 里有 `auto` 就说明实验性的 Auto review 集成
+   * 在世（`PermissionPresetService.names` = 配置表 + 在世时的 `auto`）。
+   *
+   * 返回值同样**刻意是 `unknown`**：形状由 `dsh/projections.ts` 的
+   * `permissionCatalogHasAuto` 收窄，这一层只负责把线格式带回来。
+   */
+  permissionCatalog(): Promise<unknown> {
+    return this.request("permissionPresets/catalog", {});
+  }
+
+  /**
    * 给某个**空白会话**换 agent 预设（`agentPresets/select`）。
    *
    * 参数名 `agentId` 是网关对「Agent 形参」的统一接线（会话 id 就是 agent 身份）。

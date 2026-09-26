@@ -1005,6 +1005,17 @@ export interface AgentPresetsView {
   selectable: boolean;
 }
 
+/**
+ * 实验性 Auto review 权限档的机器值（官方 `AUTO_REVIEW_PRESET`，逐字 `'auto'`）。
+ *
+ * 它**不是配置表里的一档**：官方 `permissionPresets/catalog` 只在
+ * `dsh-experimental-auto-review` 集成在世时把它放进 `options` 的末尾，所以
+ * 「这个部署有没有这一档」的判据就是目录里有没有这个值（宿主
+ * `dsh/projections.ts` 的 `permissionCatalogHasAuto`，界面按
+ * {@link ChatState.permissionAutoReview} 决定列不列出来）。
+ */
+export const AUTO_REVIEW_PRESET = "auto";
+
 export interface ChatState {
   connection: ConnectionState;
   /** 连接失败/服务器异常时的说明文本。 */
@@ -1218,6 +1229,16 @@ export interface ChatState {
    * 「按下回车那一刻 agent 还在不在跑」，自己算会算错。
    */
   busyEnter?: "queue" | "steer";
+  /**
+   * 部署是否提供实验性的 **Auto review** 权限档（`permissionPresets/catalog` 的
+   * `options` 里有没有 {@link AUTO_REVIEW_PRESET}）。
+   *
+   * 与 `agentPresets` 同一类事实：**进程级**、与会话无关（Auto 集成装上或卸下都会
+   * 发 `permission-presets/catalog-changed`，宿主据此重取），所以它在外观态那一份里，
+   * 切会话不该动它。界面按它决定权限列表里列不列出那一档；`true` 才是「有」——
+   * 拿不到证据（老服务端没有这个 remote、请求失败）时不下发，界面就不列（按肯定证据写）。
+   */
+  permissionAutoReview?: boolean;
   /**
    * 图片准入上限（`imageLimits` 投影）。
    *

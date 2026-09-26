@@ -853,7 +853,7 @@ export interface AgentPresetDocument {
 
 创建时也可以直接指定：`session/create` 的 `request.agentPreset`（与 `workspaceId` / `cwd` 并列，可同时给）。
 
-### 4.4 权限模式（read-only / workspace-write / full-access）
+### 4.4 权限模式（read-only / workspace-write / full-access / auto）
 
 **没有直接写权限的端点。** 权限是「预设名 → 两个独立旋钮」的映射，读取走会话投影 `permissions`，写入走 `/permission` **命令**。
 
@@ -883,6 +883,52 @@ selectFor(state) {
 
 对应的投影 state schema（`⟨P⟩\dsh-permission-presets\lib\index.js:136`）：`currentValue: z$1.string().min(1)`。
 
+#### 4.4.1 可选档位目录（`permissionPresets/catalog`）
+
+投影只给**当前值**，而**有哪些档可选**是另一个端点（零形参，与 `agentPresets/list` 同形）：
+
+```json
+POST /api/permissionPresets/catalog
+{"type":"client-request","rpcId":"<uuid>","method":"permissionPresets/catalog","payload":{"args":{}}}
+→ {"result":{"ok":true,"value":{
+  "options":[{"value":"workspace-write","name":"workspace-write","description":"…"},
+             {"value":"danger-full-access","name":"danger-full-access","description":"…"},
+             {"value":"auto","name":"auto"}],
+  "defaultOptions":[…同上，但没有 auto…],
+  "defaultPreset":"workspace-write"}}}
+```
+
+```ts
+export interface PermissionCatalog {
+    /** Every currently selectable preset, in contribution order. */
+    readonly options: PresetOption[];
+    /** Configured presets eligible as defaults for future sessions. */
+    readonly defaultOptions: PresetOption[];
+    /** Effective default when the Config field is omitted. */
+    readonly defaultPreset: string;
+}
+```
+
+三条口径：
+
+- **`options` 里出现 `auto` = 这个部署开着实验性的 Auto review 集成**。`options` 由
+  `PermissionPresetService.names` 推出，而 `names` = 配置表里的预设 + **在世时的 `auto`**
+  （`registerAuto()` 由 `dsh-experimental-auto-review` 在它自己的 effect 里调用）。
+  集成装上/卸下都会发一条**无载荷**的 `permission-presets/catalog-changed`（在转发
+  白名单里，见 §5.2），客户端收到要重读一次本端点；卸下时官方还会把停在 `auto` 上的
+  会话打回 `danger-full-access`。
+- **它是随安装交付的「可选 bundle」，默认关着**：`dsh-app-boot` 的 `OPTIONAL_BUNDLES`
+  里就有 `@deepseek-ai/dsh-experimental-auto-review`，要由用户把它加进 profile 的
+  `dsh.profile.bundles`（插件管理器里打开）才会组装。所以**同一个 DSH 版本，两个部署
+  的目录可以不一样**：开了的 `options` 里有 `auto`，全新 home 的默认 web profile 里没有
+  （实测：后者执行 `/permission auto` 会被拒成 `unknown preset "auto"`）。
+- **`defaultOptions` 永远不含 `auto`**：那是「新会话默认值」的白名单（`Config.defaultPreset`
+  必须是配置表里的键），拿它当「有没有这一档」的判据会在真正的 Auto 部署上漏掉那一档。
+
+本扩展的读法：`src/dsh/projections.ts` 的 `permissionCatalogHasAuto`（纯函数，只认 `options`），
+宿主把结论下发给界面的 `permissionAutoReview`；老服务端没有这个端点（404）时按「没有这一档」
+处理（fail-closed，见 `docs/dsh-compat.md`「登记之外的口径」）。
+
 发送命令（等价于网页端点权限芯片）：
 
 ```json
@@ -900,6 +946,10 @@ POST /api/commands/execute
 | `workspace-write` | `workspace-write` | `ask` |
 | `danger-full-access` | `danger-full-access` | `never` |
 
+`auto` **不在上面这张配置表里**，它的底座是写死在集成里的 `AUTO_PRESET_SPEC`：
+sandbox `danger-full-access` + approval `ask`（评审拒绝后走用户审批；早期版本这里是
+`never`，那样拒绝就是终局）。它**只能用于当前会话**，不会被写进 `defaultOptions`。
+
 ```ts
 export type SandboxMode = 'read-only' | 'workspace-write' | 'danger-full-access';   // ⟨P⟩\dsh-sandbox\lib\types\index.d.ts:19
 export type ApprovalPolicy = 'ask' | 'never';                                        // ⟨P⟩\dsh-user-approval\lib\types\index.d.ts:46
@@ -914,8 +964,6 @@ export type ApprovalPolicy = 'ask' | 'never';                                   
 ```
 
 即环境变量 `DSH_PERMISSION_MODE` 只影响 approval 旋钮，不影响 sandbox。
-
-> **未确认**：`PermissionSelect` 的第二个字段名。源码 `⟨P⟩\dsh-permission-presets\lib\types\types.d.ts` 我读到的是 `currentValue`，但同一包的 `index.d.ts` 的 `selectFor` JSDoc 用的是「effective current value」。两个 `lib/types` 输出（`.d.ts` 与 `.js`）应当一致，但我在本机只读校验时未做运行时比对。**推测依据**：类型声明文件是构建产物，以 `.d.ts` 里的 `currentValue` 为准；写代码时建议同时兼容 `currentValue ?? effectiveValue`。
 
 ### 4.5 设置读写
 
@@ -1095,9 +1143,9 @@ export interface RemoteEventReadyFrame {
 
 `clientId` 每次 open 都重新随机生成，**必须记住**（回复审批时要用）。
 
-### 5.2 转发事件全集（19 个，只有 2 个是 waterfall）
+### 5.2 转发事件全集（27 个，只有 2 个是 waterfall）
 
-唯一权威来源：`⟨P⟩\dsh-api-remotes\lib\types\remote-events.d.ts:12-69` 的 `API_REMOTE_FORWARDED_EVENTS`。
+唯一权威来源：`⟨P⟩\dsh-api-remotes\lib\types\remote-events.d.ts` 的 `API_REMOTE_FORWARDED_EVENTS`。
 
 | 事件名 | 模式 |
 |---|---|
@@ -1109,7 +1157,10 @@ export interface RemoteEventReadyFrame {
 | `api-session/removed` | emit |
 | `api-session/status` | emit |
 | `commands/change` | emit |
+| `credentials/record-updated` | emit |
 | `credentials/reference-updated` | emit |
+| `deepseek-account/model-sign-in-required` | emit |
+| `deepseek-account/session-expired` | emit |
 | `goal/activation-changed` | emit |
 | `cordis/request-run` | emit |
 | `cordis/request-run-resolved` | emit |
@@ -1118,6 +1169,11 @@ export interface RemoteEventReadyFrame {
 | `cordis/inspect-query` | emit |
 | `cordis/inspect-query-resolved` | emit |
 | `llm/adapters-updated` | emit |
+| `permission-presets/catalog-changed` | emit |
+| `plugin-manager/changed` | emit |
+| `plugin-manager/install-log` | emit |
+| `plugin-manager/install-state` | emit |
+| `schedule/changed` | emit |
 | `settings/document-updated` | emit |
 | **`user-questions/request`** | **waterfall** |
 
@@ -1141,6 +1197,7 @@ export interface RemoteEventEmitFrame {
 | `api-session/activity` | `[sessionId: SessionId, updatedAt: number]` |
 | `api-session/error` | `[sessionId: SessionId, message: string]` |
 | `agent-preset/selected` | `[sessionId: SessionId, agentPreset: string]` |
+| `permission-presets/catalog-changed` | `[]`（**无载荷**：目录本身要另发一次 `permissionPresets/catalog` 读回来） |
 
 `waterfall` 帧（`⟨P⟩\dsh-api-gateway\lib\types\stream-protocol.d.ts:33-48`）：
 
@@ -1763,7 +1820,7 @@ export interface TokenUsageProjection {
 | `title` | `string \| null` | 会话标题（列表行直接显示） |
 | `turnOutline` | `{turn, seq, prompt, response}[]` | 轮次大纲 + 跳转锚点 |
 | `plan` | `{active: boolean; pending: boolean}` | 计划模式 |
-| `permissions` | `{options: PresetOption[]; currentValue: string}` | 权限预设选择器（见 §4.4 的未确认标注） |
+| `permissions` | `{options: PresetOption[]; currentValue: string}` | 权限预设**当前值**（可选档位目录另走 `permissionPresets/catalog`，见 §4.4） |
 | `agentPreset` | `string \| null` | 当前 preset |
 | `modelSelection` | `{lastUsed: ModelSelection\|null; next: ModelSelection\|null}` | 模型选择折叠 |
 | `tokenUsage` | `TokenUsageProjection` | 累计 token |

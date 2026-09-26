@@ -137,6 +137,22 @@ export const IconShieldFilled = (p: IconProps) => (
   </Icon>
 );
 
+/**
+ * 权限盾牌（Auto review 档）：同一个盾牌外形 + 内部的「审查之眼」。
+ *
+ * 官方 `ui-permission-presets` 的档位表只给三档配了图形（`permissionGlyphs`），
+ * Auto 那一档**没有图标**；而本扩展工具栏的最小档位是「只有盾牌图标」，缺图标
+ * 时那枚胶囊会变成空的、权限列表里那一行也会比别的行少一截。所以按既有口径
+ * （三种模式共用外形、靠内部记号区分）自补一个可辨识的记号。
+ */
+export const IconShieldReview = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M12 3l7 2.5v6c0 4.2-2.9 7.9-7 9.5-4.1-1.6-7-5.3-7-9.5v-6z" />
+    <path d="M8.4 11.4c1-1.3 2.2-2 3.6-2s2.6.7 3.6 2c-1 1.3-2.2 2-3.6 2s-2.6-.7-3.6-2z" />
+    <circle cx="12" cy="11.4" r="0.9" />
+  </Icon>
+);
+
 /** 子代理（一个主节点分出两个分支）。 */
 export const IconAgents = (p: IconProps) => (
   <Icon {...p}>

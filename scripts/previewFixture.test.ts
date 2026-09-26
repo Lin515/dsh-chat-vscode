@@ -285,6 +285,10 @@ const must = [
     "工具栏 agent 预设标签（已开始的会话）",
     () => state.agentPreset === "ptc" && (state.agentPresets?.options?.length ?? 0) >= 5,
   ],
+  // 权限弹层里的实验档（Auto review）：只有 `permissionAutoReview` 为真时那一档才
+  // 会渲染（档位名 + EXP 标 + 官方警告卡）。夹具里没有这个字段，预览页就永远看不到
+  // 那一档与那张勾选确认卡，双语排版也没法肉眼核对。
+  ["权限弹层的 Auto review 档（实验）", () => state.permissionAutoReview === true],
   // 问卷的几种形态都要在夹具里：**已答完**那张必须带 `answers`（展开记录显示
   // 「用户当时选了什么」只能靠它，用户 2026-09-15 报的就是它空着）；**待回答**
   // 那张要有带选项的题，预览页才能看到「自定义回答与普通选项同一列表」。

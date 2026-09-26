@@ -6,7 +6,7 @@
  * 表现为「这个功能没有」，而不是报错（docs/audit-summary.md「goal 投影嵌套形状读错」
  * 形状解析是这一层里最容易错、又最容易测的部分，所以从控制器里挪出来单测。
  */
-import type { ChatState, GoalView, SubagentView, TodoView } from "../shared/chat";
+import { AUTO_REVIEW_PRESET, type ChatState, type GoalView, type SubagentView, type TodoView } from "../shared/chat";
 
 /**
  * `goal` 投影 → 目标条数据。
@@ -231,6 +231,31 @@ function optionalNumber(value: unknown): number | undefined {
 export function permissionFromProjection(value: unknown): string | undefined {
   const current = (value as { currentValue?: unknown } | null | undefined)?.currentValue;
   return typeof current === "string" && current ? current : undefined;
+}
+
+/**
+ * `permissionPresets/catalog`（`PermissionCatalog`）→ 这个部署有没有实验性的
+ * **Auto review** 档。
+ *
+ * 契约（`⟨P⟩\dsh-permission-presets\lib\types\types.d.ts`）：
+ * `{options: PresetOption[]; defaultOptions: PresetOption[]; defaultPreset: string}`。
+ * 判据取 `options` 里有没有 {@link AUTO_REVIEW_PRESET}：
+ *
+ * - 官方的 `catalog()` 由 `names` 推出 `options`，而 `names` = 配置表里的预设 +
+ *   **在世时的 `auto`**（`PermissionPresetService.names`；`registerAuto()` 由
+ *   `dsh-experimental-auto-review` 在自己的 effect 里调）。Auto 集成卸下时
+ *   `auto` 从 `options` 消失，官方还会把停在 `auto` 上的会话打回
+ *   `danger-full-access`；
+ * - **不看 `defaultOptions`**：那是「新会话默认值」的白名单，永远只列配置表
+ *   （`auto` 不能被设为部署默认）。
+ *
+ * 形状认不出（没有 `options`、不是数组、元素不是对象）一律按「没有」处理：
+ * 拿不到肯定证据就不把那一档摆上界面。
+ */
+export function permissionCatalogHasAuto(value: unknown): boolean {
+  const options = (value as { options?: unknown } | null | undefined)?.options;
+  if (!Array.isArray(options)) return false;
+  return options.some((option) => (option as { value?: unknown } | null | undefined)?.value === AUTO_REVIEW_PRESET);
 }
 
 /**
