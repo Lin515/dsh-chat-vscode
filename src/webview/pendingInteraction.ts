@@ -58,9 +58,9 @@ const NO_TAKEN_OVER: ReadonlySet<string> = new Set();
  * - `takenOver`：要**交给输入区渲染**的那些段的 id。键是 **`segment.id`**，不是
  *   `requestId`——抑制是按段做的（同一张卡的 `requestId` 与段 id 是两回事）。
  *   最多一个元素：官方框架按会话只留一个待处理交互（见文件头）。
- *   判据仍然是两条一起要：「**还在等**（`state === "waiting"`）且**就是被选中的那一条**」
- *   ——前一条由下面的候选收集保证（只有 `waiting` 的段才进得来），后一条由选举保证。
- *   所以已答过（`answered` / `cancelled`）的段**永远不会**出现在集合里，
+ *   判据仍然是两条一起要：「**还在等**」且「**就是被选中的那一条**」——前一条由下面的
+ *   候选收集保证（审批卡只有等待态，提问要 `waiting`，见各自的候选分支），后一条由选举
+ *   保证。所以已答过（`answered` / `cancelled`）的提问段**永远不会**出现在集合里，
  *   调用方用 `takenOver.has(segment.id)` 直接判即可。
  */
 export function resolveInteractions(messages: readonly MessageView[]): {
@@ -74,8 +74,9 @@ export function resolveInteractions(messages: readonly MessageView[]): {
   for (const message of messages) {
     for (const segment of message.segments) {
       // 同优先级取最后一条：一轮里先后来了两张卡，用户在等的是后到的那张。
-      // 只有 `waiting` 进候选——「还在等」这半条判据就是在这里落地的。
-      if (segment.kind === "approval" && segment.approval.state === "waiting") {
+      // 「还在等」这条判据在两种卡上落点不同：审批卡**只有等待态**（答完即整段摘掉，
+      // 见 adapter 的 `dropApprovalCard`），提问卡则以记录形态留在流里、要挑 `waiting`。
+      if (segment.kind === "approval") {
         approval = { segmentId: segment.id, approval: segment.approval };
       } else if (segment.kind === "question" && segment.question.state === "waiting") {
         const narrowed = planReviewOf(segment.question.items);

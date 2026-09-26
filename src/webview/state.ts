@@ -216,6 +216,14 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, messages: upsertMessage(state.messages, action.message) };
     }
 
+    case "message/remove":
+      // 整条消息消失（审批卡结算之后那条只剩空壳的助手消息）。按 id 去掉，找不到就
+      // 原样返回：宿主与界面的产物版本不一致时，这一帧不该牵连别的行。
+      return {
+        ...state,
+        messages: state.messages.filter((message) => message.id !== action.messageId),
+      };
+
     case "messages/reset":
       return { ...state, messages: action.messages };
 

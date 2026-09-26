@@ -12,7 +12,7 @@
 
 ---
 
-## 零、修复状态（截至 2026-09-23）
+## 零、修复状态（截至 2026-09-26）
 
 本章只记已修/未修，不改后面各节的原始判定（那是当时证据）。九批修复压成一览表（含三项
 单项修复），修复过程细节见原审计与 CHANGELOG。
@@ -35,6 +35,7 @@
 | 文件链接（09-23 单项） | 正文里的文件链接按官方两条路补齐（此前锚点点下去完全没反应）：**markdown 链接目标**像本地路径就开文件（`#L12` / `#L12-L40` 连行号一起给，官方 `parseFileLink` 同口径）、**行内代码 token** 只有能对上「本轮写过或申报交付的文件」时才变成可点按钮（官方 `producedFileMentions` 同口径；对不上或同名歧义**不猜**，保持惰性代码）。流式期间本地文件链接保持惰性（官方 `renderAnchor` 的 `streaming` 分支同口径），词表晚于正文到达时靠清理函数还原后重判。落地：`src/webview/fileLinks.ts`（判定）、`fileMentions.ts`（行内代码 → 按钮）、`components/Markdown.tsx`（锚点点击委托）；宿主侧 `openFile` 增行号、新增 `openExternal`（界面与宿主各判一次 http/https/mailto 白名单）。**两处刻意偏离官方**（用户 2026-09-23 报「很多链接提示文件不存在」后加）：①链接目标尾部的 `:行号`（`:12` / `:12-40` / `:12:5`）**字面路径查不到时**再拆一次重试（官方 `parseFileLink` 只认 `#L`，而模型的标签约定 `:24` 常被写进目标，整条 `src/a.ts:24` 当文件名查盘必然 miss）；②正文链接打不开时不说「文件已删除」（那是文件芯片的措辞，芯片来自工具调用、文件确实存在过），改说「找不到文件：<按会话工作目录解析出的绝对路径>」，把基准直接摆出来。**刻意未做**：官方把用户消息里的 `@路径` 也做成可点芯片（`projectUserText`），本扩展的用户气泡仍是纯文本——要做得先解决「`@文件名` 与 `@会话标题` 同形」的区分（官方靠邻近 recall 给出的会话标签表） |
 | 分页（09-14 单项） | 翻页进展判据改为适配器返回的真实新增事件数 + `hasMore` + 顶部角色、连取由宿主驱动（`src/dsh/historyPaging.ts`），不再按「首条消息 id 变没变」判进展 |
 | 后台任务详情（09-24 单项） | 后台任务面板的每行可**点开看实时输出**（此前只能看标签 / 状态 / 时长，输出完全拿不到）。走官方 `job/follow` 流（0.1.7-alpha.1 起就在 `job` 命名空间里，属既有端点补消费，没有契约变更）：宿主按**窗口**跟踪一条观察流（`controller.openJobWatch`：先收旧的、续传只带上一帧的 `next`、断线不报错等重连用原代号重开），界面按官方 `ClientJobsModel` 口径累积（`webview/jobObserve.ts`：128K 保留上限 + 截断不切开代理对 + 三种「开头没了」都留痕）。细节：可展开性照官方 `isObservable`（live 恒可展开，已结束要有 `output.total > 0`，拿不到坐标**不给入口**不猜）；行内限定文案改官方 `progress ?? detail`；面板开着且有 live 行时时长每秒走动；展开体 = 丢弃提示 + 原样报错 + 命令头（复制按钮复制的是**任务标签**，官方 `copyText={job.label}` 口径）+ 等宽输出（限高内滚、自动换行）。观察代号（`watchId`）由界面铸造、宿主原样回带：收起再点开会换号，旧流残余帧被丢掉——否则同一段输出会接两遍（预览里实测过）。接线与样式断言在 `scripts/jobObserve.test.ts` / `styles.test.ts`，线格式读取在 `scripts/jobView.test.ts`；**刻意未做**：官方弹层的「进行中 / 已结束」分区折叠与「清空」、ANSI 着色、输出自动贴底 |
+| 审批卡（09-26 单项） | 审批卡结算（允许 / 拒绝 / 撤回）之后**整段从会话记录里消失**，与官方一致——官方把审批做成输入区上的待办面板（`ui-approval` 的 `ApprovalPanel` 挂在 `conversation.composer` 槽上），答完整个面板就不见了、记录里没有这一笔。本扩展此前把它折成消息里的一段，答完那张卡还留在流里（只有重载会话才看不见，因为审批不是 durable 事件）。宿主 `SessionAdapter.dropApprovalCard` 是三条结算路径的唯一出口：本窗口答复（`controller.answerApproval`）、另一个窗口答了（会话日志 `approval/decided` → `dropApprovalByCallId`）、Host 撤回（`cancelEvent`）；摘段的同时清掉 `interactionCards` 里那份副本（不清的话下一次重折又会把它补回来）。审批卡常常**独占一条助手消息**，摘完只剩空壳时连那条消息一起去掉（新增宿主→界面帧 `message/remove`，不走整份 `messages/reset`）。`ApprovalView.state` 随之取消——这张卡只表示「还在等你答」，三条终态文案（`approvalApproved` / `approvalRejected` / `approvalExpired`）一并删除 |
 
 > 第四批**刻意保留的偏离**（用户口径，别「顺手对齐」掉）：工具行实时耗时；用户消息非右对齐
 > 气泡；两行文件行去重；`+N −M` 按最终结果统计（官方按编辑块计）。
@@ -363,7 +364,8 @@ title（`string|null` 仅非空更新）、sessionStats / contextBreakdown 字�
   `scripts/sessionLog.readSessionLogRows`。
 - **死 IPC 帧 + 处理器**：`message/remove`、`addMention`、`addFolderReference`、
   `runCommandLine`（`@` 改成写正文 token 之后，界面上再也没有发射点）；随之删掉只被
-  它们调用的 `controller.addReference`。
+  它们调用的 `controller.addReference`。（`message/remove` 2026-09-26 **重新启用**：
+  审批卡结算后那条只剩空壳的消息靠它去掉，宿主侧有了真实发射点——见本章「审批卡」一行。）
 - **引用芯片整条链（2026-09-21 删）**：`AttachmentKind` 的 `reference` / `context`、
   `Attachment.referenceKind`、`dsh/references.composeWithReferences` 与 `Reference`、
   `controller.applyPathsForView` 里的目录分支、`Composer.tsx` 的芯片分支、`.chip-glyph`、

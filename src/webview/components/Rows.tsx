@@ -642,58 +642,54 @@ function formatChars(chars: number): string {
   return String(chars);
 }
 
+/**
+ * 一张**还在等用户回答**的审批卡。
+ *
+ * 只有这一种形态：答完（允许 / 拒绝）或撤回之后，宿主把这一段整个摘掉
+ * （`SessionAdapter.dropApprovalCard`），与官方 `ApprovalPanel`「答完整个面板就不见了」
+ * 一致——所以这里没有终态标题、也没有「已答过」的分支。
+ */
 export function ApprovalCard({ approval }: { approval: ApprovalView }) {
   const texts = useTexts();
   // 服务端给了本地化展示文案就用它（0.1.7-rc.2 起），否则退回审计用的原文——
   // 与官方 `ApprovalPanel` 同口径；语言在渲染时取，切语言即时生效
   const reason = pickLocalizedText(approval.displayReason, useLocale()) ?? approval.reason;
-  const waiting = approval.state === "waiting";
-  const verdict =
-    approval.state === "approved"
-      ? texts.approvalApproved
-      : approval.state === "rejected"
-        ? texts.approvalRejected
-        : approval.state === "expired"
-          ? texts.approvalExpired
-          : undefined;
 
   return (
     <div className="approval">
       <div className="approval-title">
         <IconAlert size={14} />
-        <b>{waiting ? texts.approvalTitle : verdict}</b>
+        <b>{texts.approvalTitle}</b>
         <span className="row-detail">{resolveText(approval.toolName, texts)}</span>
       </div>
       {reason ? <div className="approval-detail">{reason}</div> : null}
       {approval.detail ? (
         <div className="approval-detail">{resolveText(approval.detail, texts)}</div>
       ) : null}
-      {waiting ? (
-        <div className="approval-actions">
+      <div className="approval-actions">
+        <button
+          className="btn btn-primary"
+          onClick={() => post({ type: "answerApproval", requestId: approval.requestId, approved: true })}
+        >
+          {texts.allow}
+        </button>
+        {approval.allowAlways ? (
           <button
-            className="btn btn-primary"
-            onClick={() => post({ type: "answerApproval", requestId: approval.requestId, approved: true })}
+            className="btn"
+            onClick={() =>
+              post({ type: "answerApproval", requestId: approval.requestId, approved: true, always: true })
+            }
           >
-            {texts.allow}
+            {texts.allowAlways}
           </button>
-          {approval.allowAlways ? (
-            <button
-              className="btn"
-              onClick={() =>
-                post({ type: "answerApproval", requestId: approval.requestId, approved: true, always: true })
-              }
-            >
-              {texts.allowAlways}
-            </button>
-          ) : null}
-          <button
-            className="btn btn-ghost"
-            onClick={() => post({ type: "answerApproval", requestId: approval.requestId, approved: false })}
-          >
-            {texts.reject}
-          </button>
-        </div>
-      ) : null}
+        ) : null}
+        <button
+          className="btn btn-ghost"
+          onClick={() => post({ type: "answerApproval", requestId: approval.requestId, approved: false })}
+        >
+          {texts.reject}
+        </button>
+      </div>
     </div>
   );
 }

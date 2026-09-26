@@ -4995,7 +4995,6 @@ export class ChatController implements vscode.Disposable {
         // 本地化展示文案（0.1.7-rc.2 起）：形状不对就当没有，界面退回 `reason`
         displayReason: localizedTextFrom(request.displayReason),
         detail: request.callId ? `@callId:${request.callId}` : undefined,
-        state: "waiting",
         // callId 同时单独记一份：会话日志的 `approval/decided` 靠它把结果
         // 对回这张卡（另一个窗口答的审批，本窗口只能从会话日志知道结果）
         ...(request.callId ? { callId: request.callId } : {}),
@@ -5510,14 +5509,15 @@ export class ChatController implements vscode.Disposable {
         const eventId = message.requestId;
         if (!eventId) break;
         // 结算掉：这条请求不再需要回放（见 `interactions` 的注释）。答复照旧先回 Host
-        // ——`settle` 拿到的是那条记录（含会话 id），据此把卡片状态落回对的域。
+        // ——`settle` 拿到的是那条记录（含会话 id），据此把卡片从对的域里摘掉。
         const settled = this.interactions.settle(eventId);
         await this.replyEvent(eventId, {
           kind: "result",
           value: message.approved ? "allowed-once" : "rejected",
         });
         const scope = settled ? this.scopes.get(settled.sessionId) : undefined;
-        scope?.adapter?.resolveApproval(eventId, message.approved ? "approved" : "rejected");
+        // 允许 / 拒绝在看得到的层面上没有差别：卡片整段摘掉（见 `dropApprovalCard`）
+        scope?.adapter?.dropApprovalCard(eventId);
         break;
       }
 

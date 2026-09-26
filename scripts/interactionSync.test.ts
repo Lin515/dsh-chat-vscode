@@ -43,6 +43,11 @@ function harness() {
       else messages[index] = frame.message;
       return;
     }
+    if (frame.type === "message/remove") {
+      const index = messages.findIndex((m) => m.id === frame.messageId);
+      if (index >= 0) messages.splice(index, 1);
+      return;
+    }
     const applySegment = (messageId: string, segment: Segment) => {
       const target = messages.find((m) => m.id === messageId);
       if (!target) return;
@@ -243,10 +248,16 @@ console.log("interactionSync: 不误认领无关结果 ✓");
 }
 console.log("interactionSync: 本窗口提交后记录里有答案 ✓");
 
-// ---------- 6. 审批：会话日志的 approval/decided 按 callId 收场 ----------
+// ---------- 6. 审批：结算（另一个窗口答了 / 撤回）之后卡片整段消失 ----------
+//
+// 用户 2026-09-26 口径：官方 web 的审批卡是输入区上的待办面板，答完就不见了、会话
+// 记录里没有这一笔；本扩展此前把它留在流里，只有重载会话才看不见（审批不是 durable
+// 事件，重放不回）。现在三条结算路径都摘卡：本窗口答复（`dropApprovalCard`）、
+// 另一个窗口答了（会话日志 `approval/decided` → `dropApprovalByCallId`）、
+// Host 撤回（`cancelEvent`）。
 {
   const { adapter, messages } = harness();
-  adapter.addApproval({ requestId: "ev-a1", toolName: "pwsh", callId: "call_9", state: "waiting" });
+  adapter.addApproval({ requestId: "ev-a1", toolName: "pwsh", callId: "call_9" });
   assert.strictEqual(resolveInteractions(messages).pending?.kind, "approval", "待审批接管输入区");
 
   adapter.applyEvent({
@@ -261,17 +272,14 @@ console.log("interactionSync: 本窗口提交后记录里有答案 ✓");
     time: 2,
     data: { id: "ap-1", outcome: "rejected" },
   } as never);
-  assert.strictEqual(approvalSegment(messages)?.approval.state, "rejected", "另一个窗口拒绝 → 本窗口跟着收场");
+  assert.strictEqual(approvalSegment(messages), undefined, "另一个窗口拒绝 → 本窗口那张卡消失");
   assert.strictEqual(resolveInteractions(messages).pending, undefined, "不再占输入区");
 
-  // 三档 outcome 的映射：allowed-once → approved，其余（cancelled / unavailable）→ expired
-  for (const [outcome, expected] of [
-    ["allowed-once", "approved"],
-    ["cancelled", "expired"],
-    ["unavailable", "expired"],
-  ] as const) {
+  // 契约里的四个收场值（`allowed-once` / `rejected` / `cancelled` / `unavailable`）现在
+  // 走同一条路：卡片消失，记录里什么都不留（差别只在工具行那边）
+  for (const outcome of ["allowed-once", "rejected", "cancelled", "unavailable"] as const) {
     const one = harness();
-    one.adapter.addApproval({ requestId: "ev-a2", toolName: "pwsh", callId: "call_8", state: "waiting" });
+    one.adapter.addApproval({ requestId: "ev-a2", toolName: "pwsh", callId: "call_8" });
     one.adapter.applyEvent({
       type: "approval/asked",
       seq: 1,
@@ -285,20 +293,59 @@ console.log("interactionSync: 本窗口提交后记录里有答案 ✓");
       data: { id: "ap-2", outcome },
     } as never);
     assert.strictEqual(
-      approvalSegment(one.messages)?.approval.state,
-      expected,
-      `outcome=${outcome} 要映射成 ${expected}（契约里的四个收场值）`,
+      approvalSegment(one.messages),
+      undefined,
+      `outcome=${outcome} 之后卡片都要消失（契约里的四个收场值）`,
     );
   }
 
-  // Host 撤回（另一个窗口答了 / 轮次中止）→ expired
+  // Host 撤回（另一个窗口答了 / 轮次中止）：撤回本质是别人答了，同样什么都不留
   const cancelled = harness();
-  cancelled.adapter.addApproval({ requestId: "ev-a3", toolName: "pwsh", callId: "call_7", state: "waiting" });
+  cancelled.adapter.addApproval({ requestId: "ev-a3", toolName: "pwsh", callId: "call_7" });
   cancelled.adapter.cancelEvent("ev-a3");
-  assert.strictEqual(approvalSegment(cancelled.messages)?.approval.state, "expired", "撤回的审批标 expired");
+  assert.strictEqual(approvalSegment(cancelled.messages), undefined, "撤回的审批也不留卡片");
   assert.strictEqual(resolveInteractions(cancelled.messages).pending, undefined);
 }
-console.log("interactionSync: 审批按 approval/decided 与撤回收场 ✓");
+console.log("interactionSync: 审批结算后整段消失（三条路径） ✓");
+
+// ---------- 6b. 摘卡之后剩下的空壳消息 ----------
+//
+// 审批卡常常**独占一条助手消息**（`addApproval` 走 `ensureAssistantMessage`；重投递 /
+// 重折之后那条消息可能正是为它新建的）：只摘段会留下一条没有段的消息，界面上就是一行
+// 空行（还带着时间与分支按钮）。所以空壳连消息一起去掉（`message/remove`）；而**同一条
+// 消息里还有别的东西**时只能摘段、消息必须留着。
+{
+  const { adapter, messages } = harness();
+  adapter.addApproval({ requestId: "ev-shell", toolName: "pwsh" });
+  assert.strictEqual(messages.length, 1, "先确认这张卡独占了一条消息");
+  adapter.dropApprovalCard("ev-shell");
+  assert.strictEqual(messages.length, 0, "卡摘掉之后空壳消息也要去掉（否则界面上留一行空行）");
+  assert.strictEqual(resolveInteractions(messages).pending, undefined, "输入区不被空壳占着");
+
+  // 同一条消息里还有正文：只摘段，消息留着
+  const shared = harness();
+  shared.adapter.applyEvent({ type: "turn/start", seq: 1, time: 1, data: { turn: 1 } } as never);
+  shared.adapter.applyEvent({
+    type: "assistant/message",
+    seq: 2,
+    time: 2,
+    data: {
+      turn: 1,
+      step: 0,
+      message: { id: "m1", role: "assistant", content: [{ type: "text", text: "我看看" }] },
+    },
+  } as never);
+  shared.adapter.addApproval({ requestId: "ev-shared", toolName: "pwsh" });
+  assert.strictEqual(shared.messages.length, 1, "卡落在已有正文的那条消息上");
+  shared.adapter.dropApprovalCard("ev-shared");
+  assert.strictEqual(shared.messages.length, 1, "消息里还有正文 → 消息留着");
+  assert.strictEqual(approvalSegment(shared.messages), undefined, "没了的只有那张卡");
+  assert.ok(
+    shared.messages[0].segments.some((segment) => segment.kind === "text"),
+    "正文照旧在记录里（工具行与工具结果同理）",
+  );
+}
+console.log("interactionSync: 审批卡摘掉后只剩空壳的消息一并去掉 ✓");
 
 // ---------- 7. 结构不变量：宿主真的接了这两条信号 ----------
 //
@@ -493,6 +540,11 @@ console.log("interactionSync: 未结算的问卷/审批随「绑定窗口」回�
 // 回放的落点是适配器，而 `addApproval` 原先无条件 push 一个新段：第二个窗口绑上
 // 同一个会话（或切走再切回）就会画出两张一模一样的审批卡，两张还都得分别答复。
 // 问卷那边本来就有 existing 分支，审批这里补齐同口径。
+//
+// 「已经答过的卡不被重投递改回等待」这条断言随口径一起没了：答过的卡现在**不存在**
+// （结算即整段摘掉，见上面第 6 节）。**跨重载**挡住「答过的请求又被回放」的是宿主
+// 账本——`interactions.settle` 之后那条请求再也回放不出来（见
+// `scripts/pendingInteractions.test.ts` 与 `controller.answerApproval`）。
 {
   const { adapter, messages } = harness();
   // 每步都**重新取一遍**段：`message/segment` 在 reducer 里是替换成新对象，
@@ -502,18 +554,18 @@ console.log("interactionSync: 未结算的问卷/审批随「绑定窗口」回�
       .flatMap((m) => m.segments)
       .filter((s): s is Extract<Segment, { kind: "approval" }> => s.kind === "approval");
 
-  adapter.addApproval({ requestId: "ev-a9", toolName: "pwsh", callId: "call_9", state: "waiting" });
-  adapter.addApproval({ requestId: "ev-a9", toolName: "pwsh", callId: "call_9", state: "waiting" });
+  adapter.addApproval({ requestId: "ev-a9", toolName: "pwsh", callId: "call_9" });
+  adapter.addApproval({ requestId: "ev-a9", toolName: "pwsh", callId: "call_9" });
   assert.strictEqual(approvalsNow().length, 1, "同一个 requestId 重投递只能有一张卡");
+  assert.strictEqual(messages.length, 1, "重投递也不该再加一条消息");
 
-  // 已经收场的那张不能被重投递改回 waiting
-  adapter.resolveApproval("ev-a9", "approved");
-  adapter.addApproval({ requestId: "ev-a9", toolName: "pwsh", callId: "call_9", state: "waiting" });
-  assert.strictEqual(approvalsNow()[0].approval.state, "approved", "已答完的审批不能被重投递改回等待");
-  assert.strictEqual(approvalsNow().length, 1, "重投递也不该再加一张");
-  assert.strictEqual(resolveInteractions(messages).pending, undefined, "也不会重新占住输入区");
+  // 结算即摘净：卡与那条空壳消息一起消失
+  adapter.dropApprovalCard("ev-a9");
+  assert.strictEqual(approvalsNow().length, 0, "结算后一张都不剩");
+  assert.strictEqual(messages.length, 0, "空壳消息也一并去掉");
+  assert.strictEqual(resolveInteractions(messages).pending, undefined, "也不会再占住输入区");
 }
-console.log("interactionSync: 审批卡重复投递去重 ✓");
+console.log("interactionSync: 审批卡重复投递去重、结算即摘净 ✓");
 
 // ---------- 9c. 重折（跟随快照 / 重连 / 加载更早）不能吃掉还没答复的卡片 ----------
 //
@@ -549,7 +601,7 @@ console.log("interactionSync: 审批卡重复投递去重 ✓");
 
   reopen();
   askTwo(adapter);
-  adapter.addApproval({ requestId: "ev-a10", toolName: "pwsh", callId: "call_10", state: "waiting" });
+  adapter.addApproval({ requestId: "ev-a10", toolName: "pwsh", callId: "call_10" });
   assert.ok(questionSegment(messages), "先确认问卷卡已经在页面上");
   assert.ok(approvalSegment(messages), "审批卡同理");
 
@@ -566,16 +618,21 @@ console.log("interactionSync: 审批卡重复投递去重 ✓");
   );
   const approval = approvalSegment(messages);
   assert.ok(approval, "审批卡同样不能被重折吃掉");
-  assert.strictEqual(approval!.approval.state, "waiting", "审批的状态也不该被改动");
+  assert.strictEqual(
+    approval!.approval.callId,
+    "call_10",
+    "补回来的还是原来那张（`callId` 是 decided 把它对回去的依据）",
+  );
   assert.strictEqual(
     messages.flatMap((m) => m.segments).filter((s) => s.kind === "question").length,
     1,
     "补回来的是同一张卡，不能变成两张",
   );
 
-  // 答完之后再重折：补回来的是**记录**（带答案），不能又变回一张等答复的卡
+  // 答完之后再重折：问卷补回来的是**记录**（带答案），审批则**什么都不该补回来**
+  // （结算即摘段 + 清掉 `interactionCards` 里那份副本；不清的话重折会把它复活）
   adapter.resolveQuestion("ev-q1", { scope: { selected: ["一起收敛"] }, docs: { selected: ["要"] } });
-  adapter.resolveApproval("ev-a10", "approved");
+  adapter.dropApprovalCard("ev-a10");
   reopen();
   const answered = questionSegment(messages);
   assert.strictEqual(answered?.question.state, "answered", "已答完的问卷重折后仍是记录");
@@ -584,7 +641,7 @@ console.log("interactionSync: 审批卡重复投递去重 ✓");
     { selected: ["一起收敛"] },
     "记录里要留着用户当时选了什么（重折不能把答案抹掉）",
   );
-  assert.strictEqual(approvalSegment(messages)?.approval.state, "approved", "已收场的审批同理");
+  assert.strictEqual(approvalSegment(messages), undefined, "已结算的审批重折后也不该回来");
   assert.strictEqual(resolveInteractions(messages).pending, undefined, "收场之后不再占输入区");
 }
 console.log("interactionSync: 重折（快照/重连/重载）后待答卡片仍在 ✓");
@@ -598,7 +655,7 @@ console.log("interactionSync: 重折（快照/重连/重载）后待答卡片仍
   const { adapter, messages } = harness();
   const t = Date.now();
   adapter.applyEvent({ type: "turn/start", seq: 1, time: t, data: { turn: 1 } } as never);
-  adapter.addApproval({ requestId: "ev-a11", toolName: "pwsh", callId: "call_11", state: "waiting" });
+  adapter.addApproval({ requestId: "ev-a11", toolName: "pwsh", callId: "call_11" });
   askTwo(adapter, "ev-q11");
   const ownerOf = (id: string) =>
     messages.find((m) => m.segments.some((s) => s.id === id))?.id;
@@ -608,7 +665,7 @@ console.log("interactionSync: 重折（快照/重连/重载）后待答卡片仍
   // 这一轮结束、下一轮开始（并且没有重折）：重投递落到新回合的消息上
   adapter.applyEvent({ type: "turn/end", seq: 2, time: t + 1, data: { turn: 1, reason: { kind: "stop" } } } as never);
   adapter.applyEvent({ type: "turn/start", seq: 3, time: t + 2, data: { turn: 2 } } as never);
-  adapter.addApproval({ requestId: "ev-a11", toolName: "pwsh", callId: "call_11", state: "waiting" });
+  adapter.addApproval({ requestId: "ev-a11", toolName: "pwsh", callId: "call_11" });
   askTwo(adapter, "ev-q11");
 
   assert.strictEqual(

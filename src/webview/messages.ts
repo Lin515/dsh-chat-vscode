@@ -533,9 +533,6 @@ export const MESSAGES = {
   injectedChars: { zh: (chars: string) => `${chars} 字符`, en: (chars: string) => `${chars} chars` },
 
   approvalTitle: { zh: "需要你的许可", en: "Permission required" },
-  approvalApproved: { zh: "已允许", en: "Allowed" },
-  approvalRejected: { zh: "已拒绝", en: "Rejected" },
-  approvalExpired: { zh: "已失效", en: "Expired" },
   allow: { zh: "允许", en: "Allow" },
   allowAlways: { zh: "始终允许", en: "Always allow" },
   reject: { zh: "拒绝", en: "Reject" },

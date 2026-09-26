@@ -31,6 +31,15 @@ export type HostToWebview =
   | { type: "patch"; patch: WirePatch }
   /** 新增或整体替换一条消息。 */
   | { type: "message/upsert"; message: MessageView }
+  /**
+   * 把一条消息从列表里去掉（`messageId` 不存在时是空操作）。
+   *
+   * 目前唯一的发射点是审批卡结算（`SessionAdapter.dropApprovalCard`）：审批卡常常
+   * **独占一条助手消息**（宿主为它新建的那条），摘掉那一段之后整条消息就什么都不剩了，
+   * 留着会在界面上留一行空行。不走 `messages/reset` 整份重发：那会让界面把整个消息
+   * 列表重渲染一遍（列表没有虚拟滚动），而这件事每次审批只发生一次、只涉及一条消息。
+   */
+  | { type: "message/remove"; messageId: string }
   /** 整体替换消息列表（切换会话、回放历史）。 */
   | { type: "messages/reset"; messages: MessageView[] }
   /** 在消息尾部追加一个段落。 */

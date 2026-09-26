@@ -158,7 +158,8 @@ console.log("pendingInteractions: 结算出口只有两个（API 面受钉）✓
 
 // ---------- 7. 两种 kind 走同一条账 ----------
 //
-// 审批与提问的**收场方式**不同（resolveApproval / resolveQuestion / cancelEvent），
+// 审批与提问的**收场方式**不同（审批 `dropApprovalCard` 整段摘掉，提问
+// `resolveQuestion` / `cancelEvent` 落成记录），
 // 但「未结算」这件事的规则完全一样——kind 只是记录的一部分，不改变四条规则。
 {
   const ledger = new PendingInteractions();

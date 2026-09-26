@@ -407,9 +407,6 @@ export interface Texts {
   injectedChars: (chars: string) => string;
 
   approvalTitle: string;
-  approvalApproved: string;
-  approvalRejected: string;
-  approvalExpired: string;
   allow: string;
   allowAlways: string;
   reject: string;

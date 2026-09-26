@@ -146,6 +146,16 @@ export type DiffLayout = "auto" | "unified" | "split";
  */
 export type FileChangeKind = "new" | "edited" | "deleted" | "gone";
 
+/**
+ * 一张**还在等用户回答**的审批卡。
+ *
+ * 它只有这一种形态：允许 / 拒绝 / 撤回之后，这张卡**整段从消息流里消失**
+ * （`SessionAdapter.dropApprovalCard`）。官方把审批做成输入区上的待办面板
+ * （`dsh-client-ui-approval` 的 `ApprovalPanel` 挂在 `conversation.composer` 槽上），
+ * 答完面板就不见了、会话记录里没有这一笔——本扩展此前把它折成消息里的一段，
+ * 于是答完之后那张卡还留在流里（只有重载会话才看不见，因为审批不是 durable 事件）。
+ * 工具行与工具结果不受影响，照旧留在记录里。
+ */
 export interface ApprovalView {
   requestId: string;
   toolName: string;
@@ -159,7 +169,6 @@ export interface ApprovalView {
   displayReason?: Record<string, string>;
   /** 待执行的参数预览（命令行/文件路径等）。 */
   detail?: string;
-  state: "waiting" | "approved" | "rejected" | "expired";
   /** 是否允许「始终允许」。 */
   allowAlways?: boolean;
   /**

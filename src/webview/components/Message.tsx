@@ -369,7 +369,8 @@ export const Message = memo(function Message({
         return <ToolRow key={segment.id} node={node} tool={segment.tool} diffLayout={diffLayout} />;
       case "approval":
         // 待处理的审批卡由**输入区**渲染（官方 `conversation.composer` 接管），这里跳过
-        // 免得同一张卡出现两次；已经答过的留在流里当记录。
+        // 免得同一张卡出现两次。审批卡没有「已答过」的形态：结算之后宿主把它整段摘掉
+        // （见 adapter 的 `dropApprovalCard`），所以还留在流里的必是**等待中**的那张。
         // **只跳过被选中的那一条**（`takenOver` 里那一个段 id）：万一同一个会话出现两张
         // waiting 卡（框架层不合法，但宿主侧的卡片补投有机会造出来），没被选中的那张必须
         // 留在流里，否则输入区只画一张、这张谁也渲染不了（见 pendingInteraction.ts 文件头）。

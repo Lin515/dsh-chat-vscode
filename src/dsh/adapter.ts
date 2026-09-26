@@ -57,13 +57,15 @@ import {
 /**
  * 这张（非 durable 的）交互卡是不是还在等人回答。
  *
+ * 审批卡**只有等待态**：结算（允许 / 拒绝 / 撤回）即整段摘掉（见 `dropApprovalCard`）。
+ * 提问卡则会以「已答完 / 已撤回」的记录形态留在流里（见 `promoteQuestionToTool`）。
+ *
  * `refold` 之后的补回位置看它：等答复的卡无论如何都要回到页面上（agent 正卡在
  * 那里），已收场的记录只在锚点还在时按原位补——挂错轮次比少一条记录更容易误导。
  */
 function isWaitingInteraction(segment: Segment): boolean {
   if (segment.kind === "question") return segment.question.state === "waiting";
-  if (segment.kind === "approval") return segment.approval.state === "waiting";
-  return false;
+  return segment.kind === "approval";
 }
 
 /**
@@ -632,7 +634,7 @@ export class SessionAdapter {
    *
    * 会话日志里审计对是 `approval/asked {id, toolName, callId?}` 与
    * `approval/decided {id, outcome}`；卡片手里只有 waterfall 的 eventId 与
-   * `callId`，靠这张表把 decided 对回卡片（见 `resolveApprovalByCallId`）。
+   * `callId`，靠这张表把 decided 对回卡片（见 `dropApprovalByCallId`）。
    */
   private readonly approvalCallIds = new Map<string, string | undefined>();
 
@@ -667,17 +669,18 @@ export class SessionAdapter {
    * 水瀑投递进来的**交互卡**（审批 / 提问），键 = 段 id（`ap:<eventId>` / `q:<eventId>`）。
    *
    * 这两类卡**不是 durable 事件**——会话日志里没有它们，唯一来源是 `$events` 的
-   * waterfall（重连后由服务端重投递，宿主的 `heldEvents` 负责回放）。而
+   * waterfall（重连后由服务端重投递，宿主账本的 `pendingInteractions.ts` 负责回放）。而
    * `refold()`（跟随流快照、socket 重连、加载更早的历史）会把消息流整体折成
    * durable 事件的产物，于是**刚投进来的卡会在下一次重折时静默消失**：
-   * 宿主 `replayHeldEvents` 是紧跟着 `ensureScope` 同步执行的，而那份跟随快照
+   * 宿主 `replayHeldToScope` 是紧跟着 `ensureScope` 同步执行的，而那份跟随快照
    * 要等一个网络往返才到——到了就把整袋消息重折一遍，卡片正好被折掉。
    * 用户 2026-09-15 报的「切走再切回来问卷不见了、agent 卡在 ask 节点」在上一轮
-   * 修完 `heldEvents` 之后仍然复现，就是它（窗口重载同理：重连后服务端重投递，
+   * 修完账本之后仍然复现，就是它（窗口重载同理：重连后服务端重投递，
    * 卡刚显示就被快照折掉）。
    *
    * 所以卡片在这里单独留一份（含它当初落在哪条助手消息上），`refold` 结束时
-   * 按锚点补回消息流——见 `restoreInteractionCards`。
+   * 按锚点补回消息流——见 `restoreInteractionCards`。**结算过的不再留在表里**：
+   * 审批卡摘掉时连同这份副本一起删（见 `dropApprovalCard`），否则重折又会把它补回来。
    */
   private readonly interactionCards = new Map<string, { segment: Segment; messageId: string }>();
 
@@ -1633,6 +1636,8 @@ export class SessionAdapter {
        * `decided` 带上四个收场值之一（`allowed-once` / `rejected` / `cancelled` /
        * `unavailable`）。审批卡的收场靠它——**另一个窗口**答的审批，本窗口只会从
        * 会话日志知道结果（那条 waterfall 是别人答的）。
+       *
+       * 四个值在这里是同一件事：这次审批结束了，卡片摘掉（见 `dropApprovalCard`）。
        */
       case "approval/asked": {
         const id = String(data.id ?? "");
@@ -1645,11 +1650,7 @@ export class SessionAdapter {
         const id = String(data.id ?? "");
         const callId = this.approvalCallIds.get(id);
         this.approvalCallIds.delete(id);
-        const outcome = String(data.outcome ?? "");
-        this.resolveApprovalByCallId(
-          callId,
-          outcome === "allowed-once" ? "approved" : outcome === "rejected" ? "rejected" : "expired",
-        );
+        this.dropApprovalByCallId(callId);
         break;
       }
 
@@ -3039,9 +3040,6 @@ export class SessionAdapter {
     const id = `ap:${approval.requestId}`;
     const existing = this.findInteractionCard(id);
     if (existing && existing.segment.kind === "approval") {
-      // 已经收场的卡片不被重投递改回 waiting（服务端只在请求**还没结算**时重投递，
-      // 这一步是纯防御；真出现只会把用户答完的卡片又变回可编辑）
-      if (existing.segment.approval.state !== "waiting") return;
       existing.segment.approval = approval;
       const updated = { ...existing.segment, approval: { ...approval } } as Segment;
       this.rememberInteraction(updated, existing.message.id);
@@ -3059,40 +3057,87 @@ export class SessionAdapter {
     this.emit({ type: "message/append", messageId: message.id, segment });
   }
 
-  resolveApproval(requestId: string, state: ApprovalView["state"]): void {
-    for (const message of this.messages) {
-      const segment = message.segments.find((s) => s.kind === "approval" && s.approval.requestId === requestId);
-      if (segment && segment.kind === "approval") {
-        segment.approval.state = state;
-        const updated = { ...segment, approval: { ...segment.approval } } as Segment;
-        // 收场同样要刷新那份副本：重折补回来的必须是「已收场」的记录，
-        // 不能又变回一张等着答复的卡
-        this.rememberInteraction(updated, message.id);
-        this.emit({ type: "message/segment", messageId: message.id, segment: updated });
+  /**
+   * 结算一张审批卡：**整段摘掉，什么都不留**（用户 2026-09-26 口径）。
+   *
+   * 官方把审批做成输入区上的待办面板（`dsh-client-ui-approval` 的 `ApprovalPanel`），
+   * 答完整个面板就不见了，会话记录里没有这一笔。本扩展此前把它折成消息里的一段，
+   * 于是允许 / 拒绝之后那张卡还留在流里、只有重载会话才看不见（审批不是 durable
+   * 事件，重放不回）——两处不一致正是这次要统一的东西。三条结算路径都归到这里：
+   * 本窗口答复（`controller.answerApproval`）、另一个窗口答了（会话日志
+   * `approval/decided`，经 `dropApprovalByCallId`）、Host 撤回（`cancelEvent`）。
+   *
+   * 摘完只剩一条**什么都没有**的助手消息时，那条消息也一并去掉：审批卡常常独占一条
+   * 消息（`addApproval` 走 `ensureAssistantMessage`，重投递 / 重折之后那条消息可能
+   * 正是为它新建的），只摘段的话界面上会留一行空行（时间与分支按钮那一行）。
+   */
+  dropApprovalCard(requestId: string): void {
+    for (const message of [...this.messages]) {
+      const at = message.segments.findIndex(
+        (segment) => segment.kind === "approval" && segment.approval.requestId === requestId,
+      );
+      if (at < 0) continue;
+      const [removed] = message.segments.splice(at, 1);
+      // `interactionCards` 里那份副本是 `refold()` 末尾用来把卡片补回消息流的：
+      // 不清的话下一次重折（翻页 / 重连 / 跟随快照）又把它补回来
+      // （与 `dropPromotedQuestionCard` 同一课）
+      if (removed) this.interactionCards.delete(removed.id);
+      if (this.hasVisibleContent(message)) {
+        this.emit({ type: "message/upsert", message: { ...message } });
+        continue;
       }
+      // 空壳消息要连模型一起去掉：只发帧不改模型的话，下一次整份 `messages/reset`
+      // 会把这条空行带回来（那时界面上就是「答完消失、重载又冒出来」）
+      this.messages = this.messages.filter((existing) => existing !== message);
+      this.byId.delete(message.id);
+      this.emit({ type: "message/remove", messageId: message.id });
     }
   }
 
   /**
-   * 按工具调用 id 收掉一张审批卡（会话日志 `approval/decided` 的入口，见
+   * 这条助手消息摘掉交互段之后还剩不剩能画的东西（`dropApprovalCard` 用它决定
+   * 要不要把整条消息也去掉）。
+   *
+   * 判据对着 `webview/components/Message.tsx` 的**消息级**渲染项逐个列：段、图片
+   * 文件（由 `produced` / `deliverables` 推出）、改动文件卡片、本轮改动行、交付行、
+   * 错误提示、轮尾用时。`usage` / `model` 不算：它们只是账本数据，不占这一行的位置
+   * （上下文占用条读的是最后一条消息的 `usage`，这条空壳被去掉后它会退回上一条的值，
+   * 下一个 step 的事件就会补上）。**只认助手消息**：用户消息的正文在 `text` 上，
+   * 而审批段只会挂到助手消息。
+   */
+  private hasVisibleContent(message: MessageView): boolean {
+    if (message.role !== "assistant") return true;
+    return (
+      message.segments.length > 0 ||
+      message.error !== undefined ||
+      message.changes !== undefined ||
+      message.streaming === true ||
+      message.turnStats !== undefined ||
+      (message.produced?.length ?? 0) > 0 ||
+      (message.deliverables?.length ?? 0) > 0
+    );
+  }
+
+  /**
+   * 按工具调用 id 摘掉一张审批卡（会话日志 `approval/decided` 的入口，见
    * `applyEvent`）：另一个窗口答的审批，本窗口只能从会话日志知道结果。
    *
    * `callId` 缺失（asker 没给）时退化成「本会话唯一在等的那张」——Agent 一轮
    * 只会挂起一次审批，这个兜底不会张冠李戴。
    */
-  resolveApprovalByCallId(callId: string | undefined, state: ApprovalView["state"]): void {
+  dropApprovalByCallId(callId: string | undefined): void {
     let fallback: string | undefined;
     for (const message of this.messages) {
       for (const segment of message.segments) {
-        if (segment.kind !== "approval" || segment.approval.state !== "waiting") continue;
+        if (segment.kind !== "approval") continue;
         if (callId !== undefined && segment.approval.callId === callId) {
-          this.resolveApproval(segment.approval.requestId, state);
+          this.dropApprovalCard(segment.approval.requestId);
           return;
         }
         if (segment.approval.callId === undefined) fallback = segment.approval.requestId;
       }
     }
-    if (callId === undefined && fallback) this.resolveApproval(fallback, state);
+    if (callId === undefined && fallback) this.dropApprovalCard(fallback);
   }
 
   /**
@@ -3366,9 +3411,10 @@ export class SessionAdapter {
    * Agent Context 释放），以及**用户自己撤掉**（计划审阅卡的「去聊天里说」→
    * 控制器回 `ASK_CANCELLED`，见 `controller.ts` 的 `cancelQuestion`）。
    *
-   * 撤回不等于「答过了」：提问标成 `cancelled`（没人回答过），审批标成
-   * `expired`。两者都必须离开 `waiting`，否则输入区一直挂着一张永远等不到
-   * 结果的卡片（用户 2026-09-15 报的多窗口问卷问题）。
+   * 撤回不等于「答过了」：提问标成 `cancelled`（没人回答过），审批则**整段摘掉**
+   * ——它没有「记录」形态，撤回与答复在看得到的层面上是同一件事（见
+   * `dropApprovalCard`）。两者都必须离开 `waiting`，否则输入区一直挂着一张永远
+   * 等不到结果的卡片（用户 2026-09-15 报的多窗口问卷问题）。
    */
   cancelEvent(requestId: string): void {
     for (const message of this.messages) {
@@ -3394,15 +3440,9 @@ export class SessionAdapter {
         return;
       }
       if (segment.kind === "approval") {
-        if (segment.approval.state !== "waiting") return;
-        segment.approval.state = "expired";
-        const updated = { ...segment, approval: { ...segment.approval } } as Segment;
-        this.rememberInteraction(updated, message.id);
-        this.emit({
-          type: "message/segment",
-          messageId: message.id,
-          segment: updated,
-        });
+        // 审批的撤回与答复在看得到的层面是同一件事：卡片摘掉（见 `dropApprovalCard`）。
+        // 用户 2026-09-26 口径——撤回本质是别人答了，留半张卡正是此前不一致的来源。
+        this.dropApprovalCard(segment.approval.requestId);
         return;
       }
     }

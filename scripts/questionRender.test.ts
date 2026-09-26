@@ -223,7 +223,7 @@ console.log("questionRender: 英文渲染同一条链路 ✓");
   const approvalSegment = {
     kind: "approval",
     id: "seg-approval",
-    approval: { requestId: "ev-approval", toolName: "pwsh", state: "waiting", detail: "rm -rf build" },
+    approval: { requestId: "ev-approval", toolName: "pwsh", detail: "rm -rf build" },
   };
   const questionSegment = {
     kind: "question",

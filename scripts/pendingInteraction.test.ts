@@ -21,11 +21,10 @@ import assert from "node:assert";
 import type { ApprovalView, MessageView, QuestionView } from "../src/shared/chat";
 import { resolveInteractions, type PendingInteraction } from "../src/webview/pendingInteraction";
 
-const approval = (id: string, state: ApprovalView["state"]): ApprovalView => ({
+const approval = (id: string): ApprovalView => ({
   requestId: id,
   toolName: "pwsh",
   reason: "需要提权",
-  state,
 });
 const question = (id: string, state: QuestionView["state"]): QuestionView => ({
   requestId: id,
@@ -60,28 +59,21 @@ const elected = (messages: MessageView[]): PendingInteraction | undefined =>
   resolveInteractions(messages).pending;
 
 // ---------- 1. 待处理的才接管；已答过的不接管 ----------
+//
+// 审批卡**没有「已答过」这一形态**：结算（允许 / 拒绝 / 撤回）之后宿主把它整段摘掉
+// （`adapter.dropApprovalCard`，见 `scripts/interactionSync.test.ts`），界面根本收不到
+// 这样一段——所以这里只断言「等待中的审批接管输入区」。**有记录形态**的是提问
+// （answered / cancelled 留在流里，见 `promoteQuestionToTool`）。
 {
   const pending = elected([
-    message([{ kind: "approval", id: "s1", approval: approval("r1", "waiting") }]),
+    message([{ kind: "approval", id: "s1", approval: approval("r1") }]),
   ]);
   assert.strictEqual(pending?.kind, "approval", "待处理的审批要接管输入区");
 
-  const answered = elected([
-    message([{ kind: "approval", id: "s1", approval: approval("r1", "approved") }]),
-  ]);
-  assert.strictEqual(answered, undefined, "已经答过的审批不该再占着输入区（它留在流里当记录）");
-
-  for (const state of ["rejected", "expired"] as const) {
-    assert.strictEqual(
-      elected([message([{ kind: "approval", id: "s", approval: approval("r", state) }])]),
-      undefined,
-      `${state} 同样不算待处理`,
-    );
-  }
   assert.strictEqual(
     elected([message([{ kind: "question", id: "s", question: question("r", "answered") }])]),
     undefined,
-    "已回答的提问也不算待处理",
+    "已回答的提问不算待处理（它留在流里当记录）",
   );
   // 被 Host 撤回的提问（另一个窗口答了 / 轮次中止）：同样必须让出输入区，
   // 否则多窗口下这张卡会永远停在页面上（用户 2026-09-15 报的）
@@ -97,7 +89,7 @@ const elected = (messages: MessageView[]): PendingInteraction | undefined =>
   const both = elected([
     message([
       { kind: "question", id: "q", question: question("rq", "waiting") },
-      { kind: "approval", id: "a", approval: approval("ra", "waiting") },
+      { kind: "approval", id: "a", approval: approval("ra") },
     ]),
   ]);
   assert.strictEqual(both?.kind, "question", "两张同时待处理时，提问优先（官方优先级）");
@@ -105,7 +97,7 @@ const elected = (messages: MessageView[]): PendingInteraction | undefined =>
   // 顺序反过来结论不变（优先级是绝对的，不是先到先得）
   const reversed = elected([
     message([
-      { kind: "approval", id: "a", approval: approval("ra", "waiting") },
+      { kind: "approval", id: "a", approval: approval("ra") },
       { kind: "question", id: "q", question: question("rq", "waiting") },
     ]),
   ]);
@@ -115,8 +107,8 @@ const elected = (messages: MessageView[]): PendingInteraction | undefined =>
 // ---------- 3. 同优先级取最后一条 ----------
 {
   const last = elected([
-    message([{ kind: "approval", id: "a1", approval: approval("r1", "waiting") }]),
-    message([{ kind: "approval", id: "a2", approval: approval("r2", "waiting") }]),
+    message([{ kind: "approval", id: "a1", approval: approval("r1") }]),
+    message([{ kind: "approval", id: "a2", approval: approval("r2") }]),
   ]);
   assert.strictEqual(
     last?.kind === "approval" ? last.approval.requestId : undefined,
@@ -158,7 +150,7 @@ const elected = (messages: MessageView[]): PendingInteraction | undefined =>
   // 优先级：plan-review > 普通提问 > 审批（官方注册优先级 2 / 1 / 0）
   const all = elected([
     message([
-      { kind: "approval", id: "a", approval: approval("ra", "waiting") },
+      { kind: "approval", id: "a", approval: approval("ra") },
       { kind: "question", id: "q", question: question("rq", "waiting") },
       { kind: "question", id: "p", question: planReview("rp", "waiting") },
     ]),
@@ -206,7 +198,7 @@ console.log("pendingInteraction: plan-review 优先级最高、收窄不了退�
 // （判据「还在等 **且** 就是被选中的那一条」，缺一半都会丢卡）。
 {
   const twoWaiting = [
-    message([{ kind: "approval", id: "seg-approval", approval: approval("r-a", "waiting") }], "a:approval"),
+    message([{ kind: "approval", id: "seg-approval", approval: approval("r-a") }], "a:approval"),
     message([{ kind: "question", id: "seg-question", question: question("r-q", "waiting") }], "a:question"),
   ];
   const { pending, takenOver } = resolveInteractions(twoWaiting);
@@ -227,7 +219,7 @@ console.log("pendingInteraction: plan-review 优先级最高、收窄不了退�
     message(
       [
         { kind: "question", id: "seg-question", question: question("r-q", "answered") },
-        { kind: "approval", id: "seg-approval", approval: approval("r-a", "waiting") },
+        { kind: "approval", id: "seg-approval", approval: approval("r-a") },
       ],
       "a:mixed",
     ),
@@ -241,9 +233,9 @@ console.log("pendingInteraction: plan-review 优先级最高、收窄不了退�
   assert.strictEqual(empty.pending, undefined, "空消息流没有待处理交互");
   assert.strictEqual(empty.takenOver.size, 0, "没有待处理交互时 takenOver 是空集");
 
-  // 已答过（answered / cancelled）的段**不在** takenOver 里——否则那条记录就丢了
+  // 已答过（answered / cancelled）的提问段**不在** takenOver 里——否则那条记录就丢了
+  // （审批没有对应的形态：它结算之后整段被摘掉，走不到这里）
   const settled = resolveInteractions([
-    message([{ kind: "approval", id: "seg-approved", approval: approval("r-a", "approved") }], "a:approved"),
     message([{ kind: "question", id: "seg-answered", question: question("r-q", "answered") }], "a:answered"),
     message([{ kind: "question", id: "seg-cancelled", question: question("r-c", "cancelled") }], "a:cancelled"),
   ]);
