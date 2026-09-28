@@ -550,6 +550,44 @@ export function Ellipsis() {
 }
 
 /**
+ * 指针冻结：流式正文块在每个增量帧都会整体重建 DOM（`dangerouslySetInnerHTML`
+ * 拿到新字符串时 React 把整块内容推倒重来）。真实点击的按下与抬起之间（人手
+ * 60–150ms）撞上一次重建，mousedown 的目标节点就被拆走，浏览器把 click 吞掉或
+ * 派发到公共祖先——块里可点的东西（文件链接 / 文件芯片）于是「点了没反应」，
+ * 而生成结束后同一处必然点得开（用户 2026-09-28 报「生成中点不开、生成后能开」）。
+ *
+ * 指针在块内期间冻结渲染（与选区冻结 `useSelectionFreeze` 同思路：只停界面，
+ * 内容照常到达并保存在状态里），离开即恢复跟随最新。指针在场 ⇒ 不重建 ⇒
+ * mousedown 与 mouseup 之间 DOM 恒定，click 必然落在真节点上。
+ *
+ * 只该用于**流式中且含可点内容**的块（`Message.tsx` 的 `StreamText`）；纯展示的
+ * 流式块（思考行等）没有可点的东西，不必付这份冻结。
+ */
+export function usePointerFreeze(
+  ref: RefObject<HTMLElement | null>,
+  text: string,
+): string {
+  const [frozen, setFrozen] = useState<string | undefined>(undefined);
+  const liveRef = useRef(text);
+  liveRef.current = text;
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const enter = () => setFrozen((prev) => prev ?? liveRef.current);
+    const leave = () => setFrozen(undefined);
+    el.addEventListener("pointerenter", enter);
+    el.addEventListener("pointerleave", leave);
+    return () => {
+      el.removeEventListener("pointerenter", enter);
+      el.removeEventListener("pointerleave", leave);
+    };
+  }, [ref]);
+
+  return frozen ?? text;
+}
+
+/**
  * 实时耗时：工具还在跑时每秒跳一次。
  *
  * 构建这类工具动辄几分钟，而协议里**没有**工具进度事件（实测：`tool/result`

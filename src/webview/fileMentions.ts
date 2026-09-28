@@ -25,18 +25,20 @@ const MENTION_CLASS = "file-mention";
  * 把正文里命中文件词表的行内代码换成可点按钮。
  *
  * @param root 已渲染的容器（`dangerouslySetInnerHTML` 的那个 div）。
- * @param port 本轮文件词表；`undefined` 或没结束（流式）时不做任何事。
+ * @param port 本轮文件词表；`undefined` 或词表为空时不做任何事。流式期间词表
+ *   可能还不全——只对**已经命中**的 token 动手（见 `fileLinks.ts` 的口径），
+ *   词表随轮次增长时靠清理函数还原后重判。
  * @param open 打开文件的动作（界面侧只负责发帧，路径解析在宿主）。
  * @returns 清理函数：还原被换掉的节点，让下一次 hydrate 能重新判定
- *   （词表可能**晚于**正文到达——轮次结束时正文不变、`produced` 才到齐，
- *   React 不会重设 `innerHTML`，不还原就永远补不上按钮）。
+ *   （词表可能**晚于**正文到达——流式期间每写出一个文件词表就变一次、轮次结束时
+ *   正文不变而 `produced` 才到齐，React 不会重设 `innerHTML`，不还原就永远补不上按钮）。
  */
 export function hydrateFileMentions(
   root: HTMLElement,
   port: FileLinkPort | undefined,
   open: (path: string) => void,
 ): () => void {
-  if (!port || !port.settled || port.paths.length === 0) return () => {};
+  if (!port || port.paths.length === 0) return () => {};
   const restore: (() => void)[] = [];
 
   for (const code of root.querySelectorAll("code")) {

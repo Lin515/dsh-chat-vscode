@@ -888,7 +888,9 @@
                     "[^plan]: 来自 `docs/merge-plan.md` 的三步收敛：先去重、再收口、最后补测试。\n" +
                     "[^port]: `config.ts` 与 `index.ts` 各读了一次 `process.env.PORT`。\n\n" +
                     "落地在 `bootstrap.ts`，入口那一处见 [index.ts](src/server/index.ts#L12)；" +
-                    "没写过的 `not-written.ts`、普通代码 `2/3` 都保持惰性。\n\n" +
+                    "没写过的 `not-written.ts`、普通代码 `2/3` 都保持惰性。" +
+                    "绝对路径盘符写法 [AGENTS.md](D:/dev/app/AGENTS.md) 同样要点得开" +
+                    "（DOMPurify 不许剥盘符 href，用户 2026-09-28 报的问题）。\n\n" +
                     "方案图：\n\n" +
                     "![本地生成的图表](./out/chart.png)\n\n" +
                     "![外链示例](https://www.w3.org/Icons/w3c_home.png)\n\n" +
@@ -1155,7 +1157,7 @@
                     env: Object.fromEntries(Array.from({ length: 20 }, (_, i) => [`DSH_STEP_${i + 1}`, `value-${i + 1}`]))
                   }, null, 2),
                   startedAt: now - 12000 } },
-                { id: "t3", kind: "text", text: "正在收敛入口……", streaming: true }
+                { id: "t3", kind: "text", text: "正在收敛入口……入口见 [index.ts](src/server/index.ts#L42)，落地在 `bootstrap.ts`。", streaming: true }
               ]
             }
           ]

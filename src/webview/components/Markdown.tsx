@@ -29,7 +29,7 @@ function openFile(path: string, line?: number): void {
  * 其余（`javascript:`、`command:` 之类，以及页内锚点之外的 scheme）一律拦下不动手——
  * webview 里让链接自己导航会把整个聊天界面换掉。
  */
-function activateAnchor(event: ReactMouseEvent<HTMLDivElement>, fileLinks?: FileLinkPort): void {
+function activateAnchor(event: ReactMouseEvent<HTMLDivElement>): void {
   const target = event.target;
   const anchor = target instanceof Element ? target.closest("a[href]") : null;
   if (!anchor) return;
@@ -39,8 +39,8 @@ function activateAnchor(event: ReactMouseEvent<HTMLDivElement>, fileLinks?: File
   event.preventDefault();
   const file = parseFileLink(href);
   if (file) {
-    // 流式期间本地文件链接保持惰性（口径见 fileLinks.ts 的 FileLinkPort.settled）
-    if (fileLinks && !fileLinks.settled) return;
+    // 流式期间也开（用户 2026-09-26 口径，见 fileLinks.ts）：目标要等 markdown
+    // 语法写完整才会渲染成锚点，此刻点到的目标已经是完整的
     openFile(file.path, file.line);
     return;
   }
@@ -86,7 +86,7 @@ const HtmlBlock = memo(function HtmlBlock({
           openImagePreview(target.src, target.alt || texts.messageImageAlt);
           return;
         }
-        activateAnchor(event, fileLinks);
+        activateAnchor(event);
       }}
       dangerouslySetInnerHTML={{ __html: html }}
     />

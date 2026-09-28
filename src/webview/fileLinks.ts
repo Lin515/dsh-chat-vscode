@@ -113,33 +113,29 @@ export function externalLinkUrl(value: string): string | undefined {
  *
  * `paths` 为空时行内代码保持惰性，但 markdown 链接照旧可点——后者自带完整路径，
  * 不需要词表。
+ *
+ * **流式期间也生效**（用户 2026-09-26 报「生成中点了没反应」后的口径，刻意偏离官方
+ * `renderAnchor` 的 streaming 分支——官方在流式期间不解析文件链接）：生成中点开
+ * 已经写出的文件恰恰是高频动作。两条路在流式期间都不引入新的猜测——markdown
+ * 链接要等目标在语法上写完整才会渲染成锚点；行内代码仍只认**词表里已有**的文件，
+ * 词表随轮次增长，匹配永远是肯定证据。
  */
 export interface FileLinkPort {
   /** 本轮写过或申报交付的文件（行内代码只有能对上它们时才可点）。 */
   readonly paths: readonly string[];
-  /**
-   * 这一轮是否已经结束。
-   *
-   * **流式期间本地文件链接保持惰性**（官方 `renderAnchor` 的 `streaming` 分支同口径）：
-   * 正文每个 token 都在变，此刻那条路径既可能是写了一半的，点下去的目标也会随着
-   * 下一帧被替换掉——「点了没反应」在这里是刻意的，不是坏掉。
-   */
-  readonly settled: boolean;
 }
 
 /**
  * 组装一份词表（去重，保持遇见顺序）。
  *
  * @param paths 本轮写过或申报交付的文件（可能有 undefined 空档）。
- * @param settled 这一轮是否已经结束。
  */
 export function fileLinkPort(
   paths: readonly (string | undefined)[],
-  settled: boolean,
 ): FileLinkPort {
   const unique: string[] = [];
   for (const path of paths) {
     if (path && !unique.includes(path)) unique.push(path);
   }
-  return { paths: unique, settled };
+  return { paths: unique };
 }

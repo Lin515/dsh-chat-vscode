@@ -119,19 +119,16 @@ const must = [
       // 全局拼一起会把别的轮次的同名文件算进来——`config.ts` 因此在两处各出现一次、
       // 被判成「同名歧义」，判定跟着失真。
       const portOf = (m: Msg) =>
-        fileLinkPort(
-          [...(m.produced ?? []), ...(m.deliverables ?? []).map((file) => file.path)],
-          !m.streaming,
-        );
+        fileLinkPort([
+          ...(m.produced ?? []),
+          ...(m.deliverables ?? []).map((file) => file.path),
+        ]);
       const allTexts = state.messages.flatMap((m: Msg) => textsOf(m));
       const hasLineLink = allTexts.some((text: string) => /\]\([^)\s]+#L\d+\)/.test(text));
       const resolved = state.messages.some((m: Msg) => {
         const port = portOf(m);
-        return (
-          port.settled &&
-          textsOf(m).some((text) =>
-            tokensOf(text).some((token) => matchFileMention(port.paths, token) !== undefined),
-          )
+        return textsOf(m).some((text) =>
+          tokensOf(text).some((token) => matchFileMention(port.paths, token) !== undefined),
         );
       });
       // 点不开的那些也要留着：夹具里全是可点的，就看不出「对不上就不猜」这条口径

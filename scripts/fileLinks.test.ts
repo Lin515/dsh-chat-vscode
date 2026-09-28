@@ -107,13 +107,12 @@ console.log("fileLinks: 行内代码只认本轮文件词表（精确 / 唯一�
 }
 console.log("fileLinks: 外链只认 http/https/mailto（相对地址与其它 scheme 不放行） ✓");
 
-// ---------- 4. 词表载体：去重、保持遇见顺序、settled 原样带上 ----------
+// ---------- 4. 词表载体：去重、保持遇见顺序 ----------
 
 {
-  const port = fileLinkPort(["a.ts", undefined, "a.ts", "b.ts"], true);
+  const port = fileLinkPort(["a.ts", undefined, "a.ts", "b.ts"]);
   assert.deepStrictEqual(port.paths, ["a.ts", "b.ts"]);
-  assert.strictEqual(port.settled, true);
-  assert.strictEqual(fileLinkPort([undefined], false).paths.length, 0);
+  assert.strictEqual(fileLinkPort([undefined]).paths.length, 0);
 }
 console.log("fileLinks: 词表去重且不带 undefined ✓");
 
@@ -151,8 +150,8 @@ console.log("fileLinks: 词表去重且不带 undefined ✓");
     "判定必须用行内代码的**全文**去对词表（部分匹配会切出半截路径）",
   );
   assert.ok(
-    /if \(!port \|\| !port\.settled \|\| port\.paths\.length === 0\) return \(\) => \{\}/.test(mentions),
-    "流式期间（settled=false）与没有词表时不做任何事——官方本地文件链接同样是惰性的",
+    /if \(!port \|\| port\.paths\.length === 0\) return \(\) => \{\}/.test(mentions),
+    "没有词表时不做任何事；流式期间词表不全也照样对已命中的 token 动手（用户 2026-09-26 口径）",
   );
   assert.ok(
     /code\.replaceChildren\(token\)/.test(mentions),
@@ -188,8 +187,8 @@ console.log("fileLinks: 行内代码 → 按钮（跳过代码块与锚点，绘
     "锚点要按 parseFileLink 判定是不是本地文件",
   );
   assert.ok(
-    /if \(fileLinks && !fileLinks\.settled\) return;/.test(markdown),
-    "流式期间本地文件链接保持惰性（官方 renderAnchor 的 streaming 分支同口径）",
+    !/settled/.test(markdown),
+    "锚点点击不得再按 settled 短路：流式期间的文件链接也要开（用户 2026-09-26 口径）",
   );
   assert.ok(
     /const external = externalLinkUrl\(href\);\s*\n\s*if \(external\) post\(\{ type: "openExternal", url: external \}\);/.test(
@@ -208,22 +207,72 @@ console.log("fileLinks: 行内代码 → 按钮（跳过代码块与锚点，绘
 }
 console.log("fileLinks: 锚点点击三分类（本地文件 / 外链 / 其余拦下，页内锚点放行） ✓");
 
-// ---------- 7. 助手正文的词表来源：produced ∪ presented，且流式期间不生效 ----------
+// ---------- 6b. 净化层不许剥盘符 href ----------
+//
+// DOMPurify 的默认 URI 白名单不认 `D:`（单字母 + 冒号像 scheme），会把 href 整个
+// 剥掉——锚点变成无 href 空壳，悬停是文本光标、点了没反应
+// （用户 2026-09-28 报「绝对路径盘符写法打不开」即此）。净化在 DOM 上做，Node
+// 断言环境没有 DOM，只能按结构钉：白名单正则必须在、且带盘符分支
+// （`fileLinks.ts` 的 parseFileLink 对盘符放行，两层口径要一致）。
+{
+  const md = read("src", "webview", "markdown.ts");
+  assert.ok(
+    /ALLOWED_URI_REGEXP\s*=\s*\/\^/.test(md),
+    "URI 白名单必须显式给出（DOMPurify 默认正则会剥掉 D:/ 的 href）",
+  );
+  // 盘符分支的字面形状：`[a-z]:[\\/]`（源码里的正则源文本）
+  assert.ok(
+    /\[a-z\]:\[\\\\\/\]/.test(md),
+    "白名单要带盘符分支（`D:/dev/a.ts` 与 parseFileLink 的放行口径一致）",
+  );
+  assert.ok(
+    /ALLOWED_URI_REGEXP,/.test(md),
+    "sanitize 配置要真的把 ALLOWED_URI_REGEXP 传给 DOMPurify（只定义不传等于没改）",
+  );
+}
+console.log("fileLinks: 净化层保留盘符 href（绝对路径文件链接渲染成真锚点） ✓");
+
+// ---------- 6c. 流式正文块要有指针冻结（否则生成中的点击会被增量重建吞掉） ----------
+//
+// 流式期间每个增量帧都重建正文块 DOM；真实点击的按下-抬起间隙撞上重建时，
+// mousedown 目标被拆走，click 到不了芯片——「生成中点不开、生成后能开」
+// （用户 2026-09-28 报告，Playwright 真鼠标回路实测：增量流中 10/10 丢失）。
+// 修复是指针冻结（与选区冻结同思路）。判定在 DOM 上发生，Node 断言只能按结构钉。
+{
+  const primitives = read("src", "webview", "components", "primitives.tsx");
+  assert.ok(
+    /export function usePointerFreeze\(/.test(primitives),
+    "primitives 要导出 usePointerFreeze（指针在块内期间冻结渲染）",
+  );
+  assert.ok(
+    /addEventListener\("pointerenter"/.test(primitives) &&
+      /addEventListener\("pointerleave"/.test(primitives),
+    "冻结的触发是指针进入 / 离开（不是按下：setState 重渲染本身也会换 DOM）",
+  );
+  const message = read("src", "webview", "components", "Message.tsx");
+  assert.ok(
+    /usePointerFreeze\(ref, unfrozen\)/.test(message),
+    "StreamText 要把指针冻结叠在选区冻结之上（生成中的正文块才有点得开的芯片）",
+  );
+}
+console.log("fileLinks: 流式正文块指针冻结（生成中点击不再被增量重建吞掉） ✓");
+
+// ---------- 7. 助手正文的词表来源：produced ∪ presented ----------
 
 {
   const message = read("src", "webview", "components", "Message.tsx");
   assert.ok(
-    /fileLinkPort\(\s*\n\s*\[\.\.\.\(message\.produced \?\? \[\]\), \.\.\.\(message\.deliverables \?\? \[\]\)\.map\(\(file\) => file\.path\)\],\s*\n\s*!message\.streaming,/.test(
+    /fileLinkPort\(\[\s*\n\s*\.\.\.\(message\.produced \?\? \[\]\),\s*\n\s*\.\.\.\(message\.deliverables \?\? \[\]\)\.map\(\(file\) => file\.path\),\s*\n\s*\]\)/.test(
       message,
     ),
-    "词表必须是 produced ∪ deliverables（官方 producedFileMentions 同一份来源），settled = !streaming",
+    "词表必须是 produced ∪ deliverables（官方 producedFileMentions 同一份来源）",
   );
   assert.ok(
     /<StreamText key=\{segment\.id\} text=\{segment\.text\} fileLinks=\{fileLinks\} \/>/.test(message),
     "词表要传给正文段（不传的话行内代码永远不会变成链接）",
   );
 }
-console.log("fileLinks: 词表 = 本轮 produced ∪ deliverables，流式期间 settled=false ✓");
+console.log("fileLinks: 词表 = 本轮 produced ∪ deliverables ✓");
 
 // ---------- 8. 打开：行号落位、相对路径解析、scheme 白名单 ----------
 

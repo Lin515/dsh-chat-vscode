@@ -86,6 +86,22 @@ purify?.addHook("afterSanitizeAttributes", (node) => {
   image.setAttribute("decoding", "async");
 });
 
+/**
+ * URI 属性（`href` / `src`）的白名单。
+ *
+ * 在 DOMPurify 默认正则（`http(s)` / `mailto` / `tel` 等约定 scheme，加相对地址）的
+ * 基础上补一条 **Windows 盘符**（`[a-z]:[\\/]`，如 `D:/dev/a.ts`）：模型写
+ * `[标题](D:/dev/app/AGENTS.md)` 是合法的文件链接（`parseFileLink` 对盘符放行），
+ * 而默认正则会把 `D:` 当成不认识的 scheme **剥掉 href**——锚点变成无 href 的空壳，
+ * 悬停是文本光标、点下去什么也不发生（用户 2026-09-28 报「绝对路径打不开」即此）。
+ *
+ * 只放行「盘符 + 冒号 + 分隔符」这一种形状，与 `fileLinks.ts` 的判定同一口径；
+ * 放行进 DOM 也不等于放行导航——正文锚点的点击一律走事件委托
+ * （`Markdown.tsx` 的 `activateAnchor`），`preventDefault` 之后由宿主再判一次。
+ */
+const ALLOWED_URI_REGEXP =
+  /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|sms|cid|xmpp):|[a-z]:[\\/]|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/iu;
+
 /** 渲染选项。 */
 export interface RenderMarkdownOptions {
   /**
@@ -129,6 +145,7 @@ function sanitize(html: string): string {
     // 注意：`ALLOW_DATA_ATTR: false` 只关掉**通配**放行，`ALLOWED_ATTR` 里
     // 显式列出的 `data-footnotes` 仍然有效（DOMPurify 的判定顺序：先看白名单）
     ALLOW_DATA_ATTR: false,
+    ALLOWED_URI_REGEXP,
   });
 }
 
