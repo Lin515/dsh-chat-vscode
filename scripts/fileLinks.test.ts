@@ -232,31 +232,6 @@ console.log("fileLinks: 锚点点击三分类（本地文件 / 外链 / 其余�
 }
 console.log("fileLinks: 净化层保留盘符 href（绝对路径文件链接渲染成真锚点） ✓");
 
-// ---------- 6c. 流式正文块要有指针冻结（否则生成中的点击会被增量重建吞掉） ----------
-//
-// 流式期间每个增量帧都重建正文块 DOM；真实点击的按下-抬起间隙撞上重建时，
-// mousedown 目标被拆走，click 到不了芯片——「生成中点不开、生成后能开」
-// （用户 2026-09-28 报告，Playwright 真鼠标回路实测：增量流中 10/10 丢失）。
-// 修复是指针冻结（与选区冻结同思路）。判定在 DOM 上发生，Node 断言只能按结构钉。
-{
-  const primitives = read("src", "webview", "components", "primitives.tsx");
-  assert.ok(
-    /export function usePointerFreeze\(/.test(primitives),
-    "primitives 要导出 usePointerFreeze（指针在块内期间冻结渲染）",
-  );
-  assert.ok(
-    /addEventListener\("pointerenter"/.test(primitives) &&
-      /addEventListener\("pointerleave"/.test(primitives),
-    "冻结的触发是指针进入 / 离开（不是按下：setState 重渲染本身也会换 DOM）",
-  );
-  const message = read("src", "webview", "components", "Message.tsx");
-  assert.ok(
-    /usePointerFreeze\(ref, unfrozen\)/.test(message),
-    "StreamText 要把指针冻结叠在选区冻结之上（生成中的正文块才有点得开的芯片）",
-  );
-}
-console.log("fileLinks: 流式正文块指针冻结（生成中点击不再被增量重建吞掉） ✓");
-
 // ---------- 7. 助手正文的词表来源：produced ∪ presented ----------
 
 {

@@ -6,7 +6,7 @@ import { fileLinkPort, type FileLinkPort } from "../fileLinks";
 import { IconBranch, IconCopy } from "../icons";
 import { Markdown } from "./Markdown";
 import { ImageGallery, LocalImageGallery, type ImageSource } from "./Images";
-import { formatClock, usePointerFreeze, useSelectionFreeze } from "./primitives";
+import { formatClock, useSelectionFreeze } from "./primitives";
 import { ApprovalCard, CommandRow, FileChips, InjectedRow, MessageImages, NoticeRow, QuestionCard, ThinkingRow, ToolRow, TurnProcessRow, TurnStatsButton, UnknownBlockRow } from "./Rows";
 import { useTexts, resolveText } from "../texts";
 import { producedOnly, withoutVanished } from "../turnFiles";
@@ -20,11 +20,7 @@ import { ChangesCard } from "./ChangesCard";
  */
 function StreamText({ text, fileLinks }: { text: string; fileLinks?: FileLinkPort }) {
   const ref = useRef<HTMLDivElement>(null);
-  const unfrozen = useSelectionFreeze(ref, text);
-  // 指针冻结要叠在选区冻结之上：选区冻的是「用户划选的那一刻」，指针冻的是
-  // 「当前正显示的内容」——两者都在场时（划选后又把指针留在块内）以后到者为准，
-  // 离开 / 取消选区都回到实时
-  const shown = usePointerFreeze(ref, unfrozen);
+  const shown = useSelectionFreeze(ref, text);
   return (
     <div ref={ref} className="md-wrapper">
       <Markdown text={shown} fileLinks={fileLinks} />
