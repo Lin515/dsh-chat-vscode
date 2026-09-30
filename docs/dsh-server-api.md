@@ -90,6 +90,8 @@
 - **新增端点 `session/initializeDefaultModel`**（0.1.7-rc.2，未消费）；**`workspace/initializeDefault`
   改成无参**——它原来收一个请求体对象（里面那个 `request` 参数的形状）连同其类型名一起删除
   （未消费）。
+- **两处只增成员**（0.2.0-rc.2，未消费）：网关多了 `hasLiveClient()`；`session/fork` 的参数多了
+  可选的 `onCreated` 回调（子会话进目录之后、可选改名之前触发）。
 
 ---
 
@@ -812,9 +814,15 @@ export interface ModelSelectionProjection {
 POST /api/agentPresets/list      {"args":{}}                                    → AgentPresetRoster
 POST /api/agentPresets/select    {"args":{"agentId":"01J...","agentPreset":"standard"}} → string（生效的 preset id）
 POST /api/agentPresets/read      {"args":{"agentPreset":"standard"}}            → AgentPresetDocument
-POST /api/agentPresets/copy      {"args":{"from":"standard","id":"my-preset","name":"我的"}} → void
-POST /api/agentPresets/deletePreset {"args":{"id":"my-preset"}}                 → void
 ```
+
+> **`copy` / `deletePreset` 在本机跑的这个版本里不存在**（2026-09-30 核）：`dsh-agent-preset-registry`
+> 只发布 `@Remote` 的 `list` / `read` / `select` 三个方法（源码树
+> `packages/preset/agent-preset-registry/src/index.ts`），Web 端那片「Agent Preset」设置区也只提供
+> **只读**的组装查看与默认预设写入（`ui-agent-preset` 的 `section-store.ts` 注释逐字是
+> read-only composition viewer）。所以**新增/编辑预设在当前版本只能走 YAML 配置层**
+> （bundle 的 `presets/*.patch.yml` 或 profile / HOME 层的 `cordis.patch.yml` 里 `- insert:` 一行），
+> 没有运行时端点可写。
 
 `AgentPresetRoster` / `AgentPresetRow`（0.1.7-rc.2 的形状，`⟨P⟩\dsh-agent-preset-registry\lib\types\types.d.ts`）：
 
