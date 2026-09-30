@@ -69,7 +69,7 @@ VS Code → 扩展 → `…` → 从 VSIX 安装 → 重载窗口。
 
 | 键 | 默认 | 说明 |
 | --- | --- | --- |
-| `dshChat.url` | 空 | 外部 `dsh web` 的**备用**地址；只在内部 DSH 没在跑、且这个地址有应答时才连它 |
+| `dshChat.url` | `http://127.0.0.1:3080` | 外部 `dsh web` 的**备用**地址；只在内部 DSH 没在跑、且这个地址有应答时才连它 |
 | `dshChat.command` | `dsh web --port 0 --no-open` | 启动内部 DSH 的命令，**原样执行**、扩展不追加任何参数 |
 | `dshChat.supervisorIdleSec` | `10` | 没有窗口连着之后，守护进程隔多久收场（5–600 秒） |
 | `dshChat.autoConnect` | `true` | VSCode 启动时是否自动连接（内部优先、外部备用、都没有则启动内部）；关掉后只显示连接按钮 |
@@ -233,7 +233,7 @@ Four rules worth knowing:
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `dshChat.url` | empty | **Fallback** address of an external `dsh web`; used only when no internal DSH is running and that address answers |
+| `dshChat.url` | `http://127.0.0.1:3080` | **Fallback** address of an external `dsh web`; used only when no internal DSH is running and that address answers |
 | `dshChat.command` | `dsh web --port 0 --no-open` | Launch command for the internal DSH, executed verbatim |
 | `dshChat.supervisorIdleSec` | `10` | Idle seconds before the guardian retires the backend (5–600) |
 | `dshChat.autoConnect` | `true` | Connect automatically when VS Code starts (internal first, external as fallback, internal is started when neither is available); when off, only the connect buttons are shown |
