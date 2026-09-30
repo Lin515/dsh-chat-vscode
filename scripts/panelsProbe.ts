@@ -3,6 +3,12 @@
  *
  * 新面板数据源验证：对真实服务器拉取各面板依赖的接口。
  *   node build/panels-probe.mjs
+ *
+ * **前提：服务端上得有一个既有会话**（脚本取 `session/list` 里最近更新的那条当样本）。
+ * 本探针走 `supervisorProbeEnv`，那是**全新的一次性 home**，里面一条会话都没有——
+ * 这时四条断言会以 `Cannot read properties of undefined (reading 'sessionId')` 失败。
+ * 那是「样本不存在」，不是接口坏了；要看真实形状得连一个已有内容的服务端
+ * （例如真实 `~/.dsh` 起的那一套）。
  */
 // 必须排在最前：会合目录与 DSH_HOME 都指到本次探针专用的临时目录（见 supervisorProbeEnv）。
 // 自检放这里还有一层作用：真的用到导出值，esbuild 才不会把副作用 import 摇掉。
@@ -14,7 +20,7 @@ if (!PROBE_SUPERVISOR_ROOT || !/dsh-chat-sup-probe-/.test(PROBE_SUPERVISOR_ROOT)
 import { DshClient } from "../src/dsh/client";
 import { SupervisorManager } from "../src/dsh/supervisorManager";
 
-const server = new SupervisorManager({ url: "", command: "dsh", log: () => {} });
+const server = new SupervisorManager({ url: "", command: "dsh web --port 0 --no-open", log: () => {} });
 const info = await server.ensure();
 const client = new DshClient(info.baseUrl, info.token, () => {});
 await client.authenticate();

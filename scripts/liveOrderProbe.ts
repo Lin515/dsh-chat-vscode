@@ -32,7 +32,7 @@ import type { MessageView, Segment } from "../src/shared/chat";
 
 export async function liveOrderCheck(): Promise<number> {
   const log = (line: string) => console.log(`[live] ${line}`);
-  const server = new SupervisorManager({ url: "", command: "dsh", log });
+  const server = new SupervisorManager({ url: "", command: "dsh web --port 0 --no-open", log });
   let client: DshClient | undefined;
   let failures = 0;
   const check = (ok: boolean, label: string, detail = "") => {

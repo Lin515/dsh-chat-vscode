@@ -31,7 +31,7 @@ import { SupervisorManager } from "../src/dsh/supervisorManager";
 import { SessionAdapter } from "../src/dsh/adapter";
 
 const log = (line: string) => console.log(`[probe] ${line}`);
-const server = new SupervisorManager({ url: "", command: "dsh", log });
+const server = new SupervisorManager({ url: "", command: "dsh web --port 0 --no-open", log });
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** 慢轮：足够长，保证队列项派发时刻可以落在它的生成中途/刚结束。 */

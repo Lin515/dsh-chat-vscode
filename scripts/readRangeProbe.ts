@@ -27,7 +27,7 @@ import { SupervisorManager } from "../src/dsh/supervisorManager";
 import type { ToolCallView } from "../src/shared/chat";
 
 const log = () => {};
-const server = new SupervisorManager({ url: "", command: "dsh", log });
+const server = new SupervisorManager({ url: "", command: "dsh web --port 0 --no-open", log });
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** 拿一个确实很长的文件，保证能演示「部分读取」。 */

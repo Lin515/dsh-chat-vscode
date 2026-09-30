@@ -31,7 +31,7 @@ if (!PROBE_SUPERVISOR_ROOT || !/dsh-chat-sup-probe-/.test(PROBE_SUPERVISOR_ROOT)
   process.stderr.write(`[workspace] 隔离失效：会合根目录=${PROBE_SUPERVISOR_ROOT}\n`);
   process.exit(2);
 }
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DshClient } from "../src/dsh/client";
@@ -42,7 +42,7 @@ process.env.DSH_HOME = home;
 console.log(`[probe] 临时 DSH_HOME = ${home}`);
 
 const log = (line: string) => console.log(`[probe] ${line}`);
-const server = new SupervisorManager({ url: "", command: "dsh", log });
+const server = new SupervisorManager({ url: "", command: "dsh web --port 0 --no-open", log });
 let client: DshClient | undefined;
 const failures: string[] = [];
 
@@ -115,8 +115,12 @@ try {
     /const workspaceId = await this\.ensureWorkspace\(\);/.test(controller),
     "newSession 先解析工作区 id 再建会话",
   );
+  // 这里比对的是**同一次调用**：工作区 id 与「按 cwd 回退」的分支都在
+  // `createSessionInWorkspace` 里，两条路径共用一份 `target`（预设等附加字段），
+  // 所以正则要容许 `{ workspaceId, ...target }` 这种展开形式——写死成
+  // `{ workspaceId }` 会在参数表一变就失效（本断言曾因此空转）。
   check(
-    /createSession\(\{ workspaceId \}\)/.test(controller),
+    /createSession\(\{\s*workspaceId\s*[,}]/.test(controller),
     "建会话把 workspaceId 交给服务端（否则会话永远不会进工作区分组）",
   );
 } catch (error) {
@@ -124,6 +128,18 @@ try {
 } finally {
   client?.dispose();
   server.stop();
+  // 这个 home 是探针**自己**建的（不像别的探针交给 supervisorProbeEnv），
+  // 所以也得自己收尾——否则每跑一次就在 TEMP 里留一份完整 home
+  // （会话日志、归档索引都在里面）。
+  if (failures.length === 0) {
+    try {
+      rmSync(home, { recursive: true, force: true });
+    } catch (error) {
+      console.log(`[probe] 临时 home 清理失败（不影响结论）：${String(error)}`);
+    }
+  } else {
+    console.log(`\n[probe] 现场保留在 ${home}`);
+  }
 }
 
 console.log(

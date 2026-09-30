@@ -42,7 +42,7 @@ import { SupervisorManager } from "../src/dsh/supervisorManager";
 import { queueItemsFromInbox, queueItemsFromWire } from "../src/dsh/queueView";
 
 const log = (line: string) => console.log(`[probe] ${line}`);
-const server = new SupervisorManager({ url: "", command: "dsh", log });
+const server = new SupervisorManager({ url: "", command: "dsh web --port 0 --no-open", log });
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 interface WireEvent {

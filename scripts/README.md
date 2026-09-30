@@ -150,15 +150,15 @@
 - `readRangeProbe.ts` — 耗 token：read 工具 `result.meta` 形状与行号缀写规则。
 - `sessionListProbe.ts` — 耗 token：fork 会话在 `session/list` 里的形状。
 - `systemPromptProbe.ts` — 耗 token：dump 真实会话的 `system/message`（几条、每轮是否重发）。
-- `workspaceProbe.ts` — 零 token：工作区分组要用 `workspaceId` 建会话（临时 DSH_HOME）。
-- `configReloadProbe.ts` — 零 token：settings / credentials 外部编辑以转发帧到达客户端。
+- `workspaceProbe.ts` — 零 token：工作区分组要用 `workspaceId` 建会话（临时 DSH_HOME，成功时自清理）。
+- `configReloadProbe.ts` — 零 token：设置文档（**当前 profile 的 `cordis.patch.yml`**，不是 `$DSH_HOME/settings.yaml`）与 credentials 的外部编辑以转发帧到达客户端；改的是数组层里的 `- id:` 行，追加前必须剔掉模板的空数组 `[]`。
 - `railJumpProbe.ts` — 零 token：点轮次横条未加载刻点 → 取回用户消息 → 落位的数据侧全链路（纯离线读日志）。
 
 ### 工具型（诊断 / 取证，零 token，可自由运行）
 
 - `probe.ts` — 直连已有服务只读打印会话列表与控制流 baseline。
 - `pageLoopProbe.ts` — 「加载更早的历史」分页循环真实推演（只读不开写路径）。
-- `panelsProbe.ts` — 只读拉取各面板依赖的接口形状。
+- `panelsProbe.ts` — 只读拉取各面板依赖的接口形状（**需要一个既有会话当样本**：隔离 home 里没有会话，会以「样本不存在」失败）。
 - `dumpSettings.ts` — 只读转储设置 schema JSON（设置面板设计依据）。
 - `effortProbe.ts` — 打印模型目录思考档位清单（排版依据）。
 - `authChainProbe.ts` — 起本地 dsh 验认证链（换 cookie、列会话）。

@@ -31,7 +31,7 @@ import { DshClient } from "../src/dsh/client";
 import { SupervisorManager } from "../src/dsh/supervisorManager";
 
 const log = (line: string) => console.log(`[probe] ${line}`);
-const server = new SupervisorManager({ url: "", command: "dsh", log });
+const server = new SupervisorManager({ url: "", command: "dsh web --port 0 --no-open", log });
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 interface Pressure {

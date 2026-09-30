@@ -42,7 +42,7 @@ const maxMessages = Number(opt("--max-messages") ?? 60);
 const targetSeq = opt("--target") === undefined ? undefined : Number(opt("--target"));
 
 const log = (line: string) => console.log(line);
-const server = new SupervisorManager({ url: "", command: "dsh", log: () => {} });
+const server = new SupervisorManager({ url: "", command: "dsh web --port 0 --no-open", log: () => {} });
 let client: DshClient | undefined;
 
 try {

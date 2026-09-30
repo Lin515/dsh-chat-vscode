@@ -22,7 +22,7 @@ let token = process.argv[3];
 let server: SupervisorManager | undefined;
 
 if (!baseUrl) {
-  server = new SupervisorManager({ url: "", command: "dsh", log: () => {} });
+  server = new SupervisorManager({ url: "", command: "dsh web --port 0 --no-open", log: () => {} });
   const info = await server.ensure();
   baseUrl = info.baseUrl;
   token = info.token;
