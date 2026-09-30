@@ -266,6 +266,11 @@ console.log("thinkingStream: 认不出的内容块留记录（file 块不再消�
     10,
     `速度要按整轮累加算（150 token / 15s = 10），实际 ${stats.tokensPerSecond}`,
   );
+  // 轮尾时钟读的是**答完的时刻**（官方 `TurnTailNodeView` 的 `closing.time` 取自
+  // `turn/end`），起点 `ts` 照旧留在消息上供 ranForMs 之类的算术用。
+  const ended = messages.find((m) => m.id === "a:1");
+  assert.strictEqual(ended?.ts, t, "助手消息的 ts 仍是本轮开始时刻");
+  assert.strictEqual(ended?.endedAt, t + 60_000, "轮尾时钟 = turn/end 的时刻（完成时间）");
 }
 console.log("thinkingStream: 轮尾用时/速度按整轮累加（官方 deriveStats 口径） ✓");
 
@@ -891,6 +896,24 @@ console.log("thinkingStream: 同轮插话按时间顺延 ✓");
   // 第一段原样保留
   const part1 = messages.find((m) => m.id === "a:1");
   assert.ok(part1?.segments.some((s) => s.kind === "text" && s.text === "第一答"), "切分前的内容留在第一段");
+  assert.strictEqual(
+    part1?.endedAt,
+    t + 60,
+    "被插话切断的那一段，完成时刻 = 插话落盘的时刻（轮尾时钟读它）",
+  );
+
+  // 轮次收场：**各段各自的**完成时刻——新段记轮次结束，旧段不被覆盖
+  adapter.applyEvent({ type: "turn/end", seq: 6, time: t + 200, data: { turn: 1, reason: { kind: "completed" } } });
+  assert.strictEqual(
+    messages.find((m) => m.id === "a:1:2")?.endedAt,
+    t + 200,
+    "最后一段的完成时刻 = turn/end",
+  );
+  assert.strictEqual(
+    messages.find((m) => m.id === "a:1")?.endedAt,
+    t + 60,
+    "已经收过尾的旧段不被轮次结束覆盖（它确实早就答完了）",
+  );
 }
 console.log("thinkingStream: 运行中插话切开轮次（生成进插话下方） ✓");
 

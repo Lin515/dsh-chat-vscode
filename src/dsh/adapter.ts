@@ -1441,6 +1441,9 @@ export class SessionAdapter {
           const partMessage = this.byId.get(this.assistantIdFor(endTurn, part));
           if (!partMessage) continue;
           partMessage.streaming = false;
+          // 轮尾时钟读的是这个（`MessageView.endedAt`）：轮次收场即「答完」。
+          // 被插话切断的段在插话那一刻已经记过，不覆盖——那一段确实早就答完了。
+          partMessage.endedAt ??= event.time;
           if (this.settleStreaming(partMessage)) {
             this.emit({ type: "message/upsert", message: { ...partMessage } });
           }
@@ -1574,7 +1577,18 @@ export class SessionAdapter {
             this.appendMessage(view);
             // 插话切分：这一轮还有后续生成就让它进下一段（插话下方）。
             // currentTurn 未定（首轮之前）没有「本轮」可言，不切。
-            if (assistant) this.turnPart += 1;
+            if (assistant) {
+              // 被切断的这段到此答完：轮尾时钟读 `endedAt`，不记它就永远停在本轮
+              // 开始时刻（长回答下两者能差几十分钟）。轮次已经收过尾的不覆盖
+              // （轮间正常到达也走这条分支，那条消息早有自己的收尾时刻）。
+              // 单发一帧是为了让这个时刻**一定**到界面：轮次收尾那条路只在
+              // 段落流式标记变化时才 upsert，这里记下的时刻不能指望它捎带。
+              if (assistant.endedAt === undefined) {
+                assistant.endedAt = event.time;
+                this.emit({ type: "message/upsert", message: { ...assistant } });
+              }
+              this.turnPart += 1;
+            }
           }
           // 图是真图：句柄换字节是异步的，视图先落地再补（见 hydrateUserMedia）
           this.hydrateUserMedia(view);

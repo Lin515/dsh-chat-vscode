@@ -476,10 +476,13 @@ export const Message = memo(function Message({
       </div>
       {/* 轮尾操作行（时间 / 分支 / 复制 / 用时）。**生成过程中整行不画**（用户
           2026-09-17 口径）：流式期间时间在跳、分支不可点、复制的内容也没定稿，
-          右下角这一排是噪音；轮次结束（`streaming === false`）才出现。 */}
+          右下角这一排是噪音；轮次结束（`streaming === false`）才出现。
+          时间是**答完的时刻**（`endedAt`），不是开始处理的时刻——与官方轮尾
+          （`TurnTailNodeView` 的 `closing.time` 取自 `turn/end`）同口径。取不到
+          收尾时刻（跟随窗口从一轮中间开始）才回落到消息自己的 `ts`。 */}
       {!message.streaming ? (
         <div className="msg-actions">
-          <span className="msg-time">{formatClock(message.ts)}</span>
+          <span className="msg-time">{formatClock(message.endedAt ?? message.ts)}</span>
           {/* 分支：复制按钮**左侧**（用户指定）。运行中不能分支——`session/fork`
               的锚点必须落在 `turn/end` 上，开放轮里锚定会被宿主拒绝而不是往前裁剪。 */}
           <button

@@ -719,6 +719,9 @@
               id: "a:1",
               role: "assistant",
               ts: now - 235000,
+              // 答完的时刻（`turn/end` 时写入）：轮尾时钟显示的是它，不是 `ts`。
+              // 与 `turnStats.ranForMs` 自洽——ts + ranForMs = now - 139000。
+              endedAt: now - 139000,
               model: "DeepSeek-V4-Pro",
               // 轮尾用时/速度明细（`turn/end` 时由适配器写入）。
               // 形状 = shared/chat.ts 的 TurnStatsView：总用时（ms）+ 整轮解码吞吐 + 首 token。

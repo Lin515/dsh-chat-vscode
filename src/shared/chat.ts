@@ -564,7 +564,24 @@ export interface ChangesSummaryView {
 export interface MessageView {
   id: string;
   role: "user" | "assistant";
+  /**
+   * 消息出现的时刻：用户消息 = 落盘时刻；助手消息 = **本轮开始**的时刻。
+   *
+   * 助手消息轮尾那个时钟显示的是 `endedAt`（完成时刻），不是这个值——见 `endedAt`。
+   */
   ts: number;
+  /**
+   * 助手消息**停止生成**的时刻（用户消息没有这个键）。
+   *
+   * 官方把轮尾时钟挂在轮次收场上（`TurnTailNodeView` 的 `closing.time` 取自
+   * `turn/end` 事件），所以助手消息末尾显示的是「这轮什么时候答完」，而不是
+   * 「什么时候开始处理」——长回答下这两者能差出几十分钟。
+   *
+   * 写入时机两处（见 `dsh/adapter.ts`）：轮次结束收尾该轮每一段；运行中插话把轮
+   * 切成多段时，被切断的那一段在插话落盘那一刻收尾。取不到（跟随窗口从一轮中间
+   * 开始、生成中）时界面回落到 `ts`。
+   */
+  endedAt?: number;
   /** 用户消息正文（助手正文在 segments 里）。 */
   text?: string;
   segments: Segment[];

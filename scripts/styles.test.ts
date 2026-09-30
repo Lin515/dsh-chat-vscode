@@ -677,6 +677,24 @@ console.log("styles: 目标条默认一行截断 + 展开切全文 ✓");
 }
 console.log("styles: 用户消息操作行（时钟 + 复制，无分支） ✓");
 
+// ---------- 14b. 助手轮尾的时钟显示**完成时刻**，不是开始处理的时刻 ----------
+//
+// 官方轮尾时钟取自轮次收场（`TurnTailNodeView` 的 `closing.time` ← `turn/end`），
+// 所以长回答下显示的是「什么时候答完」。本扩展原来直接显示 `message.ts`（本轮开始
+// 时刻），一轮跑几十分钟时会看着像「刚回复完却显示半小时前」。收尾时刻由宿主写在
+// `MessageView.endedAt`（见 dsh/adapter.ts），界面取不到时回落到 `ts`。
+{
+  const message = readFileSync(
+    join(process.cwd(), "src", "webview", "components", "Message.tsx"),
+    "utf8",
+  );
+  assert.ok(
+    /formatClock\(message\.endedAt \?\? message\.ts\)/.test(message),
+    "助手轮尾时钟要取 endedAt（完成时刻），取不到才回落到 ts",
+  );
+}
+console.log("styles: 助手轮尾时钟取完成时刻 ✓");
+
 // ---------- 3c. 「正在生成」那一行：只留文案，不搞扫光动画与秒表 ----------
 //
 // 用户 2026-09-14 拍板：**鲸鱼发光本身就是「还在跑」的证据**，官方那套
