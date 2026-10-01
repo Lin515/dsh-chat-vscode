@@ -100,7 +100,7 @@ export class SessionScope {
   /**
    * 本会话运行的 agent 预设（`agentPreset` 投影；空会话换过预设后 header 不再代表它）。
    *
-   * 初值由 `newSession` 从 `session/create` 的返回值补上（投影帧要晚一点才到），
+   * 初值由 `reuseOrCreateBlank` 从 `session/create` 的返回值补上（投影帧要晚一点才到），
    * 之后由投影帧与切换成功的返回值接管。
    */
   agentPreset: string | undefined;
@@ -122,6 +122,15 @@ export class SessionScope {
 
   /** 命令目录（`commands/list`）：把手打的 `/xxx` 路由到命令通道。 */
   readonly commandCatalog = new Map<string, { hint?: string }>();
+
+  /**
+   * 命令目录**取过一次了**（成功与失败都算）。
+   *
+   * `beginSend` 靠它区分「目录里没有这条命令」与「目录还没到」：后者不画乐观回显，等
+   * `send` 用处理好的目录确认它不是命令之后再补——空态第一条 `/xxx` 正是这一类，而判据
+   * **不能**再靠「有没有域」（空态窗口现在一进来就绑在真会话上，见 `newSession`）。
+   */
+  commandsLoaded = false;
 
   /** 当前绑定到本会话的窗口数（归零时控制器回收整个域）。 */
   viewers = 0;

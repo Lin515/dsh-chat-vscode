@@ -91,7 +91,8 @@
 - `presetDisplay.test.ts` — agent 预设展示文案折叠（内置四个走客户端词典）。
 - `mentionCandidates.test.ts` — `@` 候选两条帧：文件先到先渲染、对话各自结算。
 - `mentionNav.test.ts` — `@` / `/` 补全规则集与「返回上一层目录」。
-- `emptyComposer.test.ts` — 空态下 `/` 命令栏与 `@` 候选的行为级回归（newSession 退空态后没有域）。
+- `emptyComposer.test.ts` — 空态下 `/` 命令栏与 `@` 候选的行为级回归（空态就绑在壳上，菜单读它、不另建）。
+- `blankSessionReuse.test.ts` — 「空态必有壳、首条消息发给谁」：`reusableBlank` 的本地 blank 位（不许把已经说过话的会话当空壳接回来）、两个窗口共用一条壳、空壳上选的模型留得住。
 - `subagentPanel.test.ts` — 子代理导航与会话级切换（入口在标题右侧、进子代理 = 切会话）。
 - `subagentSwitch.test.ts` — 子代理页切到兄弟的行为级回归（下拉里同级兄弟必须可见）。
 - `activity.test.ts` — 顶栏子代理 / 后台任务入口「有东西在跑」判据（只认活的那份数据）。

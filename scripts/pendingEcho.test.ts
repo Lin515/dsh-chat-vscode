@@ -559,12 +559,24 @@ console.log("pendingEcho: 用户消息乐观回显（驱动真控制器，offlin
   c.bindView("v1");
   await c.handle({ type: "send", text: "v1 的失败行", attachments: [], gesture: "enter" }, "v1");
   const mine = String(client.prompts[0]?.requestId);
+  const mineSession = String(c.viewSessions.get("v1"));
 
-  // 另一个窗口（同一控制器、另一条会话）也有一条失败的
+  // 另一个窗口，**另一条会话**：2026-10-01 起空态是有壳的（一个工作区一条），所以两个
+  // 空态窗口会共用同一条——「只认自己窗口那份账本」这条口径必须拿两条真的不同的会话来验，
+  // 于是这里直接给假服务端塞一条已经说过话的会话，并把 v2 开在它上面
+  client.rows.push({
+    sessionId: "session-used",
+    cwd: CWD,
+    blank: false,
+    updatedAt: Date.now(),
+    running: false,
+  });
   c.bindView("v2");
+  await c.handle({ type: "openSession", sessionId: "session-used" }, "v2");
   await c.handle({ type: "send", text: "v2 的失败行", attachments: [], gesture: "enter" }, "v2");
   const other = String(client.prompts[1]?.requestId);
   assert.notStrictEqual(mine, other, "前置：两条回显身份不同");
+  assert.notStrictEqual(c.viewSessions.get("v2"), mineSession, "前置：两个窗口各占一条会话");
   assert.strictEqual(pendingOf(frames, "v2")?.[0]?.status, "failed", "前置：v2 那条也失败了");
 
   // v1 拿着 v2 的 id 来撤回 / 重发：都不许动 v2 那条
@@ -633,13 +645,23 @@ console.log("pendingEcho: 用户消息乐观回显（驱动真控制器，offlin
   const requestId = String(client.prompts[0]?.requestId);
   assert.strictEqual(pendingOf(frames, "v1")?.[0]?.status, "failed", "前置：这条失败了");
 
-  // 切走（新建对话）：域被回收
-  await c.handle({ type: "newSession" }, "v1");
+  // 切到**另一条**会话（用户点历史里的一条）：域被回收。
+  // 这里刻意不再用点「+」来「切走」——2026-10-01 起规则变了：这条会话还没说过话（prompt
+  // 被拒），点「+」会**落回同一条空壳**上，窗口上照样挂着它的回显，谈不上切走。
+  client.rows.push({
+    sessionId: "session-elsewhere",
+    cwd: CWD,
+    blank: false,
+    updatedAt: Date.now(),
+    running: false,
+  });
+  frames.length = 0;
+  await c.handle({ type: "openSession", sessionId: "session-elsewhere" }, "v1");
   assert.strictEqual(c.scopes.has(sessionId), false, "前置：切走即回收域（单窗口下它是最后一个观察者）");
   assert.deepStrictEqual(
     stateOf(frames, "v1")?.pendingMessages ?? [],
     [],
-    "退回空态那一帧不带这条回显（它按会话键留着，不属于空态）",
+    "切走那一帧不带原来那条会话的回显（它按会话键留着，不属于新会话）",
   );
 
   // 切回来：账本里那一条还在，并且随整份快照重新画出来
@@ -965,7 +987,7 @@ console.log("pendingEcho: 用户消息乐观回显（驱动真控制器，offlin
 {
   const { c, frames, client } = makeController();
   c.bindView("v1");
-  // 先发一条普通消息把会话建起来（命令目录随建会话预取，见 createSession 旁的 listCommandsFor）
+  // 先发一条普通消息把会话落下来（命令目录随域打开预取，见 reuseOrCreateBlank 旁的 listCommandsFor）
   await c.handle({ type: "send", text: "建会话", attachments: [], gesture: "enter" }, "v1");
   await new Promise((resolve) => setImmediate(resolve));
   assert.ok(client.calls.includes("commands/list"), "前置：命令目录已预取");
@@ -996,8 +1018,12 @@ console.log("pendingEcho: 用户消息乐观回显（驱动真控制器，offlin
     "回显身份就是交给 prompt 的 requestId（durable 承认凭它配对）",
   );
 }
-// 六之三、**空态**第一条消息是 `/xxx`：按下那一刻还没有会话、没有命令目录，判不了——
-// 那时不猜（不画一份可能要收回的回显），改在建好会话、确认「它不是命令」之后立刻补上。
+// 六之三、**还没有壳**时第一条消息是 `/xxx`：按下那一刻没有命令目录，判不了——那时不猜
+// （不画一份可能要收回的回显），改在落好壳、确认「它不是命令」之后立刻补上。
+//
+// 2026-10-01 起「空态」本身不再是这种情形（窗口一进来就绑在本工作区那条壳上），但这条
+// 判据仍然要在：窗口的第一条 send 完全可能跑在 `ready` 的落壳之前（界面不等 `ready`
+// 也能发），那一刻 `beginSend` 看到的仍然是一个没有域的窗口。
 {
   const { c, frames, client } = makeController();
   c.bindView("v1");

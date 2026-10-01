@@ -541,6 +541,21 @@ export class ChatController implements vscode.Disposable {
   /** 上面那批窗口（`ChatViewProvider` 据此决定是否留等 `ready` 的兜底）。 */
   private readonly restoreAwaiting = new Set<string>();
   /**
+   * 正在接回会话的窗口（`resumeRestoreHint` 从取下 hint 到 `restoreViewSession`
+   * 结算之间）。期间 `restoreHints` 里已经没有这个窗口了，但**这一轮恢复仍未结算**
+   * ——后台补壳必须照样让位（见 `hasRestorePending`）。
+   */
+  private readonly restoreInFlight = new Set<string>();
+  /**
+   * 已经发过 `ready` 的窗口。
+   *
+   * 恢复接回必须在 `ready` 之后（那一刻推的快照才不会丢，见 `resumeRestoreHint`），
+   * 而认领可能比 `ready` 更晚才落下（工作区身份未就绪时排队，见 `flushRestoreClaims`）。
+   * 没有这一位，那一批窗口落地后没人唤醒，只能等 `ChatViewProvider` 的兜底定时器——
+   * 定时器早于认领落下烧掉时，这次恢复就永远不发生了。
+   */
+  private readonly readyViews = new Set<string>();
+  /**
    * 窗口的最近活动顺序（末尾 = 最近活动）。命令面板入口（新建/历史/停止/加选区…）
    * 都指向「最近活动的那个窗口」——VS Code 没有 API 问用户此刻在看哪个视图，
    * 只能按「谁最后发了消息 / 谁可见」推断。
@@ -638,21 +653,25 @@ export class ChatController implements vscode.Disposable {
    */
   private newSessionCwd: string | undefined;
   /**
-   * **待建会话**的界面选择（按窗口）：会话还没建出来，但用户已经点过预设 / 模型。
+   * 空态页上的**待建会话**选择（按窗口）：预设与模型。
    *
-   * 值只喂给 `sessionSourceOf` 的 `pending` 那一路（空态页的预览），建会话时一次性
-   * 落到新会话上然后忘掉——「新会话从配置项重新开始」这条口径（见 CHANGELOG）靠的就是
-   * 这里的删除，而不是别处的判断。绑到一个**已有**会话时也清（那笔选择不再有意义）。
+   * 2026-10-01 对齐官方之后，空态窗口一进来就绑在本工作区那条空壳会话上（见
+   * `newSession`），预设 / 模型都直接写在**那条会话**上——这两张表因此只剩一种用法：
+   * **窗口连壳都还没有**的时候，也就是没有工作目录、`session/create` 无从下手的那一段
+   * （用户还没打开文件夹、也还没选目录）。那时它们喂给 `sessionSourceOf` 的 `pending`
+   * 那一路，让空态页仍能显示/修改「会话会用哪个预设、哪个模型」；目录一确定、壳建出来，
+   * 值一次性落到它上面然后忘掉（见 `reuseOrCreateBlank`）。绑到**已有**会话时也清。
    */
   private readonly viewAgentPreset = new Map<string, string>();
   private readonly viewModel = new Map<string, ModelSelectionView>();
   /**
-   * **待建会话**的权限预设选择（按窗口）：会话还没建出来，但用户已经在空态页的
-   * 权限菜单里点过一次。
+   * 空态页上的**待建会话**权限选择（按窗口）：与上面两张表同一来路、同一去路——
+   * 只在「连壳都还没有」的那一段有意义（没有工作目录），且只在用户于空态页的权限菜单里
+   * 点过一次时才有值。
    *
-   * 与 `viewModel` 同一口径：值只喂给 `sessionSourceOf` 的 `pending` 那一路（空态页的
-   * 预览），建会话时一次性落到新会话上然后忘掉（与部署默认相同就不发，见
-   * `createSession`）。绑到一个**已有**会话时也清（那笔选择不再有意义）。
+   * 有壳之后权限走的是会话自己的通道（`/permission`，见 `setPermission`），这张表用不上：
+   * 空态页那枚胶囊显示的就是会话的真实值。落壳时与部署默认相同的那笔不发
+   * （见 `reuseOrCreateBlank`）。
    */
   private readonly viewPermission = new Map<string, string>();
   /**
@@ -679,24 +698,27 @@ export class ChatController implements vscode.Disposable {
    */
   private readonly menuQueries = new Map<string, AbortController>();
   /**
-   * **扩展自己建出来的空会话**（`/`、`@` 菜单在空态按需建的那条）→ 它的落脚目录与预设。
+   * 本客户端**亲眼见过它在说话**的会话 id（官方 `api-session-controller` 的
+   * `engagedSessions`，见 `client/sessions/manager.ts`）。
    *
-   * 只为**复用**存在：菜单是「打开就建」，用户按 Esc 走开时那条会话还没开始对话，
-   * 下次在这个窗口里建会话时把它接回来，而不是再堆一条（官方 Web 端也是这个口径：
-   * `ui-workspace` 的 `reuseOrCreateBlank`）。服务端说它已经开始对话了就不再可复用
-   * （`refreshSessions` 里按 `blank` 清）。
+   * 会话列表行上的 `blank` 是**拉的快照**，而空壳会话的复用判据需要实时：
+   *
+   * - 官方客户端有事件流：`blankBit` 在 prompt 受理那一刻就翻假并 `onEngaged`；
+   *   本扩展只有 `session/list` 这条通道，而建会话那一次拉取发生在第一条消息
+   *   **之前**——判据于是停在「它还没开始过对话」上，下一个人点「+」时会把这条
+   *   **已经用过的**会话当成空壳接回去（用户 2026-10-01 报的现场）；
+   * - 服务端也要等到 `turn/start` 才把 header 里的 `blank` 翻假，与 prompt 受理之间
+   *   隔着一整轮往返。
+   *
+   * 两个写入点，都是**肯定证据**：`markSessionEngaged`（本窗口发出去的消息被受理），
+   * 以及它经 `setSessionRowRunning` 的那一路（服务端说这条会话在跑——比前一条宽：
+   * 别的窗口或 dsh web 在一条扩展建出来的空壳里说话，这里同样算数）。
+   *
+   * 读法是官方的 `effectiveBlank`：列表行说它空、本地这一位说它不空 → **不空**
+   * （见 `refreshSessions` 里折进列表行的那一步）。收敛也在那里：服务端自己翻假了、
+   * 或这条已经不在列表里，本地这一位就没有留下的理由。
    */
-  private readonly createdBlankSessions = new Map<
-    string,
-    {
-      /** 建它时的落脚目录（归一后，比较用）。 */
-      cwd: string;
-      /** 建它时**传过去**的预设（`undefined` = 没传，由服务端按默认组装），复用要比对它。 */
-      requestedPreset: string | undefined;
-      /** 服务端定下来的预设（`session/create` 的返回值），复用时给域一个初值。 */
-      preset: string | undefined;
-    }
-  >();
+  private readonly engagedSessions = new Set<string>();
   /**
    * 部署提供的 agent 预设目录（`agentPresets/list`），连上后取一次。
    *
@@ -825,8 +847,8 @@ export class ChatController implements vscode.Disposable {
    * 它的成功与失败都走改动前那条老路（用户 2026-09-25 口径）。
    *
    * 键与草稿 / 附件**同一套**（`keyForView`）：已绑定会话的窗口用会话 id，未绑定的
-   * 用 viewId；绑定那一刻在 `bindViewToSession` 里跟着迁移——**第一条消息必须迁**，
-   * 否则 `createSession` 绑定后立刻推的那份整份快照会把回显抹掉（快照里的
+   * 用 viewId；绑定那一刻在 `bindViewToSession` 里跟着迁移——**空态那条回显必须迁**，
+   * 否则 `reuseOrCreateBlank` 绑定后立刻推的那份整份快照会把回显抹掉（快照里的
    * `pendingMessages` 读的正是这张表）。
    *
    * 条目在三条路上被收回（都在 `retireEcho` / `retireEchoByText` 收口）：durable
@@ -1318,14 +1340,16 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
-   * 还没有会话的窗口要显示的那几项**待建会话**预览值（喂给 `sessionSourceOf` 的
-   * `pending` 那一路）。
+   * **还没有壳**的窗口要显示的那几项值（喂给 `sessionSourceOf` 的 `pending` 那一路）。
    *
-   * 只有会话建出来之前就有意义的三项：
+   * 2026-10-01 对齐官方之后，空态窗口一进来就有会话（本工作区那条空壳），显示的一律是
+   * **那条会话的真实值**；这一路只剩一种用法：**没有工作目录、连壳都建不出来**的那一段
+   * （用户还没打开文件夹、也还没选目录）。那时：
+   *
    * - **预设 / 模型**：用户点过的优先——否则点完像没反应；
    * - **权限 / 模型**：没有用户选择时退回部署默认（配置文件读出来的
-   *   `defaultPermission` / `defaultModel`）——空态页显示的就是新会话将要以什么
-   *   权限、什么模型、什么思考强度启动，而不是词典里编出来的某个档位。
+   *   `defaultPermission` / `defaultModel`）——空态页显示的就是壳建出来时会以什么权限、
+   *   什么模型、什么思考强度启动，而不是词典里编出来的某个档位。
    *
    * 别的字段一个都不掺——它们要么不属于窗口（工作目录走外观态），要么离开会话
    * 就没有意义。
@@ -1339,7 +1363,7 @@ export class ChatController implements vscode.Disposable {
     };
   }
 
-  /** 未绑定窗口的会话片段来源（推补丁时用：域必然为空，只有待建预览值）。 */
+  /** 未绑定窗口的会话片段来源（推补丁时用：域必然为空，只有上面那几项待建值）。 */
   private pendingSessionSource(viewId: string): SessionViewSource {
     return sessionSourceOf(undefined, undefined, this.models, this.pendingViewFields(viewId));
   }
@@ -1741,6 +1765,10 @@ export class ChatController implements vscode.Disposable {
       this.restoreAwaiting.delete(claim.viewId);
       if (!this.viewKinds.has(claim.viewId)) continue;
       this.applyPanelClaim(claim.viewId, claim.known);
+      // 认领落下时这个窗口可能早就发过 `ready` 了（那一刻没有 hint 可接）：当场唤醒它。
+      // 不唤醒就只能等 `ChatViewProvider` 的兜底定时器，而那个定时器是在**挂窗口时**
+      // 按 8 秒排的——它若早于本次认领烧掉，这次恢复就永远不发生了。
+      if (this.readyViews.has(claim.viewId)) void this.resumeRestoreHint(claim.viewId);
     }
   }
 
@@ -1755,7 +1783,29 @@ export class ChatController implements vscode.Disposable {
     const hint = this.restoreHints.get(viewId);
     if (!hint) return;
     this.restoreHints.delete(viewId);
-    await this.restoreViewSession(viewId, hint.sessionId, hint.subagent);
+    this.restoreInFlight.add(viewId);
+    try {
+      await this.restoreViewSession(viewId, hint.sessionId, hint.subagent);
+    } finally {
+      this.restoreInFlight.delete(viewId);
+    }
+  }
+
+  /**
+   * 这个窗口这一轮的恢复**还没结算**：认领还排着队（`restoreAwaiting`）、hint 已在手
+   * 等 `ready`（`restoreHints`）、或正在接回（`restoreInFlight`）。
+   *
+   * 后台补壳（`adoptBlankForUnboundViews`）与 `ready` 尾巴那句「落空壳」都要先问它：
+   * 恢复是这一轮「这个窗口该开哪条会话」的**唯一权威**，结算之前补壳都是猜——猜错就是
+   * 把已经接好的历史会话顶掉，用户 2026-10-02 报的「重载后历史会话一闪变成空会话」
+   * 正是这么来的（另一道兜底见 `reuseOrCreateBlank` 末尾的复查）。
+   */
+  private hasRestorePending(viewId: string): boolean {
+    return (
+      this.restoreHints.has(viewId) ||
+      this.restoreAwaiting.has(viewId) ||
+      this.restoreInFlight.has(viewId)
+    );
   }
 
   /** 注册「把这个窗口带到前台」的动作（见 `revealers`）。 */
@@ -1842,6 +1892,11 @@ export class ChatController implements vscode.Disposable {
     this.panelTitles.delete(viewId);
     this.panelTitleValues.delete(viewId);
     this.restoreHints.delete(viewId);
+    // 这一轮的恢复表都按 viewId 建，窗口下线就一起清：`restoreInFlight` 那条由它自己的
+    // `finally` 收尾（仍在飞的接回不打断，只是不再算进 `hasRestorePending`），
+    // `restoreAwaiting` 那条则再没有人来 flush
+    this.readyViews.delete(viewId);
+    this.restoreAwaiting.delete(viewId);
     // 这个窗口那次 `@` 候选查询一并作废：句柄按 viewId 建，不作废就是「关掉窗口后
     // 服务端还在为它扫会话日志」，表也跟着一直涨（见 `menuQueries`）
     this.menuQueries.get(viewId)?.abort();
@@ -2000,8 +2055,9 @@ export class ChatController implements vscode.Disposable {
     // 被换掉的那条会话「刚才在不在生成」必须在 `dropViewers` **之前**问：它是最后一个
     // 观察者时域会被整个销毁，之后再问就问不到了（见 `isSessionGenerating`）
     const previousWasGenerating = this.isSessionGenerating(previous);
-    // 「待建会话」的参数到此为止：绑定之后预设/模型都由这条会话自己的状态说话，
-    // 下次「新建对话」重新从配置项开始（见 `viewAgentPreset` 的字段注释）
+    // 空态那几张「还没落壳」的表到此为止：绑定之后预设 / 模型 / 权限都由这条会话自己的
+    // 状态说话（空态页显示的也是它的真实值）。下次「新建对话」重新从配置项开始
+    // （见 `viewAgentPreset` 的字段注释）。
     this.viewAgentPreset.delete(viewId);
     this.viewModel.delete(viewId);
     this.viewPermission.delete(viewId);
@@ -2018,9 +2074,9 @@ export class ChatController implements vscode.Disposable {
         this.attachmentsBySession.set(sessionId, attachments);
         this.attachmentsBySession.delete(viewId);
       }
-      // 乐观回显跟着迁：空态发第一条消息时它先落在窗口键上，而 `createSession`
-      // 绑定之后立刻推的那份整份快照读的是**会话键**（见 `snapshotFor`）——
-      // 不迁这一下，回显就被那一帧抹掉，正是「消息闪一下又没了」。
+      // 乐观回显跟着迁：没有壳的空态（无工作目录那一段）发第一条消息时它先落在窗口键上，
+      // 而 `reuseOrCreateBlank` 绑定之后立刻推的那份整份快照读的是**会话键**（见
+      // `snapshotFor`）——不迁这一下，回显就被那一帧抹掉，正是「消息闪一下又没了」。
       // 绑定前会话键上不可能有回显（那条会话还没有窗口用过），直接搬即可。
       const pending = this.pendingMessages.get(viewId);
       if (pending) {
@@ -2523,6 +2579,43 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
+   * VS Code 打开 / 关掉了文件夹（`extension.ts` 的 `onDidChangeWorkspaceFolders`）。
+   *
+   * 除了推那一帧工作目录提示，还要给**还停在「无会话的空态」**的窗口补空壳——它们多半
+   * 就是原先没有工作目录、建不出壳的那些（见 `ensureSession` 与
+   * `adoptBlankForUnboundViews`）。列表先按**新的**工作区重拉一份再补：空壳的判据里
+   * 就有 cwd（见 `reusableBlank`），拿旧工作区那份列表扫会扫不进新目录。
+   */
+  async applyWorkspaceFoldersChange(): Promise<void> {
+    this.refreshWorkspace();
+    if (!this.client) return;
+    await this.refreshSessions();
+    await this.adoptBlankForUnboundViews();
+  }
+
+  /**
+   * 给还停在**「无会话的空态」**的窗口补一条空壳。
+   *
+   * 这种窗口只有一种来路：进空态时**没有工作目录**，`session/create` 无从下手
+   * （见 `ensureSession`）。所以目录一确定（VS Code 打开文件夹、用户选了一个）就要
+   * 把它们补上——两处入口：`onConnected`（连接结算、列表刚拉完）与 `pickWorkspace`
+   * （用户刚选完目录）。
+   *
+   * 这是**自动路径**：连接那一档跟随 `dshChat.autoConnect`，不启动后台。
+   */
+  private async adoptBlankForUnboundViews(): Promise<void> {
+    for (const viewId of this.unboundViews()) {
+      // 这一轮恢复还没结算的窗口**让位**：它马上要被接回历史会话，此刻补壳纯属抢跑
+      // （抢赢就是「历史会话一闪变成空会话」）。恢复结算之后：接上了会话的窗口不再是
+      // `unboundViews`；没接上的则由 `ready` 尾巴那句补壳兜底，或等它第一次发 `ready`
+      // 时补——被跳过的窗口都是「这一轮还没发过 ready」的那些，那也正是用户在看的
+      // 那一刻（见 `armRestoreFallback`）。
+      if (this.hasRestorePending(viewId)) continue;
+      await this.ensureSession(viewId, { start: readAutoConnect(), askDir: false });
+    }
+  }
+
+  /**
    * 取一次部署的 agent 预设目录（`agentPresets/list`），推给所有窗口。
    *
    * 两条口径：
@@ -2623,11 +2716,12 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
-   * 给每个**空态**窗口补一帧 `agentPreset`。
+   * 给**还没落壳**的窗口补一帧 `agentPreset`。
    *
-   * 空态页上那枚胶囊显示的是「待建会话会用哪个预设」，而它的最后一级是 roster 里标了
-   * `isDefault` 的那条——目录没到之前算不出来（首帧快照发的是 null，之后又没有别的
-   * 机会重推）。所以目录一到就把这份结论补发给还没绑定会话的窗口。
+   * 那几枚胶囊的最后一级是 roster 里标了 `isDefault` 的那条——目录没到之前算不出来
+   * （首帧快照发的是 null，之后又没有别的机会重推），所以目录一到就把这份结论补发给
+   * 还没绑定会话的窗口。有壳的窗口不在这里：它们显示的是那条会话自己的预设（见
+   * `pendingViewFields`）。
    */
   private pushPendingPresets(): void {
     for (const viewId of this.unboundViews()) {
@@ -2638,13 +2732,13 @@ export class ChatController implements vscode.Disposable {
     }
   }
 
-  /** 当前处于空态（没有绑定会话）的窗口。 */
+  /** 当前**还没有壳**（没有绑定会话）的窗口：只可能是没有工作目录的那一段。 */
   private unboundViews(): string[] {
     return this.viewOrder.filter((viewId) => !this.viewSessions.has(viewId));
   }
 
   /**
-   * 给当前**空白会话**换 agent 预设（`agentPresets/select`）。
+   * 换 agent 预设：有壳就直接换在那条会话上（`agentPresets/select`）。
    *
    * 失败一律如实报出来（服务端对已开始的会话回 `agent-preset/locked`，对不存在的
    * id 回 `agent-preset/not-found`，两者都带 `details.reason`）：这是用户刚刚做的
@@ -2653,8 +2747,9 @@ export class ChatController implements vscode.Disposable {
   private async selectAgentPreset(viewId: string, id: string): Promise<void> {
     const scope = this.scopeOfView(viewId);
     if (!scope) {
-      // 还没有会话：这是**待建会话**的参数（用户 2026-09-22 口径），不建记录、
-      // 也不发 RPC——建会话时随 `session/create` 一起指定（见 `createSession`）。
+      // 连壳都还没有（没有工作目录，见 `viewAgentPreset` 的字段注释）：记成「落壳时
+      // 要用的预设」，不建记录、也不发 RPC——建壳时随 `session/create` 一起指定
+      // （见 `reuseOrCreateBlank`）。
       this.viewAgentPreset.set(viewId, id);
       this.emitToView(viewId, {
         type: "patch",
@@ -2722,6 +2817,10 @@ export class ChatController implements vscode.Disposable {
     // 边缘（`api-session/status`）我们没收到；这也是「一切都从服务端重算」的一部分
     // （新的适配器认不出时会保留这里的结论，见 `applyFrame`）。
     await this.refreshSessions();
+    // 列表到手之后才补空壳：`reusableBlank` 扫的就是这份列表，先补会看不到已经存在的
+    // 那条（见 `reuseOrCreateBlank`）。顺序与 `refreshWorkspace` 的调用位置无关紧要，
+    // 但必须在这次拉取**之后**。
+    await this.adoptBlankForUnboundViews();
   }
 
   /**
@@ -3132,13 +3231,26 @@ export class ChatController implements vscode.Disposable {
         const cwd = normalizePath(this.sessions.find((s) => s.id === scope.sessionId)?.cwd);
         if (cwd) openCwds.push(cwd);
       }
-      const views = visibleForWorkspace(
+      const raw = visibleForWorkspace(
         visibleSessionRows(value.items ?? [])
           // 本地删过的会话若被当前 dsh 进程打开过，仍会留在服务端内存里被
           // session/list 列出——按持久化的删除集合过滤，保证界面干净
           .filter((item) => !this.deletedSessionIds.has(item.sessionId)),
         { workspacePath, workspaceSessionIds: ownIds, groupedSessionIds: grouped, openCwds },
       ).map((item) => this.toSessionView(item));
+      // 本地 blank 位（`engagedSessions`）在这里**收敛**（见它的字段注释）：服务端自己
+      // 已经把这条翻成不空、或它已经不在列表里，本地这一位就没有留下的理由——它只负责
+      // 顶住两次拉取之间的空档。判据用**服务端那一行**，不是折过之后的行。
+      for (const id of [...this.engagedSessions]) {
+        const row = raw.find((item) => item.id === id);
+        if (!row || row.blank !== true) this.engagedSessions.delete(id);
+      }
+      // 官方的 `effectiveBlank`：列表行说它空、本地这一位说它不空 → **不空**。少了这一步，
+      // 刚发出第一条消息的会话会随下一次拉取（服务端的 `blank` 还没随 `turn/start` 翻假）
+      // 从历史列表里消失一下再回来。
+      const views = raw.map((item) =>
+        item.blank === true && this.engagedSessions.has(item.id) ? { ...item, blank: false } : item,
+      );
       // 分支不再缩进（用户 2026-09-19 口径：和普通会话同级，靠标题前缀「分支: 」区分），
       // 所以这里不再算血缘深度——那个字段的唯一用途就是缩进。
       // 列表整份替换也会造成 running 变化（服务端算的权威值落下来），同样要结算
@@ -3151,12 +3263,6 @@ export class ChatController implements vscode.Disposable {
         this.settleRunningChange(view.id, view.running);
       }
       this.sessions = views;
-      // 复用名册按**服务端**的 `blank` 位清理：它一说这条会话已经开始过对话（或它
-      // 不在列表里了），就不再是可复用的空会话。判据只认服务端，不认本地计数器。
-      for (const id of [...this.createdBlankSessions.keys()]) {
-        const row = views.find((item) => item.id === id);
-        if (!row || row.blank !== true) this.createdBlankSessions.delete(id);
-      }
       this.emitSessionLists();
       // running 的**权威打底**：列表是服务端算的（`SessionSummary.running`），域存在时
       // 按它对齐——官方 `ui-session` 的 `reconcileStatus()` 是同一口径。适配器那一路只从
@@ -3249,6 +3355,10 @@ export class ChatController implements vscode.Disposable {
     const row = this.sessions.find((item) => item.id === sessionId);
     if (!row || row.running === running) return;
     this.sessions = this.sessions.map((item) => (item.id === sessionId ? { ...item, running } : item));
+    // 服务端说它在跑 ⇒ 这条会话一定不是空壳了（`blank` 位在 `turn/start` 翻假，但那条
+    // 帧要比这里的判断晚一整轮）。这条证据比「本窗口发过消息」宽：别的窗口 / dsh web 在
+    // 一条扩展建出来的空壳里说话，只有这里看得见（见 `markSessionEngaged`）
+    if (running) this.markSessionEngaged(sessionId);
     this.settleRunningChange(sessionId, running);
     this.emitSessionLists();
   }
@@ -3328,11 +3438,12 @@ export class ChatController implements vscode.Disposable {
     const active: SessionSummaryView[] = [];
     const archived: SessionSummaryView[] = [];
     for (const session of this.sessions) {
-      // **还没开始对话**的空会话不进历史列表（服务端的 `blank` 位，官方会话列表同一
+      // **还没开始对话**的空壳会话不进历史列表（服务端的 `blank` 位，官方会话列表同一
       // 口径：`api/session-controller` 的 `SessionSummary.blank` 由消费者过滤）。
-      // `/`、`@` 菜单会在空态按需建一条这样的会话（见 `ensureSessionForMenu`），不挡住
-      // 它就会在列表里留一行空记录——正是用户 2026-09-22 报的现场。它仍留在
-      // `this.sessions` 里：cwd 解析、恢复窗口、复用都要读这一行。
+      // 空态窗口现在一进来就绑在这样一条壳上（见 `newSession`），不挡住就会在列表里
+      // 留一行没人用过的空记录——正是用户 2026-09-22 报的现场。它仍留在 `this.sessions`
+      // 里：cwd 解析、恢复窗口、复用都要读这一行。发言之后由本地 blank 位
+      // （`engagedSessions`）与服务端一起把它放出来（见 `refreshSessions` 的折算）。
       if (session.blank === true) continue;
       // unread 不落在行对象上（列表整份替换时行是新建的），按权威集合现算
       const row: SessionSummaryView = {
@@ -3530,62 +3641,123 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
-   * 「新建对话」：把这个窗口**退回空态**，**不建会话记录**。
+   * 「新建对话」：把这个窗口退到**本工作区那条空壳会话**上。
    *
-   * 用户 2026-09-22 口径：没有发出第一条消息之前不该在列表/服务端留下会话记录——
-   * 此前点一次「+」就建一条空会话，选个目录又建一条，列表里攒一串没人用过的空会话。
-   * 现在会话在**第一次真正需要它**的时候才建（发消息、加附件、跑命令，见 `ensureSession`），
-   * 预设 / 模型 / 工作目录这些空态页上的选择都只是**待建会话的参数**。
+   * 用户 2026-10-01 拍板，从 2026-09-22 的「点「+」不落会话记录、第一条消息才建」改成
+   * **对齐官方 DSH Web 的口径：空态就是一条真的会话**（一条还没开始过对话的空壳）。
+   * 所以点「+」不是「什么会话都没有」，而是回到工作区当前那条空壳上——没有就建一条
+   * （`ui-workspace` 的 `startSession` → `openWorkspace` → `reuseOrCreateBlank`）。
+   *
+   * 这条口径反过来让原先为「还没有会话」维护的一整套客户端机制整体消失：空态页从第一帧
+   * 起就绑在真会话上，模型 / 权限 / 预设直接写在它上面（见 `setModel`、`setPermission`、
+   * `selectAgentPreset` 各自走的就是有会话那一路）。
    *
    * 没有窗口可退（命令面板入口且没有活动窗口）时什么都不做：没有窗口就没有「下一次
    * 发送」，建出来的记录没人用得上。
+   *
+   * **先切、后建**（用户 2026-10-01 口径）：落壳那串动作（连后台 → `session/create` →
+   * 拉列表）都是往返，绝不能挡在切换前面——那样点「+」要等一两秒界面才动，而界面此刻
+   * 该做的就是「立刻变成空态」。所以先同步把窗口退回空态并推那一帧，再让落壳在后台走完
+   * （`reuseOrCreateBlank` 落好之后自己会补一份带会话的快照）。手里已经有一条现成空壳时
+   * 更快：域与换绑都是同步的，连那一帧空态都不必先推（见 `switchToBlankSync`）。
    */
   async newSession(viewId?: string): Promise<void> {
     if (!viewId) {
-      this.log("[new] 没有活动窗口，「新建对话」不建会话（会话在发第一条消息时建）");
+      this.log("[new] 没有活动窗口，「新建对话」不建会话");
       return;
     }
+    const reusable = this.reusableBlank();
+    // 已经在本工作区那条**还没说过话**的空壳上：点「+」就是原地重来一次（官方
+    // `startSession` → `reuseOrCreateBlank` 接回的也是同一条）。先拆再绑会把域整个
+    // 重建（follow 流重开、再拉一次列表），白白抖一下；这里直接推那份整份快照。
+    if (reusable !== undefined && this.viewSessions.get(viewId) === reusable) {
+      this.log(`[new] 窗口=${viewId} 已经在本工作区的空壳上（${reusable}），原地重来`);
+      this.emitToView(viewId, { type: "state", state: this.snapshotFor(viewId) });
+      return;
+    }
+    // 手里已经有一条现成的空壳：**同步**换过去（0 往返），界面下一帧就是空态
+    if (reusable !== undefined && this.switchToBlankSync(viewId, reusable)) return;
+    // 还没有现成的壳（列表还没拉过、或这个工作区还没建过）：先退回空态，再去建。
+    // 「+」是用户显式动作（`AGENTS.md` 的「能不能启动后台」那一档明确列了「新建」），
+    // 所以允许拉起后台；但**不弹目录选择器**——没有工作目录时窗口就停在「无会话的空态」，
+    // 界面那句「未选择工作区」说清原因，选目录留在那一行的按钮上（用户 2026-09-24 口径）。
+    //
+    // 这一帧是**整份快照**（不是增量 patch）：空态要把上一个会话的消息 / 队列 / 目标 /
+    // 计划模式 / 投影一次归零（patch 没覆盖 model / goal / jobs / planMode / permission，
+    // 残留会漏过去）。
     this.detachView(viewId);
-    // 整份快照：空态要把上一个会话的消息/队列/目标/计划模式/投影一次归零
-    // （增量 patch 没覆盖 model/goal/jobs/planMode/permission，残留会漏过去）
     this.emitToView(viewId, { type: "state", state: this.snapshotFor(viewId) });
+    await this.ensureSession(viewId, { start: true, askDir: false });
   }
 
   /**
-   * 把窗口落到一条**真实会话**上（已经有就原样返回，没有就建一条并绑上）。
+   * **同步**把窗口换到一条已知的空壳上（0 往返）：解绑 → 建域 → 换绑 → 推整份快照。
    *
-   * 只有真正要跟服务端打交道的地方才调它——发消息、加附件、执行命令，以及
-   * **打开 `/` 或 `@` 菜单**（这两个菜单的内容都是会话作用域的服务端目录，
-   * 见 `ensureSessionForMenu`）。空态页上的预览型选择（预设、模型）**不**走这里，
-   * 它们只记进 `viewAgentPreset` / `viewModel`。
+   * 四步都是同步的（域是内存对象，跟随流是随后才开的），所以点「+」时界面下一帧就是空态。
+   * 顺带把空态页那几项「待建参数」在 `bindViewToSession` 里清掉——与异步那条路完全同构
+   * （那里绑完后推的也是同一份 `snapshotFor`）。
    *
-   * 建会话要先有工作目录：打开着文件夹就是它，否则用用户选过的那个；两个都没有时
-   * **就地弹一次目录选择器**（用户 2026-09-22 拍板：不编造默认路径，也不封死发送）。
-   * 这一步是**用户显式动作**的一环，允许拉起后台。菜单那条路不弹这个框——它走
-   * `ensureSessionForMenu` 先判目录。
+   * 空壳的值由投影帧回填（这条路上不落实任何待建参数，理由见 `reuseOrCreateBlank`）。
+   *
+   * @returns 换绑成功 → true；拿不到域（客户端已经不在了）→ false，调用方退回异步那条路。
+   */
+  private switchToBlankSync(viewId: string, sessionId: string): boolean {
+    this.detachView(viewId);
+    const scope = this.ensureScope(sessionId);
+    if (!scope) return false;
+    this.bindViewToSession(viewId, sessionId, scope);
+    this.emitToView(viewId, { type: "state", state: this.snapshotFor(viewId) });
+    return true;
+  }
+
+  /**
+   * 把窗口落到一条**真实会话**上（已经有就原样返回，否则落到本工作区那条空壳上）。
+   *
+   * 两条用法，`options` 就是它们的差别：
+   *
+   * - **用户显式动作**（发消息、加附件、点「+」、打开菜单）：`start: true`（允许拉起
+   *   后台）、`askDir` 按场景定——发消息与加附件没有工作目录时**就地弹一次目录选择器**
+   *   （用户 2026-09-22 拍板：不编造默认路径，也不封死发送），「+」与菜单不弹
+   *   （见 `newSession`、`listCommandsForView`）；
+   * - **自动路径**（窗口就绪、VS Code 打开/关掉文件夹）：`start: readAutoConnect()`——
+   *   自动路径永不启动后端起后台。
+   *
+   * 空壳本身由 `reuseOrCreateBlank` 找或建（官方口径，见那里），所以「打开 `/` 或 `@`
+   * 菜单要先建一条会话」这件事不再是一条特殊路径：那时窗口早就绑在空壳上了。
    *
    * **同一个窗口的并发调用共用一次尝试**：`@` 候选每敲一个字符重取一次，不合并就会
    * 各建一条会话（见 `sessionEnsures`）。
    *
-   * @returns 会话域；用户取消了目录选择、或客户端不可用 → undefined（调用方什么都不做，
-   *          草稿留在输入框里）。
+   * @returns 会话域；用户取消了目录选择、没有工作目录、或客户端不可用 → undefined
+   *          （调用方什么都不做，草稿留在输入框里）。
    */
-  private async ensureSession(viewId: string): Promise<SessionScope | undefined> {
+  private async ensureSession(
+    viewId: string,
+    options: { start: boolean; askDir: boolean },
+  ): Promise<SessionScope | undefined> {
     const existing = this.scopeOfView(viewId);
     if (existing) return existing;
     const inflight = this.sessionEnsures.get(viewId);
     if (inflight) return await inflight;
     const attempt = (async (): Promise<SessionScope | undefined> => {
       if (!this.client || this.connection !== "connected") {
-        await this.ensureConnected({ start: true });
+        await this.ensureConnected({ start: options.start });
       }
       if (!this.client) return undefined;
       // 连接与目录这两步都可能让**别的路径**先把这个窗口绑到一条会话上（用户点了历史
       // 里的一条）：绑定是既成事实，就按它走，不再自己建一条把它顶掉
       const bound = this.scopeOfView(viewId);
       if (bound) return bound;
-      if (!(await this.askWorkspaceDir())) return undefined;
-      return await this.createSession(viewId);
+      if (options.askDir) {
+        if (!(await this.askWorkspaceDir())) return undefined;
+      } else if (!this.hasWorkspaceDir()) {
+        // 建空壳必须先有工作目录：`session/create` 要么给 `workspaceId`、要么给 `cwd`，
+        // 而 `workspacePath()` 在两者都没有时给的是**扩展宿主**的 `process.cwd()`
+        // ——那是 VS Code 的安装路径，用户既没选、也无从知道（见 `workspacePath`）。
+        // 这条路上不弹选择器，窗口就停在「无会话的空态」。
+        return undefined;
+      }
+      return await this.reuseOrCreateBlank(viewId);
     })();
     this.sessionEnsures.set(viewId, attempt);
     try {
@@ -3596,56 +3768,43 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
-   * 菜单（`/` 命令栏、`@` 候选）要的那份目录同样是**会话作用域**的：服务端的
-   * `commands/list` 与 `fileReferences/list` 都是 `@RemoteScope('agent')`，按
-   * `agentId` 查活跃 agent，没有会话就没有目录可列（harness 侧见
-   * `api/session-controller/src/agent.ts` 的 `resolveAgent`，没有无会话端点）。
-   * 所以空态下打开菜单 = **按需建会话**，与发消息走同一条 `ensureSession`。
+   * 让窗口落到一条**空壳会话**上：本工作区里已经有一条还没开始过对话的就认领它，
+   * 没有就 `session/create` 建一条（官方 `ui-workspace` 的同名方法，两半都抄：
+   * `reuseOrCreateBlank` 的扫描见 `reusableBlank`）。
    *
-   * 与 `ensureSession` 只差一条口径（用户 2026-09-24 拍板）：**不弹目录选择器**。
-   * 菜单是随手打开的，弹一个系统对话框打断输入不合理；目录没定就回空菜单，
-   * 由界面那句「未选择工作区」把原因说清楚（`menuNoWorkspace`），选目录留在
-   * 空态页那一行按钮上。
+   * 两条路的差别只在「要不要落实空态页上的待建参数」：
    *
-   * 其余一律与发消息同路——包括**允许拉起后台**（「显式动作才许启动」那一档：
-   * 用户要看命令栏/文件列表，菜单空着等于这条能力不存在）。
+   * - **真新建**：**工作目录**（`workspacePath()`）、**agent 预设**（用户点过的 > 配置项 >
+   *   服务端默认，见 `agentPresetFor`）、**模型**（记成域上的 `pendingModel`，由第一次
+   *   发送前的 `selectModel` 提交）在这里一次性落实；
+   * - **复用**：它本来就有自己的预设与模型，照搬这次的待建值等于把那条会话上的选择改掉，
+   *   所以**不动**——它的值由投影帧回填（空态页那几枚胶囊显示的就是这条会话的真实状态，
+   *   「预览值」这个语义随之消失）。
+   *
+   * **权限**两条路都落实（与部署默认不同的那笔在绑定后补发一次 `/permission`）：它是
+   * 「这次要用的权限」，用户刚在空态页上点过。
    */
-  private async ensureSessionForMenu(viewId: string): Promise<SessionScope | undefined> {
-    const existing = this.scopeOfView(viewId);
-    if (existing) return existing;
-    if (!this.hasWorkspaceDir()) return undefined;
-    return await this.ensureSession(viewId);
-  }
-
-  /**
-   * 真正建一条会话并绑到窗口（`session/create`）。
-   *
-   * 待建会话的几样参数在这里一次性落实：**工作目录**（`workspacePath()`）、
-   * **agent 预设**（用户点过的 > 配置项 > 服务端默认，见 `agentPresetFor`）、
-   * **模型**（记成域上的 `pendingModel`，由第一次发送前的 `selectModel` 提交）、
-   * **权限**（空态页选过的、与部署默认不同的那笔，绑定后补发一次 `/permission`）。
-   * 落实完就把待建状态清掉——下一次「新建对话」重新从配置项开始。
-   *
-   * 建之前先看有没有**可复用的空会话**（`reusableBlank`）：菜单打开过一次就留下一条
-   * 记录，用户按 Esc 走开时那条还没开始对话，接回来比再堆一条好。
-   */
-  private async createSession(viewId: string): Promise<SessionScope | undefined> {
+  private async reuseOrCreateBlank(viewId: string): Promise<SessionScope | undefined> {
     if (!this.client) return undefined;
     try {
       const preset = this.agentPresetFor(viewId);
       const workspaceId = await this.ensureWorkspace();
-      const reusable = this.reusableBlank(preset);
+      // 扫描前先确保手里有一份列表：`reusableBlank` 扫的就是 `this.sessions`，而它可能
+      // 还没拉过（窗口刚就绪、恢复路径没走到）——空着扫会把**别的窗口建好的壳**漏掉，
+      // 于是又建一条
+      if (!this.sessions.length) await this.refreshSessions();
+      const reusable = this.reusableBlank();
       const created =
         reusable !== undefined
-          ? { sessionId: reusable, agentPreset: this.createdBlankSessions.get(reusable)?.preset }
+          ? { sessionId: reusable, agentPreset: undefined }
           : await this.createSessionInWorkspace(workspaceId, preset);
       // 域是「窗口打开会话」的产物：这里总是有窗口要绑
       const scope = this.ensureScope(created.sessionId);
       // 空态页选过的权限在**绑定前**读走（`bindViewToSession` 会清掉它）
       const wantedPermission = scope ? this.viewPermission.get(viewId) : undefined;
-      // 投影帧要晚一点才到，先用创建结果给域一个初值（`agentPreset` 那条路见
-      // `applyAgentPresetProjection`）
-      if (scope) {
+      if (scope && reusable === undefined) {
+        // 投影帧要晚一点才到，先用创建结果给域一个初值（`agentPreset` 那条路见
+        // `applyAgentPresetProjection`）
         scope.agentPreset = created.agentPreset;
         // 界面上显示的模型在这里落实：用户点过的优先；没点过就是空态页展示着的
         // 部署默认（`agent-default-model` 配置）——记成 `pendingModel` 后第一次发送
@@ -3657,17 +3816,18 @@ export class ChatController implements vscode.Disposable {
           scope.model = model;
         }
       }
+      // 拉一次列表：新壳要出现在 `this.sessions` 里才找得到（`reusableBlank` 扫的就是它），
+      // 本地 blank 位也在这里与服务端对齐一次
       await this.refreshSessions();
-      // 记下这条**还没开始对话**的会话（复用名册，见 `reusableBlank`）。放在
-      // `refreshSessions` 之后：那次刷新会按服务端的 `blank` 位清理名册，先记后刷
-      // 会被它顺手清掉。服务端定的预设名（`created.agentPreset`）一并记下，复用时
-      // 给域一个初值，免得空态页上的预设显示闪一下空。
-      this.createdBlankSessions.set(created.sessionId, {
-        cwd: normalizePath(this.workspacePath()),
-        requestedPreset: preset,
-        preset: created.agentPreset,
-      });
       if (scope) {
+        // **写绑定前复查**：从上面的判据走到这里跨了至少一个 await（`ensureWorkspace` /
+        // `session/create` / 这次 `refreshSessions`），期间恢复路径或用户点历史里的一条
+        // 完全可能已经把这个窗口绑走了。绑定是既成事实——让位，不要把它顶掉：顶掉的表现
+        // 就是「会话内容先出现、随后一闪变成空会话」（用户 2026-10-02 报的现场）。
+        // 本次真新建的那条空壳留着（服务端没有删除 API，它本来就该给以后进空态的窗口
+        // 复用），只是不绑给这个窗口。
+        const bound = this.scopeOfView(viewId);
+        if (bound) return bound;
         this.bindViewToSession(viewId, created.sessionId, scope);
         // 待建会话的权限选择到此落实（会话启动后以界面显示的设定运行）。与部署默认
         // 相同就不发：那个值服务端建会话时本来就会装上，再发一次只会在新会话里留下
@@ -3741,36 +3901,95 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
-   * 找一个**可以接回来**的空会话（官方 Web 端 `ui-workspace` 的 `reuseOrCreateBlank`
-   * 同一口径）。只认扩展自己建出来的那批（`createdBlankSessions`）：
+   * 找一个**可以接回来**的空壳会话（官方 Web 端 `ui-workspace` 的 `reuseOrCreateBlank`
+   * 的扫描那半，判据逐条照搬）。
    *
-   * - 服务端还说它是 `blank`（没开始过对话）、还在列表里；
-   * - 落脚目录与新会话一致（换个目录就不该接）；
-   * - 建它时**传的预设**与这次要传的相同——预设决定会话组装哪些插件，不同就不能顶替
-   *   （空态页上那枚胶囊显示的是这次要用的预设，接一条别的组装会让它变成假话）；
-   * - 现在没有任何窗口开着它（`viewSessions` 里没有），子代理会话与归档会话不算。
+   * - 服务端说它还没开始过对话（`blank === true`）——**这就是空壳的定义**；
+   * - 且本地 blank 位没标它已经说过话（`engagedSessions`）：列表是拉的，服务端的
+   *   `blank` 会晚到，缺了这条就会把已经用过的会话当空壳接回去（见那张表的注释）；
+   * - 且它落在**本工作区**（`normalizePath` 后相同）——换个目录不能顶替；
+   * - 且不是归档 / 子代理会话。
+   *
+   * **不加别的条件**（用户 2026-10-01 口径：严格对齐官方，去掉我们自加的排除条件）：
+   * 尤其**不排除「已经有别的窗口开着它」**——一个工作区通常只有一条空壳，谁进空态都用
+   * 它，两个窗口 / 两个客户端共用同一条是官方字面的行为（官方只是只有一个主视图才遇不到，
+   * 遇不到不等于不该发生）。
    *
    * 找不到就返回 undefined，调用方照常 `session/create`。
    */
-  private reusableBlank(preset: string | undefined): string | undefined {
+  private reusableBlank(): string | undefined {
     const target = normalizePath(this.workspacePath());
-    const bound = new Set(this.viewSessions.values());
     for (const row of this.sessions) {
-      if (row.blank !== true || bound.has(row.id)) continue;
+      if (row.blank !== true) continue;
+      if (this.engagedSessions.has(row.id)) continue;
       if (this.archivedSessionIds.has(row.id) || this.subagentSessionIds.has(row.id)) continue;
-      const record = this.createdBlankSessions.get(row.id);
-      if (!record || record.requestedPreset !== preset) continue;
-      if (record.cwd !== target) continue;
+      if (normalizePath(row.cwd) !== target) continue;
       return row.id;
     }
     return undefined;
   }
 
   /**
+   * 这条会话是不是**还没开始过对话的空壳**（服务端的 `blank` 位与本地 blank 位一起看，
+   * 与 `reusableBlank` 同一条判据）。
+   *
+   * 列表里查不到那一行（子代理、别的工作区的会话）时按「不是空壳」算：宁可走保守那条路。
+   */
+  private isBlankShell(sessionId: string): boolean {
+    if (this.engagedSessions.has(sessionId)) return false;
+    return this.sessions.find((row) => row.id === sessionId)?.blank === true;
+  }
+
+  /**
+   * 把域上**待生效**的模型选择提交给服务端（`session/selectModel`），失败只记日志。
+   *
+   * 两个调用点，差别是「什么时候提交」：`send`（这条会话已经开始了，切换要在下一次请求
+   * 之前落到服务端）与 `setModel`（空壳会话说不上「本轮」，当场提交，见那里的注释）。
+   * 先清 `pendingModel` 再 await：重复提交同一笔没有意义，而并发的两次提交会让服务端
+   * 收到两条（第二条覆盖第一条，结果不一定停在用户最后点的那一个）。
+   */
+  private async applyPendingModel(scope: SessionScope): Promise<void> {
+    if (!this.client || !scope.pendingModel) return;
+    const { provider, model, reasoningEffort } = scope.pendingModel;
+    scope.pendingModel = undefined;
+    try {
+      await this.client.selectModel(scope.sessionId, provider, model, reasoningEffort);
+    } catch (error) {
+      this.log(`[model] 应用模型选择失败：${this.describeError(error)}`);
+    }
+  }
+
+  /**
+   * 这条会话**已经说过话**了：点亮本地 blank 位，本地那一行按事实翻面。
+   *
+   * 官方的同一件事是 `client/sessions/session.ts` 的 `blankBit`：prompt **受理**那一刻
+   * 翻假（被拒时不动，`Rejection must leave a first prompt blank and eligible for
+   * workspace reuse`），并 `onEngaged` 通知管理器记进 `engagedSessions`。本扩展没有那条
+   * 事件流，只有这里与 `setSessionRowRunning` 两个写入点（见 `engagedSessions` 的注释）。
+   *
+   * 两个落点分工不同，别把后者当成复用判据：
+   *
+   * - **点亮本地 blank 位**：这才是复用门槛——`reusableBlank` 折的就是它，而服务端的
+   *   `blank` 要等 `turn/start`、再等一次 `session/list` 才到得了；
+   * - **把本地那一行 `blank` 翻面**：只服务显示侧（`emitSessionLists` 挡不挡这一行、
+   *   `blankSessionIds` 挡不挡 `@` 对话候选），所以刻意**不推帧**——界面下一次列表帧
+   *   自然收敛（发出去的那一刻服务端的 status 帧就会来一趟）。
+   */
+  private markSessionEngaged(sessionId: string): void {
+    this.engagedSessions.add(sessionId);
+    const row = this.sessions.find((item) => item.id === sessionId);
+    if (row?.blank !== true) return;
+    this.sessions = this.sessions.map((item) =>
+      item.id === sessionId ? { ...item, blank: false } : item,
+    );
+  }
+
+  /**
    * 现在能不能确定新会话落在哪个目录：打开着文件夹，或用户在新会话页上选过一个。
    *
-   * 判据与 `askWorkspaceDir` 的前两道完全一致，抽出来是因为**菜单那条路**（见
-   * `ensureSessionForMenu`）要先问一句「有没有目录」，而没有目录时它**不弹**选择器。
+   * 判据与 `askWorkspaceDir` 的前两道完全一致：**空壳会话的创建也要它**——没有目录时
+   * `session/create` 只能拿到扩展宿主的 `process.cwd()`（见 `workspacePath`），所以那条
+   * 路上不建壳、窗口停在「无会话的空态」，等目录确定再补（见 `adoptBlankForUnboundViews`）。
    */
   private hasWorkspaceDir(): boolean {
     return Boolean(vscode.workspace.workspaceFolders?.[0] ?? this.newSessionCwd);
@@ -3779,8 +3998,9 @@ export class ChatController implements vscode.Disposable {
   /**
    * 空态页上改工作目录：弹系统目录选择器并记下来。
    *
-   * **不建会话**（用户 2026-09-22 口径）：会话要等第一条消息才建，选目录只是把
-   * 「新会话落在哪儿」定下来。已绑定的会话也不动——它的 cwd 是创建事实。
+   * 选完目录这个窗口就该有壳了（官方口径：打开一个工作区就有一条 blank 会话），所以
+   * 紧接着补一条——在那之前它一直停在「无会话的空态」。已绑定的会话不动：它的 cwd 是
+   * 创建事实，换目录不该改写它（用户 2026-09-22 口径）。
    *
    * 只在没有打开文件夹时才可能被调用（界面那行在 locked 时不发这条指令）；这里仍
    * 再判一次——界面状态可能滞后于 VS Code 的实际文件夹。
@@ -3790,15 +4010,17 @@ export class ChatController implements vscode.Disposable {
       this.refreshWorkspace();
       return;
     }
-    // viewId 用不上：会话要等第一条消息才建，选目录只改「新会话落在哪儿」
-    void viewId;
-    await this.askWorkspaceDir();
+    if (await this.askWorkspaceDir()) {
+      // 用户显式选了一个目录 ⇒ 允许拉起后台（与发消息同一档）；列不列表在这条路上
+      // 无所谓：`reuseOrCreateBlank` 自己会在列表空着时先拉一次
+      await this.ensureSession(viewId, { start: true, askDir: false });
+    }
   }
 
   /**
    * 问一次工作目录（系统目录选择器），选中就记下来并推一帧。
    *
-   * 两个入口共用：空态页上点那行目录，以及**要建会话却还没有目录时**（见
+   * 两个入口共用：空态页上点那行目录，以及**要落会话却还没有目录时**（见
    * `ensureSession`——那时弹的也是同一个对话框，用户只需要面对一种问法）。
    *
    * @returns 现在有目录了（本来就打开着文件夹、或选了一个）就是 true；用户取消 → false。
@@ -5385,6 +5607,9 @@ export class ChatController implements vscode.Disposable {
   async handle(message: WebviewToHost, viewId: string): Promise<void> {
     switch (message.type) {
       case "ready":
+        // 记下「这个窗口的页面已经就绪」：认领可能比 `ready` 更晚才落下，那一刻要回来
+        // 叫醒它（见 `flushRestoreClaims`）
+        this.readyViews.add(viewId);
         // 首帧快照**先行**：locale/字号等外观设置全在里面。接回会话要先走
         // `ensureConnected`——整个自动连接期间快照都出不去，界面只能停在词典
         // 缺省（英文）上，直到连接结算才翻成中文（用户报的「启动总是先英文」）。
@@ -5394,6 +5619,15 @@ export class ChatController implements vscode.Disposable {
         // 带会话内容的完整快照，内容照常回填。`resumeRestoreHint` 幂等，兜底
         // 定时器先到也只是空跑一次。
         await this.resumeRestoreHint(viewId);
+        // 这一轮恢复还没结算（认领还排着队，`resumeRestoreHint` 因此空跑）→ **不许**
+        // 先落一条空壳：认领落下时 `flushRestoreClaims` 会回来叫醒接回。在这里抢跑
+        // 只会得到「空壳先出现、历史会话随后接回来」的反序。
+        if (this.hasRestorePending(viewId)) break;
+        // 恢复不出会话（新开的窗口，或缓存里那条已经不在了）→ 落到本工作区那条空壳上
+        // （官方口径：打开一个工作区就有一条 blank 会话）。这是**自动路径**，所以连接
+        // 那一档跟随 `dshChat.autoConnect`——自动路径永不启动后台；关掉自动连接时窗口
+        // 就停在这里，等用户自己点连接（与改动前一致）。
+        await this.ensureSession(viewId, { start: readAutoConnect(), askDir: false });
         break;
 
       case "send":
@@ -5496,9 +5730,9 @@ export class ChatController implements vscode.Disposable {
         const model = group?.models.find((m) => m.id === message.model);
         const scope = this.scopeOfView(viewId);
         if (!scope) {
-          // 窗口还是空态：**不建会话**（用户 2026-09-22 口径：没有第一条消息就不该留
-          // 记录），只把这次选择记成「待建会话」的一部分，界面上立刻显示；
-          // 建会话时它会落到域上，再由发送前的 `selectModel` 提交。
+          // 连壳都还没有（没有工作目录，见 `viewModel` 的字段注释）：只把这次选择记成
+          // 「落壳时要用的模型」，界面上立刻显示；建壳时它会落到域上，再由发送前的
+          // `selectModel` 提交。
           const pending: ModelSelectionView = {
             provider: message.provider,
             model: message.model,
@@ -5524,7 +5758,7 @@ export class ChatController implements vscode.Disposable {
           contextWindow: model?.contextWindow ?? scope.model?.contextWindow,
           acceptsImage: this.acceptsImageFor(message.provider, message.model),
         };
-        // 立即更新胶囊显示（实际 selectModel 在下次发送前执行）
+        // 立即更新胶囊显示（已经开始过对话的会话里，实际 selectModel 在下次发送前执行）
         scope.model = {
           provider: scope.pendingModel.provider,
           model: scope.pendingModel.model,
@@ -5538,15 +5772,23 @@ export class ChatController implements vscode.Disposable {
       type: "patch",
       patch: sessionPatch(this.sessionSource(scope), ["model"]),
     });
+        // **空壳会话当场提交**（`session/selectModel`）：它说不上「本轮」，延迟到下次发送
+        // 没有任何好处，反倒会把选择丢掉——点「+」会回到同一条壳（官方
+        // `reuseOrCreateBlank`），而「+」会把域整个重建，只活在域上的 `pendingModel`
+        // 到那时就没了，胶囊会莫名其妙地弹回部署默认。
+        //
+        // 服务端的 `selectForNextRequest` 本来就是「下一次请求生效」，写在壳上与官方
+        // 客户端同一口径（模型是**会话**的属性，不是窗口的待建参数）。
+        if (this.isBlankShell(scope.sessionId)) await this.applyPendingModel(scope);
         break;
       }
 
       case "setPermission": {
         const scope = this.scopeOfView(viewId);
         if (!scope) {
-          // 空态：**不建会话**（与模型选择同一口径——没有第一条消息就不留记录），
-          // 把这次选择记成「待建会话」的一部分，界面上立刻显示；建会话时与部署默认
-          // 不同的那笔会被落实（见 `createSession`）
+          // 连壳都还没有（没有工作目录，见 `viewPermission` 的字段注释）：把这次选择记成
+          // 「落壳时要用的权限」，界面上立刻显示；与部署默认不同的那笔会在落壳后落实
+          // （见 `reuseOrCreateBlank`）
           this.viewPermission.set(viewId, message.permission);
           this.emitToView(viewId, {
             type: "patch",
@@ -6005,11 +6247,11 @@ export class ChatController implements vscode.Disposable {
       }
       return false;
     }
-    // 窗口还没有会话（空态）：**首条消息才建立它**。没有工作目录时会先问一次
-    // （取消 → 不建会话也不发送，草稿留在输入框里）
+    // 窗口还没有会话（空态）：落到本工作区那条空壳上（没有就建一条）。没有工作目录
+    // 时会先问一次（取消 → 不建会话也不发送，草稿留在输入框里）
     let scope = this.scopeOfView(viewId);
     if (!scope) {
-      scope = await this.ensureSession(viewId);
+      scope = await this.ensureSession(viewId, { start: true, askDir: true });
     }
     if (!scope) {
       // 用户**主动取消**了目录选择：这不是"发送失败"，而是这条消息收回输入框
@@ -6100,15 +6342,7 @@ export class ChatController implements vscode.Disposable {
     let admitted = false;
     try {
       // 发送前应用待生效的模型选择（切换即时生效于"下一轮"）
-      if (scope.pendingModel) {
-        const { provider, model, reasoningEffort } = scope.pendingModel;
-        scope.pendingModel = undefined;
-        try {
-          await this.client.selectModel(scope.sessionId, provider, model, reasoningEffort);
-        } catch (error) {
-          this.log(`[model] 发送前应用模型选择失败：${this.describeError(error)}`);
-        }
-      }
+      await this.applyPendingModel(scope);
       // 草稿与附件在 beginSend 里已清（空态那一步清的是窗口键，绑定后由
       // `bindViewToSession` 迁到会话键）；这里按会话键复述一次，不依赖迁移链路的细节。
       // **只对输入框来源做**：重发 / 排队重发的内容不是输入框里那份，清它等于擦掉用户的草稿
@@ -6154,6 +6388,10 @@ export class ChatController implements vscode.Disposable {
         await this.client.prompt(scope.sessionId, content, mode, requestId);
       }
       admitted = true;
+      // 这条会话收到人的消息了：空会话复用名册与本地那一行立刻跟上，别等下一次
+      // `session/list`（那正是「新对话的首条消息落进上一个对话」的成因，见
+      // `markSessionEngaged`）
+      this.markSessionEngaged(scope.sessionId);
     } catch (error) {
       scope.running = false;
       this.deliver(scope.sessionId, {
@@ -6286,11 +6524,11 @@ export class ChatController implements vscode.Disposable {
    */
   private async runCommand(viewId: string, line: string): Promise<{ ok: boolean; text?: string } | undefined> {
     if (!this.client) return undefined;
-    // 命令按会话执行：还没有会话时先建一个（点按钮时用户并没有先发过消息；
-    // 没有工作目录时会先问一次，取消则整条命令不执行）
+    // 命令按会话执行：还没有会话时先落到本工作区那条空壳上（点按钮时用户并没有先发过
+    // 消息；没有工作目录时会先问一次，取消则整条命令不执行）
     let scope = this.scopeOfView(viewId);
     if (!scope) {
-      scope = await this.ensureSession(viewId);
+      scope = await this.ensureSession(viewId, { start: true, askDir: true });
     }
     if (!scope) return undefined;
     const agentId = scope.sessionId;
@@ -6376,9 +6614,9 @@ export class ChatController implements vscode.Disposable {
    */
   private async pickFiles(viewId: string): Promise<void> {
     // 先把会话落下来再弹文件框：附件要上传到某个会话（回执是按会话铸造的），
-    // 而建会话可能还要先问一次工作目录——那个对话框必须**先**出来，否则用户会连着
+    // 而落会话可能还要先问一次工作目录——那个对话框必须**先**出来，否则用户会连着
     // 面对两个框，还不知道第二个在问什么（见 `ensureSession`）。
-    if (!this.scopeOfView(viewId) && !(await this.ensureSession(viewId))) return;
+    if (!this.scopeOfView(viewId) && !(await this.ensureSession(viewId, { start: true, askDir: true }))) return;
     const picked = await vscode.window.showOpenDialog({
       canSelectMany: true,
       canSelectFiles: true,
@@ -6450,10 +6688,10 @@ export class ChatController implements vscode.Disposable {
     items: readonly IntakeItem[],
     rejected: readonly IntakeRejection[],
   ): Promise<void> {
-    // 上传需要会话：窗口还是空态时先建（附件按键是常见的第一步动作；
-    // 没有工作目录时会先问一次，取消则整批附件都不接）
+    // 上传需要会话：窗口还是空态时先落到本工作区那条空壳上（附件按键是常见的第一步
+    // 动作；没有工作目录时会先问一次，取消则整批附件都不接）
     if (!this.scopeOfView(viewId)) {
-      await this.ensureSession(viewId);
+      await this.ensureSession(viewId, { start: true, askDir: true });
     }
     const key = this.keyForView(viewId);
     const list = this.attachmentsBySession.get(key) ?? [];
@@ -6898,17 +7136,20 @@ export class ChatController implements vscode.Disposable {
     const scope = this.scopeOfView(viewId);
     // 斜杠命令走命令通道（`commands/execute`），它不是用户消息，不该占一行回显。
     // 判据只能用**这一刻手里那份命令目录**（`slashCommandOf`，同步读域上的快照）：
-    // 会话在的时候目录就在（会话打开时预取，见 `openScopeFollow` 旁的 `listCommandsFor`），
-    // 空态第一条消息连会话都还没有，目录**无从查起**。
+    // 目录是异步拉的（域打开时预取、开 `/` 菜单时重取，见 `listCommandsFor`）。
     //
-    // 空态这里**不猜**（早先按「正文以 `/` 开头」一刀切，代价见下）：先不回显，
-    // 由 `send` 建好会话、用它自己的精确判据确认「这不是命令」之后再补一次。
-    // 一刀切漏掉的正是**技能调用**——`/skill-name …` 是普通消息（技能不进命令目录，
-    // 见 `skillCommands`），它整类消息因此永远要等 durable 事件才出现在消息流里
-    // （用户 2026-09-25 报的现场）；而反向的「先回显再收回」是一次肉眼可见的闪现。
+    // 目录**还没到**时这里**不猜**（早先按「正文以 `/` 开头」一刀切，代价见下）：先不回显，
+    // 由 `send` 用处理好的目录确认「这不是命令」之后再补一次。一刀切漏掉的正是**技能调用**
+    // ——`/skill-name …` 是普通消息（技能不进命令目录，见 `skillCommands`），它整类消息
+    // 因此永远要等 durable 事件才出现在消息流里（用户 2026-09-25 报的现场）；而反向的
+    // 「先回显再收回」是一次肉眼可见的闪现。
+    //
+    // 「目录还没到」的判据是域上的 `commandsLoaded`，**不能**再用「有没有域」代替：空态
+    // 窗口现在一进来就绑在本工作区那条空壳上（见 `newSession`），域有了、目录却可能还在飞。
     const slashish = attachments.length === 0 && text.trim().startsWith("/");
-    const isCommand = slashish && scope !== undefined && this.slashCommandOf(scope, text) !== undefined;
-    const commandUnknown = slashish && scope === undefined;
+    const commandUnknown = slashish && (scope === undefined || !scope.commandsLoaded);
+    const isCommand =
+      slashish && !commandUnknown && scope !== undefined && this.slashCommandOf(scope, text) !== undefined;
     const worthEchoing =
       (text.trim().length > 0 || attachments.length > 0) && !isCommand && !commandUnknown;
     // 子代理会话不回显（官方 `sendSession` 的 subagent 分支同样绕过 beginSubmission）：
@@ -7112,10 +7353,10 @@ export class ChatController implements vscode.Disposable {
   /**
    * 提交草稿：清空这个窗口（或它绑定的会话）的草稿，并把「清空」推给界面。
    *
-   * **调用点必须早于任何可能推整份状态快照的 await**：空态第一次发消息时
-   * `ensureSession` → `createSession` 会在绑定窗口后推一份整份快照，而快照里的 `draft`
-   * 读的就是这张表（见 `snapshotFor`）。晚清一步，那一帧就把用户刚发出去的正文塞回
-   * 输入框——界面上是「清空 → 闪回 → 消失」。这条顺序由 `beginSend` 保证（它排在
+   * **调用点必须早于任何可能推整份状态快照的 await**：还没有壳的空态发消息时
+   * `ensureSession` → `reuseOrCreateBlank` 会在绑定窗口后推一份整份快照，而快照里的
+   * `draft` 读的就是这张表（见 `snapshotFor`）。晚清一步，那一帧就把用户刚发出去的正文
+   * 塞回输入框——界面上是「清空 → 闪回 → 消失」。这条顺序由 `beginSend` 保证（它排在
    * `ensureConnected` 之前）。
    *
    * 它清掉的那份草稿本来也不该留着：界面在按下发送那一刻就乐观清空了自己的输入框，
@@ -7733,16 +7974,22 @@ export class ChatController implements vscode.Disposable {
   /**
    * 窗口侧「列出命令」。
    *
-   * 空态下先按需建会话（命令目录是会话作用域的，见 `ensureSessionForMenu`）——
-   * 这是用户 2026-09-24 报的现场：`newSession` 改成「只退回空态」之后没有域，
-   * 输入 `/` 一条命令都列不出来，命令栏根本不弹。
+   * 命令目录是**会话作用域**的（服务端 `commands/list` 按 `agentId` 查活跃 agent），所以
+   * 空态也必须有会话——而空态窗口在进空态那一刻就绑在本工作区那条空壳上了
+   * （见 `newSession` 与 `ensureSession`），这里只是兜一道「窗口就绪时还没连上」的底。
+   * 这条兜底**不弹目录选择器**（用户 2026-09-24 拍板：菜单是随手打开的，弹一个系统
+   * 对话框打断输入不合理），目录没定就回空菜单，由界面那句「未选择工作区」把原因说清楚
+   * （`menuNoWorkspace`），选目录留在空态页那一行按钮上。
    *
    * 拿不到会话（目录没定、连不上）时回空菜单。界面那边不需要额外的「为什么空」字段：
    * 目录没定这件事在窗口快照的 `workspace.path` 里（空串 = 未选择），界面据此显示
    * 「未选择工作区」那句提示（`webview/composerCompletion`）。
+   *
+   * 允许拉起后台：「显式动作才许启动」那一档——用户要看命令栏，菜单空着等于这条能力
+   * 不存在。
    */
   private async listCommandsForView(viewId: string): Promise<void> {
-    const scope = await this.ensureSessionForMenu(viewId);
+    const scope = await this.ensureSession(viewId, { start: true, askDir: false });
     if (!scope) {
       this.emitToView(viewId, { type: "commands/list", commands: [] });
       return;
@@ -7753,6 +8000,7 @@ export class ChatController implements vscode.Disposable {
   /** 斜杠命令目录；冷会话也能列。目录存到域上（各会话的菜单可以不同）。 */
   private async listCommandsFor(scope: SessionScope): Promise<void> {
     if (!this.client) {
+      scope.commandsLoaded = true;
       this.deliver(scope.sessionId, { type: "commands/list", commands: [] });
       return;
     }
@@ -7780,6 +8028,11 @@ export class ChatController implements vscode.Disposable {
     } catch (error) {
       this.log(`[commands] 列表获取失败：${this.describeError(error)}`);
       this.deliver(scope.sessionId, { type: "commands/list", commands: [] });
+    } finally {
+      // 「问过了」——成功或失败都算（失败的结论就是「手上这份目录是空的」，
+      // 判据见 `SessionScope.commandsLoaded`）。失败不重试：目录会随连接的
+      // `listCommandsFor` 那一轮重取。
+      scope.commandsLoaded = true;
     }
   }
 
@@ -7817,7 +8070,8 @@ export class ChatController implements vscode.Disposable {
    * @ 提及：查询文件引用候选（按该窗口绑定的会话查）。
    *
    * 与命令目录同一个前提：候选是**会话作用域**的（`fileReferences` 按 agent 的工作目录
-   * 列，没有会话就没有候选），所以空态下先按需建会话——见 `ensureSessionForMenu`。
+   * 列，没有会话就没有候选），所以空态窗口同样得先绑在本工作区那条空壳上（见
+   * `ensureSession`；这条兜底不弹目录选择器，理由与 `listCommandsForView` 同一条）。
    * 目录没定、连不上时回空列表（界面据窗口快照里的空工作目录显示「未选择工作区」）。
    *
    * **每次查询作废上一次**（`menuQueries`）：`@` 是每敲一个字符重取一次的，不作废
@@ -7837,8 +8091,8 @@ export class ChatController implements vscode.Disposable {
     const controller = new AbortController();
     this.menuQueries.set(viewId, controller);
 
-    const scope = await this.ensureSessionForMenu(viewId);
-    // 建会话可能等了一会儿，期间用户又敲了字：这一次已经被作废，一个字节都不发
+    const scope = await this.ensureSession(viewId, { start: true, askDir: false });
+    // 落会话可能等了一会儿，期间用户又敲了字：这一次已经被作废，一个字节都不发
     if (!this.isCurrentMenuQuery(viewId, controller)) return;
     const client = this.client;
     const wantsSessions = !isDirectoryQuery(query);

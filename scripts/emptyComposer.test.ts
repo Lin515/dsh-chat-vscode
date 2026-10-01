@@ -3,20 +3,22 @@
  * 驱动真 `ChatController`（offline stub），只看发给窗口的帧与假服务端收到的调用。
  *
  * 报障现场（用户 2026-09-24 报的现场）：点「+」之后输入 `/` 不弹命令栏、输入 `@`
- * 列表为空。根因是 `newSession` 退化成「退回空态」之后**没有域**，而命令目录与文件
- * 候选都是会话（agent）作用域的 RPC——`listCommandsForView` / `queryFiles` 在
- * `scopeOfView()` 为空时直接回空帧（真服务端也没有无会话端点：两个 RPC 都是
- * `@RemoteScope('agent')`，按 `agentId` 查活跃 agent）。
+ * 列表为空。根因是「退回空态」之后**没有域**，而命令目录与文件候选都是会话（agent）
+ * 作用域的 RPC——`listCommandsForView` / `queryFiles` 在 `scopeOfView()` 为空时直接回空帧
+ * （真服务端也没有无会话端点：两个 RPC 都是 `@RemoteScope('agent')`，按 `agentId`
+ * 查活跃 agent）。
  *
- * 修法是**按需建会话**（`ensureSessionForMenu`），本测试钉住它的四条口径：
+ * 2026-10-01 口径调整后（对齐官方 DSH Web：**空态就是一条真会话**），这两个菜单的
+ * 前提变了——空态窗口在进空态那一刻就绑在本工作区那条空壳上（见 `newSession`），
+ * 菜单只是读它。所以本测试钉住的是：
  *
- * 1. 空态下两个菜单都有内容（用户可见的验收标准）；
+ * 1. 空态下两个菜单都有内容（用户可见的验收标准），且**不再各建一条**会话；
  * 2. 目录没定（没打开文件夹、也没选过）时**不建会话、也不弹目录选择器**，
  *    空菜单由界面那句「未选择工作区」解释（用户 2026-09-24 拍板的口径 C）；
- * 3. 菜单按需建的会话**不进历史列表**（服务端 `blank` 位；否则又是「点一下就多一条
+ * 3. 还没开始对话的空壳**不进历史列表**（服务端 `blank` 位；否则又是「点一下就多一条
  *    空会话」，用户 2026-09-22 报过的现场）；
- * 4. 并发与复用：`@` 每敲一个字符都会重取候选，同一窗口只建一条；按 Esc 走开再回来
- *    时**接回**那条空会话，不再堆一条。
+ * 4. 并发：`@` 每敲一个字符都会重取候选，同一窗口只落一条会话（`sessionEnsures`）；
+ * 5. 复用：还没说过话的空壳要接回来，不再堆一条；换了目录则不接。
  *
  * vscode 依赖由 esbuild.scripts.mjs 的 alias 指到 `vscodeTestStub.ts`（离线、无网络、
  * 无 token、亚秒级）。
@@ -199,8 +201,15 @@ console.log("emptyComposer: 空态下的 / 命令栏与 @ 候选（驱动真控�
   const { c, frames, client } = makeController({ dir: CWD });
   c.bindView("v1");
   await c.newSession("v1");
-  assert.deepStrictEqual(client.calls.filter((m) => m === "session/create"), [], "前置：点「+」不建会话");
-  console.log("  空态就位：会话记录 0 条 ✓");
+  // 2026-10-01 口径：点「+」就地落到本工作区那条空壳上（空态 = 一条真会话）
+  assert.strictEqual(client.rows.length, 1, "点「+」落到本工作区那条空壳上");
+  const shell = client.rows[0].sessionId;
+  assert.strictEqual(
+    c.viewSessions.get("v1"),
+    shell,
+    "空态窗口必须就地绑在那条空壳上——两个菜单的 RPC 都是会话作用域的，没有域就是报障现场",
+  );
+  console.log(`  空态就位：空壳 ${shell}（已绑窗口）✓`);
 
   frames.length = 0;
   await openMenus(c, "v1");
@@ -210,15 +219,9 @@ console.log("emptyComposer: 空态下的 / 命令栏与 @ 候选（驱动真控�
   console.log(`  @ 候选：${items.length} 条 ${items.map((row) => row.path).join(", ")}`);
   assert.ok(commands.length > 0, "空态下输入 `/` 必须弹出命令栏（报障现场：一条都没有）");
   assert.ok(items.length > 0, "空态下输入 `@` 必须列出文件候选（报障现场：列表为空）");
-  assert.strictEqual(client.rows.length, 1, "两个菜单共用同一条按需建出来的会话");
-  // 窗口**绑在**这条会话上：随后发送走的是「已有域」那条路，不会再建一条（否则
-  // 菜单打开过的那条就成了孤儿，一次 `/` 加一次发送就是两条记录）
-  assert.strictEqual(
-    c.viewSessions.get("v1"),
-    client.rows[0].sessionId,
-    "菜单按需建的会话要立刻绑到这个窗口上",
-  );
-  console.log(`  按需建的会话：${client.rows[0].sessionId}（已绑窗口）✓`);
+  assert.strictEqual(client.rows.length, 1, "两个菜单读的是同一条空壳，谁都不再另建会话");
+  assert.strictEqual(c.viewSessions.get("v1"), shell, "打开菜单不会把窗口换到别的会话上");
+  console.log("  两个菜单都有内容，且没有多出会话 ✓");
 }
 
 // ---------- 二、空会话不进历史列表（否则「点一下就多一条空会话」又回来了） ----------
@@ -273,11 +276,12 @@ console.log("emptyComposer: 空态下的 / 命令栏与 @ 候选（驱动真控�
   }
 }
 
-// ---------- 四、并发：@ 每敲一个字符重取一次，同一窗口只建一条会话 ----------
+// ---------- 四、并发：@ 每敲一个字符重取一次，同一窗口只落一条会话 ----------
 {
   const { c, client } = makeController({ dir: CWD });
   c.bindView("v1");
-  await c.newSession("v1");
+  // 刻意**不先点「+」**：窗口刚上线 / 刚恢复、还没走到落壳那一步的那一瞬，正是几个
+  // 并发入口最容易撞上的时刻（它们都会看到「还没有域」）
   await Promise.all([
     c.handle({ type: "listCommands" }, "v1"),
     c.handle({ type: "queryFiles", query: "" }, "v1"),
@@ -288,24 +292,30 @@ console.log("emptyComposer: 空态下的 / 命令栏与 @ 候选（驱动真控�
   assert.strictEqual(
     client.calls.filter((m) => m === "session/create").length,
     1,
-    "同一窗口的并发建会话必须合并成一次（否则一次 @ 补全就堆出好几条空会话）",
+    "同一窗口的并发落壳必须合并成一次（否则一次 @ 补全就堆出好几条空会话）",
+  );
+  assert.strictEqual(
+    c.viewSessions.get("v1"),
+    client.rows[0].sessionId,
+    "并发之后窗口仍然只绑在那一条上",
   );
 }
 
-// ---------- 五、复用：按 Esc 走开（点「+」退回空态）再打开菜单，接回同一条空会话 ----------
+// ---------- 五、复用：还没说过话的空壳要接回来，不再堆一条 ----------
 {
   const { c, frames, client } = makeController({ dir: CWD });
   c.bindView("v1");
   await c.newSession("v1");
-  await openMenus(c, "v1");
   const first = client.rows[0]?.sessionId;
-  // 用户没发消息就点了「+」（= 窗口退回空态），再打开一次菜单
+  await openMenus(c, "v1");
+  // 用户没发消息就再点一次「+」（= 退出这条会话、重新落空态），再打开一次菜单
   await c.newSession("v1");
   frames.length = 0;
   await openMenus(c, "v1");
   const commands = (lastFrame(frames, "v1", "commands/list")?.commands ?? []) as unknown[];
   console.log(`  走开再回来：服务端共 ${client.rows.length} 条会话（首条 ${first}），命令 ${commands.length} 条`);
-  assert.strictEqual(client.rows.length, 1, "没开始对话的空会话要接回来复用，不再堆一条");
+  assert.strictEqual(client.rows.length, 1, "没开始对话的空壳要接回来复用，不再堆一条");
+  assert.strictEqual(c.viewSessions.get("v1"), first, "回到同一条空壳上（官方 reuseOrCreateBlank 的行为）");
   assert.ok(commands.length > 0, "复用那条会话后菜单照常有内容");
 }
 
@@ -314,12 +324,14 @@ console.log("emptyComposer: 空态下的 / 命令栏与 @ 候选（驱动真控�
   const { c, client } = makeController({ dir: CWD });
   c.bindView("v1");
   await c.newSession("v1");
+  const first = c.viewSessions.get("v1");
   await openMenus(c, "v1");
-  await c.newSession("v1");
+  // 用户换了个工作目录，再点一次「+」：新壳落在新目录上
   c.newSessionCwd = "C:\\work\\other";
-  await openMenus(c, "v1");
+  await c.newSession("v1");
   console.log(`  换目录后：服务端 ${client.rows.length} 条会话（cwd 分别是 ${client.rows.map((row) => row.cwd).join(" / ")}）`);
   assert.strictEqual(client.rows.length, 2, "换了工作目录就该建新会话，不能接旧目录那条");
+  assert.notStrictEqual(c.viewSessions.get("v1"), first, "新壳是另一条（旧目录那条留给别的窗口/以后复用）");
 }
 
-console.log("emptyComposer: 空态菜单按需建会话、空会话不进列表、不弹目录框、并发合并、可复用 ✓");
+console.log("emptyComposer: 空态必有壳、菜单读壳不另建、空壳不进列表、不弹目录框、并发合并、可复用 ✓");

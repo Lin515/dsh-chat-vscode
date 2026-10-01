@@ -5,7 +5,7 @@
  *
  * 机制（§0 是可执行的**对照**）：界面在按下发送那一刻就乐观清空了自己的草稿
  * （`Composer.send` → `ui/setDraft`），而宿主的草稿表要等到 `send` 后段才清。
- * 空态第一次发消息时 `send` 会先 `ensureSession` → `createSession`，它在绑定后推一份
+ * 空态第一次发消息时 `send` 会先 `ensureSession` → `reuseOrCreateBlank`，它在绑定后推一份
  * **整份状态快照**，快照里的 `draft` 读的正是那张表——于是刚发出去的正文被塞回输入框
  * （闪回），随后提交那条 patch 再把它清掉（消失）。
  *
@@ -74,7 +74,7 @@ console.log("composerDraft: 整份快照会把已提交的草稿塞回输入框�
 //
 // 空态第一次发消息这条路：`case "send":` → `beginSend`（同步：乐观回显 + 清草稿 +
 // 清附件）→ `ensureConnected`（可能要拉起内部 DSH，秒级）→ `ensureSession` →
-// `createSession` → 推整份快照（快照里的 `draft` / `attachments` / `pendingMessages`
+// `reuseOrCreateBlank` → 推整份快照（快照里的 `draft` / `attachments` / `pendingMessages`
 // 读的都是宿主那几张表）。晚一步，那一帧就是「清空 → 闪回 → 消失」，或者回显被抹掉。
 {
   const begin = bodyOf("private beginSend(");
