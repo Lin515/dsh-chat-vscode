@@ -112,7 +112,7 @@
 
 ### 宿主杂项与工程防线
 
-- `i18n.test.ts` — 宿主发给 webview 的每条文案可翻 + VS Code 原生 UI 层（`hostText.ts` + l10n bundle）不漂移。
+- `i18n.test.ts` — 宿主发给 webview 的每条文案可翻 + VS Code 原生 UI 层（`hostText.ts` + l10n bundle）不漂移 + 界面按运行时字符串查表的那几处（工具自有标题）在两份词典里都有译文。
 - `hostLog.test.ts` — 日志写入器在输出通道已关闭时必须活下来（防 `EADDRINUSE` 级联缺陷）。
 - `configChanges.test.ts` — 配置文件热重载：`$events` 的 emit 帧 → 客户端要重读的动作。
 - `invariants.test.ts` — 源码级不变量：`switch` 里不得有重复 `case`。

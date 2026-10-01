@@ -24,8 +24,10 @@
    中文照旧。
 2. **加了 `@key` 只需在 `MESSAGES` 里加一条**（`zh`/`en` 缺一不可，TS 会强制；带参数登记成
    函数、不带参数登记成字符串——于是「裸字符串被当函数调用」编译期就报）。词典与
-   `resolveText()` 都由这张表派生；`scripts/i18n.test.ts` 核对登记表 ↔ `Texts` 接口 ↔
-   宿主发射点 ↔ VS Code 两层的一致性。
+   `resolveText()` 都由这张表派生；`Texts` 接口里的每个成员都必须在表里登记，这条由
+   `texts.ts` 的 `DerivedDictionary` **编译期**钉住（表里多出来的只走 `@key` 的宿主文案
+   不进接口）；`scripts/i18n.test.ts` 核对表 ↔ 宿主发射点 ↔ VS Code 两层，以及
+   界面按运行时字符串查表的那几处（工具自有标题）在两份词典里都有译文。
 3. **加了 VS Code 命令或配置项**，`package.nls.json` 与 `package.nls.zh-cn.json` 各加一条，
    `package.json` 里写 `%key%`。
 4. **配置项说明只写作用**：说清「干什么、特殊值什么效果」即可，不写实现原理与历史口径、

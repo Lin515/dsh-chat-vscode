@@ -22,7 +22,9 @@ import type { Marker } from "./messages";
 export type Locale = "zh" | "en";
 
 /**
- * 界面词典的形状（**键名即消息表的键名**，`scripts/i18n.test.ts` 逐个核对）。
+ * 界面词典的形状（**键名即消息表的键名**：每个成员都必须在 `messages.ts` 里登记，
+ * 由下面的 `DerivedDictionary` 在编译期钉住；表里多出来的只走 `@key` 的宿主文案
+ * 不进这个接口）。
  *
  * 这里是文档与契约：每个成员在哪个界面出现、带什么参数。文案的**取值**不写在这里，
  * 写 `messages.ts`；`dictionaryFor()` 的返回值按本接口收窄，所以
@@ -600,7 +602,8 @@ export interface Texts {
    * 它们由 `shared/toolMeta.ts` 的 `TOOL_TITLE_KEYS` 按名字映射过来，而界面侧是
    * **动态查表**（`Rows.tsx` 里 `texts[titleKey]`）——字典缺键时 TS 不会报错，
    * 界面会把工具 id 原样（`cordis_run`）画成标题。所以 `scripts/i18n.test.ts`
-   * 有一条断言逐个核对这张表里的键在两份字典里都存在。
+   * 有一条断言，把 `TOOL_TITLE_KEYS` 里的每个键在两份词典里都核一遍
+   * （`docs/audit-summary.md` 的 B2 就是这个形态踩出来的）。
    */
   toolInspect: string;
   toolRunCordis: string;
@@ -741,15 +744,43 @@ export interface Texts {
 }
 
 /**
+ * 只在类型层用：`T` 不是 `never` 时，实例化处编译报错并**点名**漏掉的那个键。
+ *
+ * `AssertNever<A | B>` 的报错会直接把 `A | B` 打出来，比「某处类型不匹配」好定位。
+ */
+type AssertNever<T extends never> = T;
+
+/**
+ * 编译期自检：`Texts` 的每个成员都必须在消息表里**登记**过（`Texts ⊆ MESSAGES`）。
+ *
+ * 加这条是因为 `derive()` 结尾那个 `as unknown as Texts` 把校验绕过去了：接口里写了
+ * 而表里没写的键，`derive()` 出来的词典里就是 `undefined`，界面上渲染成一片空白
+ * ——不报错、不显示 key，只有人眼盯着那个位置才发现（往接口里加一个成员却忘了在
+ * `messages.ts` 登记时就是这个后果）。
+ *
+ * 方向是**单向**的：消息表可以多出只走 `@key` 的宿主文案（宿主发 `@key`、界面用
+ * `resolveText` 直接查表，不经过 `Texts`），所以只要求 `Texts ⊆ MESSAGES`，
+ * 反过来（表 ⊆ 接口）不成立也不该成立。
+ */
+type UnregisteredTextsKey = Exclude<keyof Texts, keyof typeof MESSAGES>;
+
+/**
+ * `derive()` 的返回类型：只有 `Texts` 的键都在表里登记过时它才是 `Texts`。
+ *
+ * 套一层是为了让上面那个 `UnregisteredTextsKey` **被用到**（`noUnusedLocals` 会把
+ * 只声明不引用的类型别名当成错误报出来），报错点也就此落在 `derive` 的实例化处。
+ */
+type DerivedDictionary = AssertNever<UnregisteredTextsKey> extends never ? Texts : never;
+
+/**
  * 由消息表派生一份词典：把每条消息的对应语言取出来（函数原样引用，不包一层，
  * 保住参数类型与 `Function.length`）。
  *
- * 返回值按 `Texts` 收窄，所以 `dictionaryFor("zh").xxx` 的调用点编译期仍然受约束。
- * 表与接口的一致性由 `scripts/i18n.test.ts` 断言：**键集合必须一致**——表里多一个
- * `Texts` 没登记的键，或者接口比表多写了一个键（界面上就会显示裸 key），都在那里
- * 报出来；成员类型也对了一遍（导出类型，没有运行时开销）。
+ * 返回值按 `Texts` 收窄，所以 `dictionaryFor("zh").xxx` 的调用点编译期仍然受约束；
+ * 「接口里的键都在表里登记过」由上面的 `DerivedDictionary` 在编译期钉住
+ * （`scripts/i18n.test.ts` 只做运行时那半边：表里每条都能解析出中英两份文案）。
  */
-function derive(locale: Locale): Texts {
+function derive(locale: Locale): DerivedDictionary {
   const out: Record<string, string | ((...args: never[]) => string)> = {};
   for (const key of Object.keys(MESSAGES) as Marker[]) {
     out[key] = MESSAGES[key][locale];

@@ -11,7 +11,7 @@
  * 中英两份）。下面的 `MARKERS` 直接从它的键派生——加一条文案只改那一张表，
  * 这里不再有手抄清单。
  *
- * 六条不变量：
+ * 七条不变量：
  * 1. **解析**：表里每个标记在 zh / en 下都不能原样返回，也不能解析成空串或
  *    夹着 `undefined`（函数里写错属性名会落到这里）；
  * 2. **参数**：带参标记的每个参数都真的进了文案（含 `C:\tools\dsh\dsh\bin`
@@ -23,7 +23,10 @@
  *    且每条的英文源串在 `l10n/bundle.l10n.zh-cn.json` 里都有**不同**的中文译文
  *    （这一层从前零断言，缺译文会静默显示英文）；
  * 6. **表本身**：每条都有中英两份、带参数的登记成函数、不带参数的登记成字符串
- *    （从前那个长 switch 的失败模式是静默的：重复 `case` = 后者不可达）。
+ *    （从前那个长 switch 的失败模式是静默的：重复 `case` = 后者不可达）；
+ * 7. **动态查表**：界面按运行时字符串取文案的地方（工具自有标题）没有编译期保护，
+ *    键在两份词典（= 消息表）里都得有。反方向那条——「接口里的每个成员都在表里
+ *    登记过」——是编译期的，由 `texts.ts` 的 `DerivedDictionary` 钉住，不在本文件。
  *
  * 顺带钉住两个容易回归的行为：多行连接说明按行解析、不认识的 `@` 文本原样透传
  * （模型/服务端的原始报错就是靠这条不被翻译）。
@@ -179,6 +182,39 @@ console.log(`i18n: 消息表的全部 ${MARKERS.length} 个键都能解析（表
   assert.deepStrictEqual(unknown, [], `HOST_MARKERS 里有消息表里没有的键：${unknown.join("、")}`);
 }
 console.log("i18n: 消息表每条都有中英两份，带参的登记成函数、无参的登记成字符串 ✓");
+
+// ---------- 1c. 工具自有标题（`TOOL_TITLE_KEYS`）的每个键都要在两份词典里 ----------
+//
+// `Rows.tsx` 是按**运行时字符串**查表的（`texts[titleKey] ?? name`），字典缺键时
+// TS 一个字都不会说，界面把工具 id 原样画成标题（`cordis_run`）——`docs/audit-summary.md`
+// 的 B2 就是这个形态，修完一直缺一条断言守着。
+//
+// 键名从 `shared/toolMeta.ts` 的源文本里抠（那里是模块私有的表，没有导出的枚举），
+// 所以**新加一个工具映射自动被覆盖**；抠不到时下面那条 `keys.length` 直接炸，
+// 不会静默变成一条恒真的空循环。
+{
+  const toolMeta = readFileSync(join(process.cwd(), "src", "shared", "toolMeta.ts"), "utf8");
+  const tableStart = toolMeta.indexOf("const TOOL_TITLE_KEYS");
+  assert.ok(tableStart > 0, "取不到 TOOL_TITLE_KEYS（表被改名或挪走了？）");
+  const table = toolMeta.slice(tableStart, toolMeta.indexOf("};", tableStart));
+  const keys = [...table.matchAll(/"(tool[A-Za-z0-9]*)"/g)].map((match) => match[1]);
+  assert.ok(keys.length >= 5, `从 TOOL_TITLE_KEYS 里只抠出 ${keys.length} 个词典键，断言会变成空转`);
+
+  const missing: string[] = [];
+  for (const key of keys) {
+    for (const locale of LOCALES) {
+      const value = (dictionaryFor(locale) as unknown as Record<string, string | undefined>)[key];
+      if (typeof value !== "string" || value.length === 0) missing.push(`${key} 在 ${locale} 里`);
+    }
+  }
+  assert.deepStrictEqual(
+    missing,
+    [],
+    "工具自有标题的词典键在两份词典里必须都有译文（动态查表，缺键只会显示工具 id）：\n" +
+      missing.map((line) => `  ${line}`).join("\n"),
+  );
+  console.log(`i18n: 工具自有标题的 ${keys.length} 个词典键在两份词典里都存在 ✓`);
+}
 
 // ---------- 2. 带参数的标记：参数真的进到文案里 ----------
 
