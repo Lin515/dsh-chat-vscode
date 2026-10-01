@@ -75,6 +75,37 @@ console.log("sessionList: 分支可见、子代理隐藏 ✓");
 }
 console.log("sessionList: 分支与普通会话同级（标题前缀区分）✓");
 
+// ---------- 2a. 行内「复制会话 ID」：常驻（当前会话 / 运行中的会话也有），且在归档左边 ----------
+//
+// 用户 2026-10-01 口径。两件事都容易在后续改动里悄悄回退：归档 / 删除那排按钮整体被
+// `locked ? null :` 包着，把复制按钮顺手写进去就会出现「最需要它的当前会话反而没有」；
+// 位置要求（归档左边）也只是书写顺序，没有任何编译期约束。
+{
+  const history = readFileSync(
+    join(process.cwd(), "src", "webview", "components", "History.tsx"),
+    "utf8",
+  );
+  const actionsStart = history.indexOf('<span className="session-item-actions">');
+  const copyButton = history.indexOf("<IconCopyButton", actionsStart);
+  const lockedBranch = history.indexOf("{locked ? null : (", actionsStart);
+  const archiveButton = history.indexOf("<IconArchive size={13}", actionsStart);
+  assert.ok(actionsStart > 0, "取不到会话行的操作区（.session-item-actions）");
+  assert.ok(copyButton > actionsStart, "会话行操作区里必须有复制会话 ID 按钮");
+  assert.ok(
+    /<IconCopyButton text=\{session\.id\} title=\{texts\.copySessionId\} \/>/.test(history),
+    "复制按钮复制的是 session.id，title 走词典的 copySessionId（中英各一份）",
+  );
+  assert.ok(
+    lockedBranch > 0 && lockedBranch > copyButton,
+    "复制会话 ID 必须在 locked 分支**之外**——当前会话与运行中的会话同样要能复制自己的 ID",
+  );
+  assert.ok(
+    archiveButton > 0 && copyButton < archiveButton,
+    "复制按钮要在归档按钮左边（用户 2026-10-01 的位置口径）",
+  );
+}
+console.log("sessionList: 复制会话 ID 常驻且在归档左边 ✓");
+
 // ---------- 3. 工作区可见性：打开文件夹跟随工作区；没有文件夹只给未分组 ----------
 //
 // 用户 2026-09-15 的设计口径。判据按**服务端工作区注册表**（会话不在任何工作区

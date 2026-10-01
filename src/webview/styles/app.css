@@ -4198,6 +4198,13 @@ button.meta-chip:hover {
   color: var(--error);
 }
 
+/* 复制成功的那 1s：图标换成对勾并亮成成功色。`:hover` 那条必须一起写——
+   `.icon-btn:hover` 与本条同特异性，后写的赢，只写一条会在悬停时被吃回灰。 */
+.session-item-actions .icon-btn.is-copied,
+.session-item-actions .icon-btn.is-copied:hover {
+  color: var(--success);
+}
+
 .session-item-title {
   font-size: var(--font-size-sm);
   overflow: hidden;

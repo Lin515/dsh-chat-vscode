@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { SessionSummaryView } from "../../shared/chat";
 import { post } from "../bridge";
 import { IconArchive, IconClose, IconPlus, IconSearch, IconTrash } from "../icons";
+import { IconCopyButton } from "./CopyButton";
 import { formatClock } from "./primitives";
 import { useTexts } from "../texts";
 
@@ -70,7 +71,8 @@ export function HistoryPanel({
       <>
         <div className="session-group">{label}</div>
         {items.map((session) => {
-          // 已被占用（运行中）或当前正在查看的会话：不显示归档 / 删除按钮
+          // 已被占用（运行中）或当前正在查看的会话：不显示**归档 / 删除**按钮
+          // （复制会话 ID 那颗不受此限，见下方 actions 里的说明）
           const locked = session.running || session.id === currentId;
           // 分支（fork）会话：**和普通会话同级**（用户 2026-09-19 口径，不再缩进）——
           // 它继承源会话的标题，所以靠标题前缀「分支: 」区分，不靠缩进。
@@ -107,34 +109,39 @@ export function HistoryPanel({
                   )}
                 </span>
               </button>
-              {locked ? null : (
-                <span className="session-item-actions">
-                  {archived ? null : (
+              <span className="session-item-actions">
+                {/* 复制会话 ID：**与 locked 无关**，当前会话与运行中的会话同样要有
+                    这颗按钮（用户 2026-10-01 口径），位置固定在归档按钮左边。 */}
+                <IconCopyButton text={session.id} title={texts.copySessionId} />
+                {locked ? null : (
+                  <>
+                    {archived ? null : (
+                      <button
+                        className="icon-btn"
+                        title={texts.archive}
+                        onClick={() => post({ type: "archiveSession", sessionId: session.id })}
+                      >
+                        <IconArchive size={13} />
+                      </button>
+                    )}
                     <button
-                      className="icon-btn"
-                      title={texts.archive}
-                      onClick={() => post({ type: "archiveSession", sessionId: session.id })}
+                      className={`icon-btn${armedDelete === session.id ? " is-danger" : ""}`}
+                      title={armedDelete === session.id ? texts.deleteSessionConfirm : texts.deleteSession}
+                      onClick={() => {
+                        if (armedDelete === session.id) {
+                          setArmedDelete(undefined);
+                          clearTimeout(armTimer.current);
+                          post({ type: "deleteSession", sessionId: session.id });
+                        } else {
+                          armDelete(session.id);
+                        }
+                      }}
                     >
-                      <IconArchive size={13} />
+                      <IconTrash size={13} />
                     </button>
-                  )}
-                  <button
-                    className={`icon-btn${armedDelete === session.id ? " is-danger" : ""}`}
-                    title={armedDelete === session.id ? texts.deleteSessionConfirm : texts.deleteSession}
-                    onClick={() => {
-                      if (armedDelete === session.id) {
-                        setArmedDelete(undefined);
-                        clearTimeout(armTimer.current);
-                        post({ type: "deleteSession", sessionId: session.id });
-                      } else {
-                        armDelete(session.id);
-                      }
-                    }}
-                  >
-                    <IconTrash size={13} />
-                  </button>
-                </span>
-              )}
+                  </>
+                )}
+              </span>
             </div>
           );
         })}

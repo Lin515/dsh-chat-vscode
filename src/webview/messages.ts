@@ -641,6 +641,8 @@ export const MESSAGES = {
   untitled: { zh: "未命名对话", en: "Untitled chat" },
   runningTag: { zh: "运行中", en: "running" },
   forkedTitle: { zh: (title: string) => `分支: ${title}`, en: (title: string) => `Fork: ${title}` },
+  // 会话行「复制会话 ID」按钮的 title（当前会话与运行中的会话同样有这颗按钮）
+  copySessionId: { zh: "复制会话 ID", en: "Copy session ID" },
   archive: { zh: "归档（从工作区列表移出）", en: "Archive (move out of workspace list)" },
   archiveList: { zh: "归档列表", en: "Archived sessions" },
   deleteSession: { zh: "删除（删除本地日志文件）", en: "Delete (remove local log files)" },

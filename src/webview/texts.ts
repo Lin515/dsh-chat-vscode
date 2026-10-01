@@ -534,6 +534,13 @@ export interface Texts {
    * `分支: 标题` / `Fork: Title`。
    */
   forkedTitle: (title: string) => string;
+  /**
+   * 历史列表行内操作：复制该会话的 ID。
+   *
+   * 与归档 / 删除不同，这颗按钮**不受「运行中 / 当前会话」限制**——当前会话也要能
+   * 复制自己的 ID（用户 2026-10-01 口径），所以它在每一个会话行上都存在。
+   */
+  copySessionId: string;
   /** 历史列表行内操作：归档（服务端从工作区移出）与删除（本地删除日志文件）。 */
   archive: string;
   /** 归档视图入口按钮 / 抽屉标题。 */
