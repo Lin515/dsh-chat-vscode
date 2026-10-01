@@ -11,7 +11,7 @@
 import assert from "node:assert";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { visibleForWorkspace, visibleSessionCandidates, visibleSessionRows } from "../src/dsh/sessionList";
+import { normalizePath, upperDriveLetter, visibleForWorkspace, visibleSessionCandidates, visibleSessionRows } from "../src/dsh/sessionList";
 import { dictionaryFor } from "../src/webview/texts";
 
 // ---------- 1. 分支必须留着，子代理必须藏起来 ----------
@@ -112,8 +112,8 @@ console.log("sessionList: 复制会话 ID 常驻且在归档左边 ✓");
 // 记录里 = 未分组），路径比较只做兜底。
 {
   const rows = [
-    { sessionId: "own", cwd: "D:/dev/dsh-chat" },
-    { sessionId: "own-late", cwd: "d:\\dev\\DSH-Chat\\" }, // 大小写/斜杠写法不同
+    { sessionId: "own", cwd: "D:/dev/demo-app" },
+    { sessionId: "own-late", cwd: "d:\\dev\\Demo-App\\" }, // 大小写/斜杠写法不同
     { sessionId: "other-project", cwd: "D:/dev/other" },
     { sessionId: "ungrouped", cwd: "C:/tmp/scratch" },
     { sessionId: "own-registry", cwd: "D:/somewhere/else" }, // 注册表记账（cwd 不同）
@@ -121,7 +121,7 @@ console.log("sessionList: 复制会话 ID 常驻且在归档左边 ✓");
   ];
   const grouped = new Set(["own-registry"]);
   const withFolder = visibleForWorkspace(rows, {
-    workspacePath: "d:/dev/dsh-chat",
+    workspacePath: "d:/dev/demo-app",
     workspaceSessionIds: new Set(["own-registry"]),
     groupedSessionIds: grouped,
     openCwds: [],
@@ -254,5 +254,23 @@ console.log("sessionList: 控制器与界面都接上了 ✓");
   );
 }
 console.log("sessionList: @ 对话候选隐藏子代理会话与空会话 ✓");
+
+// ---------- 7. 盘符大写（用户 2026-10-01：空态页工作目录的盘符应为大写） ----------
+//
+// VS Code 以小写盘符打开文件夹（命令行 `code d:\dev`）时 `fsPath` 原样保留小写，
+// 空态页照抄就显示小写。只动开头盘符；路径其余大小写有意义，不碰。
+{
+  assert.strictEqual(upperDriveLetter("d:\\dev\\demo-app"), "D:\\dev\\demo-app");
+  assert.strictEqual(upperDriveLetter("d:/dev/demo-app"), "D:/dev/demo-app");
+  assert.strictEqual(upperDriveLetter("D:\\dev"), "D:\\dev", "已是大写时原样");
+  assert.strictEqual(
+    upperDriveLetter("d:\\Dev\\src"),
+    "D:\\Dev\\src",
+    "只动盘符，路径其余部分的大小写保留",
+  );
+  assert.strictEqual(upperDriveLetter("/home/user"), "/home/user", "POSIX 路径原样");
+  assert.strictEqual(upperDriveLetter(""), "", "空串原样");
+}
+console.log("sessionList: 盘符大写 ✓");
 
 console.log("\nsessionList: all assertions passed");

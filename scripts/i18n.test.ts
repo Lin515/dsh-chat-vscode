@@ -14,7 +14,7 @@
  * 七条不变量：
  * 1. **解析**：表里每个标记在 zh / en 下都不能原样返回，也不能解析成空串或
  *    夹着 `undefined`（函数里写错属性名会落到这里）；
- * 2. **参数**：带参标记的每个参数都真的进了文案（含 `C:\tools\dsh\dsh\bin`
+ * 2. **参数**：带参标记的每个参数都真的进了文案（含 `C:\tools\dsh\bin`
  *    这种带冒号的路径不被截断）；
  * 3. **登记**：扫一遍宿主的 emitter 源码，出现过的标记必须在表里；
  * 4. **反方向**：表里登记过的每个标记都真有发射点（`serverExited` /
@@ -237,7 +237,7 @@ console.log("i18n: 消息表每条都有中英两份，带参的登记成函数�
     ["pasteTooLarge", "@pasteTooLarge:big.zip", ["big.zip"]],
     ["imageTooLarge", "@imageTooLarge:a.png", ["a.png"]],
     ["serverSpawnFailed", "@serverSpawnFailed:ENOENT", ["ENOENT"]],
-    ["serverUnreachable", "@serverUnreachable:C:\\tools\\dsh\\dsh\\bin", ["C:\\tools\\dsh\\dsh\\bin"]],
+    ["serverUnreachable", "@serverUnreachable:C:\\tools\\dsh\\bin", ["C:\\tools\\dsh\\bin"]],
     ["serverLogTail", "@serverLogTail:dsh web: ready\nport 8080", ["dsh web: ready"]],
     ["unknownCommand", "@unknownCommand:/foo", ["/foo"]],
     ["commandFailed", "@commandFailed:/foo", ["/foo"]],

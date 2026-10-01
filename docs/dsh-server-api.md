@@ -411,7 +411,7 @@ POST /api/session/list
 ```json
 {"ok":true,"value":{"items":[
   {"sessionId":"01J...","updatedAt":1757500000000,"running":false,"blank":false,
-   "cwd":"D:\\dev\\dsh-chat",
+   "cwd":"D:\\dev\\demo-app",
    "projections":{"asOfSeq":42,"values":{"title":"修一个 bug","agentPreset":"standard"}}}
 ]}}
 ```
@@ -439,7 +439,7 @@ export interface SessionSummary {
 ```json
 POST /api/session/create
 {"type":"client-request","rpcId":"<uuid>","method":"session/create","payload":{"args":{"request":{
-  "cwd":"D:\\dev\\dsh-chat","agentPreset":"standard"}}}}
+  "cwd":"D:\\dev\\demo-app","agentPreset":"standard"}}}}
 ```
 
 `SessionCreateRequest` / `SessionCreateValue`（`⟨P⟩\dsh-api-session-controller\lib\types\types.d.ts:252-263`）：
@@ -630,7 +630,7 @@ yield entryFor(item.event);
 真实帧示例（脱敏）：
 
 ```json
-{"type":"item","streamId":"7f3a...","value":{"type":"snapshot","header":{"version":3,"id":"01J...","createdAt":1757500000000,"cwd":"D:\\dev\\dsh-chat","isSeeded":false,"agentPreset":"standard"},"cursor":17,"hasMore":false,"records":[{"type":"event","event":{"type":"turn/start","seq":0,"time":1757500000100,"data":{"turn":0}}}],"projections":{"asOfSeq":17,"values":{"title":null,"plan":{"active":false,"pending":false}}}}}
+{"type":"item","streamId":"7f3a...","value":{"type":"snapshot","header":{"version":3,"id":"01J...","createdAt":1757500000000,"cwd":"D:\\dev\\demo-app","isSeeded":false,"agentPreset":"standard"},"cursor":17,"hasMore":false,"records":[{"type":"event","event":{"type":"turn/start","seq":0,"time":1757500000100,"data":{"turn":0}}}],"projections":{"asOfSeq":17,"values":{"title":null,"plan":{"active":false,"pending":false}}}}}
 {"type":"item","streamId":"7f3a...","value":{"type":"event","event":{"type":"user/message","seq":18,"time":1757500000200,"data":{"id":"msg_...","role":"user","content":[{"type":"text","text":"你好"}],"source":{"kind":"user-rpc","rpcId":"<client-uuid>"}},"surfaceOp":"append"}}}
 {"type":"item","streamId":"7f3a...","value":{"type":"assistant-stream","frame":{"type":"start","attemptId":"att_...","revision":1,"startedAfterSeq":18,"turn":0,"step":0}}}
 {"type":"item","streamId":"7f3a...","value":{"type":"assistant-stream","frame":{"type":"chunk","attemptId":"att_...","revision":1,"index":0,"time":1757500000300,"chunk":{"type":"text-delta","index":0,"text":"你"}}}}
@@ -1146,7 +1146,7 @@ export interface RemoteEventReadyFrame {
 ```
 
 ```json
-{"type":"item","streamId":"<uuid>","value":{"type":"ready","clientId":"b0f1...","host":{"home":"C:\\Users\\Cueio"}}}
+{"type":"item","streamId":"<uuid>","value":{"type":"ready","clientId":"b0f1...","host":{"home":"C:\\Users\<user>"}}}
 ```
 
 `clientId` 每次 open 都重新随机生成，**必须记住**（回复审批时要用）。

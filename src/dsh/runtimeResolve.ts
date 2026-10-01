@@ -7,9 +7,9 @@
  * 那个必然存在。也不提供"手动指定运行时"的配置项：能跑起扩展就说明运行时在，
  * 多一个配置项只会多一类"填错/填了旧版"的故障面。
  *
- * 本机实测（`Code.exe` + `ELECTRON_RUN_AS_NODE=1`）：
+ * 实测形状（`Code.exe` + `ELECTRON_RUN_AS_NODE=1`，安装目录随机器不同）：
  * ```text
- * {"execPath":"D:\\Software\\Microsoft VS Code\\Code.exe","node":"v24.18.1","abi":"146","electron":"42.10.0"}
+ * {"execPath":"<VS Code 安装目录>\\Code.exe","node":"v24.18.1","abi":"146","electron":"42.10.0"}
  * ```
  * 安装目录里只有 `Code.exe`（没有随附的 node.exe），所以 `ELECTRON_RUN_AS_NODE` 是唯一入口，
  * 也是 VS Code 扩展生态里 spawn Node 子进程的标准手法。

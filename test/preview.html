@@ -742,7 +742,7 @@
                 ] }, startedAt: now - 234000, endedAt: now - 233400 } },
                 // 读取节点：只读了一段 → 行号缀在文件名后（含一个很长的路径，验证窄侧栏下不被截掉），
                 // 展开区是读取卡：行号槽 + 内容，20 行超过 8 行上限 → 中间出现「… 其余 12 行」
-                { step: 0, id: "tool1b", kind: "tool", tool: { id: "call_1b", name: "read", title: "", detail: "…/dsh/controller.ts", command: "d:\\dev\\dsh-chat\\src\\dsh\\controller.ts", readLines: { start: 3201, end: 3220 }, status: "ok", input: '{"file_path":"d:\\\\dev\\\\dsh-chat\\\\src\\\\dsh\\\\controller.ts","offset":3201,"limit":20}', output: "3201: …", card: { kind: "read", label: "d:\\dev\\dsh-chat\\src\\dsh\\controller.ts", lang: "typescript", totalLines: 4610, lines: Array.from({ length: 20 }, (_, i) => ({ number: 3201 + i, text: i === 0 ? "  private async handle(message: WebviewToHost, viewId: string): Promise<void> {" : i === 19 ? "  }" : `    // 第 ${3201 + i} 行：真实会话里的源码行` })) }, startedAt: now - 233900, endedAt: now - 233500 } },
+                { step: 0, id: "tool1b", kind: "tool", tool: { id: "call_1b", name: "read", title: "", detail: "…/dsh/controller.ts", command: "d:\\dev\\demo-app\\src\\dsh\\controller.ts", readLines: { start: 3201, end: 3220 }, status: "ok", input: '{"file_path":"d:\\\\dev\\\\demo-app\\\\src\\\\dsh\\\\controller.ts","offset":3201,"limit":20}', output: "3201: …", card: { kind: "read", label: "d:\\dev\\demo-app\\src\\dsh\\controller.ts", lang: "typescript", totalLines: 4610, lines: Array.from({ length: 20 }, (_, i) => ({ number: 3201 + i, text: i === 0 ? "  private async handle(message: WebviewToHost, viewId: string): Promise<void> {" : i === 19 ? "  }" : `    // 第 ${3201 + i} 行：真实会话里的源码行` })) }, startedAt: now - 233900, endedAt: now - 233500 } },
                 // 搜索卡（grep）：命中按文件分组、每组带条数，超过 8 行时中间给展开钮
                 { step: 0, id: "tool2", kind: "tool", tool: { id: "call_2", name: "grep", title: "", detail: "listen(", status: "ok", input: '{"pattern":"listen\\\\("}', output: "src/server/index.ts:24\nsrc/config.ts:11", card: { kind: "search", shape: "matches", total: 4, truncated: false, files: [
                   { path: "src/server/index.ts", matches: [{ lineNumber: 24, line: "  server.listen(options.port);" }, { lineNumber: 31, line: "  server.listen(3080);" }] },
@@ -804,7 +804,7 @@
                   input: '{"command":"git status --short","description":"Show repo state"}',
                   output: [" M src/dsh/adapter.ts", " M src/webview/styles/app.css", ...Array.from({ length: 38 }, (_, i) => `?? build/tmp-${i + 1}.log`)].join("\n"),
                   exitCode: 0,
-                  card: { kind: "terminal", command: "git status --short", cwd: "d:\\dev\\dsh-chat", output: [" M src/dsh/adapter.ts", " M src/webview/styles/app.css", ...Array.from({ length: 38 }, (_, i) => `?? build/tmp-${i + 1}.log`)].join("\n"), exitCode: 0 },
+                  card: { kind: "terminal", command: "git status --short", cwd: "d:\\dev\\demo-app", output: [" M src/dsh/adapter.ts", " M src/webview/styles/app.css", ...Array.from({ length: 38 }, (_, i) => `?? build/tmp-${i + 1}.log`)].join("\n"), exitCode: 0 },
                   startedAt: now - 125000, endedAt: now - 124000 } },
                 // 终端失败：非零退出码。bash/pwsh **不**把非零退出标成 isError，
                 // 失败靠 `parseExitStatus` 自己判（`[exit code: N]` 已从正文剥掉）。
@@ -841,7 +841,7 @@
                   source: { entries: [ { name: "build", description: "一切构建相关内容的统一入口与经验库" }, { name: "review", description: "两轴代码评审" }, { name: "windows-shell", description: "Windows 的 shell 选择与使用" } ] } } },
                 { id: "inj6", kind: "injected", injected: { sourceKind: "plugin", plugin: "openviking-memory", form: "recall",
                   text: "<openviking-context>\nRelevant memory from OpenViking. Use the search/read MCP tools to expand URIs.\n\n<memory uri=\"viking://resources/dsh-vscode-project\" type=\"resources\" score=\"0.79\" />\n</openviking-context>",
-                  source: { references: [ { label: "D--dev-dsh-chat 偏好", retainedMessages: 6, omittedMessages: 118, truncated: true } ] } } },
+                  source: { references: [ { label: "D--dev-demo-app 偏好", retainedMessages: 6, omittedMessages: 118, truncated: true } ] } } },
                 // 斜杠命令节点：命令名 + 参数在标题行，结果是服务端给的原文。
                 // 两条的文案都逐字来自真实 `commands/execute` 返回（见 commandE2E）
                 { step: 1, id: "cmd1", kind: "command", command: { commandId: "cmd-4a8cbf32-3", name: "plan", state: "ok", text: "Plan mode on. Use /plan off to leave." } },
@@ -1273,7 +1273,7 @@
           state.workspace = query.get("none") === "1"
             ? { path: "", locked: false }
             : {
-                path: query.get("lock") === "1" ? "D:\\dev\\dsh-chat" : "C:\\Users\\me\\Projects\\dsh-chat",
+                path: query.get("lock") === "1" ? "D:\\dev\\demo-app" : "C:\\Users\\me\\Projects\\demo-app",
                 locked: query.get("lock") === "1"
               };
           state.agentPresets = presetRoster;

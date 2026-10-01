@@ -95,7 +95,7 @@ import {
   type ProjectionHandlers,
 } from "./projectionIngest";
 import { deriveTrajectoryModel } from "./trajectory";
-import { normalizePath, visibleForWorkspace, visibleSessionCandidates, visibleSessionRows } from "./sessionList";
+import { normalizePath, upperDriveLetter, visibleForWorkspace, visibleSessionCandidates, visibleSessionRows } from "./sessionList";
 import { acceptSessionStatus, decodeSessionStatus } from "./sessionStatus";
 import { dropLegacyUnreadState, loadUnreadSessionIds, writeUnreadSession } from "./unreadStore";
 import { isBlank, mergeWindowCache, WindowRestore, WorkspaceWindowStateStore, type SidebarSlot, type WindowCache, type WindowKind } from "./windowState";
@@ -1275,8 +1275,8 @@ export class ChatController implements vscode.Disposable {
    */
   private workspacePath(): string {
     const folder = vscode.workspace.workspaceFolders?.[0];
-    if (folder) return folder.uri.fsPath;
-    return this.newSessionCwd ?? process.cwd();
+    if (folder) return upperDriveLetter(folder.uri.fsPath);
+    return this.newSessionCwd ? upperDriveLetter(this.newSessionCwd) : process.cwd();
   }
 
   /**
@@ -1288,11 +1288,11 @@ export class ChatController implements vscode.Disposable {
    */
   private workspaceView(): NonNullable<ChatState["workspace"]> {
     const folder = vscode.workspace.workspaceFolders?.[0];
-    if (folder) return { path: folder.uri.fsPath, locked: true };
+    if (folder) return { path: upperDriveLetter(folder.uri.fsPath), locked: true };
     // 没有打开文件夹：用户选过的那个目录；**没选过就是空串**——界面显示
     // 「未选择工作区」。绝不拿宿主的 `process.cwd()`（= VS Code 安装路径）冒充一个
     // 工作目录（用户 2026-09-22 报的现场）。
-    return { path: this.newSessionCwd ?? "", locked: false };
+    return { path: this.newSessionCwd ? upperDriveLetter(this.newSessionCwd) : "", locked: false };
   }
 
   /** 部署的 agent 预设目录（外观态那一份；空表表示这个部署没有可选项）。 */

@@ -14,7 +14,7 @@
  * 运行：npm test
  */
 import assert from "node:assert";
-import { readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 /** 递归收集 src 下的 .ts（不含 .d.ts）与 .tsx。 */
@@ -25,6 +25,23 @@ function sourceFiles(dir: string): string[] {
     const full = join(dir, entry.name);
     if (entry.isDirectory()) out.push(...sourceFiles(full));
     else if (/\.tsx?$/.test(entry.name) && !entry.name.endsWith(".d.ts")) out.push(full);
+  }
+  return out;
+}
+
+/**
+ * 递归收集 dir 下匹配 ext 的文件，供「本机专属路径」断言扫仓库内容用。
+ *
+ * 跳过三类不进仓库的东西：点开头的目录、`node_modules`、`docs/dsh-contract`
+ * （`npm run dsh:check` 的生成物，.gitignore 里，不属于要审的内容）。
+ */
+function walkFiles(dir: string, ext: RegExp): string[] {
+  const out: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.name.startsWith(".") || entry.name === "node_modules" || entry.name === "dsh-contract") continue;
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...walkFiles(full, ext));
+    else if (ext.test(entry.name)) out.push(full);
   }
   return out;
 }
@@ -369,12 +386,13 @@ console.log("invariants: guard 工厂的返回值不被丢弃（收尾体真的�
     );
   }
 
-  // 空态页那一行目录的两种非锁定形态：选过 → 显示路径；没选过 → 空串（界面显示
-  // 「未选择工作区」）。空串是真的过线的值，所以这里也钉一下它不会被回退成 cwd。
+  // 空态页那一行目录的两种非锁定形态：选过 → 显示路径（盘符大写）；没选过 → 空串
+  // （界面显示「未选择工作区」）。空串是真的过线的值，所以这里也钉一下它不会被
+  // 回退成 cwd——没有选过目录时不得碰 `process.cwd()`。
   const workspaceView = bodyOf("private workspaceView(");
   assert.ok(
-    /newSessionCwd \?\? ""/.test(workspaceView),
-    "没选过目录时 `path` 必须是空串（界面显示「未选择工作区」），不能用 process.cwd() 兜底",
+    /newSessionCwd \? upperDriveLetter\(this\.newSessionCwd\) : ""/.test(workspaceView),
+    "没选过目录时 `path` 必须是空串（界面显示「未选择工作区」），不能用 process.cwd() 兜底；选过时盘符要大写",
   );
 
   // 空态页显示的权限 / 模型必须是「用户点过的 > 配置文件里的部署默认」。缺了默认
@@ -410,6 +428,116 @@ console.log("invariants: guard 工厂的返回值不被丢弃（收尾体真的�
     "空态页选过且不同于部署默认的权限必须在建会话后落实（否则实际与 UI 错位）",
   );
   console.log("invariants: 第一条消息之前不建会话；会话必须先有工作目录；菜单按需建但不弹框 ✓");
+}
+
+// ---------- 7. 代码与文档里不许有本机专属路径（全局口径 2026-10-01） ----------
+//
+// 全局口径：任何项目的文档、代码中都不要有依赖本机的设置或路径。此前真实漏过的
+// 形态：本仓库的落盘位置（盘符路径里带着仓库目录名，如探针里写死的 `REPO`）、
+// 真实用户主目录（`C:\Users\<具体用户名>`）、夹具里出现过的本机其它项目名……
+// 它们不报错、测试照绿，只在不该出现的地方泄露环境信息，换台机器就失真。
+//
+// 判据刻意**结构化**而不把特征串写死进仓库——把本机的用户名/项目名提交进来，
+// 本身就是又一条本机痕迹。三层：
+// 1. 盘符路径指向**本仓库**：包名从 package.json 现读，任何克隆位置都认得出。
+//    冒号后只接一个分隔符才算路径（`https://` 这类 scheme 的 `//` 不误伤）；
+// 2. 真实样式的用户主目录（`盘符:\Users\名字` 与 `/home/名字`）：`me`/`x`/`user`
+//    这类占位名放行，尖括号占位符（如 `C:\Users\<用户名>`）天然不命中；
+// 3. 可选的本机扩展清单 `.agent/banned-path-tokens.txt`（`.agent/` 在 gitignore
+//    里，不进仓库）：一行一个字面子串，只属于某台机器的痕迹只记录在本机。
+{
+  const repoName = (JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf8")) as { name?: string })
+    .name ?? "";
+  assert.ok(repoName, "package.json 必须有 name（第 1 条判据要用它识别本仓库的落盘位置）");
+
+  const files = [
+    ...walkFiles(join(process.cwd(), "src"), /\.tsx?$|\.css$/),
+    ...walkFiles(join(process.cwd(), "scripts"), /\.tsx?$|\.mjs$|\.md$/),
+    ...walkFiles(join(process.cwd(), "test"), /\.html?$/),
+    ...walkFiles(join(process.cwd(), "docs"), /\.md$/),
+    ...["AGENTS.md", "README.md", "CHANGELOG.md", "THIRD-PARTY-NOTICES.md"]
+      .map((name) => join(process.cwd(), name))
+      .filter(existsSync),
+  ];
+
+  // 冒号后「只接一个分隔符」：scheme（`https://`、`ws://`）与 `file:///C:/…` 里
+  // 紧跟盘符的写法都要么被 `//` 挡掉、要么本来就是真盘符，不会把 URL 误判成路径。
+  const repoPath = new RegExp(
+    "(?<![A-Za-z0-9+./-])[A-Za-z]:[\\\\/](?![\\\\/])[^\\s\"']*" +
+      repoName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+    "gi",
+  );
+  // 用户名段至少 2 字符：单字母（/home/x 这类夹具）天生是占位符；`...` 是注释里
+  // 对真实报错做脱敏的省略号（dshLocks 的崩溃日志引用），同样放行。
+  const PLACEHOLDER_NAMES = new Set(["...", "me", "user", "username", "you", "name"]);
+  const userProfile = /(?<![A-Za-z0-9+./-])[A-Za-z]:[\\/](?![\\/])Users[\\/]+([A-Za-z0-9_.-]{2,})/gi;
+  const homeDir = /\/home\/([A-Za-z0-9_.-]{2,})/g;
+
+  const tokenFile = join(process.cwd(), ".agent", "banned-path-tokens.txt");
+  const localTokens = existsSync(tokenFile)
+    ? readFileSync(tokenFile, "utf8")
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line !== "" && !line.startsWith("#"))
+    : [];
+
+  const problems: string[] = [];
+  const lineAt = (text: string, at: number): number => text.slice(0, at).split("\n").length;
+  /** 一条判据的完整决策：正则命中**且**不是占位符才算数（循环与自检共用这一份）。 */
+  const reports = (rx: RegExp, sample: string): boolean => {
+    for (const match of sample.matchAll(rx)) {
+      if (!PLACEHOLDER_NAMES.has((match[1] ?? "").toLowerCase())) return true;
+    }
+    return false;
+  };
+  for (const file of files) {
+    const text = readFileSync(file, "utf8");
+    const label = file.replace(process.cwd() + "\\", "");
+    for (const match of text.matchAll(repoPath)) {
+      problems.push(`${label}:${lineAt(text, match.index ?? 0)} 盘符路径指向本仓库（${match[0]}）`);
+    }
+    for (const match of text.matchAll(userProfile)) {
+      if (PLACEHOLDER_NAMES.has((match[1] ?? "").toLowerCase())) continue;
+      problems.push(`${label}:${lineAt(text, match.index ?? 0)} 真实样式的用户主目录（${match[0]}）`);
+    }
+    for (const match of text.matchAll(homeDir)) {
+      if (PLACEHOLDER_NAMES.has((match[1] ?? "").toLowerCase())) continue;
+      problems.push(`${label}:${lineAt(text, match.index ?? 0)} 真实样式的用户主目录（${match[0]}）`);
+    }
+    for (const token of localTokens) {
+      let at = text.indexOf(token);
+      while (at >= 0) {
+        problems.push(`${label}:${lineAt(text, at)} 本机特征串「${token}」`);
+        at = text.indexOf(token, at + token.length);
+      }
+    }
+  }
+  assert.deepStrictEqual(
+    problems,
+    [],
+    `代码/文档里发现了本机专属路径（虚构示例请用中性名，如 demo-app / C:\\work\\demo）：\n${problems.join("\n")}`,
+  );
+
+  // 探测能力自检：三条判据对**真违规**要响、对**占位符**要哑（否则这条断言没有
+  // 价值）。样例在源码里写成 `\\` 转义 / 分段拼接——否则这段自检自己就会被自己扫中。
+  assert.ok(
+    reports(repoPath, `D:\\dev\\${repoName}\\src\\a.ts`),
+    "探测能力自检：盘符路径指向本仓库的判据必须命中",
+  );
+  assert.ok(reports(userProfile, "C:\\Users\\someone\\x"), "探测能力自检：用户主目录的判据必须命中");
+  assert.ok(reports(homeDir, "/home/" + "someone/x"), "探测能力自检：POSIX 主目录的判据必须命中");
+  for (const [label, fired] of [
+    ["URL 的 scheme", () => reports(repoPath, "见 https://example.com/x")],
+    ["占位用户名 me", () => reports(userProfile, "C:\\Users\\me\\demo")],
+    ["省略号脱敏", () => reports(userProfile, "C:\\Users\\...\\.dsh")],
+    ["单字母占位", () => reports(homeDir, "/home/" + "x/a")],
+  ] as Array<[string, () => boolean]>) {
+    assert.ok(!fired(), `探测能力自检：${label} 不该命中`);
+  }
+
+  console.log(
+    `invariants: 本机路径清零（仓库落盘位置 / 用户主目录 / 本机扩展清单 ${localTokens.length} 条）：扫了 ${files.length} 个文件 ✓`,
+  );
 }
 
 console.log("\ninvariants: all assertions passed");

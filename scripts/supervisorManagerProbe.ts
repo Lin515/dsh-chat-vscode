@@ -27,7 +27,7 @@ import { appendFileSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import { setTimeout as delay } from "node:timers/promises";
 // 必须排在最前面：会合目录指到本次探针专用目录
-import { PROBE_SUPERVISOR_ROOT } from "./supervisorProbeEnv";
+import { PROBE_REPO_ROOT, PROBE_SUPERVISOR_ROOT } from "./supervisorProbeEnv";
 import { SupervisorManager } from "../src/dsh/supervisorManager";
 import { createDefaultSupervisorLauncher } from "../src/dsh/supervisorRunner";
 import { readState, supervisorDirectory } from "../src/dsh/supervisorProtocol";
@@ -60,7 +60,7 @@ function makeWindow(tag: string, url = ""): SupervisorManager {
     command: COMMAND,
     // 阈值取下限：探针十几秒出结论；默认值的正确性由离线断言覆盖
     idleSec: 5,
-    workspace: `D:/dev/dsh-chat#${tag}`,
+    workspace: `${PROBE_REPO_ROOT}#${tag}`,
     launcher: createDefaultSupervisorLauncher({ log: (line) => say(`   [${tag}] ${line}`) }),
     log: (line) => say(`   [${tag}] ${line}`),
   });

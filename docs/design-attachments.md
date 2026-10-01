@@ -4,7 +4,7 @@
 > 逐条对照与平台实测结论）；改附件 / 拖放 / 粘贴 / 上传 / 目录引用相关代码前先读。
 > 实现状态（2026-09-21）与代码一致，当天修复见文末附记。
 >
-> 依据：官方 `dsh` checkout（`D:\dev\deepseek-harness`）与本机 VS Code 1.138.0；官方证据
+> 依据：官方 `dsh` checkout 与 VS Code 1.138.0 的实测对照；官方证据
 > 只落文件与函数名（行号易漂移），需要时按名 grep。相关文档：
 > `docs/audit-input-queue-attachments.md`（逐条审计与拖放 / 粘贴实测）、
 > `docs/audit-summary.md`「7.2 功能 BUG」表 B13、`docs/dsh-server-api.md`（上传路由）。

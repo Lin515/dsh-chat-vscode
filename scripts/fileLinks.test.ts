@@ -46,8 +46,8 @@ const read = (...parts: string[]): string => readFileSync(join(process.cwd(), ..
 
   // marked 的 `encodeURI` 会把反斜杠写成 `%5C`，而净化层放行的正是这个形态——
   // 也就是说这是 Windows 绝对路径在 DOM 里的**实际 href**，点击委托原样交给这里
-  assert.deepStrictEqual(parseFileLink("D:%5Cdev%5CWorkSpace%5Cpelican-bicycle%5Cindex.html"), {
-    path: "D:\\dev\\WorkSpace\\pelican-bicycle\\index.html",
+  assert.deepStrictEqual(parseFileLink("D:%5Cdev%5Cdemo-app%5Cindex.html"), {
+    path: "D:\\dev\\demo-app\\index.html",
   });
 
   // 不是文件：URL（含 mailto）、页内锚点（目标为空）、查询串、UNC/网络前缀、
@@ -233,10 +233,10 @@ console.log("fileLinks: 锚点点击三分类（本地文件 / 外链 / 其余�
   for (const href of [
     "D:/dev/app/src/a.ts",
     "D:\\dev\\app\\src\\a.ts",
-    "D:%5Cdev%5CWorkSpace%5Cpelican-bicycle%5Cindex.html",
+    "D:%5Cdev%5Cdemo-app%5Cindex.html",
     "d:%5cdev%5ca.ts",
     "src%5Cdsh%5Ca.ts",
-    "pelican-bicycle/index.html",
+    "demo-app/index.html",
     "https://example.com/a",
     "mailto:someone@example.com",
   ]) {

@@ -62,6 +62,17 @@ export function normalizePath(value: string | undefined): string {
   return (value ?? "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
 }
 
+/**
+ * Windows 盘符统一成大写（`d:/x` → `D:/x`），其余原样。
+ *
+ * 盘符在 Windows 上大小写等价，但**给人看**的路径应该是大写盘符（`D:\dev`）——
+ * VS Code 以小写盘符打开文件夹（命令行 `code d:\dev`）时 `fsPath` 原样保留小写，
+ * 界面照抄就会显示小写。只动开头那个盘符，路径其余部分的大小写是有意义的，不碰。
+ */
+export function upperDriveLetter(value: string): string {
+  return value.replace(/^[a-z]:/, (drive) => drive.toUpperCase());
+}
+
 /** 一条会话「该不该出现在本窗口的历史列表里」所需的全部上下文。 */
 export interface WorkspaceScope {
   /**

@@ -29,7 +29,8 @@
  */
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 /** 残留清扫门槛：正常探针单轮不超过几分钟，超时的目录只可能是上次异常退出留下的。 */
 const STALE_MS = 6 * 60 * 60 * 1000;
@@ -74,6 +75,13 @@ process.env.DSH_CHAT_SUPERVISOR_DIR = dir;
 
 /** 本次探针专用的会合根目录（收尾时整个删掉，`home/` 子目录随之一起）。 */
 export const PROBE_SUPERVISOR_ROOT = dir;
+
+/**
+ * 本仓库根目录（`scripts/` 的上一级），由本模块自身位置推出——探针要引用仓库内的
+ * 产物或目录时用它，**不写死任何机器路径**（esbuild 产物在 `build/` 下，`..` 即根；
+ * 与 `dshCompat.ts` 的 ROOT 同一条推法）。
+ */
+export const PROBE_REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 function readdirSafe(path: string): string[] {
   try {

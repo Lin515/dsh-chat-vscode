@@ -24,7 +24,7 @@
  */
 import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 // 必须排在最前面：会合目录指到本次探针专用目录（模块求值期读一次）
-import { PROBE_SUPERVISOR_ROOT } from "./supervisorProbeEnv";
+import { PROBE_REPO_ROOT, PROBE_SUPERVISOR_ROOT } from "./supervisorProbeEnv";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, type Server } from "node:net";
@@ -95,7 +95,7 @@ try {
       onError: (kind, message) => receivedA.push({ kind, message }),
       log: () => {},
     },
-    { hostId: `probe-${process.pid}`, workspace: "D:/dev/dsh-chat#probe" },
+    { hostId: `probe-${process.pid}`, workspace: `${PROBE_REPO_ROOT}#probe` },
   );
   check("窗口连上了（协议握手成功）", await connectionA.open());
   const arrivedA = await waitFor(() => receivedA.length > 0, 5_000);
@@ -128,7 +128,7 @@ try {
       onError: () => {},
       log: () => {},
     },
-    { hostId: `probe-${process.pid}`, workspace: "D:/dev/dsh-chat#probe" },
+    { hostId: `probe-${process.pid}`, workspace: `${PROBE_REPO_ROOT}#probe` },
   );
   check("窗口连上了", await connectionB.open());
   const arrivedB = await waitFor(() => statesB.length > 0, 5_000);

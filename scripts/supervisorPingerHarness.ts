@@ -39,6 +39,9 @@ import {
   type SupervisorState,
 } from "../src/dsh/supervisorProtocol";
 import { isProcessAlive } from "../src/dsh/processRegistry";
+// 会合目录的隔离由入口探针（pinger.ts）第一个 import supervisorProbeEnv 完成；
+// 这里只用它的仓库根推导（不写死机器路径），模块本身是幂等的。
+import { PROBE_REPO_ROOT } from "./supervisorProbeEnv";
 
 /**
  * 等 `ms` 之后 reject——给"没有时长上限"的等待加一道**探针自己的**上限。
@@ -93,7 +96,7 @@ export class ProbeWindow {
       url: options.url ?? "",
       command: options.command,
       idleSec: options.idleSec,
-      workspace: `D:/dev/dsh-chat#${options.tag}`,
+      workspace: `${PROBE_REPO_ROOT}#${options.tag}`,
       // 真实启动器（与扩展同一条路：VS Code 自带运行时跑 `dist/supervisor.js`）
       launcher: createDefaultSupervisorLauncher({ log }),
       log,

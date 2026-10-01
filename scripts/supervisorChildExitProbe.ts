@@ -28,7 +28,7 @@
  */
 import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 // 必须排在最前面：会合目录指到本次探针专用目录（模块求值期读一次）
-import { PROBE_SUPERVISOR_ROOT } from "./supervisorProbeEnv";
+import { PROBE_REPO_ROOT, PROBE_SUPERVISOR_ROOT } from "./supervisorProbeEnv";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
@@ -56,7 +56,7 @@ if (!isolated || !/dsh-chat-sup-probe-/.test(isolated)) {
   process.exit(2);
 }
 
-const REPO = "D:/dev/dsh-chat";
+const REPO = PROBE_REPO_ROOT;
 const fakeDir = mkdtempSync(join(tmpdir(), "dsh-chat-fakedsh-"));
 const fakeScript = join(fakeDir, "fakeDsh.cjs");
 const bootLog = join(fakeDir, "boots.log");

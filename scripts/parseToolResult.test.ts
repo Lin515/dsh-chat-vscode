@@ -3,7 +3,7 @@ import { parseToolResult } from "../src/dsh/adapter";
 
 // 1. read 信封：只留 content 正文，去掉 EOF 尾注
 const readEnvelope = [
-  "<path>d:\\dev\\BM204Helper\\Inject\\Inject.cpp</path>",
+  "<path>d:\\dev\\demo-app\\src\\main.cpp</path>",
   "<type>file</type>",
   "<content>",
   "1: #include <thread>",

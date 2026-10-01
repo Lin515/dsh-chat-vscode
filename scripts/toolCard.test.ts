@@ -44,7 +44,7 @@ function settled(
 // ---------- 1. read：行号 + 内容来自 meta.lines（官方 readCardModel） ----------
 {
   const meta = {
-    path: "D:\\dev\\dsh-chat\\src\\webview\\pendingInteraction.ts",
+    path: "D:\\dev\\demo-app\\src\\webview\\pendingInteraction.ts",
     offset: 1,
     lines: [
       { number: 1, text: 'import type { ApprovalView } from "../shared/chat";' },
@@ -108,7 +108,7 @@ function settled(
       },
     ],
   };
-  const card = settled("grep", { pattern: "question|Question", include: "*.ts", path: "D:\\dev\\dsh-chat\\src" }, {
+  const card = settled("grep", { pattern: "question|Question", include: "*.ts", path: "D:\\dev\\demo-app\\src" }, {
     meta,
     output: "src\\extension.ts:322: ...",
   });

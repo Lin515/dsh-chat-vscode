@@ -18,8 +18,8 @@ import { looksLikePath, splitPath } from "../src/webview/pathDisplay";
 // ---------- 1. 路径拆分：文件名与目录各归各位 ----------
 
 {
-  const win = splitPath("D:\\dev\\dsh-chat\\src\\dsh\\controller.ts");
-  assert.deepStrictEqual(win, { dir: "D:\\dev\\dsh-chat\\src\\dsh\\", name: "controller.ts" });
+  const win = splitPath("D:\\dev\\demo-app\\src\\dsh\\controller.ts");
+  assert.deepStrictEqual(win, { dir: "D:\\dev\\demo-app\\src\\dsh\\", name: "controller.ts" });
 
   const posix = splitPath("src/dsh/controller.ts");
   assert.deepStrictEqual(posix, { dir: "src/dsh/", name: "controller.ts" });
