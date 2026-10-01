@@ -44,6 +44,12 @@ const read = (...parts: string[]): string => readFileSync(join(process.cwd(), ..
   // 百分号编码：带空格的文件名
   assert.deepStrictEqual(parseFileLink("src/my%20file.ts"), { path: "src/my file.ts" });
 
+  // marked 的 `encodeURI` 会把反斜杠写成 `%5C`，而净化层放行的正是这个形态——
+  // 也就是说这是 Windows 绝对路径在 DOM 里的**实际 href**，点击委托原样交给这里
+  assert.deepStrictEqual(parseFileLink("D:%5Cdev%5CWorkSpace%5Cpelican-bicycle%5Cindex.html"), {
+    path: "D:\\dev\\WorkSpace\\pelican-bicycle\\index.html",
+  });
+
   // 不是文件：URL（含 mailto）、页内锚点（目标为空）、查询串、UNC/网络前缀、
   // 控制字符、坏转义、非法行号
   for (const value of [
@@ -211,26 +217,49 @@ console.log("fileLinks: 锚点点击三分类（本地文件 / 外链 / 其余�
 //
 // DOMPurify 的默认 URI 白名单不认 `D:`（单字母 + 冒号像 scheme），会把 href 整个
 // 剥掉——锚点变成无 href 空壳，悬停是文本光标、点了没反应
-// （用户 2026-09-28 报「绝对路径盘符写法打不开」即此）。净化在 DOM 上做，Node
-// 断言环境没有 DOM，只能按结构钉：白名单正则必须在、且带盘符分支
-// （`fileLinks.ts` 的 parseFileLink 对盘符放行，两层口径要一致）。
+// （用户 2026-09-28 报「绝对路径盘符写法打不开」即此）。
+//
+// **marked 会先 `encodeURI`**：反斜杠在净化之前就成了 `%5C`，所以只放行字面分隔符的
+// 白名单对 `D:\…` 依然失效（用户 2026-10-01 报同一现象即此）。净化本身在真实 DOM 上
+// 做、Node 断言环境没有 DOM，但「哪种 href 能过这道闸」是**纯正则行为**：把白名单从
+// 源码里取出来真跑一遍，三种分隔符形态都必须放行。
 {
   const md = read("src", "webview", "markdown.ts");
-  assert.ok(
-    /ALLOWED_URI_REGEXP\s*=\s*\/\^/.test(md),
-    "URI 白名单必须显式给出（DOMPurify 默认正则会剥掉 D:/ 的 href）",
-  );
-  // 盘符分支的字面形状：`[a-z]:[\\/]`（源码里的正则源文本）
-  assert.ok(
-    /\[a-z\]:\[\\\\\/\]/.test(md),
-    "白名单要带盘符分支（`D:/dev/a.ts` 与 parseFileLink 的放行口径一致）",
-  );
+  const literal = /ALLOWED_URI_REGEXP\s*=\s*\/([\s\S]*?)\/([a-z]*)\s*;/u.exec(md);
+  assert.ok(literal, "markdown.ts 里必须有一份显式的 ALLOWED_URI_REGEXP 字面量");
+  const allowed = new RegExp(literal[1], literal[2]);
+
+  // 放行：正斜杠、字面反斜杠、marked 编码后的 `%5C`（两种大小写），以及相对路径与外链
+  for (const href of [
+    "D:/dev/app/src/a.ts",
+    "D:\\dev\\app\\src\\a.ts",
+    "D:%5Cdev%5CWorkSpace%5Cpelican-bicycle%5Cindex.html",
+    "d:%5cdev%5ca.ts",
+    "src%5Cdsh%5Ca.ts",
+    "pelican-bicycle/index.html",
+    "https://example.com/a",
+    "mailto:someone@example.com",
+  ]) {
+    assert.ok(allowed.test(href), `白名单必须放行 ${href}（否则 href 被剥、锚点变死键）`);
+  }
+
+  // 拒绝：别的 scheme 一律不放行（多认一个就等于多开一条宿主动作）
+  for (const href of [
+    "javascript:alert(1)",
+    "data:text/html,x",
+    "file:///etc/passwd",
+    "vscode://x/y",
+    "command:workbench.action.terminal.new",
+  ]) {
+    assert.ok(!allowed.test(href), `白名单不该放行 ${href}`);
+  }
+
   assert.ok(
     /ALLOWED_URI_REGEXP,/.test(md),
     "sanitize 配置要真的把 ALLOWED_URI_REGEXP 传给 DOMPurify（只定义不传等于没改）",
   );
 }
-console.log("fileLinks: 净化层保留盘符 href（绝对路径文件链接渲染成真锚点） ✓");
+console.log("fileLinks: 净化层保留盘符 href（正斜杠 / 反斜杠 / %5C 三种形态都放行） ✓");
 
 // ---------- 7. 助手正文的词表来源：produced ∪ presented ----------
 

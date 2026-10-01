@@ -90,17 +90,22 @@ purify?.addHook("afterSanitizeAttributes", (node) => {
  * URI 属性（`href` / `src`）的白名单。
  *
  * 在 DOMPurify 默认正则（`http(s)` / `mailto` / `tel` 等约定 scheme，加相对地址）的
- * 基础上补一条 **Windows 盘符**（`[a-z]:[\\/]`，如 `D:/dev/a.ts`）：模型写
+ * 基础上补一条 **Windows 盘符**（`[a-z]:` 后跟分隔符，如 `D:/dev/a.ts`）：模型写
  * `[标题](D:/dev/app/AGENTS.md)` 是合法的文件链接（`parseFileLink` 对盘符放行），
  * 而默认正则会把 `D:` 当成不认识的 scheme **剥掉 href**——锚点变成无 href 的空壳，
  * 悬停是文本光标、点下去什么也不发生（用户 2026-09-28 报「绝对路径打不开」即此）。
+ *
+ * **分隔符有两种形态，都要放行**：marked 会对链接目标做 `encodeURI`，反斜杠因此在
+ * 净化之前就变成 `%5C`（`D:\dev\a.ts` 渲染出来是 `D:%5Cdev%5Ca.ts`），只写字面
+ * `[\\/]` 时反斜杠路径照样被剥（用户 2026-10-01 报同一现象即此；`parseFileLink` 能
+ * `decodeURIComponent`，缺口只在净化这一层）。
  *
  * 只放行「盘符 + 冒号 + 分隔符」这一种形状，与 `fileLinks.ts` 的判定同一口径；
  * 放行进 DOM 也不等于放行导航——正文锚点的点击一律走事件委托
  * （`Markdown.tsx` 的 `activateAnchor`），`preventDefault` 之后由宿主再判一次。
  */
 const ALLOWED_URI_REGEXP =
-  /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|sms|cid|xmpp):|[a-z]:[\\/]|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/iu;
+  /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|sms|cid|xmpp):|[a-z]:(?:[\\/]|%5c)|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/iu;
 
 /** 渲染选项。 */
 export interface RenderMarkdownOptions {
