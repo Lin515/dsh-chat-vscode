@@ -291,9 +291,18 @@ maxImageDimension, mediaTypes}`；官方 UI 用它做**入队前**校验（张�
 - 界面：空态页一枚下拉框（`components/EmptyMeta.tsx`）；目录来自 `agentPresets/list`
   （`agentPresetsFromList`，坏预设与未开放选择的都在那里滤掉）；选择走 `agentPresets/select`。
 - 新会话默认预设由设置 `dshChat.agentPreset` 决定，在 `session/create` 里带上；留空则不传，
-  由服务端组装它自己的默认预设。
-- 展示名照官方折叠：`trust === 'system'` 的四个用客户端词典，其余用原文
-  （`src/webview/presetDisplay.ts`，断言 `scripts/presetDisplay.test.ts`）。
+  由服务端组装它自己的默认预设。**值可以写 id，也可以写界面上显示的名字**（中英两名都认）：
+  服务端只按 id 查表（注册表里唯一的查重就是 `Duplicate agent preset`，`name` 纯展示、不查重，
+  而且随产品交付的四个**不发布 `name`**，它们的中文名是客户端词典给的），所以「照界面上的名字填」
+  得由客户端折一次——`shared/presetMatch.ts` 的 `matchPresetInput`（id 优先，名字取目录里第一个
+  命中的，认不出原样传），候选名字由 `webview/presetDisplay.ts` 的 `presetMatchNames` 给。
+  断言 `scripts/presetMatch.test.ts`。
+- **配置项只在真新建空壳时落实**：工作区里已经有一条空壳会话时走的是复用路径，待建参数
+  （预设 / 模型）**一律不动**（`reuseOrCreateBlank` 的字段注释里有逐字口径）。
+  2026-10-01「空态即一条真会话」之后这是常态——改完配置项点「+」看不到变化，不是配置项没生效，
+  而是那条空壳本来就有自己的预设。
+- 展示名照官方折叠：内置四个用客户端词典、其余用原文（`src/webview/presetDisplay.ts`，
+  断言 `scripts/presetDisplay.test.ts`）。
 - `agent-preset/selected` **事件**仍不进适配器 switch（留在白名单只为不报「不认识的事件」）：
   状态走投影帧；切换成功后宿主自己也写一次域字段（`selectAgentPreset`），两条路不打架；
   命令目录的失效另由 `configChanges` 处理。

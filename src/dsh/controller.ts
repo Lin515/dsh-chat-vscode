@@ -52,6 +52,8 @@ import { readLocalImages } from "./localImages";
 import { shouldContinuePaging } from "./historyPaging";
 import { formatFileMention } from "./references";
 import { formatFileMentionWithLines, isDirectoryQuery } from "../shared/mentions";
+import { matchPresetInput } from "../shared/presetMatch";
+import { presetMatchNames } from "../webview/presetDisplay";
 import { resolveForVsCode } from "./hostText";
 import { normalizeTurnProcessThreshold } from "../shared/turnProcessThreshold";
 import { chooseTarget, describeFacts, externalStateOf, type TargetFacts } from "./connectTarget";
@@ -254,6 +256,9 @@ function readTurnProcessThreshold(): number {
  * 空串 / 空白 / 非字符串一律当「没配」——那时**不往 `session/create` 里传
  * `agentPreset`**，由服务端按它自己的默认预设组装（部署配置里那一个）。传一个
  * 空串会被服务端当非法 id 拒绝，所以这里必须收窄而不是原样透传。
+ *
+ * 这里读到的还是**原文**：它可以写 id，也可以写界面上显示的名字，折成 id 的活由
+ * `configuredAgentPreset` 干（要等 `agentPresets/list` 的目录到手才有候选可比）。
  *
  * 这条配置在 `package.json` 里是 `machine` 作用域（与 `dshChat.command` 同一条口径）：
  * 预设决定一个会话组装哪些插件，也就是**执行哪段代码**；克隆来的仓库里一行
@@ -1323,17 +1328,34 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
+   * 配置项里的值 → 要传给服务端的预设 id：**id 优先，认不出就按名字取目录里第一个命中的**
+   * （规则与「同名怎么办」都在 `shared/presetMatch.ts`）。
+   *
+   * 名字来自 `presetMatchNames`：内置四个的中英两名出自客户端词典，自写预设用它发布的
+   * 原文。目录还没到手、或服务端不允许选择（`agentPresetsFromList` 给空表）时没有候选，
+   * 那就把原文原样传下去——与「填错一个 id」的旧行为一致，由服务端回
+   * `agent-preset/not-found`，不在这里编造一个 id。
+   */
+  private configuredAgentPreset(): string | undefined {
+    const raw = readAgentPreset();
+    if (!raw) return undefined;
+    const candidates = this.agentPresetOptions.map((option) => ({ id: option.id, names: presetMatchNames(option) }));
+    return matchPresetInput(raw, candidates) || undefined;
+  }
+
+  /**
    * 一个窗口要建的会话用哪个 agent 预设：**用户点过的 > 配置项 > 服务端默认**。
    *
    * 没有窗口（命令面板等）时只认后两级。返回 undefined 表示「不指定」——调用方
-   * 整个字段都不传，由服务端组装它自己的默认预设。
+   * 整个字段都不传，由服务端组装它自己的默认预设。配置项那一路可以写 id 也可以写
+   * 显示名，折成 id 见 `configuredAgentPreset`。
    */
   private agentPresetFor(viewId: string | undefined): string | undefined {
     if (viewId) {
       const picked = this.viewAgentPreset.get(viewId);
       if (picked) return picked;
     }
-    const configured = readAgentPreset();
+    const configured = this.configuredAgentPreset();
     if (configured) return configured;
     // 服务端在 roster 里标了哪个是默认（`isDefault`）；认不出就不指定
     return this.agentPresetOptions.find((option) => option.isDefault)?.id;

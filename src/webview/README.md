@@ -37,7 +37,7 @@
 - `pendingMessage.ts` — 乐观回显的行身份、去重与插入位置（纯函数）。
 - `questionFlow.ts` — 问卷展示口径：题目少一次展开、题目多按 `dshChat.questionBatch` 分页问答。
 - `planReview.ts` — 计划审阅（`exit_plan_mode`）请求的识别与收窄规则（官方 `planReviewOf` 移植）。
-- `presetDisplay.ts` — agent 预设的名字与描述显示（内置四个由客户端按语言给文案）。
+- `presetDisplay.ts` — agent 预设的名字与描述显示（内置四个由客户端按语言给文案）；另给配置项按名字匹配用的候选名（中英两名，宿主也引用这一份）。
 - `markdown.ts` — Markdown → 安全 HTML：DOMPurify 过滤 + marked 配置，代码块交给 React 组件。
 - `footnotes.ts` — 脚注语法的 marked 扩展（marked 不自带，结构逐字对齐官方渲染器产出）。
 - `fileLinks.ts` — 正文文件链接：markdown 链接目标（带 `#L12` 锚点）+ 行内代码 token（仅命中本轮文件词表）。

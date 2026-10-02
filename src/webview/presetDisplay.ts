@@ -1,4 +1,5 @@
 import type { AgentPresetOptionView } from "../shared/chat";
+import { MESSAGES } from "./messages";
 import type { Texts } from "./texts";
 
 /**
@@ -77,4 +78,22 @@ export function presetDisplayText(option: AgentPresetOptionView, texts: Texts): 
     name: option.name ?? option.id,
     ...(option.description ? { description: option.description } : {}),
   };
+}
+
+/**
+ * 一个预设参与**按名字匹配**（配置项 `dshChat.agentPreset`）的候选名字。
+ *
+ * 与上面那套折叠同一份口径，只是这里要的是**原文**而不是当前语言那一份：
+ * - 内置四个的名字不在协议里（服务端不发布 `name`），由客户端词典给，所以中英两名都算；
+ * - 自写预设只有作者发布的那一个名字（作者写下的字不翻译，中英界面下都一样）；
+ * - 认不出是内置、自己又没发布名字的，没有名字可匹配——那种预设只能填 id。
+ *
+ * 匹配规则与「名字不唯一」这件事的处置在 `shared/presetMatch.ts`；宿主读配置项时
+ * 用的就是这里给的候选（`controller` 的 `configuredAgentPreset`）。
+ */
+export function presetMatchNames(option: AgentPresetOptionView): string[] {
+  const keys = isBuiltInPresetOption(option) ? BUILT_IN[option.id] : undefined;
+  if (keys === undefined) return option.name ? [option.name] : [];
+  const entry = MESSAGES[keys.name];
+  return [entry.zh, entry.en].filter((name): name is string => typeof name === "string" && name !== "");
 }
