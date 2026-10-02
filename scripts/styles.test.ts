@@ -1240,6 +1240,75 @@ console.log("styles: 复制按钮归属（工具卡内容有 / 工具串没有 /
 }
 console.log("styles: 节点展开后——进行中的贴底、已结束的置顶（跑完不重定位；运行中点开的贴底） ✓");
 
+// ---------- 16c'. 节点展开体统一是「节点框」：内容不许和正文同级 ----------
+//
+// 用户 2026-10-02 报的「已完成的问卷、读取图片展开后，内容和正文同级，看不出属于
+// 上面那一行节点」。此前展开体只有一条 1px 左边线（`.row-body` 的 `border-left`），
+// 问卷记录（`.question.is-record` 曾把外框整个去掉）与工具行的结果图库
+// （`.row-body-images`，只有一段缩进）连那一条都没有。
+//
+// 现在三处共用同一张卡（同一组选择器里的一份声明），这条钉住三件事：
+// ① 共用声明还在，且各自只补自己的强调色；
+// ② 展开体里**自带卡片**的两种（工具卡 / 代码卡）不再往外层叠一层边框；
+// ③ 工具行的结果图片真的套进了节点框，且图片那一档不吃文本档的 320px 限高。
+{
+  const shared = /\.row-body,\s*\.row-exit,\s*\.question\.is-record\s*\{([\s\S]*?)\n\}/.exec(css);
+  assert.ok(
+    shared,
+    "`.row-body` / `.row-exit` / `.question.is-record` 必须共用同一组「节点框」声明——分成三处写迟早各自漂移",
+  );
+  const frame = shared[1];
+  assert.ok(/border:\s*1px solid/.test(frame), `节点框要有整圈边框（不是只有一条左边线），现在是 "${frame.trim()}"`);
+  assert.ok(/border-radius:/.test(frame), "节点框要有圆角");
+  assert.ok(/background:\s*var\(--node-body-bg\)/.test(frame), "节点框要有那层极淡的底色（token 见 tokens.css）");
+  assert.ok(
+    /margin:\s*[^;]*18px/.test(frame),
+    "节点框要缩进到节点名之下（左 18px，与行首图标对齐），否则又和正文同级了",
+  );
+
+  // ① 问卷记录只补强调色左边：等待态那张卡也是这个颜色，两种形态应当同族
+  // （不能走 `rule()`：共用那组选择器里也有 `.question.is-record`，首个匹配拿到的是那一份）
+  const recordBlocks = [...css.matchAll(/\.question\.is-record\s*\{([^}]*)\}/g)].map((match) => match[1]);
+  assert.ok(recordBlocks.length > 0, "应当有 `.question.is-record` 的声明（共用那组 + 自己的补充）");
+  assert.ok(
+    recordBlocks.some((block) => /border-left:\s*2px solid var\(--accent\)/.test(block)),
+    "问卷记录要保留问卷自己的强调色左边（与等待态那张卡同族）",
+  );
+  assert.ok(
+    !recordBlocks.some((block) => /border:\s*none/.test(block) || /background:\s*none/.test(block)),
+    "问卷记录不许再把节点框整个去掉——那正是「展开后和正文同级」这个缺陷的成因",
+  );
+
+  // ② 自带卡片的展开体：框由内层（.tool-card / .code-block）提供
+  const cardBody = rule(".row-body.card-body");
+  assert.ok(
+    /border:\s*none/.test(cardBody) && /background:\s*none/.test(cardBody) && /padding:\s*0/.test(cardBody),
+    "`.row-body.card-body` 只留缩进与滚动：再叠一层边框就成了「卡里还套着一张卡」",
+  );
+
+  // ③ 工具行的结果图片
+  const rowsSrc = readFileSync(join(process.cwd(), "src", "webview", "components", "Rows.tsx"), "utf8");
+  assert.ok(
+    /<div className="row-body is-media">\s*\n\s*<ImageGallery/.test(rowsSrc),
+    "工具行的结果图片要套进节点框（`.row-body.is-media`）——此前它只有一段缩进，几张图直接浮在会话流里",
+  );
+  const media = rule(".row-body.is-media");
+  assert.ok(
+    /max-height:\s*none/.test(media) && /overflow:\s*visible/.test(media),
+    "图片那一档不吃文本展开体的 320px 限高与内滚（图是拿来看的）",
+  );
+  assert.ok(
+    /\.row-body \.row-body-images\s*\{[^}]*margin:\s*0/.test(css),
+    "进框之后图库自己不再留那 18px 缩进（缩进由框提供）",
+  );
+  assert.ok(
+    /\.msg-assistant \.row-body-images\s*\{[^}]*margin:\s*4px 0;/.test(css),
+    "助手消息里的图库要跟正文一条左边界——`images` 段与轮尾交付的图都是正文的一部分，" +
+      "带着节点展开体那 18px 缩进却没有框，看起来正像一个没了框的节点展开体",
+  );
+}
+console.log("styles: 节点展开体统一是「节点框」（问卷记录 / 图片 / 退出状态与其它展开体同框） ✓");
+
 // ---------- 16d. 轨迹是整页视图：打开就占用整个会话窗口，输入区让位 ----------
 //
 // 用户 2026-09-16 口径：「轨迹页面应当打开就是占用整个会话窗口，但是切换回会话时要能

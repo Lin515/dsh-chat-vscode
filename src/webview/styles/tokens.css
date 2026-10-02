@@ -77,6 +77,11 @@
   --node-command: var(--vscode-charts-apricot, #f08d49);
   --node-injected: var(--vscode-charts-lightgreen, #81c784);
 
+  /* 节点展开体的底：在界面底色上极淡地提一层（浅色主题下就是压暗一层）。
+     展开的内容靠它 + 一圈边框圈成「属于上面那一行节点」的卡片，见 app.css 的
+     `.row-body` 那一组选择器。用前景色混合而不是写死一个灰：亮/暗两套主题都不跑偏。 */
+  --node-body-bg: color-mix(in srgb, var(--fg) 4%, transparent);
+
   /* ---- interactive rows / lists ---- */
   --hover: var(--vscode-list-hoverBackground, #383838);
   --active: var(--vscode-list-activeSelectionBackground, #2c5aa050);

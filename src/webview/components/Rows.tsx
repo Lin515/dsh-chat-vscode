@@ -361,9 +361,19 @@ export function ToolRow({
           这里挂的是 `Row` 的 children，`Row` 只在展开时渲染 children，所以「收起不渲染」
           是结构本身保证的，不靠额外的条件判断——也正因为如此，收起态连 `<img>` 都不存在，
           不会替一个看不见的盒子解码图片（`read_image` 多的会话里这是几十张图）。
-          来源含 `read_image`、截图等任何工具回带的 image 块（`tool.images`）。 */}
-      {tool.images?.length ? (
-        <ImageGallery alt={texts.toolImageAlt} sources={tool.images.map((src) => ({ src }))} />
+          来源含 `read_image`、截图等任何工具回带的 image 块（`tool.images`）。
+
+          图库自己也套进**节点框**（`.row-body.is-media`，用户 2026-10-02 口径）：
+          此前它只有一段 18px 缩进、没有边框，几张图直接浮在会话流里，看不出属于
+          上面那一行节点。`.is-media` 去掉文本类展开体的 320px 限高——图是拿来看的，
+          给个内滚只会让人多拖一次滚动条。
+
+          判据是「至少有一张拿到了字节」而不是 `images.length`：字节到达前数组里是
+          空串（`ImageGallery` 自己会滤掉并返回 null），按长度渲染会先闪一个**空框**。 */}
+      {tool.images?.some((src) => src) ? (
+        <div className="row-body is-media">
+          <ImageGallery alt={texts.toolImageAlt} sources={tool.images.map((src) => ({ src }))} />
+        </div>
       ) : null}
       {tool.files?.length ? (
         <div className="row-body">
@@ -1110,6 +1120,9 @@ export function QuestionCard({
 
   // 已答完 / 已撤回：收缩成一行（行头可点开复看题目与当时的回答）。用与工具行
   // 同一套 `Row`，视觉语言不分家：这同样是「对话里发生过的一件事」。
+  // 展开体（`.question.is-record`）走与其它展开体**同一张节点框**（缩进 + 边框 +
+  // 底色，见 app.css 的 `.row-body` 那一组选择器）：它此前刻意不带框，展开后整段
+  // 题目与选项和助手正文同级，看不出属于上面那个提问节点（用户 2026-10-02 口径）。
   // 计划审阅的记录换个标题：它那次不是「提问」而是「把计划交给人放行」，
   // 展开体里除了选项还有整份计划（`detail`）。
   if (!waiting) {

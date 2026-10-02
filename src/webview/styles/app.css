@@ -909,7 +909,8 @@ button.header-title:hover {
    展开区的「卡片」形态：读取给行号 + 内容、搜索给文件 + 命中行、终端给命令 + 输出、
    网页给答案 + 来源。**有卡片时不再渲染 IN/OUT**，参数 JSON 因此不出现在界面上。
    布局与官方一致的三段：横幅（标签 + 语言/计数）→ 正文（行）→ 可选展开钮。
-   横幅上不放复制按钮（用户 2026-09-17 口径：复制只给正文消息和用户消息）。 */
+   它同时就是所在展开体的「节点框」：外层的 `.row-body.card-body` 不再自套一层
+   （见 `.row-body` 那一组选择器）。 */
 
 .tool-card {
   display: flex;
@@ -1863,16 +1864,44 @@ button.header-title:hover {
   font-variant-numeric: tabular-nums;
 }
 
+/* 节点展开体的统一「节点框」（用户 2026-10-02 口径）。
+   展开出来的内容必须一眼看出属于上面那一行节点。此前只有一条 1px 左边线，
+   问卷记录与工具行的图片连那一条都没有，展开后读起来和正文同级；现在统一成一张
+   卡片：缩进到节点名之下 + 圆角 + 1px 边框 + 一层极淡的提亮底。
+   **同一套框也给了** `.row-exit`（退出状态）与 `.question.is-record`（问卷记录）——
+   三个选择器共用一份声明，避免各自漂移。 */
+.row-body,
+.row-exit,
+.question.is-record {
+  margin: 2px 0 6px 18px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--node-body-bg);
+}
+
 .row-body {
-  margin: 2px 0 4px 18px;
-  padding: 6px 10px;
-  border-left: 1px solid var(--border);
   color: var(--description);
   font-size: var(--font-size-sm);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   max-height: 320px;
   overflow: auto;
+}
+
+/* 展开体里**自带卡片**的两种（工具卡 `.tool-card`、代码卡 `.code-block`）：
+   框归内层，外层只留缩进与滚动——两层边框叠在一起会像「卡里还套着一张卡」。 */
+.row-body.card-body {
+  padding: 0;
+  border: none;
+  background: none;
+}
+
+/* 图片展开体：同一个节点框，但不限高。图是拿来看的，给个 320px 的内滚只会让人
+   多拖一次滚动条（`.row-body` 的限高是给文本类展开体的）。 */
+.row-body.is-media {
+  max-height: none;
+  overflow: visible;
 }
 
 .row-body.mono {
@@ -2045,6 +2074,11 @@ button.header-title:hover {
   margin: 4px 0 4px 18px;
 }
 
+/* 工具行的结果图片进节点框之后（见 Rows.tsx 的 ToolRow）：缩进与内边距由框提供 */
+.row-body .row-body-images {
+  margin: 0;
+}
+
 .row-body-images img {
   max-width: 220px;
   max-height: 180px;
@@ -2097,6 +2131,14 @@ button.header-title:hover {
 /* 用户消息里的图库不带工具行正文那 18px 左缩进（那是给工具展开体对齐用的） */
 .msg-user .row-body-images {
   margin: 4px 0 0;
+}
+
+/* 助手消息里的图库同理：`images` 段（模型回带的图块）与轮尾交付的图片文件都是
+   **正文的一部分**，与 markdown 里的图同一条左边界。带着工具展开体那 18px 缩进、
+   却没有框，看起来正像一个没了框的节点展开体（用户 2026-10-02 报的同一类观感）。
+   唯一带缩进的是工具行的结果图：它在节点框里（`.row-body.is-media`）。 */
+.msg-assistant .row-body-images {
+  margin: 4px 0;
 }
 
 /* 原图浮层：App 根部挂一次，所有来源的图共用 */
@@ -2438,13 +2480,14 @@ button.header-title:hover {
   white-space: nowrap;
 }
 
-/* 已答完的问卷：整张卡收进过程行里，去掉外框与留白——
-   它已经是「一条记录」，再套一层卡片会与行的导轨观感打架 */
+/* 已答完 / 已撤回的问卷：它和别的展开体一样是**上面那一行节点的内容**，
+   所以用同一张「节点框」（缩进、圆角、边框、底色见 .row-body 那一组选择器）。
+   此前这里刻意把外框与留白整个去掉，理由是「已经是一条记录」——实测展开后整段
+   题目与选项和助手正文同级，看不出它属于上面那个提问节点（用户 2026-10-02 报的
+   正是这个），所以撤销那条口径。
+   这里只补回问卷自己的强调色左边：等待态那张卡也是这个颜色，两种形态应当同族。 */
 .question.is-record {
-  border: none;
-  background: none;
-  padding: 0;
-  margin: 0;
+  border-left: 2px solid var(--accent);
 }
 
 /* 题目的补充正文（`detail`，官方 `QuestionComposer` 的 `.detail`）：排在选项**上方**，
@@ -2570,10 +2613,11 @@ button.header-title:hover {
 }
 
 /* 终端退出状态：非零退出码 / 信号终止。放在展开区，不与正文混在一起
-   （结果正文里那行标记已被剥掉，改由这里承载）。 */
+   （结果正文里那行标记已被剥掉，改由这里承载）。
+   它同样是节点展开体的一员：框与缩进走 `.row-body` 那一组共用声明，
+   这里只换边框的左边那道为警告色。 */
 .row-exit {
-  margin: 2px 0 4px 18px;
-  padding: 2px 8px;
+  padding: 4px 10px;
   border-left: 2px solid var(--warning);
   color: var(--warning);
   font-family: var(--mono);
