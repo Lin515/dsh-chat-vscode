@@ -10,8 +10,10 @@
  * 3. **先 `stat` 再读**，有字节上限（不能一个 2 GB 的文件把宿主读爆）；
  * 4. 引用原文 → 键原样回给界面（界面按它匹配 `<img src>`）。
  *
- * 另一半（webview 侧的缓存与降级）在 `imageRender.test.ts` 与
- * `src/webview/localImages.ts` 里，Node 侧只能钉白名单——那才是危险的那一半。
+ * 另一半（webview 侧的缓存、水合与降级）在 `imageHydrate.test.ts` 与
+ * `src/webview/localImages.ts` 里。这里钉的是白名单与读盘——那才是危险的那一半；
+ * 水合那半靠手写的 DOM 桩驱动真模块，因为「浏览器那次失败与宿主回帧谁先到」
+ * 是时序问题，纯函数覆盖不到。
  *
  * 运行：npm test（已登记到 esbuild.scripts.mjs 的 entries）
  */

@@ -9,13 +9,15 @@ import type { Texts } from "./texts";
  * 解析成 `vscode-webview://…/out/chart.png`。这里把这类引用交给宿主读成 data URL
  * （宿主侧的白名单与上限见 `dsh/localImages.ts`），再把 DOM 上的 `src` 换掉。
  *
- * 三个必须的约束：
+ * 四个必须的约束：
  * - **缓存按会话隔离**：相对路径的基准是会话工作目录，切了会话之后
  *   `out/chart.png` 是另一个文件，沿用旧结果就会张冠李戴（`setLocalImageScope`）；
  * - **读不到的也记一笔**（空串）：否则每次重渲染（流式期间每个 token 都重渲染）
  *   都会把同一个不存在的路径再问一遍宿主；
  * - **失败要有降级**：外链被 CSP 拦、文件被删、超上限，都得说一句「图片加载失败」，
- *   而不是留一个破图图标；**知道是哪一张时把引用缀在后面**（见 `failedImageText`）。
+ *   而不是留一个破图图标；**知道是哪一张时把引用缀在后面**（见 `failedImageText`）；
+ * - **回帧之前浏览器那次失败不算数**：原始引用必然加载不了，而它失败得比宿主回帧早，
+ *   先降级就会把数据 URL 甩在一个已经不在文档里的元素上（见 `hydrateLocalImages`）。
  */
 
 /** 引用原文 → data URL；空串表示「宿主确认读不了」。 */
@@ -114,9 +116,21 @@ export function failedImageText(texts: Texts, ref: string | undefined): string {
  */
 export function hydrateLocalImages(root: HTMLElement, texts: Texts): () => void {
   let cancelled = false;
+  /**
+   * 正在等宿主回帧的图。
+   *
+   * 浏览器对**原始引用**必然失败：相对路径在 `vscode-webview://` 下拿不到东西
+   * （CSP 的 `img-src` 里也没有它），失败事件在毫秒级就到；而宿主那一趟是
+   * 「IPC → 读盘 → base64 → 回帧」，几十毫秒。抢在回帧之前把图换成降级文案，
+   * 数据 URL 到达时元素已经被换掉（`replaceWith` 之后它不在文档里了），
+   * 用户看到的就是「文件明明还在却加载失败」。
+   *
+   * 所以这期间来的失败**不是结论**——结论只有一个：宿主怎么回答。
+   */
+  const awaiting = new Set<HTMLImageElement>();
   const onError = (event: Event) => {
     const target = event.target;
-    if (target instanceof HTMLImageElement) markFailed(target, texts);
+    if (target instanceof HTMLImageElement && !awaiting.has(target)) markFailed(target, texts);
   };
   // 图片资源的 error **不冒泡**，只能在捕获阶段接（这是唯一能统一兜住
   // 「外链 + 本地图」两种失败的挂法）
@@ -138,6 +152,7 @@ export function hydrateLocalImages(root: HTMLElement, texts: Texts): () => void 
     const list = groups.get(src) ?? [];
     list.push(image);
     groups.set(src, list);
+    awaiting.add(image);
   }
 
   if (groups.size) {
@@ -146,6 +161,9 @@ export function hydrateLocalImages(root: HTMLElement, texts: Texts): () => void 
       for (const [src, nodes] of groups) {
         const url = urls[src];
         for (const node of nodes) {
+          // 先结清「等回帧」，再落地：`src` 换成 data URL 之后如果还失败（字节坏了），
+          // 那次失败才是真的，照旧走 `markFailed`。
+          awaiting.delete(node);
           if (url) node.setAttribute("src", url);
           else markFailed(node, texts);
         }
