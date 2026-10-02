@@ -1500,8 +1500,14 @@ button.header-title:hover {
   font-weight: 600;
 }
 
+/* 正文里的图与官方同一档尺寸上限：宽度 `min(100%, 640px)`、高度 360px，超出的**按比例**
+   缩到这个框里；要看原图是点开走 `.image-preview` 浮层（光标给提示）。官方出处是
+   `MarkdownText.module.css` 的 `.imageButton .image`（正文里的图在官方那边就包在
+   点击放大的按钮里）。此前只有 `max-width: 100%`：一张竖长的手机截图能占满整屏，
+   把会话正文挤得没法读（用户 2026-10-03 报的「太占空间，像是没有限制大小」）。 */
 .md img {
-  max-width: 100%;
+  max-width: min(100%, 640px);
+  max-height: 360px;
   border-radius: var(--radius-sm);
   /* 正文里的图点得开（点击委托在 Markdown.tsx 的 HtmlBlock 上）：光标要给提示 */
   cursor: zoom-in;

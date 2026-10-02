@@ -1309,6 +1309,34 @@ console.log("styles: 节点展开后——进行中的贴底、已结束的置�
 }
 console.log("styles: 节点展开体统一是「节点框」（问卷记录 / 图片 / 退出状态与其它展开体同框） ✓");
 
+// ---------- 16c''. 正文里的图有官方那一档尺寸上限：超出的按比例缩，原图点开看 ----------
+//
+// 官方 dsh web 的正文图（`MarkdownText.module.css` 的 `.image` + `.imageButton .image`）：
+// 宽 `min(100%, 640px)`、高 360px，点击放大走浮层。本扩展此前只写 `max-width: 100%`，
+// 于是一张竖长的截图能把整个会话窗口占满（用户 2026-10-03 报「太占空间，像是没有限制
+// 大小」）。两件事一起钉：**缩略图有上限**、**原图仍然看得到**（只有上限没有放大入口，
+// 就等于把图压成看不清的小块）。
+{
+  const image = rule(".md img");
+  assert.ok(
+    /max-width:\s*min\(100%,\s*640px\)/.test(image),
+    `正文图的宽度上限要是官方的 \`min(100%, 640px)\`（写死 640px 会在窄侧栏溢出），现在是 "${image.trim()}"`,
+  );
+  assert.ok(/max-height:\s*360px/.test(image), "正文图的高度上限要是官方的 360px（竖长截图的体积全靠它）");
+  assert.ok(/cursor:\s*zoom-in/.test(image), "缩略图要能点开看原图，光标得给提示");
+
+  const preview = rule(".image-preview img");
+  assert.ok(
+    /max-width:\s*100%/.test(preview) && /max-height:\s*100%/.test(preview),
+    "原图浮层只受视口约束——它才是「看原图」的地方，别把正文那档上限带进来",
+  );
+  assert.ok(
+    !/360px/.test(preview),
+    "正文的 360px 上限不许漏进原图浮层，否则大图永远看不清",
+  );
+}
+console.log("styles: 正文图限高 360px（官方式缩略图）+ 原图浮层不受该上限 ✓");
+
 // ---------- 16d. 轨迹是整页视图：打开就占用整个会话窗口，输入区让位 ----------
 //
 // 用户 2026-09-16 口径：「轨迹页面应当打开就是占用整个会话窗口，但是切换回会话时要能
