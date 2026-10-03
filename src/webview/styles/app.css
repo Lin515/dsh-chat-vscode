@@ -22,9 +22,9 @@
 .header {
   display: flex;
   align-items: center;
-  gap: 2px;
-  height: 34px;
-  padding: 0 6px 0 10px;
+  gap: calc(2 * var(--dp));
+  height: calc(34 * var(--dp));
+  padding: 0 calc(6 * var(--dp)) 0 calc(10 * var(--dp));
   flex: 0 0 auto;
   border-bottom: 1px solid var(--border);
 }
@@ -33,7 +33,7 @@
   display: flex;
   align-items: center;
   min-width: 0;
-  margin-right: 4px;
+  margin-right: calc(4 * var(--dp));
   color: var(--description);
 }
 
@@ -55,8 +55,8 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
+  width: calc(24 * var(--dp));
+  height: calc(24 * var(--dp));
   flex: 0 0 auto;
   border-radius: var(--radius-sm);
   color: var(--description);
@@ -105,8 +105,8 @@
   position: relative;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  margin-left: 4px;
+  gap: calc(4 * var(--dp));
+  margin-left: calc(4 * var(--dp));
   min-width: 0;
 }
 
@@ -114,11 +114,11 @@
 .subagent-trigger {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  min-height: 22px;
+  gap: calc(4 * var(--dp));
+  min-height: calc(22 * var(--dp));
   max-width: 32vw;
-  padding: 2px 5px;
-  border-radius: 6px;
+  padding: calc(2 * var(--dp)) calc(5 * var(--dp));
+  border-radius: calc(6 * var(--dp));
   font-size: var(--font-size-2xs);
   color: var(--description);
   white-space: nowrap;
@@ -161,8 +161,8 @@
    同一套排版（.header-title），只补按钮复位与悬停底色（官方 button.crumb:hover
    的可点形态：加底色、文字色不变）。 */
 button.header-title {
-  padding: 2px 5px;
-  margin-left: -5px; /* 抵消内边距，标题视觉位置与纯文本版对齐 */
+  padding: calc(2 * var(--dp)) calc(5 * var(--dp));
+  margin-left: calc(-5 * var(--dp)); /* 抵消内边距，标题视觉位置与纯文本版对齐 */
   border: none;
   border-radius: var(--radius-sm);
   background: transparent;
@@ -183,27 +183,27 @@ button.header-title:hover {
    位置相对 .subagent-nav（触发器左对齐），宽度钳进视口防窄侧栏裁切。 */
 .subagent-menu {
   position: absolute;
-  top: calc(100% + 5px);
+  top: calc(100% + 5 * var(--dp));
   left: 0;
   z-index: 30;
   display: flex;
   flex-direction: column;
-  width: 300px;
-  max-width: min(336px, calc(100vw - 16px));
-  max-height: min(420px, calc(100vh - 60px));
-  padding: 4px;
+  width: calc(300 * var(--dp));
+  max-width: min(calc(336 * var(--dp)), calc(100vw - 16 * var(--dp)));
+  max-height: min(calc(420 * var(--dp)), calc(100vh - 60 * var(--dp)));
+  padding: calc(4 * var(--dp));
   overflow: hidden;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: calc(10 * var(--dp));
   background: var(--input-bg);
   color: var(--fg);
   box-shadow:
-    0 0 0 1px rgba(0, 0, 0, 0.05),
-    0 10px 24px rgba(0, 0, 0, 0.3);
+    0 0 0 calc(1 * var(--dp)) rgba(0, 0, 0, 0.05),
+    0 calc(10 * var(--dp)) calc(24 * var(--dp)) rgba(0, 0, 0, 0.3);
 }
 
 .subagent-menu-head {
-  padding: 4px 8px 3px;
+  padding: calc(4 * var(--dp)) calc(8 * var(--dp)) calc(3 * var(--dp));
   font-size: var(--font-size-2xs);
   color: var(--muted);
 }
@@ -219,11 +219,11 @@ button.header-title:hover {
 .subagent-row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: calc(6 * var(--dp));
   width: 100%;
-  min-height: 38px;
-  padding: 4px 6px;
-  border-radius: 6px;
+  min-height: calc(38 * var(--dp));
+  padding: calc(4 * var(--dp)) calc(6 * var(--dp));
+  border-radius: calc(6 * var(--dp));
   font-size: var(--font-size-xs);
   text-align: left;
 }
@@ -254,7 +254,7 @@ button.header-title:hover {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 14px;
+  width: calc(14 * var(--dp));
   flex: 0 0 auto;
 }
 
@@ -294,9 +294,9 @@ button.header-title:hover {
 .composer-readonly {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  margin: 0 8px 8px;
-  padding: 8px 12px;
+  gap: calc(2 * var(--dp));
+  margin: 0 calc(8 * var(--dp)) calc(8 * var(--dp));
+  padding: calc(8 * var(--dp)) calc(12 * var(--dp));
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--editor-bg);
@@ -333,7 +333,7 @@ button.header-title:hover {
   /* 右侧轮次横条占住的那一条：框宽 28 + 距右缘 12。正文照它让出右内边距，
      横条因此**不覆盖**在会话内容上（用户 2026-09-18 口径）。过窄时这条与横条
      一起撤（见下方的容器查询），空间原样还给正文。 */
-  --turn-rail-gutter: 40px;
+  --turn-rail-gutter: calc(40 * var(--dp));
 }
 
 .chat-scroll {
@@ -341,7 +341,7 @@ button.header-title:hover {
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  padding-top: 8px;
+  padding-top: calc(8 * var(--dp));
   scrollbar-gutter: stable;
   /* **关掉浏览器的滚动锚定**（用户 2026-09-16 报的「展开工具调用后内容向上挤」）。
      它的语义是「可见内容保持不动」：往视口上方插内容时它自动加大 scrollTop，于是刚
@@ -356,7 +356,7 @@ button.header-title:hover {
 .chat-list {
   display: flex;
   flex-direction: column;
-  padding: 0 6px;
+  padding: 0 calc(6 * var(--dp));
   min-width: 0;
   /* 空态容器靠 min-height:100% 居中，需要父级有确定高度 */
   min-height: 100%;
@@ -367,14 +367,14 @@ button.header-title:hover {
    固定宽度不设——窄侧栏下靠 min-width 收着，left 50% + translate 居中不溢出。 */
 .jump-latest {
   position: absolute;
-  bottom: 10px;
+  bottom: calc(10 * var(--dp));
   left: 50%;
   transform: translateX(-50%);
   z-index: 6;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 4px 12px;
+  gap: calc(4 * var(--dp));
+  padding: calc(4 * var(--dp)) calc(12 * var(--dp));
   border: 1px solid var(--command-border);
   border-radius: var(--radius-pill);
   background: var(--editor-bg);
@@ -382,7 +382,7 @@ button.header-title:hover {
   font-size: var(--font-size-xs);
   white-space: nowrap;
   cursor: pointer;
-  box-shadow: 0 2px 10px rgb(0 0 0 / 0.4);
+  box-shadow: 0 calc(2 * var(--dp)) calc(10 * var(--dp)) rgb(0 0 0 / 0.4);
 }
 
 .jump-latest:hover,
@@ -398,9 +398,9 @@ button.header-title:hover {
 .find-bar {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: calc(4 * var(--dp));
   flex: 0 0 auto;
-  padding: 4px 8px;
+  padding: calc(4 * var(--dp)) calc(8 * var(--dp));
   border-bottom: 1px solid var(--border);
   background: var(--editor-bg);
   color: var(--description);
@@ -414,7 +414,7 @@ button.header-title:hover {
 .find-input {
   flex: 1 1 auto;
   min-width: 0;
-  padding: 3px 8px;
+  padding: calc(3 * var(--dp)) calc(8 * var(--dp));
   border: 1px solid var(--input-border);
   border-radius: var(--radius-sm);
   background: var(--input-bg);
@@ -435,7 +435,7 @@ button.header-title:hover {
    「No results」在窄侧栏折行（中英文长度差一倍，靠收缩而不是定宽）。 */
 .find-count {
   flex: 0 0 auto;
-  min-width: 30px;
+  min-width: calc(30 * var(--dp));
   text-align: center;
   font-size: var(--font-size-2xs);
   color: var(--description);
@@ -486,7 +486,7 @@ button.header-title:hover {
    留出右内边距，横条就落在这条空档里（用户 2026-09-18 口径：「给目录条预留空间，
    不覆盖在会话内容上显示」）。 */
 .chat-pane .chat-list {
-  padding-right: calc(6px + var(--turn-rail-gutter, 40px));
+  padding-right: calc(6 * var(--dp) + var(--turn-rail-gutter, 40 * var(--dp)));
 }
 
 /* 槽位：sticky + 零高度——横条浮在预留条里，但**不**把 scrollHeight 撑长
@@ -503,7 +503,7 @@ button.header-title:hover {
 
 .turn-rail-frame {
   /* 预览卡限高（提示词 1 行 + 响应 3 行的钳制由 line-clamp 负责） */
-  --turn-preview-height: 100px;
+  --turn-preview-height: calc(100 * var(--dp));
 
   position: absolute;
   /* 垂直居中在**滚动区的可视高度**里（`--turn-rail-band` 由 TurnRail 的
@@ -511,14 +511,14 @@ button.header-title:hover {
      回退只存在于首帧布局效果跑完之前）。带高不含下方输入区——它不在滚动区内。 */
   top: calc(var(--turn-rail-band, 100vh) / 2);
   /* 落在正文让出的预留条里（右缘 12px + 框宽 28 = --turn-rail-gutter） */
-  right: 12px;
-  width: 28px;
+  right: calc(12 * var(--dp));
+  width: calc(28 * var(--dp));
   /* 刻线是固定间距的，永远不压缩：阶梯比带高长时在框内滚（见 .turn-rail-scroller），
      高度取「自然高度 / 带高减 64 的余量 / 420px」三者的最小值。 */
   height: min(
     var(--turn-natural-height),
-    max(0px, calc(var(--turn-rail-band, 100vh) - 64px)),
-    420px
+    max(0px, calc(var(--turn-rail-band, 100vh) - 64 * var(--dp))),
+    calc(420 * var(--dp))
   );
   cursor: pointer;
   pointer-events: auto;
@@ -540,19 +540,19 @@ button.header-title:hover {
 }
 
 .turn-rail-scroller.is-fade-top {
-  mask-image: linear-gradient(to bottom, transparent 0, #000 24px, #000 100%);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 calc(24 * var(--dp)), #000 100%);
 }
 
 .turn-rail-scroller.is-fade-bottom {
-  mask-image: linear-gradient(to bottom, #000 0, #000 calc(100% - 24px), transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 0, #000 calc(100% - 24 * var(--dp)), transparent 100%);
 }
 
 .turn-rail-scroller.is-fade-top.is-fade-bottom {
   mask-image: linear-gradient(
     to bottom,
     transparent 0,
-    #000 24px,
-    #000 calc(100% - 24px),
+    #000 calc(24 * var(--dp)),
+    #000 calc(100% - 24 * var(--dp)),
     transparent 100%
   );
 }
@@ -569,7 +569,7 @@ button.header-title:hover {
   top: calc(var(--turn-natural-position) + var(--turn-rail-inset));
   right: 0;
   left: 0;
-  height: 10px;
+  height: calc(10 * var(--dp));
   transform: translateY(-50%);
   transition: top 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
   animation: turn-rail-mark-enter 150ms ease-out;
@@ -581,10 +581,10 @@ button.header-title:hover {
 .turn-rail-mark {
   position: absolute;
   inset: 0 0 0 auto;
-  width: 20px;
+  width: calc(20 * var(--dp));
   padding: 0;
   border: 0;
-  border-radius: 8px;
+  border-radius: calc(8 * var(--dp));
   background: transparent;
   cursor: pointer;
   pointer-events: none;
@@ -595,9 +595,9 @@ button.header-title:hover {
   position: absolute;
   top: 50%;
   right: 0;
-  width: 12px;
-  height: 2px;
-  border-radius: 2px;
+  width: calc(12 * var(--dp));
+  height: calc(2 * var(--dp));
+  border-radius: calc(2 * var(--dp));
   background: var(--muted);
   content: "";
   transform: translateY(-50%);
@@ -606,13 +606,13 @@ button.header-title:hover {
 
 /* 未加载的轮次：更短、更淡——「这个位置有内容，但还没取回来」 */
 .turn-rail-mark.is-unloaded::before {
-  width: 8px;
+  width: calc(8 * var(--dp));
   opacity: 0.6;
 }
 
 /* 悬停中的刻线：拉长一档（排在 active 之前，激活态保持更强的那条） */
 .turn-rail-mark.is-preview::before {
-  width: 18px;
+  width: calc(18 * var(--dp));
   background: var(--description);
 }
 
@@ -623,19 +623,19 @@ button.header-title:hover {
 
 /* 当前轮：最长最亮 */
 .turn-rail-mark.is-active::before {
-  width: 20px;
+  width: calc(20 * var(--dp));
   background: var(--fg);
 }
 
 /* 键盘焦点盖过一切悬停态：焦点环 + 焦点色 */
 .turn-rail-mark:focus-visible::before {
-  width: 20px;
+  width: calc(20 * var(--dp));
   background: var(--border-focus);
 }
 
 .turn-rail-mark:focus-visible {
   outline: 1px solid var(--border-focus);
-  outline-offset: 2px;
+  outline-offset: calc(2 * var(--dp));
 }
 
 /* 预览卡：贴着横条左侧浮出，垂直居中在悬停刻线上（clamp 保证不出框两端） */
@@ -649,19 +649,19 @@ button.header-title:hover {
     ),
     calc(100% - var(--turn-preview-height))
   );
-  right: calc(100% + 10px);
+  right: calc(100% + 10 * var(--dp));
   box-sizing: border-box;
   /* 上限 300px；容器比它宽裕得多时按「容器宽 − 120」收着（100cqw = 容器宽，
      即 .chat-pane 的 inline-size），窄侧栏里永远不出左边界 */
-  width: min(300px, calc(100cqw - 120px));
+  width: min(calc(300 * var(--dp)), calc(100cqw - 120 * var(--dp)));
   max-height: var(--turn-preview-height);
   overflow: hidden;
-  padding: 10px 12px;
+  padding: calc(10 * var(--dp)) calc(12 * var(--dp));
   border: 0;
-  border-radius: 10px;
+  border-radius: calc(10 * var(--dp));
   color: var(--fg);
   background: var(--editor-bg);
-  box-shadow: 0 2px 10px rgb(0 0 0 / 0.4);
+  box-shadow: 0 calc(2 * var(--dp)) calc(10 * var(--dp)) rgb(0 0 0 / 0.4);
   pointer-events: none;
   animation: turn-rail-preview-enter 120ms ease-out;
   transition: top 140ms cubic-bezier(0.2, 0.8, 0.2, 1);
@@ -682,24 +682,28 @@ button.header-title:hover {
 }
 
 .turn-rail-preview-response {
-  margin-top: 4px;
+  margin-top: calc(4 * var(--dp));
   color: var(--description);
   font-size: var(--font-size-2xs);
   -webkit-line-clamp: 3;
 }
 
-/* **过窄自动关闭**：会话区窄于 360px 时横条整个撤掉，并把预留的那 40px 原样
-   还给正文（两者必须同生共死——只藏横条不还空间，正文会无端留着一条空档）。
-   360 这条线的算法：横条自己占 40px，正文要保住约 300px 才读得下去（代码块
+/* **过窄自动关闭**：会话区窄于 360 个设计像素时横条整个撤掉，并把预留的那 40 个
+   设计像素原样还给正文（两者必须同生共死——只藏横条不还空间，正文会无端留着一条
+   空档）。360 这条线的算法：横条自己占 40，正文要保住约 300 才读得下去（代码块
    换行、diff 双栏、用户气泡都吃宽度）；量的是 .chat-pane 的 inline-size。
-   用户 2026-09-18 口径：原来的 280 太窄了——那时正文已经被挤成一条。 */
-@container (max-width: 360px) {
+   用户 2026-09-18 口径：原来的 280 太窄了——那时正文已经被挤成一条。
+
+   写成 `calc(N em / 13)` 而不是 px：容器查询的 `em` 相对**查询容器自身的字号**，
+   于是这条线跟着界面倍率一起移动（字号大了，同样物理宽度就装不下同样的内容）。
+   13 是基准字号——查询条件里不能用 var()，只能把基准写成字面量。 */
+@container (max-width: calc(360em / 13)) {
   .turn-rail-slot {
     display: none;
   }
 
   .chat-pane .chat-list {
-    padding-right: 6px;
+    padding-right: calc(6 * var(--dp));
   }
 }
 
@@ -715,7 +719,7 @@ button.header-title:hover {
 @keyframes turn-rail-preview-enter {
   from {
     opacity: 0;
-    transform: translateX(4px);
+    transform: translateX(calc(4 * var(--dp)));
   }
   to {
     opacity: 1;
@@ -737,21 +741,21 @@ button.header-title:hover {
   display: flex;
   flex-direction: column;
   min-width: 0;
-  padding: 4px 6px;
+  padding: calc(4 * var(--dp)) calc(6 * var(--dp));
 }
 
 /* The trailing message keeps a 200px floor so short conversations still breathe. */
 .chat-list > .msg:last-child {
-  min-height: 200px;
+  min-height: calc(200 * var(--dp));
 }
 
 /* user turn: styled like the composer rather than a right-aligned bubble */
 .msg-user {
-  padding: 8px 6px 4px;
+  padding: calc(8 * var(--dp)) calc(6 * var(--dp)) calc(4 * var(--dp));
 }
 
 .msg-user .bubble {
-  padding: 6px 10px;
+  padding: calc(6 * var(--dp)) calc(10 * var(--dp));
   border: 1px solid var(--command-border);
   border-radius: var(--radius);
   background: var(--input-bg);
@@ -767,7 +771,7 @@ button.header-title:hover {
    自己的上下内边距（全局 `box-sizing: border-box`，内边距要从上限里让出来）。
    `overflow: hidden` 让折满之后的内容不占位、也不半行露头。 */
 .msg-user .bubble.is-clamped {
-  max-height: calc(1.5em * var(--user-clamp-lines, 5) + 12px);
+  max-height: calc(1.5em * var(--user-clamp-lines, 5) + 12 * var(--dp));
   overflow: hidden;
 }
 
@@ -775,8 +779,8 @@ button.header-title:hover {
    它是文字按钮而不是图标——「展开」这两个字本身就是「这里还有内容」的提示，
    图标（箭头）在 14px 下看不出指的是什么。 */
 .msg-expand {
-  margin-left: 2px;
-  padding: 0 3px;
+  margin-left: calc(2 * var(--dp));
+  padding: 0 calc(3 * var(--dp));
   border: 0;
   background: none;
   color: var(--link);
@@ -799,9 +803,9 @@ button.header-title:hover {
 .msg-assistant .segments {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: calc(2 * var(--dp));
   min-width: 0;
-  padding: 0 8px;
+  padding: 0 calc(8 * var(--dp));
 }
 
 /* 轮尾操作条：**常驻**显示（不再靠悬停揭示）。
@@ -813,16 +817,16 @@ button.header-title:hover {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 4px;
-  height: 28px;
-  margin-top: 8px;
-  padding: 0 8px;
+  gap: calc(4 * var(--dp));
+  height: calc(28 * var(--dp));
+  margin-top: calc(8 * var(--dp));
+  padding: 0 calc(8 * var(--dp));
   opacity: 1;
 }
 
 .msg-actions .icon-btn {
-  width: 22px;
-  height: 22px;
+  width: calc(22 * var(--dp));
+  height: calc(22 * var(--dp));
   color: var(--muted);
 }
 
@@ -839,7 +843,7 @@ button.header-title:hover {
 .msg-failed-actions {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: calc(2 * var(--dp));
   flex: 0 0 auto;
   margin-right: auto;
 }
@@ -849,7 +853,7 @@ button.header-title:hover {
 .msg-failed-reason {
   flex: 0 1 auto;
   min-width: 0;
-  margin-right: 6px;
+  margin-right: calc(6 * var(--dp));
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -858,7 +862,7 @@ button.header-title:hover {
 }
 
 .msg-time {
-  margin-right: 4px;
+  margin-right: calc(4 * var(--dp));
   font-size: var(--font-size-2xs);
   color: var(--muted);
   font-variant-numeric: tabular-nums;
@@ -869,13 +873,13 @@ button.header-title:hover {
 .io-card {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: calc(6 * var(--dp));
 }
 
 .io-section {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: calc(2 * var(--dp));
   min-width: 0;
 }
 
@@ -901,7 +905,7 @@ button.header-title:hover {
 }
 
 .io-divider {
-  height: 1px;
+  height: calc(1 * var(--dp));
   background: var(--border);
 }
 
@@ -915,18 +919,18 @@ button.header-title:hover {
 .tool-card {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: calc(4 * var(--dp));
   min-width: 0;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--editor-bg);
-  padding: 5px 7px;
+  padding: calc(5 * var(--dp)) calc(7 * var(--dp));
 }
 
 .tool-card-banner {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: calc(6 * var(--dp));
   min-width: 0;
   font-size: var(--font-size-2xs);
   color: var(--muted);
@@ -944,7 +948,7 @@ button.header-title:hover {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: calc(6 * var(--dp));
 }
 
 .tool-card-count,
@@ -961,12 +965,12 @@ button.header-title:hover {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
-  gap: 3px;
+  gap: calc(3 * var(--dp));
   border: none;
   background: none;
   color: var(--muted);
   font-size: var(--font-size-2xs);
-  padding: 0 2px;
+  padding: 0 calc(2 * var(--dp));
   cursor: pointer;
   white-space: nowrap;
 }
@@ -986,7 +990,7 @@ button.header-title:hover {
 /* 行：左侧行号槽（等宽数字，右对齐）+ 正文。读取卡与搜索卡的命中行共用。 */
 .tool-card-line {
   display: flex;
-  gap: 6px;
+  gap: calc(6 * var(--dp));
   min-width: 0;
 }
 
@@ -1011,14 +1015,14 @@ button.header-title:hover {
 .tool-card-file {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: calc(6 * var(--dp));
   min-width: 0;
   border: none;
   background: none;
   color: inherit;
   font: inherit;
   text-align: left;
-  padding: 1px 0;
+  padding: calc(1 * var(--dp)) 0;
   cursor: pointer;
 }
 
@@ -1040,14 +1044,14 @@ button.header-title:hover {
 .tool-card-expand {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: calc(4 * var(--dp));
   border: none;
   background: none;
   color: var(--link);
   font: inherit;
   font-size: var(--font-size-2xs);
   text-align: left;
-  padding: 1px 0;
+  padding: calc(1 * var(--dp)) 0;
   cursor: pointer;
 }
 
@@ -1068,7 +1072,7 @@ button.header-title:hover {
   color: var(--muted);
   font-size: var(--font-size-2xs);
   border-top: 1px solid var(--border);
-  padding-top: 4px;
+  padding-top: calc(4 * var(--dp));
 }
 
 /* ---- 终端卡：提示符行 + 状态胶囊 + 输出 ---- */
@@ -1076,7 +1080,7 @@ button.header-title:hover {
 .tool-card-prompt {
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: calc(1 * var(--dp));
   min-width: 0;
 }
 
@@ -1086,7 +1090,7 @@ button.header-title:hover {
 
 .tool-card-promptline {
   display: flex;
-  gap: 6px;
+  gap: calc(6 * var(--dp));
   min-width: 0;
 }
 
@@ -1107,7 +1111,7 @@ button.header-title:hover {
   flex: 0 0 auto;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  padding: 0 4px;
+  padding: 0 calc(4 * var(--dp));
   color: var(--muted);
   white-space: nowrap;
 }
@@ -1127,10 +1131,10 @@ button.header-title:hover {
 
 .tool-card-sources {
   margin: 0;
-  padding-left: 18px;
+  padding-left: calc(18 * var(--dp));
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: calc(4 * var(--dp));
   min-width: 0;
   font-size: var(--font-size-xs);
 }
@@ -1161,7 +1165,7 @@ button.header-title:hover {
 .row-diffstat {
   flex: 0 0 auto;
   display: inline-flex;
-  gap: 4px;
+  gap: calc(4 * var(--dp));
   font-size: var(--font-size-2xs);
   font-variant-numeric: tabular-nums;
 }
@@ -1194,8 +1198,8 @@ button.header-title:hover {
    限高后卡片自己在内部滚动，会话 / 轨迹 / 输入区都照常可用。这就是用户
    2026-09-15 报的「问卷出来时点轨迹，轨迹页显示不正常」。 */
 .composer-interaction {
-  margin: 0 7px 4px;
-  max-height: min(50vh, 360px);
+  margin: 0 calc(7 * var(--dp)) calc(4 * var(--dp));
+  max-height: min(50vh, calc(360 * var(--dp)));
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
@@ -1214,7 +1218,7 @@ button.header-title:hover {
 .ctx-body {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: calc(4 * var(--dp));
   font-size: var(--font-size-xs);
   color: var(--description);
 }
@@ -1227,7 +1231,7 @@ button.header-title:hover {
 .ctx-list {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: calc(2 * var(--dp));
   margin: 0;
   padding: 0;
   list-style: none;
@@ -1236,7 +1240,7 @@ button.header-title:hover {
 .ctx-list li {
   display: flex;
   align-items: baseline;
-  gap: 6px;
+  gap: calc(6 * var(--dp));
   flex-wrap: wrap;
   min-width: 0;
 }
@@ -1268,7 +1272,7 @@ button.header-title:hover {
 .ctx-section {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: calc(2 * var(--dp));
   min-width: 0;
 }
 
@@ -1282,10 +1286,10 @@ button.header-title:hover {
 .turn-process {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: calc(6 * var(--dp));
   align-self: flex-start;
-  margin: 2px 0;
-  padding: 2px 4px;
+  margin: calc(2 * var(--dp)) 0;
+  padding: calc(2 * var(--dp)) calc(4 * var(--dp));
   border: none;
   border-radius: var(--radius-sm);
   background: none;
@@ -1321,8 +1325,8 @@ button.header-title:hover {
 .turn-stats-trigger {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 2px 6px;
+  gap: calc(4 * var(--dp));
+  padding: calc(2 * var(--dp)) calc(6 * var(--dp));
   border: none;
   border-radius: var(--radius-sm);
   background: none;
@@ -1339,13 +1343,13 @@ button.header-title:hover {
 }
 
 .turn-stats-panel {
-  min-width: 200px;
-  padding: 8px 10px;
+  min-width: calc(200 * var(--dp));
+  padding: calc(8 * var(--dp)) calc(10 * var(--dp));
   font-size: var(--font-size-2xs);
 }
 
 .turn-stats-title {
-  margin-bottom: 6px;
+  margin-bottom: calc(6 * var(--dp));
   color: var(--fg);
   font-weight: 600;
 }
@@ -1354,7 +1358,7 @@ button.header-title:hover {
 .turn-stats-rows {
   display: grid;
   grid-template-columns: auto 1fr;
-  gap: 3px 10px;
+  gap: calc(3 * var(--dp)) calc(10 * var(--dp));
   margin: 0;
 }
 
@@ -1395,24 +1399,24 @@ button.header-title:hover {
 }
 
 .md p {
-  margin: 4px 0;
+  margin: calc(4 * var(--dp)) 0;
 }
 
 .md ul,
 .md ol {
-  margin: 4px 0;
-  padding-left: 20px;
+  margin: calc(4 * var(--dp)) 0;
+  padding-left: calc(20 * var(--dp));
 }
 
 .md li {
-  margin: 2px 0;
+  margin: calc(2 * var(--dp)) 0;
 }
 
 .md h1,
 .md h2,
 .md h3,
 .md h4 {
-  margin: 14px 0 6px;
+  margin: calc(14 * var(--dp)) 0 calc(6 * var(--dp));
   font-weight: 600;
   line-height: 1.3;
 }
@@ -1439,8 +1443,8 @@ button.header-title:hover {
 }
 
 .md blockquote {
-  margin: 6px 0;
-  padding: 2px 0 2px 10px;
+  margin: calc(6 * var(--dp)) 0;
+  padding: calc(2 * var(--dp)) 0 calc(2 * var(--dp)) calc(10 * var(--dp));
   border-left: 2px solid var(--border);
   color: var(--description);
 }
@@ -1448,15 +1452,15 @@ button.header-title:hover {
 .md hr {
   border: none;
   border-top: 1px solid var(--border);
-  margin: 12px 0;
+  margin: calc(12 * var(--dp)) 0;
 }
 
 .md code {
   font-family: var(--mono);
   font-size: 0.92em;
   background: var(--code-bg);
-  border-radius: 5px;
-  padding: 1px 4px;
+  border-radius: calc(5 * var(--dp));
+  padding: calc(1 * var(--dp)) calc(4 * var(--dp));
 }
 
 /* 行内代码里的**文件链接**：命中本轮文件词表的 `` `App.tsx` `` 会被换成按钮
@@ -1477,12 +1481,12 @@ button.header-title:hover {
 .md code > .file-mention:hover,
 .md code > .file-mention:focus-visible {
   text-decoration: underline dotted currentColor;
-  text-underline-offset: 3px;
+  text-underline-offset: calc(3 * var(--dp));
 }
 
 .md table {
   border-collapse: collapse;
-  margin: 8px 0;
+  margin: calc(8 * var(--dp)) 0;
   display: block;
   overflow-x: auto;
   font-size: var(--font-size-sm);
@@ -1491,7 +1495,7 @@ button.header-title:hover {
 .md th,
 .md td {
   border: 1px solid var(--border);
-  padding: 4px 8px;
+  padding: calc(4 * var(--dp)) calc(8 * var(--dp));
   text-align: left;
 }
 
@@ -1506,8 +1510,8 @@ button.header-title:hover {
    点击放大的按钮里）。此前只有 `max-width: 100%`：一张竖长的手机截图能占满整屏，
    把会话正文挤得没法读（用户 2026-10-03 报的「太占空间，像是没有限制大小」）。 */
 .md img {
-  max-width: min(100%, 640px);
-  max-height: 360px;
+  max-width: min(100%, calc(640 * var(--dp)));
+  max-height: calc(360 * var(--dp));
   border-radius: var(--radius-sm);
   /* 正文里的图点得开（点击委托在 Markdown.tsx 的 HtmlBlock 上）：光标要给提示 */
   cursor: zoom-in;
@@ -1517,8 +1521,8 @@ button.header-title:hover {
 
 /* 脚注区：与正文之间一条细分隔线，字号略小——它是附注，不该和正文抢注意力 */
 .md .footnotes {
-  margin-top: 10px;
-  padding-top: 6px;
+  margin-top: calc(10 * var(--dp));
+  padding-top: calc(6 * var(--dp));
   border-top: 1px solid var(--border);
   font-size: var(--font-size-sm);
   color: var(--description);
@@ -1526,11 +1530,11 @@ button.header-title:hover {
 
 .md .footnotes ol {
   margin: 0;
-  padding-left: 20px;
+  padding-left: calc(20 * var(--dp));
 }
 
 .md .footnotes li {
-  margin: 2px 0;
+  margin: calc(2 * var(--dp)) 0;
 }
 
 /* 回跳箭头：脚注区里那个 `↩`，弱化到不打断阅读 */
@@ -1549,9 +1553,9 @@ button.header-title:hover {
 /* 视觉上隐藏但保留给读屏：官方脚注区的标题用 `h2.sr-only` 就是这个类 */
 .sr-only {
   position: absolute;
-  width: 1px;
-  height: 1px;
-  margin: -1px;
+  width: calc(1 * var(--dp));
+  height: calc(1 * var(--dp));
+  margin: calc(-1 * var(--dp));
   padding: 0;
   overflow: hidden;
   clip: rect(0, 0, 0, 0);
@@ -1563,20 +1567,20 @@ button.header-title:hover {
 
 .code-block {
   position: relative;
-  margin: 8px 0;
+  margin: calc(8 * var(--dp)) 0;
   border-radius: var(--radius);
   background: var(--editor-bg);
   outline: 1px solid var(--border);
-  outline-offset: -0.5px;
+  outline-offset: calc(-0.5 * var(--dp));
   overflow: hidden;
 }
 
 .code-block-head {
   display: flex;
   align-items: center;
-  gap: 6px;
-  min-height: 24px;
-  padding: 4px 6px 4px 10px;
+  gap: calc(6 * var(--dp));
+  min-height: calc(24 * var(--dp));
+  padding: calc(4 * var(--dp)) calc(6 * var(--dp)) calc(4 * var(--dp)) calc(10 * var(--dp));
   color: var(--muted);
   font-size: var(--font-size-xs);
 }
@@ -1591,7 +1595,7 @@ button.header-title:hover {
 .code-block-actions {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: calc(10 * var(--dp));
   opacity: 0;
   transition: opacity 0.12s ease;
 }
@@ -1602,8 +1606,8 @@ button.header-title:hover {
 }
 
 .code-block-actions .icon-btn {
-  width: 20px;
-  height: 20px;
+  width: calc(20 * var(--dp));
+  height: calc(20 * var(--dp));
   color: var(--muted);
 }
 
@@ -1614,7 +1618,7 @@ button.header-title:hover {
    `anywhere` 下可能整块溢出。 */
 .code-block pre {
   margin: 0;
-  padding: 0 12px 10px;
+  padding: 0 calc(12 * var(--dp)) calc(10 * var(--dp));
   white-space: pre-wrap;
   word-break: break-all;
   overflow-wrap: normal;
@@ -1634,7 +1638,7 @@ button.header-title:hover {
 }
 
 .code-block.is-collapsed .code-block-body {
-  max-height: 160px;
+  max-height: calc(160 * var(--dp));
   overflow: hidden;
 }
 
@@ -1642,7 +1646,7 @@ button.header-title:hover {
   content: "";
   position: absolute;
   inset: auto 0 0 0;
-  height: 48px;
+  height: calc(48 * var(--dp));
   background: linear-gradient(transparent, var(--editor-bg));
   pointer-events: none;
 }
@@ -1652,7 +1656,7 @@ button.header-title:hover {
   align-items: center;
   justify-content: center;
   width: 100%;
-  padding: 2px 0;
+  padding: calc(2 * var(--dp)) 0;
   color: var(--muted);
 }
 
@@ -1672,9 +1676,9 @@ button.header-title:hover {
 .row-head {
   display: flex;
   align-items: center;
-  gap: 6px;
-  min-height: 22px;
-  padding: 1px 4px;
+  gap: calc(6 * var(--dp));
+  min-height: calc(22 * var(--dp));
+  padding: calc(1 * var(--dp)) calc(4 * var(--dp));
   border-radius: var(--radius-sm);
   color: var(--description);
   font-size: var(--font-size-xs);
@@ -1688,7 +1692,7 @@ button.header-title:hover {
 
 .row-chevron {
   flex: 0 0 auto;
-  width: 12px;
+  width: calc(12 * var(--dp));
   display: inline-flex;
   justify-content: center;
   color: var(--muted);
@@ -1722,7 +1726,7 @@ button.header-title:hover {
    居中则是 2026-09-14 的补充：圆点只有 7px，靠左摆放时与相邻行的 13px 图标
    差了 3px，看起来像没对齐；居中后圆点的中心与图标中心落在同一条竖线上。 */
 .row-icon-status {
-  min-width: 13px;
+  min-width: calc(13 * var(--dp));
   /* 圆点在这格里**水平垂直都居中**（用户 2026-09-19 口径）：只给 min-width 与
      justify-content 时，圆点靠的是行盒的顶——格子被拉高（行高比 7px 大）就看得出偏上。
      圆点自带 7px 固定高，`stretch` 撑不开它，所以这里必须显式 center。 */
@@ -1800,7 +1804,7 @@ button.header-title:hover {
   /* 与节点名之间留出呼吸空间（.row-head 的 gap 之外再加 4px）：
      实测 gap 只有 6px 时，路径的第一个字符紧贴节点名，看着像被节点名压住
      （用户 2026-09-12：「写入、编辑等文件路径太靠左了，有一点点被节点名遮盖」）。 */
-  margin-left: 4px;
+  margin-left: calc(4 * var(--dp));
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
@@ -1823,8 +1827,8 @@ button.header-title:hover {
 }
 
 .row-detail-dir.is-clipped {
-  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 10px);
-  mask-image: linear-gradient(to right, transparent 0, #000 10px);
+  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 calc(10 * var(--dp)));
+  mask-image: linear-gradient(to right, transparent 0, #000 calc(10 * var(--dp)));
 }
 
 /* 文件名段：不压缩、不换行 */
@@ -1879,8 +1883,8 @@ button.header-title:hover {
 .row-body,
 .row-exit,
 .question.is-record {
-  margin: 2px 0 6px 18px;
-  padding: 8px 10px;
+  margin: calc(2 * var(--dp)) 0 calc(6 * var(--dp)) calc(18 * var(--dp));
+  padding: calc(8 * var(--dp)) calc(10 * var(--dp));
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--node-body-bg);
@@ -1891,7 +1895,7 @@ button.header-title:hover {
   font-size: var(--font-size-sm);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  max-height: 320px;
+  max-height: calc(320 * var(--dp));
   overflow: auto;
 }
 
@@ -1922,13 +1926,13 @@ button.header-title:hover {
 .row-running {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: calc(4 * var(--dp));
 }
 
 .row-running-head {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: calc(5 * var(--dp));
   color: var(--info);
 }
 
@@ -1947,7 +1951,7 @@ button.header-title:hover {
 /* 自动载入的提示词节点（系统提示词 / 插件注入…）：淡化处理，表明这不是
    用户或模型写的内容；展开后仍可读，所以只压字号与颜色，不压内容。 */
 .row-injected {
-  max-height: 400px;
+  max-height: calc(400 * var(--dp));
   color: var(--muted);
   font-size: var(--font-size-2xs);
 }
@@ -1958,7 +1962,7 @@ button.header-title:hover {
 
 .diff-body {
   /* 行底色要铺满整行，去掉 row-body 的左右内边距 */
-  padding: 4px 0;
+  padding: calc(4 * var(--dp)) 0;
 }
 
 .diff {
@@ -1970,16 +1974,16 @@ button.header-title:hover {
 }
 
 .diff-hunk + .diff-hunk {
-  margin-top: 6px;
+  margin-top: calc(6 * var(--dp));
   border-top: 1px dashed var(--border);
-  padding-top: 4px;
+  padding-top: calc(4 * var(--dp));
 }
 
 .diff-head {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 0 8px 2px;
+  gap: calc(8 * var(--dp));
+  padding: 0 calc(8 * var(--dp)) calc(2 * var(--dp));
   color: var(--muted);
   font-size: var(--font-size-2xs);
 }
@@ -1998,7 +2002,7 @@ button.header-title:hover {
 }
 
 .diff-stat .diff-add + .diff-del {
-  margin-left: 6px;
+  margin-left: calc(6 * var(--dp));
 }
 
 .diff-stat .diff-add {
@@ -2013,13 +2017,13 @@ button.header-title:hover {
 .diff-cell {
   display: flex;
   align-items: flex-start;
-  padding: 0 8px 0 4px;
+  padding: 0 calc(8 * var(--dp)) 0 calc(4 * var(--dp));
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
 .diff-sign {
-  flex: 0 0 14px;
+  flex: 0 0 calc(14 * var(--dp));
   text-align: center;
   color: var(--muted);
   user-select: none;
@@ -2068,7 +2072,7 @@ button.header-title:hover {
 }
 
 .diff-more {
-  padding: 2px 8px;
+  padding: calc(2 * var(--dp)) calc(8 * var(--dp));
   color: var(--muted);
   font-size: var(--font-size-2xs);
 }
@@ -2076,8 +2080,8 @@ button.header-title:hover {
 .row-body-images {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  margin: 4px 0 4px 18px;
+  gap: calc(6 * var(--dp));
+  margin: calc(4 * var(--dp)) 0 calc(4 * var(--dp)) calc(18 * var(--dp));
 }
 
 /* 工具行的结果图片进节点框之后（见 Rows.tsx 的 ToolRow）：缩进与内边距由框提供 */
@@ -2086,11 +2090,11 @@ button.header-title:hover {
 }
 
 .row-body-images img {
-  max-width: 220px;
-  max-height: 180px;
+  max-width: calc(220 * var(--dp));
+  max-height: calc(180 * var(--dp));
   border-radius: var(--radius-sm);
   outline: 1px solid var(--border);
-  outline-offset: -0.5px;
+  outline-offset: calc(-0.5 * var(--dp));
 }
 
 /* 缩略图是按钮（点开原图）：去掉按钮的一切装饰，只留下图片本身 */
@@ -2105,7 +2109,7 @@ button.header-title:hover {
 
 .image-thumb:focus-visible {
   outline: 2px solid var(--border-focus);
-  outline-offset: 2px;
+  outline-offset: calc(2 * var(--dp));
 }
 
 .image-thumb img {
@@ -2118,7 +2122,7 @@ button.header-title:hover {
   display: inline-flex;
   align-items: center;
   max-width: 100%;
-  padding: 4px 8px;
+  padding: calc(4 * var(--dp)) calc(8 * var(--dp));
   border: 1px dashed var(--border);
   border-radius: var(--radius-sm);
   color: var(--muted);
@@ -2130,13 +2134,13 @@ button.header-title:hover {
 .msg-media {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: calc(2 * var(--dp));
   min-width: 0;
 }
 
 /* 用户消息里的图库不带工具行正文那 18px 左缩进（那是给工具展开体对齐用的） */
 .msg-user .row-body-images {
-  margin: 4px 0 0;
+  margin: calc(4 * var(--dp)) 0 0;
 }
 
 /* 助手消息里的图库同理：`images` 段（模型回带的图块）与轮尾交付的图片文件都是
@@ -2144,7 +2148,7 @@ button.header-title:hover {
    却没有框，看起来正像一个没了框的节点展开体（用户 2026-10-02 报的同一类观感）。
    唯一带缩进的是工具行的结果图：它在节点框里（`.row-body.is-media`）。 */
 .msg-assistant .row-body-images {
-  margin: 4px 0;
+  margin: calc(4 * var(--dp)) 0;
 }
 
 /* 原图浮层：App 根部挂一次，所有来源的图共用 */
@@ -2155,7 +2159,7 @@ button.header-title:hover {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 24px;
+  padding: calc(24 * var(--dp));
   background: rgba(0, 0, 0, 0.72);
   cursor: zoom-out;
 }
@@ -2169,13 +2173,13 @@ button.header-title:hover {
 
 .image-preview-close {
   position: absolute;
-  top: 12px;
-  right: 12px;
+  top: calc(12 * var(--dp));
+  right: calc(12 * var(--dp));
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  width: calc(28 * var(--dp));
+  height: calc(28 * var(--dp));
   border: 0;
   border-radius: var(--radius-sm);
   background: rgba(255, 255, 255, 0.14);
@@ -2195,20 +2199,20 @@ button.header-title:hover {
   position: fixed;
   z-index: 50;
   /* 宽度按内容，但不许越过视口（窄侧栏是最容易出事的地方） */
-  min-width: 96px;
-  max-width: min(280px, calc(100vw - 8px));
-  padding: 4px;
+  min-width: calc(96 * var(--dp));
+  max-width: min(calc(280 * var(--dp)), calc(100vw - 8 * var(--dp)));
+  padding: calc(4 * var(--dp));
   border: 1px solid var(--vscode-menu-border, var(--border));
   border-radius: var(--radius-sm);
   background: var(--vscode-menu-background, var(--editor-bg));
   color: var(--vscode-menu-foreground, var(--fg));
-  box-shadow: 0 2px 8px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.36));
+  box-shadow: 0 calc(2 * var(--dp)) calc(8 * var(--dp)) var(--vscode-widget-shadow, rgba(0, 0, 0, 0.36));
 }
 
 .ctx-menu-item {
   display: block;
   width: 100%;
-  padding: 4px 10px;
+  padding: calc(4 * var(--dp)) calc(10 * var(--dp));
   border-radius: calc(var(--radius-sm) / 2);
   text-align: left;
   /* 英文比中文长得多：一律一行、按需省略号，不靠固定宽度 */
@@ -2226,8 +2230,8 @@ button.header-title:hover {
 /* status dot for tool rows */
 .dot {
   flex: 0 0 auto;
-  width: 7px;
-  height: 7px;
+  width: calc(7 * var(--dp));
+  height: calc(7 * var(--dp));
   border-radius: 50%;
   background: var(--muted);
 }
@@ -2241,7 +2245,7 @@ button.header-title:hover {
   /* 图标呼吸关键帧的 drop-shadow 现在用 currentColor：圆点没有文字，
      显式把 color 也钉成蓝，动画里的那圈光才不会变成文字色 */
   color: var(--info);
-  box-shadow: 0 0 4px 2px color-mix(in srgb, var(--info) 38%, transparent);
+  box-shadow: 0 0 calc(4 * var(--dp)) calc(2 * var(--dp)) color-mix(in srgb, var(--info) 38%, transparent);
   animation: icon-glow 1.6s ease-in-out infinite;
 }
 
@@ -2301,18 +2305,18 @@ button.header-title:hover {
   border: 1px solid var(--border);
   border-left: 2px solid var(--warning);
   border-radius: var(--radius);
-  padding: 8px 10px;
+  padding: calc(8 * var(--dp)) calc(10 * var(--dp));
   background: var(--editor-bg);
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  margin: 4px 0;
+  gap: calc(6 * var(--dp));
+  margin: calc(4 * var(--dp)) 0;
 }
 
 .approval-title {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: calc(6 * var(--dp));
   font-size: var(--font-size-sm);
 }
 
@@ -2326,13 +2330,13 @@ button.header-title:hover {
   font-family: var(--mono);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  max-height: 160px;
+  max-height: calc(160 * var(--dp));
   overflow: auto;
 }
 
 .approval-actions {
   display: flex;
-  gap: 6px;
+  gap: calc(6 * var(--dp));
 }
 
 /* question card (dsh ask_user_question) */
@@ -2340,18 +2344,18 @@ button.header-title:hover {
   border: 1px solid var(--border);
   border-left: 2px solid var(--accent);
   border-radius: var(--radius);
-  padding: 8px 10px;
+  padding: calc(8 * var(--dp)) calc(10 * var(--dp));
   background: var(--editor-bg);
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  margin: 4px 0;
+  gap: calc(10 * var(--dp));
+  margin: calc(4 * var(--dp)) 0;
 }
 
 .question-item {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: calc(6 * var(--dp));
 }
 
 .question-head {
@@ -2368,17 +2372,17 @@ button.header-title:hover {
 .question-options {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: calc(4 * var(--dp));
 }
 
 .question-option {
   text-align: left;
   border: 1px solid var(--input-border);
   border-radius: var(--radius-sm);
-  padding: 5px 8px;
+  padding: calc(5 * var(--dp)) calc(8 * var(--dp));
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: calc(2 * var(--dp));
 }
 
 .question-option:hover {
@@ -2408,7 +2412,7 @@ button.header-title:hover {
 .question-custom {
   flex-direction: column;
   align-items: stretch;
-  gap: 2px;
+  gap: calc(2 * var(--dp));
   cursor: pointer;
 }
 
@@ -2435,7 +2439,7 @@ button.header-title:hover {
   border-radius: var(--radius-sm);
   background: var(--input-bg);
   color: var(--input-fg);
-  padding: 4px 8px;
+  padding: calc(4 * var(--dp)) calc(8 * var(--dp));
   outline: none;
 }
 
@@ -2452,7 +2456,7 @@ button.header-title:hover {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: calc(8 * var(--dp));
 }
 
 /* 「放弃整组问题」：整份问卷的次要出口。文案与图标都不缩——它承担着「不答了也要
@@ -2460,7 +2464,7 @@ button.header-title:hover {
 .question-dismiss {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: calc(6 * var(--dp));
   color: var(--description);
   white-space: nowrap;
 }
@@ -2473,7 +2477,7 @@ button.header-title:hover {
 .question-pager {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: calc(6 * var(--dp));
   min-width: 0;
 }
 
@@ -2501,7 +2505,7 @@ button.header-title:hover {
    **不自己限高**：等待态的外层 `.composer-interaction` 与记录态的外层 `.row-body`
    都已经是一个滚动容器，这里再加一层就是两层滚动条。 */
 .question-detail {
-  margin: 2px 0 4px;
+  margin: calc(2 * var(--dp)) 0 calc(4 * var(--dp));
   font-size: var(--font-size-sm);
   line-height: 1.7;
 }
@@ -2517,17 +2521,17 @@ button.header-title:hover {
   flex-direction: column;
   /* 限高与官方同口径（`max-height: min(60vh, 520px)`）：外层对这个形态让位
      （见 `.composer-interaction.is-plan-review`），限高只有这一处 */
-  max-height: min(60vh, 520px);
+  max-height: min(60vh, calc(520 * var(--dp)));
   overflow: hidden;
-  margin: 4px 0;
+  margin: calc(4 * var(--dp)) 0;
 }
 
 .plan-review-strip {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
+  gap: calc(8 * var(--dp));
+  padding: calc(8 * var(--dp)) calc(12 * var(--dp));
   font-size: var(--font-size-xs);
   color: var(--warning);
   background: color-mix(in srgb, var(--warning) 16%, transparent);
@@ -2535,8 +2539,8 @@ button.header-title:hover {
 
 .plan-review-dot {
   flex: 0 0 auto;
-  width: 8px;
-  height: 8px;
+  width: calc(8 * var(--dp));
+  height: calc(8 * var(--dp));
   border-radius: 50%;
   background: var(--warning);
 }
@@ -2547,7 +2551,7 @@ button.header-title:hover {
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
-  padding: 8px 12px 4px;
+  padding: calc(8 * var(--dp)) calc(12 * var(--dp)) calc(4 * var(--dp));
   font-size: var(--font-size-sm);
   line-height: 1.7;
 }
@@ -2561,14 +2565,14 @@ button.header-title:hover {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 8px;
-  padding: 6px 12px 10px;
+  gap: calc(8 * var(--dp));
+  padding: calc(6 * var(--dp)) calc(12 * var(--dp)) calc(10 * var(--dp));
 }
 
 .plan-review-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: calc(8 * var(--dp));
   margin-left: auto;
 }
 
@@ -2577,7 +2581,7 @@ button.header-title:hover {
 .plan-review-discuss {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: calc(6 * var(--dp));
   color: var(--description);
 }
 
@@ -2585,10 +2589,10 @@ button.header-title:hover {
 .notice {
   display: flex;
   align-items: flex-start;
-  gap: 6px;
+  gap: calc(6 * var(--dp));
   font-size: var(--font-size-xs);
   color: var(--description);
-  padding: 2px 0;
+  padding: calc(2 * var(--dp)) 0;
 }
 
 .notice-error {
@@ -2603,7 +2607,7 @@ button.header-title:hover {
 .row-command {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: calc(4 * var(--dp));
 }
 
 .row-command-line {
@@ -2623,7 +2627,7 @@ button.header-title:hover {
    它同样是节点展开体的一员：框与缩进走 `.row-body` 那一组共用声明，
    这里只换边框的左边那道为警告色。 */
 .row-exit {
-  padding: 4px 10px;
+  padding: calc(4 * var(--dp)) calc(10 * var(--dp));
   border-left: 2px solid var(--warning);
   color: var(--warning);
   font-family: var(--mono);
@@ -2643,8 +2647,8 @@ button.header-title:hover {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 4px 6px;
-  margin-top: 4px;
+  gap: calc(4 * var(--dp)) calc(6 * var(--dp));
+  margin-top: calc(4 * var(--dp));
   font-size: var(--font-size-2xs);
 }
 
@@ -2654,9 +2658,9 @@ button.header-title:hover {
 .changes-card {
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  margin-top: 6px;
-  padding: 6px 8px;
+  gap: calc(3 * var(--dp));
+  margin-top: calc(6 * var(--dp));
+  padding: calc(6 * var(--dp)) calc(8 * var(--dp));
   border: 1px solid var(--command-border);
   border-radius: var(--radius-sm);
   background: var(--input-bg);
@@ -2666,7 +2670,7 @@ button.header-title:hover {
 .changes-card-files {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: calc(2 * var(--dp));
 }
 
 /* 标题栏与文件行共用的排版 */
@@ -2674,7 +2678,7 @@ button.header-title:hover {
 .changes-card-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: calc(8 * var(--dp));
   width: 100%;
   color: var(--description);
   text-align: left;
@@ -2732,7 +2736,7 @@ button.changes-card-head:hover .changes-card-chevron,
 .changes-card-counts,
 .changes-card-delta {
   display: inline-flex;
-  gap: 6px;
+  gap: calc(6 * var(--dp));
   flex: 0 0 auto;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
@@ -2787,9 +2791,9 @@ button.changes-card-head:hover .changes-card-chevron,
 .file-chip {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: calc(4 * var(--dp));
   max-width: 100%;
-  padding: 1px 7px;
+  padding: calc(1 * var(--dp)) calc(7 * var(--dp));
   border: 1px solid var(--command-border);
   border-radius: var(--radius-pill);
   background: var(--input-bg);
@@ -2861,9 +2865,9 @@ button.changes-card-head:hover .changes-card-chevron,
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 5px;
-  height: 24px;
-  padding: 0 8px;
+  gap: calc(5 * var(--dp));
+  height: calc(24 * var(--dp));
+  padding: 0 calc(8 * var(--dp));
   border-radius: var(--radius);
   background: var(--secondary);
   color: var(--secondary-fg);
@@ -2921,9 +2925,9 @@ button.changes-card-head:hover .changes-card-chevron,
 .pill-mode {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  height: 20px;
-  padding: 0 8px;
+  gap: calc(4 * var(--dp));
+  height: calc(20 * var(--dp));
+  padding: 0 calc(8 * var(--dp));
   border-radius: var(--radius-pill);
   background: rgba(153, 153, 152, 0.2);
   color: var(--description);
@@ -2957,7 +2961,7 @@ button.changes-card-head:hover .changes-card-chevron,
    比模型胶囊更淡——它是模型的一个属性，不是一个独立入口。 */
 .pill-effort {
   color: var(--muted);
-  max-width: 96px;
+  max-width: calc(96 * var(--dp));
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -2968,7 +2972,7 @@ button.changes-card-head:hover .changes-card-chevron,
    用户自己写的预设名可以是任意长度、英文名也比中文长，所以要自己收窄出省略号，
    不折行、也不挣开工具栏。完整名字在 title 里。 */
 .bar-preset {
-  max-width: 110px;
+  max-width: calc(110 * var(--dp));
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -3001,17 +3005,17 @@ button.changes-card-head:hover .changes-card-chevron,
 }
 
 .app.is-mini .conn-bar {
-  gap: 4px;
-  padding: 5px 6px;
+  gap: calc(4 * var(--dp));
+  padding: calc(5 * var(--dp)) calc(6 * var(--dp));
 }
 .app.is-mini .header {
-  padding: 0 4px;
-  gap: 1px;
+  padding: 0 calc(4 * var(--dp));
+  gap: calc(1 * var(--dp));
 }
 
 /* 聊天列表：收成窄条，只露消息左缘，不再显示正文/工具行 */
 .app.is-mini .chat-list {
-  padding: 4px;
+  padding: calc(4 * var(--dp));
 }
 .app.is-mini .msg {
   min-width: 0;
@@ -3029,8 +3033,8 @@ button.changes-card-head:hover .changes-card-chevron,
    Composer 的 useToolbarFit），按实测宽度算，比这个固定的 220px 阈值准得多
    ——同样的 220px，中文「工作区写入」放得下、英文 "Workspace Write" 不一定。 */
 .app.is-mini .composer-bar {
-  gap: 4px;
-  padding: 4px 6px 5px;
+  gap: calc(4 * var(--dp));
+  padding: calc(4 * var(--dp)) calc(6 * var(--dp)) calc(5 * var(--dp));
 }
 
 /* 缺口状态条：只留状态点，文字进 title */
@@ -3048,9 +3052,9 @@ button.changes-card-head:hover .changes-card-chevron,
 .pill {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  height: 18px;
-  padding: 0 4px;
+  gap: calc(4 * var(--dp));
+  height: calc(18 * var(--dp));
+  padding: 0 calc(4 * var(--dp));
   border-radius: var(--radius-sm);
   color: var(--description);
   font-size: var(--font-size-2xs);
@@ -3083,7 +3087,7 @@ button.changes-card-head:hover .changes-card-chevron,
 .ctx-ring {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: calc(4 * var(--dp));
   flex: 0 0 auto;
   color: var(--description);
   font-variant-numeric: tabular-nums;
@@ -3147,11 +3151,11 @@ button.changes-card-head:hover .changes-card-chevron,
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 10px;
+  gap: calc(10 * var(--dp));
   /* 滚动区不是 flex 容器，flex:1 在这里无效（会把提示顶到顶部），
      用 min-height 撑满才能垂直居中 */
   min-height: 100%;
-  padding: 32px 20px;
+  padding: calc(32 * var(--dp)) calc(20 * var(--dp));
   text-align: center;
   color: var(--muted);
 }
@@ -3166,12 +3170,12 @@ button.changes-card-head:hover .changes-card-chevron,
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
+  gap: calc(4 * var(--dp));
   /* 内容宽度由 `min(100%, 340px)` 定：两行元信息自己只占得下这么宽，但**预设菜单
      要借这块宽度**（它是绝对定位的，`max-width: 100%` 量的是这里）。所以这一块刻意
      比它的内容宽——菜单因此能铺满内容列，卡片里的描述不必挤成一行一个词。
      高度仍然是两行本身（`top: 100%` 的落点靠的是它，不能撑高）。 */
-  width: min(100%, 340px);
+  width: min(100%, calc(340 * var(--dp)));
   max-width: 100%;
   min-width: 0;
 }
@@ -3187,13 +3191,13 @@ button.changes-card-head:hover .changes-card-chevron,
      几何居中的图标看起来浮在文字上沿。往下挪 1.5px 抵消（预览页 6 倍放大
      逐档试出来的：1px 对纯小写仍偏高，2px 对 CJK 标签又偏低）。 */
   > svg {
-    transform: translateY(1.5px);
+    transform: translateY(calc(1.5 * var(--dp)));
   }
-  gap: 6px;
+  gap: calc(6 * var(--dp));
   /* 宽度由内容决定，但**上限**是这一块：两行各自可以被压窄，而不是把页面撑宽 */
   max-width: 100%;
   min-width: 0;
-  padding: 3px 8px;
+  padding: calc(3 * var(--dp)) calc(8 * var(--dp));
   border-radius: var(--radius-sm);
   border: 1px solid transparent;
   color: var(--muted);
@@ -3243,10 +3247,10 @@ button.meta-chip:hover {
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  gap: 2px;
+  gap: calc(2 * var(--dp));
   width: 100%;
-  padding: 6px 8px;
-  border-radius: 6.4px;
+  padding: calc(6 * var(--dp)) calc(8 * var(--dp));
+  border-radius: calc(6.4 * var(--dp));
   border: 1px solid transparent;
   text-align: left;
 }
@@ -3260,7 +3264,7 @@ button.meta-chip:hover {
 .preset-card-head {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: calc(6 * var(--dp));
 }
 
 /* 名字是这一行的**身份**：不可收缩到看不见，太长才省略（它通常很短） */
@@ -3308,8 +3312,8 @@ button.meta-chip:hover {
 .history-more {
   display: block;
   width: 100%;
-  margin: 2px 0 6px;
-  padding: 4px;
+  margin: calc(2 * var(--dp)) 0 calc(6 * var(--dp));
+  padding: calc(4 * var(--dp));
   border-radius: var(--radius-sm);
   color: var(--muted);
   font-size: var(--font-size-2xs);
@@ -3330,7 +3334,7 @@ button.meta-chip:hover {
   flex: 0 0 auto;
   display: flex;
   flex-direction: column;
-  padding: 0 8px 8px;
+  padding: 0 calc(8 * var(--dp)) calc(8 * var(--dp));
 }
 
 /* 轨迹视图下**输入区让位**：轨迹是整页视图，打开就占用整个会话窗口
@@ -3356,10 +3360,10 @@ button.meta-chip:hover {
 .lump {
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin: 0 7px;
-  padding: 2px 8px;
-  min-height: 22px;
+  gap: calc(6 * var(--dp));
+  margin: 0 calc(7 * var(--dp));
+  padding: calc(2 * var(--dp)) calc(8 * var(--dp));
+  min-height: calc(22 * var(--dp));
   background: var(--input-bg);
   border: 1px solid var(--command-border);
   border-bottom: none;
@@ -3382,9 +3386,9 @@ button.meta-chip:hover {
 .running-line {
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin: 0 7px;
-  padding: 2px 8px;
+  gap: calc(6 * var(--dp));
+  margin: 0 calc(7 * var(--dp));
+  padding: calc(2 * var(--dp)) calc(8 * var(--dp));
   font-size: var(--font-size-2xs);
   color: var(--description);
 }
@@ -3425,7 +3429,7 @@ button.meta-chip:hover {
     opacity: 0.7;
   }
   50% {
-    filter: drop-shadow(0 0 3px currentColor);
+    filter: drop-shadow(0 0 calc(3 * var(--dp)) currentColor);
     opacity: 1;
   }
 }
@@ -3435,10 +3439,10 @@ button.meta-chip:hover {
 .goal-bar {
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin: 0 7px 4px;
-  padding: 2px 8px;
-  min-height: 22px;
+  gap: calc(6 * var(--dp));
+  margin: 0 calc(7 * var(--dp)) calc(4 * var(--dp));
+  padding: calc(2 * var(--dp)) calc(8 * var(--dp));
+  min-height: calc(22 * var(--dp));
   border: 1px solid var(--command-border);
   border-radius: var(--radius);
   background: var(--input-bg);
@@ -3528,7 +3532,7 @@ button.meta-chip:hover {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
-  padding: 2px;
+  padding: calc(2 * var(--dp));
   border: none;
   border-radius: var(--radius-sm);
   background: none;
@@ -3556,14 +3560,14 @@ button.meta-chip:hover {
 .queue {
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  margin: 0 7px 4px;
+  gap: calc(3 * var(--dp));
+  margin: 0 calc(7 * var(--dp)) calc(4 * var(--dp));
   max-height: 33vh;
   overflow-y: auto;
 }
 
 .queue-head {
-  padding: 0 2px;
+  padding: 0 calc(2 * var(--dp));
   font-size: var(--font-size-2xs);
   color: var(--muted);
   opacity: 0.85;
@@ -3572,9 +3576,9 @@ button.meta-chip:hover {
 .queue-item {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: calc(6 * var(--dp));
   min-width: 0;
-  padding: 5px 9px;
+  padding: calc(5 * var(--dp)) calc(9 * var(--dp));
   border: 1px solid var(--command-border);
   border-radius: var(--radius);
   background: var(--input-bg);
@@ -3612,8 +3616,8 @@ button.meta-chip:hover {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
+  width: calc(22 * var(--dp));
+  height: calc(22 * var(--dp));
   border: none;
   background: none;
   cursor: pointer;
@@ -3634,7 +3638,7 @@ button.meta-chip:hover {
 
 /* 1px shell */
 .composer-shell {
-  padding: 1px;
+  padding: calc(1 * var(--dp));
   border-radius: var(--radius);
   background: var(--bg);
   background-size: 200% 200%;
@@ -3694,7 +3698,7 @@ button.meta-chip:hover {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 10px;
+  padding: calc(10 * var(--dp));
   background: color-mix(in srgb, var(--accent) 14%, transparent);
   pointer-events: none;
 }
@@ -3702,11 +3706,11 @@ button.meta-chip:hover {
 .page-drop-pill {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: calc(6 * var(--dp));
   max-width: 100%;
-  padding: 5px 12px;
+  padding: calc(5 * var(--dp)) calc(12 * var(--dp));
   border: 1px dashed var(--accent);
-  border-radius: 999px;
+  border-radius: calc(999 * var(--dp));
   background: var(--input-bg);
   color: var(--accent);
   font-size: var(--font-size-2xs);
@@ -3719,18 +3723,18 @@ button.meta-chip:hover {
 .composer-chips {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
-  padding: 8px 10px 0;
+  gap: calc(4 * var(--dp));
+  padding: calc(8 * var(--dp)) calc(10 * var(--dp)) 0;
 }
 
 .chip {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: calc(4 * var(--dp));
   max-width: 100%;
-  height: 20px;
-  padding: 0 3px 0 6px;
-  border-radius: 3px;
+  height: calc(20 * var(--dp));
+  padding: 0 calc(3 * var(--dp)) 0 calc(6 * var(--dp));
+  border-radius: calc(3 * var(--dp));
   background: var(--badge-bg);
   color: var(--badge-fg);
   font-size: var(--font-size-2xs);
@@ -3747,9 +3751,9 @@ button.meta-chip:hover {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 14px;
-  height: 14px;
-  border-radius: 3px;
+  width: calc(14 * var(--dp));
+  height: calc(14 * var(--dp));
+  border-radius: calc(3 * var(--dp));
   opacity: 0.7;
 }
 
@@ -3762,7 +3766,7 @@ button.meta-chip:hover {
    不这样标出来的话，用户按发送时只会看到「文件被跳过」的提示，却不知道该做什么。 */
 .chip.is-error {
   outline: 1px solid var(--error);
-  outline-offset: -1px;
+  outline-offset: calc(-1 * var(--dp));
 }
 
 .chip-spinner {
@@ -3776,9 +3780,9 @@ button.meta-chip:hover {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 14px;
-  height: 14px;
-  border-radius: 3px;
+  width: calc(14 * var(--dp));
+  height: calc(14 * var(--dp));
+  border-radius: calc(3 * var(--dp));
   color: var(--error);
 }
 
@@ -3791,8 +3795,8 @@ button.meta-chip:hover {
   outline: none;
   background: transparent;
   color: inherit;
-  padding: 8px 10px 4px;
-  min-height: 22px;
+  padding: calc(8 * var(--dp)) calc(10 * var(--dp)) calc(4 * var(--dp));
+  min-height: calc(22 * var(--dp));
   max-height: 70vh;
   resize: none;
   line-height: 1.45;
@@ -3807,8 +3811,8 @@ button.meta-chip:hover {
 .composer-bar {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 4px 8px 5px;
+  gap: calc(8 * var(--dp));
+  padding: calc(4 * var(--dp)) calc(8 * var(--dp)) calc(5 * var(--dp));
   min-width: 0;
   font-size: var(--font-size-2xs);
   /* 测量层（.composer-measure）是绝对定位的浮层，靠这个做定位基准 */
@@ -3846,7 +3850,7 @@ button.meta-chip:hover {
 .composer-measure-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: calc(8 * var(--dp));
   width: max-content;
 }
 
@@ -3865,11 +3869,11 @@ button.meta-chip:hover {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 4px;
+  gap: calc(4 * var(--dp));
   flex: 0 0 auto;
-  height: 22px;
-  min-width: 24px;
-  padding: 0 10px;
+  height: calc(22 * var(--dp));
+  min-width: calc(24 * var(--dp));
+  padding: 0 calc(10 * var(--dp));
   border-radius: var(--radius);
   background: var(--primary);
   color: var(--primary-fg);
@@ -3909,7 +3913,7 @@ button.meta-chip:hover {
 
 .popover {
   position: absolute;
-  bottom: calc(100% + 6px);
+  bottom: calc(100% + 6 * var(--dp));
   z-index: 20;
   /* 宽度两头都要管：
      - 下限 224px 是为了让思考档位一行放得下 4 个（Off/Low/High/Max，
@@ -3919,18 +3923,18 @@ button.meta-chip:hover {
        100vw 而是 100vw 减掉这段偏移。少了这个钳制，窄到 ~290px 时弹层
        会溢出到视口外被裁掉。
      76 = 触发按钮左侧偏移(~66) + 一点余量，两者都随主题字体略变，取宽不吃亏。 */
-  min-width: min(224px, calc(100vw - 76px));
-  max-width: min(420px, calc(100vw - 76px));
-  max-height: 330px;
+  min-width: min(calc(224 * var(--dp)), calc(100vw - 76 * var(--dp)));
+  max-width: min(calc(420 * var(--dp)), calc(100vw - 76 * var(--dp)));
+  max-height: calc(330 * var(--dp));
   overflow-y: auto;
-  padding: 0.2rem;
+  padding: calc(3.2 * var(--dp));
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--input-bg);
   color: var(--fg);
   box-shadow:
-    0 0 0 1px rgba(0, 0, 0, 0.05),
-    0 10px 20px rgba(0, 0, 0, 0.3);
+    0 0 0 calc(1 * var(--dp)) rgba(0, 0, 0, 0.05),
+    0 calc(10 * var(--dp)) calc(20 * var(--dp)) rgba(0, 0, 0, 0.3);
 }
 
 .popover.left {
@@ -3955,19 +3959,19 @@ button.meta-chip:hover {
      而卡片里的中文随时可断行——收缩出来只有 `min-width` 那么窄，描述会被挤成
      一行两三个词。铺满这一块才是「卡片」该有的样子。 */
   width: 100%;
-  min-width: min(224px, 100%);
+  min-width: min(calc(224 * var(--dp)), 100%);
   max-width: 100%;
-  max-height: min(70vh, 520px);
+  max-height: min(70vh, calc(520 * var(--dp)));
 }
 
 /* 向下展开：触发器上方没有空间时用它（空态页的元信息行在页面中间） */
 .popover.is-down {
-  top: calc(100% + 6px);
+  top: calc(100% + 6 * var(--dp));
   bottom: auto;
 }
 
 .popover-section {
-  padding: 6px 6px 3px;
+  padding: calc(6 * var(--dp)) calc(6 * var(--dp)) calc(3 * var(--dp));
   font-size: var(--font-size-2xs);
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -3978,7 +3982,7 @@ button.meta-chip:hover {
 .popover-section-row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: calc(6 * var(--dp));
 }
 
 .popover-section-row .spacer {
@@ -3991,7 +3995,7 @@ button.meta-chip:hover {
 .popover-drill-hint {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: calc(4 * var(--dp));
   flex: 0 0 auto;
   text-transform: none;
   letter-spacing: 0;
@@ -4001,10 +4005,10 @@ button.meta-chip:hover {
 .popover-item {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: calc(8 * var(--dp));
   width: 100%;
-  padding: 4px 6px;
-  border-radius: 6.4px;
+  padding: calc(4 * var(--dp)) calc(6 * var(--dp));
+  border-radius: calc(6.4 * var(--dp));
   border: 1px solid transparent;
   font-size: var(--font-size-xs);
   text-align: left;
@@ -4059,14 +4063,14 @@ button.meta-chip:hover {
 }
 
 .popover-empty {
-  padding: 8px 6px;
+  padding: calc(8 * var(--dp)) calc(6 * var(--dp));
   font-size: var(--font-size-xs);
   color: var(--muted);
 }
 
 .popover-sep {
-  height: 1px;
-  margin: 4px 2px;
+  height: calc(1 * var(--dp));
+  margin: calc(4 * var(--dp)) calc(2 * var(--dp));
   background: var(--border);
 }
 
@@ -4079,9 +4083,9 @@ button.meta-chip:hover {
 .segment {
   display: flex;
   flex-wrap: wrap;
-  gap: 2px;
-  margin: 4px 2px 2px;
-  padding: 2px;
+  gap: calc(2 * var(--dp));
+  margin: calc(4 * var(--dp)) calc(2 * var(--dp)) calc(2 * var(--dp));
+  padding: calc(2 * var(--dp));
   border-radius: var(--radius-sm);
   background: var(--editor-bg);
 }
@@ -4089,8 +4093,8 @@ button.meta-chip:hover {
 .segment-item {
   flex: 1 1 auto;
   min-width: 0;
-  padding: 3px 8px;
-  border-radius: 4px;
+  padding: calc(3 * var(--dp)) calc(8 * var(--dp));
+  border-radius: calc(4 * var(--dp));
   font-size: var(--font-size-2xs);
   color: var(--description);
   text-align: center;
@@ -4133,20 +4137,20 @@ button.meta-chip:hover {
   position: absolute;
   inset: 0 0 0 auto;
   z-index: 31;
-  width: min(340px, 94%);
+  width: min(calc(340 * var(--dp)), 94%);
   display: flex;
   flex-direction: column;
   background: var(--bg);
   border-left: 1px solid var(--border);
-  box-shadow: -6px 0 20px rgba(0, 0, 0, 0.25);
+  box-shadow: calc(-6 * var(--dp)) 0 calc(20 * var(--dp)) rgba(0, 0, 0, 0.25);
 }
 
 .drawer-head {
   display: flex;
   align-items: center;
-  gap: 6px;
-  height: 34px;
-  padding: 0 4px 0 10px;
+  gap: calc(6 * var(--dp));
+  height: calc(34 * var(--dp));
+  padding: 0 calc(4 * var(--dp)) 0 calc(10 * var(--dp));
   border-bottom: 1px solid var(--border);
   font-size: var(--font-size-xs);
   color: var(--description);
@@ -4155,9 +4159,9 @@ button.meta-chip:hover {
 .drawer-search-box {
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin: 6px;
-  padding: 0 8px;
+  gap: calc(6 * var(--dp));
+  margin: calc(6 * var(--dp));
+  padding: 0 calc(8 * var(--dp));
   border-radius: var(--radius);
   background: var(--input-bg);
 }
@@ -4170,7 +4174,7 @@ button.meta-chip:hover {
 .drawer-search {
   flex: 1 1 auto;
   min-width: 0;
-  padding: 4px 0;
+  padding: calc(4 * var(--dp)) 0;
   border: none;
   background: none;
   color: var(--input-fg);
@@ -4186,16 +4190,16 @@ button.meta-chip:hover {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  padding: 0 6px 8px;
+  padding: 0 calc(6 * var(--dp)) calc(8 * var(--dp));
 }
 
 .session-item {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: calc(2 * var(--dp));
   width: 100%;
-  margin-bottom: 2px;
-  padding: 4px 2px;
+  margin-bottom: calc(2 * var(--dp));
+  padding: calc(4 * var(--dp)) calc(2 * var(--dp));
   border-radius: var(--radius);
   text-align: left;
 }
@@ -4214,8 +4218,8 @@ button.meta-chip:hover {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  padding: 2px 6px;
+  gap: calc(2 * var(--dp));
+  padding: calc(2 * var(--dp)) calc(6 * var(--dp));
   border: none;
   background: none;
   color: inherit;
@@ -4225,7 +4229,7 @@ button.meta-chip:hover {
 
 .session-item-actions {
   display: flex;
-  gap: 2px;
+  gap: calc(2 * var(--dp));
   flex: 0 0 auto;
   opacity: 0;
 }
@@ -4236,8 +4240,8 @@ button.meta-chip:hover {
 }
 
 .session-item-actions .icon-btn {
-  width: 20px;
-  height: 20px;
+  width: calc(20 * var(--dp));
+  height: calc(20 * var(--dp));
 }
 
 .session-item-actions .icon-btn.is-danger {
@@ -4271,7 +4275,7 @@ button.meta-chip:hover {
 .session-item-sub {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: calc(6 * var(--dp));
   font-size: var(--font-size-2xs);
   color: var(--muted);
   overflow: hidden;
@@ -4288,8 +4292,8 @@ button.meta-chip:hover {
   position: sticky;
   top: 0;
   z-index: 1;
-  margin: 8px 0 4px;
-  padding: 2px 6px;
+  margin: calc(8 * var(--dp)) 0 calc(4 * var(--dp));
+  padding: calc(2 * var(--dp)) calc(6 * var(--dp));
   background: var(--bg);
   font-size: var(--font-size-2xs);
   font-weight: 700;
@@ -4303,8 +4307,8 @@ button.meta-chip:hover {
 .conn-bar {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 10px;
+  gap: calc(6 * var(--dp));
+  padding: calc(6 * var(--dp)) calc(10 * var(--dp));
   font-size: var(--font-size-xs);
   color: var(--warning);
   border-bottom: 1px solid var(--border);
@@ -4347,7 +4351,7 @@ button.meta-chip:hover {
 .notice-bar {
   display: flex;
   align-items: center;
-  padding: 5px 10px;
+  padding: calc(5 * var(--dp)) calc(10 * var(--dp));
   border-bottom: 1px solid var(--border);
   background: var(--hover);
 }
@@ -4374,8 +4378,8 @@ button.meta-chip:hover {
    用户 2026-09-25 口径：提示栏单独一栏，始终显示。 */
 .trigger-popover {
   position: static;
-  margin: 0 8px 4px;
-  max-height: 260px;
+  margin: 0 calc(8 * var(--dp)) calc(4 * var(--dp));
+  max-height: calc(260 * var(--dp));
   width: auto;
   align-self: stretch;
   display: flex;
@@ -4396,9 +4400,9 @@ button.meta-chip:hover {
 /* 键位提示栏：**不参与收缩**，列表再长也压不掉它（见 .trigger-popover）。 */
 .popover-hint {
   flex: 0 0 auto;
-  padding: 4px 8px 2px;
+  padding: calc(4 * var(--dp)) calc(8 * var(--dp)) calc(2 * var(--dp));
   border-top: 1px solid var(--border);
-  margin-top: 4px;
+  margin-top: calc(4 * var(--dp));
   font-size: var(--font-size-2xs);
   color: var(--muted);
 }
@@ -4413,7 +4417,7 @@ button.meta-chip:hover {
 .popover-item-hit {
   display: flex;
   align-items: baseline;
-  gap: 8px;
+  gap: calc(8 * var(--dp));
   flex: 1 1 auto;
   min-width: 0;
   text-align: left;
@@ -4426,9 +4430,9 @@ button.meta-chip:hover {
 .popover-item-action {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: calc(4 * var(--dp));
   flex: 0 0 auto;
-  padding: 1px 6px;
+  padding: calc(1 * var(--dp)) calc(6 * var(--dp));
   border: 1px solid var(--command-border);
   border-radius: var(--radius-pill);
   color: var(--muted);
@@ -4438,8 +4442,8 @@ button.meta-chip:hover {
 
 /* 键帽：等宽字体 + 底色，与说明文字区分开（官方 `.drillHint` 同形态） */
 .popover-item-key {
-  padding: 0 5px;
-  border-radius: 4px;
+  padding: 0 calc(5 * var(--dp));
+  border-radius: calc(4 * var(--dp));
   background: var(--hover);
   color: var(--fg);
   font-family: var(--mono);
@@ -4458,7 +4462,7 @@ button.meta-chip:hover {
    不标出来用户会以为回车就会执行。 */
 .popover-item-tag {
   flex: 0 0 auto;
-  padding: 0 5px;
+  padding: 0 calc(5 * var(--dp));
   border-radius: var(--radius-pill);
   background: var(--badge-bg);
   color: var(--badge-fg);
@@ -4471,11 +4475,11 @@ button.meta-chip:hover {
    而不是沿用 2xs（那与描述文字一样大，看起来像档位名的一部分而不是标记）。
    下限 7px 是给用户把界面字号调得很小时兜底。 */
 .perm-badge {
-  margin-left: 3px;
+  margin-left: calc(3 * var(--dp));
   color: var(--muted);
-  font-size: max(7px, calc(var(--font-size-2xs) - 3px));
+  font-size: max(calc(7 * var(--dp)), calc(var(--font-size-2xs) - 3 * var(--dp)));
   font-weight: 600;
-  letter-spacing: 0.2px;
+  letter-spacing: calc(0.2 * var(--dp));
   line-height: 1;
   vertical-align: super;
 }
@@ -4483,8 +4487,8 @@ button.meta-chip:hover {
 .confirm-block {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 8px;
+  gap: calc(6 * var(--dp));
+  padding: calc(8 * var(--dp));
 }
 
 .confirm-title {
@@ -4504,7 +4508,7 @@ button.meta-chip:hover {
 .confirm-ack {
   display: flex;
   align-items: flex-start;
-  gap: 6px;
+  gap: calc(6 * var(--dp));
   font-size: var(--font-size-2xs);
   color: var(--description);
   line-height: 1.55;
@@ -4513,7 +4517,7 @@ button.meta-chip:hover {
 
 .confirm-ack input {
   flex: 0 0 auto;
-  margin: 2px 0 0;
+  margin: calc(2 * var(--dp)) 0 0;
 }
 
 /* ============================ jobs panel ============================ */
@@ -4526,15 +4530,15 @@ button.meta-chip:hover {
 .job-row {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  padding: 6px 8px;
+  gap: calc(2 * var(--dp));
+  padding: calc(6 * var(--dp)) calc(8 * var(--dp));
   border-bottom: 1px solid var(--border);
 }
 
 .job-head {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: calc(6 * var(--dp));
   min-width: 0;
 }
 
@@ -4544,7 +4548,7 @@ button.meta-chip:hover {
   flex: 1 1 auto;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: calc(6 * var(--dp));
   min-width: 0;
   padding: 0;
   border: none;
@@ -4565,8 +4569,8 @@ button.meta-chip:hover {
 
 .job-row-toggle:focus-visible {
   outline: 1px solid var(--link);
-  outline-offset: 1px;
-  border-radius: 3px;
+  outline-offset: calc(1 * var(--dp));
+  border-radius: calc(3 * var(--dp));
 }
 
 /* 展开入口的箭头：官方 `.chevron` / `.chevronOpen` 同款（120ms 旋转） */
@@ -4584,14 +4588,14 @@ button.meta-chip:hover {
 .job-panel {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  margin: 4px 0 2px;
+  gap: calc(4 * var(--dp));
+  margin: calc(4 * var(--dp)) 0 calc(2 * var(--dp));
 }
 
 .job-panel-head {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: calc(6 * var(--dp));
   min-width: 0;
 }
 
@@ -4610,11 +4614,11 @@ button.meta-chip:hover {
 /* 输出区：等宽、自动换行（窄侧栏里横向滚动意味着长行要一路拖到底才读得完）、
    限高内滚——128KB 的输出不许把抽屉撑高，也不许把上面的行挤出去。 */
 .job-output {
-  max-height: min(288px, 45vh);
+  max-height: min(calc(288 * var(--dp)), 45vh);
   overflow: auto;
-  padding: 6px 8px;
+  padding: calc(6 * var(--dp)) calc(8 * var(--dp));
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: calc(4 * var(--dp));
   background: var(--editor-bg);
   font-family: var(--mono);
   font-size: var(--font-size-2xs);
@@ -4648,8 +4652,8 @@ button.meta-chip:hover {
 
 .job-kind {
   flex: 0 0 auto;
-  padding: 0 4px;
-  border-radius: 3px;
+  padding: 0 calc(4 * var(--dp));
+  border-radius: calc(3 * var(--dp));
   background: var(--badge-bg);
   color: var(--badge-fg);
   font-size: var(--font-size-2xs);
@@ -4666,7 +4670,7 @@ button.meta-chip:hover {
   color: var(--description);
   font-family: var(--mono);
   overflow-wrap: anywhere;
-  max-height: 80px;
+  max-height: calc(80 * var(--dp));
   overflow: auto;
 }
 
@@ -4679,12 +4683,12 @@ button.meta-chip:hover {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 3px;
-  width: 18px;
-  height: 18px;
+  gap: calc(3 * var(--dp));
+  width: calc(18 * var(--dp));
+  height: calc(18 * var(--dp));
   padding: 0;
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: calc(4 * var(--dp));
   color: var(--muted);
   /* 英文「Confirm stop」比中文长得多：按钮不折行，宽度不够时让位的永远是
      前面的任务名（.job-label 自带省略号），不是把行撑高 */
@@ -4701,7 +4705,7 @@ button.meta-chip:hover {
 .job-stop.is-armed:hover,
 .job-stop.is-armed:focus-visible {
   width: auto;
-  padding: 0 6px;
+  padding: 0 calc(6 * var(--dp));
   border-color: var(--error);
   background: color-mix(in srgb, var(--error) 12%, transparent);
   color: var(--error);
@@ -4731,9 +4735,9 @@ button.meta-chip:hover {
 .todos {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  margin: 0 6px 6px;
-  padding: 6px 8px;
+  gap: calc(2 * var(--dp));
+  margin: 0 calc(6 * var(--dp)) calc(6 * var(--dp));
+  padding: calc(6 * var(--dp)) calc(8 * var(--dp));
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--editor-bg);
@@ -4742,21 +4746,21 @@ button.meta-chip:hover {
 .todo-item {
   display: flex;
   align-items: flex-start;
-  gap: 6px;
+  gap: calc(6 * var(--dp));
   font-size: var(--font-size-xs);
 }
 
 .todo-glyph {
   flex: 0 0 auto;
-  width: 12px;
+  width: calc(12 * var(--dp));
   display: inline-flex;
   justify-content: center;
-  padding-top: 3px;
+  padding-top: calc(3 * var(--dp));
 }
 
 .todo-glyph .dot {
-  width: 6px;
-  height: 6px;
+  width: calc(6 * var(--dp));
+  height: calc(6 * var(--dp));
 }
 
 .todo-content {
@@ -4786,32 +4790,36 @@ button.meta-chip:hover {
   min-height: 0;
   display: flex;
   flex-direction: column;
+  /* 容器查询基准：面板的两条窄屏线（420 收窄 event 列 / 760 检查器改抽屉）量的是这里的
+     宽度。宽度来自父级拉伸（不依赖内容），容器化不改变布局；换成 px 写法会拿到媒体查询
+     的 `em`（固定按初始 16px 算），线就不会跟着界面倍率走了。 */
+  container-type: inline-size;
 }
 
 .trajectory-toolbar {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: 6px;
-  height: 32px;
-  padding: 0 6px;
+  gap: calc(6 * var(--dp));
+  height: calc(32 * var(--dp));
+  padding: 0 calc(6 * var(--dp));
   border-bottom: 1px solid var(--border);
 }
 
 .trajectory-toolbar-actions {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: calc(4 * var(--dp));
   flex: 0 0 auto;
 }
 
 .trajectory-search {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: calc(4 * var(--dp));
   flex: 1 1 auto;
   min-width: 0;
-  padding: 0 6px;
+  padding: 0 calc(6 * var(--dp));
   border: 1px solid var(--input-border);
   border-radius: var(--radius-sm);
   background: var(--input-bg);
@@ -4839,13 +4847,13 @@ button.meta-chip:hover {
   display: flex;
   flex-wrap: nowrap;
   align-items: stretch;
-  gap: 8px;
-  padding: 6px;
+  gap: calc(8 * var(--dp));
+  padding: calc(6 * var(--dp));
 }
 
 /* 账本：窄面板下检查器会盖上来（≤760px 的抽屉），不会把账本挤没 */
 .trajectory-ledger {
-  flex: 1 1 320px;
+  flex: 1 1 calc(320 * var(--dp));
   min-width: 0;
   max-height: 100%;
   overflow: auto;
@@ -4859,7 +4867,7 @@ button.meta-chip:hover {
 }
 
 .trajectory-col-event {
-  width: 122px;
+  width: calc(122 * var(--dp));
 }
 
 .trajectory-col-content {
@@ -4881,7 +4889,7 @@ button.meta-chip:hover {
 /* 键盘选中账本行（检查器的唯一入口）时给一个可见的焦点环 */
 .trajectory-row:focus-visible {
   outline: 1px solid var(--border-focus);
-  outline-offset: -1px;
+  outline-offset: calc(-1 * var(--dp));
 }
 
 .trajectory-row.is-dimmed {
@@ -4897,7 +4905,7 @@ button.meta-chip:hover {
 }
 
 .trajectory-event {
-  padding: 3px 4px 3px 8px;
+  padding: calc(3 * var(--dp)) calc(4 * var(--dp)) calc(3 * var(--dp)) calc(8 * var(--dp));
   vertical-align: top;
   border-top: 1px solid transparent;
 }
@@ -4905,7 +4913,7 @@ button.meta-chip:hover {
 .trajectory-event-inner {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: calc(4 * var(--dp));
   /* 事件列是**固定宽度**（窄面板下 50px），而里面是「kind 标签 + #N」这一串，
      英文标签（`COMPACTED` / `ASSISTANT`）比中文长得多。不给收缩下限的话，
      标签会顶出列、压到内容列上（2026-09-17 审计）。 */
@@ -4927,8 +4935,8 @@ button.meta-chip:hover {
 }
 
 .trajectory-kind {
-  padding: 0 5px;
-  border-radius: 4px;
+  padding: 0 calc(5 * var(--dp));
+  border-radius: calc(4 * var(--dp));
   /* 官方 kindTag 的底色是该色调的浅色版（`state-success-tertiary` 之类）。
      这里用 currentColor 的淡色底：`color` 由下面的 kind 类给，底色自动跟着走，
      七种记录各一份、不用手写七条。 */
@@ -4963,8 +4971,8 @@ button.meta-chip:hover {
 .trajectory-content {
   display: flex;
   align-items: baseline;
-  gap: 6px;
-  padding: 3px 4px;
+  gap: calc(6 * var(--dp));
+  padding: calc(3 * var(--dp)) calc(4 * var(--dp));
   min-width: 0;
   vertical-align: top;
 }
@@ -5008,10 +5016,10 @@ button.meta-chip:hover {
 
 /* 详情检查器 */
 .trajectory-details {
-  flex: 1 1 260px;
+  flex: 1 1 calc(260 * var(--dp));
   min-width: 0;
   /* 拖到最宽也留 280px 给账本（官方 `TABLE_MIN_WIDTH`） */
-  max-width: calc(100% - 280px);
+  max-width: calc(100% - 280 * var(--dp));
   max-height: 100%;
   display: flex;
   flex-direction: column;
@@ -5024,8 +5032,8 @@ button.meta-chip:hover {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 6px;
+  gap: calc(6 * var(--dp));
+  padding: calc(4 * var(--dp)) calc(6 * var(--dp));
   border-bottom: 1px solid var(--border);
 }
 
@@ -5043,13 +5051,13 @@ button.meta-chip:hover {
   flex: 0 0 auto;
   display: flex;
   flex-wrap: wrap;
-  gap: 2px;
-  padding: 4px 6px;
+  gap: calc(2 * var(--dp));
+  padding: calc(4 * var(--dp)) calc(6 * var(--dp));
   border-bottom: 1px solid var(--border);
 }
 
 .trajectory-tab {
-  padding: 1px 6px;
+  padding: calc(1 * var(--dp)) calc(6 * var(--dp));
   border: 0;
   border-radius: var(--radius-pill);
   background: none;
@@ -5073,16 +5081,16 @@ button.meta-chip:hover {
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
-  padding: 6px;
+  padding: calc(6 * var(--dp));
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: calc(4 * var(--dp));
 }
 
 .trajectory-detail-row {
   display: flex;
   align-items: baseline;
-  gap: 6px;
+  gap: calc(6 * var(--dp));
   font-size: var(--font-size-body);
 }
 
@@ -5103,13 +5111,13 @@ button.meta-chip:hover {
 .trajectory-detail-block {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: calc(2 * var(--dp));
 }
 
 .trajectory-pre {
   margin: 0;
-  padding: 6px;
-  max-height: 320px;
+  padding: calc(6 * var(--dp));
+  max-height: calc(320 * var(--dp));
   overflow: auto;
   border-radius: var(--radius-sm);
   background: var(--code-bg);
@@ -5135,7 +5143,7 @@ button.meta-chip:hover {
 
 .trajectory-tool-desc {
   color: var(--description);
-  margin: 2px 0 4px;
+  margin: calc(2 * var(--dp)) 0 calc(4 * var(--dp));
 }
 
 /* 概述里摊开的「后几张卡片」（官方 `overviewSections`）：每节 = 可点标题 +
@@ -5143,16 +5151,16 @@ button.meta-chip:hover {
 .trajectory-overview-sections {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  margin-top: 8px;
-  padding-top: 6px;
+  gap: calc(8 * var(--dp));
+  margin-top: calc(8 * var(--dp));
+  padding-top: calc(6 * var(--dp));
   border-top: 1px solid var(--border);
 }
 
 .trajectory-overview-section {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: calc(2 * var(--dp));
   min-width: 0;
 }
 
@@ -5166,7 +5174,7 @@ button.meta-chip:hover {
 .trajectory-overview-title {
   display: inline-flex;
   align-items: center;
-  gap: 3px;
+  gap: calc(3 * var(--dp));
   padding: 0;
   border: 0;
   background: none;
@@ -5182,7 +5190,7 @@ button.meta-chip:hover {
 
 .trajectory-overview-preview {
   min-width: 0;
-  max-height: 220px;
+  max-height: calc(220 * var(--dp));
   overflow: auto;
 }
 
@@ -5193,8 +5201,8 @@ button.meta-chip:hover {
 
 /* 压缩记录的摘要正文（官方 `compactedSummary`：没有分节标题，直接接在概述行下面） */
 .trajectory-compacted-summary {
-  margin-top: 8px;
-  padding-top: 6px;
+  margin-top: calc(8 * var(--dp));
+  padding-top: calc(6 * var(--dp));
   border-top: 1px solid var(--border);
 }
 
@@ -5208,9 +5216,9 @@ button.meta-chip:hover {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: calc(6 * var(--dp));
   width: 100%;
-  height: 28px;
+  height: calc(28 * var(--dp));
   border: 0;
   border-bottom: 1px solid var(--border);
   background: none;
@@ -5229,15 +5237,17 @@ button.meta-chip:hover {
   cursor: default;
 }
 
-/* 窄面板（webview 视口就是面板宽）：event 列收到 50px，只留 `#N` 与种类标签 */
-@media (max-width: 420px) {
+/* 窄面板（webview 视口就是面板宽）：event 列收到 50 个设计像素，只留 `#N` 与种类标签。
+   容器化在 .trajectory-view 上（见那条规则），`em` 取它的字号 = 界面字号，于是这条线
+   跟着界面倍率走——媒体查询做不到这点：它的 `em` 固定按初始 16px 算。 */
+@container (max-width: calc(420em / 13)) {
   .trajectory-col-event {
-    width: 50px;
+    width: calc(50 * var(--dp));
   }
 
   .trajectory-kind {
-    padding: 0 3px;
-    font-size: 9px;
+    padding: 0 calc(3 * var(--dp));
+    font-size: calc(9 * var(--dp));
   }
 
   .trajectory-turn-label {
@@ -5250,18 +5260,18 @@ button.meta-chip:hover {
   flex: 0 0 auto;
   display: flex;
   align-items: stretch;
-  gap: 4px;
-  padding: 4px 6px;
+  gap: calc(4 * var(--dp));
+  padding: calc(4 * var(--dp)) calc(6 * var(--dp));
   border-bottom: 1px solid var(--border);
 }
 
 .trajectory-lanes {
-  flex: 0 0 44px;
+  flex: 0 0 calc(44 * var(--dp));
   display: flex;
   flex-direction: column;
   justify-content: space-around;
   color: var(--muted);
-  font-size: 9px;
+  font-size: calc(9 * var(--dp));
   line-height: 1;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -5271,7 +5281,7 @@ button.meta-chip:hover {
   position: relative;
   flex: 1 1 auto;
   min-width: 0;
-  height: 42px;
+  height: calc(42 * var(--dp));
   border-radius: var(--radius-sm);
   background: var(--code-bg);
   /* 框选区域是这条顶条的主交互，光标用文本选区的 I 字（用户 2026-09-15 口径）：
@@ -5287,7 +5297,7 @@ button.meta-chip:hover {
   position: absolute;
   top: 0;
   bottom: 0;
-  width: 1px;
+  width: calc(1 * var(--dp));
   background: var(--border);
   pointer-events: none;
 }
@@ -5295,22 +5305,22 @@ button.meta-chip:hover {
 /* 三条泳道：0 输入 / 1 模型 / 2 工具（官方 `laneFor`） */
 .trajectory-span {
   position: absolute;
-  height: 8px;
+  height: calc(8 * var(--dp));
   padding: 0;
   border: 0;
-  border-radius: 2px;
+  border-radius: calc(2 * var(--dp));
   /* 默认为中性（system / compacted 没有自己的色调），78% 不透明度；
      有色调的记录在下面拉满——官方 span 就是这套口径（`opacity:.78` 是基准，
      `message` / `tool` 那些各自 `opacity:1`） */
   background: var(--muted);
   opacity: 0.78;
   cursor: pointer;
-  min-width: 2px;
+  min-width: calc(2 * var(--dp));
 }
 
-.trajectory-span[data-lane="0"] { top: 4px; }
-.trajectory-span[data-lane="1"] { top: 17px; }
-.trajectory-span[data-lane="2"] { top: 30px; }
+.trajectory-span[data-lane="0"] { top: calc(4 * var(--dp)); }
+.trajectory-span[data-lane="1"] { top: calc(17 * var(--dp)); }
+.trajectory-span[data-lane="2"] { top: calc(30 * var(--dp)); }
 
 /* 与账本种类标签同一套色调（官方 span 也是按 kind 着色，只是 tool/subtool 同色） */
 .trajectory-span.is-user { background: var(--link); opacity: 1; }
@@ -5325,7 +5335,7 @@ button.meta-chip:hover {
 
 .trajectory-span.is-selected {
   outline: 1px solid var(--fg);
-  outline-offset: 1px;
+  outline-offset: calc(1 * var(--dp));
 }
 
 /* 没有计时数据时的提示：绘图区正中（官方 `timeline.noTimingData` 同位置） */
@@ -5351,8 +5361,8 @@ button.meta-chip:hover {
   display: flex;
   align-items: center;
   justify-content: flex-start;
-  width: 28px;
-  padding: 0 0 0 3px;
+  width: calc(28 * var(--dp));
+  padding: 0 0 0 calc(3 * var(--dp));
   border: 0;
   border-radius: 0;
   background: linear-gradient(to right, var(--code-bg) 0, var(--code-bg) 38%, transparent 100%);
@@ -5386,7 +5396,7 @@ button.meta-chip:hover {
 .trajectory-more {
   flex: 0 0 auto;
   align-self: center;
-  width: 18px;
+  width: calc(18 * var(--dp));
   padding: 0;
   border: 0;
   border-radius: var(--radius-sm);
@@ -5420,7 +5430,7 @@ button.meta-chip:hover {
   left: 0;
   top: 0;
   bottom: 0;
-  width: 6px;
+  width: calc(6 * var(--dp));
   cursor: col-resize;
   background: none;
 }
@@ -5434,21 +5444,22 @@ button.meta-chip:hover {
   position: relative;
 }
 
-/* 窄面板：检查器改成盖在账本上的抽屉（官方 <=760px 同款行为） */
-@media (max-width: 760px) {
+/* 窄面板：检查器改成盖在账本上的抽屉（官方 <=760px 同款行为）。
+   与上面那条同理：写成容器查询才跟着界面倍率走，760 是设计像素。 */
+@container (max-width: calc(760em / 13)) {
   .trajectory-details {
     position: absolute;
-    right: 6px;
-    top: 40px;
-    bottom: 6px;
+    right: calc(6 * var(--dp));
+    top: calc(40 * var(--dp));
+    bottom: calc(6 * var(--dp));
     z-index: 3;
-    box-shadow: 0 2px 12px rgb(0 0 0 / 35%);
+    box-shadow: 0 calc(2 * var(--dp)) calc(12 * var(--dp)) rgb(0 0 0 / 35%);
     background: var(--bg);
-    max-width: calc(100% - 24px);
+    max-width: calc(100% - 24 * var(--dp));
   }
 }
 
-/* 窄屏时检查器是绝对定位的（见上面的 media query），锚点就是这块主体区 */
+/* 窄屏时检查器是绝对定位的（见上面的容器查询），锚点就是这块主体区 */
 .trajectory-body {
   position: relative;
 }

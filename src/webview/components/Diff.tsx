@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type RefObject } from "react";
 import type { DiffHunkView, DiffLayout, DiffLineView } from "../../shared/chat";
 import { splitDiffEnabled } from "../../shared/diff";
 import { useTexts } from "../texts";
+import { dp, useUiScale } from "../uiScale";
 
 /**
  * 编辑类节点的 diff 渲染。
@@ -18,16 +19,18 @@ const SPLIT_MIN_WIDTH = 640;
 
 /** 观察容器宽度，决定自适应模式是否用双栏。 */
 function useWideEnough(ref: RefObject<HTMLElement | null>): boolean {
+  const scale = useUiScale();
   const [wide, setWide] = useState(false);
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-    const check = () => setWide(el.clientWidth >= SPLIT_MIN_WIDTH);
+    // 640 是**设计像素**：两栏里的代码文本随界面倍率变宽，这条线也得跟着走
+    const check = () => setWide(el.clientWidth >= dp(SPLIT_MIN_WIDTH, scale));
     check();
     const observer = new ResizeObserver(check);
     observer.observe(el);
     return () => observer.disconnect();
-  }, [ref]);
+  }, [ref, scale]);
   return wide;
 }
 

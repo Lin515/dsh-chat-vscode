@@ -21,6 +21,21 @@ function rule(selector: string): string {
   return match[1];
 }
 
+/**
+ * 设计像素的两种合法写法：`calc(N * var(--dp))`（倍率下的写法）与裸 `Npx`。
+ * 尺度一律走设计像素，见 `docs/adr/0004-ui-scale-design-pixels.md`。
+ */
+const DESIGN_PX = String.raw`(?:calc\(\s*-?\d+(?:\.\d+)?\s*\*\s*var\(--dp\)\s*\)|-?\d+(?:\.\d+)?px)`;
+
+/** 取出设计像素的**数值**：`calc(13 * var(--dp))` / `13px` → 13。断言钉的是设计值。 */
+function designPx(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const calc = /^calc\(\s*(-?\d+(?:\.\d+)?)\s*\*\s*var\(--dp\)\s*\)$/u.exec(value.trim());
+  if (calc) return Number(calc[1]);
+  const raw = /^(-?\d+(?:\.\d+)?)px$/u.exec(value.trim());
+  return raw ? Number(raw[1]) : undefined;
+}
+
 // ---------- 1. 弹层宽度必须视口感知，否则窄侧栏会被裁掉 ----------
 //
 // 实测：`min-width: 224px` 这种固定下限 + 触发按钮距左边缘约 66px，
@@ -232,9 +247,9 @@ console.log("styles: 思考结束后的鲸鱼仍为蓝色 ✓");
   // 否则节点名横向跳 6px（实测 61 → 55）——同一类「两态盒子不同」的问题
   const status = rule(".row-icon-status");
   assert.strictEqual(
-    /min-width:\s*(\d+)px/.exec(status)?.[1],
-    "13",
-    `.row-icon-status 的坑位必须与图标同宽（13px），现在是 "${status.trim()}"`,
+    designPx(/min-width:\s*([^;]+);/.exec(status)?.[1]),
+    13,
+    `.row-icon-status 的坑位必须与图标同宽（13 个设计像素），现在是 "${status.trim()}"`,
   );
   assert.ok(
     /<span className="row-icon row-icon-status">\s*<span className=\{`dot dot-\$\{tone\}`\} \/>/.test(
@@ -259,7 +274,10 @@ console.log("styles: 运行中节点呼吸发光与图标同色、完成态保�
   const rowState = rule(".subagent-row-state");
   assert.ok(/align-items:\s*center/.test(rowState), ".subagent-row-state 里圆点垂直居中");
   assert.ok(/justify-content:\s*center/.test(rowState), ".subagent-row-state 里圆点水平居中");
-  assert.ok(/width:\s*\d+px/.test(rowState), ".subagent-row-state 要有明确的边长（独享空间）");
+  assert.ok(
+    new RegExp(`width:\\s*${DESIGN_PX}`).test(rowState),
+    ".subagent-row-state 要有明确的边长（独享空间）",
+  );
 
   // 导航本体要存在（可点的主会话标题 / 触发器 / 弹出列表 / 只读说明）
   for (const selector of [
@@ -472,7 +490,8 @@ console.log("styles: 行号紧跟文件名、时长先让位 ✓");
 //      渐隐因此挪到 `.is-clipped`（由 primitives.tsx 量 `scrollWidth` 决定）。
 {
   const detail = rule(".row-detail");
-  const margin = Number(/margin-left:\s*(\d+(?:\.\d+)?)px/.exec(detail)?.[1] ?? "0");
+  // 这条是负数（抵消容器的内边距），断言要的是「拉开了多少」，故取绝对值
+  const margin = Math.abs(designPx(/margin-left:\s*([^;]+);/.exec(detail)?.[1]) ?? 0);
   assert.ok(
     margin >= 4,
     `.row-detail 需要与节点名拉开距离（现在 margin-left: ${margin}px）——太近会像被节点名盖住`,
@@ -1262,8 +1281,8 @@ console.log("styles: 节点展开后——进行中的贴底、已结束的置�
   assert.ok(/border-radius:/.test(frame), "节点框要有圆角");
   assert.ok(/background:\s*var\(--node-body-bg\)/.test(frame), "节点框要有那层极淡的底色（token 见 tokens.css）");
   assert.ok(
-    /margin:\s*[^;]*18px/.test(frame),
-    "节点框要缩进到节点名之下（左 18px，与行首图标对齐），否则又和正文同级了",
+    /margin:\s*[^;]*calc\(18 \* var\(--dp\)\)/.test(frame),
+    "节点框要缩进到节点名之下（左 18 个设计像素，与行首图标对齐），否则又和正文同级了",
   );
 
   // ① 问卷记录只补强调色左边：等待态那张卡也是这个颜色，两种形态应当同族
@@ -1302,7 +1321,7 @@ console.log("styles: 节点展开后——进行中的贴底、已结束的置�
     "进框之后图库自己不再留那 18px 缩进（缩进由框提供）",
   );
   assert.ok(
-    /\.msg-assistant \.row-body-images\s*\{[^}]*margin:\s*4px 0;/.test(css),
+    /\.msg-assistant \.row-body-images\s*\{[^}]*margin:\s*calc\(4 \* var\(--dp\)\) 0;/.test(css),
     "助手消息里的图库要跟正文一条左边界——`images` 段与轮尾交付的图都是正文的一部分，" +
       "带着节点展开体那 18px 缩进却没有框，看起来正像一个没了框的节点展开体",
   );
@@ -1319,10 +1338,13 @@ console.log("styles: 节点展开体统一是「节点框」（问卷记录 / �
 {
   const image = rule(".md img");
   assert.ok(
-    /max-width:\s*min\(100%,\s*640px\)/.test(image),
-    `正文图的宽度上限要是官方的 \`min(100%, 640px)\`（写死 640px 会在窄侧栏溢出），现在是 "${image.trim()}"`,
+    /max-width:\s*min\(100%,\s*calc\(640 \* var\(--dp\)\)\)/.test(image),
+    `正文图的宽度上限要是官方的 \`min(100%, 640)\`（设计像素；写死会在窄侧栏溢出），现在是 "${image.trim()}"`,
   );
-  assert.ok(/max-height:\s*360px/.test(image), "正文图的高度上限要是官方的 360px（竖长截图的体积全靠它）");
+  assert.ok(
+    /max-height:\s*calc\(360 \* var\(--dp\)\)/.test(image),
+    "正文图的高度上限要是官方的 360（设计像素，竖长截图的体积全靠它）",
+  );
   assert.ok(/cursor:\s*zoom-in/.test(image), "缩略图要能点开看原图，光标得给提示");
 
   const preview = rule(".image-preview img");
@@ -1331,8 +1353,8 @@ console.log("styles: 节点展开体统一是「节点框」（问卷记录 / �
     "原图浮层只受视口约束——它才是「看原图」的地方，别把正文那档上限带进来",
   );
   assert.ok(
-    !/360px/.test(preview),
-    "正文的 360px 上限不许漏进原图浮层，否则大图永远看不清",
+    !/360/.test(preview),
+    "正文的 360（设计像素）上限不许漏进原图浮层，否则大图永远看不清",
   );
 }
 console.log("styles: 正文图限高 360px（官方式缩略图）+ 原图浮层不受该上限 ✓");
@@ -1513,8 +1535,8 @@ console.log("styles: 轨迹整页切换、加载更早在时间线左端 ✓");
   );
   const details = rule(".trajectory-details");
   assert.ok(
-    /max-width:\s*calc\(100% - 280px\)/.test(details),
-    "检查器的 max-width 要留 280px 给账本（官方 TABLE_MIN_WIDTH）",
+    /max-width:\s*calc\(100% - 280 \* var\(--dp\)\)/.test(details),
+    "检查器的 max-width 要留 280 个设计像素给账本（官方 TABLE_MIN_WIDTH）",
   );
 }
 console.log("styles: 轨迹取历史同链路、概述摊开后几张卡片 ✓");
@@ -1609,40 +1631,49 @@ console.log("styles: 轨迹配色对齐官方（输入绿 / 模型紫）✓");
 }
 console.log("styles: 连接条按钮矩阵（判定在纯函数里 / 四颗目标按钮仍有指令）✓");
 
-// ---------- 35. 滚动条拐角 / 右下角拉伸角不许是白底 ----------
+// ---------- 35. 滚动条交给 VS Code 画，我们不自绘 ----------
 //
-// 用户 2026-09-15 报的：问卷自定义回答的编辑框一出现垂直滚动条，右下角那块「可拉动」
-// 的标志就变成白底。实测（预览页取像素）修复前那一块是 **#efefef 实心方块**——Chromium
-// 在深色主题下给 resizer 画的就是这个，而本项目的滚动条轨道是透明的，所以特别扎眼。
-// 修法两条一起看：**底色清成透明** + **自己用主题色画两道斜线**（只清底的话那个角
-// 就彻底看不见了，等于把「可以拉」这个提示删掉）。
+// 用户 2026-09-15 报过「问卷自定义回答的编辑框一出现滚动条，右下角那块可拉动的标志就变成
+// 白底」，当时的修法是自绘 `::-webkit-scrollbar-corner`（清成透明）与 `::-webkit-resizer`
+// （自己画两道主题色斜线）。后来发现**这组规则在真机上一直是死的**：VS Code 的默认层给
+// `html` 写了 `scrollbar-color`，而它一旦存在，Chromium 就改用标准滚动条、把
+// `::-webkit-scrollbar*` 整组忽略——实测同一条 `::-webkit-scrollbar{width:30px}` 在没有
+// `scrollbar-color` 时是 30px，有了就变回 15px（`scrollbar-width: thin` 压到 10px）。
+// 用户 2026-10-03 的实测也印证了：字号调到很大滚动条也不变宽，因为那条宽度规则从未生效。
+//
+// 于是口径定成「**不接管**」：宽度、形状、配色全交给 VS Code 的主题（标准路径按轨道色画
+// 拐角与拉伸角，白底那块不会再出现）。tokens.css 里不再留任何自绘规则——留着只会让人以为
+// 它们是活的，还会在下一次改字号时被当成「该跟着缩放的东西」。
+//
+// 这条口径有个**验证盲区**必须一起钉住：预览页缺了 VS Code 默认层的 `scrollbar-color` 时，
+// webkit 路径是活的，预览里能看到我们自己画的滚动条（10px、自绘滑块），与真机的 15px
+// 标准滚动条不是一回事。所以预览页必须复刻那一条。
 {
-  const tokens = readFileSync(
+  const tokensRaw = readFileSync(
     join(process.cwd(), "src", "webview", "styles", "tokens.css"),
     "utf8",
   );
-  const block = (selector: string): string => {
-    const match = new RegExp(`${selector}\\s*\\{([^}]*)\\}`).exec(tokens);
-    assert.ok(match, `tokens.css 里要有 ${selector} 这条规则`);
-    return (match as RegExpExecArray)[1];
-  };
-  assert.ok(
-    /background-color:\s*transparent/.test(block("::-webkit-scrollbar-corner")),
-    "滚动条拐角必须清成透明（自定义了 ::-webkit-scrollbar 却不给拐角清底 = 一块白方块）",
+  // 注释里会提到这些选择器名（讲清为什么不留它们），先抹成等长空白再扫
+  let tokens = tokensRaw;
+  for (let i = tokens.indexOf("/*"); i >= 0; i = tokens.indexOf("/*", i + 2)) {
+    const end = tokens.indexOf("*/", i + 2);
+    const stop = end < 0 ? tokens.length : end + 2;
+    tokens = `${tokens.slice(0, i)}${" ".repeat(stop - i)}${tokens.slice(stop)}`;
+  }
+  const painted = [...tokens.matchAll(/::-webkit-(?:scrollbar|resizer)[\w-]*/g)].map((m) => m[0]);
+  assert.deepStrictEqual(
+    painted,
+    [],
+    `tokens.css 里不许再有自绘滚动条规则（在 scrollbar-color 存在时它们整组被忽略）：${painted.join("、")}`,
   );
-  const resizer = block("::-webkit-resizer");
+
+  const preview = readFileSync(join(process.cwd(), "test", "preview.html"), "utf8");
   assert.ok(
-    /background-color:\s*transparent/.test(resizer),
-    "右下角的拉伸角必须清成透明底（用户 2026-09-15 报的白底就是它）",
-  );
-  assert.ok(
-    /background-image:[\s\S]*?var\(--muted\)/.test(resizer) &&
-      /background-size:/.test(resizer) &&
-      /background-position:\s*right bottom/.test(resizer),
-    "清底之后要自己画拉伸标记（主题色斜线、贴右下角），否则那个角什么都看不见",
+    /scrollbar-color:\s*[^;]+;/u.test(preview),
+    "预览页必须复刻 VS Code 默认层的 `scrollbar-color`——少了它，预览里的滚动条与真机不是一回事",
   );
 }
-console.log("styles: 滚动条拐角与拉伸角透明 + 自绘拉伸标记 ✓");
+console.log("styles: 滚动条交给 VS Code（不自绘；预览复刻 scrollbar-color）✓");
 
 // ---------- 36. 轨迹工具栏的开关按钮必须有「按下」的样子 ----------
 //
@@ -1935,7 +1966,7 @@ console.log("styles: 贴底（规则在 autoScroll.ts；App 只剩接线；回�
   const card = rule(".plan-review");
   assert.ok(
     /max-height:\s*min\(60vh/.test(card) && /overflow:\s*hidden/.test(card),
-    "卡片按官方口径限高（min(60vh, 520px)）并裁掉溢出，滚动交给正文那一段",
+    "卡片按官方口径限高（min(60vh, 520 设计像素)）并裁掉溢出，滚动交给正文那一段",
   );
   assert.ok(
     /max-height:\s*none/.test(rule(".composer-interaction.is-plan-review")) ||
@@ -2054,8 +2085,8 @@ console.log("styles: 问卷可放弃整组问题（次要出口观感 + 折行�
     "补回不许推迟到 rAF/定时器：晚一帧就是用户看到的那一下闪烁",
   );
   assert.ok(
-    /\}, \[draft, chatScroll\]\);/.test(composer),
-    "自适应 effect 的依赖要带上滚动端口（对象恒定，不会多跑）",
+    /\}, \[draft, chatScroll, uiScale\]\);/.test(composer),
+    "自适应 effect 的依赖要带滚动端口（对象恒定，不会多跑）与界面倍率（字号变了必须重量）",
   );
   const app = readFileSync(join(process.cwd(), "src", "webview", "App.tsx"), "utf8");
   assert.ok(
@@ -2114,31 +2145,33 @@ console.log("styles: 多行草稿打字不闪（量高瞬态同帧消化）✓")
   // **预留空间**（用户 2026-09-18 口径：「给目录条预留空间，不覆盖在会话内容上显示」）：
   // 正文列表按 --turn-rail-gutter 让出右内边距，横条落在这条空档里。
   assert.ok(
-    /--turn-rail-gutter:\s*\d+px/.test(pane),
-    ".chat-pane 必须定义 --turn-rail-gutter（横条占的宽度）",
+    new RegExp(`--turn-rail-gutter:\\s*${DESIGN_PX}`).test(pane),
+    ".chat-pane 必须定义 --turn-rail-gutter（横条占的宽度，设计像素）",
   );
   const reserved = rule(".chat-pane .chat-list");
   assert.ok(
-    /padding-right:\s*calc\(6px \+ var\(--turn-rail-gutter/.test(reserved),
+    /padding-right:\s*calc\(6 \* var\(--dp\) \+ var\(--turn-rail-gutter/.test(reserved),
     `正文列表必须按 --turn-rail-gutter 让出右内边距，否则横条会盖在会话内容上；现在是 "${reserved.trim()}"`,
   );
 
   // 关闭规则：阈值不许回到过窄的值（用户 2026-09-18 报「触发关闭的宽度太窄了」），
   // 而且**预留条必须与横条同生共死**——只藏横条不还空间，正文会留一条无端空档。
-  const hide = /@container \(max-width:\s*(\d+)px\)\s*\{([\s\S]*?)\n\}/.exec(css);
-  assert.ok(hide, "必须存在 @container (max-width: …px) 的自动关闭规则");
+  // 阈值写成 `calc(N em / 13)`：容器查询的 `em` 相对查询容器自身的字号，这条线才跟着
+  // 界面倍率走（项目口径见 ADR 0004；写成裸 px 就是回归）。
+  const hide = /@container \(max-width:\s*calc\((\d+)em \/ 13\)\)\s*\{([\s\S]*?)\n\}/.exec(css);
+  assert.ok(hide, "必须存在 `@container (max-width: calc(N em / 13))` 形式的自动关闭规则");
   const threshold = Number(hide[1]);
   assert.ok(
     threshold >= 340,
-    `自动关闭的阈值必须在 340px 以上（现在是 ${threshold}px）——正文要保住约 300px 才读得下去`,
+    `自动关闭的阈值必须在 340 以上（现在是 ${threshold} 设计像素）——正文要保住约 300 才读得下去`,
   );
   assert.ok(
     /\.turn-rail-slot/.test(hide[2]) && /display:\s*none/.test(hide[2]),
     "自动关闭规则要把 .turn-rail-slot 整个 display: none",
   );
   assert.ok(
-    /\.chat-pane \.chat-list/.test(hide[2]) && /padding-right:\s*6px/.test(hide[2]),
-    "自动关闭时预留条要一起撤掉（把 40px 还给正文），不能只藏横条",
+    /\.chat-pane \.chat-list/.test(hide[2]) && /padding-right:\s*calc\(6 \* var\(--dp\)\)/.test(hide[2]),
+    "自动关闭时预留条要一起撤掉（把 40 个设计像素还给正文），不能只藏横条",
   );
 
   // 减少动画：横条的入场淡入 / 脉冲 / 预览滑入 / 缓动都在抑制名单里
@@ -2306,5 +2339,141 @@ console.log("styles: 失败回显行的动作与原因 ✓");
   );
 }
 console.log("styles: 会话查找条的高亮与计数格 ✓");
+
+// ---------- 25. 界面尺度：几何量一律走设计像素，倍率只有一处真相 ----------
+//
+// 用户 2026-10-03 口径：界面以 13px 为基准设计，字号配置改了之后**元素尺寸**也要等比
+// 缩放。做法与理由见 docs/adr/0004-ui-scale-design-pixels.md。这里钉住的是「不这么做就
+// 会静默退化」的几件事——它们全都能通过编译、也看不出报错，只会在某个字号下悄悄走形。
+{
+  const tokens = readFileSync(join(process.cwd(), "src", "webview", "styles", "tokens.css"), "utf8");
+
+  // 倍率的**唯一真相**：由字号基准推出，13 是基准字号。写成别的数、或者挪到别处声明，
+  // 都会让「auto（13px）下与基准字号像素级一致」这条不变量失效。
+  const scaleRule = /--ui-scale:\s*calc\(var\(--font-size\)\s*\/\s*(\d+)px\)/.exec(tokens);
+  assert.ok(
+    scaleRule,
+    "tokens.css 必须在 :root 上由 --font-size 推出 --ui-scale（`calc(var(--font-size) / 13px)`）",
+  );
+  const baseFromCss = Number(scaleRule[1]);
+  assert.ok(
+    /--dp:\s*calc\(1px \* var\(--ui-scale\)\)/.test(tokens),
+    "tokens.css 必须定义 --dp = 1px × 倍率（几何量一律写成 calc(N * var(--dp))）",
+  );
+
+  // 倍率注册成 <number> 且初值 1：坏值退回「不缩放」而不是让每条用到它的声明整条失效
+  assert.ok(
+    /@property --ui-scale\s*\{[^}]*syntax:\s*"<number>"[^}]*inherits:\s*true[^}]*initial-value:\s*1[^}]*\}/.test(
+      tokens,
+    ),
+    "@property --ui-scale 必须注册成 <number>、inherits: true、initial-value: 1（坏值的兜底）",
+  );
+
+  // 尺度来源只有设计像素：rem 锚在 html 的 16px 上，不跟倍率走
+  for (const [name, text] of [
+    ["tokens.css", tokens],
+    ["app.css", css],
+  ] as const) {
+    const rem = /(?<![\w.])-?\d+(?:\.\d+)?rem/.exec(text);
+    assert.ok(!rem, `${name} 里不许再用 rem 写尺寸（"${rem?.[0]}"）——它不跟界面倍率走`);
+  }
+
+  // 圆角与代码字号都要跟倍率
+  assert.ok(
+    /--radius:\s*calc\(8 \* var\(--dp\)\)/.test(tokens) && /--radius-sm:\s*calc\(6 \* var\(--dp\)\)/.test(tokens),
+    "--radius / --radius-sm 必须按设计像素定义（8 / 6），否则圆角在字号变化时不动",
+  );
+  assert.ok(
+    /--mono-size:\s*max\(calc\(var\(--vscode-editor-font-size,[^)]*\) \* var\(--ui-scale\)\)/.test(tokens),
+    "--mono-size 的编辑器字号那一支要乘 --ui-scale（代码字号跟随倍率，界面字号那一支本身就是配置值）",
+  );
+
+  // 滚动条**不在**设计像素的账上：它由 VS Code 的主题决定宽度与配色，我们不自绘
+  // （口径与实测见上面第 35 段）。这条只钉「它没有被误拉进倍率体系」。
+
+  // 「量出来的尺寸」在字号变化后必须重量，而**变量要先于测量写上**：React 的 layout
+  // effect 是子先父后，写 `--font-size` 的是父（App）——写成 layout effect 的话，子组件
+  // 在同一个提交里量到的还是上一档字号，量完设成写死的 px，父组件随后改字号也不会让它
+  // 重算（用户 2026-10-03 报的「刚调完字体输入框偏矮、敲一个字才正常」）。所以 App 用
+  // insertion effect（早于所有 layout effect），而量高度的那个 effect 把倍率放进依赖。
+  const app = readFileSync(join(process.cwd(), "src", "webview", "App.tsx"), "utf8");
+  assert.ok(
+    /useInsertionEffect\(\(\) => \{[\s\S]{0,400}?--font-size[\s\S]{0,200}?\}, \[state\.fontSizePx\]\)/.test(app),
+    "App 必须用 useInsertionEffect 写 --font-size——layout effect 是子先父后，量尺寸的子组件会读到旧字号",
+  );
+  const composer = readFileSync(
+    join(process.cwd(), "src", "webview", "components", "Composer.tsx"),
+    "utf8",
+  );
+  assert.ok(
+    /\}, \[draft, chatScroll, uiScale\]\)/.test(composer),
+    "输入框自适应高度的 effect 必须把界面倍率放进依赖（否则改完字号停在旧高度）",
+  );
+
+  // JS 侧的倍率基准必须与 CSS 同一个数：两处分开写，只有断言能把它们钉在一起
+  const uiScaleTs = readFileSync(join(process.cwd(), "src", "webview", "uiScale.ts"), "utf8");
+  const baseFromTs = Number(/UI_SCALE_BASE_PX\s*=\s*(\d+)/.exec(uiScaleTs)?.[1]);
+  assert.strictEqual(
+    baseFromTs,
+    baseFromCss,
+    `uiScale.ts 的 UI_SCALE_BASE_PX（${baseFromTs}）必须与 tokens.css 里的基准字号（${baseFromCss}）一致`,
+  );
+
+  // 注释里的 `@container` 字样与示例写法都不算数：先抹成等长空白，扫描才干净
+  let masked = css;
+  for (let i = masked.indexOf("/*"); i >= 0; i = masked.indexOf("/*", i + 2)) {
+    const end = masked.indexOf("*/", i + 2);
+    const stop = end < 0 ? masked.length : end + 2;
+    masked = `${masked.slice(0, i)}${" ".repeat(stop - i)}${masked.slice(stop)}`;
+  }
+
+  // 所有宽度类断点都必须是 `calc(N em / 13)`：裸 px 的容器查询与任何宽度类媒体查询都不
+  // 跟着倍率走（媒体查询的 em 固定按初始 16px 算，所以那边没有可用写法）。
+  // 条件文本里自带括号（`calc(...)`），所以要按括号配对取，不能正则截到第一个 `)`。
+  const containerConds: string[] = [];
+  for (let i = masked.indexOf("@container"); i >= 0; i = masked.indexOf("@container", i + 1)) {
+    const open = masked.indexOf("(", i);
+    let depth = 0;
+    for (let j = open; j < masked.length; j += 1) {
+      if (masked[j] === "(") depth += 1;
+      else if (masked[j] === ")") {
+        depth -= 1;
+        if (depth === 0) {
+          containerConds.push(masked.slice(open + 1, j));
+          break;
+        }
+      }
+    }
+  }
+  assert.ok(containerConds.length >= 3, `宽度类容器查询至少三条（现在 ${containerConds.length} 条）`);
+  for (const cond of containerConds) {
+    assert.ok(
+      /^(max|min)-width:\s*calc\(\d+em \/ 13\)$/.test(cond),
+      `容器查询条件必须是 calc(N em / 13) 形式，现在是 "${cond}"——裸 px 不跟界面倍率走`,
+    );
+  }
+  assert.ok(
+    !/@media[^{]*\b(max|min)-width/.test(css),
+    "不许再有宽度类媒体查询：它的 em 固定按初始 16px 算，阈值不会跟倍率走（改用容器查询）",
+  );
+
+  // 几何属性上的裸 px：除白名单（线宽、0、视口/容器量）外一律判失败。
+  const LINE_WIDTH = /^(border|border-(top|right|bottom|left|block|inline)|border-width|outline|text-decoration-thickness)$/;
+  const offenders: string[] = [];
+  for (const decl of masked.matchAll(/(?:^|[;{}])\s*(-{0,2}[A-Za-z][\w-]*)\s*:\s*([^;{}]*)/g)) {
+    const [, prop, value] = decl;
+    if (!/\d(?:\.\d+)?px/.test(value)) continue;
+    if (LINE_WIDTH.test(prop)) continue; // 发丝线恒定，不是尺寸
+    for (const px of value.matchAll(/(?<![\w.])(-?\d+(?:\.\d+)?)px/g)) {
+      if (Number(px[1]) !== 0) offenders.push(`${prop}: ${value.trim()}`);
+    }
+  }
+  assert.deepStrictEqual(
+    offenders,
+    [],
+    `几何量必须写成 calc(N * var(--dp))（0px 与线宽除外），这些还是裸 px：\n${offenders.join("\n")}`,
+  );
+}
+console.log("styles: 界面尺度（设计像素 / 倍率 / 断点）✓");
 
 console.log("\nstyles: all assertions passed");

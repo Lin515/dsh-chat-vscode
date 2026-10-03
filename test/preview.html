@@ -40,6 +40,12 @@
         --vscode-editor-font-family: Consolas, monospace;
         --vscode-font-family: "Segoe UI", sans-serif;
         --vscode-font-size: 13px;
+        /* VS Code webview 的默认层里就有这一条（它们设在 html 上），必须复刻：
+           它一旦存在，Chromium 就用标准滚动条、把 `::-webkit-scrollbar*` 全部忽略。
+           少了它，预览里的滚动条会是我们自己画的那一种（10px、自绘滑块），与真机
+           的 15px 标准滚动条不是一回事——「规则看着是活的、真机上是死的」这个坑
+           就是预览页缺这一条造成的。两个颜色取自主题：滑块 + 轨道。 */
+        scrollbar-color: #4d4d4d80 #1e1e1e;
       }
       html,
       body {
@@ -321,6 +327,12 @@
         const query = new URLSearchParams(location.search);
         const connection = query.get("conn") || "ready";
         const flag = (name) => (query.get(name) === "1" ? true : undefined);
+        // 字号旋钮（`?font=16`）：只认整数 ≥8，其余（含 `0`）当 auto——与宿主的
+        // `readFontSize` 同口径，坏值一律回退「跟随基准字号」。
+        const fontKnob = () => {
+          const value = Number(query.get("font"));
+          return Number.isInteger(value) && value >= 8 ? value : undefined;
+        };
         // agent 预设目录（`agentPresets/list` 的 roster，形状照抄真实输出：随产品交付的四个
         // 是 `trust: "system"`、**不带 name/description**——展示名由客户端按语言给，
         // 见 src/webview/presetDisplay.ts；另加一条用户自己写的（带原文名字与描述）
@@ -445,8 +457,10 @@
           questionBatch: 3,
           // 连续过程折叠的阈值（`dshChat.turnProcessThreshold`）：默认 5。
           turnProcessThreshold: 5,
-          // 界面字号（整数 px，`dshChat.fontSize`）：undefined = auto（配置为 0 或坏值）
-          fontSizePx: undefined,
+          // 界面字号（整数 px，`dshChat.fontSize`）：undefined = auto（配置为 0 或坏值）。
+          // `?font=16` 直接看某一个字号下的整套尺度——走的是真实通路：宿主下发的就是
+          // 这个字段，界面自己据此写 `--font-size` 并推算倍率（见 src/webview/uiScale.ts）。
+          fontSizePx: fontKnob(),
           // 「加载更早」：跟随窗口只带 60 条，更早的内容从没进过客户端
           hasMoreHistory: true,
           // 轮次大纲（`turnOutline` 投影）：右侧轮次横条的数据源，形状按契约

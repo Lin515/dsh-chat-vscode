@@ -35,6 +35,7 @@ import { IconChevronRight, IconSearch } from "../icons";
 import { Markdown } from "./Markdown";
 import { Spinner } from "./primitives";
 import { useTexts } from "../texts";
+import { dp, useUiScale } from "../uiScale";
 
 /**
  * 空轮次列表的**稳定**引用。
@@ -57,10 +58,13 @@ import {
 /**
  * 检查器的默认宽度：官方是 `clamp(320px, 38%, 440px)`（相对面板宽算一个初值），
  * 拖动范围 320–720（官方 `clampDetailsWidth` 的 min/max）。
+ *
+ * 两个端点都是**设计像素**（按界面倍率换算）；`38%` 那一支量的是面板宽，是容器给的
+ * 物理像素，不乘倍率——同一把尺子上比大小，故先把设计像素换成实际像素再夹。
  */
-function defaultInspectorWidth(): number {
+function defaultInspectorWidth(scale: number): number {
   const panel = typeof window === "undefined" ? 480 : window.innerWidth;
-  return Math.min(440, Math.max(320, Math.round(panel * 0.38)));
+  return Math.min(dp(440, scale), Math.max(dp(320, scale), Math.round(panel * 0.38)));
 }
 
 /** 详情检查器的页签（官方 `detailTabs()` 的等价分支）。 */type TabId = "summary" | "payload" | "result" | "schema" | "timing" | "preview" | "raw" | "source" | "system-prompt" | "tools" | "diff" | "raw-output";
@@ -168,6 +172,7 @@ function Inspector({
   const [tab, setTab] = useState<TabId>("summary");
   const [history, setHistory] = useState<{ key: string; tab: TabId }>({ key: "", tab: "summary" });
   const resizing = useRef<{ x: number; width: number } | null>(null);
+  const scale = useUiScale();
   // 切记录时保留仍然可用的页签（官方 `tabHistory` 同口径），否则回到「概述」
   const key = `${cell.seq}:${cell.index}`;
   if (history.key !== key) {
@@ -348,8 +353,14 @@ function Inspector({
         onMouseMove={(event) => {
           const start = resizing.current;
           if (!start) return;
-          // 往左拖 = 变宽（把手在检查器左边缘）
-          onWidth(Math.min(720, Math.max(280, start.width - (event.clientX - start.x))));
+          // 往左拖 = 变宽（把手在检查器左边缘）。280–720 是设计像素；拖出来的宽度是物理
+          // 像素，超上限时由 .trajectory-details 的 max-width 再夹一次（容器夹子兜底）。
+          onWidth(
+            Math.min(
+              dp(720, scale),
+              Math.max(dp(280, scale), start.width - (event.clientX - start.x)),
+            ),
+          );
         }}
         onMouseUp={() => {
           resizing.current = null;
@@ -357,7 +368,7 @@ function Inspector({
         onMouseLeave={() => {
           resizing.current = null;
         }}
-        onDoubleClick={() => onWidth(defaultInspectorWidth())}
+        onDoubleClick={() => onWidth(defaultInspectorWidth(scale))}
       />
       <div className="trajectory-details-head">
         <span className="trajectory-details-title">
@@ -775,6 +786,7 @@ export function TrajectoryView({
   loadingEarlier: boolean;
 }) {
   const texts = useTexts();
+  const uiScale = useUiScale();
   const tt = useMemo(() => trajectoryTexts(locale), [locale]);
   const [collapsedTurns, setCollapsedTurns] = useState<ReadonlySet<number>>(new Set());
   const [collapsedCalls, setCollapsedCalls] = useState<ReadonlySet<number>>(new Set());
@@ -784,8 +796,9 @@ export function TrajectoryView({
   const [mode, setMode] = useState<TrajectoryTimelineMode>("sequence");
   /** 时间线上拖出来的选区（用来在账本里高亮那一段）。 */
   const [range, setRange] = useState<{ start: number; end: number } | null>(null);
-  /** 检查器宽度（官方那套 clamp(320, 38%, 440) 的初值 + 可拖到 280–720）。 */
-  const [inspectorWidth, setInspectorWidth] = useState(() => defaultInspectorWidth());
+  /** 检查器宽度（px）。官方那套 clamp(320, 38%, 440) 的初值 + 可拖到 280–720（设计像素）。
+      已经拖出来的宽度是用户的选择，字号改了不重算，只在下一次挂载/双击复位时取新倍率。 */
+  const [inspectorWidth, setInspectorWidth] = useState(() => defaultInspectorWidth(uiScale));
   /** 账本的滚动容器（时间线上的点选 / 框选要把对应的行滚进视野）。 */
   const ledgerRef = useRef<HTMLDivElement>(null);
   /**

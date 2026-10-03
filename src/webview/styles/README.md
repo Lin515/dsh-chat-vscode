@@ -8,9 +8,50 @@ webview 的两份 CSS。上一层的说明见 [../README.md](../README.md)。
 ## 字号口径
 
 用户可见文字的字号一律基于基准字号 `--font-size` 换算，不要硬编码 px/em。基准来自
-`dshChat.fontSize` 配置（auto 时取 VS Code 注入的字号），档位在 `tokens.css` 的 `.app`
-规则里派生：`--font-size-body` = 基准+1、`--font-size-sm` = 基准、`--font-size-xs` =
-基准−1、`--font-size-2xs` = 基准−2、`--mono-size` = max(编辑器字号, 基准−1)。
+`dshChat.fontSize` 配置（auto 时取 VS Code 注入的字号，恒为 13px），档位在 `tokens.css` 的
+`:root` 里派生：`--font-size-body` = 基准+1、`--font-size-sm` = 基准、`--font-size-xs` =
+基准−1、`--font-size-2xs` = 基准−2、`--mono-size` = max(编辑器字号 × 倍率, 基准−1)。
 新增文字必须引用这些档位 token；Markdown 内部标题的 em 倍数与个别固定小字（轨迹时间线
 的泳道标签等）是存量例外，新增类似取值前先确认无法用档位表达。
+
+## 尺寸口径
+
+整套界面尺寸按**设计像素**量：基准字号（13px）下量出来的那个数就是设计值，字号配置变化时
+按**界面倍率**（`--ui-scale` = 字号 ÷ 13）换算成实际像素。几何量一律写成
+`calc(N * var(--dp))`（`--dp` 是一个设计像素的实际长度），就近读作「N 个设计像素」。
+
+- **跟倍率**：间距 / 内边距 / 外边距 / gap、圆角、图标与固定小尺寸、设计宽高（含弹层宽高与
+  图片上限）、阴影与偏移、字距与位移、代码块字号。
+- **不跟倍率**：描边宽度与下划线厚度（发丝线是约定，不是尺寸）、容器量（`100%`、`vw`、`vh`、
+  `cqw`、JS 量出来写回的 `--turn-rail-*`）、纯容差（±1/±2px 的防抖与贴底判据）、时长、
+  **滚动条**（宽度与配色都由 VS Code 的主题决定，见下）。
+- **与容器比较的阈值跟倍率**（它们编码的是「内容需要多宽」）：容器查询写成
+  `calc(N em / 13)`——查询里的 `em` 相对**查询容器自身的字号**；宽度类媒体查询做不到这点
+  （`em` 固定按初始 16px），所以一条都不留。JS 侧的阈值（迷你模式、diff 双栏、检查器宽度）
+  从 `src/webview/uiScale.ts` 取倍率，倍率要进 effect 依赖。
+- **两处真相要对齐**：CSS 的倍率由 `tokens.css` 的 `:root` 推出（分母 13px），JS 的是
+  `uiScale.ts` 的 `UI_SCALE_BASE_PX`；`scripts/styles.test.ts` 钉住两者相等，也钉住
+  「几何属性上没有裸 px」。
+- **量出来的尺寸要重量、且变量先于测量写上**：有一批状态是 JS 量出来的（输入框的自适应
+  高度、工具栏档位、气泡是否超行、路径是否被裁…）。字号一变它们就该重量——把倍率放进
+  对应 effect 的依赖；而写 `--font-size` 的 App **必须用 `useInsertionEffect`**（早于所有
+  layout effect）。React 的 layout effect 是**子先父后**，写成 layout effect 的话子组件在
+  同一个提交里量到的还是上一档字号，量完设成写死的 px，父组件随后改字号也不会让它重算
+  （用户 2026-10-03 报的「刚调完字体输入框偏矮、敲一个字才正常」就是这个顺序）。
+
+图片浮层与右键菜单刻意挂在 `.app` 之外（全屏定位层），所以设计 token 声明在 `:root` 上、
+字号覆盖也写在根元素上——派生声明与覆盖点必须同一级（自定义属性的 `var()` 在声明处求值）。
+决策与理由见 [docs/adr/0004-ui-scale-design-pixels.md](../../../docs/adr/0004-ui-scale-design-pixels.md)。
+
+## 预览页看不见的那些默认样式
+
+`test/preview.html` 复刻的是 VS Code 注入的主题变量，但**默认样式层**
+（`@layer vscode-default`）里的规则得一条条自己补：漏一条，预览里就会有东西与真机不是一回事，
+而且方向是「预览里活、真机上死」，很难发现。
+
+- **`scrollbar-color`**（设在 `html` 上，会继承）：一旦存在，Chromium 就改用标准滚动条并
+  **忽略 `::-webkit-scrollbar*` 整组规则**。预览页必须复刻它，否则预览里显示的是我们自己画的
+  滚动条（10px、自绘滑块），真机上是 15px 的标准滚动条。本仓因此**不自绘滚动条**：宽度、
+  形状、配色全交给 VS Code 的主题。`scripts/styles.test.ts` 钉住这两件事（不许有自绘规则、
+  预览必须有 `scrollbar-color`）。
 

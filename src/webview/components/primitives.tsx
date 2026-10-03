@@ -10,6 +10,7 @@ import {
 import { IconChevronRight } from "../icons";
 import { splitPath } from "../pathDisplay";
 import { useTexts } from "../texts";
+import { dpLength } from "../uiScale";
 
 /**
  * 元素的内容是否**真的被裁**（内容的布局宽度超过可见宽度）。
@@ -385,7 +386,11 @@ export function CtxRing({
       data-used={used}
       data-total={total}
     >
-      <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+      <svg
+        style={{ width: dpLength(16), height: dpLength(16) }}
+        viewBox="0 0 16 16"
+        aria-hidden="true"
+      >
         <circle className="ctx-ring-track" cx="8" cy="8" r={radius} />
         <circle
           className="ctx-ring-value"
@@ -405,8 +410,7 @@ export function Spinner({ size = 12 }: { size?: number }) {
   return (
     <svg
       className="spinner"
-      width={size}
-      height={size}
+      style={{ width: dpLength(size), height: dpLength(size) }}
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"

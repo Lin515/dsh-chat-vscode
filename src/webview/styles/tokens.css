@@ -89,10 +89,9 @@
   --badge-bg: var(--vscode-badge-background, #4d4d4d);
   --badge-fg: var(--vscode-badge-foreground, #ffffff);
 
-  /* ---- geometry: 0.5rem 的圆角基准与最小标签字号，是让整套 chrome 显得柔和的
-     两个尺度 ---- */
-  --radius: 0.5rem;
-  --radius-sm: 0.375rem;
+  /* ---- geometry ----
+     圆角不走 rem：rem 锚在 html 的 16px 上，不随界面倍率走。两个圆角尺度按设计像素
+     定义在下面的界面尺度块里。`--radius-pill` 是「无限圆」的哨兵值，不是尺寸。 */
   --radius-pill: 999px;
 
   --font-family: var(
@@ -102,10 +101,31 @@
     system-ui,
     sans-serif
   );
-  /* 字号基准：auto 取 VS Code 注入的字号；用户填了具体像素时由 App.tsx 写到
-     .app 上覆盖它。整套派生尺度在下面的 .app 规则里——自定义属性的 var()
-     在**声明处**求值，写在 :root 会永远钉死在根上的基准值，档位覆盖失效。 */
+  /* 字号基准：auto 取 VS Code 注入的字号；用户填了具体像素时由 App.tsx 写到**根元素**上
+     覆盖它（派生尺度都在下面这一块，与覆盖点同一级——自定义属性的 var() 在**声明处**
+     求值，分居两级就会永远用错那个值）。 */
   --font-size: var(--vscode-font-size, 13px);
+
+  /* ---- 界面尺度（见 docs/adr/0004-ui-scale-design-pixels.md）----
+     整套界面尺寸都按**设计像素**量：`--dp` 是一个设计像素的实际长度，几何量写成
+     `calc(N * var(--dp))`。倍率由字号基准推出，所以 auto（13px）时倍率恰好是 1，
+     界面与基准字号下像素级一致。
+
+     挂在 :root 而不是 `.app`：图片浮层与右键菜单刻意挂在 `.app` 之外（全屏定位层），
+     它们同样要用这些 token。 */
+  --ui-scale: calc(var(--font-size) / 13px);
+  --dp: calc(1px * var(--ui-scale));
+  --radius: calc(8 * var(--dp));
+  --radius-sm: calc(6 * var(--dp));
+  /* 文本档位：基准 13px 时解算为 body 14 / sm 13 / xs 12 / 2xs 11。它们是**字号**，
+     由字号基准直接决定，不再乘倍率（乘了就缩放两次）。 */
+  --font-size-body: calc(var(--font-size) + 1px);
+  --font-size-2xs: calc(var(--font-size) - 2px);
+  --font-size-xs: calc(var(--font-size) - 1px);
+  --font-size-sm: var(--font-size);
+  /* 代码字号跟随编辑器字号**与界面倍率**：今天「代码比正文略大」的关系在任何倍率下都
+     保住；倍率 ≤1 时它只被界面字号顶起来（界面字号本身就是配置值）。 */
+  --mono-size: max(calc(var(--vscode-editor-font-size, 12px) * var(--ui-scale)), calc(var(--font-size) - 1px));
   --mono: var(
     --vscode-editor-font-family,
     "SF Mono",
@@ -121,9 +141,8 @@
   box-sizing: border-box;
 }
 
-/* rem 必须锚定 16px：VS Code 会把 --vscode-font-size 注入到根字号上，
-   若直接拿它当根字号，0.6875rem 这类 token 会跟着缩水（11px 变 8.9px、
-   0.5rem 圆角变 6.5px），整套尺度都会走形。字号只作用于 body。 */
+/* rem 不是尺度来源（尺度一律走设计像素），这里锚定 16px 只是把根字号钉死：万一将来有人
+   拿 rem 写尺寸，它至少是个常数，不会被别处的根字号改动带着走。字号只作用于 body。 */
 html {
   font-size: 16px;
 }
@@ -143,18 +162,17 @@ body {
   font-size: var(--font-size);
 }
 
-/* 文本尺度从 --font-size 基准派生（Continue 的 getFontSize() + n 做法）。
-   必须写在 .app 上：自定义属性的 var() 在**声明处**求值，写在 :root 会永远
-   钉死在根上的基准值，App.tsx 在 .app 上的字号覆盖（inline --font-size）
-   就传不进来了。基准 13px 时解算为 body 14 / sm 13 / xs 12 / 2xs 11——
-   与原先的写死值相同；用户填的任意整数像素（≥8）让整套尺度一起移动。 */
-.app {
-  --font-size-body: calc(var(--font-size) + 1px);
-  --font-size-2xs: calc(var(--font-size) - 2px);
-  --font-size-xs: calc(var(--font-size) - 1px);
-  --font-size-sm: var(--font-size);
-  /* 代码字号跟随编辑器字号；固定档位只会把它抬高，不会压到编辑器字号之下。 */
-  --mono-size: max(var(--vscode-editor-font-size, 12px), calc(var(--font-size) - 1px));
+/* 界面倍率：当前字号相对**基准字号** 13px 的比值。13px 既是整套界面尺寸的设计基准，
+   也是 VS Code 给 webview 注入的 `--vscode-font-size`（它不随 editor.fontSize 变），
+   所以字号配置为 0（auto）时倍率恰好是 1，界面与基准字号下像素级一致。
+
+   注册成 <number> 且初值 1：倍率拿到坏值（手写 settings.json、将来改错写法）时退回
+   「不缩放」。未注册的自定义属性没有这层保护——坏值会让**每条**用到它的声明整条失效
+   （`padding: auto` 那种），数百处里等于布局全乱。 */
+@property --ui-scale {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 1;
 }
 
 #root {
@@ -187,41 +205,13 @@ a {
   color: var(--link);
 }
 
-::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
-}
+/* 滚动条**不归我们画**：VS Code 的默认层给 html 写了 `scrollbar-color`，而它一旦存在，
+   Chromium 就改用标准滚动条、把 `::-webkit-scrollbar*` 整组规则全部忽略（实测：同一条
+   `::-webkit-scrollbar{width:30px}` 在没有 `scrollbar-color` 时是 30px，有了就变回 15px；
+   `scrollbar-width: thin` 则压到 10px）。宽度、形状、配色因此都由 VS Code 的主题决定，
+   10px 那种自绘宽度是**死代码**——删掉，别在这里做尺寸或配色。
 
-::-webkit-scrollbar-thumb {
-  background: var(--vscode-scrollbarSlider-background, #4d4d4d80);
-  border-radius: var(--radius-pill);
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background: var(--vscode-scrollbarSlider-hoverBackground, #64646480);
-}
-
-::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-/* 右下角那个「可拉动」的角，以及滚动条拐角。
-   Chromium 在深色主题下给这一小块画的是一块**实心白底**（实测 #efefef），本项目的
-   滚动条轨道又是透明的，所以元素一出现垂直滚动条，右下角就冒出一块白方块（用户
-   2026-09-15 报的「问卷自定义回答的编辑框一出现滚动条，右下角的可拉动标志就变成
-   白底」就是它）。
-   底色一律清成透明——**但清掉之后 UA 那点提示也没了**（那一块本来就是它画的），
-   所以拉伸角用主题色自己补两道斜线：看得见能拉，又没有白底。 */
-::-webkit-scrollbar-corner {
-  background-color: transparent;
-}
-
-::-webkit-resizer {
-  background-color: transparent;
-  background-image:
-    linear-gradient(135deg, transparent 40%, var(--muted) 40% 52%, transparent 52%),
-    linear-gradient(135deg, transparent 40%, var(--muted) 40% 52%, transparent 52%);
-  background-repeat: no-repeat, no-repeat;
-  background-position: right bottom, right bottom;
-  background-size: 10px 10px, 6px 6px;
-}
+   真机上看起来仍像 VS Code：颜色来自 `scrollbar-color` 的两个主题色（滑块 + 轨道），
+   拐角与拉伸角也由标准路径按轨道色绘制，所以历史上的「右下角白方块」不会再出现。
+   预览页要复刻这条 `scrollbar-color`（见 test/preview.html），否则预览里会显示成
+   「我们自己画的滚动条」，与真机不一致——这个盲区曾让一条死规则看起来是活的。 */

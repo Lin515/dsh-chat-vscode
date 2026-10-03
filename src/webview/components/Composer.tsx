@@ -38,6 +38,7 @@ import { bottomGap, type AutoScrollPort } from "../autoScroll";
 import { queueDisplayOrder, queueItemHasAttachments } from "../queueOrder";
 import { segmentColumns } from "../segment";
 import { fill, resolveText, useTexts } from "../texts";
+import { useUiScale } from "../uiScale";
 import { BAR_ORDER, pickVariants, type ToolbarVariant } from "../toolbarFit";
 
 /**
@@ -258,6 +259,12 @@ export function Composer({
   /** Auto review 警告里的「我已了解这些风险」勾选（官方 `RiskConfirmation` 要求先勾才能确认）。 */
   const [acknowledged, setAcknowledged] = useState(false);
   const texts = useTexts();
+  /**
+   * 界面倍率（设计像素 → 实际像素）。输入框的**自适应高度**要用它当依赖：那个高度是
+   * 量 `scrollHeight` 得来的，而字号一变，同一个草稿的行高与内边距都变了——不重算就会
+   * 停在旧倍率的那个值上（用户 2026-10-03 报的「刚调完字体，输入框偏矮，敲一个字才正常」）。
+   */
+  const uiScale = useUiScale();
   // 目录说「这个部署有 Auto review 这一档」才列出来；当前值已经是 `auto` 时也列
   // （目录那一次请求可能失败或还没回来，而此时会话确实停在那一档上，不列的话胶囊
   // 会退回显示别的档位——假结论）。判据合成一处，列表与胶囊读同一份。
@@ -330,7 +337,7 @@ export function Composer({
       // ——直接在这里钉住（贴底 ≤1px 时意愿必为跟随，与 settle 的裁定同源）。
       if (bottomGap(pane) > 0) pane.scrollTop = pane.scrollHeight;
     }
-  }, [draft, chatScroll]);
+  }, [draft, chatScroll, uiScale]);
 
   // 运行结束后把焦点还给输入框
   useEffect(() => {

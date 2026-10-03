@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useInsertionEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ChatState, MessageView } from "../shared/chat";
 import type { HostToWebview } from "../shared/ipc";
 import { persistIdentity, post, subscribe } from "./bridge";
@@ -24,6 +24,7 @@ import {
 } from "./pendingMessage";
 import { attachDroppedFiles, attachPastedFiles, clipboardFiles, dragHasFiles } from "./attachIntake";
 import { setLocalImageScope } from "./localImages";
+import { dp, dpLength, uiScaleOf, UiScaleContext } from "./uiScale";
 import { TurnRail } from "./components/TurnRail";
 import { useTurnRailItems, useTurnRailNav } from "./turnRailNav";
 import {
@@ -162,7 +163,12 @@ function Header({
 
 function BrandMark() {
   return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <svg
+      style={{ width: dpLength(14), height: dpLength(14) }}
+      viewBox="0 0 24 24"
+      fill="none"
+      aria-hidden="true"
+    >
       <path
         d="M4 5.5A2.5 2.5 0 0 1 6.5 3h11A2.5 2.5 0 0 1 20 5.5v8a2.5 2.5 0 0 1-2.5 2.5H10l-4.2 3.4A.6.6 0 0 1 5 18.9V16h-.5A.5.5 0 0 1 4 15.5v-10Z"
         stroke="currentColor"
@@ -685,29 +691,48 @@ export function App() {
     historyLoading: state.historyLoading === true,
     loadThrough,
   });
-  // 迷你模式：.app 宽度 < 220px 时收成图标条（滞回 ≥232 恢复），由 Composer 测宽后同步到这里
+  // 迷你模式：.app 宽度 < 220 个设计像素时收成图标条（滞回 ≥232 恢复），由 Composer 测宽后
+  // 同步到这里。阈值按设计像素算——量到的宽度是容器给的物理像素，而「装不下」这件事随界面
+  // 倍率变，所以倍率进 effect 依赖：字号一改就重判一次。
   const appRef = useRef<HTMLDivElement>(null);
   const [mini, setMini] = useState(false);
+  // JS 侧的界面倍率（阈值、拖动范围、按序号算的位置）：与 CSS 同一个数，见 uiScale.ts
+  const uiScale = uiScaleOf(state.fontSizePx);
   useEffect(() => {
     const el = appRef.current;
     if (!el) return;
-    const check = () => setMini((prev) => (prev ? el.clientWidth < 232 : el.clientWidth < 220));
+    const check = () =>
+      setMini((prev) =>
+        prev ? el.clientWidth < dp(232, uiScale) : el.clientWidth < dp(220, uiScale),
+      );
     check();
     const observer = new ResizeObserver(check);
     observer.observe(el);
     return () => observer.disconnect();
-  }, []);
+  }, [uiScale]);
   // 文案跟随 VS Code 显示语言（或 `dshChat.language` 的固定选择）；
   // 词典随语言切换而重建，界面即时更新
   const texts = dictionaryFor(normalizeLocale(state.locale));
   // 会话正文与图片的右键菜单：换成自绘的「复制 / 引用」「复制 / 保存」
   // （判据在 `contextMenu.ts`；输入框这类可编辑元素仍走系统菜单，否则粘贴就没了）
   usePageContextMenu(dispatch, texts);
-  // 字号：只写一个 CSS 变量，整套文本尺度从它派生（tokens.css）。
-  // 0（auto）时不下发像素值，`--font-size` 继续取 VS Code 注入的 `--vscode-font-size`。
-  const fontStyle = state.fontSizePx
-    ? ({ "--font-size": `${state.fontSizePx}px` } as CSSProperties)
-    : undefined;
+  // 字号：只写一个 CSS 变量，整套文本与尺寸尺度从它派生（tokens.css）。
+  // 0（auto）时清掉覆盖，`--font-size` 回落 VS Code 注入的 `--vscode-font-size`。
+  //
+  // 写在**根元素**上而不是 `.app`：图片浮层与右键菜单刻意挂在 `.app` 之外（全屏定位层），
+  // 它们也要拿到派生尺度；派生声明与覆盖点必须在同一级（自定义属性的 var() 在声明处求值）。
+  //
+  // **必须是 insertion effect**（在变更阶段、所有 layout effect 之前触发），不能是
+  // layout effect：有一批子组件在 layout effect 里**量尺寸**（输入框的自适应高度、
+  // 工具栏档位、气泡是否超行…），而 React 的 layout effect 是**子先父后**——写成 layout
+  // effect 的话，子组件量到的还是上一档字号，量完设成写死的 px，父组件随后改字号也不会
+  // 让它重算（用户 2026-10-03 报的「刚调完字体输入框偏矮、敲一个字才正常」就是它）。
+  // insertion effect 同时早于绘制，配置了字号也不会闪一帧基准字号。
+  useInsertionEffect(() => {
+    const root = document.documentElement;
+    if (state.fontSizePx) root.style.setProperty("--font-size", `${String(state.fontSizePx)}px`);
+    else root.style.removeProperty("--font-size");
+  }, [state.fontSizePx]);
   const closePanel = () => dispatch({ type: "ui/setPanel", panel: "none" });
 
   // 下面的监听只在挂载时注册一次，running 用 ref 读，避免闭包里是首帧的旧值
@@ -807,10 +832,11 @@ export function App() {
     <TextsContext.Provider value={texts}>
       {/* 语言本身也下一层：服务端给的本地化文案（审批的 displayReason）要在渲染时按它挑 */}
       <LocaleContext.Provider value={state.locale}>
+      {/* 界面倍率也下一层：要按设计像素算尺寸的组件（阈值、拖动范围、刻点位置）从它取 */}
+      <UiScaleContext.Provider value={uiScale}>
       <div
         ref={appRef}
         className={`app${mini ? " is-mini" : ""}${state.panel === "trajectory" ? " is-trajectory" : ""}`}
-        style={fontStyle}
       >
         <Header state={state} dispatch={dispatch} />
         <ConnectionBar state={state} />
@@ -994,6 +1020,7 @@ export function App() {
       {/* 右键菜单浮层：同样是全屏定位层，且要盖在原图浮层之上（在原图上点右键时
           它就是弹在原图上） */}
       <ContextMenuLayer />
+      </UiScaleContext.Provider>
       </LocaleContext.Provider>
     </TextsContext.Provider>
   );

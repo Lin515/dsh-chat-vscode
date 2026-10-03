@@ -2,12 +2,13 @@ import { memo, useEffect, useId, useLayoutEffect, useRef, useState, type CSSProp
 import type { TurnRailItem } from "../turnRail";
 import { userPromptCount } from "../turnRail";
 import { useTexts } from "../texts";
+import { dp, useUiScale } from "../uiScale";
 
 /**
  * 右侧轮次横条（官方 Web UI 的 `TurnNavigator` 移植，见
  * `packages/client/ui-chat/src/client/chat/TurnNavigator.tsx`）：
  *
- * - 每一轮一枚**固定间距**的刻点（相隔 10px，右缘一列短横线）；
+ * - 每一轮一枚**固定间距**的刻点（相隔 10 个设计像素，右缘一列短横线）；
  * - **悬停 / 键盘聚焦**给出预览卡：一行提示词 + 三行响应；
  * - **点击**跳到那一轮（未加载的先取历史再落位，由父级处理，这里只上报）；
  * - 阶梯比框高时在框**内部**滚动，两端用渐变淡出提示「还能往这个方向滚」；
@@ -16,6 +17,9 @@ import { useTexts } from "../texts";
  * 两条与官方一致的关键实现：刻点本体 `pointer-events: none`——**整列**的指针
  * 输入归 `<nav>` 所有，按 Y 坐标换算出刻点（悬停预览与点击都是这套换算）；
  * 外层槽位是 **sticky + 零高度**——横条浮在正文右缘而不把 scrollHeight 撑长。
+ *
+ * 下面三个常量都是**设计像素**：倍率一变，刻点间距/内缩/淡出带一起换算——它们与
+ * 横条自身的盒宽（CSS 侧同样按 `--dp`）必须保持同一套尺度，否则命中换算会错位。
  */
 const TURN_SPACING_PX = 10;
 /** 上下两端各留的空隙（刻点不贴框）。 */
@@ -31,14 +35,14 @@ type TurnFrameStyle = CSSProperties & {
   readonly "--turn-scroll-top": string;
 };
 
-function itemPosition(index: number): TurnPositionStyle {
-  return { "--turn-natural-position": `${String(index * TURN_SPACING_PX)}px` };
+function itemPosition(index: number, spacing: number): TurnPositionStyle {
+  return { "--turn-natural-position": `${String(index * spacing)}px` };
 }
 
-function frameStyle(count: number, scrollTop: number): TurnFrameStyle {
+function frameStyle(count: number, scrollTop: number, spacing: number, inset: number): TurnFrameStyle {
   return {
-    "--turn-natural-height": `${String((count - 1) * TURN_SPACING_PX + 2 * RAIL_INSET_PX)}px`,
-    "--turn-rail-inset": `${String(RAIL_INSET_PX)}px`,
+    "--turn-natural-height": `${String((count - 1) * spacing + 2 * inset)}px`,
+    "--turn-rail-inset": `${String(inset)}px`,
     "--turn-scroll-top": `${String(scrollTop)}px`,
   };
 }
@@ -48,10 +52,12 @@ function itemAtPointer(
   frame: HTMLElement,
   scrollTop: number,
   clientY: number,
+  spacing: number,
+  inset: number,
 ): TurnRailItem | undefined {
   const rect = frame.getBoundingClientRect();
-  const offset = clientY - rect.top + scrollTop - RAIL_INSET_PX;
-  const index = Math.max(0, Math.min(items.length - 1, Math.round(offset / TURN_SPACING_PX)));
+  const offset = clientY - rect.top + scrollTop - inset;
+  const index = Math.max(0, Math.min(items.length - 1, Math.round(offset / spacing)));
   return items[index];
 }
 
@@ -89,6 +95,11 @@ function TurnNavigatorRail({
   onNavigate: (item: TurnRailItem) => void;
 }) {
   const texts = useTexts();
+  const scale = useUiScale();
+  /** 刻点间距 / 内缩 / 淡出带：设计像素按当前倍率换算（量出来的 Y 坐标是物理像素）。 */
+  const spacing = dp(TURN_SPACING_PX, scale);
+  const inset = dp(RAIL_INSET_PX, scale);
+  const fade = dp(FADE_PX, scale);
   const [previewTurn, setPreviewTurn] = useState<number | null>(null);
   const [scrollState, setScrollState] = useState<RailScrollState>(RAIL_AT_REST);
   const scrollerRef = useRef<HTMLDivElement | null>(null);
@@ -147,10 +158,10 @@ function TurnNavigatorRail({
     const scroller = scrollerRef.current;
     const index = items.findIndex((item) => item.turn === activeTurn);
     if (scroller === null || index < 0 || pointerInsideRef.current) return;
-    const markTop = index * TURN_SPACING_PX + RAIL_INSET_PX;
+    const markTop = index * spacing + inset;
     const viewTop = scroller.scrollTop;
     const viewHeight = scroller.clientHeight;
-    if (viewHeight <= 0 || (markTop >= viewTop + FADE_PX && markTop <= viewTop + viewHeight - FADE_PX)) return;
+    if (viewHeight <= 0 || (markTop >= viewTop + fade && markTop <= viewTop + viewHeight - fade)) return;
     const target = Math.max(0, markTop - viewHeight / 2);
     const reduced = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
     if (typeof scroller.scrollTo === "function") {
@@ -159,19 +170,19 @@ function TurnNavigatorRail({
       scroller.scrollTop = target;
     }
     syncScrollState();
-  }, [activeTurn, items]);
+  }, [activeTurn, items, spacing, inset, fade]);
 
   if (!rendered) return null;
   const previewIndex = items.findIndex((item) => item.turn === previewTurn);
   const preview = previewIndex < 0 ? undefined : items[previewIndex];
-  const previewPosition = previewIndex < 0 ? undefined : itemPosition(previewIndex);
+  const previewPosition = previewIndex < 0 ? undefined : itemPosition(previewIndex, spacing);
   const previewAtPointer = (event: PointerEvent<HTMLElement>): void => {
     const scrollTop = scrollerRef.current?.scrollTop ?? 0;
-    setPreviewTurn(itemAtPointer(items, event.currentTarget, scrollTop, event.clientY)?.turn ?? null);
+    setPreviewTurn(itemAtPointer(items, event.currentTarget, scrollTop, event.clientY, spacing, inset)?.turn ?? null);
   };
   const navigateAtPointer = (event: MouseEvent<HTMLElement>): void => {
     const scrollTop = scrollerRef.current?.scrollTop ?? 0;
-    const item = itemAtPointer(items, event.currentTarget, scrollTop, event.clientY);
+    const item = itemAtPointer(items, event.currentTarget, scrollTop, event.clientY, spacing, inset);
     if (item !== undefined) onNavigate(item);
   };
   const fadeClasses = ["turn-rail-scroller"];
@@ -181,7 +192,7 @@ function TurnNavigatorRail({
     <div ref={slotRef} className="turn-rail-slot">
       <nav
         className="turn-rail-frame"
-        style={frameStyle(items.length, scrollState.top)}
+        style={frameStyle(items.length, scrollState.top, spacing, inset)}
         aria-label={texts.turnRailLabel}
         onClick={navigateAtPointer}
         onPointerMove={previewAtPointer}
@@ -204,7 +215,7 @@ function TurnNavigatorRail({
               else if (showingPreview) classes.push("is-preview");
               if (item.turn === busyTurn) classes.push("is-busy");
               return (
-                <div key={item.turn} className="turn-rail-mark-pos" style={itemPosition(index)}>
+                <div key={item.turn} className="turn-rail-mark-pos" style={itemPosition(index, spacing)}>
                   <button
                     type="button"
                     className={classes.join(" ")}
