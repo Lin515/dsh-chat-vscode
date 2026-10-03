@@ -3442,7 +3442,7 @@ button.meta-chip:hover {
   border: 1px solid var(--command-border);
   border-radius: var(--radius);
   background: var(--input-bg);
-  font-size: var(--font-size-2xs);
+  font-size: var(--font-size-body);
   color: var(--description);
 }
 
@@ -4824,7 +4824,7 @@ button.meta-chip:hover {
   border: 0;
   background: none;
   color: var(--input-fg);
-  font-size: var(--font-size-2xs);
+  font-size: var(--font-size-body);
   outline: none;
 }
 
@@ -4855,7 +4855,7 @@ button.meta-chip:hover {
   width: 100%;
   border-collapse: collapse;
   table-layout: fixed;
-  font-size: var(--font-size-2xs);
+  font-size: var(--font-size-body);
 }
 
 .trajectory-col-event {
@@ -4916,14 +4916,14 @@ button.meta-chip:hover {
 .trajectory-index {
   color: var(--muted);
   font-family: var(--mono);
-  font-size: var(--font-size-2xs);
+  font-size: var(--font-size-body);
 }
 
 .trajectory-turn-label {
   display: block;
   color: var(--description);
   font-family: var(--mono);
-  font-size: var(--font-size-2xs);
+  font-size: var(--font-size-body);
 }
 
 .trajectory-kind {
@@ -4934,7 +4934,7 @@ button.meta-chip:hover {
      七种记录各一份、不用手写七条。 */
   background: color-mix(in srgb, currentColor 14%, transparent);
   color: var(--description);
-  font-size: 10px;
+  font-size: var(--font-size-2xs);
   font-weight: 650;
   letter-spacing: 0.02em;
   /* 列宽固定 + 英文标签更长：允许收缩并以省略号收尾，不顶出列（见上一条注释） */
@@ -5035,7 +5035,7 @@ button.meta-chip:hover {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: var(--font-size-2xs);
+  font-size: var(--font-size-body);
   color: var(--description);
 }
 
@@ -5054,7 +5054,7 @@ button.meta-chip:hover {
   border-radius: var(--radius-pill);
   background: none;
   color: var(--muted);
-  font-size: var(--font-size-2xs);
+  font-size: var(--font-size-body);
   white-space: nowrap;
   cursor: pointer;
 }
@@ -5083,7 +5083,7 @@ button.meta-chip:hover {
   display: flex;
   align-items: baseline;
   gap: 6px;
-  font-size: var(--font-size-2xs);
+  font-size: var(--font-size-body);
 }
 
 .trajectory-detail-label {
@@ -5115,22 +5115,22 @@ button.meta-chip:hover {
   background: var(--code-bg);
   color: var(--fg);
   font-family: var(--mono);
-  font-size: var(--font-size-2xs);
+  font-size: var(--font-size-body);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
 .trajectory-empty {
   color: var(--muted);
-  font-size: var(--font-size-2xs);
+  font-size: var(--font-size-body);
 }
 
 .trajectory-markdown {
-  font-size: var(--font-size-2xs);
+  font-size: var(--font-size-body);
 }
 
 .trajectory-tool {
-  font-size: var(--font-size-2xs);
+  font-size: var(--font-size-body);
 }
 
 .trajectory-tool-desc {
@@ -5159,7 +5159,7 @@ button.meta-chip:hover {
 .trajectory-overview-heading {
   margin: 0;
   color: var(--description);
-  font-size: var(--font-size-2xs);
+  font-size: var(--font-size-body);
   font-weight: 600;
 }
 
@@ -5215,7 +5215,7 @@ button.meta-chip:hover {
   border-bottom: 1px solid var(--border);
   background: none;
   color: var(--muted);
-  font-size: var(--font-size-2xs);
+  font-size: var(--font-size-body);
   white-space: nowrap;
   cursor: pointer;
 }
@@ -5336,7 +5336,7 @@ button.meta-chip:hover {
   align-items: center;
   justify-content: center;
   color: var(--muted);
-  font-size: var(--font-size-2xs);
+  font-size: var(--font-size-body);
   pointer-events: none;
 }
 
