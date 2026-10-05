@@ -14,21 +14,26 @@
  * 读出各自的实际宽度，再按本文件的优先级表分配。窗口宽度、文案长度、字号、
  * 语言全都自动被这一步吃掉，源码里没有一个「多少像素该藏谁」的常数。
  *
- * ## 优先级表（用户 2026-09-14 口径，2026-09-22 补「同档内从左至右」与预设标签）
+ * ## 优先级表（用户 2026-09-14 口径，2026-09-22 补「同档内从左至右」与预设标签，
+ *    2026-10-06 按用户口径把上下文圆环提为最高优先级）
  *
- * - P0 **始终显示**：权限按钮（只有图标）、模型切换按钮、发送按钮（`pinned`，装不下也留）；
- * - P1 次优先：思考强度（模型右侧）、附件、tps、上下文占用（只显示圆环）；
+ * - P0 **始终显示**：上下文占用圆环（最高优先级）、权限按钮（只有图标）、模型切换按钮、
+ *   发送按钮（`pinned`，装不下也留）；
+ * - P1 次优先：思考强度（模型右侧）、附件、tps；
  * - P2 最低：权限按钮的文字说明、agent 预设标签、上下文圆环右侧的精确数值、
  *   模型胶囊的 `提供商/模型名` 全格式档（P2 末位）。
  *
  * **同一档内部按元素在工具栏里的左右次序定优先级**（用户 2026-09-22 口径）：
- * 越靠左越先保住。P0/P1 本来就是这个次序写的；P2 的三项则分别落在左端（权限文字）、
+ * 越靠左越先保住。P1 本来就是这个次序写的；P2 的三项则分别落在左端（权限文字）、
  * 中段（预设标签）、右端（上下文数值），所以最后回来的那一项是**左右次序上最右**的
  * 上下文数值，而不是后加进来的预设标签。改元素位置就是改这一档的内部次序，
  * `scripts/toolbarFit.test.ts` 会拿 Composer 的渲染次序对照本表。
+ * P0 是例外：圆环虽然在右半区，但「始终显示」是用户口径定的最高优先级，
+ * P0 内部的 rank 次序不代表左右位置。
  *
- * 同槽位的 `context` 必须按 rank 递增（先环、后环+数值），`permission` 同理
- * （先图标、后图标+文字）——算法是「按 rank 从低到高逐档升级」，
+ * 「始终显示」只针对**圆圈图标本身**：同槽位的数值档（环右侧的精确数值）仍留在 P2，
+ * 按原来的低优先级回来。同槽位的 `context` 必须按 rank 递增（先环、后环+数值），
+ * `permission` 同理（先图标、后图标+文字）——算法是「按 rank 从低到高逐档升级」，
  * 档位不递增就再也升不上去。
  */
 
@@ -58,22 +63,24 @@ export const BAR_ORDER: readonly {
   rank: number;
   pinned?: boolean;
 }[] = [
-  // P0 —— 始终显示
-  { slot: "permission", level: "icon", rank: 0, pinned: true },
-  { slot: "model", level: "full", rank: 1, pinned: true },
-  { slot: "send", level: "full", rank: 2, pinned: true },
+  // P0 —— 始终显示（用户 2026-10-06 口径：上下文圆环提为最高优先级）
+  { slot: "context", level: "ring", rank: 0, pinned: true },
+  { slot: "permission", level: "icon", rank: 1, pinned: true },
+  { slot: "model", level: "full", rank: 2, pinned: true },
+  { slot: "send", level: "full", rank: 3, pinned: true },
   // P1 —— 次优先
-  { slot: "effort", level: "full", rank: 3 },
-  { slot: "attach", level: "full", rank: 4 },
-  { slot: "tps", level: "full", rank: 5 },
-  { slot: "context", level: "ring", rank: 6 },
+  { slot: "effort", level: "full", rank: 4 },
+  { slot: "attach", level: "full", rank: 5 },
+  { slot: "tps", level: "full", rank: 6 },
   // P2 —— 最低（三项都是「把已有信息写详细一点」或纯文字，故排在最后；
   //        档内次序 = 左右次序：左端的权限文字 → 中段的预设标签 → 右端的上下文数值）
   { slot: "permission", level: "label", rank: 7 },
   { slot: "preset", level: "full", rank: 8 },
+  // 数值档留在 P2（用户 2026-10-06 口径）：「始终显示」只指圆环本身，
+  // 环右侧的精确数值仍按原来的低优先级回来。
   { slot: "context", level: "text", rank: 9 },
   // P2 末位（用户口径）：模型胶囊的升级档——`提供商/模型名` 全格式。宽度充裕时
-  // 才从裸模型名（rank 1 的 pinned 档）升上来；它是 model 槽位的第二档，rank 必须
+  // 才从裸模型名（rank 2 的 pinned 档）升上来；它是 model 槽位的第二档，rank 必须
   // 大于同槽位的第一档（算法按 rank 逐档升级，不递增就升不上去）。
   { slot: "model", level: "provider", rank: 10 },
 ];

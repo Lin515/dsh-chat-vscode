@@ -61,9 +61,9 @@ const ALL = [
 
 // ---------- 1. 优先级表就是用户口径 ----------
 //
-// P0 三项 pinned（始终显示）；P1（思考强度/附件/tps/上下文环）全部排在
-// P2（权限文字、预设标签、上下文数值）之前；同槽位的档位 rank 必须递增，
-// 否则「先图标、后图标+文字」这种升级在算法里永远升不上去。
+// P0 四项 pinned（始终显示；上下文圆环 2026-10-06 起为最高优先级）；P1（思考强度/
+// 附件/tps）全部排在 P2（权限文字、预设标签、上下文数值）之前；同槽位的档位 rank
+// 必须递增，否则「先图标、后图标+文字」这种升级在算法里永远升不上去。
 //
 // **同一档内部按元素在工具栏里的左右次序定优先级**（用户 2026-09-22 口径）：
 // 越靠左越先保住。所以 P1/P2 各自的 rank 次序必须与下面记的左右次序一致，
@@ -74,8 +74,8 @@ const ALL = [
   const pinned = byRank.filter((spec) => spec.pinned).map((spec) => spec.slot);
   assert.deepStrictEqual(
     pinned,
-    ["permission", "model", "send"],
-    "P0（始终显示的）必须是权限、模型、发送三个",
+    ["context", "permission", "model", "send"],
+    "P0（始终显示的）必须是上下文圆环、权限、模型、发送四个",
   );
   assert.ok(
     byRank.every((spec, index) => spec.rank === index),
@@ -83,14 +83,14 @@ const ALL = [
   );
 
   const rankOf = (key: string) => BAR_ORDER.find((s) => `${s.slot}:${s.level}` === key)?.rank;
-  const p1 = ["effort:full", "attach:full", "tps:full", "context:ring"].map(rankOf);
+  const p1 = ["effort:full", "attach:full", "tps:full"].map(rankOf);
   const p2 = ["permission:label", "preset:full", "context:text", "model:provider"].map(rankOf);
   assert.ok(
     p1.every((rank) => rank !== undefined) && p2.every((rank) => rank !== undefined),
     "P1/P2 的档位都要在表里（含 agent 预设标签与模型全格式档）",
   );
   for (const [tier, ranks] of [
-    ["P1（思考强度 → 附件 → tps → 上下文环）", p1],
+    ["P1（思考强度 → 附件 → tps）", p1],
     ["P2（权限文字 → 预设标签 → 上下文数值 → 模型全格式）", p2],
   ] as [string, (number | undefined)[]][]) {
     assert.ok(
@@ -100,7 +100,7 @@ const ALL = [
   }
   assert.ok(
     Math.max(...(p1 as number[])) < Math.min(...(p2 as number[])),
-    "P1（思考强度/附件/tps/上下文环）必须整体优先于 P2（权限文字/预设/上下文数值/模型全格式）",
+    "P1（思考强度/附件/tps）必须整体优先于 P2（权限文字/预设/上下文数值/模型全格式）",
   );
 
   const perm = BAR_ORDER.filter((spec) => spec.slot === "permission").map((spec) => spec.level);
@@ -139,23 +139,23 @@ console.log("toolbarFit: 优先级表符合用户口径 ✓");
 }
 console.log("toolbarFit: 宽度充裕时全部显示 ✓");
 
-// ---------- 3. 极窄：只剩 P0 三项，且不崩 ----------
+// ---------- 3. 极窄：只剩 P0 四项（上下文圆环始终在），且不崩 ----------
 {
   for (const available of [120, 0, -20]) {
     const shown = say(available);
     assert.deepStrictEqual(
       shown,
-      ["model:full", "permission:icon", "send:full"],
-      `可用宽度 ${available}px 时只应剩 P0 三项（且权限是图标档），实际 ${shown.join(" ")}`,
+      ["context:ring", "model:full", "permission:icon", "send:full"],
+      `可用宽度 ${available}px 时只应剩 P0 四项（且权限是图标档），实际 ${shown.join(" ")}`,
     );
   }
 }
-console.log("toolbarFit: 极窄时只剩 P0（pinned 保底） ✓");
+console.log("toolbarFit: 极窄时只剩 P0 四项（pinned 保底，含上下文圆环） ✓");
 
 // ---------- 4. 逐级降级：每一档的临界宽度 ----------
 //
-// 按样本宽度算出来的阶梯（P0 194px，每个可见元素再吃 8px 间距）：
-//   218 P0 三项 → 252 +思考强度 → 282 +附件 → 334 +tps → 358 +上下文环
+// 按样本宽度算出来的阶梯（P0 四项自身 210px，每个可见槽位再吃 8px 间距）：
+//   242 P0 四项（上下文圆环已含在内） → 276 +思考强度 → 306 +附件 → 358 +tps
 //   → 416 权限图标升成图标+文字（换档只花差价 +58）
 //   → 496 +预设标签（新开一个槽位：+72 自身 +8 间距）
 //   → 542 上下文环升成环+数值（+46，同槽位只花差价）
@@ -164,11 +164,10 @@ console.log("toolbarFit: 极窄时只剩 P0（pinned 保底） ✓");
 // 也钉住 P2 内部「左端的权限文字 → 中段的预设标签 → 右端的上下文数值 →
 // 最末的模型全格式」这一次序。
 {
-  const P0 = ["model:full", "permission:icon", "send:full"];
-  const L3 = ["effort:full", ...P0].sort();
-  const L4 = ["attach:full", ...L3].sort();
-  const L5 = ["tps:full", ...L4].sort();
-  const L6 = ["context:ring", ...L5].sort();
+  const P0 = ["context:ring", "model:full", "permission:icon", "send:full"];
+  const L4 = ["effort:full", ...P0].sort();
+  const L5 = ["attach:full", ...L4].sort();
+  const L6 = ["tps:full", ...L5].sort();
   const L7 = ["permission:label", ...L6.filter((key) => key !== "permission:icon")].sort();
   const L8 = ["preset:full", ...L7].sort();
   // 同槽位升级是替换：上下文环换成环+数值，模型名换成提供商/模型名
@@ -176,10 +175,9 @@ console.log("toolbarFit: 极窄时只剩 P0（pinned 保底） ✓");
   const L10 = ALL;
 
   const steps: [number, string[]][] = [
-    [218, P0],
-    [252, L3],
-    [282, L4],
-    [334, L5],
+    [242, P0],
+    [276, L4],
+    [306, L5],
     [358, L6],
     [416, L7],
     [496, L8],
@@ -194,7 +192,7 @@ console.log("toolbarFit: 极窄时只剩 P0（pinned 保底） ✓");
     );
   }
   // 差一像素就差一档（宽度先向上取整再比大小，临界点上没有半像素抖动）
-  assert.deepStrictEqual(say(251), P0, "251px 还放不下思考强度");
+  assert.deepStrictEqual(say(275), P0, "275px 还放不下思考强度");
   assert.deepStrictEqual(say(415), L6, "415px 还放不下权限文字");
   assert.deepStrictEqual(say(495), L7, "495px 还放不下预设标签");
   assert.deepStrictEqual(say(541), L8, "541px 还放不下上下文数值");
@@ -246,15 +244,15 @@ console.log("toolbarFit: 同槽位档位互斥 ✓");
 
 // ---------- 6. 间距要计入（每个可见元素吃掉一个 gap） ----------
 //
-// P0 三项自身 = 194px；gap 8 时还要 3×8 = 218px 才排得下（含最右侧 spacer 前那一处）。
+// P0 四项自身 = 210px；gap 8 时还要 4×8 = 242px 才排得下（含最右侧 spacer 前那一处）。
 // 少算间距的实现会在临界宽度上多塞一项，然后把模型名挤成省略号。
 {
-  const pinnedOnly = ["model:full", "permission:icon", "send:full"];
-  assert.deepStrictEqual(say(218), pinnedOnly, "gap 计入后 P0 恰好占满 218px");
+  const pinnedOnly = ["context:ring", "model:full", "permission:icon", "send:full"];
+  assert.deepStrictEqual(say(242), pinnedOnly, "gap 计入后 P0 恰好占满 242px");
   assert.deepStrictEqual(
-    say(220, 0),
+    say(242, 0),
     ["effort:full", ...pinnedOnly].sort(),
-    "同样这附近 220px，间距为 0 时应当能多放一档——说明 gap 确实参与计算",
+    "同样这 242px，间距为 0 时应当能多放一档——说明 gap 确实参与计算",
   );
 }
 console.log("toolbarFit: 间距计入可用宽度 ✓");
