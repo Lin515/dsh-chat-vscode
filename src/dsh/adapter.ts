@@ -1933,28 +1933,44 @@ export class SessionAdapter {
 
     const content = Array.isArray(wire?.content) ? (wire!.content as ContentBlock[]) : [];
     for (const block of content) {
-      if (block.type === "text" && block.text.trim()) {
+      if (block.type === "text" || block.type === "reasoning") {
+        /**
+         * **空白的正文 / 思考块什么都不画**。
+         *
+         * 真实日志里就有：`{"type":"reasoning","text":""}`。这类块不是废料，它是**推理
+         * 签名的载体**——服务端只回 `signature_delta`、一个字的思考正文都没有时
+         * （`llm-deepseek` 的 `translate` 用例：`preserves signature-only thinking`），
+         * harness 仍然保留这个空文本块，签名记在 `message.source.replayState` 里，
+         * 下一轮请求要原样回传。界面上它没有任何可显示的内容。
+         *
+         * 官方对这两类块的可见性判据就是 `text.trim() !== ''`：空白即不可见，既不画行、
+         * 也不计进「这条消息有没有可见内容」（官方 ui-chat 的 `blockIsVisible` /
+         * `hasAssistantReplyContent`）。
+         *
+         * 别让它落进下面的未知块分支：那不是「认不出的块」，只是空的。落下去界面上就会
+         * 多出成百条「未知内容块 · reasoning」，而官方一条都不显示（实测 456 份日志里
+         * 407 个空思考块 + 21 个空正文块；某个会话单是空思考块就 256 条，全部带非空签名）。
+         */
+        if (!block.text.trim()) continue;
         // 有叠加层就地接管（段 id 不动，界面组件不重挂）；没有（重放、没开流式）
-        // 才另推一条 durable 段
-        const live = reclaimed.text.shift();
+        // 才另推一条 durable 段。内容取**原文**，不用判空用的 trim 结果。
+        const live = block.type === "text" ? reclaimed.text.shift() : reclaimed.thinking.shift();
         if (live) adoptDurableText(live, block.text, step);
-        else
+        else if (block.type === "text") {
           this.pushSegment(
             message,
             { kind: "text", id: `t${event.seq}:${this.sequence++}`, text: block.text },
             step,
             at++,
           );
-      } else if (block.type === "reasoning" && block.text.trim()) {
-        const live = reclaimed.thinking.shift();
-        if (live) adoptDurableText(live, block.text, step);
-        else
+        } else {
           this.pushSegment(
             message,
             { kind: "thinking", id: `r${event.seq}:${this.sequence++}`, text: block.text },
             step,
             at++,
           );
+        }
       } else if (block.type === "image") {
         // 助手消息里的图片块：此前整块被丢掉，用户看不到模型给的图。
         // 句柄要换字节（一次 RPC），所以先挂一个空段、拿到 data URL 再补发。

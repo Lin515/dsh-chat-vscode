@@ -200,6 +200,80 @@ console.log("thinkingStream: 助手图片块折成 images 段（不再静默丢�
 }
 console.log("thinkingStream: 认不出的内容块留记录（file 块不再消失） ✓");
 
+// ---------- A0d. 空白正文 / 空白思考块**一条行都不留**（官方 blockIsVisible 口径） ----------
+//
+// 真实日志里有 `{"type":"reasoning","text":""}`：服务端只回了推理签名、没有思考正文
+// （块照样结算，签名要回传给服务端，界面上没有可显示的内容）。本机 456 份日志里
+// 407 个空思考块、21 个空正文块。官方对这两类块的可见性判据是 `text.trim() !== ''`
+// ——空白即不可见，**连未知块也不是**（未知块只属于认不出的**类型**）。
+// 适配器此前把「空白」与「认不出」写成了同一个分支，于是这类块在界面上变成成百条
+// 「未知内容块 · reasoning」，而官方一条都不显示。
+{
+  const { adapter, messages } = harness();
+  adapter.applyEvent({
+    type: "assistant/message",
+    seq: 1,
+    time: Date.now(),
+    data: {
+      turn: 1,
+      step: 0,
+      message: {
+        id: "m1",
+        role: "assistant",
+        // 顺序刻意打乱：空思考、空正文、真思考、真正文——顺带钉住「空白块不影响顺序」
+        content: [
+          { type: "reasoning", text: "" },
+          { type: "text", text: "   \n  " },
+          { type: "reasoning", text: "真思考" },
+          { type: "text", text: "真正文" },
+        ],
+      },
+    },
+  } as never);
+  const segments = messages.flatMap((m) => m.segments);
+  assert.strictEqual(
+    segments.filter((s) => s.kind === "unknown").length,
+    0,
+    "空白块不是「认不出的块」，一条未知内容块都不该有",
+  );
+  assert.deepStrictEqual(
+    segments.map((s) => s.kind),
+    ["thinking", "text"],
+    "空思考 / 空正文各自不留行，非空块照源顺序落位",
+  );
+  assert.strictEqual(
+    (segments[0] as Extract<Segment, { kind: "thinking" }>).text,
+    "真思考",
+    "思考段取原文，不是判空用的 trim 结果",
+  );
+
+  // 同一批块里真有认不出的类型时，它照旧留记录——「空白」与「认不出」不能混为一谈
+  const mixed = harness();
+  mixed.adapter.applyEvent({
+    type: "assistant/message",
+    seq: 1,
+    time: Date.now(),
+    data: {
+      turn: 1,
+      step: 0,
+      message: {
+        id: "m1",
+        role: "assistant",
+        content: [
+          { type: "reasoning", text: "" },
+          { type: "file", attachment: { attachmentId: "att-9", name: "report.pdf" } },
+        ],
+      },
+    },
+  } as never);
+  const unknowns = mixed.messages
+    .flatMap((m) => m.segments)
+    .filter((s): s is Extract<Segment, { kind: "unknown" }> => s.kind === "unknown");
+  assert.strictEqual(unknowns.length, 1, "附近的空白块不该把认不出的块一起吞掉");
+  assert.strictEqual(unknowns[0].type, "file", "被记下来的仍然是那个认不出的类型");
+}
+console.log("thinkingStream: 空白的正文 / 思考块不留行，且不吞掉认不出的块 ✓");
+
 // ---------- A0b. 轮尾用时/速度：整轮累加（官方 deriveStats 的口径） ----------
 //
 // `ranForMs` = turn/end − 本轮开始；`tokensPerSecond` = **各 step 解码窗口与输出
