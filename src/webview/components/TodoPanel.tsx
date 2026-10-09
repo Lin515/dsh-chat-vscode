@@ -1,4 +1,5 @@
 import type { TodoView } from "../../shared/chat";
+import { stepDotClass } from "../activity";
 import { IconChevronDown } from "../icons";
 import { useTexts } from "../texts";
 
@@ -16,10 +17,17 @@ import { useTexts } from "../texts";
  */
 export function TodoPanel({
   todos,
+  running,
   open,
   onToggle,
 }: {
   todos: TodoView[];
+  /**
+   * 会话此刻是否还在生成（`ChatState.running`）。当前执行步骤那枚刻点的活性吃它：
+   * 生成中呼吸，会话停下来（点停 / 出错 / 打开早就停下的会话）之后保持蓝色不闪动
+   * ——判据见 `../activity.ts` 的 `stepDotClass`。
+   */
+  running: boolean;
   /** 展开态（由 `App` 按会话记账，见 `../todoPanel.ts`）。 */
   open: boolean;
   onToggle: () => void;
@@ -41,11 +49,9 @@ export function TodoPanel({
               className={`todo-item${todo.status === "completed" ? " is-completed" : ""}`}
             >
               <span className="todo-glyph">
-                <span
-                  className={`dot ${
-                    todo.status === "completed" ? "dot-ok" : todo.status === "in_progress" ? "dot-running" : ""
-                  }`}
-                />
+                {/* 当前执行步骤的活性随会话停 / 跑切换：生成中呼吸，会话停下来
+                    之后保持蓝色不闪动（判据见 `activity.ts` 的 `stepDotClass`）。 */}
+                <span className={`dot ${stepDotClass(todo.status, running)}`} />
               </span>
               <span className="todo-content">{todo.content}</span>
             </div>

@@ -1017,6 +1017,7 @@ export function App() {
           {state.todos.length ? (
             <TodoPanel
               todos={state.todos}
+              running={state.running}
               open={todosOpen}
               onToggle={() => setTodosState(toggleTodos(todosState, sessionId))}
             />

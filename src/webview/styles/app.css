@@ -2288,6 +2288,16 @@ button.header-title:hover {
   animation: icon-glow 1.6s ease-in-out infinite;
 }
 
+/* 停下来之后的「当前执行步骤」：与上面同一枚蓝点，只是**不呼吸**。
+   用户 ToDo 口径（仓库根 `ToDo.md`）：生成中它该是蓝色呼吸灯，会话中止 / 停止之后
+   还在呼吸就与实际状态不符。这一档只关动画——背景色与常驻光晕都从 `.dot-running`
+   继承（点仍然是亮的、仍然是「当前步骤」，区别只在「此刻有没有在被执行」）。
+   工具行那条「已停止用警告色」的口径不适用于这里：那说的是**被按停的工具行**，
+   而清单里这一步只是**暂时没有在跑**，把它染成警告色等于谎报它出错了。 */
+.dot-running.is-idle {
+  animation: none;
+}
+
 .dot-ok {
   background: var(--success);
 }
