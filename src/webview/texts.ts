@@ -561,6 +561,14 @@ export interface Texts {
   contextUsed: (percent: number, used: string, total: string) => string;
   /** 悬停上下文占用时的明细行（标签 + 数值）。 */
   ctxDetailCached: string;
+  /**
+   * 工具栏里**独立**的缓存命中率元素（最低优先级那一档，位置在上下文容量数值右边，
+   * 形如 `98.7% HIT`）。
+   *
+   * 参数是**不含 `%` 的百分比文本**（算法见 `cacheHit.ts`）；中英文两份文案是
+   * **同一句**（用户 2026-10-10 口径：`HIT` 通用，不做语言区分）。
+   */
+  ctxCacheHit: (percent: string) => string;
   ctxDetailSystem: string;
   ctxDetailTools: string;
   ctxDetailMessages: string;

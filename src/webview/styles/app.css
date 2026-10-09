@@ -3178,6 +3178,19 @@ button.changes-card-head:hover .changes-card-chevron,
   font-size: var(--font-size-2xs);
 }
 
+/* 缓存命中率：容量数值右边的**独立元素**（用户 2026-10-10 第二条口径：不与上下文
+   数字逗号连写），所以它不嵌在 `.ctx-ring-text` 里，字号要与容量数值对齐、自己不吃
+   弹性收缩；与 `.ctx-ring` 同一档描述色——它**不吃占用高低的警告色**：`.is-high` /
+   `.is-critical` 说的是「上下文快满了」，缓存省了多少是另一回事，跟着变红会读成
+   「命中率有问题」。 */
+.ctx-cache-hit {
+  flex: 0 0 auto;
+  font-size: var(--font-size-2xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--description);
+  white-space: nowrap;
+}
+
 /* 60% 起偏高、90% 起快满：与更早的文字版同一套阈值语义 */
 .ctx-ring.is-high .ctx-ring-value {
   stroke: var(--warning);

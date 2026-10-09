@@ -33,6 +33,10 @@ const WIDTHS: Record<string, number> = {
   // 这也是它必须实测、不能写死阈值的原因。
   "preset:full": 72,
   "context:text": 62,
+  // 容量数值右侧的缓存命中率（`98.7% HIT`，用户 2026-10-10 口径的最低优先级元素）：
+  // 它是**独立元素**（同日第二条口径：不与上下文数字逗号连写），所以量的是它自己
+  // （按 11px 字号的样本估 50px），不再把上下文那一格整个换掉。
+  "cache:full": 50,
 };
 
 const VARIANTS: ToolbarVariant[] = BAR_ORDER.map((spec) => ({
@@ -49,6 +53,8 @@ function say(available: number, gap = 8): string[] {
 
 const ALL = [
   "attach:full",
+  // 宽度充裕时上下文数值与命中率**同时**在（命中率是独立元素，不再替换数值档）
+  "cache:full",
   "context:text",
   "effort:full",
   // model 槽位在宽度充裕时停在最高档（`提供商/模型名`），裸模型名档被它替换
@@ -58,6 +64,9 @@ const ALL = [
   "send:full",
   "tps:full",
 ];
+
+/** 上一级：除命中率外全都在（命中率是最后回来的那一档，独立性就体现在这里）。 */
+const ALL_WITHOUT_CACHE = ALL.filter((key) => key !== "cache:full").sort();
 
 // ---------- 1. 优先级表就是用户口径 ----------
 //
@@ -84,14 +93,14 @@ const ALL = [
 
   const rankOf = (key: string) => BAR_ORDER.find((s) => `${s.slot}:${s.level}` === key)?.rank;
   const p1 = ["effort:full", "attach:full", "tps:full"].map(rankOf);
-  const p2 = ["permission:label", "preset:full", "context:text", "model:provider"].map(rankOf);
+  const p2 = ["permission:label", "preset:full", "context:text", "model:provider", "cache:full"].map(rankOf);
   assert.ok(
     p1.every((rank) => rank !== undefined) && p2.every((rank) => rank !== undefined),
-    "P1/P2 的档位都要在表里（含 agent 预设标签与模型全格式档）",
+    "P1/P2 的档位都要在表里（含 agent 预设标签、模型全格式档与缓存命中率）",
   );
   for (const [tier, ranks] of [
     ["P1（思考强度 → 附件 → tps）", p1],
-    ["P2（权限文字 → 预设标签 → 上下文数值 → 模型全格式）", p2],
+    ["P2（权限文字 → 预设标签 → 上下文数值 → 缓存命中率 → 模型全格式档）", p2],
   ] as [string, (number | undefined)[]][]) {
     assert.ok(
       ranks.every((rank, index) => index === 0 || (rank as number) > (ranks[index - 1] as number)),
@@ -100,15 +109,26 @@ const ALL = [
   }
   assert.ok(
     Math.max(...(p1 as number[])) < Math.min(...(p2 as number[])),
-    "P1（思考强度/附件/tps）必须整体优先于 P2（权限文字/预设/上下文数值/模型全格式）",
+    "P1（思考强度/附件/tps）必须整体优先于 P2（权限文字/预设/上下文数值/命中率/模型全格式）",
+  );
+  // 缓存命中率是**全场最低优先级**（用户 2026-10-10 口径）：它是唯一一个「可有可无的
+  // 附加读数」，宽度不够时第一个让位——所以 rank 必须是最大的那个。
+  assert.strictEqual(
+    rankOf("cache:full"),
+    BAR_ORDER.length - 1,
+    "缓存命中率必须排在最后一名（rank 最大 = 平级里最后回来、最先被挤掉）",
   );
 
   const perm = BAR_ORDER.filter((spec) => spec.slot === "permission").map((spec) => spec.level);
   const ctx = BAR_ORDER.filter((spec) => spec.slot === "context").map((spec) => spec.level);
   const mdl = BAR_ORDER.filter((spec) => spec.slot === "model").map((spec) => spec.level);
+  const cache = BAR_ORDER.filter((spec) => spec.slot === "cache").map((spec) => spec.level);
   assert.deepStrictEqual(perm, ["icon", "label"], "权限槽位必须是「先图标、后图标+文字」");
-  assert.deepStrictEqual(ctx, ["ring", "text"], "上下文槽位必须是「先环、后环+数值」");
+  assert.deepStrictEqual(ctx, ["ring", "text"], "上下文槽位必须是「先环、后环+数值」（命中率不在这个槽位里）");
   assert.deepStrictEqual(mdl, ["full", "provider"], "模型槽位必须是「先模型名、后提供商+模型名」");
+  // 命中率是**独立槽位**（用户 2026-10-10 第二条口径：不与上下文数字逗号连写）：
+  // 它自成一项，于是「数值」与「命中率」各自进退——宽度不够时先掉命中率，数值仍留着。
+  assert.deepStrictEqual(cache, ["full"], "缓存命中率必须是独立槽位（不是上下文槽位的第三档）");
 
   // 左右次序的**来源**：Composer 里 `{bar.槽位}` 的先后就是工具栏的左右布局
   // （`.composer-bar` 是 flex 行）。它一变，「哪一项先被挤掉」就跟着变。
@@ -119,8 +139,8 @@ const ALL = [
   const visual = [...composer.matchAll(/\{bar\.(\w+)\}/g)].map((match) => match[1]);
   assert.deepStrictEqual(
     visual,
-    ["permission", "model", "effort", "preset", "attach", "tps", "context", "send"],
-    "工具栏的渲染次序（= 从左至右）变了：同档内的优先级就是按它定的，改位置要同步改 rank",
+    ["permission", "model", "effort", "preset", "attach", "tps", "context", "cache", "send"],
+    "工具栏的渲染次序（= 从左至右）变了：同档内的优先级就是按它定的，改位置要同步改 rank（命中率必须紧跟上下文数值右边）",
   );
   assert.ok(
     /"model:provider": modelPill\(true\)/.test(composer),
@@ -131,10 +151,10 @@ console.log("toolbarFit: 优先级表符合用户口径 ✓");
 
 // ---------- 2. 宽度充裕：全部都显示（含 P2 各档） ----------
 //
-// 11 个档位落在 8 个槽位上（权限、上下文、模型各占一个槽位的两档），
-// 所以「全显示」= 8 项，且三处都停在最高档。
+// 12 个档位落在 9 个槽位上（权限、上下文、模型各占一个槽位的多档，命中率自成一格），
+// 所以「全显示」= 9 项，且三处都停在最高档。
 {
-  const shown = say(620);
+  const shown = say(670);
   assert.deepStrictEqual(shown, ALL, `宽度充裕时应当全显示，实际 ${shown.join(" ")}`);
 }
 console.log("toolbarFit: 宽度充裕时全部显示 ✓");
@@ -160,9 +180,12 @@ console.log("toolbarFit: 极窄时只剩 P0 四项（pinned 保底，含上下�
 //   → 496 +预设标签（新开一个槽位：+72 自身 +8 间距）
 //   → 542 上下文环升成环+数值（+46，同槽位只花差价）
 //   → 612 模型胶囊升成 `提供商/模型名`（+70，同槽位只花差价）
+//   → 670 命中率作为**独立元素**进来（+50 自身 +8 间距；**最后一档**）
 // 写死这几个边界是有意的：它们同时钉住「间距计入」与「换档只花差价」两件事，
 // 也钉住 P2 内部「左端的权限文字 → 中段的预设标签 → 右端的上下文数值 →
-// 最末的模型全格式」这一次序。
+// 数值右边的命中率」这一次序（模型全格式档是 P0 胶囊的升级档，按同槽位规则排在
+// 上下文数值之前）。**命中率那一级是独立槽位**：比上一级多花一个间距（用户
+// 2026-10-10 第二条口径：不再与上下文数值合并成一格）。
 {
   const P0 = ["context:ring", "model:full", "permission:icon", "send:full"];
   const L4 = ["effort:full", ...P0].sort();
@@ -170,9 +193,10 @@ console.log("toolbarFit: 极窄时只剩 P0 四项（pinned 保底，含上下�
   const L6 = ["tps:full", ...L5].sort();
   const L7 = ["permission:label", ...L6.filter((key) => key !== "permission:icon")].sort();
   const L8 = ["preset:full", ...L7].sort();
-  // 同槽位升级是替换：上下文环换成环+数值，模型名换成提供商/模型名
+  // 同槽位升级是替换：上下文环换成环+数值，模型名换成提供商/模型名（命中率另开一格）
   const L9 = [...L8.filter((key) => key !== "context:ring"), "context:text"].sort();
-  const L10 = ALL;
+  const L10 = ALL_WITHOUT_CACHE;
+  const L11 = ALL;
 
   const steps: [number, string[]][] = [
     [242, P0],
@@ -183,6 +207,7 @@ console.log("toolbarFit: 极窄时只剩 P0 四项（pinned 保底，含上下�
     [496, L8],
     [542, L9],
     [612, L10],
+    [670, L11],
   ];
   for (const [available, expected] of steps) {
     assert.deepStrictEqual(
@@ -197,6 +222,8 @@ console.log("toolbarFit: 极窄时只剩 P0 四项（pinned 保底，含上下�
   assert.deepStrictEqual(say(495), L7, "495px 还放不下预设标签");
   assert.deepStrictEqual(say(541), L8, "541px 还放不下上下文数值");
   assert.deepStrictEqual(say(611), L9, "611px 还升不上模型全格式档");
+  assert.deepStrictEqual(say(662), L10, "662px 还放不下命中率（它要自成一格，另吃一个间距）");
+  assert.deepStrictEqual(say(669), L10, "669px 仍差一像素放不下命中率");
 }
 
 // ---------- 4b. 单调性：宽度只增不减时，显示的档位只进不出 ----------
@@ -223,16 +250,17 @@ console.log("toolbarFit: 极窄时只剩 P0 四项（pinned 保底，含上下�
     }
     previousSlots = slots;
   }
-  // 一路撑到最后，三处「可升级的槽位」都必须停在最高档
+  // 一路撑到最后，三处「可升级的槽位」都必须停在最高档（命中率是独立槽位，另算一格）
   assert.strictEqual(levels.get("permission"), 7, "权限槽位最终应停在「图标+文字」档");
   assert.strictEqual(levels.get("context"), 9, "上下文槽位最终应停在「环+数值」档");
   assert.strictEqual(levels.get("model"), 10, "模型槽位最终应停在「提供商/模型名」档");
+  assert.strictEqual(levels.get("cache"), 11, "命中率槽位最终应停在它唯一那一档（全场最低优先级）");
 }
 console.log("toolbarFit: 逐级降级 + 宽度变大只进不出 ✓");
 
 // ---------- 5. 同槽位互斥：不会同时出现两档 ----------
 {
-  for (let available = 600; available >= 0; available -= 1) {
+  for (let available = 700; available >= 0; available -= 1) {
     const shown = say(available);
     for (const slot of ["permission", "context", "model"]) {
       const hits = shown.filter((key) => key.startsWith(`${slot}:`));

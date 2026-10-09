@@ -661,6 +661,18 @@ export const MESSAGES = {
     en: (percent: number, used: string, total: string) => `Context used ${percent}% (${used} / ${total})`,
   },
   ctxDetailCached: { zh: "缓存命中", en: "Cache hit" },
+  /**
+   * 工具栏里**独立的**缓存命中率元素（用户 2026-10-10 口径的最低优先级那一项，
+   * 位置在上下文容量数值右边，形如 `98.7% HIT`）。
+   *
+   * 两份文案**故意写成同一句**：`HIT` 是用户当天明确要的中英文通用写法，
+   * 所以这里不做语言区分，两边登记同一份（词典的规矩是 zh/en 缺一不可，
+   * 不是「必须不同」）。参数是**不含 `%` 的百分比文本**（算法见 `cacheHit.ts`）。
+   */
+  ctxCacheHit: {
+    zh: (percent: string) => `${percent}% HIT`,
+    en: (percent: string) => `${percent}% HIT`,
+  },
   ctxDetailSystem: { zh: "系统提示词", en: "System prompt" },
   ctxDetailTools: { zh: "工具定义", en: "Tool definitions" },
   ctxDetailMessages: { zh: "对话消息", en: "Conversation messages" },

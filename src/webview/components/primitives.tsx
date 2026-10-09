@@ -11,6 +11,7 @@ import { IconChevronRight } from "../icons";
 import { splitPath } from "../pathDisplay";
 import { useTexts } from "../texts";
 import { dpLength } from "../uiScale";
+import { turnCacheHitPercent } from "../cacheHit";
 
 /**
  * 元素的内容是否**真的被裁**（内容的布局宽度超过可见宽度）。
@@ -321,8 +322,10 @@ export function CtxText({
     texts.contextUsed(numbers.percent, formatTokens(numbers.used), formatTokens(numbers.total)),
   ];
   if (usage) {
-    const cacheHit = cacheHitPercent(usage);
-    if (cacheHit !== undefined) detail.push(`${texts.ctxDetailCached} ${cacheHit}%`);
+    // 悬停明细读的是**单轮**用量（官方 TurnUsagePanel 同口径），与工具栏那个
+    // 会话累计的命中率不是同一个数——两处的标签同一套词，口径差在数据源上。
+    const cacheHitPercent = turnCacheHitPercent(usage);
+    if (cacheHitPercent !== undefined) detail.push(`${texts.ctxDetailCached} ${cacheHitPercent}%`);
     else if (usage.cachedTokens) detail.push(`${texts.ctxDetailCached} ${formatTokens(usage.cachedTokens)}`);
   }
   // 上下文构成三行（启发式估算，~ 前缀与 Web 一致）；不再显示单步的
@@ -400,6 +403,8 @@ export function CtxRing({
           strokeDasharray={`${dash} ${circumference - dash}`}
         />
       </svg>
+      {/* 精确数值写在环的右边（`.ctx-ring` 是 flex 行）。缓存命中率**不在这里**：
+          它是工具栏里的独立元素（用户 2026-10-10 第二条口径），样式见 `.ctx-cache-hit`。 */}
       {text ? <span className="ctx-ring-text">{text}</span> : null}
     </span>
   );
@@ -574,20 +579,9 @@ export function useElapsed(startedAt: number | undefined, active: boolean): numb
 }
 
 /**
- * 缓存命中率（官方 turn-usage 口径）：缓存读取 / 总输入
- * （totalTokens - outputTokens，total 缺失时退回 inputTokens）。
- * provider 未报 cacheReadTokens 或分母非正时返回 undefined。
+ * 缓存命中率的算法（含会话 / 单轮两个口径）住在 `../cacheHit.ts`——那是官方同名
+ * 函数的唯一一份等价实现，界面各处都从那里取，不许在这里再算一遍。
  */
-function cacheHitPercent(usage: import("../../shared/chat").UsageView): number | undefined {
-  const read = usage.cacheReadTokens;
-  if (typeof read !== "number" || read < 0) return undefined;
-  const denom =
-    typeof usage.totalTokens === "number" && typeof usage.outputTokens === "number"
-      ? usage.totalTokens - usage.outputTokens
-      : usage.inputTokens;
-  if (typeof denom !== "number" || denom <= 0) return undefined;
-  return Math.round((read / denom) * 1000) / 10;
-}
 
 export function formatTokens(value: number): string {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;

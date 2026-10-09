@@ -42,6 +42,7 @@ import { readableMentionText } from "../mentionLinks";
 import { segmentColumns } from "../segment";
 import { fill, resolveText, useTexts } from "../texts";
 import { useUiScale } from "../uiScale";
+import { sessionCacheHitPercent } from "../cacheHit";
 import { BAR_ORDER, pickVariants, type ToolbarVariant } from "../toolbarFit";
 
 /**
@@ -600,6 +601,16 @@ export function Composer({
     usage: lastMessage?.usage,
     breakdown: state.contextBreakdown,
   };
+  /**
+   * 缓存命中率（用户 2026-10-10 口径：工具栏**最低优先级**的那一项，位置在上下文容量
+   * 数值右边，写法是 `98.7% HIT`——中英文同一份）。
+   *
+   * 取的是**会话累计**口径（`tokenUsage` 投影，官方 UsagePill 的同一个键与同一个
+   * 分母），不是最后一条消息的单步用量——后者时有时无，当常驻读数会一闪一闪。
+   * 拿不到数据时是 `undefined`：那一档**不进节点表**，于是既不占坑位、也不会把
+   * 「数据缺失」显示成 `0% HIT`（判据与算法在 `cacheHit.ts`）。
+   */
+  const cacheHitText = sessionCacheHitPercent(state.tokenUsage);
 
   // 运行中的主按钮（官方 `primaryStops = running && (empty || blocked)`）：
   // - 草稿为空 → 停止（生成中还能"点一下停"，这是用户最需要的动作）；
@@ -635,6 +646,12 @@ export function Composer({
     "tps:full": speedText,
     "context:ring": ctxNumbers ? <CtxText {...ctxProps} /> : null,
     "context:text": ctxNumbers ? <CtxText {...ctxProps} detailed /> : null,
+    // 缓存命中率是**独立元素**（用户 2026-10-10 第二条口径：不与上下文数字逗号连写），
+    // 所以它不要求 `ctxNumbers`——命中率读的是另一个投影（`tokenUsage`），有数据就显示。
+    // 只在拿不到命中率数据时整档消失（不显示 `0% HIT`）。
+    "cache:full": cacheHitText ? (
+      <span className="ctx-cache-hit">{texts.ctxCacheHit(cacheHitText)}</span>
+    ) : null,
   };
   const barVariants: ToolbarVariant[] = BAR_ORDER.filter(
     (spec) => barNodes[`${spec.slot}:${spec.level}`] != null,
@@ -1017,6 +1034,10 @@ export function Composer({
                 右侧才补上 `44K/128K` 的精确数值（最低优先级）。 */}
             {bar.tps}
             {bar.context}
+
+            {/* 缓存命中率：全场最低优先级，位置在容量数值右边，但**自成一项**
+                （用户 2026-10-10 第二条口径）——它与容量数值各自进退。 */}
+            {bar.cache}
 
             {bar.send}
 
