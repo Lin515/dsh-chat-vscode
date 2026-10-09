@@ -8,10 +8,11 @@ import type { Texts } from "./texts";
  * **与官方同一套折叠**（`@deepseek-ai/dsh-agent-preset-registry/display` 的
  * `presetDisplayText`，逐字对照）：
  *
- * - 随产品交付的那四个（判据见 `isBuiltInPresetOption`）→ 文案由**客户端**按当前
- *   语言给（`Texts` 里那八条，抄的是官方 `dsh-client-ui-agent-preset` 的词典）。
- *   服务端为这几个发布的 `name`/`description` 是**不翻译的**文件元数据，直接用会
- *   在中文界面里显示英文；
+ * - 随产品交付的那四个（判据见 `isBuiltInPresetOption`）→ 名字**与描述**都由
+ *   **客户端**按当前语言给（`Texts` 里那八条，即 `messages.ts` 的 `preset*Name` /
+ *   `preset*Description`，逐字抄官方 `@deepseek-ai/dsh-client-ui-agent-preset` 的
+ *   `locales.ts` 里 `en` / `zh` 两栏的对应键）。服务端为这几个发布的
+ *   `name`/`description` 是**不翻译的**文件元数据，直接用会在中文界面里显示英文；
  * - 其余（用户自己写的预设、或认不出的 system id）→ 用它自己发布的文案，
  *   没有就用 id。**作者写下的字不翻译**。
  *

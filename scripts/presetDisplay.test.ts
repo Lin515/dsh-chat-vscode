@@ -29,12 +29,14 @@ const en = dictionaryFor("en");
 // ---------- 1. 随产品交付的四个：名字与描述都来自词典 ----------
 {
   // 服务端**也**给了一份 name/description（文件里的元数据，不翻译）：
-  // 它必须被忽略，否则中文界面里会出现英文名
+  // 它必须被忽略，否则中文界面里会出现英文名。
+  // 这两段刻意**不取自**任何一本词典：若元数据与词典某一份逐字相同，
+  // 对应那条断言就变成「用哪边都通过」，再也测不出「元数据被优先采用」。
   const standard: AgentPresetOptionView = {
     id: "standard",
     trust: "system",
-    name: "Standard mode",
-    description: "Full coding agent…",
+    name: "Standard mode (published metadata)",
+    description: "Server-published metadata description, never translated.",
   };
   for (const [texts, expected] of [
     [zh, { name: "标准模式", description: zh.presetStandardDescription }],

@@ -135,30 +135,32 @@ export const MESSAGES = {
   /**
    * 随产品交付的四个 agent 预设的展示名与描述。
    *
-   * **逐字抄官方**（`dsh-client-ui-agent-preset` 的 `locales.ts`）：这几个预设的名字
-   * 不由服务端发布，而是客户端按当前语言给（官方 `presetDisplayText` 只对
-   * `trust === 'system'` 的已知 id 走词典），所以译文必须与官方一致——同一个部署在
-   * 官方 Web UI 与本扩展里该显示同一个名字。用户自己写的预设名不翻译。
+   * **逐字抄官方**（`@deepseek-ai/dsh-client-ui-agent-preset` 的 `locales.ts`，`en` / `zh`
+   * 两栏里那八条 `preset*` 键）：这八条由**客户端按当前语言**给，不看服务端为这几个
+   * 预设发布的那份文件元数据——官方 `presetDisplayText` 只对**不发布 `name`** 的已知 id
+   * 走词典（判据 `isBuiltInPreset`；`trust === 'system'` 那一代已随版本删掉）。所以两边
+   * 必须逐字一致：同一个部署在官方 Web UI 与本扩展里该显示同一个名字**与描述**。
+   * 用户自己写的预设不翻译；改这八条时回官方那份词典重抄，别在这里顺手改写。
    */
   presetStandardName: { zh: "标准模式", en: "Standard mode" },
   presetStandardDescription: {
-    zh: "功能完整的编码 Agent，支持文件编辑、Shell、文件与网页检索、Skills、计划、目标、子代理和工作流。",
-    en: "Full coding agent with file editing, shell, file and web search, skills, planning, goals, subagents, and workflows.",
+    zh: "处理代码、文件和资料，适合大多数任务。Agent 会按需使用检索、编辑和终端等工具。",
+    en: "Work with code, files, and information. Suitable for most tasks, with search, editing, terminal commands, and other tools available as needed.",
   },
   presetPtcName: { zh: "PTC 模式", en: "PTC mode" },
   presetPtcDescription: {
-    zh: "功能完整的编码 Agent，但默认不提供 workflow 工具；其他工具通过 PTC 模式 SDK 呈现，让模型用一个 TypeScript 程序组合多步操作。",
-    en: "Full coding agent without the workflow tool; other tools are exposed through the PTC mode SDK so the model can combine multi-step operations in one TypeScript program.",
+    zh: "包含标准模式的所有能力，更适合批量调用工具，并对结果进行筛选、整理、去重、统计或汇总的任务。",
+    en: "Includes all Standard mode capabilities. Better suited to tasks that call tools in batches and then filter, organize, deduplicate, count, or summarize the results.",
   },
   presetMinimalName: { zh: "极简模式", en: "Minimal mode" },
   presetMinimalDescription: {
-    zh: "仅提供持久 shell 的单工具编码 Agent。",
-    en: "Single-tool coding agent with a persistent shell.",
+    zh: "Agent 仅使用终端工具完成任务，适合测试和对比其基础表现。",
+    en: "The agent works using only a terminal tool. Useful for testing and comparing its basic performance.",
   },
   presetCordisName: { zh: "创造模式", en: "Creator mode" },
   presetCordisDescription: {
-    zh: "用于创建自定义 Agent preset：具备标准模式的全部能力，并提供运行时检查、持久化插件管理和 preset 创作指导。",
-    en: "Built for creating custom agent presets, with all Standard mode capabilities plus runtime inspection, persistent plugin management, and preset-authoring guidance.",
+    zh: "用对话定制 DSH：让 Agent 编写插件，添加新功能或界面；也能组合工具和提示词，创建自己的模式。",
+    en: "Customize DSH through conversation. Let the agent write plugins that add features or UI, or combine tools and prompts to create your own mode.",
   },
   /** 切换预设被服务端拒绝（已开始的会话、id 不存在…）；`reason` 是服务端给的原因。 */
   agentPresetFailed: {
