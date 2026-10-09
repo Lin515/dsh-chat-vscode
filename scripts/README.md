@@ -51,6 +51,7 @@
 - `supervisorProtocol.test.ts` — supervisor 会合协议（状态文件 / 启动锁 / socket 寻址）与运行时解析。
 - `supervisorErrors.test.ts` — 守护进程错误上报器的三条纪律（两处都发、互不影响）。
 - `queueOrder.test.ts` — 待发送队列显示形态：插话排在排队上方、带附件的行首芯片。
+- `queueHover.test.ts` — 队列行悬停看全文：截断判据是实测溢出（非字数）、浮层落位 / 限高与接线。
 - `queueView.test.ts` — 队列项视图映射：`inbox` 投影与旧线格式折算结果必须一致。
 - `jobObserve.test.ts` — 后台任务实时输出的累积口径与面板接线。
 - `jobsKill.test.ts` — 后台任务停止按钮两段式状态机与接线 / 样式。

@@ -61,5 +61,6 @@
 - `jobsKill.ts` — 后台任务停止按钮的两段式状态机（armed → pending，对齐官方 `pressKill`）。
 - `jobsOrder.ts` — 后台任务名册的显示顺序（live 在前按开始时间升序；subagent 行不进该面板）。
 - `queueOrder.ts` — 待发送队列显示顺序（插话排在排队上方；只改显示不动数据顺序）。
+- `queueHover.ts` — 队列行的单行截断判据（实测溢出，非字数）与悬停全文浮层的落位 / 限高（纯函数）。
 - `turnRail.ts` — 右侧轮次横条的数据层：`turnOutline` 投影铺底 + 已加载窗口折锚点与预览。
 - `turnRailNav.ts` — 轮次横条的导航行为（点击跳轮、未加载先取历史再落位、滚动同步高亮）。

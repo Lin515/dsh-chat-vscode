@@ -3641,6 +3641,9 @@ button.meta-chip:hover {
   opacity: 1;
 }
 
+/* 队列行的正文：恒为**单行省略**。被裁掉时悬停看全文走宿主渲染的浮窗小字
+   （原生 title，与文件芯片同一套；判据见 `queueHover.ts`，组件在 Composer 的
+   `QueueItem`），所以这里只负责这一行的省略本身，不自绘浮层。 */
 .queue-text {
   flex: 1 1 0;
   min-width: 0;

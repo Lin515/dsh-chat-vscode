@@ -8,7 +8,7 @@ import {
   type CSSProperties,
   type ReactNode,
 } from "react";
-import { AUTO_REVIEW_PRESET, type GoalView } from "../../shared/chat";
+import { AUTO_REVIEW_PRESET, type GoalView, type QueuedMessageView } from "../../shared/chat";
 import type { AppState } from "../state";
 import { post } from "../bridge";
 import {
@@ -36,6 +36,8 @@ import { useComposerCompletion } from "../composerCompletion";
 import { presetDisplayText } from "../presetDisplay";
 import { bottomGap, type AutoScrollPort } from "../autoScroll";
 import { queueDisplayOrder, queueItemHasAttachments } from "../queueOrder";
+import { queueTextIsClipped } from "../queueHover";
+import { readableMentionText } from "../mentionLinks";
 import { segmentColumns } from "../segment";
 import { fill, resolveText, useTexts } from "../texts";
 import { useUiScale } from "../uiScale";
@@ -1187,47 +1189,13 @@ function Lump({
       <div className="queue">
         <span className="queue-head">{fill(texts.queued, { n: items.length })}</span>
         {items.map((item) => {
-          // 带附件的排队消息在**行首**标出来（用户 2026-09-25 口径）：这一行只有
-          // 正文，光看文字看不出这条还带着图片 / 文件。
-          const withAttachments = queueItemHasAttachments(item);
           return (
-            <div className="queue-item" key={item.id}>
-              {withAttachments ? <span className="queue-tag">{texts.queueHasAttachment}</span> : null}
-              {/* 文本为空时本来用「（附件）」占位；已经有行首标记就不再重复说一遍。 */}
-              <span className="queue-text">{item.text || (withAttachments ? "" : texts.queueMediaOnly)}</span>
-              {/* 「插话发送」（官方 queue 行的第三个动作 `{kind:'steer'}`）：
-                  只对**排队中**的那条给出（已经是 steering 的不必再来一次），
-                  并且只有 agent 正在运行时可用——服务端同样要求运行中，否则回
-                  `session/steer-unavailable`（宿主按官方口径静默处理）。 */}
-              {item.placement !== "steering" ? (
-                <button
-                  className="queue-action"
-                  disabled={!state.running}
-                  title={state.running ? texts.queueSteer : texts.queueSteerUnavailable}
-                  onClick={() => {
-                    post({ type: "queueSteer", id: item.id });
-                    // 把排队的那条立刻发出去 = 要看回答：同 `send`，脱贴也贴回最新
-                    onFollowLatest?.();
-                  }}
-                >
-                  <IconSend size={12} />
-                </button>
-              ) : null}
-              <button
-                className="queue-action"
-                title={texts.queueEdit}
-                onClick={() => post({ type: "queueEdit", id: item.id })}
-              >
-                <IconPencil size={13} />
-              </button>
-              <button
-                className="queue-action is-danger"
-                title={texts.queueRemove}
-                onClick={() => post({ type: "queueRemove", id: item.id })}
-              >
-                <IconClose size={13} />
-              </button>
-            </div>
+            <QueueItem
+              key={item.id}
+              item={item}
+              running={state.running}
+              onFollowLatest={onFollowLatest}
+            />
           );
         })}
       </div>
@@ -1235,4 +1203,118 @@ function Lump({
   }
   return null;
 }
+
+/**
+ * 队列里的一行：正文恒为**单行省略**，真的放不下时鼠标悬停在**整行**上显示全文
+ * （原生浮窗小字）。正文显示前先还原会话引用（`readableMentionText`），
+ * 否则单行省略与悬停全文看到的都是原始 token 里的 base64。
+ *
+ * **不加展开按钮**（用户 2026-10-10 口径）：队列只是待发列表，展开会把输入区顶上去、
+ * 整块跳一下；悬停是零成本的那条路。判据必须实测——字号（`dshChat.fontSize`）、
+ * 界面倍率、侧栏宽度都会挪截断点，按字数猜一定猜错，规则与量法都在 `queueHover.ts`。
+ *
+ * 一行做成组件而不是在 `.map` 回调里内联：截断态是**每行自己的** state，
+ * 而 hooks 不能在回调里调。
+ */
+function QueueItem({
+  item,
+  running,
+  onFollowLatest,
+}: {
+  item: QueuedMessageView;
+  /** agent 是否在跑：插话发送只在运行中可用（服务端同样要求）。 */
+  running: boolean;
+  onFollowLatest?: () => void;
+}) {
+  const texts = useTexts();
+  // 带附件的排队消息在**行首**标出来（用户 2026-09-25 口径）：这一行只有正文，
+  // 光看文字看不出这条还带着图片 / 文件。
+  const withAttachments = queueItemHasAttachments(item);
+  // 文本为空时本来用「（附件）」占位；已经有行首标记就不再重复说一遍。
+  // 队列行只是**预览**，所以正文先过 `readableMentionText`：落盘的会话引用是原始 token
+  // （`@[标题](dsh-session:eyJ…)`，宿主刻意不折，见 `mentionLinks.ts` 的文件头），
+  // 不还原的话单行省略显示的是 base64、悬停全文弹出来的也是 base64。文件 / 目录引用
+  // 本来就是 `@src/a.ts` 这种字面量，原样保留。真正的编辑 / 插话仍用 `item.text` 原文
+  // （那两个动作只发 id，原始内容由宿主取）。
+  const label = readableMentionText(item.text || (withAttachments ? "" : texts.queueMediaOnly));
+  const textRef = useRef<HTMLSpanElement>(null);
+  /** 正文是否真的被裁（判据见 `queueHover.ts`；量不到证据时恒为 false）。 */
+  const [clipped, setClipped] = useState(false);
+
+  useLayoutEffect(() => {
+    const el = textRef.current;
+    if (!el) return;
+    const check = () =>
+      setClipped(
+        queueTextIsClipped(label, el.clientWidth, () => {
+          // 量**文本自己的**自然布局宽度：本行是 flex 容器、文本排在匿名 flex 项里，
+          // 项内的溢出不计入父级的 scrollable overflow（实测 `scrollWidth == clientWidth`），
+          // 与 `primitives.tsx` 的 `useClipped` 同一个坑
+          const range = document.createRange();
+          range.selectNodeContents(el);
+          return range.getBoundingClientRect().width;
+        }),
+      );
+    check();
+    // 侧栏宽度 / 字号变化都会挪截断点：宽度一变就复检（内容变化由依赖触发）
+    const observer = new ResizeObserver(check);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [label]);
+
+  return (
+    // 悬停显示全文走**原生 title**（用户 2026-10-10 口径）：与正文里的文件芯片、
+    // 改动卡片同一套浮窗小字，样式由宿主统一渲染，不在界面里自绘一层浮层。
+    // 挂在**整行**而不是只挂正文那一格：这一行的其余部分（附件标记、空白）也属于这条
+    // 消息，只挂正文时鼠标偏一格就没有提示。行内三枚按钮各自带 title，内层胜过外层，
+    // 所以那三处不会被全文顶掉。
+    // 只在**真的被裁**时挂上去——放得下的那条悬停不该弹任何东西（判据见
+    // `queueHover.ts`：字数阈值一定会猜错，字号 / 侧栏宽度都会挪截断点）。
+    <div className="queue-item" title={clipped ? label : undefined}>
+      {withAttachments ? <span className="queue-tag">{texts.queueHasAttachment}</span> : null}
+      <span className="queue-text" ref={textRef}>
+        {label}
+      </span>
+      {/* 「插话发送」（官方 queue 行的第三个动作 `{kind:'steer'}`）：
+          只对**排队中**的那条给出（已经是 steering 的不必再来一次），
+          并且只有 agent 正在运行时可用——服务端同样要求运行中，否则回
+          `session/steer-unavailable`（宿主按官方口径静默处理）。 */}
+      {item.placement !== "steering" ? (
+        <button
+          className="queue-action"
+          disabled={!running}
+          title={running ? texts.queueSteer : texts.queueSteerUnavailable}
+          onClick={() => {
+            post({ type: "queueSteer", id: item.id });
+            // 把排队的那条立刻发出去 = 要看回答：同 `send`，脱贴也贴回最新
+            onFollowLatest?.();
+          }}
+        >
+          <IconSend size={12} />
+        </button>
+      ) : null}
+      <button
+        className="queue-action"
+        title={texts.queueEdit}
+        onClick={() => post({ type: "queueEdit", id: item.id })}
+      >
+        <IconPencil size={13} />
+      </button>
+      <button
+        className="queue-action is-danger"
+        title={texts.queueRemove}
+        onClick={() => post({ type: "queueRemove", id: item.id })}
+      >
+        <IconClose size={13} />
+      </button>
+    </div>
+  );
+}
+
+/**
+ * 队列行的悬停全文**不再自绘浮层**（用户 2026-10-10 口径）：改用宿主渲染的浮窗小字
+ * （原生 `title`），与正文里的文件芯片、改动卡片同一套视觉。原先那份 `position: fixed`
+ * + 视口坐标的浮层、以及配套的落位算法都随之删掉了——自绘浮层与宿主那套本来就各写一份
+ * 样式，用户要的是统一的那一套。
+ */
 
