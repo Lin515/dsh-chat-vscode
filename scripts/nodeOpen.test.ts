@@ -123,12 +123,30 @@ console.log("nodeOpen: 端口读写与默认值 ✓");
     /const nodeOpen = useNodeOpen\(\);/.test(message),
     "Message 是展开态的唯一持有者",
   );
+  /**
+   * 这几行都必须是 `<X key={segment.id} node={node} …>`。
+   *
+   * 只钉**开标签**而不是整条 JSX：标签里的其它 prop 会随功能增删（工具行的
+   * 「在轨迹里查看这次调用」就是这么加进来的），把「node 来自同一个端口对象」这条
+   * 判据绑在「标签长什么样」上，每加一个 prop 都要来改这条断言——而它要钉的
+   * 从来不是标签的形状。`[^>]*` 不跨 `>`，所以匹配到的就是这一个开标签。
+   */
+  const nodePortTag = (name: string): string => {
+    const match = new RegExp(`<${name}\\b[^>]*node=\\{node\\}[^>]*>`, "s").exec(message);
+    assert.ok(match, `${name} 要接 Message 那一个端口对象（node={node}）`);
+    return match[0];
+  };
   assert.ok(
-    /const node = nodeOpen\.portOf\(segment\.id\);/.test(message) &&
-      /<ToolRow key=\{segment\.id\} node=\{node\}/.test(message) &&
-      /<InjectedRow key=\{segment\.id\} node=\{node\}/.test(message),
-    "每一行都接同一个端口对象（一条交互链路一个端口）",
+    /const node = nodeOpen\.portOf\(segment\.id\);/.test(message),
+    "端口对象由段的 id 取得（行自己不存展开态）",
   );
+  for (const name of ["ToolRow", "ThinkingRow", "InjectedRow", "CommandRow", "UnknownBlockRow"]) {
+    const tag = nodePortTag(name);
+    assert.ok(
+      tag.includes("key={segment.id}") && !/node=\{(?!node\})/.test(tag),
+      `${name} 的端口必须来自同一个 \`node\`——一条交互链路只开一个端口对象`,
+    );
+  }
   assert.ok(
     /runChoice\.get\(run\.anchorId\) \?\? hasUserOpenedNode\(nodeOpen\.state, run\.segments\)/.test(message),
     "过程折叠默认展不展开 = 用户点过按钮就听他的，否则看这一段里有没有用户点开的节点",

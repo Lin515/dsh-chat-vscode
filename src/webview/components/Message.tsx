@@ -87,6 +87,7 @@ export const Message = memo(function Message({
   sessionId,
   changesSummary,
   changesCardShown = false,
+  onInspectCall,
 }: {
   message: MessageView;
   /** 编辑类节点的 diff 排版（来自设置；缺省自适应）。 */
@@ -136,6 +137,11 @@ export const Message = memo(function Message({
    * 往往挂在前一段，按消息判定就会让两样在同一轮尾部并排（用户 2026-09-21 报告）。
    */
   changesCardShown?: boolean;
+  /**
+   * 「在轨迹里查看这次调用」的落点（官方 `inspectCall`，往下透到工具行）。
+   * 缺省 = 工具行不渲染那颗按钮（没有这条链路的宿主不给一颗点了没反应的按钮）。
+   */
+  onInspectCall?: (callId: string) => void;
 }) {
   const texts = useTexts();
   // 折叠节点的展开态，**按段 id 记在这里**（不在各行里）：过程折叠会把整段成员卸载，
@@ -366,7 +372,15 @@ export const Message = memo(function Message({
         if (segment.tool.question && segment.tool.question.state !== "waiting") {
           return <QuestionCard key={segment.id} question={segment.tool.question} batch={questionBatch} />;
         }
-        return <ToolRow key={segment.id} node={node} tool={segment.tool} diffLayout={diffLayout} />;
+        return (
+          <ToolRow
+            key={segment.id}
+            node={node}
+            tool={segment.tool}
+            diffLayout={diffLayout}
+            {...(onInspectCall === undefined ? {} : { onInspectCall })}
+          />
+        );
       case "approval":
         // 待处理的审批卡由**输入区**渲染（官方 `conversation.composer` 接管），这里跳过
         // 免得同一张卡出现两次。审批卡没有「已答过」的形态：结算之后宿主把它整段摘掉

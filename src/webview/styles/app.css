@@ -95,6 +95,23 @@
   animation: icon-glow 1.6s ease-in-out infinite;
 }
 
+/* 复制成功的那 1s：图标换成对勾并亮成成功色（整界面共用，`IconCopyButton` /
+   `CopyButton` 两处同款）。`:hover` 那条必须一起写——`.icon-btn:hover` 与本条
+   同特异性，后写的赢，只写一条会在悬停时被吃回灰。 */
+.icon-btn.is-copied,
+.icon-btn.is-copied:hover {
+  color: var(--success);
+}
+
+/* 开关类图标按钮的「已打开」态（轨迹的「自动换行」）。与复制成功同一条思路：只上色、
+   不换底——按钮浮在正文上方，底色一铺就像贴了块补丁。走 `--accent`（焦点边框那一色）
+   而不是 `--info`：后者是**思考鲸鱼的专属蓝**（`tokens.css` 顶部那条口径），
+   别的节点图标不许借用，而这一颗一亮就是「常驻」而不是「正在跑」。 */
+.icon-btn.is-on,
+.icon-btn.is-on:hover {
+  color: var(--accent);
+}
+
 /* -------- 标题右侧的子代理导航（官方 dsh-client-ui-subagent 同款）--------
    交互与官方 `CatalogDropdown` 逐条对齐：点击 / 悬停展开一个**固定宽度**的树形
    列表（官方 336px 菜单），点行进入子代理；子代理页标题换成两节面包屑，点左半
@@ -1918,6 +1935,28 @@ button.header-title:hover {
   font-family: var(--mono);
   font-size: var(--mono-size);
   line-height: 1.5;
+}
+
+/* 展开体里的**动作行**（目前只有「在轨迹里查看这次调用」那一颗，官方 `row.inspect`）：
+   保留节点框的缩进、去掉框本身——一颗按钮套一层带边框的卡片会读成「卡里还有一张卡」，
+   而这个动作与上面的内容不是同一层信息。 */
+.row-body.is-action {
+  padding: 0;
+  border: none;
+  background: none;
+  max-height: none;
+  overflow: visible;
+}
+
+.row-inspect {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(4 * var(--dp));
+  /* 窄侧栏里这颗按钮的文案不折行（英文 `Inspect` 比中文长，靠 ellipsis 兜底） */
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* 运行中的节点展开区：还没有结果，显示「还在跑」的状态、完整命令与计时。
@@ -4252,13 +4291,6 @@ button.meta-chip:hover {
   color: var(--error);
 }
 
-/* 复制成功的那 1s：图标换成对勾并亮成成功色。`:hover` 那条必须一起写——
-   `.icon-btn:hover` 与本条同特异性，后写的赢，只写一条会在悬停时被吃回灰。 */
-.session-item-actions .icon-btn.is-copied,
-.session-item-actions .icon-btn.is-copied:hover {
-  color: var(--success);
-}
-
 .session-item-title {
   font-size: var(--font-size-sm);
   overflow: hidden;
@@ -4776,8 +4808,10 @@ button.meta-chip:hover {
 /* ============================ 轨迹（官方账本的对齐实现） ============================ */
 /*
  * 结构对照 `dsh-client-ui-trajectory`：工具栏（轮次/调用折叠 + 搜索）+ 两列账本
- * （event / content）+ 详情检查器 + 顶部时间线。官方那两个宽度常量照抄：event 列
- * 122px、窄容器（<=620px 容器宽，这里用视口宽近似，webview 视口就是面板宽）降到 50px。
+ * （event / content）+ 详情检查器 + 顶部时间线。event 列宽度照官方量级：英文 122、中文 96
+ * （`:lang(zh)` 那一档，见 `.trajectory-col-event`），窄容器一律降到 50——收列、换紧凑
+ * 轮次标签 `#N`、种类徽章换纯图标是**同一条**容器查询，阈值来源与差异见那条查询的注释
+ * 与 `docs/design-trajectory.md` 的 3.2。
  *
  * 它是**整页**视图（官方把轨迹注册进 `conversation.view` 槽，选中就整块换掉会话页），
  * 不是抽屉：所以这里没有 `.drawer` 那套绝对定位/遮罩，只有「面板剩下的高度归我」。
@@ -4851,12 +4885,20 @@ button.meta-chip:hover {
   padding: calc(6 * var(--dp));
 }
 
-/* 账本：窄面板下检查器会盖上来（≤760px 的抽屉），不会把账本挤没 */
+/* 账本：窄面板下检查器会盖上来（≤760px 的抽屉），不会把账本挤没。
+   **关掉浏览器的滚动锚定**（与 `.chat-scroll` 同一条口径，理由见那里的长注释）。
+   账本的位置由应用拥有：落点对齐写 `scrollTop`、用户手势改它、窗口计划按它算；
+   而原生锚定的语义是「布局一变就自己改 `scrollTop`，把可见内容钉在原地」——虚拟窗口
+   重排（垫行 ↔ 真实行）正是它的触发条件，于是应用写下的位置会被它挪走一点点。实测
+   （主代理单变量：同一份 JS，只改这一条属性，真实 long 夹具、点 span5 首次落点）：
+   `auto` 时落点写下 116，下一次 commit 它自己挪到 117，收尾把这 1px 当成「用户手滚」
+   弃票，目标行只露 13.5/26px；`none` 时首次落点直接停在 105、整行可见。 */
 .trajectory-ledger {
   flex: 1 1 calc(320 * var(--dp));
   min-width: 0;
   max-height: 100%;
   overflow: auto;
+  overflow-anchor: none;
 }
 
 .trajectory-table {
@@ -4866,8 +4908,27 @@ button.meta-chip:hover {
   font-size: var(--font-size-body);
 }
 
+/* 事件列宽度**按语言分档**（官方 `.eventColumn` 是 122 / `:where(:lang(zh))` 84）：英文种类
+   标签（`COMPACTED` / `ASSISTANT`）比中文（「已压缩」/「助手」）长一倍多，中文照抄 122
+   会白占掉内容列 38。分档挂 `:lang(zh)`——语言由界面写在根元素上（见 `App.tsx` 的
+   insertion effect），`:lang()` 按子标签前缀匹配，`zh` 覆盖全部中文变体。
+
+   中文这一档是 **96**，不是官方那个 84：**84 装不下我们这一格**。逐项量过（预览页实测，
+   文本自然宽用 canvas 量，`scrollWidth` 会把 flex 项的右内边距拆出去、不可靠）：
+     index `#13` 15.4 + 内容条间隙 4 + 最长徽章（「已压缩」/「上下文」/「子工具」）
+     33.7 + 左右内边距 10 + 事件格内边距 36 + 4 = **103.1**；
+   官方没有 index（它的 `#N` 只在 `TrajectoryCell`，账本表里不渲染）、种类标签又是 10px
+   而我们是 10 基准 + 1（`--font-size-2xs` = 基准 − 2），所以它的 84 放得下、
+   我们的不行。84 下量到徽章被压到 32.4（比最长徽章的 43.7 少 11.3），文字走省略号——
+   比不改更差。取 96 是「刚好装下 103.1」向上取整的那一档，与 122 一样是**按内容定死**
+   的数，不是照抄来的。
+   窄栏那一档（容器查询里收成 50）**不分语言**，理由见那条查询的注释。 */
 .trajectory-col-event {
   width: calc(122 * var(--dp));
+}
+
+.trajectory-col-event:lang(zh) {
+  width: calc(96 * var(--dp));
 }
 
 .trajectory-col-content {
@@ -4892,10 +4953,7 @@ button.meta-chip:hover {
   outline-offset: calc(-1 * var(--dp));
 }
 
-.trajectory-row.is-dimmed {
-  opacity: 0.45;
-}
-
+/* 搜索命中的行：给正文一层底色，和下面的时间线压暗配合（官方那套是过滤 + 压暗） */
 .trajectory-row.is-match .trajectory-text {
   background: var(--badge-bg);
 }
@@ -4905,17 +4963,54 @@ button.meta-chip:hover {
 }
 
 .trajectory-event {
-  padding: calc(3 * var(--dp)) calc(4 * var(--dp)) calc(3 * var(--dp)) calc(8 * var(--dp));
+  /* 左内边距给轮次标签让位（官方 `.event` 的 `padding-left: 36px`）——标签是绝对定位的，
+     没有这段留白就会压在 `#N` 与 kind 标签上。窄栏收到 28px，见下面那条容器查询。 */
+  padding: calc(3 * var(--dp)) calc(4 * var(--dp)) calc(3 * var(--dp)) calc(36 * var(--dp));
   vertical-align: top;
   border-top: 1px solid transparent;
 }
 
+/* 轮次边界：一轮的**第一行**画一条 2px 全宽分隔线（官方
+   `tr[data-turn-start='true'] td::before`，`translateY(-50%)` 让线骑在行缝上）。
+   两条取消规则都不能漏：
+   ① `.trajectory-row:first-child` —— 整张表的第一行不画（上面没有东西可分）；
+   ② `.trajectory-history-row + .trajectory-row` —— 「加载更早的历史」是分页控件，
+      不是轮次边界。挂在**事件格**上是因为它已经是这两行的定位祖先
+      （`.trajectory-event { position: relative }`），不必再给 `td` 加规则。
+   线的颜色与行底线同源（`--border`）——官方两处用的也是同一档 `border-l1`。 */
+.trajectory-row.is-turn-start:not(:first-child) .trajectory-event::before {
+  position: absolute;
+  z-index: 1;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: calc(2 * var(--dp));
+  background: var(--border);
+  content: '';
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+
+/* ② 「加载更早的历史」之后那一行不画。单独一条是因为它同时要压过上面那条的
+   `:not(:first-child)`——两条选择器特异性相同，靠**位置在后**取胜，这条必须留在下面。 */
+.trajectory-history-row + .trajectory-row.is-turn-start .trajectory-event::before {
+  content: none;
+}
+
+/* 事件格里的内容条。
+   **高度靠 `vertical-align: top` 对齐，不要改成块级 flex + `height: 100%`**：块级 flex 会
+   把内容条变成块级盒，工具 / 子工具行的行高随之从 26 缩到 25（实测那三行），而这一格是
+   `table-layout: fixed` 的单元格，只有 `inline-flex` 才正好撑到 26。
+   但只写 `inline-flex`、不给 `vertical-align: top` 时，这一格多了绝对定位的轮次标签会让
+   行内盒跟着长高，把内容往下推 2px（带标签的行与不带标签的行基线不平）；`top` 一给，
+   两种行的内容都在距行顶 3.5 的位置（官方 `.eventInner` 的 `height: 100%` 是同一个效果）。 */
 .trajectory-event-inner {
   display: inline-flex;
+  vertical-align: top;
   align-items: center;
   gap: calc(4 * var(--dp));
-  /* 事件列是**固定宽度**（窄面板下 50px），而里面是「kind 标签 + #N」这一串，
-     英文标签（`COMPACTED` / `ASSISTANT`）比中文长得多。不给收缩下限的话，
+  /* 事件列是**固定宽度**（宽栏按语言 122 / 96，窄面板一律 50），而里面是「kind 标签 + #N」
+     这一串，英文标签（`COMPACTED` / `ASSISTANT`）比中文长得多。不给收缩下限的话，
      标签会顶出列、压到内容列上（2026-09-17 审计）。 */
   max-width: 100%;
   min-width: 0;
@@ -4927,11 +5022,52 @@ button.meta-chip:hover {
   font-size: var(--font-size-body);
 }
 
+/* 轮次标签（官方 `turnLabel`）：**绝对定位**在事件格左上角，因此**不占行高**——
+   这是官方能在窄栏显示紧凑 `#N` 的前提（标签若在流里，就会把行撑高一整行：
+   实测本扩展从 26 涨到 43）。事件格因此要预留左内边距，见 `.trajectory-event` 那两条。
+
+   **不要给它 `max-width: 100%`**：它是绝对定位的，百分比按事件格的 padding box 算
+   （122 的列减掉左内边距 36 与右内边距 4 只剩 82），而「第 10 轮」就有 51 宽——一 clamp
+   就会换行、把行撑高，正是这一条要避免的事。`nowrap` + 绝对定位下让它自然外溢即可
+   （它贴着行的**上边缘**，而 kind 标签在行内垂直居中，两者不在一条水平线上）；
+   单枚的 `max-width: 64` 才是官方的截断口径。
+
+   `z-index` 必须压过 `.trajectory-row.is-turn-start .trajectory-event::before` 那条
+   z-index:1 的 2px 分隔线，否则线会从标签中间穿过去。 */
 .trajectory-turn-label {
-  display: block;
+  position: absolute;
+  z-index: 1;
+  top: 0;
+  left: 0;
+  display: inline-grid;
+  box-sizing: border-box;
+  width: max-content;
+  padding: 0 calc(3 * var(--dp));
+  border-bottom-right-radius: calc(2 * var(--dp));
   color: var(--description);
+  background: var(--code-bg);
   font-family: var(--mono);
-  font-size: var(--font-size-body);
+  font-size: var(--font-size-2xs);
+  white-space: nowrap;
+}
+
+/* 全宽 / 紧凑两枚标签叠在同一格里（官方 `turnLabelFull` / `turnLabelCompact` 的
+   `grid-area: 1 / 1` 与 `max-width`/`opacity` 那对声明逐条对应）：宽栏放全宽那枚，
+   窄栏由容器查询翻转——不是 `display` 切换，这样两边都是同一套「占位与隐藏」规则，
+   不会在某一档漏掉收缩。**基线必须把紧凑那枚藏起来**，否则宽栏下两枚同时可见。 */
+.trajectory-turn-label-full,
+.trajectory-turn-label-compact {
+  grid-area: 1 / 1;
+  max-width: calc(64 * var(--dp));
+  overflow: hidden;
+  opacity: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trajectory-turn-label-compact {
+  max-width: 0;
+  opacity: 0;
 }
 
 .trajectory-kind {
@@ -4947,6 +5083,32 @@ button.meta-chip:hover {
   letter-spacing: 0.02em;
   /* 列宽固定 + 英文标签更长：允许收缩并以省略号收尾，不顶出列（见上一条注释） */
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 徽章里的两枚子元素（官方 `kindTagIcon` / `kindTagLabel`）：
+   宽栏 = 文字那枚占满、字形那枚宽 0 透明；窄栏由容器查询把两者对调。
+   **字形要 `flex: none`**：不给的话它在宽栏零宽状态下会被 flex 收缩逻辑压成 0 宽，
+   窄栏再放开 `width` 也长不回来。
+   字形那枚还要 `align-self: center`——它与文字同行，文字有行高、字形没有，
+   不给就跟文字基线一样吊在半空（官方 `kindTag` 是 `align-items: center`）。 */
+.trajectory-kind-icon {
+  display: inline-flex;
+  flex: none;
+  align-self: center;
+  align-items: center;
+  justify-content: center;
+  width: 0;
+  height: calc(13 * var(--dp));
+  overflow: hidden;
+  opacity: 0;
+  transform: scale(0.8);
+}
+
+.trajectory-kind-label {
+  display: inline-block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -4991,6 +5153,13 @@ button.meta-chip:hover {
   white-space: nowrap;
 }
 
+/* 「（仅工具调用）」行单独弱化（官方 `TrajectoryTable.module.css` 的 `.toolCallOnly`
+   就是一条 `color: var(--label-tertiary)`，没有别的装饰）。它压在 `.trajectory-text`
+   之后——CSS 同特异性下后者胜，这条必须留在主规则下面，否则会被主规则的颜色吃掉。 */
+.trajectory-text.is-tool-call-only {
+  color: var(--muted);
+}
+
 /* 工具行：左「请求」右「结果」两列（官方 resultPreview 的 grid 口径） */
 .trajectory-arrow {
   flex: 0 0 auto;
@@ -5012,6 +5181,112 @@ button.meta-chip:hover {
 
 .trajectory-row.is-collapsed-summary .trajectory-content {
   color: var(--description);
+}
+
+/* 请求边界小标记（官方 `requestBoundaryControl`）：请求级检查器的唯一入口。
+   官方画在**行与行之间**（`top:-8px`）、事件列左端，悬停时用 `::after` 显示一个
+   「请求 #N」的胶囊，靠 `data-label` 的 `attr()` 取值——纯 CSS，不引入额外状态。
+   绝对定位挂在**事件单元格**上（官方的 `td.event` 也是定位祖先），行本身不动。 */
+.trajectory-event {
+  position: relative;
+  /* 轮次标签的底色要盖住行底色、2px 分隔线要压在行缝上（`translateY(-50%)`），
+     两者都会被单元格自带的 `overflow: hidden` 裁掉；官方对应的是
+     `tr[data-turn-start] td { overflow: visible }` 同一条口径。 */
+  overflow: visible;
+}
+
+.trajectory-request-marker {
+  position: absolute;
+  z-index: 6;
+  top: calc(-8 * var(--dp));
+  left: calc(12 * var(--dp));
+  width: calc(16 * var(--dp));
+  height: calc(16 * var(--dp));
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.trajectory-request-marker::before {
+  position: absolute;
+  top: calc(5.5 * var(--dp));
+  left: calc(5.5 * var(--dp));
+  width: calc(5 * var(--dp));
+  height: calc(5 * var(--dp));
+  border-radius: 50%;
+  background: var(--muted);
+  /* 底色描边：标记压在行缝上，有一圈底色才不会被行背景吃掉 */
+  box-shadow: 0 0 0 calc(2 * var(--dp)) var(--bg);
+  content: '';
+  transition: background 120ms ease-in-out;
+}
+
+/* 失败请求的标记涂红（官方按请求状态给 `data-request-status`） */
+.trajectory-request-marker[data-request-status="error"]::before {
+  background: var(--error);
+}
+
+.trajectory-request-marker:hover::before,
+.trajectory-request-marker:focus-visible::before {
+  background: var(--link);
+}
+
+.trajectory-request-marker.is-active::before,
+.trajectory-request-marker.is-active:hover::before {
+  background: var(--link);
+  box-shadow: 0 0 0 calc(1.5 * var(--dp)) var(--link);
+}
+
+/* 悬停 / 聚焦时浮出请求号胶囊（官方 `::after` 的 `content: attr(data-label)`） */
+.trajectory-request-marker::after {
+  position: absolute;
+  top: calc(2 * var(--dp));
+  left: calc(17 * var(--dp));
+  width: max-content;
+  max-width: calc(180 * var(--dp));
+  padding: 0 calc(4 * var(--dp));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--description);
+  background: var(--bg);
+  /* 浮层的投影也走设计像素（裸 px 会被「几何量必须跟倍率」那条断言抓住） */
+  box-shadow: 0 calc(2 * var(--dp)) calc(6 * var(--dp)) rgba(0, 0, 0, 0.12);
+  content: attr(data-label);
+  font-family: var(--mono);
+  font-size: var(--font-size-2xs);
+  line-height: 1.4;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.trajectory-request-marker:hover::after,
+.trajectory-request-marker:focus-visible::after {
+  opacity: 1;
+}
+
+/* 请求级检查器的用量分组（官方 `usageGroup` / `usageHeading`）：两个独立小节，
+   各自一个标题与一张表，不是一张长表。 */
+.trajectory-usage-panel {
+  display: flex;
+  flex-direction: column;
+  gap: calc(10 * var(--dp));
+}
+
+.trajectory-usage-heading {
+  margin: 0 0 calc(4 * var(--dp));
+  font-size: var(--font-size-2xs);
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  color: var(--description);
+  text-transform: uppercase;
+}
+
+/* 分桶行（缓存读取 / 缓存写入 / 其他 / 推理 / 内容）：比主行缩进一层、弱化一档 */
+.trajectory-detail-row.is-detail {
+  padding-left: calc(10 * var(--dp));
+  color: var(--muted);
 }
 
 /* 详情检查器 */
@@ -5045,6 +5320,27 @@ button.meta-chip:hover {
   white-space: nowrap;
   font-size: var(--font-size-body);
   color: var(--description);
+}
+
+/* 记录检查器的标题是「种类标签 + 落点」两枚（官方 `detailsTitle` 里那个 kindTag 与
+   `detailsLocation`），横向排而不是一句文本——所以这一支改成 flex，由**落点**自己
+   省略：英文下 `Between turns · Compaction 1234` 比中文长得多，窄侧栏里先牺牲它。 */
+.trajectory-details-title-record {
+  display: flex;
+  align-items: center;
+  gap: calc(6 * var(--dp));
+}
+
+.trajectory-details-title-record .trajectory-kind {
+  flex: 0 0 auto;
+}
+
+.trajectory-details-location {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
 }
 
 .trajectory-tabs {
@@ -5108,10 +5404,94 @@ button.meta-chip:hover {
   color: var(--fg);
 }
 
+/* 可切换显示形态的时刻（官方 `timestampToggle`）：外观与普通值一样，只多一个可点的暗示。
+   用虚线下划线而不是换色/加底：这一格在计时面板里是一行普通的值，变色会读成「状态」。 */
+.trajectory-timestamp {
+  text-align: left;
+  cursor: pointer;
+  text-decoration: underline dotted;
+  text-underline-offset: calc(2 * var(--dp));
+}
+
+.trajectory-timestamp:hover {
+  color: var(--link);
+}
+
+/* 「层级」那一行的反向链接（官方 `overviewParentLinks`）：一条或多条，按顺序排。 */
+.trajectory-hierarchy-links {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: calc(4 * var(--dp));
+}
+
+.trajectory-hierarchy-link {
+  max-width: 100%;
+  overflow: hidden;
+  padding: 0;
+  color: var(--link);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trajectory-hierarchy-link:hover {
+  text-decoration: underline;
+}
+
 .trajectory-detail-block {
   display: flex;
   flex-direction: column;
   gap: calc(2 * var(--dp));
+}
+
+/* 一段原文的容器：动作条 + 正文。动作条**在流内**（占一行），不做浮层——
+   浮在右上角时按钮会盖住正文首行（不换行 + 长首行是最常见的形态）。
+   **刻意不用 flex 列**：正文靠自己的 `max-height` + `overflow: auto` 滚动，而 flex item
+   的 `min-height: auto` 会让它长到内容高、把限高交给外层（外层再一滚就是双层滚动条）。 */
+.trajectory-pre-block {
+  display: block;
+  min-width: 0;
+}
+
+.trajectory-pre-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: calc(2 * var(--dp));
+  margin-bottom: calc(2 * var(--dp));
+}
+
+/* PTC（`run_code`）那一格：程序描述 + 语言标记 + 源码（官方 `ProgramInput` 的
+   `programDescription` / `programLanguage` / `programSource` 三件）。
+   描述在源码**之上**、与源码同宽：它说明这段程序要干什么，而源码是不换行的长行，
+   放描述在下面会被横向滚动条推走。 */
+/* 虚拟化垫行（官方用虚拟滚动器的 spacer，这里用一行定高的空行顶上）：
+   它只负责把「被切掉那批行」的高度补回去，让滚动条与滚动位置照旧对应整份账本。
+   高度由行内 style 给（按窗口算出来的），所以这里只清掉行本身的观感——不能让一条
+   空行带上边框或交替底色，否则那就是一条看得见的假行。 */
+.trajectory-virtual-pad,
+.trajectory-virtual-pad > td {
+  padding: 0;
+  border: none;
+  background: none;
+  line-height: 0;
+}
+
+.trajectory-program {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: calc(4 * var(--dp));
+}
+
+/* 描述**保留换行**（官方 `white-space: pre-wrap`）：它是模型写的自然语言，压平会把
+   分条说明挤成一段；`overflow-wrap` 兜住没有空格的长串（路径、无空格标识符）。 */
+.trajectory-program-description {
+  color: var(--fg);
+  font-size: var(--font-size-body);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 .trajectory-pre {
@@ -5124,8 +5504,167 @@ button.meta-chip:hover {
   color: var(--fg);
   font-family: var(--mono);
   font-size: var(--font-size-body);
+  /* **默认不换行**：与官方 JSON 树打底一致（`ui-primitives` 的 `.stringRaw` 是
+     `white-space: pre`），参数 / Schema 的缩进结构靠横向滚动看清。常开换行会把
+     JSON 结构打散，而这一页的正文多是 JSON。开关在 `.trajectory-pre-actions` 里，
+     按 `data-wrap` 切。 */
+  white-space: pre;
+}
+
+/* 换行开关打开：与官方 `[data-wrap='true']` 同一套（`pre-wrap` + `break-all`）。
+   长 URL / 无空格长串也要断得开，否则换了行还是横着跑出去。 */
+.trajectory-pre[data-wrap="true"] {
   white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* 「原始内容」页签的**逐块排版**（官方 `SourceBlocks` 的 `.sourceBlocks` 一族）。
+   每块一节：块标题（类型 + 序号）+ 该块原文。块之间留一档间距，块内标题与正文贴紧
+   ——间距把「哪些行属于同一块」直接画出来，逐块渲染的意义就在这里。
+   官方那一版把三档距离写成 12/14/3/14px，这里按同一比例折算成设计像素并走 `--dp`。 */
+.trajectory-source-blocks {
+  box-sizing: border-box;
+  padding: calc(12 * var(--dp)) calc(14 * var(--dp));
+}
+
+.trajectory-source-block + .trajectory-source-block {
+  margin-top: calc(14 * var(--dp));
+}
+
+/* 块标题两种形态共用一套排版；可点的那种**自己就是按钮**，所以按钮要清掉 UA 样式
+   （官方用 `all: unset` 再补回 flex）。宽度取 `max-content`：块标题不该撑满一整行，
+   否则不可点的那些会把右侧留成一片看着像可点的空白。 */
+.trajectory-source-block-header,
+.trajectory-source-block-jump {
+  display: flex;
+  align-items: center;
+  gap: calc(3 * var(--dp));
+  width: max-content;
+  max-width: 100%;
+  margin-bottom: calc(3 * var(--dp));
+  user-select: none;
+  white-space: nowrap;
+}
+
+.trajectory-source-block-jump {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+/* 块标题里的类型串（`thinking` / `text` / `tool-call`）是**代码标识符**，用等宽体。
+   `min-width: 0` 让这个 flex 项在 `max-width: 100%` 的标题里真的能被压缩，省略号才生效
+   （不加就撑破容器，英文窄栏下块标题会横出面板）。 */
+.trajectory-source-block-label {
+  overflow: hidden;
+  min-width: 0;
+  color: var(--muted);
+  font-family: var(--mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 附件块的文件名（官方 `attachmentName`）：与类型串同高、但用正文字体——它是人名地名
+   那种自然语言，等宽体只会更难读。超长时省略号，不靠固定宽度。 */
+.trajectory-source-block-name {
+  overflow: hidden;
+  max-width: calc(220 * var(--dp));
+  color: var(--fg);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trajectory-source-block-icon {
+  flex: none;
+  color: var(--muted);
+}
+
+.trajectory-source-block-jump:hover .trajectory-source-block-icon {
+  color: var(--fg);
+}
+
+.trajectory-source-block-jump:focus-visible {
+  outline: none;
+}
+
+/* 聚焦时只把箭头点亮（官方同一手法）：块标题是文字，套一圈 outline 会在长文案上很难看。 */
+.trajectory-source-block-jump:focus-visible .trajectory-source-block-icon {
+  color: var(--link);
+}
+
+/* 每块的原文。**比 `.trajectory-pre` 多一件事：不断行**（官方 `overflow-wrap: anywhere`
+   + `white-space: pre-wrap`）。这一页是逐块并排看的，一段参数 JSON 横出去会把后面几块
+   一起推出可视区；裸文本页签那边默认不换行是为了保住缩进结构，那是**单段**的用法。 */
+.trajectory-source-block-content {
+  margin: 0;
+  padding: calc(6 * var(--dp));
+  max-height: calc(320 * var(--dp));
+  overflow: auto;
+  border-radius: var(--radius-sm);
+  background: var(--code-bg);
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: var(--font-size-body);
   overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  tab-size: 2;
+}
+
+/* 「系统提示词变更」页签的差分（官方 `PromptDiffSection` 的 `.promptDiffSections` /
+   `.promptDiffSection` / `.promptDiff` 一族）：一节一标题，正文是一个装所有行的 `<pre>`
+   ——行是 `<span>`，靠 `<pre>` 的换行保住原始行结构，所以这里不做任何布局折算。 */
+.trajectory-prompt-diff-sections {
+  display: flex;
+  flex-direction: column;
+  gap: calc(10 * var(--dp));
+}
+
+.trajectory-prompt-diff-title {
+  margin: 0 0 calc(4 * var(--dp));
+  color: var(--description);
+  font-size: var(--font-size-body);
+  font-weight: 600;
+}
+
+.trajectory-prompt-diff {
+  margin: 0;
+  padding: calc(6 * var(--dp));
+  max-height: calc(320 * var(--dp));
+  overflow: auto;
+  border-radius: var(--radius-sm);
+  background: var(--code-bg);
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: var(--font-size-body);
+  /* **不换行**：差分的意义在于「哪一行变了」，折行会把一行拆成几行、行号与标记全部错位。
+     长行的出路是横向滚动（与 `.trajectory-pre` 默认档同一个口径）。 */
+  white-space: pre;
+  tab-size: 2;
+}
+
+/* 四类行各自的颜色。新增 / 删除用主题的成功 / 错误色，上下文与 hunk 头沿用弱化色——
+   与官方同一套（它们的 `--dsw-alias-state-*` 映射到 VS Code 的 success / error）。 */
+.trajectory-prompt-diff-line {
+  display: inline;
+}
+
+.trajectory-prompt-diff-line.is-meta {
+  color: var(--muted);
+}
+
+.trajectory-prompt-diff-line.is-context {
+  color: var(--fg);
+}
+
+.trajectory-prompt-diff-line.is-added {
+  color: var(--success);
+}
+
+.trajectory-prompt-diff-line.is-removed {
+  color: var(--error);
 }
 
 .trajectory-empty {
@@ -5194,9 +5733,15 @@ button.meta-chip:hover {
   overflow: auto;
 }
 
-/* 预览里的原文自己滚（外层已经限高了），别再叠一层 320px 的内滚动 */
+/* 预览里的原文只露开头，**自己不带滚动条**：这一节在概述页里是一条摘要，
+   原文多长都不该把摘要撑高（外层 `.trajectory-overview-preview` 才是那个滚动的容器）。
+   从前这条写的是 `max-height: none` —— 那时 `.trajectory-pre` 就是最内层那个自己滚的
+   东西，外层限高 220 封顶看着没问题；`TrajectoryPre` 把它包进 `.trajectory-pre-block`
+   之后，一段超长正文会把这一节撑到几千像素（外层虽有 220 限高，但整条摘要得一路滚到底）。
+   要整段就看对应的页签（那里仍是 320 + 自己滚）。 */
 .trajectory-overview-preview .trajectory-pre {
   max-height: none;
+  overflow: hidden;
 }
 
 /* 压缩记录的摘要正文（官方 `compactedSummary`：没有分节标题，直接接在概述行下面） */
@@ -5237,21 +5782,83 @@ button.meta-chip:hover {
   cursor: default;
 }
 
-/* 窄面板（webview 视口就是面板宽）：event 列收到 50 个设计像素，只留 `#N` 与种类标签。
+/* 窄面板（webview 视口就是面板宽）：event 列收到 50 个设计像素，这一档同时换成紧凑形态
+   ——轮次标签由整句换成 `#N`、种类徽章由文字换成纯图标（且只作用账本事件格）、
+   账本记录序号 `#N` 隐藏，事件格左内边距跟着收到 28。
    容器化在 .trajectory-view 上（见那条规则），`em` 取它的字号 = 界面字号，于是这条线
-   跟着界面倍率走——媒体查询做不到这点：它的 `em` 固定按初始 16px 算。 */
+   跟着界面倍率走——媒体查询做不到这点：它的 `em` 固定按初始 16px 算。
+
+   **这是一条线，不是两条**。官方把「收列」与「换紧凑形态」都放在它的 620 上；本扩展
+   收列本来就在 420，所以紧凑形态也挂 420（曾照官方另加一条 620，结果是 620~900
+   这一段「列还宽着、标签已经缩成 `#N`」，比不改更差）。
+
+   **这一档不分语言**，所以要按同类选择器把上面那条 `:lang(zh)` 一起写下来：
+   `.trajectory-col-event:lang(zh)` 比 `.trajectory-col-event` 多一个伪类，只写后者的话
+   中文下收列会静默失效（窄栏里仍是 96 的列、旁边站着 19 的方徽章）。官方那条 620 的
+   两个数字（122/84）是它按自己的表宽手调的分档线，**不是**「中文能更早收」的依据：
+   收列要看的是**事件列自己放不放得下那一格的内容**（index + 种类徽章），这与语言无关；
+   而官方表宽在两侧都有余量，本扩展的面板窄得多，所以本扩展的线（420）本来就是照自己的
+   面板定的。详见 `docs/design-trajectory.md` 的 5.2。 */
 @container (max-width: calc(420em / 13)) {
-  .trajectory-col-event {
+  .trajectory-col-event,
+  .trajectory-col-event:lang(zh) {
     width: calc(50 * var(--dp));
   }
 
-  .trajectory-kind {
+  /* 事件格左内边距跟着收（官方窄栏的 `.event` 是 `padding-left: 28px`）：这一档
+     轮次标签已经是紧凑 `#N`，还留 36 就把 `#N` 顶出列了。 */
+  .trajectory-event {
+    padding-left: calc(28 * var(--dp));
+  }
+
+  /* 紧凑徽章的三条规则**只作用于账本事件格**（`.trajectory-event`）。
+     官方那句话的容器是账本滚动区 `.tablePane`，检查器是它的兄弟节点，所以官方窄栏
+     永远碰不到检查器标题里那枚徽章；我们这条容器挂在整页 `.trajectory-view` 上，
+     账本与检查器都是后代——不收作用域就会把标题里那枚**纯文本**徽章（没有 icon/label
+     两枚可对调）也压成 19dp，种类词必然被裁（420px 生产 DOM 实测：宽 19、真实文字
+     49.296875）。 */
+  .trajectory-event .trajectory-kind {
+    /* `flex: none` 是必须的：内容条是 flex，不给的话徽章会被收成 6px（实测），
+       而要的是官方那个 19px 的方徽章。 */
+    flex: none;
+    width: calc(19 * var(--dp));
+    justify-content: center;
     padding: 0 calc(3 * var(--dp));
     font-size: calc(9 * var(--dp));
   }
 
-  .trajectory-turn-label {
+  /* 徽章内部对调：文字收到 0 宽、字形放开（官方 `kindTagIcon` / `kindTagLabel`）。
+     文字不设 `display: none`——留它在 DOM 里，读屏与搜索仍拿得到种类词。 */
+  .trajectory-event .trajectory-kind-icon {
+    width: calc(13 * var(--dp));
+    opacity: 1;
+    transform: scale(1);
+  }
+
+  .trajectory-event .trajectory-kind-label {
+    max-width: 0;
+    opacity: 0;
+  }
+
+  /* 隐藏账本记录序号 `#N`。官方账本表本来就不渲染它（它的 index 只在未 import 的
+     `TrajectoryCell` 里），而这一档的内容盒 = 50 − 28（左内边距）− 4（右内边距）
+     = 18dp，装不下「`#N` + 19dp 图标」——不收就是序号与徽章一起顶到内容列上
+     （生产 DOM 实测：index 右缘 57.09、徽章右缘 80.09，事件格右缘才 56）。
+     序号仍留在 `data-cell-index` 与行的无障碍名里（选择、时间线定位、读屏都不受影响），
+     宽栏照常显示；不把事件列加宽是因为四位序号（`#1234`）仍然装不下，加宽只会白占内容列。 */
+  .trajectory-index {
     display: none;
+  }
+
+  /* 轮次标签的两枚对调（官方 `turnLabelFull` / `turnLabelCompact`） */
+  .trajectory-turn-label-full {
+    max-width: 0;
+    opacity: 0;
+  }
+
+  .trajectory-turn-label-compact {
+    max-width: calc(64 * var(--dp));
+    opacity: 1;
   }
 }
 
@@ -5329,13 +5936,85 @@ button.meta-chip:hover {
 .trajectory-span.is-tool,
 .trajectory-span.is-subtool { background: var(--node-bash); opacity: 1; }
 
+/* 助手条上的 TTFT / 解码两段（官方 `.span[data-timeline-span='message'][data-assistant-timing]`）：
+   左段是首 token 之前（偏底色），右段是解码。分界由渲染层写进 `--trajectory-assistant-ttft-stop`
+   （`ttft / (ttft + decoding)`，两个时长都取到才有这条属性）。
+   两个名字必须分开：分界是**行内**写的，如果与颜色同名，行内值会盖掉这里的调色（官方也是
+   `--trajectory-assistant-ttft` 与 `--trajectory-assistant-ttft-color` 两个名字）。 */
+.trajectory-span.is-message[data-assistant-timing="true"] {
+  --trajectory-assistant-decoding: color-mix(in srgb, var(--node-edit) 60%, var(--error));
+  --trajectory-assistant-ttft-color: color-mix(
+    in srgb,
+    var(--trajectory-assistant-decoding) 54%,
+    var(--code-bg)
+  );
+  background: linear-gradient(
+    to right,
+    var(--trajectory-assistant-ttft-color) 0,
+    var(--trajectory-assistant-ttft-color) var(--trajectory-assistant-ttft-stop),
+    var(--trajectory-assistant-decoding) var(--trajectory-assistant-ttft-stop),
+    var(--trajectory-assistant-decoding) 100%
+  );
+}
+
 .trajectory-span.is-error {
   background: var(--error);
 }
 
+/* 等时长（`time` 模式）：每条宽度归零，给一个固定方块的宽（官方 `data-equal-duration` 的 8px） */
+.trajectory-span[data-equal-duration="true"] {
+  width: calc(8 * var(--dp));
+  min-width: calc(8 * var(--dp));
+}
+
 .trajectory-span.is-selected {
+  z-index: 1;
   outline: 1px solid var(--fg);
   outline-offset: calc(1 * var(--dp));
+}
+
+/* hover 高亮环（官方 `.span[data-hovered='true']:not([data-current='true'])`）：
+   两圈 box-shadow——内圈用底色调出「与邻居隔开」的边，外圈是强调色。 */
+.trajectory-span[data-hovered]:not(.is-selected) {
+  z-index: 1;
+  opacity: 1;
+  box-shadow:
+    0 0 0 calc(1 * var(--dp)) var(--code-bg),
+    0 0 0 calc(2 * var(--dp)) color-mix(in srgb, var(--link) 80%, transparent);
+}
+
+/* 搜索没命中的条压暗到 14%（官方同值）。这一条必须写在上面那些
+   `.trajectory-span.is-<kind>`（各自 `opacity: 1`）**之后**——同特异性下后者胜。 */
+.trajectory-span.is-dimmed {
+  opacity: 0.14;
+}
+
+/* 光标跟随竖线（官方 `hoverLine`）：标出「鼠标指的时间点落在哪儿」 */
+.trajectory-hover {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: calc(1 * var(--dp));
+  background: var(--fg);
+  opacity: 0.35;
+  pointer-events: none;
+}
+
+/* 视口动画（官方那条 `left 180ms` 过渡）：只有「点某一条记录、视口跟着挪过去」
+   这一种场合加 `data-animate-viewport`——滚轮缩放与右键平移**不能**有过渡，
+   否则每滚一格都在追动画，手感发飘。
+   减少动画时整条关掉（与仓库里其它活性动画同一个 `prefers-reduced-motion` 口径）。 */
+@media (prefers-reduced-motion: no-preference) {
+  .trajectory-plot[data-animate-viewport="true"] .trajectory-span,
+  .trajectory-plot[data-animate-viewport="true"] .trajectory-boundary {
+    transition: left 180ms ease-out;
+  }
+}
+
+/* 概览条可聚焦（Escape 清选区要有落点），焦点环与账本行同一套 */
+.trajectory-plot:focus-visible {
+  outline: 1px solid var(--border-focus);
+  outline-offset: calc(-1 * var(--dp));
 }
 
 /* 没有计时数据时的提示：绘图区正中（官方 `timeline.noTimingData` 同位置） */
@@ -5383,14 +6062,44 @@ button.meta-chip:hover {
   opacity: 0.45;
 }
 
-/* 拖动出来的选区（官方 `onRangeChange` 的等价物：只做高亮，不做缩放） */
+/* 拖动出来的选区（官方 `.selection`：只做高亮，不做缩放）。
+   域外压暗由两条 `box-shadow` 向左右各铺 100vw 实现（官方同款）——不用额外的遮罩元素，
+   也不会盖住两侧的条（它是 `pointer-events:none` 的纯装饰）。 */
 .trajectory-range {
   position: absolute;
   top: 0;
   bottom: 0;
-  background: var(--active);
+  z-index: 1;
+  min-width: calc(1 * var(--dp));
+  background: color-mix(in srgb, var(--link) 12%, transparent);
+  box-shadow:
+    -100vw 0 0 100vw color-mix(in srgb, var(--code-bg) 58%, transparent),
+    100vw 0 0 100vw color-mix(in srgb, var(--code-bg) 58%, transparent);
   pointer-events: none;
 }
+
+/* 选区两端的把手（官方 `.selectionEdges::before/::after`：各 3px 宽的强调色竖条） */
+.trajectory-range-edges {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 4;
+  min-width: calc(1 * var(--dp));
+  pointer-events: none;
+}
+
+.trajectory-range-edges::before,
+.trajectory-range-edges::after {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: calc(3 * var(--dp));
+  background: var(--link);
+  content: "";
+}
+
+.trajectory-range-edges::before { left: 0; }
+.trajectory-range-edges::after { right: 0; }
 
 /* 右侧的「缩放复位」：时间线放大之后唯一的出路（官方靠双击复位，这里多给一个按钮） */
 .trajectory-more {

@@ -1,0 +1,30 @@
+// S02 夹具工具链的窄类型检查工程：只纳入本批正式文件
+// （TS 会沿 import 覆盖其依赖闭包，含 scripts/sessionLog.ts）。
+// 由 scripts/typecheck.mjs 与两个既有工程并行执行；不列其它 scripts 文件（不修旧债）。
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2023"],
+    "types": ["node"],
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "noEmit": true
+  },
+  "include": [
+    "scripts/trajectoryFixture.ts",
+    "scripts/fixtureCliText.ts",
+    "scripts/trajectoryFixtureBuild.ts",
+    "scripts/trajectoryFixtureVerify.ts",
+    "scripts/tests/trajectory/fixture.test.ts",
+    "scripts/tests/trajectory/fixtureBuild.test.ts",
+    "scripts/tests/trajectory/fixtureVerify.test.ts"
+  ]
+}

@@ -17,5 +17,10 @@
     "allowSyntheticDefaultImports": true,
     "isolatedModules": true
   },
-  "include": ["src/webview/**/*.ts", "src/webview/**/*.tsx", "src/shared/**/*.ts"]
+  "include": [
+    "src/webview/**/*.ts",
+    "src/webview/**/*.tsx",
+    "src/shared/**/*.ts",
+    "src/vendor/**/*.ts"
+  ]
 }

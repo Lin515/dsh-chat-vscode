@@ -1,0 +1,168 @@
+{
+  "upstream": {
+    "repo": "https://github.com/deepseek-ai/deepseek-harness",
+    "tag": "dsh-v0.2.0-rc.2",
+    "version": "0.2.0-rc.2",
+    "sha": "639ed015397290b3745d163aafe02ffee4aa3f84",
+    "packages": [
+      "@deepseek-ai/dsh-client-ui-trajectory",
+      "@deepseek-ai/dsh-client-ui-primitives"
+    ],
+    "fixtureDir": "test/fixtures/vendor-sources"
+  },
+  "normalization": {
+    "stripRelativeTsExtension": true,
+    "specifierRewrites": [
+      {
+        "from": "@deepseek-ai/dsh-client-ui-primitives",
+        "to": "../ui-primitives/markdown/plain-text"
+      },
+      {
+        "from": "./layout.ts",
+        "to": "./trajectory-turn-model"
+      },
+      {
+        "from": "./locales.ts",
+        "to": "./trajectory-record"
+      }
+    ]
+  },
+  "files": {
+    "src/vendor/ui-trajectory/trajectory-record.ts": {
+      "upstream": {
+        "path": "packages/client/ui-trajectory/src/client/trajectory-record.ts",
+        "bytes": 5955,
+        "sha256": "fa86cb5f89c99d677793bb673cf723e199baa681ac25f057e04471d6813ba150"
+      },
+      "upstreamNormalizedSha256": "f83439599b118526d32ee82e10ce8b651647bca932dfbedc16bf0a9bd37dc943",
+      "vendorNormalizedSha256": "0856c2dfee88176ee6a072f3a2ce4852f453ff9dab7ffe8b47fc975c23fd009f",
+      "relation": "verbatim",
+      "declaredEdits": [
+        "类型壳：去掉 `extends HTMLAttributes<HTMLDivElement>`（React），只用它当数据结构",
+        "类型壳：`ImageAttachmentRef` / `FileAttachmentRef` / `ConversationPromptSnapshot` 就地声明结构子集",
+        "类型壳：`TrajectoryTranslate` 就地声明为结构化函数类型（本地词典不走这条路径）"
+      ]
+    },
+    "src/vendor/ui-trajectory/timeline.ts": {
+      "upstream": {
+        "path": "packages/client/ui-trajectory/src/client/timeline.ts",
+        "bytes": 6565,
+        "sha256": "ed2ebfd8b4233022115d9757d50d3af6cf399690ccc4fcf36f9f3edcf8e7b173"
+      },
+      "upstreamNormalizedSha256": "bb9ae6a898a788eb6aa98688d0cde3c4bcf603e5a84b7b66192a649e8e516174",
+      "vendorNormalizedSha256": "bb9ae6a898a788eb6aa98688d0cde3c4bcf603e5a84b7b66192a649e8e516174",
+      "relation": "verbatim",
+      "declaredEdits": []
+    },
+    "src/vendor/ui-trajectory/trajectory-search-index.ts": {
+      "upstream": {
+        "path": "packages/client/ui-trajectory/src/client/trajectory-search-index.ts",
+        "bytes": 4333,
+        "sha256": "081fdf9092da9fe24e23b255262f3bd0f0e020aa9f377e318722f956b6cd371a"
+      },
+      "upstreamNormalizedSha256": "a6a05d4a3280049e195e4fcc1efebfcd88be103952d0e4a948a7dec75bf64852",
+      "vendorNormalizedSha256": "a6a05d4a3280049e195e4fcc1efebfcd88be103952d0e4a948a7dec75bf64852",
+      "relation": "verbatim",
+      "declaredEdits": []
+    },
+    "src/vendor/ui-trajectory/trajectory-preview.ts": {
+      "upstream": {
+        "path": "packages/client/ui-trajectory/src/client/trajectory-preview.ts",
+        "bytes": 859,
+        "sha256": "e367a2fff648bb4383df672f3606d0b85bfd5f69efeee80541ead791785c0342"
+      },
+      "upstreamNormalizedSha256": "cf4c8b539fd34de876f7f41378c41fd9978e535bf1d48cc7d4052837d631f179",
+      "vendorNormalizedSha256": "cf4c8b539fd34de876f7f41378c41fd9978e535bf1d48cc7d4052837d631f179",
+      "relation": "verbatim",
+      "declaredEdits": []
+    },
+    "src/vendor/ui-trajectory/code-program.ts": {
+      "upstream": {
+        "path": "packages/client/ui-trajectory/src/client/code-program.ts",
+        "bytes": 2498,
+        "sha256": "a31b4253ba9c7c2490f942768d060c769ff1b5b4fb653ccf67ab54af1e1593b7"
+      },
+      "upstreamNormalizedSha256": "787c92f8c54e3d53722e421a05bee48511206fc8a62c7992e4eee535908ddc52",
+      "vendorNormalizedSha256": "787c92f8c54e3d53722e421a05bee48511206fc8a62c7992e4eee535908ddc52",
+      "relation": "verbatim",
+      "declaredEdits": []
+    },
+    "src/vendor/ui-trajectory/inbox-state.ts": {
+      "upstream": {
+        "path": "packages/client/ui-trajectory/src/client/trajectory-message-definitions.ts",
+        "bytes": 6494,
+        "sha256": "1a4eeb432d55820c36c50975ee37b052d2148818705941a9315a2ac0a5b78ea6"
+      },
+      "upstreamNormalizedSha256": "b421b6dd3b31c6b796535786781997673fde2523c95ddca00a46e5ad25183fa2",
+      "vendorNormalizedSha256": "b62f92e5522306e62878656fd18b831747f1bbe7b3dc4ad550bc4241006285e1",
+      "relation": "excerpt",
+      "upstreamExtract": "官方 `trajectory-message-definitions.ts` 里 `trajectory-inbox-next-step` 状态机（`applySplice` 与相邻辅助函数/类型）",
+      "declaredEdits": [
+        "摘录：只搬官方那份文件里的 inbox 状态机，其余消息定义不搬",
+        "参数类型 `ConversationPreviousContext<InboxState> | undefined` → `InboxState | undefined`（本地没有那层上下文壳）"
+      ]
+    },
+    "src/vendor/ui-trajectory/trajectory-turn-model.ts": {
+      "upstream": {
+        "path": "packages/client/ui-trajectory/src/client/layout.ts",
+        "bytes": 41583,
+        "sha256": "e5760027aee36ab68104cc44bc4259fef229590b1fff6ec9f7c45d4baaa5f8c5"
+      },
+      "upstreamNormalizedSha256": "7020e1ecbefbfe3432e3839b9a7f034aecbd8070e48eb8ea8a85fe416ca60a5d",
+      "vendorNormalizedSha256": "3dc8438827998106e978497ed37a27b01fe60a69bc668d6ebaf6b8118442774f",
+      "relation": "excerpt",
+      "upstreamExtract": "官方 `layout.ts` 的 `TrajectoryGroupModel` / `TrajectoryTurnModel` 两个接口（本地只搬类型，不搬 41 KB 布局实现）",
+      "declaredEdits": [
+        "摘录：只搬官方 `layout.ts` 里的两个轮次模型接口，布局实现不搬"
+      ]
+    },
+    "src/vendor/ui-primitives/markdown/plain-text.ts": {
+      "upstream": {
+        "path": "packages/client/ui-primitives/src/markdown/plain-text.ts",
+        "bytes": 3543,
+        "sha256": "98a63f70ea7d227712915c56de7e9f12fada855d03c2041fcabf9fdcdaf9f878"
+      },
+      "upstreamNormalizedSha256": "d6201b79fb3d7dbef4595f9de56d0db88be481bcfadeb444dedfe6f60440d087",
+      "vendorNormalizedSha256": "d6201b79fb3d7dbef4595f9de56d0db88be481bcfadeb444dedfe6f60440d087",
+      "relation": "verbatim",
+      "declaredEdits": []
+    },
+    "src/vendor/ui-primitives/markdown/parse.ts": {
+      "upstream": {
+        "path": "packages/client/ui-primitives/src/markdown/parse.ts",
+        "bytes": 1790,
+        "sha256": "e281b4120306987cce9cf6d8bccfeddec2fe0c7b7b1cc190966f6dcbfd320b1b"
+      },
+      "upstreamNormalizedSha256": "58475850b71f1a741cde520c119291b95d84cd69199ab952193c5dcb7b533c69",
+      "vendorNormalizedSha256": "460a3c3f7c8935d58248532241d0292fe7e228e02acc41dfd0e2ec7d47fa9fef",
+      "relation": "verbatim",
+      "declaredEdits": [
+        "省略 `parseGfmWithMath` 整支与 3 个 math 依赖（`ui-trajectory` 包内零引用，预览投影只走 `parseGfm`）"
+      ]
+    },
+    "src/vendor/ui-primitives/markdown/cjkFriendlyStrong.ts": {
+      "upstream": {
+        "path": "packages/client/ui-primitives/src/markdown/cjkFriendlyStrong.ts",
+        "bytes": 2933,
+        "sha256": "bc4adf3183f7d0feea17e3a176e7c4b1db5bdddc29e7fc87261f627ff8a39b53"
+      },
+      "upstreamNormalizedSha256": "f9dcd55b866c016a8504972730389e31703498206f46f368a7fa73f1202d4765",
+      "vendorNormalizedSha256": "f9dcd55b866c016a8504972730389e31703498206f46f368a7fa73f1202d4765",
+      "relation": "verbatim",
+      "declaredEdits": []
+    },
+    "src/vendor/ui-primitives/markdown/local-image-syntax.ts": {
+      "upstream": {
+        "path": "packages/client/ui-primitives/src/markdown/local-image-syntax.ts",
+        "bytes": 1494,
+        "sha256": "b5d99bb0ecfad38be19d37f51aa67e1a906b5e59040970e958afa76f4c4772cc"
+      },
+      "upstreamNormalizedSha256": "dedc0852dd540ce1f57d55f3ae536b6650782448ed74a25f64fb51c8cc9fbbdd",
+      "vendorNormalizedSha256": "edb2b59970d74ae3934b3ee478dc5fff3ce399a8bf87f55d999f37cfc39297ec",
+      "relation": "verbatim",
+      "declaredEdits": [
+        "`classifyFileType(match[2]) === 'image'` → `isImageFilePath(match[2])`（判据等价，理由登记在 `src/vendor/ui-primitives/markdown/README.md`）"
+      ]
+    }
+  }
+}

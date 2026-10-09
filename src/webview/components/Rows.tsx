@@ -41,6 +41,7 @@ import {
   IconSearch,
   IconSlash,
   IconTerminal,
+  IconTrajectory,
   IconWrench,
   IconWrite,
 } from "../icons";
@@ -100,6 +101,7 @@ export function ToolRow({
   tool,
   diffLayout,
   node,
+  onInspectCall,
 }: {
   tool: ToolCallView;
   diffLayout?: DiffLayout;
@@ -108,6 +110,13 @@ export function ToolRow({
    * 否则过程折叠把这一段卸载后状态就丢了。
    */
   node: NodeOpenPort;
+  /**
+   * 「在轨迹里查看这次调用」（官方 `inspectCall`）。
+   *
+   * 缺席 = 不渲染那颗按钮——宿主没接这条链路时（例如界面嵌在别处）宁可没有，
+   * 也不要给一颗点了没反应的按钮。
+   */
+  onInspectCall?: (callId: string) => void;
 }) {
   // 工具调用默认收起（不自动展开），用户手动开合优先
   const open = node.open ?? false;
@@ -387,6 +396,30 @@ export function ToolRow({
               {file.path}
             </button>
           ))}
+        </div>
+      ) : null}
+      {/*
+        跨视图跳转：在轨迹里查看**这次调用**（官方 `row.inspect`「查看 / Inspect」）。
+
+        判据是「这一行的 `callId` 解得出轨迹记录」——不是所有行都有：调用在窗口之外、
+        只有结果那种补出来的行没有 `callId`，没有它就无从定位，所以那时**不给按钮**
+        （官方 `inspectCall` 在没有检查型视图时也是 `undefined`，按钮整颗不渲染；
+        这里是「宿主没给 id」这一半，另一半是 `onInspectCall` 没传）。
+
+        挂在展开体里而不是收起态：官方那颗按钮就长在展开区底部，收起态的行整行可点，
+        再塞一颗按钮进去会让「点行展开」与「点按钮跳转」两个动作挤在同一小片区域上。
+      */}
+      {tool.id && onInspectCall ? (
+        <div className="row-body is-action">
+          <button
+            type="button"
+            className="btn btn-ghost row-inspect"
+            title={texts.toolInspectCallTitle}
+            onClick={() => onInspectCall(tool.id)}
+          >
+            <IconTrajectory size={12} />
+            {texts.toolInspectCall}
+          </button>
         </div>
       ) : null}
     </Row>

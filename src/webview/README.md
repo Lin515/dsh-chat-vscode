@@ -17,6 +17,16 @@
 - `texts.ts` — 界面文案的取词典侧：按宿主下发的语言选词典，`Texts` 上下文；文案本体在 `messages.ts`。
 - `messages.ts` — 宿主 → 界面文案的唯一登记表（`@key` 标记 → 中英两份词典由此派生；可外溢 VS Code 通知的条目标 `vscode: true`）。
 - `trajectoryTexts.ts` — 轨迹视图的专用文案（逐字取自官方 locales，只在 webview 内部消费）。
+- `trajectoryDisplay.ts` — 轨迹账本「一行显示什么」的唯一出处（官方 `recordDisplayText` / `recordResultText` / `isToolCallOnly` / `group.*` 组标题 / `summarizeTurn` 折叠摘要的等价实现；宿主只给语义标记，文案在这一层取）。
+- `trajectoryTimeline.ts` — 轨迹时间线的视图模型：调 vendor 的官方投影，把绝对域归一化成 0..1（界面绘制与命中都在归一化域里）。
+- `trajectoryVendor.ts` — 账本 → vendor 官方形状的适配层（`vendorCell` / `vendorTurns`）与稳定身份 `trajectoryCellRecordId`。
+- `trajectoryPromptDiff.ts` — 系统提示词 / 工具目录的行级差分（官方 `promptDiffLines()` 的同一套：`diff` 包的 `structuredPatch`、context 3、hunk 头 + 逐行标记）。
+- [trajectoryPre.ts](<trajectoryPre.ts>) — 轨迹原文段落的换行偏好：渲染时读取默认值，只有用户切换时才持久化。
+- [trajectoryLedgerRows.ts](<trajectoryLedgerRows.ts>) — 账本行投影的共享 seam：查询优先于折叠、每段起点、工具隐藏与原助手后的非 primary 摘要；真实组件与正式回归同调此规则，不复制镜像实现。
+- [trajectoryInteraction.ts](<trajectoryInteraction.ts>) — 一条交互链的唯一端口：同时拥有 ledger／plot 容器 ref、记录／请求／range 选择、一次消费定位、成功 focus 回执、视口与手势资源；切会话清理公开状态和闭包监听，已排队旧回调也失效。
+- [trajectoryVirtual.ts](<trajectoryVirtual.ts>) — 账本分段窗口计划：按原位次插入 pin，垫行与呈现行数量守恒；定位 nonce 只消费一次，不能让旧 reveal 拉回手工滚动。
+- [uiScale.ts](<uiScale.ts>) — 基准字号、设计像素与界面倍率的共享换算及 React 上下文。
+- [icons.tsx](<icons.tsx>) — 内联 SVG 图标集；尺寸按设计像素换算，描边与颜色跟随界面。
 
 ## 布局与交互子系统
 

@@ -16,7 +16,6 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { SessionAdapter } from "../src/dsh/adapter";
 import { expandAssistantStream } from "../src/dsh/assistantStream";
-import type { HostToWebview } from "../src/shared/ipc";
 import type { MessageView, Segment } from "../src/shared/chat";
 
 /**

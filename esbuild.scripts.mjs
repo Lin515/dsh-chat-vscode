@@ -1,5 +1,7 @@
 import esbuild from "esbuild";
-import { mkdirSync, readdirSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, relative } from "node:path";
 
 /**
  * 开发期脚本的打包（冒烟测试、诊断探针、环境修复）。
@@ -25,6 +27,48 @@ mkdirSync("build", { recursive: true });
 for (const name of readdirSync("build")) {
   if (name.endsWith(".mjs")) rmSync(`build/${name}`, { force: true });
 }
+/**
+ * 只清掉**本脚本自己**写的那一份来源见证：不能泛删 `build/*.json`（别的工具可能也在这里放文件）。
+ * 见证与 `build/*.mjs` 同生命周期 —— 它见证的是「这次构建实际折进去的源码字节」，
+ * 留着上一轮的旧见证比没有更糟。
+ */
+const WITNESS_FILES = ["build/trajectory-fixture-build.witness.json"];
+for (const file of WITNESS_FILES) rmSync(file, { force: true });
+
+/**
+ * 记录型 `onLoad`：esbuild 请求加载 `declared` 时，把那份字节读出来算 sha256、
+ * 再**原样交回** esbuild。
+ *
+ * 语义与不装插件时逐字相同（内容不改写），区别只是这次加载被记了下来 —— 于是见证文件里的
+ * `derive.sha256` 是**真的进了 bundle 的字节**，不是事后补的声明。夹具提取 CLI 的回归据此
+ * 断言「折入的 derive 字节 = 磁盘当前源码 = CLI 写出的登记」。
+ */
+function recordDeclaredSource(declared, recorded) {
+  const filter = new RegExp(`[\\\\/]${declared.split("/").join("[\\\\/]")}$`);
+  return {
+    name: "record-declared-source-bytes",
+    setup(build) {
+      build.onLoad({ filter }, (args) => {
+        const raw = readFileSync(args.path);
+        recorded.source = {
+          file: relative(process.cwd(), args.path).replace(/\\/g, "/"),
+          sha256: createHash("sha256").update(raw).digest("hex"),
+          bytes: raw.length,
+        };
+        return { contents: raw.toString("utf8"), loader: "ts", resolveDir: dirname(args.path) };
+      });
+    },
+  };
+}
+
+/** 需要「实际折入字节」见证的入口（目前只有夹具提取 CLI）。 */
+const sourceWitnesses = {
+  "build/trajectory-fixture-build.mjs": {
+    entry: "scripts/trajectoryFixtureBuild.ts",
+    declared: "src/dsh/trajectory.ts",
+    witness: WITNESS_FILES[0],
+  },
+};
 
 const entries = {
   "build/smoke.mjs": "scripts/smoke.ts",
@@ -92,6 +136,7 @@ const entries = {
   "build/plan-command-probe.mjs": "scripts/planCommandProbe.ts",
   "build/goal-session-probe.mjs": "scripts/goalSessionProbe.ts",
   "build/session-log-scan.mjs": "scripts/sessionLogScan.ts",
+  "build/session-log.test.mjs": "scripts/sessionLog.test.ts",
   "build/session-list-probe.mjs": "scripts/sessionListProbe.ts",
   "build/session-list.test.mjs": "scripts/sessionList.test.ts",
   "build/process-registry.test.mjs": "scripts/processRegistry.test.ts",
@@ -141,6 +186,22 @@ const entries = {
   "build/job-observe.test.mjs": "scripts/jobObserve.test.ts",
   "build/queue-order.test.mjs": "scripts/queueOrder.test.ts",
   "build/trajectory.test.mjs": "scripts/trajectory.test.ts",
+  "build/trajectory-vendor.test.mjs": "scripts/trajectoryVendor.test.ts",
+  // M01 源锁：`src/vendor/**/*.ts` 的内容锁 + 双向登记 + 来源自洽（必须登记，否则 npm test 静默不跑）
+  "build/vendor-source-lock.test.mjs": "scripts/vendorSourceLock.test.ts",
+  "build/trajectory-display.test.mjs": "scripts/trajectoryDisplay.test.ts",
+  "build/trajectory-pre.test.mjs": "scripts/trajectoryPre.test.ts",
+  "build/trajectory-prompt-diff.test.mjs": "scripts/trajectoryPromptDiff.test.ts",
+  "build/inspect-call.test.mjs": "scripts/inspectCall.test.ts",
+  "build/trajectory-virtual.test.mjs": "scripts/trajectoryVirtual.test.ts",
+  "build/trajectory-ledger-rows.test.mjs": "scripts/trajectoryLedgerRows.test.ts",
+  "build/trajectory-interaction.test.mjs": "scripts/trajectoryInteraction.test.ts",
+  "build/trajectory-probe-cli.test.mjs": "scripts/trajectoryProbeCli.test.ts",
+  "build/trajectory-align-probe.mjs": "scripts/trajectoryAlignProbe.ts",
+  "build/trajectory-gap-probe.mjs": "scripts/trajectoryGapProbe.ts",
+  "build/trajectory-probe-facts.test.mjs": "scripts/trajectoryProbeFacts.test.ts",
+  "build/trajectory-shape-probe.mjs": "scripts/trajectoryShapeProbe.ts",
+  "build/trajectory-fold-probe.mjs": "scripts/trajectoryFoldProbe.ts",
   "build/turn-rail.test.mjs": "scripts/turnRail.test.ts",
   "build/manifest.test.mjs": "scripts/manifest.test.ts",
   "build/projection-store.test.mjs": "scripts/projectionStore.test.ts",
@@ -160,12 +221,26 @@ const entries = {
   "build/blank-session-reuse.test.mjs": "scripts/blankSessionReuse.test.ts",
   "build/blank-restore-race.test.mjs": "scripts/blankRestoreRace.test.ts",
   "build/dsh-compat.mjs": "scripts/dshCompat.ts",
+  // S02 夹具提取 / 离线校验：两个 CLI 与它们的离线回归（回归必须登记，否则 npm test 静默不跑）
+  "build/trajectory-fixture-build.mjs": "scripts/trajectoryFixtureBuild.ts",
+  "build/trajectory-fixture-verify.mjs": "scripts/trajectoryFixtureVerify.ts",
+  "build/trajectory-fixture.test.mjs": "scripts/tests/trajectory/fixture.test.ts",
+  "build/trajectory-fixture-build.test.mjs": "scripts/tests/trajectory/fixtureBuild.test.ts",
+  "build/trajectory-fixture-verify.test.mjs": "scripts/tests/trajectory/fixtureVerify.test.ts",
+  // M06 完整载荷整链路：OS 入口（薄壳）+ 离线回归。
+  // 入口指向 `trajectoryPayloadBenchCli.ts` —— 核心 `trajectoryPayloadBench.ts` 是**无顶层
+  // 副作用的纯模块**，测试直接 import 它；不要给核心模块单独建 CLI 条目（bundle 里
+  // `import.meta.url === argv[1]` 与 `import.meta.main` 都会在测试里恒真，CLI 会抢跑）。
+  "build/trajectory-payload-bench.mjs": "scripts/trajectoryPayloadBenchCli.ts",
+  "build/trajectory-payload-bench.test.mjs": "scripts/trajectoryPayloadBench.test.ts",
 
 };
 
 await Promise.all(
-  Object.entries(entries).map(([outfile, entryPoints]) =>
-    esbuild.build({
+  Object.entries(entries).map(async ([outfile, entryPoints]) => {
+    const witness = sourceWitnesses[outfile];
+    const recorded = { source: null };
+    await esbuild.build({
       entryPoints: [entryPoints],
       outfile,
       bundle: true,
@@ -179,8 +254,19 @@ await Promise.all(
       // `react-dom/server` 真渲染问卷卡）：与 webview 那份产物同一个转换器，
       // 否则 TSX 会退回经典转换、要求一个不存在的 React 全局变量。
       jsx: "automatic",
-    }),
-  ),
+      ...(witness === undefined ? {} : { plugins: [recordDeclaredSource(witness.declared, recorded)] }),
+    });
+    if (witness !== undefined) {
+      // 见证写在**构建成功之后**：失败时不留下半份见证（那会让「折入字节」看起来已验证过）
+      writeFileSync(witness.witness, `${JSON.stringify({
+        generatedBy: "esbuild.scripts.mjs",
+        entry: witness.entry,
+        outfile,
+        derive: recorded.source,
+        bundleSha256: createHash("sha256").update(readFileSync(outfile)).digest("hex"),
+      }, null, 2)}\n`, "utf8");
+    }
+  }),
 );
 
 

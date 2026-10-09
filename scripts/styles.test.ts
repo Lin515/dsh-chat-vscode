@@ -9,6 +9,8 @@
 import assert from "node:assert";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import type { TrajectoryCell, TrajectoryTurn } from "../src/shared/trajectory";
+import { trajectoryLedgerRows } from "../src/webview/trajectoryLedgerRows";
 import { dictionaryFor } from "../src/webview/texts";
 
 const css = readFileSync(join(process.cwd(), "src", "webview", "styles", "app.css"), "utf8");
@@ -1407,9 +1409,16 @@ console.log("styles: 轨迹整页占用会话窗口（输入区移出布局但�
     join(process.cwd(), "src", "webview", "components", "Trajectory.tsx"),
     "utf8",
   );
+  // 时间线本体（绘图区、左端 `…`、右侧复位）自 2026-10-09 起是**独立的呈现组件**
+  // （`TrajectoryTimeline.tsx`，只收一个交互端口）：绘图区那几样接线断言要去那一份里找。
+  const timeline = readFileSync(
+    join(process.cwd(), "src", "webview", "components", "TrajectoryTimeline.tsx"),
+    "utf8",
+  );
   const app = readFileSync(join(process.cwd(), "src", "webview", "App.tsx"), "utf8");
   const flatApp = app.replace(/\s+/gu, " ");
   const flatTrajectory = trajectory.replace(/\s+/gu, " ");
+  const flatTimeline = timeline.replace(/\s+/gu, " ");
 
   assert.ok(
     /className="trajectory-view" role="region"/.test(flatTrajectory),
@@ -1425,12 +1434,12 @@ console.log("styles: 轨迹整页占用会话窗口（输入区移出布局但�
   );
 
   // 「…」在绘图区**内部**、贴左缘（官方 earlierHistory）
-  const plotStart = flatTrajectory.indexOf('className="trajectory-plot"');
-  assert.ok(plotStart > 0, "找不到时间线绘图区");
-  const resetAt = flatTrajectory.indexOf('className="trajectory-more"');
+  const plotStart = flatTimeline.indexOf('className="trajectory-plot"');
+  assert.ok(plotStart > 0, "在 TrajectoryTimeline.tsx 里找不到时间线绘图区");
+  const resetAt = flatTimeline.indexOf('className="trajectory-more"');
   assert.ok(resetAt > plotStart, "绘图区之后应当还有右侧的缩放复位按钮");
   assert.ok(
-    flatTrajectory.slice(plotStart, resetAt).includes("trajectory-earlier"),
+    flatTimeline.slice(plotStart, resetAt).includes("trajectory-earlier"),
     "「加载更早」的 `…` 必须画在绘图区里（左端），不能再排到绘图区右侧",
   );
   const earlier = rule(".trajectory-earlier");
@@ -1522,6 +1531,118 @@ console.log("styles: 轨迹整页切换、加载更早在时间线左端 ✓");
     "各页签正文要抽成一份（`bodies`），概述分节与页签共用",
   );
 
+  // 2b)「原始内容」页签的逐块渲染（官方 `MarkdownRecordContent` 第二分支）
+  const sourceBlocksSrc = readFileSync(
+    join(process.cwd(), "src", "webview", "components", "SourceBlocks.tsx"),
+    "utf8",
+  ).replace(/\s+/gu, " ");
+  assert.ok(
+    /trajectoryUsesSourceBlocks\(cell\) \? \( <SourceBlocks/.test(flatTrajectory),
+    "有原始块时「原始内容」页签要整块改用逐块排版（不是把块列表加在那段裸文本下面）",
+  );
+  assert.ok(
+    /<SourceBlocks blocks=\{cell\.sourceBlocks \?\? \[\]\} texts=\{texts\} onOpenCall=\{onOpenCall\} \/>/.test(flatTrajectory),
+    "逐块视图要吃**这一格**的原始块，跳转回调由检查器透传（认到哪一行是视图层的事）",
+  );
+  // 跳转那一步不能只 `selectRecord`：目标行可能被折叠收走、也可能在虚拟化窗口之外，
+  // 少了下面三样，用户点完**什么都看不到**（与官方 `openRecordSummary` 同一套）。
+  // 这三样自 2026-10-09 起都由**交互端口**（`trajectoryInteraction.ts`）提供，
+  // 组件只按需调用——端口那一侧的行为断言在 `scripts/trajectoryInteraction.test.ts`。
+  // 源码已折成单空格（`flatTrajectory`），所以边界用「下一个顶层 const」而不是行首缩进
+  const openCall = /const openCallRecord = \(callId: string\) => \{[\s\S]*?const selectedCell =/.exec(flatTrajectory)?.[0] ?? "";
+  assert.ok(openCall.length > 0, "找不到 openCallRecord（逐块跳转那一步的实现变了？）");
+  for (const [needle, why] of [
+    ["port.expandTurn(", "目标那一轮被折了要展开（官方 openRecordSummary 的第一步）"],
+    ["port.expandCall(", "目标是工具行时，发起它的那条助手行被「调用折叠」收走了也要展开"],
+    ["port.openRecord(index)", "选中目标行并请求把它滚进视野（否则窗口外的目标看不见）"],
+  ] as const) {
+    assert.ok(openCall.includes(needle), `逐块跳转缺了「${needle}」：${why}`);
+  }
+  assert.ok(
+    /className="trajectory-source-block-content"/.test(sourceBlocksSrc),
+    "每块一节，正文那一枚的类名由样式表按 `calc(N * var(--dp))` 定义",
+  );
+  assert.ok(
+    /jumpable \? \( <button[\s\S]{0,80}?className="trajectory-source-block-jump"/.test(sourceBlocksSrc),
+    "块标题只在有 callId 且给得出回调时才是跳转按钮（画出按钮却点不动是最坏的一种）",
+  );
+  assert.ok(
+    /var\(--dp\)/.test(rule(".trajectory-source-block-content")) &&
+      /var\(--dp\)/.test(rule(".trajectory-source-blocks")),
+    "逐块排版那两处几何量必须走 --dp（裸 px 会被界面尺度那条断言抓住）",
+  );
+
+  // 2c) 「系统提示词变更」页签的**行级差分**（官方 `PromptDiffSection`）
+  const promptDiffSrc = readFileSync(
+    join(process.cwd(), "src", "webview", "components", "PromptDiff.tsx"),
+    "utf8",
+  ).replace(/\s+/gu, " ");
+  assert.ok(
+    /trajectory-prompt-diff-section/.test(promptDiffSrc) &&
+      /trajectory-prompt-diff-title/.test(promptDiffSrc) &&
+      /trajectory-prompt-diff-line/.test(promptDiffSrc),
+    "差分那一节的三个类名要在组件里出现（样式表按它们写）",
+  );
+  assert.ok(
+    /if \(lines\.length === 0\) return null;/.test(promptDiffSrc),
+    "两段相同时整节不渲染（挂一个空标题会让人以为这里本来有内容）",
+  );
+  assert.ok(
+    /is-\$\{kind\}/.test(promptDiffSrc) &&
+      /var\(--success\)/.test(rule(".trajectory-prompt-diff-line.is-added")) &&
+      /var\(--error\)/.test(rule(".trajectory-prompt-diff-line.is-removed")),
+    "新增 / 删除行分别用主题的成功 / 错误色（与 diff 视图、改动统计同一对变量）",
+  );
+  assert.ok(
+    /trajectoryUsesSourceBlocks|PromptDiffSection/.test(flatTrajectory) &&
+      /<PromptDiffSection title=\{texts\.tabSystemPrompt\}/.test(flatTrajectory),
+    "对照页签那一节要喂「改动前 vs 改动后」的两段提示词",
+  );
+  // 工具目录那一节**只在这一行记下了 before 的目录时**才出：拿改动前的 system 去比
+  // 改动后的 tools 是错的对照，所以缺席时宁可不显示（官方那边这个字段总是有）
+  assert.ok(
+    /cell\.previousPromptTools !== undefined && cell\.toolsDetail !== undefined/.test(flatTrajectory),
+    "工具目录那一节要在**两份目录都在**时才渲染",
+  );
+  const flatVendor = readFileSync(
+    join(process.cwd(), "src", "webview", "trajectoryVendor.ts"),
+    "utf8",
+  ).replace(/\s+/gu, " ");
+  // 适配层要做的是**合成官方形状**：宿主那一列（`previousPromptTools`，官方 `TrajectoryCellProps`
+  // 里没有它）进 `previousPromptDetail.tools`，而不是原样多透传一个键。拆成正反两条断言是有意的
+  // ——只写「合成有了」会漏掉「同时又透传了一份」，S01 之前正是这个状态。
+  assert.ok(
+    /\{ tools: cell\.previousPromptTools \}/.test(flatVendor),
+    "被替换掉的工具目录要合成进 `previousPromptDetail.tools`（少了它，vendor 形状里那一半永远是缺的）",
+  );
+  assert.ok(
+    !/previousPromptTools: cell\.previousPromptTools/.test(flatVendor),
+    "vendor 形状不得再透传宿主字段 `previousPromptTools`（官方没有这一列）",
+  );
+
+  // 2d) 助手记录概述里的「请求计时」一节（跨检查器的入口）
+  assert.ok(
+    /section\.onOpen !== undefined \? \(/.test(flatTrajectory),
+    "分节标题要支持**跨面板**的 onOpen（请求计时开的是请求检查器，不是记录检查器的页签）",
+  );
+  assert.ok(
+    /onOpenRequestTiming=\{openRequestTimingFor\(selectedCell\)\}/.test(flatTrajectory),
+    "记录检查器要拿到「跳到该请求的计时页签」这个回调（视图层按请求号解析，见 trajectoryDisplay）",
+  );
+  assert.ok(
+    /port\.selectRequest\(number, "timing"\)/.test(flatTrajectory) &&
+      /initialTab=\{requestTab\}/.test(flatTrajectory),
+    "跳过去要把目标页签一起交过去（请求检查器默认开在概述，不指定就像是没生效）",
+  );
+  assert.ok(
+    /key=\{selectedRequestInfo\.number\}/.test(flatTrajectory),
+    "请求检查器按请求号重挂：页签态在组件内，不重挂就采不到新的 initialTab",
+  );
+  assert.ok(
+    /if \(requestSelected\) port\.clearSelection\(\); else port\.selectRequest\(requestNumber\);/.test(flatTrajectory),
+    "点账本行那枚请求小标记要清掉上一次的目标页签（端口 `selectRequest` 不带 tab 就是回到默认页签）",
+  );
+
   // 3) 布局：分节限高自己滚；账本与检查器**不换行**、检查器最多占满去掉 280px 的宽度
   const preview = rule(".trajectory-overview-preview");
   assert.ok(
@@ -1532,6 +1653,12 @@ console.log("styles: 轨迹整页切换、加载更早在时间线左端 ✓");
   assert.ok(
     /flex-wrap:\s*nowrap/.test(body),
     ".trajectory-body 不许换行——换行会把检查器挤到第二行并撑出主体",
+  );
+  assert.ok(
+    /overflow-anchor:\s*none/.test(rule(".trajectory-ledger")),
+    "账本滚动容器必须关掉浏览器滚动锚定：账本位置由应用拥有（落点写 scrollTop、用户手势改它、" +
+      "窗口计划按它算），而虚拟窗口重排（垫行↔真实行）正是原生锚定的触发条件——它自己挪走那 1px 之后，" +
+      "落点收尾会把它当成「用户手滚」弃票，首次落点就裁掉半行（实测 auto 13.5/26px 可见、none 整行可见）",
   );
   const details = rule(".trajectory-details");
   assert.ok(
@@ -1597,6 +1724,79 @@ console.log("styles: 轨迹取历史同链路、概述摊开后几张卡片 ✓"
   );
 }
 console.log("styles: 轨迹配色对齐官方（输入绿 / 模型紫）✓");
+
+// ---------- 19b. 「（仅工具调用）」行的弱化色必须**压在** .trajectory-text 之后 ----------
+//
+// 官方 `TrajectoryTable.module.css` 的 `.toolCallOnly` 只是一条 `color: var(--label-tertiary)`；
+// CSS **同特异性下后者胜**，我们这条 `.trajectory-text.is-tool-call-only` 的特异性比
+// `.trajectory-text` 高（两个类），但如果将来有人把它挪到主规则前面、或主规则加了 `color`，
+// 弱化色就会被吃掉——那正是「仅工具调用」行看着跟普通行一样的原因。
+{
+  const base = css.indexOf("\n.trajectory-text {");
+  const muted = css.indexOf("\n.trajectory-text.is-tool-call-only {");
+  assert.ok(base >= 0, "app.css 里找不到 .trajectory-text 主规则");
+  assert.ok(muted >= 0, "app.css 里找不到 .trajectory-text.is-tool-call-only（「仅工具调用」行的弱化色）");
+  assert.ok(muted > base, "弱化色必须写在 .trajectory-text 主规则之后（同特异性下后者胜）");
+  assert.ok(
+    /color:\s*var\(--muted\)/.test(rule(".trajectory-text.is-tool-call-only")),
+    "「仅工具调用」行用中性弱化色（官方 `--label-tertiary` 的对应物是 --muted）",
+  );
+}
+console.log("styles: 「（仅工具调用）」行的弱化色 + 书写次序 ✓");
+
+// ---------- 19c. 请求边界小标记：真的有可点的圆点 + 悬停浮出的请求号胶囊 ----------
+//
+// 那枚小标记是**请求级检查器的唯一入口**（选项 / 用量含会话累计 / 请求计时都只能从它进），
+// 所以它必须是可点的（`cursor: pointer`、`background: transparent` 的按钮），
+// 而且**悬停提示走 `content: attr(data-label)`**——提示文案由界面按语言写进 `data-label`，
+// CSS 不持有任何一句用户可见文字（本仓库的中英双语硬规则）。
+{
+  /**
+   * 取一条规则体。**必须比 `rule()` 宽松**：选中态与悬停态写在同一个逗号组里
+   * （`.is-active::before,\n.is-active:hover::before { … }`），`rule()` 找的是
+   * 「选择器紧跟 `{`」，取不到组里的那个。
+   */
+  const bodyFor = (selector: string): string => {
+    const at = css.indexOf(selector);
+    assert.ok(at >= 0, `app.css 里找不到选择器 ${selector}`);
+    const open = css.indexOf("{", at);
+    const close = css.indexOf("}", open);
+    return css.slice(open + 1, close);
+  };
+  const marker = bodyFor(".trajectory-request-marker {");
+  assert.ok(/cursor:\s*pointer/.test(marker), "请求标记要能点（它是请求级检查器的唯一入口）");
+  assert.ok(
+    /position:\s*absolute/.test(marker) && /top:\s*calc\(-?[\d.]+ \* var\(--dp\)\)/.test(marker),
+    "请求标记绝对定位、上移压在行缝之间（官方 `top:-8px` 的对应物），不占行高",
+  );
+  const dot = bodyFor(".trajectory-request-marker::before {");
+  assert.ok(
+    /width:\s*calc\([\d.]+ \* var\(--dp\)\)/.test(dot) && /border-radius:\s*50%/.test(dot),
+    "圆点本体是 1:1 的圆、尺寸跟倍率走（裸 px 会被界面尺度那条断言抓住）",
+  );
+  assert.ok(
+    /box-shadow:[^;]*var\(--bg\)/.test(dot),
+    "圆点带一圈底色描边——不描的话它压在行缝上会被下面那行的背景吃掉",
+  );
+  const errorDot = bodyFor('.trajectory-request-marker[data-request-status="error"]::before');
+  assert.ok(/background:\s*var\(--error\)/.test(errorDot), "失败请求的圆点涂红（按 data-request-status 分派）");
+  const activeDot = bodyFor(".trajectory-request-marker.is-active::before");
+  assert.ok(/background:\s*var\(--link\)/.test(activeDot), "选中的请求标记要看得出来（选中态与悬停态分开）");
+  const tip = bodyFor(".trajectory-request-marker::after {");
+  assert.ok(
+    /content:\s*attr\(data-label\)/.test(tip),
+    "悬停提示的文字来自 data-label（CSS 里不写死任何一句用户可见文案）",
+  );
+  assert.ok(
+    /opacity:\s*0/.test(tip) && /pointer-events:\s*none/.test(tip),
+    "提示默认藏起来且不吃鼠标（否则它会挡住自己那颗圆点的点击）",
+  );
+  assert.ok(
+    /white-space:\s*nowrap/.test(tip),
+    "提示不折行（「请求 #12 · 压缩」英文更长，折行会把胶囊撑成两行）",
+  );
+}
+console.log("styles: 请求边界小标记（可点圆点 + data-label 悬停提示）✓");
 
 // ---------- 34. 连接条按钮矩阵：判定在纯函数里，界面只渲染 ----------
 //
@@ -1742,6 +1942,402 @@ console.log("styles: 轨迹工具栏开关的按下态（aria-pressed + --active
   );
 }
 console.log("styles: 轨迹顶条光标 = 框选 I 字，手掌光标与 is-zoomed 已除 ✓");
+
+// ---------- 38. 轮次起点的三种视觉（标签 / 分隔线 / 紧凑态）是**一组** ----------
+//
+// 官方同一个 `turnStart` 判据驱动三件事，它们互为前提，任缺一件都会走形：
+//   ① 2px 全宽分隔线：`.trajectory-row.is-turn-start .trajectory-event::before`。
+//      两条取消规则都不能漏——整张表的第一行不画、`trajectory-history-row` 之后那一行
+//      不画（那是分页控件，不是轮次边界）。
+//   ② 标签**绝对定位**在事件格力左上：这是「不占行高」的唯一来源。它一旦落回文档流，
+//      带标签的行会比别的行高出一截（实测 43px vs 26px）——③ 的紧凑态也就无从谈起。
+//   ③ 紧凑态由容器查询在两枚标签之间翻转。两枚的**隐藏态必须写在主规则里**（基线先藏、
+//      查询里再放开），否则宽栏下两枚标签会同时可见、叠在 `grid-area` 的同一格里。
+//
+// 「待遇一致性」：种类标签的收窄分布（`padding: 0 calc(3 * var(--dp))`）在**两条**容器
+// 查询里都要有，不能只在宽的那条或窄的那条给。
+{
+  /**
+   * 取一条**顶层、只列这一个选择器**的规则的声明块。
+   *
+   * 三个坑都踩过，全写下来：
+   *   1. `indexOf(选择器)` 会把分组规则里的同名类名当命中，取到别人的声明块；
+   *   2. 同名选择器在 `@container` 里还有一份，`indexOf` 会先拿到它——所以先把
+   *      `@container` 整块按大括号配对挖成等长空白（不是正则截断：`calc(...)` 带括号）；
+   *   3. 光靠「顶格 + 后面是 `{`」**仍然分不出**分组规则的第二行——`.a,\n.b { … }` 里
+   *      `.b` 也是顶格、后面也是 `{`。判据得看**前一个非空白字符**：是逗号就是分组里的
+   *      一员，跳过它继续找下一条。
+   */
+  const bodyOf = (selector: string): string => {
+    let text = css;
+    for (let at = text.indexOf("@container"); at >= 0; at = text.indexOf("@container")) {
+      const open = text.indexOf("{", at);
+      let depth = 0;
+      let end = open;
+      for (; end < text.length; end += 1) {
+        if (text[end] === "{") depth += 1;
+        else if (text[end] === "}") {
+          depth -= 1;
+          if (depth === 0) break;
+        }
+      }
+      // 等长空白替换，偏移与行号都不变
+      text = text.slice(0, at) + " ".repeat(end + 1 - at) + text.slice(end + 1);
+    }
+    const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    for (const hit of text.matchAll(new RegExp(`(?:^|\\n)(${escaped}[ \\t]*)(?=\\{)`, "gm"))) {
+      const start = hit.index + hit[0].length - hit[1].length;
+      // 往左跳过空白，看前一个非空白字符：是逗号 ⇒ 它只是选择器分组里的一员（跳过）；
+      // 是 `{` / `}` / 行首 ⇒ 这一条规则的选择器就只有它一个。
+      let back = start - 1;
+      while (back >= 0 && /\s/.test(text[back] as string)) back -= 1;
+      if (text[back] === ",") continue;
+      const open = text.indexOf("{", hit.index);
+      const close = text.indexOf("}", open);
+      return text.slice(open + 1, close);
+    }
+    assert.fail(`app.css 顶层找不到**单选择器**规则 ${selector}（分组规则里的成员不算）`);
+  };
+
+  // ① 分隔线：骑在行缝上的 2px 全宽线
+  const separator = bodyOf(".trajectory-row.is-turn-start:not(:first-child) .trajectory-event::before");
+  assert.ok(
+    /position:\s*absolute/.test(separator) && /height:\s*calc\(2 \* var\(--dp\)\)/.test(separator),
+    "轮次首行要有 2px 全宽分隔线（官方 `td::before` 的那条）",
+  );
+  assert.ok(
+    /transform:\s*translateY\(-50%\)/.test(separator),
+    "分隔线要 `translateY(-50%)` 骑在行缝上——不translate 就画在行内部、看着像多了一条线",
+  );
+  assert.ok(
+    /left:\s*0/.test(separator) && /right:\s*0/.test(separator),
+    "分隔线要**全宽**（左右都贴到 0），只画事件列宽度就不是轮次边界了",
+  );
+  // 两条取消规则
+  assert.ok(
+    css.includes(".trajectory-history-row + .trajectory-row.is-turn-start .trajectory-event::before") &&
+      /content:\s*none/.test(
+        bodyOf(".trajectory-history-row + .trajectory-row.is-turn-start .trajectory-event::before"),
+      ),
+    "「加载更早的历史」之后那一行不许画轮次分隔线（官方 `.historyLoadRow + tr[data-turn-start] td::before { content: none }`）",
+  );
+  assert.ok(
+    /:not\(:first-child\)/.test(css.slice(css.indexOf(".trajectory-row.is-turn-start"), css.indexOf(".trajectory-row.is-turn-start") + 120)),
+    "整张表的第一行不画轮次分隔线（上面没有东西可分）",
+  );
+
+  // ② 标签绝对定位 + 事件格预留左内边距
+  const label = bodyOf(".trajectory-turn-label");
+  assert.ok(
+    /position:\s*absolute/.test(label) && /top:\s*0/.test(label) && /left:\s*0/.test(label),
+    "轮次标签必须绝对定位在事件格左上——在流里就会把行撑高（③ 的紧凑态依赖它不占行高）",
+  );
+  assert.ok(
+    /width:\s*max-content/.test(label),
+    "标签宽度 `max-content`（官方 `turnLabel`）：定宽会让「第 10 轮」这种更长的文案被截",
+  );
+  assert.ok(
+    !/max-width:\s*100%/.test(label),
+    "标签不许写 `max-width: 100%`：百分比按事件格的 padding box 算（英文 122 的列减掉左 36 右 4 只剩 82，" +
+      "中文那一档更少），而「第 10 轮」就有 51 宽——一 clamp 就换行、把行撑高，正是绝对定位要避免的事",
+  );
+  // 定位祖先与裁剪口径写在**另一条** `.trajectory-event` 规则里（那里同时挂着请求边界
+  // 小标记的理由注释），所以按「同名顶层规则的合集」查，而不是只看第一条。
+  const eventRules = [...css.matchAll(/^\.trajectory-event\s*\{([\s\S]*?)\}/gmu)].map(m => m[1]).join("\n");
+  assert.ok(eventRules.length > 0, "app.css 顶层找不到 .trajectory-event 规则");
+  assert.ok(
+    /padding:[^;]*calc\(36 \* var\(--dp\)\)/.test(eventRules),
+    "事件格要预留 36 的左侧留白给轮次标签（官方 `.event` 的 `padding-left: 36px`），否则标签压在 #N 与种类标签上",
+  );
+  assert.ok(
+    /position:\s*relative/.test(eventRules) && /overflow:\s*visible/.test(eventRules),
+    "事件格要 `position: relative` + `overflow: visible`：标签与 -50% 的分隔线都挂在它身上，单元格自带的 `overflow: hidden` 会把两者裁掉",
+  );
+  // 内容条的高度对齐口径：`inline-flex` + `vertical-align: top`。
+  // **不许改成块级 flex + `height: 100%`**（那样最像官方 `.eventInner`）：块级盒会让工具 /
+  // 子工具行的行高从 26 缩到 25（实测）；只写 `inline-flex` 不给 `vertical-align: top`
+  // 又会让带标签的行内容低 2px。两个失效方向都钉住。
+  const inner = bodyOf(".trajectory-event-inner");
+  assert.ok(
+    /display:\s*inline-flex/.test(inner),
+    "内容条要 `inline-flex`：块级 flex 会把工具行的行高从 26 缩到 25",
+  );
+  assert.ok(
+    /vertical-align:\s*top/.test(inner),
+    "内容条要 `vertical-align: top`：少了它，有轮次标签的行内容比别的行低 2px",
+  );
+  assert.ok(
+    !/height:\s*100%/.test(inner),
+    "内容条不许写 `height: 100%`（照着官方 `.eventInner` 抄会踩上面那条行高坑）",
+  );
+
+  // ③ 两枚标签的隐藏态写在主规则里，紧凑态在容器查询里翻转
+  //
+  // 两枚标签**叠在同一格里**（官方那两枚的 `grid-area: 1 / 1`）：全宽那枚靠上面那条
+  // 分组规则放出来（`max-width: 64px` + `opacity: 1`），紧凑那枚在主规则里先藏起来、
+  // 到 620 那一档才放开。基线不藏的话宽栏下两枚会同时可见。
+  const stacked = /\.trajectory-turn-label-full,\s+\.trajectory-turn-label-compact\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+  assert.ok(
+    /grid-area:\s*1 \/ 1/.test(stacked) && /opacity:\s*1/.test(stacked),
+    "两枚标签要叠在同一格（`grid-area: 1 / 1`）且默认放出来的是全宽那枚——分组规则的 `.trajectory-turn-label-full, .trajectory-turn-label-compact`",
+  );
+  const compactLabel = bodyOf(".trajectory-turn-label-compact");
+  assert.ok(
+    /max-width:\s*0/.test(compactLabel) && /opacity:\s*0/.test(compactLabel),
+    "紧凑标签的隐藏态（max-width: 0 + opacity: 0）必须写在主规则里，不能只写在容器查询里——否则宽栏下两枚同时可见",
+  );
+  /**
+   * 取一条容器查询的整个块。**不能正则截到第一个 `\n}`**：块里每条规则自带一个 `}`，
+   * 那样只会拿到第一条规则就断掉（原来就是这么写的，`trajectory-kind` 那条恰好排在最后
+   * 才没暴露）。按大括号配对取。
+   */
+  const queryBody = (condition: string): string => {
+    const at = css.indexOf(`@container (${condition})`);
+    assert.ok(at >= 0, `app.css 里找不到容器查询 ${condition}`);
+    const open = css.indexOf("{", at);
+    let depth = 0;
+    let end = open;
+    for (; end < css.length; end += 1) {
+      if (css[end] === "{") depth += 1;
+      else if (css[end] === "}") {
+        depth -= 1;
+        if (depth === 0) break;
+      }
+    }
+    return css.slice(open + 1, end);
+  };
+
+  // 紧凑形态**只挂在 420 那一条线上**（与事件列收窄同一档）。
+  //
+  // 照官方另加一条 620 是错的：官方把「收列」与「换紧凑形态」都放在它的 620，而本扩展
+  // 收列在 420——多出来的那条会让 420~620 之间「列还宽着、标签已经缩成 `#N`」。这里钉三件：
+  // ① 420 那一档里四种翻转齐全；② 不许再有 620 那条线；③ 收列与换形态同档。
+  assert.ok(
+    !/calc\(620em \/ 13\)/.test(css),
+    "不许再有 620 那条容器查询：它会让 420~620 之间出现「列还宽、标签已紧凑」的中间态",
+  );
+  const narrowQuery = queryBody("max-width: calc(420em / 13)");
+  assert.ok(
+    /\.trajectory-turn-label-full\s*\{[^}]*max-width:\s*0/.test(narrowQuery) &&
+      /\.trajectory-turn-label-compact\s*\{[^}]*opacity:\s*1/.test(narrowQuery),
+    "420 那一档要把全宽轮次标签收起、紧凑 `#N` 放开",
+  );
+  // 收列那条的**选择器组里必须有 `:lang(zh)` 那一份**：中文档位（96）写在容器查询外面且
+  // 多一个伪类，窄栏只写 `.trajectory-col-event` 的话中文下收列会静默失效（同特异性下
+  // 源序在后的 `:lang(zh)` 赢），窄栏里留着 96 的列、旁边站着 19 的方徽章。
+  assert.ok(
+    /\.trajectory-col-event,\s*\.trajectory-col-event:lang\(zh\)\s*\{[^}]*calc\(50 \* var\(--dp\)\)/.test(
+      narrowQuery,
+    ),
+    "换紧凑形态与事件列收成 50 必须在同一档，且**按语言的两条都要收**（`:lang(zh)` 那份漏了会静默失效）",
+  );
+  assert.ok(
+    /\.trajectory-event\s+\.trajectory-kind\s*\{[^}]*padding:\s*0 calc\(3 \* var\(--dp\)\)/.test(narrowQuery),
+    "420 那一档要把种类标签的左右内边距收到 3（50 的列宽下不收就顶出列），" +
+      "且这条**必须限定在账本事件格里**——不限作用域会把检查器标题那枚纯文本徽章也压成 " +
+      "19dp（见下面 ④ 的实测数字）",
+  );
+
+  // ③ 事件列宽度**按语言分档**（官方 `.eventColumn` 122 / `:where(:lang(zh))` 84；
+  //    本扩展中文取 96，理由见下面那条断言）
+  //
+  // 这一档与容器查询无关，是两套并存的宽栏档位：中文种类标签（「已压缩」/「助手」）比
+  // 英文（`COMPACTED` / `ASSISTANT`）短一半以上，照抄 122 等于白占内容列 38。
+  // 语言由界面写在**根元素**上（`App.tsx` 的 insertion effect），所以 `:lang()` 能匹配到
+  // 每一条规则——这条链路断开时 CSS 不会报错，只会静默用英文档位（两处钉住）。
+  assert.ok(
+    /\.trajectory-col-event\s*\{[^}]*calc\(122 \* var\(--dp\)\)/.test(css),
+    "英文（默认）下事件列 122（官方 `.eventColumn`）",
+  );
+  assert.ok(
+    /\.trajectory-col-event:lang\(zh\)\s*\{[^}]*calc\(96 \* var\(--dp\)\)/.test(css),
+    "中文下事件列 96——**不是**官方那个 84：官方账本表里没有 `#N`（它的 index 只在 " +
+      "TrajectoryCell）、种类标签是 10px，我们的 index 15.4 + 间隙 4 + 最长徽章 43.7 + " +
+      "内边距 40 = 103.1，84 下徽章会被压到 32.4、文字走省略号",
+  );
+  {
+    const app = readFileSync(join(process.cwd(), "src", "webview", "App.tsx"), "utf8");
+    assert.ok(
+      /document\.documentElement\.lang\s*=\s*normalizeLocale\(state\.locale\)/.test(app),
+      "界面要把归一化后的语言写到根元素的 `lang` 上，`:lang(zh)` 那一档才有依据——" +
+        "`:lang()` 按子标签前缀匹配，`zh` 覆盖 `zh-cn` / `zh-tw` 等全部中文变体",
+    );
+  }
+
+  // ④ 种类徽章里的纯图标那一档（官方 `kindTagIcon` / `kindTagLabel`）
+  const kindIcon = bodyOf(".trajectory-kind-icon");
+  assert.ok(
+    /width:\s*0/.test(kindIcon) && /opacity:\s*0/.test(kindIcon),
+    "字形那枚默认宽 0 透明——宽栏显示文字那枚，窄栏才由容器查询放开",
+  );
+  assert.ok(
+    /flex:\s*none/.test(kindIcon),
+    "字形那枚必须 `flex: none`：不给的话它在宽栏零宽状态下被 flex 收成 0 宽，窄栏放开 `width` 也长不回来",
+  );
+  assert.ok(
+    /\.trajectory-kind-icon\s*\{[^}]*width:\s*calc\(13 \* var\(--dp\)\)/.test(narrowQuery) &&
+      /\.trajectory-kind-icon\s*\{[^}]*opacity:\s*1/.test(narrowQuery),
+    "420 那一档要把字形放开（官方窄栏是 13px 的纯图标）",
+  );
+  assert.ok(
+    /\.trajectory-kind-label\s*\{[^}]*max-width:\s*0/.test(narrowQuery) &&
+      !/display:\s*none/.test(bodyOf(".trajectory-kind-label")),
+    "文字那枚收到 0 宽即可，**不许 `display: none`**——留它在 DOM 里，读屏与搜索还拿得到种类词",
+  );
+  // 七种记录都要有字形，漏一种窄栏下那一种会变成空徽章
+  {
+    const trajectory = readFileSync(
+      join(process.cwd(), "src", "webview", "components", "Trajectory.tsx"),
+      "utf8",
+    );
+    const map = /const KIND_ICON[\s\S]*?\n\};/.exec(trajectory)?.[0] ?? "";
+    assert.ok(map.length > 0, "Trajectory.tsx 里找不到 KIND_ICON 映射");
+    for (const kind of ["system", "user", "context", "compacted", "message", "tool", "subtool"]) {
+      assert.ok(
+        new RegExp(`\\b${kind}:`).test(map),
+        `KIND_ICON 缺 ${kind} 的字形——窄栏下那一种记录会渲染成空徽章`,
+      );
+    }
+  }
+
+  // ④ 420 档的种类徽章规则**只作用于账本事件格**，且窄档隐藏记录序号 `#N`
+  //
+  // 官方那句 `.kindTag { width: 19px; padding: 0 }` 写在 `@container trajectory-table`
+  // 里，具名容器声明在**账本滚动区** `.tablePane` 上，而检查器是它的兄弟节点——那句规则
+  // 永远碰不到检查器标题。我们这条容器挂在整页 `.trajectory-view` 上（账本与检查器都是
+  // 它的后代），照抄就会把标题那枚**纯文本**徽章也压成 19dp（`border-box` 下内容盒只剩
+  // 13dp），「助手」这类种类词必然被裁——主代理 420px 生产 DOM 实测：标题徽章宽 19、
+  // 真实文字宽 49.296875。收作用域是这条差异的正解（不是把 19dp 放宽）。
+  //
+  // 同一档还要隐藏账本记录序号：官方账本表本来就不渲染 `#N`（它的 index 只在未 import 的
+  // `TrajectoryCell` 里），而 50dp 列 − 28dp 左内边距 − 4dp 右内边距 = 18dp 内容盒，
+  // 装不下「`#N` + 19dp 图标」（生产 DOM 实测：index 右缘 57.09、徽章右缘 80.09，
+  // 事件格右缘才 56）。序号仍留在 `data-cell-index` 与行无障碍名里，宽栏照常显示。
+  {
+    const stripped = narrowQuery.replace(/\/\*[\s\S]*?\*\//g, "");
+    const kindSelectors = [...stripped.matchAll(/([^{}]*\.trajectory-kind[^{}]*)\{/g)].map((m) => m[1].trim());
+    assert.ok(kindSelectors.length > 0, "420 档里找不到种类徽章的紧凑规则");
+    for (const selector of kindSelectors) {
+      assert.ok(
+        selector.split(",").every((one) => one.includes(".trajectory-event")),
+        "420 档的种类徽章规则必须限定在账本事件格（`.trajectory-event`）里——检查器标题里" +
+          "那枚是**纯文本**（没有 icon/label 两枚可对调），被同一条规则压成 19dp 后种类词" +
+          `必然被裁：现在是「${selector}」`,
+      );
+    }
+    assert.ok(
+      /\.trajectory-index\s*\{[^}]*display:\s*none/.test(stripped),
+      "420 档要隐藏账本记录序号 `.trajectory-index`（官方账本不显示 #N；50dp 列的内容盒只有 18dp，" +
+        "装不下「#N + 19dp 图标」）",
+    );
+    const wideIndex = bodyOf(".trajectory-index");
+    assert.ok(
+      !/display:\s*none/.test(wideIndex),
+      "宽栏仍要显示 #N——窄档隐藏只是呈现收紧，`data-cell-index` 与行无障碍名不受影响",
+    );
+    assert.ok(
+      /\.trajectory-details-title-record\s+\.trajectory-kind\s*\{[^}]*flex:\s*0 0 auto/.test(css),
+      "检查器标题里的种类徽章要 `flex: 0 0 auto`（按内容取宽）：它没有可对调的 icon/label 两枚，" +
+        "窄档规则一旦收到它身上就会被压成 19dp",
+    );
+  }
+
+  // ⑤ 折叠一轮时保留哪些行（官方 `collapseTurnRecords()`）
+  //
+  // 官方折叠**不是**「整轮变成一枚摘要行」：该轮的 system 行与 requestOnly 请求锚点行
+  // 照常显示，第一条**内容行**也留着，摘要只代表它**之后**那批。从前本扩展整轮只出一枚
+  // 摘要行，把提示词变更、上下文行、全场唯一的助手回复一起收掉了。
+  // 这里钉住那三条判据（保留 system / requestOnly、留第一条内容行、其余进摘要且摘要用
+  // `content.slice(1)` 那个切片）。
+  {
+    const ledgerRows = readFileSync(
+      join(process.cwd(), "src", "webview", "trajectoryLedgerRows.ts"),
+      "utf8",
+    );
+    /**
+     * 取「折叠一轮」那一段源码。
+     *
+     * 锚点跟着实现走：2026-10-05 加了账本虚拟化，这一段从「渲染时逐行判」搬进了
+     * `selectedRowIndexes` 那一趟；**2026-10-09 又整体搬进了 `trajectoryLedgerRows.ts`**
+     * （行投影独占搜索优先折叠、轮次/调用折叠与轮次标签落点）——判据一个字没动。
+     */
+    const at = ledgerRows.indexOf("const summaryAfter");
+    const until = ledgerRows.indexOf("markTurnStarts(rows)", at);
+    const collapsed = at >= 0 && until > at ? ledgerRows.slice(at, until) : "";
+    assert.ok(collapsed.length > 0, "trajectoryLedgerRows.ts 里找不到折叠一轮那个分支");
+    assert.ok(
+      /cell\.requestOnly !== true && cell\.kind !== "system" && position !== summaryAfter/.test(collapsed),
+      "折叠时只丢掉「第一条内容行之后」的内容行：system 行与 requestOnly 请求锚点行必须照常显示" +
+        "（官方 `collapseTurnRecords()` 对这两类直接 `return [record]`）",
+    );
+    assert.ok(
+      /cells\.indexOf\(content\[0\]\)/.test(collapsed) && /content\[0\] !== undefined/.test(collapsed),
+      "第一条内容行要留着（官方 `record.cell.index !== contentRecords[0]?.cell.index` 才丢），" +
+        "摘要行贴在它后面——位次按「第一条内容行在原始列表里的位置」现算",
+    );
+    assert.ok(
+      /content\.length > 1/.test(collapsed),
+      "内容行不多于一条时整轮一行都不收（官方 `contentRecords.length <= 1` 原样返回），" +
+        "否则会把唯一那条回复收进摘要",
+    );
+
+    // 行为：用**组件同一个函数**把这三条判据跑一遍（源码正则只说明「写了」，
+    // 这里说明「真的是这个结果」）
+    const cell = (index: number, kind: TrajectoryCell["kind"], extra: Partial<TrajectoryCell> = {}): TrajectoryCell => ({
+      index,
+      kind,
+      turn: 0,
+      seq: index,
+      time: index,
+      text: `#${index}`,
+      timeSeconds: null,
+      startedAt: null,
+      ...extra,
+    });
+    const turn: TrajectoryTurn = {
+      turn: 0,
+      groups: [
+        {
+          title: { kind: "step", step: 1 },
+          cells: [
+            cell(1, "system", { systemPromptDetail: "s" }),
+            cell(2, "context", { requestOnly: true }),
+            cell(3, "user"),
+            cell(4, "tool", { callId: "c" }),
+            cell(5, "context"),
+          ],
+        },
+      ],
+    };
+    assert.deepStrictEqual(
+      trajectoryLedgerRows({
+        turns: [turn],
+        collapsedTurns: new Set([0]),
+        collapsedCalls: new Set<string>(),
+        matchIndexes: null,
+      }).map((row) => (row.summary === undefined ? row.cellIndex : "summary")),
+      [1, 2, 3, "summary"],
+      "收起一轮：system / requestOnly / 第一条内容行留着，摘要行紧随其后（其余内容行收进摘要）",
+    );
+    const single: TrajectoryTurn = {
+      turn: 0,
+      groups: [{ title: { kind: "message" }, cells: [cell(1, "user")] }],
+    };
+    assert.deepStrictEqual(
+      trajectoryLedgerRows({
+        turns: [single],
+        collapsedTurns: new Set([0]),
+        collapsedCalls: new Set<string>(),
+        matchIndexes: null,
+      }).map((row) => row.cellIndex),
+      [1],
+      "内容行只有一条时整轮一行都不收（否则唯一那条回复会被收进摘要）",
+    );
+  }
+}
+console.log(
+  "styles: 轮次起点三种视觉（标签绝对定位 / 2px 分隔线 / 420 紧凑态含纯图标）+ 事件列按语言分档（122/96）+ 折叠保留行 ✓",
+);
 
 // ---------- 36. 顶部两颗「打开」按钮必须是两个不同的图标 ----------
 //
@@ -2025,7 +2621,6 @@ console.log("styles: 计划审阅卡单层滚动 + 决定按钮常驻 ✓");
 // 次级文字色，与计划审阅卡的「去聊天里说」同一个观感；footer 必须允许折行（英文
 // Dismiss all questions / Previous / Next 都比中文宽一截，与 37 组同一条纪律）。
 {
-  const css = readFileSync(join(process.cwd(), "src", "webview", "styles", "app.css"), "utf8");
   const footer = rule(".question-footer");
   assert.ok(
     /flex-wrap:\s*wrap/.test(footer),

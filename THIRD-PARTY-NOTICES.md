@@ -32,6 +32,32 @@ DSH Chat 自身以 **MIT** 许可发布（见 `LICENSE`）。
 
 MIT 许可证全文见本文末「附录 A」。
 
+### 1.1 `src/vendor/` 里的**源码逐字副本**（MIT）
+
+与上面的「协议类型取自官方」不同，这一部分是**把上游源码整份复制进本仓库**：
+
+- 上游包：`@deepseek-ai/dsh-client-ui-trajectory`、`@deepseek-ai/dsh-client-ui-primitives`
+- 版本：`0.2.0-rc.2`（上游 tag `dsh-v0.2.0-rc.2`）
+- 版权：Copyright (c) 2026 DeepSeek
+- 许可：MIT
+
+| 本仓库文件 | 上游文件 | 改动 |
+| --- | --- | --- |
+| `src/vendor/ui-trajectory/trajectory-preview.ts` | 同名 | import 指向同仓库副本 |
+| `src/vendor/ui-trajectory/trajectory-record.ts` | 同名 | 抽掉 React / 附件 / conversation / locales 类型壳；函数体逐字相同 |
+| `src/vendor/ui-trajectory/timeline.ts` | 同名 | import 路径（类型摘录 + 去掉 `.ts` 后缀） |
+| `src/vendor/ui-trajectory/trajectory-turn-model.ts` | `layout.ts` 的类型摘录 | 只有接口，无实现体 |
+| `src/vendor/ui-trajectory/trajectory-search-index.ts` | 同名 | import 路径 |
+| `src/vendor/ui-trajectory/inbox-state.ts` | `trajectory-message-definitions.ts` 的状态机摘录 | 参数类型换成本地形状；函数体逐字相同 |
+| `src/vendor/ui-trajectory/code-program.ts` | 同名 | 去掉 `.ts` import 后缀；函数体与常量逐字相同 |
+| `src/vendor/ui-primitives/markdown/parse.ts` | 同名 | **只搬流式臂**（省略 math 臂与其依赖）；去掉 `.ts` 后缀 |
+| `src/vendor/ui-primitives/markdown/plain-text.ts` | 同名 | 去掉 `.ts` 后缀 |
+| `src/vendor/ui-primitives/markdown/cjkFriendlyStrong.ts` | 同名 | 去掉 `.ts` 后缀 |
+| `src/vendor/ui-primitives/markdown/local-image-syntax.ts` | 同名 | `classifyFileType` 换成本地等价判定；去掉 `.ts` 后缀 |
+
+每个文件头部都注明来源、版本与「本仓库改了哪几处」；逐处改动的理由与同步流程见
+`src/vendor/README.md`。
+
 ---
 
 ## 2. DeepSeek-Harness-for-VS-Code — MIT
@@ -116,7 +142,9 @@ Apache-2.0 的义务说明：
 | --- | --- | --- |
 | `react` / `react-dom` | MIT | webview 界面 |
 | `marked` | MIT | Markdown 解析 |
+| `mdast-util-from-markdown` / `mdast-util-gfm` / `micromark-extension-gfm`（及 `micromark-*` 传递依赖） | MIT | `src/vendor/` 的 Markdown 纯文本投影（预览文本） |
 | `dompurify` | Apache-2.0 / MPL-2.0 双许可 | 渲染前净化 HTML |
+| `diff` | BSD-3-Clause | 系统提示词变更页签的行级差分（与官方轨迹同一实现） |
 | `ws` | MIT | 宿主侧 WebSocket |
 | `esbuild` | MIT | 打包 |
 | `typescript` | Apache-2.0 | 类型检查 |
@@ -160,3 +188,42 @@ SOFTWARE.
 
 Continue（Apache-2.0）的版权行为 `Copyright 2023 Continue Dev, Inc.`，
 许可证全文见 https://www.apache.org/licenses/LICENSE-2.0 。
+
+---
+
+## 附录 B：BSD 3-Clause 许可证全文（`diff`）
+
+`diff` 以 **BSD-3-Clause** 发布，该许可要求随二进制分发保留版权声明与许可全文
+（本扩展把它打包进 `dist/webview.js`，所以全文必须随包发布）：
+
+```
+BSD 3-Clause License
+
+Copyright (c) 2009-2015, Kevin Decker <kpdecker@gmail.com>
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its
+   contributors may be used to endorse or promote products derived from
+   this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```

@@ -306,6 +306,92 @@
     </script>
     <script src="../dist/webview.js"></script>
     <script>
+      /**
+       * 真实轨迹夹具的装载（`?trajectory=small|long|compaction`）。
+       *
+       * 路径就是 `test/fixtures/trajectory/<name>.json`，由正式提取 CLI 从**真实会话日志**
+       * 派生（结构 / 顺序 / 相对时序 / 长度逐字保留，只换自由文本、路径、身份与绝对时刻）。
+       * 预览页只 `fetch` 这份**已脱敏**的载荷，不碰任何真实日志。
+       *
+       * 三条硬规矩：
+       * 1. **不合成回退**：取不到就明确标成「不可用」，不拿页面里那份合成账本顶替——
+       *    否则「看的到底是真实素材还是编的」在界面上分不出来；
+       * 2. **默认（不带参数）仍是页面自带的合成账本**，它覆盖七种记录里最全的形态，
+       *    服务「调排版」这类非真实素材的演示；合成件一律带 `synthetic: true` 或注释标明；
+       * 3. 真实夹具是**整份** `TrajectoryModel`（`turns` / `requests` / `cellCount` /
+       *    `totalSeconds` / `firstStartedAt` / `hasOlder`），直接顶掉合成账本。
+       *
+       * 取到的载荷只进 `__trajectoryFixtures`（内存）与开发者可见的 `console`：不写盘、
+       * 不回显正文、不进任何用户可见文案。
+       */
+      window.__trajectoryFixturePaths = {
+        small: "fixtures/trajectory/real-small.json",
+        long: "fixtures/trajectory/real-long.json",
+        compaction: "fixtures/trajectory/real-compaction.json",
+      };
+      window.__trajectoryFixtures = {};
+      // 一次来源快照：把 `?trajectory=<名>` 指到的那份真实夹具读进来（只读这一份）
+      (function loadTrajectoryFixture() {
+        const name = new URLSearchParams(location.search).get("trajectory");
+        const path = name ? window.__trajectoryFixturePaths[name] : undefined;
+        if (!path) return;
+        if (typeof fetch !== "function") {
+          window.__trajectoryFixtures[name] = { status: "unavailable", reason: "no-fetch", path: path, provenance: null, model: null };
+          return;
+        }
+        fetch(path, { cache: "no-store" })
+          .then(function (response) {
+            if (!response.ok) throw new Error("http-" + response.status);
+            return response.json();
+          })
+          .then(function (payload) {
+            window.__trajectoryFixtures[name] = {
+              status: "ready",
+              path: path,
+              provenance: payload.provenance || null,
+              model: payload.model || null,
+            };
+            // 预览自己的「这次用的是哪份素材」标记：**留在预览专用全局对象上**，
+            // 不进 `state`、不过 JSON wire —— 生产 State 不给只为预览/测试存在的字段。
+            // 两个资格位先算成局部变量再进对象：避免三元表达式与对象键在同一处
+            // 长得太像（预览夹具的重复键扫描对那种写法会误报）。
+            const provenance = payload.provenance || null;
+            const payloadReduced = provenance === null ? null : provenance.payloadReduced === true;
+            const payloadMeasurementEligible = provenance === null
+              ? null
+              : provenance.payloadMeasurementEligible === true;
+            window.__trajectoryFixtureInfo = {
+              name: name,
+              synthetic: false,
+              unavailable: false,
+              path: path,
+              payloadReduced: payloadReduced,
+              payloadMeasurementEligible: payloadMeasurementEligible,
+              cellCount: payload.model ? payload.model.cellCount : null,
+            };
+            // 补丁走 `__push`（与宿主同一条 JSON 线上路径），界面立刻换到真实账本
+            window.__push({ type: "patch", patch: { trajectory: payload.model } });
+            // 开发者可见的输出通道式提示（非用户可见文案，不走词典）：说明这次用的是**真实**夹具
+            console.log(
+              "[preview] 轨迹素材 = 真实夹具 " + name + "（" + path + "），记录数 "
+                + (payload.model && payload.model.cellCount),
+            );
+          })
+          .catch(function (error) {
+            window.__trajectoryFixtures[name] = { status: "unavailable", reason: String(error && error.message), path: path, provenance: null, model: null };
+            window.__trajectoryFixtureInfo = {
+              name: name,
+              synthetic: false,
+              unavailable: true,
+              path: path,
+            };
+            // 账本**清空**：不合成回退（生产 State 里 `trajectory` 为 null 即可）
+            window.__push({ type: "patch", patch: { trajectory: null } });
+            console.error("[preview] 轨迹真实夹具不可用（不合成回退，请先在仓库根跑一次提取 CLI 生成它）");
+          });
+      })();
+    </script>
+    <script>
       const now = Date.now();
       const codeSample =
         "export function createServer(options) {\n" +
@@ -480,21 +566,97 @@
           // `TrajectoryModel`，内容对着本夹具的故事线手写，覆盖七种记录里的六种 +
           // 系统提示词更新、工具请求→结果、压缩失败、来源与用量）。
           trajectory: {
-            cellCount: 9,
-            totalSeconds: 12.5,
+            cellCount: 13,
+            totalSeconds: 17,
             firstStartedAt: now - 250000,
             hasOlder: true,
+            // 请求表（形状 = `src/shared/trajectory.ts` 的 `TrajectoryRequest`）。
+            // 请求边界小标记与请求级检查器（概述 / 选项 / 用量含会话累计 / 计时）都吃它。
+            // 刻意覆盖三条分支：#1 有选项、#2 是压缩且**失败**、#3 没有选项那一帧
+            // （真实日志里 `request/header` 只有少数会话有，界面那时不给「选项」页签）。
+            requests: [
+              {
+                number: 1,
+                purpose: "assistant",
+                turn: 0,
+                step: 1,
+                seq: 2,
+                startedAt: now - 249600,
+                completedAt: now - 240000,
+                status: "complete",
+                retry: { attempt: 1, max: 5 },
+                retryDelayMs: 480,
+                usage: { input: 16605, cacheRead: 1152, cacheWrite: 0, output: 1180, reasoning: 420 },
+                cumulativeUsage: { input: 16605, cacheRead: 1152, cacheWrite: 0, output: 1180, reasoning: 420 },
+                provider: "deepseek",
+                model: "DeepSeek-V4-Pro",
+                options: { provider: "deepseek", model: "DeepSeek-V4-Pro", reasoningEffort: "medium", maxTokens: 65536 },
+                assistantFirstTokenTime: now - 247750
+              },
+              {
+                number: 2,
+                purpose: "compaction",
+                turn: 1,
+                step: 0,
+                seq: 14,
+                startedAt: now - 102500,
+                completedAt: now - 90000,
+                status: "error",
+                error: "EACCES: permission denied, open 'src/config.ts'",
+                retry: { attempt: 2, max: 5 },
+                retryDelayMs: 1200,
+                usage: { input: 900, output: 120 },
+                cumulativeUsage: { input: 17505, cacheRead: 1152, cacheWrite: 0, output: 1300, reasoning: 420 },
+                provider: "deepseek",
+                model: "DeepSeek-V4-Pro"
+              },
+              {
+                number: 3,
+                purpose: "assistant",
+                turn: 1,
+                step: 1,
+                seq: 16,
+                startedAt: now - 63000,
+                completedAt: now - 60000,
+                status: "complete",
+                usage: { input: 2400, cacheRead: 0, cacheWrite: 0, output: 640, reasoning: 96 },
+                cumulativeUsage: { input: 19905, cacheRead: 1152, cacheWrite: 0, output: 1940, reasoning: 516 },
+                provider: "deepseek",
+                model: "DeepSeek-V4-Pro",
+                assistantFirstTokenTime: now - 62600
+              },
+              {
+                number: 4,
+                purpose: "assistant",
+                turn: 1,
+                step: 2,
+                seq: 17,
+                startedAt: now - 51200,
+                completedAt: now - 48000,
+                status: "complete",
+                usage: { input: 1200, output: 64 },
+                cumulativeUsage: { input: 21105, cacheRead: 1152, cacheWrite: 0, output: 2004, reasoning: 516 },
+                provider: "deepseek",
+                model: "DeepSeek-V4-Pro"
+              }
+            ],
+            // 账本按**组**组织（`TrajectoryGroup`）：组标题在宿主侧是语义
+            // （`{kind:'message'|'step'|'compaction'}`），文案在界面侧取。
+            // 第 0 轮：消息组（系统提示词 + 用户消息）+ 第 1 步组（助手 + 工具 + 子工具）。
             turns: [
               {
                 turn: 0,
-                cells: [
+                groups: [
+                  { title: { kind: "message" }, cells: [
                   {
                     index: 1,
                     kind: "system",
                     turn: 0,
                     seq: 0,
                     time: now - 250000,
-                    text: "你是 DeepSeek Harness 的编码助手。",
+                    // 初始系统提示词的行文本由界面按 `promptChange` 取（宿主只给语义）
+                    text: "",
+                    promptChange: "initial",
                     systemPromptDetail: "你是 DeepSeek Harness 的编码助手。\n\n规则：\n1. 先读再改；\n2. 不要动 public/；",
                     toolsDetail: [
                       { name: "read", description: "读文件", parameters: { type: "object", properties: { path: { type: "string" } } } },
@@ -513,7 +675,9 @@
                     turn: 0,
                     seq: 1,
                     time: now - 249000,
-                    text: "把这两个文件的启动逻辑合并到一个入口，并去掉重复初始化。",
+                    // 官方 `inputCellDetail()`：`text` 只放附件摘要（本地化 → 宿主只给计数），
+                    // 正文进 `previewMarkdown`，全部文本块进 `inputDetail`
+                    text: "",
                     previewMarkdown: "把这两个文件的启动逻辑合并到一个入口，并去掉重复初始化。",
                     inputDetail: "把这两个文件的启动逻辑合并到一个入口，并去掉重复初始化。",
                     opensTurn: true,
@@ -523,17 +687,24 @@
                     startedAt: now - 249000,
                     status: "complete"
                   },
+                  ] },
+                  { title: { kind: "step", step: 1 }, cells: [
                   {
                     index: 3,
                     kind: "message",
                     turn: 0,
+                    step: 1,
                     seq: 2,
                     time: now - 240000,
-                    text: "我看了两个文件，重复初始化的根因是端口和中间件被注册了两次。",
+                    // 助手行的 `text` 一律留空：行文本由界面按 previewMarkdown 现算
+                    text: "",
                     previewMarkdown: "我看了两个文件，重复初始化的根因是端口和中间件被注册了两次。",
                     outputDetail: "我看了两个文件，重复初始化的根因是端口和中间件被注册了两次。",
                     thinkingDetail: "先看两个文件各自的初始化路径。",
                     requestNumber: 1,
+                    // 这条助手消息发起的调用 id（= 下面工具行 / 子工具行的 `callId`）：
+                    // 检查器「层级」那一行的反向链接按它对上父行（`dsh/trajectory.ts` 的 `callIdsOf`）
+                    callIds: ["call_1", "call_1:ptc:1"],
                     usage: { input: 16605, cacheRead: 1152, cacheWrite: 0, output: 1180, think: 420 },
                     provider: "deepseek",
                     model: "DeepSeek-V4-Pro",
@@ -553,14 +724,34 @@
                     index: 4,
                     kind: "tool",
                     turn: 0,
+                    step: 1,
                     seq: 3,
                     time: now - 236000,
-                    text: 'read · {"file_path":"src/server/index.ts"}',
+                    // 官方 `summarizeCall()`：`text` 是工具名，参数进 `previewMarkdown`，
+                    // 列表侧拼成 `name · preview(args)`
+                    text: "read",
+                    previewMarkdown: '{"file_path":"src/server/index.ts"}',
                     inputDetail: '{"file_path":"src/server/index.ts"}',
-                    result: "export function bootstrap() {…}",
+                    // 官方 `summarizeResult()`：结果那栏是**原始 Markdown**，截断在界面侧
+                    resultPreviewMarkdown: "export function bootstrap() {…}",
                     outputDetail: "export function bootstrap() {…}",
                     callId: "call_1",
                     toolName: "read",
+                    // 调用时记下的工具 Schema（宿主 `schemaDetailOf()` 的产物 = 官方
+                    // `attachToolSchema()` 的 `JSON.stringify(schema, null, 2)` 原文）。
+                    // 「Schema」页签按 `parseToolSchema()` 解析 `{name, description, parameters}`
+                    // 三样，缺一不可，所以这里必须是**完整的**那一份。
+                    schemaDetail: JSON.stringify({
+                      name: "read",
+                      description: "读取工作区里的一个文件，返回带行号的正文。",
+                      parameters: {
+                        type: "object",
+                        properties: {
+                          file_path: { type: "string", description: "要读取的文件路径（工作区相对路径或绝对路径）。" }
+                        },
+                        required: ["file_path"]
+                      }
+                    }, null, 2),
                     requestNumber: 1,
                     timeSeconds: 0.6,
                     startedAt: now - 236000,
@@ -570,23 +761,27 @@
                     index: 5,
                     kind: "subtool",
                     turn: 0,
+                    step: 1,
                     seq: 4,
                     time: now - 235000,
-                    text: 'grep · {"pattern":"listen\\\\("}',
+                    text: "grep",
+                    previewMarkdown: '{"pattern":"listen\\\\("}',
                     inputDetail: '{"pattern":"listen\\\\("}',
-                    result: "src/server/index.ts:24",
+                    resultPreviewMarkdown: "src/server/index.ts:24",
                     outputDetail: "src/server/index.ts:24",
                     callId: "call_1:ptc:1",
                     toolName: "grep",
                     timeSeconds: 0.4,
                     startedAt: now - 235000,
                     status: "complete"
-                  }
+                  },
+                  ] }
                 ]
               },
               {
                 turn: 1,
-                cells: [
+                groups: [
+                  { title: { kind: "message" }, cells: [
                   {
                     index: 6,
                     kind: "system",
@@ -594,6 +789,7 @@
                     seq: 12,
                     time: now - 120000,
                     text: "",
+                    promptChange: "system",
                     systemPromptDetail: "你是 DeepSeek Harness 的编码助手。\n\n规则：\n1. 先读再改；\n2. 不要动 public/；\n3. 改完跑一遍测试。",
                     previousSystemPromptDetail: "你是 DeepSeek Harness 的编码助手。\n\n规则：\n1. 先读再改；\n2. 不要动 public/；",
                     toolsDetail: [{ name: "read" }, { name: "edit" }],
@@ -608,7 +804,10 @@
                     turn: 1,
                     seq: 13,
                     time: now - 119000,
-                    text: "工作区文件在上一轮之后发生了变化：src/config.ts",
+                    text: "",
+                    // 附件摘要：官方把它拼在预览前面（`图片 ×N · 文件 ×N · 正文预览`），
+                    // 文案在界面侧取，宿主只给计数
+                    attachments: { images: 2, files: 1 },
                     previewMarkdown: "工作区文件在上一轮之后发生了变化：src/config.ts",
                     inputDetail: "工作区文件在上一轮之后发生了变化：src/config.ts",
                     messageSource: { kind: "plugin", plugin: "dsh-fs-observation-policy", raw: { kind: "plugin", plugin: "dsh-fs-observation-policy" } },
@@ -616,13 +815,17 @@
                     startedAt: now - 119000,
                     status: "complete"
                   },
+                  ] },
+                  { title: { kind: "compaction", seq: 8 }, cells: [
                   {
                     index: 8,
                     kind: "compacted",
                     turn: 1,
                     seq: 14,
                     time: now - 100000,
-                    text: "上下文已压缩",
+                    // 有摘要 → 行文本是摘要的预览（官方 `previewMarkdown`），没有才显示「上下文已压缩」
+                    text: "",
+                    previewMarkdown: "本轮之前的历史已压缩为摘要：端口只 listen 一次……",
                     outputDetail: "本轮之前的历史已压缩为摘要：端口只 listen 一次……",
                     inputDetail: "模型写摘要时的原始输出",
                     provider: "deepseek",
@@ -632,25 +835,119 @@
                     timeSeconds: 2.5,
                     startedAt: now - 100000,
                     status: "complete"
-                  },
+                  }
+                  ] },
+                  { title: { kind: "message" }, cells: [
                   {
                     index: 9,
                     kind: "tool",
                     turn: 1,
                     seq: 15,
                     time: now - 90000,
-                    text: 'edit · {"file_path":"src/server/index.ts"}',
+                    text: "edit",
+                    previewMarkdown: '{"file_path":"src/server/index.ts"}',
                     inputDetail: '{"file_path":"src/server/index.ts"}',
-                    result: "The file has been updated successfully.",
+                    // 失败的结果那栏是**错误码**（官方 `summarizeResult` 的失败分支）
+                    result: "EACCES",
                     outputDetail: "The file has been updated successfully.",
                     callId: "call_3",
                     toolName: "edit",
                     isError: true,
                     error: "EACCES",
+                    requestNumber: 2,
                     timeSeconds: null,
                     startedAt: now - 90000,
                     status: "error"
+                  },
+                  ] },
+                  { title: { kind: "step", step: 1 }, cells: [
+                  {
+                    // 只有思考、没有正文的助手行：**不许**退化成「仅工具调用」
+                    // （官方此时展示思考摘要；真机日志里这一类占助手消息三成以上）
+                    index: 10,
+                    kind: "message",
+                    turn: 1,
+                    step: 1,
+                    seq: 16,
+                    time: now - 60000,
+                    text: "",
+                    previewMarkdown: "先确认改动的边界，再动 `src/config.ts` 里的默认值。",
+                    thinkingDetail: "先确认改动的边界，再动 `src/config.ts` 里的默认值。",
+                    requestNumber: 3,
+                    usage: { input: 2400, cacheRead: 0, cacheWrite: 0, output: 96, think: 640 },
+                    model: "DeepSeek-V4-Pro",
+                    timeSeconds: 3,
+                    startedAt: now - 63000,
+                    status: "complete"
+                  },
+                  ] },
+                  { title: { kind: "step", step: 2 }, cells: [
+                  {
+                    // 真的只有工具调用（没有正文也没有思考）：官方列表文案是带括号的
+                    // 「（仅工具调用）」+ 弱化色（`record.toolCallOnly`）
+                    index: 11,
+                    kind: "message",
+                    turn: 1,
+                    step: 2,
+                    seq: 17,
+                    time: now - 50000,
+                    text: "",
+                    emptySummary: { kind: "tool-call" },
+                    requestNumber: 4,
+                    timeSeconds: 1.2,
+                    startedAt: now - 51200,
+                    // 被中断的助手记录：宿主给的是 `@interrupted` 这个**记号**，
+                    // 界面侧要换成文案（`trajectoryCellError()`）——原样渲染的话
+                    // 检查器「错误」那一行会显示 `@interrupted` 这个内部符号。
+                    status: "error",
+                    error: "@interrupted"
+                  },
+                  {
+                    index: 12,
+                    kind: "tool",
+                    turn: 1,
+                    step: 2,
+                    seq: 18,
+                    time: now - 49000,
+                    text: "read",
+                    previewMarkdown: '{"file_path":"src/config.ts"}',
+                    inputDetail: '{"file_path":"src/config.ts"}',
+                    // 结果没有正文也没有图片 → 官方 `record.noOutput` 的语义标记
+                    // （真机里「只回了个状态、没有文本块」的工具调用就长这样）
+                    resultSummary: { kind: "no-output" },
+                    callId: "call_4",
+                    toolName: "read",
+                    requestNumber: 4,
+                    timeSeconds: 0.3,
+                    startedAt: now - 49000,
+                    status: "complete"
+                  },
+                  ] },
+                  // 步骤组之后的上下文行会**另起一个消息组**（官方 `pushMessage()` 只在
+                  // 最后一组也是消息组时才并入）——同一轮里因此可以有多个消息组。
+                  { title: { kind: "message" }, cells: [
+                  {
+                    // 工具目录变更行（`developer/message` 的 tool-addition / tool-removal）：
+                    // 宿主只给名字与计数，文案在界面侧按官方那张表拼
+                    index: 13,
+                    kind: "context",
+                    turn: 1,
+                    seq: 19,
+                    time: now - 48000,
+                    text: "",
+                    toolUpdate: { added: ["list_mcp_resources", "browser_click"], removed: ["bash"] },
+                    sourceBlocks: [
+                      { type: "tool-addition", content: "list_mcp_resources" },
+                      { type: "tool-addition", content: "browser_click" },
+                      { type: "tool-removal", content: "bash" }
+                    ],
+                    messageSource: { kind: "tool-registry", raw: { kind: "tool-registry" } },
+                    requestNumber: 4,
+                    timeSeconds: 0,
+                    startedAt: now - 48000,
+                    status: "complete"
                   }
+                  ] }
                 ]
               }
             ]
@@ -1330,7 +1627,60 @@
             ];
           }
         }
+      /**
+       * 轨迹素材：`?trajectory=<名>` **只载真实夹具**，取不到就明确标不可用，**不合成回退**。
+       *
+       * `?trajectory=small|long|compaction` 对应 `test/fixtures/trajectory/` 里三份由正式
+       * 提取 CLI 从真实会话日志派生的夹具（小 / 长 / v4 压缩）：账本是**真实来源**的整份
+       * `TrajectoryModel`，不是页面里那段手写的合成件。
+       *
+       * 三条边界：
+       * 1. **带名字但取不到**（文件没生成 / 服务端 404 / JSON 坏了 / 没有真实样本的名字，
+       *    例如 `ptc`）时**清空账本**并让 `window.__trajectoryFixtureInfo.unavailable` 为真，
+       *    **绝不**拿合成账本顶替 —— 那样「看的是真实素材还是编的」就分不出来了；
+       * 2. **完全不带参数**时才用页面自带的合成账本（`state.trajectory` 字面量）：它服务
+       *    「调排版」这类非真实素材的演示，`scripts/previewFixture.test.ts` 钉着它；其中
+       *    PTC 形态的那行记录是**展示用素材**，不代表存在真实 PTC 语料（要真实 PTC 轨迹
+       *    得先有已授权的源日志），`?trajectory=ptc` 因此走的是上面第 1 条「不可用」；
+       * 3. 真实夹具的 `model` 是整份线格式（`turns` / `requests` / `cellCount` /
+       *    `totalSeconds` / `firstStartedAt` / `hasOlder`），装载器在页面顶部那段
+       *    `loadTrajectoryFixture`。
+       *
+       * **「这一份是不是真实素材」只是预览自己的事**：标记放在**预览专用**全局对象
+       * `window.__trajectoryFixtureInfo` 上，**不进 `state`、不过 JSON wire** ——
+       * 生产的 `AppState` / `ChatState` 不为预览或测试加字段。
+       */
+      // ==== trajectory-fixture-wiring:start ====
+      function trajectoryFixtureNameOf(search) {
+        return new URLSearchParams(search).get("trajectory");
+      }
+      /**
+       * 把 `?trajectory=<名>` 对应的素材装进 state 并返回它。
+       *
+       * 只改**真实存在于生产 State** 的两样东西：`panel`（轨迹是整页视图，装载后要看得到，
+       * 头部那颗「轨迹 ⇄ 会话」能切回）与 `trajectory`（账本本体）。来源标记与资格位由
+       * `window.__trajectoryFixtureInfo` 承载，这里不碰。
+       *
+       * 抽成纯函数是为了**能在 Node 里被直接求值**：`scripts/previewFixture.test.ts` 把这段
+       * 与真夹具 JSON 一起求值，断言「真实夹具怎么进 state」，不必起浏览器；这也是它
+       * **不碰 `location` / `fetch` / `window.__push`** 的原因（那些在页面顶部那段装载器里）。
+       */
+      function applyTrajectoryFixture(state, name) {
+        if (!name) return state;
+        state.panel = "trajectory";
+        const entry = window.__trajectoryFixtures ? window.__trajectoryFixtures[name] : undefined;
+        if (!entry || entry.status !== "ready" || !entry.model || !entry.provenance
+          || entry.provenance.synthetic === true) {
+          // 还没到 / 不可用：清空账本，不回退到合成件（标记在预览专用对象上）
+          state.trajectory = null;
+          return state;
+        }
+        // 真实素材：整份 `TrajectoryModel` 顶掉合成账本
+        state.trajectory = entry.model;
         return state;
+      }
+      // ==== trajectory-fixture-wiring:end ====
+        return applyTrajectoryFixture(state, trajectoryFixtureNameOf(location.search));
       };
       // 文件芯片的种类表（`patch.fileKinds`）：形状与真实宿主一致（键 = 芯片上的
       // 原样路径，值 = "new" | "edited" | "deleted"，见 src/dsh/fileChange.ts）。

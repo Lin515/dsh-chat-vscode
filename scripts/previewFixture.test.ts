@@ -8,6 +8,7 @@ import { readFileSync } from "node:fs";
 import { foldTurnProcess } from "../src/webview/turnProcess";
 import { fileLinkPort, matchFileMention } from "../src/webview/fileLinks";
 import { pickLocalizedText } from "../src/shared/localizedText";
+import type { AppState } from "../src/webview/state";
 
 const html = readFileSync("test/preview.html", "utf8");
 
@@ -42,29 +43,144 @@ for (let i = bodyStart; i < html.length; i += 1) {
 if (end < 0) throw new Error("__buildState 的花括号不配平 —— 夹具语法有问题");
 const source = html.slice(bodyStart, end + 1);
 
+/**
+ * 真实夹具接线那段（`// ==== trajectory-fixture-wiring:start ====` 到 `:end`）。
+ *
+ * 它被单独抽出来求值：`__buildState` 现在最后一行调用 `applyTrajectoryFixture(...)`，
+ * 那个函数**不碰 `location` / `fetch`**（装载器在页面顶部另一段里），所以这里能把
+ * 「真实夹具怎么进 state」整条链路按真实代码求值，不必起浏览器。
+ */
+const wiringStart = html.indexOf("// ==== trajectory-fixture-wiring:start ====");
+const wiringEnd = html.indexOf("// ==== trajectory-fixture-wiring:end ====");
+// **不在这里抛**：接线没落地时下面第 5 段要以**断言失败**的形式报出来，而不是让整个
+// 测试文件在求值期崩掉——红必须落在断言上（见 AGENTS.md 的注入式回归纪律）。
+const wiringPresent = wiringStart >= 0 && wiringEnd > wiringStart;
+const wiringSource = wiringPresent ? html.slice(wiringStart, wiringEnd) : "";
+
+
 // `now` / `codeSample` / `locale` 是 script 顶层的变量：一并求值。
 // `locale` 来自 `location.search`（预览页支持 `?locale=en` 切换语言），
 // 无头环境里没有 location，所以这里也把它参数化——顺带能**两种语言都体检一遍**。
 // `previewImageDataUrl` 同理：夹具里图片附件的 data URL 在预览页由一段内联 SVG 算出来，
-// 而 `__buildState` 在 Node 里求值时不带那段脚本（所以它**不能**引用 window）。
+// 而 `__buildState` 在 Node 里求值时不带那段脚本（所以它**不能**引用 `document`）。
+//
+// `window` 也必须注入：接线块里只读 `window.__trajectoryFixtures` 这一份内存表
+// （真实夹具的装载器在页面顶部另一段里，`__buildState` 自己不 fetch）。
+//
+// **返回类型写成生产的 `AppState`，不是 `any`**：求值出来的是手写对象字面量，只有按视图
+// 模型定型，`state.messages[].segments` 这类深链才有上下文类型——否则每个回调形参都是隐式
+// `any`（本文件曾因此带 50 处 `noImplicitAny`，也因此一直进不了 typecheck）。定型之后
+// 「夹具字段与生产视图模型脱节」会在 `npm run typecheck` 里直接报出来。
 const codeSample = "export function bootstrap() {\n  // …\n}";
 const previewImageDataUrl = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciLz4=";
-const build = new Function(
-  "now",
-  "codeSample",
-  "location",
-  "previewImageDataUrl",
-  `return (function () ${source})();`,
-);
-
-function buildState(locale: "zh-cn" | "en") {
-  return build(Date.now(), codeSample, { search: `?locale=${locale}` }, previewImageDataUrl);
+function evaluateStateBuilder() {
+  return new Function(
+    "now",
+    "codeSample",
+    "location",
+    "previewImageDataUrl",
+    "window",
+    `return (function () { ${wiringSource}\n return (function () ${source})(); })();`,
+  ) as (
+    now: number,
+    codeSample: string,
+    location: { search: string },
+    previewImageDataUrl: string,
+    window: unknown,
+  ) => AppState;
 }
 
-const state = buildState("zh-cn");
+/** 一次求值 = 一份夹具内存表（装载器还没跑完时给空表）。 */
+function buildStateWith(locale: "zh-cn" | "en", extraQuery = "", fixtures: Record<string, unknown> = {}): AppState {
+  const build = evaluateStateBuilder();
+  return build(
+    Date.now(),
+    codeSample,
+    { search: `?locale=${locale}${extraQuery}` },
+    previewImageDataUrl,
+    { __trajectoryFixtures: fixtures },
+  );
+}
+
+// ---------- 真实夹具（`test/fixtures/trajectory/`）的装载与事实 ----------
+
+/**
+ * 预览页声明的真实夹具清单（从页面源码里读，不是这里另抄一份）。
+ *
+ * 读页面**声明**而不是自己写死路径：这样「页面接了哪三份夹具」与「磁盘上真有那三份」
+ * 由同一条断言比对，页面漏接或路径打错都会红。
+ */
+const fixtureManifest: { name: string; path: string }[] = (() => {
+  if (!wiringPresent) return [];
+  const at = html.indexOf("window.__trajectoryFixturePaths = {");
+  // 同样**不抛**：清单缺失由下面第 5 段的断言报出
+  if (at < 0) return [];
+  const open = html.indexOf("{", at);
+  const close = html.indexOf("};", open);
+  if (open < 0 || close < 0) return [];
+  const body = html.slice(open + 1, close);
+  return [...body.matchAll(/([A-Za-z][\w-]*)\s*:\s*"([^"]+)"/g)].map((match) => ({
+    name: match[1],
+    path: match[2],
+  }));
+})();
+
+const realFixtureNames = fixtureManifest.map((entry) => entry.name);
+
+/** 读一份真实夹具；不存在 / 坏 JSON / 没声明 → `undefined`（由断言判红，不抛）。 */
+function realFixture(name: string): any {
+  const entry = fixtureManifest.find((item) => item.name === name);
+  if (entry === undefined) return undefined;
+  try {
+    return JSON.parse(readFileSync(`test/${entry.path}`, "utf8")) as any;
+  } catch {
+    return undefined;
+  }
+}
+
+/** 一份夹具模型的账本行（按组摊平）。 */
+function realFixtureCells(payload: any): { kind: string; toolName?: string }[] {
+  return (payload?.model?.turns ?? []).flatMap(
+    (turn: { groups: { cells: { kind: string; toolName?: string }[] }[] }) =>
+      turn.groups.flatMap((group) => group.cells),
+  );
+}
+
+/**
+ * 把一份真实夹具按页面自己的接线逻辑装进 state（不经 `fetch`）。
+ *
+ * 返回 `{ state, info }`：`state` 是**生产 State**（真实装载器只改 `panel` 与 `trajectory`），
+ * `info` 是**预览专用**的来源标记——页面把它放在 `window.__trajectoryFixtureInfo` 上，
+ * **不进 State、不过 JSON wire**。这里按同一形状造一份，用来断言两边都不越界。
+ */
+function realFixtureState(name: string) {
+  const payload = realFixture(name);
+  const path = fixtureManifest.find((item) => item.name === name)?.path;
+  const ready: Record<string, unknown> = {
+    [name]: { status: "ready", path, provenance: payload?.provenance, model: payload?.model },
+  };
+  const state = buildStateWith("zh-cn", `&trajectory=${name}`, ready);
+  return {
+    state,
+    info: {
+      name,
+      synthetic: false,
+      unavailable: false,
+      path,
+      payloadReduced: payload?.provenance?.payloadReduced === true,
+      payloadMeasurementEligible: payload?.provenance?.payloadMeasurementEligible === true,
+      cellCount: payload?.model?.cellCount ?? null,
+    },
+  };
+}
+
+const state = buildStateWith("zh-cn");
 
 // 2) 结构断言
-const must = [
+//
+// 定型成**二元组数组**：不写这个标注时，TS 会把整份字面量推成「若干 `(string | 函数)[]`
+// 的联合」，循环里的 `check` 于是成了 `string | (() => …)` 而报「不可调用」。
+const must: [string, () => unknown][] = [
   ["goal 目标条", () => state.goal?.objective],
   ["contextOccupancy 占用环", () => state.contextOccupancy?.percent],
   // 工具栏那枚 tps 胶囊的样例：没有会话统计时它整个不进候选表（缺数据的档位不进表），
@@ -192,8 +308,9 @@ const must = [
     "轨迹账本（六种记录 + 系统提示词更新）",
     () => {
       const kinds = new Set(
-        (state.trajectory?.turns ?? []).flatMap((turn: { cells: { kind: string }[] }) =>
-          turn.cells.map((cell) => cell.kind),
+        (state.trajectory?.turns ?? []).flatMap(
+          (turn: { groups: { cells: { kind: string }[] }[] }) =>
+            turn.groups.flatMap((group) => group.cells.map((cell) => cell.kind)),
         ),
       );
       return ["system", "user", "message", "tool", "subtool", "compacted", "context"].every((kind) =>
@@ -204,9 +321,94 @@ const must = [
   [
     "轨迹账本：序号连续、工具行带结果",
     () => {
-      const cells = (state.trajectory?.turns ?? []).flatMap((turn: { cells: { index: number }[] }) => turn.cells);
-      const sequential = cells.every((cell: { index: number }, position: number) => cell.index === position + 1);
-      return sequential && cells.some((cell: { kind: string; result?: string }) => cell.kind === "tool" && cell.result);
+      const cells = (state.trajectory?.turns ?? []).flatMap((turn) =>
+        turn.groups.flatMap((group) => group.cells));
+      const sequential = cells.every((cell, position) => cell.index === position + 1);
+      return sequential && cells.some((cell) => cell.kind === "tool" && cell.result);
+    },
+  ],
+  // 检查器的「Schema」页签：夹具必须留一条**能解析**的 `schemaDetail`，否则预览页永远显示
+  // 「Schema 不可用」，调那一页的样式时看到的是空态。判据与界面侧 `parseToolSchema()` 一致
+  // ——`{name, description, parameters}` 三样缺一不可，解析不出就退回显示原文。
+  [
+    "轨迹账本：工具行带可解析的 schemaDetail",
+    () => {
+      const cells = (state.trajectory?.turns ?? []).flatMap(
+        (turn: { groups: { cells: { kind: string; schemaDetail?: string }[] }[] }) =>
+          turn.groups.flatMap((group) => group.cells),
+      );
+      const schema = cells.find(
+        (cell: { kind: string; schemaDetail?: string }) => cell.kind === "tool" && cell.schemaDetail,
+      )?.schemaDetail;
+      if (typeof schema !== "string") return false;
+      const parsed = JSON.parse(schema) as { name?: unknown; description?: unknown; parameters?: unknown };
+      return (
+        typeof parsed.name === "string"
+        && typeof parsed.description === "string"
+        && typeof parsed.parameters === "object"
+        && parsed.parameters !== null
+      );
+    },
+  ],
+  // 被中断的记录：夹具要留一条带 `@interrupted` 的，检查器错误行的换成文案那条路径
+  // 才有得看（那是个宿主记号，原样渲染出来是内部符号）。
+  [
+    "轨迹账本：留一条被中断的记录（错误行的记号）",
+    () => {
+      const cells = (state.trajectory?.turns ?? []).flatMap(
+        (turn: { groups: { cells: { error?: string }[] }[] }) =>
+          turn.groups.flatMap((group) => group.cells),
+      );
+      return cells.some((cell: { error?: string }) => cell.error === "@interrupted");
+    },
+  ],
+  // PTC（`run_code`）**没有真实样本**：本轮三份真实夹具（小 / 长 / v4 压缩）里
+  // `run_code` 都是 0 例（`provenance.capabilities` 不含它），所以预览页**不留合成行**
+  // ——造一条假的 PTC 输出会让人把「编的」当成「真实出现过的形态」。
+  // 这里钉的就是这条**缺席契约**（渲染口径由 `scripts/trajectoryDisplay.test.ts` 与
+  // `scripts/trajectoryVendor.test.ts` 的契约用例覆盖，不靠预览页）；有真实样本后，
+  // 这条应改成「真实夹具里出现 run_code」并要求它来自 `?trajectory=<名>`。
+  [
+    "轨迹账本：没有真实 run_code 样本时不留合成 PTC 行（缺席契约）",
+    () => {
+      const fromPreview = (state.trajectory?.turns ?? []).flatMap(
+        (turn: { groups: { cells: { kind: string; toolName?: string }[] }[] }) =>
+          turn.groups.flatMap((group) => group.cells),
+      );
+      const fromFixtures = realFixtureNames.flatMap((name) =>
+        realFixtureCells(realFixture(name)).filter((cell) => cell.toolName === "run_code"),
+      );
+      // 预览页里不能有任何 run_code 行；三份真实夹具里也没有 —— 两边一致才叫「没有样本」
+      return fromPreview.every((cell) => cell.toolName !== "run_code") && fromFixtures.length === 0;
+    },
+  ],
+  // 账本虚拟化的**行数阈值**：合成账本已经不再背长账本（真实长夹具顶替了它），
+  // 所以这里改成两个来源合起来判——默认合成账本 + 三份真实夹具里的任意一份，
+  // 只要有越过阈值 100 的，预览页就有得量。
+  [
+    "轨迹长账本：默认合成账本 + 真实夹具里存在越过虚拟化阈值（>100 行）的素材",
+    () => {
+      const syntheticRows = (state.trajectory?.turns ?? []).flatMap(
+        (turn: { groups: { cells: unknown[] }[] }) => turn.groups.flatMap((group) => group.cells),
+      );
+      const longestReal = realFixtureNames.reduce(
+        (longest, name) => Math.max(longest, realFixtureCells(realFixture(name)).length),
+        0,
+      );
+      return longestReal > 100 || syntheticRows.length > 100;
+    },
+  ],
+  // 分组形状（`TrajectoryGroup`）：三种组标题都要出现，界面侧的落点/摘要/搜索才有东西可查
+  [
+    "轨迹账本：三种组（消息 / 步骤 / 压缩）",
+    () => {
+      const titles = new Set(
+        (state.trajectory?.turns ?? []).flatMap(
+          (turn: { groups: { title: { kind: string } }[] }) =>
+            turn.groups.map((group) => group.title.kind),
+        ),
+      );
+      return ["message", "step", "compaction"].every((kind) => titles.has(kind));
     },
   ],
   // 轮尾「用时 X」胶囊：turn/end 才写入的 turnStats
@@ -417,12 +619,22 @@ for (const [label, check] of must) {
       i += 1;
       continue;
     }
-    // 对象键：标识符后紧跟冒号（排除 `a ? b : c` —— 那种情形 `?` 会在前面，
-    // 这里只认「行内首个非空白 token 是标识符:」，足以覆盖本文件的书写风格）
+    /**
+     * 对象键：标识符后紧跟冒号，且**紧邻的前一个非空白字符**只能是 `{` / `,` / `(` / `[`。
+     *
+     * 这条排除不是风格洁癖，是**正确性**：早先只判「前一个字符是 `\s` / `{` / `,`」，
+     * 于是多行三元表达式 `payload.provenance ?\n  payload.provenance.payloadReduced === true\n  : null,`
+     * 里的 `\n  : null,` 会被当成键 `null:`、`x === true` 那行会被当成键 `true:` ——
+     * 全是**假重复**（实脚本用 true 解析器验过：三块都无语法错误，即无真重复键）。
+     * 真的对象键前面一定是开括号或逗号；`?` / `:` / 运算符后面跟上来的不是键。
+     */
     const keyMatch = /^([A-Za-z_$][\w$]*)\s*:/.exec(html.slice(i, i + 60));
     if (keyMatch && stack.length > 0) {
-      const before = html.slice(Math.max(0, i - 1), i);
-      const isKeyPosition = /[\s{,]/.test(before) || before === "";
+      let before = i - 1;
+      while (before >= 0 && /\s/.test(html[before] as string)) before -= 1;
+      const previousChar = before < 0 ? "" : (html[before] as string);
+      const isKeyPosition = previousChar === "" || previousChar === "{" || previousChar === ","
+        || previousChar === "(" || previousChar === "[";
       if (isKeyPosition) {
         const scope = stack[stack.length - 1];
         const id = `${scope}\u0000${keyMatch[1]}`;
@@ -452,7 +664,7 @@ for (const [label, check] of must) {
 // （「即便用户只发了一次消息也有第0轮」）——横条必须整个不出现，所以浏览器侧的
 // 验证（`npm run preview` 加 `?rail=one`）需要一个形状正确的入口。
 {
-  const one = build(Date.now(), codeSample, { search: "?locale=zh-cn&rail=one" }, previewImageDataUrl);
+  const one = buildStateWith("zh-cn", "&rail=one");
   const users = one.messages.filter((m: { role: string }) => m.role === "user").length;
   const ok =
     one.messages.length === 3 &&
@@ -469,9 +681,9 @@ for (const [label, check] of must) {
 // 三种形态都要在：选过目录（可改）、跟随 VS Code 的静态行（`?lock=1`）、以及
 // **没打开文件夹也没选过目录**（`?none=1`，占位「未选择工作区」——绝不能是路径）。
 {
-  const empty = build(Date.now(), codeSample, { search: "?locale=zh-cn&empty=1" }, previewImageDataUrl);
-  const locked = build(Date.now(), codeSample, { search: "?locale=zh-cn&empty=1&lock=1" }, previewImageDataUrl);
-  const none = build(Date.now(), codeSample, { search: "?locale=zh-cn&empty=1&none=1" }, previewImageDataUrl);
+  const empty = buildStateWith("zh-cn", "&empty=1");
+  const locked = buildStateWith("zh-cn", "&empty=1&lock=1");
+  const none = buildStateWith("zh-cn", "&empty=1&none=1");
   const ok =
     empty.messages.length === 0 &&
     empty.workspace?.path &&
@@ -517,21 +729,145 @@ for (const [label, check] of must) {
 // 这条不是形式主义：`?locale=en` 是唯一能**肉眼**检查英文下排版会不会溢出的入口，
 // 它一旦坏掉，双语改动就失去了自查手段。
 {
-  const en = buildState("en");
+  const en = buildStateWith("en");
   const ok = Boolean(en.goal?.objective && en.messages?.length);
   console.log(`  ${ok ? "✓" : "✗"} 英文（?locale=en）也能构造出完整状态`);
   if (!ok) failed += 1;
   // 空态也要能构造：英文下的目录行与预设名/描述都长得多，那是唯一能**肉眼**
   // 检查它会不会溢出的入口（`?locale=en&empty=1`）
-  const enEmpty = build(
-    Date.now(),
-    codeSample,
-    { search: "?locale=en&empty=1" },
-    previewImageDataUrl,
-  );
+  const enEmpty = buildStateWith("en", "&empty=1");
   const emptyOk = enEmpty.messages.length === 0 && Boolean(enEmpty.workspace?.path) && enEmpty.agentPreset === "ptc";
   console.log(`  ${emptyOk ? "✓" : "✗"} 英文空态（?locale=en&empty=1）也能构造`);
   if (!emptyOk) failed += 1;
+}
+
+// 5) 真实轨迹夹具的接线（`?trajectory=small|long|compaction`）
+//
+// 这一段是**真实素材**的契约，不是排版演示：页面声明了三份夹具、磁盘上真有那三份、
+// 每份的登记自洽、装载只吃真实载荷；取不到时**明确标不可用**且不回退到合成账本。
+{
+  // 5a) 页面**确实**接了真实夹具：标记块在、清单声明了三份（small / long / compaction）
+  const namesOk = fixtureManifest.length === 3
+    && ["small", "long", "compaction"].every((name) => realFixtureNames.includes(name));
+  const ok5a = wiringPresent && namesOk;
+  console.log(`  ${ok5a ? "✓" : "✗"} 真实夹具接线：标记块在、声明 3 份（small / long / compaction）`);
+  if (!ok5a) failed += 1;
+
+  // 5b) 三份都在磁盘上，且都带整套出处登记与整份载荷模型（不是预览页里那段合成账本）
+  const missing = fixtureManifest.filter((entry) => {
+    const payload = realFixture(entry.name);
+    return !payload?.provenance || !payload?.model;
+  });
+  const ok5b = fixtureManifest.length === 3 && missing.length === 0;
+  console.log(`  ${ok5b ? "✓" : "✗"} 真实夹具：三份磁盘文件都在且都带 provenance + model`);
+  if (!ok5b) failed += 1;
+
+  // 5b) 三份都带**整套**出处登记与整份载荷模型（不是预览页里那段合成账本）；
+  //     `--limit 0` 下缩减恒 false、可测资格恒 true（否则不得用于 M06 全载荷）
+  const payloadOk = realFixtureNames.length === 3 && realFixtureNames.every((name) => {
+    const payload = realFixture(name);
+    const provenance = payload?.provenance;
+    const model = payload?.model;
+    return Boolean(
+      provenance
+      && model
+      && typeof provenance.sourceSha256 === "string"
+      && typeof provenance.derive?.sha256 === "string"
+      && typeof provenance.extractor?.sha256 === "string"
+      && typeof provenance.modelSha256 === "string"
+      && typeof provenance.seqMapping?.count === "number"
+      && provenance.redaction?.fieldLimit === 0
+      && provenance.payloadReduced === false
+      && provenance.payloadMeasurementEligible === true
+      && provenance.synthetic !== true
+      && Array.isArray(model.turns)
+      && Array.isArray(model.requests)
+      && typeof model.cellCount === "number"
+      && model.cellCount === realFixtureCells(payload).length,
+    );
+  });
+  console.log(`  ${payloadOk ? "✓" : "✗"} 真实夹具：整套登记 + 整份 TrajectoryModel、--limit 0 未缩减且可测`);
+  if (!payloadOk) failed += 1;
+
+  // 5c) 页面自己的装载逻辑把真实模型装进 state 的账本位（按真代码求值，不 mock 逻辑）；
+  //     来源标记只落在**预览专用**对象上，**不进生产 State**（新增字段就是越界）
+  const small = realFixtureState("small");
+  const long = realFixtureState("long");
+  const compaction = realFixtureState("compaction");
+  /**
+   * 判**内容相等**而不是引用相等：`realFixture()` 每次重新 `JSON.parse`，引用必然不同；
+   * 接线本身**不许改模型**（原样顶掉合成账本），所以序列化后逐字比对就是它的正确口径。
+   */
+  const loaded =
+    small.state.trajectory !== undefined
+    && small.state.trajectory !== null
+    && JSON.stringify(small.state.trajectory) === JSON.stringify(realFixture("small")?.model)
+    && JSON.stringify(long.state.trajectory) === JSON.stringify(realFixture("long")?.model)
+    && JSON.stringify(compaction.state.trajectory) === JSON.stringify(realFixture("compaction")?.model);
+  const marksOk = [small, long, compaction].every((built) =>
+    built.info.synthetic === false
+    && built.info.unavailable === false
+    && built.info.payloadReduced === false
+    && built.info.payloadMeasurementEligible === true
+    && built.state.panel === "trajectory",
+  );
+  // **生产 State 不许出现只为预览/测试存在的字段**：这两个键在 AppState / ChatState 里都不存在
+  const stateClean = [small, long, compaction, { state: buildStateWith("zh-cn") }].every((built) =>
+    !("trajectoryFixture" in built.state) && !("trajectoryUnavailable" in built.state),
+  );
+  console.log(`  ${loaded && marksOk ? "✓" : "✗"} 真实夹具装载：模型进 state 账本位、标记在预览专用对象上且可测`);
+  console.log(`  ${stateClean ? "✓" : "✗"} 生产 State 干净：没有 trajectoryFixture / trajectoryUnavailable 这类预览专用字段`);
+  if (!(loaded && marksOk)) failed += 1;
+  if (!stateClean) failed += 1;
+
+  // 5d) **不许合成回退**：夹具没到 / 取不到时账本清空，且预览标记 unavailable
+  const pending = buildStateWith("zh-cn", "&trajectory=long", {});
+  const failedEntry = buildStateWith("zh-cn", "&trajectory=long", {
+    long: { status: "unavailable", path: "fixtures/trajectory/real-long.json", provenance: null, model: null },
+  });
+  const noFallback =
+    pending.panel === "trajectory"
+    && pending.trajectory === null
+    && failedEntry.panel === "trajectory"
+    && failedEntry.trajectory === null;
+  // 不带参数时仍是页面自带的合成账本（服务排版演示）
+  const defaultState = buildStateWith("zh-cn");
+  const syntheticKept = (defaultState.trajectory?.turns ?? []).length > 0;
+  console.log(`  ${noFallback && syntheticKept ? "✓" : "✗"} 取不到真实夹具时不合成回退（账本清空），默认仍是合成账本`);
+  if (!(noFallback && syntheticKept)) failed += 1;
+
+  // 5e) 来源可追溯：三份的 derive 与 extractor 摘要都写进了登记，且 `generatedBy` 是正式源
+  const traceable = realFixtureNames.length === 3 && realFixtureNames.every((name) => {
+    const provenance = realFixture(name)?.provenance;
+    return /^[0-9a-f]{64}$/.test(provenance.derive?.sha256 ?? "")
+      && /^[0-9a-f]{64}$/.test(provenance.extractor?.sha256 ?? "")
+      && /^[0-9a-f]{64}$/.test(provenance.sourceSha256 ?? "")
+      && provenance.derive?.file === "src/dsh/trajectory.ts"
+      && provenance.extractor?.file === "scripts/trajectoryFixtureBuild.ts"
+      && provenance.generatedBy === "scripts/trajectoryFixtureBuild.ts";
+  });
+  console.log(`  ${traceable ? "✓" : "✗"} 真实夹具：source / derive / extractor 摘要与正式生成源都在登记里`);
+  if (!traceable) failed += 1;
+
+  // 5f) 结构事实（给下文的能力矩阵与 M06 用）：长素材**必须**越过虚拟化阈值，
+  //     压缩素材必须真的有 `compacted` 行，否则「?trajectory=long」在预览页量不到窗口化
+  const longCells = realFixtureCells(realFixture("long")).length;
+  const compactionKinds = new Set(realFixtureCells(realFixture("compaction")).map((cell) => cell.kind));
+  const structureOk = realFixtureNames.length === 3 && longCells > 100 && compactionKinds.has("compacted");
+  console.log(`  ${structureOk ? "✓" : "✗"} 真实夹具结构：长素材 ${longCells} 行（>100）、压缩素材含 compacted 行`);
+  if (!structureOk) failed += 1;
+
+  // 5g) 能力矩阵（样本覆盖的**事实**，不是承诺）：三份都不含 run_code / subtool；
+  //     没样本的能力不许在预览页造一条假的出来（PTC 那一条已按缺席契约处理）
+  const capabilityReport = realFixtureNames.map((name) => ({
+    name,
+    runCode: realFixtureCells(realFixture(name)).filter((cell) => cell.toolName === "run_code").length,
+    capabilities: realFixture(name)?.provenance?.capabilities,
+  }));
+  const noRunCodeSample = realFixtureNames.length === 3 && capabilityReport.every((entry) => entry.runCode === 0
+    && entry.capabilities?.subtool === false);
+  console.log(`  ${noRunCodeSample ? "✓" : "✗"} 能力矩阵：三份真实夹具都没有 run_code / subtool 样本（PTC 留缺席契约）`);
+  if (!noRunCodeSample) failed += 1;
 }
 
 console.log(failed === 0 ? "\npreview: 夹具结构完整" : `\npreview: ${failed} 项不合规`);

@@ -733,7 +733,43 @@ export function App() {
     if (state.fontSizePx) root.style.setProperty("--font-size", `${String(state.fontSizePx)}px`);
     else root.style.removeProperty("--font-size");
   }, [state.fontSizePx]);
+  // 语言也写在根元素上：有几条**按语言分档**的几何尺寸要挑（轨迹账本的事件列宽，见
+  // `styles/app.css` 的 `.trajectory-col-event:lang(zh)`），而语言是用户设置、不是宿主
+  // 写死在 HTML 里的那一个。用 `:lang()` 而不是给元素挂一个 `is-zh` 类：语言本来就该声明
+  // 在根元素上（读屏要用），声明只此一处，省掉「类与属性两处同步」的维护面。
+  //
+  // 值用归一化后的 `zh` / `en`（`normalizeLocale` 的口径与词典同源）：`:lang(zh)` 是按
+  // 子标签前缀匹配的，`zh` 覆盖 `zh-cn` / `zh-tw` 等全部中文，不需要把原串照抄进去。
+  // 跟字体那条同放一个 insertion effect：它在绘制前跑，切语言不会先闪一帧旧几何。
+  useInsertionEffect(() => {
+    document.documentElement.lang = normalizeLocale(state.locale);
+  }, [state.locale]);
   const closePanel = () => dispatch({ type: "ui/setPanel", panel: "none" });
+
+  /**
+   * 「在轨迹里查看这次调用」的待办目标（官方 `viewRequest.focus` 的等价物）。
+   *
+   * 会话侧那颗按钮给的是工具调用的 `callId`；轨迹侧把它解成**账本里那一行**
+   * （`cell.callId`，官方 `TrajectoryTable` 的 `record.cell.callId === inspectCallId`
+   * 同一判据），选中并滚进视野。解不出来就**一直挂着**（官方同款：找不到目标时
+   * 请求保持 pending、不 ack）——历史还在往后取的时候，「先点了、那一页随后才到」
+   * 正是它要活下来的场景。
+   *
+   * 清空时机：**轨迹侧命中并消费之后由它 ack**（`onFocusApplied`，官方
+   * `onInspectApplied` 同款）；离开轨迹视图、或切了会话也清。切会话必须清——
+   * `callId` 只在同一个会话里唯一，留着会在新会话里撞上一个无关的行。
+   */
+  const [focusCallId, setFocusCallId] = useState<string | undefined>(undefined);
+  const focusSessionRef = useRef<string | undefined>(sessionId);
+  useEffect(() => {
+    if (focusSessionRef.current === sessionId) return;
+    focusSessionRef.current = sessionId;
+    setFocusCallId(undefined);
+  }, [sessionId]);
+  useEffect(() => {
+    if (state.panel === "trajectory") return;
+    setFocusCallId((current) => (current === undefined ? current : undefined));
+  }, [state.panel]);
 
   // 下面的监听只在挂载时注册一次，running 用 ref 读，避免闭包里是首帧的旧值
   const runningRef = useRef(state.running);
@@ -828,6 +864,20 @@ export function App() {
     return rows;
   }, [state.messages, state.running, visibleEchoes]);
 
+  /**
+   * 会话侧那颗「查看」的落点（官方 `inspectCall(callId)` → `openView('trajectory', focus)`）：
+   * 记下目标、切到轨迹视图、并立刻要一份账本。
+   *
+   * 为什么自己发 `listTrajectory`：切面板那一帧 `state.panel` 还是旧值，下面那个按面板
+   * 轮询的 effect 要等下一次渲染才生效，只靠它会让第一次跳转停在一个**可能还没有账本**
+   * 的轨迹页上（用户点了「查看」却看到空页）。
+   */
+  const inspectCall = (callId: string): void => {
+    setFocusCallId(callId);
+    dispatch({ type: "ui/setPanel", panel: "trajectory" });
+    post({ type: "listTrajectory" });
+  };
+
   return (
     <TextsContext.Provider value={texts}>
       {/* 语言本身也下一层：服务端给的本地化文案（审批的 displayReason）要在渲染时按它挑 */}
@@ -856,9 +906,15 @@ export function App() {
         {state.panel === "trajectory" ? (
           <TrajectoryView
             model={state.trajectory}
+            sessionId={sessionId}
             locale={state.locale}
             onLoadEarlier={() => loadEarlier()}
             loadingEarlier={loadingEarlier}
+            {...(focusCallId === undefined ? {} : { focusCallId })}
+            // 落点被轨迹侧消费（命中并选中）之后**由它 ack**：这里清掉请求，
+            // 于是下一次点同一次调用又是一件新事（官方 `onInspectApplied` 同款）。
+            // 不 ack 的话轨迹侧每次账本换身份都会重放，把用户的选中拉回旧目标。
+            onFocusApplied={() => setFocusCallId(undefined)}
           />
         ) : (
           <div className="chat-area">
@@ -931,6 +987,8 @@ export function App() {
                         // 只有非最后一条（= 不是正在跑的那一轮）才能作为分支锚点
                         canBranch={row.canBranch}
                         takenOver={takenOver}
+                        // 「在轨迹里查看这次调用」（官方 `inspectCall`）：一路透到工具行
+                        onInspectCall={inspectCall}
                       />
                     ))}
                   </>

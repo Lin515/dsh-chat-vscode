@@ -229,10 +229,17 @@ console.log("occupancy: 封顶 100 / 容量 0 不算 / 未变不发 ✓");
 // 数字口径只能有一处。界面里再留一条「拿不到就回退到 usage 自己算」的路，
 // 同一个圆环就会时而官方口径、时而含 output 的本地口径。
 {
-  const primitives = readFileSync(
-    join(process.cwd(), "src", "webview", "components", "primitives.tsx"),
-    "utf8",
-  );
+  /**
+   * 读源码做结构断言前**统一行尾**。
+   *
+   * 本仓库 `.gitattributes` 是 `* text=auto`（没有 `eol`），于是 `git checkout` 在 Windows
+   * 上按原生行尾落盘 —— 正常的检出里这些文件是 CRLF，而 `indexOf("\n}\n")` 这类按 `\n`
+   * 定位函数结尾的写法在 CRLF 下永远找不到（`"}\r\n"` 里 `}` 之后是 `\r`）。断言要的是
+   * 源码结构，不该随工作区的换行策略变红。
+   */
+  const source = (relative: string): string =>
+    readFileSync(join(process.cwd(), relative), "utf8").replace(/\r\n/g, "\n");
+  const primitives = source(join("src", "webview", "components", "primitives.tsx"));
   const start = primitives.indexOf("export function CtxText(");
   assert.ok(start >= 0, "找不到 CtxText");
   const end = primitives.indexOf("\n}\n", start);
@@ -249,10 +256,7 @@ console.log("occupancy: 封顶 100 / 容量 0 不算 / 未变不发 ✓");
     "CtxText 不许本地算百分比；百分比必须由宿主给出",
   );
 
-  const composer = readFileSync(
-    join(process.cwd(), "src", "webview", "components", "Composer.tsx"),
-    "utf8",
-  );
+  const composer = source(join("src", "webview", "components", "Composer.tsx"));
   const callStart = composer.indexOf("<CtxText");
   assert.ok(callStart >= 0, "Composer 里找不到 <CtxText />");
   const call = composer.slice(callStart, composer.indexOf("/>", callStart) + 2);

@@ -126,6 +126,15 @@ export interface ReasoningBlock { type: "reasoning"; text: string }
 export interface TextBlock { type: "text"; text: string }
 export interface ImageBlock { type: "image"; attachment: { attachmentId: string; mediaType: string; bytes?: number; name?: string; width?: number; height?: number } }
 export interface FileBlock { type: "file"; attachment: { attachmentId: string; name: string; bytes?: number } }
+/**
+ * 模型发起的一次工具调用。
+ *
+ * 身份字段名是 **`id`**（`@deepseek-ai/dsh-llm` 的 `ToolCallBlock` 逐字如此，官方投影层
+ * 一律 `String(block.id)`）。工具调用自己的 `callId` 出现在**别处**（`tool/call` 事件与
+ * `tool` 角色的消息上），两者不是同一个键，别混——`dsh/trajectory.ts` 的 `callIdsOf()`
+ * 曾经按 `callId` 读这个块，于是那一项在真实日志上**恒为空**（实测 58776/58776 个调用块
+ * 带的是 `id`），而合成夹具恰好写的是 `callId`，所以一直是绿的。
+ */
 export interface ToolCallBlock { type: "tool-call"; id: string; name: string; arguments: string }
 /**
  * 工具结果的**旧信封**（`message.content = [tool-result{ content: [...] }]`）。

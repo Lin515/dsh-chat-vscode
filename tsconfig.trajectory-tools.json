@@ -1,0 +1,70 @@
+// 本批（轨迹审计）正式 `scripts/**` 文件的类型检查工程：M06 完整载荷量测工具链、
+// D01 真实探针、M01 源锁，加上轨迹页的宿主折叠／界面投影／交互端口回归与相邻的日志、
+// 样式、流式回归。tsconfig.json 只 include `src/**`，`scripts/**` 本来不在任何工程里，
+// 于是这些正式脚本的类型问题标准检查看不见（esbuild 只剥类型、不查类型）。
+//
+// 需要 DOM 与 JSX 配置：量测工具与轨迹页回归的依赖闭包会走到 `src/webview/**`（TSX）。
+//
+// 预览夹具体检（`scripts/previewFixture.test.ts`）也在其中：它把预览页那段代码当数据求值，
+// 求值结果按**生产的 `AppState`** 定型（不是 `any`），`state.messages[].segments` 这类深链
+// 于是有上下文类型。此前它正因为结果是 `any` 而带 52 处 `noImplicitAny`／未用变量，
+// 进不了任何工程；定型之后顺带把「夹具字段与生产视图模型脱节」也变成编译期信号。
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "types": ["node"],
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "allowSyntheticDefaultImports": true,
+    "isolatedModules": true,
+    "noEmit": true
+  },
+  "include": [
+    // M06 完整载荷量测（含它的离线回归）
+    "scripts/trajectoryPayloadBench.ts",
+    "scripts/trajectoryPayloadBenchCli.ts",
+    "scripts/trajectoryPayloadBenchBrowser.ts",
+    "scripts/trajectoryPayloadBench.test.ts",
+    // D01 真实探针：事实层 + Gap / Align 两条 CLI + 两条回归
+    "scripts/trajectoryProbeFacts.ts",
+    "scripts/trajectoryGapProbe.ts",
+    "scripts/trajectoryAlignProbe.ts",
+    "scripts/trajectoryProbeFacts.test.ts",
+    "scripts/trajectoryProbeCli.test.ts",
+    // M01 vendor 源锁与回归
+    "scripts/vendorSourceLock.ts",
+    "scripts/vendorSourceLock.test.ts",
+    // 轨迹页：宿主折叠、界面投影、交互端口、账本行、检查器、提示词差分、vendor 适配
+    "scripts/trajectory.test.ts",
+    "scripts/trajectoryDisplay.test.ts",
+    "scripts/trajectoryInteraction.test.ts",
+    "scripts/trajectoryLedgerRows.test.ts",
+    "scripts/trajectoryPre.test.ts",
+    "scripts/trajectoryPromptDiff.test.ts",
+    "scripts/trajectoryVendor.test.ts",
+    "scripts/trajectoryVirtual.test.ts",
+    // 两条探针 CLI（形状与折叠观察）
+    "scripts/trajectoryFoldProbe.ts",
+    "scripts/trajectoryShapeProbe.ts",
+    // 本批一并碰过、类型上干净的相邻回归与解码入口
+    "scripts/sessionLog.ts",
+    "scripts/sessionLog.test.ts",
+    "scripts/inspectCall.test.ts",
+    "scripts/nodeOpen.test.ts",
+    "scripts/toolbarFit.test.ts",
+    "scripts/styles.test.ts",
+    "scripts/thinkingStream.test.ts",
+    // 预览夹具体检（求值结果按生产 `AppState` 定型）
+    "scripts/previewFixture.test.ts"
+  ]
+}

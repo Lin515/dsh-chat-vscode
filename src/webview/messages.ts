@@ -708,6 +708,14 @@ export const MESSAGES = {
   toolCode: { zh: "代码", en: "Code" },
   toolExitCode: { zh: (code: number) => `退出码 ${code}`, en: (code: number) => `exit code ${code}` },
   toolSignal: { zh: (signal: string) => `被信号 ${signal} 终止`, en: (signal: string) => `killed by signal ${signal}` },
+  /**
+   * 工具行展开区底部那颗「在轨迹里查看这次调用」（官方 `row.inspect`）。
+   *
+   * 与工具自带标题那族 key 无关（`toolInspect` 是 `cordis_inspect` 那只工具的名字），
+   * 这一条是**动作**：点了切到轨迹视图、选中并滚到这次调用那一行。
+   */
+  toolInspectCall: { zh: "查看", en: "Inspect" },
+  toolInspectCallTitle: { zh: "在轨迹里查看这次调用", en: "Inspect this call in the trajectory" },
   toolImageAlt: { zh: "工具返回的图片", en: "Image returned by the tool" },
   messageImageAlt: { zh: "消息里的图片", en: "Image in the message" },
   imagePreview: { zh: "查看原图", en: "View original" },

@@ -616,6 +616,14 @@ export interface Texts {
   toolExitCode: (code: number) => string;
   /** 被信号杀死的标注（官方 `terminal.signal`）。 */
   toolSignal: (signal: string) => string;
+  /**
+   * 工具行展开区底部那颗「在轨迹里查看这次调用」（官方 `row.inspect`「查看 / Inspect」）。
+   *
+   * 与 `toolInspect`（`cordis_inspect` 那只工具**自己的名字**）无关：这一条是动作，
+   * 点了切到轨迹视图、选中并滚到这次调用那一行。
+   */
+  toolInspectCall: string;
+  toolInspectCallTitle: string;
   /** 工具结果里图片的替代文本。 */
   toolImageAlt: string;
   /** 运行中工具行的状态点标签（官方 `row.running`）。 */

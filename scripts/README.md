@@ -1,9 +1,11 @@
 # scripts/ — 断言、探针与工具脚本
 
-本目录没有子目录，全部是顶层文件，按用途分三类（每个文件头部都写明自己的定位与运行方式）：
+本目录是顶层文件，按用途分三类（每个文件头部都写明自己的定位与运行方式）；另有 `tests/` 子目录，
+放按被测对象分组的断言与它们共用的测试基础设施（作用见 [tests/README.md](<tests/README.md>)）：
 
 - **离线断言**（`*.test.ts`）——与被测源文件同名对应，不联网、不起进程（个别起本地 stub），`npm test` 跑的就是它们。**必须登记进 `esbuild.scripts.mjs` 的 `entries` 才会真正被执行**——新建断言后忘了登记，测试就静默落空。
-- **端到端探针**（多为 `*Probe.ts`，另有若干防线型脚本）——对真实 `dsh web` 或真实会话日志取证的勘察/防线脚本。文件头的「【探针定位】」块标注类型（勘察型 / 防线型 / 工具型）与是否耗模型 token：**耗 token 的按 AGENTS.md 硬约束不得随构建自动执行，每次运行前须获用户批准（一次批准一次有效）**；零 token 的可自由运行。
+- **端到端探针**（多为 `*Probe.ts`，另有若干防线型脚本）——对真实 `dsh web` 或真实会话日志取证的勘察/防线脚本。文件头的「【探针定位】」块标注类型（勘察型 / 防线型 / 工具型）与是否耗模型 token：**耗 token 的按 AGENTS.md 硬约束不得随构建自动执行，每次运行前须获用户批准（一次批准一次有效）**；零 token 仍须遵守当前任务的服务与日志访问范围，不得凭“零 token”扩大读取范围。
+- **显式调用的工具 / 量测脚本**（`*.ts`，用 `node build/<名>.mjs` 跑，不走 `npm test`）——夹具生成与离线校验、完整载荷量测那一类，**不在上面的三类里**。文件头的「【脚本定位】」块标注它的类型、是否耗 token、是否读本机会话日志，以及「绝不进 `npm test`」这类调用口径；与【探针定位】同一条纪律：耗 token 或读本机日志的必须当次批准，一次批准一次有效。
 - **工具脚本**（`*.mjs`）——打包、安装、发布、测试与类型检查的流水线脚本。
 
 依赖说明：断言与探针共用 `src/` 的纯模块；`vscode` 模块在离线环境由 `vscodeTestStub.ts` 经 esbuild alias 顶替；探针的一次性隔离环境由 `supervisorProbeEnv.ts` 提供。
@@ -109,7 +111,13 @@
 - `toolMeta.test.ts` — 工具行契约事实：分类、退出码解析、`stopped` 状态。
 - `toolCard.test.ts` — 工具卡数据推导：哪些工具、什么条件下给卡片。
 - `toolQuestion.test.ts` — `ask_user_question` 问卷事实解析（参数 + 工具结果两份 durable 材料）。
-- `trajectory.test.ts` — 轨迹宿主侧折叠断言（配对、压缩生命周期、轮次分组、请求编号）。
+- `trajectory.test.ts` — 轨迹宿主侧折叠断言（配对、压缩生命周期、轮次分组、请求编号、**请求表**——选项 / 用量含会话累计 / 请求计时 / 重试与认证失败口径、时间线接线与官方语义）。
+- `trajectoryDisplay.test.ts` — 轨迹「一行显示什么」的逐条判据（官方 `recordDisplayText` / `isToolCallOnly` 的等价物）。
+- `trajectoryVendor.test.ts` — `src/vendor/` 里那几份官方纯决策模块的判据（预览投影语法、`recordId` 回退链、搜索分词 AND、时间线并发区间与模式语义、PTC 代码程序）。
+- `trajectoryVirtual.test.ts` — 账本虚拟化的窗口算术（阈值 100 / overscan 12 / 行高估计、首帧与坏输入、垫行守恒、记录下标 → 行位置的换算）。
+- [trajectoryLedgerRows.test.ts](<trajectoryLedgerRows.test.ts>) — 账本布局行投影（flatten／搜索优先过滤／两种折叠／每 section 起点）的离线判据。
+- [trajectoryInteraction.test.ts](<trajectoryInteraction.test.ts>) — 真实交互端口的离线判据（选择互斥／reveal 消费与收尾／pending ack／手势与清理）；模拟生命周期绿不替代首次真实 DOM 几何。
+- `inspectCall.test.ts` — 跨视图跳转「在轨迹里查看这次调用」（工具行那颗按钮的渲染与入参、轨迹侧按 `callId` 的落点判据、两端接线）。
 - `localizedText.test.ts` — 服务端本地化文案的形状校验与按语言取值。
 
 ### 宿主杂项与工程防线
@@ -124,6 +132,18 @@
 - `sessionCookie.test.ts` — `DshClient` 会话 cookie 语义（跨重启复用的基础）。
 - `processRegistry.test.ts` — 外部服务器令牌流程（本地 HTTP stub）+ 进程判活。
 - `previewFixture.test.ts` — `test/preview.html` 夹具体检（键重复 / 语法错让预览静默显示旧内容的防线）。
+
+### 补充专项断言
+
+- [find.test.ts](<find.test.ts>) — 会话查找的跨文本节点匹配与命中位置环绕；不替代真实 DOM 高亮验收。
+- [blankRestoreRace.test.ts](<blankRestoreRace.test.ts>) — 恢复历史会话与自动补空会话并发时，驱动真实控制器验证绑定不被覆盖。
+- [imageHydrate.test.ts](<imageHydrate.test.ts>) — 驱动本地图片水合模块，验证宿主回帧之前的失败不提前替换图片，回帧后的真实失败正常降级。
+- [trajectoryPre.test.ts](<trajectoryPre.test.ts>) — 轨迹原文呈现的默认不换行、渲染不写偏好以及复制与换行入口。
+- [trajectoryPromptDiff.test.ts](<trajectoryPromptDiff.test.ts>) — 系统提示词和工具目录的行级差分、上下文窗口与相同内容省略规则。
+- [sessionLog.test.ts](<sessionLog.test.ts>) — 受控合成 zstd 材料上的字节与路径入口对照、帧内部魔数以及非零字节视图边界；不读取用户日志。
+- [trajectoryProbeFacts.test.ts](<trajectoryProbeFacts.test.ts>) — 新旧工具结果信封、JSON 解析与深度统计，以及对拍缺失、错配、零样本和输入缺口的纯断言。
+- [trajectoryProbeCli.test.ts](<trajectoryProbeCli.test.ts>) — 受控替换下真实 CLI 的缺失退出与读路径闸门；先证注入命中，不把受控 missing 视为自然可达，不扫描默认目录。
+- `tests/` 子目录下的断言按被测对象分组，逐文件说明见 [tests/README.md](<tests/README.md>)。
 
 ## 端到端探针（须按「【探针定位】」头的标注执行）
 
@@ -156,9 +176,13 @@
 - `configReloadProbe.ts` — 零 token：设置文档（**当前 profile 的 `cordis.patch.yml`**，不是 `$DSH_HOME/settings.yaml`）与 credentials 的外部编辑以转发帧到达客户端；改的是数组层里的 `- id:` 行，追加前必须剔掉模板的空数组 `[]`。
 - `railJumpProbe.ts` — 零 token：点轮次横条未加载刻点 → 取回用户消息 → 落位的数据侧全链路（纯离线读日志）。
 
-### 工具型（诊断 / 取证，零 token，可自由运行）
+### 工具型（诊断 / 取证，零 token；读取真实会话须先取得本次范围授权）
 
 - `probe.ts` — 直连已有服务只读打印会话列表与控制流 baseline。
+- [trajectoryAlignProbe.ts](<trajectoryAlignProbe.ts>) — 授权范围内的展示分类与分组对拍；分别报告应比、已比、缺失、错配、输入缺口和未比较字段。退出码 0 为已比较样本通过，1 错配、2 缺失、3 零样本、4 输入覆盖缺口、5 参数错误（不读取来源）；不得把零样本或未比较当成一致。
+- [trajectoryFoldProbe.ts](<trajectoryFoldProbe.ts>) — 只量**宿主侧事件摊开／排序／派生**；历史中位 0.4ms、最大 9.5ms（452 份）不是完整载荷、传输、前端索引与渲染基准，不能据此关闭整链路性能项。
+- [trajectoryGapProbe.ts](<trajectoryGapProbe.ts>) — 观察工具参数与结果的 JSON 嵌套、载荷长度及结果块分布；统计结论须明确抽取口径与分母。
+- [trajectoryShapeProbe.ts](<trajectoryShapeProbe.ts>) — 观察轨迹所需 durable 字段形态与 inbox 分类输入；输出观察而非正确性断言。
 - `pageLoopProbe.ts` — 「加载更早的历史」分页循环真实推演（只读不开写路径）。
 - `panelsProbe.ts` — 只读拉取各面板依赖的接口形状（**需要一个既有会话当样本**：隔离 home 里没有会话，会以「样本不存在」失败）。
 - `dumpSettings.ts` — 只读转储设置 schema JSON（设置面板设计依据）。
@@ -174,20 +198,43 @@
 
 - `supervisorProbeEnv.ts` — 给无头探针完全隔离的一次性环境（supervisor 会合目录 + `DSH_HOME` 两层隔离）。
 - `supervisorPingerHarness.ts` — supervisor 端到端探针共用的「窗口壳」。
-- `sessionLog.ts` — 会话日志解码库（多帧 zstd → JSONL 文本）。
+- [sessionLog.ts](<sessionLog.ts>) — 会话日志解码库；字节入口消费同一快照。旧宽松入口保留兼容；夹具生成显式使用严格入口，验证完整 zstd 帧／原生解压与校验和、全帧拼接后的 fatal UTF-8、对象 JSONL。完整末行无需换行；内部完整不认证历史来源。
+- [trajectoryProbeFacts.ts](<trajectoryProbeFacts.ts>) — 两条轨迹统计入口与离线测试共用的内容块抽取、JSON 形状与对拍累计器；无文件或网络访问，调用方负责输出和退出。
 - `renderOrderProbe.ts` — 事件顺序 vs 渲染顺序并排打印（段排序问题现场工具）。
 - `vscodeTestStub.ts` — `vscode` API 的离线 stub（esbuild alias，供 `subagentSwitch.test.ts` 驱动真 `ChatController`）。
 
-### 契约追踪（非探针的独立工具）
+### S02 夹具工具链（离线；提取 CLI 只在显式调用时运行）
+
+- [trajectoryFixture.ts](<trajectoryFixture.ts>) — 夹具的**纯脱敏变换 / 秘密扫描 / 结构不变量 / 登记校验**；
+  **零 Node 依赖**（哈希由调用方注入），读日志与落盘不在这里。
+- [trajectoryFixtureBuild.ts](<trajectoryFixtureBuild.ts>) — 提取 CLI：把一份会话日志派生成
+  `test/fixtures/trajectory/<name>.json`。**不是 `npm test` 的一部分**（标准测试不得读用户日志目录），
+  只在被显式调用时运行；失败与成功输出都是中英两套固定文案。
+- [trajectoryFixtureVerify.ts](<trajectoryFixtureVerify.ts>) — **离线校验 CLI**：只读既有夹具文件、
+  不读源日志，跑与生成器读回校验同一套判据；成功输出逐条打印三条边界（自洽 ≠ 来源真实 /
+  不代表版本语义兼容 / 不代表帧完整性）。
+- [fixtureCliText.ts](<fixtureCliText.ts>) — 两个 CLI 的固定文案表（中英两套）与语言中立的脱敏规则 id。
+- 回归与受控观察器在 `tests/` 子目录（逐文件说明见 [tests/README.md](<tests/README.md>)）；
+  夹具目录契约见 [test/fixtures/trajectory/README.md](../test/fixtures/trajectory/README.md)。
+
+### 完整载荷量测（离线，先量后优化）
+
+- [trajectoryPayloadBench.ts](<trajectoryPayloadBench.ts>) — 资格门与 Node 量测：登记齐全、`payloadReduced === false`、完整载荷资格为真、登记键 `provenance.truncatedFields` 为空才可测；可固定派生源 SHA-256。重复 `--fixture`，默认预热 2／样本 11，输出 min／median／nearest-rank p95／max 和原值。`fold.rebuild` 是合成事件重建下界，**不是真实源读取／严格解码／派生全链**；JSON wire clone 也不是 VS Code IPC。
+- [trajectoryPayloadBenchCli.ts](<trajectoryPayloadBenchCli.ts>) — 薄 IO 入口；量测与 `--emit-browser` 共用资格门、固定摘要贯穿；拒测 exit 3、不得落半成品。`--out` 写失败也是失败；`--serve-browser` 等待真实监听并打印实际端口。
+- [trajectoryPayloadBenchBrowser.ts](<trajectoryPayloadBenchBrowser.ts>) — 独立工件装配与真实浏览器 runner：生产 CSS 原字节、13px 主题桥、生产源码打点见证、三类真实脱敏夹具。同步阶段与真实 3 秒异步索引窗口分开记录，允许批次节流合并。索引执行判据使用首载真实生产 timer 的 schedule→fire→landed；刷新尾部落地另报观察，不由 `afterRefreshExecuted` 单独判失败，也不把挂起／取消计为已执行。完成须同时等 `window.__M06_DONE__ === true` 和 `window.__M06__.done === true`，半途 `running` 不是结论；JSON／React 量测不冒充扩展宿主 IPC。
+- [trajectoryPayloadBench.test.ts](<trajectoryPayloadBench.test.ts>) — 资格／退出／工件／异步窗口的离线红绿防线，不替代实际浏览器量测。示例命令与分母边界见[轨迹设计](<../docs/design-trajectory.md>)。
+
+### 契约与固定来源追踪（非耗 token 探针）
 
 - `dshContract.ts` — DSH 契约快照与差异分析纯逻辑（官方契约面 × 本扩展消费面 = 影响面）。
 - `dshContract.test.ts` — 上述逻辑的离线断言（版本判读、差异分级规则）。
-- `dshCompat.ts` — CLI 入口：`watch`（未核对的官方版本）/ `snapshot <版本>`（抓契约面落盘 `docs/dsh-contract/`）/ `check` 等命令，全部离线。
+- [dshCompat.ts](<dshCompat.ts>) — `watch`／`snapshot <版本>`／`check` 服务端契约追踪；**不覆盖官方 UI 语义**，远端版本／契约获取可能访问网络，不耗模型 token 不等于断网。
+- [vendorSourceLock.ts](<vendorSourceLock.ts>)、[登记表](<vendorSourceLock.json>)、[离线回归](<vendorSourceLock.test.ts>) — 11 份官方原字节见证与 vendor 文件集合双向锁；只归一化模块说明符，保留 literal／template／regex／ASI 语义。基准为固定官方提交，不用本地 HEAD；自洽摘要不能认证历史来源。原字节见证与授权边界见[夹具索引](<../test/fixtures/README.md>)。
 
 ## 工具脚本（`*.mjs`）
 
 - `runTests.mjs` — 并行跑全部离线断言（`build/*.test.mjs`），固定顺序缓冲输出（`npm test` 背后）。
-- `typecheck.mjs` — 并行跑两个 tsconfig 的 `--noEmit`（`npm run typecheck` 背后）。
+- [typecheck.mjs](<typecheck.mjs>) — 并行检查宿主、webview、夹具工具与轨迹工具四个 tsconfig（`--noEmit`）。第三个覆盖正式夹具链；第四个覆盖本批正式 `scripts/**`：M06 量测、D01 探针、M01 源锁、轨迹页的宿主折叠／界面投影／交互端口／账本行／检查器／提示词差分／vendor 适配回归、两条探针 CLI，以及日志、预览夹具体检、样式、流式等相邻回归。覆盖范围以各工程 `include` 为准：**本批相关的 `scripts/**` 已全部纳入，其余历史断言仍不在任何工程里**（本批之前就如此），别把「本批已覆盖」读成「全部 `scripts/**` 已覆盖」。
 - `esbuild.scripts.mjs` 之外注意：断言的登记表就在 `esbuild.scripts.mjs` 的 `entries` 里。
 - `package.mjs` — 打包 vsix：读 `package.json` 的 version，产出 `Releases/dsh-chat-<version>.vsix`（绕开 npm 在 Windows 上展开 `$npm_package_version` 失败的坑）。
 - `installVsix.mjs` — 安装 vsix 到本机 VS Code（顺带压掉 `code` CLI 的 `DEP0169` 弃用警告）。
