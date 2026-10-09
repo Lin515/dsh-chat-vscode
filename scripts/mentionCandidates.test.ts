@@ -17,7 +17,9 @@
  * 2. **宿主侧的发射**（第 2 节，函数体级判据）：两个源各自发帧、文件那帧永远先发、
  *    每次查询作废上一次、窗口下线时作废并清表。
  * 3. **界面侧只有一个重取点**（第 3 节）：导航（下钻 / 回上一层）不再自己发一遍
- *    （那会让服务端那趟扫描翻倍、先后无保证），命令目录也不再跟着每次敲字重取。
+ *    （那会让服务端那趟扫描翻倍、先后无保证），命令目录也不再跟着每次敲字重取；
+ *    另外候选列表在界面上**只有一个**上限（`CANDIDATE_LIST_LIMIT`，落在候选取用那一层），
+ *    渲染处不许再有无注释的 `slice(0, 40)`。
  *
  * 运行：npm test
  */
@@ -146,8 +148,14 @@ console.log("mentionCandidates: 对话候选只在工作区根目录列（渲染
     assert.ok(body.includes(`type: "${type}"`), `queryFiles 要发 \`${type}\` 帧`);
   }
   assert.ok(
-    /this\.emitToView\(viewId, \{ type: "files\/list", query, items: items \?\? \[\] \}\)/.test(body),
+    /this\.emitToView\(viewId, \{ type: "files\/list", query, items: complete \}\)/.test(body),
     "文件那一帧必须带上这次查询的 query（界面靠它认「这是哪一次查询」）",
+  );
+  // 文件那一半在发帧**之前**经目录列举补全（服务器一次只回 20 条，见 scripts/fileRefListing.test.ts）：
+  // 补全必须在这一帧上，不能另发一帧——另发一帧会让界面先收到半截列表再被替换
+  assert.ok(
+    /const complete = await this\.completeFileListing\(scope, query, items \?\? \[\]\)/.test(body),
+    "文件那一帧要经 completeFileListing（目录列举被服务器截掉的尾巴在这里补回来）",
   );
   assert.ok(
     !/Promise\.all\(\[\s*this\.client/.test(body),
@@ -240,7 +248,26 @@ console.log("mentionCandidates: 宿主侧各自发帧 + 取消旧查询 + 下线
       /if \(commandChannel\) post\(\{ type: "listCommands" \}\)/.test(source),
     "`/` 命令目录只在通道打开时取一次，不许跟着每次敲字重取",
   );
+
+  // 候选列表在界面上**只有一个**上限，且它落在「候选取用」那一层：渲染处原来那个
+  // 没注释的 `candidates.slice(0, 40)` 会把宿主补回来的目录尾巴（服务器 20 条上限之外
+  // 那一段，见 scripts/fileRefListing.test.ts）又截掉；而键盘导航按 `candidates.length`
+  // 走下标，两者各算一套时高亮还能走到根本没渲染的行上。
+  assert.ok(
+    !/slice\(0, 40\)/.test(source),
+    "渲染处不许再留没注释的 40 上限（既截掉宿主补齐的尾巴，又与键盘导航的下标各算一套）",
+  );
+  assert.ok(
+    /rankCandidates\([^)]*\)\.slice\(0, CANDIDATE_LIST_LIMIT\)/.test(source),
+    "上限要收在候选取用那一层（`CANDIDATE_LIST_LIMIT`）：下标 / 渲染 / 高亮只认同一份列表",
+  );
+  const limit = Number(/export const CANDIDATE_LIST_LIMIT = (\d+);/.exec(source)?.[1]);
+  assert.ok(
+    Number.isSafeInteger(limit) && limit >= 100,
+    `候选上限要足够大（一屏约 8 行，100 行 = 十几屏；*真正找文件靠再敲一个字符转全局模糊查询*），` +
+      `现在是 ${limit}——回到 40 那个量级会把宿主补齐的目录又挡掉`,
+  );
 }
-console.log("mentionCandidates: 界面侧重取点唯一 + 命令目录不跟敲字重取 ✓");
+console.log("mentionCandidates: 界面侧重取点唯一 + 命令目录不跟敲字重取 + 候选上限唯一 ✓");
 
 console.log("\nmentionCandidates: all assertions passed");

@@ -4106,14 +4106,27 @@ button.meta-chip:hover {
   white-space: nowrap;
 }
 
+/* 候选行。
+   用户 2026-10-10 报「鼠标在 @ 列表里移动会留下项目之间的分割残影」。对截图逐格采样：
+   被描过的每一行都在**行上边缘**留下一条 1px 亮线（R68 G68 B69），彼此间隔恰好 32px
+   = 行距；当前高亮行同样 32px 高、底色 R68 G67 B68 —— 细线与高亮底色几乎相同。所以
+   它不是画出来的分隔符（候选行从来没有 border-bottom / 相邻兄弟分隔规则），而是高亮
+   的旧像素没被清掉。
+   那一圈 1px 的落点就是这里原来的 `border: 1px solid transparent`：`background-clip`
+   的初始值是 `border-box`，高亮把这条 1px 透明边框也一并涂满；而透明边框自己不产生任何
+   绘制，取消高亮时按行盒重画底色，落在边框区的那 1px 高亮就成了没有归属的旧像素。
+   修法：把这条透明边框**折进内边距**（4 → 5、6 → 7），行盒与高亮背景矩形从此逐像素
+   重合，1px 的高亮没有可留的地方。几何逐像素不变：全局 `box-sizing: border-box`、
+   行宽 `100%`，两种写法的内容盒宽度、行高、圆角完全一样（也正因为没有边框之后
+   border-box 与 padding-box 就是同一个矩形，这里不需要再补 `background-clip:
+   padding-box`——那只会多一条不生效的声明）。 */
 .popover-item {
   display: flex;
   align-items: center;
   gap: calc(8 * var(--dp));
   width: 100%;
-  padding: calc(4 * var(--dp)) calc(6 * var(--dp));
+  padding: calc(5 * var(--dp)) calc(7 * var(--dp));
   border-radius: calc(6.4 * var(--dp));
-  border: 1px solid transparent;
   font-size: var(--font-size-xs);
   text-align: left;
 }
@@ -4512,6 +4525,11 @@ button.meta-chip:hover {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
+  /* 残影的第二道防线（机理与像素证据见 .popover-item 那段）：`contain: paint` 把这一层
+     变成**绘制边界**——它的内容只在自己的盒子里绘制，重画时按层清帧，上一帧越出行盒的
+     像素没有留下来的通路。视觉不动：列表本来就是裁剪容器（`overflow-y: auto`），里面
+     也没有需要溢出显示的东西（没有阴影、没有绝对定位的子项）。 */
+  contain: paint;
 }
 
 /* 键位提示栏：**不参与收缩**，列表再长也压不掉它（见 .trigger-popover）。 */

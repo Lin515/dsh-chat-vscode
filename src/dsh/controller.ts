@@ -14,6 +14,7 @@ import type {
   DiffLayout,
   DshTarget,
   FileChangeKind,
+  FileRefView,
   GoalView,
   ModelSelectionView,
   PendingMessageView,
@@ -48,6 +49,7 @@ import { readClipboardPaths } from "./clipboardPaths";
 import { saveChatImage } from "./imageFiles";
 import { ConfigChangeRouter } from "./configChanges";
 import { fileChangeKind, hasWorkingChange, isNotFoundError, resolveChipPath, splitPathLineSuffix, type FileExistence, type GitChangeStateLike } from "./fileChange";
+import { missingDirectoryEntries } from "./fileRefListing";
 import { readLocalImages } from "./localImages";
 import { shouldContinuePaging } from "./historyPaging";
 import { formatFileMention } from "./references";
@@ -8355,9 +8357,12 @@ export class ChatController implements vscode.Disposable {
 
     // 文件那一帧是界面认「这是哪一次查询」的锚，所以它**永远先发**：这里只串起发帧
     // 顺序，两个 RPC 仍是并行的（对话候选慢，不影响文件那一帧什么时候出去）。
-    const filesFrame = files.then((items) => {
+    const filesFrame = files.then(async (items) => {
+      // 服务器一次最多回 20 条（`maxResults` 是插件配置，多要不到），目录列举那一路
+      // 由这里把被截掉的尾巴按同一套排序补回来（见 `completeFileListing`）
+      const complete = await this.completeFileListing(scope, query, items ?? []);
       if (!this.isCurrentMenuQuery(viewId, controller)) return;
-      this.emitToView(viewId, { type: "files/list", query, items: items ?? [] });
+      this.emitToView(viewId, { type: "files/list", query, items: complete });
     });
     await Promise.all([
       filesFrame,
@@ -8396,6 +8401,39 @@ export class ChatController implements vscode.Disposable {
   /** 这一次 `@` 候选查询还是不是**当前那一次**（新的一次会 abort 旧的，见 `menuQueries`）。 */
   private isCurrentMenuQuery(viewId: string, controller: AbortController): boolean {
     return this.menuQueries.get(viewId) === controller && !controller.signal.aborted;
+  }
+
+  /**
+   * 目录列举的**补全**：服务器只回前 20 条，这里把被截掉的尾巴补在它们后面。
+   *
+   * 为什么会有这个上限：官方 `WorkspaceFileSearch.list()` 在「查询是空串或以 `/` 结尾」
+   * 时走 `listDirectory`，而它末尾同样过 `rankCandidates(candidates, fragment, maxResults)`
+   * ——目录列举也被 `DEFAULT_FILE_SEARCH_MAX_RESULTS`（20）截断；全局模糊查询同样是 20 条。
+   * `maxResults` 是 dsh 插件的**配置**，不是每次请求的参数（扩展侧只能发
+   * `{ agentId, query }`），所以多要不到，只能自己补齐（见 `dsh/fileRefListing.ts`）。
+   *
+   * **服务器那 20 条一条不动、顺序不动**：只按 path 去重后往后追加。fragment 为空时
+   * 每条候选的分数都是 0（官方 `scoreCandidate` 对空查询第一行就返回 0），排序退化为
+   * 「目录在前、文件在后」+ 路径的 code-unit 比较，是确定性的——所以「服务器排好的前
+   * 20 条」正是正确顺序的前缀，拼接之后整体仍是这一个正确的字母序。
+   *
+   * **fragment 非空（用户在目录里打了筛选字）时一律不补**：那种查询服务器按 fuzzy 分数
+   * 排序，本地复现不出来，硬拼只会得到两段规则不同的清单（那一半保持原样，见
+   * `listingTarget` 的肯定证据判据）。
+   *
+   * 枚举用的是**会话的工作目录**（服务器那次查询的根，它不一定是 VS Code 打开的文件夹）；
+   * 任何一步失败都静默退回服务器结果，`@` 列表绝不会因此变空或把错误抛上去。
+   */
+  private async completeFileListing(
+    scope: SessionScope,
+    query: string,
+    items: FileRefView[],
+  ): Promise<FileRefView[]> {
+    const cwd = this.cwdOf(scope);
+    if (!cwd) return items;
+    const extra = await missingDirectoryEntries({ cwd, query, known: items });
+    if (!extra.length) return items;
+    return [...items, ...extra.map((entry): FileRefView => ({ path: entry.path, kind: entry.kind }))];
   }
 
   // ---------- 在浏览器中打开（官方 Web UI 的入口） ----------

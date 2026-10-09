@@ -92,6 +92,42 @@ console.log("styles: 弹层宽度视口感知 ✓");
 }
 console.log("styles: 候选弹层的提示栏常驻（滚动只归列表） ✓");
 
+// ---------- 1c. 候选行的高亮不许画到行盒之外（鼠标扫过的残影） ----------
+//
+// 用户 2026-10-10 报「鼠标在 @ 列表里移动会留下项目之间的分割残影」。截图逐格采样：
+// 被描过的行各在**上边缘**留一条 1px 亮线（R68 G68 B69），间隔恰好 32px = 行距，当前
+// 高亮行底色 R68 G67 B68 —— 细线与高亮同色，所以它不是分隔符而是高亮的旧像素。
+// 落点就是原先那条 `border: 1px solid transparent`：`background-clip` 初始值 border-box，
+// 高亮会连这 1px 透明边框一起涂满；透明边框自己不绘制，取消高亮时就留下没有归属的 1px。
+// 修法是把这 1px 折进内边距，让行盒 = 高亮背景矩形。这三条断言钉住「不许回到那个写法」，
+// 并且折进去之后几何必须与改前等价（否则行高会少 2px）。
+{
+  const item = rule(".popover-item");
+  const border = /(?:^|[\s;])border(?:-(?:top|right|bottom|left|width|style|color))?\s*:\s*([^;]+);/.exec(
+    item,
+  )?.[1]?.trim();
+  assert.ok(
+    border === undefined || /^(?:none|0)$/.test(border),
+    `候选行不许带占位或着色的边框（透明边框会被高亮背景涂满，取消高亮时留下 1px 残影），` +
+      `现在是 "border: ${border}"：\n${item.trim()}`,
+  );
+  const padding = /(?:^|[\s;])padding\s*:\s*([^;]+);/.exec(item)?.[1]?.trim();
+  assert.deepStrictEqual(
+    // 值里带空格（`calc(5 * var(--dp))`），所以按公式整体匹配，不能按空白切
+    padding ? [...padding.matchAll(new RegExp(DESIGN_PX, "g"))].map((match) => designPx(match[0])) : undefined,
+    [5, 7],
+    `候选行的内边距要把原来那 1px 透明边框折进去（竖 5 / 横 7 个设计像素），现在是 "${padding}"` +
+      "——少了这 1px，行高与内容宽度都会比改前小 2px（视觉变更）",
+  );
+
+  const list = rule(".trigger-popover .popover-list");
+  assert.ok(
+    /contain:\s*paint/.test(list),
+    "滚动列表要 contain: paint（绘制边界清帧）：否则越出行盒的上一帧像素会留在画布上（残影的第二条通路）",
+  );
+}
+console.log("styles: 候选行高亮不越出行盒（消残影）+ 滚动层自清帧 ✓");
+
 // ---------- 2. 思考档位不能带会把一行撑破的固定最小宽度 ----------
 //
 // `min-width: 3.75em` 曾让 4 档（Off/Low/High/Max）折成 3+1 两行。

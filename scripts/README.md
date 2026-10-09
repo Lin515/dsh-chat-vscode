@@ -95,6 +95,7 @@
 - `presetDisplay.test.ts` — agent 预设展示文案折叠（内置四个走客户端词典）。
 - `presetMatch.test.ts` — 配置项 `dshChat.agentPreset` 认 id 也认显示名（中英两名、撞名取第一个、认不出原样传）。
 - `mentionCandidates.test.ts` — `@` 候选两条帧：文件先到先渲染、对话各自结算。
+- `fileRefListing.test.ts` — `@` 目录列举补全：服务器 20 条上限之外的尾巴按官方同一套排序补齐（真盘临时目录 + 真控制器）。
 - `mentionNav.test.ts` — `@` / `/` 补全规则集与「返回上一层目录」。
 - `emptyComposer.test.ts` — 空态下 `/` 命令栏与 `@` 候选的行为级回归（空态就绑在壳上，菜单读它、不另建）。
 - `blankSessionReuse.test.ts` — 「空态必有壳、首条消息发给谁」：`reusableBlank` 的本地 blank 位（不许把已经说过话的会话当空壳接回来）、两个窗口共用一条壳、空壳上选的模型留得住。

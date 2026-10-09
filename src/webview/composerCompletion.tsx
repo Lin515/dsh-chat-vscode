@@ -128,6 +128,27 @@ export function rankCandidates(
 }
 
 /**
+ * 候选列表在界面上的**行数上限**。
+ *
+ * 为什么要有它：宿主会把「目录列举」被服务器截掉的那 20 条之外的条目补回来
+ * （见 `dsh/fileRefListing.ts`），于是一个大目录可能列出几百行；每次高亮变化都要重渲染
+ * 这一列，行数不受控时打字与鼠标扫过都会顿。
+ *
+ * 为什么 200 不会把真实文件挡掉：
+ * - 一屏约 8 行（`.trigger-popover` 限高 260 设计像素），200 行 = 25 屏——作为「翻目录」
+ *   的用法早就不可用了；
+ * - 真要找某个文件**不靠翻列表**：再敲一个字符就转成全局模糊查询（查询串里有非空的
+ *   fragment 时服务器按分数排序），任何文件都能这样被搜到。所以这个上限只约束「纯目录
+ *   浏览」这一段。
+ *
+ * 它同时是**唯一**的上限：此前渲染处另有一道没注释的 40 行截断（`.popover-list` 里把
+ * `candidates` 直接切掉前 40 条之后的部分），而键盘导航按 `candidates.length` 走下标——
+ * 候选多过 40 条时，高亮会走到根本没渲染的行上（看着像「选中了一行却什么都没高亮」）。
+ * 上限收到候选取用这一层后，下标、渲染、高亮只认同一份列表。
+ */
+export const CANDIDATE_LIST_LIMIT = 200;
+
+/**
  * 触发词在正文里占的区间（含那个 `@` / `/`）。
  *
  * 内部实现：只有 `replaceToken` 用它，导出没有信息增量（调用方一律只要
@@ -564,9 +585,16 @@ function useCompletion(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [quoteRequest?.id]);
 
-  /** 当前这一帧的候选（命令通道取命令目录、`@` 通道取文件 + 对话 + `..`）。 */
+  /**
+   * 当前这一帧的候选（命令通道取命令目录、`@` 通道取文件 + 对话 + `..`）。
+   *
+   * 上限在**这里**收（见 `CANDIDATE_LIST_LIMIT`）：键盘导航、渲染与 `applyCandidate`
+   * 的下标都读这一份数组，三者不会各算一套；`..` 那一行由 `rankCandidates` 排在最前，
+   * 所以任何上限下它都在（否则用户进了目录就出不来）。
+   */
   const candidates = useMemo(
-    () => rankCandidates(trigger, commands, fileRefs.items, fileRefs.sessions),
+    () =>
+      rankCandidates(trigger, commands, fileRefs.items, fileRefs.sessions).slice(0, CANDIDATE_LIST_LIMIT),
     [trigger, commands, fileRefs],
   );
 
@@ -856,7 +884,7 @@ function useCompletion(
                 </div>
               </>
             ) : (
-              candidates.slice(0, 40).map((candidate, index) => {
+              candidates.map((candidate, index) => {
                 const isCommand = trigger?.kind === "command";
                 const row = candidate as CommandView & FileRefView & SessionRefView;
                 // 行的形状（分组、优先完整、是不是「..」/「整个目录」/对话）都由

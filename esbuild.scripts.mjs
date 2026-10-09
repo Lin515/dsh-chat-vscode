@@ -224,6 +224,7 @@ const entries = {
   "build/subagent-row-state.test.mjs": "scripts/subagentRowState.test.ts",
   "build/unread-marker.test.mjs": "scripts/unreadMarker.test.ts",
   "build/empty-composer.test.mjs": "scripts/emptyComposer.test.ts",
+  "build/file-ref-listing.test.mjs": "scripts/fileRefListing.test.ts",
   "build/blank-session-reuse.test.mjs": "scripts/blankSessionReuse.test.ts",
   "build/blank-restore-race.test.mjs": "scripts/blankRestoreRace.test.ts",
   "build/workspace-dir-repick.test.mjs": "scripts/workspaceDirRepick.test.ts",
