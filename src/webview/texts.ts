@@ -685,6 +685,8 @@ export interface Texts {
   toolTodoTitle: string;
   /** 待办进度：`{done}/{total} 已完成`（官方 `todo.completed`）。 */
   toolTodoProgress: (done: number, total: number) => string;
+  /** 待办面板抬头：标题 + 进度（完成数 / 总数），折叠时它是唯一的进度来源。 */
+  todoPanelTitle: (done: number, total: number) => string;
   /** 达到输出 token 上限、回答被截断（官方 `turn-max-tokens` 节点）。 */
   maxTokens: string;
 

@@ -4784,6 +4784,56 @@ button.meta-chip:hover {
   background: var(--editor-bg);
 }
 
+/* 抬头：整行都是展开 / 收起入口（原生按钮 → 键盘 Enter / Space 可用），
+   文字恒带进度，所以折起来也看得出「还有几条没做」。
+   与 `.changes-card-head` 同一形态：无边框无底色，悬停亮起箭头与文字。 */
+.todos-head {
+  display: flex;
+  align-items: center;
+  gap: calc(4 * var(--dp));
+  width: 100%;
+  margin: 0 0 calc(2 * var(--dp));
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--description);
+  font: inherit;
+  font-size: var(--font-size-xs);
+  text-align: left;
+  cursor: pointer;
+}
+
+.todos-head:hover {
+  color: var(--fg);
+}
+
+.todos-head:focus-visible {
+  outline: 1px solid var(--link);
+  outline-offset: calc(1 * var(--dp));
+  border-radius: calc(3 * var(--dp));
+}
+
+/* 抬头文字按内容宽、可被裁：英文比中文长，窄侧栏里靠省略号兜底 */
+.todos-title {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 折展箭头：默认朝下，展开时转 180° 朝上（与 `.job-chevron` / `.turn-process-chevron`
+   同款 120ms 旋转——这三处的图标都是 `IconChevronDown`，开合靠旋转区分） */
+.todos-chevron {
+  flex: 0 0 auto;
+  color: var(--muted);
+  transition: transform 120ms ease;
+}
+
+.todos-head[aria-expanded="true"] .todos-chevron {
+  transform: rotate(180deg);
+}
+
 .todo-item {
   display: flex;
   align-items: flex-start;

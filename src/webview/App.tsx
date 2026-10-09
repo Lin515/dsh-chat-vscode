@@ -12,8 +12,10 @@ import { FindBar } from "./components/FindBar";
 import { Message } from "./components/Message";
 import { JobsPanel } from "./components/Panels";
 import { TrajectoryView } from "./components/Trajectory";
+import { TodoPanel } from "./components/TodoPanel";
 import { Spinner } from "./components/primitives";
 import { AppState, useAppState, type PanelKind } from "./state";
+import { TODO_PANEL_DEFAULT, todosOpenIn, toggleTodos, type TodoPanelState } from "./todoPanel";
 import { changesSummaryKey, turnsWithChangesCard } from "../shared/changesSummary";
 import { resolveInteractions } from "./pendingInteraction";
 import {
@@ -763,6 +765,19 @@ export function App() {
     setFocusCallId((current) => (current === undefined ? current : undefined));
   }, [state.panel]);
 
+  /**
+   * 「任务清单」面板的开合：**界面自己的视图偏好**，默认展开（用户 2026-10-10 口径）。
+   *
+   * 为什么由 App 持有而不是放进 `TodoPanel` 自己：轨迹视图会把整块会话页卸载
+   * （`state.panel` 那个分支），组件级 state 会在「去轨迹看一眼再回来」时丢掉，
+   * 用户刚折起来的清单又弹回展开。放在这里则活得过卸载与重挂。
+   *
+   * 为什么不进聊天数据：`state.todos` 是服务端投影，界面只读不写；开合跟内容无关。
+   * 单槽位按会话记账的读法见 `todoPanel.ts`（切会话回默认展开，且不随会话数增长）。
+   */
+  const [todosState, setTodosState] = useState<TodoPanelState>(TODO_PANEL_DEFAULT);
+  const todosOpen = todosOpenIn(todosState, sessionId);
+
   // 下面的监听只在挂载时注册一次，running 用 ref 读，避免闭包里是首帧的旧值
   const runningRef = useRef(state.running);
   useEffect(() => {
@@ -1000,23 +1015,11 @@ export function App() {
           </div>
 
           {state.todos.length ? (
-            <div className="todos">
-              {state.todos.map((todo) => (
-                <div
-                  key={todo.id}
-                  className={`todo-item${todo.status === "completed" ? " is-completed" : ""}`}
-                >
-                  <span className="todo-glyph">
-                    <span
-                      className={`dot ${
-                        todo.status === "completed" ? "dot-ok" : todo.status === "in_progress" ? "dot-running" : ""
-                      }`}
-                    />
-                  </span>
-                  <span className="todo-content">{todo.content}</span>
-                </div>
-              ))}
-            </div>
+            <TodoPanel
+              todos={state.todos}
+              open={todosOpen}
+              onToggle={() => setTodosState(toggleTodos(todosState, sessionId))}
+            />
           ) : null}
           </div>
         )}

@@ -108,6 +108,7 @@ const entries = {
   "build/node-open.test.mjs": "scripts/nodeOpen.test.ts",
   "build/unknown-event.test.mjs": "scripts/unknownEvent.test.ts",
   "build/changes-card.test.mjs": "scripts/changesCard.test.ts",
+  "build/todo-collapse.test.mjs": "scripts/todoCollapse.test.ts",
   "build/tail-rows-probe.mjs": "scripts/tailRowsProbe.ts",
   "build/projections.test.mjs": "scripts/projections.test.ts",
   "build/produced.test.mjs": "scripts/produced.test.ts",

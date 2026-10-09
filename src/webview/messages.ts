@@ -781,6 +781,17 @@ export const MESSAGES = {
   terminalNoOutput: { zh: "无输出", en: "No output" },
   toolTodoTitle: { zh: "更新任务清单", en: "Update to-do list" },
   toolTodoProgress: { zh: (done: number, total: number) => `${done}/${total} 已完成`, en: (done: number, total: number) => `${done}/${total} completed` },
+  /**
+   * 「任务清单」面板的抬头：标题 + 进度（已完成 / 总数）。
+   *
+   * 与工具行的 `toolTodoTitle`（「更新任务清单」，官方 `todo.rowTitle` 的节点名）分开：
+   * 面板抬头说的是**当前清单有多少条、完成了几条**，折起来时它是唯一的进度来源。
+   * 带两个参数，所以登记成函数（不许在组件里拼字符串：中英语序不同）。
+   */
+  todoPanelTitle: {
+    zh: (done: number, total: number) => `任务清单 (${done}/${total})`,
+    en: (done: number, total: number) => `To-do list (${done}/${total})`,
+  },
   maxTokens: {
     zh: "已达到输出 token 上限，回答被截断。发送「继续」可接着写。",
     en: "Output token limit reached; the answer was truncated. Send “continue” to resume.",
