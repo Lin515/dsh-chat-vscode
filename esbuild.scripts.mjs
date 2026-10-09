@@ -126,6 +126,7 @@ const entries = {
   "build/toolbar-fit.test.mjs": "scripts/toolbarFit.test.ts",
   "build/read-range.test.mjs": "scripts/readRange.test.ts",
   "build/segment.test.mjs": "scripts/segment.test.ts",
+  "build/picker-focus.test.mjs": "scripts/pickerFocus.test.ts",
   "build/path-insert.test.mjs": "scripts/pathInsert.test.ts",
   "build/context-menu.test.mjs": "scripts/contextMenu.test.ts",
   "build/image-files.test.mjs": "scripts/imageFiles.test.ts",

@@ -4075,10 +4075,19 @@ button.meta-chip:hover {
   text-align: left;
 }
 
+/* `is-selected` = 当前生效值，`is-active` = 键盘高亮（打开弹层即定位到选中项、方向键在其上
+   移动，见 `pickerFocus.ts`）。底色与悬停同一套，**另外**描一圈焦点环：高亮落在当前生效
+   那一行上时底色与选中态一样，而鼠标正悬停别处时更要有办法认出方向键停在哪。 */
 .popover-item:hover,
-.popover-item.is-selected {
+.popover-item.is-selected,
+.popover-item.is-active {
   background: var(--active);
   color: var(--active-fg);
+}
+
+.popover-item.is-active {
+  outline: calc(1 * var(--dp)) solid var(--border-focus);
+  outline-offset: calc(-1 * var(--dp));
 }
 
 /* 候选行的主文字（命令名 / 文件路径）：默认可收缩。
@@ -4178,6 +4187,17 @@ button.meta-chip:hover {
 .segment-item:hover {
   background: var(--hover);
   color: var(--fg);
+}
+
+/* 键盘高亮（打开弹层即定位到当前档位、方向键在其上移动，见 `pickerFocus.ts`）：
+   底色与悬停同一套、另描一圈焦点环（与模型列表那一处同待遇）。写在 `is-selected` **之前**
+   ——两者同特异性，高亮落在当前档位上时该由「生效值」那一套（主色）胜出底色；它不写
+   `outline`，所以焦点环照旧留着。 */
+.segment-item.is-active {
+  background: var(--hover);
+  color: var(--fg);
+  outline: calc(1 * var(--dp)) solid var(--border-focus);
+  outline-offset: calc(-1 * var(--dp));
 }
 
 .segment-item.is-selected {

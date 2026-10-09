@@ -33,6 +33,7 @@ import { CtxText, Ellipsis, Popover, Spinner, contextNumbers, formatDuration } f
 import { ApprovalCard, PlanReviewCard, QuestionCard, formatTps } from "./Rows";
 import type { PendingInteraction } from "../pendingInteraction";
 import { useComposerCompletion } from "../composerCompletion";
+import { usePickerFocus } from "../pickerFocus";
 import { presetDisplayText } from "../presetDisplay";
 import { bottomGap, type AutoScrollPort } from "../autoScroll";
 import { queueDisplayOrder, queueItemHasAttachments } from "../queueOrder";
@@ -244,6 +245,12 @@ export function Composer({
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [modelOpen, setModelOpen] = useState(false);
+  /**
+   * 模型弹层这一次打开要定位到哪一段（见 `pickerFocus.ts`）：模型按钮与思考强度按钮
+   * 各自对应一段。两枚按钮开的是同一个弹层，但「打开时该聚焦到当前模型还是当前档位」
+   * 是两回事（用户 2026-10-10 两条报障各对应一处）。
+   */
+  const [modelFocus, setModelFocus] = useState<"model" | "effort">("model");
   const [modeOpen, setModeOpen] = useState(false);
   // 模型按钮 toggle 标志：标记「这次关闭是按钮触发的」，让 Popover 的
   // mousedown 外部检测跳过它（选中模型后弹层不关，再点按钮需能关闭）
@@ -500,6 +507,8 @@ export function Composer({
         setTimeout(() => {
           modelToggleRef.current = false;
         }, 0);
+        // 从模型按钮打开：弹层定位到当前模型那一行
+        setModelFocus("model");
         setModelOpen((v) => !v);
       }}
     >
@@ -527,6 +536,8 @@ export function Composer({
         setTimeout(() => {
           modelToggleRef.current = false;
         }, 0);
+        // 从思考强度打开：弹层定位到当前档位（与模型按钮同源、只是换了要定位的那一段）
+        setModelFocus("effort");
         setModelOpen((v) => !v);
       }}
     >
@@ -635,6 +646,33 @@ export function Composer({
   for (const variant of barVariants) {
     if (shown.has(variant.rank)) bar[variant.slot] = barNodes[`${variant.slot}:${variant.level}`];
   }
+
+  /**
+   * 「第几行」→ 模型：弹层里的模型按钮按提供商分组渲染，而键盘导航要的是**扁平序号**
+   * （分组标题只占视觉、不占号）。键与按钮自己的 `key` 同源（`提供商:模型`），于是
+   * 选中项的序号与每一行的高亮判定都只查这一张表，不必把 JSX 拍平。
+   */
+  const modelSeat = new Map<string, number>();
+  for (const group of state.models) {
+    for (const model of group.models) modelSeat.set(`${group.id}:${model.id}`, modelSeat.size);
+  }
+  const modelSelected = state.model ? (modelSeat.get(`${state.model.provider}:${state.model.model}`) ?? -1) : -1;
+  const effortSelected = state.model?.efforts?.findIndex((item) => item.id === state.model?.reasoningEffort) ?? -1;
+  /**
+   * 模型弹层「打开即定位到选中项」：模型列表与思考档位共用一个机制（`pickerFocus.ts`），
+   * 这一次打开定位哪一段由 `modelFocus`（触发按钮）决定。
+   */
+  const pickerFocus = usePickerFocus({
+    open: modelOpen,
+    group: modelFocus,
+    groups: [
+      { key: "model", count: modelSeat.size, selected: modelSelected },
+      { key: "effort", count: state.model?.efforts?.length ?? 0, selected: effortSelected },
+    ],
+  });
+  /** 该模型行此刻是不是键盘高亮（`usePickerFocus` 的判定入口）。 */
+  const modelHighlighted = (provider: string, id: string) =>
+    pickerFocus.isHighlighted("model", modelSeat.get(`${provider}:${id}`) ?? -1);
 
   return (
     <div className="composer">
@@ -867,7 +905,10 @@ export function Composer({
             <div className="anchor">
               {bar.model}
               {/* 选完模型不关闭：思考深度区留在同一面板里继续调。
-                  选中态只在点击时更新（不再随鼠标悬停变化），与权限/命令弹层一致 */}
+                  选中态只在点击时更新（不再随鼠标悬停变化），与权限/命令弹层一致。
+                  内层 div 是「打开即定位到选中项」机制的挂点（`pickerFocus.bodyRef`）：
+                  没有它，滚动定位就得满文档去找条目。它是普通块级容器，不参与
+                  .popover 的定位与翻转判定。 */}
               <Popover
                 open={modelOpen}
                 onClose={() => {
@@ -876,78 +917,84 @@ export function Composer({
                   setModelOpen(false);
                 }}
               >
-                <div className="popover-section">{texts.models}</div>
-                {state.models.length === 0 ? (
-                  <div className="popover-empty">{texts.noModels}</div>
-                ) : (
-                  state.models.map((group) => (
-                    <div key={group.id}>
-                      {state.models.length > 1 ? (
-                        <div className="popover-section">{group.name}</div>
-                      ) : null}
-                      {group.models.map((model) => (
-                        <button
-                          key={`${group.id}:${model.id}`}
-                          className={`popover-item${
-                            state.model?.model === model.id && state.model?.provider === group.id
-                              ? " is-selected"
-                              : ""
-                          }`}
-                          onClick={() => {
-                            // 档位只在目标模型支持时才带上，否则服务端会拒绝；
-                            // 面板保持打开，用户可紧接着调深度
-                            const wanted = model.efforts?.some(
-                              (item) => item.id === state.model?.reasoningEffort,
-                            )
-                              ? state.model?.reasoningEffort
-                              : model.defaultEffort;
-                            post({
-                              type: "setModel",
-                              provider: group.id,
-                              model: model.id,
-                              reasoningEffort: wanted,
-                            });
-                          }}
-                        >
-                          <span className="popover-item-main">{model.name}</span>
-                        </button>
-                      ))}
-                    </div>
-                  ))
-                )}
-                {state.model?.efforts?.length ? (
-                  <>
-                    <div className="popover-sep" />
-                    <div className="popover-section">{texts.thinkingDepth}</div>
-                    {/* 5 档及以上固定分两行（列数由 segmentColumns 决定）：
-                        自然换行会随文案长度折成 4+1 这类不均匀分布，且中英文不一致 */}
-                    <div
-                      className={`segment${segmentColumns(state.model.efforts.length) ? " is-multi-row" : ""}`}
-                      style={
-                        {
-                          "--segment-columns": segmentColumns(state.model.efforts.length) ?? 1,
-                        } as CSSProperties
-                      }
-                    >
-                      {state.model.efforts.map((item) => (
-                        <button
-                          key={item.id}
-                          className={`segment-item${(state.model?.reasoningEffort ?? "") === item.id ? " is-selected" : ""}`}
-                          onClick={() => {
-                            post({
-                              type: "setModel",
-                              provider: state.model!.provider,
-                              model: state.model!.model,
-                              reasoningEffort: item.id,
-                            });
-                          }}
-                        >
-                          {item.name}
-                        </button>
-                      ))}
-                    </div>
-                  </>
-                ) : null}
+                <div ref={pickerFocus.bodyRef}>
+                  <div className="popover-section">{texts.models}</div>
+                  {state.models.length === 0 ? (
+                    <div className="popover-empty">{texts.noModels}</div>
+                  ) : (
+                    state.models.map((group) => (
+                      <div key={group.id}>
+                        {state.models.length > 1 ? (
+                          <div className="popover-section">{group.name}</div>
+                        ) : null}
+                        {group.models.map((model) => (
+                          <button
+                            key={`${group.id}:${model.id}`}
+                            data-picker-item="model"
+                            className={`popover-item${
+                              state.model?.model === model.id && state.model?.provider === group.id
+                                ? " is-selected"
+                                : ""
+                            }${modelHighlighted(group.id, model.id) ? " is-active" : ""}`}
+                            onClick={() => {
+                              // 档位只在目标模型支持时才带上，否则服务端会拒绝；
+                              // 面板保持打开，用户可紧接着调深度
+                              const wanted = model.efforts?.some(
+                                (item) => item.id === state.model?.reasoningEffort,
+                              )
+                                ? state.model?.reasoningEffort
+                                : model.defaultEffort;
+                              post({
+                                type: "setModel",
+                                provider: group.id,
+                                model: model.id,
+                                reasoningEffort: wanted,
+                              });
+                            }}
+                          >
+                            <span className="popover-item-main">{model.name}</span>
+                          </button>
+                        ))}
+                      </div>
+                    ))
+                  )}
+                  {state.model?.efforts?.length ? (
+                    <>
+                      <div className="popover-sep" />
+                      <div className="popover-section">{texts.thinkingDepth}</div>
+                      {/* 5 档及以上固定分两行（列数由 segmentColumns 决定）：
+                          自然换行会随文案长度折成 4+1 这类不均匀分布，且中英文不一致 */}
+                      <div
+                        className={`segment${segmentColumns(state.model.efforts.length) ? " is-multi-row" : ""}`}
+                        style={
+                          {
+                            "--segment-columns": segmentColumns(state.model.efforts.length) ?? 1,
+                          } as CSSProperties
+                        }
+                      >
+                        {state.model.efforts.map((item, index) => (
+                          <button
+                            key={item.id}
+                            data-picker-item="effort"
+                            className={`segment-item${
+                              (state.model?.reasoningEffort ?? "") === item.id ? " is-selected" : ""
+                            }${pickerFocus.isHighlighted("effort", index) ? " is-active" : ""}`}
+                            onClick={() => {
+                              post({
+                                type: "setModel",
+                                provider: state.model!.provider,
+                                model: state.model!.model,
+                                reasoningEffort: item.id,
+                              });
+                            }}
+                          >
+                            {item.name}
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  ) : null}
+                </div>
               </Popover>
             </div>
 

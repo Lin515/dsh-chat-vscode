@@ -83,6 +83,7 @@
 - `panelTitle.test.ts` — 编辑区标签标题与窗口身份读法（不恒写 `DSH`、重载后不交叉）。
 - `pathDisplay.test.ts` — 单行标题里路径拆分与省略口径（文件名不参与压缩）。
 - `segment.test.ts` — 思考档位分段控件列数（≤4 档一行、5/6 档均分两行）。
+- `pickerFocus.test.ts` — 模型弹层「打开即定位到选中项」：起点判定、方向键移动、两处共用的接线与高亮样式。
 - `toolbarFit.test.ts` — 底部工具栏按优先级分配的纯函数断言（挤掉顺序、同槽互斥、pinned 保底）。
 - `connectView.test.ts` — 连接条三类状态、文案与按钮矩阵。
 - `contextMenu.test.ts` — 会话右键菜单判据、「引用」落点算术、保存建议文件名。
