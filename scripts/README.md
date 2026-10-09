@@ -138,6 +138,7 @@
 
 - [find.test.ts](<find.test.ts>) — 会话查找的跨文本节点匹配与命中位置环绕；不替代真实 DOM 高亮验收。
 - [blankRestoreRace.test.ts](<blankRestoreRace.test.ts>) — 恢复历史会话与自动补空会话并发时，驱动真实控制器验证绑定不被覆盖。
+- [workspaceDirRepick.test.ts](<workspaceDirRepick.test.ts>) — 未打开文件夹时空态页的目录胶囊：每次都弹选择框、换目录真的落到新目录那条壳上（先切后建、取消保持原状、换回复用旧壳）；打开着文件夹时仍是锁定口径。
 - [imageHydrate.test.ts](<imageHydrate.test.ts>) — 驱动本地图片水合模块，验证宿主回帧之前的失败不提前替换图片，回帧后的真实失败正常降级。
 - [trajectoryPre.test.ts](<trajectoryPre.test.ts>) — 轨迹原文呈现的默认不换行、渲染不写偏好以及复制与换行入口。
 - [trajectoryPromptDiff.test.ts](<trajectoryPromptDiff.test.ts>) — 系统提示词和工具目录的行级差分、上下文窗口与相同内容省略规则。

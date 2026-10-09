@@ -3816,7 +3816,10 @@ export class ChatController implements vscode.Disposable {
       const bound = this.scopeOfView(viewId);
       if (bound) return bound;
       if (options.askDir) {
-        if (!(await this.askWorkspaceDir())) return undefined;
+        // 「要目录」的判据是**有没有一个能用的目录**（`hasWorkspaceDir`），不是
+        // 「有没有真工作区」：用户已经在新会话页上选过目录时，发消息不该再问一遍
+        // （`askWorkspaceDir` 每次都弹，见那里的注释）。
+        if (!this.hasWorkspaceDir() && !(await this.askWorkspaceDir())) return undefined;
       } else if (!this.hasWorkspaceDir()) {
         // 建空壳必须先有工作目录：`session/create` 要么给 `workspaceId`、要么给 `cwd`，
         // 而 `workspacePath()` 在两者都没有时给的是**扩展宿主**的 `process.cwd()`
@@ -4054,20 +4057,24 @@ export class ChatController implements vscode.Disposable {
   /**
    * 现在能不能确定新会话落在哪个目录：打开着文件夹，或用户在新会话页上选过一个。
    *
-   * 判据与 `askWorkspaceDir` 的前两道完全一致：**空壳会话的创建也要它**——没有目录时
-   * `session/create` 只能拿到扩展宿主的 `process.cwd()`（见 `workspacePath`），所以那条
-   * 路上不建壳、窗口停在「无会话的空态」，等目录确定再补（见 `adoptBlankForUnboundViews`）。
+   * **空壳会话的创建也要它**——没有目录时 `session/create` 只能拿到扩展宿主的
+   * `process.cwd()`（见 `workspacePath`），所以那条路上不建壳、窗口停在「无会话的空态」，
+   * 等目录确定再补（见 `adoptBlankForUnboundViews`）。
+   *
+   * 它**不是** `askWorkspaceDir` 的早退判据（那个只认「真工作区」，见那里的注释）：
+   * 这里问的是「有没有一个能用的目录」，而用户自己选的目录就是能用的——发消息时不该
+   * 因为他已经选过就再问一遍；而空态页那枚胶囊问的是「要不要换个目录」，那是另一件事。
    */
   private hasWorkspaceDir(): boolean {
     return Boolean(vscode.workspace.workspaceFolders?.[0] ?? this.newSessionCwd);
   }
 
   /**
-   * 空态页上改工作目录：弹系统目录选择器并记下来。
+   * 空态页上改工作目录：弹系统目录选择器并记下来，然后把窗口落到**新目录**那条壳上。
    *
-   * 选完目录这个窗口就该有壳了（官方口径：打开一个工作区就有一条 blank 会话），所以
-   * 紧接着补一条——在那之前它一直停在「无会话的空态」。已绑定的会话不动：它的 cwd 是
-   * 创建事实，换目录不该改写它（用户 2026-09-22 口径）。
+   * 用户 2026-10-10 口径：**这个目录必须能反复更改**。所以这一下**每次都弹**选择框
+   * （见 `askWorkspaceDir`），与「有没有选过目录」无关；选中的目录由
+   * `rebindWorkspaceDir` 真正落到会话上（官方口径：打开一个工作区就有一条 blank 会话）。
    *
    * 只在没有打开文件夹时才可能被调用（界面那行在 locked 时不发这条指令）；这里仍
    * 再判一次——界面状态可能滞后于 VS Code 的实际文件夹。
@@ -4077,23 +4084,63 @@ export class ChatController implements vscode.Disposable {
       this.refreshWorkspace();
       return;
     }
-    if (await this.askWorkspaceDir()) {
-      // 用户显式选了一个目录 ⇒ 允许拉起后台（与发消息同一档）；列不列表在这条路上
-      // 无所谓：`reuseOrCreateBlank` 自己会在列表空着时先拉一次
-      await this.ensureSession(viewId, { start: true, askDir: false });
-    }
+    // 用户取消 → 保持原状（点击的反馈就是那个对话框本身，不再另外弹提示）
+    if (!(await this.askWorkspaceDir())) return;
+    // 用户显式选了一个目录 ⇒ 允许拉起后台（与发消息同一档）
+    await this.rebindWorkspaceDir(viewId);
   }
 
   /**
-   * 问一次工作目录（系统目录选择器），选中就记下来并推一帧。
+   * 把窗口落到**当前工作目录**那条空壳上（用户刚在新会话页上选了 / 换了目录）。
    *
-   * 两个入口共用：空态页上点那行目录，以及**要落会话却还没有目录时**（见
-   * `ensureSession`——那时弹的也是同一个对话框，用户只需要面对一种问法）。
+   * 为什么不能只调 `ensureSession`：它见到域就直接返回（「这个窗口已经有会话了」），
+   * 于是界面上写着新目录、窗口却仍绑在旧目录那条壳上——用户 2026-10-10 报的
+   * 「选完目录实际没有反应」正是这一半。
+   *
+   * 目录是**会话的创建事实**（服务端没有改 cwd 的 API），所以换目录只能是**换一条壳**：
+   *
+   * - 还绑着**空壳**（`isBlankShell`：没说过话）且它的 cwd 与新目录不同 → 解绑 → 立刻
+   *   推一帧空态（**先切、后建**，与 `newSession` 同一口径：落壳那串往返不许挡住切换）
+   *   → 由 `ensureSession` 落到新目录那条壳上（`reuseOrCreateBlank` 会复用该目录里
+   *   已有的空壳，没有才建）。旧壳**留在服务端**（没有删除 API），以后切回那个目录时
+   *   `reusableBlank` 还会复用它是它最好的去处；
+   * - 目录没变 → 什么都不做（重复点同一个目录不该重建会话）；
+   * - 已经绑着**说过话**的会话 → 不动它（换目录不该改写一条已经在用的对话；这种窗口
+   *   本来也不在空态页上——空态页只在没有消息时渲染）。判据按肯定证据写：**拿不到
+   *   「它是空壳」的证据就不动手**（`isBlankShell` 对查不到的会话返回 false）。
+   */
+  private async rebindWorkspaceDir(viewId: string): Promise<void> {
+    const bound = this.viewSessions.get(viewId);
+    if (bound !== undefined) {
+      if (!this.isBlankShell(bound)) return;
+      // 空壳一定在 `this.sessions` 里（`isBlankShell` 就是查它），所以这里读得到 cwd
+      const row = this.sessions.find((item) => item.id === bound);
+      if (row && normalizePath(row.cwd) === normalizePath(this.workspacePath())) return;
+      this.detachView(viewId);
+      this.emitToView(viewId, { type: "state", state: this.snapshotFor(viewId) });
+    }
+    await this.ensureSession(viewId, { start: true, askDir: false });
+  }
+
+  /**
+   * 弹一次系统目录选择器，选中就记下来并推一帧（**只有打开着文件夹时才不弹**）。
+   *
+   * 两个入口共用，但**要不要问**由调用方定：
+   *
+   * - 空态页上点那行目录（`pickWorkspace`）：**每次都问**——那枚胶囊的语义是
+   *   「选择 / 更改工作目录」，用户点它就是要换一个；
+   * - 要落会话却还没有目录时（`ensureSession`）：**只有完全没有目录才问**
+   *   （`hasWorkspaceDir` 为假），选过的目录不该在发消息时被再问一遍。
+   *
+   * 早退判据只认**真工作区**（VS Code 打开着文件夹）：那种情况下目录跟随 VS Code，
+   * 没有第二个口径。**绝不能**拿 `newSessionCwd` 早退——它正是「第二次点那枚胶囊
+   * 不弹框、目录改不了」的根因（用户 2026-10-10 报的现场）：第一次选完目录之后
+   * `hasWorkspaceDir()` 就为真，之后再点连对话框都不弹，而对话框是这一下点击唯一的反馈。
    *
    * @returns 现在有目录了（本来就打开着文件夹、或选了一个）就是 true；用户取消 → false。
    */
   private async askWorkspaceDir(): Promise<boolean> {
-    if (this.hasWorkspaceDir()) return true;
+    if (vscode.workspace.workspaceFolders?.[0]) return true;
     const picked = await vscode.window.showOpenDialog({
       canSelectFiles: false,
       canSelectFolders: true,

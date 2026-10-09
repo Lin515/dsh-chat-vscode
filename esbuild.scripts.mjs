@@ -221,6 +221,7 @@ const entries = {
   "build/empty-composer.test.mjs": "scripts/emptyComposer.test.ts",
   "build/blank-session-reuse.test.mjs": "scripts/blankSessionReuse.test.ts",
   "build/blank-restore-race.test.mjs": "scripts/blankRestoreRace.test.ts",
+  "build/workspace-dir-repick.test.mjs": "scripts/workspaceDirRepick.test.ts",
   "build/dsh-compat.mjs": "scripts/dshCompat.ts",
   // S02 夹具提取 / 离线校验：两个 CLI 与它们的离线回归（回归必须登记，否则 npm test 静默不跑）
   "build/trajectory-fixture-build.mjs": "scripts/trajectoryFixtureBuild.ts",
