@@ -281,7 +281,14 @@ export interface Texts {
   subagentReadonlyBody: string;
   subagentOneShot: string;
   subagentContinuable: string;
-  /** 「现在不在跑」的子代理：读作**已完成**（用户 2026-09-19 口径），不再读作「未运行」。 */
+  /** 目录里正在生成的那条子代理（`subagentRowFace` 的 `subagentRunning`；不复用 `jobRunning`）。 */
+  subagentRunning: string;
+  /**
+   * 「服务端已收尾、结果还没被用户看过」的子代理：读作**已完成**。
+   *
+   * 「现在不在跑」有两种含义，由「用户已读」这一位分开：没看过是这里，看过了才是模式名
+   * （`subagentContinuable` / `subagentOneShot`）。判据与整张状态表见 `webview/subagentRow.ts`。
+   */
   subagentCompleted: string;
   /** 点了目录里已经不在的那条子代理（列表一闪而过时的兜底）。 */
   subagentNotFound: string;

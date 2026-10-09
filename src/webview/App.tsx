@@ -44,6 +44,7 @@ import {
 import { connectViewOf, type ConnectButton, type ConnectButtonId } from "./connectView";
 import { usePageContextMenu } from "./contextMenu";
 import { jobsBusy, subagentsBusy } from "./activity";
+import { subagentRowFace } from "./subagentRow";
 import { LocaleContext, TextsContext, dictionaryFor, normalizeLocale, resolveText, useTexts } from "./texts";
 import type { SubagentView } from "../shared/chat";
 
@@ -180,21 +181,12 @@ function BrandMark() {
   );
 }
 
-/** 官方目录行的状态点色调：在跑 = 运行色，不在跑 = 已完成色（原面板的同一口径）。 */
-function subagentTone(activity: SubagentView["activity"]): string {
-  return activity === "running" ? "dot-running" : "dot-ok";
-}
-
-/** 目录行右侧的副文字：知道驻留状态就报状态，不知道就报生命周期模式。 */
-function subagentRowSub(entry: SubagentView, texts: ReturnType<typeof useTexts>): string {
-  if (entry.activity === "running") return texts.jobRunning;
-  if (entry.activity === "inactive") return texts.subagentCompleted;
-  return entry.mode === "one-shot" ? texts.subagentOneShot : texts.subagentContinuable;
-}
-
 /**
  * 目录树里的一行（官方 `CatalogRows` 的行结构：状态点列 + 标题/副文两行 + 右侧箭头）。
  * 点行进入该子代理；当前所在的那一行标题加粗、不可再点（与官方 `aria-current` 同义）。
+ *
+ * 状态点与副文字都来自 `subagentRowFace`（状态表与三条纪律在那个模块的文件头）：
+ * **点恒画**——一次性子代理从前整行没有点，用户分不出「生成中」与「已完成」。
  */
 function SubagentCatalogRow({
   entry,
@@ -206,6 +198,7 @@ function SubagentCatalogRow({
   onOpen: (id: string) => void;
 }) {
   const texts = useTexts();
+  const face = subagentRowFace(entry);
   return (
     <button
       className={`subagent-row${current ? " is-current" : ""}`}
@@ -214,14 +207,13 @@ function SubagentCatalogRow({
       disabled={current || undefined}
       onClick={() => onOpen(entry.id)}
     >
-      {/* 状态点**独享一格**（格内居中）：没有驻留证据时不画点，但保留同一列宽，
-          让各行标题对齐（官方每行保留同一状态列的口径一致）。 */}
+      {/* 状态点**独享一格**（格内居中）：色调由显示状态决定，只有运行中才有呼吸动画 */}
       <span className="subagent-row-state">
-        {entry.activity ? <span className={`dot ${subagentTone(entry.activity)}`} /> : null}
+        <span className={`dot ${face.tone}`} />
       </span>
       <span className="subagent-row-content">
         <span className="subagent-row-label">{entry.label}</span>
-        <span className="subagent-row-sub">{subagentRowSub(entry, texts)}</span>
+        <span className="subagent-row-sub">{texts[face.key]}</span>
       </span>
       <span className="subagent-row-arrow" aria-hidden>
         <IconChevronRight size={12} />

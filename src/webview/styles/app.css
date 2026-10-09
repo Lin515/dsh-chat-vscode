@@ -2292,6 +2292,15 @@ button.header-title:hover {
   background: var(--success);
 }
 
+/* 「静止且没有新内容」的状态点：子代理目录里**已读的一次性**那一档
+   （用户 2026-10-10 口径：一次性代理已完成已读后变为「一次性」，圆点为灰色）。
+   取 deemphasized 的 --muted 而不是 --description：它与「不可用/已收尾」的既有灰同一个
+   语义层，而 .dot-ok / .dot-running 是**有活动含义**的两色，混用会让灰看起来也像结论。
+   刻意不带呼吸动画（同 .dot-stopped 的理由）：它已经不动了，还在呼吸就与「运行中」分不开。 */
+.dot-muted {
+  background: var(--muted);
+}
+
 .dot-error {
   background: var(--error);
 }

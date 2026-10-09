@@ -404,9 +404,14 @@ export const MESSAGES = {
   },
   subagentOneShot: { zh: "一次性", en: "one-shot" },
   subagentContinuable: { zh: "可继续", en: "continuable" },
-  // 目录里 `activity: 'inactive'` 的那一条（用户 2026-09-19 口径）：**已完成**，
-  // 不是「未运行」。子代理一旦列在目录里就必然领过初始任务（one-shot 与
-  // continuable 都是带着 prompt 建出来的），所以「现在不在跑」= 跑完了。
+  // 目录里 `activity: 'running'` 的那一条。**不复用后台任务的 `jobRunning`**（「运行中」）：
+  // 用户对子代理这一行的口径是「生成中」（见 webview/subagentRow.ts 的状态表），两个界面
+  // 说的不是同一件事（任务在跑 vs 子代理在生成），共用一条文案就改不动其中一边。
+  subagentRunning: { zh: "生成中", en: "running" },
+  // 目录里 `activity: 'inactive'` 且**用户还没看过结果**的那一条：读作**已完成**
+  // （不是「未运行」）。子代理一旦列在目录里就必然领过初始任务（one-shot 与
+  // continuable 都是带着 prompt 建出来的），所以「现在不在跑」有两种含义，由
+  // 「已读」这一位分开：没看过是「已完成」，看过了才是模式名（可继续 / 一次性）。
   subagentCompleted: { zh: "已完成", en: "completed" },
   subagentNotFound: {
     zh: "目录里没有这个子代理，无法进入",

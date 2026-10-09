@@ -98,6 +98,7 @@
 - `blankSessionReuse.test.ts` — 「空态必有壳、首条消息发给谁」：`reusableBlank` 的本地 blank 位（不许把已经说过话的会话当空壳接回来）、两个窗口共用一条壳、空壳上选的模型留得住。
 - `subagentPanel.test.ts` — 子代理导航与会话级切换（入口在标题右侧、进子代理 = 切会话）。
 - `subagentSwitch.test.ts` — 子代理页切到兄弟的行为级回归（下拉里同级兄弟必须可见）。
+- `subagentRowState.test.ts` — 子代理目录行的显示状态（生成中 / 已完成 / 可继续 / 一次性 + 状态点色调）：驻留状态的到达顺序、进出子代理页、已读位与界面口径。
 - `activity.test.ts` — 顶栏子代理 / 后台任务入口「有东西在跑」判据（只认活的那份数据）。
 - `occupancy.test.ts` — 上下文占用环：常驻显示、每轮刷新、口径唯一。
 - `changesCard.test.ts` — 改动文件卡片三段链路（`workspace/changes` 事件 → `/api/changes.summary` → 渲染）。
@@ -201,7 +202,7 @@
 - [sessionLog.ts](<sessionLog.ts>) — 会话日志解码库；字节入口消费同一快照。旧宽松入口保留兼容；夹具生成显式使用严格入口，验证完整 zstd 帧／原生解压与校验和、全帧拼接后的 fatal UTF-8、对象 JSONL。完整末行无需换行；内部完整不认证历史来源。
 - [trajectoryProbeFacts.ts](<trajectoryProbeFacts.ts>) — 两条轨迹统计入口与离线测试共用的内容块抽取、JSON 形状与对拍累计器；无文件或网络访问，调用方负责输出和退出。
 - `renderOrderProbe.ts` — 事件顺序 vs 渲染顺序并排打印（段排序问题现场工具）。
-- `vscodeTestStub.ts` — `vscode` API 的离线 stub（esbuild alias，供 `subagentSwitch.test.ts` 驱动真 `ChatController`）。
+- `vscodeTestStub.ts` — `vscode` API 的离线 stub（esbuild alias，供 `subagentSwitch.test.ts` / `subagentRowState.test.ts` 驱动真 `ChatController`）。
 
 ### S02 夹具工具链（离线；提取 CLI 只在显式调用时运行）
 

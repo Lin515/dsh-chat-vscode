@@ -155,6 +155,7 @@ export function subagentFromCatalogEvent(value: unknown): SubagentView | undefin
  * 三种来源（durable 事件 / 投影 / RPC）都走这里，区别只在 activity：
  * 同 id 时更新 `label`/`mode` 并**保留已知的 `activity`**（新来源没带状态时不能把
  * 已知结论抹成「不知道」）；新 id 追加到末尾，顺序就是发现顺序。
+ * `unread`（宿主账本上的「用户已读」位）同一条纪律。
  *
  * 为什么不是整表替换：子代理会话只增不删，而三种来源的**完整度不同**——进程外
  * provider 不写 `subagent/catalog`，投影里就没有它们；拿投影整表替换会把 RPC 刚拿到的
@@ -171,8 +172,25 @@ export function upsertSubagent(entries: readonly SubagentView[], entry: Subagent
     ...(entry.activity === undefined && previous.activity !== undefined
       ? { activity: previous.activity }
       : {}),
+    ...(entry.unread === undefined && previous.unread !== undefined ? { unread: previous.unread } : {}),
   };
   return next;
+}
+
+/**
+ * 两条目录行在**界面上**是否等价（判据是 `upsertSubagent` 合并之后的生效值）。
+ *
+ * 不能逐字段直接比：新来源没带的 `activity` / `unread` 会被 `upsertSubagent` 用旧值
+ * 补齐，直接比会得出「有变化」——于是同一条 `subagent/catalog` 每次重放（重连、
+ * 加载更早的历史）都白推一帧、白记一行日志（见 `controller.mergeSubagentEntries`）。
+ */
+export function sameSubagentRow(previous: SubagentView, next: SubagentView): boolean {
+  return (
+    previous.label === next.label &&
+    previous.mode === next.mode &&
+    (next.activity ?? previous.activity) === previous.activity &&
+    (next.unread ?? previous.unread) === previous.unread
+  );
 }
 
 /**
@@ -181,6 +199,10 @@ export function upsertSubagent(entries: readonly SubagentView[], entry: Subagent
  * 与 `upsertSubagent` 分开是**有意的**：状态是**就地覆盖**的一条，不碰 label/mode；
  * 找不到这个 id 就原样返回（那说明它不是本会话已注册的子代理，不动手）。
  * 官方同款见 `dsh-api-session-controller` 客户端的 `updateCatalogActivity`。
+ *
+ * 返回 `changed: false` **不等于这条状态被丢掉了**：调用方（`controller`）在这之前
+ * 已经把它记进宿主账本 `subagentRunning`，目录行稍后登记时由那里回填——所以「状态
+ * 先到、目录后到」也不会永久丢状态（见 `controller.mergeSubagentEntries`）。
  */
 export function withSubagentActivity(
   entries: readonly SubagentView[],
@@ -192,6 +214,28 @@ export function withSubagentActivity(
   if (index < 0 || entries[index]!.activity === activity) return { entries: [...entries], changed: false };
   const next = entries.slice();
   next[index] = { ...entries[index]!, activity };
+  return { entries: next, changed: true };
+}
+
+/**
+ * 一条子代理的「用户已读」变化（宿主账本 `unreadSessionIds`）→ 新的列表。
+ *
+ * 与 `withSubagentActivity` 同形：就地覆盖一条、不碰 label/mode，找不到这个 id 就
+ * 原样返回（登记时另有回填，见 `controller.decorateSubagent`）。
+ *
+ * 为什么要单独一条：`unread` 不像 `running` 那样有别的帧顺带带着它——目录的三条来源
+ * （事件 / 投影 / RPC）都没有这一位，不看它的话界面上那句「已完成」永远不会变成
+ * 「可继续 / 一次性」，直到下一次目录刷新。
+ */
+export function withSubagentUnread(
+  entries: readonly SubagentView[],
+  childSessionId: string,
+  unread: boolean,
+): { entries: SubagentView[]; changed: boolean } {
+  const index = entries.findIndex((item) => item.id === childSessionId);
+  if (index < 0 || entries[index]!.unread === unread) return { entries: [...entries], changed: false };
+  const next = entries.slice();
+  next[index] = { ...entries[index]!, unread };
   return { entries: next, changed: true };
 }
 

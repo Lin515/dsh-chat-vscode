@@ -216,6 +216,7 @@ const entries = {
   "build/pending-echo.test.mjs": "scripts/pendingEcho.test.ts",
   "build/dsh-contract.test.mjs": "scripts/dshContract.test.ts",
   "build/subagent-switch.test.mjs": "scripts/subagentSwitch.test.ts",
+  "build/subagent-row-state.test.mjs": "scripts/subagentRowState.test.ts",
   "build/unread-marker.test.mjs": "scripts/unreadMarker.test.ts",
   "build/empty-composer.test.mjs": "scripts/emptyComposer.test.ts",
   "build/blank-session-reuse.test.mjs": "scripts/blankSessionReuse.test.ts",

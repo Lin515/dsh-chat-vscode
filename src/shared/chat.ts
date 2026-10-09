@@ -834,9 +834,25 @@ export interface SubagentView {
    *
    * 三个来源都没有这个字段（0.1.7-alpha.1 之前由 `subagents/list` RPC 给，
    * 之后由 `api-session/status` 中继补）：刷新时保留已知值、未知就**不下发**——
-   * 界面据此决定画不画状态点，而不是猜一个「正在运行」。
+   * 界面据此渲染「生成中」还是静止档，而不是猜一个「正在运行」。
+   *
+   * 宿主侧的唯一账本是 `controller.subagentRunning`：`session/list` 的原始行与
+   * `api-session/status` 中继都往里写，目录行**登记时**再由它回填——两条路径的
+   * 到达顺序因此不再决定成败（见 `mergeSubagentEntries`）。
    */
   activity?: "running" | "inactive";
+  /**
+   * 用户**还没读过**这条子代理的结果。
+   *
+   * 与 `activity` 同一条纪律：目录的三个来源都给不出这一位，它是宿主账本
+   * （`controller.unreadSessionIds`，判据与「生成完毕未读」完全同源：离开时它正在
+   * 生成、收尾时记未读，打开它的会话即清）的现算值，登记时回填、变化时重发。
+   *
+   * 界面用它把「服务端已收尾、结果还没被看过」与「看过之后的静止态」分开
+   * （见 `webview/subagentRow.ts`）：前者读作**已完成**，后者读作模式名
+   * （可继续 / 一次性）。
+   */
+  unread?: boolean;
 }
 
 /**

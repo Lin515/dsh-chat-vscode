@@ -87,7 +87,7 @@ import {
   type WireChatState,
 } from "./sessionView";
 import { queueItemsFromInbox, queueItemsFromWire, type QueuedItemEntry, type QueueOrigin } from "./queueView";
-import { modelSelectionFromProjection, subagentCatalogFromProjection, subagentsFromList, upsertSubagent, withSubagentActivity, agentPresetsFromList, permissionCatalogHasAuto } from "./projections";
+import { modelSelectionFromProjection, subagentCatalogFromProjection, subagentsFromList, sameSubagentRow, upsertSubagent, withSubagentActivity, withSubagentUnread, agentPresetsFromList, permissionCatalogHasAuto } from "./projections";
 import type { ModelSelectionDecoded, SubagentCatalogEntryView } from "./projections";
 import {
   ingestControlBaseline,
@@ -777,11 +777,19 @@ export class ChatController implements vscode.Disposable {
    */
   private readonly subagentSessionIds = new Set<string>();
   /**
-   * 子代理会话的**驻留状态**（`session/list` 原始行的 `running`，随每次刷新覆盖）。
+   * 子代理会话的**驻留状态**账本（两个写入口，读入口只有一个）。
    *
    * 子代理不进界面列表（`sessionList.ts` 滤掉），但「恢复到子代理页」时域的 running
    * 打底需要它——那是唯一不依赖父会话域开着的来源（`api-session/status` 中继只在
    * 状态变化时发，重载窗口前的最后一次变化早过去了）。
+   *
+   * 写入口两条：`refreshSessions`（`session/list` 原始行的 `running`，服务端的权威完整
+   * 视图）与 `syncSubagentActivity`（`api-session/status` 中继，实时但只报变化）。
+   * 读入口只有 `knownSubagentActivity` 一处：目录行**登记时**回填 `activity`——
+   * 两条路径的到达顺序因此不再决定成败（见 `decorateSubagent`）。
+   *
+   * 清理路径：`refreshSessions` 把被认成普通会话的 id 从账本上退掉，归档 / 删除会话
+   * 也各退一条（那张表不能只增不删）。
    */
   private readonly subagentRunning = new Map<string, boolean>();
   /**
@@ -1501,12 +1509,15 @@ export class ChatController implements vscode.Disposable {
       }
       return entries;
     }
-    return upsertSubagent(entries, {
-      id: scope.sessionId,
-      label: this.subagentDisplayName(scope) ?? scope.sessionId,
-      mode: scope.subagentAddress.mode,
-      activity: scope.running ? "running" : "inactive",
-    });
+    return upsertSubagent(
+      entries,
+      this.decorateSubagent({
+        id: scope.sessionId,
+        label: this.subagentDisplayName(scope) ?? scope.sessionId,
+        mode: scope.subagentAddress.mode,
+        activity: scope.running ? "running" : "inactive",
+      }),
+    );
   }
 
   /**
@@ -1541,7 +1552,9 @@ export class ChatController implements vscode.Disposable {
       const merged = [
         ...entries.map((entry) => {
           const local = known.find((item) => item.id === entry.id);
-          return local?.activity ? { ...entry, activity: local.activity } : entry;
+          // 本地已知的驻留状态优先；投影没有的两项（`activity` / `unread`）由
+          // `decorateSubagent` 按宿主账本补齐
+          return this.decorateSubagent(local?.activity ? { ...entry, activity: local.activity } : entry);
         }),
         ...known.filter((item) => !entries.some((entry) => entry.id === item.id)),
       ];
@@ -2036,6 +2049,13 @@ export class ChatController implements vscode.Disposable {
    */
   private destroyScope(scope: SessionScope): void {
     this.scopes.delete(scope.sessionId);
+    // 子代理域回收 = 用户离开这条子代理：把**这一份域上最新的**驻留状态记进宿主账本再丢。
+    // 域上的值比外部那两本账都新——发送即乐观置位（见 `send`）与 durable 轮次边界
+    // （见 `deliver`）都写在它上面，而用户报障的流程正是「进子代理页看一眼再回主会话」：
+    // 离开这一刻不记，父会话稍后重建目录时那一行就只剩「不知道」，于是显示成「可继续」。
+    // 记进去的旧结论照样由两条权威路径覆盖（`syncSubagentActivity` 的状态中继、
+    // `refreshSessions` 的会话列表），所以下次进它、或者任何一条权威帧到，都会纠正。
+    if (scope.subagentAddress) this.subagentRunning.set(scope.sessionId, scope.running);
     scope.followHandle?.cancel();
     scope.followHandle = undefined;
     scope.jobsHandle?.cancel();
@@ -3230,10 +3250,16 @@ export class ChatController implements vscode.Disposable {
         if (item.origin === "subagent") {
           this.subagentSessionIds.add(item.sessionId);
           // 子代理会话不在界面列表里，但它的 running 服务端照样给：
-          // 恢复到子代理页时域要拿它打底（见 ensureScope 的 running 打底注释）
+          // 恢复到子代理页时域要拿它打底（见 ensureScope 的 running 打底注释），
+          // 目录行登记时也要靠它回填 activity（见 decorateSubagent）
           if (typeof item.running === "boolean") {
             this.subagentRunning.set(item.sessionId, item.running);
           }
+        } else {
+          // 状态账本的**清理路径**：这张表还收 `api-session/status` 中继那条路
+          // （它不区分是不是子代理），而普通会话的状态这里用不着——列表这一份是权威的
+          // 完整视图，凡是被它认成普通会话的 id 就从账本上退掉，别只增不删。
+          this.subagentRunning.delete(item.sessionId);
         }
       }
       const folder = vscode.workspace.workspaceFolders?.[0];
@@ -3372,10 +3398,24 @@ export class ChatController implements vscode.Disposable {
     });
   }
 
-  /** 会话列表某一行的 running（找不到那一行就不管：它不在本窗口的可见集合里）。 */
+  /**
+   * 一条会话「在不在跑」的落地：会话列表那一行的 running + **未读结算**。
+   *
+   * 不在本窗口可见列表里的会话（**子代理会话**、别的工作区的会话）没有行可写，但未读
+   * 结算必须照做——子代理目录行上的「已完成 ↔ 已读」全靠这一条：它既不在
+   * `visibleSessionRows` 里（`sessionList.ts` 把 `origin === 'subagent'` 滤掉），也不在
+   * `emitSessionLists` 里，从前被这一行的早退挡在门外，于是「离开正在生成的子代理、
+   * 它收尾时记未读」永远不发生（用户 2026-10-10 报的「一次性行分不出已完成」）。
+   */
   private setSessionRowRunning(sessionId: string, running: boolean): void {
     const row = this.sessions.find((item) => item.id === sessionId);
-    if (!row || row.running === running) return;
+    if (!row) {
+      // 行不在可见列表里：只做未读结算（`settleRunningChange` 自己按「离开标记 + 没有
+      // 窗口看着它」判断，重复调用是幂等的）
+      this.settleRunningChange(sessionId, running);
+      return;
+    }
+    if (row.running === running) return;
     this.sessions = this.sessions.map((item) => (item.id === sessionId ? { ...item, running } : item));
     // 服务端说它在跑 ⇒ 这条会话一定不是空壳了（`blank` 位在 `turn/start` 翻假，但那条
     // 帧要比这里的判断晚一整轮）。这条证据比「本窗口发过消息」宽：别的窗口 / dsh web 在
@@ -3453,6 +3493,8 @@ export class ChatController implements vscode.Disposable {
     // 只写这一条自己的键：整份数组在多窗口下会互相覆写（见 `unreadStore.ts`）
     writeUnreadSession(this.state, sessionId, unread);
     this.emitSessionLists();
+    // 子代理目录行上也有这一位（已完成 ↔ 可继续 / 一次性）：同一条权威值，两个界面
+    this.syncSubagentUnread(sessionId, unread);
   }
 
   /** 真正展示给界面的两个列表（所有窗口共享同一份会话列表）。 */
@@ -3505,6 +3547,7 @@ export class ChatController implements vscode.Disposable {
       // 的蓝**（只有亲手打开它才会清，而归档会话通常不会再打开）。同上，离开标记一起作废。
       this.setSessionUnread(sessionId, false);
       this.leftGeneratingSessionIds.delete(sessionId);
+      this.subagentRunning.delete(sessionId);
       this.emitSessionLists();
       setTimeout(() => void this.refreshSessions(), 500);
     } catch (error) {
@@ -3570,6 +3613,8 @@ export class ChatController implements vscode.Disposable {
     // 列表都不进），那条旗标就成了永远不会被清掉的死重量（真机 globalState 里见过实例）。
     this.setSessionUnread(sessionId, false);
     this.leftGeneratingSessionIds.delete(sessionId);
+    // 状态账本同理：这条会话不可能再出现在任何目录里
+    this.subagentRunning.delete(sessionId);
     this.emitSessionLists();
     if (!removed) {
       this.log(
@@ -5075,16 +5120,45 @@ export class ChatController implements vscode.Disposable {
       // catalog 的三个来源（事件 / RPC / 投影）都汇到这里：顺带记进 @ 提及候选的
       // 过滤集合（见 `subagentSessionIds`），与「已在册」无关、每次都要记
       this.subagentSessionIds.add(entry.id);
-      const existing = next.find((item) => item.id === entry.id);
-      // 同 id 且 label/mode 都没变就是「已在册」：`upsertSubagent` 只更新这两项
-      // （`activity` 由它自己保留），所以这里可以直接跳过
-      if (existing && existing.label === entry.label && existing.mode === entry.mode) continue;
-      next = upsertSubagent(next, entry);
+      // 目录来源给不出驻留状态与「用户已读」，两项都由宿主账本补齐（见 `decorateSubagent`）
+      const known = this.decorateSubagent(entry);
+      const existing = next.find((item) => item.id === known.id);
+      // 等价判据按**合并之后的生效值**（`sameSubagentRow`）：同一条 durable 事件重放时
+      // 不能白推一帧，也不能白记一行日志
+      if (existing && sameSubagentRow(existing, known)) continue;
+      next = upsertSubagent(next, known);
       changed = true;
     }
     if (!changed) return false;
     scope.subagentEntries = next;
     return true;
+  }
+
+  /**
+   * 目录行 → 补齐**只有宿主才知道**的两个字段：驻留状态与「用户已读」。
+   *
+   * 这两项都不在目录的来源里（`subagentCatalog` 投影与 `subagent/catalog` 事件都没有
+   * 它们，`subagents/list` 只在新版之前的服务端上存在），所以宿主各留了一本账：
+   *
+   * - `subagentRunning`：`session/list` 的原始行与 `api-session/status` 中继都往里写；
+   * - `unreadSessionIds`：既有的「生成完毕未读」账本（离开正在生成的会话才记，打开即清）。
+   *
+   * **在登记时回填是这条链的关键**：状态可能比注册先到（`syncSubagentActivity` 在目录里
+   * 找不到那一行，什么也改不了），若不在登记时补上，那次更新就永久丢了——用户报的
+   * 「明明还在生成却显示可继续」正是这一条（诊断与回归见 `scripts/subagentRowState.test.ts`）。
+   *
+   * 行自己带的 `activity` 优先（它可能来自更权威的一次 RPC）；账本读不到就**不下发**，
+   * 不猜「正在跑」（见 `SubagentView.activity` 的注释）。
+   */
+  private decorateSubagent(entry: SubagentView): SubagentView {
+    const activity = entry.activity ?? this.knownSubagentActivity(entry.id);
+    return { ...entry, ...(activity ? { activity } : {}), unread: this.unreadSessionIds.has(entry.id) };
+  }
+
+  /** 宿主账本上「这条子代理此刻在不在跑」；没有结论时返回 `undefined`（不知道 ≠ 没在跑）。 */
+  private knownSubagentActivity(childSessionId: string): SubagentView["activity"] {
+    const running = this.subagentRunning.get(childSessionId);
+    return running === undefined ? undefined : running ? "running" : "inactive";
   }
 
   /**
@@ -5101,19 +5175,52 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
-   * 子代理驻留状态（`api-session/status` 中继）→ 就地改一条的 `activity`。
+   * 子代理驻留状态（`api-session/status` 中继）→ 记进账本 + 就地改一条的 `activity`。
    *
    * 官方同款（`dsh-api-session-controller` 客户端的 `updateCatalogActivity`）：这条中继
    * 对**每个 agent** 都发，子代理也在内，所以状态点与头部按钮的呼吸可以在**不点开面板**
    * 时就是对的。子代理没有本地日志证据，所以不走 `acceptSessionStatus` 那套「有肯定证据
    * 就拒绝不在跑」的判断——那条规则是给窗口绑定的会话用的。
+   *
+   * **账本先落**（这一步不能省）：中继可能比目录行先到（父域刚重建、目录靠 follow 流重放
+   * 才回来），那一刻 `withSubagentActivity` 找不到 id、什么都不改——账本是那次更新的唯一
+   * 去处，目录行登记时由 `decorateSubagent` 从它回填。
    */
   private syncSubagentActivity(childSessionId: string, running: boolean): void {
+    this.subagentRunning.set(childSessionId, running);
     for (const scope of this.scopes.values()) {
       const { entries, changed } = withSubagentActivity(scope.subagentEntries, childSessionId, running);
       if (!changed) continue;
       scope.subagentEntries = entries;
       this.deliverSubagentList(scope);
+    }
+  }
+
+  /**
+   * 子代理行的「用户已读」变了 → 就地覆盖已下发的目录行并重发。
+   *
+   * 这一位没有别的帧会顺带带上（目录的三条来源都没有它），所以不在这里补一发，界面就会
+   * 停在旧文案上（已完成 ↔ 可继续 / 一次性）直到下一次目录刷新。
+   *
+   * 两处都要盖：**父会话域**的目录（普通会话的清单）与子代理域手里那份**父目录快照**
+   * （`subagentSiblings`——父域已被回收时，切换下拉读的就是它）。
+   */
+  private syncSubagentUnread(childSessionId: string, unread: boolean): void {
+    for (const scope of this.scopes.values()) {
+      const own = withSubagentUnread(scope.subagentEntries, childSessionId, unread);
+      if (own.changed) {
+        scope.subagentEntries = own.entries;
+        // 唯一的扇出点：连正在看它子代理的窗口一起通知（见 `deliverSubagentList`）
+        this.deliverSubagentList(scope);
+        continue;
+      }
+      const siblings = withSubagentUnread(scope.subagentSiblings, childSessionId, unread);
+      if (!siblings.changed) continue;
+      scope.subagentSiblings = siblings.entries;
+      this.deliver(scope.sessionId, {
+        type: "patch",
+        patch: sessionPatch(this.sessionSource(scope), ["subagent"]),
+      });
     }
   }
 
