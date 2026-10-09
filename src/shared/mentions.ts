@@ -92,6 +92,48 @@ export function formatFileMentionWithLines(
   return `${mention.slice(0, -1)}${range}"`;
 }
 
+/** 会话引用 URI 的 scheme（官方 `SESSION_REFERENCE_SCHEME`）。 */
+const SESSION_SCHEME = "dsh-session:";
+
+/**
+ * 正文里**对话引用 token** 的匹配模式（**唯一**一份，每次都新造一个实例）。
+ *
+ * 两种形态各一支，与官方 `parseSessionReferenceText` 逐字一致：
+ * 1. `@[标题](dsh-session:…)`——`@` 列表里选中一条历史对话时插进正文的那条规范 token
+ *    （见 `SessionRefView.mention`）；标题里的 `\[` / `\\` 是转义；
+ * 2. 裸 `dsh-session:…`——用户手写 / 从别处粘进来的形态。
+ *
+ * 为什么要一个工厂而不是导出一个常量：`g` 正则带 `lastIndex` 状态，两处调用
+ * （整篇替换的 {@link displaySessionMentions} 与按下标逐段扫描的
+ * `webview/mentionLinks.ts`）共用同一个实例会互相踩游标。
+ */
+export function sessionMentionPattern(): RegExp {
+  return /@\[((?:\\.|[^\\\]])*)\]\((dsh-session:[^\s)]*)\)|(dsh-session:[A-Za-z0-9_-]+)/gu;
+}
+
+/**
+ * 把 base64url 负载解成**会话 id**（官方 `decodeSessionReferenceUri` 的宽松版）。
+ *
+ * 官方在解码后还会重新编码比对一次「是不是规范形态」；这里不做那一步——它防的是
+ * 服务端侧的引用伪造，而界面只拿这个 id 去打开一个标签页。**负载形状与 JSON 类型
+ * 仍然要判**：判不出就是 undefined，调用方按「这不是一条会话引用」处理，不猜。
+ *
+ * `atob` 在 Node 16+ 与 webview 里都有，所以断言环境跑的就是 webview 那条路。
+ */
+export function decodeSessionReferenceUri(uri: string): string | undefined {
+  if (!uri.startsWith(SESSION_SCHEME)) return undefined;
+  const payload = uri.slice(SESSION_SCHEME.length);
+  if (!/^[A-Za-z0-9_-]+$/u.test(payload)) return undefined;
+  try {
+    const binary = atob(payload.replaceAll("-", "+").replaceAll("_", "/"));
+    const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+    const parsed: unknown = JSON.parse(new TextDecoder().decode(bytes));
+    return typeof parsed === "string" && parsed ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * 把正文里的**对话引用 mention** 还原成可读的 `@标题`（只用于**显示**）。
  *
@@ -102,16 +144,16 @@ export function formatFileMentionWithLines(
  *
  * 但**落盘的 durable 事件里仍是原始 token**（`prepareDirectMessages` 只产出给模型
  * 用的那一份副本），所以聊天转写直接渲染正文就会显示一长串
- * `@[标题](dsh-session:eyJ…)`。这里按官方同一个正则折成 `@标题`——
+ * `@[标题](dsh-session:eyJ…)`。这里按 {@link sessionMentionPattern} 折成 `@标题`——
  * 只认严格形态，普通文本里的 `@[...]` 一个字节都不动。
  */
 export function displaySessionMentions(text: string): string {
   return text.replace(
-    /@\[((?:\\.|[^\\\]])*)\]\((dsh-session:[^\s)]*)\)|(dsh-session:[A-Za-z0-9_-]+)/gu,
+    sessionMentionPattern(),
     (_match, rawLabel: string | undefined, markdownUri: string | undefined, bareUri: string | undefined) => {
       const uri = markdownUri ?? bareUri;
       if (uri === undefined) return _match;
-      const label = rawLabel === undefined ? uri.slice("dsh-session:".length) : rawLabel.replace(/\\(.)/gu, "$1");
+      const label = rawLabel === undefined ? uri.slice(SESSION_SCHEME.length) : rawLabel.replace(/\\(.)/gu, "$1");
       return `@${label}`;
     },
   );

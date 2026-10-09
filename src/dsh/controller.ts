@@ -6135,6 +6135,14 @@ export class ChatController implements vscode.Disposable {
         break;
       }
 
+      case "revealPath": {
+        // 目录引用（用户消息里的 `@目录`）：解析口径与 openFile 完全一致
+        // （引用上原样拼写 + 会话工作目录），只是动作换成 VS Code 自己的「在资源管理器
+        // 中展开」。不复用 openFile——那条路是开文件，拿目录去开会报「文件不存在」。
+        await this.revealPath(viewId, message.path);
+        break;
+      }
+
       case "openExternal": {
         await this.openExternal(message.url, viewId);
         break;
@@ -6305,8 +6313,12 @@ export class ChatController implements vscode.Disposable {
 
       case "openInEditor": {
         // 「在编辑器中打开」：把这个窗口当前的会话带进新编辑器窗口；
-        // 未绑会话（空态）就不带，新窗口从空态起
-        const sessionForEditor = this.viewSessions.get(viewId);
+        // 未绑会话（空态）就不带，新窗口从空态起。
+        //
+        // 帧上带 `sessionId` 时开的是**那一条**（用户消息里的 `@会话` 引用走这条：
+        // 用户 2026-10-10 口径是「新开一个会话标签打开该会话」，而不是把当前窗口切过去
+        // ——后者是 `openSession` 的行为，点引用就换掉当前窗口里的对话会很唐突）。
+        const sessionForEditor = message.sessionId ?? this.viewSessions.get(viewId);
         this.log(`[openInEditor] 窗口=${viewId} 会话=${sessionForEditor ?? "（空态）"}`);
         await vscode.commands.executeCommand("dshChat.openInEditor", sessionForEditor);
         break;
@@ -7756,6 +7768,41 @@ export class ChatController implements vscode.Disposable {
       });
     } catch (error) {
       this.log(`[open] 打开失败 ${path}：${this.describeError(error)}`);
+    }
+  }
+
+  /**
+   * 「在资源管理器中展开这个目录」（用户消息里的 `@目录` 引用点开时走这条）。
+   *
+   * 与 `openFile` 同一口径的两件事：`path` 是引用上的**原样拼写**（可能相对会话工作
+   * 目录），先经 `resolveChipPath` 用会话 cwd 解析成绝对路径再动手；解析不了（相对
+   * 拼写 + 拿不到会话工作目录）时**明确告知**用户，不静默（见 `openFile` 的同段注释）。
+   *
+   * **目录不在那儿必须说一声**：VS Code 的 `revealInExplorer` 对不存在的路径只是什么
+   * 都不做，静默就退化成「点了没反应」——本文件反复要避免的那种失败。措辞走界面词典的
+   * `folderNotFound`，并带上**解析出来的绝对路径**（相对拼写对用户没有意义，他要的是
+   * 宿主到底去哪儿找了）。
+   *
+   * 不复用 `openFile`：那条路是「打开文件」，拿目录去开会把目录当文件读，报的是
+   * 「文件不存在」。这里只借它的路径解析口径，动作是 VS Code 自己的命令。
+   */
+  private async revealPath(viewId: string, path: string): Promise<void> {
+    const scope = this.scopeOfView(viewId);
+    const resolved = resolveChipPath(scope ? this.cwdOf(scope) : undefined, path);
+    if (!resolved) {
+      this.log(`[reveal] 路径解析不了（相对且缺会话工作目录），放弃展开：${path}`);
+      this.emitToView(viewId, { type: "toast", level: "warn", text: "@chipPathUnresolved" });
+      return;
+    }
+    if ((await this.fileExistence(vscode.Uri.file(resolved))) === "absent") {
+      this.log(`[reveal] 目录不存在，放弃展开：${resolved}`);
+      this.emitToView(viewId, { type: "toast", level: "warn", text: `@folderNotFound:${resolved}` });
+      return;
+    }
+    try {
+      await vscode.commands.executeCommand("revealInExplorer", vscode.Uri.file(resolved));
+    } catch (error) {
+      this.log(`[reveal] 展开失败 ${path}：${this.describeError(error)}`);
     }
   }
 

@@ -684,8 +684,8 @@ console.log("styles: 目标条默认一行截断 + 展开切全文 ✓");
     "用户消息必须有操作行（否则复制不了自己发过的内容）",
   );
   assert.ok(
-    /post\(\{ type: "copy", text: message\.text \?\? "" \}\)/.test(userBranch),
-    "用户消息的复制按钮要把正文发出去（text 可空，不能是 undefined）",
+    /post\(\{ type: "copy", text: readableMentionText\(message\.text \?\? ""\) \}\)/.test(userBranch),
+    "用户消息的复制按钮要把**可读文本**发出去（会话引用的原始 token 折成 `@标题`，见 readableMentionText；text 可空，不能是 undefined）",
   );
   assert.ok(
     /formatClock\(message\.ts\)/.test(userBranch),

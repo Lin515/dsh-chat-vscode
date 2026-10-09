@@ -513,6 +513,28 @@ export const MESSAGES = {
   mentionDrill: { zh: "进入目录", en: "Browse folder" },
   mentionDrillKey: { zh: "Tab", en: "Tab" },
   mentionNoCwd: { zh: "（无工作目录）", en: "(no cwd)" },
+  /**
+   * 正文里 `@` 引用做成链接之后的三条悬停提示（`webview/mentionLinks.ts` 判种类）。
+   *
+   * 三种引用点开的行为不同（文件开文件、目录展开资源管理器、会话开新标签页），
+   * 提示必须各说各的——合并成「打开引用」用户点之前不知道会发生什么。
+   */
+  mentionOpenFile: { zh: "打开这个文件", en: "Open this file" },
+  mentionRevealFolder: { zh: "在资源管理器中展开这个目录", en: "Reveal this folder in the Explorer" },
+  mentionOpenSession: { zh: "在新标签页中打开这个会话", en: "Open this session in a new tab" },
+  /**
+   * **草稿区**的引用提示（输入框的 title）：草稿里的引用要按住 Ctrl 才点得开，
+   * 不说明的话没人会去试（正文里已发出的引用是直接可点的，不必提示）。
+   */
+  mentionClickHint: {
+    zh: "按住 Ctrl 单击可打开这个引用",
+    en: "Ctrl+click to open this reference",
+  },
+  /** 正文里点的**目录**引用找不到（`@src/` 那种；文件那条走 `fileNotFound`）。 */
+  folderNotFound: {
+    zh: (path: string) => `找不到目录：${path}`,
+    en: (path: string) => `No such folder: ${path}`,
+  },
 
   running: { zh: "深度求索中", en: "Deep diving" },
   queued: { zh: "待发送 {n} 条", en: "{n} queued" },

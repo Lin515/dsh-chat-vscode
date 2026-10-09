@@ -92,6 +92,9 @@ VS Code → 扩展 → `…` → 从 VSIX 安装 → 重载窗口。
   `@path` / `@dir/` / `@[标题](dsh-session:…)` 写进正文——这是**路径引用**，
   模型自己用 `read` 工具读，不占附件通道。目录行：点行主体是**进目录**（继续往下挑），
   点行右侧「整个目录」按钮才是引用该目录本身（键盘上是 Enter 引用、Tab 进目录）。
+- 写进正文的引用**就是链接**：`@文件` 点开文件、`@目录/` 在资源管理器里展开、
+  `@[标题](dsh-session:…)` 在新标签页打开那条会话。**已经发出的消息**直接点即可；
+  还在**输入框里**的草稿要**按住 `Ctrl`** 再点（草稿是纯文本，不按住就只是移动光标）。
 - 回形针、拖放与**粘贴**都是**附件**通道：图片按内容块发送，其余文件逐字节上传（芯片上显示进度）。
   粘贴分两截：**复制文件 / 目录后直接 `Ctrl+V`**——宿主从系统剪贴板取回真路径，于是
   **目录变成正文里的 `@目录/` 引用**（与资源管理器右键文件夹同一条路），
@@ -252,6 +255,10 @@ session in the group you are in). History, new chat, archive and delete all live
 
 **Input** — type `/` for commands and skills, `@` for files, folders and **past sessions**
 (they insert a plain `@path` / `@dir/` / session mention that the model resolves itself).
+Those references are **links**: an `@file` opens the file, `@dir/` reveals the folder in the
+Explorer, and a session mention opens that session in a new tab. References in **messages you
+already sent** are clickable directly; one still sitting in the **composer** needs **`Ctrl`**
+(held down) because the composer is plain text.
 The paperclip and drag-and-drop are the *attachment* channel: images go as content blocks,
 everything else uploads byte-by-byte with progress on the chip. `Alt+Shift+2` adds the
 selected lines as a `@path#L12-L40` reference. **Dropping files into the webview requires

@@ -792,6 +792,36 @@ button.header-title:hover {
   overflow: hidden;
 }
 
+/* 用户消息正文里的 `@` 引用链接（`Message.tsx` 的 `renderMentionText` 渲染的行内
+   按钮）：观感照抄正文里 agent 发来的链接（上面的 `.md a`——环境色、静止态不给
+   下划线、悬停才补），只是它是一枚 `<button>`，得自己把浏览器默认外观清干净。
+
+   两条硬约束：
+   1. **行内元素、零上下内边距与外边距**——气泡的折叠判定量的是 `scrollHeight`，
+      按钮一旦把行盒撑高，「5 行」的阈值就与实际行数对不上（见 `Message.tsx` 的
+      `USER_COLLAPSE_LINES`），`font: inherit` 保证字号/行高与正文完全一致；
+   2. 键盘可达：浏览器默认的按钮焦点环在这里很扎眼，换成与环境色同色的细环。 */
+.mention-link {
+  display: inline;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  color: var(--link);
+  cursor: pointer;
+}
+
+.mention-link:hover {
+  text-decoration: underline;
+}
+
+.mention-link:focus-visible {
+  outline: 1px solid var(--link);
+  outline-offset: calc(1 * var(--dp));
+  border-radius: calc(2 * var(--dp));
+}
+
 /* 「展开 / 收起」：坐在轮尾操作行里、复制按钮**右边**（用户 2026-09-14 口径）。
    它是文字按钮而不是图标——「展开」这两个字本身就是「这里还有内容」的提示，
    图标（箭头）在 14px 下看不出指的是什么。 */

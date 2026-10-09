@@ -362,6 +362,20 @@ export interface Texts {
   mentionDrillKey: string;
   /** 对话候选没有工作目录时的占位（官方 `reference.candidate.noCwd`）。 */
   mentionNoCwd: string;
+  /**
+   * 正文里 `@` 引用做成链接之后的三条悬停提示（`webview/mentionLinks.ts` 判种类）。
+   *
+   * 三种引用点开的行为不同（文件开文件、目录展开资源管理器、会话开新标签页），
+   * 提示必须各说各的——合并成「打开引用」用户点之前不知道会发生什么。
+   */
+  mentionOpenFile: string;
+  mentionRevealFolder: string;
+  mentionOpenSession: string;
+  /**
+   * **草稿区**的引用提示（输入框的 title）：草稿里的引用要按住 Ctrl 才点得开，
+   * 不说明的话没人会去试（正文里已发出的引用是直接可点的，不必提示）。
+   */
+  mentionClickHint: string;
 
   running: string;
   queued: string;

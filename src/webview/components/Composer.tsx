@@ -33,6 +33,7 @@ import { CtxText, Ellipsis, Popover, Spinner, contextNumbers, formatDuration } f
 import { ApprovalCard, PlanReviewCard, QuestionCard, formatTps } from "./Rows";
 import type { PendingInteraction } from "../pendingInteraction";
 import { useComposerCompletion } from "../composerCompletion";
+import { openMentionAt } from "../mentionOpen";
 import { usePickerFocus } from "../pickerFocus";
 import { presetDisplayText } from "../presetDisplay";
 import { bottomGap, type AutoScrollPort } from "../autoScroll";
@@ -806,7 +807,18 @@ export function Composer({
             rows={1}
             value={draft}
             placeholder={state.messages.length ? texts.placeholderFollowUp : texts.placeholderFirst}
+            // 草稿里的引用要按住 Ctrl（macOS 上 Cmd）单击才打开——文本域是**纯文本**，
+            // 做不出真正的行内链接，只能按光标位置判（见 `../mentionOpen`）。
+            title={texts.mentionClickHint}
             {...completion.textareaProps}
+            // 写在摊开之后：文本域只有一个 `onClick`，这里**接着**补全那边的光标刷新
+            // 再判一次 Ctrl+单击，而不是把它顶掉（否则候选菜单不再跟着光标走）。
+            onClick={(event) => {
+              completion.textareaProps.onClick?.(event);
+              // 不按 Ctrl 时什么都不做：普通单击只管定位光标
+              if (!event.ctrlKey && !event.metaKey) return;
+              openMentionAt(event.currentTarget.value, event.currentTarget.selectionStart ?? 0);
+            }}
           />
 
           {/* 底部工具栏：显示哪些由 useToolbarFit 按实测宽度 + 优先级决定，

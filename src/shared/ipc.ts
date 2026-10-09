@@ -341,6 +341,18 @@ export type WebviewToHost =
    */
   | { type: "openFile"; path: string; diff?: boolean; line?: number; link?: true }
   /**
+   * 在**资源管理器中展开**一个目录（用户消息里 `@目录` 引用点开时走这条）。
+   *
+   * 与 `openFile` 同一口径：`path` 是引用上的原样拼写，可能相对会话工作目录，
+   * 宿主先用 `resolveChipPath` 按会话 cwd 解析成绝对路径再动手。目录不在那儿时
+   * **明确告知**（`@folderNotFound:<绝对路径>`）——VS Code 的 `revealInExplorer`
+   * 对不存在的路径什么都不做，静默就等于「点了没反应」（见 controller.revealPath）。
+   *
+   * 不复用 `openFile`：那条路是「打开文件」，拿目录去开会把目录当文件读，报的是
+   * 文件不存在。这里走的是 VS Code 自己的 `revealInExplorer` 命令。
+   */
+  | { type: "revealPath"; path: string }
+  /**
    * 用**系统默认程序**打开一条外链（正文里 `[说明](https://…)` 这类链接）。
    *
    * webview 自己没有开浏览器的能力，而让 `<a>` 自己导航会把整个聊天界面换掉。
@@ -357,8 +369,16 @@ export type WebviewToHost =
    * 宿主侧按 `seq` 做 fetch-once 缓存（见 controller 的 `loadChangesSummary`）。
    */
   | { type: "requestChanges"; sessionId: string; seq: number }
-  /** 在编辑器区打开一个独立的聊天面板。 */
-  | { type: "openInEditor" }
+  /**
+   * 在编辑器区**新开一个**聊天面板（新的标签页）。
+   *
+   * `sessionId` 缺省时新面板跟着**当前窗口**的会话（界面头部那颗「在编辑器中打开」
+   * 就是这个语义）；带上时新面板打开**那一条**会话——用户消息里的 `@会话` 引用走这条：
+   * 用户 2026-10-10 的口径是「新开一个会话标签打开该会话」，不是把当前窗口切过去
+   * （后者是 `openSession` 的行为）。宿主落到 `dshChat.openInEditor` 命令上，那条命令
+   * 经 `chatView.openPanel(sessionId)` 建面板并 `openSession` 绑上新窗口。
+   */
+  | { type: "openInEditor"; sessionId?: string }
   /** 把代码块内容插入当前编辑器。 */
   | { type: "insertText"; text: string }
   /** 复制到剪贴板（webview 里 navigator.clipboard 受限，交给宿主）。 */

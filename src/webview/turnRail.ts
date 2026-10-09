@@ -25,6 +25,7 @@
  */
 
 import type { MessageView } from "../shared/chat";
+import { readableMentionText } from "./mentionLinks";
 
 /** 横条上的一枚刻点。 */
 export interface TurnRailItem {
@@ -211,7 +212,10 @@ export function mergeTurnRailItems(
       continue;
     }
     const prompt = preview(
-      messageById.get(entry.anchorMessageId ?? "")?.text ?? "",
+      // 提问预览是**纯文本**，要先过一遍引用还原：durable 里的会话引用是原始 token
+      // （`@[标题](dsh-session:…)`），直接截断预览会变成一长串 base64
+      // （见 `mentionLinks.ts` 的 `readableMentionText`）
+      readableMentionText(messageById.get(entry.anchorMessageId ?? "")?.text ?? ""),
       PROMPT_PREVIEW_LIMIT,
     );
     const response = preview(

@@ -34,7 +34,6 @@ import {
   questionItemsFromArgs,
   questionKeyOf,
 } from "../shared/toolQuestion";
-import { displaySessionMentions } from "../shared/mentions";
 import { readRangeFromMeta, readRangeFromOutput } from "./readRange";
 import { subagentFromCatalogEvent } from "./projections";
 import { includedAttachments } from "./attachments";
@@ -1512,9 +1511,15 @@ export class SessionAdapter {
         const message = data as WireMessage;
         const kind = message?.source?.kind;
         // 对话引用（`@[标题](dsh-session:…)`）在落盘事件里是**原始 token**：服务端
-        // 只给模型那一份副本做替换（`prepareDirectMessages`），转写要自己折成
-        // 可读的 `@标题`，否则用户看到一长串带着 base64 会话 id 的 token。
-        const text = displaySessionMentions(blocksToText(message?.content));
+        // 只给模型那一份副本做替换（`prepareDirectMessages`）。
+        //
+        // **这里不再把它折成纯文本 `@标题`**（原先用 `displaySessionMentions`）：
+        // 折了之后会话 id 就到不了界面，用户已经发出的 `@会话` 就永远点不开——而用户
+        // 2026-10-10 的口径是「已发送消息里的引用可直接点击打开该会话」。现在原样把
+        // token 交给 webview，由 `webview/mentionLinks.ts` 切成可点的行内链接
+        // （`components/Message.tsx` 的 `renderMentionText`：显示仍是 `@标题`，
+        // 复制走可读文本），解不开的 token 同样只显示 `@标题`。
+        const text = blocksToText(message?.content);
         if (kind === "user" || kind === "user-rpc") {
           const rpcId = (message?.source as { rpcId?: unknown } | undefined)?.rpcId;
           const admitted = typeof rpcId === "string" && rpcId ? rpcId : undefined;

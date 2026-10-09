@@ -8,7 +8,9 @@ import { Markdown } from "./Markdown";
 import { ImageGallery, LocalImageGallery, type ImageSource } from "./Images";
 import { formatClock, useSelectionFreeze } from "./primitives";
 import { ApprovalCard, CommandRow, FileChips, InjectedRow, MessageImages, NoticeRow, QuestionCard, ThinkingRow, ToolRow, TurnProcessRow, TurnStatsButton, UnknownBlockRow } from "./Rows";
-import { useTexts, resolveText } from "../texts";
+import { openMentionTarget } from "../mentionOpen";
+import { readableMentionText, scanMentionLinks, type MentionLinkTarget } from "../mentionLinks";
+import { useTexts, resolveText, type Texts } from "../texts";
 import { producedOnly, withoutVanished } from "../turnFiles";
 import { foldTurnProcess, type TurnProcessRun } from "../turnProcess";
 import { hasUserOpenedNode, useNodeOpen } from "../nodeOpen";
@@ -37,6 +39,54 @@ function StreamText({ text, fileLinks }: { text: string; fileLinks?: FileLinkPor
  */
 const USER_COLLAPSE_LINES = 5;
 
+/** 一条引用链接的悬停说明：三档目标各说各的（见 `../texts` 的 `mentionOpenFile` 那几条）。 */
+function mentionTitle(texts: Texts, target: MentionLinkTarget): string {
+  if (target.kind === "file") return texts.mentionOpenFile;
+  if (target.kind === "directory") return texts.mentionRevealFolder;
+  return texts.mentionOpenSession;
+}
+
+/**
+ * 用户消息正文按 `@` 引用切段：带目标的区间渲染成**行内按钮**（`.mention-link`），
+ * 其余区间照旧纯文本。
+ *
+ * 判定与显示还原都在 `../mentionLinks` 的 `scanMentionLinks`（会话引用折成 `@标题`）；
+ * 解不开会话 id 的区间 `target` 缺省，那段只做显示还原而**不可点**——点了也不知道
+ * 该开哪一条。
+ *
+ * 切段严格按区间拼（普通文本用的是**原文切片**），所以气泡里的文字与原文逐字一致、
+ * 换行也不受影响；按钮在样式里也按行内元素处理（`.mention-link`），气泡那套
+ * 「量 `scrollHeight` 判 5 行折叠」的测量因此看不出差别。
+ */
+function renderMentionText(text: string, texts: Texts): ReactNode[] {
+  const spans = scanMentionLinks(text);
+  if (spans.length === 0) return [text];
+  const nodes: ReactNode[] = [];
+  let cursor = 0;
+  for (const span of spans) {
+    if (span.start > cursor) nodes.push(text.slice(cursor, span.start));
+    const target = span.target;
+    if (target === undefined) {
+      nodes.push(span.text);
+    } else {
+      nodes.push(
+        <button
+          key={span.start}
+          type="button"
+          className="mention-link"
+          title={mentionTitle(texts, target)}
+          onClick={() => openMentionTarget(target)}
+        >
+          {span.text}
+        </button>,
+      );
+    }
+    cursor = span.end;
+  }
+  if (cursor < text.length) nodes.push(text.slice(cursor));
+  return nodes;
+}
+
 /**
  * 用户消息正文（只渲染气泡；「展开 / 收起」按钮在消息的**操作行**里，见下面）。
  *
@@ -47,6 +97,9 @@ const USER_COLLAPSE_LINES = 5;
  * 状态与测量都由**父组件**（`Message`）持有：「展开」按用户口径要和时间、复制
  * 同一行、且最靠右——那三个按钮都在 `.msg-actions` 里，气泡在它上面。hooks 因此
  * 提到 `Message` 顶部（必须在 role 早退之前，顺序才固定）。
+ *
+ * 正文里的 `@` 引用是**行内按钮**（见 `renderMentionText`）：已发出的消息直接点，
+ * 不需要按住 Ctrl（草稿区那套按 Ctrl 的入口在 `Composer.tsx`）。
  */
 function UserBubble({
   text,
@@ -62,6 +115,7 @@ function UserBubble({
    */
   nodeRef: RefObject<HTMLDivElement>;
 }) {
+  const texts = useTexts();
   return (
     <div
       ref={nodeRef}
@@ -70,7 +124,8 @@ function UserBubble({
       // `.bubble.is-clamped`）——两处各写一个 5 迟早会对不上。
       style={{ "--user-clamp-lines": USER_COLLAPSE_LINES } as CSSProperties}
     >
-      {text}
+      {/* 正文里的 `@` 引用渲染成可点链接（一条消息里可能好几处），其余照旧纯文本 */}
+      {renderMentionText(text, texts)}
     </div>
   );
 }
@@ -279,7 +334,7 @@ export const Message = memo(function Message({
           <button
             className="icon-btn"
             title={texts.copy}
-            onClick={() => post({ type: "copy", text: message.text ?? "" })}
+            onClick={() => post({ type: "copy", text: readableMentionText(message.text ?? "") })}
           >
             <IconCopy size={14} />
           </button>
