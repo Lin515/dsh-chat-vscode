@@ -42,13 +42,24 @@ const todos: TodoView[] = [
   { id: "t3", content: "跑三件套", status: "pending" },
 ];
 
-/** 渲染成 HTML；语言按真实链路给（默认英文，这里显式喂词典）。 */
-const render = (open: boolean, locale: "zh" | "en" = "zh", items: TodoView[] = todos): string =>
+/**
+ * 渲染成 HTML；语言按真实链路给（默认英文，这里显式喂词典）。
+ *
+ * `running` 会话是否还在生成：当前执行步骤那枚刻点的活性吃它（生成中呼吸、停下
+ * 之后蓝色不闪动，见 `activity.ts` 的 `stepDotClass`）。默认 `true` = 生成中那一档，
+ * 也就是折叠之前的老观感，下面的「逐字相同」断言都按它比。
+ */
+const render = (
+  open: boolean,
+  locale: "zh" | "en" = "zh",
+  items: TodoView[] = todos,
+  running = true,
+): string =>
   renderToStaticMarkup(
     createElement(
       TextsContext.Provider,
       { value: dictionaryFor(locale) },
-      createElement(TodoPanel, { todos: items, open, onToggle: () => {} }),
+      createElement(TodoPanel, { todos: items, running, open, onToggle: () => {} }),
     ),
   );
 
@@ -129,7 +140,15 @@ console.log("todoCollapse: 折叠后清单项不挂载、抬头保留进度 ✓"
   );
   assert.ok(
     /class="todo-item"[\s\S]{0,200}?class="dot dot-running"/.test(html),
-    "in_progress：点用 .dot-running",
+    "in_progress 且会话仍在生成：点用 .dot-running（呼吸）",
+  );
+  // 会话停下来那一档（用户点停 / 本轮出错 / 打开早就停下的会话）：同一个 in_progress
+  // 条目仍走 `.dot-running` 的蓝色观感，只多一个 `is-idle` 关掉呼吸——用户 2026-10-10
+  // 口径是「显示为蓝色不闪动」，不是换一种颜色（判据见 `activity.ts` 的 `stepDotClass`）。
+  const stopped = render(true, "zh", todos, false);
+  assert.ok(
+    /class="todo-item"[\s\S]{0,200}?class="dot dot-running is-idle"/.test(stopped),
+    "in_progress 且会话已停下：点用 .dot-running is-idle（蓝色不闪动）",
   );
   const pending = html.slice(html.indexOf("跑三件套") - 200, html.indexOf("跑三件套"));
   assert.ok(
