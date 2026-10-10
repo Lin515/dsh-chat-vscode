@@ -5,12 +5,16 @@
  * 在无头环境里没法靠渲染验证；能钉住、也正是最容易改错的是**分配规则**本身：
  * 谁先被挤掉、同槽位的两档会不会同时出现、pinned 是否真的保底。
  *
+ * 后半部分（「量不到盒」「观察者随节点走」两节）钉的是**什么时候才允许结算**与
+ * **观察者挂在谁身上**：真浏览器回路（`.agent` 下的 iframe 壳子 + Playwright）验行为，
+ * 这里用可注入的假观察者把生命周期与判据钉住，最后再用源码判据确认 Composer 把两端接上了。
+ *
  * 运行：npm test（记得登记到 esbuild.scripts.mjs 的 entries）
  */
 import assert from "node:assert";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { BAR_ORDER, pickVariants, type ToolbarVariant } from "../src/webview/toolbarFit";
+import { BAR_ORDER, createFitAnchor, pickVariants, toolbarAvailableWidth, type FitObserver, type ToolbarVariant } from "../src/webview/toolbarFit";
 
 /** 一份贴近真实的宽度样本（px）：模型名较长、权限文字是中文口径。
  *
@@ -315,5 +319,192 @@ console.log("toolbarFit: 间距计入可用宽度 ✓");
   );
 }
 console.log("toolbarFit: tps 与明细同源同格式 ✓");
+
+// ---------- 8. 量不到盒时不结算；极窄但有盒仍按前缀折叠 ----------
+//
+// 「这一帧能不能结算」的判据是**盒在不在**，不是「宽度够不够」。两个方向都要钉住：
+//
+// - **没有盒**：宿主把整个 webview 隐藏起来时（用户切到别的 VS Code 标签或侧栏视图），
+//   文档视口还留着原宽度，但内层每一枚元素都没有布局盒——真浏览器实测 `body` / `.app` /
+//   `.composer` / `.composer-bar` 的 `clientWidth` 全是 0、`getClientRects()` 全为空。
+//   此时 `clientWidth - 内边距` 会算出负值（0 - 16），拿它分配就把工具栏锁成最窄那一套；
+//   而恢复显示时如果没有任何组件重渲染，用户看到的就是「明明够宽却最窄，动一下尺寸才恢复」。
+// - **有盒但极窄**：内容盒塌到 0、甚至内边距比盒还宽（available 为负）都是**有效答案**，
+//   必须照常按前缀规则折叠成 P0。轨迹页那种 `visibility: hidden` 的让位也仍然有盒
+//   （实测宽度不变），测量照旧有效——所以不能用「宽度小于某个阈值」代替盒判据。
+{
+  const base = { isConnected: true, hasBox: true, clientWidth: 400, padLeft: 8, padRight: 8 };
+  assert.strictEqual(
+    toolbarAvailableWidth(base),
+    384,
+    "正常一帧：可用宽度 = clientWidth（内边距盒）减去左右内边距（内容盒）",
+  );
+  assert.strictEqual(
+    toolbarAvailableWidth({ ...base, hasBox: false, clientWidth: 0 }),
+    undefined,
+    "没有布局盒时不结算（宿主隐藏整个 webview 就是这一档）",
+  );
+  assert.strictEqual(
+    toolbarAvailableWidth({ ...base, isConnected: false, hasBox: false, clientWidth: 0 }),
+    undefined,
+    "节点已断开时不结算",
+  );
+  assert.strictEqual(
+    toolbarAvailableWidth({ ...base, clientWidth: 0 }),
+    undefined,
+    "零宽盒（有盒也没得排）同样不结算",
+  );
+  assert.strictEqual(
+    toolbarAvailableWidth({ ...base, hasBox: false }),
+    undefined,
+    "没有盒就不结算——哪怕 clientWidth 还留着旧值",
+  );
+
+  const P0 = ["context:ring", "model:full", "permission:icon", "send:full"];
+  const collapsed = toolbarAvailableWidth({ ...base, clientWidth: 40, padLeft: 20, padRight: 20 });
+  assert.strictEqual(collapsed, 0, "有盒但内容盒塌成 0：这仍是一个有效答案，不是「量不出来」");
+  const negative = toolbarAvailableWidth({ ...base, clientWidth: 10, padLeft: 40, padRight: 40 });
+  assert.strictEqual(negative, -70, "有盒时允许算出负数（内边距比盒还宽）");
+  assert.deepStrictEqual(say(collapsed as number), P0, "内容盒 0：按前缀规则折叠成 P0 四件");
+  assert.deepStrictEqual(say(negative as number), P0, "可用宽度为负同样折叠成 P0，而不是跳过不结算");
+}
+console.log("toolbarFit: 量不到盒不结算、极窄但有盒仍折叠 ✓");
+
+// ---------- 9. 观察者随节点走（节点被替换后仍然盯新那一枚） ----------
+//
+// 缺陷（旧写法，实测于真浏览器）：`useEffect(..., [barRef, fit])` 里
+// `observer.observe(barRef.current)`。两个依赖（ref 对象与 `useCallback` 的 fit）恒稳定，
+// 于是只在**挂载**时挂一次；`.composer-bar` 被条件渲染换掉之后（只读子代理会话那一支渲染
+// `div.composer-readonly`，与 `div.composer-shell` 是同类型 div，React 复用外层 div、只换
+// 子树，`.composer-bar` 因此是新元素），新节点**没有任何观察者**——实测此时只改工具栏自身
+// 的可用宽度，档位不再重算，恢复只能靠别的组件恰好重渲染。
+//
+// 这里用假观察者（`FitObserver` 只需 observe/disconnect 两面）把生命周期钉住；
+// 真 DOM 接线（callback ref 挂在 `.composer-bar` 上、effect 里重挂并 dispose）由末尾的
+// 源码判据与真浏览器回路共同覆盖。
+{
+  /** 假观察者：只记「谁在被我观察」，断开即清空（断开之后不再投递）。 */
+  class FakeObserver implements FitObserver {
+    static readonly live = new Set<FakeObserver>();
+    readonly targets = new Set<Element>();
+    constructor(private readonly callback: () => void) {
+      FakeObserver.live.add(this);
+    }
+    observe(target: Element): void {
+      this.targets.add(target);
+    }
+    disconnect(): void {
+      this.targets.clear();
+      FakeObserver.live.delete(this);
+    }
+    /** 浏览器投递：只有还在观察这个目标时才会回调。 */
+    deliver(target: Element): void {
+      if (this.targets.has(target)) this.callback();
+    }
+  }
+  const observing = (target: Element) =>
+    [...FakeObserver.live].filter((observer) => observer.targets.has(target)).length;
+
+  const nodeA = { tag: "旧节点" } as unknown as HTMLElement;
+  const nodeB = { tag: "新节点" } as unknown as HTMLElement;
+  let settled = 0;
+  const synced: (HTMLElement | null)[] = [];
+  const anchor = createFitAnchor(
+    () => {
+      settled += 1;
+    },
+    (node) => synced.push(node),
+    (callback) => new FakeObserver(callback),
+  );
+
+  anchor.attach(nodeA);
+  assert.deepStrictEqual(synced, [nodeA], "callback ref 收到节点时要同步给调用方（fit 读它）");
+  assert.strictEqual(observing(nodeA), 1, "当前节点上恰好一枚观察者");
+
+  // effect 的 setup 会再 attach 一次当前节点（StrictMode 口径），同一枚节点必须幂等
+  anchor.attach(nodeA);
+  assert.strictEqual(observing(nodeA), 1, "同一枚节点重复 attach 不许多挂一枚（不留重复监听）");
+  assert.strictEqual(synced.length, 1, "幂等的那一次不重复同步节点");
+  const liveA = [...FakeObserver.live].find((observer) => observer.targets.has(nodeA));
+  liveA?.deliver(nodeA);
+  assert.strictEqual(settled, 1, "节点宽度变了（观察者投递）要重量一次");
+
+  // 旧节点卸载：ref 收到 null
+  anchor.attach(null);
+  assert.strictEqual(observing(nodeA), 0, "旧节点卸载后必须断开");
+  assert.deepStrictEqual(synced, [nodeA, null], "null 也要同步给调用方");
+  liveA?.deliver(nodeA);
+  assert.strictEqual(settled, 1, "断开之后旧节点再投递不许再结算");
+
+  // 节点被条件渲染换成新元素（只读子代理会话往返）：新那一枚必须有人盯
+  anchor.attach(nodeB);
+  assert.strictEqual(observing(nodeB), 1, "新节点必须被观察（旧写法在这里是 0：缺陷本身）");
+  assert.strictEqual(observing(nodeA), 0, "旧节点不许还挂在谁身上");
+  const liveB = [...FakeObserver.live].find((observer) => observer.targets.has(nodeB));
+  liveB?.deliver(nodeB);
+  assert.strictEqual(settled, 2, "新节点上的投递同样要重量（工具栏继续跟随自身宽度）");
+
+  // 负对照：旧写法的形状（挂载时 observe 一次、之后不重挂）在换节点后还停在旧节点上
+  {
+    const created: FakeObserver[] = [];
+    let mounted: FakeObserver | null = null;
+    const legacyObserveAtMount = (node: Element) => {
+      if (mounted) return;
+      mounted = new FakeObserver(() => {});
+      created.push(mounted);
+      mounted.observe(node);
+    };
+    legacyObserveAtMount(nodeA);
+    legacyObserveAtMount(nodeB); // 换成新节点，旧 effect 不会重跑
+    assert.strictEqual(created.length, 1, "旧写法只会在挂载时造一枚观察者");
+    assert.ok(created[0]!.targets.has(nodeA), "旧写法的那一枚还停在旧节点上");
+    assert.ok(!created[0]!.targets.has(nodeB), "旧写法：换节点后没有人盯新节点（这条就是修复前实测到的缺陷）");
+    created[0]!.disconnect();
+  }
+
+  // React 18 的 StrictMode：挂载 → 清理 → 再挂载；cleanup 断掉观察者后，setup 必须重挂
+  anchor.dispose();
+  assert.strictEqual(observing(nodeB), 0, "cleanup 之后不该留下观察者");
+  anchor.attach(nodeB);
+  assert.strictEqual(observing(nodeB), 1, "StrictMode 的再挂载之后仍然（且只有）一枚观察者");
+  const reattached = [...FakeObserver.live].find((observer) => observer.targets.has(nodeB));
+  reattached?.deliver(nodeB);
+  assert.strictEqual(settled, 3, "再挂载之后投递照旧重量");
+
+  anchor.dispose();
+  anchor.dispose();
+  assert.strictEqual(FakeObserver.live.size, 0, "dispose 幂等，且不留残观察者");
+}
+
+// 真 DOM 接线：真浏览器回路（`.agent` 下的 iframe 壳子 + Playwright）验的是行为，
+// 这里钉住把两端接起来的几处写法——只有 helper 绿、调用点没接上同样是缺陷。
+{
+  const composer = readFileSync(join(process.cwd(), "src", "webview", "components", "Composer.tsx"), "utf8");
+  assert.ok(
+    /hasBox: bar\.getClientRects\(\)\.length > 0/.test(composer),
+    "Composer 必须把「有没有布局盒」交给 toolbarAvailableWidth（不能用宽度阈值代替）",
+  );
+  assert.ok(
+    /if \(available === undefined\) return;/.test(composer),
+    "量不到盒时 fit 必须直接返回（保留上一次有效档位），不能拿负的可用宽度去分配",
+  );
+  assert.ok(
+    /const \{ shown, register, attachBar \} = useToolbarFit\(barVariants\);/.test(composer),
+    "hook 必须把 callback ref 交出来（节点身份与观察者一起走）",
+  );
+  assert.ok(
+    /className="composer-bar" ref=\{attachBar\}/.test(composer),
+    "`.composer-bar` 必须挂那个 callback ref，而不是裸 ref 对象（裸 ref 只写 current，没人管观察者）",
+  );
+  assert.ok(
+    /anchor\.attach\(barRef\.current\)/.test(composer) && /return \(\) => anchor\.dispose\(\);/.test(composer),
+    "effect 的 setup 要按当前节点重挂、cleanup 要断开（StrictMode 也要有效）",
+  );
+  assert.ok(
+    !/observer\.observe\(bar\)/.test(composer),
+    "旧的「挂载时 observe 一次、之后不重挂」写法必须不复存在（节点被替换后再也没人观察）",
+  );
+}
+console.log("toolbarFit: 观察者随节点走 + 真 DOM 接线 ✓");
 
 console.log("\ntoolbarFit: all assertions passed");

@@ -152,3 +152,98 @@ export function pickVariants(
   }
   return chosen;
 }
+
+/* ============================ 量宽的触发与前置条件 ============================
+   上面是「怎么分配」，这里是「什么时候分配、什么时候**不**分配」。两者必须分开看：
+   分配规则本身是对的，出问题的是把「量不出来」当成了「装不下」。 */
+
+/**
+ * 这一帧工具栏的可用宽度（内容盒宽度 = `clientWidth` 减去左右内边距）。
+ *
+ * **量不到盒时返回 `undefined`，调用方必须不结算、保留上一次那个有效档位。**
+ * 宿主把整个 webview 隐藏起来时（用户切到别的 VS Code 标签或侧栏视图），文档视口
+ * 还留着原来的宽度，但内层每一枚元素都**没有布局盒**：实测 `body` / `.app` /
+ * `.composer` / `.composer-bar` 的 `clientWidth` 全是 0、`getClientRects()` 全为空。
+ * 此时上式会算出 `0 - 左右内边距 = -16`，拿它分配就会把工具栏锁成最窄那一套；
+ * 而如果恢复显示时恰好没有任何组件重渲染（工具栏自己的观察者又没跟上新节点，见
+ * `createFitAnchor`），用户看到的就是「明明够宽却只剩最窄，动一下尺寸才恢复」。
+ *
+ * 判据必须是**盒在不在**，不能是「宽度够不够」：
+ * - 真正的极窄栏（内容盒只剩十几像素、连 P0 都排不下）**有盒**，必须照常按前缀规则
+ *   折叠——`available` 因此可能是 0 甚至负数，那仍是一个有效答案；
+ * - 轨迹页那种让位是 `visibility: hidden`，**盒还在、宽度实测不变**，测量照旧有效。
+ */
+export function toolbarAvailableWidth(input: {
+  /** 元素是否还在文档里（断开 = 拿不到盒）。 */
+  isConnected: boolean;
+  /** `getClientRects().length > 0`：有没有布局盒。 */
+  hasBox: boolean;
+  /** `clientWidth`：内边距盒宽度（含内边距，不含边框与滚动条）。 */
+  clientWidth: number;
+  padLeft: number;
+  padRight: number;
+}): number | undefined {
+  if (!input.isConnected || !input.hasBox || !(input.clientWidth > 0)) return undefined;
+  return input.clientWidth - input.padLeft - input.padRight;
+}
+
+/** `ResizeObserver` 里本模块用到的那一面（测试可注入假实现，不必有 DOM）。 */
+export interface FitObserver {
+  observe: (target: Element) => void;
+  disconnect: () => void;
+}
+
+/** 工具栏「量宽」的观察者锚：把**当前那一枚** `.composer-bar` 与一枚观察者绑在一起。 */
+export interface FitAnchor<El extends HTMLElement = HTMLElement> {
+  /**
+   * 交给 React 的 `ref`。React 18 口径：收 `node | null`、**不返回清理函数**
+   * （带清理函数的是 React 19 的写法）。`null` 表示旧节点已卸载。
+   */
+  attach: (node: El | null) => void;
+  /** 断开观察者：幂等，卸载时调用。 */
+  dispose: () => void;
+}
+
+/**
+ * 观察者**跟着节点走**，而不是「挂载时看一眼当时的节点」。
+ *
+ * 此前的写法是在 `useEffect(..., [barRef, fit])` 里 `observer.observe(barRef.current)`。
+ * 那两个依赖（ref 对象与 `useCallback` 出来的 `fit`）在组件生命周期里恒稳定，于是这个
+ * effect 只在**挂载**时跑一次，之后节点被换掉也永不重挂。而 `.composer-bar` 确实会被换掉：
+ * 只读子代理会话那一支（`state.subagent.mode === "one-shot"`）渲染的是
+ * `div.composer-readonly`，与 `div.composer-shell` 是同类型 div，React 复用外层那个 div、
+ * 只把子树换掉，`.composer-bar` 于是是新元素；实测换完之后工具栏**彻底不再跟随自身宽度
+ * 变化**（只改自己的可用宽度，档位也不再重算），恢复只能靠别的组件恰好重渲染。
+ *
+ * 用 callback ref 承担这件事，语义有三条：
+ * - 任一时刻**最多一枚**观察者，且只观察当前这一枚节点（换节点时先断开旧的）；
+ * - 同一枚节点重复 `attach` 是**幂等**的（React 18 的 StrictMode 会把 effect 走一遍
+ *   「挂载 → 清理 → 再挂载」，而 cleanup 会把观察者断掉；调用方因此在 effect 的 setup
+ *   里再 `attach` 一次当前节点，幂等才不会白多一枚观察者）；
+ * - `onNode` 把节点同步给调用方（`fit` 读宽度要用），`null` 也要同步。
+ */
+export function createFitAnchor<El extends HTMLElement>(
+  fit: () => void,
+  onNode: (node: El | null) => void,
+  createObserver: (callback: () => void) => FitObserver = (callback) => new ResizeObserver(callback),
+): FitAnchor<El> {
+  let observer: FitObserver | null = null;
+  let current: El | null = null;
+  const dispose = () => {
+    observer?.disconnect();
+    observer = null;
+    current = null;
+  };
+  return {
+    attach(node) {
+      if (node !== null && node === current && observer) return;
+      dispose();
+      onNode(node);
+      if (!node) return;
+      observer = createObserver(fit);
+      observer.observe(node);
+      current = node;
+    },
+    dispose,
+  };
+}

@@ -57,7 +57,14 @@
   可用宽度直接比大小会在临界点上因半像素来回横跳；
 - **两个触发点**：每次提交后的 layout effect（文案 / 字号 / 语言 / 模型名 / 数字位数变了
   就重量，且在 layout 阶段结算，不会先画一帧「全挤在一起」再收回去），以及
-  `.composer-bar` 的 `ResizeObserver`（拖侧栏、改窗口宽度）；
+  `.composer-bar` 的 `ResizeObserver`（拖侧栏、改窗口宽度）。观察者**随节点更新**
+  （`createFitAnchor` 的 callback ref）：只读子代理会话与完整输入区之间的条件渲染会
+  替换工具栏节点，必须断开旧观察者并观察新节点，否则后续宽度变化无法触发测量；
+- **无法测得布局盒时不结算，保留上一次有效档位**（`toolbarAvailableWidth`）：宿主隐藏
+  整个 webview 时，内层元素实测 `clientWidth` 为 0、`getClientRects()` 为空，但文档视口
+  仍保留原宽度。此时不应将无效测量分配成最窄档位。判据是布局盒是否有效，而非宽度阈值：
+  有布局盒且 `clientWidth` 大于 0 的极窄栏，即使扣除内边距后的可用宽度为 0 或负数，
+  仍按前缀规则折叠；轨迹页的 `visibility: hidden` 不移除布局盒，测量仍然有效；
 - 结算出的档位签名没变就**不重新渲染**。
 
 缺数据的档位（模型没有思考档位、还没有 tps、还没有上下文测量）**不进表**：渲染成 `null`
@@ -148,12 +155,12 @@ agent 预设标签的口径（用户 2026-09-22）：
 
 | 文件 | 职责 |
 |---|---|
-| `src/webview/toolbarFit.ts` | 优先级表 `BAR_ORDER` + 分配算法 `pickVariants`（纯函数，改行为就是改这张表） |
+| `src/webview/toolbarFit.ts` | 优先级表 `BAR_ORDER` + 分配算法 `pickVariants`（纯函数，改行为就是改这张表）；另有量宽的两条前置：观察者随节点走（`createFitAnchor`）与「量不到盒不结算」（`toolbarAvailableWidth`） |
 | `src/webview/components/Composer.tsx` | 候选档位节点表 `barNodes` + `useToolbarFit`（量宽与触发）+ 工具栏的渲染次序 |
 | `src/webview/styles/app.css` | `.composer-bar`（定位基准）、`.composer-measure`（测量层三条硬约束）、各元素的收窄上限 |
 | `src/webview/messages.ts` + `texts.ts` | 新增元素若带用户可见文字，双语两条一起登记（唯一登记表）；权限档位的文案（含实验档那七条）都在这里 |
 | `src/dsh/projections.ts` + `src/dsh/controller.ts` | 权限档位的**可用性判据**（`permissionCatalogHasAuto`）与目录拉取（`loadPermissionCatalog`），界面上那一档由它决定列不列 |
-| `scripts/toolbarFit.test.ts` | 表的口径、极窄保底、逐档临界宽度、单调性、同槽位互斥、间距计入、渲染次序 |
+| `scripts/toolbarFit.test.ts` | 表的口径、极窄保底、逐档临界宽度、单调性、同槽位互斥、间距计入、渲染次序；量不到盒不结算与观察者随节点走的生命周期（假观察者 + 假节点，含旧写法负对照） |
 | `scripts/styles.test.ts` | 测量层三条硬约束、定位基准、旧阈值通道未回来、纯文字元素自己出省略号 |
 | `test/preview.html` | 夹具要留样例，否则预览页里看不到那一档 |
 

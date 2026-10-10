@@ -46,7 +46,7 @@ import { segmentColumns } from "../segment";
 import { fill, resolveText, useTexts } from "../texts";
 import { useUiScale } from "../uiScale";
 import { sessionCacheHitPercent } from "../cacheHit";
-import { BAR_ORDER, pickVariants, type ToolbarVariant } from "../toolbarFit";
+import { BAR_ORDER, createFitAnchor, pickVariants, toolbarAvailableWidth, type ToolbarVariant } from "../toolbarFit";
 
 /**
  * 输入框的布局、工具行与文本域。
@@ -152,15 +152,20 @@ const EMPTY_RANKS: ReadonlySet<number> = new Set();
  * 底部工具栏的自适应：量出候选档位的**实际宽度**，按 `toolbarFit.ts` 的优先级
  * 决定这一帧显示哪些（分配规则在那边，这里只管「量」与「什么时候重量」）。
  *
- * 两个触发点：
+ * 三个要点：
  * - 每次提交后的 layout effect：文案、字号、语言、模型名、数字位数变了就重量，
  *   并且在 layout 阶段结算——不会先画一帧「全挤在一起」再收回去；
- * - `.composer-bar` 的 ResizeObserver：侧栏被拖动、可用宽度变了就重量。
+ * - `.composer-bar` 的 ResizeObserver **跟着节点走**（`createFitAnchor` 的 callback ref）：
+ *   侧栏被拖动、可用宽度变了就重量，节点被条件渲染换掉之后也仍然有人盯着新那一枚
+ *   （只读子代理会话那一支会把 `.composer-bar` 换成新元素）；
+ * - 量不到盒时这一帧**不结算**（`toolbarAvailableWidth` 返回 `undefined`）：宿主把整个
+ *   webview 隐藏起来时内层所有盒都塌成 0，把「量不出来」当成「装不下」会把工具栏锁在
+ *   最窄那一套，而恢复显示时未必有人重渲染。
  *
  * 全程没有写死的像素阈值：「多宽显示谁」完全由实测宽度算出来，
  * 所以换语言（权限名长短差近一倍）、换模型、调字号都自动跟上。
  */
-function useToolbarFit(barRef: React.RefObject<HTMLDivElement>, variants: ToolbarVariant[]) {
+function useToolbarFit(variants: ToolbarVariant[]) {
   /** 测量层里的 DOM（rank → 元素），宽度每次结算时重新读。 */
   const nodes = useRef(new Map<number, HTMLElement>());
   // 每次渲染刷新「当前档位表」：ResizeObserver 的回调引用是稳定的，
@@ -170,14 +175,29 @@ function useToolbarFit(barRef: React.RefObject<HTMLDivElement>, variants: Toolba
   /** 上一次结算出的档位签名（排序后的 rank），用来判断要不要重新渲染。 */
   const signature = useRef("");
   const [shown, setShown] = useState<ReadonlySet<number>>(EMPTY_RANKS);
+  /**
+   * 当前那一枚 `.composer-bar`。**由下面 `anchor` 的 callback ref 写**，不在挂载时取一次：
+   * 这个节点会被换掉（只读子代理会话那一支是同类型 div 的子树替换），而 `fit` 读的是
+   * 「现在这一枚」的宽度。
+   */
+  const barRef = useRef<HTMLDivElement | null>(null);
 
   const fit = useCallback(() => {
     const bar = barRef.current;
     if (!bar) return;
     const style = getComputedStyle(bar);
     const px = (value: string) => Number.parseFloat(value) || 0;
-    // 可用宽度 = 内容盒宽度（clientWidth 已排除边框与滚动条）再扣掉左右内边距
-    const available = bar.clientWidth - px(style.paddingLeft) - px(style.paddingRight);
+    // 可用宽度 = 内容盒宽度（`clientWidth` 已排除边框与滚动条）再扣掉左右内边距。
+    // 量不到盒时是 `undefined`：这一帧不结算，保留上一次那个有效档位
+    // （判据与理由见 `toolbarFit.ts` 的 `toolbarAvailableWidth`）。
+    const available = toolbarAvailableWidth({
+      isConnected: bar.isConnected,
+      hasBox: bar.getClientRects().length > 0,
+      clientWidth: bar.clientWidth,
+      padLeft: px(style.paddingLeft),
+      padRight: px(style.paddingRight),
+    });
+    if (available === undefined) return;
     // 间距同样读实算值：宽/窄两种形态的 gap 不一样（`.app.is-mini` 会改它）
     const gap = px(style.columnGap);
     const measured = latest.current.map((variant) => ({
@@ -197,16 +217,28 @@ function useToolbarFit(barRef: React.RefObject<HTMLDivElement>, variants: Toolba
 
   useLayoutEffect(fit);
 
+  /**
+   * 观察者随节点走（`createFitAnchor`）：换节点先断旧的、再盯新的，任一时刻最多一枚。
+   *
+   * effect 的 setup 里再 `attach` 一次当前节点，是为了 React 18 的 StrictMode 会把 effect
+   * 走一遍「挂载 → 清理 → 再挂载」——cleanup 把观察者断掉了，而 ref 回调**不会跟着重放**，
+   * 只写清理而不在 setup 里重挂，开发期就永久没有观察者。`attach` 对同一枚节点幂等，
+   * 所以正常那次挂载不会因此多出一枚。
+   */
+  const anchor = useMemo(
+    () =>
+      createFitAnchor<HTMLDivElement>(fit, (node) => {
+        barRef.current = node;
+      }),
+    [fit, barRef],
+  );
   useEffect(() => {
-    const bar = barRef.current;
-    if (!bar) return;
-    const observer = new ResizeObserver(fit);
-    observer.observe(bar);
-    return () => observer.disconnect();
-  }, [barRef, fit]);
-
-  // ref 回调必须**稳定**：每次渲染新建函数的话，React 会先把旧的解绑（传 null）
-  // 再绑新的，白白多一轮往返。档位表变没变看 rank 列表就够了。
+    anchor.attach(barRef.current);
+    return () => anchor.dispose();
+  }, [anchor, barRef]);
+  // 测量层那些 ref 回调（`register`）必须**稳定**：每次渲染新建函数的话，React 会先把旧的
+  // 解绑（传 null）再绑新的，白白多一轮往返，`nodes` 也会被反复清空又填上。
+  // 档位表变没变看 rank 列表就够了。
   const ranks = variants.map((variant) => variant.rank).join(",");
   const register = useMemo(() => {
     const map = new Map<number, (element: HTMLElement | null) => void>();
@@ -219,7 +251,10 @@ function useToolbarFit(barRef: React.RefObject<HTMLDivElement>, variants: Toolba
     return map;
   }, [ranks]);
 
-  return { shown, register };
+  // 交给 `.composer-bar` 的 callback ref：它既把节点同步给 `fit`，又把观察者挂到**这一枚**
+  // 节点上（换节点先断旧的）。必须是这个而不是裸 ref 对象——裸 ref 只写 `barRef.current`，
+  // 观察者就没人管了。
+  return { shown, register, attachBar: anchor.attach };
 }
 
 export function Composer({
@@ -787,8 +822,7 @@ export function Composer({
   const barVariants: ToolbarVariant[] = BAR_ORDER.filter(
     (spec) => barNodes[`${spec.slot}:${spec.level}`] != null,
   ).map((spec) => ({ ...spec, width: 0 }));
-  const barRef = useRef<HTMLDivElement>(null);
-  const { shown, register } = useToolbarFit(barRef, barVariants);
+  const { shown, register, attachBar } = useToolbarFit(barVariants);
   /** 这一帧实际要渲染的节点（槽位 → 节点），按优先级分配的结果。 */
   const bar: Record<string, ReactNode> = {};
   for (const variant of barVariants) {
@@ -993,7 +1027,7 @@ export function Composer({
 
           {/* 底部工具栏：显示哪些由 useToolbarFit 按实测宽度 + 优先级决定，
               这里只按视觉顺序摆位（槽位 → 节点）。 */}
-          <div className="composer-bar" ref={barRef}>
+          <div className="composer-bar" ref={attachBar}>
             {/* 权限：P0（始终显示）。窄时只有盾牌图标，宽裕时才补上权限名。
                 悬停始终有 title，点开弹层也能看到权限名。 */}
             <div className="anchor">

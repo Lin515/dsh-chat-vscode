@@ -86,7 +86,7 @@
 - `pathDisplay.test.ts` — 单行标题里路径拆分与省略口径（文件名不参与压缩）。
 - `segment.test.ts` — 思考档位分段控件列数（≤4 档一行、5/6 档均分两行）。
 - `pickerFocus.test.ts` — 模型弹层「打开即定位到选中项」：起点判定、方向键移动、两处共用的接线与高亮样式。
-- `toolbarFit.test.ts` — 底部工具栏按优先级分配的纯函数断言（挤掉顺序、同槽互斥、pinned 保底）。
+- `toolbarFit.test.ts` — 工具栏档位分配、极窄保底与布局盒判据；使用可注入观察者验证节点替换、幂等挂载、StrictMode 重挂与清理，并覆盖旧生命周期的负对照。
 - `connectView.test.ts` — 连接条三类状态、文案与按钮矩阵。
 - `contextMenu.test.ts` — 会话右键菜单判据、「引用」落点算术、保存建议文件名。
 - `questionFlow.test.ts` — 问卷展示口径：一次展开 vs 依次问答（`dshChat.questionBatch`）。
