@@ -36,6 +36,7 @@ import {
   questionKeyOf,
 } from "../shared/toolQuestion";
 import { readRangeFromMeta, readRangeFromOutput } from "./readRange";
+import { applyNextStepSplice, claimedByNextStep, type InboxState } from "./inboxClaim";
 import { subagentFromCatalogEvent } from "./projections";
 import { includedAttachments } from "./attachments";
 import { expandAssistantStream } from "./assistantStream";
@@ -575,6 +576,17 @@ export class SessionAdapter {
    * 而不是往前裁剪——见 `SessionForkError` 的 `OPEN_TURN`）。
    */
   private readonly turnEndSeqs = new Map<number, number>();
+  /**
+   * 本轮**插话**的权威判据：next-step inbox 的领取账本（官方那台状态机，
+   * 见 `dsh/inboxClaim.ts`）。
+   *
+   * 一条人发消息的 id 落在本次领取里 ⇒ 它是插进还在跑的那一轮的引导消息
+   * （追加到末尾 + 切段），而不是开启本轮的提问（插到本轮顶部）。
+   *
+   * 只在 durable 事件上重建：`refold()` 与 `reset()` 都要清掉它（否则重开窗口 /
+   * 加载更早历史之后，旧窗口的领取集合会继续给新到达的消息定性）。
+   */
+  private nextStepInbox: InboxState | undefined;
   /** 当前 step 首个 token delta 的时间戳（服务端时钟，取自 chunk 帧 time）。 */
   private stepFirstTokenAt: number | undefined;
   /** 当前 step 的**开始**时刻（`turn/start` / `step/start` 的 time）：TTFT 的基准。 */
@@ -1229,6 +1241,9 @@ export class SessionAdapter {
     this.currentStep = 0;
     this.stepFirstTokenAt = undefined;
     this.sequence = 0;
+    // 领取账本同样从头重建（它只吃 durable 事件，重放里就会走回同一个状态；
+    // 留着旧窗口的集合会给新到达的消息定性）
+    this.nextStepInbox = undefined;
     // 重放期间静默：中间态会被调用方随后的 `messages/reset` 整体覆盖（见 `replaying`）。
     // 两个调用方（follow 开窗快照、settleHistory）都在重放之后立刻发 reset。
     this.replaying = true;
@@ -1524,6 +1539,18 @@ export class SessionAdapter {
         this.stepStartedAt = event.time;
         break;
 
+      /**
+       * inbox 队列簿记：插入 / 编辑 / 领取 / 取消。
+       *
+       * 聊天流里**不出节点**（官方也不出），但它是「下一条人发消息算不算插话」的唯一
+       * 依据：官方 `inbox-next-step` 那台状态机逐字 vendor 在
+       * `src/vendor/ui-trajectory/inbox-state.ts`，口径与换算见 `dsh/inboxClaim.ts`。
+       */
+      case "agent/inbox/spliced": {
+        this.nextStepInbox = applyNextStepSplice(this.nextStepInbox, data);
+        break;
+      }
+
       case "user/message": {
         const message = data as WireMessage;
         const kind = message?.source?.kind;
@@ -1577,21 +1604,38 @@ export class SessionAdapter {
           //    已经在跑了），提问才落盘。插到本轮助手消息之前（这一轮的顶部）。
           // 2. **运行中插话**：服务端把运行中提交的消息（队列自动派发、运行中
           //    发送）经 agent/inbox **splice 进还在跑的同一轮**——轮次不结束。
-          //    表现是「紧邻助手消息的前一条是用户消息」。这时追加到末尾并把该轮
-          //    **切到下一段**（turnPart+1）：后续生成进 `a:N:2`（新段在插话下方），
-          //    而不是继续压在插话上方——那正是「生成内容在用户消息上方继续生成」
-          //    的根源。
+          //    这时追加到末尾并把该轮**切到下一段**（`turnPart+1`，前提见下面的
+          //    `cutTurn`）：后续生成进 `a:N:2`（新段在插话下方），而不是继续压在
+          //    插话上方——那正是「生成内容在用户消息上方继续生成」的根源。
           // 3. **轮间正常到达**（当前轮已结束、新一轮未开始）：currentTurn 还停在
           //    上一轮，走追加分支即可，随后 turn/start 会把分段归位。
+          //
+          // **2 与 1/3 的分界只能问 inbox 账本**（`dsh/inboxClaim.ts`）：命中 next-step
+          // 的本次领取就是插话。这里曾经用「紧邻助手消息的前一条是用户消息」猜——子代理 /
+          // 队列驱动的会话里一轮常常**没有人发消息开启**（`agent-message`、
+          // `subagent-settled`、队列派发都能开一轮），那个前提不成立，插话于是被当成
+          // 「迟到的提问」插到本轮顶部（用户 2026-10-11 报的「用户消息发送错位」）。
+          const steering = claimedByNextStep(this.nextStepInbox, message?.id);
           const assistant = this.currentAssistantMessage();
           const index = assistant ? this.messages.indexOf(assistant) : -1;
-          const alreadyHasTurnPrompt = index > 0 && this.messages[index - 1].role === "user";
+          /** 紧邻本轮助手消息的前一条已经是用户消息 ⇒ 本轮早开过口（旧服务端没有 splice 帧时的兜底）。 */
+          const promptAlreadyPlaced = index > 0 && this.messages[index - 1].role === "user";
+          /**
+           * 插话要切段，前提是这一段**已经产出过内容**——切段正是为了把插话**之前**的
+           * 生成留在上面。空壳（`turn/start` 刚建出来、模型还没吐任何东西）没有要留在
+           * 上面的东西，切了反而在气泡上方留一条只有时刻的空行（真实日志里约六分之一的
+           * 插话落在这个形态上）；直接插到它前面，后续生成仍进同一段——与官方「按事件
+           * 顺序铺节点」的读法一致（那里不会凭空多出一个空节点）。
+           */
+          const cutTurn = steering && (assistant?.segments.length ?? 0) > 0;
           if (this.byId.has(view.id)) {
             // 重连/重放时同一条事件可能再来一次：行没重画，但「已承认」的事实照样要交出去
             notifyAdmitted();
             break;
           }
-          if (assistant && index >= 0 && !alreadyHasTurnPrompt) {
+          const insertBeforeAssistant = assistant !== undefined && index >= 0
+            && (steering ? !cutTurn : !promptAlreadyPlaced);
+          if (insertBeforeAssistant) {
             this.messages.splice(index, 0, view);
             this.byId.set(view.id, view);
             this.emit({ type: "messages/reset", messages: this.messages });
@@ -2402,6 +2446,8 @@ export class SessionAdapter {
     this.turnPart = 1;
     this.currentStep = 0;
     this.stepFirstTokenAt = undefined;
+    // 领取账本随窗口作废：新窗口的记录会把 next-step 的插入 / 领取重新喂一遍
+    this.nextStepInbox = undefined;
     // 活跃 attempt 的身份同样作废：新开窗里它由开帧基线重新给出（没有基线就是
     // 「认不出」，见 `liveTurn`），留着上一次的 turn/step 会把新叠加层记到错的归属上
     this.liveTurn = undefined;

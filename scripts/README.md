@@ -25,6 +25,7 @@
 - `historyReplay.test.ts` — 「加载更早的历史」：重放期间不发帧，避免旧轮次被实时渲染一遍。
 - `thinkingStream.test.ts` — 思考完毕鲸鱼仍发光、用户消息未置顶两个缺陷的宿主侧成因。
 - `renderOrder.test.ts` — 段顺序：活路径（真流式）与离线重放必须给出同一个顺序。
+- `steeringPlacement.test.ts` — 用户消息落位：本轮提问（插到轮首）与生成中插话（追加 + 切段）的分界只看 next-step 的**本次领取**，子代理开轮的会话里插话不得被抬到本轮顶部。
 - `toolView.test.ts` — 工具行运行中数据：长命令要能完整带出供展开区显示。
 - `unknownEvent.test.ts` — 「不认识的事件」告警的边界：已知但不渲染的簿记事件不得告警。
 - `injected.test.ts` — 自动载入提示词节点（`system/message`、插件注入）的正确呈现。

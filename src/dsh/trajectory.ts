@@ -88,8 +88,7 @@ import type {
   TrajectoryTurn,
   TrajectoryUsage,
 } from "../shared/trajectory";
-import { applySplice } from "../vendor/ui-trajectory/inbox-state";
-import type { InboxState } from "../vendor/ui-trajectory/inbox-state";
+import { applyNextStepSplice, claimedByNextStep, type InboxState } from "./inboxClaim";
 
 /** 折叠时能看到的字段（`data` 是任意 JSON，逐字段守卫，不猜形状）。 */
 type EventData = Record<string, unknown>;
@@ -840,6 +839,8 @@ export function deriveTrajectoryModel(events: readonly SessionWireEvent[], hasOl
    * 它只为一件事存在：把「生成过程中插进队列、在下一次 step 边界被领取」的
    * `user/message` 认成 steering。官方在节点层给它 `kind: 'steering'`，在布局层
    * 又渲染成 `kind: 'user'`（同样走 `inputCellDetail`），差别只有**不置 `opensTurn`**。
+   *
+   * 聊天侧用**同一台状态机**决定这条消息落在轮中间还是轮顶部（`dsh/inboxClaim.ts`）。
    */
   let inboxState: InboxState | undefined;
   /**
@@ -1744,32 +1745,12 @@ export function deriveTrajectoryModel(events: readonly SessionWireEvent[], hasOl
       /**
        * `agent/inbox/spliced`：inbox 队列的插入 / 编辑 / 领取 / 取消。
        *
-       * 官方 `trajectory-inbox-next-step` 的 `match` **只吃 `target === 'next-step'`**，
-       * 这里必须照做：两类帧的 `start` / `removedCount` 共用同一个队列索引空间，把
-       * `next-turn` 也喂进这台状态机会把大量普通排队消息误判成 steering——实测本机
-       * 442 份日志，只吃 next-step 时人发消息里 154/1682（9.2%）判成 steering；
-       * 连 next-turn 一起吃会变成 1426/1682（85%），显然不是官方语义。
-       *
-       * `inserted` 元素实测 2924/2924 全部带 string `id`（键签名一律 `content,id,role,source`），
-       * 所以官方的 `.map(identity => identity.id)` 可以直译。畸形元素仍**保留槽位**——
-       * 位次就是语义（`materializePending()` 按 `start` 做 `splice`），丢掉会让后面的
-       * 位次整体前移；占位用空串，它不可能与真实的 uuid 撞上。
+       * 线格式换算（**只吃 `target === 'next-step'`**、`inserted` 畸形元素保留槽位）
+       * 与聊天侧的落位判定**同源**，都在 `dsh/inboxClaim.ts`；那里写清了为什么不能连
+       * `next-turn` 一起吃（实测本机 442 份日志：只吃 next-step 是 9.2%，一起吃 85%）。
        */
       case "agent/inbox/spliced": {
-        if (data.target !== "next-step") break;
-        if (typeof data.start !== "number") break;
-        const inserted = (Array.isArray(data.inserted) ? data.inserted : []).map((identity) => {
-          const id = identity !== null && typeof identity === "object"
-            ? (identity as { id?: unknown }).id
-            : undefined;
-          return { id: typeof id === "string" ? id : "" };
-        });
-        inboxState = applySplice(inboxState, {
-          start: data.start,
-          ...(typeof data.removedCount === "number" ? { removedCount: data.removedCount } : {}),
-          inserted,
-          ...(data.outcome === "canceled" ? { outcome: "canceled" as const } : {}),
-        });
+        inboxState = applyNextStepSplice(inboxState, data);
         break;
       }
 
@@ -1805,13 +1786,13 @@ export function deriveTrajectoryModel(events: readonly SessionWireEvent[], hasOl
          * steering（官方 `trajectory-input-message` 的第三分支）：人发消息的 id 命中
          * inbox 状态机的**本次领取**集合，就是生成过程中插进来的引导消息。
          *
+         * 判据与聊天侧的落位**同一处**（`dsh/inboxClaim.ts`）：那边用它决定这条消息
+         * 追加到本轮末尾并切段、还是插到本轮顶部。
+         *
          * 界面上它与真用户消息**没有标签差异**（官方 cell 层同样是 `kind: 'user'`），
          * 差别只有**不置 `opensTurn`**——所以这里只改这两个字段，不动呈现。
          */
-        const steering =
-          isHuman
-          && typeof message?.id === "string"
-          && inboxState?.currentClaimed.has(message.id) === true;
+        const steering = isHuman && claimedByNextStep(inboxState, message?.id);
         const messageSourcePlugin = sourcePluginName(message?.source);
         /**
          * 官方 `inputCellDetail()` 的口径：`text` 只放**附件摘要**（本地化，所以这里

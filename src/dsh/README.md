@@ -15,6 +15,7 @@
 - `sessionList.ts` — `session/list` 行的可见性与会话血缘：全局那份按注册表 / cwd / 已打开域兜底筛（`visibleForWorkspace`），发帧前再按窗口当前会话的 cwd 收窄（`visibleForView`，没有打开文件夹时各窗口各自的 cwd；cwd 取 controller 的权威账本 `sessionCwds`，子代理会话也在里面）；血缘上区分子代理会话与分支会话（两者都有 `parentSessionId`）。
 - `sessionStatus.ts` — `api-session/status` 转发事件（服务端权威的「这一轮在不在跑」）的解码与采纳策略。
 - `historyPaging.ts` — 「加载历史」的两档策略：单页档（`loadOlder`）与到目标档（`loadThrough`，轮次横条未加载刻点用）。
+- `inboxClaim.ts` — next-step inbox 的领取账本：一条人发消息是「开启本轮的提问」还是「生成中插话」的**唯一判据**（官方那台状态机的线格式换算 + 查询），聊天侧的落位与轨迹侧的 steering 分类同源。
 - `pendingInteractions.ts` — 宿主侧未结算审批 / 提问的托管账本：事件 id → 原始请求，保证去重、切会话重投、撤回收场（这类 waterfall 不是 durable 事件，必须宿主持有一份）。
 
 ## 投影（projection）

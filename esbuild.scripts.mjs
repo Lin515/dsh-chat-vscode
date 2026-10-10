@@ -163,6 +163,8 @@ const entries = {
   "build/history-replay.test.mjs": "scripts/historyReplay.test.ts",
   "build/render-order-probe.mjs": "scripts/renderOrderProbe.ts",
   "build/render-order.test.mjs": "scripts/renderOrder.test.ts",
+  // 用户消息落位：本轮提问 vs 生成中插话的分界（next-step 的本次领取）：必须登记，否则 npm test 静默不跑
+  "build/steering-placement.test.mjs": "scripts/steeringPlacement.test.ts",
   "build/live-order-probe.mjs": "scripts/liveOrderProbe.ts",
   "build/page-loop-probe.mjs": "scripts/pageLoopProbe.ts",
   "build/rail-jump-probe.mjs": "scripts/railJumpProbe.ts",
