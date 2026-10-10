@@ -1296,6 +1296,7 @@ export interface ChatState {
    * 「繁忙时的发送行为」（`ui-conversation.busyEnter`，全局部署设置）。
    *
    * 界面只用它显示运行中发送按钮的文案（排队发送 / 插话发送）与插话可用性提示；
+   * 按住 Cmd/Ctrl 时按钮显示的是加速手势对应的那一条文案（点按钮也发加速手势）；
    * **真正发出去的 `session/prompt.mode` 由宿主解析**（官方 `resolveSubmitMode`：
    * 运行中主手势用这个值、Cmd/Ctrl+Enter 用相反值，空闲恒 queue）——界面不知道
    * 「按下回车那一刻 agent 还在不在跑」，自己算会算错。

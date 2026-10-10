@@ -220,6 +220,8 @@ const entries = {
   "build/preset-match.test.mjs": "scripts/presetMatch.test.ts",
   "build/composer-draft.test.mjs": "scripts/composerDraft.test.ts",
   "build/composer-mention.test.mjs": "scripts/composerMention.test.ts",
+  // 发送手势（按钮按住 Ctrl / Cmd 的文字与点击手势）：真渲染 + 真事件链，必须登记
+  "build/composer-send.test.mjs": "scripts/composerSend.test.ts",
   "build/editor-column.test.mjs": "scripts/editorColumn.test.ts",
   "build/pending-echo.test.mjs": "scripts/pendingEcho.test.ts",
   "build/dsh-contract.test.mjs": "scripts/dshContract.test.ts",

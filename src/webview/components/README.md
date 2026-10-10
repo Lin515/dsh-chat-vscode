@@ -2,7 +2,7 @@
 
 运行环境：webview（浏览器环境，React）。上一层的说明见 [../README.md](../README.md)。
 
-- `Composer.tsx` — 底部输入框：目标条、附件、发送 / 排队（队列行真的被截断时悬停看全文），弹层规则在 `../composerCompletion.tsx`，草稿里引用的蓝字镜像与 Ctrl 悬停手指光标在 `../composerMention.ts`（本组件只渲染镜像层并同步它的几何）。
+- `Composer.tsx` — 底部输入框：目标条、附件、发送 / 排队（队列行真的被截断时悬停看全文），弹层规则在 `../composerCompletion.tsx`，草稿里引用的蓝字镜像与 Ctrl 悬停手指光标在 `../composerMention.ts`（本组件只渲染镜像层并同步它的几何）；发送按钮的文字 / 停止态与点击手势走 `../composerSend.ts`，本组件只把按住态与事件交给它。
 - `Message.tsx` — 单条消息：按 `MessageView` 种类装配正文、图片、工具行、折叠过程、轮尾文件。
 - `Markdown.tsx` — markdown 正文渲染：块切分 + 本地图片 / 文件链接的注水（hydrate）。
 - `CodeBlock.tsx` — 代码块卡片（复制 / 插入按钮；markdown 与工具卡共用，避免工具行被 DOMPurify 牵连）。

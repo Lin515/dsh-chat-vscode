@@ -33,6 +33,7 @@ import { CtxText, Ellipsis, Popover, Spinner, contextDetailLines, contextNumbers
 import { ApprovalCard, PlanReviewCard, QuestionCard, formatTps } from "./Rows";
 import type { PendingInteraction } from "../pendingInteraction";
 import { useComposerCompletion } from "../composerCompletion";
+import { clickGestureHandler, sendButtonView, watchModifierKeys } from "../composerSend";
 import { draftSegments, hitsAnyRect } from "../composerMention";
 import { openMentionAt } from "../mentionOpen";
 import { usePickerFocus } from "../pickerFocus";
@@ -412,20 +413,11 @@ export function Composer({
    * `../mentionOpen`）。按住时给它补下划线（`is-modifier`，样式在 `app.css`），
    * 松开就收回去——与 VS Code 编辑器里那条「按住 Ctrl 才显示成链接」的习惯一致。
    *
-   * 窗口失焦（点了别的应用）后键盘状态不再可靠：一律按「没按」处理。
+   * 监听本身归 `../composerSend` 的 `watchModifierKeys`：keydown / keyup 判修饰键、
+   * 窗口失焦一律按「没按」（切到别的应用后键盘状态不再可靠），发送按钮的按住态与
+   * 这一层的下划线**共用同一份状态与同一条监听**，不再各写一遍。
    */
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => setModifierHeld(event.ctrlKey || event.metaKey);
-    const onBlur = () => setModifierHeld(false);
-    window.addEventListener("keydown", onKey);
-    window.addEventListener("keyup", onKey);
-    window.addEventListener("blur", onBlur);
-    return () => {
-      window.removeEventListener("keydown", onKey);
-      window.removeEventListener("keyup", onKey);
-      window.removeEventListener("blur", onBlur);
-    };
-  }, []);
+  useEffect(() => watchModifierKeys(window, setModifierHeld), []);
 
   /**
    * 鼠标扫过输入框：命中一条引用、且按着 Ctrl / Cmd 时，把光标换成手指。
@@ -740,26 +732,34 @@ export function Composer({
   const ctxDetailTitle = contextDetailLines(ctxProps, texts).join("\n") || undefined;
 
   // 运行中的主按钮（官方 `primaryStops = running && (empty || blocked)`）：
-  // - 草稿为空 → 停止（生成中还能"点一下停"，这是用户最需要的动作）；
-  // - 草稿非空 → **发送**，文案按 `busyEnter` 标成「排队发送 / 插话发送」。
+  // - 草稿为空 → 停止（生成中还能"点一下停"，这是用户最需要的动作；按住修饰键也不变）；
+  // - 草稿非空 → **发送**，文字按这一次的手势预告走哪条路（见 `../composerSend`：
+  //   按住 Ctrl / Cmd 时换成加速手势对应的那一条，与键盘 Ctrl/Cmd+Enter 一致）。
   //
-  // 以前运行中一律是「停止」，于是设置项描述里的「发送按钮的行为」在本扩展里
-  // 根本无从生效（docs/audit-input-queue-attachments.md「拖放 / 粘贴文件」一条）。
-  const busySendLabel = state.busyEnter === "steer" ? texts.sendSteer : texts.sendQueue;
-  const sendPill = state.running && !canSend ? (
-    <button className="send-btn is-stop" title={texts.stopTitle} onClick={() => post({ type: "stop" })}>
-      <IconStop size={12} />
-    </button>
-  ) : (
-    <button
-      className="send-btn"
-      disabled={!canSend}
-      title={state.running ? busySendLabel : texts.sendTitle}
-      onClick={() => send("enter")}
-    >
-      {state.running ? busySendLabel : texts.send}
-    </button>
-  );
+  // 点击的手势**读事件当下的修饰键**（`clickGestureHandler`），不读上面那份渲染期
+  // 的 `modifierHeld` 快照——按住 / 松开与点击之间没有重渲染的保证，用快照会点错手势。
+  const sendView = sendButtonView({
+    running: state.running,
+    canSend,
+    busyEnter: state.busyEnter,
+    modifierHeld,
+    texts,
+  });
+  const sendPill =
+    sendView.kind === "stop" ? (
+      <button className="send-btn is-stop" title={sendView.title} onClick={() => post({ type: "stop" })}>
+        <IconStop size={12} />
+      </button>
+    ) : (
+      <button
+        className="send-btn"
+        disabled={!canSend}
+        title={sendView.title}
+        onClick={clickGestureHandler(send)}
+      >
+        {sendView.label}
+      </button>
+    );
 
   const barNodes: Record<string, ReactNode> = {
     "permission:icon": permissionPill(false),

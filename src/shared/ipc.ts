@@ -163,7 +163,8 @@ export type WebviewToHost =
    *
    * `gesture` 是**手势**，不是模式（官方 `ComposerSubmitGesture`）：
    * - 缺省 / `"enter"`：主发送按钮与回车（同一个手势）；
-   * - `"accelerated"`：Cmd/Ctrl+Enter。
+   * - `"accelerated"`：Cmd/Ctrl+Enter，以及按住 Cmd/Ctrl 点主发送按钮
+   *   （按钮与键盘同一条判据：按事件当下的修饰键）。
    *
    * 两者最终发到服务端的 `session/prompt.mode` 由宿主按
    * `ui-conversation.busyEnter` + 是否正在运行解析（官方 `resolveSubmitMode`：

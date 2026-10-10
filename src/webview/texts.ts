@@ -753,9 +753,9 @@ export interface Texts {
   userMessageExpand: string;
   /** 用户消息过长时默认折叠：收起。 */
   userMessageCollapse: string;
-  /** 运行中发消息：按 busyEnter=queue 时的按钮文案。 */
+  /** 运行中发消息：这一次的手势解析出 queue 时的按钮文案（判定在 `composerSend.ts`）。 */
   sendQueue: string;
-  /** 运行中发消息：按 busyEnter=steer 时的按钮文案。 */
+  /** 运行中发消息：这一次的手势解析出 steer 时的按钮文案。 */
   sendSteer: string;
   /** 队列行：把这条排队消息改成插话（仅运行中可用）。 */
   queueSteer: string;
