@@ -10,11 +10,14 @@
  * 现在规则本身收进了 module：能纯函数化的直接断言函数（第 5–9 节），必须走 React 的
  * 部分用 `react-dom/server` 渲染一个只有 hook 的组件，再把 hook 返回的 prop 当普通
  * 函数调——事件对象是手写的假对象，只带被读的字段，`textareaRef` 指向一个假节点
- * （同时是「光标真的落到哪」的观察点）。第 10–13 节跑的是真实的「事件 → 渲染」链。
+ * （同时是「光标真的落到哪」的观察点）。第 10–16 节跑的是真实的「事件 → 渲染」链，
+ * 第 17–20 节是「`@` 列表的两条入口」这一口径的回归（用户 2026-10-10）。
  *
  * 运行：npm test
  */
 import assert from "node:assert";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { createElement, type Dispatch, type KeyboardEvent, type ReactNode, type SetStateAction } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { CommandView, FileRefView, SessionRefView } from "../src/shared/chat";
@@ -310,7 +313,24 @@ console.log("completion: 分组标题 / 优先完整 / 目录按钮的判据 ✓
 console.log("completion: Tab 进入目录 / Enter 引用整个目录 ✓");
 
 // ---------- 8. 触发词判定：`/` 与 `@` 不是同一条规则 ----------
+//
+// `@` 列表**只有两条入口**（用户 2026-10-10 口径，逐字）：
+//   (1) 光标紧靠裸 `@` 右侧、且整个 `@` 内容块没有内容 —— 刚敲下 `@`，列工作区根目录；
+//   (2) 整个 `@` 内容块是一条**以 `/` 或 `\` 结尾的目录路径**（下钻写进正文的就是这个
+//       形态），光标在块内**任意位置**都算，查询用**整个内容块**，不是光标前半截。
+//
+// 「`@` 内容块」= 那个 `@` 之后那一段：不带引号时到下一个空白（或文本末尾）为止，
+// 成对引号（`@"…"`）时到闭引号为止（含空白的路径因此是一整块）；块里可以出现 `@`
+// （`node_modules/@types/` 这种真路径），但它不是触发点。触发用的 `@` 必须落在行首或
+// 空白之后——与 `/` 同一条边界规则（`mail@example.com`、`看@src` 都不算）。
+//
+// 其余一律**不弹**：已经引用的文件 / 对话、随手打的普通查询（`@src`、`@web`），
+// 把光标移进这些内容里也不许冒出列表——这是这次口径改动的正题（旧行为里
+// 「光标一进 `@src` 就弹列表」）。带引号（含空白）的引用不是例外：引号只是**引用包装**，
+// 判据看解包后的**语义路径**——以分隔符结尾（`@"my dir/"`）就按目录块开放，是文件
+// （`@"my a.ts"`）就与普通文件引用一样不弹。
 {
+  // `/` 命令通道**不动**：只认行首 / 空白后的 `/`，查询就是光标前那一段
   assert.deepStrictEqual(findTrigger("/", 1), { kind: "command", start: 0, query: "" }, "行首一个 `/` 就触发命令");
   assert.deepStrictEqual(findTrigger("/pl", 3), { kind: "command", start: 0, query: "pl" });
   assert.deepStrictEqual(
@@ -325,23 +345,223 @@ console.log("completion: Tab 进入目录 / Enter 引用整个目录 ✓");
   );
   assert.strictEqual(findTrigger("/plan off", 9), undefined, "命令参数里的 `/` 不在行首/空白后 → 不触发");
 
-  assert.deepStrictEqual(findTrigger("@", 1), { kind: "mention", start: 0, query: "" });
+  // ---- (1) 裸 `@`：光标紧靠它右侧，块里没有内容 ----
+  assert.deepStrictEqual(findTrigger("@", 1), { kind: "mention", start: 0, query: "" }, "行首裸 `@` → 根目录列表");
   assert.deepStrictEqual(
-    findTrigger("看一下 @src/webview", 16),
-    { kind: "mention", start: 4, query: "src/webview" },
-    "`@` 允许句中触发（与 `/` 同一条空白边界规则）",
+    findTrigger("看一下 @", 5),
+    { kind: "mention", start: 4, query: "" },
+    "空白后的裸 `@` 同样触发（与 `/` 同一条边界规则）",
   );
-  // `@` 与 `/` 用的是**同一条**边界规则（行首或空白）：紧贴汉字不算触发词。
-  // 这是搬家时逐字核对出来的既有行为（`findTrigger` 的 `(^|\s)` 对两者都成立），
-  // 不是「应该怎样」——断言钉在这里是防止它被无意改掉。
-  assert.strictEqual(findTrigger("看@src", 5), undefined, "`@` 紧贴汉字不算触发词（边界是行首或空白）");
-  assert.deepStrictEqual(findTrigger("  @src", 6), { kind: "mention", start: 2, query: "src" });
+  assert.deepStrictEqual(
+    findTrigger("@ 后面还有字", 1),
+    { kind: "mention", start: 0, query: "" },
+    "块后面有什么字与它无关：光标紧靠 `@` 右侧就算",
+  );
+  assert.strictEqual(
+    findTrigger("@ 后面还有字", 2),
+    undefined,
+    "光标离开了 `@` 的紧邻位置（中间隔了空白）就不算裸 `@`",
+  );
+
+  // ---- (2) 目录块：整块的语义路径以分隔符结尾，光标在块内任意位置 ----
+  const nestedText = "看一下 @src/webview/";
+  for (const caret of [5, 10, 19]) {
+    assert.deepStrictEqual(
+      findTrigger(nestedText, caret),
+      { kind: "mention", start: 4, query: "src/webview/" },
+      `目录块内的光标 ${caret}：查询必须是**整个块**（不是光标前半截）`,
+    );
+  }
+  assert.deepStrictEqual(
+    findTrigger("看一下 @src\\webview\\", 10),
+    { kind: "mention", start: 4, query: "src\\webview\\" },
+    "Windows 反斜杠写法同样是目录块（查询原样保留反斜杠，归一在写回正文时做）",
+  );
+  assert.deepStrictEqual(
+    findTrigger("@/", 2),
+    { kind: "mention", start: 0, query: "/" },
+    "`@/` 是回到工作区根目录的目录块",
+  );
+  assert.deepStrictEqual(
+    findTrigger("先看 @src/ 再继续", 6),
+    { kind: "mention", start: 3, query: "src/" },
+    "块后的空白把块切断：后面的字不属于查询",
+  );
+  assert.deepStrictEqual(
+    findTrigger("先看 @src/ 再继续", 8),
+    { kind: "mention", start: 3, query: "src/" },
+    "光标紧贴块尾（分隔符右侧、那块空白左侧）仍在块内",
+  );
+  assert.strictEqual(
+    findTrigger("先看 @src/ 再继续", 9),
+    undefined,
+    "光标越过块后的空白（进到下一段里）就不再是触发词",
+  );
+
+  // ---- (2) 带引号（含空白）的目录 token：引号是引用包装，判据看**语义路径** ----
+  //
+  // `formatFileMention` 给含空白的路径产出的就是 `@"my dir/"`：块要跨过那个空格
+  // （否则块只剩 `"my`），查询串去掉引号（服务端要的是路径，不是 mention 语法），
+  // 替换区间要覆盖闭引号（否则正文里会留半个引号）。
+  {
+    const quoted = '看一下 @"my dir/" 后面';
+    for (const caret of [6, 7, 12, 14]) {
+      assert.deepStrictEqual(
+        findTrigger(quoted, caret),
+        { kind: "mention", start: 4, query: "my dir/" },
+        `带引号目录块内的光标 ${caret}：查询是整个块的语义路径（去掉引号）`,
+      );
+    }
+    assert.strictEqual(
+      findTrigger(quoted, 15),
+      undefined,
+      "光标越过块后的空白（闭引号之外、下一段里）就不再是触发词",
+    );
+    assert.deepStrictEqual(
+      findTrigger('@"src\\webview\\"', 5),
+      { kind: "mention", start: 0, query: "src\\webview\\" },
+      "带引号的反斜杠目录同样算（语义路径以 `\\` 结尾）",
+    );
+    assert.deepStrictEqual(
+      findTrigger('@"user@host dir/"', 8),
+      { kind: "mention", start: 0, query: "user@host dir/" },
+      "引号块里的 `@`（用户名那种）不是触发点：整块仍归开头那个 `@`",
+    );
+    // 引号块**可以含空白**，于是里面也可能出现「空白之后的 `@`」（`@"my @scope/"`）：
+    // 先认外层那个完整 token，内部 `@` 就不能抢起点。逐个光标位置回归——
+    // 尤其紧贴内部 `@` 右侧那一格（旧实现正是在那里把整块切成 `scope/"`，于是目录块
+    // 当场不再触发）。
+    {
+      const inner = '看 @"my @scope/" 后面';
+      for (const caret of [4, 8, 11, 14, 15]) {
+        assert.deepStrictEqual(
+          findTrigger(inner, caret),
+          { kind: "mention", start: 2, query: "my @scope/" },
+          `引号块内出现「空白 + @」时，光标 ${caret} 仍归外层完整 token（内部 @ 不抢起点）`,
+        );
+      }
+      assert.strictEqual(
+        findTrigger(inner, 16),
+        undefined,
+        "光标越过引号块后的空白：内部 `@` 也不许在中途补一个起点出来",
+      );
+    }
+    assert.strictEqual(
+      findTrigger('看一下 @"my a.ts"', 7),
+      undefined,
+      "带引号的**文件**不以分隔符结尾 → 不弹（严格抑制）",
+    );
+    assert.strictEqual(
+      findTrigger('看一下 @"my dir/"后面', 15),
+      undefined,
+      "闭引号后紧贴着别的字：光标进到那一段里不弹",
+    );
+    assert.strictEqual(
+      findTrigger('看一下 @"my dir/', 13),
+      undefined,
+      "没有闭引号的半截引号退回按空白切块：不把它后面的正文吞进块里，也不弹",
+    );
+    assert.strictEqual(findTrigger('@""', 1), undefined, "成对空引号不算裸 `@`，也没有目录可言 → 不弹");
+    assert.strictEqual(findTrigger('@""', 3), undefined, "光标在成对空引号的闭引号之后同样不弹");
+  }
+
+  // ---- 其余已含内容的 `@`：一律不弹 ----
+  //
+  // 头两条是父代理用真实输入实测过的现场（`fill('@src/file.ts')` 整串填完后光标在末尾，
+  // 旧实现会弹列表并发出 `queryFiles: "src/file.ts"`；`@src/webview/` 把光标用
+  // Home + 右方向键挪到块中间，旧实现发的是光标前半截 `"src/"`）——这里按真实输入
+  // 与真实光标位置各钉一条。
+  assert.strictEqual(
+    findTrigger("@src/file.ts", 13),
+    undefined,
+    "整串 `@src/file.ts` 填完（光标在末尾）→ 不弹列表、不发查询",
+  );
+  assert.deepStrictEqual(
+    findTrigger("@src/webview/", 5),
+    { kind: "mention", start: 0, query: "src/webview/" },
+    "`@src/webview/` + Home + 右方向键 5 次（光标在块中间）→ 查询仍是整个块",
+  );
+  assert.strictEqual(
+    findTrigger("看一下 @src/webview", 19),
+    undefined,
+    "整块是普通路径（没有尾分隔符）→ 不弹",
+  );
+  assert.strictEqual(
+    findTrigger("看一下 @src/webview", 8),
+    undefined,
+    "把光标移进普通路径块里 → 不弹",
+  );
+  assert.strictEqual(
+    findTrigger("看一下 @web", 7),
+    undefined,
+    "普通查询（旧的模糊查询入口）不再弹列表：`@` 列表只服务「浏览目录」",
+  );
+  assert.strictEqual(
+    findTrigger("看一下 @src/a.ts", 12),
+    undefined,
+    "已引用的文件：光标移进去不弹",
+  );
+  assert.strictEqual(
+    findTrigger("@[标题](dsh-session:s1)", 3),
+    undefined,
+    "已引用的对话：光标移进去不弹",
+  );
+  assert.strictEqual(
+    findTrigger("看一下 @src/my file.ts", 12),
+    undefined,
+    "含空格的引用被空白切成 `@src/my` 那一段：不是目录块 → 不弹",
+  );
+
+  // ---- 边界：`@` 必须落在行首或空白之后 ----
+  assert.strictEqual(findTrigger("看@src/", 6), undefined, "`@` 紧贴汉字不算触发词（边界是行首或空白）");
   assert.strictEqual(findTrigger("mail@example.com 之后", 20), undefined, "`@` 后面跟着空白就不再是触发词");
-  assert.strictEqual(findTrigger("@a b", 4), undefined, "触发词里不含空白");
+  assert.strictEqual(findTrigger("@a b", 4), undefined, "块在空白处结束，光标在下一段里不算触发词");
   assert.strictEqual(findTrigger("草稿", 2), undefined, "没有触发词");
 
-  // 光标在中间：只看光标**之前**的文本
-  // （光标停在命令名之后头一个空格上 → 查询串已经结束，不再算触发词）
+  // ---- 邻近多个 `@`：光标所在块的那个赢，且**不许**退回更早的目录块 ----
+  {
+    const nearby = "看 @a/ @b/";
+    assert.deepStrictEqual(
+      findTrigger(nearby, nearby.length),
+      { kind: "mention", start: 6, query: "b/" },
+      "邻近多个 `@`：认离光标最近（且含光标）的那个块",
+    );
+    assert.deepStrictEqual(
+      findTrigger(nearby, 5),
+      { kind: "mention", start: 2, query: "a/" },
+      "光标在前一个块里就认前一个",
+    );
+    assert.strictEqual(
+      findTrigger("看 @a/ @b", 8),
+      undefined,
+      "光标在后一个块里、而它是普通查询 → 不弹（不许退回前面那个目录块）",
+    );
+    assert.deepStrictEqual(
+      findTrigger("看 @node_modules/@types/", 23),
+      { kind: "mention", start: 2, query: "node_modules/@types/" },
+      "路径里的 `@`（`@types`）不是触发点：整块仍归那个行首/空白后的 `@`",
+    );
+    for (const caret of [17, 19]) {
+      assert.deepStrictEqual(
+        findTrigger("看 @node_modules/@types/", caret),
+        { kind: "mention", start: 2, query: "node_modules/@types/" },
+        `光标 ${caret} 紧贴/落在内部 \`@\` 那一段里：起点仍是外层那个 \`@\``,
+      );
+    }
+    const mixed = '看 @"a b/" @c/';
+    assert.deepStrictEqual(
+      findTrigger(mixed, 5),
+      { kind: "mention", start: 2, query: "a b/" },
+      "邻近多个 `@`：前一个是带引号目录块时，光标在块里就认它",
+    );
+    assert.deepStrictEqual(
+      findTrigger(mixed, 13),
+      { kind: "mention", start: 10, query: "c/" },
+      "光标在后一个块里就认后一个",
+    );
+  }
+
+  // ---- 光标在中间的命令：只看光标**之前**的文本 ----
   assert.strictEqual(
     findTrigger("/plan 后面还有字", 6),
     undefined,
@@ -352,19 +572,19 @@ console.log("completion: Tab 进入目录 / Enter 引用整个目录 ✓");
     { kind: "command", start: 0, query: "plan" },
     "光标还在命令名末尾时仍是触发词",
   );
-  // 一段文本里两个触发词：**离光标最近的那个**赢（`@` 分支先判、又必须贴着光标）
+  // 一段文本里两个触发词：**离光标最近的那个**赢
   assert.deepStrictEqual(
-    findTrigger("先写 /pl 再看 @src", 11),
-    { kind: "mention", start: 10, query: "" },
-    "光标贴在第二个 `@` 后面时走提及通道（不是前面那个 `/pl`）",
+    findTrigger("先写 /pl 再看 @src/", 12),
+    { kind: "mention", start: 10, query: "src/" },
+    "光标在第二个 `@` 的目录块里 → 走提及通道（不是前面那个 `/pl`）",
   );
   assert.deepStrictEqual(
-    findTrigger("先写 /pl 再看 @src", 6),
+    findTrigger("先写 /pl 再看 @src/", 6),
     { kind: "command", start: 3, query: "pl" },
     "光标回到 `/pl` 末尾时走命令通道",
   );
 }
-console.log("completion: 触发词判定（`/` 行首 / `@` 提及） ✓");
+console.log("completion: 触发词判定（`/` 行首不变；`@` 只认裸 `@` 与目录块） ✓");
 
 // ---------- 9. 弹层可见性 ----------
 {
@@ -583,8 +803,11 @@ function nextFrame(prev: Frame, overrides: Partial<UseComposerCompletionInput> =
 // 落光标必须在 `requestAnimationFrame` 里：同步改 textarea 会有两种表现——
 // 要么被 React 这次重渲染按新 prop 顶掉（光标跑回原处），要么在受控 textarea 上
 // 被 React 拒绝。所以这里既断言「排了 rAF」，也放行后断言「真的落到了插入内容之后」。
+//
+// 列表的入口用裸 `@`（新口径的第 (1) 条）：根目录那一层没有 `..`，第 0 条候选就是
+// `src/dsh` 目录，Enter（pick）与下钻写出的是同一个 `@src/dsh/`。
 {
-  const f = frame("看看 @a", 6);
+  const f = frame("看看 @", 4);
   assert.ok(f.html.includes("a.txt"), "`a.txt` 有候选，弹层应当渲染出来");
   assert.deepStrictEqual(f.posted, [], "渲染本身不该发帧");
 
@@ -601,10 +824,10 @@ console.log("completion(hook): 选完立刻写回草稿 + 光标在 rAF 里落 �
 
 // ---------- 11. 选完先 dismissed 一次，弹层不立刻重开 ----------
 //
-// 没有这条记忆时，选完那次 keyup 的重新探测会在同一个位置再命中 `@src/dsh/`，
-// 弹层关了又弹（用户看到「列表闪一下」）。
+// 没有这条记忆时，选完那次 keyup 的重新探测会在同一个位置再命中目录块，弹层关了又弹
+// （用户看到「列表闪一下」）。
 {
-  const first = frame("看看 @a", 6);
+  const first = frame("看看 @", 4);
   assert.ok(first.html.includes("popover-item"), "前提：弹层开着");
   press(first, "Enter");
   assert.strictEqual(first.draft, "看看 @src/dsh/");
@@ -613,9 +836,9 @@ console.log("completion(hook): 选完立刻写回草稿 + 光标在 rAF 里落 �
   assert.strictEqual(after.html, "", "选完之后同一个位置不许再弹（否则就是「按回车列表闪一下」）");
   assert.ok(!after.html.includes("popover-item"));
 
-  // 光标真的动了（记忆失效）→ 允许重新打开
-  const moved = frame("看看 @src/dsh/", 4);
-  assert.ok(moved.html.includes("popover-item"), "光标挪回 `@` 里就是新的编辑动作，弹层该回来");
+  // 光标真的动了（记忆失效）→ 允许重新打开：新位置在目录块里，本来就该开着
+  const moved = frame("看看 @src/dsh/", 6);
+  assert.ok(moved.html.includes("popover-item"), "光标挪进 `@` 里就是新的编辑动作，弹层该回来");
 }
 console.log("completion(hook): 「刚选完先别重开」的记忆 ✓");
 
@@ -624,7 +847,7 @@ console.log("completion(hook): 「刚选完先别重开」的记忆 ✓");
 // 不 `stopPropagation` 的话，这次 ESC 会落到 App 的 window 层兜底监听上——
 // 用户只是想关掉候选列表，结果把正在跑的那一轮中止了。
 {
-  const f = frame("@src", 4);
+  const f = frame("@src/", 5);
   assert.ok(f.html.includes("popover"), "前提：弹层开着");
 
   const calls = press(f, "Escape");
@@ -649,7 +872,7 @@ console.log("completion(hook): ESC 优先级链（弹层先消费、其余放行
 //
 // 两次都让 highlight 停在 0（不做键盘导航）：上面那个「触发词变化时把高亮复位」
 // 的 effect 会在重新渲染那一帧把导航结果抹掉（真实 React 里会另有一次渲染把它花掉），
-// 而第 0 条候选本来就够用——`..` 那行验 pick、`@a` 的第一条（目录）验 drill。
+// 而第 0 条候选本来就够用——`..` 那行验 pick、裸 `@` 的第一条（目录）验 drill。
 {
   const start = frame("@src/webview/", 13);
   // 列表第一行是 `..`（回到上一层），标题来自词典
@@ -660,8 +883,9 @@ console.log("completion(hook): ESC 优先级链（弹层先消费、其余放行
   press(start, "Enter");
   assert.strictEqual(start.draft, "@src/", "「..」= 回到上一层（正文只留上一层的查询串）");
 
-  // Tab（drill）在目录行 = 下钻：正文换成该目录的查询串（`..` 不出现，所以第 0 条就是目录）
-  const tabbed = frame("@a", 2);
+  // Tab（drill）在目录行 = 下钻：正文换成该目录的查询串（根目录那一层没有 `..`，
+  // 所以第 0 条就是目录；入口只能是裸 `@`——普通查询已经不再弹列表）
+  const tabbed = frame("@", 1);
   press(tabbed, "Tab");
   assert.strictEqual(tabbed.draft, "@src/dsh/", "Tab 下钻：正文变成目录查询串（继续留在候选态）");
   assert.strictEqual(tabbed.node.lastSelection, undefined, "下钻的落光标同样在 rAF 里（不许同步做）");
@@ -680,21 +904,39 @@ console.log("completion(hook): Enter / Tab 的接线 ✓");
 {
   // 候选路径来自 Windows 侧（反斜杠）时，下钻写进正文的必须是正斜杠
   const winDir: FileRefView[] = [{ path: "src\\dsh", kind: "directory" }];
-  const drilled = frame("@s", 2, { fileRefs: { query: "@s", items: winDir, sessions: [] } });
+  const drilled = frame("@", 1, { fileRefs: { query: "", items: winDir, sessions: [] } });
   press(drilled, "Tab");
   assert.strictEqual(drilled.draft, "@src/dsh/", "下钻：候选里的反斜杠要归一（不许写成 `@src\\dsh/`）");
 
   // 「..」那行同理：用户手输反斜杠时，上一层也要归一再写回正文
-  const back = frame("@src\\dsh\\we", 11, { fileRefs: { query: "@src\\dsh\\we", items: winDir, sessions: [] } });
+  const back = frame("@src\\dsh\\", 9, { fileRefs: { query: "@src\\dsh\\", items: winDir, sessions: [] } });
   assert.ok(back.html.includes(".."), "进到子目录后，「..」那行必须在");
   press(back, "Enter");
   assert.strictEqual(back.draft, "@src/", "回上一层：`src\\` 也要写成 `@src/`");
 
   // 选中带空格的目录：引号成对，且尾斜杠留在引号**内**（目录标记不能丢）
   const spaced: FileRefView[] = [{ path: "docs\\my dir", kind: "directory" }];
-  const picked = frame("@d", 2, { fileRefs: { query: "@d", items: spaced, sessions: [] } });
+  const picked = frame("@", 1, { fileRefs: { query: "", items: spaced, sessions: [] } });
   press(picked, "Enter");
   assert.strictEqual(picked.draft, '@"docs/my dir/"', "选中带空格目录：引号成对 + 分隔符归一");
+
+  // 下钻 / 回上一层：含空白的目录同样要写带引号的查询形态。不带引号的话块会在空白处
+  // 结束（`@my`），下钻当场掉出候选态——所以查询形态与选中形态共用同一份拼写规则。
+  const spacedNested: FileRefView[] = [{ path: "my dir/sub", kind: "directory" }];
+  const intoNested = frame("@", 1, { fileRefs: { query: "", items: spacedNested, sessions: [] } });
+  press(intoNested, "Tab");
+  assert.strictEqual(intoNested.draft, '@"my dir/sub/"', "下钻含空格目录：写回带引号的目录块");
+
+  const backSpaced = frame('@"my dir/sub/"', 8, {
+    fileRefs: { query: "my dir/sub/", items: [], sessions: [] },
+  });
+  assert.ok(backSpaced.html.includes(".."), "前提：进了子目录就有「..」那一行");
+  press(backSpaced, "Enter");
+  assert.strictEqual(
+    backSpaced.draft,
+    '@"my dir/"',
+    "回到含空白的上一层：引号跟着保留（否则列表会掉出候选态）",
+  );
   console.log("completion(hook): 引用文本归一化（分隔符 / 成对引号） ✓");
 }
 
@@ -763,7 +1005,7 @@ console.log("completion(hook): 弹层没接管时的 Enter = 发送 ✓");
     "`/` 菜单里不许出现「Tab 进入目录」那套说明（命令候选没有目录可进）",
   );
 
-  const mention = frame("@src", 4);
+  const mention = frame("@src/", 5);
   assert.ok(mention.html.includes(TEXTS.mentionHint), "`@` 菜单底部的提示仍是带 Tab 的那份");
 
   // ② 提示栏是滚动列表的**兄弟**节点：层数为 2 才算「在列表之外」
@@ -821,7 +1063,7 @@ console.log("completion(hook): 底部提示栏（命令菜单去掉 Tab、常驻
     );
   }
 
-  const f = frame("@a", 2);
+  const f = frame("@a/", 3);
   const rows = rowPropsOf(f.popoverNode);
   assert.ok(rows.length > 1, "前提：这一帧有多条候选行");
   assert.strictEqual(selectedIndexOf(f.popoverNode), 0, "前提：起点选中的是第 0 条");
@@ -847,5 +1089,149 @@ console.log("completion(hook): 底部提示栏（命令菜单去掉 Tab、常驻
   );
 }
 console.log("completion(hook): 悬停改高亮只认真实指针移动（滚动抢不走） ✓");
+
+/* ============ `@` 列表的两条入口（用户 2026-10-10 口径） ============ */
+
+// ---------- 17. 只在「裸 `@`」与「目录块」两处开列表 ----------
+//
+// 行为断言（真渲染 hook）：列表开不开、开的时候查询串是不是**整个块**。
+// 「普通查询 / 已引用的文件 / 已引用的对话 / 带引号的**文件**」的判据在第 8 节用
+// `findTrigger` 钉死了，这里补的是**界面这一层**：光标移进这些内容里，弹层里一个
+// 候选行都不许出现；带引号的**目录**（`@"my dir/"`）反过来要开着（见下面那一小段）。
+{
+  // (1) 裸 `@`：列表自动打开，工作区根目录那一层照旧带对话候选
+  const bare = frame("@", 1);
+  assert.ok(bare.html.includes("popover-item"), "刚敲下裸 `@` → 根目录列表自动打开");
+  assert.ok(bare.html.includes(TEXTS.mentionSessions), "根目录这一层照旧列对话候选");
+
+  // (2) 目录块：光标在块内**任意位置**都开着，且查询串是整块——判据是「..」指向
+  //     `src/`：若查询串只取光标前半截，后两帧的「..」会指回工作区根目录
+  //     （`mentionParent` 拿到的就是半截串），正是这次要修掉的那种偏差。
+  const nested = "@src/webview/";
+  for (const [label, caret] of [["紧靠 `@`", 1], ["块中间", 6], ["块末尾", 13]] as const) {
+    const f = frame(nested, caret);
+    assert.ok(f.html.includes("popover-item"), `光标在目录块（${label}）→ 列表开着`);
+    assert.ok(
+      f.html.includes('popover-item-sub">src/<'),
+      `查询串必须是整个块（${label}）：「..」指向 src/ 而不是根目录`,
+    );
+    assert.ok(!f.html.includes(TEXTS.mentionSessions), `进了目录不再列对话候选（${label}）`);
+  }
+
+  // 带引号（含空白）的**目录** token 同样是目录块：列表开着，且查询是整个块的语义路径
+  // （`my dir/` 的上一层是工作区根目录 → `..` 那行显示词典里的「返回上一层」）
+  {
+    const spacedDir = '看一下 @"my dir/" 后面';
+    const f = frame(spacedDir, 7);
+    assert.ok(f.html.includes("popover-item"), "带引号空格的目录 token：光标在块里 → 列表开着");
+    assert.ok(f.html.includes('popover-item-main is-priority">..'), "它是目录块（顶部有 `..`）");
+    assert.ok(f.html.includes(TEXTS.mentionParent), "`..` 指向工作区根目录（语义路径 `my dir/` 的一层）");
+    assert.ok(!f.html.includes(TEXTS.mentionSessions), "进了目录不再列对话候选");
+  }
+
+  // 其余已含内容的 `@`：光标移进去一个候选行都不许出现
+  const closed: Array<[string, string, number]> = [
+    ["已引用的文件", "看一下 @src/a.ts", 8],
+    ["整串填完的普通路径（光标在末尾）", "@src/file.ts", 13],
+    ["已引用的对话", "@[标题](dsh-session:s1)", 4],
+    ["普通查询", "看一下 @web", 7],
+    ["没有尾分隔符的路径", "看一下 @src/webview", 10],
+    ["带引号空格的文件", '看一下 @"my a.ts"', 7],
+  ];
+  for (const [label, draft, caret] of closed) {
+    assert.strictEqual(frame(draft, caret).html, "", `${label}：光标移进去不许弹出列表`);
+  }
+}
+console.log("completion(hook): `@` 列表只认裸 `@` 与目录块（其余内容不弹） ✓");
+
+// ---------- 18. 目录整段替换：换掉的是整个块，前后文一个字不动 ----------
+//
+// 光标在块中间时，替换区间也必须是**整个块**（`tokenSpan` 取 `trigger.query` 的全长，
+// 而新口径下 `query` 就是整块）：只换光标前半截会留下半截路径，把块后面的正文一起
+// 吃进去则是「误吞后缀」。这里前后各挂一段文字，两边都要在。
+{
+  const text = "前文 @src/webview/ 后文";
+  const up = frame(text, 8); // 光标在 `src/we|bview/` 中间
+  assert.ok(up.html.includes("popover-item"), "前提：目录块里列表开着");
+  press(up, "Enter"); // 第 0 条是 `..` = 回上一层
+  assert.strictEqual(up.draft, "前文 @src/ 后文", "整块被换掉：前缀与后缀一个字都没被吃掉");
+  assert.ok(flushRaf() >= 1, "落光标仍走 rAF");
+  assert.strictEqual(up.node.lastSelection, "前文 @src/".length, "光标落在替换结果之后");
+
+  // 下钻同样整段替换（裸 `@` 的第 0 条是 `src/dsh` 目录），后缀不许动
+  const wide = frame("前文 @ 后文", 4, {
+    fileRefs: { query: "", items: [{ path: "src/webview", kind: "directory" }], sessions: [] },
+  });
+  press(wide, "Tab");
+  assert.strictEqual(wide.draft, "前文 @src/webview/ 后文", "下钻写入的是目录块，前后文不动");
+
+  // 带引号的目录块：替换区间要**覆盖闭引号**（按查询串长度算会留下一个孤引号），
+  // 前后文同样一个字不动
+  const quoted = frame('前文 @"my dir/" 后文', 6, {
+    fileRefs: { query: "my dir/", items: [], sessions: [] },
+  });
+  assert.ok(quoted.html.includes("popover-item"), "前提：带引号目录块里列表开着");
+  press(quoted, "Enter"); // 第 0 条是 `..`：`my dir/` 的上一层是工作区根目录
+  assert.strictEqual(
+    quoted.draft,
+    "前文 @ 后文",
+    "带引号目录块整段替换：闭引号一起被换掉，前后文不误吞",
+  );
+  assert.ok(flushRaf() >= 1, "落光标仍走 rAF");
+  assert.strictEqual(quoted.node.lastSelection, "前文 @".length, "光标落在替换结果之后");
+}
+console.log("completion(hook): 目录块整段替换（前后文不误吞） ✓");
+
+// ---------- 19. 不发重复 queries：光标在块内挪动不算「查询变了」 ----------
+//
+// 一次 `@` 查询在服务端是「扫全部会话日志」那一趟（百毫秒级，见
+// `docs/adr/0002-mention-candidates-two-frames.md`），所以「同一个目录块里挪光标」
+// 绝不能重发 `queryFiles`：重取 effect 的依赖只有触发词种类 + 查询串。
+//
+// 为什么只钉到「依赖数组」这一层：本仓库的界面断言走 `react-dom/server` 渲染，
+// **effect 不跑**，这种时序在无头环境里造不出来（`mentionCandidates.test.ts` 对同一个
+// effect 用的也是结构判据 + 发射点计数，理由相同）。
+{
+  const text = "@src/webview/";
+  const queries = [1, 6, 13].map((caret) => findTrigger(text, caret)?.query);
+  assert.deepStrictEqual(
+    queries,
+    ["src/webview/", "src/webview/", "src/webview/"],
+    "光标在块内的位置不改变查询串（于是「查询串变了才重取」不会因挪光标而多发一帧）",
+  );
+  const quotedText = '@"my dir/"';
+  assert.deepStrictEqual(
+    [1, 7, 9].map((caret) => findTrigger(quotedText, caret)?.query),
+    ["my dir/", "my dir/", "my dir/"],
+    "带引号的目录块同理：整块一个查询串（引号只是包装，不进查询）",
+  );
+
+  const source = readFileSync(join(process.cwd(), "src", "webview", "composerCompletion.tsx"), "utf8");
+  assert.ok(
+    /\}, \[trigger\?\.kind, trigger\?\.query\]\);/.test(source),
+    "`@` 重取 effect 的依赖只能是「触发词种类 + 查询串」：光标位置进依赖就会每挪一格多发一帧",
+  );
+}
+console.log("completion(hook): 同一目录块内挪光标不发重复 queries ✓");
+
+// ---------- 20. 下钻自动变目录 → 自然满足 (2) ----------
+//
+// 「新输入裸 `@` 自动打开、通过列表下钻自动变目录」是这套口径能用的关键：下钻写回
+// 正文的就是 `@<目录>/`，于是下一帧的触发词自然满足 (2)，列表不会因为换了个查询串
+// 而关掉。
+{
+  const root = frame("@", 1);
+  press(root, "Tab"); // 第 0 条是 `src/dsh` 目录
+  assert.strictEqual(root.draft, "@src/dsh/", "裸 `@` + Tab = 进第一条目录");
+
+  const drilled = frame(root.draft, root.draft.length);
+  assert.ok(drilled.html.includes("popover-item"), "下钻后的目录块仍开着列表（自然满足 (2)）");
+  assert.ok(
+    drilled.html.includes('popover-item-sub">src/<'),
+    "下钻后的查询串是整块 `src/dsh/`：「..」指向 src/",
+  );
+  assert.ok(!drilled.html.includes(TEXTS.mentionSessions), "进了目录不再列对话候选");
+}
+console.log("completion(hook): 下钻自动变目录块（列表不关） ✓");
 
 console.log("\nmentionNav: all assertions passed");

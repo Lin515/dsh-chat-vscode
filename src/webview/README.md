@@ -32,7 +32,7 @@
 
 - `autoScroll.ts` — 聊天区自动滚动（贴底 / 回底胶囊）：一个模块一个端口（`AutoScrollPort` 范例）。
 - `find.ts` — 会话查找（Ctrl+F）的纯逻辑：文本节点序列上的子串定位与激活下标环绕推进；DOM 胶水在 `components/FindBar.tsx`。
-- `composerCompletion.tsx` — 输入框 `@` / `/` 补全的唯一归属地：触发判定、候选取用与优先级、键盘导航、弹层 JSX。
+- `composerCompletion.tsx` — 输入框 `@` / `/` 补全的唯一归属地：触发判定（`@` 只认「裸 `@`」与「以分隔符结尾的目录块」两条入口，带引号含空白的目录 token 按同一判据解包，查询与替换都用整个块）、候选取用与优先级、键盘导航、弹层 JSX。
 - [composerSend.ts](<composerSend.ts>) — 发送手势与主按钮文案的唯一出处：按住 Ctrl / Cmd 时按钮文字换成这一次真会走的那条路、点按钮发加速手势（与键盘同一条判据），按住态的 keydown / keyup / blur 监听也在这里。界面只发手势，模式由宿主解析。
 - `mentionLinks.ts` — 正文里 `@` 引用的可点目标判定（`@文件` / `@目录/` / `@会话` 各指向谁、哪一段文字算引用）。
 - `mentionOpen.ts` — 点到一条 `@` 引用之后发哪条帧的唯一分派（已发出消息里的链接与草稿区的 Ctrl+单击共用）。

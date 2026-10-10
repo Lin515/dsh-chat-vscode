@@ -10,13 +10,15 @@
  * `tokenSpan` / `caretAfterInsert` / `candidateRows` / `actionFor` / `popoverVisible`），
  * 断言见 `scripts/mentionNav.test.ts`（行为）与 `scripts/pathInsert.test.ts`（光标算术）。
  *
- * 行为与搬家前**逐字一致**——每一条都对应一条断言：
+ * 行为与搬家前**逐字一致**——每一条都对应一条断言（唯一的例外是第 6 条里的 `@`
+ * 入口：2026-10-10 起 `@` 列表只认「裸 `@`」与「目录块」两条，见 `findTrigger`）：
  * 1. 草稿的两次写（`onDraft` 本地 state + `post({type:"setDraft"})` 宿主持久化）顺序与内容不变；
  * 2. 落光标仍在 `requestAnimationFrame` 里（否则 caret 会被 React 的重渲染顶掉）；
  * 3. `pick`（引用 token / 命令名）与 `drill`（进目录）的差别；
  * 4. 选完先 `dismissed` 一次，避免弹层立刻重开；
  * 5. ESC 优先级链：弹层打开时 ESC 先关弹层并 `stopPropagation`（不能把正在跑的那一轮中止了）；
- * 6. `/` 只有在**行首或空白后**且名字在命令目录里才走命令通道（与 `@` 提及的判定不同）；
+ * 6. `/` 只有在**行首或空白后**且名字在命令目录里才走命令通道；`@` 走自己的内容块判定
+ *    （两条入口见 `findTrigger`），两条通道的边界规则相同、判据不同；
  * 7. 指针悬停改高亮**只认 `mousemove`**：列表为露出键盘选中的那行而滚动时，浏览器会把
  *    `mouseenter` 补发给「刚滚到静止指针底下」的行，等于凭空抢走键盘的高亮（官方
  *    `MenuView` 同一判词，现场与断言见行上的注释与 `scripts/mentionNav.test.ts` 第 16 节）。
@@ -69,26 +71,152 @@ export type CandidateAction = "pick" | "drill";
 /**
  * 找出光标前正在输入的触发词。
  *
- * 两者都以「行首或空白」为边界：
- * - `/` 若只认行首，用户在已有文字后打空格再输 `/` 就弹不出菜单（很常见）；
- * - 而路径里的 `/`（`src/dsh/controller.ts`）前面是非空白字符，用空白边界
- *   就能既允许句中触发、又不误判路径。
+ * `/` 与 `@` **不是同一条规则**：
+ * - `/`：以「行首或空白」为边界（只认行首的话，用户在已有文字后打空格再输 `/` 就弹不出
+ *   菜单，很常见）；而路径里的 `/`（`src/dsh/controller.ts`）前面是非空白字符，
+ *   用空白边界就能既允许句中触发、又不误判路径。查询串就是光标前那一段。
+ * - `@`：列表**只有两条入口**（用户口径），因为它的候选是**服务端按查询串列目录 /
+ *   扫会话**——列表该出现的地方只有「刚开始敲」与「在目录里浏览」：
+ *   1. **裸 `@`**：光标紧靠那个 `@` 的右侧、且整个 `@` 内容块没有内容 → 列工作区根目录；
+ *   2. **目录块**：整个 `@` 内容块是一条以 `/` 或 `\` 结尾的目录路径（下钻与 `..` 写回
+ *      正文的就是这个形态），光标在块内**任意位置**都算，查询用**整个块**。
+ *   其余一律不触发：已经引用的文件 / 对话、随手打的普通查询（`@src`、`@web`）——
+ *   把光标移进这些内容里不该冒出候选列表。
+ *   含空白的路径引用（`formatFileMention` 产出 `@"my dir/"`）**按同一个判据算**：引号是
+ *   引用包装，块是「`@` + 成对引号之间那一段」的整块，语义路径以分隔符结尾就是目录块；
+ *   查询与替换都去掉那对引号（替换区间覆盖闭引号，正文里不留半个引号）。带引号的
+ *   **文件**（`@"my a.ts"`）与对话引用一样不以分隔符结尾 → 不触发。
  *
- * 纯函数：断言见 `scripts/mentionNav.test.ts`（含「`@` 能与 `/` 在同一段文本里区分」）。
+ * 纯函数：断言见 `scripts/mentionNav.test.ts`（含「`@` 能与 `/` 在同一段文本里区分」
+ * 与上面两条入口的逐字口径）。
  */
 export function findTrigger(text: string, caret: number): Trigger | undefined {
-  const before = text.slice(0, caret);
-  const mention = /(^|\s)@([^\s@]*)$/.exec(before);
-  if (mention) {
-    const query = mention[2] ?? "";
-    return { kind: "mention", start: before.length - query.length - 1, query };
+  const at = clampIndex(caret, text.length);
+  const block = mentionBlockAt(text, at);
+  if (block) {
+    // (1) 裸 `@`：块里一个字都没有，且光标紧靠它右侧（隔了空白的 `@ |` 不算、
+    //     成对空引号那一块也不算）
+    const bare = !block.quoted && block.body.length === 0 && at === block.start + 1;
+    // (2) 目录块：整块以分隔符结尾。查询串取**整个块**——光标可能停在块中间
+    // （鼠标点进来、方向键挪回来），只取光标前半截会查错一层目录，替换时还会
+    // 留下半截路径。
+    if (bare || isDirectoryBlock(block.body)) {
+      return { kind: "mention", start: block.start, query: block.body };
+    }
   }
+  const before = text.slice(0, at);
   const command = /(^|\s)\/([^\s/]*)$/.exec(before);
   if (command) {
     const query = command[2] ?? "";
     return { kind: "command", start: before.length - query.length - 1, query };
   }
   return undefined;
+}
+
+/**
+ * 一个 `@` **内容块**。
+ *
+ * 两种形态（判据同一个：`@` 到块尾之间那一段的**语义路径**）：
+ * - 不带引号：从 `@` 到下一个空白（或文本末尾）——`@src/webview/`；
+ * - 带引号（`formatFileMention` 给含空白路径产出的形态）：从开引号到**成对的闭引号**，
+ *   块因此可以跨过空白（`@"my dir/"` 是一整块）。**没有闭引号时退回按空白切块**——
+ *   半截引号不许把后面的正文吞进块里。
+ */
+interface MentionBlock {
+  /** 触发用的 `@` 在文本里的下标。 */
+  start: number;
+  /** 块之后第一个字符的下标（下一个空白 / 文本末尾；带引号时是闭引号之后）。 */
+  end: number;
+  /** 块的**语义路径**（不含 `@`，带引号时也不含那对引号）——可直接当查询串。 */
+  body: string;
+  /** 是不是成对引号的形态（空引号块不算裸 `@`，见 `findTrigger`）。 */
+  quoted: boolean;
+}
+
+/**
+ * 光标落在哪一个 `@` 内容块里（不在任何块里就是 undefined）。
+ *
+ * 分两步，**先认完整的带引号 token、再退回按空白切块**：
+ * 1. 光标落在某个成对引号的 token（`@"…"`）区间里时，那个 token 拥有整段——引号块
+ *    **可以含空白**，于是里面也可能出现「空白之后的 `@`」（`@"my @scope/"`）。
+ *    先认外层 token，那些内部 `@` 就不可能被当成新的触发起点（否则光标一挪到它右侧，
+ *    整块就变成 `scope/"`、目录块当场不再触发）。
+ * 2. 光标不在任何引号 token 里才按空白切块：块里可以出现 `@`
+ *    （`node_modules/@types/` 这种真路径要走得通），但**触发点**必须是「行首或空白之后」
+ *    的那个 `@`——与 `/` 同一条边界规则，于是 `mail@example.com`、`看@src` 都不会误开
+ *    列表。块里那些不合边界的 `@`（`@types` 那个）只是块内容，不另起一个块。
+ *
+ * 两步都是「从光标往前找**最近**的那个合格起点，且光标必须落在它的块内」
+ * （`@src/ |` 里光标已经出了块，不算）。找到就返回——不再往前退：光标所在的块若是
+ * 普通查询，也不该退回更早那个目录块去开列表。
+ */
+function mentionBlockAt(text: string, caret: number): MentionBlock | undefined {
+  const quoted = quotedMentionBlockAt(text, caret);
+  if (quoted) return quoted;
+  let from = caret;
+  while (from > 0) {
+    const start = text.lastIndexOf("@", from - 1);
+    if (start < 0) return undefined;
+    if (start === 0 || /\s/u.test(text[start - 1] ?? "")) {
+      const block = mentionBlockFrom(text, start);
+      if (caret <= block.end) return block;
+    }
+    from = start;
+  }
+  return undefined;
+}
+
+/**
+ * 光标所在的那个**成对引号** token（`@"…"`）；没有就是 undefined。
+ *
+ * 只认「行首或空白之后」的 `@"`（与其余触发点同一条边界规则），闭引号必须在光标处或
+ * 其后（光标落在引号块**内**、含紧贴闭引号右侧那一格都算）。**没有闭引号时不算**：
+ * 半截引号退回按空白切块，不许把它后面的正文吞进块里（见 {@link MentionBlock}）。
+ */
+function quotedMentionBlockAt(text: string, caret: number): MentionBlock | undefined {
+  let search = caret - 1;
+  while (search >= 0) {
+    const start = text.lastIndexOf('@"', search);
+    if (start < 0) return undefined;
+    if (start === 0 || /\s/u.test(text[start - 1] ?? "")) {
+      const close = text.indexOf('"', start + 2);
+      if (close >= 0 && caret <= close + 1) {
+        return { start, end: close + 1, body: text.slice(start + 2, close), quoted: true };
+      }
+    }
+    search = start - 1;
+  }
+  return undefined;
+}
+
+/** 从某个合格 `@` 起算整个内容块（形态见 {@link MentionBlock}）。 */
+function mentionBlockFrom(text: string, start: number): MentionBlock {
+  if (text[start + 1] === '"') {
+    const close = text.indexOf('"', start + 2);
+    if (close >= 0) {
+      return { start, end: close + 1, body: text.slice(start + 2, close), quoted: true };
+    }
+  }
+  const end = mentionBlockEnd(text, start + 1);
+  return { start, end, body: text.slice(start + 1, end), quoted: false };
+}
+
+/** 从 `from` 起第一个空白字符的下标；没有就是文本末尾。 */
+function mentionBlockEnd(text: string, from: number): number {
+  for (let index = from; index < text.length; index += 1) {
+    if (/\s/u.test(text[index] ?? "")) return index;
+  }
+  return text.length;
+}
+
+/**
+ * 整块内容是不是**目录路径**：以 `/` 或 `\` 结尾（空块不算）。
+ *
+ * 两种分隔符都认：候选路径来自 Windows 侧时是 `src\webview`，用户也可能手输反斜杠
+ * （写回正文时的归一见 `shared/mentions.ts` 的 `normalizeMentionPath`）。
+ */
+function isDirectoryBlock(body: string): boolean {
+  return /[\\/]$/u.test(body);
 }
 
 /** 这一条候选是不是「对话引用」（有 `mention`，没有文件那样的 `kind`）。 */
@@ -134,12 +262,12 @@ export function rankCandidates(
  * （见 `dsh/fileRefListing.ts`），于是一个大目录可能列出几百行；每次高亮变化都要重渲染
  * 这一列，行数不受控时打字与鼠标扫过都会顿。
  *
- * 为什么 200 不会把真实文件挡掉：
+ * 这个上限的边界（不要读成「这里能访问到任何文件」）：
  * - 一屏约 8 行（`.trigger-popover` 限高 260 设计像素），200 行 = 25 屏——作为「翻目录」
  *   的用法早就不可用了；
- * - 真要找某个文件**不靠翻列表**：再敲一个字符就转成全局模糊查询（查询串里有非空的
- *   fragment 时服务器按分数排序），任何文件都能这样被搜到。所以这个上限只约束「纯目录
- *   浏览」这一段。
+ * - 能弹列表的只有「裸 `@`」与「以分隔符结尾的目录块」，查询串就是那一层的目录路径
+ *   （见 `findTrigger`），所以**同一层里排在第 200 条之后的条目在这一列里看不到**。
+ *   上限收在这一层只是为了让渲染行数受控，不是可达性保证。
  *
  * 它同时是**唯一**的上限：此前渲染处另有一道没注释的 40 行截断（`.popover-list` 里把
  * `candidates` 直接切掉前 40 条之后的部分），而键盘导航按 `candidates.length` 走下标——
@@ -151,9 +279,14 @@ export const CANDIDATE_LIST_LIMIT = 200;
 /**
  * 触发词在正文里占的区间（含那个 `@` / `/`）。
  *
+ * `@` 的区间**按文本重算整个内容块**（`mentionBlockFrom`），不是
+ * `start + 1 + query.length`：带引号的目录块里查询串是去掉引号的语义路径，长度比正文里
+ * 那一段短两个引号——按 query 长度算会把闭引号留在正文里。重算出来的区间覆盖整块
+ * （含那对引号），所以光标停在块中间时也是整段替换。命令的区间仍是
+ * `start + 1 + query.length`（查询串就是光标前那一段）。
+ *
  * 内部实现：只有 `replaceToken` 用它，导出没有信息增量（调用方一律只要
- * `caretAfterInsert` 的「新文本 + 新光标」）。位置基于 `findTrigger` 的前提
- * ——光标就在触发词末尾。
+ * `caretAfterInsert` 的「新文本 + 新光标」）。
  */
 interface TokenSpan {
   before: string;
@@ -167,7 +300,12 @@ interface TokenSpan {
 /** 算触发词区间。 */
 function tokenSpan(text: string, trigger: Trigger): TokenSpan {
   const start = clampIndex(trigger.start, text.length);
-  const end = clampIndex(trigger.start + 1 + trigger.query.length, text.length);
+  const end = clampIndex(
+    trigger.kind === "mention"
+      ? mentionBlockFrom(text, start).end
+      : start + 1 + trigger.query.length,
+    text.length,
+  );
   return { before: text.slice(0, start), after: text.slice(end), start, end };
 }
 
@@ -337,6 +475,28 @@ export function popoverVisible(
  */
 export function clickAction(shape: CandidateRow): CandidateAction {
   return shape.folder ? "drill" : "pick";
+}
+
+/**
+ * 下钻 / 回上一层写回正文的 `@` token（`drill` 与 `..` 共用，方向只差那个路径）。
+ *
+ * 三件事都由它一处负责：
+ * - **分隔符归一**：候选路径可能来自 Windows 侧（`src\webview`），不归一就会在家里
+ *   留下 `@src\webview/`（用户 2026-09-21 报的）；
+ * - **含空白要带引号**：`@` 列表的触发判据是「整块是以分隔符结尾的目录路径」，而
+ *   不带引号时块在空白处结束——`@my dir/` 会当场掉出候选态（块只剩 `my`），
+ *   所以空格路径写成 `@"my dir/"`（`formatFileMention` 产出，与选中候选写回正文的
+ *   拼写同一份规则，见 `shared/mentions.ts` 的文件头）；
+ * - **回到工作区根目录写裸 `@`**：那是入口 (1) 的形态，写成 `@/` 会多出一个没有意义的
+ *   根目录段。
+ *
+ * 路径含控制字符或 `"` 时 `formatFileMention` 给不出 token（那种路径本来就不可引用），
+ * 退回与归一后同形的裸写法，行为与不带引号时代一致。
+ */
+function drillQueryToken(path: string): string {
+  const normalized = normalizeMentionPath(path ?? "");
+  if (normalized === "") return "@";
+  return formatFileMention(normalized, "directory") ?? `@${normalized}/`;
 }
 
 /* ============================ hook ============================ */
@@ -740,20 +900,18 @@ function useCompletion(
         // 「..」：回到上一层目录，与 drill 同一条链路、方向相反。
         // 分隔符归一（用户 2026-09-21 口径）：用户手输 `src\webview\` 时上一层是
         // `src\`，写成 `@src/` 才和引用文本的语法一致（见 `shared/mentions.ts`）。
-        const parent = normalizeMentionPath(outcome.path);
-        replace(`@${parent}`);
+        // 含空白的上一层写成带引号的形态（见 `drillQueryToken`）。
+        replace(drillQueryToken(outcome.path));
         return;
       }
       if (outcome.type === "drill") {
         // 目录 + Tab / 点行主体：**打开**它（下钻），不是把它本身载入。正文里补上
         // 结尾斜杠，服务端按它当目录查询，列表于是换成该目录的内容。
         //
-        // 分隔符同样归一：候选路径可能来自 Windows 侧（`src\webview`），
-        // 不归一就会在正文里留下 `@src\webview/`（用户 2026-09-21 报的）。
-        // 这里写的是**查询形态**（还没选中任何东西），所以不加引号——带空格的路径
-        // 本来就无法用触发词继续下钻（查询按空白切段），引号只属于最终引用。
-        const path = normalizeMentionPath(outcome.path);
-        replace(`@${path}/`);
+        // 分隔符归一：候选路径可能来自 Windows 侧（`src\webview`），不归一就会在正文里
+        // 留下 `@src\webview/`（用户 2026-09-21 报的）；含空白的路径还要带上引号，
+        // 否则块在空白处结束、下钻当场掉出候选态（见 `drillQueryToken`）。
+        replace(drillQueryToken(outcome.path));
         return;
       }
       // 文件 / 目录（pick）：把路径**作为纯引用 token 插进正文**。

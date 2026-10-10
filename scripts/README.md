@@ -60,7 +60,7 @@
 
 ### 附件 / 图片 / 引用
 
-- `pathInsert.test.ts` — 附件归类（`classifyPath`）+ 路径插入光标处（含真实临时文件）。
+- `pathInsert.test.ts` — 附件归类（`classifyPath`）+ 路径插入光标处 + `@` 目录块的整段替换（含引号空格目录的闭引号边界，真实临时文件）。
 - `attachments.test.ts` — 扩展名 → mediaType 纯映射与 `showOpenDialog` 跨平台约束。
 - `clipboardPaths.test.ts` — 系统剪贴板路径读取的判据（解析、大小上限、目录粘贴）。
 - `references.test.ts` — `@path` 引用文本的拼写规则（对齐官方 `formatFileMention`）。
@@ -97,7 +97,7 @@
 - `presetMatch.test.ts` — 配置项 `dshChat.agentPreset` 认 id 也认显示名（中英两名、撞名取第一个、认不出原样传）。
 - `mentionCandidates.test.ts` — `@` 候选两条帧：文件先到先渲染、对话各自结算。
 - `fileRefListing.test.ts` — `@` 目录列举补全：服务器 20 条上限之外的尾巴按官方同一套排序补齐（真盘临时目录 + 真控制器）。
-- `mentionNav.test.ts` — `@` / `/` 补全规则集与「返回上一层目录」。
+- `mentionNav.test.ts` — `@` / `/` 补全规则集、「返回上一层目录」、`@` 列表的两条入口（裸 `@` 与目录块；带引号空格目录解包整块）与目录块整段替换。
 - `emptyComposer.test.ts` — 空态下 `/` 命令栏与 `@` 候选的行为级回归（空态就绑在壳上，菜单读它、不另建）。
 - `composerSend.test.ts` — 发送按钮的手势链路：按住 Ctrl / Cmd 时文字换成这一次真会走的那条路、点按钮发加速手势（真事件链 + 真 `Composer` 渲染），空闲仍发送、运行中无草稿仍是停止。
 - `blankSessionReuse.test.ts` — 「空态必有壳、首条消息发给谁」：`reusableBlank` 的本地 blank 位（不许把已经说过话的会话当空壳接回来）、两个窗口共用一条壳、空壳上选的模型留得住。

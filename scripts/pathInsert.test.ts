@@ -32,7 +32,7 @@ import { classifyPath, formatPathList, quotePath } from "../src/dsh/attachments"
 (globalThis as { acquireVsCodeApi?: unknown }).acquireVsCodeApi = () => ({
   postMessage: () => undefined,
 });
-const { caretAfterInsert, insertToken } = await import("../src/webview/composerCompletion");
+const { caretAfterInsert, findTrigger, insertToken, replaceToken } = await import("../src/webview/composerCompletion");
 
 const dir = mkdtempSync(join(tmpdir(), "dsh-classify-"));
 try {
@@ -201,5 +201,117 @@ console.log("insert: 光标处插入 ✓");
   assert.strictEqual(caretAfterInsert("abc", Number.NaN, Number.NaN, "@x").text, "abc@x");
 }
 console.log("completion: 触发词替换的落点算术 ✓");
+
+// ---------- 6. `@` 目录块的整段替换（触发词 = 整个内容块） ----------
+//
+// 用户 2026-10-10 口径：光标在 `@` 目录块**内部任意位置**时列表都开着，而且查询用
+// **整个内容块**而不是光标前半截。渲染层能看见的效果就是这里的两件事：
+// - 替换区间是**整个块**（`replaceToken` 自己按文本重算块终点——带引号的形态下按
+//   `trigger.query` 长度算会把闭引号留在正文里）；
+// - 块之外的正文一个字都不能动（前缀、后缀都要在）。
+//
+// 这两条合起来才对：只换光标前半截会留下 `@src/dsh/bview/` 这种半截路径；
+// 把块后面的正文一起吃掉则是「误吞后缀」。查询串与替换终点共用同一个块判据
+// （`composerCompletion.tsx` 的 `mentionBlockFrom`），所以带引号（含空白）的目录
+// token 也走这一套，只是查询与写法都去掉那对引号。
+{
+  const text = "前文 @src/webview/ 后文";
+  for (const caret of [4, 8, 15]) {
+    const trigger = findTrigger(text, caret);
+    assert.deepStrictEqual(
+      trigger,
+      { kind: "mention", start: 3, query: "src/webview/" },
+      `光标 ${caret} 落在目录块里：查询串是整个块`,
+    );
+    const result = replaceToken(text, trigger!, "@src/dsh/");
+    assert.strictEqual(result.text, "前文 @src/dsh/ 后文", "整段替换：前后文一个字都没被吃掉");
+    assert.strictEqual(result.caret, "前文 @src/dsh/".length, "光标落在插入内容之后");
+  }
+
+  // 带引号（含空白）的引用插进来时同样只换整个块
+  {
+    const withQuoted = replaceToken("看 @src/ 后面", findTrigger("看 @src/ 后面", 5)!, '@"my dir/"');
+    assert.strictEqual(withQuoted.text, '看 @"my dir/" 后面', "块后的正文不许被吃进引号里");
+  }
+  {
+    const withSpacedFile = replaceToken(
+      "看 @src/ 后面",
+      findTrigger("看 @src/ 后面", 5)!,
+      '@"src/my file.ts"',
+    );
+    assert.strictEqual(withSpacedFile.text, '看 @"src/my file.ts" 后面', "含空格文件名同理");
+  }
+
+  // 带引号的**目录块**：查询串是去掉引号的语义路径，替换区间覆盖那对引号
+  {
+    const quoted = '看 @"my dir/" 后面';
+    const trigger = findTrigger(quoted, 7);
+    assert.deepStrictEqual(
+      trigger,
+      { kind: "mention", start: 2, query: "my dir/" },
+      "带引号目录块：查询串是语义路径（不含引号）",
+    );
+    assert.strictEqual(
+      replaceToken(quoted, trigger!, '@"my dir/sub/"').text,
+      '看 @"my dir/sub/" 后面',
+      "整块替换覆盖闭引号：不留孤引号，前后文不动",
+    );
+    // 换成不带引号的形态（上一层是工作区根目录）时，闭引号也必须一起消失
+    assert.strictEqual(
+      replaceToken(quoted, trigger!, "@").text,
+      "看 @ 后面",
+      "替换区间覆盖闭引号：换成裸 `@` 时不留下半个引号",
+    );
+    // 光标紧靠闭引号右侧时区间照样是整个块（替换终点不按光标截断）
+    assert.strictEqual(
+      replaceToken(quoted, findTrigger(quoted, 11)!, "@").text,
+      "看 @ 后面",
+      "光标在块尾附近也是整块替换（查询与替换共用同一套块终点）",
+    );
+  }
+
+  // 引号块里出现「空白 + @」（`@"my @scope/"`）：外层完整 token 拥有整段，
+  // 替换起点/终点都不许被那个内部 `@` 切走
+  {
+    const inner = '看 @"my @scope/" 后面';
+    for (const caret of [4, 8, 11, 14]) {
+      const trigger = findTrigger(inner, caret);
+      assert.deepStrictEqual(
+        trigger,
+        { kind: "mention", start: 2, query: "my @scope/" },
+        `光标 ${caret}：内部 \`@\` 不抢起点，查询是解包后的整个块`,
+      );
+      const result = replaceToken(inner, trigger!, "@src/");
+      assert.strictEqual(result.text, "看 @src/ 后面", "整段替换：闭引号被覆盖，前缀后缀不动");
+      assert.strictEqual(result.caret, "看 @src/".length, "光标落在替换结果之后");
+    }
+  }
+
+  // Windows 反斜杠写的目录块：整块换掉，且反斜杠照原样进查询串
+  {
+    const win = "看 @src\\dsh\\ 后面";
+    const trigger = findTrigger(win, 10);
+    assert.deepStrictEqual(
+      trigger,
+      { kind: "mention", start: 2, query: "src\\dsh\\" },
+      "反斜杠目录块：查询串是整个块（原样保留反斜杠）",
+    );
+    assert.strictEqual(
+      replaceToken(win, trigger!, "@src/webview/").text,
+      "看 @src/webview/ 后面",
+      "反斜杠目录块同样是整段替换",
+    );
+  }
+
+  // 块之后的空白另一边不该被当成触发词（否则「把光标放到目录块后面」会又弹列表、
+  // 下一次替换还会把后面的字吃掉）；紧贴块尾的那一格仍算块内
+  assert.deepStrictEqual(
+    findTrigger("看 @src/ 后面", 7),
+    { kind: "mention", start: 2, query: "src/" },
+    "光标紧贴块尾（分隔符右侧、那块空白左侧）仍在块内",
+  );
+  assert.strictEqual(findTrigger("看 @src/ 后面", 8), undefined, "光标越过块后的空白 → 没有触发词，也就没有替换");
+}
+console.log("completion: `@` 目录块的整段替换 ✓");
 
 console.log("\nclassify/insert: all assertions passed");
