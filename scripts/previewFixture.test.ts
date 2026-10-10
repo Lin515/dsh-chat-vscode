@@ -702,8 +702,27 @@ for (const [label, check] of must) {
     (empty.agentPresets?.options ?? []).some((o: { trust?: string; name?: string }) => o.trust === "user" && !o.name) &&
     empty.agentPreset === "ptc" &&
     // 空态**没有会话**（会话要等第一条消息才建，宿主侧的不变量见 scripts/invariants.test.ts）
-    empty.session == null;
+    empty.session == null &&
+    // 乐观回显也必须空：空态页的渲染条件是「没有消息且没有回显」，
+    // 留着主故事那几条回显的话，预览页这一档渲染的是消息流，两行元信息根本看不到
+    empty.pendingMessages.length === 0;
   console.log(`  ${ok ? "✓" : "✗"} ?empty=1：空态夹具（目录三种形态 + 预设目录 + 无会话）`);
+  if (!ok) failed += 1;
+}
+
+// 3c) 标题栏上的工作目录（`?dir=1`）：VS Code 没打开文件夹、目录是给会话单独设的。
+// 判据与渲染在 `scripts/sessionDir.test.ts`，这里只管**预览页有这一档可看**——
+// 少了它，标题栏那段路径在预览里永远出不来（夹具默认是「打开着文件夹」的锁定档）。
+{
+  const withDir = buildStateWith("zh-cn", "&dir=1");
+  const ok =
+    // 默认档保持锁定（界面与从前逐字一致），`?dir=1` 才是新形态
+    state.workspace?.locked === true &&
+    withDir.workspace?.locked === false &&
+    Boolean(withDir.workspace?.path) &&
+    // 会话真的有 cwd：显示的是这条会话落在哪，不是编出来的路径
+    withDir.session?.cwd === withDir.workspace?.path;
+  console.log(`  ${ok ? "✓" : "✗"} ?dir=1：没打开文件夹的会话（标题栏有工作目录），默认档仍是锁定`);
   if (!ok) failed += 1;
 }
 

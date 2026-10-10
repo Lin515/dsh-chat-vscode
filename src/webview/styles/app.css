@@ -46,6 +46,61 @@
   max-width: 40vw;
 }
 
+/* 标题前的工作目录（`HeaderDir`）：只在 VS Code 没打开文件夹时出现。
+   比标题更淡——标题是这一页的主语，目录是它的落点。
+   收缩口径与空态页的目录行（`.meta-dir` / `.meta-name`）同一套：目录前缀是唯一
+   可伸缩的一段，末段目录名保住（用户真正在看的那个目录名不能被裁）。
+   上限比标题（40vw）更紧（30vw）：标题是这一页的主语、目录是它的落点，空间不够时
+   目录先让位。**不要**再额外加重它的收缩权重——子代理页上那一排（标题 + 面包屑 +
+   触发器）本来就更挤，权重一压，整段路径会直接折成 0 宽（实测），
+   用户要看的那个目录名也跟着没了；按内容宽度等比收缩时它至少还留得住末段。 */
+.header-dir {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(3 * var(--dp));
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  font-size: var(--font-size-xs);
+  color: var(--description);
+  max-width: 30vw;
+}
+
+/* 图标不参与收缩（被压扁的图标比没有更难看），也不跟着路径前缀一起被裁 */
+.header-dir > svg {
+  flex: 0 0 auto;
+}
+
+/* 路径本体：目录前缀 + 末段，**两段之间没有间隙**——装得下时读起来就是一个完整字符串
+   （用户 2026-10-10 口径：完整显示时不要分割）。间隙只留在图标与文字之间，
+   所以 `.header-dir` 的 gap 只作用在图标那一段上。 */
+.header-dir-path {
+  display: inline-flex;
+  align-items: baseline; /* 与空态页的目录行（.meta-label）同一口径 */
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* 认不出是路径（没有分隔符）：没有可拆的两段，整段自己从右侧省略 */
+.header-dir-path.is-text {
+  display: block;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.header-dir-prefix {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+/* 末段（目录名）：不参与收缩——**只有放不下时**才由前缀那一段去挨省略号 */
+.header-dir-name {
+  flex: 0 0 auto;
+}
+
 .header-spacer {
   flex: 1 1 auto;
   min-width: 0;
@@ -3074,6 +3129,11 @@ button.changes-card-head:hover .changes-card-chevron,
 
 /* 头部：收成品牌 + 新建 + 历史（其余按钮隐藏），标题用图标表示未命名 */
 .app.is-mini .header-title {
+  display: none;
+}
+/* 标题前的工作目录同理收掉：那一档连标题都放不下，路径更放不下
+   （留在那里会把剩下的按钮挤出去） */
+.app.is-mini .header-dir {
   display: none;
 }
 .app.is-mini .icon-btn[data-mini="hide"] {

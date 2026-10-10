@@ -447,7 +447,11 @@
           connectPhase: query.get("phase") || undefined,
           needsToken: flag("token"),
           serverUrl: "http://127.0.0.1:3080",
-          session: { id: "s1", title: "重构 server 启动流程", updatedAt: now, running: false },
+          session: { id: "s1", title: "重构 server 启动流程", updatedAt: now, running: false, cwd: "C:\\Users\\me\\Projects\\demo-app" },
+          // 工作目录：默认演**打开着文件夹**那一档（跟随 VS Code，界面不显示路径）。
+          // `?dir=1` 换成「没打开文件夹、目录是给这个会话单独设的」——那时标题栏
+          // 要在标题前补一段路径（见 `sessionDirPath` 与 `App.tsx` 的 `HeaderDir`）。
+          workspace: { path: "C:\\Users\\me\\Projects\\demo-app", locked: true },
           // 主故事是**已开始**的会话（有消息）→ 工具栏在思考强度与附件之间显示这枚
           // 只读预设标签；空态页（`?empty=1`）由下面的分支接管成可点的下拉框。
           agentPresets: presetRoster,
@@ -1568,6 +1572,14 @@
           state.running = false;
         }
 
+        // 没打开文件夹（`?dir=1`）：目录是给会话单独设的，标题栏在标题前补一段路径。
+        // 与空态页那枚胶囊的区别是**这里会话已经开始了**（有消息），胶囊早就不在，
+        // 路径只有标题栏这一个落点——英文下路径更长，是这一段的排版检验入口
+        // （`?locale=en&dir=1`）。
+        if (query.get("dir") === "1") {
+          state.workspace = { path: "C:\\Users\\me\\Projects\\demo-app", locked: false };
+        }
+
         // 空态（`?empty=1`）：新会话的初始页面——一行能力提示 + 两行元信息
         // （工作目录、agent 预设）。主故事有消息，空态在预览页就永远看不到，
         // 而这两行正是「窄侧栏下英文会不会溢出」最容易出事的地方（长路径 +
@@ -1581,6 +1593,10 @@
         if (query.get("empty") === "1") {
           state.messages = [];
           state.session = null;
+          // 乐观回显也要清掉：空态页的渲染条件是「没有消息**且**没有回显」
+          // （见 App.tsx 里 EmptyState 的判据）。主故事留着一堆待发/失败的回显，
+          // 不清的话这一档渲染的还是消息流，空态页那两行元信息在预览里根本出不来。
+          state.pendingMessages = [];
           state.workspace = query.get("none") === "1"
             ? { path: "", locked: false }
             : {

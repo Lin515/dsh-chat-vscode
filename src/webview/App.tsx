@@ -34,6 +34,7 @@ import {
   IconChat,
   IconChevronDown,
   IconChevronRight,
+  IconFolder,
   IconGlobe,
   IconHistory,
   IconJobs,
@@ -47,6 +48,8 @@ import { connectViewOf, type ConnectButton, type ConnectButtonId } from "./conne
 import { usePageContextMenu } from "./contextMenu";
 import { jobsBusy, subagentsBusy } from "./activity";
 import { subagentRowFace } from "./subagentRow";
+import { sessionDirPath } from "./sessionDir";
+import { splitPath } from "./pathDisplay";
 import { LocaleContext, TextsContext, dictionaryFor, normalizeLocale, resolveText, useTexts } from "./texts";
 import type { SubagentView } from "../shared/chat";
 
@@ -92,6 +95,10 @@ function Header({
       <span className="header-brand" title="DeepSeek Harness">
         <BrandMark />
       </span>
+      {/* 工作目录（没打开文件夹时才有，见 `sessionDirPath`）：放在标题**前方**，
+          它是「这条会话在哪干活」，标题是「它在干什么」——先地点后事情。
+          打开着文件夹时整段不渲染，界面与从前逐字一致。 */}
+      <HeaderDir state={state} />
       {child ? (
         // 子代理页：标题 = 主会话标题，可点返回主会话（官方 .crumb 的可点形态）
         <button
@@ -161,6 +168,44 @@ function Header({
         <IconGlobe size={15} />
       </button>
     </div>
+  );
+}
+
+/**
+ * 标题前的工作目录（路径 + 文件夹图标）。
+ *
+ * 只在 **VS Code 没打开文件夹**时出现——那时没有任何别的地方提示这个会话落在哪个
+ * 目录：空态页那行目录（`EmptyMeta`）过了空态就不在了，VS Code 的标题栏与资源管理器
+ * 也没有工作区可言。打开着文件夹时目录跟随 VS Code，这里整个不渲染（用户 2026-10-10
+ * 口径）。判据与取值见 `sessionDirPath`（纯函数，含「会话 cwd 优先」的理由）。
+ *
+ * 静态文字，不是按钮：换目录是**新会话**的事（会话 cwd 是创建事实），已开始的会话
+ * 点它换不了目录，做成可点的只会误导。全文挂在 `title` 上——窄侧栏里被裁掉的是
+ * 目录前缀（`.header-dir-prefix`），悬停仍读得到完整路径。
+ *
+ * 路径本体包在 `.header-dir-path` 里（**一段**，前缀与末段之间没有间隙）：装得下时
+ * 读起来就是一个完整字符串，装不下时被省略号吃掉的只有目录前缀、末段目录名留住
+ * ——「分割」只是放不下时的降级，不是常态（用户 2026-10-10 口径）。
+ */
+function HeaderDir({ state }: { state: AppState }) {
+  const texts = useTexts();
+  const path = sessionDirPath(state);
+  if (!path) return null;
+  // 与正文路径、空态页目录行同一口径：末段目录名不参与收缩，挨裁的是目录前缀
+  const parts = splitPath(path);
+  return (
+    <span className="header-dir" title={`${path}\n${texts.sessionDir}`}>
+      <IconFolder size={12} />
+      {parts ? (
+        <span className="header-dir-path">
+          <span className="header-dir-prefix">{parts.dir}</span>
+          <span className="header-dir-name">{parts.name}</span>
+        </span>
+      ) : (
+        // 认不出是路径（没有分隔符）：整段原样，自己从右侧省略
+        <span className="header-dir-path is-text">{path}</span>
+      )}
+    </span>
   );
 }
 
