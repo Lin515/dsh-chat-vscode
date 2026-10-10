@@ -1322,6 +1322,19 @@
               segments: []
             },
             {
+              id: "u:3b",
+              role: "user",
+              ts: now - 13000,
+              // **已发出的会话引用**的真实落盘形态（取自会话日志）：服务端把
+              // `@[标题](dsh-session:…)` 折成 `@标题` 才落盘，会话 id 只在紧随消息的召回
+              // 事件里，宿主把它折成 `sessionRefs`（见 `shared/chat.ts` 与
+              // `dsh/adapter.ts` 的 `attachSessionRefs`）。没有这份清单时同一段文字只能按
+              // 形状当文件引用——两者在界面上长得一样，分界就在悬停说明（会话 / 文件）。
+              text: "@轨迹四项收口与逐块渲染交接 里提到了 @src/webview/mentionLinks.ts 的判定",
+              sessionRefs: [{ label: "轨迹四项收口与逐块渲染交接", sessionId: "session-10263ccf-3e75-4923-bf8a-eea1a86ec30a" }],
+              segments: []
+            },
+            {
               id: "a:3",
               role: "assistant",
               ts: now - 12000,

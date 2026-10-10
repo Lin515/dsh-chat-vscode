@@ -134,13 +134,20 @@
   的句柄文本）；③会话引用 `@[label](dsh-session:…)`。
 - **现行做法（已对齐，2026-09-14 起细化）**：`@` 变成正文里的 `@path` token（不再生成
   附件栏芯片），上传只留给「模型可直接读的文本」。
-- **落盘的会话引用按原始 token 下发（2026-10-10）**：服务端只替换**给模型的那一份**
-  副本（`prepareDirectMessages`），durable 事件里仍是 `@[标题](dsh-session:…)`。宿主
-  从前把它折成可读的 `@标题` 再交给界面，会话 id 因此到不了界面、用户**已经发出**的引用
-  点不开——现在原样下发（`adapter.ts` 的 `user/message` 分支），界面侧
-  `webview/mentionLinks.ts` 切成可点的行内链接：显示仍是 `@标题`、复制走可读文本
-  （`readableMentionText`）、轮次大纲的提问预览同样先还原。轨迹视图
-  （`dsh/trajectory.ts` 的 `user/message`）没有链接能力，只做同一条显示还原。
+- **落盘的会话引用是折过的 `@标题`（2026-10-10 核实）**：服务端在消息进入模型前把 token
+  换成被引用会话的快照，并顺手把落盘正文里的 token 折成可读标题——`dsh-session-reference`
+  的 `parseSessionReferenceText` 在 `agent/pre-step` 里跑，而 `agent-loop` 随后把这份 decision
+  原样追加成 durable 事件（`agent.ts` 的 `session.append('user/message', …)`）。所以
+  **durable `user/message` 里没有会话 id**，id 只在紧随其后的召回事件里
+  （`source: {kind: "session-reference", references: [{label, sessionId, …}]}`）。
+  宿主按官方同一口径（`dsh-client-ui-chat` 的 `ReferenceLabelProjector`：召回紧跟被引用的
+  那条消息，按 `seq - 1` 关联）把这些引用挂到前一条用户消息上（`adapter.ts` 的
+  `attachSessionRefs`，界面字段 `MessageView.sessionRefs`），`webview/mentionLinks.ts` 再按
+  这份「标题 ↔ id」清单把 `@标题` 认成会话引用。此前以为 durable 里留的是**原始 token**
+  （误读了 `prepareDirectMessages` 的「只给模型一份副本」），于是那个 `@标题` 只能按形状
+  判成**文件引用**——用户 2026-10-10 报的「发出去的会话引用被识别为文件链接」就是这个。
+  显示仍是 `@标题`、复制走可读文本（`readableMentionText`）、轮次大纲的提问预览同样先还原；
+  轨迹视图（`dsh/trajectory.ts` 的 `user/message`）没有链接能力，只做同一条显示还原。
 - **审计当时的差异要点（设计取舍记录）**：全量内联显著抬高 token 与上下文压力；二进制
   / 超大文件拿不到正文；`@` 的模型侧语义（可追踪的工作区路径引用）被抹掉。
 

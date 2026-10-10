@@ -256,6 +256,22 @@ const must: [string, () => unknown][] = [
       return hasLineLink && resolved && inert;
     },
   ],
+  // 用户消息里的 `@` 引用：**两种来路**都要在夹具里，否则预览页看不出它们的分界
+  // （长得一模一样，只有悬停说明与点击目标不同）。目录 / 文件那种走草稿里的 `@path`
+  // 与正文里的 `@path`；**已发出的会话引用**正文里只剩 `@标题`，靠召回清单
+  // （`sessionRefs`）才认成会话——用户 2026-10-10 报的「发出去的会话引用被识别为文件
+  // 链接」就是这个形态。判据要连**正文里真有那个 `@标题`** 一起看：清单与正文对不上的
+  // 夹具（标题改了、正文没改）在预览里什么都演示不出来。
+  [
+    "用户消息里的 @ 引用（含已发出的会话引用）",
+    () => {
+      type RefMsg = { sessionRefs?: { label: string; sessionId?: string }[]; text?: string };
+      return state.messages.some((m: RefMsg) => {
+        const refs = m.sessionRefs ?? [];
+        return refs.length > 0 && refs.every((ref) => (m.text ?? "").includes(`@${ref.label}`));
+      });
+    },
+  ],
   // agent 交付的图片文件（present 申报 / 本轮 write 出来）：这两条路**没有** markdown
   // 引用，界面上要另外画成图——用户 2026-09-18 报的「agent 发来的图看不到」正是这个
   [

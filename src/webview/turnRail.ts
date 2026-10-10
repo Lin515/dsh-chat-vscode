@@ -212,9 +212,10 @@ export function mergeTurnRailItems(
       continue;
     }
     const prompt = preview(
-      // 提问预览是**纯文本**，要先过一遍引用还原：durable 里的会话引用是原始 token
-      // （`@[标题](dsh-session:…)`），直接截断预览会变成一长串 base64
-      // （见 `mentionLinks.ts` 的 `readableMentionText`）
+      // 提问预览是**纯文本**，要先过一遍引用还原：正文里可能还留着原始 token
+      // （`@[标题](dsh-session:…)`——队列条目、用户手写的裸 URI），直接截断预览会变成
+      // 一长串 base64（见 `mentionLinks.ts` 的 `readableMentionText`；已经折过的
+      // `@标题` 走这一道也不变）
       readableMentionText(messageById.get(entry.anchorMessageId ?? "")?.text ?? ""),
       PROMPT_PREVIEW_LIMIT,
     );

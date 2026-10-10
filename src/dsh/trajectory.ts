@@ -1788,7 +1788,8 @@ export function deriveTrajectoryModel(events: readonly SessionWireEvent[], hasOl
          */
         const message = data as MessageLike;
         const kind = typeof message?.source?.kind === "string" ? (message.source.kind as string) : "";
-        // 轨迹里的这条也是**纯文本**：会话引用在落盘事件里是原始 token
+        // 轨迹里的这条也是**纯文本**：落盘正文里服务端已经把会话引用折成了 `@标题`，
+        // 但队列条目、用户手写的裸 URI、服务端折过之前的历史快照里仍可能是原始 token
         // （`@[标题](dsh-session:…)`），不折的话用户在轨迹里看到的是一长串 base64
         // （聊天侧由 `webview/mentionLinks.ts` 还原成可点的 `@标题`，这边没有链接能力，
         // 只做同一条显示还原）

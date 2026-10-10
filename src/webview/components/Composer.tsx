@@ -1515,8 +1515,9 @@ function QueueItem({
   // 光看文字看不出这条还带着图片 / 文件。
   const withAttachments = queueItemHasAttachments(item);
   // 文本为空时本来用「（附件）」占位；已经有行首标记就不再重复说一遍。
-  // 队列行只是**预览**，所以正文先过 `readableMentionText`：落盘的会话引用是原始 token
-  // （`@[标题](dsh-session:eyJ…)`，宿主刻意不折，见 `mentionLinks.ts` 的文件头），
+  // 队列行只是**预览**，所以正文先过 `readableMentionText`：队列条目来自 `inbox`
+  // 投影，里面是**用户提交的原文**——会话引用还是原始 token
+  // （`@[标题](dsh-session:eyJ…)`，服务端只在落盘时才折，见 `mentionLinks.ts` 的文件头），
   // 不还原的话单行省略显示的是 base64、悬停全文弹出来的也是 base64。文件 / 目录引用
   // 本来就是 `@src/a.ts` 这种字面量，原样保留。真正的编辑 / 插话仍用 `item.text` 原文
   // （那两个动作只发 id，原始内容由宿主取）。

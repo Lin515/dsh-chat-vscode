@@ -23,6 +23,7 @@ import { hunksFromMeta, hunksFromToolArgs } from "../shared/diff";
 import {
   parseCatalogEntries,
   parseInstructionChanges,
+  parseRecalledSessionRefs,
   parseRecalledSessions,
   parseRelaySender,
   parseSnapshotSections,
@@ -1526,15 +1527,15 @@ export class SessionAdapter {
       case "user/message": {
         const message = data as WireMessage;
         const kind = message?.source?.kind;
-        // 对话引用（`@[标题](dsh-session:…)`）在落盘事件里是**原始 token**：服务端
-        // 只给模型那一份副本做替换（`prepareDirectMessages`）。
+        // 对话引用（`@[标题](dsh-session:…)`）在落盘事件里**只剩折叠后的 `@标题`**：
+        // 服务端在消息进入模型前把它换成被引用会话的快照，顺手把落盘正文里的 token
+        // 折成可读标题（`dsh-session-reference` 的 `parseSessionReferenceText` 在
+        // `agent/pre-step` 里跑，`agent-loop` 随后把这份 decision 原样追加成 durable 事件），
+        // **会话 id 只在紧随其后的召回事件里**（见下面 `attachSessionRefs`）。
         //
-        // **这里不再把它折成纯文本 `@标题`**（原先用 `displaySessionMentions`）：
-        // 折了之后会话 id 就到不了界面，用户已经发出的 `@会话` 就永远点不开——而用户
-        // 2026-10-10 的口径是「已发送消息里的引用可直接点击打开该会话」。现在原样把
-        // token 交给 webview，由 `webview/mentionLinks.ts` 切成可点的行内链接
-        // （`components/Message.tsx` 的 `renderMentionText`：显示仍是 `@标题`，
-        // 复制走可读文本），解不开的 token 同样只显示 `@标题`。
+        // 这里曾经以为 durable 里仍是原始 token（`prepareDirectMessages` 只给模型一份副本），
+        // 于是把 id 的来路整个押在那份 token 上：实际落盘的是 `@标题`，界面按形状把它当成
+        // 「文件引用」——用户 2026-10-10 报的「@ 引用会话发出去之后被识别为文件链接」就是它。
         const text = blocksToText(message?.content);
         if (kind === "user" || kind === "user-rpc") {
           const rpcId = (message?.source as { rpcId?: unknown } | undefined)?.rpcId;
@@ -1620,6 +1621,10 @@ export class SessionAdapter {
         // 其余来源（system prompt / agent instructions / goal / skill / 插件注入）
         // 不是用户说的话，但确实进了模型上下文——作为「自动载入」节点显示出来，
         // 否则用户完全看不到模型被喂了什么。
+        //
+        // 跨会话引用的召回（`kind: "session-reference"`）在此之前先把引用的会话挂到
+        // **紧邻在前的**那条用户消息上：正文里那些 `@标题` 的 id 只有这里能拿到。
+        this.attachSessionRefs(event, message?.source);
         this.pushInjected(event, message?.content, message?.source);
         break;
       }
@@ -2631,6 +2636,33 @@ export class SessionAdapter {
     const segment: Segment = { kind: "injected", id, injected };
     this.pushSegment(message, segment);
     this.emit({ type: "message/append", messageId: message.id, segment });
+  }
+
+  /**
+   * 把一条**跨会话召回**（`kind: "session-reference"`）引用的会话挂到紧邻在前的用户消息上。
+   *
+   * 为什么需要这一手：落盘的用户消息正文里，`@[标题](dsh-session:…)` 已经被服务端折成了
+   * `@标题`（见 `user/message` 分支的注释），会话 id 只在这条召回事件的
+   * `source.references[]` 里。不挂的话界面只看到 `@标题` 这个形状，会把它当成文件引用
+   * （悬停说「打开这个文件」、点开去开一个同名文件）。
+   *
+   * 关联口径与官方一致（`dsh-client-ui-chat` 的 `ReferenceLabelProjector`）：召回事件
+   * **紧跟**在引用它的那条消息之后，所以被引用的消息是 `seq - 1` 那条（官方直接按
+   * `seq - 1` 找，本扩展的消息 id 就是 `u:<seq>`）。认不出召回形状、或前一条不是用户
+   * 消息（跟随窗口从一轮中间开始）时什么都不做——**没有 id 就不造链接**，界面照旧按
+   * 形状显示，不猜。这条约定拿本机全部会话日志核过：9 条跨会话召回事件，前一条 seq
+   * 全是人的 `user/message`，且那条正文里都真有 `@<标题>`。
+   *
+   * 补帧走整条 upsert：这条用户消息可能已经画在界面上了（先落位、召回后到），文本与
+   * 附件都不变，只是多了 `sessionRefs` 这一项。
+   */
+  private attachSessionRefs(event: SessionWireEvent, source: unknown): void {
+    const refs = parseRecalledSessionRefs(source);
+    if (refs === undefined) return;
+    const target = this.byId.get(`u:${event.seq - 1}`);
+    if (target === undefined || target.role !== "user") return;
+    target.sessionRefs = refs;
+    this.emit({ type: "message/upsert", message: { ...target } });
   }
 
   /**

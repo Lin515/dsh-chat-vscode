@@ -140,12 +140,15 @@ export function decodeSessionReferenceUri(uri: string): string | undefined {
  * 用户在 `@` 列表里选中一个历史对话时，插进正文的是官方那条规范 token
  * （`@[标题](dsh-session:…)`，见 `SessionRefView.mention`）。它是**给服务端看的**：
  * 服务端在消息进入模型前把它换成被引用会话的快照，并顺手把正文里的 token 换成
- * 可读的 `@标题`（`dsh-session-reference` 的 `parseSessionReferenceText`）。
+ * 可读的 `@标题`（`dsh-session-reference` 的 `parseSessionReferenceText`）——**落盘的
+ * durable 正文因此已经是 `@标题`**，会话 id 只在紧随消息的召回事件里（聊天侧由
+ * `MessageView.sessionRefs` 带给界面，见 `dsh/adapter.ts` 的 `attachSessionRefs`）。
  *
- * 但**落盘的 durable 事件里仍是原始 token**（`prepareDirectMessages` 只产出给模型
- * 用的那一份副本），所以聊天转写直接渲染正文就会显示一长串
- * `@[标题](dsh-session:eyJ…)`。这里按 {@link sessionMentionPattern} 折成 `@标题`——
- * 只认严格形态，普通文本里的 `@[...]` 一个字节都不动。
+ * 那这一道还原是给谁用的：正文里出现**原始 token 形态**的那些来源——队列里的条目
+ * （`inbox` 投影存的是用户提交的原文）、用户手写或从别处粘进来的裸 `dsh-session:…`、
+ * 以及服务端折过之前的历史快照。折过的正文本来就无可折，原样返回。
+ *
+ * 只认严格形态（{@link sessionMentionPattern}），普通文本里的 `@[...]` 一个字节都不动。
  */
 export function displaySessionMentions(text: string): string {
   return text.replace(

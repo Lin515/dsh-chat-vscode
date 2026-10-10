@@ -1,21 +1,27 @@
 /**
  * 正文里 `@` 引用的**可点目标**：`@文件`、`@目录/`、`@会话` 各点开什么。
  *
- * 两类来源（都是用户自己写进正文的引用，不是「看起来像路径的文本」）：
+ * 三类来源：
  *
  * 1. **文件 / 目录**——官方 `file-reference` 的语法：`@` 后跟非空白（`@src/a.ts`）、
  *    含空白时用引号（`@"my file.txt"`）、目录以结尾 `/` 标记（`@src/`）、
  *    行号区间按 `#L12` / `#L12-L40` 挂在末尾（见 `shared/mentions.ts` 的
  *    `formatFileMentionWithLines`）；
- * 2. **会话**——`@[标题](dsh-session:…)` 与裸 `dsh-session:…`，模式与显示还原
- *    **同源**（`shared/mentions.ts` 的 `sessionMentionPattern`）：正文里落盘的
- *    是那条给服务端看的原始 token，界面把它折成 `@标题` 并挂上会话 id。
+ * 2. **会话（草稿里那条还没发出去的形态）**——`@[标题](dsh-session:…)` 与裸
+ *    `dsh-session:…`，模式与显示还原**同源**（`shared/mentions.ts` 的
+ *    `sessionMentionPattern`）：输入框（以及刚提交、还没被服务端折过的那一帧）里就是
+ *    那条给服务端看的原始 token，界面把它折成 `@标题` 并挂上会话 id；
+ * 3. **会话（已经发出去、落盘时被服务端折过的形态）**——正文里只剩 `@标题`，会话 id 在
+ *    `MessageView.sessionRefs` 里（服务端紧随消息的召回事件给的，见
+ *    `shared/injectedSource.ts` 的 `parseRecalledSessionRefs`）。这一档**必须**拿到那份
+ *    清单才认：同样的 `@标题` 没有任何证据时，按形状只是一个路径引用（见 {@link refSpanAt}）。
  *
- * 判定一律按**肯定证据**，两类各有一条：
+ * 判定一律按**肯定证据**，三类各有一条：
  * - 文件的 token 边界与官方一样是「行首或空白之后」，且路径形状要过得去
  *   （见 `looksLikePath`）——于是 `foo@bar.com`、正文里的 `@2x` 这类保持普通文本；
- * - 会话必须有**解得开**的 id（{@link decodeSessionReferenceUri}）：解不开的仍然
- *   按显示形态折成 `@标题`，但**不做成链接**（点了也不知道该开哪一条）。
+ * - 草稿形态的会话必须有**解得开**的 id（{@link decodeSessionReferenceUri}）：解不开的
+ *   仍然按显示形态折成 `@标题`，但**不做成链接**（点了也不知道该开哪一条）；
+ * - 已发出形态的会话必须有 `sessionRefs` 里**逐字相同**的那条标题。
  *
  * 打开动作只有一份（`mentionOpen.ts`）：本模块只回答「哪一段文字指向哪个目标」，
  * 转写里的链接与草稿区的 Ctrl+单击共用它。
@@ -23,6 +29,7 @@
  * 纯函数、不碰 DOM 也不引 React：断言见 `scripts/mentionLinks.test.ts`。
  */
 import { sessionMentionPattern, decodeSessionReferenceUri } from "../shared/mentions";
+import type { MessageSessionRef } from "../shared/chat";
 import { parseFileLink } from "./fileLinks";
 
 /** 一条 `@` 引用点开之后要做什么。 */
@@ -125,11 +132,29 @@ function fileTargetAt(
  *
  * 返回的区间**互不重叠、按出现顺序**排列，且覆盖原文的每一段（中间那些普通文本
  * 由调用方按区间自己切）——见 `Message.tsx` 的 `renderMentionText`。
+ *
+ * @param text 正文（草稿或某条消息的原文）。
+ * @param sessionRefs 这条正文里**已经发出去**的会话引用（`MessageView.sessionRefs`）；
+ *   只有消息气泡拿得到它，草稿（里面是原始 token）不需要。
  */
-export function scanMentionLinks(text: string): MentionLinkSpan[] {
+export function scanMentionLinks(
+  text: string,
+  sessionRefs?: readonly MessageSessionRef[],
+): MentionLinkSpan[] {
   const spans: MentionLinkSpan[] = [];
   const session = sessionMentionPattern();
+  const refs = sessionRefs === undefined || sessionRefs.length === 0
+    ? undefined
+    : [...sessionRefs].sort((left, right) => right.label.length - left.label.length);
   for (let at = 0; at < text.length; at += 1) {
+    if (text[at] === "@" && refs !== undefined) {
+      const ref = refSpanAt(text, at, refs);
+      if (ref !== undefined) {
+        spans.push(ref);
+        at = ref.end - 1;
+        continue;
+      }
+    }
     // 会话引用的两种形态都以这两个字面量开头；不先判一次就会在每个下标上跑一遍
     // 全文搜索（`exec` 会一直往后找），一条长消息上就是平方级
     if (text[at] === "@" || text.startsWith("dsh-session:", at)) {
@@ -142,13 +167,43 @@ export function scanMentionLinks(text: string): MentionLinkSpan[] {
     }
     if (text[at] !== "@") continue;
     if (!isMentionBoundary(text, at)) continue;
-    // 会话引用：`@` 开头的 markdown 形态（引文里那条规范 token）
+    // 落到这里的只剩文件 / 目录：路径形状与行号锚点在 `fileTargetAt` 里判
     const file = fileTargetAt(text, at);
     if (!file) continue;
     spans.push({ start: at, end: file.end, text: text.slice(at, file.end), target: file.target });
     at = file.end - 1;
   }
   return spans;
+}
+
+/**
+ * 从 `at` 起是不是一条**已经发出去的**会话引用（落盘正文里被折成了 `@标题`）。
+ *
+ * 只做「正文这一点起就是那条标题」的**字面比对**：标题与 id 都来自紧随消息的召回事件，
+ * 不是从形状猜的。命中就把整段 `@标题` 认成会话，不再让它落到「按形状当路径」那一档
+ * （那正是用户 2026-10-10 报的「发出去的会话引用被识别为文件链接」）。
+ *
+ * 与官方同一条口径：`dsh-client-ui-primitives` 的 `projectUserText` 先按
+ * `referenceLabels` 找 `@标题`、命中的区间标成会话，之后按形状的那一档按游标跳过与它
+ * 重叠的区间。标题也照官方**长的先认**（`@会话` 与 `@会话 2` 并存时不会认错）。
+ */
+function refSpanAt(
+  text: string,
+  at: number,
+  refs: readonly MessageSessionRef[],
+): MentionLinkSpan | undefined {
+  if (!isMentionBoundary(text, at)) return undefined;
+  for (const ref of refs) {
+    if (ref.label === "" || !text.startsWith(ref.label, at + 1)) continue;
+    return {
+      start: at,
+      end: at + 1 + ref.label.length,
+      text: `@${ref.label}`,
+      // id 认不出来时只做显示（官方正文里的会话引用本来也只是个标签，点不开）
+      ...(ref.sessionId === undefined ? {} : { target: { kind: "session", sessionId: ref.sessionId } as const }),
+    };
+  }
+  return undefined;
 }
 
 /** 从 `at` 起是不是一条会话引用（没有 `@` 的裸形态也算）。 */
@@ -192,10 +247,12 @@ export function mentionAt(text: string, index: number): MentionLinkSpan | undefi
 /**
  * 把一段正文里的引用换成**给人看的那份文本**（原始 token → 显示文本）。
  *
- * durable 事件里存的是**给服务端看的原始 token**（会话引用是
- * `@[标题](dsh-session:…)`），界面上显示的却是折好的 `@标题`。凡是把消息正文当
- * **纯文本**用的地方都要先过这一道，否则用户看到的是带 base64 会话 id 的长 token：
- * 复制按钮（`components/Message.tsx`）与轮次大纲的提问预览（`turnRail.ts`）都是。
+ * 正文里可能是两种形态：**已经发出**的消息里服务端已经折好了（`@[标题](dsh-session:…)`
+ * → `@标题`），而队列条目、用户手写的裸 URI、折过之前的历史快照里仍是**给服务端看的
+ * 原始 token**。凡是把消息正文当**纯文本**用的地方都要先过这一道，否则用户看到的是带
+ * base64 会话 id 的长 token：复制按钮（`components/Message.tsx`）与轮次大纲的提问预览
+ * （`turnRail.ts`）、队列行预览（`components/Composer.tsx`）都是；已经是可读形态的
+ * 正文过这一道原样返回。
  *
  * 文件 / 目录引用的 `span.text` 就是原文那一段（`@src/a.ts`、`@src/`），所以那两档
  * 原样保留；一条都扫不到时原样返回。

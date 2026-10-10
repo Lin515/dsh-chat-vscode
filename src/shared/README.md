@@ -14,7 +14,7 @@
 - `toolQuestion.ts` — `ask_user_question` 问卷事实：题目在调用参数、答案在工具结果，两份 durable 材料折出问卷记录（重载后卡片不丢）。
 - `turnProcessThreshold.ts` — 连续过程折叠的阈值（默认值与特殊语义只写这一份，两边共用）。
 - `imageRef.ts` — 正文图片引用分类（远程 / 内联 / 本地路径）：判断哪些该交给宿主读成 data URL。
-- `injectedSource.ts` — 「自动载入的上下文」条目的结构化字段解析（按官方各 `form` 的正文逐条解析，全有或全无）。
+- `injectedSource.ts` — 「自动载入的上下文」条目的结构化字段解析（按官方各 `form` 的正文逐条解析，全有或全无）；另给消息正文用的「跨会话引用标题 ↔ 会话 id」读法（逐条跳过认不出的条目）。
 - `localizedText.ts` — 服务端给的本地化文案（`{en, [locale]}`）的形状校验与取值（审批 `displayReason` 等官方口径）。
 - `mentions.ts` — `@` 引用的文本形态：宿主插目录引用与界面补全插入必须产出一模一样的拼写。
 - `presetMatch.ts` — 配置项里的预设（可以写 id，也可以写界面上的名字）折成服务端认的 id：id 优先，名字取目录里第一个命中的。

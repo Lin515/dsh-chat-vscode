@@ -596,6 +596,25 @@ export interface MessageView {
   endedAt?: number;
   /** 用户消息正文（助手正文在 segments 里）。 */
   text?: string;
+  /**
+   * 这条用户消息里**被服务端折成 `@标题`** 的对话引用（`MessageSessionRef`）。
+   *
+   * 用户在 `@` 列表里选一条历史对话时，插进正文的是官方那条规范 token
+   * （`@[标题](dsh-session:…)`，见 `SessionRefView.mention`）。服务端在消息进入模型前
+   * 把它换成被引用会话的快照，**顺带把落盘正文里的 token 折成可读的 `@标题`**
+   * （`dsh-session-reference` 的 `parseSessionReferenceText` 在 `agent/pre-step` 里跑，
+   * 而 `agent-loop` 随后就把这份 decision 原样追加成 durable 事件）——所以落盘的
+   * 用户消息里**没有会话 id**，只有标题文字。
+   *
+   * 会话 id 只留在紧随其后的那条**召回事件**里（`source.references[]`，官方
+   * `ReferenceLabelProjector` 也是按这个「召回紧跟被引用的消息」的约定把标签挂回消息
+   * 节点的：官方挂 `referenceLabels`，我们额外带上 `sessionId`，因为本扩展的引用要能
+   * 点开）。界面据此把 `@标题` 认成会话引用而不是文件引用（见 `webview/mentionLinks.ts`）。
+   *
+   * 认不出召回形状时整个键缺省——那时 `@标题` 按形状当普通引用（官方 `projectUserText`
+   * 的「按形状」那一档），不猜。
+   */
+  sessionRefs?: MessageSessionRef[];
   segments: Segment[];
   attachments?: Attachment[];
   streaming?: boolean;
@@ -1004,6 +1023,19 @@ export interface SessionRefView {
   sameWorkspace?: boolean;
   /** 源会话时间（服务端候选给的是创建时间，epoch ms）；仅用于列表显示。 */
   updatedAt?: number;
+}
+
+/**
+ * 一条**已经发出去**的对话引用在消息正文里的身份（见 `MessageView.sessionRefs`）。
+ *
+ * 正文里留下的是折叠后的 `@label`；点开要用的是 `sessionId`。两者都来自紧随消息的
+ * 召回事件（`source.references[]`），不是从正文里猜的。
+ */
+export interface MessageSessionRef {
+  /** 正文里那个 `@label` 的标题文字（服务端折出来的原文，未转义）。 */
+  label: string;
+  /** 被引用会话的 id；召回记录里缺这个字段时只做显示、不做成链接。 */
+  sessionId?: string;
 }
 
 /** 上下文窗口的权威值来源（由服务端 `request/context` 事件给出）。 */

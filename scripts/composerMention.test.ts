@@ -25,7 +25,7 @@ import { join } from "node:path";
 import { draftSegments, hitsAnyRect } from "../src/webview/composerMention";
 
 /**
- * 会话引用的**原始 token**（草稿里落盘的就是它）。
+ * 会话引用的**原始 token**（草稿 / 提交给服务端的就是它；服务端落盘时才折成 `@标题`）。
  *
  * 负载是 id 的 UTF-8 JSON 再 base64url——与 `shared/mentions.ts` 的解码同一条口径
  * （这里真走一遍编码，而不是喂一个刚好长得像的字符串）。

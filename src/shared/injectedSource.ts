@@ -6,6 +6,10 @@
  * `snapshot` 列出分节、`relay` 标出来自哪个会话、`recall` 给出「保留 N 条 · 省略 M 条」；
  * 认不出的形状退回不透明呈现（正文 + 原样字段）。
  *
+ * 另有一条**同一份 `source`、另一个目的**的读法：{@link parseRecalledSessionRefs} 只取
+ * 跨会话引用里的「标题 ↔ 会话 id」，供消息正文把 `@标题` 认成会话引用（官方
+ * `sessionRecallLabels` 的对应物）。
+ *
  * 我们此前只留了 `{kind, plugin, form}` 与正文，**把这些字段整个丢了**，于是界面上
  * 只有一段文字、看不出「这轮指令是新增的还是移除的」。这里按官方谓词逐条解析，
  * 并且**全有或全无**：任一条目形状不对就返回 undefined，退回不透明呈现——
@@ -13,6 +17,7 @@
  *
  * 纯函数、不引 React / vscode：断言见 `scripts/injectedSource.test.ts`。
  */
+import type { MessageSessionRef } from "./chat";
 
 /** 指令变更（`form: "instructions"`）：官方 `instructionChanges`。 */
 export interface InstructionChange {
@@ -126,4 +131,39 @@ export function parseRecalledSessions(source: unknown): RecalledSession[] | unde
     });
   }
   return sessions;
+}
+
+/**
+ * **跨会话引用**（`kind: "session-reference"`，即 `form: "recall"`）在正文里指向哪些会话。
+ *
+ * 与上面的 {@link parseRecalledSessions} 读的是同一个 `source`，但**目的不同、口径也不同**
+ * （官方同样是两个读者：卡片看 `recalledSessions`，消息正文的标签挂接看
+ * `sessionRecallLabels`）：
+ *
+ * - 卡片那个（上面的）要报「保留了多少条、省略了多少条」，所以**全有或全无**——任一条目
+ *   说不清完整度就整项退回不透明呈现；
+ * - 这个只回答「哪些 `@标题` 是会话引用」，标题本身是唯一证据，所以**逐条跳过**认不出的
+ *   条目（官方 `collect` 就是跳过），一条都不剩才返回 undefined。
+ *
+ * 比官方多读一个 `sessionId`：官方正文里的会话引用只是个带图标的标签，本扩展要能**点开**
+ * （见 `MessageView.sessionRefs`）。`sessionId` 认不出来时保留标题、不带 id——那时界面照旧
+ * 折成 `@标题` 显示，只是不可点，而不是退回去当文件引用。
+ *
+ * 只认 `kind === "session-reference"`：记忆类插件也有 `form: "recall"` 的注入
+ * （`{kind: "plugin", plugin: "openviking-memory"}`），但它们的 `references` 是另一回事。
+ */
+export function parseRecalledSessionRefs(source: unknown): MessageSessionRef[] | undefined {
+  const record = asRecord(source);
+  if (record?.["kind"] !== "session-reference") return undefined;
+  const list = record["references"];
+  if (!Array.isArray(list)) return undefined;
+  const refs: MessageSessionRef[] = [];
+  for (const item of list) {
+    const reference = asRecord(item);
+    const label = reference?.["label"];
+    if (typeof label !== "string" || label === "") continue;
+    const sessionId = reference?.["sessionId"];
+    refs.push({ label, ...(typeof sessionId === "string" && sessionId ? { sessionId } : {}) });
+  }
+  return refs.length > 0 ? refs : undefined;
 }

@@ -100,6 +100,8 @@
 - `mentionCandidates.test.ts` — `@` 候选两条帧：文件先到先渲染、对话各自结算。
 - `fileRefListing.test.ts` — `@` 目录列举补全：服务器 20 条上限之外的尾巴按官方同一套排序补齐（真盘临时目录 + 真控制器）。
 - `mentionNav.test.ts` — `@` / `/` 补全规则集、「返回上一层目录」、`@` 列表的两条入口（裸 `@` 与目录块；带引号空格目录解包整块）与目录块整段替换。
+- `mentionLinks.test.ts` — 正文里 `@` 引用的判定：文件 / 目录按形状，会话按「草稿里的原始 token」或「已发出消息的 `sessionRefs` 清单」两种来路。
+- `mentionLinksUi.test.ts` — 上面那份判定真的渲染成可点行内按钮（悬停说明按三档目标给），以及 `.mention-link` 的行内样式。
 - `emptyComposer.test.ts` — 空态下 `/` 命令栏与 `@` 候选的行为级回归（空态就绑在壳上，菜单读它、不另建）。
 - `composerSend.test.ts` — 发送按钮的手势链路：按住 Ctrl / Cmd 时文字换成这一次真会走的那条路、点按钮发加速手势（真事件链 + 真 `Composer` 渲染），空闲仍发送、运行中无草稿仍是停止。
 - `blankSessionReuse.test.ts` — 「空态必有壳、首条消息发给谁」：`reusableBlank` 的本地 blank 位（不许把已经说过话的会话当空壳接回来）、两个窗口共用一条壳、空壳上选的模型留得住。

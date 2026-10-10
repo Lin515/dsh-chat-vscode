@@ -251,4 +251,127 @@ console.log("injected: 大内容不截断 ✓");
 }
 console.log("injected: 生产者自有 kind（system-prompt / runtime-context / plugin:<包名>） ✓");
 
+// ---------- 9. 跨会话召回：把引用的会话挂回**紧邻在前的**那条用户消息 ----------
+//
+// 真实落盘形态（取自会话日志）：用户消息正文里 `@[标题](dsh-session:…)` 已被服务端折成
+// `@标题`，会话 id 只在紧随其后的召回事件（`kind: "session-reference"`, `form: "recall"`）
+// 的 `source.references[]` 里。宿主必须把它挂回前一条消息（`seq - 1`），否则界面只能按
+// 形状把 `@标题` 当文件引用——用户 2026-10-10 报的就是这个。
+{
+  const { adapter, messages } = harness();
+  const t = Date.now();
+  const reference = {
+    sessionId: "session-10263ccf-3e75-4923-bf8a-eea1a86ec30a",
+    label: "轨迹四项收口与逐块渲染交接",
+    capturedFormatVersion: 4,
+    capturedThroughSeq: 3112,
+    compacted: false,
+    originalMessages: 97,
+    retainedMessages: 97,
+    omittedMessages: 0,
+    omittedBytes: 0,
+    truncated: false,
+    inputIndex: 0,
+  };
+  adapter.applyEvent({ type: "turn/start", seq: 1, time: t, data: { turn: 1 } });
+  adapter.applyEvent({
+    type: "user/message", seq: 2, time: t + 1,
+    data: {
+      id: "u1", role: "user",
+      content: [{ type: "text", text: "@轨迹四项收口与逐块渲染交接 里出现了大量未知内容块" }],
+      source: { kind: "user", rpcId: "r1" },
+    },
+  });
+  // 挂接之前：界面只看到折叠后的标题，这条消息还不带引用
+  assert.strictEqual(
+    messages.find((m) => m.role === "user")?.sessionRefs,
+    undefined,
+    "召回还没到，先不凭空造引用",
+  );
+  adapter.applyEvent({
+    type: "user/message", seq: 3, time: t + 2,
+    data: {
+      id: "u2", role: "user",
+      content: [{ type: "text", text: "## Referenced sessions\n\n…" }],
+      source: { kind: "session-reference", form: "recall", version: 1, references: [reference] },
+    },
+  });
+
+  const users = messages.filter((m) => m.role === "user");
+  assert.strictEqual(users.length, 1, "召回本身不是用户消息（它是自动载入的上下文）");
+  assert.deepStrictEqual(
+    users[0]?.sessionRefs,
+    [{ label: "轨迹四项收口与逐块渲染交接", sessionId: reference.sessionId }],
+    "标题 ↔ 会话 id 要挂到引用它的那条消息上",
+  );
+  assert.strictEqual(users[0]?.text, "@轨迹四项收口与逐块渲染交接 里出现了大量未知内容块", "只补引用，正文一个字不动");
+  assert.strictEqual(injected(messages).length, 1, "召回卡片照旧显示（挂接不影响注入节点）");
+
+  // 重放同一条召回事件：不重复、值不变（跟随窗口重折历史走的就是这条路）
+  adapter.applyEvent({
+    type: "user/message", seq: 3, time: t + 2,
+    data: {
+      id: "u2", role: "user",
+      content: [{ type: "text", text: "## Referenced sessions\n\n…" }],
+      source: { kind: "session-reference", form: "recall", version: 1, references: [reference] },
+    },
+  });
+  assert.strictEqual(messages.filter((m) => m.role === "user").length, 1, "重放不该多出一条消息");
+  assert.strictEqual(injected(messages).length, 1, "重放不该多出一个注入节点");
+  assert.strictEqual(
+    messages.find((m) => m.role === "user")?.sessionRefs?.length,
+    1,
+    "重放后引用仍在",
+  );
+}
+console.log("injected: 跨会话召回把引用挂回前一条用户消息 ✓");
+
+// ---------- 10. 认不出召回形状：什么都不挂（不猜） ----------
+
+{
+  const { adapter, messages } = harness();
+  const t = Date.now();
+  adapter.applyEvent({ type: "turn/start", seq: 1, time: t, data: { turn: 1 } });
+  adapter.applyEvent({
+    type: "user/message", seq: 2, time: t + 1,
+    data: { id: "u1", role: "user", content: [{ type: "text", text: "@某个会话 的问题" }], source: { kind: "user" } },
+  });
+  // 记忆类插件的 `form: "recall"` 不是跨会话引用（kind 不同）；references 形状不对的更不算
+  const recalls = [
+    { kind: "plugin:openviking-memory", plugin: "openviking-memory", form: "recall", references: [{ label: "某个会话", sessionId: "s1" }] },
+    { kind: "session-reference", form: "recall", version: 1, references: [{ sessionId: "s1" }] },
+    { kind: "session-reference", form: "recall", version: 1, references: [] },
+    { kind: "session-reference", form: "recall", version: 1 },
+  ];
+  let seq = 3;
+  for (const source of recalls) {
+    adapter.applyEvent({
+      type: "user/message", seq: seq++, time: t + seq,
+      data: { id: `u${seq}`, role: "user", content: [{ type: "text", text: "## Referenced sessions\n…" }], source },
+    });
+  }
+  assert.strictEqual(
+    messages.find((m) => m.role === "user")?.sessionRefs,
+    undefined,
+    "拿不到「标题 + 会话 id」就不挂：界面照旧按形状显示，不猜",
+  );
+
+  // 召回事件出现在最前面（跟随窗口从一轮中间开始）：没有前一条消息，不能炸也不能乱挂
+  const orphan = harness();
+  orphan.adapter.applyEvent({
+    type: "user/message", seq: 5, time: t,
+    data: {
+      id: "u5", role: "user",
+      content: [{ type: "text", text: "## Referenced sessions\n…" }],
+      source: { kind: "session-reference", form: "recall", version: 1, references: [{ sessionId: "s1", label: "x" }] },
+    },
+  });
+  assert.deepStrictEqual(
+    orphan.messages.filter((m) => m.role === "user"),
+    [],
+    "孤儿召回不创出用户消息",
+  );
+}
+console.log("injected: 认不出的召回不挂引用 ✓");
+
 console.log("\ninjected: all assertions passed");

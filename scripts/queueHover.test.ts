@@ -94,8 +94,8 @@ console.log("queueHover: 悬停全文的判据（实测溢出，非字数） ✓
     "全文要挂在 title 上、且挂**整行**（只挂正文那一格时鼠标偏到附件标记 / 空白就没有提示），" +
       "并以实测量出来的 clipped 为闸门：没被截断的那条一个字符都不挂",
   );
-  // 队列行是预览：落盘的会话引用是原始 token，显示前必须折成 `@标题`
-  // （否则单行省略与悬停全文看到的都是 base64 会话 id）
+  // 队列行是预览：队列条目存的是**用户提交的原文**（会话引用还是 token），
+  // 显示前必须折成 `@标题`（否则单行省略与悬停全文看到的都是 base64 会话 id）
   assert.ok(
     /const label = readableMentionText\(item\.text/.test(row),
     "队列行的正文要先过 readableMentionText（与复制按钮、轮次大纲预览同一道还原）",

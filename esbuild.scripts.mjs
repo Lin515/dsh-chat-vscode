@@ -154,6 +154,7 @@ const entries = {
   "build/question-render.test.mjs": "scripts/questionRender.test.ts",
   "build/mention-nav.test.mjs": "scripts/mentionNav.test.ts",
   "build/mention-candidates.test.mjs": "scripts/mentionCandidates.test.ts",
+  "build/mention-links.test.mjs": "scripts/mentionLinks.test.ts",
   "build/mention-links-ui.test.mjs": "scripts/mentionLinksUi.test.ts",
   "build/selection.test.mjs": "scripts/selection.test.ts",
   "build/workspace-probe.mjs": "scripts/workspaceProbe.ts",

@@ -5,11 +5,14 @@
  * 目标），这里钉的是「用户真能点到」——判定对了却没渲染成按钮、或者按钮长在了一段
  * 本来就该是普通文本的文字上，源码正则都看不出来。
  *
- * 覆盖四件事：
+ * 覆盖六件事：
  * 1. `@src/a.ts` 渲染成带 `.mention-link` 的行内按钮，悬停说明按「文件」那一档给；
  * 2. 目录引用同样可点，但提示是「展开目录」——三档目标点开的行为不同，提示不能混；
  * 3. 会话引用按**显示形态**（`@标题`）渲染，原始的长 token 一个字节都不出现在界面上；
- * 4. 解不开 id 的会话引用**不做成链接**（点了也不知道开哪一条），照旧只做显示还原。
+ * 4. 解不开 id 的会话引用**不做成链接**（点了也不知道开哪一条），照旧只做显示还原；
+ * 5. 普通文本里的路径不造链接；
+ * 6. **已经发出去**的会话引用（落盘时被服务端折成 `@标题`、id 由召回清单带回来）按会
+ *    话渲染，且同一条正文在没有清单时按形状是文件引用。
  *
  * 另有一条样式断言：`.mention-link` 必须是**行内**元素、没有上下内边距——气泡的折叠
  * 判定量的是 `scrollHeight`，按钮把行盒撑高的话「5 行」的阈值就与实际行数对不上。
@@ -54,22 +57,27 @@ function quietly<T>(run: () => T): T {
   }
 }
 
-const userMessage = (text: string): MessageView => ({
+const userMessage = (text: string, sessionRefs?: MessageView["sessionRefs"]): MessageView => ({
   id: "u:1",
   role: "user",
   ts: Date.now(),
   text,
   segments: [],
+  ...(sessionRefs === undefined ? {} : { sessionRefs }),
 });
 
 /** 渲染一条用户消息的 HTML。 */
-const render = (text: string, locale: "zh" | "en" = "zh"): string =>
+const render = (
+  text: string,
+  locale: "zh" | "en" = "zh",
+  sessionRefs?: MessageView["sessionRefs"],
+): string =>
   quietly(() =>
     renderToStaticMarkup(
       createElement(
         TextsContext.Provider,
         { value: dictionaryFor(locale) },
-        createElement(Message, { message: userMessage(text) }),
+        createElement(Message, { message: userMessage(text, sessionRefs) }),
       ),
     ),
   );
@@ -157,7 +165,36 @@ const sessionToken = (label: string, id: string): string =>
   console.log("mentionLinksUi: 解不开的会话引用只显示、不链接 ✓");
 }
 
-// ---------- 6. 样式：行内元素、不撑高行盒，观感与正文链接一致 ----------
+// ---------- 6. 已经发出去的会话引用：正文只剩 `@标题`，靠召回清单认 ----------
+{
+  // **真实落盘形态**（取自会话日志）：服务端把 `@[标题](dsh-session:…)` 折成 `@标题`
+  // 之后才落盘，id 只在紧随消息的召回事件里（宿主折成 `MessageView.sessionRefs`）。
+  const text = "@轨迹四项收口与逐块渲染交接 里出现了大量思考前的未知内容块节点";
+  const refs = [{ label: "轨迹四项收口与逐块渲染交接", sessionId: "session-10263ccf" }];
+  const html = render(text, "zh", refs);
+  assert.ok(
+    /<button[^>]*class="mention-link"[^>]*>@轨迹四项收口与逐块渲染交接<\/button>/.test(html),
+    `已发出的会话引用要渲染成可点链接（修复前它被当成文件引用）：${html}`,
+  );
+  assert.ok(
+    html.includes(`title="${zh.mentionOpenSession}"`),
+    "悬停说明必须是「在新标签页打开这个会话」，不能是「打开这个文件」",
+  );
+  assert.ok(
+    !html.includes(`title="${zh.mentionOpenFile}"`),
+    `不能同时挂着文件那一档的提示：${html}`,
+  );
+
+  // 同一条正文**没有**清单时按形状是文件引用——这份清单就是这两种引用唯一的分界
+  const shapeOnly = render(text);
+  assert.ok(
+    shapeOnly.includes(`title="${zh.mentionOpenFile}"`),
+    `没有召回清单时按形状当文件引用（就是用户报的那个现象）：${shapeOnly}`,
+  );
+  console.log("mentionLinksUi: 已发出的会话引用按召回清单认成会话 ✓");
+}
+
+// ---------- 7. 样式：行内元素、不撑高行盒，观感与正文链接一致 ----------
 {
   const css = readFileSync(join(process.cwd(), "src", "webview", "styles", "app.css"), "utf8");
   const rule = /\.mention-link\s*\{([^}]*)\}/.exec(css);

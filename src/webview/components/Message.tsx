@@ -1,5 +1,5 @@
 import { memo, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
-import type { ChangesSummaryView, DiffLayout, FileChangeKind, MessageView, Segment } from "../../shared/chat";
+import type { ChangesSummaryView, DiffLayout, FileChangeKind, MessageSessionRef, MessageView, Segment } from "../../shared/chat";
 import { localImageMediaType } from "../../shared/imageRef";
 import { post } from "../bridge";
 import { fileLinkPort, type FileLinkPort } from "../fileLinks";
@@ -54,12 +54,20 @@ function mentionTitle(texts: Texts, target: MentionLinkTarget): string {
  * 解不开会话 id 的区间 `target` 缺省，那段只做显示还原而**不可点**——点了也不知道
  * 该开哪一条。
  *
+ * `sessionRefs` 是这条消息里**已经发出去**的会话引用：服务端把 `@[标题](dsh-session:…)`
+ * 折成 `@标题` 之后，标题与会话 id 由紧随的召回事件补回来（见 `../../shared/chat.ts` 的
+ * `MessageView.sessionRefs`）。没有它，正文里的 `@标题` 只能按形状当路径引用。
+ *
  * 切段严格按区间拼（普通文本用的是**原文切片**），所以气泡里的文字与原文逐字一致、
  * 换行也不受影响；按钮在样式里也按行内元素处理（`.mention-link`），气泡那套
  * 「量 `scrollHeight` 判 5 行折叠」的测量因此看不出差别。
  */
-function renderMentionText(text: string, texts: Texts): ReactNode[] {
-  const spans = scanMentionLinks(text);
+function renderMentionText(
+  text: string,
+  texts: Texts,
+  sessionRefs?: readonly MessageSessionRef[],
+): ReactNode[] {
+  const spans = scanMentionLinks(text, sessionRefs);
   if (spans.length === 0) return [text];
   const nodes: ReactNode[] = [];
   let cursor = 0;
@@ -104,10 +112,13 @@ function renderMentionText(text: string, texts: Texts): ReactNode[] {
 function UserBubble({
   text,
   expanded,
+  sessionRefs,
   nodeRef,
 }: {
   text: string;
   expanded: boolean;
+  /** 这条消息里**已经发出去**的会话引用（见 `renderMentionText`）。 */
+  sessionRefs?: readonly MessageSessionRef[];
   /**
    * **不能叫 `ref`**：React 18 里 `ref` 是函数组件的保留 prop，传进去不会出现在
    * props 里（会警告「Function components cannot be given refs」），
@@ -125,7 +136,7 @@ function UserBubble({
       style={{ "--user-clamp-lines": USER_COLLAPSE_LINES } as CSSProperties}
     >
       {/* 正文里的 `@` 引用渲染成可点链接（一条消息里可能好几处），其余照旧纯文本 */}
-      {renderMentionText(text, texts)}
+      {renderMentionText(text, texts, sessionRefs)}
     </div>
   );
 }
@@ -298,7 +309,12 @@ export const Message = memo(function Message({
         className={`msg msg-user${message.sendState === "failed" ? " is-failed" : ""}`}
         data-msg-id={message.id}
       >
-        <UserBubble text={message.text ?? ""} expanded={bubbleOpen} nodeRef={bubbleRef} />
+        <UserBubble
+          text={message.text ?? ""}
+          expanded={bubbleOpen}
+          sessionRefs={message.sessionRefs}
+          nodeRef={bubbleRef}
+        />
         {attachments.length ? (
           <div className="msg-media">
             {images.length ? <ImageGallery alt={texts.messageImageAlt} sources={images} /> : null}
