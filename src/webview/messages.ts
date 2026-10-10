@@ -727,7 +727,7 @@ export const MESSAGES = {
     argParts: 2, // 参数形如 `<张数>:<模型名>`（模型名里可能含冒号）
     zh: (count: number, model: string) => `模型「${model}」不支持图片输入，已把 ${count} 个路径插入输入框`,
     en: (count: number, model: string) => `Model "${model}" does not accept image input; inserted ${count} path(s) into the box`,
-  },  queueAttachmentsLost: { zh: "这条消息的附件无法还原，请重新添加（正文已放回输入框）", en: "Attachments could not be restored; please re-attach them (text is back in the box)" },
+  },  queueAttachmentsLost: { zh: "部分附件无法还原，消息已保留在队列中。", en: "Some attachments cannot be restored. The message was kept in the queue." },
   queueContentLost: { zh: "排队消息的内容无法还原，已只中止当前轮", en: "Could not restore the queued message; only the current turn was stopped" },
   /**
    * 排队消息没能发起（ESC 中止后接着发 / 摘不动队列时的回滚）。

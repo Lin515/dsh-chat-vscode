@@ -190,6 +190,8 @@ const entries = {
   "build/job-observe.test.mjs": "scripts/jobObserve.test.ts",
   "build/queue-order.test.mjs": "scripts/queueOrder.test.ts",
   "build/queue-hover.test.mjs": "scripts/queueHover.test.ts",
+  // 队列「取回重新编辑」的回填链路（真 ChatController + vscode stub；必须登记，否则 npm test 静默不跑）
+  "build/queue-restore.test.mjs": "scripts/queueRestore.test.ts",
   "build/trajectory.test.mjs": "scripts/trajectory.test.ts",
   "build/trajectory-vendor.test.mjs": "scripts/trajectoryVendor.test.ts",
   // M01 源锁：`src/vendor/**/*.ts` 的内容锁 + 双向登记 + 来源自洽（必须登记，否则 npm test 静默不跑）

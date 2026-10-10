@@ -53,6 +53,7 @@
 - `queueOrder.test.ts` — 待发送队列显示形态：插话排在排队上方、带附件的行首芯片。
 - `queueHover.test.ts` — 队列行悬停看全文：截断判据是实测溢出（非字数）、浮层落位 / 限高与接线。
 - `queueView.test.ts` — 队列项视图映射：`inbox` 投影与旧线格式折算结果必须一致。
+- `queueRestore.test.ts` — 「取回重新编辑」的完整语义（真 `ChatController` + vscode stub）：摘除回显先于 RPC resolve 仍要还原、切换会话写回原会话、remove 失败不回填、**附件还原不了就整条不摘**（durable 文件缺回执 / 图片字节取不到 / 两者混合：队列与草稿原样 + 按会话提示）、纯 durable 图片完全可还原的对照、草稿追加按肯定身份去重（同名同字节不同图、同路径不同回执都不合并）。
 - `jobObserve.test.ts` — 后台任务实时输出的累积口径与面板接线。
 - `jobsKill.test.ts` — 后台任务停止按钮两段式状态机与接线 / 样式。
 - `jobsOrder.test.ts` — 后台任务名册排序口径（官方 `ordered()`）。

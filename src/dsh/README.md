@@ -26,7 +26,7 @@
 ## 视图折叠（线格式 → 视图模型的纯函数）
 
 - `produced.ts` — 「本轮产生了哪些文件」：按成功的第一方变更调用推导，对齐官方 `mutationPath`。
-- `queueView.ts` — 队列里待发送消息的视图：`inbox` 投影两代线格式折成同一个 `QueuedMessageView`（`next-turn` / `next-step`）。
+- `queueView.ts` — 队列里待发送消息的视图：`inbox` 投影两代线格式折成同一个 `QueuedMessageView`（`next-turn` / `next-step`）；另有「取回重新编辑」的附件还原计划（`queueRestoreAttachments`：本地提交记录优先，重载后退回内容块——图片走 durable 句柄换字节、文件无回执计入 `unrestorable`；**计数非 0 时控制器不摘队列**）与追加去重（`attachmentIdentities` 只认肯定身份：同 id / 同上传回执 / 同 durable 句柄 / 图片同字节摘要）。
 - `jobView.ts` — 后台任务的线格式读取：`job` 命名空间新旧两代帧形状 + `job/follow` 单任务保留输出。
 - [trajectory.ts](<trajectory.ts>) — 轨迹的宿主侧折叠：同一份 durable 事件的第二次折叠（账本 turn → group → cell + **请求表**，消费官方 `dsh-client-ui-trajectory` 的请求事实；`step/start` 是请求与助手记录共同的计时起点；助手请求与压缩请求分开按稳定身份记账，避免 overflow 时序相互顶替；新步骤继承最近生效的整份 header 配置，`request/header` 按事件落点归属该步助手请求、配置与结算帧身份逐字段分开，无配置证据不从结算帧倒推；请求状态与重试事实分开，retry 整份替换诊断／结算身份并保首 token／用量，配置只回落本请求已用 header；首 token 按 raw／packed 合格字符串 delta 读取，晚 attempt 回填同身份已有记录；当前助手贡献随 retry 失效，中断闭合与重复 start 保状态；system 更新归随后首个有效助手／当前 partial，初始 prologue 按首可见轮归位；steering 分类用 vendor 的 inbox 状态机，领取落点按事件 seq 关联，同号轮次合并）。真实完整夹具、固定官方与代表性边界的区别见[轨迹设计](<../../docs/design-trajectory.md>)。
 - `readRange.ts` — `read` 工具的行号区间：判定读了整文件还是片段，把行号缀在文件名后。

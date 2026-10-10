@@ -1,3 +1,4 @@
+import { createHash, randomUUID } from "node:crypto";
 import type { Attachment, QueuedMessageView } from "../shared/chat";
 
 /**
@@ -167,4 +168,153 @@ function entryOf(
       placement: fields.placement,
     },
   };
+}
+
+// ---------- 「取回重新编辑」的附件还原 ----------
+
+/**
+ * 「取回重新编辑」时要放回输入框的附件（纯折算，控制器只管落地）。
+ *
+ * 两个来源、一条判据：
+ *
+ * 1. **本地提交记录**（`submissions`，扩展没重载过）——最权威，含展示名、路径、
+ *    上传回执与内联字节，原样还回去即可；
+ * 2. **内容块**（本地记录被 TTL / 条数上限淘汰，或扩展重载过）——只有线格式能给的
+ *    东西。这里必须区分两种形态，它们的可还原性不同：
+ *    - **提交态**（`PromptContentPart`：图片 `{mediaType,data}`、文件 `{receiptId}`）
+ *      是 `buildPromptContent` 装出来的，图片字节就在块里；
+ *    - **durable 态**（`protocol.ts` 的 `ImageBlock` / `FileBlock`：`attachment{}` 带
+ *      `attachmentId`）是服务端落盘后的引用。图片能用 `session/attachment` 换回字节
+ *      （与回放同一条通道，见 `pendingImages`）；**文件没有上传回执**——而
+ *      `buildPromptContent` 只认回执，造一枚发不出去的文件芯片比不还原更糟，
+ *      所以只计数（`unrestorable`），由调用方如实告知用户。
+ */
+export interface QueueRestorePlan {
+  /** 现在就能用的附件（本地记录原样，或提交态内容块里的图片）。 */
+  attachments: Attachment[];
+  /** 只有 durable 句柄的图片：要经 `session/attachment` 换回字节才算能用。 */
+  pendingImages: { attachment: Attachment; attachmentId: string }[];
+  /** 还原不出来的附件数量（durable 文件块等）——只有它非 0 才需要提示用户。 */
+  unrestorable: number;
+}
+
+/** base64 的长度 → 原始字节数（`bytes` 只是芯片上的展示元数据）。 */
+function base64ByteLength(data: string): number {
+  const padding = data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0;
+  return Math.floor((data.length * 3) / 4) - padding;
+}
+
+/** 内容块（提交态 / durable 态混在一条通道里）→ 附件还原计划。 */
+function restoreFromContent(content: unknown): QueueRestorePlan {
+  const plan: QueueRestorePlan = { attachments: [], pendingImages: [], unrestorable: 0 };
+  for (const raw of Array.isArray(content) ? content : []) {
+    const part = raw as {
+      type?: unknown;
+      mediaType?: unknown;
+      data?: unknown;
+      name?: unknown;
+      attachment?: {
+        attachmentId?: unknown;
+        mediaType?: unknown;
+        bytes?: unknown;
+        name?: unknown;
+        width?: unknown;
+        height?: unknown;
+      };
+    } | null;
+    if (!part || typeof part !== "object") continue;
+
+    if (part.type === "image") {
+      const ref = part.attachment;
+      const attachmentId = typeof ref?.attachmentId === "string" && ref.attachmentId ? ref.attachmentId : undefined;
+      if (attachmentId) {
+        // durable 句柄：字节要另取（`pendingImages`）
+        const mediaType = typeof ref?.mediaType === "string" ? ref.mediaType : undefined;
+        plan.pendingImages.push({
+          attachmentId,
+          attachment: {
+            id: randomUUID(),
+            kind: "image",
+            name: typeof ref?.name === "string" && ref.name ? ref.name : "image",
+            attachmentId,
+            ...(mediaType ? { mediaType } : {}),
+            ...(typeof ref?.bytes === "number" ? { bytes: ref.bytes } : {}),
+            ...(typeof ref?.width === "number" ? { width: ref.width } : {}),
+            ...(typeof ref?.height === "number" ? { height: ref.height } : {}),
+          },
+        });
+        continue;
+      }
+      if (typeof part.data === "string" && part.data && typeof part.mediaType === "string" && part.mediaType) {
+        plan.attachments.push({
+          id: randomUUID(),
+          kind: "image",
+          name: typeof part.name === "string" && part.name ? part.name : "image",
+          dataUrl: `data:${part.mediaType};base64,${part.data}`,
+          bytes: base64ByteLength(part.data),
+          mediaType: part.mediaType,
+        });
+        continue;
+      }
+      plan.unrestorable += 1;
+      continue;
+    }
+
+    // 文件块：durable 态没有回执、提交态没有展示名；而本地记录在场时走的是上面那条
+    // 短路（`content ⊆ attachments`），所以这里一律按「还原不了」计数
+    if (part.type === "file") plan.unrestorable += 1;
+  }
+  return plan;
+}
+
+/**
+ * 队列项的原文与内容块 → 附件还原计划。
+ *
+ * 本地记录优先：它是全量（内容块里只有真发出去的那些），带展示名与回执；
+ * 没有它（重载 / 淘汰）才退回内容块。返回的附件是**副本**——输入框里的那份会被
+ * 上传状态就地改写（`setStateForUpload`），不能让它反过来改到提交记录。
+ */
+export function queueRestoreAttachments(local: readonly Attachment[], content: unknown): QueueRestorePlan {
+  if (local.length) {
+    return { attachments: local.map((attachment) => ({ ...attachment })), pendingImages: [], unrestorable: 0 };
+  }
+  return restoreFromContent(content);
+}
+
+/**
+ * 附件的**肯定身份**（追加还原附件时用它去重）：一条附件可以同时有几个身份，只要
+ * **任一**命中就算同一份。
+ *
+ * 只认有证据的同一性——同 `id`、同上传回执（`receiptId`，一次上传一个句柄）、同
+ * durable 句柄（`attachmentId` 是字节 sha256）、图片的实际字节（`dataUrl` 的 sha256）。
+ * **刻意不用「名字 + 字节数」或「路径」**：截图常被系统命名为 `image`，同名同大小的
+ * 两张不同图不是同一份；路径相同也不等于内容相同（同一个文件改了再传、不同选区，
+ * 回执与字节都不一样）。没有证据时**不合并**——按仓库纪律「拿不到证据就不动手」，
+ * 少合并只是多一枚芯片，多合并会把用户真正要发的东西吞掉。
+ */
+export function attachmentIdentities(attachment: Attachment): string[] {
+  const keys = [`id:${attachment.id}`];
+  if (attachment.kind === "file" && attachment.upload?.status === "ready") {
+    keys.push(`receipt:${attachment.upload.receiptId}`);
+  }
+  if (attachment.attachmentId) keys.push(`ref:${attachment.attachmentId}`);
+  if (attachment.kind === "image" && attachment.dataUrl) {
+    // 图片字节就是身份：dataUrl 可能很大，取摘要当键（不拿它当字符串拼前缀）
+    keys.push(`data:${createHash("sha256").update(attachment.dataUrl).digest("hex")}`);
+  }
+  return keys;
+}
+
+/** 把还原出来的附件追加进已有列表（就地改，按 `attachmentIdentities` 去重）。 */
+export function appendRestoredAttachments(list: Attachment[], additions: readonly Attachment[]): void {
+  const seen = new Set<string>();
+  for (const attachment of list) {
+    for (const key of attachmentIdentities(attachment)) seen.add(key);
+  }
+  for (const attachment of additions) {
+    const keys = attachmentIdentities(attachment);
+    if (keys.some((key) => seen.has(key))) continue;
+    for (const key of keys) seen.add(key);
+    list.push(attachment);
+  }
 }

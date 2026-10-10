@@ -88,7 +88,14 @@ import {
   type SessionViewSource,
   type WireChatState,
 } from "./sessionView";
-import { queueItemsFromInbox, queueItemsFromWire, type QueuedItemEntry, type QueueOrigin } from "./queueView";
+import {
+  appendRestoredAttachments,
+  queueItemsFromInbox,
+  queueItemsFromWire,
+  queueRestoreAttachments,
+  type QueuedItemEntry,
+  type QueueOrigin,
+} from "./queueView";
 import { modelSelectionFromProjection, subagentCatalogFromProjection, subagentsFromList, sameSubagentRow, upsertSubagent, withSubagentActivity, withSubagentUnread, agentPresetsFromList, permissionCatalogHasAuto } from "./projections";
 import type { ModelSelectionDecoded, SubagentCatalogEntryView } from "./projections";
 import {
@@ -4527,25 +4534,37 @@ export class ChatController implements vscode.Disposable {
       return;
     }
     const results = await Promise.all(
-      refs.map(async (ref) => {
-        try {
-          const value = await this.client!.request<{ attachment?: unknown; data?: unknown }>(
-            "session/attachment",
-            { request: { sessionId, attachmentId: ref.attachmentId } },
-          );
-          const data = typeof value?.data === "string" ? value.data : "";
-          if (!data) return "";
-          // 服务端只回 base64 与字节，媒体类型在句柄里（拿不到就按 png——
-          // 浏览器对 data URL 的 MIME 很宽容，错的类型仍会渲染）
-          const mediaType = ref.mediaType ?? "image/png";
-          return `data:${mediaType};base64,${data}`;
-        } catch (error) {
-          this.log(`[attachment] 读取图片失败：${this.describeError(error)}`);
-          return "";
-        }
-      }),
+      refs.map((ref) => this.fetchAttachmentDataUrl(sessionId, ref.attachmentId, ref.mediaType)),
     );
     done(results);
+  }
+
+  /**
+   * 一个 durable 附件句柄 → data URL（取不到返回空串）。
+   *
+   * 两个消费方共用这一处 RPC：回放的图片（`loadAttachmentImages`）与「队列消息取回
+   * 重新编辑」时从内容块还原的图片（`editQueuedMessage`）。
+   */
+  private async fetchAttachmentDataUrl(
+    sessionId: string,
+    attachmentId: string,
+    mediaType: string | undefined,
+  ): Promise<string> {
+    if (!this.client) return "";
+    try {
+      const value = await this.client.request<{ attachment?: unknown; data?: unknown }>(
+        "session/attachment",
+        { request: { sessionId, attachmentId } },
+      );
+      const data = typeof value?.data === "string" ? value.data : "";
+      if (!data) return "";
+      // 服务端只回 base64 与字节，媒体类型在句柄里（拿不到就按 png——
+      // 浏览器对 data URL 的 MIME 很宽容，错的类型仍会渲染）
+      return `data:${mediaType ?? "image/png"};base64,${data}`;
+    } catch (error) {
+      this.log(`[attachment] 读取图片失败：${this.describeError(error)}`);
+      return "";
+    }
   }
 
   /**
@@ -7591,9 +7610,24 @@ export class ChatController implements vscode.Disposable {
   /**
    * 队列消息「重新编辑」：把它从队列里摘掉，内容放回输入框。
    *
-   * 顺序不能反——先摘队列再回填。若这条其实已经开始发送了（服务端回
-   * `session/queue-item-not-found`），回填会让用户以为它还没发出去，
-   * 接着一发送就变成重复消息。
+   * ## 顺序：**先抓好、先把附件预备齐，再摘**
+   *
+   * 三步都不许提前动队列：
+   *
+   * 1. **抓好**——原文 / 附件 / 草稿键必须在 `await` 之前抓。摘除一旦生效，服务端会
+   *    立刻重推队列（新通道是 `inbox` 投影，旧服务端是 `queue` 帧），那条重推经
+   *    `syncQueue` **整表重建** `queueOrigin`（先 `clear()`），被摘掉的这一项自然不在
+   *    里面；等 await 回来再读，附件与原文双双落空——用户报障的「带附件的排队消息取回
+   *    重编，附件没了」就是这个（跟随流与控制流分居两条 socket，回显**允许**先于 RPC 的
+   *    resolve 到达，该排列已由离线回路复现；回归见 `scripts/queueRestore.test.ts`）。
+   *    草稿键同理：await 期间用户可能切了会话，那时 `keyForView` 指向的是**新**会话。
+   * 2. **预备还原**——附件还原计划与图片字节（durable 句柄经 `session/attachment` 换回）
+   *    全部先算出来。**只要有一枚还原不了就不摘**：用户的硬目标是「取回重编不能丢附件」，
+   *    摘了再只回填一部分，等于把那一枚从队列里抹掉。宁可这次不取回（消息原样留在队列里，
+   *    需修改时应先备好完整内容，再取消旧消息并重发），并按会话提示一句。
+   * 3. **摘除成功才回填**——摘不动（服务端回 `session/queue-item-not-found`）时**不回填**：
+   *    那多半是这条已经开始发送了，回填会让用户以为它还没发出去，接着一发送就变成重复
+   *    消息；这一路草稿与 `queueOrigin` 也都不动，用户还能再点一次。
    *
    * 正文用客户端自己存的原文（`submissions`）而不是队列回显：提交给服务端的
    * 正文已经把文件上下文内联进去了，把回显倒回输入框会是一大坨内容。
@@ -7602,9 +7636,40 @@ export class ChatController implements vscode.Disposable {
     if (!this.client) return;
     const scope = this.scopeOfView(viewId);
     if (!scope) return;
+    const sessionId = scope.sessionId;
+    // 抓取一律在 await 之前（见函数注释）。`queueOrigin` 是队列折算时建的索引；
+    // 它若恰好没有这一项，用同一个 requestId 的提交记录兜底（`submissions` 还没被
+    // 淘汰时两者同源，这里只是不漏掉原文）
+    const key = this.keyForView(viewId);
     const item = scope.queueItems.find((entry) => entry.id === itemId);
+    const origin = scope.queueOrigin.get(itemId) ?? this.originFor(item?.rpcId);
+
+    // 附件：本地提交记录最权威；重载 / 记录被淘汰后退回内容块——其中的图片能用
+    // durable 句柄换回字节，文件块没有上传回执（发送只认回执，不伪造）所以计入「还原不了」
+    const plan = queueRestoreAttachments(origin?.attachments ?? [], origin?.content);
+    const restoredAttachments = [...plan.attachments];
+    let unrestorable = plan.unrestorable;
+    for (const pending of plan.pendingImages) {
+      const dataUrl = await this.fetchAttachmentDataUrl(
+        sessionId,
+        pending.attachmentId,
+        pending.attachment.mediaType,
+      );
+      if (dataUrl) restoredAttachments.push({ ...pending.attachment, dataUrl });
+      else unrestorable += 1;
+    }
+
+    // 还原不了就**不摘**（见函数注释第 2 步）。提示按**会话**投递：还在看这条会话的窗口
+    // 照常看到；切走了的窗口不该收到——那帧会把别的会话的失败画进当前界面
+    if (unrestorable > 0) {
+      const toast = { type: "toast", level: "warn", text: "@queueAttachmentsLost" } as const;
+      if (this.viewSessions.get(viewId) === sessionId) this.emitToView(viewId, toast);
+      else this.deliver(sessionId, toast);
+      return;
+    }
+
     try {
-      await this.client.updateQueueRemove(scope.sessionId, itemId);
+      await this.client.updateQueueRemove(sessionId, itemId);
     } catch (error) {
       this.reportError(
         vscode.l10n.t("Failed to restore the queued message (it may already be sending)"),
@@ -7612,27 +7677,27 @@ export class ChatController implements vscode.Disposable {
       );
       return;
     }
-
-    const origin = scope.queueOrigin.get(itemId);
     scope.queueOrigin.delete(itemId);
-
-    const key = this.keyForView(viewId);
     const restored = origin?.text ?? item?.text ?? "";
     // 输入框里可能已经有草稿：追加而不是覆盖，避免把用户正在写的内容弄丢
     const existing = this.drafts.get(key) ?? "";
-    const next = existing.trim() ? `${existing.replace(/\s+$/, "")}\n${restored}` : restored;
+    const next = existing.trim()
+      ? restored
+        ? `${existing.replace(/\s+$/, "")}\n${restored}`
+        : existing
+      : restored;
     this.drafts.set(key, next);
 
     const list = this.attachmentsBySession.get(key) ?? [];
-    for (const attachment of origin?.attachments ?? []) {
-      if (!list.some((entry) => entry.id === attachment.id)) list.push(attachment);
-    }
+    appendRestoredAttachments(list, restoredAttachments);
     this.attachmentsBySession.set(key, list);
-    this.emitToView(viewId, { type: "patch", patch: { draft: next, attachments: [...list] } });
 
-    // 线上正文里带附件、本地却没有原始记录（扩展重载过）：附件找不回来，说清楚
-    if (item?.hasMedia && !origin?.attachments.length) {
-      this.emitToView(viewId, { type: "toast", level: "warn", text: "@queueAttachmentsLost" });
+    // 只在「这个窗口还看着这条会话」时定向推给它：await 期间用户切走了的话，这帧会把
+    // **别的会话**的草稿画进当前输入框（内容仍留在原会话的草稿表里，切回去就看得到）
+    if (this.viewSessions.get(viewId) === sessionId) {
+      this.emitToView(viewId, { type: "patch", patch: { draft: next, attachments: [...list] } });
+    } else {
+      this.deliver(sessionId, { type: "patch", patch: { draft: next, attachments: [...list] } });
     }
   }
 
