@@ -147,6 +147,24 @@
 - 推论：任何「进入时从父域取数」的路径都要按「父域可能不在」设计——同步给种子、
   异步有回填、回填的通知对象是看本会话的窗口。
 
+**2026-10-11 显示名：目录条目缺 label 时用会话标题兜底**（已修，行为级回归在
+`scripts/subagentTitle.test.ts`）：workflow 派发的子代理**没有描述符 label**（父目录条目
+的 label 来自子代理描述符，而 workflow 起子代理时不传它），目录的三个来源于是都把 label
+兜底成会话 id，列表里显示一串 uuid；展示名此前只在这条子代理**被打开过**时解析得出，
+而本地补好的名字又会被下一次「label 等于会话 id」的并入覆盖回去（「关掉再打开又变回
+ID」）。
+
+- 标题**不必打开子代理**就能拿到：`session/list` 每一行带 `projections.values.title`
+  （官方客户端就是拿它给目录子行当 `displayTitle`，见 `dsh-api-session-controller` 的
+  `client/sessions/service.ts` 的 `projectList`）。宿主于是留一本标题账本
+  （`controller.subagentTitles`）：`session/list` 的原始子代理行，加上正在看那条子代理时
+  它自己的 `patch.session.title`（后者让「进去过一次」成为跨域回收的粘性事实）。
+- 显示名在**发帧那一刻**由 `resolveSubagentDisplay` 统一现算：来源的真 label →
+  打开时的描述符 label / 会话标题 → 标题账本 → 会话 id；**不写回**目录条目（写回就会被
+  重放覆盖）。界面侧不参与解析，只渲染 `SubagentView.label`。
+- 时效靠三处：`refreshSessions`（顺带，零成本）、子代理菜单打开（现有按需刷新那条路）、
+  子代理收尾（`api-session/status` 中继，尾随防抖合并成一次 `session/list`）。
+
 ## 7. jobs（后台任务面板）—— 一致（数据词表）/ 不一致（入口与状态色）
 
 数据**一致**：官方五态 `running/stopping/completed/killed/failed`，扩展逐个枚举、字段一一

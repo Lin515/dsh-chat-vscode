@@ -184,6 +184,14 @@ const MAX_PENDING_KEYS = 64;
  */
 const FOLLOW_RETRY_MAX = 5;
 
+/**
+ * 子代理收尾后补一次标题账本的**尾随防抖**（见 `scheduleSubagentTitles`）。
+ *
+ * 一次 workflow 派发会有很多个子代理依次收尾，逐个发 `session/list` 就是风暴；
+ * 800ms 足够把同一批收尾合到一次请求里，而用户几乎察觉不到这点延迟。
+ */
+const SUBAGENT_TITLES_DEBOUNCE_MS = 800;
+
 /** 读取编辑节点 diff 的排版设置（auto / unified / split，缺省自适应）。 */
 function readDiffLayout(): DiffLayout {
   const value = vscode.workspace.getConfiguration("dshChat").get<string>("diffLayout");
@@ -855,6 +863,28 @@ export class ChatController implements vscode.Disposable {
    */
   private readonly subagentRunning = new Map<string, boolean>();
   /**
+   * 子代理会话的**标题**账本（`childSessionId → 会话标题`）：目录行缺 label 时的显示名兜底。
+   *
+   * 为什么需要：workflow 派发的子代理**没有描述符 label**（父目录条目里的 label 来自
+   * 子代理描述符，而 workflow 起子代理时不传它），于是目录的三个来源都把 label 兜底成
+   * 会话 id——一串 uuid，用户没法把它和任何东西对上。会话标题本来就有，而且**不必打开
+   * 那个子代理**：`session/list` 每一行带 `projections.values.title`（官方客户端就是拿
+   * 它给目录子行当 `displayTitle`：`dsh-api-session-controller` 的
+   * `client/sessions/service.ts` 的 `projectList`）。
+   *
+   * 两个写入口：`collectSubagentTitles`（`session/list` 的原始子代理行）与 `deliver`
+   * （正在看那条子代理时它自己的 `patch.session.title`——这一路让「进去过一次」成为
+   * **跨域回收**的粘性事实，否则退出子代理页就再也读不到那个名字）。
+   *
+   * 清理路径：`session/list` 明确给出「这一行不是子代理」（`origin` 非 `subagent`）时
+   * 删一条——按肯定证据动手，与 `subagentRunning` 的清理同形。
+   */
+  private readonly subagentTitles = new Map<string, string>();
+  /** 标题账本的尾随防抖计时器（子代理收尾时补一次，见 `scheduleSubagentTitles`）。 */
+  private subagentTitlesTimer: ReturnType<typeof setTimeout> | undefined;
+  /** 标题账本刷新在途：同一时刻只发一次 `session/list`（见 `refreshSubagentTitles`）。 */
+  private subagentTitlesInflight: Promise<void> | undefined;
+  /**
    * 本地已删除的会话 id 集合（持久化于 globalState 的 `deletedSessionIds`）。
    *
    * 服务端**没有**会话删除/detach API：当前 dsh 进程打开过的会话常驻服务端内存
@@ -1312,6 +1342,9 @@ export class ChatController implements vscode.Disposable {
       // 与标题各显示一个名字（2026-09-24 的现场：列表 uuid、标题自动名）
       const selfScope = this.scopes.get(sessionId);
       if (selfScopeHasAddress(selfScope)) {
+        // 顺手把这条子代理自己的标题记进账本：「进去过一次」于是成为**跨域回收**的
+        // 粘性事实——返回父会话（子域被回收）之后目录里仍是这个名字，不退回 uuid
+        this.rememberSubagentTitle(sessionId, frame.patch.session?.title);
         this.deliver(sessionId, {
           type: "patch",
           patch: sessionPatch(this.sessionSource(selfScope), ["subagent"]),
@@ -1568,42 +1601,30 @@ export class ChatController implements vscode.Disposable {
     };
   }
 
-  /** 子代理会话的显示名：目录行里的 label；目录里找不到时退回会话 id。 */
+  /**
+   * 子代理会话的显示名：目录行经过 `resolveSubagentDisplay` 解析后的 label
+   * （真 label → 会话标题 → 会话 id，见那条函数）；目录里找不到时退回会话 id。
+   */
   private subagentLabelOf(scope: SessionScope): string {
     const siblings = this.parentCatalogOf(scope);
-    return siblings.find((entry) => entry.id === scope.sessionId)?.label ?? scope.sessionId;
+    const entry = siblings.find((item) => item.id === scope.sessionId);
+    return entry ? this.resolveSubagentDisplay(entry).label : scope.sessionId;
   }
 
   /**
    * 子代理域的**父目录**（兄弟行）：父会话域还开着时用它的实时目录，否则用进入时
    * 抄下的快照。两者都空时至少要含自己——自己的地址必然成立（进得来就说明成立）。
    *
-   * 兜底行的 label 用**描述符 label**（适配器记的目录条）而不是会话 id：id 是一串
-   * uuid，用户没法把它和真实标题对上（切换列表与标题不一致的现场，2026-09-24）。
-   * 描述符 label 由 follow 流重放注册进本域（`subagent/descriptor` → `selfEntry`），
-   * 它就是官方目录行显示的那个名字。
+   * 这里**不再**就地回填显示名：目录行可以重放（投影 / 事件 / 重连），写回的名字会被
+   * 下一次「label 等于会话 id」的并入覆盖回去（「关掉再打开又变回 ID」）。显示名统一
+   * 在发帧那一刻由 `resolveSubagentDisplay` 现算。
    */
   private parentCatalogOf(scope: SessionScope): SubagentView[] {
     if (!scope.subagentAddress) return [];
     const parentScope = this.scopes.get(scope.subagentAddress.parentSessionId);
     const entries = parentScope ? parentScope.subagentEntries : scope.subagentSiblings;
     const existing = entries.find((entry) => entry.id === scope.sessionId);
-    if (existing) {
-      // 目录行缺 label（旧事件 / 投影没带）时用本会话已知的显示名补齐——
-      // 触发器、列表行与标签标题三处读到的是同一个名字
-      if (existing.label === scope.sessionId) {
-        const known = this.subagentDisplayName(scope);
-        if (known && known !== existing.label) {
-          const next = entries.map((entry) =>
-            entry.id === scope.sessionId ? { ...entry, label: known } : entry,
-          );
-          if (parentScope) parentScope.subagentEntries = next;
-          else scope.subagentSiblings = next;
-          return next;
-        }
-      }
-      return entries;
-    }
+    if (existing) return entries;
     return upsertSubagent(
       entries,
       this.decorateSubagent({
@@ -1679,7 +1700,9 @@ export class ChatController implements vscode.Disposable {
       parentSessionId: address.parentSessionId,
       parentTitle: this.sessions.find((session) => session.id === address.parentSessionId)?.title ?? address.parentSessionId,
       mode: address.mode,
-      parentEntries: this.parentCatalogOf(scope),
+      // 每一行都过一遍显示名解析：缺 label 的行在这一刻拿到会话标题（见
+      // `resolveSubagentDisplay`），触发器 / 列表行 / 编辑区标签三处同源
+      parentEntries: this.parentCatalogOf(scope).map((entry) => this.resolveSubagentDisplay(entry)),
     };
   }
 
@@ -3378,6 +3401,10 @@ export class ChatController implements vscode.Disposable {
         if (typeof item.cwd === "string" && item.cwd) cwds.set(item.sessionId, item.cwd);
       }
       this.sessionCwds = cwds;
+      // 子代理显示名的**标题账本**：同一份原始行顺带收下（workflow 派发的子代理没有
+      // 描述符 label，目录里只拿得到会话 id，见 `subagentTitles`）。变化在列表整份
+      // 装好之后再推（`sweepSubagentTitles` 要读新的会话列表算父会话标题）。
+      const titleChanges = this.collectSubagentTitles(value.items ?? []);
       // @ 提及候选过滤的打底（判据与用途见 `subagentSessionIds` 与 sessionList.ts）
       for (const item of value.items ?? []) {
         if (item.origin === "subagent") {
@@ -3466,6 +3493,9 @@ export class ChatController implements vscode.Disposable {
       // 会话列表是**标题的权威**（服务端 `session/list`）：恢复窗口时面板先绑上会话、
       // 这一份才到，标签要在这里补一次；删掉的会话也从标签上退掉
       for (const sessionId of new Set(this.viewSessions.values())) this.syncPanelTitle(sessionId);
+      // 标题账本变了 → 重推受影响的那几条子代理目录（放在列表装好之后：重推的上下文里
+      // 带父会话标题，见 `sweepSubagentTitles`）
+      this.sweepSubagentTitles(titleChanges, "会话列表");
     } catch (error) {
       this.log(`[sessions] 列表获取失败：${this.describeError(error)}`);
     }
@@ -5594,6 +5624,165 @@ export class ChatController implements vscode.Disposable {
       scope.subagentEntries = entries;
       this.deliverSubagentList(scope);
     }
+    // 收尾那一刻标题已经落地（它是这条会话自己的首轮产出的）→ 补一次标题账本。
+    // 界面因此既不必点开这个子代理、也不必等下一次菜单打开就能看到它的名字。
+    if (!running && this.isKnownSubagent(childSessionId)) this.scheduleSubagentTitles();
+  }
+
+  /** 这个 id 是不是已知的子代理（目录并入点与 `session/list` 的子代理行两处账本）。 */
+  private isKnownSubagent(sessionId: string): boolean {
+    if (this.subagentSessionIds.has(sessionId)) return true;
+    for (const scope of this.scopes.values()) {
+      if (scope.subagentEntries.some((entry) => entry.id === sessionId)) return true;
+      if (scope.subagentSiblings.some((entry) => entry.id === sessionId)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * 目录行在**界面上**的显示名（唯一的解析点，发帧的每条路都走它）。
+   *
+   * 目录来源**给了真 label** 就原样用（`subagent` 派发与分支类子代理走这条，显示名
+   * 不变）；只给了会话 id（= 三个来源都没有 label，workflow 派发的子代理就是这样）
+   * 时，按权威程度取：当前**打开着**这条子代理时的显示名（描述符 label → 会话标题）、
+   * 标题账本里的会话标题、最后才是会话 id。
+   *
+   * 解析**不写回** `scope.subagentEntries`：目录是可以重放的（投影 / 事件 / 重连），
+   * 写回的名字会被下一次「label 等于会话 id」的并入用 `upsertSubagent` 覆盖回去
+   * （用户 2026-10-11 报的「关掉再打开又变回 ID」）。发帧时现算则永远算得出最新的
+   * 那个名字，也不干扰 `sameSubagentRow` 的「同一条不重复发帧」判据。
+   *
+   * 活读的那个名字**等于会话 id 时不算数**：子代理页的会话摘要标题是这里现算出来的
+   * （目录里没有 label 时它自己就是会话 id），读回去等于拿 uuid 顶掉账本里的标题。
+   */
+  private resolveSubagentDisplay(entry: SubagentView): SubagentView {
+    if (entry.label && entry.label !== entry.id) return entry;
+    const own = this.scopes.get(entry.id);
+    const live = own ? this.subagentDisplayName(own) : undefined;
+    const named = live && live !== entry.id ? live : undefined;
+    const label = named ?? this.subagentTitles.get(entry.id) ?? entry.id;
+    return label === entry.label ? entry : { ...entry, label };
+  }
+
+  /**
+   * `session/list` 的原始行 → 标题账本。
+   *
+   * 只认子代理行，而且只认**有** `title` 投影的行：投影没有这个键时**不动**账本
+   * （「这一版不知道标题」不等于「它没有标题」，抹掉已知值只会让名字退回 uuid）。
+   *
+   * @returns 真的变了的会话 id（没有变化就不发帧，见 `sweepSubagentTitles`）。
+   */
+  private collectSubagentTitles(items: readonly SessionSummaryWire[]): Set<string> {
+    const changed = new Set<string>();
+    for (const item of items) {
+      if (item.origin !== "subagent") {
+        // 肯定证据：这一行不是子代理（同一个 id 不可能是两者）→ 退掉留下的标题
+        if (this.subagentTitles.delete(item.sessionId)) changed.add(item.sessionId);
+        continue;
+      }
+      const title = item.projections?.values?.title;
+      const trimmed = typeof title === "string" ? title.trim() : "";
+      if (!trimmed || this.subagentTitles.get(item.sessionId) === trimmed) continue;
+      this.subagentTitles.set(item.sessionId, trimmed);
+      changed.add(item.sessionId);
+    }
+    return changed;
+  }
+
+  /**
+   * 一条子代理会话自己的标题（`session/list` 那一路之外的第二条来路：它自己的
+   * `patch.session`）→ 记进标题账本，变化就重推目录。
+   */
+  private rememberSubagentTitle(sessionId: string, title: string | undefined): void {
+    const trimmed = typeof title === "string" ? title.trim() : "";
+    if (!trimmed || this.subagentTitles.get(sessionId) === trimmed) return;
+    this.subagentTitles.set(sessionId, trimmed);
+    this.sweepSubagentTitles(new Set([sessionId]), "子代理会话标题");
+  }
+
+  /**
+   * 标题账本变了 → 把受影响的那几条目录重推一遍。
+   *
+   * 普通会话的清单走 `deliverSubagentList`（唯一的列表扇出点，顺带把父目录快照同步给
+   * 正在看它子代理的窗口）；子代理页手里那份**父目录快照**（`subagentSiblings`）只由
+   * `subagent` patch 承载，所以那条要单独补发（与 `fetchParentCatalog` 同一手法）。
+   *
+   * @param source 这次标题是从哪条路来的（只进日志，便于分辨「会话列表」与「子代理自己
+   *   的标题」两条来路）。
+   */
+  private sweepSubagentTitles(changed: ReadonlySet<string>, source: string): void {
+    if (!changed.size) return;
+    for (const scope of this.scopes.values()) {
+      if (scope.subagentEntries.some((entry) => changed.has(entry.id))) {
+        this.deliverSubagentList(scope);
+        continue;
+      }
+      if (!scope.subagentSiblings.some((entry) => changed.has(entry.id))) continue;
+      this.deliver(scope.sessionId, {
+        type: "patch",
+        patch: sessionPatch(this.sessionSource(scope), ["subagent"]),
+      });
+    }
+    this.log(`[subagents] 标题补齐 ${changed.size} 条（${source}）`);
+  }
+
+  /**
+   * 单独取一份 `session/list`，**只**补标题账本（不重跑 `refreshSessions` 的
+   * blank / running 结算，也不整份替换会话列表）。
+   *
+   * 两个触发点：子代理菜单打开（那一下就是「把最新的名字要一遍」，与目录本身的按需
+   * 刷新同一取舍）与子代理收尾（见 `scheduleSubagentTitles`）。**单飞**：同一时刻
+   * 只发一次请求。
+   */
+  private refreshSubagentTitles(): Promise<void> {
+    const client = this.client;
+    if (!client) return Promise.resolve();
+    if (this.subagentTitlesInflight) return this.subagentTitlesInflight;
+    const task = (async () => {
+      try {
+        const value = await client.listSessions();
+        this.sweepSubagentTitles(this.collectSubagentTitles(value.items ?? []), "会话列表");
+      } catch (error) {
+        // 拿不到就保持现状（名字停在会话 id 或上一次算出来的那一个），只记一行
+        this.log(`[subagents] 标题补齐失败：${this.describeError(error)}`);
+      }
+    })().finally(() => {
+      this.subagentTitlesInflight = undefined;
+    });
+    this.subagentTitlesInflight = task;
+    return task;
+  }
+
+  /**
+   * 子代理收尾后补一次标题账本，**尾随防抖**。
+   *
+   * 一次 workflow 派发会有很多个子代理依次收尾；逐个发 `session/list` 就是风暴，
+   * 合到一次请求里即可（后到的收尾把计时器往后推，最后那一次覆盖整批）。
+   */
+  private scheduleSubagentTitles(): void {
+    if (this.subagentTitlesTimer !== undefined) clearTimeout(this.subagentTitlesTimer);
+    this.subagentTitlesTimer = setTimeout(() => {
+      this.subagentTitlesTimer = undefined;
+      void this.refreshSubagentTitles();
+    }, SUBAGENT_TITLES_DEBOUNCE_MS);
+  }
+
+  /**
+   * 目录变了就下发（唯一的列表帧，见 `shared/ipc.ts`）。
+   *
+   * 同时把**父目录快照**同步进正在看这个会话子代理的窗口（切换下拉的数据，
+   * 见 `syncSubagentContext`）——目录的三条来源（事件 / 投影 / RPC）都汇到
+   * `deliverSubagentList`，这里就是唯一的扇出点。
+   *
+   * 下发的每一行都过一遍 `resolveSubagentDisplay`：目录里缺 label 的行在这一刻拿到
+   * 会话标题，而不是永远停在 uuid。
+   */
+  private deliverSubagentList(scope: SessionScope): void {
+    this.deliver(scope.sessionId, {
+      type: "subagents/list",
+      entries: scope.subagentEntries.map((entry) => this.resolveSubagentDisplay(entry)),
+    });
+    this.syncSubagentContext(scope.sessionId);
   }
 
   /**
@@ -5622,21 +5811,6 @@ export class ChatController implements vscode.Disposable {
         patch: sessionPatch(this.sessionSource(scope), ["subagent"]),
       });
     }
-  }
-
-  /**
-   * 目录变了就下发（唯一的列表帧，见 `shared/ipc.ts`）。
-   *
-   * 同时把**父目录快照**同步进正在看这个会话子代理的窗口（切换下拉的数据，
-   * 见 `syncSubagentContext`）——目录的三条来源（事件 / 投影 / RPC）都汇到
-   * `deliverSubagentList`，这里就是唯一的扇出点。
-   */
-  private deliverSubagentList(scope: SessionScope): void {
-    this.deliver(scope.sessionId, {
-      type: "subagents/list",
-      entries: scope.subagentEntries,
-    });
-    this.syncSubagentContext(scope.sessionId);
   }
 
   /**
@@ -8550,6 +8724,10 @@ export class ChatController implements vscode.Disposable {
    * 普通会话刷自己的目录；**正在看子代理时刷父会话的**——切换下拉列出的是父目录
    * （兄弟行），刷当前会话（子代理）自己的目录对那份清单没有任何帮助，反而会在
    * 子代理会话上白发一次 RPC。
+   *
+   * 另外**并一条标题账本刷新**（不 await，不拖慢菜单）：目录里缺 label 的行（workflow
+   * 派发的子代理）要在这一刻拿到会话标题，否则名字停在 uuid——这与「打开就要最新」是
+   * 同一取舍，见 `refreshSubagentTitles`。
    */
   private async refreshSubagents(viewId: string): Promise<void> {
     const scope = this.scopeOfView(viewId);
@@ -8557,6 +8735,7 @@ export class ChatController implements vscode.Disposable {
       this.emitToView(viewId, { type: "subagents/list", entries: [] });
       return;
     }
+    void this.refreshSubagentTitles();
     if (scope.subagentAddress) {
       // 子代理页：清单是父目录（兄弟行），要最新就把父目录刷一遍（父域开着时
       // RPC 那条完整检索会并入父域并回推上下文；父域不在时投影 RPC 直接补快照）
@@ -8988,6 +9167,9 @@ export class ChatController implements vscode.Disposable {
       this.closeFollowRetry(sessionId);
     }
     this.followGenerations.clear();
+    // 标题账本的防抖 timer 也不许活过扩展卸载（在途的那次请求由 client.dispose 收掉）
+    if (this.subagentTitlesTimer !== undefined) clearTimeout(this.subagentTitlesTimer);
+    this.subagentTitlesTimer = undefined;
     this.client?.dispose();
     // **后台管理器一定要释放**：`reconnectServer` 每次配置变更都会换一个新的管理器，
     // 而只有激活期那个进了 `context.subscriptions`——不在这里统一 dispose，

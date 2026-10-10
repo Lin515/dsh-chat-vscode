@@ -861,6 +861,12 @@ export interface SubagentContextView {
  */
 export interface SubagentView {
   id: string;
+  /**
+   * 界面上的显示名。**宿主下发前已经解析过**：目录来源给了真 label 就用它；只给了
+   * 会话 id（workflow 派发的子代理没有描述符 label）时按「当前打开时的描述符 label →
+   * 会话标题 → 会话 id」兜底，界面不必自己再猜（判据见 `controller` 的
+   * `resolveSubagentDisplay` 与标题账本 `subagentTitles`）。
+   */
   label: string;
   /**
    * 生命周期模式。打开子代理对话时必须原样带上：硬编码 `continuable` 会被
