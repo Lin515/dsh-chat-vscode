@@ -219,6 +219,8 @@ const entries = {
   "build/preset-display.test.mjs": "scripts/presetDisplay.test.ts",
   "build/preset-match.test.mjs": "scripts/presetMatch.test.ts",
   "build/composer-draft.test.mjs": "scripts/composerDraft.test.ts",
+  "build/composer-mention.test.mjs": "scripts/composerMention.test.ts",
+  "build/editor-column.test.mjs": "scripts/editorColumn.test.ts",
   "build/pending-echo.test.mjs": "scripts/pendingEcho.test.ts",
   "build/dsh-contract.test.mjs": "scripts/dshContract.test.ts",
   "build/subagent-switch.test.mjs": "scripts/subagentSwitch.test.ts",

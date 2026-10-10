@@ -1101,6 +1101,17 @@ export interface ChatState {
   serverUrl?: string;
   /** VS Code 的显示语言标识（如 zh-cn、en），界面据此选中英文案。 */
   locale?: string;
+  /**
+   * 本窗口是**编辑区标签组里的会话**（不是侧栏 / 辅助栏里的）。
+   *
+   * 窗口级事实：既不是会话状态，也不是部署设置，所以不在 `SessionView` /
+   * `AppearanceView` 那两张字段表里，由 `snapshotFor` 直接补上。它在窗口挂上来的
+   * 那一刻就定了，之后不会变，于是只在整份快照里下发。
+   *
+   * 界面据此**不显示**「在编辑器中打开」：这个窗口自己就在标签组里，再开一次只会
+   * 得到两个开着同一条会话的标签。
+   */
+  inEditorTab?: boolean;
   session?: SessionSummaryView;
   messages: MessageView[];
   /**

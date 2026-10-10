@@ -2716,8 +2716,9 @@ console.log("styles: 问卷可放弃整组问题（次要出口观感 + 折行�
     "补回不许推迟到 rAF/定时器：晚一帧就是用户看到的那一下闪烁",
   );
   assert.ok(
-    /\}, \[draft, chatScroll, uiScale\]\);/.test(composer),
-    "自适应 effect 的依赖要带滚动端口（对象恒定，不会多跑）与界面倍率（字号变了必须重量）",
+    /\}, \[draft, chatScroll, uiScale, syncMirror\]\);/.test(composer),
+    "自适应 effect 的依赖要带滚动端口（对象恒定，不会多跑）、界面倍率（字号变了必须重量）" +
+      "与镜像对齐回调（`syncMirror` 只读 ref，空依赖恒定，进表不会让它多跑）",
   );
   const app = readFileSync(join(process.cwd(), "src", "webview", "App.tsx"), "utf8");
   assert.ok(
@@ -3037,8 +3038,9 @@ console.log("styles: 会话查找条的高亮与计数格 ✓");
     "utf8",
   );
   assert.ok(
-    /\}, \[draft, chatScroll, uiScale\]\)/.test(composer),
-    "输入框自适应高度的 effect 必须把界面倍率放进依赖（否则改完字号停在旧高度）",
+    /\}, \[draft, chatScroll, uiScale, syncMirror\]\)/.test(composer),
+    "输入框自适应高度的 effect 必须把界面倍率放进依赖（否则改完字号停在旧高度）；" +
+      "镜像对齐回调是空依赖的 `useCallback`，一并列出不会让它多跑",
   );
 
   // JS 侧的倍率基准必须与 CSS 同一个数：两处分开写，只有断言能把它们钉在一起

@@ -33,6 +33,9 @@
 - `autoScroll.ts` — 聊天区自动滚动（贴底 / 回底胶囊）：一个模块一个端口（`AutoScrollPort` 范例）。
 - `find.ts` — 会话查找（Ctrl+F）的纯逻辑：文本节点序列上的子串定位与激活下标环绕推进；DOM 胶水在 `components/FindBar.tsx`。
 - `composerCompletion.tsx` — 输入框 `@` / `/` 补全的唯一归属地：触发判定、候选取用与优先级、键盘导航、弹层 JSX。
+- `mentionLinks.ts` — 正文里 `@` 引用的可点目标判定（`@文件` / `@目录/` / `@会话` 各指向谁、哪一段文字算引用）。
+- `mentionOpen.ts` — 点到一条 `@` 引用之后发哪条帧的唯一分派（已发出消息里的链接与草稿区的 Ctrl+单击共用）。
+- `composerMention.ts` — 草稿区引用的渲染镜像：切段（哪几段上链接色，按住 Ctrl 时补下划线）与「按住 Ctrl 悬停在引用上方」的命中判定；镜像层与文本域必须逐字同排版（`components/Composer.tsx` 逐帧同步几何）。
 - `mentionNav.ts` — `@` 候选里的 `..` 上一层目录导航（只算目标查询串）。
 - `segment.ts` — 思考档位分段控件的列数（≤4 档一行、5/6 档均分两行）。
 - `pickerFocus.ts` — 下拉弹层「打开即定位到选中项」的共用机制（模型列表与思考档位共用一套：起点判定、方向键移动、滚入视野）。

@@ -1425,6 +1425,9 @@ export class ChatController implements vscode.Disposable {
       // 不该因为这次收敛而变——对拍线上帧时那是最容易白费一轮的噪声。
       ...this.connectionPatch(),
       ...appearanceView(this.appearanceSource()),
+      // 窗口级事实（不属于会话片段，也不属于部署设置）：本窗口是不是编辑区标签组里
+      // 的会话，见 `ChatState.inEditorTab`
+      inEditorTab: this.viewKinds.get(viewId ?? "") === "panel",
       ...sessionView(
         sessionSourceOf(
           scope,
@@ -6314,15 +6317,18 @@ export class ChatController implements vscode.Disposable {
         break;
 
       case "openInEditor": {
-        // 「在编辑器中打开」：把这个窗口当前的会话带进新编辑器窗口；
+        // 「在编辑器中打开」：把这个窗口当前的会话带进编辑器窗口；
         // 未绑会话（空态）就不带，新窗口从空态起。
         //
         // 帧上带 `sessionId` 时开的是**那一条**（用户消息里的 `@会话` 引用走这条：
-        // 用户 2026-10-10 口径是「新开一个会话标签打开该会话」，而不是把当前窗口切过去
+        // 用户 2026-10-10 口径是「开一个新标签页显示该会话」，而不是把当前窗口切过去
         // ——后者是 `openSession` 的行为，点引用就换掉当前窗口里的对话会很唐突）。
+        //
+        // 第二个参数是**来源窗口**：落点是哪个标签组由它决定（自己就在某个标签组里
+        // 就开在同一组的新标签里，否则用活动分组），见 `ChatViewProvider.editorColumnFor`。
         const sessionForEditor = message.sessionId ?? this.viewSessions.get(viewId);
         this.log(`[openInEditor] 窗口=${viewId} 会话=${sessionForEditor ?? "（空态）"}`);
-        await vscode.commands.executeCommand("dshChat.openInEditor", sessionForEditor);
+        await vscode.commands.executeCommand("dshChat.openInEditor", sessionForEditor, viewId);
         break;
       }
 

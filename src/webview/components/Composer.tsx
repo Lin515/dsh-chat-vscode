@@ -33,6 +33,7 @@ import { CtxText, Ellipsis, Popover, Spinner, contextDetailLines, contextNumbers
 import { ApprovalCard, PlanReviewCard, QuestionCard, formatTps } from "./Rows";
 import type { PendingInteraction } from "../pendingInteraction";
 import { useComposerCompletion } from "../composerCompletion";
+import { draftSegments, hitsAnyRect } from "../composerMention";
 import { openMentionAt } from "../mentionOpen";
 import { usePickerFocus } from "../pickerFocus";
 import { presetDisplayText } from "../presetDisplay";
@@ -246,6 +247,26 @@ export function Composer({
   onFollowLatest?: () => void;
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  /**
+   * 草稿的**渲染镜像**（`../composerMention`）：文本域的字透明，看得见的字全由这一层
+   * 画，其中引用那几段上链接色。它自己量不出文本域的盒子，宽度 / 高度 / 滚动位置都由
+   * 下面的 `syncMirror` 同步。
+   */
+  const mirrorRef = useRef<HTMLDivElement>(null);
+  /**
+   * Ctrl / Cmd 此刻按着没有。
+   *
+   * **必须是 state**：按住时镜像层里的引用要补下划线（`is-modifier`），那是渲染结果，
+   * 只放在 ref 里画不出来。每按一次 Ctrl 多一次渲染，代价可以接受（一次键盘事件而已）。
+   */
+  const [modifierHeld, setModifierHeld] = useState(false);
+  /**
+   * 鼠标最后一次扫过输入框时的位置。
+   *
+   * 修饰键按下 / 松开那一刻鼠标多半一动不动，而手指光标要在那一刻就位（按下出现、
+   * 松开收回）——所以位置得记着，重新判一次命中。
+   */
+  const pointerAt = useRef<{ x: number; y: number } | null>(null);
   const [modelOpen, setModelOpen] = useState(false);
   /**
    * 模型弹层这一次打开要定位到哪一段（见 `pickerFocus.ts`）：模型按钮与思考强度按钮
@@ -317,6 +338,23 @@ export function Composer({
   // 「有没有在等审批 / 提问」不在这个组件里再推一遍：它就是 `pending` 这个 prop
   // 本身（选举结果见 `pendingInteraction.ts`），下面的运行中那行直接读它。
 
+  /**
+   * 把镜像层的几何对齐到文本域：宽度取它的 content box（`clientWidth` 已扣掉滚动条与
+   * 内边距）、高度与滚动位置照抄。镜像层自己量不出这些——它是个绝对定位的浮层，不知道
+   * 文本域此刻多宽、滚到了哪一行。
+   *
+   * 只读两个 ref，所以可以稳定（空依赖）：绘制前那一处与下面盯尺寸的 `ResizeObserver`
+   * 共用同一个对齐动作。
+   */
+  const syncMirror = useCallback(() => {
+    const el = textareaRef.current;
+    const mirror = mirrorRef.current;
+    if (!el || !mirror) return;
+    mirror.style.width = `${el.clientWidth}px`;
+    mirror.style.height = `${el.clientHeight}px`;
+    mirror.scrollTop = el.scrollTop;
+  }, []);
+
   // 自适应高度
   //
   // 「塌回 auto 再量」有一帧内的瞬态，必须在这里一并消化掉，否则多行草稿打字时
@@ -338,6 +376,9 @@ export function Composer({
     const prevTop = pane?.scrollTop ?? 0;
     el.style.height = "auto";
     el.style.height = `${Math.min(el.scrollHeight, window.innerHeight * 0.7)}px`;
+    // 必须在高度定下来**之后**对齐镜像层：草稿长到出滚动条时，文本域的内容宽度会窄
+    // 一条滚动条，镜像层要跟着窄，否则一换行就错位
+    syncMirror();
     if (!pane) return;
     if (pane.scrollTop !== prevTop) {
       // auto 瞬态把端口撑高、scrollTop 被浏览器夹小：补回原位。
@@ -348,7 +389,83 @@ export function Composer({
       // ——直接在这里钉住（贴底 ≤1px 时意愿必为跟随，与 settle 的裁定同源）。
       if (bottomGap(pane) > 0) pane.scrollTop = pane.scrollHeight;
     }
-  }, [draft, chatScroll, uiScale]);
+  }, [draft, chatScroll, uiScale, syncMirror]);
+
+  /**
+   * 文本域**尺寸**变了也要重新对齐镜像层。
+   *
+   * 上面那个 layout effect 只在草稿 / 字号变时跑：拖侧栏、开合面板、切分编辑器都不会
+   * 动草稿，而文本域的宽度一变，镜像层的换行位置就停在旧宽度上——整段蓝字与文字错位，
+   * 直到用户敲下一个字才恢复。`ResizeObserver` 盯的就是文本域自己的盒子，宽度、高度
+   * （含滚动条出现那一下）都收得住。
+   */
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => syncMirror());
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [syncMirror]);
+
+  /**
+   * 草稿里的引用**按住 Ctrl / Cmd 才可点**（与文本域的 onClick 同一判据，见
+   * `../mentionOpen`）。按住时给它补下划线（`is-modifier`，样式在 `app.css`），
+   * 松开就收回去——与 VS Code 编辑器里那条「按住 Ctrl 才显示成链接」的习惯一致。
+   *
+   * 窗口失焦（点了别的应用）后键盘状态不再可靠：一律按「没按」处理。
+   */
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => setModifierHeld(event.ctrlKey || event.metaKey);
+    const onBlur = () => setModifierHeld(false);
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("keyup", onKey);
+    window.addEventListener("blur", onBlur);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("keyup", onKey);
+      window.removeEventListener("blur", onBlur);
+    };
+  }, []);
+
+  /**
+   * 鼠标扫过输入框：命中一条引用、且按着 Ctrl / Cmd 时，把光标换成手指。
+   *
+   * 命中判定读镜像层里那几段引用**实际画出来**的矩形（`hitsAnyRect`），不是按字符
+   * 位置估——草稿里等宽字体与 CJK 混排，估算必偏，而这块的判定精度就是「手指出现
+   * 的位置对不对」。光标是纯 DOM 副作用（下划线才是渲染结果），不走状态。
+   */
+  const hitsMentionAt = (x: number, y: number): boolean => {
+    const mirror = mirrorRef.current;
+    if (!mirror) return false;
+    for (const mark of mirror.querySelectorAll<HTMLElement>(".mention-mark")) {
+      if (hitsAnyRect(mark.getClientRects(), x, y)) return true;
+    }
+    return false;
+  };
+
+  /** 按当下的修饰键状态给文本域一个光标：命中引用且按着 Ctrl / Cmd = 手指。 */
+  const applyMentionCursor = (x: number, y: number): void => {
+    const el = textareaRef.current;
+    if (!el) return;
+    const next = modifierHeld && hitsMentionAt(x, y) ? "pointer" : "";
+    if (el.style.cursor !== next) el.style.cursor = next;
+  };
+
+  /**
+   * 修饰键按下 / 松开那一刻，鼠标通常**一动不动**（没有下一次 mousemove）：这里按
+   * 最后记下的位置重判一次——按下时手指立刻出现，松开时连同下划线一起收回。
+   */
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    if (!modifierHeld) {
+      el.style.cursor = "";
+      return;
+    }
+    const point = pointerAt.current;
+    if (point) applyMentionCursor(point.x, point.y);
+    // 依赖里只列 `modifierHeld`：命中判定与光标写入读的都是它这一次渲染的值
+  }, [modifierHeld]);
 
   // 运行结束后把焦点还给输入框
   useEffect(() => {
@@ -812,27 +929,67 @@ export function Composer({
             </div>
           ) : null}
 
-          {/* 触发词（`@` / `/`）的 ref 与 onChange / onKeyUp / onClick / onKeyDown
-              全在 `completion.textareaProps` 里：ESC 优先级链、Enter/Tab 的补全语义、
-              两次写草稿都在那边，组件不能再写一份。 */}
-          <textarea
-            className="composer-input"
-            rows={1}
-            value={draft}
-            placeholder={state.messages.length ? texts.placeholderFollowUp : texts.placeholderFirst}
-            // 草稿里的引用要按住 Ctrl（macOS 上 Cmd）单击才打开——文本域是**纯文本**，
-            // 做不出真正的行内链接，只能按光标位置判（见 `../mentionOpen`）。
-            title={texts.mentionClickHint}
-            {...completion.textareaProps}
-            // 写在摊开之后：文本域只有一个 `onClick`，这里**接着**补全那边的光标刷新
-            // 再判一次 Ctrl+单击，而不是把它顶掉（否则候选菜单不再跟着光标走）。
-            onClick={(event) => {
-              completion.textareaProps.onClick?.(event);
-              // 不按 Ctrl 时什么都不做：普通单击只管定位光标
-              if (!event.ctrlKey && !event.metaKey) return;
-              openMentionAt(event.currentTarget.value, event.currentTarget.selectionStart ?? 0);
-            }}
-          />
+          {/* 草稿区：文本域 + 它的**渲染镜像**（见 `../composerMention`）。
+              镜像层在文本域**下面**，画的是全部看得见的字（引用那几段上链接色）；
+              文本域自己的字透明（`app.css` 的 `textarea.composer-input`），只留光标与
+              选区。两层共用同一个类名保证排版逐字一致，宽度 / 高度 / 滚动位置由
+              `syncMirror` 同步。外层负责给它当定位基准，并让文本域照旧撑满整行
+              （列向 flex 的交叉轴拉伸）。 */}
+          <div className="composer-field">
+            {/* 类名刻意与文本域**共用** `composer-input`：字号 / 行高 / 内边距 /
+                折行口径只有那一处，另写一份就一定会与文本域漂开；`is-modifier` 是
+                「按住 Ctrl / Cmd」——那时引用补下划线（可点的提示） */}
+            <div
+              className={`composer-input composer-mirror${modifierHeld ? " is-modifier" : ""}`}
+              aria-hidden
+              ref={mirrorRef}
+            >
+              {draftSegments(draft).map((segment) =>
+                segment.link ? (
+                  <span className="mention-mark" key={segment.at}>
+                    {segment.text}
+                  </span>
+                ) : (
+                  segment.text
+                ),
+              )}
+            </div>
+            {/* 触发词（`@` / `/`）的 ref 与 onChange / onKeyUp / onClick / onKeyDown
+                全在 `completion.textareaProps` 里：ESC 优先级链、Enter/Tab 的补全语义、
+                两次写草稿都在那边，组件不能再写一份。 */}
+            <textarea
+              className="composer-input"
+              rows={1}
+              value={draft}
+              placeholder={state.messages.length ? texts.placeholderFollowUp : texts.placeholderFirst}
+              // 草稿里的引用要按住 Ctrl（macOS 上 Cmd）单击才打开——文本域是**纯文本**，
+              // 做不出真正的行内链接，只能按光标位置判（见 `../mentionOpen`）。
+              title={texts.mentionClickHint}
+              {...completion.textareaProps}
+              // 写在摊开之后：文本域只有一个 `onClick`，这里**接着**补全那边的光标刷新
+              // 再判一次 Ctrl+单击，而不是把它顶掉（否则候选菜单不再跟着光标走）。
+              onClick={(event) => {
+                completion.textareaProps.onClick?.(event);
+                // 不按 Ctrl 时什么都不做：普通单击只管定位光标
+                if (!event.ctrlKey && !event.metaKey) return;
+                openMentionAt(event.currentTarget.value, event.currentTarget.selectionStart ?? 0);
+              }}
+              // 手指光标：划到引用上方且按着修饰键才出现（判据与上面那条 onClick 同源）
+              onMouseMove={(event) => {
+                pointerAt.current = { x: event.clientX, y: event.clientY };
+                applyMentionCursor(event.clientX, event.clientY);
+              }}
+              onMouseLeave={(event) => {
+                pointerAt.current = null;
+                event.currentTarget.style.cursor = "";
+              }}
+              // 草稿长过上限时文本域自己内滚：镜像层跟着滚，否则蓝字会停在原处
+              onScroll={(event) => {
+                const mirror = mirrorRef.current;
+                if (mirror) mirror.scrollTop = event.currentTarget.scrollTop;
+              }}
+            />
+          </div>
 
           {/* 底部工具栏：显示哪些由 useToolbarFit 按实测宽度 + 优先级决定，
               这里只按视觉顺序摆位（槽位 → 节点）。 */}

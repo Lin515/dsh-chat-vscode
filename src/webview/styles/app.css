@@ -3954,6 +3954,53 @@ button.meta-chip:hover {
   background: var(--hover);
 }
 
+/* ==================== 草稿区：文本域 + 它的渲染镜像 ====================
+   草稿里的 `@` 引用要渲成蓝色链接（用户 2026-10-10 口径）：静止态只给颜色，
+   按住 Ctrl / Cmd 时再补下划线。而 `<textarea>` 里是一段**连续的纯文本**，CSS 选不中
+   「其中某几个字」，做法是两层：镜像层（`div`）画所有看得见的字、并给引用上色，
+   文本域自己的字**透明**——光标、选区、输入法仍由文本域自己管。判定与切段在
+   `webview/composerMention.ts`。
+
+   两条硬约束：
+   1. 两层共用 `.composer-input` 的排版（字号 / 行高 / 内边距 / 折行），镜像层只加
+      定位与裁剪；宽度、高度、滚动位置由组件逐帧从文本域同步（CSS 量不出可视区）；
+   2. 外层必须是**列向 flex**：文本域在普通块容器里会退回 `inline-block`，基线间隙
+      会让输入区凭空高出几像素（折叠阈值、贴底判定都跟着变）。 */
+.composer-field {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+.composer-mirror {
+  position: absolute;
+  top: 0;
+  left: 0;
+  overflow: hidden;
+  /* 与文本域的内部折行口径一致（不写这两条，长单词处会提前折） */
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  /* 尺寸由组件从文本域同步；`.composer-input` 的 min/max-height 是给文本域自己的 */
+  min-height: 0;
+  max-height: none;
+  /* 只画字：不接鼠标事件（命中判定读它的矩形，见 `trackMentionCursor`）、不进选区 */
+  pointer-events: none;
+  user-select: none;
+}
+
+/* 引用：与正文里的链接（`.mention-link` / `.md a`）同一档颜色。 */
+.composer-mirror .mention-mark {
+  color: var(--link);
+}
+
+/* 按住 Ctrl / Cmd：引用补下划线（`Composer.tsx` 按修饰键给镜像层挂 `is-modifier`）。
+   静止态只给颜色、不给下划线，是用户 2026-10-10 的口径：颜色说明「这是引用」，
+   下划线说明「现在按下去会打开」——两种状态各有各的信号，不必让下划线常驻。
+   `text-decoration` 不参与排版，于是镜像层与文本域的行盒仍然逐像素一致。 */
+.composer-mirror.is-modifier .mention-mark {
+  text-decoration: underline;
+}
+
 .composer-input {
   border: none;
   outline: none;
@@ -3968,8 +4015,25 @@ button.meta-chip:hover {
   font-size: var(--font-size-body);
 }
 
+/* 字透明**只给文本域**（类名 + 类型选择器；镜像层是 `div`，不受这条影响）。
+   插入点必须自己给颜色：`-webkit-text-fill-color` 不管光标，而 `color` 是继承来的
+   正文色——写出来只为了把「光标始终可见」这条钉明白。 */
+textarea.composer-input {
+  -webkit-text-fill-color: transparent;
+  caret-color: var(--editor-fg);
+}
+
+/* 选区必须是**半透明**的：文本域的字是透明的，不透明的选区底色会把镜像层那些字
+   整个盖住——选中之后一片空白，看不见自己选了什么。 */
+.composer-input::selection {
+  background: color-mix(in srgb, var(--link) 30%, transparent);
+}
+
 .composer-input::placeholder {
   color: #999998cc;
+  /* 占位符会把文本域那条「字形透明」继承过去，这里必须显式还回来，否则空输入框
+     的提示语整个看不见（`npm run preview` 的空态一眼就能看到） */
+  -webkit-text-fill-color: #999998cc;
 }
 
 .composer-bar {

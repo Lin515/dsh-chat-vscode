@@ -25,6 +25,9 @@ export const env = {
 };
 export const window = {
   activeTextEditor: undefined,
+  // 编辑区标签组：「在编辑器中打开」的落点判定（`editorColumn.test.ts`）要读它。
+  // 默认没有分组 = 空窗口，落到 `ViewColumn.Beside`（新开一个分组）
+  tabGroups: { all: [] as unknown[], activeTabGroup: undefined as unknown },
   showErrorMessage: async () => undefined,
   showInformationMessage: async () => undefined,
   showWarningMessage: async () => undefined,
@@ -32,6 +35,9 @@ export const window = {
   showOpenDialog: async () => undefined,
   showTextDocument: async () => undefined,
 };
+
+/** 只用得到这两个符号值；其余档位这条链路碰不到。 */
+export const ViewColumn = { Active: -1, Beside: -2, One: 1, Two: 2, Three: 3 };
 export const workspace = {
   workspaceFolders: [],
   getConfiguration: () => config,

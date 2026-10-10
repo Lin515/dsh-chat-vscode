@@ -151,14 +151,19 @@ function Header({
       >
         {state.panel === "trajectory" ? <IconChat size={15} /> : <IconTrajectory size={15} />}
       </button>
-      <button
-        data-mini="hide"
-        className="icon-btn"
-        title={texts.openInEditor}
-        onClick={() => post({ type: "openInEditor" })}
-      >
-        <IconOpenInEditor size={15} />
-      </button>
+      {/* 「在编辑器中打开」：**编辑区标签组里的会话不显示这颗按钮**（用户 2026-10-10
+          口径）——它自己就在标签组里，再开一次只会得到两个开着同一条会话的标签。
+          侧栏 / 辅助栏里的窗口才需要它。 */}
+      {state.inEditorTab ? null : (
+        <button
+          data-mini="hide"
+          className="icon-btn"
+          title={texts.openInEditor}
+          onClick={() => post({ type: "openInEditor" })}
+        >
+          <IconOpenInEditor size={15} />
+        </button>
+      )}
       <button
         data-mini="hide"
         className="icon-btn"

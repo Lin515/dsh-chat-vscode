@@ -488,7 +488,10 @@
             { id: "at-up", kind: "file", path: "D:/dev/app/docs/spec.pdf", name: "docs/spec.pdf", upload: { status: "uploading", loaded: 42000, total: 180000 } },
             { id: "at-err", kind: "file", name: "big.bin", upload: { status: "error", message: "HTTP 413" } }
           ],
-          draft: "把这两个文件的启动逻辑合并到一个入口",
+          // 草稿里带两条 `@` 引用（文件 + 目录）：引用要渲成蓝色链接（见
+          // `src/webview/composerMention.ts`），两侧的普通文字照旧——镜像层与文本域
+          // 错位一个像素都看得出来，所以这一段必须留着
+          draft: "把这两个文件的启动逻辑合并到一个入口：先看 @src/server/index.ts 与 @src/ 下的配置",
           // 乐观回显（`PendingMessageView`，见 src/webview/pendingMessage.ts）：两种形态
           // 都要留着，否则预览页看不出失败那一行的红框 / 两个动作 / 原因。
           // 账本里只有「已经发出去」的那一类（按下发送那一刻 agent 空闲）——排队 / 插话那几条

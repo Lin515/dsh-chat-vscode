@@ -163,13 +163,19 @@ function registerContributions(context: vscode.ExtensionContext, host: Contribut
       await controller.openHistory();
       controller.revealActiveView();
     }),
-    // 「在编辑器中打开」：webview 按钮会把点击来源窗口的会话带过来；
-    // 命令面板直接执行（没有来源窗口）时用最近活动窗口的会话；都没有就空态
+    // 「在编辑器中打开」：webview 按钮会把点击来源窗口的会话与窗口本身带过来；
+    // 命令面板直接执行（没有来源窗口）时用最近活动窗口的会话、落点是当前活动分组。
+    // 落点规则（用户 2026-10-10 口径）：来源窗口自己就在某个标签组里就在**那一组**
+    // 开新标签，否则用已有活动分组，都没有才新开一个分组（见 `editorColumnFor`）。
     vscode.commands.registerCommand(
       "dshChat.openInEditor",
-      (sessionId?: string) => {
-        log(`[cmd] openInEditor session=${sessionId ?? "（无来源窗口，取活动窗口）"}`);
-        return provider.openPanel(sessionId ?? controller.activeSessionId()).panel;
+      (sessionId?: string, sourceViewId?: string) => {
+        log(
+          `[cmd] openInEditor session=${sessionId ?? "（无来源窗口，取活动窗口）"}` +
+            ` source=${sourceViewId ?? "（命令面板）"}`,
+        );
+        const column = provider.editorColumnFor(sourceViewId);
+        return provider.openPanel(sessionId ?? controller.activeSessionId(), column).panel;
       },
     ),
     // 编辑器标题栏（`editor/title` 贡献点）那颗「打开 DSH 窗口」按钮的落点：

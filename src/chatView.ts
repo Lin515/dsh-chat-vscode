@@ -24,6 +24,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   private readonly disposables: vscode.Disposable[] = [];
   /** 窗口（viewId）→ 它的 webview。定向投递按这个表找到目标。 */
   private readonly viewWebviews = new Map<string, vscode.Webview>();
+  /**
+   * 窗口（viewId）→ 它所在的**编辑区标签组**；只有编辑区面板有值（侧栏不在编辑器区）。
+   *
+   * 记的是最近一次读到的组：`WebviewPanel.viewColumn` 在面板退到后台标签时可能读不到，
+   * 那时用上一次的值兜底比「当场没有就当侧栏」安全——后者会让面板里点出来的引用跑到
+   * 活动分组去，而不是留在自己这一组（见 `editorColumnFor`）。
+   */
+  private readonly panelColumns = new Map<string, vscode.ViewColumn>();
   /** 恢复期的兜底定时器：页面迟迟不发 `ready` 时到点也得把会话接回去。 */
   private readonly restoreTimers = new Set<ReturnType<typeof setTimeout>>();
   /** 已经认领过缓存会话的侧栏槽位（每个槽位只认领一次，见 `resolveWebviewView`）。 */
@@ -102,11 +110,31 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   }
 
   /**
+   * 「在编辑器中打开」的落点：编辑区**哪一个标签组**。
+   *
+   * 规则（用户 2026-10-10 口径）：
+   * 1. 来源窗口自己就在某个标签组里（编辑区面板，`@会话` 引用从那里点出来）→ 开在
+   *    **那一组**的新标签里：跳去别的组等于把用户正看着的这一组丢下；
+   * 2. 否则编辑器区**已有任意标签组**（哪怕里面只有代码文件）→ 开在**当前活动**的
+   *    那一组里。原来固定用 `ViewColumn.Beside`，点几次就排出一列分组，而用户要的是
+   *    「新标签」；
+   * 3. 一个标签组都没有（只有空窗口才会这样）→ 新开一个分组：`ViewColumn.Beside`，
+   *    也就是这条规则出现之前一直用的那个落点。
+   */
+  editorColumnFor(sourceViewId?: string): vscode.ViewColumn {
+    const own = sourceViewId ? this.panelColumns.get(sourceViewId) : undefined;
+    if (own !== undefined) return own;
+    if (vscode.window.tabGroups.all.length === 0) return vscode.ViewColumn.Beside;
+    return vscode.window.tabGroups.activeTabGroup.viewColumn;
+  }
+
+  /**
    * 在编辑器区打开一个独立面板；指定会话时面板打开那个会话。
    *
-   * `column` 默认 `ViewColumn.Beside`（「在编辑器中打开」＝新开一个分组，与用户正在看的
-   * 文件并排）；`focus` 默认 false——**只有编辑器标题栏那条**「在本分组新建对话窗口」
-   * 要 `focus: true`（用户 2026-09-15 口径：点了要「跳转」过去）。
+   * `column` 默认 `ViewColumn.Beside`（新开一个分组）；「在编辑器中打开」那条路先用
+   * {@link editorColumnFor} 取落点（已有标签组就在里面开新标签），只有明确要新开一个
+   * 分组时才落回这个默认值。`focus` 默认 false——**只有编辑器标题栏那条**
+   * 「在本分组新建对话窗口」要 `focus: true`（用户 2026-09-15 口径：点了要「跳转」过去）。
    *
    * 返回 `viewId`：调用方可能要往这个新窗口里塞一个**新会话**
    * （`newSessionInGroup` 走 `controller.newSession(viewId)`）。页面还没加载完也没关系
@@ -150,6 +178,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       if (panel.title !== title) panel.title = title;
     });
     this.controller.bindViewKind(viewId, "panel");
+    // 面板落脚的标签组：`@会话` 引用与「在编辑器中打开」都要用它（见 `editorColumnFor`）。
+    // `viewColumn` 只在读得到时才记（后台标签 / 拖动过程中可能为空），窗口关掉就清
+    const rememberColumn = () => {
+      const column = panel.viewColumn;
+      if (column !== undefined) this.panelColumns.set(viewId, column);
+    };
+    rememberColumn();
+    this.disposables.push(panel.onDidChangeViewState(rememberColumn));
+    this.disposables.push(panel.onDidDispose(() => this.panelColumns.delete(viewId)));
     // 面板变可见时视作活动（命令面板入口「最近活动的窗口」靠它定位）
     this.disposables.push(
       panel.onDidChangeViewState((event) => {
@@ -279,6 +316,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     for (const disposable of this.disposables) disposable.dispose();
     this.disposables.length = 0;
     this.viewWebviews.clear();
+    this.panelColumns.clear();
   }
 }
 
