@@ -5,7 +5,7 @@
 
 ## 会话主链路
 
-- `controller.ts` — 会话控制器，宿主侧的核心：管理会话域生命周期、把 `shared/ipc.ts` 的界面请求接到 `adapter` / `client`，下发状态帧与 patch。
+- `controller.ts` — 会话控制器，宿主侧的核心：管理会话域生命周期、把 `shared/ipc.ts` 的界面请求接到 `adapter` / `client`，下发状态帧与 patch。会话「在不在跑」的三条输入在这里合流（适配器的 durable 轮次边界、`api-session/status` 中继、会话列表），`session/follow` 的**单流**失败也由它按 `client.ts` 的契约重开（`reopenScopeFollow`，带退避与上限，并按流身份丢弃旧流的迟到回调）。
 - `adapter.ts` — 聊天流适配器：把 durable 会话事件流折成「人类转写」口径的 `MessageView`（聊天流那套折叠；轨迹的账本折叠在 `trajectory.ts`）。
 - `client.ts` — DSH 服务端客户端：一元 RPC、`$events` / follow 等流的 WebSocket 订阅；`DshApiError` / `DshAuthError` 区分业务与认证错误，「端点不存在」按肯定证据判定。
 - `protocol.ts` — DSH 线上协议的线格式类型（依据 `docs/dsh-server-api.md` 逐字摘录，只保留客户端真正用到的字段）。

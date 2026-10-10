@@ -232,6 +232,8 @@ const entries = {
   "build/subagent-switch.test.mjs": "scripts/subagentSwitch.test.ts",
   "build/subagent-row-state.test.mjs": "scripts/subagentRowState.test.ts",
   "build/unread-marker.test.mjs": "scripts/unreadMarker.test.ts",
+  // 报错会话的状态口径（单流失败重开 / 提交失败不许覆盖 durable 证据）：驱真 ChatController + stub（必须登记，否则 npm test 静默不跑）
+  "build/error-session-status.test.mjs": "scripts/errorSessionStatus.test.ts",
   "build/empty-composer.test.mjs": "scripts/emptyComposer.test.ts",
   "build/file-ref-listing.test.mjs": "scripts/fileRefListing.test.ts",
   "build/blank-session-reuse.test.mjs": "scripts/blankSessionReuse.test.ts",

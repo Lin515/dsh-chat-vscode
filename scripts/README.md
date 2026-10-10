@@ -33,6 +33,7 @@
 - `composerDraft.test.ts` — 草稿在「提交」链路上的顺序契约（界面乐观清空与宿主草稿表时序）。
 - `pendingEcho.test.ts` — 乐观回显行为级回归：按下发送那一刻同步产生、只收「已经发出去」的那类。
 - `unreadMarker.test.ts` — 「生成完毕未读」行为级回归：只有离开时正在生成才点亮蓝标题。
+- `errorSessionStatus.test.ts` — 报错会话的状态口径：产品语义（离开时界面显示生成中 → 收尾亮未读）与两条错误分支（`session/follow` 单流失败不重开、提交失败无条件回滚覆盖 durable 证据）的行为级回归；驱动真 `ChatController`。
 
 ### 投影
 

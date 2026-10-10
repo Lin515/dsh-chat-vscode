@@ -170,6 +170,14 @@ const MAX_PENDING_MESSAGES = 8;
  */
 const MAX_PENDING_KEYS = 64;
 
+/**
+ * 一条 `session/follow` 流连续失败时最多重开几次（见 `reopenScopeFollow`）。
+ *
+ * 达到上限后停止自动重开，由 socket 重连后的 `onConnected` 恢复全部域的流。
+ * 持续失败的原因未必可知，但必须避免无限重试。
+ */
+const FOLLOW_RETRY_MAX = 5;
+
 /** 读取编辑节点 diff 的排版设置（auto / unified / split，缺省自适应）。 */
 function readDiffLayout(): DiffLayout {
   const value = vscode.workspace.getConfiguration("dshChat").get<string>("diffLayout");
@@ -536,6 +544,31 @@ export class ChatController implements vscode.Disposable {
    * 惰性创建，最后一个绑定窗口解绑时回收。
    */
   private readonly scopes = new Map<string, SessionScope>();
+  /**
+   * 会话 id → 该域 `session/follow` 的**连续**失败次数（见 `reopenScopeFollow`）。
+   *
+   * 收到一份完整快照即清零（流真的活了）；域被回收 / socket 重连 / 扩展卸载时由
+   * `closeFollowRetry` 清掉，不在表里留没有归属的条目。
+   */
+  private readonly followRetries = new Map<string, number>();
+  /** 会话 id → 待触发的那一次跟随流重开（`closeFollowRetry` 负责取消）。 */
+  private readonly followRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /**
+   * 会话 id → 这个域**当前这一次**开流的代号（取自 `followGenerationSeq`）。
+   *
+   * 回调按它认身份（见 `followIsCurrent`）：比“句柄是不是同一个”更早可用——句柄要等
+   * `followSession` 返回才拿得到，而回调（含同步替身的极端时序）可能在返回之前就发生。
+   * 域被回收 / 收线 / 扩展卸载时删掉条目；**代号本身不复用**（见 `followGenerationSeq`）。
+   */
+  private readonly followGenerations = new Map<string, number>();
+  /**
+   * 开流代号的全局面发号器：只增不减，**跨回收 / 收线 / 重连都不复用**。
+   *
+   * 不能按会话「从 0 重新发号」：收线只取消句柄，域对象照旧留在 `scopes` 里，重连后会在
+   * **同一个域对象**上再开一条流——若两次都发到 1，收线前那条流的迟到 item / error / end
+   * 就会通过身份判据，改写新适配器或再排一次重开（见 `followIsCurrent`）。
+   */
+  private followGenerationSeq = 0;
   /** 窗口（viewId）→ 当前绑定的会话 id。未绑定的窗口是「空态」（还没有会话）。 */
   private readonly viewSessions = new Map<string, string>();
   /**
@@ -862,11 +895,24 @@ export class ChatController implements vscode.Disposable {
    * 下一次列表刷新把那一行翻回 false 时结算出一条假未读（用户 2026-09-30 报的现场，
    * 真机日志里两处：收尾后 2 分 13 秒 / 85 秒仍被记成「离开生成中的会话」）。
    *
-   * 因此拒收时把值记在这里，等「本地有没有开放轮次」这条证据消失时（域被回收，见
-   * `settlePendingStatus`）再重判一次；列表整份刷新被采纳时它也被后来的结论顶掉。
+   * 因此拒收时把值记在这里，等「本地有没有开放轮次」这条证据变了再重判一次（域被回收，
+   * 见 `settlePendingStatus`）；durable 的 `running` 结论到达时它直接作废——那条比这条
+   * 中继值新，照旧留存只会留下一条已经失效的记账（见 `openScopeFollow` 的帧回调）。列表整份刷新
+   * 被采纳时同理。
    * 值只可能是 `false`——`true` 永远被采纳。
    */
   private readonly pendingStatuses = new Map<string, boolean>();
+  /**
+   * 域上**最近一次权威 running 结论**的版本号与值（见 `noteAuthorityRunning`）。
+   *
+   * 只由权威来源写：`api-session/status` 中继、会话列表整份刷新、以及适配器给出的 durable
+   * 轮次边界。`send` 的乐观置位**不写这里**——提交失败收场要靠版本号把「本次自己写的 true」
+   * 与「等待期间到达的权威 true」区分开：两者布尔值相同，只看 `scope.running` 分不出来。
+   * 版本号取自全局单调计数，**值与乐观写入相同也照记**（权威再次确认同样是一条新证据）。
+   * 用 `WeakMap` 按域对象存：域被回收即随之消失，不必另设清理点。
+   */
+  private readonly authorityRunning = new WeakMap<SessionScope, { version: number; running: boolean }>();
+  private authoritySeq = 0;
   /**
    * 草稿与附件按会话隔离：切换会话时输入框文本与附件芯片一起切换。
    * 已绑定会话的窗口用会话 id 做键（同会话的多窗口共享）；**未绑定**的窗口用
@@ -2092,6 +2138,10 @@ export class ChatController implements vscode.Disposable {
    */
   private destroyScope(scope: SessionScope): void {
     this.scopes.delete(scope.sessionId);
+    // 这张表按会话建：域没了就没有「这个域的跟随流连续失败几次」可言，待触发的那次
+    // 重开也必须作废——留存只会得到一条永远不会被清除的条目，重开还会产生一条没有收件人的流
+    this.closeFollowRetry(scope.sessionId);
+    this.followGenerations.delete(scope.sessionId);
     // 子代理域回收 = 用户离开这条子代理：把**这一份域上最新的**驻留状态记进宿主账本再丢。
     // 域上的值比外部那两本账都新——发送即乐观置位（见 `send`）与 durable 轮次边界
     // （见 `deliver`）都写在它上面，而用户报障的流程正是「进子代理页看一眼再回主会话」：
@@ -2882,6 +2932,10 @@ export class ChatController implements vscode.Disposable {
   private async onConnected(): Promise<void> {
     // socket 重建后长活流都要重开：每个打开的域重新跟随（适配器整个重建，
     // 新快照会重放最近 60 条），全局流重开一次
+    // 重开是全新的开始：失败计数与还没触发的旧重开一并作废（跨重连的旧 timer 不许再开流）
+    for (const sessionId of [...this.followRetryTimers.keys(), ...this.followRetries.keys()]) {
+      this.closeFollowRetry(sessionId);
+    }
     for (const scope of this.scopes.values()) {
       this.openScopeFollow(scope);
       this.openScopeJobs(scope);
@@ -3399,6 +3453,8 @@ export class ChatController implements vscode.Disposable {
         if (!acceptSessionStatus(row.running, scope.adapter?.hasOpenTurn() === true)) continue;
         // 列表比中继那条更晚、也是权威：它一旦被采纳，先前拒收的那条就没有留下的理由了
         this.pendingStatuses.delete(scope.sessionId);
+        // 会话列表也是权威来源：记版本 + 值（见 `authorityRunning`）
+        this.noteAuthorityRunning(scope, row.running);
         this.writeScopeRunning(scope, row.running);
       }
       // 会话列表是**标题的权威**（服务端 `session/list`）：恢复窗口时面板先绑上会话、
@@ -3444,7 +3500,11 @@ export class ChatController implements vscode.Disposable {
     // 列表那一行是**新域的打底值**（见 `ensureScope`），必须与域同一个口径：列表里的
     // 「运行中」标记也靠它，不然用户切走再切回来会拿到一个过期的值。
     this.setSessionRowRunning(status.sessionId, status.running);
-    if (scope) this.writeScopeRunning(scope, status.running);
+    if (scope) {
+      // 权威结论到了（中继被采纳）：记版本 + 值（不可省略——见 `authorityRunning`）
+      this.noteAuthorityRunning(scope, status.running);
+      this.writeScopeRunning(scope, status.running);
+    }
     return true;
   }
 
@@ -3473,6 +3533,23 @@ export class ChatController implements vscode.Disposable {
       type: "patch",
       patch: sessionPatch(this.sessionSource(scope), ["running"]),
     });
+  }
+
+  /**
+   * 记下一条**权威** running 结论（见 `authorityRunning`）。
+   *
+   * 由三个权威来源调用：`api-session/status` 中继被采纳时、会话列表整份刷新被采纳时、
+   * 适配器给出的 durable 轮次边界。**值没有变化也要记**：权威在等待期间再次确认「在跑」，
+   * 本身就是一条新证据，不能因为与乐观写入的布尔值相同而被忽略。
+   */
+  private noteAuthorityRunning(scope: SessionScope, running: boolean): void {
+    this.authoritySeq += 1;
+    this.authorityRunning.set(scope, { version: this.authoritySeq, running });
+  }
+
+  /** 域上权威 running 的当前版本号（一次都没收到过权威结论时为 0）。 */
+  private authorityVersion(scope: SessionScope): number {
+    return this.authorityRunning.get(scope)?.version ?? 0;
   }
 
   /**
@@ -4446,9 +4523,19 @@ export class ChatController implements vscode.Disposable {
   /** 给域开（或 socket 重连后重开）`session/follow` 流；适配器整个重建。 */
   private openScopeFollow(scope: SessionScope): void {
     const sessionId = scope.sessionId;
-    if (!this.client) return;
+    const streamClient = this.client;
+    if (!streamClient) return;
     scope.followHandle?.cancel();
+    // 这一次开流的**代号**：回调只认「还是这个 client、还是这个域、还是这一次开流」的那一份。
+    // 被取消 / 被替换 / 断线重连之后的旧流还可能送来迟到的 item / error / end——它们既不许
+    // 复活旧流，也不许把帧写进新的适配器（见 `followIsCurrent`）。代号从全局发号器取，
+    // 不复用，收线 + 重连这种「同一个域对象再开一次」的时序才不会与新流拿到同一个代号。
+    const generation = (this.followGenerationSeq += 1);
+    this.followGenerations.set(sessionId, generation);
+    const isCurrent = (): boolean => this.followIsCurrent(scope, streamClient, generation);
     const adapter = new SessionAdapter((frame) => {
+      // 被替换掉的那一次开流的适配器：它的帧不再算数（否则旧快照/旧 patch 会污染新域）
+      if (!isCurrent()) return;
       // **durable 的「在不在跑」要同时落到会话列表那一行**（2026-09-30 修）：收尾的
       // 权威状态位（`api-session/status`）可能比本轮的 durable `turn/end` **先到**，
       // 那一刻本地还有「本轮开着」的肯定证据，它会被 `acceptSessionStatus` 拒收（那条
@@ -4457,6 +4544,11 @@ export class ChatController implements vscode.Disposable {
       // 记了离开标记，下一次列表刷新把那一行翻回 false 时结算成未读，就是用户报的
       // 「明明已读却亮蓝」。列表与域从此同一个来源（对账见 `scripts/unreadMarker.test.ts`）。
       if (frame.type === "patch" && typeof frame.patch.running === "boolean") {
+        // durable 的结论比先前被拒收的那条中继值**新**：账没有必要再留着
+        // （与列表整份刷新被采纳时的口径一致，见 `refreshSessions`）
+        this.pendingStatuses.delete(sessionId);
+        // durable 轮次边界同样是权威来源：记版本 + 值（值没变也要记，见 `authorityRunning`）
+        this.noteAuthorityRunning(scope, frame.patch.running);
         this.setSessionRowRunning(sessionId, frame.patch.running);
       }
       this.deliver(sessionId, frame);
@@ -4496,8 +4588,9 @@ export class ChatController implements vscode.Disposable {
       },
     );
     scope.adapter = adapter;
-    scope.followHandle = this.client.followSession(sessionId, {
+    scope.followHandle = streamClient.followSession(sessionId, {
       onItem: (value) => {
+        if (!isCurrent()) return;
         // **顺序在 `replayFollowSnapshot` 里**：先让适配器回放历史记录，再铺开投影值。
         // 投影是「截至 asOfSeq 的折叠结果」，永远比记录里的事件新；反过来先铺投影再回放，
         // 历史里最后一个事件会把折叠值**覆盖回旧状态**——`plan` 就是活例（见
@@ -4506,11 +4599,95 @@ export class ChatController implements vscode.Disposable {
         replayFollowSnapshot(value as SessionFollowFrame, adapter, (block) => {
           ingestFollowSnapshot(this.projectionHandlers, scope, block);
         });
+        // 一份完整快照 = 这条流真的活着：连续失败计数与待触发的重开一并清掉
+        if ((value as { type?: unknown })?.type === "snapshot") this.closeFollowRetry(sessionId);
       },
       onError: () => {
-        // socket 断开重连后会由 onConnected 重开
+        // **单流**失败（帧 error）不会触发 socket 的 close，`onConnected` 也就不会跑；
+        // 按 `DshClient` 的契约（见 `client.ts` 的 `connect`）由这里重开这条流。
+        // 迟到的旧流 error 在这里被 `isCurrent` 挡掉：不重开、不复活。
+        if (!isCurrent()) return;
+        this.reopenScopeFollow(scope, streamClient, generation);
+      },
+      onEnd: () => {
+        // 服务端把这条流**正常结束**（帧类型 `end`）时客户端只调 `onEnd`、**不调**
+        // `onError`（见 `client.ts` 的 `ws.on("message")`）：同一条恢复路径，漏了它这条
+        // 路径就完全没有恢复——适配器同样停在旧态、`hasOpenTurn()` 永远真。
+        if (!isCurrent()) return;
+        this.reopenScopeFollow(scope, streamClient, generation);
       },
     }, scope.subagentAddress);
+  }
+
+  /**
+   * 这条跟随流的回调还属于「当前这一次开流」吗（`openScopeFollow` 的流身份）。
+   *
+   * 三个都相同才算数：同一个客户端实例、`scopes` 里还是这个域对象、这个域的
+   * **开流代号**还是这一次。用代号而不是比较句柄：句柄要等 `followSession` 返回才拿得到，
+   * 开流调用**还没返回**时它是 undefined——把 undefined 当作通过条件，会使「同步回调排下的
+   * 重开」在句柄已被新的一次开流替换之后仍然越权开流（真客户端的回调恒为异步，见
+   * `client.ts` 的 `openStream`；但身份判据不该靠这个前提成立）。
+   */
+  private followIsCurrent(scope: SessionScope, client: DshClient, generation: number): boolean {
+    if (this.client !== client) return false;
+    if (this.scopes.get(scope.sessionId) !== scope) return false;
+    return this.followGenerations.get(scope.sessionId) === generation;
+  }
+
+  /**
+   * 清掉一条会话的跟随流重试状态（计数 + 待触发的那次重开）。
+   *
+   * 四个清理点：收到完整快照（流活了）、域被回收、连接收线（`teardownStreams`）、
+   * socket 重连（重开是全新的开始）。不清理就是「旧 timer 还能再开一条流」和
+   * 「按会话建的表只增不删」。
+   */
+  private closeFollowRetry(sessionId: string): void {
+    const timer = this.followRetryTimers.get(sessionId);
+    if (timer !== undefined) clearTimeout(timer);
+    this.followRetryTimers.delete(sessionId);
+    this.followRetries.delete(sessionId);
+  }
+
+  /**
+   * 一条 `session/follow` **单流**失败或**被服务端正常结束**后的重开
+   * （`openScopeFollow` 的 onError / onEnd 两个调用点）。
+   *
+   * 为什么必须自己重开：socket 断开时 `DshClient` 会在 `close` 分支把每条流都 `onError`
+   * 一次并重连，重连成功由 `onConnected` 重开全部域的流；而**单流**结束（帧类型的
+   * `error`，或服务端把这条流 `end` 掉——后者客户端只调 `onEnd`，连 `onError` 都没有）
+   * 只把这一条流从客户端的流表里删掉，socket 照旧——`onConnected` 不会跑；若不在这里
+   * 重开，这个域就再也没有跟随流了。
+   *
+   * 后果不是「少几帧」：适配器停在旧态 ⇒ `hasOpenTurn()` 永远为真 ⇒ 此后每一条权威
+   * 「不在跑」（`api-session/status`）都被 `acceptSessionStatus` 拒收，界面一直显示
+   * 生成中，durable 的收尾也永远到不了（用户 2026-10-10 报的「报错的会话有时似被误判
+   * 生成」）。重开的新快照会重放跟随窗口，`turnRunning` 于是从 durable 事实**重算**：
+   * 收尾在窗口里就是结论，不在窗口里则按既有规则「认不出就不发帧」——这里**不**猜 running。
+   *
+   * 退避与上限：连续失败按次数线性退避（150ms 起、封顶 1.5s），超过 `FOLLOW_RETRY_MAX`
+   * 只记一行日志、不再重开（再开也只会变成热循环，攒着等 socket 重连那条路）。
+   * 定时器与计数都由 `closeFollowRetry` 清理；等待期间域被回收、客户端被换掉、或这条流
+   * 已被别的开流替换（`followIsCurrent` 不成立）时，那一次重开直接作废。
+   */
+  private reopenScopeFollow(scope: SessionScope, client: DshClient, generation: number): void {
+    const sessionId = scope.sessionId;
+    const attempts = (this.followRetries.get(sessionId) ?? 0) + 1;
+    this.followRetries.set(sessionId, attempts);
+    if (attempts > FOLLOW_RETRY_MAX) {
+      if (attempts === FOLLOW_RETRY_MAX + 1) {
+        this.log(`[follow] 会话=${sessionId} 已重试 ${FOLLOW_RETRY_MAX} 次，停止自动重开（等待 socket 重连）`);
+      }
+      return;
+    }
+    const timer = setTimeout(() => {
+      this.followRetryTimers.delete(sessionId);
+      if (!this.followIsCurrent(scope, client, generation)) return;
+      this.openScopeFollow(scope);
+    }, Math.min(150 * attempts, 1_500));
+    // 同一会话同时只留一个待触发的重开：后到的 error 以前一个为准
+    const previous = this.followRetryTimers.get(sessionId);
+    if (previous !== undefined) clearTimeout(previous);
+    this.followRetryTimers.set(sessionId, timer);
   }
 
   /**
@@ -4841,9 +5018,16 @@ export class ChatController implements vscode.Disposable {
 
   private teardownStreams(): void {
     // 每个域的 follow 流单独取消（域本身保留，重连时由 onConnected 重开）
+    // **重试状态与开流代号一并作废**：只取消句柄的话，已经排下的那次重开、以及旧流迟到的
+    // error / end，都还会按这个域再开一条流（域对象仍在 `scopes` 里，只看域的身份判据
+    // 照旧成立）——收线 / 换连接之后会多出一条没人收的流。清掉代号即让旧回调一律失效。
+    for (const sessionId of [...this.followRetryTimers.keys(), ...this.followRetries.keys()]) {
+      this.closeFollowRetry(sessionId);
+    }
     for (const scope of this.scopes.values()) {
       scope.followHandle?.cancel();
       scope.followHandle = undefined;
+      this.followGenerations.delete(scope.sessionId);
       scope.jobsHandle?.cancel();
       scope.jobsHandle = undefined;
     }
@@ -6694,6 +6878,19 @@ export class ChatController implements vscode.Disposable {
      * 把回显标成失败（`failEcho` 幂等、不覆盖 `catch` 里那条更具体的原因）。
      */
     let admitted = false;
+    /**
+     * 本次提交**有没有做过乐观置位**（`scope.running = true`）、置位那一刻域上的值，
+     * 以及那一刻**权威 running 的版本号**。
+     *
+     * 三个变量都必须在 `try` 之外声明，失败收场（`catch`）才看得见（见那里的回滚判据）；
+     * 但**赋值留在原来的位置**：`await applyPendingModel` 期间 durable 证据完全可能把
+     * running 翻面，而提交模式（`resolveSubmitMode`）读的必须是「乐观置位那一刻」的值——
+     * 提到 `try` 之前就会读到一个过期的值。版本号用来分辨「等待期间到达的权威结论」：
+     * 权威在等待期间确认过运行状态（哪怕布尔值与乐观写入相同），失败收场就不得回滚它。
+     */
+    let optimistic = false;
+    let wasRunning = false;
+    let authorityAtSubmit = 0;
     try {
       // 发送前应用待生效的模型选择（切换即时生效于"下一轮"）
       await this.applyPendingModel(scope);
@@ -6719,8 +6916,12 @@ export class ChatController implements vscode.Disposable {
       // **先**取「发出去的那一刻 agent 还在不在跑」，再乐观置位。顺序反了的话
       // `resolveSubmitMode` 里的 `!running` 这道门永远走不进去，空闲发消息也会带
       // `mode:"steer"`（审计确认的缺陷，见 resolveSubmitMode 的注释）。
-      const wasRunning = scope.running;
+      // 读到的这个值同时是失败收场的回滚基准（见 catch）：域上那个 `true` 是不是本次
+      // 写的，由 `optimistic` 记着。
+      wasRunning = scope.running;
+      authorityAtSubmit = this.authorityVersion(scope);
       scope.running = true;
+      optimistic = true;
       this.deliver(scope.sessionId, {
         type: "patch",
         patch: sessionPatch(this.sessionSource(scope), ["running"]),
@@ -6747,11 +6948,34 @@ export class ChatController implements vscode.Disposable {
       // `markSessionEngaged`）
       this.markSessionEngaged(scope.sessionId);
     } catch (error) {
-      scope.running = false;
-      this.deliver(scope.sessionId, {
-        type: "patch",
-        patch: sessionPatch(this.sessionSource(scope), ["running"]),
-      });
+      // 失败收场：**只回滚本次提交的乐观置位**，绝不覆盖已有的真实证据。
+      //
+      // 无条件置 `false`（改动前的写法）在「本轮真在跑」时是错的——`await prompt(...)`
+      // 期间完全可能到了 durable 证据（`turn/start`）或权威值（`api-session/status`），
+      // 网络层的 reject 也不能推出「服务端没接受」。实测过的三种现场：域与界面说空闲、
+      // 会话列表那一行说运行中（三个口径互相矛盾）；列表里没有那一行的会话（子代理）更会
+      // 因此判成空闲，用户离开时记不出离开标记，那一轮真收尾时不亮未读。
+      //
+      // 判据按**肯定证据**写（拿不到证据才回滚），而且只回滚**本次真的置过位**的那一次：
+      // - `optimistic` 为假 = 本次提交在乐观置位之前就失败了（模型应用那一步），域上那个值
+      //   根本不是本次写的 —— 不许动（那是替用户下结论）；
+      // - 等待期间到达过**权威**结论（`authorityVersion` 变了，含布尔值与乐观写入相同的
+      //   「权威再次确认在跑」）—— 权威优先，不许动；
+      // - 提交前它就在跑（`wasRunning`）、适配器还有开放轮次、会话列表那一行说在跑
+      //   —— 三者任一成立也什么都不动；
+      // - 真的空闲提交失败（本次置了位、又没有任何证据）照旧回落空闲，否则会一直停在「生成中」。
+      const evidence =
+        this.authorityVersion(scope) !== authorityAtSubmit ||
+        wasRunning ||
+        scope.adapter?.hasOpenTurn() === true ||
+        this.sessions.some((item) => item.id === scope.sessionId && item.running);
+      if (optimistic && !evidence && scope.running) {
+        scope.running = false;
+        this.deliver(scope.sessionId, {
+          type: "patch",
+          patch: sessionPatch(this.sessionSource(scope), ["running"]),
+        });
+      }
       // 这一轮没提交成功：那一行标成失败并带上服务端 / 传输层的原因（**不回填输入框**，
       // 用户口径 2026-09-25：正文留在那一行里，重发用行上的按钮）。
       // 这条提交**没有回显**时（尚未发出的那条 / 子代理会话）没有能承载失败的那一行，
@@ -8703,6 +8927,11 @@ export class ChatController implements vscode.Disposable {
   dispose(): void {
     this.disposed = true;
     this.teardownStreams();
+    // 跟随流的重试状态也一起收：待触发的重开 timer 不许活过扩展卸载
+    for (const sessionId of [...this.followRetryTimers.keys(), ...this.followRetries.keys()]) {
+      this.closeFollowRetry(sessionId);
+    }
+    this.followGenerations.clear();
     this.client?.dispose();
     // **后台管理器一定要释放**：`reconnectServer` 每次配置变更都会换一个新的管理器，
     // 而只有激活期那个进了 `context.subscriptions`——不在这里统一 dispose，
