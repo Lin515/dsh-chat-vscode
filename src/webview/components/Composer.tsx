@@ -988,9 +988,9 @@ export function Composer({
                 ),
               )}
             </div>
-            {/* 触发词（`@` / `/`）的 ref 与 onChange / onKeyUp / onClick / onKeyDown
-                全在 `completion.textareaProps` 里：ESC 优先级链、Enter/Tab 的补全语义、
-                两次写草稿都在那边，组件不能再写一份。 */}
+            {/* 触发词（`@` / `/`）的 ref 与 onChange / onKeyUp / onClick / onFocus /
+                onKeyDown 全在 `completion.textareaProps` 里：ESC 优先级链、Enter/Tab 的
+                补全语义、两次写草稿、焦点回到输入框时的重算都在那边，组件不能再写一份。 */}
             <textarea
               className="composer-input"
               rows={1}

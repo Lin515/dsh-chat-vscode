@@ -260,6 +260,9 @@
             { path: "src/dsh/client.ts", kind: "file" },
             { path: "src/webview/components", kind: "directory" },
           ],
+          // 判定位：「这一块自己已经能引用到内容吗」（用户 2026-10-11 口径，见
+          // docs/adr/0005）。这里是「不能引用」——列表照弹的样子。
+          resolved: false,
         });
         // 对话候选是**另一条帧**（它慢得多，见 shared/ipc.ts 的 files/list 注释）：
         // `query` 与上面那条一致，界面才认它是同一次查询的那一批。两条都要留样例，

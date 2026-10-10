@@ -68,6 +68,26 @@ const apply = (state: typeof initialState, ...actions: Action[]): typeof initial
   assert.deepStrictEqual(filesOnly.fileRefs.items, [FILE_A], "`files/list` 装文件那一半");
   assert.deepStrictEqual(filesOnly.fileRefs.sessions, [], "对话候选还没到（此前是空）");
   assert.strictEqual(filesOnly.fileRefs.query, "", "`files/list` 同时记下这是哪一次查询");
+  assert.strictEqual(
+    filesOnly.fileRefs.resolved,
+    false,
+    "宿主没发 `resolved`（旧宿主）按 false 收：退回「一律弹列表」的旧行为，不做抑制",
+  );
+
+  // 「这一块已经能引用到内容」的判定跟着同一条帧走（用户 2026-10-11 口径，判据在宿主）：
+  // 它属于**这一次**查询，所以下一次查询的帧要把它翻回去——否则上一块的判定会一直按住
+  // 后面的块（界面按「`query` 对得上才算这一次的判定」读它，见 `composerCompletion`）。
+  {
+    const suppressed = apply(initialState, {
+      type: "files/list",
+      query: "src/a.ts",
+      items: [],
+      resolved: true,
+    });
+    assert.strictEqual(suppressed.fileRefs.resolved, true, "宿主说这一块已经能引用到内容");
+    const nextQuery = apply(suppressed, { type: "files/list", query: "src/", items: [FILE_B] });
+    assert.strictEqual(nextQuery.fileRefs.resolved, false, "换一次查询就归零");
+  }
 
   const withSessions = apply(filesOnly, {
     type: "files/sessions",
@@ -148,8 +168,16 @@ console.log("mentionCandidates: 对话候选只在工作区根目录列（渲染
     assert.ok(body.includes(`type: "${type}"`), `queryFiles 要发 \`${type}\` 帧`);
   }
   assert.ok(
-    /this\.emitToView\(viewId, \{ type: "files\/list", query, items: complete \}\)/.test(body),
-    "文件那一帧必须带上这次查询的 query（界面靠它认「这是哪一次查询」）",
+    /this\.emitToView\(viewId, \{ type: "files\/list", query, items: complete, resolved: false \}\)/.test(body),
+    "文件那一帧必须带上这次查询的 query（界面靠它认「这是哪一次查询」）与判定位",
+  );
+  // 「这一块已经能引用到内容」→ 一个查询都不发、当场回一条 `resolved: true` 的空帧
+  // （用户 2026-10-11 口径；行为断言在 scripts/mentionResolve.test.ts）
+  assert.ok(
+    /if \(scope && \(await this\.mentionResolves\(scope, query\)\)\) \{\s*\n\s*if \(!this\.isCurrentMenuQuery\(viewId, controller\)\) return;\s*\n\s*this\.emitToView\(viewId, \{ type: "files\/list", query, items: \[\], resolved: true \}\);/.test(
+      body,
+    ),
+    "抑制分支要在两条 RPC 之前：不查、当场回帧（界面据此整块不弹）",
   );
   // 文件那一半在发帧**之前**经目录列举补全（服务器一次只回 20 条，见 scripts/fileRefListing.test.ts）：
   // 补全必须在这一帧上，不能另发一帧——另发一帧会让界面先收到半截列表再被替换

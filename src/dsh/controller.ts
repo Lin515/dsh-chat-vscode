@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join, relative, resolve, sep } from "node:path";
+import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import * as vscode from "vscode";
 import { panelTabTitle } from "../shared/chat";
@@ -53,7 +53,13 @@ import { missingDirectoryEntries } from "./fileRefListing";
 import { readLocalImages } from "./localImages";
 import { shouldContinuePaging } from "./historyPaging";
 import { formatFileMention } from "./references";
-import { formatFileMentionWithLines, isDirectoryQuery } from "../shared/mentions";
+import {
+  formatFileMentionWithLines,
+  isBrowseQuery,
+  isDirectoryQuery,
+  mentionPathOf,
+  referenceSessionIdOf,
+} from "../shared/mentions";
 import { matchPresetInput } from "../shared/presetMatch";
 import { presetMatchNames } from "../webview/presetDisplay";
 import { resolveForVsCode } from "./hostText";
@@ -8744,6 +8750,11 @@ export class ChatController implements vscode.Disposable {
    * 官方拿查询串去筛历史对话，于是进了目录也照样列）。进了某个目录时这一组连查都不查
    * ——那趟是全语料扫描，查了也只能丢掉；界面侧有同一条判据（`rankCandidates`），
    * 所以已经在飞的那一批也不会渲染出来。
+   *
+   * **这一块已经能引用到内容时，两个源都不查**（用户 2026-10-11 口径）：光标落在一条
+   * 已经写好的引用里（`@src/a.ts`、`@[标题](dsh-session:…)`），宿主只回一条
+   * `resolved: true` 的空帧，界面据此整块不弹（判据见 `mentionResolves`）——不查既省下
+   * 那一趟，也让界面**当场**拿到判定、不必先闪一个列表出来。
    */
   private async queryFiles(viewId: string, query: string): Promise<void> {
     this.menuQueries.get(viewId)?.abort();
@@ -8754,9 +8765,14 @@ export class ChatController implements vscode.Disposable {
     // 落会话可能等了一会儿，期间用户又敲了字：这一次已经被作废，一个字节都不发
     if (!this.isCurrentMenuQuery(viewId, controller)) return;
     const client = this.client;
+    if (scope && (await this.mentionResolves(scope, query))) {
+      if (!this.isCurrentMenuQuery(viewId, controller)) return;
+      this.emitToView(viewId, { type: "files/list", query, items: [], resolved: true });
+      return;
+    }
     const wantsSessions = !isDirectoryQuery(query);
     if (!client || !scope) {
-      this.emitToView(viewId, { type: "files/list", query, items: [] });
+      this.emitToView(viewId, { type: "files/list", query, items: [], resolved: false });
       if (wantsSessions) this.emitToView(viewId, { type: "files/sessions", query, sessions: [] });
       return;
     }
@@ -8796,7 +8812,7 @@ export class ChatController implements vscode.Disposable {
       // 由这里把被截掉的尾巴按同一套排序补回来（见 `completeFileListing`）
       const complete = await this.completeFileListing(scope, query, items ?? []);
       if (!this.isCurrentMenuQuery(viewId, controller)) return;
-      this.emitToView(viewId, { type: "files/list", query, items: complete });
+      this.emitToView(viewId, { type: "files/list", query, items: complete, resolved: false });
     });
     await Promise.all([
       filesFrame,
@@ -8835,6 +8851,46 @@ export class ChatController implements vscode.Disposable {
   /** 这一次 `@` 候选查询还是不是**当前那一次**（新的一次会 abort 旧的，见 `menuQueries`）。 */
   private isCurrentMenuQuery(viewId: string, controller: AbortController): boolean {
     return this.menuQueries.get(viewId) === controller && !controller.signal.aborted;
+  }
+
+  /**
+   * 光标所在那个 `@` 块**是不是已经能引用到内容**（用户 2026-10-11 口径）。
+   *
+   * 是的话这一块就是一条现成的引用（不是待补全的查询），界面整块不弹候选列表、
+   * 这里也不去查（见 `queryFiles`）。三条判据，按块的形态分派：
+   *
+   * 1. **浏览入口**（裸 `@`、以 `/` 或 `\` 结尾的路径）恒为「否」——那种形态的意思就是
+   *    「进去看这一层」，目录在不在都要能进去（`shared/mentions.ts` 的 `isBrowseQuery`）；
+   * 2. **对话引用 token**（`[标题](dsh-session:…)` 或裸 `dsh-session:…`）→ 解出会话 id，
+   *    看这条会话还在不在。判据用**两份**账本：`sessionCwds` 是 `session/list` 原始行建的
+   *    权威账本（**任何可见性过滤之前**），`sessions` 是按窗口收窄之后的历史列表——只认
+   *    后者会漏掉**别的项目**的会话引用，而 `@` 候选来自服务端全量会话（按 cwd 亲缘排序，
+   *    不按窗口收窄），引用一条别的项目的会话完全合法。**打一个裸会话 id
+   *    （`@session-…`）不算**：它不是服务端认的引用形态，那仍然是「在检索会话」，列表该弹
+   *    ——用户 2026-10-11 报的现场正是它不弹了；
+   * 3. **其余按路径**：去掉行号区间（`@src/a.ts#L12-L40` 指的仍是那个文件），绝对路径
+   *    原样、相对路径按**会话工作目录**解析，`stat` 得到才算在（判据与文件芯片分类同源：
+   *    只有明确报「找不到」才算不在，其它异常一律按「不确定」→ 弹列表，见
+   *    `fileExistence` 的三态）。
+   *
+   * 拿不到证据（没有会话工作目录、路径解析不了、`stat` 报的是未知错误）一律返回
+   * `false`：**宁可弹列表**——那块本来就可能是个要检索的片段，而把列表按住的代价是
+   * 用户彻底看不到候选。
+   */
+  private async mentionResolves(scope: SessionScope, query: string): Promise<boolean> {
+    if (isBrowseQuery(query)) return false;
+    const sessionId = referenceSessionIdOf(query);
+    if (sessionId !== undefined) {
+      // 会话列表由 `ensureSession` 保证已拉过（空表时它会先 refreshSessions，见
+      // `reuseOrCreateBlank`）：两份账本里都没有，就是这条会话已经不在了。
+      return this.sessionCwds.has(sessionId) || this.sessions.some((row) => row.id === sessionId);
+    }
+    const path = mentionPathOf(query);
+    if (path === "") return false;
+    const cwd = this.cwdOf(scope);
+    const absolute = isAbsolute(path) ? path : cwd ? join(cwd, path) : undefined;
+    if (absolute === undefined) return false;
+    return (await this.fileExistence(vscode.Uri.file(absolute))) === "present";
   }
 
   /**

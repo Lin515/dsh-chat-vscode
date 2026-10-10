@@ -154,6 +154,8 @@ const entries = {
   "build/question-render.test.mjs": "scripts/questionRender.test.ts",
   "build/mention-nav.test.mjs": "scripts/mentionNav.test.ts",
   "build/mention-candidates.test.mjs": "scripts/mentionCandidates.test.ts",
+  // 「光标所在的 @ 块已经能引用到内容就不弹」这条口径的宿主侧判据（真控制器 + 真盘临时目录）
+  "build/mention-resolve.test.mjs": "scripts/mentionResolve.test.ts",
   "build/mention-links.test.mjs": "scripts/mentionLinks.test.ts",
   "build/mention-links-ui.test.mjs": "scripts/mentionLinksUi.test.ts",
   "build/selection.test.mjs": "scripts/selection.test.ts",

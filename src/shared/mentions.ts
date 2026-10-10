@@ -53,6 +53,56 @@ export function isDirectoryQuery(query: string): boolean {
   return /[\\/]/.test(query ?? "");
 }
 
+/**
+ * 这个 `@` 查询是不是列表的**浏览入口**（裸 `@`，或尾部带分隔符的路径）。
+ *
+ * 浏览入口**永远弹列表**，也不做「这块是不是已经能引用到内容」的判定（用户
+ * 2026-10-11 口径）：`@src/` 这种形态的意思就是「进去看这一层」，目录在不在都要能
+ * 进去——不存在的目录列出来是空表，比什么都不弹更说明问题；而裸 `@` 是唯一的
+ * 「从头开始浏览」入口（连工作目录都没定时的提示也挂在它上面）。
+ *
+ * 判据与 `composerCompletion.findTrigger` 的两条入口同源，宿主与界面两边都要用：
+ * 宿主拿它决定这块要不要做存在性判定（`controller.mentionResolves`），界面拿它决定
+ * 要不要等宿主那一次的判定（浏览入口当场弹，不等）。
+ */
+export function isBrowseQuery(query: string): boolean {
+  const text = query ?? "";
+  return text === "" || /[\\/]$/u.test(text);
+}
+
+/**
+ * `@` 块的**语义路径**：去掉行号区间（`formatFileMentionWithLines` 附在末尾的
+ * `#L12` / `#L12-L40`）。
+ *
+ * 只给「这块指向哪个路径」的判据用（宿主按它查盘）：带行号的引用指向的还是同一个
+ * 文件，不去掉就等于查一个不存在的名字——它会被判成「引用不到内容」，于是光标一进
+ * 这条引用列表就弹出来（用户 2026-10-11 口径里点名的那一条）。
+ */
+export function mentionPathOf(query: string): string {
+  return (query ?? "").replace(/#L\d+(?:-L\d+)?$/u, "");
+}
+
+/**
+ * 这一块**已经写成的对话引用 token** 指向哪条会话（`[标题](dsh-session:…)`，或用户
+ * 手写 / 粘进来的裸 `dsh-session:…`）；不是这两种形态就返回 undefined。
+ *
+ * 与 {@link sessionMentionPattern} 的区别是**整块**匹配：这里回答的是「这一整块就是
+ * 一条对话引用吗」，所以两种形态都要求从头到尾都是它。解不出会话 id（负载不是
+ * base64url、或里面不是非空字符串）时同样返回 undefined——调用方按「这不是一条
+ * 对话引用」处理，不猜（见 {@link decodeSessionReferenceUri}）。
+ *
+ * **裸会话 id（`@session-…`）不是对话引用**：它不是服务端认的引用形态（官方
+ * `parseSessionReferenceText` 只认上面两种 token），所以打一个 id 进正文仍然是
+ * 「在检索会话」，那份列表该弹（用户 2026-10-11 报的现场就是它不弹了）。
+ */
+export function referenceSessionIdOf(query: string): string | undefined {
+  const body = query ?? "";
+  const markdown = /^\[((?:\\.|[^\\\]])*)\]\((dsh-session:[^\s)]*)\)$/u.exec(body);
+  if (markdown) return decodeSessionReferenceUri(markdown[2] ?? "");
+  const bare = /^(dsh-session:[A-Za-z0-9_-]+)$/u.exec(body);
+  return bare ? decodeSessionReferenceUri(bare[1] ?? "") : undefined;
+}
+
 /** 生成 `@` 引用的模型可见文本；不可引用时返回 undefined。 */
 export function formatFileMention(path: string, kind: "file" | "directory" = "file"): string | undefined {
   // 先归一化分隔符，再谈尾斜杠：`src\dsh\` 归一后就是 `src/dsh/`，不必再补

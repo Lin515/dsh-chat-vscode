@@ -40,7 +40,19 @@ export interface AppState extends ChatState {
   archivedSessions: SessionSummaryView[];
   panel: PanelKind;
   commands: CommandView[];
-  fileRefs: { query: string; items: FileRefView[]; sessions: SessionRefView[] };
+  fileRefs: {
+    query: string;
+    items: FileRefView[];
+    sessions: SessionRefView[];
+    /**
+     * 宿主对**这一块**的判定：它本身已经是一条能引用到内容的引用（见 `shared/ipc.ts`
+     * 的 `files/list`）。`true` 时列表整块不弹。
+     *
+     * 与 `query` 是**同一批**：`query` 说明这次判定与候选属于哪一次查询，界面据此
+     * 判断「判定还没到」（那时宁可先不弹，否则光标一进已有引用就闪一下列表）。
+     */
+    resolved: boolean;
+  };
   /**
    * 轨迹账本（宿主折叠后下发，见 `src/dsh/trajectory.ts`）。
    *
@@ -111,7 +123,7 @@ export const initialState: AppState = {
   archivedSessions: [],
   panel: "none",
   commands: [],
-  fileRefs: { query: "", items: [], sessions: [] },
+  fileRefs: { query: "", items: [], sessions: [], resolved: false },
 };
 
 function replaceSegment(message: MessageView, segment: Segment): MessageView {
@@ -315,10 +327,17 @@ export function reducer(state: AppState, action: Action): AppState {
       // 只换**文件**那一半：对话候选还在路上（它要扫全部会话日志，慢得多），先把
       // 上一批留在屏上——官方的 `@` 菜单就是 stale-while-revalidate
       // （`ui-input-trigger` 的 `menuReduce`：新一代替换之前，旧条目继续渲染）。
-      // 这一帧也是界面认「这是哪一次查询」的锚（见下面的 `files/sessions`）。
+      // 这一帧也是界面认「这是哪一次查询」的锚（见下面的 `files/sessions`），
+      // 以及「这一块本身已经能引用到内容」的判定落点（`resolved`，见 `shared/ipc.ts`）。
+      // 旧宿主不发 `resolved`：按 `false` 收（退回「一律弹列表」的旧行为）。
       return {
         ...state,
-        fileRefs: { ...state.fileRefs, query: action.query, items: action.items },
+        fileRefs: {
+          ...state.fileRefs,
+          query: action.query,
+          items: action.items,
+          resolved: action.resolved === true,
+        },
       };
 
     case "files/sessions":

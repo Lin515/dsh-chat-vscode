@@ -10,15 +10,18 @@
  * `tokenSpan` / `caretAfterInsert` / `candidateRows` / `actionFor` / `popoverVisible`），
  * 断言见 `scripts/mentionNav.test.ts`（行为）与 `scripts/pathInsert.test.ts`（光标算术）。
  *
- * 行为与搬家前**逐字一致**——每一条都对应一条断言（唯一的例外是第 6 条里的 `@`
- * 入口：2026-10-10 起 `@` 列表只认「裸 `@`」与「目录块」两条，见 `findTrigger`）：
+ * 行为与搬家前**逐字一致**——每一条都对应一条断言（`@` 入口的口径除外，它在
+ * 2026-10-10 与 2026-10-11 两轮里改过：现在是「光标落在哪个 `@` 块里就以整块为查询串，
+ * 块里有内容就触发，但宿主说这块**已经能引用到内容**时整块不弹」，见 `findTrigger` 与
+ * `mentionSuppressed`）：
  * 1. 草稿的两次写（`onDraft` 本地 state + `post({type:"setDraft"})` 宿主持久化）顺序与内容不变；
  * 2. 落光标仍在 `requestAnimationFrame` 里（否则 caret 会被 React 的重渲染顶掉）；
  * 3. `pick`（引用 token / 命令名）与 `drill`（进目录）的差别；
- * 4. 选完先 `dismissed` 一次，避免弹层立刻重开；
+ * 4. 选完先 `dismissed` 一次，避免弹层立刻重开（这份「已关闭」记忆只对**同一次**编辑
+ *    动作有效：焦点重新进入输入框时清掉，见 `onFocus`）；
  * 5. ESC 优先级链：弹层打开时 ESC 先关弹层并 `stopPropagation`（不能把正在跑的那一轮中止了）；
  * 6. `/` 只有在**行首或空白后**且名字在命令目录里才走命令通道；`@` 走自己的内容块判定
- *    （两条入口见 `findTrigger`），两条通道的边界规则相同、判据不同；
+ *    （见 `findTrigger`），两条通道的边界规则相同、判据不同；
  * 7. 指针悬停改高亮**只认 `mousemove`**：列表为露出键盘选中的那行而滚动时，浏览器会把
  *    `mouseenter` 补发给「刚滚到静止指针底下」的行，等于凭空抢走键盘的高亮（官方
  *    `MenuView` 同一判词，现场与断言见行上的注释与 `scripts/mentionNav.test.ts` 第 16 节）。
@@ -40,7 +43,7 @@ import {
   type TextareaHTMLAttributes,
 } from "react";
 import type { CommandView, FileRefView, SessionRefView } from "../shared/chat";
-import { formatFileMention, isDirectoryQuery, normalizeMentionPath } from "../shared/mentions";
+import { formatFileMention, isBrowseQuery, isDirectoryQuery, normalizeMentionPath } from "../shared/mentions";
 import { post } from "./bridge";
 import { IconFolder } from "./icons";
 import { mentionParent } from "./mentionNav";
@@ -75,20 +78,28 @@ export type CandidateAction = "pick" | "drill";
  * - `/`：以「行首或空白」为边界（只认行首的话，用户在已有文字后打空格再输 `/` 就弹不出
  *   菜单，很常见）；而路径里的 `/`（`src/dsh/controller.ts`）前面是非空白字符，
  *   用空白边界就能既允许句中触发、又不误判路径。查询串就是光标前那一段。
- * - `@`：列表**只有两条入口**（用户口径），因为它的候选是**服务端按查询串列目录 /
- *   扫会话**——列表该出现的地方只有「刚开始敲」与「在目录里浏览」：
- *   1. **裸 `@`**：光标紧靠那个 `@` 的右侧、且整个 `@` 内容块没有内容 → 列工作区根目录；
- *   2. **目录块**：整个 `@` 内容块是一条以 `/` 或 `\` 结尾的目录路径（下钻与 `..` 写回
- *      正文的就是这个形态），光标在块内**任意位置**都算，查询用**整个块**。
- *   其余一律不触发：已经引用的文件 / 对话、随手打的普通查询（`@src`、`@web`）——
- *   把光标移进这些内容里不该冒出候选列表。
- *   含空白的路径引用（`formatFileMention` 产出 `@"my dir/"`）**按同一个判据算**：引号是
- *   引用包装，块是「`@` + 成对引号之间那一段」的整块，语义路径以分隔符结尾就是目录块；
- *   查询与替换都去掉那对引号（替换区间覆盖闭引号，正文里不留半个引号）。带引号的
- *   **文件**（`@"my a.ts"`）与对话引用一样不以分隔符结尾 → 不触发。
+ * - `@`：光标落在哪个 `@` 内容块里（见 {@link mentionBlockAt}）就以**整块**为查询串，
+ *   块里有内容就触发——打会话 id / 名字片段（`@session-…`、`@web`）与目录块一样要弹，
+ *   服务端正是拿这个查询串列目录、筛对话（用户 2026-10-11 报的现场：会话 id 打进去
+ *   一条候选都不出来，就是这里把「有内容的块」整档判掉了）。
+ *
+ * **能不能引用到内容由宿主判**（用户 2026-10-11 口径）：块本身已经是一条能引用到
+ * 内容的引用（路径在盘上、或对话引用指向的会话还在）时列表整块不弹，否则才弹。判据
+ * 要查盘、要查会话列表，界面这一层没有证据，所以它随后面那条 `files/list` 帧回来
+ * （`resolved`，抑制门见 `useCompletion`），这里只负责把块认出来。
+ *
+ * 两条与「能不能引用」无关的既有判据：
+ * - **裸 `@`**：块里一个字都没有、且光标紧靠它右侧 → 列工作区根目录（隔了空白的
+ *   `@ |` 不算、成对空引号 `@""` 那一块也不算）；
+ * - **目录块**（以 `/` 或 `\` 结尾）：那是「进去看这一层」的浏览入口，目录在不在都要
+ *   能进去，所以宿主不做判定、恒弹（`shared/mentions.ts` 的 `isBrowseQuery`）。
+ *
+ * 含空白的路径引用（`formatFileMention` 产出 `@"my dir/"`）按同一个判据算：引号是
+ * 引用包装，块是「`@` + 成对引号之间那一段」的整块，查询与替换都去掉那对引号
+ * （替换区间覆盖闭引号，正文里不留半个引号）。
  *
  * 纯函数：断言见 `scripts/mentionNav.test.ts`（含「`@` 能与 `/` 在同一段文本里区分」
- * 与上面两条入口的逐字口径）。
+ * 与上面各条口径的逐字回归）。
  */
 export function findTrigger(text: string, caret: number): Trigger | undefined {
   const at = clampIndex(caret, text.length);
@@ -97,10 +108,9 @@ export function findTrigger(text: string, caret: number): Trigger | undefined {
     // (1) 裸 `@`：块里一个字都没有，且光标紧靠它右侧（隔了空白的 `@ |` 不算、
     //     成对空引号那一块也不算）
     const bare = !block.quoted && block.body.length === 0 && at === block.start + 1;
-    // (2) 目录块：整块以分隔符结尾。查询串取**整个块**——光标可能停在块中间
-    // （鼠标点进来、方向键挪回来），只取光标前半截会查错一层目录，替换时还会
-    // 留下半截路径。
-    if (bare || isDirectoryBlock(block.body)) {
+    // (2) 有内容的块：查询串取**整个块**——光标可能停在块中间（鼠标点进来、方向键
+    //     挪回来），只取光标前半截会查错一层目录，替换时还会留下半截路径。
+    if (bare || block.body.length > 0) {
       return { kind: "mention", start: block.start, query: block.body };
     }
   }
@@ -140,7 +150,7 @@ interface MentionBlock {
  * 1. 光标落在某个成对引号的 token（`@"…"`）区间里时，那个 token 拥有整段——引号块
  *    **可以含空白**，于是里面也可能出现「空白之后的 `@`」（`@"my @scope/"`）。
  *    先认外层 token，那些内部 `@` 就不可能被当成新的触发起点（否则光标一挪到它右侧，
- *    整块就变成 `scope/"`、目录块当场不再触发）。
+ *    整块就变成 `scope/"`：目录块会被切掉，「进去看这一层」这一路当场失效）。
  * 2. 光标不在任何引号 token 里才按空白切块：块里可以出现 `@`
  *    （`node_modules/@types/` 这种真路径要走得通），但**触发点**必须是「行首或空白之后」
  *    的那个 `@`——与 `/` 同一条边界规则，于是 `mail@example.com`、`看@src` 都不会误开
@@ -209,16 +219,6 @@ function mentionBlockEnd(text: string, from: number): number {
   return text.length;
 }
 
-/**
- * 整块内容是不是**目录路径**：以 `/` 或 `\` 结尾（空块不算）。
- *
- * 两种分隔符都认：候选路径来自 Windows 侧时是 `src\webview`，用户也可能手输反斜杠
- * （写回正文时的归一见 `shared/mentions.ts` 的 `normalizeMentionPath`）。
- */
-function isDirectoryBlock(body: string): boolean {
-  return /[\\/]$/u.test(body);
-}
-
 /** 这一条候选是不是「对话引用」（有 `mention`，没有文件那样的 `kind`）。 */
 export function isSessionCandidate(candidate: MentionCandidate): candidate is SessionRefView {
   return typeof (candidate as SessionRefView).mention === "string";
@@ -265,9 +265,10 @@ export function rankCandidates(
  * 这个上限的边界（不要读成「这里能访问到任何文件」）：
  * - 一屏约 8 行（`.trigger-popover` 限高 260 设计像素），200 行 = 25 屏——作为「翻目录」
  *   的用法早就不可用了；
- * - 能弹列表的只有「裸 `@`」与「以分隔符结尾的目录块」，查询串就是那一层的目录路径
- *   （见 `findTrigger`），所以**同一层里排在第 200 条之后的条目在这一列里看不到**。
- *   上限收在这一层只是为了让渲染行数受控，不是可达性保证。
+ * - 弹列表的块只有两类：浏览入口（裸 `@` 与以分隔符结尾的目录块，查询串就是那一层的
+ *   目录路径）与「还不能引用到内容」的检索块（会话 id / 名字片段，见 `findTrigger`），
+ *   所以**同一层里排在第 200 条之后的条目在这一列里看不到**。上限收在这一层只是为了让
+ *   渲染行数受控，不是可达性保证。
  *
  * 它同时是**唯一**的上限：此前渲染处另有一道没注释的 40 行截断（`.popover-list` 里把
  * `candidates` 直接切掉前 40 条之后的部分），而键盘导航按 `candidates.length` 走下标——
@@ -483,12 +484,11 @@ export function clickAction(shape: CandidateRow): CandidateAction {
  * 三件事都由它一处负责：
  * - **分隔符归一**：候选路径可能来自 Windows 侧（`src\webview`），不归一就会在家里
  *   留下 `@src\webview/`（用户 2026-09-21 报的）；
- * - **含空白要带引号**：`@` 列表的触发判据是「整块是以分隔符结尾的目录路径」，而
- *   不带引号时块在空白处结束——`@my dir/` 会当场掉出候选态（块只剩 `my`），
- *   所以空格路径写成 `@"my dir/"`（`formatFileMention` 产出，与选中候选写回正文的
- *   拼写同一份规则，见 `shared/mentions.ts` 的文件头）；
- * - **回到工作区根目录写裸 `@`**：那是入口 (1) 的形态，写成 `@/` 会多出一个没有意义的
- *   根目录段。
+ * - **含空白要带引号**：不带引号时块在空白处结束——`@my dir/` 会当场掉出候选态
+ *   （块只剩 `my`），所以空格路径写成 `@"my dir/"`（`formatFileMention` 产出，与选中
+ *   候选写回正文的拼写同一份规则，见 `shared/mentions.ts` 的文件头）；
+ * - **回到工作区根目录写裸 `@`**：那是唯一的「从头浏览」形态，写成 `@/` 会多出一个
+ *   没有意义的根目录段。
  *
  * 路径含控制字符或 `"` 时 `formatFileMention` 给不出 token（那种路径本来就不可引用），
  * 退回与归一后同形的裸写法，行为与不带引号时代一致。
@@ -509,11 +509,21 @@ export interface UseComposerCompletionInput {
   caret?: number;
   /** 命令目录（`commands/list`）。 */
   commands: readonly CommandView[];
-  /** 文件 / 对话候选（`fileReferences/list` + `sessionReferenceResolver/candidates`）。 */
+  /**
+   * 文件 / 对话候选（`fileReferences/list` + `sessionReferenceResolver/candidates`）
+   * 与**这一块自己**的判定。
+   *
+   * `resolved` = 宿主说光标所在那个 `@` 块本身已经是一条能引用到内容的引用
+   * （路径在盘上 / 对话引用指向的会话还在）——那种块整块不弹（用户 2026-10-11 口径，
+   * 判据见 `controller.mentionResolves`）。它**与 `query` 同一批**回来：两者都属于
+   * 同一次查询，`query` 对不上就是「这一次的判定还没到」。缺省（旧宿主不发）按
+   * `false` 处理，退回「一律弹列表」的旧行为。
+   */
   fileRefs: {
     query: string;
     items: readonly FileRefView[];
     sessions: readonly SessionRefView[];
+    resolved?: boolean;
   };
   /** 界面文案（词典）。 */
   texts: Texts;
@@ -557,17 +567,20 @@ export interface ComposerCompletion {
   /** 触发词弹层（没触发时是 null）。 */
   popover: ReactNode;
   /**
-   * 文本域要接的 prop（ref + 四个事件）。
+   * 文本域要接的 prop（ref + 五个事件）。
    *
    * `onKeyDown` 里带着 ESC 优先级链与 Enter/Tab 的补全语义，所以**不能**由组件
    * 自己再写一份——组件只负责把工具行、文本域这些「其余一切」拼起来。
+   *
+   * `onFocus` 与其余四个一样是**规则的一部分**（焦点回到输入框 = 新的编辑动作，见
+   * `onFocus`），组件必须原样摊到文本域上。
    *
    * `ref` 就是传进来的 `textareaRef`（没传时是 hook 自建的那个），所以组件既可以直接
    * `{...textareaProps}` 交给文本域，也可以自己再挂一个 ref——两种写法都能用。
    */
   textareaProps: Pick<
     TextareaHTMLAttributes<HTMLTextAreaElement>,
-    "onChange" | "onKeyUp" | "onClick" | "onKeyDown"
+    "onChange" | "onKeyUp" | "onClick" | "onFocus" | "onKeyDown"
   > & {
     /**
      * 就是传进来的 `textareaRef`（没传时是本 hook 自建的那个）。
@@ -628,8 +641,17 @@ function useCompletion(
    */
   const ownRef = useRef<HTMLTextAreaElement | null>(null);
   const ref = textareaRef ?? ownRef;
-  // ESC 关掉候选弹层后记下当时的文本与光标：只要没有真实编辑，随后的 keyup /
-  // 聚焦回调不会重新探测触发词把列表弹回来（否则表现为「按 ESC 列表又弹出」）
+  /**
+   * 上一次「关掉弹层」时的文本与光标（ESC 关闭，或选中一条命令 / 引用之后）。
+   *
+   * 只要**同一次编辑动作**里文本与光标都没变，随后的 keyup 重新探测不该把列表弹回来
+   * （否则表现为「按 ESC 列表又弹出」「选完按回车列表闪一下」）。
+   *
+   * 它记的是「这一次编辑动作」，所以**焦点重新进入输入框时由 `onFocus` 清掉**：用户
+   * 从框外回来、光标又落在某个 `@` 块里（点回来的位置常常就是末尾那一格）时，位置没变
+   * 而记忆还命中，列表就永远不出来——用户 2026-10-11 报的「从框外回来不弹，得先在框内
+   * 挪一下光标才弹」正是它（挪光标让位置变了，记忆才失效）。
+   */
   const dismissedRef = useRef<{ value: string; caret: number } | null>(null);
   /** 候选行的容器（`.popover-list`，弹层里**唯一**可滚的那一层），键盘导航要滚它。 */
   const popoverRef = useRef<HTMLDivElement | null>(null);
@@ -1019,9 +1041,54 @@ function useCompletion(
     [refreshTrigger],
   );
 
+  /**
+   * 焦点**重新进入**输入框：这是一次新的编辑动作（用户 2026-10-11 报的现场）。
+   *
+   * 两件事都要做，缺一件就是用户看到的样子：
+   * - **清掉「已关闭」记忆**：它只对**同一次**编辑动作有效（ESC 关掉列表、选中一条之后
+   *   先别重开）。从框外回来时位置往往一个字都没动（点在文本右侧的空白处 = 末尾那一格，
+   *   正好等于记忆里的光标），记忆仍命中 → 那次探测直接返回、列表永远不出来；
+   * - **重算触发词**：`findTrigger` 只在事件里跑，而光标这时**已经**落在某个 `@` 块里
+   *   （点进来、宿主把焦点还回来），不重算就一个列表都不弹——用户看到的正是「回到框里
+   *   没反应，得先在框内挪一下光标才弹」。
+   *
+   * 纯焦点（没有点击、没有敲键）也必须重算：宿主把焦点还回来（发完一轮、插入路径之后）
+   * 走的就是它。查询串没变时这一步不会多发帧——重取 effect 的依赖是触发词种类 + 查询串。
+   */
+  const onFocus = useCallback(
+    (event: React.FocusEvent<HTMLTextAreaElement>) => {
+      dismissedRef.current = null;
+      const el = event.currentTarget;
+      refreshTrigger(el.value, el.selectionStart ?? el.value.length);
+    },
+    [refreshTrigger],
+  );
+
+  /**
+   * 「这一块已经能引用到内容」把列表整块按住（用户 2026-10-11 口径）。
+   *
+   * 判据只有宿主能给（要查盘、要查会话列表），所以它随 `files/list` 那一条帧回来
+   * （`fileRefs.query` 对得上才是这一次的判定）：
+   * - **判定说「能引用」** → 整块不弹：光标移进一条已经写好的引用（`@src/a.ts`、
+   *   `@[标题](dsh-session:…)`）时不该冒出列表来（用户 2026-10-10 报的现场）；
+   * - **判定还没到** → 也先不弹。宿主对「能引用」的块根本不发查询、当场回帧（子毫秒
+   *   级），而「不能引用」的块那条文件查询是**索引**查询（官方 `file-reference-local`
+   *   只有每个工作区的第一次要遍历一遍，之后陈旧索引当场作答，见 `search.ts` 的
+   *   `indexFor`），所以这段等待在一两帧之内——比先闪一个列表出来好。
+   *   **浏览入口不看这条**（见下）：裸 `@` 是唯一的「从头浏览」入口，等一个往返就是
+   *   「刚敲 `@` 列表没反应」。
+   *
+   * 浏览入口（裸 `@`、以 `/` 或 `\` 结尾的路径）由 `shared/mentions.ts` 的
+   * `isBrowseQuery` 认：那是「进去看这一层」的意思，目录在不在都要能进去。
+   */
+  const mentionSuppressed =
+    trigger?.kind === "mention" &&
+    !isBrowseQuery(trigger.query) &&
+    (fileRefs.query !== trigger.query || fileRefs.resolved === true);
+
   const popover = useMemo(
     () =>
-      popoverVisible(trigger, candidates.length, noWorkspace) ? (
+      !mentionSuppressed && popoverVisible(trigger, candidates.length, noWorkspace) ? (
         <div className="popover trigger-popover">
           {/* 只有这一层滚（`.popover-list`）：底部提示栏是它的**兄弟**节点，
               列表滑到哪儿都不影响提示常驻（用户 2026-09-25 口径）。 */}
@@ -1160,7 +1227,7 @@ function useCompletion(
           </div>
         </div>
       ) : null,
-    [trigger, candidates, rows, hasFolderCandidate, highlight, texts, noWorkspace, applyCandidate],
+    [trigger, candidates, rows, hasFolderCandidate, highlight, texts, noWorkspace, applyCandidate, mentionSuppressed],
   );
 
   return {
@@ -1170,6 +1237,9 @@ function useCompletion(
       onChange: onEdit,
       onKeyUp: onCaretMove,
       onClick: onCaretMove,
+      // 焦点回来也是一次新的编辑动作（清「已关闭」记忆 + 重算触发词，见 `onFocus`）：
+      // 少了它，「从框外回来、光标已经在能触发的 @ 块里」一帧都不弹，非得再挪一下光标
+      onFocus,
       onKeyDown,
     },
   };

@@ -14,7 +14,12 @@
  */
 import assert from "node:assert";
 import { formatFileMention } from "../src/dsh/references";
-import { displaySessionMentions } from "../src/shared/mentions";
+import {
+  displaySessionMentions,
+  isBrowseQuery,
+  mentionPathOf,
+  referenceSessionIdOf,
+} from "../src/shared/mentions";
 
 // ---------- 1. mention 文本：目录补尾斜杠、分隔符统一成 `/` ----------
 //
@@ -92,5 +97,51 @@ console.log("references: 含控制字符/引号的路径拒绝引用 ✓");
   }
 }
 console.log("references: 对话引用的显示形态（@标题）✓");
+
+// ---------- 5. 查询块的**语义**：浏览入口 / 行号区间 / 对话引用 token ----------
+//
+// 这三个纯函数是「这一块已经能引用到内容吗」那条产品口径（用户 2026-10-11）的判据
+// 前半截：宿主拿它们把块分成三类（`controller.mentionResolves`），界面拿
+// `isBrowseQuery` 决定要不要等宿主那一次判定。链路断言见
+// `scripts/mentionResolve.test.ts`。
+{
+  // 浏览入口 = 裸 `@`（空查询）或以 `/` / `\` 结尾的路径：那种形态的意思是「进去看
+  // 这一层」，目录在不在都要能进去，所以永远弹列表、不做存在性判定。
+  for (const query of ["", "src/", "src\\webview\\", "my dir/"]) {
+    assert.strictEqual(isBrowseQuery(query), true, `"${query}" 是浏览入口`);
+  }
+  // 其余一律是「检索块」：会话 id / 名字片段、不带尾分隔符的路径，都要过判定
+  for (const query of ["session-4be424ed", "web", "src/webview", "a.ts#L12", "[标题](dsh-session:InMxIg)"]) {
+    assert.strictEqual(isBrowseQuery(query), false, `"${query}" 不是浏览入口（要做存在性判定）`);
+  }
+
+  // 行号区间是 `formatFileMentionWithLines` 附在**末尾**的产物：判「这个文件在不在」
+  // 之前必须去掉它，否则查的是一个不存在的名字（用户点名的那一条）
+  assert.strictEqual(mentionPathOf("src/a.ts#L12"), "src/a.ts");
+  assert.strictEqual(mentionPathOf("src/a.ts#L12-L40"), "src/a.ts");
+  assert.strictEqual(mentionPathOf("src/a.ts"), "src/a.ts", "没有行号就原样");
+  assert.strictEqual(mentionPathOf("#L12"), "", "只剩行号 → 空路径（调用方按「判不出」处理）");
+  assert.strictEqual(mentionPathOf("a#L1b.ts"), "a#L1b.ts", "行号必须整个在末尾才算（`#L1` 后面还有字就不是它）");
+
+  // 对话引用 token：整块匹配，解得出会话 id 才算
+  const uri = `dsh-session:${Buffer.from(JSON.stringify("s1"), "utf8").toString("base64url")}`;
+  assert.strictEqual(referenceSessionIdOf(`[修复连接超时](${uri})`), "s1", "规范 token 解出会话 id");
+  assert.strictEqual(referenceSessionIdOf(uri), "s1", "裸 `dsh-session:…` 同样是对话引用（用户手写 / 粘进来的形态）");
+  // **裸会话 id 不是对话引用**：那不是服务端认的形态，打进去仍然是在检索会话
+  // （用户 2026-10-11 报的现场就是它的候选列表不弹了）
+  for (const raw of [
+    "session-4be424ed-3f46-4c23-ad68-9a4fd33f3d6d",
+    `前缀 [标题](${uri})`,
+    `[标题](${uri}) 后缀`,
+    "[标题](https://x)",
+    "dsh-session:",
+    "dsh-session:!!!",
+    // 负载解出来不是字符串（官方 `decodeSessionReferenceUri` 同判据）
+    "dsh-session:eyJpZCI6IjAxSiJ9",
+  ]) {
+    assert.strictEqual(referenceSessionIdOf(raw), undefined, `"${raw}" 不是对话引用 token`);
+  }
+}
+console.log("references: 查询块的语义（浏览入口 / 行号区间 / 对话引用 token） ✓");
 
 console.log("\nreferences: all assertions passed");

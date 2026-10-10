@@ -114,8 +114,16 @@ export type HostToWebview =
    * 「切进一个只有几个文件的目录，却要等一次全语料扫描」——用户报的
    * 「@ 列表切换目录感觉慢」正是它。官方的 `@` 源同样是两个 source 各自结算
    * （`dsh-client-ui-input-trigger` 的 `source-settled`），界面按同一口径合并。
+   *
+   * `resolved` 是**这一块自己**的状态，不是这次查询的结果：`true` = 光标所在那个 `@`
+   * 块本身已经是一条能引用到内容的引用（路径在盘上 / 对话引用指向的会话还在），于是
+   * 界面整块不弹列表、宿主也不去查（`items` 必为空表）。判据见
+   * `controller.mentionResolves`，用户 2026-10-11 口径：**已经能引用到内容就不弹，
+   * 否则就要弹**。浏览入口（裸 `@`、以 `/` 或 `\` 结尾的路径）恒为 `false`——那种形态
+   * 的意思就是「进去看这一层」。缺省（旧宿主不发这一位）按 `false` 处理，退回
+   * 「一律弹列表」的旧行为。
    */
-  | { type: "files/list"; query: string; items: FileRefView[] }
+  | { type: "files/list"; query: string; items: FileRefView[]; resolved?: boolean }
   /**
    * `@` 候选的**对话那一半**（`sessionReferenceResolver/candidates`）。
    *

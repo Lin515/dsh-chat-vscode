@@ -97,9 +97,10 @@
 - `pendingInteractions.test.ts` — `dsh/pendingInteractions.ts` 的四条内部规则（真 API 断言）。
 - `presetDisplay.test.ts` — agent 预设展示文案折叠（内置四个走客户端词典）。
 - `presetMatch.test.ts` — 配置项 `dshChat.agentPreset` 认 id 也认显示名（中英两名、撞名取第一个、认不出原样传）。
-- `mentionCandidates.test.ts` — `@` 候选两条帧：文件先到先渲染、对话各自结算。
+- `mentionCandidates.test.ts` — `@` 候选两条帧：文件先到先渲染、对话各自结算；判定位 `resolved` 与 `query` 同一批收下、换查询即归零。
 - `fileRefListing.test.ts` — `@` 目录列举补全：服务器 20 条上限之外的尾巴按官方同一套排序补齐（真盘临时目录 + 真控制器）。
-- `mentionNav.test.ts` — `@` / `/` 补全规则集、「返回上一层目录」、`@` 列表的两条入口（裸 `@` 与目录块；带引号空格目录解包整块）与目录块整段替换。
+- `mentionResolve.test.ts` — 「光标所在的 `@` 块已经能引用到内容时不弹列表」的宿主侧判据：路径在盘上 / 带行号区间 / 对话引用 token，以及裸会话 id 必须照旧弹（真控制器 + 真盘临时目录）。
+- `mentionNav.test.ts` — `@` / `/` 补全规则集、「返回上一层目录」、`@` 块的两层判定（块认得出来 + 抑制门：浏览入口恒弹、判定说能引用就不弹；带引号空格目录解包整块）、焦点回到输入框算新编辑动作（清「已关闭」记忆 + 重算触发词）与目录块整段替换。
 - `mentionLinks.test.ts` — 正文里 `@` 引用的判定：文件 / 目录按形状，会话按「草稿里的原始 token」或「已发出消息的 `sessionRefs` 清单」两种来路。
 - `mentionLinksUi.test.ts` — 上面那份判定真的渲染成可点行内按钮（悬停说明按三档目标给），以及 `.mention-link` 的行内样式。
 - `emptyComposer.test.ts` — 空态下 `/` 命令栏与 `@` 候选的行为级回归（空态就绑在壳上，菜单读它、不另建）。
