@@ -1,2 +1,11 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# 上游见证素材按**字节**当凭据（`scripts/vendorSourceLock.json` 记的是原字节数与 sha256），
+# 而源锁读的正是工作区那份文件：检出成 CRLF 就会被报成「上游原文漂移」。固定成 LF，
+# 让任何平台、任何 core.autocrlf 设置下检出的字节都一样。
+test/fixtures/vendor-sources/** text eol=lf
+
+# vendor 副本同理固定成 LF：源锁的变异锚点（`scripts/vendorSourceLock.test.ts`）用含 `\n` 的
+# 原始字符串定位，CRLF 会让锚点找不到而报错。
+src/vendor/** text eol=lf
