@@ -255,7 +255,7 @@ title（`string|null` 仅非空更新）、sessionStats / contextBreakdown 字�
 - 已补：`turnOutline` 曾连字段名都读错，现按契约解析并由右侧轮次横条消费（2026-09-14）；
   `agentPreset` 已消费（2026-09-22，新会话页预设下拉 + `session/create` 参数）；
   `tokenUsage` 的缓存命中率已进工具栏（2026-10-10，会话累计口径，容量数值右侧的独立
-  元素 `98.7% HIT`，见 `docs/audit-projections-panels.md` §9）。
+  元素 `98.7%HIT`，见 `docs/audit-projections-panels.md` §9）。
 - 仍未消费：`subagentTiming`（成对字段，子代理「活跃耗时」列）、`subagent`（身份投影，
   决定子代理会话的只读输入框）、`schedule`、`permissions.options`、`modelCatalog`
   其余字段。

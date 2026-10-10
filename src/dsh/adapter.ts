@@ -285,9 +285,25 @@ function toUsage(
   return {
     inputTokens: usage.inputTokens,
     outputTokens: usage.outputTokens,
-    totalTokens: usage.totalTokens ?? usage.inputTokens + usage.outputTokens,
+    /**
+     * `totalTokens` **原样透传**，不替服务端编总账。
+     *
+     * 从前这里是 `usage.totalTokens ?? inputTokens + outputTokens`。那个补法**错在口径**：
+     * 线格式契约里 `inputTokens` 只是**未缓存**输入，prompt 侧三桶（未缓存输入 / 缓存读 /
+     * 缓存写）互不重叠（`@deepseek-ai/dsh-llm` 的 `TokenUsage` 逐字写着 “Counts are
+     * DISJOINT: inputTokens is uncached input only”），`input + output` 于是漏掉两个缓存桶。
+     * 谁拿它当命中率的分母，算出来的就是「缓存读取 ÷（未缓存输入 + 输出）」——不是命中率，
+     * 还常常大于 100%（详情里那个与官方对不上的读数就出在这里）。
+     *
+     * 视图模型与线格式的关系是**镜像**：服务端给什么就是什么，缺了就是缺（用 `undefined`
+     * 表达，而不是补一个看起来合理的数）。
+     */
+    totalTokens: usage.totalTokens,
     cachedTokens: (usage.cacheReadTokens ?? 0) + (usage.cacheWriteTokens ?? 0),
     cacheReadTokens: usage.cacheReadTokens,
+    // 缓存写入**单独带出去**（不并进 cachedTokens）：合并值是给占用/压力复算用的，
+    // 而线格式契约里 prompt 侧是三个互不重叠的桶，分开留着才看得出哪一桶缺了
+    cacheWriteTokens: usage.cacheWriteTokens,
     reasoningTokens: usage.reasoningTokens,
     tokensPerSecond,
   };

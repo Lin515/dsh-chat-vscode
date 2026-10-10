@@ -7,11 +7,11 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
+import type { ChatState } from "../../shared/chat";
 import { IconChevronRight } from "../icons";
 import { splitPath } from "../pathDisplay";
-import { useTexts } from "../texts";
+import { useTexts, type Texts } from "../texts";
 import { dpLength } from "../uiScale";
-import { turnCacheHitPercent } from "../cacheHit";
 
 /**
  * 元素的内容是否**真的被裁**（内容的布局宽度超过可见宽度）。
@@ -276,6 +276,61 @@ export function contextNumbers(
   return { percent, used, total };
 }
 
+/** 悬停明细的输入：与 `CtxText` 的 props 同形，只是不含「环右侧要不要带数值」。 */
+export interface ContextDetailInput {
+  /** 宿主算好的百分比（官方 `contextOccupancy` 的等价输出）。 */
+  percent?: number;
+  used?: number;
+  /** 分母；与 `percent` 一样只来自投影/宿主，缺一不显示。 */
+  total?: number;
+  /**
+   * 会话累计的缓存命中率（**不含 `%` 的百分比文本**，与工具栏那枚 `98.7%HIT` 同一个值）。
+   *
+   * 明细里这一行**刻意**与工具栏共用同一个数：官方 ContextMeter 面板（本悬停对应的那个
+   * 面板）根本没有缓存命中这一行，官方可见的那枚读数是会话累计口径的（`UsagePill` /
+   * `StatsPills`），所以两处给同一个数才是「与官方一致」；单轮口径另有说法（官方「本轮用量」
+   * 对话框是**整轮累加**），不在这里显示。
+   */
+  cacheHit?: string;
+  /** 上下文构成（`contextBreakdown` 投影），与 Web 的 ContextMeter 面板同源。 */
+  breakdown?: ChatState["contextBreakdown"];
+}
+
+/**
+ * 上下文悬停明细的**唯一一份拼法**，界面里两处悬停共用它：
+ * 上下文占用的圆环（`CtxText`），以及工具栏里那枚**独立**的缓存命中读数
+ * （`Composer` 的 `.ctx-cache-hit`——两处悬停给的信息必须一模一样）。
+ *
+ * 所以拼法只此一份：两处各自拼一遍的话，加一行、改一个标签都会只改一处，
+ * 「一模一样」就成了一句会过期的话。
+ *
+ * 三组行各自独立，缺数据的行**不出现**（于是数据相同时两处必然逐字一致）：
+ * - 首行要三个数同源同现（判据见 `contextNumbers`，宿主没算出可信测量时不下发）；
+ * - 缓存命中那行读的是**会话累计**口径（用户 2026-10-10 口径：与工具栏那枚读数同值，
+ *   官方可见的也是这个口径——官方那个面板本身没有这一行）；
+ * - 构成三行是启发式估算（`~` 前缀与 Web 一致，数值**固定一位小数**），说的是当前
+ *   上下文由什么构成，与上面两个读数不是同一个维度。
+ *
+ * @param input 与 `CtxText` 同源的三个上下文数与构成投影。
+ * @param texts 界面词典（调用方自己 `useTexts()` 取）。
+ */
+export function contextDetailLines(input: ContextDetailInput, texts: Texts): string[] {
+  const detail: string[] = [];
+  const numbers = contextNumbers(input.percent, input.used, input.total);
+  if (numbers) {
+    detail.push(texts.contextUsed(numbers.percent, formatTokens(numbers.used), formatTokens(numbers.total)));
+  }
+  if (input.cacheHit) detail.push(`${texts.ctxDetailCached} ${input.cacheHit}%`);
+  if (input.breakdown) {
+    // 三行的数值写法是**固定一位小数**（用户 2026-10-10 口径），走 `formatBreakdownTokens`，
+    // 不与上下文的紧凑写法（`44K/128K`）共用 `formatTokens`。
+    detail.push(`${texts.ctxDetailSystem} ~${formatBreakdownTokens(input.breakdown.systemTokens)}`);
+    detail.push(`${texts.ctxDetailTools} ~${formatBreakdownTokens(input.breakdown.toolsTokens)}`);
+    detail.push(`${texts.ctxDetailMessages} ~${formatBreakdownTokens(input.breakdown.messageTokens)}`);
+  }
+  return detail;
+}
+
 /**
  * 上下文占用：圆环（宽裕时环右侧再给精确数值），悬停显示明细行。
  *
@@ -299,18 +354,10 @@ export function CtxText({
   percent,
   used,
   total,
-  usage,
+  cacheHit,
   breakdown,
   detailed,
-}: {
-  /** 宿主算好的百分比（官方 `contextOccupancy` 的等价输出）。 */
-  percent?: number;
-  used?: number;
-  /** 分母；与 `percent` 一样只来自投影/宿主，缺一不显示。 */
-  total?: number;
-  usage?: import("../../shared/chat").UsageView;
-  /** 上下文构成（`contextBreakdown` 投影），与 Web 的 ContextMeter 面板同源。 */
-  breakdown?: import("../../shared/chat").ChatState["contextBreakdown"];
+}: ContextDetailInput & {
   /** 最低优先级档位：环右侧再显示 `44K/128K`。 */
   detailed?: boolean;
 }) {
@@ -318,23 +365,9 @@ export function CtxText({
   const numbers = contextNumbers(percent, used, total);
   if (!numbers) return null;
 
-  const detail: string[] = [
-    texts.contextUsed(numbers.percent, formatTokens(numbers.used), formatTokens(numbers.total)),
-  ];
-  if (usage) {
-    // 悬停明细读的是**单轮**用量（官方 TurnUsagePanel 同口径），与工具栏那个
-    // 会话累计的命中率不是同一个数——两处的标签同一套词，口径差在数据源上。
-    const cacheHitPercent = turnCacheHitPercent(usage);
-    if (cacheHitPercent !== undefined) detail.push(`${texts.ctxDetailCached} ${cacheHitPercent}%`);
-    else if (usage.cachedTokens) detail.push(`${texts.ctxDetailCached} ${formatTokens(usage.cachedTokens)}`);
-  }
-  // 上下文构成三行（启发式估算，~ 前缀与 Web 一致）；不再显示单步的
-  // 输入/输出/推理/合计——那是本轮用量，不是上下文总量
-  if (breakdown) {
-    detail.push(`${texts.ctxDetailSystem} ~${formatTokens(breakdown.systemTokens)}`);
-    detail.push(`${texts.ctxDetailTools} ~${formatTokens(breakdown.toolsTokens)}`);
-    detail.push(`${texts.ctxDetailMessages} ~${formatTokens(breakdown.messageTokens)}`);
-  }
+  // 明细在这里、在缓存命中读数那里都是同一份（`contextDetailLines`）；
+  // 环本身与它**不是**一回事：环看「还剩多少余地」，明细看精确读数与构成。
+  const detail = contextDetailLines({ percent, used, total, cacheHit, breakdown }, texts);
 
   return (
     <CtxRing
@@ -588,6 +621,21 @@ export function formatTokens(value: number): string {
   if (value >= 10_000) return `${Math.round(value / 1000)}K`;
   if (value >= 1000) return `${(value / 1000).toFixed(1)}K`;
   return String(value);
+}
+
+/**
+ * 上下文构成三行（系统提示词 / 工具定义 / 对话消息）的数值写法
+ * （用户 2026-10-10 口径）：**固定一位小数**。
+ *
+ * 与通用的 `formatTokens` 有意不同——那个是全局读数用的紧凑写法（上万就取整，`44K`），
+ * 这三行要的是量级变化也不改口径的固定一位小数（`44.2K`）。
+ * 单位仍按量级取 K / M；不足一千照实写整数（742 个 token 写成 `742.0` 是把不存在的
+ * 精度装出来）。
+ */
+export function formatBreakdownTokens(value: number): string {
+  if (value < 1_000) return String(value);
+  if (value < 1_000_000) return `${(value / 1_000).toFixed(1)}K`;
+  return `${(value / 1_000_000).toFixed(1)}M`;
 }
 
 /**

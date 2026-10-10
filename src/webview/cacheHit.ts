@@ -1,4 +1,4 @@
-import type { ChatState, UsageView } from "../shared/chat";
+import type { ChatState } from "../shared/chat";
 
 /**
  * 缓存命中率：**官方口径在本仓库的唯一一份实现**。
@@ -8,12 +8,15 @@ import type { ChatState, UsageView } from "../shared/chat";
  *   （整数进位、以及「部分命中绝不被四舍五入成 100%」时自动多给几位）；
  * - `src/client/chat/StatsPills.tsx` 的 `billedInputTokens` 与 `cacheHitPercent`——
  *   **会话口径**：分子 `cacheReadTokens`，分母是三个 prompt 侧计费桶之和
- *   （`uncachedInputTokens + cacheReadTokens + cacheWriteTokens`），数据来自 `tokenUsage` 投影；
- * - `src/client/chat/TurnUsagePanel.tsx`——**单轮口径**：分母 `totalTokens - outputTokens`。
+ *   （`uncachedInputTokens + cacheReadTokens + cacheWriteTokens`），数据来自 `tokenUsage` 投影。
  *
- * 官方的两个面板共用同一个 `formatCacheHitPercent`，差别只在数据源与小数位
- * （会话胶囊 0 位、单轮明细 1 位）。这里照同一套分工：两个入口各一个函数、
- * 共用一个格式化实现——**不许在组件里再算一遍**，否则同一个界面上会出现两个口径。
+ * 界面上的读数**只有这一个口径**（工具栏那枚 `98.7%HIT` 与两处悬停明细里的「缓存命中」行，
+ * 用户 2026-10-10 口径：两处同一个数）。官方另一个命中率出现在「本轮用量」对话框
+ * （`src/client/chat/TurnUsagePanel.tsx`），那是**整轮所有 attempt 的累加**
+ * （`@deepseek-ai/dsh-token-meter` 的 `deriveTurnTokenUsage`），既不是逐 step 的用量、
+ * 也不是会话累计的用量：本扩展不放这个数，免得与工具栏那枚打架。
+ *
+ * **不许在组件里再算一遍**，否则同一个界面上会出现两个口径。
  */
 
 /** 会话累计用量（`tokenUsage` 投影）里本模块要读的三个 prompt 侧计费桶。 */
@@ -110,14 +113,16 @@ export function formatCacheHitPercent(
 }
 
 /**
- * 工具栏那枚命中率读数（**会话口径**，用户 2026-10-10 口径的最低优先级元素，
- * 界面里是容量数值右侧的**独立**元素，写法 `98.7% HIT`）。
+ * 会话累计的命中率（**界面上唯一的命中率读数**：工具栏那枚 `98.7%HIT`，以及两处悬停
+ * 明细里的「缓存命中」行都读它——用户 2026-10-10 口径，两处必须同一个数）。
  *
- * 数据源是 `tokenUsage` 投影（全会话累计，官方 `UsagePill` 读的同一个键）而不是
- * 「最后一条消息的 usage」：后者是**单步**用量、且最后一条消息不一定有 usage，
- * 拿它当工具栏的常驻读数会一会儿有一会儿没有。分母按官方 `cacheHitPercent`：
- * 三个 prompt 侧计费桶之和（`docs/audit-projections-panels.md` 的 tokenUsage 一节
- * 记的也是这个口径）。
+ * 数据源是 `tokenUsage` 投影（全会话累计，官方 `UsagePill` / `StatsPills` 读的同一个键），
+ * 分母按官方 `cacheHitPercent`：三个 prompt 侧计费桶之和（`docs/audit-projections-panels.md`
+ * 的 tokenUsage 一节记的也是这个口径）。
+ *
+ * **单轮口径不在界面里显示**：官方那个数只出现在「本轮用量」对话框，而且它是**整轮**
+ * 所有 attempt 的累加（`@deepseek-ai/dsh-token-meter` 的 `deriveTurnTokenUsage`），
+ * 与逐 step 的用量不是一回事；本扩展的明细里放它只会与工具栏那个数打架，所以不放。
  *
  * **拿不到数据就什么都不给**（调用方据此隐藏这一档，而不是显示 0%）：
  * - 没有投影——老服务端没有这个计量单元，`state.tokenUsage` 是 `undefined`；
@@ -128,26 +133,7 @@ export function formatCacheHitPercent(
  */
 export function sessionCacheHitPercent(usage: ChatState["tokenUsage"] | undefined): string | undefined {
   if (!usage || !(usage.cacheReadTokens > 0)) return undefined;
-  // 一位小数：用户口径的示例形如 `98.7% HIT`（官方的会话胶囊默认取整数，但同一个
-  // `formatCacheHitPercent` 的单轮面板取一位——精度是显示选择，口径才是算法）。
+  // 一位小数：用户口径的示例形如 `98.7%HIT`（官方的会话胶囊默认取整数，但同一个
+  // `formatCacheHitPercent` 在「本轮用量」面板里取一位——精度是显示选择，口径才是算法）。
   return formatCacheHitPercent(usage.cacheReadTokens, billedInputTokens(usage), 1) ?? undefined;
-}
-
-/**
- * 上下文圆环悬停明细里的命中率（**单轮口径**，官方 `TurnUsagePanel` 同式：
- * 分母是 `totalTokens - outputTokens`）。
- *
- * 扩展的 `UsageView` 比官方的单轮契约更穷：`totalTokens` 可能压根没有（线格式里
- * 它是可选的），那时退回 `inputTokens`——它同样是 prompt 侧、不含 output。
- * 两者都拿不到就不显示（这一行在明细里是可选项，官方也一样）。
- */
-export function turnCacheHitPercent(usage: UsageView | undefined): string | undefined {
-  const read = usage?.cacheReadTokens;
-  if (typeof read !== "number" || read < 0) return undefined;
-  const denominator =
-    typeof usage?.totalTokens === "number" && typeof usage.outputTokens === "number"
-      ? usage.totalTokens - usage.outputTokens
-      : usage?.inputTokens;
-  if (typeof denominator !== "number" || denominator <= 0) return undefined;
-  return formatCacheHitPercent(read, denominator, 1) ?? undefined;
 }

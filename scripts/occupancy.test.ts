@@ -24,7 +24,7 @@ import assert from "node:assert";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { SessionAdapter } from "../src/dsh/adapter";
-import { contextNumbers, formatContextSpan } from "../src/webview/components/primitives";
+import { contextNumbers, formatBreakdownTokens, formatContextSpan } from "../src/webview/components/primitives";
 
 /** 收集 patch 帧里的 contextOccupancy 序列。 */
 function harness() {
@@ -280,6 +280,11 @@ console.log("occupancy: 界面侧没有本地重算 / 回退路径（结构不�
   assert.strictEqual(formatContextSpan(1_500_000, 2_000_000), "1.5M/2.0M", "分子超过 1M 也照样升到 M");
   assert.strictEqual(formatContextSpan(500, 128_000), "500/128K", "不足 1K 时照实给数字");
   assert.ok(!/\(/.test(formatContextSpan(437_000, 1_000_000)), "不再有括号");
+  // 悬停明细里的构成三行走**另一套**写法（用户 2026-10-10 口径：固定一位小数）
+  assert.strictEqual(formatBreakdownTokens(44_180), "44.2K", "上万也不取整，固定一位小数");
+  assert.strictEqual(formatBreakdownTokens(128_000), "128.0K", "一位小数是固定口径，不是「有余数才写」");
+  assert.strictEqual(formatBreakdownTokens(1_240_000), "1.2M", "百万位用 M");
+  assert.strictEqual(formatBreakdownTokens(742), "742", "不足一千照实给整数（742 个 token 没有小数可言）");
   // 三个数同源同现：缺一就不该有「上下文占用」这一档（工具栏按它决定要不要占坑位）
   assert.strictEqual(contextNumbers(34, 43_520, 128_000)?.used, 43_520);
   assert.strictEqual(contextNumbers(34, 43_520, undefined), undefined, "缺分母不显示");

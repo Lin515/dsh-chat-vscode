@@ -29,7 +29,7 @@ import {
   IconStop,
   IconTarget,
 } from "../icons";
-import { CtxText, Ellipsis, Popover, Spinner, contextNumbers, formatDuration } from "./primitives";
+import { CtxText, Ellipsis, Popover, Spinner, contextDetailLines, contextNumbers, formatDuration } from "./primitives";
 import { ApprovalCard, PlanReviewCard, QuestionCard, formatTps } from "./Rows";
 import type { PendingInteraction } from "../pendingInteraction";
 import { useComposerCompletion } from "../composerCompletion";
@@ -405,7 +405,6 @@ export function Composer({
   // 与悬停明细里写的「平均输出速度」对不上，用户看到的就是「胶囊上的数字和
   // 明细里的不一样」（2026-09-15 口径：以明细为准，两边同一个数）。
   const stats = state.sessionStats;
-  const lastMessage = state.messages.at(-1);
   const tps =
     stats && stats.decodeMs > 0 && stats.decodeTokens > 0
       ? stats.decodeTokens / (stats.decodeMs / 1000)
@@ -594,24 +593,34 @@ export function Composer({
     state.contextOccupancy?.usedTokens,
     state.contextOccupancy?.contextWindow,
   );
+  /**
+   * 缓存命中率（用户 2026-10-10 口径：工具栏**最低优先级**的那一项，位置在上下文容量
+   * 数值右边，写法是 `98.7%HIT`——中英文同一份）。
+   *
+   * 取的是**会话累计**口径（`tokenUsage` 投影，官方 UsagePill 的同一个键与同一个
+   * 分母）。这个值是界面上**唯一**的命中率来源：工具栏那一枚与两处悬停明细里的
+   * 「缓存命中」行都读它（用户 2026-10-10 口径：明细里要显示与工具栏同一个数——
+   * 官方可见的也是这个口径，而官方那个上下文面板本身没有这一行）。
+   * 拿不到数据时是 `undefined`：那一档**不进节点表**，于是既不占坑位、也不会把
+   * 「数据缺失」显示成 `0%HIT`（判据与算法在 `cacheHit.ts`）。
+   */
+  const cacheHitText = sessionCacheHitPercent(state.tokenUsage);
   const ctxProps = {
     percent: state.contextOccupancy?.percent,
     used: state.contextOccupancy?.usedTokens,
     total: state.contextOccupancy?.contextWindow,
-    // 明细里的缓存命中与构成是**独立**的投影，有就显示
-    usage: lastMessage?.usage,
+    cacheHit: cacheHitText,
     breakdown: state.contextBreakdown,
   };
   /**
-   * 缓存命中率（用户 2026-10-10 口径：工具栏**最低优先级**的那一项，位置在上下文容量
-   * 数值右边，写法是 `98.7% HIT`——中英文同一份）。
+   * 悬停明细：**圆环与缓存命中读数共用同一份文本**（用户 2026-10-10 口径：缓存命中
+   * 悬停要显示与上下文悬停一模一样的信息）。拼法只有一份（`contextDetailLines`），
+   * 两处喂的又是同一组 `ctxProps`，所以两处悬停必然逐字一致。
    *
-   * 取的是**会话累计**口径（`tokenUsage` 投影，官方 UsagePill 的同一个键与同一个
-   * 分母），不是最后一条消息的单步用量——后者时有时无，当常驻读数会一闪一闪。
-   * 拿不到数据时是 `undefined`：那一档**不进节点表**，于是既不占坑位、也不会把
-   * 「数据缺失」显示成 `0% HIT`（判据与算法在 `cacheHit.ts`）。
+   * 一行都没有时给 `undefined`（不挂空提示）：此时圆环那边同样没有明细可看，
+   * 悬停弹出一个空白框反而像坏了。
    */
-  const cacheHitText = sessionCacheHitPercent(state.tokenUsage);
+  const ctxDetailTitle = contextDetailLines(ctxProps, texts).join("\n") || undefined;
 
   // 运行中的主按钮（官方 `primaryStops = running && (empty || blocked)`）：
   // - 草稿为空 → 停止（生成中还能"点一下停"，这是用户最需要的动作）；
@@ -649,9 +658,13 @@ export function Composer({
     "context:text": ctxNumbers ? <CtxText {...ctxProps} detailed /> : null,
     // 缓存命中率是**独立元素**（用户 2026-10-10 第二条口径：不与上下文数字逗号连写），
     // 所以它不要求 `ctxNumbers`——命中率读的是另一个投影（`tokenUsage`），有数据就显示。
-    // 只在拿不到命中率数据时整档消失（不显示 `0% HIT`）。
+    // 只在拿不到命中率数据时整档消失（不显示 `0%HIT`）。
+    // 悬停给的是**与上下文圆环同一份**明细（`ctxDetailTitle`）：元素是独立的，
+    // 但信息不缩水。
     "cache:full": cacheHitText ? (
-      <span className="ctx-cache-hit">{texts.ctxCacheHit(cacheHitText)}</span>
+      <span className="ctx-cache-hit" title={ctxDetailTitle}>
+        {texts.ctxCacheHit(cacheHitText)}
+      </span>
     ) : null,
   };
   const barVariants: ToolbarVariant[] = BAR_ORDER.filter(
@@ -1397,4 +1410,3 @@ function QueueItem({
  * + 视口坐标的浮层、以及配套的落位算法都随之删掉了——自绘浮层与宿主那套本来就各写一份
  * 样式，用户要的是统一的那一套。
  */
-

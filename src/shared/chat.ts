@@ -493,7 +493,19 @@ export interface UsageView {  inputTokens?: number;
   cachedTokens?: number;
   /** 缓存读取 token（provider cacheRead），缓存命中率分子。 */
   cacheReadTokens?: number;
+  /**
+   * 缓存写入 token（provider cacheWrite）。**单独留一份**，与 `cachedTokens` 并存：
+   * 后者是两个缓存桶的合并值（占用/压力的复算用得上），而线格式契约里 prompt 侧是
+   * **三个互不重叠的桶**（未缓存输入 / 缓存读 / 缓存写），分开留着才看得出哪一桶缺了
+   * ——缺桶与会话命中率的分母有关（见 `webview/cacheHit.ts` 的 `billedInputTokens`）。
+   */
+  cacheWriteTokens?: number;
   reasoningTokens?: number;
+  /**
+   * 服务端给的全量（prompt 侧三桶 + output）。**没有就是没有**，不在这里按
+   * `inputTokens + outputTokens` 补一个——线格式里 `inputTokens` 只是未缓存输入，
+   * 补出来的总账会漏掉两个缓存桶（见 `dsh/adapter.ts` 的 `toUsage`）。
+   */
   totalTokens?: number;
   /** 上下文窗口上限（用于上下文占用条）。 */
   contextWindow?: number;
@@ -615,7 +627,14 @@ export interface MessageView {
    */
   turnStats?: TurnStatsView;
   model?: string;
-  /** 本 step 的用量：只用于上下文占用条与输出速度（tok/s），不再单独成行展示。 */
+  /**
+   * **本 step** 的用量：上下文占用条与输出速度（tok/s）读它。
+   *
+   * 「本 step」是要紧的：一轮里多个 step 时它只反映最后一个 step。界面上那枚缓存命中率
+   * **不读它**——那是会话累计口径（`tokenUsage` 投影），官方「本轮用量」对话框则是
+   * **整轮累加**（`@deepseek-ai/dsh-token-meter` 的 `deriveTurnTokenUsage`）：三个数
+   * 各有各的范围，谁也不能拿来当另一个用。
+   */
   usage?: UsageView;
   deliverables?: DeliverableView[];
   /**

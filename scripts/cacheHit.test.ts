@@ -1,17 +1,18 @@
 /**
- * 缓存命中率：**口径**（分子分母是谁、怎么进位）与「没有数据时不显示」。
+ * 缓存命中率：**口径**（分子分母是谁、怎么进位）、「没有数据时不显示」与「界面只有这一个口径」。
  *
- * 这块逻辑只有一个实现（`src/webview/cacheHit.ts`，官方 `formatCacheHitPercent` 的等价
- * 移植），两个界面入口共用它：
- * - 工具栏那枚最低优先级的独立读数（容量数值右侧的 `98.7% HIT`）→ **会话累计**口径，
- *   数据来自 `tokenUsage` 投影，等价官方 `UsagePill` 的 `cacheHitPercent`；
- * - 上下文圆环悬停明细里那一行 → **单轮**口径，数据来自最后一条消息的 usage，
- *   等价官方 `TurnUsagePanel`。
+ * 这块逻辑只有一个实现（`src/webview/cacheHit.ts`，官方 `formatCacheHitPercent` 的等价移植），
+ * 界面上的三处读数（工具栏那枚 `98.7%HIT` 与两处悬停明细里的「缓存命中」行）共用它：
+ * **会话累计**口径，数据来自 `tokenUsage` 投影，等价官方 `UsagePill` 的 `cacheHitPercent`
+ * （用户 2026-10-10 口径：明细里的数必须与工具栏一致，官方可见的也是这个口径）。
+ * 官方另一个命中率在「本轮用量」对话框，那是**整轮累加**（`deriveTurnTokenUsage`），
+ * 与逐 step 的用量都不是一回事，本扩展不放那个数——下面有一条断言钉住这一点。
  *
- * 这个文件钉三件事（前两件是任务验收要求的）：
+ * 这个文件钉四件事（前两件是任务验收要求的）：
  * 1. 命中率的算法与官方逐值同口径（含「部分命中不许显示成 100%」那条）；
  * 2. 数据缺失时返回 `undefined`（调用方据此隐藏该元素，而不是显示 `0%`）；
- * 3. 工具栏那一档确实接的是会话口径与会话数据（结构不变量，防止有人换回单步用量）。
+ * 3. 视图模型不许替服务端编总账（`inputTokens` 是未缓存输入，加出来的 total 会漏缓存桶）；
+ * 4. 工具栏那一档与两处悬停明细接的都是**同一个会话口径的值**（结构不变量）。
  *
  * 运行：npm test（已在 esbuild.scripts.mjs 的 entries 里登记）
  */
@@ -22,8 +23,9 @@ import {
   billedInputTokens,
   formatCacheHitPercent,
   sessionCacheHitPercent,
-  turnCacheHitPercent,
 } from "../src/webview/cacheHit";
+import { SessionAdapter } from "../src/dsh/adapter";
+import type { UsageView } from "../src/shared/chat";
 
 // ---------- 1. 会话口径：分子是缓存读取，分母是三个 prompt 侧计费桶之和 ----------
 //
@@ -77,7 +79,7 @@ import {
     "99.99",
     "有未命中时不能显示成 100%（官方 formatCacheHitPercent 的加精度分支）",
   );
-  // 一位小数（用户口径的示例形如 `98.7% HIT`）
+  // 一位小数（用户口径的示例形如 `98.7%HIT`）
   assert.strictEqual(formatCacheHitPercent(988, 1000, 1), "98.8");
   assert.strictEqual(formatCacheHitPercent(988, 1000, 0), "99");
 }
@@ -120,40 +122,41 @@ console.log("cacheHit: 会话口径（三桶做分母、部分命中不显示 10
 }
 console.log("cacheHit: 数据缺失时隐藏（undefined，而不是 0%）✓");
 
-// ---------- 3. 单轮口径（悬停明细那条）：分母 totalTokens - outputTokens ----------
+// ---------- 3. 视图模型不许替服务端编总账 ----------
 //
-// 与官方 `TurnUsagePanel` 同式；扩展的线格式里 `totalTokens` 是可选的，所以多一条
-// 退回 `inputTokens`（同样是 prompt 侧、不含 output）的兜底。
+// `UsageView.totalTokens` 从前是 `totalTokens ?? inputTokens + outputTokens` 算出来的。
+// 那个补法漏掉两个缓存桶（线格式契约：`inputTokens` 只是**未缓存**输入，prompt 侧三桶互不
+// 重叠），谁拿它当分母就会得到一个不是命中率的比例——用户 2026-10-10 报的「详情里的与官方
+// 差很多」就有它一份。这里驱动**真实适配器**，钉住「服务端没给就没有」。
 {
+  const usages: (UsageView | undefined)[] = [];
+  const adapter = new SessionAdapter((frame) => {
+    if (frame.type === "message/upsert" && frame.message.role === "assistant") {
+      usages.push(frame.message.usage);
+    }
+  });
+  const feed = (usage: Record<string, number>): void => {
+    adapter.applyEvent({
+      type: "assistant/message",
+      seq: 1,
+      time: 1,
+      data: { turn: 1, step: 0, usage, message: { id: "m1", role: "assistant", content: [] } },
+    } as never);
+  };
+
+  feed({ inputTokens: 18_054, outputTokens: 2, cacheReadTokens: 1_152, cacheWriteTokens: 0 });
   assert.strictEqual(
-    turnCacheHitPercent({ totalTokens: 10_000, outputTokens: 2_000, cacheReadTokens: 4_000 }),
-    "50",
-    "4000 / (10000 - 2000) = 50%",
-  );
-  assert.strictEqual(
-    turnCacheHitPercent({ inputTokens: 2_000, cacheReadTokens: 1_000 }),
-    "50",
-    "没有 totalTokens 时退回 inputTokens（同是 prompt 侧）",
-  );
-  assert.strictEqual(
-    turnCacheHitPercent({ totalTokens: 10_000, cacheReadTokens: 4_000 }),
+    usages.at(-1)?.totalTokens,
     undefined,
-    "totalTokens 有而 outputTokens 没有、也没有 inputTokens：两个口径都算不出，不猜",
+    "服务端没给 totalTokens 时视图模型**没有**总账（不许拿 inputTokens + outputTokens 补）",
   );
-  assert.strictEqual(turnCacheHitPercent({ totalTokens: 10_000, outputTokens: 2_000 }), undefined, "没报 cacheReadTokens → 不显示");
-  assert.strictEqual(
-    turnCacheHitPercent({ totalTokens: 2_000, outputTokens: 2_000, cacheReadTokens: 0 }),
-    undefined,
-    "分母非正（这一轮只有输出）→ 不显示",
-  );
-  // 与工具栏那条**故意不同**：单轮明细里 read=0 是「这一轮没吃到缓存」的真实读数
-  assert.strictEqual(
-    turnCacheHitPercent({ totalTokens: 5_000, outputTokens: 1_000, cacheReadTokens: 0 }),
-    "0",
-    "单轮明细里 0 是有意义的读数（它问的就是这一轮）",
-  );
+  assert.strictEqual(usages.at(-1)?.cacheWriteTokens, 0, "缓存写入桶单独带出来（线格式里它与缓存读是两桶）");
+
+  feed({ inputTokens: 18_054, outputTokens: 2, cacheReadTokens: 1_152, cacheWriteTokens: 0, totalTokens: 19_208 });
+  assert.strictEqual(usages.at(-1)?.totalTokens, 19_208, "服务端给了 totalTokens 就原样透传");
 }
-console.log("cacheHit: 单轮口径（悬停明细）与它的兜底/隐藏判据 ✓");
+console.log("cacheHit: 视图模型不编总账（透传服务端 / 缺就缺）✓");
+
 
 // ---------- 4. 结构不变量：工具栏那一档接的是会话口径与会话数据 ----------
 //
@@ -164,6 +167,7 @@ console.log("cacheHit: 单轮口径（悬停明细）与它的兜底/隐藏判�
   const source = (relative: string): string =>
     readFileSync(join(process.cwd(), relative), "utf8").replace(/\r\n/g, "\n");
   const composer = source(join("src", "webview", "components", "Composer.tsx"));
+  const primitives = source(join("src", "webview", "components", "primitives.tsx"));
 
   assert.ok(
     /const cacheHitText = sessionCacheHitPercent\(state\.tokenUsage\);/.test(composer),
@@ -178,8 +182,29 @@ console.log("cacheHit: 单轮口径（悬停明细）与它的兜底/隐藏判�
     "命中率不许再当上下文槽位的第三档 / 传进 CtxRing 与数值拼成一格（用户口径：单独的元素）",
   );
   assert.ok(
-    /<span className="ctx-cache-hit">\{texts\.ctxCacheHit\(cacheHitText\)\}<\/span>/.test(composer),
-    "独立元素的文案必须走词典（`ctxCacheHit`），不在组件里拼 `% HIT`",
+    /className="ctx-cache-hit" title=\{ctxDetailTitle\}/.test(composer) &&
+      /\{texts\.ctxCacheHit\(cacheHitText\)\}/.test(composer),
+    "独立元素的文案必须走词典（`ctxCacheHit`），不在组件里拼 `%HIT`；悬停明细挂 `ctxDetailTitle`",
+  );
+  // 悬停：命中率读数与上下文圆环**共用同一份明细**（用户 2026-10-10 口径：
+  // 缓存命中悬停显示与上下文悬停一模一样的信息）。两侧各钉一条，防止有人改一处。
+  assert.ok(
+    /const ctxDetailTitle = contextDetailLines\(ctxProps, texts\)/.test(composer),
+    "缓存命中的悬停明细必须由 `contextDetailLines` + 同一组 `ctxProps` 拼出，不许另拼一份",
+  );
+  assert.ok(
+    /const detail = contextDetailLines\(\{ percent, used, total, cacheHit, breakdown \}, texts\);/.test(primitives),
+    "上下文圆环的悬停明细也必须走这同一个拼法（否则「一模一样」会随任一处改动过期）",
+  );
+  // 明细里那一行**就是**工具栏那个数（用户 2026-10-10 口径：两处同一个数）。
+  // 数据源只有一个 `cacheHitText`，所以这里钉的是「它被喂进明细」，而不是「再算一遍」。
+  assert.ok(
+    /cacheHit: cacheHitText,/.test(composer),
+    "明细里的命中率必须直接取 `cacheHitText`（会话累计口径），不许回退到某条消息的用量",
+  );
+  assert.ok(
+    !/usage/.test(primitives.slice(primitives.indexOf("export interface ContextDetailInput"), primitives.indexOf("export function contextDetailLines"))),
+    "`ContextDetailInput` 不再收单步 usage：明细里的命中率只有会话口径一个来源",
   );
   // 位置：`{bar.cache}` 必须紧跟 `{bar.context}`（用户在容量数值右边）
   assert.ok(

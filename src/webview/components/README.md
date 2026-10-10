@@ -24,4 +24,4 @@
 - `EmptyMeta.tsx` — 空态页元信息：会话工作目录与 agent 预设。
 - `ContextMenu.tsx` — 自绘右键菜单浮层（根部挂一次，只管画）。
 - `CopyButton.tsx` — 复制按钮（工具卡与后台任务详情共用，1s 文案反馈）。
-- `primitives.tsx` — 小组件与格式化工具（Popover、`formatClock`、路径拆分展示等）。
+- `primitives.tsx` — 小组件与格式化工具（Popover、`formatClock`、路径拆分展示等）；上下文占用的圆环与它的悬停明细也在这里，明细拼法 `contextDetailLines` 是**唯一一份**（工具栏那枚缓存命中读数的悬停也读它，两处信息刻意保持一致）。
