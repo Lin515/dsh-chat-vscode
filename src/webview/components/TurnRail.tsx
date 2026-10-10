@@ -108,13 +108,15 @@ function TurnNavigatorRail({
   const pointerInsideRef = useRef(false);
   const previewId = useId();
   /**
-   * 显示判据：**用户消息 ≥ 2** 且宽度足够（宽度走 CSS 容器查询）才渲染。
-   * 用户消息数 = 带提示词预览的轮数（`userPromptCount`）——一条消息的会话
-   * 没有可导航的东西，横条只是右缘的噪音。刻点少到不成梯子同理。
+   * 显示判据：**有用户消息**（≥ 1）且宽度足够（宽度走 CSS 容器查询）才渲染。
+   * 用户消息数 = 带提示词预览的轮数（`userPromptCount`）——只发过一条消息的会话
+   * 同样要有横条：那一枚刻点就是「回到本会话开头」的入口（用户 2026-10-10 口径，
+   * 此前 ≥ 2 才显示，单消息会话里连目录条都看不到）。没有用户消息的会话
+   * （自动轮 / 纯注入）才不显示。
    * **必须盯它重跑 effect**：条件不满足时组件整个返回 null（各 ref 为 null），
    * 一次性 effect 那时跑完就再也不会跑了——观察者会永远缺席。
    */
-  const rendered = userPromptCount(items) >= 2;
+  const rendered = userPromptCount(items) >= 1;
 
   const syncScrollState = (): void => {
     const scroller = scrollerRef.current;

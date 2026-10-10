@@ -239,8 +239,9 @@ export function mergeTurnRailItems(
  *
  * 大纲的 `prompt` 只从人类的 `user/message`（`source.kind === 'user'` 且非空）
  * 折出来——自动轮（goal 驱动、纯注入）没有提示词，不计入。这就是显示判据
- * 「用户消息 ≥ 2 才显示横条」里的那个数：一条消息的会话没有任何可导航的东西，
- * 横条只是右缘的噪音。已加载与未加载的轮都算（窗口外的大纲预览同样有提示词）。
+ * 「有用户消息才显示横条」里的那个数（见 `components/TurnRail.tsx`）：
+ * 一条消息的会话也有可导航的东西（回到开头），没有用户消息的会话才是噪音。
+ * 已加载与未加载的轮都算（窗口外的大纲预览同样有提示词）。
  */
 export function userPromptCount(items: readonly TurnRailItem[]): number {
   let count = 0;

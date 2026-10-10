@@ -301,8 +301,8 @@ console.log("turnRail: 部分加载的轮次点它仍去用户消息处 ✓");
 // 拼出一条 id 为 `a:0` 的助手消息。它不是一轮，只是「第一轮之前的内容」。
 //
 // 判据：每个**真实**轮都有 `turn/start` ⟹ 都在 `turnOutline` 里；已加载轮次必须被
-// 大纲确认，本地拼出来的 `a:0` 于是整轮消失。一条消息的会话因此只剩 1 枚刻点，
-// 显示判据（用户消息 ≥ 2）再把它整个收起来。
+// 大纲确认，本地拼出来的 `a:0` 于是整轮消失。一条消息的会话因此只剩 1 枚刻点——
+// 显示判据看的是「有没有用户消息」，这枚刻点照样画出来（用户 2026-10-10 口径）。
 {
   // 一条用户消息的真实会话：先有注入/命令行拼出的 a:0，再有真正的第 1 轮
   const messages: MessageView[] = [
@@ -318,7 +318,7 @@ console.log("turnRail: 部分加载的轮次点它仍去用户消息处 ✓");
   assert.strictEqual(items[0].turn, 1);
   assert.deepStrictEqual(items[0].anchor, { kind: "loaded", messageId: "u:1" },
     "真实轮的锚点仍是那条用户消息");
-  assert.strictEqual(userPromptCount(items), 1, "一条用户消息 → 只有 1 条提示词，横条不显示");
+  assert.strictEqual(userPromptCount(items), 1, "一条用户消息 → 恰好 1 条提示词，横条显示这一枚刻点");
 
   // 两轮的真实会话：幻影轮照样被挡，两条用户消息都在
   const twoTurns: MessageView[] = [
@@ -339,16 +339,16 @@ console.log("turnRail: 部分加载的轮次点它仍去用户消息处 ✓");
   assert.deepStrictEqual(mergeTurnRailItems([assistant("a:0", [])], []), []);
 
   // 大纲缺席（老服务端没挂投影）时无从确认，退回已加载轮次（幻影轮仍可能出现——
-  // 那条路上没有权威可依，但显示判据要求 ≥2 条用户消息，一条消息的会话照样不显示）
+  // 那条路上没有权威可依）
   const fallback = mergeTurnRailItems(messages, undefined);
   assert.deepStrictEqual(fallback.map((item) => item.turn), [0, 1]);
   assert.strictEqual(userPromptCount(fallback), 1);
 }
-console.log("turnRail: 幻影轮 0 被大纲挡掉、单消息会话不显示 ✓");
+console.log("turnRail: 幻影轮 0 被大纲挡掉、单消息会话只留真实那枚刻点 ✓");
 
 // ---------- 10. 显示判据的用户消息计数 ----------
 //
-// 「用户消息 ≥ 2 且宽度足够才显示横条」里那个数：带提示词预览的轮数。自动轮
+// 「有用户消息（≥ 1）且宽度足够才显示横条」里那个数：带提示词预览的轮数。自动轮
 // （goal 驱动、纯注入）没有提示词，不计入——它们不是"用户说的话"。
 {
   assert.strictEqual(userPromptCount([]), 0);

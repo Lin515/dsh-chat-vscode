@@ -676,9 +676,10 @@ for (const [label, check] of must) {
 }
 
 // 3c) 轮次横条的边界形态（`?rail=one`）：单条用户消息 + 首个 turn/start 之前拼出来的
-// 幻影 `a:0`。这条夹具存在的唯一理由就是钉住用户 2026-09-18 报的那个 bug
-// （「即便用户只发了一次消息也有第0轮」）——横条必须整个不出现，所以浏览器侧的
-// 验证（`npm run preview` 加 `?rail=one`）需要一个形状正确的入口。
+// 幻影 `a:0`。这条夹具存在的理由之一就是钉住用户 2026-09-18 报的那个 bug
+// （「即便用户只发了一次消息也有第0轮」）——横条上只许有一枚刻点（单条用户消息也
+// 要显示横条，见 `components/TurnRail.tsx` 的显示判据），所以浏览器侧的验证
+// （`npm run preview` 加 `?rail=one`）需要一个形状正确的入口。
 {
   const one = buildStateWith("zh-cn", "&rail=one");
   const users = one.messages.filter((m: { role: string }) => m.role === "user").length;

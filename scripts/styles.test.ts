@@ -2833,20 +2833,21 @@ console.log("styles: 多行草稿打字不闪（量高瞬态同帧消化）✓")
     "消息根节点必须带 data-msg-id（跳转锚点与激活轮的命中测试都靠它）",
   );
 
-  // 显示判据：**用户消息 ≥ 2**（不是"轮次 ≥ 2"）——一条消息的会话没有可导航的东西，
-  // 而且适配器在首个 turn/start 之前拼出来的幻影轮 a:0 会让"轮次 ≥ 2"误判为有得导航。
+  // 显示判据：**有用户消息**（≥ 1，不是"轮次 ≥ 2"）——一条消息的会话同样要显示
+  // （那一枚刻点是"回到开头"的入口，用户 2026-10-10 口径），而且适配器在首个
+  // turn/start 之前拼出来的幻影轮 a:0 会让"轮次 ≥ 1"误判为有用户消息。
   // 判据换掉时这条断言变红是有意的：它同时钉住「组件用 userPromptCount 而非 items.length」。
   const turnRail = readFileSync(
     join(process.cwd(), "src", "webview", "components", "TurnRail.tsx"),
     "utf8",
   );
   assert.ok(
-    /const rendered = userPromptCount\(items\) >= 2;/.test(turnRail),
-    "横条的显示判据必须是「用户消息 ≥ 2」（userPromptCount），宽度那一半由 CSS 容器查询负责",
+    /const rendered = userPromptCount\(items\) >= 1;/.test(turnRail),
+    "横条的显示判据必须是「有用户消息」（userPromptCount），宽度那一半由 CSS 容器查询负责",
   );
   assert.ok(
     !/if \(items\.length < 2\) return null;/.test(turnRail),
-    "旧的「轮次 ≥ 2」判据不许回来：幻影轮 a:0 会让它把单消息会话也显示出来",
+    "旧的「轮次 ≥ 2」判据不许回来：幻影轮 a:0 会让它把无用户消息的会话也显示出来",
   );
 
   // 文案双语
