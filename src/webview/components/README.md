@@ -11,7 +11,7 @@
 - `Diff.tsx` — diff 渲染：单栏 / 双栏两种排版。
 - `Images.tsx` — 会话图片的统一呈现（用户 / 模型 / 工具 / 正文引用三处合成一套）+ 图片预览层。
 - `ChangesCard.tsx` — 轮尾改动文件卡片（数据来自宿主认证路由 `/api/changes.summary`）。
-- `TodoPanel.tsx` — 会话底部的「任务清单」面板（`todo_write` 投影）：抬头带进度、可折叠；开合态由 `App` 按会话记账（见 `../todoPanel.ts`）。
+- `TodoPanel.tsx` — 会话底部的「任务清单」面板（`todo_write` 投影）：抬头带进度、可折叠，展开 / 收起走同一段行渲染；收起只留当前执行项（没有在执行的则留最后执行过的那条），抬头箭头展开朝下、收起朝上；开合态由 `App` 按会话记账（见 `../todoPanel.ts`）。
 - [Trajectory.tsx](<Trajectory.tsx>) — 轨迹装配与账本／两个互斥检查器；折叠与搜索规则委托[行投影模块](<../trajectoryLedgerRows.ts>)，所有选择、focus、range、定位与视口通过[同一交互端口](<../trajectoryInteraction.ts>)。请求概述分别计工具／子工具，结果链接定位到助手消息或压缩记录。
 - [TrajectoryTimeline.tsx](<TrajectoryTimeline.tsx>) — 时间线呈现层：只接收一个完整交互端口（含 plot ref），负责 ResizeObserver 与归一化跨度绘制，不另持有一套选择／手势状态。
 - `TrajectoryPre.tsx` — 轨迹检查器里「一段原文」的统一呈现件（正文 + 复制 / 自动换行那对按钮）；`Trajectory.tsx` 里十几处都用它，新加一处原文就自动带上这两个动作。

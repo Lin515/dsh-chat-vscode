@@ -5040,15 +5040,17 @@ textarea.composer-input {
   white-space: nowrap;
 }
 
-/* 折展箭头：默认朝下，展开时转 180° 朝上（与 `.job-chevron` / `.turn-process-chevron`
-   同款 120ms 旋转——这三处的图标都是 `IconChevronDown`，开合靠旋转区分） */
+/* 折展箭头：**展开朝下、收起朝上**（用户 2026-10-10 口径）——图标是 `IconChevronDown`
+   （本身就朝下），所以收起时才转 180°。这条刻意与本应用其它折展箭头
+   （`.changes-card-chevron` / `.turn-process-chevron` / `.job-chevron` 那一套「展开朝上」）
+   相反：清单贴在输入区上方，箭头指的是面板自身往哪边收。旋转过渡同款 120ms。 */
 .todos-chevron {
   flex: 0 0 auto;
   color: var(--muted);
   transition: transform 120ms ease;
 }
 
-.todos-head[aria-expanded="true"] .todos-chevron {
+.todos-head[aria-expanded="false"] .todos-chevron {
   transform: rotate(180deg);
 }
 

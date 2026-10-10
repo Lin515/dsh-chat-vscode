@@ -78,6 +78,7 @@
 - `autoScroll.test.ts` — `.chat-scroll` 自动滚动行为断言（真调用纯状态机）。
 - `nodeOpen.test.ts` — 折叠节点展开态 + 过程折叠新口径（主动点开跑完不收回、新盒子贴底）。
 - `turnProcess.test.ts` — 连续过程折叠最终版：只留本轮最后一段正文，段内工具次数判阈值。
+- `todoCollapse.test.ts` — 「任务清单」面板折叠：默认展开、收起只留当前执行项（没有在执行的则留最后执行过的那条；全 pending / 空清单不挂条目）、抬头箭头展开朝下 / 收起朝上。
 - `turnFiles.test.ts` — 轮尾文件两行的去重口径（交付行说了的不再重复）。
 - `turnRail.test.ts` — 轮次横条数据层：`turnOutline` 投影铺底 ∪ 已加载窗口。
 - `panelTitle.test.ts` — 编辑区标签标题与窗口身份读法（不恒写 `DSH`、重载后不交叉）。

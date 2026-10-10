@@ -4,16 +4,23 @@
  * 口径：清单一直展开着会把输入区越顶越高，要能折起来；但**默认展开**，折起来之后
  * 抬头仍要能看出进度（完成数 / 总数），而且重新渲染不能弹回展开。
  *
- * 三层各钉一半，缺一层就漏一种错法：
+ * **收起不是把清单藏掉**（用户 2026-10-10 口径）：折起来仍留**当前执行的那一条**，
+ * 省掉的是其余行的高度。当前执行项按投影里的 `in_progress` 认；一条都没有（这一轮
+ * 已经做完 / 模型没写 in_progress）时留**最后执行过的那一条**，绝不拿还没执行的
+ * `pending` 顶替——全 pending 与空清单因此**一行都不挂**，只有抬头照报进度。
+ *
+ * 四层各钉一半，缺一层就漏一种错法：
  * 1. `webview/todoPanel.ts` 的纯状态：默认展开、折叠后**同一会话**保持折叠、
  *    换会话回默认展开、状态是单槽位（不给每个访问过的会话留一条，那会无界增长）；
- * 2. 真渲染（`react-dom/server`）：抬头是个带 `aria-expanded` 的原生按钮（键盘可达）、
- *    折叠时清单项**不进 HTML**、三态点的类名与折叠前逐字相同、中英双语；
- * 3. 接线与样式：折叠态是 App 的**本地 state**（不进聊天数据）、容器搬进组件、
- *    `app.css` 里 `.todos` 系列既有的规则没被动过。
+ * 2. 同一个模块的 `collapsedTodo`：收起时留哪一条（当前执行项 → 最后执行过的那条 → 不给）；
+ * 3. 真渲染（`react-dom/server`）：抬头是个带 `aria-expanded` 的原生按钮（键盘可达）、
+ *    收起时**恰好一行**清单项且三态点的类名与展开时逐字相同、中英双语；
+ * 4. 接线与样式：折叠态是 App 的**本地 state**（不进聊天数据）、容器搬进组件、
+ *    抬头箭头的方向（展开朝下、收起朝上：图标本身朝下 + 收起时才转 180°）。
  *
  * 断言落在产出的 HTML 与纯函数结果上，而不是源码正则上：正则只证明「代码里有这行字」，
- * 渲染能证明「用户真能看见 / 真点得到」。
+ * 渲染能证明「用户真能看见 / 真点得到」。样式那三条是例外——旋转是 CSS 声明本身，
+ * 无头环境里没有排版结果可断言。
  *
  * 运行：npm test（已在 esbuild.scripts.mjs 的 entries 里登记）
  */
@@ -23,7 +30,12 @@ import { join } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { TodoView } from "../src/shared/chat";
-import { TODO_PANEL_DEFAULT, todosOpenIn, toggleTodos } from "../src/webview/todoPanel";
+import {
+  TODO_PANEL_DEFAULT,
+  collapsedTodo,
+  todosOpenIn,
+  toggleTodos,
+} from "../src/webview/todoPanel";
 import { TextsContext, dictionaryFor } from "../src/webview/texts";
 
 // `bridge.ts` 在模块求值期就挂了 `window.addEventListener`（webview 里那是真实存在的
@@ -94,6 +106,55 @@ const render = (
 }
 console.log("todoCollapse: 纯状态（默认展开 / 折叠保持 / 换会话回默认 / 单槽位） ✓");
 
+// ---------- 1b. 收起时留哪一条：当前执行项 → 最后执行过的那条 → 一条都不给 ----------
+//
+// 「最后执行过的项目」只能由**投影里的顺序 + 状态**推出来：官方 `TodoItem` 每条只有
+// `content` + `status`（三态词表，见 `docs/audit-projections-panels.md` 的
+// 「todos（任务清单）」一节与 `activity.ts` 的 `stepDotClass`），没有时间戳之类的
+// 历史字段可按——不去猜服务端字段，也就不在这里发明一种。
+{
+  const mixed: TodoView[] = [
+    { id: "a", content: "已完成的旧步骤", status: "completed" },
+    { id: "b", content: "正在做", status: "in_progress" },
+    { id: "c", content: "还没做", status: "pending" },
+  ];
+  assert.strictEqual(collapsedTodo(mixed)?.id, "b", "有正在做的那条就留它");
+
+  // 投影里可能同时写着多条 `in_progress`（模型一次写宽的清单）：留**最后一条**
+  const twoActive: TodoView[] = [
+    { id: "a", content: "先做的", status: "in_progress" },
+    { id: "b", content: "后做的", status: "in_progress" },
+    { id: "c", content: "还没做", status: "pending" },
+  ];
+  assert.strictEqual(collapsedTodo(twoActive)?.id, "b", "多条 in_progress 时留最后一条");
+
+  // 没有 in_progress：留**最后一条执行过的**（completed），不是第一条、更不是后面的 pending
+  const done: TodoView[] = [
+    { id: "a", content: "第一步", status: "completed" },
+    { id: "b", content: "第二步", status: "completed" },
+    { id: "c", content: "还没做", status: "pending" },
+  ];
+  assert.strictEqual(collapsedTodo(done)?.id, "b", "没有当前执行项时留最后一条已完成项");
+
+  // 只有 pending（还没开始跑）/ 空清单：明确给不出——收起态因此一行都不挂
+  assert.strictEqual(
+    collapsedTodo([{ id: "a", content: "待办", status: "pending" }]),
+    undefined,
+    "全 pending 时没有「执行过的项目」——不拿 pending 顶替",
+  );
+  assert.strictEqual(collapsedTodo([]), undefined, "空清单给不出条目");
+
+  // 只读：不许就地反转 / 排序调用方那份投影数组
+  const input: TodoView[] = [...done];
+  collapsedTodo(input);
+  assert.deepStrictEqual(
+    input.map((todo) => todo.id),
+    ["a", "b", "c"],
+    "取末条不许改动传入的投影数组",
+  );
+}
+console.log("todoCollapse: 收起留哪一条（当前执行项 → 最后执行过的那条 → 一条不给） ✓");
+
 // ---------- 2. 默认展开：抬头 + 全部清单项都在 ----------
 {
   const html = render(true);
@@ -112,20 +173,72 @@ console.log("todoCollapse: 纯状态（默认展开 / 折叠保持 / 换会话�
 }
 console.log("todoCollapse: 默认展开 + 抬头带进度 ✓");
 
-// ---------- 3. 折叠：清单项不挂载，抬头（进度）仍在 ----------
+// ---------- 3. 收起：只剩**当前执行项**一行，抬头（进度）仍在 ----------
 {
   const html = render(false);
   assert.ok(
     /<button type="button" class="todos-head" aria-expanded="false">/.test(html),
-    `折叠时 aria-expanded 必须是 false：${html.slice(0, 240)}`,
+    `收起时 aria-expanded 必须是 false：${html.slice(0, 240)}`,
   );
   assert.ok(html.includes("任务清单 (1/3)"), "折起来也要能看出有几条 / 完成了几条");
-  for (const content of ["读契约", "改界面", "跑三件套"]) {
-    assert.ok(!html.includes(content), `折叠时清单项不该挂载（省的是高度，不是文字）：${content}`);
+  assert.ok(html.includes("改界面"), "收起时当前执行项要留在面板上（不是整块藏掉）");
+  for (const content of ["读契约", "跑三件套"]) {
+    assert.ok(!html.includes(content), `收起时其余行不挂载（省的是高度）：${content}`);
   }
-  assert.ok(!/class="todo-item/.test(html), "折叠时不渲染清单项");
+  assert.strictEqual(
+    html.match(/class="todo-item/g)?.length,
+    1,
+    `收起时恰好一行清单项：${html.slice(0, 400)}`,
+  );
+  // 留下的那一行与展开时**逐字同结构**（`.todo-item` / `.todo-glyph` / `.dot` /
+  // `.todo-content`，样式体系一个字没动），刻点档位也照旧：会话仍在生成 → 呼吸。
+  assert.ok(
+    /class="todo-item"><span class="todo-glyph"><span class="dot dot-running"><\/span><\/span><span class="todo-content">改界面<\/span>/.test(
+      html,
+    ),
+    `收起那一行与展开时逐字相同：${html.slice(0, 400)}`,
+  );
+  // 会话停下来那一档在收起态同样成立（用户口径：停下之后蓝色不闪动）
+  const stopped = render(false, "zh", todos, false);
+  assert.ok(
+    /class="todo-item"><span class="todo-glyph"><span class="dot dot-running is-idle"/.test(stopped),
+    `收起态里停下之后仍是蓝点不闪（is-idle）：${stopped.slice(0, 400)}`,
+  );
 }
-console.log("todoCollapse: 折叠后清单项不挂载、抬头保留进度 ✓");
+console.log("todoCollapse: 收起后只留当前执行项、其余不挂载 ✓");
+
+// ---------- 3b. 没有当前执行项：留最后执行过的那条（不是 pending） ----------
+{
+  const done: TodoView[] = [
+    { id: "a", content: "第一步", status: "completed" },
+    { id: "b", content: "第二步", status: "completed" },
+    { id: "c", content: "还没做", status: "pending" },
+  ];
+  const html = render(false, "zh", done);
+  assert.ok(html.includes("第二步"), `没有 in_progress 时留最后一条已完成项：${html.slice(0, 400)}`);
+  assert.ok(!html.includes("第一步"), "不留更早的那条已完成项");
+  assert.ok(!html.includes("还没做"), "不许拿还没执行的 pending 顶替");
+  assert.ok(/class="dot dot-ok"/.test(html), "留下的已完成项照旧用 .dot-ok");
+  assert.strictEqual(html.match(/class="todo-item/g)?.length, 1, "仍然恰好一行");
+}
+console.log("todoCollapse: 无 in_progress 时留最后执行过的那条 ✓");
+
+// ---------- 3c. 全 pending / 空清单：收起态一行都不挂，抬头照报进度 ----------
+{
+  const allPending: TodoView[] = [
+    { id: "a", content: "还没做的一", status: "pending" },
+    { id: "b", content: "还没做的二", status: "pending" },
+  ];
+  const html = render(false, "zh", allPending);
+  assert.ok(html.includes("任务清单 (0/2)"), `全 pending 时抬头照报进度：${html.slice(0, 240)}`);
+  assert.ok(!html.includes("还没做的"), "还没执行的条目不许当成当前步骤展示");
+  assert.ok(!/class="todo-item/.test(html), "全 pending 时收起态没有条目行");
+
+  const empty = render(false, "zh", []);
+  assert.ok(empty.includes("任务清单 (0/0)"), `空清单的抬头照旧：${empty.slice(0, 240)}`);
+  assert.ok(!/class="todo-item/.test(empty), "空清单没有条目行");
+}
+console.log("todoCollapse: 全 pending / 空清单收起后不留条目行 ✓");
 
 // ---------- 4. 三态点色与折叠前的旧行为逐字相同 ----------
 //
@@ -252,10 +365,32 @@ console.log("todoCollapse: 折叠态是本地 UI state、不进聊天数据 ✓"
     "抬头文字要一行截断（英文比中文长，窄侧栏靠它兜底）",
   );
   assert.ok(/transition:\s*transform/.test(rule(".todos-chevron")), "箭头要有旋转过渡");
+  // 箭头方向（用户 2026-10-10 口径）：**展开朝下、收起朝上**。两半合起来才成立——
+  // 图标本身是朝下的 `IconChevronDown`（下面用真渲染钉住它的路径），所以收起时才转 180°。
+  // 这条刻意与本应用其它折展箭头（`.changes-card-chevron` / `.turn-process-chevron`
+  // 那一套「展开朝上」）相反：清单贴在输入区上方，箭头指的是面板自身往哪边收。
   assert.ok(
-    /transform:\s*rotate\(180deg\)/.test(rule('.todos-head[aria-expanded="true"] .todos-chevron')),
-    "展开时箭头朝上（与 .changes-card-chevron / .turn-process-chevron 同款）",
+    /transform:\s*rotate\(180deg\)/.test(rule('.todos-head[aria-expanded="false"] .todos-chevron')),
+    "收起时箭头朝上（图标朝下 + 转 180°）",
   );
+  {
+    const expandedChevron = new RegExp(
+      '\\.todos-head\\[aria-expanded="true"\\]\\s*\\.todos-chevron\\s*\\{([\\s\\S]*?)\\}',
+      "u",
+    ).exec(css);
+    assert.ok(
+      expandedChevron === null || !/rotate/.test(expandedChevron[1]),
+      "展开时箭头不旋转（图标本身就朝下）",
+    );
+    // 图标那半：真渲染出来的就是朝下的 chevron（`M5 9l7 7 7-7`），展开 / 收起都一样，
+    // 方向差别全在 CSS 的旋转上。
+    for (const open of [true, false]) {
+      assert.ok(
+        render(open).includes('d="M5 9l7 7 7-7"'),
+        `抬头那颗图标本身朝下（open=${open}）`,
+      );
+    }
+  }
   assert.ok(/outline/.test(rule(".todos-head:focus-visible")), "键盘聚焦要有可见的焦点环");
 }
 console.log("todoCollapse: 在既有 .todos 规则上扩展（容器与清单项不动） ✓");
