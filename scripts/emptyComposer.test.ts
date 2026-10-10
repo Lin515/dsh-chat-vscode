@@ -182,10 +182,21 @@ function lastFrame(frames: Captured[], viewId: string, type: string): Record<str
   return undefined;
 }
 
-/** 最近一帧发给所有窗口的会话列表。 */
-function lastSessions(frames: Captured[]) {
-  const frame = lastFrame(frames, "all", "sessions");
-  return (frame?.sessions ?? []) as { id: string; blank?: boolean }[];
+/**
+ * 最近一帧**这个窗口收到**的会话列表。
+ *
+ * 没有打开文件夹时宿主按窗口各发一份（历史列表跟随该窗口当前会话的 cwd，见
+ * `scripts/sessionListScope.test.ts`），所以判据要与 `chatView.deliver` 的过线语义一致：
+ * `target === "all"` 是广播，定向帧只有该 viewId 收得到。
+ */
+function lastSessions(frames: Captured[], viewId: string) {
+  for (let i = frames.length - 1; i >= 0; i -= 1) {
+    const { target, frame } = frames[i];
+    if (frame.type !== "sessions") continue;
+    if (target !== "all" && target !== viewId) continue;
+    return (frame.sessions ?? []) as { id: string; blank?: boolean }[];
+  }
+  return [];
 }
 
 /** 打两个菜单，把量到的候选数打印出来（哪个窗口、假服务端建了几条会话都要看得见）。 */
@@ -231,7 +242,7 @@ console.log("emptyComposer: 空态下的 / 命令栏与 @ 候选（驱动真控�
   await c.newSession("v1");
   await openMenus(c, "v1");
   const id = client.rows[0].sessionId;
-  const listed = lastSessions(frames).map((row) => row.id);
+  const listed = lastSessions(frames, "v1").map((row) => row.id);
   console.log(`  界面列表：${listed.length} 条${listed.length ? ` ${listed.join(", ")}` : ""}（域里那条是 ${id}）`);
   assert.ok(
     !listed.includes(id),

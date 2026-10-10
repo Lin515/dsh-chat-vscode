@@ -28,6 +28,10 @@
  * 会在空态按需建一条这样的会话，露在列表里就是「点一下多一条空会话」（用户
  * 2026-09-22 报的现场）。那条过滤住在 `controller.emitSessionLists`（它要读窗口态与
  * 未读集合），这里的 `visibleSessionCandidates` 只负责对应的 @ 候选那一侧。
+ *
+ * **发帧那一步还要按窗口收窄**（`visibleForView`）：没有打开文件夹时，每个会话可以
+ * 各自选一个工作目录（用户 2026-10-10 口径），历史列表必须跟着**这个窗口当前那条
+ * 会话的 cwd**，而不是把本窗口打开过的所有 cwd 并成一份发出去。
  */
 
 /** 只藏**子代理**会话；分支（有 parent、`origin` 为空）必须留着。 */
@@ -119,4 +123,46 @@ export function visibleForWorkspace<T extends { sessionId: string; cwd?: string 
     if (scope.workspacePath !== undefined) return cwd === scope.workspacePath;
     return !scope.groupedSessionIds.has(row.sessionId);
   });
+}
+
+/** 一个**窗口**当前该看见哪些历史行所需的上下文（收窄的输入）。 */
+export interface ViewScope {
+  /** VS Code 打开了文件夹（目录跟随 VS Code）：所有窗口同一份，不收窄。 */
+  folderOpen: boolean;
+  /**
+   * 这个窗口**当前**的工作目录（原样字符串，不必先归一）：它绑定那条会话的 cwd，
+   * 或新会话页上选定的目录。`undefined` = 拿不到目录证据。
+   */
+  cwd?: string;
+}
+
+/**
+ * 一个窗口该看见的历史行：在 {@link visibleForWorkspace} 的**全局**结论之上再按窗口收窄。
+ *
+ * 用户 2026-10-10 口径：没有打开文件夹时，每个会话可以各自选一个工作目录，历史列表
+ * 必须跟着**这个窗口当前那条会话的 cwd**——两个面板各开一个目录时，各自的历史里不许
+ * 混进对方的会话。
+ *
+ * 三档，判据都是肯定证据：
+ *
+ * 1. **打开了文件夹** → 原样放行：目录跟随 VS Code，所有窗口同一份（旧口径不动，
+ *    含「任何已打开域的 cwd」那条兜底）；
+ * 2. **没打开文件夹、窗口有目录** → 只留 cwd 相同的行（`normalizePath` 是唯一比较口径，
+ *    大小写与斜杠写法不同算同一个目录）；
+ * 3. **没打开文件夹、窗口没有目录**（空态、还没落壳，或服务端没给这条会话 cwd）→
+ *    原样放行 = 按「未分组」列全。**不拿别的目录去猜**：收紧会把「没有文件夹的新窗口
+ *    从历史里接回会话」这条路径堵死，而那时本来就没有可隔离的对象。
+ *
+ * `rows` 应当是全局那一份（`this.sessions`），本函数只做减法——全局那份还要给打开
+ * 菜单、空壳复用、running 打底用（见 `controller.refreshSessions`）。返回的数组在
+ * 第 1、3 档就是入参本身，调用方不许改它。
+ */
+export function visibleForView<T extends { cwd?: string }>(
+  rows: readonly T[],
+  scope: ViewScope,
+): readonly T[] {
+  if (scope.folderOpen) return rows;
+  const cwd = normalizePath(scope.cwd);
+  if (!cwd) return rows;
+  return rows.filter((row) => normalizePath(row.cwd) === cwd);
 }

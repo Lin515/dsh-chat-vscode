@@ -462,10 +462,13 @@ console.log("invariants: guard 工厂的返回值不被丢弃（收尾体真的�
 
   // 空态页那一行目录的两种非锁定形态：选过 → 显示路径（盘符大写）；没选过 → 空串
   // （界面显示「未选择工作区」）。空串是真的过线的值，所以这里也钉一下它不会被
-  // 回退成 cwd——没有选过目录时不得碰 `process.cwd()`。
+  // 回退成 cwd——没有选过目录时不得碰 `process.cwd()`。目录按**窗口**取（先看该窗口
+  // 当前那条会话的 cwd，见 `viewCwd`），但取值只在这里折成"有 / 没有"两态。
   const workspaceView = bodyOf("private workspaceView(");
   assert.ok(
-    /newSessionCwd \? upperDriveLetter\(this\.newSessionCwd\) : ""/.test(workspaceView),
+    /const path = \(viewId \? this\.viewCwd\(viewId\) : undefined\) \?\? this\.newSessionCwd;/.test(
+      workspaceView,
+    ) && /path \? upperDriveLetter\(path\) : ""/.test(workspaceView),
     "没选过目录时 `path` 必须是空串（界面显示「未选择工作区」），不能用 process.cwd() 兜底；选过时盘符要大写",
   );
 

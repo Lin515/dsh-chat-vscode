@@ -12,7 +12,7 @@
 - `assistantStream.ts` — 跟随开帧里紧凑记录流（`activeAttempt`）的展开，重开 follow 时把进行中的节点重建回原始 chunk 序列。
 - `scope.ts` — 会话域：一个会话的投影存储、适配器与视图装配的容器。
 - `sessionView.ts` — 「一个会话在界面上的状态」的唯一生产者：字段清单只在这里（快照 / 增量 patch / 切会话整帧三处共用，避免切会话后字段静默复旧）。
-- `sessionList.ts` — `session/list` 行的可见性与会话血缘（区分子代理会话与分支会话，两者都有 `parentSessionId`）。
+- `sessionList.ts` — `session/list` 行的可见性与会话血缘：全局那份按注册表 / cwd / 已打开域兜底筛（`visibleForWorkspace`），发帧前再按窗口当前会话的 cwd 收窄（`visibleForView`，没有打开文件夹时各窗口各自的 cwd；cwd 取 controller 的权威账本 `sessionCwds`，子代理会话也在里面）；血缘上区分子代理会话与分支会话（两者都有 `parentSessionId`）。
 - `sessionStatus.ts` — `api-session/status` 转发事件（服务端权威的「这一轮在不在跑」）的解码与采纳策略。
 - `historyPaging.ts` — 「加载历史」的两档策略：单页档（`loadOlder`）与到目标档（`loadThrough`，轮次横条未加载刻点用）。
 - `pendingInteractions.ts` — 宿主侧未结算审批 / 提问的托管账本：事件 id → 原始请求，保证去重、切会话重投、撤回收场（这类 waterfall 不是 durable 事件，必须宿主持有一份）。

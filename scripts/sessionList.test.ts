@@ -6,12 +6,16 @@
  * 只有 `origin` 能区分（`'subagent'`）。这组断言把判据钉死，并覆盖分支行
  * 与普通会话**同级**（不缩进、靠标题前缀「分支: 」区分，用户 2026-09-19 口径）。
  *
+ * 还钉住**发帧前的按窗口收窄**（用户 2026-10-10 口径）：没有打开文件夹时，每个会话
+ * 可以各自选一个工作目录，历史列表跟着**这个窗口当前那条会话的 cwd**——纯函数判据在
+ * 这里，行为级回归（驱动真控制器）在 `scripts/sessionListScope.test.ts`。
+ *
  * 运行：npm test
  */
 import assert from "node:assert";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { normalizePath, upperDriveLetter, visibleForWorkspace, visibleSessionCandidates, visibleSessionRows } from "../src/dsh/sessionList";
+import { normalizePath, upperDriveLetter, visibleForView, visibleForWorkspace, visibleSessionCandidates, visibleSessionRows } from "../src/dsh/sessionList";
 import { dictionaryFor } from "../src/webview/texts";
 
 // ---------- 1. 分支必须留着，子代理必须藏起来 ----------
@@ -163,6 +167,50 @@ console.log("sessionList: 复制会话 ID 常驻且在归档左边 ✓");
 }
 console.log("sessionList: 工作区可见性（有文件夹 / 无文件夹 / 已打开域兜底）✓");
 
+// ---------- 3a. 发帧那一步按**窗口**收窄：没有文件夹时只看当前会话的 cwd ----------
+//
+// 用户 2026-10-10 口径：VS Code 没有打开文件夹时，每个会话可以各自选一个工作目录，
+// 历史列表必须跟着**这个窗口当前那条会话的 cwd**（两个面板各开一个目录时，各自的历史
+// 里不许混进对方的会话）。全局那一份（`visibleForWorkspace` 的结论）保持并集不变——
+// 打开会话 / 空壳复用 / running 打底都读它（行为级回归见 `sessionListScope.test.ts`）。
+{
+  const rows = [
+    { sessionId: "a-1", cwd: "C:/work/alpha" },
+    { sessionId: "a-2", cwd: "c:\\WORK\\Alpha\\" }, // 同一目录的另一种写法
+    { sessionId: "b-1", cwd: "C:/work/beta" },
+    { sessionId: "no-cwd" },
+  ];
+
+  // ① 无文件夹 + 窗口有 cwd：只留同一目录（大小写 / 斜杠算同一个）
+  assert.deepStrictEqual(
+    visibleForView(rows, { folderOpen: false, cwd: "C:/work/ALPHA" }).map((row) => row.sessionId),
+    ["a-1", "a-2"],
+    "窗口当前会话在 alpha：历史只许有 alpha 的会话（写法不同也算同一个目录）",
+  );
+
+  // ② 无文件夹 + 窗口没有 cwd：原样放行（未分组那一档），不拿别的目录猜
+  assert.deepStrictEqual(
+    visibleForView(rows, { folderOpen: false }).map((row) => row.sessionId),
+    ["a-1", "a-2", "b-1", "no-cwd"],
+    "拿不到目录证据时不收紧：保持全局那一份（收紧会把无文件夹新窗口从历史恢复会话的路堵死）",
+  );
+
+  // ③ 打开着文件夹：原样放行 —— 目录跟随 VS Code，所有窗口同一份（旧口径不动）
+  assert.deepStrictEqual(
+    visibleForView(rows, { folderOpen: true, cwd: "C:/work/beta" }).map((row) => row.sessionId),
+    ["a-1", "a-2", "b-1", "no-cwd"],
+    "打开着文件夹时不做按窗口收窄（folder 的注册表 + cwd 口径在 visibleForWorkspace 里）",
+  );
+
+  // ④ 返回的就是入参本身（第 1、3 档）：调用方不许改它，也不该有人误以为拿到了副本
+  assert.strictEqual(
+    visibleForView(rows, { folderOpen: true }),
+    rows,
+    "不收窄的两档直接返回入参（省一次分配；语义是只读视图）",
+  );
+}
+console.log("sessionList: 窗口级收窄（有 cwd 跟随、无 cwd 放宽、folder 放行）✓");
+
 // ---------- 4. 结构不变量：控制器必须走这两个函数，不能自己写过滤 ----------
 {
   const controller = readFileSync(join(process.cwd(), "src", "dsh", "controller.ts"), "utf8");
@@ -185,6 +233,78 @@ console.log("sessionList: 工作区可见性（有文件夹 / 无文件夹 / 已
   assert.ok(
     !/lineageDepths/.test(controller),
     "血缘深度已随缩进一起删掉（用户 2026-09-19：分支和普通会话同级）",
+  );
+
+  // 发帧那一步按窗口收窄：判据是**这个窗口当前会话的 cwd**（`viewCwd`），
+  // 不是 activeViewId 那一个窗口、也不是「本窗口打开过的所有 cwd」的并集。
+  const emitStart = controller.indexOf("private emitSessionLists(): void {");
+  assert.ok(emitStart > 0, "取不到 emitSessionLists");
+  const emitBody = controller.slice(emitStart, controller.indexOf("\n  private viewCwd(", emitStart));
+  assert.ok(
+    /visibleForView\(this\.sessions, \{ folderOpen: false, cwd: this\.viewCwd\(viewId\) \}\)/.test(emitBody),
+    "无文件夹时必须按窗口收窄（`visibleForView` + 该窗口的 `viewCwd`）",
+  );
+  assert.ok(
+    !/activeViewId/.test(emitBody),
+    "收窄判据不许读 activeViewId（那是一个窗口的 cwd，两个面板会拿到同一份列表）",
+  );
+  assert.ok(
+    /vscode\.workspace\.workspaceFolders\?\.\[0\]/.test(emitBody) &&
+      /this\.emitAll\(\{ type: "sessions", sessions: active \}\)/.test(emitBody),
+    "打开着文件夹时仍走广播（所有窗口同一份，行为与旧口径逐字相同）",
+  );
+  assert.ok(
+    /for \(const viewId of this\.liveViewIds\(\)\)/.test(emitBody),
+    "按窗口发帧时收件人取活窗口名册（viewOrder ∪ viewSessions ∪ viewKinds），不许漏掉已有窗口",
+  );
+  assert.ok(
+    /this\.sessions = views;/.test(controller),
+    "全局 this.sessions 仍是 visibleForWorkspace 的并集（打开 / 空壳复用 / running 打底都读它）",
+  );
+
+  // 权威 cwd 账本：从 `session/list` 的**原始行**建（在任何可见性过滤之前），
+  // 因为窗口当前会话可能是**子代理会话**——它不在 `this.sessions` 里，cwd 只能靠账本。
+  assert.ok(
+    /private sessionCwds = new Map<string, string>\(\)/.test(controller) &&
+      /cwds\.set\(item\.sessionId, item\.cwd\)/.test(controller),
+    "权威 cwd 账本要从 session/list 的原始行整份重建（子代理会话的 cwd 也要记进去）",
+  );
+  assert.ok(
+    /this\.sessionCwds\.clear\(\)/.test(controller),
+    "换连接 / 断线收场要清空权威 cwd 账本（生命周期收口，下次列表到达重建）",
+  );
+
+  const viewCwdStart = controller.indexOf("private viewCwd(viewId: string)");
+  assert.ok(viewCwdStart > 0, "取不到 viewCwd");
+  const viewCwdBody = controller.slice(viewCwdStart, controller.indexOf("\n  /**", viewCwdStart + 10));
+  assert.ok(
+    /this\.viewSessions\.get\(viewId\)/.test(viewCwdBody) &&
+      /this\.sessionCwds\.get\(sessionId\)/.test(viewCwdBody),
+    "绑了会话就以**那条会话的 cwd** 为准（会话的创建事实，判据读权威账本而不是可见列表）",
+  );
+  assert.ok(
+    /this\.newSessionCwd/.test(viewCwdBody),
+    "没绑会话（空态页）才退回用户选定的目录（newSessionCwd）",
+  );
+  assert.ok(
+    !/this\.sessions\b/.test(viewCwdBody),
+    "viewCwd 不许读 `this.sessions`——那份是界面该看见的历史，子代理会话不在里面（读它会让子代理页退回跨目录全列）",
+  );
+  assert.ok(
+    !/activeViewId/.test(viewCwdBody) && !/openCwds/.test(viewCwdBody),
+    "viewCwd 不许读 activeViewId / openCwds 并集",
+  );
+
+  // 换绑 / 退回空态时，列表与空态页那行目录要在同一刻跟着换（否则界面停在旧 cwd 的口径上）
+  assert.ok(
+    /this\.emitViewScopedState\(\);/.test(controller) &&
+      /this\.emitSessionLists\(\);\s*\n\s*this\.emitWorkspaceViews\(\);/m.test(controller),
+    "绑定 / 解绑要经 `emitViewScopedState` 同时重发历史列表与按窗口的工作目录",
+  );
+  assert.ok(
+    /private workspaceView\(viewId\?: string\)/.test(controller) &&
+      /this\.workspaceView\(viewId\)/.test(controller),
+    "空态页那行目录按窗口取（先看该窗口当前会话的 cwd）——与历史列表同一套判据",
   );
 }
 console.log("sessionList: 控制器与界面都接上了 ✓");

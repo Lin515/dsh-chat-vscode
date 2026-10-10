@@ -142,6 +142,8 @@ const entries = {
   "build/session-log.test.mjs": "scripts/sessionLog.test.ts",
   "build/session-list-probe.mjs": "scripts/sessionListProbe.ts",
   "build/session-list.test.mjs": "scripts/sessionList.test.ts",
+  // 历史列表按窗口当前会话 cwd 隔离（无文件夹时多会话各有 cwd）：驱真控制器 + stub（必须登记，否则 npm test 静默不跑）
+  "build/session-list-scope.test.mjs": "scripts/sessionListScope.test.ts",
   "build/process-registry.test.mjs": "scripts/processRegistry.test.ts",
   "build/config-changes.test.mjs": "scripts/configChanges.test.ts",
   "build/footnotes.test.mjs": "scripts/footnotes.test.ts",

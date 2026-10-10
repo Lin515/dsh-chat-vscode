@@ -19,7 +19,7 @@
 - `wire.test.ts` — 过线语义：宿主 → webview 的帧被 JSON 序列化会丢 `undefined` 键，清空字段必须发 `null`。
 - `sessionView.test.ts` — 「一个会话在界面上的状态」只有唯一生产者，字段集合不得在生产者之间漂移。
 - `sessionStatus.test.ts` — `api-session/status` 状态位中继的解码与采纳策略（服务端权威的「这轮在不在跑」）。
-- `sessionList.test.ts` — 会话列表行可见性与分支呈现（用 `origin` 而非 `parentSessionId` 区分子代理）。
+- `sessionList.test.ts` — 会话列表行可见性与分支呈现（用 `origin` 而非 `parentSessionId` 区分子代理），以及发帧前的**按窗口收窄**判据（无文件夹时跟随该窗口当前会话的 cwd）。
 - `parseToolResult.test.ts` — `dsh/adapter.ts` 的 `parseToolResult`（read 信封等工具结果解析）。
 - `commandNode.test.ts` — 斜杠命令节点与「本轮文件改动」适配（`command/run`↔`done`、deliverables 呈现、write/edit 推导）。
 - `historyReplay.test.ts` — 「加载更早的历史」：重放期间不发帧，避免旧轮次被实时渲染一遍。
@@ -142,6 +142,7 @@
 
 ### 补充专项断言
 
+- [sessionListScope.test.ts](<sessionListScope.test.ts>) — 历史列表跟随**当前会话 cwd**：没有打开文件夹时两个面板各开一个目录，历史按各自的 cwd 隔离（切换 / 换选目录 / 空态未绑 / 无 cwd 兜底逐条覆盖），打开着文件夹时仍是「所有窗口同一份 + 注册表 + 已打开域兜底」的旧口径；还覆盖**绑在子代理会话**上的窗口（它的 cwd 只在权威 `session/list` 里、不在可见历史里）与权威 cwd 账本的生命周期（列表里消失即淘汰、换连接清空）。
 - [find.test.ts](<find.test.ts>) — 会话查找的跨文本节点匹配与命中位置环绕；不替代真实 DOM 高亮验收。
 - [blankRestoreRace.test.ts](<blankRestoreRace.test.ts>) — 恢复历史会话与自动补空会话并发时，驱动真实控制器验证绑定不被覆盖。
 - [workspaceDirRepick.test.ts](<workspaceDirRepick.test.ts>) — 未打开文件夹时空态页的目录胶囊：每次都弹选择框、换目录真的落到新目录那条壳上（先切后建、取消保持原状、换回复用旧壳）；打开着文件夹时仍是锁定口径。

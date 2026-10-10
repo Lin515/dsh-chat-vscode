@@ -136,6 +136,8 @@ function sharedGlobalState() {
 }
 
 interface Driver {
+  /** 新窗口上线（真实链路上 `ChatViewProvider.attach` 就会调，见 `controller.bindView`）。 */
+  bindView(viewId: string): void;
   openSession(viewId: string, sessionId: string): Promise<void>;
   unbindView(viewId: string): void;
   newSession(viewId: string): Promise<void>;
@@ -171,7 +173,13 @@ function makeDriver(rows: Row[], options: { state?: () => ReturnType<typeof fake
   };
   internals.client = fakeClient(rows) as never;
   internals.connection = "connected";
+  // 真实链路上窗口**先挂上**（`ChatViewProvider.attach` → `controller.bindView`），
+  // 之后才可能开会话。宿主按窗口发帧（没有打开文件夹时历史列表跟随该窗口当前会话的
+  // cwd，见 `scripts/sessionListScope.test.ts`），所以这里必须走同一顺序——少了它，
+  // 「没有窗口绑会话」的那些场景（②）就一帧都收不到。
+  (controller as unknown as { bindView(viewId: string): void }).bindView("v1");
   const c = controller as unknown as {
+    bindView(viewId: string): void;
     openSession(viewId: string, sessionId: string): Promise<void>;
     unbindView(viewId: string): void;
     newSession(viewId: string): Promise<void>;
@@ -180,6 +188,7 @@ function makeDriver(rows: Row[], options: { state?: () => ReturnType<typeof fake
   };
   let turnSeq = 100;
   const driver: Driver = {
+    bindView: (viewId) => c.bindView(viewId),
     openSession: (viewId, sessionId) => c.openSession(viewId, sessionId),
     unbindView: (viewId) => c.unbindView(viewId),
     newSession: (viewId) => c.newSession(viewId),
@@ -203,26 +212,79 @@ function makeDriver(rows: Row[], options: { state?: () => ReturnType<typeof fake
 }
 
 /**
- * 界面口径的未读：最近一帧会话列表（`target === "all"`）里那一行的 `unread`。
+ * 界面口径的未读：**某个窗口收到**的最近一帧会话列表里那一行的 `unread`。
  *
  * 断言走帧而不是直接读 `unreadSessionIds`：界面看到的才是这条功能的事实，集合只是内部账。
+ * 没有打开文件夹时宿主按窗口各发一份（历史列表跟随该窗口当前会话的 cwd，见
+ * `scripts/sessionListScope.test.ts`），所以这里按过线语义取帧：`target === "all"` 是广播，
+ * 其余只有该 viewId 收得到。
  */
-function unreadInList(frames: Captured[], sessionId: string): boolean | undefined {
-  const row = rowOf(frames, sessionId);
+function unreadInList(frames: Captured[], sessionId: string, viewId = "v1"): boolean | undefined {
+  const row = rowOf(frames, sessionId, viewId);
   return row ? row.unread === true : undefined;
 }
 
-/** 最近一帧会话列表里那一行（找不到说明这一代列表里没有它）。 */
-function rowOf(frames: Captured[], sessionId: string): SessionRowView | undefined {
+/**
+ * 某个窗口收到的**最新一帧**会话列表里那一行。
+ *
+ * 判据只看**那一帧**：找到最新一帧符合 target 的 `sessions` 帧就算结算——帧里没有这条
+ * 会话就返回 `undefined`（说明它此刻不在该窗口的列表里），**绝不往旧帧回溯**。回溯会把
+ * 「上一代列表里的行」当成当前界面：窗口切到别的 cwd 后，旧帧仍带着已经不可见的那一行，
+ * 断言就会读到一个界面上根本不存在的事实。
+ */
+function rowOf(frames: Captured[], sessionId: string, viewId = "v1"): SessionRowView | undefined {
   for (let index = frames.length - 1; index >= 0; index -= 1) {
     const { target, frame } = frames[index];
-    if (target !== "all" || frame.type !== "sessions") continue;
+    if (frame.type !== "sessions") continue;
+    if (target !== "all" && target !== viewId) continue;
     const rows = (frame.sessions ?? []) as SessionRowView[];
-    const hit = rows.find((item) => item.id === sessionId);
-    if (hit) return hit;
+    return rows.find((item) => item.id === sessionId);
   }
   return undefined;
 }
+
+// ---------- 观测器口径：只看最新一帧、只认发给本窗口的帧 ----------
+//
+// 这两条钉的是 `rowOf` 自己（纯数组，不起控制器）：它是所有未读断言的"眼睛"，
+// 眼睛口径错了，下面所有场景都会跟着读到假事实。
+{
+  // 最新一帧里没有它 → undefined（旧帧里那行 unread=true 不算数：它已经不是当前的 UI）
+  const switchedCwd: Captured[] = [
+    { target: "v1", frame: { type: "sessions", sessions: [{ id: A, running: false, unread: true }] } },
+    { target: "v1", frame: { type: "sessions", sessions: [{ id: B, running: false }] } },
+  ];
+  assert.strictEqual(
+    rowOf(switchedCwd, A, "v1"),
+    undefined,
+    "最新该窗口的会话列表里没有它就必须是 undefined——不许回溯旧帧把旧行当成当前界面",
+  );
+  assert.strictEqual(
+    unreadInList(switchedCwd, A, "v1"),
+    undefined,
+    "同一口径：未读读数也必须是 undefined，而不是旧帧里的 true",
+  );
+
+  // 定向发给**别的窗口**的帧不算本窗口看到；广播帧每个窗口都收得到（folder 档）
+  const otherView: Captured[] = [
+    { target: "v1", frame: { type: "sessions", sessions: [{ id: B, running: false }] } },
+    { target: "v2", frame: { type: "sessions", sessions: [{ id: A, running: false, unread: true }] } },
+  ];
+  assert.strictEqual(
+    rowOf(otherView, A, "v1"),
+    undefined,
+    "发给别的窗口的帧不影响本窗口的读数（本窗口最新一帧里没有它）",
+  );
+  assert.strictEqual(rowOf(otherView, A, "v2")?.unread, true, "那个窗口自己那份里确实带着未读");
+  const broadcast: Captured[] = [
+    { target: "all", frame: { type: "sessions", sessions: [{ id: A, running: false, unread: true }] } },
+  ];
+  assert.strictEqual(
+    rowOf(broadcast, A, "v1")?.unread,
+    true,
+    "广播帧（打开着文件夹那一档）每个窗口都收得到，定向判据不许把它排掉",
+  );
+}
+console.log("unreadMarker: 观测器只看最新一帧、只认本窗口收到的帧 ✓");
 
 console.log("unreadMarker: 驱动真控制器（offline stub）");
 
@@ -301,12 +363,20 @@ console.log("unreadMarker: 驱动真控制器（offline stub）");
 // ---------- ⑦ 关掉视图也算离开；新建对话也算 ----------
 {
   const closed = makeDriver([row(A)]);
+  // 观察窗口：列表按窗口各发一份（无文件夹时跟随该窗口当前会话的 cwd），最后一个
+  // **看着 A 的**窗口关掉之后，A 的未读只剩别的活窗口那条帧能看见——v2 不绑会话，
+  // 不在 `viewSessions` 里，所以它不算「还有窗口开着它」（判据见 `noteSessionLeft`）。
+  closed.driver.bindView("v2");
   await closed.driver.refreshSessions();
   await closed.driver.openSession("v1", A);
   await closed.driver.status(A, true);
   closed.driver.unbindView("v1");
   await closed.driver.status(A, false);
-  assert.strictEqual(unreadInList(closed.frames, A), true, "关掉视图＝离开，收尾要记未读");
+  assert.strictEqual(
+    unreadInList(closed.frames, A, "v2"),
+    true,
+    "关掉视图＝离开，收尾要记未读",
+  );
 
   const fresh = makeDriver([row(A)]);
   await fresh.driver.refreshSessions();

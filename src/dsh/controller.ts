@@ -106,7 +106,7 @@ import {
   type ProjectionHandlers,
 } from "./projectionIngest";
 import { deriveTrajectoryModel } from "./trajectory";
-import { normalizePath, upperDriveLetter, visibleForWorkspace, visibleSessionCandidates, visibleSessionRows } from "./sessionList";
+import { normalizePath, upperDriveLetter, visibleForView, visibleForWorkspace, visibleSessionCandidates, visibleSessionRows } from "./sessionList";
 import { acceptSessionStatus, decodeSessionStatus } from "./sessionStatus";
 import { dropLegacyUnreadState, loadUnreadSessionIds, writeUnreadSession } from "./unreadStore";
 import { isBlank, mergeWindowCache, WindowRestore, WorkspaceWindowStateStore, type SidebarSlot, type WindowCache, type WindowKind } from "./windowState";
@@ -516,6 +516,20 @@ function connectionFieldsOf(input: ConnectionFieldsInput): ConnectionFields {
 export class ChatController implements vscode.Disposable {
   private client: DshClient | undefined;
   private sessions: SessionSummaryView[] = [];
+  /**
+   * **会话落在哪个目录**的权威账本（会话 id → cwd），来自 `session/list` 的**原始行**。
+   *
+   * 与 `this.sessions` 的分工：那份是**界面该看见的历史**（子代理会话被
+   * `visibleSessionRows` 全局藏掉、blank 位也折过），这份只回答「这条会话的 cwd 是
+   * 什么」，不参与任何可见性判断。存在的理由只有一个：窗口切进**子代理会话**时，那条
+   * 会话不在 `this.sessions` 里，但「这个窗口当前会话的 cwd」仍然成立——否则按 cwd
+   * 收窄历史那一步会退化成跨目录全列（见 `viewCwd`）。
+   *
+   * 生命周期：`refreshSessions` 每次**整份替换**（它是那一份列表的投影，条目数与列表
+   * 同阶，单一写入口）；换连接 / 断线收场时在 `teardownStreams` 里清空，下次列表到达
+   * 重建。
+   */
+  private sessionCwds = new Map<string, string>();
   /**
    * 打开的会话域（sessionId → 域）。每个窗口绑定一个域；域内产生的帧只发给
    * 绑定该会话的窗口（见 `deliver`），全局帧走 `emitAll`。域在窗口首次绑定时
@@ -1329,14 +1343,31 @@ export class ChatController implements vscode.Disposable {
    * `locked` 为真时**没有可选目录**；为假时 `path` 可能还是空的（用户没打开文件夹、
    * 也没选过目录）——那时界面显示「未选择工作区」，不再拿宿主的 `process.cwd()` 冒充
    * （那会变成 VS Code 的安装路径，用户 2026-09-22 报的现场）。
+   *
+   * 没有打开文件夹时 `path` **按窗口**取（`viewId` 给出时）：先看这个窗口当前那条会话的
+   * cwd，再退回用户选定的目录（`viewCwd`）——两个窗口各停在各目录的空壳上时，各自显示
+   * 各自那个目录。打开着文件夹时与窗口无关（目录跟随 VS Code）。
    */
-  private workspaceView(): NonNullable<ChatState["workspace"]> {
+  private workspaceView(viewId?: string): NonNullable<ChatState["workspace"]> {
     const folder = vscode.workspace.workspaceFolders?.[0];
     if (folder) return { path: upperDriveLetter(folder.uri.fsPath), locked: true };
     // 没有打开文件夹：用户选过的那个目录；**没选过就是空串**——界面显示
     // 「未选择工作区」。绝不拿宿主的 `process.cwd()`（= VS Code 安装路径）冒充一个
     // 工作目录（用户 2026-09-22 报的现场）。
-    return { path: this.newSessionCwd ? upperDriveLetter(this.newSessionCwd) : "", locked: false };
+    const path = (viewId ? this.viewCwd(viewId) : undefined) ?? this.newSessionCwd;
+    return { path: path ? upperDriveLetter(path) : "", locked: false };
+  }
+
+  /**
+   * 空态页那行工作目录**按窗口**推：每个窗口显示的是它自己那条会话的目录。
+   *
+   * 没有打开文件夹时才有差别；打开着文件夹时每份都一样（目录跟随 VS Code），逐窗口
+   * 发只是把同一份值多发几下——保持一条发射路径，比两套分支少一处会漂的地方。
+   */
+  private emitWorkspaceViews(): void {
+    for (const viewId of this.liveViewIds()) {
+      this.emitToView(viewId, { type: "patch", patch: { workspace: this.workspaceView(viewId) } });
+    }
   }
 
   /** 部署的 agent 预设目录（外观态那一份；空表表示这个部署没有可选项）。 */
@@ -1431,7 +1462,7 @@ export class ChatController implements vscode.Disposable {
       // 键集合与取值由两个构造器决定，但帧的 JSON 形态（`JSON.stringify` 的顺序）
       // 不该因为这次收敛而变——对拍线上帧时那是最容易白费一轮的噪声。
       ...this.connectionPatch(),
-      ...appearanceView(this.appearanceSource()),
+      ...appearanceView(this.appearanceSource(viewId)),
       // 窗口级事实（不属于会话片段，也不属于部署设置）：本窗口是不是编辑区标签组里
       // 的会话，见 `ChatState.inEditorTab`
       inEditorTab: this.viewKinds.get(viewId ?? "") === "panel",
@@ -1618,7 +1649,7 @@ export class ChatController implements vscode.Disposable {
   }
 
   /** 首帧快照里「与会话无关」的那一半（语言 / 排版 / 字号 / 批次 / 阈值 / 发送行为 / 新会话页）。 */
-  private appearanceSource(): AppearanceViewSource {
+  private appearanceSource(viewId?: string): AppearanceViewSource {
     return {
       locale: () => readLanguage(),
       diffLayout: () => readDiffLayout(),
@@ -1636,8 +1667,8 @@ export class ChatController implements vscode.Disposable {
       busyEnter: () => (this.busyEnter === "steer" ? "steer" : "queue"),
       /** 权限列表里那一档实验性的 Auto review（进程级事实，见 `loadPermissionCatalog`）。 */
       permissionAutoReview: () => this.permissionAutoReview,
-      /** 新会话的工作目录：空态页那一行提示（没有打开文件夹时界面可改）。 */
-      workspace: () => this.workspaceView(),
+      /** 新会话的工作目录：空态页那一行提示（没有打开文件夹时界面可改、且按窗口取值）。 */
+      workspace: () => this.workspaceView(viewId),
       /** 部署的 agent 预设目录（空表 = 没有可选项，界面什么都不渲染）。 */
       agentPresets: () => this.agentPresetsView(),
     };
@@ -2153,6 +2184,20 @@ export class ChatController implements vscode.Disposable {
     if (this.viewKinds.get(viewId) === "panel") this.syncPanelTitle(sessionId);
     this.log(`[bind] 窗口=${viewId} → 会话=${sessionId}（原=${previous ?? "空态"}）`);
     this.persistWindowState();
+    // 换会话可能换了 cwd：这个窗口的历史列表与空态页那行目录都要跟着同一刻换
+    this.emitViewScopedState();
+  }
+
+  /**
+   * 按**窗口**发的两样东西：历史列表（没有打开文件夹时按这个窗口当前会话的 cwd 收窄，
+   * 见 `emitSessionLists`）与空态页那行工作目录（`emitWorkspaceViews`）。
+   *
+   * 两者是同一件事（「这个窗口现在的目录是哪个」）的两面，绑定 / 解绑时缺一发就会
+   * 露出上一个目录的口径：列表里是 A 的会话、目录胶囊写着 B，或者反过来。
+   */
+  private emitViewScopedState(): void {
+    this.emitSessionLists();
+    this.emitWorkspaceViews();
   }
 
   /**
@@ -2626,10 +2671,11 @@ export class ChatController implements vscode.Disposable {
    * VS Code 打开 / 关掉了文件夹：空态页那一行工作目录要跟着变（含「可不可改」）。
    *
    * 目录本身由 `workspacePath()` 现读，所以这里只推一帧；**不**去动已经建好的会话
-   * ——会话 header 的 cwd 是创建事实，换文件夹不该改写既有会话。
+   * ——会话 header 的 cwd 是创建事实，换文件夹不该改写既有会话。没有打开文件夹时
+   * 这个值按窗口取（各看各的会话 cwd），所以逐窗口推。
    */
   refreshWorkspace(): void {
-    this.emitAll({ type: "patch", patch: { workspace: this.workspaceView() } });
+    this.emitWorkspaceViews();
   }
 
   /**
@@ -3235,7 +3281,7 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
-   * 历史会话列表 = **本窗口该看见的那些会话**。
+   * 历史会话列表的**全局那一份**（`this.sessions`）＝ 本窗口可能看见的所有会话。
    *
    * 用户 2026-09-15 的设计口径：
    *
@@ -3251,12 +3297,27 @@ export class ChatController implements vscode.Disposable {
    * - 会话 cwd == 当前工作区路径：新会话的 `upsert` 增量可能比这次查询晚到，
    *   只看注册表会让「刚建好的会话」从列表里闪一下；
    * - **任何已打开域**的 cwd：工作区目录与历史会话目录的写法（大小写/分隔符）
-   *   可能不一致，恢复窗口时不能因为这点差异把要接回的会话滤掉。
+   *   可能不一致，恢复窗口时不能因为这点差异把要接回的会话滤掉。这条 cwd 取自
+   *   **本次取回的权威列表**（而不是上一份 `this.sessions`）：刚打开的会话可能
+   *   还没进过上一份快照，用旧数据会把它的 cwd 漏掉。
+   *
+   * **这一份刻意是「并集」而不是任何一个窗口该看见的列表**：打开会话（`reusableBlank`
+   * 扫空壳）、空壳判据（`isBlankShell`）、running 打底（`ensureScope`）、`blankSessionIds`
+   * 都读它，收窄了就会丢数据。真正发给界面的列表在 `emitSessionLists` 里按窗口收窄
+   * （没有打开文件夹时，每个窗口只看见它当前那条会话 cwd 下的会话，见 `visibleForView`）。
    */
   async refreshSessions(): Promise<void> {
     if (!this.client) return;
     try {
       const value = await this.client.listSessions();
+      // **权威 cwd 账本**：从**原始行**整份重建（任何可见性过滤之前）。子代理会话被
+      // `visibleSessionRows` 全局藏掉、不进 `this.sessions`，但它的 cwd 是权威事实——
+      // 窗口切进子代理页时「当前会话的 cwd」还要靠它（见 `sessionCwds` 与 `viewCwd`）。
+      const cwds = new Map<string, string>();
+      for (const item of value.items ?? []) {
+        if (typeof item.cwd === "string" && item.cwd) cwds.set(item.sessionId, item.cwd);
+      }
+      this.sessionCwds = cwds;
       // @ 提及候选过滤的打底（判据与用途见 `subagentSessionIds` 与 sessionList.ts）
       for (const item of value.items ?? []) {
         if (item.origin === "subagent") {
@@ -3285,10 +3346,14 @@ export class ChatController implements vscode.Disposable {
           ownIds = new Set(row.sessionIds);
         }
       }
-      // 基准放宽到**任何打开的域**的 cwd（见 `visibleForWorkspace` 的注释）
+      // 基准放宽到**任何打开的域**的 cwd（见 `visibleForWorkspace` 的注释）。cwd 从
+      // **这次刚取回的权威列表**里读（`sessionCwds`，任何可见性过滤之前建的账本），
+      // 而不是上一份 `this.sessions`：刚建好 / 刚打开的会话可能还没进过上一份列表，
+      // 用旧快照会把它自己的 cwd 漏掉——那份列表里没有它，按窗口收窄那一步也就读不到
+      // 它的 cwd（见 `visibleForView`）。
       const openCwds: string[] = [];
       for (const scope of this.scopes.values()) {
-        const cwd = normalizePath(this.sessions.find((s) => s.id === scope.sessionId)?.cwd);
+        const cwd = normalizePath(this.sessionCwds.get(scope.sessionId));
         if (cwd) openCwds.push(cwd);
       }
       const raw = visibleForWorkspace(
@@ -3509,13 +3574,80 @@ export class ChatController implements vscode.Disposable {
     this.syncSubagentUnread(sessionId, unread);
   }
 
-  /** 真正展示给界面的两个列表（所有窗口共享同一份会话列表）。 */
+  /**
+   * 真正展示给界面的两个列表（`sessions` / `archivedSessions`）——**按窗口各发一份**。
+   *
+   * 发帧是唯一按窗口收窄的地方（`this.sessions` 是全局并集，见 `refreshSessions`）：
+   *
+   * - **打开了文件夹**：目录跟随 VS Code，所有窗口同一份 → 仍走**广播**（一条帧发给
+   *   全部窗口，与旧口径逐字相同；也保证任何已挂上的窗口都收得到，不依赖窗口名册）；
+   * - **没有打开文件夹**：每个窗口只看见**它当前那条会话 cwd** 下的会话（用户
+   *   2026-10-10 口径：不同会话可以各自选目录，历史必须跟着各自的目录隔离）；
+   *   收件人取 `liveViewIds()`（此刻活着的窗口名册，见那里）。
+   */
   private emitSessionLists(): void {
+    if (vscode.workspace.workspaceFolders?.[0]) {
+      const { active, archived } = this.groupSessionLists(this.sessions);
+      this.emitAll({ type: "sessions", sessions: active });
+      this.emitAll({ type: "archivedSessions", sessions: archived });
+      return;
+    }
+    for (const viewId of this.liveViewIds()) {
+      const { active, archived } = this.groupSessionLists(
+        visibleForView(this.sessions, { folderOpen: false, cwd: this.viewCwd(viewId) }),
+      );
+      this.emitToView(viewId, { type: "sessions", sessions: active });
+      this.emitToView(viewId, { type: "archivedSessions", sessions: archived });
+    }
+  }
+
+  /**
+   * 此刻**活着的窗口**名册（按窗口发帧时的收件人）。
+   *
+   * 三个来源取并集，每一个都是「这个 viewId 现在存在」的肯定证据，且都在 `unbindView`
+   * 里一起清掉：`bindView` 登记的活动顺序表（`viewOrder`）、绑过会话的窗口
+   * （`viewSessions`）、登记过种类的窗口（`viewKinds`）。真实链路上挂窗口时前两样都会
+   * 走到（`ChatViewProvider.attach` 先 `bindView`，绑定会话时再写 `viewSessions`），
+   * 并集只是把「只走了其中一条」的路径也覆盖住——**漏一个窗口，它的历史列表就收不到帧**。
+   * 发往不存在窗口是空操作（`chatView.deliver` 查不到就不发），所以并集宁宽勿窄。
+   */
+  private liveViewIds(): string[] {
+    const ids = new Set<string>(this.viewOrder);
+    for (const viewId of this.viewSessions.keys()) ids.add(viewId);
+    for (const viewId of this.viewKinds.keys()) ids.add(viewId);
+    return [...ids];
+  }
+
+  /**
+   * 这个窗口**当前**的工作目录（按窗口收窄历史列表的判据）。
+   *
+   * - 绑了会话：以**那条会话的 cwd** 为准——它是会话的创建事实，也是这个窗口此刻
+   *   在看的目录。判据读**权威账本** `sessionCwds` 而不是 `this.sessions` 那一行：
+   *   后者是界面该看见的历史，**子代理会话根本不在里面**（`visibleSessionRows` 全局
+   *   藏掉），切进子代理页时读它就会退化成「拿不到 cwd」；
+   * - 没绑会话（空态页、还没落壳）：退回**新会话页上选定的目录**（`newSessionCwd`）——
+   *   空态页那枚胶囊显示的就是它，窗口接下来也会落到这个目录的空壳上；
+   * - 账本里没有这条（列表还没到、服务端没给 cwd）：返回 `undefined` = **不收窄**。
+   *   宁可列全，也不拿另一个目录去猜（判据按肯定证据写，见 `visibleForView`）。
+   */
+  private viewCwd(viewId: string): string | undefined {
+    const sessionId = this.viewSessions.get(viewId);
+    if (sessionId === undefined) return this.newSessionCwd;
+    return this.sessionCwds.get(sessionId);
+  }
+
+  /**
+   * 把全局列表折成界面的两个列表：**还没开始对话**的空壳会话不进历史列表（服务端的
+   * `blank` 位，官方会话列表同一口径：`api/session-controller` 的 `SessionSummary.blank`
+   * 由消费者过滤），归档过的进归档那一份。
+   */
+  private groupSessionLists(rows: readonly SessionSummaryView[]): {
+    active: SessionSummaryView[];
+    archived: SessionSummaryView[];
+  } {
     const active: SessionSummaryView[] = [];
     const archived: SessionSummaryView[] = [];
-    for (const session of this.sessions) {
-      // **还没开始对话**的空壳会话不进历史列表（服务端的 `blank` 位，官方会话列表同一
-      // 口径：`api/session-controller` 的 `SessionSummary.blank` 由消费者过滤）。
+    for (const session of rows) {
       // 空态窗口现在一进来就绑在这样一条壳上（见 `newSession`），不挡住就会在列表里
       // 留一行没人用过的空记录——正是用户 2026-09-22 报的现场。它仍留在 `this.sessions`
       // 里：cwd 解析、恢复窗口、复用都要读这一行。发言之后由本地 blank 位
@@ -3528,8 +3660,7 @@ export class ChatController implements vscode.Disposable {
       };
       (this.archivedSessionIds.has(session.id) ? archived : active).push(row);
     }
-    this.emitAll({ type: "sessions", sessions: active });
-    this.emitAll({ type: "archivedSessions", sessions: archived });
+    return { active, archived };
   }
 
   /**
@@ -3958,6 +4089,9 @@ export class ChatController implements vscode.Disposable {
     if (this.viewKinds.get(viewId) === "panel") this.setPanelTitle(viewId, panelTabTitle(undefined));
     this.log(`[bind] 窗口=${viewId} → 空态（原=${previous}，会话记录保留）`);
     this.persistWindowState();
+    // 退回空态 = 这个窗口不再有当前会话的 cwd（历史列表随之放宽到「未分组」那一档，
+    // 空态页那行目录退回用户选定的目录，见 `viewCwd`）
+    this.emitViewScopedState();
   }
 
   /**
@@ -4163,7 +4297,8 @@ export class ChatController implements vscode.Disposable {
     const path = picked?.[0]?.fsPath;
     if (!path) return false;
     this.newSessionCwd = path;
-    this.emitAll({ type: "patch", patch: { workspace: this.workspaceView() } });
+    // 空态页那行目录按窗口取（绑定会话的 cwd 优先），所以这里逐窗口推
+    this.emitWorkspaceViews();
     return true;
   }
 
@@ -4721,6 +4856,10 @@ export class ChatController implements vscode.Disposable {
     this.eventsClientId = undefined;
     // 换了连接（可能是另一个服务端）：端点可用性的结论作废，下次开域重新问
     this.subagentListMissing = false;
+    // 会话列表的权威账本同理作废：它记的是**上一个连接那台服务端**的 cwd，换连接后
+    // 那批 id 的含义不再保证（下次 `refreshSessions` 到达时整份重建）。清掉只是让
+    // 「拿不到 cwd」这一段回到保守兜底（不收窄），不会留下错目录。
+    this.sessionCwds.clear();
     // 连接收掉了，旧的去重记账不作数；**未结算的审批 / 提问照旧留着**（见 `interactions`）
     this.interactions.resetDedupe();
   }

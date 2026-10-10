@@ -271,11 +271,13 @@ console.log("sessionView: 外观态键集固定 ✓");
     );
   }
 
-  // （b）快照里两个构造器都在（少一个 → 那一半字段整体消失）
+  // （b）快照里两个构造器都在（少一个 → 那一半字段整体消失）。外观态那一份要带上
+  // `viewId`：空态页那行工作目录按窗口取（没有打开文件夹时各看各的会话 cwd，
+  // 见 `workspaceView` 与 `scripts/sessionListScope.test.ts`）。
   assert.ok(
-    /\.\.\.appearanceView\(this\.appearanceSource\(\)\)/.test(controller) &&
+    /\.\.\.appearanceView\(this\.appearanceSource\(viewId\)\)/.test(controller) &&
       /\.\.\.sessionView\(\s*sessionSourceOf\(/.test(controller),
-    "snapshotFor 必须由 appearanceView + sessionView 两份构造器拼出",
+    "snapshotFor 必须由 appearanceView + sessionView 两份构造器拼出（外观态要带 viewId）",
   );
 
   // （c）会话字段的 patch 只准走 sessionPatch：宿主侧不再出现手写的会话字段字面量
