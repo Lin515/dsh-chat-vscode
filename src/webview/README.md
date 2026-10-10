@@ -59,6 +59,7 @@
 - `presetDisplay.ts` — agent 预设的名字与描述显示（内置四个由客户端按语言给文案）；另给配置项按名字匹配用的候选名（中英两名，宿主也引用这一份）。
 - `markdown.ts` — Markdown → 安全 HTML：DOMPurify 过滤 + marked 配置，代码块交给 React 组件。
 - `footnotes.ts` — 脚注语法的 marked 扩展（marked 不自带，结构逐字对齐官方渲染器产出）。
+- `linkDestinations.ts` — Windows 反斜杠路径的链接 / 图片目标保护：CommonMark 把「`\` + ASCII 标点」当转义（`\.agent`、`\_cache` 这类目录名会丢分隔符），tokenizer 层预编码成 `%5C`；边界见文件头。
 - `fileLinks.ts` — 正文文件链接：markdown 链接目标（带 `#L12` 锚点）+ 行内代码 token（仅命中本轮文件词表）。
 - `fileMentions.ts` — 行内代码文件链接的 DOM 变换（换成内层按钮，官方同构）。
 - `localImages.ts` — 本地图片引用的界面侧解析：交给宿主读 data URL 后换 `src`，缓存按会话隔离。

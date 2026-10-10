@@ -1,6 +1,7 @@
 import DOMPurify from "dompurify";
 import { Marked } from "marked";
 import { beginFootnotes, endFootnotes, footnoteExtensions, footnoteSection } from "./footnotes";
+import { windowsPathTokenizers } from "./linkDestinations";
 
 /**
  * Markdown → 安全 HTML。
@@ -22,6 +23,15 @@ const marked = new Marked({
   breaks: false,
   // 脚注（`markdown.footnotes`）：marked 不带这套语法，由 `footnotes.ts` 补
   extensions: footnoteExtensions(),
+  /**
+   * Windows 反斜杠路径的链接目标不被 CommonMark 当转义吃掉（`\.` → `.`）。
+   *
+   * 少了这一条时：正文里 `[日志](D:\app\demo\.agent\a.log)` 的 href 会变成
+   * `…demo.agent…`，点击报「找不到文件」；`![](D:\app\demo\.agent\图.png)` 同理，
+   * 本地图片按改坏的路径读盘，界面显示「图片加载失败」。缘由与边界见
+   * `linkDestinations.ts`。
+   */
+  tokenizer: windowsPathTokenizers(),
 });
 
 /**
