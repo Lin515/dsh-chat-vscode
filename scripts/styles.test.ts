@@ -2766,6 +2766,50 @@ console.log("styles: 多行草稿打字不闪（量高瞬态同帧消化）✓")
     "刻线本体必须 pointer-events: none——悬停预览与点击都按 Y 坐标在框上换算（官方同款）",
   );
 
+  // 刻线残影（用户 2026-10-11 报「会话里两枚刻线时，鼠标移到一枚上再移走会留下一道
+  // 很薄的灰色残影」）。逐格采样那张截图：残留的一行是**悬停档的宽度**（18dp ≈ 22px、
+  // 右缘对齐），当时刻线本身只剩非悬停档（8dp）那么短——不是画出来的线，是悬停时更长的
+  // 旧像素没被清掉：宽度从 18dp 缩回 12dp／8dp 时缩掉的那一段落在新盒子之外，重画按新
+  // 盒子清帧就把它剩下了。口径与候选行高亮那条（`.popover-item`：行盒与高亮背景矩形必须
+  // 逐像素重合）同源，于是两条防线都要在：
+  //   ① 刻线盒宽**恒定**在最宽档、各档位只改「画多长」（scaleX，右缘对齐）；
+  //   ② 那一层 `contain: paint`（按层清帧，横条自己的「第二道防线」，与
+  //      `.trigger-popover .popover-list` 同一口径）。
+  const tick = rule(".turn-rail-mark::before");
+  assert.ok(
+    /width:\s*calc\(20 \* var\(--dp\)\)/.test(tick),
+    `刻线盒宽必须恒定在最宽档 20dp（现在是 "${tick.trim()}"）——盒宽随档位变时，缩掉的那一段落在新盒子之外，旧像素就会剩下（残影）`,
+  );
+  assert.ok(
+    /transform:\s*translateY\(-50%\)\s*scaleX\(var\(--turn-tick-scale/.test(tick) &&
+      /transform-origin:\s*right center/.test(tick),
+    "刻线的档位只能走 transform 的 scaleX（右缘对齐、往左长）——不许回到改 width 的写法",
+  );
+  for (const selector of [
+    ".turn-rail-mark.is-unloaded::before",
+    ".turn-rail-mark.is-preview::before",
+    ".turn-rail-mark.is-active::before",
+    ".turn-rail-mark:focus-visible::before",
+  ]) {
+    const block = rule(selector);
+    assert.ok(
+      /--turn-tick-scale:\s*[\d.]+/.test(block) && !/\bwidth:/.test(block),
+      `${selector} 只能设 --turn-tick-scale，不许再改 width（盒宽一旦随档位变，残影就回来）`,
+    );
+  }
+  assert.ok(
+    /contain:\s*paint/.test(rule(".turn-rail-scroller")),
+    "横条的内滚层必须 contain: paint——刻线残影的第二道防线（与 .trigger-popover .popover-list 同一口径）",
+  );
+  // 焦点环画在刻线盒**内侧**：刻线盒右缘就是那一层的右缘，`contain: paint` 会把往外的
+  // 半圈裁掉（实测那一竖从来就没画出来过，看着像缺口朝右的半环）。
+  const focusRing = rule(".turn-rail-mark:focus-visible");
+  const focusOffset = designPx(/outline-offset:\s*([^;}]+)/.exec(focusRing)?.[1]?.trim());
+  assert.ok(
+    typeof focusOffset === "number" && focusOffset <= 0,
+    `焦点环要画在刻线盒内侧（outline-offset ≤ 0，现在是 "${String(focusOffset)}"）——往外画会被那一层的 contain: paint 裁掉`,
+  );
+
   // 容器查询的基准与关闭规则必须成对存在：基准没了查询永远不命中（横条挤死窄栏），
   // 规则没了基准白设
   const pane = rule(".chat-pane");

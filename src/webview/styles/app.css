@@ -598,13 +598,20 @@ button.header-title:hover {
   transition: height 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
-/* 框的内滚层：不显示滚动条、不把滚动链给到正文，两端可滚方向用渐隐提示 */
+/* 框的内滚层：不显示滚动条、不把滚动链给到正文，两端可滚方向用渐隐提示。
+   `contain: paint` 是刻线残影的第二道防线（第一道是刻线盒宽恒定，见
+   `.turn-rail-mark::before` 那段）：这一层变成绘制边界后按层清帧，上一帧越出
+   刻线盒的像素没有留下来的通路。机理与像素证据同 `.trigger-popover .popover-list`
+   那条（候选行高亮残影）。视觉不动：这一层本来就是裁剪容器（`overflow-y: auto`
+   会把另一轴也算成 auto），里面没有任何需要溢出显示的东西——预览卡是这一层的
+   **兄弟**（`right: calc(100% + 10dp)` 浮在横条左侧），不受它裁剪。 */
 .turn-rail-scroller {
   position: absolute;
   inset: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-width: none;
+  contain: paint;
 }
 
 .turn-rail-scroller::-webkit-scrollbar {
@@ -662,29 +669,44 @@ button.header-title:hover {
   pointer-events: none;
 }
 
-/* 短横线（刻线本体） */
+/* 短横线（刻线本体）。**盒宽恒定**（最宽的那一档 = 20 个设计像素），各档位只改
+   「画多长」（`scaleX`）与颜色——这是刻线残影的第一道防线，口径与候选行高亮那条
+   （`.popover-item`：行盒与高亮背景矩形必须逐像素重合）同源：状态切换不许让
+   上一个状态的像素落在下一个状态的盒子之外。
+
+   用户 2026-10-11 报「会话里两枚刻线时，鼠标移到其中一枚上再移走，会留下一道
+   很薄的灰色残影」。对截图逐格采样：残留的那一行是**悬停档的宽度**（18dp ≈ 22px
+   右缘对齐），而当时刻线本身只有非悬停档那么短（8dp）——它不是画出来的线，
+   而是悬停时更长的旧像素没被清掉：宽度从 18dp 缩回 12dp／8dp 时，缩掉的那一段
+   落在新盒子之外，重画按新盒子清帧就把它剩下了。盒宽恒定在 20dp 之后，每一档
+   都画在同一个盒子里，旧档的像素没有存身的缝隙；顺带 `transform` 是可合成属性，
+   悬停／移开的过渡不再逐帧重画光栅。
+
+   `scaleX` 的取值就是各档位与 20dp 的比值（12/20、8/20、18/20、20/20），
+   `transform-origin: right center` 保住「右缘对齐、往左长」这条既有观感。 */
 .turn-rail-mark::before {
   position: absolute;
   top: 50%;
   right: 0;
-  width: calc(12 * var(--dp));
+  width: calc(20 * var(--dp));
   height: calc(2 * var(--dp));
   border-radius: calc(2 * var(--dp));
   background: var(--muted);
   content: "";
-  transform: translateY(-50%);
-  transition: width 140ms ease, background-color 140ms ease;
+  transform: translateY(-50%) scaleX(var(--turn-tick-scale, 0.6));
+  transform-origin: right center;
+  transition: transform 140ms ease, background-color 140ms ease;
 }
 
 /* 未加载的轮次：更短、更淡——「这个位置有内容，但还没取回来」 */
 .turn-rail-mark.is-unloaded::before {
-  width: calc(8 * var(--dp));
+  --turn-tick-scale: 0.4;
   opacity: 0.6;
 }
 
 /* 悬停中的刻线：拉长一档（排在 active 之前，激活态保持更强的那条） */
 .turn-rail-mark.is-preview::before {
-  width: calc(18 * var(--dp));
+  --turn-tick-scale: 0.9;
   background: var(--description);
 }
 
@@ -695,19 +717,23 @@ button.header-title:hover {
 
 /* 当前轮：最长最亮 */
 .turn-rail-mark.is-active::before {
-  width: calc(20 * var(--dp));
+  --turn-tick-scale: 1;
   background: var(--fg);
 }
 
 /* 键盘焦点盖过一切悬停态：焦点环 + 焦点色 */
 .turn-rail-mark:focus-visible::before {
-  width: calc(20 * var(--dp));
+  --turn-tick-scale: 1;
   background: var(--border-focus);
 }
 
+/* 焦点环画在刻线盒**内侧**（负偏移）而不是外侧 +2dp：横条那一层带 `contain: paint`
+   （见 `.turn-rail-scroller`），刻线盒的右缘就是那一层的右缘，往外的半圈会被裁掉——
+   实测（预览页 560px 宽、字号 16）焦点环右侧那一竖从来就没画出来过，看着像个缺口朝右的
+   半环。收进盒内之后四边都在层内，环跟着 `border-radius` 走，观感是一圈贴着刻线的圆角环。 */
 .turn-rail-mark:focus-visible {
   outline: 1px solid var(--border-focus);
-  outline-offset: calc(2 * var(--dp));
+  outline-offset: calc(-1 * var(--dp));
 }
 
 /* 预览卡：贴着横条左侧浮出，垂直居中在悬停刻线上（clamp 保证不出框两端） */
