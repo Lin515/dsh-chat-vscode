@@ -140,9 +140,17 @@ try {
   // ---------- 4b. 非法帧头：垃圾不得被读成「空内容」 ----------
   {
     /**
-     * Node 的 `zstdDecompressSync` 会把「魔数 + 几个垃圾字节」当成一个**完整的空帧**接受
-     * （实测 `info: true` 下 `bytesWritten` 等于输入长度、buffer 为 0 字节）。只按「解出来了」
-     * 判断就会把垃圾读成空内容。这里钉三条**正确契约**：非法帧头 → `undefined`。
+     * 原生引擎对这几个样本的宽容度是**版本行为，不是本仓库的契约**，两种都实测到过：
+     * - Node 24.19 及更早：把「魔数 + 几个垃圾字节」当成**完整的空帧**接受（`info: true` 下
+     *   `bytesWritten` 等于输入长度、buffer 为 0 字节）。只按「解出来了」判断就会把垃圾读成
+     *   空内容 —— `validFrameHeader` 挡的就是这个假边界；
+     * - Node 24.20 起：直接抛 `Z_BUF_ERROR`（unexpected end of file），宽容入口的 `catch`
+     *   分支接住，结果同样是 `undefined`。
+     *
+     * 所以注入确认只钉「这段字节不得被原生引擎解出任何内容」（引擎抛错也算满足），引擎这次
+     * 偏严还是偏宽打印成观察；**契约**只有一条：非法帧头 → `undefined`（由 `bothAgree` 钉）。
+     * 引擎偏严的版本上这几条用例压不到 `validFrameHeader` 那一层（引擎先抛了），这一事实在
+     * 观察行里看得见，不再写成会随 Node 版本翻红的断言。
      *
      * 判据来自 zstd 帧格式规范（RFC 8878 §3.1.1.1）：Reserved_bit 必须为 0；描述符声明的
      * 可选字段与至少一个块头都要放得下。
@@ -157,19 +165,28 @@ try {
       // 描述符声称有窗口描述符，但块头放不下
       ["no-block-left", Buffer.concat([Buffer.from([...MAGIC]), Buffer.from([0x00, 0x00])])],
     ];
+    const engineBehavior: string[] = [];
     for (const [label, bytes] of invalidHeaders) {
-      // 注入确认：Node 原生确实会把这些字节「解出来」（否则本用例没测到那条边界）
-      const native = zlib.zstdDecompressSync(bytes, { info: true }) as unknown as {
-        buffer?: Buffer;
-        engine?: { bytesWritten?: number };
-      };
-      assert.strictEqual(
-        native.engine?.bytesWritten,
-        bytes.length,
-        `${label}：注入确认 —— Node 原生把这段垃圾当成完整帧消费掉了`,
+      let native: Buffer | undefined;
+      let engineThrew = false;
+      try {
+        const decoded = zlib.zstdDecompressSync(bytes, { info: true }) as unknown as { buffer?: Buffer };
+        native = decoded.buffer;
+      } catch {
+        // 新版 Node 直接拒（Z_BUF_ERROR）——同样是「没解出内容」
+        engineThrew = true;
+      }
+      // 注入确认（与引擎版本无关的那一半）：这段字节不得被解出任何内容
+      assert.ok(
+        engineThrew || native?.length === 0,
+        `${label}：注入确认 —— 原生引擎不得把这段字节解出内容（buffer=${native?.length ?? "抛错"}）`,
       );
+      engineBehavior.push(`${label}=${engineThrew ? "引擎直接拒" : "引擎当完整空帧接受"}`);
       bothAgree(`invalid-header-${label}`, bytes, undefined);
     }
+    console.log(
+      `[观察] 非法帧头的原生引擎行为（Node ${process.version}）：${engineBehavior.join("，")}`,
+    );
 
     /**
      * 追加式日志的**残尾**：前面已有完整帧、后面跟一段不构成合法帧的字节（常见于写到一半

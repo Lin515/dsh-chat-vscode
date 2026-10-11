@@ -744,6 +744,11 @@ JsonTree 与 `outputBlocks` 的既有产品取舍保持不变，后续只能在�
 [离线校验](<../scripts/trajectoryFixtureVerify.ts>)只验证既有登记、脱敏与结构自洽，不认证历史源身份。
 内部完整性、来源授权、来源认证是三件事，不能用自洽 hash 替代后两者。
 
+原生引擎的宽容度是运行期 Node 的版本行为，不是契约：Node 24.19 及更早把「魔数 + 垃圾」当完整空帧
+接受（`zstdDecompressSync` 不抛错、buffer 为 0 字节），24.20 起改抛 `Z_BUF_ERROR`。因此帧头合法性与
+「垃圾不得被读成空内容」由日志库自己判，断言只钉产物契约（非法帧头 → `undefined`）与「引擎不得解出
+内容」，不钉这一次引擎偏宽还是偏严。
+
 当前三份[真实脱敏夹具](<../test/fixtures/trajectory/README.md>)均以无上限 `--limit 0` 生成：
 `payloadReduced=false`、`payloadMeasurementEligible=true`、`provenance.truncatedFields={}`，派生源码固定 SHA-256 为
 `922c508989987643f4c873e6120c15e3dfbc1981c8e0cb497140400f95c450cb`。
