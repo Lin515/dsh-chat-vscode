@@ -104,7 +104,12 @@ interface Internals {
   connection: string;
   scopes: Map<string, unknown>;
   drafts: Map<string, string>;
-  attachmentsBySession: Map<string, Attachment[]>;
+  /** 附件草稿的账本（`dsh/attachmentLifecycle.ts`）：读列表、整份替换、追加。 */
+  attachments: {
+    list(key: string | undefined): readonly Attachment[];
+    add(key: string, attachments: readonly Attachment[]): void;
+    replace(key: string, attachments: readonly Attachment[]): void;
+  };
   subscribe(listener: (target: string, frame: Record<string, unknown>) => void): unknown;
   bindView(viewId: string): void;
   openSession(viewId: string, sessionId: string): Promise<void>;
@@ -247,7 +252,7 @@ async function scene(options: {
   if (options.channel === "inbox") h.pushInbox(S1, [item]);
   else h.pushQueue(S1, [item]);
   h.c.drafts.set(S1, "已有草稿");
-  h.c.attachmentsBySession.set(S1, [{ ...KEEP }]);
+  h.c.attachments.replace(S1, [{ ...KEEP }]);
   h.frames.length = 0;
   // 返回**同一个** harness 对象：场景里的 `remove` 覆写要落到客户端闭包持有的那份上
   h.scope = scope;
@@ -255,7 +260,7 @@ async function scene(options: {
 }
 
 const draftOf = (h: Harness, key: string) => h.c.drafts.get(key) ?? "";
-const attachmentsOf = (h: Harness, key: string) => h.c.attachmentsBySession.get(key) ?? [];
+const attachmentsOf = (h: Harness, key: string) => [...h.c.attachments.list(key)];
 const namesOf = (list: Attachment[]) => list.map((a) => a.id).sort().join(",");
 const toastsOf = (h: Harness, target: string) =>
   h.frames.filter((f) => f.target === target && f.frame.type === "toast").map((f) => String(f.frame.text));
@@ -425,7 +430,7 @@ console.log("queueRestore: 驱动真控制器（offline stub）");
 {
   const h = await scene({ remember: true, channel: "inbox", content: DURABLE_CONTENT });
   // 用户已经自己把那份文件重新加过一次（id 不同、回执相同）
-  h.c.attachmentsBySession.set(S1, [
+  h.c.attachments.replace(S1, [
     { ...KEEP },
     { id: "a-again", kind: "file", name: "报告.pdf", path: "C:\\ws\\报告.pdf", upload: { status: "ready", receiptId: "rcpt-1" } },
   ]);
@@ -449,7 +454,7 @@ console.log("queueRestore: 驱动真控制器（offline stub）");
   const second: Attachment = { id: "img-b", kind: "image", name: "image", bytes: 3, dataUrl: "data:image/png;base64,BBBB" };
   const h = await scene({ remember: true, channel: "inbox", content: DURABLE_CONTENT, local: [first, second] });
   // 草稿里已经有第一张（同 id，应当去重）
-  h.c.attachmentsBySession.set(S1, [{ ...first }]);
+  h.c.attachments.replace(S1, [{ ...first }]);
   h.remove = async () => {
     h.pushInbox(S1, []);
     return { accepted: true };
@@ -492,7 +497,7 @@ console.log("queueRestore: 驱动真控制器（offline stub）");
     content: DURABLE_CONTENT,
     local: [uploaded, uploading, reuploaded, noReceipt],
   });
-  h.c.attachmentsBySession.set(S1, [{ ...uploaded }, { ...uploading }]);
+  h.c.attachments.replace(S1, [{ ...uploaded }, { ...uploading }]);
   h.remove = async () => {
     h.pushInbox(S1, []);
     return { accepted: true };

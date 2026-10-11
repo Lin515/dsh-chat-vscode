@@ -222,17 +222,18 @@ function makeController(options: { running?: boolean; failPrompt?: boolean } = {
   const inner = controller as unknown as {
     pendingMessages: Map<string, PendingMessageView[]>;
     drafts: Map<string, string>;
-    attachmentsBySession: Map<string, { id: string }[]>;
+    /** 附件草稿的账本（`dsh/attachmentLifecycle.ts`）。 */
+    attachments: {
+      list(key: string | undefined): readonly { id: string }[];
+      add(key: string, attachments: readonly { id: string }[]): void;
+    };
     keyForView(viewId: string): string;
   };
   c.pendingEchoesOfView = (viewId) => [...(inner.pendingMessages.get(inner.keyForView(viewId)) ?? [])];
   c.draftOf = (viewId) => inner.drafts.get(inner.keyForView(viewId));
-  c.attachmentIds = (viewId) => (inner.attachmentsBySession.get(inner.keyForView(viewId)) ?? []).map((a) => a.id);
+  c.attachmentIds = (viewId) => inner.attachments.list(inner.keyForView(viewId)).map((a) => a.id);
   c.putAttachment = (viewId, attachment) => {
-    const key = inner.keyForView(viewId);
-    const list = inner.attachmentsBySession.get(key) ?? [];
-    list.push(attachment);
-    inner.attachmentsBySession.set(key, list);
+    inner.attachments.add(inner.keyForView(viewId), [attachment]);
   };
   c.newSessionCwd = CWD;
   c.client = client as never;

@@ -84,8 +84,9 @@ console.log("composerDraft: 整份快照会把已提交的草稿塞回输入框�
     "「提交即清空草稿」要落在 beginSend 里（它排在连接与建会话之前）",
   );
   assert.ok(
-    /this\.commitAttachments\(viewId\)/.test(begin),
-    "附件芯片同理：界面自己不清附件，晚清一步回显里那份与芯片那份会同时显示",
+    /this\.commitAttachments\(viewId, requestId\)/.test(begin),
+    "附件芯片同理：界面自己不清附件，晚清一步回显里那份与芯片那份会同时显示" +
+      "（提交那一刻把它移进这次提交的租约，requestId 就是租约的身份）",
   );
   assert.ok(
     !/\bawait\b/.test(begin),
@@ -204,8 +205,10 @@ console.log("composerDraft: 连不上后台时那一行标成失败 ✓");
   assert.ok(resendStart >= 0, "找不到 resendPending 分支");
   const resend = controller.slice(resendStart, controller.indexOf('case "stop":', resendStart));
   assert.ok(
-    /submitMessage\(viewId, echo\.text, echo\.attachments, "enter", "retry"\)/.test(resend),
-    "重发按 `retry` 提交：走同一条通道，但不碰输入框",
+    /submitMessage\(\s*viewId,\s*echo\.text,\s*echo\.attachments,\s*"enter",\s*"retry",\s*undefined,\s*message\.requestId,?\s*\)/.test(
+      resend,
+    ),
+    "重发按 `retry` 提交：走同一条通道，但不碰输入框；最后那个 requestId 是把附件租约交接给新提交",
   );
   assert.ok(
     /this\.echoOfView\(viewId, message\.requestId\)/.test(resend),

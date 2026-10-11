@@ -13,12 +13,14 @@
 
 ## 一、谁拥有这些状态
 
-- **权威表在宿主**：`ChatController.drafts` / `attachmentsBySession` / `pendingMessages`
-  （都是内存 Map）。界面只持有乐观镜像（`AppState.draft` / `attachments` / `pendingMessages`），
-  改完立刻渲染、不等往返。
+- **权威表在宿主**：`ChatController.drafts` / `pendingMessages`（内存 Map），附件草稿则是
+  `dsh/attachmentLifecycle.ts` 的**附件账本**（归属 + 上传状态 + 暂存字节的唯一权威表，
+  见该文件头与 `docs/design-attachments.md`）。界面只持有乐观镜像（`AppState.draft` /
+  `attachments` / `pendingMessages`），改完立刻渲染、不等往返。
 - **同一套键**：还没有会话的窗口按 `viewId` 存，绑定会话之后按会话 id 存（`keyForView`）。
   绑定与退回空态各有一条迁移——`bindViewToSession`（窗口键 → 会话键）、`detachView`（会话键 → 窗口键）。
-  草稿/附件的迁移判据是「值不是 `undefined`」（**空串也是草稿**）；回显的迁移判据是「取到数组」。
+  草稿的迁移判据是「值不是 `undefined`」（**空串也是草稿**）；附件交账本自己的 `move`
+  （有一份记录就搬，空表也搬；两份相遇合并）；回显的迁移判据是「取到数组」。
 - **整份状态快照读的也是这几张表**（`snapshotFor`），所以宿主的表就是
   「界面重载 / 切会话 / 建会话之后看到什么」。
 

@@ -26,7 +26,6 @@ import type {
   SubagentContextView,
   SubagentView,
   TodoView,
-  UploadState,
 } from "../shared/chat";
 import type { HostToWebview, WebviewToHost } from "../shared/ipc";
 import { SessionAdapter, type ImageRef } from "./adapter";
@@ -46,6 +45,7 @@ import {
   type PromptContentPart,
 } from "./attachments";
 import { readClipboardPaths } from "./clipboardPaths";
+import { AttachmentLifecycle } from "./attachmentLifecycle";
 import { saveChatImage } from "./imageFiles";
 import { ConfigChangeRouter } from "./configChanges";
 import { fileChangeKind, hasWorkingChange, isNotFoundError, resolveChipPath, splitPathLineSuffix, type FileExistence, type GitChangeStateLike } from "./fileChange";
@@ -968,7 +968,21 @@ export class ChatController implements vscode.Disposable {
    * 自己的 viewId 做键（各自暂存，建会话时迁移到会话键，见 `bindViewToSession`）。
    */
   private readonly drafts = new Map<string, string>();
-  private readonly attachmentsBySession = new Map<string, Attachment[]>();
+  /**
+   * 附件草稿的**归属与上传生命周期**（唯一权威表，见 `dsh/attachmentLifecycle.ts`）。
+   *
+   * 键与草稿 / 回显**同一套**（`keyForView`）：已绑定会话的窗口用会话 id，未绑定的
+   * 用 viewId；绑定与退回空态各有一条迁移（`move`）。归属按**记录身份**保持稳定：
+   * 上传的结算落在开轮那一刻那条记录上，**切换查看会话不改变已有附件的归属**，也不向
+   * 当前会话推帧。字节暂存、在飞轮次、作废判据都在那边，控制器只注入一次 IO 与一次
+   * 「列表变了」（回归见 `scripts/attachmentLifecycle.test.ts`）。
+   */
+  private readonly attachments = new AttachmentLifecycle({
+    performUpload: (input) => this.performUpload(input),
+    describeError: (error) => this.describeError(error),
+    publish: (key, list) => this.publishAttachments(key, list),
+    log: (message) => this.log(message),
+  });
   /**
    * 乐观回显账本（见 `shared/chat.ts` 的 `PendingMessageView`）。
    *
@@ -1546,7 +1560,7 @@ export class ChatController implements vscode.Disposable {
       ),
       // 输入区那三个字段按**窗口**存（未绑会话时）/ 按会话键存，不属于会话状态片段：
       // 它们由输入框那条链单独维护，这里只补进快照（见 `keyForView`）。
-      attachments: this.attachmentsBySession.get(sessionId ?? viewId ?? "") ?? [],
+      attachments: [...this.attachments.list(sessionId ?? viewId ?? "")],
       draft: this.drafts.get(sessionId ?? viewId ?? "") ?? "",
       // 乐观回显同理按窗口键存：**空表也要发**，否则切会话时上一条会话的回显留在界面
       pendingMessages: [...(this.pendingMessages.get(sessionId ?? viewId ?? "") ?? [])],
@@ -2019,7 +2033,17 @@ export class ChatController implements vscode.Disposable {
     // 未绑定会话的窗口按 viewId 存回显：viewId 是每个 webview 实例现铸的（`chatView.attach`），
     // 这个键不会再有人用，连同清掉。绑过会话的那一份挂在**会话键**上、刻意留着（用户口径：
     // 失败的那行要能重新打开这条会话继续操作），窗口下线不构成删它的理由
-    if (!sessionId) this.pendingMessages.delete(viewId);
+    if (!sessionId) {
+      // 这个窗口的键不会再有人用：它名下每条回显持有的**附件租约**先放掉，再清表与草稿。
+      // 只认这个键自己的回显——别的会话的失败行（与它们的租约）按现行口径跨窗口保留。
+      for (const echo of this.pendingMessages.get(viewId) ?? []) {
+        this.attachments.releaseLease(echo.requestId);
+      }
+      this.pendingMessages.delete(viewId);
+      // 同理：窗口键上的附件草稿跟着这个 webview 实例走，viewId 不会再有人用
+      // （绑过会话的那一份挂在会话键上、刻意留着，见 `attachmentLifecycle.release`）
+      this.attachments.release(viewId);
+    }
     this.revealers.delete(viewId);
     this.viewKinds.delete(viewId);
     // 标签设定器与「上次写下去的标题」跟着窗口一起清：长期存活的扩展宿主里，
@@ -2215,11 +2239,9 @@ export class ChatController implements vscode.Disposable {
         this.drafts.set(sessionId, draft);
         this.drafts.delete(viewId);
       }
-      const attachments = this.attachmentsBySession.get(viewId);
-      if (attachments) {
-        this.attachmentsBySession.set(sessionId, attachments);
-        this.attachmentsBySession.delete(viewId);
-      }
+      // 附件草稿跟着窗口键搬（**空表也算一份**：提交后的空表必须一起搬，否则会话键下
+      // 读到的是更早的值——判据与草稿那句「值不是 undefined」同源，只是收进了账本）
+      this.attachments.move(viewId, sessionId);
       // 乐观回显跟着迁：没有壳的空态（无工作目录那一段）发第一条消息时它先落在窗口键上，
       // 而 `reuseOrCreateBlank` 绑定之后立刻推的那份整份快照读的是**会话键**（见
       // `snapshotFor`）——不迁这一下，回显就被那一帧抹掉，正是「消息闪一下又没了」。
@@ -4084,11 +4106,9 @@ export class ChatController implements vscode.Disposable {
       this.drafts.set(viewId, draft);
       this.drafts.delete(previous);
     }
-    const attachments = this.attachmentsBySession.get(previous);
-    if (attachments) {
-      this.attachmentsBySession.set(viewId, attachments);
-      this.attachmentsBySession.delete(previous);
-    }
+    // 附件草稿按**窗口键**搬回去（与 `bindViewToSession` 的迁移严格对称）：点「+」
+    // 之后输入框上那几枚芯片还在，用户接着发不需要重加
+    this.attachments.move(previous, viewId);
     this.dropViewers(previous);
     this.noteSessionLeft(previous, wasGenerating);
     if (this.viewKinds.get(viewId) === "panel") this.setPanelTitle(viewId, panelTabTitle(undefined));
@@ -6240,6 +6260,8 @@ export class ChatController implements vscode.Disposable {
         // 只认这个窗口自己那份账本：别的会话的 id 就算撞上了也不许动（见 `echoOfView`）
         if (!this.echoOfView(viewId, message.requestId)) break;
         this.retireEcho(message.requestId, "user-retract");
+        // 撤回是这条提交的**最终收场**：它的附件租约跟着释放（字节与在飞轮次一起收）
+        this.attachments.releaseLease(message.requestId);
         break;
       }
 
@@ -6251,8 +6273,18 @@ export class ChatController implements vscode.Disposable {
         if (!echo) break;
         this.removeEcho(message.requestId, "user-resend");
         // 手势按主发送算：重发就是"再发一次"，不继承上一次的加速手势；
-        // **来源是 `retry`**：这一段内容不是输入框里的那份，绝不能顺手清掉用户正在写的草稿
-        await this.submitMessage(viewId, echo.text, echo.attachments, "enter", "retry");
+        // **来源是 `retry`**：这一段内容不是输入框里的那份，绝不能顺手清掉用户正在写的草稿。
+        // 附件草稿走**租约交接**（`handoffLeaseFrom`）：换到新提交的 requestId 上继续持有——
+        // 不取消仍在飞的上传、不重启、也不放回输入框；重发再失败时新那一行同样持有它。
+        await this.submitMessage(
+          viewId,
+          echo.text,
+          echo.attachments,
+          "enter",
+          "retry",
+          undefined,
+          message.requestId,
+        );
         break;
       }
 
@@ -6812,8 +6844,10 @@ export class ChatController implements vscode.Disposable {
     gesture: "enter" | "accelerated",
     source: "composer" | "retry" | "queue" = "composer",
     prebuiltContent?: readonly PromptContentPart[],
+    /** 「重发」专用：把上一行的附件租约交给这次提交继续持有（见 `beginSend`）。 */
+    handoffLeaseFrom?: string,
   ): Promise<boolean> {
-    const requestId = this.beginSend(viewId, text, attachments, source);
+    const requestId = this.beginSend(viewId, text, attachments, source, handoffLeaseFrom);
     // 未连接时先恢复连接：历史会话切换后跟随流尚未建立时直接 prompt
     // 会触发服务端 resume，冷启动竞态下 resume 可能失败。
     // **用户显式动作**（按了发送）：允许拉起内部后台（关掉自动连接时也算数，
@@ -6821,7 +6855,7 @@ export class ChatController implements vscode.Disposable {
     if (!this.client || this.connection !== "connected") await this.ensureConnected({ start: true });
     if (!this.client) {
       if (!this.failEcho(requestId, "@sendNoConnection")) {
-        this.appendDraft(viewId, text, attachments);
+        this.appendDraft(viewId, text, attachments, requestId);
       }
       return false;
     }
@@ -6853,7 +6887,7 @@ export class ChatController implements vscode.Disposable {
   ): Promise<boolean> {
     if (!this.client) {
       if (!this.failEcho(requestId, "@sendNoConnection")) {
-        this.appendDraft(viewId, text, attachments);
+        this.appendDraft(viewId, text, attachments, requestId);
       }
       return false;
     }
@@ -6867,7 +6901,7 @@ export class ChatController implements vscode.Disposable {
       // 用户**主动取消**了目录选择：这不是"发送失败"，而是这条消息收回输入框
       // （唯一一条不回显失败态的路径——把用户自己的取消画成红框是误导）
       this.retireEcho(requestId, "workspace-cancelled");
-      this.appendDraft(viewId, text, attachments);
+      this.appendDraft(viewId, text, attachments, requestId);
       return false;
     }
 
@@ -6879,8 +6913,10 @@ export class ChatController implements vscode.Disposable {
     const slash = attachments.length === 0 ? this.slashCommandOf(scope, text) : undefined;
     if (slash) {
       // 草稿与附件已在 beginSend 里清掉（提交那一刻，早于建会话），这里只剩执行命令。
-      // 回显要收回：命令不是用户消息，它的执行记录由命令节点承载。
+      // 回显要收回：命令不是用户消息，它的执行记录由命令节点承载。**这次提交到此收场**，
+      // 附件租约（提交那一刻移走的那一份）跟着释放——命令不再引用它。
       this.retireEcho(requestId, "slash");
+      this.attachments.releaseLease(requestId);
       const outcome = await this.runCommand(viewId, slash.line);
       if (outcome && !outcome.ok) {
         this.emitToView(viewId, {
@@ -6938,7 +6974,7 @@ export class ChatController implements vscode.Disposable {
       // 拼不出内容块（什么都没带）＝什么都没发出去：那一行标成失败（原因写在上面）；
       // 这条本来就没有回显时（尚未发出的那条 / 子代理会话）照旧把正文还回去
       if (!this.failEcho(requestId, "@sendEmpty")) {
-        this.appendDraft(viewId, text, attachments);
+        this.appendDraft(viewId, text, attachments, requestId);
       }
       return false;
     }
@@ -6968,10 +7004,12 @@ export class ChatController implements vscode.Disposable {
       await this.applyPendingModel(scope);
       // 草稿与附件在 beginSend 里已清（空态那一步清的是窗口键，绑定后由
       // `bindViewToSession` 迁到会话键）；这里按会话键复述一次，不依赖迁移链路的细节。
-      // **只对输入框来源做**：重发 / 排队重发的内容不是输入框里那份，清它等于擦掉用户的草稿
+      // **只对输入框来源做**：重发 / 排队重发的内容不是输入框里那份，清它等于擦掉用户的草稿。
+      // 附件这一次**并入同一个租约、不下发**：beginSend 那道移走已经把「空」推给界面了，
+      // 这里防的是「共享空壳：别的窗口的芯片在迁移合并时并进来」，没有新变化可广播。
       if (source === "composer") {
         const key = this.keyForView(viewId);
-        this.attachmentsBySession.set(key, []);
+        this.commitAttachments(viewId, requestId, { publish: false });
         this.drafts.set(key, "");
       }
       // 子代理会话不收文件附件（官方同一条硬规则：`subagent/attachment-invalid`，
@@ -6982,7 +7020,7 @@ export class ChatController implements vscode.Disposable {
       const address = scope.subagentAddress;
       if (address && content.some((part) => part.type === "file")) {
         this.emitToView(viewId, { type: "toast", level: "warn", text: "@subagentFilesUnsupported" });
-        this.appendDraft(viewId, text, attachments);
+        this.appendDraft(viewId, text, attachments, requestId);
         return false;
       }
       // **先**取「发出去的那一刻 agent 还在不在跑」，再乐观置位。顺序反了的话
@@ -7055,7 +7093,7 @@ export class ChatController implements vscode.Disposable {
       const detail = this.describeError(error);
       this.log(`[submit] 发送失败：${detail}`);
       if (!this.failEcho(requestId, `@sendFailed:${detail}`)) {
-        this.appendDraft(viewId, text, attachments);
+        this.appendDraft(viewId, text, attachments, requestId);
         // 排队来源这一档的正文刚被 `appendDraft` 放回输入框，报错文案就说清这一点
         this.reportError(
           source === "queue"
@@ -7069,6 +7107,9 @@ export class ChatController implements vscode.Disposable {
       // 原因，所以这里用最泛的那一句；没有回显时它什么都不做（上面已经按老口径收场）。
       if (!admitted) this.failEcho(requestId, "@sendUnconfirmed");
     }
+    // 这条提交**没有回显**（排队口径 / 子代理会话 / 判成命令但没走命令通道那类）却发出去
+    // 了：界面上没有能承载它的那一行，提交那一刻移走的附件租约到此收场——不靠上限兜底。
+    if (admitted && !this.echoFor(requestId)) this.attachments.releaseLease(requestId);
     // 上传不完整的提示**放在 try 之外**：它是成功之后的告知，抛在这里不该被上面的
     // catch 当成「没发出去」（那会把已经发出去的那条标成失败，还会把 running 置回 false）
     if (admitted && notUploaded.length) this.warnUploadIncomplete(viewId, notUploaded);
@@ -7344,7 +7385,7 @@ export class ChatController implements vscode.Disposable {
       await this.ensureSession(viewId, { start: true, askDir: true });
     }
     const key = this.keyForView(viewId);
-    const list = this.attachmentsBySession.get(key) ?? [];
+    const existing = this.attachments.list(key);
     const scope = this.scopeOfView(viewId);
     const plan = planIntake({
       items,
@@ -7354,20 +7395,18 @@ export class ChatController implements vscode.Disposable {
       // 投影的用途），拿不到时给一个保守硬上限——同步读一张几百 MB 的图会冻住宿主
       maxImageBytes: scope?.imageLimits?.maxImageBytes ?? IMAGE_INLINE_HARD_CAP,
       // 附件按路径去重（同一张图加两次没有意义）；字节条目没有身份可比，不去重
-      existingPaths: list.flatMap((attachment) => (attachment.path ? [attachment.path] : [])),
+      existingPaths: existing.flatMap((attachment) => (attachment.path ? [attachment.path] : [])),
       rejected,
       onError: (message) => this.log(`[attach] ${message}`),
     });
 
-    // 先把芯片落进列表（带 uploading，由 startUpload 写）再起上传：上传是异步的
+    // 先把芯片落进列表（带 uploading，由 `attachments.start` 写）再起上传：上传是异步的
     // 一条日志把这一批的去向说清楚（排查「我加的东西怎么没进来」全靠它）
     this.log(
       `[attach] ${source}：附件 ${plan.attachments.length}（其中上传 ${plan.uploads.length}）` +
         ` / 目录引用 ${plan.directories.length} / 路径兜底 ${plan.pathOnly.length} / 拒绝 ${plan.rejected.length}`,
     );
-    list.push(...plan.attachments);
-    this.attachmentsBySession.set(key, list);
-    this.pushAttachmentsForView(viewId, list);
+    this.attachments.add(key, plan.attachments);
 
     for (const directory of plan.directories) this.addDirectoryReference(viewId, directory);
     for (const upload of plan.uploads) this.startUpload(viewId, upload);
@@ -7444,87 +7483,69 @@ export class ChatController implements vscode.Disposable {
     return bytes;
   }
 
-  /** 把窗口的附件列表推给界面：绑了会话走会话投递，空态直接发给这个窗口。 */
-  private pushAttachmentsForView(viewId: string, list: readonly Attachment[]): void {
-    const sessionId = this.viewSessions.get(viewId);
-    if (sessionId) {
-      this.deliver(sessionId, { type: "patch", patch: { attachments: [...list] } });
-    } else {
-      this.emitToView(viewId, { type: "patch", patch: { attachments: [...list] } });
+  /**
+   * 账本里那份列表变了：**按归属键**决定这一帧发给谁。
+   *
+   * 有窗口正绑在这个键上（它是会话 id）→ 按会话广播，同会话的多窗口共享同一份芯片；
+   * 这个键就是某个还没绑定会话的窗口自己（viewId）→ 定向发给它；**没人看这条会话时
+   * 什么都不发**——结算只落在归属那条记录上，不按「此刻在看哪条会话」投递。
+   */
+  private publishAttachments(key: string, list: readonly Attachment[]): void {
+    const frame: HostToWebview = { type: "patch", patch: { attachments: [...list] } };
+    for (const sessionId of this.viewSessions.values()) {
+      if (sessionId === key) {
+        this.deliver(key, frame);
+        return;
+      }
+    }
+    // 空态窗口的键就是它自己的 viewId；已经绑走（`move` 搬过）或已经下线的都不发
+    if (this.viewOrder.includes(key) && this.viewSessions.get(key) === undefined) {
+      this.emitToView(key, frame);
     }
   }
 
   /**
-   * 起一次上传（路径来源重读磁盘，字节来源用手上这一份），并把 `receiptId` 写回芯片。
+   * 账本唯一的上传 IO：路径来源重读磁盘、字节来源用账本留的那一份，再走
+   * `DshClient.uploadFile`（与官方同一条路由）。
    *
-   * 字节先存进 `droppedBytes`：上传失败后芯片上的「重试」要能再传一次，而字节那条路
-   * 没有任何别的来源（列表里只有名字）。上传成功后立刻丢掉，失败则留到用户重试或
-   * 删掉芯片——内存占用因此只跟「在飞 + 失败」的条目走。
+   * 生命周期（开轮 / 结算 / 旧轮作废 / 失败重试的来源）全在
+   * `dsh/attachmentLifecycle.ts` 里：这里只做这一次 IO，`sessionId` 由账本在**开轮
+   * 那一刻**抓给它，之后与窗口切到哪条会话无关。
+   */
+  private async performUpload(input: {
+    sessionId: string;
+    source: IntakeUpload["source"];
+    name: string;
+  }): Promise<{ receiptId: string }> {
+    if (!this.client) throw new Error("@uploadNoSession");
+    const bytes =
+      input.source.kind === "bytes" ? input.source.bytes : new Uint8Array(readFileSync(input.source.path));
+    const value = await this.client.uploadFile(input.sessionId, bytes, input.name);
+    return { receiptId: value.receiptId };
+  }
+
+  /**
+   * 起一次上传（`planIntake` 判出来要上传的那几枚）。
+   *
+   * 上传的会话在**这一刻**取定：窗口绑着会话就是它，空态窗口（还没落壳）没有会话可传，
+   * 账本会直接落 `@uploadNoSession`。之后用户切走也不改这次上传的归属。
    */
   private startUpload(viewId: string, upload: IntakeUpload): void {
-    const key = this.keyForView(viewId);
-    const attachment = (this.attachmentsBySession.get(key) ?? []).find((a) => a.id === upload.id);
-    if (!attachment) return;
-    if (upload.source.kind === "bytes") this.droppedBytes.set(upload.id, upload.source.bytes);
-    this.setStateForUpload(viewId, upload.id, { status: "uploading", loaded: 0 });
-    void this.runUpload(viewId, upload.id, attachment.name, upload.source);
+    this.attachments.start(
+      this.keyForView(viewId),
+      upload.id,
+      this.client ? this.viewSessions.get(viewId) : undefined,
+      upload.source,
+    );
   }
 
-  /** 拖放 / 粘贴字节的暂存（键 = 附件 id）：只为「上传失败后重试」而留。 */
-  private readonly droppedBytes = new Map<string, Uint8Array>();
-
-  private async runUpload(
-    viewId: string,
-    id: string,
-    name: string,
-    source: IntakeUpload["source"],
-  ): Promise<void> {
-    const sessionId = this.viewSessions.get(viewId);
-    if (!this.client || !sessionId) {
-      this.setStateForUpload(viewId, id, { status: "error", message: "@uploadNoSession" });
-      return;
-    }
-    try {
-      const bytes = source.kind === "bytes" ? source.bytes : new Uint8Array(readFileSync(source.path));
-      const value = await this.client.uploadFile(sessionId, bytes, name);
-      this.droppedBytes.delete(id);
-      this.setStateForUpload(viewId, id, { status: "ready", receiptId: value.receiptId });
-    } catch (error) {
-      this.log(`[upload] ${name} 上传失败：${this.describeError(error)}`);
-      this.setStateForUpload(viewId, id, { status: "error", message: this.describeError(error) });
-    }
-  }
-
-  /** 改**指定窗口**某个附件的上传状态并下发。 */
-  private setStateForUpload(viewId: string, id: string, state: UploadState): void {
-    this.mutateAttachmentsForView(viewId, (list) => {
-      const target = list.find((a) => a.id === id);
-      if (target) target.upload = state;
-    });
-  }
-
-  /** 修改**指定窗口**的附件并下发（键为会话 id；空态窗口用 viewId 做键）。 */
-  private mutateAttachmentsForView(viewId: string, fn: (list: Attachment[]) => void): void {
-    const key = this.keyForView(viewId);
-    const list = this.attachmentsBySession.get(key) ?? [];
-    fn(list);
-    this.attachmentsBySession.set(key, list);
-    this.pushAttachmentsForView(viewId, list);
-  }
-
-  /** 重传一个失败的文件附件（字节来源用手上那份暂存，路径来源重读磁盘）。 */
+  /** 重传一个失败的文件附件：来源（暂存字节 / 附件路径）由账本自己取。 */
   private retryUpload(viewId: string, id: string): void {
-    const key = this.keyForView(viewId);
-    const attachment = (this.attachmentsBySession.get(key) ?? []).find((a) => a.id === id);
-    if (!attachment) return;
-    // 拖放 / 粘贴来的附件没有路径，字节存在 `droppedBytes` 里（见 startUpload）
-    const dropped = this.droppedBytes.get(id);
-    if (dropped) {
-      this.startUpload(viewId, { id, source: { kind: "bytes", bytes: dropped } });
-      return;
-    }
-    if (!attachment.path) return;
-    this.startUpload(viewId, { id, source: { kind: "path", path: attachment.path } });
+    this.attachments.retry(
+      this.keyForView(viewId),
+      id,
+      this.client ? this.viewSessions.get(viewId) : undefined,
+    );
   }
 
   /**
@@ -7535,13 +7556,9 @@ export class ChatController implements vscode.Disposable {
     return isImagePath(path) || isDirectoryPath(path) ? basename(path) : this.relativePath(path);
   }
 
+  /** 删掉一枚芯片：账本顺手作废它在飞的那一轮、释放它的暂存字节（迟到的完成不再复活它）。 */
   private removeAttachment(viewId: string, id: string): void {
-    // 拖放字节只为「失败重试」而留：芯片删了就没用了，别占着内存
-    this.droppedBytes.delete(id);
-    this.mutateAttachmentsForView(viewId, (list) => {
-      const index = list.findIndex((a) => a.id === id);
-      if (index >= 0) list.splice(index, 1);
-    });
+    this.attachments.remove(this.keyForView(viewId), id);
   }
 
   /**
@@ -7773,6 +7790,10 @@ export class ChatController implements vscode.Disposable {
    * 后两件事**只对输入框来源做**（`source === "composer"`）：重发 / 排队重发的那段内容
    * 不是输入框里那份，输入框里此刻可能是用户正打着的另一句话——清它就是把那句话擦掉。
    *
+   * `handoffLeaseFrom` 是「重发」专用：把上一行持有的**附件租约**交给这次新提交继续持有
+   * （不取消在飞的上传、不重启、不放回输入框，见 `commitAttachments` 与
+   * `dsh/attachmentLifecycle.ts` 的 `transferLease`）。
+   *
    * @returns 本次提交的 requestId（回显与 durable 事件的关联身份，由 `send` 带给 prompt）。
    */
   private beginSend(
@@ -7780,8 +7801,10 @@ export class ChatController implements vscode.Disposable {
     text: string,
     attachments: Attachment[],
     source: "composer" | "retry" | "queue",
+    handoffLeaseFrom?: string,
   ): string {
     const requestId = randomUUID();
+    if (handoffLeaseFrom) this.attachments.transferLease(handoffLeaseFrom, requestId);
     const key = this.keyForView(viewId);
     const scope = this.scopeOfView(viewId);
     // 斜杠命令走命令通道（`commands/execute`），它不是用户消息，不该占一行回显。
@@ -7816,7 +7839,7 @@ export class ChatController implements vscode.Disposable {
     }
     if (source === "composer") {
       this.commitDraft(viewId);
-      this.commitAttachments(viewId);
+      this.commitAttachments(viewId, requestId);
     }
     return requestId;
   }
@@ -7838,6 +7861,8 @@ export class ChatController implements vscode.Disposable {
       const victim = list.findIndex((entry) => entry.status !== "failed");
       if (victim < 0) break;
       const [dropped] = list.splice(victim, 1);
+      // 被淘汰的那一行不再被任何人引用：它持有的附件租约（提交那一刻移走的那一份）一起放掉
+      if (dropped) this.attachments.releaseLease(dropped.requestId);
       this.log(`[echo] 回显条数超过上限，丢弃最旧的未失败一条 requestId=${dropped?.requestId ?? ""}`);
     }
     this.putPending(key, list);
@@ -7866,6 +7891,10 @@ export class ChatController implements vscode.Disposable {
     while (this.pendingMessages.size > MAX_PENDING_KEYS) {
       const oldest = this.pendingMessages.keys().next().value;
       if (oldest === undefined) break;
+      // 整个键被淘汰 = 它名下每一条回显都不再被引用：各自的附件租约一起放掉
+      for (const echo of this.pendingMessages.get(oldest) ?? []) {
+        this.attachments.releaseLease(echo.requestId);
+      }
       this.pendingMessages.delete(oldest);
       this.log(`[echo] 回显键数超过上限，丢弃最旧的键 key=${oldest}`);
     }
@@ -7918,8 +7947,8 @@ export class ChatController implements vscode.Disposable {
    * 推一份乐观回显给这个键对应的窗口。
    *
    * `key` 是**窗口键**（未绑定会话的窗口用 viewId）或**会话键**（已绑定用会话 id）——
-   * 按域在不在分流投递，与 `pushAttachmentsForView` 同一套：已绑定的窗口按会话投递
-   * （同一会话的多窗口看到同一份回显，与草稿/附件的现行口径一致），未绑定的定向发给它自己。
+   * 按域在不在分流投递，与附件账本那条 `publishAttachments` 同一套：已绑定的窗口按会话
+   * 投递（同一会话的多窗口看到同一份回显，与草稿/附件的现行口径一致），未绑定的定向发给它自己。
    */
   private pushPending(key: string): void {
     const frame: HostToWebview = {
@@ -7968,36 +7997,63 @@ export class ChatController implements vscode.Disposable {
    * 对不上（正文里带 `@` 引用会被折写、附件消息正文为空）就不收：宁可多留一条，
    * 也不能把另一条正在等的回显误收掉。
    */
-  private retireEchoByText(sessionId: string, text: string): void {
+  private retireEchoByText(sessionId: string, text: string): string | undefined {
     const wanted = text.trim();
-    if (!wanted) return;
+    if (!wanted) return undefined;
     const list = this.pendingMessages.get(sessionId);
-    if (!list?.length) return;
+    if (!list?.length) return undefined;
     const index = list.findIndex((echo) => echo.text.trim() === wanted);
-    if (index < 0) return;
+    if (index < 0) return undefined;
     const [echo] = list.splice(index, 1);
     this.putPending(sessionId, list);
     this.log(`[echo] 按正文收回乐观回显 requestId=${echo?.requestId ?? ""}`);
     this.pushPending(sessionId);
+    return echo?.requestId;
   }
 
   /**
    * 一条**人的**用户消息被 durable 承认（适配器的 `onUserMessage` 回调）。
    *
    * 有 `rpcId` 就按它收（权威、精确）；没有才退回按正文（见 `retireEchoByText`）。
+   * 承认 = 这条提交**真的成了历史**：它的附件租约到此收场（服务端已经拿到内容块，
+   * 本地那份芯片与字节没有必要再留着）。
    */
   private noteUserAdmitted(sessionId: string, message: { rpcId?: string; text: string }): void {
     if (message.rpcId) {
       this.retireEcho(message.rpcId, "admitted");
+      this.attachments.releaseLease(message.rpcId);
       return;
     }
-    this.retireEchoByText(sessionId, message.text);
+    const retired = this.retireEchoByText(sessionId, message.text);
+    if (retired) this.attachments.releaseLease(retired);
   }
 
-  /** 清空这个窗口（或它绑定的会话）的附件芯片，并把「清空」推给界面（与 `commitDraft` 对称）。 */
-  private commitAttachments(viewId: string): void {
-    this.attachmentsBySession.set(this.keyForView(viewId), []);
-    this.pushAttachmentsForView(viewId, []);
+  /** 按 requestId 找一条回显（**全局扫**：key 会随绑定迁移，按 id 找没有时序问题）。 */
+  private echoFor(requestId: string): PendingMessageView | undefined {
+    for (const list of this.pendingMessages.values()) {
+      const echo = list.find((entry) => entry.requestId === requestId);
+      if (echo) return echo;
+    }
+    return undefined;
+  }
+
+  /**
+   * 提交那一刻把可见芯片**移进这次提交的租约**（并推一份空表），有回显的那条失败行改引用
+   * 租约里那一份活条目——它的上传状态会继续被结算，于是「重发」拿得到真回执。
+   *
+   * **移走而不是销毁**（见 `dsh/attachmentLifecycle.ts`）：字节与在飞那一次上传都留着，
+   * 失败回填（`appendDraft`）能把原来那些对象整份还回输入框；成功 / 撤回 / 命令 / 无回显的
+   * 提交成功才由 `releaseLease` 最终释放。
+   *
+   * `publish: false` 给 `send` 里那次按会话键的复述：`beginSend` 已经下发过「空」了，
+   * 那次只是防「共享空壳：别的窗口的芯片在迁移合并时并进来」，没有新变化要广播。
+   */
+  private commitAttachments(viewId: string, requestId: string, options?: { publish?: boolean }): void {
+    const key = this.keyForView(viewId);
+    const leased = this.attachments.detach(key, requestId, options);
+    if (!leased) return;
+    const echo = this.echoFor(requestId);
+    if (echo) echo.attachments = [...leased];
   }
 
   /**
@@ -8026,19 +8082,26 @@ export class ChatController implements vscode.Disposable {
     else this.emitToView(viewId, { type: "patch", patch: { draft: "" } });
   }
 
-  /** 把文本与附件追加回输入框（发送失败时的兜底，尽量不丢内容）。 */
-  private appendDraft(viewId: string, text: string, attachments: Attachment[]): void {
+  /**
+   * 把文本与附件追加回输入框（发送失败时的兜底，尽量不丢内容）。
+   *
+   * `requestId` 给出时先**归还这次提交的租约**：原先那几枚（上传状态 / 回执 / 暂存字节 /
+   * 在飞那一次结算）整份回到可见草稿；紧接着 `add` 的界面副本按 id 去重自动跳过。没有租约
+   * 的来源（重发 / 排队重发）按老口径把手上这一批放回去。
+   */
+  private appendDraft(viewId: string, text: string, attachments: Attachment[], requestId?: string): void {
     const key = this.keyForView(viewId);
     const existing = this.drafts.get(key) ?? "";
     const next = existing.trim()
       ? `${existing.replace(/\s+$/, "")}\n${text}`
       : text;
     this.drafts.set(key, next);
-    const list = this.attachmentsBySession.get(key) ?? [];
-    for (const attachment of attachments) {
-      if (!list.some((entry) => entry.id === attachment.id)) list.push(attachment);
-    }
-    this.attachmentsBySession.set(key, list);
+    // 附件走账本（按 id 去重），但这一帧由这里**合成**（正文与附件一次推给界面）：
+    // 账本先推一帧、这里再推一帧的话，界面上是两帧连续的同字段补丁。
+    // 先归还租约（如果这次提交有），再放界面副本——重复的 id 在这一步被跳过。
+    if (requestId) this.attachments.returnLease(requestId, key, { publish: false });
+    this.attachments.add(key, attachments, { publish: false });
+    const list = this.attachments.list(key);
     this.emitToView(viewId, { type: "patch", patch: { draft: next, attachments: [...list] } });
   }
 
@@ -8123,9 +8186,11 @@ export class ChatController implements vscode.Disposable {
       : restored;
     this.drafts.set(key, next);
 
-    const list = this.attachmentsBySession.get(key) ?? [];
+    // 附件的身份判据（同回执 / 同 durable 句柄 / 图片同字节）仍只有 `queueView` 一份，
+    // 合并在这里做；账本只负责「掉出列表的那些枚释放字节与轮次」，这一帧由这里合成
+    const list = [...this.attachments.list(key)];
     appendRestoredAttachments(list, restoredAttachments);
-    this.attachmentsBySession.set(key, list);
+    this.attachments.replace(key, list, { publish: false });
 
     // 只在「这个窗口还看着这条会话」时定向推给它：await 期间用户切走了的话，这帧会把
     // **别的会话**的草稿画进当前输入框（内容仍留在原会话的草稿表里，切回去就看得到）
@@ -9056,6 +9121,9 @@ export class ChatController implements vscode.Disposable {
     // 作废在途轮（迟到的完成一律静默让位）+ 收跟随流 + dispose 客户端：三件事的顺序在
     // 模块里定死（见 `ConnectionAttempts.dispose`），这里不再自己排
     this.attempts.dispose();
+    // 附件草稿的归属账本（含拖放 / 粘贴那份暂存字节）随停用一起清：长期存活的扩展宿主
+    // 里不能留下没有任何窗口能再读到的内存
+    this.attachments.dispose();
     // 跟随流的重试状态也一起收：待触发的重开 timer 不许活过扩展卸载
     for (const sessionId of [...this.followRetryTimers.keys(), ...this.followRetries.keys()]) {
       this.closeFollowRetry(sessionId);

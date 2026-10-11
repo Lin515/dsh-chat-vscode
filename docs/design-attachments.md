@@ -94,9 +94,16 @@
 决策唯一在纯函数 planIntake：文件 → uploads；图片 → 内容块 data URL；
   目录 → @dir/ 引用文本；拒绝 → toast（按 source 分措辞）
 
-上传：startUpload → runUpload → DshClient.uploadFile
+上传：startUpload → 附件账本开轮（`attachmentLifecycle.start`）→ performUpload → DshClient.uploadFile
   POST /api/session/uploadFileBinary?sessionId&name（application/octet-stream）
   → upload.status = { ready, receiptId }（失败 = error，可点芯片重试）
+  结算写回**开轮那一刻**那条记录（切会话不改归属；移除 / 回收 / 释放租约之后迟到的完成作废）
+
+提交：beginSend → commitAttachments（把可见芯片**移进这次提交的租约**，按 requestId 认）
+  失败（无回显）→ appendDraft：租约整份归还输入框（原对象 / 回执 / 字节 / 在飞结算都回来）
+  失败（有回显）→ 红行引用租约里那一份活条目：在飞完成后「重发」拿得到真回执
+  重发 → 租约**交接**给新提交（不取消在飞上传、不重启、不放回输入框；再失败仍有可用租约）
+  收场才 releaseLease：durable 承认 / 撤回 / 命令 / 无回显的提交成功 / 回显被上限淘汰
 
 发送（send，controller.ts）：buildPromptContent
   content = [ ...附件（按列表顺序）, {type:"text", text} ]     ← 官方同序
@@ -186,9 +193,17 @@
 ### 5.2 机制差异（不是判据差异）
 
 官方从浏览器把 Blob 交给后台 Worker/XHR 流式上传，草稿在浏览器内存里持原始 `File`，
-后台上传在会话切换后继续；扩展在宿主里整块读入内存再 POST（`runUpload`），图片来源是
-宿主读成的 data URL、发送时从 webview 再带回宿主（JSON 往返），字节暂存 `droppedBytes`
-（按附件 id，成功后释放、失败留到重试或删除）。功能等价，内存/带宽开销更大。
+后台上传在会话切换后继续；扩展在宿主里整块读入内存再 POST（`attachmentLifecycle` 的上传
+轮次），图片来源是宿主读成的 data URL、发送时从 webview 再带回宿主（JSON 往返），字节暂存
+在**附件账本**的持有者里（按附件 id，只为「失败后重试 / 回填后重试」而留）。功能等价，
+内存/带宽开销更大。
+
+上传的**归属**只认开轮那一刻那条会话：上传还在飞时切走，结算照旧写回原会话的芯片（切回来
+能看到回执 / 失败与重试），且不再向当前会话推帧；迟到完成既不复活已删除的附件，也不覆盖
+新一轮（连点重试并成一轮）。**提交也不销毁它**：芯片随提交移进一份按 requestId 认的租约，
+失败回填归还、重发交接、收场才释放（口径见 `commitAttachments` / `appendDraft` /
+`resendPending` 的注释与 `attachmentLifecycle` 的文件头）。
+回归见 `scripts/attachmentLifecycle.test.ts`。
 
 ---
 
@@ -245,7 +260,8 @@ webview 拿不到路径（同 §6.1 的实测），但**宿主**可以问**系�
 | `src/webview/App.tsx` | 全页 drop / paste 监听（只注册一次）与拖放浮层（`usePageFileDrop` / `usePagePaste`） |
 | `src/shared/ipc.ts` | `attachBytes` 帧定义（`source` / `files[{name,mimeType,base64}]` / `unreadable` / `tooLarge`） |
 | `src/dsh/attachments.ts` | **纯逻辑**：判据、上限、去重、拒绝、内容块装配（`classifyPath` / `imageMediaTypeForEntry` / `classifyDroppedBytes` / `ATTACH_BYTES_LIMIT` / `planIntake` / `buildPromptContent`） |
-| `src/dsh/controller.ts` | 接入执行与上传；目录引用的唯一落点；发送装配（`pickFiles` / `pickFolder` / `addPaths` / `ingestAttachments` / `addDirectoryReference` / `decodeAttachBytes` / `startUpload` / `runUpload` / `retryUpload` / `send`） |
+| `src/dsh/attachmentLifecycle.ts` | **附件草稿的归属与上传生命周期**（唯一权威表）：一份列表归谁（未绑定窗口按 viewId、绑定后按会话 id；换键整份搬迁并合并）、上传开轮 / 结算 / 旧轮作废（结算落在开轮那一刻那个持有者上）、**提交租约**（`detach` 移走 / `returnLease` 归还 / `transferLease` 重发交接 / `releaseLease` 收场释放）与字节暂存。控制器只注入上传 IO 与「列表变了」 |
+| `src/dsh/controller.ts` | 接入执行与上传的 IO；目录引用的唯一落点；提交与回显生命周期上的租约接线（`commitAttachments` / `appendDraft` / `resendPending` / `retractPending` / `noteUserAdmitted` / 回显上限淘汰）；发送装配（`pickFiles` / `pickFolder` / `addPaths` / `ingestAttachments` / `addDirectoryReference` / `decodeAttachBytes` / `startUpload` / `retryUpload` / `performUpload` / `publishAttachments` / `send`） |
 | `src/dsh/clipboardPaths.ts` | 系统剪贴板真路径（Windows，`readClipboardPaths`） |
 | `src/dsh/client.ts` | 上传，与官方同一路由（`uploadFile`） |
 | `src/webview/components/Composer.tsx` | 芯片（上传中 / 失败可重试 / 名字）与附件入口按钮（`composer-chips`） |
@@ -273,6 +289,9 @@ webview 拿不到路径（同 §6.1 的实测），但**宿主**可以问**系�
 | 12 | 添加文件对话框不得同时允许文件与目录 | §3 |
 | 13 | 拖放 / 粘贴只在认出文件时才 `preventDefault`，且监听挂在 window | §4（源码断言） |
 | 14 | 芯片形态与夹具同步（没有"引用芯片"这种形态） | `scripts/previewFixture.test.ts`、`test/preview.html` |
+| 15 | 上传的结算落在**开轮那一刻**的会话上：切走后原会话照常拿到回执 / 失败态且可重试，当前会话不被推帧；迟到完成不复活已删附件、不覆盖新一轮；连点重试只有一轮在飞 | `scripts/attachmentLifecycle.test.ts`（切会话结算、迟到完成、连点重试） |
+| 16 | 附件草稿的键跟着窗口 ↔ 会话迁移（空表也搬；两份相遇合并）与回收口径（窗口下线收回 viewId 那份，会话键那份留着） | `scripts/attachmentLifecycle.test.ts`（空壳首次绑定迁移、窗口下线的回收口径） |
+| 17 | **提交不销毁附件草稿**：提交那一刻移进按 requestId 认的租约；无回显的失败整份归还（原对象 / 字节 / 在飞结算都还在，回填后能继续结算与重试）；有回显的失败行引用活条目，在飞完成后重发带得上真回执；重发是租约交接（不取消在飞上传、不重启、不放回输入框），再失败时新那一行仍持有它；durable 承认 / 撤回 / 命令 / 无回显提交成功 / 回显淘汰才最终释放；按键回收不连带租约、越过告警阈值也不按数量销毁，dispose 全清 | `scripts/attachmentLifecycle.test.ts`（提交移走与归还、租约交接、告警阈值不销毁、失败回填与重发交接） |
 
 **跨 webview ↔ 宿主的改动**（本设计里就是 `attachBytes` 帧）必须**两边一起打包**：
 `npm run package && npm run install:vsix`，并确认安装目录下 `dist/webview.js` 与
