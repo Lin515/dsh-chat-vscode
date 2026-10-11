@@ -1715,7 +1715,6 @@ export function TrajectoryView({
             </span>
           ) : null}
           <span className="trajectory-event-inner">
-            <span className="trajectory-index">{`#${cell.index}`}</span>
             {cell.status === "running" ? <span className="dot dot-running" aria-hidden /> : null}
             <span className={kindClass(cell)} aria-label={kindLabel(cell.kind, tt)}>
               <span className="trajectory-kind-icon">{KIND_ICON[cell.kind]}</span>

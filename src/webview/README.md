@@ -26,7 +26,7 @@
 - [trajectoryInteraction.ts](<trajectoryInteraction.ts>) — 一条交互链的唯一端口：同时拥有 ledger／plot 容器 ref、记录／请求／range 选择、一次消费定位、成功 focus 回执、视口与手势资源；切会话清理公开状态和闭包监听，已排队旧回调也失效。
 - [trajectoryVirtual.ts](<trajectoryVirtual.ts>) — 账本分段窗口计划：按原位次插入 pin，垫行与呈现行数量守恒；定位 nonce 只消费一次，不能让旧 reveal 拉回手工滚动。
 - [uiScale.ts](<uiScale.ts>) — 基准字号、设计像素与界面倍率的共享换算及 React 上下文。
-- [icons.tsx](<icons.tsx>) — 内联 SVG 图标集；尺寸按设计像素换算，描边与颜色跟随界面。
+- [icons.tsx](<icons.tsx>) — 内联 SVG 图标集；四档权限复用官方 Regular SVG，其他图标自绘；尺寸按设计像素换算，描边与颜色跟随界面。
 
 ## 布局与交互子系统
 

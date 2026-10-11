@@ -349,6 +349,14 @@ console.log("todoCollapse: 折叠态是本地 UI state、不进聊天数据 ✓"
   assert.ok(/background:\s*var\(--editor-bg\)/.test(container), ".todos 的底色照旧");
   assert.ok(/flex-direction:\s*column/.test(container), ".todos 仍是竖排容器");
   assert.ok(/display:\s*flex/.test(rule(".todo-item")), ".todo-item 的排版照旧");
+  assert.ok(/line-height:\s*1\.5/.test(rule(".todo-item")), "条目使用明确行高，刻点槽与文字首行高度保持一致");
+  const glyph = rule(".todo-glyph");
+  assert.ok(/height:\s*1lh/.test(glyph), "刻点槽高度跟随首行行高，换行与字号变化不依赖固定偏移");
+  assert.ok(
+    /align-items:\s*center/.test(glyph) && /justify-content:\s*center/.test(glyph),
+    "展开与收起、三种状态共用双轴居中的刻点槽",
+  );
+  assert.ok(!/padding|margin|transform/.test(glyph), "刻点槽不使用手工偏移模拟居中");
   assert.ok(
     /text-decoration:\s*line-through/.test(rule(".todo-item.is-completed .todo-content")),
     "已完成项的删除线照旧",

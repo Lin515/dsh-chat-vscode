@@ -2187,9 +2187,7 @@ console.log("styles: 轨迹顶条光标 = 框选 I 字，手掌光标与 is-zoom
   );
   assert.ok(
     /\.trajectory-col-event:lang\(zh\)\s*\{[^}]*calc\(96 \* var\(--dp\)\)/.test(css),
-    "中文下事件列 96——**不是**官方那个 84：官方账本表里没有 `#N`（它的 index 只在 " +
-      "TrajectoryCell）、种类标签是 10px，我们的 index 15.4 + 间隙 4 + 最长徽章 43.7 + " +
-      "内边距 40 = 103.1，84 下徽章会被压到 32.4、文字走省略号",
+    "中文下保留事件列 96：种类徽章、状态点与轮次标签仍需空间，移除记录编号不连带改变列宽",
   );
   {
     const app = readFileSync(join(process.cwd(), "src", "webview", "App.tsx"), "utf8");
@@ -2236,7 +2234,7 @@ console.log("styles: 轨迹顶条光标 = 框选 I 字，手掌光标与 is-zoom
     }
   }
 
-  // ④ 420 档的种类徽章规则**只作用于账本事件格**，且窄档隐藏记录序号 `#N`
+  // ④ 420 档的种类徽章规则只作用于账本事件格；所有宽度下均不渲染记录序号
   //
   // 官方那句 `.kindTag { width: 19px; padding: 0 }` 写在 `@container trajectory-table`
   // 里，具名容器声明在**账本滚动区** `.tablePane` 上，而检查器是它的兄弟节点——那句规则
@@ -2245,10 +2243,8 @@ console.log("styles: 轨迹顶条光标 = 框选 I 字，手掌光标与 is-zoom
   // 13dp），「助手」这类种类词必然被裁——主代理 420px 生产 DOM 实测：标题徽章宽 19、
   // 真实文字宽 49.296875。收作用域是这条差异的正解（不是把 19dp 放宽）。
   //
-  // 同一档还要隐藏账本记录序号：官方账本表本来就不渲染 `#N`（它的 index 只在未 import 的
-  // `TrajectoryCell` 里），而 50dp 列 − 28dp 左内边距 − 4dp 右内边距 = 18dp 内容盒，
-  // 装不下「`#N` + 19dp 图标」（生产 DOM 实测：index 右缘 57.09、徽章右缘 80.09，
-  // 事件格右缘才 56）。序号仍留在 `data-cell-index` 与行无障碍名里，宽栏照常显示。
+  // 官方账本不显示记录序号，因此直接移除渲染节点，而不是仅在窄栏藏起来。
+  // `data-cell-index` 与选择行为继续保留，序号仍是时间线定位的内部身份。
   {
     const stripped = narrowQuery.replace(/\/\*[\s\S]*?\*\//g, "");
     const kindSelectors = [...stripped.matchAll(/([^{}]*\.trajectory-kind[^{}]*)\{/g)].map((m) => m[1].trim());
@@ -2261,15 +2257,15 @@ console.log("styles: 轨迹顶条光标 = 框选 I 字，手掌光标与 is-zoom
           `必然被裁：现在是「${selector}」`,
       );
     }
-    assert.ok(
-      /\.trajectory-index\s*\{[^}]*display:\s*none/.test(stripped),
-      "420 档要隐藏账本记录序号 `.trajectory-index`（官方账本不显示 #N；50dp 列的内容盒只有 18dp，" +
-        "装不下「#N + 19dp 图标」）",
+    const trajectory = readFileSync(
+      join(process.cwd(), "src", "webview", "components", "Trajectory.tsx"),
+      "utf8",
     );
-    const wideIndex = bodyOf(".trajectory-index");
+    assert.ok(!/trajectory-index/.test(trajectory), "所有宽度下均不渲染节点前的记录 #编号，与官方账本一致");
+    assert.ok(!/\.trajectory-index\s*\{/.test(css), "移除编号后不得保留仅用于它的样式");
     assert.ok(
-      !/display:\s*none/.test(wideIndex),
-      "宽栏仍要显示 #N——窄档隐藏只是呈现收紧，`data-cell-index` 与行无障碍名不受影响",
+      /data-cell-index=\{cell\.index\}/.test(trajectory) && /port\.selectRecord\(cell\.index\)/.test(trajectory),
+      "记录编号只从呈现移除：时间线定位与行选择仍使用原记录身份",
     );
     assert.ok(
       /\.trajectory-details-title-record\s+\.trajectory-kind\s*\{[^}]*flex:\s*0 0 auto/.test(css),

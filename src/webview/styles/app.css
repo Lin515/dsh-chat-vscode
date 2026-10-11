@@ -5085,14 +5085,17 @@ textarea.composer-input {
   align-items: flex-start;
   gap: calc(6 * var(--dp));
   font-size: var(--font-size-xs);
+  line-height: 1.5;
 }
 
+/* 刻点在首行行高内双轴居中；使用真实行高，字号变化和多行条目都不需要手调偏移。 */
 .todo-glyph {
   flex: 0 0 auto;
   width: calc(12 * var(--dp));
+  height: 1lh;
   display: inline-flex;
+  align-items: center;
   justify-content: center;
-  padding-top: calc(3 * var(--dp));
 }
 
 .todo-glyph .dot {
@@ -5213,21 +5216,11 @@ textarea.composer-input {
   font-size: var(--font-size-body);
 }
 
-/* 事件列宽度**按语言分档**（官方 `.eventColumn` 是 122 / `:where(:lang(zh))` 84）：英文种类
-   标签（`COMPACTED` / `ASSISTANT`）比中文（「已压缩」/「助手」）长一倍多，中文照抄 122
-   会白占掉内容列 38。分档挂 `:lang(zh)`——语言由界面写在根元素上（见 `App.tsx` 的
-   insertion effect），`:lang()` 按子标签前缀匹配，`zh` 覆盖全部中文变体。
-
-   中文这一档是 **96**，不是官方那个 84：**84 装不下我们这一格**。逐项量过（预览页实测，
-   文本自然宽用 canvas 量，`scrollWidth` 会把 flex 项的右内边距拆出去、不可靠）：
-     index `#13` 15.4 + 内容条间隙 4 + 最长徽章（「已压缩」/「上下文」/「子工具」）
-     33.7 + 左右内边距 10 + 事件格内边距 36 + 4 = **103.1**；
-   官方没有 index（它的 `#N` 只在 `TrajectoryCell`，账本表里不渲染）、种类标签又是 10px
-   而我们是 10 基准 + 1（`--font-size-2xs` = 基准 − 2），所以它的 84 放得下、
-   我们的不行。84 下量到徽章被压到 32.4（比最长徽章的 43.7 少 11.3），文字走省略号——
-   比不改更差。取 96 是「刚好装下 103.1」向上取整的那一档，与 122 一样是**按内容定死**
-   的数，不是照抄来的。
-   窄栏那一档（容器查询里收成 50）**不分语言**，理由见那条查询的注释。 */
+/* 事件列按语言分档：英文种类标签较长，中文保留较窄的 96dp 档位。
+   分档挂 `:lang(zh)`——语言由 `App.tsx` 写在根元素上，覆盖全部中文变体。
+   账本不渲染记录序号；列宽仍为种类徽章、运行状态点与轮次标签留空间。
+   本地徽章字号与内边距不同于官方，因此本次不连带调整列宽。
+   窄栏那一档（容器查询里收成 50）不分语言，理由见那条查询的注释。 */
 .trajectory-col-event {
   width: calc(122 * var(--dp));
 }
@@ -5269,7 +5262,7 @@ textarea.composer-input {
 
 .trajectory-event {
   /* 左内边距给轮次标签让位（官方 `.event` 的 `padding-left: 36px`）——标签是绝对定位的，
-     没有这段留白就会压在 `#N` 与 kind 标签上。窄栏收到 28px，见下面那条容器查询。 */
+     没有这段留白就会压在 kind 标签上。窄栏收到 28px，见下面那条容器查询。 */
   padding: calc(3 * var(--dp)) calc(4 * var(--dp)) calc(3 * var(--dp)) calc(36 * var(--dp));
   vertical-align: top;
   border-top: 1px solid transparent;
@@ -5314,17 +5307,11 @@ textarea.composer-input {
   vertical-align: top;
   align-items: center;
   gap: calc(4 * var(--dp));
-  /* 事件列是**固定宽度**（宽栏按语言 122 / 96，窄面板一律 50），而里面是「kind 标签 + #N」
-     这一串，英文标签（`COMPACTED` / `ASSISTANT`）比中文长得多。不给收缩下限的话，
+  /* 事件列是固定宽度（宽栏按语言 122 / 96，窄面板一律 50），里面只有状态点与 kind 标签；
+     英文标签（`COMPACTED` / `ASSISTANT`）比中文长得多。不给收缩下限的话，
      标签会顶出列、压到内容列上（2026-09-17 审计）。 */
   max-width: 100%;
   min-width: 0;
-}
-
-.trajectory-index {
-  color: var(--muted);
-  font-family: var(--mono);
-  font-size: var(--font-size-body);
 }
 
 /* 轮次标签（官方 `turnLabel`）：**绝对定位**在事件格左上角，因此**不占行高**——
@@ -6101,7 +6088,7 @@ textarea.composer-input {
    `.trajectory-col-event:lang(zh)` 比 `.trajectory-col-event` 多一个伪类，只写后者的话
    中文下收列会静默失效（窄栏里仍是 96 的列、旁边站着 19 的方徽章）。官方那条 620 的
    两个数字（122/84）是它按自己的表宽手调的分档线，**不是**「中文能更早收」的依据：
-   收列要看的是**事件列自己放不放得下那一格的内容**（index + 种类徽章），这与语言无关；
+   收列要看的是**事件列自己放不放得下那一格的内容**（状态点 + 种类徽章），这与语言无关；
    而官方表宽在两侧都有余量，本扩展的面板窄得多，所以本扩展的线（420）本来就是照自己的
    面板定的。详见 `docs/design-trajectory.md` 的 5.2。 */
 @container (max-width: calc(420em / 13)) {
@@ -6143,16 +6130,6 @@ textarea.composer-input {
   .trajectory-event .trajectory-kind-label {
     max-width: 0;
     opacity: 0;
-  }
-
-  /* 隐藏账本记录序号 `#N`。官方账本表本来就不渲染它（它的 index 只在未 import 的
-     `TrajectoryCell` 里），而这一档的内容盒 = 50 − 28（左内边距）− 4（右内边距）
-     = 18dp，装不下「`#N` + 19dp 图标」——不收就是序号与徽章一起顶到内容列上
-     （生产 DOM 实测：index 右缘 57.09、徽章右缘 80.09，事件格右缘才 56）。
-     序号仍留在 `data-cell-index` 与行的无障碍名里（选择、时间线定位、读屏都不受影响），
-     宽栏照常显示；不把事件列加宽是因为四位序号（`#1234`）仍然装不下，加宽只会白占内容列。 */
-  .trajectory-index {
-    display: none;
   }
 
   /* 轮次标签的两枚对调（官方 `turnLabelFull` / `turnLabelCompact`） */

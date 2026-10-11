@@ -22,10 +22,10 @@ import {
   IconPlay,
   IconRefresh,
   IconSend,
-  IconShield,
-  IconShieldCheck,
-  IconShieldFilled,
-  IconShieldReview,
+  IconPermissionReadOnly,
+  IconPermissionWorkspaceWrite,
+  IconPermissionFullAccess,
+  IconPermissionAutoReview,
   IconStop,
   IconTarget,
 } from "../icons";
@@ -93,7 +93,7 @@ interface PermissionSeat {
 }
 
 /**
- * 权限模式的展示定义：图标固定用盾牌（WebUI 未提供专用图标），文案与 WebUI 对齐。
+ * 权限模式的展示定义：四档图标直接复用官方 Regular SVG，文案与 WebUI 对齐。
  *
  * `autoReview` 为真时在末尾追加**实验性的 Auto review 档**——它不是配置表里的一档，
  * 而是 `dsh-experimental-auto-review` 集成在世时才会出现在
@@ -109,18 +109,18 @@ function permissionMeta(
   autoReview: boolean,
 ): PermissionSeat[] {
   const seats: PermissionSeat[] = [
-    { id: "read-only", label: texts.permReadOnly, desc: texts.permReadOnlyDesc, icon: <IconShield size={12} /> },
+    { id: "read-only", label: texts.permReadOnly, desc: texts.permReadOnlyDesc, icon: <IconPermissionReadOnly size={16} /> },
     {
       id: "workspace-write",
       label: texts.permWorkspaceWrite,
       desc: texts.permWorkspaceWriteDesc,
-      icon: <IconShieldCheck size={12} />,
+      icon: <IconPermissionWorkspaceWrite size={16} />,
     },
     {
       id: "danger-full-access",
       label: texts.permFullAccess,
       desc: texts.permFullAccessDesc,
-      icon: <IconShieldFilled size={12} />,
+      icon: <IconPermissionFullAccess size={16} />,
       confirm: {
         title: texts.permConfirmTitle,
         body: texts.permConfirmBody,
@@ -134,7 +134,7 @@ function permissionMeta(
       label: texts.permAutoReview,
       desc: texts.permAutoReviewDesc,
       badge: texts.permAutoReviewBadge,
-      icon: <IconShieldReview size={12} />,
+      icon: <IconPermissionAutoReview size={16} />,
       confirm: {
         title: texts.permAutoReviewTitle,
         body: texts.permAutoReviewBody,
@@ -588,7 +588,7 @@ export function Composer({
    * 权限胶囊：`withLabel` 是用户口径里最低优先级那一档（图标 + 权限名）。
    *
    * `EXP` 标只在**带文字那一档**出现：它本身就是一段文字，而「只有图标」那一档是
-   * P0 的最小宽度形态（Auto review 用带审查之眼的盾牌图标区分，见 `IconShieldReview`）。
+   * P0 的最小宽度形态（Auto review 用官方盾牌内的 A 区分，见 `IconPermissionAutoReview`）。
    */
   const permissionPill = (withLabel: boolean) => (
     <button

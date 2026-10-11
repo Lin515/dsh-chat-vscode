@@ -126,6 +126,7 @@ const entries = {
   "build/file-change.test.mjs": "scripts/fileChange.test.ts",
   "build/styles.test.mjs": "scripts/styles.test.ts",
   "build/toolbar-fit.test.mjs": "scripts/toolbarFit.test.ts",
+  "build/permission-icons.test.mjs": "scripts/permissionIcons.test.ts",
   "build/cache-hit.test.mjs": "scripts/cacheHit.test.ts",
   "build/read-range.test.mjs": "scripts/readRange.test.ts",
   "build/segment.test.mjs": "scripts/segment.test.ts",

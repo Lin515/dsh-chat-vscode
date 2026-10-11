@@ -150,8 +150,14 @@ Apache-2.0 的义务说明：
 | `typescript` | Apache-2.0 | 类型检查 |
 | `@vscode/vsce` | MIT | 打包 vsix |
 
-图标为项目自绘的 SVG 线条图标（`src/webview/icons.tsx`），风格对齐
-heroicons outline（MIT）的观感，但路径由本项目自行编写。
+除四档权限图标外，`src/webview/icons.tsx` 中的 SVG 线条图标由本项目自行编写，
+风格对齐 heroicons outline（MIT）的观感。
+
+四档权限图标直接复用 DeepSeek Harness 的
+`packages/client/ui-primitives/src/PermissionIcon.tsx`（MIT，Copyright (c) 2026 DeepSeek），
+来源为 tag `dsh-v0.2.1-alpha.2`、提交 `d743267388641bc76f17c45ce8b4c231aed1d32c`。
+路径、逐路径填充和描边属性、16×16 视窗以及 Regular 描边保持原样；尺寸接入本项目的
+设计像素换算，并补充 SVG props 与 `focusable` 属性。MIT 许可证全文见「附录 A」。
 
 ---
 

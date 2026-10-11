@@ -77,6 +77,8 @@
 
 ### 视图与界面行为
 
+- [permissionIcons.test.ts](<permissionIcons.test.ts>) — 四档官方权限 SVG 的渲染断言：路径与属性指纹、Regular 描边、设计像素尺寸和权限档位接线。
+
 - `markdown.test.ts` — Markdown 安全与能力边界（DOMPurify 白名单放行 GFM 复选框、外链图片加固、Windows 反斜杠路径的链接 / 图片目标不被 CommonMark 转义吃掉）。
 - `footnotes.test.ts` — 脚注 marked 扩展行为断言（真 marked + 真扩展）。
 - `fileLinks.test.ts` — 正文文件链接三段链路（判定 / DOM 落地 / 样式）。
