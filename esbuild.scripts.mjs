@@ -182,6 +182,8 @@ const entries = {
   "build/connect-view.test.mjs": "scripts/connectView.test.ts",
   "build/session-view.test.mjs": "scripts/sessionView.test.ts",
   "build/auto-scroll.test.mjs": "scripts/autoScroll.test.ts",
+  // 阅读定位端口（一次阅读动作：先放跟随再落位 / 延期取历史 / 300 帧跟踪 / 过期作废）：必须登记，否则 npm test 静默不跑
+  "build/reading-placement.test.mjs": "scripts/readingPlacement.test.ts",
   "build/find.test.mjs": "scripts/find.test.ts",
   "build/client-dispose.test.mjs": "scripts/clientDispose.test.ts",
   "build/pinger.mjs": "scripts/pinger.ts",

@@ -44,9 +44,8 @@ export const GESTURE_WINDOW_MS = 400;
  * 滚动容器 + 两个动作，交给消费方的那**一个**端口。
  *
  * 对象的**身份是稳定的**（`useAutoScroll` 只建一次）：装进去的两个 ref 恒定，
- * `release` / `pin` 都读 `ref.current`。稳定不只是省渲染——`releaseFollow` 会进
- * `useTurnRailNav` 的依赖数组（那里的 `navigate` 是 `useCallback`），动作每渲染
- * 换一次引用就会把下游的 memo 白打掉。
+ * `release` / `pin` 都读 `ref.current`。稳定不只是省渲染——阅读定位端口会直接读
+ * `port.release()`，动作每渲染换一次引用就会把下游的 memo 白打掉。
  */
 export interface AutoScrollPort {
   /** 会话滚动区（`.chat-scroll`）。历史翻页、轮次跳转、量高瞬态补回都要它。 */
@@ -62,9 +61,10 @@ export interface AutoScrollPort {
 /**
  * React 这一侧看到的绑定：端口 + 唯一一个会变的量（胶囊亮不亮）。
  *
- * 「回底动作」在这里**换成稳定引用**（`jumpToLatest` / `releaseFollow`），因为它要进
- * 依赖数组与 memo 子树的 props；两个动作每次都读 port 上的最新实现，
- * 所以合成对象只需要在 `showJump` 变化时换一次。
+ * 「回底动作」在这里**换成稳定引用**（`jumpToLatest`），因为它要进依赖数组与 memo
+ * 子树的 props；动作每次都读 port 上的最新实现，所以合成对象只需要在 `showJump`
+ * 变化时换一次。放跟随那条通道只有 `port.release`——阅读定位端口直接用它，
+ * 不再另开一个 `releaseFollow` 转发面（多一个转发面就多一处「谁先谁后」的记性）。
  */
 export interface AutoScrollBinding {
   readonly port: AutoScrollPort;
@@ -72,8 +72,6 @@ export interface AutoScrollBinding {
   readonly showJump: boolean;
   /** 稳定引用的回底动作（胶囊 / `Composer` 发消息）。 */
   readonly jumpToLatest: () => void;
-  /** 稳定引用的放跟随动作（轮次横条跳转）。 */
-  readonly releaseFollow: () => void;
 }
 
 /** 距底距离：≤ 0 表示内容不足一屏（天然贴底）。 */
@@ -414,9 +412,8 @@ export function useAutoScroll(active: boolean, sessionId: string | undefined): A
     () => ({
       port,
       showJump,
-      // 稳定引用：动作每次都读端口上的最新实现，所以这两个可以在依赖数组里长期存在
+      // 稳定引用：动作每次都读端口上的最新实现，所以它可以在依赖数组里长期存在
       jumpToLatest: () => port.pin(),
-      releaseFollow: () => port.release(),
     }),
     [port, showJump],
   );

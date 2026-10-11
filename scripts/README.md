@@ -78,12 +78,13 @@
 - `markdown.test.ts` — Markdown 安全与能力边界（DOMPurify 白名单放行 GFM 复选框、外链图片加固、Windows 反斜杠路径的链接 / 图片目标不被 CommonMark 转义吃掉）。
 - `footnotes.test.ts` — 脚注 marked 扩展行为断言（真 marked + 真扩展）。
 - `fileLinks.test.ts` — 正文文件链接三段链路（判定 / DOM 落地 / 样式）。
-- `autoScroll.test.ts` — `.chat-scroll` 自动滚动行为断言（真调用纯状态机）。
+- `autoScroll.test.ts` — `.chat-scroll` 自动滚动行为断言（真调用纯状态机）；末尾一节把阅读定位端口接到真 `AutoScrollPort` 上验「先放跟随再落位」。
+- `readingPlacement.test.ts` — 阅读定位端口行为断言：release 在写 `scrollTop` 之前、无效目标 no-op、取历史前后各放一次、300 帧跟踪与手势让位、查找两帧等待期的手势 / 切会话 / 换元素竞争（可注入 DOM 与帧源，真调用）。
 - `nodeOpen.test.ts` — 折叠节点展开态 + 过程折叠新口径（主动点开跑完不收回、新盒子贴底）。
 - `turnProcess.test.ts` — 连续过程折叠最终版：只留本轮最后一段正文，段内工具次数判阈值。
 - `todoCollapse.test.ts` — 「任务清单」面板折叠：默认展开、收起只留当前执行项（没有在执行的则留最后执行过的那条；全 pending / 空清单不挂条目）、抬头箭头展开朝下 / 收起朝上。
 - `turnFiles.test.ts` — 轮尾文件两行的去重口径（交付行说了的不再重复）。
-- `turnRail.test.ts` — 轮次横条数据层：`turnOutline` 投影铺底 ∪ 已加载窗口。
+- `turnRail.test.ts` — 轮次横条数据层：`turnOutline` 投影铺底 ∪ 已加载窗口；跳转策略（首枚刻点置顶、no-op 闸门、无 running、动作全走阅读定位端口）在末节接线断言。
 - `panelTitle.test.ts` — 编辑区标签标题与窗口身份读法（不恒写 `DSH`、重载后不交叉）。
 - `pathDisplay.test.ts` — 单行标题里路径拆分与省略口径（文件名不参与压缩）。
 - `segment.test.ts` — 思考档位分段控件列数（≤4 档一行、5/6 档均分两行）。

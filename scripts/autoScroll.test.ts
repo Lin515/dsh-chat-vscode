@@ -553,6 +553,89 @@ console.log("auto-scroll: 切会话 / 轨迹视图往返（按意愿复原阅读
 }
 console.log("auto-scroll: 发消息 / 插话 / 胶囊共用同一个「回最新」✓");
 
+// ---------- 11. 阅读定位端口：真 AutoScrollPort 上的「先放跟随再落位」 ----------
+//
+// 一次阅读动作的顺序断言在 `scripts/readingPlacement.test.ts`（可注入 DOM / 帧）。
+// 这里把它接到**真的** `AutoScrollPort`（`setupAutoScroll` + `createScrollFollow`）上：
+// 放跟随走的必须是这条链路自己的显式通道，落位之后任何跟随信号都不许把视口拽回底部。
+{
+  const el = fakeScroller();
+  const port = stubPort(el);
+  const state = createScrollFollow();
+  const dom = controlledEnv();
+  const handle = setupAutoScroll(port, state, () => undefined, dom.env);
+  dom.drainFrames(); // 首帧：贴底
+
+  const { createReadingPort } = await import("../src/webview/readingPlacement");
+  // 阅读定位的帧单独控制：它与 autoScroll 的帧是两条链，这里只关心落位那一次写入
+  let nextFrame = 1;
+  const pending = new Map<number, () => void>();
+  /** 锚点行：视口位置跟着滚动走（真浏览器的行为），落位之后偏差自己收敛到 0。 */
+  const anchorRow = (): HTMLElement =>
+    ({
+      isConnected: true,
+      getBoundingClientRect: () => ({ top: 300 - el.scrollTop, left: 0, height: 20 }),
+    }) as unknown as HTMLElement;
+  const reading = createReadingPort(port, {
+    requestFrame: (callback) => {
+      const id = nextFrame;
+      nextFrame += 1;
+      pending.set(id, callback);
+      return id;
+    },
+    cancelFrame: (id) => {
+      pending.delete(id);
+    },
+    flowTop: (row, scrollport) =>
+      row.getBoundingClientRect().top - scrollport.getBoundingClientRect().top,
+    rangeRect: () => ({ top: 0, height: 0 }),
+    anchorRow,
+    expandClamped: () => undefined,
+  });
+
+  // 视口停在会话中间但仍在跟随：下一次 settle 会把它钉回底部（可滚范围 0..600）
+  el.scrollTop = 300;
+  dom.hostFrame();
+  dom.drainFrames();
+  assert.strictEqual(el.scrollTop, 600, "前提：跟随中停在中途会被钉回底部");
+
+  el.scrollTop = 300;
+  assert.strictEqual(
+    reading.landRow({ resolve: () => "u:1" }),
+    true,
+    "锚点行在 DOM 里（查询是注入的假实现）",
+  );
+  assert.strictEqual(el.scrollTop, 276, "落位写的是行顶 − 24（300 − 24）");
+  assert.strictEqual(
+    state.following,
+    false,
+    "落位前先放跟随：走的就是 autoScroll 的显式 release（没有第二个释放通道）",
+  );
+  dom.hostFrame();
+  emit(fakeDocument, "visibilitychange", {});
+  dom.drainFrames();
+  assert.strictEqual(
+    el.scrollTop,
+    276,
+    "落位之后 settle 不许把视口钉回底部（跳转等于没跳的那个坑）",
+  );
+
+  // 无效目标：连跟随都不放
+  port.pin();
+  assert.strictEqual(state.following, true, "点回最新 = 恢复跟随");
+  assert.strictEqual(
+    reading.landRow({ resolve: () => null }),
+    false,
+    "锚点还不在 DOM 里 → 不落位",
+  );
+  assert.strictEqual(state.following, true, "无效目标不许顺手关掉实况跟随");
+  assert.strictEqual(el.scrollTop, 600, "无效目标不动视口");
+
+  reading.cancel();
+  handle.detach();
+}
+console.log("auto-scroll: 阅读定位端口（先放跟随再落位、无效目标不放）✓");
+
 // ---------- 收尾：还原全局桩 ----------
 Object.defineProperty(globalThis, "performance", {
   value: realPerformance,

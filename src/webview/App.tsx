@@ -3,6 +3,7 @@ import type { ChatState, MessageView } from "../shared/chat";
 import type { HostToWebview } from "../shared/ipc";
 import { persistIdentity, post, subscribe } from "./bridge";
 import { useAutoScroll } from "./autoScroll";
+import { useReadingPort } from "./readingPlacement";
 import { Composer } from "./components/Composer";
 import { EmptyMeta } from "./components/EmptyMeta";
 import { HistoryPanel } from "./components/History";
@@ -713,6 +714,10 @@ export function App() {
   // 这里只把它的结果接给组件——端口一个（`chatScroll`），滚动手势与贴底判定不在这里。
   const chatScroll = useAutoScroll(chatActive, sessionId);
   const scrollRef = chatScroll.port.scrollEl;
+  // 阅读定位（点刻点跳轮 / 查找跳命中）：一次动作的完整顺序（先放跟随、再写视口，
+  // 取历史前后各放一次）在 `readingPlacement.ts` 的端口里。横条与查找条共用**同一份**
+  // 端口，所以「一次只可能有一个阅读动作」由它一个地方保证。
+  const reading = useReadingPort(chatScroll.port);
   // 「加载更早」按钮（单页档）与轮次横条的跨轮跳转（到目标档）两个入口；
   // 没有滚动自动加载（与官方会话页一致）
   const { loadEarlier, loadThrough, loading: loadingEarlier } = useHistoryPaging(scrollRef, state);
@@ -722,10 +727,8 @@ export function App() {
   // 「可加载」呈现（点击取回用户消息），而不是退化成助手消息（见 `mergeTurnRailItems`）。
   const railItems = useTurnRailItems(state.messages, state.turnOutline, state.hasMoreHistory === true);
   const { activeTurn, busyTurn, navigate } = useTurnRailNav({
-    scrollRef,
-    listRef: chatScroll.port.contentEl,
+    port: reading,
     items: railItems,
-    releaseFollow: chatScroll.releaseFollow,
     active: chatActive,
     sessionId,
     hasMoreHistory: state.hasMoreHistory === true,
@@ -983,11 +986,7 @@ export function App() {
             {/* 会话查找条（Ctrl+F）：自绘——webview 拿不到原生查找部件（见
                 FindBar.tsx 文件头）。挂在滚动区之前、随会话页一起卸载：轨迹视图
                 打开时查找自动收掉并摘掉全局注册表里的高亮。 */}
-            <FindBar
-              scrollEl={chatScroll.port.scrollEl}
-              contentEl={chatScroll.port.contentEl}
-              releaseFollow={chatScroll.releaseFollow}
-            />
+            <FindBar port={reading} />
             <div className="chat-pane">
               <div className="chat-scroll" ref={chatScroll.port.scrollEl}>
               {/* 右侧轮次横条：sticky 零高度槽位浮在正文右缘，不占布局、不撑长

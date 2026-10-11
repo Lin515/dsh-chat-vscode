@@ -28,7 +28,16 @@ import {
   sameTurnRailItem,
   userPromptCount,
 } from "../src/webview/turnRail";
-import { reuseTurnRailItems } from "../src/webview/turnRailNav";
+
+// `turnRailNav` 现在读 `autoScroll` 的贴底判据（阈值知识只留那一处），而 `bridge.ts`
+// 在模块求值期就挂 `window.addEventListener`（webview 里那是真实存在的宿主）。无头
+// 环境补一个最小 window——补在 import 之前，所以这里用动态 import（与
+// `scripts/autoScroll.test.ts` 同一套桩）。
+(globalThis as { window?: unknown }).window = {
+  addEventListener: () => undefined,
+  removeEventListener: () => undefined,
+};
+const { reuseTurnRailItems } = await import("../src/webview/turnRailNav");
 
 const user = (id: string, text: string): MessageView => ({
   id,
@@ -369,67 +378,51 @@ console.log("turnRail: 幻影轮 0 被大纲挡掉、单消息会话只留真实
 }
 console.log("turnRail: 显示判据的用户消息计数 ✓");
 
-// ---------- 11. 跳转的滚动语义：显式放跟随 —— 接线 ----------
+// ---------- 11. 跳转的滚动语义：横条自己的策略 —— 接线 ----------
 //
 // 跳进历史位置 = 离开实况尾部。**程序化滚动不算手势**（`autoScroll.ts` 的意愿只由
 // 手势翻），所以跳转必须有一条显式通道把"跟随最新"放掉：不放的话下一次 settle 会把
 // 视口钉回底部，跳转等于没跳（官方 TurnNavigator 同一条注释）。
 //
-// 「放掉之后确实不钉底」的行为断言在 `scripts/autoScroll.test.ts`（真调用）；
-// 这里只钉**接线**：横条拿到的是 `autoScroll` 模块产出的那个动作，且两个分支都先放后跳。
+// 那条通道现在是**一次完整阅读动作**（先放跟随、再取历史 / 落位 / 跟踪、过期作废）
+// 里的内部一步，行为断言在 `scripts/readingPlacement.test.ts`（真调用 + 可注入
+// DOM/帧），集成断言在 `scripts/autoScroll.test.ts`（真 AutoScrollPort）。
+//
+// 这里只钉横条**自己的策略**：点哪一枚刻点、哪一枚置顶、什么时候算「取完了」、
+// 哪种点击是 no-op——这些不该被下沉进端口。
 {
   const nav = readFileSync(join(process.cwd(), "src", "webview", "turnRailNav.ts"), "utf8");
-  const app = readFileSync(join(process.cwd(), "src", "webview", "App.tsx"), "utf8");
 
+  // 横条只接一个阅读定位端口：不再自己接 release + 两个 ref，也不再有落位几何
   assert.ok(
-    /releaseFollow: \(\) => void;/.test(nav),
-    "横条的胶水要接一个「放掉跟随」的入口（程序化滚动不算手势，不给这条通道就跳不动）",
+    /port: ReadingPort;/.test(nav),
+    "横条的胶水要接一个阅读定位端口（不放跟随顺序、落位几何、跟踪都在它里面）",
   );
   assert.ok(
-    /releaseFollow: chatScroll\.releaseFollow,/.test(app),
-    "App 要从 autoScroll 模块的绑定里取放跟随动作给横条（不再自己拼一个 useCallback）",
+    !/releaseFollow|releaseRef/.test(nav) && !/landOnRow\(|trackLanding\(/.test(nav),
+    "横条不许自带释放通道或落位几何：那会把「先释放再落位」的顺序又记回调用方",
   );
 
-  // 两个跳转分支：① 窗口外先放跟随再取历史；② 已加载先放跟随再落位。
-  // 放跟随必须在**落位之前**（顺序反了的话，落位那一下又被钉回底部）。
-  const unloadedAt = nav.indexOf("if (item.anchor.kind === \"unloaded\")");
-  const releaseInUnloaded = nav.indexOf("releaseRef.current?.();", unloadedAt);
-  const loadAt = nav.indexOf("loadThroughRef.current?.(item.anchor.seq);", unloadedAt);
-  assert.ok(unloadedAt > 0 && releaseInUnloaded > unloadedAt, "窗口外那个分支要先显式放跟随");
+  // 两个跳转分支都交给端口：① 窗口外先放跟随再取历史（延期落位）；② 已加载/top 直接落位
   assert.ok(
-    releaseInUnloaded < loadAt,
-    "窗口外的跳转顺序必须是：放跟随 → 取历史（反了的话连取期间的 prepend 补偿会被 settle 当成布局事故拉回底部）",
+    /port\.awaitTop\(fetch\)/.test(nav) && /port\.awaitRow\(rowTargetOf\(turn\), fetch\)/.test(nav),
+    "窗口外的跳转走端口的延期动作（放跟随 → 取历史是一步，顺序不可能写错）",
   );
   assert.ok(
-    /loadThroughRef\.current\?\.\(item\.anchor\.seq\)/.test(nav),
+    /port\.landRow\(/.test(nav) && /port\.toTop\(\)/.test(nav),
+    "已加载刻点落位 / 首枚刻点置顶各走端口的一个动作",
+  );
+  assert.ok(
+    /loadThroughRef\.current\?\.\(seq\)/.test(nav),
     "窗口外的跳转要带上目标 seq（官方 loadThrough 语义：取到窗口覆盖这一轮为止）",
   );
 
-  const loadedAt = nav.indexOf("const row = anchorElement(list, item.anchor.messageId);", releaseInUnloaded);
-  const releaseInLoaded = nav.indexOf("releaseRef.current?.();", loadedAt);
-  const landAt = nav.indexOf("landOnRow(el, row, item.turn, setActiveTurnStable);", loadedAt);
-  assert.ok(loadedAt > 0 && releaseInLoaded > loadedAt && landAt > releaseInLoaded, "已加载那个分支要先显式放跟随再落位");
-
+  // 闸门仍然在动作**之前**：没有更早历史 / 已在取历史时点击是 no-op，不许关掉实况跟随
+  const gate = nav.indexOf('if (!hasMoreHistory || historyLoading) return;');
+  const firstAction = nav.indexOf("port.awaitTop(fetch)");
   assert.ok(
-    nav.indexOf("if (!hasMoreHistory || historyLoading) return;", unloadedAt) < releaseInUnloaded,
-    "no-op 的点击（没有更早历史 / 已在取历史）不许顺手把实况跟开关掉：防御判断必须在放跟随**之前**",
-  );
-
-  // 用户 2026-09-20 口径：**目录第一枚刻点一律置顶**。它是唯一需要取历史的那个，
-  // 取回后目标行上方还会插入异步变高的内容，「对齐到阅读线」实战里总差一点
-  // （停在目标行的尾部）；`scrollTop = 0` 不受任何后续高度变化影响。
-  assert.ok(
-    /const jumpToTop = itemsRef\.current\[0\]\?\.turn === item\.turn;/.test(nav),
-    "按「是不是目录第一枚刻点」决定置顶",
-  );
-  assert.ok(
-    /if \(pendingJumpTopRef\.current\) \{[\s\S]{0,500}?el\.scrollTop = 0;/s.test(nav) ||
-      /if \(!pendingJumpTopRef\.current\) return;[\s\S]{0,500}?el\.scrollTop = 0;/.test(nav),
-    "取回历史后的首枚刻点直接置顶",
-  );
-  assert.ok(
-    /\}, \[historyLoading, scrollRef\]\);/.test(nav),
-    "置顶等的是 `historyLoading` 落回 false（宿主对「取完了」的直接声明），不看该轮是否 loaded",
+    gate > 0 && firstAction > gate,
+    "no-op 的点击（没有更早历史 / 已在取历史）不许顺手把实况跟随关掉：防御判断必须在动作之前",
   );
   assert.ok(
     /if \(!hasMoreHistory \|\| historyLoading\) return;/.test(nav),
@@ -439,44 +432,26 @@ console.log("turnRail: 显示判据的用户消息计数 ✓");
     !/running: boolean;/.test(nav) && !/running \|\|/.test(nav),
     "生成中不再拦「跳到未加载的轮次」（官方同一枚刻点也不看 running）：在飞的流式内容由宿主的抄送保住",
   );
-  // **取历史之后的那一次定位，必须先放掉跟随**：补偿会让视口落在（近）底部，
-  // `scroll()` 的「回到近底部即恢复跟随」把意愿翻回 true，rAF 里的 settle 随即
-  // `scrollTop = scrollHeight`，把刚算好的位置整个吃掉（实测：置顶到 0 又被钉回 5816）。
-  // 这也解释了用户「再点一次就好了」——第二次走已加载分支，那条路径本来就有放跟随。
+
+  // 用户 2026-09-20 口径：**目录第一枚刻点一律置顶**（不论它加载了没有）
   assert.ok(
-    /releaseRef\.current\?\.\(\);[\s\S]{0,300}?el\.scrollTop = 0;/.test(nav),
-    "置顶前必须放一次跟随（否则 settle 会把它钉回底部）",
-  );
-  assert.ok(
-    /releaseRef\.current\?\.\(\);[\s\S]{0,300}?landOnRow\(el, row, item\.turn, setActiveTurnStable\);/.test(nav),
-    "落位前必须放一次跟随（同上）",
+    /const jumpToTop = itemsRef\.current\[0\]\?\.turn === item\.turn;/.test(nav),
+    "按「是不是目录第一枚刻点」决定置顶",
   );
 
-  // 落位**之后**要继续跟踪到布局稳定（用户 2026-09-20 报的「中间都能跳、第一条大概率
-  // 不对」）：需要加载历史的那些轮次，目标行**上方**会插入内容，其中一部分（代码高亮 /
-  // Markdown / 图片 / 折叠）是**异步变高**的，落位只做一次就会被它们推走。
+  // 取历史结束的判据是宿主对「取完了」的直接声明（`historyLoading` 落回 false），
+  // 不看该轮是否变成 loaded；结算与放弃都在端口的 settleHistory 里
   assert.ok(
-    /landOnRow\(el, row, item\.turn, setActiveTurnStable\);[\s\S]{0,140}?trackLanding\(el, list, item\.turn, item\.anchor\.messageId, row\);/.test(nav),
-    "落位之后要起落位跟踪（否则「需要加载历史」的轮次会落到位又被推走）",
+    /\}, \[historyLoading, port, clearBusy\]\);/.test(nav),
+    "结算等的是 `historyLoading` 落回 false（宿主对「取完了」的直接声明），不看该轮是否 loaded",
   );
   assert.ok(
-    /Math\.abs\(drift\) > 1/.test(nav) && /requestAnimationFrame\(tick\)/.test(nav),
-    "跟踪逐帧读目标行位置，偏差才写 scrollTop（已对齐就不动，不跟用户抢）",
+    /port\.settleHistory\(\)/.test(nav),
+    "「取完了」的结算（首枚刻点置顶 / 放弃取不回的目标）要交给阅读定位端口",
   );
   assert.ok(
-    /if \(frames >= TRACK_FRAMES\) \{/.test(nav) && /const TRACK_FRAMES = 300;/.test(nav),
-    "收手只看观察窗（不因「已对齐」提前收手：那会漏掉一两秒后才撑开的异步内容）",
+    /port\.commitRow\(\)/.test(nav),
+    "每次布局提交都要试一次延期落位（取回的锚点行一出现就跳）",
   );
-  assert.ok(
-    /el\.addEventListener\("wheel", onGesture/.test(nav) && /function onGesture/.test(nav),
-    "用户一有滚动手势就停止跟踪（跟踪不能跟用户抢方向盘）",
-  );
-  const navigateAt = nav.indexOf("const navigate = useCallback(");
-  const stopInNavigate = nav.indexOf("stopTracking();", navigateAt);
-  assert.ok(
-    navigateAt > 0 && stopInNavigate > navigateAt && stopInNavigate < unloadedAt,
-    "新的一次跳转要取消上一次的落位跟踪（它盯的是旧目标）",
-  );
-  assert.ok(/\[sessionId, stopTracking\]/.test(nav), "切会话也要停掉落位跟踪");
 }
-console.log("turnRail: 跳转先放跟随再落位（接线）✓");
+console.log("turnRail: 跳转策略（置顶 / 闸门 / 无 running / 端口化）✓");

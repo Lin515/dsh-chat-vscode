@@ -12,7 +12,9 @@
  *    不改 DOM，React 流式重渲染、语法高亮 span 都不会被高亮标记冲掉（往文本节点里
  *    包 `<mark>` 的做法在这里必死——消息流每帧都在重渲染）。配色取编辑器查找的
  *    主题变量（`--vscode-editor-findMatch*`），主题跟随白送。
- * 2. **程序化滚动先放跟随**：跳到命中处之前先 `releaseFollow`，否则 `autoScroll`
+ * 2. **程序化滚动与展开折叠是同一次阅读动作**：跳到命中处时先展开折叠的用户气泡，
+ *    再放跟随、两帧后居中——整条顺序都在 `../readingPlacement.ts` 的端口里
+ *    （`revealMatch`），组件不再自己记「先释放后测量」。不放跟随的话 `autoScroll`
  *    的 settle 会把视口钉回底部、把刚算好的位置吃掉——与轮次横条跳转同一条纪律。
  * 3. **Esc 归 ESC 归属链**（`../escapeOwner.ts`）：本层按浮层层级登记，活跃期间才有
  *     归属，没人认领才轮到「停止生成」——不再自己挂 document 监听。
@@ -23,7 +25,7 @@
  *
  * 纯逻辑（子串定位、环绕推进）在 `../find.ts`，断言见 `scripts/find.test.ts`。
  */
-import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   computeMatches,
   FIND_ALL_HIGHLIGHT,
@@ -31,6 +33,7 @@ import {
   stepActive,
 } from "../find";
 import { ESC_LAYER, useEscapeLayer } from "../escapeOwner";
+import type { ReadingPort } from "../readingPlacement";
 import { useTexts } from "../texts";
 import { IconChevronDown, IconClose, IconSearch } from "../icons";
 
@@ -120,60 +123,20 @@ function clearMarks(): void {
 }
 
 /**
- * 跳到一处命中：先放跟随、展开折叠的用户气泡（若命中在里面），等布局落定后
- * 把**命中所在那一行**居中。
- *
- * 两个时序要点：
- * - 展开必须**点按钮**（Message.tsx 操作行里的「展开」）而不是自己撕 class：
- *   `is-clamped` 是 React 状态画的，手改 class 撑不过下一次渲染；
- * - 程序化滚动不算手势：不放的话 settle 会把视口钉回底部（轮次跳转同一条纪律）。
- *
- * 居中用**命中 Range 自己**的矩形（展开提交之后量）：气泡展开后有十几行，
- * 以气泡顶为居中目标的话命中行仍可能留在折叠视口之下。展开是否已落进布局
- * 用双 rAF 等——第一帧等 React 提交，第二帧量到的才是展开后的布局。
+ * 跳到一处命中：交给阅读定位端口的 `revealMatch`——展开折叠的用户气泡、先放跟随、
+ * 两帧后把**命中所在那一行**居中，四步的顺序与取消都在端口里。
  */
-function reveal(
-  match: Range[],
-  scrollEl: RefObject<HTMLElement | null>,
-  releaseFollow: () => void,
-): void {
-  const scroller = scrollEl.current;
+function reveal(match: Range[], port: ReadingPort): void {
   const range = match[0];
-  const anchor = range?.startContainer.parentElement;
-  if (!scroller || !range || !anchor || !anchor.isConnected) return;
-  const bubble = anchor.closest(".bubble");
-  if (bubble !== null && bubble.classList.contains("is-clamped")) {
-    // 展开按钮带 `aria-expanded`：失败回显行的「重发 / 撤回」与它共用 `msg-expand`
-    // 类（Message.tsx 的 echoActions），裸类名选择器在那几行会点到「重发」。
-    // 短气泡（内容没被裁）本来就没有这颗按钮，optional chaining 落成无害空操作。
-    bubble
-      .closest(".msg")
-      ?.querySelector<HTMLButtonElement>(".msg-expand[aria-expanded]")
-      ?.click();
-  }
-  // 程序化滚动不算手势：不放的话 settle 会把视口钉回底部（轮次跳转同一条纪律）
-  releaseFollow();
-  requestAnimationFrame(() =>
-    requestAnimationFrame(() => {
-      if (!anchor.isConnected) return;
-      const line = range.getBoundingClientRect();
-      if (line.height === 0) return; // 还是不可见（没有可点的展开钮）：不动视口
-      scroller.scrollTop += line.top - scroller.getBoundingClientRect().top - scroller.clientHeight / 2;
-    }),
-  );
+  if (range === undefined) return;
+  port.revealMatch(range);
 }
 
 export function FindBar({
-  scrollEl,
-  contentEl,
-  releaseFollow,
+  /** 阅读定位端口：滚动区 / 正文列表 / 一次完整的命中定位动作都在这一份上。 */
+  port,
 }: {
-  /** 会话滚动区（`.chat-scroll`）：跳转定位的坐标系。 */
-  scrollEl: RefObject<HTMLDivElement | null>;
-  /** 正文列表（`.chat-list`）：搜索的根，也是 MutationObserver 的观察对象。 */
-  contentEl: RefObject<HTMLDivElement | null>;
-  /** 把「跟随最新」放掉（跳转前调用，理由见文件头第 2 条）。 */
-  releaseFollow: () => void;
+  port: ReadingPort;
 }) {
   const texts = useTexts();
   const [open, setOpen] = useState(false);
@@ -182,6 +145,8 @@ export function FindBar({
   /** 激活命中的 0 起下标（界面上显示 current + 1）。 */
   const [current, setCurrent] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
+  /** 正文列表（`.chat-list`）：搜索的根，也是 MutationObserver 的观察对象。 */
+  const contentEl = port.contentEl;
 
   // —— 回调里读最新值的 ref 面（与 autoScroll / turnRailNav 同一套手法）——
   const matchesRef = useRef<Range[][]>([]);
@@ -319,9 +284,9 @@ export function FindBar({
       currentRef.current = clamped;
       setCurrent(clamped);
       paint(matches, clamped);
-      reveal(matches[clamped], scrollEl as RefObject<HTMLElement | null>, releaseFollow);
+      reveal(matches[clamped], port);
     },
-    [scrollEl, releaseFollow],
+    [port],
   );
 
   const step = useCallback(

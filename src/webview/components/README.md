@@ -20,7 +20,7 @@
 - `TurnRail.tsx` — 右侧轮次横条组件：固定间距刻点、悬停预览卡、点击跳轮。
 - `Panels.tsx` — 顶栏面板：后台任务详情（实时输出、停止按钮）、子代理等抽屉。抽屉外壳（后台任务等）按 `../escapeOwner.ts` 的 `ESC_LAYER.drawer` 登记自己的关闭动作。
 - `History.tsx` — 会话历史抽屉：搜索、删除（二次点击确认）、归档。ESC 关抽屉走 `../escapeOwner.ts` 的 `ESC_LAYER.drawer`（自己消费，不落到会话页的停止生成）。
-- `FindBar.tsx` — 会话查找条（Ctrl+F）：CSS Custom Highlight API 高亮 + 计数 + 上一处/下一处；纯逻辑在 `../find.ts`。ESC 关查找走 `../escapeOwner.ts` 的浮层层级（不再自己挂 document 监听）。
+- `FindBar.tsx` — 会话查找条（Ctrl+F）：CSS Custom Highlight API 高亮 + 计数 + 上一处/下一处；纯逻辑在 `../find.ts`，跳命中（展开折叠气泡 → 放跟随 → 居中）走 `../readingPlacement.ts` 的同一个 `ReadingPort`。ESC 关查找走 `../escapeOwner.ts` 的浮层层级（不再自己挂 document 监听）。
 - `EmptyMeta.tsx` — 空态页元信息：会话工作目录与 agent 预设。
 - `ContextMenu.tsx` — 自绘右键菜单浮层（根部挂一次，只管画）。ESC 收菜单按 `../escapeOwner.ts` 的 `ESC_LAYER.contextMenu` 登记：压过原图浮层，一次 ESC 只关它。
 - `CopyButton.tsx` — 复制按钮（工具卡与后台任务详情共用，1s 文案反馈）。

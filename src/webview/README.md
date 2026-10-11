@@ -31,6 +31,7 @@
 ## 布局与交互子系统
 
 - `autoScroll.ts` — 聊天区自动滚动（贴底 / 回底胶囊）：一个模块一个端口（`AutoScrollPort` 范例）。
+- [readingPlacement.ts](<readingPlacement.ts>) — 阅读定位：一次阅读动作的唯一实现（有效性判定 → 放跟随 → 几何写入 → 延期取历史 / 稳定落位跟踪 / 过期作废）。轮次横条与查找条从**同一份** `ReadingPort` 取「滚动区 / 正文列表 / 动作」；贴底阈值与 `bottomGap` 仍只由 `autoScroll` 提供。
 - `find.ts` — 会话查找（Ctrl+F）的纯逻辑：文本节点序列上的子串定位与激活下标环绕推进；DOM 胶水在 `components/FindBar.tsx`。
 - [escapeOwner.ts](<escapeOwner.ts>) — **ESC 的归属链**：一次按键只归一个消费者，没有消费者才轮到「停止生成」——而它属于会话页，只在会话页占据前景时存在（判据 `isConversationForeground`）。元素层（输入框 / 时间线绘图区）在自己的 `onKeyDown` 里 `consumeEscape`；全局浮层用 `useEscapeLayer` 在活跃期间按 `ESC_LAYER` 层级登记（右键菜单 > 原图 > 抽屉 > 并列浮层）、关闭或卸载即注销；唯一的 window 监听（`attachEscapeFallback`）按「元素层 > 浮层 > 会话页的停止生成」裁决。层级与消费只有一个出处，浮层的注册先后不参与仲裁。
 - `composerCompletion.tsx` — 输入框 `@` / `/` 补全的唯一归属地：触发判定（`@` 看光标落在哪个内容块里，块里有内容就触发、查询与替换都用整块，带引号含空白的 token 按同一判据解包）、**抑制门**（宿主说这一块已经能引用到内容时不弹；浏览入口恒弹）、候选取用与优先级、键盘导航、弹层 JSX。
@@ -72,4 +73,4 @@
 - `queueOrder.ts` — 待发送队列显示顺序（插话排在排队上方；只改显示不动数据顺序）。
 - `queueHover.ts` — 队列行的单行截断判据（实测溢出，非字数）与悬停全文浮层的落位 / 限高（纯函数）。
 - `turnRail.ts` — 右侧轮次横条的数据层：`turnOutline` 投影铺底 + 已加载窗口折锚点与预览。
-- `turnRailNav.ts` — 轮次横条的导航行为（点击跳轮、未加载先取历史再落位、滚动同步高亮）。
+- `turnRailNav.ts` — 轮次横条的导航行为（点击跳轮、未加载先取历史再落位、滚动同步高亮）；「先放跟随再落位」等时序与几何委托 [readingPlacement.ts](<readingPlacement.ts>)，这里只留横条自己的策略（哪一枚置顶、no-op 闸门、何时算取完）。
