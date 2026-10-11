@@ -35,8 +35,9 @@ import type { PendingInteraction } from "../pendingInteraction";
 import { useComposerCompletion } from "../composerCompletion";
 import { consumeEscape } from "../escapeOwner";
 import { clickGestureHandler, sendButtonView, watchModifierKeys } from "../composerSend";
-import { draftSegments, hitsAnyRect } from "../composerMention";
-import { openMentionAt } from "../mentionOpen";
+import { hitsAnyRect } from "../composerMention";
+import { ComposerSessionDraft } from "../composerSessionDraft";
+import { openMentionTarget } from "../mentionOpen";
 import { usePickerFocus } from "../pickerFocus";
 import { presetDisplayText } from "../presetDisplay";
 import { bottomGap, type AutoScrollPort } from "../autoScroll";
@@ -343,6 +344,9 @@ export function Composer({
   );
 
   const draft = state.draft;
+  const sessionDraft = useMemo(() => new ComposerSessionDraft(), [state.session?.id]);
+  sessionDraft.sync(draft, state.session?.id);
+  const displayDraft = sessionDraft.text;
   /**
    * `@` / `/` 补全：弹层 + 文本域要接的那几个 prop。
    *
@@ -351,7 +355,8 @@ export function Composer({
    * 也拥有宿主下发的「插到光标处」请求。组件这边只剩布局 / 工具行 / 文本域。
    */
   const completion = useComposerCompletion({
-    draft,
+    draft: displayDraft,
+    sessionDraft,
     commands: state.commands,
     fileRefs: state.fileRefs,
     texts,
@@ -979,7 +984,7 @@ export function Composer({
               aria-hidden
               ref={mirrorRef}
             >
-              {draftSegments(draft).map((segment) =>
+              {sessionDraft.segments().map((segment) =>
                 segment.link ? (
                   <span className="mention-mark" key={segment.at}>
                     {segment.text}
@@ -995,7 +1000,7 @@ export function Composer({
             <textarea
               className="composer-input"
               rows={1}
-              value={draft}
+              value={displayDraft}
               placeholder={state.messages.length ? texts.placeholderFollowUp : texts.placeholderFirst}
               // 草稿里的引用要按住 Ctrl（macOS 上 Cmd）单击才打开——文本域是**纯文本**，
               // 做不出真正的行内链接，只能按光标位置判（见 `../mentionOpen`）。
@@ -1007,7 +1012,8 @@ export function Composer({
                 completion.textareaProps.onClick?.(event);
                 // 不按 Ctrl 时什么都不做：普通单击只管定位光标
                 if (!event.ctrlKey && !event.metaKey) return;
-                openMentionAt(event.currentTarget.value, event.currentTarget.selectionStart ?? 0);
+                const target = sessionDraft.targetAt(event.currentTarget.selectionStart ?? 0);
+                if (target) openMentionTarget(target);
               }}
               // 手指光标：划到引用上方且按着修饰键才出现（判据与上面那条 onClick 同源）
               onMouseMove={(event) => {

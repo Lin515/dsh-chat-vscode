@@ -10,8 +10,7 @@
  * 1. **逐字相同**：切段拼回去必须与草稿一字不差。镜像层多一个字、少一个字，后面所有字
  *    的位置都会跟着漂，用户看到的就是一串错位的蓝字；
  * 2. **谁上色**：只有解得开目标的引用上链接色（解不开会话 id 的那种点不开，也不该看着
- *    像链接），且会话引用取的是**原文 token**——草稿里显示的就是它，正文气泡那条
- *    「折成 `@标题`」的显示还原不适用于草稿。
+ *    像链接）。纯切段函数不改变输入；会话标题投影与绑定由会话草稿端口另行验证。
  *
  * 另有一组样式 / 接线断言：镜像层必须复用 `.composer-input` 的排版（自己另写一份字号 /
  * 行高 / 内边距就一定会与文本域漂开）、文本域字形透明但光标可见、选区半透明（不透明会把
@@ -205,8 +204,8 @@ const sessionToken = (label: string, id: string): string =>
     "utf8",
   );
   assert.ok(
-    /draftSegments\(draft\)/.test(composer),
-    "镜像层按 `draftSegments` 切段渲染（判定与渲染只有一处）",
+    /sessionDraft\.segments\(\)/.test(composer) && /value=\{displayDraft\}/.test(composer),
+    "镜像层和文本域共用会话草稿端口的可见投影（绑定与渲染只有一处）",
   );
   assert.ok(
     /className=\{`composer-input composer-mirror\$\{modifierHeld \? " is-modifier" : ""\}`\}/.test(

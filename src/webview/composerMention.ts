@@ -8,11 +8,9 @@
  * 类名**保证字号 / 行高 / 折行口径逐字一致；宽度、高度与滚动位置由组件从文本域同步
  * （镜像层自己量不出文本域的可视区）。
  *
- * 于是这里的第一条硬约束是：**镜像层的文本必须与草稿逐字相同**——多一个字、少一个
- * 字，后面所有字的位置都会跟着漂，用户看到的就是一串错位的蓝字。所以每一段的文本
- * 一律取**原文切片**，连会话引用也不例外：草稿里落盘的是 `@[标题](dsh-session:…)`
- * 这条给服务端看的原始 token，文本域里显示的就是它（`Composer.tsx` 刻意不折）。
- * 正文气泡里那条「折成 `@标题`」的显示还原**不适用于草稿**。
+ * 第一条硬约束是：**镜像层与文本域的可见文本必须逐字相同**——否则后续文字全部错位。
+ * 本模块只切输入切片，不负责折叠。会话引用先由 `ComposerSessionDraft` 投影成 `@标题`，
+ * 文本域和镜像同时使用投影；落盘与发送则由该端口序列化回完整 token。
  *
  * 纯函数、不碰 DOM 也不引 React：断言见 `scripts/composerMention.test.ts`。
  */
@@ -42,8 +40,7 @@ export function draftSegments(draft: string): DraftSegment[] {
     if (span.start > cursor) {
       out.push({ text: draft.slice(cursor, span.start), link: false, at: cursor });
     }
-    // 文本一律取**原文切片**（会话引用折成 `@标题` 那份只在正文气泡里用）：
-    // 镜像层与文本域必须逐字对齐，差一个字符后面全错位
+    // 切段不改变输入内容；显示投影由会话草稿端口统一处理。
     out.push({
       text: draft.slice(span.start, span.end),
       link: span.target !== undefined,

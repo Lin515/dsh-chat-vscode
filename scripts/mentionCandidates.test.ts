@@ -174,7 +174,7 @@ console.log("mentionCandidates: 对话候选只在工作区根目录列（渲染
   // 「这一块已经能引用到内容」→ 一个查询都不发、当场回一条 `resolved: true` 的空帧
   // （用户 2026-10-11 口径；行为断言在 scripts/mentionResolve.test.ts）
   assert.ok(
-    /if \(scope && \(await this\.mentionResolves\(scope, query\)\)\) \{\s*\n\s*if \(!this\.isCurrentMenuQuery\(viewId, controller\)\) return;\s*\n\s*this\.emitToView\(viewId, \{ type: "files\/list", query, items: \[\], resolved: true \}\);/.test(
+    /if \(!sessionOnly && scope && \(await this\.mentionResolves\(scope, query\)\)\) \{\s*\n\s*if \(!this\.isCurrentMenuQuery\(viewId, controller\)\) return;\s*\n\s*this\.emitToView\(viewId, \{ type: "files\/list", query, items: \[\], resolved: true \}\);/.test(
       body,
     ),
     "抑制分支要在两条 RPC 之前：不查、当场回帧（界面据此整块不弹）",
@@ -182,7 +182,7 @@ console.log("mentionCandidates: 对话候选只在工作区根目录列（渲染
   // 文件那一半在发帧**之前**经目录列举补全（服务器一次只回 20 条，见 scripts/fileRefListing.test.ts）：
   // 补全必须在这一帧上，不能另发一帧——另发一帧会让界面先收到半截列表再被替换
   assert.ok(
-    /const complete = await this\.completeFileListing\(scope, query, items \?\? \[\]\)/.test(body),
+    /const complete = sessionOnly \? \[\] : await this\.completeFileListing\(scope, query, items \?\? \[\]\)/.test(body),
     "文件那一帧要经 completeFileListing（目录列举被服务器截掉的尾巴在这里补回来）",
   );
   assert.ok(
@@ -207,7 +207,7 @@ console.log("mentionCandidates: 对话候选只在工作区根目录列（渲染
   // 对话候选只在根目录列：进了目录连查都不查（那趟是全语料扫描，查了也只能丢掉）。
   // 判据在两处同源：宿主这里不查、界面 `rankCandidates` 不渲染（第 1b 节）。
   assert.ok(
-    /const wantsSessions = !isDirectoryQuery\(query\);/.test(body) &&
+    /const wantsSessions = sessionOnly \|\| !isDirectoryQuery\(query\);/.test(body) &&
       /const sessions = !wantsSessions\s*\n?\s*\? undefined/.test(body),
     "进了目录就不发对话候选那次 RPC（`sessions` 直接是 undefined）",
   );
@@ -263,7 +263,7 @@ console.log("mentionCandidates: 宿主侧各自发帧 + 取消旧查询 + 下线
     "`@` 候选的重取点只能有一个（下钻 / 回上一层不再自己发一遍：那会让服务端那趟扫描翻倍）",
   );
   assert.ok(
-    /if \(trigger\?\.kind === "mention"\) post\(\{ type: "queryFiles", query: trigger\.query \}\)/.test(source),
+    /if \(trigger\?\.kind === "mention"\) post\(\{ type: "queryFiles", query: trigger\.query, \.\.\.\(trigger\.sessionOnly \? \{ sessionOnly: true \} : \{\}\) \}\)/.test(source),
     "那唯一一处就是「查询串变了就重取」的 effect",
   );
   assert.ok(

@@ -1330,8 +1330,8 @@ console.log("completion(hook): 目录块整段替换（前后文不误吞） ✓
 
   const source = readFileSync(join(process.cwd(), "src", "webview", "composerCompletion.tsx"), "utf8");
   assert.ok(
-    /\}, \[trigger\?\.kind, trigger\?\.query\]\);/.test(source),
-    "`@` 重取 effect 的依赖只能是「触发词种类 + 查询串」：光标位置进依赖就会每挪一格多发一帧",
+    /\}, \[trigger\?\.kind, trigger\?\.query, trigger\?\.sessionOnly\]\);/.test(source),
+    "`@` 重取 effect 的依赖只能是触发词种类、查询串和会话限定通道：光标位置进依赖就会每挪一格多发一帧",
   );
 }
 console.log("completion(hook): 同一目录块内挪光标不发重复 queries ✓");

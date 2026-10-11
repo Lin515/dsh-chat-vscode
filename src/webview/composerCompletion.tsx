@@ -46,6 +46,7 @@ import {
 import type { CommandView, FileRefView, SessionRefView } from "../shared/chat";
 import { formatFileMention, isBrowseQuery, isDirectoryQuery, normalizeMentionPath } from "../shared/mentions";
 import { post } from "./bridge";
+import { ComposerSessionDraft, type DraftEditRange } from "./composerSessionDraft";
 import { consumeEscape } from "./escapeOwner";
 import { IconFolder } from "./icons";
 import { mentionParent } from "./mentionNav";
@@ -60,6 +61,9 @@ export interface Trigger {
   /** 触发词在文本里的起始下标。 */
   start: number;
   query: string;
+  /** 折叠会话块的完整可编辑区间，允许标题含空白。 */
+  end?: number;
+  sessionOnly?: boolean;
 }
 
 /**
@@ -103,8 +107,11 @@ export type CandidateAction = "pick" | "drill";
  * 纯函数：断言见 `scripts/mentionNav.test.ts`（含「`@` 能与 `/` 在同一段文本里区分」
  * 与上面各条口径的逐字回归）。
  */
-export function findTrigger(text: string, caret: number): Trigger | undefined {
+export function findTrigger(text: string, caret: number, sessions?: ComposerSessionDraft): Trigger | undefined {
   const at = clampIndex(caret, text.length);
+  const session = sessions?.queryAt(at);
+  if (session === null) return undefined;
+  if (session) return { kind: "mention", ...session };
   const block = mentionBlockAt(text, at);
   if (block) {
     // (1) 裸 `@`：块里一个字都没有，且光标紧靠它右侧（隔了空白的 `@ |` 不算、
@@ -249,6 +256,10 @@ export function rankCandidates(
     const query = trigger.query.toLowerCase();
     return commands.filter((command) => command.name.toLowerCase().includes(query));
   }
+  if (trigger.sessionOnly) {
+    const query = trigger.query.toLowerCase();
+    return sessions.filter((session) => session.label.toLowerCase().includes(query));
+  }
   const files: MentionCandidate[] = [...items];
   const refs: MentionCandidate[] = isDirectoryQuery(trigger.query) ? [] : [...sessions];
   const parent = mentionParent(trigger.query);
@@ -304,9 +315,9 @@ interface TokenSpan {
 function tokenSpan(text: string, trigger: Trigger): TokenSpan {
   const start = clampIndex(trigger.start, text.length);
   const end = clampIndex(
-    trigger.kind === "mention"
+    trigger.end ?? (trigger.kind === "mention"
       ? mentionBlockFrom(text, start).end
-      : start + 1 + trigger.query.length,
+      : start + 1 + trigger.query.length),
     text.length,
   );
   return { before: text.slice(0, start), after: text.slice(end), start, end };
@@ -540,6 +551,8 @@ export interface UseComposerCompletionInput {
   noWorkspace?: boolean;
   /** 草稿写回：本地 state（宿主持久化那一写由本 module 自己发）。 */
   onDraft: (text: string) => void;
+  /** 会话草稿端口：统一显示、写回与触发区间，不将绑定泄漏给文本域。 */
+  sessionDraft?: ComposerSessionDraft;
   /**
    * 弹层**没接管**的 Enter 交给它（`"accelerated"` = Cmd/Ctrl+Enter）。
    *
@@ -627,6 +640,7 @@ function useCompletion(
     texts,
     noWorkspace,
     onDraft,
+    sessionDraft,
     onSubmit,
     insertRequest,
     quoteRequest,
@@ -667,7 +681,7 @@ function useCompletion(
    * `useState(undefined)` 逐字等价。传了 `caret`（测试与独立使用）时才能从第一帧
    * 就看见触发词，否则「弹层该不该渲染」这类断言没法离线跑。
    */
-  const [trigger, setTrigger] = useStateImpl<Trigger | undefined>(() => findTrigger(draft, caret ?? draft.length));
+  const [trigger, setTrigger] = useStateImpl<Trigger | undefined>(() => findTrigger(draft, caret ?? draft.length, sessionDraft));
   const [highlight, setHighlight] = useStateImpl<number>(0);
   /**
    * 每次都读到**最新一帧**的草稿、目录与回调。
@@ -676,17 +690,51 @@ function useCompletion(
    * （草稿已被 React 换成新的，捕获的却还是上一帧）——搬家前这些代码直接读组件作用
    * 域里的 `state.draft`，等价于这里每次都取最新值。
    */
-  const latest = useRef({ draft, commands, fileRefs, texts, onDraft, onSubmit });
-  latest.current = { draft, commands, fileRefs, texts, onDraft, onSubmit };
+  const latest = useRef({ draft, commands, fileRefs, texts, onDraft, onSubmit, sessionDraft });
+  latest.current = { draft, commands, fileRefs, texts, onDraft, onSubmit, sessionDraft };
 
   /**
    * 草稿的**两次写**：本地 state（`onDraft`，界面立刻变）+ 宿主持久化
    * （`setDraft` 帧，换会话 / 重载后草稿还在）。顺序与内容必须与搬家前一致。
    */
-  const writeDraft = useCallback((text: string) => {
-    latest.current.onDraft(text);
-    post({ type: "setDraft", text });
+  const writeDraft = useCallback((text: string, caret: number, range?: DraftEditRange) => {
+    const result = latest.current.sessionDraft?.write(text, caret, range) ?? { text, raw: text, caret };
+    latest.current.draft = result.text;
+    latest.current.onDraft(result.raw);
+    post({ type: "setDraft", text: result.raw });
+    return result;
   }, []);
+
+  // textarea 的 input 没有可靠的旧选区；在原生 beforeinput 中捕获，避免重复标题串绑。
+  const beforeEdit = useRef<DraftEditRange | undefined>();
+  useEffect(() => {
+    const node = ref.current;
+    if (!node) return;
+    const capture = (event: Event) => {
+      const input = event as InputEvent;
+      // 插入 / 选区替换保留精确位置；无选区删除和历史回退的实际区间由差分计算。
+      beforeEdit.current = input.inputType.startsWith("insert") ||
+        (input.inputType.startsWith("delete") && node.selectionStart !== node.selectionEnd)
+        ? { start: node.selectionStart, end: node.selectionEnd }
+        : undefined;
+    };
+    const replaceUnchanged = () => {
+      const range = beforeEdit.current;
+      // 重输相同选区时浏览器仍发 input，但 React 因 value 未变不会发 onChange。
+      // 只在实际 input 后失效，取消的 beforeinput 不应影响绑定。
+      if (!latest.current.sessionDraft || !range || range.start === range.end || node.value !== latest.current.draft) return;
+      beforeEdit.current = undefined;
+      const result = writeDraft(node.value, node.selectionStart, range);
+      dismissedRef.current = null;
+      setTrigger(findTrigger(result.text, result.caret, latest.current.sessionDraft));
+    };
+    node.addEventListener("beforeinput", capture);
+    node.addEventListener("input", replaceUnchanged);
+    return () => {
+      node.removeEventListener("beforeinput", capture);
+      node.removeEventListener("input", replaceUnchanged);
+    };
+  }, [ref, sessionDraft, writeDraft]);
 
   /**
    * 触发词出现时才去拉候选列表，避免每次输入都请求。
@@ -709,10 +757,10 @@ function useCompletion(
    * 「扫全部会话日志」的活翻倍，而两批回答的先后也没有保证（旧批次可能后到）。
    */
   useEffect(() => {
-    if (trigger?.kind === "mention") post({ type: "queryFiles", query: trigger.query });
+    if (trigger?.kind === "mention") post({ type: "queryFiles", query: trigger.query, ...(trigger.sessionOnly ? { sessionOnly: true } : {}) });
     // 换触发词 / 改查询串都要把高亮回到第一条：列表整个换了，停在旧下标上会选错行
     setHighlight(0);
-  }, [trigger?.kind, trigger?.query]);
+  }, [trigger?.kind, trigger?.query, trigger?.sessionOnly]);
 
   /**
    * 宿主要求把文本插到光标处（选了不能内嵌的路径：目录 / 二进制 / 非 UTF-8…）。
@@ -729,14 +777,15 @@ function useCompletion(
     const el = ref.current;
     const text = latest.current.draft;
     // 有选区时插在选区之后（不删用户已选中的文字）
-    const next = insertToken(text, request.text, el?.selectionEnd ?? caret ?? text.length);
-    writeDraft(next.value);
+    const at = el?.selectionEnd ?? caret ?? text.length;
+    const next = insertToken(text, request.text, at);
+    const written = writeDraft(next.value, next.caret, { start: at, end: at });
     // 等 React 把新 value 渲染出来再定位光标
     requestAnimationFrame(() => {
       const node = ref.current;
       if (!node) return;
       node.focus();
-      node.setSelectionRange(next.caret, next.caret);
+      node.setSelectionRange(written.caret, written.caret);
     });
     // 只依赖 id：effect 内读的草稿就是这次请求对应的那一帧
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -758,13 +807,14 @@ function useCompletion(
 
     const el = ref.current;
     const text = latest.current.draft;
-    const next = quoteBlock(text, request.text, el?.selectionEnd ?? caret ?? text.length);
-    writeDraft(next.value);
+    const at = el?.selectionEnd ?? caret ?? text.length;
+    const next = quoteBlock(text, request.text, at);
+    const written = writeDraft(next.value, next.caret, { start: at, end: at });
     requestAnimationFrame(() => {
       const node = ref.current;
       if (!node) return;
       node.focus();
-      node.setSelectionRange(next.caret, next.caret);
+      node.setSelectionRange(written.caret, written.caret);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [quoteRequest?.id]);
@@ -841,14 +891,14 @@ function useCompletion(
     (token: string) => {
       const current = latest.current;
       if (!trigger) return;
-      const result = replaceToken(current.draft, trigger, token);
-      writeDraft(result.text);
+      const replaced = replaceToken(current.draft, trigger, token);
+      const result = writeDraft(replaced.text, replaced.caret, tokenSpan(latest.current.draft, trigger));
       landCaret(result.caret);
       // 下钻 / 回上一层**不**关弹层：列表换成新那一层的内容继续留在候选态。
       // 重取候选由「查询串变了就发一次」的那个 effect 负责（它读的是下一帧的
       // trigger），这里**不再自己发一遍**——一次导航发两遍是白烧一遍服务端的
       // 全语料扫描，而且两批回答谁先到没有保证。
-      setTrigger(findTrigger(result.text, result.caret));
+      setTrigger(findTrigger(result.text, result.caret, latest.current.sessionDraft));
     },
     [trigger, writeDraft, landCaret],
   );
@@ -866,8 +916,8 @@ function useCompletion(
   const insertMentionText = useCallback(
     (mention: string) => {
       if (!trigger) return;
-      const result = replaceToken(latest.current.draft, trigger, mention);
-      writeDraft(result.text);
+      const replaced = replaceToken(latest.current.draft, trigger, mention);
+      const result = writeDraft(replaced.text, replaced.caret, tokenSpan(latest.current.draft, trigger));
       setTrigger(undefined);
       dismissedRef.current = { value: result.text, caret: result.caret };
       landCaret(result.caret);
@@ -896,8 +946,8 @@ function useCompletion(
       );
       if (!outcome) return;
       if (outcome.type === "command") {
-        const result = replaceToken(current.draft, trigger, `/${outcome.name}`);
-        writeDraft(result.text);
+        const replaced = replaceToken(current.draft, trigger, `/${outcome.name}`);
+        const result = writeDraft(replaced.text, replaced.caret, tokenSpan(latest.current.draft, trigger));
         setTrigger(undefined);
         // 光标同步落到命令名之后：接下来直接打参数，再按回车就是执行。
         // 同步改 textarea 的 DOM 值与光标——React 这帧提交时 prop 值已相同、
@@ -962,7 +1012,7 @@ function useCompletion(
       }
       // 任何真实的文本 / 光标变化都解除「已关闭」标记
       dismissedRef.current = null;
-      setTrigger(findTrigger(value, at));
+      setTrigger(findTrigger(value, at, latest.current.sessionDraft));
     },
     [],
   );
@@ -1026,11 +1076,15 @@ function useCompletion(
   const onEdit = useCallback(
     (event: React.ChangeEvent<HTMLTextAreaElement>) => {
       const value = event.target.value;
-      latest.current.onDraft(value);
-      post({ type: "setDraft", text: value });
-      refreshTrigger(value, event.target.selectionStart ?? value.length);
+      const result = writeDraft(value, event.target.selectionStart ?? value.length, beforeEdit.current);
+      beforeEdit.current = undefined;
+      if (result.text !== value) {
+        event.target.value = result.text;
+        event.target.setSelectionRange(result.caret, result.caret);
+      }
+      refreshTrigger(result.text, result.caret);
     },
-    [refreshTrigger],
+    [refreshTrigger, writeDraft],
   );
 
   const onCaretMove = useCallback(
@@ -1085,7 +1139,7 @@ function useCompletion(
   const mentionSuppressed =
     trigger?.kind === "mention" &&
     !isBrowseQuery(trigger.query) &&
-    (fileRefs.query !== trigger.query || fileRefs.resolved === true);
+    (fileRefs.query !== trigger.query || (!trigger.sessionOnly && fileRefs.resolved === true));
 
   const popover = useMemo(
     () =>
@@ -1097,7 +1151,7 @@ function useCompletion(
             {candidates.length === 0 ? (
               <>
                 <div className="popover-section">
-                  {trigger?.kind === "command" ? texts.commands : texts.mentionFiles}
+                  {trigger?.kind === "command" ? texts.commands : trigger?.sessionOnly ? texts.mentionSessions : texts.mentionFiles}
                 </div>
                 <div className="popover-empty">
                   {/* 空的理由分两种：没有工作目录（宿主根本没去取目录）与真的没匹配项。
@@ -1106,7 +1160,9 @@ function useCompletion(
                     ? texts.menuNoWorkspace
                     : trigger?.kind === "command"
                       ? texts.commandsEmpty
-                      : texts.mentionEmpty}
+                      : trigger?.sessionOnly
+                        ? texts.mentionSessionsEmpty
+                        : texts.mentionEmpty}
                 </div>
               </>
             ) : (
@@ -1224,7 +1280,7 @@ function useCompletion(
             )}
           </div>
           <div className="popover-hint">
-            {trigger?.kind === "command" ? texts.commandHint : texts.mentionHint}
+            {trigger?.kind === "command" ? texts.commandHint : trigger?.sessionOnly ? texts.mentionSessionsHint : texts.mentionHint}
           </div>
         </div>
       ) : null,

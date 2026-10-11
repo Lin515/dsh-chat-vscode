@@ -496,6 +496,7 @@ export const MESSAGES = {
   mentionFiles: { zh: "文件", en: "Files" },
   mentionSessions: { zh: "对话", en: "Sessions" },
   mentionEmpty: { zh: "没有匹配的文件", en: "No matching files" },
+  mentionSessionsEmpty: { zh: "没有匹配的对话", en: "No matching sessions" },
   /**
    * 菜单空着的**第二种理由**：这个窗口还没有工作目录（`workspace.path` 是空串）。
    *
@@ -516,6 +517,7 @@ export const MESSAGES = {
    */
   commandHint: { zh: "↑↓ 选择 · Enter 引用 · Esc 取消", en: "↑↓ select · Enter reference · Esc cancel" },
   mentionHint: { zh: "↑↓ 选择 · Enter 引用 · Tab 进入目录 · Esc 取消", en: "↑↓ select · Enter reference · Tab browse folder · Esc cancel" },
+  mentionSessionsHint: { zh: "↑↓ 选择 · Enter / Tab 引用 · Esc 取消", en: "↑↓ select · Enter / Tab reference · Esc cancel" },
   mentionParent: { zh: "返回上一层目录", en: "Go to the parent folder" },
   mentionDrill: { zh: "进入目录", en: "Browse folder" },
   mentionDrillKey: { zh: "Tab", en: "Tab" },

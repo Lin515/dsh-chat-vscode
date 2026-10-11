@@ -479,7 +479,7 @@ export type WebviewToHost =
   /** 请求斜杠命令目录。 */
   | { type: "listCommands" }
   /** 查询文件引用候选（@ 提及）。 */
-  | { type: "queryFiles"; query: string }
+  | { type: "queryFiles"; query: string; sessionOnly?: boolean }
   /**
    * 解析正文里的**本地图片引用**（`![](out/chart.png)`）。
    *

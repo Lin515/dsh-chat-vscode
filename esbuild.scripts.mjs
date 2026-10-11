@@ -236,6 +236,7 @@ const entries = {
   "build/preset-match.test.mjs": "scripts/presetMatch.test.ts",
   "build/composer-draft.test.mjs": "scripts/composerDraft.test.ts",
   "build/composer-mention.test.mjs": "scripts/composerMention.test.ts",
+  "build/composer-session-draft.test.mjs": "scripts/composerSessionDraft.test.ts",
   // 发送手势（按钮按住 Ctrl / Cmd 的文字与点击手势）：真渲染 + 真事件链，必须登记
   "build/composer-send.test.mjs": "scripts/composerSend.test.ts",
   // ESC 归属链（菜单>原图、轨迹聚焦不停止生成、生命周期）：手写事件链驱动真处理器，必须登记

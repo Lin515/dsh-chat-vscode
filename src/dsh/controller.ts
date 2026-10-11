@@ -6728,7 +6728,7 @@ export class ChatController implements vscode.Disposable {
         break;
 
       case "queryFiles":
-        await this.queryFiles(viewId, message.query);
+        await this.queryFiles(viewId, message.query, message.sessionOnly === true);
         break;
 
       case "resolveImages": {
@@ -8892,7 +8892,7 @@ export class ChatController implements vscode.Disposable {
    * `resolved: true` 的空帧，界面据此整块不弹（判据见 `mentionResolves`）——不查既省下
    * 那一趟，也让界面**当场**拿到判定、不必先闪一个列表出来。
    */
-  private async queryFiles(viewId: string, query: string): Promise<void> {
+  private async queryFiles(viewId: string, query: string, sessionOnly = false): Promise<void> {
     this.menuQueries.get(viewId)?.abort();
     const controller = new AbortController();
     this.menuQueries.set(viewId, controller);
@@ -8901,12 +8901,13 @@ export class ChatController implements vscode.Disposable {
     // 落会话可能等了一会儿，期间用户又敲了字：这一次已经被作废，一个字节都不发
     if (!this.isCurrentMenuQuery(viewId, controller)) return;
     const client = this.client;
-    if (scope && (await this.mentionResolves(scope, query))) {
+    // 编辑过的会话标题不能再按同名文件判断「已引用」，也不具有目录浏览语义。
+    if (!sessionOnly && scope && (await this.mentionResolves(scope, query))) {
       if (!this.isCurrentMenuQuery(viewId, controller)) return;
       this.emitToView(viewId, { type: "files/list", query, items: [], resolved: true });
       return;
     }
-    const wantsSessions = !isDirectoryQuery(query);
+    const wantsSessions = sessionOnly || !isDirectoryQuery(query);
     if (!client || !scope) {
       this.emitToView(viewId, { type: "files/list", query, items: [], resolved: false });
       if (wantsSessions) this.emitToView(viewId, { type: "files/sessions", query, sessions: [] });
@@ -8914,7 +8915,7 @@ export class ChatController implements vscode.Disposable {
     }
     // 两个源并行取。对话那条失败（老版本服务器没有这个 remote）不该把文件候选
     // 一起拖下水，所以各自兜住；作废导致的失败是**正常结果**，不进日志。
-    const files = client
+    const files = sessionOnly ? Promise.resolve([]) : client
       .request<{ path: string; kind: "file" | "directory" }[]>(
         "fileReferences/list",
         { agentId: scope.sessionId, query },
@@ -8946,7 +8947,7 @@ export class ChatController implements vscode.Disposable {
     const filesFrame = files.then(async (items) => {
       // 服务器一次最多回 20 条（`maxResults` 是插件配置，多要不到），目录列举那一路
       // 由这里把被截掉的尾巴按同一套排序补回来（见 `completeFileListing`）
-      const complete = await this.completeFileListing(scope, query, items ?? []);
+      const complete = sessionOnly ? [] : await this.completeFileListing(scope, query, items ?? []);
       if (!this.isCurrentMenuQuery(viewId, controller)) return;
       this.emitToView(viewId, { type: "files/list", query, items: complete, resolved: false });
     });

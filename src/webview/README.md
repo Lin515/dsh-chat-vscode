@@ -38,6 +38,7 @@
 - [composerSend.ts](<composerSend.ts>) — 发送手势与主按钮文案的唯一出处：按住 Ctrl / Cmd 时按钮文字换成这一次真会走的那条路、点按钮发加速手势（与键盘同一条判据），按住态的 keydown / keyup / blur 监听也在这里。界面只发手势，模式由宿主解析。
 - `mentionLinks.ts` — 正文里 `@` 引用的可点目标判定（`@文件` / `@目录/` / `@会话` 各指向谁、哪一段文字算引用）；**已经发出去**的会话引用正文里只剩 `@标题`，靠 `MessageView.sessionRefs` 那份「标题 ↔ 会话 id」清单才认得出。
 - `mentionOpen.ts` — 点到一条 `@` 引用之后发哪条帧的唯一分派（已发出消息里的链接与草稿区的 Ctrl+单击共用）。
+- [composerSessionDraft.ts](<composerSessionDraft.ts>) — 会话引用草稿端口：可见标题与确定性 token 分离，按出现区间绑定；编辑标题即失效旧身份，按完整标题重新匹配，镜像和 Ctrl 跳转共用绑定。
 - `composerMention.ts` — 草稿区引用的渲染镜像：切段（哪几段上链接色，按住 Ctrl 时补下划线）与「按住 Ctrl 悬停在引用上方」的命中判定；镜像层与文本域必须逐字同排版（`components/Composer.tsx` 逐帧同步几何）。
 - `mentionNav.ts` — `@` 候选里的 `..` 上一层目录导航（只算目标查询串）。
 - `segment.ts` — 思考档位分段控件的列数（≤4 档一行、5/6 档均分两行）。

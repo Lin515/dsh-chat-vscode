@@ -44,7 +44,9 @@ process.on("unhandledRejection", (error) => {
 // `vscodeTestStub` 的 stat 一律抛：这里换成真盘的 stat，并让「找不到」带上
 // `FileNotFound`（`isNotFoundError` 认的就是这个 code；node 的 ENOENT 会被当成
 // 「未知错误」→ 不抑制，那是另一条分支，本文件第 5 节单独钉）。
+let statCalls = 0;
 (vscode.workspace.fs as { stat: (uri: { fsPath: string }) => Promise<unknown> }).stat = async (uri) => {
+  statCalls += 1;
   try {
     await stat(uri.fsPath);
     return {};
@@ -185,10 +187,10 @@ const existingSessionId = client.rows[0]?.sessionId ?? "";
 assert.ok(existingSessionId, "前提：绑定后有一条会话（用来验对话引用的判定）");
 
 /** 一次 `@` 查询：清掉旧帧与调用表，返回这一次的帧与这一次发出去的方法名。 */
-async function query(query: string): Promise<{ frame: Record<string, unknown>; methods: string[] }> {
+async function query(query: string, sessionOnly = false): Promise<{ frame: Record<string, unknown>; methods: string[] }> {
   frames.length = 0;
   client.calls.length = 0;
-  await c.handle({ type: "queryFiles", query }, "v1");
+  await c.handle({ type: "queryFiles", query, ...(sessionOnly ? { sessionOnly: true } : {}) }, "v1");
   const frame = frameOf(frames, query);
   assert.ok(frame, `应当发出 query="${query}" 的 files/list 帧`);
   return { frame, methods: client.calls.map((call) => call.method) };
@@ -315,6 +317,23 @@ console.log("mentionResolve: 「已经能引用到内容」的判定（真控制
     "别的项目的会话引用同样「能引用到内容」→ 不弹（判据要认过滤前的账本）",
   );
 }
+
+// 编辑失效的会话标题独立查询：同名文件、斜杠或空白不改变会话语义，也不查盘。
+{
+  for (const title of ["alpha.ts", "sub/", "my title / sub"]) {
+    const before = statCalls;
+    const result = await query(title, true);
+    assert.strictEqual(result.frame.resolved, false, "失效标题不得按同名文件抑制");
+    assert.deepStrictEqual(result.frame.items, [], "会话标题查询不提供文件候选");
+    assert.strictEqual(statCalls, before, "会话标题不做路径存在性查询");
+    assert.ok(!result.methods.includes("fileReferences/list"), "只查会话候选，不查文件候选");
+    assert.ok(result.methods.includes("sessionReferenceResolver/candidates"), "斜杠标题也必须查询会话");
+    assert.ok(client.calls.some((call) => call.method === "sessionReferenceResolver/candidates" && call.params?.query === title));
+    assert.deepStrictEqual(frames.filter(({ frame }) => frame.query === title).map(({ frame }) => frame.type),
+      ["files/list", "files/sessions"], "仍先发查询锚帧，再发会话候选");
+  }
+}
+console.log("mentionResolve: 编辑后的完整标题只查询会话，不受文件存在性或分隔符影响 ✓");
 
 await rm(root, { recursive: true, force: true });
 
