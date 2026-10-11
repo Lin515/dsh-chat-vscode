@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState } from "react";
 import type { MouseEvent } from "react";
 import { post } from "../bridge";
+import { consumeEscape } from "../escapeOwner";
 import type {
   ApprovalView,
   CommandRunView,
@@ -1117,12 +1118,11 @@ export function QuestionCard({
                   // 输入法组字中的 Enter 是在选字，不是快捷键
                   if (event.nativeEvent.isComposing) return;
                   // ESC：**先归问卷管**。它是「取消这次自定义回答」，不是「停止生成」——
-                  // 不拦的话窗口层那个兜底监听会把正在跑的这一轮直接中止，用户
-                  // 正在写的半截答案连同卡片一起被结算掉。文字按既有口径保留
-                  // （与再点一下取消选中同一条规则：只取消选中，不清空内容）。
+                  // 不消费的话归属链的兜底会把正在跑的这一轮直接中止，用户正在写的
+                  // 半截答案连同卡片一起被结算掉。文字按既有口径保留（与再点一下取消选中
+                  // 同一条规则：只取消选中，不清空内容）。
                   if (event.key === "Escape") {
-                    event.preventDefault();
-                    event.stopPropagation();
+                    consumeEscape(event);
                     if (customSelected) toggleCustom(item.id, item.multiSelect);
                     return;
                   }

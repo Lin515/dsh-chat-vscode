@@ -18,6 +18,7 @@ import {
   type TrajectoryTimelineMode,
 } from "../../shared/trajectory";
 import type { TrajectoryInteraction } from "../trajectoryInteraction";
+import { consumeEscape, type EscapeKeyEvent } from "../escapeOwner";
 import type { TrajectoryTimeline as TrajectoryTimelineModel } from "../trajectoryTimeline";
 import {
   formatDurationMs,
@@ -34,6 +35,19 @@ interface SpanBox {
   left: number;
   width: number;
   gap: number;
+}
+
+/**
+ * 绘图区的一次按键：只有 Escape 归它——清选区与选中（官方只在有选区时吃这个键；这里
+ * 一律吃，因为记录 / 请求两个检查器也归这条清理链），其余按键原样放过。
+ *
+ * 单独命名是为了让离线回归驱动**这一个**处理器走真实冒泡链：这次按键归元素层
+ * （`consumeEscape` 盖章并吃掉冒泡），不能让没有消费者的兜底把它当成「停止生成」。
+ */
+export function timelineEscape(event: EscapeKeyEvent, clearSelection: () => void): void {
+  if (event.key !== "Escape") return;
+  consumeEscape(event);
+  clearSelection();
 }
 
 /**
@@ -182,13 +196,7 @@ export function TrajectoryTimeline({
         // 可聚焦：Escape 清选区要有落点（官方那条 track 也是可聚焦的）
         tabIndex={0}
         aria-label={texts.timelineAria}
-        onKeyDown={(event) => {
-          // Escape = 清选区与选中（官方只在有选区时吃这个键；这里一律吃，
-          // 因为记录 / 请求两个检查器也归这条清理链）
-          if (event.key !== "Escape") return;
-          event.preventDefault();
-          port.clearSelection();
-        }}
+        onKeyDown={(event) => timelineEscape(event, port.clearSelection)}
         onWheel={(event) => port.zoomAtCursor(event.clientX, event.deltaY, maxZoom)}
         onMouseDown={(event) => {
           // 右键 = 平移手势；轻点不拖 = 清选择。拖到时间线外面也要跟手，

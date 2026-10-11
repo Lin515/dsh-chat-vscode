@@ -19,7 +19,8 @@
  * 3. `pick`（引用 token / 命令名）与 `drill`（进目录）的差别；
  * 4. 选完先 `dismissed` 一次，避免弹层立刻重开（这份「已关闭」记忆只对**同一次**编辑
  *    动作有效：焦点重新进入输入框时清掉，见 `onFocus`）；
- * 5. ESC 优先级链：弹层打开时 ESC 先关弹层并 `stopPropagation`（不能把正在跑的那一轮中止了）；
+ * 5. ESC：弹层打开时由**元素层**（本次输入）消费——关掉弹层，且不让这次按键落到
+ *    归属链的「停止生成」兜底上（见 `./escapeOwner.ts`）；
  * 6. `/` 只有在**行首或空白后**且名字在命令目录里才走命令通道；`@` 走自己的内容块判定
  *    （见 `findTrigger`），两条通道的边界规则相同、判据不同；
  * 7. 指针悬停改高亮**只认 `mousemove`**：列表为露出键盘选中的那行而滚动时，浏览器会把
@@ -45,6 +46,7 @@ import {
 import type { CommandView, FileRefView, SessionRefView } from "../shared/chat";
 import { formatFileMention, isBrowseQuery, isDirectoryQuery, normalizeMentionPath } from "../shared/mentions";
 import { post } from "./bridge";
+import { consumeEscape } from "./escapeOwner";
 import { IconFolder } from "./icons";
 import { mentionParent } from "./mentionNav";
 import { formatClock } from "./components/primitives";
@@ -969,11 +971,10 @@ function useCompletion(
     (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
       if (trigger) {
         // ESC 关掉候选弹层：优先级最高。记下文本+光标防止随后的 keyup 重新
-        // 探测把列表弹回来；stopPropagation 让这次 ESC 不再落到「关弹层 / 停止
-        // 生成」的更高层监听上（App.tsx 的 window 层兜底）
+        // 探测把列表弹回来；consumeEscape 让这次 ESC 归元素层（不再落到「停止生成」
+        // 的兜底上，见 escapeOwner.ts）
         if (event.key === "Escape") {
-          event.preventDefault();
-          event.stopPropagation();
+          consumeEscape(event);
           dismissedRef.current = {
             value: draft,
             caret: event.currentTarget.selectionStart ?? draft.length,

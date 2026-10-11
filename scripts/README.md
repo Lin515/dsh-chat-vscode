@@ -106,6 +106,7 @@
 - `mentionLinksUi.test.ts` — 上面那份判定真的渲染成可点行内按钮（悬停说明按三档目标给），以及 `.mention-link` 的行内样式。
 - `emptyComposer.test.ts` — 空态下 `/` 命令栏与 `@` 候选的行为级回归（空态就绑在壳上，菜单读它、不另建）。
 - `composerSend.test.ts` — 发送按钮的手势链路：按住 Ctrl / Cmd 时文字换成这一次真会走的那条路、点按钮发加速手势（真事件链 + 真 `Composer` 渲染），空闲仍发送、运行中无草稿仍是停止。
+- `escapeOwner.test.ts` — ESC 归属链：手写事件链驱动真处理器（轨迹绘图区 `timelineEscape` + window 兜底 `escapeFallbackListener`），钉住菜单 > 原图 > 抽屉 > 并列浮层的先后、元素层消费后不停止生成、**只有会话页占据前景才停止**（轨迹页与抽屉在前景时不中止会话）、兜底唯一挂点与注销清理。
 - `blankSessionReuse.test.ts` — 「空态必有壳、首条消息发给谁」：`reusableBlank` 的本地 blank 位（不许把已经说过话的会话当空壳接回来）、两个窗口共用一条壳、空壳上选的模型留得住。
 - `subagentPanel.test.ts` — 子代理导航与会话级切换（入口在标题右侧、进子代理 = 切会话）。
 - `subagentSwitch.test.ts` — 子代理页切到兄弟的行为级回归（下拉里同级兄弟必须可见）。

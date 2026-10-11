@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { JobItemView } from "../../shared/chat";
 import { IconChevronDown, IconClose, IconJobs, IconStop } from "../icons";
+import { ESC_LAYER, useEscapeLayer } from "../escapeOwner";
 import { formatClock, formatDuration } from "./primitives";
 import { CopyButton } from "./CopyButton";
 import { compareJobs, isLiveJob, isObservableJob, isSubagentJob } from "../jobsOrder";
@@ -34,6 +35,9 @@ type JobOutputAction =
   bodyRef?: React.RefObject<HTMLDivElement>;
 }) {
   const texts = useTexts();
+  // 抽屉一挂上就是开着（App 只在对应面板上渲染它）：ESC 归它，关掉自己。
+  // 组件卸载即注销，不会留下吞键的空壳（见 `../escapeOwner.ts` 的 `useEscapeLayer`）
+  useEscapeLayer(ESC_LAYER.drawer, true, onClose);
   return (
     <>
       <div className="drawer-backdrop" onClick={onClose} />

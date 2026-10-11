@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { ESC_LAYER, useEscapeLayer } from "../escapeOwner";
 import { IconClose } from "../icons";
 import { failedImageText, resolveLocalImages } from "../localImages";
 import { useTexts } from "../texts";
@@ -140,9 +141,9 @@ export function closeImagePreview(): void {
 /**
  * 原图浮层。挂在 App 根部**一次**，任何来源的图片共用它。
  *
- * ESC 用**捕获**阶段拦：App 自己也有一个 window 级 ESC（中止生成），不拦的话
- * 「关掉预览」会顺带把 agent 停掉。捕获阶段先于冒泡执行，`stopPropagation`
- * 把这次按键吃掉，只关预览。
+ * ESC 归**归属链**（见 `../escapeOwner.ts`）：本层在活跃期间按
+ * `ESC_LAYER.imagePreview` 登记，关掉即注销。层级低于右键菜单，于是菜单开在原图上时
+ * 一次 ESC 只关菜单、下一次才关它，第三次才轮到「停止生成」。
  */
 export function ImagePreviewLayer() {
   const texts = useTexts();
@@ -155,16 +156,9 @@ export function ImagePreviewLayer() {
     };
   }, []);
 
-  useEffect(() => {
-    if (!value) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.stopPropagation();
-      closeImagePreview();
-    };
-    window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
-  }, [value]);
+  // ESC 关预览走归属链：层级在原图浮层这一档——右键菜单开着时（层级更高）先关菜单，
+  // 下一次 ESC 才轮到它；没有浮层时才会落到「停止生成」
+  useEscapeLayer(ESC_LAYER.imagePreview, value !== null, closeImagePreview);
 
   if (!value) return null;
   return (

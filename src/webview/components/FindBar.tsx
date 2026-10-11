@@ -14,8 +14,8 @@
  *    主题变量（`--vscode-editor-findMatch*`），主题跟随白送。
  * 2. **程序化滚动先放跟随**：跳到命中处之前先 `releaseFollow`，否则 `autoScroll`
  *    的 settle 会把视口钉回底部、把刚算好的位置吃掉——与轮次横条跳转同一条纪律。
- * 3. **Esc 在 document 层消费**：先于 App.tsx window 层的「Esc 停止生成」，
- *     与 SubagentNav 的浮层同一套分层。
+ * 3. **Esc 归 ESC 归属链**（`../escapeOwner.ts`）：本层按浮层层级登记，活跃期间才有
+ *     归属，没人认领才轮到「停止生成」——不再自己挂 document 监听。
  *
  * 搜索范围的边界（都是「没渲染的内容搜不到」，与「加载更早」分页同一条诚实口径）：
  * 折叠的连续过程段与工具卡中段是**卸载**的（DOM 里没有）；折叠的用户长消息是
@@ -30,6 +30,7 @@ import {
   FIND_CURRENT_HIGHLIGHT,
   stepActive,
 } from "../find";
+import { ESC_LAYER, useEscapeLayer } from "../escapeOwner";
 import { useTexts } from "../texts";
 import { IconChevronDown, IconClose, IconSearch } from "../icons";
 
@@ -298,18 +299,10 @@ export function FindBar({
     return () => window.removeEventListener("keydown", onKey);
   }, [openBar]);
 
-  // Esc 关闭：document 层消费，压过 App.tsx window 层的「Esc 停止生成」（分层先例：
-  // SubagentNav）。查找框聚焦时事件从 input 冒泡上来，同样走这里。
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.stopPropagation();
-      close();
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [open, close]);
+  // Esc 关闭走归属链（见 `../escapeOwner.ts`）：本层活跃期间登记、关闭即注销。
+  // 查找框聚焦时事件从 input 冒泡上来，元素层没人消费才轮到它——它先于「停止生成」
+  // 的兜底被问到，因此查找开着时 ESC 只关查找条。
+  useEscapeLayer(ESC_LAYER.floating, open, close);
 
   // 打开时聚焦并全选（再按 Ctrl+F 的 select 也走同一个框）
   useEffect(() => {

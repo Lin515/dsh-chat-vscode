@@ -5,6 +5,7 @@ import {
   subscribeContextMenu,
   type ContextMenuValue,
 } from "../contextMenu";
+import { ESC_LAYER, useEscapeLayer } from "../escapeOwner";
 
 /**
  * 自绘右键菜单浮层（App 根部挂一次）。
@@ -28,24 +29,18 @@ export function ContextMenuLayer() {
       if (target instanceof Element && target.closest(".ctx-menu")) return;
       closeContextMenu();
     };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      // ESC 要**吃掉**：App 另有一个 window 级 ESC（中止生成），菜单开着时它必须先收菜单
-      // （与 `Images.tsx` 的原图浮层同一条优先级链，普通按键不拦）。
-      event.stopPropagation();
-      closeContextMenu();
-    };
     window.addEventListener("pointerdown", onPointerDown, true);
-    window.addEventListener("keydown", onKeyDown, true);
     window.addEventListener("scroll", closeContextMenu, true);
     window.addEventListener("resize", closeContextMenu);
     return () => {
       window.removeEventListener("pointerdown", onPointerDown, true);
-      window.removeEventListener("keydown", onKeyDown, true);
       window.removeEventListener("scroll", closeContextMenu, true);
       window.removeEventListener("resize", closeContextMenu);
     };
   }, [value]);
+
+  // ESC 收菜单走归属链：层级压过原图浮层（一次 ESC 只关菜单），没消费者时才轮到停止生成
+  useEscapeLayer(ESC_LAYER.contextMenu, value !== null, closeContextMenu);
 
   // 贴边修正：先按落点画出来，量到真实尺寸后再往里推（量之前不知道菜单有多宽）。
   const ref = useRef<HTMLDivElement | null>(null);

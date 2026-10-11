@@ -45,6 +45,12 @@ import {
   IconTrajectory,
 } from "./icons";
 import { connectViewOf, type ConnectButton, type ConnectButtonId } from "./connectView";
+import {
+  attachEscapeFallback,
+  ESC_LAYER,
+  isConversationForeground,
+  useEscapeLayer,
+} from "./escapeOwner";
 import { usePageContextMenu } from "./contextMenu";
 import { jobsBusy, subagentsBusy } from "./activity";
 import { subagentRowFace } from "./subagentRow";
@@ -301,26 +307,17 @@ function SubagentNav({ state, agentsBusy }: { state: AppState; agentsBusy: boole
     setOpen(false);
   }, [child?.parentSessionId, state.session?.id]);
 
-  // 展开时点外部 / Esc 收起（悬停不参与开合——那是上一版被否掉的交互）
+  // 展开时点外部收起（悬停不参与开合——那是上一版被否掉的交互）。ESC 收起走归属链：
+  // 本层活跃期间登记，消费一次就关掉自己（不再压全局「ESC 停止生成」）
   useEffect(() => {
     if (!open) return;
     const onDown = (event: PointerEvent) => {
       if (rootRef.current && !rootRef.current.contains(event.target as Node)) setOpen(false);
     };
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        // 本层消费：不再落到全局「ESC 停止生成」
-        event.stopPropagation();
-        setOpen(false);
-      }
-    };
     document.addEventListener("pointerdown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("pointerdown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
+    return () => document.removeEventListener("pointerdown", onDown);
   }, [open]);
+  useEscapeLayer(ESC_LAYER.floating, open, () => setOpen(false));
 
   const entries = child ? child.parentEntries : state.subagentEntries;
   const currentId = child ? state.session?.id : undefined;
@@ -828,11 +825,17 @@ export function App() {
   const [todosState, setTodosState] = useState<TodoPanelState>(TODO_PANEL_DEFAULT);
   const todosOpen = todosOpenIn(todosState, sessionId);
 
-  // 下面的监听只在挂载时注册一次，running 用 ref 读，避免闭包里是首帧的旧值
+  // 下面的监听只在挂载时注册一次，两个判据都用 ref 读，避免闭包里是首帧的旧值
   const runningRef = useRef(state.running);
   useEffect(() => {
     runningRef.current = state.running;
   }, [state.running]);
+  // 「无人认领的 ESC = 停止生成」只在**会话页**占据前景时成立（见 isConversationForeground）：
+  // 轨迹整页或历史 / 任务抽屉顶掉会话页之后，中止机制就该不存在，而不是被谁抢先消费
+  const conversationForegroundRef = useRef(isConversationForeground(state.panel));
+  useEffect(() => {
+    conversationForegroundRef.current = isConversationForeground(state.panel);
+  }, [state.panel]);
 
   // 轨迹视图开着时的刷新节奏：**运行中每 3 秒取一次**，停下后再取一次收尾。
   //
@@ -867,15 +870,17 @@ export function App() {
   useEffect(() => {
     const unsubscribe = subscribe(dispatch as (message: HostToWebview) => void);
     post({ type: "ready" });
-    // ESC 优先级链的兜底层：候选弹层（textarea 层）> 浮层（document 层）> 停止
-    // 生成（window 层）。上层消费后会 stopPropagation，不会走到这里
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && runningRef.current) post({ type: "stop" });
-    };
-    window.addEventListener("keydown", onKey);
+    // ESC 归属链的**唯一**挂点：元素层（输入框 / 绘图区）已经消费的到不了这里；活跃
+    // 浮层按层级消费（菜单 > 原图 > 其余）；都没有、会话页还在前景且生成中才停止生成
+    // （见 escapeOwner.ts）
+    const detachEscape = attachEscapeFallback({
+      isConversationForeground: () => conversationForegroundRef.current,
+      isRunning: () => runningRef.current,
+      stop: () => post({ type: "stop" }),
+    });
     return () => {
       unsubscribe();
-      window.removeEventListener("keydown", onKey);
+      detachEscape();
     };
     // 只在挂载时订阅一次
     // eslint-disable-next-line react-hooks/exhaustive-deps

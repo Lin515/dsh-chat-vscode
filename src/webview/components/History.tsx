@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { SessionSummaryView } from "../../shared/chat";
 import { post } from "../bridge";
+import { ESC_LAYER, useEscapeLayer } from "../escapeOwner";
 import { IconArchive, IconClose, IconPlus, IconSearch, IconTrash } from "../icons";
 import { IconCopyButton } from "./CopyButton";
 import { formatClock } from "./primitives";
@@ -42,6 +43,10 @@ export function HistoryPanel({
   const armTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => () => clearTimeout(armTimer.current), []);
   const texts = useTexts();
+  // 抽屉一挂上就是开着（App 只在面板为 history 时渲染它）：ESC 归它，关掉自己。
+  // 组件卸载即注销，不会留下吞键的空壳（见 `../escapeOwner.ts` 的 `useEscapeLayer`）；
+  // 遮罩带全屏层级（`ESC_LAYER.drawer` 压过并列浮层），一次 ESC 只关抽屉本身
+  useEscapeLayer(ESC_LAYER.drawer, true, onClose);
 
   const armDelete = (sessionId: string) => {
     setArmedDelete(sessionId);

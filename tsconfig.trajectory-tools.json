@@ -65,6 +65,8 @@
     "scripts/styles.test.ts",
     "scripts/thinkingStream.test.ts",
     // 预览夹具体检（求值结果按生产 `AppState` 定型）
-    "scripts/previewFixture.test.ts"
+    "scripts/previewFixture.test.ts",
+    // ESC 归属链回归（手写事件链驱动 webview 的真处理器，依赖闭包会走到 TSX 组件）
+    "scripts/escapeOwner.test.ts"
   ]
 }

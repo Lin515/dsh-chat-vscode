@@ -8,6 +8,7 @@ import {
   type RefObject,
 } from "react";
 import type { ChatState } from "../../shared/chat";
+import { ESC_LAYER, useEscapeLayer } from "../escapeOwner";
 import { IconChevronRight } from "../icons";
 import { splitPath } from "../pathDisplay";
 import { useTexts, type Texts } from "../texts";
@@ -230,20 +231,12 @@ export function Popover({
       const el = ref.current;
       if (el && !el.contains(event.target as Node)) onClose();
     };
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        // 本层消费：不再落到全局「ESC 停止生成」
-        event.stopPropagation();
-        onClose();
-      }
-    };
     document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
+    return () => document.removeEventListener("mousedown", onDown);
   }, [open, onClose]);
+
+  // ESC 关闭走归属链（不是自己挂 document 监听）：活跃期间登记，关掉 / 卸载即注销
+  useEscapeLayer(ESC_LAYER.floating, open, onClose);
 
   if (!open) return null;
   const placement = flipUp ? { top: "calc(100% + 6px)", bottom: "auto" } : undefined;

@@ -33,6 +33,7 @@ import { CtxText, Ellipsis, Popover, Spinner, contextDetailLines, contextNumbers
 import { ApprovalCard, PlanReviewCard, QuestionCard, formatTps } from "./Rows";
 import type { PendingInteraction } from "../pendingInteraction";
 import { useComposerCompletion } from "../composerCompletion";
+import { consumeEscape } from "../escapeOwner";
 import { clickGestureHandler, sendButtonView, watchModifierKeys } from "../composerSend";
 import { draftSegments, hitsAnyRect } from "../composerMention";
 import { openMentionAt } from "../mentionOpen";
@@ -1365,11 +1366,10 @@ function GoalBar({ goal }: { goal: GoalView | undefined }) {
           onKeyDown={(event) => {
             if (event.key === "Enter") save();
             else if (event.key === "Escape") {
-              // **必须吃掉这次 ESC**：不 stopPropagation 的话，窗口层那个
-              // 「ESC = 停止生成」的兜底监听会跟着触发——用户只是想取消改目标，
-              // 结果把正在跑的这一轮也中止了（ESC 优先级链见 App.tsx）。
-              event.preventDefault();
-              event.stopPropagation();
+              // **必须把这次 ESC 归元素层**：不消费的话，归属链的兜底（生成中 =
+              // 停止生成）会跟着触发——用户只是想取消改目标，结果把正在跑的这一轮
+              // 也中止了（见 escapeOwner.ts）
+              consumeEscape(event);
               setDraft(undefined);
             }
           }}
