@@ -177,6 +177,8 @@ const entries = {
   "build/supervisor-policy.test.mjs": "scripts/supervisorPolicy.test.ts",
   "build/connect-target.test.mjs": "scripts/connectTarget.test.ts",
   "build/connection-stop.test.mjs": "scripts/connectionStop.test.ts",
+  // 连接尝试的账本与收场：驱真控制器 + 假客户端 / 假服务端（必须登记，否则 npm test 静默不跑）
+  "build/connection-attempts.test.mjs": "scripts/connectionAttempts.test.ts",
   "build/auto-connect-config.test.mjs": "scripts/autoConnectConfig.test.ts",
   "build/connect-snapshot.test.mjs": "scripts/connectSnapshot.test.ts",
   "build/connect-view.test.mjs": "scripts/connectView.test.ts",

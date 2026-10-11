@@ -54,6 +54,7 @@
 - `supervisorErrors.ts` — 守护进程的错误上报器：文件 + 广播两处都发，任一处炸不影响另一处。
 - `runtimeResolve.ts` — supervisor 运行时：固定用 VS Code 自带的 Node（`ELECTRON_RUN_AS_NODE=1`），不依赖 PATH 上的 node。
 - `connectTarget.ts` — 内部 / 外部 DSH 的选路纯函数：内部优先、外部备用且须实测可达，目标粘性（自动路径永不换目标）。
+- `connectionAttempts.ts` — 连接尝试的账本与收场：轮次作废与回调身份判据、当前客户端的存放点、「换目标 / 停止连接 / 放弃一轮 / 停止内部 DSH」四个收场意图各调管理器哪一档与动作顺序（写能力收在闭包里，调用方绕不过完整收场）；客户端创建的唯一 seam（生产是 `new DshClient`，离线测试换假客户端）。
 
 ## 进程与杂项
 

@@ -46,7 +46,8 @@
 
 - `connectTarget.test.ts` — 内部 / 外部 DSH 选路的分支组合（内部优先、外部备用须可达、目标粘性）。
 - `connectSnapshot.test.ts` — `SupervisorManager.snapshot()` 只读快照。
-- `connectionStop.test.ts` — 连接收场：停止 / 换目标必须真的停下来（无限重连 dispose 三处）。
+- `connectionStop.test.ts` — 连接收场的**接线**：档位只在一个地方拼（控制器不直接调管理器的停止入口）、四个落点各走哪个收场意图、回调身份判据走轮次、两道闸归账本；另一半是管理器侧的心跳兜底顺序与 `release` 同时断与挡。
+- `connectionAttempts.test.ts` — 连接收场的**行为**（真 `ChatController` + 假客户端 / 假服务端）：等待中停止、换目标留着同后台占用、旧客户端迟到回调不许写状态、收场不重复 dispose、迟到完成不覆盖新连接、外部目标下停内部后台不动本窗口连接、叫停后心跳不接回、显式动作重连，以及模块面的终止顺序与「放弃一轮不动不属于它的连接」。
 - `clientDispose.test.ts` — `DshClient.dispose()` 真能停掉自己的无限重连。
 - `autoConnectConfig.test.ts` — `dshChat.autoConnect` 改动即时生效，不提示重载窗口。
 - `supervisorPolicy.test.ts` — 启动 / 重连决策：没许可不许拉起、复用优先。
