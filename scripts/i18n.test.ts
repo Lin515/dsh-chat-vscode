@@ -185,9 +185,8 @@ console.log("i18n: 消息表每条都有中英两份，带参的登记成函数�
 
 // ---------- 1c. 工具自有标题（`TOOL_TITLE_KEYS`）的每个键都要在两份词典里 ----------
 //
-// `Rows.tsx` 是按**运行时字符串**查表的（`texts[titleKey] ?? name`），字典缺键时
-// TS 一个字都不会说，界面把工具 id 原样画成标题（`cordis_run`）——`docs/audit-summary.md`
-// 的 B2 就是这个形态，修完一直缺一条断言守着。
+// Rows.tsx 动态查表，缺键会露出工具 id 而 TS 不报错；
+// 见 docs/audit-summary.md「文案登记完整性」。
 //
 // 键名从 `shared/toolMeta.ts` 的源文本里抠（那里是模块私有的表，没有导出的枚举），
 // 所以**新加一个工具映射自动被覆盖**；抠不到时下面那条 `keys.length` 直接炸，

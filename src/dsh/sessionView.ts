@@ -45,14 +45,7 @@ export interface SessionView {
   permission?: ChatState["permission"];
   planMode: ChatState["planMode"];
   todos: ChatState["todos"];
-  /**
-   * 子代理目录。
-   *
-   * 名字与界面状态字段**逐字相同**（此前宿主叫 `subagents`、界面读 `subagentEntries`，
-   * 两个名字指同一件事，改一侧忘另一侧没有任何编译期或断言保护——见
-   * `docs/audit-summary.md`「7.2 功能 BUG」表 B7）。统一取界面侧那个名字：它是这条数据在**视图模型**里
-   * 的名字，线格式跟着视图模型走，跨名桥就没有存在的理由。
-   */
+  /** 子代理目录；与界面同名，见 docs/audit-summary.md「会话状态字段一致性」。 */
   subagentEntries: ChatState["subagentEntries"];
   /**
    * 正在看**子代理会话**时的上下文（面包屑 / 切换下拉 / 只读判定）。

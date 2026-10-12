@@ -1,171 +1,107 @@
 # DSH Chat
 
-![DSH Chat 在 VS Code 里的样子](docs/demo.png)
+![DSH Chat 在 VS Code 中 / DSH Chat in VS Code](docs/demo.png)
 
-在 VS Code 里用 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（`dsh`）对话的第三方扩展。
-
-界面由扩展**自己绘制**（自绘 webview，不嵌入网页），会话与工具能力全部来自 `dsh`，
-与官方 DSH Web UI 的数据语义保持一致——它是一套标准的 Chat 界面，只是长在 VS Code 里。
+在 VS Code 中使用 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（`dsh`）的第三方前端。扩展自绘 webview，不嵌入官方网页；会话、模型与工具能力由 DSH 提供，数据语义与官方 Web UI 对齐。
 
 [English](#english) | 简体中文
 
----
-
-## 前置条件：先装 `dsh`
-
-本扩展是 `dsh` 的**前端**，自己没有模型能力，**必须先安装 dsh**：
-
-```bash
-npm i -g @deepseek-ai/dsh     # 官方仓库：https://github.com/deepseek-ai/deepseek-harness
-```
-
-- dsh 自己的模型凭据要配好（`dsh` 首次使用会引导，或直接改 `~/.dsh` 下的配置）。
-- VS Code ≥ 1.101（辅助侧栏容器需要 ≥ 1.106，旧版本自动回退到活动栏）。
-
 ## 安装
 
-**从 VSIX**（自己打包）：
+先安装 DSH 并按首次使用引导配置模型凭据：
+
+```bash
+npm i -g @deepseek-ai/dsh
+```
+
+需要 VS Code ≥ 1.101；辅助侧栏容器需要 ≥ 1.106，旧版回退到活动栏。
+
+从源码打包：
 
 ```bash
 npm install
-npm run package          # 产出 Releases/dsh-chat-<version>.vsix
+npm run package  # Releases/dsh-chat-<version>.vsix
 ```
 
-VS Code → 扩展 → `…` → 从 VSIX 安装 → 重载窗口。
+在 VS Code「扩展 → … → 从 VSIX 安装」中选择产物，然后重载窗口。源码调试用 `npm run watch`，打开仓库后按 `F5`。
 
-**从源码调试**：`npm install && npm run watch`，用 VS Code 打开本仓库按 `F5`。
+## 连接
 
-## 关键：内部 DSH 优先，外部 DSH 备用
+开启 `dshChat.autoConnect` 时，自动选路为：
 
-| 情形 | 行为 |
-| --- | --- |
-| **内部在跑** | 连内部那套（守护进程 + `dsh web`，由扩展按 `dshChat.command` 启动并托管，启动令牌自动解析，不用手填）。 |
-| **内部没在跑，外部可达** | 连 `dshChat.url` 那个地址（备用）。服务器要授权时弹框输入访问令牌（`dsh web` 启动 URL 里 `?token=` 之后那段），也可以用命令面板 **DSH: 输入访问令牌**。 |
-| **都没有** | **启动一套内部 DSH**（`dshChat.autoConnect` 开着时自动做；关掉则只显示按钮等你点）。 |
+| 条件 | 行为 |
+|---|---|
+| 内部 DSH 已运行 | 连接扩展托管的守护进程与 `dsh web`，自动取得启动令牌 |
+| 内部未运行、外部可达 | 连接 `dshChat.url`；需要授权时输入启动 URL 的 `?token=` 值，也可用「DSH: 输入访问令牌」 |
+| 两者均不可用 | 按 `dshChat.command` 启动内部 DSH |
 
-再补四条容易踩的口径：
-
-- **目标选一次就粘住**：自动路径只在启动时选一次（内部 → 外部 → 启动内部），此后重连永远
-  重试同一个目标，**不会**因为另一个后来起来了就换（换目标 = 换服务器、换会话列表、
-  丢掉正在跑的轮次）。要换只能自己点按钮：连接条上的「启动内部 DSH」/「连接内部 DSH」/
-  「连接外部 DSH」。**内部** DSH 在跑时给「连接内部 DSH」，不在时给「启动内部 DSH」——
-  这两个按钮是**同一套逻辑**（有就接上、没有就起一套），显示哪个只是按当前状态给的措辞，
-  点哪个都能把内部后台用起来；「连接外部 DSH」恒显（没配 `dshChat.url` 时置灰）。
-- **连接中只给「停止连接」+「查看日志」**：连接（含一轮轮重试）**没有**自动停止的时间限制，
-  停在什么时候由你点。启动失败（命令写错、dsh 起不来）与认证失败不自动重试——退回按钮态，
-  原因写在连接条上，日志里有详情。
-- **多个 VS Code 窗口共用同一个后台**：扩展按 `command` 给窗口分组，同一组的窗口共用一套
-  守护进程与同一个 `dsh web`——不是每个窗口各起一个。同一份用户设置下所有窗口天然同组；
-  `command` 不同（远端窗口、不同配置档、Insiders/Stable）就是**不同的组**，各用各的后台。
-  守护进程按**活连接数**决定何时收场（默认空闲 10 秒，可配），所以「重载窗口 / 重开 VS Code」
-  不会杀掉后台，正在跑的会话也不会因此中断。
-- **`url` 与 `command` 是 `machine` 作用域**：只能在**用户设置**里改，工作区的
-  `.vscode/settings.json` 覆盖不了它们（`command` 是经 shell 执行的命令、`url` 决定
-  凭据发往哪个服务器——这两件事不该由克隆来的仓库决定）。**`url`、`command`
-  改完要重载窗口**才生效（扩展会弹提示）；**`autoConnect` 改完即时生效**（停在按钮态
-  时会立刻按新值自动连接）；其余配置项改完即时生效。
+- 关闭自动连接后只显示按钮；显式连接内部仍会在必要时启动后台。「启动内部」与「连接内部」是同一逻辑；连接外部不启动进程，未配置 URL 时置灰。
+- 选定目标后重连只重试该目标，不自动切换服务器。切换目标须手动操作，会切换会话列表。
+- 连接中提供「停止连接」与「查看日志」，持续重试没有自动时限；启动或认证失败则回到按钮态，原因见连接条与日志。
+- 相同启动命令的 VS Code 窗口共用后台；最后一个窗口断开后默认空闲 10 秒才退出。在此宽限期内重载不会中断后台。
+- `url` 与 `command` 只能在用户设置中修改，工作区不能覆盖，修改后须重载窗口；其它设置即时生效。
 
 ## 配置
 
-| 键 | 默认 | 说明 |
-| --- | --- | --- |
-| `dshChat.url` | `http://127.0.0.1:3080` | 外部 `dsh web` 的**备用**地址；只在内部 DSH 没在跑、且这个地址有应答时才连它 |
-| `dshChat.command` | `dsh web --port 0 --no-open` | 启动内部 DSH 的命令，**原样执行**、扩展不追加任何参数 |
-| `dshChat.supervisorIdleSec` | `10` | 没有窗口连着之后，守护进程隔多久收场（5–600 秒） |
-| `dshChat.autoConnect` | `true` | VSCode 启动时是否自动连接（内部优先、外部备用、都没有则启动内部）；关掉后只显示连接按钮 |
-| `dshChat.diffLayout` | `auto` | 编辑类节点的 diff 排版：`auto`（窄单栏 / 宽双栏）、`unified`、`split` |
-| `dshChat.language` | `auto` | 聊天界面语言：`auto` 跟随 VS Code、`zh-cn`、`en` |
-| `dshChat.fontSize` | `0` | 聊天界面字号（整数 px，≥8）；`0` 跟随 VS Code 字号 |
-| `dshChat.questionBatch` | `3` | 一份问卷一次展开几道题；更多题目改为依次问答，`0` = 始终全部展开 |
-| `dshChat.turnProcessThreshold` | `5` | 一轮结束后，过程段内工具调用（含 subagent 派发）达到该数量才折成一枚按钮；`0` = 永不折叠，`1–2` = 永远折叠（仅 1 次调用的段照旧平铺） |
-| `dshChat.agentPreset` | 空 | 新会话使用的 agent 预设（填预设 id，或它在界面上显示的名字，中英文都认）；留空跟随 DSH 服务端的默认预设 |
+| 键 | 默认 | 作用 |
+|---|---|---|
+| `dshChat.url` | `http://127.0.0.1:3080` | 外部 DSH 的备用地址 |
+| `dshChat.command` | `dsh web --port 0 --no-open` | 内部启动命令，原样执行，不追加参数 |
+| `dshChat.supervisorIdleSec` | `10` | 无窗口连接后的退出宽限期，5–600 秒 |
+| `dshChat.autoConnect` | `true` | 自动连接；关闭后等待手动操作 |
+| `dshChat.diffLayout` | `auto` | 编辑 diff：窄单栏 / 宽双栏，或固定 `unified` / `split` |
+| `dshChat.language` | `auto` | 聊天语言：跟随 VS Code，或 `zh-cn` / `en` |
+| `dshChat.fontSize` | `0` | 整数 px；`0` 跟随 VS Code，非零值至少按 8 px 显示 |
+| `dshChat.questionBatch` | `3` | 一次展开的题数；超出时依次问答，`0` 全部展开 |
+| `dshChat.turnProcessThreshold` | `5` | 结束后的过程段达到该工具数才折叠；含子代理派发；`0` 不折，`1–2` 总折，单调用段仍平铺 |
+| `dshChat.agentPreset` | 空 | 新会话预设 id 或中英文显示名；空值使用服务端默认预设 |
 
-## 用法要点
+## 使用
 
-**打开与切换**：活动栏 / 辅助侧栏各有一个容器，也可以把对话开进编辑器区面板
-（命令面板 **DSH: 在编辑器中打开对话**，界面头部那颗按钮同一条路）。落点是编辑器区
-**已有的分组**：在那里新开一个标签页，来源窗口自己就在某个标签页里时开在**同一分组**；
-编辑器区一个分组都没有时才新开一个。窗口本身是编辑器区标签页时，头部不再显示这颗按钮。
-编辑器标题栏右上角那颗鲸鱼按钮会在**当前分组**里新开一个会话。
-历史对话、新建、归档、删除都在界面里。
+### 面板与会话
 
-**输入与引用**：
+可在活动栏、辅助侧栏或编辑器中使用。命令「DSH: 在编辑器中打开对话」与界面头部按钮将对话开到已有编辑器分组；来源已在编辑器时沿用同一分组。编辑器标题栏的鲸鱼按钮在当前分组新建会话。
 
-- `/` 弹出命令与技能菜单；`@` 弹出文件 / 目录 / **历史对话**候选。选中即把
-  `@path` / `@dir/` / `@[标题](dsh-session:…)` 写进正文——这是**路径引用**，
-  模型自己用 `read` 工具读，不占附件通道。目录行：点行主体是**进目录**（继续往下挑），
-  点行右侧「整个目录」按钮才是引用该目录本身（键盘上是 Enter 引用、Tab 进目录）。
-- 写进正文的引用**就是链接**：`@文件` 点开文件、`@目录/` 在资源管理器里展开、
-  `@[标题](dsh-session:…)` 在新标签页打开那条会话（与来源会话同一个编辑器分组；
-  来源在侧栏 / 辅助栏时按上面那条「在编辑器中打开」的落点）。**已经发出的消息**直接点即可；
-  还在**输入框里**的草稿按链接色（蓝）显示，要**按住 `Ctrl`** 再点——不按住只移动光标；
-  按住时引用补下划线，鼠标指向引用时指针变成手型。
-- 回形针、拖放与**粘贴**都是**附件**通道：图片按内容块发送，其余文件逐字节上传（芯片上显示进度）。
-  粘贴分两截：**复制文件 / 目录后直接 `Ctrl+V`**——宿主从系统剪贴板取回真路径，于是
-  **目录变成正文里的 `@目录/` 引用**（与资源管理器右键文件夹同一条路），
-  **文件走附件通道**（图片 → 内容块、其余 → 上传且**不限大小**，与回形针选同一个文件一样）；
-  剪贴板里本来就不是文件时（截图、复制的图片数据）退成字节通道，行为与拖放一致。
-  纯文本粘贴照旧落进输入框。编辑器里选中代码后 **Alt+Shift+2** 加的是 `@path#L12-L40`
-  这样的**选区引用**。拖放进 webview **必须按住 `Shift`**（VS Code 的 iframe 拖拽门，见「已知限制」）。
-- 会话里**看得见图**：你发出的图片显示为缩略图，模型或工具回带的图（含 `read_image`）
-  同样；agent **交付或生成**的图片文件（`present` 申报的、本轮写出来的 `.png`/`.jpg`/`.svg`）
-  也画成图；正文里引用的图片同样会渲染——工作目录内的本地路径由扩展读成图（越界路径不读），
-  `https://` 外链按原样加载但不带来源信息。点任意一张图可看原图，`Esc` 关闭。
+历史列表只显示当前工作区的会话，支持新建、归档、删除与「从这里分支」；分支标题带「分支: 」前缀。子代理入口可查看执行记录，一次性子代理只读，可继续子代理支持续聊。后台任务可展开输出；轨迹提供账本、时间线与详情检查器。服务端设置通过「在浏览器中打开」进入官方 Web UI。
 
-**过程与交互**：工具调用压成单行（点开看完整参数、结果、结构化 diff），运行中的节点
-有呼吸效果与实时耗时；审批、问卷（题多时依次问答，可放弃整组问题不答）、计划审阅
-（`exit_plan_mode`）各有专属卡片；停止生成用按钮或 `Esc`（队列非空时 `Esc` 会中止
-当前轮并发出队首消息）。
+### 输入、引用与附件
 
-**面板**：历史对话（只列当前工作区的会话；分支会话与普通会话同级，标题带「分支: 」前缀）、
-子代理（点进去看它**只读**的执行记录，默认停在最新一条）、后台任务、**轨迹**（账本 +
-时间线 + 详情检查器，与官方同一套折叠口径）。有子代理 / 后台任务在跑时，右上角对应的
-入口图标会亮起并呼吸。dsh 服务端自己的设置页**没有自绘**——用界面里的
-「在浏览器中打开」直接改 Web UI 的设置。
+- `/` 打开命令与技能菜单；`@` 引用文件、目录或历史会话，写入 `@path`、`@dir/` 或 `@[标题](dsh-session:…)`，由模型自行读取，不占附件通道。
+- 目录行主体进入目录，右侧「整个目录」按钮引用目录；键盘用 Enter 引用、Tab 进入。已发送的引用直接点击；草稿引用按住 `Ctrl` 点击。会话引用在新标签页打开，沿用编辑器分组规则。
+- `Alt+Shift+2` 将编辑器选区加入为 `@path#L12-L40` 引用。
+- 回形针选择文件：图片发送为内容块，其余文件上传，芯片显示上传状态。此路径通道不受拖放的 8 MB 限制。
+- 拖放须按住 `Shift`：文件走字节通道，单文件最多 8 MB，不支持目录。Windows 复制文件或目录后粘贴可由宿主取回真路径：文件走附件、目录变成正文引用；其它平台与截图粘贴回退到同一字节通道。纯文本粘贴不变。
+- 用户、模型与工具返回的图片，以及交付或本轮生成的图片文件均可预览。正文本地图片仅在会话工作目录内读取；HTTPS 图片不发送 referrer。点击看原图，`Esc` 关闭。
 
-**其它**：中英双语（跟随 VS Code 显示语言）；上下文占用圆环、目标条、轮次横条；
-「从这里分支」；消息与展开状态跟着工作区记忆（存在 VS Code 自己的工作区缓存里，
-不往项目目录写文件）；Markdown 支持 GFM 任务列表 / 表格 / 脚注，**不做**公式与代码高亮
-（取舍见 `THIRD-PARTY-NOTICES.md`）。
+### 生成与交互
+
+工具行可展开完整参数、结果与结构化 diff，运行时显示耗时。审批、问卷和计划审阅有专属卡片；问卷可放弃整组回答。未被图片、菜单或编辑操作消费的 `Esc` 停止当前轮；队列非空时会按原序重发待发消息。
+
+界面提供中英双语、上下文占用、目标条与轮次导航。消息和展开状态存于 VS Code 工作区缓存，不写入项目。Markdown 支持任务列表、表格与脚注，不提供公式渲染或代码高亮。
 
 ## 开发与验证
 
+先读 [AGENTS.md](AGENTS.md)。设计与契约入口见 [docs/README.md](docs/README.md)，测试与诊断入口见 [scripts/README.md](scripts/README.md)。常规验证不调用模型：
+
 ```bash
-npm run typecheck      # 宿主与 webview 两套 tsconfig
-npm test               # 离线断言（并行跑）
-npm run build          # 生产构建（dist/）
-npm run smoke          # 端到端冒烟：真实拉起 dsh、真实调一次模型
-npm run preview        # 浏览器里预览 webview 产物 http://127.0.0.1:8777/test/preview.html
-npm run package        # 打成 vsix
+npm run typecheck
+npm test
+npm run build
 ```
 
-`docs/` 下是实现与审计文档（与官方 Web 的逐条对照、supervisor 设计、轨迹规格、
-服务端 API 参考）；`scripts/` 下是断言与诊断探针。改代码前请先读 `AGENTS.md`。
+`npm run preview` 预览 webview；`npm run package` 打包。`smoke`、真实探针与 e2e 会启动 DSH 或调用模型，运行前须取得用户当次明确批准。
 
 ## 已知限制
 
-- **不是** `dsh web` 的复刻：不嵌入网页、不自绘服务端设置页（走浏览器打开）；
-  子代理面板与官方仍有差距（耗时列、`hasChildren` 树等，数据齐、缺呈现）。
-- **拖文件进 webview 必须先按 `Shift`**：webview 是 iframe，VS Code 在主窗口上监听拖拽，
-  没按 `Shift` 就给 iframe 挂 `pointer-events: none`。从系统资源管理器拖同样受影响。
-  **拖放**按字节走（单文件上限 8 MB，目录不支持）；**粘贴**的文件/目录改为宿主读系统剪贴板
-  拿真路径（见上），因此不受那条上限影响——但**只有 Windows 有这个读法**（WinForms 剪贴板），
-  其它平台粘贴退化为字节通道：目录只能靠 `@` 引用、超过 8 MB 的文件请用回形针。
-  剪贴板里是**位图**（截图）而不是文件时也走字节通道，同样受 8 MB 限制。
-- 停止语义与官方契约有一处刻意偏离（`Esc` = 由客户端摘空队列 → cancel → 按原序重发），
-  依据是实测：只 cancel 不会让队列自行接续。
-- 面板/窗口状态恢复依赖 VS Code 自己的工作区缓存与 `window.restoreWindows` 设置。
-- 服务端协议无版本协商：本项目针对 DSH `0.1.5-rc.1` 实测。
+- 无协议版本协商；当前核对基准与兼容边界见 [dsh-compat.md](docs/dsh-compat.md)。
+- 停止刻意采用「摘空队列 → cancel → 按原序重发」：历史实测中只 cancel 不可靠地接续队列。
+- 生成中的正文会重建 DOM，点击文件链接可能被增量刷新吞掉；轮次结束后再点。后台任务分区、ANSI 着色与部分官方统计展示尚未实现。
+- 拖放受 VS Code iframe 门控与字节通道限制；其它平台的大文件请用回形针，目录请用 `@`。
+- 面板恢复依赖 VS Code 工作区缓存与 `window.restoreWindows`。
 
 ## 许可与归属
 
-本项目以 **MIT** 许可发布，见 `LICENSE`。完整、逐项的披露见
-[`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md)：协议类型取自 DeepSeek Harness（MIT）；
-DSH 传输层的结构写法继承自 DeepSeek-Harness-for-VS-Code（MIT）；界面在早期参考过
-Continue 的视觉与交互取向（Apache-2.0），**未拷贝其源码**，如今已按本扩展自己的
-设计 token 与样式自绘、不再以它为类比。
-
-欢迎 issue 与 PR。提交前请确保 `npm run typecheck` 与 `npm test` 通过。
+[MIT](LICENSE)。来源与取舍详见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)：协议类型来自 DeepSeek Harness，传输层结构继承自 DeepSeek-Harness-for-VS-Code；早期视觉参考 Continue，未复制其源码。
 
 ---
 
@@ -173,153 +109,101 @@ Continue 的视觉与交互取向（Apache-2.0），**未拷贝其源码**，如
 
 # DSH Chat
 
-![DSH Chat inside VS Code](docs/demo.png)
-
-A third-party VS Code extension for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`).
-
-The extension **draws its own UI** (a self-rendered webview — no embedded browser page) and
-takes every conversational capability from `dsh`, with the same data semantics as the official
-DSH Web UI: a standard chat experience, living inside VS Code.
-
-## Prerequisite: install `dsh` first
-
-DSH Chat is a **frontend**; it has no model access of its own. Install `dsh` first:
-
-```bash
-npm i -g @deepseek-ai/dsh     # official repo: https://github.com/deepseek-ai/deepseek-harness
-```
-
-Configure your model credentials for `dsh` as usual.
-VS Code ≥ 1.101 (the secondary-sidebar container needs ≥ 1.106; older versions fall back to the
-activity bar).
+A third-party VS Code frontend for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`). It draws its own webview rather than embedding the official page. DSH supplies sessions, models and tools; data semantics follow the official Web UI.
 
 ## Install
 
+Install DSH and follow its first-use credential setup:
+
 ```bash
-npm install
-npm run package        # produces Releases/dsh-chat-<version>.vsix
+npm i -g @deepseek-ai/dsh
 ```
 
-Then in VS Code: Extensions → `…` → Install from VSIX → reload. To hack on it:
-`npm install && npm run watch`, open this repo in VS Code and press `F5`.
+Requires VS Code ≥ 1.101. The secondary-sidebar container requires ≥ 1.106; older versions fall back to the activity bar.
 
-## The key mechanism: internal DSH first, external DSH as fallback
+Build from source:
 
-| Situation | Behaviour |
-| --- | --- |
-| **Internal DSH is running** | Connect to it (guardian + `dsh web`, started and supervised by the extension from `dshChat.command`; the launch token is parsed automatically). |
-| **No internal DSH, external answers** | Connect to `dshChat.url` (the fallback). If the server requires authorization it prompts for the access token (the `?token=` value from the `dsh web` launch URL), or use **DSH: Enter Access Token** from the Command Palette. |
-| **Neither** | **Start an internal DSH** (done automatically while `dshChat.autoConnect` is on; when off, the buttons are shown and nothing happens until you click). |
+```bash
+npm install
+npm run package  # Releases/dsh-chat-<version>.vsix
+```
 
-Four rules worth knowing:
+Choose Extensions → … → Install from VSIX, then reload. For source debugging, run `npm run watch`, open the repository in VS Code and press `F5`.
 
-- **The target is chosen once and then sticks**: the automatic path picks it at startup
-  (internal → external → start internal) and later retries always retry that same target — it
-  never switches because the other one came up (switching means another server, another session
-  list, and losing a running turn). Switch by hand if you want to: **Start internal DSH** /
-  **Connect to internal DSH** / **Connect to external DSH** on the connection bar. The internal
-  button reads "connect" while an internal backend is running and "start" when it is not; the
-  external button is always there (greyed out when `dshChat.url` is empty).
-- **While connecting, only "Stop connecting" and "Show logs" are offered**: connecting (including
-  the retry loop) has **no** automatic time limit — only you stop it. Start failures (bad
-  command, dsh never comes up) and auth failures are not retried automatically: they fall back to
-  the button state with the reason on the bar and details in the log.
-- **Multiple VS Code windows share one backend**: windows are grouped by `command`, and one group
-  shares a single guardian + `dsh web` — not one per window. With a single set of user settings
-  every window lands in the same group; a different `command` (remote windows, different profiles,
-  Insiders/Stable) forms **separate** groups with separate backends. The guardian retires a
-  backend once nobody is connected (10s idle by default, configurable), so reloading a window or
-  restarting VS Code never kills it.
-- **`url` and `command` are `machine`-scoped**: they can only be set in *user* settings; a
-  workspace's `.vscode/settings.json` cannot override them (`command` is executed through a
-  shell and `url` decides where credentials go — a cloned repository must not decide either).
-  **`url` and `command` require a window reload** (the extension offers to do it);
-  **`autoConnect` applies immediately** (when idle, it re-routes right away); every other
-  setting applies immediately.
+## Connection
+
+With `dshChat.autoConnect` enabled:
+
+| Condition | Action |
+|---|---|
+| Internal DSH is running | Connect to the extension-managed guardian and `dsh web`; obtain the launch token automatically |
+| No internal DSH, external is reachable | Connect to `dshChat.url`; when required, enter the launch URL's `?token=` value, or use **DSH: Enter Access Token** |
+| Neither is available | Start internal DSH using `dshChat.command` |
+
+- When auto-connect is off, wait for manual action. Explicitly connecting internally still starts a backend if needed; “start” and “connect” share this logic. Connecting externally never starts a process; its button is disabled without a URL.
+- Reconnection sticks to the chosen server. Switch targets manually; doing so changes the session list.
+- While connecting, use “Stop connecting” or “Show logs”. Retries have no automatic deadline; launch and authentication failures return to the buttons with an error reason.
+- Windows with the same launch command share a backend. It exits after the last connection has been idle for 10 seconds by default; reloading within that grace period leaves it running.
+- `url` and `command` are user-only, machine-scoped settings and require a window reload. Other settings apply immediately.
 
 ## Settings
 
-| Key | Default | Meaning |
-| --- | --- | --- |
-| `dshChat.url` | `http://127.0.0.1:3080` | **Fallback** address of an external `dsh web`; used only when no internal DSH is running and that address answers |
-| `dshChat.command` | `dsh web --port 0 --no-open` | Launch command for the internal DSH, executed verbatim |
-| `dshChat.supervisorIdleSec` | `10` | Idle seconds before the guardian retires the backend (5–600) |
-| `dshChat.autoConnect` | `true` | Connect automatically when VS Code starts (internal first, external as fallback, internal is started when neither is available); when off, only the connect buttons are shown |
-| `dshChat.diffLayout` | `auto` | Diff layout for edit calls: `auto`, `unified`, `split` |
-| `dshChat.language` | `auto` | Chat UI language: `auto` (follow VS Code), `zh-cn`, `en` |
-| `dshChat.fontSize` | `0` | Chat UI font size in px (≥8); `0` follows VS Code |
-| `dshChat.questionBatch` | `3` | Questions shown at once; more than this are asked one at a time; `0` = always all |
-| `dshChat.turnProcessThreshold` | `5` | Fold a finished turn's consecutive process into one button once it holds this many tool calls (subagent dispatches count); `0` = never fold, `1–2` = always fold (a run with a single call stays flat) |
-| `dshChat.agentPreset` | empty | Agent preset new sessions run (a preset id, or the name it displays, Chinese or English); empty follows the DSH server's own default preset |
+| Key | Default | Purpose |
+|---|---|---|
+| `dshChat.url` | `http://127.0.0.1:3080` | Fallback external DSH address |
+| `dshChat.command` | `dsh web --port 0 --no-open` | Internal launch command, executed verbatim |
+| `dshChat.supervisorIdleSec` | `10` | Exit grace period with no connected windows, 5–600 seconds |
+| `dshChat.autoConnect` | `true` | Connect automatically; when off, wait for manual action |
+| `dshChat.diffLayout` | `auto` | Narrow unified / wide split diff, or fixed `unified` / `split` |
+| `dshChat.language` | `auto` | Follow VS Code, or use `zh-cn` / `en` |
+| `dshChat.fontSize` | `0` | Integer px; `0` follows VS Code, nonzero values display at least 8 px |
+| `dshChat.questionBatch` | `3` | Questions shown together; larger sets run sequentially, `0` shows all |
+| `dshChat.turnProcessThreshold` | `5` | Fold a finished process segment at this many tool calls, including subagent dispatches; `0` never folds, `1–2` always folds, single-call segments stay flat |
+| `dshChat.agentPreset` | empty | New-session preset id or Chinese/English display name; empty uses the server default |
 
-## Using it
+## Use
 
-**Windows** — an activity-bar view, a secondary-sidebar view, and an editor-area panel
-(**DSH: Open in Editor**, or the whale button in the editor title bar, which opens a fresh
-session in the group you are in). History, new chat, archive and delete all live in the UI.
+### Panels and sessions
 
-**Input** — type `/` for commands and skills, `@` for files, folders and **past sessions**
-(they insert a plain `@path` / `@dir/` / session mention that the model resolves itself).
-Those references are **links**: an `@file` opens the file, `@dir/` reveals the folder in the
-Explorer, and a session mention opens that session in a new tab. References in **messages you
-already sent** are clickable directly; one still sitting in the **composer** needs **`Ctrl`**
-(held down) because the composer is plain text.
-The paperclip and drag-and-drop are the *attachment* channel: images go as content blocks,
-everything else uploads byte-by-byte with progress on the chip. `Alt+Shift+2` adds the
-selected lines as a `@path#L12-L40` reference. **Dropping files into the webview requires
-holding `Shift`** (a VS Code iframe-drag gate, see Limitations).
-Conversation images are visible: your own images render as thumbnails, and so do images the
-model or a tool returns (including `read_image`). Image files the agent **delivers or generates**
-(declared via `present`, or written this turn as `.png`/`.jpg`/`.svg`) are drawn as images too,
-as are images referenced in the answer — a local path inside the session working directory is read
-by the extension (paths outside it are not), while `https://` links load as-is with no referrer.
-Click any image to view the original; `Esc` closes it.
+Use the activity bar, secondary sidebar or editor area. **DSH: Open in Editor** and the header button open a tab in an existing editor group; an editor source keeps its own group. The whale button in the editor title bar creates a session in the current group.
 
-**During a turn** — tool calls collapse to one line (expand for arguments, results, a
-structured diff), running calls glow and show a live elapsed timer; approvals, questionnaires
-(asked one at a time when long) and plan review (`exit_plan_mode`) get dedicated cards;
-`Esc` stops generation, and with messages queued it stops the turn and sends the frontmost one.
+History is scoped to the current workspace and supports new, archive, delete and branch-from-here; branch titles have a “Branch: ” prefix. Open subagents to view their records: one-shot agents are read-only, continuable agents support follow-up chat. Jobs expose output, and Trajectory provides a ledger, timeline and inspector. “Open in browser” leads to the official server settings.
 
-**Panels** — history (current workspace only), subagents, background jobs, and **Trajectory**
-(ledger + timeline + inspector, folded exactly like upstream). The server's own settings page
-is **not** re-implemented: use "open in browser" to edit it in the DSH Web UI.
+### Input, references and attachments
 
-**Also** — bilingual UI following the VS Code display language; context-usage ring, goal bar,
-turn rail; branch-from-here; per-workspace window/session memory (stored in VS Code's own
-workspace cache, never in your project); Markdown with GFM task lists, tables and footnotes,
-deliberately **without** math or syntax highlighting (`THIRD-PARTY-NOTICES.md` has the rationale).
+- `/` opens commands and skills; `@` references files, folders or past sessions using `@path`, `@dir/` or `@[title](dsh-session:…)`. The model reads references itself; they are not attachments.
+- A folder row navigates into it; its “Entire folder” button references it. Enter references, Tab navigates. Click references in sent messages directly; hold `Ctrl` to click draft references. Session links open a new tab using the same editor-group rules.
+- `Alt+Shift+2` inserts an editor selection as `@path#L12-L40`.
+- The paperclip sends images as content blocks and uploads other files, showing upload status on their chips. This path channel is not subject to the drop channel's 8 MB cap.
+- Hold `Shift` to drop files. Drops use bytes, allow up to 8 MB per file and do not support folders. On Windows, pasting copied files/folders retrieves their paths: files become attachments, folders become text references. Other platforms and pasted screenshots use the same byte channel. Plain-text paste is unchanged.
+- Preview images from users, models, tools, deliverables and files generated this turn. Local answer images are read only inside the session working directory; HTTPS images send no referrer. Click for the original; `Esc` closes it.
+
+### Generation and interaction
+
+Expand tool rows for full arguments, results and structured diffs; running tools show elapsed time. Approvals, questionnaires and plan reviews have dedicated cards, and a questionnaire can be abandoned as a group. An `Esc` not consumed by an image, menu or edit stops the turn; queued messages are then resent in their original order.
+
+The UI offers Chinese/English, context usage, goals and turn navigation. Messages and expansion state live in VS Code's workspace cache, not project files. Markdown supports task lists, tables and footnotes, but not math rendering or code highlighting.
 
 ## Development
 
+Read [AGENTS.md](AGENTS.md) first. See [docs/README.md](docs/README.md) for designs and contracts, and [scripts/README.md](scripts/README.md) for tests and diagnostics. Routine validation makes no model calls:
+
 ```bash
-npm run typecheck   # host + webview tsconfigs
-npm test            # 53 offline assertion suites, in parallel
-npm run build       # production build into dist/
-npm run smoke       # end-to-end: starts a real dsh, makes a real model call
-npm run preview     # preview the webview at http://127.0.0.1:8777/test/preview.html
-npm run package     # build a vsix
+npm run typecheck
+npm test
+npm run build
 ```
 
-`docs/` holds the implementation/audit documentation (upstream parity audit, supervisor design,
-trajectory spec, server API reference); `scripts/` holds the assertions and diagnostic probes.
-Read `AGENTS.md` before changing code.
+Use `npm run preview` for the webview and `npm run package` for a VSIX. Smoke tests, live probes and e2e may start DSH or call models; obtain explicit user approval for each invocation.
 
 ## Limitations
 
-- Not a replica of `dsh web`: no embedded page, no self-drawn server settings page, and the
-  subagent panel still lacks a few upstream columns (duration, `hasChildren` tree).
-- **Dropping files into the webview requires `Shift`** (VS Code blocks iframe pointer events
-  during a drag otherwise); drops upload as bytes, 8 MB per file, folders unsupported.
-- Stop semantics deviate from the upstream contract on purpose (`Esc` = client-side queue
-  drain → cancel → resend in order), because a bare cancel measurably does not resume the queue.
-- Panel/window restore depends on VS Code's workspace cache and `window.restoreWindows`.
-- No protocol version negotiation: measured against DSH `0.1.5-rc.1`.
+- No protocol version negotiation; see [dsh-compat.md](docs/dsh-compat.md) for the current checked baseline and compatibility boundaries.
+- Stop intentionally drains the queue, cancels and resends in order: historical probes did not reliably resume queued work after a bare cancel.
+- Streaming text rebuilds its DOM, so an incremental update may swallow a file-link click; retry after the turn ends. Job sections, ANSI coloring and some upstream statistics remain unimplemented.
+- Drops are constrained by VS Code's iframe gate and the byte channel. On other platforms, use the paperclip for large files and `@` for folders.
+- Panel restoration depends on VS Code's workspace cache and `window.restoreWindows`.
 
 ## Licence and attribution
 
-MIT — see `LICENSE`. The full itemised disclosure is in
-[`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md): protocol types come from DeepSeek Harness
-(MIT); the DSH transport layer inherits its structural approach from
-DeepSeek-Harness-for-VS-Code (MIT); the interface was guided early on by Continue's visual and
-interaction design (Apache-2.0) **without copying its source**, and is now drawn from this
-extension's own design tokens rather than held up as a Continue clone.
+[MIT](LICENSE). See [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) for sources and design choices: protocol types come from DeepSeek Harness; transport structure derives from DeepSeek-Harness-for-VS-Code; early visuals referenced Continue without copying its source.

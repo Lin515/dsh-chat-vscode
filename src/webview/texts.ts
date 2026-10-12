@@ -632,13 +632,8 @@ export interface Texts {
   toolPwsh: string;
   toolReadImage: string;
   /**
-   * cordis（插件运行时）那几只工具的自有标题。
-   *
-   * 它们由 `shared/toolMeta.ts` 的 `TOOL_TITLE_KEYS` 按名字映射过来，而界面侧是
-   * **动态查表**（`Rows.tsx` 里 `texts[titleKey]`）——字典缺键时 TS 不会报错，
-   * 界面会把工具 id 原样（`cordis_run`）画成标题。所以 `scripts/i18n.test.ts`
-   * 有一条断言，把 `TOOL_TITLE_KEYS` 里的每个键在两份词典里都核一遍
-   * （`docs/audit-summary.md` 的 B2 就是这个形态踩出来的）。
+   * cordis 工具自有标题，由 TOOL_TITLE_KEYS 动态查表；缺键会露出工具 id，TS 不报错。
+   * scripts/i18n.test.ts 核对两份词典；见 docs/audit-summary.md「文案登记完整性」。
    */
   toolInspect: string;
   toolRunCordis: string;

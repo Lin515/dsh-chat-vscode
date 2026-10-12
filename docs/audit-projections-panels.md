@@ -1,425 +1,82 @@
-# 投影与面板一致性审计（一次性报告）
+# 投影与面板：消费规则与缺口
 
-> 本文是 projections & panels 专项审计的一次性分报告，判定定格在审计当时；多数「不一致」
-> 此后已修，现状以 [`audit-summary.md`](audit-summary.md) 的「零、修复状态」为准，**不要照着
-> 本文重复修一遍**。什么时候读：重做三个未做面板（schedule / agentPreset / subagentTiming）
-> 取契约（§15、§16、§6）时，或查投影 seq 水位线语义（§17）时。结论按 **一致 / 不一致 /
-> 无法确认** 标注，各条附置信度。
+现行消费表是 `projectionIngest.ts` 的 `PROJECTION_READERS`，副作用在 controller，形状解析在 `projections.ts`。本文不复制易失效的键数量或旧失败清单；总览见 [审计结论](<audit-summary.md>)，类型来源见 [服务端契约](<dsh-server-api.md>)。
 
-## 0. 投影键总表：官方 20 键 vs 扩展消费 10 键
+## 投影水位线
 
-官方 `SessionProjectionMap` 本体 11 键：`inbox`、`agentPreset`、`title`、`todos`、
-`sessionListMetadata`、`imageLimits`、`modelSelection`、`subagentCatalog`、`subagentTiming`、
-`subagent`、`goal`；另有 9 键由各功能包 `declare module` 合并进来：`permissions`、`plan`、
-`tokenUsage`、`contextPressure`、`contextBreakdown`、`sessionStats`、`turnOutline`、`schedule`、
-`agentPreset`。合计 **20 个 client 可见键**（原文快照口径）。
+会话控制值逐键 higher seq wins，同 seq 也不覆盖。baseline 按 asOfSeq 替换世代、清理切点上缺失的能力键；不能把迟到 follow 快照绕过登记表写回状态。列表镜像采用最后到达值，是不同的有意语义，见 [ADR](<adr/0001-projection-value-store.md>)。
 
-扩展的 `applyProjection`（`src/dsh/controller.ts`）只消费 **10 个**：`modelSelection`、
-`permissions`、`plan`、`todos`、`title`、`contextPressure`、`contextBreakdown`、`sessionStats`、
-`subagentCatalog`、`goal`。`jobs` 不走投影，走 `session/control` 的 jobs 帧（list mirror），
-与官方一致。官方 UI 经 `useProjection(` 消费投影；其中 `subagentCatalog` 官方 UI 不直接读
-（面板走 `subagent/list` RPC 的同构行）。
+## 模型、计划与目标
 
-**扩展整项丢弃的投影（官方 UI 用户可见）**：`tokenUsage`、`turnOutline`、`imageLimits`、
-`schedule`、`sessionListMetadata`、`inbox`、`subagentTiming`、`subagent`（身份）；
-`agentPreset` 当时也在其中，2026-09-22 起已消费（§16）。
-
----
-
-## 1. modelSelection（模型选择）—— 一致（选择值）/ 不一致（默认值与可路由性）
-
-官方 wire 形态 `{lastUsed, next}`，`next` 已在服务端折好（`pending ?? lastUsed`）；官方 UI 取
-`next ?? catalog.default`（回退到 `session/modelCatalog` 的默认模型），并把「provider 是否
-可路由」记入 `routable`，不可路由时阻断输入区。
-
-扩展读 `next ?? lastUsed`——与官方等价（wire 上 `next` 为 null 时 `lastUsed` 必为 null）。
-三处不一致：
-
-- **默认模型来源**：扩展丢弃目录的 `default` / `routableProviders` / `failures`，默认模型改读
-  设置命名空间。两处通常同源，但契约不等价：若设置与 `catalog.default` 不一致（例如运行时
-  被别的调用方改过），扩展开场显示的模型胶囊可能与实际会用的模型不同；目录缺失的 provider
-  也不提示。置信度：中。
-- **不可路由阻断**：扩展无对应逻辑，选到不可路由 provider 要等发送后由服务端报错。
-  置信度：高。
-- **contextWindow 来源**：官方模型目录契约里没有 `contextWindow`；扩展的模型视图该字段从不
-  赋值，唯一来源是 `contextPressure.contextWindow`（即官方明确「不必与压力原子配对」的
-  字段），悬停/占用条分母偶尔是旧 provider 的容量。置信度：中。
-
-## 2. permissions（权限胶囊）—— 不一致
-
-官方契约：投影为 `{options, currentValue}`，菜单的选项集合、显示名、描述**全部由投影驱动**；
-派生的 `custom` 会成为 `currentValue` 但不进菜单；官方默认预设表只有 `workspace-write` 与
-`danger-full-access` 两条。
-
-扩展只读 `currentValue`，`options` 整个丢弃，菜单硬编码 `read-only` / `workspace-write` /
-`danger-full-access` 三条（`src/webview/components/Composer.tsx`）。后果：
-
-1. 部署自定义预设表（改名、加减条目、只配 `read-only`）时，扩展显示的三条与宿主不一致；
-2. `currentValue === "custom"` 时（宿主明确会派生该值）胶囊静默回退为 `workspace-write`，
-   用户看到**错误**的当前权限；
-3. 若部署未配置 `read-only`，扩展仍把它作为可选项发出 `/permission read-only`。
-
-置信度：高（代码级确定）；严重性取决于具体部署的预设表配置。
-
-## 3. plan（计划模式）—— 不一致（`pending` 被丢弃）
-
-官方契约：`{active, pending}`——`active` 是已落地的状态，`pending` 为真表示「已记日志的
-`/plan` 选择指向另一状态、尚未失败、且之后没有记录到该状态」。官方 UI 按**有效目标态**
-`pending ? !active : active` 显示计划模式 chip，同一谓词也用于输入区。
-
-扩展只取 `active`，`pending` 从未读取，转而用**客户端乐观态**（仅 UI 点击「进入计划模式」
-时设置的本地状态）补足。后果：进入计划模式的过渡窗口内官方立刻显示 chip，扩展不显示；
-经 `/plan` 命令或另一客户端发起的切换，扩展的乐观态为空，UI 滞后到事件落地才有反应；退出
-时扩展在整个 `active` 为真的窗口都显示「已进入」。置信度：高。
-
-（通则：投影里 `pending` / `wanted` 这类待提交值与已提交值成对出现时，生效状态是**两者的
-组合**，不是任何单个字段——`plan` 只是一个实例。）
-
-## 4. todos（任务清单）—— 一致
-
-官方投影为 `TodoItem[] | null`（每条仅 `content` + `status` 三态词表，无 id/priority）。
-扩展逐字同词表，`null → []` 与官方 UI 等价；`id` 为扩展自造，仅渲染 key 差异，无语义影响。
-
-## 5. 上下文占用 contextPressure / contextBreakdown —— 不一致（分子口径 + `projectedTokens` 丢弃）
-
-官方语义：`pressureTokens` = **prompt 侧**（uncached input + cache read + cache write，
-**不含 output**）；`projectedTokens` = 该样本 + 其后 surface 的带符号增量（压缩会使它下降
-——这是 `pressureTokens` 单独做不到的）。契约明确三者不是同一次请求的原子观测：切换模型
-可能让新容量配旧压力。官方占用条分子取 `projectedTokens ?? pressureTokens`，且必须同时有
-分子与 `contextWindow` 才渲染 meter。
-
-扩展只读 `contextWindow`，`pressureTokens` / `projectedTokens` 从未消费；分子自算，用最后
-一条消息的 `usage.totalTokens`（**含 output**），分母来自 `request/context` 事件（不是投影）。
-三处不一致：
-
-- **A 分子口径**：官方 prompt 侧 vs 扩展 prompt+output，占用条系统性偏高，幅度≈最近一步
-  的 output token（典型 0.3%–2%）。置信度：高。
-- **B 压缩不可见**：扩展分子只在助手消息到达时更新，压缩后官方占用条立刻下落，扩展仍显示
-  压缩前占用，直到下一轮消息落地。置信度：高。
-- **C 显示门限**：官方须有分子且有分母才渲染；扩展的 `CtxText` 有第二兜底（用模型目录/
-  `request/context` 分母本地重算百分比），可能在官方不显示 meter 的状态下显示。置信度：中。
-
-`contextBreakdown` **一致**：`{systemTokens, toolsTokens, messageTokens}` 字段一一对应；
-官方口径「三者相加 ≠ `projectedTokens`，只能当构成近似呈现」，扩展逐行显示、不求和——一致。
-
-## 6. 子代理 subagentCatalog / subagent / subagentTiming —— 三个契约，勿混
-
-**官方契约**：
-
-- 投影 `subagentCatalog`：`SubagentCatalogEntry = {id, createdAt} + mode`——`'one-shot'`
-  （`label` 可选）或 `'continuable'`（`label` 必填）。**没有 `kind`，也没有 `activity`。**
-- RPC `subagent/list` 的返回行是**另一个契约**：才有 `kind: 'child'` 与
-  `activity: 'running'|'inactive'`，另有 `SubagentCatalog {entries, parentAvailable}`。
-  官方面板的 activity 来自这里；运行时长来自投影 `subagentTiming`（经 session-list 的
-  `projectionValues` 读取）。
-- 投影 `subagent`（身份，`SubagentIdentityProjection | null`）：宿主用它校验地址模式——
-  打开子代理时 `identity.mode` 必须与 `address.mode` 一致，否则报 `subagent/unauthorized`。
-
-**扩展当时的错误**（形状混用 + `mode` 丢弃）：
-
-- 把 RPC 行的过滤（`kind === "child"`）套在**投影**上——投影条目没有 `kind`，结果**恒为
-  空数组**，且每次（重）连接、每次投影变化都会把子代理列表重置为空并广播
-  `parentAvailable: false`；同一扩展在 RPC 路径上用的却是正确形状——两处混用。面板表现为
-  「无子代理」，直到用户再点一次按钮走 RPC。
-- `mode` 两条路径都丢弃，打开子代理一律发 `mode: "continuable"`：打开 `one-shot` 子代理必被
-  宿主拒绝，界面上只表现为面板内容为空。置信度：高（两处都是代码级确定）。
-- 不读 `subagentTiming`（导航下拉没有运行时长），也不读 `subagent` 身份投影。
-- ~~刻意差异（非缺陷）：子代理对话是静态快照（无实时流 + 定时收尾），官方是实时流的只读
-  输入区。~~ **已于 2026-09-24 消除**：子代理对话改为**会话级切换**（`openSession` 带子
-  代理地址，`session/follow` / `session/page` 都按地址打开），与官方同为实时流；可继续
-  子代理可继续对话（`subagents/prompt`），一次性子代理输入区换成只读说明（官方
-  `SubagentReadOnlyComposer` 同款选举）。入口同步对齐官方：标题右侧的计数触发器 /
-  面包屑（`SubagentHeaderLineage` 同款），独立按钮与只读快照抽屉已删。
-
-**2026-09-25 同级切换缺陷**（已修，行为级回归在 `scripts/subagentSwitch.test.ts`）：
-从子代理页切到另一个兄弟时，切换下拉里只剩自己、兄弟不可见。根因是**会话域的生命周期**
-（视图离开即回收，`dropViewers` → `destroyScope`），不是目录取数——`parentCatalogOf`
-读父域目录的口径一直是对的，但切到第二个子代理时**父域已经不在**：
-
-- 新域的兄弟快照落空，首帧快照里只剩「兜底自己」那一行（label 还退回会话 id）；
-  修法：`openSubagent` 把手里命中的那份父目录**随行**传给新域（`openSession` /
-  `ensureScope` 的 seed 参数），切换后的第一帧就有完整兄弟清单；`running` 打底也改读
-  刚落好的种子（原写法先读后写，父域不在时读恒空）。
-- 异步的 `fetchParentCatalog`（恢复路径唯一来源）补齐后**通知发错对象**：
-  `syncSubagentContext(本会话id)` 的参数语义是父会话 id，通知的是「看它子代理的窗口」，
-  看本会话的窗口一条都收不到——缺陷永不自愈。补齐后必须把重算的 `subagent` patch
-  **直接发给看本会话的窗口**。
-- 推论：任何「进入时从父域取数」的路径都要按「父域可能不在」设计——同步给种子、
-  异步有回填、回填的通知对象是看本会话的窗口。
-
-**2026-10-11 显示名：目录条目缺 label 时用会话标题兜底**（已修，行为级回归在
-`scripts/subagentTitle.test.ts`）：workflow 派发的子代理**没有描述符 label**（父目录条目
-的 label 来自子代理描述符，而 workflow 起子代理时不传它），目录的三个来源于是都把 label
-兜底成会话 id，列表里显示一串 uuid；展示名此前只在这条子代理**被打开过**时解析得出，
-而本地补好的名字又会被下一次「label 等于会话 id」的并入覆盖回去（「关掉再打开又变回
-ID」）。
-
-- 标题**不必打开子代理**就能拿到：`session/list` 每一行带 `projections.values.title`
-  （官方客户端就是拿它给目录子行当 `displayTitle`，见 `dsh-api-session-controller` 的
-  `client/sessions/service.ts` 的 `projectList`）。宿主于是留一本标题账本
-  （`controller.subagentTitles`）：`session/list` 的原始子代理行，加上正在看那条子代理时
-  它自己的 `patch.session.title`（后者让「进去过一次」成为跨域回收的粘性事实）。
-- 显示名在**发帧那一刻**由 `resolveSubagentDisplay` 统一现算：来源的真 label →
-  打开时的描述符 label / 会话标题 → 标题账本 → 会话 id；**不写回**目录条目（写回就会被
-  重放覆盖）。界面侧不参与解析，只渲染 `SubagentView.label`。
-- 时效靠三处：`refreshSessions`（顺带，零成本）、子代理菜单打开（现有按需刷新那条路）、
-  子代理收尾（`api-session/status` 中继，尾随防抖合并成一次 `session/list`）。
-
-## 7. jobs（后台任务面板）—— 一致（数据词表）/ 不一致（入口与状态色）
-
-数据**一致**：官方五态 `running/stopping/completed/killed/failed`，扩展逐个枚举、字段一一
-对应（未知状态扩展兜底为 `completed`、官方直接抛错，生产上词表不会不匹配，视为一致）。
-
-两处不一致：
-
-- **入口可见性**：官方按钮只在会话有任务时渲染并带 live/idle 计数；扩展常驻、无计数徽标，
-  空态显示「无后台任务」。视觉噪音，无数据错误。置信度：高。
-- **状态色**：官方 `stopping` 与 `killed` 共用警告（attention）色；扩展 `stopping` 画成运行
-  蓝、`killed` 无色——被取消/正在停止的任务看起来仍在正常运行。置信度：高。
-
-## 8. sessionStats（会话统计）—— 一致（数据）/ 不一致（呈现）
-
-数据**一致**：官方八字段 `turns/steps/llmMs/toolMs/ttftMs/ttftSteps/decodeMs/decodeTokens`，
-扩展全读、语义逐字对应。
-
-呈现**不一致**：官方是输入区常驻胶囊（turns/steps + tok/s）+ 点击对话框，投影缺失时还有
-派生回退；扩展只塞在 tps 悬停标题里——tps 拿不到时整个入口消失，且从不显示 turns/steps
-（官方胶囊的主标签就是这两个计数），全日志统计没有常驻可见入口。置信度：高。
-
-## 9. tokenUsage（会话累计用量）—— 只消费了缓存命中率
-
-官方契约：全会话**累计**用量，四桶不相交（`uncachedInputTokens / outputTokens /
-cacheReadTokens / cacheWriteTokens`）；官方渲染用量胶囊 + 分桶对话框（计费输入 = 三桶输入
-之和，总计再加 output）。
-
-扩展只消费其中**缓存命中率**这一项（工具栏最低优先级那档，位置在上下文容量数值右边的
-独立元素 `98.7%HIT`——用户 2026-10-10 口径：不与容量数字逗号连写；口径与算法在
-`src/webview/cacheHit.ts`，逐值对齐官方 `formatCacheHitPercent`）——用量胶囊
-与分桶对话框仍未做。`CtxText` 悬停明细里那一行显示的**也是这个会话累计的数**
-（同日口径：两处必须一致；官方那个上下文面板本身没有缓存命中行）。官方另一个命中率在
-「本轮用量」对话框，是**整轮**所有 attempt 的聚合，既不是逐 step 用量也不是会话累计——
-扩展不放这个数（`message.usage` 是最后一步用量且每次覆盖，连「本轮总量」也拿不到）。
-置信度：高。
-
-## 10. turnOutline（轮次大纲）—— 完全丢弃
-
-官方契约：整份日志每个已开始轮次的大纲 `{turn, seq, prompt, response}`，与客户端分页进来
-多少无关；官方用它拼轮次导航轨，未加载轮次也能显示 prompt/response 预览并跳转。
-
-扩展未消费，也没有任何轮次导航/大纲 UI。长会话无法按轮跳转、看不到未加载轮次预览。
-置信度：高。
-
-## 11. imageLimits（附件限额）—— 完全丢弃
-
-官方契约：`{maxImageBytes, maxImagesPerMessage, maxMessageImageBytes, maxImagePixels,
-maxImageDimension, mediaTypes}`；官方 UI 用它做**入队前**校验（张数、单图字节、总字节），并
-用同一投影把服务端 `session/attachment-invalid` 的 reason 翻成带具体限额的本地化文案。
-
-扩展不消费；图片准入只看扩展名映射与「当前模型是否接受图片」（外加非图片文本 512 KiB 内联
-上限），**没有任何字节/张数/总大小上限**。超限图片会被加进输入框并编码成 base64，直到发送
-才被宿主拒绝，错误文案是原始 reason。置信度：高。
-
-## 12. title / sessionListMetadata / 会话列表
-
-- `title` **一致**：RPC 列表行与投影推送两处都读。小差异：`title` 变 `null` 时扩展不清旧标题。
-- `sessionListMetadata`（`{blank, lastPromptAt}`）：扩展不读该投影键，但用的是服务端已折算
-  好的 `SessionSummary.blank`——**数据本身不丢**。
-- **blank 会话可见性**：官方隐藏非当前的 blank 行并把标题本地化为「新建会话」。**✅ 2026-10-01
-  已修（当前口径）**：**空态就是一条真会话**——窗口一进空态（新开 / 恢复不出会话 / 点「+」）
-  就落到本工作区那条「空壳」上，没有就 `session/create`（`reuseOrCreateBlank`，官方
-  `ui-workspace` 同名方法两半都抄）。它推翻了 2026-09-22 的「惰性建立」：那时「新建对话」只退
-  回空态、第一条真正需要会话的动作才建，为此外挂了一套「空会话复用名册 + 按窗口暂存的预设 /
-  模型 / 权限」；现在空态页显示的每一个值都是那条会话的真实值，那套机制整体消失。
-  **空壳的复用判据必须带客户端本地的 blank 位**（`engagedSessions`，官方同名物）：服务端的
-  `blank` 要到 `turn/start` 才翻假、而列表是**拉的**，只看快照会把已经聊过的会话当空壳接回去
-  （2026-10-01 报的「首条消息落进上一个对话」）。不变量与落点见 `scripts/invariants.test.ts`
-  第 6 节与 `scripts/blankSessionReuse.test.ts`。
-  **补壳必须让位恢复**：补壳是**后台自动路径**（连接结算、窗口就绪、打开文件夹），而恢复
-  （重载窗口接回关闭前那条会话）才是「这个窗口该开哪条会话」的权威。补壳链从判据到写绑定跨着
-  整串往返（`ensureWorkspace` / `session/create` / `refreshSessions`），写绑定前不复查就会把
-  已经接好的历史会话顶掉——用户 2026-10-02 报的「重载后历史会话一闪变成空会话」正是这个。
-  两道防线：补壳入口跳过「这一轮恢复还没结算」的窗口（`hasRestorePending`），以及
-  `reuseOrCreateBlank` 写绑定前复查窗口有没有被别的路径绑走（后者同时挡住「用户点历史里的一条」
-  被后台补壳改写）。断言见 `scripts/blankRestoreRace.test.ts`。
-  **没有工作目录时建不了壳**（`session/create` 只剩扩展宿主的 `process.cwd()` 可用）：窗口停在
-  「无会话的空态」，界面那句「未选择工作区」解释原因；目录一确定（打开文件夹 / 选目录）就补壳。
-  **没打开文件夹时那个目录可以反复改**（用户 2026-10-10 口径）：空态页那枚胶囊每次都弹选择框
-  （`askWorkspaceDir` 只对「VS Code 打开着文件夹」早退），选完由 `rebindWorkspaceDir` 把窗口换到
-  **新目录**那条空壳上——目录是会话的创建事实（服务端没有改 cwd 的 API），所以换目录只能是换一条
-  壳，旧壳留着给以后切回那个目录时复用；已经聊过的会话不因换目录被改写。断言见
-  `scripts/workspaceDirRepick.test.ts`。
-  **两处有意的差异**：① 官方是「隐藏 blank，但显示**当前选中的**那一条」，扩展挡掉全部 blank
-  ——列表是所有窗口共享的一份（`emitAll`），「当前那条」按窗口各不相同，要那条语义就得先有
-  按窗口发出的列表；挡掉全部在观感上等价（正在编辑的会话本来就在正文里，不靠列表指认）。
-  ② 官方只有一个主视图，扩展可以让两个窗口共用同一条空壳（用户 2026-10-01 明确口径：严格对齐
-  官方，去掉「不许别的窗口正开着它」那条自加排除）。
-- 子代理会话过滤**一致**：官方 `origin !== "subagent"`，扩展等价。
-- 归档与 cwd 过滤：官方按 `archived` 集合；扩展是本地删除集 + 可见性判据（`sessionList.ts`）：
-  打开着文件夹时跟随 VS Code（本工作区注册表记账 + `cwd` 相同 + 「任何已打开域的 cwd」兜底），
-  没有打开文件夹时未分组会话进全局那份、**发帧前再按各窗口当前会话的 cwd 收窄**（用户
-  2026-10-10 口径：不同会话可以各自选目录，历史互不混入）——行为确定，是否符合扩展定位属设计判断。
-- 列表顺序：官方按 `updatedAt` 降序且服务端已把 `lastPromptAt` 折进 `updatedAt`，扩展直接用
-  该字段——**实际等价（经服务端折算）**。
-
-## 13. inbox（排队消息）与 steering 呈现
-
-**状态更新（2026-09-18）**：审计当时「扩展不消费 inbox 投影」——服务端 2026-09-09 起删掉了
-`session/control` 的队列帧通道，队列只剩 `inbox` 投影这一条来源，扩展当时只读旧通道，待发
-列表**整体消失**（用户报的现场）。现在扩展**双读**（inbox 投影 + 旧 queues/queue 帧），折算
-在 `src/dsh/queueView.ts`（`queueItemsFromInbox` / `queueItemsFromWire`）。
-
-**契约**：`session/control` 队列帧的 `SessionQueuedItem {placement: 'queued'|'steering'|
-'context', rpcId?, message}` 是投递前的权威快照；`inbox` 投影是持久化 splice 折出的两段待
-投递列表（`'next-turn'` / `'next-step'`）——**两个东西，勿混**。
-
-- **`context` 丢弃：一致**。官方两个呈现面都不渲染 `context`（排队坞只取 `queued`，steering
-  面只取 `steering`），扩展同样丢弃。
-- **steering 呈现位置与计数：不一致**。官方把待投递 steering 作为**对话流内联气泡**，出现在
-  对应轮次的位置；扩展把 `queued` 与 `steering` 合并成输入框上方一条「排队中」状态条并计入
-  条数——插话显示成「排队的用户消息」。置信度：高。
-- **user/message 的 steering 分类：不一致**。官方按 inbox `'next-step'` 认领集把
-  `user/message` 分成 `steering` 或普通 `user`；扩展只有「user / 其余」两分法，**没有
-  steering 分类**，历史里的插话与普通用户消息完全同形。附注：`'user-rpc'` 是消息来源映射的
-  **键**，其 `kind` 字段是 `'user'`，扩展按 `kind === "user-rpc"` 的判断在线上不会命中，属
-  多余分支（不构成可见差异）。置信度：高。
-
-## 14. context 注入节点（durable 非用户消息）—— 不一致（字段名与派生标签）
-
-官方节点契约：`kind: 'context'` + `provenance {role: 'inject'|'recall', label}` + `form`（六个
-已知形态 `instructions/catalog/snapshot/notice/relay/recall`，**未知形态一律置 null 走不透明
-呈现**）；`role` / `label` 按来源分派，recall 的 label 是会话标题列表。
-
-扩展：`form` **不做白名单校验**（未知形态当已知透传）；没有 `role`/`label` 概念，界面按
-`sourceKind`/`plugin` 硬映射少数几个 kind（`system` / `agent-instructions` / `skill-catalog` /
-`plugin` 等）。后果：跨会话 recall 与普通注入同样显示为「自动载入」；未知 `form` 被原样显示
-成 detail 文本而不是「不透明」。置信度：高。
-
-## 15. schedule 契约（面板未做，重做必读）
-
-- 官方契约：投影 `schedule: readonly ScheduleRecord[]`；`ScheduleRecord` 是 `After | At |
-  Every` 三种调度记录（含 `id / prompt / scheduledAt / state`），由 `schedule/change` 事件
-  折叠。
-- 官方两处用户可见：① 定时提醒目录（`useProjection("schedule")`）；② 工作区列表的「有待
-  触发提醒」指示（`projectionValues.schedule.length > 0`）。完成提醒（`completed`）的具体
-  呈现未定位到渲染代码，见文末「无法确认」。
-- 扩展当时：**完全未消费**——模型经调度工具创建的提醒在扩展里没有任何入口可查看。
-  置信度：高。
-
-## 16. agentPreset 契约（✅ 2026-09-22 已修；含落地细节，改动时按这套走）
-
-官方契约：投影 `agentPreset: string | null`，注释强调**「重建读取 `agentPreset` 会话投影，
-绝不只看 header」**。官方 UI 读它显示会话的 preset 标签，并有新会话的 preset 选择入口。
-
-审计当时：扩展只是**声明过未使用**（header / `createSession` / wire 类型里都有字段，但不传、
-不读）；`agent-preset/selected` 事件进了渲染白名单但适配器 switch 没有 case——落在 default
-且因在白名单里而不报警。用户看不到当前会话跑在哪个 preset 下，也无法在新建时选择。
-
-2026-09-22 落地：
-
-- 投影进登记表：`src/dsh/projectionIngest.ts` 的 `agentPreset`（`projections.agentPresetFromProjection`）；
-  域名段 `SessionScope.agentPreset`；线格式字段 `ChatState.agentPreset`（会话片段）。
-- 界面：空态页一枚下拉框（`components/EmptyMeta.tsx`）；目录来自 `agentPresets/list`
-  （`agentPresetsFromList`，坏预设与未开放选择的都在那里滤掉）；选择走 `agentPresets/select`。
-- 新会话默认预设由设置 `dshChat.agentPreset` 决定，在 `session/create` 里带上；留空则不传，
-  由服务端组装它自己的默认预设。**值可以写 id，也可以写界面上显示的名字**（中英两名都认）：
-  服务端只按 id 查表（注册表里唯一的查重就是 `Duplicate agent preset`，`name` 纯展示、不查重，
-  而且随产品交付的四个**不发布 `name`**，它们的中文名是客户端词典给的），所以「照界面上的名字填」
-  得由客户端折一次——`shared/presetMatch.ts` 的 `matchPresetInput`（id 优先，名字取目录里第一个
-  命中的，认不出原样传），候选名字由 `webview/presetDisplay.ts` 的 `presetMatchNames` 给。
-  断言 `scripts/presetMatch.test.ts`。
-- **配置项只在真新建空壳时落实**：工作区里已经有一条空壳会话时走的是复用路径，待建参数
-  （预设 / 模型）**一律不动**（`reuseOrCreateBlank` 的字段注释里有逐字口径）。
-  2026-10-01「空态即一条真会话」之后这是常态——改完配置项点「+」看不到变化，不是配置项没生效，
-  而是那条空壳本来就有自己的预设。
-- 展示名照官方折叠：内置四个用客户端词典、其余用原文（`src/webview/presetDisplay.ts`，
-  断言 `scripts/presetDisplay.test.ts`）。
-- `agent-preset/selected` **事件**仍不进适配器 switch（留在白名单只为不报「不认识的事件」）：
-  状态走投影帧；切换成功后宿主自己也写一次域字段（`selectAgentPreset`），两条路不打架；
-  命令目录的失效另由 `configChanges` 处理。
-
-## 17. 投影消费框架语义：seq 水位线
-
-**官方语义**（projection store 三条规则）：
-
-1. **按 seq 丢弃过期值**：每键记 `(value, seq)`，应用时 `seq` 更小**或相等**都不覆盖
-   （higher seq wins；重放与过期帧直接丢弃）。
-2. **基线播种**：baseline 以 `asOfSeq` 为切点播种各键，并**清掉基线未携带、且 seq 不高于
-   asOfSeq 的键**——「基线里没有的键 = 该切点上能力不存在」。
-3. **世代替换**：新基线到来时丢掉水位高于新切点的旧行。
-
-**扩展当时**：设计注释宣称有第 1 条规则，代码没有——projection 帧不读 `seq`，baseline 与
-follow snapshot 只遍历 `values`、不读 `asOfSeq`、也不清理缺失键；`seq` 字段声明了但全仓
-未用。
-
-**要不要紧**：`session/follow` 的快照（带自己的 `asOfSeq` 切点）与实时 projection 帧是两条
-流，投递顺序无保证；旧快照后到会把更旧的 `permissions` / `plan` / `modelSelection` / `todos` /
-`contextBreakdown` / `goal` 写回界面，直到同键下一次变更才纠正；重连（新 baseline）也不会
-清掉已消失的能力键。置信度：中高（代码级差异确定；触发需要具体的流交错时机，未实测）。
-
-## 18. 排序：真正重要的差异
-
-1. **goal 双向失效**：契约是**嵌套**的 `{goal: {...}, roundsStarted, createdAt, updatedAt}`
-   （wire view 即 `state.current`），扩展按扁平读，`goal?.objective` 恒 undefined → 恒清空；
-   且 webview 里根本没有目标面板/条。两处叠加＝目标功能完全不可见。置信度：高。
-2. **subagentCatalog 形状用错 + mode 硬编码**：投影上按 `kind` 过滤恒空；`mode` 两路丢弃，
-   打开 one-shot 子代理固定发 continuable → 宿主拒绝。置信度：高。
-3. **交付文件完全不可见**：presented 解析了但无人渲染，工具行 files 有渲染分支但从未赋值，
-   也没有官方「从 write/edit 参数派生本轮产物」的逻辑。置信度：高。
-4. **占用条分子口径错**：官方 `projectedTokens ?? pressureTokens`（prompt 侧 + 压缩增量），
-   扩展用 `totalTokens`（含 output）且丢弃 `projectedTokens`——系统性偏高且对压缩无反应。
-   置信度：高。
-5. **imageLimits 未消费**：无张数/单图/总量预校验，超限图片一路编码到发送才被拒。置信度：高。
-6. **permissions.options 未消费 + custom 静默误显示**：硬编码三条；custom 回退成
-   workspace-write。置信度：高。
-7. **tokenUsage 只消费了一半**：缓存命中率已进工具栏（会话累计，见 §9）；用量胶囊与分桶
-   对话框仍未做，连「本轮聚合用量」也没有（扩展的 usage 是最后一步）。置信度：高。
-8. **排队与插话混淆**：steering 并进「排队中」计数与位置；且无 user/message→steering 分类。
-   置信度：高。
-9. **seq 水位线缺失**：注释宣称有、代码没有；过期快照可覆盖新值。置信度：中高。
-10. **turnOutline / schedule / agentPreset / subagentTiming / subagent 未消费**：分别缺轮次
-    导航轨、提醒目录与列表指示、preset 标签与选择、运行时长、子代理身份。（agentPreset 已于
-    2026-09-22 修复；subagent 身份那条的**地址路由**——follow/page/prompt/stop 按子代理
-    地址——已于 2026-09-24 随会话级切换接上，`subagentTiming` 运行时长仍未消费。）
-    置信度：高。
-11. **blank 会话列表策略**：官方隐藏非当前 blank 行。（✅ 2026-09-22 会话改惰性建立；
-    ✅ 2026-09-24 补齐：`blank` 位真的被消费——菜单按需建的会话不进历史列表也不进 `@`
-    对话候选，见 §12。）置信度：高。
-12. **sessionStats 只在 tps 悬停**：tps 拿不到时入口消失；不显示 turns/steps。置信度：高。
-13. **jobs 面板细节**：按钮常驻、无 live/idle 计数、stopping 用运行蓝而非警告色。置信度：高。
-14. **模型目录 default / routableProviders / failures 被丢弃**：默认模型走设置命名空间推导；
-    不可路由无阻断提示。置信度：中高。
-
-## 19. 官方 UI 展示、扩展整项丢弃的投影
-
-| 投影键 | 官方用途 | 扩展 |
-|---|---|---|
-| `tokenUsage` | 会话累计用量胶囊 + 分桶对话框 | 部分：缓存命中率进了工具栏（2026-10-10，§9）；胶囊与对话框无 |
-| `turnOutline` | 轮次导航轨（含未加载轮次预览） | 无 |
-| `imageLimits` | 附件入队前张数/大小校验 + 限额文案 | 无（改用设置里的模型模态判断） |
-| `schedule` | 定时提醒目录；列表「活跃提醒」指示 | 无（§15） |
-| `agentPreset` | preset 标签 + 新会话选择位 | ✅ 已消费（2026-09-22，§16） |
-| `sessionListMetadata` | 冷会话列表 blank / lastPromptAt 提示源 | 无（读服务端已折算的 `SessionSummary.blank`：2026-09-24 起用于挡空会话） |
-| `inbox` | `'next-step'` 认领集把 user/message 分类为 steering | 无 |
-| `subagentTiming` | 子代理面板运行时长 | 无（§6） |
-| `subagent` | 宿主地址模式校验；会话身份 | 无（因此 mode 被硬编码，§6） |
-| `permissions.options` | 权限菜单选项集合/名称/描述 | 只读 currentValue，选项硬编码 |
-| `contextPressure.pressureTokens` / `.projectedTokens` | 占用条分子 | 不读，分子自算（§5） |
-| `plan.pending` | 计划 chip 的有效目标态 | 不读，改用客户端乐观态（§3） |
-
-## 20. 已确认基本一致（不必再查）
-
-- `todos`（词表与 null 处理）、`sessionStats`（八字段语义）、`title`（取值与列表行）、
-  `modelSelection`（`next ?? lastUsed` 选择值）、`jobs`（五态词表与字段名）、
-  `contextBreakdown`（三字段名与「不求和」口径）、排队 placement 丢弃 `context` 这一条、
-  以及控制帧 `baseline / queue / jobs / projection` 的帧类型与按会话取值的路径。
-
-## 21. 无法确认（保持存疑，勿当结论引用）
-
-- 官方工作区列表对 `depth`（谱系缩进）与 `completed`（完成提醒）的呈现：确认了数据侧产出
-  与可见性规则，但没有在已安装产物里定位到消费二者的渲染代码，不下结论。
-- 审计部署的 `permission-presets.presets` 实际配置未知，`read-only` 是否真的不在该部署无法
-  确认；可确认的是扩展**永不读** `options`，显示必然与宿主配置解耦。
-- `contextPressure.contextWindow` 与 `request/context` 分母在真实会话中的分歧频率（静态
-  代码无法判定）。
-- 官方列表的「活跃定时任务」指示与折叠条数上限（5）扩展都没有——是否算「必要行为」属
-  产品判断，不列为严格不一致。
+- `modelSelection` 读 next ?? lastUsed；默认模型来源与 catalog.default、routableProviders / failures 的完整消费仍有差异，不能声称已提供不可路由输入阻断。
+- `plan` 生效态为 `pending ? !active : active`，不是只读 active，也不是客户端乐观值。
+- `goal` 是嵌套对象，roundsStarted 在外层；null 清空。
+- 容量与压力非原子观测，模型切换可能新容量配旧压力，不能用单次静态值证明一致。
+
+## permissions（权限）
+
+只解析 currentValue；菜单固定 read-only / workspace-write / danger-full-access，不消费投影 options。custom 或部署自定义选项的显示仍可能回退到 workspace-write，与服务端目录不等价。
+
+Auto review 只在 `permissionPresets/catalog.options` 明确含 auto 时开放；不看 defaultOptions（auto 不能成为部署默认），拿不到肯定证据不展示。404 缺端点与暂时失败分开处理，不能因临时错误抹掉已有能力结论。实验集成卸载会改变目录与命令缓存。
+
+## todos（任务清单）
+
+`TodoItem[] | null`，每条仅 content 与 pending / in_progress / completed 三态；null → 空列表。渲染 id 为扩展自造，不是服务端身份，不应增加不存在的 priority 等语义。
+
+## 用量与上下文
+
+- `contextPressure` 分子为 projectedTokens ?? pressureTokens，仅 prompt 侧，不含 output；projectedTokens 含压缩等带符号 surface 增量。
+- `contextBreakdown` 的 systemTokens / toolsTokens / messageTokens 是近似构成，不能求和冒充压力值。
+- `tokenUsage` 是会话累计的 uncachedInputTokens / outputTokens / cacheReadTokens / cacheWriteTokens。缓存命中分母为三个输入桶之和；工具栏 HIT 与悬停取同一个累计值，格式见 `cacheHit.ts`。
+- 会话累计用量胶囊与分桶对话框未做；message.usage 是最后一步，不代表整轮 attempt 聚合。
+- `sessionStats` 八字段语义已消费，但显示主要在 tps 悬停；不能当作完整 turns / steps 常驻面板。
+
+## 子代理：目录、身份与活性勿混
+
+三种登记形状：
+
+| 来源 | 身份与状态 |
+|---|---|
+| subagentCatalog 投影 | id / createdAt / mode / label；没有 kind、activity |
+| subagent/catalog durable 事件 | version=0 / childId / childCreatedAt / mode / label；没有 activity |
+| 旧 subagents/list RPC | kind=child 才入表；带 mode、activity；该端点在 0.1.7-alpha.1 删除 |
+
+目录按 id 只增并入，缺失 activity / unread 保留原值；不同来源不是完整超集。运行状态由 api-session/status 中继，登记先后无保证，宿主账本负责晚登记回填；unread 来自本地已读账本，不是目录字段。继承前缀按 session/end-seed 的 inherited 位排除。
+
+子代理打开、follow、page、prompt、stop 均按真实地址路由；continuable 可继续，one-shot 只读。unknown 模式不得猜成 continuable。`subagentTiming` 时长尚未消费，不把地址接通当作该面板已完成。
+
+### 父域回收与显示名
+
+离开父视图后父域可能已销毁。兄弟切换要同步携带父目录种子，恢复路径异步补齐后直接通知当前子会话窗口，不能误发给“看其子代理”的窗口。回归在 `subagentSwitch.test.ts`。
+
+缺 label 时展示名在发帧时现算：来源真 label → 打开时描述符 / 会话标题 → 标题账本 → id。不写回目录，防止重放把本地标题覆回 uuid。账本来源为 session/list 的 title 与已打开会话的 title patch；列表刷新、菜单打开与子代理收尾防抖维护时效。回归在 `subagentTitle.test.ts`。
+
+## jobs（后台任务）
+
+名册来自 `job/list` 流的整表 rows，旧服务端兼读 control baseline / jobs 帧，不走投影。任务输出单独走 `job/follow`。五态 running / stopping / completed / killed / failed；打开名册面板只重发内存，不能刷新服务端。入口计数、可见性与状态色的官方差异需按当前 UI 核对，不把历史视觉观察当作新缺陷。
+
+## 会话列表与空壳
+
+- title 从列表与投影两路读取；sessionListMetadata 不直接消费，但列表已给出折算 blank。
+- 空态是一条真实空壳，有则复用、无则创建。复用须结合客户端 engagedSessions，不能只信滞后的列表 blank，否则首条消息会落进旧对话。
+- 后台补壳必须让位恢复：入口跳过 hasRestorePending，写绑定前再查窗口是否已被恢复或手动打开路径绑定。回归在 `blankSessionReuse.test.ts` / `blankRestoreRace.test.ts`。
+- 无 cwd 不建壳；无 VS Code 文件夹时可反复选择目录，换目录是换到该目录的壳，不修改已聊会话的 cwd。回归在 `workspaceDirRepick.test.ts`。
+- 列表过滤全部 blank 与 subagent 行；允许多窗口共用空壳。这是与单视图官方 UI 不同的既定取舍。
+- 打开文件夹时按工作区登记与 cwd 过滤；未打开文件夹时发帧前按各窗口当前会话 cwd 收窄。按服务端 updatedAt 降序，不另猜 lastPromptAt。
+
+## inbox 与轮次大纲
+
+inbox 与旧 queue 帧通过各自解析入口折算，context 不显示；queued / steering 合并呈现的差异见 [输入审计](<audit-input-queue-attachments.md>)。不能继续引用旧结论“完全不读 inbox”。
+
+turnOutline 已登记消费；大纲独立于本地分页窗口，包含未加载轮次的预览与跳转。不要把旧报告的“完全丢弃”当作现状。
+
+## imageLimits
+
+已消费单图 maxImageBytes，缺省硬上限 64 MB；超过限额按文件上传并提示。maxImagesPerMessage / maxMessageImageBytes 的整批预检、像素预检与上传进度未对齐。路径图片准入表与浏览器本地图片扩展名表是两类约束。
+
+## 未消费能力与未确认
+
+- schedule 提醒目录、活跃提醒指示与 subagentTiming 时长尚未做。旧 After / At / Every 摘录不是新版契约；实现前按目标类型重新核对。
+- context 注入的未知 form 与官方不透明呈现仍有差异；不能把未知值猜成已知六种形态之一。
+- 官方 depth / completed 的实际渲染、部署 permission-presets 配置，以及两种容量来源在真实会话中的分歧频率，历史审计未确认。
+- 功能缺口是否跟进属产品决策；新增形态与契约正确性分开，零样本和局部测试均不证明等价。

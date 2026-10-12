@@ -1,189 +1,82 @@
-# 项目 AI 文档（DSH Chat）
+# 项目 AI 约定（DSH Chat）
 
-> 本文件是**本仓库所有 AI 会话的强制约束**。项目内约定优先于用户级 `~/.dsh/AGENTS.md`。
-> 改代码前先读这一份；与它冲突的改动一律先问用户。
+本文件约束本仓库的 AI 会话，项目约定优先于用户级约定。改动前先读；与约定冲突时先问用户。
 
-## 最高优先级：任何改动都必须考虑中英双语
+## 中英双语
 
-**硬规则，不是建议。** 扩展商店面向全球，任何**新增/修改用户可见文字**的改动都必须同时备好中英两套。
+新增或修改用户可见文字，必须同时提供中文与英文。开发者日志与内部技术文档使用中文，标识符使用英文。
 
-### 三条链路，语言来源不同
-
-| 载体 | 语言来源 | 放哪里 |
+| 载体 | 语言来源 | 登记位置 |
 |---|---|---|
-| **webview 界面**（聊天区、输入框、面板、目标条…） | `dshChat.language` 设置（`auto` 跟随 VS Code 显示语言） | `src/webview/messages.ts` 的 `MESSAGES`（唯一登记表；`texts.ts` 的两本词典由它派生） |
-| **VS Code 原生 UI**（通知、输入框标题、错误弹窗、命令名、配置项描述） | **VS Code 自己的显示语言**（与上面的设置无关） | `package.nls.json`（英文，源语言）/ `package.nls.zh-cn.json`（中文） |
-| **宿主 → webview 的文案**（toast、连接说明、错误详情） | 由 webview 决定 | 见下方「`@key` 标记」 |
+| webview 界面 | `dshChat.language`；`auto` 跟随 VS Code 显示语言 | `src/webview/messages.ts` 的 `MESSAGES`，词典由 `texts.ts` 派生 |
+| VS Code 命令与配置说明 | VS Code 显示语言 | `package.nls.json` / `package.nls.zh-cn.json`；清单使用 `%key%` |
+| VS Code 原生通知 | VS Code 显示语言 | `vscode.l10n.t(...)` 与 `l10n/bundle.l10n.zh-cn.json`；清单保留 `"l10n": "./l10n"` |
+| 宿主发给 webview 的文案 | webview 解析 | 发送 `@key` 或 `@key:arg`，不写死中文 |
 
-### 硬性检查项（每次改动都要过一遍）
+- `MESSAGES` 的条目必须有 `zh` / `en`；带参数用函数，不拼接句子。`DerivedDictionary` 检查 `Texts` 成员完整性，`scripts/i18n.test.ts` 检查登记表、宿主发射点和两层 VS Code 译文。
+- `resolveText()` 只翻译 `@` 标记；模型与服务端的原始文本不翻译。标记必须有登记与实际发射点，不保留死文案。可能进入原生通知的条目标 `vscode: true`，必要时用 `l10n:` 指定占位符，由 `hostText.ts` 与 bundle 对齐。
+- 配置说明只写作用与特殊值效果，不写实现历史、通用重载提示或 `**` 加粗。
+- 布局须容纳英文：按钮、胶囊与标签使用 `white-space: nowrap` 和 `text-overflow: ellipsis`，用 flex/grid，不按中文字数或固定宽度布局。界面改动用 `npm run preview` 检查窄侧栏。
 
-1. **不在宿主里写死用户可见的中文**。交给 webview 渲染的 → `@key` 标记；交给
-   VS Code 自己弹出的 → `vscode.l10n.t(...)`，并在 `l10n/bundle.l10n.zh-cn.json` 里加译文
-   （l10n 的 key 是英文源串，不是自定义 id；`package.json` 必须有 `"l10n": "./l10n"`，
-   缺了 bundle 不加载、译文静默失效）。例外：`log()` 写进输出通道的调试日志是开发者可见，
-   中文照旧。
-2. **加了 `@key` 只需在 `MESSAGES` 里加一条**（`zh`/`en` 缺一不可，TS 会强制；带参数登记成
-   函数、不带参数登记成字符串——于是「裸字符串被当函数调用」编译期就报）。词典与
-   `resolveText()` 都由这张表派生；`Texts` 接口里的每个成员都必须在表里登记，这条由
-   `texts.ts` 的 `DerivedDictionary` **编译期**钉住（表里多出来的只走 `@key` 的宿主文案
-   不进接口）；`scripts/i18n.test.ts` 核对表 ↔ 宿主发射点 ↔ VS Code 两层，以及
-   界面按运行时字符串查表的那几处（工具自有标题）在两份词典里都有译文。
-3. **加了 VS Code 命令或配置项**，`package.nls.json` 与 `package.nls.zh-cn.json` 各加一条，
-   `package.json` 里写 `%key%`。
-4. **配置项说明只写作用**：说清「干什么、特殊值什么效果」即可，不写实现原理与历史口径、
-   不写「改完需重载窗口」套话、不用 `**` 加粗（设置页不渲染成粗体）。
-5. **文案不要拼字符串**（中英语序不同，`"已清理 " + n + " 个进程"` 翻不准）：带变量的写成
-   `(n) => ...` 函数（见 `messages.ts` 的 `imagePathsInserted`），或 `@key:arg` + 词典函数。
-6. **新增界面元素先想「英文下会不会溢出」**（英文常比中文长 1.5~2 倍）：按钮/胶囊/标签一律
-   `white-space: nowrap` + `text-overflow: ellipsis`，不靠固定宽度；布局用 flex/grid、
-   不依赖中文字数；窄侧栏最容易出事，改完用 `npm run preview` 看一眼。
+## 官方契约与兼容
 
-### `@key` 标记：宿主怎么把文案交给界面
+本扩展自绘界面，但能力与数据语义须与官方 `dsh web` 一致。
 
-宿主不知道用户选了哪种语言，只传语言中立标记：
-`this.emit({ type: "toast", level: "warn", text: "@uploadIncomplete:report.pdf" })`。
-界面侧 `resolveText()` 翻译；不以 `@` 开头的文本原样显示（模型/服务端的原始报错就是这类，
-**不要**翻译）。`i18n.test.ts` 双向检查：宿主发出的每个标记都要登记，登记过的每个标记也
-必须有发射点——「死文案」和裸 key 一样是缺陷（`serverExited` / `switchingServer` 这么残留过
-两轮）。可能外溢到 VS Code 原生通知的条目加 `vscode: true`（可选 `l10n:` 给位置占位符），
-`hostText.ts` 与 l10n bundle 按这套清单对齐，缺译文/漏处理都会被断言抓住。
-
-## 与官方 dsh web 前端保持一致
-
-本扩展是 `dsh web` 的**自绘前端**：界面与组件是自己的，**能力与数据语义必须与官方一致**。
-判断某处怎么实现：先读官方类型声明
-`%APPDATA%\npm\node_modules\@deepseek-ai\dsh\node_modules\@deepseek-ai\<包>\lib\types\**\*.d.ts`
-（短、可读，是契约）→ 回 `lib/client.js` grep 确认实现 → 有疑问写探针实测，
-**不要按猜测的形状写代码**。`docs/audit-summary.md` 是逐条对照的结论汇总，动相关代码前先看它；
-`goal` 投影嵌套形状、`plan` 投影 `pending` 字段两个坑都源于没读契约。
-
-**投影的通用读法**：投影里出现 `pending` / `wanted` 这类待提交值并与一个已提交值成对出现时，
-界面上看到的生效状态是**两者的组合**，不是任何单个字段（`plan` 的 `pending ? !active : active`
-即实例）。契约里逐字找这对字段再定读法。`schedule`、`agentPreset`、`subagentTiming` 三个面板
-没做，重做时必然再撞。
-
-## 官方版本对齐与兼容
-
-追踪口径、发布去向、当前对齐基准与兼容层登记都在 **`docs/dsh-compat.md`**（含官方四档渠道的出处）。
-每次要做的动作：
-
-- **官方发新版后跑 `npm run dsh:watch`**，对基准之后的每个版本跑 `npm run dsh:check -- <版本>`。
-  逐版本的核对结论写进提交说明与该版 `CHANGELOG`，**不记进文档**（文档里只有一行当前基准，
-  不记历史台账）。`dsh:watch` 拿那一行当基准——**基准行不推进就等于没核对过**（这是「声称已处理
-  必须附证据」在版本对齐上的落点）：处理完那一版的差异（有 P0 就改完代码并跑过三件套）才推进。
-- **只有 P0 才改代码**：P0 = 本扩展在用的端点/事件/类型消失、改名或形状变。只有 P2 时
-  **不动代码、不发版**，直接把基准行推进到该版本。
-- **能同时兼容新旧就兼容**（新名优先 + 记住可用名 / 双通道读，新通道权威），并登记进
-  `docs/dsh-compat.md` 的兼容层表：起算日 + 两个月 = 移除期限，到期由 `dsh:watch` 报出，确认后再删。
-- **CHANGELOG**：某版本含与 DSH 对齐的改动时，写明**对齐的是哪个 DSH 版本**。
+- 协议改动先读 `docs/dsh-server-api.md` 与 `docs/audit-summary.md`，再核对目标版本 API 包的 `lib/types/**/*.d.ts`、`lib/client.js`。不猜载荷形状；需要实测时遵守「构建与验证」的批准要求。
+- 投影的已提交值与 `pending` / `wanted` 待提交值须组合解读，例如 plan 为 `pending ? !active : active`。线格式与视图模型不可混用：`toUsage` 读取 `cacheReadTokens`，不是视图字段 `cachedTokens`。
+- 官方版本、渠道、发布去向与兼容层统一登记在 `docs/dsh-compat.md`。新版先跑 `npm run dsh:watch`，再逐版 `npm run dsh:check -- <版本>`。差异处理完成后才推进基准；核对历史写入提交说明，涉及发布的用户可见变化写入该版 CHANGELOG，不另建文档台账。
+- P0 是消费面的端点、事件或类型被删除、改名或改变形状，必须处理；只有 P2 时不改代码、不发版；P1 是否跟进是产品决策。兼容分支采用新名优先并记住可用名，或双读且新通道权威。
+- 每条兼容层登记起算日与两个月后的移除期限。`dsh:watch` 提示到期后，确认再删；不得因到期自动删除。
 
 ## 构建与验证
 
-- **npm 脚本直接在 `pwsh` 里跑**（会话沙箱需 `danger-full-access`；受限模式下 esbuild 会
-  `spawn EPERM`、探针写 `~/.dsh` 会 `EPERM`）。构建姿势见 `build` skill。
-- **标准命令：`npm run typecheck`、`npm test`、`npm run build`**——每次改动跑这三个就够，
-  不起真实 dsh、不发真实消息、不花 token。
-- **smoke 与探针是重验证，只在对应链路被改动时才跑**（对真实服务端建会话、发真实消息、
-  每次花真 token；环境已由 `scripts/supervisorProbeEnv.ts` 全隔离到一次性临时目录，
-  但「少跑」仍是第一道）：
-  - `npm run smoke`：动了 `SupervisorManager` / `DshClient` / `SessionAdapter` /
-    supervisor 连接链路才跑；
-  - 各探针：动了 plan / goal / subagent / 工具行 / 队列 / 投影契约才跑，改前改后各一遍对拍；
-  - 纯界面 / 文案 / 样式 / webview 改动**不要**跑——断言与改动无关，纯属烧 token。
-- **（硬约束，用户 2026-09-20 立）禁止自动执行任何消耗 token 的验证**：smoke、探针、e2e
-  一律**不得**在未经用户**当次明确批准**的情况下运行——即使用户要求「验证构建/改动」，默认也
-  只跑三件套。确有必要时先说明「跑哪个、为什么非跑不可、预计耗时」，获批再跑；一次批准只对
-  那一次有效。各探针的定位见文件头部「探针定位」块。
-- **新增测试必须登记到 `esbuild.scripts.mjs` 的 `entries`**，否则 `npm test` 静默不跑。
-- 改动界面后 `npm run preview` 看一眼（夹具覆盖各种节点形态；**夹具数据必须来自真实输出**）。
-- **改完长 `switch` 或夹具必须看 `npm run build` 的 esbuild 警告**：`[duplicate-case]` 与
-  重复对象键都不会让 typecheck 或断言变红——工具链全绿也会静默丢功能。
-- **发布包走 `package.json` 的 `files` 白名单，仓库里不再有 `.vscodeignore`**（两者不能共存，同时存在
-  会让 `npm run package` 直接失败）。白名单的含义是「**没列的不进包**」，所以新增要发布的东西时必须补进
-  `files`——实测漏掉过 `CHANGELOG.md` 与 `LICENSE`：vsce 的 readme / changelog / license 处理器只处理
-  **通过了过滤**的文件，漏掉时**不报错、包照出**。反过来，模式写错或过期会让 vsce 退出 1 并点名，不会静默；
-  `scripts/manifest.test.ts` 还按清单里被引用的位置（`main` / `icon` / `l10n` / `%key%` / 演示图 /
-  更新日志 / 许可证 / 第三方声明）逐条钉住了白名单。
-- **动 plan / goal / subagent / 工具行之前先取基线**：`node build/command-e2e.mjs`（约 1 分钟）
-  改前改后各一遍。长探针前台跑并给足 `timeoutMs`（`queue-continue-probe` 单轮约 3 分钟）。
-- **跨 webview ↔ 宿主的改动两边都要装上**：`dist/webview.js` 与 `dist/extension.js` 是两份
-  产物，只更新一半时新帧类型落进宿主旧产物的 `default` 分支静默失效，宿主日志里一行都没有
-  （本地图片「加载失败」曾为此排查两轮）。判据：`npm run package && npm run install:vsix`
-  后确认安装目录下两份产物的时间戳都是新的。
-- **「图片加载失败」不止那一个成因**：产物齐全时，正文里的本地图也曾整片失败——界面先把
-  未解析的本地引用塞进 `<img src>`，浏览器那次失败（CSP 拦下 / 404）毫秒级就到，比宿主
-  「IPC → 读盘 → base64 → 回帧」早，降级文案先把元素换掉，数据 URL 回来时已经贴不上。
-  回帧之前的失败不算数，这条钉在 `scripts/imageHydrate.test.ts`（看 `hydrateLocalImages`）。
+常规改动运行 `npm run typecheck`、`npm test`、`npm run build`，不启动真实 DSH、不发送真实消息。
 
-## 代码约定
+- **未经用户当次明确批准，禁止运行消耗模型 token 的 smoke、探针或 e2e。** 即使用户要求验证，默认也只跑上述三项。需要重验证时先说明脚本、必要性与预计耗时；一次批准只对应一次运行。
+- 连接链路改动才考虑 `npm run smoke`；plan / goal / subagent / 工具行 / 队列 / 投影契约改动才考虑对应探针，获批后改前、改后取基线。`command-e2e` 可用于 plan / goal / subagent / 工具行基线。纯界面、文案、样式不跑这些探针。
+- 探针定位以文件头为准；`supervisorProbeEnv.ts` 提供一次性隔离环境。长探针须留足前台超时。
+- 新增测试登记到 `esbuild.scripts.mjs` 的 `entries`，否则 `npm test` 不执行。检查构建中的 `[duplicate-case]` 与重复键警告，类型检查不能覆盖它们。
+- 界面预览夹具须来自真实输出。跨宿主与 webview 的改动须同时更新 `dist/extension.js` 与 `dist/webview.js`；需要安装验收时用 `npm run package` 和 `npm run install:vsix`，核对两份产物均已更新。
+- 发布包采用 `package.json` 的 `files` 白名单，不与 `.vscodeignore` 共存。新增发布资源须入白名单，包括更新日志、许可证、译文与第三方声明；`scripts/manifest.test.ts` 检查资源覆盖。
 
-- **「能不能启动后台」是一条显式许可**：`autoConnect` 只约束**自动**路径（激活期选路、窗口
-  恢复、5 秒心跳），用户显式动作（发消息 / 新建 / 切换会话 / 启动 / 连接 / 重启内部 DSH）
-  一律允许启动。「启动内部 DSH」与「连接内部 DSH」是**同一套逻辑**（有就接上、没有就起一套；
-  界面两轴状态与真实状态有偏差，按钮同义才不会「点对了却没反应」）。只有「连接外部 DSH」
-  不启动任何东西。认证链按 `ownership === "external"` 分叉（peer 窗口同样用会合文件里的
-  token 换 cookie）。连接状态里 `stopped`（按钮态）与 `error`（启动/认证失败，要用户动作）
-  分开渲染，连接类失败留在 `connecting` 里一轮轮重试。选路是纯函数
-  `connectTarget.chooseTarget`，目标粘性——自动路径永不换目标。详见 `docs/design-supervisor.md`。
-- **注释与文档用中文**（本仓库既有风格）；标识符用英文。引用其它文件内容用具体栏目名、
-  函数名，不用节号、行号等易变标识。
-- **界面文案一律走词典**，不在组件里写死中文字符串。
-- **安全谓词按肯定证据写**（`=== true`），不按否定证据写——见 `processRegistry.isKillable`
-  的教训：拿不到证据应当**不动**，而不是动手。
-- **进程查询一律异步**（`await`）：同步 `spawnSync` 会冻住扩展宿主约 1.5 秒。
-- **宿主 → webview 的帧是 JSON 过的，值为 `undefined` 的键会被整条丢掉**：「清空某个字段」
-  必须发 `null`（宿主侧 `jsonSafeFrame`，界面侧 `mergeWirePatch` 折回「键不存在」），否则
-  清空指令静默失效（「进行中的目标清不掉」即此）。细则见 `src/shared/wire.ts`，
-  回归断言在 `scripts/wire.test.ts`。
-- **线格式 ≠ 视图模型**：服务端字段与界面字段长得像时编译器不会拦——`toUsage` 只认线格式的
-  `cacheReadTokens`，喂视图模型的 `cachedTokens` 会被静默忽略（不报错、值为空）。跨这层边界
-  对着官方 `.d.ts` 逐字核字段名。
-- **一条交互链路只开一个端口对象**：容器 ref 与该链路的动作合成**一个**对象交给组件
-  （`src/webview/autoScroll.ts` 的 `AutoScrollPort` 是范例），不要把同一条链路的端口拆成
-  多个 prop——规则会跟着端口散到多个文件，回归断言也只能写成「读源码正则」。
-- **CSS 同特异性下后者胜**：新加的类可能悄悄吃掉既有伪类（`.is-stop` 压过 `:hover` 就是
-  实例）。改样式后给**同语义元素**补一条「待遇一致性」断言（例如两个活性指示器的动画开关
-  必须同步）。
+## 实现边界
 
-## 安全口径（2026-09-17 全项目审计后立）
+- `autoConnect` 只限制自动路径；用户显式发送、新建、切会话、启动、连接或重启内部 DSH 均可启动后台。「启动内部」与「连接内部」同一逻辑，有则连接、无则启动；连接外部不启动进程。自动路径不切换粘性目标。
+- 认证按 `ownership === "external"` 分叉，peer 窗口也用会合令牌换 cookie。连接条区分 `stopped` 按钮态、需用户动作的 `error` 与持续重试的 `connecting`。选路见 `connectTarget.chooseTarget`，完整规则见 `docs/design-supervisor.md`。
+- JSON 帧清空字段必须发 `null`，不能发会被序列化丢弃的 `undefined`；宿主 `jsonSafeFrame` 与界面 `mergeWirePatch` 配套，见 `src/shared/wire.ts` 和 `scripts/wire.test.ts`。
+- 一条交互链只暴露一个端口对象，合并容器 ref 与动作；参考 `AutoScrollPort`。不要拆成多个 prop 后分散维护规则。
+- 本地图片解析回帧之前的加载失败不能触发最终降级；见 `hydrateLocalImages` 与 `scripts/imageHydrate.test.ts`。
+- CSS 同特异性遵循后者覆盖前者；样式改动为同语义元素补一致性断言，例如活性指示器动画开关。
+- 文档和注释引用栏目名、函数名，不用节号或行号；不写本机专属路径。源码目录按层建立 README，只说明本目录文件与直属子目录；根目录导航放本文件，根 README 面向用户。
 
-- **会执行代码 / 决定凭据去向的配置项必须是 `machine` 作用域**：`dshChat.command` 经 shell
-  原样执行、`dshChat.url` 决定令牌与内容发往哪个 origin。默认的 `window` 作用域允许工作区
-  覆盖——克隆来的仓库里一行 `.vscode/settings.json` 就能执行命令。断言在
-  `scripts/invariants.test.ts`。
-- **服务端给的值不可信**：会话 id 会被拿去拼路径删目录（`deleteSession` 两道：
-  `isSafeSessionId` + `resolve()` 包含性检查）；socket 推来的状态逐字段验形状
-  （`decodeServerMessage` 的 `checkState`），而不是只判「是个对象」。
-- **拿不到证据就不动手**：按端口兜底杀进程前先确认身份（`looksLikeDsh`）；孤儿锁、pid 复用
-  同理。端口会被无关程序接管，`taskkill /T /F` 杀错进程树是不可逆的事故。
-- **长期存活的进程要把住内存**：socket 行缓冲有上限（`LineDecoder`），超限就断开；按会话/
-  事件为键的 Map 必须有清理路径（`eventSessions` 曾只增不删）。
-- **日志里会有秘密**：`supervisor.log` 含 dsh 的 stdout（启动公告带 `?token=`），凡是展示给
-  人看的地方都要先过 `redactSecrets`。
-- **并发入口要合并**：`ensure()`/`bringUp()` 这类「拉起一套」的入口必须幂等，否则两个窗口
-  同时重启会 spawn 出两个 dsh，前一个的 pid 再也找不回来。
+## 安全
 
-## 协作与交付纪律
+- 执行命令或决定凭据去向的配置必须是 `machine` 作用域，禁止工作区覆盖；当前包括 `dshChat.command` 与 `dshChat.url`，由 `scripts/invariants.test.ts` 检查。
+- 外部输入逐字段验形状。删除会话目录同时检查 `isSafeSessionId` 与解析后的路径包含性；socket 状态由 `decodeServerMessage` 的 `checkState` 校验。
+- 进程操作只依据肯定证据（`=== true`）。端口清理先确认 `looksLikeDsh`，孤儿锁与 PID 复用同样验证身份；证据不足不操作。进程查询异步，避免同步调用阻塞扩展宿主。
+- 行缓冲必须有上限，超限断开；会话或事件索引的 Map 必须有清理路径。展示日志先经 `redactSecrets`，包括含启动令牌的 DSH stdout。
+- `ensure()` / `bringUp()` 等启动入口须幂等并合并并发调用，避免遗失重复启动的进程。
 
-- **断言只钉确定的事实**。同一探针跑出 `0/3`、`0/3`、`3/3` 时，那件事就是不确定的：把分布
-  打印成观察、注明「另一次运行结果相反」，不要写硬断言——那只会得到一条随机器负载飘的假防线。
+## 协作与发布
 
-- **声称「已处理」必须附证据**（文件:行 / 断言名），一句「已完成」不可靠。
+- 未经用户明确要求提交，不执行 `git commit`；提交说明用中文。并行编辑先划定文件所有权，同一文件仅一个写入者。
+- 完成声明附文件位置或断言名。断言只固定确定事实；不稳定的探针分布作为观察报告，不写硬断言。注入式验证先读回确认注入生效。
+- `CHANGELOG.md` 仅在更新版本号时修改：汇总上次发布后的最终用户可见效果，每条一句，不写实现字段、函数、配置键或个人环境例子。涉及官方对齐时注明 DSH 版本。
+- 发布：标题 `## <版本>（日期）`，`npm version x.y.z --no-git-tag-version`，验证三项，再按用户授权提交并 `git tag -a v<x.y.z>`。推 tag 触发 `.github/workflows/release.yml`，校验版本、验证、打包并发布 GitHub Release；含 `-` 的 tag 为预发布。商店仍手动发布，以官方 npm `latest` 为对齐基准。
 
-- **注入式回归验证先确认注入生效**。写盘那一步静默失败（如 `Set-Content -NoNewline` 没写成），
-  后面的「通过」是假的——先读回文件确认。
+## 根目录导航
 
-- **多个子代理并行改同一批文件前先划文件所有权**。子代理不受本仓库的观察规则约束，彼此读到
-  的是中间态；同一文件交给一个代理写，其余只读。
-
-- **CHANGELOG.md 说明**
-  - **CHANGELOG.md** ：vsce 会将其作为扩展的「更新日志」打进 vsix，扩展页与商店页渲染的就是它
-  - 它按**版本发布口径**写，普通 commit 禁止更改 `CHANGELOG.md`，仅在版本号更新时，再回溯 commit 至上个版本，总结所有用户可见面的更改。如果同一个处涉及多次改动，只需要说明最终效果，去除中间态。
-  - 每条一句话说清「用户会看到什么变化」（新功能 / 界面变化 / 修好了什么），不写字段名、函数名、
-    配置键、日志口径、实现机制这类只有读代码才知道的东西，也不举个人环境里的具体例子
-    （提供商、模型、目录、会话名）——用中性说法。
-
-  - **发布**：版本标题为 `## <版本>（日期）`；`npm version x.y.z --no-git-tag-version`；跑三件套；提交；`git tag -a v<x.y.z>`。
-    **推 tag 即自动发布 GitHub Release**（`.github/workflows/release.yml`：校验 tag 与清单版本一致 → 跑三件套 →
-    打包 vsix → Release 正文取 CHANGELOG 对应版本；带 `-` 的 tag 标为预发布）。**扩展商店不在该流程里**，
-    仍是手工动作——商店的对齐基准是官方 DSH 的 npm `latest`，判据见 `docs/dsh-compat.md`。
+| 入口 | 用途 |
+|---|---|
+| `README.md` | 中英文安装、连接、配置与功能说明 |
+| `CONTEXT.md` | 项目领域词表 |
+| `ToDo.md` | 尚未处理或待复现的问题 |
+| `CHANGELOG.md`、`LICENSE`、`THIRD-PARTY-NOTICES.md` | 发布记录、许可证与来源披露 |
+| `package.json`、`package-lock.json` | 扩展清单、命令与依赖锁定 |
+| `package.nls*.json`、`l10n/` | VS Code 原生文案与翻译 |
+| `esbuild.mjs`、`esbuild.scripts.mjs` | 扩展和离线脚本构建入口 |
+| `tsconfig*.json` | 宿主、webview 与脚本的类型检查范围 |
+| `src/`、`scripts/`、`test/` | 源码、工具与测试夹具；各目录 README 提供分层导航 |
+| `docs/` | 当前设计、契约、兼容与审计边界；入口见 `docs/README.md` |
+| `media/`、`.vscode/`、`.github/` | 品牌资源、调试配置与发布流程 |
+| `.agent/` | 临时脚本、报告与任务材料，不作为长期文档 |

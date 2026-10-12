@@ -763,7 +763,7 @@ console.log("styles: 助手轮尾时钟取完成时刻 ✓");
     !/turn-status-shimmer/.test(css) && !/\.turn-status\b/.test(css),
     "不应再有 TurnStatus 的扫光状态行（用户明确去掉：鲸鱼发光已足够）",
   );
-  // 文案走词典断言（文案表已搬进 messages.ts，见 docs/audit-summary.md 修复一览第六批）
+  // 文案走词典，见 docs/audit-summary.md「文案登记完整性」。
   assert.strictEqual(
     dictionaryFor("zh").running,
     "深度求索中",

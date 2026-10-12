@@ -1236,14 +1236,9 @@ export interface ChatState {
   todos: TodoView[];
   goal?: GoalView;
   /**
-   * 子代理目录（当前会话的子代理，标题旁导航的清单）。
-   *
-   * **只叫这一个名字**：早先宿主帧里叫 `subagents`、界面状态里叫 `subagentEntries`，
-   * 同一条数据在两侧各一个名字，改一侧忘另一侧时既没有编译期报错、也没有断言保护
-   * （`docs/audit-summary.md`「7.2 功能 BUG」表 B7：开着面板切会话，列表停在上一个会话上）。现在线格式
-   * 与视图模型都叫 `subagentEntries`（字段清单见 `dsh/sessionView.ts`）。
-   *
-   * 两个来源的字段集**不一样**，别互相套用（见 `SubagentView` 的注释）。
+   * 当前会话的子代理目录；线格式、宿主缓存与界面同名，避免切会话漏更新。
+   * 字段集见 dsh/sessionView.ts；投影与旧 RPC 的差异见 SubagentView。
+   * 约束见 docs/audit-summary.md「会话状态字段一致性」。
    */
   subagentEntries: SubagentView[];
   /**

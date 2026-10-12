@@ -493,7 +493,7 @@ export class DshClient {
    * 给**可继续的子代理**续发一条人的消息（`subagents/prompt`）。
    *
    * 参数形状逐字对照契约（`dsh-subagent/lib/types/control-types.d.ts` 的
-   * `SubagentPromptRequest`；位置参数名见 docs/dsh-server-api.md §9.2）：
+   * `SubagentPromptRequest`；位置参数名见 docs/dsh-server-api.md「端点位置参数名总表」）：
    * `mode` 在线上**恒为 `'continuable'`**——那是地址的判别标记，不是本子代理的
    * 模式（一次性子代理走不到这里：界面只读，宿主也不发）。
    * `delivery` 是官方 prompt `mode` 在这条端点上的名字（`queue` / `steer`）。

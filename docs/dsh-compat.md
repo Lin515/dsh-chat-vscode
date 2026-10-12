@@ -25,10 +25,10 @@
 | `x.y.z-canary.N` | `canary` | 金丝雀 |
 
 - **没有 beta 档**。真出现 `beta`，按上面的映射会落进 `next`；本工具把它单列，只是为了不误判成 rc。
-- **发布 npm 是手动动作**：`.github/workflows/release-publish.yml` 是 `workflow_dispatch`，且
-  `release:verify` 强制要求当前 ref 是 `dsh-v*` tag。所以 **tag 一定先于 npm 存在**，
-  「官方 git tag 有、npm 上查不到」就是**仅在 GitHub 发布的测试版**（实测存在：`0.1.3-alpha.1`）。
-  这是本工具的机械判据，不需要人去判断。
+- **发布 npm 是手动动作**：`.github/workflows/release-publish.yml` 是 `workflow_dispatch`，
+  `release:verify` 要求当前 ref 为 `dsh-v*` tag，因此 tag 先于 npm 发布存在。工具把有 tag、
+  暂未查到 npm 的版本标为仅 GitHub；这只表示检查时的状态，也可能是尚未发布或查询失败，
+  不能据此断言官方永远不发布 npm。
 
 ---
 
@@ -77,7 +77,7 @@ CHANGELOG：某版本若含与 DSH 对齐的改动，在该版本条目里写明
 - 基准**单调向前**：它之前的官方版本不需要核对（从最早的 tag 补起会把二十多个历史版本变成待办）。
   要看两个历史版本之间的差异，用 `npm run dsh:diff -- <旧版本> <新版本>`。
 
-本扩展当前对齐：DSH `0.2.0-rc.2`（rc 渠道；2026-09-30 核对 `0.2.0-rc.1` 与 `0.2.0-rc.2`：两份快照只有新增成员，没有删除或改写，属 P2，故未改代码、未发版）<!-- dsh-compat:baseline -->
+本扩展当前对齐：DSH `0.2.1-alpha.2`（alpha 渠道；2026-10-11 核对 `0.2.1-alpha.1` 与 `0.2.1-alpha.2`：两份快照的 P0 均为 0，差异只有新增（P1）与无关变化（P2）；P1 按第四节口径属产品决策、本次不跟进，两个不在 CONTRACT_PACKAGES 的 seam 已人工对拍零变化，故未改代码、未发版）<!-- dsh-compat:baseline -->
 
 ---
 

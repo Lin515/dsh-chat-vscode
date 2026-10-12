@@ -1,179 +1,66 @@
-# 输入区工具栏：组件优先级与宽度自适应
+# 输入区工具栏：优先级与宽度自适应
 
-> 本文是**会话页输入框下方那一条**（`.composer-bar`）的设计规格：显示谁、按什么次序退场、
-> 宽度怎么算出来的。改优先级表、加减工具栏元素、动 `.composer-*` 布局之前先读这一份。
->
-> 这份口径最初只散在 `src/webview/toolbarFit.ts` 的头注释、提交说明与断言里（当时没有
-> 留下设计文件），2026-09-22 收拢成文，并补上「同档内从左至右」与 agent 预设标签两条；
-> 2026-10-06 按用户口径把上下文占用圆环提为最高优先级（P0 始终显示），其精确数值档不动。
+修改 `.composer-bar` 元素、次序或布局前读本文。显示档位由同一份 `BAR_ORDER` 与实测宽度分配，不用固定窗口宽度猜隐藏谁。
 
-## 一、一句话
+## 优先级与档位
 
-工具栏的元素**共用一份优先级表**：宽度够就多显示，不够就按优先级从低到高依次退场；
-「够不够」由每个候选档位的**实测宽度**与工具栏的可用宽度当场比出来，源码里没有一个
-「多少像素该藏谁」的常数。
-
-## 二、优先级表（用户口径）
-
-三档，越靠前越先保住：
-
-| 档 | 元素 | 行为 |
+| 槽位:档位 | rank | 口径 |
 |---|---|---|
-| **P0 始终显示** | 上下文占用（圆环，**最高优先级**）→ 权限按钮（仅图标）→ 模型按钮 → 发送按钮 | `pinned`：无论多窄都显示，装不下也留 |
-| **P1 次优先** | 思考等级 → 附件 → tps 速度 | 宽度不够时从右往左依次退场 |
-| **P2 最低** | 权限按钮的文字 → agent 预设标签 → 上下文精确数值 → 模型胶囊的 `提供商/模型名` 全格式 | 最后才回来，最先被挤掉 |
+| `context:ring` | 0 | P0 pinned，占用环最高优先级；精确数值另属 P2 |
+| `permission:icon` | 1 | P0 pinned，盾牌入口，title 给全称，无下箭头 |
+| `model:full` | 2 | P0 pinned，当前模型名，max-width 150px，无下箭头 |
+| `send:full` | 3 | P0 pinned，运行且草稿空为停止；否则按 busyEnter / 当下 Ctrl、Cmd 手势显示发送模式 |
+| `effort:full` | 4 | P1，只读思考等级，点击 toggle 同一模型弹层 |
+| `attach:full` | 5 | P1，通用附件入口，不随模型是否收图隐藏 |
+| `tps:full` | 6 | P1，会话平均输出速度（Σ 输出 token / Σ 解码窗口），与 hover 同源同格式 |
+| `permission:label` | 7 | P2，图标 + 权限名，与 icon 互斥 |
+| `preset:full` | 8 | P2，会话开始后的只读预设名 |
+| `context:text` | 9 | P2，环 + 44K/128K，与 ring 互斥，环内无百分比 |
+| `model:provider` | 10 | P2，提供商/模型名，与 full 互斥 |
 
-**同一档内部按元素在工具栏里的左右次序定优先级**（用户 2026-09-22 口径）：越靠左越先保住。
-所以：
+P0 四项无条件落位，极窄也留 DOM。P1 / P2 各档按渲染左右次序，左边优先；挪元素必须同步 rank。占用环是有意例外，虽然在右半区仍最高优先级。
 
-- P1/P2 两档的次序是照着左右布局写的：P1 的思考强度与附件在左半区、tps 在右半区；P2 的
-  三项分别落在**左端**（权限文字）、**中段**（预设标签）、**右端**（上下文数值），于是最后
-  回来的那一项是左右次序上最右的上下文数值，而不是新加进来的预设标签；
-- P0 是例外：上下文圆环在工具栏里排在右半区，但用户 2026-10-06 口径把它定为最高优先级、
-  始终显示——P0 内部的 rank 次序反映的是口径，不是左右位置。「始终显示」只指**圆圈图标
-  本身**：环右侧的精确数值（`context:text`）仍留在 P2，按原来的低优先级回来。
+分配是**前缀**：某档装不下，后面的这一帧都不显示，不跳过高档贪心填低档。接受空隙以保证宽度增加时元素只进不出、不降档。同槽位逐档升级只付宽度差，不再付 gap；互斥档 rank 必须递增。
 
-这条规则的**真正来源是渲染次序**：`.composer-bar` 是 flex 行，`Composer` 里
-`{bar.槽位}` 的先后就是左右布局。挪动元素位置等于改动该档的内部优先级，改完必须同步改
-`BAR_ORDER` 的 rank——`scripts/toolbarFit.test.ts` 会拿渲染次序与表对照。
+## 实测与生命周期
 
-## 三、判定机制：量出来，不猜
+候选档位放到 `.composer-measure`：零尺寸、overflow:hidden、visibility:hidden，量整个控件（图标 / 内边距 / 文字），不是只量文本。模型名、语言、字号和数字位数都可能改变宽度。
 
-每一项的宽度都由**文案**决定，而文案长度会变：权限名中英差近一倍（「工作区写入」/
-"Workspace Write"）、模型名长短不一、tps 与上下文数字的位数会变、用户还能调字号
-（`dshChat.fontSize`）。所以「< 260px 就藏 tps」这类阈值必然是错的——换个语言或换个模型
-就错位：要么明明装得下却提前藏了，要么装不下还硬塞、把模型名挤成省略号。
+- 每项 getBoundingClientRect().width 向上取整，避免临界半像素抖动。
+- 可用宽度 = bar.clientWidth − computed 左右 padding；新槽位计 computed column-gap（通常 8px，mini 4px）。
+- 提交后的 layout effect 与 ResizeObserver 两处触发。`createFitAnchor` 的 callback ref 随条件渲染替换节点，断旧观察、挂新观察；StrictMode 重新挂载也必须恢复观察。
+- `toolbarAvailableWidth` 量不到有效布局盒时不结算，保上一有效档位。真实极窄、扣 padding 后为 0 / 负值仍须分配；visibility:hidden 保布局盒，仍可测，不能靠视口宽度猜。
+- 缺数据的档位不进表，null 不占槽位 / gap；签名没变不 render，空结果用稳定 EMPTY_RANKS。
 
-做法是把**所有候选档位**渲染进一个不可见的测量层（`.composer-measure`，零尺寸 +
-`overflow: hidden` + `visibility: hidden`），读各自的 `getBoundingClientRect().width`，
-再与工具栏的可用宽度比。于是窗口宽度、文案长度、字号、语言全都被这一步自动吃掉。
+连 P0 都放不下时由 CSS 收窄 / ellipsis，不再另加隐藏门。mini 的 220px 只调间距与 padding，不决定谁显示。新文字需 nowrap + ellipsis，中英都检查。
 
-- **量的是整个控件**（图标 + 下拉箭头 + 内边距 + 文字），不是纯文字宽度；每个元素另有
-  自己的 `max-width` 上限（见第七节），量出来的自然宽度到那个上限为止；
-- **可用宽度** = `.composer-bar` 的 `clientWidth` 减去左右内边距（读 computed 值，不写死）；
-- **间距**读 `.composer-bar` 的 computed `column-gap`（正常 8px，`.app.is-mini` 下 4px），
-  每个新开的槽位按一个间距计入；
-- **宽度向上取整**后再求和：浏览器给的是小数（高 DPI 下常见 `.34` 这种尾数），与整数
-  可用宽度直接比大小会在临界点上因半像素来回横跳；
-- **两个触发点**：每次提交后的 layout effect（文案 / 字号 / 语言 / 模型名 / 数字位数变了
-  就重量，且在 layout 阶段结算，不会先画一帧「全挤在一起」再收回去），以及
-  `.composer-bar` 的 `ResizeObserver`（拖侧栏、改窗口宽度）。观察者**随节点更新**
-  （`createFitAnchor` 的 callback ref）：只读子代理会话与完整输入区之间的条件渲染会
-  替换工具栏节点，必须断开旧观察者并观察新节点，否则后续宽度变化无法触发测量；
-- **无法测得布局盒时不结算，保留上一次有效档位**（`toolbarAvailableWidth`）：宿主隐藏
-  整个 webview 时，内层元素实测 `clientWidth` 为 0、`getClientRects()` 为空，但文档视口
-  仍保留原宽度。此时不应将无效测量分配成最窄档位。判据是布局盒是否有效，而非宽度阈值：
-  有布局盒且 `clientWidth` 大于 0 的极窄栏，即使扣除内边距后的可用宽度为 0 或负数，
-  仍按前缀规则折叠；轨迹页的 `visibility: hidden` 不移除布局盒，测量仍然有效；
-- 结算出的档位签名没变就**不重新渲染**。
+## 行为约定
 
-缺数据的档位（模型没有思考档位、还没有 tps、还没有上下文测量）**不进表**：渲染成 `null`
-的档位会白占一个坑位和一段间距，把本来装得下的东西挤掉。
+发送按钮与 Ctrl/Cmd+Enter 共用 `composerSend`：默认 queue 时加速手势为 steer，默认 steer 时为 queue；按钮在点击当下读修饰键，界面只发手势，宿主解析模式。
 
-## 四、分配规则是「前缀」，不是贪心填充
+预设标签只在 messages.length 非零时显示，与空态判据一致。目录或当前 id 未到不画空壳；展示共用 presetDisplayText，内置四个走词典，用户自写原文，未知 id 原样。空态的可点预设选择与开轮后的只读标签不能混用。
 
-一旦某一档装不下，排在它后面的档位这一帧**一概不显示**。这不是偷懒，而是「优先级」这三个
-字的字面含义——若允许跳过装不下的高档去装低档（贪心填充），就会出现「附件按钮显示了、
-优先级更高的思考强度却没有」这种与口径相反的画面，而且拖宽侧栏时元素会**此起彼伏**
-（宽一点点：附件进来、上下文环被挤出去；再宽一点：上下文环又回来），实测在 242~330px
-之间会来回跳三次。前缀规则下，宽度只增不减时元素只进不出，拖动过程干净。
-
-代价是「装不下 A 档时不会拿 B 档去填那块空隙」，即可能出现一段空白——这是为了口径一致
-刻意接受的。
-
-## 五、每个槽位与档位
-
-| 槽位:档位 | rank | 数据来源与口径 |
-|---|---|---|
-| `context:ring` | 0 | 上下文占用圆环（pinned，用户 2026-10-06 口径：最高优先级、始终显示）；三个值同源，都取自宿主按官方口径算好的 `contextOccupancy` |
-| `permission:icon` | 1 | 权限弹层入口，只有盾牌图标（**不带**下箭头）；悬停 title 给权限名，弹层里能看到全称 |
-| `model:full` | 2 | 模型切换按钮；显示当前模型名（`max-width: 150px` 之上出省略号，同样**不带**下箭头） |
-| `send:full` | 3 | 运行中且草稿为空时变成「停止」；否则按 `busyEnter` 显示「排队发送 / 插话发送 / 发送」。按住 Ctrl / Cmd 时显示的是**加速手势**对应的那一条（默认 queue → 「插话发送」，默认 steer → 「排队发送」），与键盘 Ctrl/Cmd+Enter 一致；点这枚按钮同样按事件当下的修饰键发加速手势。判定只有一份，在 `src/webview/composerSend.ts` |
-| `effort:full` | 4 | 思考等级的**只读**展示，点它开/关**同一个**模型弹层（与模型按钮逐字一致的 toggle 语义） |
-| `attach:full` | 5 | 通用附件入口：图片按图片发、其余文件逐字节上传；不随模型是否支持图片而隐藏 |
-| `tps:full` | 6 | **始终**取会话统计的「平均输出速度」（Σ 输出 token ÷ Σ 解码窗口），与悬停明细同一个数、同一个格式化函数 |
-| `permission:label` | 7 | 权限按钮的文字档（图标 + 权限名），与 `permission:icon` **同槽位**、互斥 |
-| `preset:full` | 8 | agent 预设**只读标签**：会话开始后显示当前会话跑的是哪套组装 |
-| `context:text` | 9 | 圆环右侧的 `44K/128K` 精确数值（环内不写百分比），与 `context:ring` **同槽位**、互斥；数值档仍按 P2 回来，「始终显示」不覆盖它 |
-| `model:provider` | 10 | 模型胶囊的升级档：`提供商/模型名` 全格式，宽度充裕时才从裸模型名升上来，与 `model:full` **同槽位**、互斥 |
-
-两个弹层入口（权限、模型）**不画下箭头**（用户 2026-09-22 精简 UI）：箭头是纯宽度项
-（8px 图标 + 4px 间距），去掉它整条阶梯左移，而表里、CSS 里都没有常量需要跟着改——
-这正是「量出来」而不是「写死阈值」的好处。要加新元素时同理：先摆位置，宽度交给测量层。
-
-两处「同槽位两档」的 rank 必须递增（先图标后图标+文字、先环后环+数值）：算法是「按 rank
-从低到高逐档升级」，档位不递增就再也升不上去。换档只花差价，不额外吃间距。
-
-agent 预设标签的口径（用户 2026-09-22）：
-
-- **只在会话开始后显示**，判据与 App 的空态页同一条（`messages.length === 0` 就是空态）：
-  空态页上承担「用哪套组装」的是那个**可点**的下拉框（`EmptyMeta` 的 `AgentPresetChip`），
-  而会话一旦开始，服务端就锁死了预设，输入区这边只剩「它叫什么」可读；
-- **不可点、不可改**，是纯文字；展示名的折叠与空态页共用 `presetDisplayText`（随产品交付
-  的四个走词典、用户自写的用原文，认不出的 id 退回 id）；
-- 拿不到预设目录或当前预设 id 时整个不渲染，而不是显示一个空壳。
-
-### 权限弹层的档位列表（含实验性的 Auto review）
-
-点开权限胶囊（`permission:icon` / `permission:label`）看到的档位列表，由两段拼成：
+## 权限弹层
 
 | 来源 | 档位 | 条件 |
 |---|---|---|
-| 客户端内置（文案随词典，与 WebUI 对齐） | `read-only` / `workspace-write` / `danger-full-access` | 恒有 |
-| 服务端目录 | `auto`（**Auto review**，实验） | 宿主下发的 `permissionAutoReview` 为真，**或**当前值已经是 `auto` |
+| 客户端双语词典 | read-only / workspace-write / danger-full-access | 恒有 |
+| 服务端目录 | auto（Auto review，实验） | permissionAutoReview 为真，或当前值已是 auto |
 
-- **「有没有这一档」只有一个判据**：`permissionPresets/catalog` 的 `options` 里有没有 `auto`
-  （宿主 `dsh/projections.ts` 的 `permissionCatalogHasAuto`，纯函数）。它不是配置表里的一档，
-  只在 `dsh-experimental-auto-review` 集成在世时出现；集成装上/卸下会发
-  `permission-presets/catalog-changed`，宿主重读后经 `permissionAutoReview` 下发。
-  老服务端没有这个端点时**不列**（fail-closed），见 `docs/dsh-compat.md`「登记之外的口径」。
-- 当前值已经是 `auto` 时也列（**即使目录那一次请求失败**）：否则胶囊会退回显示别的档位
-  ——那不只是一个缺项，而是一个假结论（会话实际停在 Auto review 上）。
-- **文案逐字抄官方** `ui-permission-presets` 的 `accessZh` / `accessEn`，共七条：档位名、`EXP`
-  标、描述、警告标题、警告正文、勾选文案、确认按钮。注意**官方中文词典里那一档的名字仍然是
-  `Auto review`**（它没有翻译这一档），所以本扩展也不给中文另起名字。
-- **图标是自补的**：官方只给 `read-only` / `workspace-write` / `danger-full-access` 配了图形，
-  Auto 那一档没有；而本扩展工具栏的最小档位是「只有图标」，缺图标那枚胶囊会变成空的，
-  列表里那一行也会比别的行短一截。按既有口径（三种模式共用外形、内部记号不同）补了
-  `IconShieldReview`（盾牌里一只眼睛）。
-- **需要过警告的档有两档**：`danger-full-access`（历来如此）与 `auto`。确认卡在弹层内就地
-  替换列表（不是系统模态框）：标题 + 正文 + `取消` / `确认`；`auto` 多一道官方要求的勾选
-  （「我已了解这些风险，并愿意继续」），**没勾选时确认按钮不可点**——两者都逐字取官方文案。
-  确认态在关弹层 / 再点胶囊 / 换档位时复位。
+Auto 可用性只认 permissionPresets/catalog.options 的肯定证据（permissionCatalogHasAuto）。目录变更事件触发重读；404 / 插件缺失不列，瞬态断线 / 超时 / 5xx 保先前结论。当前已是 auto 必须能显示，不能因请求失败伪装成别档。版本与部署不能替代目录证据，见[兼容规则](<dsh-compat.md>)。
 
-## 六、极窄兜底：交给 CSS，不硬裁
+Auto 的七条文字逐字取官方 accessZh / accessEn；官方中文名也为 Auto review。自补 IconShieldReview 以满足最小图标档。danger-full-access / auto 都在弹层内确认，不弹系统模态；auto 必须勾选风险确认才可继续。关弹层 / 再点胶囊 / 换档复位确认态。
 
-连 P0 四项都排不下时（约 < 240px），分配算法已经无档可退，此时由 CSS 收窄：胶囊
-`max-width: 100%` + `overflow: hidden`，模型名与预设标签出省略号。工具栏的宽度分配不会
-走到这一步——那是「连模型名都放不下」的极端情形。
-
-迷你模式（`.app.is-mini`，< 220px）**不再决定工具栏显示谁**，只保留间距与内边距收紧。
-同一个 220px 下中文「工作区写入」放得下、英文 "Workspace Write" 不一定，固定阈值做不到
-这件事；旧通道有断言禁止回来。
-
-## 七、改这里要动哪些文件
+## 实现与回归
 
 | 文件 | 职责 |
 |---|---|
-| `src/webview/toolbarFit.ts` | 优先级表 `BAR_ORDER` + 分配算法 `pickVariants`（纯函数，改行为就是改这张表）；另有量宽的两条前置：观察者随节点走（`createFitAnchor`）与「量不到盒不结算」（`toolbarAvailableWidth`） |
-| `src/webview/components/Composer.tsx` | 候选档位节点表 `barNodes` + `useToolbarFit`（量宽与触发）+ 工具栏的渲染次序 |
-| `src/webview/styles/app.css` | `.composer-bar`（定位基准）、`.composer-measure`（测量层三条硬约束）、各元素的收窄上限 |
-| `src/webview/messages.ts` + `texts.ts` | 新增元素若带用户可见文字，双语两条一起登记（唯一登记表）；权限档位的文案（含实验档那七条）都在这里 |
-| `src/dsh/projections.ts` + `src/dsh/controller.ts` | 权限档位的**可用性判据**（`permissionCatalogHasAuto`）与目录拉取（`loadPermissionCatalog`），界面上那一档由它决定列不列 |
-| `scripts/toolbarFit.test.ts` | 表的口径、极窄保底、逐档临界宽度、单调性、同槽位互斥、间距计入、渲染次序；量不到盒不结算与观察者随节点走的生命周期（假观察者 + 假节点，含旧写法负对照） |
-| `scripts/styles.test.ts` | 测量层三条硬约束、定位基准、旧阈值通道未回来、纯文字元素自己出省略号 |
-| `test/preview.html` | 夹具要留样例，否则预览页里看不到那一档 |
+| [toolbarFit.ts](<../src/webview/toolbarFit.ts>) | BAR_ORDER、pickVariants、观察目标与可用宽度前置 |
+| [Composer.tsx](<../src/webview/components/Composer.tsx>) | barNodes、useToolbarFit、渲染次序 |
+| [app.css](<../src/webview/styles/app.css>) | 测量层、定位基准与收窄 |
+| [messages.ts](<../src/webview/messages.ts>) / [texts.ts](<../src/webview/texts.ts>) | 双语登记与取词典 |
+| [projections.ts](<../src/dsh/projections.ts>) / [controller.ts](<../src/dsh/controller.ts>) | 权限目录判据与拉取 |
+| [toolbarFit.test.ts](<../scripts/toolbarFit.test.ts>) | 优先级、临界宽度、单调性、互斥、gap、渲染次序与观察生命周期（含负对照） |
+| [styles.test.ts](<../scripts/styles.test.ts>) / [previewFixture.test.ts](<../scripts/previewFixture.test.ts>) | 测量层与旧阈值防线、预览覆盖 |
 
-新增元素先想**英文下会不会溢出**（英文常比中文长 1.5~2 倍）：纯文字元素一律
-`white-space: nowrap` + `text-overflow: ellipsis`，不靠固定宽度。
-
-## 八、不变量与回归门
-
-- **P0 四项不参与分配**：无条件落位，任何宽度下都在 DOM 里（上下文圆环 2026-10-06 起
-  也在其中，且是最高优先级）；
-- **同槽位互斥**：权限与上下文各自最多出现一档，不会同时渲染两档；
-- **左进不出**：宽度只增不减时，已显示的元素不会消失、也不会退回低档；
-- **同档内 rank 与渲染次序同序**：挪元素位置必须同步改表；
-- **tps 与悬停明细同源同格式**：同一个数、同一个格式化函数、同一个词典 key；
-- 断言入口：`npm test` 的 `toolbarFit` / `styles` / `previewFixture` 三套（改完记得
-  `npm run preview`，把预览页的 body 宽度从 300 扫到 700px，看中英两种语言下的阶梯形态）。
+新增元素同步预览夹具；UI 改动再看中英宽度阶梯。本次仅编辑文档时常规验证依[AGENTS](<../AGENTS.md>)，不自动启动真实模型探针。

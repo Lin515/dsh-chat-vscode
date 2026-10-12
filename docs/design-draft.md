@@ -1,237 +1,80 @@
-# 按下发送那一下的乐观状态（草稿 / 附件 / 回显）与提交顺序契约
+# 发送与草稿：乐观状态、回显与提交顺序
 
-> 这份文档是「输入框里那串字归谁管、什么时候被清、什么时候还回去、消息什么时候画出来、
-> 失败的那条长什么样」的口径。动 `Controller.beginSend` / `submitMessage` / `send` /
-> `failEcho` / `commitDraft` / `commitAttachments` / `retireEcho`、
-> `webview/pendingMessage.ts` 或界面「发送」那条链路之前先读这一份。
-> 2026-09-23 立：用户报的「消息发出后输入框先清空、又闪回一下、再消失」违反了第三节的顺序契约。
-> 2026-09-25 三次修订：先加「按下发送那一刻就画出来」（乐观回显），随后按用户口径重定
-> **失败态**（不撤回、红框 + 重发 / 撤回 + 原因）与**交接无闪烁**（见第四、五节）；
-> 同一天再收窄一次：**账本只管「已经发出去」的那一类**——运行中发送（排队 / 插话）
-> 一个字都不进这个账本；最后把「ESC 中止后把排队消息摘出来接着发」并进**同一条发送通道**
-> （见第二节的 `source` 与第八节）。
+修改 `beginSend` / `submitMessage` / `send`、草稿迁移、附件租约或 `pendingMessage` 前读本文。队列 / 平台事实见[输入审计](<audit-input-queue-attachments.md>)，附件归属见[附件设计](<design-attachments.md>)。
 
-## 一、谁拥有这些状态
+## 状态归属
 
-- **权威表在宿主**：`ChatController.drafts` / `pendingMessages`（内存 Map），附件草稿则是
-  `dsh/attachmentLifecycle.ts` 的**附件账本**（归属 + 上传状态 + 暂存字节的唯一权威表，
-  见该文件头与 `docs/design-attachments.md`）。界面只持有乐观镜像（`AppState.draft` /
-  `attachments` / `pendingMessages`），改完立刻渲染、不等往返。
-- **同一套键**：还没有会话的窗口按 `viewId` 存，绑定会话之后按会话 id 存（`keyForView`）。
-  绑定与退回空态各有一条迁移——`bindViewToSession`（窗口键 → 会话键）、`detachView`（会话键 → 窗口键）。
-  草稿的迁移判据是「值不是 `undefined`」（**空串也是草稿**）；附件交账本自己的 `move`
-  （有一份记录就搬，空表也搬；两份相遇合并）；回显的迁移判据是「取到数组」。
-- **整份状态快照读的也是这几张表**（`snapshotFor`），所以宿主的表就是
-  「界面重载 / 切会话 / 建会话之后看到什么」。
+宿主的 drafts / pendingMessages 内存 Map 是权威表，附件由 `attachmentLifecycle` 管理；界面持乐观镜像。`snapshotFor` 读取这些表，因此它们决定切会话、重载界面、建会话后看见什么。
 
-## 二、写点清单
+- 未绑定窗口按 viewId，绑定后按 sessionId。`bindViewToSession` 与 `detachView` 负责迁移。
+- 草稿以值不是 undefined 为迁移判据，空串也是草稿；附件有记录就搬，空表也搬，两份相遇合并；回显按数组迁移。
+- 新建对话先同步切空态，再后台落壳；已有空壳可零往返切换。草稿 / 附件跟窗口走，失败回显按会话键留着。
+- 这些表不是落盘持久化：宿主重启会丢内存态，切会话或回收域不能擅自丢失败行或把在飞行标成失败。
 
-**「把一条消息发给服务端」只有一条通道**：`Controller.submitMessage`。它有四个调用点
-（用户按发送、失败行上的「重发」、ESC 中止后把排队消息接着发出去、摘不动队列时的回滚），
-差别只在 `source` 这一个参数——它回答「这段内容是谁的」：
+## 唯一发送通道
 
-| `source` | 谁的内容 | 提交即清空输入框？ | 提交模式 |
+所有真正提交走 `submitMessage`，内容来源决定是否清输入框：
+
+| source | 来源 | 清草稿 / 芯片 | 提交模式 |
 |---|---|---|---|
-| `composer` | 输入框里那份（用户按发送） | **是**（`beginSend` 于任何 await 之前清，`send` 里按会话键复述一次） | `resolveSubmitMode(按下那刻在不在跑, 手势)` |
-| `retry` | 失败那一行里那份（点「重发」） | **否** | 同上（重发就是「再发一次」） |
-| `queue` | 排队区里那份（ESC 后接着发 / 回滚） | **否** | 固定 `queue`（见第八节） |
+| composer | 输入框 | beginSend 同步清空，send 按会话键复述 | 当下运行状态 + 手势 |
+| retry | 失败行重发 | 不清，用户可能在写另一条 | 当下运行状态 + 手势 |
+| queue | ESC 后续发或回滚 | 不清 | 固定 queue |
 
-`retry` / `queue` 不许碰输入框：用户此刻可能正打着另一句话、挂着别的附件，清它就是数据丢失。
+队列取回编辑与取消不参与回显账本。界面写草稿同时更新本地与宿主，但按发送时不额外 post `setDraft ""` 押注两条 IPC 的顺序；清空唯一入口是 `commitDraft`，附件是 `commitAttachments`，回显是 `addEcho`。
 
-| 时机 | 入口 | 动作 |
-|---|---|---|
-| 打字、补全选中、引用插入 | 界面 `writeDraft` | 两次写：本地 `ui/setDraft` + `setDraft` 帧（宿主持久化） |
-| 按下发送（**任何 await 之前**） | `Controller.beginSend`（由 `submitMessage` 调用） | ① 铸 `requestId`；② **只在「这一刻 agent 空闲、且这条确实会作为用户消息发出去」时**写回显并推 `pendingMessages`（判据见第四节的「什么算『发出去』」）；③ 仅 `composer`：`commitDraft` 清草稿、`commitAttachments` 清附件芯片 |
-| 按下发送后落壳那一刻（窗口还没有壳、正文以 `/` 开头） | `send` 里的补判 | 落好壳、按**命令目录**确认它不是命令 → `addEcho` 补上这条回显（早于 `prompt`）；见第四节的「什么算『发出去』」 |
-| 按下发送 / 重发（真正提交） | `Controller.submitMessage` → `send` | 连接（必要时拉起后台）→ `ensureSession` → `prompt`（带 `beginSend` 铸的 `requestId`） |
-| 运行中发送（排队 / 插话） | `send` 里的 `resolveSubmitMode` + 服务端队列 | **与改动前完全相同**：不进账本、不占界面；成功由服务端队列 / 插话接管，失败走老口径（正文回输入框 + 原生提示） |
-| 服务端队列里出现这一条 | `syncQueue` | 真实队列行照旧进排队区（这一层没动） |
-| ESC 中止后接着发队首 | `stopRunning` → `resubmit` → **`submitMessage(source:"queue")`** | 见第八节 |
-| durable 承认了这条消息 | `adapter.onUserMessage` → `noteUserAdmitted` | 按 `source.rpcId` 收回回显（服务端不回它时按正文兜底）——**落位帧之后**才发生，重放路径同样如此（`adapter.notifyAdmitted` / `flushAdmitted`） |
-| 没真的发出去 | `failEcho`（有回显：行留在对话流里）、`retireEcho` + `appendDraft`（用户主动取消选目录） | 见第四节 |
-| 队列项被取回编辑 / 取消 | `editQueuedMessage` / `handle("queueRemove")` | 正文回输入框（编辑）或直接丢弃（取消）——**不参与**发送通道（这些条目压根不在账本里） |
-| 新建对话（`+`） | 先同步 `detachView` + 整份快照，落壳在后台 | **先切、后建**：落壳（连后台 → `session/create` → 拉列表）是往返，排在切换之后（用户 2026-10-01 报过「点 + 有明显停顿」）；手里已有现成空壳时连那一帧都不必先推（`switchToBlankSync`，0 往返）。草稿/附件跟着**窗口**走；回显按会话键留着（失败的要能切回来接着操作） |
-| 建会话 / 切会话 / 窗口就绪 | `snapshotFor` 的整份快照 | 带着当前草稿、附件与回显 |
+## 顺序契约
 
+1. `beginSend` 必须同步且在任何 await（尤其 ensureConnected）之前铸 requestId、更新回显与 composer 草稿 / 附件。否则连接 / 建会话期间快照会把已清草稿塞回、把回显抹掉。
+2. 首条消息落壳时，回显与草稿一起从窗口键迁到会话键；快照读会话键，漏迁移就会闪失。空态通常已有真会话，但 ready 前抢发与发送时选目录仍可能走这条窄路。
+3. 真提交失败保完整失败行，不再复制回输入框。唯一主动取消目录选择例外：回收回显并归还草稿。
 
-## 三、顺序契约（坑点）
+## 回显判据
 
-界面在按下发送那一刻就清空了自己的输入框，并立刻显示这条消息。由此推出三条不变量，
-**都落在宿主**，因为只有宿主知道「这条到底发出去了没有」：
+回显只管「当下 agent 空闲，且内容会作为用户消息提交」的那类，不代表服务端已承认：
 
-1. **「按下发送那一刻的乐观动作」必须早于任何 await。**
-   `submitMessage` 里 `beginSend(...)` 排在 `ensureConnected(...)` **之前**——连接可能要拉起
-   内部 DSH（秒级，第一条消息最慢），期间任何一份整份快照都会把刚发出去的正文塞回输入框
-   （快照里的 `draft`/`attachments`/`pendingMessages` 读的都是宿主那几张表），把回显抹掉。
-   因此 `beginSend` **必须是同步方法**（`scripts/composerDraft.test.ts` 按源码钉住这三条）。
-2. **还没有壳的窗口发第一条消息时，回显必须跟着草稿一起从窗口键迁到会话键。**
-   `submitMessage` → `ensureSession` → `reuseOrCreateBlank` 在绑定窗口后会推一份整份快照，
-   而快照里的回显读的是**会话键**：不迁移，那一条就被这一帧抹掉（「消息闪一下又没了」）。
-   （2026-10-01 起「空态」本身已经是一条真会话了——窗口就绪 / 点「+」时就落了壳，所以这一段
-   只剩「消息比 `ready` 的落壳早到」与「没有工作目录、发送时才选目录」两条窄路；判据本身不变。）
-3. **没真的发出去时，界面上必须留下一条"这条没发出去"的完整记录。**
-   2026-09-23 那版是「把草稿还回输入框」；2026-09-25 改成**留在原地标成失败**（见第四节）：
-   正文就在那一行里，回填输入框只会变成「输入框一份 + 消息流一份」。
-   唯一例外是用户**主动取消**目录选择（`ensureSession` 返回 undefined）——那不是失败，
-   正文回输入框，回显收回。
-
-## 四、乐观回显（`pendingMessages`）：只管「已经发出去」的那一类
-
-**它解决什么**：没有它，**空闲发送**的消息要等「拉起后台 → 建会话 → `prompt` → 服务端落盘 →
-follow 流推事件」整条链走完才出现在对话流里。官方的对应物是 `ISession.beginSubmission`
-往会话快照里塞的 `PendingSubmission`（`dsh-api-session-controller`）。
-
-**只收「已经发出去」的那一类**（用户 2026-09-25 口径）：按下发送那一刻 agent 空闲 ⇒
-这一次会立刻 `session/prompt`，那一条就该即刻出现在对话流里（插在本轮助手行之前，
-`pendingInsertIndex` 与 `adapter` 的落位分支同判据，真实行将来落在哪它就插在哪）。
-
-| 这一条 | 归哪管 |
+| 情形 | 归属 |
 |---|---|
-| 按下那一刻 agent 空闲（这一条真发出去了） | 进账本 → **对话流**里的一行 |
-| 按下那一刻 agent 在跑（排队 / 插话：这条**还没发出去**） | **不进账本**。它唯一的去处是输入框上方的排队区，由**服务端名册**驱动（`syncQueue` 那条老路径：真实队列行 + 取消 / 编辑 / 插话）。成功走队列/插话那条老路，失败也走老口径（正文回输入框 + 原生提示）——本次改动一概不碰 |
-| 失败（账本里那条） | 留在**对话流**里（红框 + 重发 / 撤回 + 原因） |
+| 空闲用户消息 | 对话流 pendingMessages，插在真实用户行将来的位置 |
+| 运行中排队 / 插话 | 不进账本，仅服务端队列区；失败归还正文并原生提示 |
+| 真斜杠命令 | commands/execute，不回显 |
+| 子代理发送等无回显路径 | 失败沿既有正文回填与原生提示 |
 
-于是 `PendingMessageView` 里没有「落点」这种字段：账本里的每一条都进对话流。
+斜杠判断按会话 commandCatalog，不按 `/` 外观。技能不在命令目录，仍是用户消息；带附件不经命令通道。正文普通 / 带附件立即回显；目录已加载时按目录判；无壳或未加载目录时不猜，send 落壳确认非命令后、prompt 前补 `addEcho`。补判看这个 requestId 是否已有回显，不能画第二条。
 
-### 一条消息什么时候算「发出去」（回显判据）
+## 失败态与重发
 
-判据是两问：**这一刻 agent 空闲吗**（上面那句）、**这条会作为用户消息发给模型吗**。
+- failEcho 留原行，红框 + 最左重发 / 撤回 + 单行失败原因，全文在 title。以 rpcId 指认；无 rpcId 不画动作。
+- 撤回只删行，不回填；重发先静默 removeEcho，再 `submitMessage(source:"retry")` 铸新 requestId。中途不推两行都不存在的帧，连点第二次找不到旧行即空操作。
+- `echoOfView` 按调用窗口自己的键检查所有权，不能操作别的会话同 id；retry 不清当前输入框 / 芯片。
+- @key 原因按界面语言解析，服务端原文不翻译。有失败行时不重复弹原生错误框；无回显时保原生提示，日志两者都保留。
+- 失败行是纯界面对象，buildPromptContent 不读取它，后续继续不会自动带它；只有重发会再次提交。回收域不替在飞提交下失败结论，防用户重发造成重复。
 
-第二问只有一种「不是」：**斜杠命令**走 `commands/execute`，它不是用户消息（执行记录由命令
-节点承载），不该占一行回显。判据是**命令目录**（`slashCommandOf` 读域上的 `commandCatalog`
-快照），不是正文长相——按「以 `/` 开头」一刀切会把**技能调用**（`/skill-name …`：技能不进
-命令目录，见 `controller.skillCommands`）整类误伤，那类消息因此永远要等 durable 事件才出现
-在对话流里（用户 2026-09-25 报的现场）。
+## durable 交接无闪烁
 
-目录是会话作用域的，于是按下那一刻分三种情形：
+1. durable 用户行带 source.rpcId → MessageView.rpcId，和回显同身份。
+2. adapter 先落位并发帧，再通知 onUserMessage 收回回显。重放压住增量帧时，把承认通知攒到 messages/reset 之后（notifyAdmitted / flushAdmitted）。
+3. durable 行暂借本地图片字节，避免缩略图退成芯片再复原。先按 `includedAttachments` 过滤，与 buildPromptContent 同判据 / 顺序后按位置对齐，不能借给另一张图。
+4. pendingVisible 去重，两边 React key 均为 `p:<rpcId>`，复用 DOM；pendingInsertIndex 与 adapter 落位规则一致。
+5. 老服务端不回 rpcId 时宿主按正文退回兜底（retireEchoByText），最坏多画一帧，不能假称相同身份交接。
 
-| 这一刻手里有什么 | 预判 | 回显在哪一步产生 |
-|---|---|---|
-| 正文不以 `/` 开头，或带了附件 | 一定是用户消息（带附件的行不经命令通道） | `beginSend`（按下那一刻） |
-| 有会话、目录查得到 | 按目录判：命中命令 → 不回显（`send` 里走 `retireEcho` 那道门也不会碰到它）；没命中 → 回显 | `beginSend` |
-| 窗口还没有壳、正文以 `/` 开头 | **不猜**（没有会话，目录无从查起；`beginSend` 看的是域上的 `commandsLoaded`，不是「有没有域」） | `send` 落好壳、用同一个判据确认「不是命令」之后立刻补（`addEcho`），**早于 `prompt`** |
+## ESC 后队列续发
 
-只有第三种是「晚一点」：它没得早——那一刻连会话都还没有。反过来若在那一刻乐观回显，
-真命令（`/compact` 之类）就要先画一行再收回，那是一次肉眼可见的闪现。
+仅 cancel 不保证队列继续，且 abort 后马上提交可能排到旧队列后。stopRunning 捕获原 content、顺序摘空 → cancel → 等真空闲（最多 8 秒）→ 原序 `submitMessage(...,"enter","queue",origin.content)`，不自建第二条 prompt 路径。
 
-补判那一步的判据是「**这个 `requestId` 还没有回显**」而不是「刚才是不是判不了」：
-已经有回显的那些（普通正文、带附件、重发 / 排队重发）在那里天然是空操作，画不出第二条。
+- 空闲续发产生回显，失败保红行；仍运行的回滚固定 queue，不插话，失败归还正文并提示。
+- origin.content 取本地提交记录，否则 inbox 内容块；按文本重建会丢图片。
+- 摘失败或空闲超时回滚，提交失败时只归还已摘出且尚未提交的余项；未摘项还在服务端，不能再复制一份草稿。
+- 这不是事务：摘队列、cancel、等待和逐条提交之间仍有竞态，不承诺绝不丢失 / 重复。详见[停止与续发审计](<audit-input-queue-attachments.md>)。
 
-**没有回显的那两档**（运行中发送那条、子代理会话）走完整的老口径：失败时正文回输入框 +
-原生错误提示，子代理不收文件附件时照旧弹 toast——`failEcho` 返回「有没有一条回显被标成失败」，
-调用方据此决定走哪条收场路（见 `submitMessage` / `send`）。
+## 回归门
 
-### 失败态（用户 2026-09-25 口径）
+| 测试 | 覆盖 |
+|---|---|
+| composerDraft | 真 reducer 快照负对照；beginSend 无 await 且早于连接；统一清空 / 失败入口；source 门与窗口所有权 |
+| pendingEcho | 真控制器 + offline stub：首条迁移、直播 / 重放交接、图片借字节、失败留行、切回可操作、连点幂等、运行中不入账、queue 统一续发、命令与技能补判 |
+| attachments | included 与 includedAttachments 同序 |
+| styles | 失败气泡、动作顺序、原因截断 |
+| previewFixture | 在飞带图与 failed 两种形态，队列区不吃乐观回显 |
 
-- **不撤回显示**：`failEcho` 只改状态，把那一行留在**对话流**里（气泡走 `--error` 描边 + 淡红底）。
-- 操作行**最左侧**给「重发」「撤回」，后面写失败原因（单行 + 省略号，全文在 `title` 里）。
-  动作与原因都在 `Message.tsx` 的用户消息分支里，由 `sendState` / `sendError` 驱动；
-  两个动作都凭 `rpcId` 指认那一条回显（它就是 requestId），没有它就不画按钮。
-- **撤回** = 删掉那一行（`retractPending`），不回填输入框。
-- **重发** = 先撤回再按普通发送重走一遍（`resendPending` → `submitMessage(source:"retry")`），
-  新的 requestId。撤回那一步**不单独推帧**（`removeEcho`）：紧接着 `beginSend` 会推一份带
-  最终状态的，否则中间那一帧两行都不在、界面上就是重发时闪一下。连点两次是安全的：
-  第二下找不到那条回显（`echoOfView` 按**调用窗口自己的键**找，别人的 id 撞上也动不了它）。
-  它**不清输入框**：失败那一行的内容不是输入框里那份（见第二节的 `source`）。
-- 失败原因可能是宿主发的 `@key:arg`（`@sendFailed:<服务端原文>` / `@sendNoConnection` /
-  `@sendEmpty` / `@sendUnconfirmed`），界面按当前语言解析；服务端原文那一段**不翻译**。
-  **有回显**的失败不弹 VS Code 原生错误框（原因就在那一行里写着，弹窗只是把同一句话再说一遍）；
-  **没有回显**的那些（尚未发出的那条 / 子代理会话）走老口径，那里的弹窗照旧，日志两种情况都照旧。
-- 失败的行是**纯界面对象**：宿主账本之外没有任何地方引用它，`buildPromptContent` 也从不读它
-  ——所以「后续会话继续」永远不会把失败的消息带上；唯一的再发路径是那颗「重发」。
-  宿主重启（内存态消失）后它才消失；**切会话再切回来仍在**（账本按会话键保留，
-  `destroyScope` 刻意不动它）。
-- 域回收（切走 / 新建对话 / 关窗口）**不许**替用户下结论：既不许丢（切回来还得能重发 / 撤回），
-  也不许把还在飞的那条（`sending`）改写成失败——那条很可能已经发出去了，画成红框会诱导用户
-  点「重发」把同一条内容发两遍。它由 live 流或重开时的 durable 承认收回，那才是权威证据。
-
-## 五、交接为什么不会闪（五件小事，缺一不可）
-
-1. **durable 用户行带 `rpcId`**（`MessageView.rpcId`，来自 `source.rpcId`）——回显与真实行
-   的同一个身份。
-2. **承认回调在落位帧之后触发**：`adapter` 先把 durable 行放进消息表**并发帧**，再
-   `onUserMessage` → 收回回显。反过来的话，中间会有一帧两边都不在（那就是「闪一下」）。
-   **重放路径**（follow 开窗快照 / 「加载更早的历史」）里落位帧被 `replaying` 静默压住，
-   只有收尾那一份整份 `messages/reset` 才带给界面——所以那里的承认通知要**攒到 reset
-   发出去之后**再补发（`notifyAdmitted` / `flushAdmitted`）。这是「按源码推不出闪烁」的那个坑。
-3. **durable 行借用回显的图片字节**（`adapter.resolveEchoAttachments` → `submissions` 里那份）：
-   不借的话图会从缩略图退回文件名芯片、等 `hydrateUserMedia` 换回字节再变回缩略图。
-   借的时候要按**位置**对齐，而内容块里只有「真的进了块」的那些附件（文件没传完、图片没有
-   可解析字节的不在），所以本地那份要先过 `includedAttachments`（与 `buildPromptContent`
-   同一个判据、同一个顺序）——不过这一遍就会整体错位，把字节借给另一张图。
-4. **界面按 `rpcId` 去重 + 稳定 key**：`pendingVisible` 把已被承认的回显剔掉；
-   两边的 React key 都用 `p:<rpcId>`（`pendingMessage.messageRowKey`），React 复用同一个
-   DOM 节点，不卸载重建。
-5. **插入位置跟着落位规则走**（第四节）。服务端不回 `rpcId` 的老版本上第 4 条不成立，
-   靠宿主按正文兜底收回（`retireEchoByText`），最坏多画一帧。
-
-## 六、界面为什么不自己补一帧清空
-
-界面只做乐观清空，**不**额外补发 `setDraft ""` 帧：那等于把顺序押在两条 postMessage 的到达
-顺序上，而宿主仍可能在处理 `send` 之前推出快照（不变量落在没人守的那一侧）。
-宿主侧的 `commitDraft` 是唯一入口，两处重复的清空（斜杠分支、提交补丁里的 `draft: ""`）
-已经收进它；附件只有一个写入口（`commitAttachments`），回显的两个时机（按下那一刻、
-落好壳之后的补判）共用同一个写入口（`addEcho`）。
-
-## 七、ESC 中止后把排队消息接着发出去（`stopRunning` → `resubmit`）
-
-**为什么要先摘空**：只 `cancel` 不会让队列自动接续（实测结论，见
-`docs/audit-input-queue-attachments.md` 的停止一节），而且中止后立刻提交的新消息会被
-「abort 后唤醒」锁存，排到仍留在队列里的消息之后（顺序倒置）。做法是先整条摘空 → `cancel`
-→ 等本轮真正结束（上限 8 秒）→ 按原顺序重新提交。
-
-**重新提交走的就是第二节那条唯一通道**（`submitMessage(..., "enter", "queue", origin.content)`）——
-不再自己铸 requestId、自己记 submissions、自己调 `prompt`（那会是第二条发送通道，行为与
-手按发送迟早漂）。于是这一刻的两档各自落回已有口径，判据仍是**「这一刻 agent 在不在跑」**：
-
-| 这一刻 | 它到底发出去了没有 | 表现 |
-|---|---|---|
-| agent 已空闲（ESC 后接着发队首，最常见） | **发出去了** | 立刻产生乐观回显、画进对话流；失败 → 留在原地标成失败（红框 + 重发 / 撤回），不弹原生框 |
-| agent 还在跑（`requeue` 回滚：队列摘不动 / 等本轮结束超时） | **还没发出去** | 不进账本（唯一去处仍是排队区）；提交模式固定 `queue`；失败 → 正文回输入框 + 原生提示 + 一次提示 |
-
-三个细节：
-
-- **提交模式固定 `queue`**（`source === "queue"` 不参与 `resolveSubmitMode`）：回滚那次 agent
-  还在跑，必须回队列，插话进正在跑的那一轮不是回滚；派发那次 agent 空闲，
-  `resolveSubmitMode(false, ·)` 给的也是 `queue`，两者与改动前逐字相同。
-- **内容块用当初提交的那一份**（`origin.content`）：本地提交记录不在时（扩展重载过 /
-  记录被上限淘汰）这一份来自 `inbox` 投影，里面可能含内联图片字节——按文本重建会丢它们。
-- **失败时只有「已摘出但还没提交」的那些**被还回输入框（`resubmit` 里 `entries.slice(index + 1)`）：
-  摘不动的那条仍在服务端队列里，还回去会让同一条既在队列又在输入框。
-
-## 八、回归门
-
-`scripts/composerDraft.test.ts`（按源码钉顺序）：
-
-- §0 是**对照**：用真实的 `reducer` 把「整份快照会把已提交的草稿塞回输入框」跑一遍；
-- §1 钉「乐观动作早于任何 await」：`beginSend` 里必须有 `commitDraft` / `commitAttachments`
-  且**不含 `await`**，`submitMessage` 里 `beginSend(` 早于 `ensureConnected(`；
-- §2 钉失败路径都落到 `failEcho`（唯一例外是用户取消目录选择那条回填）、
-  `try` 里的提前 return 由 `finally` 收网；
-- §3 钉连不上时那一行标成失败并写明原因；
-- §4 钉「谁的内容决定动不动输入框」与「发送只有一条通道」：`beginSend` / `send` 里的两处
-  清空都在 `source === "composer"` 门内，重发按 `retry`、排队重发按 `queue` 且不许自己
-  `prompt` / 自己记 submissions，撤回与重发都过 `echoOfView` 的所有权门，上传提示在
-  `try` 之外。
-
-`scripts/pendingEcho.test.ts`（**行为级**，驱动真 `ChatController` + offline stub）钉这些 +
-纯函数与接线：回显帧早于 `session/create`、`reuseOrCreateBlank` 快照里回显仍在（迁移生效）、
-**交接帧序（落位早于收回）+ durable 行带 rpcId + 图片借用本地字节**（**直播与重放两条路各一条**）、
-失败留在**对话流**里且原因/状态正确且不回填草稿、**切会话再切回失败行仍在且仍是失败态**、
-撤回与重发（连点幂等、重发只推一帧、**重发不许碰输入框里的草稿与芯片**、
-**别人的 id 动不了别的会话那条**）、**运行中发送不进账本**（排队区拿到的仍是服务端真实
-队列项、入队失败走老口径回填草稿）、**ESC 后接着发队首走统一路径**（空闲 ⇒ 产生回显 +
-不清输入框；回滚 ⇒ 不进账本 + mode 仍是 queue + 失败回填；**本地无提交记录时内容块原样重发**）、
-无 `rpcId` 兜底、**斜杠的两档判据**（目录里真有的命令不回显且走命令通道；`/skill-name …`
-这类「长成 `/xxx` 但不是命令」的技能调用按下那一刻就回显、并作为普通消息发给模型；
-空态那条 `/xxx` 在**落好壳之后、发出去之前**补回显）；
-另有 `pendingVisible` / `pendingInsertIndex` / `pendingPlacement` / `pendingAsMessage` 的
-纯函数断言，以及 App / Message / Composer 的接线断言（含「排队区不吃乐观回显」）。
-
-`scripts/attachments.test.ts`：`buildPromptContent` 的 `included` 与 `includedAttachments`
-同序（按下标借字节靠它，见第五节第 3 条）。
-
-`scripts/styles.test.ts`：失败气泡走 `--error`、「重发 / 撤回」顶到最左、失败原因单行截断。
-
-`scripts/previewFixture.test.ts`：夹具里两种回显数据形态（带图的一条在飞、`failed` 红框的一条）
-都在（账本里只有已发出的那一类，所以不再有「排队中的那条不画」这一档）。
+常规验证按[AGENTS](<../AGENTS.md>)，不因本文提到历史探针就自动运行真实模型测试。

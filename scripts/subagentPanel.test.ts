@@ -240,7 +240,7 @@ console.log("subagentPanel: 子代理域的 running 打底 ✓");
     ),
     "子代理的停止走 subagents/interruptByParent（父地址是持久事实，父不在线也停得了）",
   );
-  // 客户端方法与线格式对齐（docs/dsh-server-api.md §9.2 的位置参数名）
+  // 客户端方法与线格式对齐，见 docs/dsh-server-api.md「端点位置参数名总表」。
   assert.ok(
     /"subagents\/prompt",\s*\{\s*request:\s*\{[\s\S]{0,400}delivery,/.test(client),
     "subagents/prompt 的参数是 {request: {...}}，delivery 必填（0.1.5 起）",

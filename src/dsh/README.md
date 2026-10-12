@@ -1,69 +1,67 @@
-# src/dsh/ — 宿主侧（协议适配与控制）
+# src/dsh/ — 宿主侧协议与控制
 
-运行环境：扩展宿主（Node 环境，可用 `vscode` 与 Node API）。
-上一层的说明见 [../README.md](../README.md)。
+扩展宿主环境，可用 vscode / Node API；上层边界见[源码导航](<../README.md>)。本页只定位职责，规则见[设计与契约](<../../docs/README.md>)。
 
 ## 会话主链路
 
-- `controller.ts` — 会话控制器，宿主侧的核心：管理会话域生命周期、把 `shared/ipc.ts` 的界面请求接到 `adapter` / `client`，下发状态帧与 patch。会话「在不在跑」的三条输入在这里合流（适配器的 durable 轮次边界、`api-session/status` 中继、会话列表），`session/follow` 的**单流**失败也由它按 `client.ts` 的契约重开（`reopenScopeFollow`，带退避与上限，并按流身份丢弃旧流的迟到回调）。
-- `adapter.ts` — 聊天流适配器：把 durable 会话事件流折成「人类转写」口径的 `MessageView`（聊天流那套折叠；轨迹的账本折叠在 `trajectory.ts`）。
-- `client.ts` — DSH 服务端客户端：一元 RPC、`$events` / follow 等流的 WebSocket 订阅；`DshApiError` / `DshAuthError` 区分业务与认证错误，「端点不存在」按肯定证据判定。
-- `protocol.ts` — DSH 线上协议的线格式类型（依据 `docs/dsh-server-api.md` 逐字摘录，只保留客户端真正用到的字段）。
-- `assistantStream.ts` — 跟随开帧里紧凑记录流（`activeAttempt`）的展开，重开 follow 时把进行中的节点重建回原始 chunk 序列。
-- `scope.ts` — 会话域：一个会话的投影存储、适配器与视图装配的容器。
-- `sessionView.ts` — 「一个会话在界面上的状态」的唯一生产者：字段清单只在这里（快照 / 增量 patch / 切会话整帧三处共用，避免切会话后字段静默复旧）。
-- `sessionList.ts` — `session/list` 行的可见性与会话血缘：全局那份按注册表 / cwd / 已打开域兜底筛（`visibleForWorkspace`），发帧前再按窗口当前会话的 cwd 收窄（`visibleForView`，没有打开文件夹时各窗口各自的 cwd；cwd 取 controller 的权威账本 `sessionCwds`，子代理会话也在里面）；血缘上区分子代理会话与分支会话（两者都有 `parentSessionId`）。
-- `sessionStatus.ts` — `api-session/status` 转发事件（服务端权威的「这一轮在不在跑」）的解码与采纳策略。
-- `historyPaging.ts` — 「加载历史」的两档策略：单页档（`loadOlder`）与到目标档（`loadThrough`，轮次横条未加载刻点用）。
-- `inboxClaim.ts` — next-step inbox 的领取账本：一条人发消息是「开启本轮的提问」还是「生成中插话」的**唯一判据**（官方那台状态机的线格式换算 + 查询），聊天侧的落位与轨迹侧的 steering 分类同源。
-- `pendingInteractions.ts` — 宿主侧未结算审批 / 提问的托管账本：事件 id → 原始请求，保证去重、切会话重投、撤回收场（这类 waterfall 不是 durable 事件，必须宿主持有一份）。
+- [controller.ts](<controller.ts>) — 会话域生命周期、IPC 接线、状态合流、单流失败重开与回调身份守卫。
+- [adapter.ts](<adapter.ts>) — durable 事件折为聊天 MessageView。
+- [client.ts](<client.ts>) — RPC / WebSocket 流；业务、认证与端点不存在的错误分类。
+- [protocol.ts](<protocol.ts>) — 客户端消费的线格式类型。
+- [assistantStream.ts](<assistantStream.ts>) — activeAttempt 紧凑记录展开与重开 follow 恢复。
+- [scope.ts](<scope.ts>) — 会话投影、适配器与视图装配容器。
+- [sessionView.ts](<sessionView.ts>) — 会话视图字段唯一生产者，快照 / patch / 切会话共用。
+- [sessionList.ts](<sessionList.ts>) — 工作区 / 窗口 cwd 可见性与子代理、分支血缘。
+- [sessionStatus.ts](<sessionStatus.ts>) — api-session/status 的解码与采纳。
+- [historyPaging.ts](<historyPaging.ts>) — 单页 loadOlder 与到目标 loadThrough。
+- [inboxClaim.ts](<inboxClaim.ts>) — next-step 领取账本，提问 / steering 的共同判据。
+- [pendingInteractions.ts](<pendingInteractions.ts>) — 非 durable 审批 / 提问的托管、去重、重投与收场。
 
-## 投影（projection）
+## 投影与视图折叠
 
-- `projectionStore.ts` — 投影值存储：每投影键当前值的权威表，seq 低的帧不能回退高的（契约逐字引官方 `ProjectionValueStore`）。
-- `projectionIngest.ts` — 投影摄入：一个投影键一条登记（形状读取 + 效果），`ProjectionHandlers` 映射类型保证加键时编译期就发现漏实现。
-- `projections.ts` — 投影值的形状解析纯函数（goal / subagent / todo 等；形状读错在界面上表现为「功能没有」，所以单独抽出可离线断言）。
+- [projectionStore.ts](<projectionStore.ts>) — seq 单调的权威值表，见[ADR](<../../docs/adr/0001-projection-value-store.md>)。
+- [projectionIngest.ts](<projectionIngest.ts>) — 投影键的形状读取 / 效果唯一登记。
+- [projections.ts](<projections.ts>) — goal / subagent / todo 等形状解析纯函数。
+- [produced.ts](<produced.ts>) — 成功第一方变更调用产生的本轮文件。
+- [queueView.ts](<queueView.ts>) — 两代队列形状、附件还原计划与肯定身份去重；不可还原时禁止摘队列。
+- [jobView.ts](<jobView.ts>) — 任务新旧帧与单任务输出。
+- [trajectory.ts](<trajectory.ts>) — 同份 durable 的账本 / 请求表折叠；身份、时序与验收边界见[轨迹设计](<../../docs/design-trajectory.md>)。
+- [readRange.ts](<readRange.ts>) — read 工具的整文件 / 片段行号区间。
+- [changes.ts](<changes.ts>) — workspace/changes 形状校验。
+- [fileChange.ts](<fileChange.ts>) — 文件状态与普通打开 / 对比入口。
 
-## 视图折叠（线格式 → 视图模型的纯函数）
+## 附件、引用与图片
 
-- `produced.ts` — 「本轮产生了哪些文件」：按成功的第一方变更调用推导，对齐官方 `mutationPath`。
-- `queueView.ts` — 队列里待发送消息的视图：`inbox` 投影两代线格式折成同一个 `QueuedMessageView`（`next-turn` / `next-step`）；另有「取回重新编辑」的附件还原计划（`queueRestoreAttachments`：本地提交记录优先，重载后退回内容块——图片走 durable 句柄换字节、文件无回执计入 `unrestorable`；**计数非 0 时控制器不摘队列**）与追加去重（`attachmentIdentities` 只认肯定身份：同 id / 同上传回执 / 同 durable 句柄 / 图片同字节摘要）。
-- `jobView.ts` — 后台任务的线格式读取：`job` 命名空间新旧两代帧形状 + `job/follow` 单任务保留输出。
-- [trajectory.ts](<trajectory.ts>) — 轨迹的宿主侧折叠：同一份 durable 事件的第二次折叠（账本 turn → group → cell + **请求表**，消费官方 `dsh-client-ui-trajectory` 的请求事实；`step/start` 是请求与助手记录共同的计时起点；助手请求与压缩请求分开按稳定身份记账，避免 overflow 时序相互顶替；新步骤继承最近生效的整份 header 配置，`request/header` 按事件落点归属该步助手请求、配置与结算帧身份逐字段分开，无配置证据不从结算帧倒推；请求状态与重试事实分开，retry 整份替换诊断／结算身份并保首 token／用量，配置只回落本请求已用 header；首 token 按 raw／packed 合格字符串 delta 读取，晚 attempt 回填同身份已有记录；当前助手贡献随 retry 失效，中断闭合与重复 start 保状态；system 更新归随后首个有效助手／当前 partial，初始 prologue 按首可见轮归位；steering 分类用 vendor 的 inbox 状态机，领取落点按事件 seq 关联，同号轮次合并）。真实完整夹具、固定官方与代表性边界的区别见[轨迹设计](<../../docs/design-trajectory.md>)。
-- `readRange.ts` — `read` 工具的行号区间：判定读了整文件还是片段，把行号缀在文件名后。
-- `changes.ts` — 改动文件清单（`workspace/changes`）的形状校验，验不过整份丢弃。
-- `fileChange.ts` — 文件改动状态判定（新增 / 删除线 / 开对比窗口还是普通打开），不依赖 git 扩展命令的静默无操作。
-
-## 附件 / 图片 / 剪贴板
-
-- `references.ts` — 附件模型：与官方对齐的两条路（目录 → 引用、图片 → 内容块），不再把文件正文内联进 prompt。
-- `fileRefListing.ts` — `@` 候选的**目录列举补全**：服务器一次只回 20 条（`maxResults` 是插件配置、改不了），这里按官方同一套排序把被截掉的尾巴追加在服务器结果之后（只补「查询为空或以 `/` 结尾」那一路；fragment 非空的模糊查询排序本地复现不出，不补）。
-- `attachments.ts` — 路径 → 「附件怎么发」的归类（刻意不依赖 `vscode`，可直接单测）。
-- `attachmentLifecycle.ts` — **附件草稿的归属与上传生命周期**（唯一权威表）：一份列表归谁（未绑定窗口按 viewId、绑定后按会话 id；换键时整份搬迁，两份相遇则合并）、在飞轮次的结算与作废（结算落在**开轮那一刻**那个持有者上，切会话不改归属；迟到完成不复活已删附件、不覆盖新一轮；重复 start / 连点重试并成一轮）、**提交租约**（`detach` 移走 / `returnLease` 失败归还 / `transferLease` 重发交接 / `releaseLease` 收场释放；提交只移走可见草稿，字节与在飞结算都不销毁）与字节暂存。控制器只注入一次上传 IO（读字节 + `uploadFile`）与一次「列表变了」，并把租约接在提交与回显生命周期上。
-- `localImages.ts` — 正文引用的本地图片读成 data URL：路径限制在会话工作目录内（模型可控字符串当外部输入）。
-- `imageBytes.ts` — 图片地址 → 字节（`data:` / `http(s):` 两种），纯逻辑可离线断言。
-- `imageFiles.ts` — 「保存图片」的宿主一半：`showSaveDialog` + 写盘。
-- `clipboardPaths.ts` — 从系统剪贴板读文件 / 目录的真路径（PowerShell），粘贴文件时唯一能拿到路径的地方。
+- [references.ts](<references.ts>) — 附件与引用模型，不内联文件正文。
+- [fileRefListing.ts](<fileRefListing.ts>) — 空查询 / 尾斜杠目录列举补全；不补本地无法同序的模糊查询。
+- [attachments.ts](<attachments.ts>) — 接入分类、限额、去重与内容块，见[附件设计](<../../docs/design-attachments.md>)。
+- [attachmentLifecycle.ts](<attachmentLifecycle.ts>) — 附件唯一归属表、上传轮次与提交租约。
+- [localImages.ts](<localImages.ts>) — 会话 cwd 内的本地图片读取。
+- [imageBytes.ts](<imageBytes.ts>) — data / http(s) 图片到字节。
+- [imageFiles.ts](<imageFiles.ts>) — 保存图片对话框与写盘。
+- [clipboardPaths.ts](<clipboardPaths.ts>) — Windows 系统剪贴板文件 / 目录真路径。
 
 ## supervisor 连接链路
 
-- `supervisorManager.ts` — 后台管理器（客户端形态）：找 supervisor、必要时拉起、保持长连接；dsh 的生死裁决权在 supervisor，扩展不杀进程。
-- `supervisorClient.ts` — 扩展侧连接：读会合状态、`SupervisorLauncher` 抽象、socket 长连接（ping / 状态推送 / 告别）。
-- `supervisorProtocol.ts` — supervisor 的会合协议：状态文件、启动锁、socket 寻址；文件一律原子写、读取宽容，路径由 `rendezvousPaths()` 唯一产出。
-- `supervisorWire.ts` — supervisor 的 socket 协议：按行 JSON 的双向消息（hello / ping / control / 状态推送）。
-- `supervisorRunner.ts` — supervisor 的真实启动器：VS Code 自带 Node 跑 `dist/supervisor.js`，detached + unref 与宿主解耦。
-- `supervisorErrors.ts` — 守护进程的错误上报器：文件 + 广播两处都发，任一处炸不影响另一处。
-- `runtimeResolve.ts` — supervisor 运行时：固定用 VS Code 自带的 Node（`ELECTRON_RUN_AS_NODE=1`），不依赖 PATH 上的 node。
-- `connectTarget.ts` — 内部 / 外部 DSH 的选路纯函数：内部优先、外部备用且须实测可达，目标粘性（自动路径永不换目标）。
-- `connectionAttempts.ts` — 连接尝试的账本与收场：轮次作废与回调身份判据、当前客户端的存放点、「换目标 / 停止连接 / 放弃一轮 / 停止内部 DSH」四个收场意图各调管理器哪一档与动作顺序（写能力收在闭包里，调用方绕不过完整收场）；客户端创建的唯一 seam（生产是 `new DshClient`，离线测试换假客户端）。
+生命周期与按钮规则见[supervisor 设计](<../../docs/design-supervisor.md>)。
+
+- [supervisorManager.ts](<supervisorManager.ts>) — 指定目标的连接管理；进程生死由 supervisor 裁决。
+- [supervisorClient.ts](<supervisorClient.ts>) — 会合状态、启动器抽象与 socket 长连接。
+- [supervisorProtocol.ts](<supervisorProtocol.ts>) — 原子状态文件、启动锁、socket 寻址与统一解码。
+- [supervisorWire.ts](<supervisorWire.ts>) — 按行 JSON 的 hello / ping / control / 状态协议。
+- [supervisorRunner.ts](<supervisorRunner.ts>) — VS Code Node 的 detached + unref 启动器。
+- [supervisorErrors.ts](<supervisorErrors.ts>) — 互不阻断的文件 / 广播错误上报。
+- [runtimeResolve.ts](<runtimeResolve.ts>) — VS Code 自带 Node 定位，不依赖 PATH。
+- [connectTarget.ts](<connectTarget.ts>) — 内部优先、外部备用与目标粘性。
+- [connectionAttempts.ts](<connectionAttempts.ts>) — 轮次、客户端身份、四种收场意图与创建 seam。
 
 ## 进程与杂项
 
-- `processRegistry.ts` — 进程在不在、端口上有没有人听（`isProcessAlive` / `tcpReachableSync`）；历史遗留的生命周期机制已随 supervisor 架构退役。
-- `dshLocks.ts` — `dsh` 自己的 writer lock 清理与 `$DSH_HOME` 定位（dsh 起不来的兜底，与后台生命周期无关）。
-- `configChanges.ts` — 配置文件热重载 → 客户端要重读什么（settings.yaml / cordis.patch.yml 等 live 重载的映射表）。
-- `hostLog.ts` — 扩展日志写入器：任何生命周期阶段（包括输出通道已关闭的停用期）都不得抛异常。
-- `hostText.ts` — 宿主产生的 `@key` 标记 → VS Code 原生 UI 文本（通知跟随 VS Code 显示语言，与 `dshChat.language` 无关）。
-- `selection.ts` — 编辑器选区 → 行号区间（部分引用要体现行号；「下一行行首结束要少算一行」的边界在这里）。
-- `windowState.ts` — 工作区级会话窗口状态缓存（`workspaceState`）：记住上次每个窗口面板开着哪个会话。
-- `unreadStore.ts` — 「生成完毕未读」在 globalState 里的存放口径：一个会话一把键（多窗口不互相覆写），旧口径那份整份数组启动时作废。
+- [processRegistry.ts](<processRegistry.ts>) — 进程与 TCP 可达性查询。
+- [dshLocks.ts](<dshLocks.ts>) — writer lock 清理与 DSH_HOME 定位。
+- [configChanges.ts](<configChanges.ts>) — 服务端配置热重载到客户端重读的映射。
+- [hostLog.ts](<hostLog.ts>) — 包括停用期也不抛异常的宿主日志。
+- [hostText.ts](<hostText.ts>) — @key 到原生 UI 文本，跟随 VS Code 语言。
+- [selection.ts](<selection.ts>) — 编辑器选区行号边界。
+- [windowState.ts](<windowState.ts>) — workspaceState 会话窗口缓存。
+- [unreadStore.ts](<unreadStore.ts>) — 每会话一个 globalState 键的未读存储。

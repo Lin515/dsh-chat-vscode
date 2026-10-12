@@ -7603,18 +7603,10 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
-   * 中止当前轮；**队列非空时把队首消息接着发出去**。
-   *
-   * 实测（`scripts/queueContinueProbe.ts`，两轮各 3 次）确定的两个事实：
-   * 1. 只 `cancel` **不会**让队列自动接续——agent 因 abort 抛出而跳出轮循环，
-   *    队列项保留（`cancel` 用 `keepInbox: true`）但不会被消费（两轮都 3/3）；
-   * 2. 中止之后再提交新消息，服务端**是否顺带把保留的队列项跑起来是不确定的**：
-   *    同一脚本两次运行得到相反结果（一次 3/3 唤醒、一次 0/3），取决于中止落在
-   *    轮循环哪一步，客户端无法预判。被唤醒时用户刚提交的那条会被排到队列项后面。
-   *
-   * 所以做法是：先把**整条队列**摘空（服务端就没有可继续的待办，事实 2 的两条分支
-   * 都不再成立），再中止、等空闲，然后按原顺序重新提交。首条自然成为新一轮，其余在
-   * 其后排队，与正常排队语义一致。任何一步失败都退化为「只中止」，不会丢消息或发两遍。
+   * 摘空可恢复的队列 → cancel → 等真空闲 → 按原序走 submitMessage。
+   * 历史探针中仅 cancel 两轮均未接续；追加 prompt 唤醒旧队列分别为 3/3 与 0/3，不能依赖。
+   * 先捕获 origin.content 保留附件；摘取失败 / 等待超时回滚，提交失败归还尚未提交的余项。
+   * 这不是事务，不能保证竞态下绝不丢失 / 重复；边界见 docs/audit-input-queue-attachments.md。
    */
   private async stopRunning(viewId: string): Promise<void> {
     if (!this.client) return;
@@ -7731,16 +7723,8 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
-   * 中止当前轮。
-   *
-   * 刻意**不**在这里乐观地置 `running: false`：那会骗过下面的 `waitUntilIdle`，
-   * 让我们在本轮真正结束前就重新提交（于是那条消息被排进队列且不会自动接续）。
-   * 界面上的「生成中」由服务端回 `turn/end` 时适配器发的 patch 收掉。
-   */
-  /**
-   * 中止当前轮。子代理会话走 `subagents/interruptByParent`（官方对子代理地址的
-   * 停止路由：父地址是持久事实，父 Agent 不在线也停得了）；普通会话照旧
-   * `session/cancel`。
+   * 子代理用持久父地址走 subagents/interruptByParent；普通会话走 session/cancel。
+   * 不乐观置 running:false，须等服务端收尾，否则 waitUntilIdle 会提前重发进未续跑的队列。
    */
   private async cancelTurn(scope: SessionScope): Promise<void> {
     if (!this.client) return;
@@ -7766,35 +7750,12 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
-   * 按下发送那一刻的**全部乐观动作**：乐观回显 + 提交即清空（草稿与附件芯片）。
-   *
-   * 这是 `send` 这条链路里唯一一个**必须早于任何 await** 的入口（官方同位置的是
-   * `ISession.beginSubmission`）：没有它，用户消息要等「拉起后台 → 建会话 → prompt →
-   * 服务端落盘 → follow 流推事件」整条链走完才出现在消息流里（第一条消息最慢）。
-   *
-   * 三件事各自的口径：
-   * - **回显**（见 `shared/chat.ts` 的 `PendingMessageView`）：**只在「这一刻 agent
-   *   空闲」时建**——那一条会立刻以 `session/prompt` 发出去。运行中发送（排队 / 插话）
-   *   不进账本：它还没发出去，唯一的去处是输入框上方的排队区，而那里由服务端名册驱动
-   *   （用户 2026-09-25 口径：本次改动只针对已经发出去的消息）。于是「插在对话流的哪个
-   *   位置」就是唯一要算的东西——真实行将来落在哪，它就插在哪，交接时不跳位。
-   *   这条判据对**四个调用点一视同仁**：ESC 中止后把排队消息摘出来重发时，agent 空闲
-   *   = 那一条真的发出去了 → 同样立刻画出来；回滚（agent 还在跑）→ 它仍是排队中的，
-   *   一个字段都不进账本（见 `submitMessage` 的 `source`）；
-   * - **草稿**：`commitDraft` 的调用点由此提前到「连接之前」——`ensureConnected` 可能要
-   *   拉起内部 DSH（秒级），期间任何一份整份快照（窗口恢复、别的窗口切会话触发的
-   *   重建）都会把刚发出去的正文塞回输入框（见 `docs/design-draft.md` 的顺序契约）；
-   * - **附件**：同理。界面在按下发送那一刻还照着宿主下发的芯片渲染（它自己不清附件），
-   *   而回显里已经带着同样的图片/文件——不清就会看到「芯片一份 + 回显一份」。
-   *
-   * 后两件事**只对输入框来源做**（`source === "composer"`）：重发 / 排队重发的那段内容
-   * 不是输入框里那份，输入框里此刻可能是用户正打着的另一句话——清它就是把那句话擦掉。
-   *
-   * `handoffLeaseFrom` 是「重发」专用：把上一行持有的**附件租约**交给这次新提交继续持有
-   * （不取消在飞的上传、不重启、不放回输入框，见 `commitAttachments` 与
-   * `dsh/attachmentLifecycle.ts` 的 `transferLease`）。
-   *
-   * @returns 本次提交的 requestId（回显与 durable 事件的关联身份，由 `send` 带给 prompt）。
+   * 提交的同步入口，必须早于连接等任何 await，避免快照回填已发送草稿与重复芯片。
+   * 空闲且非命令才建回显；运行中排队 / 插话不进账本，目录未到时延后补判。
+   * 仅 source=composer 清草稿与附件；retry / queue 不能擦掉用户当前输入。
+   * handoffLeaseFrom 将旧提交的附件租约交给新提交，保在飞上传，不重启或回填输入框。
+   * 顺序与 durable 交接见 docs/design-draft.md。
+   * @returns prompt 与 durable 回显关联的 requestId。
    */
   private beginSend(
     viewId: string,

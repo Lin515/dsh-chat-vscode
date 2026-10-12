@@ -74,11 +74,9 @@ export function planModeFromProjection(value: unknown): boolean {
  * `kind`/`activity`（那两个字段属于 `subagents/list` 的 RPC 行 `SubagentListEntry`）。
  * 把 RPC 行的 `kind === "child"` 过滤套在投影上会让目录恒为空。
  *
- * 投影也不携带驻留状态，所以 `known`（上一次 RPC 列表）里同 id 的 `activity`
- * 原样保留；不知道就不下发——界面据此不画状态点，而不是猜「正在运行」。
+ * 本函数只读目录字段；驻留状态由后续合流保留，不能从投影缺值猜「正在运行」。
  *
  * @param value 投影值（数组）。
- * @param known 上一次已知的列表，用于保留 activity。
  */
 export function subagentCatalogFromProjection(value: unknown): SubagentCatalogEntryView[] {
   const entries = Array.isArray(value) ? value : [];
@@ -240,18 +238,9 @@ export function withSubagentUnread(
 }
 
 // ---------------------------------------------------------------------------
-// 其余投影键的形状读取（2026-09-19：从 `controller.applyProjection` 的 switch 里搬进来）
-//
-// 搬出来的**只有解析**，一行判断都没有改：每个函数体逐字来自原来那个 case，包括
-// 「承重字段坏了整条丢弃」与「坏值退化成什么」的容忍度。效果（写哪些 scope 字段、
-// 发哪一帧）仍在控制器里——见 `dsh/projectionIngest.ts` 的登记表。
-//
-// 为什么这一步值得做：这个 switch 是**三次「按猜测的形状写」的现场**（`goal` /
-// `subagentCatalog` / `turnOutline`，见 `docs/audit-summary.md` 三、四章的对应条目），而它住的
-// 文件没有任何测试接缝（`scripts/` 里没有文件 import controller.ts）。搬进来之后，
-// 每个键都能按契约逐字构造一个值来钉形状，而不必起 VS Code、起服务器。
-//
-// 契约来源：`docs/dsh-server-api.md`「投影」一节的 19 个键表（值类型逐条对照本机安装树）。
+// 其余投影形状读取；这里只解析，写 scope 与发帧由 projectionIngest 登记表派发。
+// 按 docs/dsh-server-api.md「投影」构造离线断言，防止猜形状后静默恒为空。
+// 当前消费面以登记表为准，不以历史 API 摘录的键数为准。
 // ---------------------------------------------------------------------------
 
 /** 形状里的数字：给了有限数就取它，否则用兜底值（与搬出来之前的 `numberOr` 逐字一致）。 */
