@@ -113,6 +113,7 @@ import {
   type ProjectionHandlers,
 } from "./projectionIngest";
 import { deriveTrajectoryModel } from "./trajectory";
+import { backfillTrajectorySchemas, missingSchemaAnchor } from "./trajectoryBackfill";
 import { normalizePath, upperDriveLetter, visibleForView, visibleForWorkspace, visibleSessionCandidates, visibleSessionRows } from "./sessionList";
 import { acceptSessionStatus, decodeSessionStatus } from "./sessionStatus";
 import { dropLegacyUnreadState, loadUnreadSessionIds, writeUnreadSession } from "./unreadStore";
@@ -4926,6 +4927,76 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
+   * 轨迹账本一帧：把该窗口会话**当时看得见的全部 durable 事件**折一遍发出去
+   * （官方视图也是客户端自己折的，没有对应 RPC，见 `dsh/trajectory.ts` 的文件头）；
+   * 整份模型走 JSON 字符串，绕开「`undefined` 键被丢掉」那套线格式语义。
+   *
+   * 之后再看这一折有没有「**表头不在窗口里**」的工具行（`missingSchemaAnchor`）：
+   * 有就按需往前补页（`dsh/trajectoryBackfill.ts`），补到东西再折一遍补发一帧。
+   * 为什么要补：跟随开窗只带 `maxMessages` 条消息，而 `request/header` 不属于任何
+   * 消息、分页切点是按消息对齐的，于是它**很容易被切在窗口外**——窗口里所有工具行
+   * 就都取不到目录，界面上整片「Schema 不可用」。官方开窗是 500 条消息所以少见，
+   * 本扩展为了让聊天流少渲染（消息列表没有虚拟滚动）只带一小段，缺口就明显。
+   *
+   * 帧序是「**先内容、后修正**」：补页要走一次网络往返（长会话可能好几页），第一帧
+   * 不该等它——先给现状，补完再刷新。不需要补（判据一开始就不成立）时只发一帧，
+   * 与从前逐字相同。
+   */
+  private async sendTrajectory(viewId: string): Promise<void> {
+    const scope = this.scopeOfView(viewId);
+    const adapter = scope?.adapter;
+    const fold = (): string =>
+      JSON.stringify(
+        adapter
+          ? deriveTrajectoryModel(
+              adapter.trajectoryEvents(),
+              adapter.hasMoreHistory(),
+              adapter.trajectoryCallCatalogs(),
+            )
+          : { turns: [], cellCount: 0, totalSeconds: 0, firstStartedAt: null, hasOlder: false },
+      );
+    this.emitToView(viewId, { type: "trajectory", json: fold() });
+    if (!adapter || !scope || !this.client) return;
+    // 一次只跑一条链：轨迹面板在运行中每 3 秒发一次 `listTrajectory`，没有这道闸门
+    // 就会并发好几条回补链（同一个 beforeSeq 被请求多次，各自还会重折一遍）
+    if (scope.trajectoryBackfilling) return;
+    scope.trajectoryBackfilling = true;
+    try {
+      const client = this.client;
+      const added = await backfillTrajectorySchemas({
+        missingAnchor: () => {
+          const events = adapter.trajectoryEvents();
+          const catalogs = adapter.trajectoryCallCatalogs();
+          return missingSchemaAnchor(
+            deriveTrajectoryModel(events, adapter.hasMoreHistory(), catalogs),
+            events,
+            catalogs,
+          );
+        },
+        earliestSeq: () => adapter.trajectoryEarliestSeq(),
+        throughSeq: () => adapter.cursor(),
+        fetchPage: (request) =>
+          client.page(
+            scope.sessionId,
+            request.throughSeq,
+            request.beforeSeq,
+            request.maxMessages,
+            scope.subagentAddress,
+          ),
+        absorb: (records) => adapter.absorbTrajectoryBackfill(records as never[]),
+      });
+      if (!added) return;
+      this.emitToView(viewId, { type: "trajectory", json: fold() });
+    } catch (error) {
+      // 回补是机会性的：取不到就保持现状（那些工具行继续显示「Schema 不可用」），
+      // 不能因为一次分页失败把轨迹面板弄坏，也不必拿原生通知打断用户。
+      this.log(`[trajectory] schema 回补失败：${String(error)}`);
+    } finally {
+      scope.trajectoryBackfilling = false;
+    }
+  }
+
+  /**
    * 从某条助手消息创建分支。
    *
    * `session/fork` 把一个**冷可读的已完成轮前缀**复制成一个新会话：原会话不动，
@@ -6711,17 +6782,9 @@ export class ChatController implements vscode.Disposable {
         this.closeJobWatch(viewId);
         break;
 
-      case "listTrajectory": {
-        // 轨迹账本：把该窗口会话的**全部 durable 事件**折一遍（官方视图也是
-        // 客户端自己折的，没有对应 RPC，见 `dsh/trajectory.ts` 的文件头）。
-        // 整份模型走 JSON 字符串，绕开「undefined 键被丢掉」那套线格式语义。
-        const adapter = this.scopeOfView(viewId)?.adapter;
-        const model = adapter
-          ? deriveTrajectoryModel(adapter.trajectoryEvents(), adapter.hasMoreHistory())
-          : { turns: [], cellCount: 0, totalSeconds: 0, firstStartedAt: null, hasOlder: false };
-        this.emitToView(viewId, { type: "trajectory", json: JSON.stringify(model) });
+      case "listTrajectory":
+        await this.sendTrajectory(viewId);
         break;
-      }
 
       case "listCommands":
         await this.listCommandsForView(viewId);

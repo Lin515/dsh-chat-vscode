@@ -26,6 +26,7 @@
 - [queueView.ts](<queueView.ts>) — 两代队列形状、附件还原计划与肯定身份去重；不可还原时禁止摘队列。
 - [jobView.ts](<jobView.ts>) — 任务新旧帧与单任务输出。
 - [trajectory.ts](<trajectory.ts>) — 同份 durable 的账本 / 请求表折叠；身份、时序与验收边界见[轨迹设计](<../../docs/design-trajectory.md>)。
+- [trajectoryBackfill.ts](<trajectoryBackfill.ts>) — 窗口没带进 `request/header` 时按需回补更早事件（判据 + 循环）。
 - [readRange.ts](<readRange.ts>) — read 工具的整文件 / 片段行号区间。
 - [changes.ts](<changes.ts>) — workspace/changes 形状校验。
 - [fileChange.ts](<fileChange.ts>) — 文件状态与普通打开 / 对比入口。

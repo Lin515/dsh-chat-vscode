@@ -41,6 +41,7 @@ import { subagentFromCatalogEvent } from "./projections";
 import { includedAttachments } from "./attachments";
 import { expandAssistantStream } from "./assistantStream";
 import { producedPath } from "./produced";
+import { headerTools, type TrajectoryCallCatalog } from "./trajectory";
 import type { HostToWebview } from "../shared/ipc";
 import {
   isKnownEventType,
@@ -620,6 +621,29 @@ export class SessionAdapter {
    */
   private readonly seen = new Map<number, SessionWireEvent>();
   /**
+   * **轨迹专用**的窗口外表头：`seq → {seq, tools}`（`session/page` 定向回补进来的那一批，
+   * 见 `dsh/trajectoryBackfill.ts`）。
+   *
+   * 为什么与 `seen` 分开：轨迹缺的是「调用之前那一份 `request/header`」，而 `seen`
+   * 是**聊天流**的事件集——它的最小 seq 就是「加载更早」的分页锚点（`earliestSeq()`）。
+   * 把回补的旧事件塞进 `seen`，等于替用户连点了十几次「加载更早」：下一次结算就会把
+   * 那些消息一并显示出来、`hasMoreHistory` 也跟着变。
+   *
+   * 又为什么不干脆另存一份**完整事件**交给折叠（那样也能修好 schema）：账本的行集合会
+   * 因此变大——面板已经渲染出窗口那一段之后，补进来的更早记录会插在它**上面**，用户的
+   * 视图被顶走（轨迹的滚动归应用自己管，`overflow-anchor: none`）。表头只参与「这条调用
+   * 当时的目录是哪一份」这一个判断，不进账本，所以只留这一份最小形状。
+   */
+  private readonly trajectoryCatalogs = new Map<number, TrajectoryCallCatalog>();
+  /**
+   * 已经回补过的 seq（含**不是**表头的事件）。
+   *
+   * 判「这一页有没有带来新东西」只能是逐 seq：一页里可能一个表头都没有（回补循环得
+   * 接着往前翻），而「新东西」是这页带来的全部事件。同时也是回补 `beforeSeq` 锚点的
+   * 另一半分（见 `trajectoryEarliestSeq`）。
+   */
+  private readonly trajectoryBackfilledSeqs = new Set<number>();
+  /**
    * 已经往日志里报过的**未知事件类型**（见 `log` 与 `noteUnknownEvent`）。
    *
    * 按类型而不是按 seq 去重：`refold()` 会把已记录的事件整体重折（跟随流开窗、
@@ -1039,9 +1063,39 @@ export class SessionAdapter {
    * 面替换、`compaction/*`、`tool/ptc-dispatch*`、`session/end-seed`）——
    * 轨迹账本正是靠它们才成立（官方也是同一份事件的第二套折叠，见
    * `src/dsh/trajectory.ts` 的文件头与 `docs/design-trajectory.md`）。
+   *
+   * **只有窗口里的事件**：回补进来的那几页不进这里（它们只补「调用时目录」，
+   * 见 `trajectoryCallCatalogs`）——账本的行集合因此与窗口逐字一致，面板打开着的时候
+   * 往回插几千行会把用户的视图顶走（轨迹的滚动归应用自己管，`overflow-anchor: none`）。
    */
   trajectoryEvents(): SessionWireEvent[] {
     return [...this.seen.values()].sort((left, right) => left.seq - right.seq);
+  }
+
+  /**
+   * 窗口外补进来的**调用时目录**（按 seq 升序），交给折叠当窗口里没有表头时的兜底。
+   *
+   * 只装 `request/header` 抽出来的 `{seq, tools}`：其余事件对「这条调用当时的目录是
+   * 哪一份」没有贡献，留在适配器里只是白占内存。
+   */
+  trajectoryCallCatalogs(): TrajectoryCallCatalog[] {
+    return [...this.trajectoryCatalogs.values()].sort((left, right) => left.seq - right.seq);
+  }
+
+  /**
+   * 轨迹回补的 `beforeSeq` 锚点：窗口事件与已回补事件里最小的 seq。
+   *
+   * 与 `earliestSeq()` 分开：那个是**聊天流**的分页锚点，回补不许动它。
+   */
+  trajectoryEarliestSeq(): number | undefined {
+    let min: number | undefined;
+    for (const seq of this.seen.keys()) {
+      if (min === undefined || seq < min) min = seq;
+    }
+    for (const seq of this.trajectoryBackfilledSeqs) {
+      if (min === undefined || seq < min) min = seq;
+    }
+    return min;
   }
 
   /**
@@ -1164,6 +1218,38 @@ export class SessionAdapter {
     }
     this.hasMore = hasMore;
     if (added > 0) this.pendingSettle = true;
+    return added;
+  }
+
+  /**
+   * 并入一页**只给轨迹用**的更早事件（`session/page` 的产物），只留下其中的表头。
+   *
+   * 与 `absorbRecords` 的三点不同，都是刻意的：
+   * 1. 写进 `trajectoryCatalogs`（只留 `request/header` 的 `{seq, tools}`），**不碰
+   *    `seen`** —— 聊天流的消息、分页锚点（`earliestSeq()`）都不动；
+   * 2. **不动 `hasMore`**：页面的 `hasMore` 只说明「服务端还有更早的」，而适配器这个
+   *    字段是**聊天流**的事实（「加载更早」按钮要不要出）——轨迹补完了目录，不等于
+   *    聊天流也把那些消息加载进来了；
+   * 3. **不置 `pendingSettle`**：没有要结算的聊天消息，下一次 `settleHistory()` 不该
+   *    因为轨迹补过表头而多发一整份 `messages/reset`。
+   *
+   * @returns 这一页**新见到的**事件条数（含不是表头的那些；0 = 没带来新东西，回补循环
+   *   据此停下）。为什么按事件数而不是表头数：一页里可能一个表头都没有，那时循环要
+   *   接着往前翻，只有「这页全是见过的 seq」才说明翻到头了。
+   */
+  absorbTrajectoryBackfill(records: readonly SessionHistoryRecord[]): number {
+    let added = 0;
+    for (const record of records ?? []) {
+      if (record?.type !== "event") continue;
+      const seq = record.event?.seq;
+      if (typeof seq !== "number") continue;
+      if (this.seen.has(seq) || this.trajectoryBackfilledSeqs.has(seq)) continue;
+      this.trajectoryBackfilledSeqs.add(seq);
+      added += 1;
+      if (record.event.type !== "request/header") continue;
+      const tools = headerTools((record.event.data as { header?: unknown } | undefined)?.header);
+      this.trajectoryCatalogs.set(seq, { seq, ...(tools === undefined ? {} : { tools }) });
+    }
     return added;
   }
 
@@ -2440,8 +2526,12 @@ export class SessionAdapter {
     this.liveSegments.clear();
     this.turnEndSeqs.clear();
     // **清掉已记录的事件**：snapshot 是一次全新的开窗，旧窗口的记录不再有效
-    // （重连后服务端会重发基线，留着会与新窗口的 seq 集合混在一起）
+    // （重连后服务端会重发基线，留着会与新窗口的 seq 集合混在一起）。
+    // 轨迹回补的那一份同样作废：它属于旧窗口的那条回补链，清掉之后下一次
+    // `sendTrajectory` 会重新判锚点（判据不成立就一页都不取）。
     this.seen.clear();
+    this.trajectoryCatalogs.clear();
+    this.trajectoryBackfilledSeqs.clear();
     this.currentTurn = undefined;
     this.turnPart = 1;
     this.currentStep = 0;

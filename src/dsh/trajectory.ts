@@ -501,8 +501,14 @@ function displayFailure(failure: unknown): { message: string; code?: string } {
   };
 }
 
-/** `EpochHeader.tools` → 详情面板用的工具目录。 */
-function headerTools(header: unknown): TrajectoryToolSchema[] | undefined {
+/**
+ * `EpochHeader.tools` → 详情面板用的工具目录。
+ *
+ * 两个消费点：折叠时读窗口里的 `request/header`；回补时把窗口外那几页的表头也抽成
+ * 同一形状（`SessionAdapter.absorbTrajectoryBackfill`）——两处必须同一口径，否则
+ * 「窗口里带的表头」与「补进来的表头」会被解释成两种东西。
+ */
+export function headerTools(header: unknown): TrajectoryToolSchema[] | undefined {
   const tools = (header as { tools?: unknown } | undefined)?.tools;
   if (!Array.isArray(tools) || tools.length === 0) return undefined;
   const out: TrajectoryToolSchema[] = [];
@@ -697,11 +703,34 @@ function turnEndFailure(reason: unknown): { message: string; code?: string } | u
 }
 
 /**
+ * 折叠之外补进来的**调用时目录**（`seq` + 那一帧 `request/header` 的 `tools`）。
+ *
+ * 只有一个来源：跟随窗口没带进表头时按需往前回补的那几页（`dsh/trajectoryBackfill.ts`）。
+ * 它**只参与「这条调用当时的工具目录是哪一份」这一个判断**，不进账本：`request/header`
+ * 进了账本就会多出一行「工具已更新」，而用户看见的窗口并没有变——面板打开着的时候
+ * 往上面插几千行是把视图顶走的（轨迹的滚动归应用自己管，`overflow-anchor: none`）。
+ */
+export interface TrajectoryCallCatalog {
+  /** 那一帧 `request/header` 的 seq。 */
+  readonly seq: number;
+  /** 那一帧带的工具目录；**字段缺席 = 工具无关的请求**（官方 `EpochHeader.tools` 的语义）。 */
+  readonly tools?: readonly TrajectoryToolSchema[];
+}
+
+/**
  * 把 durable 事件折成账本。
  *
  * `events` 必须是**按 seq 升序**的 durable 事件（`adapter.seen` 的 values 排序后）。
+ *
+ * `catalogs` 是窗口外补进来的调用时目录（可选）：窗口里**一帧表头都没有**时，某条调用
+ * 当时的目录只能从它取（那些表头在窗口外的更早位置）。窗口里出现过表头之后就不再看它
+ * ——回补来的永远比窗口里的旧。
  */
-export function deriveTrajectoryModel(events: readonly SessionWireEvent[], hasOlder: boolean): TrajectoryModel {
+export function deriveTrajectoryModel(
+  events: readonly SessionWireEvent[],
+  hasOlder: boolean,
+  catalogs: readonly TrajectoryCallCatalog[] = [],
+): TrajectoryModel {
   const cells: TrajectoryCell[] = [];
   /** callId → 工具行下标（结果回来时回填同一行）。 */
   const toolCells = new Map<string, number>();
@@ -818,6 +847,35 @@ export function deriveTrajectoryModel(events: readonly SessionWireEvent[], hasOl
    * 才能逐格取到），省下的是宿主里 95.7% 的重复分配与 GC 压力。
    */
   const schemaIntern = new Map<TrajectoryToolSchema, string>();
+  /**
+   * 窗口外补进来的调用时目录（按 seq 升序），只服务上面 `catalogForCall` 那一个判断。
+   *
+   * 规则与窗口里的表头逐字相同：取**最后一条 seq 小于这次调用**的那一份（后一帧整体
+   * 替换前一帧）。目录表按需建、建一次就缓存——一个会话通常只有一两份。
+   */
+  const outerCatalogs = [...catalogs].sort((left, right) => left.seq - right.seq);
+  const outerCatalogMaps = new Map<TrajectoryCallCatalog, ReadonlyMap<string, TrajectoryToolSchema>>();
+  /**
+   * 这次调用当时生效的目录。
+   *
+   * **只有窗口里还没出现过表头时才看窗口外那一份**（`lastHeaderSeq === null`）：窗口里
+   * 一旦出现过表头，它就是权威（比回补来的任何一帧都新）；窗口里一帧表头都没有时，
+   * 「这次调用之前最近的一帧」只能从窗口外那几页里找。
+   */
+  const catalogForCall = (seq: number): ReadonlyMap<string, TrajectoryToolSchema> | undefined => {
+    if (lastHeaderSeq !== null) return toolsByName;
+    for (let index = outerCatalogs.length - 1; index >= 0; index -= 1) {
+      const entry = outerCatalogs[index];
+      if (entry.seq >= seq) continue;
+      let map = outerCatalogMaps.get(entry);
+      if (map === undefined) {
+        map = new Map((entry.tools ?? []).map((tool) => [tool.name, tool]));
+        outerCatalogMaps.set(entry, map);
+      }
+      return map;
+    }
+    return undefined;
+  };
   /**
    * **初始**系统提示词那一行单独存着，最后 unshift 到最前面。
    *
@@ -2172,7 +2230,7 @@ export function deriveTrajectoryModel(events: readonly SessionWireEvent[], hasOl
         const callId = typeof data.callId === "string" ? data.callId : "";
         const name = typeof data.name === "string" ? data.name : "tool";
         const args = typeof data.arguments === "string" ? data.arguments : "";
-        const schemaDetail = schemaDetailOf(name, toolsByName, schemaIntern);
+        const schemaDetail = schemaDetailOf(name, catalogForCall(event.seq) ?? toolsByName, schemaIntern);
         // 这次调用是**这一步的助手请求**发起的，挂它的号（不是「最后开的请求号」：
         // 同一步中途可能压缩过，那个号属于压缩请求）
         const stepNumber = currentStepRequestNumber();
@@ -2248,7 +2306,7 @@ export function deriveTrajectoryModel(events: readonly SessionWireEvent[], hasOl
         const name = typeof data.name === "string" ? data.name : "tool";
         const args = typeof data.arguments === "string" ? data.arguments : JSON.stringify(data.arguments ?? "");
         const raw = args && args !== '""' ? args : "";
-        const schemaDetail = schemaDetailOf(name, toolsByName, schemaIntern);
+        const schemaDetail = schemaDetailOf(name, catalogForCall(event.seq) ?? toolsByName, schemaIntern);
         const cell = push({
           kind: "subtool",
           turn: currentTurn,

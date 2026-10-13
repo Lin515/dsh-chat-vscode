@@ -62,6 +62,14 @@ export class SessionScope {
    * 并发请求多次，白白重折一遍历史）。
    */
   historyLoading = false;
+  /**
+   * 本会话是否有一条**轨迹 schema 回补**链正在跑（`sendTrajectory` 的并发闸门）。
+   *
+   * 与 `historyLoading` 同一个道理，但它**不发帧**：轨迹面板在运行中每 3 秒发一次
+   * `listTrajectory`，没有这道闸门就会并发好几条回补链（各自从头判一次锚点、各自取页，
+   * 同一个 `beforeSeq` 被请求多次）。回补是机会性的，界面不需要知道它在跑。
+   */
+  trajectoryBackfilling = false;
   /** 排队中的消息（`inbox` 投影；旧服务端是 session/control 的队列帧）。 */
   queueItems: QueuedMessageView[] = [];
   /** 队列项 id → 它的原始输入（每次队列帧到达时按 rpcId 重建）。 */

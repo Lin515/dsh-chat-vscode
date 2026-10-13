@@ -212,6 +212,8 @@ const entries = {
   "build/vendor-source-lock.test.mjs": "scripts/vendorSourceLock.test.ts",
   "build/trajectory-display.test.mjs": "scripts/trajectoryDisplay.test.ts",
   "build/trajectory-pre.test.mjs": "scripts/trajectoryPre.test.ts",
+  // 轨迹 schema 回补（窗口没带进 request/header → 按需往前补页）：必须登记，否则 npm test 静默不跑
+  "build/trajectory-schema-backfill.test.mjs": "scripts/trajectorySchemaBackfill.test.ts",
   "build/trajectory-prompt-diff.test.mjs": "scripts/trajectoryPromptDiff.test.ts",
   "build/inspect-call.test.mjs": "scripts/inspectCall.test.ts",
   "build/trajectory-virtual.test.mjs": "scripts/trajectoryVirtual.test.ts",
