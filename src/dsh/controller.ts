@@ -38,7 +38,9 @@ import {
   formatPathList,
   isDirectoryPath,
   isImagePath,
+  imageMediaTypeForEntry,
   planIntake,
+  withoutAttachmentDataUrls,
   type IntakeItem,
   type IntakeRejection,
   type IntakeUpload,
@@ -1594,7 +1596,9 @@ export class ChatController implements vscode.Disposable {
       ),
       // 输入区那三个字段按**窗口**存（未绑会话时）/ 按会话键存，不属于会话状态片段：
       // 它们由输入框那条链单独维护，这里只补进快照（见 `keyForView`）。
-      attachments: [...this.attachments.list(sessionId ?? viewId ?? "")],
+      // 草稿附件剥掉 `dataUrl`：图片的 base64 只该在需要它的地方过线（见
+      // `withoutAttachmentDataUrls`），回显那条 `pendingMessages` 保留。
+      attachments: withoutAttachmentDataUrls(this.attachments.list(sessionId ?? viewId ?? "")),
       draft: this.drafts.get(sessionId ?? viewId ?? "") ?? "",
       // 乐观回显同理按窗口键存：**空表也要发**，否则切会话时上一条会话的回显留在界面
       pendingMessages: [...(this.pendingMessages.get(sessionId ?? viewId ?? "") ?? [])],
@@ -6495,10 +6499,14 @@ export class ChatController implements vscode.Disposable {
         break;
 
       case "send":
+        // 附件取**宿主账本**里那一份（界面那份只是它的投影）：帧里不再回传副本——
+        // 图片附件的 `dataUrl` 有几 MB，回传等于让它从 webview 再走一趟单程。
+        // 取的时刻早于 `beginSend` 里的 `commitAttachments`（那一步把芯片移进租约），
+        // 所以这里拿到的是用户此刻看到的那一批。
         await this.submitMessage(
           viewId,
           message.text,
-          message.attachments,
+          [...this.attachments.list(this.keyForView(viewId))],
           message.gesture ?? "enter",
           "composer",
         );
@@ -6772,12 +6780,31 @@ export class ChatController implements vscode.Disposable {
         // 所以拖放**不支持文件夹**（0 字节条目 → 明确提示），文件走字节通道——
         // 与按钮 / 粘贴最终同一条上传。
         {
-          const clipboardPaths = message.source === "paste" ? await readClipboardPaths() : [];
+          // 字节通道自己就能完整处理这一批时**不必去要真路径**。四个条件全满足才跳过：
+          // 真的读到了东西（不是空批）、没有任何读不出来的（复制目录给的 0 字节条目就在
+          // `unreadable` 里）、没有超 8 MB 的、而且每一枚都是图片。图片走路径通道与走字节
+          // 通道的结果相同（都内联成内容块、芯片名都取 basename），跳过不改变归宿；而那次
+          // 查询要付一次 PowerShell 进程启动（7 约 0.4 秒、5.1 约 1.3 秒，见
+          // `clipboardPaths.ts`），它正卡在「粘贴 → 芯片出现」的路径上——粘截图是最常见的
+          // 那条路。有任何一枚可能损失（读不出 / 超限 = 只有路径通道兜得住）就照旧去问。
+          const bytesAreEnough =
+            message.files.length > 0 &&
+            message.unreadable.length === 0 &&
+            message.tooLarge.length === 0 &&
+            message.files.every(
+              (file) => imageMediaTypeForEntry(file.mimeType, file.name) !== undefined,
+            );
+          const clipboardPaths =
+            message.source === "paste" && !bytesAreEnough ? await readClipboardPaths() : [];
           if (clipboardPaths.length) {
             this.log(`[attach] 粘贴：系统剪贴板里有 ${clipboardPaths.length} 个路径`);
             await this.addPaths(viewId, clipboardPaths, "paste");
             break;
           }
+          // 读不到路径就退回字节通道（截图、非 Windows、剪贴板被占、shell 缺失都是这条）。
+          // 这条日志是排查「粘贴大文件为什么被 8 MB 挡住 / 目录为什么成了 0 字节条目」的
+          // 唯一线索——没有它只能看出「走了字节通道」，看不出为什么没走路径
+          if (message.source === "paste") this.log("[attach] 粘贴：系统剪贴板里没有可用路径，走字节通道");
           // `source` 只影响这一批的提示措辞与日志：准入判据完全相同（缺省当拖放，旧帧没有该字段）
           const source: IngestSource = message.source === "paste" ? "paste" : "drop";
           const items: IntakeItem[] = [];
@@ -7732,7 +7759,12 @@ export class ChatController implements vscode.Disposable {
    * 什么都不发**——结算只落在归属那条记录上，不按「此刻在看哪条会话」投递。
    */
   private publishAttachments(key: string, list: readonly Attachment[]): void {
-    const frame: HostToWebview = { type: "patch", patch: { attachments: [...list] } };
+    // 剥 `dataUrl` 再下发（见 `withoutAttachmentDataUrls`）：芯片不显示图，而这份列表
+    // 每次变化都整份重发，带着图片 base64 就变成几 MB × 已有张数的过线量
+    const frame: HostToWebview = {
+      type: "patch",
+      patch: { attachments: withoutAttachmentDataUrls(list) },
+    };
     for (const sessionId of this.viewSessions.values()) {
       if (sessionId === key) {
         this.deliver(key, frame);
@@ -8304,7 +8336,10 @@ export class ChatController implements vscode.Disposable {
     if (requestId) this.attachments.returnLease(requestId, key, { publish: false });
     this.attachments.add(key, attachments, { publish: false });
     const list = this.attachments.list(key);
-    this.emitToView(viewId, { type: "patch", patch: { draft: next, attachments: [...list] } });
+    this.emitToView(viewId, {
+      type: "patch",
+      patch: { draft: next, attachments: withoutAttachmentDataUrls(list) },
+    });
   }
 
   /**
@@ -8397,9 +8432,15 @@ export class ChatController implements vscode.Disposable {
     // 只在「这个窗口还看着这条会话」时定向推给它：await 期间用户切走了的话，这帧会把
     // **别的会话**的草稿画进当前输入框（内容仍留在原会话的草稿表里，切回去就看得到）
     if (this.viewSessions.get(viewId) === sessionId) {
-      this.emitToView(viewId, { type: "patch", patch: { draft: next, attachments: [...list] } });
+      this.emitToView(viewId, {
+        type: "patch",
+        patch: { draft: next, attachments: withoutAttachmentDataUrls(list) },
+      });
     } else {
-      this.deliver(sessionId, { type: "patch", patch: { draft: next, attachments: [...list] } });
+      this.deliver(sessionId, {
+        type: "patch",
+        patch: { draft: next, attachments: withoutAttachmentDataUrls(list) },
+      });
     }
   }
 

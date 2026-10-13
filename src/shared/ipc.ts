@@ -1,4 +1,4 @@
-import type { Attachment, ChatState, ChangesSummaryView, MessageView, ModelSelectionView, ProviderGroupView, Segment, SessionSummaryView, TodoView } from "./chat";
+import type { ChatState, ChangesSummaryView, MessageView, ModelSelectionView, ProviderGroupView, Segment, SessionSummaryView, TodoView } from "./chat";
 import type {
   CommandView,
   FileRefView,
@@ -178,8 +178,12 @@ export type WebviewToHost =
    * `ui-conversation.busyEnter` + 是否正在运行解析（官方 `resolveSubmitMode`：
    * 运行中主手势用设置值、加速手势用**相反**值；空闲恒 queue）。
    * 界面不自己算——它不知道「发出去的那一刻 agent 还在不在跑」。
+   *
+   * **不带附件**：草稿附件的权威是宿主账本（界面那份只是它的投影），发送时宿主按
+   * 窗口键取账本里那一份。以前这里回传整份 `Attachment[]`，而图片附件带着完整的
+   * `dataUrl`——同一串 base64 于是要从 webview 再走一趟单程（几 MB，2026-10-13）。
    */
-  | { type: "send"; text: string; attachments: Attachment[]; gesture?: "enter" | "accelerated" }
+  | { type: "send"; text: string; gesture?: "enter" | "accelerated" }
   /**
    * **撤回**一条发送失败的回显：把那一行删掉。
    *

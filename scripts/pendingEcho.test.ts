@@ -365,15 +365,20 @@ console.log("pendingEcho: 用户消息乐观回显（驱动真控制器，offlin
 {
   const { c, frames, client } = makeController();
   c.bindView("v1");
-  const image = {
-    id: "img1",
-    kind: "image" as const,
-    name: "shot.png",
-    dataUrl: "data:image/png;base64,iVBORw0KGgo=",
-    width: 8,
-    height: 6,
-  };
-  await c.handle({ type: "send", text: "带图", attachments: [image], gesture: "enter" }, "v1");
+  await c.handle({ type: "openSession", sessionId: "session-image" }, "v1");
+  // 附件必须**先进账本**再发送：`send` 帧不再回传附件副本，宿主按窗口键取账本那一份
+  // （见 `shared/ipc.ts` 的 `send`）。这里走真实的粘贴字节通道，账本里那份因此带着本地字节。
+  await c.handle(
+    {
+      type: "attachBytes",
+      source: "paste",
+      files: [{ name: "shot.png", mimeType: "image/png", base64: "iVBORw0KGgo=" }],
+      unreadable: [],
+      tooLarge: [],
+    },
+    "v1",
+  );
+  await c.handle({ type: "send", text: "带图", gesture: "enter" }, "v1");
   const requestId = client.prompts[0].requestId;
 
   frames.length = 0;
@@ -427,7 +432,7 @@ console.log("pendingEcho: 用户消息乐观回显（驱动真控制器，offlin
   assert.strictEqual(first?.kind, "image");
   assert.strictEqual(
     first?.dataUrl,
-    image.dataUrl,
+    "data:image/png;base64,iVBORw0KGgo=",
     "durable 行借用了同一次提交的本地字节：交接时图不会退回文件名芯片再变回来",
   );
   assert.strictEqual(first?.attachmentId, "sha256:abc", "句柄仍用 durable 那一个（异步补字节照旧会跑）");

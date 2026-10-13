@@ -24,9 +24,11 @@ import { execFile } from "node:child_process";
  * VS Code 的扩展宿主是 Node（不是 Electron 渲染进程），拿不到 Electron 的
  * `clipboard` 模块；扩展 API 里也只有 `vscode.env.clipboard.readText()`（纯文本）。
  * Windows 上唯一现成的「读文件拖放列表」通道就是 WinForms 的
- * `Clipboard.GetFileDropList()`，它要求 **STA 线程**，所以脚本跑在
- * `powershell.exe -Sta` 里（Windows PowerShell 5.1 在每台 Windows 上都有；
- * 找不到时退回 `pwsh.exe`）。
+ * `Clipboard.GetFileDropList()`，它要求 **STA 线程**，所以脚本跑在 PowerShell 的
+ * `-Sta` 里。**进程启动成本**是这个方案的主要代价：PowerShell 7（`pwsh.exe`）约
+ * 0.4 秒，而 Windows PowerShell 5.1（`powershell.exe`）约 1.3 秒——所以顺序是 7 优先、
+ * 5.1 兜底（见 `SHELLS`）。这段耗时直接落在用户按下 Ctrl+V 之后，任何加在它前面的
+ * 步骤都会被感知成「粘贴卡了一下」。
  *
  * ## 拿不到就当作「没有」——绝不猜
  *
@@ -46,8 +48,20 @@ const CLIPBOARD_SCRIPT = [
   "[System.Windows.Forms.Clipboard]::GetFileDropList() | ForEach-Object { $_ }",
 ].join("; ");
 
-/** 先试 Windows PowerShell（5.1 每台机器都有），再试 PowerShell 7。 */
-const SHELLS = ["powershell.exe", "pwsh.exe"];
+/**
+ * 取剪贴板文件列表的 shell 顺序：**PowerShell 7 优先**，Windows PowerShell 5.1 兜底。
+ *
+ * 为什么要反转（2026-10-13 实测，用户报「粘一张截图要等 1 秒左右」）：这条查询串在
+ * 「粘贴 → 附件芯片出现」的关键路径上，而 **5.1 的进程启动本身就要 1.0～1.5 秒**
+ * （本机冷热一致：`powershell.exe -NoProfile -Command 1` ≈ 1040 ms，加 WinForms 到
+ * 1260～1480 ms），PowerShell 7 同一条查询只要 380～450 ms，`cmd.exe` 对照约 100 ms
+ * ——也就是说这 1 秒几乎全是 5.1 的启动开销，不是读剪贴板本身。7 不是每台机器都有，
+ * 没有时（ENOENT）回落到 5.1（每台 Windows 都自带）。
+ *
+ * 顺序靠前的那个坏掉（策略禁止、WinForms 缺失等）不换 shell：那种失败换一个也一样，
+ * 而且再等 1 秒更糟（见下面 `attempt` 的判据）。
+ */
+const SHELLS = ["pwsh.exe", "powershell.exe"];
 
 /** 读一次剪贴板的超时：卡住时立刻放弃并回退字节通道，不让用户干等。 */
 const TIMEOUT_MS = 5000;

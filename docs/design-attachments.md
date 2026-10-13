@@ -49,6 +49,8 @@
   粘贴图片先按会话内序号命名（pastedImageNames：图N.png / imageN.png）
   粘贴先问系统剪贴板真路径；没有路径才 decodeAttachBytes
 → planIntake → ingestAttachments → 芯片 / 引用 / 提示
+   整份下发的附件列表剥掉 dataUrl（芯片只显示名字与上传状态）
+→ beginSend → 附件取宿主账本（send 帧不回传 Attachment[]）
 → startUpload → attachmentLifecycle.start → performUpload → uploadFile
 → POST /api/session/uploadFileBinary?sessionId&name，application/octet-stream
 → ready + receiptId 或 error（芯片可重试）
@@ -102,7 +104,8 @@
 ### Shift 与粘贴路径
 
 - workbench 的 `windowDidDragStart` 不按 Shift 就令 iframe pointer-events:none，文件会在编辑器打开；Shift 才放行。整页 dragover 阻默认，dragActive 显示投放浮层。
-- Windows 宿主 `readClipboardPaths` 用 powershell.exe -Sta + WinForms GetFileDropList，UTF-8、5 秒超时、windowsHide；无 shell 时试 pwsh.exe。非 Windows / shell 缺失 / 剪贴板占用返回空表，正常回退字节，不作为错误。
+- Windows 宿主 `readClipboardPaths` 用 PowerShell 的 `-Sta` + WinForms GetFileDropList，UTF-8、5 秒超时、windowsHide；**PowerShell 7（`pwsh.exe`）优先、5.1 兜底**——5.1 的进程启动本机实测 1.0～1.5 秒，7 只有 0.4 秒，而这次查询串在「粘贴 → 芯片出现」的路径上。非 Windows / shell 缺失 / 剪贴板占用返回空表，正常回退字节，不作为错误。
+- 这次查询**只在这一批字节通道兜不住时才做**：全部读出、全在 8 MB 内且每一枚都是图片时直接走字节通道（图片走两条通道结果相同：都内联成内容块、芯片名都取 basename）。复制目录（0 字节条目进 `unreadable`）与任何超限条目照旧去要真路径——只有路径通道兜得住它们。
 - 复制目录后 Chromium File 为 size=0、type=""，arrayBuffer 抛 IO 错误；两层 0 字节拒绝不能删。不要拦 Ctrl+V keydown，否则截图粘贴也被吞。
 
 ## 实现地图与回归
@@ -113,7 +116,7 @@
 - [attachIntake.ts](<../src/webview/attachIntake.ts>) / [App.tsx](<../src/webview/App.tsx>)：字节提取、整页 drop / paste 与浮层；[pastedImageNames.ts](<../src/webview/pastedImageNames.ts>)：粘贴图片的会话内编号名；[ipc.ts](<../src/shared/ipc.ts>)：帧。
 - [clipboardPaths.ts](<../src/dsh/clipboardPaths.ts>)：Windows 真路径；[mentions.ts](<../src/shared/mentions.ts>)：引用拼写；[Composer.tsx](<../src/webview/components/Composer.tsx>)：芯片与重试。
 
-离线回归：attachments（回执、内容顺序、同管线 / 同 MIME、上限与拒绝）、pastedImageNames（编号识别、起始编号、只改图片、被拒条目不改名、降级图片文件的消息 / 回显 / 草稿恢复、删除后跨会话续号、快粘与切语言、空态绑定迁移、有界保留窗口）、attachmentLifecycle（切会话、旧轮、归还 / 交接 / 释放）、selection、previewFixture。跨宿主 / webview 的帧改动须双端构建；交付安装版时确认两端产物都更新。mimeType 可选兼容旧帧，不能把混合产物验证当完整验收。常规命令与真实测试批准见[AGENTS](<../AGENTS.md>)。
+离线回归：attachments（回执、内容顺序、同管线 / 同 MIME、上限与拒绝、`withoutAttachmentDataUrls` 只读不改、FileReader 前缀与并发顺序、剪贴板查询的四条件跳过、发送取账本）、pastedImageNames（编号识别、起始编号、只改图片、被拒条目不改名、降级图片文件的消息 / 回显 / 草稿恢复、删除后跨会话续号、快粘与切语言、空态绑定迁移、有界保留窗口）、clipboardPaths（解析、脚本形状、shell 顺序）、attachmentLifecycle（切会话、旧轮、归还 / 交接 / 释放）、selection、previewFixture。跨宿主 / webview 的帧改动须双端构建；交付安装版时确认两端产物都更新。mimeType 可选兼容旧帧，不能把混合产物验证当完整验收。常规命令与真实测试批准见[AGENTS](<../AGENTS.md>)。
 
 ## 未覆盖边界与重评条件
 

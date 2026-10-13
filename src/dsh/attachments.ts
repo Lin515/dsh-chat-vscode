@@ -405,6 +405,27 @@ export function planIntake(input: IntakePlanInput): IntakePlan {
   return plan;
 }
 
+/**
+ * 下发前的草稿附件：**剥掉 `dataUrl`**。
+ *
+ * 图片附件的 `dataUrl` 是完整的 base64（2 MB 图 ≈ 2.7 MB 字符串），而界面上的草稿芯片
+ * 只显示名字与上传状态：全 webview 唯一读 `dataUrl` 的是消息渲染（`Message.tsx`），
+ * 它读的是 `messages` / `pendingMessages` 里的附件，不是这份草稿列表。不剥的话这串
+ * base64 会随**每一次**整份下发重发（发第 k 张图时把前 k−1 张的 `dataUrl` 再发一遍），
+ * 粘贴因此越用越慢（2026-10-13 用户报「粘贴要等一秒」的成因之一）。
+ *
+ * **只读不改**：账本里那份（发送装配要用）保持完整，这里返回的是新建的浅副本。
+ * 需要 `dataUrl` 的那条路（乐观回显的图片气泡）走的是 `pendingMessages`，不受影响。
+ */
+export function withoutAttachmentDataUrls(list: readonly Attachment[]): Attachment[] {
+  return list.map((attachment) => {
+    if (attachment.dataUrl === undefined) return attachment;
+    const copy: Attachment = { ...attachment };
+    delete copy.dataUrl;
+    return copy;
+  });
+}
+
 /** 随 prompt 发出的内容块（官方 `PromptContentPart` 的三态）。 */
 export type PromptContentPart =
   | { type: "file"; receiptId: string }

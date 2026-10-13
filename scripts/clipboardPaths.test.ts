@@ -55,6 +55,12 @@ console.log("clipboardPaths: 输出解析（空 / 多行 / 行尾空白 / UNC）
   assert.ok(/GetFileDropList\(\)/.test(source), "读的就是文件拖放列表");
   assert.ok(/windowsHide: true/.test(source), "别在用户面前闪一个黑框（扩展宿主是后台进程）");
   assert.ok(/timeout: TIMEOUT_MS/.test(source), "卡住要能超时放弃，不能让粘贴一直悬着");
+  // 顺序即性能：这条查询串在「粘贴 → 芯片出现」的关键路径上，5.1 的进程启动本机实测
+  // 1.0～1.5 秒（7 约 0.4 秒），排反了用户体感就是「粘一张图要等 1 秒」（2026-10-13）
+  assert.ok(
+    /const SHELLS = \["pwsh\.exe", "powershell\.exe"\]/.test(source),
+    "PowerShell 7 必须排在 5.1 前面：5.1 每次启动要 1 秒以上，而这 1 秒全落在粘贴的等待里",
+  );
   // 脚本是常量、不经插值：路径只从剪贴板出来，不会被拼进脚本（没有注入面）
   const scriptBlock = /const CLIPBOARD_SCRIPT = \[([\s\S]*?)\]\.join/.exec(source)?.[1] ?? "";
   assert.ok(scriptBlock.length > 0, "找不到 CLIPBOARD_SCRIPT —— 结构变了，这条断言要跟着改");

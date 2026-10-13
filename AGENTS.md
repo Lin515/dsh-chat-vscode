@@ -46,6 +46,7 @@
 - JSON 帧清空字段必须发 `null`，不能发会被序列化丢弃的 `undefined`；宿主 `jsonSafeFrame` 与界面 `mergeWirePatch` 配套，见 `src/shared/wire.ts` 和 `scripts/wire.test.ts`。
 - 一条交互链只暴露一个端口对象，合并容器 ref 与动作；参考 `AutoScrollPort`。不要拆成多个 prop 后分散维护规则。
 - 本地图片解析回帧之前的加载失败不能触发最终降级；见 `hydrateLocalImages` 与 `scripts/imageHydrate.test.ts`。
+- 附件的 base64 只在需要它的地方过线：草稿列表的整份下发剥掉 `dataUrl`（`withoutAttachmentDataUrls`，芯片不读它），`send` 帧不带附件、发送取宿主账本（`attachments.list`），粘贴编码走 `FileReader`。界面与宿主是两条 IPC，几 MB 的字符串来回搬运会直接变成用户可感知的等待。
 - CSS 同特异性遵循后者覆盖前者；样式改动为同语义元素补一致性断言，例如活性指示器动画开关。
 - 文档和注释引用栏目名、函数名，不用节号或行号；不写本机专属路径。源码目录按层建立 README，只说明本目录文件与直属子目录；根目录导航放本文件，根 README 面向用户。
 

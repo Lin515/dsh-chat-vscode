@@ -85,20 +85,6 @@ export const ATTACH_BYTES_LIMIT = 8 * 1024 * 1024;
 /** 这一批附件是从哪条路进来的（只影响宿主给的提示文案）。 */
 export type AttachSource = "drop" | "paste";
 
-/** 一份 `File` 的字节 → base64（`postMessage` 两端的序列化都吃不掉 `Uint8Array`）。 */
-export function fileToBase64(file: File): Promise<string> {
-  return file.arrayBuffer().then((buffer) => {
-    const bytes = new Uint8Array(buffer);
-    let binary = "";
-    // 分块拼接：一次 apply 传十万级参数会栈溢出
-    const CHUNK = 0x8000;
-    for (let i = 0; i < bytes.length; i += CHUNK) {
-      binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
-    }
-    return btoa(binary);
-  });
-}
-
 /**
  * 这次拖拽带不带文件。
  *
@@ -202,6 +188,50 @@ export function clipboardFiles(data: DataTransfer | null | undefined): File[] {
 }
 
 /**
+ * 一份 `File` 的字节 → base64（`postMessage` 两端的序列化都吃不掉 `Uint8Array`）。
+ *
+ * **浏览器走 `FileReader.readAsDataURL`**：编码发生在原生实现里，2 MB 截图实测
+ * 6 ms；手写「分块 `fromCharCode` + `btoa`」同样 2 MB 要 30 ms——那 30 ms 几乎全花在
+ * JS 侧拼一个几 MB 的字符串上（2026-10-13 实测），而它正排在「粘贴 → 芯片出现」的
+ * 路径里。`FileReader` 缺失的环境（离线测试跑在 Node）退回手写实现，两条路输出同一串
+ * base64，调用方看不出差别。
+ */
+export function fileToBase64(file: File): Promise<string> {
+  return typeof FileReader === "function" ? readFileAsBase64(file) : encodeChunked(file);
+}
+
+/** 原生路径：读成 data URL 再剥掉 `data:…;base64,` 前缀。 */
+function readFileAsBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const url = typeof reader.result === "string" ? reader.result : "";
+      const at = url.indexOf(",");
+      if (at < 0) {
+        reject(new Error("FileReader 没有给出 data URL"));
+        return;
+      }
+      resolve(url.slice(at + 1));
+    };
+    reader.onerror = () => reject(reader.error ?? new Error("读取失败"));
+    reader.readAsDataURL(file);
+  });
+}
+
+/** 退路：分块拼接（一次 apply 传十万级参数会栈溢出）。 */
+function encodeChunked(file: File): Promise<string> {
+  return file.arrayBuffer().then((buffer) => {
+    const bytes = new Uint8Array(buffer);
+    let binary = "";
+    const CHUNK = 0x8000;
+    for (let i = 0; i < bytes.length; i += CHUNK) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+    }
+    return btoa(binary);
+  });
+}
+
+/**
  * 把一批 `File` 读成字节并交给宿主（`attachBytes`）。
  *
  * **0 字节的条目一律不读，直接报 `unreadable`**：复制**目录**时 Chromium 给的就是
@@ -213,6 +243,10 @@ export function clipboardFiles(data: DataTransfer | null | undefined): File[] {
  * 目录在宿主侧另有更好的归宿：粘贴时宿主先从系统剪贴板取**真路径**，目录走 `@dir/`
  * **引用**（写进正文的路径，不是附件）、文件走附件通道。这里是那条路失败时的兜底。
  *
+ * 多个条目**并发读**：一次粘几张图时，串行读会让第 N 张的等待叠加前 N−1 张的编码时间
+ * （每张 2 MB 约 6 ms 起，含读盘更多）。顺序仍按条目原序（`Promise.all` 的结果与输入
+ * 同序），所以编号与附件的先后不变；代价是同时持有这一批的 base64（受 8 MB 单条上限约束）。
+ *
  * 超限的只报名字（`tooLarge`）。
  */
 export function attachFiles(files: File[], source: AttachSource): void {
@@ -222,24 +256,31 @@ export function attachFiles(files: File[], source: AttachSource): void {
   void (async () => {
     const payload: { name: string; mimeType?: string; base64: string }[] = [];
     const unreadable: string[] = [];
-    for (const file of accepted) {
-      if (file.size === 0) {
+    const encoded = await Promise.all(
+      accepted.map(async (file): Promise<string | undefined> => {
+        if (file.size === 0) return undefined;
+        try {
+          return await fileToBase64(file);
+        } catch {
+          return undefined;
+        }
+      }),
+    );
+    encoded.forEach((base64, index) => {
+      const file = accepted[index]!;
+      if (base64 === undefined) {
         unreadable.push(file.name);
-        continue;
+        return;
       }
-      try {
-        payload.push({
-          name: file.name,
-          // 浏览器声明的类型：宿主**优先**按它判图片（与官方同口径，
-          // 见 `dsh/attachments.ts` 的 `imageMediaTypeForEntry`）。空串=没声明，
-          // 宿主退回按文件名后缀判——所以这个字段不能省。
-          ...(file.type ? { mimeType: file.type } : {}),
-          base64: await fileToBase64(file),
-        });
-      } catch {
-        unreadable.push(file.name);
-      }
-    }
+      payload.push({
+        name: file.name,
+        // 浏览器声明的类型：宿主**优先**按它判图片（与官方同口径，
+        // 见 `dsh/attachments.ts` 的 `imageMediaTypeForEntry`）。空串=没声明，
+        // 宿主退回按文件名后缀判——所以这个字段不能省。
+        ...(file.type ? { mimeType: file.type } : {}),
+        base64,
+      });
+    });
     if (!payload.length && !unreadable.length && !tooLarge.length) return;
     post({ type: "attachBytes", source, files: payload, unreadable, tooLarge });
   })();

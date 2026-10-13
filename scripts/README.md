@@ -69,7 +69,7 @@
 - [pathInsert.test.ts](<pathInsert.test.ts>) — 附件归类（`classifyPath`）+ 路径插入光标处 + `@` 目录块的整段替换（含引号空格目录的闭引号边界，真实临时文件）。
 - [attachments.test.ts](<attachments.test.ts>) — 扩展名 → mediaType 纯映射与 `showOpenDialog` 跨平台约束。
 - [attachmentLifecycle.test.ts](<attachmentLifecycle.test.ts>) — 附件草稿的归属、上传生命周期与**提交租约**：账本 module 的移走 / 归还 / 交接 / 释放（含越过告警阈值只记日志不销毁）与真控制器的受控 Promise 上传链（切会话结算、失败回填、失败行重发带真回执、窗口下线与撤回的回收口径）。
-- [clipboardPaths.test.ts](<clipboardPaths.test.ts>) — 系统剪贴板路径读取的判据（解析、大小上限、目录粘贴）。
+- [clipboardPaths.test.ts](<clipboardPaths.test.ts>) — 系统剪贴板路径读取的判据（解析、大小上限、目录粘贴、shell 顺序：7 优先以免每次粘贴付 5.1 的一秒启动）。
 - [pastedImageNames.test.ts](<pastedImageNames.test.ts>) — 粘贴图片的会话内编号名（`图N.png` / `imageN.png`）：编号识别、起始编号的基线、只改图片、被拒条目不编号。
 - [references.test.ts](<references.test.ts>) — `@path` 引用文本的拼写规则（对齐官方 `formatFileMention`）。
 - [selection.test.ts](<selection.test.ts>) — 编辑器选区 → 行号区间（「下一行行首结束要少算一行」边界）。

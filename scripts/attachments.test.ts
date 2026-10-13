@@ -25,7 +25,27 @@ import {
   isDirectoryPath,
   isImagePath,
   planIntake,
+  withoutAttachmentDataUrls,
 } from "../src/dsh/attachments";
+
+// ---------- 0. 下发前剥 dataUrl（图片的 base64 不该反复过线） ----------
+
+{
+  const image: Attachment = {
+    id: "i1",
+    kind: "image",
+    name: "图1.png",
+    dataUrl: "data:image/png;base64,AAAA",
+    bytes: 3,
+  };
+  const file: Attachment = { id: "f1", kind: "file", name: "notes.md" };
+  const out = withoutAttachmentDataUrls([image, file]);
+  assert.strictEqual(out[0]!.dataUrl, undefined, "图片的 dataUrl 不进下发帧（芯片不显示图）");
+  assert.strictEqual(out[0]!.name, "图1.png", "其余字段照旧");
+  assert.strictEqual(out[1], file, "本来就没有 dataUrl 的条目原样透传（不复制）");
+  assert.strictEqual(image.dataUrl, "data:image/png;base64,AAAA", "账本里那一份不许被改（发送装配还要用它）");
+  assert.notStrictEqual(out[0], image, "剥的是副本");
+}
 
 // ---------- 1. 扩展名 → mediaType ----------
 
@@ -338,6 +358,60 @@ console.log("attachments: 目录探测 / id / 错误上报 ✓");
   assert.deepStrictEqual(folderFrame.files, [], "目录条目（0 字节）不进 payload——上一版发的是 `docs.png` + 空 base64");
   assert.deepStrictEqual(folderFrame.unreadable, ["docs"], "读不出来的条目要报名字，让宿主提示");
 
+  // ⑧ FileReader 优先：浏览器里编码走原生实现（2 MB 实测 6 ms，而手写分块 + btoa 是
+  //    30 ms，全在粘贴的关键路径上）。Node 没有 FileReader，所以这里装一个桩来验证
+  //    **编排**：剥掉 data URL 前缀、多条目并发后顺序不变、失败归到 unreadable。
+  {
+    const intakeSource = readFileSync(join(process.cwd(), "src", "webview", "attachIntake.ts"), "utf8");
+    assert.ok(
+      /return typeof FileReader === "function" \? readFileAsBase64\(file\) : encodeChunked\(file\);/.test(intakeSource),
+      "编码必须优先走 FileReader，手写分块只做退路（5 倍差距，且在粘贴的等待里）",
+    );
+    const real = (globalThis as { FileReader?: unknown }).FileReader;
+    class StubFileReader {
+      result: string | null = null;
+      error: unknown = null;
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      readAsDataURL(file: File): void {
+        void file.arrayBuffer().then((buffer) => {
+          if (file.name === "boom.png") {
+            this.error = new Error("stub failure");
+            this.onerror?.();
+            return;
+          }
+          const bytes = Buffer.from(new Uint8Array(buffer));
+          this.result = `data:${file.type || "application/octet-stream"};base64,${bytes.toString("base64")}`;
+          this.onload?.();
+        });
+      }
+    }
+    (globalThis as { FileReader?: unknown }).FileReader = StubFileReader;
+    try {
+      posted.length = 0;
+      attachPastedFiles([
+        new File([new Uint8Array([1, 2])], "a.png", { type: "image/png" }),
+        new File([new Uint8Array([3])], "boom.png", { type: "image/png" }),
+        new File([new Uint8Array([4, 5, 6])], "b.bin", { type: "" }),
+      ]);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      const frame = posted[0] as { files: { name: string; base64: string }[]; unreadable: string[] };
+      assert.deepStrictEqual(
+        frame.files.map((file) => file.name),
+        ["a.png", "b.bin"],
+        "并发编码后仍按条目原序：编号与附件的先后都靠这个顺序",
+      );
+      assert.strictEqual(
+        frame.files[0]!.base64,
+        Buffer.from([1, 2]).toString("base64"),
+        "`data:…;base64,` 前缀必须剥掉（宿主只认裸 base64）",
+      );
+      assert.deepStrictEqual(frame.unreadable, ["boom.png"], "FileReader 失败归到 unreadable，不静默丢");
+    } finally {
+      (globalThis as { FileReader?: unknown }).FileReader = real;
+    }
+  }
+
   console.log("attachments: 粘贴接取（纯文本放行 / files 与 items / 只给图片补后缀 / 0 字节报 unreadable / source / 超限）✓");
 }
 
@@ -369,17 +443,44 @@ console.log("attachments: 目录探测 / id / 错误上报 ✓");
   // 剪贴板取；取到的路径**不分流**，整批交给接入管线（目录 → `@dir/` 引用、
   // 文件 → 附件，由 `planIntake` 一处决定）。顺序**不可反**：先走字节通道的话
   // 目录又变 0 字节附件、大文件又被 8 MB 挡掉。
+  //
+  // 2026-10-13 加了一道**跳过**：这一批字节通道自己能完整处理（都读出、都在 8 MB 内、
+  // 且都是图片）时不去要真路径——图片走两条通道结果相同，而那次查询要启动一个
+  // PowerShell 进程（7 约 0.4 秒、5.1 约 1.3 秒），正卡在「粘贴 → 芯片出现」上。
   assert.ok(
-    /const clipboardPaths = message\.source === "paste" \? await readClipboardPaths\(\) : \[\]/.test(
+    /const bytesAreEnough =[\s\S]{0,700}?message\.files\.every\(/.test(controller),
+    "跳过判据要四个条件一起看：有读到东西、没有 unreadable、没有 tooLarge、且每一枚都是图片",
+  );
+  assert.ok(
+    /const clipboardPaths =\s*\n?\s*message\.source === "paste" && !bytesAreEnough \? await readClipboardPaths\(\) : \[\]/.test(
       controller,
     ),
-    "粘贴必须先在宿主侧取剪贴板真路径（非粘贴一律不取），再谈字节通道",
+    "只有「字节通道兜不住」的粘贴才去要真路径；非粘贴一律不取",
   );
   assert.ok(
     /if \(clipboardPaths\.length\) \{[\s\S]{0,400}?await this\.addPaths\(viewId, clipboardPaths, "paste"\)/.test(
       controller,
     ),
     "取到路径就整批（含目录）交给接入管线，宿主不再自己按类别分流",
+  );
+  // **附件只在需要它的地方过线**（2026-10-13）：草稿列表整份下发、且每次变化都重发，
+  // 带上图片的 dataUrl 就是「几 MB × 已有张数」；而发送以前还要把这份列表原样传回宿主。
+  assert.ok(
+    /private publishAttachments\(key: string, list: readonly Attachment\[\]\): void \{[\s\S]{0,500}?withoutAttachmentDataUrls\(list\)/.test(
+      controller,
+    ),
+    "整份下发的草稿列表必须剥掉 dataUrl（芯片只显示名字与上传状态）",
+  );
+  assert.ok(
+    !/attachments: \[\.\.\.this\.attachments\.list\(/.test(controller),
+    "每个下发点都要走 withoutAttachmentDataUrls——漏一处就等于没剥",
+  );
+  assert.ok(
+    /await this\.submitMessage\(\s*\n\s*viewId,\s*\n\s*message\.text,\s*\n\s*\[\.\.\.this\.attachments\.list\(this\.keyForView\(viewId\)\)\]/.test(
+      controller,
+    ) &&
+      !/attachments: message\.attachments/.test(controller),
+    "发送取宿主账本那一份：帧里的附件副本（含 dataUrl）不再回传",
   );
   assert.ok(
     /private addDirectoryReference\(viewId: string, path: string\): void \{\s*\n\s*this\.insertMention\(viewId, formatFileMention\(this\.relativePath\(path\), "directory"\)\)/.test(

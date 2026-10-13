@@ -530,10 +530,14 @@ export function Composer({
    *
    * 候选弹层打开时 Enter 到不了这里（补全 hook 的 onKeyDown 先消费并
    * `stopPropagation`），所以这里不必再判弹层状态。
+   *
+   * **不发附件**：附件的权威是宿主账本，界面这份 `state.attachments` 只是它的投影，
+   * 宿主发送时自己取账本（见 `shared/ipc.ts` 的 `send`）。回传一份副本意味着图片的
+   * base64 要从这里再走一趟单程。
    */
   const send = (gesture: "enter" | "accelerated" = "enter") => {
     if (!canSend) return;
-    post({ type: "send", text: draft.trim(), attachments: state.attachments, gesture });
+    post({ type: "send", text: draft.trim(), gesture });
     // 发出去了就是要看回答：脱贴状态下也贴回最新（与切会话同一条规则）
     onFollowLatest?.();
     onDraft("");
