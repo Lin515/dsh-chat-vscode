@@ -61,7 +61,7 @@
 
 1. durable 用户行带 source.rpcId → MessageView.rpcId，和回显同身份。
 2. adapter 先落位并发帧，再通知 onUserMessage 收回回显。重放压住增量帧时，把承认通知攒到 messages/reset 之后（notifyAdmitted / flushAdmitted）。
-3. durable 行暂借本地图片字节，避免缩略图退成芯片再复原。先按 `includedAttachments` 过滤，与 buildPromptContent 同判据 / 顺序后按位置对齐，不能借给另一张图。
+3. durable 行暂借本地图片字节，避免缩略图退成芯片再复原。先按 `includedAttachments` 过滤，与 buildPromptContent 同判据 / 顺序后按位置对齐，不能借给另一张图。同一次提交的本地路径一并借给图片与文件块，文件块另带上内容块里的 durable 句柄——附件芯片据此可以单击打开本地那一份（见[附件设计](<design-attachments.md#打开附件>)）；图片缩略图本身单击出来的是原图浮层。
 4. pendingVisible 去重，两边 React key 均为 `p:<rpcId>`，复用 DOM；pendingInsertIndex 与 adapter 落位规则一致。
 5. 老服务端不回 rpcId 时宿主按正文退回兜底（retireEchoByText），最坏多画一帧，不能假称相同身份交接。
 

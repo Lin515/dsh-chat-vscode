@@ -51,13 +51,38 @@ export interface PerformUploadInput {
   name: string;
 }
 
+/**
+ * 一次上传的回执。
+ *
+ * `attachmentId` 是服务端附件存储里的**内容身份**（`sha256:…`，见
+ * `docs/dsh-server-api.md` 的 `FileAttachmentRef`）：它既写进芯片（`Attachment.attachmentId`），
+ * 也用来记「这枚附件以后能在本地打开什么」（`rememberOpenTarget`）。
+ */
+export interface UploadReceipt {
+  receiptId: string;
+  attachmentId?: string;
+}
+
 /** 账本要宿主做的三件事：一次上传 IO、失败原因文案、把最新列表交给界面。 */
 export interface AttachmentLifecyclePorts {
   /**
    * 真正的一次上传：路径来源重读磁盘、字节来源用给的那一份，再走官方同一条路由
    * （`DshClient.uploadFile`）。失败就抛，原因由 `describeError` 落成芯片文案。
    */
-  performUpload(input: PerformUploadInput): Promise<{ receiptId: string }>;
+  performUpload(input: PerformUploadInput): Promise<UploadReceipt>;
+  /**
+   * 上传成功那一刻记下「这枚附件以后能在本地打开什么」（可选）。
+   *
+   * 记账必须在这里：字节来源的暂存字节**成功即释放**（见 `settle`），原文件路径也可能
+   * 之后不在了——这一刻是宿主最后一次同时握着「内容身份」与「本地那一份」。
+   * 宿主据此记下原文件路径，或给字节来源落一份内容寻址的临时副本
+   * （见 `dsh/attachmentOpen.ts`）。
+   */
+  rememberOpenTarget?(input: {
+    attachmentId: string;
+    name: string;
+    source: AttachmentUploadSource;
+  }): void;
   /** 上传失败的原因文案（`@key` 或服务端原文），写进芯片的错误态。 */
   describeError(error: unknown): string;
   /** 某个键上的可见列表变了：把**最新一份**交给界面（调用方决定按会话广播还是发窗口）。 */
@@ -288,6 +313,22 @@ export class AttachmentLifecycle {
   }
 
   /**
+   * 按附件 id 找回账本里那一枚（可见草稿与提交租约一起找）。
+   *
+   * 唯一消费方是「单击打开附件」：界面手上的 `dataUrl` 只是投影（下发时被
+   * `withoutAttachmentDataUrls` 剥掉了），要落临时副本得回账本取**完整的那一条**
+   * （带 `dataUrl`）；还没释放的暂存字节同理。id 是宿主铸造的 UUID，找不到就是
+   * 没有（durable 消息行里的 `m<序号>` 不在这个命名空间里，天然落空）。
+   */
+  find(id: string): { attachment: Attachment; bytes?: Uint8Array } | undefined {
+    for (const holder of [...this.records.values(), ...this.leases.values()]) {
+      const attachment = holder.list.find((entry) => entry.id === id);
+      if (attachment) return { attachment, bytes: holder.bytes.get(id) };
+    }
+    return undefined;
+  }
+
+  /**
    * 提交失败、把内容还回输入框时**归还租约**：整份并回这个键上的可见列表，在飞轮次重新
    * 指回可见记录（于是它照旧结算、照旧能被重试）。
    *
@@ -453,7 +494,7 @@ export class AttachmentLifecycle {
         source: round.source,
         name: round.name,
       });
-      this.settle(round, { status: "ready", receiptId: value.receiptId });
+      this.settle(round, { status: "ready", receiptId: value.receiptId }, value.attachmentId);
     } catch (error) {
       this.ports.log?.(`[upload] ${round.name} 上传失败：${this.ports.describeError(error)}`);
       this.settle(round, { status: "error", message: this.ports.describeError(error) });
@@ -466,8 +507,12 @@ export class AttachmentLifecycle {
    * 三道门都在这一处：轮次被作废（移除 / 回收 / 替代）、被新一轮顶掉（同一枚附件最多一轮
    * 在飞）、附件已经不在持有者手里（既不复活、也不把字节留在账上）。持有者被换键 / 合并 /
    * 移进租约 / 交接**不是**门：`round.holder` 跟着条目走，结算照常落到那份账上。
+   *
+   * 成功这一刻做三件事，顺序有意义：写回执与**内容身份**（界面据此认得这枚附件）→
+   * 把「本地能打开什么」交给宿主（`rememberOpenTarget`，此后原文件可能不在了、字节也
+   * 要释放）→ 释放暂存字节。
    */
-  private settle(round: InflightUpload, state: UploadState): void {
+  private settle(round: InflightUpload, state: UploadState, attachmentId?: string): void {
     if (round.cancelled) return;
     const holder = round.holder;
     if (holder.pending.get(round.attachmentId) !== round) return;
@@ -478,8 +523,14 @@ export class AttachmentLifecycle {
       return;
     }
     target.upload = state;
-    // 成功之后没有「再传一次」这回事（界面只在失败态给重试），字节到此为止
-    if (state.status === "ready") holder.bytes.delete(round.attachmentId);
+    if (state.status === "ready") {
+      // 成功之后没有「再传一次」这回事（界面只在失败态给重试），字节到此为止
+      if (attachmentId !== undefined) {
+        target.attachmentId = attachmentId;
+        this.ports.rememberOpenTarget?.({ attachmentId, name: round.name, source: round.source });
+      }
+      holder.bytes.delete(round.attachmentId);
+    }
     // 租约不是可见草稿：结算只更新条目（失败行 / 回填引用它），不许推帧
     if (!holder.detached) this.ports.publish(holder.key, holder.list);
   }

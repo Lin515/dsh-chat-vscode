@@ -9,6 +9,7 @@ import { ImageGallery, LocalImageGallery, type ImageSource } from "./Images";
 import { formatClock, useSelectionFreeze } from "./primitives";
 import { ApprovalCard, CommandRow, FileChips, InjectedRow, MessageImages, NoticeRow, QuestionCard, ThinkingRow, ToolRow, TurnProcessRow, TurnStatsButton, UnknownBlockRow } from "./Rows";
 import { openMentionTarget } from "../mentionOpen";
+import { canOpenAttachment, openAttachment } from "../attachmentOpen";
 import { readableMentionText, scanMentionLinks, type MentionLinkTarget } from "../mentionLinks";
 import { useTexts, resolveText, type Texts } from "../texts";
 import { producedOnly, withoutVanished } from "../turnFiles";
@@ -263,6 +264,8 @@ export const Message = memo(function Message({
     // 缩略图；还没到 / 取不回来、以及文件附件，退回文件名芯片——用户至少能确认
     // 「我发出去的是哪些东西」，而不是一片空白或一个碎图图标。
     const attachments = message.attachments ?? [];
+    // 图片缩略图单击出来的是**原图浮层**（`ImageGallery` 的默认动作，与助手消息、工具行、
+    // 正文外链的图同一套待遇）；下面那些**附件芯片**才是「在编辑器里打开本地那一份」的入口。
     const images: ImageSource[] = attachments
       .filter((attachment) => attachment.kind === "image" && attachment.dataUrl)
       .map((attachment) => ({
@@ -320,11 +323,27 @@ export const Message = memo(function Message({
             {images.length ? <ImageGallery alt={texts.messageImageAlt} sources={images} /> : null}
             {chips.length ? (
               <div className="composer-chips">
-                {chips.map((attachment) => (
-                  <span className="chip" key={attachment.id}>
-                    <span className="chip-name">{attachment.name}</span>
-                  </span>
-                ))}
+                {chips.map((attachment) =>
+                  // 打得开的画成按钮（单击在编辑器里打开，见 `../attachmentOpen`）；
+                  // 只有服务端副本的那些仍是一枚静态芯片——做成按钮却点了没反应更糟
+                  canOpenAttachment(attachment) ? (
+                    <button
+                      className="chip chip-open"
+                      key={attachment.id}
+                      // 悬停给**原文件完整路径**（回放的消息靠宿主按内容身份查出来，见
+                      // `dsh/attachmentOpenStore.ts`）；查不到就不给提示，不拿文件名凑数。
+                      // 「单击会打开」不写进提示：可点光标本身就是提示。
+                      title={attachment.path}
+                      onClick={() => openAttachment(attachment)}
+                    >
+                      <span className="chip-name">{attachment.name}</span>
+                    </button>
+                  ) : (
+                    <span className="chip" key={attachment.id}>
+                      <span className="chip-name">{attachment.name}</span>
+                    </span>
+                  ),
+                )}
               </div>
             ) : null}
           </div>

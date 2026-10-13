@@ -27,7 +27,13 @@
  * 全部失败场景并以退出码 1 收场（诊断一条链路上的多个独立不变量时比逐条重跑快）。
  */
 import assert from "node:assert";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import * as vscode from "vscode";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import type { Attachment } from "../src/shared/chat";
+import { attachmentTempRoot, contentDigest } from "../src/dsh/attachmentOpen";
+import { readOriginalTarget } from "../src/dsh/attachmentOpenStore";
 
 process.on("unhandledRejection", (error) => {
   console.error("[attachmentLifecycle] 未处理的异步拒绝（当作失败）：", error);
@@ -37,6 +43,7 @@ process.on("unhandledRejection", (error) => {
 // 动态 import：让 alias（esbuild 打包期）把 controller 依赖的 vscode 换成 stub。
 const { ChatController } = await import("../src/dsh/controller");
 const { AttachmentLifecycle } = await import("../src/dsh/attachmentLifecycle");
+const { editorCalls } = await import("./vscodeTestStub");
 
 const A = "session-a";
 const B = "session-b";
@@ -71,6 +78,16 @@ const flush = async (): Promise<void> => {
   await new Promise((resolve) => setImmediate(resolve));
 };
 
+/**
+ * 一条**在当前平台上算绝对**的夹具路径。
+ *
+ * `node:path` 的 `isAbsolute` 是平台相关的：写死 `C:\ws\notes.md` 这类 Windows 形态，在
+ * Linux 上会被当成相对路径（缺 cwd 时直接解析不了）——CI 在 ubuntu-latest 上冒出来的
+ * 就是这一条。夹具只要求「绝对」，不要求文件真的存在（调用方各自定 `fileExistence`）；
+ * 真正要落盘的场景另用 `mkdtempSync` 那一套。
+ */
+const absoluteFixturePath = (...parts: string[]): string => join(tmpdir(), "dsh-attachment-fixture", ...parts);
+
 // =====================================================================================
 // §一 账本 module 的行为（跨它的真实 interface；不经过控制器）
 // =====================================================================================
@@ -80,7 +97,9 @@ function ledgerHarness() {
   const uploads: { sessionId: string; name: string; kind: string; bytes?: Uint8Array; path?: string }[] = [];
   const published: { key: string; ids: string[] }[] = [];
   const logs: string[] = [];
-  const gates: ReturnType<typeof gate<{ receiptId: string }>>[] = [];
+  const gates: ReturnType<typeof gate<{ receiptId: string; attachmentId?: string }>>[] = [];
+  /** 「本地能打开什么」的交付：内容身份 + 当时那份来源（字节或原文件路径）。 */
+  const openTargets: { attachmentId: string; name: string; kind: string; bytes?: Uint8Array; path?: string }[] = [];
   let gated = false;
   const ledger = new AttachmentLifecycle({
     performUpload: (input) => {
@@ -91,9 +110,17 @@ function ledgerHarness() {
         ...(input.source.kind === "bytes" ? { bytes: input.source.bytes } : { path: input.source.path }),
       });
       if (!gated) return Promise.resolve({ receiptId: `rcpt-${input.name}` });
-      const pending = gate<{ receiptId: string }>();
+      const pending = gate<{ receiptId: string; attachmentId?: string }>();
       gates.push(pending);
       return pending.promise;
+    },
+    rememberOpenTarget: (input) => {
+      openTargets.push({
+        attachmentId: input.attachmentId,
+        name: input.name,
+        kind: input.source.kind,
+        ...(input.source.kind === "bytes" ? { bytes: input.source.bytes } : { path: input.source.path }),
+      });
     },
     describeError: (error) => (error instanceof Error ? error.message : String(error)),
     publish: (key, list) => published.push({ key, ids: list.map((a) => a.id) }),
@@ -111,6 +138,7 @@ function ledgerHarness() {
     published,
     logs,
     gates,
+    openTargets,
     /** 之后的上传都挂到闸门上（场景自己 resolve / reject）。 */
     useGates: () => {
       gated = true;
@@ -456,6 +484,53 @@ await scenario("一.10 重复 start 不改在飞那一轮的字节来源", async
   assert.strictEqual(h.uploads[1]!.bytes, first, "重试用的仍是第一轮那份字节（没被重复 start 覆写）");
 });
 
+// ---------- 一.11 上传成功：内容身份写回芯片，并把「本地能打开什么」交给宿主 ----------
+await scenario("一.11 内容身份写回芯片、打开目标交给宿主（失败与作废轮都不给）", async () => {
+  const h = ledgerHarness();
+  h.useGates();
+  const remembered = h.openTargets;
+  // 字节来源：成功那一刻连**字节**一起交给宿主（之后账本自己就释放了）
+  h.ledger.add("s", [h.chip("c1")]);
+  const bytes = new Uint8Array([1, 2, 3]);
+  h.ledger.start("s", "c1", "s", { kind: "bytes", bytes });
+  h.gates[0]!.resolve({ receiptId: "rcpt-1", attachmentId: "sha256:aaa" });
+  await flush();
+  assert.strictEqual(h.ledger.list("s")[0]?.attachmentId, "sha256:aaa", "内容身份要写回芯片");
+  assert.deepStrictEqual(
+    remembered.map((entry) => [entry.attachmentId, entry.kind, entry.bytes === bytes]),
+    [["sha256:aaa", "bytes", true]],
+    "成功那一刻把同一份字节交给宿主（不是副本）",
+  );
+
+  // 路径来源：给的是原文件路径
+  h.ledger.add("s", [h.chip("c2", { path: "C:\\ws\\c2.txt" })]);
+  h.ledger.start("s", "c2", "s", { kind: "path", path: "C:\\ws\\c2.txt" });
+  h.gates.at(-1)!.resolve({ receiptId: "rcpt-2", attachmentId: "sha256:bbb" });
+  await flush();
+  assert.deepStrictEqual(remembered.at(-1), {
+    attachmentId: "sha256:bbb",
+    name: "c2.txt",
+    kind: "path",
+    path: "C:\\ws\\c2.txt",
+  });
+
+  // 失败不给（那时本地打开仍然走账本暂存字节，不靠这份索引）
+  h.ledger.add("s", [h.chip("c3")]);
+  h.ledger.start("s", "c3", "s", { kind: "bytes", bytes: new Uint8Array([9]) });
+  h.gates.at(-1)!.reject(new Error("网络断了"));
+  await flush();
+  assert.strictEqual(remembered.length, 2, "失败的轮次不该记打开目标");
+
+  // 作废轮（移除后迟到完成）也不给：那枚附件已经不在任何列表里
+  h.ledger.add("s", [h.chip("c4")]);
+  h.ledger.start("s", "c4", "s", { kind: "bytes", bytes: new Uint8Array([4]) });
+  const stale = h.gates.at(-1)!;
+  h.ledger.remove("s", "c4");
+  stale.resolve({ receiptId: "rcpt-4", attachmentId: "sha256:ccc" });
+  await flush();
+  assert.strictEqual(remembered.length, 2, "已移除的附件不该留下打开目标");
+});
+
 // =====================================================================================
 // §二 真控制器的集成场景（接入 → 上传 → 切会话 / 移除 / 重试）
 // =====================================================================================
@@ -531,6 +606,13 @@ interface Internals {
     releaseLease?(requestId: string): void;
   };
   attachmentsBySession?: Map<string, Attachment[]>;
+  /** 「内容身份 → 本地可打开的那个文件」索引（接线后才有的字段：探测式调用）。 */
+  attachmentTargets?: { pathFor(id: string): Promise<string | undefined>; remember(id: string, path: string): void };
+  /** 路径通道的接入（「添加文件」按钮 / 粘贴真路径）：驱动真 `planIntake` 那条管线。 */
+  addPaths?(viewId: string, paths: readonly string[], source: string): Promise<void>;
+  fileExistence(uri: { fsPath: string }): Promise<"present" | "absent" | "unknown">;
+  openChanges(uri: { fsPath: string }): Promise<boolean>;
+  sessions: { id: string; cwd: string }[];
   bindView(viewId: string): void;
   unbindView(viewId: string): void;
   openSession(viewId: string, sessionId: string): Promise<void>;
@@ -559,8 +641,13 @@ interface Harness {
   frames: Captured[];
   /** 每一次 `uploadFile`（结算断言看它：打在哪个会话、用的哪份字节）。 */
   uploads: UploadCall[];
-  /** 下一次上传的应答：场景自己决定什么时候 resolve / reject（受控 Promise）。 */
-  answer: (call: UploadCall) => Promise<{ receiptId: string }>;
+  /**
+   * 下一次上传的应答：场景自己决定什么时候 resolve / reject（受控 Promise）。
+   *
+   * 只给 `receiptId` 就够——`attachmentId`（内容身份）缺省时由测试台按文件名合成一个，
+   * 因为真宿主的上传应答里 `file` 一定在（`performUpload` 要读它写回芯片）。
+   */
+  answer: (call: UploadCall) => Promise<{ receiptId: string; attachmentId?: string }>;
   /** 每一次 `session/prompt`（内容块断言看它：重发到底带没带上文件回执）。 */
   prompts: { sessionId: string; content: unknown[]; mode: string; requestId: string }[];
   /** 下一次 prompt 的应答：默认成功，场景可以让它挂在闸门上或抛。 */
@@ -586,11 +673,17 @@ const fakeMemento = () => {
   };
 };
 
-function harness(): Harness {
+/**
+ * 一套离线控制器台。
+ *
+ * `globalState` 可以**跨两次 harness 调用共用**：那正是「重开宿主」的形状——内存里的
+ * 一切（索引、账本）都是新的，只有 `globalState` 里那份持久记录还在。
+ */
+function harness(globalState: ReturnType<typeof fakeMemento> = fakeMemento()): Harness {
   const controller = new ChatController(
     fakeServer() as never,
     () => undefined,
-    fakeMemento() as never,
+    globalState as never,
     fakeMemento() as never,
     { delete: async () => undefined, get: async () => undefined, store: async () => undefined } as never,
   );
@@ -622,7 +715,17 @@ function harness(): Harness {
     uploadFile: (sessionId: string, bytes: Uint8Array, name: string) => {
       const call: UploadCall = { sessionId, name, bytes };
       state.uploads.push(call);
-      return state.answer(call);
+      // 真实客户端回的是 `{receiptId, file}`（`DshClient.uploadFile`）：`file.attachmentId`
+      // 是内容摘要，控制器要读它写回芯片并记住「本地能打开什么」。场景只给 receiptId 时
+      // 在这里补一个内容身份，省得每条场景都手写那一层。
+      return state.answer(call).then((answer) => ({
+        receiptId: answer.receiptId,
+        file: {
+          attachmentId: answer.attachmentId ?? `sha256:${call.name}`,
+          name: call.name,
+          bytes: call.bytes.byteLength,
+        },
+      }));
     },
     prompt: async (sessionId: string, content: unknown[], mode: string, requestId: string) => {
       state.prompts.push({ sessionId, content, mode, requestId });
@@ -673,6 +776,9 @@ await scenario("二.1 切会话后 A 结算、B 不受污染", async () => {
   await h.c.openSession("v1", B);
   h.answer = async (call) => ({ receiptId: `rcpt-${call.name}` });
   await h.c.handle(attachFrame("b.txt"), "v1");
+  // B 自己那一枚的结算也走一帧（接线后上传应答多一次微任务）：这里先让它落定，
+  // 否则下面清零之后它才到达，会被算成「A 的结算推给了 B」
+  await flush();
   assert.deepStrictEqual(
     listOf(h.c, B).map((a) => a.name),
     ["b.txt"],
@@ -1187,6 +1293,388 @@ await scenario("二.16 无回显失败回填与清理断言", async () => {
   const before = h.uploads.length;
   await h.c.handle({ type: "retryUpload", id: otherId }, "v1");
   assert.strictEqual(h.uploads.length, before, "移除释放了字节：重试不再打 IO");
+});
+
+// ---------- 二.17 上传成功的字节附件：本地留了一份可打开的副本 ----------
+await scenario("二.17 字节来源上传成功后内容身份可换回本地副本", async () => {
+  const h = harness();
+  h.c.bindView("v1");
+  await h.c.openSession("v1", A);
+  await h.c.handle(attachFrame("拖进来的.txt"), "v1");
+  await flush();
+
+  const chip = listOf(h.c, A)[0]!;
+  assert.deepStrictEqual(uploadOf(h.c, A, "拖进来的.txt"), {
+    status: "ready",
+    receiptId: "rcpt-拖进来的.txt",
+  });
+  assert.strictEqual(chip.attachmentId, "sha256:拖进来的.txt", "上传成功要把内容身份写回芯片");
+
+  // 落盘是后台的：这里等它一次（真机上用户点到之前早就写完了）
+  const path = await h.c.attachmentTargets?.pathFor(chip.attachmentId!);
+  assert.ok(path, "内容身份要能换回本地那一份");
+  assert.ok(existsSync(path!), `临时副本要真的在磁盘上：${path}`);
+  assert.strictEqual(readFileSync(path!, "utf8"), "hello", "副本内容与拖进来的字节一致");
+  rmSync(dirname(path!), { recursive: true, force: true });
+});
+
+// ---------- 二.18 打开附件：账本里的字节落临时副本；没有可打开的内容就明确说一声 ----------
+await scenario("二.18 打开附件：内存字节落副本、无处可取时提示", async () => {
+  const h = harness();
+  h.c.bindView("v1");
+  await h.c.openSession("v1", A);
+
+  // 粘贴进来的截图：磁盘上没有原件，账本里那一条带着 dataUrl
+  const png = Buffer.from("fake-png-bytes");
+  putAttachment(h.c, A, {
+    id: "img-1",
+    kind: "image",
+    name: "图1.png",
+    dataUrl: `data:image/png;base64,${png.toString("base64")}`,
+  });
+  editorCalls.reset();
+  await h.c.handle({ type: "openAttachment", name: "图1.png", kind: "image", id: "img-1" }, "v1");
+  const copy = join(attachmentTempRoot(tmpdir()), contentDigest(png).slice(0, 12), "图1.png");
+  assert.ok(existsSync(copy), `账本里的字节要落成临时副本：${copy}`);
+  assert.strictEqual(readFileSync(copy, "utf8"), "fake-png-bytes");
+  // 普通打开**只发 `vscode.open`**：不按文件类型分流，也不走文本编辑器那条路
+  // （`openTextDocument` 对二进制直接抛「文件似乎是二进制文件，不能作为文本打开」
+  // ——2026-10-13 用户报「单击没有反应」就是这一条，真机日志里只有一行 `[open] 打开失败`）。
+  assert.deepStrictEqual(
+    editorCalls.opened,
+    [],
+    "普通打开不许走文本编辑器那条路（二进制在真机上必失败）",
+  );
+  assert.deepStrictEqual(
+    editorCalls.openedViaCommand,
+    [copy],
+    "把文件交给 VS Code：vscode.open 打开临时副本，编辑器由它自己挑",
+  );
+  assert.deepStrictEqual(
+    h.frames.filter((f) => f.frame.type === "toast"),
+    [],
+    "打开成功不弹提示",
+  );
+  rmSync(dirname(copy), { recursive: true, force: true });
+
+  // 只有服务端副本的文件附件（重开这套扩展之后的历史消息）：明说打不开，不静默
+  h.frames.length = 0;
+  await h.c.handle({ type: "openAttachment", name: "历史.pdf", kind: "file", attachmentId: "sha256:none" }, "v1");
+  const toasts = h.frames.filter((f) => f.frame.type === "toast");
+  assert.strictEqual(toasts.length, 1, "打不开要有提示");
+  assert.strictEqual(toasts[0]!.frame.text, "@attachmentUnavailable", "提示走语言中立标记");
+});
+
+// ---------- 二.19 打开附件：普通打开交给 vscode.open，带行号才走文本文档 ----------
+await scenario("二.19 普通打开发 vscode.open；带行号才走文本文档", async () => {
+  const h = harness();
+  h.c.bindView("v1");
+  await h.c.openSession("v1", A);
+  h.c.fileExistence = async () => "present";
+  // 路径要用**宿主平台上算绝对**的那种（`isAbsolute` 是平台相关的：写死 `C:\…` 在 Linux 上
+  // 会被当成相对路径，缺 cwd 时直接解析不了——CI 在 ubuntu-latest 上跑出来的正是这条）
+  const notes = absoluteFixturePath("notes.md");
+  putAttachment(h.c, A, { id: "f1", kind: "file", name: "notes.md", path: notes });
+
+  editorCalls.reset();
+  await h.c.handle({ type: "openAttachment", name: "notes.md", kind: "file", id: "f1", path: notes }, "v1");
+  assert.deepStrictEqual(
+    editorCalls.openedViaCommand,
+    [notes],
+    "普通打开就是把资源交给 VS Code（`vscode.open`），编辑器由它自己挑",
+  );
+  assert.deepStrictEqual(editorCalls.opened, [], "普通打开不经过文本编辑器 API");
+  assert.deepStrictEqual(h.frames.filter((f) => f.frame.type === "toast"), [], "成功时不弹提示");
+
+  // 正文链接那种**带行号**的打开（`[…](src/a.ts#L12)`）仍走文本文档：光标要按真实行数夹取，
+  // 越界的 `Position` 在 VS Code 里是抛异常而不是夹取
+  editorCalls.reset();
+  await h.c.handle({ type: "openFile", path: notes, line: 7 }, "v1");
+  assert.deepStrictEqual(editorCalls.opened, [notes], "带行号时先取文本文档");
+  assert.deepStrictEqual(editorCalls.shown, [notes], "再把那份文档显示出来");
+});
+
+// ---------- 二.20 不按类型分流：不是图片的二进制一样开得出来；带行号指到二进制也不静默 ----------
+await scenario("二.20 二进制附件照常打开；带行号那条路失败也不静默", async () => {
+  const h = harness();
+  h.c.bindView("v1");
+  await h.c.openSession("v1", A);
+  // 拖进来的压缩包：上传失败 → 字节留在账本里（这正是「点开临时副本」的来路之一）
+  h.answer = async () => {
+    throw new Error("网络断了");
+  };
+  await h.c.handle(attachFrame("archive.zip"), "v1");
+  await flush();
+  const chip = listOf(h.c, A)[0]!;
+  assert.strictEqual(chip.upload?.status, "error", "前提：这一枚落在失败态（字节仍在）");
+
+  editorCalls.reset();
+  await h.c.handle({ type: "openAttachment", name: chip.name, kind: "file", id: chip.id }, "v1");
+  const copy = join(attachmentTempRoot(tmpdir()), contentDigest(Buffer.from("hello")).slice(0, 12), "archive.zip");
+  assert.ok(existsSync(copy), `账本里的暂存字节要落成临时副本：${copy}`);
+  assert.deepStrictEqual(editorCalls.opened, [], "压缩包同样不走文本编辑器（这里没有按类型分流）");
+  assert.deepStrictEqual(editorCalls.openedViaCommand, [copy], "vscode.open 照样把文件开出来");
+  rmSync(dirname(copy), { recursive: true, force: true });
+
+  // 带行号打开指到一个二进制上（`![](pic.png#L3)` 那种链接）：文本那条路在真机上必失败
+  // （桩按扩展名复刻），必须退到普通打开——不能只留一行日志
+  editorCalls.reset();
+  const pic = absoluteFixturePath("pic.png");
+  await h.c.handle({ type: "openFile", path: pic, line: 3 }, "v1");
+  assert.deepStrictEqual(editorCalls.opened, [], "二进制拿不到文本文档");
+  assert.deepStrictEqual(editorCalls.openedViaCommand, [pic], "退回普通打开，仍然开出来");
+  assert.ok(
+    (h.frames.filter((f) => f.frame.type === "toast").length === 0),
+    "这条退让不需要提示（用户拿到了文件）",
+  );
+});
+
+/** 打开链的离线台：查真实临时文件，服务端字节只由场景注入。 */
+async function openHarness() {
+  const h = harness();
+  h.c.bindView("v1");
+  await h.c.openSession("v1", A);
+  h.c.fileExistence = async (uri) => existsSync(uri.fsPath) ? "present" : "absent";
+  const reads: { sessionId: string; attachmentId: string }[] = [];
+  const source = { answer: async (): Promise<unknown> => undefined };
+  (h.c.client as { request: (method: string, params: { request: { sessionId: string; attachmentId: string } }) => Promise<unknown> }).request = async (method, params) => {
+    assert.strictEqual(method, "session/attachment", "只允许离线附件读数");
+    reads.push(params.request);
+    return source.answer();
+  };
+  h.c.openChanges = async () => { assert.fail("附件缺原件不能用 git diff 冒充打开成功"); };
+  h.frames.length = 0;
+  editorCalls.reset();
+  return { ...h, reads, source };
+}
+
+await scenario("二.21 失效的消息路径继续到账本字节，不提前报文件删除", async () => {
+  const h = await openHarness();
+  const bytes = Buffer.from("stale-message-path-copy");
+  const name = "stale-message.png";
+  const copy = join(attachmentTempRoot(tmpdir()), contentDigest(bytes).slice(0, 12), name);
+  putAttachment(h.c, A, { id: "stale-message", kind: "image", name, dataUrl: `data:image/png;base64,${bytes.toString("base64")}` });
+  try {
+    await h.c.handle({ type: "openAttachment", kind: "image", name, id: "stale-message", path: join(tmpdir(), "missing-attachment-original", name) }, "v1");
+    assert.deepStrictEqual(editorCalls.openedViaCommand, [copy], "原路径失效后打开账本副本");
+    assert.strictEqual(readFileSync(copy, "utf8"), bytes.toString());
+    assert.deepStrictEqual(h.frames.filter((f) => f.frame.type === "toast"), []);
+    assert.deepStrictEqual(h.reads, [], "账本能打开就不读服务端");
+  } finally {
+    rmSync(dirname(copy), { recursive: true, force: true });
+  }
+});
+
+await scenario("二.22 失效的账本路径不挡 dataUrl，无法解析的消息路径同样继续", async () => {
+  const h = await openHarness();
+  const bytes = Buffer.from("stale-ledger-path-copy");
+  const name = "stale-ledger.png";
+  const copy = join(attachmentTempRoot(tmpdir()), contentDigest(bytes).slice(0, 12), name);
+  putAttachment(h.c, A, { id: "stale-ledger", kind: "image", name, path: join(tmpdir(), "missing-attachment-original", name), dataUrl: `data:image/png;base64,${bytes.toString("base64")}` });
+  try {
+    await h.c.handle({ type: "openAttachment", kind: "image", name, id: "stale-ledger", path: "relative-without-cwd.png" }, "v1");
+    assert.deepStrictEqual(editorCalls.openedViaCommand, [copy]);
+    assert.strictEqual(readFileSync(copy, "utf8"), bytes.toString());
+    assert.deepStrictEqual(h.frames.filter((f) => f.frame.type === "toast"), []);
+  } finally {
+    rmSync(dirname(copy), { recursive: true, force: true });
+  }
+});
+
+await scenario("二.23 失效原路径后先取上传索引，再取 durable 图片字节", async () => {
+  const h = await openHarness();
+  const root = mkdtempSync(join(tmpdir(), "dsh-attachment-index-"));
+  const indexed = join(root, "indexed.png");
+  const bytes = Buffer.from("durable-fallback-bytes");
+  const name = "durable-fallback.png";
+  const copy = join(attachmentTempRoot(tmpdir()), contentDigest(bytes).slice(0, 12), name);
+  writeFileSync(indexed, "indexed-original-bytes");
+  h.c.attachmentTargets!.remember("sha256:fallback", indexed);
+  putAttachment(h.c, A, { id: "durable", kind: "image", name, path: join(root, "gone.png"), attachmentId: "sha256:fallback" });
+  h.source.answer = async () => ({ data: bytes.toString("base64"), attachment: { mediaType: "image/png" } });
+  const message = { type: "openAttachment", kind: "image", name, id: "durable", path: join(root, "gone.png") };
+  try {
+    await h.c.handle(message, "v1");
+    assert.deepStrictEqual(editorCalls.openedViaCommand, [indexed], "有效索引优先于服务端副本");
+    assert.deepStrictEqual(h.reads, []);
+    rmSync(indexed);
+    editorCalls.reset();
+    await h.c.handle(message, "v1");
+    assert.deepStrictEqual(h.reads, [{ sessionId: A, attachmentId: "sha256:fallback" }]);
+    assert.deepStrictEqual(editorCalls.openedViaCommand, [copy]);
+    assert.strictEqual(readFileSync(copy, "utf8"), bytes.toString());
+    assert.strictEqual(await h.c.attachmentTargets!.pathFor("sha256:fallback"), copy, "恢复副本写回索引");
+    assert.deepStrictEqual(h.frames.filter((f) => f.frame.type === "toast"), []);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(dirname(copy), { recursive: true, force: true });
+  }
+});
+
+await scenario("二.24 全来源不可用只报一次附件提示，普通删文件仍走 git diff", async () => {
+  const h = await openHarness();
+  const missing = join(tmpdir(), "missing-attachment-original", "unavailable.png");
+  h.c.attachmentTargets!.remember("sha256:unavailable", missing);
+  putAttachment(h.c, A, { id: "unavailable", kind: "image", name: "unavailable.png", path: missing, attachmentId: "sha256:unavailable" });
+  h.source.answer = async () => { throw new Error("离线：没有服务端副本"); };
+  await h.c.handle({ type: "openAttachment", kind: "image", name: "unavailable.png", path: missing, id: "unavailable" }, "v1");
+  assert.deepStrictEqual(editorCalls.openedViaCommand, []);
+  assert.strictEqual(h.reads.length, 1, "前面失效不阻断最后的字节来源");
+  assert.deepStrictEqual(h.frames.filter((f) => f.frame.type === "toast").map((f) => f.frame.text), ["@attachmentUnavailable"]);
+
+  let diffs = 0;
+  h.c.openChanges = async (uri) => { assert.strictEqual(uri.fsPath, missing); diffs++; return true; };
+  h.frames.length = 0;
+  await h.c.handle({ type: "openFile", path: missing }, "v1");
+  assert.strictEqual(diffs, 1, "普通 openFile 的 git 删除文件退路保持不变");
+  assert.deepStrictEqual(h.frames.filter((f) => f.frame.type === "toast"), []);
+});
+
+await scenario("二.25 原件存在时优先打开，按会话 cwd 解析相对路径", async () => {
+  const h = await openHarness();
+  const root = mkdtempSync(join(tmpdir(), "dsh-attachment-original-"));
+  const original = join(root, "original.png");
+  writeFileSync(original, "original-edited-content");
+  h.c.sessions = [{ id: A, cwd: root }];
+  putAttachment(h.c, A, { id: "original", kind: "image", name: "original.png", path: original, dataUrl: "data:image/png;base64,Y29weQ==", attachmentId: "sha256:original" });
+  try {
+    await h.c.handle({ type: "openAttachment", kind: "image", name: "original.png", id: "original", path: "original.png" }, "v1");
+    assert.deepStrictEqual(editorCalls.openedViaCommand, [original]);
+    assert.deepStrictEqual(h.reads, []);
+    assert.deepStrictEqual(h.frames.filter((f) => f.frame.type === "toast"), []);
+    editorCalls.reset();
+    await h.c.handle({ type: "openAttachment", kind: "image", name: "original.png", id: "original" }, "v1");
+    assert.deepStrictEqual(editorCalls.openedViaCommand, [original], "账本原路径同样优先于 dataUrl");
+    assert.deepStrictEqual(h.reads, []);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+await scenario("二.26 编辑器拒绝原件后继续副本，全部拒绝只报一次", async () => {
+  const h = await openHarness();
+  const root = mkdtempSync(join(tmpdir(), "dsh-attachment-rejected-"));
+  const original = join(root, "rejected.png");
+  writeFileSync(original, "rejected-original");
+  const bytes = Buffer.from("editor-fallback-bytes");
+  const name = "editor-fallback.png";
+  const copy = join(attachmentTempRoot(tmpdir()), contentDigest(bytes).slice(0, 12), name);
+  putAttachment(h.c, A, { id: "rejected", kind: "image", name, dataUrl: `data:image/png;base64,${bytes.toString("base64")}` });
+  const execute = vscode.commands.executeCommand;
+  const attempted: string[] = [];
+  let rejectAll = false;
+  vscode.commands.executeCommand = (async (_command: string, uri: { fsPath: string }) => {
+    attempted.push(uri.fsPath);
+    if (rejectAll || uri.fsPath === original) throw new Error("离线：编辑器拒绝打开");
+    return execute("vscode.open", uri);
+  }) as typeof execute;
+  try {
+    await h.c.handle({ type: "openAttachment", kind: "image", name, id: "rejected", path: original }, "v1");
+    assert.deepStrictEqual(attempted, [original, copy], "不能把 openFile 的 void 当打开成功");
+    assert.deepStrictEqual(editorCalls.openedViaCommand, [copy]);
+    assert.deepStrictEqual(h.frames.filter((f) => f.frame.type === "toast"), []);
+    rejectAll = true;
+    await h.c.handle({ type: "openAttachment", kind: "image", name, id: "rejected", path: original }, "v1");
+    assert.deepStrictEqual(h.frames.filter((f) => f.frame.type === "toast").map((f) => f.frame.text), ["@attachmentUnavailable"]);
+  } finally {
+    vscode.commands.executeCommand = execute;
+    rmSync(root, { recursive: true, force: true });
+    rmSync(dirname(copy), { recursive: true, force: true });
+  }
+});
+
+// ---------- 二.27 打开记录落盘：重开宿主之后，历史文件附件照样打开用户那个原件 ----------
+await scenario("二.27 重开宿主后按持久记录打开历史文件附件", async () => {
+  const globalState = fakeMemento();
+  const root = mkdtempSync(join(tmpdir(), "dsh-attachment-restart-"));
+  const original = join(root, "报告.pdf");
+  writeFileSync(original, "original-file-content");
+
+  const h1 = harness(globalState);
+  h1.c.bindView("v1");
+  await h1.c.openSession("v1", A);
+  h1.c.fileExistence = async (uri) => (existsSync(uri.fsPath) ? "present" : "absent");
+  // 「添加文件」按钮 / 粘贴真路径走的是**路径通道**：附件本来就带着用户磁盘上那个路径
+  await h1.c.addPaths!("v1", [original], "button");
+  await flush();
+  const chip = listOf(h1.c, A)[0]!;
+  assert.strictEqual(chip.upload?.status, "ready", "前提：这一枚上传成功（上传回执里带了内容身份）");
+  const durable = chip.attachmentId;
+  assert.ok(durable, "前提：上传成功那一刻内容身份写回了芯片");
+  assert.strictEqual(
+    readOriginalTarget(globalState, durable),
+    original,
+    "路径通道记的是用户自己那个文件：芯片悬停显示它、点开也开它",
+  );
+
+  // 另一条通道：拖放 / 粘贴进来的字节在磁盘上没有原件，只有我们落的临时副本。
+  // 它照样打得开，但**不是**「用户的文件路径」，不能拿去当悬停提示。
+  await h1.c.handle(attachFrame("drop.bin"), "v1");
+  await flush();
+  const dropped = listOf(h1.c, A).find((attachment) => attachment.name === "drop.bin")!;
+  const droppedId = dropped.attachmentId!;
+  const copy = join(attachmentTempRoot(tmpdir()), contentDigest(Buffer.from("hello")).slice(0, 12), "drop.bin");
+  // 副本是**后台**落的：索引里挂着那份承诺，等它就等于等盘上那份文件
+  assert.strictEqual(
+    await h1.c.attachmentTargets!.pathFor(droppedId),
+    copy,
+    "前提：临时副本落到了内容寻址的那条路径上",
+  );
+  assert.ok(existsSync(copy), `前提：临时副本真的在盘上（${copy}）`);
+  assert.strictEqual(
+    readOriginalTarget(globalState, droppedId),
+    undefined,
+    "临时副本不当「原文件路径」展示（临时目录里的路径不是用户的文件）",
+  );
+
+  // 重开宿主：新的控制器、新的内存索引，只有 globalState 是同一份
+  const h2 = harness(globalState);
+  h2.c.bindView("v1");
+  await h2.c.openSession("v1", A);
+  h2.c.fileExistence = async (uri) => (existsSync(uri.fsPath) ? "present" : "absent");
+  assert.strictEqual(
+    await h2.c.attachmentTargets!.pathFor(durable),
+    undefined,
+    "前提：新宿主的内存索引是空的（这里只剩持久记录可依）",
+  );
+
+  editorCalls.reset();
+  try {
+    // 回放的历史消息：芯片上只剩内容身份（durable 行的 id 是 `m<序号>`，账本里查不到）
+    await h2.c.handle(
+      { type: "openAttachment", kind: "file", name: "报告.pdf", attachmentId: durable, id: "m0" },
+      "v1",
+    );
+    assert.deepStrictEqual(editorCalls.openedViaCommand, [original], "按持久记录打开用户磁盘上那个原件");
+    assert.deepStrictEqual(h2.frames.filter((f) => f.frame.type === "toast"), [], "打得开就不该有提示");
+
+    // 字节通道那一枚跨重启也打得开——打开的是我们落的副本（悬停不显示它，但单击能用）
+    await h2.c.handle(
+      { type: "openAttachment", kind: "file", name: "drop.bin", attachmentId: droppedId, id: "m1" },
+      "v1",
+    );
+    assert.deepStrictEqual(
+      editorCalls.openedViaCommand,
+      [original, copy],
+      "没有原件的附件打开副本（同一条记录，只是 `copy` 为真）",
+    );
+
+    // 原文件被移走 / 删掉之后，同一条记录不能假装还打得开
+    rmSync(original);
+    await h2.c.handle(
+      { type: "openAttachment", kind: "file", name: "报告.pdf", attachmentId: durable, id: "m0" },
+      "v1",
+    );
+    assert.deepStrictEqual(editorCalls.openedViaCommand, [original, copy], "文件不在了就不再发起打开");
+    assert.deepStrictEqual(
+      h2.frames.filter((f) => f.frame.type === "toast").map((f) => f.frame.text),
+      ["@attachmentUnavailable"],
+      "文件不在了就明确说打不开",
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(dirname(copy), { recursive: true, force: true });
+  }
 });
 
 if (failures.length) {

@@ -95,6 +95,8 @@ const HOST_MARKERS: string[] = [
   // 文件芯片
   "chipFileDeleted",
   "chipPathUnresolved",
+  // 附件（单击打开：本地没有可打开的内容时才发）
+  "attachmentUnavailable",
   // 正文里的文件链接（打不开时把解析出来的绝对路径报出来）
   "fileNotFound",
   // 拖放

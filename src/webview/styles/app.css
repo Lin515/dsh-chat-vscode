@@ -3942,6 +3942,19 @@ button.meta-chip:hover {
   max-width: 26ch;
 }
 
+/* 芯片名 / 整枚芯片就是**打开入口**（单击在编辑器里打开，见 `webview/attachmentOpen.ts`）：
+   只改鼠标指针，不补下划线——芯片本来就像个可点的控件，下划线是链接的语汇，这里多余。
+   左对齐是因为按钮的 UA 默认居中，配 `text-overflow: ellipsis` 时截断位置会看着别扭。 */
+.chip-open {
+  text-align: left;
+  cursor: pointer;
+}
+
+/* 芯片里的非按钮部分（上传转圈）也跟着整枚芯片可点：指针要一致，别在中间留一块 */
+.chip-open .chip-spinner {
+  cursor: pointer;
+}
+
 .chip-remove {
   display: inline-flex;
   align-items: center;

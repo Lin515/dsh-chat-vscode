@@ -103,6 +103,8 @@ const entries = {
   "build/image-size.test.mjs": "scripts/imageSize.test.ts",
   // 附件草稿的归属与上传生命周期（账本 module + 真 ChatController 的受控 Promise 上传链）：必须登记，否则 npm test 静默不跑
   "build/attachment-lifecycle.test.mjs": "scripts/attachmentLifecycle.test.ts",
+  // 「单击打开附件」的本地落点（叶子名清洗 / 临时副本落盘 / 内容身份索引）：必须登记，否则 npm test 静默不跑
+  "build/attachment-open.test.mjs": "scripts/attachmentOpen.test.ts",
   "build/clipboard-paths.test.mjs": "scripts/clipboardPaths.test.ts",
   "build/queue-view.test.mjs": "scripts/queueView.test.ts",
   "build/job-view.test.mjs": "scripts/jobView.test.ts",

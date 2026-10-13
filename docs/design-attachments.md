@@ -37,6 +37,27 @@
   - 本窗口按会话保留已分配最大编号，A → B → A 不回收已删芯片的编号，连续快粘也不依赖回帧；尚未绑定会话的空态编号在首次绑定时迁移，已绑定会话退回新空态时归零。
   - 最多保留 256 个最近访问的已编号会话，窗口销毁释放；超过保留窗口或重载后只恢复可见基线，已删除且不再可见的编号无法恢复，不按过滤后的会话列表缺席清理。
 
+## 打开附件
+
+输入框芯片与消息里的附件芯片，**单击**就在编辑器里打开（不要求修饰键：芯片上没有别的点击动作），悬停显示的是**原文件完整路径**——可点光标已经说明「点得开」，提示不必再复述一遍动作；路径查不到（拖放 / 粘贴进来的没有原文件、别处发的本机没记过）就不给提示，不拿文件名凑数。**图片缩略图不在此列**：它单击出来的仍是原图浮层，与助手消息、工具行、正文外链的图共用同一套待遇——放大看是缩略图最常见的动作，换成「打开编辑器」只会让用户为了看一眼图去开一个编辑器。界面只交身份（`webview/attachmentOpen.ts`），解析链只有一条（`controller.openAttachment`）：
+
+1. `path`：原文件路径。路径通道进来的附件带着它；回放消息从同一次提交的本地记录借（`adapter.userMedia` 的 `echoAttachments`）。
+2. `id`：宿主账本里那一条（`AttachmentLifecycle.find`）——`dataUrl`（粘贴 / 截图的字节）或**还没释放**的暂存字节，从内存落一份临时副本。
+3. `attachmentId`：durable 内容身份。先查打开索引（内存：`AttachmentOpenIndex`，路径通道记原路径、字节通道在上传成功时落临时副本）与 `globalState` 里的持久记录（`attachmentOpenStore.ts`，一条身份一把键，跨宿主重启还在）；命中且文件还在就直接开。否则图片再退到 `session/attachment` 换字节（回放的图片只剩这个句柄时走这条，拿到的是服务端**归一化**过的副本，不是原始字节）。
+4. 都拿不到 → `@attachmentUnavailable`（不静默）。
+
+临时副本落在系统临时目录的 `dsh-chat-attachments` 下，按内容摘要分目录（`<摘要前 12 位>/<叶子名>`），同一份内容只写一次。**不是**内存虚拟文档：VS Code 内置的图片预览只认真实文件 URI，自定义 scheme 的 `TextDocumentContentProvider` 按文本渲染，一张 PNG 只会是乱码。
+
+每条本地来路经 `controller.tryOpenAttachmentPath`：消息或账本中的路径无法解析、确认不存在、或编辑器拒绝打开时，继续尝试账本字节、上传索引与服务端图片副本，全部失败才提示一次。`stat` 不确定时仍尝试编辑器，不能当成确认缺失。原件可打开时始终优先，不用上传快照替换用户修改后的内容。附件链不走 `openFile` 的 git 删除文件对比或中途文件缺失提示；普通文件点击仍保留那条退路。
+
+附件与普通文件都**不按文件类型分流**：普通打开只有一句 `vscode.open` 命令，编辑器交给 VS Code 按资源类型自己挑（图片进内置预览、文本进文本编辑器、其余进它自己的对应编辑器），与在资源管理器里双击同一个行为。**唯一自己动手的是「带行号打开」**（正文链接的 `#L24`）：`controller.openFile` 按文件真实行数夹取光标，那条路取一次文本文档再 `showTextDocument`，失败就退回普通打开。
+
+这里踩过一次坑：早先用 `openTextDocument` 直接打开，它对一张 PNG 抛「文件似乎是二进制文件，不能作为文本打开」，日志里只留一行 `[open] 打开失败`，用户看到的就是「单击没有反应」（2026-10-13 实测）；随后一度补了一句「先判是不是图片」，那是把同一件事判了第二遍——加类型判据不如把打开动作整个交出去。
+
+字节通道（拖放 / 截图）的本地留底发生在**上传成功那一刻**（账本的 `rememberOpenTarget` 端口）：那是宿主最后一次同时握着内容身份与字节，此后再无机会。图片不靠它：草稿芯片按账本 `id` 取字节，发出之后图片以缩略图呈现（单击是原图浮层），只有取不到字节、退回芯片的那一张才又落到这条链上，那时借来的本地路径与 durable 句柄仍可一试。
+
+打不开的两类都会明确提示：**重开扩展之后**的历史文件附件（索引在内存里，随扩展退出消失），以及**别的客户端**（如官方 Web UI）发出的文件附件——服务端没有「按句柄读文件字节」的端点。图片不受这两条限制。
+
 ## 引用与快照
 
 文件引用是正文 `@path`，目录写成 `@dir/`；上传文件则提交 receiptId，不内联全文，不能把两种入口混为一谈。
@@ -114,12 +135,14 @@
 
 - [attachments.ts](<../src/dsh/attachments.ts>)：planIntake、分类 / 上限 / 去重、`admissionVerdict`（像素与单边）、buildPromptContent。
 - [imageSize.ts](<../src/dsh/imageSize.ts>)：图片头部宽高（png / jpeg / webp / gif），给准入预检用。
-- [attachmentLifecycle.ts](<../src/dsh/attachmentLifecycle.ts>)：唯一归属表、上传轮次、提交租约。
-- [controller.ts](<../src/dsh/controller.ts>)：接入 IO、唯一目录引用落点、上传与提交租约接线；[client.ts](<../src/dsh/client.ts>)：uploadFile。
-- [attachIntake.ts](<../src/webview/attachIntake.ts>) / [App.tsx](<../src/webview/App.tsx>)：字节提取、整页 drop / paste 与浮层；[pastedImageNames.ts](<../src/webview/pastedImageNames.ts>)：粘贴图片的会话内编号名；[ipc.ts](<../src/shared/ipc.ts>)：帧。
+- [attachmentLifecycle.ts](<../src/dsh/attachmentLifecycle.ts>)：唯一归属表、上传轮次、提交租约；成功时写回内容身份并把打开目标交给宿主。
+- [attachmentOpen.ts](<../src/dsh/attachmentOpen.ts>)：临时副本命名 / 落盘与内容身份索引（纯逻辑，可离线断言）。
+- [attachmentOpenStore.ts](<../src/dsh/attachmentOpenStore.ts>)：同一条对应关系的持久化口径（`globalState`，一条身份一把键 + 按写入时间有界淘汰；原文件与临时副本分开记，前者才当「文件路径」展示；不 import vscode）。
+- [controller.ts](<../src/dsh/controller.ts>)：接入 IO、唯一目录引用落点、上传与提交租约接线、`openAttachment` 解析链；[client.ts](<../src/dsh/client.ts>)：uploadFile。
+- [attachIntake.ts](<../src/webview/attachIntake.ts>) / [App.tsx](<../src/webview/App.tsx>)：字节提取、整页 drop / paste 与浮层；[pastedImageNames.ts](<../src/webview/pastedImageNames.ts>)：粘贴图片的会话内编号名；[attachmentOpen.ts](<../src/webview/attachmentOpen.ts>)：打开的 IPC 分派与可点判据；[ipc.ts](<../src/shared/ipc.ts>)：帧。
 - [clipboardPaths.ts](<../src/dsh/clipboardPaths.ts>)：Windows 真路径；[mentions.ts](<../src/shared/mentions.ts>)：引用拼写；[Composer.tsx](<../src/webview/components/Composer.tsx>)：芯片与重试。
 
-离线回归：attachments（回执、内容顺序、同管线 / 同 MIME、上限与拒绝、图片准入四项、`withoutAttachmentDataUrls` 只读不改、FileReader 前缀与并发顺序、剪贴板查询的四条件跳过、发送取账本）、imageSize（四种格式头部读数与放行边界）、pastedImageNames（编号识别、起始编号、只改图片、被拒条目不改名、降级图片文件的消息 / 回显 / 草稿恢复、删除后跨会话续号、快粘与切语言、空态绑定迁移、有界保留窗口）、clipboardPaths（解析、脚本形状、shell 顺序）、attachmentLifecycle（切会话、旧轮、归还 / 交接 / 释放）、selection、previewFixture。跨宿主 / webview 的帧改动须双端构建；交付安装版时确认两端产物都更新。mimeType 可选兼容旧帧，不能把混合产物验证当完整验收。常规命令与真实测试批准见[AGENTS](<../AGENTS.md>)。
+离线回归：attachments（回执、内容顺序、同管线 / 同 MIME、上限与拒绝、图片准入四项、`withoutAttachmentDataUrls` 只读不改、FileReader 前缀与并发顺序、剪贴板查询的四条件跳过、发送取账本）、attachmentOpen（叶子名与扩展名、data URL 解码、内容寻址落盘、索引等待与淘汰、打开记录的取值 / 形状校验 / 有界淘汰）、imageSize（四种格式头部读数与放行边界）、pastedImageNames（编号识别、起始编号、只改图片、被拒条目不改名、降级图片文件的消息 / 回显 / 草稿恢复、删除后跨会话续号、快粘与切语言、空态绑定迁移、有界保留窗口）、clipboardPaths（解析、脚本形状、shell 顺序）、attachmentLifecycle（切会话、旧轮、归还 / 交接 / 释放、内容身份与打开目标、**重开宿主后按持久记录打开历史文件附件**）、selection、previewFixture。跨宿主 / webview 的帧改动须双端构建；交付安装版时确认两端产物都更新。mimeType 可选兼容旧帧，不能把混合产物验证当完整验收。常规命令与真实测试批准见[AGENTS](<../AGENTS.md>)。
 
 ## 未覆盖边界与重评条件
 
@@ -129,5 +152,8 @@
 - 大图路径读取仍有同步占用扩展宿主的风险；准入上限与离线测试通过不证明该路径无阻塞，改变读取管线时须单独量测。
 - 纯附件发送仍被 Composer 的非空正文判定挡住；宿主能装配附件，不代表界面已开放该入口。
 - 拖放目录缺平台真路径，不是可靠名称猜测修复的问题；平台开放后应加可选路径字段、复用 addPaths，不另开管线。
+- 打开记录跨宿主重启保留，但**只对本扩展自己上传的附件**成立：别的客户端（如官方 Web UI）发的文件附件，本机从没记过路径，也没有「按句柄读文件字节」的端点，只能提示打不开。原文件被移走或删掉、临时副本被系统清掉，同样落到那条提示。
+- 打开记录与内存索引各有一份，上限都是 256 条：越过就丢最旧的。丢记录只影响「还能不能打开」，不丢用户数据——原件仍在原处，下次上传会重新记上。
+- 临时副本不主动清理：路径由内容摘要决定，同一份内容只写一次，其余交给系统清理临时目录。丢记录不删文件（那个文件可能正开在编辑器里），但反过来说，副本被系统清掉之后那条记录也就打不开东西了——它会一直留到被淘汰为止，不在打开失败时就地删（网络盘、临时拔掉的盘都会让「不存在」是暂时的）。
 
 可跟进能力集中在[待评估清单](<../ToDo.md>)；以上边界不等于已决定实现。

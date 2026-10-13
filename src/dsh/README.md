@@ -38,6 +38,8 @@
 - [fileRefListing.ts](<fileRefListing.ts>) — 空查询 / 尾斜杠目录列举补全；不补本地无法同序的模糊查询。
 - [attachments.ts](<attachments.ts>) — 接入分类、限额、去重与内容块；进不了内容块的图片在这里判为「按文件上传」（`notInlined` 记原因），见[附件设计](<../../docs/design-attachments.md>)。
 - [attachmentLifecycle.ts](<attachmentLifecycle.ts>) — 附件唯一归属表、上传轮次与提交租约。
+- [attachmentOpen.ts](<attachmentOpen.ts>) — 打开附件的临时副本命名 / 落盘与内容身份索引。
+- [attachmentOpenStore.ts](<attachmentOpenStore.ts>) — 同一条「内容身份 → 本地路径」的持久化口径（`globalState`，跨宿主重启；原文件与临时副本分开记）。
 - [localImages.ts](<localImages.ts>) — 会话 cwd 内的本地图片读取。
 - [imageBytes.ts](<imageBytes.ts>) — data / http(s) 图片到字节。
 - [imageSize.ts](<imageSize.ts>) — 图片头部（png / jpeg / webp / gif）的宽高读数，供服务端的像素与单边准入预检。

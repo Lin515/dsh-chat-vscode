@@ -323,9 +323,22 @@ function toUsage(
  * （`session/attachment`，与助手/工具图片同一个回调）：所以这里把句柄与元数据一起
  * 带上，字节由 `hydrateUserMedia` 异步补，界面拿到就画缩略图——用户发过的图，
  * 回放时要看得见（此前只显示一个文件名芯片）。
- * 文件没有可显示的字节，显示名字与大小即可。
+ * 文件没有可显示的字节，显示名字与大小即可；它的 `attachmentId`（内容摘要）是
+ * 「打开这枚附件」按内容找回本地那一份的唯一线索（见 `dsh/attachmentOpen.ts`）。
+ *
+ * `echoAttachments`（同一次提交留下的本地账本）**两种借用**，都按同序下标对齐：
+ * 图片借 `dataUrl`（否则交接时会先退回名字芯片再变回缩略图，闪两下），图片与文件
+ * 一起借 `path`——本地那一份的路径落盘事件里没有，但它是「打开附件」最保真的落点。
+ *
+ * 借不到 `path`（会话重开、扩展重载）时还问一次 `originalPathFor`：本机**记得**那个原
+ * 文件在哪的话就带上（跨宿主重启靠 `attachmentOpenStore.ts` 里的记录）。芯片悬停显示的
+ * 就是它——显示不出来的时候，多半也真的打不开。
  */
-function userMedia(content: unknown, echoAttachments?: readonly Attachment[]): Attachment[] {
+function userMedia(
+  content: unknown,
+  echoAttachments?: readonly Attachment[],
+  originalPathFor?: (attachmentId: string) => string | undefined,
+): Attachment[] {
   if (!Array.isArray(content)) return [];
   // 本地那份先过一遍与装配内容块**同一个判据**：`echoAttachments` 是当时的**全量**附件，
   // 而内容块里只有真进了块的那些（文件没传完、图片没有可解析字节的都不在）——不过这一遍
@@ -342,6 +355,8 @@ function userMedia(content: unknown, echoAttachments?: readonly Attachment[]): A
       // 同序的回显附件里已经有本地字节（同一次提交）：借它的 dataUrl 与固有宽高，
       // 句柄仍用 durable 的那一个（`hydrateUserMedia` 照旧会去换一次，只是不再赶时间）
       const localEntry = local?.[index];
+      // 路径两个来源：同一次提交的本地账本（更近），或本机记着的那份原文件
+      const localPath = localEntry?.path ?? (attachmentId ? originalPathFor?.(attachmentId) : undefined);
       media.push({
         id: `m${index++}`,
         kind: "image",
@@ -354,17 +369,23 @@ function userMedia(content: unknown, echoAttachments?: readonly Attachment[]): A
         ...(localEntry?.kind === "image" && localEntry.dataUrl ? { dataUrl: localEntry.dataUrl } : {}),
         ...(typeof localEntry?.width === "number" ? { width: localEntry.width } : {}),
         ...(typeof localEntry?.height === "number" ? { height: localEntry.height } : {}),
+        ...(localPath ? { path: localPath } : {}),
       });
       continue;
     }
     if (block.type === "file") {
       const attachment = (block as { attachment?: Record<string, unknown> }).attachment ?? {};
       const name = typeof attachment.name === "string" && attachment.name ? attachment.name : "file";
+      const attachmentId = typeof attachment.attachmentId === "string" ? attachment.attachmentId : undefined;
+      const localEntry = local?.[index];
+      const localPath = localEntry?.path ?? (attachmentId ? originalPathFor?.(attachmentId) : undefined);
       media.push({
         id: `m${index++}`,
         kind: "file",
         name,
         bytes: typeof attachment.bytes === "number" ? attachment.bytes : undefined,
+        ...(attachmentId ? { attachmentId } : {}),
+        ...(localPath ? { path: localPath } : {}),
       });
     }
   }
@@ -923,6 +944,19 @@ export class SessionAdapter {
    * 等 `hydrateUserMedia` 换回字节。
    */
   resolveEchoAttachments: ((rpcId: string) => readonly Attachment[] | undefined) | undefined;
+
+  /**
+   * 一个 durable 句柄 → **本机上那个原文件**的路径（由控制器注入）。
+   *
+   * 用途只有一个：回放的用户消息里那枚附件芯片，**悬停要显示「文件在哪」**。内容块里
+   * 没有路径，本机记得的那一份就是唯一来源；跨宿主重启之后靠全局存储里的记录
+   * （`dsh/attachmentOpenStore.ts`），查不到就不给——不猜一个路径出来。
+   *
+   * 只给**原文件**：拖放 / 粘贴进来的附件在我们落的临时副本里，把那个路径当「文件路径」
+   * 显示，只会让人以为自己的文件跑到系统临时目录去了（要不要打开是另一回事，那条路在
+   * `controller.openAttachment`，副本照样打得开）。
+   */
+  originalPathFor: ((attachmentId: string) => string | undefined) | undefined;
 
   /**
    * 本会话**继承前缀**的末尾 seq（`session/end-seed` 的 seq），没有分叉种子时是 -1。
@@ -1670,7 +1704,7 @@ export class SessionAdapter {
           // 不借的话 durable 行会先从缩略图退回文件名芯片、等 `hydrateUserMedia`
           // 回来再变成缩略图——同一条消息在交接时闪两下。
           const echoAttachments = admitted ? this.resolveEchoAttachments?.(admitted) : undefined;
-          const media = userMedia(message?.content, echoAttachments);
+          const media = userMedia(message?.content, echoAttachments, this.originalPathFor);
           if (!text && media.length === 0) {
             notifyAdmitted();
             break;

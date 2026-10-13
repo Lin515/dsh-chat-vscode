@@ -73,11 +73,18 @@ export interface Attachment {
   /** 图片字节数。 */
   bytes?: number;
   /**
-   * 图片的 **durable 句柄**（`sha256:…`）：只在**回放的消息**里有值，草稿附件没有。
+   * 附件的 **durable 句柄**（`sha256:…`）：服务端附件存储里的内容身份。
    *
-   * 用户消息里的图片块落盘时已经是这种不透明引用（发送时内联的 base64 由服务端
-   * `admitPromptContent` 提升掉），所以想看回放里的图只能拿它去换字节——
-   * 与助手/工具图片同一条 `session/attachment` 通道。
+   * 图片与文件**都有**，只是来的路不同：
+   * - 图片：用户消息里的图片块落盘时已经是不透明引用（发送时内联的 base64 由服务端
+   *   `admitPromptContent` 提升掉），所以想看回放里的图只能拿它去换字节——与助手 /
+   *   工具图片同一条 `session/attachment` 通道；
+   * - 文件：上传回执里的 `file.attachmentId` 就是内容摘要（见
+   *   `docs/dsh-server-api.md` 的 `FileAttachmentRef`），上传成功后落在芯片上，
+   *   回放的消息里由内容块给出。
+   *
+   * 两个消费方：回放图片换字节（`hydrateUserMedia`），以及「单击打开附件」按
+   * 内容身份找回本地那一份（宿主 `dsh/attachmentOpen.ts` 的索引）。
    */
   attachmentId?: string;
   /**

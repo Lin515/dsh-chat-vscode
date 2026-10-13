@@ -379,6 +379,18 @@ export const MESSAGES = {
     zh: "暂时拿不到会话工作目录，无法定位这个文件；稍后再点一次试试",
     en: "The session working directory is not available yet, so this file cannot be located; try again in a moment",
   },
+  /**
+   * 翻出一枚**本地已经没有**的附件（点了但没有原件，也换不回字节）。
+   *
+   * 三条来路都会落到这里：本机从没记过它的路径（别的客户端发的、记录被淘汰），记过但
+   * 那个文件已经不在原处，以及临时副本被系统清掉。不能写成「只剩服务端副本」——文件
+   * 附件在服务端那份**取不回来**（`session/attachment` 只服务图片），那句话会让人以为
+   * 还有一条路可走。图片不走这条：它们经 `session/attachment` 总能换回字节。
+   */
+  attachmentUnavailable: {
+    zh: "找不到这个附件的本地文件，也没能从服务端取回副本",
+    en: "The local file for this attachment could not be found, and no copy could be retrieved from the server",
+  },
   dropUnreadable: {
     zh: (name: string) => `${name} 读不出来，没有加进来（目录暂不支持拖放，请用「添加文件」或 @ 引用）`,
     en: (name: string) =>

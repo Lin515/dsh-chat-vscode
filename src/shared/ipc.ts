@@ -1,4 +1,4 @@
-import type { ChatState, ChangesSummaryView, MessageView, ModelSelectionView, ProviderGroupView, Segment, SessionSummaryView, TodoView } from "./chat";
+import type { AttachmentKind, ChatState, ChangesSummaryView, MessageView, ModelSelectionView, ProviderGroupView, Segment, SessionSummaryView, TodoView } from "./chat";
 import type {
   CommandView,
   FileRefView,
@@ -365,6 +365,37 @@ export type WebviewToHost =
    * 文件不存在。这里走的是 VS Code 自己的 `revealInExplorer` 命令。
    */
   | { type: "revealPath"; path: string }
+  /**
+   * 在编辑器里**打开一枚附件**（输入框芯片、消息里的附件、用户消息里的图片缩略图）。
+   *
+   * 界面只交它手上有的**身份**，宿主按下面的顺序找本地可打开的东西——找法全在
+   * `controller.openAttachment`，界面不猜（它读不了磁盘、也读不了服务端附件存储）：
+   *
+   * 1. `path`：原文件的绝对路径（路径通道进来的附件，以及同一次会话里从本地提交记录
+   *    借到路径的回放消息）；
+   * 2. `id`：宿主账本里的附件 id（草稿芯片与乐观回显那几枚）——账本里那一条还带着
+   *    `dataUrl`（粘贴 / 截图的字节）或还没释放的暂存字节，都从内存落一份临时文件；
+   * 3. `attachmentId`：服务端 durable 句柄。图片经 `session/attachment` 换字节，文件
+   *    按内容摘要查宿主的上传索引（路径通道记原路径、字节通道在上传成功时留一份临时
+   *    副本）；
+   * 4. 都没有 → 发 `@attachmentUnavailable`，不静默。
+   *
+   * `kind` 只用来决定第 3 步要不要去问线上（`session/attachment` 只服务图片，文件问
+   * 必然失败）。`name` 是落临时文件时的展示名（VS Code 靠扩展名挑编辑器）；`mediaType`
+   * 只在名字给不出扩展名时用来补一个。
+   *
+   * 为什么走临时文件：VS Code 内置的图片预览只认真实文件 URI，内存里的虚拟文档
+   * （`TextDocumentContentProvider`）按文本渲染，一张 PNG 只会是一片乱码。
+   */
+  | {
+      type: "openAttachment";
+      name: string;
+      kind: AttachmentKind;
+      path?: string;
+      id?: string;
+      attachmentId?: string;
+      mediaType?: string;
+    }
   /**
    * 用**系统默认程序**打开一条外链（正文里 `[说明](https://…)` 这类链接）。
    *

@@ -55,6 +55,9 @@ export function ImageGallery({ sources, alt }: { sources: ImageSource[]; alt: st
             key={index}
             type="button"
             className="image-thumb"
+            // 缩略图**一律**单击出原图浮层：放大看是这里最常见的动作，用户消息里的图
+            // 也一样。「在编辑器里打开」是**附件芯片**的动作（`../attachmentOpen.ts`），
+            // 别把两种入口合成一个——那样用户就只是想把图看大一点，却弹出整个编辑器。
             title={texts.imagePreview}
             onClick={() => openImagePreview(source.src, source.alt ?? alt)}
           >

@@ -6,6 +6,8 @@
 
 用户正文、图片和文件块均须保留，不能按文本是否非空过滤整条消息或内容块。durable `user/message.data` 就是消息本体，不包 message；它与 system/message、tool/result 的包装不同。
 
+消息里的**附件芯片**是单击打开的入口，解析链与落地见[附件设计](<design-attachments.md#打开附件>)；悬停显示原文件完整路径，那份路径由宿主按内容身份查出来交给适配器（`adapter.userMedia` 的 `originalPathFor`），查不到就不给提示。**图片缩略图不是**打开入口：它单击出来的仍是原图浮层，与助手消息、工具行、正文外链的图共用同一套待遇。
+
 会话引用进入模型前变成快照，durable 正文折成 `@标题`，会话 id 由紧随的 session-reference 召回事件补回，按 seq - 1 关联用户消息。复制与提问预览使用可读标题，不能把会话引用误判成路径；补全 token 规则见[引用设计](<design-mentions.md>)。
 
 ## 交付文件与工具产物

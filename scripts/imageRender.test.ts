@@ -67,6 +67,8 @@ function quietly<T>(run: () => T): T {
 
 const PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==";
 const JPEG = "data:image/jpeg;base64,/9j/4AAQSkZJRg==";
+/** 界面文案走真词典：断言落在用户真会看到的措辞上。 */
+const zh = dictionaryFor("zh");
 
 const userMessage = (attachments: MessageView["attachments"]): MessageView => ({
   id: "u:1",
@@ -105,6 +107,16 @@ const userMessage = (attachments: MessageView["attachments"]): MessageView => ({
     !html.includes("chip-name"),
     "已经是真图了就不该再画一个文件名芯片（同一份附件画两遍）",
   );
+  // 这张图**有**本地那一份（`attachmentId` 是 durable 句柄，源码里也借了原路径）：它照样
+  // 不该变成「在编辑器里打开」——放大看是缩略图的常用动作，只有附件**芯片**才是打开入口。
+  assert.ok(
+    html.includes(`title="${zh.imagePreview}"`),
+    `图片缩略图的悬停提示必须是原图浮层，实际：${html}`,
+  );
+  assert.ok(
+    !html.includes("chip-open"),
+    "图片缩略图不是「在编辑器里打开」的入口（那是附件芯片的动作，2026-10-14 复原）",
+  );
   console.log("image: 用户发出的图片渲染为缩略图 ✓");
 }
 
@@ -129,7 +141,24 @@ const userMessage = (attachments: MessageView["attachments"]): MessageView => ({
   );
   assert.ok(html.includes("merge-plan.pdf"), "文件附件显示文件名");
   assert.ok(!html.includes("<img"), "文件附件不该被画成图片");
+  // 只有服务端副本（没有本地路径 / 账本 id / durable 句柄）的那一枚是静态芯片：
+  // 做成按钮却点了没反应更糟。
+  assert.ok(!html.includes("chip-open"), "拿不到本地那一份的文件附件不该做成可点按钮");
   console.log("image: 文件附件仍是芯片 ✓");
+}
+
+// ---------- 3b. 附件芯片这一枚才是「在编辑器里打开」的入口 ----------
+{
+  const html = quietly(() =>
+    render(userMessage([{ id: "m0", kind: "file", name: "notes.md", path: "notes.md" }])),
+  );
+  assert.ok(
+    html.includes('class="chip chip-open"'),
+    `有本地原文件的附件芯片要做成可点按钮，实际：${html}`,
+  );
+  // 悬停给的是**原文件完整路径**，不再复述「单击打开」——可点光标已经说明了这件事
+  assert.ok(html.includes('title="notes.md"'), `可点芯片的悬停提示要是原文件路径，实际：${html}`);
+  console.log("image: 附件芯片单击打开编辑器、悬停显示路径 ✓");
 }
 
 // ---------- 4. 助手消息里的图片块：`images` 段渲染成图库 ----------

@@ -38,6 +38,7 @@ import { clickGestureHandler, sendButtonView, watchModifierKeys } from "../compo
 import { hitsAnyRect } from "../composerMention";
 import { ComposerSessionDraft } from "../composerSessionDraft";
 import { openMentionTarget } from "../mentionOpen";
+import { openAttachment } from "../attachmentOpen";
 import { usePickerFocus } from "../pickerFocus";
 import { presetDisplayText } from "../presetDisplay";
 import { bottomGap, type AutoScrollPort } from "../autoScroll";
@@ -934,9 +935,19 @@ export function Composer({
             <div className="composer-chips">
               {state.attachments.map((attachment) => (
                 <span
-                  className={`chip${attachment.upload?.status === "error" ? " is-error" : ""}`}
+                  // `chip-open`：整枚芯片都是打开入口（鼠标指针可点），见 `../attachmentOpen`
+                  className={`chip chip-open${attachment.upload?.status === "error" ? " is-error" : ""}`}
                   key={attachment.id}
-                  title={attachment.path ?? attachment.name}
+                  // 悬停给**原文件完整路径**（本地那条通道才有；拖放 / 粘贴进来的没有路径
+                  // 就不给提示）。「单击会打开」不必写进提示——`chip-open` 的可点光标
+                  // 已经说明了这件事，见 `../attachmentOpen`。
+                  title={attachment.path}
+                  // 单击**整枚芯片**都算打开，不只是名字那一段：芯片上只有重试与移除这两枚
+                  // 按钮有自己的动作，其余位置（左右内边距、上传转圈）点下去都该打开。
+                  onClick={(event) => {
+                    if ((event.target as HTMLElement).closest(".chip-remove, .chip-retry")) return;
+                    openAttachment(attachment);
+                  }}
                 >
                   {/* 上传状态：官方 FileCard 里文件芯片带进度/失败态。
                       失败可点重试，否则用户只能删掉重选（内容其实还在磁盘上）。 */}
@@ -960,6 +971,8 @@ export function Composer({
                       <IconRefresh size={11} />
                     </button>
                   ) : null}
+                  {/* 草稿列表不含 `dataUrl`（下发时剥掉了），但账本里那一条还在，
+                      所以这里的芯片**总是**打得开（宿主按 `id` 取字节或路径）。 */}
                   <span className="chip-name">{attachment.name}</span>
                   <button
                     className="chip-remove"

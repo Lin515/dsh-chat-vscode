@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { readdirSync, readFileSync, rmSync, statSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import * as vscode from "vscode";
@@ -48,7 +48,9 @@ import {
   type PromptContentPart,
 } from "./attachments";
 import { readClipboardPaths } from "./clipboardPaths";
-import { AttachmentLifecycle } from "./attachmentLifecycle";
+import { AttachmentLifecycle, type UploadReceipt } from "./attachmentLifecycle";
+import { AttachmentOpenIndex, attachmentTempRoot, materializeAttachment, parseBase64DataUrl } from "./attachmentOpen";
+import { readAttachmentTarget, readOriginalTarget, writeAttachmentTarget } from "./attachmentOpenStore";
 import { saveChatImage } from "./imageFiles";
 import { ConfigChangeRouter } from "./configChanges";
 import { fileChangeKind, hasWorkingChange, isNotFoundError, resolveChipPath, splitPathLineSuffix, type FileExistence, type GitChangeStateLike } from "./fileChange";
@@ -1015,8 +1017,19 @@ export class ChatController implements vscode.Disposable {
     performUpload: (input) => this.performUpload(input),
     describeError: (error) => this.describeError(error),
     publish: (key, list) => this.publishAttachments(key, list),
+    rememberOpenTarget: (input) => this.rememberOpenTarget(input),
     log: (message) => this.log(message),
   });
+  /**
+   * 「附件内容身份 → 本地能打开的那个文件」：路径通道记原文件路径，字节通道在上传成功
+   * 那一刻落一份内容寻址的临时副本（见 `dsh/attachmentOpen.ts`）。
+   *
+   * 键是 durable 句柄，所以回放的消息（只带内容块里的句柄）也能命中——只要那份附件是
+   * 这套扩展上传的。这份内存表只管**本次宿主生命周期内**的快查（含「临时副本正在落盘」
+   * 那种在途状态）；跨重启靠 `globalState` 里那条持久记录续上（见 `dsh/attachmentOpenStore.ts`）：
+   * 文件附件没有「回服务端取字节」这条路，路径一忘就只能提示打不开。
+   */
+  private readonly attachmentTargets = new AttachmentOpenIndex();
   /**
    * 乐观回显账本（见 `shared/chat.ts` 的 `PendingMessageView`）。
    *
@@ -4581,6 +4594,9 @@ export class ChatController implements vscode.Disposable {
     // durable 用户行的图片借**同一次提交的本地附件**（`submissions` 里那份，图片带 dataUrl）：
     // 不借的话交接时会从缩略图退回文件名芯片、等字节换回来再变回缩略图（闪两下）
     adapter.resolveEchoAttachments = (rpcId) => this.originFor(rpcId)?.attachments;
+    // 回放的用户消息带上「本机那个原文件在哪」：芯片悬停显示它，点开也是它。跨宿主重启
+    // 之后只能靠持久记录（`attachmentOpenStore.ts`）——那一层只认原文件，临时副本不算。
+    adapter.originalPathFor = (attachmentId) => readOriginalTarget(this.state, attachmentId);
     // 轮次结束时先推一次 Git 重扫：否则刚写完的文件还没进改动清单，用户第一次
     // 点芯片看到的是完整文件而不是 diff（见 refreshGitState 的注释）
     adapter.refreshFiles = () => this.refreshGitState();
@@ -4868,20 +4884,42 @@ export class ChatController implements vscode.Disposable {
     attachmentId: string,
     mediaType: string | undefined,
   ): Promise<string> {
-    if (!this.client) return "";
+    const fetched = await this.fetchAttachmentBytes(sessionId, attachmentId);
+    if (!fetched) return "";
+    // 服务端只回 base64 与字节，媒体类型在句柄里（拿不到就按 png——
+    // 浏览器对 data URL 的 MIME 很宽容，错的类型仍会渲染）
+    return `data:${mediaType ?? fetched.mediaType ?? "image/png"};base64,${fetched.bytes.toString("base64")}`;
+  }
+
+  /**
+   * 一个 durable 附件句柄 → **字节**（取不到返回 undefined）。
+   *
+   * `session/attachment` 只服务图片（服务端按会话日志里的图片块授权，见
+   * `docs/dsh-server-api.md` 的其他端点速查）：文件没有这条回头路，只能靠本地上传时
+   * 记下的那一份（`attachmentTargets`）。
+   *
+   * 第三个消费方是「打开附件」：回放的历史图片本地已经没有字节，只能换回来落临时副本。
+   */
+  private async fetchAttachmentBytes(
+    sessionId: string,
+    attachmentId: string,
+  ): Promise<{ bytes: Buffer; mediaType?: string } | undefined> {
+    if (!this.client) return undefined;
     try {
       const value = await this.client.request<{ attachment?: unknown; data?: unknown }>(
         "session/attachment",
         { request: { sessionId, attachmentId } },
       );
       const data = typeof value?.data === "string" ? value.data : "";
-      if (!data) return "";
-      // 服务端只回 base64 与字节，媒体类型在句柄里（拿不到就按 png——
-      // 浏览器对 data URL 的 MIME 很宽容，错的类型仍会渲染）
-      return `data:${mediaType ?? "image/png"};base64,${data}`;
+      if (!data) return undefined;
+      const mediaType = (value?.attachment as { mediaType?: unknown } | undefined)?.mediaType;
+      return {
+        bytes: Buffer.from(data, "base64"),
+        ...(typeof mediaType === "string" ? { mediaType } : {}),
+      };
     } catch (error) {
       this.log(`[attachment] 读取图片失败：${this.describeError(error)}`);
-      return "";
+      return undefined;
     }
   }
 
@@ -6871,6 +6909,11 @@ export class ChatController implements vscode.Disposable {
         break;
       }
 
+      case "openAttachment": {
+        await this.openAttachment(viewId, message);
+        break;
+      }
+
       case "openExternal": {
         await this.openExternal(message.url, viewId);
         break;
@@ -7834,12 +7877,68 @@ export class ChatController implements vscode.Disposable {
     sessionId: string;
     source: IntakeUpload["source"];
     name: string;
-  }): Promise<{ receiptId: string }> {
+  }): Promise<UploadReceipt> {
     if (!this.client) throw new Error("@uploadNoSession");
     const bytes =
       input.source.kind === "bytes" ? input.source.bytes : new Uint8Array(readFileSync(input.source.path));
     const value = await this.client.uploadFile(input.sessionId, bytes, input.name);
-    return { receiptId: value.receiptId };
+    // 内容身份一并回带（账本写进芯片，并据此记「本地能打开什么」，见 rememberOpenTarget）
+    return { receiptId: value.receiptId, attachmentId: value.file.attachmentId };
+  }
+
+  /**
+   * 上传成功那一刻记下「这枚附件以后能在本地打开什么」（账本的 `rememberOpenTarget` 端口）。
+   *
+   * 两条来源分开处理，因为「打开什么」本来就不同：
+   * - **路径来源**：记用户自己那个文件的路径（打开的是原件，不是拷贝，之后他改了也看得见）；
+   * - **字节来源**（拖放 / 截图粘贴）：磁盘上没有原件，落一份内容寻址的临时副本
+   *   （见 `dsh/attachmentOpen.ts`）——这是这套附件唯一还能被打开的机会，字节马上要释放。
+   *
+   * 写盘是**后台**的：上传成功这一刻不该为了「以后可能点开」再阻塞一次 IO。落盘失败
+   * （临时目录不可写等）只记日志，之后点开会落到「取字节 / 说打不开」那条路上。
+   */
+  private rememberOpenTarget(input: {
+    attachmentId: string;
+    name: string;
+    source: IntakeUpload["source"];
+  }): void {
+    if (input.source.kind === "path") {
+      // 用户自己那个文件：既能打开，也是芯片悬停要显示的「文件路径」
+      this.rememberLocalTarget(input.attachmentId, input.source.path, false);
+      return;
+    }
+    const bytes = input.source.bytes;
+    const pending = materializeAttachment({
+      root: attachmentTempRoot(tmpdir()),
+      bytes,
+      name: input.name,
+    }).catch((error: unknown) => {
+      this.log(`[open] 附件临时副本落盘失败（${input.name}）：${this.describeError(error)}`);
+      return undefined;
+    });
+    // 磁盘上从来没有过这个文件，落下来的副本只用于打开，不当「原文件路径」展示
+    this.rememberLocalTarget(input.attachmentId, pending, true);
+  }
+
+  /**
+   * 记下「这枚内容身份以后在本地打开什么」：内存索引（含在途落盘）+ **持久记录**。
+   *
+   * 持久化那一半是给下一次宿主启动用的（口径见 `dsh/attachmentOpenStore.ts`）：durable
+   * 消息里只有内容摘要，而文件附件没有「回服务端取字节」这条路——路径一忘，历史消息里
+   * 那枚芯片就只剩一句打不开，用户的文件却还在原处。
+   *
+   * `copy` 区分两条通道：路径来源记的是用户自己那个文件，字节来源记的是本扩展落的临时
+   * 副本。字节通道要等副本落盘才有路径，所以在承诺上续一笔（落盘失败就没有可记的）。
+   */
+  private rememberLocalTarget(id: string, target: string | Promise<string | undefined>, copy: boolean): void {
+    this.attachmentTargets.remember(id, target);
+    if (typeof target === "string") {
+      writeAttachmentTarget(this.state, id, { path: target, copy });
+      return;
+    }
+    void target.then((path) => {
+      if (path) writeAttachmentTarget(this.state, id, { path, copy });
+    });
   }
 
   /**
@@ -8563,6 +8662,9 @@ export class ChatController implements vscode.Disposable {
    *
    * `preview: true` 是既有行为：单击芯片只是预览，不挤掉已经打开的文件。
    *
+   * **打开动作本身不按文件类型分流**：普通打开一律是 `vscode.open` 命令，由 VS Code
+   * 按资源类型挑编辑器。唯一自己动手的是「带行号打开」（见方法末尾那一支的注释）。
+   *
    * `line` 是正文里带行号的链接给的**1 基起始行**：打开后把光标落在那一行。
    * 只有普通打开这条路才用得上（要看改动时开的是对比窗口，行号在那儿没有落点）；
    * 不是正整数、或超出文件行数时按没给处理（越界的位置 `Position` 会抛）。
@@ -8620,13 +8722,33 @@ export class ChatController implements vscode.Disposable {
       this.reportMissingFile(viewId, resolved, fromLink);
       return;
     }
+    // **不按文件类型分流**：打开就是「把这个资源交给 VS Code」，由它按资源类型挑编辑器
+    // ——图片进内置预览、文本进文本编辑器、其余进它自己的对应编辑器，与在资源管理器里
+    // 双击同一个行为。这里曾经用 `openTextDocument` 打开，它对一张 PNG 直接抛「文件似乎
+    // 是二进制文件，不能作为文本打开」，日志里只留一行 `[open] 打开失败`，用户看到的就是
+    // 「单击没有反应」（2026-10-13 实测踩中）；也曾经在这里按 `isImagePath` 自己分流，
+    // 那只是把同一件事判了第二遍。
+    //
+    // **唯一需要自己动手的是「带行号打开」**（正文链接的 `#L24`，只有它会给 `line`）：
+    // 光标位置要按文件真实行数夹取（越界的 `Position` 是抛异常，不是夹取），所以那一条
+    // 仍走文本文档。它失败（链接指到一个二进制上）就退到普通打开，不静默。
+    if (isLineNumber(effectiveLine)) {
+      try {
+        const document = await vscode.workspace.openTextDocument(uri);
+        const position = this.revealLine(document, effectiveLine);
+        await vscode.window.showTextDocument(document, {
+          preview: true,
+          ...(position ? { selection: new vscode.Range(position, position) } : {}),
+        });
+        return;
+      } catch (error) {
+        this.log(
+          `[open] 带行号打开失败（${path}）：${this.describeError(error)}；退回普通打开`,
+        );
+      }
+    }
     try {
-      const document = await vscode.workspace.openTextDocument(uri);
-      const position = this.revealLine(document, effectiveLine);
-      await vscode.window.showTextDocument(document, {
-        preview: true,
-        ...(position ? { selection: new vscode.Range(position, position) } : {}),
-      });
+      await vscode.commands.executeCommand("vscode.open", uri, { preview: true });
     } catch (error) {
       this.log(`[open] 打开失败 ${path}：${this.describeError(error)}`);
     }
@@ -8664,6 +8786,128 @@ export class ChatController implements vscode.Disposable {
       await vscode.commands.executeCommand("revealInExplorer", vscode.Uri.file(resolved));
     } catch (error) {
       this.log(`[reveal] 展开失败 ${path}：${this.describeError(error)}`);
+    }
+  }
+
+  /**
+   * 「打开这枚附件」（界面上的芯片与用户消息里的图片缩略图点一下就走这里）。
+   *
+   * 界面只交身份，四步解析**从「最接近原件」到「最兜底」**，全在这一处：
+   *
+   * 1. `path`：原文件路径（路径通道进来的附件；回放消息也能从本地提交记录借到它）。
+   *    打开的就是用户自己那个文件，之后他改了什么，这里看得见。
+   * 2. 账本里那一条（`id` 命中草稿或提交租约）：`dataUrl`（粘贴 / 截图的字节）或
+   *    **还没释放**的暂存字节，落一份临时副本再打开——这是「磁盘上从来没有过这个文件」
+   *    的那一类唯一的机会（见 `dsh/attachmentOpen.ts` 的文件头）。
+   * 3. `attachmentId`（durable 句柄）：先查宿主的上传索引与 `globalState` 里的持久记录
+   *    （路径通道记原路径、字节通道上传成功时留的临时副本；记录跨宿主重启还在，见
+   *    `dsh/attachmentOpenStore.ts`），命中且文件还在就直接开；否则图片再经 `session/attachment`
+   *    换一次字节落临时副本（回放的历史图片走这条；服务端返回的是**归一化**过的副本，
+   *    不是原始字节）。
+   * 4. 都拿不到 → `@attachmentUnavailable`。**不静默**：点了没反应是最难查的失败。
+   */
+  private async openAttachment(
+    viewId: string,
+    message: { name: string; kind: "file" | "image"; path?: string; id?: string; attachmentId?: string; mediaType?: string },
+  ): Promise<void> {
+    const scope = this.scopeOfView(viewId);
+    const cwd = scope ? this.cwdOf(scope) : undefined;
+
+    if (message.path && await this.tryOpenAttachmentPath(message.path, cwd)) return;
+
+    // 账本里那一枚：只有草稿与乐观回显的 id 在这个命名空间里（durable 行的 `m<序号>` 落空）
+    const entry = message.id ? this.attachments.find(message.id) : undefined;
+    if (entry) {
+      if (entry.attachment.path && await this.tryOpenAttachmentPath(entry.attachment.path, cwd)) return;
+      const inline = entry.attachment.dataUrl ? parseBase64DataUrl(entry.attachment.dataUrl) : undefined;
+      const bytes = inline?.bytes ?? entry.bytes;
+      if (bytes) {
+        const path = await this.materializeAttachmentCopy({
+          bytes,
+          name: entry.attachment.name,
+          mediaType: inline?.mediaType ?? entry.attachment.mediaType,
+        });
+        if (path && await this.tryOpenAttachmentPath(path, cwd)) return;
+      }
+    }
+
+    const durable = message.attachmentId ?? entry?.attachment.attachmentId;
+    if (durable) {
+      // 两处都查：内存索引里可能还挂着「临时副本正在落盘」，而这份记录也可能是**上一个
+      // 宿主进程**留下的——那条就在 `globalState` 里，点一次现查一次（见
+      // `dsh/attachmentOpenStore.ts`，文件附件没有回服务端取字节的第二条路）。
+      const candidates = [
+        await this.attachmentTargets.pathFor(durable),
+        readAttachmentTarget(this.state, durable)?.path,
+      ];
+      for (const candidate of new Set(candidates)) {
+        if (candidate && await this.tryOpenAttachmentPath(candidate, cwd)) return;
+      }
+      if (message.kind === "image" && scope) {
+        const fetched = await this.fetchAttachmentBytes(scope.sessionId, durable);
+        if (fetched) {
+          const path = await this.materializeAttachmentCopy({
+            bytes: fetched.bytes,
+            name: message.name,
+            mediaType: message.mediaType ?? fetched.mediaType,
+          });
+          if (path) {
+            // 落下来的副本同样是「这条句柄的本地那一份」：下次点击不必再问一次线上
+            // （但它不是用户的文件，悬停提示不拿它当路径，见 `readOriginalTarget`）
+            this.rememberLocalTarget(durable, path, true);
+            if (await this.tryOpenAttachmentPath(path, cwd)) return;
+          }
+        }
+      }
+    }
+
+    this.log(
+      `[open] 附件没有可打开的本地内容：name=${message.name} kind=${message.kind} ` +
+        `path=${message.path ?? "-"} id=${message.id ?? "-"} attachmentId=${message.attachmentId ?? "-"}`,
+    );
+    this.emitToView(viewId, { type: "toast", level: "warn", text: "@attachmentUnavailable" });
+  }
+
+  /**
+   * 附件的一条本地来路：解析不了、确认缺失或编辑器拒绝都交回解析链继续尝试。
+   * 不借 openFile 的 void 判断成功，也不走它的 git 删除文件对比与中途提示。
+   * stat 不确定不是缺失证据：仍可交给编辑器，只有命令完成才算打开成功。
+   */
+  private async tryOpenAttachmentPath(path: string, cwd: string | undefined): Promise<boolean> {
+    const resolved = resolveChipPath(cwd, path);
+    if (!resolved) return false;
+    const uri = vscode.Uri.file(resolved);
+    if (await this.fileExistence(uri) === "absent") return false;
+    try {
+      await vscode.commands.executeCommand("vscode.open", uri, { preview: true });
+      return true;
+    } catch (error) {
+      this.log(`[open] 附件路径打开失败 ${resolved}：${this.describeError(error)}`);
+      return false;
+    }
+  }
+
+  /**
+   * 字节 → 内容寻址的临时副本 → 绝对路径（写盘失败给 undefined）。
+   *
+   * 临时目录取系统临时目录下的固定子目录：这份东西不是会话产物、不该进工作区，也不该
+   * 落进扩展的持久状态。同一份内容重复点开只会写一次（路径由摘要决定）。
+   */
+  private async materializeAttachmentCopy(input: {
+    bytes: Uint8Array;
+    name: string;
+    mediaType?: string;
+  }): Promise<string | undefined> {
+    try {
+      return await materializeAttachment({
+        root: attachmentTempRoot(tmpdir()),
+        bytes: input.bytes,
+        name: input.name,
+        mediaType: input.mediaType,
+      });
+    } catch (error) {
+      this.log(`[open] 附件临时副本落盘失败（${input.name}）：${this.describeError(error)}`);
+      return undefined;
     }
   }
 

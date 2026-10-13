@@ -13,6 +13,8 @@
  * 运行：npm test（已登记到 esbuild.scripts.mjs 的 entries）
  */
 import assert from "node:assert";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { SessionAdapter, type ImageRef } from "../src/dsh/adapter";
 import type { MessageView } from "../src/shared/chat";
 import type { HostToWebview } from "../src/shared/ipc";
@@ -139,6 +141,9 @@ const imageBlock = (id: string, name: string, mediaType: string, width = 1024, h
   adapter.loadImages = () => {
     asked += 1;
   };
+  // 本机记得 `sha256:doc` 那份原文件在哪（跨宿主重启靠全局存储里的记录）：
+  // 芯片悬停显示的就是它，点开也是它
+  adapter.originalPathFor = (id) => (id === "sha256:doc" ? "C:\\ws\\spec.pdf" : undefined);
   adapter.applyEvent({
     type: "user/message",
     seq: 1,
@@ -159,9 +164,30 @@ const imageBlock = (id: string, name: string, mediaType: string, width = 1024, h
     ["file", "image"],
     "文件块仍是 file 附件（界面上是芯片）",
   );
-  assert.strictEqual(attachments[0].attachmentId, undefined, "文件没有可显示的字节，不取");
+  assert.strictEqual(
+    attachments[0].attachmentId,
+    "sha256:doc",
+    "文件块带上 durable 句柄（「单击打开附件」靠它按内容找回本地那一份），但**不取字节**",
+  );
+  assert.strictEqual(attachments[0].path, "C:\\ws\\spec.pdf", "本机记得的原文件路径要带上（悬停显示、点开都用它）");
+  assert.strictEqual(attachments[1].path, undefined, "没记过的图不给路径（不猜一个出来）");
   assert.strictEqual(asked, 1, "只为图片要字节");
-  console.log("image-attachments: 文件块不参与取字节 ✓");
+  console.log("image-attachments: 文件块不参与取字节、本机记得的原文件路径带上 ✓");
+}
+
+// ---------- 4b. 接线：控制器把「本机那个原文件在哪」注入适配器 ----------
+{
+  // 这一条只能查源码：适配器实例在控制器内部按会话建，测试拿不到它。缺了这行接线，
+  // 回放消息里的芯片就永远没有路径可显示（而单击照样能开——两者本是同一份记录）。
+  const source = readFileSync(join(process.cwd(), "src/dsh/controller.ts"), "utf8");
+  assert.ok(
+    source.includes("adapter.originalPathFor ="),
+    "控制器要把原文件路径的查法注入适配器（缺了它，芯片悬停没有路径可显示）",
+  );
+  assert.ok(
+    source.includes("readOriginalTarget(this.state"),
+    "注入的查法只认记录里的原文件——临时副本不当「文件路径」展示",
+  );
 }
 
 // ---------- 5. 助手消息里的图片块：空位留在数组里，由界面决定画不画 ----------
