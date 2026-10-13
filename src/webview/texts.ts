@@ -633,7 +633,7 @@ export interface Texts {
   toolReadImage: string;
   /**
    * cordis 工具自有标题，由 TOOL_TITLE_KEYS 动态查表；缺键会露出工具 id，TS 不报错。
-   * scripts/i18n.test.ts 核对两份词典；见 docs/audit-summary.md「文案登记完整性」。
+   * scripts/i18n.test.ts 核对两份词典；见 docs/design-messages.md。
    */
   toolInspect: string;
   toolRunCordis: string;

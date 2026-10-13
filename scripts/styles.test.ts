@@ -25,7 +25,7 @@ function rule(selector: string): string {
 
 /**
  * 设计像素的两种合法写法：`calc(N * var(--dp))`（倍率下的写法）与裸 `Npx`。
- * 尺度一律走设计像素，见 `docs/adr/0004-ui-scale-design-pixels.md`。
+ * 尺度一律走设计像素，见 `docs/design-ui-scale.md`。
  */
 const DESIGN_PX = String.raw`(?:calc\(\s*-?\d+(?:\.\d+)?\s*\*\s*var\(--dp\)\s*\)|-?\d+(?:\.\d+)?px)`;
 
@@ -763,7 +763,7 @@ console.log("styles: 助手轮尾时钟取完成时刻 ✓");
     !/turn-status-shimmer/.test(css) && !/\.turn-status\b/.test(css),
     "不应再有 TurnStatus 的扫光状态行（用户明确去掉：鲸鱼发光已足够）",
   );
-  // 文案走词典，见 docs/audit-summary.md「文案登记完整性」。
+  // 文案走词典，见 docs/design-messages.md。
   assert.strictEqual(
     dictionaryFor("zh").running,
     "深度求索中",
@@ -3016,7 +3016,7 @@ console.log("styles: 会话查找条的高亮与计数格 ✓");
 // ---------- 25. 界面尺度：几何量一律走设计像素，倍率只有一处真相 ----------
 //
 // 用户 2026-10-03 口径：界面以 13px 为基准设计，字号配置改了之后**元素尺寸**也要等比
-// 缩放。做法与理由见 docs/adr/0004-ui-scale-design-pixels.md。这里钉住的是「不这么做就
+// 缩放。做法与理由见 docs/design-ui-scale.md。这里钉住的是「不这么做就
 // 会静默退化」的几件事——它们全都能通过编译、也看不出报错，只会在某个字号下悄悄走形。
 {
   const tokens = readFileSync(join(process.cwd(), "src", "webview", "styles", "tokens.css"), "utf8");

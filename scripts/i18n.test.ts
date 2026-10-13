@@ -186,7 +186,7 @@ console.log("i18n: 消息表每条都有中英两份，带参的登记成函数�
 // ---------- 1c. 工具自有标题（`TOOL_TITLE_KEYS`）的每个键都要在两份词典里 ----------
 //
 // Rows.tsx 动态查表，缺键会露出工具 id 而 TS 不报错；
-// 见 docs/audit-summary.md「文案登记完整性」。
+// 见 docs/design-messages.md。
 //
 // 键名从 `shared/toolMeta.ts` 的源文本里抠（那里是模块私有的表，没有导出的枚举），
 // 所以**新加一个工具映射自动被覆盖**；抠不到时下面那条 `keys.length` 直接炸，

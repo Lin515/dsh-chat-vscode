@@ -109,7 +109,7 @@ console.log("todoCollapse: 纯状态（默认展开 / 折叠保持 / 换会话�
 // ---------- 1b. 收起时留哪一条：当前执行项 → 最后执行过的那条 → 一条都不给 ----------
 //
 // 「最后执行过的项目」只能由**投影里的顺序 + 状态**推出来：官方 `TodoItem` 每条只有
-// `content` + `status`（三态词表，见 `docs/audit-projections-panels.md` 的
+// `content` + `status`（三态词表，见 `docs/design-projections.md` 的
 // 「todos（任务清单）」一节与 `activity.ts` 的 `stepDotClass`），没有时间戳之类的
 // 历史字段可按——不去猜服务端字段，也就不在这里发明一种。
 {
@@ -243,7 +243,7 @@ console.log("todoCollapse: 全 pending / 空清单收起后不留条目行 ✓")
 // ---------- 4. 三态点色与折叠前的旧行为逐字相同 ----------
 //
 // 顺手核对：契约里的 `TodoItem.status` 只有三态（`pending` / `in_progress` / `completed`，
-// 见官方 `TodoItem` 与 docs/audit-projections-panels.md 的 todos 一节），
+// 见官方 `TodoItem` 与 docs/design-projections.md 的 todos 一节），
 // 所以进度只算「完成数 / 总数」，不发明第四种状态。
 {
   const html = render(true);

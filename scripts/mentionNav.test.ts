@@ -1307,7 +1307,7 @@ console.log("completion(hook): 目录块整段替换（前后文不误吞） ✓
 // ---------- 19. 不发重复 queries：光标在块内挪动不算「查询变了」 ----------
 //
 // 一次 `@` 查询在服务端是「扫全部会话日志」那一趟（百毫秒级，见
-// `docs/adr/0002-mention-candidates-two-frames.md`），所以「同一个目录块里挪光标」
+// `docs/design-mentions.md`），所以「同一个目录块里挪光标」
 // 绝不能重发 `queryFiles`：重取 effect 的依赖只有触发词种类 + 查询串。
 //
 // 为什么只钉到「依赖数组」这一层：本仓库的界面断言走 `react-dom/server` 渲染，

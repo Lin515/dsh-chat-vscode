@@ -89,7 +89,7 @@ function recorder(): { handlers: ProjectionHandlers; seen: Recorded[] } {
 
   // 契约里存在、但本扩展**有意不消费**的键。它们不是「忘了做」：
   // - `subagent` / `subagentTiming` / `schedule` 是三个还没做的面板
-  //   （见 docs/audit-projections-panels.md「未消费能力与未确认」），解析一份没人用的形状只会攒死代码；
+  //   （见 docs/design-projections.md「验证与未覆盖边界」），解析一份没人用的形状只会攒死代码；
   // - `sessionListMetadata` 是冷列表提示，本扩展的列表走自己的排序。
   const NOT_CONSUMED = ["schedule", "subagent", "subagentTiming", "sessionListMetadata"];
   for (const key of NOT_CONSUMED) {

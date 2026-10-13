@@ -1128,7 +1128,7 @@ export function Composer({
                     // 进出计划模式都必须走命令通道：把 `/plan` 拼进消息正文服务端
                     // 不认（实测 plan.active 仍为 false），而退出应当是 `/plan off`
                     // ——正文写 `/plan` 按官方语义反而是**进入**，方向会反。
-                    // 见 scripts/planCommandProbe.ts 与 docs/audit-summary.md「`/plan` 计划模式双向失效」一条。
+                    // 见 scripts/planCommandProbe.ts 与 docs/design-draft.md。
                     post({ type: "runCommand", line: state.planMode ? "/plan off" : "/plan" });
                     setModeOpen(false);
                   }}

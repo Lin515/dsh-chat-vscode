@@ -3,7 +3,7 @@
  *
  * 抽出来的理由很直接：`goal` 与 `subagentCatalog` 两个 bug 都是**形状读错**——
  * 按猜测的字段写、没有契约核对、也没有断言，于是「恒为空」这种失败在界面上
- * 表现为「这个功能没有」，而不是报错（docs/audit-summary.md「goal 投影嵌套形状读错」
+ * 表现为「这个功能没有」，而不是报错（docs/design-projections.md
  * 形状解析是这一层里最容易错、又最容易测的部分，所以从控制器里挪出来单测。
  */
 import { AUTO_REVIEW_PRESET, type ChatState, type GoalView, type SubagentView, type TodoView } from "../shared/chat";

@@ -51,7 +51,7 @@ export function toggleTodos(state: TodoPanelState, sessionId: string | undefined
  *    只有抬头照报 `0/N` 的进度。
  *
  * 为什么只能这么推：官方 `TodoItem` 每条只有 `content` + `status`
- * （见 `docs/audit-projections-panels.md` 的「todos（任务清单）」一节），
+ * （见 `docs/design-projections.md` 的「todos（任务清单）」一节），
  * 没有时间戳之类的历史字段可按——不猜服务端字段，也就不在这里发明一种。
  *
  * 纯函数、只读入参：投影数组是聊天数据，界面不许就地反转 / 排序它。

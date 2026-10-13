@@ -1,7 +1,7 @@
 import { createContext, useContext } from "react";
 
 /**
- * 界面尺度（见 `docs/adr/0004-ui-scale-design-pixels.md`）：
+ * 界面尺度（见 `docs/design-ui-scale.md`）：
  *
  * - **设计像素**是「在基准字号下量出来的尺寸」。CSS 侧由 `tokens.css` 的 `.app` 从
  *   `--font-size` 推导 `--dp`，几何量一律写成 `calc(N * var(--dp))`；

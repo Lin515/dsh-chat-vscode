@@ -5119,7 +5119,7 @@ textarea.composer-input {
  * （event / content）+ 详情检查器 + 顶部时间线。event 列宽度照官方量级：英文 122、中文 96
  * （`:lang(zh)` 那一档，见 `.trajectory-col-event`），窄容器一律降到 50——收列、换紧凑
  * 轮次标签 `#N`、种类徽章换纯图标是**同一条**容器查询，阈值来源与差异见那条查询的注释
- * 与 `docs/design-trajectory.md` 的 3.2。
+ * 与 `docs/design-trajectory.md` 的「界面与交互」。
  *
  * 它是**整页**视图（官方把轨迹注册进 `conversation.view` 槽，选中就整块换掉会话页），
  * 不是抽屉：所以这里没有 `.drawer` 那套绝对定位/遮罩，只有「面板剩下的高度归我」。
@@ -6090,7 +6090,7 @@ textarea.composer-input {
    两个数字（122/84）是它按自己的表宽手调的分档线，**不是**「中文能更早收」的依据：
    收列要看的是**事件列自己放不放得下那一格的内容**（状态点 + 种类徽章），这与语言无关；
    而官方表宽在两侧都有余量，本扩展的面板窄得多，所以本扩展的线（420）本来就是照自己的
-   面板定的。详见 `docs/design-trajectory.md` 的 5.2。 */
+   面板定的。详见 `docs/design-trajectory.md` 的「有意差异与未采纳形态」。 */
 @container (max-width: calc(420em / 13)) {
   .trajectory-col-event,
   .trajectory-col-event:lang(zh) {

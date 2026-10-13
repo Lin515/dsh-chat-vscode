@@ -1,6 +1,6 @@
 /**
  * 【探针定位】勘察型 · 耗 token —— 钉「只 cancel 不会让队列接续」这条服务端事实，
- *   结论已固化在 controller.stopRunning 的设计与 docs/audit-input-queue-attachments.md「停止与队列」；
+ *   结论已固化在 controller.stopRunning 的设计与 docs/design-draft.md「ESC 后队列续发」；
  *   只在重开队列语义问题时跑。按 AGENTS.md 硬约束，每次运行前须获用户批准，
  *   不得随构建自动执行。
  *

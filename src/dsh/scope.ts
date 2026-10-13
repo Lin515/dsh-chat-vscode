@@ -78,7 +78,7 @@ export class SessionScope {
 
   /** 会话内投影：待办 / 子代理目录 / 后台任务 / 目标条 / 计划模式 / 权限。 */
   todos: TodoView[] = [];
-  /** 子代理目录；与线格式 / 视图模型同名，见 docs/audit-summary.md「会话状态字段一致性」。 */
+  /** 子代理目录；与线格式 / 视图模型同名，见 docs/design-projections.md。 */
   subagentEntries: SubagentView[] = [];
   /**
    * 子代理会话专用：**父会话**的子代理目录快照（兄弟行，含自己）。

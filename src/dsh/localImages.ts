@@ -11,7 +11,7 @@ import { localImageMediaType, localImagePath } from "../shared/imageRef";
  * **安全口径**——这些路径是**模型可控的字符串**，必须当外部输入看：
  * - 解析后的绝对路径必须落在**当前会话的工作目录内**。模型可以写任意路径，
  *   宿主顺着它读盘，等于把整个磁盘变成可读内容；如果模型同时被注入着写外链图片，
- *   那就是一条「读本地文件 → 编进 URL 外传」的完整链路（`docs/audit-summary.md`
+ *   那就是一条「读本地文件 → 编进 URL 外传」的完整链路（`docs/design-security.md`
  *   记的同一条外传面）。工作目录之外一律不读，界面退回原样的文本引用。
  * - 扩展名必须在图片表里（[`localImageMediaType`]：png/jpg/jpeg/webp/gif/**svg**），
  *   与附件准入那张表分开——那张表管"模型能不能读字节"，这张管"浏览器能不能画"；

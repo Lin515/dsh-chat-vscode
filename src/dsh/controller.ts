@@ -1533,7 +1533,7 @@ export class ChatController implements vscode.Disposable {
      *
      * 三处「切会话要换掉哪些字段」的现场（首帧快照、增量 patch、切会话专帧）以前各写
      * 一份，加一个字段只改其中一处，后果是**那个字段在切换后静默复旧/丢失**（`goal`
-     * 清不掉、`historyLoading` 永久卡死都是这一族，见 `docs/audit-summary.md`）。
+     * 清不掉、`historyLoading` 永久卡死都是这一族，见 `docs/design-projections.md`）。
      * 现在字段清单只有 `dsh/sessionView.ts` 一份：外观态（与会话无关的设置）与
      * 会话态（域 + 适配器）各由自己的构造器出，两边都带全字段，`undefined` 折成
      * `null`（`shared/wire.ts` 的过线口径）只在那两个构造器里做。
@@ -4542,7 +4542,7 @@ export class ChatController implements vscode.Disposable {
         // **顺序在 `replayFollowSnapshot` 里**：先让适配器回放历史记录，再铺开投影值。
         // 投影是「截至 asOfSeq 的折叠结果」，永远比记录里的事件新；反过来先铺投影再回放，
         // 历史里最后一个事件会把折叠值**覆盖回旧状态**——`plan` 就是活例（见
-        // `docs/audit-summary.md` 的「快照回放会覆盖投影折叠值」）。这条顺序以前只能靠
+        // `docs/design-projections.md`）。这条顺序以前只能靠
         // 正则去比两个 `indexOf` 的大小，现在是一个可以被直接调用的函数。
         replayFollowSnapshot(value as SessionFollowFrame, adapter, (block) => {
           ingestFollowSnapshot(this.projectionHandlers, scope, block);
@@ -5728,7 +5728,7 @@ export class ChatController implements vscode.Disposable {
   /**
    * 目标条。投影是**嵌套**的、轮次计数在外层（见 `projections.goalFromProjection`）。
    * 以前按扁平形状读，两个字段都取不到，于是 goal 恒被清空、目标条从未渲染
-   * （`docs/audit-summary.md`「goal 投影嵌套形状读错」一条）。键不存在 → 清空目标条。
+   * （`docs/design-projections.md`）。键不存在 → 清空目标条。
    */
   private applyGoalProjection(scope: SessionScope, value: GoalView | undefined, present: boolean): void {
     scope.goal = present ? value : undefined;
@@ -6908,7 +6908,7 @@ export class ChatController implements vscode.Disposable {
     // 斜杠命令走命令通道，**不发给模型**：官方客户端的 enter 列把 `/xxx` 交给
     // `commands/execute`，宿主也明确「without sending it to the model」。
     // 以前只有 `/permission` 走命令通道，手打的 `/compact`、`/goal` 等一律当普通
-    // 消息发给模型（docs/audit-summary.md「手打斜杠命令全部不执行」一条）。附带附件时仍按普通消息发：
+    // 消息发给模型（docs/design-draft.md）。附带附件时仍按普通消息发：
     // 命令若不能带附件，服务端会拒绝，而用户此刻显然是想发这批内容。
     const slash = attachments.length === 0 ? this.slashCommandOf(scope, text) : undefined;
     if (slash) {
@@ -7606,7 +7606,7 @@ export class ChatController implements vscode.Disposable {
    * 摘空可恢复的队列 → cancel → 等真空闲 → 按原序走 submitMessage。
    * 历史探针中仅 cancel 两轮均未接续；追加 prompt 唤醒旧队列分别为 3/3 与 0/3，不能依赖。
    * 先捕获 origin.content 保留附件；摘取失败 / 等待超时回滚，提交失败归还尚未提交的余项。
-   * 这不是事务，不能保证竞态下绝不丢失 / 重复；边界见 docs/audit-input-queue-attachments.md。
+   * 这不是事务，不能保证竞态下绝不丢失 / 重复；边界见 docs/design-draft.md。
    */
   private async stopRunning(viewId: string): Promise<void> {
     if (!this.client) return;

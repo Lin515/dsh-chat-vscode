@@ -22,7 +22,7 @@
 
 本扩展自绘界面，但能力与数据语义须与官方 `dsh web` 一致。
 
-- 协议改动先读 `docs/dsh-server-api.md` 与 `docs/audit-summary.md`，再核对目标版本 API 包的 `lib/types/**/*.d.ts`、`lib/client.js`。不猜载荷形状；需要实测时遵守「构建与验证」的批准要求。
+- 协议改动先读[服务端契约](<docs/dsh-server-api.md>)，再按[技术文档导航](<docs/README.md>)选择对应主题的消费规则与边界，核对目标版本 API 包的 `lib/types/**/*.d.ts`、`lib/client.js`。不猜载荷形状；需要实测时遵守「构建与验证」的批准要求。
 - 投影的已提交值与 `pending` / `wanted` 待提交值须组合解读，例如 plan 为 `pending ? !active : active`。线格式与视图模型不可混用：`toUsage` 读取 `cacheReadTokens`，不是视图字段 `cachedTokens`。
 - 官方版本、渠道、发布去向与兼容层统一登记在 `docs/dsh-compat.md`。新版先跑 `npm run dsh:watch`，再逐版 `npm run dsh:check -- <版本>`。差异处理完成后才推进基准；核对历史写入提交说明，涉及发布的用户可见变化写入该版 CHANGELOG，不另建文档台账。
 - P0 是消费面的端点、事件或类型被删除、改名或改变形状，必须处理；只有 P2 时不改代码、不发版；P1 是否跟进是产品决策。兼容分支采用新名优先并记住可用名，或双读且新通道权威。
@@ -77,6 +77,6 @@
 | `esbuild.mjs`、`esbuild.scripts.mjs` | 扩展和离线脚本构建入口 |
 | `tsconfig*.json` | 宿主、webview 与脚本的类型检查范围 |
 | `src/`、`scripts/`、`test/` | 源码、工具与测试夹具；各目录 README 提供分层导航 |
-| `docs/` | 当前设计、契约、兼容与审计边界；入口见 `docs/README.md` |
+| `docs/` | 长期主题设计、契约、兼容与验证边界；入口见[文档导航](<docs/README.md>) |
 | `media/`、`.vscode/`、`.github/` | 品牌资源、调试配置与发布流程 |
 | `.agent/` | 临时脚本、报告与任务材料，不作为长期文档 |

@@ -45,7 +45,7 @@ export interface SessionView {
   permission?: ChatState["permission"];
   planMode: ChatState["planMode"];
   todos: ChatState["todos"];
-  /** 子代理目录；与界面同名，见 docs/audit-summary.md「会话状态字段一致性」。 */
+  /** 子代理目录；与界面同名，见 docs/design-projections.md。 */
   subagentEntries: ChatState["subagentEntries"];
   /**
    * 正在看**子代理会话**时的上下文（面包屑 / 切换下拉 / 只读判定）。

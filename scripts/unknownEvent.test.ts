@@ -6,7 +6,7 @@
  * `RENDERED_EVENT_TYPES`，于是**已知但不渲染**的簿记事件也落进告警分支：
  * `agent/inbox/spliced`（每条消息入队 + 领取各一条，新会话开场 3~5 条）、
  * `command/*`（每次斜杠命令）、`llm/retry`（每次重试）都命中，把告警刷成噪音
- * （docs/audit-summary.md「已知未处理的事件反复触发 warn」一条）。
+ * （docs/design-messages.md）。
  *
  * 正确行为（本次修复）：
  *  - dsh 已知词汇（渲染的 ∪ 知情静默的）→ 一律不告警；

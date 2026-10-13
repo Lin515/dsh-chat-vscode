@@ -10,7 +10,7 @@ React / 浏览器环境，不使用 Node API。上层边界见[源码导航](<..
 - [bridge.ts](<bridge.ts>) — acquireVsCodeApi 单例、IPC 与状态持久化。
 - [texts.ts](<texts.ts>) — 按宿主语言取词典与 Texts 上下文。
 - [messages.ts](<messages.ts>) — @key / 中英文案唯一登记，原生通知标 vscode:true。
-- [uiScale.ts](<uiScale.ts>) — 设计像素 / 字号倍率与上下文，见[ADR](<../../docs/adr/0004-ui-scale-design-pixels.md>)。
+- [uiScale.ts](<uiScale.ts>) — 设计像素 / 字号倍率与上下文，见[尺度设计](<../../docs/design-ui-scale.md>)。
 - [icons.tsx](<icons.tsx>) — SVG 图标，设计像素尺寸、继承色与描边。
 
 ## 轨迹
@@ -33,7 +33,7 @@ React / 浏览器环境，不使用 Node API。上层边界见[源码导航](<..
 - [readingPlacement.ts](<readingPlacement.ts>) — 查找 / 横条共用的落位、取历史与过期作废；贴底事实仍由 autoScroll 提供。
 - [find.ts](<find.ts>) — 文本节点子串查找与激活下标环绕。
 - [escapeOwner.ts](<escapeOwner.ts>) — ESC 唯一仲裁：元素 → 浮层（右键菜单 > 原图 > 抽屉 > 并列浮层）→ 会话页的停止生成（只有会话页占据前景时才存在，判据 `isConversationForeground`）；不按注册先后。
-- [composerCompletion.tsx](<composerCompletion.tsx>) — @ / / 触发、完整块查询、已可引用抑制、候选与键盘导航，见[ADR](<../../docs/adr/0005-mention-block-already-references.md>)。
+- [composerCompletion.tsx](<composerCompletion.tsx>) — @ / / 触发、完整块查询、已可引用抑制、候选与键盘导航，见[引用设计](<../../docs/design-mentions.md>)。
 - [composerSend.ts](<composerSend.ts>) — 键盘 / 按钮同源手势与文案，界面不解析模式。
 - [composerSessionDraft.ts](<composerSessionDraft.ts>) — 可见会话标题与确定性 token 的区间绑定、编辑失效与重匹配。
 - [composerMention.ts](<composerMention.ts>) — 草稿引用镜像、Ctrl 命中与同排版几何。

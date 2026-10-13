@@ -117,8 +117,8 @@ export function formatCacheHitPercent(
  * 明细里的「缓存命中」行都读它——用户 2026-10-10 口径，两处必须同一个数）。
  *
  * 数据源是 `tokenUsage` 投影（全会话累计，官方 `UsagePill` / `StatsPills` 读的同一个键），
- * 分母按官方 `cacheHitPercent`：三个 prompt 侧计费桶之和（`docs/audit-projections-panels.md`
- * 的 tokenUsage 一节记的也是这个口径）。
+ * 分母按官方 `cacheHitPercent`：三个 prompt 侧计费桶之和（`docs/design-projections.md`
+ * 的「用量与上下文」记的也是这个口径）。
  *
  * **单轮口径不在界面里显示**：官方那个数只出现在「本轮用量」对话框，而且它是**整轮**
  * 所有 attempt 的累加（`@deepseek-ai/dsh-token-meter` 的 `deriveTurnTokenUsage`），

@@ -1,6 +1,6 @@
 # 附件与引用接入设计
 
-修改添加文件、拖放、粘贴、上传或目录引用前读本文。当前问题见[输入审计](<audit-input-queue-attachments.md>)；上传契约见[API 参考](<dsh-server-api.md>)。平台证据取自 VS Code 1.138 的既有实测，不代表所有版本。
+修改添加文件、拖放、粘贴、上传或目录引用前读本文。队列还原与提交时序见[发送设计](<design-draft.md>)，补全查询见[引用设计](<design-mentions.md>)；上传契约见[API 参考](<dsh-server-api.md>)。平台证据取自 VS Code 1.138 的既有实测，不代表所有版本。
 
 ## 三个入口、一条管线、三种落点
 
@@ -30,6 +30,12 @@
 - 路径按现有列表去重；字节条目没有可靠身份，不按名字去重。
 - 对话框固定 `canSelectFiles:true, canSelectFolders:false`；Windows/Linux 两者都开会变成目录选择器。
 - 0 字节由界面与宿主两层拒绝，不能把目录载荷当成空文件附件。纯文本粘贴不进附件流程。
+
+## 引用与快照
+
+文件引用是正文 `@path`，目录写成 `@dir/`；上传文件则提交 receiptId，不内联全文，不能把两种入口混为一谈。
+
+编辑器选区插入带行号的正文路径引用，例如 `@path#L12-L40`，由模型读取对应文件行；不内联代码，也不保存选区内容快照。会话引用的快照与 durable 身份恢复见[消息设计](<design-messages.md#用户消息与引用身份>)。
 
 ## 数据流与归属
 
@@ -104,9 +110,13 @@
 
 离线回归：attachments（回执、内容顺序、同管线 / 同 MIME、上限与拒绝）、attachmentLifecycle（切会话、旧轮、归还 / 交接 / 释放）、selection、previewFixture。跨宿主 / webview 的帧改动须双端构建；交付安装版时确认两端产物都更新。mimeType 可选兼容旧帧，不能把混合产物验证当完整验收。常规命令与真实测试批准见[AGENTS](<../AGENTS.md>)。
 
-## 待办
+## 未覆盖边界与重评条件
 
-1. 图片整批准入：maxImagesPerMessage / maxMessageImageBytes / maxImagePixels / maxImageDimension 未消费，只有 maxImageBytes 使用于内联上限；当前只能等服务端提交时报错，不能假称已完整预检。
-2. 上传进度：目前 uploading 的 loaded 恒为 0，只有状态，无逐字节进度；需改宿主传输并回传进度。
-3. 路径仅后缀兜底，文本内容的 a.png 可能被误当图片并遭服务端整批拒绝；内容嗅探与额外 IO 的取舍尚未定。
-4. 拖放目录等待平台真路径能力；若能取得，应加可选路径字段并复用 addPaths，不能再开一条管线。
+- 图片只消费 maxImageBytes；maxImagesPerMessage / maxMessageImageBytes / maxImagePixels / maxImageDimension 未消费，当前只能等服务端提交时报错，不能假称完整整批预检。
+- uploading 的 loaded 恒为 0，只有状态、无逐字节进度；跟进需改宿主传输并回传进度。
+- 路径仅后缀兜底，文本内容的 a.png 可能被误当图片并遭服务端整批拒绝；内容嗅探与额外 IO 的取舍尚未定。
+- 大图路径读取仍有同步占用扩展宿主的风险；准入上限与离线测试通过不证明该路径无阻塞，改变读取管线时须单独量测。
+- 纯附件发送仍被 Composer 的非空正文判定挡住；宿主能装配附件，不代表界面已开放该入口。
+- 拖放目录缺平台真路径，不是可靠名称猜测修复的问题；平台开放后应加可选路径字段、复用 addPaths，不另开管线。
+
+可跟进能力集中在[待评估清单](<../ToDo.md>)；以上边界不等于已决定实现。

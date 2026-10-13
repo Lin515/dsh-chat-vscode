@@ -47,7 +47,7 @@ P0 四项无条件落位，极窄也留 DOM。P1 / P2 各档按渲染左右次�
 | 客户端双语词典 | read-only / workspace-write / danger-full-access | 恒有 |
 | 服务端目录 | auto（Auto review，实验） | permissionAutoReview 为真，或当前值已是 auto |
 
-Auto 可用性只认 permissionPresets/catalog.options 的肯定证据（permissionCatalogHasAuto）。目录变更事件触发重读；404 / 插件缺失不列，瞬态断线 / 超时 / 5xx 保先前结论。当前已是 auto 必须能显示，不能因请求失败伪装成别档。版本与部署不能替代目录证据，见[兼容规则](<dsh-compat.md>)。
+Auto 能力与目录失败的判据统一见[投影设计的 permissions](<design-projections.md#permissions权限>)，版本与部署不能替代目录证据。界面当前已是 auto 必须能显示，不能因请求失败伪装成别档；目录变更事件触发重读。
 
 Auto 的七条文字逐字取官方 accessZh / accessEn；官方中文名也为 Auto review。自补 IconShieldReview 以满足最小图标档。danger-full-access / auto 都在弹层内确认，不弹系统模态；auto 必须勾选风险确认才可继续。关弹层 / 再点胶囊 / 换档复位确认态。
 

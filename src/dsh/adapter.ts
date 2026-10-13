@@ -1520,7 +1520,7 @@ export class SessionAdapter {
         // 「step/turn 是否已关闭」（`interruption(context)`），不关心是
         // aborted / error / completed。原因是同一件事：一轮关掉之后，那些调用
         // 不会再有 `tool/result` 了，不合成它们就永远停在「运行中」，
-        // 看起来像任务卡死（docs/audit-summary.md「中止后工具行永远卡『运行中』」一条）。
+        // 看起来像任务卡死（docs/design-messages.md）。
         // 「正常完成但调用没收尾」在真实会话里确实会出现（结果被截断、连接抖动）。
         this.synthesizeInterrupted(event.time);
         this.emit({ type: "message/upsert", message: { ...message } });
@@ -1579,7 +1579,7 @@ export class SessionAdapter {
           };
           // 非文本块（图片 / 文件）**不能丢**：此前的 `if (!text) break;` 会
           // 让「纯图片用户消息」整条不渲染——用户发了张图，界面上什么都没有
-          // （docs/audit-summary.md「用户消息的非文本内容被丢弃」一条）。
+          // （docs/design-messages.md）。
           // 图片字节顺手**借乐观回显那一份**（同一次提交，本地已有 dataUrl）：
           // 不借的话 durable 行会先从缩略图退回文件名芯片、等 `hydrateUserMedia`
           // 回来再变成缩略图——同一条消息在交接时闪两下。
@@ -2174,7 +2174,7 @@ export class SessionAdapter {
    *   `pressureTokens` + 表面自那次采样以来的增减。**这是唯一会逐轮变化的那个**
    *   （实测：小对话里 `pressureTokens` 连续三轮都是 19206，而 `projectedTokens`
    *   19215 → 19844 每轮都动），且**压缩后会下降**——`pressureTokens` 做不到，
-   *   因为压缩不产生 usage 事件（docs/audit-summary.md「占用条分子口径错」一条）。
+   *   因为压缩不产生 usage 事件（docs/design-projections.md）。
    *
    * **分子的来源顺序**（实测依据见 `scripts/pressureProbe.ts`）：
    * 1. 官方 `projectedTokens` / `pressureTokens`（投影）；

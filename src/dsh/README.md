@@ -19,7 +19,7 @@
 
 ## 投影与视图折叠
 
-- [projectionStore.ts](<projectionStore.ts>) — seq 单调的权威值表，见[ADR](<../../docs/adr/0001-projection-value-store.md>)。
+- [projectionStore.ts](<projectionStore.ts>) — seq 单调的权威值表，见[投影设计](<../../docs/design-projections.md>)。
 - [projectionIngest.ts](<projectionIngest.ts>) — 投影键的形状读取 / 效果唯一登记。
 - [projections.ts](<projections.ts>) — goal / subagent / todo 等形状解析纯函数。
 - [produced.ts](<produced.ts>) — 成功第一方变更调用产生的本轮文件。

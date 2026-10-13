@@ -106,7 +106,7 @@
      求值，分居两级就会永远用错那个值）。 */
   --font-size: var(--vscode-font-size, 13px);
 
-  /* ---- 界面尺度（见 docs/adr/0004-ui-scale-design-pixels.md）----
+  /* ---- 界面尺度（见 docs/design-ui-scale.md）----
      整套界面尺寸都按**设计像素**量：`--dp` 是一个设计像素的实际长度，几何量写成
      `calc(N * var(--dp))`。倍率由字号基准推出，所以 auto（13px）时倍率恰好是 1，
      界面与基准字号下像素级一致。

@@ -804,7 +804,7 @@ export type GoalPhase = "active" | "paused" | "blocked" | "complete";
  *    roundsStarted, createdAt, updatedAt }`
  * ——目标本体嵌在 `goal` 里，轮次计数却在**外层**。
  * 早先按扁平的 `{objective, phase, rounds, maxRounds}` 读，于是
- * `goal?.objective` 恒 undefined、状态恒被清空（docs/audit-summary.md「goal 投影嵌套形状读错」一条）。
+ * `goal?.objective` 恒 undefined、状态恒被清空（docs/design-projections.md）。
  */
 export interface GoalView {
   id?: string;
@@ -857,7 +857,7 @@ export interface SubagentContextView {
  *   该端点在新版已删除——`activity` 现在由 `api-session/status` 中继补齐。
  *
  * 早先把 RPC 行的过滤（`kind === "child"`）套在投影上，于是面板每次刷新都被
- * 清空（docs/audit-summary.md「subagentCatalog 形状用错 + mode 硬编码」一条）。
+ * 清空（docs/design-projections.md）。
  */
 export interface SubagentView {
   id: string;
@@ -1238,7 +1238,7 @@ export interface ChatState {
   /**
    * 当前会话的子代理目录；线格式、宿主缓存与界面同名，避免切会话漏更新。
    * 字段集见 dsh/sessionView.ts；投影与旧 RPC 的差异见 SubagentView。
-   * 约束见 docs/audit-summary.md「会话状态字段一致性」。
+   * 约束见 docs/design-projections.md。
    */
   subagentEntries: SubagentView[];
   /**
