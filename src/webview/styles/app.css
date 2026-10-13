@@ -5995,11 +5995,34 @@ textarea.composer-input {
   min-width: 0;
 }
 
+/* 标题行 = 标题 + 该节正文的动作条（复制 / 自动换行）。**同一行**是要点：动作条从前在
+   正文正上方独占一行，于是「标题 → 正文框」的距离（2 + 24 + 2dp）比「正文框 → 下一节
+   标题」的节间距（8dp）还大，正文看起来归下一节去了（官方也是标题与动作条同一行，
+   见 `components/TrajectorySection.tsx` 的文件头）。底对齐：标题与它的正文之间只留
+   节内那一档 2dp，因此小于节与节之间的 8dp。 */
 .trajectory-overview-heading {
+  display: flex;
+  align-items: flex-end;
+  gap: calc(4 * var(--dp));
+  /* 定高：动作条是挂载后才 portal 上来的，行高不钉住的话那一行会跳一下 */
+  min-height: calc(24 * var(--dp));
   margin: 0;
   color: var(--description);
   font-size: var(--font-size-body);
   font-weight: 600;
+}
+
+/* 动作条插槽：贴右端（官方 `programActions` 的 `margin-left: auto`）。 */
+.trajectory-overview-actions {
+  display: inline-flex;
+  align-items: center;
+  margin-left: auto;
+}
+
+/* 挂进标题行的动作条**不带下边距**：那一行的底边就是正文的顶边。只有留在正文上方
+   独立一行的版本（没有标题行的页签 / 工具目录 / 对照节）才需要它把按钮与正文分开。 */
+.trajectory-overview-actions .trajectory-pre-actions {
+  margin-bottom: 0;
 }
 
 .trajectory-overview-title {

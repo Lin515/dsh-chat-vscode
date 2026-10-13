@@ -14,7 +14,8 @@
 - `TodoPanel.tsx` — 会话底部的「任务清单」面板（`todo_write` 投影）：抬头带进度、可折叠，展开 / 收起走同一段行渲染；收起只留当前执行项（没有在执行的则留最后执行过的那条），抬头箭头展开朝下、收起朝上；开合态由 `App` 按会话记账（见 `../todoPanel.ts`）。
 - [Trajectory.tsx](<Trajectory.tsx>) — 轨迹装配与账本／两个互斥检查器；折叠与搜索规则委托[行投影模块](<../trajectoryLedgerRows.ts>)，所有选择、focus、range、定位与视口通过[同一交互端口](<../trajectoryInteraction.ts>)。请求概述分别计工具／子工具，结果链接定位到助手消息或压缩记录。
 - [TrajectoryTimeline.tsx](<TrajectoryTimeline.tsx>) — 时间线呈现层：只接收一个完整交互端口（含 plot ref），负责 ResizeObserver 与归一化跨度绘制，不另持有一套选择／手势状态。绘图区聚焦时的 ESC 由 `timelineEscape` 清选区与选中，并经 `../escapeOwner.ts` 的 `consumeEscape` 消费（不许落到「停止生成」兜底）。
-- `TrajectoryPre.tsx` — 轨迹检查器里「一段原文」的统一呈现件（正文 + 复制 / 自动换行那对按钮）；`Trajectory.tsx` 里十几处都用它，新加一处原文就自动带上这两个动作。
+- `TrajectoryPre.tsx` — 轨迹检查器里「一段原文」的统一呈现件（正文 + 复制 / 自动换行那对按钮）；`Trajectory.tsx` 里十几处都用它，新加一处原文就自动带上这两个动作。有标题行时那对按钮 portal 到标题行右侧（见 `TrajectorySection.tsx`），没有时留在正文上方一行。
+- [TrajectorySection.tsx](<TrajectorySection.tsx>) — 概述页一节的**外壳**：标题行（标题 + 正文动作条插槽）+ 正文预览。动作条与标题同一行，正文紧贴标题，插槽经 context 交给正文块里的 `TrajectoryPre`。
 - `SourceBlocks.tsx` — 轨迹检查器「原始内容」页签的逐块排版（对齐官方 `SourceBlocks()`）：每块一节（块标题 + 该块原文），块上有 `callId` 时标题变跳转按钮。
 - `PromptDiff.tsx` — 轨迹检查器「差异」页签里的一节行级差分（对齐官方 `PromptDiffSection()`）：标题 + 逐行着色；行序列由 `../trajectoryPromptDiff.ts` 算。
 - `TurnRail.tsx` — 右侧轮次横条组件：固定间距刻点、悬停预览卡、点击跳轮。

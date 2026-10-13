@@ -38,6 +38,7 @@ import { PromptDiffSection } from "./PromptDiff";
 import { Spinner } from "./primitives";
 import { SourceBlocks } from "./SourceBlocks";
 import { TrajectoryPre } from "./TrajectoryPre";
+import { TrajectorySection } from "./TrajectorySection";
 import { useTexts } from "../texts";
 import { trajectoryAssistantRequestNumber, trajectoryAssistantSummary, trajectoryCallCellIndex, trajectoryCellContent, trajectoryCellError, trajectoryCodeProgram, trajectoryGroupTitle, trajectoryRecordGenerationTime, trajectoryRecordThroughput, trajectoryRecordTotalTime, trajectoryRecordTtft, trajectoryRequestCallCounts, trajectoryRequestCells, trajectoryRowLabel, trajectoryToolUpdateParams, trajectoryTurnSummary, trajectoryUsesSourceBlocks, type TrajectoryRequestCallCounts } from "../trajectoryDisplay";
 import { trajectoryRowPositions, trajectoryWindowPlan, VIRTUALIZATION_THRESHOLD, VIRTUAL_ROW_HEIGHT } from "../trajectoryVirtual";
@@ -842,12 +843,15 @@ function Inspector({
 
             {/* 概述里**直接摊开后几张卡片的内容**（官方 `overviewSections`）：
                 工具行 = 参数 / 结果 / Schema / 计时，markdown 记录 = 预览。
-                标题可点：点了切到对应页签看完整版。 */}
+                标题可点：点了切到对应页签看完整版。
+                标题行右侧是**该节正文动作条的落点**（复制 / 自动换行由正文块 portal
+                上来，见 `TrajectorySection`）——正文因此紧贴标题，而不是被一行按钮隔开。 */}
             <div className="trajectory-overview-sections">
               {sections.map((section) => (
-                <section className="trajectory-overview-section" key={section.key}>
-                  <div className="trajectory-overview-heading">
-                    {section.onOpen !== undefined ? (
+                <TrajectorySection
+                  key={section.key}
+                  heading={
+                    section.onOpen !== undefined ? (
                       /* 跨面板那一节（请求计时）：标题点了开**另一个检查器**的页签 */
                       <button
                         type="button"
@@ -870,10 +874,11 @@ function Inspector({
                         {section.label}
                         <IconChevronRight size={12} />
                       </button>
-                    )}
-                  </div>
-                  <div className="trajectory-overview-preview">{section.body}</div>
-                </section>
+                    )
+                  }
+                >
+                  {section.body}
+                </TrajectorySection>
               ))}
             </div>
           </>
@@ -1178,29 +1183,19 @@ function RequestInspector({
               </div>
             ) : null}
             <div className="trajectory-overview-sections">
-              <section className="trajectory-overview-section">
-                <div className="trajectory-overview-heading">
-                  <span className="trajectory-overview-title">{texts.tabUsage}</span>
-                </div>
-                <div className="trajectory-overview-preview">
-                  <RequestUsageRows usage={request.usage} texts={texts} />
-                </div>
-              </section>
-              <section className="trajectory-overview-section">
-                <div className="trajectory-overview-heading">
-                  <span className="trajectory-overview-title">{texts.tabTiming}</span>
-                </div>
-                <div className="trajectory-overview-preview">
-                  {/* 概述里那一份是**缩略**（官方传 `preview`：计时来源那行不出） */}
-                  <RequestTimingPanel
-                    request={request}
-                    assistant={assistant}
-                    anchor={anchor}
-                    preview
-                    texts={texts}
-                  />
-                </div>
-              </section>
+              <TrajectorySection heading={<span className="trajectory-overview-title">{texts.tabUsage}</span>}>
+                <RequestUsageRows usage={request.usage} texts={texts} />
+              </TrajectorySection>
+              <TrajectorySection heading={<span className="trajectory-overview-title">{texts.tabTiming}</span>}>
+                {/* 概述里那一份是**缩略**（官方传 `preview`：计时来源那行不出） */}
+                <RequestTimingPanel
+                  request={request}
+                  assistant={assistant}
+                  anchor={anchor}
+                  preview
+                  texts={texts}
+                />
+              </TrajectorySection>
             </div>
           </>
         ) : null}

@@ -38,6 +38,9 @@ import { renderToStaticMarkup } from "react-dom/server";
 const { TrajectoryPre } = (await import("../src/webview/components/TrajectoryPre")) as {
   TrajectoryPre: ComponentType<{ text: string; copyTitle: string; wrapTitle: string }>;
 };
+const { TrajectorySection } = (await import("../src/webview/components/TrajectorySection")) as {
+  TrajectorySection: ComponentType<{ heading: ReactNode; children?: ReactNode }>;
+};
 const { TextsContext, dictionaryFor } = (await import("../src/webview/texts")) as {
   TextsContext: { Provider: ComponentType<{ value: unknown; children?: ReactNode }> };
   dictionaryFor: (locale: "zh" | "en") => unknown;
@@ -206,6 +209,106 @@ assert.strictEqual(toggleWrap(true), false, "换行态拨一下 = 不换行");
   const block = /^\.trajectory-pre-block\s*\{([\s\S]*?)\}/mu.exec(css)?.[1] ?? "";
   assert.ok(/min-width:\s*0/.test(block), "正文块要能被窄侧栏压窄（min-width: 0）");
 }
+
+// ---------- 7. 概述里动作条挂到**标题行**（正文不再被一行按钮与标题隔开） ----------
+//
+// 用户 2026-10-13 口径：概述里「标题行 + 动作行」两行使「标题 → 它的正文」比
+// 「正文 → 下一节标题」还远，读起来像正文归了下一节。官方是标题与动作条同一行
+// （`OverviewSection` 的 `h3.overviewHeading` + `programActions`），这里同一手法：
+// 正文块里的动作条 portal 进标题行右侧的插槽。
+{
+  const css = readFileSync(join(process.cwd(), "src", "webview", "styles", "app.css"), "utf8");
+  const pre = readFileSync(
+    join(process.cwd(), "src", "webview", "components", "TrajectoryPre.tsx"),
+    "utf8",
+  );
+  assert.ok(
+    /host === null \? actions : createPortal\(actions, host\)/.test(pre),
+    "没有标题行时动作条留在正文上方一行；有插槽时 portal 到标题行（两条路都要在）",
+  );
+
+  const section = readFileSync(
+    join(process.cwd(), "src", "webview", "components", "TrajectorySection.tsx"),
+    "utf8",
+  );
+  assert.ok(
+    /trajectory-overview-heading[\s\S]*?\{heading\}[\s\S]*?trajectory-overview-actions/m.test(section),
+    "插槽要在**标题行里**、且是标题的兄弟——按钮不能嵌进标题那枚 button（非法 HTML）",
+  );
+  assert.ok(
+    /value=\{slot\}>\{children\}/.test(section),
+    "正文（children）要吃到插槽那个 context，否则正文块里的动作条找不到落点",
+  );
+
+  const trajectory = readFileSync(
+    join(process.cwd(), "src", "webview", "components", "Trajectory.tsx"),
+    "utf8",
+  );
+  assert.ok(
+    !/className="trajectory-overview-preview"/.test(trajectory),
+    "概述节一律走 `TrajectorySection`（自己拼那一套就漏掉动作条插槽）",
+  );
+  assert.ok(
+    (trajectory.match(/<TrajectorySection/g) ?? []).length >= 2,
+    "记录检查器与请求检查器的概述各有一处 `TrajectorySection`",
+  );
+
+  const heading = /^\.trajectory-overview-heading\s*\{([\s\S]*?)\}/mu.exec(css)?.[1] ?? "";
+  assert.ok(heading.length > 0, "app.css 里找不到 `.trajectory-overview-heading`");
+  assert.ok(/display:\s*flex/.test(heading), "标题行要横排（标题左、动作条右）");
+  assert.ok(
+    /align-items:\s*flex-end/.test(heading),
+    "标题行底对齐：标题与它的正文之间只留节内那一档间距",
+  );
+  const slot = /^\.trajectory-overview-actions\s*\{([\s\S]*?)\}/mu.exec(css)?.[1] ?? "";
+  assert.ok(slot.length > 0, "app.css 里找不到 `.trajectory-overview-actions`");
+  assert.ok(/margin-left:\s*auto/.test(slot), "动作条插槽贴右端（官方 `margin-left: auto`）");
+  const mounted = /^\.trajectory-overview-actions \.trajectory-pre-actions\s*\{([\s\S]*?)\}/mu.exec(css)?.[1] ?? "";
+  assert.ok(mounted.length > 0, "app.css 里找不到「挂进标题行的动作条」那条覆盖规则");
+  assert.ok(
+    /margin-bottom:\s*0/.test(mounted),
+    "挂进标题行之后不许再带下边距（那一行的底边就是正文的顶边）",
+  );
+}
+console.log("trajectoryPre: 概述里动作条并入标题行（标题与正文紧贴） ✓");
+
+// ---------- 8. `TrajectorySection` 真渲染一遍：标题行里确实有那个插槽 ----------
+//
+// 插槽元素要到挂载之后才存在（`ref` 回调），SSR 里拿不到，所以这一条钉的是**外壳的
+// 形状**：标题行（标题 + 插槽）在前、正文预览在后，正文吃到插槽那个 context。
+{
+  const restore = installStorage(new Map());
+  let html = "";
+  try {
+    html = renderToStaticMarkup(
+      createElement(
+        TextsContext.Provider,
+        { value: ZH },
+        createElement(
+          TrajectorySection,
+          { heading: createElement("span", { className: "trajectory-overview-title" }, "参数") },
+          createElement(TrajectoryPre, { text: "{}", copyTitle: "复制参数", wrapTitle: "自动换行" }),
+        ),
+      ),
+    );
+  } finally {
+    restore();
+  }
+  assert.ok(
+    /class="trajectory-overview-heading"[\s\S]*?trajectory-overview-title[\s\S]*?class="trajectory-overview-actions"/.test(html),
+    `标题行里要有标题与插槽（顺序：标题 → 插槽），实际：${html.slice(0, 200)}`,
+  );
+  assert.ok(
+    /trajectory-overview-actions"><\/span><\/div><div class="trajectory-overview-preview"/.test(html),
+    "插槽在标题行里闭合，正文预览是标题行的兄弟（不是嵌在标题行里）",
+  );
+  assert.ok(
+    /trajectory-pre-block[\s\S]*?trajectory-pre-actions[\s\S]*?<pre class="trajectory-pre"/.test(html),
+    "SSR 下插槽还不存在，动作条按「正文上方一行」渲染（两条路同一份按钮）",
+  );
+  assert.strictEqual((html.match(/<button/g) ?? []).length, 2, "每段原文恰好两个动作，不多不少");
+}
+console.log("trajectoryPre: TrajectorySection 标题行带动作条插槽 ✓");
 
 console.log("trajectoryPre: 默认不换行 + 两个动作齐备 + 渲染不写偏好 ✓");
 console.log("trajectoryPre: 偏好采样 / 存储不可用回落 / 拨开关取反 ✓");

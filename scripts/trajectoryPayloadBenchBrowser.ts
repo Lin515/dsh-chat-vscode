@@ -1692,6 +1692,7 @@ const REACT_DOM_SHIM_SOURCE = `import * as ReactDOMProfiling from "react-dom/pro
 export const createRoot = ReactDOMProfiling.createRoot;
 export const flushSync = ReactDOMProfiling.flushSync;
 export const hydrateRoot = ReactDOMProfiling.hydrateRoot;
+export const createPortal = ReactDOMProfiling.createPortal;
 export default ReactDOMProfiling;
 `;
 

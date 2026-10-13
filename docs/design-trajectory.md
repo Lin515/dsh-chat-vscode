@@ -84,7 +84,7 @@ vendor 提供 sequence / duration / time / actual：duration 去空闲、保并�
 
 system diff 用 structuredPatch(context=3)，system / tools 分开比前后同类快照，相同或缺一份不显示。Schema 用调用时版本。窗口没带进「调用之前那一帧 request/header」时（跟随分页按消息对齐切，而表头不属于任何消息），宿主按需往前补页、只取其中的表头交给折叠：判据是「这条工具行之前有没有表头」，有表头即视为真缺席（那一帧目录里本来就没有这个工具名）不再往回翻；账本一行都不变（回补不进账本，否则往用户正看着的视图上方插行），聊天流的消息、分页锚点与 hasMore 同样不动。「结果在窗口里、调用在窗口外」的结果行没有工具名，仍不可用（官方同口径）。PTC code-program 行显描述、参数叫代码、有程序即使空输出也给结果页签；TypeScript / Python 只按 Schema，不猜源码。PTC 真实零样本，不把契约回归当安装验证。
 
-SourceBlocks 显原文与精确调用链接，纯工具目录变更用名字清单，无块退文本。统一 TrajectoryPre，默认 pre，可拨 pre-wrap + break-all；动作条在正文上方独立行，dsh.trajectory.jsonStringWrapping 仅拨动落盘、各段独立。
+SourceBlocks 显原文与精确调用链接，纯工具目录变更用名字清单，无块退文本。统一 TrajectoryPre，默认 pre，可拨 pre-wrap + break-all；概述节里动作条并入标题行（复制 / 自动换行挂到标题右侧的插槽，正文紧贴标题），没有标题行的页签 / 工具目录 / 对照节里仍是正文上方独立一行；dsh.trajectory.jsonStringWrapping 仅拨动落盘、各段独立。
 
 trajectoryTexts.ts 唯一登记 zh / en，参数函数；缺时长为不可用，<1 秒整数毫秒、<10 秒两位小数、其余一位。绝对时刻切本地日期 / Unix 秒（3 位），时长不切。服务端错误原样、语义标记本地化，AUTH 经 displayFailure 清文案。
 
