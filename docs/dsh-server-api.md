@@ -432,6 +432,8 @@ export interface SessionSummary {
 ```
 
 > 激活策略：**只读存储 header + 投影缓存行**，不会唤起 Agent（`⟨P⟩\dsh-api-session-controller\README.md`「Each endpoint states its activation policy」）。
+
+> `updatedAt` **不是**「最后一次日志写入」：服务端取 `max(header.createdAt, sessionListMetadata.lastPromptAt)`，即**最后一条人类消息**（agent 的产出不改它）。子代理目录的显示顺序读的就是它，见[投影设计](<design-projections.md>)的「子代理」。
 > 这是第三方实现用来做「服务器存活探测」的端点（`⟨W⟩\src\dsh\apiClient.ts:212-235`）——因为老版本 0.1.1 的 `host.describe` 已移除。
 
 ### 3.2 `session/create` —— 新建会话

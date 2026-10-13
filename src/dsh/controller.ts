@@ -116,6 +116,7 @@ import { deriveTrajectoryModel } from "./trajectory";
 import { backfillTrajectorySchemas, missingSchemaAnchor } from "./trajectoryBackfill";
 import { normalizePath, upperDriveLetter, visibleForView, visibleForWorkspace, visibleSessionCandidates, visibleSessionRows } from "./sessionList";
 import { acceptSessionStatus, decodeSessionStatus } from "./sessionStatus";
+import { orderSubagentEntries } from "./subagentOrder";
 import { dropLegacyUnreadState, loadUnreadSessionIds, writeUnreadSession } from "./unreadStore";
 import { isBlank, mergeWindowCache, WindowRestore, WorkspaceWindowStateStore, type SidebarSlot, type WindowCache, type WindowKind } from "./windowState";
 
@@ -877,6 +878,35 @@ export class ChatController implements vscode.Disposable {
    */
   private readonly subagentRunning = new Map<string, boolean>();
   /**
+   * 子代理目录的**判定时间**账本（`childSessionId → epoch ms`）：下拉里那一行的排序键。
+   *
+   * 口径（用户 2026-10-13）：清单始终按「用户消息最新的，或者 agent 轮次结果正文最新的」
+   * 从上到下排（见 `subagentOrder.ts`）。判定条目只有两类，**agent 的过程消息**（思考、
+   * 工具调用、逐段正文）不进这个账本——否则生成中每来一条事件就要重排一次。
+   *
+   * 写入口两条，都取**新**、不互相覆盖：
+   *
+   * - `noteSubagentTimes`（`session/list` 的原始子代理行）：服务端
+   *   `sessionListMetadata.lastPromptAt`（`SessionSummary.updatedAt` =
+   *   `max(createdAt, lastPromptAt)`）——**用户消息**那一半，服务端时间戳，不随 agent 的
+   *   产出变化；
+   * - `syncSubagentActivity`（`api-session/status` 由 running 转 false，且我们此前知道它
+   *   在跑）：**一轮收尾**那一半。服务端没有「最后一条助手消息的时间」这种字段
+   *   （投影与摘要都只有 `lastPromptAt`），所以这一半取宿主**亲历**的收尾时刻——中继就是
+   *   服务端在收尾那一刻发的，与会话列表 `updatedAt` 一样按「两端时钟同源」读。
+   *
+   * 读入口只有 `orderedCatalog` 一处（下发与父目录快照都在那里排序）。
+   * 生命周期属于连接而不是父域：权威列表中消失 / 变普通、删除、归档与连接收线时清理；
+   * 父域回收不清，返回后重放目录仍保留同一个顺序。
+   */
+  private readonly subagentActivityAt = new Map<string, number>();
+  /** 仅 status true 登记的亲历开轮证据；列表打底不写，status false 一次性消费。与排序账本同寿命。 */
+  private readonly subagentSettlementsPending = new Set<string>();
+  /** 连接收线使在途列表失效，避免旧列表响应重新填入已清理的排序账本。 */
+  private subagentOrderGeneration = 0;
+  /** 每份在途完整列表只可清请求前已有且等待期间未被 status 更新的记录；finally 回收。 */
+  private readonly subagentOrderPruneCandidates = new Set<Set<string>>();
+  /**
    * 子代理会话的**标题**账本（`childSessionId → 会话标题`）：目录行缺 label 时的显示名兜底。
    *
    * 为什么需要：workflow 派发的子代理**没有描述符 label**（父目录条目里的 label 来自
@@ -1557,6 +1587,9 @@ export class ChatController implements vscode.Disposable {
           // 因为那时会话还不存在（见 `pendingViewFields`）
           scope ? undefined : this.pendingViewFields(viewId),
           this.subagentContextOf(scope),
+          // 目录的先后同样在这一层现算（`orderedCatalog`）：会话片段与 `subagents/list`
+          // 帧必须给同一个顺序，否则后到的那一帧会把界面上的先后改回去
+          scope ? this.orderedCatalog(scope.subagentEntries) : undefined,
         ),
       ),
       // 输入区那三个字段按**窗口**存（未绑会话时）/ 按会话键存，不属于会话状态片段：
@@ -1575,7 +1608,15 @@ export class ChatController implements vscode.Disposable {
    * patch 自然带上新值。
    */
   private sessionSource(scope: SessionScope | undefined): SessionViewSource {
-    return sessionSourceOf(scope, undefined, this.models, undefined, this.subagentContextOf(scope));
+    return sessionSourceOf(
+      scope,
+      undefined,
+      this.models,
+      undefined,
+      this.subagentContextOf(scope),
+      // 目录的先后与快照同源（见 `orderedCatalog`）：两个生产者给同一个顺序
+      scope ? this.orderedCatalog(scope.subagentEntries) : undefined,
+    );
   }
 
   /**
@@ -1621,15 +1662,19 @@ export class ChatController implements vscode.Disposable {
     const parentScope = this.scopes.get(scope.subagentAddress.parentSessionId);
     const entries = parentScope ? parentScope.subagentEntries : scope.subagentSiblings;
     const existing = entries.find((entry) => entry.id === scope.sessionId);
-    if (existing) return entries;
-    return upsertSubagent(
-      entries,
-      this.decorateSubagent({
-        id: scope.sessionId,
-        label: this.subagentDisplayName(scope) ?? scope.sessionId,
-        mode: scope.subagentAddress.mode,
-        activity: scope.running ? "running" : "inactive",
-      }),
+    // 顺序在**读**这一层统一（`orderedCatalog`）：父域不在时用的是进入时抄下的那份快照，
+    // 它记的是那一刻的先后，而判定时间随时在变。
+    if (existing) return this.orderedCatalog(entries);
+    return this.orderedCatalog(
+      upsertSubagent(
+        entries,
+        this.decorateSubagent({
+          id: scope.sessionId,
+          label: this.subagentDisplayName(scope) ?? scope.sessionId,
+          mode: scope.subagentAddress.mode,
+          activity: scope.running ? "running" : "inactive",
+        }),
+      ),
     );
   }
 
@@ -3307,7 +3352,8 @@ export class ChatController implements vscode.Disposable {
   async refreshSessions(): Promise<void> {
     if (!this.client) return;
     try {
-      const value = await this.client.listSessions();
+      const { value, generation, activityChanges } = await this.listSessionsForSubagentOrder(this.client);
+      if (generation !== this.subagentOrderGeneration) return;
       // **权威 cwd 账本**：从**原始行**整份重建（任何可见性过滤之前）。子代理会话被
       // `visibleSessionRows` 全局藏掉、不进 `this.sessions`，但它的 cwd 是权威事实——
       // 窗口切进子代理页时「当前会话的 cwd」还要靠它（见 `sessionCwds` 与 `viewCwd`）。
@@ -3320,6 +3366,8 @@ export class ChatController implements vscode.Disposable {
       // 描述符 label，目录里只拿得到会话 id，见 `subagentTitles`）。变化在列表整份
       // 装好之后再推（`sweepSubagentTitles` 要读新的会话列表算父会话标题）。
       const titleChanges = this.collectSubagentTitles(value.items ?? []);
+      // 判定时间账本（用户消息那一半）与标题同一份原始行：会话列表就是它的权威来路，
+      // 变化在列表整份装好之后再推（那时父会话标题也才是新的）
       // @ 提及候选过滤的打底（判据与用途见 `subagentSessionIds` 与 sessionList.ts）
       for (const item of value.items ?? []) {
         if (item.origin === "subagent") {
@@ -3411,6 +3459,8 @@ export class ChatController implements vscode.Disposable {
       // 标题账本变了 → 重推受影响的那几条子代理目录（放在列表装好之后：重推的上下文里
       // 带父会话标题，见 `sweepSubagentTitles`）
       this.sweepSubagentTitles(titleChanges, "会话列表");
+      // 顺序变了也要重推：目录内容没变但先后变了的话，界面会停在旧顺序上
+      this.redeliverSubagentRows(activityChanges);
     } catch (error) {
       this.log(`[sessions] 列表获取失败：${this.describeError(error)}`);
     }
@@ -3719,6 +3769,7 @@ export class ChatController implements vscode.Disposable {
       this.setSessionUnread(sessionId, false);
       this.leftGeneratingSessionIds.delete(sessionId);
       this.subagentRunning.delete(sessionId);
+      this.clearSubagentOrder(sessionId);
       this.emitSessionLists();
       setTimeout(() => void this.refreshSessions(), 500);
     } catch (error) {
@@ -3786,6 +3837,7 @@ export class ChatController implements vscode.Disposable {
     this.leftGeneratingSessionIds.delete(sessionId);
     // 状态账本同理：这条会话不可能再出现在任何目录里
     this.subagentRunning.delete(sessionId);
+    this.clearSubagentOrder(sessionId);
     this.emitSessionLists();
     if (!removed) {
       this.log(
@@ -5063,6 +5115,10 @@ export class ChatController implements vscode.Disposable {
     // 那批 id 的含义不再保证（下次 `refreshSessions` 到达时整份重建）。清掉只是让
     // 「拿不到 cwd」这一段回到保守兜底（不收窄），不会留下错目录。
     this.sessionCwds.clear();
+    this.subagentOrderGeneration += 1;
+    this.subagentOrderPruneCandidates.clear();
+    this.subagentActivityAt.clear();
+    this.subagentSettlementsPending.clear();
     // 连接收掉了，旧的去重记账不作数；**未结算的审批 / 提问照旧留着**（见 `interactions`）
     this.interactions.resetDedupe();
   }
@@ -5131,7 +5187,10 @@ export class ChatController implements vscode.Disposable {
           }
         }
       }
-      if (archivedChanged) this.archivedSessionIds = nextSet;
+      if (archivedChanged) {
+        this.archivedSessionIds = nextSet;
+        for (const id of nextSet) this.clearSubagentOrder(id);
+      }
     }
 
     if (!workspacesChanged && !archivedChanged) return;
@@ -5600,16 +5659,43 @@ export class ChatController implements vscode.Disposable {
    * 去处，目录行登记时由 `decorateSubagent` 从它回填。
    */
   private syncSubagentActivity(childSessionId: string, running: boolean): void {
-    this.subagentRunning.set(childSessionId, running);
+    // 收尾那一下同时是一条判定条目（一轮的结果，见 subagentActivityAt）：顺序变了就得重推目录，
+    // 所以先记时间再改状态（下面那次扇出用的已经是新顺序）
+    const orderChanged = this.noteSubagentSettlement(childSessionId, running);
     for (const scope of this.scopes.values()) {
       const { entries, changed } = withSubagentActivity(scope.subagentEntries, childSessionId, running);
       if (!changed) continue;
       scope.subagentEntries = entries;
-      this.deliverSubagentList(scope);
+      // 顺序也变了的话交给下面那一次重推：同一条目录不连发两帧
+      if (!orderChanged) this.deliverSubagentList(scope);
     }
+    if (orderChanged) this.redeliverSubagentRows(new Set([childSessionId]));
     // 收尾那一刻标题已经落地（它是这条会话自己的首轮产出的）→ 补一次标题账本。
     // 界面因此既不必点开这个子代理、也不必等下一次菜单打开就能看到它的名字。
     if (!running && this.isKnownSubagent(childSessionId)) this.scheduleSubagentTitles();
+  }
+
+  /**
+   * 记下一条驻留状态，并判断它是不是**一次收尾**；是就同时记下判定时间。
+   *
+   * 「收尾」的判据是**亲历**：status true 留下一条待结算证据，status false 消费它。
+   * 展示用的 running 可被列表打底覆盖，但不能抹掉这条证据；列表 true 也不能创造证据。
+   * 同名迟到 false 已无证据可消费，重连打底 false 也不会把陈旧子代理当成刚收尾。
+   *
+   * @returns 判定时间有没有变新（变新 = 目录顺序要重推）。
+   */
+  private noteSubagentSettlement(childSessionId: string, running: boolean): boolean {
+    for (const candidates of this.subagentOrderPruneCandidates) candidates.delete(childSessionId);
+    this.subagentRunning.set(childSessionId, running);
+    if (this.deletedSessionIds.has(childSessionId) || this.archivedSessionIds.has(childSessionId)) return false;
+    if (running) {
+      this.subagentSettlementsPending.add(childSessionId);
+      return false;
+    }
+    const settled = this.subagentSettlementsPending.delete(childSessionId);
+    // 服务端没有下发「最后一条助手消息的时间」，收尾时刻只能由这条中继亲历（见 subagentActivityAt）
+    if (!settled) return false;
+    return this.noteSubagentTime(childSessionId, Date.now());
   }
 
   /** 这个 id 是不是已知的子代理（目录并入点与 `session/list` 的子代理行两处账本）。 */
@@ -5684,16 +5770,17 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
-   * 标题账本变了 → 把受影响的那几条目录重推一遍。
+   * 目录行变了 → 把受影响的那几条目录重推一遍。
    *
    * 普通会话的清单走 `deliverSubagentList`（唯一的列表扇出点，顺带把父目录快照同步给
    * 正在看它子代理的窗口）；子代理页手里那份**父目录快照**（`subagentSiblings`）只由
    * `subagent` patch 承载，所以那条要单独补发（与 `fetchParentCatalog` 同一手法）。
    *
-   * @param source 这次标题是从哪条路来的（只进日志，便于分辨「会话列表」与「子代理自己
-   *   的标题」两条来路）。
+   * 两个账本共用它：标题（`sweepSubagentTitles`）与判定时间（顺序变了也要重推，否则
+   * 界面停在旧顺序上直到下一次目录内容变化）。只推**真的包含这些 id** 的域——账本里
+   * 记着别的会话，不该让所有窗口重渲染。
    */
-  private sweepSubagentTitles(changed: ReadonlySet<string>, source: string): void {
+  private redeliverSubagentRows(changed: ReadonlySet<string>): void {
     if (!changed.size) return;
     for (const scope of this.scopes.values()) {
       if (scope.subagentEntries.some((entry) => changed.has(entry.id))) {
@@ -5706,6 +5793,17 @@ export class ChatController implements vscode.Disposable {
         patch: sessionPatch(this.sessionSource(scope), ["subagent"]),
       });
     }
+  }
+
+  /**
+   * 标题账本变了 → 重推受影响的目录。
+   *
+   * @param source 这次标题是从哪条路来的（只进日志，便于分辨「会话列表」与「子代理自己
+   *   的标题」两条来路）。
+   */
+  private sweepSubagentTitles(changed: ReadonlySet<string>, source: string): void {
+    if (!changed.size) return;
+    this.redeliverSubagentRows(changed);
     this.log(`[subagents] 标题补齐 ${changed.size} 条（${source}）`);
   }
 
@@ -5723,8 +5821,13 @@ export class ChatController implements vscode.Disposable {
     if (this.subagentTitlesInflight) return this.subagentTitlesInflight;
     const task = (async () => {
       try {
-        const value = await client.listSessions();
-        this.sweepSubagentTitles(this.collectSubagentTitles(value.items ?? []), "会话列表");
+        const { value, generation, activityChanges } = await this.listSessionsForSubagentOrder(client);
+        if (generation !== this.subagentOrderGeneration) return;
+        const items = value.items ?? [];
+        // 同一份 `session/list` 顺带把判定时间账本（用户消息那一半）刷新到最新：菜单打开
+        // 就是要「把最新的要一遍」，先后也应该按最新的算
+        this.sweepSubagentTitles(this.collectSubagentTitles(items), "会话列表");
+        this.redeliverSubagentRows(activityChanges);
       } catch (error) {
         // 拿不到就保持现状（名字停在会话 id 或上一次算出来的那一个），只记一行
         this.log(`[subagents] 标题补齐失败：${this.describeError(error)}`);
@@ -5758,14 +5861,89 @@ export class ChatController implements vscode.Disposable {
    * `deliverSubagentList`，这里就是唯一的扇出点。
    *
    * 下发的每一行都过一遍 `resolveSubagentDisplay`：目录里缺 label 的行在这一刻拿到
-   * 会话标题，而不是永远停在 uuid。
+   * 会话标题，而不是永远停在 uuid。顺序也在这里统一（`orderedCatalog`）——父会话域的
+   * 目录与子代理页的父目录快照都读它，两处看到的先后才是同一个。
    */
   private deliverSubagentList(scope: SessionScope): void {
     this.deliver(scope.sessionId, {
       type: "subagents/list",
-      entries: scope.subagentEntries.map((entry) => this.resolveSubagentDisplay(entry)),
+      entries: this.orderedCatalog(scope.subagentEntries).map((entry) => this.resolveSubagentDisplay(entry)),
     });
     this.syncSubagentContext(scope.sessionId);
+  }
+
+  /**
+   * 目录行的**下发顺序**（唯一的排序点，口径见 `subagentOrder.ts`）。
+   *
+   * 排序键是**现算**的，不写回目录：账本会随用户消息与收尾变化，写回的话目录的重放
+   * （投影 / durable 事件 / 重连）会用旧顺序盖回去——与显示名「发帧那一刻现算」同一条
+   * 纪律（见 `resolveSubagentDisplay`）。
+   */
+  private orderedCatalog(entries: readonly SubagentView[]): SubagentView[] {
+    return orderSubagentEntries(entries, this.subagentActivityAt);
+  }
+
+  /**
+   * 记一条子代理的判定时间（取新，旧值不回退）。
+   *
+   * @returns 有没有真的变新——只有变新才重推目录（同一条 `session/list` 反复来不该白推帧）。
+   */
+  private noteSubagentTime(sessionId: string, at: number): boolean {
+    if (!Number.isFinite(at) || at <= 0) return false;
+    const known = this.subagentActivityAt.get(sessionId) ?? 0;
+    if (at <= known) return false;
+    this.subagentActivityAt.set(sessionId, at);
+    return true;
+  }
+
+  /**
+   * `session/list` 的原始行 → 判定时间账本（**用户消息**那一半）。
+   *
+   * 完整原始列表是生命周期的权威：消失、变普通、已删除或归档的 id 从排序与待结算账本退掉。
+   * 行的 `updatedAt` 是服务端算的 `max(createdAt, lastPromptAt)`，也就是「最后一条人类
+   * 消息」——agent 的产出不改它，正合判定条目的口径。
+   *
+   * @returns 真的变新的会话 id（账本变了才重推目录，见 `redeliverSubagentRows`）。
+   */
+  private noteSubagentTimes(items: readonly SessionSummaryWire[], pruneCandidates: ReadonlySet<string>): Set<string> {
+    const changed = new Set<string>();
+    const retained = new Set(items.filter((item) => item.origin === "subagent"
+      && !this.deletedSessionIds.has(item.sessionId) && !this.archivedSessionIds.has(item.sessionId))
+      .map((item) => item.sessionId));
+    for (const id of pruneCandidates) {
+      if (retained.has(id)) continue;
+      if (this.subagentActivityAt.has(id)) changed.add(id);
+      this.clearSubagentOrder(id);
+    }
+    for (const item of items) {
+      if (!retained.has(item.sessionId)) continue;
+      if (typeof item.updatedAt === "number" && this.noteSubagentTime(item.sessionId, item.updatedAt)) {
+        changed.add(item.sessionId);
+      }
+    }
+    return changed;
+  }
+
+  /** 只给排序账本提供请求前的清理候选，旧快照不能抹掉等待期间亲历的实时证据。 */
+  private async listSessionsForSubagentOrder(client: DshClient) {
+    const generation = this.subagentOrderGeneration;
+    const pruneCandidates = new Set([...this.subagentActivityAt.keys(), ...this.subagentSettlementsPending]);
+    this.subagentOrderPruneCandidates.add(pruneCandidates);
+    try {
+      const value = await client.listSessions();
+      // 同一段同步续体内先结算再注销候选，避免返回调用者的 await 空档漏掉实时更新。
+      const activityChanges = generation === this.subagentOrderGeneration
+        ? this.noteSubagentTimes(value.items ?? [], pruneCandidates) : new Set<string>();
+      return { value, generation, activityChanges };
+    } finally {
+      this.subagentOrderPruneCandidates.delete(pruneCandidates);
+    }
+  }
+
+  /** 清理新增排序账本；不跟父域销毁绑定，以保留进出子代理的排序契约。 */
+  private clearSubagentOrder(sessionId: string): void {
+    this.subagentActivityAt.delete(sessionId);
+    this.subagentSettlementsPending.delete(sessionId);
   }
 
   /**
@@ -8764,7 +8942,7 @@ export class ChatController implements vscode.Disposable {
         return undefined;
       }
       const own = scope.subagentEntries.find((entry) => entry.id === childSessionId);
-      return own ? { entry: own, parentId: scope.sessionId, catalog: [...scope.subagentEntries] } : undefined;
+      return own ? { entry: own, parentId: scope.sessionId, catalog: this.orderedCatalog(scope.subagentEntries) } : undefined;
     };
     let hit = resolve();
     if (!hit) {

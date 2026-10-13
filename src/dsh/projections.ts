@@ -75,16 +75,20 @@ export function planModeFromProjection(value: unknown): boolean {
  * 把 RPC 行的 `kind === "child"` 过滤套在投影上会让目录恒为空。
  *
  * 本函数只读目录字段；驻留状态由后续合流保留，不能从投影缺值猜「正在运行」。
+ * `createdAt` 照收（判定时间并列时的先后判据，见 `SubagentView.createdAt`）。
  *
  * @param value 投影值（数组）。
  */
 export function subagentCatalogFromProjection(value: unknown): SubagentCatalogEntryView[] {
   const entries = Array.isArray(value) ? value : [];
   return entries.map((entry) => {
-    const child = entry as { id?: unknown; mode?: unknown; label?: unknown };
+    const child = entry as { id?: unknown; createdAt?: unknown; mode?: unknown; label?: unknown };
     const id = String(child.id ?? "");
     return {
       id,
+      ...(typeof child.createdAt === "number" && Number.isFinite(child.createdAt)
+        ? { createdAt: child.createdAt }
+        : {}),
       label: typeof child.label === "string" && child.label ? child.label : id,
       // `SubagentCatalogEntry` 是判别联合：continuable 必带 label，one-shot 的 label 可省。
       // 0.1.7-alpha.1 起还多一个 `{mode:'unknown', label?}`（认不出模式的候选）。认不出就按
@@ -96,7 +100,7 @@ export function subagentCatalogFromProjection(value: unknown): SubagentCatalogEn
 }
 
 /** 投影目录一条（**没有** `activity`：投影里根本没这个字段）。 */
-export type SubagentCatalogEntryView = Pick<SubagentView, "id" | "label" | "mode">;
+export type SubagentCatalogEntryView = Pick<SubagentView, "id" | "createdAt" | "label" | "mode">;
 
 /**
  * `subagents/list` RPC 行 → 子代理列表（**旧服务端专用**：该端点在 0.1.7-alpha.1 被删除）。
@@ -134,14 +138,19 @@ export function subagentsFromList(value: unknown): SubagentView[] {
  * 两条纪律：
  * - `version !== 0` 或 `childId` 空 → `undefined`（认不出的版本**不猜**，交给 RPC 那条完整路兜）；
  * - **不设 `activity`**：事件里没有这个字段，状态由 `api-session/status` 中继或 RPC 给。
+ *
+ * `childCreatedAt` 照收成 `createdAt`（判定时间并列时的先后判据，见 `SubagentView.createdAt`）。
  */
 export function subagentFromCatalogEvent(value: unknown): SubagentView | undefined {
-  const event = value as { version?: unknown; childId?: unknown; mode?: unknown; label?: unknown } | null | undefined;
+  const event = value as { version?: unknown; childId?: unknown; childCreatedAt?: unknown; mode?: unknown; label?: unknown } | null | undefined;
   if (event?.version !== 0) return undefined;
   const id = typeof event.childId === "string" ? event.childId : "";
   if (!id) return undefined;
   return {
     id,
+    ...(typeof event.childCreatedAt === "number" && Number.isFinite(event.childCreatedAt)
+      ? { createdAt: event.childCreatedAt }
+      : {}),
     label: typeof event.label === "string" && event.label ? event.label : id,
     mode: event.mode === "continuable" ? "continuable" : "one-shot",
   };
@@ -153,7 +162,8 @@ export function subagentFromCatalogEvent(value: unknown): SubagentView | undefin
  * 三种来源（durable 事件 / 投影 / RPC）都走这里，区别只在 activity：
  * 同 id 时更新 `label`/`mode` 并**保留已知的 `activity`**（新来源没带状态时不能把
  * 已知结论抹成「不知道」）；新 id 追加到末尾，顺序就是发现顺序。
- * `unread`（宿主账本上的「用户已读」位）同一条纪律。
+ * `unread`（宿主账本上的「用户已读」位）与 `createdAt` 同一条纪律——新来源没带就不覆盖
+ * 已知值（RPC 行没有 `createdAt`，它并入时不该把事件给的创建时刻抹掉）。
  *
  * 为什么不是整表替换：子代理会话只增不删，而三种来源的**完整度不同**——进程外
  * provider 不写 `subagent/catalog`，投影里就没有它们；拿投影整表替换会把 RPC 刚拿到的
@@ -178,14 +188,15 @@ export function upsertSubagent(entries: readonly SubagentView[], entry: Subagent
 /**
  * 两条目录行在**界面上**是否等价（判据是 `upsertSubagent` 合并之后的生效值）。
  *
- * 不能逐字段直接比：新来源没带的 `activity` / `unread` 会被 `upsertSubagent` 用旧值
- * 补齐，直接比会得出「有变化」——于是同一条 `subagent/catalog` 每次重放（重连、
+ * 不能逐字段直接比：新来源没带的 `activity` / `unread` / `createdAt` 会被 `upsertSubagent`
+ * 用旧值补齐，直接比会得出「有变化」——于是同一条 `subagent/catalog` 每次重放（重连、
  * 加载更早的历史）都白推一帧、白记一行日志（见 `controller.mergeSubagentEntries`）。
  */
 export function sameSubagentRow(previous: SubagentView, next: SubagentView): boolean {
   return (
     previous.label === next.label &&
     previous.mode === next.mode &&
+    (next.createdAt ?? previous.createdAt) === previous.createdAt &&
     (next.activity ?? previous.activity) === previous.activity &&
     (next.unread ?? previous.unread) === previous.unread
   );

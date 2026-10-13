@@ -50,6 +50,12 @@ Auto review 只在 `permissionPresets/catalog.options` 明确含 auto 时开放�
 
 打开、follow、page、prompt 与 stop 均按真实地址路由：continuable 可继续，one-shot 只读，unknown 模式不得猜成 continuable。
 
+目录行的**显示顺序**按判定时间从新到旧（`subagentOrder.ts`）：用户消息（`sessionListMetadata.lastPromptAt`，经 session/list 行的 `updatedAt`）与一轮收尾（宿主亲历的 `api-session/status` running→false）两者取新、不加优先级，agent 的过程消息不参与判定；并列按创建时刻（更晚建的在前），再并列才退回发现顺序。创建时刻来自投影 / durable 事件的 `createdAt`，对两条路径是同一份事实，所以父会话目录与子代理页的父目录快照永远给出同一个顺序。排序键在下发与父目录快照两处**现算**，不写回目录——否则重放会用旧顺序盖回去。
+
+收尾证据独立于展示用 running：仅 `api-session/status` 的 true 登记待结算证据，false 一次性消费。列表 true 只是打底，不算亲历开轮；列表 false 不抹掉已经亲历的 true，也不直接记收尾，因此列表刷新穿插与同名迟到 false 都不会漏记或重复刷新顺序。
+
+排序时间与待结算证据属于当前连接：完整原始列表中消失、变成普通会话、删除或归档时清理。两条完整列表读取路径仅清请求前已有且等待期间未被 status 更新的记录，旧快照的缺席不能抹掉实时新证据；请求候选在完成或失败时回收。连接收线清空并拒收旧在途列表。父域回收不清理，返回后重放目录仍保留顺序。删除 / 归档后的服务端残留列表行与 status 不重新填账。离线回归由 `subagentOrder.test.ts` 驱动真实 controller 覆盖上述时序与三处目录生产者。
+
 ### 父域回收与显示名
 
 离开父视图后父域可能已销毁。兄弟切换须同步携带父目录种子；异步恢复补齐后直接通知当前子会话窗口，不能误发给“看其子代理”的窗口。

@@ -374,6 +374,11 @@ export function sessionSourceOf(
   pending?: Partial<Pick<SessionViewSource, "model" | "permission" | "agentPreset">>,
   /** 子代理上下文：由调用方（控制器）现算——`sessionSourceOf` 够不到父会话域与列表。 */
   subagent?: SessionView["subagent"],
+  /**
+   * 子代理目录的**下发顺序**：同样由调用方现算。目录的先后由判定时间账本决定
+   * （见 `dsh/subagentOrder.ts`），而这个模块够不到那本账；不传就退回域上的原始顺序。
+   */
+  subagentEntries?: SessionView["subagentEntries"],
 ): SessionViewSource {
   const adapter: SessionAdapter | undefined = scope?.adapter;
   return {
@@ -389,7 +394,7 @@ export function sessionSourceOf(
     permission: () => (scope ? scope.permission : pending?.permission?.()),
     planMode: () => scope?.planMode,
     todos: () => scope?.todos,
-    subagentEntries: () => scope?.subagentEntries,
+    subagentEntries: () => subagentEntries ?? scope?.subagentEntries,
     subagent: () => subagent,
     jobs: () => scope?.jobs,
     goal: () => scope?.goal,

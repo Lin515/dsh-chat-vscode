@@ -119,6 +119,7 @@
 - [subagentSwitch.test.ts](<subagentSwitch.test.ts>) — 子代理页切到兄弟的行为级回归（下拉里同级兄弟必须可见）。
 - [subagentRowState.test.ts](<subagentRowState.test.ts>) — 子代理目录行的显示状态（生成中 / 已完成 / 可继续 / 一次性 + 状态点色调）：驻留状态的到达顺序、进出子代理页、已读位与界面口径。
 - [subagentTitle.test.ts](<subagentTitle.test.ts>) — 子代理显示名：目录条目缺 label（workflow 派发的子代理）时默认显示会话标题，且来源重放 / 重新打开菜单 / 子域回收后都不退回会话 id。
+- [subagentOrder.test.ts](<subagentOrder.test.ts>) — 子代理目录的显示顺序：用户消息时间与一轮收尾取新、agent 过程消息不参与、进子代理再退出来不改变先后。
 - [activity.test.ts](<activity.test.ts>) — 顶栏子代理 / 后台任务入口「有东西在跑」判据（只认活的那份数据）。
 - [occupancy.test.ts](<occupancy.test.ts>) — 上下文占用环：常驻显示、每轮刷新、口径唯一。
 - [cacheHit.test.ts](<cacheHit.test.ts>) — 会话累计缓存命中率、缺数据隐藏与工具栏 / 悬停读数同源。

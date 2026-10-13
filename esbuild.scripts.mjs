@@ -248,6 +248,8 @@ const entries = {
   "build/dsh-contract.test.mjs": "scripts/dshContract.test.ts",
   "build/subagent-switch.test.mjs": "scripts/subagentSwitch.test.ts",
   "build/subagent-row-state.test.mjs": "scripts/subagentRowState.test.ts",
+  // 子代理目录的显示顺序（判定时间：用户消息与一轮收尾取新）：驱真 ChatController + stub，必须登记
+  "build/subagent-order.test.mjs": "scripts/subagentOrder.test.ts",
   // 子代理显示名：目录行缺 label 时默认显示会话标题（workflow 派发的子代理），必须登记
   "build/subagent-title.test.mjs": "scripts/subagentTitle.test.ts",
   "build/unread-marker.test.mjs": "scripts/unreadMarker.test.ts",

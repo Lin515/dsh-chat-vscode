@@ -862,6 +862,19 @@ export interface SubagentContextView {
 export interface SubagentView {
   id: string;
   /**
+   * 父会话记下这条「子代理建立」事实的时刻（epoch ms）。
+   *
+   * 两个来源带它：`subagentCatalog` 投影的 `createdAt`（`SubagentCatalogEntry`）与
+   * `subagent/catalog` durable 事件的 `childCreatedAt`；旧 `subagents/list` RPC 行没有，
+   * 没有就是 `undefined`。
+   *
+   * 用途**只有一处**：判定时间并列时决定先后（见 `dsh/subagentOrder.ts`）。判定时间是
+   * 用户消息与一轮收尾取新的结果，同一毫秒建出来的一批子代理会并列——那时若按「数组是
+   * 怎么攒起来的」排，父会话域的目录与子代理页的父目录快照可能给出两个顺序，进出子代理
+   * 就会看到先后变了。带上创建时刻，先后对所有来源都是同一个。
+   */
+  createdAt?: number;
+  /**
    * 界面上的显示名。**宿主下发前已经解析过**：目录来源给了真 label 就用它；只给了
    * 会话 id（workflow 派发的子代理没有描述符 label）时按「当前打开时的描述符 label →
    * 会话标题 → 会话 id」兜底，界面不必自己再猜（判据见 `controller` 的

@@ -209,11 +209,12 @@ console.log("projections: goal 的四态词表+未知值降级+blockedReason ✓
   const list = subagentCatalogFromProjection(wire);
   assert.strictEqual(list.length, 2, "投影条目必须全部保留（按 kind 过滤会得到空数组）");
   assert.deepStrictEqual(
-    list.map((item) => [item.id, item.mode, item.label]),
+    list.map((item) => [item.id, item.mode, item.label, item.createdAt]),
     [
-      ["s-1", "continuable", "调研契约"],
-      ["s-2", "one-shot", "s-2"],
+      ["s-1", "continuable", "调研契约", 1],
+      ["s-2", "one-shot", "s-2", 2],
     ],
+    "投影的 createdAt 也要收下（判定时间并列时的先后判据，见 SubagentView.createdAt）",
   );
   // 投影不带 activity：不知道就不下发，界面据此不画状态点（而不是猜「正在运行」）。
   // 解析出来的这一条**根本没有这个键**，activity 只能由 RPC 或状态中继补上
@@ -253,6 +254,14 @@ console.log("projections: subagentCatalog 投影保留全部条目，不按 kind
     ],
     "同 id 更新 label/mode 并保留 activity",
   );
+
+  // 5.3 `createdAt` 同一条纪律：旧 RPC 行没有这个字段，它并入时不许抹掉事件给的创建时刻
+  //（创建时刻参与并列判据，抹掉就等于顺序退回「数组是怎么攒起来的」）
+  const dated = upsertSubagent(
+    [{ id: "s-1", label: "A", mode: "one-shot" as const, createdAt: 7 }],
+    { id: "s-1", label: "A", mode: "one-shot" },
+  );
+  assert.strictEqual(dated[0]?.createdAt, 7, "新来源没带 createdAt 时保留已知值");
 }
 console.log("projections: 目录按 id 并入，保留 activity，不整表替换 ✓");
 
@@ -264,12 +273,19 @@ console.log("projections: 目录按 id 并入，保留 activity，不整表替�
 {
   assert.deepStrictEqual(
     subagentFromCatalogEvent({ version: 0, childId: "s-1", childCreatedAt: 1, mode: "continuable", label: "调研契约" }),
-    { id: "s-1", label: "调研契约", mode: "continuable" },
+    // `createdAt` 照收：判定时间并列时的先后判据（见 SubagentView.createdAt）
+    { id: "s-1", createdAt: 1, label: "调研契约", mode: "continuable" },
   );
   // one-shot 的 label 可省 → 退回 id（与另两种来源同口径）
   assert.deepStrictEqual(
     subagentFromCatalogEvent({ version: 0, childId: "s-2", childCreatedAt: 2, mode: "one-shot" }),
-    { id: "s-2", label: "s-2", mode: "one-shot" },
+    { id: "s-2", createdAt: 2, label: "s-2", mode: "one-shot" },
+  );
+  // 没有 childCreatedAt 就不带这个键（缺值不等于 0：0 会被当成「最老」参与并列判据）
+  assert.strictEqual(
+    "createdAt" in subagentFromCatalogEvent({ version: 0, childId: "s-6", mode: "one-shot" })!,
+    false,
+    "事件没给创建时刻时不许补一个 0",
   );
   // 词表外的 mode 一律当 one-shot：拿它去 follow 不会被鉴权拒绝，反过来会
   assert.strictEqual(
