@@ -2,7 +2,7 @@ import { memo, useEffect, useId, useLayoutEffect, useRef, useState, type CSSProp
 import type { TurnRailItem } from "../turnRail";
 import { userPromptCount } from "../turnRail";
 import { useTexts } from "../texts";
-import { dp, useUiScale } from "../uiScale";
+import { dp, lineThickness, useUiScale } from "../uiScale";
 
 /**
  * 右侧轮次横条（官方 Web UI 的 `TurnNavigator` 移植，见
@@ -26,6 +26,13 @@ const TURN_SPACING_PX = 10;
 const RAIL_INSET_PX = 6;
 /** 渐变淡出的带宽。 */
 const FADE_PX = 24;
+/**
+ * 刻线的厚度（设计像素）。**写进 CSS 前必须过 `lineThickness` 取整到整 CSS 像素**：
+ * `2 × --dp` 在倍率不为 1 时是小数（字号 16 → 2.4615），光栅化器按每一枚所在的位置
+ * 就近取整，同一串刻线就会有的画 2 个设备像素、有的画 3 个，看上去粗细不匀
+ * （用户 2026-10-13 报的现象）。
+ */
+const TURN_TICK_PX = 2;
 
 type TurnPositionStyle = CSSProperties & { readonly "--turn-natural-position": string };
 
@@ -33,17 +40,25 @@ type TurnFrameStyle = CSSProperties & {
   readonly "--turn-natural-height": string;
   readonly "--turn-rail-inset": string;
   readonly "--turn-scroll-top": string;
+  readonly "--turn-tick-thickness": string;
 };
 
 function itemPosition(index: number, spacing: number): TurnPositionStyle {
   return { "--turn-natural-position": `${String(index * spacing)}px` };
 }
 
-function frameStyle(count: number, scrollTop: number, spacing: number, inset: number): TurnFrameStyle {
+function frameStyle(
+  count: number,
+  scrollTop: number,
+  spacing: number,
+  inset: number,
+  thickness: number,
+): TurnFrameStyle {
   return {
     "--turn-natural-height": `${String((count - 1) * spacing + 2 * inset)}px`,
     "--turn-rail-inset": `${String(inset)}px`,
     "--turn-scroll-top": `${String(scrollTop)}px`,
+    "--turn-tick-thickness": `${String(thickness)}px`,
   };
 }
 
@@ -100,6 +115,8 @@ function TurnNavigatorRail({
   const spacing = dp(TURN_SPACING_PX, scale);
   const inset = dp(RAIL_INSET_PX, scale);
   const fade = dp(FADE_PX, scale);
+  /** 刻线厚度：取整到整 CSS 像素（见 `TURN_TICK_PX`），否则同一串刻线粗细不匀。 */
+  const thickness = lineThickness(TURN_TICK_PX, scale);
   const [previewTurn, setPreviewTurn] = useState<number | null>(null);
   const [scrollState, setScrollState] = useState<RailScrollState>(RAIL_AT_REST);
   const scrollerRef = useRef<HTMLDivElement | null>(null);
@@ -194,7 +211,7 @@ function TurnNavigatorRail({
     <div ref={slotRef} className="turn-rail-slot">
       <nav
         className="turn-rail-frame"
-        style={frameStyle(items.length, scrollState.top, spacing, inset)}
+        style={frameStyle(items.length, scrollState.top, spacing, inset, thickness)}
         aria-label={texts.turnRailLabel}
         onClick={navigateAtPointer}
         onPointerMove={previewAtPointer}

@@ -683,13 +683,18 @@ button.header-title:hover {
    悬停／移开的过渡不再逐帧重画光栅。
 
    `scaleX` 的取值就是各档位与 20dp 的比值（12/20、8/20、18/20、20/20），
-   `transform-origin: right center` 保住「右缘对齐、往左长」这条既有观感。 */
+   `transform-origin: right center` 保住「右缘对齐、往左长」这条既有观感。
+
+   **厚度由组件取整后写进 `--turn-tick-thickness`**（`2 × --dp` 只在倍率 1 时才是整数；
+   倍率一变，同一串刻线会被光栅化器按每一枚的位置分别取整成 2 或 3 个设备像素，看上去
+   粗细不匀——用户 2026-10-13 报的现象，取整口径见 `uiScale.ts` 的 `lineThickness`）。
+   回退值保持设计像素写法，供没有组件写值的场景（如只加载 CSS 的静态片段）。 */
 .turn-rail-mark::before {
   position: absolute;
   top: 50%;
   right: 0;
   width: calc(20 * var(--dp));
-  height: calc(2 * var(--dp));
+  height: var(--turn-tick-thickness, calc(2 * var(--dp)));
   border-radius: calc(2 * var(--dp));
   background: var(--muted);
   content: "";

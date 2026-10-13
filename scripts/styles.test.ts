@@ -12,6 +12,7 @@ import { join } from "node:path";
 import type { TrajectoryCell, TrajectoryTurn } from "../src/shared/trajectory";
 import { trajectoryLedgerRows } from "../src/webview/trajectoryLedgerRows";
 import { dictionaryFor } from "../src/webview/texts";
+import { lineThickness } from "../src/webview/uiScale";
 
 const css = readFileSync(join(process.cwd(), "src", "webview", "styles", "app.css"), "utf8");
 
@@ -2781,6 +2782,39 @@ console.log("styles: 多行草稿打字不闪（量高瞬态同帧消化）✓")
       /transform-origin:\s*right center/.test(tick),
     "刻线的档位只能走 transform 的 scaleX（右缘对齐、往左长）——不许回到改 width 的写法",
   );
+  // 刻线厚度（用户 2026-10-13 报「轮次多了以后每根刻线厚度不一致」）：`2 × --dp` 只在
+  // 倍率 1 时是整数（2 个设备像素），字号 16（1.2308）时是 2.4615——一两个像素厚的量
+  // 落在小数上会被光栅化器按每一枚的位置就近取整，同一串刻线于是有的 2 个设备像素、
+  // 有的 3 个。组件把厚度取整到整 CSS 像素后写进 `--turn-tick-thickness`；CSS 只许读它
+  // （设计像素的写法只留作回退值）。
+  assert.ok(
+    /height:\s*var\(--turn-tick-thickness,\s*calc\(2 \* var\(--dp\)\)\)/.test(tick),
+    `刻线厚度必须读组件写好的 --turn-tick-thickness（现在是 "${tick.trim()}"）——厚度落在小数上时同一串刻线粗细不匀`,
+  );
+  const uiScaleTs = readFileSync(join(process.cwd(), "src", "webview", "uiScale.ts"), "utf8");
+  const railTs = readFileSync(join(process.cwd(), "src", "webview", "components", "TurnRail.tsx"), "utf8");
+  assert.ok(
+    /export function lineThickness\(/.test(uiScaleTs),
+    "uiScale.ts 要提供线宽取整的入口（刻线厚度、未来的发丝线都从它走）",
+  );
+  assert.ok(
+    /lineThickness\(TURN_TICK_PX, scale\)/.test(railTs) && /--turn-tick-thickness/.test(railTs),
+    "横条要用 lineThickness 算刻线厚度，并把它写进 --turn-tick-thickness（否则 CSS 读不到取整后的值）",
+  );
+  // 断言取整本身：线宽永远是整 CSS 像素（与 DPR 无关——实测取整到设备像素在 DPR 2 上更差，见 uiScale.ts）
+  assert.strictEqual(lineThickness(2, 16 / 13), 2, "字号 16（1.2308）：2.4615 取整到 2");
+  assert.strictEqual(lineThickness(2, 1), 2, "基准倍率下保持设计值 2");
+  assert.strictEqual(lineThickness(2, 12 / 13), 2, "字号 12（0.9231）：1.8461 取整到 2");
+  assert.strictEqual(lineThickness(2, 20 / 13), 3, "字号 20（1.5385）：3.0769 取整到 3");
+  assert.strictEqual(lineThickness(2, 8 / 13), 1, "字号 8（0.6154）：1.2308 取整到 1");
+  assert.strictEqual(lineThickness(2, 0.1), 1, "极小倍率也要保住 1px，不许取整成 0（线会消失）");
+  for (const scale of [0.6154, 0.9231, 1, 1.0769, 1.1538, 1.2308, 1.5385]) {
+    const thickness = lineThickness(2, scale);
+    assert.ok(
+      Number.isInteger(thickness) && thickness >= 1,
+      `厚度必须是至少 1 的整 CSS 像素（倍率 ${String(scale)} 得到 ${String(thickness)}）`,
+    );
+  }
   for (const selector of [
     ".turn-rail-mark.is-unloaded::before",
     ".turn-rail-mark.is-preview::before",
