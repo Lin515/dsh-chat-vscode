@@ -30,6 +30,10 @@
 - 路径按现有列表去重；字节条目没有可靠身份，不按名字去重。
 - 对话框固定 `canSelectFiles:true, canSelectFolders:false`；Windows/Linux 两者都开会变成目录选择器。
 - 0 字节由界面与宿主两层拒绝，不能把目录载荷当成空文件附件。纯文本粘贴不进附件流程。
+- 粘贴进来的图片在发帧前按**会话内序号**命名：中文界面 `图N.png`、英文界面 `imageN.png`，后缀沿用条目自己的写法。0 字节与超过 8 MB 的条目不编号——它们会被拒，提示里必须报用户认得的原名。名字**不是磁盘文件名**：图片按内容摘要落进附件存储，同名不冲突，编号只为人在对话里指代。
+  - 基线取已加载用户消息、乐观回显与草稿芯片里的最大编号（两种前缀都认，切语言不撞号）。图片降级为文件时，编号主干与图片后缀同时匹配的文件名也参与基线，普通文件不占号。
+  - 本窗口按会话保留已分配最大编号，A → B → A 不回收已删芯片的编号，连续快粘也不依赖回帧；尚未绑定会话的空态编号在首次绑定时迁移，已绑定会话退回新空态时归零。
+  - 最多保留 256 个最近访问的已编号会话，窗口销毁释放；超过保留窗口或重载后只恢复可见基线，已删除且不再可见的编号无法恢复，不按过滤后的会话列表缺席清理。
 
 ## 引用与快照
 
@@ -42,6 +46,7 @@
 ```text
 回形针 → pickFiles → addPaths
 拖放 / 粘贴 → attachFiles → attachBytes {source,files[{name,mimeType,base64}],unreadable,tooLarge}
+  粘贴图片先按会话内序号命名（pastedImageNames：图N.png / imageN.png）
   粘贴先问系统剪贴板真路径；没有路径才 decodeAttachBytes
 → planIntake → ingestAttachments → 芯片 / 引用 / 提示
 → startUpload → attachmentLifecycle.start → performUpload → uploadFile
@@ -105,10 +110,10 @@
 - [attachments.ts](<../src/dsh/attachments.ts>)：planIntake、分类 / 上限 / 去重、buildPromptContent。
 - [attachmentLifecycle.ts](<../src/dsh/attachmentLifecycle.ts>)：唯一归属表、上传轮次、提交租约。
 - [controller.ts](<../src/dsh/controller.ts>)：接入 IO、唯一目录引用落点、上传与提交租约接线；[client.ts](<../src/dsh/client.ts>)：uploadFile。
-- [attachIntake.ts](<../src/webview/attachIntake.ts>) / [App.tsx](<../src/webview/App.tsx>)：字节提取、整页 drop / paste 与浮层；[ipc.ts](<../src/shared/ipc.ts>)：帧。
+- [attachIntake.ts](<../src/webview/attachIntake.ts>) / [App.tsx](<../src/webview/App.tsx>)：字节提取、整页 drop / paste 与浮层；[pastedImageNames.ts](<../src/webview/pastedImageNames.ts>)：粘贴图片的会话内编号名；[ipc.ts](<../src/shared/ipc.ts>)：帧。
 - [clipboardPaths.ts](<../src/dsh/clipboardPaths.ts>)：Windows 真路径；[mentions.ts](<../src/shared/mentions.ts>)：引用拼写；[Composer.tsx](<../src/webview/components/Composer.tsx>)：芯片与重试。
 
-离线回归：attachments（回执、内容顺序、同管线 / 同 MIME、上限与拒绝）、attachmentLifecycle（切会话、旧轮、归还 / 交接 / 释放）、selection、previewFixture。跨宿主 / webview 的帧改动须双端构建；交付安装版时确认两端产物都更新。mimeType 可选兼容旧帧，不能把混合产物验证当完整验收。常规命令与真实测试批准见[AGENTS](<../AGENTS.md>)。
+离线回归：attachments（回执、内容顺序、同管线 / 同 MIME、上限与拒绝）、pastedImageNames（编号识别、起始编号、只改图片、被拒条目不改名、降级图片文件的消息 / 回显 / 草稿恢复、删除后跨会话续号、快粘与切语言、空态绑定迁移、有界保留窗口）、attachmentLifecycle（切会话、旧轮、归还 / 交接 / 释放）、selection、previewFixture。跨宿主 / webview 的帧改动须双端构建；交付安装版时确认两端产物都更新。mimeType 可选兼容旧帧，不能把混合产物验证当完整验收。常规命令与真实测试批准见[AGENTS](<../AGENTS.md>)。
 
 ## 未覆盖边界与重评条件
 

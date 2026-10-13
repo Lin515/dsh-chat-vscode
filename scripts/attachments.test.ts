@@ -186,8 +186,12 @@ console.log("attachments: 目录探测 / id / 错误上报 ✓");
       app,
     ) &&
       /window\.addEventListener\("paste", onPaste\)/.test(app) &&
-      /usePagePaste\(\);/.test(app),
+      /usePagePaste\(state\);/.test(app),
     "粘贴必须挂 window、只在认出文件后才 preventDefault，且真的被 App 调用",
+  );
+  assert.ok(
+    /assigned\.current\.rename\(\{[\s\S]{0,400}?\}\);[\s\S]{0,200}?attachPastedFiles\(named\.files\)/.test(app),
+    "粘贴图片必须先按会话内编号改名再发帧（见 webview/pastedImageNames.ts）：不编号时几张图全叫 image.png",
   );
   console.log("attachments: 拖放字节归类 ✓");
 }

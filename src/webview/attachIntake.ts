@@ -121,6 +121,29 @@ const IMAGE_EXTENSIONS: Record<string, string> = {
 };
 
 /**
+ * 条目是图片时给出它的后缀，否则 `undefined`。
+ *
+ * 判据与 `namedClipboardEntry` 是**同一张表**（MIME 键或后缀值）：只要有一头认出
+ * 是图片就算图片。MIME 在表外（`image/bmp`、`image/svg+xml` 这类）时这些图宿主会当
+ * **文件**上传，但它确实是图，名字也该有编号（粘贴图片的改名见
+ * `pastedImageNames.ts`）——改名保留原后缀、不动 `File.type`，所以归宿不变。
+ *
+ * **原名已有后缀就沿用它的写法**（`photo.jpeg` 不该被改写成 `.jpg`），只有没有
+ * 可用后缀时才按 MIME 补：后缀是给人看的，也是宿主在 MIME 缺失时的判图依据。
+ */
+export function imageExtensionFor(mimeType: string | undefined, name: string): string | undefined {
+  const extension = /\.([a-z0-9]+)$/i.exec(name)?.[1]?.toLowerCase();
+  if (extension !== undefined && isImageExtension(extension)) return extension;
+  const mime = mimeType?.split(";", 1)[0]?.trim().toLowerCase();
+  return mime ? IMAGE_EXTENSIONS[mime] : undefined;
+}
+
+/** 后缀是不是图片（表里 `jpg` 与真实存在的 `jpeg` 都算）。 */
+function isImageExtension(extension: string): boolean {
+  return extension === "jpeg" || Object.values(IMAGE_EXTENSIONS).includes(extension);
+}
+
+/**
  * 给剪贴板里**明确是图片**的条目补一个带后缀的名字。
  *
  * 为什么必须有后缀：宿主的归类判据是 `imageMediaTypeFor(name)`——**只看文件名后缀**

@@ -73,6 +73,7 @@ React / 浏览器环境，不使用 Node API。上层边界见[源码导航](<..
 - [localImages.ts](<localImages.ts>) — 正文图片交宿主读取，缓存按会话隔离。
 - [imageClipboard.ts](<imageClipboard.ts>) — canvas 转 PNG 写剪贴板。
 - [attachIntake.ts](<attachIntake.ts>) — drop / paste 字节通道，真路径归宿主。
+- [pastedImageNames.ts](<pastedImageNames.ts>) — 粘贴图片的会话内编号名（图N / imageN）。
 - [jobObserve.ts](<jobObserve.ts>) — 观察身份与重连锚点的输出累积。
 - [jobsKill.ts](<jobsKill.ts>) — armed → pending 停止状态机。
 - [jobsOrder.ts](<jobsOrder.ts>) — live / 开始时间顺序，排除 subagent 行。

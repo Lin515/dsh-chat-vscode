@@ -26,6 +26,7 @@ import {
   pendingVisible,
 } from "./pendingMessage";
 import { attachDroppedFiles, attachPastedFiles, clipboardFiles, dragHasFiles } from "./attachIntake";
+import { createPastedImageSequence, visibleImageNames } from "./pastedImageNames";
 import { setLocalImageScope } from "./localImages";
 import { dp, dpLength, uiScaleOf, UiScaleContext } from "./uiScale";
 import { TurnRail } from "./components/TurnRail";
@@ -613,15 +614,36 @@ function usePageFileDrop() {
  * （比如刚点开一条消息）粘贴也该能加附件。VS Code 桌面版对 `Ctrl+V` 的处理
  * （`preventDefault` + 由宿主补发 `execCommand("paste")`）见模块文件头：**paste
  * 事件照样会到 webview**，所以这条路不需要自己抢按键。
+ *
+ * 命名（`pastedImageNames.ts`）：剪贴板位图的名字一律是 `image.png`，这里在发给
+ * 宿主之前按**会话内编号**改成 `图1.png` / `image1.png`，让用户能直接说「看图3」。
  */
-function usePagePaste() {
+function usePagePaste(state: AppState) {
+  // 监听只挂一次（window 级），最新的会话状态从 ref 取：把 state 写进依赖数组
+  // 会让每次帧到达都重挂一次监听
+  const latest = useRef(state);
+  latest.current = state;
+  // 按会话记住已分配最大编号，A → B → A 与连续快粘都不能重用已删芯片的号。
+  // 编号器只保留最近 256 个已编号会话；清理与恢复边界见 pastedImageNames。
+  const assigned = useRef(createPastedImageSequence());
+  // 每次会话切换都同步（不等下一次粘贴）：空态首次绑定迁移，重新进空态归零。
+  useLayoutEffect(() => {
+    assigned.current.selectSession(state.session?.id);
+  }, [state.session?.id]);
   useEffect(() => {
     const onPaste = (event: ClipboardEvent) => {
       const files = clipboardFiles(event.clipboardData);
       if (!files.length) return;
       // 认出了文件才劫持：否则文本粘贴会被吃掉（textarea 拿不到原生插入）
       event.preventDefault();
-      attachPastedFiles(files);
+      const current = latest.current;
+      const named = assigned.current.rename({
+        sessionId: current.session?.id,
+        names: visibleImageNames(current),
+        files,
+        locale: normalizeLocale(current.locale),
+      });
+      attachPastedFiles(named.files);
     };
     window.addEventListener("paste", onPaste);
     return () => window.removeEventListener("paste", onPaste);
@@ -709,7 +731,7 @@ export function App() {
   // 全页拖放：拖文件进会话页的任何位置都算添加附件（dragActive 时亮出浮层）
   const dragActive = usePageFileDrop();
   // 全页粘贴：Ctrl+V 贴图片 / 文件同样算添加附件（没有浮层可亮，纯文本仍走原生）
-  usePagePaste();
+  usePagePaste(state);
   // 自动滚动（贴底 / 放跟随 / 回底胶囊）：整套规则在 `autoScroll.ts` 里，
   // 这里只把它的结果接给组件——端口一个（`chatScroll`），滚动手势与贴底判定不在这里。
   const chatScroll = useAutoScroll(chatActive, sessionId);
