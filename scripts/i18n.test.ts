@@ -82,7 +82,7 @@ const HOST_MARKERS: string[] = [
   // 附件 / 上传
   "uploadIncomplete",
   "uploadNoSession",
-  "imagePathsInserted",
+  "imageFilesUploaded",
   // 乐观回显（发送失败那一行上的原因，见 controller 的 failEcho）
   "sendNoConnection",
   "sendEmpty",
@@ -105,6 +105,11 @@ const HOST_MARKERS: string[] = [
   "pasteTooLarge",
   // 图片内联上限（超限改按文件上传）
   "imageTooLarge",
+  // 图片判据（超限改按文件上传：像素 / 单边 / 张数 / 单条消息的图片总字节）
+  "imagePixelsTooLarge",
+  "imageDimensionTooLarge",
+  "imageCountTooLarge",
+  "imageBytesTooLarge",
   // 图片另存（右键菜单「保存」：字节取不回来 / 写盘失败才提示，成功不提示）
   "imageSaveFailed",
   // 剪贴板 / 浏览器
@@ -234,7 +239,7 @@ console.log("i18n: 消息表每条都有中英两份，带参的登记成函数�
     ["dropTooLarge", "@dropTooLarge:big.zip", ["big.zip"]],
     ["pasteUnreadable", "@pasteUnreadable:notes.pdf", ["notes.pdf"]],
     ["pasteTooLarge", "@pasteTooLarge:big.zip", ["big.zip"]],
-    ["imageTooLarge", "@imageTooLarge:a.png", ["a.png"]],
+    ["imageTooLarge", "@imageTooLarge:a.png:20971520", ["a.png", "20"]],
     ["serverSpawnFailed", "@serverSpawnFailed:ENOENT", ["ENOENT"]],
     ["serverUnreachable", "@serverUnreachable:C:\\tools\\dsh\\bin", ["C:\\tools\\dsh\\bin"]],
     ["serverLogTail", "@serverLogTail:dsh web: ready\nport 8080", ["dsh web: ready"]],
@@ -255,8 +260,15 @@ console.log("i18n: 消息表每条都有中英两份，带参的登记成函数�
     ["sendFailed", "@sendFailed:gateway/input-invalid: bad args", ["gateway/input-invalid: bad args"]],
     // 两个参数：按第一段冒号切，第二段里的冒号整段保留
     ["llmRetry", "@llmRetry:2:5", ["2", "5"]],
-    ["imagePathsInserted", "@imagePathsInserted:2:vendor:model", ["2", "vendor:model"]],
+    ["imageFilesUploaded", "@imageFilesUploaded:2:vendor:model", ["2", "vendor:model"]],
     ["uploadIncomplete", "@uploadIncomplete:4:report.pdf, notes.md", ["4", "report.pdf, notes.md"]],
+    // 图片去向：`<文件名>:<数字…>`（文件名是 basename，不含冒号）。像素那条报的是**上限**
+    // 而不是实测值，所以这里核对缩写后的「6400万」；总字节那条的文案报 MB，所以给能整除的
+    // 字节数，核对换算后的数字
+    ["imagePixelsTooLarge", "@imagePixelsTooLarge:图1.png:64000000", ["图1.png", "6400万"]],
+    ["imageDimensionTooLarge", "@imageDimensionTooLarge:shot.png:9000:8192", ["shot.png", "9000", "8192"]],
+    ["imageCountTooLarge", "@imageCountTooLarge:图21.png:20", ["图21.png", "20"]],
+    ["imageBytesTooLarge", "@imageBytesTooLarge:a.png:104857600:209715200", ["a.png", "100", "200"]],
   ];
 
   for (const [key, marker, expected] of PARAM_CASES) {
@@ -274,7 +286,18 @@ console.log("i18n: 消息表每条都有中英两份，带参的登记成函数�
   }
 
   // 缺参也不能炸出 undefined/NaN（宿主的模板串万一少拼了一段）
-  for (const raw of ["@llmRetry:2", "@uploadIncomplete:", "@imagePathsInserted:2", "@serverLogTail:"]) {
+  for (const raw of [
+    "@llmRetry:2",
+    "@uploadIncomplete:",
+    "@imageFilesUploaded:2",
+    "@serverLogTail:",
+    // 图片去向那几条是宿主按判据拼的，任一段漏掉都不该出现 undefined / NaN
+    "@imageTooLarge:图1.png",
+    "@imagePixelsTooLarge:",
+    "@imageDimensionTooLarge:",
+    "@imageCountTooLarge:图1.png",
+    "@imageBytesTooLarge:图1.png:104857600",
+  ]) {
     for (const locale of LOCALES) {
       const resolved = resolveText(raw, dictionaryFor(locale));
       assert.ok(!resolved.includes("undefined") && !resolved.includes("NaN"), `${raw} 在 ${locale} 下：${resolved}`);

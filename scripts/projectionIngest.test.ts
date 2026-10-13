@@ -112,7 +112,17 @@ console.log(`projectionIngest: 键集合 ${PROJECTION_KEYS.length} 个与契约�
     { key: "todos", wire: [{ id: "t", content: "写文档", status: "completed" }], expect: [{ id: "t", content: "写文档", status: "completed" }] },
     { key: "tokenUsage", wire: { outputTokens: 7 }, expect: { uncachedInputTokens: 0, outputTokens: 7, cacheReadTokens: 0, cacheWriteTokens: 0 } },
     { key: "turnOutline", wire: [{ turn: 0, seq: 3, prompt: "问", response: "答" }], expect: [{ turn: 0, seq: 3, prompt: "问", response: "答" }] },
-    { key: "imageLimits", wire: { maxImageBytes: 1024 }, expect: { maxImagesPerMessage: undefined, maxImageBytes: 1024, maxMessageImageBytes: undefined } },
+    {
+      key: "imageLimits",
+      wire: { maxImageBytes: 1024 },
+      expect: {
+        maxImagesPerMessage: undefined,
+        maxImageBytes: 1024,
+        maxMessageImageBytes: undefined,
+        maxImagePixels: undefined,
+        maxImageDimension: undefined,
+      },
+    },
     { key: "title", wire: "标题", expect: "标题" },
     { key: "contextBreakdown", wire: { systemTokens: 1, toolsTokens: 2, messageTokens: 3 }, expect: { systemTokens: 1, toolsTokens: 2, messageTokens: 3 } },
     { key: "sessionStats", wire: { llmMs: 5, toolMs: 6 }, expect: { turns: 0, steps: 0, llmMs: 5, toolMs: 6, ttftMs: 0, ttftSteps: 0, decodeMs: 0, decodeTokens: 0 } },

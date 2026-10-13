@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import type { Attachment } from "../shared/chat";
+import { imageSizeOf } from "./imageSize";
 
 /**
  * 路径 → 「附件怎么发」的归类。
@@ -9,8 +10,29 @@ import type { Attachment } from "../shared/chat";
  *
  * 判据与官方两条路对齐（见 references.ts 文件头）：
  * - **目录** → 引用（官方靠结尾斜杠标记，模型自己决定要不要 list）；
- * - **图片**（模型接受图片输入）→ 图片内容块；
+ * - **图片**（模型接受图片输入，且五项判据都过）→ 图片内容块；
  * - **其余文件** → 文件附件，选中即**逐字节上传**拿 `receiptId`。
+ *
+ * ## 图片进不了内容块时改按**文件上传**
+ *
+ * 曾经只判「内联字节上限」（`maxImageBytes`）并降级成文件上传；2026-10-13 把五项判据
+ * 都补上之后一度改成「退成正文里的 `@` 引用」，随后又推翻了——**引用依赖共享文件系统**：
+ * 会话是用本地工作区路径当 `cwd` 建的，同机 DSH 没问题，容器 / 另一台机器上那个路径
+ * 根本不存在，用户却会看到「已改为 @ 引用插入」。上传副本不受这个假设约束（字节是搬
+ * 过去的，宿主自己把句柄路径解析到它的执行世界），是快照（本地文件之后被移动 / 删除也
+ * 不影响），还按 sha256 去重。所以：**图片进不了内容块就按文件上传**，理由如实告诉用户。
+ *
+ * 官方 `dsh web` 走的是第三条路（`InputBar.intakeFiles`：越限即整批拒，「never enters the
+ * rail」）——本扩展多给一个可用的副本：文件通道**没有任何准入限制**（`AttachmentStore.saveFile`
+ * 的契约原文是 "Files carry no admission limits: any byte content and length is accepted"），
+ * 模型本来也读不到文件内容、靠工具去取那份副本（`fileHandleText`）。
+ *
+ * 两处如实提示的地方：
+ * - **逐图**超限（字节 / 像素 / 单边）的副本，模型**也必须先缩小**才能 `read_image`
+ *   （宿主复用同一份上限），提示里要写明；
+ * - **整批**超限（张数 / 总字节）的副本单张都在限内，模型**可以直接读取**，提示照实说。
+ *
+ * 图片**仍然不**自己判「模型收不收图」，那由 `classify*` 按 `acceptsImage` 决定去向。
  *
  * ## 为什么**不**判断「文件可不可读」「文件大不大」
  *
@@ -33,7 +55,7 @@ import type { Attachment } from "../shared/chat";
  *
  * 唯一真实的准入限制在**图片**那条路上（官方 `IMAGE_ADMISSION_ERROR_CODES`：
  * 类型 / 张数 / 字节 / 像素上限）——那由宿主校验，并把限额经 `imageLimits` 投影
- * 下发（本扩展已消费）；这里只需按「模型收不收图」决定走内容块还是走上传。
+ * 下发（本扩展已消费）；图片进不了内容块就按文件上传，理由见上一节。
  */
 
 /** 以图片块发送的扩展名 → mediaType（与服务端支持的图片类型对齐）。 */
@@ -71,11 +93,62 @@ export function isDirectoryPath(path: string): boolean {
 }
 
 /** 不能做附件时的原因（用于提示与测试断言）。 */
-export type PathOnlyReason = "directory" | "unreadable" | "image-unsupported";
+export type PathOnlyReason = "directory" | "unreadable";
+
+/**
+ * 服务端的图片准入上限（`imageLimits` 投影里除 `maxImageBytes` 之外的四项）。
+ *
+ * 逐图的三条（字节 / 像素 / 单边）与整批的两条（张数 / 总字节）判据不同，但**去向相同**：
+ * 这张图进不了这条消息（模型也就读不到它，`read_image` 复用同一份上限），于是按
+ * 「有路径 → `@` 引用、没路径 → 提示没加进来」处理，**不再**改按文件上传（理由见文件头）。
+ *
+ * 像素与单边在**接入时**按图片头部预检（`dsh/imageSize.ts`）；张数与单条消息的图片总
+ * 字节是**整批**判据，由 `planIntake` 连同草稿里已有的附件一起算。
+ */
+export interface ImageAdmissionLimits {
+  /** 源图 `宽 × 高` 的上限。 */
+  maxImagePixels?: number;
+  /** 源图单边的上限。 */
+  maxImageDimension?: number;
+  /** 单条消息的图片张数上限。 */
+  maxImagesPerMessage?: number;
+  /** 单条消息的图片总字节上限（按编码后的源图字节算）。 */
+  maxMessageImageBytes?: number;
+}
+
+/**
+ * 图片**进不了**内容块的原因（提示与测试的依据）。
+ *
+ * 像素那条**不带实测值**：`72000000` 这种数字对用户没有任何指导意义，只报上限
+ * （文案按语言缩写成「6400万」/「64M」）；单边（分辨率）报具体数字，字节与张数报上限，
+ * 总字节那条额外报「已用多少」（那两个数都是 MB 量级，用户看得懂）。
+ *
+ * 原因还决定提示的**后半句**：逐图三条（字节 / 像素 / 单边）的副本模型也得先缩小才能
+ * 查看，整批两条（张数 / 总字节）的副本模型可以直接读取（那几个数只在文案层分支，见
+ * `webview/messages.ts`）。
+ */
+export type ImageUnavailable =
+  /** 单张编码字节超过**内联**上限（`maxImageBytes`）。 */
+  | { reason: "image-over-limit"; limit: number }
+  /** 源图 `宽 × 高` 超过服务端上限。 */
+  | { reason: "image-pixels"; limit: number }
+  /** 源图单边超过服务端上限。 */
+  | { reason: "image-dimension"; measured: number; limit: number }
+  /** 这一条消息的图片张数已达上限。 */
+  | { reason: "image-count"; limit: number }
+  /** 这一条消息的图片总字节已达上限（`bytes` 是加入前已占用的量）。 */
+  | { reason: "image-bytes"; bytes: number; limit: number }
+  /** 当前模型不接受图片输入。 */
+  | { reason: "image-unsupported" };
 
 export type ClassifyOutcome =
-  /** 可以做附件：随消息发送（图片内容块 / 上传后拿 receiptId）。 */
-  | { kind: "attachment"; attachment: Attachment }
+  /**
+   * 可以做附件：随消息发送（图片内容块 / 上传后拿 receiptId）。
+   *
+   * 图片进不了内容块时也是这一支（附件变成**文件**、走上传），`notInlined` 记录原因
+   * 供调用方提示；非图片条目与正常内联的图不带它。
+   */
+  | { kind: "attachment"; attachment: Attachment; notInlined?: ImageUnavailable }
   /** 不做附件：目录交给引用，读不出来的把路径交给用户。 */
   | { kind: "path"; reason: PathOnlyReason };
 
@@ -88,7 +161,7 @@ export interface ClassifyInput {
   /** 当前模型是否接受图片输入；false 时图片无法内嵌。 */
   acceptsImage: boolean;
   /**
-   * 图片**内联**上限（字节）：超过它就不读字节、改按普通文件上传。
+   * 图片**内联**上限（字节）：超过它就不读字节（该条目随后按文件上传）。
    *
    * 为什么要有：图片走的是「读成字节 → base64 → 内容块」，`readFileSync` 是**同步**的
    * 且 base64 再胀 4/3——一张几百 MB 的图会把扩展宿主冻住并把内存顶爆，而服务端
@@ -96,6 +169,8 @@ export interface ClassifyInput {
    * 界面侧由调用方传入；缺省时调用方给一个保守的硬上限）。
    */
   maxImageBytes?: number;
+  /** 像素 / 单边判据（超限即按文件上传，原因见 `ImageUnavailable`）。 */
+  admission?: ImageAdmissionLimits;
   /** 读取失败时的回调（默认静默）。 */
   onError?: (message: string) => void;
 }
@@ -113,15 +188,27 @@ export function classifyPath(input: ClassifyInput): ClassifyOutcome {
 
   const mediaType = imageMediaTypeFor(path);
   if (mediaType) {
-    if (!acceptsImage) return { kind: "path", reason: "image-unsupported" };
+    // 进不了内容块的图一律**按文件上传**（`notInlined` 说明原因，调用方据此提示）：
+    // 文件通道没有准入限制，字节搬到宿主那儿模型至少能用工具处理它
+    const asFile = (notInlined: ImageUnavailable): ClassifyOutcome => ({
+      kind: "attachment",
+      attachment: { id: randomUUID(), kind: "file", path, name },
+      notInlined,
+    });
+    if (!acceptsImage) return asFile({ reason: "image-unsupported" });
     try {
-      // 先量大小再读字节：超大图不进内容块，改按普通文件上传（调用方据此提示原因）
+      // 先量大小再读字节：超大图连读都不读，直接给出「内联上限」这个原因
       const size = statSync(path).size;
       if (input.maxImageBytes !== undefined && size > input.maxImageBytes) {
         onError?.(`图片超过内联上限（${size} > ${input.maxImageBytes} 字节），改按文件上传：${path}`);
-        return { kind: "attachment", attachment: { id: randomUUID(), kind: "file", path, name } };
+        return asFile({ reason: "image-over-limit", limit: input.maxImageBytes });
       }
       const bytes = readFileSync(path);
+      const rejected = admissionVerdict(bytes, input.admission);
+      if (rejected) {
+        onError?.(`图片超过服务端准入（${rejected.reason}），改按文件上传：${path}`);
+        return asFile(rejected);
+      }
       return {
         kind: "attachment",
         attachment: {
@@ -203,53 +290,89 @@ export function imageMediaTypeForEntry(mimeType: string | undefined, name: strin
   return imageMediaTypeFor(name);
 }
 
+/**
+ * 图片字节的**头部尺寸**准入：撞上像素或单边上限时给出原因，否则 `undefined`。
+ *
+ * - 检查顺序与服务端一致（先像素、后单边，见 `attachment-local` 的 `detectImage`），
+ *   这样本地提示与提交后被服务端拒时说的是同一条；
+ * - 不从字节长度推算——这两条上限与文件大小无关（PNG 压得狠，几 MB 的图完全可能
+ *   上千万像素）；
+ * - 读不出宽高（格式不认识 / 头部截断）时**放行**：判据按肯定证据写，宁可让服务端去拒，
+ *   也不拿一个猜出来的尺寸误伤正常图片（见 `dsh/imageSize.ts`）。
+ *
+ * 字节上限不在这里判：那是**内联**上限，先于读字节判（见 `ClassifyInput.maxImageBytes`）。
+ */
+export function admissionVerdict(
+  bytes: Uint8Array,
+  admission: ImageAdmissionLimits | undefined,
+): Extract<ImageUnavailable, { reason: "image-pixels" | "image-dimension" }> | undefined {
+  const maxPixels = admission?.maxImagePixels;
+  const maxDimension = admission?.maxImageDimension;
+  if (maxPixels === undefined && maxDimension === undefined) return undefined;
+  const size = imageSizeOf(bytes);
+  if (!size) return undefined;
+  const pixels = size.width * size.height;
+  if (maxPixels !== undefined && pixels > maxPixels) {
+    return { reason: "image-pixels", limit: maxPixels };
+  }
+  const side = Math.max(size.width, size.height);
+  if (maxDimension !== undefined && side > maxDimension) {
+    return { reason: "image-dimension", measured: side, limit: maxDimension };
+  }
+  return undefined;
+}
+
 export interface DroppedBytesInput {
   /** 文件名（webview 侧 `File.name`，只有名字，没有路径）。 */
   name: string;
   bytes: Uint8Array;
-  /** 当前模型是否接受图片输入；false 时图片不能内嵌，改走上传。 */
+  /** 当前模型是否接受图片输入；false 时图片进不了内容块。 */
   acceptsImage: boolean;
   /** 浏览器声明的 MIME（`File.type`），可能与后缀不一致；有就优先采信。 */
   mimeType?: string;
-  /** 图片**内联**上限（字节）：超过它就不内联、改按普通文件上传（与 `classifyPath` 同口径）。 */
+  /** 图片**内联**上限（字节）：超过它就不内联（与 `classifyPath` 同口径）。 */
   maxImageBytes?: number;
-  /** 读取 / 降级原因的回调（默认静默）。 */
+  /** 像素 / 单边判据（超限即按文件上传，与 `classifyPath` 同口径）。 */
+  admission?: ImageAdmissionLimits;
+  /** 不可用原因的回调（默认静默）。 */
   onError?: (message: string) => void;
 }
 
-export interface DroppedBytesOutcome {
-  kind: "attachment";
-  attachment: Attachment;
-  /** 图片超过内联上限、已改按文件上传（调用方据此提示，与路径通道同一条文案）。 */
-  degraded?: "image-over-limit";
-}
+export type DroppedBytesOutcome =
+  | { kind: "attachment"; attachment: Attachment; notInlined?: ImageUnavailable };
 
 /**
  * 归类一份**只有字节和文件名**的附件（拖放 / 剪贴板里没有真路径的那些）。
  *
  * 判据与 `classifyPath` 同口径，只是信息更少：
- * - **图片且模型收图** → 图片附件（内容块，与官方内联图片字节一致），
- *   `dataUrl` 由字节直接拼，无需路径；超过 `maxImageBytes` 则**降级为文件上传**
- *   （与路径通道一样，不能让一张超大图以内联块发出去、到提交时被服务端整批拒）；
- * - **其余**（含模型不收图的图片）→ 文件附件，调用方**立即上传字节**
- *   （上传路径按字节发、不挑类型，图片当普通文件上传也比丢掉强——模型仍能用
- *   工具处理它，而"模型不收图"时退回路径文本对这两条路根本不可行：没有路径可插）。
+ * - **图片且模型收图且五项判据都过** → 图片附件（内容块，与官方内联图片字节一致），
+ *   `dataUrl` 由字节直接拼，无需路径；
+ * - **图片但进不了**（超限 / 模型不收图）→ 同样是 `attachment`，只是附件是**文件**、
+ *   走上传（`notInlined` 说明原因）。字节在手上，没必要丢掉；
+ * - **其余**（MIME 表外的、非图片的）→ 文件附件，调用方立即上传字节。
  *
  * 刻意不读盘、不引 `vscode`：冒烟测试能直接验证归类结果。
  */
 export function classifyDroppedBytes(input: DroppedBytesInput): DroppedBytesOutcome {
   const { name, bytes, acceptsImage, mimeType } = input;
   const mediaType = imageMediaTypeForEntry(mimeType, name);
-  if (mediaType && acceptsImage) {
+  if (mediaType) {
+    const asFile = (notInlined: ImageUnavailable): DroppedBytesOutcome => ({
+      kind: "attachment",
+      attachment: { id: randomUUID(), kind: "file", name },
+      notInlined,
+    });
+    if (!acceptsImage) return asFile({ reason: "image-unsupported" });
     if (input.maxImageBytes !== undefined && bytes.length > input.maxImageBytes) {
       input.onError?.(
         `图片超过内联上限（${bytes.length} > ${input.maxImageBytes} 字节），改按文件上传：${name}`,
       );
-      return {
-        kind: "attachment",
-        attachment: { id: randomUUID(), kind: "file", name },
-        degraded: "image-over-limit",
-      };
+      return asFile({ reason: "image-over-limit", limit: input.maxImageBytes });
+    }
+    const rejected = admissionVerdict(bytes, input.admission);
+    if (rejected) {
+      input.onError?.(`图片超过服务端准入（${rejected.reason}），改按文件上传：${name}`);
+      return asFile(rejected);
     }
     return {
       kind: "attachment",
@@ -276,12 +399,17 @@ export type IntakeItem =
   | { from: "path"; path: string; name: string; directory?: boolean }
   | { from: "bytes"; name: string; bytes: Uint8Array; mimeType?: string };
 
-/** 这一批里没进来的条目（界面已判出来的，以及宿主自己判出来的）。 */
-export interface IntakeRejection {
-  name: string;
-  /** `unreadable`：目录条目（拖放不支持）/ 0 字节 / 读不出来；`too-large`：超过字节通道上限。 */
-  reason: "unreadable" | "too-large";
-}
+/**
+ * 这一批里没进来的条目（界面已判出来的，以及宿主自己判出来的）。
+ *
+ * 判据算出来的数字**原样带上**：上限（以及单边、总字节那两个有意义的具体值）只有在
+ * 判据那一处才算得出，不能让文案层去猜。
+ */
+export type IntakeRejection =
+  /** 目录条目（拖放不支持）/ 0 字节 / 读不出来。 */
+  | { name: string; reason: "unreadable" }
+  /** 超过字节通道上限（webview 那 8 MB；图片与文件都走这条传输判据）。 */
+  | { name: string; reason: "too-large" };
 
 export interface IntakePlanInput {
   items: readonly IntakeItem[];
@@ -289,6 +417,16 @@ export interface IntakePlanInput {
   acceptsImage: boolean;
   /** 图片内联上限（缺省时调用方给一个保守硬上限）。 */
   maxImageBytes?: number;
+  /** 像素 / 单边 / 张数 / 总字节准入（缺省的项不检查）。 */
+  admission?: ImageAdmissionLimits;
+  /**
+   * 已经在草稿里的附件。
+   *
+   * 张数与总字节是**整批**判据：服务端算的是这一条消息里的全部图片，草稿里已有的那些
+   * 同样占额度，所以这里必须把它们算进来（只按新条目判会让「先加 19 张、再加 2 张」
+   * 在提交时才被拒）。
+   */
+  existing?: readonly Attachment[];
   /** 已经在附件列表里的路径：**路径项**按它去重（同一份文件加两次没有意义）。 */
   existingPaths?: readonly string[];
   /** 目录探测（默认 `isDirectoryPath`，测试可注入）。 */
@@ -304,25 +442,29 @@ export interface IntakeUpload {
   source: { kind: "path"; path: string } | { kind: "bytes"; bytes: Uint8Array };
 }
 
+/** 进不了内容块、已改按文件上传的图片（附件与上传项都在下面两份清单里，这里只带原因）。 */
+export interface IntakeDegradedImage {
+  name: string;
+  unavailable: ImageUnavailable;
+}
+
 export interface IntakePlan {
-  /** 新增的附件（文件带 upload 状态由调用方随后写入；图片已内联成 data URL）。 */
+  /** 新增的附件（非图片文件带 upload 状态由调用方随后写入；图片已内联成 data URL）。 */
   attachments: Attachment[];
-  /** 需要立即上传的文件附件。 */
+  /** 需要立即上传的文件附件（含**进不了内容块、改按文件上传的图片**）。 */
   uploads: IntakeUpload[];
   /** 目录 → 调用方插 `@dir/` **引用**（附件列表里不出现目录）。 */
   directories: string[];
-  /** 读不出来 / 模型不收图 → 调用方把带引号的路径插进正文（最后一道兜底）。 */
+  /** 图片进不了内容块的**原因**（附件已经是文件、上传项已在 `uploads` 里；提示用）。 */
+  degradedImages: IntakeDegradedImage[];
+  /** 读不出来的**非图片**条目 → 调用方把带引号的路径插进正文（最后一道兜底）。 */
   pathOnly: string[];
   /** 没进来的条目（含界面报来的）。 */
   rejected: IntakeRejection[];
-  /** 图片超过内联上限、已改按文件上传（提示用）。 */
-  degradedImages: string[];
-  /** 模型不收图的图片条数（调用方提示「路径已插入」用）。 */
-  unsupportedImages: number;
 }
 
 /**
- * 三个入口（添加文件 / 拖放 / 粘贴）**唯一**的接入决策：条目 → 附件 / 目录引用 / 拒绝。
+ * 三个入口（添加文件 / 拖放 / 粘贴）**唯一**的接入决策：条目 → 附件 / 引用 / 拒绝。
  *
  * 为什么收成一个纯函数：路径与字节两条路曾经各写一遍（分类、上限、去重、提示都各一套），
  * 于是漂移出了真 BUG——字节通道的附件没有 `path`，发送装配按 `path` 过滤，
@@ -331,9 +473,12 @@ export interface IntakePlan {
  *
  * 判据（与官方一致）：
  * - **目录** → 引用（官方靠结尾斜杠标记，模型自己决定要不要 list）；
- * - **图片**（模型收图、且不超内联上限）→ 图片附件；
- * - **其余** → 文件附件 + 立即上传；
- * - 读不出来 / 模型不收图 → 路径文本兜底（字节条目没有路径可插，只能上传）。
+ * - **图片**（模型收图、且内联字节 / 像素 / 单边 / 张数 / 总字节都过）→ 图片附件；
+ * - **图片进不了**（上面任一条不过，或模型不收图）→ **改按文件上传**（附件变文件、
+ *   进 `uploads`），原因记进 `degradedImages` 供提示。不走 `@` 引用：引用依赖共享
+ *   文件系统，远端部署下是空头支票（理由见文件头）；
+ * - **其余文件** → 文件附件 + 立即上传（上传不挑类型与大小）；
+ * - 读不出来的**非图片**条目 → 带引号的路径文本兜底。
  *
  * 不读 vscode、不写界面：调用方负责把结果落到视图上。
  */
@@ -343,12 +488,54 @@ export function planIntake(input: IntakePlanInput): IntakePlan {
     attachments: [],
     uploads: [],
     directories: [],
+    degradedImages: [],
     pathOnly: [],
     rejected: [...(input.rejected ?? [])],
-    degradedImages: [],
-    unsupportedImages: 0,
   };
   const seen = new Set(input.existingPaths ?? []);
+
+  // 整批额度：草稿里已有的图片先占掉（服务端算的是这一条消息的全部图片）
+  const existingImages = (input.existing ?? []).filter((attachment) => attachment.kind === "image");
+  let imageCount = existingImages.length;
+  let imageBytes = existingImages.reduce((total, attachment) => total + (attachment.bytes ?? 0), 0);
+
+  /**
+   * 整批准入：这一枚图片还能不能进（张数 → 总字节，顺序与服务端一致）。
+   *
+   * 判定是**逐枚**的：额度满了之后同一批里后面的图片也进不来，而每一枚都报出原因，
+   * 用户才知道是「太多了」还是「太大了」。
+   */
+  const admitImage = (attachment: Attachment): ImageUnavailable | undefined => {
+    const countLimit = input.admission?.maxImagesPerMessage;
+    if (countLimit !== undefined && imageCount >= countLimit) {
+      return { reason: "image-count", limit: countLimit };
+    }
+    const bytesLimit = input.admission?.maxMessageImageBytes;
+    const bytes = attachment.bytes ?? 0;
+    if (bytesLimit !== undefined && imageBytes + bytes > bytesLimit) {
+      return { reason: "image-bytes", bytes: imageBytes, limit: bytesLimit };
+    }
+    imageCount += 1;
+    imageBytes += bytes;
+    return undefined;
+  };
+
+  /**
+   * 图片进不了内容块 → 换成**文件附件**并立即上传：字节搬到宿主那儿模型至少能用工具处理它，
+   * 而这个落点不依赖「执行世界能读到本地路径」（见文件头）。两条通道共用这一份。
+   */
+  const uploadAsFile = (item: IntakeItem, unavailable: ImageUnavailable): void => {
+    const file: Attachment = { id: randomUUID(), kind: "file", name: item.name };
+    if (item.from === "path") file.path = item.path;
+    plan.attachments.push(file);
+    plan.uploads.push({
+      id: file.id,
+      source: item.from === "path"
+        ? { kind: "path", path: item.path }
+        : { kind: "bytes", bytes: item.bytes },
+    });
+    plan.degradedImages.push({ name: item.name, unavailable });
+  };
 
   for (const item of input.items) {
     if (item.from === "bytes") {
@@ -364,12 +551,23 @@ export function planIntake(input: IntakePlanInput): IntakePlan {
         mimeType: item.mimeType,
         acceptsImage: input.acceptsImage,
         maxImageBytes: input.maxImageBytes,
+        admission: input.admission,
         onError: input.onError,
       });
+      if (outcome.notInlined) {
+        uploadAsFile(item, outcome.notInlined);
+        continue;
+      }
+      if (outcome.attachment.kind === "image") {
+        const blocked = admitImage(outcome.attachment);
+        if (blocked) {
+          uploadAsFile(item, blocked);
+          continue;
+        }
+      }
       plan.attachments.push(outcome.attachment);
       if (outcome.attachment.kind === "file") {
         plan.uploads.push({ id: outcome.attachment.id, source: { kind: "bytes", bytes: item.bytes } });
-        if (outcome.degraded === "image-over-limit") plan.degradedImages.push(item.name);
       }
       continue;
     }
@@ -389,18 +587,28 @@ export function planIntake(input: IntakePlanInput): IntakePlan {
       name: item.name,
       acceptsImage: input.acceptsImage,
       maxImageBytes: input.maxImageBytes,
+      admission: input.admission,
       onError: input.onError,
     });
     if (outcome.kind === "attachment") {
+      if (outcome.notInlined) {
+        uploadAsFile(item, outcome.notInlined);
+        continue;
+      }
+      if (outcome.attachment.kind === "image") {
+        const blocked = admitImage(outcome.attachment);
+        if (blocked) {
+          uploadAsFile(item, blocked);
+          continue;
+        }
+      }
       plan.attachments.push(outcome.attachment);
       if (outcome.attachment.kind === "file") {
         plan.uploads.push({ id: outcome.attachment.id, source: { kind: "path", path: item.path } });
-        if (imageMediaTypeFor(item.path)) plan.degradedImages.push(item.name);
       }
       continue;
     }
     plan.pathOnly.push(item.path);
-    if (outcome.reason === "image-unsupported") plan.unsupportedImages++;
   }
   return plan;
 }

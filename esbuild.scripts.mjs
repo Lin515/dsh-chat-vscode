@@ -99,6 +99,8 @@ const entries = {
   "build/attachments.test.mjs": "scripts/attachments.test.ts",
   // 粘贴图片的会话内编号名（图N / imageN）：必须登记，否则 npm test 静默不跑
   "build/pasted-image-names.test.mjs": "scripts/pastedImageNames.test.ts",
+  // 图片头部宽高解析（服务端像素/单边准入要在接入时预检）：必须登记，否则 npm test 静默不跑
+  "build/image-size.test.mjs": "scripts/imageSize.test.ts",
   // 附件草稿的归属与上传生命周期（账本 module + 真 ChatController 的受控 Promise 上传链）：必须登记，否则 npm test 静默不跑
   "build/attachment-lifecycle.test.mjs": "scripts/attachmentLifecycle.test.ts",
   "build/clipboard-paths.test.mjs": "scripts/clipboardPaths.test.ts",

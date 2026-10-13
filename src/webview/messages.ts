@@ -24,10 +24,13 @@ export type LocalizedMessage = {
   /**
    * 标记里 `@key:` 之后那一段**怎么分给函数的形参**（只对带参数的登记有意义）。
    *
-   * 缺省是整段给第一个形参（`@key:arg` 的常规形态，参数里的冒号不截断）。
-   * 写 `2` 表示「按第一段冒号对半切」——只有那几条历史口径如此：
-   * `llmRetry` 的「第几次:共几次」、`uploadIncomplete` 的「个数:文件名预览」、
-   * `imagePathsInserted` 的「张数:模型名」。
+   * 缺省是整段给第一个形参（`@key:arg` 的常规形态，参数里的冒号不截断）。写 `N` 表示
+   * 「切成 N 段」：切前 N−1 个冒号，**剩下的整段**给最后一个形参——所以含冒号的原文只能
+   * 出现在最后一段。两条历史口径是 `2`（`llmRetry` 的「第几次:共几次」、
+   * `uploadIncomplete` 的「个数:文件名预览」）；图片那几条用 `3`/`4`
+   * （`<文件名>:<数字…>`，以及 `imageFilesUploaded` 的
+   * `<张数>:<模型名>`——文件名是 basename 不含冒号，模型名含冒号所以它
+   * 必须落在最后一段）。
    */
   argParts?: number;
   /**
@@ -63,6 +66,25 @@ export function asMessageTable(table: unknown): MessageTable {
     }
   }
   return table as MessageTable;
+}
+
+/** 字节 → 兆字节（提示里报量级就够，四舍五入到整数）。 */
+function megabytes(bytes: number): number {
+  return Math.round(bytes / (1024 * 1024));
+}
+
+/**
+ * 位数量级的缩写：像素上限报成「6400万」/「64M」，而不是 `64000000`。
+ *
+ * 用户对「这张图有多少像素」没有直觉，位数量级的原始数字只会白占一行（2026-10-13 口径：
+ * 像素那条**只报上限**、不报实测值，且这个上限按语言缩写）。用 `Intl` 的 compact 记法，
+ * 界面不留自造的万 / 亿换算表——单位后缀由 `Intl` 按语言给出。
+ */
+function compactCount(locale: "zh" | "en", value: number): string {
+  return new Intl.NumberFormat(locale === "zh" ? "zh-CN" : "en", {
+    notation: "compact",
+    maximumFractionDigits: 1,
+  }).format(value);
 }
 
 /**
@@ -381,9 +403,49 @@ export const MESSAGES = {
     en: (name: string) =>
       `${name} is too large (over 8 MB) and was not attached; save it as a file and use the attach button, which has no size limit`,
   },
+  // 图片进不了内容块 → **按文件上传**（不是拒收，也不是正文里的 `@` 引用：引用依赖共享
+  // 文件系统，远端部署下是空头支票）。参数形如 `<文件名>:<数字…>`；文件名是 basename
+  // （Windows 文件名不含冒号），所以按冒号切段是安全的。
+  //
+  // 后半句按原因分两类，照实说模型能不能直接读那份副本：**逐图**超限（内联字节 / 像素 /
+  // 单边）的副本模型也得先缩小才能 `read_image`；**整批**超限（张数 / 总字节）的副本单张
+  // 本来就在限内，模型按需读即可。
   imageTooLarge: {
-    zh: (name: string) => `${name} 超过服务端的图片上限，已改为按文件上传`,
-    en: (name: string) => `${name} is over the server's image limit and was uploaded as a file instead`,
+    argParts: 2,
+    zh: (name: string, limit: number) =>
+      `${name} 超过服务端的图片内联上限 ${megabytes(limit)} MB，未作为图片加入，已作为文件上传；模型需先缩小该图才能直接查看`,
+    en: (name: string, limit: number) =>
+      `${name} is over the server's ${megabytes(limit)} MB inline limit, so it was uploaded as a file instead of an image; downscale it before the model can view it`,
+  },
+  // 像素那条**不报实测值**：`72000000` 这种数字对用户没有指导意义，只报上限（按语言
+  // 缩写成「6400万」/「64M」）。单边是分辨率，报具体数字用户才缩得准。
+  imagePixelsTooLarge: {
+    argParts: 2,
+    zh: (name: string, limit: number) =>
+      `${name} 的像素数（宽 × 高）超过服务端上限 ${compactCount("zh", limit)}，未作为图片加入，已作为文件上传；模型需先缩小该图才能直接查看`,
+    en: (name: string, limit: number) =>
+      `${name} has more than the server's ${compactCount("en", limit)}-pixel limit (width × height), so it was uploaded as a file instead of an image; downscale it before the model can view it`,
+  },
+  imageDimensionTooLarge: {
+    argParts: 3,
+    zh: (name: string, side: number, limit: number) =>
+      `${name} 的长边是 ${side} 像素，超过服务端上限 ${limit}，未作为图片加入，已作为文件上传；模型需先缩小该图才能直接查看`,
+    en: (name: string, side: number, limit: number) =>
+      `${name} is ${side} pixels on its longest side, over the server limit of ${limit}; it was uploaded as a file instead of an image, and must be downscaled before the model can view it`,
+  },
+  imageCountTooLarge: {
+    argParts: 2,
+    zh: (name: string, limit: number) =>
+      `一条消息最多 ${limit} 张图片，${name} 未作为图片加入，已作为文件上传；模型可直接读取这份副本`,
+    en: (name: string, limit: number) =>
+      `A message accepts at most ${limit} images; ${name} was uploaded as a file instead, and the model can read that copy on demand`,
+  },
+  imageBytesTooLarge: {
+    argParts: 3,
+    zh: (name: string, bytes: number, limit: number) =>
+      `一条消息的图片合计不能超过 ${megabytes(limit)} MB（已用 ${megabytes(bytes)} MB），${name} 未作为图片加入，已作为文件上传；模型可直接读取这份副本`,
+    en: (name: string, bytes: number, limit: number) =>
+      `Images in one message are limited to ${megabytes(limit)} MB in total (already ${megabytes(bytes)} MB); ${name} was uploaded as a file instead, and the model can read that copy on demand`,
   },
   dropHint: { zh: "松开即添加为附件", en: "Release to attach" },
 
@@ -725,10 +787,13 @@ export const MESSAGES = {
     zh: (attempt: number) => `模型调用失败，正在重试（第 ${attempt} 次）`,
     en: (attempt: number) => `The model call failed; retrying (attempt ${attempt})`,
   },
-  imagePathsInserted: {
-    argParts: 2, // 参数形如 `<张数>:<模型名>`（模型名里可能含冒号）
-    zh: (count: number, model: string) => `模型「${model}」不支持图片输入，已把 ${count} 个路径插入输入框`,
-    en: (count: number, model: string) => `Model "${model}" does not accept image input; inserted ${count} path(s) into the box`,
+  // 模型不收图片输入是**整批**原因（这一批里每一张都进不了内容块），汇总成一条：按条发
+  // 会刷屏。参数形如 `<张数>:<模型名>`（模型名里可能含冒号，所以它必须在最后一段）
+  imageFilesUploaded: {
+    argParts: 2,
+    zh: (count: number, model: string) => `模型「${model}」不支持图片输入，${count} 张图片已作为文件上传`,
+    en: (count: number, model: string) =>
+      `Model "${model}" does not accept image input; ${count} image${count === 1 ? "" : "s"} uploaded as file${count === 1 ? "" : "s"}`,
   },  queueAttachmentsLost: { zh: "部分附件无法还原，消息已保留在队列中。", en: "Some attachments cannot be restored. The message was kept in the queue." },
   queueContentLost: { zh: "排队消息的内容无法还原，已只中止当前轮", en: "Could not restore the queued message; only the current turn was stopped" },
   /**

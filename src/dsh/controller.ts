@@ -41,6 +41,7 @@ import {
   imageMediaTypeForEntry,
   planIntake,
   withoutAttachmentDataUrls,
+  type ImageUnavailable,
   type IntakeItem,
   type IntakeRejection,
   type IntakeUpload,
@@ -7626,20 +7627,22 @@ export class ChatController implements vscode.Disposable {
   /**
    * **三个入口唯一的接入执行层**：添加文件按钮 / 拖放 / 粘贴。
    *
-   * 决策全部在纯函数 `attachments.planIntake` 里（条目 → 附件 / 目录引用 / 拒绝），
+   * 决策全部在纯函数 `attachments.planIntake` 里（条目 → 附件 / 引用 / 拒绝），
    * 这里只把结果落到视图上。之所以收成一份：路径与字节两条路曾经各写一遍，
    * 于是漂移出了真 BUG——字节通道的附件没有 `path`，发送装配按 `path` 过滤，
    * 上传成功的文件**根本没进 prompt**，而且连提示都不发（2026-09-21 修）。
    *
    * 三条去向（与官方一致，理由见 `attachments.ts` 文件头）：
-   * - **图片** → 图片附件（内容块，官方同样内联图片字节）；
+   * - **图片**（五项判据全过）→ 图片附件（内容块，官方同样内联图片字节）；
    * - **目录** → `@dir/` **引用文本**（不是附件芯片，见 `addDirectoryReference`）；
    * - **其余文件** → 文件附件并**立即上传**（官方 upload-on-pick：选完就开始传，
    *   发送时只带 `receiptId`；上传按字节发，类型与大小都不挑——官方也不挑，
    *   **不要**在这里加可读性/大小筛子）。
    *
-   * 读不出来（选择到读取之间被删的竞态）、或模型不收图片，才退回把带引号的路径插到
-   * 光标处——那是最后一道兜底，不再假装「已作为上下文加入」。
+   * 进不了内容块的**图片**另走一条：改按文件上传（附件变文件、立即上传），原因用一条
+   * 提示说清。不走 `@` 引用——引用依赖「执行世界能读到本地路径」，远端部署下是空头支票
+   * （见 `attachments.ts` 文件头）。读不出来的**非图片**条目（选择到读取之间被删的竞态）
+   * 仍旧退回带引号的路径——那是最后一道兜底，不再假装「已作为上下文加入」。
    */
   private async ingestAttachments(
     viewId: string,
@@ -7662,6 +7665,16 @@ export class ChatController implements vscode.Disposable {
       // 图片内联上限：优先用服务端自己的 `imageLimits.maxImageBytes`（这正是那份
       // 投影的用途），拿不到时给一个保守硬上限——同步读一张几百 MB 的图会冻住宿主
       maxImageBytes: scope?.imageLimits?.maxImageBytes ?? IMAGE_INLINE_HARD_CAP,
+      // 图片判据（像素 / 单边 / 张数 / 总字节）：在接入那一刻判出来，不再等服务端在提交时
+      // 整批拒（那时用户看到的是一句英文原文报错）
+      admission: {
+        maxImagePixels: scope?.imageLimits?.maxImagePixels,
+        maxImageDimension: scope?.imageLimits?.maxImageDimension,
+        maxImagesPerMessage: scope?.imageLimits?.maxImagesPerMessage,
+        maxMessageImageBytes: scope?.imageLimits?.maxMessageImageBytes,
+      },
+      // 张数与总字节是整批判据：草稿里已有的附件同样占额度
+      existing,
       // 附件按路径去重（同一张图加两次没有意义）；字节条目没有身份可比，不去重
       existingPaths: existing.flatMap((attachment) => (attachment.path ? [attachment.path] : [])),
       rejected,
@@ -7672,7 +7685,8 @@ export class ChatController implements vscode.Disposable {
     // 一条日志把这一批的去向说清楚（排查「我加的东西怎么没进来」全靠它）
     this.log(
       `[attach] ${source}：附件 ${plan.attachments.length}（其中上传 ${plan.uploads.length}）` +
-        ` / 目录引用 ${plan.directories.length} / 路径兜底 ${plan.pathOnly.length} / 拒绝 ${plan.rejected.length}`,
+        ` / 目录引用 ${plan.directories.length} / 图片改文件 ${plan.degradedImages.length}` +
+        ` / 路径兜底 ${plan.pathOnly.length} / 拒绝 ${plan.rejected.length}`,
     );
     this.attachments.add(key, plan.attachments);
 
@@ -7681,18 +7695,23 @@ export class ChatController implements vscode.Disposable {
     if (plan.pathOnly.length) {
       this.emitToView(viewId, { type: "ui/insertText", text: formatPathList(plan.pathOnly) });
     }
-    // 图片被降级成文件上传时说明原因（否则用户只看到「我加的是图，怎么成了文件」）——
-    // 两条通道同一条文案，不再只有路径那条会提示
-    for (const name of plan.degradedImages) {
-      this.emitToView(viewId, { type: "toast", level: "warn", text: `@imageTooLarge:${name}` });
+    // 图片的去向逐条说明（进不了内容块 → 按文件上传；文案后半句照实说模型能不能直接读）
+    for (const image of plan.degradedImages) {
+      const marker = this.imageUnavailableMarker(image.name, image.unavailable);
+      if (marker) this.emitToView(viewId, { type: "toast", level: "warn", text: marker });
     }
-    if (plan.unsupportedImages > 0) {
+    // 「模型不收图片输入」是**整批**原因（这一批里每一张都进不了内容块），按条发提示会
+    // 刷屏：汇总成一条
+    const unsupported = plan.degradedImages.filter(
+      (image) => image.unavailable.reason === "image-unsupported",
+    ).length;
+    if (unsupported > 0) {
       const model = scope?.model;
       const label = model?.label ?? model?.model ?? "";
       this.emitToView(viewId, {
         type: "toast",
         level: "warn",
-        text: `@imagePathsInserted:${plan.unsupportedImages}:${label}`,
+        text: `@imageFilesUploaded:${unsupported}:${label}`,
       });
     }
     // 两条路各一套措辞（字面量写在这里，`scripts/i18n.test.ts` 靠它核对发射点）：
@@ -7702,8 +7721,34 @@ export class ChatController implements vscode.Disposable {
     const unreadableKey = source === "paste" ? "@pasteUnreadable" : "@dropUnreadable";
     const tooLargeKey = source === "paste" ? "@pasteTooLarge" : "@dropTooLarge";
     for (const item of plan.rejected) {
-      const marker = item.reason === "too-large" ? tooLargeKey : unreadableKey;
-      this.emitToView(viewId, { type: "toast", level: "warn", text: `${marker}:${item.name}` });
+      const marker = item.reason === "too-large" ? `${tooLargeKey}:${item.name}` : `${unreadableKey}:${item.name}`;
+      this.emitToView(viewId, { type: "toast", level: "warn", text: marker });
+    }
+  }
+
+  /**
+   * 图片进不了内容块（改按文件上传）时的提示标记。
+   *
+   * 五种原因各一条，数字由判据算出的原样带上（提示层不重算）；**像素只报上限**（实测的
+   * 位数量级对用户没有指导意义）。文案的后半句在词典里按原因分：逐图三条（内联字节 /
+   * 像素 / 单边）的副本模型也得先缩小才能 `read_image`，整批两条（张数 / 总字节）的副本
+   * 单张都在限内、模型可以直接读。`image-unsupported` 返回 `undefined`：那是整批原因，
+   * 由 `ingestAttachments` 汇总成一条。
+   */
+  private imageUnavailableMarker(name: string, unavailable: ImageUnavailable): string | undefined {
+    switch (unavailable.reason) {
+      case "image-over-limit":
+        return `@imageTooLarge:${name}:${unavailable.limit}`;
+      case "image-pixels":
+        return `@imagePixelsTooLarge:${name}:${unavailable.limit}`;
+      case "image-dimension":
+        return `@imageDimensionTooLarge:${name}:${unavailable.measured}:${unavailable.limit}`;
+      case "image-count":
+        return `@imageCountTooLarge:${name}:${unavailable.limit}`;
+      case "image-bytes":
+        return `@imageBytesTooLarge:${name}:${unavailable.bytes}:${unavailable.limit}`;
+      default:
+        return undefined;
     }
   }
 

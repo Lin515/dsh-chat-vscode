@@ -1361,15 +1361,24 @@ export interface ChatState {
   /**
    * 图片准入上限（`imageLimits` 投影）。
    *
-   * **`maxImageBytes` 已被消费**（`classifyPath` 的内联上限）：超过它的图不再读成字节
-   * 做内容块，改为按普通文件上传并提示原因——同步读一张巨图会冻住扩展宿主。
-   * `maxImagesPerMessage` / `maxMessageImageBytes` 还没有消费点（发送前的整批校验
-   * 未实现），超限时仍由服务端拒绝。
+   * **全部已消费**（2026-10-13 起）：
+   * - `maxImageBytes` → `classifyPath` / `classifyDroppedBytes` 的**内联**上限：超过它的图
+   *   不再读成字节做内容块，改为按普通文件上传并提示（同步读一张巨图会冻住扩展宿主）；
+   * - `maxImagePixels` / `maxImageDimension` → 接入时按图片**头部**读出的宽高预检
+   *   （`dsh/imageSize.ts`），超限**当场拒收**；
+   * - `maxImagesPerMessage` / `maxMessageImageBytes` → 连同草稿里已有的附件一起算的
+   *   整批准入，同样当场拒收。
+   *
+   * 这后四项过去没有消费点，用户只会在提交后被服务端整批拒（报错还是英文原文，
+   * 例如 "Image exceeds the configured decoded-pixel limit."），见
+   * [附件设计](<../../docs/design-attachments.md>)。
    */
   imageLimits?: {
     maxImagesPerMessage?: number;
     maxImageBytes?: number;
     maxMessageImageBytes?: number;
+    maxImagePixels?: number;
+    maxImageDimension?: number;
   };
   /**
    * 全日志会话统计（`sessionStats` 投影）：轮次/步骤计数与 LLM / 工具 / 首 token /

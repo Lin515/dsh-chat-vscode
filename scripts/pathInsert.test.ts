@@ -1,11 +1,13 @@
 /**
  * 附件归类（`classifyPath`）+ 路径插入光标处。
  *
- * 契约（0.5.0 起，对齐官方两条路）：
+ * 契约（0.5.0 起，对齐官方两条路；图片去向见 2026-10-13 口径）：
  *  - 目录 → **引用**（`@dir/`，模型自己决定要不要 list）；
- *  - 图片（模型收图）→ 图片内容块；
+ *  - 图片（模型收图、且五项判据都过）→ 图片内容块；
  *  - **其余文件**（二进制 / 非 UTF-8 / 任意大小都一样）→ 文件附件，选中即上传；
- *  - 只有「读不出来」（选择到读取之间被删）与「模型不收图片」退回**只给路径**，
+ *  - 进不了内容块的**图片** → 同样是附件，只是变成**文件**并走上传（`notInlined` 说明原因；
+ *    文件通道没有准入限制，且不依赖「执行世界能读到本地路径」，见 `src/dsh/attachments.ts` 文件头）；
+ *  - 只有**非图片**的「读不出来」（选择到读取之间被删）退回**只给路径**，
  *    由界面以双引号包裹插到输入框光标处。
  *
  * **0.7.x 的一版曾经加过「可读性 / 大小筛子」**（二进制、非 UTF-8、>8MB → 只给
@@ -85,14 +87,65 @@ try {
   const pathCases: [string, string, Parameters<typeof classifyPath>[0]][] = [
     ["目录", "directory", { path: subDir, name: "assets", acceptsImage: true }],
     ["不存在", "unreadable", { path: join(dir, "nope.txt"), name: "nope.txt", acceptsImage: true }],
-    ["模型不支持图片", "image-unsupported", { path: pngPath, name: "shot.png", acceptsImage: false }],
   ];
   for (const [label, reason, input] of pathCases) {
     const outcome = classifyPath(input);
     assert.strictEqual(outcome.kind, "path", `${label} 应当只给路径`);
     assert.strictEqual(outcome.kind === "path" && outcome.reason, reason, `${label} 的理由`);
   }
-  console.log("classify: 目录/读不出/模型不收图 → 路径 ✓");
+  // 模型不收图的**图片**：进不了内容块 → 改按文件上传（`notInlined` 说明原因）
+  const unsupported = classifyPath({ path: pngPath, name: "shot.png", acceptsImage: false });
+  assert.strictEqual(unsupported.kind, "attachment", "模型不收图时该条目仍是附件（变成文件）");
+  assert.strictEqual(unsupported.kind === "attachment" && unsupported.attachment.kind, "file");
+  assert.deepStrictEqual(
+    unsupported.kind === "attachment" ? unsupported.notInlined : undefined,
+    { reason: "image-unsupported" },
+  );
+  console.log("classify: 目录/读不出 → 路径；模型不收图 → 按文件上传 ✓");
+
+  // ---------- 2.5 图片判据（路径通道）：按头部尺寸判「进不了内容块」 ----------
+  //
+  // 这里必须是**真实文件**：路径通道会 `readFileSync` 再把字节交给头部解析，与字节通道
+  // 共用同一份判据（`attachments.ts` 的 `admissionVerdict`）。
+  {
+    const hugePath = join(dir, "huge.png");
+    const header = Buffer.alloc(29);
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(header, 0);
+    header.writeUInt32BE(13, 8);
+    header.write("IHDR", 12, "latin1");
+    header.writeUInt32BE(9000, 16);
+    header.writeUInt32BE(8000, 20);
+    writeFileSync(hugePath, header);
+
+    const oversized = classifyPath({
+      path: hugePath,
+      name: "huge.png",
+      acceptsImage: true,
+      admission: { maxImagePixels: 64_000_000, maxImageDimension: 8192 },
+    });
+    assert.strictEqual(oversized.kind, "attachment", "9000×8000 = 72M 像素：改按文件上传");
+    assert.strictEqual(oversized.kind === "attachment" && oversized.attachment.kind, "file");
+    assert.deepStrictEqual(
+      oversized.kind === "attachment" ? oversized.notInlined : undefined,
+      { reason: "image-pixels", limit: 64_000_000 },
+      "只报上限：实测的位数量级对用户没有指导意义",
+    );
+
+    // 同一张图在限内时照旧内嵌；不给 admission 时完全不判（既有调用点不受影响）
+    const fit = classifyPath({
+      path: hugePath,
+      name: "huge.png",
+      acceptsImage: true,
+      admission: { maxImagePixels: 100_000_000 },
+    });
+    assert.strictEqual(fit.kind, "attachment", "调大上限后它就该进来");
+    assert.strictEqual(fit.kind === "attachment" && fit.attachment.kind, "image");
+    assert.strictEqual(fit.kind === "attachment" ? fit.notInlined : "x", undefined);
+    const noAdmission = classifyPath({ path: hugePath, name: "huge.png", acceptsImage: true });
+    assert.strictEqual(noAdmission.kind, "attachment", "没给准入上限就什么都不判（旧调用点行为不变）");
+    assert.strictEqual(noAdmission.kind === "attachment" && noAdmission.attachment.kind, "image");
+    console.log("classify: 图片判据（像素超限改按文件 / 限内照旧 / 不给上限不判）✓");
+  }
 
   // 目录名像图片（xxx.png/）仍按目录处理，不能因为扩展名就去读它
   const imageNamedDir = join(dir, "screenshot.png");

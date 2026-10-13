@@ -496,17 +496,31 @@ console.log("projections: tokenUsage 四桶 ✓");
 }
 console.log("projections: turnOutline 承重字段与预览的容忍度 ✓");
 
-// 7.6 imageLimits：0 与缺失同义（不能当成「零字节上限」）
+// 7.6 imageLimits：0 与缺失同义（不能当成「零字节上限」）；五项都要解析出来
 {
-  assert.deepStrictEqual(imageLimitsFromProjection({ maxImageBytes: 8388608, maxImagesPerMessage: 24 }), {
-    maxImagesPerMessage: 24,
-    maxImageBytes: 8388608,
-    maxMessageImageBytes: undefined,
-  });
+  assert.deepStrictEqual(
+    imageLimitsFromProjection({
+      maxImageBytes: 8388608,
+      maxImagesPerMessage: 24,
+      maxMessageImageBytes: 209715200,
+      maxImagePixels: 64000000,
+      maxImageDimension: 8192,
+    }),
+    {
+      maxImagesPerMessage: 24,
+      maxImageBytes: 8388608,
+      maxMessageImageBytes: 209715200,
+      maxImagePixels: 64000000,
+      maxImageDimension: 8192,
+    },
+    "像素与单边也要解析：接入时的预检靠它们（过去只解析三个，超限只能在提交后被服务端拒）",
+  );
   assert.deepStrictEqual(imageLimitsFromProjection({ maxImageBytes: 0 }), {
     maxImagesPerMessage: undefined,
     maxImageBytes: undefined,
     maxMessageImageBytes: undefined,
+    maxImagePixels: undefined,
+    maxImageDimension: undefined,
   });
 }
 console.log("projections: imageLimits 上限取值 ✓");

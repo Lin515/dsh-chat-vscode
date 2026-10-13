@@ -261,8 +261,22 @@ export interface Texts {
   dropUnreadable: (name: string) => string;
   /** 拖放里超过大小上限的项的 toast（宿主 `@dropTooLarge:name`）。 */
   dropTooLarge: (name: string) => string;
-  /** 图片超过服务端内联上限、被降级成文件上传时的 toast（宿主 `@imageTooLarge:name`）。 */
-  imageTooLarge: (name: string) => string;
+  /**
+   * 图片进不了内容块、已按文件上传时的 toast（宿主 `@imageTooLarge|imagePixelsTooLarge|…`）。
+   *
+   * 五条原因各报自己的上限（像素那条只报上限，按语言缩写）；文案的后半句在
+   * `messages.ts` 里按原因分：逐图超限的副本模型也得先缩小才能看，整批超限的可以直接读。
+   */
+  /** 图片内联字节超上限（宿主 `@imageTooLarge:name:limit`）。 */
+  imageTooLarge: (name: string, limit: number) => string;
+  /** 图片的宽 × 高超上限（宿主 `@imagePixelsTooLarge:name:limit`；**不报实测像素数**）。 */
+  imagePixelsTooLarge: (name: string, limit: number) => string;
+  /** 图片的长边超上限（宿主 `@imageDimensionTooLarge:name:side:limit`）。 */
+  imageDimensionTooLarge: (name: string, side: number, limit: number) => string;
+  /** 这一条消息的图片张数已达上限（宿主 `@imageCountTooLarge:name:limit`）。 */
+  imageCountTooLarge: (name: string, limit: number) => string;
+  /** 这一条消息的图片总字节已达上限（宿主 `@imageBytesTooLarge:name:bytes:limit`）。 */
+  imageBytesTooLarge: (name: string, bytes: number, limit: number) => string;
   /** 拖放区高亮时显示的提示（松开即添加）。 */
   dropHint: string;
 
@@ -607,8 +621,12 @@ export interface Texts {
   statsTitle: string;
   /** Markdown 脚注区的无障碍标题（官方 `markdown.footnotes`，视觉上隐藏）。 */
   markdownFootnotes: string;
-  /** 模型不支持图片输入、改为把路径插进输入框的提示（张数 + 模型名）。 */
-  imagePathsInserted: (count: number, model: string) => string;
+  /**
+   * 模型不支持图片输入时的提示（已按文件上传的张数 + 模型名）。
+   *
+   * 这是**整批**原因（这一批里每一张都进不了内容块），所以汇总成一条而不是逐张发。
+   */
+  imageFilesUploaded: (count: number, model: string) => string;
   /** 排队消息取回编辑时，附件无法还原的提示。 */
   queueAttachmentsLost: string;
   /** 排队消息拿不到可重发内容时的提示。 */
@@ -883,9 +901,11 @@ export function fill(template: string, values: Record<string, string | number>):
  * 解析口径（**不许改**，宿主按这套口径拼参数）：
  * - `text.slice(1).split(":")`：冒号只切第一段当 key，其余**全部**是参数
  *   （参数里含冒号不会被截断，例如 Windows 路径 `C:\tools\dsh\bin`）；
- * - 表里标了 `argParts: 2` 的三条（`llmRetry` 的「第几次:共几次」、
- *   `uploadIncomplete` 的「个数:文件名预览」、`imagePathsInserted` 的「张数:模型名」）
- *   再按参数串里的**第一段**冒号切一次，切法与从前的 `switch` 逐字一致；
+ * - 表里标了 `argParts: N` 的条目按参数串里的**前 N−1 段**冒号切（缺省 1 段 = 整段给
+ *   第一个形参）。两条历史口径标的是 2（`llmRetry` 的「第几次:共几次」、
+ *   `uploadIncomplete` 的「个数:文件名预览」），切法与从前的 `switch` 逐字一致；
+ *   图片去向那几条标 2 / 3（`<文件名>:<数字…>`，以及 `imageFilesUploaded` 的
+ *   `<张数>:<模型名>`——模型名含冒号，所以它落在最后一段）；
  * - `@key`（没有冒号）时参数串为空串：`Number("")` = 0、
  *   `Number.isFinite(count) ? count : 0` 这两条缺参兜底照旧。
  */
@@ -907,11 +927,30 @@ export function resolveText(text: string, texts: Texts): string {
  * **切参数的口径与从前的 switch 逐字一致**（`text.slice(1).split(":")` 后，
  * `parts[0]` 是 key、`parts.slice(1).join(":")` 是参数串 `arg`）：
  * - 缺省：`arg` 整段给第一个形参（`@serverLogTail:a:b` 这种含冒号的原文不被截断）；
- * - 表里标了 `argParts: 2` 的那三条（`llmRetry` / `uploadIncomplete` /
- *   `imagePathsInserted`）按 **`arg` 里的第一段冒号**再切一次，与从前逐字相同；
+ * - 表里标了 `argParts: N` 的条目按 `arg` 里的**前 N−1 段**冒号再切（见 `splitArgs`：
+ *   切完剩下的整段给最后一个形参），与从前逐字相同；
  * - `@key`（没有冒号）时 `arg` = ""：`Number("")` = 0、
  *   `Number.isFinite(count) ? count : 0` 这两条缺参兜底照旧（`".indexOf(":")` = -1）。
  */
+/**
+ * 把 `@key:` 之后那一整段参数按表里声明的段数切开（`parts` 段）。
+ *
+ * 切前 `parts − 1` 个冒号，**剩下的整段**给最后一个形参：含冒号的原文（Windows 路径、
+ * 模型名）只会出现在最后一段，因此不被截断。缺段时补空串（`Number("")` = 0 那条缺参
+ * 兜底照旧）——这与从前 `argParts: 2` 的切法逐字一致，只是把「2」泛化成了 N。
+ */
+function splitArgs(arg: string, parts: number): string[] {
+  const out: string[] = [];
+  let rest = arg;
+  for (let index = 1; index < parts; index += 1) {
+    const separator = rest.indexOf(":");
+    out.push(separator < 0 ? rest : rest.slice(0, separator));
+    rest = separator < 0 ? "" : rest.slice(separator + 1);
+  }
+  out.push(rest);
+  return out;
+}
+
 function resolveMarker(text: string, texts: Texts): string {
   if (!text.startsWith("@")) return text;
   // 与从前 `text.slice(1).split(":")` 同一口径：冒号只切第一段当 key
@@ -926,20 +965,17 @@ function resolveMarker(text: string, texts: Texts): string {
   // 参数串 = 第一段冒号之后的**全部**内容（`@key` / `@key:` 都是 ""）。
   // 含冒号的原文整段保留，所以 Windows 路径这类参数不会被截断。
   const arg = parts.length > 1 ? parts.slice(1).join(":") : "";
-  const separator = arg.indexOf(":");
-  // 两个参数时按 `arg` 的第一段冒号切（个数/张数在前，文件名/模型名在后），
-  // 再按表里声明的 `swapArgs` 对调成函数的形参顺序。
-  const parsed =
-    entry.argParts === 2
-      ? [arg.slice(0, separator < 0 ? undefined : separator), separator < 0 ? "" : arg.slice(separator + 1)]
-      : [arg];
+  // 按表里声明的段数切（`argParts` 缺省 1 段 = 整段给第一个形参）：切前 N−1 个冒号，
+  // 剩下的整段给最后一个形参——含冒号的原文（Windows 路径、模型名）因此在最后一个形参
+  // 里不被截断。切完再按表里声明的 `swapArgs` 对调成函数的形参顺序。
+  const parsed = splitArgs(arg, entry.argParts ?? 1);
   if (entry.swapArgs) parsed.reverse();
   // 数字形参（`llmRetry` 的「第几次 / 共几次」等）在这里转：
   // 从前那几条 `case` 里各自写的 `Number(...)` / `Number.isFinite(c) ? c : 0`
   // 就在这个位置，逐条对应见 `NUMERIC_ARG`。
   const args = convertArgs(key as Marker, parsed);
   // 逐支调用：形态与从前的 `texts.xxx(a)` / `texts.xxx(a, b)` 一一对应。
-  return (message as MessageFn)(args[0], args[1]);
+  return (message as MessageFn)(...args);
 }
 
 /**
@@ -952,7 +988,13 @@ const NUMERIC_ARG: Partial<Record<Marker, readonly ("string" | "number" | "finit
   llmRetry: ["number", "number"], // 从前 `Number(attempt)` / `Number(max)`
   llmRetryAlways: ["number"],
   uploadIncomplete: ["string", "finite"], // 形参顺序是 (names, count)
-  imagePathsInserted: ["finite", "string"], // 形参顺序是 (count, model)
+  imageFilesUploaded: ["finite", "string"], // 形参顺序是 (count, model)
+  // 图片去向：形参顺序就是标记里的顺序（文件名是唯一的一段文本）
+  imageTooLarge: ["string", "finite"], // (name, limit)
+  imagePixelsTooLarge: ["string", "finite"], // (name, limit)
+  imageDimensionTooLarge: ["string", "finite", "finite"], // (name, side, limit)
+  imageCountTooLarge: ["string", "finite"], // (name, limit)
+  imageBytesTooLarge: ["string", "finite", "finite"], // (name, bytes, limit)
 };
 
 /** 按 `NUMERIC_ARG` 把字符串参数转成数字（缺参时 `Number("")` = 0，与从前一致）。 */
@@ -975,7 +1017,11 @@ function convertArgs(key: Marker, parsed: string[]): unknown[] {
  * 位置后调用」的落点——它不做逐参数类型检查，**表本身**的形参类型才是契约
  * （`Texts` 接口由表派生，写错类型在 `messages.ts` 那一行就会报错）。
  */
-type MessageFn = (first?: any, second?: any) => string;
+/**
+ * 词典函数的调用形状：形参个数由表里的 `argParts` 决定（最多四段：单边那条要同时报
+ * 「长边」与「上限」），所以这里不收窄成固定的两个。
+ */
+type MessageFn = (...args: any[]) => string;
 
 /** `Texts` 本身不带语言标识，而解析只能查表——用引用相等认出是哪一本词典。 */
 function localeKey(texts: Texts): Locale {

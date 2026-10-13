@@ -476,19 +476,26 @@ export function turnOutlineFromProjection(value: unknown): NonNullable<ChatState
 /**
  * `imageLimits` 投影 → 图片准入上限。
  *
- * 契约里还有 `maxImagePixels` / `maxImageDimension` / `mediaTypes` 三个字段，本扩展
- * 没有消费点，**不解析**（同 `permissions.options` 的理由）。
+ * 六个字段里 `mediaTypes` 仍未消费（服务端只接受 png/jpeg/webp/gif，本扩展的
+ * `IMAGE_MEDIA_TYPES` 与它同表，没有第二个消费点）；其余五项全部解析：
+ * `maxImageBytes` 是**内联**上限（超了不内联，改为正文里的 `@` 引用），`maxImagePixels` /
+ * `maxImageDimension` / `maxImagesPerMessage` / `maxMessageImageBytes` 是**准入**
+ * 上限（超了当场拒收，见 `attachments.ts` 的 `planIntake`）。
  */
 export function imageLimitsFromProjection(value: unknown): NonNullable<ChatState["imageLimits"]> {
   const limits = (value ?? {}) as {
     maxImagesPerMessage?: unknown;
     maxImageBytes?: unknown;
     maxMessageImageBytes?: unknown;
+    maxImagePixels?: unknown;
+    maxImageDimension?: unknown;
   };
   return {
     maxImagesPerMessage: numberOr(limits.maxImagesPerMessage, 0) || undefined,
     maxImageBytes: numberOr(limits.maxImageBytes, 0) || undefined,
     maxMessageImageBytes: numberOr(limits.maxMessageImageBytes, 0) || undefined,
+    maxImagePixels: numberOr(limits.maxImagePixels, 0) || undefined,
+    maxImageDimension: numberOr(limits.maxImageDimension, 0) || undefined,
   };
 }
 

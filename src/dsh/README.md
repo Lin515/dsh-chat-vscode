@@ -36,10 +36,11 @@
 
 - [references.ts](<references.ts>) — 附件与引用模型，不内联文件正文。
 - [fileRefListing.ts](<fileRefListing.ts>) — 空查询 / 尾斜杠目录列举补全；不补本地无法同序的模糊查询。
-- [attachments.ts](<attachments.ts>) — 接入分类、限额、去重与内容块，见[附件设计](<../../docs/design-attachments.md>)。
+- [attachments.ts](<attachments.ts>) — 接入分类、限额、去重与内容块；进不了内容块的图片在这里判为「按文件上传」（`notInlined` 记原因），见[附件设计](<../../docs/design-attachments.md>)。
 - [attachmentLifecycle.ts](<attachmentLifecycle.ts>) — 附件唯一归属表、上传轮次与提交租约。
 - [localImages.ts](<localImages.ts>) — 会话 cwd 内的本地图片读取。
 - [imageBytes.ts](<imageBytes.ts>) — data / http(s) 图片到字节。
+- [imageSize.ts](<imageSize.ts>) — 图片头部（png / jpeg / webp / gif）的宽高读数，供服务端的像素与单边准入预检。
 - [imageFiles.ts](<imageFiles.ts>) — 保存图片对话框与写盘。
 - [clipboardPaths.ts](<clipboardPaths.ts>) — Windows 系统剪贴板文件 / 目录真路径。
 

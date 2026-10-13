@@ -25,8 +25,10 @@
 同一份输入在不同入口应有同一落点，通道能力差异除外：
 
 - 图片判据 MIME 优先、后缀兜底，仅 png/jpeg/webp/gif；表外 `image/*`（bmp/svg 等）上传为文件。
-- 两条通道都检查 `imageLimits.maxImageBytes`，缺省硬上限 64 MB。超限降级上传并提示 `@imageTooLarge:<名字>`。
-- 模型不收图：有路径则插引号路径并提示 `@imagePathsInserted`；无路径则文件上传。
+- **图片进不了内容块时按文件上传**（附件变文件、立即上传），**不**用正文里的 `@` 引用当退路。五项判据（内联字节 `maxImageBytes`、像素 `maxImagePixels` 默认 64,000,000、单边 `maxImageDimension` 默认 8192、张数 `maxImagesPerMessage`、单条消息图片总字节 `maxMessageImageBytes`）在接入那一刻判：像素与单边按**图片头部**读数（`imageSize.ts`，四种格式都在固定偏移上，不解码整图；读不出来就放行），张数与总字节是**整批**判据，连同草稿里已有的图片一起算；顺序与服务端一致（先像素、后单边）。
+  为什么退路是上传而不是引用：`@` 引用只在**模型的执行世界能读到那个路径**时成立，而会话是用本地工作区路径当 `cwd` 建的——同机 DSH 成立，容器 / 另一台机器上那个路径根本不存在，用户却会看到「已改为 @ 引用插入」。上传副本不受这个假设约束（字节是搬过去的，宿主自己把句柄路径解析到执行世界），还是快照（本地文件之后被移动 / 删除都不影响）并按 sha256 去重。官方 `dsh web` 的做法是越限**整批拒**（`InputBar.intakeFiles`：「refused … and never enters the rail」），本扩展多给一个副本，因为文件通道**没有任何准入限制**（`AttachmentStore.saveFile` 的契约原文 "Files carry no admission limits: any byte content and length is accepted"）。
+- 提示一律报**上限**：像素按语言缩写成「6400万」/「64M」，**不报这张图的实际像素数**（位数量级对用户没有指导意义）；单边是分辨率，报具体数字；张数与总字节各报自己的数，总字节额外报「已用多少」。后半句照实说副本能不能被模型直接读：**逐图**超限（内联字节 / 像素 / 单边）的副本模型也得先缩小才能 `read_image`；**整批**超限（张数 / 总字节）的副本单张本来就在限内，模型可直接读取。
+- 模型不收图是**整批**原因（这一批里每一张都进不了内容块），汇总成一条 `@imageFilesUploaded:<张数>:<模型名>`，不按条目刷屏。
 - 路径按现有列表去重；字节条目没有可靠身份，不按名字去重。
 - 对话框固定 `canSelectFiles:true, canSelectFolders:false`；Windows/Linux 两者都开会变成目录选择器。
 - 0 字节由界面与宿主两层拒绝，不能把目录载荷当成空文件附件。纯文本粘贴不进附件流程。
@@ -110,17 +112,18 @@
 
 ## 实现地图与回归
 
-- [attachments.ts](<../src/dsh/attachments.ts>)：planIntake、分类 / 上限 / 去重、buildPromptContent。
+- [attachments.ts](<../src/dsh/attachments.ts>)：planIntake、分类 / 上限 / 去重、`admissionVerdict`（像素与单边）、buildPromptContent。
+- [imageSize.ts](<../src/dsh/imageSize.ts>)：图片头部宽高（png / jpeg / webp / gif），给准入预检用。
 - [attachmentLifecycle.ts](<../src/dsh/attachmentLifecycle.ts>)：唯一归属表、上传轮次、提交租约。
 - [controller.ts](<../src/dsh/controller.ts>)：接入 IO、唯一目录引用落点、上传与提交租约接线；[client.ts](<../src/dsh/client.ts>)：uploadFile。
 - [attachIntake.ts](<../src/webview/attachIntake.ts>) / [App.tsx](<../src/webview/App.tsx>)：字节提取、整页 drop / paste 与浮层；[pastedImageNames.ts](<../src/webview/pastedImageNames.ts>)：粘贴图片的会话内编号名；[ipc.ts](<../src/shared/ipc.ts>)：帧。
 - [clipboardPaths.ts](<../src/dsh/clipboardPaths.ts>)：Windows 真路径；[mentions.ts](<../src/shared/mentions.ts>)：引用拼写；[Composer.tsx](<../src/webview/components/Composer.tsx>)：芯片与重试。
 
-离线回归：attachments（回执、内容顺序、同管线 / 同 MIME、上限与拒绝、`withoutAttachmentDataUrls` 只读不改、FileReader 前缀与并发顺序、剪贴板查询的四条件跳过、发送取账本）、pastedImageNames（编号识别、起始编号、只改图片、被拒条目不改名、降级图片文件的消息 / 回显 / 草稿恢复、删除后跨会话续号、快粘与切语言、空态绑定迁移、有界保留窗口）、clipboardPaths（解析、脚本形状、shell 顺序）、attachmentLifecycle（切会话、旧轮、归还 / 交接 / 释放）、selection、previewFixture。跨宿主 / webview 的帧改动须双端构建；交付安装版时确认两端产物都更新。mimeType 可选兼容旧帧，不能把混合产物验证当完整验收。常规命令与真实测试批准见[AGENTS](<../AGENTS.md>)。
+离线回归：attachments（回执、内容顺序、同管线 / 同 MIME、上限与拒绝、图片准入四项、`withoutAttachmentDataUrls` 只读不改、FileReader 前缀与并发顺序、剪贴板查询的四条件跳过、发送取账本）、imageSize（四种格式头部读数与放行边界）、pastedImageNames（编号识别、起始编号、只改图片、被拒条目不改名、降级图片文件的消息 / 回显 / 草稿恢复、删除后跨会话续号、快粘与切语言、空态绑定迁移、有界保留窗口）、clipboardPaths（解析、脚本形状、shell 顺序）、attachmentLifecycle（切会话、旧轮、归还 / 交接 / 释放）、selection、previewFixture。跨宿主 / webview 的帧改动须双端构建；交付安装版时确认两端产物都更新。mimeType 可选兼容旧帧，不能把混合产物验证当完整验收。常规命令与真实测试批准见[AGENTS](<../AGENTS.md>)。
 
 ## 未覆盖边界与重评条件
 
-- 图片只消费 maxImageBytes；maxImagesPerMessage / maxMessageImageBytes / maxImagePixels / maxImageDimension 未消费，当前只能等服务端提交时报错，不能假称完整整批预检。
+- 图片准入已消费 `maxImageBytes` / `maxImagePixels` / `maxImageDimension` / `maxImagesPerMessage` / `maxMessageImageBytes` 五项；投影里剩下的 `mediaTypes` 未消费（本扩展的图片表与它同是 png/jpeg/webp/gif 四种，没有第二个消费点）。判据只在**接入那一刻**做一次：上限中途变化（投影刷新）不会回头清理已进草稿的图片，最终裁决仍在服务端。
 - uploading 的 loaded 恒为 0，只有状态、无逐字节进度；跟进需改宿主传输并回传进度。
 - 路径仅后缀兜底，文本内容的 a.png 可能被误当图片并遭服务端整批拒绝；内容嗅探与额外 IO 的取舍尚未定。
 - 大图路径读取仍有同步占用扩展宿主的风险；准入上限与离线测试通过不证明该路径无阻塞，改变读取管线时须单独量测。

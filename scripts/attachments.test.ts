@@ -5,7 +5,7 @@
  * 2. `showOpenDialog` 的跨平台约束——这条无法在无头环境测行为，只能扫源码。
  *
  * `classifyPath` 的完整覆盖（目录 / 图片 / 文本 / 二进制 / 非 UTF-8 / 过大 /
- * 读不出来 / 模型不支持图片）在 `pathInsert.test.ts`，那里有真实临时文件。
+ * 读不出来 / 进不了消息的图）在 `pathInsert.test.ts`，那里有真实临时文件。
  *
  * 运行：npm test
  */
@@ -16,6 +16,7 @@ import { join } from "node:path";
 import type { Attachment } from "../src/shared/chat";
 import {
   ATTACH_BYTES_LIMIT,
+  admissionVerdict,
   buildPromptContent,
   classifyDroppedBytes,
   classifyPath,
@@ -148,12 +149,14 @@ console.log("attachments: 目录探测 / id / 错误上报 ✓");
   assert.strictEqual(image.attachment.bytes, pngBytes.length, "字节数要如实带上");
   assert.strictEqual(image.attachment.path, undefined, "拖放来的附件没有路径");
 
-  // 模型不收图：不能退回「插入路径」——拖放根本没有路径可插，改走上传
+  // 模型不收图：图片进不了内容块，改按文件上传（字节在手上，没必要丢掉）
   const unsupported = classifyDroppedBytes({ name: "shot.png", bytes: pngBytes, acceptsImage: false });
-  assert.strictEqual(
-    unsupported.attachment.kind,
-    "file",
-    "模型不收图时图片退化为普通文件上传，而不是丢掉（拖放没有路径可插）",
+  assert.strictEqual(unsupported.kind, "attachment", "模型不收图时该条目仍是附件（只是变成文件）");
+  assert.strictEqual(unsupported.attachment.kind, "file", "改按文件上传");
+  assert.deepStrictEqual(
+    unsupported.notInlined,
+    { reason: "image-unsupported" },
+    "原因带上：调用方据此提示（@imageFilesUploaded 那条整批汇总）",
   );
 
   const text = classifyDroppedBytes({
@@ -482,6 +485,32 @@ console.log("attachments: 目录探测 / id / 错误上报 ✓");
       !/attachments: message\.attachments/.test(controller),
     "发送取宿主账本那一份：帧里的附件副本（含 dataUrl）不再回传",
   );
+  // 图片进不了内容块时：五条原因各有一句文案，数字由判据算出的原样带上（提示层不重算）；
+  // 像素那条**不带实测值**
+  for (const snippet of [
+    "`@imageTooLarge:${name}:${unavailable.limit}`",
+    "`@imagePixelsTooLarge:${name}:${unavailable.limit}`",
+    "`@imageDimensionTooLarge:${name}:${unavailable.measured}:${unavailable.limit}`",
+    "`@imageCountTooLarge:${name}:${unavailable.limit}`",
+    "`@imageBytesTooLarge:${name}:${unavailable.bytes}:${unavailable.limit}`",
+  ]) {
+    assert.ok(controller.includes(snippet), `图片去向提示必须按这个形状发：${snippet}`);
+  }
+  assert.ok(
+    !/imagePixelsTooLarge[^\n]*measured/.test(controller),
+    "像素那条不许报实测值：72000000 这种位数量级对用户没有指导意义",
+  );
+  // 「模型不收图」是**整批**原因：按条发会刷屏，要汇总成一条
+  assert.ok(
+    controller.includes("`@imageFilesUploaded:${unsupported}:${label}`"),
+    "模型不收图时汇总成一条（张数 + 模型名）",
+  );
+  assert.ok(
+    /admission: \{\s*\n\s*maxImagePixels: scope\?\.imageLimits\?\.maxImagePixels,[\s\S]{0,400}?maxMessageImageBytes: scope\?\.imageLimits\?\.maxMessageImageBytes,/.test(
+      controller,
+    ) && /existing,\s*\n\s*\/\/ 附件按路径去重/.test(controller),
+    "四项准入上限与「已有附件」都要真的传进 planIntake：漏了 existing 就等于只按新条目判额度",
+  );
   assert.ok(
     /private addDirectoryReference\(viewId: string, path: string\): void \{\s*\n\s*this\.insertMention\(viewId, formatFileMention\(this\.relativePath\(path\), "directory"\)\)/.test(
       controller,
@@ -665,18 +694,28 @@ console.log("attachments: 目录探测 / id / 错误上报 ✓");
       "文件附件要带上上传来源（字节来源没有路径可读）",
     );
 
-    // ③ 图片内联上限：**两条通道都**降级为文件上传（此前只有路径那条会判）
+    // ③ 图片内联上限：**两条通道都**改成按文件上传（附件变文件、进上传队列），并带上原因。
+    //    不走 `@` 引用：引用依赖共享文件系统，远端部署下是空头支票
     const pathOver = planIntake({
       items: [{ from: "path", path: bigPath, name: "big.png" }],
       acceptsImage: true,
       maxImageBytes: 8,
       onError: () => {},
     });
-    assert.strictEqual(pathOver.attachments[0].kind, "file", "路径来的超大图降级为上传");
-    assert.deepStrictEqual(pathOver.degradedImages, ["big.png"], "降级要报出来（提示 @imageTooLarge）");
+    assert.deepStrictEqual(
+      pathOver.attachments,
+      [{ id: pathOver.attachments[0]?.id, kind: "file", name: "big.png", path: bigPath }],
+      "超大图变成文件附件（带路径，附件芯片显示文件名）",
+    );
     assert.deepStrictEqual(
       pathOver.uploads,
-      [{ id: pathOver.attachments[0].id, source: { kind: "path", path: bigPath } }],
+      [{ id: pathOver.attachments[0]?.id, source: { kind: "path", path: bigPath } }],
+      "并立即上传（文件通道没有准入限制）",
+    );
+    assert.deepStrictEqual(
+      pathOver.degradedImages,
+      [{ name: "big.png", unavailable: { reason: "image-over-limit", limit: 8 } }],
+      "原因要报出来（提示 @imageTooLarge:big.png:8）",
     );
     const bytesOver = planIntake({
       items: [{ from: "bytes", name: "big.png", bytes: new Uint8Array(9), mimeType: "image/png" }],
@@ -684,22 +723,37 @@ console.log("attachments: 目录探测 / id / 错误上报 ✓");
       maxImageBytes: 8,
       onError: () => {},
     });
-    assert.strictEqual(bytesOver.attachments[0].kind, "file", "字节来的超大图同样降级（此前这里不判）");
-    assert.deepStrictEqual(bytesOver.degradedImages, ["big.png"]);
+    assert.strictEqual(bytesOver.attachments[0]?.kind, "file", "字节来的超大图同样改按文件上传");
+    assert.deepStrictEqual(
+      bytesOver.uploads,
+      [{ id: bytesOver.attachments[0]?.id, source: { kind: "bytes", bytes: new Uint8Array(9) } }],
+      "上传来源就是手上这份字节",
+    );
+    assert.deepStrictEqual(
+      bytesOver.degradedImages,
+      [{ name: "big.png", unavailable: { reason: "image-over-limit", limit: 8 } }],
+    );
 
-    // ④ 模型不收图：字节通道只能上传（没有路径可插）；路径通道退回路径文本
+    // ④ 模型不收图：同样改按文件上传（两条通道都一样，不再有「没路径就没辙」这一支）
     const noImageBytes = planIntake({
       items: [{ from: "bytes", name: "a.png", bytes: pngBytes, mimeType: "image/png" }],
       acceptsImage: false,
     });
-    assert.strictEqual(noImageBytes.attachments[0].kind, "file", "模型不收图时字节通道按文件上传");
+    assert.strictEqual(noImageBytes.attachments[0]?.kind, "file", "模型不收图时按文件上传");
+    assert.deepStrictEqual(
+      noImageBytes.degradedImages,
+      [{ name: "a.png", unavailable: { reason: "image-unsupported" } }],
+    );
     const noImagePath = planIntake({
       items: [{ from: "path", path: pngPath, name: "a.png" }],
       acceptsImage: false,
     });
-    assert.deepStrictEqual(noImagePath.attachments, [], "路径通道没有内容块可给");
-    assert.deepStrictEqual(noImagePath.pathOnly, [pngPath], "退回把路径插到光标处（最后一道兜底）");
-    assert.strictEqual(noImagePath.unsupportedImages, 1, "并计数以便提示");
+    assert.deepStrictEqual(
+      noImagePath.attachments,
+      [{ id: noImagePath.attachments[0]?.id, kind: "file", name: "a.png", path: pngPath }],
+      "路径通道同样按文件上传",
+    );
+    assert.deepStrictEqual(noImagePath.pathOnly, [], "pathOnly 只留非图片那条兜底");
 
     // ⑤ 目录 → **引用**（附件列表里不出现目录），同一路径只插一次
     const dirs = planIntake({
@@ -755,6 +809,165 @@ console.log("attachments: 目录探测 / id / 错误上报 ✓");
     rmSync(dir, { recursive: true, force: true });
   }
   console.log("attachments: planIntake（两通道同判据 / MIME 优先 / 上限与拒绝 / 目录进引用）✓");
+}
+
+// ---------- 9. 图片去向：进不了内容块 → 改按文件上传 ----------
+//
+// 判据五项（内联字节 / 像素 / 单边 / 张数 / 总字节）与官方一致；去向是 2026-10-13 定的：
+// 进不了内容块的图**按文件上传**（附件变文件、立即上传），因为文件通道没有准入限制、
+// 且不依赖「执行世界能读到本地路径」（`@` 引用在远端部署下是空头支票）。理由是如实告诉
+// 用户：逐图超限的副本模型也得先缩小才能看，整批超限的副本可以直接读。
+//
+// 像素那条**只报上限**：实测的位数量级对用户没有意义。判据只看图片头部，所以测试造头
+// 就够——不需要真的造一张 8192×8192 的图。
+{
+  /** 一段合法的 PNG 头（尺寸由参数给，其余字节不参与解析）。 */
+  const png = (width: number, height: number): Uint8Array => {
+    const bytes = new Uint8Array(29);
+    bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
+    bytes.set([0, 0, 0, 13], 8);
+    bytes.set([0x49, 0x48, 0x44, 0x52], 12);
+    bytes.set([(width >>> 24) & 0xff, (width >>> 16) & 0xff, (width >>> 8) & 0xff, width & 0xff], 16);
+    bytes.set([(height >>> 24) & 0xff, (height >>> 16) & 0xff, (height >>> 8) & 0xff, height & 0xff], 20);
+    return bytes;
+  };
+  const limits = { maxImagePixels: 64_000_000, maxImageDimension: 8192 };
+
+  // ① 像素超限（用户 2026-10-13 的实际报错）：只报上限，实测值不进文案
+  const pixels = classifyDroppedBytes({
+    name: "shot.png",
+    bytes: png(9000, 8000),
+    mimeType: "image/png",
+    acceptsImage: true,
+    admission: limits,
+  });
+  assert.strictEqual(pixels.attachment.kind, "file", "越过像素上限的图不许进内容块，改按文件");
+  assert.deepStrictEqual(
+    pixels.notInlined,
+    { reason: "image-pixels", limit: 64_000_000 },
+    "像素那条只报上限：72000000 这种位数量级对用户没有指导意义",
+  );
+
+  // ② 单边超限（像素没超）：检查顺序与服务端一致，先像素后单边；分辨率报具体数字
+  const side = classifyDroppedBytes({
+    name: "wide.png",
+    bytes: png(9000, 100),
+    mimeType: "image/png",
+    acceptsImage: true,
+    admission: limits,
+  });
+  assert.deepStrictEqual(side.notInlined, { reason: "image-dimension", measured: 9000, limit: 8192 });
+
+  // ③ 在限内的图照旧进内容块；读不出尺寸的**放行**（判据按肯定证据写）
+  const fit = classifyDroppedBytes({
+    name: "ok.png",
+    bytes: png(4000, 3000),
+    mimeType: "image/png",
+    acceptsImage: true,
+    admission: limits,
+  });
+  assert.strictEqual(fit.attachment.kind, "image", "4000×3000 远在限内");
+  assert.strictEqual(fit.notInlined, undefined, "正常内联的图没有「进不了」的原因");
+  const unreadable = classifyDroppedBytes({
+    name: "mystery.png",
+    bytes: new Uint8Array([1, 2, 3]),
+    mimeType: "image/png",
+    acceptsImage: true,
+    admission: limits,
+  });
+  assert.strictEqual(unreadable.attachment.kind, "image", "读不出宽高就不拦：宁可让服务端去拒，也不猜尺寸");
+
+  // ④ 张数：整批算，且**草稿里已有的图片同样占额度**
+  const countPlan = planIntake({
+    items: [
+      { from: "bytes", name: "a.png", bytes: png(10, 10), mimeType: "image/png" },
+      { from: "bytes", name: "b.png", bytes: png(10, 10), mimeType: "image/png" },
+      { from: "bytes", name: "c.png", bytes: png(10, 10), mimeType: "image/png" },
+    ],
+    acceptsImage: true,
+    admission: { maxImagesPerMessage: 2 },
+  });
+  assert.deepStrictEqual(
+    countPlan.attachments.map((attachment) => `${attachment.name}:${attachment.kind}`),
+    ["a.png:image", "b.png:image", "c.png:file"],
+    "额度满了之后那一枚改按文件上传（不是丢掉）",
+  );
+  assert.deepStrictEqual(
+    countPlan.degradedImages,
+    [{ name: "c.png", unavailable: { reason: "image-count", limit: 2 } }],
+    "被挡住的那一枚要报原因（用户才知道是「太多了」）",
+  );
+  assert.deepStrictEqual(
+    countPlan.uploads.map((upload) => upload.id),
+    [countPlan.attachments[2]?.id],
+    "改按文件的那一枚要立即上传",
+  );
+  const withExisting = planIntake({
+    items: [{ from: "bytes", name: "new.png", bytes: png(10, 10), mimeType: "image/png" }],
+    acceptsImage: true,
+    admission: { maxImagesPerMessage: 2 },
+    existing: [
+      { id: "e1", kind: "image", name: "图1.png", bytes: 10 },
+      { id: "e2", kind: "image", name: "图2.png", bytes: 10 },
+    ],
+  });
+  assert.deepStrictEqual(
+    withExisting.degradedImages,
+    [{ name: "new.png", unavailable: { reason: "image-count", limit: 2 } }],
+    "草稿里已有的两张图占满额度：只按新条目判会让「19 张 + 2 张」到提交时才被拒",
+  );
+
+  // ⑤ 总字节：同样把已有的算进去，提示里给「已用」与「上限」（文案按 MB 呈现）
+  const bytesPlan = planIntake({
+    items: [
+      { from: "bytes", name: "big1.png", bytes: png(10, 10), mimeType: "image/png" },
+      { from: "bytes", name: "big2.png", bytes: png(10, 10), mimeType: "image/png" },
+    ],
+    acceptsImage: true,
+    admission: { maxMessageImageBytes: 40 },
+  });
+  assert.strictEqual(bytesPlan.attachments[0]?.kind, "image", "29 字节的 PNG 头进得去");
+  assert.strictEqual(bytesPlan.attachments[1]?.kind, "file", "下一枚会超 40 字节 → 改按文件");
+  assert.deepStrictEqual(bytesPlan.degradedImages, [
+    { name: "big2.png", unavailable: { reason: "image-bytes", bytes: 29, limit: 40 } },
+  ]);
+
+  // ⑥ 路径通道同一条去向（真实文件：会 readFileSync 再交给头部解析）
+  const dir = mkdtempSync(join(tmpdir(), "dsh-intake-admission-"));
+  try {
+    const shotPath = join(dir, "shot.png");
+    writeFileSync(shotPath, png(9000, 8000));
+    const pathPlan = planIntake({
+      items: [{ from: "path", path: shotPath, name: "shot.png" }],
+      acceptsImage: true,
+      admission: limits,
+      onError: () => {},
+    });
+    assert.deepStrictEqual(
+      pathPlan.attachments,
+      [{ id: pathPlan.attachments[0]?.id, kind: "file", name: "shot.png", path: shotPath }],
+      "有路径的图同样按文件上传（附件芯片显示文件名）",
+    );
+    assert.deepStrictEqual(
+      pathPlan.uploads,
+      [{ id: pathPlan.attachments[0]?.id, source: { kind: "path", path: shotPath } }],
+    );
+    assert.deepStrictEqual(pathPlan.degradedImages, [
+      { name: "shot.png", unavailable: { reason: "image-pixels", limit: 64_000_000 } },
+    ]);
+    assert.deepStrictEqual(pathPlan.rejected, [], "没有任何条目被拒收");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+
+  // ⑦ 内核的纯函数也直接钉一遍（两处调用点共用它）；像素那条**不带实测值**
+  assert.deepStrictEqual(admissionVerdict(png(8192, 8192), limits), {
+    reason: "image-pixels",
+    limit: 64_000_000,
+  });
+  assert.strictEqual(admissionVerdict(png(100, 100), limits), undefined);
+  assert.strictEqual(admissionVerdict(png(9000, 9000), {}), undefined, "没给上限就什么都不判");
+  console.log("attachments: 图片去向（进不了内容块 → 按文件上传，原因如实上报）✓");
 }
 
 console.log("\nattachments: all assertions passed");
