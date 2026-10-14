@@ -224,7 +224,7 @@
 - [tailRowsProbe.ts](<tailRowsProbe.ts>) — 轮尾三样（改动卡片 / 本轮文件 / 交付文件）分布体检（离线回放）。
 - [pinger.ts](<pinger.ts>) — 手工排查窗口（已收敛成 `supervisorPingerHarness` 的薄壳）。
 
-### 探针支撑（非 CLI，供其它探针 import）
+### 探针支撑（非 CLI，供其它探针使用）
 
 - [supervisorProbeEnv.ts](<supervisorProbeEnv.ts>) — 给无头探针完全隔离的一次性环境（supervisor 会合目录 + `DSH_HOME` 两层隔离）。
 - [supervisorPingerHarness.ts](<supervisorPingerHarness.ts>) — supervisor 端到端探针共用的「窗口壳」。
@@ -232,6 +232,7 @@
 - [trajectoryProbeFacts.ts](<trajectoryProbeFacts.ts>) — 两条轨迹统计入口与离线测试共用的内容块抽取、JSON 形状与对拍累计器；无文件或网络访问，调用方负责输出和退出。
 - [renderOrderProbe.ts](<renderOrderProbe.ts>) — 事件顺序 vs 渲染顺序并排打印（段排序问题现场工具）。
 - [vscodeTestStub.ts](<vscodeTestStub.ts>) — `vscode` API 的离线 stub（esbuild alias，供 `subagentSwitch.test.ts` / `subagentRowState.test.ts` 驱动真 `ChatController`）。
+- [fakeDsh.cjs](<fakeDsh.cjs>) — 探针用的假 `dsh web`：只宣布地址然后一直开着，`--hang-after` 可切「进程在、端口不响应」的卡死形态。由[子进程生死探针](<supervisorChildExitProbe.ts>)复制到临时目录后用 `node` 拉起，**不 import**；与真 dsh 一致的公告行格式、启动链与 boot 记账契约见文件头。
 
 ### S02 夹具工具链（离线；提取 CLI 只在显式调用时运行）
 

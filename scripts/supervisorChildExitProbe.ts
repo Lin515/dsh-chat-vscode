@@ -148,7 +148,7 @@ const restarts = (scenario: { bootIndex: number }): number => Math.max(0, bootRe
 
 try {
   say(`会合根目录（隔离）：${isolated}`);
-  writeFileSync(fakeScript, readFileSync(`${REPO}/shared/fakeDsh.cjs`), "utf8");
+  writeFileSync(fakeScript, readFileSync(`${REPO}/scripts/fakeDsh.cjs`), "utf8");
 
   // ================= 场景 A：只杀真 node（温和），外壳留着 =================
   say("\n【A】杀掉真 dsh 的 node（`process.kill`），看守护进程认不认、重启不重启…");

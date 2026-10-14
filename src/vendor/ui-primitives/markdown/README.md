@@ -1,7 +1,7 @@
 # src/vendor/ui-primitives/markdown/ — Markdown 纯文本投影链
 
 上游 `@deepseek-ai/dsh-client-ui-primitives@0.2.0-rc.2`（tag `dsh-v0.2.0-rc.2`）
-的源码副本。来源、版本、同步流程与硬规则见 [../../README.md](../../README.md)。
+的源码副本。来源、版本与同步流程见 [../../README.md](../../README.md)；改写约束见 [../../AGENTS.md](../../AGENTS.md)。
 
 这条链只做**投影**（Markdown 原文 → 单行纯文本），不渲染任何东西。
 
