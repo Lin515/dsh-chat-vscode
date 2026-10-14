@@ -11,6 +11,8 @@
 
 断言与探针复用源码纯模块；[vscodeTestStub.ts](<vscodeTestStub.ts>) 经 esbuild alias 替代 vscode，[supervisorProbeEnv.ts](<supervisorProbeEnv.ts>) 提供一次性隔离环境。
 
+**走文件系统解析的夹具路径按宿主平台算绝对**（`join(tmpdir(), …)` 拼），不能写死 Windows 形态：`node:path` 的 `isAbsolute` 是平台相关的，`C:\…` 在 Linux 上会被当成相对路径，缺 cwd 时直接解析不了——断言只看到「什么也没打开」，而不是一条像样的失败。CI 跑在 `ubuntu-latest`，本地 Windows 绿不代表它绿；只做字符串断言的夹具（分隔符清洗之类）不受此限。
+
 ---
 
 ## 离线断言（`*.test.ts`）
