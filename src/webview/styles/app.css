@@ -4599,6 +4599,97 @@ textarea.composer-input {
   color: var(--error);
 }
 
+/* 多选形态（用户 2026-10-15）下每行行首的自绘复选框。**不用原生外观**：原生方框是
+   系统那套白底蓝勾，与本界面（细描边 + 主题色）不是一种语言，尺寸也不跟 --dp 走、
+   字号调大后与行内图标不成比例。整行本身就是热区（见 History 的行 onClick），
+   这颗是它的状态指示。 */
+.session-item-check {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  padding: calc(2 * var(--dp));
+  cursor: pointer;
+}
+
+.session-item-check input {
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
+  width: calc(14 * var(--dp));
+  height: calc(14 * var(--dp));
+  margin: 0;
+  border: 1px solid var(--input-border);
+  border-radius: calc(4 * var(--dp));
+  background: var(--input-bg);
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.session-item-check input:hover:not(:disabled) {
+  border-color: var(--border-focus);
+}
+
+/* 勾中：整颗填主题色，勾取它的前景色——与「被勾中的行」同一套配色 */
+.session-item-check input:checked {
+  border-color: var(--primary);
+  background: var(--primary);
+}
+
+/* 勾用一个**六边形 clip-path** 剪出来，形状与「右下两条描边转 45°」那个 L 形完全一致，
+   但不再是一个「小盒子 + transform」：
+   ① 被 transform 的元素按**亚像素**栅格化，而它自身的位置又来自居中的小数边距；方框
+      是像素对齐的（背景 / 边框会吸附到整数设备像素），两者一叠加，勾相对方框就会整体
+      偏最多半个像素，且偏向随侧栏宽度（元素落在网格上的相位）左右摇摆——同一颗勾换个
+      面板宽度就可能从偏左变偏右。改成「铺满内框 + 剪出形状」后，勾的格子跟着输入框自己
+      的像素网格走：实测字号 16px 时左右留白恒为 3 / 3（改前是 3 / 4，即用户看到的「偏左」）。
+   ② 也绕开了 Chromium 把 `border-width` 向下取整到整数设备像素这件事：1.6 设计像素的
+      笔画在字号 13 时其实只画 1px（细了四成），clip-path 按设计值画。
+   顶点＝「4 × 7 内容 + 1.6 描边」那个 L 形（(4,0) (5.6,0) (5.6,8.6) (0,8.6) (0,7) (4,7)）
+   绕盒子中心 (2.8, 4.3) 转 45°，再整体平移到**外接框中心**与内框中心重合：转完之后墨迹的
+   外接框比盒子中心低 `min(宽, 高) / (2√2)`（描边多厚都是这一条，描边沿盒子外沿铺），
+   下面这组坐标已经把这点对角差补进去了，所以 x / y 两轴的偏移各自关于 50% 对称。 */
+.session-item-check input:checked::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  background: var(--primary-fg);
+  clip-path: polygon(
+    calc(50% + 3.889 * var(--dp)) calc(50% - 3.606 * var(--dp)),
+    calc(50% + 5.02 * var(--dp)) calc(50% - 2.475 * var(--dp)),
+    calc(50% - 1.061 * var(--dp)) calc(50% + 3.605 * var(--dp)),
+    calc(50% - 5.02 * var(--dp)) calc(50% - 0.354 * var(--dp)),
+    calc(50% - 3.889 * var(--dp)) calc(50% - 1.485 * var(--dp)),
+    calc(50% - 1.061 * var(--dp)) calc(50% + 1.344 * var(--dp))
+  );
+}
+
+.session-item-check input:focus-visible {
+  outline: 1px solid var(--border-focus);
+  outline-offset: calc(1 * var(--dp));
+}
+
+/* 运行中 / 当前会话的复选框是禁用的（宿主拒绝这两类的删除）：方框位置与形状**不变**
+   （不然同一列里会出现两种盒子），只把描边调淡、去掉填充——看着能勾、勾了却被拒才糟 */
+.session-item-check input:disabled {
+  border-color: var(--input-border);
+  background: transparent;
+  opacity: 0.45;
+}
+
+.session-item-check.is-locked,
+.session-item-check.is-locked input {
+  cursor: default;
+}
+
+/* 多选形态下被勾中的行：整行淡染一层（与「当前会话」同一个选中色），
+   选中的是哪几条不必去认那 14 设计像素的小方框 */
+.session-item.is-picked {
+  background: var(--active);
+}
+
 .session-group {
   position: sticky;
   top: 0;
@@ -4611,6 +4702,57 @@ textarea.composer-input {
   color: var(--description);
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+
+/* 多选工具条：常驻在列表下方（「全选」没有别的入口），没有选中项时只剩它一颗可用。
+   窄侧栏下先让说明文字（数量）截断，三颗按钮与它自己的文字都不折行。 */
+.drawer-batch {
+  display: flex;
+  align-items: center;
+  gap: calc(6 * var(--dp));
+  flex: 0 0 auto;
+  padding: calc(6 * var(--dp)) calc(8 * var(--dp));
+  border-top: 1px solid var(--border);
+  font-size: var(--font-size-2xs);
+  color: var(--muted);
+}
+
+.drawer-batch-all,
+.drawer-batch-count {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 「全选」这一颗的文字靠左：被裁时读出来的是「Clear se…」而不是中间那段
+   （`.btn` 默认居中，居中裁切两头都缺，读起来像坏掉的字样） */
+.drawer-batch-all {
+  justify-content: flex-start;
+}
+
+/* 宽度不够时**先截断说明文字**（已选数量 / 确认文案），按钮文字尽量留全：
+   它是说明，勾选状态在每一行的复选框上本来就看得见 */
+.drawer-batch-count {
+  flex-shrink: 2;
+}
+
+/* 二次确认删除：与行内那条提示同色（--error），文字是「再次点击确认删除 N 项」 */
+.drawer-batch-count.is-danger {
+  color: var(--error);
+}
+
+.drawer-batch-action {
+  flex: 0 0 auto;
+}
+
+/* 已武装的删除按钮：整颗变红（压在 `.btn:hover` 之后，同特异性下后者胜），
+   与行内垃圾桶被武装时是同一件事的两种大小 */
+.drawer-batch-delete.is-danger,
+.drawer-batch-delete.is-danger:hover {
+  background: var(--error);
+  color: #ffffff;
 }
 
 /* ============================ status line ============================ */

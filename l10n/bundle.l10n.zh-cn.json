@@ -21,6 +21,7 @@
   "Add folder reference": "添加目录引用",
 
   "Failed to archive the session": "归档会话失败",
+  "Failed to restore the session": "恢复归档会话失败",
   "Failed to delete the session": "删除会话失败",
   "Failed to create a session": "新建会话失败",
   "Select the working directory for new sessions": "选择新会话的工作目录",

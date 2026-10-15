@@ -588,6 +588,143 @@ console.log("styles: 路径与节点名有间距、目录渐隐只在被裁时 �
 }
 console.log("styles: 右键菜单口径只有全局一处（History 不留第二条） ✓");
 
+// ---------- 8a. 历史抽屉的多选：自绘复选框、工具条压在列表下方、武装态压过 .btn:hover ----------
+//
+// 用户 2026-10-15 口径（顶部开关切多选 + 全选 + 归档 / 恢复 / 删除；之后又要求「多选框
+// 样式不太好看，请优化」）。四条都只有看 CSS 才知道：
+// ① 复选框是**自绘**的（`appearance: none` + 主题色的边框 / 填充 / 勾），不是系统那套
+//    白底蓝勾——后者在深色主题下与本界面不是一种语言，尺寸也不跟 --dp 走；
+// ② 勾中、禁用两个档位各有自己的样子（禁用只留淡描边空框：这两类宿主一律拒）；
+// ③ 被勾中的行整行淡染（`.is-picked`）——与 `.session-item:hover` 同特异性，必须写在它
+//    后面，否则鼠标一悬停就退回灰底（同 `btn-ghost` 那条按下态的坑）；
+// ④ 工具条是抽屉里的一行（`border-top` 分隔线），动作按钮不被说明文字挤扁，武装后的
+//    删除按钮整颗变红且压过 `.btn:hover`；
+// ⑤ 勾是在方框里**居中**的（用户随后报「√ 位置不够居中」「怎么感觉还是偏左」）：靠
+//    「铺满内框 + 六边形 clip-path」跟着方框的像素网格走，不能再回到「小盒子 + transform」。
+{
+  const checkBox = /\.session-item-check\s*\{([\s\S]*?)\}/.exec(css)?.[1] ?? "";
+  assert.ok(checkBox.length > 0, "app.css 里找不到 .session-item-check（多选的复选框）");
+  assert.ok(!/opacity:\s*0/.test(checkBox), "复选框是这一行的状态指示，不是悬停才浮现的图标");
+
+  const checkInput = /\.session-item-check input\s*\{([\s\S]*?)\}/.exec(css)?.[1] ?? "";
+  assert.ok(checkInput.length > 0, "app.css 里找不到 .session-item-check input");
+  assert.ok(
+    /appearance:\s*none/.test(checkInput) && /-webkit-appearance:\s*none/.test(checkInput),
+    "复选框要自绘（appearance: none），不能留系统那套白底蓝勾",
+  );
+  assert.ok(
+    designPx(/width:\s*([^;]+)/.exec(checkInput)?.[1]) === 14 &&
+      designPx(/height:\s*([^;]+)/.exec(checkInput)?.[1]) === 14 &&
+      designPx(/border-radius:\s*([^;]+)/.exec(checkInput)?.[1]) === 4,
+    "方框尺寸与圆角按设计像素写（原生外观不跟 --dp，字号改了就会与行内图标不成比例）",
+  );
+  assert.ok(/border:\s*1px solid var\(--input-border\)/.test(checkInput), "空框用输入框那支描边色");
+  assert.ok(/cursor:\s*pointer/.test(checkInput), "方框本身可点（整行也是热区，见 History 的行 onClick）");
+
+  assert.ok(
+    /\.session-item-check input:checked\s*\{([\s\S]*?)\}/.exec(css)?.[1]?.includes("var(--primary)") ?? false,
+    "勾中时整颗填 --primary（与选中行同一套配色）",
+  );
+  const tick = /\.session-item-check input:checked::after\s*\{([\s\S]*?)\}/.exec(css)?.[1] ?? "";
+  assert.ok(tick.length > 0, "勾要用 ::after 画出来（`appearance: none` 之后浏览器不再画勾）");
+  // 用户 2026-10-15 口径「被选中时 √ 位置不够居中，上下左右都要居中」，以及随后的
+  // 「怎么感觉还是偏左」。居中不能靠「小盒子 + margin auto + transform」：被 transform 的
+  // 元素按亚像素栅格化，而方框（背景 / 边框）会吸附到整数设备像素，两者一叠加勾相对方框
+  // 就会偏最多半个像素，偏向还随元素落在网格上的相位摇摆（实测字号 16px 时左右留白 3 / 4，
+  // 换个侧栏宽度又变成 4 / 3）。所以勾改成「::after 铺满内框 + 六边形 clip-path 剪出来」：
+  // 勾的格子跟着输入框自己的像素网格走，且不受 `border-width` 向下取整到整数设备像素的影响。
+  assert.ok(
+    /background:\s*var\(--primary-fg\)/.test(tick) && /clip-path:\s*polygon\(/.test(tick),
+    "勾是内框大小的一层 --primary-fg + 六边形 clip-path（形状与「两条描边转 45°」等价）",
+  );
+  assert.ok(
+    !/transform:/.test(tick) && !/border-width:/.test(tick),
+    "勾不许再靠 transform 摆位：亚像素栅格化会让它相对像素对齐的方框偏半个像素（偏向还随侧栏宽度摇摆）",
+  );
+  assert.ok(
+    ["left", "right", "top", "bottom"].every((side) =>
+      new RegExp(`(?:^|;)\\s*${side}:\\s*0(?:px)?\\s*;`).test(tick),
+    ),
+    "勾那一层要铺满输入框内框（四边贴 0），这样 50% 才是方框中心",
+  );
+  const polygon = /clip-path:\s*polygon\(([\s\S]*?)\);/.exec(tick)?.[1] ?? "";
+  const points = polygon
+    .split(",")
+    .map((point) => point.trim())
+    .filter((point) => point.length > 0)
+    .map((point) => {
+      const match = /^calc\(50% ([+-]) ([0-9.]+) \* var\(--dp\)\) calc\(50% ([+-]) ([0-9.]+) \* var\(--dp\)\)$/.exec(point);
+      return match
+        ? {
+            x: (match[1] === "-" ? -1 : 1) * Number(match[2]),
+            y: (match[3] === "-" ? -1 : 1) * Number(match[4]),
+          }
+        : undefined;
+    });
+  assert.ok(
+    points.length === 6 && points.every((point) => point !== undefined),
+    `勾的六边形要写成 calc(50% ± N * var(--dp)) 的六个顶点（现在 ${points.length} 个）`,
+  );
+  const xs = points.map((point) => point!.x);
+  const ys = points.map((point) => point!.y);
+  const near = (a: number, b: number) => Math.abs(a - b) < 0.002;
+  // 勾的形状本身左右不对称（左下那条短臂更短），要钉的是**墨迹外接框**关于中心对称：
+  // 两个方向的最远顶点到中心的距离相等，勾就压不到任何一边。
+  assert.ok(
+    near(Math.max(...xs), -Math.min(...xs)),
+    `勾的水平外接框必须关于中心对称（现在 x 偏移 ${JSON.stringify(xs)}），否则就是又偏左 / 偏右了`,
+  );
+  assert.ok(
+    near(Math.max(...ys), -Math.min(...ys)),
+    `勾的垂直外接框也必须关于中心对称（现在 y 偏移 ${JSON.stringify(ys)}）：转 45° 后墨迹比盒子中心低 min(宽, 高) / (2√2)，那点对角差要写进顶点里`,
+  );
+  // 外接框尺寸＝(宽 + 高 + 2 × 描边) / √2 与 (高 + 2 × 描边) / √2：把「4 × 7 内容 +
+  // 1.6 描边」钉住，免得有人顺手改坐标却改了勾的比例。
+  assert.ok(
+    near(Math.max(...xs) - Math.min(...xs), (4 + 7 + 1.6 * 2) / Math.SQRT2) &&
+      near(Math.max(...ys) - Math.min(...ys), (7 + 1.6 * 2) / Math.SQRT2),
+    "勾的宽高要落在「4 × 7 内容 + 1.6 描边」转 45° 后的外接框上",
+  );
+  const disabled = /\.session-item-check input:disabled\s*\{([\s\S]*?)\}/.exec(css)?.[1] ?? "";
+  assert.ok(
+    disabled.length > 0 && /background:\s*transparent/.test(disabled) && /opacity:/.test(disabled),
+    "禁用（运行中 / 当前会话）要退回一个淡描边空框，不能看着像能勾",
+  );
+  assert.ok(
+    /\.session-item-check input:focus-visible\s*\{([\s\S]*?)\}/.test(css),
+    "键盘焦点要有环（原生外观没了，焦点环也得自己补）",
+  );
+
+  const picked = css.indexOf(".session-item.is-picked");
+  const itemHover = css.indexOf(".session-item:hover");
+  assert.ok(
+    picked > 0 && itemHover > 0 && picked > itemHover,
+    "被勾中的行整行淡染，且必须写在 .session-item:hover 之后（同特异性后者胜）",
+  );
+
+  const batch = rule(".drawer-batch");
+  assert.ok(/border-top:/.test(batch), "工具条是抽屉里的一行（靠上边框与列表分隔），不是浮层");
+  assert.ok(/flex:\s*0 0 auto/.test(batch), "工具条不参与 .drawer-body 的伸缩（列表滚它不滚）");
+  assert.ok(
+    /flex:\s*0 0 auto/.test(rule(".drawer-batch-action")),
+    "两颗动作按钮不许被说明文字挤扁（窄侧栏下先截断的是数量文字）",
+  );
+  assert.ok(
+    !/white-space:\s*normal/.test(rule(".drawer-batch-count")) &&
+      /text-overflow:\s*ellipsis/.test(rule(".drawer-batch-count")),
+    "已选数量单行截断（英文那条比中文长，布局要容得下）",
+  );
+
+  const armed = css.indexOf(".drawer-batch-delete.is-danger");
+  const btnHover = css.indexOf(".btn:hover");
+  assert.ok(armed > 0 && btnHover > 0 && armed > btnHover, "武装态必须写在 .btn:hover 之后（同特异性后者胜）");
+  assert.ok(
+    /\.drawer-batch-delete\.is-danger:hover\s*\{([\s\S]*?)\}/.test(css),
+    "武装态要显式再写一条 :hover（光靠源码顺序，后面谁插一条 .btn:hover 就会吃掉它）",
+  );
+}
+console.log("styles: 历史抽屉的多选（自绘复选框 / 勾中行 / 工具条 / 武装态压过 hover） ✓");
+
 // ---------- 8b. 自绘右键菜单：定位 / 压层 / 文案不溢出 / 接线 ----------
 //
 // 用户 2026-09-23 口径：原生菜单全界面拦掉，正文右键换成「复制 / 引用」、图片右键换成

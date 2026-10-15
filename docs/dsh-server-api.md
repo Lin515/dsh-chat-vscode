@@ -105,6 +105,11 @@
   记录一起没）。规则种类是 `after` / `at` / `every` / `daily` / `weekly` / `cron`，`change`
   只接受后五档（相对延迟不可改）；提交与变更后由 `schedule/changed`（零载荷 emit）通知客户端
   重取目录。旧服务端（≤ 0.1.7-rc.1）没有这个命名空间，请求 404。
+- **新增端点 `workspace/unarchiveSession`**（0.1.6-alpha.1 起，本扩展消费）：恢复归档会话，
+  与 §3.9 的 `workspace/archiveSession` 配对——请求体同样只有 `sessionId`
+  （`WorkspaceUnarchiveSessionRequest = {sessionId}`），回同一个 `WorkspaceArchiveValue`
+  （`archivedSessionIds` 是**完整集合**，每次都是权威值）。归档在本摘录那一版就有，恢复是
+  后加的：旧服务端（≤ 0.1.5-rc.3）请求它得 404，而恢复**没有替代路径**，界面只给一条失败通知。
 
 ---
 
@@ -752,6 +757,7 @@ export type SessionControlFrame =
 
 `WorkspaceArchiveSessionRequest = {sessionId}`，`WorkspaceArchiveValue = {archivedSessionIds: readonly SessionId[]}`（`⟨P⟩\dsh-api-workspace-controller\lib\types\types.d.ts`）。
 **注意：seam 没有删除会话的 API**——日志文件只增不减（`⟨P⟩\dsh-session-persistence-jsonl\README.md`「Nothing deletes session files」）。
+（恢复归档的端点晚于本摘录，见上面的「后续版本的契约变更」。）
 
 ### 3.10 `session/search` —— 全文检索
 

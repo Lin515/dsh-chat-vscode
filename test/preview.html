@@ -389,6 +389,17 @@
             { id: "s3", title: "会话历史里的分支显示", updatedAt: Date.now() - 60000, running: true },
           ],
         });
+        // 归档列表（抽屉右上那颗归档盒按钮切过去）：与普通列表同一份字段形状，
+        // 只是这些会话被服务端移出了工作区分组。两条足以看出「归档视图里那颗按钮
+        // 变成恢复」（勾选后工具条上那颗也是「恢复」）。夹具里**不放**运行中的行：
+        // 归档视图的可选判据与普通视图同源，运行中那一档在普通列表里已经看得到。
+        window.__push({
+          type: "archivedSessions",
+          sessions: [
+            { id: "a1", title: "整理 dsh 兼容层登记表", updatedAt: Date.now() - 86400000, running: false },
+            { id: "a2", title: "排查窄侧栏下的工具栏换行", updatedAt: Date.now() - 172800000, running: false },
+          ],
+        });
         // 子代理目录：一条在跑（蓝点呼吸）、一条跑完了（`inactive` = **已完成**绿灯），
         // 一条只有投影（没有 `activity`，此时不画点、改显示模式）。
         window.__push({

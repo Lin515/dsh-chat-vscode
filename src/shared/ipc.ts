@@ -290,6 +290,8 @@ export type WebviewToHost =
   | { type: "listTrajectory" }
   /** 归档会话（服务端 workspace/archiveSession：从工作区分组移出，可再找回）。 */
   | { type: "archiveSession"; sessionId: string }
+  /** 恢复归档会话（服务端 workspace/unarchiveSession：移回工作区分组）。 */
+  | { type: "unarchiveSession"; sessionId: string }
   /** 删除会话（服务端没有删除 API：本地删除会话日志文件目录）。 */
   | { type: "deleteSession"; sessionId: string }
   /**

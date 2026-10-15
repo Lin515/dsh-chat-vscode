@@ -3819,6 +3819,23 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
+   * 恢复归档：服务端把会话移回工作区分组（`workspace/unarchiveSession`，与归档同一个
+   * `WorkspaceArchiveValue`）。权威状态同样经 workspace/follow 流的 `archived` 增量回来，
+   * 列表自动刷新；兜底再拉一次列表（增量延迟时）。
+   */
+  private async unarchiveSession(sessionId: string): Promise<void> {
+    if (!this.client) return;
+    try {
+      await this.client.unarchiveSession(sessionId);
+      this.archivedSessionIds.delete(sessionId);
+      this.emitSessionLists();
+      setTimeout(() => void this.refreshSessions(), 500);
+    } catch (error) {
+      this.reportError(vscode.l10n.t("Failed to restore the session"), error);
+    }
+  }
+
+  /**
    * 删除会话。服务端**没有**删除/detach API（会话日志文件只增不减），这里
    * 直接删除本地日志目录：`~/.dsh/sessions/<工作区>/session-<会话id>`（目录名
    * 就是会话 id，见日志文件头 `id` 字段），并把会话 id 记入 `deletedSessionIds`
@@ -6830,6 +6847,10 @@ export class ChatController implements vscode.Disposable {
 
       case "archiveSession":
         await this.archiveSession(message.sessionId);
+        break;
+
+      case "unarchiveSession":
+        await this.unarchiveSession(message.sessionId);
         break;
 
       case "deleteSession":

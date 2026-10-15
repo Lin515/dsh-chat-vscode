@@ -686,6 +686,40 @@ export interface Texts {
   deleteSession: string;
   deleteSessionConfirm: string;
   noArchivedSessions: string;
+  /** 历史列表多选：每行复选框的无障碍名与悬停提示（带会话标题）。 */
+  selectSession: (title: string) => string;
+  /**
+   * 抽屉顶部那颗**多选形态开关**（用户 2026-10-15 口径：在归档切换按钮左边，与它
+   * 同一套切换制）。点开才长出复选框与批量工具条，再点一次退出。
+   */
+  multiSelect: string;
+  /** 多选形态开关已打开时的提示（同一个按钮，文字说明这次点击会退出）。 */
+  multiSelectExit: string;
+  /**
+   * 历史列表多选：运行中的会话与当前会话的复选框禁用时的提示。
+   *
+   * 这两类宿主会拒（见 controller 的 `deleteSession`），所以批量操作不能把它们选进来。
+   */
+  selectLocked: string;
+  /**
+   * 多选工具条那颗翻转按钮的两种文字：还有没选中的就显示「全选」，已经全选就是
+   * 「取消全选」（用户 2026-10-15 口径）。判据在 `../sessionSelection.ts`。
+   */
+  selectAll: string;
+  selectNone: string;
+  /** 多选工具条：已选数量；二次确认删除期间由 `deleteSelectedConfirm` 顶替。 */
+  selectedCount: (count: number) => string;
+  /** 多选工具条三个按钮的**短标签**（完整说明分别见 `archive` / `unarchive` / `deleteSession`）。 */
+  batchArchive: string;
+  batchUnarchive: string;
+  batchDelete: string;
+  /** 恢复归档（行内按钮的提示，也是多选工具条上那颗按钮的完整说明）。 */
+  unarchive: string;
+  /**
+   * 多选删除的二次确认：第一次点击只把工具条切到红字提示，再点一次才真的删。
+   * 与行内垃圾桶同一条口径（`DELETE_ARM_MS`），只是这里要报出**影响几条**。
+   */
+  deleteSelectedConfirm: (count: number) => string;
 
   contextUsed: (percent: number, used: string, total: string) => string;
   /** 悬停上下文占用时的明细行（标签 + 数值）。 */

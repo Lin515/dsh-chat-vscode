@@ -374,6 +374,31 @@ export const IconArchive = (p: IconProps) => (
   </Icon>
 );
 
+/**
+ * 归档盒 + 向上箭头（heroicons archive-box-arrow-up 的同一套简化画法）：
+ * 恢复归档会话。盒子轮廓与 `IconArchive` 逐字相同，只把里面那道横杠换成箭头——
+ * 两颗图标在同一行里换着出现（归档视图与普通视图），轮廓不一致会看成两个东西。
+ */
+export const IconUnarchive = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M3.75 7.5a3 3 0 0 1 3-3h10.5a3 3 0 0 1 3 3v9a3 3 0 0 1-3 3H6.75a3 3 0 0 1-3-3z" />
+    <path d="M3.75 7.5h16.5" />
+    <path d="M12 16.5v-5" />
+    <path d="M9.5 13.5 12 11l2.5 2.5" />
+  </Icon>
+);
+
+/**
+ * 多选形态开关：方框里一个勾（heroicons check-square 的同一套简化画法）。
+ * 与行首那颗自绘复选框是同一个隐喻——这颗按钮点开，列表才长出那些方框。
+ */
+export const IconMultiSelect = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M4.5 6.75a2.25 2.25 0 0 1 2.25-2.25h10.5a2.25 2.25 0 0 1 2.25 2.25v10.5a2.25 2.25 0 0 1-2.25 2.25H6.75a2.25 2.25 0 0 1-2.25-2.25z" />
+    <path d="M8.6 12.1l2.3 2.3 4.5-5" />
+  </Icon>
+);
+
 export const IconTrash = (p: IconProps) => (
   <Icon {...p}>
     <path d="M4 7h16" />

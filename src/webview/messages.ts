@@ -950,6 +950,32 @@ export const MESSAGES = {
   deleteSession: { zh: "删除（删除本地日志文件）", en: "Delete (remove local log files)" },
   deleteSessionConfirm: { zh: "再次点击确认删除", en: "Click again to confirm" },
   noArchivedSessions: { zh: "暂无归档会话", en: "No archived sessions" },
+  // 历史列表多选：复选框的无障碍名（带标题）与禁用提示（运行中 / 当前会话）
+  selectSession: { zh: (title: string) => `选择：${title}`, en: (title: string) => `Select: ${title}` },
+  // 顶部多选形态开关（与归档切换同一个位置组：多选在归档左边）
+  multiSelect: {
+    zh: "多选（批量归档、恢复或删除）",
+    en: "Multi-select (batch archive, restore or delete)",
+  },
+  multiSelectExit: { zh: "退出多选", en: "Exit multi-select" },
+  selectLocked: {
+    zh: "运行中的会话与当前会话不可选择",
+    en: "Running sessions and the session you are viewing cannot be selected",
+  },
+  // 全选按钮的翻转（还没有全选 → 全选；已经全选 → 取消全选）。英文取「Select all / Clear all」
+  // 这对对称的短词：比 Clear selection 短一截，窄侧栏下少截一段字
+  selectAll: { zh: "全选", en: "Select all" },
+  selectNone: { zh: "取消全选", en: "Clear all" },
+  selectedCount: { zh: (count: number) => `已选 ${count} 项`, en: (count: number) => `${count} selected` },
+  // 多选工具条的短标签（完整说明在 title 里，取 archive / unarchive / deleteSession）
+  batchArchive: { zh: "归档", en: "Archive" },
+  batchUnarchive: { zh: "恢复", en: "Restore" },
+  batchDelete: { zh: "删除", en: "Delete" },
+  unarchive: { zh: "恢复（移回工作区列表）", en: "Restore (move back to workspace list)" },
+  deleteSelectedConfirm: {
+    zh: (count: number) => `再次点击确认删除 ${count} 项`,
+    en: (count: number) => `Click again to delete ${count}`,
+  },
 
   contextUsed: {
     zh: (percent: number, used: string, total: string) => `上下文已用 ${percent}%（${used} / ${total}）`,

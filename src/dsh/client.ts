@@ -658,6 +658,14 @@ export class DshClient {
   }
 
   /**
+   * 恢复归档会话：移回工作区分组（与归档同一个 `WorkspaceArchiveValue`，回权威归档集合）。
+   * 请求体同样只有 `sessionId`。
+   */
+  unarchiveSession(sessionId: string): Promise<{ archivedSessionIds: string[] }> {
+    return this.request("workspace/unarchiveSession", { request: { sessionId } });
+  }
+
+  /**
    * 往前取一页历史（`session/page`）。地址与 `followSession` 同一套：`subagent`
    * 给出时用子代理地址（普通会话地址取不到子代理会话的分页）。
    */

@@ -15,8 +15,19 @@
 import assert from "node:assert";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { normalizePath, upperDriveLetter, visibleForView, visibleForWorkspace, visibleSessionCandidates, visibleSessionRows } from "../src/dsh/sessionList";
-import { dictionaryFor } from "../src/webview/texts";
+import { dictionaryFor, TextsContext } from "../src/webview/texts";
+
+// `bridge.ts`（`History.tsx` 间接引入）在模块求值期就挂了 `window.addEventListener`
+// （webview 里那是真实存在的宿主）。无头环境里补一个最小 window，且必须补在
+// **动态 import 之前**（同 `questionRender.test.ts` 的做法）。
+(globalThis as { window?: unknown }).window = {
+  addEventListener: () => {},
+  removeEventListener: () => {},
+};
+const { HistoryPanel } = await import("../src/webview/components/History");
 
 // ---------- 1. 分支必须留着，子代理必须藏起来 ----------
 //
@@ -109,6 +120,176 @@ console.log("sessionList: 分支与普通会话同级（标题前缀区分）✓
   );
 }
 console.log("sessionList: 复制会话 ID 常驻且在归档左边 ✓");
+
+// ---------- 2b. 历史列表的多选与批量动作（用户 2026-10-15 口径） ----------
+//
+// 用户 2026-10-15：抽屉顶部加一颗**多选形态开关**（在归档切换按钮左边，与它同一套切换制：
+// 点开才长出复选框与批量工具条，再点一次退出）；多选形态下可全选、对选中项归档 / 恢复 /
+// 删除（删除要二次确认）；切到归档列表复用同一套逻辑，只是归档那颗变成**恢复**。
+//
+// 纯判据（可选 / 选择集跟随列表 / 全选翻转）在 `sessionSelection.test.ts` 里钉；这里钉
+// 组件与宿主侧的接线——它们漏一处都不会编译报错，只会让按钮点了没反应或选错了对象：
+// ① 复选框与行内那两颗按钮必须用**同一个**可选判据（`sessionLocked`）：各写各的，就会出现
+//    「复选框勾得上、点下去却被宿主拒」；
+// ② 复选框与工具条**只在多选形态里**渲染（平时抽屉是一张干净列表）；
+// ③ 归档视图那条恢复链路（`unarchiveSession` 从界面一路到控制器）；
+// ④ 批量删除与行内垃圾桶同一条二次确认口径（`DELETE_ARM_MS`）。
+{
+  const history = readFileSync(
+    join(process.cwd(), "src", "webview", "components", "History.tsx"),
+    "utf8",
+  );
+  assert.ok(
+    /const locked = sessionLocked\(session, currentId\);/.test(history),
+    "行内归档 / 恢复 / 删除与复选框必须共用 sessionLocked（写两遍判据迟早漂）",
+  );
+  assert.ok(
+    /<input[\s\S]{0,300}?type="checkbox"[\s\S]{0,300}?checked=\{selected\.has\(session\.id\)\}[\s\S]{0,300}?disabled=\{locked\}/.test(
+      history,
+    ),
+    "多选形态的行要有复选框：勾选态读选择集、禁用位读那个共用的可选判据",
+  );
+  assert.ok(
+    /pruneSelection/.test(history) && /selectableSessionIds/.test(history) && /toggleAllSelection/.test(history),
+    "多选判据必须走 sessionSelection 那三个纯函数（选择集跟随列表 + 全选翻转都在那里）",
+  );
+
+  // 多选形态开关：位置（归档切换左边）、切换制（aria-pressed + is-active）、进出都清干净
+  const headStart = history.indexOf('<div className="drawer-head">');
+  const multiToggle = history.indexOf("title={multiSelect ? texts.multiSelectExit : texts.multiSelect}", headStart);
+  const archiveToggle = history.indexOf("title={texts.archiveList}", headStart);
+  assert.ok(
+    headStart > 0 && multiToggle > headStart && archiveToggle > multiToggle,
+    "多选开关必须在顶部归档切换按钮的**左边**（用户 2026-10-15 的位置口径）",
+  );
+  assert.ok(
+    /aria-pressed=\{multiSelect\}/.test(history) &&
+      /className=\{`icon-btn\$\{multiSelect \? " is-active" : ""\}`\}/.test(history),
+    "多选开关是切换制：状态写在 aria-pressed 上，打开时有按下态（与归档入口同一套 is-active）",
+  );
+  // 两道闸门：一道给行首复选框、一道给批量工具条（顺序也是这两处）
+  const gates = [...history.matchAll(/\{multiSelect \? \(/g)].map((match) => match.index ?? -1);
+  assert.strictEqual(gates.length, 2, "复选框与批量工具条各要一道 `{multiSelect ? (` 闸门");
+  const checkBox = history.indexOf("session-item-check");
+  const batchBar = history.indexOf('<div className="drawer-batch">');
+  assert.ok(
+    checkBox > 0 && batchBar > 0 && gates[0] < checkBox && gates[1] < batchBar,
+    "复选框与工具条只在多选形态里渲染（平时不该长出来）",
+  );
+  assert.ok(
+    /if \(multiSelect\) \{[\s\S]{0,200}?if \(!locked\) changeSelection\(toggleSelection\(selected, session\.id\)\);/.test(
+      history,
+    ),
+    "多选形态下点整行 = 勾选 / 取消勾选（不打开会话、不关抽屉），锁定行点了没反应",
+  );
+  assert.ok(
+    /const toggleMultiSelect = \(\) => \{[\s\S]{0,300}?setSelected\(NO_SELECTION\)/.test(history),
+    "进出多选形态都要清掉选择集（退出时收干净，进来时不带上次的残留）",
+  );
+
+  // 归档视图：行内那颗与工具条那颗都是**恢复**
+  assert.ok(
+    /if \(archived\) post\(\{ type: "unarchiveSession", sessionId: session\.id \}\);/.test(history),
+    "归档视图里行内那颗按钮要走 unarchiveSession（同一位置、同一套行为，只把方向反过来）",
+  );
+  assert.ok(
+    /onClick=\{archived \? restoreSelected : archiveSelected\}/.test(history),
+    "多选工具条那颗按钮按视图在恢复 / 归档之间翻转",
+  );
+  // 批量删除的二次确认：与行内同一条时长常量，确认文案带影响条数
+  assert.ok(
+    /if \(!armed\) \{/.test(history) &&
+      /setTimeout\(\(\) => setArmedBatch\(false\), DELETE_ARM_MS\)/.test(history) &&
+      /texts\.deleteSelectedConfirm\(selectedCount\)/.test(history),
+    "批量删除必须两段式：第一下只武装，第二下才发（与行内垃圾桶共用 DELETE_ARM_MS 与确认文案）",
+  );
+  assert.ok(
+    /className="btn btn-ghost drawer-batch-all"/.test(history) &&
+      /allChecked \? texts\.selectNone : texts\.selectAll/.test(history),
+    "「全选 / 取消全选」按是否已全选翻转（判据在 sessionSelection 的 allSelected）",
+  );
+
+  // 恢复链路的宿主侧：IPC 消息 → 客户端端点 → 控制器的归档集合与列表刷新
+  const ipc = readFileSync(join(process.cwd(), "src", "shared", "ipc.ts"), "utf8");
+  assert.ok(
+    /\{ type: "unarchiveSession"; sessionId: string \}/.test(ipc),
+    "界面要能发 unarchiveSession（ipc.ts 的消息联合）",
+  );
+  const client = readFileSync(join(process.cwd(), "src", "dsh", "client.ts"), "utf8");
+  assert.ok(
+    /unarchiveSession\(sessionId: string\)[\s\S]{0,200}?"workspace\/unarchiveSession", \{ request: \{ sessionId \} \}/.test(
+      client,
+    ),
+    "客户端要打到官方端点 workspace/unarchiveSession（请求体只有 sessionId）",
+  );
+  const controller = readFileSync(join(process.cwd(), "src", "dsh", "controller.ts"), "utf8");
+  assert.ok(
+    /case "unarchiveSession":/.test(controller) && /private async unarchiveSession\(sessionId: string\)/.test(controller),
+    "控制器要有 unarchiveSession 分派与实现",
+  );
+  assert.ok(
+    /archivedSessionIds\.delete\(sessionId\)/.test(controller),
+    "恢复后要把它从归档集合退掉（列表立刻回到普通视图），权威值仍由 workspace/follow 流确认",
+  );
+
+  // 文案：条数必须真的进到确认文案里（中英各一份）
+  assert.ok(dictionaryFor("zh").deleteSelectedConfirm(2).includes("2"), "中文确认文案要报出条数");
+  assert.ok(dictionaryFor("en").deleteSelectedConfirm(2).includes("2"), "英文确认文案要报出条数");
+  assert.ok(dictionaryFor("en").selectedCount(3).includes("3"), "已选数量要报出条数");
+}
+console.log("sessionList: 多选、批量归档 / 恢复 / 删除与二次确认 ✓");
+
+// ---------- 2c. 真渲染抽屉：复选框的禁用位与工具条的禁用位对上（SSR 静态渲染） ----------
+//
+// 2b 是源码形状，这一条是**渲染出来的标记**：每行一颗复选框、运行中与当前会话那两颗
+// 是禁用的、没有选中项时工具条上两颗动作按钮都不可点（但「全选」可点）。本仓库没有
+// jsdom（不为测试引入依赖），所以只渲染静态标记，事件行为靠 2b 与
+// `sessionSelection.test.ts` 的纯判据覆盖。
+{
+  const now = Date.now();
+  const markup = renderToStaticMarkup(
+    createElement(
+      TextsContext.Provider,
+      { value: dictionaryFor("zh") },
+      createElement(HistoryPanel, {
+        sessions: [
+          { id: "plain", title: "PLAIN", updatedAt: now, running: false },
+          { id: "busy", title: "BUSY", updatedAt: now, running: true },
+          { id: "current", title: "CURRENT", updatedAt: now, running: false },
+        ],
+        archivedSessions: [{ id: "arch", title: "ARCH", updatedAt: now, running: false }],
+        currentId: "current",
+        onClose: () => {},
+      }),
+    ),
+  );
+
+  const bodyStart = markup.indexOf('class="drawer-body"');
+  assert.ok(bodyStart > 0, "渲染结果里没有抽屉的列表区");
+  const body = markup.slice(bodyStart);
+
+  // 默认是**普通形态**：一颗复选框都没有、也没有批量工具条（多选开关点开才长出来）。
+  // 多选形态本身是组件内部状态，SSR 点不动它——那边的接线由 2b 的源码断言与预览页实测覆盖。
+  assert.strictEqual(
+    (body.match(/type="checkbox"/g) ?? []).length,
+    0,
+    "没开多选时列表里不该有任何复选框（用户 2026-10-15：不是常驻多选）",
+  );
+  assert.ok(!/drawer-batch/.test(markup), "没开多选时不该有批量工具条");
+  assert.ok(
+    (body.match(/session-item-main/g) ?? []).length === 3,
+    "列表照常渲染三行（当前视图只有 sessions 那份，归档那份不渲染）",
+  );
+
+  // 顶部那颗多选开关：未打开时 aria-pressed=false，且排在归档切换左边
+  const toggle = /<button[^>]*aria-pressed="false"[^>]*>/.exec(markup);
+  assert.ok(toggle, "抽屉顶部要有多选形态开关，未打开时 aria-pressed=false");
+  assert.ok(
+    markup.indexOf(toggle[0]) < markup.indexOf('title="归档列表"'),
+    "多选开关在归档切换按钮左边（用户 2026-10-15 的位置口径）",
+  );
+}
+console.log("sessionList: 抽屉真渲染（默认普通形态：无复选框 / 无工具条 / 有多选开关）✓");
 
 // ---------- 3. 工作区可见性：打开文件夹跟随工作区；没有文件夹只给未分组 ----------
 //
