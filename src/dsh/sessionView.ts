@@ -55,6 +55,15 @@ export interface SessionView {
    */
   subagent?: ChatState["subagent"];
   jobs: ChatState["jobs"];
+  /**
+   * 本会话的自动化任务（DSH `schedule`）。
+   *
+   * 与 `jobs` 一样是**会话片段**：切会话必须整份换掉，所以它走同一张字段表，
+   * 而不是另开一条按会话投递的帧（后者会绕开「切会话要清哪些键」这条唯一登记）。
+   */
+  schedules: ChatState["schedules"];
+  /** 自动化任务的读取状态（`loading` / `ready` / `unsupported`；`undefined` = 没问过）。 */
+  schedulesStatus?: ChatState["schedulesStatus"];
   goal?: ChatState["goal"];
   contextWindow?: ChatState["contextWindow"];
   contextOccupancy?: ChatState["contextOccupancy"];
@@ -107,6 +116,8 @@ export const SESSION_VIEW_KEYS = [
   "subagentEntries",
   "subagent",
   "jobs",
+  "schedules",
+  "schedulesStatus",
   "goal",
   "contextWindow",
   "contextOccupancy",
@@ -199,6 +210,12 @@ export const SESSION_FIELDS = {
   },
   jobs: {
     read: (source) => (source.jobs?.() ?? []) as SessionView["jobs"],
+  },
+  schedules: {
+    read: (source) => (source.schedules?.() ?? []) as SessionView["schedules"],
+  },
+  schedulesStatus: {
+    read: (source) => source.schedulesStatus?.() as SessionView["schedulesStatus"],
   },
   goal: {
     read: (source) => source.goal?.() as SessionView["goal"],
@@ -397,6 +414,8 @@ export function sessionSourceOf(
     subagentEntries: () => subagentEntries ?? scope?.subagentEntries,
     subagent: () => subagent,
     jobs: () => scope?.jobs,
+    schedules: () => scope?.schedules,
+    schedulesStatus: () => scope?.schedulesStatus,
     goal: () => scope?.goal,
     // 粘性显示值（上下文窗口 / 占用 / 速度）由适配器持有
     contextWindow: () => adapter?.stickyState().contextWindow,

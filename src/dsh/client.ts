@@ -560,6 +560,68 @@ export class DshClient {
   }
 
   /**
+   * 全部自动化任务（`schedule/catalog`，零形参）。
+   *
+   * 契约给的是**全局目录**：每条带原始会话绑定、`status` 与最近一次投递。本扩展按
+   * 打开面板的那个会话过滤它（见 controller 的 `loadSchedules`）——一次读取就能同时
+   * 服务「本会话还有哪些、跑完的还在不在」，不必为每个会话各打一次。
+   *
+   * 返回值刻意是 `unknown`：形状由 `dsh/scheduleView.ts` 的
+   * `scheduleEntriesFromCatalog` 逐字段收窄（纯函数，离线可断言）。
+   */
+  scheduleCatalog(): Promise<unknown> {
+    return this.request(METHODS.scheduleCatalog, {});
+  }
+
+  /**
+   * 一条任务的**已保存投递记录**（`schedule/history`）。
+   *
+   * `limit` 是必填整数、1–100（服务端对区间外的值回 `invalid_rule`，不猜默认值）；
+   * `before` 是上一页最旧一条的 messageId（**排他**游标），不给就是最新一页。
+   * 一次性的「任务不存在」与「游标失效」都**正常返回**（`code` 在信封里），不是异常。
+   */
+  scheduleHistory(
+    sessionId: string,
+    id: string,
+    limit: number,
+    before?: string,
+  ): Promise<unknown> {
+    return this.request(METHODS.scheduleHistory, {
+      request: { sessionId, id, limit, ...(before !== undefined ? { before } : {}) },
+    });
+  }
+
+  /**
+   * 改一条任务的运行时间（`schedule/update`，比较并交换）。
+   *
+   * `expected` 必须是**编辑开始时读到的完整规则**（逐字段取自目录条目），服务端拿它
+   * 做比较：期间被投递推进过或被别的客户端改过就回 `schedule_conflict`，不覆盖。
+   * 返回值同样刻意是 `unknown`——`updated: true` / `updated: false` + `code` /
+   * 工具错误三支由 `scheduleView.ts` 的 `scheduleUpdateOutcome` 读。
+   */
+  scheduleUpdate(
+    sessionId: string,
+    id: string,
+    expected: Record<string, unknown>,
+    change: unknown,
+  ): Promise<unknown> {
+    return this.request(METHODS.scheduleUpdate, {
+      request: { sessionId, id, expected, change },
+    });
+  }
+
+  /**
+   * 删掉一条自动化任务（`schedule/delete`）。
+   *
+   * 删除是**硬删**：任务行与它的投递记录一起没了，不再触发、也不再出现在目录里；
+   * 原会话与已排队的消息不受影响。任务本来就不在时回 `{deleted: false,
+   * code: 'schedule_not_found'}`——那是正常结果，不是异常。
+   */
+  scheduleDelete(sessionId: string, id: string): Promise<unknown> {
+    return this.request(METHODS.scheduleDelete, { request: { sessionId, id } });
+  }
+
+  /**
    * 移除一条排队 / 插话消息（`SessionUpdateQueueRequest`，action `{kind:'remove'}`）。
    * 服务端随后会重发队列（当前服务端重发 `inbox` 投影），界面以它为准。
    */

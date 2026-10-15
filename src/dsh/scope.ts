@@ -3,6 +3,7 @@ import type {
   JobItemView,
   ModelSelectionView,
   QueuedMessageView,
+  ScheduleItemView,
   SubagentView,
   TodoView,
 } from "../shared/chat";
@@ -98,6 +99,39 @@ export class SessionScope {
    */
   subagentSiblings: SubagentView[] = [];
   jobs: JobItemView[] = [];
+  /**
+   * 本会话的自动化任务（`schedule/catalog` 按会话过滤后的视图模型）。
+   *
+   * 与 `jobs` 并列而不是合并：两者的生命周期与操作完全不同（任务行有停止按钮与
+   * 实时输出，自动化任务有运行时间编辑、执行记录与删除），合成一条列表就得在每一处
+   * 再按种类分叉。面板把它们放在同一个抽屉里的两个分区（见 `Schedules.tsx`）。
+   */
+  schedules: ScheduleItemView[] = [];
+  /**
+   * 每条自动化任务的**编辑基准**（键 = 任务 id，值 = 目录原文里那份完整规则）。
+   *
+   * `schedule/update` 是「比较并交换」：提交的 `expected` 必须与读到的规则完全一致。
+   * 视图模型是给界面看的、已经丢掉了原始拼写，所以基准只留在这里——界面只回任务
+   * id 与新的运行时间，别的一律由宿主按这份原文拼。
+   */
+  readonly scheduleExpected = new Map<string, Record<string, unknown>>();
+  /**
+   * 自动化任务的读取状态：`loading` = 正在读，`ready` = 读到了（可能是空表），
+   * `unsupported` = 这个部署没有那组端点（≤ 0.1.7-rc.1），`error` = 这次没拿到。
+   * `undefined` = 还没问过。
+   *
+   * 界面不许在这四态之外显示空态文案：把「还没问过」「读不到」都说成「没有自动化
+   * 任务」，就是把一个没查证的问题当成了结论。
+   */
+  schedulesStatus: "loading" | "ready" | "unsupported" | "error" | undefined;
+  /**
+   * 这个域的自动化任务**被看过**（面板打开过）。
+   *
+   * 与 `schedulesStatus` 分开：状态说的是「上次读取的结果」，这一位说的是「有没有
+   * 人在等这份数据」。用户在**断开**时打开面板时状态会落成 `error`，而断线重连后
+   * 要重读的正是这些域（`onConnected`）——只看状态会把「没连上过」的域漏掉。
+   */
+  schedulesWanted = false;
   goal: ChatState["goal"];
   planMode = false;
   permission: string | undefined;

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { JobItemView } from "../../shared/chat";
+import type { JobItemView, ScheduleItemView, ChatState } from "../../shared/chat";
 import { IconChevronDown, IconClose, IconJobs, IconStop } from "../icons";
 import { ESC_LAYER, useEscapeLayer } from "../escapeOwner";
 import { formatClock, formatDuration } from "./primitives";
@@ -7,18 +7,22 @@ import { CopyButton } from "./CopyButton";
 import { compareJobs, isLiveJob, isObservableJob, isSubagentJob } from "../jobsOrder";
 import { autoResetMs, killSettled, phaseLive, pressKill, type KillPhase } from "../jobsKill";
 import type { JobObserved } from "../jobObserve";
+import type { ScheduleHistoryState } from "../state";
+import { SchedulesSection, type ScheduleAction } from "./Schedules";
 import { post } from "../bridge";
 import { useTexts } from "../texts";
 
 /**
- * 面板要用到的两条界面动作（观察开始 / 观察释放）。
+ * 面板要用到的界面动作：后台任务的两条（观察开始 / 观察释放）+ 自动化任务的一条
+ * （执行记录请求）。
  *
- * 收窄成这两条而不是直接收 `Dispatch<Action>`：面板只管这两件事，别的动作从这里
+ * 收窄成这三条而不是直接收 `Dispatch<Action>`：面板只管这几件事，别的动作从这里
  * 发不出去（`App.tsx` 传进来的 `dispatch` 本来就接受全部动作，收窄是给自己看的约束）。
  */
 type JobOutputAction =
   | { type: "ui/jobObserve"; jobId: string; watchId: number }
-  | { type: "ui/jobClose"; jobId: string };
+  | { type: "ui/jobClose"; jobId: string }
+  | ScheduleAction;
 
 /** 抽屉外壳：历史 / 后台任务两个面板共用（标题栏 + 可滚动内容）。 */function Drawer({
   title,
@@ -135,6 +139,11 @@ export function JobsPanel({
   jobs,
   outputs,
   killResult,
+  schedules,
+  schedulesStatus,
+  scheduleHistory,
+  scheduleResult,
+  sessionId,
   dispatch,
   onClose,
 }: {
@@ -143,7 +152,16 @@ export function JobsPanel({
   outputs?: Record<string, JobObserved>;
   /** 最近一条停止请求的结算（宿主 `jobs/killResult` 帧；没有 = 还没停过任何任务）。 */
   killResult?: { jobId: string; ok: boolean };
-  /** 只放行本面板要用的两条动作（观察开始 / 观察释放），别的一律发不出去。 */
+  /** 本会话的自动化任务（DSH `schedule`，与后台任务同一个抽屉里的另一个分区）。 */
+  schedules: ScheduleItemView[];
+  schedulesStatus?: ChatState["schedulesStatus"];
+  /** 各任务的执行记录累积（键 = 任务 id；按需读取，见 `state.ts`）。 */
+  scheduleHistory?: Record<string, ScheduleHistoryState>;
+  /** 最近一次自动化任务变更的结算（宿主 `schedules/result` 帧）。 */
+  scheduleResult?: { op: "update" | "delete"; id: string; ok: boolean; code?: string };
+  /** 当前窗口绑定的会话（换会话要重新读一次自动化任务清单）。 */
+  sessionId?: string;
+  /** 只放行本面板要用的三条动作，别的一律发不出去。 */
   dispatch: (action: JobOutputAction) => void;
   onClose: () => void;
 }) {
@@ -258,10 +276,23 @@ export function JobsPanel({
 
   return (
     <Drawer title={texts.jobs} icon={<IconJobs size={14} />} onClose={onClose}>
-      {sorted.length === 0 ? (
-        <div className="popover-empty">{texts.jobsEmpty}</div>
-      ) : (
-        sorted.map((job) => {
+      {/* 自动化任务（DSH schedule）排在上面：它们是**持久**的安排，用户打开这个
+          抽屉最常问的是「我让模型安排的那些事还在吗」；下面才是会话内正在跑 /
+          刚跑完的后台任务。两个分区各自有空态，不合并成一句「什么都没有」。 */}
+      <SchedulesSection
+        sessionId={sessionId}
+        schedules={schedules}
+        status={schedulesStatus}
+        history={scheduleHistory}
+        result={scheduleResult}
+        dispatch={dispatch}
+      />
+      <div className="panel-section">
+        <div className="panel-section-title">{texts.jobs}</div>
+        {sorted.length === 0 ? (
+          <div className="popover-empty">{texts.jobsEmpty}</div>
+        ) : (
+          sorted.map((job) => {
           const observable = isObservableJob(job);
           const open = expanded === job.id;
           // 生产者的实时进度优先于终态原因（官方 `jobDetail`）：在跑的行看进度，
@@ -311,8 +342,9 @@ export function JobsPanel({
               {open ? <JobOutputPanel job={job} output={output} /> : null}
             </div>
           );
-        })
-      )}
+          })
+        )}
+      </div>
     </Drawer>
   );
 }

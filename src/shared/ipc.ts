@@ -1,4 +1,4 @@
-import type { AttachmentKind, ChatState, ChangesSummaryView, MessageView, ModelSelectionView, ProviderGroupView, Segment, SessionSummaryView, TodoView } from "./chat";
+import type { AttachmentKind, ChatState, ChangesSummaryView, MessageView, ModelSelectionView, ProviderGroupView, ScheduleDeliveryView, ScheduleHistoryRetention, ScheduleTimingChangeView, Segment, SessionSummaryView, TodoView } from "./chat";
 import type {
   CommandView,
   FileRefView,
@@ -102,6 +102,45 @@ export type HostToWebview =
    * **不翻译**（模型与服务端的原始报错一律原样露出）。
    */
   | { type: "jobs/observeFailed"; jobId: string; watchId: number; detail?: string }
+  /**
+   * 一页自动化任务的**执行记录**（`schedule/history`，`Schedules.tsx` 的详情消费）。
+   *
+   * `mode` 由**宿主**决定（它知道这一帧是回应哪一次请求）：`replace` = 这一帧是
+   * 最新一页（打开详情 / 刷新），`append` = 这是「加载更早」追加的一页。界面不自己
+   * 推断——同一时刻可能有一前一后两次请求在飞，按请求侧的记忆拼会把两页接反。
+   *
+   * 三种「没有记录」必须分开（与 `scheduleView.ts` 的读取口径一致）：
+   * - `hostUnavailable: true` = 宿主**连问都没能问出去**（未连接 / 没有绑定会话）；
+   * - `code` 给了 = 服务端明确说这次读不到（`schedule_not_found` / 游标失效）；
+   * - `error` 给了 = **这次没拿到**（连接、传输、服务端错误），界面保留旧记录并给重试；
+   * - 三者都没有且 `records` 为空 = 成功读到的空历史。
+   *
+   * `unavailable` 与 `pruned` 也是两件事：前者是「更早的可能没有」（旧记录没有指令
+   * 快照），后者才是「确实被裁掉过」——只有后者配显示保留口径。
+   */
+  | {
+      type: "schedules/history";
+      id: string;
+      mode: "replace" | "append";
+      records: ScheduleDeliveryView[];
+      nextBefore?: string;
+      earlierRecordsUnavailable: boolean;
+      earlierRecordsPruned: boolean;
+      retention?: ScheduleHistoryRetention;
+      code?: string;
+      /** 服务端 / 传输层的原样报错（不翻译）。 */
+      error?: string;
+      /** 宿主没能发起这次读取（未连接 / 没有绑定会话）。 */
+      hostUnavailable?: boolean;
+    }
+  /**
+   * 一次自动化任务变更的结算（更新运行时间 / 删除）。
+   *
+   * 与 `jobs/killResult` 同一条纪律：**每次请求都要回一帧**（连失败也一样），
+   * 界面的「保存中 / 删除请求中」只认它收场。`ok: false` 时 `code` 是服务端的稳定
+   * 错误码（`schedule_conflict` / `schedule_ended` / …），文案由界面按语言给。
+   */
+  | { type: "schedules/result"; op: "update" | "delete"; id: string; ok: boolean; code?: string }
   /** 斜杠命令目录（输入框输入 / 时弹出）。 */
   | { type: "commands/list"; commands: CommandView[] }
   /**
@@ -511,6 +550,35 @@ export type WebviewToHost =
    * 界面上没有第二个人在看，留着流只是白占一条 socket 多路复用通道。
    */
   | { type: "unobserveJob"; jobId: string }
+  /**
+   * 请求本会话的自动化任务清单（打开后台任务抽屉时发）。
+   *
+   * 宿主据此读一次 `schedule/catalog` 并按当前会话过滤，结果走会话字段
+   * （`schedules` / `schedulesStatus` 的 patch）——**不是**一条专用帧：那样会绕开
+   * 「切会话要清哪些键」的唯一登记表（见 `dsh/sessionView.ts`）。
+   */
+  | { type: "listSchedules" }
+  /**
+   * 请求一条自动化任务的执行记录（打开详情 / 刷新 / 翻更早一页）。
+   *
+   * 带 `before` 就是「加载更早」那一页（游标是上一页最旧的 messageId，排他）；
+   * 宿主按它决定回帧的 `mode`。宿主**总是**回一帧 `schedules/history`。
+   */
+  | { type: "scheduleHistory"; id: string; before?: string }
+  /**
+   * 改一条自动化任务的运行时间（`schedule/update` 的比较并交换）。
+   *
+   * 界面只交**任务 id** 与新的运行时间：`expected`（编辑开始时读到的完整规则）与
+   * 原始会话绑定都由宿主按读取时留下的原文拼——界面那份视图模型已经把拼写丢了
+   * （见 `dsh/scope.ts` 的 `scheduleExpected`）。宿主**总是**回一帧 `schedules/result`。
+   */
+  | { type: "updateSchedule"; id: string; change: ScheduleTimingChangeView }
+  /**
+   * 删除一条自动化任务（`schedule/delete`，硬删：任务行与投递记录一起没）。
+   *
+   * 界面只交任务 id；宿主**总是**回一帧 `schedules/result`。
+   */
+  | { type: "deleteSchedule"; id: string }
   /** 请求斜杠命令目录。 */
   | { type: "listCommands" }
   /** 查询文件引用候选（@ 提及）。 */

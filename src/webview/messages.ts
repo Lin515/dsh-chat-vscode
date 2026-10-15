@@ -535,6 +535,196 @@ export const MESSAGES = {
   },
   /** 宿主连流都没能开（没连接 / 没有绑定会话）时的概括文案。 */
   jobOutputUnavailable: { zh: "实时输出暂时不可用", en: "Live output is currently unavailable" },
+  // ---------- 自动化任务（DSH schedule） ----------
+  // 与后台任务同一个抽屉里的另一个分区。任务名一律取服务端存的 title（见
+  // shared/schedule.ts 的文件头）：这里没有任何「从指令推名字」的文案。
+  scheduleSection: { zh: "自动化任务", en: "Automation tasks" },
+  scheduleEmpty: { zh: "当前会话没有自动化任务", en: "This session has no automation tasks" },
+  scheduleEmptyHint: {
+    zh: "在对话里让模型用 schedule_create 安排后续任务，它们会出现在这里",
+    en: "Ask the model to schedule follow-ups with schedule_create; they show up here",
+  },
+  scheduleLoading: { zh: "正在读取自动化任务…", en: "Loading automation tasks…" },
+  // 能力缺失与「读到了空表」是两回事（旧版服务端没有 schedule 命名空间）
+  scheduleUnsupported: {
+    zh: "这个 DSH 版本没有自动化任务接口（需要 0.1.7-rc.2 及以上）",
+    en: "This DSH version has no automation task endpoints (requires 0.1.7-rc.2 or newer)",
+  },
+  scheduleLoadFailed: {
+    zh: "自动化任务读取失败；重新打开面板会再试一次",
+    en: "Could not read automation tasks; reopening the panel retries",
+  },
+  scheduleActive: { zh: "启用中", en: "enabled" },
+  scheduleInactive: { zh: "已结束", en: "inactive" },
+  scheduleUnknownStatus: { zh: "未知状态", en: "unknown status" },
+  scheduleNextRun: { zh: "下次运行", en: "Next run" },
+  scheduleLastTarget: { zh: "最后目标", en: "Last target" },
+  schedulePromptLabel: { zh: "指令", en: "Instruction" },
+  // 行主体（可展开的行是按钮）：无障碍标签带任务名
+  scheduleExpandAria: {
+    zh: (title: string) => `查看 ${title} 的详情`,
+    en: (title: string) => `Show details of ${title}`,
+  },
+  scheduleCollapseAria: {
+    zh: (title: string) => `收起 ${title} 的详情`,
+    en: (title: string) => `Hide details of ${title}`,
+  },
+  // 频率文本（拼装口径在 shared/schedule.ts 的 scheduleFrequency）
+  scheduleOnce: { zh: "一次性", en: "Once" },
+  scheduleEvery: {
+    zh: (value: number, unit: string) => `每 ${value} ${unit}`,
+    en: (value: number, unit: string) => `Every ${value} ${unit}`,
+  },
+  // 单位词带幅度：英文分单复数（`1 hour` / `12 hours`），中文两个分支同词。
+  // sec / min 用缩写，两种数量下都不变。
+  scheduleUnitSec: { zh: () => "秒", en: () => "sec" },
+  scheduleUnitMin: { zh: () => "分", en: () => "min" },
+  scheduleUnitHour: { zh: () => "小时", en: (value: number) => (value === 1 ? "hour" : "hours") },
+  scheduleUnitDay: { zh: () => "天", en: (value: number) => (value === 1 ? "day" : "days") },
+  // 时区为空串 = 与系统时区相同（官方口径：那一行不名时区）
+  scheduleDaily: {
+    zh: (time: string, zone: string) => (zone ? `每天 ${time}（${zone}）` : `每天 ${time}`),
+    en: (time: string, zone: string) => (zone ? `Every day at ${time} (${zone})` : `Every day at ${time}`),
+  },
+  scheduleWeekly: {
+    zh: (weekdays: string, time: string, zone: string) =>
+      zone ? `每周 ${weekdays} ${time}（${zone}）` : `每周 ${weekdays} ${time}`,
+    en: (weekdays: string, time: string, zone: string) =>
+      zone ? `Weekly on ${weekdays} at ${time} (${zone})` : `Weekly on ${weekdays} at ${time}`,
+  },
+  scheduleCron: {
+    zh: (expression: string, zone: string) => (zone ? `Cron ${expression}（${zone}）` : `Cron ${expression}`),
+    en: (expression: string, zone: string) => (zone ? `Cron ${expression} (${zone})` : `Cron ${expression}`),
+  },
+  scheduleWeekday1: { zh: "周一", en: "Mon" },
+  scheduleWeekday2: { zh: "周二", en: "Tue" },
+  scheduleWeekday3: { zh: "周三", en: "Wed" },
+  scheduleWeekday4: { zh: "周四", en: "Thu" },
+  scheduleWeekday5: { zh: "周五", en: "Fri" },
+  scheduleWeekday6: { zh: "周六", en: "Sat" },
+  scheduleWeekday7: { zh: "周日", en: "Sun" },
+  scheduleWeekdayJoin: { zh: "、", en: ", " },
+  scheduleRelativeFuture: {
+    zh: (value: number, unit: string) => `${value} ${unit}后`,
+    en: (value: number, unit: string) => `in ${value} ${unit}`,
+  },
+  scheduleRelativeOverdue: {
+    zh: (value: number, unit: string) => `已过期 ${value} ${unit}`,
+    en: (value: number, unit: string) => `overdue by ${value} ${unit}`,
+  },
+  scheduleRelativeNow: { zh: "现在", en: "now" },
+  // 运行时间编辑
+  scheduleRuleLabel: { zh: "运行时间", en: "Run time" },
+  scheduleRepeatLabel: { zh: "重复", en: "Repeat" },
+  scheduleRepeatOnce: { zh: "一次", en: "Once" },
+  scheduleRepeatEvery: { zh: "固定间隔", en: "Fixed interval" },
+  scheduleRepeatDaily: { zh: "每天", en: "Every day" },
+  scheduleRepeatWeekly: { zh: "每周", en: "Weekly" },
+  scheduleRepeatCron: { zh: "自定义（cron）", en: "Custom (cron)" },
+  scheduleFieldDate: { zh: "日期", en: "Date" },
+  scheduleFieldTime: { zh: "时间", en: "Time" },
+  scheduleFieldZone: { zh: "时区", en: "Time zone" },
+  scheduleFieldAmount: { zh: "间隔数量", en: "Interval" },
+  scheduleFieldUnit: { zh: "间隔单位", en: "Unit" },
+  scheduleFieldWeekdays: { zh: "星期", en: "Weekdays" },
+  scheduleFieldExpression: { zh: "cron 表达式", en: "Cron expression" },
+  scheduleZoneSystem: {
+    zh: (label: string) => `${label}（本机时区）`,
+    en: (label: string) => `${label} (system zone)`,
+  },
+  scheduleSave: { zh: "保存修改", en: "Save changes" },
+  scheduleSaving: { zh: "正在保存…", en: "Saving…" },
+  scheduleCancel: { zh: "取消", en: "Cancel" },
+  scheduleUnsaved: { zh: "有未保存的修改", en: "Unsaved changes" },
+  scheduleInactiveReadonly: {
+    zh: "已结束的任务不能再改运行时间",
+    en: "An inactive task's run time can no longer be changed",
+  },
+  scheduleRuleUnreadable: {
+    zh: "这条任务的规则读不出来，只能查看",
+    en: "This task's rule could not be read; it is view-only",
+  },
+  scheduleCronInvalid: {
+    zh: (field: string) => `cron 表达式里「${field}」不合法`,
+    en: (field: string) => `The cron expression's ${field} field is invalid`,
+  },
+  scheduleCronFieldMinute: { zh: "分钟", en: "minute" },
+  scheduleCronFieldHour: { zh: "小时", en: "hour" },
+  scheduleCronFieldDayOfMonth: { zh: "日", en: "day of month" },
+  scheduleCronFieldMonth: { zh: "月", en: "month" },
+  scheduleCronFieldDayOfWeek: { zh: "星期", en: "day of week" },
+  // 保存 / 删除的失败文案（服务端的稳定错误码，见 dsh/scheduleView.ts）
+  scheduleErrConflict: {
+    zh: "任务在你编辑期间被改过，请重新打开详情再改",
+    en: "The task changed while you were editing; reopen the details and try again",
+  },
+  scheduleErrEnded: {
+    zh: "任务已结束，不能再改运行时间",
+    en: "The task has ended; its run time can no longer be changed",
+  },
+  scheduleErrNotFound: { zh: "任务已不存在（可能已被删除）", en: "The task no longer exists" },
+  scheduleErrSubagent: {
+    zh: "子代理会话里的任务不能修改",
+    en: "A task bound to a subagent session cannot be modified",
+  },
+  scheduleErrZone: { zh: "时区无效", en: "Invalid time zone" },
+  scheduleErrNotFuture: { zh: "目标时间必须晚于现在", en: "The target time must be in the future" },
+  scheduleErrInterval: { zh: "间隔不能小于 60 秒", en: "The interval must be at least 60 seconds" },
+  scheduleErrInvalid: { zh: "服务端拒绝了这次修改", en: "The host rejected this change" },
+  scheduleErrInternal: { zh: "服务端内部错误", en: "The host reported an internal error" },
+  scheduleErrOffline: {
+    zh: "没能连上服务端，修改未提交",
+    en: "Not connected to the host; the change was not submitted",
+  },
+  // 删除（两段式确认，与停止按钮同口径）
+  scheduleDeleteTitle: {
+    zh: (title: string) => `删除任务 ${title}`,
+    en: (title: string) => `Delete task ${title}`,
+  },
+  scheduleDeleteConfirm: { zh: "再次点击确认删除", en: "Click again to confirm" },
+  scheduleDeleteConfirmAction: { zh: "确认删除", en: "Confirm delete" },
+  scheduleDeleting: { zh: "正在删除…", en: "Deleting…" },
+  scheduleDeleteFailed: { zh: "删除失败", en: "Delete failed" },
+  scheduleDeleteNote: {
+    zh: "删除后任务不再触发，已保存的执行记录也会一起删除",
+    en: "Deleting stops future delivery and removes the saved delivery records",
+  },
+  // 执行记录
+  scheduleRecords: { zh: "执行记录", en: "Saved deliveries" },
+  scheduleRecordsEmpty: { zh: "还没有投递记录", en: "No saved deliveries yet" },
+  scheduleRecordsLoading: { zh: "正在读取执行记录…", en: "Loading saved deliveries…" },
+  scheduleRecordsMore: { zh: "加载更早", en: "Load older records" },
+  scheduleRecordsUnavailable: {
+    zh: "更早的记录可能已不可用",
+    en: "Earlier deliveries may no longer be available",
+  },
+  scheduleRecordsPruned: {
+    zh: (days: number, records: number) => `服务端只保留最近 ${days} 天、每个任务最多 ${records} 条`,
+    en: (days: number, records: number) =>
+      `The host keeps at most ${records} records per task within ${days} days`,
+  },
+  scheduleRecordsFailed: {
+    zh: (detail: string) => `执行记录读取失败：${detail}`,
+    en: (detail: string) => `Could not read saved deliveries: ${detail}`,
+  },
+  scheduleRecordsRetry: { zh: "重试", en: "Retry" },
+  scheduleRecordsMissing: { zh: "这个任务已不存在（可能已被删除）", en: "This task no longer exists" },
+  scheduleRecordsCursorLost: {
+    zh: "分页位置已失效，请重新打开记录",
+    en: "The page position is no longer valid; reopen the records",
+  },
+  scheduleRecordsOffline: {
+    zh: "未连接或没有绑定会话，暂时读不到执行记录",
+    en: "Not connected or no session bound; saved deliveries are unavailable",
+  },
+  scheduleRecordNoPrompt: {
+    zh: "这条记录没有保存当时的指令",
+    en: "This record kept no instruction snapshot",
+  },
+  scheduleRecordTitle: {
+    zh: (occurrence: string, delivered: string) => `发生时刻 ${occurrence}，投递确认 ${delivered}`,
+    en: (occurrence: string, delivered: string) => `Due ${occurrence}, delivered ${delivered}`,
+  },
   commands: { zh: "命令", en: "Commands" },
   commandsEmpty: { zh: "没有可用命令", en: "No commands available" },
   skillTag: { zh: "技能", en: "Skill" },

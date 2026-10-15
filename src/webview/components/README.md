@@ -19,7 +19,8 @@
 - `SourceBlocks.tsx` — 轨迹检查器「原始内容」页签的逐块排版（对齐官方 `SourceBlocks()`）：每块一节（块标题 + 该块原文），块上有 `callId` 时标题变跳转按钮。
 - `PromptDiff.tsx` — 轨迹检查器「差异」页签里的一节行级差分（对齐官方 `PromptDiffSection()`）：标题 + 逐行着色；行序列由 `../trajectoryPromptDiff.ts` 算。
 - `TurnRail.tsx` — 右侧轮次横条组件：固定间距刻点、悬停预览卡、点击跳轮。
-- `Panels.tsx` — 顶栏面板：后台任务详情（实时输出、停止按钮）、子代理等抽屉。抽屉外壳（后台任务等）按 `../escapeOwner.ts` 的 `ESC_LAYER.drawer` 登记自己的关闭动作。
+- `Panels.tsx` — 顶栏面板：后台任务抽屉（自动化任务分区 + 任务详情：实时输出、停止按钮）、子代理等抽屉。抽屉外壳（后台任务等）按 `../escapeOwner.ts` 的 `ESC_LAYER.drawer` 登记自己的关闭动作。
+- [Schedules.tsx](<Schedules.tsx>) — 后台任务抽屉里的**自动化任务**分区（DSH `schedule`）：清单（四种读取状态各自成档）、运行时间编辑（草稿与已存规则比对后才亮保存栏）、执行记录（按需分页）与两段式删除。口径见[投影设计](<../../docs/design-projections.md#自动化任务schedule>)。
 - `History.tsx` — 会话历史抽屉：搜索、删除（二次点击确认）、归档。ESC 关抽屉走 `../escapeOwner.ts` 的 `ESC_LAYER.drawer`（自己消费，不落到会话页的停止生成）。
 - `FindBar.tsx` — 会话查找条（Ctrl+F）：CSS Custom Highlight API 高亮 + 计数 + 上一处/下一处；纯逻辑在 `../find.ts`，跳命中（展开折叠气泡 → 放跟随 → 居中）走 `../readingPlacement.ts` 的同一个 `ReadingPort`。ESC 关查找走 `../escapeOwner.ts` 的浮层层级（不再自己挂 document 监听）。
 - `EmptyMeta.tsx` — 空态页元信息：会话工作目录与 agent 预设。

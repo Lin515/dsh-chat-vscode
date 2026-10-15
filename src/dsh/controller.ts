@@ -80,7 +80,14 @@ import type {
   SessionControlFrame,
   SessionFollowFrame,
 } from "./protocol";
+import { SCHEDULE_CHANGED_EVENT } from "./protocol";
 import { jobFollowFrameFromWire, jobItemsFromWire, jobRowsFromFrame } from "./jobView";
+import {
+  scheduleDeleteOutcome,
+  scheduleEntriesFromCatalog,
+  scheduleHistoryFromWire,
+  scheduleUpdateOutcome,
+} from "./scheduleView";
 import {
   ServerNotRunningError,
   SupervisorManager,
@@ -199,6 +206,15 @@ const FOLLOW_RETRY_MAX = 5;
  * 800ms 足够把同一批收尾合到一次请求里，而用户几乎察觉不到这点延迟。
  */
 const SUBAGENT_TITLES_DEBOUNCE_MS = 800;
+
+/**
+ * 一次执行记录读取多少条。
+ *
+ * 20 与官方详情页「打开记录时请求最新 20 条」同口径：投递记录只有发生时刻与当时的
+ * 指令，一页够铺满一屏；更早的由「加载更早」按游标续取。服务端允许 1–100，
+ * 这里取小值是因为**读取次数**比单页体积更值得省（一次点击一页）。
+ */
+const SCHEDULE_HISTORY_PAGE = 20;
 
 /** 读取编辑节点 diff 的排版设置（auto / unified / split，缺省自适应）。 */
 function readDiffLayout(): DiffLayout {
@@ -2982,6 +2998,13 @@ export class ChatController implements vscode.Disposable {
     // 子代理目录也跟着重拉一次（官方 `handleConnected` 同款）：掉线期间建立的子代理
     // 在那段时间没有任何帧能到，而重放只覆盖跟随窗口——不重拉就漏掉窗口外的那些。
     for (const scope of this.scopes.values()) void this.refreshSubagentCatalog(scope);
+    // 自动化任务同理，而且更必要：`schedule/changed` 是**广播**，掉线期间的那几次
+    // 广播没有任何重放机制——不重拉就会一直显示掉线前的任务集（官方客户端同样在
+    // 连接重置后刷新目录）。判据是「有没有人在等」（`schedulesWanted`），不是「上次
+    // 读到了没有」：断开时打开面板的域状态会是 `error`，但它同样需要补这一次读取。
+    for (const scope of this.scopes.values()) {
+      if (scope.schedulesWanted) void this.loadSchedules(scope, true);
+    }
     this.openControlStream();
     this.openEventsStream();
     this.openWorkspaceStream();
@@ -4513,6 +4536,11 @@ export class ChatController implements vscode.Disposable {
     // 而 RPC 是服务端按会话语料做的完整检索（见 `refreshSubagentCatalog`）。
     // 少了这一下，重载窗口/切会话回来必须点开面板才有列表（用户 2026-09-23 报的现场）。
     void this.refreshSubagentCatalog(scope);
+    // 自动化任务也**预取**一次（用户 2026-10-15 口径）：抽屉入口的指示灯要在
+    // **从没打开过面板**的会话上就亮得起来，而它吃的正是这份清单——面板只是同一份
+    // 数据的详细视图。静默读（不动 `schedulesStatus`），失败就当没读到、下次再试。
+    scope.schedulesWanted = true;
+    void this.loadSchedules(scope, true);
     // 重开控制流拿新会话的 baseline（队列/任务/投影）：baseline 是全量集合，
     // 多取一次是幂等的
     this.openControlStream();
@@ -6068,6 +6096,157 @@ export class ChatController implements vscode.Disposable {
     });
   }
 
+  // ---------- 自动化任务（DSH schedule） ----------
+
+  /**
+   * 读一次自动化任务目录，按**本会话**过滤后落进域。
+   *
+   * 为什么要全局目录而不是 `schedule/list`：`list` 只回当前会话的**活跃**任务，于是
+   * 一条一次性任务投递完就从这个面板里消失了（它变成 `inactive`），用户再也看不到、
+   * 也删不掉它。目录同时带回 `status` 与最近一次投递，正是「跑完的还在不在」要的信息。
+   *
+   * `silent` 是给「后台刷新」（`schedule/changed` 广播、socket 重连）用的：那时**不动**
+   * `schedulesStatus`，界面停在已读到的内容上，刷新失败也不把面板打回空态。
+   *
+   * 两条在途纪律与 `refreshSubagentCatalog` 同款：域可能已经被回收（或客户端被换掉），
+   * 迟到的响应不许写进别人的域。
+   */
+  private async loadSchedules(scope: SessionScope, silent = false): Promise<void> {
+    const client = this.client;
+    if (!client) {
+      // 没连上：这不是「没有任务」也不是「服务端不支持」。把状态落成 `error`，
+      // 面板如实说「读取失败」；`schedulesWanted` 让断线重连后自动补读一次。
+      if (!silent) {
+        scope.schedulesStatus = "error";
+        this.deliver(scope.sessionId, {
+          type: "patch",
+          patch: sessionPatch(this.sessionSource(scope), ["schedulesStatus"]),
+        });
+      }
+      return;
+    }
+    if (!silent) {
+      scope.schedulesStatus = "loading";
+      this.deliver(scope.sessionId, {
+        type: "patch",
+        patch: sessionPatch(this.sessionSource(scope), ["schedulesStatus"]),
+      });
+    }
+    let value: unknown;
+    try {
+      value = await client.scheduleCatalog();
+    } catch (error) {
+      if (this.scopes.get(scope.sessionId) !== scope || this.client !== client) return;
+      // 端点不存在 = 这个部署没有自动化任务能力（≤ 0.1.7-rc.1）：这是一个**结论**，
+      // 与「这次没拿到」不同，界面据此显示能力缺失而不是空态。其余失败保留下一次机会。
+      if (endpointAbsent(error)) {
+        scope.schedulesStatus = "unsupported";
+        scope.schedules = [];
+        scope.scheduleExpected.clear();
+        this.log(`[schedule] 这个服务端没有 schedule 端点（会话=${scope.sessionId}）：${this.describeError(error)}`);
+      } else if (!silent) {
+        scope.schedulesStatus = "error";
+        this.log(`[schedule] 目录读取失败（会话=${scope.sessionId}）：${this.describeError(error)}`);
+      } else {
+        // 后台刷新（预取 / 广播 / 重连）失败：**保留上次读到的那份**，连状态也不动——
+        // 一次网络抖动不该把「已读到 3 条」改写成「读取失败」，更不该让入口的指示灯
+        // 因为一次失败就熄掉（那是替一次没落定的读取下结论）。
+        this.log(`[schedule] 后台刷新失败，保留上次结果（会话=${scope.sessionId}）：${this.describeError(error)}`);
+        return;
+      }
+      this.deliver(scope.sessionId, {
+        type: "patch",
+        patch: sessionPatch(this.sessionSource(scope), ["schedules", "schedulesStatus"]),
+      });
+      return;
+    }
+    if (this.scopes.get(scope.sessionId) !== scope || this.client !== client) return;
+    const entries = scheduleEntriesFromCatalog(value).filter((entry) => entry.item.sessionId === scope.sessionId);
+    scope.schedules = entries.map((entry) => entry.item);
+    scope.scheduleExpected.clear();
+    for (const entry of entries) {
+      if (entry.expected) scope.scheduleExpected.set(entry.item.id, entry.expected);
+    }
+    scope.schedulesStatus = "ready";
+    this.log(
+      `[schedule] 本会话自动化任务 ${scope.schedules.length} 条（会话=${scope.sessionId}` +
+        `${silent ? "，后台刷新" : ""}）`,
+    );
+    this.deliver(scope.sessionId, {
+      type: "patch",
+      patch: sessionPatch(this.sessionSource(scope), ["schedules", "schedulesStatus"]),
+    });
+  }
+
+  /**
+   * 回一页执行记录。
+   *
+   * **每条请求都要回帧**（连不上 / 没绑定会话 / 服务端拒绝都算）：详情区的「正在读取」
+   * 只认这一帧收场。三种「没有记录」分开表达，见 `shared/ipc.ts` 的帧注释。
+   */
+  private async sendScheduleHistory(
+    viewId: string,
+    scope: SessionScope | undefined,
+    id: string,
+    before: string | undefined,
+  ): Promise<void> {
+    const mode = before === undefined ? "replace" : "append";
+    const client = this.client;
+    if (!client || !scope) {
+      this.emitToView(viewId, {
+        type: "schedules/history",
+        id,
+        mode,
+        records: [],
+        earlierRecordsUnavailable: false,
+        earlierRecordsPruned: false,
+        hostUnavailable: true,
+      });
+      return;
+    }
+    // 任务的**原始绑定**才是这条读取的会话（契约要求 `{sessionId, id}`）：目录里
+    // 那一条带着它，拿当前窗口绑的会话去问在跨会话的场景下会查不到（`schedule_not_found`）。
+    const binding = scope.schedules.find((entry) => entry.id === id)?.sessionId ?? scope.sessionId;
+    try {
+      const value = await client.scheduleHistory(binding, id, SCHEDULE_HISTORY_PAGE, before);
+      const page = scheduleHistoryFromWire(value);
+      if (!page) {
+        this.emitToView(viewId, {
+          type: "schedules/history",
+          id,
+          mode,
+          records: [],
+          earlierRecordsUnavailable: false,
+          earlierRecordsPruned: false,
+          error: "schedule/history: 认不出的响应",
+        });
+        return;
+      }
+      this.emitToView(viewId, {
+        type: "schedules/history",
+        id,
+        mode,
+        records: page.records,
+        nextBefore: page.nextBefore,
+        earlierRecordsUnavailable: page.earlierRecordsUnavailable,
+        earlierRecordsPruned: page.earlierRecordsPruned,
+        retention: page.retention,
+        code: page.code,
+      });
+    } catch (error) {
+      this.log(`[schedule] 执行记录读取失败（id=${id}）：${this.describeError(error)}`);
+      this.emitToView(viewId, {
+        type: "schedules/history",
+        id,
+        mode,
+        records: [],
+        earlierRecordsUnavailable: false,
+        earlierRecordsPruned: false,
+        error: this.describeError(error),
+      });
+    }
+  }
+
   // ---------- 主机事件（审批 / 提问） ----------
 
   private openEventsStream(): void {
@@ -6098,6 +6277,17 @@ export class ChatController implements vscode.Disposable {
       // 变更，所以在交给配置路由之前先接住——此前它落进 `ConfigChangeRouter` 的 default
       // 被静默丢掉，而官方前端正是靠这条中继维护 running（见 `dsh/sessionStatus.ts`）。
       if (this.applySessionStatus(frame.event, frame.args ?? [])) return;
+      // 自动化任务集变了（另一个窗口改了时间、删了任务，或某个任务到点投递后状态
+      // 变了）：只刷新**已经读过**的会话域。从没打开过面板的会话不因此多打一次 RPC，
+      // 它下次打开时会现读一次（`listSchedules`）。
+      if (frame.event === SCHEDULE_CHANGED_EVENT) {
+        for (const scope of this.scopes.values()) {
+          // `unsupported` 不在此列：那个部署根本没有这条广播的来源，真收到也只说明
+          // 结论过期，等用户下次打开面板现读即可（不为一个已判定的缺失反复打请求）。
+          if (scope.schedulesWanted && scope.schedulesStatus !== "unsupported") void this.loadSchedules(scope, true);
+        }
+        return;
+      }
       this.configChanges.handle(frame.event, frame.args ?? []);
       return;
     }
@@ -7030,6 +7220,121 @@ export class ChatController implements vscode.Disposable {
       case "unobserveJob":
         this.closeJobWatch(viewId);
         break;
+
+      case "listSchedules": {
+        // 面板打开（或用户手动刷新）：读一次目录。没绑定会话就没有可读的东西——
+        // 界面那边此时整条面板都是空态，不必回任何帧。
+        const scope = this.scopeOfView(viewId);
+        this.log(`[schedule] 面板打开：读取会话=${scope?.sessionId ?? "无"} 的自动化任务`);
+        if (scope) {
+          // 「有人在等这份数据」：断线重连后要补读的正是这些域（见 `onConnected`）
+          scope.schedulesWanted = true;
+          await this.loadSchedules(scope);
+        }
+        break;
+      }
+
+      case "scheduleHistory":
+        await this.sendScheduleHistory(viewId, this.scopeOfView(viewId), message.id, message.before);
+        break;
+
+      case "updateSchedule": {
+        // 运行时间编辑（比较并交换）。**每条路都要回 `schedules/result`**：界面的
+        // 「正在保存」只认这一帧收场。`expected` 与原始会话绑定都取自读取时留下的
+        // 原文——界面那份视图模型已经丢掉了原始拼写（见 `scope.scheduleExpected`）。
+        const scope = this.scopeOfView(viewId);
+        const expected = scope?.scheduleExpected.get(message.id);
+        const item = scope?.schedules.find((entry) => entry.id === message.id);
+        if (!this.client || !scope || !expected || !item) {
+          this.log(
+            `[schedule] 修改没法发出：${this.client ? "" : "未连接"}${
+              scope ? (expected ? (item ? "" : "，名册里已没有这一条") : "，没有可用的比较基准") : "没有绑定会话"
+            }（id=${message.id}）`,
+          );
+          this.emitToView(viewId, {
+            type: "schedules/result",
+            op: "update",
+            id: message.id,
+            ok: false,
+            // 名册里已经没有这一条 → 任务不存在；名册里有、但基准读不出来（词表外的
+            // 种类 / 缺字段）→ 按冲突报：界面会说「重新打开详情再改」，而重读一次
+            // 正是能拿到可用基准的那条路。
+            code: scope === undefined ? undefined : item === undefined ? "schedule_not_found" : "schedule_conflict",
+          });
+          break;
+        }
+        try {
+          const value = await this.client.scheduleUpdate(
+            item.sessionId,
+            message.id,
+            expected,
+            message.change,
+          );
+          const outcome = scheduleUpdateOutcome(value);
+          this.log(
+            `[schedule] 修改${outcome.ok ? "已提交" : "未生效"}（id=${message.id}` +
+              `${outcome.code ? `，code=${outcome.code}` : ""}）`,
+          );
+          this.emitToView(viewId, {
+            type: "schedules/result",
+            op: "update",
+            id: message.id,
+            ok: outcome.ok,
+            code: outcome.code,
+          });
+          // 成功要读回权威值（重锚后的目标时刻只有服务端算得出）；没生效的三种
+          // 「基准过期」类也要重读，否则用户会拿着同一份过期基准反复撞冲突。
+          if (outcome.ok || outcome.code === "schedule_conflict" || outcome.code === "schedule_ended" || outcome.code === "schedule_not_found") {
+            void this.loadSchedules(scope, true);
+          }
+        } catch (error) {
+          this.log(`[schedule] 修改请求失败（id=${message.id}）：${this.describeError(error)}`);
+          this.emitToView(viewId, { type: "schedules/result", op: "update", id: message.id, ok: false });
+        }
+        break;
+      }
+
+      case "deleteSchedule": {
+        const scope = this.scopeOfView(viewId);
+        const item = scope?.schedules.find((entry) => entry.id === message.id);
+        if (!this.client || !scope || !item) {
+          this.log(
+            `[schedule] 删除没法发出：${this.client ? "" : "未连接"}${
+              scope ? (item ? "" : "，名册里已没有这一条") : "没有绑定会话"
+            }（id=${message.id}）`,
+          );
+          this.emitToView(viewId, {
+            type: "schedules/result",
+            op: "delete",
+            id: message.id,
+            ok: false,
+            code: item ? undefined : "schedule_not_found",
+          });
+          break;
+        }
+        try {
+          const value = await this.client.scheduleDelete(item.sessionId, message.id);
+          const outcome = scheduleDeleteOutcome(value);
+          this.log(
+            `[schedule] 删除${outcome.ok ? "已完成" : "未生效"}（id=${message.id}` +
+              `${outcome.code ? `，code=${outcome.code}` : ""}）`,
+          );
+          this.emitToView(viewId, {
+            type: "schedules/result",
+            op: "delete",
+            id: message.id,
+            ok: outcome.ok,
+            code: outcome.code,
+          });
+          // 删掉了要读回权威值（列表里那一行才会消失）；「本来就没有」也读一次——
+          // 那说明本地的名册已经过期，正好借这一下对齐。
+          if (outcome.ok || outcome.code === "schedule_not_found") void this.loadSchedules(scope, true);
+        } catch (error) {
+          this.log(`[schedule] 删除请求失败（id=${message.id}）：${this.describeError(error)}`);
+          this.emitToView(viewId, { type: "schedules/result", op: "delete", id: message.id, ok: false });
+        }
+        break;
+      }
 
       case "listTrajectory":
         await this.sendTrajectory(viewId);

@@ -92,6 +92,19 @@
   （未消费）。
 - **两处只增成员**（0.2.0-rc.2，未消费）：网关多了 `hasLiveClient()`；`session/fork` 的参数多了
   可选的 `onCreated` 回调（子会话进目录之后、可选改名之前触发）。
+- **自动化任务可管理**（0.1.7-rc.2 起，`@deepseek-ai/dsh-schedule` 的 `schedule` 命名空间；本扩展
+  自 0.10.6 起消费）：五个一元端点，参数一律走 `{request: {…}}`（`catalog` 零形参）——
+  `schedule/catalog`（回全部任务，每条是 `ScheduleRecord` + `sessionId` + `status` +
+  `lastDelivery`）、`schedule/list`（只回**某会话的活跃**任务）、`schedule/history`
+  （`{sessionId, id, limit: 1–100, before?}`，回最新在前的 `records` / `nextBefore` /
+  `earlierRecordsUnavailable` / `earlierRecordsPruned` / `retention`；任务或游标找不到时回
+  `code` 而不是抛错）、`schedule/update`（比较并交换：`{sessionId, id, expected, change?, title?,
+  prompt?}`，`expected` 是编辑开始时读到的完整记录；`updated: false` 带
+  `schedule_conflict` / `schedule_ended` / `schedule_not_found`）、`schedule/delete`
+  （`{deleted: true}` 或 `{deleted: false, code: 'schedule_not_found'}`；**硬删**，任务行与投递
+  记录一起没）。规则种类是 `after` / `at` / `every` / `daily` / `weekly` / `cron`，`change`
+  只接受后五档（相对延迟不可改）；提交与变更后由 `schedule/changed`（零载荷 emit）通知客户端
+  重取目录。旧服务端（≤ 0.1.7-rc.1）没有这个命名空间，请求 404。
 
 ---
 

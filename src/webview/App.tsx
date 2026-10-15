@@ -54,7 +54,7 @@ import {
   useEscapeLayer,
 } from "./escapeOwner";
 import { usePageContextMenu } from "./contextMenu";
-import { jobsBusy, subagentsBusy } from "./activity";
+import { jobsEntrySignal, subagentsBusy } from "./activity";
 import { subagentRowFace } from "./subagentRow";
 import { sessionDirPath } from "./sessionDir";
 import { splitPath } from "./pathDisplay";
@@ -90,9 +90,11 @@ function Header({
   };
 
   // 「现在有东西在跑吗」（用户 2026-09-19 口径）：判据是纯函数，见 `activity.ts`。
-  // 子代理目录上有在跑的，计数触发器会亮出状态点（同一判据）。
+  // 子代理目录上有在跑的，计数触发器会亮出状态点（同一判据）；后台任务那枚还看
+  // **待执行的自动化任务**（用户 2026-10-15 口径——同一个抽屉里还有东西排着），
+  // 那一档亮而不呼吸。
   const agentsBusy = subagentsBusy(state.subagentEntries, state.jobs);
-  const jobsRunning = jobsBusy(state.jobs);
+  const jobsSignal = jobsEntrySignal(state.jobs, state.schedules);
   // 子代理页：标题栏显示的本来就是「主会话的标题」——把它变成可点的返回入口
   // （官方 crumbs 左半的 openTitle 同款），后面只接 `/ 子代理标题`，不重复一节。
   const child = state.subagent;
@@ -138,7 +140,9 @@ function Header({
       </button>
       <button
         data-mini="hide"
-        className={`icon-btn${state.panel === "jobs" ? " is-active" : ""}${jobsRunning ? " is-busy" : ""}`}
+        className={`icon-btn${state.panel === "jobs" ? " is-active" : ""}${
+          jobsSignal === "busy" ? " is-busy" : jobsSignal === "pending" ? " is-pending" : ""
+        }`}
         title={texts.jobs}
         onClick={() => toggle("jobs", () => post({ type: "listJobs" }))}
       >
@@ -1126,6 +1130,11 @@ export function App() {
             jobs={state.jobs}
             outputs={state.jobOutputs}
             killResult={state.jobKill}
+            schedules={state.schedules}
+            schedulesStatus={state.schedulesStatus}
+            scheduleHistory={state.scheduleHistory}
+            scheduleResult={state.scheduleResult}
+            sessionId={state.session?.id}
             dispatch={dispatch}
             onClose={closePanel}
           />

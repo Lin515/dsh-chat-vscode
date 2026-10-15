@@ -240,6 +240,20 @@ export const METHODS = {
    * 如实回给界面（「停止失败」一档），不做能力探测。
    */
   jobKill: "job/kill",
+  /**
+   * 自动化任务（`dsh-schedule` 的 `schedule` 命名空间，0.1.7-rc.2 起）。
+   *
+   * 五个端点各有自己的位置参数名（网关只认声明的那些字段）：
+   * `catalog` 零形参、其余四个收 `{request: …}`。`update` / `delete` 在契约上还有
+   * 一个可选的 `AbortSignal`，那是宿主侧的取消信号、不过线。
+   *
+   * 旧服务端（≤ 0.1.7-rc.1）没有这个命名空间，整个请求 404——调用方按
+   * `endpointAbsent` 认出「这个部署没有自动化任务能力」，而不是当成一次失败。
+   */
+  scheduleCatalog: "schedule/catalog",
+  scheduleHistory: "schedule/history",
+  scheduleUpdate: "schedule/update",
+  scheduleDelete: "schedule/delete",
   eventsResult: "$events/result",
 } as const;
 
@@ -331,6 +345,72 @@ export interface JobChunkWire {
   channel?: string;
   gapBefore?: true;
 }
+
+/**
+ * 自动化任务的线格式（`dsh-schedule` 的 `ScheduleCatalogEntry`）。
+ *
+ * 逐字段是 `unknown`：形状读取在 `dsh/scheduleView.ts` 一处完成（与 `JobViewWire`
+ * 同一条纪律——那里放宽成具体类型只是因为 job 的字段是扩展自己窄化过的）。
+ * 这一条带三个**只在目录里**的成员：`sessionId`（原始绑定）、`status`
+ * （`active` / `inactive`）与 `lastDelivery`（最近一次收件箱投递）。
+ */
+export interface ScheduleCatalogEntryWire {
+  id?: unknown;
+  kind?: unknown;
+  title?: unknown;
+  prompt?: unknown;
+  scheduledAt?: unknown;
+  afterSeconds?: unknown;
+  everySeconds?: unknown;
+  time?: unknown;
+  timeZone?: unknown;
+  weekdays?: unknown;
+  expression?: unknown;
+  sessionId?: unknown;
+  status?: unknown;
+  lastDelivery?: unknown;
+}
+
+/**
+ * `schedule/history` 的响应（`ScheduleDeliveryHistoryResult`）。
+ *
+ * 两支：成功那一支带 `records` 与保留口径；失败那一支带 `code`
+ * （`schedule_not_found` / `delivery_cursor_not_found`）——两者都不抛错，
+ * 所以调用方必须**先看 `code`**，不能拿空的 `records` 当「没有记录」。
+ */
+export interface ScheduleHistoryResultWire {
+  id?: unknown;
+  records?: unknown;
+  earlierRecordsUnavailable?: unknown;
+  earlierRecordsPruned?: unknown;
+  retention?: unknown;
+  nextBefore?: unknown;
+  code?: unknown;
+}
+
+/** `schedule/update` 的响应（`ScheduleUpdateResult`）：改成了、没改成、或被拒。 */
+export interface ScheduleUpdateResultWire {
+  id?: unknown;
+  updated?: unknown;
+  record?: unknown;
+  code?: unknown;
+  message?: unknown;
+}
+
+/** `schedule/delete` 的响应（`ScheduleDeleteResult`）：删掉了，或本来就没有。 */
+export interface ScheduleDeleteResultWire {
+  id?: unknown;
+  deleted?: unknown;
+  code?: unknown;
+}
+
+/**
+ * 任务集变化的广播（`schedule/changed`，零载荷）。
+ *
+ * 官方口径：客户端收到它就重取全局目录与该会话的活跃清单。本扩展只用它刷新
+ * **已经读过**的会话域（从没打开过面板的会话不因此多打一次 RPC）。
+ */
+export const SCHEDULE_CHANGED_EVENT = "schedule/changed";
 
 /** 会话事件里我们主动渲染的类型；其余按下面的 `SILENT_EVENT_TYPES` / `ignorable` 规则降级。 */
 export const RENDERED_EVENT_TYPES: ReadonlySet<string> = new Set([

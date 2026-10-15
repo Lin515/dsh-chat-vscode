@@ -1,18 +1,21 @@
 /**
  * 顶栏两颗面板入口的「有东西在跑」判据（用户 2026-09-19 口径）：
  * 有子代理在跑 → 子代理按钮亮起并呼吸；有后台任务在跑 → 后台任务按钮亮起并呼吸。
+ * 用户 2026-10-15 口径：**有待执行的自动化任务时，后台任务按钮同样要亮**（那个抽屉
+ * 里还有东西排着）。
  *
- * 为什么单独钉：判据横跨两份数据（子代理目录的 `activity` 与后台任务的 `status`），
- * 而且**只认「活的」那一份**——判成常亮就成了噪音，判成不亮则用户看不出还在跑。
- * 界面侧只做渲染，改坏了不会报错（`App.tsx` 的 Header 里没有别的证据）。
+ * 为什么单独钉：判据横跨两份数据（子代理目录的 `activity` 与后台任务的 `status`，
+ * 外加自动化任务的 `status`），而且**只认「活的」那一份**——判成常亮就成了噪音，
+ * 判成不亮则用户看不出还在跑。界面侧只做渲染，改坏了不会报错（`App.tsx` 的 Header
+ * 里没有别的证据）。
  *
  * 运行：npm test（登记在 esbuild.scripts.mjs 的 entries）
  */
 import assert from "node:assert";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { JobItemView, SubagentView, TodoView } from "../src/shared/chat";
-import { jobsBusy, stepDotClass, subagentsBusy } from "../src/webview/activity";
+import type { JobItemView, ScheduleItemView, SubagentView, TodoView } from "../src/shared/chat";
+import { jobsEntrySignal, stepDotClass, subagentsBusy } from "../src/webview/activity";
 
 const job = (patch: Partial<JobItemView>): JobItemView => ({
   id: "j",
@@ -23,6 +26,18 @@ const job = (patch: Partial<JobItemView>): JobItemView => ({
   ...patch,
 });
 
+const schedule = (patch: Partial<ScheduleItemView>): ScheduleItemView => ({
+  id: "schedule-1",
+  sessionId: "s1",
+  title: "跑一遍回归测试",
+  prompt: "把 npm test 跑一遍",
+  kind: "every",
+  status: "active",
+  everySeconds: 1800,
+  scheduledAt: "2026-10-15T02:00:00.000Z",
+  ...patch,
+});
+
 const entry = (patch: Partial<SubagentView>): SubagentView => ({
   id: "s",
   label: "调研 MCP 工具清单",
@@ -30,26 +45,63 @@ const entry = (patch: Partial<SubagentView>): SubagentView => ({
   ...patch,
 });
 
-// ---------- 1. 后台任务：live（running / stopping）才算在跑 ----------
+// ---------- 1. 后台任务：live（running / stopping）才算在跑（busy 档） ----------
 {
-  assert.strictEqual(jobsBusy([]), false, "没有任务 = 不亮");
-  assert.strictEqual(jobsBusy([job({})]), true, "running = 在跑");
-  assert.strictEqual(jobsBusy([job({ status: "stopping" })]), true, "stopping 还没结束 = 也算在跑");
+  assert.strictEqual(jobsEntrySignal([], []), "off", "没有任务 = 不亮");
+  assert.strictEqual(jobsEntrySignal([job({})], []), "busy", "running = 在跑（亮且呼吸）");
+  assert.strictEqual(jobsEntrySignal([job({ status: "stopping" })], []), "busy", "stopping 还没结束 = 也算在跑");
   for (const status of ["completed", "killed", "failed"]) {
-    assert.strictEqual(jobsBusy([job({ status })]), false, `${status} = 已收场，不亮`);
+    assert.strictEqual(jobsEntrySignal([job({ status })], []), "off", `${status} = 已收场，不亮`);
   }
   // 服务端将来新增的状态：不认识就不认领（不猜「已完成」也不猜「在跑」）
-  assert.strictEqual(jobsBusy([job({ status: "paused" })]), false, "未知状态不点亮");
+  assert.strictEqual(jobsEntrySignal([job({ status: "paused" })], []), "off", "未知状态不点亮");
   // 子代理那一路不点亮后台任务按钮（用户 2026-09-24 口径：面板不收子代理，
   // 按钮信号同口径——否则「按钮亮着、面板却是空的」）
-  assert.strictEqual(jobsBusy([job({ kind: "subagent" })]), false, "只有子代理在跑 = 后台任务按钮不亮");
+  assert.strictEqual(jobsEntrySignal([job({ kind: "subagent" })], []), "off", "只有子代理在跑 = 后台任务按钮不亮");
   assert.strictEqual(
-    jobsBusy([job({ kind: "subagent" }), job({ id: "j2" })]),
-    true,
+    jobsEntrySignal([job({ kind: "subagent" }), job({ id: "j2" })], []),
+    "busy",
     "混着时普通后台任务照样点亮",
   );
 }
 console.log("activity: 后台任务的活性判据 ✓");
+
+// ---------- 1b. 自动化任务：待执行（active）亮起**但不呼吸**（pending 档） ----------
+//
+// 用户 2026-10-15 口径：那个抽屉里还有排着的自动化任务时，入口不该看起来是空的。
+// 判据只认 `status: 'active'`（服务端说的「还会触发」）：已结束与词表外的状态都不点
+// ——与后台任务那边同一条「不认识就不认领」的纪律。
+//
+// 档位分开的理由：`pending` 时什么都没在执行，而这只界面把「呼吸」当作活动的专用
+// 信号（运行圆点 / 思考鲸鱼 / 待办刻点）；一条每日任务配上一段永远跑的动画，正是
+// 用户自己抱怨过的那类谎报（见 `stepDotClass` 的注释与 `ToDo.md`）。
+{
+  assert.strictEqual(jobsEntrySignal([], [schedule({})]), "pending", "有待执行的任务 = 亮起（不呼吸）");
+  assert.strictEqual(jobsEntrySignal([], [schedule({ status: "inactive" })]), "off", "已结束（一次性投递完）= 不亮");
+  assert.strictEqual(jobsEntrySignal([], [schedule({ status: "paused" })]), "off", "词表外的状态不认领");
+  assert.strictEqual(
+    jobsEntrySignal([], [schedule({ status: "inactive" }), schedule({ id: "schedule-2" })]),
+    "pending",
+    "名册里有待执行的（哪怕混着已结束的）就点亮",
+  );
+  assert.strictEqual(
+    jobsEntrySignal([job({ status: "completed" })], [schedule({})]),
+    "pending",
+    "后台任务已收场、自动化任务还排着 = 亮起（不呼吸）",
+  );
+  // 有东西真的在跑时**以 busy 为准**：那一刻该给的是活动信号
+  assert.strictEqual(
+    jobsEntrySignal([job({})], [schedule({})]),
+    "busy",
+    "同时在跑 → busy（呼吸），不因为还有排着的就降成 pending",
+  );
+  assert.strictEqual(
+    jobsEntrySignal([job({ kind: "subagent" })], [schedule({ kind: "cron", expression: "0 9 * * 1-5" })]),
+    "pending",
+    "与子代理的过滤互不影响（两条来源各判各的）",
+  );
+}
+console.log("activity: 自动化任务的待执行判据（亮而不呼吸） ✓");
 
 // ---------- 2. 子代理：目录的 activity 是权威值 ----------
 {
@@ -100,8 +152,8 @@ console.log("activity: 投影目录 + 后台任务兜底 ✓");
     "Header 的子代理信号必须用 subagentsBusy（喂目录 + 后台任务两条来源）",
   );
   assert.ok(
-    /const jobsRunning = jobsBusy\(state\.jobs\);/.test(app),
-    "Header 的后台任务按钮必须用 jobsBusy",
+    /const jobsSignal = jobsEntrySignal\(state\.jobs, state\.schedules\);/.test(app),
+    "Header 的后台任务按钮必须用 jobsEntrySignal（喂后台任务 + 自动化任务两条来源）",
   );
   // 子代理没有独立按钮了：信号落在标题右侧的触发器上（.subagent-trigger）
   assert.ok(
@@ -113,10 +165,10 @@ console.log("activity: 投影目录 + 后台任务兜底 ✓");
     "子代理触发器要有 is-busy 态",
   );
   assert.ok(
-    /className=\{`icon-btn\$\{state\.panel === "jobs" \? " is-active" : ""\}\$\{jobsRunning \? " is-busy" : ""\}`\}/.test(
+    /className=\{`icon-btn\$\{state\.panel === "jobs" \? " is-active" : ""\}\$\{\s*\n?\s*jobsSignal === "busy" \? " is-busy" : jobsSignal === "pending" \? " is-pending" : ""\s*\n?\s*\}`\}/.test(
       app,
     ),
-    "后台任务按钮要有 is-busy 态",
+    "后台任务按钮要有 is-busy（在跑）与 is-pending（排着，亮而不呼吸）两档",
   );
 
   // 后台任务面板不收子代理行（用户 2026-09-24 口径）：过滤必须真的落在面板里，
@@ -144,10 +196,23 @@ console.log("activity: 投影目录 + 后台任务兜底 ✓");
     /color:\s*var\(--info\)/.test(group(".icon-btn.is-busy,")),
     "亮起来用活动色 var(--info)（与运行圆点同色）",
   );
+  // 「排着」那一档：同样是活动色，但**不许有动画**——那是活动的专用信号
+  assert.ok(
+    /color:\s*var\(--info\)/.test(group(".icon-btn.is-pending,")),
+    "待执行那一档也用活动色 var(--info)",
+  );
+  assert.ok(
+    /animation:\s*none/.test(group(".icon-btn.is-pending > svg")),
+    "待执行那一档必须关掉呼吸（排着不是在跑，见 activity.ts 的 JobsEntrySignal）",
+  );
   // 同特异性下后者胜：这条规则必须排在 .icon-btn.is-active 之后，否则面板开着时颜色被吃掉
   assert.ok(
     css.indexOf(".icon-btn.is-busy") > css.indexOf(".icon-btn.is-active"),
     ".icon-btn.is-busy 必须写在 .icon-btn.is-active 之后（同特异性后者胜）",
+  );
+  assert.ok(
+    css.indexOf(".icon-btn.is-pending") > css.indexOf(".icon-btn.is-active"),
+    ".icon-btn.is-pending 必须写在 .icon-btn.is-active 之后（同特异性后者胜）",
   );
   // 触发器的状态点必须复用运行圆点那组关键帧（同语义指示器同节奏）：
   // 组件给点挂的是 dot-running，样式里不许再为它造第二套动画

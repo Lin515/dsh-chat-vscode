@@ -150,6 +150,19 @@
   animation: icon-glow 1.6s ease-in-out infinite;
 }
 
+/* 面板入口的「有东西排着」态（用户 2026-10-15 口径：待执行的自动化任务）。
+   **只上色、不呼吸**——排着不是在跑，一条每日 / 固定间隔任务会让这枚入口一直亮着，
+   给它配一段永远跑的动画就是谎报活动（与 `.dot-running.is-idle` 同一套口径：
+   亮色留住、动画关掉）。规则同样写在 `.is-active` 之后，面板开着时也看得见。 */
+.icon-btn.is-pending,
+.icon-btn.is-pending:hover {
+  color: var(--info);
+}
+
+.icon-btn.is-pending > svg {
+  animation: none;
+}
+
 /* 复制成功的那 1s：图标换成对勾并亮成成功色（整界面共用，`IconCopyButton` /
    `CopyButton` 两处同款）。`:hover` 那条必须一起写——`.icon-btn:hover` 与本条
    同特异性，后写的赢，只写一条会在悬停时被吃回灰。 */
@@ -5031,6 +5044,227 @@ textarea.composer-input {
 .job-stop-label {
   font-size: var(--font-size-2xs);
   line-height: 1;
+}
+
+/* ============================ 自动化任务分区 ============================ */
+
+/* 抽屉里的分区（自动化任务 / 后台任务）：标题 + 内容，两块之间一条分隔线。
+   两个分区各自渲染自己的空态，所以这里不给整块设最小高度。 */
+.panel-section {
+  display: flex;
+  flex-direction: column;
+  padding: calc(4 * var(--dp)) 0 calc(2 * var(--dp));
+}
+
+.panel-section + .panel-section {
+  border-top: 1px solid var(--border);
+  margin-top: calc(4 * var(--dp));
+}
+
+.panel-section-title {
+  padding: calc(4 * var(--dp)) calc(8 * var(--dp)) calc(2 * var(--dp));
+  font-size: var(--font-size-2xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.schedule-card {
+  display: flex;
+  flex-direction: column;
+  gap: calc(4 * var(--dp));
+  padding: calc(6 * var(--dp)) calc(8 * var(--dp));
+  border: 1px solid var(--border);
+  border-radius: calc(4 * var(--dp));
+}
+
+.schedule-card-title {
+  font-size: var(--font-size-2xs);
+  font-weight: 600;
+  color: var(--description);
+}
+
+/* 一行「标签 + 控件」：标签固定一块，控件吃掉剩下的宽度。英文标签（Time zone /
+   Interval）比中文长得多，所以标签不按字数定宽、也不折行——控件自己收缩。 */
+.schedule-field {
+  display: flex;
+  align-items: center;
+  gap: calc(6 * var(--dp));
+  min-width: 0;
+}
+
+.schedule-field > label,
+.schedule-field > .schedule-field-label {
+  flex: 0 0 auto;
+  min-width: calc(64 * var(--dp));
+  font-size: var(--font-size-2xs);
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+/* 星期那一行横排放不下七枚按钮（英文 Mon…Sun 比中文还宽）：标签单独一行，
+   按钮整行铺开——挤在同一行会折成两排，看起来像是两组不同的星期。 */
+.schedule-field.is-stacked {
+  flex-direction: column;
+  align-items: stretch;
+  gap: calc(3 * var(--dp));
+}
+
+.schedule-field input,
+.schedule-field select {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: calc(2 * var(--dp)) calc(4 * var(--dp));
+  border: 1px solid var(--border);
+  border-radius: calc(4 * var(--dp));
+  background: var(--input-bg);
+  color: var(--input-fg);
+  font-size: var(--font-size-2xs);
+  font-family: inherit;
+}
+
+.schedule-cron-input {
+  font-family: var(--mono);
+}
+
+/* 星期多选：七枚小按钮一行放不下就换行（英文 Mon/Tue… 比中文宽） */
+.schedule-days {
+  display: flex;
+  flex-wrap: wrap;
+  gap: calc(3 * var(--dp));
+  min-width: 0;
+}
+
+.schedule-day {
+  padding: calc(1 * var(--dp)) calc(5 * var(--dp));
+  border: 1px solid var(--border);
+  border-radius: calc(3 * var(--dp));
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: var(--font-size-2xs);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.schedule-day.is-on {
+  border-color: var(--link);
+  color: var(--link);
+  background: color-mix(in srgb, var(--link) 12%, transparent);
+}
+
+.schedule-day:disabled,
+.schedule-field input:disabled,
+.schedule-field select:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+/* 有未保存修改时的操作行（官方 Save bar 同语义：只在草稿与存下来的值不同时出现） */
+.schedule-actions {
+  display: flex;
+  align-items: center;
+  gap: calc(6 * var(--dp));
+  min-width: 0;
+  padding-top: calc(2 * var(--dp));
+  border-top: 1px solid var(--border);
+}
+
+.schedule-unsaved {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--font-size-2xs);
+  color: var(--muted);
+}
+
+.schedule-btn {
+  flex: 0 0 auto;
+  padding: calc(2 * var(--dp)) calc(8 * var(--dp));
+  border: 1px solid var(--border);
+  border-radius: calc(4 * var(--dp));
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  font-size: var(--font-size-2xs);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.schedule-btn.is-primary {
+  border-color: var(--link);
+  background: color-mix(in srgb, var(--link) 14%, transparent);
+  color: var(--link);
+}
+
+.schedule-btn:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+/* 执行记录：发生时刻 + 当时真正发出的指令。指令可能很长，限高内滚（与任务详情的
+   输出区同一套处理）。 */
+.schedule-records {
+  display: flex;
+  flex-direction: column;
+  gap: calc(4 * var(--dp));
+}
+
+.schedule-record-list {
+  display: flex;
+  flex-direction: column;
+  gap: calc(4 * var(--dp));
+}
+
+.schedule-record {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: calc(6 * var(--dp));
+  align-items: start;
+  padding: calc(4 * var(--dp)) calc(6 * var(--dp));
+  border: 1px solid var(--border);
+  border-radius: calc(4 * var(--dp));
+}
+
+.schedule-record-time {
+  font-size: var(--font-size-2xs);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.schedule-record-prompt {
+  min-width: 0;
+  max-height: calc(72 * var(--dp));
+  overflow: auto;
+  font-size: var(--font-size-2xs);
+  color: var(--description);
+  overflow-wrap: anywhere;
+}
+
+.schedule-link {
+  align-self: flex-start;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--link);
+  font: inherit;
+  font-size: var(--font-size-2xs);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.schedule-link:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+/* 展开区里的指令正文：与工具行的详情一样限高内滚，别把面板撑长 */
+.schedule-prompt {
+  max-height: calc(96 * var(--dp));
 }
 
 /* ============================ to-do panel ============================ */

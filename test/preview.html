@@ -108,6 +108,160 @@
           }, 400),
         );
       }
+      // 自动化任务（DSH `schedule`）的预览夹具。
+      //
+      // 形状取自服务端契约 `ScheduleCatalogEntry`（`schedule/catalog` 的一条）经宿主
+      // 收窄后的视图模型（`ScheduleItemView`，见 src/shared/ipc.ts 与 dsh/scheduleView.ts）：
+      // 规则字段 + `sessionId` + `status` + `lastDelivery`。四条覆盖四种形态：
+      // 一次性（`at`）、固定间隔（`every`）、每日（`daily`，规则时区 = 本机时区时
+      // 频率行不名时区）、每周（`weekly`）+ 一条**已结束**的（`inactive`，投递过）。
+      // 预览里可以看到「过期在前、其余按目标时刻升序」的排序与两种状态点。
+      //
+      // 夹具在页面存活期间是**可变**的（`previewScheduleRows`）：保存与删除要让界面
+      // 看到权威值真的变了，否则「保存成功后草稿应换新」这条路径在预览里看不出效果
+      // （草稿仍然与旧值不同 → 一直亮着「有未保存的修改」，看着像 bug）。
+      var previewScheduleRows = null;
+      function previewSchedules() {
+        if (previewScheduleRows === null) {
+          previewScheduleRows = [
+            {
+              id: "schedule-1",
+              sessionId: "s1",
+              title: "跑一遍回归测试",
+              prompt: "把 npm test 跑一遍，红了就把失败的那几条贴出来。",
+              kind: "every",
+              status: "active",
+              everySeconds: 1800,
+              scheduledAt: new Date(Date.now() + 1800 * 1000).toISOString(),
+            },
+            {
+              id: "schedule-2",
+              sessionId: "s1",
+              title: "每日构建巡检",
+              prompt: "检查昨晚的构建产物：失败的流水线、新增的告警，各列一条结论。",
+              kind: "daily",
+              status: "active",
+              time: "23:00:00.000",
+              timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+              scheduledAt: new Date(Date.now() + 43200 * 1000).toISOString(),
+            },
+            {
+              id: "schedule-3",
+              sessionId: "s1",
+              title: "周五清理临时分支",
+              prompt: "把这一周合并过的临时分支列出来，确认可以删的再删。",
+              kind: "weekly",
+              status: "active",
+              time: "09:30:00.000",
+              timeZone: "UTC",
+              weekdays: [1, 3, 5],
+              scheduledAt: new Date(Date.now() + 300000 * 1000).toISOString(),
+            },
+            {
+              id: "schedule-4",
+              sessionId: "s1",
+              title: "工作日早间巡检",
+              prompt: "每个工作日 09:00 看一眼夜间告警与失败流水线，只报需要人处理的。",
+              kind: "cron",
+              status: "active",
+              expression: "0 9 * * 1-5",
+              timeZone: "UTC",
+              scheduledAt: new Date(Date.now() + 600000 * 1000).toISOString(),
+            },
+            {
+              id: "schedule-5",
+              sessionId: "s1",
+              title: "发布会提醒",
+              prompt: "提醒我把发版说明写进 CHANGELOG。",
+              kind: "at",
+              status: "inactive",
+              scheduledAt: new Date(Date.now() - 600 * 1000).toISOString(),
+              lastDelivery: {
+                scheduledAt: new Date(Date.now() - 600 * 1000).toISOString(),
+                deliveredAt: new Date(Date.now() - 599 * 1000).toISOString(),
+              },
+            },
+          ];
+        }
+        return previewScheduleRows.map(function (row) {
+          return Object.assign({}, row);
+        });
+      }
+      /** 保存：把提交的 `change` 应用到那一条（服务端会重锚目标，这里按各档粗算一次）。 */
+      function applyPreviewChange(id, change) {
+        previewSchedules();
+        previewScheduleRows = previewScheduleRows.map(function (row) {
+          if (row.id !== id) return row;
+          if (change.kind === "every") {
+            return Object.assign({}, row, {
+              kind: "every",
+              everySeconds: change.every_seconds,
+              scheduledAt: new Date(Date.now() + change.every_seconds * 1000).toISOString(),
+            });
+          }
+          if (change.kind === "daily") {
+            return Object.assign({}, row, {
+              kind: "daily",
+              time: change.daily.time,
+              timeZone: change.daily.time_zone,
+            });
+          }
+          if (change.kind === "weekly") {
+            return Object.assign({}, row, {
+              kind: "weekly",
+              time: change.weekly.time,
+              timeZone: change.weekly.time_zone,
+              weekdays: change.weekly.weekdays,
+            });
+          }
+          if (change.kind === "cron") {
+            return Object.assign({}, row, {
+              kind: "cron",
+              expression: change.cron.expression,
+              timeZone: change.cron.time_zone,
+            });
+          }
+          // 一次性：预览里把提交的本地日期时间按 UTC 解释（真服务端按那一档时区算）
+          return Object.assign({}, row, {
+            kind: "at",
+            scheduledAt: new Date(change.at.date + "T" + change.at.time + "Z").toISOString(),
+          });
+        });
+      }
+      /** 删除：真服务端是硬删（任务行与投递记录一起没）。 */
+      function removePreviewSchedule(id) {
+        previewSchedules();
+        previewScheduleRows = previewScheduleRows.filter(function (row) {
+          return row.id !== id;
+        });
+      }
+      // 执行记录：真实宿主会为展开的那一行回一帧 `schedules/history`（`mode: "replace"`
+      // 是最新一页、`append` 是「加载更早」）。这里按请求回帧，字段形状取自
+      // `ScheduleDeliveryHistoryResult`（records / nextBefore / 保留口径）。
+      function previewScheduleHistory(message) {
+        const older = message.before !== undefined;
+        const base = older ? 10 : 0;
+        var records = [];
+        for (var index = 0; index < (older ? 3 : 4); index += 1) {
+          var at = new Date(Date.now() - (base + index + 1) * 3600 * 1000);
+          records.push({
+            scheduledAt: at.toISOString(),
+            deliveredAt: new Date(at.getTime() + 2000).toISOString(),
+            prompt: index === 0 ? "把 npm test 跑一遍，红了就把失败的那几条贴出来。" : undefined,
+          });
+        }
+        window.__push({
+          type: "schedules/history",
+          id: message.id,
+          mode: older ? "append" : "replace",
+          records: records,
+          // 第一页给个游标：展开详情就能试「加载更早」
+          ...(older ? {} : { nextBefore: "msg-page-1" }),
+          earlierRecordsUnavailable: older,
+          earlierRecordsPruned: false,
+          retention: { days: 30, records: 200 },
+        });
+      }
       // 正文/附件里的占位图（真实链路给的是服务端字节的 data URL）：一张内联 SVG，
       // 形状一致、看得见。放在函数外、`__buildState` 也能引用（`scripts/previewFixture.test.ts`
       // 会把 `__buildState` 抽出来在 Node 里求值，所以那个函数体**不能**引用 window）。
@@ -134,6 +288,13 @@
               // 这里用宏任务复刻同样的时序：effect 里的 ready 发完，脚本才继续定义 __buildState
               setTimeout(function () {
                 window.__push({ type: "state", state: window.__buildState() });
+                // 自动化任务：真实宿主在**会话域建起来时**就静默预取一次（不等人打开
+                // 面板）——抽屉入口的指示灯就是吃这份数据。这里复刻同一时序，
+                // 否则预览里那颗按钮要等点开面板才会亮。
+                window.__push({
+                  type: "patch",
+                  patch: { schedules: previewSchedules(), schedulesStatus: "ready" },
+                });
               }, 0);
             }
             if (message && message.type === "resolveImages") {
@@ -159,6 +320,42 @@
             if (message && message.type === "unobserveJob") {
               // 收起 / 关面板：宿主取消那条流，帧到此为止
               stopJobStream();
+            }
+            if (message && message.type === "listSchedules") {
+              // 打开后台任务抽屉：真实宿主读一次目录，按会话过滤后走会话字段的 patch
+              setTimeout(function () {
+                window.__push({
+                  type: "patch",
+                  patch: { schedules: previewSchedules(), schedulesStatus: "ready" },
+                });
+              }, 0);
+            }
+            if (message && message.type === "scheduleHistory") {
+              setTimeout(function () {
+                previewScheduleHistory(message);
+              }, 120);
+            }
+            if (message && message.type === "updateSchedule") {
+              // 保存：真实宿主发出 `schedule/update` 后回结算帧并重读目录
+              setTimeout(function () {
+                applyPreviewChange(message.id, message.change);
+                window.__push({ type: "schedules/result", op: "update", id: message.id, ok: true });
+                window.__push({
+                  type: "patch",
+                  patch: { schedules: previewSchedules(), schedulesStatus: "ready" },
+                });
+              }, 400);
+            }
+            if (message && message.type === "deleteSchedule") {
+              // 删除：真实宿主回结算帧，删掉后重读目录（那一行随即消失）
+              setTimeout(function () {
+                removePreviewSchedule(message.id);
+                window.__push({ type: "schedules/result", op: "delete", id: message.id, ok: true });
+                window.__push({
+                  type: "patch",
+                  patch: { schedules: previewSchedules(), schedulesStatus: "ready" },
+                });
+              }, 400);
             }
           },
           getState: function () {

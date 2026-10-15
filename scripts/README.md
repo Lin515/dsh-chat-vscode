@@ -65,6 +65,7 @@
 - [jobsKill.test.ts](<jobsKill.test.ts>) — 后台任务停止按钮两段式状态机与接线 / 样式。
 - [jobsOrder.test.ts](<jobsOrder.test.ts>) — 后台任务名册排序口径（官方 `ordered()`）。
 - [jobView.test.ts](<jobView.test.ts>) — job 名册 / 单任务输出流 /「端点不存在」判据（0.1.7 搬运）。
+- [schedule.test.ts](<schedule.test.ts>) — 自动化任务（`schedule`）：目录与编辑基准收窄 / 执行记录与变更结算 / 频率与相对时间 / 运行时间草稿与提交 / cron 方言 / 时区清单 / 接线与样式。
 
 ### 附件 / 图片 / 引用
 

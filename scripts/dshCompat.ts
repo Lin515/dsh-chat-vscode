@@ -79,6 +79,10 @@ const CONTRACT_PACKAGES = [
   "@deepseek-ai/dsh-goal",
   "@deepseek-ai/dsh-plan-mode",
   "@deepseek-ai/dsh-subagent",
+  // 自动化任务（`schedule` 命名空间：catalog / list / history / update / delete）。
+  // 0.1.7-rc.2 起才可管理，扩展自本版起消费它——包名不在清单里，那块契约就没有证据
+  // （见 docs/dsh-compat.md 的「已知边界」）。
+  "@deepseek-ai/dsh-schedule",
 ];
 
 // ---------------------------------------------------------------- 官方版本清单

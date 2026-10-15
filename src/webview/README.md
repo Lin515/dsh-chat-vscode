@@ -50,7 +50,7 @@ React / 浏览器环境，不使用 Node API。上层边界见[源码导航](<..
 - [pathDisplay.ts](<pathDisplay.ts>) — 单行路径拆分与保文件名省略。
 - [sessionDir.ts](<sessionDir.ts>) — 标题栏 cwd 判据。
 - [connectView.ts](<connectView.ts>) — 连接条状态、文案与按钮矩阵。
-- [activity.ts](<activity.ts>) — 子代理 / 任务入口活性。
+- [activity.ts](<activity.ts>) — 子代理 / 任务入口活性（后台任务在跑，或还有待执行的自动化任务）。
 - [subagentRow.ts](<subagentRow.ts>) — 运行、已读与生命周期模式合成显示。
 - [contextMenu.ts](<contextMenu.ts>) — 原生 / 自绘右键判据，见[右键设计](<../../docs/design-context-menu.md>)。
 - [nodeOpen.ts](<nodeOpen.ts>) — 消息持有的节点展开态。

@@ -108,6 +108,8 @@ const entries = {
   "build/clipboard-paths.test.mjs": "scripts/clipboardPaths.test.ts",
   "build/queue-view.test.mjs": "scripts/queueView.test.ts",
   "build/job-view.test.mjs": "scripts/jobView.test.ts",
+  // 自动化任务（schedule）：线格式收窄 / 频率文本 / 运行时间编辑 / 接线与样式
+  "build/schedule.test.mjs": "scripts/schedule.test.ts",
   "build/session-cookie.test.mjs": "scripts/sessionCookie.test.ts",
   "build/tool-view.test.mjs": "scripts/toolView.test.ts",
   "build/tool-card.test.mjs": "scripts/toolCard.test.ts",

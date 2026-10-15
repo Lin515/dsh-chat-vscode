@@ -71,15 +71,37 @@ Auto review 只在 `permissionPresets/catalog.options` 明确含 auto 时开放�
 
 jobs 的入口计数、可见性与状态色差异须按当前 UI 核对，不把历史视觉观察当新缺陷。旧报告的“完全不读 inbox”“完全丢弃 turnOutline”不是现状。
 
+## 自动化任务（schedule）
+
+DSH 的定时任务由模型工具 `schedule_create` 建立，服务端把「规则 + 原始会话绑定 + 状态 + 最近一次投递」存成一条持久记录。本扩展把它并进后台任务抽屉的**自动化任务**分区（`webview/components/Schedules.tsx`），三种视图状态各自独立，**不许**合并成一句「没有任务」：
+
+| 视图 | 状态来源 | 不许折成什么 |
+|---|---|---|
+| 清单 | `schedulesStatus`：`undefined`（没问过）/ `loading` / `ready`（可能是空表）/ `unsupported`（端点不存在）/ `error`（这次没拿到） | 「没有自动化任务」 |
+| 执行记录 | 帧上的 `code`（任务不存在 / 游标失效）、`error`（这次没拿到）、`hostUnavailable`（宿主连问都没问出去）与「成功读到的空历史」四者分开 | 空表 |
+| 变更结算 | `schedules/result` 的 `ok` 与稳定错误码；`code` 缺失 = 请求根本没发出去 | 「已保存」 |
+
+清单读的是**全局目录**（`schedule/catalog`）按当前会话过滤，不是 `schedule/list`：后者只回**活跃**任务，一条一次性任务投递完就变成 `inactive` 并从它里面消失——用户再也看不到、也删不掉自己那条。目录带回 `status` 与 `lastDelivery`，正是「跑完的还在不在」要的信息。刷新时机有四处：**会话域建起来时预取**（静默）、面板打开（`listSchedules`）、`schedule/changed` 广播（只刷**有人等过**的域，`schedulesWanted`）、socket 重连（广播没有重放，不补读就会一直显示掉线前的任务集）。预取不是可选项：抽屉入口的指示灯要在**从没打开过面板**的会话上就亮得起来（见下），而背景刷新失败**保留上次结果**、连状态都不动——一次抖动不该把「已读到 3 条」改写成「读取失败」。
+
+**入口指示灯**：有待执行（`status: 'active'`）的自动化任务时，顶栏的后台任务按钮**亮起**——与后台任务在跑时同一个入口、同一种活动色，但**不呼吸**（判据在 `webview/activity.ts` 的 `jobsEntrySignal`，用户 2026-10-15 口径；三档 `off` / `pending` / `busy`）。两条来源合在一个判据里，因为它们指向同一个抽屉的两个分区；已结束与词表外的状态都不点亮，与后台任务那边同一条「不认识就不认领」的纪律。档位分开的理由是这只界面把「呼吸」当作活动的专用信号（运行圆点 / 思考鲸鱼 / 待办刻点）：`pending` 时并没有任何东西在执行，而一条每日或固定间隔任务会让入口长期亮着——给它配一段永远跑的动画是谎报活动，与用户抱怨过的「会话早停了、那点还在闪」是同一类错。
+
+改运行时间是**比较并交换**：提交的 `expected` 必须是读取时看到的那份完整规则。视图模型已经把原始拼写丢掉了（`everyAmount` 之类的显示折算不可逆），所以基准由宿主按目录原文保留（`scope.scheduleExpected`，投影口径与官方 `timingSnapshot` 一致，见 `dsh/scheduleView.ts`）；界面只回任务 id 与新的运行时间。服务端拒绝时按码分档显示（`schedule_conflict` / `schedule_ended` / `schedule_not_found` / `not_future` / `frequency_too_high` …），并重读一次权威值——拿着一份过期基准反复重试只会一直撞冲突。已结束（`inactive`）的任务在界面上只读：服务端会以 `schedule_ended` 拒绝。
+
+执行记录按需读取、一次 20 条（与官方详情页同口径），`before` 是上一页最旧一条的 messageId（排他游标）。`earlierRecordsUnavailable`（旧记录没有指令快照）与 `earlierRecordsPruned`（确实被保留窗口裁掉过）是两件事，只有后者配显示保留口径。
+
+删除是**硬删**（任务行与已保存的投递记录一起没）；界面只有任务 id，原始会话绑定由宿主按目录原文拼。两段式确认与后台任务的停止按钮共用同一台状态机（`webview/jobsKill.ts`）。
+
+有意差异（不当作缺陷补齐）：只列**当前会话**的任务（因此也没有官方详情里那个「回到原会话」入口——面板本来就是按会话打开的），全局任务页与会话头部的提醒时钟未做；`cron` 显示规范表达式本身，不渲染官方那句自然语言描述。删除不会取消已经在途的那一次投递——服务端契约如此。
+
 ## 会话视图字段一致性
 
 `sessionView.ts` 是快照与 patch 的共同字段登记表。切会话须带 `historyLoading`、`subagentEntries` 等清空值；宿主字段与视图字段不能混用。JSON 清空发 `null`，不发会被序列化丢弃的 `undefined`，与 `jsonSafeFrame` / `mergeWirePatch` 配套。
 
 ## 验证与未覆盖边界
 
-离线回归入口：projectionIngest、projections、sessionView、wire、subagentSwitch、subagentTitle 与 cacheHit。真实 plan / goal / subagent 探针须按[验证约定](<../AGENTS.md>)获得当次批准；离线解析正确不证明完整产品能力或安装端时序。
+离线回归入口：projectionIngest、projections、sessionView、wire、subagentSwitch、subagentTitle、cacheHit 与 schedule。真实 plan / goal / subagent 探针须按[验证约定](<../AGENTS.md>)获得当次批准；离线解析正确不证明完整产品能力或安装端时序。
 
-- 会话累计用量胶囊与分桶对话框、schedule 提醒目录 / 活跃指示、subagentTiming 时长未做。旧 After / At / Every 摘录不是新版契约，实现前重新核对目标类型。
+- 会话累计用量胶囊与分桶对话框、自动化任务在**官方那几处**的活跃指示（会话头部提醒时钟、会话行时钟标记、全局任务页与 `schedule_create` 卡片）、subagentTiming 时长未做（本扩展的等价信号是抽屉入口那颗指示灯，见上文）。提醒目录 / 执行记录 / 运行时间编辑 / 删除已并入后台任务抽屉，真实服务端上的时区与 DST 边界、`schedule/changed` 的跨客户端联动仍只有离线断言与契约证据，没有安装端验收。
 - 模型目录默认值、可路由性与 failures 的完整消费，部署权限 options，未知 context form 的呈现仍有差异；未知 form 不能猜成已知六种之一。
 - 官方 depth / completed 的实际渲染、部署 permission-presets 配置、两种容量来源在真实会话中的分歧频率，以及典型会话 header 去重效果与真实 transcript 下的流程体量，既有证据不足。
 - 功能缺口是否跟进是产品决策。零样本、局部测试与接通地址均不证明面板完成或官方等价。

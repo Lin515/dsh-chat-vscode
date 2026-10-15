@@ -975,6 +975,113 @@ export interface JobItemView {
 }
 
 /**
+ * 自动化任务（DSH `schedule`）的规则种类。
+ *
+ * 服务端把「一次性」拆成两支：`after`（创建时给的相对延迟）与 `at`（绝对时刻）。
+ * 两者都只存 UTC 目标、**不存创建时的时区**；`every` 是固定间隔（不是日历规则），
+ * `daily` / `weekly` / `cron` 才带隐含时区的墙上时钟。种类身份属于服务端，这里原样
+ * 保留（见 `dsh/scheduleView.ts` 的收窄）。
+ */
+export type ScheduleKind = "after" | "at" | "every" | "daily" | "weekly" | "cron";
+
+/**
+ * 一条自动化任务（`schedule/catalog` 的一条，宿主已收窄）。
+ *
+ * 服务端把「规则」与「投递状态」放在同一条记录上（`ScheduleCatalogEntry` =
+ * `ScheduleRecord` + `sessionId` + `status` + `lastDelivery`）。界面要的正是这两半：
+ * 规则用来显示频率、也是编辑时的比较基准；状态与最近一次投递用来显示「已结束」。
+ *
+ * **指令正文（`prompt`）也在里面**：官方详情页把完整指令显示出来，而这段文字只由
+ * 服务端持有——界面自己截不出来。它属于这个任务的展示内容，不进会话正文。
+ */
+export interface ScheduleItemView {
+  id: string;
+  /** 任务归属的会话（原始绑定，官方口径：编辑与删除都按它走）。 */
+  sessionId: string;
+  /** 任务名（创建时必填，最多 120 字符）；界面**一律**用它命名任务。 */
+  title: string;
+  /** 到点要送进原会话的指令正文。 */
+  prompt: string;
+  kind: ScheduleKind | (string & {});
+  /**
+   * `active` = 还会触发；`inactive` = 已结束（一次性任务投递后、或服务端停用它）。
+   *
+   * 与 `JobItemView.status` 同一条纪律：**保留原字符串、不折成已知值**——服务端将来
+   * 多一个状态时，界面按原样显示，不猜成「启用中」。
+   */
+  status: "active" | "inactive" | (string & {});
+  /** 已提交的下一次目标（`inactive` 时是最后一次），RFC3339 UTC。 */
+  scheduledAt: string;
+  /** `kind: 'after'` 的原始延迟秒数。 */
+  afterSeconds?: number;
+  /** `kind: 'every'` 的固定间隔秒数（服务端保证 ≥ 60）。 */
+  everySeconds?: number;
+  /** `daily` / `weekly` 存的本地墙上时间（`HH:mm:ss.SSS`）。 */
+  time?: string;
+  /** `daily` / `weekly` / `cron` 的规则时区（IANA）；其余种类没有。 */
+  timeZone?: string;
+  /** `weekly` 的 ISO 星期集合（1 = 周一，唯一升序）。 */
+  weekdays?: number[];
+  /** `cron` 的**规范**五段表达式（服务端存的就是规范化后的文本）。 */
+  expression?: string;
+  /**
+   * 最近一次已确认的收件箱投递。
+   *
+   * 它只说明「消息进了收件箱」，**不是**模型执行完成（官方口径）。界面显示的
+   * 时间就是这一次的发生时刻；`messageId` 不是给人看的东西，不消费。
+   */
+  lastDelivery?: { scheduledAt: string; deliveredAt: string };
+  /**
+   * 这条任务的规则能不能当编辑基准（`false` = 读不出完整规则，只能看）。
+   *
+   * 服务端的 `schedule/update` 是「比较并交换」，提交的 `expected` 必须与它存的规则
+   * 完全一致；词表外的种类、或墙钟规则缺字段时**拼不出**这份基准，界面就该只读——
+   * 让用户改半天再被拒（`schedule_conflict`）比一开始就说明白差得多。
+   * 缺省（`undefined`）当作可编辑：宿主是唯一会设 `false` 的地方。
+   */
+  editable?: boolean;
+}
+
+/**
+ * 一条已保存的投递记录（`schedule/history` 的记录）。
+ *
+ * `prompt` 是**当时真正发出去的那份指令**：任务后来改过指令时，旧记录仍是旧文本；
+ * 更老的记录没有这一位（服务端补不出来），那时**不许**拿当前指令顶替。
+ */
+export interface ScheduleDeliveryView {
+  scheduledAt: string;
+  deliveredAt: string;
+  prompt?: string;
+}
+
+/**
+ * 运行时间编辑提交的一档（`ScheduleTimingChange` 的线格式）。
+ *
+ * `at` 用**本地日期时间 + 显式时区**这一支（`LocalAtInput`）：一次性的目标只存 UTC
+ * 时刻，编辑时用哪个时区解释由用户选的那一档决定。其余各档与创建时的选择器同形。
+ */
+export type ScheduleTimingChangeView =
+  | { kind: "at"; at: { date: string; time: string; time_zone: string } }
+  | { kind: "every"; every_seconds: number }
+  | { kind: "daily"; daily: { time: string; time_zone: string } }
+  | { kind: "weekly"; weekly: { time: string; time_zone: string; weekdays: number[] } }
+  | { kind: "cron"; cron: { expression: string; time_zone: string } };
+
+/**
+ * 一条任务当前的读取状态（供 `schedule/history` 的响应与界面空态判据共用）。
+ *
+ * 服务端把「这次读到的记录」与「历史被裁剪的两种事实」分开返回，界面也必须分开：
+ * `earlierRecordsUnavailable` 是「更早的可能没有」，`earlierRecordsPruned` 才是
+ * 「确实被删过」——只有后者才显示保留口径的说明。
+ */
+export interface ScheduleHistoryRetention {
+  /** 服务端保留窗口（天）。 */
+  days: number;
+  /** 每个任务最多保留多少条记录。 */
+  records: number;
+}
+
+/**
  * 排队中（尚未发送）的消息。
  *
  * 两种线格式都折到这里（见 `dsh/queueView.ts`）：当前服务端是 `inbox` 投影的
@@ -1270,6 +1377,22 @@ export interface ChatState {
   subagent?: SubagentContextView;
   /** 后台任务（bash / pwsh / 子代理等），来自 session/control 的 jobs 帧。 */
   jobs: JobItemView[];
+  /**
+   * 本会话的自动化任务（DSH `schedule`，来自 `schedule/catalog` 按会话过滤）。
+   *
+   * 与 `jobs` 同一个面板、同一条会话字段管线：切会话时跟着整体换掉（快照里恒有这一
+   * 个键），宿主只在面板真的打开过之后才去读它（见 `schedulesStatus`）。
+   */
+  schedules: ScheduleItemView[];
+  /**
+   * 自动化任务的读取状态：`loading` = 正在读、`ready` = 读到了（可能是空表）、
+   * `unsupported` = 服务端没有这组端点、`error` = **这次没拿到**（连接 / 传输 /
+   * 服务端错误）。**`undefined` = 还没问过**。
+   *
+   * 四态分开是必须的：`unsupported`、`error` 与「读到了空表」在界面上是完全不同的
+   * 三件事，把它们都折成「没有自动化任务」就是替一个没问过的问题下结论。
+   */
+  schedulesStatus?: "loading" | "ready" | "unsupported" | "error";
   /** 历史是否还有更早的内容可加载。 */
   hasMoreHistory?: boolean;
   /**

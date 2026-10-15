@@ -6,6 +6,8 @@ import type {
   CommandView,
   FileRefView,
   MessageView,
+  ScheduleDeliveryView,
+  ScheduleHistoryRetention,
   Segment,
   SessionRefView,
   SessionSummaryView,
@@ -98,6 +100,44 @@ export interface AppState extends ChatState {
    * 会把同一段输出接两遍。累积口径在 `jobObserve.ts`（纯函数）。
    */
   jobOutputs?: Record<string, JobObserved>;
+  /**
+   * 自动化任务的执行记录（键 = 任务 id），只活在界面侧。
+   *
+   * 按需读取：详情里的「执行记录」第一次展开时向宿主发一次 `scheduleHistory`，
+   * 「加载更早」按游标续页。宿主回帧带 `mode`（replace / append），界面不自己推断
+   * ——同一时刻可能有一前一后两次请求在飞。
+   */
+  scheduleHistory?: Record<string, ScheduleHistoryState>;
+  /**
+   * 最近一次自动化任务变更的结算（宿主 `schedules/result` 帧的落点）。
+   *
+   * 与 `jobKill` 同一条纪律：**每次结算都换新对象**（同一行连着两次失败也是两帧），
+   * 详情区按引用相等识别「来了一条新结算」，把「正在保存 / 删除中」推进到失败并
+   * 显示对应文案。
+   */
+  scheduleResult?: { op: "update" | "delete"; id: string; ok: boolean; code?: string };
+}
+
+/** 一条任务的执行记录（界面侧累积，见 `AppState.scheduleHistory`）。 */
+export interface ScheduleHistoryState {
+  records: ScheduleDeliveryView[];
+  /** 更早一页的排他游标（`schedule/history` 的 `nextBefore`）；没有 = 到头了。 */
+  nextBefore?: string;
+  /** 更早的记录**可能**没有（旧记录没有指令快照）——不是「被裁掉了」。 */
+  unavailable: boolean;
+  /** 确实被服务端的保留窗口裁掉过（只有这一位配显示保留口径）。 */
+  pruned: boolean;
+  retention?: ScheduleHistoryRetention;
+  /** 这一次读取还没落定（界面据此显示「正在读取」）。 */
+  loading: boolean;
+  /** 至少成功读过一页（空历史与「还没读过」由它分开）。 */
+  loaded: boolean;
+  /** 服务端明确说这次读不到（`schedule_not_found` / 游标失效）。 */
+  code?: string;
+  /** 宿主没能发起这次读取（未连接 / 没有绑定会话）。 */
+  hostUnavailable?: boolean;
+  /** 服务端 / 传输层的原样报错（不翻译）。 */
+  error?: string;
 }
 
 export const initialState: AppState = {
@@ -119,6 +159,7 @@ export const initialState: AppState = {
   todos: [],
   subagentEntries: [],
   jobs: [],
+  schedules: [],
   sessions: [],
   archivedSessions: [],
   panel: "none",
@@ -150,8 +191,15 @@ function appendDelta(message: MessageView, segmentId: string, delta: string): Me
   return { ...message, segments };
 }
 
-function upsertMessage(messages: MessageView[], message: MessageView): MessageView[] {
-  const index = messages.findIndex((m) => m.id === message.id);
+/** 去掉表里的一个键（键不在时原样返回，保住引用相等以免白重渲染）。 */
+function withoutKey<T>(table: Record<string, T> | undefined, key: string): Record<string, T> | undefined {
+  if (!table || !(key in table)) return table;
+  const next = { ...table };
+  delete next[key];
+  return next;
+}
+
+function upsertMessage(messages: MessageView[], message: MessageView): MessageView[] {  const index = messages.findIndex((m) => m.id === message.id);
   if (index < 0) return [...messages, message];
   const next = messages.slice();
   next[index] = message;
@@ -194,7 +242,15 @@ export type Action =
    */
   | { type: "ui/jobObserve"; jobId: string; watchId: number }
   /** 收起一行（或关面板）：释放这条观察的累积；重新展开会重新锚起。 */
-  | { type: "ui/jobClose"; jobId: string };
+  | { type: "ui/jobClose"; jobId: string }
+  /**
+   * 请求一条自动化任务的执行记录（打开详情的记录区 / 刷新 / 加载更早）。
+   *
+   * 与 `ui/jobObserve` 同一个道理：界面先自己把「正在读取」置上，再发请求——
+   * 等宿主回帧才动状态的话，那一段往返里详情区会显示上一次的结论（或空态）。
+   * `reset` 是「这一下从第一页重读」（打开详情、刷新），据此丢掉旧游标。
+   */
+  | { type: "ui/scheduleHistoryRequest"; id: string; reset?: boolean };
 
 export function reducer(state: AppState, action: Action): AppState {
   switch (action.type) {
@@ -217,6 +273,10 @@ export function reducer(state: AppState, action: Action): AppState {
         // 实时输出的累积也一样：换会话后旧任务的条目再也不会被渲染（面板读的是新
         // 会话的名册），而键是全局唯一的任务 id，留着就是一堆谁也用不上的文本
         ...(switched ? { jobOutputs: undefined } : {}),
+        // 自动化任务的执行记录与结算同理：任务 id 全局唯一，换会话后旧条目再也不会
+        // 被渲染（面板读的是新会话的任务清单）
+        ...(switched ? { scheduleHistory: undefined } : {}),
+        ...(switched ? { scheduleResult: undefined } : {}),
       };
     }
 
@@ -306,6 +366,43 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, jobOutputs: { ...state.jobOutputs, [action.jobId]: next } };
     }
 
+    case "schedules/history": {
+      // 一条执行记录的回帧。`mode` 由**宿主**给（`replace` = 最新一页 / 刷新，
+      // `append` = 加载更早的那一页）：界面不自己按「这次请求带没带游标」推断——
+      // 同一时刻可能有一前一后两次请求在飞，按请求侧的记忆拼会把两页接反。
+      const previous = state.scheduleHistory?.[action.id];
+      const replacing = action.mode === "replace";
+      const failed = action.error !== undefined || action.hostUnavailable === true;
+      const entry: ScheduleHistoryState = {
+        // 读取失败时**保留旧记录**（半个列表比一张空表更接近事实），只有成功的那一页
+        // 才替换 / 追加
+        records: failed
+          ? (previous?.records ?? [])
+          : replacing
+            ? action.records
+            : [...(previous?.records ?? []), ...action.records],
+        nextBefore: failed ? previous?.nextBefore : action.nextBefore,
+        unavailable: action.earlierRecordsUnavailable,
+        pruned: action.earlierRecordsPruned,
+        retention: action.retention ?? previous?.retention,
+        loading: false,
+        loaded: failed ? (previous?.loaded ?? false) : true,
+        code: action.code,
+        hostUnavailable: action.hostUnavailable,
+        error: action.error,
+      };
+      return { ...state, scheduleHistory: { ...state.scheduleHistory, [action.id]: entry } };
+    }
+
+    case "schedules/result":
+      // 每次结算都换新对象（同 `jobs/killResult`）：同一行连着两次失败也要各推进一次
+      // 详情区的状态机。删除成功时顺手丢掉那条执行记录——任务已经不存在了。
+      return {
+        ...state,
+        scheduleResult: { op: action.op, id: action.id, ok: action.ok, code: action.code },
+        ...(action.op === "delete" && action.ok ? { scheduleHistory: withoutKey(state.scheduleHistory, action.id) } : {}),
+      };
+
     case "trajectory": {
       // 宿主发的是一整段 JSON 字符串（不是逐键 patch）：
       // 轨迹模型里 `startedAt: null` / `timeSeconds: null` 是**有意义的空值**，
@@ -393,6 +490,22 @@ export function reducer(state: AppState, action: Action): AppState {
       const jobOutputs = { ...state.jobOutputs };
       delete jobOutputs[action.jobId];
       return { ...state, jobOutputs };
+    }
+
+    case "ui/scheduleHistoryRequest": {
+      // 先把「正在读取」置上再发请求（见 Action 注释）。`reset` 从第一页重读：
+      // 旧游标此刻已经不能用了，留着它会让「加载更早」接着一个过期的位置取。
+      const previous = state.scheduleHistory?.[action.id];
+      const entry: ScheduleHistoryState = action.reset === true || !previous
+        ? {
+            records: action.reset === true ? [] : (previous?.records ?? []),
+            unavailable: false,
+            pruned: false,
+            loading: true,
+            loaded: previous?.loaded ?? false,
+          }
+        : { ...previous, loading: true, error: undefined, hostUnavailable: undefined, code: undefined };
+      return { ...state, scheduleHistory: { ...state.scheduleHistory, [action.id]: entry } };
     }
 
     case "ui/openPanel":

@@ -133,6 +133,10 @@ npm run dsh:diff -- <旧版本> <新版本>   # 只求差
   「当时是怎么判的」。同一台机器上换会话接着核对时，先看这个目录里有没有目标版本的快照。
 - 消费面从仓库已有的唯一登记点推出来（`projectionIngest` 的投影键、`protocol.ts` 的三个事件表、
   源码里的端点字面量），**不另立清单**。
+- **新消费一个官方包时**：把包名补进 `scripts/dshCompat.ts` 的 `CONTRACT_PACKAGES`，**并重抓一次
+  基准快照**（`ensureSnapshot` 见到同名快照就直接复用，不重抓的话新包不会进那份快照，下一次
+  `dsh:check` 会报一条 `package-added`）。`0.2.1-alpha.2` 加入 `@deepseek-ai/dsh-schedule`
+  （自动化任务）时就是这么做的：删掉本地那份快照再 `npm run dsh:snapshot -- 0.2.1-alpha.2`。
 - 报告里出现 `⚠ 有 N 个包没取到` 时必须人工确认：缺证据不等于没影响。
 
 ---
