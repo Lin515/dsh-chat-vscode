@@ -37,6 +37,13 @@ import {
 } from "../shared/toolQuestion";
 import { readRangeFromMeta, readRangeFromOutput } from "./readRange";
 import { applyNextStepSplice, claimedByNextStep, type InboxState } from "./inboxClaim";
+import {
+  inboxSpliceOf,
+  noteInboxInserted,
+  noteInboxSplice,
+  takeLostSubmissions,
+  type SubmissionReceipts,
+} from "./submissionReceipts";
 import { subagentFromCatalogEvent } from "./projections";
 import { includedAttachments } from "./attachments";
 import { expandAssistantStream } from "./assistantStream";
@@ -609,6 +616,15 @@ export class SessionAdapter {
    * 加载更早历史之后，旧窗口的领取集合会继续给新到达的消息定性）。
    */
   private nextStepInbox: InboxState | undefined;
+  /**
+   * 已经交给服务端、还没成为 durable 用户消息的那些提交在**收件箱里的回执**
+   * （判定规则与官方客户端的 `settlement.receipt` 同款，见 `dsh/submissionReceipts.ts`）。
+   *
+   * 这是「一句话交出去了、服务端却没能落盘」的唯一凭据：`session/prompt` 的 accepted
+   * 只代表进了收件箱。回执**不随 `refold` / `reset` 清空**——它的水位只许前进，
+   * 重放里那些更旧的事件本来就不该把它顶回去。
+   */
+  private readonly submissions: SubmissionReceipts = new Map();
   /** 当前 step 首个 token delta 的时间戳（服务端时钟，取自 chunk 帧 time）。 */
   private stepFirstTokenAt: number | undefined;
   /** 当前 step 的**开始**时刻（`turn/start` / `step/start` 的 time）：TTFT 的基准。 */
@@ -834,6 +850,21 @@ export class SessionAdapter {
   }
 
   /**
+   * 轮次边界（`turn/end` / `request/context`）上收网：**领走了却始终没落盘**的提交到此定性。
+   *
+   * 为什么是这两个事件：`user/message` 只在 `prepareRequest` 之后才落盘，而这两个都在它
+   * **之后**——正常提交到这里早被 `user/message` 清掉回执了；还留着「位次为 `null`、
+   * 水位更旧」的那些，只能是那一轮在落盘之前就失败了（真实例子：所选模型没有对应的
+   * 思考档位）。判据与来路见 `dsh/submissionReceipts.ts`。
+   */
+  private settleLostSubmissions(seq: number): void {
+    if (!this.submissions.size) return;
+    for (const rpcId of takeLostSubmissions(this.submissions, seq)) {
+      this.onSubmissionLost?.(rpcId, "lost");
+    }
+  }
+
+  /**
    * 图片句柄 → 可显示字节的装载回调（由控制器注入）。
    *
    * 适配器刻意不持有网络客户端：它只把「这里有哪几张图」交出去，
@@ -935,6 +966,19 @@ export class SessionAdapter {
    * 发完**（见 `notifyAdmitted` 的注释）。
    */
   onUserMessage: ((message: { rpcId?: string; text: string }) => void) | undefined;
+
+  /**
+   * 一条**已经交给服务端**的提交永远到不了 durable（由控制器注入）。
+   *
+   * 两种来路，都在 `dsh/submissionReceipts.ts` 里判（官方客户端的 `settlement.receipt` 同款）：
+   * - `lost`：那一轮把这条从收件箱领走了，却在落盘 `user/message` 之前失败
+   *   （真实例子：所选模型没有对应的思考档位）——这是**真的没发出去**；
+   * - `canceled`：这条待发消息被有意丢掉（官方 `Session.clear()` / 队列取消）。
+   *
+   * 两者都必须收场：收显只在 durable 承认时收回，不收就会永远停在 `sending`
+   * ——界面画成一条正常消息、被 `pendingInsertIndex` 甩到会话最底部（用户 2026-10-16 报的现场）。
+   */
+  onSubmissionLost: ((rpcId: string, reason: "lost" | "canceled") => void) | undefined;
 
   /**
    * 按 `rpcId` 取**同一次提交的本地附件**（由控制器注入：`submissions` 里那份原文与附件）。
@@ -1646,6 +1690,8 @@ export class SessionAdapter {
         this.emit({ type: "message/upsert", message: { ...message } });
         this.turnRunning = false;
         this.emit({ type: "patch", patch: { running: false } });
+        // 这一轮收场了：把「领走了却没落盘」的那些提交定性（见 settleLostSubmissions）
+        this.settleLostSubmissions(event.seq);
         // 轮次结束 = 文件都落盘了：先推一次 Git 重扫再分类，让芯片的
         // [新增] / 删除线立刻是准的，也让「用户随后点芯片」直接看到 diff
         // （不推的话刚写完的文件还没进改动清单，第一次点只会打开完整文件）。
@@ -1667,6 +1713,16 @@ export class SessionAdapter {
        * `src/vendor/ui-trajectory/inbox-state.ts`，口径与换算见 `dsh/inboxClaim.ts`。
        */
       case "agent/inbox/spliced": {
+        // 提交回执：**先按领取 / 取消平移已有位次，再记这一帧新入队的那几条**（官方的次序：
+        // 同一帧里既删又插时，插入项的位次才落在 `start` 上）。取消是「这条待发消息被有意
+        // 丢掉」，当场交出去；领取只把位次置空，落没落盘要等 `turn/end` / `request/context`。
+        const splice = inboxSpliceOf(data);
+        if (splice) {
+          for (const rpcId of noteInboxSplice(this.submissions, splice, event.seq)) {
+            this.onSubmissionLost?.(rpcId, "canceled");
+          }
+          noteInboxInserted(this.submissions, splice, event.seq);
+        }
         this.nextStepInbox = applyNextStepSplice(this.nextStepInbox, data);
         break;
       }
@@ -1687,6 +1743,10 @@ export class SessionAdapter {
         if (kind === "user" || kind === "user-rpc") {
           const rpcId = (message?.source as { rpcId?: unknown } | undefined)?.rpcId;
           const admitted = typeof rpcId === "string" && rpcId ? rpcId : undefined;
+          // 这条提交真的成了历史：它的收件箱回执到此收场——**必须在这里就地清掉**，
+          // 不能等 `notifyAdmitted`（那一个在重放期间会被攒着延后），否则同一批重放里
+          // 后面的 `request/context` 会把这条已经承认的提交误判成「领走了却没落盘」。
+          if (admitted) this.submissions.delete(admitted);
           /**
            * 承认事实交给控制器的时机是**这条落位并发帧之后**（本分支末尾），不是之前。
            *
@@ -1941,6 +2001,9 @@ export class SessionAdapter {
           this.refreshOccupancy();
           this.emit({ type: "patch", patch: { contextWindow: this.contextWindow } });
         }
+        // 请求上下文在这条流里排在 `user/message` **之后**：正常提交到这里回执早清了，
+        // 还留着的就是没落盘的那些（第二个收网点，见 settleLostSubmissions）
+        this.settleLostSubmissions(event.seq);
         break;
       }
 

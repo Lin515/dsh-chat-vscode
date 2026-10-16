@@ -255,6 +255,8 @@ const entries = {
   "build/escape-owner.test.mjs": "scripts/escapeOwner.test.ts",
   "build/editor-column.test.mjs": "scripts/editorColumn.test.ts",
   "build/pending-echo.test.mjs": "scripts/pendingEcho.test.ts",
+  // 收件箱回执的纯数学（位次平移 / 水位单调 / 取消与领取的分野）：判定「服务端受理了却没落盘」，必须登记
+  "build/submission-receipts.test.mjs": "scripts/submissionReceipts.test.ts",
   "build/dsh-contract.test.mjs": "scripts/dshContract.test.ts",
   "build/subagent-switch.test.mjs": "scripts/subagentSwitch.test.ts",
   "build/subagent-row-state.test.mjs": "scripts/subagentRowState.test.ts",

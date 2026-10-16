@@ -730,6 +730,16 @@ export interface PendingMessageView {
    * 原始报错（原样露出，不翻译）。
    */
   error?: string;
+  /**
+   * 落位锚点：提交那一刻对话流里**最后一条 durable 行的 id**（当时还没有任何行、或没有
+   * 会话时为 `undefined`）。
+   *
+   * 只给失败行用。`sending` 那条的落位跟着「真实行将来落在哪」（`pendingInsertIndex`），
+   * 而失败那条的**真实行永远不会来**——没有锚点的话，后一轮开始后它会被一路排到会话
+   * 最底部（用户 2026-10-16 报的现场）。锚点行不在当前窗口（翻页翻掉了、换了窗口）时
+   * 退回那条判据。
+   */
+  anchor?: string;
 }
 
 export type TodoStatus = "pending" | "in_progress" | "completed";

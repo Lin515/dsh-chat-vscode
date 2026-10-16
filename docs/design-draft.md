@@ -57,6 +57,20 @@
 - @key 原因按界面语言解析，服务端原文不翻译。有失败行时不重复弹原生错误框；无回显时保原生提示，日志两者都保留。
 - 失败行是纯界面对象，buildPromptContent 不读取它，后续继续不会自动带它；只有重发会再次提交。回收域不替在飞提交下失败结论，防用户重发造成重复。
 
+## 受理 ≠ 落盘：收件箱回执
+
+`session/prompt` 回 `accepted` 只说明那句话进了服务端收件箱，**不代表它写进了会话记录**。`agent-loop` 的次序是 `turn/start` → 领取收件箱里那条 → `prepareRequest`（解析模型 / 请求配置）→ 才落盘 durable `user/message`。中间任何一步抛错，这一轮就只剩 `turn/end{reason:{kind:'error'}}`，那句人话永远不落盘——真实例子是所选模型没有对应的思考档位（`UNSUPPORTED_REASONING_EFFORT` 正抛在落盘之前）。
+
+这类提交以前收不了场：回显只在 durable 承认时收回，于是永远停在 `sending`，界面把它画成一条正常消息、`pendingInsertIndex` 又把它甩到会话最底部。判定交给[收件箱回执](<../src/dsh/submissionReceipts.ts>)，口径与官方客户端 Session 的 `settlement.receipt` 同款：
+
+- 入队帧记下目标与位次；领取帧把位次置 `null`；`outcome:'canceled'` 的帧是「有意丢掉」，当场交出去；
+- `turn/end` / `request/context` 上仍未承认、位次还是 `null`、且回执水位更旧 ⇒ 这条提交永远到不了 durable；
+- 两个事件都排在 `user/message` **之后**，正常提交到那时回执早清了，所以这条判定不会误伤已发出的消息；位次只随带水位的帧平移、水位只许前进，重连重放因此幂等。
+
+两种收场分开走：`lost`（领走了没落盘，或用户叫停时那一轮还没落盘）按失败口径留在原地——红框、重发 / 撤回、原因 `@sendNotPersisted`；`canceled` 只撤回收显并释放附件租约（用户自己取消的待发消息不该变成红框失败行）。回执只由 durable 事件建立，客户端正好在那条入队 splice 上掉线且开窗快照没带回它时判定不触发（官方另有 `inbox` 投影兜底）——缺失只会漏判，不会误判。
+
+**失败行留在原地**：回显带一枚落位锚点（`PendingMessageView.anchor`），值是提交那一刻对话流里**最后一条 durable 行**的 id。还在等承认的那条按「真实行将来落在哪」插位（`pendingInsertIndex`）；失败那条的真实行永远不会来，那条判据对它不成立——没有锚点，后一轮一开始它就被排到会话最底部（同一个现场的另一半）。锚点行不在当前窗口（翻页翻掉了、换了窗口）时退回那条判据。
+
 ## durable 交接无闪烁
 
 1. durable 用户行带 source.rpcId → MessageView.rpcId，和回显同身份。
@@ -109,10 +123,11 @@
 | 测试 | 覆盖 |
 |---|---|
 | composerDraft | 真 reducer 快照负对照；beginSend 无 await 且早于连接；统一清空 / 失败入口；source 门与窗口所有权 |
-| pendingEcho | 真控制器 + offline stub：首条迁移、直播 / 重放交接、图片借字节、失败留行、切回可操作、连点幂等、运行中不入账、queue 统一续发、命令与技能补判 |
+| pendingEcho | 真控制器 + offline stub：首条迁移、直播 / 重放交接、图片借字节、失败留行、受理未落盘（含取消、已落盘不被翻案、叫停、落位锚点）、切回可操作、连点幂等、运行中不入账、queue 统一续发、命令与技能补判 |
+| submissionReceipts | 收件箱回执的纯数学：形状与占位、位次平移、水位单调与重放幂等、领取与取消的分野、两条队列互不干扰、同帧既删又插 |
 | queueRestore | 真控制器 + vscode stub：回显先到、跨会话与任一附件失败时整条保留的负面场景 |
 | attachments | included 与 includedAttachments 同序 |
 | styles | 失败气泡、动作顺序、原因截断 |
-| previewFixture | 在飞带图与 failed 两种形态，队列区不吃乐观回显 |
+| previewFixture | 在飞带图、failed 与 failed 带落位锚点三种形态，队列区不吃乐观回显 |
 
 常规验证按[AGENTS](<../AGENTS.md>)，不因本文提到历史探针就自动运行真实模型测试。离线全绿不代表安装端快捷键、IPC 或全部时序已验证。

@@ -4636,6 +4636,9 @@ export class ChatController implements vscode.Disposable {
     // **攒到那一份整份 `messages/reset` 发出去之后再补**（见 `adapter.notifyAdmitted`）
     // ——重连 / 重载窗口后既不留下幽灵回显，也不会先收回、后落位（那就是"闪一下"）
     adapter.onUserMessage = (message) => this.noteUserAdmitted(sessionId, message);
+    // 一条**已经交给服务端**的提交永远到不了 durable（判定见 `dsh/submissionReceipts.ts`）：
+    // 「被领走却没落盘」是真的没发出去（标失败留行），「被有意取消」只撤回收显。
+    adapter.onSubmissionLost = (rpcId, reason) => this.settleLostSubmission(rpcId, reason);
     // durable 用户行的图片借**同一次提交的本地附件**（`submissions` 里那份，图片带 dataUrl）：
     // 不借的话交接时会从缩略图退回文件名芯片、等字节换回来再变回缩略图（闪两下）
     adapter.resolveEchoAttachments = (rpcId) => this.originFor(rpcId)?.attachments;
@@ -7588,6 +7591,7 @@ export class ChatController implements vscode.Disposable {
         text,
         attachments: [...attachments],
         status: "sending",
+        ...this.echoAnchorField(viewId),
       });
     }
 
@@ -8539,6 +8543,7 @@ export class ChatController implements vscode.Disposable {
         text,
         attachments: [...attachments],
         status: "sending",
+        ...this.echoAnchorField(viewId),
       });
     }
     if (source === "composer") {
@@ -8546,6 +8551,21 @@ export class ChatController implements vscode.Disposable {
       this.commitAttachments(viewId, requestId);
     }
     return requestId;
+  }
+
+  /**
+   * 这条回显的**落位锚点**：提交那一刻对话流里最后一条 durable 行的 id。
+   *
+   * 只有失败行会用到它（见 `shared/chat.ts` 的 `PendingMessageView.anchor`）：失败那条的
+   * 真实行永远不会来，「真实行将来落在哪」那条判据对它不成立，没有锚点它就被排到会话最底部。
+   * 取适配器的消息表——它就是对话流的权威顺序（界面那份是它的窗口投影，末行一致）。
+   *
+   * 提交那一刻没有会话、或那条会话还没有任何 durable 行（空态第一条消息）时**没有锚点**：
+   * 那一行本来就该在末尾，不需要锚。
+   */
+  private echoAnchorField(viewId: string): { anchor?: string } {
+    const last = this.scopeOfView(viewId)?.adapter?.snapshotMessages().at(-1);
+    return last ? { anchor: last.id } : {};
   }
 
   /**
@@ -8730,6 +8750,32 @@ export class ChatController implements vscode.Disposable {
     }
     const retired = this.retireEchoByText(sessionId, message.text);
     if (retired) this.attachments.releaseLease(retired);
+  }
+
+  /**
+   * 一条**已经交给服务端**的提交永远到不了 durable 时的收场（判定见
+   * `dsh/submissionReceipts.ts`，来路是适配器的 `onSubmissionLost`）。
+   *
+   * `session/prompt` 的 accepted 只说明那句话进了服务端收件箱；那一轮若在把它写成
+   * durable `user/message` 之前就失败（真实例子：所选模型没有对应的思考档位），
+   * 收显就永远等不到承认——以前它会一直停在 `sending`，界面画成一条正常消息、
+   * 被 `pendingInsertIndex` 甩到会话最底部（用户 2026-10-16 报的现场）。
+   *
+   * 两种来路分开收场：
+   * - `lost`：**真的没发出去**——按既有失败口径留在原地（红框 + 重发 / 撤回 + 原因），
+   *   正文不回输入框（与 `send` 的失败收场同一条口径）；
+   * - `canceled`：这条待发消息是被**有意丢掉**的（官方 `Session.clear()` / 队列取消），
+   *   用户自己取消的东西不该变成红框失败行；但它必须离开账本，否则同样会永远挂在底部。
+   */
+  private settleLostSubmission(rpcId: string, reason: "lost" | "canceled"): void {
+    if (reason === "lost") {
+      this.failEcho(rpcId, "@sendNotPersisted");
+      return;
+    }
+    const key = this.removeEcho(rpcId, "inbox-canceled");
+    if (key === undefined) return;
+    this.attachments.releaseLease(rpcId);
+    this.pushPending(key);
   }
 
   /** 按 requestId 找一条回显（**全局扫**：key 会随绑定迁移，按 id 找没有时序问题）。 */

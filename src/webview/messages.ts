@@ -757,6 +757,15 @@ export const MESSAGES = {
   sendEmpty: { zh: "没有可发送的内容", en: "Nothing to send" },
   /** 会话已经关掉 / 连接断了，始终没收到服务端的确认。 */
   sendUnconfirmed: { zh: "未收到服务端确认，这条可能没有发出去", en: "No confirmation from the server; this may not have been sent" },
+  /**
+   * 服务端**受理了**这条，但那一轮在把它写进会话记录之前就失败了（真实例子：所选模型
+   * 没有对应的思考档位）。它与 `@sendUnconfirmed` 的区别是**已经确证**没落盘：这条
+   * 待发消息被那一轮领走、却始终没有成为会话里的用户消息，所以内容一定没发出去。
+   */
+  sendNotPersisted: {
+    zh: "服务端受理后本轮失败，这条没有写进会话（内容未发出）",
+    en: "The turn failed after acceptance, so this was never recorded in the session (not sent)",
+  },
   mentionFiles: { zh: "文件", en: "Files" },
   mentionSessions: { zh: "对话", en: "Sessions" },
   mentionEmpty: { zh: "没有匹配的文件", en: "No matching files" },

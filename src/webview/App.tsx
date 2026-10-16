@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useInsertionEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { ChatState, MessageView } from "../shared/chat";
+import type { ChatState, MessageView, PendingMessageView } from "../shared/chat";
 import type { HostToWebview } from "../shared/ipc";
 import { persistIdentity, post, subscribe } from "./bridge";
 import { useAutoScroll } from "./autoScroll";
@@ -935,23 +935,25 @@ export function App() {
    * 消息流的**行序列**：真实消息 + 乐观回显，一处拼装、下面只 map 一次。
    *
    * 回显行的渲染与真实行完全共用（同一个 `Message`），只有 `sendState` 让失败那行
-   * 变红并给出重发 / 撤回。插装位置见 `pendingInsertIndex`。
+   * 变红并给出重发 / 撤回。插装位置由 `pendingPlacement` **一处**给出：还在等承认的那些
+   * 插在「真实行将来落在哪」，失败那些插回提交那一刻的锚点行之后（见它的注释）。
    */
   const messageRows = useMemo(() => {
     const rows: { key: string; message: MessageView; canBranch: boolean }[] = [];
     const pushMessage = (message: MessageView, canBranch: boolean): void => {
       rows.push({ key: messageRowKey(message), message, canBranch });
     };
+    const byIndex = new Map(
+      pendingPlacement(state.messages, visibleEchoes).map((entry) => [entry.index, entry.echoes]),
+    );
+    const echoesBefore = (index: number): PendingMessageView[] => byIndex.get(index) ?? [];
     state.messages.forEach((message, index) => {
+      for (const echo of echoesBefore(index)) pushMessage(pendingAsMessage(echo), false);
       // 只有非最后一条（= 不是正在跑的那一轮）才能作为分支锚点
       pushMessage(message, !state.running || index < state.messages.length - 1);
     });
-    // 回显插进上面那一串里：`before` 在本轮助手行之前，`after` 追加在末尾
-    const echoPlacement = pendingPlacement(state.messages, visibleEchoes);
-    const tail = rows.splice(echoPlacement.index);
-    for (const echo of echoPlacement.before) pushMessage(pendingAsMessage(echo), false);
-    rows.push(...tail);
-    for (const echo of echoPlacement.after) pushMessage(pendingAsMessage(echo), false);
+    // `index === messages.length` 的那些落在这里（追加末尾）
+    for (const echo of echoesBefore(state.messages.length)) pushMessage(pendingAsMessage(echo), false);
     return rows;
   }, [state.messages, state.running, visibleEchoes]);
 

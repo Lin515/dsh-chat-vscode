@@ -707,6 +707,8 @@
           // 都要留着，否则预览页看不出失败那一行的红框 / 两个动作 / 原因。
           // 账本里只有「已经发出去」的那一类（按下发送那一刻 agent 空闲）——排队 / 插话那几条
           // 压根不进账本，它们的归属是下面 `__composer` 推的服务端队列项。
+          // 失败那条带 `anchor`（提交那一刻最后一条 durable 行）：它插回 `a:3` 之后，
+          // 也就是「留在原地」的样子——不锚的话它会被排到整个会话最底部。
           pendingMessages: [
             {
               requestId: "echo-1",
@@ -723,7 +725,8 @@
               text: "这条发失败了，留在这里等重发或撤回",
               attachments: [],
               status: "failed",
-              error: "@sendFailed:gateway/input-invalid: prompt rejected"
+              error: "@sendFailed:gateway/input-invalid: prompt rejected",
+              anchor: "a:3"
             }
           ],
           models: [

@@ -15,8 +15,8 @@ import type { MessageView, PendingMessageView } from "../shared/chat";
  *    两个来源同时在场，全靠这一条不重复；
  * 3. **行身份**（`messageRowKey` / `pendingAsMessage` 的 id）：两边都用 `p:<rpcId>`，
  *    React 因此复用同一个 DOM 节点，交接时不卸载重建（用户报的「闪一下」有一半来自这里）；
- * 4. **插在哪**（`pendingPlacement`）：真实行将来落在哪，回显就插在哪——空闲发送那条
- *    插在本轮助手消息之前（`adapter` 的落位分支同判据）。
+ * 4. **插在哪**（`pendingPlacement`）：还在等承认的那条插在「真实行将来落在哪」，失败那条
+ *    插回提交那一刻的锚点行之后（它没有将来的落位可等）。
  */
 
 /** 回显行 id / React key 的前缀（`p:` + rpcId）。真消息的 id 是 `u:<seq>` / `a:<turn>`，不撞。 */
@@ -78,11 +78,13 @@ export function pendingVisible(
 }
 
 /**
- * 回显在消息表里的插入位置。
+ * 回显在消息表里的插入位置（`messages` 的下标，`messages.length` = 末尾）。
  *
- * 按下那一刻 agent 空闲，真实行将来会插在**本轮助手行之前**（`adapter` 的
- * `user/message` 落位分支同判据），所以回显也要插在它之前——否则 `turn/start`
- * 造出助手行的那一瞬，回显会掉到它下方、随后又跳回上方。
+ * 这是**还在等承认**（`sending`）那一类的判据：按下那一刻 agent 空闲，真实行将来会插在
+ * **本轮助手行之前**（`adapter` 的 `user/message` 落位分支同判据），所以回显也要插在它
+ * 之前——否则 `turn/start` 造出助手行的那一瞬，回显会掉到它下方、随后又跳回上方。
+ *
+ * 失败行**不用**这条：它的真实行永远不会来，「将来的落位」不存在，见 `pendingPlacement`。
  */
 export function pendingInsertIndex(messages: readonly MessageView[]): number {
   const last = messages[messages.length - 1];
@@ -95,20 +97,36 @@ export function pendingInsertIndex(messages: readonly MessageView[]): number {
 }
 
 /**
- * 对话流那几条回显分成两段：`index` 之前插 `before`、末尾追加 `after`。
+ * 回显的落位计划：**在 `messages[index]` 之前**插入这一组（`index === messages.length`
+ * 表示追加到末尾）。按 `index` 升序返回，同一位置内保持发送先后。
  *
- * 同段内保持发送先后。
+ * 两类回显两条判据，**不能合并**：
+ *
+ * 1. **失败行**（`status === "failed"`、且带落位锚点）：插回**提交那一刻的位置**——锚点行
+ *    （当时对话流里最后一条 durable 行）之后。它的真实行永远不会来，`pendingInsertIndex`
+ *    对它没有意义；不锚的话，后一轮一开始它就被甩到会话最底部（用户 2026-10-16 报的现场）。
+ *    锚点行不在当前窗口时（翻页翻掉了、换了窗口）退回下一条判据——宁可多漂一次，也不能
+ *    凭空插到看不出来由的位置。
+ * 2. 其余（还在等 durable 承认）：见 `pendingInsertIndex`。
  */
 export function pendingPlacement(
   messages: readonly MessageView[],
   echoes: readonly PendingMessageView[],
-): { index: number; before: PendingMessageView[]; after: PendingMessageView[] } {
-  const index = pendingInsertIndex(messages);
-  const before: PendingMessageView[] = [];
-  const after: PendingMessageView[] = [];
+): { index: number; echoes: PendingMessageView[] }[] {
+  const fallback = pendingInsertIndex(messages);
+  const at = new Map<string, number>();
+  messages.forEach((message, index) => {
+    at.set(message.id, index);
+  });
+  const groups = new Map<number, PendingMessageView[]>();
   for (const echo of echoes) {
-    if (index < messages.length) before.push(echo);
-    else after.push(echo);
+    const anchor = echo.status === "failed" && echo.anchor ? at.get(echo.anchor) : undefined;
+    const index = anchor === undefined ? fallback : anchor + 1;
+    const group = groups.get(index);
+    if (group) group.push(echo);
+    else groups.set(index, [echo]);
   }
-  return { index, before, after };
+  return [...groups]
+    .map(([index, group]) => ({ index, echoes: group }))
+    .sort((a, b) => a.index - b.index);
 }

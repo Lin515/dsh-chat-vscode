@@ -510,6 +510,247 @@ console.log("pendingEcho: 用户消息乐观回显（驱动真控制器，offlin
   );
 }
 
+// ---------- 三之二、服务端**已受理**但这一轮没能落盘 → 那一行也必须收场 ----------
+//
+// 官方 `dsh-client` 的 Session 为这件事定过口径（`submissionSettlements` 的
+// `receipt` + 「`request/context` / `turn/end` 上仍未承认、且已经离开收件箱」⇒ 这条提交
+// 失败）。真实触发例子：所选模型没有对应的思考档位——`llm.prepareCall` 在
+// `user/message` 落盘**之前**抛 `UNSUPPORTED_REASONING_EFFORT`，这一轮于是只有
+// `turn/start` / `step/start` / `turn/end(error)`，那句人话永远不落盘；
+// 而 `session/prompt` 早就回了 accepted，宿主因此不走 `failEcho`。
+// 少了这条收场，回显会一直停在 `sending`：界面把它画成一条**正常**消息，随后被
+// `pendingInsertIndex` 一路甩到会话最底部（用户报的现场）。
+{
+  const { c, frames, client } = makeController();
+  c.bindView("v1");
+  await c.handle({ type: "send", text: "档位不支持的那条", attachments: [], gesture: "enter" }, "v1");
+  const requestId = String(client.prompts[0].requestId);
+  const push = (seq: number, type: string, data: Record<string, unknown>) =>
+    client.followers.session?.({ type: "event", event: { type, seq, time: Date.now(), data } });
+
+  push(9, "agent/inbox/spliced", {
+    target: "next-turn",
+    start: 0,
+    inserted: [
+      {
+        id: "m1",
+        source: { kind: "user-rpc", rpcId: requestId },
+        content: [{ type: "text", text: "档位不支持的那条" }],
+      },
+    ],
+  });
+  push(10, "turn/start", { turn: 1 });
+  push(11, "agent/inbox/spliced", { target: "next-turn", start: 0, removedCount: 1 });
+  push(12, "step/start", { turn: 1, step: 1 });
+  push(13, "turn/end", {
+    turn: 1,
+    reason: { kind: "error", error: { message: 'model does not support reasoning effort "high"' } },
+  });
+
+  const echo = pendingOf(frames, "v1");
+  console.log(`  未落盘那一条的状态：${String(echo?.[0]?.status)}，原因=${String(echo?.[0]?.error)}`);
+  assert.strictEqual(echo?.length, 1, "那一行留在原地（不许收回：正文要能重发）");
+  assert.strictEqual(
+    echo?.[0]?.status,
+    "failed",
+    "这一轮没能落盘 ⇒ 必须标成 failed（否则它会永远以 sending 留在会话最底部）",
+  );
+  assert.match(String(echo?.[0]?.error ?? ""), /^@/, "失败原因走 @key（界面按语言解析）");
+
+  // 反面：消息**还在**收件箱里（例如运行中排队）时不许误判——它只是还没发出去
+  const queued = makeController();
+  queued.c.bindView("v1");
+  await queued.c.handle({ type: "send", text: "排队那条", gesture: "enter" }, "v1");
+  const queuedId = String(queued.client.prompts[0].requestId);
+  queued.client.followers.session?.({
+    type: "event",
+    event: {
+      type: "agent/inbox/spliced",
+      seq: 9,
+      time: Date.now(),
+      data: {
+        target: "next-turn",
+        start: 0,
+        inserted: [
+          { id: "q1", source: { kind: "user-rpc", rpcId: queuedId }, content: [{ type: "text", text: "排队那条" }] },
+        ],
+      },
+    },
+  });
+  queued.client.followers.session?.({
+    type: "event",
+    event: { type: "turn/end", seq: 10, time: Date.now(), data: { turn: 1, reason: { kind: "completed" } } },
+  });
+  assert.strictEqual(
+    queued.c.pendingEchoesOfView("v1")[0]?.status,
+    "sending",
+    "还在收件箱里等着的那条不许标失败（它只是还没轮到）",
+  );
+}
+
+// ---------- 三之三、收件箱里那条被显式取消 → 撤回收显（不画失败行） ----------
+//
+// `outcome: "canceled"` 是服务端「这些待发消息被有意丢掉了」的durable 标记（官方
+// `Session.clear()` 与队列取消都走它）。用户自己取消掉的东西不该变成一条红框失败行；
+// 但它必须**离开**回显账本——否则同样会永远挂在会话底部。
+{
+  const { c, frames, client } = makeController();
+  c.bindView("v1");
+  await c.handle({ type: "send", text: "会被取消的那条", attachments: [], gesture: "enter" }, "v1");
+  const requestId = String(client.prompts[0].requestId);
+  const push = (seq: number, type: string, data: Record<string, unknown>) =>
+    client.followers.session?.({ type: "event", event: { type, seq, time: Date.now(), data } });
+
+  push(9, "agent/inbox/spliced", {
+    target: "next-turn",
+    start: 0,
+    inserted: [
+      {
+        id: "m2",
+        source: { kind: "user-rpc", rpcId: requestId },
+        content: [{ type: "text", text: "会被取消的那条" }],
+      },
+    ],
+  });
+  push(10, "agent/inbox/spliced", { target: "next-turn", start: 0, removedCount: 1, outcome: "canceled" });
+
+  assert.deepStrictEqual(c.pendingEchoesOfView("v1"), [], "被取消的待发消息必须离开回显账本");
+  assert.deepStrictEqual(pendingOf(frames, "v1"), [], "界面收到的最后一帧也必须是空表");
+}
+
+// ---------- 三之四、正常落盘优先于边界帧：承认过的那条不许被误判 ----------
+//
+// 收件箱回执（`dsh/submissionReceipts.ts`）只在「领走了却始终没落盘」时下结论。正常提交
+// 的 `user/message` 排在 `request/context` / `turn/end` **之前**，回执在那时就清了——
+// 这条用例钉住「先落盘、后边界」的次序，防止把已经正常发出的消息标成失败。
+{
+  const { c, frames, client } = makeController();
+  c.bindView("v1");
+  await c.handle({ type: "send", text: "正常那条", attachments: [], gesture: "enter" }, "v1");
+  const requestId = String(client.prompts[0].requestId);
+  const push = (seq: number, type: string, data: Record<string, unknown>) =>
+    client.followers.session?.({ type: "event", event: { type, seq, time: Date.now(), data } });
+
+  push(9, "agent/inbox/spliced", {
+    target: "next-turn",
+    start: 0,
+    inserted: [
+      { id: "m1", source: { kind: "user-rpc", rpcId: requestId }, content: [{ type: "text", text: "正常那条" }] },
+    ],
+  });
+  push(10, "turn/start", { turn: 1 });
+  push(11, "agent/inbox/spliced", { target: "next-turn", start: 0, removedCount: 1 });
+  push(12, "user/message", {
+    content: [{ type: "text", text: "正常那条" }],
+    source: { kind: "user-rpc", rpcId: requestId },
+  });
+  push(13, "request/context", { provider: "deepseek", model: "deepseek-v4.1-flash" });
+  push(14, "turn/end", { turn: 1, reason: { kind: "completed" } });
+
+  assert.deepStrictEqual(
+    c.pendingEchoesOfView("v1"),
+    [],
+    "落盘之后回显已经收回（不许再被后面的边界帧翻成失败行）",
+  );
+  const failedFrames = frames.filter(
+    ({ target, frame }) =>
+      target === "v1" &&
+      frame.type === "patch" &&
+      ((frame.patch as { pendingMessages?: { status?: string }[] }).pendingMessages ?? []).some(
+        (entry) => entry.status === "failed",
+      ),
+  );
+  assert.deepStrictEqual(failedFrames, [], "全程没有任何一帧把这条画成失败");
+}
+
+// ---------- 三之五、按下发送后立刻停止：那一轮在落盘前被中断 → 同样收场 ----------
+//
+// 服务端 `session/cancel` 的口径是「保住收件箱里**还没领取**的，中断当前这一轮」：
+// 已经被领取的那条不会被放回队列，也不会落盘（它只是被丢了）。所以这里不是「排队中」，
+// 而是**真的没发出去**——那一行必须收场，正文要能重发。
+{
+  const { c, frames, client } = makeController();
+  c.bindView("v1");
+  await c.handle({ type: "send", text: "发完就停", attachments: [], gesture: "enter" }, "v1");
+  const requestId = String(client.prompts[0].requestId);
+  const push = (seq: number, type: string, data: Record<string, unknown>) =>
+    client.followers.session?.({ type: "event", event: { type, seq, time: Date.now(), data } });
+
+  push(9, "agent/inbox/spliced", {
+    target: "next-turn",
+    start: 0,
+    inserted: [
+      { id: "m1", source: { kind: "user-rpc", rpcId: requestId }, content: [{ type: "text", text: "发完就停" }] },
+    ],
+  });
+  push(10, "turn/start", { turn: 1 });
+  push(11, "agent/inbox/spliced", { target: "next-turn", start: 0, removedCount: 1 });
+  push(12, "turn/end", { turn: 1, reason: { kind: "aborted", reason: { kind: "user" } } });
+
+  assert.strictEqual(
+    pendingOf(frames, "v1")?.[0]?.status,
+    "failed",
+    "被中断在落盘之前的提交同样没发出去（不许以 sending 永远挂着）",
+  );
+}
+
+// ---------- 三之六、落位锚点：提交那一刻最后一条 durable 行 ----------
+//
+// 失败行靠它留在原地（见 `pendingPlacement`）：那条真实行永远不会来，「将来的落位」
+// 对它不成立。这里钉两件事：提交时按当时的末行打锚、失败之后锚点还在。
+{
+  const { c, frames, client } = makeController();
+  client.rows.push({
+    sessionId: "session-used",
+    cwd: CWD,
+    blank: false,
+    updatedAt: Date.now(),
+    running: false,
+  });
+  c.bindView("v1");
+  await c.handle({ type: "openSession", sessionId: "session-used" }, "v1");
+  const push = (seq: number, type: string, data: Record<string, unknown>) =>
+    client.followers.session?.({ type: "event", event: { type, seq, time: Date.now(), data } });
+  // 会话里已有的那一轮：turn/start 造出助手行，提问落位在它上方
+  push(1, "turn/start", { turn: 1 });
+  push(2, "user/message", {
+    content: [{ type: "text", text: "上一句" }],
+    source: { kind: "user" },
+  });
+  push(3, "turn/end", { turn: 1, reason: { kind: "completed" } });
+  const lastRow = String(
+    (c as unknown as { scopeOfView(id: string): { adapter?: { snapshotMessages(): { id: string }[] } } })
+      .scopeOfView("v1")
+      ?.adapter?.snapshotMessages()
+      .at(-1)?.id,
+  );
+  assert.ok(lastRow, "前置：会话里已经有 durable 行");
+
+  frames.length = 0;
+  await c.handle({ type: "send", text: "下一条", attachments: [], gesture: "enter" }, "v1");
+  const requestId = String(client.prompts[0].requestId);
+  assert.strictEqual(
+    pendingOf(frames, "v1")?.[0]?.anchor,
+    lastRow,
+    "回显带上的锚点就是提交那一刻的最后一条 durable 行",
+  );
+
+  // 这一轮又没落盘：失败之后锚点必须还在（它就是「留在原地」的唯一依据）
+  push(9, "agent/inbox/spliced", {
+    target: "next-turn",
+    start: 0,
+    inserted: [
+      { id: "m1", source: { kind: "user-rpc", rpcId: requestId }, content: [{ type: "text", text: "下一条" }] },
+    ],
+  });
+  push(10, "turn/start", { turn: 2 });
+  push(11, "agent/inbox/spliced", { target: "next-turn", start: 0, removedCount: 1 });
+  push(12, "turn/end", { turn: 2, reason: { kind: "error", error: { message: "boom" } } });
+  const failed = pendingOf(frames, "v1")?.[0];
+  assert.strictEqual(failed?.status, "failed", "前置：这一条确实失败了");
+  assert.strictEqual(failed?.anchor, lastRow, "失败行仍然带着锚点（界面据此插回原位）");
+}
+
 // ---------- 四、撤回 / 重发（失败行上的两个按钮） ----------
 {
   const { c, frames, client } = makeController({ failPrompt: true });
@@ -1123,9 +1364,32 @@ console.log("pendingEcho: 预渲染时机、迁移、无闪烁交接（直播+�
   assert.strictEqual(pendingInsertIndex([user("u:1", "a")]), 1, "还没有助手行 → 追加末尾");
   const placement = pendingPlacement(openTurn, echoes);
   assert.deepStrictEqual(
-    [placement.index, placement.before.map((e) => e.requestId), placement.after.map((e) => e.requestId)],
-    [openTurn.length - 1, ["e1", "e2"], []],
-    "账本里那几条都插在本轮助手行之前（保持发送先后）",
+    placement.map((entry) => [entry.index, entry.echoes.map((e) => e.requestId)]),
+    [[openTurn.length - 1, ["e1", "e2"]]],
+    "还在等承认的那几条都插在本轮助手行之前（保持发送先后）",
+  );
+
+  // 2b) 失败行按**落位锚点**回原位：锚点行之后。锚点行不在窗口里、或那条还在等承认时，
+  //     退回上面那条判据（`sending` 那条不该被锚点影响）。
+  const transcript = [assistant("a:0"), user("u:1", "r1"), assistant("a:1")];
+  // 末尾是「用户行 + 助手行」⇒ 未锚定的落位是 3（末尾）；锚在 a:0 上的失败行要回到 1
+  assert.strictEqual(pendingInsertIndex(transcript), transcript.length, "前置：未锚定的落位在末尾");
+  const anchored = pendingPlacement(transcript, [
+    { ...echo("f1", "failed"), anchor: "a:0" },
+    { ...echo("f2", "failed"), anchor: "缺失的锚点行" },
+    { ...echo("s1"), anchor: "a:0" },
+  ]);
+  assert.deepStrictEqual(
+    anchored.map((entry) => [entry.index, entry.echoes.map((e) => e.requestId)]),
+    [
+      [1, ["f1"]],
+      [transcript.length, ["f2", "s1"]],
+    ],
+    "失败行插回锚点行之后；锚点缺失与 sending 那条退回「将来的落位」",
+  );
+  assert.ok(
+    anchored.every((entry) => entry.index <= transcript.length),
+    "落位下标不许越界（界面按它插行）",
   );
 
   // 3) 折算成一行：身份 / 状态 / 动作字段都带过去

@@ -306,7 +306,7 @@ const must: [string, () => unknown][] = [
   // 账本里只有「已经发出去」的那一类，所以这里不再有「排队中的那条不画」这一档：
   // 排队 / 插话的消息压根不进账本（它们在下面 `__composer` 的服务端队列项里）。
   [
-    "乐观回显（带图的一条 + 失败红框的一条）",
+    "乐观回显（带图的一条 + 失败红框的一条 + 失败行带落位锚点）",
     () => {
       const transcript = state.pendingMessages.some(
         (echo: { status?: string; attachments?: unknown[] }) =>
@@ -316,7 +316,14 @@ const must: [string, () => unknown][] = [
         (echo: { status?: string; error?: string }) =>
           echo.status === "failed" && Boolean(echo.error),
       );
-      return transcript && failed;
+      // 失败行要带一个**能对上的**锚点：预览页才能看出「插回原地」与「排到最底部」的差别
+      const anchored = state.pendingMessages.some(
+        (echo: { status?: string; anchor?: string }) =>
+          echo.status === "failed" &&
+          Boolean(echo.anchor) &&
+          state.messages.some((message: { id: string }) => message.id === echo.anchor),
+      );
+      return transcript && failed && anchored;
     },
   ],
   // 轨迹账本：七种记录要留够形态，否则预览页看不到种类标签/检查器页签/折叠行的差别

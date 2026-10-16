@@ -15,6 +15,7 @@
 - [sessionStatus.ts](<sessionStatus.ts>) — api-session/status 的解码与采纳。
 - [historyPaging.ts](<historyPaging.ts>) — 单页 loadOlder 与到目标 loadThrough。
 - [inboxClaim.ts](<inboxClaim.ts>) — next-step 领取账本，提问 / steering 的共同判据。
+- [submissionReceipts.ts](<submissionReceipts.ts>) — 提交在服务端收件箱里的回执：判定「受理了却没落盘」。
 - [pendingInteractions.ts](<pendingInteractions.ts>) — 非 durable 审批 / 提问的托管、去重、重投与收场。
 
 ## 投影与视图折叠
