@@ -24,14 +24,14 @@
  * 拿「已知的子代理会话 id 集合」去对——集合由调用方维护（`controller` 的
  * `subagentSessionIds`），这里只出纯函数。
  *
- * **历史列表也挡空会话**（服务端的 `blank` 位 = 还没开始过对话）：菜单（`/`、`@`）
- * 会在空态按需建一条这样的会话，露在列表里就是「点一下多一条空会话」（用户
- * 2026-09-22 报的现场）。那条过滤住在 `controller.emitSessionLists`（它要读窗口态与
- * 未读集合），这里的 `visibleSessionCandidates` 只负责对应的 @ 候选那一侧。
+ * **空壳会话照常进历史列表**（用户 2026-10-17 口径）：它是一条普通可管理行，只多一位
+ * `occupied`（被会话窗口拿着时锁住），占用位由 `controller.groupSessionLists` 现算。
+ * 挡空会话的只剩 **@ 提及的对话候选**那一侧（`visibleSessionCandidates`）。
  *
  * **发帧那一步还要按窗口收窄**（`visibleForView`）：没有打开文件夹时，每个会话可以
  * 各自选一个工作目录（用户 2026-10-10 口径），历史列表必须跟着**这个窗口当前那条
- * 会话的 cwd**，而不是把本窗口打开过的所有 cwd 并成一份发出去。
+ * 会话的 cwd**；空态（还没选目录）则只列**未分组**的会话（用户 2026-10-17 口径），
+ * 不能把别的窗口打开过的目录里那些**已分组**的会话漏进一个还没选目录的窗口。
  */
 
 /** 只藏**子代理**会话；分支（有 parent、`origin` 为空）必须留着。 */
@@ -80,27 +80,28 @@ export function upperDriveLetter(value: string): string {
 /** 一条会话「该不该出现在本窗口的历史列表里」所需的全部上下文。 */
 export interface WorkspaceScope {
   /**
-   * 当前工作区路径（**归一后**）。`undefined` = VS Code 没有打开文件夹，
-   * 这时按用户口径（2026-09-15）只显示**未分组**的会话。
+   * 当前工作区路径（**归一后**）。`undefined` = VS Code 没有打开文件夹，这一层**不做
+   * 目录 / 分组收窄**（只挡没有 cwd 的行）；按窗口收窄交给 {@link visibleForView}。
    */
   workspacePath?: string;
   /** 服务端工作区注册表里**当前工作区**那条记录的 `sessionIds`。 */
   workspaceSessionIds?: ReadonlySet<string>;
-  /** 注册表里**所有**工作区记账的会话 id（判「未分组」用）。 */
-  groupedSessionIds: ReadonlySet<string>;
   /** 本窗口**任何已打开域**的 cwd（归一后）。 */
   openCwds: readonly string[];
 }
 
 /**
- * 历史会话列表的可见性（用户 2026-09-15 的设计口径）。
+ * 历史会话列表的**全局**可见性（用户 2026-09-15 的设计口径）。
  *
  * 1. **打开了文件夹** → 跟随 VS Code，只显示这个工作区的会话；
- * 2. **没有打开文件夹** → 只显示未分组的会话（不属于任何服务端工作区）。
+ * 2. **没有打开文件夹** → 这一层**不做目录 / 分组收窄**，只挡「没有 cwd」的行。
+ *    收窄留到最后那一层（`visibleForView`）：每个窗口可以各自选一个目录，空态又是第三档；
+ *    上游先按「未分组」或「已打开域」滤一遍，会把下游真正要用的行提前丢掉——用户刚选
+ *    一个目录（那个目录还没有任何已打开域）时，该目录里**已分组**的会话就再也找不回来。
  *
- * 判据按**服务端注册表**而不是自己比较 cwd：`session/list` 的 `SessionSummary`
- * 不带 workspaceId，而「一条会话属于哪个工作区」本身就是注册表说了算（只有
- * `session/create` 带 `workspaceId` 建出来的会话才会被记进去）。两条兜底：
+ * 打开了文件夹时判据按**服务端注册表**而不是自己比较 cwd：`session/list` 的
+ * `SessionSummary` 不带 workspaceId，而「一条会话属于哪个工作区」本身就是注册表说了算
+ * （只有 `session/create` 带 `workspaceId` 建出来的会话才会被记进去）。两条兜底：
  *
  * - 会话 cwd == 当前工作区路径：新会话的 `upsert` 增量可能比这次查询晚到，
  *   只看注册表会让「刚建好的会话」从列表里闪一下；
@@ -117,11 +118,12 @@ export function visibleForWorkspace<T extends { sessionId: string; cwd?: string 
   const open = scope.openCwds.map(normalizePath);
   return rows.filter((row) => {
     if (!row.cwd) return false;
+    // 没有打开文件夹：只挡没有 cwd 的行（收窄见 `visibleForView`，理由见函数头）
+    if (scope.workspacePath === undefined) return true;
     const cwd = normalizePath(row.cwd);
     if (open.includes(cwd)) return true;
     if (scope.workspaceSessionIds?.has(row.sessionId)) return true;
-    if (scope.workspacePath !== undefined) return cwd === scope.workspacePath;
-    return !scope.groupedSessionIds.has(row.sessionId);
+    return cwd === scope.workspacePath;
   });
 }
 
@@ -134,35 +136,42 @@ export interface ViewScope {
    * 或新会话页上选定的目录。`undefined` = 拿不到目录证据。
    */
   cwd?: string;
+  /**
+   * 服务端工作区注册表里**所有**工作区记账的会话 id（判「未分组」用）：没有打开文件夹、
+   * 窗口也还没有目录时，只列不属于任何工作区的那些行。
+   */
+  groupedSessionIds: ReadonlySet<string>;
 }
 
 /**
  * 一个窗口该看见的历史行：在 {@link visibleForWorkspace} 的**全局**结论之上再按窗口收窄。
  *
- * 用户 2026-10-10 口径：没有打开文件夹时，每个会话可以各自选一个工作目录，历史列表
- * 必须跟着**这个窗口当前那条会话的 cwd**——两个面板各开一个目录时，各自的历史里不许
- * 混进对方的会话。
+ * 用户 2026-10-10 与 2026-10-17 口径：没有打开文件夹时，每个会话可以各自选一个工作目录，
+ * 历史列表必须跟着**这个窗口当前那条会话的 cwd**——两个面板各开一个目录时，各自的历史里
+ * 不许混进对方的会话；窗口还停在空态（没选目录）时，列的是**未分组**（不属于任何服务端
+ * 工作区）的会话，别的窗口打开过的目录里那些已分组的会话不许漏进来。
  *
  * 三档，判据都是肯定证据：
  *
  * 1. **打开了文件夹** → 原样放行：目录跟随 VS Code，所有窗口同一份（旧口径不动，
- *    含「任何已打开域的 cwd」那条兜底）；
+ *    含「任何已打开域的 cwd」那条兜底，见 `visibleForWorkspace`）；
  * 2. **没打开文件夹、窗口有目录** → 只留 cwd 相同的行（`normalizePath` 是唯一比较口径，
- *    大小写与斜杠写法不同算同一个目录）；
- * 3. **没打开文件夹、窗口没有目录**（空态、还没落壳，或服务端没给这条会话 cwd）→
- *    原样放行 = 按「未分组」列全。**不拿别的目录去猜**：收紧会把「没有文件夹的新窗口
- *    从历史里接回会话」这条路径堵死，而那时本来就没有可隔离的对象。
+ *    大小写与斜杠写法不同算同一个目录；**不看注册表分组**——用户口径是这个目录下的历史，
+ *    注册进工作区的那条会话同样属于这个目录）；
+ * 3. **没打开文件夹、窗口没有目录**（空态、还没落壳）→ 只留**未分组**的行（不在任何
+ *    工作区注册记录里）。收窄的依据是「目录还没选」这件事本身：已分组的会话属于某个具体
+ *    目录，此刻没有证据说明用户想看它。
  *
  * `rows` 应当是全局那一份（`this.sessions`），本函数只做减法——全局那份还要给打开
  * 菜单、空壳复用、running 打底用（见 `controller.refreshSessions`）。返回的数组在
- * 第 1、3 档就是入参本身，调用方不许改它。
+ * 第 1 档就是入参本身，调用方不许改它。
  */
-export function visibleForView<T extends { cwd?: string }>(
+export function visibleForView<T extends { id: string; cwd?: string }>(
   rows: readonly T[],
   scope: ViewScope,
 ): readonly T[] {
   if (scope.folderOpen) return rows;
   const cwd = normalizePath(scope.cwd);
-  if (!cwd) return rows;
-  return rows.filter((row) => normalizePath(row.cwd) === cwd);
+  if (cwd) return rows.filter((row) => normalizePath(row.cwd) === cwd);
+  return rows.filter((row) => !scope.groupedSessionIds.has(row.id));
 }

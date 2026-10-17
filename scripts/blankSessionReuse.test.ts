@@ -12,11 +12,13 @@
  * 读的正是它）。
  *
  * 2026-10-01 口径调整后（对齐官方：**空态就是一条真会话**，见 `newSession`），本测试
- * 钉住三件事：
+ * 钉住四件事：
  *
  * 1. 点「+」之后窗口**立刻**落在本工作区那条空壳会话上（不再有「无会话的空态」）；
  * 2. 连开几个新对话，每条首消息都必须落在一条**没说过话**的会话上（报障现场）；
- * 3. 还没说过话的空壳要接回来（两个窗口进空态共用同一条），说过话的绝不再接。
+ * 3. 还没说过话的空壳要接回来；说过话的绝不再接；
+ * 4. 空壳**按窗口独占**（用户 2026-10-17 口径，取代 2026-10-01 的「两个窗口共用一条」）：
+ *    第二个窗口进空态另建一条，谁也不接别人正在用的壳。
  *
  * 假服务端与真服务端同形：`session/create` 造出 `blank:true` 的行，`session/list`
  * 只在被查时才交出新值。`lag` 那一档模拟「服务端还没跟上 `turn/start`」——
@@ -74,8 +76,14 @@ function fakeClient(
       models.push({ sessionId, provider, model });
       return { selected: { provider, model } };
     },
-    async createSession(target: { workspaceId?: string; cwd?: string }) {
+    async createSession(target: { workspaceId?: string; cwd?: string }, reuse?: string) {
       calls.push("session/create");
+      // 指名复用一条已有会话（`session/create` 的第二个位置参数）：服务端认得它就**还是
+      // 那条**，顺手把它的 Agent 激活（认领见 controller 的 `adoptBlankShell`）
+      if (reuse !== undefined) {
+        const row = rows.find((item) => item.sessionId === reuse);
+        if (row) return { sessionId: row.sessionId };
+      }
       const sessionId = `session-${rows.length + 1}`;
       rows.push({
         sessionId,
@@ -102,6 +110,10 @@ function fakeClient(
     async request(method: string, params?: Record<string, unknown>) {
       calls.push(method);
       if (method === "workspace/create") return { workspace: { workspaceId: "ws-1" } };
+      // 命令通道（`/permission` 等命令走它）：认领 / 后续命令链路的通用夹具
+      if (method === "commands/execute") {
+        return { commandId: "cmd-1", result: { kind: "success", text: String(params?.line ?? "") } };
+      }
       if (method === "agentPresets/list") return { presets: [] };
       if (method === "subagents/list") return { entries: [] };
       if (method === "session/projections") return { values: {} };
@@ -116,6 +128,10 @@ function fakeClient(
       if (rows.length === 0 && method === "commands/list") return [];
       return undefined;
     },
+    async scheduleCatalog() {
+      // 这个部署有自动化任务能力、但当前会话一条都没有（目录为空）
+      return [];
+    },
     async sessionProjections() {
       return { values: {} };
     },
@@ -123,9 +139,26 @@ function fakeClient(
       return undefined;
     },
     async settingsDescribe() {
-      return { namespaces: [] };
+      // 部署默认（`agent-default-model` / `permission`）：建一条**真新建**的空壳时用它落实
+      // 模型与权限（用户 2026-10-17 口径「新建等价于官方的新会话」），所以夹具得给一个
+      return {
+        namespaces: [
+          { ns: "agent-default-model", value: { provider: "prov", model: "model-default" } },
+          { ns: "permission", value: { defaultPreset: "workspace-write" } },
+        ],
+      };
     },
-    followSession() {
+    followSession(sessionId: string, handler: { onItem(value: unknown): void }) {
+      // 真服务端开帧就是一份 snapshot：交点空日志的快照（`cursor: 0`），与真链路上
+      // 「刚建 / 刚接回的壳还没有任何记录」一致
+      handler.onItem({
+        type: "snapshot",
+        header: { version: 3, id: sessionId, createdAt: 1, cwd: CWD, isSeeded: false },
+        cursor: 0,
+        records: [],
+        hasMore: false,
+        projections: { asOfSeq: 0, values: {} },
+      });
       return { cancel() {} };
     },
     followJobs() {
@@ -177,6 +210,7 @@ function makeController(
     client: unknown;
     connection: string;
     sessions: { id: string; blank?: boolean }[];
+    deletedSessionIds: Set<string>;
     viewSessions: Map<string, string>;
     scopes: Map<string, unknown>;
     /** 本地 blank 位（官方 `engagedSessions`：我们亲眼见它说过话的会话）。 */
@@ -306,31 +340,34 @@ console.log("blankSessionReuse: 点「+」之后第一条消息发给谁（驱�
 //
 // 复用本身是**要的**，而且是官方的核心行为（`ui-workspace` 的 `reuseOrCreateBlank`）：
 // 一个工作区通常只有一条空壳，谁进空态都用它。下面这条修正只该摘掉**已经说过话**的。
+//
+// 判据是「**这条壳是不是本窗口手里那一条**」：已经在它上面时点「+」是**完全 no-op**
+// （见第九条，id 不变），根本到不了复用挑选这一步；而这个窗口刚上线 / 刚从别的会话退回来时，
+// 该接回那条没人用过的空壳，不是再堆一条。
 {
-  const { c, client } = makeController({ dir: CWD });
+  const { c, client } = makeController({ dir: CWD, seed: [{ sessionId: "session-blank-seed" }] });
   c.bindView("v1");
+  const shell = client.rows[0].sessionId;
   await clickPlus(c, "v1");
-  const first = client.rows[0].sessionId;
+  assert.strictEqual(c.viewSessions.get("v1"), shell, "有现成空壳就接回它，不另建");
   // 空态打开 `/` 菜单：窗口已经在壳上了，菜单**不再**另建一条（用户 2026-09-24 口径的
-  // 「按需建会话」在新口径下变成「空态一进来就有会话」）
+  // 「按需建会话」在 2026-10-01 的空态口径下变成「空态一进来就有会话」）
   await c.handle({ type: "listCommands" }, "v1");
   assert.strictEqual(client.rows.length, 1, "菜单不再另建会话（空态窗口已经绑在壳上）");
-  assert.ok(!c.engagedSessions.has(first), "没说过话的空壳不许被标成已经用过");
-  // 用户再点一次「+」然后发第一条消息：接回同一条，不再堆一条
-  await clickPlus(c, "v1");
-  assert.strictEqual(c.viewSessions.get("v1"), first, "点「+」回到同一条还没说过话的空壳上");
+  assert.ok(!c.engagedSessions.has(shell), "没说过话的空壳不许被标成已经用过");
   await sendMessage(c, "v1", "接回来的第一条");
-  console.log(`  空壳 ${first}，首条消息落在 ${client.prompts[0].sessionId}（共 ${client.rows.length} 条）`);
+  console.log(`  空壳 ${shell}，首条消息落在 ${client.prompts[0].sessionId}（共 ${client.rows.length} 条）`);
   assert.strictEqual(client.rows.length, 1, "没说过话的空壳要接回来，不再堆一条");
-  assert.strictEqual(client.prompts[0].sessionId, first, "首条消息落在那条还没说过话的空壳上");
-  assert.ok(c.engagedSessions.has(first), "用过的空壳必须点亮本地 blank 位");
+  assert.strictEqual(client.prompts[0].sessionId, shell, "首条消息落在那条还没说过话的空壳上");
+  assert.ok(c.engagedSessions.has(shell), "用过的空壳必须点亮本地 blank 位");
   console.log("  未用过的空壳仍被复用 ✓");
 }
 
-// ---------- 五、两个窗口进空态共用同一条空壳（口径 3：不加自加排除条件） ----------
+// ---------- 五、两个窗口进空态：**各占一条**（空壳不跨窗口共享） ----------
 //
-// 官方只有一个主视图，所以「两个窗口共用一条空壳」遇不到；遇不到不等于不该发生——用户
-// 2026-10-01 明确口径：严格对齐官方，去掉我们自加的 `bound.has` 那条排除。
+// 用户 2026-10-17 口径取代了 2026-10-01 的「两个窗口进空态共用同一条空壳（官方字面
+// 行为）」：空壳按窗口独占——它正被某个窗口当「新会话」用着，别人再进空态就另建一条。
+// 两个窗口看同一条**已经开始的对话**（内容会话）照旧是容许的共享形态，不在这一条里。
 {
   const { c, client } = makeController({ dir: CWD });
   c.bindView("v1");
@@ -338,10 +375,11 @@ console.log("blankSessionReuse: 点「+」之后第一条消息发给谁（驱�
   await clickPlus(c, "v1");
   const first = client.rows[0].sessionId;
   await clickPlus(c, "v2");
-  console.log(`  窗口 v1/v2 → ${c.viewSessions.get("v1")} / ${c.viewSessions.get("v2")}`);
-  assert.strictEqual(client.rows.length, 1, "第二个窗口进空态不许另建一条（复用本工作区那条空壳）");
-  assert.strictEqual(c.viewSessions.get("v2"), first, "两个窗口共用同一条空壳是容许的（官方字面行为）");
-  console.log("  两个窗口进空态共用同一条空壳 ✓");
+  const second = c.viewSessions.get("v2");
+  console.log(`  窗口 v1/v2 → ${c.viewSessions.get("v1")} / ${second}（服务端 ${client.rows.length} 条）`);
+  assert.strictEqual(client.rows.length, 2, "第二个窗口进空态要另建一条（第一条被 v1 占着）");
+  assert.notStrictEqual(second, first, "空壳不跨窗口共享（用户 2026-10-17 口径）");
+  assert.strictEqual(c.viewSessions.get("v1"), first, "第一个窗口的绑定不被打扰");
 }
 
 // ---------- 六、服务端还没跟上时，本地 blank 位自己顶住（effectiveBlank 的另一半） ----------
@@ -373,13 +411,20 @@ console.log("blankSessionReuse: 点「+」之后第一条消息发给谁（驱�
 // ---------- 七、空壳上选的模型要留得住 ----------
 //
 // 模型是**会话**的属性（官方 `session/selectModel`），所以在壳上选它就当场写进会话。
-// 只在域上记一笔（`pendingModel`，等下次发送再提交）会把这个选择丢掉：点「+」会回到同
-// 一条壳，而「+」把域整个重建，胶囊下一帧就弹回部署默认。
+// 只在域上记一笔（`pendingModel`，等下次发送再提交）会把这个选择丢掉：离开这条壳再回来
+// 时域已经重建，胶囊会莫名其妙地弹回部署默认。
+//
+// 「离开再回来」走的是**复用**那条路（当前不在壳上 → 接回那条没人用过的壳）；
+// 已经在壳上再点「+」是**完全 no-op**（见第九条）——它连模型一起原样留着，
+// 所以「选择留得住」这条在这两条路上都成立。
 {
-  const { c, client } = makeController({ dir: CWD });
+  const { c, client } = makeController({
+    dir: CWD,
+    seed: [{ sessionId: "session-history", blank: false }, { sessionId: "session-blank-seed" }],
+  });
   c.bindView("v1");
   await clickPlus(c, "v1");
-  const shell = client.rows[0].sessionId;
+  const shell = String(c.viewSessions.get("v1"));
   await c.handle({ type: "setModel", provider: "prov", model: "model-1" }, "v1");
   console.log(`  空壳上选模型 → ${JSON.stringify(client.models)}`);
   assert.deepStrictEqual(
@@ -387,9 +432,16 @@ console.log("blankSessionReuse: 点「+」之后第一条消息发给谁（驱�
     [{ sessionId: shell, provider: "prov", model: "model-1" }],
     "空壳会话上选模型要当场写进会话（session/selectModel），不能只记在域上",
   );
+  const before = client.models.length;
+  // 走去别的会话，再点「+」回到这条壳：它是本次会话里已经用过的壳，接回来仍是同一条
+  await c.openSession("v1", "session-history");
   await clickPlus(c, "v1");
-  assert.strictEqual(c.viewSessions.get("v1"), shell, "点「+」回到同一条空壳上");
-  assert.strictEqual(client.models.length, 1, "回到同一条壳不会重复提交（选择已经在会话上）");
+  assert.strictEqual(c.viewSessions.get("v1"), shell, "点「+」接回那条还没说过话的空壳");
+  assert.strictEqual(
+    client.models.length,
+    before,
+    "接回同一条壳不会重复提交（选择已经在会话上）",
+  );
 }
 
 // ---------- 八、已经开始的会话仍按老口径：切模型延迟到下一次发送 ----------
@@ -410,34 +462,49 @@ console.log("blankSessionReuse: 点「+」之后第一条消息发给谁（驱�
   );
 }
 
-// ---------- 九、已经在本工作区那条空壳上时，点「+」原地重来 ----------
+// ---------- 九、已经在一条空壳上时再点「+」：**完全 no-op** ----------
 //
-// 官方 `startSession` → `reuseOrCreateBlank` 接回的就是同一条（它 `retain` 同一个会话对象，
-// 不拆不建）。我们照做：先 `detachView` 再落壳会把域整个重建（follow 流重开 + 再拉一次列表），
-// 白白抖一下，而结果一模一样。
+// 用户 2026-10-17 21:00 口径：当前会话已经是一条新的空会话时，
+// 「创建新会话」什么都不做——id 不变、目录不删、绑定不动，连它记着的模型 / 思考强度 / 预设 /
+// 权限也**不写回默认**：用户要的就是这条已经开着的空壳原样不动（见 `newSession` 的入口判据）。
 {
   const { c, client } = makeController({ dir: CWD });
   c.bindView("v1");
   await clickPlus(c, "v1");
-  const shell = c.viewSessions.get("v1");
-  const lists = client.calls.filter((method) => method === "session/list").length;
-  await clickPlus(c, "v1");
-  console.log(`  原地再点一次「+」：会话仍 ${c.viewSessions.get("v1")}（列表调用 ${lists} → ${client.calls.filter((m) => m === "session/list").length}）`);
-  assert.strictEqual(c.viewSessions.get("v1"), shell, "点「+」还在同一条壳上");
-  assert.strictEqual(
-    client.calls.filter((method) => method === "session/list").length,
-    lists,
-    "已经在那条壳上时点「+」不该再拆一次域、再拉一次列表",
+  const shell = String(c.viewSessions.get("v1"));
+  // 在壳上改一档模型：no-op 之后**照旧留着**这一档
+  await c.handle({ type: "setModel", provider: "prov", model: "model-1" }, "v1");
+  assert.deepStrictEqual(
+    client.models.map((row) => row.model),
+    ["model-1"],
+    "前置：这条壳上的模型被改过",
   );
-  assert.strictEqual(client.rows.length, 1, "更不该堆出第二条壳");
+  await clickPlus(c, "v1");
+  const next = String(c.viewSessions.get("v1"));
+  console.log(
+    `  再点一次「+」：${shell} → ${next}（模型提交序列 ${client.models.map((row) => row.model).join(", ")}；` +
+      `已删集合 ${[...c.deletedSessionIds].join(", ") || "（空）"}）`,
+  );
+  assert.strictEqual(next, shell, "同一窗口再点「+」完全 no-op（id 不变）");
+  assert.ok(!c.deletedSessionIds.has(shell), "旧会话目录不删");
+  assert.ok(c.sessions.some((row) => row.id === shell), "它还在列表里（这一次仍绑着它）");
+  assert.strictEqual(client.rows.length, 1, "no-op 不另铸会话");
+  assert.deepStrictEqual(
+    client.models.map((row) => row.model),
+    ["model-1"],
+    "no-op 不改写模型（用户刚选的那一档照旧留着）",
+  );
 }
 
-// ---------- 十、先切、后建：点「+」的第一帧是**同步**推出去的 ----------
+// ---------- 十、先切、后建：没有现成空壳时，点「+」的第一帧是**同步**推出去的 ----------
 //
 // 报障现场（用户 2026-10-01）：点「+」有明显停顿感，「像是先创建后台会话再切换」。落壳那串
 // 动作（连后台 → `session/create` → 拉列表）全是往返，必须排在切换**之后**；而切换本身是
 // 同步的（解绑 → 建域 → 换绑 → 推整份快照）。这条断言的就是那个次序：**不 await 调用**之后，
 // 那一帧已经在路上了。
+//
+// 「手里已经有一条现成空壳」那条同步路（`switchToBlankSync`）不在这里——它连空态帧都不推
+// （换绑本身就是同步的）。这里走的是**没有现成壳**那条：先退回空态、再落壳。
 {
   const { c, frames, client } = makeController({ dir: CWD });
   c.bindView("v1");
@@ -445,6 +512,7 @@ console.log("blankSessionReuse: 点「+」之后第一条消息发给谁（驱�
   await sendMessage(c, "v1", "先说一句，把这条壳用掉");
   const used = String(c.viewSessions.get("v1"));
   assert.ok(c.engagedSessions.has(used), "前置：这条壳已经用过了（+ 才会走「没有现成壳」那条路）");
+  // 那条用过的壳仍被本窗口占着（说过话之后它不再是空壳，占用随之释放），所以「+」要另建
   frames.length = 0;
 
   const pending = c.handle({ type: "newSession" }, "v1"); // 刻意**不** await
@@ -465,10 +533,10 @@ console.log("blankSessionReuse: 点「+」之后第一条消息发给谁（驱�
   assert.notStrictEqual(
     c.viewSessions.get("v1"),
     used,
-    "落壳之后落在一条**新的**空壳上（用过的那条不再复用）",
+    "落壳之后落在一条**新的**空壳上（用过的那条不再是空壳，更不会被复用）",
   );
   const settled = frames.filter(({ target, frame }) => target === "v1" && frame.type === "state");
   assert.ok(settled.length > early.length, "落壳完成后再补一份带会话的快照");
 }
 
-console.log("blankSessionReuse: 空态必有壳、首条消息只发给没说过话的会话 ✓");
+console.log("blankSessionReuse: 空态必有壳、首条消息只发给没说过话的会话、空壳按窗口独占 ✓");

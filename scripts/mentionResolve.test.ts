@@ -35,6 +35,7 @@ import { join } from "node:path";
 import * as vscode from "vscode";
 import { ChatController } from "../src/dsh/controller";
 import type { FileRefEntry } from "../src/dsh/fileRefListing";
+import { visibleForView } from "../src/dsh/sessionList";
 
 process.on("unhandledRejection", (error) => {
   console.error("[mentionResolve] 未处理的异步拒绝（当作失败）：", error);
@@ -79,8 +80,11 @@ function fakeClient(serverItems: FileRefEntry[]) {
   return {
     rows,
     calls,
-    async createSession(target: { workspaceId?: string; cwd?: string }) {
+    async createSession(target: { workspaceId?: string; cwd?: string }, reuse?: string) {
       calls.push({ method: "session/create" });
+      // 指名复用一条已有会话（`session/create` 的第二个位置参数，见 controller 的
+      // `adoptBlankShell`）：服务端认得它就**还是那条**
+      if (reuse !== undefined && rows.some((row) => row.sessionId === reuse)) return { sessionId: reuse };
       const sessionId = `session-${rows.length + 1}`;
       rows.push({ sessionId, cwd: target.cwd ?? "", blank: true, updatedAt: Date.now() + rows.length, running: false });
       return { sessionId };
@@ -304,9 +308,20 @@ console.log("mentionResolve: 「已经能引用到内容」的判定（真控制
     value: { items: [{ workspaceId: "w-other", path: "D:/other-project", sessionIds: [otherId] }] },
   });
   await cast.refreshSessions();
+  // 前置换成了两句：全局候选（`this.sessions`）里现在**有**它——那一份是完整候选，
+  // 按窗口收窄只发生在发帧那一步（`visibleForView`）；界面上看不见它是因为它既不在本窗口
+  // 当前会话的 cwd 下、又已分组。判据若读「界面那一份」，这条引用就会被误判成引用不到内容。
   assert.ok(
-    !cast.sessions.some((row) => row.id === otherId),
-    "前提：它属于别的工作区（cwd 也不是本窗口打开的域）→ 不在本窗口的历史列表里",
+    cast.sessions.some((row) => row.id === otherId),
+    "前提：它在全局候选里（收窄在发帧那一步，见 `visibleForView`）",
+  );
+  assert.ok(
+    !visibleForView(cast.sessions as { id: string; cwd?: string }[], {
+      folderOpen: false,
+      cwd: root,
+      groupedSessionIds: new Set([otherId]),
+    }).some((row) => row.id === otherId),
+    "前提：按窗口收窄之后它不在这个窗口的历史列表里（别的目录 + 已分组）",
   );
   assert.ok(cast.sessionCwds.has(otherId), "前提：权威 cwd 账本（任何可见性过滤之前建的）里还有它");
 

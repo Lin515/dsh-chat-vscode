@@ -15,10 +15,11 @@
  * 1. 空态下两个菜单都有内容（用户可见的验收标准），且**不再各建一条**会话；
  * 2. 目录没定（没打开文件夹、也没选过）时**不建会话、也不弹目录选择器**，
  *    空菜单由界面那句「未选择工作区」解释（用户 2026-09-24 拍板的口径 C）；
- * 3. 还没开始对话的空壳**不进历史列表**（服务端 `blank` 位；否则又是「点一下就多一条
- *    空会话」，用户 2026-09-22 报过的现场）；
+ * 3. 还没开始对话的空壳**照样进历史列表**（用户 2026-10-17 口径：空壳要能被看见、被删除），
+ *    只是被某个会话窗口占着的那一条带上 `occupied` 锁；
  * 4. 并发：`@` 每敲一个字符都会重取候选，同一窗口只落一条会话（`sessionEnsures`）；
- * 5. 复用：还没说过话的空壳要接回来，不再堆一条；换了目录则不接。
+ * 5. 菜单只读现成的空壳；当前已经是一条空壳时再点「+」是**完全 no-op**（不删目录、不换 id）；
+ *    换了目录则不接（会话的 cwd 是创建事实）。
  *
  * vscode 依赖由 esbuild.scripts.mjs 的 alias 指到 `vscodeTestStub.ts`（离线、无网络、
  * 无 token、亚秒级）。
@@ -62,8 +63,14 @@ function fakeClient() {
   return {
     calls,
     rows,
-    async createSession(target: { workspaceId?: string; cwd?: string }) {
+    async createSession(target: { workspaceId?: string; cwd?: string }, reuse?: string) {
       calls.push("session/create");
+      // 指名复用一条已有会话（`session/create` 的第二个位置参数，认领见 controller 的
+      // `adoptBlankShell`）：服务端认得它就**还是那条**，顺手把它的 Agent 激活
+      if (reuse !== undefined) {
+        const row = rows.find((item) => item.sessionId === reuse);
+        if (row) return { sessionId: row.sessionId };
+      }
       const sessionId = `session-blank-${rows.length + 1}`;
       rows.push({
         sessionId,
@@ -81,6 +88,10 @@ function fakeClient() {
     async request(method: string, params?: Record<string, unknown>) {
       calls.push(method);
       if (method === "workspace/create") return { workspace: { workspaceId: "ws-1" } };
+      // 命令通道（`/permission` 等命令走它）：认领 / 后续命令链路的通用夹具
+      if (method === "commands/execute") {
+        return { commandId: "cmd-1", result: { kind: "success", text: String(params?.line ?? "") } };
+      }
       if (method === "agentPresets/list") return { presets: [] };
       if (method === "subagents/list") return { entries: [] };
       if (method === "session/projections") return { values: {} };
@@ -97,6 +108,10 @@ function fakeClient() {
       if (method === "skills/list") return { skills: [] };
       return undefined;
     },
+    async scheduleCatalog() {
+      // 这个部署有自动化任务能力、但当前会话一条都没有（目录为空）
+      return [];
+    },
     async sessionProjections() {
       return { values: {} };
     },
@@ -106,7 +121,16 @@ function fakeClient() {
     async settingsDescribe() {
       return { namespaces: [] };
     },
-    followSession() {
+    followSession(sessionId: string, handler: { onItem(value: unknown): void }) {
+      // 开帧快照（空日志）：与真链路上「刚建 / 刚接回的壳还没有任何记录」一致
+      handler.onItem({
+        type: "snapshot",
+        header: { version: 3, id: sessionId, createdAt: 1, cwd: CWD, isSeeded: false },
+        cursor: 0,
+        records: [],
+        hasMore: false,
+        projections: { asOfSeq: 0, values: {} },
+      });
       return { cancel() {} };
     },
     followJobs() {
@@ -156,6 +180,7 @@ function makeController(options: { dir?: string } = {}) {
     client: unknown;
     connection: string;
     sessions: { id: string; blank?: boolean }[];
+    deletedSessionIds: Set<string>;
     viewSessions: Map<string, string>;
     newSessionCwd?: string;
     bindView(viewId: string): void;
@@ -235,22 +260,24 @@ console.log("emptyComposer: 空态下的 / 命令栏与 @ 候选（驱动真控�
   console.log("  两个菜单都有内容，且没有多出会话 ✓");
 }
 
-// ---------- 二、空会话不进历史列表（否则「点一下就多一条空会话」又回来了） ----------
+// ---------- 二、空会话进历史列表，且被本窗口占着时带上锁 ----------
 {
   const { c, frames, client } = makeController({ dir: CWD });
   c.bindView("v1");
   await c.newSession("v1");
   await openMenus(c, "v1");
   const id = client.rows[0].sessionId;
-  const listed = lastSessions(frames, "v1").map((row) => row.id);
-  console.log(`  界面列表：${listed.length} 条${listed.length ? ` ${listed.join(", ")}` : ""}（域里那条是 ${id}）`);
-  assert.ok(
-    !listed.includes(id),
-    "还没开始对话的空会话不许进历史列表（服务端 blank 位，官方列表同一口径）",
+  const listed = lastSessions(frames, "v1") as { id: string; occupied?: boolean }[];
+  const row = listed.find((item) => item.id === id);
+  console.log(
+    `  界面列表：${listed.length} 条${listed.length ? ` ${listed.map((item) => item.id).join(", ")}` : ""}` +
+      `（域里那条是 ${id}，occupied=${row?.occupied}）`,
   );
+  assert.ok(row, "还没开始对话的空会话照样要进历史列表（用户 2026-10-17 口径：空壳可见、可删）");
+  assert.strictEqual(row?.occupied, true, "被某个会话窗口占着的空壳要带上占用位（界面上锁住它）");
   assert.ok(
-    c.sessions.some((row) => row.id === id && row.blank === true),
-    "空会话必须仍留在宿主自己的列表里（cwd 解析、恢复窗口、复用都要读它）",
+    c.sessions.some((item) => item.id === id && item.blank === true),
+    "空会话必须留在宿主自己的列表里（cwd 解析、恢复窗口、复用都要读它）",
   );
 }
 
@@ -312,37 +339,62 @@ console.log("emptyComposer: 空态下的 / 命令栏与 @ 候选（驱动真控�
   );
 }
 
-// ---------- 五、复用：还没说过话的空壳要接回来，不再堆一条 ----------
+// ---------- 五、菜单只读现成的空壳；再点「+」则**完全 no-op** ----------
+//
+// 两条口径叠在这一段里：①打开 `/` 或 `@` 菜单**不建会话**——窗口早就绑在一条真空壳上，
+// 菜单只是读它（用户 2026-09-24 / 2026-10-01 口径）；②当前已经是一条新的空会话时再点
+// 「+」，用户 2026-10-17 21:00 口径是**什么都不做**——id 不变、目录不删、绑定不动，连它
+// 记着的模型 / 预设 / 权限也不写回默认（见 `newSession` 的入口判据）。
 {
   const { c, frames, client } = makeController({ dir: CWD });
   c.bindView("v1");
   await c.newSession("v1");
   const first = client.rows[0]?.sessionId;
+  const created = client.calls.filter((method) => method === "session/create").length;
   await openMenus(c, "v1");
-  // 用户没发消息就再点一次「+」（= 退出这条会话、重新落空态），再打开一次菜单
+  assert.strictEqual(
+    client.calls.filter((method) => method === "session/create").length,
+    created,
+    "打开菜单不建会话（窗口早就落在一条空壳上，菜单只是读它）",
+  );
+  // 用户没发消息就再点一次「+」：完全 no-op
   await c.newSession("v1");
   frames.length = 0;
   await openMenus(c, "v1");
   const commands = (lastFrame(frames, "v1", "commands/list")?.commands ?? []) as unknown[];
-  console.log(`  走开再回来：服务端共 ${client.rows.length} 条会话（首条 ${first}），命令 ${commands.length} 条`);
-  assert.strictEqual(client.rows.length, 1, "没开始对话的空壳要接回来复用，不再堆一条");
-  assert.strictEqual(c.viewSessions.get("v1"), first, "回到同一条空壳上（官方 reuseOrCreateBlank 的行为）");
-  assert.ok(commands.length > 0, "复用那条会话后菜单照常有内容");
+  const second = c.viewSessions.get("v1");
+  console.log(
+    `  空壳 ${first} → 再点「+」→ ${second}（服务端内存里 ${client.rows.length} 条，命令 ${commands.length} 条）`,
+  );
+  assert.strictEqual(second, first, "同一窗口再点「+」完全 no-op（id 不变、目录不删）");
+  assert.ok(!c.deletedSessionIds.has(String(first)), "旧会话目录不删（用户 2026-10-17 口径）");
+  assert.ok(
+    c.sessions.some((row) => row.id === first),
+    "它还在宿主那份列表里（这一次仍绑着它）",
+  );
+  assert.ok(commands.length > 0, "no-op 之后那条空壳的菜单照常有内容");
+  assert.strictEqual(client.rows.length, 1, "没有多出会话（no-op 不另铸）");
 }
 
-// ---------- 六、换了目录就不复用（会话的 cwd 是创建事实，不能张冠李戴） ----------
+// ---------- 六、空壳上换过目录标记之后再点「+」：照旧 no-op（换目录本身走 `pickWorkspace`） ----------
+//
+// 会话的 cwd 是创建事实，所以换目录**不能**沿用旧目录那条壳——但那条路是空态页上的目录胶囊
+// （`pickWorkspace` → `rebindWorkspaceDir`：先解绑、再落到新目录那条壳上），不是「+」。
+// 点「+」在一条空壳上是完全 no-op（用户 2026-10-17 21:00 口径），`newSessionCwd` 变了也一样：
+// 它什么都不做，旧目录那条壳留在原地等真正的换目录动作。
 {
   const { c, client } = makeController({ dir: CWD });
   c.bindView("v1");
   await c.newSession("v1");
   const first = c.viewSessions.get("v1");
   await openMenus(c, "v1");
-  // 用户换了个工作目录，再点一次「+」：新壳落在新目录上
   c.newSessionCwd = "C:\\work\\other";
+  const callsBefore = client.calls.length;
   await c.newSession("v1");
-  console.log(`  换目录后：服务端 ${client.rows.length} 条会话（cwd 分别是 ${client.rows.map((row) => row.cwd).join(" / ")}）`);
-  assert.strictEqual(client.rows.length, 2, "换了工作目录就该建新会话，不能接旧目录那条");
-  assert.notStrictEqual(c.viewSessions.get("v1"), first, "新壳是另一条（旧目录那条留给别的窗口/以后复用）");
+  console.log(`  换目录标记后点「+」：服务端 ${client.rows.length} 条会话（cwd 分别是 ${client.rows.map((row) => row.cwd).join(" / ")}）`);
+  assert.strictEqual(c.viewSessions.get("v1"), first, "空壳上的「+」是 no-op：不换壳、不换目录");
+  assert.strictEqual(client.rows.length, 1, "no-op 不新建（换目录由 `pickWorkspace` 那条路落壳）");
+  assert.strictEqual(client.calls.length, callsBefore, "no-op 一条 RPC 都不发");
 }
 
-console.log("emptyComposer: 空态必有壳、菜单读壳不另建、空壳不进列表、不弹目录框、并发合并、可复用 ✓");
+console.log("emptyComposer: 空态必有壳、菜单读壳不另建、空壳进列表并上锁、不弹目录框、并发合并、停在空壳上点「+」no-op ✓");

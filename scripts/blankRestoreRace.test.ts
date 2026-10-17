@@ -61,8 +61,11 @@ function fakeClient(seed: { sessionId: string; blank?: boolean }[] = []) {
   return {
     calls,
     rows,
-    async createSession(target: { workspaceId?: string; cwd?: string }) {
+    async createSession(target: { workspaceId?: string; cwd?: string }, reuse?: string) {
       calls.push("session/create");
+      // 指名复用一条已有会话（`session/create` 的第二个位置参数，见 controller 的
+      // `adoptBlankShell`）：服务端认得它就**还是那条**
+      if (reuse !== undefined && rows.some((row) => row.sessionId === reuse)) return { sessionId: reuse };
       const sessionId = `session-${rows.length + 1}`;
       rows.push({
         sessionId,

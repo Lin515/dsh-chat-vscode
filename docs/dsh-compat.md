@@ -7,8 +7,8 @@
 工具在 `scripts/dshCompat.ts`（命令 `npm run dsh:watch` / `dsh:check`）；分级与抽取规则在
 `scripts/dshContract.ts`。契约面本身见 `docs/dsh-server-api.md`。
 
-**本文不记历史核对台账**：逐版本的核对结论属于提交说明与 `CHANGELOG.md`，文档只保留规则、
-当前基准与兼容层登记——否则它会长成一份没人再读的流水账，而且每换一版就得维护两处。
+**本文不记历史核对台账**：逐版本的核对结论只留在 git 历史与该版 `CHANGELOG.md` 里，文档只保留
+规则、当前基准与兼容层登记——否则它会长成一份没人再读的流水账，而且每换一版就得维护两处。
 
 ---
 

@@ -270,7 +270,12 @@ const entries = {
   "build/empty-composer.test.mjs": "scripts/emptyComposer.test.ts",
   "build/file-ref-listing.test.mjs": "scripts/fileRefListing.test.ts",
   "build/blank-session-reuse.test.mjs": "scripts/blankSessionReuse.test.ts",
+  // 空壳记着的预设被删掉（接回时指名认领 + 退回部署默认）：必须登记，否则 npm test 静默不跑
+  "build/blank-preset-adopt.test.mjs": "scripts/blankPresetAdopt.test.ts",
   "build/blank-restore-race.test.mjs": "scripts/blankRestoreRace.test.ts",
+  // 「停在空壳上点「+」完全 no-op」与空壳按窗口独占（真 ChatController + 假服务端）：
+  // 必须登记，否则 npm test 静默不跑
+  "build/blank-session-noop.test.mjs": "scripts/blankSessionNoop.test.ts",
   "build/workspace-dir-repick.test.mjs": "scripts/workspaceDirRepick.test.ts",
   "build/dsh-compat.mjs": "scripts/dshCompat.ts",
   // S02 夹具提取 / 离线校验：两个 CLI 与它们的离线回归（回归必须登记，否则 npm test 静默不跑）

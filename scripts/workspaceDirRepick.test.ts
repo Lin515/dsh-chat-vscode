@@ -63,8 +63,14 @@ function fakeClient() {
     calls,
     rows,
     prompts,
-    async createSession(target: { workspaceId?: string; cwd?: string }) {
+    async createSession(target: { workspaceId?: string; cwd?: string }, reuse?: string) {
       calls.push("session/create");
+      // 指名复用一条已有会话（`session/create` 的第二个位置参数）：服务端认得它就**还是
+      // 那条**（顺手激活它的 Agent，见 controller 的 `adoptBlankShell`）
+      if (reuse !== undefined) {
+        const row = rows.find((item) => item.sessionId === reuse);
+        if (row) return { sessionId: row.sessionId };
+      }
       const sessionId = `session-${rows.length + 1}`;
       rows.push({
         sessionId,
@@ -448,12 +454,12 @@ console.log("workspaceDirRepick: 空态页的目录胶囊能反复改目录（�
     let boundAtCreate: string | undefined = "（还没建）";
     let stateFramesAtCreate = -1;
     const create = client.createSession;
-    client.createSession = async (target) => {
+    client.createSession = async (target, reuse) => {
       boundAtCreate = c.viewSessions.get("v1");
       stateFramesAtCreate = frames.filter(
         ({ target: to, frame }) => to === "v1" && frame.type === "state",
       ).length;
-      return create(target);
+      return create(target, reuse);
     };
     await clickChip(c, "v1");
     console.log(
@@ -466,11 +472,12 @@ console.log("workspaceDirRepick: 空态页的目录胶囊能反复改目录（�
   }
 }
 
-// ---------- 八、换回原目录：复用那条还没说过话的旧壳 ----------
+// ---------- 八、换回原目录：接回那条还没说过话的旧壳（同目录、且没人占着） ----------
 //
 // 旧壳只是「不再被这个窗口用」，没有被丢掉（服务端没有删除 API）。换回它的目录时
-// `reusableBlank` 按 **cwd** 匹配（判据见那里的注释），应当把它接回来，而不是每条
-// 目录都堆一条壳。这条同时证明「按 cwd 复用」不会把新目录的窗口带回旧目录。
+// `reusableBlank` 按 **cwd** 匹配**且**要求没人占着它（用户 2026-10-17 口径：空壳按
+// 会话窗口独占）——这条壳只有这个窗口用过、此刻空着，所以接回来是对的：反复换目录
+// 不该每条都堆一条壳。这条同时证明「按 cwd 复用」不会把新目录的窗口带回旧目录。
 {
   const dialog = stubDialog([DIR_A, DIR_B, DIR_A]);
   try {
@@ -485,9 +492,10 @@ console.log("workspaceDirRepick: 空态页的目录胶囊能反复改目录（�
     console.log(
       `  A → B → A：${shellA} → ${shellB} → ${back}（服务端共 ${client.rows.length} 条会话）`,
     );
-    assert.strictEqual(client.rows.length, 2, "来回换目录不该每条都堆一条壳");
-    assert.strictEqual(back, shellA, "换回原目录要复用那条还没说过话的旧壳（按 cwd 匹配）");
+    assert.strictEqual(client.rows.length, 2, "来回换目录不该每条都堆一条壳（同目录那条还空着就接回来）");
+    assert.strictEqual(back, shellA, "换回原目录接回那条还没说过话、又没人占着的旧壳");
     assert.strictEqual(cwdOf(client, back), DIR_A, "复用回来的那条 cwd 就是原目录");
+    assert.notStrictEqual(back, shellB, "不许把新目录那条壳带回来");
   } finally {
     dialog.restore();
   }

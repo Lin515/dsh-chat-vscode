@@ -24,7 +24,7 @@
 
 - 协议改动先读[服务端契约](<docs/dsh-server-api.md>)，再按[技术文档导航](<docs/README.md>)选择对应主题的消费规则与边界，核对目标版本 API 包的 `lib/types/**/*.d.ts`、`lib/client.js`。不猜载荷形状；需要实测时遵守「构建与验证」的批准要求。
 - 投影的已提交值与 `pending` / `wanted` 待提交值须组合解读，例如 plan 为 `pending ? !active : active`。线格式与视图模型不可混用：`toUsage` 读取 `cacheReadTokens`，不是视图字段 `cachedTokens`。
-- 官方版本、渠道、发布去向与兼容层统一登记在 `docs/dsh-compat.md`。新版先跑 `npm run dsh:watch`，再逐版 `npm run dsh:check -- <版本>`。差异处理完成后才推进基准；核对历史写入提交说明，涉及发布的用户可见变化写入该版 CHANGELOG，不另建文档台账。
+- 官方版本、渠道、发布去向与兼容层统一登记在 `docs/dsh-compat.md`。新版先跑 `npm run dsh:watch`，再逐版 `npm run dsh:check -- <版本>`。差异处理完成后才推进基准；涉及发布的用户可见变化写入该版 CHANGELOG，不另建文档台账。
 - P0 是消费面的端点、事件或类型被删除、改名或改变形状，必须处理；只有 P2 时不改代码、不发版；P1 是否跟进是产品决策。兼容分支采用新名优先并记住可用名，或双读且新通道权威。
 - 每条兼容层登记起算日与两个月后的移除期限。`dsh:watch` 提示到期后，确认再删；不得因到期自动删除。
 
@@ -62,10 +62,10 @@
 
 ## 协作与发布
 
-- 未经用户明确要求提交，不执行 `git commit`；提交说明用中文。并行编辑先划定文件所有权，同一文件仅一个写入者。
+- 并行编辑先划定文件所有权，同一文件仅一个写入者。
 - 完成声明附文件位置或断言名。断言只固定确定事实；不稳定的探针分布作为观察报告，不写硬断言。注入式验证先读回确认注入生效。
 - `CHANGELOG.md` 仅在更新版本号时修改：汇总上次发布后的最终用户可见效果，每条一句，不写实现字段、函数、配置键或个人环境例子。涉及官方对齐时注明 DSH 版本。
-- 发布：标题 `## <版本>（日期）`，`npm version x.y.z --no-git-tag-version`，验证三项，再按用户授权提交并 `git tag -a v<x.y.z>`。推 tag 触发 `.github/workflows/release.yml`，校验版本、验证、打包并发布 GitHub Release；含 `-` 的 tag 为预发布。商店仍手动发布，以官方 npm `latest` 为对齐基准。
+- 发布：标题 `## <版本>（日期）`，`npm version x.y.z --no-git-tag-version`，验证三项，再打 `git tag -a v<x.y.z>`（发版口径：版本号、CHANGELOG 与 tag 三者一起到位）。推 tag 触发 `.github/workflows/release.yml`，校验版本、验证、打包并发布 GitHub Release；含 `-` 的 tag 为预发布。商店仍手动发布，以官方 npm `latest` 为对齐基准。
 
 ## 根目录导航
 

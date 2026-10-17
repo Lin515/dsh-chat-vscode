@@ -334,7 +334,7 @@ console.log("invariants: guard 工厂的返回值不被丢弃（收尾体真的�
 //     只有它认识「没有工作目录就建不了壳」这条边界；
 //  3. `ensureSession` 在要目录的那条路上先 `askWorkspaceDir()`，不要的那条路上先判
 //     `hasWorkspaceDir()`——绝不拿宿主的 cwd 冒充工作目录；
-//  4. 空壳复用判据不许多加自加的排除条件（口径 3，尤其不许排除「别的窗口正开着它」）；
+//  4. 空壳按窗口独占：复用判据必须排除被别的窗口拿着（占用或预留）的那条；
 //  5. 本地 blank 位必须在「prompt 受理」与「服务端说它在跑」两处点亮，并在列表刷新时
 //     折进列表行（官方的 `effectiveBlank`）。
 {
@@ -350,7 +350,11 @@ console.log("invariants: guard 工厂的返回值不被丢弃（收尾体真的�
   };
 
   const newSession = bodyOf("async newSession(");
-  assert.ok(/this\.detachView\(viewId\)/.test(newSession), "「新建对话」必须先把窗口退出现有会话");
+  assert.ok(
+    /this\.detachView\(viewId\)/.test(newSession),
+    "「新建对话」在**当前不是空壳、手里也没有现成空壳**那条路上必须先把窗口退出现有会话" +
+      "（停在空壳上是完全 no-op，连这一步都不走，见 `newSession` 的入口判据）",
+  );
   assert.ok(
     /ensureSession\(viewId, \{ start: true, askDir: false \}\)/.test(newSession),
     "「新建对话」必须落到本工作区那条空壳会话上，且**不弹**目录选择器" +
@@ -367,8 +371,8 @@ console.log("invariants: guard 工厂的返回值不被丢弃（收尾体真的�
     /this\.detachView\(viewId\);[\s\S]{0,260}?this\.emitToView\(viewId, \{ type: "state", state: this\.snapshotFor\(viewId\) \}\);[\s\S]{0,140}?await this\.ensureSession\(/.test(
       newSession,
     ),
-    "「新建对话」必须先同步退回空态并推那一帧，**再** await 落壳" +
-      "（否则界面要等「连后台 → 建会话 → 拉列表」整串往返）",
+    "「新建对话」真去落壳那一条路（当前非空壳且没有可用壳）必须先同步退回空态并推那一帧，" +
+      "**再** await 落壳（否则界面要等「连后台 → 建会话 → 拉列表」整串往返）",
   );
   // 手里已经有现成空壳时更快：同步换绑，连那一帧空态都不必先推
   const syncSwitch = bodyOf("private switchToBlankSync(");
@@ -423,7 +427,8 @@ console.log("invariants: guard 工厂的返回值不被丢弃（收尾体真的�
   }
 
   // 空壳的复用判据（官方 reuseOrCreateBlank 的扫描）：服务端说它空、本地 blank 位没标它
-  // 说过话、落在本工作区、不是归档 / 子代理。**不许多任何自加条件**。
+  // 说过话、落在本工作区、不是归档 / 子代理，且**没有别的窗口拿着它**（用户 2026-10-17
+  // 口径：空壳不跨窗口共享，取代 2026-10-01 的「两个窗口共用一条」）。
   const reusable = bodyOf("private reusableBlank(");
   assert.ok(
     /row\.blank !== true/.test(reusable) && /this\.engagedSessions\.has\(row\.id\)/.test(reusable),
@@ -435,9 +440,12 @@ console.log("invariants: guard 工厂的返回值不被丢弃（收尾体真的�
     "空壳必须落在本工作区（cwd 归一后相同）",
   );
   assert.ok(
-    !/viewSessions/.test(reusable),
-    "空壳判据里不许有「别的窗口正开着它」这条自加排除（用户 2026-10-01 口径：" +
-      "两个窗口 / 两个客户端共用同一条空壳是容许的，官方字面就是这样）",
+    /this\.blankHolder\(row\.id\) !== undefined/.test(reusable),
+    "空壳判据必须排除被别的窗口拿着（占用或预留）的那条——空壳不跨窗口共享",
+  );
+  assert.ok(
+    /row\.id === avoid/.test(reusable),
+    "调用方点名的 `avoid` 必须排除：点「+」判定要另开一条时，刚解绑的旧壳不许被立刻挑回来",
   );
 
   // 本地 blank 位的两个写入点：prompt 受理（send）与服务端说它在跑（列表行 running）。
@@ -499,8 +507,11 @@ console.log("invariants: guard 工厂的返回值不被丢弃（收尾体真的�
   const shell = bodyOf("private async reuseOrCreateBlank(");
   assert.ok(
     /wantedPermission && wantedPermission !== this\.defaultPermission/.test(shell) &&
-      /runCommand\(viewId, `\/permission \$\{wantedPermission\}`\)/.test(shell),
-    "空态页选过且不同于部署默认的权限必须在落壳后落实（否则实际与 UI 错位）",
+      // 权限命令按**这次真正落下的那条会话 id** 执行（不是按窗口再解析一次）：落壳这一路
+      // 跨了往返，期间窗口可能已经切走，按窗口解析会打到别的会话上
+      /runCommandOnSession\(target, `\/permission \$\{wantedPermission\}`\)/.test(shell),
+    "空态页选过且不同于部署默认的权限必须在落壳后落实（否则实际与 UI 错位），" +
+      "而且要钉在**刚落的这条会话**上",
   );
   assert.ok(
     /reusable === undefined/.test(shell),
@@ -526,7 +537,7 @@ console.log("invariants: guard 工厂的返回值不被丢弃（收尾体真的�
     "后台补壳必须跳过「这一轮恢复还没结算」的窗口（抢跑就是「历史会话一闪变成空会话」）",
   );
   assert.ok(
-    /scopeOfView\(viewId\)[\s\S]*?if \(bound\) return bound;[\s\S]*?this\.bindViewToSession\(viewId, created\.sessionId, scope\)/.test(
+    /scopeOfView\(viewId\)[\s\S]*?if \(bound\) return bound;[\s\S]*?this\.bindViewToSession\(viewId, target, scope\)/.test(
       shell,
     ),
     "空壳写绑定前必须复查窗口有没有被别的路径绑走（恢复路径、用户点历史里的一条）：" +

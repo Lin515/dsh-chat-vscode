@@ -764,6 +764,15 @@ export interface SessionSummaryView {
   unread?: boolean;
   blank?: boolean;
   /**
+   * 这条**空壳**此刻正被某个会话窗口占用（用户 2026-10-17 口径：空壳不跨窗口共享）。
+   *
+   * 只对空壳有意义：内容会话被别的窗口打开是**共享**的既定形态（两个窗口看同一条对话），
+   * 不构成删除 / 归档的阻碍，所以宿主只给 `blank === true` 的行算这一位（见 controller
+   * 的 `occupiedBlank`）。占用是**运行期**状态：宿主内存表，不落盘，扩展重启后任何会话
+   * 打开之前一律为假。
+   */
+  occupied?: boolean;
+  /**
    * 源会话 id：分支（`session/fork`）出来的会话带它，列表里靠标题前缀
    * （`texts.forkedTitle` 的「分支: 」）与普通会话区分——**同级的行**，不缩进
    * （用户 2026-09-19 口径）。

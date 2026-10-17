@@ -135,6 +135,29 @@ for (const raw of ["@[未绑定](dsh-session:%%%%)", "@[普通](https://example.
   assert.deepEqual(draft.targetAt(4), target("a"));
 }
 
+// **同一个会话**的空草稿也要清得动。
+//
+// 这一档与上面那条的区别是 `owner` **不变**：宿主把同一会话的草稿清空（发送成功后的
+// `commitDraft`）时送来的就是 `("", 同一个 id)`。早先的判据只看「原始串有没有变」，而
+// 用户新插入的 token 在 `write` 里还没绑定成块（`raw` 停在上一份）时，那句 return 会让
+// 输入框停在旧文字上，宿主却已经认为它是空的。
+{
+  const draft = model("");
+  // 用户直接敲 / 粘贴一段正文：`raw` 还没跟着更新（真实链路上它由下一次 `sync` 定稿）
+  draft.write("刚打的一段话", 6);
+  assert.equal(draft.text, "刚打的一段话", "前置：输入框里有字");
+
+  draft.sync("", "owner"); // 同一个 owner、一份空草稿
+  assert.equal(draft.text, "", "同 id 空快照必须清掉输入框（不能因为原始串相同就提前返回）");
+  assert.equal(draft.raw, "");
+  assert.deepEqual(draft.segments(), []);
+
+  // 队列取回 / 切回来：再给一份非空草稿要能重建
+  draft.sync(token("Other title", "other"), "owner");
+  assert.equal(draft.text, "@Other title");
+  assert.deepEqual(draft.targetAt(4), target("other"));
+}
+
 // 真 hook 的 Enter 选中和 onChange：写回、持久化仍发确定性 token，光标在显示域。
 for (const locale of ["zh", "en"] as const) {
   const draft = model(token("Old title", "old"));

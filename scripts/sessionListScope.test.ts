@@ -7,6 +7,12 @@
  * 同时开着两个 cwd 不同的会话。历史列表必须**按窗口当前那条会话的 cwd 隔离**——
  * 否则「两个面板各自开一个目录」时，两个面板的历史里混着对方的会话。
  *
+ * 用户 2026-10-17 追加：没有打开文件夹、窗口还停在**空态**（没选目录）时，列的是
+ * **未分组**的会话（不在任何服务端工作区注册记录里）——别的窗口打开过的目录里那些
+ * 已分组会话不许漏进来；而这个窗口一旦选了某个目录，**该目录下**的历史（已分组与否）
+ * 都要看见。收窄只发生在发帧那一步，全局那份 `this.sessions` 是完整候选：上游先滤掉的话，
+ * 「刚选一个还没有已打开域的目录」就再也拿不回该目录里已分组的会话。
+ *
  * 三件事必须同时成立，缺一条这组断言就会红：
  * 1. **按窗口过滤**：无文件夹时，窗口只看见它当前会话 cwd 下的会话（不是「本窗口
  *    打开过的所有 cwd 的并集」，也不是 `activeViewId` 那一个窗口的 cwd）；
@@ -69,8 +75,14 @@ function fakeClient(seed: Row[]) {
   return {
     rows,
     calls,
-    async createSession(target: { workspaceId?: string; cwd?: string }) {
+    async createSession(target: { workspaceId?: string; cwd?: string }, reuse?: string) {
       calls.push("session/create");
+      // 指名复用一条已有会话（`session/create` 的第二个位置参数）：服务端认得它就**还是
+      // 那条**（顺手激活它的 Agent，见 controller 的 `adoptBlankShell`）
+      if (reuse !== undefined) {
+        const row = rows.find((item) => item.sessionId === reuse);
+        if (row) return { sessionId: row.sessionId };
+      }
       const sessionId = `created-${rows.length + 1}`;
       rows.push({
         sessionId,
@@ -160,11 +172,15 @@ interface ChatControllerInternals {
   viewSessions: Map<string, string>;
   newSessionCwd?: string;
   workspaces: { workspaceId: string; path: string; sessionIds: string[] }[];
+  /** 已归档的会话 id（界面上的第二份列表）。 */
+  archivedSessionIds: Set<string>;
   /** 权威 cwd 账本（会话 id → cwd，`session/list` 原始行的投影）。 */
   sessionCwds: Map<string, string>;
   bindView(viewId: string): void;
   openSession(viewId: string, sessionId: string): Promise<void>;
   handle(message: Record<string, unknown>, viewId: string): Promise<void>;
+  /** 退回空态（「新建对话」的第一步；只解绑，窗口照旧活着）。 */
+  detachView(viewId: string): void;
   /** 换连接 / 断线收场（真实链路上 prepareRound / 掉线时走它）。 */
   teardownStreams(): void;
 }
@@ -251,6 +267,17 @@ function sessionIdsFor(frames: Captured[], viewId: string): string[] | undefined
   return undefined;
 }
 
+/** 归档那一份列表（与 {@link sessionIdsFor} 同一套过线语义）。 */
+function archivedIdsFor(frames: Captured[], viewId: string): string[] | undefined {
+  for (let i = frames.length - 1; i >= 0; i -= 1) {
+    const { target, frame } = frames[i];
+    if (frame.type !== "archivedSessions") continue;
+    if (target !== "all" && target !== viewId) continue;
+    return ((frame.sessions ?? []) as { id: string }[]).map((row) => row.id);
+  }
+  return undefined;
+}
+
 /** 用户点开历史抽屉（界面发 `listSessions`）。 */
 async function openHistory(c: ChatControllerInternals, viewId: string): Promise<void> {
   await c.handle({ type: "listSessions" }, viewId);
@@ -314,17 +341,20 @@ console.log("sessionListScope: 历史列表跟随当前会话 cwd（驱动真控
   console.log(`  v2（cwd=${DIR_B}）：${JSON.stringify(v2)}`);
   assert.deepStrictEqual(
     v1,
-    ["used-A"],
-    "没有打开文件夹时，窗口 v1 的历史只许有它当前会话 cwd 下的会话——别人的目录不许混进来",
+    ["used-A", "blank-A"],
+    "没有打开文件夹时，窗口 v1 的历史只许有它当前会话 cwd 下的会话——别人的目录不许混进来；" +
+      "同目录那条空壳照旧在列（用户 2026-10-17 口径：空壳不再整行藏起来）",
   );
   assert.deepStrictEqual(
     v2,
-    ["used-B"],
+    ["used-B", "blank-B"],
     "窗口 v2 同理（两个面板同时开着不同 cwd 时，各自的历史必须互不串）",
   );
-  for (const id of ["blank-A", "blank-B"]) {
-    assert.ok(!(v1 ?? []).includes(id), `还没说过话的空壳不进历史（${id}）`);
-  }
+  assert.strictEqual(
+    (v1 ?? []).includes("blank-B") || (v2 ?? []).includes("blank-A"),
+    false,
+    "空壳也按 cwd 收窄：别的目录那条空壳不许混进本窗口的列表",
+  );
   assert.ok(
     !(v1 ?? []).includes("no-cwd"),
     "没有 cwd 的会话一律不显示（服务端建会话时必给 cwd 或 workspaceId）",
@@ -335,8 +365,9 @@ console.log("sessionListScope: 历史列表跟随当前会话 cwd（驱动真控
   // 只发生在发帧那一步（见 `emitSessionLists` 的注释）。收窄了这里会先红。
   assert.deepStrictEqual(
     c.sessions.map((row) => row.id),
-    ["used-A", "used-B", "used-C", "blank-A", "blank-B"],
-    "全局 this.sessions 仍是并集：两个窗口各自 cwd 的会话、没被任何窗口打开的未分组会话、" +
+    ["used-A", "used-B", "used-C", "reg-C", "blank-A", "blank-B"],
+    "全局 this.sessions 是**完整候选**：两个窗口各自 cwd 的会话、所有已分组会话（按窗口收窄" +
+      "只在发帧那一步，上游先滤会让「刚选一个还没有已打开域的目录」看不到该目录里已分组的会话）、" +
       "以及**空壳**（复用判据要扫它）都在里面；没有 cwd 的会话照旧不进（它 resume 不了）",
   );
 }
@@ -347,13 +378,17 @@ console.log("sessionListScope: 历史列表跟随当前会话 cwd（驱动真控
   c.bindView("v1");
   await c.openSession("v1", "used-A");
   await openHistory(c, "v1");
-  assert.deepStrictEqual(sessionIdsFor(frames, "v1"), ["used-A"], "先绑 A：只看见 A 的会话");
+  assert.deepStrictEqual(
+    sessionIdsFor(frames, "v1"),
+    ["used-A", "blank-A"],
+    "先绑 A：只看见 A 的会话（含那条空壳）",
+  );
 
   await c.openSession("v1", "used-B");
   console.log(`  切到 B 之后的 v1：${JSON.stringify(sessionIdsFor(frames, "v1"))}`);
   assert.deepStrictEqual(
     sessionIdsFor(frames, "v1"),
-    ["used-B"],
+    ["used-B", "blank-B"],
     "同一个窗口切到别的 cwd 的会话，历史列表必须立刻跟着换成新 cwd 的（绑定那一帧就重发）",
   );
 }
@@ -367,7 +402,7 @@ console.log("sessionListScope: 历史列表跟随当前会话 cwd（驱动真控
     // 空态页那枚胶囊只在「还绑着空壳」时才换目录，所以这里绑的是 DIR_A 那条空壳
     await c.openSession("v1", "blank-A");
     await openHistory(c, "v1");
-    assert.deepStrictEqual(sessionIdsFor(frames, "v1"), ["used-A"], "换目录之前：看见 A 的历史");
+    assert.deepStrictEqual(sessionIdsFor(frames, "v1"), ["used-A", "blank-A"], "换目录之前：看见 A 的历史");
 
     await c.handle({ type: "pickWorkspace" }, "v1");
     const bound = c.viewSessions.get("v1");
@@ -377,7 +412,7 @@ console.log("sessionListScope: 历史列表跟随当前会话 cwd（驱动真控
     assert.strictEqual(bound, "blank-B", "换目录落到新目录那条空壳上（复用，不新建）");
     assert.deepStrictEqual(
       sessionIdsFor(frames, "v1"),
-      ["used-B"],
+      ["used-B", "blank-B"],
       "换选目录之后历史列表跟到新目录（旧目录的会话不再出现）",
     );
   } finally {
@@ -385,7 +420,7 @@ console.log("sessionListScope: 历史列表跟随当前会话 cwd（驱动真控
   }
 }
 
-// ---------- 四、新建空页还没绑会话：按**选定目录**列；没有目录时保守兜底 ----------
+// ---------- 四、新建空页还没绑会话：按**选定目录**列；没有目录时列「未分组」 ----------
 {
   const { c, frames } = makeHarness(commonRows(), { dir: DIR_A });
   c.bindView("v1");
@@ -393,7 +428,7 @@ console.log("sessionListScope: 历史列表跟随当前会话 cwd（驱动真控
   console.log(`  空态未绑会话（选定 ${DIR_A}）：${JSON.stringify(sessionIdsFor(frames, "v1"))}`);
   assert.deepStrictEqual(
     sessionIdsFor(frames, "v1"),
-    ["used-A"],
+    ["used-A", "blank-A"],
     "空态页显示着哪个目录，历史就按那个目录列（见 `newSessionCwd`：界面那枚胶囊显示的就是它）",
   );
 }
@@ -406,9 +441,9 @@ console.log("sessionListScope: 历史列表跟随当前会话 cwd（驱动真控
   console.log(`  空态未绑会话（没有目录）：${JSON.stringify(sessionIdsFor(frames, "v1"))}`);
   assert.deepStrictEqual(
     sessionIdsFor(frames, "v1"),
-    ["used-A", "used-B", "used-C"],
-    "拿不到目录证据时不收紧：按「未分组」列全（与改动前的口径一致——没有 cwd 就无从隔离，" +
-      "收紧会把新窗口恢复历史会话的路堵死）",
+    ["used-A", "used-B", "used-C", "blank-A", "blank-B"],
+    "拿不到目录证据时按「未分组」列：不在任何服务端工作区注册记录里的行照列" +
+      "（used-* 与空壳），分组过的行挡在外面；不拿另一个目录去猜",
   );
   assert.ok(
     !(sessionIdsFor(frames, "v1") ?? []).includes("reg-C"),
@@ -480,11 +515,11 @@ console.log("sessionListScope: 历史列表跟随当前会话 cwd（驱动真控
     sessionIdsFor(frames, "v3"),
     ["used-C", "reg-C"],
     "后挂上的窗口一样要收到属于它自己 cwd 的那一份（收件人是活窗口名册，不是发射那一刻的某一个窗口）；" +
-      "同目录里那条**注册表记账**的会话由「任何已打开域的 cwd」兜底放行——那是旧口径，不在这次收窄里",
+      "同目录里那条**注册表记账**的会话照样可见——没打开文件夹、窗口有目录时只按 cwd 过滤，不看注册表分组",
   );
   assert.deepStrictEqual(
     sessionIdsFor(frames, "v1"),
-    ["used-A"],
+    ["used-A", "blank-A"],
     "新窗口的加入不改变别的窗口那一份",
   );
 }
@@ -493,7 +528,7 @@ console.log("sessionListScope: 历史列表跟随当前会话 cwd（驱动真控
 //
 // 子代理会话被 `visibleSessionRows` 全局藏起来（`origin === 'subagent'`），所以它**不在**
 // `this.sessions` 里；但它的 cwd 是权威事实（`session/list` 的原始行里带着），窗口切进
-// 子代理页时「当前会话的 cwd」必须照样成立——否则这个窗口的历史会退回跨 cwd 全列。
+// 子代理页时「当前会话的 cwd」必须照样成立——否则这个窗口的历史读不到目录证据，会退回「未分组」那一档。
 {
   const { c, client, frames } = makeHarness([
     { sessionId: "parent-A", cwd: DIR_A },
@@ -543,7 +578,7 @@ console.log("sessionListScope: 历史列表跟随当前会话 cwd（驱动真控
   assert.deepStrictEqual(
     sessionIdsFor(frames, "v1"),
     ["parent-A", "used-B"],
-    "账本条目淘汰后回到保守兜底（拿不到当前会话 cwd → 不收窄），而不是按一个过期目录继续收窄",
+    "账本条目淘汰后回到「未分组」兜底（拿不到当前会话 cwd 就按未分组列），而不是按一个过期目录继续收窄",
   );
 }
 
@@ -564,6 +599,135 @@ console.log("sessionListScope: 历史列表跟随当前会话 cwd（驱动真控
     0,
     "换连接 / 断线收场必须清空权威 cwd 账本（它记的是上一台服务端的 id→cwd，等下次 refreshSessions 重建）",
   );
+}
+
+// ---------- 九、空态窗口不许漏出**别的窗口开着**的已分组目录 ----------
+//
+// 用户 2026-10-17 口径：没打开文件夹时，空会话（还没选目录）的历史列**未分组**的会话。
+// 「别的窗口此刻开着 DIR_C 的域」不是这个窗口该看它的理由——上游那份 `openCwds` 兜底只
+// 属于「打开着文件夹」那一档；漏出去的表现就是空态窗口里冒出别人的项目会话。
+{
+  const { c, frames } = makeHarness(commonRows(), {
+    workspaces: [{ workspaceId: "ws-c", path: DIR_C, sessionIds: ["reg-C"] }],
+  });
+  c.bindView("v1");
+  c.bindView("v2");
+  // v2 打开 DIR_C 里那条**已分组**的会话（此刻它的域是活的，cwd 进了 openCwds）
+  await c.openSession("v2", "reg-C");
+  await openHistory(c, "v1");
+  await openHistory(c, "v2");
+  const v1 = sessionIdsFor(frames, "v1") ?? [];
+  const v2 = sessionIdsFor(frames, "v2") ?? [];
+  console.log(`  别的窗口开着 ${DIR_C}：v1（空态）=${JSON.stringify(v1)} v2=${JSON.stringify(v2)}`);
+  assert.deepStrictEqual(
+    v1,
+    ["used-A", "used-B", "used-C", "blank-A", "blank-B"],
+    "空态窗口（没有目录）只列**未分组**的会话：已分组的那条由它的目录决定，不是由别人开着它决定",
+  );
+  assert.ok(!v1.includes("reg-C"), "别的窗口开着 DIR_C 的域，不许把那条已分组会话漏进空态窗口");
+  assert.ok(v2.includes("reg-C"), "开着它的那个窗口照旧看得见（按窗口收窄，不是全局藏掉）");
+}
+
+// ---------- 十、选目录那一刻就能看见该目录里**已分组**的会话（上游不许先滤掉） ----------
+//
+// 现场：用户在空态选了目录 D，那个目录**还没有任何已打开域**（第一次进这个项目）。
+// 上游若先按「未分组」或「已打开域」收窄，注册表里记在这条工作区下的会话就永远找不回来
+// ——纯函数改对了也没用，因为数据在更早那一步就没了。这一档同时钉住两件事：
+// 全局候选里有它，且按窗口收窄之后它确实出现在这个目录那一份里。
+{
+  const dialog = stubDialog([DIR_C]);
+  try {
+    const { c, frames } = makeHarness(commonRows(), {
+      workspaces: [{ workspaceId: "ws-c", path: DIR_C, sessionIds: ["reg-C"] }],
+    });
+    c.bindView("v1");
+    await openHistory(c, "v1");
+    assert.deepStrictEqual(
+      sessionIdsFor(frames, "v1"),
+      ["used-A", "used-B", "used-C", "blank-A", "blank-B"],
+      "选目录之前：空态只列未分组（已分组那条属于某个目录，此刻还没有目录证据）",
+    );
+    assert.ok(
+      c.sessions.some((row) => row.id === "reg-C"),
+      "全局候选里必须有它——上游先滤掉的话，下面按目录收窄那一步再也拿不到这一行",
+    );
+
+    await c.handle({ type: "pickWorkspace" }, "v1");
+    const ids = sessionIdsFor(frames, "v1") ?? [];
+    console.log(`  选中 ${DIR_C}（此前没有已打开域）：${JSON.stringify(ids)}`);
+    assert.ok(ids.includes("used-C"), "该目录里未分组的会话照旧可见");
+    assert.ok(ids.includes("reg-C"), "该目录里**已分组**的会话同样可见（用户口径是这个目录下的历史）");
+    assert.ok(!ids.includes("used-A") && !ids.includes("used-B"), "别的目录的会话不许混进来");
+  } finally {
+    dialog.restore();
+  }
+}
+
+// ---------- 十一、active 与 archived 两份列表都按窗口隔离 ----------
+{
+  const { c, frames } = makeHarness(commonRows(), {
+    workspaces: [{ workspaceId: "ws-c", path: DIR_C, sessionIds: ["reg-C"] }],
+  });
+  c.bindView("v1");
+  c.bindView("v2");
+  // 用户把两条不同目录的会话各归档一条
+  c.archivedSessionIds.add("used-A");
+  c.archivedSessionIds.add("used-B");
+  c.archivedSessionIds.add("reg-C");
+  await c.openSession("v1", "used-A");
+  await c.openSession("v2", "used-B");
+  await openHistory(c, "v1");
+  await openHistory(c, "v2");
+  console.log(
+    `  归档也隔离：v1 active=${JSON.stringify(sessionIdsFor(frames, "v1"))} archived=${JSON.stringify(archivedIdsFor(frames, "v1"))}；` +
+      `v2 archived=${JSON.stringify(archivedIdsFor(frames, "v2"))}`,
+  );
+  assert.deepStrictEqual(archivedIdsFor(frames, "v1"), ["used-A"], "归档那一份同样按 cwd 收窄");
+  assert.deepStrictEqual(archivedIdsFor(frames, "v2"), ["used-B"], "另一个窗口的归档列表只含它自己目录的");
+  assert.deepStrictEqual(sessionIdsFor(frames, "v1"), ["blank-A"], "归档过的会话不再出现在 active 那份里");
+  assert.ok(
+    !(archivedIdsFor(frames, "v1") ?? []).includes("reg-C"),
+    "别的目录里归档的会话不许出现在这个窗口的归档列表里",
+  );
+}
+
+// ---------- 十二、换目录 / 退回空态：那一刻就重发帧（不必等下一次拉取） ----------
+{
+  const dialog = stubDialog([DIR_B]);
+  try {
+    const { c, client, frames } = makeHarness(commonRows(), {
+      workspaces: [{ workspaceId: "ws-c", path: DIR_C, sessionIds: ["reg-C"] }],
+    });
+    c.bindView("v1");
+    await c.openSession("v1", "used-A");
+    await openHistory(c, "v1");
+    assert.deepStrictEqual(sessionIdsFor(frames, "v1"), ["used-A", "blank-A"], "前置：先看见 A 的");
+
+    // 退回空态（点「+」的第一步）：列表立刻换成「未分组」那一档
+    const before = frames.length;
+    c.detachView("v1");
+    const afterDetach = frames.slice(before).filter(({ frame }) => frame.type === "sessions" && frame.sessions !== undefined);
+    console.log(`  退回空态后立刻发的列表帧：${afterDetach.length} 条 → ${JSON.stringify(sessionIdsFor(frames, "v1"))}`);
+    assert.ok(afterDetach.length > 0, "退回空态必须**当场**重发列表帧（否则界面还停在旧目录那一份）");
+    assert.deepStrictEqual(
+      sessionIdsFor(frames, "v1"),
+      ["used-A", "used-B", "used-C", "blank-A", "blank-B"],
+      "没有选目录时退回空态 → 换成未分组那一档",
+    );
+
+    // 空态里选目录：同样当场重发（`askWorkspaceDir` 走 `emitViewScopedState`）
+    await c.handle({ type: "pickWorkspace" }, "v1");
+    const bound = c.viewSessions.get("v1");
+    const cwd = client.rows.find((row) => row.sessionId === bound)?.cwd;
+    console.log(`  空态选 ${DIR_B} → 绑在 ${bound}（cwd=${cwd}）：${JSON.stringify(sessionIdsFor(frames, "v1"))}`);
+    assert.ok(
+      (sessionIdsFor(frames, "v1") ?? []).includes("used-B"),
+      "选目录那一刻跟着换成该目录那一份",
+    );
+    assert.ok(!(sessionIdsFor(frames, "v1") ?? []).includes("used-A"), "旧目录的会话立刻消失");
+  } finally {
+    dialog.restore();
+  }
 }
 
 console.log("sessionListScope: 每窗口按当前会话 cwd 隔离、切换即跟随、文件夹旧口径不变 ✓");

@@ -291,10 +291,11 @@ console.log("sessionList: 多选、批量归档 / 恢复 / 删除与二次确认
 }
 console.log("sessionList: 抽屉真渲染（默认普通形态：无复选框 / 无工具条 / 有多选开关）✓");
 
-// ---------- 3. 工作区可见性：打开文件夹跟随工作区；没有文件夹只给未分组 ----------
+// ---------- 3. 工作区可见性：打开文件夹跟随工作区；没有文件夹保留完整候选（收窄在发帧那一步） ----------
 //
-// 用户 2026-09-15 的设计口径。判据按**服务端工作区注册表**（会话不在任何工作区
-// 记录里 = 未分组），路径比较只做兜底。
+// 用户 2026-09-15 / 2026-10-17 的设计口径。判据按**服务端工作区注册表**（会话不在任何
+// 工作区记录里 = 未分组），路径比较只做兜底。「没有文件夹」不再在这一层收窄：那一档由
+// `visibleForView` 按窗口决定（空态列未分组、有目录列该目录）。
 {
   const rows = [
     { sessionId: "own", cwd: "D:/dev/demo-app" },
@@ -304,11 +305,9 @@ console.log("sessionList: 抽屉真渲染（默认普通形态：无复选框 / 
     { sessionId: "own-registry", cwd: "D:/somewhere/else" }, // 注册表记账（cwd 不同）
     { sessionId: "no-cwd" },
   ];
-  const grouped = new Set(["own-registry"]);
   const withFolder = visibleForWorkspace(rows, {
     workspacePath: "d:/dev/demo-app",
     workspaceSessionIds: new Set(["own-registry"]),
-    groupedSessionIds: grouped,
     openCwds: [],
   }).map((row) => row.sessionId);
   assert.deepStrictEqual(
@@ -317,32 +316,33 @@ console.log("sessionList: 抽屉真渲染（默认普通形态：无复选框 / 
     "打开了文件夹：只显示本工作区的会话（路径兜底 + 注册表记账），未分组与别的项目都不显示",
   );
 
-  const noFolder = visibleForWorkspace(rows, {
-    groupedSessionIds: grouped,
-    openCwds: [],
-  }).map((row) => row.sessionId);
+  // 没有打开文件夹：这一层**只挡没有 cwd 的行**，目录 / 分组收窄留到最后那一层
+  // （`visibleForView`：空态列未分组、有目录列该目录——上游先滤会让「刚选一个还没有
+  // 已打开域的目录」拿不回该目录里已分组的会话）
+  const noFolder = visibleForWorkspace(rows, { openCwds: [] }).map((row) => row.sessionId);
   assert.deepStrictEqual(
     noFolder,
-    ["own", "own-late", "other-project", "ungrouped"],
-    "没有打开文件夹：显示未分组（含 dsh web 直接建的、别的目录的），但不显示任何工作区记账的会话",
+    ["own", "own-late", "other-project", "ungrouped", "own-registry"],
+    "没有打开文件夹：全局候选是**完整**的（含注册表记账的会话），收窄在发帧那一步",
   );
 
-  const withOpenScope = visibleForWorkspace(rows, {
-    workspacePath: undefined,
-    groupedSessionIds: grouped,
+  // 「任何已打开域的 cwd」这条兜底属于**打开着文件夹**那一档（恢复窗口时不能因为路径
+  // 写法差异把要接回的会话滤掉）；没有文件夹时不再需要它——那一层不收窄
+  const folderWithOpenScope = visibleForWorkspace(rows, {
+    workspacePath: "d:/dev/demo-app",
+    workspaceSessionIds: new Set(["own-registry"]),
     openCwds: ["d:\\dev\\other\\"],
   }).map((row) => row.sessionId);
   assert.ok(
-    withOpenScope.includes("other-project"),
+    folderWithOpenScope.includes("other-project"),
     "**任何已打开域**的 cwd 一律放行：恢复窗口时不能因为路径写法差异把要接回的会话滤掉",
   );
   assert.ok(
-    !withOpenScope.includes("own-registry"),
-    "没有打开文件夹时，注册表记账的会话**不**显示（它属于别的工作区）；" +
-      "放行只靠「已打开域的 cwd」这一条",
+    !folderWithOpenScope.includes("ungrouped"),
+    "打开了文件夹时，既不属于本工作区、也没有被任何窗口打开的会话不可见",
   );
   assert.ok(
-    !withOpenScope.includes("no-cwd"),
+    !folderWithOpenScope.includes("no-cwd"),
     "没有 cwd 的会话不显示（服务端建会话时必给 cwd 或 workspaceId）",
   );
 }
@@ -355,42 +355,45 @@ console.log("sessionList: 工作区可见性（有文件夹 / 无文件夹 / 已
 // 里不许混进对方的会话）。全局那一份（`visibleForWorkspace` 的结论）保持并集不变——
 // 打开会话 / 空壳复用 / running 打底都读它（行为级回归见 `sessionListScope.test.ts`）。
 {
+  // 行形状取 `this.sessions` 那一份（`SessionSummaryView`：`id` + `cwd`）——`visibleForView`
+  // 的「未分组」判据读的就是 `id`
   const rows = [
-    { sessionId: "a-1", cwd: "C:/work/alpha" },
-    { sessionId: "a-2", cwd: "c:\\WORK\\Alpha\\" }, // 同一目录的另一种写法
-    { sessionId: "b-1", cwd: "C:/work/beta" },
-    { sessionId: "no-cwd" },
+    { id: "a-1", sessionId: "a-1", cwd: "C:/work/alpha" },
+    { id: "a-2", sessionId: "a-2", cwd: "c:\\WORK\\Alpha\\" }, // 同一目录的另一种写法
+    { id: "b-1", sessionId: "b-1", cwd: "C:/work/beta" },
+    { id: "no-cwd", sessionId: "no-cwd" },
   ];
 
   // ① 无文件夹 + 窗口有 cwd：只留同一目录（大小写 / 斜杠算同一个）
   assert.deepStrictEqual(
-    visibleForView(rows, { folderOpen: false, cwd: "C:/work/ALPHA" }).map((row) => row.sessionId),
+    visibleForView(rows, { folderOpen: false, cwd: "C:/work/ALPHA", groupedSessionIds: new Set() }).map((row) => row.sessionId),
     ["a-1", "a-2"],
     "窗口当前会话在 alpha：历史只许有 alpha 的会话（写法不同也算同一个目录）",
   );
 
-  // ② 无文件夹 + 窗口没有 cwd：原样放行（未分组那一档），不拿别的目录猜
+  // ② 无文件夹 + 窗口没有 cwd（还是空态）：只留**未分组**（不属于任何工作区）的行
+  //    ——用户 2026-10-17 口径：空会话的历史列未分组下的会话
   assert.deepStrictEqual(
-    visibleForView(rows, { folderOpen: false }).map((row) => row.sessionId),
-    ["a-1", "a-2", "b-1", "no-cwd"],
-    "拿不到目录证据时不收紧：保持全局那一份（收紧会把无文件夹新窗口从历史恢复会话的路堵死）",
+    visibleForView(rows, { folderOpen: false, groupedSessionIds: new Set(["b-1"]) }).map((row) => row.sessionId),
+    ["a-1", "a-2", "no-cwd"],
+    "空态（没选目录）只列未分组：注册表记账的 b-1 属于某个目录，此刻没有证据说明用户想看它",
   );
 
   // ③ 打开着文件夹：原样放行 —— 目录跟随 VS Code，所有窗口同一份（旧口径不动）
   assert.deepStrictEqual(
-    visibleForView(rows, { folderOpen: true, cwd: "C:/work/beta" }).map((row) => row.sessionId),
+    visibleForView(rows, { folderOpen: true, cwd: "C:/work/beta", groupedSessionIds: new Set(["b-1"]) }).map((row) => row.sessionId),
     ["a-1", "a-2", "b-1", "no-cwd"],
     "打开着文件夹时不做按窗口收窄（folder 的注册表 + cwd 口径在 visibleForWorkspace 里）",
   );
 
-  // ④ 返回的就是入参本身（第 1、3 档）：调用方不许改它，也不该有人误以为拿到了副本
+  // ④ 返回的就是入参本身（第 1 档）：调用方不许改它，也不该有人误以为拿到了副本
   assert.strictEqual(
-    visibleForView(rows, { folderOpen: true }),
+    visibleForView(rows, { folderOpen: true, groupedSessionIds: new Set() }),
     rows,
-    "不收窄的两档直接返回入参（省一次分配；语义是只读视图）",
+    "不收窄的那一档直接返回入参（省一次分配；语义是只读视图）",
   );
 }
-console.log("sessionList: 窗口级收窄（有 cwd 跟随、无 cwd 放宽、folder 放行）✓");
+console.log("sessionList: 窗口级收窄（有 cwd 跟随、空态按未分组、folder 放行）✓");
 
 // ---------- 4. 结构不变量：控制器必须走这两个函数，不能自己写过滤 ----------
 {
@@ -422,8 +425,14 @@ console.log("sessionList: 窗口级收窄（有 cwd 跟随、无 cwd 放宽、fo
   assert.ok(emitStart > 0, "取不到 emitSessionLists");
   const emitBody = controller.slice(emitStart, controller.indexOf("\n  private viewCwd(", emitStart));
   assert.ok(
-    /visibleForView\(this\.sessions, \{ folderOpen: false, cwd: this\.viewCwd\(viewId\) \}\)/.test(emitBody),
-    "无文件夹时必须按窗口收窄（`visibleForView` + 该窗口的 `viewCwd`）",
+    /visibleForView\(this\.sessions, \{ folderOpen: false, cwd: this\.viewCwd\(viewId\), groupedSessionIds \}\)/.test(emitBody),
+    "无文件夹时必须按窗口收窄（`visibleForView` + 该窗口的 `viewCwd` + 注册表那份未分组判据）",
+  );
+  assert.ok(
+    /groupedSessionIds\.add\(id\)/.test(emitBody) &&
+      /for \(const row of this\.workspaces\)/.test(emitBody) &&
+      /visibleForView\(this\.sessions, \{ folderOpen: false, cwd: this\.viewCwd\(viewId\), groupedSessionIds \}\)/.test(emitBody),
+    "「未分组」的判据取**全部**工作区注册记录的会话 id（每次发帧现算），并交给 visibleForView",
   );
   assert.ok(
     !/activeViewId/.test(emitBody),
@@ -491,8 +500,7 @@ console.log("sessionList: 窗口级收窄（有 cwd 跟随、无 cwd 放宽、fo
 console.log("sessionList: 控制器与界面都接上了 ✓");
 
 // ---------- 5. @ 提及的「对话候选」也不显示子代理会话（用户 2026-09-22 口径），
-//             也不显示还没开始对话的空会话（用户 2026-09-24 口径：菜单按需建的
-//             那条空会话在历史列表里被挡着，@ 候选那条路也不能漏出来） ----------
+//             也不显示还没开始对话的空会话（它们连标题都没有，候选行只能显示会话 id） ----------
 //
 // 候选 RPC（sessionReferenceResolver/candidates）的行不带 origin、也不带 blank（契约
 // SessionReferenceMentionCandidate 只有 sessionId/label/displayTitle/cwd/
@@ -549,10 +557,8 @@ console.log("sessionList: 控制器与界面都接上了 ✓");
     /this\.subagentSessionIds\.add\(entry\.id\)/.test(controller),
     "subagentSessionIds 必须由子代理目录的并入点（mergeSubagentEntries）实时补充",
   );
-  assert.ok(
-    /if \(session\.blank === true\) continue;/.test(controller),
-    "历史列表必须挡掉服务端标了 blank 的空会话（emitSessionLists）",
-  );
+  // 历史列表是否还挡空会话是**行为**（不是源码形状）：由 `emptyComposer.test.ts` 的
+  // 「空会话进历史列表」一段驱动真控制器断言（空壳在列、被窗口拿着的带 occupied 锁）。
 }
 console.log("sessionList: @ 对话候选隐藏子代理会话与空会话 ✓");
 

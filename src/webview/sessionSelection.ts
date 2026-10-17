@@ -6,8 +6,9 @@
  *
  * - **可选判据**：与行内归档 / 删除按钮同源（`sessionLocked`）。运行中的会话服务端
  *   还在往里写、当前窗口正在看的会话删完无处可看，宿主两条都会拒（见 controller 的
- *   `deleteSession`）；批量操作不能把这两类混进去，否则用户点一次删除会连着收到几条
- *   拒绝提示。
+ *   `deleteSession`）；**被别的会话窗口占用的空壳**同样勾不上——空壳不跨窗口共享
+ *   （用户 2026-10-17 口径），它正被某个窗口当「新会话」用着，删了等于从别人脚下抽走。
+ *   批量操作不能把这几类混进去，否则用户点一次删除会连着收到几条拒绝提示。
  * - **选择集跟随列表**：搜索框改变可见行、切归档视图换了另一份列表、归档 / 删除后
  *   行消失，选中项都要跟着退掉——留下的那些是**看不见却会被操作**的幽灵选择
  *   （`pruneSelection`）。
@@ -16,12 +17,18 @@
  */
 import type { SessionSummaryView } from "../shared/chat";
 
-/** 这一行能不能被归档 / 恢复 / 删除：运行中与当前会话都不行（宿主侧同一套保护）。 */
+/**
+ * 这一行能不能被归档 / 恢复 / 删除：运行中、当前会话、以及**被别的窗口占用的空壳**
+ * 都不行（宿主侧同一套保护）。
+ *
+ * `occupied` 由宿主动算、只标空壳（见 `SessionSummaryView.occupied`）：**内容会话的共享
+ * 不受它影响**——两个窗口看同一条已开始的对话是容许的，那些行照旧可选。
+ */
 export function sessionLocked(
-  row: Pick<SessionSummaryView, "id" | "running">,
+  row: Pick<SessionSummaryView, "id" | "running" | "occupied">,
   currentId?: string,
 ): boolean {
-  return row.running || row.id === currentId;
+  return row.running || row.id === currentId || row.occupied === true;
 }
 
 /** 当前列表里可选的会话 id（顺序照列表）。 */
