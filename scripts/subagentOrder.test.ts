@@ -428,7 +428,7 @@ console.log("subagentOrder: 判定时间排序（纯函数 + 真控制器）");
 }
 
 // ---------- ⑦ 新账本生命周期：权威消失 / 普通化 / 删除 / 归档 / 连接收线 ----------
-for (const cleanup of ["absent", "ordinary", "delete", "archive", "workspaceArchive", "teardown"] as const) {
+for (const cleanup of ["absent", "ordinary", "delete", "archive", "workspaceArchive", "workspaceReplace", "teardown"] as const) {
   const state = { items: [parentRow(), childRow(ID_A, 100)] };
   const d = makeDriver(state);
   await d.open("v1", ID_M);
@@ -451,6 +451,10 @@ for (const cleanup of ["absent", "ordinary", "delete", "archive", "workspaceArch
     await d.internals.archiveSession(ID_A);
   } else if (cleanup === "workspaceArchive") {
     d.internals.onWorkspaceFrame({ type: "archived", archivedSessionIds: [ID_A] });
+  } else if (cleanup === "workspaceReplace") {
+    // `replace` 在**增量位**上带完整值（官方 `acceptIncrement` 的 `case 'replace'` → `replaceBaseline`）：
+    // 归档集合整份替换，与 `archived` 增量同一条清理路径，不许漏。
+    d.internals.onWorkspaceFrame({ type: "replace", value: { items: [], archivedSessionIds: [ID_A] } });
   } else {
     d.internals.teardownStreams();
   }
@@ -458,7 +462,7 @@ for (const cleanup of ["absent", "ordinary", "delete", "archive", "workspaceArch
   assert.ok(!d.internals.subagentSettlementsPending.has(ID_A), `${cleanup}: 清理待收尾证据`);
   await d.status(ID_A, false);
   assert.ok(!d.internals.subagentActivityAt.has(ID_A), `${cleanup}: 迟到 false 不复活收尾时间`);
-  if (cleanup === "delete" || cleanup === "archive" || cleanup === "workspaceArchive") {
+  if (cleanup === "delete" || cleanup === "archive" || cleanup === "workspaceArchive" || cleanup === "workspaceReplace") {
     await d.refresh();
     await d.status(ID_A, true);
     await d.status(ID_A, false);
@@ -466,7 +470,7 @@ for (const cleanup of ["absent", "ordinary", "delete", "archive", "workspaceArch
     assert.ok(!d.internals.subagentSettlementsPending.has(ID_A), `${cleanup}: 服务端残留行 / status 不复活待结算账本`);
   }
 }
-console.log("  ⑦ 新账本六条清理路径与迟到帧 ✓");
+console.log("  ⑦ 新账本七条清理路径与迟到帧 ✓");
 
 // ---------- ⑧ 连接切代挡住旧在途列表；列表 true 不制造亲历开轮 ----------
 {

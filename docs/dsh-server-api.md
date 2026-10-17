@@ -759,6 +759,10 @@ export type SessionControlFrame =
 **注意：seam 没有删除会话的 API**——日志文件只增不减（`⟨P⟩\dsh-session-persistence-jsonl\README.md`「Nothing deletes session files」）。
 （恢复归档的端点晚于本摘录，见上面的「后续版本的契约变更」。）
 
+工作区状态流 `workspace/follow`（`WorkspaceFollowFrame`，`@deepseek-ai/dsh-api-workspace-controller` 0.2.1-rc.2）承载本扩展要的两样历史列表判据：**工作区注册表**（`WorkspaceBaseline.items`，每条 `{workspaceId, path, sessionIds}`，是「这条会话属于哪个工作区」的来源；`session/list` 不带 workspaceId）与**已归档会话集合**。每代以一个 `baseline` 开场，其后是增量：`upsert{workspace}` / `remove{workspaceId}` / `order{workspaceIds}` / `archived{archivedSessionIds}` / `pinned{pinnedSessionIds}` / `replace{value}`；`archived` 每次都是**完整集合**（`session/list` 不分归档与否，归档过滤在客户端做）。
+
+`replace` 是**增量位上的完整值**：值是一整份 `WorkspaceBaseline`，在**同一代内**替换此前交付的全部状态（不是新一代的开帧；官方 `acceptIncrement` 的 `case 'replace'` 与开帧走同一条 `replaceBaseline()`）。本扩展按权威全量值消费它——`items` 整份换掉注册表（缺失或非数组时解析为空集合）、`archivedSessionIds` 整份换掉归档集合，**空数组即清空**；归档字段缺失或不是数组时沿用既有兼容边界（保留旧集合），缺 `value` 的 `replace` 当作坏帧忽略。
+
 ### 3.10 `session/search` —— 全文检索
 
 ```json

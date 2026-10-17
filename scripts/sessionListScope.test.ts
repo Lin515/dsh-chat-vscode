@@ -90,6 +90,8 @@ function fakeClient(seed: Row[]) {
         blank: true,
         updatedAt: Date.now() + rows.length,
         running: false,
+        origin: undefined,
+        parentSessionId: undefined,
       });
       return { sessionId };
     },
@@ -728,6 +730,154 @@ console.log("sessionListScope: 历史列表跟随当前会话 cwd（驱动真控
   } finally {
     dialog.restore();
   }
+}
+
+// ---------- 十三、`replace` 增量：完整值整份替换（含空集合），其后增量照旧 ----------
+//
+// 官方 `WorkspaceFollowIncrement.replace` 带一整份 `WorkspaceBaseline`，在**同一代内**替换此前
+// 交付的全部状态（不是新一代的开帧）；官方客户端 `acceptIncrement` 的 `case 'replace'` 直接走
+// `replaceBaseline()` —— `items` 整份替换注册表、`archivedSessionIds` 整份替换归档集合，与
+// `baseline` 同一条路径。本段钉四件事：非空 replace 是**替换不是合并**、空集合**真清空**、
+// 其后 `upsert` / `remove` / `archived` 增量照旧、同帧缺 `archivedSessionIds` 时照旧不动归档
+// 集合（`mentionResolve.test.ts` 旧夹具的分工，见本段最后一段）。
+{
+  const { c, client, frames } = makeHarness(commonRows(), {
+    workspaces: [{ workspaceId: "ws-c", path: DIR_C, sessionIds: ["reg-C"] }],
+  });
+  const cast = c as unknown as { onWorkspaceFrame(frame: unknown): void };
+  c.bindView("v1");
+  await openHistory(c, "v1");
+  console.log(`  前置 baseline：${JSON.stringify(sessionIdsFor(frames, "v1"))}`);
+  assert.deepStrictEqual(
+    sessionIdsFor(frames, "v1"),
+    ["used-A", "used-B", "used-C", "blank-A", "blank-B"],
+    "前置：注册表里的 reg-C 不算未分组，不出现",
+  );
+
+  // 这一段此前的状态：一条归档增量（只有归档变化 → 只重发列表，不查 session/list）
+  const listCallsBeforeArchive = client.calls.filter((call) => call === "session/list").length;
+  cast.onWorkspaceFrame({ type: "archived", archivedSessionIds: ["used-A"] });
+  assert.strictEqual(
+    client.calls.filter((call) => call === "session/list").length,
+    listCallsBeforeArchive,
+    "仅归档变化不查 session/list（手上那份全局候选照旧够用）",
+  );
+  await openHistory(c, "v1");
+  assert.deepStrictEqual(archivedIdsFor(frames, "v1"), ["used-A"], "前置：归档增量生效");
+  assert.deepStrictEqual(
+    sessionIdsFor(frames, "v1"),
+    ["used-B", "used-C", "blank-A", "blank-B"],
+    "前置：归档的那条离开活动列表",
+  );
+
+  // ★ 非空 replace：注册表与归档集合都换成**另一份**，旧的一条都不留（不是合并、也不是清空）
+  const listCallsBeforeReplace = client.calls.filter((call) => call === "session/list").length;
+  cast.onWorkspaceFrame({
+    type: "replace",
+    value: {
+      items: [{ workspaceId: "ws-z", path: DIR_B, sessionIds: ["used-B", "blank-B"] }],
+      archivedSessionIds: ["used-C"],
+    },
+  });
+  await openHistory(c, "v1");
+  console.log(
+    `  非空 replace 后：workspaces=${JSON.stringify(c.workspaces)} archived=${JSON.stringify([...c.archivedSessionIds])}`,
+  );
+  assert.deepStrictEqual(
+    c.workspaces,
+    [{ workspaceId: "ws-z", path: DIR_B, sessionIds: ["used-B", "blank-B"] }],
+    "`items` 整份替换：旧工作区 ws-c 消失、新工作区 ws-z 生效，不是把两份并起来",
+  );
+  assert.deepStrictEqual(
+    [...c.archivedSessionIds],
+    ["used-C"],
+    "`archivedSessionIds` 整份替换：旧的 used-A 不在新集合里就出局，不是并集",
+  );
+  assert.ok(
+    client.calls.filter((call) => call === "session/list").length > listCallsBeforeReplace,
+    "注册表整份替换要**重算**（refreshSessions）：谁属于哪个工作区变了，光重发旧列表不够",
+  );
+  assert.deepStrictEqual(archivedIdsFor(frames, "v1"), ["used-C"], "归档那一份列表跟着换");
+  assert.deepStrictEqual(
+    sessionIdsFor(frames, "v1"),
+    ["used-A", "reg-C", "blank-A"],
+    "ws-z 那两条被记账挡掉、used-C 被归档挡掉，未分组里剩的照列（ws-c 没了 → reg-C 回来）",
+  );
+
+  // ★ 空 replace：注册表与归档集合都清掉，先前被记账 / 归档的会话全部回到未分组活动列表
+  cast.onWorkspaceFrame({ type: "replace", value: { items: [], archivedSessionIds: [] } });
+  await openHistory(c, "v1");
+  console.log(
+    `  空 replace 后：workspaces=${JSON.stringify(c.workspaces)} archived=${JSON.stringify([...c.archivedSessionIds])}` +
+      ` → ${JSON.stringify(sessionIdsFor(frames, "v1"))}`,
+  );
+  assert.deepStrictEqual(c.workspaces, [], "`items` 是权威全量值：空数组就清空注册表");
+  assert.strictEqual(c.archivedSessionIds.size, 0, "`archivedSessionIds` 是权威全量值：空数组就清空归档集合");
+  assert.deepStrictEqual(archivedIdsFor(frames, "v1"), [], "归档那一份列表帧也要跟着空");
+  assert.deepStrictEqual(
+    sessionIdsFor(frames, "v1"),
+    ["used-A", "used-B", "used-C", "reg-C", "blank-A", "blank-B"],
+    "注册表与归档一起清空 → 原先分组 / 归档的会话全部回到未分组活动列表",
+  );
+
+  // `replace` 之后，增量语义照旧：upsert 换一条、archived 只动归档、remove 去掉一条
+  cast.onWorkspaceFrame({
+    type: "upsert",
+    workspace: { workspaceId: "ws-a", path: DIR_A, sessionIds: ["used-A", "blank-A"] },
+  });
+  await openHistory(c, "v1");
+  assert.deepStrictEqual(
+    c.workspaces,
+    [{ workspaceId: "ws-a", path: DIR_A, sessionIds: ["used-A", "blank-A"] }],
+    "replace 之后的 upsert 仍按 workspaceId 换 / 增",
+  );
+  assert.deepStrictEqual(
+    sessionIdsFor(frames, "v1"),
+    ["used-B", "used-C", "reg-C", "blank-B"],
+    "upsert 那条工作区里的会话随即算「已分组」，离开空态窗口的未分组列表",
+  );
+
+  const listCallsBeforeArchived = client.calls.filter((call) => call === "session/list").length;
+  cast.onWorkspaceFrame({ type: "archived", archivedSessionIds: ["used-C"] });
+  assert.strictEqual(
+    client.calls.filter((call) => call === "session/list").length,
+    listCallsBeforeArchived,
+    "replace 之后「仅归档变化不查 session/list」这条也没被破坏",
+  );
+  await openHistory(c, "v1");
+  assert.deepStrictEqual(archivedIdsFor(frames, "v1"), ["used-C"], "replace 之后的 archived 增量仍整份生效");
+
+  cast.onWorkspaceFrame({ type: "remove", workspaceId: "ws-a" });
+  await openHistory(c, "v1");
+  assert.deepStrictEqual(c.workspaces, [], "replace 之后的 remove 仍能去掉一条");
+  assert.deepStrictEqual(
+    sessionIdsFor(frames, "v1"),
+    ["used-A", "used-B", "reg-C", "blank-A", "blank-B"],
+    "工作区没了 → 那两条回到未分组；归档的 used-C 照旧不在活动列表里",
+  );
+
+  // 既有边界：`baseline` 只给 `items`（省略 `archivedSessionIds`）时**不动**归档集合
+  cast.onWorkspaceFrame({
+    type: "baseline",
+    value: { items: [{ workspaceId: "ws-c", path: DIR_C, sessionIds: ["reg-C"] }] },
+  });
+  await openHistory(c, "v1");
+  assert.deepStrictEqual(
+    [...c.archivedSessionIds],
+    ["used-C"],
+    "baseline 缺 `archivedSessionIds` 时照旧不动（mentionResolve 旧夹具的分工，不许被这次改动收窄）",
+  );
+  assert.deepStrictEqual(archivedIdsFor(frames, "v1"), ["used-C"], "归档列表那一帧也照旧");
+  assert.deepStrictEqual(
+    c.workspaces,
+    [{ workspaceId: "ws-c", path: DIR_C, sessionIds: ["reg-C"] }],
+    "同时 `items` 仍整份替换",
+  );
+  assert.deepStrictEqual(
+    sessionIdsFor(frames, "v1"),
+    ["used-A", "used-B", "blank-A", "blank-B"],
+    "reg-C 重新被记账 → 又从未分组列表里退出",
+  );
 }
 
 console.log("sessionListScope: 每窗口按当前会话 cwd 隔离、切换即跟随、文件夹旧口径不变 ✓");

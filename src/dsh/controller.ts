@@ -326,7 +326,7 @@ function readAgentPreset(): string | undefined {
   return trimmed ? trimmed : undefined;
 }
 
-/** `workspace/follow` 的线格式（只取本地用得到的字段）。 */
+/** `workspace/follow` 的线格式（只取本地用得到的字段；`value` 是 `baseline` 与 `replace` 共用的完整值）。 */
 interface WorkspaceFollowFrameWire {
   type?: string;
   value?: {
@@ -5805,19 +5805,26 @@ export class ChatController implements vscode.Disposable {
   /**
    * 工作区状态流承载两样东西，都是历史列表的权威判据：
    *
-   * 1. **工作区注册表**（baseline 的 `items` + `upsert` / `remove` 增量）：每条
+   * 1. **工作区注册表**（`baseline` / `replace` 的 `items` + `upsert` / `remove` 增量）：每条
    *    记录带 `sessionIds`，是「这条会话属于哪个工作区」的唯一来源（`session/list`
    *    不带 workspaceId，见 `workspaces` 字段的注释）；不在任何工作区里的会话就是
    *    「未分组」。
    * 2. **已归档会话集合**：每代以一个 `baseline` 开场，其后是 `archived` 增量
    *    （每次都是**完整集合**）。`session/list` 不分归档与否，归档过滤在客户端做。
+   *
+   * `replace` 落在**增量位**上（`WorkspaceFollowIncrement`），值却是一整份 `baseline`：
+   * 同一代内替换此前交付的全部状态，不是新一代的开帧，只由服务端的访问过滤补发
+   * （官方客户端 `acceptIncrement` 的 `case 'replace'` 直接走 `replaceBaseline`）。
    */
   private onWorkspaceFrame(frame: WorkspaceFollowFrameWire): void {
+    // 完整值帧：`baseline` 与 `replace` 共用这条应用路径（缺 `value` 的 `replace` 按既有
+    // 边界当作坏帧忽略，不误清空）。
+    const appliesFullValue = frame?.type === "baseline" || (frame?.type === "replace" && !!frame.value);
     // 先消化注册表增量：`upsert` 换一条记录、`remove` 去掉一条、`order` 只影响
     // 顺序（界面上不展示工作区本身，忽略）。`items` 是完整集合，直接替换。
     let workspacesChanged = false;
-    if (frame?.type === "baseline") {
-      this.workspaces = workspaceRows(frame.value?.items);
+    if (appliesFullValue) {
+      this.workspaces = workspaceRows(frame?.value?.items);
       workspacesChanged = true;
     } else if (frame?.type === "upsert" && frame.workspace) {
       const row = workspaceRow(frame.workspace);
@@ -5834,7 +5841,12 @@ export class ChatController implements vscode.Disposable {
     }
 
     let archivedChanged = false;
-    const next = frame?.type === "baseline" ? frame.value?.archivedSessionIds : frame?.type === "archived" ? frame.archivedSessionIds : undefined;
+    // 缺 `archivedSessionIds` 时照旧**不动**归档集合（旧服务端 / 旧夹具只给 `items`）。
+    const next = appliesFullValue
+      ? frame?.value?.archivedSessionIds
+      : frame?.type === "archived"
+        ? frame.archivedSessionIds
+        : undefined;
     if (Array.isArray(next)) {
       const nextSet = new Set(next);
       archivedChanged = nextSet.size !== this.archivedSessionIds.size;
