@@ -38,8 +38,8 @@ import {
   type ConsumptionSurface,
   type ContractSnapshot,
   type PackageContract,
+  type TypertContract,
 } from "./dshContract";
-import { PROJECTION_KEYS } from "../src/dsh/projectionIngest";
 import { CONSUMED_EVENT_TYPES, RENDERED_EVENT_TYPES, SILENT_EVENT_TYPES } from "../src/dsh/protocol";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -164,6 +164,15 @@ function cString(buffer: Buffer, start: number, length: number): string {
   return slice.subarray(0, end === -1 ? slice.length : end).toString("utf8").trim();
 }
 
+/**
+ * 纯类型包（确实没有 `lib/typert.host.js`）的合法空描述符。
+ *
+ * 必须与「文件在、但内容残缺 / 骨架认不出」区分开：后者要抛错。把残缺文件当成空串
+ * 送进抽取器，等于把一次抽取失败静默记成「这个包一个端点都没有」，对官方做差时就会
+ * 变成成批的「端点被删」（0.2.1-alpha.3 那 35 条 P0 假报就是这么长出来的）。
+ */
+const EMPTY_TYPERT: TypertContract = { endpoints: {}, events: [] };
+
 /** 一个版本的契约快照：逐包抓 tarball → 抽端点/事件/类型面。 */
 async function buildSnapshot(version: string): Promise<ContractSnapshot> {
   const packages: Record<string, PackageContract> = {};
@@ -176,7 +185,10 @@ async function buildSnapshot(version: string): Promise<ContractSnapshot> {
     }
     const files = readTarEntries(gunzipSync(tarball));
     const typertEntry = files.get("package/lib/typert.host.js");
-    const typert = extractTypertContract(typertEntry === undefined ? "" : typertEntry.toString("utf8"));
+    const typert =
+      typertEntry === undefined
+        ? EMPTY_TYPERT
+        : extractTypertContract(typertEntry.toString("utf8"), { package: pkg, version });
     const declarations = [...files.entries()]
       .filter(([path]) => path.startsWith("package/lib/") && path.endsWith(".d.ts"))
       .map(([path, data]) => ({ path, text: data.toString("utf8") }));

@@ -138,43 +138,594 @@ export interface ContractSnapshot {
 /**
  * 快照格式版本。抽取规则变了就把它加一：旧的快照文件与新的抽取结果不可比，
  * 与其拿两套规则的结果做差（会凭空多出一堆「变化」），不如重抓。
+ *
+ * 3：支持 alpha.3 起 `createTypertRemoteInfo({ methods })` 的描述符骨架（旧版是顶层
+ * `invocations: [ … ]`），并把参数线上名按 `wire ?? name` 还原。
  */
-export const SNAPSHOT_FORMAT_VERSION = 2;
+export const SNAPSHOT_FORMAT_VERSION = 3;
 
 const EMPTY_PACKAGE: PackageContract = { endpoints: {}, events: [], types: {} };
 
-/** 从 `lib/typert.host.js` 抽出端点与事件。 */
-export function extractTypertContract(source: string): { endpoints: Record<string, EndpointContract>; events: readonly string[] } {
-  const endpoints: Record<string, EndpointContract> = {};
-  for (const chunk of invocationChunks(source)) {
-    const id = /namespace:\s*'([^']+)'[\s\S]*?method:\s*'([^']+)'/.exec(chunk);
-    if (id === null) continue;
-    const scopeMatch = /scope:\s*\{\s*context:\s*'[^']*'\s*,\s*wire:\s*'([^']+)'/.exec(chunk);
-    endpoints[`${id[1]}/${id[2]}`] = {
-      scope: scopeMatch === null ? null : scopeMatch[1],
-      params: parameterWires(chunk),
-      types: [...new Set([...chunk.matchAll(/typeSymbol:\s*'([^']+)'/g)].map((match) => match[1]))],
-    };
+export interface TypertContract {
+  readonly endpoints: Record<string, EndpointContract>;
+  readonly events: readonly string[];
+}
+
+/** 抽取失败时用来定位是哪个发布产物的包名 / 版本。 */
+export interface DescriptorContext {
+  readonly package?: string;
+  readonly version?: string;
+}
+
+/**
+ * 从 `lib/typert.host.js` 抽出端点与事件。
+ *
+ * 官方生成器换过一次描述符骨架，两种都认：
+ * - alpha.2 及更早：顶层 `invocations: [ { namespace, method, … } ]`；
+ * - alpha.3 起：`createTypertRemoteInfo({ methods: { 'ns/method': { … } } })`，
+ *   而 `TYPERT.invocations` 变成 `get invocations() { return $remote.descriptors }`——
+ *   老正则只找 `invocations: [`，于是一份描述符被抽成「零端点」，对官方做差就凭空
+ *   多出成批的「端点消失」（0.2.1-alpha.3 实测 35 条 P0 全是这么来的）。
+ *
+ * 认不出骨架 / 结构残缺时**抛错**，不返回残缺快照：快照缺了一半再求差，看起来
+ * 就是真的破坏（另一半则被静默吞掉），比直接失败更糟。
+ */
+export function extractTypertContract(source: string, context: DescriptorContext = {}): TypertContract {
+  try {
+    return parseTypertContract(source);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    const name = context.package ?? "未知包";
+    const where = context.version === undefined ? name : `${name}@${context.version}`;
+    throw new Error(`typert 描述符抽取失败（${where}）：${detail}`);
   }
-  return { endpoints, events: [...new Set([...source.matchAll(/"name":\s*"([^"]+)",\s*\n\s*"mode":\s*"emit"/g)].map((match) => match[1]))].sort() };
 }
 
-/** 切出 `invocations: [` 数组里逐个 invocation 对象的正文（每个对象以 4 空格缩进开头）。 */
-function invocationChunks(source: string): string[] {
-  const start = source.indexOf("invocations: [");
-  if (start === -1) return [];
-  const end = source.indexOf("\n  ],", start);
-  const body = source.slice(start, end === -1 ? source.length : end);
-  return body.split(/\n {4}\{\n/).slice(1);
+function parseTypertContract(source: string): TypertContract {
+  if (source.trim() === "") throw new Error("描述符文件内容为空");
+  // 先把整份文件的结构验一遍：截断 / 半份产物绝不能进抽取——缺的那半会被当成
+  // 「端点消失」报成 P0，比直接失败更糟。
+  assertBalanced(source);
+  // 骨架定位只在 mask（挖掉字符串与注释的等长副本）上做：注释里的 `const TYPERT = {…}`、
+  // description 里提到的 `createTypertRemoteInfo(` 都不是真的骨架。
+  const mask = maskedSource(source);
+  // 端点先解析：`methods` / `invocations` 坏掉时要在读 `TYPERT` 之前报出准确的原因。
+  // 两种骨架的描述符正文都在 `TYPERT` 里（新骨架的 `model.events` 尤其只能在那边读），
+  // 所以端点解析完仍要打开 `TYPERT` 做格式互斥与事件面。
+  if (REMOTE_CALL.test(mask)) {
+    const endpoints = remoteMethods(source, mask);
+    const members = objectMembers(typertBody(source, mask));
+    if (propertiesNamed(members, "invocations").length > 0) {
+      throw new Error("同时出现 createTypertRemoteInfo 与顶层 invocations 数组，格式未知");
+    }
+    return { endpoints, events: descriptorEvents(members) };
+  }
+  const members = objectMembers(typertBody(source, mask));
+  if (propertiesNamed(members, "invocations").length === 0) {
+    throw new Error("认不出描述符格式：既没有 createTypertRemoteInfo 调用，也没有顶层 invocations 数组");
+  }
+  return { endpoints: invocationMethods(members), events: descriptorEvents(members) };
 }
 
-/** 取参数数组里每个参数的 `wire`（scope 的 `wire` 不在这个数组里，故不混进来）。 */
-function parameterWires(chunk: string): string[] {
-  const start = chunk.indexOf("parameters: [");
-  if (start === -1) return [];
-  const end = chunk.indexOf("\n      ],", start);
-  const body = chunk.slice(start, end === -1 ? chunk.length : end);
-  return [...body.matchAll(/\n {10}wire:\s*'([^']+)'/g)].map((match) => match[1]);
+const REMOTE_CALL = /createTypertRemoteInfo\s*\(/;
+const TYPERT_DECLARATION = /const\s+TYPERT\s*(?::[^=;]*)?=\s*\{/;
+
+/**
+ * 把字符串字面量与注释整段挖成等长空格，得到只含代码的同长副本。
+ * 骨架定位若直接对原文件跑正则，注释里的 `// const TYPERT = {…}`、description 里的
+ * `createTypertRemoteInfo(` 都会被当成真的声明；等长保证命中下标能直接回到原文件取值。
+ */
+function maskedSource(source: string): string {
+  const masked = source.split("");
+  let cursor = 0;
+  while (cursor < source.length) {
+    const character = source[cursor];
+    if (character === '"' || character === "'" || character === "`") {
+      const end = skipStringLiteral(source, cursor);
+      if (end === -1) throw new Error("描述符里的字符串字面量没有闭合（产物可能被截断）");
+      masked.fill(" ", cursor, end);
+      cursor = end;
+      continue;
+    }
+    if (character === "/" && (source[cursor + 1] === "/" || source[cursor + 1] === "*")) {
+      const next = skipTrivia(source, cursor);
+      if (next === cursor) {
+        cursor += 1;
+        continue;
+      }
+      masked.fill(" ", cursor, next);
+      cursor = next;
+      continue;
+    }
+    cursor += 1;
+  }
+  return masked.join("");
+}
+
+/**
+ * 取 `TYPERT` 对象字面量的正文；找不到 / 没闭合都报错。
+ * 声明位置在 `mask` 上找（注释里写着的 `const TYPERT = {…}` 不是声明），正文取原文件，
+ * 因为成员值本身是字符串字面量。
+ */
+function typertBody(source: string, mask: string): string {
+  const match = TYPERT_DECLARATION.exec(mask);
+  if (match === null) throw new Error("找不到 TYPERT 对象字面量");
+  const open = match.index + match[0].length - 1;
+  const close = matchBracket(source, open);
+  if (close === -1) throw new Error("TYPERT 对象字面量没有闭合");
+  return source.slice(open + 1, close);
+}
+
+/** alpha.3 起的骨架：端点是 `createTypertRemoteInfo` 实参里 `methods` 映射的键。 */
+function remoteMethods(source: string, mask: string): Record<string, EndpointContract> {
+  const call = REMOTE_CALL.exec(mask);
+  if (call === null) throw new Error("找不到 createTypertRemoteInfo 调用");
+  const open = skipTrivia(source, call.index + call[0].length);
+  if (source[open] !== "{") throw new Error("createTypertRemoteInfo 的第一个实参不是对象字面量");
+  const close = matchBracket(source, open);
+  if (close === -1) throw new Error("createTypertRemoteInfo 的实参没有闭合");
+  const methods = blockMember(objectMembers(source.slice(open + 1, close)), "methods");
+  if (methods === undefined) throw new Error("createTypertRemoteInfo 的实参里找不到 methods");
+  if (methods.bracket !== "{") throw new Error("methods 不是对象字面量");
+  const endpoints: Record<string, EndpointContract> = {};
+  const seen = new Set<string>();
+  for (const member of objectMembers(methods.body)) {
+    if (member.kind !== "property") throw new Error(`methods 里出现非属性成员 ${member.key}`);
+    if (member.value.kind !== "block" || member.value.bracket !== "{") {
+      throw new Error(`methods['${member.key}'] 不是对象字面量：${describeValue(member.value)}`);
+    }
+    if (seen.has(member.key)) throw new Error(`methods 里出现重复端点 ${member.key}`);
+    seen.add(member.key);
+    endpoints[member.key] = endpointOf(member.value.body);
+  }
+  return endpoints;
+}
+
+/** alpha.2 及更早的骨架：端点是 `invocations` 数组里各条目的 `namespace` + `method`。 */
+function invocationMethods(typertMembers: readonly ObjectMember[]): Record<string, EndpointContract> {
+  const invocations = blockMember(typertMembers, "invocations");
+  if (invocations === undefined) throw new Error("TYPERT 里找不到 invocations");
+  if (invocations.bracket !== "[") throw new Error("invocations 不是数组字面量");
+  const endpoints: Record<string, EndpointContract> = {};
+  const seen = new Set<string>();
+  for (const element of arrayElements(invocations.body)) {
+    if (element.kind !== "block" || element.bracket !== "{") throw new Error(`invocations 数组里出现非对象元素：${describeValue(element)}`);
+    const members = objectMembers(element.body);
+    const namespace = stringMember(members, "namespace");
+    const method = stringMember(members, "method");
+    if (namespace === undefined || method === undefined) throw new Error("invocation 缺少 namespace / method，无法确定端点身份");
+    const id = `${namespace}/${method}`;
+    if (seen.has(id)) throw new Error(`invocations 里出现重复端点 ${id}`);
+    seen.add(id);
+    endpoints[id] = endpointOf(element.body);
+  }
+  return endpoints;
+}
+
+/** 一个端点从描述符里能读到的三样：scope 线上名、参数线上名（保序）、契约类型。 */
+function endpointOf(body: string): EndpointContract {
+  const members = objectMembers(body);
+  const scopeBlock = blockMember(members, "scope");
+  const scope = scopeBlock === undefined ? null : scopeWire(objectMembers(scopeBlock.body));
+  const parametersBlock = blockMember(members, "parameters");
+  // 官方方法恒显式写 `parameters`（无参也是 `[]`）：缺字段说明抽到的不是完整描述符。
+  if (parametersBlock === undefined) throw new Error("端点描述符缺少 parameters 数组");
+  if (parametersBlock.bracket !== "[") throw new Error("parameters 不是数组字面量");
+  const params: string[] = [];
+  const types: string[] = [];
+  for (const parameter of arrayElements(parametersBlock.body)) {
+    if (parameter.kind !== "block" || parameter.bracket !== "{") throw new Error(`parameters 数组里出现非对象元素：${describeValue(parameter)}`);
+    const fields = objectMembers(parameter.body);
+    // 线上字段名规则是 `wire ?? name`：省略 wire 的参数（如 `session/attachment` 的
+    // `request`）也要算数，否则会被报成「参数被删掉」。
+    params.push(parameterWire(fields));
+    types.push(...parameterTypes(fields));
+  }
+  const resultBlock = blockMember(members, "result");
+  if (resultBlock !== undefined) {
+    if (resultBlock.bracket !== "{") throw new Error("result 不是对象字面量");
+    types.push(...typeSymbolsOf(objectMembers(resultBlock.body)));
+  }
+  return { scope, params, types: [...new Set(types)] };
+}
+
+/** scope 的线上名必写：官方已发出的 scope 只有 `{ context, wire }`，缺 wire 是残缺。 */
+function scopeWire(members: readonly ObjectMember[]): string {
+  const wire = stringMember(members, "wire");
+  if (wire === undefined) throw new Error("scope 缺少 wire");
+  return wire;
+}
+
+function parameterWire(members: readonly ObjectMember[]): string {
+  const wire = stringMember(members, "wire");
+  if (wire !== undefined) return wire;
+  const name = stringMember(members, "name");
+  if (name === undefined) throw new Error("参数既没有 wire 也没有 name");
+  return name;
+}
+
+/** 参数引用的契约类型只在 `codec` / `strictCodec` 这一层找。 */
+function parameterTypes(members: readonly ObjectMember[]): string[] {
+  const types: string[] = [];
+  for (const key of ["codec", "strictCodec"]) {
+    const block = blockMember(members, key);
+    if (block === undefined) continue;
+    if (block.bracket !== "{") throw new Error(`${key} 不是对象字面量`);
+    types.push(...typeSymbolsOf(objectMembers(block.body)));
+  }
+  return types;
+}
+
+/** 只读本层的 `typeSymbol`：`codec` 里嵌的 jsonSchema 有同名键，不算契约引用。 */
+function typeSymbolsOf(members: readonly ObjectMember[]): string[] {
+  const member = soleMember(members, "typeSymbol");
+  if (member === undefined) return [];
+  if (member.value.kind !== "string") throw new Error(`typeSymbol 不是字符串字面量：${describeValue(member.value)}`);
+  return [member.value.text];
+}
+
+/**
+ * 事件面取 `TYPERT.model.events` 里 `mode: "emit"` 的条目。
+ * 不能按整个文件找 `"name"/"mode"`：`model.services[].members[].name`、`model.types[].name`
+ * 和 jsonSchema 里的同名键都会混进来。
+ */
+function descriptorEvents(typertMembers: readonly ObjectMember[]): readonly string[] {
+  const model = blockMember(typertMembers, "model");
+  if (model === undefined) throw new Error("TYPERT 里找不到 model 对象");
+  if (model.bracket !== "{") throw new Error("TYPERT.model 不是对象字面量");
+  const events = blockMember(objectMembers(model.body), "events");
+  if (events === undefined) throw new Error("TYPERT 里找不到 model 的 events 数组");
+  if (events.bracket !== "[") throw new Error("TYPERT.model.events 不是数组字面量");
+  const names: string[] = [];
+  for (const element of arrayElements(events.body)) {
+    if (element.kind !== "block" || element.bracket !== "{") throw new Error(`events 数组里出现非对象元素：${describeValue(element)}`);
+    const fields = objectMembers(element.body);
+    const name = stringMember(fields, "name");
+    if (name === undefined) throw new Error("events 条目缺少 name");
+    // 真实生成器恒显式写 `mode`：缺字段说明条目残缺，不能静默当非 emit 丢掉。
+    const mode = stringMember(fields, "mode");
+    if (mode === undefined) throw new Error("events 条目缺少 mode");
+    // 口径保持只收 `mode: "emit"`：waterfall 等其它发出方式不在事件面里。
+    if (mode === "emit") names.push(name);
+  }
+  return [...new Set(names)].sort();
+}
+
+/**
+ * 整份文件的结构自洽检查：括号必须成对。
+ * 拦的是**截断产物**——末尾少几个字符时局部块还能配对，只差全局这一层。
+ */
+function assertBalanced(source: string): void {
+  const stack: string[] = [];
+  let cursor = 0;
+  while (cursor < source.length) {
+    const character = source[cursor];
+    if (character === '"' || character === "'" || character === "`") {
+      const end = skipStringLiteral(source, cursor);
+      if (end === -1) throw new Error("描述符里的字符串字面量没有闭合（产物可能被截断）");
+      cursor = end;
+      continue;
+    }
+    if (character === "/" && (source[cursor + 1] === "/" || source[cursor + 1] === "*")) {
+      const next = skipTrivia(source, cursor);
+      cursor = next === cursor ? cursor + 1 : next;
+      continue;
+    }
+    if (CLOSERS[character] !== undefined) {
+      stack.push(character);
+      cursor += 1;
+      continue;
+    }
+    if (character === "}" || character === "]" || character === ")") {
+      const open = stack.pop();
+      if (open === undefined || CLOSERS[open] !== character) throw new Error("描述符的括号不配对（产物可能被截断）");
+      cursor += 1;
+      continue;
+    }
+    cursor += 1;
+  }
+  if (stack.length > 0) throw new Error("描述符的括号没有闭合（产物可能被截断）");
+}
+
+// ---------------------------------------------------------------- 描述符扫描
+//
+// 生成器产出的描述符里，`name` / `mode` / `typeSymbol` 这些字面量同样出现在
+// `description` / `jsDoc` 字符串内部；反过来，`codec` 里嵌着用户类型的 JSON Schema，
+// 里面可能有同名的 `methods` / `events` / `typeSymbol` 键。所以抽取不能对整份文本跑
+// 正则，也不能「找不到就当没有」：
+// - 只从 `createTypertRemoteInfo(…)` 的实参对象与 `TYPERT` 对象这两个**根**出发，
+//   在根的顶层成员里找 `methods` / `model.events`；
+// - 每个要读的字段都按语义验形状，认不出的值、展开、残缺一律抛错——静默跳过等于把
+//   「没抽到」当成「官方的端点没了」，正是这次要修的误报。
+
+interface ScalarValue {
+  readonly kind: "string";
+  readonly text: string;
+}
+
+/** 生成器没产出过的值（标识符、数字、函数调用、展开……）：调用点按语义决定是否接受。 */
+interface OtherValue {
+  readonly kind: "other";
+  readonly text: string;
+}
+
+interface BlockValue {
+  readonly kind: "block";
+  readonly bracket: "{" | "[";
+  readonly body: string;
+}
+
+type DescriptorValue = ScalarValue | OtherValue | BlockValue;
+
+interface PropertyMember {
+  readonly kind: "property";
+  readonly key: string;
+  readonly value: DescriptorValue;
+}
+
+/** `get invocations() { … }` 这类访问器：记下键名，但不当作属性值。 */
+interface AccessorMember {
+  readonly kind: "accessor";
+  readonly key: string;
+}
+
+type ObjectMember = PropertyMember | AccessorMember;
+
+const CLOSERS: Record<string, string | undefined> = { "{": "}", "[": "]", "(": ")" };
+
+/**
+ * 从 `index` 处的引号开始跳过整个字符串字面量，返回结束引号之后的位置；
+ * **没有结束引号时给 -1**——未闭合的串是残缺产物，调用点必须报错而不是吞到文件尾。
+ */
+function skipStringLiteral(text: string, index: number): number {
+  const quote = text[index];
+  let cursor = index + 1;
+  while (cursor < text.length) {
+    const character = text[cursor];
+    if (character === "\\") {
+      cursor += 2;
+      continue;
+    }
+    if (character === quote) return cursor + 1;
+    cursor += 1;
+  }
+  return -1;
+}
+
+/** 跳过空白与注释；返回第一个实义字符的位置。 */
+function skipTrivia(text: string, index: number): number {
+  let cursor = index;
+  while (cursor < text.length) {
+    const character = text[cursor];
+    if (character === " " || character === "\t" || character === "\n" || character === "\r") {
+      cursor += 1;
+      continue;
+    }
+    if (character === "/" && text[cursor + 1] === "/") {
+      const newline = text.indexOf("\n", cursor);
+      cursor = newline === -1 ? text.length : newline + 1;
+      continue;
+    }
+    if (character === "/" && text[cursor + 1] === "*") {
+      const close = text.indexOf("*/", cursor + 2);
+      // 没有收尾的块注释意味着它后面的一切都被吞掉（典型是产物被截断），
+      // 静默当「文件到此结束」会把残件抽成一份看似完整的快照。
+      if (close === -1) throw new Error("描述符里的块注释没有闭合（产物可能被截断）");
+      cursor = close + 2;
+      continue;
+    }
+    return cursor;
+  }
+  return cursor;
+}
+
+/** 找与 `openIndex` 处 `{` / `[` / `(` 配对的闭括号（跳过字符串 / 注释）；不配对时给 -1。 */
+function matchBracket(text: string, openIndex: number): number {
+  const open = text[openIndex];
+  const close = CLOSERS[open];
+  if (close === undefined) return -1;
+  let depth = 0;
+  let cursor = openIndex;
+  while (cursor < text.length) {
+    const character = text[cursor];
+    if (character === '"' || character === "'" || character === "`") {
+      const end = skipStringLiteral(text, cursor);
+      if (end === -1) return -1;
+      cursor = end;
+      continue;
+    }
+    if (character === "/" && (text[cursor + 1] === "/" || text[cursor + 1] === "*")) {
+      const next = skipTrivia(text, cursor);
+      cursor = next === cursor ? cursor + 1 : next;
+      continue;
+    }
+    if (character === open) depth += 1;
+    else if (character === close) {
+      depth -= 1;
+      if (depth === 0) return cursor;
+    }
+    cursor += 1;
+  }
+  return -1;
+}
+
+function isIdentifierCharacter(character: string | undefined): boolean {
+  return character !== undefined && /[A-Za-z0-9_$]/.test(character);
+}
+
+function isIdentifierStart(character: string): boolean {
+  return /[A-Za-z_$]/.test(character);
+}
+
+/** 报错用的现场片段：压平空白，避免错误信息被产物里的长字符串撕开。 */
+function preview(text: string, index: number): string {
+  const slice = text.slice(index, index + 40).replace(/\s+/g, " ").trim();
+  return slice === "" ? "（文件结尾）" : slice;
+}
+
+function describeValue(value: DescriptorValue): string {
+  return value.kind === "block" ? `${value.bracket}…` : value.text;
+}
+
+/** 只挑同名数据属性：用于「有没有这个属性」的判断，例如新版 `get invocations()` 不算旧骨架。 */
+function propertiesNamed(members: readonly ObjectMember[], key: string): PropertyMember[] {
+  return members.filter((member): member is PropertyMember => member.kind === "property" && member.key === key);
+}
+
+/**
+ * 取唯一的同名数据字段。同名访问器（`get scope()` 之类）必须报错：生成的描述符里已知字段
+ * 都是数据字段，把它当「没有这个字段」会让坏形状退回缺省值，正是要修的误报来源。
+ */
+function soleMember(members: readonly ObjectMember[], key: string): PropertyMember | undefined {
+  const found = members.filter((member) => member.key === key);
+  if (found.length === 0) return undefined;
+  if (found.length > 1) throw new Error(`描述符里出现 ${found.length} 处 ${key}，无法确定结构`);
+  const member = found[0];
+  if (member.kind !== "property") throw new Error(`描述符里的 ${key} 是访问器，不是数据字段`);
+  return member;
+}
+
+/** 取唯一的 `key: {…}` / `key: […]` 块；没有给 undefined，多处 / 不是块则报错。 */
+function blockMember(members: readonly ObjectMember[], key: string): BlockValue | undefined {
+  const member = soleMember(members, key);
+  if (member === undefined) return undefined;
+  if (member.value.kind !== "block") throw new Error(`${key} 不是对象 / 数组字面量：${describeValue(member.value)}`);
+  return member.value;
+}
+
+/** 取唯一的字符串字段；没有给 undefined，多处 / 不是字符串则报错。 */
+function stringMember(members: readonly ObjectMember[], key: string): string | undefined {
+  const member = soleMember(members, key);
+  if (member === undefined) return undefined;
+  if (member.value.kind !== "string") throw new Error(`${key} 不是字符串字面量：${describeValue(member.value)}`);
+  return member.value.text;
+}
+
+/** 读一个值：字符串字面量、`{}` / `[]` 块，或「生成器没产出过的形状」。 */
+function readValue(body: string, index: number): { readonly value: DescriptorValue; readonly end: number } {
+  const character: string | undefined = body[index];
+  if (character === '"' || character === "'" || character === "`") {
+    const end = skipStringLiteral(body, index);
+    if (end === -1) throw new Error(`字符串字面量没有闭合：${preview(body, index)}`);
+    const text = body.slice(index + 1, end - 1);
+    // 带插值的模板不是静态值：`prefix${value}` 当线上名会把动态值伪装成确定契约。
+    if (character === "`" && text.includes("${")) return { value: { kind: "other", text: body.slice(index, end) }, end };
+    return { value: { kind: "string", text }, end };
+  }
+  if (character === "{" || character === "[") {
+    const close = matchBracket(body, index);
+    if (close === -1) throw new Error(`${character} 块没有闭合：${preview(body, index)}`);
+    return { value: { kind: "block", bracket: character, body: body.slice(index + 1, close) }, end: close + 1 };
+  }
+  const end = skipValueToken(body, index);
+  return { value: { kind: "other", text: body.slice(index, end).trim() }, end };
+}
+
+/** 扫过一段「非块字面量」的值（标识符 / 数字 / 调用 / 展开），到本层逗号或块尾为止。 */
+function skipValueToken(body: string, index: number): number {
+  let cursor = index;
+  let depth = 0;
+  while (cursor < body.length) {
+    const character = body[cursor];
+    if (character === '"' || character === "'" || character === "`") {
+      const end = skipStringLiteral(body, cursor);
+      cursor = end === -1 ? body.length : end;
+      continue;
+    }
+    if (character === "/" && (body[cursor + 1] === "/" || body[cursor + 1] === "*")) {
+      const next = skipTrivia(body, cursor);
+      cursor = next === cursor ? cursor + 1 : next;
+      continue;
+    }
+    if (character === "(" || character === "{" || character === "[") {
+      depth += 1;
+      cursor += 1;
+      continue;
+    }
+    if (character === ")" || character === "}" || character === "]") {
+      if (depth === 0) return cursor;
+      depth -= 1;
+      cursor += 1;
+      continue;
+    }
+    if (character === "," && depth === 0) return cursor;
+    cursor += 1;
+  }
+  return cursor;
+}
+
+/** 读一个成员名：字符串键或标识符。 */
+function readMemberName(body: string, index: number): { readonly name: string; readonly end: number } {
+  const character: string | undefined = body[index];
+  if (character === '"' || character === "'" || character === "`") {
+    const end = skipStringLiteral(body, index);
+    if (end === -1) throw new Error(`成员名的字符串字面量没有闭合：${preview(body, index)}`);
+    const name = body.slice(index + 1, end - 1);
+    if (character === "`" && name.includes("${")) throw new Error(`成员名是带插值的模板，不是固定键：${preview(body, index)}`);
+    return { name, end };
+  }
+  if (character === undefined || !isIdentifierStart(character)) throw new Error(`描述符对象里出现认不出的成员：${preview(body, index)}`);
+  let end = index;
+  while (end < body.length && isIdentifierCharacter(body[end])) end += 1;
+  return { name: body.slice(index, end), end };
+}
+
+const MEMBER_MODIFIERS = new Set(["get", "set", "async"]);
+
+/**
+ * 严解析对象正文的顶层成员：只认 `key: value`、方法简写与访问器，其余（展开、
+ * 裸标识符、多余标点）一律抛错。**不静默跳过**——跳过就是把残缺当「没有这个字段」。
+ */
+function objectMembers(body: string): ObjectMember[] {
+  const members: ObjectMember[] = [];
+  let cursor = skipTrivia(body, 0);
+  while (cursor < body.length) {
+    const first = readMemberName(body, cursor);
+    let name = first.name;
+    let after = skipTrivia(body, first.end);
+    if (MEMBER_MODIFIERS.has(name) && body[after] !== ":") {
+      const second = readMemberName(body, after);
+      name = second.name;
+      after = skipTrivia(body, second.end);
+    }
+    if (body[after] === ":") {
+      const read = readValue(body, skipTrivia(body, after + 1));
+      members.push({ kind: "property", key: name, value: read.value });
+      cursor = skipTrivia(body, read.end);
+    } else if (body[after] === "(") {
+      const closeParameters = matchBracket(body, after);
+      if (closeParameters === -1) throw new Error(`描述符方法 ${name} 的形参表没有闭合`);
+      const bodyStart = skipTrivia(body, closeParameters + 1);
+      if (body[bodyStart] !== "{") throw new Error(`描述符方法 ${name} 没有函数体`);
+      const closeBody = matchBracket(body, bodyStart);
+      if (closeBody === -1) throw new Error(`描述符方法 ${name} 的函数体没有闭合`);
+      members.push({ kind: "accessor", key: name });
+      cursor = skipTrivia(body, closeBody + 1);
+    } else {
+      throw new Error(`描述符成员 ${name} 后面既不是冒号也不是形参表：${preview(body, after)}`);
+    }
+    if (cursor < body.length) {
+      if (body[cursor] !== ",") throw new Error(`描述符成员 ${name} 之后缺少逗号：${preview(body, cursor)}`);
+      cursor = skipTrivia(body, cursor + 1);
+    }
+  }
+  return members;
+}
+
+/** 严解析数组正文的顶层元素；元素形状由调用点按语义验。 */
+function arrayElements(body: string): DescriptorValue[] {
+  const elements: DescriptorValue[] = [];
+  let cursor = skipTrivia(body, 0);
+  while (cursor < body.length) {
+    const read = readValue(body, cursor);
+    elements.push(read.value);
+    cursor = skipTrivia(body, read.end);
+    if (cursor < body.length) {
+      if (body[cursor] !== ",") throw new Error(`描述符数组元素之后缺少逗号：${preview(body, cursor)}`);
+      cursor = skipTrivia(body, cursor + 1);
+    }
+  }
+  return elements;
 }
 
 /**
