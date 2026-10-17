@@ -14,7 +14,7 @@ webview 的两份 CSS，上层见[界面导航](<../README.md>)。
 - **透明边框吃掉高亮**：background-clip 初值 border-box，背景涂满透明边框。将边框折入内边距，让行盒与高亮矩形重合（`.popover-item`）。
 - **状态切换改几何**：刻线从 18dp 缩回 12dp，旧像素越出新盒。盒宽恒定在最宽档，各状态只用 scaleX 改绘制长度（`.turn-rail-mark::before`）。
 
-滚动层 `contain: paint` 提供绘制边界（`.trigger-popover .popover-list`、`.turn-rail-scroller`）。新增状态高亮须保证新盒罩住旧画；[styles 回归](<../../../scripts/styles.test.ts>)的「候选行高亮不越出行盒」与「右侧轮次横条」固定相应写法。
+滚动层 `contain: paint` 提供绘制边界（`.trigger-popover .popover-list`、`.model-popover-list`、`.turn-rail-scroller`）。新增状态高亮须保证新盒罩住旧画；[styles 回归](<../../../scripts/styles.test.ts>)的「候选行高亮不越出行盒」与「右侧轮次横条」固定相应写法。
 
 ## 预览默认样式层
 

@@ -75,7 +75,7 @@ export function activate(context: vscode.ExtensionContext): void {
     url: config().get<string>("url") ?? "",
     command: config().get<string>("command") || DEFAULT_COMMAND,
     idleSec: config().get<number>("supervisorIdleSec") ?? IDLE_SEC_DEFAULT,
-    // `autoConnect` 关掉时，扩展**不许**自动选路连上（激活期只探测、显示按钮）；
+    // `autoConnect` 关掉时，激活期那一次自动连接**不许**选路连上（只探测、显示按钮）；
     // 用户显式动作（发消息 / 点「启动内部 DSH」）不受它约束，见 supervisorManager 文件头
     autoConnect: config().get<boolean>("autoConnect") ?? true,
     workspace: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
@@ -115,7 +115,7 @@ export function activate(context: vscode.ExtensionContext): void {
     supportsSecondarySidebar(),
   );
 
-  // 第二部分：启动期收尾——清残留进程、自动连接、按需打开面板
+  // 第二部分：启动期收尾——清残留文档锁、自动连接一次
   startup(config, controller);
 }
 
@@ -364,8 +364,9 @@ function registerContributions(context: vscode.ExtensionContext, host: Contribut
         void promptServerReload();
       }
       // `dshChat.autoConnect` 例外（用户 2026-09-19 口径）：它只是"自动路径的许可"，
-      // 改动**即时生效、不必重载窗口**——更新管理器的许可；若当前正停在按钮态
-      // （没在连、没连过），立即按新值选一次路连上。
+      // 改动**即时生效、不必重载窗口**——把新许可交给管理器即可。**它不负责连接**：
+      // 自动连接一个扩展宿主只做一次（激活期那一趟），改开关既不触发新的选路，也不打断
+      // 已建的连接；用户此时的显式动作照常放行。
       if (event.affectsConfiguration("dshChat.autoConnect")) {
         controller.applyAutoConnect(host.config().get<boolean>("autoConnect") ?? true);
       }
@@ -387,7 +388,7 @@ async function promptServerReload(): Promise<void> {
   if (picked) void vscode.commands.executeCommand("workbench.action.reloadWindow");
 }
 
-/** 启动期收尾：清理上次未正常关闭的残留服务器、按配置自动连接。 */
+/** 启动期收尾：清理上次异常退出留下的文件锁，并按配置**自动连接一次**。 */
 function startup(
   config: () => vscode.WorkspaceConfiguration,
   controller: ChatController,
@@ -420,10 +421,14 @@ function startup(
       log(`[lock] 残留锁检测失败：${error instanceof Error ? error.message : String(error)}`);
     })
     .finally(() => {
-      // 自动连接的决策全在控制器里（用户 2026-09-18 改）：
+      // 自动连接的决策全在控制器里，而且**一个扩展宿主只做一次**
+      // （闸在 `ChatController.autoConnect`：重复调用只返回同一条链）：
       // - `autoConnect` 开着：**选一次路**（内部在跑 → 内部；否则外部配了且可达 → 外部；
-      //   都没有 → 拉起一套内部），此后目标粘住不放；
+      //   都没有 → 拉起一套内部），此后目标粘住不放、只接上不拉起（使用途中的断线也照这条
+      //   走：按原目标继续重连，不重新选路；后台明确终结或用户停止才回按钮态）；
       // - 关着：完全不自动连——只探测两轴、把连接条切到按钮态等用户点。
+      // 这一次要等文档锁清完（上面那串异步），所以窗口的 `ready` / 恢复可能先到：那一刻
+      // 控制器不自己连接，把"上次开着哪条会话"留着，等这一趟连上后由 `onConnected` 接回。
       void controller.autoConnect(autoConnect);
     });
 }

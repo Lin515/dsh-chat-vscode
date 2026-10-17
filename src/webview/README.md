@@ -41,7 +41,7 @@ React / 浏览器环境，不使用 Node API。上层边界见[源码导航](<..
 - [mentionOpen.ts](<mentionOpen.ts>) — 已发链接与草稿 Ctrl 点击的 IPC 分派。
 - [mentionNav.ts](<mentionNav.ts>) — 候选 .. 上层目录查询。
 - [segment.ts](<segment.ts>) — 思考档位列数。
-- [pickerFocus.ts](<pickerFocus.ts>) — 弹层选中项定位、方向键与滚入视野。
+- [pickerFocus.ts](<pickerFocus.ts>) — 模型弹层选中项定位（打开即滚到当前模型）、方向键与滚入视野；定位范围只有可滚的模型列表，常驻的思考档位区不参与键盘导航。
 - [toolbarFit.ts](<toolbarFit.ts>) — 实测宽度分档、节点观察与有效布局盒，见[工具栏设计](<../../docs/design-composer.md>)。
 
 ## 状态与展示

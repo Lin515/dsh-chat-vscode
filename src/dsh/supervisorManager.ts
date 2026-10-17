@@ -3,7 +3,9 @@
  *
  * 不直接杀进程，restart / stop 只请求独立 supervisor 执行。
  * 外部目标不得保留内部 socket / 状态；停止连接须交还占用并挡心跳接回。
- * autoConnect 只限制自动路径，显式 internal/start:true 可启动，外部永不启动。
+ * autoConnect 只作 ensure() 省略 start 时的默认值；显式 internal/start:true 可启动，
+ * 外部永不启动。心跳只接入已在跑的那一套，任何情况下都不自己拉起一套（自动连接只在
+ * 扩展启动时做一次，见 ChatController.autoConnect）。
  * supervisor 活着时只接入，不重复 spawn；等就绪无总时限，用户可取消。
  *
  * stop(options?: { release?: boolean; cancelWait?: boolean; askSupervisor?: boolean }): Promise<boolean>
@@ -112,10 +114,24 @@ export interface EnsureOptions {
   target?: DshTarget;
 }
 
+/**
+ * `stopped` 是哪一档（见 `ServerStatus.cause`）。
+ *
+ * 只有 `stop` / `idle` 是守护进程**亲口告的别**：它把 dsh 一起带走了，这一套就此终结。
+ * `replaced` 是它还在、只是顶掉了本窗口这条 socket；`gone` 是一般失联（会合状态此刻读不到、
+ * socket 断了、或换目标时主动断开）——后台完全可能马上就回来。
+ *
+ * 控制器据此决定"收掉连接回按钮态"还是"按原目标接着接"，**不看一次探测结论**：
+ * 退场途中探测仍可能读到将消失的会合状态（见 `docs/design-supervisor.md`「自动连接只做一次」）。
+ */
+export type SupervisorStopCause = "stop" | "idle" | "replaced" | "gone";
+
 export interface ServerStatus {
   state: ServerState;
   info?: ServerInfo;
   detail?: string;
+  /** 仅 `state: "stopped"` 时有意义（见 `SupervisorStopCause`）。 */
+  cause?: SupervisorStopCause;
 }
 
 /**
@@ -164,7 +180,7 @@ export interface ConnectSnapshot {
   connected: boolean;
   /** 本窗口此刻允不允许**自动**拉起一套。= `canStart()`（`dshChat.autoConnect`）。 */
   startAllowed: boolean;
-  /** 「停止内部 DSH」那道闸：不许自动拉起，但别的窗口起了仍会接上（= 旧 `stoppedByUser`）。 */
+  /** 「停止内部 DSH」的记账：后台是用户停的（现在只进日志与快照，不再是自动路径的闸）。 */
   stoppedByUser: boolean;
   /** 「停止连接」那道闸：**不再占用**内部后台，心跳不许自动接回（= 旧 `detachedByUser`）。 */
   detachedByUser: boolean;
@@ -209,8 +225,9 @@ export interface ManagerOptions {
   /**
    * `dshChat.autoConnect`：**自动**路径是否允许"后台不存在时自己拉起一套"（默认 true）。
    *
-   * 只约束自动路径（激活期的自动连接、5 秒一次的心跳自检）。用户显式动作走
-   * `ensure({ start: true })`，一律覆盖它。
+   * 只作 `ensure()` 省略 `start` 时的默认值。自动连接本身**只在扩展启动时做一次**
+   * （见 `ChatController.autoConnect`）：心跳不会因为它是 true 就去拉一套，关掉它也不会
+   * 收回已经建好的连接。用户显式动作走 `ensure({ start: true })`，一律覆盖它。
    */
   autoConnect?: boolean;
   workspace?: string;
@@ -279,8 +296,11 @@ export class SupervisorManager {
   private startAllowed = false;
   private disposed = false;
   /**
-   * 用户按过「停止服务器」：**不许**自动重连、也不许自动拉起，直到用户显式要求
-   * （点「启动内部 DSH」/发消息/重启，任何一条都会走 `bringUp` 清掉它）。
+   * 用户按过「停止服务器」：记下"后台是用户主动停的"，直到 `bringUp` 清掉它。
+   *
+   * 自动连接只做一次（见 `ChatController.autoConnect`）之后，它**不再是任何自动路径的闸**：
+   * 心跳根本不拉后台，谁都没得拦。留它是给界面与诊断读的（快照字段、日志里那一句
+   * 「用户已停止服务器」），并继续由 `stop()` / `bringUp` 记账。
    *
    * 与 `disposed` 分开：`disposed` 是"本窗口退出了"（心跳也停），这个是"后台是用户
    * 主动停的"——心跳要继续跑，别的窗口把后台重新起起来时这边要能自动接上。
@@ -291,10 +311,10 @@ export class SupervisorManager {
    * （2026-09-19 用户口径：不连就不占用）。
    *
    * 与 `stoppedByUser` 刻意分开，两者管的是不同的动作：
-   * - `stoppedByUser`（「停止内部 DSH」）不许的是"**拉起**一套"，但别的窗口把后台重新
-   *   起起来时本窗口仍要自动接上——那正是它存在的用途（见它的注释）；
+   * - `stoppedByUser`（「停止内部 DSH」）记的是"后台是用户停的"（现在只进日志与快照，
+   *   见它的注释），而别的窗口把后台重新起起来时本窗口仍要自动接上——那正是心跳存在的用途；
    * - 这个不许的是"**接入**已经在跑的那一套"：用户明确说了不连，就不能过 5 秒又被接回去
-   *   （`heartbeatTick` 的接入分支排在 `stoppedByUser` 检查**之前**，只靠那个标志挡不住）。
+   *   （`heartbeatTick` 的接入分支排在它后面，只靠 `stoppedByUser` 挡不住）。
    *
    * 任何显式动作（发消息 / 三个连接按钮 / 重启 / 激活期选路）都经 `bringUp` 清掉它。
    */
@@ -323,8 +343,8 @@ export class SupervisorManager {
       options.launcher ??
       createDefaultSupervisorLauncher({ extensionPath: options.extensionPath, appRoot: options.appRoot, log: options.log });
     // 心跳**常驻**（旧实现只在连上 socket 之后才开）：它现在同时承担"后台还在吗"的
-    // 巡检——关掉自动启动时，正是这一次巡检发现"守护进程起来了"并自动接上，
-    // 而不会自己去拉起一套。控制器的心跳自检（`onHeartbeat`）也挂在同一个节拍上。
+    // 巡检——关掉自动启动时，正是这一次巡检发现"守护进程起来了"并接上，而**永远**不会
+    // 自己拉起一套（见 `heartbeatTick`）。控制器的心跳自检（`onHeartbeat`）也挂在同一个节拍上。
     this.startHeartbeat();
   }
 
@@ -460,10 +480,10 @@ export class SupervisorManager {
   }
 
   /**
-   * 配置监听（`dshChat.autoConnect` 改动）用：**即时更新**自动路径的许可，不必重载窗口。
+   * 配置监听（`dshChat.autoConnect` 改动）用：只更新许可，不必重载窗口。
    *
-   * 只影响自动路径（心跳"自己拉一套"、省略 `start` 的 `ensure()`）；用户显式动作仍走
-   * `ensure({ start: true })` 覆盖它。已建立的连接不打断。
+   * 更新的是 `ensure()` 省略 `start` 时的默认值。**不触发任何连接**（用户 2026-10-18
+   * 口径：自动连接只做一次）：改开不会现在就自动连一次，改关也不会收回已建好的连接。
    */
   setAutoConnect(value: boolean): void {
     this.options.autoConnect = value;
@@ -652,7 +672,8 @@ export class SupervisorManager {
     this.launched = false;
     this.clientCount = 1;
     if (this.status.info && this.status.info.ownership !== "external") {
-      this.setStatus({ state: "stopped", detail });
+      // 我们主动断开（换目标 / 交还占用）：这不是"后台没了"，别让控制器当终结收尾
+      this.setStatus({ state: "stopped", detail, cause: "gone" });
     }
     if (held) {
       this.options.log(
@@ -787,7 +808,8 @@ export class SupervisorManager {
     // ② 守护进程不在：**只有拿到许可**才拉一套
     if (!this.startAllowed) {
       this.options.log("[supervisor] 后台没有在跑，且本次调用不允许启动（dshChat.autoConnect 关掉时只显示按钮）");
-      this.setStatus({ state: "stopped", detail: "server not running" });
+      // `gone`：这一次调用（自动路径只许接上）没接成，不代表后台终结——别让控制器收掉重连意图
+      this.setStatus({ state: "stopped", detail: "server not running", cause: "gone" });
       throw new ServerNotRunningError();
     }
 
@@ -911,7 +933,8 @@ export class SupervisorManager {
           if (this.connection !== connection) return;
           this.connection = undefined;
           if (this.target !== "internal") return;
-          this.setStatus({ state: "stopped", detail: `supervisor ${reason}` });
+          // `reason` 本身就是那一档：stop / idle 是终结，replaced 只是被顶掉
+          this.setStatus({ state: "stopped", detail: `supervisor ${reason}`, cause: reason });
         },
         onClosed: (reason) => {
           this.options.log(`[supervisor] 与 supervisor 的连接断开：${reason}`);
@@ -973,11 +996,11 @@ export class SupervisorManager {
   }
 
   /**
-   * 心跳：只做"连接还在吗 / 该不该重连"。
+   * 心跳：只做"连接还在吗"与"接上已经在跑的那一套"。
    *
    * **不做**旧实现那套"判还有没有别的窗口、决定要不要杀"——那件事已经由 supervisor
-   * 按连接数自己裁决了。也**不做**"后台不在就自己拉一套"，除非 `autoConnect` 允许
-   * （见文件头的启动决策）：关掉自动连接的用户要的是"没连就没连，界面给按钮"。
+   * 按连接数自己裁决了。也**不做**"后台不在了就自己拉一套"（任何开关下都不做）：
+   * 自动连接只在扩展启动时做一次，之后要连、要起都等用户动作（见 `ChatController.autoConnect`）。
    */
   private startHeartbeat(): void {
     this.stopHeartbeat();
@@ -1024,24 +1047,25 @@ export class SupervisorManager {
       await this.connect(state);
       return;
     }
-    // 守护进程不在了：关掉自动连接、或用户刚按过「停止服务器」时，**不许**自己拉一套
-    if (this.stoppedByUser || !this.canStart()) {
-      if (this.status.state !== "stopped") {
-        this.options.log(
-          this.stoppedByUser
-            ? "[supervisor] 用户已停止服务器：不自动拉起（界面给按钮）"
-            : "[supervisor] 守护进程不在了；已关闭自动连接，不自行拉起（界面给按钮）",
-        );
-        this.setStatus({ state: "stopped", detail: "server not running" });
-      }
-      return;
-    }
-    this.options.log("[supervisor] 会合文件不在了（或 supervisor 已退出），重新确保一套");
-    this.setStatus({ state: "stopped" });
-    try {
-      await this.ensure({ start: true, target: "internal" });
-    } catch (error) {
-      this.options.log(`[supervisor] 重新确保后台失败：${error instanceof Error ? error.message : String(error)}`);
+    // 守护进程不在了（会合文件读不到、或进程已经退了）：**永远不自己拉一套**。
+    //
+    // 这里曾经按 `canStart()` 去 `ensure({ start: true })`——那正是"别的窗口停掉内部 DSH
+    // 之后，这个窗口 5 秒后又拉起一套"的来路。自动连接只在扩展启动时做一次（见
+    // `ChatController.autoConnect`），之后要连、要起都等用户动作。
+    //
+    // 状态落成 `stopped` 且 `cause: "gone"`：这是**一般失联**，不等于"这一套终结了"
+    // （守护进程可能只是正在换代）。控制器据此仍按原目标接着重连，绝不重新选路。
+    //
+    // 正在 bring-up（`ensurePromise` 在飞）时一个字都不改状态：那一趟自己会写。
+    if (this.ensurePromise) return;
+    if (this.status.state !== "stopped") {
+      this.options.log(
+        this.stoppedByUser
+          ? "[supervisor] 用户已停止服务器：不自动拉起（界面给按钮）"
+          : "[supervisor] 守护进程不在了；不自动拉起（界面给按钮）",
+      );
+      // `gone`：此刻读不到会合状态而已，守护进程可能只是正在换代/重启——不当作终结信号
+      this.setStatus({ state: "stopped", detail: "server not running", cause: "gone" });
     }
   }
 
@@ -1199,7 +1223,7 @@ export class SupervisorManager {
    */
   private async askSupervisorToStop(): Promise<boolean> {
     // **心跳继续跑**（不 stopHeartbeat）：别的窗口把后台重新起起来时，本窗口要能自动接上。
-    // 抑制"自动拉起"用 `stoppedByUser`（由 `stop()` 置位，见字段注释）。
+    // `stop()` 顺带置 `stoppedByUser`（只进日志与快照，见字段注释）。
     const connection = this.connection;
     if (connection?.connected !== true) return this.stopDetachedInternal();
     this.options.log("[supervisor] 停止请求：交给 supervisor 执行");
@@ -1210,7 +1234,8 @@ export class SupervisorManager {
     // 还会把它当成现行的后台列出来，而它马上就不在了）
     this.state = undefined;
     this.launched = false;
-    this.setStatus({ state: "stopped", detail: "stopped by user" });
+    // `stop`：本窗口请守护进程连 dsh 一起收场——对控制器而言与它的告别同档（已知终结）
+    this.setStatus({ state: "stopped", detail: "stopped by user", cause: "stop" });
     return true;
   }
 

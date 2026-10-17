@@ -97,9 +97,21 @@ function check(label: string, ok: boolean, detail = ""): void {
     "beginConnect 另外重开两道闸（`reopen()`：显式动作或自动选路都要能拉起）",
     /this\.attempts\.reopen\(\)/u.test(bodyOf("beginConnect")),
   );
-  for (const name of ["autoConnect", "reconnectPeer"]) {
-    check(`${name} 也走 \`retarget()\`（窗口重载后 / 心跳换共享后台）`, /this\.attempts\.retarget\(\)/u.test(bodyOf(name)));
-  }
+  check(
+    "reconnectPeer 也走 `retarget()`（窗口重载后 / 心跳换共享后台）",
+    /this\.attempts\.retarget\(\)/u.test(bodyOf("reconnectPeer")),
+  );
+  check(
+    "激活期那次自动连接也走 `reopen()` + `retarget()`（选路＝换目标：作废在途轮 + 中止等待 + 收连接，**不交还占用**）",
+    /this\.attempts\.reopen\(\)/u.test(bodyOf("chooseAtActivation")) &&
+      /this\.attempts\.retarget\(\)/u.test(bodyOf("chooseAtActivation")),
+    "本体在 chooseAtActivation；autoConnect 只是那道「一个宿主只做一次」的闸",
+  );
+  check(
+    "autoConnect 只把本体交给 chooseAtActivation，不自己拼收场",
+    /this\.chooseAtActivation\(/u.test(bodyOf("autoConnect")) && !/this\.attempts\./u.test(bodyOf("autoConnect")),
+    "闸里再动手收场＝重复调用也会作废用户刚发起的那一轮",
+  );
   check(
     "stopReconnect（用户点「停止连接」）走 `stopByUser()`",
     /this\.attempts\.stopByUser\(\)/u.test(bodyOf("stopReconnect")),

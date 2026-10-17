@@ -42,7 +42,7 @@
 
 ## 实现边界
 
-- `autoConnect` 只限制自动路径；用户显式发送、新建、切会话、启动、连接或重启内部 DSH 均可启动后台。「启动内部」与「连接内部」同一逻辑，有则连接、无则启动；连接外部不启动进程。自动路径不切换粘性目标。
+- 自动连接**一个扩展宿主只做一次**（激活期那趟，闸在 `ChatController.autoConnect`）：此后心跳 / 聊天页面（webview）重载 / `ready` / 恢复 hint / 补空壳 / 改 `dshChat.autoConnect` 都**不拉起新 supervisor**，只消费激活期那趟的结果或接上已在跑的那一套。真正的 VS Code「重载窗口」会重开扩展宿主，新宿主激活时那趟自动连接照做。使用途中的断线**保留对原端点的自动重连**（`start: false`，不重新选路、不另起后台）；只有守护进程亲口告别（`ServerStatus.cause` 为 `stop` / `idle`）或用户停止才算已知终结，回按钮态。`autoConnect` 只作 `ensure()` 省略 `start` 时的默认值；用户显式发送、新建、切会话、启动、连接或重启内部 DSH 均走 `start: true`，照旧可启动后台。「启动内部」与「连接内部」同一逻辑，有则连接、无则启动；连接外部不启动进程（`start: false`）。自动路径不切换粘性目标。见 `docs/design-supervisor.md`「自动连接只做一次」。
 - 认证按 `ownership === "external"` 分叉，peer 窗口也用会合令牌换 cookie。连接条区分 `stopped` 按钮态、需用户动作的 `error` 与持续重试的 `connecting`。选路见 `connectTarget.chooseTarget`，完整规则见 `docs/design-supervisor.md`。
 - JSON 帧清空字段必须发 `null`，不能发会被序列化丢弃的 `undefined`；宿主 `jsonSafeFrame` 与界面 `mergeWirePatch` 配套，见 `src/shared/wire.ts` 和 `scripts/wire.test.ts`。
 - 一条交互链只暴露一个端口对象，合并容器 ref 与动作；参考 `AutoScrollPort`。不要拆成多个 prop 后分散维护规则。

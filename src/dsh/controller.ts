@@ -235,17 +235,14 @@ function isLineNumber(value: number | undefined): value is number {
 }
 
 /**
- * `dshChat.autoConnect`：激活期要不要**自动选路连上**。
+ * 两个后台地址是不是**同一个端点**。
  *
- * 语义（用户 2026-09-18 口径，取代同名含义的旧 `autoStart`）：关掉 = 启动后**完全不自动连**，
- * 只把内部/外部的探测结论摆到连接条上、显示按钮等用户点。
- *
- * 它只约束扩展自己的**自动**行为（激活期自动连接、窗口恢复会话、心跳自检）。
- * 用户显式动作——发消息、新建/切换会话、点「启动内部 DSH」/「连接内部/外部 DSH」/
- * 「重启内部 DSH」——一律不受它限制。
+ * 比的是"要不要重建客户端"：会合文件里的地址带尾斜杠（`http://127.0.0.1:41001/`），
+ * `DshClient` 收下时就把它去掉了（`client.ts` 的 `baseUrl`），所以必须先归一化再比——
+ * 否则每次心跳都会判成"端点变了"，把一条还在重试的连接 dispose 掉另起一个。
  */
-function readAutoConnect(): boolean {
-  return vscode.workspace.getConfiguration("dshChat").get<boolean>("autoConnect") ?? true;
+function sameEndpoint(left: string, right: string): boolean {
+  return left.replace(/\/+$/, "") === right.replace(/\/+$/, "");
 }
 
 /**
@@ -1232,18 +1229,35 @@ export class ChatController implements vscode.Disposable {
    */
   private facts: TargetFacts = { internalRunning: false, externalConfigured: false, externalReachable: false };
   /**
-   * **粘性目标**：这一轮连内部还是外部，以及本轮允不允许"内部不存在就拉起一套"。
+   * **粘性目标**：这一轮连内部还是外部，以及激活期那一次允不允许"内部不存在就拉起一套"。
    *
    * 用户 2026-09-18 口径：自动路径**选一次就不再换**（换目标 = 换服务器、换会话列表、
-   * 丢掉正在跑的轮次），只有用户点按钮才换。`undefined` = 还没选过
-   * （`dshChat.autoConnect` 关掉且用户没点过按钮时就是这一档，此时心跳不许自动连）。
+   * 丢掉正在跑的轮次），只有用户点按钮才换。`undefined` = 还没选过——激活期的自动选路
+   * 还没落地，或扩展启动时 `dshChat.autoConnect` 本就关着；这一档心跳什么都不做（界面给按钮）。
+   *
+   * `mayStart` 是**激活期那一次**的许可（用户 2026-10-18 口径：自动连接只做一次，见
+   * `docs/design-supervisor.md`「自动连接只做一次」）：之后心跳只按 `start: false` 接着试
+   * ——只能接上还活着的后台，要拉起新的一套必须由用户显式动作发起。
    *
    * **为什么它不读快照的 `target`**：管理器那份是"上一轮 `ensure()` 记下的目标"，
-   * 它**回不到 `undefined`**；而控制器这份有一个管理器表达不了的状态——`autoConnect`
-   * 改关时把它清空（"界面给按钮、心跳什么都不做"），改开时靠"还没定过目标"重新选一次路
-   * （见 `applyAutoConnect`）。读快照的话，这个"从没定过"的判据永远是假，改开关就不生效了。
+   * 它**回不到 `undefined`**；而"从没定过目标"正是控制器判断"这次自动选路还没做过"的判据。
    */
   private target?: { kind: DshTarget; mayStart: boolean };
+  /**
+   * 激活期那一次自动连接（`startup()` → `autoConnect()`）的闸与在飞结果。
+   *
+   * **一个扩展宿主生命周期只做一次**（用户 2026-10-18 口径）：闸在第一个 `await` 之前落下
+   * （`startup()` 是在异步清文档锁的 `finally` 里调 `autoConnect()` 的，用户完全可能在这几
+   * 毫秒里自己动手），此后自动路径只许**消费**它——要连就 `await` 它，已经结束就照现状用。
+   */
+  private activationConnect: Promise<void> | undefined;
+  /**
+   * 用户在激活期里**自己动过连接**（点按钮、发送、新建/切会话、重启、停止）：迟到的自动选路让位。
+   *
+   * 只用于让位判断，不参与任何连接语义：`autoConnect()` 的探测是异步的（外部可达性要一次
+   * HTTP），用户抢在它落地之前动手时，"内部没在跑"这类结论已经过期，不许覆盖既成事实。
+   */
+  private userChoseConnection = false;
   /** 连接阶段：条上"正在启动内部 DSH…"与"正在连接内部 DSH…"的区别。 */
   private connectPhase: ConnectPhase = "connecting";
   private disposed = false;
@@ -1362,21 +1376,32 @@ export class ChatController implements vscode.Disposable {
     if (this.connection === "connected") {
       const probe = await this.probeConnection(this.server.activeBaseUrl);
       if (probe.alive || !probe.info) return;
-      // 地址还在但服务器没了：通常是守护进程把 dsh 重起了（端口变了）。
+      // 端点没变：手里这条 ws 才是权威（这一次 HTTP 可能只是抖），让它自己退避重连恢复；
+      // 这里再 ensure 一轮等于把一条还在重试的连接 dispose 掉、另起第二个。
+      if (this.client && sameEndpoint(probe.info.baseUrl, this.client.baseUrl)) return;
+      // 端点变了：通常是守护进程把 dsh 重起了（端口与令牌都换了），必须重建。
       // 这里**只接上**（start:false）——后台是守护进程在管，扩展不负责起它。
       if (!this.attempts.retryable) return;
       await this.reconnectPeer(probe.info);
       return;
     }
     // 未连接：只有"用户没叫停 + 这一轮还能接着试 + 目标已定"才继续。
-    // 目标没定 = `autoConnect` 关掉且用户还没点按钮：什么都不做（界面给按钮）。
+    // 目标没定 = 激活期的自动选路没落地、或启动时 `autoConnect` 就关着：什么都不做（界面给按钮）。
     if (!this.attempts.autoReconnect || !this.attempts.retryable || !this.target) return;
     // **外部目标交给客户端自己重连**：它的地址是固定的，`DshClient` 的 ws 退避重连
     // （1s→2s→…→15s）就能恢复；这里再 `ensureConnected` 一轮等于**并发建第二个客户端**
     // ——两个客户端各带一套跟随流，互相打断（2026-09-19 排查"一直反复自动连接"时发现）。
-    // 内部目标不能这么放：守护进程重起 dsh 后**端口与令牌都变了**，必须重读会合文件重建。
     if (this.client && this.target.kind === "external") return;
-    await this.ensureConnected({ start: this.target.mayStart, target: this.target.kind });
+    // **内部目标：只接上、不再拉起**（自动连接只在扩展启动时做一次）：`mayStart` 只在激活期
+    // 那一次有效，这里一律 `start: false`。而"这一刻没有内部后台"（会合状态刚被清、守护进程
+    // 换代、dsh 正在重启）**不等于这一套终结**：什么都不发起、也不改重连意图，下一个心跳重新
+    // 探测，后台回来就按原目标接上。绝不 `start: true`——那正是"启动时那一次自动连接"的来路，
+    // 别的窗口停掉后台后本窗口 5 秒内又 spawn 一个新 supervisor 要根治的正是它。
+    if (this.target.kind === "internal" && !facts.internalRunning) return;
+    // 端点没变就让手里的客户端自己恢复（同一个断口，别重建第二个）；变了才必须重建。
+    const info = this.server.snapshot().status.info;
+    if (this.client && info && sameEndpoint(info.baseUrl, this.client.baseUrl)) return;
+    await this.ensureConnected({ start: false, target: this.target.kind });
   }
 
   /**
@@ -1956,14 +1981,15 @@ export class ChatController implements vscode.Disposable {
     subagent?: { parentSessionId: string; mode: "one-shot" | "continuable" },
   ): Promise<void> {
     if (this.viewSessions.get(viewId) === sessionId) return;
-    // **自动路径**：跟随 `dshChat.autoConnect`——关掉自动连接时，恢复会话不该顺手
-    // 把后台起起来或连上去（用户 2026-09-18 口径：那时界面只显示按钮，等用户点）
+    // **自动路径**：只消费激活期那一次自动连接——那次还没落地就等它，已经落地就照现状用
+    // （接上了就恢复，停在按钮态就跳过）。这里**不自己发起连接**（用户 2026-10-18 口径：
+    // 自动连接只在扩展启动时做一次），否则一次窗口重载就能把用户刚停掉的后台又拉起来。
     //
-    // 这一趟占一号（与 `openSession` 同源）：`ensureConnected` / `refreshSessions` 都是
+    // 这一趟占一号（与 `openSession` 同源）：`awaitActivationConnect` / `refreshSessions` 都是
     // 往返，期间用户自己的动作（点历史里的一条、「+」、关窗）才是他现在的意图——
     // 恢复回来时对不上就收手，绝不覆盖用户刚选的那条。
     const action = this.beginViewAction(viewId);
-    if (!this.client || this.connection !== "connected") await this.ensureConnected({ start: readAutoConnect() });
+    if (!this.client || this.connection !== "connected") await this.awaitActivationConnect();
     if (!this.viewActionIsCurrent(action)) {
       this.log(`[restore] 窗口=${viewId} 接回 ${sessionId} 的期间用户已经自己选了：这一次不落地`);
       return;
@@ -2103,13 +2129,43 @@ export class ChatController implements vscode.Disposable {
    * 为什么必须等 `ready`：`restoreViewSession` 会推一份完整快照，而网页还没加载完
    * 时推的快照会丢（webview 的 message 监听是在 bundle 执行后才挂上的）。
    * 绑在这一刻，会话内容正好出现在它的首帧快照里。
+   *
+   * 还没连上时它**不消费 hint**：`ready` 完全可能早于激活期那次自动连接（`startup()` 要先
+   * 异步清完文档锁）。那一趟接不了就把 hint 留在这里，等连接落地后 `onConnected` 回来接。
    */
   async resumeRestoreHint(viewId: string): Promise<void> {
     const hint = this.restoreHints.get(viewId);
     if (!hint) return;
+    // **先把 hint 认领走**（从「等 ready」挪到「正在接回」）：`ready`、认领落下与 `onConnected`
+    // 都会来敲这一趟，谁先认领谁接，后到的看到已经没有 hint 就什么都不做——同一条 hint
+    // 绝不接两遍。接不了时按身份还回去（见下），等下一次唤醒再来。
     this.restoreHints.delete(viewId);
     this.restoreInFlight.add(viewId);
+    // 记下**这一刻**窗口的动作代号（只读，不占新号——自动恢复不该把用户的动作作废）：
+    // 等激活期那次连接期间用户自己点了历史里的一条 / 「+」，代号就变了，这一趟作废。
+    const action = { viewId, epoch: this.viewActions.get(viewId) };
     try {
+      if (!this.client || this.connection !== "connected") {
+        await this.awaitActivationConnect();
+        if (!this.client || this.connection !== "connected") {
+          // **接不了就还回去**：这一刻接不上（激活期那次还没发起、或它落地时停在按钮态），
+          // 但"用户上次开的就是这条会话"仍然有效。烧掉它，连接落地后 `onConnected` 只会补
+          // 一条空壳，用户的历史会话再没有人接回来——聊天页面先就绪、激活期那次自动连接
+          // 随后才结算时就会这样。
+          // 只还这一条：期间若已有新的 hint 落下，那是更新的意图。
+          if (!this.restoreHints.has(viewId)) this.restoreHints.set(viewId, hint);
+          this.log(
+            `[restore] 窗口=${viewId} 还没连上，恢复到 ${hint.sessionId} 的这次先留着（连接落地后再接）`,
+          );
+          return;
+        }
+      }
+      if (!this.viewActionIsCurrent(action) || this.viewSessions.get(viewId) !== undefined) {
+        // 等连接期间用户自己选了（点历史里的一条 / 「+」/ 关窗）：他现在的意图才算数，
+        // 这条 hint 作废——绝不许回来把用户刚选的那条盖掉。
+        this.log(`[restore] 窗口=${viewId} 等连接期间用户已经自己选了：恢复到 ${hint.sessionId} 作废`);
+        return;
+      }
       await this.restoreViewSession(viewId, hint.sessionId, hint.subagent);
     } finally {
       this.restoreInFlight.delete(viewId);
@@ -2505,15 +2561,20 @@ export class ChatController implements vscode.Disposable {
    * 建立（或恢复）与 dsh 的连接。
    *
    * `options.start` 决定"内部后台不存在时允不允许拉一套"（透传给管理器，见
-   * `supervisorManager` 文件头的启动决策）：只有"都没有 → 启动内部"那一支与
-   * **用户显式**动作（发消息 / 新建会话 / 点「启动内部 DSH」）为真。
-   * 不允许且内部后台不在时，管理器抛 `ServerNotRunningError`，这里切回按钮态
-   * （界面按两轴结论给按钮），而不是把"没启动"渲染成"正在连接…"或"连接失败"。
+   * `supervisorManager` 文件头的启动决策）：只有**激活期那一次**自动选路（"都没有 → 启动内部"
+   * 那一支，见 `autoConnect()`）与**用户显式**动作（发消息 / 新建会话 / 点「启动内部 DSH」/
+   * 重启）为真。不允许且内部后台这一刻不在时，管理器抛 `ServerNotRunningError`：这里**保留
+   * "按原目标接着接"的意图**（界面仍是"正在连接…"），而不是把"没启动"渲染成终局失败——
+   * 后台完全可能马上回来（见 `classifyConnectFailure` 的表）。
+   *
+   * **带上 `start: true` 就记一笔"用户动过"**（见 `userChoseConnection`）：激活期的自动
+   * 选路是异步的，用户在它落地之前自己发起连接时，迟到的自动结论不许覆盖既成事实。
    *
    * `options.target` 是**粘性目标**（见 `target` 字段）：不给时沿用上一次选的那个。
    */
   async ensureConnected(options: EnsureOptions = {}): Promise<void> {
     if (this.disposed) return;
+    if (options.start === true) this.userChoseConnection = true;
     if (this.client && this.connection === "connected") return;
     // **并发合并**：心跳每 5 秒重试一轮，用户动作可能同时到；两轮叠在一起会建出两个
     // 客户端（两条 WS、两套跟随流，服务端会看到两个"窗口"）。
@@ -2627,7 +2688,7 @@ export class ChatController implements vscode.Disposable {
    *
    * | 类别 | 例子 | 界面 | 自动重试 |
    * |---|---|---|---|
-   * | 没目标 | `ServerNotRunningError`（外部目标没配地址；或本轮不许启动） | 按钮态 | 否（等用户点） |
+   * | 没后台 | `ServerNotRunningError`（本轮不许启动，或后台这一刻正好不在） | 仍在**连接中** + 原因 | 是——但只"接着接"，`start: false`，绝不自行拉起 |
    * | 用户叫停 | `WaitCancelledError` | 按钮态 | 否 |
    * | 认证类 | `DshAuthError`（要令牌 / 令牌被拒） | 按钮态 + 「输入令牌」（外部） | 否——重试解决不了凭据问题 |
    * | 启动类 | `@serverSpawnFailed` / `@serverNotReady`（命令错、dsh 起不来） | 按钮态 + 原因 | 否——否则每 5 秒 spawn 一个必死进程、日志被刷爆 |
@@ -2638,9 +2699,12 @@ export class ChatController implements vscode.Disposable {
    */
   private classifyConnectFailure(error: unknown, roundTarget: DshTarget): void {
     if (error instanceof ServerNotRunningError) {
-      this.log("[connect] 没有可连的内部后台，且本次调用不允许启动（界面给按钮）");
-      this.attempts.markRetry(false);
-      this.setConnection("stopped");
+      // 后台**这一刻**不在（会合状态刚被清、守护进程换代、别的窗口正把它拉起来），
+      // 或这一轮本来就不许启动：这**不是**这一套的终结。保留"按原目标接着接"的意图，
+      // 下一轮心跳/重试再试；绝不 `start: true`——自动路径不负责起后台（见 `handleHeartbeat`）。
+      this.attempts.markRetry(true);
+      this.log("[connect] 这一刻没有可连的内部后台（不会自行拉起）：按原目标接着等它回来");
+      this.setConnection("connecting");
       return;
     }
     if (error instanceof WaitCancelledError) {
@@ -2906,7 +2970,8 @@ export class ChatController implements vscode.Disposable {
    * 把它们补上——两处入口：`onConnected`（连接结算、列表刚拉完）与 `pickWorkspace`
    * （用户刚选完目录）。
    *
-   * 这是**自动路径**：连接那一档跟随 `dshChat.autoConnect`，不启动后台。
+   * 这是**自动路径**：只消费激活期那一次自动连接（`awaitActivationConnect`），既不起后台、
+   * 也不自己发起连接——补壳不该成为"再连一次"的来路（用户 2026-10-18 口径）。
    */
   private async adoptBlankForUnboundViews(): Promise<void> {
     for (const viewId of this.unboundViews()) {
@@ -2916,7 +2981,7 @@ export class ChatController implements vscode.Disposable {
       // 时补——被跳过的窗口都是「这一轮还没发过 ready」的那些，那也正是用户在看的
       // 那一刻（见 `armRestoreFallback`）。
       if (this.hasRestorePending(viewId)) continue;
-      await this.ensureSession(viewId, { start: readAutoConnect(), askDir: false });
+      await this.ensureSession(viewId, { start: false, askDir: false });
     }
   }
 
@@ -3136,6 +3201,13 @@ export class ChatController implements vscode.Disposable {
     // 列表到手之后才补空壳：`reusableBlank` 扫的就是这份列表，先补会看不到已经存在的
     // 那条（见 `reuseOrCreateBlank`）。顺序与 `refreshWorkspace` 的调用位置无关紧要，
     // 但必须在这次拉取**之后**。
+    //
+    // 补壳之前先唤醒**还留着的恢复**：`ready`（或认领落下）早于激活期那次自动连接时，
+    // hint 就留在 `restoreHints` 里等这一刻（见 `resumeRestoreHint`）。每一条唤醒都会**同步**
+    // 落进 `restoreInFlight`，所以下面那趟补壳照样给它们让位（`hasRestorePending`）。
+    for (const viewId of [...this.restoreHints.keys()]) {
+      if (this.readyViews.has(viewId)) void this.resumeRestoreHint(viewId);
+    }
     await this.adoptBlankForUnboundViews();
   }
 
@@ -3229,6 +3301,7 @@ export class ChatController implements vscode.Disposable {
       return;
     }
     this.target = { kind: "internal", mayStart: true };
+    this.userChoseConnection = true;
     this.attempts.reopen();
     this.connectPhase = "connecting";
     // 接入的是**别的窗口**拉起的后台时，「重启内部 DSH」会打断所有窗口（supervisor 杀 dsh
@@ -3284,32 +3357,93 @@ export class ChatController implements vscode.Disposable {
       this.setConnection("connecting", status.detail);
       return;
     }
-    // 「停止服务器」/ 守护进程自己退场：内部那套没了 → 左轴立刻变"未运行"、回到按钮态，
-    // 而不是继续显示旧的就绪状态（那样用户会以为后台还在）
+    // 「停止服务器」/ 守护进程自己退场：内部那套没了 → 左轴立刻变"未运行"。
+    // 接着分两条路：**它亲口告的别**（stop / idle：连 dsh 一起收场了）是已知终结，收掉连接与
+    // 重连意图、回按钮态等用户动作；其余（`gone` / `replaced`，以及没带 cause 的旧来时路）
+    // 只是一般失联——按原目标接着接（`start: false`，绝不自行拉起），所以这里**不动重试意图**。
     if (status.state === "stopped") {
       this.setInternalRunning(false);
-      this.attempts.markRetry(false);
-      this.setConnection("stopped");
+      if (status.cause === "stop" || status.cause === "idle") {
+        this.finalizeTerminalStop(status.detail);
+        return;
+      }
+      if (!this.attempts.retryable) this.setConnection("stopped");
     }
+  }
+
+  /**
+   * 后台这一套**已知终结**（守护进程亲口告别 stop / idle）：收掉连接与重连意图，回按钮态。
+   *
+   * 与"一般失联"的分界在调用方，不在探测：只有结构化的终结信号（`ServerStatus.cause`）才走
+   * 这一档。曾经这里靠一次 `probeRunning` 探测下结论，而**退场途中那一次探测仍可能读到将消失
+   * 的会合状态**（`supervisorAlive` 还是 true），那一趟就不敢收；此后管理器不会再报一次
+   * stopped（状态已经是 stopped），旧客户端自己的 WS 退避重连于是把连接条永远按在"连接中"。
+   * 现在终结信号是确定的，不用猜。
+   *
+   * 收尾走账本自己的 `stopByUser()`：关掉自动重连与重试意图、作废在途的那一轮（连跟随流一起
+   * 收）、把客户端幂等 dispose（`markStopped` 落到按钮态）。旧客户端的迟到回调因为轮次判据
+   * 写不进状态，界面停住等用户动作。
+   */
+  private finalizeTerminalStop(detail?: string): void {
+    if (this.client || this.attempts.retryable || this.attempts.autoReconnect) {
+      this.log(`[connect] 后台已终结（${detail ?? "supervisor goodbye"}）：收掉连接与重连意图，界面给按钮`);
+    }
+    this.attempts.stopByUser();
   }
 
   // ---------- 启动 / 连接（用户可控，2026-09-18 重写） ----------
 
   /**
-   * 激活期的自动连接（`startup()` 调用）。
+   * 激活期的自动连接（`startup()` 调用）：**一个扩展宿主生命周期只做一次**。
+   *
+   * 闸与在飞结果都落在 `activationConnect` 上：重复调用（激活期清文档锁的 `finally` 迟到、
+   * 或别处误叫）一律忽略并返回同一条链——不会再重新选路，更不会拉起第二套后台。
    *
    * `dshChat.autoConnect` 开着：**选一次路**——内部后台在跑就接内部；否则外部地址配了
    * 且此刻可达就连外部；两者都没有就拉起一套内部。选完**粘住**（见 `target` 字段），
-   * 之后的重试永远只认这一个目标。
+   * 之后所有自动路径只认这一个目标、且只许接上、不许再拉起（见 `handleHeartbeat`）。
    *
    * 关着：**完全不自动连**——只刷新两轴探测结论，把界面切到按钮态等用户点
    * （用户 2026-09-18 口径：这是 `autoStart` 改名 `autoConnect` 后的新含义）。
    */
   async autoConnect(autoConnect: boolean): Promise<void> {
+    if (this.activationConnect) {
+      this.log("[connect] 自动连接只在扩展启动时做一次，这次调用忽略");
+      return this.activationConnect;
+    }
+    // 先落下"已经发起过"这件事，再让它自己跑：`startup()` 在异步地清完文档锁之后才调到这里，
+    // 而用户可能已经抢先自己点了连接——那个窗口里的自动选路必须让位（见下面的让位判据）。
+    //
+    // 这条链**不把异常抛给调用方**（`startup()` 那边是 fire-and-forget 的 `void`）：记一笔就
+    // 结束，界面停在按钮态等用户动作。也让"在飞的那一次"永远是一条约得上的正常链。
+    this.activationConnect = this.chooseAtActivation(autoConnect).catch((error) => {
+      this.log(`[connect] 激活期的自动连接没有走完：${this.describeError(error)}`);
+    });
+    return this.activationConnect;
+  }
+
+  /**
+   * 激活期自动选路的本体（唯一调用方是 `autoConnect()`，闸在那里）。
+   *
+   * **两道让位判据**：用户在激活期里自己动过连接
+   * （`userChoseConnection`，任何带 `start: true` 的显式动作都会记上）或已经选定了目标
+   * （`target`）时，迟到的自动选路**一个字都不改**——连 `retarget()` 都不做，那会把用户
+   * 刚发起的那一轮作废掉。判据在 `probeFacts()` 前后各查一次：外部可达性那一步要发一次
+   * HTTP，探测期间用户完全可能点下去。
+   */
+  private async chooseAtActivation(autoConnect: boolean): Promise<void> {
+    if (!this.activationConnectStillWanted()) {
+      this.log("[connect] 用户已经自己动过连接，激活期的自动选路让位");
+      return;
+    }
     this.attempts.reopen();
-    // 激活期的这一轮同样先收场（窗口重载后可能还挂着上一条连接）
+    // 激活期的这一轮同样先作废可能还在飞的那一轮：只此一次，旧轮的结果不许再写状态
     this.attempts.retarget();
     const facts = await this.probeFacts();
+    if (!this.activationConnectStillWanted()) {
+      this.log("[connect] 探测期间用户已经自己动过连接，激活期的自动选路让位");
+      return;
+    }
     this.setFacts(facts);
     if (!autoConnect) {
       this.target = undefined;
@@ -3321,37 +3455,63 @@ export class ChatController implements vscode.Disposable {
     const plan = chooseTarget(facts);
     this.target = { kind: plan.target, mayStart: plan.start };
     this.connectPhase = plan.start ? "starting" : "connecting";
-    this.log(`[connect] 自动选路（${describeFacts(facts)}）→ ${plan.target}${plan.start ? "（先拉起一套内部后台）" : ""}`);
+    this.log(
+      `[connect] 自动选路（${describeFacts(facts)}）→ ${plan.target}${plan.start ? "（先拉起一套内部后台）" : ""}；此后只接上、不再自动拉起`,
+    );
     await this.ensureConnected({ start: plan.start, target: plan.target });
   }
 
   /**
-   * 配置监听（`dshChat.autoConnect` 改动）用：**即时应用新值，不必重载窗口**
-   * （用户 2026-09-19 口径：改 autoConnect 不该弹「重载窗口」，只有 `url` / `command` 要）。
+   * 激活期这次自动选路还该不该做：用户动过连接、或已经定过目标 → 不做了。
    *
-   * - **改开**（false → true）：更新自动路径许可；若当前正停在**按钮态且从没定过目标**
-   *   （就是"关掉后只显示按钮"的那一档），立即按激活期那套**选一次路**连上——用户改完
-   *   开关马上能看到效果。正在连接 / 已连上 / 用户点过按钮（有粘性目标）都不动：
-   *   那些是既成事实，配置改动不该打断正在跑的会话，也不该替用户收回他显式停过的连接。
-   * - **改关**（true → false）：只更新许可。已建立的连接不打断；之后的自动路径
-   *   （心跳"自己拉一套"）按新许可走。
+   * 判据只认这两样，**刻意不看连接状态**：连接条被别的路径改掉（后台终结回按钮态、掉线转
+   * 「正在连接…」）都是既成事实，不代表"用户动过"，不该让激活期的选路因此放弃
+   * （探测结论本来就是它要用的）。
+   */
+  private activationConnectStillWanted(): boolean {
+    return !this.userChoseConnection && !this.target;
+  }
+
+  /**
+   * 自动路径**只消费激活期那一次自动连接**：那一次还在飞就等它结算，已经落地就照现状用。
+   *
+   * 三档判据，顺序不能换：
+   *  1. 已经连着 → 立刻返回。这一档同时挡住**自等**：`onConnected` 的尾巴会回到自动补壳
+   *     （`adoptBlankForUnboundViews`），而那一刻激活期这条链还在飞，等它就是把链接到自己身上。
+   *  2. 激活期那一次**还没发起**（`startup()` 要先异步清完文档锁，而聊天页面（webview）的
+   *     `ready` / 恢复 hint 可能更早）→ 如实返回，**什么都不做也不消费**。调用方据此决定
+   *     "这一趟先不做"（恢复 hint 就是这么留着的，见 `resumeRestoreHint`），而不是当成一次
+   *     失败的连接。
+   *  3. 在飞 → 等它结算（失败也是结算：这一趟不重来；"接着按原目标接"归心跳管，
+   *     见 `handleHeartbeat`）。
+   *
+   * 这里**永远不自己发起连接**：那正是"聊天页面（webview）重载 / 心跳把用户刚停掉的后台
+   * 又拉起来"的老路（真正的 VS Code「重载窗口」会重开扩展宿主，按"一个宿主激活一次"，
+   * 那一次自动连接是**该做**的）。
+   */
+  private async awaitActivationConnect(): Promise<void> {
+    if (this.client && this.connection === "connected") return;
+    const pending = this.activationConnect;
+    if (!pending) return;
+    await pending;
+  }
+
+  /**
+   * 配置监听（`dshChat.autoConnect` 改动）用。
+   *
+   * **改这个开关不触发任何自动连接**（自动连接只做一次），无论改开
+   * 还是改关——它只更新自动路径的许可（`SupervisorManager` 那份，供 `ensure()` 的默认值），
+   * 新值从**下一次窗口激活**开始生效。正在跑的连接一个字都不动：配置改动不该打断会话，
+   * 也不该替用户收回他显式停过的连接。要现在就连，用连接条上的按钮。
+   *
+   * 之所以不再"改开就立刻自动连一次"：那正是"停掉后台之后又被自动拉起来"的另一条来路
+   * ——用户改配置的动作与"我要起一套后台"不是一回事。
    */
   applyAutoConnect(value: boolean): void {
     this.server.setAutoConnect(value);
-    if (!value) {
-      this.log("[connect] dshChat.autoConnect 改为关：只影响之后的自动路径，现有连接不动");
-      return;
-    }
-    if (this.connection === "stopped" || this.connection === "error") {
-      if (!this.target) {
-        this.log("[connect] dshChat.autoConnect 改为开：当前在按钮态，立即按自动选路连接");
-        void this.autoConnect(true);
-      } else {
-        this.log("[connect] dshChat.autoConnect 改为开：已有粘性目标，保持现状");
-      }
-    } else {
-      this.log("[connect] dshChat.autoConnect 改为开：正在连接/已连接，保持现状");
-    }
+    this.log(
+      `[connect] dshChat.autoConnect 改为${value ? "开" : "关"}：只改自动路径的许可，不触发连接`,
+    );
   }
 
   /**
@@ -3437,6 +3597,10 @@ export class ChatController implements vscode.Disposable {
    * 放行（发消息 /「启动内部 DSH」/「重启内部 DSH」），只有自动路径才该在叫停后放弃。
    */
   stopReconnect(): void {
+    // 用户按下「停止连接」就是一次**显式表态**：即便下面这一档因为"没在连接中"而早退，
+    // 也必须挡住激活期那次迟到的自动选路（见 `activationConnectStillWanted`）——否则
+    // 探测回来仍会按 `start:true` 把用户刚叫停的后台拉起来。
+    this.userChoseConnection = true;
     if (this.connection !== "connecting" && this.connection !== "disconnected") return;
     this.log("[connect] 用户点了「停止连接」");
     // **真的停下来**：关闸 + 作废在途轮 + 中止管理器的等待 + 收跟随流 + dispose 客户端
@@ -3466,6 +3630,9 @@ export class ChatController implements vscode.Disposable {
    * 那一档会发控制帧）。
    */
   async stopServer(): Promise<boolean> {
+    // 同上：这是一次显式表态。`stopInternal` 只管作废在途轮与关自动重连，管不住**还没发起**
+    // 的激活期自动选路——那一次回来照样会按 `start:true` 拉起一套用户刚停掉的后台。
+    this.userChoseConnection = true;
     return this.attempts.stopInternal(this.target?.kind);
   }
 
@@ -4173,8 +4340,14 @@ export class ChatController implements vscode.Disposable {
     return { viewId, epoch: this.viewActionSeq };
   }
 
-  /** 这一次动作还是不是这个窗口**最近**的那一次（不看绑定，只看意图）。 */
-  private viewActionIsCurrent(action: { viewId: string; epoch: number }): boolean {
+  /**
+   * 这一次动作还是不是这个窗口**最近**的那一次（不看绑定，只看意图）。
+   *
+   * `epoch` 允许是 `undefined`：自动恢复会**只读**记下这一刻的代号（不占新号），
+   * 而那时这个窗口可能一次动作都还没有（`viewActions` 里没有条目）——`undefined` 与
+   * "仍然没有"相等，''之后真有人动了就比不上了。
+   */
+  private viewActionIsCurrent(action: { viewId: string; epoch: number | undefined }): boolean {
     return this.viewActions.get(action.viewId) === action.epoch;
   }
 
@@ -4287,8 +4460,9 @@ export class ChatController implements vscode.Disposable {
    *   后台）、`askDir` 按场景定——发消息与加附件没有工作目录时**就地弹一次目录选择器**
    *   （用户 2026-09-22 拍板：不编造默认路径，也不封死发送），「+」与菜单不弹
    *   （见 `newSession`、`listCommandsForView`）；
-   * - **自动路径**（窗口就绪、VS Code 打开/关掉文件夹）：`start: readAutoConnect()`——
-   *   自动路径永不启动后端起后台。
+   * - **自动路径**（窗口就绪、VS Code 打开/关掉文件夹、连接结算后的补壳）：`start: false`——
+   *   只消费激活期那一次自动连接（`awaitActivationConnect`），**既不起后台、也不自己发起连接**。
+   *   窗口重载（聊天页面那一层）不该把用户刚停掉的后台又拉起来（用户 2026-10-18 口径）。
    *
    * 空壳本身由 `reuseOrCreateBlank` 找或建（官方口径，见那里），所以「打开 `/` 或 `@`
    * 菜单要先建一条会话」这件事不再是一条特殊路径：那时窗口早就绑在空壳上了。
@@ -4315,6 +4489,12 @@ export class ChatController implements vscode.Disposable {
     if (existing) return existing;
     const inflight = this.sessionEnsures.get(viewId);
     if (inflight) {
+      // **显式请求要能把在飞的这条链升档**：在飞的多半是 `ready` 尾巴 / 补壳那条**自动路径**
+      // （`start: false`），它可能正卡在"等激活期那次自动连接"上。用户这时点「+」/发消息若只是
+      // 并进去，`ensureConnected({ start: true })` 与 `userChoseConnection` 都不会发生——
+      // `dshChat.autoConnect` 关着、或激活期探测还没落地时，这枚按钮就按不动了。
+      // 所以先把许可与连接落下来（与那条链的等待无关），会话落地仍由共享的那条链收口。
+      if (options.start) await this.ensureConnected({ start: true });
       // **同窗口共用一次尝试**（`@` 候选每敲一个字符重取、附件、自动补壳都会并发调到这里）：
       // 共享的那条链失败时不能变成 N 个等待者各建一次（那正好把合并承诺反过来了）。
       const settledScope = await inflight;
@@ -4324,7 +4504,12 @@ export class ChatController implements vscode.Disposable {
     }
     const attempt = (async (): Promise<SessionScope | undefined> => {
       if (!this.client || this.connection !== "connected") {
-        await this.ensureConnected({ start: options.start });
+        // `start: true` 是**用户显式动作**（发消息、加附件、点「+」、打开菜单）：允许拉起后台。
+        // 其余（`ready` 尾巴、`onConnected` 的自动补壳）是**自动路径**：只消费激活期那一次
+        // 自动连接（`awaitActivationConnect`），绝不自己发起连接——否则聊天页面重载一次就能把
+        // 用户刚停掉的后台又拉起来（用户 2026-10-18 口径）。
+        if (options.start) await this.ensureConnected({ start: true });
+        else await this.awaitActivationConnect();
       }
       if (!this.client) return undefined;
       // 连接与目录这两步都可能让**别的路径**先把这个窗口绑到一条会话上（用户点了历史
@@ -7307,8 +7492,8 @@ export class ChatController implements vscode.Disposable {
         // 记下「这个窗口的页面已经就绪」：认领可能比 `ready` 更晚才落下，那一刻要回来
         // 叫醒它（见 `flushRestoreClaims`）
         this.readyViews.add(viewId);
-        // 首帧快照**先行**：locale/字号等外观设置全在里面。接回会话要先走
-        // `ensureConnected`——整个自动连接期间快照都出不去，界面只能停在词典
+        // 首帧快照**先行**：locale/字号等外观设置全在里面。接回会话要先等激活期那次自动
+        // 连接（`awaitActivationConnect`）——整个连接期间快照都出不去，界面只能停在词典
         // 缺省（英文）上，直到连接结算才翻成中文（用户报的「启动总是先英文」）。
         // 能收到 `ready` 就说明 webview 的监听已挂上，此刻推帧不会丢。
         this.emitToView(viewId, { type: "state", state: this.snapshotFor(viewId) });
@@ -7321,10 +7506,11 @@ export class ChatController implements vscode.Disposable {
         // 只会得到「空壳先出现、历史会话随后接回来」的反序。
         if (this.hasRestorePending(viewId)) break;
         // 恢复不出会话（新开的窗口，或缓存里那条已经不在了）→ 落到本工作区那条空壳上
-        // （官方口径：打开一个工作区就有一条 blank 会话）。这是**自动路径**，所以连接
-        // 那一档跟随 `dshChat.autoConnect`——自动路径永不启动后台；关掉自动连接时窗口
-        // 就停在这里，等用户自己点连接（与改动前一致）。
-        await this.ensureSession(viewId, { start: readAutoConnect(), askDir: false });
+        // （官方口径：打开一个工作区就有一条 blank 会话）。这是**自动路径**：只消费激活期
+        // 那一次自动连接（`start: false`），既不起后台、也不自己发起连接——聊天页面重载一次
+        // 不该把用户刚停掉的后台又拉起来（用户 2026-10-18 口径）。那一次没连上时窗口就停在
+        // 按钮态等用户点，而连接落地后 `onConnected` 会回来补这条空壳。
+        await this.ensureSession(viewId, { start: false, askDir: false });
         break;
 
       case "send":

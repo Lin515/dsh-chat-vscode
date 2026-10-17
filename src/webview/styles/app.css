@@ -4255,6 +4255,37 @@ textarea.composer-input {
   bottom: auto;
 }
 
+/* 模型弹层：外框只负责「可滚的模型列表 + 常驻的思考档位」两段的高度分配，**自己不滚**
+   ——滚动留给 `.model-popover-list`。与 `/` `@` 候选弹层（`.trigger-popover`）是同一套
+   分区手法，只是那一边的常驻栏是键位提示、这一边是思考档位。
+
+   用户 2026-10-10 口径：思考强度要一直看得见，滑动滚动条只作用于模型列表。档位区留在
+   列表里时做不到——模型多到要滚时，它不是被顶到底部、就是得滑到底才看得见。 */
+.popover.model-popover {
+  display: flex;
+  flex-direction: column;
+  /* 覆盖 .popover 的 overflow-y: auto（滚动交给 .model-popover-list） */
+  overflow: hidden;
+}
+
+/* 真正滚的那一层。`min-height: 0` 是 flex 子项被允许收缩到内容高度以下的前提：少了它，
+   模型一多就按内容高度把外框顶开，档位区会被挤出 max-height 之外。 */
+.model-popover-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  /* 残影的第二道防线（机理与像素证据见 .popover-item 那段）：`contain: paint` 把这一层
+     变成**绘制边界**——内容只在自己的盒子里绘制，重画时按层清帧，上一帧越出行盒的像素
+     没有留下来的通路。视觉不动：列表本来就是裁剪容器，里面也没有需要溢出显示的东西。 */
+  contain: paint;
+}
+
+/* 思考档位区：**不参与收缩**，模型列表再长也压不掉它（见 .model-popover）。
+   模型不支持可选档位时整块不渲染（连 `.popover-sep` 一起），不留空占位。 */
+.model-popover-effort {
+  flex: 0 0 auto;
+}
+
 .popover-section {
   padding: calc(6 * var(--dp)) calc(6 * var(--dp)) calc(3 * var(--dp));
   font-size: var(--font-size-2xs);
@@ -4426,16 +4457,8 @@ textarea.composer-input {
   color: var(--fg);
 }
 
-/* 键盘高亮（打开弹层即定位到当前档位、方向键在其上移动，见 `pickerFocus.ts`）：
-   底色与悬停同一套、另描一圈焦点环（与模型列表那一处同待遇）。写在 `is-selected` **之前**
-   ——两者同特异性，高亮落在当前档位上时该由「生效值」那一套（主色）胜出底色；它不写
-   `outline`，所以焦点环照旧留着。 */
-.segment-item.is-active {
-  background: var(--hover);
-  color: var(--fg);
-  outline: calc(1 * var(--dp)) solid var(--border-focus);
-  outline-offset: calc(-1 * var(--dp));
-}
+/* 注：档位区没有「键盘高亮」那一套（`.segment-item.is-active`）——它常驻在弹层里，
+   方向键只走模型列表（见 `pickerFocus.ts`），档位用 Tab / 点击进入。 */
 
 .segment-item.is-selected {
   background: var(--primary);

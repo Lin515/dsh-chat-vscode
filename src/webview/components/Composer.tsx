@@ -307,12 +307,6 @@ export function Composer({
    */
   const pointerAt = useRef<{ x: number; y: number } | null>(null);
   const [modelOpen, setModelOpen] = useState(false);
-  /**
-   * 模型弹层这一次打开要定位到哪一段（见 `pickerFocus.ts`）：模型按钮与思考强度按钮
-   * 各自对应一段。两枚按钮开的是同一个弹层，但「打开时该聚焦到当前模型还是当前档位」
-   * 是两回事（用户 2026-10-10 两条报障各对应一处）。
-   */
-  const [modelFocus, setModelFocus] = useState<"model" | "effort">("model");
   const [modeOpen, setModeOpen] = useState(false);
   // 模型按钮 toggle 标志：标记「这次关闭是按钮触发的」，让 Popover 的
   // mousedown 外部检测跳过它（选中模型后弹层不关，再点按钮需能关闭）
@@ -663,8 +657,8 @@ export function Composer({
         setTimeout(() => {
           modelToggleRef.current = false;
         }, 0);
-        // 从模型按钮打开：弹层定位到当前模型那一行
-        setModelFocus("model");
+        // 两枚触发按钮（模型胶囊、思考强度胶囊）开的是同一个弹层；弹层打开即
+        // 定位到当前模型那一行，与是哪一枚按钮打开的无关（见 `pickerFocus.ts`）
         setModelOpen((v) => !v);
       }}
     >
@@ -692,8 +686,8 @@ export function Composer({
         setTimeout(() => {
           modelToggleRef.current = false;
         }, 0);
-        // 从思考强度打开：弹层定位到当前档位（与模型按钮同源、只是换了要定位的那一段）
-        setModelFocus("effort");
+        // 与模型按钮同源：开的是同一个弹层。思考档位区在弹层里**常驻**显示
+        // （见 `.model-popover-effort`），不必再「打开后聚焦到它」
         setModelOpen((v) => !v);
       }}
     >
@@ -850,22 +844,14 @@ export function Composer({
     for (const model of group.models) modelSeat.set(`${group.id}:${model.id}`, modelSeat.size);
   }
   const modelSelected = state.model ? (modelSeat.get(`${state.model.provider}:${state.model.model}`) ?? -1) : -1;
-  const effortSelected = state.model?.efforts?.findIndex((item) => item.id === state.model?.reasoningEffort) ?? -1;
   /**
-   * 模型弹层「打开即定位到选中项」：模型列表与思考档位共用一个机制（`pickerFocus.ts`），
-   * 这一次打开定位哪一段由 `modelFocus`（触发按钮）决定。
+   * 模型弹层「打开即定位到当前模型」：可键盘导航的只有模型列表这一段——思考档位区
+   * 常驻显示、不参与滚动，方向键也就没有第二段可去（见 `pickerFocus.ts`）。
    */
-  const pickerFocus = usePickerFocus({
-    open: modelOpen,
-    group: modelFocus,
-    groups: [
-      { key: "model", count: modelSeat.size, selected: modelSelected },
-      { key: "effort", count: state.model?.efforts?.length ?? 0, selected: effortSelected },
-    ],
-  });
+  const pickerFocus = usePickerFocus({ open: modelOpen, count: modelSeat.size, selected: modelSelected });
   /** 该模型行此刻是不是键盘高亮（`usePickerFocus` 的判定入口）。 */
   const modelHighlighted = (provider: string, id: string) =>
-    pickerFocus.isHighlighted("model", modelSeat.get(`${provider}:${id}`) ?? -1);
+    pickerFocus.isHighlighted(modelSeat.get(`${provider}:${id}`) ?? -1);
 
   return (
     <div className="composer">
@@ -1161,11 +1147,13 @@ export function Composer({
             {/* 模型切换：P0（始终显示）。 */}
             <div className="anchor">
               {bar.model}
-              {/* 选完模型不关闭：思考深度区留在同一面板里继续调。
+              {/* 选完模型不关闭：思考档位区留在同一面板里继续调。
                   选中态只在点击时更新（不再随鼠标悬停变化），与权限/命令弹层一致。
-                  内层 div 是「打开即定位到选中项」机制的挂点（`pickerFocus.bodyRef`）：
-                  没有它，滚动定位就得满文档去找条目。它是普通块级容器，不参与
-                  .popover 的定位与翻转判定。 */}
+
+                  面板分两段，**只有模型列表这一段滚**（用户 2026-10-10 口径）：
+                  外框自己不滚，把高度分给「可滚的列表」与「常驻的档位区」。列表那一层
+                  同时是「打开即定位到当前模型」的挂点（`pickerFocus.bodyRef`）——滚动
+                  定位因此只落在这里，不会把档位区或页面一起带走。 */}
               <Popover
                 open={modelOpen}
                 onClose={() => {
@@ -1173,8 +1161,9 @@ export function Composer({
                   if (modelToggleRef.current) return;
                   setModelOpen(false);
                 }}
+                className="model-popover"
               >
-                <div ref={pickerFocus.bodyRef}>
+                <div className="model-popover-list" ref={pickerFocus.bodyRef}>
                   <div className="popover-section">{texts.models}</div>
                   {state.models.length === 0 ? (
                     <div className="popover-empty">{texts.noModels}</div>
@@ -1215,43 +1204,45 @@ export function Composer({
                       </div>
                     ))
                   )}
-                  {state.model?.efforts?.length ? (
-                    <>
-                      <div className="popover-sep" />
-                      <div className="popover-section">{texts.thinkingDepth}</div>
-                      {/* 5 档及以上固定分两行（列数由 segmentColumns 决定）：
-                          自然换行会随文案长度折成 4+1 这类不均匀分布，且中英文不一致 */}
-                      <div
-                        className={`segment${segmentColumns(state.model.efforts.length) ? " is-multi-row" : ""}`}
-                        style={
-                          {
-                            "--segment-columns": segmentColumns(state.model.efforts.length) ?? 1,
-                          } as CSSProperties
-                        }
-                      >
-                        {state.model.efforts.map((item, index) => (
-                          <button
-                            key={item.id}
-                            data-picker-item="effort"
-                            className={`segment-item${
-                              (state.model?.reasoningEffort ?? "") === item.id ? " is-selected" : ""
-                            }${pickerFocus.isHighlighted("effort", index) ? " is-active" : ""}`}
-                            onClick={() => {
-                              post({
-                                type: "setModel",
-                                provider: state.model!.provider,
-                                model: state.model!.model,
-                                reasoningEffort: item.id,
-                              });
-                            }}
-                          >
-                            {item.name}
-                          </button>
-                        ))}
-                      </div>
-                    </>
-                  ) : null}
                 </div>
+                {/* 思考档位：常驻在列表**之外**（列表滚到底也卷不走它，用户 2026-10-10
+                    口径「滑动滚动条仅用于模型列表」）。模型不支持可选档位时整块不渲染
+                    ——连分隔线一起消失，不留一条空占位。 */}
+                {state.model?.efforts?.length ? (
+                  <div className="model-popover-effort">
+                    <div className="popover-sep" />
+                    <div className="popover-section">{texts.thinkingDepth}</div>
+                    {/* 5 档及以上固定分两行（列数由 segmentColumns 决定）：
+                        自然换行会随文案长度折成 4+1 这类不均匀分布，且中英文不一致 */}
+                    <div
+                      className={`segment${segmentColumns(state.model.efforts.length) ? " is-multi-row" : ""}`}
+                      style={
+                        {
+                          "--segment-columns": segmentColumns(state.model.efforts.length) ?? 1,
+                        } as CSSProperties
+                      }
+                    >
+                      {state.model.efforts.map((item) => (
+                        <button
+                          key={item.id}
+                          className={`segment-item${
+                            (state.model?.reasoningEffort ?? "") === item.id ? " is-selected" : ""
+                          }`}
+                          onClick={() => {
+                            post({
+                              type: "setModel",
+                              provider: state.model!.provider,
+                              model: state.model!.model,
+                              reasoningEffort: item.id,
+                            });
+                          }}
+                        >
+                          {item.name}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
               </Popover>
             </div>
 

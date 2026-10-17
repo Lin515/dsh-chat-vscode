@@ -27,7 +27,7 @@ npm run package  # Releases/dsh-chat-<version>.vsix
 
 ## 连接
 
-开启 `dshChat.autoConnect` 时，自动选路为：
+开启 `dshChat.autoConnect` 时，扩展启动后自动连接**一次**，选路为：
 
 | 条件 | 行为 |
 |---|---|
@@ -35,6 +35,7 @@ npm run package  # Releases/dsh-chat-<version>.vsix
 | 内部未运行、外部可达 | 连接 `dshChat.url`；需要授权时输入启动 URL 的 `?token=` 值，也可用「DSH: 输入访问令牌」 |
 | 两者均不可用 | 按 `dshChat.command` 启动内部 DSH |
 
+- 这一次之后不再重新自动选路、也不再自动启动后台：别的窗口停掉内部后台（例如点「停止内部 DSH」）后，本窗口不会自己把它拉起来。后台**明确终结**（守护进程告别：空闲退场或收到「停止内部 DSH」）时停在按钮态等操作；只是使用途中**断线**（网络抖动、`dsh` 重启、守护进程换地址）则按原目标继续重连，不重新选路、也不另起一套。要连、要起都用连接条上的按钮或发消息。
 - 关闭自动连接后只显示按钮；显式连接内部仍会在必要时启动后台。「启动内部」与「连接内部」是同一逻辑；连接外部不启动进程，未配置 URL 时置灰。
 - 选定目标后重连只重试该目标，不自动切换服务器。切换目标须手动操作，会切换会话列表。
 - 连接中提供「停止连接」与「查看日志」，持续重试没有自动时限；启动或认证失败则回到按钮态，原因见连接条与日志。
@@ -48,7 +49,7 @@ npm run package  # Releases/dsh-chat-<version>.vsix
 | `dshChat.url` | `http://127.0.0.1:3080` | 外部 DSH 的备用地址 |
 | `dshChat.command` | `dsh web --port 0 --no-open` | 内部启动命令，原样执行，不追加参数 |
 | `dshChat.supervisorIdleSec` | `10` | 无窗口连接后的退出宽限期，5–600 秒 |
-| `dshChat.autoConnect` | `true` | 自动连接；关闭后等待手动操作 |
+| `dshChat.autoConnect` | `true` | 启动时自动连接一次；关闭后等待手动操作 |
 | `dshChat.diffLayout` | `auto` | 编辑 diff：窄单栏 / 宽双栏，或固定 `unified` / `split` |
 | `dshChat.language` | `auto` | 聊天语言：跟随 VS Code，或 `zh-cn` / `en` |
 | `dshChat.fontSize` | `0` | 整数 px；`0` 跟随 VS Code，非零值至少按 8 px 显示 |
@@ -134,7 +135,7 @@ Choose Extensions → … → Install from VSIX, then reload. For source debuggi
 
 ## Connection
 
-With `dshChat.autoConnect` enabled:
+With `dshChat.autoConnect` enabled, the extension connects automatically **once** after startup:
 
 | Condition | Action |
 |---|---|
@@ -142,6 +143,7 @@ With `dshChat.autoConnect` enabled:
 | No internal DSH, external is reachable | Connect to `dshChat.url`; when required, enter the launch URL's `?token=` value, or use **DSH: Enter Access Token** |
 | Neither is available | Start internal DSH using `dshChat.command` |
 
+- After that single attempt nothing picks a route or starts a backend automatically again: when another window stops the internal backend (for example by “Stop internal DSH”), this window will not bring it back. A **known termination** (the guardian says goodbye: idle exit, or a stop request) leaves the buttons waiting for you; a mid-use **disconnect** (a network hiccup, a `dsh` restart, the guardian moving to a new address) keeps reconnecting to the same target without re-routing or starting another backend. Use the connection buttons or send a message to connect or start it.
 - When auto-connect is off, wait for manual action. Explicitly connecting internally still starts a backend if needed; “start” and “connect” share this logic. Connecting externally never starts a process; its button is disabled without a URL.
 - Reconnection sticks to the chosen server. Switch targets manually; doing so changes the session list.
 - While connecting, use “Stop connecting” or “Show logs”. Retries have no automatic deadline; launch and authentication failures return to the buttons with an error reason.
@@ -155,7 +157,7 @@ With `dshChat.autoConnect` enabled:
 | `dshChat.url` | `http://127.0.0.1:3080` | Fallback external DSH address |
 | `dshChat.command` | `dsh web --port 0 --no-open` | Internal launch command, executed verbatim |
 | `dshChat.supervisorIdleSec` | `10` | Exit grace period with no connected windows, 5–600 seconds |
-| `dshChat.autoConnect` | `true` | Connect automatically; when off, wait for manual action |
+| `dshChat.autoConnect` | `true` | Connect once at startup; when off, wait for manual action |
 | `dshChat.diffLayout` | `auto` | Narrow unified / wide split diff, or fixed `unified` / `split` |
 | `dshChat.language` | `auto` | Follow VS Code, or use `zh-cn` / `en` |
 | `dshChat.fontSize` | `0` | Integer px; `0` follows VS Code, nonzero values display at least 8 px |

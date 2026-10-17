@@ -193,6 +193,10 @@ const entries = {
   // 连接尝试的账本与收场：驱真控制器 + 假客户端 / 假服务端（必须登记，否则 npm test 静默不跑）
   "build/connection-attempts.test.mjs": "scripts/connectionAttempts.test.ts",
   "build/auto-connect-config.test.mjs": "scripts/autoConnectConfig.test.ts",
+  // 自动连接只在扩展启动时做一次：驱真控制器（假服务端/假客户端）+ 真 socket 假守护进程
+  // （必须登记，否则 npm test 静默不跑）
+  "build/auto-connect-once.test.mjs": "scripts/autoConnectOnce.test.ts",
+  "build/supervisor-no-respawn.test.mjs": "scripts/supervisorNoRespawn.test.ts",
   "build/connect-snapshot.test.mjs": "scripts/connectSnapshot.test.ts",
   "build/connect-view.test.mjs": "scripts/connectView.test.ts",
   "build/session-view.test.mjs": "scripts/sessionView.test.ts",

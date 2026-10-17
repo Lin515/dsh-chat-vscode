@@ -196,6 +196,10 @@ export function Row({
  * `align="center"` 是给「弹层比触发按钮宽得多、而按钮又不在页面边缘」的场合：
  * 左右对齐在这种位置必然裁掉一边，居中并把自己钳进视口才是要的结果（居中相对的是
  * **最近的定位祖先**，所以调用方要保证那一层就是它要对齐的那一行）。
+ *
+ * `className` 是给需要**自己分区**的弹层的额外挂点（模型弹层要把「可滚的列表」与
+ * 「常驻的思考档位」拆开，见 `app.css` 的 `.model-popover`）。宽度、边距这类尺寸不
+ * 走它——那些仍由 `.popover` 统一管。
  */
 export function Popover({
   open,
@@ -204,6 +208,7 @@ export function Popover({
   drop = "up",
   children,
   style,
+  className,
 }: {
   open: boolean;
   onClose: () => void;
@@ -212,6 +217,7 @@ export function Popover({
   drop?: "up" | "down";
   children: ReactNode;
   style?: CSSProperties;
+  className?: string;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [flipUp, setFlipUp] = useState(false);
@@ -243,7 +249,7 @@ export function Popover({
   return (
     <div
       ref={ref}
-      className={`popover ${align}${drop === "down" ? " is-down" : ""}`}
+      className={`popover ${align}${drop === "down" ? " is-down" : ""}${className ? ` ${className}` : ""}`}
       style={{ ...placement, ...style }}
       role="dialog"
     >

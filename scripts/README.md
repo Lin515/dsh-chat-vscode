@@ -53,8 +53,10 @@
 - [connectionStop.test.ts](<connectionStop.test.ts>) — 连接收场的**接线**：档位只在一个地方拼（控制器不直接调管理器的停止入口）、四个落点各走哪个收场意图、回调身份判据走轮次、两道闸归账本；另一半是管理器侧的心跳兜底顺序与 `release` 同时断与挡。
 - [connectionAttempts.test.ts](<connectionAttempts.test.ts>) — 连接收场的**行为**（真 `ChatController` + 假客户端 / 假服务端）：等待中停止、换目标留着同后台占用、旧客户端迟到回调不许写状态、收场不重复 dispose、迟到完成不覆盖新连接、外部目标下停内部后台不动本窗口连接、叫停后心跳不接回、显式动作重连，以及模块面的终止顺序与「放弃一轮不动不属于它的连接」。
 - [clientDispose.test.ts](<clientDispose.test.ts>) — `DshClient.dispose()` 真能停掉自己的无限重连。
-- [autoConnectConfig.test.ts](<autoConnectConfig.test.ts>) — `dshChat.autoConnect` 改动即时生效，不提示重载窗口。
+- [autoConnectConfig.test.ts](<autoConnectConfig.test.ts>) — `dshChat.autoConnect` 改动即时生效、只更新自动路径的许可，不提示重载窗口，也不再触发连接。
+- [autoConnectOnce.test.ts](<autoConnectOnce.test.ts>) — **自动连接只在扩展启动时做一次**（真 `ChatController` + 假客户端 / 假服务端）：重复调用只一条链、关掉不自动连、迟到的激活期选路给用户动作让位、心跳只接上（`start: false`）不拉起、改开关不触发连接、`ready` / 恢复早于激活期连接时先留着 hint 并在连上后接回历史会话。
 - [supervisorPolicy.test.ts](<supervisorPolicy.test.ts>) — 启动 / 重连决策：没许可不许拉起、复用优先。
+- [supervisorNoRespawn.test.ts](<supervisorNoRespawn.test.ts>) — 管理器级**不被自动拉起**（真 socket 假守护进程、假启动器、隔离会合目录）：多窗口同生共死（A 窗口 `stop()` 后 B 收到 `goodbye(stop)` 且三轮心跳 0 次 spawn）、socket 瞬断只复接现有那套、后台终结后回按钮态不复活、许可与显式 `start: true` 语义不变。
 - [supervisorProtocol.test.ts](<supervisorProtocol.test.ts>) — supervisor 会合协议（状态文件 / 启动锁 / socket 寻址）与运行时解析。
 - [supervisorErrors.test.ts](<supervisorErrors.test.ts>) — 守护进程错误上报器的三条纪律（两处都发、互不影响）。
 - [queueOrder.test.ts](<queueOrder.test.ts>) — 待发送队列显示形态：插话排在排队上方、带附件的行首芯片。
@@ -99,7 +101,7 @@
 - [panelTitle.test.ts](<panelTitle.test.ts>) — 编辑区标签标题与窗口身份读法（不恒写 `DSH`、重载后不交叉）。
 - [pathDisplay.test.ts](<pathDisplay.test.ts>) — 单行标题里路径拆分与省略口径（文件名不参与压缩）。
 - [segment.test.ts](<segment.test.ts>) — 思考档位分段控件列数（≤4 档一行、5/6 档均分两行）。
-- [pickerFocus.test.ts](<pickerFocus.test.ts>) — 模型弹层「打开即定位到选中项」：起点判定、方向键移动、两处共用的接线与高亮样式。
+- [pickerFocus.test.ts](<pickerFocus.test.ts>) — 模型弹层「打开即定位到选中项」：起点判定、方向键移动（只走模型列表这一段）、高亮样式可见，以及「滚动只归模型列表、思考档位区常驻在滚动容器之外、模型不支持可选档位时整块（含分隔线）不渲染」的结构与样式契约。
 - [toolbarFit.test.ts](<toolbarFit.test.ts>) — 工具栏档位分配、极窄保底与布局盒判据；使用可注入观察者验证节点替换、幂等挂载、StrictMode 重挂与清理，并覆盖旧生命周期的负对照。
 - [connectView.test.ts](<connectView.test.ts>) — 连接条三类状态、文案与按钮矩阵。
 - [contextMenu.test.ts](<contextMenu.test.ts>) — 会话右键菜单判据、「引用」落点算术、保存建议文件名。

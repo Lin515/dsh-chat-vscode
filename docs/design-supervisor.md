@@ -44,13 +44,33 @@ socket 管 ping、控制、状态与错误；文件只管跨世代会合，不�
 
 ### 长连接与自检
 
-地址改变时用新 token 换 cookie 并重建客户端；cookie 绑 authority。supervisor 崩溃时自检重新拉起，遗留 DSH 按肯定身份回收。DSH 自身退出由 supervisor 处理，启动窗口关闭不影响 detached 进程完成启动。
+地址改变时用新 token 换 cookie 并重建客户端；cookie 绑 authority。supervisor 崩溃后**扩展不会自己把它拉回来**（见「自动连接只做一次」）：那只是一般失联，本窗口按原端点接着重连（`start: false`）；只有守护进程**亲口告别**（`cause` 为 `stop` / `idle`，连 `dsh` 一起收场）或用户停止，才回按钮态等用户动作。DSH 自身退出由 supervisor 处理，启动窗口关闭不影响 detached 进程完成启动。
 
 ### 能不能启动后台是一条显式许可
 
-`autoConnect` 只约束激活、恢复与心跳等自动路径。关掉时只探测 / 显示按钮，不启动进程；显式发送、新建、切会话、启动、连接或重启内部 DSH 均允许启动。
+`autoConnect` 只约束**自动**路径，而且只作 `ensure()` 省略 `start` 时的默认值。关掉时只探测 / 显示按钮，不启动进程；显式发送、新建、切会话、启动、连接或重启内部 DSH 均走 `start: true`，一律覆盖它。它不限制任何用户动作，也不收回用户自己选过的连接。
 
-「启动内部」与「连接内部」同一逻辑：有则连接、无则启动；连接外部不启动任何进程。真实认证 / 启动失败停止自动重试，连接失败则继续等用户叫停。
+### 自动连接只做一次
+
+自动连接（按 `autoConnect` 探测两轴、选路、必要时拉起一套内部后台）**一个扩展宿主只做一次**，就是激活期那一趟（`startup()` 清完文档锁后调 `ChatController.autoConnect`；闸与在飞结果都在 `activationConnect`，重复调用只返回同一条链）。这一趟要等清锁的异步收尾，而聊天页面（webview）的 `ready` / 恢复可能先到：那一刻控制器**不自己连接**（`awaitActivationConnect` 只消费这一趟的结果），把恢复 hint 留着，等连接落地后由 `onConnected` 接回——不许把历史会话顶成空壳。
+
+**不是**「一个窗口只做一次」：真正的 VS Code「重载窗口」会重开扩展宿主，新宿主激活时那趟自动连接是该做的（配置说明里的「下一次激活生效」就是这个意思）。
+
+此后**没有任何自动路径会拉起新的 supervisor**：
+
+| 路径 | 行为 |
+|---|---|
+| 管理器心跳（5 秒） | 只接入已在跑的那一套；会合文件 / 守护进程不在了不 spawn，也不自行拉起 |
+| 控制器心跳 | 未连接时只 `ensureConnected({ start: false })`：接上还活着的后台，不拉起；暂缺内部后台时什么都不发起，重连意图留着 |
+| 聊天页面（webview）重载 / `ready` / 恢复 hint / 补空壳 | 只消费激活期那一趟的在飞结果与现有连接，不发起新连接 |
+| `dshChat.autoConnect` 热改 | 只更新许可（`ensure()` 省略 `start` 时的默认值），不触发连接，不打断已建连接 |
+| 用户显式发送 / 新建 / 切会话 / 「启动内部」「连接内部」/ 重启 | 照旧允许启动（`start: true` 覆盖许可）；「连接外部」是 `start: false`，只探测那个地址，永不启动进程 |
+
+因此 A 窗口点「停止内部 DSH」之后，B 窗口收到 `goodbye(stop)` 只回按钮态：要再有一套后台，必须有人在某个窗口里显式动作。`stop(options)` 的五档收敛与守护进程侧 `restart` / `stop` 的语义都没变。
+
+**已知终结与一般失联**：守护进程退场时亲口发的 `goodbye`（`reason` 为 `stop` / `idle`）是确定的终结信号（管理器落成 `ServerStatus.cause`）：控制器据此收掉连接与重连意图、回按钮态，旧客户端的迟到回调因轮次判据写不进状态。`replaced`（被顶掉但仍活着）与 `gone`（一般失联：会合状态读不到、socket 断了、主动换目标而断开）都不终结这一轮连接：界面留在「正在连接…」，按原目标接着接（`start: false`），端点变了才重建客户端。判断不靠探测——守护进程退场途中那一次 `probeRunning()` 仍可能读到将消失的会合状态。
+
+`autoConnect` 关掉时激活期那一趟只探测 / 显示按钮，不启动进程。「启动内部」与「连接内部」同一逻辑：有则连接、无则启动；连接外部不启动任何进程。真实认证 / 启动失败停止自动重试，连接失败则继续等用户叫停。
 
 ### 等待没有时长上限
 
@@ -69,7 +89,7 @@ socket 管 ping、控制、状态与错误；文件只管跨世代会合，不�
 
 ## 选路与粘性目标
 
-`connectTarget.chooseTarget()`：内部存在 → 内部；否则外部已配置且可达 → 外部；否则启动内部。自动选路只在激活或从未选过目标时发生，心跳 / 重试不切服务器。
+`connectTarget.chooseTarget()`：内部存在 → 内部；否则外部已配置且可达 → 外部；否则启动内部。选路**只在激活期那一趟**发生（见「自动连接只做一次」）；心跳 / 重试 / 聊天页面（webview）重载都不切服务器，也不重新选路。
 
 这是有意取舍：换目标会换会话列表并离开当前轮次，因此内部故障不自动降级到外部。显式按钮才能换目标。发送 / 新建 / 切会话沿用目标，未定则内部；外部 always mayStart=false。
 
@@ -117,11 +137,11 @@ socket 管 ping、控制、状态与错误；文件只管跨世代会合，不�
 
 ## 配置生效
 
-url / command 改动提示重载，不热切服务器。autoConnect 即时生效：开启且当前按钮态从未选过目标时选路；关闭只撤自动许可，不打断已建连接，也不收回用户显式选择。idleSec 热读。
+url / command 改动提示重载，不热切服务器。autoConnect 即时生效但**不触发连接**：它只更新自动路径的许可，改开不会现在就自动连一次，改关不打断已建连接、也不收回用户显式选择；新值从下一次窗口激活那趟自动连接起生效。idleSec 热读。
 
 ## 验证与未覆盖边界
 
-离线入口：connectTarget / connectView / connectSnapshot / autoConnectConfig、supervisorPolicy / supervisorProtocol / supervisorErrors、connectionStop / clientDispose，以及 i18n / styles。真 socket 假服务端必须读 data，否则 paused socket 不触发预期 close，不能假称测了占用释放。
+离线入口：connectTarget / connectView / connectSnapshot、supervisorPolicy / supervisorProtocol / supervisorErrors、connectionStop / clientDispose、autoConnectConfig / **autoConnectOnce**（驱真控制器：重复调用只一条链、关掉不自动连、迟到选路让位、普通断连按原目标接着接且不重建不拉起、已知终结才回按钮态、换端点才重建、热配置不触发连接、显式停止登记意图、显式动作能升档、`ready` 早于激活期连接仍接回历史会话）与 **supervisorNoRespawn**（真 socket 假守护进程：多窗口同生共死、socket 瞬断只复接现有那套、后台终结后心跳不 spawn），以及 i18n / styles。真 socket 假服务端必须读 data，否则 paused socket 不触发预期 close，不能假称测了占用释放。
 
 真实 supervisor / DSH 探针按[验证约定](<../AGENTS.md>)另获当次批准，使用真 Manager 入口与临时目录硬断言，不能用手抄流程替代。历史 R1 探针间隔 3 秒小于启动宽限（idleSec+10），未证明超宽限后的同 PID 复接；不要把它当空闲退场边界已覆盖。进程存活但服务卡死亦未实现自动重启。
 

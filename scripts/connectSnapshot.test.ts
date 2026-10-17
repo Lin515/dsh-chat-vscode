@@ -226,7 +226,7 @@ try {
     await stopInFlight;
     check("停止结束之后 stopping 复位", manager.snapshot().stopping === false);
     check(
-      "stop({askSupervisor:true}) 同时置起 stoppedByUser（不许自动拉起）",
+      "stop({askSupervisor:true}) 同时置起 stoppedByUser（记下「后台是用户停的」）",
       manager.snapshot().stoppedByUser === true,
     );
 
