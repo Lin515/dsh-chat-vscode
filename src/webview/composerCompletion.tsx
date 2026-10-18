@@ -13,7 +13,7 @@
  * 行为与搬家前**逐字一致**——每一条都对应一条断言（`@` 入口的口径除外，它在
  * 2026-10-10 与 2026-10-11 两轮里改过：现在是「光标落在哪个 `@` 块里就以整块为查询串，
  * 块里有内容就触发，但宿主说这块**已经能引用到内容**时整块不弹」，见 `findTrigger` 与
- * `mentionSuppressed`）：
+ * `resolvedSuppressed`）：
  * 1. 草稿的两次写（`onDraft` 本地 state + `post({type:"setDraft"})` 宿主持久化）顺序与内容不变；
  * 2. 落光标仍在 `requestAnimationFrame` 里（否则 caret 会被 React 的重渲染顶掉）；
  * 3. `pick`（引用 token / 命令名）与 `drill`（进目录）的差别；
@@ -30,7 +30,14 @@
  * 8. 弹层**这一帧画不出来**时键盘不归补全（`popoverOpen`）：Enter 是发送、↑↓ 挪光标、
  *    ESC 交给归属链。此前键盘只读「有触发词 + 候选非空」，而 `..` 是无条件挂在最前的，
  *    于是抑制门按住时回车会选中一个看不见的行（用户 2026-10-18 报的现场，断言见
- *    `scripts/mentionNav.test.ts` 的「键盘只在弹层画出来时接管」一节）。
+ *    `scripts/mentionNav.test.ts` 的「键盘只在弹层画出来时接管」一节）；
+ * 9. 查询串变了、而这一次的帧还在路上时，**画过的那一份候选原地留屏**（`paintedBox`），
+ *    列表整个刷新过程只换一次内容。官方 `ui-input-trigger` 的 `menuReduce` 正是这个口径：
+ *    `hit` 只把各源置成 pending、items 与高亮原地不动，settle 时才整份换掉；pending 期间
+ *    pick、Enter 与 Tab 都被 `arbitrate` / `pick` 里的 `status !== 'ready'` 挡住，界面这
+ *    一侧同理把留屏期间的键位与指针动作一并冻结（见 `stale`）。用户 2026-10-18 报的现场是
+ *    「刷新时列表先消失再展开」：弹层在 `.composer` 的常规流里，撤掉它输入区就矮一截、
+ *    会话区跟着弹一下。
  */
 import {
   Fragment,
@@ -82,6 +89,24 @@ export type MentionCandidate = CommandView | FileRefView | SessionRefView;
 
 /** 候选列表里的动作：`pick` = 把这一条插进正文，`drill` = 进目录浏览。 */
 export type CandidateAction = "pick" | "drill";
+
+/**
+ * 上一次**画在屏上**的那一份候选，与它属于哪一次查询（见 `useCompletion` 的 `paintedBox`）。
+ *
+ * 存在的理由只有一个：`@` 每改一个字都要重发一次查询，而那一帧回来之前界面不能把列表
+ * 撤掉——弹层在 `.composer` 的常规流里（`app.css` 的 `.trigger-popover`），撤掉它输入区
+ * 就矮一截、会话区跟着弹一下（用户 2026-10-18 报的现场）。留屏期间屏上那一份是**旧查询**
+ * 的结果，所以键位与指针动作也一并冻结（见 `stale`）。
+ */
+interface PaintedCandidates {
+  /** 触发通道：`/` 与 `@` 的列表不互相顶替。 */
+  kind: "command" | "mention";
+  /** 触发词在正文里的起点：只有**同一个** `@` 块才谈得上「原地留屏」。 */
+  start: number;
+  /** 这一份属于哪一次查询（高亮只在它变的时候回到第一条，见 `shownKey`）。 */
+  key: string;
+  candidates: MentionCandidate[];
+}
 
 /**
  * 找出光标前正在输入的触发词。
@@ -722,6 +747,20 @@ function useCompletion(
   const [trigger, setTrigger] = useStateImpl<Trigger | undefined>(() => findTrigger(draft, caret ?? draft.length, sessionDraft));
   const [highlight, setHighlight] = useStateImpl<number>(0);
   /**
+   * 上一次**画在屏上**的那一份候选（`@` 弹层的 stale-while-revalidate，见文件头第 9 条）。
+   *
+   * 只在**同一个** `@` 块里复用：触发词起点变了就是另一块，没有「原地留屏」可言，
+   * 上一块的候选行不许占新块的首行（用户 2026-10-18 报的「快按 Enter 选到上一层」）。
+   * 触发词消失（选中一条 / ESC / 光标离开这个块）即清空：光标移回一条已经写好的引用时，
+   * 上一块的列表不许先闪一下（用户 2026-10-10 报的现场）。
+   *
+   * 为什么是挂在**可注入状态钩子**上的可变盒子，而不是 `useRef`：离线断言是逐帧重新渲染
+   * 的（每个 `frame` 都是一棵新树、一个新实例，见 `ComposerCompletionState`），`useRef`
+   * 在那一侧每次归零，「跨帧留屏」这条规则就永远断不出来。这个盒子在生产里就是一次
+   * `useState` 的初始值——此后只改 `.current`、不再 `set`，所以不会引起重渲染。
+   */
+  const [paintedBox] = useStateImpl<{ current: PaintedCandidates | null }>(() => ({ current: null }));
+  /**
    * 每次都读到**最新一帧**的草稿、目录与回调。
    *
    * rAF 里的落光标与 keyup 的重新探测都要读「刚才那一帧」的值，闭包捕获会读到旧的
@@ -789,6 +828,43 @@ function useCompletion(
   }, [commandChannel]);
 
   /**
+   * 屏上这一份列表的**新鲜度**，以及要不要原地留屏。
+   *
+   * - `fresh`：`files/list` 这一帧问的就是当前查询串，候选与判定都属于这一次。`/` 通道
+   *   恒算新鲜——它列的是命令目录，与查询串无关（过滤在 `rankCandidates` 里本地做）。
+   * - `keep`：这一帧还在路上，而**同一个块**上一次画过一份——那一份原地留屏（见
+   *   `paintedBox`），既不塌成空列表、也不掺进这一帧画得出来的半份（例如只有 `..`）。
+   *
+   * 留屏期间列表内容一行不动：这就是「整个刷新过程只换一次内容」的全部实现
+   * （用户 2026-10-18 口径）。
+   */
+  const fresh = trigger !== undefined && (commandChannel || fileRefs.query === trigger.query);
+  const painted = paintedBox.current;
+  const keep =
+    !fresh && trigger !== undefined && painted !== null && painted.kind === trigger.kind && painted.start === trigger.start
+      ? painted
+      : null;
+
+  /**
+   * 屏上这一份列表是不是**上一次查询**留下的（这一次的帧还在路上）。
+   *
+   * 画着的是旧结果，所以这一段的键位与指针动作一并冻结（见 `onKeyDown` / `applyCandidate`
+   * / 候选行上的 `onMouseMove`）：官方 `ui-input-trigger` 的 `arbitrate` 与 `pick` 同样按
+   * 各源的 `status !== 'ready'` 把 pending 期间的 pick、Enter 与 Tab 挡掉。
+   */
+  const stale = keep !== null;
+
+  /**
+   * 屏上这一份属于哪一次查询（触发通道 + 触发词起点 + 查询串）。
+   *
+   * 高亮只在它变的时候回到第一条：列表整份换掉了，停在旧下标上会选错行；而留屏期间内容
+   * 没换，把用户刚挪过去的高亮抹掉是白改一次界面（官方 `menuReduce` 在 `hit` 时同样保留
+   * 高亮，settle 时才重新校验）。
+   */
+  const listKey = trigger === undefined ? "" : `${trigger.kind}:${trigger.start}:${trigger.query}`;
+  const shownKey = keep ? keep.key : listKey;
+
+  /**
    * `@` 候选的重取点，也**只有这一个**：查询串一变就发一次 `queryFiles`。
    *
    * 下钻 / 回上一层（`replace`）不再自己发一遍——一次导航发两遍会让服务端那趟
@@ -796,9 +872,12 @@ function useCompletion(
    */
   useEffect(() => {
     if (trigger?.kind === "mention") post({ type: "queryFiles", query: trigger.query, ...(trigger.sessionOnly ? { sessionOnly: true } : {}) });
-    // 换触发词 / 改查询串都要把高亮回到第一条：列表整个换了，停在旧下标上会选错行
-    setHighlight(0);
   }, [trigger?.kind, trigger?.query, trigger?.sessionOnly]);
+
+  // 列表整份换掉了才把高亮回到第一条（判据见 `shownKey`）。
+  useEffect(() => {
+    setHighlight(0);
+  }, [shownKey]);
 
   /**
    * 宿主要求把文本插到光标处（选了不能内嵌的路径：目录 / 二进制 / 非 UTF-8…）。
@@ -864,22 +943,29 @@ function useCompletion(
    * 的下标都读这一份数组，三者不会各算一套；`..` 那一行由 `rankCandidates` 排在最前，
    * 所以任何上限下它都在（否则用户进了目录就出不来）。
    *
-   * **旧的候选行不许充当这一层的候选**：`files/list` 帧没回来（或回来的那一帧属于另一次
-   * 查询）时 `fileRefs.query` 与当前触发词对不上，这时一律按**空**的文件 / 对话候选算。
-   * 浏览入口（裸 `@`、`@../`、`@D:/x/`）不等待判定，当场就画弹层——拿旧帧去画的话，
-   * 上一层的宿主「上一层」行与文件行会先占住首行，用户快按 Enter 就选中了**上一层**的
-   * 目标（例如从裸 `@` 切到 `@D:/dev/other/`：旧根那一层的 parent 不许占新层的首行）。
-   * 普通查询本来就要等这一帧的判定（`mentionSuppressed`），不受影响。
+   * 三条来路，按优先级：
+   * 1. **原地留屏的那一份**（`keep`）：整份是上一次查询的，一行不加、一行不减——掺进
+   *    这一帧的半份（例如只有 `..`）就是「先塌再长」，正是用户 2026-10-18 报的那个闪烁；
+   * 2. **这一帧的候选**（`fresh`）：文件 / 对话用帧里的，`..` 由 `rankCandidates` 按
+   *    当前查询合成；
+   * 3. **这一块还没画过**（刚敲 `@`、光标刚移进这个块）：只画按当前查询**就地**算得出来
+   *    的那一份——浏览入口的 `..` 不等帧（等一个往返就是「刚敲 `@` 列表没反应」）；普通
+   *    查询在这一档根本不画弹层（见 `waiting`），不会拿半份结果糊弄。
    *
-   * `cwd` 例外：它是**会话**的工作目录（不随查询变），继续传当前帧里的那个，用于算
-   * `..` 的动作层深度。
+   * `cwd` 是**会话**的工作目录（不随查询变），三条来路都传当前帧里的那个，用于算 `..`
+   * 的动作层深度与候选行的悬停完整路径。
    */
   const candidates = useMemo(() => {
-    const fresh = trigger !== undefined && fileRefs.query === trigger.query;
-    const items = fresh ? fileRefs.items : [];
-    const sessions = fresh ? fileRefs.sessions : [];
-    return rankCandidates(trigger, commands, items, sessions, fileRefs.cwd).slice(0, CANDIDATE_LIST_LIMIT);
-  }, [trigger, commands, fileRefs]);
+    if (trigger === undefined) return [];
+    if (keep) return keep.candidates;
+    if (fresh) {
+      return rankCandidates(trigger, commands, fileRefs.items, fileRefs.sessions, fileRefs.cwd).slice(
+        0,
+        CANDIDATE_LIST_LIMIT,
+      );
+    }
+    return rankCandidates(trigger, commands, [], [], fileRefs.cwd).slice(0, CANDIDATE_LIST_LIMIT);
+  }, [trigger, commands, fileRefs, fresh, keep]);
 
   const rows = useMemo(
     () => candidateRows(candidates, trigger?.kind ?? "mention", texts),
@@ -983,11 +1069,15 @@ function useCompletion(
    * 与官方的差别只有一处：官方鼠标点行 = `pick`（与 Enter 同义），这里改成「点目录
    * 就进去」（用户 2026-09-21 口径）。键盘分工不动，所以「引用整个目录」在键盘上
    * 仍是 Enter、鼠标上是那枚按钮——两条都有路可走，谁也不会被挤掉。
+   *
+   * **留屏期间（`stale`）一行都不许选中**：屏上那一份属于上一次查询，点它 / 敲它都会把
+   * 这一块的正文改写成另一个目标。判据收在这一个入口，键盘与指针走的都是它（官方
+   * `controller.pick` 同样按 `group.status === 'ready'` 把 pending 期间的点击挡掉）。
    */
   const applyCandidate = useCallback(
     (index: number, action: CandidateAction = "pick") => {
       const current = latest.current;
-      if (!trigger) return;
+      if (!trigger || stale) return;
       const outcome = outcomeFor(
         trigger.kind,
         candidates[index],
@@ -1043,7 +1133,7 @@ function useCompletion(
       // 是两条不同的通道（见 `shared/mentions.ts` 的文件头）。
       insertMentionText(outcome.token);
     },
-    [trigger, candidates, writeDraft, insertMentionText, replace],
+    [trigger, stale, candidates, writeDraft, insertMentionText, replace],
   );
 
   /**
@@ -1069,30 +1159,41 @@ function useCompletion(
   /**
    * 「这一块已经能引用到内容」把列表整块按住（用户 2026-10-11 口径）。
    *
-   * 判据只有宿主能给（要查盘、要查会话列表），所以它随 `files/list` 那一条帧回来
-   * （`fileRefs.query` 对得上才是这一次的判定）：
+   * 判据只有宿主能给（要查盘、要查会话列表），所以它随 `files/list` 那一条帧回来；
+   * 只有**属于当前查询**的那一次判定才算数（`fresh`）——别的查询留下的判定说的是别的
+   * 路径，拿它按这一块的头，光标一移进新块就会整块不弹：
    * - **判定说「能引用」** → 整块不弹：光标移进一条已经写好的引用（`@src/a.ts`、
-   *   `@[标题](dsh-session:…)`）时不该冒出列表来（用户 2026-10-10 报的现场）；
-   * - **判定还没到** → 也先不弹。宿主对「能引用」的块根本不发查询、当场回帧（子毫秒
-   *   级），而「不能引用」的块那条文件查询是**索引**查询（官方 `file-reference-local`
-   *   只有每个工作区的第一次要遍历一遍，之后陈旧索引当场作答，见 `search.ts` 的
-   *   `indexFor`），所以这段等待在一两帧之内——比先闪一个列表出来好。
-   *   **浏览入口不看这条**（见下）：裸 `@` 是唯一的「从头浏览」入口，等一个往返就是
-   *   「刚敲 `@` 列表没反应」。
+   *   `@[标题](dsh-session:…)`）时不该冒出列表来（用户 2026-10-10 报的现场）。
+   *   `sessionOnly` 块不看这条：它列的就是服务端按整块筛出来的对话候选。
+   * - **判定还没到** → 看 `waiting`：这一块之前画过就继续画（那一份原地留屏），没画过
+   *   就先不弹。宿主对「能引用」的块根本不发查询、当场回帧（子毫秒级），而「不能引用」
+   *   的块那条文件查询是**索引**查询（官方 `file-reference-local` 只有每个工作区的第一次
+   *   要遍历一遍，之后陈旧索引当场作答，见 `search.ts` 的 `indexFor`），所以这段等待在
+   *   一两帧之内——比先闪一个空结果说明出来好。
    *
-   * 浏览入口（裸 `@`、以 `/` 或 `\` 结尾的路径）由 `shared/mentions.ts` 的
-   * `isBrowseQuery` 认：那是「进去看这一层」的意思，目录在不在都要能进去。
+   * 浏览入口（裸 `@`、以 `/` 或 `\` 结尾的路径）由 `shared/mentions.ts` 的 `isBrowseQuery`
+   * 认：那是「进去看这一层」的意思，目录在不在都要能进去，不吃判定、也不等判定。
    */
-  const mentionSuppressed =
+  const resolvedSuppressed =
     trigger?.kind === "mention" &&
+    fresh &&
+    !trigger.sessionOnly &&
     !isBrowseQuery(trigger.query) &&
-    (fileRefs.query !== trigger.query || (!trigger.sessionOnly && fileRefs.resolved === true));
+    fileRefs.resolved === true;
+
+  /**
+   * 这一类普通 `@` 查询**还没画过**、而这一帧的判定还在路上：先不弹。
+   *
+   * 画过的（`stale`）继续画——那一份原地留屏，**不塌也不重画**（见 `candidates`）。
+   */
+  const waiting =
+    trigger?.kind === "mention" && !fresh && !isBrowseQuery(trigger.query) && keep === null;
 
   /**
    * 弹层**这一帧画不画**——键盘与渲染读**同一份**判据。
    *
    * 键盘那一支（`onKeyDown` 的 Enter / Tab / ↑↓ / ESC）此前只读「有触发词 + 候选非空」，
-   * 而 `..` 由 `rankCandidates` **无条件**挂在最前（进了目录就一定有它），于是上面的抑制门
+   * 而 `..` 由 `rankCandidates` **无条件**挂在最前（进了目录就一定有它），于是抑制门
    * 把弹层按住时，候选照样非空：用户按下回车就选中了一个**看不见**的第一行。
    * 用户 2026-10-18 报的现场正是它——敲一条工作区外的完整路径（宿主判定说这块已经能引用
    * 到内容 → 抑制门按住 → 列表一个行都不画），回车把正文改写成上一层目录。
@@ -1101,14 +1202,23 @@ function useCompletion(
    * ——Enter 照旧是发送，↑↓ 照旧挪光标，ESC 交给归属链的兜底（没有画出来的东西可关）。
    * 官方 `ui-input-trigger` 的 `arbitrate` 第一句同样是 `if (!state.open) return 'pass'`。
    */
-  const popoverOpen = !mentionSuppressed && popoverVisible(trigger, candidates.length, noWorkspace);
+  const popoverOpen = !resolvedSuppressed && !waiting && popoverVisible(trigger, candidates.length, noWorkspace);
+
+  // 记下**这一帧真的画出来了什么**：下一次 pending 就靠它原地留屏（见 `paintedBox`）。
+  // 冻结中的那一份不再重记——它的 key 属于旧查询，重记会把 key 换成新的、把高亮抹掉；
+  // 弹层没画出来时不动记录（关掉的列表不该在下一帧复活），触发词消失即清空。
+  if (trigger === undefined) {
+    paintedBox.current = null;
+  } else if (popoverOpen && keep === null) {
+    paintedBox.current = { kind: trigger.kind, start: trigger.start, key: listKey, candidates };
+  }
 
   const onKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
       if (popoverOpen) {
         // ESC 关掉候选弹层：优先级最高。记下文本+光标防止随后的 keyup 重新
         // 探测把列表弹回来；consumeEscape 让这次 ESC 归元素层（不再落到「停止生成」
-        // 的兜底上，见 escapeOwner.ts）
+        // 的兜底上，见 escapeOwner.ts）。留屏期间也照关：画着的东西总能关掉。
         if (event.key === "Escape") {
           consumeEscape(event);
           dismissedRef.current = {
@@ -1118,7 +1228,25 @@ function useCompletion(
           setTrigger(undefined);
           return;
         }
-        if (candidates.length > 0) {
+        if (stale) {
+          // 屏上这一份是**上一次查询**留下的：Enter / Tab / ↑↓ 一律**吞掉**（preventDefault
+          // 之后什么都不做）。官方 `ui-input-trigger` 的 `arbitrate` 同款——pending 期间
+          // Enter「既不选中陈旧的候选、也不落到发送」，Tab「不让焦点离开输入框」，而 ↑↓
+          // 在各源都还 pending 时本来就没有可移动的目标（`positions` 只走 ready 组）。
+          //
+          // 三件事都不许发生：选中陈旧行（用户 2026-10-18 报的「选中上一层」，见
+          // `paintedBox` 的块判据）、把半截 `@` 查询当普通消息发出去、把焦点/光标挪走。
+          // 这几键归弹层（画着的那一份还没轮到它们），不是「没画出来」那一档。
+          if (
+            event.key === "Enter" ||
+            event.key === "Tab" ||
+            event.key === "ArrowDown" ||
+            event.key === "ArrowUp"
+          ) {
+            event.preventDefault();
+            return;
+          }
+        } else if (candidates.length > 0) {
           if (event.key === "ArrowDown") {
             event.preventDefault();
             // 标记「这次高亮是键盘来的」：只有键盘导航才把选中行滚进视野，
@@ -1149,7 +1277,8 @@ function useCompletion(
         }
       }
       // 弹层**没**接管的 Enter = 发送（Shift+Enter 换行、Cmd/Ctrl+Enter = 加速手势）。
-      // 「没接管」包括**弹层这一帧没画出来**（`popoverOpen` 为假，见它那里的注释）。
+      // 「没接管」包括**弹层这一帧没画出来**（`popoverOpen` 为假，见它那里的注释）与
+      // **留屏期间被吞掉**的那一次（`stale`，上面已经 return）。
       //
       // 与官方同口径：组合输入（中文输入法选词）中的 Enter 一律放过；`send` 只发**手势**，
       // 「排队 / 插话 / 停止」由宿主按按下的那一刻在不在跑来解析。
@@ -1158,7 +1287,7 @@ function useCompletion(
         latest.current.onSubmit?.(event.ctrlKey || event.metaKey ? "accelerated" : "enter");
       }
     },
-    [popoverOpen, candidates, highlight, draft, applyCandidate],
+    [popoverOpen, stale, candidates, highlight, draft, applyCandidate],
   );
 
   const onEdit = useCallback(
@@ -1282,7 +1411,10 @@ function useCompletion(
                         每次都 `setHighlight` 同一个值纯属白跑。 */}
                     <div
                       className={`popover-item${index === highlight ? " is-selected" : ""}`}
-                      onMouseMove={index === highlight ? undefined : () => setHighlight(index)}
+                      // 留屏期间连高亮也不动（`stale`）：这几行是上一次查询的结果，指针扫过去
+                      // 先把高亮挪上来、紧接着的 Enter 又被吞掉，等于用一次没有结果的选中骗人。
+                      // 官方 `hover` 同样只认 ready 组（`validHighlight` 在 pending 组上返回 null）。
+                      onMouseMove={stale || index === highlight ? undefined : () => setHighlight(index)}
                     >
                       {/* 主体：**目录行点它就是打开该目录**（下钻进下一层），
                           文件 / 对话插入引用 token，「..」回上一层。
@@ -1373,7 +1505,7 @@ function useCompletion(
           </div>
         </div>
       ) : null,
-    [trigger, candidates, rows, hasFolderCandidate, highlight, texts, noWorkspace, applyCandidate, popoverOpen, hoverPath],
+    [trigger, stale, candidates, rows, hasFolderCandidate, highlight, texts, noWorkspace, applyCandidate, popoverOpen, hoverPath],
   );
 
   return {

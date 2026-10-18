@@ -23,6 +23,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   createElement,
+  type ChangeEvent,
   type Dispatch,
   type FocusEvent,
   type KeyboardEvent,
@@ -873,6 +874,54 @@ function nextFrame(prev: Frame, overrides: Partial<UseComposerCompletionInput> =
   );
 }
 
+/**
+ * **真的敲一次字**：改假文本域里的值与光标，调一次 `onChange`（草稿两次写 + 按新文本
+ * 重算触发词），再用同一个状态表渲下一帧。
+ *
+ * 与 `frame(draft, caret, …, prev.store)` 的区别：那个只换输入，**触发词仍停在上一帧**
+ * （`useState` 的初值只在第一次渲染时算）——「敲字之后查询串变了」这条链路只有真调一次
+ * 编辑事件才走得出来。
+ */
+function typeAt(
+  prev: Frame,
+  text: string,
+  caret: number,
+  overrides: Partial<UseComposerCompletionInput> = {},
+): Frame {
+  prev.node.value = text;
+  prev.node.selectionStart = caret;
+  prev.node.selectionEnd = caret;
+  prev.props.onChange?.({
+    target: prev.node as unknown as HTMLTextAreaElement,
+  } as unknown as ChangeEvent<HTMLTextAreaElement>);
+  return frame(text, caret, overrides, prev.store);
+}
+
+/**
+ * 弹层元素树里候选行**主体按钮**（`.popover-item-hit`）的 props，按行顺序。
+ *
+ * 挂在行上的事件处理器不会出现在 `html` 里（见 `Frame.html` 的注释），而「点这一行
+ * 会发生什么」只能真调一次那个处理器才知道，所以这里把 props 抠出来。
+ */
+function hitPropsOf(node: ReactNode): Array<Record<string, unknown>> {
+  const hits: Array<Record<string, unknown>> = [];
+  const visit = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      for (const child of value) visit(child);
+      return;
+    }
+    if (typeof value !== "object" || value === null) return;
+    const props = (value as { props?: Record<string, unknown> }).props;
+    if (!props) return;
+    if (typeof props.className === "string" && /(^|\s)popover-item-hit(\s|$)/.test(props.className)) {
+      hits.push(props);
+    }
+    visit(props.children);
+  };
+  visit(node);
+  return hits;
+}
+
 // ---------- 10. 草稿的两次写 + 光标在 rAF 里落 ----------
 //
 // 顺序与内容都是契约：先 `onDraft`（界面立刻变），再 `post({type:"setDraft"})`
@@ -1487,7 +1536,7 @@ console.log("completion(hook): 下钻自动变目录块（列表不关） ✓");
 // 正文却被改写成「上一层目录」——选中了一个用户看不见的第一行。
 //
 // 根因是两处判据分了家：
-// - 渲染那一支读 `mentionSuppressed` + `popoverVisible`（弹层此刻画不画）；
+// - 渲染那一支读 `resolvedSuppressed` / `waiting` + `popoverVisible`（弹层此刻画不画）；
 // - 键盘那一支只读「有触发词 + 候选非空」，而 `..` 由 `rankCandidates` **无条件**挂在最前
 //   （进了目录就一定有它），于是「候选非空」在弹层被按住时照样为真。
 //
@@ -1562,6 +1611,123 @@ console.log("completion(hook): 下钻自动变目录块（列表不关） ✓");
 }
 console.log("completion(hook): 键盘只在弹层画出来时接管（抑制门按住时 Enter 归发送） ✓");
 
+// ---------- 21b. 刷新期间列表**原地留屏**：只换一次内容，键位一并冻结 ----------
+//
+// 现场（用户 2026-10-18）：`@` 每改一个字都要重发一次查询（宿主查盘、扫会话日志），
+// 而那一帧回来之前界面会把列表撤掉——弹层在 `.composer` 的常规流里，撤掉它输入区就矮
+// 一截、会话区跟着弹一下，看着像闪一下。口径是「列表常驻，只在内容上刷新」。
+//
+// 留屏期间屏上那一份是**上一次查询**的结果，所以键位与指针动作一并冻结（官方
+// `ui-input-trigger` 的 `menuReduce` 把各源置成 pending、items 与高亮原地不动，
+// `arbitrate` / `pick` 再按 `status !== 'ready'` 把 Enter / Tab / pick 挡掉）。
+//
+// 这一节钉四件事：留屏那一份是完整的（不塌成空结果、也不掺进当前查询的半份）、
+// 留屏期间 Enter / Tab / ↑↓ / 点击都不生效、帧到了**只换一次**内容并交还键位、
+// 换块或触发词消失后不复用上一份。
+{
+  const ROOT: FileRefView[] = [
+    { path: "D:/dev", kind: "directory", parent: true },
+    { path: "a.txt", kind: "file" },
+    { path: "src", kind: "directory" },
+  ];
+  /** 裸 `@` 那一层的帧（`query` 是空串）——下一帧里它就成了「上一次查询」。 */
+  const rootFrame: UseComposerCompletionInput["fileRefs"] = {
+    query: "",
+    items: ROOT,
+    sessions: SESSIONS,
+    resolved: false,
+    cwd: "D:/dev/proj",
+  };
+
+  const first = frame("@", 1, { fileRefs: rootFrame });
+  assert.ok(first.html.includes("a.txt"), "前提：裸 `@` 这一层的候选已经在屏上");
+
+  // 真的敲一个字：查询串变成 `s`，而这一次的帧还没回来（宿主还在查盘 / 扫会话日志）
+  const typing = typeAt(first, "@s", 2, { fileRefs: rootFrame });
+  assert.ok(typing.html.includes("a.txt"), "留屏：上一份候选原样在（不许塌成空列表）");
+  assert.ok(/title="D:\/dev"/.test(typing.html), "留屏：首行仍是上一份的「上一层」行");
+  assert.ok(!typing.html.includes(TEXTS.mentionEmpty), "留屏：不许先画一个「没有匹配的文件」");
+  assert.strictEqual(typing.draft, "@s", "留屏不改正文");
+
+  // 留屏期间键位一并冻结：Enter / Tab / ↑↓ 都被吞掉（不选中陈旧行、不发送、不挪光标）
+  const sent: string[] = [];
+  const held = nextFrame(typing, { fileRefs: rootFrame, onSubmit: (gesture) => sent.push(gesture) });
+  assert.ok(held.html.includes("a.txt"), "前提：这一帧仍在留屏");
+  assert.strictEqual(press(held, "Enter").prevented, 1, "留屏：Enter 被吞掉");
+  assert.deepStrictEqual(sent, [], "留屏：Enter 不许把半截 `@s` 当普通消息发出去");
+  assert.deepStrictEqual(held.written, [], "留屏：Enter 不许选中陈旧的候选行");
+  assert.strictEqual(press(held, "Tab").prevented, 1, "留屏：Tab 被吞掉（焦点不许离开输入框）");
+  assert.strictEqual(press(held, "ArrowDown").prevented, 1, "留屏：↓ 归列表，不许挪光标");
+  assert.strictEqual(press(held, "ArrowUp").prevented, 1, "留屏：↑ 归列表，不许挪光标");
+
+  // 指针同理：画着的那一行点下去什么都不发生（判据收在 `applyCandidate` 一处）
+  const hits = hitPropsOf(held.popoverNode);
+  assert.ok(hits.length >= 2, "前提：留屏那一份里有候选行");
+  let clickPrevented = 0;
+  (hits[1]?.onMouseDown as ((event: unknown) => void))?.({ preventDefault: () => (clickPrevented += 1) });
+  assert.strictEqual(clickPrevented, 1, "留屏：点击同样要 preventDefault（焦点不许被抢走）");
+  assert.deepStrictEqual(held.written, [], "留屏：点击不许选中陈旧的候选行");
+
+  // 帧到了（查询串对上）→ 整份换成本次查询的候选，键位交还列表
+  const SETTLED: UseComposerCompletionInput["fileRefs"] = {
+    query: "s",
+    items: [{ path: "src", kind: "directory" }],
+    sessions: [],
+    resolved: false,
+    cwd: "D:/dev/proj",
+  };
+  const settled = nextFrame(held, { fileRefs: SETTLED });
+  assert.ok(settled.html.includes("src"), "帧到了 → 换成本次查询的候选");
+  assert.ok(!settled.html.includes("a.txt"), "帧到了 → 上一次查询的候选整份退场（内容只换一次）");
+  press(settled, "Enter");
+  assert.strictEqual(settled.draft, "@src/", "帧到了 → 键盘交还列表（Enter 选中第一条目录）");
+
+  // 高亮不跟着查询串复位：留屏期间屏上那一份没换，用户挪过去的高亮就停在原处。
+  // 复位那一支是 effect（提交之后的事），离线渲染里不跑，所以这里同时钉它的**依赖数组**：
+  // 跟着 `trigger.query` 走会在留屏期间先把高亮跳回顶部、等帧到了再跳一次，等于刷一次新动两次屏。
+  const nav = frame("@", 1, { fileRefs: rootFrame });
+  press(nav, "ArrowDown");
+  const navTyping = typeAt(nav, "@s", 2, { fileRefs: rootFrame });
+  assert.ok(
+    /class="popover-item is-selected"[^>]*>[\s\S]*?a\.txt</.test(navTyping.html),
+    "留屏：高亮仍停在第二行（内容没换就不复位）",
+  );
+  const source = readFileSync(join(process.cwd(), "src", "webview", "composerCompletion.tsx"), "utf8");
+  assert.ok(
+    /\}, \[shownKey\]\);/.test(source),
+    "高亮复位 effect 的依赖只能是 `shownKey`（屏上这一份属于哪一次查询），不是查询串",
+  );
+
+  // 换块（触发词起点不同）不复用上一份：那一份不是这一块的候选
+  const otherBlock = typeAt(first, "看看 @s", 5, { fileRefs: rootFrame });
+  assert.strictEqual(otherBlock.html, "", "另一块的判定还没到 → 没画过就不画，更不许拿上一块的行顶上");
+
+  // 裸 `@` 还没等到帧时先画出来的「没有匹配的文件」同样算「画过」：敲下一个字符时它留在屏上，
+  // 不许先消失、等结果到了再长回来（那正是这次要治的那种闪）
+  const staleFrame: UseComposerCompletionInput["fileRefs"] = {
+    query: "别的查询",
+    items: FILES,
+    sessions: SESSIONS,
+    resolved: false,
+  };
+  const bareRoot = frame("@", 1, { fileRefs: staleFrame });
+  assert.ok(bareRoot.html.includes(TEXTS.mentionEmpty), "前提：裸 `@` 的帧还没到，先画空结果说明");
+  const bareTyping = typeAt(bareRoot, "@s", 2, { fileRefs: staleFrame });
+  assert.ok(bareTyping.html.includes(TEXTS.mentionEmpty), "留屏：这一份说明留在屏上，不许塌掉再长回来");
+  assert.ok(!bareTyping.html.includes("a.txt"), "留屏：仍不许掺进旧帧的文件行");
+
+  // 触发词消失即清空记录：光标挪出块再挪回来，pending 期间不许先闪一个旧列表
+  const outside = typeAt(first, "@src/a.ts 后面", 13, { fileRefs: rootFrame });
+  assert.strictEqual(outside.html, "", "光标在块外：不画（这一帧顺带把记录清掉）");
+  const backIn = typeAt(outside, "@src/a.ts 后面", 4, { fileRefs: rootFrame });
+  assert.strictEqual(
+    backIn.html,
+    "",
+    "挪回块里、判定还没到 → 先不画（不许拿已经清掉的上一份闪一下）",
+  );
+}
+console.log("completion(hook): 刷新期间列表原地留屏（只换一次内容 + 键位冻结） ✓");
+
 // ---------- 22. M2 宿主下发的「上一层」行（裸 `@` 那一层） ----------
 //
 // 工作区外的发现（见 docs/design-mentions.md「三种入口」）里，裸 `@` 那一层多一行「上一层」：
@@ -1576,25 +1742,6 @@ console.log("completion(hook): 键盘只在弹层画出来时接管（抑制门�
 //   仍不算它），但那只决定「Tab 进入目录」这条提示显不显示，不是 Tab 没动作；
 // - 两把键各只写一次草稿、不发 `queryFiles`、不发送。
 {
-  /** 弹层元素树里候选行**主体按钮**（`.popover-item-hit`）的 props，按行顺序。 */
-  function hitPropsOf(node: ReactNode): Array<Record<string, unknown>> {
-    const hits: Array<Record<string, unknown>> = [];
-    const visit = (value: unknown): void => {
-      if (Array.isArray(value)) {
-        for (const child of value) visit(child);
-        return;
-      }
-      if (typeof value !== "object" || value === null) return;
-      const props = (value as { props?: Record<string, unknown> }).props;
-      if (!props) return;
-      if (typeof props.className === "string" && /(^|\s)popover-item-hit(\s|$)/.test(props.className)) {
-        hits.push(props);
-      }
-      visit(props.children);
-    };
-    visit(node);
-    return hits;
-  }
 
   const HOST_PARENT: FileRefView = { path: "D:/dev", kind: "directory", parent: true };
   const refs: UseComposerCompletionInput["fileRefs"] = {
