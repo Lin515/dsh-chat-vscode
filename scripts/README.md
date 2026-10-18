@@ -99,7 +99,7 @@
 - [turnFiles.test.ts](<turnFiles.test.ts>) — 轮尾文件两行的去重口径（交付行说了的不再重复）。
 - [turnRail.test.ts](<turnRail.test.ts>) — 轮次横条数据层：`turnOutline` 投影铺底 ∪ 已加载窗口；跳转策略（首枚刻点置顶、no-op 闸门、无 running、动作全走阅读定位端口）在末节接线断言。
 - [panelTitle.test.ts](<panelTitle.test.ts>) — 编辑区标签标题与窗口身份读法（不恒写 `DSH`、重载后不交叉）。
-- [pathDisplay.test.ts](<pathDisplay.test.ts>) — 单行标题里路径拆分与省略口径（文件名不参与压缩）。
+- [pathDisplay.test.ts](<pathDisplay.test.ts>) — 单行标题里路径拆分与省略口径（文件名不参与压缩），以及候选 / 「上一层」行悬停标题的完整绝对路径解析（绝对与 cwd 两侧都按根锚定语义消掉 `..`）。
 - [segment.test.ts](<segment.test.ts>) — 思考档位分段控件列数（≤4 档一行、5/6 档均分两行）。
 - [pickerFocus.test.ts](<pickerFocus.test.ts>) — 模型弹层「打开即定位到选中项」：起点判定、方向键移动（只走模型列表这一段）、高亮样式可见，以及「滚动只归模型列表、思考档位区常驻在滚动容器之外、模型不支持可选档位时整块（含分隔线）不渲染」的结构与样式契约。
 - [toolbarFit.test.ts](<toolbarFit.test.ts>) — 工具栏档位分配、极窄保底与布局盒判据；使用可注入观察者验证节点替换、幂等挂载、StrictMode 重挂与清理，并覆盖旧生命周期的负对照。
@@ -112,11 +112,11 @@
 - [pendingInteractions.test.ts](<pendingInteractions.test.ts>) — `dsh/pendingInteractions.ts` 的四条内部规则（真 API 断言）。
 - [presetDisplay.test.ts](<presetDisplay.test.ts>) — agent 预设展示文案折叠（内置四个走客户端词典）。
 - [presetMatch.test.ts](<presetMatch.test.ts>) — 配置项 `dshChat.agentPreset` 认 id 也认显示名（中英两名、撞名取第一个、认不出原样传）。
-- [mentionCandidates.test.ts](<mentionCandidates.test.ts>) — `@` 候选两条帧：文件先到先渲染、对话各自结算；判定位 `resolved` 与 `query` 同一批收下、换查询即归零；工作区外筛选的五档近似与两道上限的关系。
-- [fileRefListing.test.ts](<fileRefListing.test.ts>) — `@` 目录列举补全与工作区外发现：服务器 20 条上限之外的尾巴按官方同一套排序补齐、信任门关时不扩越界、绝对路径（M1）与相对 `..`（M3）的列举与档位筛选、「上一层」行，以及注入 fs 的 UNC / 符号链接段 / 盘根边界（真盘临时目录 + 真控制器）。
-- [localAccess.test.ts](<localAccess.test.ts>) — 本地 FS 访问层：一条查询一条 1500ms 预算（不逐步重置）、全局未完成操作上限（挂死操作只放弃等待、槽位等底层结算）、作废 / 过期后的 ok 结果不写缓存，以及信任门的形态与「只缓存肯定通过」。
-- [mentionResolve.test.ts](<mentionResolve.test.ts>) — 「光标所在的 `@` 块已经能引用到内容时不弹列表」的宿主侧判据：路径在盘上 / 带行号区间 / 对话引用 token，裸会话 id 必须照旧弹，信任门关时不凭本机 stat 抑制，盘符裸写是浏览入口且不查对话候选（真控制器 + 真盘临时目录）。
-- [mentionNav.test.ts](<mentionNav.test.ts>) — `@` / `/` 补全规则集、「返回上一层目录」、`@` 块的两层判定（块认得出来 + 抑制门：浏览入口恒弹、判定说能引用就不弹；带引号空格目录解包整块）、焦点回到输入框算新编辑动作（清「已关闭」记忆 + 重算触发词）、目录块整段替换与候选行的悬停完整路径。
+- [mentionCandidates.test.ts](<mentionCandidates.test.ts>) — `@` 候选两条帧：文件先到先渲染、对话各自结算；判定位 `resolved` 与 `query` 同一批收下、换查询即归零；宿主下发的「上一层」行保持首行且不重复合成；工作区外筛选的五档近似与两道上限的关系。
+- [fileRefListing.test.ts](<fileRefListing.test.ts>) — `@` 目录列举补全与工作区外发现：服务器 20 条上限之外的尾巴按官方同一套排序补齐、信任门关时不扩越界、绝对路径（M1）与相对 `..`（M3）的列举与档位筛选、宿主下发的「上一层」行（M2，帧内 `items[0]` 与门关不发）、不支持的根 / 盘符形态零 FS 调用，以及注入 fs 的 UNC / 符号链接段 / 盘根边界（真盘临时目录 + 真控制器）。
+- [localAccess.test.ts](<localAccess.test.ts>) — 本地 FS 访问层：一条查询一条 1500ms 预算（不逐步重置）、全局未完成操作上限（挂死操作只放弃等待、槽位等底层结算）、排队者的接棒与「作废 / 预算耗尽后不启动」、作废 / 过期后的 ok 结果不写缓存，以及信任门的形态、只缓存肯定通过与「哪些路径写法不做本地解释」。
+- [mentionResolve.test.ts](<mentionResolve.test.ts>) — 「光标所在的 `@` 块已经能引用到内容时不弹列表」的宿主侧判据：路径在盘上 / 带行号区间 / 对话引用 token，裸会话 id 必须照旧弹，信任门关时不凭本机 stat 抑制，盘符裸写是浏览入口且不查对话候选，不支持的根形态（`/foo`）不按 cwd 推断（真控制器 + 真盘临时目录）。
+- [mentionNav.test.ts](<mentionNav.test.ts>) — `@` / `/` 补全规则集、「上一层」导航（工作区内回退、M2 宿主下发行、M3 含 `..` 的段算术与根止步、陈旧帧不掺入其候选）、`@` 块的两层判定（块认得出来 + 抑制门：浏览入口恒弹、判定说能引用就不弹；带引号空格目录解包整块）、焦点回到输入框算新编辑动作、目录块整段替换与候选行的悬停完整路径。
 - [mentionLinks.test.ts](<mentionLinks.test.ts>) — 正文里 `@` 引用的判定：文件 / 目录按形状，会话按「草稿里的原始 token」或「已发出消息的 `sessionRefs` 清单」两种来路。
 - [mentionLinksUi.test.ts](<mentionLinksUi.test.ts>) — 上面那份判定真的渲染成可点行内按钮（悬停说明按三档目标给），以及 `.mention-link` 的行内样式。
 - [emptyComposer.test.ts](<emptyComposer.test.ts>) — 空态下 `/` 命令栏与 `@` 候选的行为级回归（空态就绑在壳上，菜单读它、不另建）。
