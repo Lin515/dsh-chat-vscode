@@ -161,8 +161,13 @@ export type HostToWebview =
    * 否则就要弹**。浏览入口（裸 `@`、以 `/` 或 `\` 结尾的路径）恒为 `false`——那种形态
    * 的意思就是「进去看这一层」。缺省（旧宿主不发这一位）按 `false` 处理，退回
    * 「一律弹列表」的旧行为。
+   *
+   * `cwd` 是这次查询的**会话工作目录**（服务器列候选的根）：界面拿它把候选路径与
+   * 自己合成的「上一层」行解析成完整绝对路径，做悬停标题（见 `webview/pathDisplay.ts`
+   * 的 `resolveDisplayPath`）。没有会话工作目录时整位不出现，界面退回显示原样的相对
+   * 路径。
    */
-  | { type: "files/list"; query: string; items: FileRefView[]; resolved?: boolean }
+  | { type: "files/list"; query: string; items: FileRefView[]; resolved?: boolean; cwd?: string }
   /**
    * `@` 候选的**对话那一半**（`sessionReferenceResolver/candidates`）。
    *

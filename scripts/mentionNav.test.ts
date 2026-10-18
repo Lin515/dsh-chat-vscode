@@ -958,9 +958,13 @@ console.log("completion(hook): ESC 优先级链（弹层先消费、其余放行
 // 而第 0 条候选本来就够用——`..` 那行验 pick、裸 `@` 的第一条（目录）验 drill。
 {
   const start = frame("@src/webview/", 13);
-  // 列表第一行是 `..`（回到上一层），标题来自词典
-  assert.ok(start.html.includes("popover-item-main is-priority\">.."), "顶部第一条是「..」");
-  assert.ok(start.html.includes(TEXTS.mentionParent), "「..」那行的悬停说明走词典");
+  // 列表第一行是 `..`（回到上一层），它的悬停标题是解析出来的**完整目标**（这里没有
+  // cwd，退回展示路径本身），按钮上的动作说明仍走词典
+  assert.ok(
+    /class="popover-item-main is-priority" title="src\/">\.\.</.test(start.html),
+    "顶部第一条是「..」，悬停标题给上一层目标",
+  );
+  assert.ok(start.html.includes(TEXTS.mentionParent), "「..」那行的动作说明（按钮 title）走词典");
 
   // Enter（pick）在「..」行 = 回到上一层：正文只留 `@<上一层>`
   press(start, "Enter");
@@ -1021,6 +1025,46 @@ console.log("completion(hook): Enter / Tab 的接线 ✓");
     "回到含空白的上一层：引号跟着保留（否则列表会掉出候选态）",
   );
   console.log("completion(hook): 引用文本归一化（分隔符 / 成对引号） ✓");
+}
+
+// ---------- 13c. 悬停标题 = 完整绝对路径（长路径被省略时的确认手段） ----------
+//
+// 工作区外的候选保留绝对 / `../` 前缀（见 docs/design-mentions.md「不增加「工作区外」
+// 标签」：长路径的省略不得使目标无法确认）。候选行主体那个 span 的 `title` 就是完整
+// 目标——解析基准是 `files/list` 帧下发的**会话 cwd**，所以界面自己合成的「上一层」行
+// （`src/`、`../`、盘根回工作区那种空 path）也能算出来。没有 cwd（旧宿主）时退回原样的
+// 展示路径，不猜。
+{
+  const absolute = { query: "D:/dev/other/", items: [{ path: "D:/dev/other/x.txt", kind: "file" as const }], sessions: [], cwd: "D:/dev/other" };
+  const m1 = frame("@D:/dev/other/", 14, { fileRefs: absolute });
+  assert.ok(
+    m1.html.includes('title="D:/dev/other/x.txt"'),
+    "工作区外的绝对路径候选：悬停标题就是那条完整路径",
+  );
+
+  const up = { query: "../", items: [{ path: "../x.txt", kind: "file" as const }], sessions: [], cwd: "D:/dev/other" };
+  const m3 = frame("@../", 4, { fileRefs: up });
+  assert.ok(
+    m3.html.includes('title="D:/dev/x.txt"'),
+    "`../` 形态的候选：拿会话 cwd 解析成完整绝对路径（否则只看到一个省略后的相对路径）",
+  );
+
+  const nested = frame("@src/webview/", 13, { fileRefs: { query: "src/webview/", items: [], sessions: [], cwd: "D:/dev/other" } });
+  assert.ok(
+    nested.html.includes('title="D:/dev/other/src"'),
+    "界面自己合成的「上一层」行同样给出完整目标（它的 path 是相对的 `src/`）",
+  );
+
+  const driveRoot = frame("@D:/", 5, { fileRefs: { query: "D:/", items: [], sessions: [], cwd: "D:/dev/other" } });
+  assert.ok(
+    driveRoot.html.includes('title="D:/dev/other"'),
+    "盘根的「上一层」回到工作区（空 path）：悬停标题就是会话 cwd 本身",
+  );
+
+  // 没有 cwd 时不猜：退回展示路径原样（`src/`），至少和行里显示的一致
+  const noCwd = frame("@src/webview/", 13, { fileRefs: { query: "src/webview/", items: [], sessions: [] } });
+  assert.ok(noCwd.html.includes('title="src/"'), "旧宿主不发 cwd 时悬停退回展示路径本身");
+  console.log("completion(hook): 悬停标题给完整绝对路径（含合成的「上一层」行） ✓");
 }
 
 // ---------- 14. 弹层**没**接管时的 Enter = 发送（回归锁） ----------
@@ -1222,7 +1266,7 @@ console.log("completion(hook): 悬停改高亮只认真实指针移动（滚动�
     assert.ok(f.html.includes("popover-item"), "会话检索块：块本身还引用不到内容 → 列表要弹");
     assert.ok(f.html.includes(TEXTS.mentionSessions), "对话候选那一组在（服务端按整块筛会话）");
     assert.ok(f.html.includes("上一个会话"), "候选里就是那条会话");
-    assert.ok(!f.html.includes('popover-item-main is-priority">..'), "没有分隔符的查询不该冒出「..」");
+    assert.ok(!f.html.includes(">..</span>"), "没有分隔符的查询不该冒出「..」");
 
     // 一条候选都没有也要弹：用户口径是「否则就要弹」，空结果由弹层自己说明
     const empty = frame(draft, draft.length, {
@@ -1420,7 +1464,10 @@ console.log("completion(hook): 下钻自动变目录块（列表不关） ✓");
       },
     });
     assert.ok(f.html.includes("popover-item"), "对照：弹层画出来了才轮到键盘接管");
-    assert.ok(f.html.includes('popover-item-main is-priority">..'), "对照：第一行就是「..」");
+    assert.ok(
+      /class="popover-item-main is-priority"(?: title="[^"]*")?>\.\.</.test(f.html),
+      "对照：第一行就是「..」",
+    );
 
     assert.strictEqual(press(f, "ArrowUp").prevented, 1, "对照：弹层在时 ↑ 归它");
     assert.strictEqual(press(f, "Escape").prevented, 1, "对照：弹层在时 ESC 归它");

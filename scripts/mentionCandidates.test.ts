@@ -168,22 +168,37 @@ console.log("mentionCandidates: 对话候选只在工作区根目录列（渲染
     assert.ok(body.includes(`type: "${type}"`), `queryFiles 要发 \`${type}\` 帧`);
   }
   assert.ok(
-    /this\.emitToView\(viewId, \{ type: "files\/list", query, items: complete, resolved: false \}\)/.test(body),
-    "文件那一帧必须带上这次查询的 query（界面靠它认「这是哪一次查询」）与判定位",
+    /this\.emitToView\(viewId, \{ type: "files\/list", query, items: complete, resolved: false, \.\.\.frameCwd\(cwd\) \}\)/.test(body),
+    "文件那一帧必须带上这次查询的 query（界面靠它认「这是哪一次查询」）、判定位与 cwd（悬停完整路径）",
   );
   // 「这一块已经能引用到内容」→ 一个查询都不发、当场回一条 `resolved: true` 的空帧
   // （用户 2026-10-11 口径；行为断言在 scripts/mentionResolve.test.ts）
   assert.ok(
-    /if \(!sessionOnly && scope && \(await this\.mentionResolves\(scope, query\)\)\) \{\s*\n\s*if \(!this\.isCurrentMenuQuery\(viewId, controller\)\) return;\s*\n\s*this\.emitToView\(viewId, \{ type: "files\/list", query, items: \[\], resolved: true \}\);/.test(
+    /const resolves = !sessionOnly && scope\s*\n\s*\? await this\.mentionResolves\(scope, query, budget, localAllowed\)\s*\n\s*: false;/.test(body) &&
+      /if \(!this\.isCurrentMenuQuery\(viewId, controller\)\) return;\s*\n\s*if \(resolves\) \{\s*\n\s*this\.emitToView\(viewId, \{ type: "files\/list", query, items: \[\], resolved: true, \.\.\.frameCwd\(cwd\) \}\);/.test(body),
+    "抑制分支要在两条 RPC 之前：不查、当场回帧（界面据此整块不弹），走完判定再确认一次句柄",
+  );
+  // 本地 FS 预算：一次查询一条，信任门 / 抑制判定 / 目录读取共用（见 localAccess.ts）。
+  // 计时点必须在**落会话之后**——启动 / 恢复会话那几趟 RPC 的时间不该吃掉本地预算。
+  assert.ok(
+    /const budget = new LocalFsBudget\(undefined, \{ signal: controller\.signal \}\)/.test(body),
+    "一次查询只有一条本地 FS 预算（不逐步重新计时）",
+  );
+  assert.ok(
+    body.indexOf("const budget = new LocalFsBudget(") > body.indexOf("await this.ensureSession("),
+    "预算要在 ensureSession 落定之后才开始计时（否则启动会话的 RPC 直接吃掉它）",
+  );
+  assert.ok(
+    /const localAllowed = \(\): Promise<boolean> => \{\s*\n\s*allowed \?\?= cwd && !sessionOnly \? this\.localAccess\.allows\(cwd, budget\) : Promise\.resolve\(false\);/.test(
       body,
     ),
-    "抑制分支要在两条 RPC 之前：不查、当场回帧（界面据此整块不弹）",
+    "信任门懒算且只算一次：纯会话查询不为它白等一趟本机 stat",
   );
   // 文件那一半在发帧**之前**经目录列举补全（服务器一次只回 20 条，见 scripts/fileRefListing.test.ts）：
   // 补全必须在这一帧上，不能另发一帧——另发一帧会让界面先收到半截列表再被替换
   assert.ok(
-    /const complete = sessionOnly \? \[\] : await this\.completeFileListing\(scope, query, items \?\? \[\]\)/.test(body),
-    "文件那一帧要经 completeFileListing（目录列举被服务器截掉的尾巴在这里补回来）",
+    /const complete = sessionOnly\s*\n\s*\? \[\]\s*\n\s*: await this\.completeFileListing\(scope, query, items \?\? \[\], budget, localAllowed\);/.test(body),
+    "文件那一帧要经 completeFileListing（目录列举被服务器截掉的尾巴在这里补回来），并把预算与门一起传下去",
   );
   assert.ok(
     !/Promise\.all\(\[\s*this\.client/.test(body),
@@ -297,5 +312,47 @@ console.log("mentionCandidates: 宿主侧各自发帧 + 取消旧查询 + 下线
   );
 }
 console.log("mentionCandidates: 界面侧重取点唯一 + 命令目录不跟敲字重取 + 候选上限唯一 ✓");
+
+// ---------- 4. 工作区外筛选：五档近似与上限 ----------
+//
+// 见 docs/design-mentions.md「候选合成、排序与上限」：越界那一侧的清单由扩展自己出
+// （服务器对这些查询恒返回空表），筛选按官方 `scoreCandidate` 的**档位顺序近似**——
+// 完全相等 > 名字前缀 > 名字包含 > 路径包含 > 子序列；同档内目录优先、再 code-unit
+// （排序的端到端断言见 scripts/fileRefListing.test.ts）。这里钉档位与两道上限的关系。
+{
+  const { MAX_COMPLETED_ENTRIES, outsideRank } = await import("../src/dsh/fileRefListing");
+  type Entry = { path: string; kind: "file" | "directory" };
+  const file = (path: string): Entry => ({ path, kind: "file" });
+
+  assert.strictEqual(outsideRank(file("D:/dev/other/no"), "no"), 0, "名字完全相等是最前档");
+  assert.strictEqual(outsideRank(file("D:/dev/other/notes.txt"), "no"), 1, "名字前缀第二档");
+  assert.strictEqual(outsideRank(file("D:/dev/other/ano.txt"), "no"), 2, "名字包含第三档");
+  assert.strictEqual(
+    outsideRank(file("D:/dev/other/no-dir/x.txt"), "no"),
+    3,
+    "路径包含第四档（名字里没有，但路径前缀里有）",
+  );
+  assert.strictEqual(
+    outsideRank(file("D:/dev/other/n1o.txt"), "no"),
+    4,
+    "子序列最后一档（不评分，只判有无）",
+  );
+  assert.strictEqual(outsideRank(file("D:/dev/other/x.txt"), "zz"), undefined, "哪个档都不匹配就不列");
+  // 大小写不敏感（与官方同口径）
+  assert.strictEqual(outsideRank(file("D:/dev/other/NOTES.txt"), "no"), 1, "档位判据大小写不敏感");
+  assert.strictEqual(outsideRank(file("D:/D/No"), "NO"), 0, "完全相等同样不区分大小写");
+  assert.strictEqual(outsideRank(file("D:/dev/other/anything.txt"), ""), 0, "空筛选词没有档位可言（目录列举）");
+
+  // 两道上限的关系：本地上限（我们补的那一段）必须**大于**界面渲染上限，否则宿主多补的
+  // 尾巴在界面上根本画不出来；上限只在筛选与排序**之后**才收（见 fileRefListing 的用例）
+  const { CANDIDATE_LIST_LIMIT } = await import("../src/webview/composerCompletion");
+  assert.strictEqual(MAX_COMPLETED_ENTRIES, 1000, "本地补全的兜底上限是 1000 条");
+  assert.strictEqual(CANDIDATE_LIST_LIMIT, 200, "界面渲染上限是 200 行");
+  assert.ok(
+    CANDIDATE_LIST_LIMIT < MAX_COMPLETED_ENTRIES,
+    "界面那道上限必须更小（它是渲染口径；本地上限是「一帧别塞几万条」的兜底）",
+  );
+}
+console.log("mentionCandidates: 工作区外筛选的五档近似与上限 ✓");
 
 console.log("\nmentionCandidates: all assertions passed");

@@ -59,3 +59,69 @@ export function splitPath(value: string): PathParts | undefined {
   if (cut < 0) return undefined;
   return { dir: value.slice(0, cut + 1), name: value.slice(cut + 1) };
 }
+
+/* ==================== 展示路径的根与完整路径（悬停标题） ==================== */
+
+/**
+ * 一段展示路径的「根 + 段」。
+ *
+ * 为什么界面自己也要一套：`@` 候选里既有服务器给的**相对路径**（`src/a.ts`），也有
+ * 宿主补的**绝对路径**（`D:/dev/other/x.txt`）与 `../` 形态，还有界面自己合成的
+ * 「上一层」行（`src/`、`../`、盘根回工作区的空 path）。长路径在窄侧栏里会被
+ * `text-overflow: ellipsis` 截断，悬停必须能给出**完整目标**——于是要有一个不依赖
+ * 宿主平台的纯字符串解析（`D:/`、`//server/share/`、`/` 三种根都认）。
+ */
+export interface DisplayPathParts {
+  /** 根（`D:/`、`//server/share/`、`/`）；相对路径是空串。 */
+  root: string;
+  /** 根之后的段（`.` 与空段已去掉；`..` 原样保留，由调用方决定怎么消）。 */
+  segments: string[];
+}
+
+/** 拆出展示路径的根与段（分隔符统一看成 `/`；不碰文件系统，纯字符串）。 */
+export function displayPathParts(path: string): DisplayPathParts {
+  const text = normalize(path);
+  const drive = /^([A-Za-z]:)\//u.exec(text);
+  if (drive) return { root: `${drive[1]}/`, segments: segmentsOf(text.slice(drive[0].length)) };
+  const unc = /^(\/\/[^/]+\/[^/]+)\/?/u.exec(text);
+  if (unc) return { root: `${unc[1]}/`, segments: segmentsOf(text.slice(unc[0].length)) };
+  if (text.startsWith("/")) return { root: "/", segments: segmentsOf(text.slice(1)) };
+  return { root: "", segments: segmentsOf(text) };
+}
+
+/**
+ * 把候选 / 「上一层」行的展示路径解析成**完整绝对路径**（悬停标题）。
+ *
+ * - 目标本身已是绝对形态 → 原样（归一成正斜杠）；
+ * - 相对形态 → 拼到 `cwd` 上，`.` 与 `..` 在拼接过程中消掉（`..` 到根就停）；
+ * - 没有 `cwd`（旧宿主不发、或还没绑定会话）或 `cwd` 自己不是绝对形态 → `undefined`，
+ *   调用方退回显示原样的相对路径（**不猜**）。
+ */
+export function resolveDisplayPath(cwd: string | undefined, path: string): string | undefined {
+  const target = displayPathParts(path ?? "");
+  if (target.root !== "") return joinDisplayPath(target.root, target.segments);
+  const base = displayPathParts(cwd ?? "");
+  if (base.root === "") return undefined;
+  const segments = [...base.segments];
+  for (const segment of target.segments) {
+    if (segment === "..") {
+      if (segments.length > 0) segments.pop();
+      continue;
+    }
+    segments.push(segment);
+  }
+  return joinDisplayPath(base.root, segments);
+}
+
+function normalize(path: string): string {
+  return (path ?? "").replaceAll("\\", "/");
+}
+
+function segmentsOf(text: string): string[] {
+  return text.split("/").filter((segment) => segment !== "" && segment !== ".");
+}
+
+function joinDisplayPath(root: string, segments: readonly string[]): string {
+  const base = root.endsWith("/") ? root : `${root}/`;
+  return `${base}${segments.join("/")}`;
+}

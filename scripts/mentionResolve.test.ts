@@ -350,6 +350,75 @@ console.log("mentionResolve: 「已经能引用到内容」的判定（真控制
 }
 console.log("mentionResolve: 编辑后的完整标题只查询会话，不受文件存在性或分隔符影响 ✓");
 
+// ---------- 7. 信任门关：不凭本机 stat 抑制文件候选 ----------
+//
+// 用户 2026-10-18 口径：文件路径的抑制判定复用**工作区外发现**的同一道信任门。门关时
+// （远端 / WSL / 拿不到「执行世界就是本机」的肯定证据）本机看到的「这个文件在」没有
+// 意义，于是**不抑制**——列表照旧弹、手写引用照旧能发。这里用「会话 cwd 指向一个本机
+// 不存在的位置」造门关，再问一条**本机确实存在**的绝对路径：旧判据会说「已经能引用
+// 到内容」（于是整块不弹），新判据必须说不能。
+{
+  const { ChatController } = await import("../src/dsh/controller");
+  const controller = new ChatController(
+    fakeServer() as never,
+    () => undefined,
+    fakeMemento() as never,
+    fakeMemento() as never,
+    { delete: async () => undefined, get: async () => undefined, store: async () => undefined } as never,
+  );
+  const seeing: { target: string; frame: Record<string, unknown> }[] = [];
+  (controller as never as { subscribe(listener: (target: string, frame: Record<string, unknown>) => void): unknown })
+    .subscribe((target, frame) => seeing.push({ target, frame }));
+  const inner = controller as unknown as {
+    client: unknown;
+    connection: string;
+    newSessionCwd?: string;
+    bindView(viewId: string): void;
+    newSession(viewId?: string): Promise<void>;
+    handle(message: Record<string, unknown>, viewId: string): Promise<void>;
+  };
+  // cwd 是一个**本机不存在**的原生绝对路径：形状过得去，证据拿不到 → 门关
+  const missingCwd = join(tmpdir(), "dsh-mention-resolve-missing-cwd");
+  inner.newSessionCwd = missingCwd;
+  inner.client = fakeClient(SERVER_ITEMS) as never;
+  inner.connection = "connected";
+  inner.bindView("v2");
+  await inner.newSession("v2");
+
+  const existing = join(root, "alpha.ts");
+  seeing.length = 0;
+  await inner.handle({ type: "queryFiles", query: existing }, "v2");
+  const frame = seeing.find(({ frame: value }) => value.type === "files/list" && value.query === existing)?.frame;
+  assert.ok(frame, "应当发出这条查询的 files/list 帧");
+  assert.strictEqual(
+    frame.resolved,
+    false,
+    "门关时不凭本机 stat 抑制候选（这个文件确实在本机，但执行世界不一定是本机）",
+  );
+  assert.ok(
+    seeing.some(({ frame: value }) => value.type === "files/list" && value.query === existing && Array.isArray(value.items)),
+    "不抑制时照旧给候选那一帧（列表照旧弹）",
+  );
+}
+console.log("mentionResolve: 信任门关时不凭本机 stat 抑制候选 ✓");
+
+// ---------- 8. 盘符裸写（`@D:`）：浏览入口 + 目录查询，不是会话检索 ----------
+//
+// 见 docs/design-mentions.md「三种入口」的 M1 补充口径：`@D:` 按 `D:/` 列盘根。于是它
+// 既是浏览入口（不等待抑制判定、恒弹列表），又是目录查询（这一层不列对话候选）。
+// 判据在 `shared/mentions.ts`（`isDriveQuery` 并入 `isDirectoryQuery` / `isBrowseQuery`），
+// 这里钉宿主侧的接线。
+{
+  const drive = await query("D:");
+  assert.strictEqual(drive.frame.resolved, false, "盘符裸写是浏览入口：不做存在性判定");
+  assert.ok(
+    !drive.methods.includes("sessionReferenceResolver/candidates"),
+    "盘符裸写算「进了目录」：宿主连对话候选那趟扫描都不发",
+  );
+  assert.ok(drive.methods.includes("fileReferences/list"), "文件那一路照常问服务器（它回空表，本地补盘根）");
+}
+console.log("mentionResolve: 盘符裸写是浏览入口且不查对话候选 ✓");
+
 await rm(root, { recursive: true, force: true });
 
 console.log("mentionResolve: 「已经能引用到内容」的判定 ✓");

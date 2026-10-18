@@ -17,6 +17,8 @@ import { formatFileMention } from "../src/dsh/references";
 import {
   displaySessionMentions,
   isBrowseQuery,
+  isDirectoryQuery,
+  isDriveQuery,
   mentionPathOf,
   referenceSessionIdOf,
 } from "../src/shared/mentions";
@@ -114,6 +116,18 @@ console.log("references: 对话引用的显示形态（@标题）✓");
   for (const query of ["session-4be424ed", "web", "src/webview", "a.ts#L12", "[标题](dsh-session:InMxIg)"]) {
     assert.strictEqual(isBrowseQuery(query), false, `"${query}" 不是浏览入口（要做存在性判定）`);
   }
+
+  // 盘符裸写（`D:`）：它列的是 D 盘根（见 docs/design-mentions.md「三种入口」的 M1 补充
+  // 口径），所以既是**目录查询**也是**浏览入口**。宿主与界面共用这两个判据，缺一处就会
+  // 出现「宿主去扫了一遍会话 / 界面把会话组画出来」或者「被本机 stat 抑制成一条已解析
+  // 的引用」。只认一个字母 + 一个冒号的裸形态，`D:/` 走普通的尾分隔符那条路。
+  assert.strictEqual(isDriveQuery("D:"), true);
+  assert.strictEqual(isDriveQuery("d:"), true);
+  for (const query of ["D", "D:/", "D:dev", "DD:", ""]) {
+    assert.strictEqual(isDriveQuery(query), false, `"${query}" 不是盘符裸写`);
+  }
+  assert.strictEqual(isDirectoryQuery("D:"), true, "盘符裸写算「进了目录」：宿主不查会话、界面不渲染会话组");
+  assert.strictEqual(isBrowseQuery("D:"), true, "盘符裸写是浏览入口：不等待抑制判定、恒弹列表");
 
   // 行号区间是 `formatFileMentionWithLines` 附在**末尾**的产物：判「这个文件在不在」
   // 之前必须去掉它，否则查的是一个不存在的名字（用户点名的那一条）

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, join, relative, resolve, sep } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import * as vscode from "vscode";
 import { panelTabTitle } from "../shared/chat";
@@ -55,6 +55,13 @@ import { saveChatImage } from "./imageFiles";
 import { ConfigChangeRouter } from "./configChanges";
 import { fileChangeKind, hasWorkingChange, isNotFoundError, resolveChipPath, splitPathLineSuffix, type FileExistence, type GitChangeStateLike } from "./fileChange";
 import { missingDirectoryEntries } from "./fileRefListing";
+import {
+  hostPlatform,
+  isNativeAbsolutePath,
+  LocalAccessGate,
+  LocalFsBudget,
+  probeExistence,
+} from "./localAccess";
 import { readLocalImages } from "./localImages";
 import { shouldContinuePaging } from "./historyPaging";
 import { formatFileMention } from "./references";
@@ -394,6 +401,16 @@ function isSafeSessionId(sessionId: string): boolean {
   if (!sessionId || sessionId === "." || sessionId === "..") return false;
   if (sessionId.length > 200) return false;
   return !/[\\/:*?"<>|]/.test(sessionId);
+}
+
+/**
+ * `files/list` 帧里的 `cwd` 字段（没有会话工作目录时整个字段不出现）。
+ *
+ * 界面拿它把候选与「上一层」行的展示路径解析成完整绝对路径（悬停标题），见
+ * `webview/pathDisplay.ts` 的 `resolveDisplayPath`。
+ */
+function frameCwd(cwd: string | undefined): { cwd?: string } {
+  return cwd ? { cwd } : {};
 }
 
 /**
@@ -837,6 +854,17 @@ export class ChatController implements vscode.Disposable {
    * 所以不需要另开一个序号表。窗口下线时一并作废（`unbindView`）。
    */
   private readonly menuQueries = new Map<string, AbortController>();
+  /**
+   * `@` 工作区外发现的**信任门**（宿主独家持有）。
+   *
+   * `@` 的承诺是「执行世界能读到这个路径」；`dshChat.url` 指向别的机器、或
+   * `dshChat.command` 跑的是 WSL 时，本机列出的路径在那边可能不存在、或是另一个同名
+   * 文件。门关时不扩越界发现、不发根目录的「上一层」行、也不凭本机 `stat` 抑制文件
+   * 候选（仍可手写引用并正常发送）；会话引用不经过文件系统信任门。完整口径见
+   * `docs/design-mentions.md`「工作区外的发现范围」。结果按 cwd 串缓存，见
+   * `localAccess.ts` 的 `LocalAccessGate`。
+   */
+  private readonly localAccess = new LocalAccessGate();
   /**
    * 本客户端**亲眼见过它在说话**的会话 id（官方 `api-session-controller` 的
    * `engagedSessions`，见 `client/sessions/manager.ts`）。
@@ -10603,15 +10631,36 @@ export class ChatController implements vscode.Disposable {
     // 落会话可能等了一会儿，期间用户又敲了字：这一次已经被作废，一个字节都不发
     if (!this.isCurrentMenuQuery(viewId, controller)) return;
     const client = this.client;
+    // 这次的会话工作目录：候选的相对路径基准（服务器按它列），也是界面悬停完整路径的
+    // 解析基准（`cwd` 随 `files/list` 下发，见 `shared/ipc.ts`）。
+    const cwd = scope ? this.cwdOf(scope) : undefined;
+    // 本地 FS 预算**在首次本地 FS 操作之前**才开始计时：启动 / 恢复会话那几趟 RPC 的
+    // 时间不该吃掉本地预算。一次查询只有这一条预算，信任门、抑制判定与目录读取共用，
+    // 不逐步重新计时（见 `localAccess.ts`）。
+    const budget = new LocalFsBudget(undefined, { signal: controller.signal });
+    /**
+     * 这次的本地发现许可（形状 + cwd 是本机目录的肯定证据）。
+     *
+     * **懒算且只算一次**：会话引用块与块已能引用的判定都不需要它，浏览入口也只在下发
+     * 候选那一帧才需要——早算就会让一次纯会话查询白等一趟本机 stat。
+     */
+    let allowed: Promise<boolean> | undefined;
+    const localAllowed = (): Promise<boolean> => {
+      allowed ??= cwd && !sessionOnly ? this.localAccess.allows(cwd, budget) : Promise.resolve(false);
+      return allowed;
+    };
     // 编辑过的会话标题不能再按同名文件判断「已引用」，也不具有目录浏览语义。
-    if (!sessionOnly && scope && (await this.mentionResolves(scope, query))) {
-      if (!this.isCurrentMenuQuery(viewId, controller)) return;
-      this.emitToView(viewId, { type: "files/list", query, items: [], resolved: true });
+    const resolves = !sessionOnly && scope
+      ? await this.mentionResolves(scope, query, budget, localAllowed)
+      : false;
+    if (!this.isCurrentMenuQuery(viewId, controller)) return;
+    if (resolves) {
+      this.emitToView(viewId, { type: "files/list", query, items: [], resolved: true, ...frameCwd(cwd) });
       return;
     }
     const wantsSessions = sessionOnly || !isDirectoryQuery(query);
     if (!client || !scope) {
-      this.emitToView(viewId, { type: "files/list", query, items: [], resolved: false });
+      this.emitToView(viewId, { type: "files/list", query, items: [], resolved: false, ...frameCwd(cwd) });
       if (wantsSessions) this.emitToView(viewId, { type: "files/sessions", query, sessions: [] });
       return;
     }
@@ -10649,9 +10698,11 @@ export class ChatController implements vscode.Disposable {
     const filesFrame = files.then(async (items) => {
       // 服务器一次最多回 20 条（`maxResults` 是插件配置，多要不到），目录列举那一路
       // 由这里把被截掉的尾巴按同一套排序补回来（见 `completeFileListing`）
-      const complete = sessionOnly ? [] : await this.completeFileListing(scope, query, items ?? []);
+      const complete = sessionOnly
+        ? []
+        : await this.completeFileListing(scope, query, items ?? [], budget, localAllowed);
       if (!this.isCurrentMenuQuery(viewId, controller)) return;
-      this.emitToView(viewId, { type: "files/list", query, items: complete, resolved: false });
+      this.emitToView(viewId, { type: "files/list", query, items: complete, resolved: false, ...frameCwd(cwd) });
     });
     await Promise.all([
       filesFrame,
@@ -10710,13 +10761,22 @@ export class ChatController implements vscode.Disposable {
    * 3. **其余按路径**：去掉行号区间（`@src/a.ts#L12-L40` 指的仍是那个文件），绝对路径
    *    原样、相对路径按**会话工作目录**解析，`stat` 得到才算在（判据与文件芯片分类同源：
    *    只有明确报「找不到」才算不在，其它异常一律按「不确定」→ 弹列表，见
-   *    `fileExistence` 的三态）。
+   *    `probeExistence` 的三态）。
    *
-   * 拿不到证据（没有会话工作目录、路径解析不了、`stat` 报的是未知错误）一律返回
+   * **文件路径这一条新增同一道信任门**（用户 2026-10-18 口径）：门关时不凭本机 `stat`
+   * 抑制候选——远端 / WSL 部署下本机看到的「这个文件在」对执行世界没有意义，那种部署里
+   * 列表宁可照旧弹（`@` 仍可手写、照旧能发）。会话引用那一条不过门，继续按会话账本判。
+   *
+   * 拿不到证据（门关、没有会话工作目录、路径解析不了、`stat` 报的是未知错误）一律返回
    * `false`：**宁可弹列表**——那块本来就可能是个要检索的片段，而把列表按住的代价是
    * 用户彻底看不到候选。
    */
-  private async mentionResolves(scope: SessionScope, query: string): Promise<boolean> {
+  private async mentionResolves(
+    scope: SessionScope,
+    query: string,
+    budget: LocalFsBudget,
+    localAllowed: () => Promise<boolean>,
+  ): Promise<boolean> {
     if (isBrowseQuery(query)) return false;
     const sessionId = referenceSessionIdOf(query);
     if (sessionId !== undefined) {
@@ -10726,10 +10786,11 @@ export class ChatController implements vscode.Disposable {
     }
     const path = mentionPathOf(query);
     if (path === "") return false;
+    if (!(await localAllowed())) return false;
     const cwd = this.cwdOf(scope);
-    const absolute = isAbsolute(path) ? path : cwd ? join(cwd, path) : undefined;
+    const absolute = isNativeAbsolutePath(path, hostPlatform()) ? path : cwd ? join(cwd, path) : undefined;
     if (absolute === undefined) return false;
-    return (await this.fileExistence(vscode.Uri.file(absolute))) === "present";
+    return (await probeExistence(absolute, budget)) === "present";
   }
 
   /**
@@ -10752,15 +10813,24 @@ export class ChatController implements vscode.Disposable {
    *
    * 枚举用的是**会话的工作目录**（服务器那次查询的根，它不一定是 VS Code 打开的文件夹）；
    * 任何一步失败都静默退回服务器结果，`@` 列表绝不会因此变空或把错误抛上去。
+   *
+   * **工作区外的发现**（M1 绝对路径 / M3 相对 `..`）由同一趟补进来，但只在信任门通过
+   * （`outsideAllowed`）时参与。
    */
   private async completeFileListing(
     scope: SessionScope,
     query: string,
     items: FileRefView[],
+    budget: LocalFsBudget,
+    localAllowed: () => Promise<boolean>,
   ): Promise<FileRefView[]> {
     const cwd = this.cwdOf(scope);
     if (!cwd) return items;
-    const extra = await missingDirectoryEntries({ cwd, query, known: items });
+    const outsideAllowed = await localAllowed();
+    // 预算可能已经被信任门那一趟耗尽（不可达的网络 cwd）：保守不补，且**不重建 deadline**
+    // ——重建就等于把 1500ms 的总预算变成「每一步各自计时」。
+    if (!budget.usable()) return items;
+    const extra = await missingDirectoryEntries({ cwd, query, known: items, budget, outsideAllowed });
     if (!extra.length) return items;
     return [...items, ...extra.map((entry): FileRefView => ({ path: entry.path, kind: entry.kind }))];
   }

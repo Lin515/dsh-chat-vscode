@@ -273,6 +273,8 @@ const entries = {
   "build/error-session-status.test.mjs": "scripts/errorSessionStatus.test.ts",
   "build/empty-composer.test.mjs": "scripts/emptyComposer.test.ts",
   "build/file-ref-listing.test.mjs": "scripts/fileRefListing.test.ts",
+  // 本地 FS 访问层（有界等待 / 全局未完成操作上限 / 信任门）：必须登记，否则 npm test 静默不跑
+  "build/local-access.test.mjs": "scripts/localAccess.test.ts",
   "build/blank-session-reuse.test.mjs": "scripts/blankSessionReuse.test.ts",
   // 空壳记着的预设被删掉（接回时指名认领 + 退回部署默认）：必须登记，否则 npm test 静默不跑
   "build/blank-preset-adopt.test.mjs": "scripts/blankPresetAdopt.test.ts",

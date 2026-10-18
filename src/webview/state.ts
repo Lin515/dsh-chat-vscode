@@ -54,6 +54,14 @@ export interface AppState extends ChatState {
      * 判断「判定还没到」（那时宁可先不弹，否则光标一进已有引用就闪一下列表）。
      */
     resolved: boolean;
+    /**
+     * 这次的**会话工作目录**（`files/list` 帧下发的候选基准；空串 = 没有）。
+     *
+     * 候选里的相对路径、以及界面自己合成的「上一层」行（`../`、盘根回工作区那种空
+     * path），只有配上它才能算出完整绝对路径（悬停标题用，见 `pathDisplay.ts` 的
+     * `resolveDisplayPath`）。
+     */
+    cwd: string;
   };
   /**
    * 轨迹账本（宿主折叠后下发，见 `src/dsh/trajectory.ts`）。
@@ -164,7 +172,7 @@ export const initialState: AppState = {
   archivedSessions: [],
   panel: "none",
   commands: [],
-  fileRefs: { query: "", items: [], sessions: [], resolved: false },
+  fileRefs: { query: "", items: [], sessions: [], resolved: false, cwd: "" },
 };
 
 function replaceSegment(message: MessageView, segment: Segment): MessageView {
@@ -427,6 +435,7 @@ export function reducer(state: AppState, action: Action): AppState {
       // 这一帧也是界面认「这是哪一次查询」的锚（见下面的 `files/sessions`），
       // 以及「这一块本身已经能引用到内容」的判定落点（`resolved`，见 `shared/ipc.ts`）。
       // 旧宿主不发 `resolved`：按 `false` 收（退回「一律弹列表」的旧行为）。
+      // `cwd` 同理：没有时界面显示原样的相对路径（悬停完整路径解析不了就不解析）。
       return {
         ...state,
         fileRefs: {
@@ -434,6 +443,7 @@ export function reducer(state: AppState, action: Action): AppState {
           query: action.query,
           items: action.items,
           resolved: action.resolved === true,
+          cwd: action.cwd ?? "",
         },
       };
 

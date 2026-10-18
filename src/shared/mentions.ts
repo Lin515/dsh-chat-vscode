@@ -38,6 +38,22 @@ export function normalizeMentionPath(path: string): string {
 }
 
 /**
+ * 这个 `@` 查询是不是**盘符裸写**（`D:`）。
+ *
+ * 只可能是 Windows 盘根：官方 `list()` 拿它去列工作区索引会回空表，而用户的意思是
+ * 「看 D 盘根」（见 `docs/design-mentions.md`「三种入口」的 M1 补充口径）。所以宿主
+ * 与界面都把它按**目录查询**处理：不是「在检索会话」，也不该被本地 `stat` 抑制成
+ * 一条已解析的文件引用。写成 `D:\`、`D:/` 时走的是普通的尾分隔符形态，不靠这一条。
+ *
+ * 判据是**语法**的（一个字母 + 一个冒号），不分平台：POSIX 上打 `@D:` 只是一个普通
+ * 名字片段，多列一个空表没有代价；反过来在 Windows 上漏认它，用户得到的是一句
+ * 误导性的「没有匹配的文件」。
+ */
+export function isDriveQuery(query: string): boolean {
+  return /^[A-Za-z]:$/u.test(query ?? "");
+}
+
+/**
  * 这个 `@` 查询是不是**已经进了某个目录**（查询串里出现分隔符，两种写法都认）。
  *
  * 两处判据同源，缺一不可：
@@ -47,14 +63,15 @@ export function normalizeMentionPath(path: string): string {
  *   「先进目录、对话条目再慢慢消失」——用户 2026-09-25 报的现场）。
  *
  * 正斜杠与反斜杠都算：候选路径来自 Windows 侧时可能写成 `src\webview`，用户也可能
- * 手输反斜杠（见 `normalizeMentionPath`）。
+ * 手输反斜杠（见 `normalizeMentionPath`）。盘符裸写（`D:`）同样是「进了目录」——它列
+ * 的是盘根那一层，两边必须一致，否则宿主会去扫一遍会话、界面还会把会话组画出来。
  */
 export function isDirectoryQuery(query: string): boolean {
-  return /[\\/]/.test(query ?? "");
+  return /[\\/]/.test(query ?? "") || isDriveQuery(query);
 }
 
 /**
- * 这个 `@` 查询是不是列表的**浏览入口**（裸 `@`，或尾部带分隔符的路径）。
+ * 这个 `@` 查询是不是列表的**浏览入口**（裸 `@`、盘符裸写，或尾部带分隔符的路径）。
  *
  * 浏览入口**永远弹列表**，也不做「这块是不是已经能引用到内容」的判定（用户
  * 2026-10-11 口径）：`@src/` 这种形态的意思就是「进去看这一层」，目录在不在都要能
@@ -63,11 +80,13 @@ export function isDirectoryQuery(query: string): boolean {
  *
  * 判据与 `composerCompletion.findTrigger` 的两条入口同源，宿主与界面两边都要用：
  * 宿主拿它决定这块要不要做存在性判定（`controller.mentionResolves`），界面拿它决定
- * 要不要等宿主那一次的判定（浏览入口当场弹，不等）。
+ * 要不要等宿主那一次的判定（浏览入口当场弹，不等）。盘符裸写（`D:`）也算浏览入口
+ * ——它没有尾分隔符，但用户的意思确实是「列 D 盘根」，被抑制成一条已解析的引用就
+ * 违背了 M1 的口径。
  */
 export function isBrowseQuery(query: string): boolean {
   const text = query ?? "";
-  return text === "" || /[\\/]$/u.test(text);
+  return text === "" || /[\\/]$/u.test(text) || isDriveQuery(text);
 }
 
 /**

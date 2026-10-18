@@ -13,7 +13,7 @@
 import assert from "node:assert";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { looksLikePath, splitPath } from "../src/webview/pathDisplay";
+import { displayPathParts, looksLikePath, resolveDisplayPath, splitPath } from "../src/webview/pathDisplay";
 
 // ---------- 1. 路径拆分：文件名与目录各归各位 ----------
 
@@ -120,5 +120,47 @@ console.log("pathDisplay: 带空格的路径仍按路径处理（文件名不被
   );
 }
 console.log("pathDisplay: 结构不变量（目录可裁 / 文件名不压缩 / 行号紧贴文件名） ✓");
+
+// ---------- 4. 悬停标题：展示路径 → 完整绝对路径 ----------
+//
+// `@` 候选里有工作区外的绝对路径与 `../` 形态，界面自己还会合成「上一层」行（`src/`、
+// `../`、盘根回工作区的空串）。长路径在窄侧栏被省略，悬停必须能确认完整目标，
+// 所以这一段把「怎么从展示路径算出完整路径」钉成纯函数行为。
+{
+  assert.deepStrictEqual(displayPathParts("D:\\dev\\proj"), { root: "D:/", segments: ["dev", "proj"] });
+  assert.deepStrictEqual(displayPathParts("D:/"), { root: "D:/", segments: [] });
+  assert.deepStrictEqual(displayPathParts("//server/share/dev"), { root: "//server/share/", segments: ["dev"] });
+  assert.deepStrictEqual(displayPathParts("/home/u"), { root: "/", segments: ["home", "u"] });
+  assert.deepStrictEqual(displayPathParts("../x"), { root: "", segments: ["..", "x"] });
+  assert.deepStrictEqual(displayPathParts("src/./a"), { root: "", segments: ["src", "a"] }, "`.` 段直接消掉");
+  assert.deepStrictEqual(displayPathParts(""), { root: "", segments: [] });
+
+  // 已经是绝对形态：原样（只归一分隔符）
+  assert.strictEqual(resolveDisplayPath("D:/dev/proj", "D:/other/x.txt"), "D:/other/x.txt");
+  assert.strictEqual(resolveDisplayPath(undefined, "D:\\other\\x.txt"), "D:/other/x.txt");
+  assert.strictEqual(resolveDisplayPath("D:/dev/proj", "//server/share/x.txt"), "//server/share/x.txt");
+
+  // 相对形态：拼到 cwd 上
+  assert.strictEqual(resolveDisplayPath("D:/dev/proj", "src/a.ts"), "D:/dev/proj/src/a.ts");
+  assert.strictEqual(resolveDisplayPath("D:/dev/proj", "src/"), "D:/dev/proj/src");
+  assert.strictEqual(resolveDisplayPath("D:/dev/proj", "../a.ts"), "D:/dev/a.ts");
+  assert.strictEqual(resolveDisplayPath("D:/dev/proj", "../../../a.ts"), "D:/a.ts", "`..` 到根就停");
+  assert.strictEqual(resolveDisplayPath("D:/dev/proj", "foo/../bar"), "D:/dev/proj/bar");
+  assert.strictEqual(resolveDisplayPath("/home/u/proj", "../x"), "/home/u/x");
+  assert.strictEqual(resolveDisplayPath("//server/share/dev", "../x"), "//server/share/x");
+
+  // 界面合成的「上一层」行：path 可能是 `src/`、`../` 或**空串**（盘根回工作区）
+  assert.strictEqual(resolveDisplayPath("D:/dev/proj", "src/"), "D:/dev/proj/src");
+  assert.strictEqual(resolveDisplayPath("D:/dev/proj", "../"), "D:/dev");
+  assert.strictEqual(resolveDisplayPath("D:/dev/proj", ""), "D:/dev/proj", "空路径 = 工作区根 = cwd 本身");
+  assert.strictEqual(resolveDisplayPath("D:/", ""), "D:/");
+
+  // 拿不到 cwd / cwd 自己不是绝对形态：不猜
+  assert.strictEqual(resolveDisplayPath(undefined, "src/a.ts"), undefined);
+  assert.strictEqual(resolveDisplayPath("", "src/a.ts"), undefined);
+  assert.strictEqual(resolveDisplayPath("relative/base", "src/a.ts"), undefined);
+  assert.strictEqual(resolveDisplayPath(undefined, ""), undefined);
+}
+console.log("pathDisplay: 悬停标题的完整绝对路径（M1 绝对 / M3 `../` / 合成的上一层行） ✓");
 
 console.log("\npathDisplay: all assertions passed");

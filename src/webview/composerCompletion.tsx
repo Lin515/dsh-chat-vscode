@@ -55,6 +55,7 @@ import { ComposerSessionDraft, type DraftEditRange } from "./composerSessionDraf
 import { consumeEscape } from "./escapeOwner";
 import { IconFolder } from "./icons";
 import { mentionParent } from "./mentionNav";
+import { resolveDisplayPath } from "./pathDisplay";
 import { formatClock } from "./components/primitives";
 import type { Texts } from "./texts";
 
@@ -542,6 +543,13 @@ export interface UseComposerCompletionInput {
     items: readonly FileRefView[];
     sessions: readonly SessionRefView[];
     resolved?: boolean;
+    /**
+     * 这次的**会话工作目录**（`files/list` 帧下发；旧宿主不发时缺失）。
+     *
+     * 悬停标题拿它把候选里的相对路径与界面自己合成的「上一层」行解析成完整绝对路径
+     * （见 `pathDisplay.ts` 的 `resolveDisplayPath`）。缺失时退回原样的展示路径。
+     */
+    cwd?: string;
   };
   /** 界面文案（词典）。 */
   texts: Texts;
@@ -1162,6 +1170,20 @@ function useCompletion(
     [refreshTrigger],
   );
 
+  /**
+   * 这一行的悬停标题：**完整绝对路径**（解析不出就退回展示路径本身）。
+   *
+   * 长路径在窄侧栏里被 `text-overflow: ellipsis` 省略，悬停是确认目标的唯一手段。
+   * 候选路径可能是绝对的（工作区外的 M1）、`../` 形态的（M3），也可能是界面自己合成的
+   * 「上一层」行（`src/`、`../`、盘根回工作区的**空串**——空串就是 cwd 本身），所以统一
+   * 拿这一帧下发的会话 cwd 解析（见 `pathDisplay.ts` 的 `resolveDisplayPath`）。旧宿主
+   * 不发 cwd 时退回原样的展示路径，不猜。
+   */
+  const hoverPath = useCallback(
+    (path: string): string | undefined => resolveDisplayPath(fileRefs.cwd, path) ?? (path || undefined),
+    [fileRefs.cwd],
+  );
+
   const popover = useMemo(
     () =>
       popoverOpen ? (
@@ -1240,8 +1262,16 @@ function useCompletion(
                       >
                         {/* 命令名与对话标题走「优先完整」那档样式（`.is-priority`）：宽度不够时
                             先省略右边的描述，绝不把命令截成 `/git-guard…`、把对话截成半个标题。
-                            文件路径不做这个标记——长路径必须能省略。 */}
-                        <span className={`popover-item-main${shape.priority ? " is-priority" : ""}`}>
+                            文件路径不做这个标记——长路径必须能省略。
+                            省略之后的确认手段是**悬停标题里的完整绝对路径**：路径本身可能是
+                            绝对的（`D:/dev/other/x.txt`）或 `../` 形态（工作区外），也可能带
+                            一串被省略的目录段——所以拿这一帧的会话 cwd 解析（`resolveDisplayPath`），
+                            解析不出就退回原样的展示路径。界面自己合成的「上一层」行走的也是
+                            同一条（它的 path 是 `src/` / `../` / 空串，空串就是 cwd 本身）。 */}
+                        <span
+                          className={`popover-item-main${shape.priority ? " is-priority" : ""}`}
+                          title={isCommand || shape.session ? undefined : hoverPath(row.path)}
+                        >
                           {isCommand
                             ? `/${row.name}`
                             : shape.session
@@ -1305,7 +1335,7 @@ function useCompletion(
           </div>
         </div>
       ) : null,
-    [trigger, candidates, rows, hasFolderCandidate, highlight, texts, noWorkspace, applyCandidate, popoverOpen],
+    [trigger, candidates, rows, hasFolderCandidate, highlight, texts, noWorkspace, applyCandidate, popoverOpen, hoverPath],
   );
 
   return {

@@ -33,13 +33,14 @@ React / 浏览器环境，不使用 Node API。上层边界见[源码导航](<..
 - [readingPlacement.ts](<readingPlacement.ts>) — 查找 / 横条共用的落位、取历史与过期作废；贴底事实仍由 autoScroll 提供。
 - [find.ts](<find.ts>) — 文本节点子串查找与激活下标环绕。
 - [escapeOwner.ts](<escapeOwner.ts>) — ESC 唯一仲裁：元素 → 浮层（右键菜单 > 原图 > 抽屉 > 并列浮层）→ 会话页的停止生成（只有会话页占据前景时才存在，判据 `isConversationForeground`）；不按注册先后。
-- [composerCompletion.tsx](<composerCompletion.tsx>) — @ / / 触发、完整块查询、已可引用抑制、候选与键盘导航，见[引用设计](<../../docs/design-mentions.md>)。
+- [composerCompletion.tsx](<composerCompletion.tsx>) — @ / / 触发、完整块查询、已可引用抑制、候选与键盘导航（候选行的悬停标题是解析出来的完整绝对路径），见[引用设计](<../../docs/design-mentions.md>)。
 - [composerSend.ts](<composerSend.ts>) — 键盘 / 按钮同源手势与文案，界面不解析模式。
 - [composerSessionDraft.ts](<composerSessionDraft.ts>) — 可见会话标题与确定性 token 的区间绑定、编辑失效与重匹配。
 - [composerMention.ts](<composerMention.ts>) — 草稿引用镜像、Ctrl 命中与同排版几何。
 - [mentionLinks.ts](<mentionLinks.ts>) — 已发正文的文件 / 目录 / 会话目标，sessionRefs 恢复会话身份。
 - [mentionOpen.ts](<mentionOpen.ts>) — 已发链接与草稿 Ctrl 点击的 IPC 分派。
 - [mentionNav.ts](<mentionNav.ts>) — 候选 .. 上层目录查询。
+- [pathDisplay.ts](<pathDisplay.ts>) — 路径的展示口径：单行标题的拆分省略，以及把候选 / 「上一层」行的展示路径解析成完整绝对路径（悬停标题）。
 - [segment.ts](<segment.ts>) — 思考档位列数。
 - [pickerFocus.ts](<pickerFocus.ts>) — 模型弹层选中项定位（打开即滚到当前模型）、方向键与滚入视野；定位范围只有可滚的模型列表，常驻的思考档位区不参与键盘导航。
 - [toolbarFit.ts](<toolbarFit.ts>) — 实测宽度分档、节点观察与有效布局盒，见[工具栏设计](<../../docs/design-composer.md>)。
