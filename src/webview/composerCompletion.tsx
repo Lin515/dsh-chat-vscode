@@ -268,6 +268,10 @@ export function rankCandidates(
   }
   const files: MentionCandidate[] = [...items];
   const refs: MentionCandidate[] = isDirectoryQuery(trigger.query) ? [] : [...sessions];
+  // 宿主已经下发了「上一层」行（裸 `@` 且信任门通过时，它由 `dsh/controller.ts` 的
+  // `completeFileListing` 挂成 `items[0]`）：原样留着——它本来就是这一层的首行，
+  // 界面**不再自己合成一条**，否则同一个目标会在列表里出现两行「..」。
+  if (files.some(isParentCandidate)) return [...files, ...refs];
   const parent = mentionParent(trigger.query);
   if (parent === undefined) return [...files, ...refs];
   const up: FileRefView = { path: parent, kind: "directory", parent: true };
@@ -388,6 +392,17 @@ export interface CandidateRow {
 }
 
 /**
+ * 这一条候选是不是**「返回上一层」行**。
+ *
+ * 两个来源同形：界面自己合成的（`rankCandidates`，进了子目录时的 `..`）与宿主下发的
+ * （裸 `@` 且信任门通过时由 `completeFileListing` 放在 `items[0]`）。渲染、动作与排序
+ * 都只读这一个判据，不各推一遍。
+ */
+function isParentCandidate(candidate: MentionCandidate): boolean {
+  return (candidate as FileRefView).parent === true;
+}
+
+/**
  * 算出这一帧每一行的形状。
  *
  * `section` 由这条候选的种类与触发通道决定（命令一条、`@` 的文件 / 对话各一条，
@@ -407,7 +422,7 @@ export function candidateRows(
   return candidates.map((candidate, index) => {
     const isCommand = kind === "command";
     const isSession = !isCommand && isSessionCandidate(candidate);
-    const isParent = !isCommand && !isSession && (candidate as FileRefView).parent === true;
+    const isParent = !isCommand && !isSession && isParentCandidate(candidate);
     const section = sectionOf(candidate);
     return {
       index,
@@ -432,7 +447,7 @@ export function hasDrillableFolder(candidates: readonly MentionCandidate[]): boo
     (candidate) =>
       !isSessionCandidate(candidate) &&
       (candidate as FileRefView).kind === "directory" &&
-      (candidate as FileRefView).parent !== true,
+      !isParentCandidate(candidate),
   );
 }
 
@@ -463,7 +478,14 @@ export function outcomeFor(
     return token ? { type: "session", token } : undefined;
   }
   const file = candidate as FileRefView;
-  if (file.parent) return { type: "parent", path: file.path };
+  // 「返回上一层」行**只有 pick 有动作**（Enter / 点行主体）：它不是可下钻的目录，
+  // `drill`（Tab）落在它身上应当是**什么都不做**。旧实现无论哪个动作都返回 `parent`，
+  // 于是 Tab 在那一行上也回上一层——键盘上两把键做同一件事，而界面还承诺
+  // 「Tab = 进入目录」（`hasDrillableFolder` 早就把这一行排除在「可下钻」之外，
+  // 两处判据现在一致）。
+  if (isParentCandidate(file)) {
+    return action === "drill" ? undefined : { type: "parent", path: file.path };
+  }
   if (file.kind === "directory" && action === "drill") return { type: "drill", path: file.path };
   return { type: "insert", token: formatFileMention(file.path, file.kind) ?? `"${file.path}"` };
 }

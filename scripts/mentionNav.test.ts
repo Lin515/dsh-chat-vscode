@@ -1485,4 +1485,97 @@ console.log("completion(hook): 下钻自动变目录块（列表不关） ✓");
 }
 console.log("completion(hook): 键盘只在弹层画出来时接管（抑制门按住时 Enter 归发送） ✓");
 
+// ---------- 22. M2 宿主下发的「上一层」行（裸 `@` 那一层） ----------
+//
+// 工作区外的发现（见 docs/design-mentions.md「三种入口」）里，裸 `@` 那一层多一行「上一层」：
+// 它由**宿主**下发（cwd 的父目录，绝对形态，信任门通过且父目录在本机确实是目录时才有），
+// 因为只有宿主知道会话 cwd、也只有它碰得到文件系统。形状与界面自己合成的那一行**同形**
+// （`{ path, kind: "directory", parent: true }`，界面不需要新字段）。
+//
+// 这一节用真实 hook + 手写事件钉三件事：
+// - 该行**排在最前**，且宿主没下发时裸 `@` 那一层不凭空长出一行；
+// - Enter / 点行主体 = pick：写回父目录的浏览 token（`@D:/dev/`，正文换成那一层的查询）；
+// - **Tab 对它无动作**：它不是可下钻的目录（`hasDrillableFolder` 的判据），旧实现
+//   `outcomeFor(file.parent)` 不看动作、Tab 也回上一层——键盘上两把键做同一件事。
+{
+  /** 弹层元素树里候选行**主体按钮**（`.popover-item-hit`）的 props，按行顺序。 */
+  function hitPropsOf(node: ReactNode): Array<Record<string, unknown>> {
+    const hits: Array<Record<string, unknown>> = [];
+    const visit = (value: unknown): void => {
+      if (Array.isArray(value)) {
+        for (const child of value) visit(child);
+        return;
+      }
+      if (typeof value !== "object" || value === null) return;
+      const props = (value as { props?: Record<string, unknown> }).props;
+      if (!props) return;
+      if (typeof props.className === "string" && /(^|\s)popover-item-hit(\s|$)/.test(props.className)) {
+        hits.push(props);
+      }
+      visit(props.children);
+    };
+    visit(node);
+    return hits;
+  }
+
+  const HOST_PARENT: FileRefView = { path: "D:/dev", kind: "directory", parent: true };
+  const refs: UseComposerCompletionInput["fileRefs"] = {
+    query: "",
+    items: [HOST_PARENT, { path: "D:/dev/proj/src", kind: "directory" }],
+    sessions: [],
+    cwd: "D:/dev/proj",
+  };
+
+  // 宿主没下发时：裸 `@` 那一层没有「上一层」（工作区根目录就是它，跳不出工作区）
+  {
+    const plain = frame("@", 1, {
+      fileRefs: { query: "", items: [{ path: "D:/dev/proj/src", kind: "directory" }], sessions: [], cwd: "D:/dev/proj" },
+    });
+    assert.ok(plain.html.includes("popover-item"), "前提：有候选，弹层画出来了");
+    assert.ok(
+      !/class="popover-item-main[^"]*">\.\.</.test(plain.html),
+      "宿主没下发 parent 行时，裸 `@` 那一层不凭空长出一行「..」",
+    );
+  }
+
+  const f = frame("@", 1, { fileRefs: refs });
+  assert.ok(f.html.includes("popover-item"), "前提：弹层画出来了");
+  assert.ok(
+    /class="popover-item-main is-priority" title="D:\/dev">\.\.</.test(f.html),
+    "「..」排在最前，悬停标题是以会话 cwd 解析出来的完整目标",
+  );
+  assert.ok(f.html.includes(">D:/dev<"), "行里显示实际目标的完整路径（不省略到无法确认）");
+  assert.strictEqual(
+    hasDrillableFolder(rankCandidates({ kind: "mention", start: 0, query: "" }, [], refs.items, refs.sessions)),
+    true,
+    "这一层还有一个可下钻的真目录（于是「Tab 进入目录」的提示照样显示）",
+  );
+
+  // Tab 对它无动作：既不下钻也不回上一层（它不是可下钻的目录）
+  const tabbed = press(f, "Tab");
+  assert.strictEqual(tabbed.prevented, 1, "Tab 仍由弹层吃掉（不许落成默认的焦点切换）");
+  assert.strictEqual(f.draft, "@", "Tab 落在「..」上什么都不做（正文一个字不动）");
+  assert.deepStrictEqual(f.written, [], "Tab 没有写回正文");
+
+  // Enter = pick：写回父目录的浏览 token（正文换成那一层的查询串）
+  press(f, "Enter");
+  assert.deepStrictEqual(f.written, ["@D:/dev/"], "Enter 在「..」上= 回上一层：写回父目录的浏览 token");
+  assert.strictEqual(f.draft, "@D:/dev/");
+
+  // 点行主体 = pick（`clickAction` 对 parent 行给 pick，不是 drill）→ 同样回上一层
+  {
+    const clicked = frame("@", 1, { fileRefs: refs });
+    const hits = hitPropsOf(clicked.popoverNode);
+    assert.strictEqual(hits.length, 2, "前提：两行候选各有一个主体按钮");
+    (hits[0].onMouseDown as (event: { preventDefault: () => void }) => void)({
+      preventDefault: () => undefined,
+    });
+    assert.deepStrictEqual(clicked.written, ["@D:/dev/"], "点「..」行主体 = pick：回上一层");
+    assert.strictEqual(clicked.node.lastSelection, undefined, "落光标同样排在 rAF 里（与 Enter 一条链路）");
+    assert.strictEqual(flushRaf() >= 1, true, "下一帧真的落了光标");
+    assert.strictEqual(clicked.node.lastSelection, "@D:/dev/".length, "光标落在写回的浏览 token 之后");
+  }
+}
+console.log("completion(hook): M2 宿主「上一层」行（Enter / 点击回上一层，Tab 无动作） ✓");
+
 console.log("\nmentionNav: all assertions passed");

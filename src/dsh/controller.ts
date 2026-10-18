@@ -54,7 +54,7 @@ import { readAttachmentTarget, readOriginalTarget, writeAttachmentTarget } from 
 import { saveChatImage } from "./imageFiles";
 import { ConfigChangeRouter } from "./configChanges";
 import { fileChangeKind, hasWorkingChange, isNotFoundError, resolveChipPath, splitPathLineSuffix, type FileExistence, type GitChangeStateLike } from "./fileChange";
-import { missingDirectoryEntries } from "./fileRefListing";
+import { missingDirectoryEntries, parentDirectoryEntry } from "./fileRefListing";
 import {
   hostPlatform,
   isNativeAbsolutePath,
@@ -10839,9 +10839,20 @@ export class ChatController implements vscode.Disposable {
     // 预算可能已经被信任门那一趟耗尽（不可达的网络 cwd）：保守不补，且**不重建 deadline**
     // ——重建就等于把 1500ms 的总预算变成「每一步各自计时」。
     if (!budget.usable()) return items;
+    // M2：裸 `@` 那一层多一行「上一层」（cwd 的父目录，绝对形态）。它由宿主下发、
+    // **排在服务器那几条之前**（列表顶部那一行，键盘上下第一下就够得到），只在门通过、
+    // 查询为空串、父目录在本机确实是目录时出现；cwd 就是盘根 / 共享根时不发（没有上一层），
+    // 父目录是盘根时照发（`@D:/` 是可浏览的一层）。任何一步失败都只是「没有这一行」，
+    // 服务器结果一条不动（见 `docs/design-mentions.md`「三种入口」的 M2 口径）。
+    const parent = query === "" && outsideAllowed && !items.some((item) => item.parent === true)
+      ? await parentDirectoryEntry({ cwd, budget })
+      : undefined;
     const extra = await missingDirectoryEntries({ cwd, query, known: items, budget, outsideAllowed });
-    if (!extra.length) return items;
-    return [...items, ...extra.map((entry): FileRefView => ({ path: entry.path, kind: entry.kind }))];
+    const head: FileRefView[] = parent
+      ? [{ path: parent.path, kind: parent.kind, parent: true }]
+      : [];
+    if (!extra.length) return [...head, ...items];
+    return [...head, ...items, ...extra.map((entry): FileRefView => ({ path: entry.path, kind: entry.kind }))];
   }
 
   // ---------- 在浏览器中打开（官方 Web UI 的入口） ----------

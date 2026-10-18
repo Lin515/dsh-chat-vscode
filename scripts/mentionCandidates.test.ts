@@ -155,6 +155,63 @@ console.log("mentionCandidates: 两条帧的合并语义（文件先到 / 对话
 }
 console.log("mentionCandidates: 对话候选只在工作区根目录列（渲染层判据） ✓");
 
+// ---------- 1c. 宿主下发的「上一层」行（M2） ----------
+//
+// 裸 `@` 那一层的「上一层」行由**宿主**下发：只有它知道会话 cwd、也只有它碰得到文件系统
+// （界面拿不到任何盘上证据）。形状与界面自己合成的那一行同形（`parent: true`），所以界面
+// 这一层要做的只有两件事：**原样保留**它在首位、**不再合成**第二条（否则同一层两行「..」）。
+// 判据见 `composerCompletion.rankCandidates` 与 `docs/design-mentions.md`「三种入口」。
+{
+  const { rankCandidates } = await import("../src/webview/composerCompletion");
+  const named = (c: { path?: string; sessionId?: string }): string => c.path ?? c.sessionId ?? "";
+
+  // 裸 `@`：宿主给了 parent 行 → 它在首行，且界面不重复合成
+  const withHost: FileRefView[] = [
+    { path: "D:/dev", kind: "directory", parent: true },
+    { path: "src/a.ts", kind: "file" },
+  ];
+  const root = rankCandidates({ kind: "mention", start: 0, query: "" }, [], withHost, [SESSION_1]);
+  assert.deepStrictEqual(
+    root.map((c) => named(c as { path?: string; sessionId?: string })),
+    ["D:/dev", "src/a.ts", "s1"],
+    "宿主下发的「上一层」行保持首行（服务器那几条顺序不动），对话候选照旧在最后",
+  );
+  assert.strictEqual((root[0] as FileRefView).parent, true, "它就是「..」行（界面不需要新字段）");
+  assert.strictEqual(
+    root.filter((c) => (c as FileRefView).parent === true).length,
+    1,
+    "同一层只有一行「..」：宿主下发了，界面就不再自己合成",
+  );
+
+  // 宿主没给：裸 `@` 那一层没有「..」（工作区根目录就是它，界面不凭空造一条）
+  const withoutHost = rankCandidates(
+    { kind: "mention", start: 0, query: "" },
+    [],
+    [{ path: "src/a.ts", kind: "file" }],
+    [],
+  );
+  assert.deepStrictEqual(
+    withoutHost.filter((c) => (c as FileRefView).parent === true),
+    [],
+    "宿主没下发时裸 `@` 那一层不长出「..」",
+  );
+
+  // 进了子目录（有 query 的那一层）：界面自己合成的「..」照旧排最前——宿主只给根那一层
+  const nested = rankCandidates(
+    { kind: "mention", start: 0, query: "src/webview/" },
+    [],
+    [{ path: "src/webview/Com.tsx", kind: "file" }],
+    [SESSION_1],
+  );
+  assert.deepStrictEqual(
+    nested.map((c) => named(c as { path?: string; sessionId?: string })),
+    ["src/", "src/webview/Com.tsx"],
+    "进了子目录：界面合成的「..」仍排最前（对话候选不进目录）",
+  );
+  assert.strictEqual((nested[0] as FileRefView).parent, true);
+}
+console.log("mentionCandidates: 宿主下发的「上一层」行（首行 / 不重复 / 子目录仍合成） ✓");
+
 // ---------- 2. 宿主侧：两个源各自发帧 + 每次查询作废上一次 ----------
 {
   const controller = readFileSync(join(process.cwd(), "src", "dsh", "controller.ts"), "utf8");

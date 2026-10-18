@@ -62,6 +62,14 @@ import {
 export interface FileRefEntry {
   path: string;
   kind: "file" | "directory";
+  /**
+   * 界面的「返回上一层目录」行（`FileRefView.parent` 的宿主侧同形字段）。
+   *
+   * 服务端从不产出它：M2 的「上一层」行由 {@link parentDirectoryEntry} 算好、作为那一层
+   * 候选的**第一条**下发（见 `docs/design-mentions.md`「三种入口」）。界面按这个标记选
+   * 渲染「..」行并走「回上一层」那一条动作（`outcomeFor`）。
+   */
+  parent?: boolean;
 }
 
 /**
@@ -150,17 +158,21 @@ export function listingTarget(
   if (slash < 0) return undefined;
   const fragment = normalized.slice(slash + 1);
   const directory = normalized.slice(0, slash + 1);
-  if (isNativeAbsolutePath(directory, platform)) {
-    return { scope: "absolute", directory, prefix: directory, fragment };
-  }
   // 不支持的根 / 盘符形态（单根相对 `/foo/`、驱动器相对 `D:foo/`、设备命名空间、
   // 不完整的 UNC `//server/`）：**三条路一条都不走**。
+  //
+  // 守卫必须在绝对形态判定**之前**：POSIX 的形态判据只认「以 `/` 开头」，于是
+  // `//?/UNC/server/share/` 这种设备命名空间会被它当成合法的 POSIX 绝对路径接受，
+  // 绕过这里唯一一道拒绝（见 `localAccess.unsupportedLocalPathForm`）。
   //
   // 放它们进 `inside` / `up` 会得到两种错误解释：`win32.resolve` 把 `/foo/` 接到当前盘
   // 根、把 `D:foo/` 接到 D 盘当前目录；另一种情况是 cwd 恰好有同名祖先时，`/foo/` 被
   // 当成 `cwd/foo` 列出一份根本不是用户指的那一层的清单。这里是纯字符串判据，所以
   // 「一次 FS 调用都不发」——「不探测未输入的共享」也在这一层成立。
   if (unsupportedLocalPathForm(directory, platform)) return undefined;
+  if (isNativeAbsolutePath(directory, platform)) {
+    return { scope: "absolute", directory, prefix: directory, fragment };
+  }
   if (directory.split("/").some((segment) => segment === "..")) {
     return { scope: "up", directory, prefix: directory, fragment };
   }
@@ -262,7 +274,7 @@ export async function parentDirectoryEntry(options: {
   if (parent === current) return undefined;
   const outcome = await withinBudget(budget, () => fs.stat(parent));
   if (!outcome.ok || !outcome.value.isDirectory()) return undefined;
-  return { path: parent.replaceAll("\\", "/"), kind: "directory" };
+  return { path: parent.replaceAll("\\", "/"), kind: "directory", parent: true };
 }
 
 /**

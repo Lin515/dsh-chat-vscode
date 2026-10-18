@@ -30,7 +30,7 @@
 import assert from "node:assert";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   listingTarget,
   missingDirectoryEntries,
@@ -372,14 +372,43 @@ console.log("fileRefListing: 目录列举补全（真盘临时目录 + 真控制
     frames.length = 0;
     await c.handle({ type: "queryFiles", query: "" }, "v1");
     const frame = lastFrame(frames, "v1", "");
-    assert.deepStrictEqual(paths((frame?.items ?? []) as FileRefEntry[]), ROOT_LISTING, "宿主把目录列举补全后再发帧（用户报的「显示不全」）");
+    const items = (frame?.items ?? []) as FileRefEntry[];
+    // M2：裸 `@` 那一层的第一条是宿主下发的「上一层」（cwd 的父目录，绝对形态）
+    const parentPath = dirname(root).replaceAll("\\", "/");
     assert.deepStrictEqual(
-      paths(((frame?.items ?? []) as FileRefEntry[]).slice(0, serverItems.length)),
+      items[0],
+      { path: parentPath, kind: "directory", parent: true },
+      "裸 `@` 那一层的第一条是「上一层」行（cwd 的父目录 + parent 标记）",
+    );
+    assert.deepStrictEqual(
+      paths(items.slice(1)),
+      ROOT_LISTING,
+      "宿主把目录列举补全后再发帧（用户报的「显示不全」）",
+    );
+    assert.deepStrictEqual(
+      paths(items.slice(1, 1 + serverItems.length)),
       paths(serverItems),
       "服务器那几条的顺序与位置一个都不动（只往后追加）",
     );
     // 帧里带会话 cwd：界面拿它把候选 / 「上一层」行的展示路径解析成完整绝对路径（悬停标题）
     assert.strictEqual(frame?.cwd, root, "files/list 帧要带上这次查询的会话 cwd（悬停完整路径的解析基准）");
+  }
+
+  // 4a2. 门关时不下发「上一层」行（cwd 在本机判不出「是目录」：工作目录不存在）
+  {
+    const serverItems: FileRefEntry[] = [{ path: "only.ts", kind: "file" }];
+    const { c, frames } = makeController(join(root, "gone"), serverItems);
+    c.bindView("v1");
+    await c.newSession("v1");
+    frames.length = 0;
+    await c.handle({ type: "queryFiles", query: "" }, "v1");
+    const items = lastItems(frames, "v1", "");
+    assert.deepStrictEqual(paths(items), ["only.ts"], "门关时服务器结果原样下发");
+    assert.strictEqual(
+      items.some((item) => item.parent === true),
+      false,
+      "门关时不下发「上一层」行：本机拿不到「这个 cwd 是目录」的肯定证据，就不做本地发现",
+    );
   }
 
   // 4b. 服务器回空表 + fragment 非空 → 帧里就是空表（不抛错、不凭空补）
@@ -518,6 +547,11 @@ console.log("fileRefListing: 目录列举补全（真盘临时目录 + 真控制
     assert.strictEqual(listingTarget(query, "win32"), undefined, `"${query}" 不做本地解释（Windows 宿主）`);
   }
   assert.strictEqual(listingTarget("D:foo/", "posix"), undefined, "POSIX 宿主上盘符写法同样不解释");
+  // 设备命名空间在 POSIX 宿主上**也**要拒绝：那边「以 `/` 开头就是绝对路径」的判据会
+  // 把 `//?/UNC/…` 当成合法 POSIX 绝对路径接受，所以不支持形态的守卫必须排在它前面
+  for (const query of ["//?/UNC/server/share/", "//./C:/dev/"]) {
+    assert.strictEqual(listingTarget(query, "posix"), undefined, `"${query}" 是设备命名空间：POSIX 宿主上也不解释`);
+  }
   assert.deepStrictEqual(
     listingTarget("/foo/", "posix"),
     { scope: "absolute", directory: "/foo/", prefix: "/foo/", fragment: "" },
@@ -615,6 +649,23 @@ const budget = () => new LocalFsBudget();
       }),
       [],
       `"${query}" 不做本地列举`,
+    );
+  }
+  // POSIX 宿主上的设备命名空间：守卫排在「以 `/` 开头就是绝对路径」那条判据之前，
+  // 所以它同样一次 FS 调用都不发（否则会去 stat 一个根本不是共享的根）
+  for (const query of ["//?/UNC/server/share/", "//./C:/dev/"]) {
+    assert.deepStrictEqual(
+      await missingDirectoryEntries({
+        cwd: "/home/u",
+        query,
+        known: [],
+        outsideAllowed: true,
+        platform: "posix",
+        fs: noProbe.probe,
+        budget: budget(),
+      }),
+      [],
+      `POSIX 宿主上的设备命名空间（"${query}"）不做本地列举`,
     );
   }
   assert.deepStrictEqual(
@@ -770,21 +821,22 @@ const budget = () => new LocalFsBudget();
 }
 
 {
-  // M2「上一层」行：cwd 的父目录（绝对形态）；盘根 / 共享根不发；父级不是目录不发
+  // M2「上一层」行：cwd 的父目录（绝对形态）；盘根 / 共享根不发；父级不是目录不发。
+  // 返回的形状带 `parent: true`（界面按它渲染「..」行、走「回上一层」那一条动作）。
   const parent = fakeFs({ stats: { "D:/": "dir", "D:/dev": "dir", "D:/dev/proj": "dir" } });
   assert.deepStrictEqual(
     await parentDirectoryEntry({ cwd: "D:/dev/proj", platform: WINDOWS, fs: parent.probe, budget: budget() }),
-    { path: "D:/dev", kind: "directory" },
+    { path: "D:/dev", kind: "directory", parent: true },
     "工作区根那一层的「上一层」行：目标是 cwd 的父目录，绝对形态",
   );
   assert.deepStrictEqual(
     await parentDirectoryEntry({ cwd: "D:\\dev\\proj", platform: WINDOWS, fs: parent.probe, budget: budget() }),
-    { path: "D:/dev", kind: "directory" },
+    { path: "D:/dev", kind: "directory", parent: true },
     "反斜杠形态的 cwd 同样归一成正斜杠（候选路径与界面拼写同一条）",
   );
   assert.deepStrictEqual(
     await parentDirectoryEntry({ cwd: "D:/dev", platform: WINDOWS, fs: parent.probe, budget: budget() }),
-    { path: "D:/", kind: "directory" },
+    { path: "D:/", kind: "directory", parent: true },
     "父目录是盘根时照发（`@D:/` 是可浏览的一层）",
   );
   const rootCwd = fakeFs({ stats: { "D:/": "dir" } });
