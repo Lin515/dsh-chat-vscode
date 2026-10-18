@@ -863,12 +863,23 @@ function useCompletion(
    * 上限在**这里**收（见 `CANDIDATE_LIST_LIMIT`）：键盘导航、渲染与 `applyCandidate`
    * 的下标都读这一份数组，三者不会各算一套；`..` 那一行由 `rankCandidates` 排在最前，
    * 所以任何上限下它都在（否则用户进了目录就出不来）。
+   *
+   * **旧的候选行不许充当这一层的候选**：`files/list` 帧没回来（或回来的那一帧属于另一次
+   * 查询）时 `fileRefs.query` 与当前触发词对不上，这时一律按**空**的文件 / 对话候选算。
+   * 浏览入口（裸 `@`、`@../`、`@D:/x/`）不等待判定，当场就画弹层——拿旧帧去画的话，
+   * 上一层的宿主「上一层」行与文件行会先占住首行，用户快按 Enter 就选中了**上一层**的
+   * 目标（用户 2026-10-18 报的现场：注入 M2 根帧后手输 `@D:/dev/other/`，首行 title 还是
+   * 旧根目录）。普通查询本来就要等这一帧的判定（`mentionSuppressed`），不受影响。
+   *
+   * `cwd` 例外：它是**会话**的工作目录（不随查询变），继续传当前帧里的那个，用于算
+   * `..` 的动作层深度。
    */
-  const candidates = useMemo(
-    () =>
-      rankCandidates(trigger, commands, fileRefs.items, fileRefs.sessions, fileRefs.cwd).slice(0, CANDIDATE_LIST_LIMIT),
-    [trigger, commands, fileRefs],
-  );
+  const candidates = useMemo(() => {
+    const fresh = trigger !== undefined && fileRefs.query === trigger.query;
+    const items = fresh ? fileRefs.items : [];
+    const sessions = fresh ? fileRefs.sessions : [];
+    return rankCandidates(trigger, commands, items, sessions, fileRefs.cwd).slice(0, CANDIDATE_LIST_LIMIT);
+  }, [trigger, commands, fileRefs]);
 
   const rows = useMemo(
     () => candidateRows(candidates, trigger?.kind ?? "mention", texts),

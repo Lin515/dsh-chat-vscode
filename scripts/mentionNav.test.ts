@@ -751,7 +751,14 @@ function frame(
       draft,
       caret,
       commands: COMMANDS,
-      fileRefs: { query: draft, items: FILES, sessions: SESSIONS },
+      // `fileRefs.query` 是**服务器那次查询的查询串**（`files/list` 帧带回来的那一个），
+      // 对 `@` 块就是整块的查询串——与真实宿主同形。界面按它判「这一帧是不是这一层的」
+      // （旧帧的文件行不许充当这一层的候选），所以夹具不能拿整份草稿当查询串。
+      fileRefs: {
+        query: findTrigger(draft, caret, undefined)?.query ?? "",
+        items: FILES,
+        sessions: SESSIONS,
+      },
       texts: TEXTS,
       onDraft: (text) => {
         out.draft = text;
@@ -1281,6 +1288,11 @@ console.log("completion(hook): 悬停改高亮只认真实指针移动（滚动�
   }
 
   // ---- 浏览入口恒弹：不吃判定，也不等判定 ----
+  //
+  // 「不等判定」的意思是**这一层当场画得出来**，不是「拿上一层的帧来画」：帧还没回来时
+  // 文件 / 对话候选一律按空算（旧层的宿主「上一层」行与文件行不许占住首行——用户
+  // 2026-10-18 报的现场），但弹层本身照旧出来（裸 `@` 给「没有匹配的文件」，进了目录的
+  // 块给界面自己按当前查询合成的「..」）。
   for (const [label, draft, caret] of [
     ["裸 `@`", "@", 1],
     ["目录块（尾分隔符）", "@src/webview/", 13],
@@ -1289,8 +1301,26 @@ console.log("completion(hook): 悬停改高亮只认真实指针移动（滚动�
     const f = frame(draft, caret, {
       fileRefs: { query: "别的查询", items: FILES, sessions: SESSIONS, resolved: true },
     });
-    assert.ok(f.html.includes("popover-item"), `${label}：浏览入口当场弹（目录在不在都要能进去）`);
+    assert.ok(f.popoverNode !== null, `${label}：浏览入口当场弹（目录在不在都要能进去）`);
+    assert.ok(
+      !f.html.includes("a.txt"),
+      `${label}：旧帧的文件行不许充当这一层的候选（快按 Enter 会选到上一层的东西）`,
+    );
   }
+  for (const [label, draft, caret] of [
+    ["目录块（尾分隔符）", "@src/webview/", 13],
+    ["带引号空格的目录块", '看一下 @"my dir/" 后面', 7],
+  ] as const) {
+    const f = frame(draft, caret, {
+      fileRefs: { query: "别的查询", items: FILES, sessions: SESSIONS, resolved: true },
+    });
+    assert.ok(f.html.includes(">..</"), `${label}：「..」按**当前查询**合成（不等帧也能导航）`);
+  }
+  assert.ok(
+    frame("@", 1, { fileRefs: { query: "别的查询", items: FILES, sessions: SESSIONS, resolved: true } })
+      .html.includes(TEXTS.mentionEmpty),
+    "裸 `@` 那一层的帧还没回来时弹的是空结果说明（宿主还没给「上一层」行）",
+  );
 
   // 裸 `@` 那一层照旧带对话候选（服务端按空查询筛历史会话）
   assert.ok(frame("@", 1).html.includes(TEXTS.mentionSessions), "根目录这一层照旧列对话候选");
@@ -1657,7 +1687,41 @@ console.log("completion(hook): M2 宿主「上一层」行（Enter / 点击回�
     press(f, "Enter");
     assert.strictEqual(f.draft, "@../../", "Enter 在那一行上 = 再往上一层（写回 `@../../`）");
   }
+
+  // 旧帧还在场（`fileRefs.query` 对不上当前触发词）时，这一层**不许**用旧层的候选行：
+  // 浏览入口不等待判定、当场画弹层，拿旧帧去画就会让上一层的宿主「上一层」行占住首行，
+  // 用户快按 Enter 选中的是上一层（用户 2026-10-18 报的现场：注入 M2 根帧后手输
+  // `@D:/dev/other/`，首行 title 还是旧根目录）。
+  {
+    const stale: UseComposerCompletionInput["fileRefs"] = {
+      query: "",
+      items: [
+        { path: "D:/dev", kind: "directory", parent: true },
+        { path: "src", kind: "directory" },
+      ],
+      sessions: [],
+      cwd: "D:/dev/proj",
+    };
+    // `@../`：首行必须是**新查询**的上一层（`../../` → 盘根），不是旧根帧那一行
+    const up = frame("@../", 4, { fileRefs: stale });
+    assert.ok(
+      /class="popover-item-main is-priority" title="D:\/">\.\.</.test(up.html),
+      "旧根帧在场时手输 `@../`：首行「..」按当前查询算（../../），不是旧根帧的 parent",
+    );
+    assert.ok(!up.html.includes(">src<"), "旧查询的文件行不许掺进这一层（否则快按 Enter 会误选）");
+    press(up, "Enter");
+    assert.strictEqual(up.draft, "@../../", "快按 Enter 选的是新查询的上一层，不是旧层的父目录");
+
+    // 绝对目录查询同理：首行是它自己那一层的上一层
+    const absolute = frame("@D:/other/", 10, { fileRefs: stale });
+    assert.ok(
+      /class="popover-item-main is-priority" title="D:\/">\.\.</.test(absolute.html),
+      "旧根帧在场时手输 `@D:/other/`：首行「..」是 `D:/`，不是旧根帧的 parent",
+    );
+    press(absolute, "Enter");
+    assert.strictEqual(absolute.draft, "@D:/", "Enter 写回的是新查询的上一层");
+  }
 }
-console.log("mentionNav: M3 相对 `..` 向上（深度算术 / 盘根与共享根止步 / 无 cwd 回退） ✓");
+console.log("mentionNav: M3 相对 `..` 向上（深度算术 / 盘根与共享根止步 / 无 cwd 回退 / 陈旧帧不掺入） ✓");
 
 console.log("\nmentionNav: all assertions passed");
