@@ -8,13 +8,7 @@
 
 ## 安装
 
-先安装 DSH 或 [桌面端DSH](https://www.deepseek.com/harness/) ，并按首次使用引导配置模型凭据：
-
-```bash
-npm i -g @deepseek-ai/dsh
-```
-
-扩展需要 VS Code ≥ 1.101；辅助侧栏容器需要 ≥ 1.106，旧版回退到活动栏。
+先安装 DSH `npm i -g @deepseek-ai/dsh` 或 [桌面端DSH](https://www.deepseek.com/harness/) ，并按首次使用引导配置模型凭据。
 
 扩展可从 [VSCode 扩展市场](https://marketplace.visualstudio.com/items?itemName=Lin515.dsh-chat) 直接安装，如需源码打包：
 
@@ -22,6 +16,8 @@ npm i -g @deepseek-ai/dsh
 npm install
 npm run package  # Releases/dsh-chat-<version>.vsix
 ```
+
+然后请从扩展设置中配置连接方式，共有三种连接 DSH 的方式：内部DSH、外部DSH、桌面端DSH，分别对应配置项：`dshChat.command`、`dshChat.url`、`dshChat.desktopExecutable`，需启用哪一种方式，则配置哪一项即可。
 
 ## 连接
 
@@ -125,13 +121,7 @@ A third-party VS Code frontend for [DeepSeek Harness](https://github.com/deepsee
 
 ## Install
 
-Install DSH or the [DSH desktop app](https://www.deepseek.com/harness/) and follow its first-use credential setup:
-
-```bash
-npm i -g @deepseek-ai/dsh
-```
-
-The extension requires VS Code ≥ 1.101. The secondary-sidebar container requires ≥ 1.106; older versions fall back to the activity bar.
+Install DSH with `npm i -g @deepseek-ai/dsh` or the [DSH desktop app](https://www.deepseek.com/harness/), and follow its first-use credential setup.
 
 Install the extension directly from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=Lin515.dsh-chat), or build from source:
 
@@ -139,6 +129,8 @@ Install the extension directly from the [VS Code Marketplace](https://marketplac
 npm install
 npm run package  # Releases/dsh-chat-<version>.vsix
 ```
+
+Then configure the connection method in the extension settings. DSH can be connected in three ways — internal DSH, external DSH and the desktop app — configured by `dshChat.command`, `dshChat.url` and `dshChat.desktopExecutable` respectively; set only the one you want to use.
 
 ## Connection
 
