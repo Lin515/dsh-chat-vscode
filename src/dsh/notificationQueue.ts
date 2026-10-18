@@ -25,8 +25,9 @@
  * 的「历史重放或传输重发不算新的实际发生」）。
  *
  * durable 事件在一条会话日志里的 `seq` 是单调的，所以水位只需按**会话**记一份，
- * 不必按类型分表。水位表按会话 id 存活；会话被真正删除时控制器调 `forgetSession`
- * 清理（归档不算删除，水位留着——那条会话还能恢复，恢复后仍要拒绝重发）。
+ * 不必按类型分表。水位表按会话 id 存活；会话被真正删除时控制器调 `forgetSession`，
+ * 把它的水位**连同它的通知记录**一起收掉（归档不算删除，水位与通知都留着——那条会话
+ * 还能恢复，恢复后仍要拒绝重发、仍要显示它自己的通知）。
  *
  * ## 确认
  *
@@ -228,13 +229,20 @@ export class NotificationQueue {
   }
 
   /**
-   * 会话被真正删除时丢掉它的 `seq` 水位。
+   * 会话被真正删除时丢掉它的 `seq` 水位**和它的通知记录**。
    *
-   * 归档 / 关闭视图都**不**调用：那条会话还能恢复或重新打开，水位留着才挡得住重发。
-   * 删除是终结性的（会话日志与 id 都不会再来），此时不清理才是泄漏。
+   * 归档 / 关闭视图 / 断线重连都**不**调用：那条会话还能恢复或重新打开，水位要留着挡重发，
+   * 通知也还能被重新打开的画面看到。删除是终结性的（会话日志与 id 都不会再来，控制器还把它
+   * 记进 `deletedSessionIds`），此时不清理就是**永久留存**：没有任何窗口能绑到这条会话，
+   * 它自己的未确认记录既不可见也不可确认，会一直占着队列；已确认的那部分还会占着
+   * `ACKED_HISTORY_LIMIT` 的名额，把活着的会话的历史挤出去。
+   *
+   * **共享通知（没有归属）与其他会话的记录一律保留。**
    */
   forgetSession(sessionId: string): void {
     this.watermarks.delete(sessionId);
+    this.dropSessionRecords(this.live, sessionId);
+    this.dropSessionRecords(this.acked, sessionId);
   }
 
   /** 未确认条数（调试 / 断言用）。 */
@@ -255,6 +263,17 @@ export class NotificationQueue {
   /** 新 id：确认后新建 / 部分确认的剩余部分都用它（见 `acknowledge`）。 */
   private mintId(): string {
     return `n${(this.sequence += 1)}`;
+  }
+
+  /**
+   * 就地从一份列表里摘掉某条会话的记录（`forgetSession` 用）。
+   *
+   * 只比会话归属：共享记录（`sessionId === undefined`）与其他会话都不会命中。
+   */
+  private dropSessionRecords(records: NoticeRecord[], sessionId: string): void {
+    for (let index = records.length - 1; index >= 0; index -= 1) {
+      if (records[index].sessionId === sessionId) records.splice(index, 1);
+    }
   }
 
   /** 已确认历史：最新在后；超出上限时丢最旧的。 */

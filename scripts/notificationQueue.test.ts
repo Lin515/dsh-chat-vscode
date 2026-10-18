@@ -9,8 +9,8 @@
  * 1. 合并判据（归属 / 级别 / 类型 / 关键内容）与次数、最近发生的排序（固定时钟）；
  * 2. 确认：整条确认后复发新建、**迟到确认**只吞它看到的那部分（剩余换新 id）；
  * 3. 可见范围（当前会话 + 共享；未绑定只剩共享）与 id 唯一；
- * 4. durable `seq` 水位：重发不计数、1000 条之后老 seq 仍被拒、按会话隔离、
- *    会话真删除时清理；
+ * 4. durable `seq` 水位：重发不计数、1000 条之后老 seq 仍被拒、按会话隔离；
+ *    真删除会话时清掉它的水位、未确认与已确认通知（共享与其他会话保留）；
  * 5. 容量：已确认保留 500、未确认不淘汰；
  * 6. 多视图：一次发生只算一次、镜像按视图隔离、确认跨视图同步、视图关闭重绑后仍在；
  * 7. 界面本地复制失败：归属校验 + 每窗口请求号水位（畸形帧不污染）；
@@ -177,6 +177,56 @@ console.log("notificationQueue: 队列核心");
     "清理之后这条会话的水位从头开始",
   );
   console.log("  ✓ seq 水位：重发不计数、1000+ 后老 seq 仍拒、按会话隔离、forgetSession 清理");
+}
+
+// ---------- 4b. 真删除：该会话的通知（未确认 / 已确认 / 部分确认余量）一并收掉 ----------
+{
+  const queue = new NotificationQueue(() => 0);
+  // s1：一条未确认（带水位）
+  const s1Live = queue.enqueue({ sessionId: "s1", level: "warn", kind: "unknownEvent", text: "@s1:live", seq: 4 });
+  assert.ok(s1Live);
+  // s1：一条**部分确认**——看到的那部分进已确认历史，剩余换新 id 继续未确认
+  queue.enqueue({ sessionId: "s1", level: "warn", kind: "k", text: "@s1:partial" });
+  queue.enqueue({ sessionId: "s1", level: "warn", kind: "k", text: "@s1:partial" });
+  const partial = queue.visible("s1").find((record) => record.text === "@s1:partial");
+  assert.ok(partial);
+  assert.strictEqual(partial.count, 2);
+  assert.strictEqual(queue.acknowledge(partial.id, 1), true, "前置：部分确认一份");
+  assert.strictEqual(queue.pendingCount(), 2, "前置：s1 的未确认含剩余部分");
+  assert.strictEqual(queue.ackedCount(), 1, "前置：s1 看到的那部分已在已确认历史里");
+  // s1：一条整条确认的（另一条已确认历史）
+  const s1Acked = queue.enqueue({ sessionId: "s1", level: "warn", kind: "k", text: "@s1:acked" });
+  assert.ok(s1Acked);
+  queue.acknowledge(s1Acked.id, 1);
+  // s2 与共享：删除 s1 之后必须原样留着
+  const s2Live = queue.enqueue({ sessionId: "s2", level: "warn", kind: "k", text: "@s2:live" });
+  const s2Acked = queue.enqueue({ sessionId: "s2", level: "warn", kind: "k", text: "@s2:acked" });
+  assert.ok(s2Live && s2Acked);
+  queue.acknowledge(s2Acked.id, 1);
+  queue.enqueue({ level: "info", kind: "k", text: "@shared" });
+  assert.strictEqual(queue.pendingCount(), 4, "前置：s1 两条未确认 + s2 一条 + 共享一条");
+  assert.strictEqual(queue.ackedCount(), 3, "前置：s1 两条已确认 + s2 一条");
+
+  queue.forgetSession("s1");
+
+  assert.deepStrictEqual(
+    queue.visible("s1").map((record) => record.text),
+    ["@shared"],
+    "被删会话自己的通知全部消失（未确认、已确认、部分确认的剩余与已确认那份），只剩共享",
+  );
+  assert.strictEqual(queue.pendingCount(), 2, "只清被删会话：其他会话与共享的未确认都保留");
+  assert.strictEqual(queue.ackedCount(), 1, "被删会话的已确认历史一并收掉，不许占着 500 条名额");
+  assert.deepStrictEqual(
+    queue.visible("s2").map((record) => record.text).sort(),
+    ["@s2:acked", "@s2:live", "@shared"],
+    "其他会话的未确认与已确认都完好",
+  );
+  assert.strictEqual(queue.watermarkCount(), 0, "水位同时收掉（s1 那条是唯一一条带 seq 的）");
+  assert.ok(
+    queue.enqueue({ sessionId: "s1", level: "warn", kind: "unknownEvent", text: "@s1:reborn", seq: 1 }),
+    "删除后这条会话从自己的 0 起算（水位已清，同 id 的新 seq 可再入队）",
+  );
+  console.log("  ✓ 真删除清通知：未确认 / 已确认 / 部分确认余量全收，共享与其他会话保留，水位清后可重入");
 }
 
 // ---------- 5. 容量：已确认 500、未确认不淘汰 ----------
@@ -548,7 +598,7 @@ async function open(h: Harness, viewId: string, sessionId: string): Promise<void
   console.log("  ✓ 命令分流：unhandled 红入队、执行过的 error 与成功都不入队");
 }
 
-// ---------- 10. 无持久化 + 真删除清理 seq 水位 ----------
+// ---------- 10. 无持久化 + 真删除清理该会话的通知与 seq 水位 ----------
 {
   const h = harness();
   await open(h, "v1", S1);
@@ -561,7 +611,8 @@ async function open(h: Harness, viewId: string, sessionId: string): Promise<void
   assert.strictEqual(h.globalState.dumpKeys().length, 0, "这条断言本身有效：全局存储此刻是空的");
 
   // 铺一条 durable `seq` 水位（未知事件那条路走的就是它——复制失败只记每窗口请求号，
-  // 不进这张表）。删除是终结性的：真 `deleteSession` → `rememberDeleted` → 清水位。
+  // 不进这张表）。删除是终结性的：真 `deleteSession` → `rememberDeleted` → 清水位，
+  // 同一条路径也要把**这条会话自己的通知**收掉（未确认与已确认都收）。
   // `findSessionDir` 在本测试的离线台里已钉成 undefined，不会扫真实 `~/.dsh/sessions`。
   h.c.notifications.enqueue({
     sessionId: S1,
@@ -571,12 +622,34 @@ async function open(h: Harness, viewId: string, sessionId: string): Promise<void
     seq: 3,
   });
   assert.ok(h.c.notifications.watermarkCount() >= 1, "水位已铺上（回路自身前提）");
+  // 另一条会话与共享通知：删除 S1 之后必须原样留着
+  assert.ok(h.c.notifications.enqueue({ sessionId: S2, level: "warn", kind: "k", text: "@onlyS2" }));
+  assert.ok(h.c.notifications.enqueue({ level: "info", kind: "k", text: "@shared" }));
+  assert.strictEqual(h.c.notifications.pendingCount(), 4, "前置：S1 两条未确认 + S2 一条 + 共享一条");
 
+  // 另一个窗口绑着 S2：删除 S1 不该动它看到的那一份
+  await open(h, "v2", S2);
   h.c.unbindView("v1");
   const before = h.c.notifications.watermarkCount();
   await h.c.deleteSession(S1);
   assert.strictEqual(before - h.c.notifications.watermarkCount(), 1, "真删除会话时清掉它的 seq 水位");
-  console.log("  ✓ 不落盘；真 deleteSession 清理水位");
+  assert.strictEqual(h.c.notifications.pendingCount(), 2, "被删会话的未确认通知一并收掉（共享与其他会话保留）");
+  assert.deepStrictEqual(
+    h.c.notifications.visible(S1).map((notice) => notice.text),
+    ["@shared"],
+    "被删会话自己的通知不再留在任何可见范围里（当前会话 + 共享的过滤只剩共享）",
+  );
+
+  // 删除入口不需要补发镜像：被删会话不可能被任何窗口绑着（`isSessionViewed` 挡在删除前），
+  // 所以别的窗口那份镜像本来就不含它。这里把 S2 的窗口重建一次，拿到的权威镜像照旧只有
+  // 它自己的 + 共享。
+  await h.c.handle({ type: "ready" }, "v2");
+  assert.deepStrictEqual(
+    mirrorOf(h, "v2").map((notice) => notice.text).sort(),
+    ["@onlyS2", "@shared"],
+    "S2 的窗口看到的权威镜像只有它自己的与共享的",
+  );
+  console.log("  ✓ 不落盘；真 deleteSession 清理该会话的通知与水位，共享与其他会话保留");
 }
 
 console.log("\nnotificationQueue: all assertions passed");
