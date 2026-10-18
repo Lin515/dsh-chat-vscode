@@ -6214,7 +6214,22 @@ export class ChatController implements vscode.Disposable {
     subagentCatalog: (scope, value, present) => this.applySubagentCatalogProjection(scope, value, present),
     goal: (scope, value, present) => this.applyGoalProjection(scope, value, present),
     agentPreset: (scope, value) => this.applyAgentPresetProjection(scope, value),
+    workingDirectory: (scope, value) => this.applyWorkingDirectoryProjection(scope, value),
   };
+
+  /** 执行目录变化只影响当前输入与标题；创建目录、分组和历史路径保持原语义。 */
+  private applyWorkingDirectoryProjection(scope: SessionScope, value: string | undefined): void {
+    if (scope.workingDirectory === value) return;
+    scope.workingDirectory = value;
+    // 在发补丁之前作废旧目录的查询；即使查询串没变，界面也会按新目录重取。
+    for (const [viewId, sessionId] of this.viewSessions) {
+      if (sessionId === scope.sessionId) this.menuQueries.get(viewId)?.abort();
+    }
+    this.deliver(scope.sessionId, {
+      type: "patch",
+      patch: sessionPatch(this.sessionSource(scope), ["workingDirectory"]),
+    });
+  }
 
   /**
    * 队列的权威来源（当前服务端）：`{'next-turn':…,'next-step':…}`。
@@ -10632,9 +10647,11 @@ export class ChatController implements vscode.Disposable {
     // 落会话可能等了一会儿，期间用户又敲了字：这一次已经被作废，一个字节都不发
     if (!this.isCurrentMenuQuery(viewId, controller)) return;
     const client = this.client;
-    // 这次的会话工作目录：候选的相对路径基准（服务器按它列），也是界面悬停完整路径的
-    // 解析基准（`cwd` 随 `files/list` 下发，见 `shared/ipc.ts`）。
-    const cwd = scope ? this.cwdOf(scope) : undefined;
+    // 一次查询冻结同一个执行目录：抑制、补列、信任门与回帧不能各自在 await 后读新值。
+    const cwd = scope ? scope.workingDirectory ?? this.cwdOf(scope) : undefined;
+    const queryScope = { ...(scope ? { sessionId: scope.sessionId } : {}), ...frameCwd(cwd) };
+    const isCurrent = (): boolean => this.isCurrentMenuQuery(viewId, controller) &&
+      (!scope || this.viewSessions.get(viewId) === scope.sessionId);
     // 本地 FS 预算**在首次本地 FS 操作之前**才开始计时：启动 / 恢复会话那几趟 RPC 的
     // 时间不该吃掉本地预算。一次查询只有这一条预算，信任门、抑制判定与目录读取共用，
     // 不逐步重新计时（见 `localAccess.ts`）。
@@ -10652,17 +10669,17 @@ export class ChatController implements vscode.Disposable {
     };
     // 编辑过的会话标题不能再按同名文件判断「已引用」，也不具有目录浏览语义。
     const resolves = !sessionOnly && scope
-      ? await this.mentionResolves(scope, query, budget, localAllowed)
+      ? await this.mentionResolves(query, budget, localAllowed, cwd)
       : false;
-    if (!this.isCurrentMenuQuery(viewId, controller)) return;
+    if (!isCurrent()) return;
     if (resolves) {
-      this.emitToView(viewId, { type: "files/list", query, items: [], resolved: true, ...frameCwd(cwd) });
+      this.emitToView(viewId, { type: "files/list", query, items: [], resolved: true, ...queryScope });
       return;
     }
     const wantsSessions = sessionOnly || !isDirectoryQuery(query);
     if (!client || !scope) {
-      this.emitToView(viewId, { type: "files/list", query, items: [], resolved: false, ...frameCwd(cwd) });
-      if (wantsSessions) this.emitToView(viewId, { type: "files/sessions", query, sessions: [] });
+      this.emitToView(viewId, { type: "files/list", query, items: [], resolved: false, ...queryScope });
+      if (wantsSessions) this.emitToView(viewId, { type: "files/sessions", query, sessions: [], ...queryScope });
       return;
     }
     // 两个源并行取。对话那条失败（老版本服务器没有这个 remote）不该把文件候选
@@ -10701,9 +10718,9 @@ export class ChatController implements vscode.Disposable {
       // 由这里把被截掉的尾巴按同一套排序补回来（见 `completeFileListing`）
       const complete = sessionOnly
         ? []
-        : await this.completeFileListing(scope, query, items ?? [], budget, localAllowed);
-      if (!this.isCurrentMenuQuery(viewId, controller)) return;
-      this.emitToView(viewId, { type: "files/list", query, items: complete, resolved: false, ...frameCwd(cwd) });
+        : await this.completeFileListing(cwd, query, items ?? [], budget, localAllowed);
+      if (!isCurrent()) return;
+      this.emitToView(viewId, { type: "files/list", query, items: complete, resolved: false, ...queryScope });
     });
     await Promise.all([
       filesFrame,
@@ -10711,10 +10728,11 @@ export class ChatController implements vscode.Disposable {
         ? []
         : [
             filesFrame.then(() => sessions).then((rows) => {
-              if (!this.isCurrentMenuQuery(viewId, controller)) return;
+              if (!isCurrent()) return;
               this.emitToView(viewId, {
                 type: "files/sessions",
                 query,
+                ...queryScope,
                 // @ 列表不显示子代理会话（用户 2026-09-22 口径）：候选行不带 origin，
                 // 按 `subagentSessionIds` 客户端自己过滤（判据见 sessionList.ts）。
                 // 还没开始对话的空会话同样不列：`@` 引用要的是**有内容的对话**，
@@ -10776,10 +10794,10 @@ export class ChatController implements vscode.Disposable {
    * 用户彻底看不到候选。
    */
   private async mentionResolves(
-    scope: SessionScope,
     query: string,
     budget: LocalFsBudget,
     localAllowed: () => Promise<boolean>,
+    cwd: string | undefined,
   ): Promise<boolean> {
     if (isBrowseQuery(query)) return false;
     const sessionId = referenceSessionIdOf(query);
@@ -10796,7 +10814,6 @@ export class ChatController implements vscode.Disposable {
     // 会把它误抑制成一条已解析引用。宁可弹列表：服务器候选与手写引用照旧。
     if (unsupportedLocalPathForm(path, hostPlatform())) return false;
     if (!(await localAllowed())) return false;
-    const cwd = this.cwdOf(scope);
     const absolute = isNativeAbsolutePath(path, hostPlatform()) ? path : cwd ? join(cwd, path) : undefined;
     if (absolute === undefined) return false;
     return (await probeExistence(absolute, budget)) === "present";
@@ -10820,20 +10837,19 @@ export class ChatController implements vscode.Disposable {
    * 排序，本地复现不出来，硬拼只会得到两段规则不同的清单（那一半保持原样，见
    * `listingTarget` 的肯定证据判据）。
    *
-   * 枚举用的是**会话的工作目录**（服务器那次查询的根，它不一定是 VS Code 打开的文件夹）；
+   * 枚举用的是这次查询冻结的**执行目录**（服务器那次查询的根，它不一定是 VS Code 打开的文件夹）；
    * 任何一步失败都静默退回服务器结果，`@` 列表绝不会因此变空或把错误抛上去。
    *
    * **工作区外的发现**（M1 绝对路径 / M3 相对 `..`）由同一趟补进来，但只在信任门通过
    * （`outsideAllowed`）时参与。
    */
   private async completeFileListing(
-    scope: SessionScope,
+    cwd: string | undefined,
     query: string,
     items: FileRefView[],
     budget: LocalFsBudget,
     localAllowed: () => Promise<boolean>,
   ): Promise<FileRefView[]> {
-    const cwd = this.cwdOf(scope);
     if (!cwd) return items;
     const outsideAllowed = await localAllowed();
     // 预算可能已经被信任门那一趟耗尽（不可达的网络 cwd）：保守不补，且**不重建 deadline**

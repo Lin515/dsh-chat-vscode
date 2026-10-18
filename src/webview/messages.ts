@@ -143,13 +143,8 @@ export const MESSAGES = {
     zh: "工作目录跟随 VS Code 打开的文件夹",
     en: "Working directory follows the folder open in VS Code",
   },
-  /**
-   * 标题栏上工作目录那一段的悬停说明。
-   *
-   * 与空态页那枚目录胶囊是同一件事的另一个落点：会话一开始，胶囊就不在了，
-   * 而「这条会话落在哪个目录」仍然要读得到（只有没打开文件夹时才有这一段）。
-   */
-  sessionDir: { zh: "会话工作目录", en: "Session working directory" },
+  /** 标题前的执行目录说明：与工作区不同，或 VS Code 未打开文件夹时显示。 */
+  sessionDir: { zh: "会话执行目录", en: "Session execution directory" },
   agentPresetLabel: { zh: "Agent 预设", en: "Agent preset" },
   agentPresetSeat: {
     zh: "即将开始的这个会话所用的 Agent 预设",

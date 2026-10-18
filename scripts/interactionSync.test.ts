@@ -410,8 +410,8 @@ console.log("interactionSync: 宿主侧接线正确 ✓");
     // `files/list` 后面那两个可选位分别是对「这一块已经能引用到内容」的判定（用户
     // 2026-10-11 口径，见 scripts/mentionResolve.test.ts）与这次查询的会话工作目录
     // （界面悬停完整路径用，见 scripts/pathDisplay.test.ts）：类型里带上它们，别把整行钉死
-    /\{ type: "files\/list"; query: string; items: FileRefView\[\](?:; (?:resolved|cwd)\?: (?:boolean|string))* \}/.test(ipc) &&
-      /\{ type: "files\/sessions"; query: string; sessions: SessionRefView\[\] \}/.test(ipc),
+    /\{ type: "files\/list"; query: string; items: FileRefView\[\](?:; (?:resolved|cwd|sessionId)\?: (?:boolean|string))* \}/.test(ipc) &&
+      /\{ type: "files\/sessions"; query: string; sessions: SessionRefView\[\]; cwd\?: string; sessionId\?: string \}/.test(ipc),
     "文件与对话候选要分成两条帧（各自带 query，界面按它丢旧批次）",
   );
   assert.ok(

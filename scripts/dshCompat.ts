@@ -76,6 +76,8 @@ const CONTRACT_PACKAGES = [
   "@deepseek-ai/dsh-llm",
   "@deepseek-ai/dsh-session",
   "@deepseek-ai/dsh-session-projection",
+  // 执行目录投影与 working-directory/change；不等同于创建目录或工作区归属。
+  "@deepseek-ai/dsh-working-directory",
   "@deepseek-ai/dsh-goal",
   "@deepseek-ai/dsh-plan-mode",
   "@deepseek-ai/dsh-subagent",

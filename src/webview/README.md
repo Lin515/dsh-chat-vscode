@@ -49,7 +49,7 @@ React / 浏览器环境，不使用 Node API。上层边界见[源码导航](<..
 
 - [cacheHit.ts](<cacheHit.ts>) — 会话累计缓存命中格式化；缺数据不返回读数。
 - [pathDisplay.ts](<pathDisplay.ts>) — 单行路径拆分与保文件名省略。
-- [sessionDir.ts](<sessionDir.ts>) — 标题栏 cwd 判据。
+- [sessionDir.ts](<sessionDir.ts>) — 标题栏执行目录取值与工作区差异显示判据。
 - [sessionSelection.ts](<sessionSelection.ts>) — 历史列表多选：可选判据、选择集跟随列表、全选翻转。
 - [connectView.ts](<connectView.ts>) — 连接条状态、文案与按钮矩阵。
 - [activity.ts](<activity.ts>) — 子代理 / 任务入口活性（后台任务在跑，或还有待执行的自动化任务）。

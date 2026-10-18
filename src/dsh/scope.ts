@@ -142,6 +142,8 @@ export class SessionScope {
    * 之后由投影帧与切换成功的返回值接管。
    */
   agentPreset: string | undefined;
+  /** 当前执行目录；只由 workingDirectory 投影更新，不改创建目录与工作区归属。 */
+  workingDirectory: string | undefined;
 
   /**
    * 本会话下一轮将用的模型（`modelSelection` 投影，新会话没有选择时是部署默认）。

@@ -162,6 +162,7 @@ npm run dsh:diff -- <旧版本> <新版本>   # 只求差
   基准快照**（`ensureSnapshot` 见到同名快照就直接复用，不重抓的话新包不会进那份快照，下一次
   `dsh:check` 会报一条 `package-added`）。`0.2.1-alpha.2` 加入 `@deepseek-ai/dsh-schedule`
   （自动化任务）时就是这么做的：删掉本地那份快照再 `npm run dsh:snapshot -- 0.2.1-alpha.2`。
+- 执行目录适配消费 `@deepseek-ai/dsh-working-directory`，已加入包清单；投影值为 `string | null`，缺失回退会话创建目录。工作区归属与执行目录分离的消费规则见[投影设计的执行目录](<design-projections.md#执行目录>)。
 - 报告里出现 `⚠ 有 N 个包没取到` 时必须人工确认：缺证据不等于没影响。
 
 ---

@@ -99,6 +99,7 @@ export type CandidateAction = "pick" | "drill";
  * 的结果，所以键位与指针动作也一并冻结（见 `stale`）。
  */
 interface PaintedCandidates {
+  sessionId?: string;
   /** 触发通道：`/` 与 `@` 的列表不互相顶替。 */
   kind: "command" | "mention";
   /** 触发词在正文里的起点：只有**同一个** `@` 块才谈得上「原地留屏」。 */
@@ -578,6 +579,9 @@ export interface UseComposerCompletionInput {
   caret?: number;
   /** 命令目录（`commands/list`）。 */
   commands: readonly CommandView[];
+  /** 当前查询归属与执行目录；改变任一项都要重取，即使查询串未变。 */
+  sessionId?: string;
+  workingDirectory?: string;
   /**
    * 文件 / 对话候选（`fileReferences/list` + `sessionReferenceResolver/candidates`）
    * 与**这一块自己**的判定。
@@ -589,12 +593,13 @@ export interface UseComposerCompletionInput {
    * `false` 处理，退回「一律弹列表」的旧行为。
    */
   fileRefs: {
+    sessionId?: string;
     query: string;
     items: readonly FileRefView[];
     sessions: readonly SessionRefView[];
     resolved?: boolean;
     /**
-     * 这次的**会话工作目录**（`files/list` 帧下发；旧宿主不发时缺失）。
+     * 这次的**执行目录**（`files/list` 帧下发；旧宿主不发时缺失）。
      *
      * 悬停标题拿它把候选里的相对路径与界面自己合成的「上一层」行解析成完整绝对路径
      * （见 `pathDisplay.ts` 的 `resolveDisplayPath`）。缺失时退回原样的展示路径。
@@ -700,6 +705,8 @@ function useCompletion(
     caret,
     commands,
     fileRefs,
+    sessionId,
+    workingDirectory,
     texts,
     noWorkspace,
     onDraft,
@@ -838,10 +845,14 @@ function useCompletion(
    * 留屏期间列表内容一行不动：这就是「整个刷新过程只换一次内容」的全部实现
    * （用户 2026-10-18 口径）。
    */
-  const fresh = trigger !== undefined && (commandChannel || fileRefs.query === trigger.query);
+  const fresh = trigger !== undefined && (commandChannel || (
+    fileRefs.query === trigger.query &&
+    (sessionId === undefined || fileRefs.sessionId === sessionId) &&
+    (workingDirectory === undefined || fileRefs.cwd === workingDirectory)
+  ));
   const painted = paintedBox.current;
   const keep =
-    !fresh && trigger !== undefined && painted !== null && painted.kind === trigger.kind && painted.start === trigger.start
+    !fresh && trigger !== undefined && painted !== null && painted.sessionId === sessionId && painted.kind === trigger.kind && painted.start === trigger.start
       ? painted
       : null;
 
@@ -861,18 +872,18 @@ function useCompletion(
    * 没换，把用户刚挪过去的高亮抹掉是白改一次界面（官方 `menuReduce` 在 `hit` 时同样保留
    * 高亮，settle 时才重新校验）。
    */
-  const listKey = trigger === undefined ? "" : `${trigger.kind}:${trigger.start}:${trigger.query}`;
+  const listKey = trigger === undefined ? "" : JSON.stringify([sessionId, workingDirectory, trigger.kind, trigger.start, trigger.query]);
   const shownKey = keep ? keep.key : listKey;
 
   /**
-   * `@` 候选的重取点，也**只有这一个**：查询串一变就发一次 `queryFiles`。
+   * `@` 候选的唯一重取点：查询语义、会话身份或执行目录改变时发一次 `queryFiles`。
    *
    * 下钻 / 回上一层（`replace`）不再自己发一遍——一次导航发两遍会让服务端那趟
    * 「扫全部会话日志」的活翻倍，而两批回答的先后也没有保证（旧批次可能后到）。
    */
   useEffect(() => {
     if (trigger?.kind === "mention") post({ type: "queryFiles", query: trigger.query, ...(trigger.sessionOnly ? { sessionOnly: true } : {}) });
-  }, [trigger?.kind, trigger?.query, trigger?.sessionOnly]);
+  }, [trigger?.kind, trigger?.query, trigger?.sessionOnly, sessionId, workingDirectory]);
 
   // 列表整份换掉了才把高亮回到第一条（判据见 `shownKey`）。
   useEffect(() => {
@@ -952,7 +963,7 @@ function useCompletion(
    *    的那一份——浏览入口的 `..` 不等帧（等一个往返就是「刚敲 `@` 列表没反应」）；普通
    *    查询在这一档根本不画弹层（见 `waiting`），不会拿半份结果糊弄。
    *
-   * `cwd` 是**会话**的工作目录（不随查询变），三条来路都传当前帧里的那个，用于算 `..`
+   * `cwd` 是这次查询冻结的**执行目录**（不随查询串变），三条来路都传当前帧里的那个，用于算 `..`
    * 的动作层深度与候选行的悬停完整路径。
    */
   const candidates = useMemo(() => {
@@ -1210,7 +1221,7 @@ function useCompletion(
   if (trigger === undefined) {
     paintedBox.current = null;
   } else if (popoverOpen && keep === null) {
-    paintedBox.current = { kind: trigger.kind, start: trigger.start, key: listKey, candidates };
+    paintedBox.current = { sessionId, kind: trigger.kind, start: trigger.start, key: listKey, candidates };
   }
 
   const onKeyDown = useCallback(

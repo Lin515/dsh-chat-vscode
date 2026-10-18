@@ -8,6 +8,11 @@
  */
 import { AUTO_REVIEW_PRESET, type ChatState, type GoalView, type SubagentView, type TodoView } from "../shared/chat";
 
+/** workingDirectory 的线格式是 string | null；不按本机平台拒绝远端绝对路径。 */
+export function workingDirectoryFromProjection(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
 /**
  * `goal` 投影 → 目标条数据。
  *

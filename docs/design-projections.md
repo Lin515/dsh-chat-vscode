@@ -14,6 +14,14 @@
 - 适配器不直接读取 `projections.values.title`；投影标题走 controller 效果，`session/title` 事件仍有独立入口。
 - `session/list` 携带的投影提示有意不走 store，采用最后到达值。列表契约允许缓存陈旧提示，扩展不为未打开会话建域；为防抽屉标题回退而维护全部会话投影不值得。不能将这条例外当遗漏补齐。
 
+## 执行目录
+
+`workingDirectory` 是 `string | null`，初值来自会话创建目录，`working-directory/change` 更新它。通过同一投影登记表消费 follow 开帧、控制流 baseline 与增量；按水位拒绝旧值，baseline 缺键与 null 清空后退回创建目录，不自行从工具参数推断。
+
+执行目录仅用于当前 `@` 查询及标题显示，不改创建 / 认领目录、工作区归属、空壳复用、历史过滤、权限或既有进程。会话片段包含该值，切会话、重连均沿用快照与投影机制；已提交消息与图片的路径解析保持原有口径，不把最新执行目录追溯用于历史引用。
+
+标题前复用原目录样式：VS Code 未打开文件夹时显示执行目录；打开文件夹时，仅在执行目录与工作区目录不同时显示。投影缺失时依次回退会话创建目录、窗口目录；比较保留 POSIX 大小写，不因远端路径采用本机 realpath。
+
 ## 模型、计划与目标
 
 - `modelSelection` 读取 `next ?? lastUsed`。模型目录默认值与 `catalog.default` 的关系、`routableProviders` / `failures` 的完整消费仍需核对，不能声称已阻断不可路由输入。

@@ -354,6 +354,8 @@ export function Composer({
     sessionDraft,
     commands: state.commands,
     fileRefs: state.fileRefs,
+    sessionId: state.session?.id,
+    workingDirectory: state.workingDirectory ?? state.session?.cwd,
     texts,
     // 还没有工作目录：空态下 `/` 与 `@` 的候选都是会话作用域的服务端目录，宿主在没有
     // 目录时不会就地建会话（用户 2026-09-24 口径），两个菜单必然为空——弹层要改说

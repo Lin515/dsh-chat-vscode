@@ -1297,6 +1297,8 @@ export interface ChatState {
    */
   inEditorTab?: boolean;
   session?: SessionSummaryView;
+  /** 当前执行目录（workingDirectory 投影）；缺失时以会话创建目录作初始基准。 */
+  workingDirectory?: string;
   messages: MessageView[];
   /**
    * 还没被服务端承认的用户消息（乐观回显，见 `PendingMessageView`）。

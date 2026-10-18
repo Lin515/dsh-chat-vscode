@@ -1,8 +1,6 @@
 /**
- * 标题栏上的会话工作目录（用户 2026-10-10 口径）：
- * **VS Code 没有打开文件夹**、工作目录是给 DSH 会话单独设的时，标题栏要在标题
- * **前方**补上工作目录路径；打开着文件夹时保持原状（那时目录跟随 VS Code，资源管理器
- * 与 VS Code 自己的标题栏已经说明了这件事）。
+ * 标题栏上的执行目录：未打开文件夹时显示；打开时仅在与工作区目录不同时显示。
+ * 执行目录投影优先，缺失时保留会话创建目录的回退。
  *
  * 第 1 节钉**判据**（纯函数 `sessionDirPath`，按真实取值分档：会话 cwd 优先、
  * 退回扩展记下的目录、拿不到证据就不显示、空串不当目录）；第 2 / 3 节钉**接线**——
@@ -93,7 +91,19 @@ const summary = (cwd?: string): SessionSummaryView => ({
     "会话自己的 cwd 不依赖扩展记的那个目录（重载后仍读得到）",
   );
 }
-console.log("sessionDir: 显示哪个目录（会话 cwd 优先、拿不到证据不显示）✓");
+// 执行目录优先，只有不同才在已打开文件夹的窗口显示；回到工作区后消失。
+for (const locked of [true, false]) {
+  const state = { workspace: { path: DIR_A, locked }, session: summary(DIR_A) };
+  assert.equal(sessionDirPath({ ...state, workingDirectory: DIR_B }), DIR_B);
+  assert.equal(sessionDirPath({ ...state, workingDirectory: DIR_A }), locked ? undefined : DIR_A);
+  assert.equal(sessionDirPath({ ...state, workingDirectory: "" }), locked ? undefined : DIR_A);
+}
+assert.equal(sessionDirPath({ workspace: { path: "C:/work/alpha/", locked: true }, workingDirectory: "c:\\work\\alpha" }), undefined);
+assert.equal(sessionDirPath({ workspace: { path: "/work/Alpha", locked: true }, workingDirectory: "/work/alpha" }), "/work/alpha");
+assert.equal(sessionDirPath({ workspace: { path: "/work/alpha/", locked: true }, workingDirectory: "/work/alpha" }), undefined);
+assert.equal(sessionDirPath({ workspace: { path: "/", locked: true }, workingDirectory: "/" }), undefined);
+assert.equal(sessionDirPath({ workspace: { path: DIR_A, locked: true }, session: summary(), workingDirectory: DIR_B }), DIR_B, "子代理不必依赖摘要 cwd");
+console.log("sessionDir: 执行目录优先、差异显示与平台路径比较 ✓");
 
 // ---------- 2. 接线：渲染在**标题前方**，取值只走判据 ----------
 {

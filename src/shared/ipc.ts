@@ -162,12 +162,12 @@ export type HostToWebview =
    * 的意思就是「进去看这一层」。缺省（旧宿主不发这一位）按 `false` 处理，退回
    * 「一律弹列表」的旧行为。
    *
-   * `cwd` 是这次查询的**会话工作目录**（服务器列候选的根）：界面拿它把候选路径与
+   * `sessionId` 与 `cwd` 是这次查询的归属与**执行目录**（服务器列候选的根）：界面拿它把候选路径与
    * 自己合成的「上一层」行解析成完整绝对路径，做悬停标题（见 `webview/pathDisplay.ts`
    * 的 `resolveDisplayPath`）。没有会话工作目录时整位不出现，界面退回显示原样的相对
    * 路径。
    */
-  | { type: "files/list"; query: string; items: FileRefView[]; resolved?: boolean; cwd?: string }
+  | { type: "files/list"; query: string; items: FileRefView[]; resolved?: boolean; cwd?: string; sessionId?: string }
   /**
    * `@` 候选的**对话那一半**（`sessionReferenceResolver/candidates`）。
    *
@@ -175,7 +175,7 @@ export type HostToWebview =
    * 那一批，晚到的旧批次直接丢——否则会渲染出「文件是这一层的、对话是上一层筛出来的」
    * （宿主侧更早就作废了旧查询，见 `controller.queryFiles` 的作废口径）。
    */
-  | { type: "files/sessions"; query: string; sessions: SessionRefView[] }
+  | { type: "files/sessions"; query: string; sessions: SessionRefView[]; cwd?: string; sessionId?: string }
   /** 一次性提示。 */
   | { type: "toast"; level: "info" | "warn" | "error"; text: string }
   /**

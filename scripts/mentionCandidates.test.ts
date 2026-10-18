@@ -225,14 +225,14 @@ console.log("mentionCandidates: 宿主下发的「上一层」行（首行 / 不
     assert.ok(body.includes(`type: "${type}"`), `queryFiles 要发 \`${type}\` 帧`);
   }
   assert.ok(
-    /this\.emitToView\(viewId, \{ type: "files\/list", query, items: complete, resolved: false, \.\.\.frameCwd\(cwd\) \}\)/.test(body),
+    /this\.emitToView\(viewId, \{ type: "files\/list", query, items: complete, resolved: false, \.\.\.queryScope \}\)/.test(body),
     "文件那一帧必须带上这次查询的 query（界面靠它认「这是哪一次查询」）、判定位与 cwd（悬停完整路径）",
   );
   // 「这一块已经能引用到内容」→ 一个查询都不发、当场回一条 `resolved: true` 的空帧
   // （用户 2026-10-11 口径；行为断言在 scripts/mentionResolve.test.ts）
   assert.ok(
-    /const resolves = !sessionOnly && scope\s*\n\s*\? await this\.mentionResolves\(scope, query, budget, localAllowed\)\s*\n\s*: false;/.test(body) &&
-      /if \(!this\.isCurrentMenuQuery\(viewId, controller\)\) return;\s*\n\s*if \(resolves\) \{\s*\n\s*this\.emitToView\(viewId, \{ type: "files\/list", query, items: \[\], resolved: true, \.\.\.frameCwd\(cwd\) \}\);/.test(body),
+    /const resolves = !sessionOnly && scope\s*\n\s*\? await this\.mentionResolves\(query, budget, localAllowed, cwd\)\s*\n\s*: false;/.test(body) &&
+      /if \(!isCurrent\(\)\) return;\s*\n\s*if \(resolves\) \{\s*\n\s*this\.emitToView\(viewId, \{ type: "files\/list", query, items: \[\], resolved: true, \.\.\.queryScope \}\);/.test(body),
     "抑制分支要在两条 RPC 之前：不查、当场回帧（界面据此整块不弹），走完判定再确认一次句柄",
   );
   // 本地 FS 预算：一次查询一条，信任门 / 抑制判定 / 目录读取共用（见 localAccess.ts）。
@@ -254,7 +254,7 @@ console.log("mentionCandidates: 宿主下发的「上一层」行（首行 / 不
   // 文件那一半在发帧**之前**经目录列举补全（服务器一次只回 20 条，见 scripts/fileRefListing.test.ts）：
   // 补全必须在这一帧上，不能另发一帧——另发一帧会让界面先收到半截列表再被替换
   assert.ok(
-    /const complete = sessionOnly\s*\n\s*\? \[\]\s*\n\s*: await this\.completeFileListing\(scope, query, items \?\? \[\], budget, localAllowed\);/.test(body),
+    /const complete = sessionOnly\s*\n\s*\? \[\]\s*\n\s*: await this\.completeFileListing\(cwd, query, items \?\? \[\], budget, localAllowed\);/.test(body),
     "文件那一帧要经 completeFileListing（目录列举被服务器截掉的尾巴在这里补回来），并把预算与门一起传下去",
   );
   assert.ok(
@@ -284,7 +284,7 @@ console.log("mentionCandidates: 宿主下发的「上一层」行（首行 / 不
     "进了目录就不发对话候选那次 RPC（`sessions` 直接是 undefined）",
   );
   assert.ok(
-    /if \(wantsSessions\) this\.emitToView\(viewId, \{ type: "files\/sessions", query, sessions: \[\] \}\)/.test(
+    /if \(wantsSessions\) this\.emitToView\(viewId, \{ type: "files\/sessions", query, sessions: \[\], \.\.\.queryScope \}\)/.test(
       body,
     ),
     "没有会话可查时也只在那一次查询该列对话候选时才发空帧",

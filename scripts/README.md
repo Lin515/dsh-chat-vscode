@@ -44,7 +44,7 @@
 
 - [projections.test.ts](<projections.test.ts>) — 投影形状回归防线（`goal` / `subagentCatalog` 的形状读错防线）。
 - [projectionStore.test.ts](<projectionStore.test.ts>) — 投影值存储契约：higher seq wins、baseline 语义、低 seq 丢弃。
-- [projectionIngest.test.ts](<projectionIngest.test.ts>) — 投影摄入登记表：键集合与契约双向对齐、一个键一条。
+- [projectionIngest.test.ts](<projectionIngest.test.ts>) — 投影摄入登记表：键集合与契约双向对齐、一个键一条；执行目录开帧 / 增量 / 清空与旧水位拒绝。
 
 ### 连接与后台（supervisor / 连接条 / 队列 / 后台任务）
 

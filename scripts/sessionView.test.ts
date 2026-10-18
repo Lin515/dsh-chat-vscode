@@ -74,6 +74,7 @@ const EXPECTED_SESSION_KEYS = [
   "turnOutline",
   "imageLimits",
   "agentPreset",
+  "workingDirectory",
 ];
 
 /** 声明的外观态字段清单（手写，同上）。 */
@@ -119,6 +120,7 @@ function fullSessionSource(): SessionViewSource {
     turnOutline: () => undefined,
     imageLimits: () => undefined,
     agentPreset: () => undefined,
+    workingDirectory: () => undefined,
   };
 }
 
@@ -398,5 +400,19 @@ console.log("sessionView: 子代理目录只剩一个名字（subagentEntries）
   assert.strictEqual(bound2.model?.(), undefined);
 }
 console.log("sessionView: 空态预览值（pending）只在没有会话时生效 ✓");
+
+// 执行目录随会话切换清空，不污染创建目录或外观态。
+{
+  const scope = new SessionScope("directory");
+  scope.workingDirectory = "/worktree";
+  const view = sessionView(sessionSourceOf(scope, { id: "directory", title: "", updatedAt: 0, running: false, cwd: "/project" }, []));
+  assert.equal(view.workingDirectory, "/worktree");
+  assert.equal(view.session?.cwd, "/project");
+  assert.equal(sessionView(sessionSourceOf(new SessionScope("other"), undefined, [])).workingDirectory, null);
+  assert.equal(sessionView(sessionSourceOf(undefined, undefined, [])).workingDirectory, null);
+  scope.workingDirectory = undefined;
+  assert.deepEqual(sessionPatch(sessionSourceOf(scope, undefined, []), ["workingDirectory"]), { workingDirectory: null });
+}
+console.log("sessionView: 执行目录随会话切换与清空过线 ✓");
 
 console.log("\nsessionView: all assertions passed");

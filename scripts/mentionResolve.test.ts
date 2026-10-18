@@ -37,6 +37,9 @@ import { ChatController } from "../src/dsh/controller";
 import type { FileRefEntry } from "../src/dsh/fileRefListing";
 import { hostPlatform } from "../src/dsh/localAccess";
 import { visibleForView } from "../src/dsh/sessionList";
+import type { SessionScope } from "../src/dsh/scope";
+import { ingestControlBaseline, ingestProjection, type ProjectionHandlers } from "../src/dsh/projectionIngest";
+import { reducer, initialState } from "../src/webview/state";
 
 process.on("unhandledRejection", (error) => {
   console.error("[mentionResolve] 未处理的异步拒绝（当作失败）：", error);
@@ -438,6 +441,68 @@ console.log("mentionResolve: 信任门关时不凭本机 stat 抑制候选 ✓")
   assert.ok(drive.methods.includes("fileReferences/list"), "文件那一路照常问服务器（它回空表，本地补盘根）");
 }
 console.log("mentionResolve: 盘符裸写是浏览入口且不查对话候选 ✓");
+
+// ---------- 执行目录适配：真投影入口 + 查询链路，创建目录始终不变 ----------
+{
+  const inner = c as unknown as {
+    scopes: Map<string, SessionScope>;
+    projectionHandlers: ProjectionHandlers;
+    sessionCwds: Map<string, string | undefined>;
+    snapshotFor(viewId: string): { workingDirectory?: string | null; session?: { cwd?: string } | null };
+  };
+  const scope = inner.scopes.get(existingSessionId)!;
+  assert.ok(scope);
+  const move = (value: unknown, seq: number) => ingestProjection(inner.projectionHandlers, scope, "workingDirectory", value, seq);
+  move(join(root, "sub"), 10);
+  assert.equal(inner.snapshotFor("v1").workingDirectory, join(root, "sub"));
+  assert.equal(inner.sessionCwds.get(existingSessionId), root, "执行目录不改认领账本");
+  assert.equal(inner.snapshotFor("v1").session?.cwd, root, "不改会话创建目录");
+  assert.equal((await query("beta.ts")).frame.resolved, true, "相对抑制判定使用执行目录");
+  assert.equal((await query("alpha.ts")).frame.resolved, false, "不再按创建目录误抑制");
+  const list = await query("");
+  assert.equal(list.frame.cwd, join(root, "sub"));
+  assert.equal(list.frame.sessionId, existingSessionId);
+  assert.ok((list.frame.items as FileRefEntry[]).some((item) => item.path === "beta.ts"), "补列使用执行目录");
+  assert.equal(move(root, 9), false, "旧投影不能回退目录");
+
+  // 在旧目录查询未结算时切目录，再切回：即使 cwd 相同也不能复活旧批次（ABA）。
+  const request = client.request.bind(client);
+  let release!: (items: FileRefEntry[]) => void;
+  let started!: () => void;
+  const waiting = new Promise<void>((resolve) => { started = resolve; });
+  const held = new Promise<FileRefEntry[]>((resolve) => { release = resolve; });
+  client.request = async (method, params) => {
+    if (method === "fileReferences/list") { started(); return held; }
+    return request(method, params);
+  };
+  frames.length = 0;
+  const pending = c.handle({ type: "queryFiles", query: "" }, "v1");
+  await waiting;
+  move(root, 11);
+  move(join(root, "sub"), 12);
+  release([{ path: "stale.txt", kind: "file" }]);
+  await pending;
+  assert.ok(!frames.some(({ frame }) => frame.type === "files/list" || frame.type === "files/sessions"), "已作废目录查询的两路迟到结果均不下发");
+  client.request = request;
+  assert.equal((await query("")).frame.cwd, join(root, "sub"), "新查询按当前目录重取");
+
+  ingestControlBaseline(inner.projectionHandlers, scope, { asOfSeq: 13, values: {} });
+  assert.equal(inner.snapshotFor("v1").workingDirectory, null, "清空必须过线为 null");
+  assert.equal((await query("alpha.ts")).frame.resolved, true, "baseline 缺键退回创建目录");
+  move(join(root, "sub"), 14);
+  move(null, 15);
+  assert.equal((await query("")).frame.cwd, root, "null 清空后不会残留执行目录");
+
+  // 界面双源回帧也按会话与执行目录验归属（同 query 不足以判断新鲜度）。
+  const state = { ...initialState, session: { id: existingSessionId, title: "", updatedAt: 0, running: false, cwd: root }, workingDirectory: join(root, "sub") };
+  const old = { type: "files/list" as const, query: "", items: SERVER_ITEMS, cwd: root, sessionId: existingSessionId };
+  assert.equal(reducer(state, old), state, "界面拒绝旧目录文件帧");
+  assert.equal(reducer(state, { ...old, sessionId: "other", cwd: state.workingDirectory }), state, "界面拒绝其它会话文件帧");
+  const current = reducer(state, { ...old, cwd: state.workingDirectory });
+  assert.equal(current.fileRefs.cwd, state.workingDirectory);
+  assert.equal(reducer(current, { type: "files/sessions", query: "", sessions: [], cwd: root, sessionId: existingSessionId }), current, "界面拒绝旧目录对话帧");
+}
+console.log("mentionResolve: 执行目录投影、补列、抑制、ABA 迟到丢弃与清空回退 ✓");
 
 await rm(root, { recursive: true, force: true });
 

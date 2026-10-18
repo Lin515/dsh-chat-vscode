@@ -1502,8 +1502,8 @@ console.log("completion(hook): 目录块整段替换（前后文不误吞） ✓
 
   const source = readFileSync(join(process.cwd(), "src", "webview", "composerCompletion.tsx"), "utf8");
   assert.ok(
-    /\}, \[trigger\?\.kind, trigger\?\.query, trigger\?\.sessionOnly\]\);/.test(source),
-    "`@` 重取 effect 的依赖只能是触发词种类、查询串和会话限定通道：光标位置进依赖就会每挪一格多发一帧",
+    /\}, \[trigger\?\.kind, trigger\?\.query, trigger\?\.sessionOnly, sessionId, workingDirectory\]\);/.test(source),
+    "`@` 重取依赖查询语义、会话和执行目录，不依赖光标位置：块内每挪一格不应多发一帧",
   );
 }
 console.log("completion(hook): 同一目录块内挪光标不发重复 queries ✓");
@@ -1727,6 +1727,30 @@ console.log("completion(hook): 键盘只在弹层画出来时接管（抑制门�
   );
 }
 console.log("completion(hook): 刷新期间列表原地留屏（只换一次内容 + 键位冻结） ✓");
+
+// 执行目录变了但查询串没变：旧候选只留屏，不能被选中；新目录回帧后交还动作。
+{
+  const refs: UseComposerCompletionInput["fileRefs"] = {
+    sessionId: "owner", cwd: "/project", query: "", items: [{ path: "old.txt", kind: "file" }], sessions: [], resolved: false,
+  };
+  const first = frame("@", 1, { sessionId: "owner", workingDirectory: "/project", fileRefs: refs });
+  assert.ok(first.html.includes("old.txt"));
+  const moved = nextFrame(first, { sessionId: "owner", workingDirectory: "/worktree", fileRefs: refs });
+  assert.ok(moved.html.includes("old.txt"), "同一会话的旧目录候选原地留屏");
+  press(moved, "Enter");
+  assert.deepEqual(moved.written, [], "旧目录结果不可选中");
+  const fresh = nextFrame(moved, { sessionId: "owner", workingDirectory: "/worktree", fileRefs: {
+    ...refs, cwd: "/worktree", items: [{ path: "new.txt", kind: "file" }],
+  } });
+  assert.ok(fresh.html.includes("new.txt") && !fresh.html.includes("old.txt"));
+  press(fresh, "Enter");
+  assert.equal(fresh.draft, "@new.txt", "新目录候选可以选中");
+  const switched = nextFrame(first, { sessionId: "other", workingDirectory: "/project", fileRefs: refs });
+  assert.ok(!switched.html.includes("old.txt"), "不同会话即使目录相同也不复用留屏列表");
+  const source = readFileSync(join(process.cwd(), "src", "webview", "composerCompletion.tsx"), "utf8");
+  assert.ok(/\[trigger\?\.kind, trigger\?\.query, trigger\?\.sessionOnly, sessionId, workingDirectory\]/u.test(source), "执行目录和会话身份改变时重发同一查询");
+}
+console.log("completion(hook): 同查询串切执行目录与切会话隔离 ✓");
 
 // ---------- 22. M2 宿主下发的「上一层」行（裸 `@` 那一层） ----------
 //

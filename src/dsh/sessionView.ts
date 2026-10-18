@@ -83,6 +83,8 @@ export interface SessionView {
    * 必须跟着换——外观态那一半在切会话时是不动的。
    */
   agentPreset?: ChatState["agentPreset"];
+  /** 执行目录是会话态，随切换整份替换；缺失在线上折成 null。 */
+  workingDirectory?: ChatState["workingDirectory"];
 }
 
 /**
@@ -131,6 +133,7 @@ export const SESSION_VIEW_KEYS = [
   "turnOutline",
   "imageLimits",
   "agentPreset",
+  "workingDirectory",
 ] as const satisfies readonly (keyof SessionView)[];
 
 /** 键清单里那个「字段名」的类型（`SESSION_VIEW_KEYS` 与字段表必须键集相同）。 */
@@ -256,6 +259,9 @@ export const SESSION_FIELDS = {
   },
   agentPreset: {
     read: (source) => source.agentPreset?.() as SessionView["agentPreset"],
+  },
+  workingDirectory: {
+    read: (source) => source.workingDirectory?.() as SessionView["workingDirectory"],
   },
 } satisfies SessionFields;
 
@@ -430,5 +436,6 @@ export function sessionSourceOf(
     turnOutline: () => scope?.turnOutline,
     imageLimits: () => scope?.imageLimits,
     agentPreset: () => (scope ? scope.agentPreset : pending?.agentPreset?.()),
+    workingDirectory: () => scope?.workingDirectory,
   };
 }

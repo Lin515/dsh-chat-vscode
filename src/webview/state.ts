@@ -43,6 +43,8 @@ export interface AppState extends ChatState {
   panel: PanelKind;
   commands: CommandView[];
   fileRefs: {
+    /** 查询归属；切会话时不接收另一条会话的迟到结果。 */
+    sessionId?: string;
     query: string;
     items: FileRefView[];
     sessions: SessionRefView[];
@@ -55,7 +57,7 @@ export interface AppState extends ChatState {
      */
     resolved: boolean;
     /**
-     * 这次的**会话工作目录**（`files/list` 帧下发的候选基准；空串 = 没有）。
+     * 这次的**执行目录**（`files/list` 帧下发的候选基准；空串 = 没有）。
      *
      * 候选里的相对路径、以及界面自己合成的「上一层」行（`../`、盘根回工作区那种空
      * path），只有配上它才能算出完整绝对路径（悬停标题用，见 `pathDisplay.ts` 的
@@ -429,6 +431,8 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, commands: action.commands };
 
     case "files/list":
+      if (action.sessionId !== undefined && action.sessionId !== state.session?.id) return state;
+      if (action.sessionId !== undefined && state.workingDirectory !== undefined && action.cwd !== state.workingDirectory) return state;
       // 只换**文件**那一半：对话候选还在路上（它要扫全部会话日志，慢得多），先把
       // 上一批留在屏上——官方的 `@` 菜单就是 stale-while-revalidate
       // （`ui-input-trigger` 的 `menuReduce`：新一代替换之前，旧条目继续渲染）。
@@ -440,8 +444,10 @@ export function reducer(state: AppState, action: Action): AppState {
         ...state,
         fileRefs: {
           ...state.fileRefs,
+          sessionId: action.sessionId,
           query: action.query,
           items: action.items,
+          ...(action.sessionId !== state.fileRefs.sessionId || (action.cwd ?? "") !== state.fileRefs.cwd ? { sessions: [] } : {}),
           resolved: action.resolved === true,
           cwd: action.cwd ?? "",
         },
@@ -451,6 +457,11 @@ export function reducer(state: AppState, action: Action): AppState {
       // 属于**别的查询**的对话候选直接丢（敲字快时后到的那一批）：收下就会渲染出
       // 「文件是这一层的、对话是上一层筛出来的」这种混合列表。
       if (action.query !== state.fileRefs.query) return state;
+      if (action.sessionId !== undefined && (
+        action.sessionId !== state.session?.id || action.sessionId !== state.fileRefs.sessionId ||
+        (action.cwd ?? "") !== state.fileRefs.cwd ||
+        (state.workingDirectory !== undefined && action.cwd !== state.workingDirectory)
+      )) return state;
       return {
         ...state,
         fileRefs: { ...state.fileRefs, sessions: action.sessions },
