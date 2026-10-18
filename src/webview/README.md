@@ -69,6 +69,7 @@ React / 浏览器环境，不使用 Node API。上层边界见[源码导航](<..
 
 - [markdown.ts](<markdown.ts>) — marked 与 DOMPurify；代码块由组件渲染。
 - [footnotes.ts](<footnotes.ts>) — 脚注扩展。
+- [cjkStrong.ts](<cjkStrong.ts>) — tokenizer 放宽中文标点收尾的加粗闭合（官方 cjkFriendlyStrong 口径）。
 - [linkDestinations.ts](<linkDestinations.ts>) — tokenizer 保护 Windows 反斜杠目标。
 - [fileLinks.ts](<fileLinks.ts>) — Markdown 路径锚点与本轮文件 token。
 - [fileMentions.ts](<fileMentions.ts>) — 文件 token 到按钮的 DOM 变换。

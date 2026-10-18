@@ -1,5 +1,6 @@
 import DOMPurify from "dompurify";
 import { Marked } from "marked";
+import { cjkStrongTokenizers } from "./cjkStrong";
 import { beginFootnotes, endFootnotes, footnoteExtensions, footnoteSection } from "./footnotes";
 import { windowsPathTokenizers } from "./linkDestinations";
 
@@ -24,14 +25,17 @@ const marked = new Marked({
   // 脚注（`markdown.footnotes`）：marked 不带这套语法，由 `footnotes.ts` 补
   extensions: footnoteExtensions(),
   /**
-   * Windows 反斜杠路径的链接目标不被 CommonMark 当转义吃掉（`\.` → `.`）。
+   * tokenizer 层的两处覆写：
    *
-   * 少了这一条时：正文里 `[日志](D:\app\demo\.agent\a.log)` 的 href 会变成
-   * `…demo.agent…`，点击报「找不到文件」；`![](D:\app\demo\.agent\图.png)` 同理，
-   * 本地图片按改坏的路径读盘，界面显示「图片加载失败」。缘由与边界见
-   * `linkDestinations.ts`。
+   * - `windowsPathTokenizers`：Windows 反斜杠路径的链接目标不被 CommonMark 当转义
+   *   吃掉（`\.` → `.`）。少了它时，正文里 `[日志](D:\app\demo\.agent\a.log)` 的
+   *   href 会变成 `…demo.agent…`，点击报「找不到文件」；`![](D:\app\demo\.agent\图.png)`
+   *   同理，本地图片按改坏的路径读盘，界面显示「图片加载失败」。缘由与边界见
+   *   `linkDestinations.ts`。
+   * - `cjkStrongTokenizers`：中文标点收尾的加粗（`…不够。**分页…`）允许闭合，
+   *   向官方 `cjkFriendlyStrong` 口径对齐，见 `cjkStrong.ts`。
    */
-  tokenizer: windowsPathTokenizers(),
+  tokenizer: { ...windowsPathTokenizers(), ...cjkStrongTokenizers() },
 });
 
 /**

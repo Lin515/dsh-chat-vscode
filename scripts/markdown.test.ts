@@ -24,6 +24,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Marked } from "marked";
+import { cjkStrongTokenizers } from "../src/webview/cjkStrong";
 import { parseFileLink } from "../src/webview/fileLinks";
 import { windowsPathTokenizers } from "../src/webview/linkDestinations";
 import { localImagePath } from "../src/shared/imageRef";
@@ -346,7 +347,7 @@ const source = read("src", "webview", "markdown.ts");
   // 接线不变量：注释掉一行也算「没接」，所以这里要求它是一行**真配置**
   // （行首只允许空白，不含 `//`），并连 import 一起钉住
   assert.ok(
-    /^[ \t]*tokenizer: windowsPathTokenizers\(\),$/mu.test(source),
+    /^[ \t]*tokenizer: \{ \.\.\.windowsPathTokenizers\(\), \.\.\.cjkStrongTokenizers\(\) \},$/mu.test(source),
     "markdown.ts 的 marked 实例必须真的接入 windowsPathTokenizers()（挂漏或注释掉都是静默失效）",
   );
   assert.ok(
@@ -385,6 +386,103 @@ const source = read("src", "webview", "markdown.ts");
     }
   }
   console.log("markdown: Windows 反斜杠路径的链接/图片目标（真 marked → 真判定 → 真宿主解析）✓");
+}
+
+// ---------- 7. 中文标点收尾的加粗（官方 cjkFriendlyStrong 口径） ----------
+//
+// CommonMark 要求闭合 `**` 是 right-flanking：前一字符不是标点，或者前一字符是标点但
+// **后一字符是空白或标点**。中英混排最常见的收尾 `…不够。**分页…`（前是 `。`、后是
+// 汉字）两条都不满足，于是加粗失效、星号直接露在正文里；同一段里闭合符后是换行或标点
+// 的加粗却照常生效，看着像模型把标记写错了。官方渲染链为这条规则补过扩展
+// （`cjkFriendlyStrong`），本扩展在 `webview/cjkStrong.ts` 补上同一判据（向官方对齐），
+// 本段用真 marked 钉住「修好」与「没放宽别的形状」两侧。
+{
+  const withFix = new Marked({
+    gfm: true,
+    breaks: false,
+    tokenizer: { ...windowsPathTokenizers(), ...cjkStrongTokenizers() },
+  });
+  const withoutFix = new Marked({ gfm: true, breaks: false, tokenizer: windowsPathTokenizers() });
+  const render = (marked: Marked, src: string): string => marked.parse(src, { async: false }) as string;
+  const strongs = (html: string): string[] =>
+    [...html.matchAll(/<strong>([\s\S]*?)<\/strong>/gu)].map((match) => match[1] as string);
+
+  // 用户报的那一句（会话原文，含前后文）
+  const reported = "建议把路径来源基准保存到消息或工具视图模型中；回放时结合目录变更事件恢复。"
+    + "**变化可能发生在同一轮内部，只按轮次记目录也不够。**"
+    + "分页历史缺少前置目录状态时，应补齐基准或明确无法解析，不能拿最新目录猜。";
+  const rendered = render(withFix, reported);
+  assert.deepStrictEqual(
+    strongs(rendered),
+    ["变化可能发生在同一轮内部，只按轮次记目录也不够。"],
+    `中文标点收尾的加粗必须成对，实际：${rendered}`,
+  );
+  assert.ok(!rendered.includes("**"), `加粗成对后星号不得留在正文里，实际：${rendered}`);
+
+  // 同形状的其它收尾标点，以及行首开场（官方 e2e 的用例形状）
+  for (const [src, expected] of [
+    ["**句号。**后续", "句号。"],
+    ["恢复。**变化不够。**分页", "变化不够。"],
+    ["提醒！**先存盘！**再改", "先存盘！"],
+    ["先确认？**还早？**接着走", "还早？"],
+  ] as const) {
+    const html = render(withFix, src);
+    assert.deepStrictEqual(strongs(html), [expected], `标点收尾的加粗要成对：${src} → ${html}`);
+    assert.ok(!html.includes("**"), `星号不得留在正文里：${src} → ${html}`);
+  }
+
+  // 加粗内部仍是真解析：行内代码之类的标记照常递归
+  assert.deepStrictEqual(
+    strongs(render(withFix, "**加 `code` 的收尾。**后续")),
+    ["加 <code>code</code> 的收尾。"],
+    "放宽闭合不得把加粗内部降级成字面文本",
+  );
+
+  // 没放宽任何别的形状：挂与不挂这层修复必须产出**逐字相同**的 HTML。
+  // （西文相邻、单星号 em、三星号组合都不在官方判据里；代码里的星号是字面量）
+  for (const untouched of [
+    "**Period.**next",
+    "*斜体。*后续",
+    "***粗斜。***后续",
+    "**我赞成这个方向。**\n让 VS Code 打开",
+    "**补全**：使用当前执行目录。",
+    "正文**加粗**文字",
+    "行内 `**变化不够。**分页`",
+    "```\n**变化不够。**分页\n```",
+  ]) {
+    assert.strictEqual(
+      render(withFix, untouched),
+      render(withoutFix, untouched),
+      `这次修复不得改动其它形状：${untouched}`,
+    );
+  }
+
+  // 负向对照：没有这层修复时那一对星号就是字面文本——这正是要修的那条 CommonMark 语义。
+  // marked 升级后此处若变红，说明上游自己改成了 CJK 友好，需重新评估 cjkStrong 是否还必要。
+  const unfixed = render(withoutFix, "恢复。**变化不够。**分页");
+  assert.ok(
+    !unfixed.includes("<strong>") && unfixed.includes("**变化不够。**"),
+    `负向对照：默认管线必须把星号留成字面文本，实际：${unfixed}`,
+  );
+
+  // 接线不变量：注释掉一行也算「没接」，所以要求它是一行**真配置**并连 import 一起钉住
+  assert.ok(
+    /^[ \t]*tokenizer: \{ \.\.\.windowsPathTokenizers\(\), \.\.\.cjkStrongTokenizers\(\) \},$/mu.test(source),
+    "markdown.ts 的 marked 实例必须接入 cjkStrongTokenizers()（挂漏或注释掉都是静默失效）",
+  );
+  assert.ok(
+    /import \{ cjkStrongTokenizers \} from "\.\/cjkStrong";/u.test(source),
+    "markdown.ts 必须从 cjkStrong 导入 cjkStrongTokenizers",
+  );
+  // 判据的文字系统要与官方扩展逐条一致（少一个都会让对应语言的收尾漏回字面星号）
+  const cjkSource = read("src", "webview", "cjkStrong.ts");
+  for (const script of ["Han", "Hiragana", "Katakana", "Hangul", "Bopomofo"]) {
+    assert.ok(
+      new RegExp(`Script_Extensions=${script}`).test(cjkSource),
+      `cjkStrong 的 CJK 判据缺 ${script}（应与官方 cjkFriendlyStrong 一致）`,
+    );
+  }
+  console.log("markdown: 中文标点收尾的加粗成对（官方 cjkFriendlyStrong 口径）✓");
 }
 
 console.log("\nmarkdown: all assertions passed");
