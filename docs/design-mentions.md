@@ -84,7 +84,7 @@
 
 ### 路径解析：放开哪一条、保留哪一条
 
-越界列举的新判据（`resolveListingDirectory`，取代越界分支里的 `resolveInside`）：
+越界列举的新判据（`resolveListingDirectory`，取代越界分支里的 `resolveInside`；不支持的根 / 盘符形态在更早的纯字符串判据处就被拒绝，走不到这里，见上面「补充口径」）：
 
 - 目标目录按宿主形态是**绝对路径** → 直接用作列举根（不做 `relative()` 包含判据，绝对形态天然可跨卷）；
 - **相对且不含 `..` 段** → 仍是今天那条 `resolveInside`（逐段 `lstat`、拒绝符号链接段、拒绝越界）；
