@@ -38,6 +38,7 @@ import {
   IconChat,
   IconChevronDown,
   IconChevronRight,
+  IconDesktop,
   IconFolder,
   IconGlobe,
   IconHistory,
@@ -66,7 +67,7 @@ import type { SubagentView } from "../shared/chat";
 /**
  * 顶部只有一排图标按钮——Continue 的聊天页没有传统工具栏，
  * 这里保留最少的入口：新建、历史、后台任务、在编辑器中打开、
- * 在浏览器中打开（官方 Web UI）。
+ * 打开（官方 Web UI / 桌面端应用窗口，见 `state.desktopConnected`）。
  *
  * 子代理**没有**按钮（官方 Web 端也没有）：它的入口在标题右侧——普通会话显示
  * 目录计数触发器、子代理页显示面包屑（见 `SubagentNav`），没有子代理时什么都不占。
@@ -74,7 +75,7 @@ import type { SubagentView } from "../shared/chat";
  * 这里曾经还有一颗**设置**按钮（自绘的 DSH 服务端设置面板）。它被删掉了：
  * Web 端的设置页是各功能插件自绘的页面组合（`settings.section` 槽），没有任何
  * 数据契约可以自绘复刻，而通用 schema 表单只能展示裸字段名。现在 Web 专属设置
- * 走「在浏览器中打开」，扩展真正读取的设置（模型、`busyEnter`…）另有入口。
+ * 走「打开」（连桌面端时改开桌面端窗口），扩展真正读取的设置（模型、`busyEnter`…）另有入口。
  */
 function Header({
   state,
@@ -176,14 +177,28 @@ function Header({
           <IconOpenInEditor size={15} />
         </button>
       )}
-      <button
-        data-mini="hide"
-        className="icon-btn"
-        title={texts.openInBrowser}
-        onClick={() => post({ type: "openInBrowser" })}
-      >
-        <IconGlobe size={15} />
-      </button>
+      {/* 「打开」：**一颗按钮两种形态**（用户 2026-10-18 口径）。当前连的是桌面端内置
+          服务时打开桌面端应用窗口——那套服务对浏览器是关着的（只认自己按进程生成的
+          启动令牌），在浏览器里打开只会得到一页 401；其余情况打开官方 Web UI。 */}
+      {state.desktopConnected ? (
+        <button
+          data-mini="hide"
+          className="icon-btn"
+          title={texts.openDesktop}
+          onClick={() => post({ type: "openDesktop" })}
+        >
+          <IconDesktop size={15} />
+        </button>
+      ) : (
+        <button
+          data-mini="hide"
+          className="icon-btn"
+          title={texts.openInBrowser}
+          onClick={() => post({ type: "openInBrowser" })}
+        >
+          <IconGlobe size={15} />
+        </button>
+      )}
     </div>
   );
 }
@@ -395,6 +410,8 @@ const CONNECT_POST: Record<ConnectButtonId, () => void> = {
   startInternal: () => post({ type: "startInternal" }),
   connectInternal: () => post({ type: "connectInternal" }),
   connectExternal: () => post({ type: "connectExternal" }),
+  startDesktop: () => post({ type: "startDesktop" }),
+  connectDesktop: () => post({ type: "connectDesktop" }),
   restartInternal: () => post({ type: "restartInternal" }),
   enterToken: () => post({ type: "setToken" }),
   showLogs: () => post({ type: "showLogs" }),

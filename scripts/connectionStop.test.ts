@@ -184,12 +184,16 @@ function check(label: string, ok: boolean, detail = ""): void {
   );
 }
 
-// ---------- 5. 目标是外部时，**内部那套一个字都不许动界面** ----------
+// ---------- 5. 目标不是内部时，**内部那套一个字都不许动界面** ----------
+//
+// 2026-09-19 立的是「目标为外部」这一档；2026-10-18 桌面端接进来之后，同一个道理对它同样
+// 成立（桌面端那一支也不走 supervisor，管理器报的内部状态与我们这条连接无关），所以这条
+// 断言覆盖**两个非内部目标**。
 {
   const body = bodyOf("onServerStatus");
   check(
-    "onServerStatus 在目标为外部时提前返回（内部那套的退场/失败不许改写界面）",
-    /if\s*\(this\.target\?\.kind\s*===\s*"external"\)\s*return;/u.test(body),
+    "onServerStatus 在目标为外部 / 桌面端时提前返回（内部那套的退场/失败不许改写界面）",
+    /this\.target\?\.kind\s*===\s*"external"\s*\|\|\s*this\.target\?\.kind\s*===\s*"desktop"/u.test(body),
     "少了它：内部守护进程退场/换地址会把界面从'连着外部'拉回按钮态",
   );
 }
@@ -220,6 +224,34 @@ function check(label: string, ok: boolean, detail = ""): void {
     "「停止连接」之后心跳不许自动接回（detachedByUser 排在 connection.connected 之前）",
     detachedAt >= 0 && connectedAt >= 0 && detachedAt < connectedAt,
     `detached@${detachedAt} connected@${connectedAt}`,
+  );
+}
+
+// ---------- 6b. 桌面端目标：端点每次启动都变，比对必须用**刚探到的那一份** ----------
+//
+// 这是桌面端接入里最容易写错、也最难发现的一处：管理器那份 `status.info` 是本窗口自己
+// `ensure()` 时写下的旧值，拿它和手里的客户端比会**永远**"端点没变"，于是安装更新替换宿主
+// （端口与凭据一起换）之后，客户端会一直重连一个已经不存在的端口——用户看到的只是
+// "一直正在连接…"，没有任何报错。所以：未连接那一档与**已连接那一档**都要重新发现。
+{
+  const heartbeat = bodyOf("handleHeartbeat");
+  check(
+    "心跳对桌面端目标重新发现端点（不是拿管理器那份旧 status.info 比）",
+    /probeDesktop\(false\)/u.test(heartbeat) && /sameEndpoint\(current\.baseUrl, this\.client\.baseUrl\)/u.test(heartbeat),
+    "少了它：宿主被替换（端口变了）之后永远判「端点没变」",
+  );
+  check(
+    "「已连接」那一档也覆盖桌面端（否则替换宿主之后客户端会一直重连死端口）",
+    /this\.connection === "connected"[\s\S]{0,600}?this\.target\?\.kind === "desktop"[\s\S]{0,900}?probeDesktop\(false\)/u.test(heartbeat),
+    "桌面端的重发现必须排在那条分支里（连上的时候也要能发现宿主换了）",
+  );
+  check(
+    "桌面端可连接时按原目标重建连接（走 reconnectPeer → ensure，重新发现 + 重新签票）",
+    /reconnectPeer\(\{ baseUrl: current\.baseUrl, owned: false, ownership: "desktop" \}\)/u.test(heartbeat),
+  );
+  check(
+    "桌面端这一刻连不上就什么都不发起（不自行拉起，也不改重连意图）",
+    /current\.kind !== "attached"\) return;/u.test(heartbeat),
   );
 }
 

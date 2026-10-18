@@ -13,6 +13,10 @@
  *    是 `start: false`，暂缺内部后台时一个字都不发起（重连意图留着，下个心跳再探）；
  * 3. `dshChat.autoConnect` 改开时立刻 `autoConnect(true)`——用户改配置不是"我要起一套"。
  *
+ * 2026-10-19 再补一条选路的**前提**：`dshChat.command` 留空 = 没有内部那一轴，激活期选路
+ * 连"内部"那一档都不碰（落到别的轴；一条都没有时一次 `ensure` 都不发起、落按钮态）。
+ * 这正对应用户报的"我都没配启动命令，它怎么自己起来一套"。
+ *
  * 另钉两条**收场**语义（用户 2026-10-18 澄清）：使用过程中的普通断连**保留对原端点的自动
  * 重连**（不重新选路、不 spawn），只有守护进程亲口告别（`cause` 为 `stop`/`idle`）或用户点了
  * 停止才算终结、才回按钮态；同一个守护进程换了端点才重建客户端。
@@ -86,6 +90,7 @@ class FakeClient {
   }
 
   async authenticate(): Promise<void> {}
+  useSessionCookie(): void {}
   connect(): void {}
   onDidChangeState(listener: (state: string) => void): void {
     this.listeners.push(listener);
@@ -194,6 +199,7 @@ interface Harness {
   setSupervisorAlive(value: boolean): void;
   /** 管理器快照里那份"内部就绪"的记忆（心跳用它判端点变没变）。 */
   setStatusInfo(info: unknown): void;
+  setDesktopUrl(url: string): void;
   /**
    * 给控制器一个"能用的工作目录"（`hasWorkspaceDir()` 只认打开的文件夹或 `newSessionCwd`）。
    * 建空壳那条自动路径必须有它，否则窗口停在"无会话的空态"，与"有没有连上"无关。
@@ -218,7 +224,16 @@ function deferred(): Deferred {
   return { promise, resolve };
 }
 
-function makeHarness(options: { seed?: { sessionId: string; blank?: boolean }[]; supervisorAlive?: boolean } = {}): Harness {
+function makeHarness(
+  options: {
+    seed?: { sessionId: string; blank?: boolean }[];
+    supervisorAlive?: boolean;
+    /** 内部那一轴存不存在（`dshChat.command` 留空时为 false，用户 2026-10-19 口径）。 */
+    commandConfigured?: boolean;
+    /** 桌面端那一轴：配了可执行文件 + 这一刻可连接（选路会落到它）。 */
+    desktopAttachable?: boolean;
+  } = {},
+): Harness {
   const ensureCalls: { start?: boolean; target?: string }[] = [];
   const stopCalls: Record<string, unknown>[] = [];
   const autoConnectValues: boolean[] = [];
@@ -230,9 +245,13 @@ function makeHarness(options: { seed?: { sessionId: string; blank?: boolean }[];
   let holdNextProbe = false;
   let probeCount = 0;
   const probeGates: Deferred[] = [];
+  const desktopAttachable = options.desktopAttachable === true;
+  let desktopUrl = "http://127.0.0.1:7777/";
 
   const server = {
     externalUrl: undefined,
+    commandConfigured: options.commandConfigured ?? true,
+    desktopConfigured: desktopAttachable,
     async probeRunning() {
       probeCount += 1;
       if (holdNextProbe) {
@@ -245,6 +264,9 @@ function makeHarness(options: { seed?: { sessionId: string; blank?: boolean }[];
     },
     async probeExternal() {
       return false;
+    },
+    async probeDesktop() {
+      return desktopAttachable ? { kind: "attached", baseUrl: desktopUrl, cookie: "desktop-cookie" } : { kind: "not-running" };
     },
     snapshot() {
       return { target: undefined, status: { state: "stopped", info: statusInfo }, connected: false, startAllowed: true };
@@ -306,6 +328,9 @@ function makeHarness(options: { seed?: { sessionId: string; blank?: boolean }[];
     },
     setStatusInfo(info: unknown) {
       statusInfo = info;
+    },
+    setDesktopUrl(url: string) {
+      desktopUrl = url;
     },
     holdProbe() {
       holdNextProbe = true;
@@ -778,12 +803,93 @@ console.log("autoConnectOnce: 自动连接只在扩展启动时做一次（驱�
   check("恢复也不再挂在账上（认领已收口）", !h.internals.restoreHints.has("v1"));
 }
 
+// ---------- 十二、空启动命令 = 没有内部那一轴：激活期选路连内部那一档都不碰 ----------
+//
+// 用户 2026-10-19 口径：`dshChat.command` 留空就是在说"我不要内部 DSH"。此时激活期选路
+// 要么落到别的轴（桌面端），要么**没有可选项**（一次 ensure 都不发起、落按钮态）——
+// 两条都不许拿空命令去连内部或拉起内部。
+{
+  const withDesktop = makeHarness({ supervisorAlive: false, commandConfigured: false, desktopAttachable: true });
+  const activation = withDesktop.controller.autoConnect(true);
+  await settle(4);
+  check(
+    "空命令 + 桌面端可连接 → 选路落到桌面端（它已经在跑，只接上：start:false）",
+    withDesktop.ensureCalls.length === 1 &&
+      withDesktop.ensureCalls[0].target === "desktop" &&
+      withDesktop.ensureCalls[0].start === false,
+    JSON.stringify(withDesktop.ensureCalls),
+  );
+  check(
+    "空命令时**没有**任何一轮连内部（那正是拿空命令去 spawn 的来路）",
+    withDesktop.ensureCalls.every((call) => call.target !== "internal"),
+    JSON.stringify(withDesktop.ensureCalls),
+  );
+  check(
+    "粘性目标粘在桌面端上（不许再自动拉起任何东西）",
+    withDesktop.internals.target?.kind === "desktop" && withDesktop.internals.target?.mayStart === false,
+    JSON.stringify(withDesktop.internals.target),
+  );
+  // 让那一轮落地，别把在飞的 ensure 留在外面（否则脚本结尾会报 unsettled top-level await）
+  withDesktop.resolveEnsure(0, {
+    baseUrl: "http://127.0.0.1:7777/",
+    cookie: "desktop-cookie",
+    ownership: "desktop",
+  });
+  await activation;
+  await settle(4);
+
+  const nothing = makeHarness({ supervisorAlive: false, commandConfigured: false, desktopAttachable: false });
+  await nothing.controller.autoConnect(true);
+  await settle(4);
+  check(
+    "空命令 + 没有别的轴 → 没有可选项：一次 ensure 都不发起",
+    nothing.ensureCalls.length === 0,
+    JSON.stringify(nothing.ensureCalls),
+  );
+  check(
+    "没有可选项 → 落按钮态且不粘任何目标",
+    nothing.internals.connection === "stopped" && nothing.internals.target === undefined,
+    `${nothing.internals.connection} / ${JSON.stringify(nothing.internals.target)}`,
+  );
+}
+
+// ---------- 十三、关掉自动连接后首次新建：选出的桌面端仍是粘性目标，换口只接上 ----------
+{
+  const h = makeHarness({ commandConfigured: false, desktopAttachable: true });
+  h.setWorkspaceDir(CWD);
+  h.internals.bindView("v1");
+  await h.controller.autoConnect(false);
+  const userNew = h.controller.newSession("v1");
+  await settle(4);
+  check("首次新建选桌面端且允许启动", h.ensureCalls[0]?.target === "desktop" && h.ensureCalls[0]?.start === true, JSON.stringify(h.ensureCalls));
+  const desktopInfo = (baseUrl: string) => ({ baseUrl, cookie: "desktop-cookie", ownership: "desktop" });
+  h.resolveEnsure(0, desktopInfo("http://127.0.0.1:7777/"));
+  await userNew;
+  await settle();
+  check("通用入口保存桌面端粘性目标", h.internals.target?.kind === "desktop", JSON.stringify(h.internals.target));
+  check("首次连接成功", h.internals.connection === "connected", h.internals.connection);
+
+  h.setDesktopUrl("http://127.0.0.1:8888/");
+  h.clients[0].emit("disconnected");
+  await h.heartbeat();
+  check(
+    "桌面端换口后心跳重连原目标且禁止启动",
+    h.ensureCalls.length === 2 && h.ensureCalls[1].target === "desktop" && h.ensureCalls[1].start === false,
+    JSON.stringify(h.ensureCalls),
+  );
+  h.resolveEnsure(1, desktopInfo("http://127.0.0.1:8888/"));
+  await settle();
+  check("旧客户端收掉、新客户端接上新端口", h.clients.length === 2 && h.clients[0].disposed === 1 && h.clients[1].baseUrl === "http://127.0.0.1:8888");
+  check("换口后恢复已连接", h.internals.connection === "connected", h.internals.connection);
+  h.controller.dispose();
+}
+
 if (failures > 0) {
   console.error(`\n✗ 自动连接只在扩展启动时做一次：${failures} 项未通过`);
   process.exitCode = 1;
 } else {
   console.log(
-    "\n✓ 自动连接只在扩展启动时做一次（重复调用只一条链 / 关掉不自动连 / 迟到选路让位 / 用户先停则一次都不连 / 普通断连按原目标接着接、绝不重建与拉起 / 热配置不触发连接 / 已知终结才回按钮态 / 换端点才重建 / ready 早于连接仍能接回历史会话 / 自动补壳不压用户动作 / 迟到的恢复作废）全通过",
+    "\n✓ 自动连接只在扩展启动时做一次（重复调用只一条链 / 关掉不自动连 / 迟到选路让位 / 用户先停则一次都不连 / 普通断连按原目标接着接、绝不重建与拉起 / 热配置不触发连接 / 已知终结才回按钮态 / 换端点才重建 / ready 早于连接仍能接回历史会话 / 自动补壳不压用户动作 / 迟到的恢复作废 / 空命令时连内部那一档都不碰）全通过",
   );
   assert.ok(true);
 }

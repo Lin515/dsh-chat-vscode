@@ -20,6 +20,10 @@
  * 2. 「查看日志」恒显（每一档都可能是"连不上但说不清"）；
  * 3. 连接中**只**给这两个按钮——不许冒出启动/连接/重启按钮。
  *
+ * 2026-10-19 补一档：**内部那一轴不存在**（`dshChat.command` 留空 = 没有内部 DSH）时，
+ * 左半句写「内部 DSH：未配置」，内部那三颗按钮一颗都不给，主按钮位让给唯一还有意义的轴
+ * （见下面第 4c 组）。
+ *
  * 运行：npm test（**新增文件必须登记到 esbuild.scripts.mjs 的 entries**，否则静默不跑）
  */
 import assert from "node:assert";
@@ -37,8 +41,11 @@ const TEXTS: ConnectTexts = {
   startingInternal: "startingInternal",
   connectingInternal: "connectingInternal",
   connectingExternal: (baseUrl: string) => `connectingExternal(${baseUrl})`,
+  startingDesktop: "startingDesktop",
+  connectingDesktop: "connectingDesktop",
   statusInternalRunning: "statusInternalRunning",
   statusInternalNotRunning: "statusInternalNotRunning",
+  statusInternalUnconfigured: "statusInternalUnconfigured",
   statusExternalReachable: "statusExternalReachable",
   statusExternalUnreachable: "statusExternalUnreachable",
   statusExternalUnconfigured: "statusExternalUnconfigured",
@@ -46,6 +53,8 @@ const TEXTS: ConnectTexts = {
   startInternal: "startInternal",
   connectInternal: "connectInternal",
   connectExternal: "connectExternal",
+  startDesktop: "startDesktop",
+  connectDesktop: "connectDesktop",
   restartInternal: "restartInternal",
   externalDisabledHint: "externalDisabledHint",
   enterToken: "enterToken",
@@ -96,8 +105,8 @@ function check(label: string, ok: boolean, detail = ""): void {
     ids(internalStarting),
   );
   check(
-    "连接中不许出现启动/连接/重启内部、连接外部（用户 2026-09-18 口径）",
-    !/startInternal|connectInternal|connectExternal|restartInternal/.test(ids(internalStarting)),
+    "连接中不许出现启动/连接/重启内部、连接外部、桌面端那两颗（用户 2026-09-18 口径）",
+    !/startInternal|connectInternal|connectExternal|restartInternal|startDesktop|connectDesktop/.test(ids(internalStarting)),
   );
   check("连接中「查看日志」依然是幽灵小按钮 + data-mini（恒显那条口径不变）", (() => {
     const logs = buttonOf(internalStarting, "showLogs");
@@ -116,6 +125,20 @@ function check(label: string, ok: boolean, detail = ""): void {
 
   const externalNoAddress = view({ connection: "connecting", connectTarget: "external" });
   check("连接中 + 外部但没配地址 → 退回「正在连接…」", externalNoAddress.text === TEXTS.connecting, externalNoAddress.text);
+
+  const desktopStarting = view({ connection: "connecting", connectTarget: "desktop", connectPhase: "starting" });
+  check("连接中 + 桌面端 + starting → 「正在启动 DSH 桌面端…」", desktopStarting.text === TEXTS.startingDesktop, desktopStarting.text);
+  const desktopConnecting = view({ connection: "connecting", connectTarget: "desktop", connectPhase: "connecting" });
+  check(
+    "连接中 + 桌面端 + connecting → 「正在连接 DSH 桌面端…」",
+    desktopConnecting.text === TEXTS.connectingDesktop,
+    desktopConnecting.text,
+  );
+  check(
+    "连接中的桌面端目标同样只有「停止连接」+「查看日志」",
+    ids(desktopConnecting) === "stopReconnect,showLogs",
+    ids(desktopConnecting),
+  );
 
   const targetUnset = view({ connection: "connecting", serverUrl: "http://127.0.0.1:9/" });
   check(
@@ -183,6 +206,104 @@ function check(label: string, ok: boolean, detail = ""): void {
   })(), unreachable.text);
 }
 
+// ---------- 4b. 桌面端那一颗：配了才出现，措辞按认人结论二分 ----------
+//
+// 与内部那两颗同一个口径（用户 2026-10-18）：两个按钮是**同一套逻辑**（有就接上、没有就
+// 拉起），措辞只负责告诉用户"此刻大概是什么状态"。没配 `dshChat.desktopExecutable` 时
+// **一颗都不给**——没有可连的目标，按钮只会白占位置。
+{
+  const noDesktop = view({ connection: "stopped", internalRunning: false, externalState: "unconfigured" });
+  check(
+    "没配桌面端 → 一颗桌面端按钮都不出现",
+    ids(noDesktop) === "startInternal,connectExternal,showLogs",
+    ids(noDesktop),
+  );
+
+  const notRunning = view({ connection: "stopped", internalRunning: false, desktopConfigured: true, desktopRunning: false });
+  check(
+    "配了 + 认人没找到 → 「启动 DSH 桌面端」，排在连接外部之后",
+    ids(notRunning) === "startInternal,connectExternal,startDesktop,showLogs",
+    ids(notRunning),
+  );
+  check("「启动 DSH 桌面端」用加号图标（与内部的「启动」同一形态）", buttonOf(notRunning, "startDesktop")?.icon === "plus");
+
+  const running = view({ connection: "stopped", internalRunning: false, desktopConfigured: true, desktopRunning: true });
+  check(
+    "配了 + 认人在跑 → 「连接 DSH 桌面端」（只换措辞，不换位置）",
+    ids(running) === "startInternal,connectExternal,connectDesktop,showLogs",
+    ids(running),
+  );
+  check("「连接 DSH 桌面端」用重启图标（与内部的「连接」同一形态）", buttonOf(running, "connectDesktop")?.icon === "refresh");
+  check("桌面端那两颗都不是主按钮（主按钮位留给内部那一轴）", buttonOf(running, "connectDesktop")?.variant === "plain");
+
+  const errorWithDesktop = view({ connection: "error", connectionDetail: "@desktopCredentialRejected", desktopConfigured: true, desktopRunning: true });
+  check(
+    "桌面端凭据失败 → error 档里详情优先，桌面端那颗照旧给（用户要能重试）",
+    errorWithDesktop.text === "@desktopCredentialRejected" && ids(errorWithDesktop).includes("connectDesktop"),
+    `${errorWithDesktop.text} / ${ids(errorWithDesktop)}`,
+  );
+  check(
+    "桌面端凭据失败**不**给「输入令牌」（桌面端没有可输入的令牌）",
+    buttonOf(errorWithDesktop, "enterToken") === undefined,
+    ids(errorWithDesktop),
+  );
+}
+
+// ---------- 4c. 内部那一轴不存在（`dshChat.command` 留空，用户 2026-10-19 口径） ----------
+//
+// 「留空 = 没有内部 DSH」要在界面上看得出来：状态短语写「未配置」（不是「未运行」），
+// 内部那三颗按钮**一颗都不给**（含「重启内部 DSH」——它在没配命令时永远不该出现），
+// 主按钮位让给唯一还有意义的那条轴。
+{
+  const unconfigured = view({ connection: "stopped", internalConfigured: false, internalRunning: false, externalState: "unconfigured" });
+  check(
+    "内部未配置 → 状态短语是「未配置」（不是「未运行」）",
+    unconfigured.text === `${TEXTS.statusInternalUnconfigured}${TEXTS.statusSeparator}${TEXTS.statusExternalUnconfigured}`,
+    unconfigured.text,
+  );
+  check(
+    "内部未配置 → 没有「启动内部 DSH」/「连接内部 DSH」/「重启内部 DSH」",
+    ids(unconfigured) === "connectExternal,showLogs",
+    ids(unconfigured),
+  );
+  check(
+    "内部未配置且没有别的轴 → 「连接外部 DSH」置灰，没有主按钮（没有可点的主动作）",
+    buttonOf(unconfigured, "connectExternal")?.disabled === true &&
+      buttonOf(unconfigured, "connectExternal")?.variant === "plain",
+    `${buttonOf(unconfigured, "connectExternal")?.variant}`,
+  );
+
+  const withExternal = view({ connection: "stopped", internalConfigured: false, externalState: "reachable" });
+  check(
+    "内部未配置 + 外部可达 → 「连接外部 DSH」升为主按钮（唯一还有意义的轴）",
+    ids(withExternal) === "connectExternal,showLogs" && buttonOf(withExternal, "connectExternal")?.variant === "primary",
+    `${ids(withExternal)} / ${buttonOf(withExternal, "connectExternal")?.variant}`,
+  );
+
+  const withDesktop = view({ connection: "stopped", internalConfigured: false, externalState: "unconfigured", desktopConfigured: true, desktopRunning: false });
+  check(
+    "内部未配置 + 配了桌面端 → 「启动 DSH 桌面端」升为主按钮（「只想用桌面端」的配法）",
+    ids(withDesktop) === "connectExternal,startDesktop,showLogs" && buttonOf(withDesktop, "startDesktop")?.variant === "primary",
+    `${ids(withDesktop)} / ${buttonOf(withDesktop, "startDesktop")?.variant}`,
+  );
+
+  // 「内部在跑但没配命令」是不可能的组合（探测层已短路），界面按未配置渲染即可；
+  // 这条钉的是**判据只看 `internalConfigured`**，不会被一个残留的 `internalRunning` 带回旧样子
+  const staleRunning = view({ connection: "stopped", internalConfigured: false, internalRunning: true, externalState: "unconfigured" });
+  check(
+    "内部未配置时即便 internalRunning 为真也不给内部那两颗（判据只看 internalConfigured）",
+    !/startInternal|connectInternal|restartInternal/.test(ids(staleRunning)),
+    ids(staleRunning),
+  );
+
+  const configured = view({ connection: "stopped", internalConfigured: true, internalRunning: false, externalState: "unconfigured" });
+  check(
+    "配了命令 → 照旧给「启动内部 DSH」并占主按钮位（没动既有口径）",
+    ids(configured) === "startInternal,connectExternal,showLogs" && buttonOf(configured, "startInternal")?.variant === "primary",
+    ids(configured),
+  );
+}
+
 // ---------- 5. 按钮态 `error`：详情优先 + needsToken 时给「输入令牌」 ----------
 {
   const authError = view({
@@ -248,7 +369,7 @@ function check(label: string, ok: boolean, detail = ""): void {
     "App.tsx 不再有 statusText / connectingText 这两个局部判定",
     !/function (statusText|connectingText)\(/u.test(flat),
   );
-  for (const kind of ["startInternal", "connectInternal", "connectExternal", "restartInternal"]) {
+  for (const kind of ["startInternal", "connectInternal", "connectExternal", "startDesktop", "connectDesktop", "restartInternal"]) {
     check(
       `App.tsx 里「${kind}」这颗按钮仍然真的接了指令（别只在纯函数里存在）`,
       flat.includes(`type: "${kind}"`),

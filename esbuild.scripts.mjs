@@ -189,6 +189,12 @@ const entries = {
   "build/supervisor-errors.test.mjs": "scripts/supervisorErrors.test.ts",
   "build/supervisor-policy.test.mjs": "scripts/supervisorPolicy.test.ts",
   "build/connect-target.test.mjs": "scripts/connectTarget.test.ts",
+  // 桌面端内置服务的发现与接入（认人 / 找口 / 四个解析器 / 四种结论 / 拉起等就绪）：必须登记
+  "build/desktop-attach.test.mjs": "scripts/desktopAttach.test.ts",
+  // 顶栏「打开 DSH 桌面端」的宿主接线（desktopConnected 判据 / 动作 / 失败通知）：必须登记
+  "build/desktop-open.test.mjs": "scripts/desktopOpen.test.ts",
+  // 自铸浏览器会话凭据（名字向量 / 票格式与签名 / 有效期 / 密钥扫描）：必须登记
+  "build/browser-session.test.mjs": "scripts/browserSession.test.ts",
   "build/connection-stop.test.mjs": "scripts/connectionStop.test.ts",
   // 连接尝试的账本与收场：驱真控制器 + 假客户端 / 假服务端（必须登记，否则 npm test 静默不跑）
   "build/connection-attempts.test.mjs": "scripts/connectionAttempts.test.ts",

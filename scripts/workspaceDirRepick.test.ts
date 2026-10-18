@@ -135,6 +135,7 @@ function fakeClient() {
 
 const fakeServer = () => ({
   externalUrl: undefined,
+  commandConfigured: true,
   onHeartbeat() {},
   snapshot() {
     return { status: { info: undefined }, supervisorAlive: false };

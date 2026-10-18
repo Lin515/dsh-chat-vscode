@@ -5,6 +5,8 @@
  *
  * - **没许可就不许拉起**：`dshChat.autoConnect` 关掉、内部后台又不在时，`ensure()` 只能抛
  *   `ServerNotRunningError`（界面据此回到按钮态），**一次 spawn 都不能发生**；
+ * - **空命令 = 没有内部那一轴**（用户 2026-10-19 口径，第 4b 组）：不读会合文件、不接上、
+ *   更不拉起——`probeRunning()` 全假，`ensure({target:"internal"})` 抛同样的错且零 spawn；
  * - **有许可才拉起**：用户显式动作（`ensure({start:true})`）必须能起一套，不管配置；
  * - **守护进程还活着就只接入、不另起**（重复 spawn 出来的 supervisor 会因管道被占用
  *   自杀，而父进程的 spawn 开销已经付掉了）；
@@ -34,6 +36,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 // 纯协议模块（只 `import type` 会合协议，运行时不读环境变量），可以静态引入
 import { decodeClientMessage } from "../src/dsh/supervisorWire";
+import { DesktopStartError, type DesktopDeps } from "../src/dsh/desktopAttach";
 // 必须排在最前面：把会合根目录指到本次断言专用的临时目录（模块求值期读一次）
 const TEST_ROOT = mkdtempSync(join(tmpdir(), "dsh-chat-policy-"));
 process.env.DSH_CHAT_SUPERVISOR_DIR = TEST_ROOT;
@@ -189,15 +192,38 @@ function fakeLauncher(onLaunch?: () => void) {
   };
 }
 
-function makeManager(group: string, autoConnect: boolean, launcher: { launch: (input: never) => Promise<{ ok: true }> }): SupervisorManager {
+function makeManager(
+  group: string,
+  autoConnect: boolean,
+  launcher: { launch: (input: never) => Promise<{ ok: true }> },
+  /** 启动命令：留空即"没有内部那一轴"（用户 2026-10-19 口径），默认与清单里那条一致。 */
+  command = "dsh web --port 0 --no-open",
+): SupervisorManager {
   return new SupervisorManager({
     group,
     url: "",
-    command: "dsh web --port 0 --no-open",
+    command,
     autoConnect,
     launcher: launcher as never,
     log: () => undefined,
   });
+}
+
+/** 桌面端只走合成进程表与凭据，不查询本机服务。 */
+const DESKTOP_EXE = join(TEST_ROOT, "desktop");
+const DESKTOP_COMMANDS = new Map([[7, `${DESKTOP_EXE} /runtime/dsh-desktop-host/lib/index.js`]]);
+function desktopDeps(patch: Partial<DesktopDeps> = {}): DesktopDeps {
+  return {
+    executable: DESKTOP_EXE,
+    commandLines: async () => DESKTOP_COMMANDS,
+    listenPorts: async () => [{ address: "127.0.0.1", port: 5674 }],
+    credentialText: () => `records:\n  client-connection/browser-session:\n    kind: grant\n    payload:\n      version: 1\n      secret: ${"s".repeat(43)}\n`,
+    confirmDsh: async () => ({ status: 401, body: "dsh" }),
+    verifyCookie: async () => "ok",
+    now: () => 1_700_000_000_000,
+    log: () => undefined,
+    ...patch,
+  };
 }
 
 const background = await listen();
@@ -289,6 +315,41 @@ try {
     publishState("policy-probe", { baseUrl: background.baseUrl });
     const noServer = await manager.probeRunning();
     check("端口没了 → serverAlive=false（守护进程还在）", noServer.supervisorAlive && !noServer.serverAlive);
+    manager.dispose();
+  }
+
+  // ---------- 4b. 空启动命令 = 没有内部那一轴（用户 2026-10-19 口径） ----------
+  //
+  // 「留空」是在说"我不要内部 DSH"，不是"请用默认命令"：于是这里既不接上、也不拉起，
+  // 连会合文件都不读（对齐桌面端"没配就一次系统查询都不做"）。缺了这条，一条空命令
+  // 会被拿去 spawn，而启动出来的进程谁也认不出是谁的。
+  {
+    const launcher = fakeLauncher();
+    const manager = makeManager("policy-no-command", true, launcher.launcher, "");
+    managers.push(manager);
+    check("空命令 → commandConfigured 为假（界面与选路的第一道判据）", manager.commandConfigured === false);
+    // 故意写一份**看起来活着**的会合文件（守护进程 pid 就是本进程）：只要 probeRunning
+    // 读了它，hasState / supervisorAlive 就会是真
+    publishState("policy-no-command", { baseUrl: "http://127.0.0.1:9/" });
+    const probe = await manager.probeRunning();
+    check(
+      "没配命令时 probeRunning() 不读会合文件（全假，尽管文件就写在那儿）",
+      probe.hasState === false && probe.supervisorAlive === false && probe.serverAlive === false && probe.starting === false,
+      JSON.stringify(probe),
+    );
+    let error: unknown;
+    try {
+      await manager.ensure({ start: true, target: "internal" });
+    } catch (caught) {
+      error = caught;
+    }
+    check("空命令时 ensure({target:'internal'}) 抛 ServerNotRunningError", error instanceof ServerNotRunningError, String(error));
+    check("空命令时**一次 spawn 都没有**（绝不允许拿空命令拉起）", launcher.calls() === 0, `calls=${launcher.calls()}`);
+    check(
+      "空命令时状态是 stopped + 详情说明是「没配」而不是「没在跑」",
+      manager.getStatus().state === "stopped" && manager.getStatus().detail === "internal not configured",
+      `${manager.getStatus().state} / ${manager.getStatus().detail ?? "（无）"}`,
+    );
     manager.dispose();
   }
 
@@ -434,6 +495,77 @@ try {
     await daemon.close();
     await internalUrl.close();
     await externalUrl.close();
+  }
+
+  // ---------- 7b. 切桌面端同样立即交还内部占用，不等发现完成、更不等心跳 ----------
+  {
+    const group = "policy-desktop-detach";
+    const socket = socketPathIn(supervisorDirectory(group), group);
+    const internalUrl = await listen();
+    publishState(group, { baseUrl: internalUrl.baseUrl, token: "internal-token", socket });
+    const daemon = await listenDaemon(socket);
+    let releaseProbe!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseProbe = resolve; });
+    const manager = new SupervisorManager({
+      group, url: "", command: "dsh web --port 0 --no-open", desktopExecutable: DESKTOP_EXE,
+      autoConnect: false, launcher: fakeLauncher().launcher as never, log: () => undefined,
+      desktop: desktopDeps({ commandLines: async () => { await gate; return DESKTOP_COMMANDS; } }),
+    });
+    managers.push(manager);
+    try {
+      await manager.ensure({ target: "internal", start: false });
+      await waitFor(() => daemon.clients() === 1);
+      check("切桌面端前内部确实占用一条 socket", daemon.clients() === 1);
+      const attaching = manager.ensure({ target: "desktop", start: false });
+      check("桌面端探测尚未完成，内部记忆已清空", !manager.snapshot().remembered && manager.peekState() === undefined);
+      await waitFor(() => daemon.clients() === 0);
+      check("桌面端探测尚未完成，内部 socket 已真正断开", daemon.clients() === 0, `clients=${daemon.clients()}`);
+      releaseProbe();
+      const info = await attaching;
+      check("交还内部占用不影响桌面端接入", info.ownership === "desktop");
+      await (manager as unknown as { heartbeatTick(): Promise<void> }).heartbeatTick();
+      check("心跳保留桌面端归属，且不接回内部", manager.getStatus().info?.ownership === "desktop" && daemon.clients() === 0);
+    } finally {
+      releaseProbe();
+      manager.dispose();
+      await daemon.close();
+      await internalUrl.close();
+    }
+  }
+
+  // ---------- 7c. 取消覆盖初始发现：迟到的结果既不能 spawn，也不能发布 ready ----------
+  for (const action of ["stop", "dispose"] as const) {
+    for (const running of [false, true]) {
+      let releaseProbe!: () => void;
+      const gate = new Promise<void>((resolve) => { releaseProbe = resolve; });
+      let launches = 0;
+      const manager = new SupervisorManager({
+        group: `policy-desktop-cancel-${action}-${running}`, url: "", command: "", desktopExecutable: DESKTOP_EXE,
+        autoConnect: false, log: () => undefined,
+        desktop: desktopDeps({ commandLines: async () => { await gate; return running ? DESKTOP_COMMANDS : new Map(); } }),
+      });
+      managers.push(manager);
+      // 若错误地启动，只记录并立刻失败；绝不创建真实桌面端进程。
+      (manager as unknown as { launchDesktop(): Promise<never> }).launchDesktop = async () => {
+        launches += 1;
+        throw new DesktopStartError("OFFLINE_SENTINEL");
+      };
+      const connecting = manager.ensure({ target: "desktop", start: true }).catch((error: unknown) => error);
+      if (action === "dispose") manager.dispose();
+      else {
+        await manager.stop({ cancelWait: true });
+        await manager.stop({ release: true });
+      }
+      releaseProbe();
+      const result = await connecting;
+      check(`${action} 后初始发现迟到（running=${running}）仍以取消收场`, result instanceof WaitCancelledError, String(result));
+      check(`${action} 后零启动且不发布 ready（running=${running}）`, launches === 0 && manager.getStatus().state !== "ready", `launches=${launches}`);
+      manager.dispose();
+      if (action === "dispose") {
+        const late = await manager.ensure({ target: "desktop", start: true }).catch((error: unknown) => error);
+        check("已释放管理器不能由新请求复活桌面端连接", late instanceof WaitCancelledError && launches === 0, String(late));
+      }
+    }
   }
 
   // ---------- 8. 用户点「停止连接」：彻底交还占用，且**心跳不许接回来**（2026-09-19） ----------
@@ -765,7 +897,7 @@ if (failures > 0) {
   process.exitCode = 1;
 } else {
   console.log(
-    "\n✓ supervisor 启动/重连决策（许可 / 复用 / 令牌来自会合文件 / 只读探测 / 等待可中断 / 外部也等到底 / 换目标彻底断开 / 停止连接交还占用且心跳不接回 / 交还后重启仍是真重启 / 停止入口收敛且连点只发一条控制帧）全通过",
+    "\n✓ supervisor 启动/重连决策（许可 / 空命令即没有内部那一轴 / 复用 / 令牌来自会合文件 / 只读探测 / 等待可中断 / 外部也等到底 / 换目标彻底断开 / 停止连接交还占用且心跳不接回 / 交还后重启仍是真重启 / 停止入口收敛且连点只发一条控制帧）全通过",
   );
   assert.ok(true);
 }

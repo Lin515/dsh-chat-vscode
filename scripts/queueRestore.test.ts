@@ -138,6 +138,7 @@ function wireItem(id: string, rpcId: string, content: unknown[]) {
 
 const fakeServer = () => ({
   externalUrl: undefined,
+  commandConfigured: true,
   onHeartbeat() {},
   snapshot() {
     return { status: { info: undefined }, supervisorAlive: false };

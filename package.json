@@ -198,6 +198,12 @@
           "default": "dsh web --port 0 --no-open",
           "markdownDescription": "%config.command%"
         },
+        "dshChat.desktopExecutable": {
+          "type": "string",
+          "scope": "machine",
+          "default": "",
+          "markdownDescription": "%config.desktopExecutable%"
+        },
         "dshChat.supervisorIdleSec": {
           "type": "number",
           "default": 10,

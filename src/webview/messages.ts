@@ -108,6 +108,11 @@ export const MESSAGES = {
   history: { zh: "历史对话", en: "Chat history" },
   openInEditor: { zh: "在编辑器中打开", en: "Open in editor" },
   openInBrowser: { zh: "在浏览器中打开 DSH Web", en: "Open DSH Web in browser" },
+  /**
+   * 顶部那颗「打开」按钮的另一种形态：当前连的**就是桌面端内置服务**时，它打开的是
+   * 桌面端应用窗口（那套服务对浏览器是关着的，见 `docs/design-desktop.md`「浏览器访问」）。
+   */
+  openDesktop: { zh: "打开 DSH 桌面端", en: "Open the DSH desktop app" },
   openInBrowserOffline: {
     zh: "还没有连上 DSH 服务器，暂时无法在浏览器中打开。",
     en: "Not connected to a DSH server yet, so it cannot be opened in the browser.",
@@ -889,6 +894,8 @@ export const MESSAGES = {
   startInternal: { zh: "启动内部 DSH", en: "Start internal DSH" },
   connectInternal: { zh: "连接内部 DSH", en: "Connect to internal DSH" },
   connectExternal: { zh: "连接外部 DSH", en: "Connect to external DSH" },
+  startDesktop: { zh: "启动 DSH 桌面端", en: "Start the DSH desktop app" },
+  connectDesktop: { zh: "连接 DSH 桌面端", en: "Connect to the DSH desktop app" },
   restartInternal: { zh: "重启内部 DSH", en: "Restart internal DSH" },
   externalDisabledHint: { zh: "未配置 dshChat.url，没有可连的外部 DSH", en: "dshChat.url is not set, so there is no external DSH to connect to" },
   startingInternal: { zh: "正在启动内部 DSH…", en: "Starting the internal DSH…" },
@@ -897,10 +904,16 @@ export const MESSAGES = {
     zh: (baseUrl: string) => `正在连接外部 DSH（${baseUrl}）…`,
     en: (baseUrl: string) => `Connecting to the external DSH (${baseUrl})…`,
   },
+  startingDesktop: { zh: "正在启动 DSH 桌面端…", en: "Starting the DSH desktop app…" },
+  connectingDesktop: { zh: "正在连接 DSH 桌面端…", en: "Connecting to the DSH desktop app…" },
   stopReconnect: { zh: "停止连接", en: "Stop connecting" },
   showLogs: { zh: "查看日志", en: "Show logs" },
   statusInternalRunning: { zh: "内部 DSH：运行中", en: "Internal DSH: running" },
   statusInternalNotRunning: { zh: "内部 DSH：未运行", en: "Internal DSH: not running" },
+  // 内部那一轴不存在（`dshChat.command` 留空）：与外部那半句的「未配置」同口径。
+  // 它是**界面文案**（`connectViewOf` 直接读词典），不是宿主发的 `@key` 标记，
+  // 所以不进 `i18n.test.ts` 的 HOST_MARKERS（对照 `statusInternalRunning`）
+  statusInternalUnconfigured: { zh: "内部 DSH：未配置", en: "Internal DSH: not configured" },
   statusExternalReachable: { zh: "外部 DSH：可达", en: "External DSH: reachable" },
   statusExternalUnreachable: { zh: "外部 DSH：不可达", en: "External DSH: unreachable" },
   statusExternalUnconfigured: { zh: "外部 DSH：未配置", en: "External DSH: not configured" },
@@ -936,6 +949,39 @@ export const MESSAGES = {
     zh: (baseUrl: string) => `连不上 ${baseUrl}（会一直重试，可点「停止连接」）。请确认该地址上运行着 dsh web。`,
     en: (baseUrl: string) =>
       `Cannot reach the DSH server at ${baseUrl} yet (retrying until it answers or you stop connecting). Make sure dsh web is running there.`,
+  },
+  // 桌面端那一支的失败说明（**只进连接条**：`describeError` 的这几种不经过 reportError，
+  // 所以没有 vscode / l10n 那一层）。它们都属"要用户动作"：不自动重试。
+  desktopCredentialMissing: {
+    zh: "读不到 DSH 的本地凭据（DSH 主目录里没有浏览器会话密钥），无法接上桌面端服务。让桌面端或 dsh web 启动过一次就会生成这份凭据。",
+    en: "Cannot read the local DSH credential (the DSH home has no browser-session secret), so the desktop app's service cannot be attached. Starting the desktop app or dsh web once creates it.",
+  },
+  desktopCredentialRejected: {
+    zh: "DSH 桌面端拒绝了本扩展签发的会话凭据。通常是桌面端与本扩展解析到的 DSH 主目录不是同一个。",
+    en: "The DSH desktop app rejected the session credential this extension signed. This usually means the desktop app and this extension resolve different DSH home directories.",
+  },
+  desktopSpawnFailed: {
+    zh: (detail: string) => `启动 DSH 桌面端失败：${detail}`,
+    en: (detail: string) => `Could not start the DSH desktop app: ${detail}`,
+  },
+  desktopNotReady: {
+    zh: "已启动 DSH 桌面端，但没等到它的内置服务就绪。请确认桌面端确实起来了，再用「连接 DSH 桌面端」重试。",
+    en: "The DSH desktop app was started but its built-in service did not become ready. Check that the app is running, then try “Connect to the DSH desktop app” again.",
+  },
+  /**
+   * 拉起的桌面端进程**刚启动就退出**（而且当时没有任何桌面端宿主进程在跑）。
+   *
+   * 参数是退出码；被信号杀死时宿主不带参数，文案自动省掉那一段。
+   */
+  desktopExited: {
+    zh: (code: string) =>
+      code
+        ? `DSH 桌面端进程刚启动就退出了（退出码 ${code}），没等到它的内置服务。请确认 dshChat.desktopExecutable 指向的程序能手动启动。`
+        : "DSH 桌面端进程刚启动就退出了，没等到它的内置服务。请确认 dshChat.desktopExecutable 指向的程序能手动启动。",
+    en: (code: string) =>
+      code
+        ? `The DSH desktop process exited right after launch (exit code ${code}) and its built-in service never became ready. Check that the program at dshChat.desktopExecutable starts on its own.`
+        : "The DSH desktop process exited right after launch and its built-in service never became ready. Check that the program at dshChat.desktopExecutable starts on its own.",
   },
   serverLogTail: {
     vscode: true,

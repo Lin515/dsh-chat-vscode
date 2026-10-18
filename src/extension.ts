@@ -14,32 +14,24 @@ import {
 let output: vscode.OutputChannel | undefined;
 
 /**
- * 启动命令的兜底默认值——**与 `package.json` 里 `dshChat.command` 的 default 必须一致**。
- *
- * 为什么要有这个常量：设置在用户没写过时也会返回 schema 的 default，所以这里只在
- * 「用户把命令清成空串」时才生效；但它出现在**两个**地方（激活期构造 ServerManager、
- * 配置变更后重连），写两份字符串迟早漂移。
- *
- * 命令**原样执行，扩展不追加任何参数**：`--port 0`（系统分配端口）与 `--no-open`
- * （不弹系统浏览器）都是这条默认值的一部分，用户可以整条改掉。
- */
-const DEFAULT_COMMAND = "dsh web --port 0 --no-open";
-
-/**
  * 这台机器上"共享同一个后台"的分组键：**只按内部启动命令算**（`dshChat.command`）。
  *
  * 为什么需要它：VS Code 的设置是有作用域的（默认 / 工作区 / 工作区文件夹），所以
- * **不同窗口的 `dshChat.command` 可能不同**——那就该各用各的内部后台，不能互相抢。
+ * **不同窗口的 `dshChat.command` 可能不同**——那就该各用各的内部后台，不能互相抢；
+ * 内部 DSH 也正是按各自的命令行辨认的（见 `docs/design-supervisor.md`）。
  *
  * `dshChat.url`（外部备用地址）**不进分组键**（2026-09-18 改）：它只是内部不可用时的
  * 备用目标，而会合目录是**内部后台**的身份。若还算进去，配了 url 的窗口会去另一个目录
  * 找内部后台 → 判成"内部不存在" → 自己再起一套；用户改一次 url 也会与既有后台失联。
  *
+ * 命令**留空**时（= 用户选择"没有内部 DSH"）就照空串算：分组键与别的窗口不同无所谓，
+ * 那条轴整个不存在，谁也不会拿这个键去会合。
+ *
  * **算法只有一份**（`groupForConfig`）：探针也要算同一个键，两处漂移就会变成
  * "两个窗口互相看不见对方的后台、各起一个"。
  */
 function leaseGroupKey(config: () => vscode.WorkspaceConfiguration): string {
-  const command = config().get<string>("command") || DEFAULT_COMMAND;
+  const command = config().get<string>("command") ?? "";
   return groupForConfig(command);
 }
 
@@ -73,7 +65,13 @@ export function activate(context: vscode.ExtensionContext): void {
   const server = new SupervisorManager({
     group,
     url: config().get<string>("url") ?? "",
-    command: config().get<string>("command") || DEFAULT_COMMAND,
+    // 内部启动命令：**留空就是没有内部那一轴**（不启动、不连接、不选路、界面不给那两颗按钮）。
+    // 这里刻意**不回落**默认命令：清单里的 `default` 已经覆盖了"用户从没写过"那一态，
+    // 而用户显式清空是在说"我不要它"——回落会把这句意图悄悄吃掉（用户 2026-10-19 报的
+    // "我都没配启动命令，它是怎么启动的"就是这条）。
+    command: config().get<string>("command") ?? "",
+    // 桌面端那一条支路：留空就整个关闭（见 README 的配置说明与 docs/design-desktop.md）
+    desktopExecutable: config().get<string>("desktopExecutable") ?? "",
     idleSec: config().get<number>("supervisorIdleSec") ?? IDLE_SEC_DEFAULT,
     // `autoConnect` 关掉时，激活期那一次自动连接**不许**选路连上（只探测、显示按钮）；
     // 用户显式动作（发消息 / 点「启动内部 DSH」）不受它约束，见 supervisorManager 文件头
@@ -211,6 +209,17 @@ function registerContributions(context: vscode.ExtensionContext, host: Contribut
     // 同时收掉本窗口的连接——只发停止请求不收连接的话，客户端会在 dsh 消失后一直重连，
     // 界面反复跳回"连接中"（见 `ChatController.stopServer`）
     vscode.commands.registerCommand("dshChat.stopServer", async () => {
+      // **本窗口没有内部那一轴**（`dshChat.command` 留空）：直接忽略。不同的内部 DSH 是按
+      // 各自的命令行辨认的，别的窗口那套不是本窗口的，也没有"本窗口的内部 DSH"可停
+      // （用户 2026-10-19 口径）。回执必须说清是"没配"而不是"没在运行"——后者会让用户以为
+      // 自己那套真的已经没了。
+      if (!server.commandConfigured) {
+        log("[server] 没有配置 dshChat.command（内部那一轴已关闭），「停止内部 DSH」忽略");
+        await vscode.window.showInformationMessage(
+          vscode.l10n.t("dshChat.command is not set, so this window has no internal DSH to stop."),
+        );
+        return;
+      }
       const stopped = await controller.stopServer();
       // 回执必须**如实**：目标是外部时这条命令停的是内部那套，而内部守护进程不在时
       // 其实什么都没停——这时说"已停止"就是在骗人（2026-09-19）
@@ -237,22 +246,27 @@ function registerContributions(context: vscode.ExtensionContext, host: Contribut
         // 光看那两行会读错（用户实测：连着外部，诊断里却写着内部那一套）。
         target === "external"
           ? vscode.l10n.t("Connection target: {0}", vscode.l10n.t("external DSH (dshChat.url)"))
-          : target === "internal"
-            ? vscode.l10n.t("Connection target: {0}", vscode.l10n.t("internal DSH (supervisor)"))
-            : vscode.l10n.t("Connection target: not chosen yet"),
+          : target === "desktop"
+            ? vscode.l10n.t("Connection target: {0}", vscode.l10n.t("DSH desktop app (its built-in service)"))
+            : target === "internal"
+              ? vscode.l10n.t("Connection target: {0}", vscode.l10n.t("internal DSH (supervisor)"))
+              : vscode.l10n.t("Connection target: not chosen yet"),
         status.info ? vscode.l10n.t("Address: {0}", status.info.baseUrl) : undefined,
         // 「是不是本扩展启动的」**只在外部模式下才是否**：内部后台一律由本扩展拉起，
-        // 区别只在于"是不是**这个窗口**拉起的"。原来写成 yes / no(用 url) 会误导用户
-        // （用户 2026-09-13 报：连到别的窗口拉起的那个时，它明明也是本扩展启动的）。
+        // 区别只在于"是不是**这个窗口**拉起的"；桌面端内置的那套既不归本扩展拉、也不归它管。
+        // 原来写成 yes / no(用 url) 会误导用户（用户 2026-09-13 报：连到别的窗口拉起的那个时，
+        // 它明明也是本扩展启动的）。
         status.info
           ? status.info.ownership === "external"
             ? vscode.l10n.t("Started by this extension: {0}", vscode.l10n.t("no (external dshChat.url)"))
-            : vscode.l10n.t(
-                "Started by this extension: {0}",
-                status.info.owned
-                  ? vscode.l10n.t("yes, by this window")
-                  : vscode.l10n.t("yes, by another window (shared)"),
-              )
+            : status.info.ownership === "desktop"
+              ? vscode.l10n.t("Started by this extension: {0}", vscode.l10n.t("no (the DSH desktop app runs it)"))
+              : vscode.l10n.t(
+                  "Started by this extension: {0}",
+                  status.info.owned
+                    ? vscode.l10n.t("yes, by this window")
+                    : vscode.l10n.t("yes, by another window (shared)"),
+                )
           : undefined,
         shared
           ? vscode.l10n.t(
@@ -261,7 +275,9 @@ function registerContributions(context: vscode.ExtensionContext, host: Contribut
                 ? vscode.l10n.t("this window started the supervisor, {0} window(s) in total", shared.hostCount)
                 : shared.ownership === "peer"
                   ? vscode.l10n.t("using the supervisor of another window, {0} window(s) in total", shared.hostCount)
-                  : vscode.l10n.t("no (external dshChat.url)"),
+                  : shared.ownership === "desktop"
+                    ? vscode.l10n.t("no (the DSH desktop app serves it)")
+                    : vscode.l10n.t("no (external dshChat.url)"),
             )
           : undefined,
         status.detail ? vscode.l10n.t("Detail: {0}", resolveForVsCode(status.detail)) : undefined,
@@ -358,15 +374,16 @@ function registerContributions(context: vscode.ExtensionContext, host: Contribut
       ) {
         controller.refreshAppearance();
       }
-      // 连接行为：`dshChat.url` / `dshChat.command` 改了要**重载窗口**（它们只在激活期读
-      // 一次，不重载的话用户改了 `dshChat.url`（或启动命令）却仍连着旧目标。**连接配置
-      // 不再就地热切换**（用户口径 2026-09-14：太复杂，改成重载窗口生效）。原地切需要
-      // "断干净 + 按新配置接上 + 换分组 + 别把别人的后台带走"一整套时序，收益却只是省一次
-      // 窗口重载——不值得。这里的提示是**唯一**的生效入口（README 里写明了这一条；
-      // 配置项说明只写作用，不写"改完需重载"这类套话，见 AGENTS.md）。
+      // 连接行为：`dshChat.url` / `dshChat.command` / `dshChat.desktopExecutable` 改了要
+      // **重载窗口**（它们只在激活期读一次，不重载的话用户改了 `dshChat.url`（启动命令、
+      // 桌面端路径也一样）却仍连着旧目标。**连接配置不再就地热切换**（用户口径 2026-09-14：
+      // 太复杂，改成重载窗口生效）。原地切需要"断干净 + 按新配置接上 + 换分组 + 别把别人的
+      // 后台带走"一整套时序，收益却只是省一次窗口重载——不值得。这里的提示是**唯一**的生效
+      // 入口（README 里写明了这一条；配置项说明只写作用，不写"改完需重载"这类套话，见 AGENTS.md）。
       if (
         event.affectsConfiguration("dshChat.url") ||
-        event.affectsConfiguration("dshChat.command")
+        event.affectsConfiguration("dshChat.command") ||
+        event.affectsConfiguration("dshChat.desktopExecutable")
       ) {
         void promptServerReload();
       }

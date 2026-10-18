@@ -9,11 +9,11 @@
  * 生命周期那一层（会合租约 / 心跳 / 接管）在 supervisor 架构落地后已经整体删除，
  * 见 `docs/design-supervisor.md`；这里留下的是与"谁持有 dsh"无关的那部分。
  */
-import { spawn } from "node:child_process";
 import { readFileSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { isProcessAlive } from "./processRegistry";
+import { fetchCommandLines } from "./processTable";
 
 /** 需要探测残留锁的文件（相对 `$DSH_HOME`）。 */
 const LOCKED_DOCUMENTS = [".credentials.yaml", "settings.yaml"] as const;
@@ -27,107 +27,10 @@ export interface StaleLockResult {
 }
 
 /**
- * 取「所有进程的命令行」快照（pid → 命令行）。拿不到返回 undefined。
- *
- * 为什么要**批量**：Windows 上取命令行只能起 PowerShell 查 CIM，而代价几乎全在
- * 解释器启动上——实测单查一个 pid 约 1600ms，一次查全部进程约 1800ms。
- * 逐个查会让 N 个锁耗时 N×1600ms，批量后恒为一次。
- *
- * 为什么放在这个文件里：它唯一的用途就是"判断锁的持有者到底是不是 dsh"
- * （pid 会被回收，只看"进程在不在"会把已死的持有者当成活的）。搬进来是为了让
- * **清锁这件事自成一体**，不依赖别的模块。
- */
-async function fetchCommandLines(): Promise<Map<number, string> | undefined> {
-  if (process.platform !== "win32") return undefined;
-  const script = "Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress";
-  const stdout = await runPowerShell(script);
-  if (stdout === undefined) return undefined;
-  const lines = new Map<number, string>();
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(stdout.trim());
-  } catch {
-    return undefined;
-  }
-  // `ConvertTo-Json` 只有一个元素时给对象、多个时给数组，两种都要吃下
-  const rows = Array.isArray(parsed) ? parsed : [parsed];
-  for (const row of rows) {
-    if (typeof row !== "object" || row === null) continue;
-    const { ProcessId, CommandLine } = row as { ProcessId?: unknown; CommandLine?: unknown };
-    if (typeof ProcessId !== "number" || !Number.isSafeInteger(ProcessId)) continue;
-    if (typeof CommandLine !== "string" || !CommandLine.trim()) continue;
-    lines.set(ProcessId, CommandLine.trim());
-  }
-  return lines;
-}
-
-/** 起一次 PowerShell 拿 stdout（超时/超限都当"拿不到"，绝不抛）。 */
-async function runPowerShell(script: string): Promise<string | undefined> {
-  const candidates = process.platform === "win32" ? ["pwsh.exe", "powershell.exe"] : ["pwsh", "powershell"];
-  for (const executable of candidates) {
-    const outcome = await execCapture(executable, ["-NoProfile", "-NonInteractive", "-Command", script]);
-    if (outcome.errorCode !== undefined) {
-      if (outcome.errorCode === "ENOENT") continue; // 解释器不存在：换一个再试
-      return undefined;
-    }
-    if (outcome.code !== 0) return undefined;
-    return outcome.stdout;
-  }
-  return undefined;
-}
-
-function execCapture(
-  command: string,
-  args: string[],
-): Promise<{ code: number | undefined; stdout: string; errorCode: string | undefined }> {
-  return new Promise((resolve) => {
-    let child;
-    try {
-      child = spawn(command, args, { windowsHide: true });
-    } catch (error) {
-      resolve({ code: undefined, stdout: "", errorCode: (error as NodeJS.ErrnoException).code ?? "SPAWN_FAILED" });
-      return;
-    }
-    const chunks: Buffer[] = [];
-    let size = 0;
-    let settled = false;
-    const finish = (value: { code: number | undefined; stdout: string; errorCode: string | undefined }) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve(value);
-    };
-    const timer = setTimeout(() => {
-      try {
-        child.kill();
-      } catch {
-        // 已退出
-      }
-      finish({ code: undefined, stdout: "", errorCode: "TIMEOUT" });
-    }, 20_000);
-    timer.unref?.();
-    child.stdout?.on("data", (chunk: Buffer) => {
-      size += chunk.length;
-      if (size > 64 * 1024 * 1024) {
-        // 输出超限说明数据不可信：宁可不确认（不删锁）也不要截断后误判
-        finish({ code: undefined, stdout: "", errorCode: "MAXBUFFER" });
-        return;
-      }
-      chunks.push(chunk);
-    });
-    child.on("error", (error) => {
-      finish({ code: undefined, stdout: "", errorCode: (error as NodeJS.ErrnoException).code ?? "SPAWN_FAILED" });
-    });
-    child.on("close", (code) => {
-      finish({ code: code ?? undefined, stdout: Buffer.concat(chunks).toString("utf8"), errorCode: undefined });
-    });
-  });
-}
-
-/**
  * `$DSH_HOME`（默认 `~/.dsh`；`DSH_HOME` 环境变量可覆盖）。
  *
- * 为什么扩展要知道它：崩溃遗留的锁与配置都在这里；`clearStaleDocumentLocks` 要按它定位。
+ * 为什么扩展要知道它：崩溃遗留的锁与配置都在这里；`clearStaleDocumentLocks` 要按它定位，
+ * 桌面端支路也要按它找凭据文件（`desktopAttach.ts` 的 `productionDesktopDeps`）。
  */
 export function dshHome(): string {
   const configured = process.env.DSH_HOME?.trim();

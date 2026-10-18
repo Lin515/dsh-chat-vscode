@@ -306,6 +306,7 @@ console.log("fileRefListing: 目录列举补全（真盘临时目录 + 真控制
 
   const fakeServer = () => ({
     externalUrl: undefined,
+    commandConfigured: true,
     onHeartbeat() {},
     snapshot() {
       return { status: { info: undefined }, supervisorAlive: false };

@@ -8,22 +8,20 @@
 
 ## 安装
 
-先安装 DSH 并按首次使用引导配置模型凭据：
+先安装 DSH 或 [桌面端DSH](https://www.deepseek.com/harness/) ，并按首次使用引导配置模型凭据：
 
 ```bash
 npm i -g @deepseek-ai/dsh
 ```
 
-需要 VS Code ≥ 1.101；辅助侧栏容器需要 ≥ 1.106，旧版回退到活动栏。
+扩展需要 VS Code ≥ 1.101；辅助侧栏容器需要 ≥ 1.106，旧版回退到活动栏。
 
-从源码打包：
+扩展可从 [VSCode 扩展市场](https://marketplace.visualstudio.com/items?itemName=Lin515.dsh-chat) 直接安装，如需源码打包：
 
 ```bash
 npm install
 npm run package  # Releases/dsh-chat-<version>.vsix
 ```
-
-在 VS Code「扩展 → … → 从 VSIX 安装」中选择产物，然后重载窗口。源码调试用 `npm run watch`，打开仓库后按 `F5`。
 
 ## 连接
 
@@ -33,21 +31,25 @@ npm run package  # Releases/dsh-chat-<version>.vsix
 |---|---|
 | 内部 DSH 已运行 | 连接扩展托管的守护进程与 `dsh web`，自动取得启动令牌 |
 | 内部未运行、外部可达 | 连接 `dshChat.url`；需要授权时输入启动 URL 的 `?token=` 值，也可用「DSH: 输入访问令牌」 |
-| 两者均不可用 | 按 `dshChat.command` 启动内部 DSH |
+| 内部未运行、外部不可达、DSH 桌面端的内置服务可连接 | 接入 DSH 桌面端**已经在内置运行**的那套服务，继续它正开着的会话 |
+| 以上均不可用 | 按`dshChat.command`启动内部 DSH，若`dshChat.command`为空，则会以`dshChat.desktopExecutable`启动 DSH桌面端。 |
 
-- 这一次之后不再重新自动选路、也不再自动启动后台：别的窗口停掉内部后台（例如点「停止内部 DSH」）后，本窗口不会自己把它拉起来。后台**明确终结**（守护进程告别：空闲退场或收到「停止内部 DSH」）时停在按钮态等操作；只是使用途中**断线**（网络抖动、`dsh` 重启、守护进程换地址）则按原目标继续重连，不重新选路、也不另起一套。要连、要起都用连接条上的按钮或发消息。
-- 关闭自动连接后只显示按钮；显式连接内部仍会在必要时启动后台。「启动内部」与「连接内部」是同一逻辑；连接外部不启动进程，未配置 URL 时置灰。
-- 选定目标后重连只重试该目标，不自动切换服务器。切换目标须手动操作，会切换会话列表。
-- 连接中提供「停止连接」与「查看日志」，持续重试没有自动时限；启动或认证失败则回到按钮态，原因见连接条与日志。
 - 相同启动命令的 VS Code 窗口共用后台；最后一个窗口断开后默认空闲 10 秒才退出。在此宽限期内重载不会中断后台。
-- `url` 与 `command` 只能在用户设置中修改，工作区不能覆盖，修改后须重载窗口；其它设置即时生效。
+
+## DSH 桌面端
+
+桌面端（Electron 应用）自己内置运行着一套 DSH 服务，扩展直接接入它，不另起第二套 `dsh web`。桌面端停在欢迎页、未登录时服务同样在跑。
+
+- `dshChat.desktopExecutable` 指向桌面端可执行文件（机器作用域）；留空则整条支路关闭。两边必须用**同一个 DSH 主目录**，否则凭据会被拒。
+- 只想用桌面端：把 `dshChat.command` 留空。
 
 ## 配置
 
 | 键 | 默认 | 作用 |
 |---|---|---|
 | `dshChat.url` | `http://127.0.0.1:3080` | 外部 DSH 的备用地址 |
-| `dshChat.command` | `dsh web --port 0 --no-open` | 内部启动命令，原样执行，不追加参数 |
+| `dshChat.command` | `dsh web --port 0 --no-open` | 内部启动命令，原样执行，不追加参数；留空 = 不使用内部 DSH |
+| `dshChat.desktopExecutable` | 空 | DSH 桌面端可执行文件路径；空值关闭「接入桌面端内置服务」，填写后可用连接条上的桌面端按钮启动它并接入它的服务（需与桌面端使用同一个 DSH 主目录） |
 | `dshChat.supervisorIdleSec` | `10` | 无窗口连接后的退出宽限期，5–600 秒 |
 | `dshChat.autoConnect` | `true` | 启动时自动连接一次；关闭后等待手动操作 |
 | `dshChat.diffLayout` | `auto` | 编辑 diff：窄单栏 / 宽双栏，或固定 `unified` / `split` |
@@ -63,7 +65,7 @@ npm run package  # Releases/dsh-chat-<version>.vsix
 
 可在活动栏、辅助侧栏或编辑器中使用。命令「DSH: 在编辑器中打开对话」与界面头部按钮将对话开到已有编辑器分组；来源已在编辑器时沿用同一分组。编辑器标题栏的鲸鱼按钮在当前分组新建会话。
 
-历史列表只显示当前工作区的会话，支持新建、归档、删除与「从这里分支」；分支标题带「分支: 」前缀。子代理入口可查看执行记录，一次性子代理只读，可继续子代理支持续聊。后台任务抽屉分两个分区：**自动化任务**（模型用 `schedule_create` 安排的定时任务，显示频率与下次运行，可展开看执行记录、修改运行时间、删除）与**后台任务**（bash / pwsh 等，可展开看实时输出）。抽屉里有后台任务在跑、或还有待执行的自动化任务时，顶栏那颗入口按钮会亮起（有任务真的在跑时还会呼吸；只是排着时不闪）。轨迹提供账本、时间线与详情检查器。服务端设置通过「在浏览器中打开」进入官方 Web UI。
+历史列表只显示当前工作区的会话，支持新建、归档、删除与「从这里分支」；分支标题带「分支: 」前缀。子代理入口可查看执行记录，一次性子代理只读，可继续子代理支持续聊。后台任务抽屉分两个分区：**自动化任务**（模型用 `schedule_create` 安排的定时任务，显示频率与下次运行，可展开看执行记录、修改运行时间、删除）与**后台任务**（bash / pwsh 等，可展开看实时输出）。抽屉里有后台任务在跑、或还有待执行的自动化任务时，顶栏那颗入口按钮会亮起（有任务真的在跑时还会呼吸；只是排着时不闪）。轨迹提供账本、时间线与详情检查器。服务端设置通过「在浏览器中打开」进入官方 Web UI；当前连的是桌面端内置服务时那颗按钮改为「打开 DSH 桌面端」（那套服务不向浏览器开放）。
 
 ### 消息通知
 
@@ -102,6 +104,7 @@ npm run build
 ## 已知限制
 
 - 无协议版本协商；当前核对基准与兼容边界见 [dsh-compat.md](docs/dsh-compat.md)。
+- 接入桌面端内置服务依赖桌面端与 `dsh-client-connection` 的内部实现（凭据记录、`dsh-desktop-host` 的入口与 spawn 形态），已登记在 [dsh-compat.md](docs/dsh-compat.md)，随官方版本对拍。
 - 停止刻意采用「摘空队列 → cancel → 按原序重发」：历史实测中只 cancel 不可靠地接续队列。
 - 生成中的正文会重建 DOM，点击文件链接可能被增量刷新吞掉；轮次结束后再点。后台任务的 ANSI 着色与部分官方统计展示尚未实现。
 - 自动化任务：只列**当前会话**的任务（全局任务页、会话头部的提醒时钟、`schedule_create` 的对话卡片与「活跃指示」尚未实现）；本扩展对 `cron` 显示规范表达式本身，不渲染官方那句自然语言描述。删除是硬删（执行记录一并消失），且不会取消已经在途的那一次投递。
@@ -122,22 +125,20 @@ A third-party VS Code frontend for [DeepSeek Harness](https://github.com/deepsee
 
 ## Install
 
-Install DSH and follow its first-use credential setup:
+Install DSH or the [DSH desktop app](https://www.deepseek.com/harness/) and follow its first-use credential setup:
 
 ```bash
 npm i -g @deepseek-ai/dsh
 ```
 
-Requires VS Code ≥ 1.101. The secondary-sidebar container requires ≥ 1.106; older versions fall back to the activity bar.
+The extension requires VS Code ≥ 1.101. The secondary-sidebar container requires ≥ 1.106; older versions fall back to the activity bar.
 
-Build from source:
+Install the extension directly from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=Lin515.dsh-chat), or build from source:
 
 ```bash
 npm install
 npm run package  # Releases/dsh-chat-<version>.vsix
 ```
-
-Choose Extensions → … → Install from VSIX, then reload. For source debugging, run `npm run watch`, open the repository in VS Code and press `F5`.
 
 ## Connection
 
@@ -147,21 +148,25 @@ With `dshChat.autoConnect` enabled, the extension connects automatically **once*
 |---|---|
 | Internal DSH is running | Connect to the extension-managed guardian and `dsh web`; obtain the launch token automatically |
 | No internal DSH, external is reachable | Connect to `dshChat.url`; when required, enter the launch URL's `?token=` value, or use **DSH: Enter Access Token** |
-| Neither is available | Start internal DSH using `dshChat.command` |
+| No internal DSH, external unreachable, the DSH desktop app's built-in service is attachable | Attach to the service the desktop app **already runs**, continuing the sessions it has open |
+| None of the above | Start internal DSH using `dshChat.command`; if it is empty, launch the DSH desktop app using `dshChat.desktopExecutable`. |
 
-- After that single attempt nothing picks a route or starts a backend automatically again: when another window stops the internal backend (for example by “Stop internal DSH”), this window will not bring it back. A **known termination** (the guardian says goodbye: idle exit, or a stop request) leaves the buttons waiting for you; a mid-use **disconnect** (a network hiccup, a `dsh` restart, the guardian moving to a new address) keeps reconnecting to the same target without re-routing or starting another backend. Use the connection buttons or send a message to connect or start it.
-- When auto-connect is off, wait for manual action. Explicitly connecting internally still starts a backend if needed; “start” and “connect” share this logic. Connecting externally never starts a process; its button is disabled without a URL.
-- Reconnection sticks to the chosen server. Switch targets manually; doing so changes the session list.
-- While connecting, use “Stop connecting” or “Show logs”. Retries have no automatic deadline; launch and authentication failures return to the buttons with an error reason.
 - Windows with the same launch command share a backend. It exits after the last connection has been idle for 10 seconds by default; reloading within that grace period leaves it running.
-- `url` and `command` are user-only, machine-scoped settings and require a window reload. Other settings apply immediately.
+
+## DSH desktop app
+
+The desktop app (Electron) already runs a DSH service of its own, and the extension attaches to it instead of starting a second `dsh web`. The service also runs while the app sits on its welcome screen or is not signed in.
+
+- `dshChat.desktopExecutable` points at the app's executable (machine-scoped); empty disables the branch. Both sides must use the **same DSH home**, otherwise the credential is rejected.
+- Desktop only: leave `dshChat.command` empty.
 
 ## Settings
 
 | Key | Default | Purpose |
 |---|---|---|
 | `dshChat.url` | `http://127.0.0.1:3080` | Fallback external DSH address |
-| `dshChat.command` | `dsh web --port 0 --no-open` | Internal launch command, executed verbatim |
+| `dshChat.command` | `dsh web --port 0 --no-open` | Internal launch command, executed verbatim; empty means no internal DSH |
+| `dshChat.desktopExecutable` | empty | Path of the DSH desktop app executable; empty disables attaching to the app's built-in service, while setting it enables the desktop button that starts the app and attaches to that service (both sides must use the same DSH home) |
 | `dshChat.supervisorIdleSec` | `10` | Exit grace period with no connected windows, 5–600 seconds |
 | `dshChat.autoConnect` | `true` | Connect once at startup; when off, wait for manual action |
 | `dshChat.diffLayout` | `auto` | Narrow unified / wide split diff, or fixed `unified` / `split` |
@@ -177,7 +182,7 @@ With `dshChat.autoConnect` enabled, the extension connects automatically **once*
 
 Use the activity bar, secondary sidebar or editor area. **DSH: Open in Editor** and the header button open a tab in an existing editor group; an editor source keeps its own group. The whale button in the editor title bar creates a session in the current group.
 
-History is scoped to the current workspace and supports new, archive, delete and branch-from-here; branch titles have a “Branch: ” prefix. Open subagents to view their records: one-shot agents are read-only, continuable agents support follow-up chat. Jobs expose output, and Trajectory provides a ledger, timeline and inspector. “Open in browser” leads to the official server settings.
+History is scoped to the current workspace and supports new, archive, delete and branch-from-here; branch titles have a “Branch: ” prefix. Open subagents to view their records: one-shot agents are read-only, continuable agents support follow-up chat. The jobs drawer has two sections: **Scheduled tasks** (scheduled by the model through `schedule_create`, showing frequency and next run, with expandable execution records, rescheduling and deletion) and **Background jobs** (bash / pwsh and similar jobs, with expandable live output). The header button lights up while a background job is running or a scheduled task is pending; it pulses only while something is actually running, not just scheduled. Trajectory provides a ledger, timeline and inspector. “Open in browser” leads to the official server settings; while attached to the DSH desktop app's built-in service that button opens the desktop app itself instead, because the service is not exposed to browsers.
 
 ### Notifications
 
@@ -216,8 +221,10 @@ Use `npm run preview` for the webview and `npm run package` for a VSIX. Smoke te
 ## Limitations
 
 - No protocol version negotiation; see [dsh-compat.md](docs/dsh-compat.md) for the current checked baseline and compatibility boundaries.
+- Attaching to the desktop app's built-in service relies on internal implementations of the app and of `dsh-client-connection` (the credential record, and the `dsh-desktop-host` entry and spawn shape); they are registered in [dsh-compat.md](docs/dsh-compat.md) and checked against new upstream versions.
 - Stop intentionally drains the queue, cancels and resends in order: historical probes did not reliably resume queued work after a bare cancel.
-- Streaming text rebuilds its DOM, so an incremental update may swallow a file-link click; retry after the turn ends. Job sections, ANSI coloring and some upstream statistics remain unimplemented.
+- Streaming text rebuilds its DOM, so an incremental update may swallow a file-link click; retry after the turn ends. ANSI coloring for background jobs and some upstream statistics remain unimplemented.
+- Scheduled tasks: only the **current session's** tasks are listed (the global tasks page, the session-header reminder clock, the `schedule_create` conversation card and its activity indicator are not implemented); `cron` is shown as the expression itself rather than as the upstream natural-language description. Deletion is hard (execution records go with it) and does not cancel a delivery already in flight.
 - Drops are constrained by VS Code's iframe gate and the byte channel. On other platforms, use the paperclip for large files and `@` for folders.
 - Panel restoration depends on VS Code's workspace cache and `window.restoreWindows`.
 

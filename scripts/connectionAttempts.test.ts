@@ -160,11 +160,13 @@ function makeHarness() {
       stopping: false,
       remembered: false,
       externalUrl: undefined,
+      commandConfigured: true,
     }),
     onHeartbeat: (hook: () => void) => {
       heartbeatHook = hook;
     },
     externalUrl: "https://external.example/",
+    commandConfigured: true,
     activeBaseUrl: undefined,
     freshToken: () => undefined,
     setAutoConnect: () => undefined,

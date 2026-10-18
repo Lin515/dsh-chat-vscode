@@ -365,6 +365,20 @@ export const IconGlobe = (p: IconProps) => (
   </Icon>
 );
 
+/**
+ * 显示器（heroicons `computer-desktop` outline 的简化画法）：顶部「打开 DSH 桌面端」。
+ *
+ * 与 `IconGlobe` 是**同一颗按钮的两种形态**（见 `App.tsx` 顶栏那颗「打开」按钮）：
+ * 连的是桌面端内置服务时它打开的是桌面端应用窗口，地球会指错东西（浏览器那条路在
+ * 那种连接下是关着的，见 `docs/design-desktop.md`「浏览器访问」），所以换成显示器。
+ */
+export const IconDesktop = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M3 5.25A2.25 2.25 0 0 1 5.25 3h13.5A2.25 2.25 0 0 1 21 5.25v9.5A2.25 2.25 0 0 1 18.75 17H5.25A2.25 2.25 0 0 1 3 14.75z" />
+    <path d="M9 17.25v1.007a3 3 0 0 1-.879 2.122L7.5 21h9l-.621-.621A3 3 0 0 1 15 18.257V17.25" />
+  </Icon>
+);
+
 /** 归档盒（heroicons archive-box outline）：从工作区列表移出会话。 */
 export const IconArchive = (p: IconProps) => (
   <Icon {...p}>

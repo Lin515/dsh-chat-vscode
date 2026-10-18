@@ -8,17 +8,26 @@
  * 扩展启动时做一次，见 ChatController.autoConnect）。
  * supervisor 活着时只接入，不重复 spawn；等就绪无总时限，用户可取消。
  *
+ * **桌面端目标**（`TargetFacts.desktopAttachable` 那一支，见 docs/design-desktop.md）与
+ * 内部、外部并列：它既没有 supervisor 可谈，也没有启动令牌可用——凭据是扩展用本机签名
+ * 密钥现场签出的浏览器会话票（`desktopAttach.ts`），所以 ensure() 在那一支只做
+ * "发现 + 签票 + 验票"（必要时先把桌面端拉起来并等它就绪）。桌面端的进程生死归它自己。
+ *
  * stop(options?: { release?: boolean; cancelWait?: boolean; askSupervisor?: boolean }): Promise<boolean>
  * 不给 options 等同 cancelWait + askSupervisor；仅收连接须显式 stop({})。
  * snapshot() 是管理器只读出口，客户端轮次与异步两轴探测仍由控制器维护。
  * 完整规则见 docs/design-supervisor.md。
  */
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { closeSync, mkdirSync, openSync, readFileSync } from "node:fs";
 import { connect as connectTcp } from "node:net";
+import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   IDLE_SEC_DEFAULT,
+  PRIVATE_DIR_MODE,
+  PRIVATE_FILE_MODE,
   type SupervisorState,
   clampIdleSec,
   generationOf,
@@ -34,26 +43,46 @@ import {
 } from "./supervisorClient";
 import { createDefaultSupervisorLauncher } from "./supervisorRunner";
 import { isProcessAlive } from "./processRegistry";
+import {
+  DesktopCredentialError,
+  DesktopStartCancelledError,
+  DesktopStartError,
+  attachDesktopHost,
+  desktopLaunchEnv,
+  productionDesktopDeps,
+  startDesktopAndWait,
+  type DesktopAttachResult,
+  type DesktopDeps,
+  type DesktopLaunch,
+} from "./desktopAttach";
 import type { DshTarget } from "./connectTarget";
 
 /** 后台连接信息（沿用旧形状，controller 与界面不必跟着改）。 */
 export interface ServerInfo {
   /** 形如 http://127.0.0.1:3080（不含尾部斜杠）。 */
   baseUrl: string;
-  /** 用于换取签名 cookie 的启动令牌（外部服务器可能没有）。 */
+  /** 用于换取签名 cookie 的启动令牌（外部服务器与桌面端都没有）。 */
   token?: string;
+  /**
+   * **桌面端目标专用**：本窗口自铸的浏览器会话票（`name=value`，可直接放进 `Cookie` 头）。
+   *
+   * 桌面端没有可用的启动令牌（它按进程生成、只经 IPC 交给 Electron 主进程），所以凭据是
+   * 用本机签名密钥现场签出来的（见 `browserSession.ts`）。它按**凭据**对待：不进日志、
+   * 不进界面、不进错误详情。
+   */
+  cookie?: string;
   /** 是否由本窗口拉起（保留字段，供诊断与文案判断）。 */
   owned: boolean;
   /**
    * 归属：`self` = 本窗口拉起的 supervisor 那套；`peer` = 别的窗口拉起的同一套；
-   * `external` = 用户用 `dshChat.url` 指定的外部服务器。
+   * `external` = 用户用 `dshChat.url` 指定的外部服务器；`desktop` = DSH 桌面端内置的那套服务。
    *
    * 注意：**它与"谁负责杀"已经无关**（现在是 supervisor 负责），只用于界面文案与诊断。
    */
   ownership: Ownership;
 }
 
-export type Ownership = "self" | "peer" | "external";
+export type Ownership = "self" | "peer" | "external" | "desktop";
 export type ServerState = "stopped" | "starting" | "ready" | "failed";
 
 /**
@@ -220,6 +249,19 @@ export interface ManagerOptions {
   url: string;
   /** 启动命令（`dshChat.command`，原样执行、不追加参数）。 */
   command: string;
+  /**
+   * DSH 桌面端的可执行文件（`dshChat.desktopExecutable`）。**空白 = 整条桌面端支路关闭**。
+   *
+   * 两个用途：**收窄认人**（只认从这条路径启动的进程，避免误认同一台机器上的另一份安装）
+   * 与**启动**（用户点「启动 DSH 桌面端」时拉起它）。见 `docs/design-desktop.md`。
+   */
+  desktopExecutable?: string;
+  /**
+   * 桌面端发现与接入的 seam（离线测试注入假实现）。
+   *
+   * 省缺项由 `productionDesktopDeps` 补：进程表 / 端口查询、读凭据文件、两次 HTTP 探测。
+   */
+  desktop?: Partial<DesktopDeps>;
   /** 空闲阈值（秒）：写进会合文件，supervisor 热读。 */
   idleSec?: number;
   /**
@@ -335,6 +377,20 @@ export class SupervisorManager {
   private readonly directory: string;
   private readonly group: string;
   private readonly launcher: SupervisorLauncher;
+  /** 桌面端那套（进程表 / 凭据 / HTTP）的依赖：生产实现与测试 seam 合并后的那一份。 */
+  private readonly desktop: DesktopDeps;
+  /**
+   * 桌面端「认人 + 鉴权」的**缓存结论**（`DESKTOP_PROBE_TTL_MS`）。
+   *
+   * 为什么需要缓存：认人要查一次进程表（Windows 上是起 PowerShell 的一次 CIM 查询，秒级），
+   * 而心跳 5 秒一拍、按钮文案与选路判据都读它。没有缓存就是每拍一次进程查询——为了一个
+   * "桌面端在不在跑"的结论，代价明显不成比例。TTL 之内直接复用；用户显式动作（点按钮 /
+   * 激活期选路）**强制重探**，所以"刚启动的桌面端"不会被旧结论挡住。
+   *
+   * 它同时是**票的缓存**：TTL 只有几秒，而票的有效期是天级（见 `browserSession.ts`），
+   * 所以复用是安全的。
+   */
+  private desktopProbe: { at: number; result: DesktopAttachResult } | undefined;
 
   constructor(private readonly options: ManagerOptions) {
     this.group = options.group ?? groupForConfig(options.command);
@@ -342,6 +398,10 @@ export class SupervisorManager {
     this.launcher =
       options.launcher ??
       createDefaultSupervisorLauncher({ extensionPath: options.extensionPath, appRoot: options.appRoot, log: options.log });
+    this.desktop = {
+      ...productionDesktopDeps(options.desktopExecutable ?? "", options.log),
+      ...options.desktop,
+    };
     // 心跳**常驻**（旧实现只在连上 socket 之后才开）：它现在同时承担"后台还在吗"的
     // 巡检——关掉自动启动时，正是这一次巡检发现"守护进程起来了"并接上，而**永远**不会
     // 自己拉起一套（见 `heartbeatTick`）。控制器的心跳自检（`onHeartbeat`）也挂在同一个节拍上。
@@ -399,6 +459,35 @@ export class SupervisorManager {
   get externalUrl(): string | undefined {
     const url = this.options.url?.trim();
     return url ? url.replace(/\/+$/, "") : undefined;
+  }
+
+  /** 桌面端可执行文件（`dshChat.desktopExecutable`）；空白 = 整条桌面端支路关闭。 */
+  get desktopExecutable(): string | undefined {
+    const value = this.desktop.executable.trim();
+    return value ? value : undefined;
+  }
+
+  /** 配了桌面端可执行文件吗（界面按钮与选路都用它当第一道判据）。 */
+  get desktopConfigured(): boolean {
+    return this.desktopExecutable !== undefined;
+  }
+
+  /**
+   * 内部启动命令配了吗（`dshChat.command` 非空）。
+   *
+   * **留空 = 没有内部那一轴**（用户 2026-10-19 口径）：不启动、不连接、不选路、界面不给
+   * 那两颗按钮。与桌面端那一轴同一副样子（`desktopExecutable` 留空时整条支路关闭、
+   * 一次系统查询都不做，见 `docs/design-desktop.md`）。不同的内部 DSH 是按各自的命令行
+   * 辨认的，本窗口没有配命令就没有属于它的那一套。
+   *
+   * 读的是**用户配置的原值**，这里**不回落到清单默认值**：从没写过这条设置的用户由
+   * `package.json` 的 `default` 覆盖（行为不变），而显式清空是在说"我不要它"——
+   * 回落会把这句意图悄悄吃掉（用户报的"我都没配启动命令，它怎么自己起来了"正是这条）。
+   *
+   * 它是本文件与控制器、选路共用的第一道判据（`probeRunning()` / `ensure()` 各自握着一段）。
+   */
+  get commandConfigured(): boolean {
+    return this.options.command.trim().length > 0;
   }
 
   /** 当前生效的地址（连接用）。 */
@@ -459,6 +548,10 @@ export class SupervisorManager {
    */
   sharedSummary(): { ownership: Ownership; serverPid?: number; hostCount: number } | undefined {
     if (this.target === "external") return this.externalUrl ? { ownership: "external", hostCount: 1 } : undefined;
+    // 桌面端内置的那套服务由桌面端应用持有：既不是"本窗口拉起的"，也没有"别的窗口共用"可言
+    if (this.target === "desktop") {
+      return this.desktopConfigured ? { ownership: "desktop", hostCount: 1 } : undefined;
+    }
     const state = this.state;
     if (!state) return undefined;
     return {
@@ -496,6 +589,12 @@ export class SupervisorManager {
    * 要 spawn 一个 PowerShell，几秒一次地把扩展宿主冻住百来毫秒，不值得。
    */
   async probeRunning(): Promise<RunningSnapshot> {
+    // **没配命令 = 没有内部那一轴**：会合文件一个字都不读（对齐桌面端"没配就一次系统查询
+    // 都不做"）。少了这一句，别的窗口跑着的后台会让界面显示"内部 DSH：运行中"，还给出
+    // 「连接内部 DSH」——那两颗按钮点下去就是拿空命令去 spawn（用户 2026-10-19 口径）。
+    if (!this.commandConfigured) {
+      return { hasState: false, supervisorAlive: false, serverAlive: false, starting: false };
+    }
     const state = readState(this.directory);
     if (!state) {
       return { hasState: false, supervisorAlive: false, serverAlive: false, starting: false };
@@ -524,6 +623,232 @@ export class SupervisorManager {
     const url = this.externalUrl;
     if (!url) return false;
     return this.reachable(url);
+  }
+
+  /**
+   * 桌面端那一套此刻的状态：**认人 + 鉴权**（`attachDesktopHost`）。
+   *
+   * 三种结论各有去处（见 `docs/design-desktop.md`「失败与回落」）：
+   * - `attached` = 可连接（选路那一支的判据，票一起带回来）；
+   * - `not-running` = 没找到进程 / 端口不是 DSH（**不等于失败**：桌面端可能正在启动）；
+   * - `no-credential` / `rejected` = 凭据不可用（要用户动作，不重试）。
+   *
+   * `force` 为假时复用 `DESKTOP_PROBE_TTL_MS` 之内的结论（见 `desktopProbe` 字段）。
+   * 没配可执行文件时**一次系统查询都不做**，直接给 `not-running`。
+   */
+  async probeDesktop(force = false): Promise<DesktopAttachResult> {
+    if (!this.desktopConfigured) return { kind: "not-running" };
+    const cached = this.desktopProbe;
+    if (!force && cached && this.desktop.now() - cached.at < DESKTOP_PROBE_TTL_MS) return cached.result;
+    const result = await attachDesktopHost(this.desktop);
+    this.desktopProbe = { at: this.desktop.now(), result };
+    return result;
+  }
+
+  /**
+   * 丢掉桌面端的缓存结论。
+   *
+   * 两处要它：票被服务端拒（本机密钥与对面的不是同一把——**再探一次**才可能自愈）、
+   * 以及"发现到接入之间端口变了"（更新替换宿主）。缓存里存着票，所以它也顺带作废那张票。
+   */
+  dropDesktopProbe(): void {
+    this.desktopProbe = undefined;
+  }
+
+  /**
+   * 桌面端目标就绪：发现 + 鉴权（必要时先把它拉起来），返回可直接建客户端的服务信息。
+   *
+   * **生命周期归桌面端自己**（扩展不关停它，也不接管它的窗口），所以这里与内部那套最大的
+   * 区别是"没有 supervisor 那一层"：只发现、只签票、只连。
+   */
+  private async ensureDesktop(mayStart: boolean): Promise<ServerInfo> {
+    if (this.disposed) throw new WaitCancelledError();
+    if (!this.desktopConfigured) {
+      // 防御路径：界面在没配时不给那两枚按钮，正常到不了这里
+      this.options.log("[desktop] 没有配置 dshChat.desktopExecutable，桌面端支路关闭");
+      this.setStatus({ state: "stopped", detail: "desktop not configured", cause: "gone" });
+      throw new ServerNotRunningError();
+    }
+    // 初始发现也在本轮等待里：不能等探测返回、准备 spawn 时才登记，否则此前的取消会丢失。
+    const wait = this.beginWait();
+    const stopped = () => wait.signal.aborted || this.disposed || this.target !== "desktop";
+    try {
+      // 心跳允许复用缓存；用户显式动作强制重探，避免刚启动的桌面端被旧结论挡住。
+      const probe = await this.probeDesktop(mayStart);
+      if (stopped()) throw new WaitCancelledError();
+      const outcome = probe.kind === "not-running" && mayStart
+        ? await this.startDesktopService(wait.signal, stopped)
+        : probe;
+      if (stopped()) throw new WaitCancelledError();
+      if (outcome.kind === "attached") {
+        this.options.log(`[desktop] 已接上桌面端内置服务：${outcome.baseUrl}`);
+        const info: ServerInfo = {
+          baseUrl: outcome.baseUrl,
+          cookie: outcome.cookie,
+          owned: false,
+          ownership: "desktop",
+        };
+        this.setStatus({ state: "ready", info });
+        return info;
+      }
+      if (outcome.kind === "no-credential" || outcome.kind === "rejected") {
+        // 凭据不可用：不重试（重试解决不了）。清缓存，下次重新读文件、重新签
+        this.dropDesktopProbe();
+        throw new DesktopCredentialError(outcome.kind === "rejected" ? "rejected" : "missing");
+      }
+      // 「此刻没有可连的桌面端」不是失败：控制器按 ServerNotRunningError 接着试（与内部同口径）
+      this.setStatus({ state: "stopped", detail: "desktop service not running", cause: "gone" });
+      throw new ServerNotRunningError();
+    } finally {
+      this.endWait(wait);
+    }
+  }
+
+  /**
+   * 拉起桌面端并等它的服务就绪（用户点了「启动 DSH 桌面端」，或激活期选到那一支）。
+   *
+   * 等待可被「停止连接」中断（`beginWait` 的中断器），超时归**启动类**失败
+   * （`@desktopNotReady`：不自动重试，避免 spawn 风暴，与内部那套的启动类口径一致）；
+   * 拉起的进程先退出了（且没有别的宿主进程在跑）同样归**启动类**，但立刻给结论
+   * （`@desktopExited`）。
+   */
+  private async startDesktopService(signal: AbortSignal, stopped: () => boolean): Promise<DesktopAttachResult> {
+    const executable = this.desktopExecutable;
+    if (!executable) return { kind: "not-running" };
+    this.options.log("[desktop] 拉起 DSH 桌面端并等它的服务就绪");
+    try {
+      return await startDesktopAndWait({
+        deps: this.desktop,
+        launch: (target) => this.launchDesktop(target),
+        timeoutMs: DESKTOP_READY_TIMEOUT_MS,
+        pollMs: DESKTOP_POLL_MS,
+        stopped,
+        // 与初始发现共用中断器，不能在准备启动时重新登记一轮等待而遗失取消。
+        sleep: (ms) => delay(ms, undefined, { signal }).catch(() => undefined),
+      });
+    } catch (error) {
+      // 等就绪期间用户点了「停止连接」：这是**用户指令**的产物，不是失败（与内部那套同口径）
+      if (error instanceof DesktopStartCancelledError) throw new WaitCancelledError();
+      // 真的失败：把桌面端自己的输出尾巴附进日志。它就是"起不来"的第一手证据
+      // （同 supervisor 的 `logTail` 口径；票与令牌都进不了这里，`logDesktopTail` 会洗）
+      this.logDesktopTail();
+      throw error;
+    }
+  }
+
+  /**
+   * 拉起桌面端可执行文件（detached + unref：它不随 VS Code 退出，也不被扩展收养）。
+   *
+   * 只在 `spawn` **真的失败**时抛（`ENOENT` 这类是异步事件，所以要等一个事件回合）：
+   * 单纯"起来了但服务还没就绪"由等就绪那一轮判（见 `startDesktopService`）。
+   * 已经有一个桌面端在跑时，重复拉起只会聚焦已有窗口（它自己做了单实例），也无害。
+   *
+   * 三件事都不能少（理由见 `desktopLaunchEnv` 与 `runtimeResolve.ts` 的 `spawnDetached`）：
+   * - **环境洗过**：继承来的 `ELECTRON_RUN_AS_NODE` 会让它变成没有窗口的 Node；
+   * - **输出留证据**：`stdio: "ignore"` 等于把"起不来的原因"扔掉，日志里一个字都没有；
+   * - **把退出码交出去**：`spawn` 事件只证明进程创建成功，等就绪那一轮才知道服务该不该在。
+   */
+  private async launchDesktop(executable: string): Promise<DesktopLaunch> {
+    const logFd = this.openDesktopLog();
+    let child;
+    try {
+      child = spawn(executable, [], {
+        detached: true,
+        env: desktopLaunchEnv(),
+        // 输出**进文件而不是管道**（与 `runtimeResolve.ts` 的 `spawnDetached` 同一口径）：
+        // 管道会拖住调用方，而且扩展退出后读端一关，桌面端再往 stdout 写就是 EPIPE
+        // ——一个不随 VS Code 退出的应用不该有这种死法
+        stdio: ["ignore", logFd ?? "ignore", logFd ?? "ignore"],
+      });
+    } catch (error) {
+      throw new DesktopStartError((error as NodeJS.ErrnoException).code ?? "SPAWN_FAILED");
+    } finally {
+      // 子进程已经拿到自己那份 dup：父进程这一份必须关掉，否则扩展宿主自己一直占着它
+      if (logFd !== undefined) {
+        try {
+          closeSync(logFd);
+        } catch {
+          // 忽略：关不掉也不影响这次启动
+        }
+      }
+    }
+    let exited: { code: number | null } | undefined;
+    child.once("exit", (code) => {
+      exited = { code };
+    });
+    const failure = await new Promise<NodeJS.ErrnoException | undefined>((resolve) => {
+      child.once("spawn", () => resolve(undefined));
+      child.once("error", (error) => resolve(error as NodeJS.ErrnoException));
+    });
+    child.unref();
+    if (failure) throw new DesktopStartError(failure.code ?? failure.message);
+    return { exited: () => exited };
+  }
+
+  /**
+   * 「打开 DSH 桌面端」：把这个桌面端拉起来（**不**等它的服务、也不改连接）。
+   *
+   * 用户点的是"打开应用"：已在跑时它自己的单实例会聚焦已有窗口，没在跑就开一个。
+   * 连接与发现仍由 `ensure()` 那条链路负责（这里连 `desktopProbe` 的缓存都不动——
+   * 窗口起来后服务还要几秒，那不是这次动作的事）。起不来时抛 `DesktopStartError`。
+   */
+  async openDesktopApp(): Promise<void> {
+    const executable = this.desktopExecutable;
+    if (!executable) {
+      // 防御路径：界面上这颗按钮只在连上桌面端时出现，而那时可执行文件必然配了
+      this.options.log("[desktop] 没有配置 dshChat.desktopExecutable，打不开桌面端");
+      return;
+    }
+    this.options.log("[desktop] 打开 DSH 桌面端（已在跑则聚焦已有窗口）");
+    try {
+      await this.launchDesktop(executable);
+    } catch (error) {
+      this.logDesktopTail();
+      throw error;
+    }
+  }
+
+  /**
+   * 桌面端可执行文件的 stdout / stderr 落到哪个文件。
+   *
+   * 放在会合目录里、与会合协议那份 `supervisor.log` **并列但分开**：后者是内部后台的
+   * 诊断线索（`logTail` 甚至按关键字读它的尾巴给遗留锁提示），混进桌面端的输出只会
+   * 让两边互相干扰。
+   */
+  private desktopLogPath(): string {
+    return join(this.directory, "desktop.log");
+  }
+
+  /**
+   * 打开桌面端输出日志（拿不到就是 `undefined`）。
+   *
+   * 拿不到**不该拦住启动**：少一条诊断线索，比"打不开桌面端"轻得多。
+   */
+  private openDesktopLog(): number | undefined {
+    try {
+      // 目录与文件的权限都按"可能要写凭据进去"给：桌面端的 stdout 里可能带它自己那份
+      // 带令牌的地址（`printUrl`），日志文件不该比会合文件更宽松
+      mkdirSync(this.directory, { recursive: true, mode: PRIVATE_DIR_MODE });
+      return openSync(this.desktopLogPath(), "a", PRIVATE_FILE_MODE);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * 把桌面端最近的输出打进开发日志（**只在失败时**调用）。
+   *
+   * 与 `logTail` 同一口径：只取尾部、经 `redactSecrets`、读不到就当没有。
+   */
+  private logDesktopTail(lines = DESKTOP_LOG_TAIL_LINES): void {
+    let text: string;
+    try {
+      text = readFileSync(this.desktopLogPath(), "utf8");
+    } catch {
+      return;
+    }
+    const tail = redactSecrets(text.split(/\r?\n/).filter(Boolean).slice(-lines).join("\n"));
+    if (tail) this.options.log(`[desktop] 桌面端最近输出：\n${tail}`);
   }
 
   /**
@@ -593,6 +918,11 @@ export class SupervisorManager {
    */
   async ensure(options: EnsureOptions = {}): Promise<ServerInfo> {
     this.target = options.target ?? this.target ?? "internal";
+    if (this.target === "desktop") {
+      // 与切外部同口径：先交还内部占用，再发现桌面端；不等探测完成或心跳兜底。
+      this.detachInternal("目标切到桌面端");
+      return this.ensureDesktop(options.start === true);
+    }
     const external = this.externalUrl;
     if (this.target === "external") {
       // 防御路径：界面上「连接外部 DSH」在没配地址时是置灰的，正常到不了这里。
@@ -619,14 +949,24 @@ export class SupervisorManager {
       this.setStatus({ state: "ready", info });
       return info;
     }
+    // **本窗口没有内部那一轴**（`dshChat.command` 留空）：不接入、更不拉起一套。
+    // 界面在没配时不给那两颗按钮、命令面板那两条入口也拦在控制器里，正常到不了这里；
+    // 真到了就按"没有可连的目标"处理（调用方切按钮态），**绝不允许拿空命令去 spawn**
+    // ——空命令启动出来的进程谁也认不出是谁的（用户 2026-10-19 口径）。
+    if (!this.commandConfigured) {
+      this.options.log("[supervisor] 没有配置 dshChat.command（内部那一轴已关闭），不接入也不拉起内部后台");
+      this.setStatus({ state: "stopped", detail: "internal not configured", cause: "gone" });
+      throw new ServerNotRunningError();
+    }
     // 已经就绪**且长连接还在**才算数：只看状态会在"地址还在、连接没了"时误判成已完成
     // （实测：restart 之后状态是 ready、连接却没重建，于是再也收不到状态推送）。
-    // 还要确认这份就绪信息**就是内部那一套**：目标刚被用户从外部切回内部时，
-    // 旧状态里那份 external 的 info 不能当数（它没有 socket 长连接可言）。
+    // 还要确认这份就绪信息**就是内部那一套**：目标从外部或桌面端切回内部时，旧状态里那份
+    // 别的归属的 info 不能当数（external 没有 socket 长连接可言、desktop 连的是另一个进程）。
     if (
       this.status.state === "ready" &&
       this.status.info &&
       this.status.info.ownership !== "external" &&
+      this.status.info.ownership !== "desktop" &&
       this.connection?.connected
     ) {
       return this.status.info;
@@ -671,7 +1011,15 @@ export class SupervisorManager {
     this.state = undefined;
     this.launched = false;
     this.clientCount = 1;
-    if (this.status.info && this.status.info.ownership !== "external") {
+    // 只作废**内部那一套**的就绪信息（`self` / `peer`）：这里是"收掉内部连接"的落点，
+    // 而 `status.info` 可能放着**别的轴**那一份——外部（`external`）与桌面端（`desktop`）
+    // 的地址都不是"内部那一套的记忆"，作废它们等于把另外两条轴的结论一起抹掉。
+    //
+    // 桌面端那一份尤其要紧：目标不是内部时这道兜底**每 5 秒**跑一次，而界面那颗「打开」
+    // 按钮的判据（`ChatController.desktopConnected`）读的正是 `status.info.ownership`，
+    // 必须原样留着。清状态本身不发帧，界面要等下一次整份快照（切会话就是最常发生的
+    // 那一次）才读得到它——一次误清就足以让那颗按钮退回"在浏览器中打开"。
+    if (this.status.info && (this.status.info.ownership === "self" || this.status.info.ownership === "peer")) {
       // 我们主动断开（换目标 / 交还占用）：这不是"后台没了"，别让控制器当终结收尾
       this.setStatus({ state: "stopped", detail, cause: "gone" });
     }
@@ -1359,6 +1707,24 @@ export class SupervisorManager {
 
 /** 心跳节拍：与旧实现一致（5s）。 */
 const HEARTBEAT_MS = 5_000;
+
+/**
+ * 桌面端「认人 + 鉴权」结论的缓存时长。
+ *
+ * 比心跳节拍（5s）长一点：认人要查一次进程表（Windows 上是秒级的 CIM 查询），
+ * 而按钮文案与激活期选路读的都是"桌面端在不在"这个布尔量。10 秒的陈旧度对
+ * "未在跑/已在跑"的措辞没有影响，用户显式动作还会强制重探。
+ */
+const DESKTOP_PROBE_TTL_MS = 10_000;
+
+/** 拉起桌面端后等它的服务就绪的上限（Electron 冷启动几秒，更新替换宿主时更久）。 */
+const DESKTOP_READY_TIMEOUT_MS = 30_000;
+
+/** 等就绪时的轮询间隔：每一轮都是一次完整的发现 + 鉴权。 */
+const DESKTOP_POLL_MS = 1_000;
+
+/** 拉起失败时回读桌面端输出的行数（与会合日志的 `logTail` 同一口径）。 */
+const DESKTOP_LOG_TAIL_LINES = 20;
 
 /**
  * 把日志尾巴里的**启动令牌**抹掉再给人看。

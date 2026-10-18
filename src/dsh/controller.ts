@@ -79,6 +79,7 @@ import { presetMatchNames } from "../webview/presetDisplay";
 import { resolveForVsCode } from "./hostText";
 import { normalizeTurnProcessThreshold } from "../shared/turnProcessThreshold";
 import { chooseTarget, describeFacts, externalStateOf, type TargetFacts } from "./connectTarget";
+import { DesktopCredentialError, DesktopStartError } from "./desktopAttach";
 import { DshApiError, DshAuthError, DshClient, endpointAbsent, type SessionReferenceCandidateWire, type SessionSummaryWire } from "./client";
 import { createConnectionAttempts, type ConnectionAttempts, type ConnectionRound, type DshClientFactory } from "./connectionAttempts";
 import type { ProjectionBlockWire } from "./projectionStore";
@@ -536,8 +537,12 @@ type ConnectionFields = Pick<
   | "connection"
   | "connectionDetail"
   | "internalRunning"
+  | "internalConfigured"
   | "externalState"
   | "externalAddress"
+  | "desktopConfigured"
+  | "desktopRunning"
+  | "desktopConnected"
   | "connectTarget"
   | "connectPhase"
   | "needsToken"
@@ -596,10 +601,31 @@ function connectionFieldsOf(input: ConnectionFieldsInput): ConnectionFields {
     connectionDetail: round.detail,
     /** 内部后台在不在跑：按钮态据此给「启动内部 DSH」还是「连接内部 DSH」。 */
     internalRunning: facts.internalRunning || undefined,
+    /**
+     * 内部那一轴存不存在（`dshChat.command` 配了才算）。
+     *
+     * 留空 = 没有内部 DSH：界面**不给**那两颗按钮，状态短语写「内部 DSH：未配置」——
+     * 与外部那半句的三态口径一致（用户 2026-10-19 口径）。
+     */
+    internalConfigured: facts.internalConfigured,
     /** 外部备用地址的状态：`unconfigured` 时「连接外部 DSH」置灰。 */
     externalState: externalStateOf(facts),
     /** 外部地址本身（连接中那条文案要写出"在连哪个地址"）——**来自快照**。 */
     externalAddress: snapshot.externalUrl,
+    /** 配了桌面端可执行文件：按钮态据此多给一颗「启动/连接 DSH 桌面端」。 */
+    desktopConfigured: facts.desktopConfigured || undefined,
+    /** 桌面端进程在不在跑：只决定上面那颗按钮的措辞（选路看的是 `desktopAttachable`）。 */
+    desktopRunning: facts.desktopRunning || undefined,
+    /**
+     * **当前这条连接**是不是桌面端内置的那套服务。
+     *
+     * 判据是"这一轮建起客户端的那份 `ServerInfo` 归属为 `desktop`"（`snapshot.status.info`
+     * 就是 `ensure()` 最近一次的结果），**不是**目标是不是桌面端：目标粘在桌面端但这一轮
+     * 还没连上时，界面不该按"已经连上桌面端"给动作。顶栏那颗「打开」按钮据此二分
+     * （浏览器 / 桌面端应用窗口），理由见 `docs/design-desktop.md`「浏览器访问」。
+     */
+    desktopConnected:
+      (round.connection === "connected" && snapshot.status.info?.ownership === "desktop") || undefined,
     /** 粘性目标（连接中条上写"内部/外部"）；没选过时为 undefined（过线成 null → 界面清键）。 */
     connectTarget: round.target,
     /** 阶段只在连接中有意义，其余状态清掉（否则按钮态还挂着"正在启动…"）。 */
@@ -1300,18 +1326,29 @@ export class ChatController implements vscode.Disposable {
   /** 心跳触发的共享后台切换正在跑（去重，见 `reconnectPeer`）。 */
   private peerReconnect = false;
   /**
-   * **两轴探测结论**：内部守护进程在不在跑、外部备用地址可不可达（同一次心跳刷新）。
+   * **探测结论**：内部守护进程在不在跑、外部备用地址可不可达、桌面端内置服务在不在/可不可连
+   * （同一次心跳刷新）。
    *
-   * 这是**本窗口的观测**，不是管理器快照的镜像：快照里没有这两个值（内部那一轴要
-   * `probeRunning()` 问"守护进程进程还在吗"、外部那一轴要发一次 HTTP，都是异步的，
-   * 见 `docs/design-supervisor.md`「两条存在性判据」）。它们只在 `probeFacts()` / `setFacts()` / `setInternalRunning()` 三处写入，
-   * 界面侧由 `connectionFieldsOf` 一次映射成 `internalRunning` / `externalState`。
+   * 这是**本窗口的观测**，不是管理器快照的镜像：快照里没有这几个值（内部那一轴要
+   * `probeRunning()` 问"守护进程进程还在吗"、外部那一轴要发一次 HTTP、桌面端那一轴要查进程表
+   * 与凭据，都是异步的，见 `docs/design-supervisor.md`「存在性判据」）。它们只在
+   * `probeFacts()` / `setFacts()` / `setInternalRunning()` 三处写入，界面侧由
+   * `connectionFieldsOf` 一次映射成 `internalRunning` / `internalConfigured` / `externalState` /
+   * `desktopConfigured` / `desktopRunning`。
    *
    * 此前是两个字段（`internalRunning` / `externalReachable`）各自被赋值的：一个值两处
    * 镜像，"改了内部忘了外部"就会让按钮态那半句与按钮集各说各话。现在只有这一份，
-   * 且只有 `externalStateOf(facts)` 一个读法（它本来就在 `connectTarget` 里）。
+   * 且外部那一轴只有 `externalStateOf(facts)` 一个读法（它本来就在 `connectTarget` 里）。
    */
-  private facts: TargetFacts = { internalRunning: false, externalConfigured: false, externalReachable: false };
+  private facts: TargetFacts = {
+    internalRunning: false,
+    internalConfigured: false,
+    externalConfigured: false,
+    externalReachable: false,
+    desktopConfigured: false,
+    desktopRunning: false,
+    desktopAttachable: false,
+  };
   /**
    * **粘性目标**：这一轮连内部还是外部，以及激活期那一次允不允许"内部不存在就拉起一套"。
    *
@@ -1411,15 +1448,20 @@ export class ChatController implements vscode.Disposable {
     // 早期版本存过启动令牌；令牌每次启动都会刷新，留着只会误导，直接清掉
     void this.secrets.delete(LEGACY_TOKEN_SECRET);
 
-    // 两轴结论的**初值**：外部那一轴现在就能从配置断定（配没配 `dshChat.url` 是配置事实，
-    // 不必等一次 HTTP 探测），内部那一轴要等第一次探测——在它之前按"未运行"渲染
-    // （按钮态给的是「启动内部 DSH」，点它与「连接内部 DSH」是同一套逻辑，见 `docs/design-supervisor.md`「连接条按钮矩阵」）。
+    // 两轴（+ 桌面端那一轴）结论的**初值**：外部与桌面端现在就能从配置断定（配没配
+    // `dshChat.url` / `dshChat.desktopExecutable` 是配置事实，不必等一次探测），内部与
+    // 桌面端"在不在跑"要等第一次探测——在它之前按"未运行"渲染（按钮态给的是「启动…」，
+    // 点它与「连接…」是同一套逻辑，见 `docs/design-supervisor.md`「连接条按钮矩阵」）。
     // 少了这一句，配了外部地址的窗口在首帧快照里会显示"外部 DSH：未配置"
     // 并把「连接外部 DSH」置灰，直到第一轮探测回来。
     this.facts = {
       internalRunning: false,
+      internalConfigured: this.server.commandConfigured,
       externalConfigured: this.server.externalUrl !== undefined,
       externalReachable: false,
+      desktopConfigured: this.server.desktopConfigured,
+      desktopRunning: false,
+      desktopAttachable: false,
     };
 
     // 心跳自检：只有控制器知道"当前连接还活着吗"。ServerManager 每 5 秒问一次，
@@ -1458,6 +1500,21 @@ export class ChatController implements vscode.Disposable {
     const facts = await this.probeFacts();
     this.setFacts(facts);
     if (this.connection === "connected") {
+      // **桌面端目标**：它的端点每次启动都变（安装更新还会替换宿主，端口与凭据一起换），
+      // 所以"端点变了没有"只能按**刚探到**的那一份比。管理器那份 `status.info` 是本窗口
+      // `ensure()` 时写下的旧值，拿它比会永远"端点没变"，手里的客户端就会一直重连一个
+      // 已经不存在的端口（用户看到的是一直"正在连接…"）。
+      if (this.target?.kind === "desktop") {
+        const current = await this.server.probeDesktop(false);
+        // 这一刻探不到（正在启动 / 刚被关掉）：什么都不发起，下个心跳重探；手里那条
+        // 客户端自己退避重连（它连的正是刚消失的那个端点）
+        if (current.kind !== "attached") return;
+        if (this.client && sameEndpoint(current.baseUrl, this.client.baseUrl)) return;
+        if (!this.attempts.retryable) return;
+        // 只借它那句"按原目标重建"：`ensure()` 会在桌面端那一支重新发现、重新签票
+        await this.reconnectPeer({ baseUrl: current.baseUrl, owned: false, ownership: "desktop" });
+        return;
+      }
       const probe = await this.probeConnection(this.server.activeBaseUrl);
       if (probe.alive || !probe.info) return;
       // 端点没变：手里这条 ws 才是权威（这一次 HTTP 可能只是抖），让它自己退避重连恢复；
@@ -1482,6 +1539,18 @@ export class ChatController implements vscode.Disposable {
     // 探测，后台回来就按原目标接上。绝不 `start: true`——那正是"启动时那一次自动连接"的来路，
     // 别的窗口停掉后台后本窗口 5 秒内又 spawn 一个新 supervisor 要根治的正是它。
     if (this.target.kind === "internal" && !facts.internalRunning) return;
+    // **桌面端目标**：这一刻连不上就什么都不发起（桌面端可能正在启动，或已被用户关掉），
+    // 下个心跳重新探测。可连接时才比对端点——这里的端点取**刚探到的那一份**：端口每次
+    // 启动都变（安装更新会替换宿主，端口与凭据一起换），而管理器那份 `status.info` 是
+    // 上一次 `ensure()` 留下的，拿它比对会永远"端点没变"。
+    if (this.target.kind === "desktop") {
+      if (!facts.desktopAttachable) return;
+      const probe = await this.server.probeDesktop(false);
+      const baseUrl = probe.kind === "attached" ? probe.baseUrl : undefined;
+      if (this.client && baseUrl && sameEndpoint(baseUrl, this.client.baseUrl)) return;
+      await this.ensureConnected({ start: false, target: "desktop" });
+      return;
+    }
     // 端点没变就让手里的客户端自己恢复（同一个断口，别重建第二个）；变了才必须重建。
     const info = this.server.snapshot().status.info;
     if (this.client && info && sameEndpoint(info.baseUrl, this.client.baseUrl)) return;
@@ -1489,18 +1558,41 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
-   * 只读探测两个轴（内部守护进程在不在、外部地址可不可达）。
+   * 只读探测三轴（内部守护进程在不在、外部地址可不可达、桌面端内置服务在不在/可不可连）。
    *
    * 外部那一次 HTTP 探测**只在未连接时做**（2026-09-19 落实到函数内部）：连上之后连接条
    * 根本不显示，而"连上了"本身就是可达证据——不跳的话每 5 秒都会朝那个地址发一次 GET。
    * 跳的时候**沿用上一次的结论**，不要改写成"不可达"（那是假的：我们正连着它）。
+   *
+   * 桌面端那一轴同一套口径，理由更硬：它的探测要查一次进程表（Windows 上是秒级的 CIM
+   * 查询），未连接时也交给管理器缓存 `DESKTOP_PROBE_TTL_MS`。它的结论分**两轴**：
+   * `desktopRunning`（认人成功，只给按钮文案用）与 `desktopAttachable`（鉴权也通过，
+   * 选路看它）。
    */
   private async probeFacts(): Promise<TargetFacts> {
     const snapshot = await this.server.probeRunning();
     const externalConfigured = this.server.externalUrl !== undefined;
     const externalReachable =
       externalConfigured && this.connection !== "connected" ? await this.server.probeExternal() : this.facts.externalReachable;
-    return { internalRunning: snapshot.supervisorAlive, externalConfigured, externalReachable };
+    const desktopConfigured = this.server.desktopConfigured;
+    let desktopRunning = this.facts.desktopRunning;
+    let desktopAttachable = this.facts.desktopAttachable;
+    if (desktopConfigured && this.connection !== "connected") {
+      const probe = await this.server.probeDesktop(false);
+      desktopRunning = probe.kind !== "not-running";
+      desktopAttachable = probe.kind === "attached";
+    }
+    return {
+      // 没配启动命令 = 没有内部那一轴，**恒为假**（探测层已经短路，这里是第二道：
+      // 界面据此不给那两颗按钮，选路据此不选内部）
+      internalRunning: this.server.commandConfigured && snapshot.supervisorAlive,
+      internalConfigured: this.server.commandConfigured,
+      externalConfigured,
+      externalReachable,
+      desktopConfigured,
+      desktopRunning,
+      desktopAttachable,
+    };
   }
 
   /**
@@ -1534,8 +1626,14 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
-   * 心跳发现：我们连的是**别的窗口**的后台，而它换了地址（或刚被重起）。
-   * 换上新的令牌/地址重连——会话还在服务端，只是连接要重来一次。
+   * 端点已经不作数了，按**原目标**重建连接。
+   *
+   * 两种来路：心跳发现我们连的是**别的窗口**的后台而它换了地址（或刚被重起）；桌面端目标
+   * 的内置宿主被替换（安装更新会换端口与凭据）。两者都是"会话还在服务端，只是连接要重来
+   * 一次"，所以走同一条路：作废在途轮 + 收掉旧客户端（含它自己的无限重连） + `start: false`
+   * 重接——**绝不因此拉起任何东西**。
+   *
+   * `info` 只用到地址（重建时由 `ensure()` 重新发现真实端点，桌面端还会重新签票）。
    *
    * `inFlight` 去重是必须的：心跳每 5 秒一次，而重连要起 PowerShell/HTTP 好几轮，
    * 不去重就会并发建出多个客户端，每个都开一套跟随流。
@@ -1544,13 +1642,13 @@ export class ChatController implements vscode.Disposable {
     if (this.peerReconnect) return;
     this.peerReconnect = true;
     try {
-      this.log(`[server] 切换共享后台：${info.baseUrl}`);
+      this.log(`[server] 端点已变，按原目标重建连接：${info.baseUrl}`);
       // 与换目标同一条纪律：作废在途轮 + 收掉旧连接（含客户端自己的无限重连）
       this.attempts.retarget();
       // 后台是守护进程在管、此刻确实在跑：这里只接上，绝不因为"连不上"就自己拉起一套
       await this.ensureConnected({ start: false });
     } catch (error) {
-      this.log(`[server] 切换共享后台失败：${this.describeError(error)}`);
+      this.log(`[server] 按原目标重建连接失败：${this.describeError(error)}`);
     } finally {
       this.peerReconnect = false;
     }
@@ -2818,13 +2916,35 @@ export class ChatController implements vscode.Disposable {
       }
       return inFlight.finished;
     }
-    // 许可按"这一轮里最宽的那个请求"算；目标按粘性目标（见 `target` 字段）
-    const target = options.target ?? this.target?.kind ?? "internal";
+    // 许可按"这一轮里最宽的那个请求"算；目标按粘性目标（见 `target` 字段）。
+    // **没定过目标时走同一套选路**（不再硬编码内部）：那条硬编码在"命令留空"的窗口里
+    // 就是"拿空命令去连内部"（用户 2026-10-19 报的自动启动，一处来路就是它）。
+    const target = options.target ?? this.target?.kind ?? this.preferredTarget();
+    if (!target) {
+      this.log("[connect] 没有任何可用的目标（内部 DSH 没配启动命令，也没有配桌面端），不发起连接");
+      this.attempts.markRetry(false);
+      this.setConnection("stopped");
+      return;
+    }
+    // 通用入口首次选路也要留下粘性目标：断线后心跳据此重新发现桌面端的新端口。
+    this.target = { kind: target, mayStart: options.start === true };
     return this.attempts.run({ target, mayStart: options.start === true }, (round) => this.connectOnce(round));
   }
 
+  /**
+   * 没定过粘性目标时，按当前探测结论选一个（`chooseTarget`）；没有任何可选项时 `undefined`。
+   *
+   * 只在"从没选过目标"的入口用得上（发消息 / 新建 / 切会话这类显式动作赶在激活期自动选路
+   * 落地之前）。**命中"内部那一轴不存在"时绝不能兜底成内部**：那正是一条拿空命令 spawn 的路。
+   */
+  private preferredTarget(): DshTarget | undefined {
+    return chooseTarget(this.facts)?.target;
+  }
+
   private async connectOnce(round: ConnectionRound): Promise<void> {
-    const roundTarget = this.target?.kind ?? "internal";
+    // 目标取**这一轮自己记下的那个**（`ensureConnected` 选好后交给账本），不再读可能被
+    // 后续用户动作改写的粘性目标：旧轮次只能处理自己的目标。
+    const roundTarget = round.target;
     // 阶段：这一轮允许"内部不存在就拉起一套"、而内部此刻确实不在 → 在**启动**它
     // （发消息这类显式动作也会走到这里，文案得说实话，而不是笼统地"正在连接"）
     this.connectPhase =
@@ -2847,7 +2967,12 @@ export class ChatController implements vscode.Disposable {
       // peer（别的窗口拉起的、或窗口重载后接上的同一套）手里同样有会合文件里的启动
       // 令牌，必须走同一条令牌换 cookie 的路；此前它们被当成外部服务器处理，于是
       // 弹「输入令牌」框——用户报的"内部启动后拿不到 token、连不上"就是这里。
-      const client = info.ownership === "external" ? await this.openExternalClient(info) : await this.openOwnedClient(info);
+      const client =
+        info.ownership === "external"
+          ? await this.openExternalClient(info)
+          : info.ownership === "desktop"
+            ? await this.openDesktopClient(info)
+            : await this.openOwnedClient(info);
       // 换 cookie / 换令牌也要几秒，期间用户可能已经换了目标或点了停止
       if (round.stale()) {
         round.discard(client);
@@ -2915,7 +3040,8 @@ export class ChatController implements vscode.Disposable {
    * | 没后台 | `ServerNotRunningError`（本轮不许启动，或后台这一刻正好不在） | 仍在**连接中** + 原因 | 是——但只"接着接"，`start: false`，绝不自行拉起 |
    * | 用户叫停 | `WaitCancelledError` | 按钮态 | 否 |
    * | 认证类 | `DshAuthError`（要令牌 / 令牌被拒） | 按钮态 + 「输入令牌」（外部） | 否——重试解决不了凭据问题 |
-   * | 启动类 | `@serverSpawnFailed` / `@serverNotReady`（命令错、dsh 起不来） | 按钮态 + 原因 | 否——否则每 5 秒 spawn 一个必死进程、日志被刷爆 |
+   * | 桌面端凭据类 | `DesktopCredentialError`（读不到密钥 / 票被拒） | 按钮态 + 原因（**没有**令牌入口） | 否——同上，且桌面端没有可输入的东西 |
+   * | 启动类 | `@serverSpawnFailed` / `@serverNotReady`（命令错、dsh 起不来）、`@desktopSpawnFailed` / `@desktopNotReady` / `@desktopExited`（桌面端起不来 / 等不到就绪 / 刚起来就退出） | 按钮态 + 原因 | 否——否则每 5 秒 spawn 一个必死进程、日志被刷爆 |
    * | 连接类 | 地址连不上、socket 断 | 仍在**连接中** + 原因 | **是**，直到连上或用户点「停止连接」 |
    *
    * 拿不到明确证据时按**连接类**处理（继续试），因为"多试几次"的代价只是日志，
@@ -2923,11 +3049,16 @@ export class ChatController implements vscode.Disposable {
    */
   private classifyConnectFailure(error: unknown, roundTarget: DshTarget): void {
     if (error instanceof ServerNotRunningError) {
-      // 后台**这一刻**不在（会合状态刚被清、守护进程换代、别的窗口正把它拉起来），
-      // 或这一轮本来就不许启动：这**不是**这一套的终结。保留"按原目标接着接"的意图，
-      // 下一轮心跳/重试再试；绝不 `start: true`——自动路径不负责起后台（见 `handleHeartbeat`）。
+      // 目标**这一刻**不可用（会合状态刚被清、守护进程换代、别的窗口正把它拉起来、
+      // 桌面端刚退出 / 正在启动，或这一轮本来就不许启动）：这**不是**这一套的终结。
+      // 保留"按原目标接着接"的意图，下一轮心跳/重试再试；绝不 `start: true`——自动路径
+      // 不负责起后台（见 `handleHeartbeat`），桌面端也不由心跳拉起。
       this.attempts.markRetry(true);
-      this.log("[connect] 这一刻没有可连的内部后台（不会自行拉起）：按原目标接着等它回来");
+      this.log(
+        roundTarget === "desktop"
+          ? "[connect] 这一刻连不上桌面端内置服务（不会自行拉起）：按原目标接着等它回来"
+          : "[connect] 这一刻没有可连的内部后台（不会自行拉起）：按原目标接着等它回来",
+      );
       this.setConnection("connecting");
       return;
     }
@@ -2952,6 +3083,14 @@ export class ChatController implements vscode.Disposable {
       this.setConnection("error", detail);
       return;
     }
+    if (error instanceof DesktopCredentialError) {
+      // 桌面端凭据不可用（读不到本机密钥 / 票被拒）：重试解决不了，回按钮态 + 原因。
+      // **不置 needsToken**——桌面端没有可输入的令牌，给了入口等于骗用户去输一个不存在的东西
+      this.attempts.markRetry(false);
+      this.log(`[connect] 桌面端凭据不可用（需要用户动作，不再自动重试）：${detail}`);
+      this.setConnection("error", detail);
+      return;
+    }
     if (this.isStartFailure(error)) {
       this.attempts.markRetry(false);
       this.log(`[connect] 启动失败（不再自动重试，避免反复 spawn）：${detail}`);
@@ -2964,15 +3103,22 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
-   * 这一轮的异常是不是"**起来就死**"那一类（spawn 失败、或等不出一个可用的会合状态）。
+   * 这一轮的异常是不是"**起来就死**"那一类（spawn 失败、或等不出一个可用的就绪状态）。
    *
-   * 这两条都是 `SupervisorManager` 用 `@serverSpawnFailed` / `@serverNotReady` 开头的
-   * detail 抛出来的（见 `startFailure` / `bringUpWith`），识别它们是为了**别自动重试**：
-   * 命令写错时每 5 秒 spawn 一个必死进程、日志被刷爆，比"停下来等用户"糟得多。
+   * 前两条是 `SupervisorManager` 用 `@serverSpawnFailed` / `@serverNotReady` 开头的 detail
+   * 抛出来的；后三条是桌面端那一支（`desktopAttach.ts` 的 `DesktopStartError` /
+   * `DesktopNotReadyError` / `DesktopExitedError`）。识别它们是为了**别自动重试**：
+   * 命令/路径写错时每 5 秒 spawn 一个必死进程、日志被刷爆，比"停下来等用户"糟得多。
    */
   private isStartFailure(error: unknown): boolean {
     const message = error instanceof Error ? error.message : String(error);
-    return message.startsWith("@serverSpawnFailed") || message.startsWith("@serverNotReady");
+    return (
+      message.startsWith("@serverSpawnFailed") ||
+      message.startsWith("@serverNotReady") ||
+      message.startsWith("@desktopSpawnFailed") ||
+      message.startsWith("@desktopNotReady") ||
+      message.startsWith("@desktopExited")
+    );
   }
 
   /** 自管服务器：启动令牌来自会合文件，认证失败只能如实报错。 */
@@ -3059,6 +3205,40 @@ export class ChatController implements vscode.Disposable {
       }
     }
     throw new DshAuthError("访问令牌连续被拒，请确认用的是 dsh web 最新打印的 URL。");
+  }
+
+  /**
+   * 桌面端内置服务（`dshChat.desktopExecutable`）：凭据是扩展**自铸的浏览器会话票**。
+   *
+   * 与外部服务器那条链的区别：**没有令牌入口**。桌面端的启动令牌是 `randomBytes(32)` 按
+   * 进程生成的、只经 IPC 交给 Electron 主进程（见 `docs/design-desktop.md`），用户手里
+   * 根本没有可输入的东西——所以票被拒时只如实报错，不弹输入框。
+   *
+   * 票由管理器在 `ensure()` 里签好（发现 + 鉴权都在那一趟做，含"被拒就重签一次"），
+   * 这里只负责装进客户端并做一次真实调用确认：`listSessions()` 是最轻的只读端点，
+   * 也正是这条连接马上要用的那个。
+   */
+  private async openDesktopClient(info: ServerInfo): Promise<DshClient> {
+    const cookie = info.cookie;
+    const client = this.attempts.newClient(info.baseUrl, undefined);
+    if (!cookie) {
+      client.dispose();
+      throw new DesktopCredentialError("missing");
+    }
+    client.useSessionCookie(cookie);
+    try {
+      await client.listSessions();
+      this.setNeedsToken(false);
+      return client;
+    } catch (error) {
+      client.dispose();
+      // 票被拒（两边解析到不同的 DSH 主目录时就会这样）：作废缓存结论，下次重新发现重签
+      if (error instanceof DshAuthError) {
+        this.server.dropDesktopProbe();
+        throw new DesktopCredentialError("rejected");
+      }
+      throw error;
+    }
   }
 
   /**
@@ -3476,16 +3656,21 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
-   * 两轴探测结论（内部在不在跑、外部可不可达）变了就推给界面。
+   * 探测结论（内部在不在跑、外部可不可达、桌面端在不在跑/可不可连）变了就推给界面。
    *
-   * 按钮态的按钮集与那半句状态文案都靠它：内部在跑 → 「连接内部 DSH」，不在 → 「启动内部 DSH」。
+   * 按钮态的按钮集与那半句状态文案都靠它：内部在跑 → 「连接内部 DSH」，不在 → 「启动内部 DSH」；
+   * 桌面端那一轴决定多出来的那颗按钮是「启动」还是「连接 DSH 桌面端」。
    * **只在这里整份换掉 `facts`**（外部轴的 `unconfigured` 判定也由它出，见 `externalStateOf`）。
    */
   private setFacts(facts: TargetFacts): void {
     const changed =
       this.facts.internalRunning !== facts.internalRunning ||
+      this.facts.internalConfigured !== facts.internalConfigured ||
       this.facts.externalConfigured !== facts.externalConfigured ||
-      this.facts.externalReachable !== facts.externalReachable;
+      this.facts.externalReachable !== facts.externalReachable ||
+      this.facts.desktopConfigured !== facts.desktopConfigured ||
+      this.facts.desktopRunning !== facts.desktopRunning ||
+      this.facts.desktopAttachable !== facts.desktopAttachable;
     this.facts = facts;
     if (changed) this.emitConnection();
   }
@@ -3522,14 +3707,17 @@ export class ChatController implements vscode.Disposable {
   /**
    * 「重启内部 DSH」：请守护进程把 dsh 重起一个（详见 `SupervisorManager.restart`）。
    *
-   * 只对**内部**目标有意义：外部那台服务器不归本扩展管，界面
+   * 只对**内部**目标有意义：外部那台服务器与桌面端内置的那套都不归本扩展管，界面
    * （`internalRunning` 为假时不显示这枚按钮）与命令面板两道都拦在这里。
    */
   async restart(): Promise<void> {
-    if (this.target?.kind === "external") {
-      this.log("[server] 当前目标是外部 DSH，「重启内部 DSH」不适用");
+    if (this.target?.kind === "external" || this.target?.kind === "desktop") {
+      this.log(`[server] 当前目标是${this.target.kind === "desktop" ? "DSH 桌面端" : "外部 DSH"}，「重启内部 DSH」不适用`);
       return;
     }
+    // 内部那一轴不存在时同样不适用：命令面板那一条也要拦在这里，否则会拿一条空命令去"重启"
+    // （用户 2026-10-19 口径）。
+    if (!this.internalAxisExists("重启内部 DSH")) return;
     this.target = { kind: "internal", mayStart: true };
     this.userChoseConnection = true;
     this.attempts.reopen();
@@ -3569,13 +3757,13 @@ export class ChatController implements vscode.Disposable {
 
   /** 服务器状态变化时同步给界面。 */
   onServerStatus(status: ServerStatus): void {
-    // **当前目标是外部时，管理器的内部那套状态一律不影响界面**（2026-09-19）：
-    // 我们连的不是它。内部那套可能仍在跑（别的窗口在用），但它的换地址 / 退场与本窗口
-    // 这条连接无关——从前这里会把界面从"连着外部"拉回按钮态或错误态，看起来就像
-    // "切到外部之后还在跟内部守护进程打交道"。内部那一轴（按钮文案用）由 5 秒心跳的
-    // 探测结论刷新，不靠这条推送（`detachInternal` 之后管理器还会报一次 stopped，
-    // 那只是"我断开了"，不是"内部后台不在了"）。
-    if (this.target?.kind === "external") return;
+    // **当前目标不是内部时，管理器的内部那套状态一律不影响界面**（2026-09-19 建立，
+    // 2026-10-18 扩到桌面端）：我们连的不是它。内部那套可能仍在跑（别的窗口在用），
+    // 但它的换地址 / 退场与本窗口这条连接无关——从前这里会把界面从"连着外部"拉回按钮态
+    // 或错误态，看起来就像"切到外部之后还在跟内部守护进程打交道"。内部那一轴（按钮文案用）
+    // 由 5 秒心跳的探测结论刷新，不靠这条推送（`detachInternal` 之后管理器还会报一次
+    // stopped，那只是"我断开了"，不是"内部后台不在了"）。
+    if (this.target?.kind === "external" || this.target?.kind === "desktop") return;
     if (status.state === "failed" && status.detail) {
       // 启动类失败（spawn 不起来、等不出可用状态）：**不自动重试**，退回按钮态 + 原因
       this.attempts.markRetry(false);
@@ -3686,10 +3874,24 @@ export class ChatController implements vscode.Disposable {
       return;
     }
     const plan = chooseTarget(facts);
+    // 没有任何可选项（内部那一轴不存在——没配 `dshChat.command`——又没有可用的桌面端）：
+    // **不选路、不启动任何东西**，落按钮态等用户配。这里绝不能兜底成"启动内部"：那会拿
+    // 一条空命令去 spawn（用户 2026-10-19 口径；空命令启动出来的进程谁也认不出是谁的）。
+    if (!plan) {
+      this.target = undefined;
+      this.attempts.markRetry(false);
+      this.log(
+        `[connect] 没有可选的目标（${describeFacts(facts)}）：` +
+          "内部 DSH 需要配置 dshChat.command，或配置 dshChat.desktopExecutable 用桌面端",
+      );
+      this.setConnection("stopped");
+      return;
+    }
     this.target = { kind: plan.target, mayStart: plan.start };
     this.connectPhase = plan.start ? "starting" : "connecting";
     this.log(
-      `[connect] 自动选路（${describeFacts(facts)}）→ ${plan.target}${plan.start ? "（先拉起一套内部后台）" : ""}；此后只接上、不再自动拉起`,
+      `[connect] 自动选路（${describeFacts(facts)}）→ ${plan.target}` +
+        `${plan.start ? (plan.target === "desktop" ? "（先拉起 DSH 桌面端）" : "（先拉起一套内部后台）") : ""}；此后只接上、不再自动拉起`,
     );
     await this.ensureConnected({ start: plan.start, target: plan.target });
   }
@@ -3759,14 +3961,31 @@ export class ChatController implements vscode.Disposable {
    * （`supervisor/main.ts`），扩展只要连上它的 socket 并等就绪（见 `bringUpWith`）。
    */
   async startInternal(): Promise<void> {
+    if (!this.internalAxisExists("启动内部 DSH")) return;
     this.beginConnect("internal", true, "starting");
     await this.ensureConnected({ start: true, target: "internal" });
   }
 
   /** 「连接内部 DSH」：有就接上、没有就起一套——与「启动内部 DSH」同一套逻辑（见上）。 */
   async connectInternal(): Promise<void> {
+    if (!this.internalAxisExists("连接内部 DSH")) return;
     this.beginConnect("internal", true, "connecting");
     await this.ensureConnected({ start: true, target: "internal" });
+  }
+
+  /**
+   * 内部那一轴存在吗（配了 `dshChat.command`）？
+   *
+   * 不存在时记一条日志、把界面留在按钮态并返回 `false`——与 `connectExternal()` 的"没配地址"
+   * 那一支同一口径：**不发起连接，更不拿空命令去 spawn**（用户 2026-10-19 口径：命令留空
+   * 就等于没有内部 DSH，与 `desktopExecutable` 留空时整条支路关闭同一副样子）。
+   */
+  private internalAxisExists(action: string): boolean {
+    if (this.server.commandConfigured) return true;
+    this.log(`[connect] 没有配置 dshChat.command（内部那一轴已关闭），「${action}」无从做起`);
+    this.attempts.markRetry(false);
+    this.setConnection("stopped");
+    return false;
   }
 
   /**
@@ -3786,7 +4005,38 @@ export class ChatController implements vscode.Disposable {
     await this.ensureConnected({ start: false, target: "external" });
   }
 
-  /** 三个连接入口共用的开场：换粘性目标、重新打开自动重连、进入"连接中"。 */
+  /**
+   * 「启动 DSH 桌面端」：**用户显式要那套内置服务可用**（桌面端不在时按钮态里的主动作）。
+   *
+   * 与「连接 DSH 桌面端」是**同一套逻辑**（都传 `mayStart: true`）：桌面端不在就把它拉起来，
+   * 在就接上它。保留两个按钮与内部那两颗同一个理由——按钮的措辞来自"认人"那一次探测，
+   * 与真实状态之间会有偏差（可能刚启动、也可能刚退出），语义相同才不会"点对了按钮却什么都
+   * 没发生"。**扩展不关停桌面端**：它的进程生死归它自己（见 `docs/design-desktop.md`）。
+   */
+  async startDesktop(): Promise<void> {
+    if (!this.server.desktopConfigured) {
+      this.log("[connect] 没有配置 dshChat.desktopExecutable，「启动 DSH 桌面端」无从拉起");
+      this.attempts.markRetry(false);
+      this.setConnection("stopped");
+      return;
+    }
+    this.beginConnect("desktop", true, "starting");
+    await this.ensureConnected({ start: true, target: "desktop" });
+  }
+
+  /** 「连接 DSH 桌面端」：有就接上、没有就拉起一个——与「启动 DSH 桌面端」同一套逻辑（见上）。 */
+  async connectDesktop(): Promise<void> {
+    if (!this.server.desktopConfigured) {
+      this.log("[connect] 没有配置 dshChat.desktopExecutable，「连接 DSH 桌面端」无从连起");
+      this.attempts.markRetry(false);
+      this.setConnection("stopped");
+      return;
+    }
+    this.beginConnect("desktop", true, "connecting");
+    await this.ensureConnected({ start: true, target: "desktop" });
+  }
+
+  /** 所有连接入口共用的开场：换粘性目标、重新打开自动重连、进入"连接中"。 */
   private beginConnect(kind: DshTarget, mayStart: boolean, phase: ConnectPhase): void {
     this.attempts.reopen();
     this.target = { kind, mayStart };
@@ -3861,11 +4111,21 @@ export class ChatController implements vscode.Disposable {
    *
    * 返回"停止请求有没有真的发出去"：调用方据此给用户哪句回执（只有 `askSupervisor`
    * 那一档会发控制帧）。
+   *
+   * **本窗口没有内部那一轴时（`dshChat.command` 留空）直接忽略、返回 `false`**（用户
+   * 2026-10-19 口径）：不同的内部 DSH 是按各自的命令行辨认的，别的窗口跑着的那套不是本窗口
+   * 的，也没有"本窗口的内部 DSH"可停——不去替别人收场，也不走"临时接入去停别的窗口的后台"
+   * 那条路（空命令的窗口连会合分组都与别人不同，本来也接不上）。回执由命令面板按这个
+   * `false` 给，并**不许**说成"内部 DSH 没有在运行"（那是另一回事，见 `extension.ts`）。
    */
   async stopServer(): Promise<boolean> {
     // 同上：这是一次显式表态。`stopInternal` 只管作废在途轮与关自动重连，管不住**还没发起**
     // 的激活期自动选路——那一次回来照样会按 `start:true` 拉起一套用户刚停掉的后台。
     this.userChoseConnection = true;
+    if (!this.server.commandConfigured) {
+      this.log("[server] 没有配置 dshChat.command（内部那一轴已关闭），「停止内部 DSH」忽略");
+      return false;
+    }
     return this.attempts.stopInternal(this.target?.kind);
   }
 
@@ -8533,6 +8793,10 @@ export class ChatController implements vscode.Disposable {
         await this.openInBrowser();
         break;
 
+      case "openDesktop":
+        await this.openDesktop();
+        break;
+
       case "openInEditor": {
         // 「在编辑器中打开」：把这个窗口当前的会话带进编辑器窗口；
         // 未绑会话（空态）就不带，新窗口从空态起。
@@ -8566,6 +8830,14 @@ export class ChatController implements vscode.Disposable {
 
       case "connectExternal":
         await this.connectExternal();
+        break;
+
+      case "startDesktop":
+        await this.startDesktop();
+        break;
+
+      case "connectDesktop":
+        await this.connectDesktop();
         break;
 
       case "stopReconnect":
@@ -11502,6 +11774,27 @@ export class ChatController implements vscode.Disposable {
     if (!opened) {
       this.log("[browser] 系统没有接受这次打开请求");
       this.notify({ level: "warn", kind: "openInBrowserFailed", text: "@openInBrowserFailed" });
+    }
+  }
+
+  /**
+   * 「打开 DSH 桌面端」：把桌面端应用拉起来（已在跑时它自己的单实例会聚焦已有窗口）。
+   *
+   * 这颗按钮只在**当前连的就是桌面端内置服务**时顶替「在浏览器中打开」（见
+   * `ChatState.desktopConnected`）：桌面端内置服务对浏览器是关着的——它只认自己那份
+   * 按进程生成的启动令牌，浏览器那条路只会得到一页 401（见 `docs/design-desktop.md`
+   * 「浏览器访问」）。而桌面端应用本来就在这台机器上，打开它既是对同一件事的正确入口，
+   * 也不动连接（连的还是那一个服务进程）。
+   *
+   * 起不来时只报一次（窗口级动作 → 共享通知）：失败属**启动类**，不自动重试。
+   */
+  private async openDesktop(): Promise<void> {
+    try {
+      await this.server.openDesktopApp();
+    } catch (error) {
+      const detail = error instanceof DesktopStartError ? error.detail : String(error);
+      this.log(`[desktop] 打开 DSH 桌面端失败：${detail}`);
+      this.notify({ level: "warn", kind: "desktopSpawnFailed", text: `@desktopSpawnFailed:${detail}` });
     }
   }
 

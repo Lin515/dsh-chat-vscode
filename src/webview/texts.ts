@@ -36,6 +36,10 @@ export interface Texts {
   openInEditor: string;
   /** 顶部那颗「在浏览器中打开」按钮的 title。 */
   openInBrowser: string;
+  /**
+   * 同一颗按钮的另一种形态：当前连的是**桌面端内置服务**时的 title
+   * （打开桌面端应用窗口，而不是浏览器）。 */
+  openDesktop: string;
   /** 还没连上服务器时点它的提示（`@key` 标记，宿主发）。 */
   openInBrowserOffline: string;
   /** 系统拒绝了这次打开（openExternal 返回 false）。 */
@@ -606,6 +610,10 @@ export interface Texts {
   connectInternal: string;
   /** 连接条按钮：连 `dshChat.url` 那个备用地址。 */
   connectExternal: string;
+  /** 连接条按钮：桌面端**不在跑**时拉起它（配了 `dshChat.desktopExecutable` 才出现）。 */
+  startDesktop: string;
+  /** 连接条按钮：桌面端**已在跑**，接上它内置的那套服务。 */
+  connectDesktop: string;
   /** 连接条按钮：让守护进程把内部 dsh 重起一个（外部目标没有"重启"可言）。 */
   restartInternal: string;
   /** 「连接外部 DSH」置灰时的悬停提示（没配 `dshChat.url`）。 */
@@ -616,6 +624,10 @@ export interface Texts {
   connectingInternal: string;
   /** 连接条：正在连外部备用地址（带地址）。 */
   connectingExternal: (baseUrl: string) => string;
+  /** 连接条：正在**拉起** DSH 桌面端（桌面端不在跑时的那一档）。 */
+  startingDesktop: string;
+  /** 连接条：正在连桌面端内置的那套服务。 */
+  connectingDesktop: string;
   /**
    * 连接条按钮：停掉**正在进行的连接**。
    *
@@ -629,9 +641,12 @@ export interface Texts {
   /**
    * 连接条（按钮态）的**两轴**状态短语：左轴内部、右轴外部，拼成
    * 「内部 DSH：未运行 · 外部 DSH：可达」这样一行（见 `App.tsx` 的 `ConnectionBar`）。
+   * 两轴各自三态：内部多一档「未配置」（`dshChat.command` 留空 = 没有那一轴）。
    */
   statusInternalRunning: string;
   statusInternalNotRunning: string;
+  /** 内部那一轴不存在（没配启动命令）——与 `statusExternalUnconfigured` 同口径。 */
+  statusInternalUnconfigured: string;
   statusExternalReachable: string;
   statusExternalUnreachable: string;
   statusExternalUnconfigured: string;
@@ -651,6 +666,16 @@ export interface Texts {
   serverNotReady: string;
   /** 连接条：该地址上一次都没应答过（**仍在重试**，直到连通或用户点「停止连接」）。 */
   serverUnreachable: (baseUrl: string) => string;
+  /** 连接失败条：读不到桌面端要用的本机凭据（DSH 主目录里没有会话密钥）。 */
+  desktopCredentialMissing: string;
+  /** 连接失败条：桌面端拒了本扩展签发的会话凭据（通常是两边 DSH 主目录不一致）。 */
+  desktopCredentialRejected: string;
+  /** 连接失败条：桌面端可执行文件起不来（原因来自 spawn）。 */
+  desktopSpawnFailed: (detail: string) => string;
+  /** 连接失败条：桌面端已拉起，但没等到它的内置服务就绪。 */
+  desktopNotReady: string;
+  /** 连接失败条：拉起的桌面端进程刚启动就退出（参数是退出码，拿不到时为空串）。 */
+  desktopExited: (code: string) => string;
   /** 连接失败条末段：服务器日志尾部（原文照贴，不翻译）。 */
   serverLogTail: (tail: string) => string;
   /** 通知：在共享后台的窗口里执行「重启服务器」，后台已由本窗口接管重起。 */

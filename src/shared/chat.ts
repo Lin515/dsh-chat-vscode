@@ -28,11 +28,12 @@ import type {
 export type ConnectionState = "connecting" | "ready" | "error" | "stopped";
 
 /**
- * 这一轮连哪个 DSH（用户 2026-09-18 口径：**内部优先、外部备用**）。
+ * 这一轮连哪个 DSH（用户 2026-09-18 口径：**内部优先、外部备用**；2026-10-18 加桌面端）。
  *
- * 判定与"粘性"（自动路径选一次就不再换）见 `dsh/connectTarget.ts` 与 `design-supervisor.md`「选路与粘性目标」。
+ * 判定与"粘性"（自动路径选一次就不再换）见 `dsh/connectTarget.ts` 与
+ * `docs/design-supervisor.md`「选路与粘性目标」；桌面端那一支见 `docs/design-desktop.md`。
  */
-export type DshTarget = "internal" | "external";
+export type DshTarget = "internal" | "external" | "desktop";
 
 /** 外部轴的探测结论（连接条右半句"外部 DSH：…"）。 */
 export type ExternalState = "unconfigured" | "reachable" | "unreachable";
@@ -1294,10 +1295,45 @@ export interface ChatState {
    * 用户可以点「连接内部 DSH」"；不在了就是「启动内部 DSH」。
    */
   internalRunning?: boolean;
+  /**
+   * 内部那一轴存不存在：配了启动命令（`dshChat.command` 非空）才算。
+   *
+   * **留空 = 没有内部 DSH**（用户 2026-10-19 口径）：不启动、不连接、不选路，界面不给
+   * 那两颗按钮（也不给「重启内部 DSH」），状态短语改说「内部 DSH：未配置」——与
+   * `desktopConfigured` 留空即整条支路关闭同一副样子。不同的内部 DSH 按各自的命令行辨认，
+   * 没配命令的窗口没有属于它的那一套。
+   */
+  internalConfigured?: boolean;
   /** 外部备用地址的探测结论（决定连接条右半句与「连接外部 DSH」是否可点）。 */
   externalState?: ExternalState;
   /** 配置里的外部地址（连接中条上写"正在连接外部 DSH（<地址>）…"用）。 */
   externalAddress?: string;
+  /**
+   * 配了桌面端可执行文件（`dshChat.desktopExecutable`）。
+   *
+   * 按钮态据此**多给一颗**「启动 / 连接 DSH 桌面端」：没配就没有那条支路，
+   * 也不该拿一颗永远失败的按钮去占位置。
+   */
+  desktopConfigured?: boolean;
+  /**
+   * DSH 桌面端的进程此刻在跑吗（认人结论）。
+   *
+   * 只决定上面那颗按钮的**措辞**（未在跑 → 「启动 DSH 桌面端」，在跑 → 「连接 DSH 桌面端」），
+   * 不参与选路：那两个按钮与内部那两颗一样是同一套逻辑（有就接上、没有就拉起），
+   * 而"进程在"不等于"能连上"。
+   */
+  desktopRunning?: boolean;
+  /**
+   * **当前这条连接**就是 DSH 桌面端内置的那套服务。
+   *
+   * 顶栏那颗「打开」按钮据此二分：连的是它，就在浏览器里打不开——桌面端内置服务只认
+   * 自己按进程生成的启动令牌，浏览器拿不到票（见 `docs/design-desktop.md`「浏览器访问」），
+   * 所以那颗按钮改成「打开 DSH 桌面端」（拉起应用 / 聚焦已有窗口）。
+   *
+   * 判据是**这一轮建起客户端的那份服务信息**的归属为 `desktop`，不是"目标选了桌面端"：
+   * 目标粘在桌面端、这一轮却还没连上时，按钮该保持原样。
+   */
+  desktopConnected?: boolean;
   /** 当前粘性目标（连接中条上据此写"内部/外部"）；未选定（`autoConnect` 关掉且没点过）时不下发。 */
   connectTarget?: DshTarget;
   /** 连接阶段（连接中才有）：正在拉起内部 DSH，还是正在连已有的。 */

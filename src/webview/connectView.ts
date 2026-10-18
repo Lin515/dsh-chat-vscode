@@ -17,8 +17,11 @@
  * 1. **连接中只有「停止连接」+「查看日志」**，目标写在文案里（不摆启动/连接按钮）；
  * 2. **「查看日志」恒显**——每一档都可能是"连不上但说不清"；「停止连接」只在正在连接时给；
  * 3. **按钮态（`stopped` / `error`）**：内部在跑 → 「连接内部 DSH」，不在 → 「启动内部 DSH」，
- *    外加恒显的「连接外部 DSH」（没配 `dshChat.url` 时置灰 + 悬停提示）、内部在跑时的
- *    「重启内部 DSH」、需要令牌时的「输入令牌」，最后是恒显的「查看日志」。
+ *    外加恒显的「连接外部 DSH」（没配 `dshChat.url` 时置灰 + 悬停提示）、配了
+ *    `dshChat.desktopExecutable` 时的「启动 / 连接 DSH 桌面端」（措辞按认人结论二分）、
+ *    内部在跑时的「重启内部 DSH」、需要令牌时的「输入令牌」，最后是恒显的「查看日志」。
+ *    **内部那一轴没配**（`dshChat.command` 留空 = 没有内部 DSH，用户 2026-10-19 口径）时
+ *    这四颗里跟内部有关的三颗一颗都不给，主按钮位让给唯一还有意义的那条轴。
  *
  * **本模块不依赖 React**（只吃 `ChatState` 与一份词典）：`resolve` 由调用方注入，
  * 于是"标记怎么翻"仍留在界面那侧（`texts.ts` 的 `resolveText`），这里只管**判定**。
@@ -39,6 +42,8 @@ export type ConnectButtonId =
   | "startInternal"
   | "connectInternal"
   | "connectExternal"
+  | "startDesktop"
+  | "connectDesktop"
   | "restartInternal"
   | "enterToken"
   | "showLogs";
@@ -79,8 +84,12 @@ export interface ConnectTexts {
   startingInternal: string;
   connectingInternal: string;
   connectingExternal: (baseUrl: string) => string;
+  startingDesktop: string;
+  connectingDesktop: string;
   statusInternalRunning: string;
   statusInternalNotRunning: string;
+  /** 内部那一轴不存在（`dshChat.command` 留空）——与外部那半句的「未配置」同口径。 */
+  statusInternalUnconfigured: string;
   statusExternalReachable: string;
   statusExternalUnreachable: string;
   statusExternalUnconfigured: string;
@@ -88,6 +97,10 @@ export interface ConnectTexts {
   startInternal: string;
   connectInternal: string;
   connectExternal: string;
+  /** 未在跑 → 「启动 DSH 桌面端」。 */
+  startDesktop: string;
+  /** 已在跑 → 「连接 DSH 桌面端」。 */
+  connectDesktop: string;
   restartInternal: string;
   externalDisabledHint: string;
   enterToken: string;
@@ -97,7 +110,14 @@ export interface ConnectTexts {
 
 /** 连接条那行字：按钮态的**两轴短语**（「内部 DSH：未运行 · 外部 DSH：可达」）。 */
 function statusText(state: ChatState, texts: ConnectTexts): string {
-  const internal = state.internalRunning === true ? texts.statusInternalRunning : texts.statusInternalNotRunning;
+  // 内部那半句是**三态**：没配命令（整条轴关闭）与"配了但没在跑"必须在界面上分得开
+  // （用户 2026-10-19 口径：留空 = 没有内部 DSH，不是"它没运行"）
+  const internal =
+    state.internalConfigured === false
+      ? texts.statusInternalUnconfigured
+      : state.internalRunning === true
+        ? texts.statusInternalRunning
+        : texts.statusInternalNotRunning;
   const external =
     state.externalState === "reachable"
       ? texts.statusExternalReachable
@@ -119,6 +139,9 @@ function connectingText(state: ChatState, texts: ConnectTexts, detail: string | 
   }
   if (state.connectTarget === "external") {
     return state.externalAddress ? texts.connectingExternal(state.externalAddress) : texts.connecting;
+  }
+  if (state.connectTarget === "desktop") {
+    return state.connectPhase === "starting" ? texts.startingDesktop : texts.connectingDesktop;
   }
   return `${texts.connecting}${state.serverUrl ? ` ${state.serverUrl}` : ""}`;
 }
@@ -172,26 +195,66 @@ export function connectViewOf(
   if (state.needsToken === true) {
     buttons.push({ id: "enterToken", label: texts.enterToken, icon: "key", variant: "plain" });
   }
+  // 内部那一轴存不存在：**没配 `dshChat.command` 就没有它**（用户 2026-10-19 口径）——
+  // 不给那两颗按钮，也不给「重启内部 DSH」（下面那颗本来只在"在跑"时给）。少了这个判据，
+  // 一颗点下去只会拿空命令去 spawn 的按钮就永远摆在最显眼的位置上。
+  const internalConfigured = state.internalConfigured !== false;
+  // 主按钮位：内部那一轴在就归它；它不存在时归**唯一还有意义的那条轴**（先桌面端，
+  // 那正是"只想用桌面端"的配法；再退到外部）。按钮集里总得有一个主动作。
+  const primaryId: ConnectButtonId | undefined = internalConfigured
+    ? internalRunning
+      ? "connectInternal"
+      : "startInternal"
+    : state.desktopConfigured === true
+      ? state.desktopRunning === true
+        ? "connectDesktop"
+        : "startDesktop"
+      : externalConfigured
+        ? "connectExternal"
+        : undefined;
   // 内部那一轴：在跑 → 「连接内部 DSH」，不在 → 「启动内部 DSH」。
   // 两个按钮**同一套逻辑**（有就接上、没有就起一套，见文件头的矩阵口径）：界面显示的是两轴探测的结论，
   // 与后台真实状态必然有偏差，语义相同才不会出现"点对了按钮却什么都没发生"。
-  buttons.push(
-    internalRunning
-      ? { id: "connectInternal", label: texts.connectInternal, icon: "refresh", variant: "primary" }
-      : { id: "startInternal", label: texts.startInternal, icon: "plus", variant: "primary" },
-  );
+  if (internalConfigured) {
+    buttons.push(
+      internalRunning
+        ? { id: "connectInternal", label: texts.connectInternal, icon: "refresh", variant: "primary" }
+        : { id: "startInternal", label: texts.startInternal, icon: "plus", variant: "primary" },
+    );
+  }
   // 恒显：显示与否**不看可达性**（连接失败会写进日志与条上）；只有没配地址时置灰。
   // 提示文字挂在按钮外层（`disabled` 的元素收不到 hover，title 不会显示）
   buttons.push({
     id: "connectExternal",
     label: texts.connectExternal,
     icon: "refresh",
-    variant: "plain",
+    variant: primaryId === "connectExternal" ? "primary" : "plain",
     disabled: !externalConfigured,
     tip: externalConfigured ? undefined : texts.externalDisabledHint,
   });
-  // 「重启内部 DSH」只在内部那套在跑时给（外部目标没有"重启"可言）
-  if (internalRunning) {
+  // 桌面端那一条支路：**配了可执行文件才给**（没配就没有可连的目标，按钮只会白占位置）。
+  // 措辞按**认人**结论二分——与内部那两颗同一个口径：两个按钮是同一套逻辑
+  // （有就接上、没有就拉起），措辞只负责告诉用户"此刻大概是什么状态"。
+  if (state.desktopConfigured === true) {
+    buttons.push(
+      state.desktopRunning === true
+        ? {
+            id: "connectDesktop",
+            label: texts.connectDesktop,
+            icon: "refresh",
+            variant: primaryId === "connectDesktop" ? "primary" : "plain",
+          }
+        : {
+            id: "startDesktop",
+            label: texts.startDesktop,
+            icon: "plus",
+            variant: primaryId === "startDesktop" ? "primary" : "plain",
+          },
+    );
+  }
+  // 「重启内部 DSH」只在内部那套在跑时给（外部目标没有"重启"可言）；内部那一轴不存在时
+  // 更不该给——没有那一套可重启（探测层已经把 `internalRunning` 压成假，这里是第二道）
+  if (internalConfigured && internalRunning) {
     buttons.push({ id: "restartInternal", label: texts.restartInternal, icon: "refresh", variant: "plain" });
   }
   buttons.push(logButton);

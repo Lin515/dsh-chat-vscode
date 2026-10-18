@@ -523,6 +523,15 @@ export type WebviewToHost =
    */
   | { type: "connectExternal" }
   /**
+   * 「启动 DSH 桌面端」：**用户显式**要求桌面端内置的那套服务可用（按钮态里认人没找到它时的主动作）。
+   *
+   * 与「连接 DSH 桌面端」**同一套逻辑**（没有就拉起、有就接上）；两者的差别只在界面按认人
+   * 结论给的措辞。扩展**不关停**桌面端：它的进程生死归它自己（见 `docs/design-desktop.md`）。
+   */
+  | { type: "startDesktop" }
+  /** 「连接 DSH 桌面端」：有就接上、没有就拉起一个（与「启动 DSH 桌面端」同一套逻辑）。 */
+  | { type: "connectDesktop" }
+  /**
    * 「停止连接」：停掉**正在进行的连接**（中止在途那一轮 + 关掉自动重连）。
    *
    * 界面在**任何**连接中的状态都会给这个按钮（`connection === "connecting"`），
@@ -540,6 +549,15 @@ export type WebviewToHost =
    * 而且启动令牌换 cookie 是 `303 → 裸 /`，附带的查询串本来就会被丢掉。
    */
   | { type: "openInBrowser" }
+  /**
+   * 打开 **DSH 桌面端应用**（拉起它，已在跑则聚焦已有窗口）。
+   *
+   * 顶栏那颗「打开」按钮的另一种形态：当前连的是桌面端内置服务时用它顶替
+   * `openInBrowser`——那套服务对浏览器是关着的（只认自己按进程生成的启动令牌，见
+   * `docs/design-desktop.md`「浏览器访问」），在浏览器里打开只会得到一页 401。
+   * 界面按 `ChatState.desktopConnected` 二分；这颗动作**不动连接**。
+   */
+  | { type: "openDesktop" }
   /** 刷新当前会话的子代理目录（标题旁导航打开 / 悬停时）。 */
   | { type: "listSubagents" }
   /**

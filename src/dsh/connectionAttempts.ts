@@ -419,8 +419,12 @@ export function createConnectionAttempts(options: ConnectionAttemptsOptions): Co
     },
 
     async stopInternal(target) {
-      if (target === "external") {
-        options.log("[server] 当前目标是外部 DSH：「停止内部 DSH」只停内部后台，这条连接不动");
+      if (target === "external" || target === "desktop") {
+        // 要停的是**内部**那一套，与外部服务器 / 桌面端内置服务都无关：本窗口那条连接
+        // （客户端 + 跟随流）与界面状态一个字都不动，只有停止请求照发
+        options.log(
+          `[server] 当前目标是${target === "desktop" ? "DSH 桌面端" : "外部 DSH"}：「停止内部 DSH」只停内部后台，这条连接不动`,
+        );
         return options.stop({ cancelWait: true, askSupervisor: true });
       }
       autoPath = false;

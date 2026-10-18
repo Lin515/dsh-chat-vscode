@@ -120,6 +120,8 @@ compaction-image-offload 包里声明，契约快照里那份 `SessionEventMap` 
 | 预设 roster 的 `trust` 字段（内置预设的判据） | ≤ 0.1.6-alpha.2 | `src/dsh/projections.ts` 的 `agentPresetsFromList`、`src/webview/presetDisplay.ts` 的 `isBuiltInPresetOption` | 2026-09-23 | 2026-11-23 | 0.1.7-alpha.1 删掉了该字段，判定改用官方 `isBuiltInPreset`（不发布 `name` 的已知 id 即内置）。有 `trust` 时仍以它为准，否则用户自写的同名预设会被静默改名 |
 | 预设选择的可见性判据（roster 的 `modeSelectionEnabled`） | ≤ 0.1.7-rc.1 | `src/dsh/projections.ts` 的 `agentPresetsFromList`、`src/dsh/controller.ts` 的 `loadAgentPresets` / `publishAgentPresets` / `applyDeveloperTools` | 2026-09-24 | 2026-11-24 | 0.1.7-rc.2 起服务端不再有这个策略（官方 `a44534e274` 把选择可见性并进客户端的「代码工作工具」开关，宿主持久化在 `ui-settings`）；旧服务端仍以 roster 字段为准，两代都读 |
 | 审批原因的旧形态（只有 `reason`） | ≤ 0.1.7-rc.1 | `src/dsh/controller.ts` 的 `deliverEventToScope`、`src/webview/components/Rows.tsx` 的 `ApprovalCard` | 2026-09-24 | 2026-11-24 | 0.1.7-rc.2 起 asker 可附只用于展示的本地化 `displayReason`（官方界面优先用它）；没有它时仍显示审计用的 `reason` |
+| 浏览器会话 cookie 的内部形状（名字前缀 `dsh-auth-`、v1 载荷、HMAC 口径、凭据记录键 `client-connection/browser-session`） | 依赖内部实现，非公开契约（0.2.1-rc.2 起，含桌面端内置宿主） | `src/dsh/browserSession.ts`、`src/dsh/desktopAttach.ts` | 2026-10-18 | 2026-12-18 | 桌面端不从命令行启动、启动令牌拿不到，扩展只能自铸等价凭据（见[桌面端接入](<design-desktop.md>)）。它是 `dsh-client-connection` 的内部实现，不在 `CONTRACT_PACKAGES` 里，所以每次推进基准要人工对拍这四个常量 |
+| `dsh-desktop-host` 的入口与 spawn 形态（命令行含该签名、loopback 端口随机、无票 `GET /` 回 401） | 依赖桌面端实现，非公开契约（0.2.1-rc.2 起） | `src/dsh/desktopSession.ts`、`src/dsh/processTable.ts`、`src/dsh/desktopAttach.ts` | 2026-10-18 | 2026-12-18 | 认人只能按命令行签名匹配、认领只能按"无票 401"判断（见[桌面端接入](<design-desktop.md>)「端点发现」）。官方改了入口路径、spawn 形态或那道 401 握手时这条支路会静默失效（表现为"找不到桌面端服务"），所以每次推进基准要人工对拍 |
 <!-- dsh-compat:layers:end -->
 
 登记之外还有三条仍然有效的口径（来自核对时的取舍，不随上述条目到期）：

@@ -60,12 +60,16 @@
 - [supervisorRunner.ts](<supervisorRunner.ts>) — VS Code Node 的 detached + unref 启动器。
 - [supervisorErrors.ts](<supervisorErrors.ts>) — 互不阻断的文件 / 广播错误上报。
 - [runtimeResolve.ts](<runtimeResolve.ts>) — VS Code 自带 Node 定位，不依赖 PATH。
-- [connectTarget.ts](<connectTarget.ts>) — 内部优先、外部备用与目标粘性。
+- [connectTarget.ts](<connectTarget.ts>) — 内部优先、外部备用、桌面端可连接，以及目标粘性。
 - [connectionAttempts.ts](<connectionAttempts.ts>) — 轮次、客户端身份、四种收场意图与创建 seam。
+- [browserSession.ts](<browserSession.ts>) — 自铸浏览器会话凭据（名字推导、票构造、密钥扫描）。
+- [desktopSession.ts](<desktopSession.ts>) — 桌面端内置服务的认人（命令行签名）与找口（回环端口）。
+- [desktopAttach.ts](<desktopAttach.ts>) — 桌面端发现四步的编排、有效期阶梯、拉起并等就绪。
 
 ## 进程与杂项
 
 - [processRegistry.ts](<processRegistry.ts>) — 进程与 TCP 可达性查询。
+- [processTable.ts](<processTable.ts>) — 进程命令行与监听端口查询（含四个平台的解析器）。
 - [dshLocks.ts](<dshLocks.ts>) — writer lock 清理与 DSH_HOME 定位。
 - [configChanges.ts](<configChanges.ts>) — 服务端配置热重载到客户端重读的映射。
 - [hostLog.ts](<hostLog.ts>) — 包括停用期也不抛异常的宿主日志。

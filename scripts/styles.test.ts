@@ -2517,11 +2517,17 @@ console.log(
 // 15px 下分不出来。浏览器那颗改成 `IconGlobe`（VS Code 自己的 Simple Browser
 // 也是地球）。这条断言按**图标组件名**钉住两者不同——形状相似是肉眼很难复查的
 // 一类回归，而"顺手换成同一个"又极其自然（我就是这么写错的）。
+//
+// 第三种形态是：那颗按钮在**当前连的是桌面端内置服务**时改开桌面端应用窗口
+// （`state.desktopConnected` 二分，见 `docs/design-desktop.md`「浏览器访问」）。
+// 三颗「打开」类的图标两两不同（编辑区 = 方框箭头 / 浏览器 = 地球 / 桌面端 = 显示器），
+// 同一颗按钮在两种形态间切换时，用户看的正是图标有没有变。
 {
   const app = readFileSync(join(process.cwd(), "src", "webview", "App.tsx"), "utf8");
   const editorIcon = /type: "openInEditor"[\s\S]{0,160}?<(\w+)/.exec(app)?.[1];
   const browserIcon = /type: "openInBrowser"[\s\S]{0,160}?<(\w+)/.exec(app)?.[1];
-  assert.ok(editorIcon && browserIcon, "顶部两颗「打开」按钮都应当存在");
+  const desktopIcon = /type: "openDesktop"[\s\S]{0,160}?<(\w+)/.exec(app)?.[1];
+  assert.ok(editorIcon && browserIcon && desktopIcon, "顶部三颗「打开」按钮都应当存在");
   assert.notStrictEqual(
     browserIcon,
     editorIcon,
@@ -2534,8 +2540,16 @@ console.log(
     "IconGlobe",
     "「在浏览器中打开」用地球（VS Code 的 Simple Browser 同款）",
   );
+  assert.strictEqual(desktopIcon, "IconDesktop", "「打开 DSH 桌面端」的图标（显示器）");
+  // 「打开」那颗按钮的两种形态必须**看得出换了**：它就在同一格里、同一个位置
+  assert.notStrictEqual(desktopIcon, browserIcon, "桌面端形态不能沿用地球");
+  assert.notStrictEqual(desktopIcon, editorIcon, "桌面端形态不能与「在编辑器中打开」撞图标");
+  assert.ok(
+    /state\.desktopConnected\s*\?/.test(app),
+    "那颗按钮必须按 state.desktopConnected 二分（否则连桌面端时仍会去开浏览器）",
+  );
 }
-console.log("styles: 两颗「打开」按钮图标不同（编辑区=方框箭头 / 浏览器=地球）✓");
+console.log("styles: 三颗「打开」按钮图标两两不同（编辑区=方框箭头 / 浏览器=地球 / 桌面端=显示器）✓");
 
 // ---------- 37. 贴底：意愿只由手势决定，几何只负责续跟 ----------
 //

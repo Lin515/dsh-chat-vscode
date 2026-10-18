@@ -144,6 +144,7 @@ function fakeClient(rows: Row[]) {
 /** `externalUrl` / `activeBaseUrl` 都不给：`openInBrowser` 走「没有可用地址」那一支（共享通知）。 */
 const fakeServer = () => ({
   externalUrl: undefined,
+  commandConfigured: true,
   activeBaseUrl: undefined,
   onHeartbeat() {},
   freshToken() {

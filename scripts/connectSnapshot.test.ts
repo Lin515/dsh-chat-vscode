@@ -281,6 +281,51 @@ try {
     check("activeBaseUrl = 外部地址", snap.activeBaseUrl === info.baseUrl, snap.activeBaseUrl ?? "（无）");
     manager.dispose();
   }
+  // ---------- 4. 桌面端目标：内部那套的兜底清理不许作废桌面端的就绪信息 ----------
+  //
+  // 桌面端那一轴就绪之后，目标不是内部，于是**每 5 秒**的心跳都会走「收掉陈旧内部连接」
+  // 那道兜底（`detachConnection`）。它只该作废内部那一份（`self` / `peer`）：`status.info`
+  // 里也可能是外部或桌面端的地址，抹掉等于把另外两条轴的结论一起清掉——而界面那颗「打开」
+  // 按钮的判据（`ChatController.desktopConnected`）读的正是 `status.info.ownership`。
+  {
+    const EXE = "C:\\Apps\\DSH Desktop\\dsh-desktop.exe";
+    const manager = new SupervisorManager({
+      group: "snapshot-desktop",
+      url: "",
+      command: "dsh web --port 0 --no-open",
+      autoConnect: false,
+      desktopExecutable: EXE,
+      // 桌面端的发现与鉴权全给假实现：这条断言不碰真实进程表 / 凭据 / HTTP
+      desktop: {
+        commandLines: async () =>
+          new Map([[7, `"${EXE}" --expose-internals C:\\Apps\\DSH Desktop\\resources\\@deepseek-ai\\dsh-desktop-host\\lib\\index.js`]]),
+        listenPorts: async () => [{ address: "127.0.0.1", port: 5674 }],
+        credentialText: () =>
+          ["records:", "  client-connection/browser-session:", "    payload:", "      version: 1", `      secret: ${"s".repeat(43)}`, ""].join("\n"),
+        confirmDsh: async () => ({ status: 401, body: "dsh web authentication required" }),
+        verifyCookie: async () => "ok" as const,
+      },
+      launcher: { async launch() { return { ok: true as const }; } } as never,
+      log: () => undefined,
+    });
+    managers.push(manager);
+    const info = await manager.ensure({ start: false, target: "desktop" });
+    check(
+      "桌面端目标：status.info.ownership = desktop（界面那颗按钮的判据）",
+      manager.snapshot().status.info?.ownership === "desktop",
+      String(manager.snapshot().status.info?.ownership),
+    );
+
+    // 心跳那一拍：目标不是内部 → 走「收掉陈旧内部连接」那道兜底
+    await (manager as unknown as { heartbeatTick(): Promise<void> }).heartbeatTick();
+    const snap = manager.snapshot();
+    check(
+      "兜底清理之后桌面端的就绪信息仍在（它就是界面那颗按钮的判据）",
+      snap.status.state === "ready" && snap.status.info?.ownership === "desktop" && snap.activeBaseUrl === info.baseUrl,
+      `${snap.status.state} / ${String(snap.status.info?.ownership)} / ${String(snap.activeBaseUrl)}`,
+    );
+    manager.dispose();
+  }
 } finally {
   for (const manager of managers) manager.dispose();
   for (const daemon of daemons) await daemon.close().catch(() => undefined);

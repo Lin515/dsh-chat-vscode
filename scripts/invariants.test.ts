@@ -263,18 +263,19 @@ console.log("invariants: guard 工厂的返回值不被丢弃（收尾体真的�
 // （工作区里的一行设置就能执行命令 / 一个服务端给的 id 就能删掉别的目录）。
 {
   // 5.1 `dshChat.command` 是要**经 shell 执行**的字符串，`dshChat.url` 决定
-  //     令牌与聊天内容发到哪个 origin。两者都必须是 `machine` 作用域：
+  //     令牌与聊天内容发到哪个 origin，`dshChat.desktopExecutable` 是**要被拉起的可执行文件**
+  //     （且它决定扩展去连哪一份本机服务）。三者都必须是 `machine` 作用域：
   //     工作区（尤其是克隆来的别人的仓库）不许覆盖它们。
   const manifest = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf8")) as {
     contributes?: { configuration?: { properties?: Record<string, { scope?: string }> } };
   };
   const properties = manifest.contributes?.configuration?.properties ?? {};
-  for (const key of ["dshChat.command", "dshChat.url"]) {
+  for (const key of ["dshChat.command", "dshChat.url", "dshChat.desktopExecutable"]) {
     assert.strictEqual(
       properties[key]?.scope,
       "machine",
       `${key} 必须是 "scope": "machine"——否则工作区的 .vscode/settings.json 就能覆盖它` +
-        `（command 是经 shell 执行的命令，url 决定凭据发到哪个服务器）`,
+        `（command 是经 shell 执行的命令，url 决定凭据发到哪个服务器，desktopExecutable 是要拉起的可执行文件）`,
     );
   }
   console.log("invariants: 会执行命令 / 决定凭据去向的配置项锁在 machine 作用域 ✓");
@@ -316,6 +317,21 @@ console.log("invariants: guard 工厂的返回值不被丢弃（收尾体真的�
     "supervisor 的 bringUp 必须合并并发调用（否则 restart 撞上崩溃重起会留下一个谁也看不见的孤儿 dsh）",
   );
   console.log("invariants: supervisor 的 bringUp 合并并发调用 ✓");
+
+  // 5.6 `dshChat.command` **留空 = 没有内部那一轴**（用户 2026-10-19 口径）：扩展不许替用户
+  //     把空命令还原成默认值。清单里的 `default` 只覆盖"从没写过这条设置"那一态，而用户
+  //     显式清空是在说"我不要它"——回落会把这句意图吃掉，症状是"清空命令、重载窗口之后
+  //     它自己又起来一套"。这条失败起来同样安静：类型系统看不见，测试也不说话。
+  const extension = readFileSync(join(process.cwd(), "src", "extension.ts"), "utf8");
+  assert.ok(
+    !/get<string>\(\s*"command"\s*\)\s*\|\|/.test(extension) && !/DEFAULT_COMMAND/.test(extension),
+    "src/extension.ts 不许给 dshChat.command 回落默认命令（`|| 默认值` 会把用户清空配置的意图吃掉）",
+  );
+  assert.ok(
+    /get<string>\(\s*"command"\s*\)\s*\?\?/.test(extension),
+    'src/extension.ts 读 dshChat.command 只能原样取（`?? ""`），空串要原样交给管理器',
+  );
+  console.log("invariants: command 留空即没有内部 DSH（扩展不回落默认命令）✓");
 }
 
 // ---------- 6. 空态就是一条真会话（用户 2026-10-01 口径，对齐官方 DSH Web） ----------

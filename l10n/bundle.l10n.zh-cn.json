@@ -48,14 +48,17 @@
   "Connection target: {0}": "当前连接目标：{0}",
   "external DSH (dshChat.url)": "外部 DSH（dshChat.url）",
   "internal DSH (supervisor)": "内部 DSH（守护进程）",
+  "DSH desktop app (its built-in service)": "DSH 桌面端（内置服务）",
   "Connection target: not chosen yet": "当前连接目标：尚未选定",
   "Address: {0}": "地址：{0}",
   "Started by this extension: {0}": "由本扩展启动：{0}",
   "yes, by this window": "是，本窗口启动的",
   "yes, by another window (shared)": "是，另一个窗口启动的（共用中）",
   "no (external dshChat.url)": "否（外部 dshChat.url）",
+  "no (the DSH desktop app runs it)": "否（由 DSH 桌面端运行）",
   "this window started the supervisor, {0} window(s) in total": "本窗口启动了守护进程，共 {0} 个窗口在用",
   "using the supervisor of another window, {0} window(s) in total": "使用另一个窗口的守护进程，共 {0} 个窗口在用",
+  "no (the DSH desktop app serves it)": "否（由 DSH 桌面端提供服务）",
   "Detail: {0}": "说明：{0}",
   "Server processes: supervisor {0}{1}": "后台进程：守护进程 {0}{1}",
   "none": "无",
@@ -66,5 +69,6 @@
   "Server settings changed. Reload the window to apply them.": "服务器设置已更改，重载窗口后生效。",
   "Reload Window": "重载窗口",
   "Stopped the DSH server and its supervisor process.": "已停止 dsh 服务器及其守护进程。",
-  "The internal DSH server is not running.": "内部 DSH 没有在运行。"
+  "The internal DSH server is not running.": "内部 DSH 没有在运行。",
+  "dshChat.command is not set, so this window has no internal DSH to stop.": "没有配置 dshChat.command，本窗口没有内部 DSH 可停。"
 }

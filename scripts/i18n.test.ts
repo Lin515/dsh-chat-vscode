@@ -137,6 +137,12 @@ const HOST_MARKERS: string[] = [
   "serverNotReady",
   "serverUnreachable",
   "serverLogTail",
+  // 桌面端内置服务（只进连接条：这几条不经过 reportError，所以没有 vscode / l10n 那一层）
+  "desktopCredentialMissing",
+  "desktopCredentialRejected",
+  "desktopSpawnFailed",
+  "desktopNotReady",
+  "desktopExited",
   // 多窗口共享后台
   "sharedRestarted",
 ];
@@ -249,6 +255,10 @@ console.log("i18n: 消息表每条都有中英两份，带参的登记成函数�
     ["pasteTooLarge", "@pasteTooLarge:big.zip", ["big.zip"]],
     ["imageTooLarge", "@imageTooLarge:a.png:20971520", ["a.png", "20"]],
     ["serverSpawnFailed", "@serverSpawnFailed:ENOENT", ["ENOENT"]],
+    // 桌面端拉不起来（路径错 / 权限不足）：原因来自 spawn 的错误码
+    ["desktopSpawnFailed", "@desktopSpawnFailed:ENOENT", ["ENOENT"]],
+    // 桌面端刚起来就退出：参数是退出码；被信号杀死时宿主不带参数（另一支文案）
+    ["desktopExited", "@desktopExited:1", ["1"]],
     ["serverUnreachable", "@serverUnreachable:C:\\tools\\dsh\\bin", ["C:\\tools\\dsh\\bin"]],
     ["serverLogTail", "@serverLogTail:dsh web: ready\nport 8080", ["dsh web: ready"]],
     ["unknownCommand", "@unknownCommand:/foo", ["/foo"]],
