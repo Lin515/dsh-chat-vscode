@@ -25,7 +25,12 @@
  *    （见 `findTrigger`），两条通道的边界规则相同、判据不同；
  * 7. 指针悬停改高亮**只认 `mousemove`**：列表为露出键盘选中的那行而滚动时，浏览器会把
  *    `mouseenter` 补发给「刚滚到静止指针底下」的行，等于凭空抢走键盘的高亮（官方
- *    `MenuView` 同一判词，现场与断言见行上的注释与 `scripts/mentionNav.test.ts` 第 16 节）。
+ *    `MenuView` 同一判词，现场与断言见行上的注释与 `scripts/mentionNav.test.ts` 的
+ *    「悬停改高亮只认真实指针移动」一节）；
+ * 8. 弹层**这一帧画不出来**时键盘不归补全（`popoverOpen`）：Enter 是发送、↑↓ 挪光标、
+ *    ESC 交给归属链。此前键盘只读「有触发词 + 候选非空」，而 `..` 是无条件挂在最前的，
+ *    于是抑制门按住时回车会选中一个看不见的行（用户 2026-10-18 报的现场，断言见
+ *    `scripts/mentionNav.test.ts` 的「键盘只在弹层画出来时接管」一节）。
  */
 import {
   Fragment,
@@ -1017,9 +1022,46 @@ function useCompletion(
     [],
   );
 
+  /**
+   * 「这一块已经能引用到内容」把列表整块按住（用户 2026-10-11 口径）。
+   *
+   * 判据只有宿主能给（要查盘、要查会话列表），所以它随 `files/list` 那一条帧回来
+   * （`fileRefs.query` 对得上才是这一次的判定）：
+   * - **判定说「能引用」** → 整块不弹：光标移进一条已经写好的引用（`@src/a.ts`、
+   *   `@[标题](dsh-session:…)`）时不该冒出列表来（用户 2026-10-10 报的现场）；
+   * - **判定还没到** → 也先不弹。宿主对「能引用」的块根本不发查询、当场回帧（子毫秒
+   *   级），而「不能引用」的块那条文件查询是**索引**查询（官方 `file-reference-local`
+   *   只有每个工作区的第一次要遍历一遍，之后陈旧索引当场作答，见 `search.ts` 的
+   *   `indexFor`），所以这段等待在一两帧之内——比先闪一个列表出来好。
+   *   **浏览入口不看这条**（见下）：裸 `@` 是唯一的「从头浏览」入口，等一个往返就是
+   *   「刚敲 `@` 列表没反应」。
+   *
+   * 浏览入口（裸 `@`、以 `/` 或 `\` 结尾的路径）由 `shared/mentions.ts` 的
+   * `isBrowseQuery` 认：那是「进去看这一层」的意思，目录在不在都要能进去。
+   */
+  const mentionSuppressed =
+    trigger?.kind === "mention" &&
+    !isBrowseQuery(trigger.query) &&
+    (fileRefs.query !== trigger.query || (!trigger.sessionOnly && fileRefs.resolved === true));
+
+  /**
+   * 弹层**这一帧画不画**——键盘与渲染读**同一份**判据。
+   *
+   * 键盘那一支（`onKeyDown` 的 Enter / Tab / ↑↓ / ESC）此前只读「有触发词 + 候选非空」，
+   * 而 `..` 由 `rankCandidates` **无条件**挂在最前（进了目录就一定有它），于是上面的抑制门
+   * 把弹层按住时，候选照样非空：用户按下回车就选中了一个**看不见**的第一行。
+   * 用户 2026-10-18 报的现场正是它——敲一条工作区外的完整路径（宿主判定说这块已经能引用
+   * 到内容 → 抑制门按住 → 列表一个行都不画），回车把正文改写成上一层目录。
+   *
+   * 判据只能有一份：看到的和按键接管的必须是同一个东西。弹层没画出来时这一键就不归补全
+   * ——Enter 照旧是发送，↑↓ 照旧挪光标，ESC 交给归属链的兜底（没有画出来的东西可关）。
+   * 官方 `ui-input-trigger` 的 `arbitrate` 第一句同样是 `if (!state.open) return 'pass'`。
+   */
+  const popoverOpen = !mentionSuppressed && popoverVisible(trigger, candidates.length, noWorkspace);
+
   const onKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
-      if (trigger) {
+      if (popoverOpen) {
         // ESC 关掉候选弹层：优先级最高。记下文本+光标防止随后的 keyup 重新
         // 探测把列表弹回来；consumeEscape 让这次 ESC 归元素层（不再落到「停止生成」
         // 的兜底上，见 escapeOwner.ts）
@@ -1062,6 +1104,7 @@ function useCompletion(
         }
       }
       // 弹层**没**接管的 Enter = 发送（Shift+Enter 换行、Cmd/Ctrl+Enter = 加速手势）。
+      // 「没接管」包括**弹层这一帧没画出来**（`popoverOpen` 为假，见它那里的注释）。
       //
       // 与官方同口径：组合输入（中文输入法选词）中的 Enter 一律放过；`send` 只发**手势**，
       // 「排队 / 插话 / 停止」由宿主按按下的那一刻在不在跑来解析。
@@ -1070,7 +1113,7 @@ function useCompletion(
         latest.current.onSubmit?.(event.ctrlKey || event.metaKey ? "accelerated" : "enter");
       }
     },
-    [trigger, candidates, highlight, draft, applyCandidate],
+    [popoverOpen, candidates, highlight, draft, applyCandidate],
   );
 
   const onEdit = useCallback(
@@ -1119,31 +1162,9 @@ function useCompletion(
     [refreshTrigger],
   );
 
-  /**
-   * 「这一块已经能引用到内容」把列表整块按住（用户 2026-10-11 口径）。
-   *
-   * 判据只有宿主能给（要查盘、要查会话列表），所以它随 `files/list` 那一条帧回来
-   * （`fileRefs.query` 对得上才是这一次的判定）：
-   * - **判定说「能引用」** → 整块不弹：光标移进一条已经写好的引用（`@src/a.ts`、
-   *   `@[标题](dsh-session:…)`）时不该冒出列表来（用户 2026-10-10 报的现场）；
-   * - **判定还没到** → 也先不弹。宿主对「能引用」的块根本不发查询、当场回帧（子毫秒
-   *   级），而「不能引用」的块那条文件查询是**索引**查询（官方 `file-reference-local`
-   *   只有每个工作区的第一次要遍历一遍，之后陈旧索引当场作答，见 `search.ts` 的
-   *   `indexFor`），所以这段等待在一两帧之内——比先闪一个列表出来好。
-   *   **浏览入口不看这条**（见下）：裸 `@` 是唯一的「从头浏览」入口，等一个往返就是
-   *   「刚敲 `@` 列表没反应」。
-   *
-   * 浏览入口（裸 `@`、以 `/` 或 `\` 结尾的路径）由 `shared/mentions.ts` 的
-   * `isBrowseQuery` 认：那是「进去看这一层」的意思，目录在不在都要能进去。
-   */
-  const mentionSuppressed =
-    trigger?.kind === "mention" &&
-    !isBrowseQuery(trigger.query) &&
-    (fileRefs.query !== trigger.query || (!trigger.sessionOnly && fileRefs.resolved === true));
-
   const popover = useMemo(
     () =>
-      !mentionSuppressed && popoverVisible(trigger, candidates.length, noWorkspace) ? (
+      popoverOpen ? (
         <div className="popover trigger-popover">
           {/* 只有这一层滚（`.popover-list`）：底部提示栏是它的**兄弟**节点，
               列表滑到哪儿都不影响提示常驻（用户 2026-09-25 口径）。 */}
@@ -1284,7 +1305,7 @@ function useCompletion(
           </div>
         </div>
       ) : null,
-    [trigger, candidates, rows, hasFolderCandidate, highlight, texts, noWorkspace, applyCandidate, mentionSuppressed],
+    [trigger, candidates, rows, hasFolderCandidate, highlight, texts, noWorkspace, applyCandidate, popoverOpen],
   );
 
   return {

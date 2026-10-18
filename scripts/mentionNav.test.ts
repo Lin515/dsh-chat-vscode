@@ -12,7 +12,9 @@
  * 函数调——事件对象是手写的假对象，只带被读的字段，`textareaRef` 指向一个假节点
  * （同时是「光标真的落到哪」的观察点）。第 10–16 节跑的是真实的「事件 → 渲染」链，
  * 第 17–20 节是**弹层何时弹**这一口径的回归（用户 2026-10-10 与 2026-10-11 两轮：
- * 浏览入口恒弹，块已经能引用到内容时整块不弹）。
+ * 浏览入口恒弹，块已经能引用到内容时整块不弹），最后「键盘只在弹层画出来时接管」
+ * 一节钉住键盘与渲染同判据（用户 2026-10-18 报的现场：抑制门按住时回车改写了正文，
+ * 选中一个看不见的「..」）。
  *
  * 运行：npm test
  */
@@ -1355,5 +1357,85 @@ console.log("completion(hook): 同一目录块内挪光标不发重复 queries �
   assert.ok(!drilled.html.includes(TEXTS.mentionSessions), "进了目录不再列对话候选");
 }
 console.log("completion(hook): 下钻自动变目录块（列表不关） ✓");
+
+/* ============ 键盘只在弹层真画出来时才接管 ============ */
+
+// ---------- 21. 弹层没画出来时，Enter / ↑↓ / ESC 都不算它的（用户 2026-10-18 报的现场） ----------
+//
+// 现场：在输入框里敲一条**工作区外的路径**，`@` 列表并不存在（抑制门按住），接着按回车，
+// 正文却被改写成「上一层目录」——选中了一个用户看不见的第一行。
+//
+// 根因是两处判据分了家：
+// - 渲染那一支读 `mentionSuppressed` + `popoverVisible`（弹层此刻画不画）；
+// - 键盘那一支只读「有触发词 + 候选非空」，而 `..` 由 `rankCandidates` **无条件**挂在最前
+//   （进了目录就一定有它），于是「候选非空」在弹层被按住时照样为真。
+//
+// 判据必须**同一份**：弹层没画出来，这一键就不归补全（Enter 照旧是发送，↑↓ 照旧挪光标，
+// ESC 交给归属链的兜底）。三条通道各钉一遍，最后用同一份草稿的「画出来」那一帧作对照
+// ——两组只差「弹层画没画」，行为必须天差地别。
+{
+  // 一条工作区外的绝对路径：进过目录（有分隔符，于是 `..` 在候选里），宿主判定说这块
+  // 已经能引用到内容 → 抑制门按住 → 弹层一个行都不画。
+  const outside = "@D:/dev/other/notes.txt";
+  const outsideQuery = "D:/dev/other/notes.txt";
+
+  /** 一遍「抑制门按住」的现场：弹层没画出来，回车 / 方向键 / ESC 都不该被它接管。 */
+  function hidden(label: string, fileRefs: UseComposerCompletionInput["fileRefs"]): void {
+    const sent: string[] = [];
+    const f = frame(outside, outside.length, {
+      fileRefs,
+      onSubmit: (gesture) => {
+        sent.push(gesture);
+      },
+    });
+    assert.strictEqual(f.html, "", `${label}：前提是弹层没画出来`);
+
+    // 回车：不许改写正文（不许选中看不见的「..」），要落到发送
+    press(f, "Enter");
+    assert.strictEqual(f.draft, outside, `${label}：列表没画出来时 Enter 不许改写正文`);
+    assert.deepStrictEqual(sent, ["enter"], `${label}：Enter 归发送`);
+
+    // ↑↓：不许被吃掉（那会让光标挪不动，同时改一个看不见的高亮）
+    assert.strictEqual(press(f, "ArrowUp").prevented, 0, `${label}：↑ 要留给光标`);
+    assert.strictEqual(press(f, "ArrowDown").prevented, 0, `${label}：↓ 要留给光标`);
+
+    // ESC：没有画出来的东西可关，这一键交给归属链（生成中就是停止生成）
+    const escape = press(f, "Escape");
+    assert.strictEqual(escape.prevented, 0, `${label}：ESC 不该被一个不存在的列表消费`);
+    assert.strictEqual(escape.stopped, 0, `${label}：ESC 要能继续冒泡到兜底`);
+  }
+
+  // 抑制的两条来路各一遍：判定说「已经能引用到内容」，与「这一次的判定还没回来」。
+  hidden("判定说能引用", { query: outsideQuery, items: [], sessions: [], resolved: true });
+  hidden("判定还没到", { query: "上一次的查询", items: FILES, sessions: SESSIONS, resolved: false });
+
+  // 对照：同一份草稿、同一条查询，只是判定说「引用不到」（`resolved: false`）→ 弹层真的
+  // 画出来，这时键盘归它：Enter 选中第一行（`..` → 上一层目录）、↑↓ 与 ESC 都被接管。
+  {
+    const sent: string[] = [];
+    const f = frame(outside, outside.length, {
+      fileRefs: { query: outsideQuery, items: [], sessions: [], resolved: false },
+      onSubmit: (gesture) => {
+        sent.push(gesture);
+      },
+    });
+    assert.ok(f.html.includes("popover-item"), "对照：弹层画出来了才轮到键盘接管");
+    assert.ok(f.html.includes('popover-item-main is-priority">..'), "对照：第一行就是「..」");
+
+    assert.strictEqual(press(f, "ArrowUp").prevented, 1, "对照：弹层在时 ↑ 归它");
+    assert.strictEqual(press(f, "Escape").prevented, 1, "对照：弹层在时 ESC 归它");
+    assert.deepStrictEqual(sent, [], "对照：ESC 关列表不发送");
+  }
+
+  // 对照的「Enter 选中」单独一帧：前一帧的 ESC 已经把列表关掉了
+  {
+    const f = frame(outside, outside.length, {
+      fileRefs: { query: outsideQuery, items: [], sessions: [], resolved: false },
+    });
+    press(f, "Enter");
+    assert.strictEqual(f.draft, "@D:/dev/", "对照：弹层画出来时 Enter 照样选中「..」（回上一层）");
+  }
+}
+console.log("completion(hook): 键盘只在弹层画出来时接管（抑制门按住时 Enter 归发送） ✓");
 
 console.log("\nmentionNav: all assertions passed");
