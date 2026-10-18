@@ -253,16 +253,16 @@ export interface Texts {
   fileDeletedHint: string;
   /** 已删除芯片的无障碍标题（与 `openChangesAria` 同构，不带语言特有的括号）。 */
   deletedFileAria: (name: string) => string;
-  /** 文件已删除且**内容确实找不回**时的 toast（宿主 `@chipFileDeleted` 专用）。 */
+  /** 文件已删除且**内容确实找不回**时的通知（宿主 `@chipFileDeleted` 专用）。 */
   chipFileDeleted: string;
-  /** 相对路径但拿不到会话工作目录时的 toast（宿主 `@chipPathUnresolved` 专用）。 */
+  /** 相对路径但拿不到会话工作目录时的通知（宿主 `@chipPathUnresolved` 专用）。 */
   chipPathUnresolved: string;
-  /** 拖放里读不出字节的项（目录等）的 toast（宿主 `@dropUnreadable:name`）。 */
+  /** 拖放里读不出字节的项（目录等）的通知（宿主 `@dropUnreadable:name`）。 */
   dropUnreadable: (name: string) => string;
-  /** 拖放里超过大小上限的项的 toast（宿主 `@dropTooLarge:name`）。 */
+  /** 拖放里超过大小上限的项的通知（宿主 `@dropTooLarge:name`）。 */
   dropTooLarge: (name: string) => string;
   /**
-   * 图片进不了内容块、已按文件上传时的 toast（宿主 `@imageTooLarge|imagePixelsTooLarge|…`）。
+   * 图片进不了内容块、已按文件上传时的通知（宿主 `@imageTooLarge|imagePixelsTooLarge|…`）。
    *
    * 五条原因各报自己的上限（像素那条只报上限，按语言缩写）；文案的后半句在
    * `messages.ts` 里按原因分：逐图超限的副本模型也得先缩小才能看，整批超限的可以直接读。
@@ -653,7 +653,7 @@ export interface Texts {
   serverUnreachable: (baseUrl: string) => string;
   /** 连接失败条末段：服务器日志尾部（原文照贴，不翻译）。 */
   serverLogTail: (tail: string) => string;
-  /** toast：在共享后台的窗口里执行「重启服务器」，后台已由本窗口接管重起。 */
+  /** 通知：在共享后台的窗口里执行「重启服务器」，后台已由本窗口接管重起。 */
   sharedRestarted: string;
 
   searchSessions: string;
@@ -864,8 +864,6 @@ export interface Texts {
   branchFromHere: string;
   /** 分支创建失败的提示。 */
   branchFailed: string;
-  /** 分支创建成功的提示（新会话标题作为变量）。 */
-  branchCreated: (title: string) => string;
   /** 这条消息还取不到分支锚点（本轮尚未收尾）。 */
   branchNoAnchor: string;
   /** 分支按钮的禁用说明（运行中不能分支）。 */
@@ -877,6 +875,30 @@ export interface Texts {
   historyLoading: string;
   /** 「回到最新」胶囊：脱贴后内容继续增长时的兜底入口（点击回底并恢复贴底）。 */
   jumpToLatest: string;
+  /**
+   * 消息通知（宿主权威的常驻提醒，见 `docs/design-notifications.md`）。
+   *
+   * 顶部常驻条只画**最近一条未确认**（没有就整块不渲染、不自动消失），抽屉按最近发生
+   * 顺序列出当前会话与共享的通知并逐条标出确认状态。确认是一颗写明的按钮；抽屉里
+   * 没有「一键全确认」。
+   */
+  notifications: string;
+  notificationAcknowledge: string;
+  /** 顶部那条的展开入口（打开通知抽屉；也是命令「查看消息通知」的界面落点）。 */
+  notificationHistory: string;
+  notificationsEmpty: string;
+  notificationsUnacknowledged: string;
+  notificationsAcknowledged: string;
+  /** 发生次数（抽屉里 1 也显示；顶部只在重复发生时报）。 */
+  notificationCount: (count: number) => string;
+  /** 首次发生时刻（抽屉里作为最近发生时间的 title，不占额外一行）。 */
+  notificationFirstAt: (time: string) => string;
+  /** 没有会话归属的通知（所有视图都看得到）。 */
+  notificationShared: string;
+  /** 抽屉里会话 ID 那一格的标签。 */
+  notificationSession: string;
+  /** 宿主标记：执行目录已切换（绿色重要变化），参数是完整目录路径。 */
+  executionDirChanged: (dir: string) => string;
   /** 会话查找条（Ctrl+F）的 aria 标签（查找框与整条共用）。 */
   findInChat: string;
   /** 会话查找框的占位文案。 */

@@ -783,6 +783,28 @@ export interface SessionSummaryView {
   parentSessionId?: string;
 }
 
+/**
+ * 通知队列里的一条（宿主 → 界面的镜像项，见 `docs/design-notifications.md`）。
+ *
+ * 只有宿主会铸造 / 合并 / 确认；界面拿到的是**某一刻的列表**，确认时把 `id` 与当时
+ * 渲染出来的 `count` 一起回给宿主（迟到的一次点击不该吞掉它之后又发生的那次，
+ * 见 `dsh/notificationQueue.ts` 的 `acknowledge`）。
+ */
+export interface NotificationView {
+  /** 稳定 id（确认按它定位）。 */
+  id: string;
+  /** 归属会话；缺省 = 共享通知（所有视图都看得到）。 */
+  sessionId?: string;
+  level: "error" | "warn" | "info";
+  /** 语言中立标记（`@key:arg`），界面按当前语言翻译。 */
+  text: string;
+  /** 合并进来的实际发生次数（> 1 时界面要显示次数）。 */
+  count: number;
+  firstAt: number;
+  lastAt: number;
+  acknowledged: boolean;
+}
+
 export interface ModelEffortView {
   id: string;
   name: string;
@@ -1426,12 +1448,13 @@ export interface ChatState {
    */
   historyLoading?: boolean;
   /**
-   * 一次性轻提示（复制成功、设置已保存、图片被跳过…）。
+   * 通知队列的**镜像**（宿主权威，见 `docs/design-notifications.md`）。
    *
-   * `id` 每次自增：同样的文案连续来两次（例如连点两次复制）也要重新计时，
-   * 否则第二次会因为没有状态变化而不刷新。
+   * 每个视图收到的只是**它可见的那一份**：当前会话的通知 + 共享通知（没有绑定会话
+   * 时只有共享通知）。未确认与已确认混在一起、按最近发生排序：顶部取第一条未确认，
+   * 抽屉按同一份列表渲染（宿主是唯一生产者，界面不做任何本地增删）。
    */
-  notice?: { id: number; level: "info" | "warn" | "error"; text: string };
+  notifications?: NotificationView[];
   /**
    * 待插入输入框光标处的文本（宿主 → 界面的单向指令）。
    *

@@ -22,6 +22,7 @@
 | [附件与引用接入](<design-attachments.md>) | 接入矩阵、上传租约、引用表示、平台限制与准入缺口 |
 | [引用补全](<design-mentions.md>) | 整块查询、已解析引用抑制、发现范围（工作区外）、两帧候选与目录导航 |
 | [消息、工具与交付](<design-messages.md>) | 非文本内容、工具收尾、产物入口、Markdown 路径与文案登记 |
+| [消息通知](<design-notifications.md>) | 常驻通知、会话归属、确认与通知历史 |
 | [输入工具栏](<design-composer.md>) | 实测宽度、优先级前缀、节点观察与权限弹层 |
 | [界面尺度](<design-ui-scale.md>) | 设计像素、CSS / JS 几何、断点、字号变量与测量顺序 |
 | [右键菜单](<design-context-menu.md>) | 事件接管、判定矩阵、图片复制与保存 |

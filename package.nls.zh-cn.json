@@ -4,6 +4,7 @@
   "view.chat.name": "DSH Chat",
   "cmd.newSession.title": "DSH: 新建对话",
   "cmd.history.title": "DSH: 历史对话",
+  "cmd.notifications.title": "DSH: 查看消息通知",
   "cmd.openInEditor.title": "DSH: 在编辑器中打开对话",
   "cmd.newSessionInGroup.title": "DSH: 在本分组新建对话窗口",
   "cmd.stop.title": "DSH: 停止生成",

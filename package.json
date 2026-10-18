@@ -87,6 +87,11 @@
         "icon": "$(history)"
       },
       {
+        "command": "dshChat.notifications",
+        "title": "%cmd.notifications.title%",
+        "icon": "$(bell)"
+      },
+      {
         "command": "dshChat.openInEditor",
         "title": "%cmd.openInEditor.title%",
         "icon": "$(open-preview)"

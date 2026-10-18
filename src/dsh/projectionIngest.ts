@@ -99,13 +99,24 @@ export interface ProjectionViewMap {
 export type ProjectionKey = keyof ProjectionViewMap;
 
 /**
+ * 这个投影值**从哪条路进来**的。
+ *
+ * 效果那一半需要它来区分「真实变化」与「快照 / baseline 重铺」：执行目录就是活例
+ * ——follow 开帧、控制流 baseline 与重连都会重发同一批值，把它们当变化会让用户
+ * 每次重开 / 重连都收到一条与本机无关的提醒（见 `controller.applyWorkingDirectoryProjection`）。
+ * 清空（`present === false`）同样可能是 baseline 缺键造成的，所以判据不能只看值。
+ */
+export type ProjectionSource = "snapshot" | "baseline" | "live";
+
+/**
  * 每个键的**效果**：写 `SessionScope` 的字段、发帧。
  *
  * 映射类型 ⇒ 少一个键编译不过；这就是「加一个投影键 = 改一处」的强制手段。
  *
- * 两个参数要分清楚：
+ * 三个参数要分清楚：
  * - `value` 是该键解析后的视图值；
- * - `present` 是**这个键此刻在不在 store 里**（`false` = 能力缺失／被 baseline 清掉了）。
+ * - `present` 是**这个键此刻在不在 store 里**（`false` = 能力缺失／被 baseline 清掉了）；
+ * - `source` 是这次派发的来路（见 `ProjectionSource`）。
  *
  * `present` 必须单独给：读取器对「没有值」的容忍度各不相同——`todos` 给空表、
  * `tokenUsage` 给四个 0（它本来永远给得出完整对象），后者照原样发出去就成了
@@ -113,7 +124,12 @@ export type ProjectionKey = keyof ProjectionViewMap;
  * 只有效果那一半答得出来。
  */
 export type ProjectionHandlers = {
-  [K in ProjectionKey]: (scope: SessionScope, value: ProjectionViewMap[K], present: boolean) => void;
+  [K in ProjectionKey]: (
+    scope: SessionScope,
+    value: ProjectionViewMap[K],
+    present: boolean,
+    source: ProjectionSource,
+  ) => void;
 };
 
 /**
@@ -163,9 +179,14 @@ export function readProjection(key: string, value: unknown): unknown {
  * 「读 store 而不是读传进来的参数」是有意的：baseline 那条路上（先 truncate 再 seed）
  * 同一个键可能先被清掉再被重新播种，读最终状态能保证**只派发一次、且派发的是终值**。
  */
-function dispatch(handlers: ProjectionHandlers, scope: SessionScope, key: ProjectionKey): void {
+function dispatch(
+  handlers: ProjectionHandlers,
+  scope: SessionScope,
+  key: ProjectionKey,
+  source: ProjectionSource,
+): void {
   const value = READERS[key](scope.projections.get(key)) as never;
-  handlers[key](scope, value, scope.projections.has(key));
+  handlers[key](scope, value, scope.projections.has(key), source);
 }
 
 /**
@@ -185,7 +206,7 @@ export function ingestProjection(
   seq?: number,
 ): boolean {
   if (!scope.projections.apply(key, value, seq)) return false;
-  if (isProjectionKey(key)) dispatch(handlers, scope, key);
+  if (isProjectionKey(key)) dispatch(handlers, scope, key, "live");
   return true;
 }
 
@@ -220,7 +241,7 @@ export function ingestFollowSnapshot(
   for (const [key, value] of Object.entries(blockValues(block))) {
     if (scope.projections.apply(key, value, cut) && isProjectionKey(key)) touched.push(key);
   }
-  for (const key of touched) dispatch(handlers, scope, key);
+  for (const key of touched) dispatch(handlers, scope, key, "snapshot");
   return touched;
 }
 
@@ -249,7 +270,7 @@ export function ingestControlBaseline(
     ...scope.projections.seed(block),
   ]);
   const keys = [...touched].filter(isProjectionKey);
-  for (const key of keys) dispatch(handlers, scope, key);
+  for (const key of keys) dispatch(handlers, scope, key, "baseline");
   return keys;
 }
 

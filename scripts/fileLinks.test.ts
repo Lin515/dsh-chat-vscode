@@ -347,9 +347,8 @@ console.log("fileLinks: 宿主侧行号落位 + 相对路径解析 + 外链白�
     "重试必须走 splitPathLineSuffix（判定口径只有一份）",
   );
   assert.ok(
-    /private reportMissingFile\(viewId: string \| undefined, resolved: string, fromLink: boolean\): void \{/.test(
-      controller,
-    ) && /text: fromLink \? `@fileNotFound:\$\{resolved\}` : "@chipFileDeleted"/.test(controller),
+    /private reportMissingFile\([\s\S]{0,240}?\): void \{/.test(controller) &&
+      /text: fromLink \? `@fileNotFound:\$\{resolved\}` : "@chipFileDeleted"/.test(controller),
     "链接（@fileNotFound，带解析出的绝对路径）与文件芯片（@chipFileDeleted）的措辞必须分开",
   );
 

@@ -176,8 +176,6 @@ export type HostToWebview =
    * （宿主侧更早就作废了旧查询，见 `controller.queryFiles` 的作废口径）。
    */
   | { type: "files/sessions"; query: string; sessions: SessionRefView[]; cwd?: string; sessionId?: string }
-  /** 一次性提示。 */
-  | { type: "toast"; level: "info" | "warn" | "error"; text: string }
   /**
    * 正文里本地图片引用的解析结果（`resolveImages` 的回帧）。
    *
@@ -210,6 +208,25 @@ export type HostToWebview =
 export type WebviewToHost =
   /** webview 加载完成，请求首帧状态。 */
   | { type: "ready" }
+  /**
+   * 确认一条消息通知（用户明确知悉，不表示问题已解决）。
+   *
+   * `count` 是界面**当时**渲染出来的发生次数：宿主只用它判断这次点击看到的是不是
+   * 最新那一份（见 `dsh/notificationQueue.ts` 的 `acknowledge`），界面不自己改本地
+   * 列表——确认后由宿主的镜像帧同步到所有视图。
+   */
+  | { type: "acknowledgeNotification"; id: string; count: number }
+  /**
+   * 界面本地复制图片失败（`webview/imageClipboard.ts`）：唯一的入队入口。
+   *
+   * - `sessionId` 是**复制动作发起那一刻**这个窗口绑定的会话（未绑定为空）；宿主校验
+   *   它与窗口此刻的绑定一致才入队——复制是耗时动作，发起后用户可能已经切走。
+   *   （`requestId` 则是在这次复制**失败落定、即将 post 那一刻**递增，手势时只捕获归属。）
+   * - `requestId` 是这个 webview 里单调递增的**请求号**（每次真实失败 +1）。宿主按
+   *   「每窗口水位」拒绝重复投递（同一号第二次到达是空操作），与 durable `seq` 的
+   *   水位互不相干。界面页面重建时它从头开始，宿主在 `ready` 时清掉水位。
+   */
+  | { type: "reportImageCopyFailure"; sessionId?: string; requestId: number }
   /**
    * 发送一条消息。
    *

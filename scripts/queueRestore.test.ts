@@ -116,6 +116,8 @@ interface Internals {
   handle(message: Record<string, unknown>, viewId: string): Promise<void>;
   rememberSubmission(requestId: string, text: string, content: unknown[], attachments: Attachment[]): void;
   onControlFrame(frame: Record<string, unknown>): void;
+  /** 通知队列（宿主权威的那一份，见 `docs/design-notifications.md`）。 */
+  notifications: { visible(sessionId: string | undefined): { text: string; count: number }[] };
 }
 
 /** inbox 投影的一条待发消息（新通道）。 */
@@ -262,8 +264,21 @@ async function scene(options: {
 const draftOf = (h: Harness, key: string) => h.c.drafts.get(key) ?? "";
 const attachmentsOf = (h: Harness, key: string) => [...h.c.attachments.list(key)];
 const namesOf = (list: Attachment[]) => list.map((a) => a.id).sort().join(",");
-const toastsOf = (h: Harness, target: string) =>
-  h.frames.filter((f) => f.target === target && f.frame.type === "toast").map((f) => String(f.frame.text));
+/**
+ * 某个窗口**最近一次**收到的通知镜像（宿主权威队列按视图过滤后下发的 `notifications` 补丁）。
+ *
+ * 通知取代了从前的瞬时 `toast` 帧：断言口径不变（「这一条该不该出现」），只是通道换了。
+ */
+const noticesOf = (h: Harness, target: string): { text: string; count: number }[] => {
+  let latest: { text: string; count: number }[] = [];
+  for (const f of h.frames) {
+    if (f.target !== target) continue;
+    const patch = (f.frame as { patch?: { notifications?: { text: string; count: number }[] } }).patch;
+    if (patch?.notifications) latest = patch.notifications;
+  }
+  return latest;
+};
+const toastsOf = (h: Harness, target: string) => noticesOf(h, target).map((notice) => notice.text);
 
 /** S1 的域（队列项与来源索引都挂在它上面）。 */
 const scopeOf = (h: Harness) =>
@@ -535,10 +550,13 @@ console.log("queueRestore: 驱动真控制器（offline stub）");
   assert.strictEqual(attachmentsOf(h, S2).length, 0, `新会话的附件必须原样：${namesOf(attachmentsOf(h, S2))}`);
   assert.strictEqual(draftOf(h, S1), "已有草稿", `队列留着时原草稿也不许动：${JSON.stringify(draftOf(h, S1))}`);
   assert.strictEqual(h.removes.length, 0, "还原不了时不许摘队列（切了会话也一样）");
-  assert.strictEqual(
-    h.frames.filter((f) => f.target === "v1" && f.frame.type === "toast").length,
-    0,
-    `还原失败的提示不得画进新会话：${toastsOf(h, "v1").join(" / ")}`,
+  // 通知按**会话**归属：窗口切到新会话之后，这条失败不该出现在它的镜像里。
+  // （断言升级过：从前只查「有没有 toast 帧」，现在查「这个窗口此刻可见的通知」，
+  //  切会话真的换了过滤范围，才证得出归属没越界。）
+  assert.deepStrictEqual(noticesOf(h, "v1"), [], `还原失败的提示不得画进新会话：${toastsOf(h, "v1").join(" / ")}`);
+  assert.ok(
+    h.c.notifications.visible(S1).some((notice) => notice.text === "@queueAttachmentsLost"),
+    "失败要归属**发起取回的那个会话**（S1），不是完成时窗口看着的 S2",
   );
   console.log("  场景九：还原不了 + 切会话 → 队列保留、提示不越会话 ✓");
 }

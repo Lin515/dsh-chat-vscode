@@ -65,6 +65,12 @@ npm run package  # Releases/dsh-chat-<version>.vsix
 
 历史列表只显示当前工作区的会话，支持新建、归档、删除与「从这里分支」；分支标题带「分支: 」前缀。子代理入口可查看执行记录，一次性子代理只读，可继续子代理支持续聊。后台任务抽屉分两个分区：**自动化任务**（模型用 `schedule_create` 安排的定时任务，显示频率与下次运行，可展开看执行记录、修改运行时间、删除）与**后台任务**（bash / pwsh 等，可展开看实时输出）。抽屉里有后台任务在跑、或还有待执行的自动化任务时，顶栏那颗入口按钮会亮起（有任务真的在跑时还会呼吸；只是排着时不闪）。轨迹提供账本、时间线与详情检查器。服务端设置通过「在浏览器中打开」进入官方 Web UI。
 
+### 消息通知
+
+需要关注、又未在会话中明确呈现的信息会进入通知队列：红色表示影响会话执行的错误，黄色表示非阻断问题，绿色表示重要变化。顶部优先显示最新未确认项，必须点击「确认」才会移入历史，不会自动消失；确认只表示知悉。
+
+通过「展开历史」或命令「DSH: 查看消息通知」打开通知抽屉。每个视图只显示当前会话与共享通知，确认会同步到同窗口的其他视图。未确认的同类通知合并计数，确认后再次发生会重新提醒。已确认历史最多保留 500 条，未确认通知不自动淘汰；通知仅保存在扩展宿主内存中，重开面板或切换会话不会清除，重载窗口或退出 VS Code 后清空。
+
 ### 输入、引用与附件
 
 - `/` 打开命令与技能菜单；`@` 引用文件、目录或历史会话，写入 `@path`、`@dir/` 或 `@[标题](dsh-session:…)`，由模型自行读取，不占附件通道。
@@ -172,6 +178,12 @@ With `dshChat.autoConnect` enabled, the extension connects automatically **once*
 Use the activity bar, secondary sidebar or editor area. **DSH: Open in Editor** and the header button open a tab in an existing editor group; an editor source keeps its own group. The whale button in the editor title bar creates a session in the current group.
 
 History is scoped to the current workspace and supports new, archive, delete and branch-from-here; branch titles have a “Branch: ” prefix. Open subagents to view their records: one-shot agents are read-only, continuable agents support follow-up chat. Jobs expose output, and Trajectory provides a ledger, timeline and inspector. “Open in browser” leads to the official server settings.
+
+### Notifications
+
+Important information not already shown clearly in the conversation enters the notification queue: red for errors blocking session execution, yellow for non-blocking issues, and green for important changes. The newest unacknowledged item stays at the top until you explicitly acknowledge it; acknowledgment means awareness, not resolution.
+
+Open the notification drawer with **Show history** or **DSH: View Notifications**. Each view shows its current session and shared notifications, with acknowledgments synchronized across views in the same window. Repeated unacknowledged items are grouped and counted; recurrence after acknowledgment creates a new item. Up to 500 acknowledged items are retained; unacknowledged items are never evicted automatically. Notifications stay only in extension-host memory: reopening panels or switching sessions keeps them, while reloading the window or exiting VS Code clears them.
 
 ### Input, references and attachments
 

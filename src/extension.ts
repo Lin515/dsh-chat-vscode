@@ -163,6 +163,13 @@ function registerContributions(context: vscode.ExtensionContext, host: Contribut
       await controller.openHistory();
       controller.revealActiveView();
     }),
+    // 「DSH: 查看消息通知」：打开通知抽屉（空队列也照开，抽屉自己渲染空态与已确认历史）。
+    // 与 history 同一条路由：命令是用户显式动作，可以把最近活动窗口带到前台；
+    // 一个窗口都没有时由控制器唤起主侧栏并等它就绪（不广播给所有视图）。
+    vscode.commands.registerCommand("dshChat.notifications", () => {
+      controller.openNotifications();
+      controller.revealActiveView();
+    }),
     // 「在编辑器中打开」：webview 按钮会把点击来源窗口的会话与窗口本身带过来；
     // 命令面板直接执行（没有来源窗口）时用最近活动窗口的会话、落点是当前活动分组。
     // 落点规则（用户 2026-10-10 口径）：来源窗口自己就在某个标签组里就在**那一组**

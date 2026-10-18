@@ -262,8 +262,152 @@
           retention: { days: 30, records: 200 },
         });
       }
-      // 正文/附件里的占位图（真实链路给的是服务端字节的 data URL）：一张内联 SVG，
-      // 形状一致、看得见。放在函数外、`__buildState` 也能引用（`scripts/previewFixture.test.ts`
+      // 消息通知：宿主权威队列的**镜像**（见 docs/design-notifications.md 与
+      // src/dsh/notificationQueue.ts）。预览页复刻宿主那半边：镜像按这个窗口绑定的会话
+      // 过滤（当前会话 + 共享）、按最近发生排序；确认与「界面本地复制图片失败」都走
+      // **回帧**（界面不本地改列表，见 src/webview/notifications.ts 与
+      // webview/components/Notifications.tsx）。
+      //
+      // 内部记录比过线的镜像多带 `sessionId: undefined` 那一档：`s2` 是**别的会话**的
+      // 通知，真实宿主根本不会发到本窗口（镜像只含可见范围），这里留着正是为了在预览里
+      // 看着「视图过滤生效」——它进不了屏幕，`__notifications.records()` 里看得到。
+      var previewNotificationSeq = 0;
+      var previewNotifications = null;
+      /** 这个窗口此刻绑定的会话（宿主 `viewSessions` 那一份；ready 的快照里取）。 */
+      var previewNotificationSession = null;
+      function previewNotificationMirror() {
+        var sessionId = previewNotificationSession;
+        return (previewNotifications || [])
+          .filter(function (record) {
+            return record.sessionId === undefined || record.sessionId === sessionId;
+          })
+          .sort(function (left, right) {
+            return right.lastAt - left.lastAt;
+          })
+          .map(function (record) {
+            var view = {
+              id: record.id,
+              level: record.level,
+              text: record.text,
+              count: record.count,
+              firstAt: record.firstAt,
+              lastAt: record.lastAt,
+              acknowledged: record.acknowledged
+            };
+            if (record.sessionId !== undefined) view.sessionId = record.sessionId;
+            return view;
+          });
+      }
+      function previewNotificationPush() {
+        window.__push({ type: "patch", patch: { notifications: previewNotificationMirror() } });
+      }
+      /** 一条**新的实际发生**：同归属 + 同级别 + 同文案的未确认合并计数（宿主口径）。 */
+      function previewNotificationEnqueue(record) {
+        var live = previewNotifications || [];
+        var existing = null;
+        for (var index = 0; index < live.length; index += 1) {
+          var item = live[index];
+          if (!item.acknowledged && item.level === record.level && item.text === record.text
+            && item.sessionId === record.sessionId) {
+            existing = item;
+            break;
+          }
+        }
+        if (existing) {
+          existing.count += 1;
+          existing.lastAt = record.lastAt;
+        } else {
+          previewNotificationSeq += 1;
+          live.push(Object.assign({ id: "preview-n" + previewNotificationSeq }, record));
+        }
+        previewNotifications = live;
+        previewNotificationPush();
+      }
+      /**
+       * 确认一条（宿主 `acknowledgeNotification` 的落点）。
+       *
+       * 次数口径与 `notificationQueue.acknowledge` 一致：只把用户**看到的**那部分移入
+       * 已确认历史；点击之前又发生过的部分换成新 id 继续未确认。非法 / 过期 id 是空操作，
+       * 但仍回一份权威镜像（界面不本地改列表，不回帧就会卡在点不掉的提示上）。
+       */
+      function previewNotificationAcknowledge(id, seenCount) {
+        var live = previewNotifications || [];
+        var index = -1;
+        for (var cursor = 0; cursor < live.length; cursor += 1) {
+          if (live[cursor].id === id) {
+            index = cursor;
+            break;
+          }
+        }
+        if (index < 0) {
+          previewNotificationPush();
+          return;
+        }
+        var record = live[index];
+        var seen = Math.max(1, Math.min(seenCount, record.count));
+        live.splice(index, 1);
+        live.push(Object.assign({}, record, { acknowledged: true, count: seen }));
+        if (record.count > seen) {
+          previewNotificationSeq += 1;
+          live.push(Object.assign({}, record, {
+            id: "preview-n" + previewNotificationSeq,
+            count: record.count - seen
+          }));
+        }
+        previewNotificationPush();
+      }
+      // 验收入口（Playwright 用；全部走真实的 `__push` 帧，不直接改 DOM）：
+      // - `open()`：命令入口「DSH: 查看消息通知」发的那一帧（`ui/openPanel`）；
+      // - `records()`：夹具内部记录（含镜像不会带出去的别的会话那一条）；
+      // - `push(level, text, sessionId, count)`：造一条新的实际发生（含合并）；
+      // - `set(list)`：换一份完整镜像（造空态 / 全已确认 / 超长正文）；
+      // - `reportImageCopyFailure(sessionId)`：界面那条本地失败帧的宿主侧效果；
+      // - `acknowledgeAll()`：把未确认全点掉，看顶部让位与抽屉空态。
+      window.__notifications = {
+        open: function () {
+          window.__push({ type: "ui/openPanel", panel: "notifications" });
+        },
+        records: function () {
+          return JSON.parse(JSON.stringify(previewNotifications || []));
+        },
+        push: function (level, text, sessionId, count) {
+          var at = Date.now();
+          previewNotificationEnqueue({
+            sessionId: sessionId,
+            level: level,
+            text: text,
+            count: count || 1,
+            firstAt: at,
+            lastAt: at,
+            acknowledged: false
+          });
+        },
+        set: function (records) {
+          previewNotifications = records.slice();
+          previewNotificationPush();
+        },
+        reportImageCopyFailure: function (sessionId) {
+          var at = Date.now();
+          previewNotificationEnqueue({
+            sessionId: sessionId,
+            level: "warn",
+            text: "@imageCopyFailed",
+            count: 1,
+            firstAt: at,
+            lastAt: at,
+            acknowledged: false
+          });
+        },
+        acknowledgeAll: function () {
+          var live = previewNotifications || [];
+          live.forEach(function (record) {
+            record.acknowledged = true;
+          });
+          previewNotifications = live;
+          previewNotificationPush();
+        }
+      };
+      // 正文/附件里的占位图（真实链路给的是服务端字节的 data URL）：一张内联 SVG，      // 形状一致、看得见。放在函数外、`__buildState` 也能引用（`scripts/previewFixture.test.ts`
       // 会把 `__buildState` 抽出来在 Node 里求值，所以那个函数体**不能**引用 window）。
       var previewImageDataUrl =
         "data:image/svg+xml;base64," +
@@ -287,7 +431,12 @@
               // 真实宿主是异步回帧的（webview → 扩展进程 → postMessage 回来），
               // 这里用宏任务复刻同样的时序：effect 里的 ready 发完，脚本才继续定义 __buildState
               setTimeout(function () {
-                window.__push({ type: "state", state: window.__buildState() });
+                var snapshot = window.__buildState();
+                // 通知队列的夹具从**同一份快照**起：之后确认 / 新发生的回帧都改这一份
+                // （宿主那边队列也只有一份，镜像按窗口过滤）
+                previewNotifications = (snapshot.notifications || []).slice();
+                previewNotificationSession = snapshot.session ? snapshot.session.id : null;
+                window.__push({ type: "state", state: snapshot });
                 // 自动化任务：真实宿主在**会话域建起来时**就静默预取一次（不等人打开
                 // 面板）——抽屉入口的指示灯就是吃这份数据。这里复刻同一时序，
                 // 否则预览里那颗按钮要等点开面板才会亮。
@@ -296,6 +445,28 @@
                   patch: { schedules: previewSchedules(), schedulesStatus: "ready" },
                 });
               }, 0);
+            }
+            if (message && message.type === "acknowledgeNotification") {
+              // 确认的回帧：宿主处理完把权威镜像推回来（界面自己不删列表）
+              setTimeout(function () {
+                previewNotificationAcknowledge(message.id, message.count);
+              }, 0);
+            }
+            if (message && message.type === "reportImageCopyFailure") {
+              // 本地复制图片失败：宿主校验归属与每窗口请求号水位后按**固定文案**入队
+              // （级别 / 文案都由宿主定，界面只带 sessionId 与 requestId）
+              if (message.sessionId === previewNotificationSession) {
+                var copyFailureAt = Date.now();
+                previewNotificationEnqueue({
+                  sessionId: message.sessionId,
+                  level: "warn",
+                  text: "@imageCopyFailed",
+                  count: 1,
+                  firstAt: copyFailureAt,
+                  lastAt: copyFailureAt,
+                  acknowledged: false,
+                });
+              }
             }
             if (message && message.type === "resolveImages") {
               // 逐条「读盘」：`missing` 那条故意**不回**——真实宿主对工作目录里不存在
@@ -782,6 +953,65 @@
             { turn: 2, seq: 12, prompt: "先跑一遍现有测试，确认基线是绿的。", response: "" },
             { turn: 3, seq: 24, prompt: "重构范围要覆盖到哪一层？", response: "" },
             { turn: 4, seq: 36, prompt: "按你选的方案改吧，顺便把回归测试补上。", response: "" }
+          ],
+          // 消息通知（`state.notifications`，宿主权威队列按本窗口可见范围过滤后的镜像，
+          // 形状 = `NotificationView`，见 src/shared/chat.ts）。**顺序即宿主给的顺序**：
+          // 最近发生在前，顶部取第一条未确认、抽屉按同一份顺序渲染（不再分组重排）。
+          //
+          // 四种形态一次看全：绿色未确认（执行目录改变，正文里是长无空格路径——窄侧栏
+          // 换行的压力样本）、红色未确认、共享黄色（合并过 3 次）、已确认历史；
+          // 另加一条**别的会话**（`sessionId: "s2"`）的未确认——真实宿主的镜像里不会
+          // 有它（只发可见范围），留着是为了在预览里看着「视图过滤」生效（进不了屏幕）。
+          notifications: [
+            {
+              id: "n1",
+              sessionId: "s1",
+              level: "info",
+              text: "@executionDirChanged:D:\\dev\\dsh-chat\\packages\\a-very-long-directory-segment-without-any-spaces\\nested\\deeper",
+              count: 1,
+              firstAt: now - 1000,
+              lastAt: now - 1000,
+              acknowledged: false
+            },
+            {
+              id: "n4",
+              sessionId: "s2",
+              level: "error",
+              text: "@sharedRestarted",
+              count: 1,
+              firstAt: now - 2000,
+              lastAt: now - 2000,
+              acknowledged: false
+            },
+            {
+              id: "n2",
+              sessionId: "s1",
+              level: "error",
+              text: "@queueDispatchFailed",
+              count: 1,
+              firstAt: now - 5000,
+              lastAt: now - 5000,
+              acknowledged: false
+            },
+            {
+              id: "n3",
+              level: "warn",
+              text: "@imageCopyFailed",
+              count: 3,
+              firstAt: now - 30000,
+              lastAt: now - 9000,
+              acknowledged: false
+            },
+            {
+              id: "n5",
+              sessionId: "s1",
+              level: "warn",
+              text: "@unknownEvent:kernel/brand-new-thing-with-a-very-long-type-name",
+              count: 1,
+              firstAt: now - 100000,
+              lastAt: now - 100000,
+              acknowledged: true
+            }
           ],
           // 轨迹账本（宿主折叠后按需下发；形状 = `src/shared/trajectory.ts` 的
           // `TrajectoryModel`，内容对着本夹具的故事线手写，覆盖七种记录里的六种 +

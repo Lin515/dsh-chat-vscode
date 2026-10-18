@@ -89,9 +89,10 @@ const DSH_KNOWN_EVENT_TYPES = [
 function harness() {
   const toasts: string[] = [];
   const lines: string[] = [];
-  const adapter = new SessionAdapter((frame) => {
-    if (frame.type === "toast") toasts.push(frame.text);
-  });
+  const adapter = new SessionAdapter(() => {});
+  // 未知事件不再走 `toast` 帧：适配器把它交给控制器（→ 宿主通知队列），
+  // 这里直接接住那个回调，口径与从前一致（「该不该告警」）。
+  adapter.onUnknownEvent = (event) => toasts.push(`@unknownEvent:${event.type}`);
   // 宿主日志落点（控制器在真实链路上注入的是 `[event] 会话=… ` 前缀的 log）
   adapter.log = (line) => lines.push(line);
   return { adapter, toasts, lines };

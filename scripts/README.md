@@ -38,6 +38,9 @@
 - [composerSessionDraft.test.ts](<composerSessionDraft.test.ts>) — 会话标题投影、同名区间绑定、编辑失效与完整标题重匹配、真实补全事件写回和 Ctrl 目标；纯离线覆盖中英界面。
 - [pendingEcho.test.ts](<pendingEcho.test.ts>) — 乐观回显行为级回归：按下发送那一刻同步产生、只收「已经发出去」的那类。
 - [unreadMarker.test.ts](<unreadMarker.test.ts>) — 「生成完毕未读」行为级回归：只有离开时正在生成才点亮蓝标题。
+- [notificationQueue.test.ts](<notificationQueue.test.ts>) — 消息通知行为级回归：合并判据（归属 / 级别 / 类型 / 关键内容）、确认后复发新建、迟到确认不吞新发生、每会话 `seq` 水位拒重发（1000 条之后仍拒）、已确认 500 上限与未确认不淘汰、无持久化；驱动真 `ChatController` 覆盖多视图镜像只算一次、按会话过滤、确认跨视图同步、执行目录只在 live 真实变更时通知（开帧 / baseline / null 清空 / 同水位静默）、删除会话清理水位。
+- [notificationsView.test.ts](<notificationsView.test.ts>) — 通知界面的接线回归：镜像 reducer、ack 上报帧形状、命令打开抽屉的路由、ESC 关闭不确认不中止。
+- [notificationsController.test.ts](<notificationsController.test.ts>) — 通知的宿主接线回归（真 `ChatController`）：多视图镜像只算一次、ack 跨视图同步、视图关闭重绑保留、无窗口命令经主侧栏 ready 消费、复制失败归属与请求号水位、删除会话清理 `seq` 水位。
 - [errorSessionStatus.test.ts](<errorSessionStatus.test.ts>) — 报错会话的状态口径：产品语义（离开时界面显示生成中 → 收尾亮未读）与两条错误分支（`session/follow` 单流失败不重开、提交失败无条件回滚覆盖 durable 证据）的行为级回归；驱动真 `ChatController`。
 
 ### 投影

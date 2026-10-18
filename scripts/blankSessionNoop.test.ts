@@ -380,11 +380,15 @@ async function clickPlus(c: ControllerInternals, viewId: string): Promise<void> 
   await c.handle({ type: "newSession" }, viewId);
 }
 
-/** 这个窗口收到过的提示文本（按到达顺序）。 */
+/** 这个窗口收到过的提示文本（取它**最近一次**收到的通知镜像）。 */
 function toasts(frames: Captured[], viewId: string): string[] {
-  return frames
-    .filter(({ target, frame }) => frame.type === "toast" && (target === "all" || target === viewId))
-    .map(({ frame }) => String(frame.text));
+  let latest: { text: string }[] = [];
+  for (const { target, frame } of frames) {
+    if (target !== viewId) continue;
+    const patch = (frame as { patch?: { notifications?: { text: string }[] } }).patch;
+    if (patch?.notifications) latest = patch.notifications;
+  }
+  return latest.map((notice) => notice.text);
 }
 
 /** 让窗口落到一条空壳上（第一次「+」只落壳）。 */

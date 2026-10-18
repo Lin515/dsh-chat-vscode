@@ -881,10 +881,11 @@ export class SessionAdapter {
   /**
    * 宿主日志落点（由控制器注入）：把「本客户端不认识的事件」记进输出通道。
    *
-   * 为什么需要它：那条告警在界面上是**一闪而过的提示条**，用户看到时已经点不到，
-   * 而它恰好是内核升级信号——dsh 冒出了本客户端名单里没有的词汇（会话里第一条
-   * 真实案例就是 `workspace/changes`，见 `noteUnknownEvent`）。协议文档
-   * （docs/dsh-server-api.md「线上事件信封」一节的降级纪律）要求的正是「至少在输出通道里报一次」。
+   * 为什么需要它：那条告警在界面上进的是**通知队列**（用户可确认、可在通知历史里回看），
+   * 而日志这一份是**诊断细节**（含事件数据摘要）——它恰好是内核升级信号：dsh 冒出了
+   * 本客户端名单里没有的词汇（会话里第一条真实案例就是 `workspace/changes`，见
+   * `noteUnknownEvent`）。协议文档（docs/dsh-server-api.md「线上事件信封」一节的降级纪律）
+   * 要求的正是「至少在输出通道里报一次」。
    *
    * 注入方式与 `loadImages` 一致：适配器不持有 vscode，日志由控制器带会话前缀转交。
    */
@@ -979,6 +980,16 @@ export class SessionAdapter {
    * ——界面画成一条正常消息、被 `pendingInsertIndex` 甩到会话最底部（用户 2026-10-16 报的现场）。
    */
   onSubmissionLost: ((rpcId: string, reason: "lost" | "canceled") => void) | undefined;
+
+  /**
+   * 一条**本客户端不认识**、且不是 `ignorable` 的会话事件（由控制器注入）。
+   *
+   * 控制器把它折成通知队列里的一条黄色通知（`@unknownEvent:<type>`）。交给回调而不是
+   * 发帧，是因为通知队列在**控制器**手里（宿主权威的单一队列，见
+   * `docs/design-notifications.md`）；重放期间与 `emit` 同口径静默（见
+   * `reportUnknownEvent`），所以历史重放不会重新产出旧通知。
+   */
+  onUnknownEvent: ((event: { type: string; seq?: number }) => void) | undefined;
 
   /**
    * 按 `rpcId` 取**同一次提交的本地附件**（由控制器注入：`submissions` 里那份原文与附件）。
@@ -2114,16 +2125,10 @@ export class SessionAdapter {
         // 「未知」= 本客户端与 dsh 词汇表都不认识；已知但有意不渲染的类型
         // （SILENT_EVENT_TYPES）不算，否则簿记事件会把告警刷成噪音。
         if (!isKnownEventType(event.type)) {
-          // 日志**先于**告警且不受重放静默影响：提示条看完就没了，日志才是可追溯的
-          // 那一份（ignorable 的未知事件界面上完全无声，同样记）
+          // 日志**先于**告警且不受重放静默影响：通知会进队列（确认之后仍能在通知历史里
+          // 回看），日志那一份则是可追溯的诊断细节（含事件数据摘要），两者都要有
           this.noteUnknownEvent(event);
-          if (!event.ignorable) {
-            this.emit({
-              type: "toast",
-              level: "warn",
-              text: `@unknownEvent:${event.type}`,
-            });
-          }
+          if (!event.ignorable) this.reportUnknownEvent(event);
         }
         break;
       }
@@ -2146,6 +2151,21 @@ export class SessionAdapter {
     log(
       `未知会话事件 type=${event.type} seq=${event.seq} ${verdict} data=${summarizeEventData(event.data ?? {})}`,
     );
+  }
+
+  /**
+   * 把「遇到一条不认识的事件」交给控制器（→ 通知队列）。
+   *
+   * **重放期间静默**：与 `emit` 同一口径。历史重放（follow 开帧、重连、翻更早的一页）
+   * 会把老事件再走一遍，那不是新的实际发生（见 `docs/design-notifications.md`）；
+   * 日志那一条仍然照记（`noteUnknownEvent` 不受这里影响）。
+   */
+  private reportUnknownEvent(event: SessionWireEvent): void {
+    if (this.replaying) return;
+    this.onUnknownEvent?.({
+      type: event.type,
+      ...(typeof event.seq === "number" ? { seq: event.seq } : {}),
+    });
   }
 
   private applyAssistantMessage(event: SessionWireEvent, data: Record<string, any>): void {

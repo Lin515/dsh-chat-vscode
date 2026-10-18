@@ -11,7 +11,7 @@ import { imageFileName, resolveImageBytes } from "./imageBytes";
  * 做的事：`showSaveDialog` 与 `workspace.fs.writeFile`。
  */
 
-/** 保存结果：`failed` 带一句原因，给宿主日志（用户看到的是同一条 toast）。 */
+/** 保存结果：`failed` 带一句原因，给宿主日志（用户看到的是同一条黄色通知，见 `docs/design-notifications.md`）。 */
 export type SaveImageResult =
   | { status: "saved"; path: string }
   | { status: "cancelled" }

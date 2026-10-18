@@ -52,6 +52,8 @@ React / 浏览器环境，不使用 Node API。上层边界见[源码导航](<..
 - [sessionDir.ts](<sessionDir.ts>) — 标题栏执行目录取值与工作区差异显示判据。
 - [sessionSelection.ts](<sessionSelection.ts>) — 历史列表多选：可选判据、选择集跟随列表、全选翻转。
 - [connectView.ts](<connectView.ts>) — 连接条状态、文案与按钮矩阵。
+- [notifications.ts](<notifications.ts>) — 消息通知的展示口径（顶部取哪条、抽屉列表与时间格式化、级别到 `.notice` 修饰类），宿主权威队列见 `dsh/notificationQueue.ts`。
+- [imageCopyFailure.ts](<imageCopyFailure.ts>) — 界面本地复制图片失败的归属上报端口（捕获发起会话、过期丢弃、失败报告序号），宿主入队见[消息通知设计](<../../docs/design-notifications.md>)。
 - [activity.ts](<activity.ts>) — 子代理 / 任务入口活性（后台任务在跑，或还有待执行的自动化任务）。
 - [subagentRow.ts](<subagentRow.ts>) — 运行、已读与生命周期模式合成显示。
 - [contextMenu.ts](<contextMenu.ts>) — 原生 / 自绘右键判据，见[右键设计](<../../docs/design-context-menu.md>)。

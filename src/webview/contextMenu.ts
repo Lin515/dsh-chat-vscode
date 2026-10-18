@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { localImageMediaType } from "../shared/imageRef";
 import { post } from "./bridge";
 import { copyImageElement } from "./imageClipboard";
+import { imageCopyFailureSession, reportImageCopyFailure } from "./imageCopyFailure";
 import type { Action } from "./state";
 import type { Texts } from "./texts";
 
@@ -212,6 +213,11 @@ export function usePageContextMenu(dispatch: (action: Action) => void, texts: Te
           closeContextMenu();
           return;
         }
+        // **菜单构造那一刻**的会话就是这次复制的手势归属：菜单开着的时候外部命令
+        // （VS Code 命令面板 / 另一个窗口）可能已经把本窗口切到别的会话，等到点
+        // 「复制」再从模块 scope 读就会把 S1 的失败算给 S2。归属在这里捕获，`run`
+        // 闭包用它；`reportImageCopyFailure` 随后还会因已换会话把这次上报丢掉。
+        const originSession = imageCopyFailureSession();
         openContextMenu({
           x: event.clientX,
           y: event.clientY,
@@ -221,9 +227,9 @@ export function usePageContextMenu(dispatch: (action: Action) => void, texts: Te
               label: texts.copy,
               run: () => {
                 void copyImageElement(image).then((ok) => {
-                  if (!ok) {
-                    dispatch({ type: "ui/notice", level: "error", text: texts.imageCopyFailed });
-                  }
+                  // 失败由宿主入队（文案 / 级别是宿主的固定文案，界面不发任意文本）：
+                  // 端口只在仍属同一会话时才回帧，见 `imageCopyFailure.ts`
+                  if (!ok) reportImageCopyFailure(originSession);
                 });
               },
             },

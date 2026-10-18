@@ -76,9 +76,9 @@ const HOST_MARKERS: string[] = [
   // agent 预设（切换被服务端拒绝）
   "agentPresetFailed",
   // 历史 / 分支
+  // （`branchCreated` 已随「成功且视图已切到新分支 = 原位反馈」的口径删掉：宿主不再发它）
   "branchNoAnchor",
   "branchFailed",
-  "branchCreated",
   // 附件 / 上传
   "uploadIncomplete",
   "uploadNoSession",
@@ -114,6 +114,10 @@ const HOST_MARKERS: string[] = [
   "imageBytesTooLarge",
   // 图片另存（右键菜单「保存」：字节取不回来 / 写盘失败才提示，成功不提示）
   "imageSaveFailed",
+  // 界面本地复制图片失败（webview 报 `reportImageCopyFailure`，宿主入通知队列）
+  "imageCopyFailed",
+  // 执行目录真实变更（绿色通知；初始投影 / 历史重放 / 重连重铺都不发）
+  "executionDirChanged",
   // 剪贴板 / 浏览器
   // （`copied` 已随「复制成功不弹信息条」的口径一起删掉：复制按钮不再发 toast）
   "openInBrowserOffline",
@@ -249,7 +253,6 @@ console.log("i18n: 消息表每条都有中英两份，带参的登记成函数�
     ["commandFailed", "@commandFailed:/foo", ["/foo"]],
     ["unknownEvent", "@unknownEvent:weird/event", ["weird/event"]],
     ["callId", "@callId:call_abc123", ["call_abc123"]],
-    ["branchCreated", "@branchCreated:my-branch", ["my-branch"]],
     ["uploadFailedReason", "@uploadFailedReason:disk full", ["disk full"]],
     ["injectedChars", "@injectedChars:7.0K", ["7.0K"]],
     ["tokensPerSecond", "@tokensPerSecond:12.3", ["12.3"]],

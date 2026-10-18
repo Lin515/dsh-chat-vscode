@@ -96,8 +96,16 @@ export function Range(start: unknown, end: unknown) {
   this.start = start;
   this.end = end;
 }
+/**
+ * `executeCommand` 的**全部**调用记录（按调用顺序）。
+ *
+ * 离线断言「命令接线」用（例如「查看消息通知」在没有活动窗口时唤起主侧栏：
+ * `dshChat.view.focus`）。只追加、不改既有行为，各测试自己清空。
+ */
+export const executedCommands: string[] = [];
 export const commands = {
   executeCommand: async (command: string, ...args: unknown[]) => {
+    executedCommands.push(command);
     // 只记「打开」这条：图片等二进制经 `vscode.open` 交给 VS Code 自己挑编辑器
     if (command === "vscode.open") {
       const uri = args[0] as { fsPath?: string } | undefined;

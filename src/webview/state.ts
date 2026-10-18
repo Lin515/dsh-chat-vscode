@@ -32,8 +32,20 @@ import {
  * 重建整棵消息树，这是流式渲染保持流畅的关键。
  */
 
-/** 右侧抽屉当前显示的页面。 */
-export type PanelKind = "none" | "history" | "jobs" | "trajectory";
+/**
+ * 右侧抽屉当前显示的页面。
+ *
+ * 写成**允许名单**（`as const` 数组派生联合类型）：`ui/openPanel` 是宿主发来的字符串，
+ * 界面必须只接受登记过的值，未知值一律忽略——见 `isPanelKind`。
+ */
+export const PANEL_KINDS = ["none", "history", "jobs", "trajectory", "notifications"] as const;
+
+export type PanelKind = (typeof PANEL_KINDS)[number];
+
+/** 宿主帧里的 `panel` 是不是登记过的抽屉：守卫用，不做任何强转。 */
+export function isPanelKind(value: string): value is PanelKind {
+  return (PANEL_KINDS as readonly string[]).includes(value);
+}
 
 export interface AppState extends ChatState {
   /** 会话列表（历史抽屉内容）。 */
@@ -232,17 +244,9 @@ function mapMessage(
 export type Action =
   | HostToWebview
   | { type: "ui/setPanel"; panel: PanelKind }
-  | { type: "ui/dismissNotice" }
   | { type: "ui/setDraft"; text: string }
   /** 界面自产的「引用到输入框」（右键菜单）：文本已经是当前语言的成品，不走 `@key`。 */
   | { type: "ui/quoteText"; text: string }
-  /**
-   * 界面自产的轻提示（如「复制图片失败」）。
-   *
-   * 这条通道原本只有宿主有（`toast` 帧），而复制图片是在界面里做的（见
-   * `imageClipboard.ts`），失败时宿主根本不知情。文案由调用方从词典取好，这里存成品。
-   */
-  | { type: "ui/notice"; level: "info" | "warn" | "error"; text: string }
   /**
    * 展开一行后台任务：铸造这一轮的观察代号并清空旧累积（见 `AppState.jobOutputs`）。
    *
@@ -467,15 +471,6 @@ export function reducer(state: AppState, action: Action): AppState {
         fileRefs: { ...state.fileRefs, sessions: action.sessions },
       };
 
-    case "toast": {
-      // 每次都给新的 id：同样文案连续两次也要重新计时
-      const previous = state.notice?.id ?? 0;
-      return {
-        ...state,
-        notice: { id: previous + 1, level: action.level, text: action.text },
-      };
-    }
-
     case "ui/insertText": {
       // 同样用自增 id：连续两次插入同一段文本也要各插一次
       const previous = state.insertRequest?.id ?? 0;
@@ -486,12 +481,6 @@ export function reducer(state: AppState, action: Action): AppState {
       // 与 `ui/insertText` 同一套去重口径（见 AppState.quoteRequest）
       const previous = state.quoteRequest?.id ?? 0;
       return { ...state, quoteRequest: { id: previous + 1, text: action.text } };
-    }
-
-    case "ui/notice": {
-      // 与宿主的 `toast` 帧同一个落点（`notice`），id 同样自增
-      const previous = state.notice?.id ?? 0;
-      return { ...state, notice: { id: previous + 1, level: action.level, text: action.text } };
     }
 
     case "ui/setPanel":
@@ -530,10 +519,9 @@ export function reducer(state: AppState, action: Action): AppState {
     }
 
     case "ui/openPanel":
-      return { ...state, panel: action.panel as PanelKind };
-
-    case "ui/dismissNotice":
-      return { ...state, notice: undefined };
+      // 宿主帧里的 `panel` 是字符串：只认登记过的抽屉，未知值**忽略**（不猜、不存）。
+      // 这一条命令同时是「查看消息通知」的落点，所以 notifications 必须在允许名单里。
+      return isPanelKind(action.panel) ? { ...state, panel: action.panel } : state;
 
     case "ui/setDraft":
       return { ...state, draft: action.text };

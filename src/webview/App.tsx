@@ -12,6 +12,7 @@ import { ContextMenuLayer } from "./components/ContextMenu";
 import { FindBar } from "./components/FindBar";
 import { Message } from "./components/Message";
 import { JobsPanel } from "./components/Panels";
+import { NotificationBar, NotificationsPanel } from "./components/Notifications";
 import { TrajectoryView } from "./components/Trajectory";
 import { TodoPanel } from "./components/TodoPanel";
 import { Spinner } from "./components/primitives";
@@ -27,6 +28,7 @@ import {
 } from "./pendingMessage";
 import { attachDroppedFiles, attachPastedFiles, clipboardFiles, dragHasFiles } from "./attachIntake";
 import { createPastedImageSequence, visibleImageNames } from "./pastedImageNames";
+import { setImageCopyFailureScope } from "./imageCopyFailure";
 import { setLocalImageScope } from "./localImages";
 import { dp, dpLength, uiScaleOf, UiScaleContext } from "./uiScale";
 import { TurnRail } from "./components/TurnRail";
@@ -481,11 +483,7 @@ function EmptyState({ state }: { state: AppState }) {
   );
 }
 
-/** 轻提示的停留时长（毫秒）。 */
-const NOTICE_MS = 4000;
-
-/**
- * 「加载更早的历史」的两个入口（`session/page`）——**与官方同构的两档语义**
+/** 「加载更早的历史」的两个入口（`session/page`）——**与官方同构的两档语义**
  * （判据在宿主侧，见 `dsh/historyPaging.ts`）：
  *
  * - `loadEarlier()`：**单页档**（官方 `ISession.loadOlder()`），取一页就停。会话页的
@@ -649,46 +647,6 @@ function usePagePaste(state: AppState) {
   }, []);
 }
 
-/**
- * 一次性轻提示条（复制成功、设置已保存、图片被跳过…）。
- *
- * 宿主用语言中立的 `@key:arg` 传文案，这里按当前语言翻译（`resolveText`）。
- * 同一条提示靠 `id` 变化重新计时：连点两次复制也能再闪一次。
- */
-function NoticeBar({
-  notice,
-  onDismiss,
-}: {
-  notice: ChatState["notice"];
-  onDismiss: () => void;
-}) {
-  const texts = useTexts();
-  // `onDismiss` 是父组件每次渲染新建的箭头函数（流式期间每帧都重渲染），把它写进
-  // 依赖数组会让**每个 token**都重开一次计时器——提示条于是永不消失，直到这一轮
-  // 生成结束（2026-09-17 全项目审计发现）。用 ref 拿最新的回调，
-  // 计时只跟 `notice.id` 走：同一条提示靠 id 变化重新计时（连点两次复制也能再闪一次）。
-  const dismissRef = useRef(onDismiss);
-  dismissRef.current = onDismiss;
-  useEffect(() => {
-    if (!notice) return;
-    const timer = setTimeout(() => dismissRef.current(), NOTICE_MS);
-    return () => clearTimeout(timer);
-  }, [notice?.id]);
-
-  if (!notice) return null;
-  const cls =
-    notice.level === "error"
-      ? "notice notice-error"
-      : notice.level === "warn"
-        ? "notice notice-warn"
-        : "notice";
-  return (
-    <div className="notice-bar">
-      <div className={cls}>{resolveText(notice.text, texts)}</div>
-    </div>
-  );
-}
-
 export function App() {
   const { state, dispatch } = useAppState();
   // 会话页是否在场：轨迹视图下它整块卸载，两个滚动 hook 都要能重挂
@@ -781,6 +739,16 @@ export function App() {
   // 会话正文与图片的右键菜单：换成自绘的「复制 / 引用」「复制 / 保存」
   // （判据在 `contextMenu.ts`；输入框这类可编辑元素仍走系统菜单，否则粘贴就没了）
   usePageContextMenu(dispatch, texts);
+  /**
+   * 「复制图片失败」的归属登记（见 `imageCopyFailure.ts`）。
+   *
+   * 与上面 `setLocalImageScope` 同一套写法：模块级只记「此刻是哪条会话」，
+   * 真正的失败会带上**发起那一刻**捕获的归属，回帧前再与这里核对一次——切走之后
+   * 才失败的复制不画进新会话。
+   */
+  useEffect(() => {
+    setImageCopyFailureScope(sessionId);
+  }, [sessionId]);
   // 字号：只写一个 CSS 变量，整套文本与尺寸尺度从它派生（tokens.css）。
   // 0（auto）时清掉覆盖，`--font-size` 回落 VS Code 注入的 `--vscode-font-size`。
   //
@@ -978,9 +946,12 @@ export function App() {
       >
         <Header state={state} dispatch={dispatch} />
         <ConnectionBar state={state} />
-        <NoticeBar
-          notice={state.notice}
-          onDismiss={() => dispatch({ type: "ui/dismissNotice" })}
+        {/* 顶部常驻通知条（宿主权威镜像）：只画最近一条未确认，没有就整块不渲染。
+            它**不自动消失**、不自动展开抽屉；展开走那颗写明的入口。 */}
+        <NotificationBar
+          notifications={state.notifications}
+          sessionId={sessionId}
+          onOpenHistory={() => dispatch({ type: "ui/openPanel", panel: "notifications" })}
         />
 
         {/* 轨迹是**整页**视图（和官方 Web UI 一样），不是盖在会话上的抽屉：
@@ -1133,6 +1104,17 @@ export function App() {
             scheduleResult={state.scheduleResult}
             sessionId={state.session?.id}
             dispatch={dispatch}
+            onClose={closePanel}
+          />
+        ) : null}
+
+        {/* 通知抽屉：ESC 只收起它（`useEscapeLayer` 的抽屉层），既不确认也不停生成。
+            它顶掉会话页之后，「无人认领的 ESC = 停止生成」这条兜底自然不成立
+            （`isConversationForeground` 只认 none）。 */}
+        {state.panel === "notifications" ? (
+          <NotificationsPanel
+            notifications={state.notifications}
+            sessionId={sessionId}
             onClose={closePanel}
           />
         ) : null}

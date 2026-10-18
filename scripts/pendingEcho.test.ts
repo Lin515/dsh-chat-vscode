@@ -1164,13 +1164,12 @@ console.log("pendingEcho: 用户消息乐观回显（驱动真控制器，offlin
     "没摘下来的那条仍在服务端队列里，不许还回输入框（否则同一条既在队列又在输入框）",
   );
   assert.ok(
-    frames.some(
-      ({ target, frame }) =>
-        target === "v1" &&
-        frame.type === "toast" &&
-        (frame as { text?: string }).text === "@queueDispatchFailed",
-    ),
-    "回滚失败照旧提示一次（提示文案不再说「内容已放回输入框」，两种收场各自在界面上看得见）",
+    frames.some(({ target, frame }) => {
+      if (target !== "v1") return false;
+      const patch = (frame as { patch?: { notifications?: { text: string }[] } }).patch;
+      return (patch?.notifications ?? []).some((notice) => notice.text === "@queueDispatchFailed");
+    }),
+    "回滚失败照旧提示一次（提示进通知队列，文案不再说「内容已放回输入框」，两种收场各自在界面上看得见）",
   );
 }
 

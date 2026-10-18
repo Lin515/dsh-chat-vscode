@@ -662,6 +662,22 @@ const fakeServer = () => ({
   },
 });
 
+/**
+ * 某个窗口**最近一次**收到的通知镜像。
+ *
+ * 通知取代了从前的瞬时 `toast` 帧（见 `docs/design-notifications.md`）：断言口径不变
+ * （「成功不该有提示 / 打不开要说一声」），只是通道换成宿主权威队列的镜像。
+ */
+function noticesOf(h: { frames: Captured[] }, viewId: string): { text: string; count: number }[] {
+  let latest: { text: string; count: number }[] = [];
+  for (const { target, frame } of h.frames) {
+    if (target !== viewId) continue;
+    const patch = (frame as { patch?: { notifications?: { text: string; count: number }[] } }).patch;
+    if (patch?.notifications) latest = patch.notifications;
+  }
+  return latest;
+}
+
 const fakeMemento = () => {
   const map = new Map<string, unknown>();
   return {
@@ -1351,7 +1367,7 @@ await scenario("二.18 打开附件：内存字节落副本、无处可取时提
     "把文件交给 VS Code：vscode.open 打开临时副本，编辑器由它自己挑",
   );
   assert.deepStrictEqual(
-    h.frames.filter((f) => f.frame.type === "toast"),
+    noticesOf(h, "v1"),
     [],
     "打开成功不弹提示",
   );
@@ -1360,9 +1376,9 @@ await scenario("二.18 打开附件：内存字节落副本、无处可取时提
   // 只有服务端副本的文件附件（重开这套扩展之后的历史消息）：明说打不开，不静默
   h.frames.length = 0;
   await h.c.handle({ type: "openAttachment", name: "历史.pdf", kind: "file", attachmentId: "sha256:none" }, "v1");
-  const toasts = h.frames.filter((f) => f.frame.type === "toast");
+  const toasts = noticesOf(h, "v1");
   assert.strictEqual(toasts.length, 1, "打不开要有提示");
-  assert.strictEqual(toasts[0]!.frame.text, "@attachmentUnavailable", "提示走语言中立标记");
+  assert.strictEqual(toasts[0]!.text, "@attachmentUnavailable", "提示走语言中立标记");
 });
 
 // ---------- 二.19 打开附件：普通打开交给 vscode.open，带行号才走文本文档 ----------
@@ -1384,7 +1400,7 @@ await scenario("二.19 普通打开发 vscode.open；带行号才走文本文档
     "普通打开就是把资源交给 VS Code（`vscode.open`），编辑器由它自己挑",
   );
   assert.deepStrictEqual(editorCalls.opened, [], "普通打开不经过文本编辑器 API");
-  assert.deepStrictEqual(h.frames.filter((f) => f.frame.type === "toast"), [], "成功时不弹提示");
+  assert.deepStrictEqual(noticesOf(h, "v1"), [], "成功时不弹提示");
 
   // 正文链接那种**带行号**的打开（`[…](src/a.ts#L12)`）仍走文本文档：光标要按真实行数夹取，
   // 越界的 `Position` 在 VS Code 里是抛异常而不是夹取
@@ -1424,7 +1440,7 @@ await scenario("二.20 二进制附件照常打开；带行号那条路失败也
   assert.deepStrictEqual(editorCalls.opened, [], "二进制拿不到文本文档");
   assert.deepStrictEqual(editorCalls.openedViaCommand, [pic], "退回普通打开，仍然开出来");
   assert.ok(
-    (h.frames.filter((f) => f.frame.type === "toast").length === 0),
+    (noticesOf(h, "v1").length === 0),
     "这条退让不需要提示（用户拿到了文件）",
   );
 });
@@ -1458,7 +1474,7 @@ await scenario("二.21 失效的消息路径继续到账本字节，不提前报
     await h.c.handle({ type: "openAttachment", kind: "image", name, id: "stale-message", path: join(tmpdir(), "missing-attachment-original", name) }, "v1");
     assert.deepStrictEqual(editorCalls.openedViaCommand, [copy], "原路径失效后打开账本副本");
     assert.strictEqual(readFileSync(copy, "utf8"), bytes.toString());
-    assert.deepStrictEqual(h.frames.filter((f) => f.frame.type === "toast"), []);
+    assert.deepStrictEqual(noticesOf(h, "v1"), []);
     assert.deepStrictEqual(h.reads, [], "账本能打开就不读服务端");
   } finally {
     rmSync(dirname(copy), { recursive: true, force: true });
@@ -1475,7 +1491,7 @@ await scenario("二.22 失效的账本路径不挡 dataUrl，无法解析的消�
     await h.c.handle({ type: "openAttachment", kind: "image", name, id: "stale-ledger", path: "relative-without-cwd.png" }, "v1");
     assert.deepStrictEqual(editorCalls.openedViaCommand, [copy]);
     assert.strictEqual(readFileSync(copy, "utf8"), bytes.toString());
-    assert.deepStrictEqual(h.frames.filter((f) => f.frame.type === "toast"), []);
+    assert.deepStrictEqual(noticesOf(h, "v1"), []);
   } finally {
     rmSync(dirname(copy), { recursive: true, force: true });
   }
@@ -1504,7 +1520,7 @@ await scenario("二.23 失效原路径后先取上传索引，再取 durable 图
     assert.deepStrictEqual(editorCalls.openedViaCommand, [copy]);
     assert.strictEqual(readFileSync(copy, "utf8"), bytes.toString());
     assert.strictEqual(await h.c.attachmentTargets!.pathFor("sha256:fallback"), copy, "恢复副本写回索引");
-    assert.deepStrictEqual(h.frames.filter((f) => f.frame.type === "toast"), []);
+    assert.deepStrictEqual(noticesOf(h, "v1"), []);
   } finally {
     rmSync(root, { recursive: true, force: true });
     rmSync(dirname(copy), { recursive: true, force: true });
@@ -1520,14 +1536,14 @@ await scenario("二.24 全来源不可用只报一次附件提示，普通删文
   await h.c.handle({ type: "openAttachment", kind: "image", name: "unavailable.png", path: missing, id: "unavailable" }, "v1");
   assert.deepStrictEqual(editorCalls.openedViaCommand, []);
   assert.strictEqual(h.reads.length, 1, "前面失效不阻断最后的字节来源");
-  assert.deepStrictEqual(h.frames.filter((f) => f.frame.type === "toast").map((f) => f.frame.text), ["@attachmentUnavailable"]);
+  assert.deepStrictEqual(noticesOf(h, "v1").map((notice) => notice.text), ["@attachmentUnavailable"]);
 
   let diffs = 0;
   h.c.openChanges = async (uri) => { assert.strictEqual(uri.fsPath, missing); diffs++; return true; };
   h.frames.length = 0;
   await h.c.handle({ type: "openFile", path: missing }, "v1");
   assert.strictEqual(diffs, 1, "普通 openFile 的 git 删除文件退路保持不变");
-  assert.deepStrictEqual(h.frames.filter((f) => f.frame.type === "toast"), []);
+  assert.deepStrictEqual(noticesOf(h, "v1"), []);
 });
 
 await scenario("二.25 原件存在时优先打开，按会话 cwd 解析相对路径", async () => {
@@ -1541,7 +1557,7 @@ await scenario("二.25 原件存在时优先打开，按会话 cwd 解析相对�
     await h.c.handle({ type: "openAttachment", kind: "image", name: "original.png", id: "original", path: "original.png" }, "v1");
     assert.deepStrictEqual(editorCalls.openedViaCommand, [original]);
     assert.deepStrictEqual(h.reads, []);
-    assert.deepStrictEqual(h.frames.filter((f) => f.frame.type === "toast"), []);
+    assert.deepStrictEqual(noticesOf(h, "v1"), []);
     editorCalls.reset();
     await h.c.handle({ type: "openAttachment", kind: "image", name: "original.png", id: "original" }, "v1");
     assert.deepStrictEqual(editorCalls.openedViaCommand, [original], "账本原路径同样优先于 dataUrl");
@@ -1572,10 +1588,10 @@ await scenario("二.26 编辑器拒绝原件后继续副本，全部拒绝只报
     await h.c.handle({ type: "openAttachment", kind: "image", name, id: "rejected", path: original }, "v1");
     assert.deepStrictEqual(attempted, [original, copy], "不能把 openFile 的 void 当打开成功");
     assert.deepStrictEqual(editorCalls.openedViaCommand, [copy]);
-    assert.deepStrictEqual(h.frames.filter((f) => f.frame.type === "toast"), []);
+    assert.deepStrictEqual(noticesOf(h, "v1"), []);
     rejectAll = true;
     await h.c.handle({ type: "openAttachment", kind: "image", name, id: "rejected", path: original }, "v1");
-    assert.deepStrictEqual(h.frames.filter((f) => f.frame.type === "toast").map((f) => f.frame.text), ["@attachmentUnavailable"]);
+    assert.deepStrictEqual(noticesOf(h, "v1").map((notice) => notice.text), ["@attachmentUnavailable"]);
   } finally {
     vscode.commands.executeCommand = execute;
     rmSync(root, { recursive: true, force: true });
@@ -1646,7 +1662,7 @@ await scenario("二.27 重开宿主后按持久记录打开历史文件附件", 
       "v1",
     );
     assert.deepStrictEqual(editorCalls.openedViaCommand, [original], "按持久记录打开用户磁盘上那个原件");
-    assert.deepStrictEqual(h2.frames.filter((f) => f.frame.type === "toast"), [], "打得开就不该有提示");
+    assert.deepStrictEqual(noticesOf(h2, "v1"), [], "打得开就不该有提示");
 
     // 字节通道那一枚跨重启也打得开——打开的是我们落的副本（悬停不显示它，但单击能用）
     await h2.c.handle(
@@ -1667,7 +1683,7 @@ await scenario("二.27 重开宿主后按持久记录打开历史文件附件", 
     );
     assert.deepStrictEqual(editorCalls.openedViaCommand, [original, copy], "文件不在了就不再发起打开");
     assert.deepStrictEqual(
-      h2.frames.filter((f) => f.frame.type === "toast").map((f) => f.frame.text),
+      noticesOf(h2, "v1").map((notice) => notice.text),
       ["@attachmentUnavailable"],
       "文件不在了就明确说打不开",
     );

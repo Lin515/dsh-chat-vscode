@@ -73,3 +73,4 @@
 - [selection.ts](<selection.ts>) — 编辑器选区行号边界。
 - [windowState.ts](<windowState.ts>) — workspaceState 会话窗口缓存。
 - [unreadStore.ts](<unreadStore.ts>) — 每会话一个 globalState 键的未读存储。
+- [notificationQueue.ts](<notificationQueue.ts>) — 宿主权威的消息通知队列（合并 / 确认 / seq 水位 / 容量；不 import vscode、不落盘）。

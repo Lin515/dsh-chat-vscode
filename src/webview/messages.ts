@@ -1139,7 +1139,6 @@ export const MESSAGES = {
 
   branchFromHere: { zh: "从这里分支", en: "Branch from here" },
   branchFailed: { zh: "创建分支失败", en: "Could not create the branch" },
-  branchCreated: { zh: (title: string) => `已创建分支：${title}`, en: (title: string) => `Branch created: ${title}` },
   branchNoAnchor: { zh: "这条消息还取不到分支锚点（本轮尚未收尾），暂时不能分支", en: "No branch anchor for this message yet (the turn has not finished)" },
   branchRunning: { zh: "生成中不能分支", en: "Cannot branch while generating" },
   historyMore: { zh: "加载更早的历史", en: "Load earlier history" },
@@ -1151,6 +1150,35 @@ export const MESSAGES = {
   findPrev: { zh: "上一个匹配（Shift+Enter）", en: "Previous match (Shift+Enter)" },
   findNext: { zh: "下一个匹配（Enter）", en: "Next match (Enter)" },
   findClose: { zh: "关闭查找（Esc）", en: "Close find (Esc)" },
+  // ---------- 消息通知（宿主权威的常驻提醒，见 docs/design-notifications.md）----------
+  // 顶部常驻条与通知抽屉的界面文案。通知**正文**由宿主发 `@` 标记（`@unknownEvent` /
+  // `@executionDirChanged` / `@imageCopyFailed` …），这里只登记外壳文字。
+  notifications: { zh: "消息通知", en: "Notifications" },
+  // 确认是**写明的按钮**（不以 ✕ / 计时 / 切换视图替代）：只表示已悉知，不表示已解决
+  notificationAcknowledge: { zh: "确认", en: "Acknowledge" },
+  notificationHistory: { zh: "展开历史", en: "Show history" },
+  notificationsEmpty: { zh: "没有消息通知", en: "No notifications" },
+  notificationsUnacknowledged: { zh: "未确认", en: "Unacknowledged" },
+  notificationsAcknowledged: { zh: "已确认", en: "Acknowledged" },
+  // 发生次数：抽屉里 **1 也显示**（那是读数），顶部只在重复发生时报
+  notificationCount: {
+    zh: (count: number) => `发生 ${count} 次`,
+    en: (count: number) => `Occurred ${count} ${count === 1 ? "time" : "times"}`,
+  },
+  // 首次发生时刻（抽屉里作为最近发生时间的 title，不占额外一行）
+  notificationFirstAt: { zh: (time: string) => `首次发生：${time}`, en: (time: string) => `First occurred: ${time}` },
+  // 没有会话归属的通知：所有视图都看得到
+  notificationShared: { zh: "共享", en: "Shared" },
+  notificationSession: { zh: "会话", en: "Session" },
+  /**
+   * 执行目录改变（宿主 `@executionDirChanged:<dir>`）：绿色重要变化。
+   *
+   * 参数是完整目录路径（可能含冒号，按默认整段给第一个形参的口径解析）。
+   */
+  executionDirChanged: {
+    zh: (dir: string) => `执行目录已切换为 ${dir}`,
+    en: (dir: string) => `Execution directory changed to ${dir}`,
+  },
   turnRailLabel: { zh: "轮次导航", en: "Turn navigation" },
   turnRailJump: { zh: (turn: number) => `跳到第 ${turn} 轮`, en: (turn: number) => `Jump to turn ${turn}` },
   turnRailJumpLoad: { zh: (turn: number) => `加载并跳到第 ${turn} 轮`, en: (turn: number) => `Load and jump to turn ${turn}` },

@@ -17,6 +17,7 @@ import type {
   FileRefView,
   GoalView,
   ModelSelectionView,
+  NotificationView,
   PendingMessageView,
   ProviderGroupView,
   QuestionAnswerView,
@@ -131,7 +132,9 @@ import {
   ingestProjection,
   replayFollowSnapshot,
   type ProjectionHandlers,
+  type ProjectionSource,
 } from "./projectionIngest";
+import { NotificationQueue, type NoticeInput, type NoticeRecord } from "./notificationQueue";
 import { deriveTrajectoryModel } from "./trajectory";
 import { backfillTrajectorySchemas, missingSchemaAnchor } from "./trajectoryBackfill";
 import { normalizePath, upperDriveLetter, visibleForView, visibleForWorkspace, visibleSessionCandidates, visibleSessionRows } from "./sessionList";
@@ -714,6 +717,29 @@ export class ChatController implements vscode.Disposable {
    */
   private readonly readyViews = new Set<string>();
   /**
+   * 「这个窗口还没就绪时收到的开面板指令」（viewId → panel）。
+   *
+   * `ui/openPanel` 是**定向帧**：webview 还没发 `ready` 时它落在空处，用户点了
+   * 「查看消息通知」却什么都没发生。所以先记在这里，`ready` 首帧（快照）之后补发；
+   * 窗口下线时一起清掉（见 `unbindView`）。**不广播**：广播会把抽屉开到所有视图上。
+   */
+  private readonly pendingPanelOpens = new Map<string, string>();
+  /**
+   * 「命令在没有任何窗口时按下的通知入口」：先唤起主侧栏，等它的 `ready` 到了再开抽屉。
+   *
+   * 与 `pendingPanelOpens` 分开是因为这一刻**还不知道 viewId**——侧栏视图可能还没被
+   * VS Code 实例化（`dshChat.view.focus` 才刚让它出现），所以只能记一个意图。
+   */
+  private pendingNotificationsOpen = false;
+  /**
+   * 每窗口「界面本地复制失败」请求号的已见水位（见 `reportImageCopyFailure`）。
+   *
+   * 与 durable `seq` 的水位**不是一回事**：这个号由 webview 自己铸造、页面重建就从头
+   * 开始，所以 `ready`（新页面）与窗口下线时必须清掉，否则新页面的第一次失败会被当成
+   * 「旧的重复投递」吃掉。窗口数有界，条目随 `unbindView` 清理。
+   */
+  private readonly copyFailureWatermarks = new Map<string, number>();
+  /**
    * 窗口的最近活动顺序（末尾 = 最近活动）。命令面板入口（新建/历史/停止/加选区…）
    * 都指向「最近活动的那个窗口」——VS Code 没有 API 问用户此刻在看哪个视图，
    * 只能按「谁最后发了消息 / 谁可见」推断。
@@ -1077,6 +1103,15 @@ export class ChatController implements vscode.Disposable {
    * 也由这里回填。存放口径（为什么按会话分键、旧集合为什么作废）在 `unreadStore.ts`。
    */
   private readonly unreadSessionIds: Set<string>;
+  /**
+   * 消息通知队列（**宿主权威的单一内存队列**，见 `notificationQueue.ts` 与
+   * `docs/design-notifications.md`）。
+   *
+   * 一个扩展宿主 = 一个 VS Code 窗口，所以「窗口共享」天然成立，不需要跨窗口同步；
+   * webview 只是镜像（`publishNotifications` 按各视图的会话过滤后下发）。**不落盘**：
+   * 队列只活在这份内存里，重载窗口或退出即清空，关面板 / 切会话 / 断线重连都保留。
+   */
+  private readonly notifications = new NotificationQueue();
   /**
    * 「离开标记」：**我离开过一条正在生成的会话，且还没回来看**（用户 2026-09-24 口径）。
    *
@@ -1557,6 +1592,136 @@ export class ChatController implements vscode.Disposable {
     }
   }
 
+  // ---------- 消息通知 ----------
+
+  /**
+   * 把一个**实际发生**放进通知队列，并把新的镜像推给所有窗口。
+   *
+   * 这是通知的唯一入口（`docs/design-notifications.md` 的分级与准入）：调用点都在
+   * **逻辑事件发生的那一处**，绝不在 `deliver` / `emitAll` 的收件人循环里——那条路
+   * 对每个绑定该会话的窗口各投一份，在循环里入队会把次数按窗口数虚增。
+   *
+   * `sessionId` 必须是**发起这一刻的归属**（耗时操作在 await 之后仍用捕获的那个），
+   * 不能在这里读「当前视图绑定着谁」：保存图片 / 打开文件这类动作发起后用户可以切走，
+   * 通知不该泄漏到新会话。
+   */
+  private notify(input: NoticeInput): void {
+    const record = this.notifications.enqueue(input);
+    if (!record) return; // 重发（seq 不比水位新）：不是新的实际发生
+    this.publishNotifications();
+  }
+
+  /**
+   * 把队列镜像推给**每个活着的窗口**：各发它自己可见的那一份（当前会话 + 共享）。
+   *
+   * 只遍历收件人、不改队列，所以多少窗口看同一条会话都不会影响次数；确认与合并都
+   * 只发生在宿主这一份上。视图重建（`ready`）拿到的是 `snapshotFor` 里同一份快照。
+   */
+  private publishNotifications(): void {
+    for (const viewId of this.liveViewIds()) {
+      this.emitToView(viewId, {
+        type: "patch",
+        patch: { notifications: this.notificationMirror(viewId) },
+      });
+    }
+  }
+
+  /** 某个窗口可见的通知镜像（归属取**这个窗口此刻绑着的会话**）。 */
+  private notificationMirror(viewId: string | undefined): NotificationView[] {
+    const sessionId = viewId ? this.viewSessions.get(viewId) : undefined;
+    return this.notifications.visible(sessionId).map((record) => this.notificationView(record));
+  }
+
+  /** 队列记录 → 界面镜像项（`order` 这类排序内部量不过线）。 */
+  private notificationView(record: NoticeRecord): NotificationView {
+    return {
+      id: record.id,
+      ...(record.sessionId === undefined ? {} : { sessionId: record.sessionId }),
+      level: record.level,
+      text: record.text,
+      count: record.count,
+      firstAt: record.firstAt,
+      lastAt: record.lastAt,
+      acknowledged: record.acknowledged,
+    };
+  }
+
+  /**
+   * 确认一条通知（界面按它**看到的那个 id 与次数**回帧）。
+   *
+   * 只认这个窗口**可见**范围里的未确认记录（归属取它此刻绑定的会话，未绑定就是共享那
+   * 一份——不拿 `activeSessionId` 兜底，那是别的窗口的事实）；`id` / `count` 逐字段验
+   * 形状，不信任 webview 传来的任意会话。
+   *
+   * 用户没看到的发生不会被这次点击吞掉（见 `notificationQueue.acknowledge`）；确认成功
+   * 后镜像推给**所有**窗口（确认状态在任一视图确认后同步）。空操作（过期 id、重复点击、
+   * 别的视图已确认）也回这个窗口一份权威镜像——界面不本地改列表，不回帧就会卡在一条
+   * 永远点不掉的提示上。
+   */
+  private acknowledgeNotification(viewId: string, id: unknown, seenCount: unknown): void {
+    const bound = this.viewSessions.get(viewId);
+    const valid =
+      typeof id === "string" &&
+      id.length > 0 &&
+      typeof seenCount === "number" &&
+      Number.isSafeInteger(seenCount) &&
+      seenCount > 0;
+    const visible = this.notifications.visible(bound);
+    const target = valid ? visible.find((record) => record.id === id && !record.acknowledged) : undefined;
+    if (!target) {
+      this.emitToView(viewId, {
+        type: "patch",
+        patch: { notifications: this.notificationMirror(viewId) },
+      });
+      return;
+    }
+    this.notifications.acknowledge(target.id, seenCount as number);
+    this.publishNotifications();
+  }
+
+  /**
+   * 让某个窗口打开右侧抽屉。
+   *
+   * 窗口**已就绪**才直接发帧；否则先记成待开（`ready` 首帧之后补发）——
+   * 命令面板入口可能在 webview 还没加载完时被按下，直接发帧会落在空处。
+   */
+  private openPanelTo(viewId: string, panel: string): void {
+    if (this.readyViews.has(viewId)) {
+      this.emitToView(viewId, { type: "ui/openPanel", panel });
+      return;
+    }
+    this.pendingPanelOpens.set(viewId, panel);
+  }
+
+  /**
+   * 命令面板入口「DSH: 查看消息通知」：让**最近活动的窗口**打开通知抽屉。
+   *
+   * 有活动窗口就走定向帧（与 `openHistory` 同一条路由）；一个窗口都没有时**先唤起
+   * 主侧栏**并把抽屉记成待开——不能广播（那会把抽屉开到所有视图上），也不能什么都不做
+   * （从未实例化过任何视图时，原来那条 `emitAll` 兜底是彻底的空操作）。
+   * 队列为空时同样可打开：抽屉自己渲染空态与已确认历史。
+   */
+  openNotifications(): void {
+    const target = this.activeViewId();
+    if (target) {
+      this.openPanelTo(target, "notifications");
+      return;
+    }
+    // 一个窗口都没有：唤起主侧栏，并把抽屉记成「它的 `ready` 之后要开」。
+    // `executeCommand` 会 reject（贡献点被禁用 / 视图容器没注册），不接住就是宿主里的
+    // unhandled rejection，而且这个意图会一直留着、等下一个不相干的 ready 才意外打开——
+    // 失败就作废并留日志。
+    this.pendingNotificationsOpen = true;
+    this.log("[notify] 没有活动窗口，唤起主侧栏并登记待开通知抽屉");
+    vscode.commands.executeCommand("dshChat.view.focus").then(
+      () => {},
+      (error: unknown) => {
+        this.pendingNotificationsOpen = false;
+        this.log(`[notify] 唤起主侧栏失败，撤下待开的通知抽屉：${this.describeError(error)}`);
+      },
+    );
+  }
+
   /**
    * 取一条 `workspace/changes` 宣告的改动清单，并回帧给**正在看这个会话**的窗口。
    *
@@ -1769,6 +1934,9 @@ export class ChatController implements vscode.Disposable {
       draft: this.drafts.get(sessionId ?? viewId ?? "") ?? "",
       // 乐观回显同理按窗口键存：**空表也要发**，否则切会话时上一条会话的回显留在界面
       pendingMessages: [...(this.pendingMessages.get(sessionId ?? viewId ?? "") ?? [])],
+      // 通知队列的镜像：与增量帧（`publishNotifications`）同一份取值口径——视图重建、
+      // 恢复编辑区面板、切会话都靠这一份把「谁能看到哪些通知」重新对齐
+      notifications: this.notificationMirror(viewId),
     };
   }
 
@@ -2328,6 +2496,10 @@ export class ChatController implements vscode.Disposable {
     // `restoreAwaiting` 那条则再没有人来 flush
     this.readyViews.delete(viewId);
     this.restoreAwaiting.delete(viewId);
+    // 窗口下线：待开的面板与「界面复制失败」请求号水位都不再有收件人，一起清
+    // （viewId 是每个 webview 实例现铸的，这个键不会再有人用）
+    this.pendingPanelOpens.delete(viewId);
+    this.copyFailureWatermarks.delete(viewId);
     // 这个窗口那次 `@` 候选查询一并作废：句柄按 viewId 建，不作废就是「关掉窗口后
     // 服务端还在为它扫会话日志」，表也跟着一直涨（见 `menuQueries`）
     this.menuQueries.get(viewId)?.abort();
@@ -2561,6 +2733,9 @@ export class ChatController implements vscode.Disposable {
   private emitViewScopedState(): void {
     this.emitSessionLists();
     this.emitWorkspaceViews();
+    // 通知是**按窗口**过滤的（当前会话 + 共享）：切会话 / 解绑之后可见范围变了，
+    // 必须跟着重推一次，否则顶部会继续展示上一个会话的通知
+    this.publishNotifications();
   }
 
   /**
@@ -3174,7 +3349,13 @@ export class ChatController implements vscode.Disposable {
             ? error.message
             : String(error);
       this.log(`[preset] 切换失败（${id}）：${reason}`);
-      this.emitToView(viewId, { type: "toast", level: "warn", text: `@agentPresetFailed:${reason}` });
+      // 归属取**发起那一刻**那个会话（`scope` 就是发起时的域，切走也不会画到新会话）
+      this.notify({
+        sessionId: scope.sessionId,
+        level: "warn",
+        kind: "agentPresetFailed",
+        text: `@agentPresetFailed:${reason}`,
+      });
     }
   }
 
@@ -3357,7 +3538,10 @@ export class ChatController implements vscode.Disposable {
     // 「重启内部 DSH」是用户显式动作：允许拉起一套（关掉自动连接时也算数）
     await this.ensureConnected({ start: true, target: "internal" });
     if (wasPeer) {
-      this.emitAll({ type: "toast", level: "warn", text: "@sharedRestarted" });
+      // 共享后台的重启：本窗口接管了重起这件事，而**别的窗口**看不到这个动作
+      // （它们没有发起，界面也不会变）——这是绿色「重要变化」，共享归属（用户 2026-10-18 口径）。
+      // 发起端（非 peer）走下面那条原生回执，两者互斥，不做统一。
+      this.notify({ level: "info", kind: "sharedRestarted", text: "@sharedRestarted" });
       return;
     }
     vscode.window.showInformationMessage(vscode.l10n.t("The DSH server has been restarted."));
@@ -4273,10 +4457,17 @@ export class ChatController implements vscode.Disposable {
     }
   }
 
-  /** 记住一个已删除的会话 id 并持久化（跨扩展重载，列表保持干净）。 */
+  /**
+   * 记住一个已删除的会话 id 并持久化（跨扩展重载，列表保持干净）。
+   *
+   * 真正删除是终结性的：通知队列里那条会话的 `seq` 水位到这里收掉（归档 / 恢复 /
+   * 关闭视图都不清——那条会话还会回来，水位留着才挡得住重发）。这也是水位表的
+   * **唯一**清理路径，所以必须挂在这里，不能只写在注释里。
+   */
   private rememberDeleted(sessionId: string): void {
     if (this.deletedSessionIds.has(sessionId)) return;
     this.deletedSessionIds.add(sessionId);
+    this.notifications.forgetSession(sessionId);
     void this.state.update("deletedSessionIds", [...this.deletedSessionIds]);
   }
 
@@ -5394,8 +5585,9 @@ export class ChatController implements vscode.Disposable {
     // 文件芯片种类（[新增] / 删除线）的分类回调：适配器交路径，宿主查 git 与磁盘。
     // 带上会话 cwd：芯片路径可能是相对会话工作目录的拼写，解析不了会误判 deleted
     adapter.classifyFiles = (paths) => this.classifyFiles(this.cwdOf(scope), paths);
-    // 未知事件（内核冒出的新词汇）记进输出通道：界面上那条提示条一闪而过，
-    // 日志是唯一能回看的落点。带会话 id——多会话并存时要知道是哪个会话冒出来的。
+    // 未知事件（内核冒出的新词汇）记进输出通道：用户侧那条通知会进队列（确认之后还能在
+    // 通知历史里回看），日志那一份则是可追溯的诊断细节（含事件数据摘要）。
+    // 带会话 id——多会话并存时要知道是哪个会话冒出来的。
     adapter.log = (line) => this.log(`[event] 会话=${sessionId} ${line}`);
     // 子代理「注册」：父会话的 `subagent/catalog` durable 事件（直播与重放都会到）→
     // 立刻并入目录并发帧，不必等面板打开那一下 RPC（见 `registerSubagent`）
@@ -5407,6 +5599,18 @@ export class ChatController implements vscode.Disposable {
     // 一条**已经交给服务端**的提交永远到不了 durable（判定见 `dsh/submissionReceipts.ts`）：
     // 「被领走却没落盘」是真的没发出去（标失败留行），「被有意取消」只撤回收显。
     adapter.onSubmissionLost = (rpcId, reason) => this.settleLostSubmission(rpcId, reason);
+    // 一条本客户端不认识、又不是 ignorable 的会话事件 → 黄色通知（`@unknownEvent:<type>`）。
+    // 适配器在重放期间不回调，所以历史重放不会重新产出旧通知；`seq` 一起带过来，
+    // 队列按**每会话水位**拒绝重发（不是新的实际发生，见 notificationQueue 文件头）。
+    adapter.onUnknownEvent = (event) =>
+      this.notify({
+        sessionId,
+        level: "warn",
+        kind: "unknownEvent",
+        key: event.type,
+        text: `@unknownEvent:${event.type}`,
+        ...(event.seq === undefined ? {} : { seq: event.seq }),
+      });
     // durable 用户行的图片借**同一次提交的本地附件**（`submissions` 里那份，图片带 dataUrl）：
     // 不借的话交接时会从缩略图退回文件名芯片、等字节换回来再变回缩略图（闪两下）
     adapter.resolveEchoAttachments = (rpcId) => this.originFor(rpcId)?.attachments;
@@ -5925,7 +6129,7 @@ export class ChatController implements vscode.Disposable {
     if (!source) return;
     const atSeq = scope?.adapter?.forkAnchorFor(messageId);
     if (atSeq === undefined) {
-      this.emitToView(viewId, { type: "toast", level: "warn", text: "@branchNoAnchor" });
+      this.notify({ sessionId: source, level: "warn", kind: "branchNoAnchor", text: "@branchNoAnchor" });
       return;
     }
     try {
@@ -5934,14 +6138,13 @@ export class ChatController implements vscode.Disposable {
       });
       const childId = value?.sessionId;
       if (!childId) {
-        this.emitToView(viewId, { type: "toast", level: "error", text: "@branchFailed" });
+        this.notify({ sessionId: source, level: "warn", kind: "branchFailed", text: "@branchFailed" });
         return;
       }
       await this.refreshSessions();
-      // 分支结果落在点击的那个窗口：它切到新会话，其他窗口保持不动
+      // 分支结果落在点击的那个窗口：它切到新会话，其他窗口保持不动。
+      // **成功不入队**（用户 2026-10-18 口径）：视图已经切到新分支，这就是原位反馈。
       await this.openSession(viewId, childId);
-      const title = this.sessions.find((session) => session.id === childId)?.title ?? childId;
-      this.emitToView(viewId, { type: "toast", level: "info", text: `@branchCreated:${title}` });
     } catch (error) {
       this.reportError(vscode.l10n.t("Failed to create the branch"), error);
     }
@@ -6214,13 +6417,33 @@ export class ChatController implements vscode.Disposable {
     subagentCatalog: (scope, value, present) => this.applySubagentCatalogProjection(scope, value, present),
     goal: (scope, value, present) => this.applyGoalProjection(scope, value, present),
     agentPreset: (scope, value) => this.applyAgentPresetProjection(scope, value),
-    workingDirectory: (scope, value) => this.applyWorkingDirectoryProjection(scope, value),
+    workingDirectory: (scope, value, present, source) =>
+      this.applyWorkingDirectoryProjection(scope, value, present, source),
   };
 
-  /** 执行目录变化只影响当前输入与标题；创建目录、分组和历史路径保持原语义。 */
-  private applyWorkingDirectoryProjection(scope: SessionScope, value: string | undefined): void {
-    if (scope.workingDirectory === value) return;
-    scope.workingDirectory = value;
+  /**
+   * 执行目录变化只影响当前输入与标题；创建目录、分组和历史路径保持原语义。
+   *
+   * **只有 live 且真的换了一个目录才进通知队列**（绿色，见
+   * `docs/design-notifications.md`）：follow 开帧、控制流 baseline 与重连都会把同一批
+   * 投影值重铺一遍，那不是「用户在会话里改了目录」；同一水位的重发会被投影存储拒掉，
+   * 根本走不到这里。基准取**上一个有效目录**（没有投影值时退回会话创建目录——契约里
+   * baseline 缺键与 `null` 清空都按创建目录兜底），所以：
+   * - 域刚建起来、开帧就带着值 → `source !== "live"`，静默铺值；
+   * - 开帧没带这个键、随后来的第一次 live 值 → 与创建目录比较，不同就是真实变化；
+   * - 清空（`null` / 缺键）与相同值 → 不出通知。
+   */
+  private applyWorkingDirectoryProjection(
+    scope: SessionScope,
+    value: string | undefined,
+    present: boolean,
+    source: ProjectionSource,
+  ): void {
+    const next = present ? value : undefined;
+    // 基准：上一个已提交的投影值；没有就退回会话创建目录（回退口径见 design-projections）
+    const previous = scope.workingDirectory ?? this.cwdOf(scope);
+    if (scope.workingDirectory === next) return;
+    scope.workingDirectory = next;
     // 在发补丁之前作废旧目录的查询；即使查询串没变，界面也会按新目录重取。
     for (const [viewId, sessionId] of this.viewSessions) {
       if (sessionId === scope.sessionId) this.menuQueries.get(viewId)?.abort();
@@ -6228,6 +6451,19 @@ export class ChatController implements vscode.Disposable {
     this.deliver(scope.sessionId, {
       type: "patch",
       patch: sessionPatch(this.sessionSource(scope), ["workingDirectory"]),
+    });
+    if (source !== "live") return;
+    // 清空不是「改到了某个目录」：这一条不出绿色通知（界面退回创建目录即可感知）
+    if (next === undefined) return;
+    // 没有基准（会话还没进列表、创建目录也拿不到）时不吞：宁可报一次，也不把真实变化
+    // 静默掉——「初始能力缺失 + 第一次 live 值」正是这条要覆盖的场景
+    if (previous !== undefined && previous === next) return;
+    this.notify({
+      sessionId: scope.sessionId,
+      level: "info",
+      kind: "workingDirectory",
+      key: next,
+      text: `@executionDirChanged:${next}`,
     });
   }
 
@@ -7536,11 +7772,29 @@ export class ChatController implements vscode.Disposable {
         // 记下「这个窗口的页面已经就绪」：认领可能比 `ready` 更晚才落下，那一刻要回来
         // 叫醒它（见 `flushRestoreClaims`）
         this.readyViews.add(viewId);
+        // 新页面：界面的「复制失败请求号」从头开始，宿主那份水位跟着清掉
+        // （否则新页面的第一次失败会被当成旧号重复投递而丢掉）
+        this.copyFailureWatermarks.delete(viewId);
         // 首帧快照**先行**：locale/字号等外观设置全在里面。接回会话要先等激活期那次自动
         // 连接（`awaitActivationConnect`）——整个连接期间快照都出不去，界面只能停在词典
         // 缺省（英文）上，直到连接结算才翻成中文（用户报的「启动总是先英文」）。
         // 能收到 `ready` 就说明 webview 的监听已挂上，此刻推帧不会丢。
         this.emitToView(viewId, { type: "state", state: this.snapshotFor(viewId) });
+        // 这个窗口在就绪之前收到的开面板指令（命令面板入口可能比页面加载更早按下）：
+        // 放在快照**之后**补发，抽屉打开时界面已经有全量状态了。
+        // 「没有任何窗口」时那条通知意图（`pendingNotificationsOpen`）**只由主侧栏消费**：
+        // 那一刻 VS Code 可能同时把编辑区面板恢复起来，谁先 ready 就把抽屉开到谁上面是错的
+        // （用户按的是主侧栏那个入口）；secondary / panel 的 ready 不消费、也不清除它。
+        const consumeGlobal = this.pendingNotificationsOpen && this.viewKinds.get(viewId) === "primary";
+        const pendingPanel = consumeGlobal ? "notifications" : this.pendingPanelOpens.get(viewId);
+        if (consumeGlobal) {
+          this.pendingNotificationsOpen = false;
+          this.log(`[notify] 主侧栏 ${viewId} 就绪，补发待开的通知抽屉`);
+        }
+        if (pendingPanel !== undefined) {
+          this.pendingPanelOpens.delete(viewId);
+          this.emitToView(viewId, { type: "ui/openPanel", panel: pendingPanel });
+        }
         // 然后接回「这个窗口上次开着哪个会话」：绑上后 `openSession` 会再推一份
         // 带会话内容的完整快照，内容照常回填。`resumeRestoreHint` 幂等，兜底
         // 定时器先到也只是空跑一次。
@@ -7556,6 +7810,34 @@ export class ChatController implements vscode.Disposable {
         // 按钮态等用户点，而连接落地后 `onConnected` 会回来补这条空壳。
         await this.ensureSession(viewId, { start: false, askDir: false });
         break;
+
+      case "acknowledgeNotification":
+        this.acknowledgeNotification(viewId, message.id, message.count);
+        break;
+
+      case "reportImageCopyFailure": {
+        // 界面本地复制图片失败（`webview/imageClipboard.ts`）：界面自己不知道宿主那份
+        // 通知队列，这一帧就是它的入队入口。
+        //
+        // 逐字段验形状 + **归属必须与这个窗口此刻绑定的会话一致**：复制是耗时动作，
+        // 发起后用户可以切走，迟到的失败不该画进新会话；也不信任任意 sessionId
+        // （`undefined` 只在空态窗口成立，那时入的是共享通知）。
+        const requestId = message.requestId;
+        if (typeof requestId !== "number" || !Number.isSafeInteger(requestId) || requestId <= 0) break;
+        // 归属必须与这个窗口此刻绑定的会话一致：**先验归属、再动水位**——顺序反了的话，
+        // 一条跨会话的畸形高号帧会把水位顶高，之后这个窗口所有合法的失败报告都被当旧号拒掉。
+        // （`undefined` 只在空态窗口成立，那时入的是共享通知。）
+        const bound = this.viewSessions.get(viewId);
+        if (message.sessionId !== bound) break;
+        // 每窗口一个**独立**的请求号水位（与 durable `seq` 的水位是两回事，不能混用）：
+        // 重复投递同一号是空操作，真实的第二次复制会带更大的号。
+        // 水位在 `ready`（页面重建、界面的计数器从头开始）与窗口下线时清掉。
+        const watermark = this.copyFailureWatermarks.get(viewId);
+        if (watermark !== undefined && requestId <= watermark) break;
+        this.copyFailureWatermarks.set(viewId, requestId);
+        this.notify({ sessionId: bound, level: "warn", kind: "imageCopy", text: "@imageCopyFailed" });
+        break;
+      }
 
       case "send":
         // 附件取**宿主账本**里那一份（界面那份只是它的投影）：帧里不再回传副本——
@@ -7753,11 +8035,18 @@ export class ChatController implements vscode.Disposable {
         // 界面上的按钮化命令（权限预设、进入/退出计划模式）。成功与失败都靠
         // command/run ↔ command/done 折出的节点呈现，这里只补「命令不存在」这种
         // 压根没进处理器、因而没有节点可显示的情形。
+        // 归属在**发起这一刻**捕获：命令是异步执行的，完成时窗口可能已经切走，
+        // 那时再读绑定就会把别的会话的失败画到新会话上（用户 2026-10-18 口径）。
+        const sessionId = this.viewSessions.get(viewId);
         const outcome = await this.runCommand(viewId, message.line);
-        if (outcome && !outcome.ok) {
-          this.emitToView(viewId, {
-            type: "toast",
+        // 只有「压根没进处理器」才入队（红色）：执行过但结果是 error 的那种，适配器已经
+        // 折成红色命令节点、原文就在正文里，再通知一次就是重复
+        if (outcome?.unhandled === true) {
+          this.notify({
+            sessionId,
             level: "error",
+            kind: "commandFailed",
+            key: message.line,
             text: outcome.text ?? `@commandFailed:${message.line}`,
           });
         }
@@ -7966,8 +8255,10 @@ export class ChatController implements vscode.Disposable {
         // 「保存图片」（图片右键菜单）：解析字节 → 用户选路径 → 写盘。
         // 默认目录与本地图解析同一口径（会话 cwd → 打开的工作区 → 用户目录）：
         // 会话目录拿不到时退回工作区，仍是用户明确打开的目录，只是基准换了。
-        // 保存成功**不发 toast**（与「复制成功不弹信息条」同一条口径：结果在界面上
-        // 就能感知——路径是用户自己选的）；取不到字节 / 写盘失败才提示。
+        // 保存成功**不发通知**（与「复制成功不入队」同一条口径：结果在界面上就能感知
+        // ——路径是用户自己选的）；取不到字节 / 写盘失败才入队（黄色：局部操作失败）。
+        // 归属在**发起这一刻**捕获：保存要等用户选路径，期间用户可以切走。
+        const sessionId = this.viewSessions.get(viewId);
         const scope = this.scopeOfView(viewId);
         const defaultDir =
           (scope ? this.cwdOf(scope) : undefined) ??
@@ -7976,7 +8267,7 @@ export class ChatController implements vscode.Disposable {
         const result = await saveChatImage(message.src, message.name, defaultDir);
         if (result.status === "failed") {
           this.log(`[image] 保存失败：${result.reason}`);
-          this.emitToView(viewId, { type: "toast", level: "error", text: "@imageSaveFailed" });
+          this.notify({ sessionId, level: "warn", kind: "imageSaveFailed", text: "@imageSaveFailed" });
         } else if (result.status === "saved") {
           this.log(`[image] 已保存：${result.path}`);
         }
@@ -8371,10 +8662,15 @@ export class ChatController implements vscode.Disposable {
       this.retireEcho(requestId, "slash");
       this.attachments.releaseLease(requestId);
       const outcome = await this.runCommand(viewId, slash.line);
-      if (outcome && !outcome.ok) {
-        this.emitToView(viewId, {
-          type: "toast",
+      // 同 `runCommand` 那条：只有未进处理器的命令才入队（红色）；
+      // 执行过但 error 的结果由正文里的红色命令节点承接
+      if (outcome?.unhandled === true) {
+        // 归属是这个域（`scope` 在发送那一刻定下），不用「完成时视图绑定了谁」
+        this.notify({
+          sessionId: scope.sessionId,
           level: "error",
+          kind: "commandFailed",
+          key: slash.line,
           text: outcome.text ?? `@commandFailed:${slash.line}`,
         });
       }
@@ -8473,7 +8769,14 @@ export class ChatController implements vscode.Disposable {
       // 沿用老口径：提示 + 回填。）
       const address = scope.subagentAddress;
       if (address && content.some((part) => part.type === "file")) {
-        this.emitToView(viewId, { type: "toast", level: "warn", text: "@subagentFilesUnsupported" });
+        // 正文回填只是「东西还在输入框里」，没有说明**为什么**没发出去 —— 原因入队
+        // （黄色：局部操作问题；用户 2026-10-18 口径：没有说清原因的原位反馈不算承接）
+        this.notify({
+          sessionId: scope.sessionId,
+          level: "warn",
+          kind: "subagentFilesUnsupported",
+          text: "@subagentFilesUnsupported",
+        });
         this.appendDraft(viewId, text, attachments, requestId);
         return false;
       }
@@ -8565,8 +8868,16 @@ export class ChatController implements vscode.Disposable {
     // 了：界面上没有能承载它的那一行，提交那一刻移走的附件租约到此收场——不靠上限兜底。
     if (admitted && !this.echoFor(requestId)) this.attachments.releaseLease(requestId);
     // 上传不完整的提示**放在 try 之外**：它是成功之后的告知，抛在这里不该被上面的
-    // catch 当成「没发出去」（那会把已经发出去的那条标成失败，还会把 running 置回 false）
-    if (admitted && notUploaded.length) this.warnUploadIncomplete(viewId, notUploaded);
+    // catch 当成「没发出去」（那会把已经发出去的那条标成失败，还会把 running 置回 false）。
+    // 芯片上**已经明确标成上传失败**的那些，用户原位就看得到，不再入队（用户 2026-10-18
+    // 口径：按实际可见反馈判断，不是「正文有没有回填」）；其余才补一条黄色通知。
+    if (admitted && notUploaded.length) {
+      const silentlySkipped = notUploaded.filter((name) => {
+        const attachment = attachments.find((item) => item.name === name);
+        return attachment?.upload?.status !== "error";
+      });
+      if (silentlySkipped.length) this.warnUploadIncomplete(scope.sessionId, silentlySkipped);
+    }
     return admitted;
   }
 
@@ -8635,15 +8946,22 @@ export class ChatController implements vscode.Disposable {
     this.publishAgentPresets();
   }
 
-  /** 提示：有文件附件没上传成功，发送时被跳过（内容没丢，仍在芯片上）。 */
-  private warnUploadIncomplete(viewId: string, names: string[]): void {
+  /**
+   * 提示：有文件附件没上传成功、发送时被跳过（内容没丢，仍在芯片上）。
+   *
+   * 只对**芯片上看不出失败**的那些调用（见 `submitMessage` 的判据）；归属是发起发送
+   * 的那个会话，不是「完成时视图绑定了谁」。级别是黄色：不影响会话进程，但用户必须
+   * 知道这批内容没跟着发出去。
+   */
+  private warnUploadIncomplete(sessionId: string | undefined, names: string[]): void {
     // `、` 是中文顿号，英文里得用 `, `——所以预览串只做「取前几个 + 省略号」，
     // 分隔符与「等 N 个」都交给词典按语言拼（见 texts.ts 的 uploadIncomplete）。
     const preview = names.slice(0, 3).join(", ");
     const more = names.length > 3 ? "…" : "";
-    this.emitToView(viewId, {
-      type: "toast",
+    this.notify({
+      sessionId,
       level: "warn",
+      kind: "uploadIncomplete",
       text: `@uploadIncomplete:${names.length}:${preview}${more}`,
     });
   }
@@ -8667,7 +8985,10 @@ export class ChatController implements vscode.Disposable {
    * 返回值里 `value === undefined` 表示「没有这条命令」——官方客户端也把它当
    * 错误结果处理（`unknown or malformed command`）。
    */
-  private async runCommand(viewId: string, line: string): Promise<{ ok: boolean; text?: string } | undefined> {
+  private async runCommand(
+    viewId: string,
+    line: string,
+  ): Promise<{ ok: boolean; text?: string; unhandled?: boolean } | undefined> {
     if (!this.client) return undefined;
     // 命令按会话执行：还没有会话时先落到本工作区那条空壳上（点按钮时用户并没有先发过
     // 消息；没有工作目录时会先问一次，取消则整条命令不执行）
@@ -8696,7 +9017,7 @@ export class ChatController implements vscode.Disposable {
   private async runCommandOnSession(
     sessionId: string,
     line: string,
-  ): Promise<{ ok: boolean; text?: string } | undefined> {
+  ): Promise<{ ok: boolean; text?: string; unhandled?: boolean } | undefined> {
     if (!this.client) return undefined;
     return await this.executeCommandOn(sessionId, line);
   }
@@ -8705,7 +9026,7 @@ export class ChatController implements vscode.Disposable {
   private async executeCommandOn(
     agentId: string,
     line: string,
-  ): Promise<{ ok: boolean; text?: string } | undefined> {
+  ): Promise<{ ok: boolean; text?: string; unhandled?: boolean } | undefined> {
     if (!this.client) return undefined;
     const attempt = (attachmentsKey: "submittedAttachments" | "images") =>
       this.client!.request<{ result?: { kind?: string; text?: string } } | undefined>("commands/execute", {
@@ -8715,7 +9036,10 @@ export class ChatController implements vscode.Disposable {
       });
 
     const interpret = (value: { result?: { kind?: string; text?: string } } | undefined) => {
-      if (value === undefined) return { ok: false, text: `@unknownCommand:${line}` };
+      // `value === undefined`：**压根没进处理器**，界面上没有命令节点可看 → 调用方要入队
+      // `unhandled` 与「执行过但结果是 error」分开：后者已由适配器折成红色命令节点、
+      // 原文就在正文里（用户 2026-10-18 口径：不重复通知）
+      if (value === undefined) return { ok: false, text: `@unknownCommand:${line}`, unhandled: true };
       return { ok: value.result?.kind !== "error", text: value.result?.text };
     };
 
@@ -8910,10 +9234,20 @@ export class ChatController implements vscode.Disposable {
     if (plan.pathOnly.length) {
       this.emitToView(viewId, { type: "ui/insertText", text: formatPathList(plan.pathOnly) });
     }
-    // 图片的去向逐条说明（进不了内容块 → 按文件上传；文案后半句照实说模型能不能直接读）
+    // 图片的去向逐条说明（进不了内容块 → 按文件上传；文案后半句照实说模型能不能直接读）。
+    // 这里没有别的原位反馈（芯片只是换成了文件附件，看不出**为什么**），所以入队黄色通知；
+    // 归属用这次接入的会话（`scope` 在上面已成定局，不是完成时视图绑着谁）。
     for (const image of plan.degradedImages) {
       const marker = this.imageUnavailableMarker(image.name, image.unavailable);
-      if (marker) this.emitToView(viewId, { type: "toast", level: "warn", text: marker });
+      if (marker) {
+        this.notify({
+          sessionId: scope?.sessionId,
+          level: "warn",
+          kind: "imageDegraded",
+          key: image.name,
+          text: marker,
+        });
+      }
     }
     // 「模型不收图片输入」是**整批**原因（这一批里每一张都进不了内容块），按条发提示会
     // 刷屏：汇总成一条
@@ -8923,21 +9257,29 @@ export class ChatController implements vscode.Disposable {
     if (unsupported > 0) {
       const model = scope?.model;
       const label = model?.label ?? model?.model ?? "";
-      this.emitToView(viewId, {
-        type: "toast",
+      this.notify({
+        sessionId: scope?.sessionId,
         level: "warn",
+        kind: "imageFilesUploaded",
         text: `@imageFilesUploaded:${unsupported}:${label}`,
       });
     }
     // 两条路各一套措辞（字面量写在这里，`scripts/i18n.test.ts` 靠它核对发射点）：
     // 准入判据完全相同，但「拖放上限 8 MB，请改用添加文件」对粘贴来的东西说不通
     // （用户手上没有那个文件）。按钮那条路不会有拒绝（对话框只给读得出来的路径），
-    // 所以这里的兜底措辞用不到它。
+    // 所以这里的兜底措辞用不到它。拒收的条目在输入框里不留痕迹，只有这条通知能说清。
     const unreadableKey = source === "paste" ? "@pasteUnreadable" : "@dropUnreadable";
     const tooLargeKey = source === "paste" ? "@pasteTooLarge" : "@dropTooLarge";
     for (const item of plan.rejected) {
       const marker = item.reason === "too-large" ? `${tooLargeKey}:${item.name}` : `${unreadableKey}:${item.name}`;
-      this.emitToView(viewId, { type: "toast", level: "warn", text: marker });
+      // `kind` 按原因分开：同一次接入里「太大」与「读不出来」是两回事，不该合并成一条
+      this.notify({
+        sessionId: scope?.sessionId,
+        level: "warn",
+        kind: item.reason === "too-large" ? "dropTooLarge" : "dropUnreadable",
+        key: item.name,
+        text: marker,
+      });
     }
   }
 
@@ -9209,8 +9551,9 @@ export class ChatController implements vscode.Disposable {
 
     if (!pending.length) {
       if (scope.queueItems.length) {
-        // 有排队消息但拿不到可重发内容（理论上不会发生）：只中止，别把消息弄丢
-        this.emitToView(viewId, { type: "toast", level: "warn", text: "@queueContentLost" });
+        // 有排队消息但拿不到可重发内容（理论上不会发生）：只中止，别把消息弄丢。
+        // 队列区会随着中止被清空，这条通知是唯一还能说明「刚才那些没重发」的地方
+        this.notify({ sessionId, level: "warn", kind: "queueContentLost", text: "@queueContentLost" });
       }
       await this.finishCancelOnly(scope);
       return;
@@ -9243,7 +9586,14 @@ export class ChatController implements vscode.Disposable {
         new Error("turn did not settle"),
       );
       await this.requeue(viewId, removed);
-      this.emitToView(viewId, { type: "toast", level: "warn", text: "@queueDispatchFailed" });
+      // 原生那条（上面 `reportError`）说的是底层超时；这条说的是**用户的那些消息现在
+      // 去哪儿了**（放回队列、没发出去），信息不同，不属于重复提示
+      this.notify({
+        sessionId,
+        level: "error",
+        kind: "queueDispatchFailed",
+        text: "@queueDispatchFailed",
+      });
       return;
     }
 
@@ -9282,6 +9632,8 @@ export class ChatController implements vscode.Disposable {
    * 还没发的那些统一还回输入框（它们连提交都没走到），并提示一次。
    */
   private async resubmit(viewId: string, entries: { origin: QueueOrigin }[]): Promise<void> {
+    // 归属在**这一批开始重发之前**捕获：提交是异步的，用户在等待期间可以切走
+    const sessionId = this.viewSessions.get(viewId);
     for (let index = 0; index < entries.length; index++) {
       const { origin } = entries[index];
       const accepted = await this.submitMessage(
@@ -9297,7 +9649,12 @@ export class ChatController implements vscode.Disposable {
       if (accepted) continue;
       // 这一条已经由统一路径收场（`failEcho` 标失败，或正文已回输入框）：
       // 它**后面**还没提交的那些在这里统一还回去（`submitMessage` 只管它自己那一条）
-      this.emitToView(viewId, { type: "toast", level: "warn", text: "@queueDispatchFailed" });
+      this.notify({
+        sessionId,
+        level: "error",
+        kind: "queueDispatchFailed",
+        text: "@queueDispatchFailed",
+      });
       for (const rest of entries.slice(index + 1)) {
         this.appendDraft(viewId, rest.origin.text, rest.origin.attachments);
       }
@@ -9752,12 +10109,15 @@ export class ChatController implements vscode.Disposable {
       else unrestorable += 1;
     }
 
-    // 还原不了就**不摘**（见函数注释第 2 步）。提示按**会话**投递：还在看这条会话的窗口
-    // 照常看到；切走了的窗口不该收到——那帧会把别的会话的失败画进当前界面
+    // 还原不了就**不摘**（见函数注释第 2 步）。通知按**会话**归属：还在看这条会话的
+    // 窗口照常看到；切走了的窗口不该收到——它会把别的会话的失败画进当前界面
     if (unrestorable > 0) {
-      const toast = { type: "toast", level: "warn", text: "@queueAttachmentsLost" } as const;
-      if (this.viewSessions.get(viewId) === sessionId) this.emitToView(viewId, toast);
-      else this.deliver(sessionId, toast);
+      this.notify({
+        sessionId,
+        level: "warn",
+        kind: "queueAttachmentsLost",
+        text: "@queueAttachmentsLost",
+      });
       return;
     }
 
@@ -9894,13 +10254,21 @@ export class ChatController implements vscode.Disposable {
     // 芯片路径可能是相对会话工作目录的拼写：先解析成绝对路径再动手，
     // 不解析的话 Uri.file 拼不出可解析的 URI，「已删除」提示与打开失败
     // 都会对无辜文件发生（与 classifyFiles 同一口径，见 resolveChipPath）
+    // 归属在**发起这一刻**捕获（下面有 await：文件存在性检查、编辑器打开），
+    // 用户在等待期间切走之后，这些失败不该画进新会话
+    const notifySession = viewId ? this.viewSessions.get(viewId) : undefined;
     let resolved = resolveChipPath(cwd, path);
     if (!resolved) {
       // 只可能发生在「相对路径 + 拿不到会话工作目录」时（会话还没进列表）。
       // 以前这里只写日志 → 用户点了完全没反应，不知道发生了什么。
       this.log(`[open] 路径解析不了（相对且缺会话工作目录），放弃打开：${path}`);
       if (viewId) {
-        this.emitToView(viewId, { type: "toast", level: "warn", text: "@chipPathUnresolved" });
+        this.notify({
+          sessionId: notifySession,
+          level: "warn",
+          kind: "chipPathUnresolved",
+          text: "@chipPathUnresolved",
+        });
       }
       return;
     }
@@ -9925,7 +10293,7 @@ export class ChatController implements vscode.Disposable {
       if (await this.openChanges(uri)) return;
       if (existence === "absent") {
         // 磁盘上没有了、git 也没有记录 → 内容找不回。明确说一声，别静默。
-        this.reportMissingFile(viewId, resolved, fromLink);
+        this.reportMissingFile(viewId, notifySession, resolved, fromLink);
         return;
       }
     } else if (existence === "absent") {
@@ -9933,7 +10301,7 @@ export class ChatController implements vscode.Disposable {
       // 打开必然失败。这里退化成和普通点击同一条链（先试改动对比），
       // 而不是静默失败：对被删除的文件来说，能看到删除前的内容已经是最好的结果。
       if (await this.openChanges(uri)) return;
-      this.reportMissingFile(viewId, resolved, fromLink);
+      this.reportMissingFile(viewId, notifySession, resolved, fromLink);
       return;
     }
     // **不按文件类型分流**：打开就是「把这个资源交给 VS Code」，由它按资源类型挑编辑器
@@ -9984,16 +10352,30 @@ export class ChatController implements vscode.Disposable {
    * 「文件不存在」。这里只借它的路径解析口径，动作是 VS Code 自己的命令。
    */
   private async revealPath(viewId: string, path: string): Promise<void> {
+    // 归属在发起这一刻捕获（下面有 await 的存在性检查），切走之后不该画进新会话
+    const sessionId = this.viewSessions.get(viewId);
     const scope = this.scopeOfView(viewId);
     const resolved = resolveChipPath(scope ? this.cwdOf(scope) : undefined, path);
     if (!resolved) {
       this.log(`[reveal] 路径解析不了（相对且缺会话工作目录），放弃展开：${path}`);
-      this.emitToView(viewId, { type: "toast", level: "warn", text: "@chipPathUnresolved" });
+      this.notify({
+        sessionId,
+        level: "warn",
+        kind: "chipPathUnresolved",
+        text: "@chipPathUnresolved",
+      });
       return;
     }
     if ((await this.fileExistence(vscode.Uri.file(resolved))) === "absent") {
       this.log(`[reveal] 目录不存在，放弃展开：${resolved}`);
-      this.emitToView(viewId, { type: "toast", level: "warn", text: `@folderNotFound:${resolved}` });
+      // 目录路径是「关键内容」：不同目录各成一条，不会被合并成第一次那个
+      this.notify({
+        sessionId,
+        level: "warn",
+        kind: "folderNotFound",
+        key: resolved,
+        text: `@folderNotFound:${resolved}`,
+      });
       return;
     }
     try {
@@ -10026,6 +10408,9 @@ export class ChatController implements vscode.Disposable {
   ): Promise<void> {
     const scope = this.scopeOfView(viewId);
     const cwd = scope ? this.cwdOf(scope) : undefined;
+    // 归属在发起这一刻捕获：下面全是 await（字节换算、临时副本落盘），
+    // 用户切走之后这条失败不该画进新会话
+    const sessionId = scope?.sessionId;
 
     if (message.path && await this.tryOpenAttachmentPath(message.path, cwd)) return;
 
@@ -10079,7 +10464,12 @@ export class ChatController implements vscode.Disposable {
       `[open] 附件没有可打开的本地内容：name=${message.name} kind=${message.kind} ` +
         `path=${message.path ?? "-"} id=${message.id ?? "-"} attachmentId=${message.attachmentId ?? "-"}`,
     );
-    this.emitToView(viewId, { type: "toast", level: "warn", text: "@attachmentUnavailable" });
+    this.notify({
+      sessionId,
+      level: "warn",
+      kind: "attachmentUnavailable",
+      text: "@attachmentUnavailable",
+    });
   }
 
   /**
@@ -10134,11 +10524,20 @@ export class ChatController implements vscode.Disposable {
    * 根本没删过的文件。链接这条路因此**把解析出来的绝对路径说出来**：
    * 「怎么算出来的」一眼可见，用户才能自己判断基准对不对。
    */
-  private reportMissingFile(viewId: string | undefined, resolved: string, fromLink: boolean): void {
+  private reportMissingFile(
+    viewId: string | undefined,
+    sessionId: string | undefined,
+    resolved: string,
+    fromLink: boolean,
+  ): void {
     if (!viewId) return;
-    this.emitToView(viewId, {
-      type: "toast",
+    // 归属是**发起打开那一刻**的会话（`sessionId` 由调用方捕获），不是完成时视图绑着谁；
+    // 链接那条按文件成 key，同一份文件失败多次合并，不同文件各自成条
+    this.notify({
+      sessionId,
       level: "warn",
+      kind: fromLink ? "fileNotFound" : "chipFileDeleted",
+      key: fromLink ? resolved : "",
       // 带 `:` 的绝对路径照旧整条当参数（`@key:arg` 只按第一个 `:` 切，见 i18n 断言）
       text: fromLink ? `@fileNotFound:${resolved}` : "@chipFileDeleted",
     });
@@ -10165,12 +10564,19 @@ export class ChatController implements vscode.Disposable {
    * 多开一条宿主动作（`file:` 这类会把本地路径交给系统程序）。
    *
    * 系统拒绝打开时**明确告知**用户（`openExternal` 返回 false），不静默——
-   * 「点了没反应」正是这条链路要避免的失败。提示只发给**点它的那个窗口**
-   * （同文件芯片：多个面板开着时，别的会话不该弹这条）。
+   * 「点了没反应」正是这条链路要避免的失败。归属是**点它的那个窗口当前那个会话**
+   * （同文件芯片：多个面板开着时，别的会话不该看到这条）；这个函数里唯一的 await 之后
+   * 不再读绑定，所以在这里捕获一次即可。
    */
   private async openExternal(url: string, viewId: string): Promise<void> {
+    const sessionId = this.viewSessions.get(viewId);
     const refuse = (): void => {
-      this.emitToView(viewId, { type: "toast", level: "warn", text: "@openExternalFailed" });
+      this.notify({
+        sessionId,
+        level: "warn",
+        kind: "openExternalFailed",
+        text: "@openExternalFailed",
+      });
     };
     const allowed = ["http:", "https:", "mailto:"];
     let protocol: string;
@@ -10503,7 +10909,14 @@ export class ChatController implements vscode.Disposable {
     }
     if (!hit) {
       this.log(`[subagents] 目录里没有 ${childSessionId}，进入失败`);
-      this.emitToView(viewId, { type: "toast", level: "warn", text: "@subagentNotFound" });
+      // 归属是**发起时**那个会话（`scope` 在函数开头捕获），不是刷新之后的绑定
+      this.notify({
+        sessionId: scope.sessionId,
+        level: "warn",
+        kind: "subagentNotFound",
+        key: childSessionId,
+        text: "@subagentNotFound",
+      });
       return;
     }
     this.log(`[subagents] 进入子代理 ${hit.entry.label}（${childSessionId}, ${hit.entry.mode}），父会话=${hit.parentId}`);
@@ -10894,7 +11307,8 @@ export class ChatController implements vscode.Disposable {
   private async openInBrowser(): Promise<void> {
     const baseUrl = this.client?.baseUrl ?? this.server.activeBaseUrl ?? this.server.externalUrl;
     if (!baseUrl) {
-      this.emitAll({ type: "toast", level: "warn", text: "@openInBrowserOffline" });
+      // 「在浏览器中打开」是窗口级动作，不属于任何会话 → 共享通知（所有视图都看得到）
+      this.notify({ level: "warn", kind: "openInBrowserOffline", text: "@openInBrowserOffline" });
       return;
     }
     // 令牌**现读**会合文件：守护进程可能在我们换 cookie 之后重起过 dsh、换了一份令牌
@@ -10905,7 +11319,7 @@ export class ChatController implements vscode.Disposable {
     const opened = await vscode.env.openExternal(vscode.Uri.parse(url.href));
     if (!opened) {
       this.log("[browser] 系统没有接受这次打开请求");
-      this.emitAll({ type: "toast", level: "warn", text: "@openInBrowserFailed" });
+      this.notify({ level: "warn", kind: "openInBrowserFailed", text: "@openInBrowserFailed" });
     }
   }
 

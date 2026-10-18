@@ -283,6 +283,14 @@ const entries = {
   // 必须登记，否则 npm test 静默不跑
   "build/blank-session-noop.test.mjs": "scripts/blankSessionNoop.test.ts",
   "build/workspace-dir-repick.test.mjs": "scripts/workspaceDirRepick.test.ts",
+  // 通知队列（合并 / 确认 / 重发水位 / 容量）与宿主接线（多视图镜像、执行目录 live-only）：
+  // 驱真 ChatController + stub，必须登记，否则 npm test 静默不跑
+  "build/notification-queue.test.mjs": "scripts/notificationQueue.test.ts",
+  // 通知界面接线（reducer 镜像、ack 上报、命令路由、ESC/抽屉）：必须登记
+  "build/notifications-view.test.mjs": "scripts/notificationsView.test.ts",
+  // 通知的宿主接线（多视图镜像 / ack / 重绑 / 无窗口命令 / 复制失败归属 / 删除清水位）：
+  // 驱真 ChatController + stub，必须登记
+  "build/notifications-controller.test.mjs": "scripts/notificationsController.test.ts",
   "build/dsh-compat.mjs": "scripts/dshCompat.ts",
   // S02 夹具提取 / 离线校验：两个 CLI 与它们的离线回归（回归必须登记，否则 npm test 静默不跑）
   "build/trajectory-fixture-build.mjs": "scripts/trajectoryFixtureBuild.ts",

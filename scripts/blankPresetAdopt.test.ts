@@ -284,11 +284,21 @@ async function settle(): Promise<void> {
   for (let round = 0; round < 8; round += 1) await new Promise((resolve) => setImmediate(resolve));
 }
 
-/** 界面收到的失败提示（`@agentPresetFailed:` 那一类）。 */
-function warnings(frames: { frame: Record<string, unknown> }[]): string[] {
-  return frames
-    .filter(({ frame }) => frame.type === "toast" && frame.level === "warn")
-    .map(({ frame }) => String(frame.text));
+/**
+ * 界面收到的失败提示（`@agentPresetFailed:` 那一类）。
+ *
+ * 通知取代了从前的瞬时 `toast` 帧：取每个窗口**最近一次**收到的镜像，再挑 warn 那档。
+ */
+function warnings(frames: { target?: string; frame: Record<string, unknown> }[]): string[] {
+  const latest = new Map<string, { level: string; text: string }[]>();
+  for (const { target, frame } of frames) {
+    const patch = (frame as { patch?: { notifications?: { level: string; text: string }[] } }).patch;
+    if (patch?.notifications) latest.set(target ?? "", patch.notifications);
+  }
+  return [...latest.values()]
+    .flat()
+    .filter((notice) => notice.level === "warn")
+    .map((notice) => notice.text);
 }
 
 console.log("blankPresetAdopt: 空壳记着的预设被删掉之后还切不切得动（驱动真控制器，offline stub）");
