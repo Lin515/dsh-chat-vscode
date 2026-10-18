@@ -135,10 +135,17 @@ console.log("pathDisplay: 结构不变量（目录可裁 / 文件名不压缩 / 
   assert.deepStrictEqual(displayPathParts("src/./a"), { root: "", segments: ["src", "a"] }, "`.` 段直接消掉");
   assert.deepStrictEqual(displayPathParts(""), { root: "", segments: [] });
 
-  // 已经是绝对形态：原样（只归一分隔符）
+  // 已经是绝对形态：归一成正斜杠，并按**根锚定语义**消掉 `..`（悬停要给的是用户看到的
+  // 那个目标，留一串 `..` 既读不出来、也没法和同一个目录的其它拼写对上）
   assert.strictEqual(resolveDisplayPath("D:/dev/proj", "D:/other/x.txt"), "D:/other/x.txt");
   assert.strictEqual(resolveDisplayPath(undefined, "D:\\other\\x.txt"), "D:/other/x.txt");
   assert.strictEqual(resolveDisplayPath("D:/dev/proj", "//server/share/x.txt"), "//server/share/x.txt");
+  assert.strictEqual(resolveDisplayPath(undefined, "D:/a/../b"), "D:/b", "绝对形态里的 `..` 要消掉");
+  assert.strictEqual(resolveDisplayPath(undefined, "D:/a/../../b"), "D:/b", "绝对形态的 `..` 到根就停");
+  assert.strictEqual(resolveDisplayPath(undefined, "/a/../b"), "/b", "POSIX 绝对形态同理");
+  assert.strictEqual(resolveDisplayPath(undefined, "/a/../../b"), "/b");
+  assert.strictEqual(resolveDisplayPath(undefined, "//server/share/a/../b"), "//server/share/b", "UNC 根同理");
+  assert.strictEqual(resolveDisplayPath(undefined, "D:/a/./b"), "D:/a/b");
 
   // 相对形态：拼到 cwd 上
   assert.strictEqual(resolveDisplayPath("D:/dev/proj", "src/a.ts"), "D:/dev/proj/src/a.ts");
@@ -160,6 +167,12 @@ console.log("pathDisplay: 结构不变量（目录可裁 / 文件名不压缩 / 
   assert.strictEqual(resolveDisplayPath("", "src/a.ts"), undefined);
   assert.strictEqual(resolveDisplayPath("relative/base", "src/a.ts"), undefined);
   assert.strictEqual(resolveDisplayPath(undefined, ""), undefined);
+
+  // cwd 自己带 `..`（服务端给的是字符串，界面不假设它已归一）：基准那一侧同样先消
+  assert.strictEqual(resolveDisplayPath("D:/a/../b", "x.ts"), "D:/b/x.ts");
+  assert.strictEqual(resolveDisplayPath("D:/a/../b", "../x.ts"), "D:/x.ts");
+  assert.strictEqual(resolveDisplayPath("/a/../b", "x.ts"), "/b/x.ts");
+  assert.strictEqual(resolveDisplayPath("D:/a/../../../b", "x.ts"), "D:/b/x.ts", "cwd 里的 `..` 到根就停");
 }
 console.log("pathDisplay: 悬停标题的完整绝对路径（M1 绝对 / M3 `../` / 合成的上一层行） ✓");
 

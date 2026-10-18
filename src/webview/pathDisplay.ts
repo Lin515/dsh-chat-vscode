@@ -92,25 +92,43 @@ export function displayPathParts(path: string): DisplayPathParts {
 /**
  * 把候选 / 「上一层」行的展示路径解析成**完整绝对路径**（悬停标题）。
  *
- * - 目标本身已是绝对形态 → 原样（归一成正斜杠）；
+ * - 目标本身已是绝对形态 → 归一到根锚定语义后原样拼回（`D:/a/../b` 显示为 `D:/b`）；
  * - 相对形态 → 拼到 `cwd` 上，`.` 与 `..` 在拼接过程中消掉（`..` 到根就停）；
  * - 没有 `cwd`（旧宿主不发、或还没绑定会话）或 `cwd` 自己不是绝对形态 → `undefined`，
  *   调用方退回显示原样的相对路径（**不猜**）。
+ *
+ * 两侧都走 {@link resolveDisplaySegments}：悬停要给的是**用户会看到的那个目标**，
+ * 留着 `..` 既读不出来、也没法和同一条候选的其它拼写对上（同一个目录可能经由
+ * `../x`、`D:/a/../x` 两种候选到达）。`cwd` 自己也可能带 `..`（服务端给的是字符串，
+ * 界面不假设它已归一），所以基准那一侧同样先消一遍。
  */
 export function resolveDisplayPath(cwd: string | undefined, path: string): string | undefined {
   const target = displayPathParts(path ?? "");
-  if (target.root !== "") return joinDisplayPath(target.root, target.segments);
+  if (target.root !== "") {
+    return joinDisplayPath(target.root, resolveDisplaySegments(target.segments));
+  }
   const base = displayPathParts(cwd ?? "");
   if (base.root === "") return undefined;
-  const segments = [...base.segments];
-  for (const segment of target.segments) {
+  return joinDisplayPath(base.root, resolveDisplaySegments([...base.segments, ...target.segments]));
+}
+
+/**
+ * 在**根锚定**的段栈上消掉 `..`（`.` 与空段在 {@link displayPathParts} 里已经去掉）：
+ * `..` 弹出上一段，栈空时停在根（`path.resolve` 语义，不越出根）。
+ *
+ * 导出给 `mentionNav` 用：它算「上一层」时要按同一套语义先归一当前目录
+ * （`D:/a/../b/` 的上一层是 `D:/` 而不是 `D:/a/`）。
+ */
+export function resolveDisplaySegments(segments: readonly string[]): string[] {
+  const stack: string[] = [];
+  for (const segment of segments) {
     if (segment === "..") {
-      if (segments.length > 0) segments.pop();
+      stack.pop();
       continue;
     }
-    segments.push(segment);
+    stack.push(segment);
   }
-  return joinDisplayPath(base.root, segments);
+  return stack;
 }
 
 function normalize(path: string): string {

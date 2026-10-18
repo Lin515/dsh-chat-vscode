@@ -39,8 +39,8 @@ React / 浏览器环境，不使用 Node API。上层边界见[源码导航](<..
 - [composerMention.ts](<composerMention.ts>) — 草稿引用镜像、Ctrl 命中与同排版几何。
 - [mentionLinks.ts](<mentionLinks.ts>) — 已发正文的文件 / 目录 / 会话目标，sessionRefs 恢复会话身份。
 - [mentionOpen.ts](<mentionOpen.ts>) — 已发链接与草稿 Ctrl 点击的 IPC 分派。
-- [mentionNav.ts](<mentionNav.ts>) — 候选 .. 上层目录查询。
-- [pathDisplay.ts](<pathDisplay.ts>) — 路径的展示口径：单行标题的拆分省略，以及把候选 / 「上一层」行的展示路径解析成完整绝对路径（悬停标题）。
+- [mentionNav.ts](<mentionNav.ts>) — 候选「上一层」的查询串：工作区内逐层回退、绝对形态（盘符 / UNC / POSIX 根）回退与盘根回工作区的回路，以及含 `..` 段相对查询按会话 cwd 深度的段算术（退到根就停）。
+- [pathDisplay.ts](<pathDisplay.ts>) — 路径的展示口径：单行标题的拆分省略，以及把候选 / 「上一层」行的展示路径解析成完整绝对路径（悬停标题，绝对与相对两侧都按根锚定语义消掉 `..`）。
 - [segment.ts](<segment.ts>) — 思考档位列数。
 - [pickerFocus.ts](<pickerFocus.ts>) — 模型弹层选中项定位（打开即滚到当前模型）、方向键与滚入视野；定位范围只有可滚的模型列表，常驻的思考档位区不参与键盘导航。
 - [toolbarFit.ts](<toolbarFit.ts>) — 实测宽度分档、节点观察与有效布局盒，见[工具栏设计](<../../docs/design-composer.md>)。

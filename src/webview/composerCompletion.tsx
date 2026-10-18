@@ -256,6 +256,7 @@ export function rankCandidates(
   commands: readonly CommandView[],
   items: readonly FileRefView[],
   sessions: readonly SessionRefView[],
+  cwd?: string,
 ): MentionCandidate[] {
   if (!trigger) return [];
   if (trigger.kind === "command") {
@@ -272,7 +273,9 @@ export function rankCandidates(
   // `completeFileListing` 挂成 `items[0]`）：原样留着——它本来就是这一层的首行，
   // 界面**不再自己合成一条**，否则同一个目标会在列表里出现两行「..」。
   if (files.some(isParentCandidate)) return [...files, ...refs];
-  const parent = mentionParent(trigger.query);
+  // 界面自己合成的「上一层」：`cwd` 传下去，含 `..` 段的相对查询才知道往上还能走几层
+  // （见 `mentionNav.mentionParent`；宿主下发的 parent 行在上一步已经返回，不会被它覆盖）
+  const parent = mentionParent(trigger.query, cwd);
   if (parent === undefined) return [...files, ...refs];
   const up: FileRefView = { path: parent, kind: "directory", parent: true };
   return [up, ...files, ...refs];
@@ -863,7 +866,7 @@ function useCompletion(
    */
   const candidates = useMemo(
     () =>
-      rankCandidates(trigger, commands, fileRefs.items, fileRefs.sessions).slice(0, CANDIDATE_LIST_LIMIT),
+      rankCandidates(trigger, commands, fileRefs.items, fileRefs.sessions, fileRefs.cwd).slice(0, CANDIDATE_LIST_LIMIT),
     [trigger, commands, fileRefs],
   );
 

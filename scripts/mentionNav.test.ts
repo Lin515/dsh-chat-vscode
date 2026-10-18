@@ -117,8 +117,13 @@ console.log("mentionNav: 逐层回退 ✓");
 console.log("mentionNav: 半截输入下的上一层 ✓");
 
 // ---------- 4. 反斜杠写法（Windows 手输）同样认 ----------
+//
+// 认的是**写法**：反斜杠按分隔符切段（否则 `src\webview\` 会被当成一个名字）。
+// 返回值一律是正斜杠形态——`@` 引用本身就是正斜杠语法，写回正文那条路
+// （`drillQueryToken` 与 `shared/mentions.ts` 的 `normalizeMentionPath`）也会归一，
+// 所以候选行里显示的上一层与最终写进正文的形态是同一个。
 {
-  assert.strictEqual(mentionParent("src\\webview\\"), "src\\", "反斜杠分隔符照原样保留");
+  assert.strictEqual(mentionParent("src\\webview\\"), "src/", "反斜杠写法照常切段，返回值归一成正斜杠");
   assert.strictEqual(mentionParent("src\\"), "", "一层深度的反斜杠写法回到根");
 }
 console.log("mentionNav: 反斜杠写法 ✓");
@@ -1577,5 +1582,82 @@ console.log("completion(hook): 键盘只在弹层画出来时接管（抑制门�
   }
 }
 console.log("completion(hook): M2 宿主「上一层」行（Enter / 点击回上一层，Tab 无动作） ✓");
+
+// ---------- 23. M3 相对 `..` 向上：按会话 cwd 的深度做段算术，退到根就停 ----------
+//
+// `@../` 是工作区外发现的第三条入口（见 docs/design-mentions.md「三种入口」的 M3）：
+// 相对形态允许越出会话 cwd，但最多退到根（盘符根 / UNC 共享根 / POSIX 根）——再往上
+// 没有目标，查询串也不许一路加长（`../../../../` 与 `../../` 在根上指同一层，
+// 加长只会让用户看到一串没有意义的点）。
+//
+// 判据只有 cwd 能给：`files/list` 帧下发它（`pathDisplay.displayPathParts` 认盘符、
+// UNC 与 POSIX 三种根），这里按**平台形态**逐个断言。
+{
+  // Windows 盘符：cwd = D:/dev/proj（离根 2 层）
+  {
+    const cwd = "D:/dev/proj";
+    assert.strictEqual(mentionParent("../", cwd), "../../", "`../` 再上一层：多一个 `..` 段");
+    assert.strictEqual(mentionParent("../../", cwd), "", "退到盘根：回工作区空查询（键盘上唯一的回路）");
+    assert.strictEqual(mentionParent("../../../", cwd), "", "已经在盘根：查询串不再加长（目标不变）");
+    assert.strictEqual(mentionParent("../other/", cwd), "../", "`../other/` 的上一层就是 `../`");
+    assert.strictEqual(mentionParent("foo/../", cwd), "../", "`foo/../` 归一到 cwd 本身，上一层是 cwd 的父目录");
+    assert.strictEqual(mentionParent("foo/bar/../", cwd), "", "`..` 段按语义消掉：归一后是 cwd/foo，它的上一层是 cwd（裸 `@`）");
+    assert.strictEqual(mentionParent("..\\", cwd), "../../", "反斜杠写法同样算");
+    assert.strictEqual(mentionParent("../..", cwd), "../../", "半截输入（没打尾斜杠）按当前目录算");
+  }
+  // cwd 的父目录就是盘根时：`../` 直接回工作区
+  assert.strictEqual(mentionParent("../", "D:/dev"), "", "cwd 离根只有一层时 `../` 就是盘根");
+  assert.strictEqual(mentionParent("D:", "D:/dev/proj"), "", "盘符裸写的「上一层」：盘根没有上一层（回工作区）");
+  assert.strictEqual(mentionParent("D:/", "D:/dev/proj"), "", "盘根的 `..` 保留既定取值：回工作区空查询");
+  assert.strictEqual(mentionParent("D:/dev/", "D:/dev/proj"), "D:/", "盘符根下面那一层退到根");
+  assert.strictEqual(mentionParent("D:/dev/other/", "D:/dev/proj"), "D:/dev/", "绝对形态逐层回退");
+  assert.strictEqual(
+    mentionParent("D:/dev/other/notes.txt", "D:/dev/proj"),
+    "D:/dev/",
+    "带筛选词的绝对查询：正在浏览的目录是 D:/dev/other/，上一层是 D:/dev/（筛选词那一段不算目录）",
+  );
+  assert.strictEqual(mentionParent("D:/a/../b/", "D:/dev/proj"), "D:/", "绝对形态里的 `..` 先按根锚定语义归一");
+  // UNC：共享根就是根，退到它就停
+  {
+    const cwd = "//server/share/dev";
+    assert.strictEqual(mentionParent("../", cwd), "", "UNC 共享根同样止步（回工作区）");
+    assert.strictEqual(mentionParent("../other/", cwd), "../", "共享根下面那一层照常退一层");
+    assert.strictEqual(mentionParent("//server/share/dev/other/", cwd), "//server/share/dev/", "UNC 绝对形态逐层回退");
+    assert.strictEqual(mentionParent("//server/share/", cwd), "", "共享根本身没有上一层");
+  }
+  // POSIX：cwd = /home/u/proj（离根 3 层）
+  {
+    const cwd = "/home/u/proj";
+    assert.strictEqual(mentionParent("../", cwd), "../../", "POSIX 上同样按深度算");
+    assert.strictEqual(mentionParent("../../../", cwd), "", "退到 POSIX 根：回工作区");
+    assert.strictEqual(mentionParent("../../../../", cwd), "", "已经在根：查询串不再加长（目标不变）");
+    assert.strictEqual(mentionParent("/home/u/", cwd), "/home/", "POSIX 绝对形态逐层回退");
+    assert.strictEqual(mentionParent("/", cwd), "", "POSIX 根的上一层保留既定取值：回工作区");
+  }
+  // 没有 cwd（旧宿主 / 还没绑定会话）：不肯把纯 `..` 串加长，退回老口径；
+  // 仍在 cwd 内部的那几层不需要深度，照常算
+  assert.strictEqual(mentionParent("../"), "", "没有 cwd 时不敢往上走：回工作区空查询");
+  assert.strictEqual(mentionParent("foo/bar/"), "foo/", "cwd 内部的目录回退不需要 cwd");
+  assert.strictEqual(mentionParent("foo/../"), "", "回到 cwd 本身时，上一层要出 cwd → 不猜");
+  assert.strictEqual(mentionParent("../other/"), "../", "`../other/` 的上一层是 `../`（不需要深度）");
+  // 宿主下发的 cwd 要真的传进 `rankCandidates`：`@../` 那一层的「..」是 `../../`
+  {
+    const f = frame("@../", 4, {
+      fileRefs: {
+        query: "../",
+        items: [{ path: "../x.txt", kind: "file" }],
+        sessions: [],
+        cwd: "D:/dev/proj",
+      },
+    });
+    assert.ok(
+      /class="popover-item-main is-priority" title="D:\/">\.\.</.test(f.html),
+      "`@../` 那一层：合成的「..」目标是 `../../`，悬停解析出来的完整目标是盘根",
+    );
+    press(f, "Enter");
+    assert.strictEqual(f.draft, "@../../", "Enter 在那一行上 = 再往上一层（写回 `@../../`）");
+  }
+}
+console.log("mentionNav: M3 相对 `..` 向上（深度算术 / 盘根与共享根止步 / 无 cwd 回退） ✓");
 
 console.log("\nmentionNav: all assertions passed");
