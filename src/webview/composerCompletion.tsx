@@ -440,10 +440,12 @@ export function candidateRows(
 }
 
 /**
- * 这一批候选里有没有**可以进去浏览的目录**（`..` 不算：它是回上一层，Tab 对它没有意义）。
+ * 这一批候选里有没有**可以下钻的目录**（`..` 不算：它是回上一层，不是进到它里面）。
  *
- * 决定「文件」分组标题栏右侧要不要显示 `Tab 进入目录` 的提示——一个目录都没有时
- * 显示它只会让人以为按了有用。
+ * 判据只服务一件事：「文件」分组标题栏右侧要不要显示 `Tab 进入目录` 的提示——一个能
+ * 下钻的子目录都没有时，显示它只会让人以为按了有用。它与「Tab 在这一行有没有动作」
+ * **不是**同一件事：`..` 上 Tab 照旧有动作（回上一层，见 `outcomeFor`），只是那个动作
+ * 不是「进入目录」，所以这一行的存在不能当作显示提示的依据。
  */
 export function hasDrillableFolder(candidates: readonly MentionCandidate[]): boolean {
   return candidates.some(
@@ -460,7 +462,7 @@ export type CandidateOutcome =
   | { type: "command"; name: string }
   /** 对话引用：把服务端铸好的 mention 原样插进正文。 */
   | { type: "session"; token: string }
-  /** `..`：回到上一层（正文只留上一层查询串）。 */
+  /** `..`：回到上一层（正文只留上一层查询串）；Enter 与 Tab 是同一条动作。 */
   | { type: "parent"; path: string }
   /** 目录（Enter / 行右侧「整个目录」按钮）：引用**整个目录**。 */
   | { type: "insert"; token: string }
@@ -481,14 +483,12 @@ export function outcomeFor(
     return token ? { type: "session", token } : undefined;
   }
   const file = candidate as FileRefView;
-  // 「返回上一层」行**只有 pick 有动作**（Enter / 点行主体）：它不是可下钻的目录，
-  // `drill`（Tab）落在它身上应当是**什么都不做**。旧实现无论哪个动作都返回 `parent`，
-  // 于是 Tab 在那一行上也回上一层——键盘上两把键做同一件事，而界面还承诺
-  // 「Tab = 进入目录」（`hasDrillableFolder` 早就把这一行排除在「可下钻」之外，
-  // 两处判据现在一致）。
-  if (isParentCandidate(file)) {
-    return action === "drill" ? undefined : { type: "parent", path: file.path };
-  }
+  // 「返回上一层」行**两把键做同一件事**：pick（Enter / 点行主体）与 drill（Tab）都回
+  // 上一层。它不是「可以下钻的目录」——下钻是进到它里面，而它本身就是往上走一层；
+  // `hasDrillableFolder` 因此仍把它排除在「Tab 进入目录」提示之外，但那只是**提示的
+  // 依据**，不是「Tab 无动作」：`..` 与目录行一样是导航行，两把键落在它身上理当给出
+  // 同一个结果，而不是让 Tab 被静默吞掉。
+  if (isParentCandidate(file)) return { type: "parent", path: file.path };
   if (file.kind === "directory" && action === "drill") return { type: "drill", path: file.path };
   return { type: "insert", token: formatFileMention(file.path, file.kind) ?? `"${file.path}"` };
 }
@@ -977,7 +977,7 @@ function useCompletion(
   /**
    * 选中一条候选。三条通道的差别全在 `outcomeFor` 里，这里只执行：
    * - **Enter** = `pick`（目录就是「引用整个目录」）；
-   * - **Tab** = `drill`（目录下钻，非目录退回 `pick`）；
+   * - **Tab** = `drill`（目录下钻，非目录退回 `pick`；「..」两把键都回上一层）；
    * - **鼠标点行主体** = 目录下钻、其余 `pick`（行右侧「整个目录」按钮才是选中目录）。
    *
    * 与官方的差别只有一处：官方鼠标点行 = `pick`（与 Enter 同义），这里改成「点目录
@@ -1134,7 +1134,8 @@ function useCompletion(
             return;
           }
           // Enter = 选中（目录就是「引用整个目录」）；Tab = 目录下钻，非目录退回选中。
-          // 与官方一致：Esc/↑↓/Tab 之外，Tab 是唯一会「进入目录」的键。
+          // 「..」行是两把键的**同一个**结果：Enter 与 Tab 都回上一层（见 `outcomeFor`
+          // 的 parent 分支）——它是导航行，既没有「引用它自己」也没有「进到它里面」。
           if (event.key === "Enter") {
             event.preventDefault();
             applyCandidate(highlight, "pick");
@@ -1287,7 +1288,8 @@ function useCompletion(
                           文件 / 对话插入引用 token，「..」回上一层。
                           选中**整个目录**由行右侧那枚「整个目录」按钮负责（用户 2026-09-21
                           口径：鼠标点行 = 进目录，想引用整个目录有专门的按钮）；
-                          键盘那边仍是官方分工——Enter 选中、Tab 下钻。 */}
+                          键盘那边仍是官方分工——Enter 选中、Tab 下钻；「..」行例外，
+                          它不是可下钻的目标，两把键都回上一层（见 `outcomeFor`）。 */}
                       <button
                         className="popover-item-hit"
                         title={shape.parent ? texts.mentionParent : shape.folder ? texts.mentionDrill : undefined}

@@ -106,7 +106,7 @@
 
 - 越界的**文件**路径写全 → `mentionResolves` 判「能引用」→ 整块抑制、列表不弹（回车是发送）；要浏览目录必须带尾分隔符。与工作区内同源，不因越界而例外。
 - 键盘继续只认 `popoverOpen`（见「键盘只在弹层画出来时接管」）：抑制门按住时回车归发送、↑↓ 归光标、ESC 归归属链。
-- 「上一层」行**只有 pick 有动作**（Enter / 点行主体 = 回上一层）；`drill`（Tab）落在它身上**什么都不做**——它不是可下钻的目录，`hasDrillableFolder` 用的是同一条判据（不然 Tab 也回上一层，与「Tab = 进入目录」的提示自相矛盾）。
+- 「上一层」行是**导航行**：Enter / Tab / 点行主体给的是同一个结果——回上一层（写回那一层的查询串，列表换到那一层继续浏览）。一次导航只改一次正文，取帧仍只由查询串 effect 发一次。它不是**可下钻的目录**（下钻 = 进到它里面），所以 `hasDrillableFolder` 仍把它排除在外——但那决定的是「Tab 进入目录」这条提示显不显示，不是 Tab 有没有动作；两把键在这一行上一致，Tab 不再被静默吞掉。
 - 「上一层」行有两个来源、同一个形状：宿主下发的（裸 `@` 那一层，`items[0]`）与界面自己合成的（`mentionParent` 认出的子目录层）。宿主已经给出时界面原样保留它在首位、**不再合成第二条**；宿主那几条的顺序与位置一个不动。
 - **候选行只属于当前查询**：`fileRefs.query` 与当前触发词对不上（这一层的帧还没回来，或回来的是上一次查询的）时，文件 / 对话候选按空算，只有按**当前**查询合成的「上一层」行照常画。浏览入口不等待判定、当场画弹层，拿旧帧去画就会让上一层的宿主「上一层」行与文件行占住首行，快按 Enter 会选到**上一层**的目标（例如从裸 `@` 切到 `@D:/dev/other/`：旧根那一层的 parent 不许占新层的首行）。`cwd` 是会话属性、不随查询变，照旧用当前帧里的那个算深度。
 - 会话候选（对话引用）照旧只在工作区根那一层列，越界目录里不列。
@@ -124,7 +124,7 @@
 | 段 | 内容 | 断言入口 |
 |---|---|---|
 | 1 | 信任门 + M1（绝对路径目录列举、盘符裸写归一、越界筛选词本地档位）与不支持形态拒绝 | `scripts/fileRefListing.test.ts`（越界 / 门关 / 盘根 / 符号链接段 / 不存在目录 / 不支持的形态与零 FS 调用；夹具路径按宿主平台算绝对）、`scripts/localAccess.test.ts`（预算、全局槽位与排队者行为、形态判据）、`scripts/mentionCandidates.test.ts`（档位顺序与上限）、`scripts/mentionResolve.test.ts`（单根相对形态不被 cwd 同名文件抑制） |
-| 2 | M2 根目录「上一层」行 | `scripts/fileRefListing.test.ts`（帧内 `items[0]` 的形状与门关不发）、`scripts/mentionCandidates.test.ts`（只在下发时出现、保持首行、不与合成的 `..` 重复）、`scripts/mentionNav.test.ts`（该行 Enter / 点击写回 `@D:/dev/`，Tab 无动作） |
+| 2 | M2 根目录「上一层」行 | `scripts/fileRefListing.test.ts`（帧内 `items[0]` 的形状与门关不发）、`scripts/mentionCandidates.test.ts`（只在下发时出现、保持首行、不与合成的 `..` 重复）、`scripts/mentionNav.test.ts`（该行 Enter / Tab / 点击都写回 `@D:/dev/`，两把键一致且各只写一次草稿、不发查询帧） |
 | 3 | M3 `@../` 相对向上 | `scripts/fileRefListing.test.ts`（越出 cwd、退到盘根就停）、`scripts/mentionNav.test.ts`（`mentionParent` 在 `../`、`../other/`、`foo/../`、`D:/`、UNC 共享根、POSIX 根与无 cwd 时的取值）、`scripts/pathDisplay.test.ts`（绝对栈与 cwd 含 `..` 时的悬停归一） |
 
 ### 补充决策

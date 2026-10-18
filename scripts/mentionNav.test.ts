@@ -43,8 +43,15 @@ import { dictionaryFor } from "../src/webview/texts";
   addEventListener: () => {},
   removeEventListener: () => {},
 };
+/**
+ * 界面发给宿主的帧（`post`），供「一次导航只写一条草稿、导航本身不发查询帧」这类
+ * 计数断言读。原先是纯 no-op，改成记录不改行为。
+ */
+const POSTED: Array<Record<string, unknown>> = [];
 (globalThis as { acquireVsCodeApi?: unknown }).acquireVsCodeApi = () => ({
-  postMessage: () => undefined,
+  postMessage: (message: unknown) => {
+    POSTED.push(message as Record<string, unknown>);
+  },
 });
 const {
   candidateRows,
@@ -233,12 +240,14 @@ console.log("completion: 候选取用与优先级（`..` 最前、文件在前�
     [[TEXTS.commands, true, true]],
   );
 
-  // 「有可下钻的目录」不算 `..`（它是回上一层，Tab 对它没有意义）
+  // 「有可下钻的目录」不算 `..`：它本身是回上一层，没有「进到它里面」这回事。
+  // 这只决定「Tab 进入目录」那条提示显不显示，**不**决定 Tab 有没有动作——`..` 上
+  // Tab 照旧有动作（回上一层，与 Enter 一致，见第 7 节的 parent 用例）。
   assert.strictEqual(hasDrillableFolder(files), true, "有一个真目录 → 标题栏要显示 Tab 提示");
   assert.strictEqual(
     hasDrillableFolder([{ path: "src/", kind: "directory", parent: true }]),
     false,
-    "只有 `..` 时不该显示「按 Tab 进入目录」",
+    "只有 `..` 时不显示「按 Tab 进入目录」（没有可下钻的子目录，不是 Tab 没动作）",
   );
   assert.strictEqual(hasDrillableFolder(sessions), false, "对话候选不是目录");
 }
@@ -277,6 +286,11 @@ console.log("completion: 分组标题 / 优先完整 / 目录按钮的判据 ✓
     "「..」走自己的分支：回到上一层，而不是把 `..` 载入成引用",
   );
   assert.deepStrictEqual(
+    outcomeFor("mention", up, "drill"),
+    { type: "parent", path: "src/" },
+    "「..」上 Tab（drill）与 Enter（pick）同一条动作：它是导航行，不是可下钻的目录",
+  );
+  assert.deepStrictEqual(
     outcomeFor("mention", session, "drill"),
     { type: "session", token: "@[标题](dsh-session:s1)" },
     "对话引用原样插入服务端铸好的 mention，不参与下钻",
@@ -309,7 +323,8 @@ console.log("completion: 分组标题 / 优先完整 / 目录按钮的判据 ✓
   //   如果是选中该目录，尾部已有整个目录按钮用于满足该需求了」。
   // 所以：目录行点主体 = drill（打开），文件 / 对话 / `..` = pick；
   // 右下那枚「整个目录」按钮仍是 pick（它在 JSX 里写死，见 styles.test 的接线断言）。
-  // 键盘分工不动：Enter = pick、Tab = drill（上面那批用例钉的就是它）。
+  // 键盘分工不动：Enter = pick、Tab = drill（上面那批用例钉的就是它）；「..」行是唯一
+  // 的例外——它是导航行，pick 与 drill 都给同一个 `parent` 结果（见上面的 `up` 用例）。
   {
     const dirRow = candidateRows([...rankCandidates({ kind: "mention", start: 0, query: "src" }, [], [dir], [])], "mention", TEXTS).find(
       (row) => row.folder,
@@ -319,13 +334,13 @@ console.log("completion: 分组标题 / 优先完整 / 目录按钮的判据 ✓
     const fileRow = candidateRows([file], "mention", TEXTS)[0];
     assert.strictEqual(clickAction(fileRow), "pick", "点文件行 = 选中（文件没有「打开」这一说）");
     const upRow = candidateRows([up], "mention", TEXTS)[0];
-    assert.strictEqual(clickAction(upRow), "pick", "「..」行仍是 pick（它的 outcome 本来就是回上一层）");
+    assert.strictEqual(clickAction(upRow), "pick", "「..」行仍是 pick（两把键的 outcome 都是回上一层）");
     const sessionRow = candidateRows([session], "mention", TEXTS)[0];
     assert.strictEqual(clickAction(sessionRow), "pick", "对话行 = 选中");
     console.log("completion: 点目录行 = 进目录（选中整个目录留给尾部按钮 / Enter） ✓");
   }
 }
-console.log("completion: Tab 进入目录 / Enter 引用整个目录 ✓");
+console.log("completion: Tab 进入目录 / Enter 引用整个目录（「..」上两把键同为回上一层） ✓");
 
 // ---------- 8. 触发词判定：`/` 与 `@` 不是同一条规则 ----------
 //
@@ -824,6 +839,19 @@ function press(frame: Frame, key: string, extra: Record<string, unknown> = {}) {
 }
 
 /**
+ * 按一次键并交出这一动作发给宿主的帧（`post`）。
+ *
+ * 「一次导航只写一条草稿、导航本身不发查询帧」这类计数断言读它：`queryFiles` 的重取点
+ * 只有查询串那个 effect 一处（第 19 节钉住它的依赖数组），effect 在无头渲染里不跑，
+ * 这里能观察的是**动作本身**有没有自己再发一遍（或写两遍草稿）。
+ */
+function pressAndPost(frame: Frame, key: string): Array<Record<string, unknown>> {
+  POSTED.length = 0;
+  press(frame, key);
+  return POSTED.splice(0, POSTED.length);
+}
+
+/**
  * 假焦点事件：焦点**重新进入**输入框（`onFocus`）。
  *
  * 只带 hook 会读的两个字段：`currentTarget.value` 与 `selectionStart`——用户「点回输入框」
@@ -979,8 +1007,22 @@ console.log("completion(hook): ESC 优先级链（弹层先消费、其余放行
   assert.ok(start.html.includes(TEXTS.mentionParent), "「..」那行的动作说明（按钮 title）走词典");
 
   // Enter（pick）在「..」行 = 回到上一层：正文只留 `@<上一层>`
-  press(start, "Enter");
+  const enterFrames = pressAndPost(start, "Enter");
   assert.strictEqual(start.draft, "@src/", "「..」= 回到上一层（正文只留上一层的查询串）");
+
+  // Tab（drill）落在同一行 = **与 Enter 同一个结果**：正文一样、发给宿主的帧一样，
+  // 且一次导航只写一次草稿、不发查询帧、不落成发送。
+  {
+    const sent: string[] = [];
+    const tabUp = frame("@src/webview/", 13, { onSubmit: (gesture) => sent.push(gesture) });
+    const tabFrames = pressAndPost(tabUp, "Tab");
+    assert.strictEqual(tabUp.draft, start.draft, "Tab 与 Enter 结果一致：也回上一层");
+    assert.deepStrictEqual(tabFrames, enterFrames, "两把键发给宿主的帧逐字相同（不许重复写 / 重复查询）");
+    assert.deepStrictEqual(tabFrames, [{ type: "setDraft", text: "@src/" }], "一次回上一层只写一条草稿帧，不发 queryFiles");
+    assert.deepStrictEqual(sent, [], "回上一层不发送（这一键由弹层接管）");
+    assert.strictEqual(flushRaf() >= 1, true, "落光标同样排在 rAF 里");
+    assert.strictEqual(tabUp.node.lastSelection, "@src/".length, "光标落在写回的查询串之后");
+  }
 
   // Tab（drill）在目录行 = 下钻：正文换成该目录的查询串（根目录那一层没有 `..`，
   // 所以第 0 条就是目录；入口只能是裸 `@`——普通查询已经不再弹列表）
@@ -1527,11 +1569,12 @@ console.log("completion(hook): 键盘只在弹层画出来时接管（抑制门�
 // 因为只有宿主知道会话 cwd、也只有它碰得到文件系统。形状与界面自己合成的那一行**同形**
 // （`{ path, kind: "directory", parent: true }`，界面不需要新字段）。
 //
-// 这一节用真实 hook + 手写事件钉三件事：
+// 这一节用真实 hook + 手写事件钉四件事：
 // - 该行**排在最前**，且宿主没下发时裸 `@` 那一层不凭空长出一行；
 // - Enter / 点行主体 = pick：写回父目录的浏览 token（`@D:/dev/`，正文换成那一层的查询）；
-// - **Tab 对它无动作**：它不是可下钻的目录（`hasDrillableFolder` 的判据），旧实现
-//   `outcomeFor(file.parent)` 不看动作、Tab 也回上一层——键盘上两把键做同一件事。
+// - **Tab 与 Enter 同一个结果**：也写回 `@D:/dev/`。它不是可下钻的目录（`hasDrillableFolder`
+//   仍不算它），但那只决定「Tab 进入目录」这条提示显不显示，不是 Tab 没动作；
+// - 两把键各只写一次草稿、不发 `queryFiles`、不发送。
 {
   /** 弹层元素树里候选行**主体按钮**（`.popover-item-hit`）的 props，按行顺序。 */
   function hitPropsOf(node: ReactNode): Array<Record<string, unknown>> {
@@ -1586,16 +1629,28 @@ console.log("completion(hook): 键盘只在弹层画出来时接管（抑制门�
     "这一层还有一个可下钻的真目录（于是「Tab 进入目录」的提示照样显示）",
   );
 
-  // Tab 对它无动作：既不下钻也不回上一层（它不是可下钻的目录）
-  const tabbed = press(f, "Tab");
-  assert.strictEqual(tabbed.prevented, 1, "Tab 仍由弹层吃掉（不许落成默认的焦点切换）");
-  assert.strictEqual(f.draft, "@", "Tab 落在「..」上什么都不做（正文一个字不动）");
-  assert.deepStrictEqual(f.written, [], "Tab 没有写回正文");
+  // Tab 与 Enter 在这一行上是**同一个结果**（都是回上一层）：两把键各只写一次草稿、
+  // 不发查询帧、都不发送。用两张同源帧分别按键，比较它们结果与发出的帧。
+  const sent: string[] = [];
+  const tabbed = frame("@", 1, { fileRefs: refs, onSubmit: (gesture) => sent.push(gesture) });
+  POSTED.length = 0;
+  const tabCalls = press(tabbed, "Tab");
+  const tabFrames = POSTED.splice(0, POSTED.length);
+  assert.strictEqual(tabCalls.prevented, 1, "Tab 仍由弹层吃掉（不许落成默认的焦点切换）");
+  assert.strictEqual(tabbed.draft, "@D:/dev/", "Tab 在「..」上 = 回上一层（与 Enter 同一个结果）");
+  assert.deepStrictEqual(sent, [], "回上一层不发送");
+  assert.deepStrictEqual(
+    tabFrames,
+    [{ type: "setDraft", text: "@D:/dev/" }],
+    "一次回上一层只写一条草稿帧，导航本身不发 queryFiles（重取由查询串 effect 独占）",
+  );
 
   // Enter = pick：写回父目录的浏览 token（正文换成那一层的查询串）
-  press(f, "Enter");
-  assert.deepStrictEqual(f.written, ["@D:/dev/"], "Enter 在「..」上= 回上一层：写回父目录的浏览 token");
-  assert.strictEqual(f.draft, "@D:/dev/");
+  const entered = frame("@", 1, { fileRefs: refs });
+  const enterFrames = pressAndPost(entered, "Enter");
+  assert.deepStrictEqual(entered.written, ["@D:/dev/"], "Enter 在「..」上= 回上一层：写回父目录的浏览 token");
+  assert.strictEqual(entered.draft, "@D:/dev/");
+  assert.deepStrictEqual(enterFrames, tabFrames, "两把键发给宿主的帧逐字相同");
 
   // 点行主体 = pick（`clickAction` 对 parent 行给 pick，不是 drill）→ 同样回上一层
   {
@@ -1611,7 +1666,7 @@ console.log("completion(hook): 键盘只在弹层画出来时接管（抑制门�
     assert.strictEqual(clicked.node.lastSelection, "@D:/dev/".length, "光标落在写回的浏览 token 之后");
   }
 }
-console.log("completion(hook): M2 宿主「上一层」行（Enter / 点击回上一层，Tab 无动作） ✓");
+console.log("completion(hook): M2 宿主「上一层」行（Enter / Tab / 点击同为回上一层） ✓");
 
 // ---------- 23. M3 相对 `..` 向上：按会话 cwd 的深度做段算术，退到根就停 ----------
 //
@@ -1672,20 +1727,25 @@ console.log("completion(hook): M2 宿主「上一层」行（Enter / 点击回�
   assert.strictEqual(mentionParent("../other/"), "../", "`../other/` 的上一层是 `../`（不需要深度）");
   // 宿主下发的 cwd 要真的传进 `rankCandidates`：`@../` 那一层的「..」是 `../../`
   {
-    const f = frame("@../", 4, {
-      fileRefs: {
-        query: "../",
-        items: [{ path: "../x.txt", kind: "file" }],
-        sessions: [],
-        cwd: "D:/dev/proj",
-      },
-    });
+    const upRefs: UseComposerCompletionInput["fileRefs"] = {
+      query: "../",
+      items: [{ path: "../x.txt", kind: "file" }],
+      sessions: [],
+      cwd: "D:/dev/proj",
+    };
+    const f = frame("@../", 4, { fileRefs: upRefs });
     assert.ok(
       /class="popover-item-main is-priority" title="D:\/">\.\.</.test(f.html),
       "`@../` 那一层：合成的「..」目标是 `../../`，悬停解析出来的完整目标是盘根",
     );
-    press(f, "Enter");
+    const enterFrames = pressAndPost(f, "Enter");
     assert.strictEqual(f.draft, "@../../", "Enter 在那一行上 = 再往上一层（写回 `@../../`）");
+
+    // 界面自己合成的 parent 行同样两把键一个结果：Tab 也回上一层，帧与 Enter 逐字相同
+    const tabbed = frame("@../", 4, { fileRefs: upRefs });
+    const tabFrames = pressAndPost(tabbed, "Tab");
+    assert.strictEqual(tabbed.draft, f.draft, "Tab 与 Enter 在合成的「..」上结果一致（`@../../`）");
+    assert.deepStrictEqual(tabFrames, enterFrames, "两把键发出的帧逐字相同（各一条 setDraft，不发 queryFiles）");
   }
 
   // 旧帧还在场（`fileRefs.query` 对不上当前触发词）时，这一层**不许**用旧层的候选行：
