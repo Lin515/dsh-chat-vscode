@@ -137,13 +137,25 @@ console.log("unknownEvent: 已知词汇被「渲染 ∪ 静默 ∪ 消费」完�
 // 上面那张冻结表**刻意**停在 0.1.5-rc.1（新词汇正是告警该响的时候），所以内核新加的
 // 类型要单独登记。这里逐个钉住「升级时新出现、本扩展有意不渲染」的类型——漏一个，
 // 用户每次升级都会看到一条「不认识的事件」提示。
+//
+// 这张名单是**对齐版本时的收口点**：契约快照看不见模块增强声明的事件类型，所以
+// `docs/dsh-compat.md` 的「词汇漂移」一节要求每次对齐都拿官方 `KNOWN_SESSION_EVENT_TYPES`
+// 与 `protocol.ts` 的三个集合求一次差，差出来的每个类型在这里钉住（或登记成渲染 / 消费）。
 {
   const ADDED_KNOWN: readonly string[] = [
     // 0.1.6-alpha：顶层轮次停止时宣告本轮改了哪些文件（已渲染，见 RENDERED_EVENT_TYPES）
     "workspace/changes",
+    // 0.1.6-alpha.1：图片降级决策（官方的消息投影，改的是模型可见消息）
+    "image/offload",
     // 0.1.7-alpha.1：工具目录增量（`role:'developer'` 的消息）。官方把它的内容块标为
     // 「保留：生产者与消费者一起实现之前，provider 与 UI 都拒绝」，即这一版没有生产者。
     "developer/message",
+    // 0.2.1-alpha.2：会话工作目录变更（`{cwd}`）。本客户端暂不跟随这条事件，是否跟进
+    // 另作核对（见 protocol.ts 的 SILENT_EVENT_TYPES 注释）。
+    "working-directory/change",
+    // 0.2.1-alpha.3：有主任务的生命周期簿记（注册 / 结算各一条；官方 web 端不出界面）
+    "job/registered",
+    "job/settled",
   ];
   const uncovered = ADDED_KNOWN.filter(
     (type) =>
@@ -154,7 +166,7 @@ console.log("unknownEvent: 已知词汇被「渲染 ∪ 静默 ∪ 消费」完�
   for (const type of ADDED_KNOWN) adapter.applyEvent(wire(type) as never);
   assert.deepStrictEqual(toasts.filter((t) => t.startsWith("@unknownEvent:")), []);
 }
-console.log("unknownEvent: 升级新增的类型已登记（workspace/changes、developer/message） ✓");
+console.log("unknownEvent: 升级新增的类型已登记（workspace/changes、image/offload、developer/message、working-directory/change、job/registered、job/settled） ✓");
 
 // ---------- 3. 真正没见过的类型：告警保留 ----------
 

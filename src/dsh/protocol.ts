@@ -462,7 +462,9 @@ export const RENDERED_EVENT_TYPES: ReadonlySet<string> = new Set([
  * `command/*` 每次斜杠命令、`llm/retry` 每次模型重试都会命中（docs/design-messages.md）。
  *
  * 名单 = dsh-session `KNOWN_SESSION_EVENT_TYPES`（0.1.5-rc.1）减去已渲染的类型、再减去
- * `CONSUMED_EVENT_TYPES`（那些要读内容、只是不出节点）。
+ * `CONSUMED_EVENT_TYPES`（那些要读内容、只是不出节点）。0.1.5-rc.1 **之后**内核新增的
+ * 类型逐个追加在下面，每条注明引入版本与官方出处——对齐版本时的词汇核对规矩见
+ * `docs/dsh-compat.md` 的「词汇漂移」一节。
  * 其中 `llm/retry*`、`command/*`、`tool/ptc-dispatch*` 官方 web 端是有界面的
  * （重试提示、斜杠命令节点、`run_code` 子派发卡片），这里先静默，属于待补的
  * 功能缺口，而非永久决定。
@@ -472,6 +474,22 @@ export const SILENT_EVENT_TYPES: ReadonlySet<string> = new Set([
   "agent/inbox/spliced",
   // 上下文压缩的裁剪明细（start/summary/end 已渲染，prune 只是记账）
   "compaction/prune",
+  // 图片降级决策（0.1.6-alpha.1 起）：图片超出模型路由的预算时，官方把旧图片换成
+  // 「附件名 + 可读取的只读路径」的文本。它属于官方的 `MESSAGE_PROJECTION_EVENT_TYPES`
+  // （会改变**模型可见**消息的那一类），效果由服务端的消息投影承担；本客户端不重放
+  // 模型视图，所以只登记为已知、不解释其内容。
+  "image/offload",
+  // 有主任务（bash / pwsh / 子代理 / workflow）的生命周期簿记（0.2.1-alpha.3 新增，
+  // 官方 `fix(jobs): persist owned job lifecycle timing in sessions`）：任务注册与结算
+  // 各写一条，载荷是任务身份、时长与终态原因（`exit code: 0` 这类）。官方 web 端不为
+  // 它出界面——任务抽屉读 `job/list` 流、工具行读 `tool/result`，所以这里静默即可。
+  "job/registered",
+  "job/settled",
+  // 会话工作目录变更（0.2.1-alpha.2 新增，`dsh-working-directory` 包）：`{cwd}` 一条，
+  // 官方语义是「改这条会话的工作目录，已起的进程保持原目录」。本客户端目前把 cwd 当
+  // 会话的创建事实（见 `controller.ts` 的 `sessionCwds` 与 `cwdOf`），**不**跟随这条
+  // 事件；登记为已知只为不误报，是否跟进 cwd 变更另作核对。
+  "working-directory/change",
   // 消息反馈插件
   "feedback/message-delete",
   "feedback/message-put",

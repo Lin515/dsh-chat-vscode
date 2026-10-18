@@ -51,6 +51,31 @@
 CHANGELOG：某版本若含与 DSH 对齐的改动，在该版本条目里写明**对齐的是哪个 DSH 版本**。
 核对的结论（哪几处 P0、怎么处理的）写进提交说明与那条 CHANGELOG——不写进本文档。
 
+### 词汇漂移（工具看不见，必须人工核对）
+
+会话事件是**开放词汇表**，而内核新增事件类型**不需要改 dsh-session 的类型文本**：
+`job/registered` / `job/settled` 在 `@deepseek-ai/dsh-jobs` 的模块增强里，
+`working-directory/change` 在 working-directory 包、`image/offload` 在
+compaction-image-offload 包里声明，契约快照里那份 `SessionEventMap` 一个字都不变。
+所以 `dsh:check` 对这类新增**一声不响**：报告里没有，不等于官方没有新增。
+
+漏登记的代价落在运行期：`src/dsh/protocol.ts` 的三个集合（渲染 / 知情静默 / 消费）
+认不出、事件又没带 `ignorable` 时，适配器按「内核冒出了本客户端从未见过的词汇」弹提示条
+（宿主日志每种类型只记一条，**提示条是每条事件都弹**——`job/registered` 与 `job/settled`
+意味着每次 bash / pwsh / 子代理任务各弹两条）。
+
+因此每次对齐版本时**必须**额外做这一步：
+
+1. 取目标版本的官方词汇表：内核仓库 `packages/core/session/src/known-event-types.ts` 的
+   `KNOWN_SESSION_EVENT_TYPES`（由 `scripts/gen-persistence-catalog.ts` 生成，含各模块增强
+   登记的全部类型）；npm 产物里对应 `@deepseek-ai/dsh-session` 的 `known-event-types.js`。
+2. 与 `src/dsh/protocol.ts` 的 `RENDERED_EVENT_TYPES` ∪ `SILENT_EVENT_TYPES` ∪
+   `CONSUMED_EVENT_TYPES` 求差：官方有、本扩展没有的**逐个当场归类**——有界面的进渲染、
+   纯簿记的进知情静默、要读内容的进消费（三集合互斥），并同步
+   `scripts/unknownEvent.test.ts` 的 `ADDED_KNOWN`（该测试会拦住漏登记）。反向的一侧
+   （本扩展有、官方已删）也顺手看一眼：那说明我们还在为不存在的类型留渲染分支。
+3. 差集为空，这一步才算做完。差额与处理结论写进该版的提交说明与 CHANGELOG，不另立台账。
+
 ---
 
 ## 三、兼容代码的规矩
@@ -146,6 +171,11 @@ npm run dsh:diff -- <旧版本> <新版本>   # 只求差
 - **只覆盖契约面，不覆盖行为变化**。官方改了语义但没改形状时（例如「cancel 之后队列是否自动接续」，
   见[发送设计的停止续发边界](<design-draft.md#esc-后队列续发>)）快照是看不出来的，仍要靠获批探针实测。P0 是「要去看」的
   信号，不是结论。
+- **模块增强声明的事件类型工具看不见**：契约快照只抽 `CONTRACT_PACKAGES` 的 `.d.ts`，而
+  `job/registered` / `job/settled`（dsh-jobs）、`working-directory/change`、
+  `image/offload` 都是别的包通过 `declare module` 增强 `SessionEventMap` 声明的，
+  dsh-session 自己的类型文本里没有它们。每次对齐都要按「词汇漂移」那一节人工求一次差；
+  报告里没有这些类型，不代表内核没有新增。
 - **消费面的类型名不只来自源码**：也扫 `docs/dsh-server-api.md` 里点名的类型。那份文档是逐字摘抄的
   契约参考，代码里按字段内联读值、不写类型名的地方（权限投影就是）靠它才认得出。偏保守，
   宁可多报。**反向也成立**：在那份文档里顺手点名一个我们**并不消费**的类型名，等于把它登记进
