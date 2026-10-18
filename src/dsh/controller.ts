@@ -184,6 +184,26 @@ const SUBMISSION_TTL_MS = 30 * 60 * 1000;
 const MAX_SUBMISSIONS = 50;
 
 /**
+ * 一次提交的本地记录（`submissions` 的值）。
+ *
+ * `sessionId` 是**提交那一刻**那条会话：`lost` 收场要把正文与附件还回输入框时必须按它，
+ * 不能读「此刻窗口绑定着谁」——提交之后用户完全可以切走，那条会话域也可能已被回收
+ * （见 `settleLostSubmission`）。
+ *
+ * `settled` = 这条提交已经收场（内容还回了输入框 / 已被 durable 承认 / 被有意取消）：
+ * 同一 rpcId 的重复或迟到回执靠它挡住——重连重放会把入队 / 领取 / 收网三帧再走一遍，
+ * 回执表因此会被重建。
+ */
+interface SubmissionRecord {
+  text: string;
+  attachments: Attachment[];
+  content: unknown[];
+  at: number;
+  sessionId: string;
+  settled?: boolean;
+}
+
+/**
  * 一个键（窗口 / 会话）下同时留着的乐观回显条数上限。
  *
  * 回显只活到「被承认 / 被证伪」，正常情况下同一键下最多一两条；上限是给
@@ -1254,11 +1274,11 @@ export class ChatController implements vscode.Disposable {
    * 里**（界面插的 token），上传文件变成 `{type:'file', receiptId}` 内容块、图片是
    * 独立内容块——回显文本里看不到这些结构。用回显「重新编辑」会丢掉附件芯片。这里按 requestId 存原文，队列帧带回 `rpcId` 时就能对回去。
    * requestId 全局唯一，跨会话共享一份表即可。
+   *
+   * 它同时是「没有回显的提交被判 `lost`」时唯一还能还原内容的地方（见
+   * `settleLostSubmission`）：那一条没有能承载失败的行，正文只能凭这份记录还回输入框。
    */
-  private readonly submissions = new Map<
-    string,
-    { text: string; attachments: Attachment[]; content: unknown[]; at: number }
-  >();
+  private readonly submissions = new Map<string, SubmissionRecord>();
   /**
    * 连接状态（**本窗口自己那一轮**的状态机）。
    *
@@ -7858,8 +7878,11 @@ export class ChatController implements vscode.Disposable {
         // 只认这个窗口自己那份账本：别的会话的 id 就算撞上了也不许动（见 `echoOfView`）
         if (!this.echoOfView(viewId, message.requestId)) break;
         this.retireEcho(message.requestId, "user-retract");
-        // 撤回是这条提交的**最终收场**：它的附件租约跟着释放（字节与在飞轮次一起收）
+        // 撤回是这条提交的**最终收场**：它的附件租约跟着释放（字节与在飞轮次一起收）。
+        // 记录也一并标成收场——用户明确丢掉了这一条，此后即使服务端还回一条「受理了
+        // 却没落盘」，也不许把正文再塞回输入框（那等于撤回后又变出来）
         this.attachments.releaseLease(message.requestId);
+        this.settleSubmissionRecord(message.requestId);
         break;
       }
 
@@ -7870,6 +7893,10 @@ export class ChatController implements vscode.Disposable {
         const echo = this.echoOfView(viewId, message.requestId);
         if (!echo) break;
         this.removeEcho(message.requestId, "user-resend");
+        // 旧那次提交到此收场：租约交给新 requestId 继续持有（`handoffLeaseFrom`），
+        // 而旧记录标成收场——旧 rpcId 的「没落盘」回执不许再把这同一段正文还回输入框
+        // （新那一次已经把内容带走了，还回去就是凭空多一份）
+        this.settleSubmissionRecord(message.requestId);
         // 手势按主发送算：重发就是"再发一次"，不继承上一次的加速手势；
         // **来源是 `retry`**：这一段内容不是输入框里的那份，绝不能顺手清掉用户正在写的草稿。
         // 附件草稿走**租约交接**（`handoffLeaseFrom`）：换到新提交的 requestId 上继续持有——
@@ -8796,7 +8823,7 @@ export class ChatController implements vscode.Disposable {
       // 队列「重新编辑」要还原用户**原始**输入，所以记的是拼引用之前的正文。
       // requestId 是 `beginSend` 铸的那一个：队列帧把同一个 id 作为 rpcId 带回，
       // 「重新编辑」凭它还原，乐观回显也凭它收回。
-      this.rememberSubmission(requestId, text.trim(), content, attachments);
+      this.rememberSubmission(requestId, text.trim(), content, attachments, scope.sessionId);
       // 排队来源**一律按 queue 提交**：它本来就是排队区里那条，摘出来重发要么是派发
       // （那时 agent 空闲，`resolveSubmitMode` 也会给 queue），要么是回滚（agent 还在跑，
       // 那时必须回队列，插话进当前轮不是回滚）。所以这里不猜手势，与改动前逐字相同。
@@ -8850,14 +8877,21 @@ export class ChatController implements vscode.Disposable {
       const detail = this.describeError(error);
       this.log(`[submit] 发送失败：${detail}`);
       if (!this.failEcho(requestId, `@sendFailed:${detail}`)) {
-        this.appendDraft(viewId, text, attachments, requestId);
-        // 排队来源这一档的正文刚被 `appendDraft` 放回输入框，报错文案就说清这一点
-        this.reportError(
-          source === "queue"
-            ? vscode.l10n.t("Failed to send the queued message (its content is back in the box)")
-            : vscode.l10n.t("Failed to send"),
-          error,
-        );
+        // 跟随流与控制流分居两条 socket：**回执可能先到**——这条提交已经被判 `lost`，
+        // 那一刻就按老口径把正文还回输入框并提示过一次（`restoreLostSubmission`）。
+        // 本地 `prompt` 随后才 reject 时不许再还第二份（那会是同一句话两份）。
+        if (this.submissionSettled(requestId)) {
+          this.log(`[submit] 正文已由 lost 收场还回输入框，不重复回填：requestId=${requestId}`);
+        } else {
+          this.appendDraft(viewId, text, attachments, requestId);
+          // 排队来源这一档的正文刚被 `appendDraft` 放回输入框，报错文案就说清这一点
+          this.reportError(
+            source === "queue"
+              ? vscode.l10n.t("Failed to send the queued message (its content is back in the box)")
+              : vscode.l10n.t("Failed to send"),
+            error,
+          );
+        }
       }
     } finally {
       // 兜底：`try` 里提前 return 的分支也走这里收网。`failEcho` 幂等且不覆盖更具体的
@@ -8866,6 +8900,9 @@ export class ChatController implements vscode.Disposable {
     }
     // 这条提交**没有回显**（排队口径 / 子代理会话 / 判成命令但没走命令通道那类）却发出去
     // 了：界面上没有能承载它的那一行，提交那一刻移走的附件租约到此收场——不靠上限兜底。
+    // 这条提交之后若被判 `lost`（受理了却没落盘），内容由 `restoreLostSubmission` 按
+    // `submissions` 里的提交记录放回输入框：租约没了就放记录里那份芯片，租约还在
+    // （回执先于 `session/prompt` resolve 到达）则整份归还。
     if (admitted && !this.echoFor(requestId)) this.attachments.releaseLease(requestId);
     // 上传不完整的提示**放在 try 之外**：它是成功之后的告知，抛在这里不该被上面的
     // catch 当成「没发出去」（那会把已经发出去的那条标成失败，还会把 running 置回 false）。
@@ -9495,11 +9532,15 @@ export class ChatController implements vscode.Disposable {
   /**
    * 按 requestId 取回用户原始输入，并顺手缓存到 `queueOrigin`（供「重新编辑」）。
    * 取不到返回 undefined，调用方退回线上文本。
+   *
+   * **没有内容块的记录不算原文**：`restoreLostSubmission` 在记录被淘汰后会补一条空内容
+   * 的占位（只为挡住重复回执），那条不能当可还原的原文——否则「取回重编」会拿它顶掉
+   * 队列项里真正的正文（`origin?.text ?? item.text` 对空串不成立）。
    */
   private originFor(rpcId: string | undefined): QueueOrigin | undefined {
     if (!rpcId) return undefined;
     const record = this.submissions.get(rpcId);
-    if (!record) return undefined;
+    if (!record?.content.length) return undefined;
     return { text: record.text, attachments: record.attachments, content: record.content };
   }
 
@@ -9507,15 +9548,36 @@ export class ChatController implements vscode.Disposable {
    * 记下这次提交的原文、附件与内容块，供队列「重新编辑」还原、
    * 以及「ESC 中止后把队首重新发出」使用（后者需要原样内容块才能带上图片）。
    *
-   * 服务端不保证会回 `rpcId`（插件/版本差异），所以这只是尽力而为的记录；
-   * 同时按时间与条数设上限，避免长会话里无限增长。
+   * `sessionId` 是**提交那一刻**那条会话，`lost` 收场要把内容还回哪个输入框按它（见
+   * `restoreLostSubmission`）——不能等到收场时再读「此刻窗口绑定着谁」。
+   *
+   * 服务端不保证会回 `rpcId`（插件/版本差异），所以这只是尽力而为的记录。
    */
   private rememberSubmission(
     requestId: string,
     text: string,
     content: unknown[],
     attachments: Attachment[],
+    sessionId: string,
   ): void {
+    this.putSubmissionRecord(requestId, {
+      text,
+      attachments: [...attachments],
+      content: [...content],
+      at: Date.now(),
+      sessionId,
+    });
+  }
+
+  /**
+   * 提交记录表的**唯一插入口**：先按时间淘汰过期项，再按条数上限淘汰最旧的（插入序）。
+   *
+   * 上限必须只在这一处：`restoreLostSubmission` 给「记录已被淘汰的未知 rpcId」补占位
+   * 记录也走这里——绕过裁剪的话，每来一条不同的未知回执就能长一条，与「有界」的承诺相反。
+   * 淘汰**不**连带释放附件租约：租约挂在回显 / 在飞提交上，由它们自己的生命周期收场
+   * （见 `dsh/attachmentLifecycle.ts`；回显那条另有 `addEcho` / `trimPendingKeys` 收）。
+   */
+  private putSubmissionRecord(requestId: string, record: SubmissionRecord): void {
     const now = Date.now();
     for (const [key, value] of [...this.submissions]) {
       if (now - value.at > SUBMISSION_TTL_MS) this.submissions.delete(key);
@@ -9525,12 +9587,7 @@ export class ChatController implements vscode.Disposable {
       if (oldest === undefined) break;
       this.submissions.delete(oldest);
     }
-    this.submissions.set(requestId, {
-      text,
-      attachments: [...attachments],
-      content: [...content],
-      at: now,
-    });
+    this.submissions.set(requestId, record);
   }
 
   /**
@@ -9945,10 +10002,19 @@ export class ChatController implements vscode.Disposable {
     if (message.rpcId) {
       this.retireEcho(message.rpcId, "admitted");
       this.attachments.releaseLease(message.rpcId);
+      // 这条提交真的成了历史：本地记录标成收场。此后同一 rpcId 若还有 `lost` 回执
+      // （重连重放）也不许再把这份正文塞回输入框——它已经是会话里的一行了
+      this.settleSubmissionRecord(message.rpcId);
       return;
     }
     const retired = this.retireEchoByText(sessionId, message.text);
-    if (retired) this.attachments.releaseLease(retired);
+    if (retired) {
+      this.attachments.releaseLease(retired);
+      // 旧服务端不回 rpcId 时这条就是「已经成了历史」的唯一证据（按正文对上的那一条）：
+      // 记录一并标成收场——它的收件箱回执还在，后面 `turn/end` 完全可能再判它一次
+      // 「受理了却没落盘」，那时不许把正文塞回输入框（它已经在会话里了）
+      this.settleSubmissionRecord(retired);
+    }
   }
 
   /**
@@ -9961,20 +10027,149 @@ export class ChatController implements vscode.Disposable {
    * 被 `pendingInsertIndex` 甩到会话最底部（用户 2026-10-16 报的现场）。
    *
    * 两种来路分开收场：
-   * - `lost`：**真的没发出去**——按既有失败口径留在原地（红框 + 重发 / 撤回 + 原因），
-   *   正文不回输入框（与 `send` 的失败收场同一条口径）；
+   * - `lost`：**真的没发出去**。有回显的那条按既有失败口径留在原地（红框 + 重发 /
+   *   撤回 + 原因），正文不回输入框；**没有回显的那条**（运行中排队发送 / 子代理会话，
+   *   内容块见 `beginSend` 的两道门）按 `failEcho` 的契约退回老口径：正文与附件回
+   *   原会话的输入框 + 原生提示（见 `restoreLostSubmission`）——提交那一刻它们已经
+   *   被清掉，不还回去就等于静默吞掉用户那句话；
    * - `canceled`：这条待发消息是被**有意丢掉**的（官方 `Session.clear()` / 队列取消），
-   *   用户自己取消的东西不该变成红框失败行；但它必须离开账本，否则同样会永远挂在底部。
+   *   用户自己取消的东西不该变成红框失败行，也不该把正文塞回输入框；但它必须离开账本，
+   *   否则同样会永远挂在底部。
    */
   private settleLostSubmission(rpcId: string, reason: "lost" | "canceled"): void {
     if (reason === "lost") {
-      this.failEcho(rpcId, "@sendNotPersisted");
+      // 有回显：那一行留在原地标失败（正文不回输入框，既有口径不变），到此收场
+      if (this.failEcho(rpcId, "@sendNotPersisted")) return;
+      this.restoreLostSubmission(rpcId);
       return;
     }
     const key = this.removeEcho(rpcId, "inbox-canceled");
-    if (key === undefined) return;
     this.attachments.releaseLease(rpcId);
+    // 收场标记对**两种来路公共**：有回显的那条同样要标——重放再判一次 `lost` 时，
+    // 记录若还是「没收场」，那条被有意取消的正文会被当成没落盘又塞回输入框
+    this.settleSubmissionRecord(rpcId);
+    if (key === undefined) return;
     this.pushPending(key);
+  }
+
+  /**
+   * **没有回显**的提交被判 `lost` 的收场（`failEcho` 返回 `false`）。
+   *
+   * 界面上没有能承载失败的那一行，所以退回 `failEcho` 注释里那条老口径：内容块
+   * （`rememberSubmission` 记的原文与附件）回到**提交那一刻那条会话**的输入框，
+   * 并弹一次原生错误提示。归还走附件账本的租约——租约还在时（回执先于
+   * `session/prompt` resolve 到达）整份还回可见草稿，在飞上传与暂存字节都不取消；
+   * 已经由 `send` 收尾释放过时（受理已 resolve）就按记录里那份芯片放回去。
+   *
+   * 记录被 TTL / 条数上限淘汰后没有正文可还：仍然报原生提示（不许静默），并且塞一条
+   * **空内容**的占位记录标成 `settled`——同一 rpcId 的重复 / 迟到回执因此也被同一道门
+   * 挡住，去重不另建无界集合（上限就由 `submissions` 这张表兜）。
+   */
+  private restoreLostSubmission(rpcId: string): void {
+    const record = this.submissions.get(rpcId);
+    if (!record) {
+      this.log(`[submit] 无回显的提交未落盘，但本地提交记录已被淘汰，无法回填：requestId=${rpcId}`);
+      // 走同一处有界插入（TTL / 条数上限）：未知 rpcId 也能长记录的话，这张表就没有上限了
+      this.putSubmissionRecord(rpcId, {
+        text: "",
+        attachments: [],
+        content: [],
+        at: Date.now(),
+        sessionId: "",
+        settled: true,
+      });
+      this.reportLostSubmission();
+      return;
+    }
+    if (record.settled === true) return; // 已经收场过（重复 / 迟到回执）：不重复回填、不重复提示
+    record.settled = true;
+    this.log(`[submit] 无回显的提交未落盘，正文与附件回到会话输入框：requestId=${rpcId} 会话=${record.sessionId}`);
+    if (record.sessionId) this.appendDraftForSession(record.sessionId, record.text, record.attachments, rpcId);
+    this.reportLostSubmission();
+  }
+
+  /**
+   * 「服务端受理了、这一轮却没在落盘之前写成 durable」的原生提示。
+   *
+   * 只有 `detail` 会过 `resolveForVsCode`（见 `reportError`），所以前缀必须是已经本地化的
+   * 现成文案，不能塞 `@key`；原因用 `@sendNotPersisted` 标记（界面那份词典与 VS Code 那份
+   * l10n 都登记了它）。
+   */
+  private reportLostSubmission(): void {
+    this.reportError(vscode.l10n.t("Failed to send"), new Error("@sendNotPersisted"));
+  }
+
+  /**
+   * 把**某条会话**的输入框补上正文与附件（`lost` 收场专用）。
+   *
+   * 与 `appendDraft` 同一套口径（追加不覆盖、附件按 id 去重），区别只有归属：
+   * 它的键是**提交那一刻那条会话**，帧也按会话投递（`deliver`）——同一会话的每个窗口
+   * 都看到这份回填，而当前正看着别的会话的窗口收不到；那时状态留在草稿 / 附件账本里，
+   * 切回那条会话的整份快照会带上它（见 `snapshotFor`）。
+   */
+  private appendDraftForSession(
+    sessionId: string,
+    text: string,
+    attachments: Attachment[],
+    requestId?: string,
+  ): void {
+    this.deliver(sessionId, { type: "patch", patch: this.fillDraft(sessionId, text, attachments, requestId) });
+  }
+
+  /**
+   * 把正文与附件并回某个键（窗口 / 会话）的输入框，返回那一帧 `patch`——**投递给谁由
+   * 调用方定**（`appendDraft` 定向发窗口，`appendDraftForSession` 按会话镜像）。
+   *
+   * 正文用换行追加，绝不覆盖：`lost` 收场发生时用户可能已经在那条会话里写了下一句
+   * （切走再切回来也照样）。附件先归还这次提交的租约（那份活条目带着上传状态与在飞轮次），
+   * 再补记录里那份界面副本——重复的 id 在这一步被跳过。
+   *
+   * `requestId` 给出时顺手把提交记录标成收场：内容已经还回去了，同一 rpcId 的 `lost`
+   * 回执（重连重放会再来一遍）不许再追加第二份。
+   */
+  private fillDraft(
+    key: string,
+    text: string,
+    attachments: Attachment[],
+    requestId?: string,
+  ): { draft: string; attachments: Attachment[] } {
+    const existing = this.drafts.get(key) ?? "";
+    const next = existing.trim() ? `${existing.replace(/\s+$/, "")}\n${text}` : text;
+    this.drafts.set(key, next);
+    if (requestId) {
+      this.settleSubmissionRecord(requestId);
+      // 附件走账本（按 id 去重），但这一帧由这里**合成**（正文与附件一次推给界面）：
+      // 账本先推一帧、这里再推一帧的话，界面上是两帧连续的同字段补丁
+      this.attachments.returnLease(requestId, key, { publish: false });
+    }
+    this.attachments.add(key, attachments, { publish: false });
+    return { draft: next, attachments: withoutAttachmentDataUrls(this.attachments.list(key)) };
+  }
+
+  /**
+   * 把一条提交记录标成**已经收场**（幂等；记录不在时什么都不做）。
+   *
+   * 落点：内容已经还回输入框（`appendDraft`）、已被 durable 承认（`noteUserAdmitted`）、
+   * 被用户撤回 / 重发（`retractPending` / `resendPending`，那一段内容用户已经明确丢掉或
+   * 交给新那次提交带走了）、被有意取消（`settleLostSubmission` 的 `canceled` 档）。
+   * 标记之后，同一 rpcId 的 `lost` 回执（重连重放会把它再放一遍）不再回填第二次。
+   * 记录本身照旧留着：durable 行还要借它的附件字节（见 `resolveEchoAttachments`），
+   * 淘汰仍由 `submissions` 的 TTL / 条数上限管。
+   */
+  private settleSubmissionRecord(rpcId: string | undefined): void {
+    if (!rpcId) return;
+    const record = this.submissions.get(rpcId);
+    if (record) record.settled = true;
+  }
+
+  /**
+   * 这条提交的内容是不是**已经收场**（还回了输入框 / 已被承认 / 被有意丢掉）。
+   *
+   * 调用方拿它避免二次回填：同一 rpcId 的 `lost` 回执与本地 `prompt` reject 谁先到都
+   * 可能（两条 socket），先到的那条已经把内容安置好，后到的不许再动。
+   */
+  private submissionSettled(rpcId: string): boolean {
+    return this.submissions.get(rpcId)?.settled === true;
   }
 
   /** 按 requestId 找一条回显（**全局扫**：key 会随绑定迁移，按 id 找没有时序问题）。 */
@@ -10032,29 +10227,16 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
-   * 把文本与附件追加回输入框（发送失败时的兜底，尽量不丢内容）。
+   * 把文本与附件追加回**这个窗口**的输入框（发送失败时的兜底，尽量不丢内容）。
    *
    * `requestId` 给出时先**归还这次提交的租约**：原先那几枚（上传状态 / 回执 / 暂存字节 /
    * 在飞那一次结算）整份回到可见草稿；紧接着 `add` 的界面副本按 id 去重自动跳过。没有租约
-   * 的来源（重发 / 排队重发）按老口径把手上这一批放回去。
+   * 的来源（重发 / 排队重发）按老口径把手上这一批放回去。附件与正文的合并、去重与收场标记
+   * 都在 `fillDraft` 里（`appendDraftForSession` 走同一份，只是投递口径不同）。
    */
   private appendDraft(viewId: string, text: string, attachments: Attachment[], requestId?: string): void {
     const key = this.keyForView(viewId);
-    const existing = this.drafts.get(key) ?? "";
-    const next = existing.trim()
-      ? `${existing.replace(/\s+$/, "")}\n${text}`
-      : text;
-    this.drafts.set(key, next);
-    // 附件走账本（按 id 去重），但这一帧由这里**合成**（正文与附件一次推给界面）：
-    // 账本先推一帧、这里再推一帧的话，界面上是两帧连续的同字段补丁。
-    // 先归还租约（如果这次提交有），再放界面副本——重复的 id 在这一步被跳过。
-    if (requestId) this.attachments.returnLease(requestId, key, { publish: false });
-    this.attachments.add(key, attachments, { publish: false });
-    const list = this.attachments.list(key);
-    this.emitToView(viewId, {
-      type: "patch",
-      patch: { draft: next, attachments: withoutAttachmentDataUrls(list) },
-    });
+    this.emitToView(viewId, { type: "patch", patch: this.fillDraft(key, text, attachments, requestId) });
   }
 
   /**

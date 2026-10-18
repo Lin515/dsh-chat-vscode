@@ -17,7 +17,16 @@ class DisposableLike {
 const config = { get: () => undefined, has: () => false, update: async () => undefined };
 
 export const Disposable = DisposableLike;
-export const l10n = { t: (s: string) => s };
+/**
+ * `vscode.l10n.t` 的桩：与真身一样做 `{0}` 位置替换。
+ *
+ * 宿主 `reportError` 是用 `t("{0}: {1}", 前缀, 原因)` 拼整句的，不做替换的话记下来的原生
+ * 提示就是模板串本身（`{0}: {1}`），断言不到真实文案。单参数的调用照旧原样返回。
+ */
+export const l10n = {
+  t: (message: string, ...args: unknown[]) =>
+    args.reduce<string>((text, value, index) => text.replaceAll(`{${index}}`, String(value)), message),
+};
 export const env = {
   language: "zh-cn",
   clipboard: { writeText: async () => undefined },
@@ -43,12 +52,24 @@ export const editorCalls = {
   },
 };
 
+/**
+ * VS Code **原生通知**的调用记录（离线断言用）。
+ *
+ * `showErrorMessage` 在桩里本来是 no-op，「有回显就留在那一行、没有回显才弹原生提示」
+ * 这条口径于是没有可断言的落点（宿主走 `ChatController.reportError` → 这里）。
+ * 只记第一个参数（那是整句提示），其余项忽略。
+ */
+export const nativeErrors: string[] = [];
+
 export const window = {
   activeTextEditor: undefined,
   // 编辑区标签组：「在编辑器中打开」的落点判定（`editorColumn.test.ts`）要读它。
   // 默认没有分组 = 空窗口，落到 `ViewColumn.Beside`（新开一个分组）
   tabGroups: { all: [] as unknown[], activeTabGroup: undefined as unknown },
-  showErrorMessage: async () => undefined,
+  showErrorMessage: async (message: string) => {
+    nativeErrors.push(String(message));
+    return undefined;
+  },
   showInformationMessage: async () => undefined,
   showWarningMessage: async () => undefined,
   showInputBox: async () => undefined,

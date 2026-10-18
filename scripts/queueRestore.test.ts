@@ -114,7 +114,13 @@ interface Internals {
   bindView(viewId: string): void;
   openSession(viewId: string, sessionId: string): Promise<void>;
   handle(message: Record<string, unknown>, viewId: string): Promise<void>;
-  rememberSubmission(requestId: string, text: string, content: unknown[], attachments: Attachment[]): void;
+  rememberSubmission(
+    requestId: string,
+    text: string,
+    content: unknown[],
+    attachments: Attachment[],
+    sessionId: string,
+  ): void;
   onControlFrame(frame: Record<string, unknown>): void;
   /** 通知队列（宿主权威的那一份，见 `docs/design-notifications.md`）。 */
   notifications: { visible(sessionId: string | undefined): { text: string; count: number }[] };
@@ -248,7 +254,7 @@ async function scene(options: {
   const scope = h.c.scopes.get(S1);
   assert.ok(scope, "S1 的域应已建立（回路自身前提）");
   if (options.remember) {
-    h.c.rememberSubmission("r1", TEXT, SUBMITTED_CONTENT, options.local ?? [IMAGE, FILE]);
+    h.c.rememberSubmission("r1", TEXT, SUBMITTED_CONTENT, options.local ?? [IMAGE, FILE], S1);
   }
   const item = { inbox: inboxItem, wire: wireItem }[options.channel]("q1", "r1", options.content);
   if (options.channel === "inbox") h.pushInbox(S1, [item]);

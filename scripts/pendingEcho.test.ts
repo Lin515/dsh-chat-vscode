@@ -30,6 +30,8 @@ process.on("unhandledRejection", (error) => {
 
 const { ChatController } = await import("../src/dsh/controller");
 import type { PendingMessageView } from "../src/shared/chat";
+// 原生通知（`reportError`）的落点：桩里只记录，供「没有回显时才弹原生提示」这条口径断言
+const { nativeErrors } = await import("./vscodeTestStub");
 
 const CWD = "C:\\work\\demo";
 
@@ -63,6 +65,13 @@ function fakeClient(options: { running?: boolean; failPrompt?: boolean } = {}) {
    * 测试里直接这么摆：`waitUntilIdle` 是 8 秒轮询，不模拟这个收尾每个用例都要等满。
    */
   let onCancel: (() => void) | undefined;
+  /**
+   * 卡住 `prompt` 的闸：跟随流（durable 事件）与控制流（RPC 的 accepted）是两条 socket，
+   * 「这一轮没落盘」的收网完全可能**先于** `session/prompt` resolve 到达（见
+   * `settleLostSubmission` 的收场）。闸住它就能摆出那个次序。
+   */
+  let promptGate: Promise<void> | undefined;
+  let releaseGate: (() => void) | undefined;
   return {
     calls,
     timeline,
@@ -77,6 +86,18 @@ function fakeClient(options: { running?: boolean; failPrompt?: boolean } = {}) {
     },
     setOnCancel(hook: () => void) {
       onCancel = hook;
+    },
+    /** 闸住下一条 `prompt`（`releasePrompt` 放行）：摆「回执先到、accepted 后到」的次序。 */
+    holdPrompt() {
+      promptGate = new Promise<void>((resolve) => {
+        releaseGate = resolve;
+      });
+    },
+    releasePrompt() {
+      const release = releaseGate;
+      releaseGate = undefined;
+      promptGate = undefined;
+      release?.();
     },
     async cancel() {
       calls.push("session/cancel");
@@ -117,6 +138,7 @@ function fakeClient(options: { running?: boolean; failPrompt?: boolean } = {}) {
       calls.push("session/prompt");
       timeline.push("call:session/prompt");
       prompts.push({ sessionId, content, mode, requestId });
+      if (promptGate) await promptGate;
       if (failPrompt) throw new Error("prompt rejected");
       return { accepted: true };
     },
@@ -304,6 +326,38 @@ function endTurn(client: ReturnType<typeof fakeClient>, turn = 1): void {
       data: { turn, reason: { kind: "completed" } },
     },
   });
+}
+
+/**
+ * 一组「服务端收下了、却在落盘之前失败」的帧序（收件箱回执的判定来路，见
+ * `dsh/submissionReceipts.ts`）：入队 → 本轮开始 → 领取（位次置 `null`）→ `turn/end(error)` 收网。
+ *
+ * `push` 必须显式传**提交那一刻那条会话**的跟随流回调：`client.followers.session` 是
+ * 「最近一次 followSession 的落点」，测试里切过会话之后它指向的是新会话。
+ */
+function pushLostSubmission(push: (value: unknown) => void, rpcId: string, base: number, text = "x"): void {
+  const event = (seq: number, type: string, data: Record<string, unknown>) =>
+    push({ type: "event", event: { type, seq, time: Date.now(), data } });
+  event(base + 1, "agent/inbox/spliced", {
+    target: "next-turn",
+    start: 0,
+    inserted: [{ id: `m:${rpcId}`, source: { kind: "user-rpc", rpcId }, content: [{ type: "text", text }] }],
+  });
+  event(base + 2, "turn/start", { turn: 1 });
+  event(base + 3, "agent/inbox/spliced", { target: "next-turn", start: 0, removedCount: 1 });
+  event(base + 4, "turn/end", {
+    turn: 1,
+    reason: { kind: "error", error: { message: "prepareRequest failed" } },
+  });
+}
+
+/** 轮询等一个测试侧条件成立（提交链在若干 await 之后才走到 `prompt`）。 */
+async function waitFor(check: () => boolean, tries = 50): Promise<void> {
+  for (let index = 0; index < tries; index += 1) {
+    if (check()) return;
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.ok(check(), "等待条件超时");
 }
 
 console.log("pendingEcho: 用户消息乐观回显（驱动真控制器，offline stub）");
@@ -559,6 +613,9 @@ console.log("pendingEcho: 用户消息乐观回显（驱动真控制器，offlin
     "这一轮没能落盘 ⇒ 必须标成 failed（否则它会永远以 sending 留在会话最底部）",
   );
   assert.match(String(echo?.[0]?.error ?? ""), /^@/, "失败原因走 @key（界面按语言解析）");
+  // 有回显的那条照旧**不回填**输入框（正文就在那一行里；回填会变成两份）。没有回显的
+  // 那一类走另一条契约（见「三之七」）——两边的分野按 `failEcho` 的返回值划。
+  assert.strictEqual(c.draftOf("v1"), "", "有回显的 lost 不回填输入框（正文留在那一行里）");
 
   // 反面：消息**还在**收件箱里（例如运行中排队）时不许误判——它只是还没发出去
   const queued = makeController();
@@ -753,6 +810,317 @@ console.log("pendingEcho: 用户消息乐观回显（驱动真控制器，offlin
   assert.strictEqual(failed?.status, "failed", "前置：这一条确实失败了");
   assert.strictEqual(failed?.anchor, lastRow, "失败行仍然带着锚点（界面据此插回原位）");
 }
+
+// ---------- 三之七、**没有回显**的那一类 lost：正文与附件回到原会话的输入框 ----------
+//
+// 运行中发送（排队口径）与子代理会话本来就**不建回显**（`beginSend` 的 `goesOutNow` /
+// `subagentAddress` 两道门），提交那一刻正文与附件芯片已经被清掉。服务端受理了、那一轮
+// 却没在落盘之前把它写成 durable `user/message` 时（收件箱回执判定的 `lost`），`failEcho`
+// 找不到能承载失败的那一行、返回 `false`——旧收场**忽略了这个 false**，等于静默吞掉用户
+// 那句话。这里钉住 `failEcho` 契约要的收场：正文回**原会话**输入框（追加，不覆盖用户
+// 新写的）、附件芯片一并回来、原生提示照发；「运行中发送不进账本」这条设计不变。
+{
+  const { c, frames, client } = makeController();
+  c.bindView("v1");
+  await c.handle({ type: "send", text: "第一条", attachments: [], gesture: "enter" }, "v1");
+  client.followers.session?.(userMessageEvent(1, "第一条", client.prompts[0].requestId));
+  const sessionId = String(c.viewSessions.get("v1"));
+  const scope = c.scopes.get(sessionId);
+  assert.ok(scope, "前置：会话域在");
+  const push = client.followers.session;
+  assert.ok(push, "前置：这一轮的跟随流回调在");
+  scope.running = true; // agent 在跑 ⇒ 下一条按 queue 提交，**不进账本**
+  c.putAttachment("v1", { id: "lost-a1", kind: "file", name: "notes.txt" });
+
+  frames.length = 0;
+  await c.handle({ type: "send", text: "排队那条没落盘", gesture: "enter" }, "v1");
+  const requestId = String(client.prompts[1]?.requestId);
+  assert.strictEqual(client.prompts[1]?.mode, "queue", "前置：运行中发送按 queue 提交");
+  assert.strictEqual(pendingOf(frames, "v1"), undefined, "前置：这一档不建账本（没有能承载失败的那一行）");
+  assert.strictEqual(c.draftOf("v1"), "", "前置：提交那一刻正文已从输入框清掉");
+  assert.deepStrictEqual(c.attachmentIds("v1"), [], "前置：提交那一刻附件芯片也移走了");
+  const nativeBefore = nativeErrors.length;
+  frames.length = 0;
+
+  pushLostSubmission(push, requestId, 20, "排队那条没落盘");
+
+  assert.strictEqual(
+    c.draftOf("v1"),
+    "排队那条没落盘",
+    "没落盘的正文必须还回输入框（`failEcho` 返回 false 时那条契约：别把失败咽下去）",
+  );
+  assert.deepStrictEqual(c.attachmentIds("v1"), ["lost-a1"], "这次提交的附件芯片一并回来（不静默丢件）");
+  assert.ok(
+    frames.some(
+      ({ target, frame }) =>
+        target === "v1" &&
+        frame.type === "patch" &&
+        (frame.patch as { draft?: string }).draft === "排队那条没落盘",
+    ),
+    "回填要推帧（用户当场看得见正文回来了）",
+  );
+  assert.strictEqual(nativeErrors.length, nativeBefore + 1, "没有回显时按老口径弹原生提示，不许静默");
+  const notice = String(nativeErrors.at(-1));
+  assert.match(notice, /^Failed to send: /, "原生提示 = 既有本地化前缀 + 原因");
+  assert.ok(!notice.includes("@"), `原生提示里不许留裸 @key：${notice}`);
+  assert.deepStrictEqual(c.pendingEchoesOfView("v1"), [], "账本里一条都没有：无回显那条设计不变");
+}
+
+// ---------- 三之八、回填只写**原会话**、只追加；别的会话与用户新草稿都不许动 ----------
+{
+  const { c, frames, client } = makeController();
+  c.bindView("v1");
+  await c.handle({ type: "send", text: "第一条", attachments: [], gesture: "enter" }, "v1");
+  client.followers.session?.(userMessageEvent(1, "第一条", client.prompts[0].requestId));
+  const sessionId = String(c.viewSessions.get("v1"));
+  const scope = c.scopes.get(sessionId);
+  assert.ok(scope, "前置：会话域在");
+  const push = client.followers.session;
+  assert.ok(push, "前置：这一轮的跟随流回调在");
+  scope.running = true;
+  await c.handle({ type: "send", text: "没落盘那条", gesture: "enter" }, "v1");
+  const requestId = String(client.prompts[1]?.requestId);
+  // 用户接着在**原会话**输入框里打了下一句：回填必须追加，不能覆盖
+  await c.handle({ type: "setDraft", text: "我正在打的新草稿" }, "v1");
+  // 第二个窗口在看别的会话：这条回填不许漏到它那里
+  client.rows.push({
+    sessionId: "session-elsewhere",
+    cwd: CWD,
+    blank: false,
+    updatedAt: Date.now(),
+    running: false,
+  });
+  c.bindView("v2");
+  await c.handle({ type: "openSession", sessionId: "session-elsewhere" }, "v2");
+  // 第三个窗口在看**同一条**原会话：镜像照旧（草稿与芯片按会话键存）
+  c.bindView("v3");
+  await c.handle({ type: "openSession", sessionId }, "v3");
+
+  frames.length = 0;
+  pushLostSubmission(push, requestId, 30, "没落盘那条");
+
+  assert.strictEqual(
+    c.draftOf("v1"),
+    "我正在打的新草稿\n没落盘那条",
+    "追加在用户新草稿之后（不许覆盖用户正在写的内容）",
+  );
+  const draftsTo = (viewId: string): string[] =>
+    frames
+      .filter(({ target, frame }) => target === viewId && frame.type === "patch")
+      .map(({ frame }) => (frame.patch as { draft?: string }).draft)
+      .filter((draft): draft is string => typeof draft === "string");
+  assert.ok(draftsTo("v1").includes("我正在打的新草稿\n没落盘那条"), "原会话那个窗口收到回填");
+  assert.deepStrictEqual(draftsTo("v2"), [], "看别的会话的窗口收不到（归属是原会话，不是「当前窗口」）");
+  assert.ok(draftsTo("v3").includes("我正在打的新草稿\n没落盘那条"), "同会话的另一个窗口照旧看到镜像");
+}
+
+// ---------- 三之九、重复 / 迟到的回执不许追加两份，也不许删掉已回填的芯片 ----------
+//
+// 重连重放会把入队 / 领取 / 收网三帧再走一遍（回执表被重建），同一 rpcId 因此可能第二次
+// 走到 `onSubmissionLost`；而控制流（accepted）与跟随流（durable 事件）分居两条 socket，
+// 收网**先于** `session/prompt` resolve 到达也完全可能。三种次序下回填都只能发生一次。
+{
+  // A) 同一条 lost 回执来两遍（重连重放）
+  const { c, client } = makeController();
+  c.bindView("v1");
+  await c.handle({ type: "send", text: "第一条", attachments: [], gesture: "enter" }, "v1");
+  client.followers.session?.(userMessageEvent(1, "第一条", client.prompts[0].requestId));
+  const scope = c.scopes.get(String(c.viewSessions.get("v1")));
+  assert.ok(scope, "前置：会话域在");
+  const push = client.followers.session;
+  assert.ok(push, "前置：这一轮的跟随流回调在");
+  scope.running = true;
+  await c.handle({ type: "send", text: "重复回执那条", gesture: "enter" }, "v1");
+  const requestId = String(client.prompts[1]?.requestId);
+  pushLostSubmission(push, requestId, 20, "重复回执那条");
+  assert.strictEqual(c.draftOf("v1"), "重复回执那条", "前置：第一次回填");
+  const afterFirst = nativeErrors.length;
+  pushLostSubmission(push, requestId, 40, "重复回执那条");
+  assert.strictEqual(c.draftOf("v1"), "重复回执那条", "重复 / 迟到的 lost 不许追加第二份");
+  assert.strictEqual(nativeErrors.length, afterFirst, "重复回执也不再弹第二条原生提示");
+}
+{
+  // B) 本地 `prompt` 先抛错（既有口径已经把正文还回输入框）之后才判 lost
+  const { c, client } = makeController();
+  c.bindView("v1");
+  await c.handle({ type: "send", text: "第一条", attachments: [], gesture: "enter" }, "v1");
+  client.followers.session?.(userMessageEvent(1, "第一条", client.prompts[0].requestId));
+  const scope = c.scopes.get(String(c.viewSessions.get("v1")));
+  assert.ok(scope, "前置：会话域在");
+  const push = client.followers.session;
+  assert.ok(push, "前置：这一轮的跟随流回调在");
+  scope.running = true;
+  client.setFailPrompt(true);
+  await c.handle({ type: "send", text: "本地就失败的那条", gesture: "enter" }, "v1");
+  assert.strictEqual(c.draftOf("v1"), "本地就失败的那条", "前置：prompt 抛错已把正文还回输入框（既有口径）");
+  const afterCatch = nativeErrors.length;
+  pushLostSubmission(push, String(client.prompts[1]?.requestId), 20, "本地就失败的那条");
+  assert.strictEqual(c.draftOf("v1"), "本地就失败的那条", "同一条提交随后被判 lost 时不许再追加一份");
+  assert.strictEqual(nativeErrors.length, afterCatch, "也不重复弹原生提示");
+}
+{
+  // C) 回执先到、`session/prompt` 后 resolve：那时租约还在，照旧只回填一次，
+  //    而且随后受理那一步的收尾不许把已经回填的芯片删掉
+  const { c, frames, client } = makeController();
+  c.bindView("v1");
+  await c.handle({ type: "send", text: "第一条", attachments: [], gesture: "enter" }, "v1");
+  client.followers.session?.(userMessageEvent(1, "第一条", client.prompts[0].requestId));
+  const scope = c.scopes.get(String(c.viewSessions.get("v1")));
+  assert.ok(scope, "前置：会话域在");
+  const push = client.followers.session;
+  assert.ok(push, "前置：这一轮的跟随流回调在");
+  scope.running = true;
+  c.putAttachment("v1", { id: "late-a1", kind: "file", name: "late.txt" });
+
+  client.holdPrompt();
+  const sending = c.handle({ type: "send", text: "回执先到那条", gesture: "enter" }, "v1");
+  await waitFor(() => client.prompts.length === 2);
+  const requestId = String(client.prompts[1]?.requestId);
+  pushLostSubmission(push, requestId, 20, "回执先到那条");
+  assert.strictEqual(c.draftOf("v1"), "回执先到那条", "回执先到：正文照旧回输入框");
+  assert.deepStrictEqual(c.attachmentIds("v1"), ["late-a1"], "租约还在时整份归还（不取消在飞上传）");
+
+  frames.length = 0;
+  client.releasePrompt();
+  await sending;
+  assert.deepStrictEqual(c.attachmentIds("v1"), ["late-a1"], "随后受理那一步的收尾不许把已回填的芯片删掉");
+  assert.strictEqual(c.draftOf("v1"), "回执先到那条", "也不许再追加一份");
+}
+{
+  // D) 用户把失败行**撤回**（明确丢掉）之后，同一 rpcId 的 lost 回执不许把正文变回来
+  const { c, frames, client } = makeController({ failPrompt: true });
+  c.bindView("v1");
+  await c.handle({ type: "send", text: "撤回了的那条", attachments: [], gesture: "enter" }, "v1");
+  const requestId = String(client.prompts[0]?.requestId);
+  assert.strictEqual(pendingOf(frames, "v1")?.[0]?.status, "failed", "前置：这条失败了");
+  await c.handle({ type: "retractPending", requestId }, "v1");
+  assert.deepStrictEqual(pendingOf(frames, "v1"), [], "前置：撤回 = 删掉那一行");
+  const push = client.followers.session;
+  assert.ok(push, "前置：这一轮的跟随流回调在");
+  const before = nativeErrors.length;
+  pushLostSubmission(push, requestId, 20, "撤回了的那条");
+  assert.strictEqual(c.draftOf("v1"), "", "撤回之后不许再把正文还回输入框（用户明确丢掉了它）");
+  assert.strictEqual(nativeErrors.length, before, "也不弹原生提示");
+}
+{
+  // E) 用户点了**重发**（同一段内容换了新 requestId 带走）之后，旧 rpcId 的 lost 回执
+  //    不许再把这段正文还回输入框——那会让同一句话在输入框里凭空多一份
+  const { c, frames, client } = makeController({ failPrompt: true });
+  c.bindView("v1");
+  await c.handle({ type: "send", text: "要重发的那条", attachments: [], gesture: "enter" }, "v1");
+  const oldId = String(client.prompts[0]?.requestId);
+  client.setFailPrompt(false);
+  await c.handle({ type: "resendPending", requestId: oldId }, "v1");
+  const newId = String(client.prompts[1]?.requestId);
+  assert.notStrictEqual(newId, oldId, "前置：重发用了新的 requestId");
+  assert.strictEqual(pendingOf(frames, "v1")?.[0]?.requestId, newId, "前置：新那一行在等承认");
+  const push = client.followers.session;
+  assert.ok(push, "前置：这一轮的跟随流回调在");
+  const before = nativeErrors.length;
+  pushLostSubmission(push, oldId, 20, "要重发的那条");
+  assert.strictEqual(c.draftOf("v1"), "", "重发之后旧 rpcId 的 lost 不许把正文再放回输入框");
+  assert.strictEqual(nativeErrors.length, before, "也不弹原生提示");
+  assert.strictEqual(
+    pendingOf(frames, "v1")?.[0]?.requestId,
+    newId,
+    "新那一次提交不受影响（旧 id 的回执只动旧记录）",
+  );
+}
+{
+  // F) 旧服务端：durable 承认**不带 rpcId**、按正文兜底收回（回执因此还留着）之后，
+  //    同一 rpcId 再被判 lost 时不许把已经落盘的正文塞回输入框
+  const { c, client } = makeController();
+  c.bindView("v1");
+  await c.handle({ type: "send", text: "只有正文", attachments: [], gesture: "enter" }, "v1");
+  const requestId = String(client.prompts[0]?.requestId);
+  const push = client.followers.session;
+  assert.ok(push, "前置：跟随流回调在");
+  const event = (seq: number, type: string, data: Record<string, unknown>) =>
+    push({ type: "event", event: { type, seq, time: Date.now(), data } });
+  event(20, "agent/inbox/spliced", {
+    target: "next-turn",
+    start: 0,
+    inserted: [
+      { id: "m1", source: { kind: "user-rpc", rpcId: requestId }, content: [{ type: "text", text: "只有正文" }] },
+    ],
+  });
+  event(21, "turn/start", { turn: 1 });
+  event(22, "agent/inbox/spliced", { target: "next-turn", start: 0, removedCount: 1 });
+  // 落盘的这条**不带 rpcId**（旧服务端 / 插件差异）：适配器清不掉回执，只能按正文收回回显
+  event(23, "user/message", { content: [{ type: "text", text: "只有正文" }], source: { kind: "user" } });
+  assert.deepStrictEqual(c.pendingEchoesOfView("v1"), [], "前置：按正文兜底收回回显");
+  const before = nativeErrors.length;
+  event(24, "turn/end", { turn: 1, reason: { kind: "completed" } });
+  assert.strictEqual(c.draftOf("v1"), "", "这条已经落盘：正文不许被塞回输入框");
+  assert.strictEqual(nativeErrors.length, before, "它已经成了历史：也不该有失败提示");
+}
+{
+  // G) 有回显的那条被**有意取消**（`outcome: canceled`）之后，重放再判一次 lost 不许回填
+  const { c, frames, client } = makeController();
+  c.bindView("v1");
+  await c.handle({ type: "send", text: "会被取消的那条", attachments: [], gesture: "enter" }, "v1");
+  const requestId = String(client.prompts[0]?.requestId);
+  const push = client.followers.session;
+  assert.ok(push, "前置：跟随流回调在");
+  const event = (seq: number, type: string, data: Record<string, unknown>) =>
+    push({ type: "event", event: { type, seq, time: Date.now(), data } });
+  event(20, "agent/inbox/spliced", {
+    target: "next-turn",
+    start: 0,
+    inserted: [
+      {
+        id: "m2",
+        source: { kind: "user-rpc", rpcId: requestId },
+        content: [{ type: "text", text: "会被取消的那条" }],
+      },
+    ],
+  });
+  event(21, "agent/inbox/spliced", { target: "next-turn", start: 0, removedCount: 1, outcome: "canceled" });
+  assert.deepStrictEqual(pendingOf(frames, "v1"), [], "前置：有意取消 → 撤回收显");
+  const before = nativeErrors.length;
+  pushLostSubmission(push, requestId, 30, "会被取消的那条");
+  assert.strictEqual(c.draftOf("v1"), "", "有意取消过的那条正文不许被后来的 lost 塞回输入框");
+  assert.strictEqual(nativeErrors.length, before, "也不弹原生提示");
+}
+{
+  // H) 回执**先**到（判 lost 并已回填），本地 `prompt` 随后才 reject：不许再追加一份
+  const { c, frames, client } = makeController();
+  c.bindView("v1");
+  await c.handle({ type: "send", text: "第一条", attachments: [], gesture: "enter" }, "v1");
+  client.followers.session?.(userMessageEvent(1, "第一条", client.prompts[0].requestId));
+  const scope = c.scopes.get(String(c.viewSessions.get("v1")));
+  assert.ok(scope, "前置：会话域在");
+  const push = client.followers.session;
+  assert.ok(push, "前置：跟随流回调在");
+  scope.running = true;
+  client.holdPrompt();
+  client.setFailPrompt(true); // 放行后这次 `prompt` 会 reject
+  const sending = c.handle({ type: "send", text: "先判没落盘那条", gesture: "enter" }, "v1");
+  await waitFor(() => client.prompts.length === 2);
+  const requestId = String(client.prompts[1]?.requestId);
+  pushLostSubmission(push, requestId, 20, "先判没落盘那条");
+  assert.strictEqual(c.draftOf("v1"), "先判没落盘那条", "前置：回执先到 → 已经回填一次");
+  const afterLost = nativeErrors.length;
+  frames.length = 0;
+  client.releasePrompt();
+  await sending;
+  assert.strictEqual(c.draftOf("v1"), "先判没落盘那条", "随后 prompt reject 不许再追加第二份");
+  assert.strictEqual(nativeErrors.length, afterLost, "也不重复弹原生提示");
+}
+{
+  // I) 未知 rpcId 的占位记录也必须走同一条有界裁剪（TTL / 50 条上限）
+  const { c } = makeController();
+  const inner = c as unknown as {
+    settleLostSubmission(rpcId: string, reason: "lost" | "canceled"): void;
+    submissions: Map<string, unknown>;
+  };
+  for (let index = 0; index < 60; index += 1) inner.settleLostSubmission(`unknown-${index}`, "lost");
+  assert.ok(
+    inner.submissions.size <= 50,
+    `未知 rpcId 的占位记录同样受 50 条上限约束（实际 ${inner.submissions.size} 条）`,
+  );
+}
+console.log("pendingEcho: 无回显的 lost 把正文与附件还原到原会话输入框（重复/迟到/先到回执只还原一次）✓");
 
 // ---------- 四、撤回 / 重发（失败行上的两个按钮） ----------
 {

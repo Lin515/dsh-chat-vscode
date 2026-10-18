@@ -756,10 +756,15 @@ export const MESSAGES = {
    * 服务端**受理了**这条，但那一轮在把它写进会话记录之前就失败了（真实例子：所选模型
    * 没有对应的思考档位）。它与 `@sendUnconfirmed` 的区别是**已经确证**没落盘：这条
    * 待发消息被那一轮领走、却始终没有成为会话里的用户消息，所以内容一定没发出去。
+   *
+   * `vscode: true`：没有回显的那条（运行中排队发送 / 子代理会话）没有能承载失败的行，
+   * 这句原因是**原生错误提示**里唯一说清「为什么没发出去」的细节（见
+   * `controller.reportLostSubmission`）。
    */
   sendNotPersisted: {
     zh: "服务端受理后本轮失败，这条没有写进会话（内容未发出）",
     en: "The turn failed after acceptance, so this was never recorded in the session (not sent)",
+    vscode: true,
   },
   mentionFiles: { zh: "文件", en: "Files" },
   mentionSessions: { zh: "对话", en: "Sessions" },
@@ -1210,6 +1215,9 @@ export type Marker = keyof typeof MESSAGES;
 export const VSCODE_FACING_MARKERS = [
   "authNeedsToken",
   "authTokenRejected",
+  // 没有回显的那条提交被判「受理了却没落盘」：原生提示里的失败细节（见 controller 的
+  // `reportLostSubmission`；有回显时这条原因只进失败行，两种收场共用同一句话）
+  "sendNotPersisted",
   "serverSpawnFailed",
   "serverNotReady",
   "serverUnreachable",

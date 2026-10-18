@@ -60,6 +60,7 @@ interface Handler {
 const LOCALIZED: Record<string, Handler> = {
   authNeedsToken: { key: englishSource("authNeedsToken") },
   authTokenRejected: { key: englishSource("authTokenRejected") },
+  sendNotPersisted: { key: englishSource("sendNotPersisted") },
   serverSpawnFailed: { key: englishSource("serverSpawnFailed"), arg: true },
   serverNotReady: { key: englishSource("serverNotReady") },
   serverUnreachable: { key: englishSource("serverUnreachable"), arg: true },

@@ -32,6 +32,7 @@
   "Failed to cancel the queued message": "取消排队消息失败",
   "Failed to steer the queued message": "插话发送失败",
   "Failed to send": "发送失败",
+  "The turn failed after acceptance, so this was never recorded in the session (not sent)": "服务端受理后本轮失败，这条没有写进会话（内容未发出）",
   "Failed to run {0}": "执行 {0} 失败",
   "Failed to take back the queued message; only the current turn was stopped": "取出排队消息失败，已只中止当前轮",
   "Timed out waiting for the current turn to finish": "等待当前轮结束超时",

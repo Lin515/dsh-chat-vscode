@@ -83,11 +83,13 @@ const HOST_MARKERS: string[] = [
   "uploadIncomplete",
   "uploadNoSession",
   "imageFilesUploaded",
-  // 乐观回显（发送失败那一行上的原因，见 controller 的 failEcho）
+  // 乐观回显（发送失败那一行上的原因，见 controller 的 failEcho）；
+  // 没有回显的那条同一条原因改走原生提示（见 controller 的 reportLostSubmission）
   "sendNoConnection",
   "sendEmpty",
   "sendUnconfirmed",
   "sendFailed",
+  "sendNotPersisted",
   // 排队
   "queueAttachmentsLost",
   "queueContentLost",
