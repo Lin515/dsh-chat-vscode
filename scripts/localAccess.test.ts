@@ -24,6 +24,7 @@ import {
   MAX_PENDING_FS_OPS,
   pendingFsOperations,
   probeExistence,
+  unsupportedLocalPathForm,
   withinBudget,
   type FsProbe,
   type FsStatsLike,
@@ -131,6 +132,79 @@ console.log("localAccess: 有界等待 / 全局未完成上限 / 信任门");
   assert.strictEqual(pendingFsOperations(), baseline, "底层操作结算后槽位归还（不会永久泄漏）");
 }
 
+// ---------- 3b. 排队者：接棒、作废 / 超时后不启动 ----------
+//
+// 第 3 节测的是「挂满之后超时」，这一节补的是**排队那一侧**的行为：槽位空出来时排队者
+// 接棒（计数不变、直接转交），以及预算耗尽 / 查询作废时它**连底层操作都不启动**
+// ——「未完成操作有界」的另一半（见 `localAccess.ts` 的 `acquireSlot` / `releaseSlot`）。
+{
+  const baseline = pendingFsOperations();
+  const started: string[] = [];
+  /** 每次调用都记一笔「谁启动了」，并留一个可释放的 deferred（不挂死、收尾能清干净）。 */
+  const held = (tag: string) => () =>
+    new Promise<string>((resolve) => {
+      started.push(tag);
+      releases.push(() => resolve(tag));
+    });
+  const releases: Array<() => void> = [];
+
+  const occupied = [
+    withinBudget(new LocalFsBudget(5_000), held("a")),
+    withinBudget(new LocalFsBudget(5_000), held("b")),
+  ];
+  await tick();
+  assert.deepStrictEqual(started, ["a", "b"], "前提：两个全局槽位被占满");
+  assert.strictEqual(pendingFsOperations(), baseline + MAX_PENDING_FS_OPS);
+
+  // 1) 接棒：排队者拿到释放的槽位、真的启动、正常结算
+  const handoff = withinBudget(new LocalFsBudget(5_000), held("c"));
+  await tick();
+  assert.deepStrictEqual(started, ["a", "b"], "槽位满时排队者不启动底层操作");
+  releases[0]?.();
+  assert.deepStrictEqual(await occupied[0], { ok: true, value: "a" }, "释放的那个操作正常结算");
+  await tick();
+  assert.deepStrictEqual(started, ["a", "b", "c"], "槽位释放后排队者接棒并真的启动");
+  assert.strictEqual(pendingFsOperations(), baseline + MAX_PENDING_FS_OPS, "转交不算新占：计数不变");
+  releases[2]?.();
+  assert.deepStrictEqual(await handoff, { ok: true, value: "c" }, "接棒者正常结算（槽位直接转交给它）");
+  releases[1]?.();
+  assert.deepStrictEqual(await occupied[1], { ok: true, value: "b" });
+  await tick();
+  assert.strictEqual(pendingFsOperations(), baseline, "全部结算后槽位归还");
+
+  // 2) 排队者作废：连底层操作都不启动（不给没人要的探针抢槽位）
+  const occupied2 = [
+    withinBudget(new LocalFsBudget(5_000), held("d")),
+    withinBudget(new LocalFsBudget(5_000), held("e")),
+  ];
+  await tick();
+  const abortedController = new AbortController();
+  const queuedAborted = withinBudget(
+    new LocalFsBudget(5_000, { signal: abortedController.signal }),
+    held("f"),
+  );
+  await tick();
+  assert.ok(!started.includes("f"), "排队中的操作还没启动");
+  abortedController.abort();
+  assert.deepStrictEqual(await queuedAborted, { ok: false, reason: "cancelled" }, "排队者作废立刻收场");
+  assert.ok(!started.includes("f"), "作废的排队者自始至终没启动底层操作");
+
+  // 3) 排队者预算耗尽：同样不启动
+  const queuedExpired = withinBudget(new LocalFsBudget(30), held("g"));
+  await tick();
+  assert.deepStrictEqual(await queuedExpired, { ok: false, reason: "timeout" }, "排队者预算耗尽后放弃等待");
+  assert.ok(!started.includes("g"), "预算耗尽的排队者不启动底层操作");
+
+  // 收尾：放掉还占着槽位的两个操作，把全局计数还给基线（后面的用例不隐式依赖空余槽位）
+  for (const release of releases.slice(3)) release();
+  assert.deepStrictEqual(await Promise.all(occupied2), [
+    { ok: true, value: "d" },
+    { ok: true, value: "e" },
+  ]);
+  await tick();
+  assert.strictEqual(pendingFsOperations(), baseline, "收尾后槽位全部归还（不留隐式依赖）");
+}
+
 // ---------- 4. 作废 / 过期后的 ok 结果一律丢弃（不许写缓存） ----------
 {
   // 4a. 已启动后作废：立刻收场，槽位等底层结算
@@ -224,6 +298,29 @@ console.log("localAccess: 有界等待 / 全局未完成上限 / 信任门");
   assert.strictEqual(isNativeAbsolutePath("/home/u", "posix"), true);
   assert.strictEqual(isNativeAbsolutePath("D:/dev", "posix"), false, "POSIX 宿主上盘符形态判假");
   assert.strictEqual(isNativeAbsolutePath("", "win32"), false);
+
+  // 不支持的根 / 盘符形态（`unsupportedLocalPathForm`）：判据是**纯字符串**的，两条消费
+  // 路径（`fileRefListing.listingTarget` 与 `controller.mentionResolves`）都用它，
+  // 所以在这里逐字钉住两个平台的答案。
+  for (const path of ["/foo", "\\foo", "/foo/", "/", "D:foo", "D:", "//server/", "//", "\\\\.\\C:\\dev", "\\\\?\\C:\\dev"]) {
+    assert.strictEqual(
+      unsupportedLocalPathForm(path, "win32"),
+      true,
+      `"${path}" 是 Windows 上不支持的根 / 盘符形态：不做本地解释`,
+    );
+  }
+  for (const path of ["", "src/a.ts", "../x", "sub\\dir", "D:/dev", "D:\\dev", "//server/share", "//server/share/dev"]) {
+    assert.strictEqual(
+      unsupportedLocalPathForm(path, "win32"),
+      false,
+      `"${path}" 是普通相对形态或合法绝对形态：照旧本地解释`,
+    );
+  }
+  assert.strictEqual(unsupportedLocalPathForm("D:/dev", "posix"), true, "POSIX 宿主上盘符写法不做本地解释");
+  assert.strictEqual(unsupportedLocalPathForm("\\\\.\\C:\\dev", "posix"), true, "POSIX 宿主上设备命名空间同理");
+  assert.strictEqual(unsupportedLocalPathForm("/home/u/proj", "posix"), false, "POSIX 宿主上原生绝对形态照旧");
+  assert.strictEqual(unsupportedLocalPathForm("src/a.ts", "posix"), false, "普通相对路径不受影响");
+  assert.strictEqual(unsupportedLocalPathForm("", "posix"), false, "空串不是形态问题（由调用方各自判空）");
 }
 
 // ---------- 7. 信任门：形状 + 证据 + 缓存 ----------
@@ -277,9 +374,21 @@ console.log("localAccess: 有界等待 / 全局未完成上限 / 信任门");
     assert.strictEqual(denied.calls(), 2, `${name} 第二次仍要重新 stat（负结果不缓存）`);
   }
   {
-    const slow = build(() => new Promise<FsStatsLike>(() => undefined));
+    // 挂死的 stat：超时收场，但槽位仍挂在它手里（不提前释放）；用**可释放的** deferred
+    // 而不是永久 pending 的 Promise——否则这个槽位会一直占到用例结束，后面几节隐式
+    // 依赖「还剩一个空槽」而自己不知道（见 7d 与第 3b 节）。
+    const baseline = pendingFsOperations();
+    let releaseSlow: ((value: FsStatsLike) => void) | undefined;
+    const slow = build(() => new Promise<FsStatsLike>((resolve) => {
+      releaseSlow = resolve;
+    }));
     assert.strictEqual(await slow.instance.allows("D:/dev/proj", new LocalFsBudget(10)), false, "超时 → 门关");
     assert.strictEqual(slow.instance.size, 0, "超时同样不缓存");
+    assert.ok(releaseSlow, "前提：底层 stat 真的启动过（超时只放弃等待，不取消底层操作）");
+    assert.strictEqual(pendingFsOperations(), baseline + 1, "槽位仍挂在未结算的底层操作上");
+    releaseSlow?.(stats("dir"));
+    await tick();
+    assert.strictEqual(pendingFsOperations(), baseline, "底层结算后归还槽位");
   }
 
   // 7c. 作废 / 耗尽的预算不给通过结果：缓存命中也一样
@@ -298,21 +407,38 @@ console.log("localAccess: 有界等待 / 全局未完成上限 / 信任门");
   }
 
   // 7d. FS 启动后作废、随后才回来：不许允许、也不许写缓存
+  //
+  // 「启动了」这一步必须**等到**：`allows` 返回后立刻 abort 时，`withinBudget` 还停在
+  // `await acquireSlot(...)` 那一跳上，底层 stat 一次都没跑——那样这条断言测的是
+  // 「作废前就没启动」，槽位与缓存两条都空转（见第 3b 节：那才是「排队者作废不启动」）。
   {
+    const baseline = pendingFsOperations();
     let releaseStat: ((value: FsStatsLike) => void) | undefined;
+    let markStarted: (() => void) | undefined;
+    const began = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
     const gateSlow = new LocalAccessGate({
       platform: "win32",
-      fs: statOnly(() => new Promise<FsStatsLike>((resolve) => {
-        releaseStat = resolve;
-      })),
+      fs: statOnly(() => {
+        markStarted?.();
+        return new Promise<FsStatsLike>((resolve) => {
+          releaseStat = resolve;
+        });
+      }),
     });
     const controller = new AbortController();
     const budget = new LocalFsBudget(10_000, { signal: controller.signal });
     const pending = gateSlow.allows("D:/dev/proj", budget);
+    await began;
+    assert.ok(releaseStat, "前提：底层 stat 已经启动（这时才谈得上「作废后仍占槽」）");
+    assert.strictEqual(pendingFsOperations(), baseline + 1, "未结算的 stat 占着一个槽位");
     controller.abort();
     assert.strictEqual(await pending, false, "作废立刻收场（不等那次 stat）");
+    assert.strictEqual(pendingFsOperations(), baseline + 1, "槽位仍在底层操作手里（不提前释放）");
     releaseStat?.(stats("dir"));
     await tick();
+    assert.strictEqual(pendingFsOperations(), baseline, "底层结算后归还槽位");
     assert.strictEqual(gateSlow.size, 0, "迟到的肯定结果不许写进缓存（它属于一条已作废的查询）");
   }
 

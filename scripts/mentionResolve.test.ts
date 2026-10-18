@@ -35,6 +35,7 @@ import { join } from "node:path";
 import * as vscode from "vscode";
 import { ChatController } from "../src/dsh/controller";
 import type { FileRefEntry } from "../src/dsh/fileRefListing";
+import { hostPlatform } from "../src/dsh/localAccess";
 import { visibleForView } from "../src/dsh/sessionList";
 
 process.on("unhandledRejection", (error) => {
@@ -255,6 +256,25 @@ console.log("mentionResolve: 「已经能引用到内容」的判定（真控制
 
   const nested = await query("src/webview");
   assert.strictEqual(nested.frame.resolved, false, "盘上没有的相对路径照旧弹（模糊查询那一路）");
+}
+
+// ---------- 4b. 不支持的根 / 盘符形态：不做本地推断 ----------
+//
+// Windows 宿主上的单根相对写法（`/foo`）**不相对会话 cwd**：`path.join(cwd, "/foo")`
+// 拼出的是 `cwd/foo`，于是本机恰好存在同名文件时它会被误抑制成一条已解析引用。
+// 判据收在 `localAccess.unsupportedLocalPathForm`（命中即放弃本地推断，服务器候选与
+// 手写引用照旧）。POSIX 宿主上 `/foo` 是原生绝对路径，这条用例在那里退化成「本机没有
+// 这个文件 → absent」，两种宿主都断言 `resolved: false`——所以夹具要在 Windows 上真的
+// 造出那个同名文件，否则这条断言在 Windows 上也是空转。
+{
+  if (hostPlatform() === "win32") await writeFile(join(root, "foo"), "x\n");
+  const rootRelative = await query("/foo");
+  assert.strictEqual(
+    rootRelative.frame.resolved,
+    false,
+    "单根相对形态（`/foo`）不做本地推断：不许被 cwd 下的同名文件抑制",
+  );
+  assert.ok(rootRelative.methods.includes("fileReferences/list"), "不抑制时就照旧查候选（列表该弹）");
 }
 
 // ---------- 5. 对话引用：token 指向的会话还在 → 不弹 ----------

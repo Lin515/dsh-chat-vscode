@@ -510,6 +510,24 @@ console.log("fileRefListing: 目录列举补全（真盘临时目录 + 真控制
     { scope: "up", directory: "../", prefix: "../", fragment: "no" },
     "相对 `..` 的筛选词查询走 `up`",
   );
+  // 不支持的根 / 盘符形态：`listingTarget` **当场判假**，三条路（absolute / inside / up）
+  // 一条都不走。放它们进 `inside` / `up` 会得到两种错误解释：`win32.resolve` 把 `/foo/`
+  // 按**当前盘**根解析、把 `D:foo/` 接到 D 盘当前目录；或者 cwd 恰好有同名祖先时把
+  // `/foo/` 当成 `cwd/foo` 列出一份根本不是用户指的那一层的清单。
+  for (const query of ["/foo/", "\\foo\\", "D:foo/", "D:foo/bar", "//server/", "//?/UNC/server/share/"]) {
+    assert.strictEqual(listingTarget(query, "win32"), undefined, `"${query}" 不做本地解释（Windows 宿主）`);
+  }
+  assert.strictEqual(listingTarget("D:foo/", "posix"), undefined, "POSIX 宿主上盘符写法同样不解释");
+  assert.deepStrictEqual(
+    listingTarget("/foo/", "posix"),
+    { scope: "absolute", directory: "/foo/", prefix: "/foo/", fragment: "" },
+    "POSIX 宿主上 `/foo/` 是原生绝对形态（不受 Windows 那几条限制影响）",
+  );
+  assert.deepStrictEqual(
+    listingTarget("../", "posix"),
+    { scope: "up", directory: "../", prefix: "../", fragment: "" },
+    "普通相对形态不受影响（POSIX 宿主同理）",
+  );
 }
 
 /* ==================== 注入 fs 的路径解析边界（第 6 节） ==================== */
@@ -578,6 +596,33 @@ const WINDOWS = "win32" as const;
 const budget = () => new LocalFsBudget();
 
 {
+  // 不支持的根 / 盘符形态：**一次 FS 调用都不发**。这是「纯字符串判据」的可见后果——
+  // `win32.resolve(cwd, "/foo/")` 会落到当前盘根去探测一个用户没指的位置。
+  const noProbe = fakeFs({
+    stats: { "D:/": "dir", "D:/foo": "dir" },
+    listing: { "D:/": [{ name: "foo", kind: "dir" }], "D:/foo": [{ name: "x.txt", kind: "file" }] },
+  });
+  for (const query of ["/foo/", "D:foo/", "//server/"]) {
+    assert.deepStrictEqual(
+      await missingDirectoryEntries({
+        cwd: "D:/",
+        query,
+        known: [],
+        outsideAllowed: true,
+        platform: WINDOWS,
+        fs: noProbe.probe,
+        budget: budget(),
+      }),
+      [],
+      `"${query}" 不做本地列举`,
+    );
+  }
+  assert.deepStrictEqual(
+    { stat: noProbe.calls.stat, lstat: noProbe.calls.lstat, readdir: noProbe.calls.readdir },
+    { stat: [], lstat: [], readdir: [] },
+    "不支持的形态连一次 FS 调用都不发（含 lstat 与 readdir）",
+  );
+
   // 不完整的 UNC：`//server` / `//server/` 都不是可列举的根（win32 会把它们解析到当前盘），
   // 形态判据直接判假，**一次 FS 调用都不许发**——「不探测未输入的共享」在形态这一层成立
   const bare = fakeFs({ stats: { "/": "dir" } });

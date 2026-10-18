@@ -38,7 +38,9 @@
  * `..` 段允许越出 cwd。**三条都逐段 `lstat`、都拒绝符号链接段**：不跟随目录链接段
  * （跟随会把列举引到网络位置或链接环上），且绝不用 `path.resolve` 先把 `link/..` 吃掉
  * ——那会让待检查的段消失。相对形态退到盘根就停（`path.resolve` 语义），要列盘根以上的
- * 东西只能改用绝对形态。
+ * 东西只能改用绝对形态。不支持的根 / 盘符形态（Windows 上的单根相对 `/foo/`、驱动器
+ * 相对 `D:foo/`、设备命名空间与不完整 UNC）在 `listingTarget` 就判假，三条路都不走
+ * （见 `localAccess.unsupportedLocalPathForm`）。
  *
  * 任何失败（目录不存在 / 不可读 / 权限 / 断链 / 超时 / 查询已作废）一律静默回退空表：
  * `@` 列表宁可少几条，也绝不能变空或把错误抛上去。Windows 宿主的 UNC 与映射盘只在用户
@@ -49,6 +51,7 @@ import {
   hostPlatform,
   isNativeAbsolutePath,
   nodeFsProbe,
+  unsupportedLocalPathForm,
   withinBudget,
   LocalFsBudget,
   type FsProbe,
@@ -150,11 +153,14 @@ export function listingTarget(
   if (isNativeAbsolutePath(directory, platform)) {
     return { scope: "absolute", directory, prefix: directory, fragment };
   }
-  // UNC 形态但**不是**完整的共享根（`//server/`、`\\?\UNC\…` 这些）：形状判据已经判假，
-  // 这里连工作区内那条路都不走。否则 `win32.resolve` 会把 `//server/` 当成相对段接到
-  // 会话 cwd 上（或落到当前盘），先去探测一个根本不是共享的根——「不探测未输入的共享」
-  // 要求这里**一次 FS 调用都不发**。
-  if (directory.startsWith("//")) return undefined;
+  // 不支持的根 / 盘符形态（单根相对 `/foo/`、驱动器相对 `D:foo/`、设备命名空间、
+  // 不完整的 UNC `//server/`）：**三条路一条都不走**。
+  //
+  // 放它们进 `inside` / `up` 会得到两种错误解释：`win32.resolve` 把 `/foo/` 接到当前盘
+  // 根、把 `D:foo/` 接到 D 盘当前目录；另一种情况是 cwd 恰好有同名祖先时，`/foo/` 被
+  // 当成 `cwd/foo` 列出一份根本不是用户指的那一层的清单。这里是纯字符串判据，所以
+  // 「一次 FS 调用都不发」——「不探测未输入的共享」也在这一层成立。
+  if (unsupportedLocalPathForm(directory, platform)) return undefined;
   if (directory.split("/").some((segment) => segment === "..")) {
     return { scope: "up", directory, prefix: directory, fragment };
   }

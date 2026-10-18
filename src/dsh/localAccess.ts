@@ -286,6 +286,40 @@ export function isNativeAbsolutePath(path: string, platform: HostPlatform = host
 }
 
 /**
+ * 这段路径是不是**本模块明确不做本地解释**的形态。
+ *
+ * 为什么要单独一条判据：{@link isNativeAbsolutePath} 判的是「是不是宿主原生的**绝对**
+ * 形态」，而「不是绝对」只说明它**相对**——不说明它相对谁。下面这两类写法在 Windows 上
+ * 根本不相对会话 cwd，拿 `win32.resolve(cwd, …)` 去解释会落到**当前盘**：
+ *
+ * - **单根相对**（`/foo`、`\foo`）：`win32.resolve` 把它接到当前盘的根上（`C:\foo`），
+ *   而用户写的是「工作区里的 foo」或者干脆是 POSIX 形态；
+ * - **驱动器相对**（`D:foo`）：`win32.resolve` 把它接到 **D 盘的当前目录**（一个随进程
+ *   变化的量）上；
+ * - **设备 / 扩展长度命名空间**（`\\?\…`、`\\.\…`）与不完整的 UNC（`\\server\`、
+ *   `//server/`）：解析根不是共享名（见 {@link isNativeAbsolutePath}）。
+ *
+ * POSIX 宿主同理认得出 Windows 盘符与设备命名空间这两种形态：它们在 POSIX 上只是
+ * 「碰巧长得像路径的普通文件名」，按它去 `stat` / 列目录只会得到一句误导性的
+ * 「没有匹配的文件」。
+ *
+ * **只挡这些不支持的根 / 盘符形态**：普通相对路径（`src/a.ts`、`../x`）、合法的盘符
+ * 绝对路径与完整 UNC 都不受影响。调用方（`fileRefListing.listingTarget` 与
+ * `controller.mentionResolves`）拿到 `true` 时的动作是**放弃本地解释**——不列目录、
+ * 不凭本机证据抑制候选；服务器候选与手写引用照旧。
+ */
+export function unsupportedLocalPathForm(path: string, platform: HostPlatform = hostPlatform()): boolean {
+  const text = path ?? "";
+  if (text === "") return false;
+  if (platform === "win32") {
+    // 盘符（含裸 `D:`）、单根与 UNC / 设备形态：判不出原生绝对形态的就是不支持的那一类
+    if (/^[A-Za-z]:/u.test(text) || /^[\\/]/u.test(text)) return !isNativeAbsolutePath(text, platform);
+    return false;
+  }
+  return /^[A-Za-z]:/u.test(text) || /^[\\/]{2}[?.][\\/]/u.test(text);
+}
+
+/**
  * 本机存在性的三态（与 `controller.fileExistence` 同一口径）：只有明确「找不到」才算
  * `absent`，其余异常（权限、离线共享、非法字符、虚拟文件系统不支持…）一律 `unknown`
  * ——拿不到证据就不动手。

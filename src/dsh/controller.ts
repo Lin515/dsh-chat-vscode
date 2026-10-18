@@ -61,6 +61,7 @@ import {
   LocalAccessGate,
   LocalFsBudget,
   probeExistence,
+  unsupportedLocalPathForm,
 } from "./localAccess";
 import { readLocalImages } from "./localImages";
 import { shouldContinuePaging } from "./historyPaging";
@@ -10761,7 +10762,10 @@ export class ChatController implements vscode.Disposable {
    * 3. **其余按路径**：去掉行号区间（`@src/a.ts#L12-L40` 指的仍是那个文件），绝对路径
    *    原样、相对路径按**会话工作目录**解析，`stat` 得到才算在（判据与文件芯片分类同源：
    *    只有明确报「找不到」才算不在，其它异常一律按「不确定」→ 弹列表，见
-   *    `probeExistence` 的三态）。
+   *    `probeExistence` 的三态）。**不支持的根 / 盘符形态**（Windows 上的单根相对
+   *    `/foo`、驱动器相对 `D:foo`，POSIX 宿主上的盘符 / 设备命名空间写法）不参与本地
+   *    推断——它们不相对会话 cwd，`join(cwd, …)` 会拼出用户没指的路径（见
+   *    `localAccess.isNativeAbsolutePath` 的相邻判据 `unsupportedLocalPathForm`）。
    *
    * **文件路径这一条新增同一道信任门**（用户 2026-10-18 口径）：门关时不凭本机 `stat`
    * 抑制候选——远端 / WSL 部署下本机看到的「这个文件在」对执行世界没有意义，那种部署里
@@ -10786,6 +10790,11 @@ export class ChatController implements vscode.Disposable {
     }
     const path = mentionPathOf(query);
     if (path === "") return false;
+    // 不支持的根 / 盘符形态（Windows 上的单根相对 `/foo`、驱动器相对 `D:foo`，以及
+    // POSIX 宿主上的盘符 / 设备命名空间写法）：**不做本地推断**。它们不是相对会话 cwd
+    // 的路径（`join(cwd, "/foo")` 会拼出一个用户没指的 `cwd/foo`），本机恰好同名的文件
+    // 会把它误抑制成一条已解析引用。宁可弹列表：服务器候选与手写引用照旧。
+    if (unsupportedLocalPathForm(path, hostPlatform())) return false;
     if (!(await localAllowed())) return false;
     const cwd = this.cwdOf(scope);
     const absolute = isNativeAbsolutePath(path, hostPlatform()) ? path : cwd ? join(cwd, path) : undefined;

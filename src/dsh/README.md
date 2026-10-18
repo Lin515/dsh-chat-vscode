@@ -37,8 +37,8 @@
 ## 附件、引用与图片
 
 - [references.ts](<references.ts>) — 附件与引用模型，不内联文件正文。
-- [fileRefListing.ts](<fileRefListing.ts>) — 本地目录列举：工作区内空查询 / 尾斜杠的尾巴补全，以及信任门通过后的工作区外发现（M1 绝对路径 / M3 相对 `..` / 「上一层」行）；逐段拒绝符号链接段。
-- [localAccess.ts](<localAccess.ts>) — `@` 发现的本地访问层：一条查询一条有界预算、全局未完成 FS 操作上限，与 cwd 形态 + 本机目录证据组成的信任门（只缓存肯定通过）。
+- [fileRefListing.ts](<fileRefListing.ts>) — 本地目录列举：工作区内空查询 / 尾斜杠的尾巴补全，以及信任门通过后的工作区外发现（M1 绝对路径 / M2 根目录「上一层」行 / M3 相对 `..`）；逐段拒绝符号链接段，不支持的根 / 盘符形态（单根相对、驱动器相对、设备命名空间）在纯字符串判据处就拒绝。
+- [localAccess.ts](<localAccess.ts>) — `@` 发现的本地访问层：一条查询一条有界预算、全局未完成 FS 操作上限，cwd 原生形态 + 本机目录证据组成的信任门（只缓存肯定通过），以及「哪些路径写法不做本地解释」的形态判据（`unsupportedLocalPathForm`）。
 - [attachments.ts](<attachments.ts>) — 接入分类、限额、去重与内容块；进不了内容块的图片在这里判为「按文件上传」（`notInlined` 记原因），见[附件设计](<../../docs/design-attachments.md>)。
 - [attachmentLifecycle.ts](<attachmentLifecycle.ts>) — 附件唯一归属表、上传轮次与提交租约。
 - [attachmentOpen.ts](<attachmentOpen.ts>) — 打开附件的临时副本命名 / 落盘与内容身份索引。
