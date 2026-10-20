@@ -60,8 +60,7 @@ import { usePageContextMenu } from "./contextMenu";
 import { jobsEntrySignal, subagentsBusy } from "./activity";
 import { subagentRowFace } from "./subagentRow";
 import { subagentCurrentNode, subagentDescendants } from "./subagentTree";
-import { sessionDirPath } from "./sessionDir";
-import { splitPath } from "./pathDisplay";
+import { sessionDirParts, sessionDirPath } from "./sessionDir";
 import { LocaleContext, TextsContext, dictionaryFor, normalizeLocale, resolveText, useTexts } from "./texts";
 import type { SubagentTreeView, SubagentView } from "../shared/chat";
 
@@ -106,11 +105,12 @@ function Header({
       <span className="header-brand" title="DeepSeek Harness">
         <BrandMark />
       </span>
-      {/* 执行目录放在标题前方；未打开文件夹或与工作区目录不同时显示，见 sessionDirPath。 */}
-      <HeaderDir state={state} />
       {/* 标题本身就是切换入口（用户 2026-10-20 口径）：有子代理时变成可点击，
           点击展开「顶层会话 + 多层子代理树」；标题后的计数仍在。 */}
       <SessionTitle state={state} agentsBusy={agentsBusy} />
+      {/* 执行目录跟在标题（与子代理计数）之后；未打开文件夹或与工作区目录不同时
+          显示，见 sessionDirPath。 */}
+      <HeaderDir state={state} />
       <span className="header-spacer" />
       <button className="icon-btn" title={texts.newChat} onClick={() => post({ type: "newSession" })}>
         <IconPlus size={15} />
@@ -187,36 +187,31 @@ function Header({
 }
 
 /**
- * 标题前的执行目录（路径 + 文件夹图标）。
+ * 标题右侧的执行目录（文件夹图标 + 目录名 + 所在路径）。
  *
  * VS Code 未打开文件夹时显示；打开时仅在执行目录与工作区目录不同时显示。
  * 判据与回退取值集中在 `sessionDirPath`，不影响空态页的工作区目录选择。
  *
- * 静态文字，不是切目录入口。全文挂在 `title` 上——窄侧栏里被裁掉的是
- * 目录前缀（`.header-dir-prefix`），悬停仍读得到完整路径。
+ * 静态文字，不是切目录入口。全文挂在 `title` 上——窄侧栏里被裁掉的是所在路径，
+ * 悬停仍读得到完整目录。
  *
- * 路径本体包在 `.header-dir-path` 里（**一段**，前缀与末段之间没有间隙）：装得下时
- * 读起来就是一个完整字符串，装不下时被省略号吃掉的只有目录前缀、末段目录名留住
- * ——「分割」只是放不下时的降级，不是常态（用户 2026-10-10 口径）。
+ * 显示形态（用户 2026-10-20 口径）：文件夹图标后空一格接目录名，再空一格是它
+ * 所在的路径，路径里不再重复目录名（`📁 dsh-chat D:\dev`）。装不下时先省略所在
+ * 路径，目录名留住——与正文路径「末段不参与收缩」同一口径。
  */
 function HeaderDir({ state }: { state: AppState }) {
   const texts = useTexts();
   const path = sessionDirPath(state);
   if (!path) return null;
-  // 与正文路径、空态页目录行同一口径：末段目录名不参与收缩，挨裁的是目录前缀
-  const parts = splitPath(path);
+  const parts = sessionDirParts(path);
+  if (!parts) return null;
   return (
     <span className="header-dir" title={`${path}\n${texts.sessionDir}`}>
-      <IconFolder size={12} />
-      {parts ? (
-        <span className="header-dir-path">
-          <span className="header-dir-prefix">{parts.dir}</span>
-          <span className="header-dir-name">{parts.name}</span>
-        </span>
-      ) : (
-        // 认不出是路径（没有分隔符）：整段原样，自己从右侧省略
-        <span className="header-dir-path is-text">{path}</span>
-      )}
+      <IconFolder size={16} />
+      <span className="header-dir-name">{parts.name}</span>
+      {parts.parent ? (
+        <span className="header-dir-parent">{parts.parent}</span>
+      ) : null}
     </span>
   );
 }

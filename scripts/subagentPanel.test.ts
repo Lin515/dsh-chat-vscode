@@ -142,6 +142,13 @@ console.log("subagentPanel: 入口在标题上、计数保留、空树不可点 
       /\.subagent-menu-group \+ \.subagent-menu-group \{/.test(css),
     "app.css 要有标题切换入口、计数与分组样式",
   );
+  // 标题与计数之间要留得下计数点的常驻光晕（用户 2026-10-20 口径）：
+  // 4dp 时悬停底色会压到圆点左缘，看着像标题的可点区域盖住了圆点
+  {
+    const group = /\.header-title-group\s*\{([\s\S]*?)\}/u.exec(css)?.[1] ?? "";
+    const gap = Number(/gap:\s*calc\((\d+) \* var\(--dp\)\)/u.exec(group)?.[1]);
+    assert.ok(gap >= 8, "标题与子代理计数之间至少留 8dp（要为运行圆点的 6dp 光晕让出空隙）");
+  }
   // 列表是「点了展开」的固定宽度菜单，不是每次渲染都挂着的浮层
   assert.ok(
     /\{open && tree \? \(\s*<div className="subagent-menu"/.test(app),

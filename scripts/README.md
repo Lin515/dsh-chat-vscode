@@ -143,7 +143,7 @@
 - [cacheHit.test.ts](<cacheHit.test.ts>) — 会话累计缓存命中率、缺数据隐藏与工具栏 / 悬停读数同源。
 - [composerMention.test.ts](<composerMention.test.ts>) — 草稿引用镜像逐字还原、可解析目标上色与文本域排版一致。
 - [editorColumn.test.ts](<editorColumn.test.ts>) — 打开聊天与会话引用的标签组落点：来源组、活动组与无分组兜底。
-- [sessionDir.test.ts](<sessionDir.test.ts>) — 无文件夹时标题前显示会话 cwd，证据不足隐藏，窄栏收缩与迷你模式收起。
+- [sessionDir.test.ts](<sessionDir.test.ts>) — 无文件夹时标题右侧显示会话 cwd（目录名 + 所在路径），证据不足隐藏，窄栏收缩与迷你模式收起。
 - [changesCard.test.ts](<changesCard.test.ts>) — 改动文件卡片三段链路（`workspace/changes` 事件 → `/api/changes.summary` → 渲染）。
 - [produced.test.ts](<produced.test.ts>) — 「本轮产出文件」推导（`producedPath`，按成功的写类调用）。
 - [fileChange.test.ts](<fileChange.test.ts>) — 「哪些文件算有改动」判定（`git.openChange` 静默无操作防线）。

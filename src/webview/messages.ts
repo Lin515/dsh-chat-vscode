@@ -148,7 +148,7 @@ export const MESSAGES = {
     zh: "工作目录跟随 VS Code 打开的文件夹",
     en: "Working directory follows the folder open in VS Code",
   },
-  /** 标题前的执行目录说明：与工作区不同，或 VS Code 未打开文件夹时显示。 */
+  /** 标题右侧的执行目录说明：与工作区不同，或 VS Code 未打开文件夹时显示。 */
   sessionDir: { zh: "会话执行目录", en: "Session execution directory" },
   agentPresetLabel: { zh: "Agent 预设", en: "Agent preset" },
   agentPresetSeat: {

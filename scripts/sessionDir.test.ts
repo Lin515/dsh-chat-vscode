@@ -1,10 +1,11 @@
 /**
- * 标题栏上的执行目录：未打开文件夹时显示；打开时仅在与工作区目录不同时显示。
+ * 标题右侧的执行目录：未打开文件夹时显示；打开时仅在与工作区目录不同时显示。
  * 执行目录投影优先，缺失时保留会话创建目录的回退。
  *
  * 第 1 节钉**判据**（纯函数 `sessionDirPath`，按真实取值分档：会话 cwd 优先、
- * 退回扩展记下的目录、拿不到证据就不显示、空串不当目录）；第 2 / 3 节钉**接线**——
- * 元素真的渲染在标题之前、样式给了收缩口径与迷你模式的收起。
+ * 退回扩展记下的目录、拿不到证据就不显示、空串不当目录）；第 2 节钉**显示拆分**
+ * （图标与目录名、目录名与所在路径之间各空一格，路径不重复目录名）；第 3 / 4 节钉**接线**——
+ * 元素真的渲染在标题（及子代理计数）之后、样式给了收缩口径与迷你模式的收起。
  *
  * 为什么这几条必须钉住：判据或接线少一处，症状都是「静默」的——要么路径根本不出现，
  * 要么窄侧栏里长路径把标题挤没（这是本仓库界面改动最常见的两种退化形态）。
@@ -15,7 +16,7 @@ import assert from "node:assert";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { SessionSummaryView } from "../src/shared/chat";
-import { sessionDirPath } from "../src/webview/sessionDir";
+import { sessionDirParts, sessionDirPath } from "../src/webview/sessionDir";
 import { MESSAGES } from "../src/webview/messages";
 
 const read = (...parts: string[]): string => readFileSync(join(process.cwd(), ...parts), "utf8");
@@ -105,16 +106,42 @@ assert.equal(sessionDirPath({ workspace: { path: "/", locked: true }, workingDir
 assert.equal(sessionDirPath({ workspace: { path: DIR_A, locked: true }, session: summary(), workingDirectory: DIR_B }), DIR_B, "子代理不必依赖摘要 cwd");
 console.log("sessionDir: 执行目录优先、差异显示与平台路径比较 ✓");
 
-// ---------- 2. 接线：渲染在**标题前方**，取值只走判据 ----------
+// ---------- 2. 显示拆分：目录名 + 所在路径（路径里不重复目录名） ----------
+{
+  assert.deepStrictEqual(
+    sessionDirParts("C:\\work\\alpha"),
+    { name: "alpha", parent: "C:\\work" },
+    "目录名是最后一段，所在路径是它前面的那一段",
+  );
+  assert.deepStrictEqual(
+    sessionDirParts("D:/dev/demo-app/"),
+    { name: "demo-app", parent: "D:/dev" },
+    "尾分隔符不影响拆分，也不把目录名空掉",
+  );
+  assert.deepStrictEqual(sessionDirParts("/work/alpha"), { name: "alpha", parent: "/work" });
+  // 没有上一级可写：整条路径当目录名，不编一个假上级
+  assert.deepStrictEqual(sessionDirParts("/"), { name: "/", parent: "" });
+  assert.deepStrictEqual(sessionDirParts("C:\\"), { name: "C:\\", parent: "" });
+  assert.deepStrictEqual(sessionDirParts("C:\\work"), { name: "work", parent: "C:\\" }, "盘根要带分隔符");
+  assert.deepStrictEqual(sessionDirParts("\\\\server\\share"), { name: "\\\\server\\share", parent: "" });
+  assert.deepStrictEqual(
+    sessionDirParts("\\\\server\\share\\proj"),
+    { name: "proj", parent: "\\\\server\\share" },
+  );
+  assert.deepStrictEqual(sessionDirParts("alpha"), { name: "alpha", parent: "" }, "没有分隔符时只剩目录名");
+  assert.strictEqual(sessionDirParts("   "), undefined, "空路径不凭空拆出一段");
+}
+console.log("sessionDir: 图标与目录名/所在路径各空一格、路径不重复目录名 ✓");
+
+// ---------- 3. 接线：渲染在**标题与子代理计数之后**，取值只走判据 ----------
 {
   const dirAt = app.indexOf("<HeaderDir state={state} />");
-  // 两处标题：子代理页那条可点的面包屑（`className="header-title"` 的 button）与普通会话
-  // 那条静态文本——两者都必须在它**之后**
-  const crumbAt = app.indexOf('className="header-title"');
-  const plainAt = app.indexOf('<span className="header-title">{title}</span>');
+  // 标题（连同后面的子代理计数）是切换入口的整组；目录必须排在整组之后
+  const titleAt = app.indexOf("<SessionTitle state={state} agentsBusy={agentsBusy} />");
+  const spacerAt = app.indexOf('<span className="header-spacer" />');
   assert.ok(
-    dirAt > 0 && crumbAt > dirAt && plainAt > dirAt,
-    "工作目录要渲染在标题之前（用户口径：位置在标题前方；两种标题形态都要在它之后）",
+    dirAt > titleAt && titleAt > 0 && spacerAt > dirAt,
+    "工作目录要渲染在标题与子代理计数之后、右侧按钮之前（用户口径：标题右侧；有子代理时在其右侧）",
   );
 
   const body = app.slice(app.indexOf("function HeaderDir("), app.indexOf("function BrandMark("));
@@ -123,22 +150,16 @@ console.log("sessionDir: 执行目录优先、差异显示与平台路径比较 
     "取值必须走 sessionDirPath——判据只有那一处（别在组件里再判一遍 locked）",
   );
   assert.ok(/if \(!path\) return null;/.test(body), "没有目录就整个不渲染（不画空壳）");
-  assert.ok(/<IconFolder size=\{12\} \/>/.test(body), "路径前要有文件夹图标（无头文字分不出这是目录）");
+  assert.ok(/<IconFolder size=\{16\} \/>/.test(body), "路径前要有文件夹图标（无头文字分不出这是目录）");
   assert.ok(
-    /header-dir-prefix/.test(body) && /header-dir-name/.test(body),
-    "路径要拆成目录前缀 + 末段两段（末段不参与收缩，与正文路径同一口径）",
-  );
-  // 两段必须包在同一个 `.header-dir-path` 里：装得下时它读起来是一个完整字符串，
-  // 「分割」只在被省略号截断时才是可见的（用户 2026-10-10 口径）
-  assert.ok(
-    /className="header-dir-path"[\s\S]{0,200}className="header-dir-prefix"[\s\S]{0,120}className="header-dir-name"/.test(
-      body,
-    ),
-    "前缀与末段要同属 `.header-dir-path` 一段（各自散着放的话中间会多出一道间隙）",
+    /const parts = sessionDirParts\(path\);/.test(body) &&
+      /className="header-dir-name">\{parts\.name\}/.test(body) &&
+      /className="header-dir-parent">\{parts\.parent\}/.test(body),
+    "目录要拆成「目录名 + 所在路径」两段（图标与目录名、目录名与路径之间各空一格）",
   );
   assert.ok(
     /title=\{`\$\{path\}\\n\$\{texts\.sessionDir\}`\}/.test(body),
-    "完整路径要挂在 title 上——窄侧栏里裁掉的是目录前缀，悬停仍读得到全文",
+    "完整路径要挂在 title 上——窄侧栏里裁掉的是所在路径，悬停仍读得到全文",
   );
   // 静态文字：换目录是**新会话**的事，已开始的会话点它换不了目录
   assert.ok(
@@ -146,9 +167,9 @@ console.log("sessionDir: 执行目录优先、差异显示与平台路径比较 
     "这一段不是按钮（做成可点的只会让用户以为点它能换目录）",
   );
 }
-console.log("sessionDir: 接线在标题前方、判据单点、静态文字 ✓");
+console.log("sessionDir: 接线在标题与子代理计数之后、判据单点、静态文字 ✓");
 
-// ---------- 3. 样式：窄栏里让位，迷你模式整个收起 ----------
+// ---------- 4. 样式：窄栏里让位，迷你模式整个收起 ----------
 {
   /** 取出一个选择器的声明块（第一个匹配）。 */
   const rule = (selector: string): string => {
@@ -175,22 +196,32 @@ console.log("sessionDir: 接线在标题前方、判据单点、静态文字 ✓
   );
   assert.ok(
     /flex:\s*0\s+1\s/.test(dir),
-    "收缩按内容宽度等比进行（子代理页上加重权重会把整段路径折成 0 宽，末段目录名也跟着没）",
+    "收缩按内容宽度等比进行（加重权重会把整段路径折成 0 宽，目录名也跟着没）",
   );
   assert.ok(/white-space:\s*nowrap/.test(dir), ".header-dir 单行（英文路径更长，折行会撑高顶栏）");
+  assert.ok(
+    /gap:\s*calc\(4 \* var\(--dp\)\)/.test(dir),
+    "图标与目录名之间空一格（用户 2026-10-21 口径）",
+  );
 
   assert.ok(
-    /text-overflow:\s*ellipsis/.test(rule(".header-dir-prefix")),
-    "目录前缀要能被裁——挨裁的只能是它，末段目录名要留住",
+    /text-overflow:\s*ellipsis/.test(rule(".header-dir-name")),
+    "目录名过长时自己省略（不能只靠外层裁切）",
   );
-  // 路径那一段内部**不许有间隙**：完整显示时它就该是一个字符串，
-  // 中间那道缝会让人读成「路径 + 另一个词」（间隙只留在图标与文字之间）
-  const path = rule(".header-dir-path");
-  assert.ok(!/gap:/.test(path), ".header-dir-path 内部不许有间隙（完整显示时要读成一个字符串）");
   assert.ok(
     /flex:\s*0\s+0\s/.test(rule(".header-dir-name")),
-    "末段目录名不参与收缩（它才是用户要看的那一段）",
+    "目录名不参与收缩（它才是用户要看的那一段）",
   );
+  const parent = rule(".header-dir-parent");
+  assert.ok(
+    /flex:\s*0\s+1\s/.test(parent) && /min-width:\s*0/.test(parent),
+    "所在路径可收缩：装不下时先省它",
+  );
+  assert.ok(
+    !/margin-left:/.test(parent),
+    "目录名与所在路径之间的空格只由 .header-dir 的 gap 提供（不要再叠一层）",
+  );
+  assert.ok(/text-overflow:\s*ellipsis/.test(parent), "所在路径过长要能省略");
   assert.ok(
     /\.app\.is-mini \.header-dir\s*\{[^}]*display:\s*none/.test(css),
     "迷你模式要连同它一起收起（那一档连标题都不显示，路径留着会把按钮挤出去）",
@@ -198,7 +229,7 @@ console.log("sessionDir: 接线在标题前方、判据单点、静态文字 ✓
 }
 console.log("sessionDir: 收缩口径与迷你模式收起 ✓");
 
-// ---------- 4. 悬停说明：中英两份都在登记表里 ----------
+// ---------- 5. 悬停说明：中英两份都在登记表里 ----------
 {
   const entry = MESSAGES.sessionDir;
   assert.strictEqual(typeof entry.zh, "string", "sessionDir 的中文在消息表里");
