@@ -40,14 +40,22 @@ const { QuestionCard } = await import("../src/webview/components/Rows");
 const { Message } = await import("../src/webview/components/Message");
 // 第 7 节的 `takenOver` 由公开入口现算（不手写段 id），选举 → 抑制 → 渲染一条链路都过一遍
 const { resolveInteractions } = await import("../src/webview/pendingInteraction");
+// 半填草稿的内存表：第 5c 节直接往表里种一份草稿，再渲染验证「切回来」的恢复
+const { clearAllQuestionDrafts, questionDraftKey, writeQuestionDraft } = await import(
+  "../src/webview/questionDraft"
+);
 
 /** 渲染成 HTML；语言按真实链路给（`useTexts` 的默认是英文，这里显式喂词典）。 */
-const render = (question: QuestionView, locale: "zh" | "en" = "zh"): string =>
+const render = (
+  question: QuestionView,
+  locale: "zh" | "en" = "zh",
+  sessionId?: string,
+): string =>
   renderToStaticMarkup(
     createElement(
       TextsContext.Provider,
       { value: dictionaryFor(locale) },
-      createElement(QuestionCard, { question, batch: 3 }),
+      createElement(QuestionCard, { question, batch: 3, sessionId }),
     ),
   );
 
@@ -195,6 +203,59 @@ console.log("questionRender: 多选问卷同样可选自定义回答 ✓");
   }
 }
 console.log("questionRender: 待答卡可放弃整组问题、收场卡没有出口 ✓");
+
+// ---------- 5c. 待答卡的半填状态：切走会话再回来按内存草稿恢复 ----------
+//
+// 用户 2026-10-21 口径：问卷填了一半切去别的会话，切回来不能从头再填；草稿**不落盘**
+// （DSH 重启后问卷本来就要重新发起）。这里直接往内存表种一份草稿，再用同一把键渲染，
+// 验证选项、自定义回答的文字与选中态、依次问答的停靠题位都真的回到了界面上。
+{
+  clearAllQuestionDrafts();
+  writeQuestionDraft(questionDraftKey("session-a", "ev-draft"), {
+    selected: { scope: ["只改入口文件"] },
+    custom: { docs: "README 先不动" },
+    customChosen: { docs: true },
+    index: 0,
+  });
+
+  const restored = render({ requestId: "ev-draft", state: "waiting", items }, "zh", "session-a");
+  assert.deepStrictEqual(selectedLabels(restored), ["只改入口文件"], "切回来时选中的选项要恢复");
+  assert.ok(
+    /<div class="question-option question-custom is-selected">[\s\S]*?<textarea class="question-input"[^>]*>README 先不动<\/textarea>/.test(
+      restored,
+    ),
+    "自定义回答的文字与选中态要一起恢复",
+  );
+
+  // 草稿键带会话 id：别的会话里同名的问卷不借用这份半填状态
+  const otherSession = render({ requestId: "ev-draft", state: "waiting", items }, "zh", "session-b");
+  assert.deepStrictEqual(selectedLabels(otherSession), [], "别的会话不会恢复出选项");
+  assert.ok(!/question-custom is-selected/.test(otherSession), "别的会话不会恢复出自定义回答的选中态");
+
+  // 依次问答还要恢复停在第几题（题目数 > 阈值才分页）
+  const steppedItems: QuestionView["items"] = [
+    { id: "s1", question: "第一个问题", options: [{ label: "一" }] },
+    { id: "s2", question: "第二个问题", options: [{ label: "二" }] },
+    { id: "s3", question: "第三个问题", options: [{ label: "三" }] },
+    { id: "s4", question: "第四个问题", options: [{ label: "四" }] },
+  ];
+  writeQuestionDraft(questionDraftKey("session-a", "ev-step"), {
+    selected: {},
+    custom: {},
+    customChosen: {},
+    index: 2,
+  });
+  const stepped = render(
+    { requestId: "ev-step", state: "waiting", items: steppedItems },
+    "zh",
+    "session-a",
+  );
+  assert.ok(stepped.includes("第 3 / 4 题"), `切回来时停在第 3 题：${stepped.slice(0, 400)}`);
+  assert.ok(stepped.includes("第三个问题"), "渲染的是恢复的那一题");
+  assert.ok(!stepped.includes("第一个问题"), "没有从头回到第一题");
+  clearAllQuestionDrafts();
+}
+console.log("questionRender: 问卷半填草稿按会话恢复 ✓");
 
 // ---------- 6. 英文同一条链路（双语规则：文案走词典，不写死） ----------
 {

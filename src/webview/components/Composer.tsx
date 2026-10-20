@@ -893,7 +893,11 @@ export function Composer({
           ) : pending.kind === "plan-review" ? (
             <PlanReviewCard question={pending.question} review={pending.review} />
           ) : (
-            <QuestionCard question={pending.question} batch={state.questionBatch} />
+            <QuestionCard
+              question={pending.question}
+              batch={state.questionBatch}
+              sessionId={state.session?.id}
+            />
           )}
         </div>
       ) : null}

@@ -1060,7 +1060,7 @@ console.log("styles: 代码块自动换行（官方 pre-wrap） ✓");
     /pending\.kind === "approval" \? \(\s*<ApprovalCard/.test(composer),
     "审批卡在这里渲染",
   );
-  assert.ok(/<QuestionCard question=\{pending\.question\}/.test(composer), "提问卡同理");
+  assert.ok(/<QuestionCard\s+question=\{pending\.question\}/.test(composer), "提问卡同理");
 
   // 卡片必须**限高内滚**：`.composer` 是 `flex: 0 0 auto`，一张多题问卷会长到
   // 1500+px，把上面的会话 / 轨迹压成 0 高、自己还从面板底部溢出去（420×900 实测

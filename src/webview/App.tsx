@@ -1048,7 +1048,8 @@ export function App() {
             轨迹打开时就该占用整个会话窗口（用户 2026-09-16 口径：待答问卷不该一直
             占着底部，切回来时它照常还在）。
             输入区由 `.app.is-trajectory` 用「移出布局 + 隐藏」的方式让位，**不卸载**：
-            待答问卷里填了一半的选择是 `QuestionCard` 的本地 state，卸载就没了。
+            半填的选择虽能经内存草稿表在重挂载时恢复（见 `questionDraft.ts`），但焦点、
+            光标与正在输入的编辑状态会丢——看一眼轨迹回来不该打断正在填的答案。
             注意两个滚动监听挂在 `chat-scroll` 上，它被卸载后必须能在回来时重挂，
             所以下面两个 hook 都吃一个 `active`（见 `useAutoScroll`）。 */}
         {state.panel === "trajectory" ? (

@@ -137,8 +137,18 @@ console.log("questionFlow: 提交闸门覆盖全部题目 ✓");
   );
   const composer = readFileSync(join(process.cwd(), "src", "webview", "components", "Composer.tsx"), "utf8");
   assert.ok(
-    /<QuestionCard question=\{pending\.question\} batch=\{state\.questionBatch\} \/>/.test(composer),
-    "待回答的问卷要把宿主下发的阈值传进卡片",
+    /<QuestionCard[\s\S]{0,200}?question=\{pending\.question\}[\s\S]{0,160}?batch=\{state\.questionBatch\}[\s\S]{0,160}?sessionId=\{state\.session\?\.id\}/.test(
+      composer,
+    ),
+    "待回答的问卷要把宿主下发的阈值与所属会话传进卡片",
+  );
+  assert.ok(
+    /readQuestionDraft\(draftKey\)/.test(rows) && /writeQuestionDraft\(draftKey/.test(rows),
+    "半填状态要从问卷草稿表读回，并在每次选择 / 输入 / 翻页后写回（切会话恢复）",
+  );
+  assert.ok(
+    /clearQuestionDraft\(draftKey\)/.test(rows),
+    "问卷收场（已作答 / 已撤回）后要清掉这份草稿",
   );
   const pkg = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf8")) as {
     contributes: { configuration: { properties: Record<string, { type?: string; minimum?: number; default?: unknown }> } };

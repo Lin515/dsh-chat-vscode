@@ -65,6 +65,7 @@ React / 浏览器环境，不使用 Node API。上层边界见[源码导航](<..
 - [pendingInteraction.ts](<pendingInteraction.ts>) — plan-review > 提问 > 审批的输入接管。
 - [pendingMessage.ts](<pendingMessage.ts>) — 乐观回显身份、去重与插入位置。
 - [questionFlow.ts](<questionFlow.ts>) — questionBatch 分页问答。
+- [questionDraft.ts](<questionDraft.ts>) — 问卷半填草稿的内存表：按会话 + 问卷 id 归档、上限淘汰、收场即清；只用于切会话恢复，不落盘。
 - [planReview.ts](<planReview.ts>) — 计划审阅识别与收窄。
 - [presetDisplay.ts](<presetDisplay.ts>) — 内置双语 / 自写原文与配置名称匹配。
 

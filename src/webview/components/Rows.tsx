@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent } from "react";
 import { post } from "../bridge";
 import { consumeEscape } from "../escapeOwner";
@@ -17,6 +17,12 @@ import { classifyTool, toolTitleKey } from "../../shared/toolMeta";
 import { MAX_CATALOG_ENTRIES } from "../../shared/injectedSource";
 import { formatDuration, Popover, Row, useElapsed, useSelectionFreeze, useStickyBody } from "./primitives";
 import { canSubmit, isAnswered, questionMode } from "../questionFlow";
+import {
+  clearQuestionDraft,
+  questionDraftKey,
+  readQuestionDraft,
+  writeQuestionDraft,
+} from "../questionDraft";
 import { planReviewAnswer, planReviewOf, type PlanReviewView } from "../planReview";
 import { DiffView } from "./Diff";
 import { CodeBlock } from "./CodeBlock";
@@ -838,6 +844,10 @@ export function PlanReviewCard({
  *    都是空的（用户 2026-09-15 报的「展开后没有显示用户的回答」就是这个）；
  * 4. **已撤回**（`cancelled`，没人回答过）：同样收缩成一行（`已取消 N 题`）。
  *
+ * 待答卡的**半填状态**（选项 / 自定义文本 / 自定义回答选中态 / 依次问答停在第几题）
+ * 会写进 `../questionDraft` 的**内存表**，切走会话再回来时恢复；不落盘（DSH 重启后
+ * 问卷本来就要重新发起）。已收场的卡只读 `question.answers`，不用草稿冒充当时的回答。
+ *
  * 自定义回答是一个**组合组件**（用户 2026-09-15 口径）：一行两件东西——标题
  * 「自定义回答」+ 一个**可多行**的输入框。整行**是一个整体**，与普通选项同权：
  * - 它是选项列表的最后一行（同一个 `.question-option` 外观）；
@@ -851,24 +861,53 @@ export function PlanReviewCard({
  *
  * `batch` 由宿主下发（webview 读不到 VS Code 配置），缺省用默认阈值。
  */
-export function QuestionCard({
+export function QuestionCard(props: {
+  question: QuestionView;
+  batch?: number;
+  /**
+   * 卡片所属会话（草稿表按会话 + 问卷 id 归档）。
+   *
+   * 记录卡不传也可以：它只读 `question.answers`，草稿键会落到 `null` 会话分组，
+   * 不会串到真实会话的待答卡上。
+   */
+  sessionId?: string;
+}) {
+  // 按**问卷 id** 换 key：同一个宿主位置上的卡片可能从一张问卷换成另一张（切换会话、
+  // 宿主替换待处理交互），不换实例就会把上一张的本地填写状态带过来。key 不拼会话 id：
+  // 会话 id 晚一帧到达时只该迁移草稿键，不该把用户已经填好的内容重新挂载丢掉。
+  return <QuestionCardState key={props.question.requestId} {...props} />;
+}
+
+function QuestionCardState({
   question,
   batch,
+  sessionId,
 }: {
   question: QuestionView;
   batch?: number;
+  sessionId?: string;
 }) {
   const texts = useTexts();
-  const [selected, setSelected] = useState<Record<string, string[]>>({});
-  const [custom, setCustom] = useState<Record<string, string>>({});
+  const draftKey = questionDraftKey(sessionId, question.requestId);
+  /**
+   * 挂载时读回这份问卷的填写草稿（切会话后回到这张卡就是靠这一步）。
+   *
+   * 只读一次：卡片按问卷 id 换 key，换问卷必然重新挂载；同一张问卷的后续更新
+   * 继续用本地 state，不会把用户正在改的内容冲掉。
+   */
+  const [restored] = useState(() => readQuestionDraft(draftKey));
+  const [selected, setSelected] = useState<Record<string, string[]>>(() => restored?.selected ?? {});
+  const [custom, setCustom] = useState<Record<string, string>>(() => restored?.custom ?? {});
   /**
    * 自定义回答**这个组合组件被选中了没有**。
    *
    * 它与「输入框里有没有字」是两件事（用户 2026-09-15 口径）：选中别的选项只取消
    * 它的选中态、**不清空**输入框，所以光看文字判断「选没选它」是不对的。
    */
-  const [customChosen, setCustomChosen] = useState<Record<string, boolean>>({});
-  const [index, setIndex] = useState(0);
+  const [customChosen, setCustomChosen] = useState<Record<string, boolean>>(
+    () => restored?.customChosen ?? {},
+  );
+  const [index, setIndex] = useState(restored?.index ?? 0);
   // 已答完的问卷默认收缩；用户点开看记录后不再自动收起
   const [expanded, setExpanded] = useState(false);
   /**
@@ -889,6 +928,21 @@ export function QuestionCard({
   // 免得 `items[current]` 变成 undefined 把整张卡渲染成空白
   const current = stepped ? Math.min(index, Math.max(0, items.length - 1)) : 0;
   const shown = stepped ? items.slice(current, current + 1) : items;
+
+  /**
+   * 把当前填写状态写回内存表。
+   *
+   * 每次选择 / 输入 / 翻页都写，而不是等卸载时收尾：切会话时组件直接卸载，
+   * 没有可靠的收尾时机；这里让表始终停在最新一次渲染的状态。问卷一收场就删掉，
+   * 免得已作答的内容留在表里被后来的同 id 问卷误用。
+   */
+  useEffect(() => {
+    if (!waiting) {
+      clearQuestionDraft(draftKey);
+      return;
+    }
+    writeQuestionDraft(draftKey, { selected, custom, customChosen, index });
+  }, [draftKey, waiting, selected, custom, customChosen, index]);
 
   /**
    * 收场后的答案**以宿主写进卡片的那份为准**。

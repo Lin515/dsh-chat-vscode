@@ -161,6 +161,8 @@ const entries = {
   "build/config-changes.test.mjs": "scripts/configChanges.test.ts",
   "build/footnotes.test.mjs": "scripts/footnotes.test.ts",
   "build/question-flow.test.mjs": "scripts/questionFlow.test.ts",
+  // 问卷半填草稿的内存表：切会话恢复、按会话隔离、上限淘汰（必须登记，否则静默不跑）
+  "build/question-draft.test.mjs": "scripts/questionDraft.test.ts",
   "build/tool-question.test.mjs": "scripts/toolQuestion.test.ts",
   "build/localized-text.test.mjs": "scripts/localizedText.test.ts",
   "build/plan-review.test.mjs": "scripts/planReview.test.ts",
