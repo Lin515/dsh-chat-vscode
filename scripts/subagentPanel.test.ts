@@ -149,6 +149,17 @@ console.log("subagentPanel: 入口在标题上、计数保留、空树不可点 
     const gap = Number(/gap:\s*calc\((\d+) \* var\(--dp\)\)/u.exec(group)?.[1]);
     assert.ok(gap >= 8, "标题与子代理计数之间至少留 8dp（要为运行圆点的 6dp 光晕让出空隙）");
   }
+  // 光晕是圆点的 box-shadow：计数容器一裁就会在圆点左侧切出直边（用户报「像被切割」）。
+  // 间隙只负责别让标题压上来，裁切必须靠「容器不裁、只裁文字」解决。
+  assert.ok(
+    !/\.header-subagent-count\s*\{[^}]*overflow:\s*hidden/.test(css),
+    "子代理计数容器不能 overflow: hidden（会裁掉运行圆点左侧的光晕，切出直边）",
+  );
+  assert.ok(
+    /\.header-subagent-count-text\s*\{[^}]*text-overflow:\s*ellipsis/.test(css) &&
+      /className="header-subagent-count-text">\{texts\.subagentCount\(count\)\}/.test(app),
+    "计数文字要单独包一层承担省略号，不能连圆点一起裁",
+  );
   // 列表是「点了展开」的固定宽度菜单，不是每次渲染都挂着的浮层
   assert.ok(
     /\{open && tree \? \(\s*<div className="subagent-menu"/.test(app),

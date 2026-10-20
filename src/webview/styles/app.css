@@ -230,18 +230,27 @@ button.header-title.is-switcher > svg.is-open {
   transform: rotate(180deg);
 }
 
-/* 标题后的子代理计数：当前会话下面全部子代理（含多层后代）；有在跑的带状态点 */
+/* 标题后的子代理计数：当前会话下面全部子代理（含多层后代）；有在跑的带状态点。
+   **这里不能 overflow: hidden**：运行圆点的常驻光晕是 box-shadow，容器的裁切会在
+   圆点左侧切出一条直边，看着像圆点被标题或计数框切掉了一半。省略号交给内层文字。 */
 .header-subagent-count {
   display: inline-flex;
   align-items: center;
   gap: calc(4 * var(--dp));
   flex: 0 1 auto;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
   font-size: var(--font-size-2xs);
   color: var(--muted);
+}
+
+/* 计数文字自己收缩并省略；圆点（连同光晕）不受影响 */
+.header-subagent-count-text {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* 弹出的目录列表：官方 .menu 的定宽皮肤（336px、大圆角、投影），向下展开。

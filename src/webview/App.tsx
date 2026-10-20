@@ -432,7 +432,7 @@ function SessionTitle({ state, agentsBusy }: { state: AppState; agentsBusy: bool
       {count > 0 ? (
         <span className="header-subagent-count" title={texts.subagentCount(count)}>
           {agentsBusy || treeBusy ? <span className="dot dot-running" /> : null}
-          {texts.subagentCount(count)}
+          <span className="header-subagent-count-text">{texts.subagentCount(count)}</span>
         </span>
       ) : null}
       {open && tree ? (
