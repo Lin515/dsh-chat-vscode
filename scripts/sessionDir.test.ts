@@ -5,7 +5,8 @@
  * 第 1 节钉**判据**（纯函数 `sessionDirPath`，按真实取值分档：会话 cwd 优先、
  * 退回扩展记下的目录、拿不到证据就不显示、空串不当目录）；第 2 节钉**显示拆分**
  * （图标与目录名、目录名与所在路径之间各空一格，路径不重复目录名）；第 3 / 4 节钉**接线**——
- * 元素真的渲染在标题（及子代理计数）之后、样式给了收缩口径与迷你模式的收起。
+ * 元素真的渲染在标题（及子代理计数）之后、样式给了占满剩余宽度的口径、与「新建」
+ * 按钮的 80dp 基准留白，以及迷你模式的收起。
  *
  * 为什么这几条必须钉住：判据或接线少一处，症状都是「静默」的——要么路径根本不出现，
  * 要么窄侧栏里长路径把标题挤没（这是本仓库界面改动最常见的两种退化形态）。
@@ -169,7 +170,7 @@ console.log("sessionDir: 图标与目录名/所在路径各空一格、路径不
 }
 console.log("sessionDir: 接线在标题与子代理计数之后、判据单点、静态文字 ✓");
 
-// ---------- 4. 样式：窄栏里让位，迷你模式整个收起 ----------
+// ---------- 4. 样式：占满剩余宽度、80dp 留白，迷你模式整个收起 ----------
 {
   /** 取出一个选择器的声明块（第一个匹配）。 */
   const rule = (selector: string): string => {
@@ -181,22 +182,24 @@ console.log("sessionDir: 接线在标题与子代理计数之后、判据单点�
 
   const dir = rule(".header-dir");
   assert.ok(
-    /min-width:\s*0/.test(dir) && /overflow:\s*hidden/.test(dir),
-    ".header-dir 必须能收缩（写死宽度的话长路径会把标题挤没）",
-  );
-  /** 取一条规则的 `max-width` 设计值（vw 口径：窄侧栏里要跟着窗口收）。 */
-  const vwCap = (selector: string): number => {
-    const value = /max-width:\s*(\d+(?:\.\d+)?)vw/.exec(rule(selector))?.[1];
-    assert.ok(value, `${selector} 的 max-width 要是 vw 口径（固定像素会在窄侧栏溢出）`);
-    return Number(value);
-  };
-  assert.ok(
-    vwCap(".header-dir") < vwCap(".header-title"),
-    ".header-dir 的上限要比标题更紧——标题是这一页的主语，空间不够时先让位的是目录",
+    /flex:\s*1\s+1\s+auto/.test(dir) && /min-width:\s*0/.test(dir) && /overflow:\s*hidden/.test(dir),
+    ".header-dir 要占满标题与右侧按钮之间的剩余宽度（装不下时还能收，长路径不会把标题挤没）",
   );
   assert.ok(
-    /flex:\s*0\s+1\s/.test(dir),
-    "收缩按内容宽度等比进行（加重权重会把整段路径折成 0 宽，目录名也跟着没）",
+    !/max-width\s*:/.test(dir),
+    "不要再给 .header-dir 设 max-width 截断：宽面板里要一直显示到「新建」按钮前（用户 2026-10-21 口径）",
+  );
+  // 与「新建」按钮之间的基准留白：设计像素口径，字号倍率一变整段留白跟着变；
+  // 上限 80dp，窄到放不下时按顶栏宽度收窄（clamp），别把右侧按钮挤出可视区
+  assert.ok(
+    /min-width:\s*clamp\(\s*0px\s*,\s*calc\(100%\s*-\s*204\s*\*\s*var\(--dp\)\)\s*,\s*calc\(80\s*\*\s*var\(--dp\)\)\s*\)/u.test(
+      rule(".header-dir + .header-spacer"),
+    ),
+    "目录与「新建」按钮之间留 80dp 基准间隔（上限随字号缩放，窄栏按顶栏宽度收窄）",
+  );
+  assert.ok(
+    /\.app\.is-mini \.header-spacer\s*\{[^}]*min-width:\s*0/u.test(css),
+    "迷你模式目录收起后要撤掉那段留白（兄弟选择器仍会匹配到 spacer）",
   );
   assert.ok(/white-space:\s*nowrap/.test(dir), ".header-dir 单行（英文路径更长，折行会撑高顶栏）");
   assert.ok(
@@ -227,7 +230,7 @@ console.log("sessionDir: 接线在标题与子代理计数之后、判据单点�
     "迷你模式要连同它一起收起（那一档连标题都不显示，路径留着会把按钮挤出去）",
   );
 }
-console.log("sessionDir: 收缩口径与迷你模式收起 ✓");
+console.log("sessionDir: 占满剩余宽度、80dp 留白与迷你模式收起 ✓");
 
 // ---------- 5. 悬停说明：中英两份都在登记表里 ----------
 {

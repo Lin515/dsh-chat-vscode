@@ -198,6 +198,10 @@ function Header({
  * 显示形态（用户 2026-10-20 口径）：文件夹图标后空一格接目录名，再空一格是它
  * 所在的路径，路径里不再重复目录名（`📁 dsh-chat D:\dev`）。装不下时先省略所在
  * 路径，目录名留住——与正文路径「末段不参与收缩」同一口径。
+ *
+ * 宽度（用户 2026-10-21 口径）：这一段占满标题与右侧按钮之间的剩余宽度，宽面板里
+ * 一直显示到「新建」按钮前；与按钮之间留 80dp 基准间隔（跟随字号缩放）。见
+ * `app.css` 的 `.header-dir` 与其后的 `.header-spacer`。
  */
 function HeaderDir({ state }: { state: AppState }) {
   const texts = useTexts();

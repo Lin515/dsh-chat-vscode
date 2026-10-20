@@ -51,21 +51,23 @@
    显示形态（用户 2026-10-20 口径）：图标后空一格接目录名，再空一格是所在路径；
    路径里不再重复目录名。收缩口径与正文路径、空态页目录行同一套：目录名是唯一
    不可伸缩的一段，装不下时挨裁的是后面的所在路径。
-   上限比标题（40vw）更紧（30vw）：标题是这一页的主语、目录是它的落点，空间不够时
-   目录先让位。**不要**再额外加重它的收缩权重——那一排（标题 + 子代理计数 + 目录）
+
+   宽度（用户 2026-10-21 口径）：目录吃满标题与右侧按钮之间的剩余宽度，不再按
+   30vw 提前截断——宽面板里要能一直显示到「新建」按钮前。目录右侧留白的上限是
+   80dp 基准（见下一条规则；窄到放不下时按顶栏宽度收窄），字号倍率一变整段留白
+   跟着变。**不要**再额外加重它的收缩权重——那一排（标题 + 子代理计数 + 目录）
    本来就更挤，权重一压，整段路径会直接折成 0 宽（实测），用户要看的目录名也跟着没了。 */
 .header-dir {
   display: inline-flex;
   align-items: center;
   /* 与目录名到所在路径的间距同宽：图标、目录名、路径三段之间各空一格 */
   gap: calc(4 * var(--dp));
-  flex: 0 1 auto;
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
   font-size: var(--font-size-xs);
   color: var(--description);
-  max-width: 30vw;
 }
 
 /* 图标不参与收缩（被压扁的图标比没有更难看），也不跟着路径一起被裁 */
@@ -94,6 +96,19 @@
 .header-spacer {
   flex: 1 1 auto;
   min-width: 0;
+}
+
+/* 目录与「新建」按钮之间的基准留白（用户 2026-10-21 口径）：目录可以一直铺到
+   按钮前 80dp 处。留白写成设计像素（`--dp`），跟随字号缩放，不写死像素。
+   目录缺席时这条不匹配，`.header-spacer` 仍是普通弹性空隙，按钮照样靠右。
+
+   窄到放不下时留白按顶栏自身宽度收窄（clamp 的中间项）而不是一律钉死 80dp：
+   204dp 是顶栏扣掉左右内边距后、要留给品牌 + 六颗按钮 + 间距（178dp）与一点
+   标题的固定宽度；再窄还保留满 80dp 会把右侧按钮挤出可视区。顶栏宽度到 300dp
+   以上都取上限 80dp。 */
+.header-dir + .header-spacer {
+  flex: 0 0 auto;
+  min-width: clamp(0px, calc(100% - 204 * var(--dp)), calc(80 * var(--dp)));
 }
 
 .icon-btn {
@@ -3185,9 +3200,14 @@ button.changes-card-head:hover .changes-card-chevron,
   display: none;
 }
 /* 标题右侧的工作目录同理收掉：那一档连标题都放不下，路径更放不下
-   （留在那里会把剩下的按钮挤出去） */
+   （留在那里会把剩下的按钮挤出去）。目录虽然从布局里消失，兄弟选择器仍会匹配，
+   所以那 80dp 的目录留白也要一并撤掉——图标条里不需要这段空档。 */
 .app.is-mini .header-dir {
   display: none;
+}
+.app.is-mini .header-spacer {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 .app.is-mini .icon-btn[data-mini="hide"] {
   display: none;
