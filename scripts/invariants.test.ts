@@ -346,8 +346,9 @@ console.log("invariants: guard 工厂的返回值不被丢弃（收尾体真的�
 //
 // 按源码钉住：
 //  1. 「+」与「窗口就绪」都必须**落到本工作区那条壳**上，且**不弹**目录选择器；
-//  2. 需要真会话的入口（发消息 / 加附件 / 跑命令 / 点「+」/ 菜单）都汇到 `ensureSession`，
-//     只有它认识「没有工作目录就建不了壳」这条边界；
+//  2. 发消息 / 跑命令 / 点「+」/ 菜单这些入口都汇到 `ensureSession`，只有它认识
+//     「没有工作目录就建不了壳」这条边界；**附件入口是例外**——它不替用户建会话、
+//     连后台或弹目录选择器，没有可用会话时直接拒收并提示（用户 2026-10-20 口径）。
 //  3. `ensureSession` 在要目录的那条路上先 `askWorkspaceDir()`，不要的那条路上先判
 //     `hasWorkspaceDir()`——绝不拿宿主的 cwd 冒充工作目录；
 //  4. 空壳按窗口独占：复用判据必须排除被别的窗口拿着（占用或预留）的那条；
@@ -406,7 +407,6 @@ console.log("invariants: guard 工厂的返回值不被丢弃（收尾体真的�
   for (const [signature, label] of [
     ["private async send(", "发消息"],
     ["private async runCommand(", "跑命令"],
-    ["private async ingestAttachments(", "加附件"],
   ] as const) {
     const body = bodyOf(signature);
     assert.ok(
@@ -414,6 +414,36 @@ console.log("invariants: guard 工厂的返回值不被丢弃（收尾体真的�
       `${label}没有会话时必须先走 ensureSession（要目录那条路：没有工作目录时问一次）`,
     );
     assert.ok(!/this\.newSession\(/.test(body), `${label}不该借 newSession 落会话（它只退出现有会话）`);
+  }
+
+  // **附件入口不建会话**：点「添加附件」时若连接 / 目录 / 会话任一不满足，直接发黄色
+  // 通知并拒收（按钮那条连文件框都不弹）。否则用户在文件选择框之后还会撞见一个
+  // 目录选择框，既像重复动作又说不清原因（用户 2026-10-20 报的现场）。
+  for (const [signature, label] of [
+    ["private async ingestAttachments(", "加附件（拖放 / 粘贴）"],
+    ["private async pickFiles(", "添加附件按钮"],
+  ] as const) {
+    const body = bodyOf(signature);
+    assert.ok(
+      !/ensureSession\(/.test(body),
+      `${label}不许替用户建会话 / 弹目录选择器：没有可用会话时只拒收并提示`,
+    );
+    assert.ok(
+      /intakeBlockMarker\(viewId\)/.test(body),
+      `${label}必须先过会话门（连接已就绪 + 有工作目录 + 窗口已绑会话）`,
+    );
+  }
+  {
+    const pick = bodyOf("private async pickFiles(");
+    assert.ok(
+      /intakeBlockMarker\(viewId\)[\s\S]{0,180}?return;[\s\S]{0,220}?showOpenDialog/.test(pick),
+      "按钮入口的判断必须早于文件选择框：命中会话门就 return，连文件框都不弹",
+    );
+    const ingest = bodyOf("private async ingestAttachments(");
+    assert.ok(
+      /rejectIntakeWithoutSession\(viewId, blocked, source, items\.length\)/.test(ingest),
+      "拖放 / 粘贴拿到内容后按同一会话门整批拒收，传递发起视图以保留通知归属，不落半批芯片",
+    );
   }
 
   const ensure = bodyOf("private async ensureSession(");

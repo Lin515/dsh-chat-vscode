@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
+import { fileAttachmentReady } from "../shared/attachmentGate";
 import type { Attachment } from "../shared/chat";
 import { imageSizeOf } from "./imageSize";
 
@@ -688,8 +689,11 @@ export function buildPromptContent(
 
   for (const attachment of attachments) {
     if (attachment.kind === "file") {
-      if (attachment.upload?.status === "ready") {
-        content.push({ type: "file", receiptId: attachment.upload.receiptId });
+      // 判据与发送门同源（`shared/attachmentGate.ts` 的 `fileAttachmentReady`）；
+      // 这里再收窄一次类型，拿到 `receiptId`（`upload` 是联合类型）。
+      const upload = attachment.upload;
+      if (fileAttachmentReady(attachment) && upload?.status === "ready") {
+        content.push({ type: "file", receiptId: upload.receiptId });
         included.push(attachment);
       } else {
         notUploaded.push(attachment.name);

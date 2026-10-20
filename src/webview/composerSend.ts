@@ -1,4 +1,5 @@
 import type { ChatState } from "../shared/chat";
+import type { AttachmentUploadBlock } from "../shared/attachmentGate";
 import type { Texts } from "./texts";
 
 /**
@@ -84,8 +85,10 @@ export interface SendButtonView {
   kind: "stop" | "send";
   /** 按钮上的文字（停止态没有文字，只有一枚停止图标）。 */
   label: string;
-  /** 悬停提示。 */
+  /** 悬停提示（禁用的发送按钮挂在**外层**，见 Composer）。 */
   title: string;
+  /** 发送按钮是否置灰（停止按钮恒可点）。 */
+  disabled: boolean;
 }
 
 /**
@@ -93,27 +96,44 @@ export interface SendButtonView {
  * 运行中且草稿为空 → **停止**（按住修饰键也不许变成发送）；空闲 → 「发送」；
  * 运行中 → 按这一次的手势预告走哪条路。
  *
- * @param input - 这一帧的运行状态、草稿可用性、设置值与按住态。
+ * 附件未就绪是**另一种**原因：它只把发送按钮置灰，**不**把运行中的按钮变成停止
+ * （用户 2026-10-19 口径：有正文、只是文件还在传时，停止与排队都该留在原地）。
+ * 连接不可用仍按原来的停止行为，不借道这条分支。
+ *
+ * @param input - 这一帧的运行状态、草稿可用性、附件阻塞原因、设置值与按住态。
  * @returns 按钮要显示的文字与悬停。
  */
 export function sendButtonView(input: {
   running: boolean;
   canSend: boolean;
+  hasDraft: boolean;
+  uploadBlock: AttachmentUploadBlock | undefined;
   busyEnter: ChatState["busyEnter"];
   modifierHeld: boolean;
   texts: Texts;
 }): SendButtonView {
-  if (input.running && !input.canSend) {
-    return { kind: "stop", label: "", title: input.texts.stopTitle };
+  const blockedTitle =
+    input.uploadBlock === "uploading"
+      ? input.texts.sendBlockedUploading
+      : input.uploadBlock === "error"
+        ? input.texts.sendBlockedUploadFailed
+        : undefined;
+  if (input.running && (!input.hasDraft || (!input.canSend && blockedTitle === undefined))) {
+    return { kind: "stop", label: "", title: input.texts.stopTitle, disabled: false };
   }
   if (!input.running) {
-    return { kind: "send", label: input.texts.send, title: input.texts.sendTitle };
+    return {
+      kind: "send",
+      label: input.texts.send,
+      title: blockedTitle ?? input.texts.sendTitle,
+      disabled: !input.canSend,
+    };
   }
   const label =
     busySubmitIntent(input.busyEnter, heldGesture(input.modifierHeld)) === "steer"
       ? input.texts.sendSteer
       : input.texts.sendQueue;
-  return { kind: "send", label, title: label };
+  return { kind: "send", label, title: blockedTitle ?? label, disabled: !input.canSend };
 }
 
 /**

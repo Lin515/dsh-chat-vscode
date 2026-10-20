@@ -241,7 +241,15 @@ function makeController(options: { running?: boolean; failPrompt?: boolean } = {
     /** 这个窗口名下的附件芯片 id。 */
     attachmentIds(viewId: string): string[];
     /** 给这个窗口挂一个附件芯片（模拟用户在输入框上加附件）。 */
-    putAttachment(viewId: string, attachment: { id: string; kind: "file" | "image"; name: string }): void;
+    putAttachment(
+      viewId: string,
+      attachment: {
+        id: string;
+        kind: "file" | "image";
+        name: string;
+        upload?: { status: "ready"; receiptId: string };
+      },
+    ): void;
   };
   // 测试侧的读表口子：键的折算规则与控制器同一套（`keyForView`），
   // 不然「按 viewId 查会话键」会读到一个不存在的键、断言就成了空的
@@ -831,7 +839,12 @@ console.log("pendingEcho: 用户消息乐观回显（驱动真控制器，offlin
   const push = client.followers.session;
   assert.ok(push, "前置：这一轮的跟随流回调在");
   scope.running = true; // agent 在跑 ⇒ 下一条按 queue 提交，**不进账本**
-  c.putAttachment("v1", { id: "lost-a1", kind: "file", name: "notes.txt" });
+  c.putAttachment("v1", {
+    id: "lost-a1",
+    kind: "file",
+    name: "notes.txt",
+    upload: { status: "ready", receiptId: "r-lost" },
+  });
 
   frames.length = 0;
   await c.handle({ type: "send", text: "排队那条没落盘", gesture: "enter" }, "v1");
@@ -971,7 +984,12 @@ console.log("pendingEcho: 用户消息乐观回显（驱动真控制器，offlin
   const push = client.followers.session;
   assert.ok(push, "前置：这一轮的跟随流回调在");
   scope.running = true;
-  c.putAttachment("v1", { id: "late-a1", kind: "file", name: "late.txt" });
+  c.putAttachment("v1", {
+    id: "late-a1",
+    kind: "file",
+    name: "late.txt",
+    upload: { status: "ready", receiptId: "r-late" },
+  });
 
   client.holdPrompt();
   const sending = c.handle({ type: "send", text: "回执先到那条", gesture: "enter" }, "v1");

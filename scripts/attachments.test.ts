@@ -14,6 +14,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Attachment } from "../src/shared/chat";
+import { attachmentUploadBlock, fileAttachmentReady } from "../src/shared/attachmentGate";
 import {
   ATTACH_BYTES_LIMIT,
   admissionVerdict,
@@ -479,9 +480,10 @@ console.log("attachments: 目录探测 / id / 错误上报 ✓");
     "每个下发点都要走 withoutAttachmentDataUrls——漏一处就等于没剥",
   );
   assert.ok(
-    /await this\.submitMessage\(\s*\n\s*viewId,\s*\n\s*message\.text,\s*\n\s*\[\.\.\.this\.attachments\.list\(this\.keyForView\(viewId\)\)\]/.test(
+    /const key = this\.keyForView\(viewId\);[\s\S]{0,200}?const attachments = \[\.\.\.this\.attachments\.list\(key\)\]/.test(
       controller,
     ) &&
+      /await this\.submitMessage\(\s*\n\s*viewId,\s*\n\s*message\.text,\s*\n\s*attachments,/.test(controller) &&
       !/attachments: message\.attachments/.test(controller),
     "发送取宿主账本那一份：帧里的附件副本（含 dataUrl）不再回传",
   );
@@ -968,6 +970,48 @@ console.log("attachments: 目录探测 / id / 错误上报 ✓");
   assert.strictEqual(admissionVerdict(png(100, 100), limits), undefined);
   assert.strictEqual(admissionVerdict(png(9000, 9000), {}), undefined, "没给上限就什么都不判");
   console.log("attachments: 图片去向（进不了内容块 → 按文件上传，原因如实上报）✓");
+}
+
+// ---------- 8. 发送门与内容装配同源：允许发送 ⇔ 每一枚文件都会进 prompt ----------
+//
+// 界面（`canSend`）与宿主兜底读 `attachmentUploadBlock`，装配读 `fileAttachmentReady`；
+// 两者都收在 `shared/attachmentGate.ts`。这里把等价关系直接钉住：只要门说可以发，
+// `buildPromptContent` 就不能有 `notUploaded`（反之亦然）——否则又会回到
+// 「界面放行、文件被静默丢掉」。
+{
+  const ready: Attachment = { id: "f-ready", kind: "file", name: "ok.txt", upload: { status: "ready", receiptId: "r1" } };
+  const uploading: Attachment = { id: "f-up", kind: "file", name: "up.txt", upload: { status: "uploading", loaded: 0 } };
+  const failed: Attachment = { id: "f-err", kind: "file", name: "err.txt", upload: { status: "error", message: "boom" } };
+  const image: Attachment = {
+    id: "i1",
+    kind: "image",
+    name: "shot.png",
+    dataUrl: "data:image/png;base64,AAAA",
+  };
+  const cases: { name: string; list: Attachment[]; block: "uploading" | "error" | undefined }[] = [
+    { name: "空列表", list: [], block: undefined },
+    { name: "只有图片（图片不走上传）", list: [image], block: undefined },
+    { name: "文件全部就绪", list: [ready, image], block: undefined },
+    { name: "文件上传中", list: [ready, uploading], block: "uploading" },
+    { name: "文件上传失败", list: [uploading, failed], block: "error" },
+  ];
+  for (const item of cases) {
+    assert.strictEqual(attachmentUploadBlock(item.list), item.block, `${item.name}：发送门的判据`);
+    const plan = buildPromptContent("hi", item.list);
+    assert.strictEqual(
+      item.block === undefined,
+      plan.notUploaded.length === 0,
+      `${item.name}：允许发送 ⇔ 每一枚文件都进了 prompt`,
+    );
+    for (const attachment of item.list) {
+      assert.strictEqual(
+        fileAttachmentReady(attachment),
+        attachment.kind !== "file" || plan.included.includes(attachment),
+        `${item.name}：fileAttachmentReady 与 included 逐枚一致（${attachment.name}）`,
+      );
+    }
+  }
+  console.log("attachments: 发送门与 buildPromptContent 同源（允许发送 ⇔ 文件会进 prompt）✓");
 }
 
 console.log("\nattachments: all assertions passed");

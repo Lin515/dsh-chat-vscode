@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import { AUTO_REVIEW_PRESET, type GoalView, type QueuedMessageView } from "../../shared/chat";
+import { attachmentUploadBlock } from "../../shared/attachmentGate";
 import type { AppState } from "../state";
 import { post } from "../bridge";
 import {
@@ -515,8 +516,15 @@ export function Composer({
    * **也算能发**：用户口径（2026-09-14，2026-09-18 沿用）是"发消息这类显式动作照旧
    * 允许拉起后台"——输入了一句话却发不出去、还得先去点按钮，是把自动连接的语义读成了
    * "什么都不许做"。`connecting` / `error` 不给发：正在连或连不上，发出去只会失败。
+   *
+   * 文件附件未就绪（上传中 / 上传失败）也拦：发送装配只收 `ready`（见
+   * `buildPromptContent`），放过去等于静默少发文件。图片是内联的，不参与这道门
+   * （判据与原因见 `shared/attachmentGate.ts`）。
    */
-  const canSend = draft.trim().length > 0 && (state.connection === "ready" || state.connection === "stopped");
+  const draftText = draft.trim();
+  const hasDraft = draftText.length > 0;
+  const uploadBlock = attachmentUploadBlock(state.attachments);
+  const canSend = hasDraft && uploadBlock === undefined && (state.connection === "ready" || state.connection === "stopped");
 
   /**
    * 把草稿发出去。
@@ -783,11 +791,13 @@ export function Composer({
   const sendView = sendButtonView({
     running: state.running,
     canSend,
+    hasDraft,
+    uploadBlock,
     busyEnter: state.busyEnter,
     modifierHeld,
     texts,
   });
-  const sendPill =
+  const sendButton =
     sendView.kind === "stop" ? (
       <button className="send-btn is-stop" title={sendView.title} onClick={() => post({ type: "stop" })}>
         <IconStop size={12} />
@@ -795,12 +805,22 @@ export function Composer({
     ) : (
       <button
         className="send-btn"
-        disabled={!canSend}
-        title={sendView.title}
+        disabled={sendView.disabled}
+        title={sendView.disabled ? undefined : sendView.title}
         onClick={clickGestureHandler(send)}
       >
         {sendView.label}
       </button>
+    );
+  // 禁用的原生 button 收不到 hover（也不可靠地弹 title），原因挂在**外层 span** 上：
+  // 用户必须看得到「为什么不能发」（上传中 / 上传失败）。
+  const sendPill =
+    sendView.kind === "send" && sendView.disabled ? (
+      <span className="send-disabled" title={sendView.title}>
+        {sendButton}
+      </span>
+    ) : (
+      sendButton
     );
 
   const barNodes: Record<string, ReactNode> = {

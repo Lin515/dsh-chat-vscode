@@ -36,7 +36,7 @@ P0 四项无条件落位，极窄也留 DOM。P1 / P2 各档按渲染左右次�
 
 ## 行为约定
 
-发送按钮与 Ctrl/Cmd+Enter 共用 `composerSend`：默认 queue 时加速手势为 steer，默认 steer 时为 queue；按钮在点击当下读修饰键，界面只发手势，宿主解析模式。
+发送按钮与 Ctrl/Cmd+Enter 共用 `composerSend`：默认 queue 时加速手势为 steer，默认 steer 时为 queue；按钮在点击当下读修饰键，界面只发手势，宿主解析模式。文件附件未就绪（上传中 / 上传失败）时发送按钮置灰，悬停说明原因；生成中且有正文时保留排队 / 插话文案、不变成停止，正文为空才仍是停止（判据见 `shared/attachmentGate.ts`）。
 
 预设标签只在 messages.length 非零时显示，与空态判据一致。目录或当前 id 未到不画空壳；展示共用 presetDisplayText，内置四个走词典，用户自写原文，未知 id 原样。空态的可点预设选择与开轮后的只读标签不能混用。
 

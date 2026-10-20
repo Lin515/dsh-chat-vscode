@@ -5,6 +5,7 @@ import { basename, join, relative, resolve, sep } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import * as vscode from "vscode";
 import { panelTabTitle } from "../shared/chat";
+import { attachmentUploadBlock } from "../shared/attachmentGate";
 import type {
   Attachment,
   ChangesSummaryView,
@@ -4956,10 +4957,11 @@ export class ChatController implements vscode.Disposable {
    *
    * 两条用法，`options` 就是它们的差别：
    *
-   * - **用户显式动作**（发消息、加附件、点「+」、打开菜单）：`start: true`（允许拉起
-   *   后台）、`askDir` 按场景定——发消息与加附件没有工作目录时**就地弹一次目录选择器**
-   *   （用户 2026-09-22 拍板：不编造默认路径，也不封死发送），「+」与菜单不弹
-   *   （见 `newSession`、`listCommandsForView`）；
+   * - **用户显式动作**（发消息、点「+」、打开菜单）：`start: true`（允许拉起后台）、
+   *   `askDir` 按场景定——发消息没有工作目录时**就地弹一次目录选择器**（用户 2026-09-22
+   *   拍板：不编造默认路径，也不封死发送），「+」与菜单不弹（见 `newSession`、
+   *   `listCommandsForView`）。**附件入口不走这里**：它不建会话、不连后台，没有可用会话
+   *   就直接拒收并提示（见 `intakeBlockMarker`）；
    * - **自动路径**（窗口就绪、VS Code 打开/关掉文件夹、连接结算后的补壳）：`start: false`——
    *   只消费激活期那一次自动连接（`awaitActivationConnect`），**既不起后台、也不自己发起连接**。
    *   窗口重载（聊天页面那一层）不该把用户刚停掉的后台又拉起来（用户 2026-10-18 口径）。
@@ -5004,7 +5006,7 @@ export class ChatController implements vscode.Disposable {
     }
     const attempt = (async (): Promise<SessionScope | undefined> => {
       if (!this.client || this.connection !== "connected") {
-        // `start: true` 是**用户显式动作**（发消息、加附件、点「+」、打开菜单）：允许拉起后台。
+        // `start: true` 是**用户显式动作**（发消息、点「+」、打开菜单）：允许拉起后台。
         // 其余（`ready` 尾巴、`onConnected` 的自动补壳）是**自动路径**：只消费激活期那一次
         // 自动连接（`awaitActivationConnect`），绝不自己发起连接——否则聊天页面重载一次就能把
         // 用户刚停掉的后台又拉起来（用户 2026-10-18 口径）。
@@ -8119,19 +8121,39 @@ export class ChatController implements vscode.Disposable {
         break;
       }
 
-      case "send":
+      case "send": {
         // 附件取**宿主账本**里那一份（界面那份只是它的投影）：帧里不再回传副本——
         // 图片附件的 `dataUrl` 有几 MB，回传等于让它从 webview 再走一趟单程。
         // 取的时刻早于 `beginSend` 里的 `commitAttachments`（那一步把芯片移进租约），
         // 所以这里拿到的是用户此刻看到的那一批。
+        const key = this.keyForView(viewId);
+        const attachments = [...this.attachments.list(key)];
+        // **宿主兜底**：文件还没传完 / 传失败时不许提交。界面按钮已经拦了一次，
+        // 这里防的是新入口漏判、投影漂移与夹具 / 旧协议直发 `send`。命中时不建回显、
+        // 不动芯片，把宿主账本里的草稿原样重新镜像一帧——界面在按下发送那一刻已经
+        // 清掉了自己的输入框，不推回去就等于吞掉用户那句话。命中即 bug 信号，只记日志，
+        // 不弹原生错误（用户原位看得到上传状态）。
+        const block = attachmentUploadBlock(attachments);
+        if (block !== undefined) {
+          this.log(`[send] 文件附件未就绪（${block}），拒绝提交：窗口=${viewId}`);
+          this.emitToView(viewId, {
+            type: "patch",
+            patch: {
+              draft: this.drafts.get(key) ?? message.text,
+              attachments: withoutAttachmentDataUrls(attachments),
+            },
+          });
+          break;
+        }
         await this.submitMessage(
           viewId,
           message.text,
-          [...this.attachments.list(this.keyForView(viewId))],
+          attachments,
           message.gesture ?? "enter",
           "composer",
         );
         break;
+      }
 
       case "retractPending": {
         // 撤回 = 把那一行删掉（不把正文塞回输入框：用户口径 2026-09-25）。
@@ -9421,10 +9443,14 @@ export class ChatController implements vscode.Disposable {
    * 由文件本身决定走哪条路，用户不必先想清楚该点哪个按钮。
    */
   private async pickFiles(viewId: string): Promise<void> {
-    // 先把会话落下来再弹文件框：附件要上传到某个会话（回执是按会话铸造的），
-    // 而落会话可能还要先问一次工作目录——那个对话框必须**先**出来，否则用户会连着
-    // 面对两个框，还不知道第二个在问什么（见 `ensureSession`）。
-    if (!this.scopeOfView(viewId) && !(await this.ensureSession(viewId, { start: true, askDir: true }))) return;
+    // 没有可用会话就**直接拒收**，连文件选择框都不弹：附件要上传到某个会话，而用户
+    // 点的是「添加附件」，这时再冒出目录选择 / 后台连接之类的框，既像上一个动作的
+    // 回声，又说不清为什么（用户 2026-10-20 口径）。原因走黄色通知，入口只做一件事。
+    const blocked = this.intakeBlockMarker(viewId);
+    if (blocked !== undefined) {
+      this.rejectIntakeWithoutSession(viewId, blocked, "button");
+      return;
+    }
     const picked = await vscode.window.showOpenDialog({
       canSelectMany: true,
       canSelectFiles: true,
@@ -9491,6 +9517,10 @@ export class ChatController implements vscode.Disposable {
    * 提示说清。不走 `@` 引用——引用依赖「执行世界能读到本地路径」，远端部署下是空头支票
    * （见 `attachments.ts` 文件头）。读不出来的**非图片**条目（选择到读取之间被删的竞态）
    * 仍旧退回带引号的路径——那是最后一道兜底，不再假装「已作为上下文加入」。
+   *
+   * **没有可用会话就整批拒收**：上传没有目标，收下来只会变成一枚 `@uploadNoSession`
+   * 的失败芯片，而它连重试都没有意义。这里不替用户建会话 / 连后台（入口本身已经把
+   * 这件事拒掉了，按钮那条连文件框都不弹），只按原因发黄色通知。
    */
   private async ingestAttachments(
     viewId: string,
@@ -9498,10 +9528,12 @@ export class ChatController implements vscode.Disposable {
     items: readonly IntakeItem[],
     rejected: readonly IntakeRejection[],
   ): Promise<void> {
-    // 上传需要会话：窗口还是空态时先落到本工作区那条空壳上（附件按键是常见的第一步
-    // 动作；没有工作目录时会先问一次，取消则整批附件都不接）
-    if (!this.scopeOfView(viewId)) {
-      await this.ensureSession(viewId, { start: true, askDir: true });
+    const blocked = this.intakeBlockMarker(viewId);
+    // 只拒“有内容要接”的批次：空批（例如拖进来的 0 字节目录）照旧走下面的拒绝提示，
+    // 免得把“读不出来”误报成“会话没准备好”。
+    if (blocked !== undefined && items.length > 0) {
+      this.rejectIntakeWithoutSession(viewId, blocked, source, items.length);
+      return;
     }
     const key = this.keyForView(viewId);
     const existing = this.attachments.list(key);
@@ -9539,7 +9571,9 @@ export class ChatController implements vscode.Disposable {
     this.attachments.add(key, plan.attachments);
 
     for (const directory of plan.directories) this.addDirectoryReference(viewId, directory);
-    for (const upload of plan.uploads) this.startUpload(viewId, upload);
+    // 传入这一趟**已经验证过**的会话 id，不在开轮那一刻再读一次绑定：从判据到开轮
+    // 之间用户可能切走 / 断线，再读一次就会把「刚验过的会话」换成 undefined。
+    for (const upload of plan.uploads) this.startUpload(viewId, upload, scope?.sessionId);
     if (plan.pathOnly.length) {
       this.emitToView(viewId, { type: "ui/insertText", text: formatPathList(plan.pathOnly) });
     }
@@ -9590,6 +9624,43 @@ export class ChatController implements vscode.Disposable {
         text: marker,
       });
     }
+  }
+
+  /**
+   * 附件入口此刻能不能接：能接返回 `undefined`，不能接返回要提示的原因标记。
+   *
+   * 判据按**肯定证据**分档：
+   * - 连接不在 `connected`（或干脆没有客户端）→ 后台未连接；
+   * - 已经绑着会话 → **放行**（上传要的是会话 id，与窗口有没有文件夹无关）；
+   * - 还没有会话、也没有可用工作目录 → 请先选目录（没目录就建不出这条会话）；
+   * - 还没有会话、目录已知（落壳在飞 / 建会话失败）→ 会话未就绪；那条路已经由
+   *   `reuseOrCreateBlank` 的 `catch` 报过一次原生错误，这里只补一句“附件没加进来”。
+   *
+   * **不在这里替用户建会话 / 连后台**：附件入口只做附件，原因用一条黄色通知说清
+   * （用户 2026-10-20 口径：文件选择框之后再来一个目录选择框会让用户莫名其妙）。
+   */
+  private intakeBlockMarker(viewId: string): string | undefined {
+    if (!this.client || this.connection !== "connected") return "@attachBackendOffline";
+    // 已经绑着会话就一定能传：上传要的是会话 id，不是「这个窗口有没有文件夹」。
+    // `hasWorkspaceDir` 只用来区分「还没有会话」的那一档该提示什么（它不读会话 cwd）。
+    if (this.scopeOfView(viewId)) return undefined;
+    return this.hasWorkspaceDir() ? "@attachSessionUnavailable" : "@attachNeedsWorkspace";
+  }
+
+  /**
+   * 整批拒收没有会话可落的附件接入（见 `ingestAttachments` 与 `pickFiles` 的会话门）。
+   *
+   * 归属取拒收发生时的会话绑定：断线不清绑定，已有会话的提示仍只归该会话；
+   * 只有未绑定会话时才发共享通知，让未绑定窗口也能看到原因。
+   *
+   * @param marker - `intakeBlockMarker` 给出的原因标记。
+   * @param count - 这一批的条目数；按钮入口还没选文件时不给（只记入口）。
+   */
+  private rejectIntakeWithoutSession(viewId: string, marker: string, source: IngestSource, count = 0): void {
+    const sessionId = this.viewSessions.get(viewId);
+    const detail = count > 0 ? `${count} 个条目` : "入口";
+    this.log(`[attach] ${source}：${detail}整批拒收（没有可用会话：${marker.slice(1)}）`);
+    this.notify({ sessionId, level: "warn", kind: marker.slice(1), text: marker });
   }
 
   /**
@@ -9767,16 +9838,12 @@ export class ChatController implements vscode.Disposable {
   /**
    * 起一次上传（`planIntake` 判出来要上传的那几枚）。
    *
-   * 上传的会话在**这一刻**取定：窗口绑着会话就是它，空态窗口（还没落壳）没有会话可传，
-   * 账本会直接落 `@uploadNoSession`。之后用户切走也不改这次上传的归属。
+   * `sessionId` 是接入层**这一趟已经验证过**的会话（调用方在上面过了会话门）。上传的
+   * 归属在**这一刻**取定，之后用户切走也不改这次上传的归属；这里不再读一次窗口绑定。
+   * 没有 id 只可能是别的调用点（重试）或竞态，账本会落 `@uploadNoSession` 作为最后防线。
    */
-  private startUpload(viewId: string, upload: IntakeUpload): void {
-    this.attachments.start(
-      this.keyForView(viewId),
-      upload.id,
-      this.client ? this.viewSessions.get(viewId) : undefined,
-      upload.source,
-    );
+  private startUpload(viewId: string, upload: IntakeUpload, sessionId: string | undefined): void {
+    this.attachments.start(this.keyForView(viewId), upload.id, sessionId, upload.source);
   }
 
   /** 重传一个失败的文件附件：来源（暂存字节 / 附件路径）由账本自己取。 */

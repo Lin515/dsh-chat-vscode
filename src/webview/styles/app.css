@@ -4208,6 +4208,14 @@ textarea.composer-input {
   background: var(--primary);
 }
 
+/* 禁用的发送按钮：原因挂在**外层**（禁用的原生 button 收不到 hover）。
+   inline-flex 让外层与按钮同尺寸，工具栏量宽与布局都不变。 */
+.send-disabled {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+
 /* ============================ popovers ============================ */
 
 .popover {

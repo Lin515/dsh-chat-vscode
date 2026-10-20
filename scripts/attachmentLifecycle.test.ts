@@ -950,21 +950,23 @@ await scenario("二.6 窗口下线的回收口径", async () => {
   assert.deepStrictEqual(listOf(h.c, "v2"), [], "窗口下线后窗口键上的草稿要回收（viewId 不会再用）");
 });
 
-// ---------- 二.7 失败回填：芯片以**原对象**回到输入框，且仍在飞的上传照旧结算 ----------
+// ---------- 二.7 失败回填：就绪的芯片以**原对象**回到输入框 ----------
 //
 // 提交那一刻芯片被移走（租约），但**不销毁**：没有回显的失败把这一份原样还回输入框，
-// 上传状态 / 回执 / 暂存字节 / 在飞那一次结算都跟着回来。
-await scenario("二.7 失败回填恢复原芯片，在飞上传完成后结算", async () => {
+// 上传状态 / 回执都跟着回来。文件未就绪的提交进不到这里——发送门先拦（见二.8）。
+await scenario("二.7 失败回填恢复原芯片（就绪）", async () => {
   const h = harness();
   h.c.bindView("v1");
   await h.c.openSession("v1", A);
   // 让这次提交**不产生回显**（agent 在跑 → 排队口径）：无回显的失败才走「还回输入框」
   h.c.scopes.get(A)!.running = true;
-  const upload = gate<{ receiptId: string }>();
-  h.answer = () => upload.promise;
-  await h.c.handle(attachFrame("报告.pdf"), "v1");
+  putAttachment(h.c, A, {
+    id: "ready-report",
+    kind: "file",
+    name: "报告.pdf",
+    upload: { status: "ready", receiptId: "rcpt-restored" },
+  });
   const original = listOf(h.c, A)[0]!;
-  assert.strictEqual(original.upload?.status, "uploading", "前提：芯片正在传");
 
   h.promptAnswer = async () => {
     throw new Error("gateway/input-invalid: 发送失败");
@@ -973,22 +975,17 @@ await scenario("二.7 失败回填恢复原芯片，在飞上传完成后结算"
 
   const restored = listOf(h.c, A);
   assert.strictEqual(restored.length, 1, `回填后应恰好一枚：${restored.length}`);
-  assert.strictEqual(restored[0], original, "回到输入框的必须是原来那一枚（状态 / 字节 / 在飞结算都在它身上）");
-  assert.strictEqual(restored[0]!.upload?.status, "uploading", "回填那一刻它仍在传");
-
-  // 在飞那次上传照旧结算：完成后芯片自己变成 ready（销毁式清空会在这里永久挂 uploading）
-  upload.resolve({ receiptId: "rcpt-restored" });
-  await flush();
+  assert.strictEqual(restored[0], original, "回到输入框的必须是原来那一枚（状态 / 回执都在它身上）");
   assert.deepStrictEqual(
-    uploadOf(h.c, A, "报告.pdf"),
+    restored[0]!.upload,
     { status: "ready", receiptId: "rcpt-restored" },
-    "在飞结算必须活过提交与回填",
+    "回填不能丢回执",
   );
-  assert.strictEqual(h.uploads.length, 1, "不必重新上传");
+  assert.strictEqual(h.uploads.length, 0, "这一枚已经就绪，不需要再传");
 });
 
-// ---------- 二.8 失败回填后「重试」仍用账本留的那份字节 ----------
-await scenario("二.8 失败回填后重试仍用原字节", async () => {
+// ---------- 二.8 未就绪时 send 被拦；重试就绪后才提交 ----------
+await scenario("二.8 未就绪 send 被拦，重试就绪后才提交", async () => {
   const h = harness();
   h.c.bindView("v1");
   await h.c.openSession("v1", A);
@@ -997,28 +994,39 @@ await scenario("二.8 失败回填后重试仍用原字节", async () => {
   h.answer = () => upload.promise;
   await h.c.handle(attachFrame("坏.pdf"), "v1");
   const original = listOf(h.c, A)[0]!;
-  h.promptAnswer = async () => {
-    throw new Error("发送失败");
-  };
-  await h.c.handle({ type: "send", text: "带上附件", attachments: wireAttachments(original, "界面副本"), gesture: "enter" }, "v1");
-  assert.strictEqual(listOf(h.c, A)[0], original, "前提：原芯片已回填");
+  h.c.drafts.set(A, "带上附件");
 
+  // 上传失败：门拦下，不提交、不建回显，芯片与草稿都留着
   upload.reject(new Error("网络断了"));
   await flush();
-  assert.strictEqual(uploadOf(h.c, A, "坏.pdf")?.status, "error", "在飞失败要落进回填后的那一枚");
+  assert.strictEqual(uploadOf(h.c, A, "坏.pdf")?.status, "error", "前提：这一枚落到失败态");
+  const promptsBefore = h.prompts.length;
+  const framesBefore = h.frames.length;
+  await h.c.handle({ type: "send", text: "带上附件", attachments: wireAttachments(original, "界面副本"), gesture: "enter" }, "v1");
+  assert.strictEqual(h.prompts.length, promptsBefore, "失败态不许提交");
+  assert.strictEqual(listOf(h.c, A)[0], original, "芯片原地不动");
+  assert.ok(
+    h.frames.slice(framesBefore).some(({ target, frame }) =>
+      target === "v1" &&
+      frame.type === "patch" &&
+      (frame.patch as { draft?: string }).draft === "带上附件"),
+    "宿主把账本草稿原样推回（界面按下发送时已清空自己的输入框）",
+  );
 
+  // 重试成功 → 再发就能提交
   const retry = gate<{ receiptId: string }>();
   h.answer = () => retry.promise;
   await h.c.handle({ type: "retryUpload", id: original.id }, "v1");
-  assert.strictEqual(h.uploads.length, 2, "回填后的失败芯片还能再传一次");
-  assert.strictEqual(h.uploads[1]!.bytes, h.uploads[0]!.bytes, "重试用的是账本留的那一份字节（同一个数组）");
   retry.resolve({ receiptId: "rcpt-retry" });
   await flush();
   assert.deepStrictEqual(uploadOf(h.c, A, "坏.pdf"), { status: "ready", receiptId: "rcpt-retry" });
+  h.promptAnswer = async () => undefined;
+  await h.c.handle({ type: "send", text: "带上附件", attachments: wireAttachments(original, "界面副本"), gesture: "enter" }, "v1");
+  assert.strictEqual(h.prompts.length, promptsBefore + 1, "就绪之后才真的提交");
 });
 
-// ---------- 二.9 失败红行引用租约里的活条目 → 重发带上真回执 ----------
-await scenario("二.9 失败红行引用租约，重发带上真回执", async () => {
+// ---------- 二.9 未就绪时 send 被宿主门拦下；就绪后的失败行引用租约里的活条目 ----------
+await scenario("二.9 未就绪 send 被拦；就绪后失败行引用活条目，重发带上真回执", async () => {
   const h = harness();
   h.c.bindView("v1");
   await h.c.openSession("v1", A);
@@ -1026,6 +1034,18 @@ await scenario("二.9 失败红行引用租约，重发带上真回执", async (
   h.answer = () => upload.promise;
   await h.c.handle(attachFrame("报告.pdf"), "v1");
   const original = listOf(h.c, A)[0]!;
+  h.c.drafts.set(A, "带上附件");
+
+  // 上传还在飞：发送门的宿主兜底直接拦下——不提交、不建回显、芯片与草稿都留着
+  const promptsBefore = h.prompts.length;
+  await h.c.handle({ type: "send", text: "带上附件", attachments: wireAttachments(original, "界面副本"), gesture: "enter" }, "v1");
+  assert.strictEqual(h.prompts.length, promptsBefore, "文件未就绪时宿主不许提交 prompt");
+  assert.strictEqual(h.c.pendingMessages.get(A)?.length ?? 0, 0, "也不建失败红行");
+  assert.strictEqual(listOf(h.c, A)[0], original, "芯片没有被移进租约");
+
+  // 传完之后再发（这次让 prompt 失败）：失败行引用的必须是账本里那一枚（活的上传状态）
+  upload.resolve({ receiptId: "rcpt-row" });
+  await flush();
   h.promptAnswer = async () => {
     throw new Error("发送失败");
   };
@@ -1034,14 +1054,10 @@ await scenario("二.9 失败红行引用租约，重发带上真回执", async (
   const row = h.c.pendingMessages.get(A)?.[0];
   assert.ok(row, "应有失败红行");
   assert.strictEqual(row!.attachments?.[0], original, "失败行引用的必须是账本里那一枚（活的上传状态）");
-  assert.strictEqual(row!.attachments?.[0]?.upload?.status, "uploading", "那一刻仍在传");
-
-  upload.resolve({ receiptId: "rcpt-row" });
-  await flush();
   assert.deepStrictEqual(
     row!.attachments?.[0]?.upload,
     { status: "ready", receiptId: "rcpt-row" },
-    "在飞完成后行里那一枚自己变 ready（重发才拿得到真回执）",
+    "那一刻已经就绪，失败行持有的是同一枚",
   );
 
   // 重发：这次让它成功，内容块必须带上真回执
@@ -1055,14 +1071,17 @@ await scenario("二.9 失败红行引用租约，重发带上真回执", async (
   );
 });
 
-// ---------- 二.10 重发 = 租约交接：不取消仍在飞的上传、不重启、不放回输入框 ----------
-await scenario("二.10 重发交接租约：在飞上传不被取消", async () => {
+// ---------- 二.10 重发 = 租约交接：不重启上传、不碰输入框草稿 ----------
+await scenario("二.10 重发交接租约：不重启上传、不碰草稿", async () => {
   const h = harness();
   h.c.bindView("v1");
   await h.c.openSession("v1", A);
-  const upload = gate<{ receiptId: string }>();
-  h.answer = () => upload.promise;
-  await h.c.handle(attachFrame("报告.pdf"), "v1");
+  putAttachment(h.c, A, {
+    id: "ready-report",
+    kind: "file",
+    name: "报告.pdf",
+    upload: { status: "ready", receiptId: "rcpt-handoff" },
+  });
   const original = listOf(h.c, A)[0]!;
   h.promptAnswer = async () => {
     throw new Error("第一次失败");
@@ -1075,30 +1094,19 @@ await scenario("二.10 重发交接租约：在飞上传不被取消", async () 
 
   // 用户又打了一句话（失败行还在）：重发**不许碰**输入框里这份草稿
   h.c.drafts.set(A, "用户正在写的草稿");
-  // 第一次重发：那次上传仍在飞，交接不许把它取消，也不许再起一轮
+  const uploadsBefore = h.uploads.length;
   h.promptAnswer = async () => undefined;
   await h.c.handle({ type: "resendPending", requestId: row!.requestId }, "v1");
-  assert.strictEqual(h.uploads.length, 1, "重发不许取消 / 重启仍在飞的那一轮上传");
+  assert.strictEqual(h.uploads.length, uploadsBefore, "重发不许重启上传（这一枚本来就已经就绪）");
   assert.deepStrictEqual(listOf(h.c, A), [], "重发不许把芯片放回输入框");
   assert.strictEqual(h.c.drafts.get(A), "用户正在写的草稿", "重发不许碰输入框里的草稿");
   assert.ok(leaseOf(h.c, requestIdOf(h.c)!), "租约跟着交接给新的提交");
 
-  // 在飞那次完成：新提交（新回显）里的那一枚要自己变成 ready
-  upload.resolve({ receiptId: "rcpt-handoff" });
-  await flush();
-  const newRow = h.c.pendingMessages.get(A)?.at(-1);
-  assert.deepStrictEqual(
-    newRow?.attachments?.[0]?.upload,
-    { status: "ready", receiptId: "rcpt-handoff" },
-    "交接之后结算仍写回那一枚（重发失败还有可用租约的同一份东西）",
-  );
-
-  // 再重发一次：这次内容块要带上真回执
-  await h.c.handle({ type: "resendPending", requestId: newRow!.requestId }, "v1");
+  // 新提交成功：内容块带上原来的真回执
   const content = h.prompts.at(-1)?.content ?? [];
   assert.ok(
-    content.some((part) => (part as { type?: string; receiptId?: string }).receiptId === "rcpt-handoff"),
-    `第二次重发应带上第一次结算出的回执：${JSON.stringify(content)}`,
+    content.some((part) => (part as { receiptId?: string }).receiptId === "rcpt-handoff"),
+    `重发应带上原回执：${JSON.stringify(content)}`,
   );
 });
 
@@ -1136,9 +1144,12 @@ await scenario("二.12 租约与回显同寿命：别处解绑不误杀，撤回
   const h = harness();
   h.c.bindView("v1");
   await h.c.openSession("v1", A);
-  const upload = gate<{ receiptId: string }>();
-  h.answer = () => upload.promise;
-  await h.c.handle(attachFrame("报告.pdf"), "v1");
+  putAttachment(h.c, A, {
+    id: "ready-report",
+    kind: "file",
+    name: "报告.pdf",
+    upload: { status: "ready", receiptId: "rcpt-retract" },
+  });
   const original = listOf(h.c, A)[0]!;
   h.promptAnswer = async () => {
     throw new Error("发送失败");
@@ -1192,9 +1203,12 @@ await scenario("二.14 提交期间切会话：回填不丢不重复", async () 
   h.c.bindView("v1");
   await h.c.openSession("v1", A);
   h.c.scopes.get(A)!.running = true;
-  const upload = gate<{ receiptId: string }>();
-  h.answer = () => upload.promise;
-  await h.c.handle(attachFrame("晚点.pdf"), "v1");
+  putAttachment(h.c, A, {
+    id: "ready-late",
+    kind: "file",
+    name: "晚点.pdf",
+    upload: { status: "ready", receiptId: "rcpt-late" },
+  });
   const original = listOf(h.c, A)[0]!;
 
   const promptGate = gate<void>();
@@ -1208,24 +1222,24 @@ await scenario("二.14 提交期间切会话：回填不丢不重复", async () 
   const landed = [...listOf(h.c, A), ...listOf(h.c, B)];
   assert.strictEqual(landed.length, 1, `回填后全场应恰好一枚：A=${listOf(h.c, A).length} B=${listOf(h.c, B).length}`);
   assert.strictEqual(landed[0], original, "回填的仍是原来那一枚（原对象）");
-  upload.resolve({ receiptId: "rcpt-late" });
-  await flush();
-  const anyList = [...listOf(h.c, A), ...listOf(h.c, B)];
   assert.deepStrictEqual(
-    anyList[0]?.upload,
+    landed[0]?.upload,
     { status: "ready", receiptId: "rcpt-late" },
-    "切了会话也要继续结算（结算落在归属记录上，与当前在看哪条会话无关）",
+    "回填不丢回执（重发要用）",
   );
 });
 
-// ---------- 二.15 重发交接后再失败：新行仍持租约，结算与第三次重发都不丢 ----------
+// ---------- 二.15 重发交接后再失败：新行仍持租约，第三次重发带上回执 ----------
 await scenario("二.15 重发交接后再失败：新行仍持租约", async () => {
   const h = harness();
   h.c.bindView("v1");
   await h.c.openSession("v1", A);
-  const upload = gate<{ receiptId: string }>();
-  h.answer = () => upload.promise;
-  await h.c.handle(attachFrame("报告.pdf"), "v1");
+  putAttachment(h.c, A, {
+    id: "ready-report",
+    kind: "file",
+    name: "报告.pdf",
+    upload: { status: "ready", receiptId: "rcpt-third" },
+  });
   const original = listOf(h.c, A)[0]!;
   h.promptAnswer = async () => {
     throw new Error("第一次失败");
@@ -1242,17 +1256,9 @@ await scenario("二.15 重发交接后再失败：新行仍持租约", async () 
   assert.notStrictEqual(secondId, firstId, "重发是一次新提交");
   assert.strictEqual(leaseOf(h.c, firstId), undefined, "旧 requestId 不再持有租约");
   assert.ok(leaseOf(h.c, secondId), "重发失败后**新那一行**仍持有租约（还能再重发）");
-  assert.strictEqual(h.uploads.length, 1, "全过程没有取消 / 重启仍在飞的那一轮上传");
   assert.strictEqual(second?.attachments?.[0], original, "新行引用的还是账本里那一枚");
 
-  // 在飞完成 → 新行那一枚变 ready；第三次重发带上真回执
-  upload.resolve({ receiptId: "rcpt-third" });
-  await flush();
-  assert.deepStrictEqual(
-    (h.c.pendingMessages.get(A) ?? []).at(-1)?.attachments?.[0]?.upload,
-    { status: "ready", receiptId: "rcpt-third" },
-    "交接之后结算写回那一枚",
-  );
+  // 第三次重发成功：内容块带上原回执
   h.promptAnswer = async () => undefined;
   await h.c.handle({ type: "resendPending", requestId: second!.requestId }, "v1");
   const content = h.prompts.at(-1)?.content ?? [];
@@ -1262,15 +1268,18 @@ await scenario("二.15 重发交接后再失败：新行仍持租约", async () 
   );
 });
 
-// ---------- 二.16 无回显失败回填与清理断言 ----------
-await scenario("二.16 无回显失败回填与清理断言", async () => {
+// ---------- 二.16 无回显失败回填与失败芯片清理 ----------
+await scenario("二.16 无回显失败回填与失败芯片清理", async () => {
   const h = harness();
   h.c.bindView("v1");
   await h.c.openSession("v1", A);
   h.c.scopes.get(A)!.running = true;
-  const upload = gate<{ receiptId: string }>();
-  h.answer = () => upload.promise;
-  await h.c.handle(attachFrame("报告.pdf"), "v1");
+  putAttachment(h.c, A, {
+    id: "ready-report",
+    kind: "file",
+    name: "报告.pdf",
+    upload: { status: "ready", receiptId: "rcpt-clean" },
+  });
   const original = listOf(h.c, A)[0]!;
   h.promptAnswer = async () => {
     throw new Error("发送失败");
@@ -1283,21 +1292,9 @@ await scenario("二.16 无回显失败回填与清理断言", async () => {
   assert.strictEqual(listOf(h.c, A)[0], original, "归还的是原来那一枚");
   assert.strictEqual(leaseOf(h.c, requestId), undefined, "回填之后这次提交的租约已经不在账上");
   assert.deepStrictEqual(h.c.pendingMessages.get(A) ?? [], [], "无回显的失败不留红行");
-
-  // 在飞失败 → 重试（第二次上传同一份字节）→ 成功
-  upload.reject(new Error("网络断了"));
-  await flush();
-  assert.deepStrictEqual(uploadOf(h.c, A, "报告.pdf"), { status: "error", message: "网络断了" });
-  const retry = gate<{ receiptId: string }>();
-  h.answer = () => retry.promise;
-  await h.c.handle({ type: "retryUpload", id: original.id }, "v1");
-  assert.strictEqual(h.uploads.length, 2, "回填后能重试");
-  assert.strictEqual(h.uploads[1]!.bytes, h.uploads[0]!.bytes, "重试仍用账本留的那份字节");
-  retry.resolve({ receiptId: "rcpt-clean" });
-  await flush();
   assert.deepStrictEqual(uploadOf(h.c, A, "报告.pdf"), { status: "ready", receiptId: "rcpt-clean" });
 
-  // 清理：失败态那一枚被移除之后不再占字节（重试成为空操作）
+  // 清理：失败态的芯片被移除之后不再占字节（重试成为空操作）
   const second = gate<{ receiptId: string }>();
   h.answer = () => second.promise;
   await h.c.handle(attachFrame("另一份.pdf"), "v1");

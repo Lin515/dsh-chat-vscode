@@ -202,6 +202,13 @@ export const MESSAGES = {
   send: { zh: "发送", en: "Send" },
   sendTitle: { zh: "发送（Enter）", en: "Send (Enter)" },
   stopTitle: { zh: "停止生成", en: "Stop generating" },
+  /** 文件附件还在上传：发送按钮置灰，悬停说明原因（见 shared/attachmentGate）。 */
+  sendBlockedUploading: { zh: "等待附件上传完毕", en: "Waiting for uploads to finish" },
+  /** 文件附件上传失败：须先重试或移除，不能带着失败芯片发送。 */
+  sendBlockedUploadFailed: {
+    zh: "附件上传失败，请重试或移除",
+    en: "Attachment upload failed; retry or remove",
+  },
   thinkingDepth: { zh: "思考深度", en: "Thinking depth" },
   selectModel: { zh: "选择模型", en: "Select model" },
   models: { zh: "模型", en: "Models" },
@@ -737,6 +744,21 @@ export const MESSAGES = {
     en: (names: string, count: number) => `${count} file(s) could not be uploaded (${names}); only the ready attachments were sent`,
   },
   uploadNoSession: { zh: "还没有连上服务器，附件传不上去", en: "Not connected to the server yet; the attachment cannot be uploaded" },
+  /** 接入时没有可用会话：后台未连接（整批拒收，见 controller 的 rejectIntakeWithoutSession）。 */
+  attachBackendOffline: {
+    zh: "后台未连接，暂时无法添加附件",
+    en: "The backend is not connected; attachments cannot be added yet",
+  },
+  /** 接入时没有可用会话：没有工作目录（整批拒收）。 */
+  attachNeedsWorkspace: {
+    zh: "请选择工作目录后再添加附件",
+    en: "Choose a working directory before adding attachments",
+  },
+  /** 接入时没有可用会话：其余（建会话失败等）——原因已由原生错误提示说明。 */
+  attachSessionUnavailable: {
+    zh: "会话尚未就绪，附件未添加",
+    en: "The session is not ready; the attachments were not added",
+  },
   /**
    * 发送失败的那一行（乐观回显的失败态）。
    *

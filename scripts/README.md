@@ -78,8 +78,9 @@
 ### 附件 / 图片 / 引用
 
 - [pathInsert.test.ts](<pathInsert.test.ts>) — 附件归类（`classifyPath`，含**进不了内容块的图**＝ 变成文件附件 + `notInlined` 原因）+ 路径插入光标处 + `@` 目录块的整段替换（含引号空格目录的闭引号边界，真实临时文件）。
-- [attachments.test.ts](<attachments.test.ts>) — 扩展名 → mediaType 纯映射、`showOpenDialog` 跨平台约束、拖放 / 粘贴两条字节通道、**图片去向**（进不了内容块改按文件上传、五项判据与整批额度、提示标记形状）、三个入口共用的 `planIntake` 与发送装配。
-- [attachmentLifecycle.test.ts](<attachmentLifecycle.test.ts>) — 附件草稿的归属、上传生命周期与**提交租约**：账本 module 的移走 / 归还 / 交接 / 释放（含越过告警阈值只记日志不销毁）与真控制器的受控 Promise 上传链（切会话结算、失败回填、失败行重发带真回执、窗口下线与撤回的回收口径）。
+- [attachments.test.ts](<attachments.test.ts>) — 扩展名 → mediaType 纯映射、`showOpenDialog` 跨平台约束、拖放 / 粘贴两条字节通道、**图片去向**（进不了内容块改按文件上传、五项判据与整批额度、提示标记形状）、三个入口共用的 `planIntake` 与发送装配、**发送门与装配同源**（允许发送 ⇔ 文件都会进 prompt）。
+- [attachmentLifecycle.test.ts](<attachmentLifecycle.test.ts>) — 附件草稿的归属、上传生命周期与**提交租约**：账本 module 的移走 / 归还 / 交接 / 释放（含越过告警阈值只记日志不销毁）与真控制器的受控 Promise 上传链（切会话结算、就绪才提交、未就绪 send 被拦、失败回填、失败行重发带真回执、窗口下线与撤回的回收口径）。
+- [attachIntakeGate.test.ts](<attachIntakeGate.test.ts>) — 附件接入的**会话门**：点附件时没有目录 / 后台未连接 / 会话未就绪三档直接拒收（连文件框都不弹）与对应提示、断线拒收通知按会话隔离（未绑定时共享）、混批一并拒收、正常空态只弹文件选择框并照旧上传、宿主 `send` 兜底重推草稿。
 - [clipboardPaths.test.ts](<clipboardPaths.test.ts>) — 系统剪贴板路径读取的判据（解析、大小上限、目录粘贴、shell 顺序：7 优先以免每次粘贴付 5.1 的一秒启动）。
 - [pastedImageNames.test.ts](<pastedImageNames.test.ts>) — 粘贴图片的会话内编号名（`图N.png` / `imageN.png`）：编号识别、起始编号的基线、只改图片、被拒条目不编号。
 - [imageSize.test.ts](<imageSize.test.ts>) — 四种图片格式的头部宽高解析（含截断 / 0 边长 / 未知格式一律返回 undefined 的放行口径）。
@@ -126,7 +127,7 @@
 - [mentionLinks.test.ts](<mentionLinks.test.ts>) — 正文里 `@` 引用的判定：文件 / 目录按形状，会话按「草稿里的原始 token」或「已发出消息的 `sessionRefs` 清单」两种来路。
 - [mentionLinksUi.test.ts](<mentionLinksUi.test.ts>) — 上面那份判定真的渲染成可点行内按钮（悬停说明按三档目标给），以及 `.mention-link` 的行内样式。
 - [emptyComposer.test.ts](<emptyComposer.test.ts>) — 空态下 `/` 命令栏与 `@` 候选的行为级回归（空态就绑在壳上，菜单读它、不另建）。
-- [composerSend.test.ts](<composerSend.test.ts>) — 发送按钮的手势链路：按住 Ctrl / Cmd 时文字换成这一次真会走的那条路、点按钮发加速手势（真事件链 + 真 `Composer` 渲染），空闲仍发送、运行中无草稿仍是停止。
+- [composerSend.test.ts](<composerSend.test.ts>) — 发送按钮的手势链路：按住 Ctrl / Cmd 时文字换成这一次真会走的那条路、点按钮发加速手势（真事件链 + 真 `Composer` 渲染），空闲仍发送、运行中无草稿仍是停止；**附件未就绪只置灰**（保留排队 / 插话文案、外层悬停给原因），不把生成中的发送变成停止。
 - [escapeOwner.test.ts](<escapeOwner.test.ts>) — ESC 归属链：手写事件链驱动真处理器（轨迹绘图区 `timelineEscape` + window 兜底 `escapeFallbackListener`），钉住菜单 > 原图 > 抽屉 > 并列浮层的先后、元素层消费后不停止生成、**只有会话页占据前景才停止**（轨迹页与抽屉在前景时不中止会话）、兜底唯一挂点与注销清理。
 - [blankSessionReuse.test.ts](<blankSessionReuse.test.ts>) — 「空态必有壳、首条消息发给谁」：`reusableBlank` 的本地 blank 位（不许把已经说过话的会话当空壳接回来）、空壳上选的模型留得住、已经在一条空壳上再点「+」是完全 no-op（不写回模型、也不另接一条别人的壳）。
 - [blankSessionNoop.test.ts](<blankSessionNoop.test.ts>) — 「点「+」」在用户 2026-10-17 21:00 口径下的行为级回归（真 `ChatController` + 假服务端）：当前已经停在一条**空壳**上时**完全 no-op**——不清输入框 / 附件 / 待发与失败回显、不改模型 / 思考强度 / 权限 / 预设 / 工作目录，不换绑定、不认领、不连后台、不发任何 RPC、不另建也不删（改过标题 / 计划 / 目标 / 挂着自动化任务、甚至断连的壳同样 no-op）；无壳 / 内容会话则照旧落壳：接回没人占用的现成空壳（同步换绑 + 一次指名认领）或真新建；空壳按窗口独占，两个窗口并发点「+」互不干扰。

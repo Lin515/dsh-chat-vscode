@@ -95,7 +95,11 @@
 
 按键回收不连带租约，越过告警阈值也不能按数量销毁；dispose 全清。草稿与回显时序见[发送设计](<design-draft.md>)。
 
-`buildPromptContent` 保附件列表顺序，再放文本。文件是否进入 prompt 只看上传回执，不看 path；未就绪的报 `@uploadIncomplete` 名字，图片 data URL 不可解析则进 dropped 并记宿主日志。上传未完成不禁发送是有意差异，不是漏做按钮门。
+`buildPromptContent` 保附件列表顺序，再放文本。文件是否进入 prompt 只看上传回执，不看 path；未就绪的报 `@uploadIncomplete` 名字，图片 data URL 不可解析则进 dropped 并记宿主日志。
+
+文件附件未就绪（上传中或上传失败）**禁用发送**，空闲与生成中一致，Enter 与 Ctrl/Cmd+Enter 走同一个发送入口早退；生成中且有正文时按钮保留「排队 / 插话」文案、只置灰，不变成停止。悬停说明原因（上传中 / 上传失败）；禁用的原生 button 收不到 hover，提示挂在外层容器。判据只有 `shared/attachmentGate.ts` 的 `attachmentUploadBlock` 一份，`buildPromptContent` 的就绪判据同源；图片内联、不参与这道门。宿主在 `send` 入口按同一判据兜底：命中时不动芯片、不建回显，把宿主账本里的草稿原样重新镜像一帧并记日志。
+
+**没有可用会话就整批拒收接入**：附件入口不替用户建会话、连后台或弹目录选择器（用户 2026-10-20 口径：文件选择框之后再来一个目录选择框会让用户莫名其妙）。判据是「连接已就绪 + 窗口已绑会话」；还没有会话时再看有没有工作目录，决定提示「请选择工作目录」还是「会话尚未就绪」。不满足时按钮入口连文件选择框都不弹，直接发黄色通知；拖放与粘贴同样整批拒收，也不落 `@uploadNoSession` 芯片。拒收通知归属发起时绑定的会话，断线不改变归属；仅未绑定会话时使用共享通知。
 
 ## 官方证据与差异
 
@@ -108,11 +112,12 @@
 | InputBar 的图片准入与 Host 把关 | 数量、单张、总量超限整批拒绝；契约还有像素 / 边长上限 |
 | 文件 input | multiple，无 accept / webkitdirectory |
 | uploadsPending / primaryDisabled | 文件上传中或失败都禁发送，须重试或移除 |
+| addFiles 的会话绑定检查 | 没有会话绑定直接返回 `file.sessionUnavailable`，整批不收 |
 | serializeAttachments | 附件同序，文本最后，空文本不放块 |
 | `file-upload/src/protocol.ts` 与浏览器 Worker | 同一二进制路由；Blob/流由 XHR 报进度或 fetch duplex，精确字节可回退 Remote base64 |
 | `input/editor/keymap.ts`、`ui-attachment/src/client/drop-events.ts` | 粘贴文件、拖放、文件选择都进 intakeFiles；粘贴文本可同时发生 |
 
-本扩展保留路径去重、目录转引用、无路径且模型不收图时上传、上传未完成可发送并提示、字节 8 MB 与内联图 64 MB 硬上限。前两者避免无意义重复 / 空目录附件；后两项限制兜住 base64 膨胀、字符串拷贝与同步大文件读取。
+本扩展保留路径去重、目录转引用、无路径且模型不收图时上传、字节 8 MB 与内联图 64 MB 硬上限。前两者避免无意义重复 / 空目录附件；后两项限制兜住 base64 膨胀、字符串拷贝与同步大文件读取。发送门与接入会话门已按官方口径补齐：文件未就绪不许发，没有会话不接附件。
 
 传输机制不等价：官方持浏览器 File、Worker 流式上传；扩展宿主整块读入内存再 POST，图片 data URL 还经历 JSON 往返，内存与带宽更高。二进制路由不吃 Remote base64 的 300 MiB JSON body 上限，但不代表宿主内存无限。
 
@@ -138,11 +143,12 @@
 - [attachmentLifecycle.ts](<../src/dsh/attachmentLifecycle.ts>)：唯一归属表、上传轮次、提交租约；成功时写回内容身份并把打开目标交给宿主。
 - [attachmentOpen.ts](<../src/dsh/attachmentOpen.ts>)：临时副本命名 / 落盘与内容身份索引（纯逻辑，可离线断言）。
 - [attachmentOpenStore.ts](<../src/dsh/attachmentOpenStore.ts>)：同一条对应关系的持久化口径（`globalState`，一条身份一把键 + 按写入时间有界淘汰；原文件与临时副本分开记，前者才当「文件路径」展示；不 import vscode）。
-- [controller.ts](<../src/dsh/controller.ts>)：接入 IO、唯一目录引用落点、上传与提交租约接线、`openAttachment` 解析链；[client.ts](<../src/dsh/client.ts>)：uploadFile。
+- [attachmentGate.ts](<../src/shared/attachmentGate.ts>)：发送门的唯一判据（文件就绪 / 阻塞原因），宿主与界面共用。
+- [controller.ts](<../src/dsh/controller.ts>)：接入 IO、接入会话门、唯一目录引用落点、上传与提交租约接线、`send` 兜底、`openAttachment` 解析链；[client.ts](<../src/dsh/client.ts>)：uploadFile。
 - [attachIntake.ts](<../src/webview/attachIntake.ts>) / [App.tsx](<../src/webview/App.tsx>)：字节提取、整页 drop / paste 与浮层；[pastedImageNames.ts](<../src/webview/pastedImageNames.ts>)：粘贴图片的会话内编号名；[attachmentOpen.ts](<../src/webview/attachmentOpen.ts>)：打开的 IPC 分派与可点判据；[ipc.ts](<../src/shared/ipc.ts>)：帧。
-- [clipboardPaths.ts](<../src/dsh/clipboardPaths.ts>)：Windows 真路径；[mentions.ts](<../src/shared/mentions.ts>)：引用拼写；[Composer.tsx](<../src/webview/components/Composer.tsx>)：芯片与重试。
+- [clipboardPaths.ts](<../src/dsh/clipboardPaths.ts>)：Windows 真路径；[mentions.ts](<../src/shared/mentions.ts>)：引用拼写；[Composer.tsx](<../src/webview/components/Composer.tsx>)：芯片、重试与发送按钮置灰；[composerSend.ts](<../src/webview/composerSend.ts>)：按钮档位与悬停原因。
 
-离线回归：attachments（回执、内容顺序、同管线 / 同 MIME、上限与拒绝、图片准入四项、`withoutAttachmentDataUrls` 只读不改、FileReader 前缀与并发顺序、剪贴板查询的四条件跳过、发送取账本）、attachmentOpen（叶子名与扩展名、data URL 解码、内容寻址落盘、索引等待与淘汰、打开记录的取值 / 形状校验 / 有界淘汰）、imageSize（四种格式头部读数与放行边界）、pastedImageNames（编号识别、起始编号、只改图片、被拒条目不改名、降级图片文件的消息 / 回显 / 草稿恢复、删除后跨会话续号、快粘与切语言、空态绑定迁移、有界保留窗口）、clipboardPaths（解析、脚本形状、shell 顺序）、attachmentLifecycle（切会话、旧轮、归还 / 交接 / 释放、内容身份与打开目标、**重开宿主后按持久记录打开历史文件附件**）、selection、previewFixture。跨宿主 / webview 的帧改动须双端构建；交付安装版时确认两端产物都更新。mimeType 可选兼容旧帧，不能把混合产物验证当完整验收。常规命令与真实测试批准见[AGENTS](<../AGENTS.md>)。
+离线回归：attachments（回执、内容顺序、同管线 / 同 MIME、上限与拒绝、图片准入四项、`withoutAttachmentDataUrls` 只读不改、FileReader 前缀与并发顺序、剪贴板查询的四条件跳过、发送取账本、**发送门与装配同源**）、attachIntakeGate（无目录取消 / 后台未连接 / 建会话失败三档整批拒收与提示、正常空态照旧上传、混批整批拒收、宿主 `send` 兜底重推草稿）、composerSend（附件未就绪只置灰、不把运行中的发送变成停止、真渲染外层悬停）、attachmentOpen（叶子名与扩展名、data URL 解码、内容寻址落盘、索引等待与淘汰、打开记录的取值 / 形状校验 / 有界淘汰）、imageSize（四种格式头部读数与放行边界）、pastedImageNames（编号识别、起始编号、只改图片、被拒条目不改名、降级图片文件的消息 / 回显 / 草稿恢复、删除后跨会话续号、快粘与切语言、空态绑定迁移、有界保留窗口）、clipboardPaths（解析、脚本形状、shell 顺序）、attachmentLifecycle（切会话、旧轮、归还 / 交接 / 释放、内容身份与打开目标、**重开宿主后按持久记录打开历史文件附件**）、selection、previewFixture。跨宿主 / webview 的帧改动须双端构建；交付安装版时确认两端产物都更新。mimeType 可选兼容旧帧，不能把混合产物验证当完整验收。常规命令与真实测试批准见[AGENTS](<../AGENTS.md>)。
 
 ## 未覆盖边界与重评条件
 

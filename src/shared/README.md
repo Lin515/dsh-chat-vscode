@@ -6,6 +6,7 @@
 - `chat.ts` — 视图模型：宿主与 webview 共用的聊天状态形状（刻意与线协议解耦，协议变更只影响 `dsh/` 适配层）。
 - `ipc.ts` — 宿主 ↔ webview 的消息协议类型（`HostToWebview` / `WebviewToHost`）。
 - `wire.ts` — 宿主 → webview 的过线语义：JSON 过线会丢 `undefined` 键，清空字段必须发 `null`（`jsonSafeFrame` / `mergeWirePatch`）。
+- `attachmentGate.ts` — 发送门的唯一判据：文件附件是否就绪、阻止发送的原因是上传中还是上传失败；宿主兜底、界面按钮与 `buildPromptContent` 同源。
 - `diff.ts` — 编辑类节点的 diff：两条来源归一成 `DiffHunkView`，只做行序列与增删计数，排版交给界面。
 - `changesSummary.ts` — 改动清单的缓存键（必须带会话 id，事件 seq 是按会话各自编号的）。
 - `trajectory.ts` — 轨迹视图的线格式与视图模型（记录种类逐字对齐官方契约；**含请求表 `TrajectoryRequest`**——请求级检查器吃的选项 / 用量含会话累计 / 请求计时都在这张表里；时间线投影已 vendor 到 `src/vendor/`，这里只剩类型与域坐标换算）。

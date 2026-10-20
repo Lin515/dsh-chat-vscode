@@ -85,6 +85,9 @@ export interface Texts {
   send: string;
   sendTitle: string;
   stopTitle: string;
+  /** 文件附件未就绪（上传中 / 上传失败）时发送按钮的悬停原因。 */
+  sendBlockedUploading: string;
+  sendBlockedUploadFailed: string;
   thinkingDepth: string;
   /** 模型按钮的悬停提示（动作口径）：「思考深度」是右侧思考强度胶囊的。 */
   selectModel: string;
@@ -448,6 +451,10 @@ export interface Texts {
   uploadIncomplete: (names: string, count: number) => string;
   /** 还没有会话（连不上服务器），附件传不上去。 */
   uploadNoSession: string;
+  /** 接入时没有可用会话、整批拒收的三句原因（见 controller 的 rejectIntakeWithoutSession）。 */
+  attachBackendOffline: string;
+  attachNeedsWorkspace: string;
+  attachSessionUnavailable: string;
   /** @ 提及 */
   mentionFiles: string;
   /** @ 列表里**对话候选**那一组的标题（官方 `reference.section.sessions`）。 */
