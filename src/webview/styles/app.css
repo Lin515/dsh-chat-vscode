@@ -180,71 +180,25 @@
   color: var(--accent);
 }
 
-/* -------- 标题右侧的子代理导航（官方 dsh-client-ui-subagent 同款）--------
-   交互与官方 `CatalogDropdown` 逐条对齐：点击 / 悬停展开一个**固定宽度**的树形
-   列表（官方 336px 菜单），点行进入子代理；子代理页标题换成两节面包屑，点左半
-   （父会话标题）回主会话。 */
+/* -------- 标题上的会话切换（用户 2026-10-20 口径）--------
+   有子代理时标题本身变成切换入口：点击展开「顶层会话 + 子代理树」的定宽清单，
+   再点关闭；标题后的计数提示保留。 */
 
-/* 容器：弹出列表的定位壳（官方 .root 的 position: relative） */
-.subagent-nav {
+/* 标题 + 计数的定位壳：弹出清单相对它左对齐 */
+.header-title-group {
   position: relative;
   display: inline-flex;
   align-items: center;
   gap: calc(4 * var(--dp));
-  margin-left: calc(4 * var(--dp));
   min-width: 0;
+  max-width: 50vw;
 }
 
-/* 触发器：官方 .trigger / .switcherTrigger——透明底、悬停变亮、chevron 随开合旋转 */
-.subagent-trigger {
-  display: inline-flex;
-  align-items: center;
-  gap: calc(4 * var(--dp));
-  min-height: calc(22 * var(--dp));
-  max-width: 32vw;
-  padding: calc(2 * var(--dp)) calc(5 * var(--dp));
-  border-radius: calc(6 * var(--dp));
-  font-size: var(--font-size-2xs);
-  color: var(--description);
-  white-space: nowrap;
-  overflow: hidden;
+.header-title-group .header-title {
+  max-width: none;
 }
 
-.subagent-trigger:hover,
-.subagent-trigger.is-busy {
-  color: var(--fg);
-}
-
-.subagent-trigger:hover {
-  background: var(--hover);
-}
-
-/* 当前子代理标题（子代理页）：官方 .switcherTrigger——主文字色 + 500 字重 */
-.subagent-trigger.is-current {
-  color: var(--fg);
-  font-weight: 600;
-}
-
-.subagent-trigger-title,
-.subagent-trigger-count {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.subagent-trigger > svg {
-  flex: none;
-  transition: transform 120ms ease;
-}
-
-/* 开合时 chevron 翻转（官方 .triggerOpen 同款） */
-.subagent-trigger > svg.is-open {
-  transform: rotate(180deg);
-}
-
-/* 面包屑左半：主会话标题变身「返回」按钮（子代理页）。
-   同一套排版（.header-title），只补按钮复位与悬停底色（官方 button.crumb:hover
-   的可点形态：加底色、文字色不变）。 */
+/* 可点标题：同一套排版（.header-title），只补按钮复位、悬停底色与 chevron */
 button.header-title {
   padding: calc(2 * var(--dp)) calc(5 * var(--dp));
   margin-left: calc(-5 * var(--dp)); /* 抵消内边距，标题视觉位置与纯文本版对齐 */
@@ -259,13 +213,47 @@ button.header-title:hover {
   background: var(--hover);
 }
 
-.subagent-crumb-sep {
+button.header-title.is-switcher {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(3 * var(--dp));
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 40vw;
+}
+
+.header-title-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+button.header-title.is-switcher > svg {
   flex: none;
-  color: var(--description);
+  transition: transform 120ms ease;
+}
+
+/* 开合时 chevron 翻转 */
+button.header-title.is-switcher > svg.is-open {
+  transform: rotate(180deg);
+}
+
+/* 标题后的子代理计数：当前会话下面全部子代理（含多层后代）；有在跑的带状态点 */
+.header-subagent-count {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(4 * var(--dp));
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--font-size-2xs);
+  color: var(--muted);
 }
 
 /* 弹出的目录列表：官方 .menu 的定宽皮肤（336px、大圆角、投影），向下展开。
-   位置相对 .subagent-nav（触发器左对齐），宽度钳进视口防窄侧栏裁切。 */
+   位置相对 .header-title-group（标题左对齐），宽度钳进视口防窄侧栏裁切。 */
 .subagent-menu {
   position: absolute;
   top: calc(100% + 5 * var(--dp));
@@ -274,7 +262,7 @@ button.header-title:hover {
   display: flex;
   flex-direction: column;
   width: calc(300 * var(--dp));
-  max-width: min(calc(336 * var(--dp)), calc(100vw - 16 * var(--dp)));
+  max-width: min(calc(336 * var(--dp)), calc(100vw - 40 * var(--dp)));
   max-height: min(calc(420 * var(--dp)), calc(100vh - 60 * var(--dp)));
   padding: calc(4 * var(--dp));
   overflow: hidden;
@@ -298,6 +286,20 @@ button.header-title:hover {
   min-height: 0;
   overflow-y: auto;
 }
+
+/* 两组之间用分隔线断开：顶层会话与子代理会话是「组」的区别，不是缩进的区别 */
+.subagent-menu-group + .subagent-menu-group {
+  margin-top: calc(2 * var(--dp));
+  padding-top: calc(2 * var(--dp));
+  border-top: 1px solid var(--border);
+}
+
+/* 顶层会话行：与第 1 层子代理同级对齐，用字重强调它是这一组的根 */
+.subagent-root-row .subagent-row-label {
+  font-weight: 600;
+}
+
+/* 深层子代理靠行内 padding-left 缩进（层级来自数据，见 SubagentCatalogRow） */
 
 /* 目录一行：官方 .row——状态点列 + 标题/副文两行内容 + 右侧箭头；
    悬停整行铺 hover 底（圆角贴行），当前行加粗。 */
@@ -3178,7 +3180,7 @@ button.changes-card-head:hover .changes-card-chevron,
    拖到 VS Code 侧栏最小宽度时由 VS Code 原生收起成图标条。 */
 
 /* 头部：收成品牌 + 新建 + 历史（其余按钮隐藏），标题用图标表示未命名 */
-.app.is-mini .header-title {
+.app.is-mini .header-title-group {
   display: none;
 }
 /* 标题前的工作目录同理收掉：那一档连标题都放不下，路径更放不下

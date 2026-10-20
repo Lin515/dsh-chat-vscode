@@ -26,6 +26,7 @@ import type {
   SessionRefView,
   SessionSummaryView,
   SubagentContextView,
+  SubagentTreeView,
   SubagentView,
   TodoView,
 } from "../shared/chat";
@@ -126,7 +127,7 @@ import {
   type QueuedItemEntry,
   type QueueOrigin,
 } from "./queueView";
-import { modelSelectionFromProjection, subagentCatalogFromProjection, subagentsFromList, sameSubagentRow, upsertSubagent, withSubagentActivity, withSubagentUnread, agentPresetsFromList, permissionCatalogHasAuto } from "./projections";
+import { modelSelectionFromProjection, subagentCatalogFromProjection, subagentIdentityFromProjection, subagentsFromList, sameSubagentRow, upsertSubagent, withSubagentActivity, withSubagentUnread, agentPresetsFromList, permissionCatalogHasAuto } from "./projections";
 import type { ModelSelectionDecoded, SubagentCatalogEntryView } from "./projections";
 import {
   ingestControlBaseline,
@@ -142,6 +143,7 @@ import { backfillTrajectorySchemas, missingSchemaAnchor } from "./trajectoryBack
 import { normalizePath, upperDriveLetter, visibleForView, visibleForWorkspace, visibleSessionCandidates, visibleSessionRows } from "./sessionList";
 import { acceptSessionStatus, decodeSessionStatus } from "./sessionStatus";
 import { orderSubagentEntries } from "./subagentOrder";
+import { buildSubagentTree } from "./subagentTree";
 import { dropLegacyUnreadState, loadUnreadSessionIds, writeUnreadSession } from "./unreadStore";
 import { isBlank, mergeWindowCache, WindowRestore, WorkspaceWindowStateStore, type SidebarSlot, type WindowCache, type WindowKind } from "./windowState";
 
@@ -175,6 +177,22 @@ type RestoreHint = {
   sessionId: string;
   subagent?: { parentSessionId: string; mode: "one-shot" | "continuable" };
 };
+
+/**
+ * 子代理树索引的一条：父子关系 + 画树需要的显示字段。
+ *
+ * 与 `SessionScope.subagentEntries` 的分工：目录是**每个父会话一份**的显示清单；
+ * 这份索引是**跨父会话**的血缘账本，用来画整棵树（含没打开过的祖先 / 兄弟）。
+ * 两个来源的字段完整度不同（`session/list` 有父子关系与身份投影，目录事件有
+ * 描述符 label 与创建时刻），并入时缺什么就保留已知值。
+ */
+interface IndexedSubagent {
+  id: string;
+  parentSessionId: string;
+  label?: string;
+  mode: "one-shot" | "continuable";
+  createdAt?: number;
+}
 
 /** 类型守卫：这个域正在查看**子代理会话**（有子代理地址）。 */
 function selfScopeHasAddress(scope: SessionScope | undefined): boolean {
@@ -1060,6 +1078,22 @@ export class ChatController implements vscode.Disposable {
    */
   private readonly subagentSessionIds = new Set<string>();
   /**
+   * 子代理树的**血缘索引**（`childId → { parentSessionId, mode, label… }`）。
+   *
+   * 与各会话域里的 `subagentEntries` 分开：那份目录只看得见「当前父会话的直接下级」，
+   * 标题点击后的清单要画**整棵多层树**（含没打开过的祖先 / 兄弟），所以宿主得有一份
+   * 跨域的血缘账本。写入口：
+   * - `session/list` 原始行（`origin === 'subagent'` + `parentSessionId`）：跨进程 /
+   *   跨窗口的权威血缘；
+   * - 每条目录的并入点（`mergeSubagentEntries`，含 durable 事件 / 投影 / 旧 RPC）：
+   *   即时补齐 label / 模式 / 创建时刻；
+   * - `ensureScope` / 进入子代理：恢复路径直接落到一条子代理时，它的地址就是血缘。
+   *
+   * 清理路径：`session/list` 明确说某 id 不再是子代理、删除 / 归档时退掉；父链断掉
+   * 的节点不硬塞进树（见 `dsh/subagentTree.ts`）。
+   */
+  private readonly subagentIndex = new Map<string, IndexedSubagent>();
+  /**
    * 子代理会话的**驻留状态**账本（两个写入口，读入口只有一个）。
    *
    * 子代理不进界面列表（`sessionList.ts` 滤掉），但「恢复到子代理页」时域的 running
@@ -1076,7 +1110,7 @@ export class ChatController implements vscode.Disposable {
    */
   private readonly subagentRunning = new Map<string, boolean>();
   /**
-   * 子代理目录的**判定时间**账本（`childSessionId → epoch ms`）：下拉里那一行的排序键。
+   * 子代理目录的**判定时间**账本（`childSessionId → epoch ms`）：标题清单里那一行的排序键。
    *
    * 口径（用户 2026-10-13）：清单始终按「用户消息最新的，或者 agent 轮次结果正文最新的」
    * 从上到下排（见 `subagentOrder.ts`）。判定条目只有两类，**agent 的过程消息**（思考、
@@ -1697,7 +1731,7 @@ export class ChatController implements vscode.Disposable {
         this.rememberSubagentTitle(sessionId, frame.patch.session?.title);
         this.deliver(sessionId, {
           type: "patch",
-          patch: sessionPatch(this.sessionSource(selfScope), ["subagent"]),
+          patch: sessionPatch(this.sessionSource(selfScope), ["subagent", "subagentTree"]),
         });
       }
     }
@@ -2043,6 +2077,7 @@ export class ChatController implements vscode.Disposable {
           // 目录的先后同样在这一层现算（`orderedCatalog`）：会话片段与 `subagents/list`
           // 帧必须给同一个顺序，否则后到的那一帧会把界面上的先后改回去
           scope ? this.orderedCatalog(scope.subagentEntries) : undefined,
+          this.subagentTreeOf(scope),
         ),
       ),
       // 输入区那三个字段按**窗口**存（未绑会话时）/ 按会话键存，不属于会话状态片段：
@@ -2074,6 +2109,7 @@ export class ChatController implements vscode.Disposable {
       this.subagentContextOf(scope),
       // 目录的先后与快照同源（见 `orderedCatalog`）：两个生产者给同一个顺序
       scope ? this.orderedCatalog(scope.subagentEntries) : undefined,
+      this.subagentTreeOf(scope),
     );
   }
 
@@ -2175,6 +2211,8 @@ export class ChatController implements vscode.Disposable {
         ...known.filter((item) => !entries.some((entry) => entry.id === item.id)),
       ];
       scope.subagentSiblings = merged;
+      // 父目录投影同样是血缘证据：这些行都是 parentId 的直接下级
+      for (const entry of merged) this.noteSubagentIndex(parentId, entry);
       this.log(`[subagents] 会话=${scope.sessionId} 父目录（投影）${entries.length} 条`);
       // 补齐的是**本会话域**的父目录快照：把重算后的上下文直接发给看这个会话的窗口。
       // 不能写 syncSubagentContext(本会话id)——那条的参数语义是「父会话 id」，通知的
@@ -2182,7 +2220,7 @@ export class ChatController implements vscode.Disposable {
       // （2026-09-25 报障的根因之二，回归见 scripts/subagentSwitch.test.ts 场景二）。
       this.deliver(scope.sessionId, {
         type: "patch",
-        patch: sessionPatch(this.sessionSource(scope), ["subagent"]),
+        patch: sessionPatch(this.sessionSource(scope), ["subagent", "subagentTree"]),
       });
     } catch (error) {
       this.log(`[subagents] 父目录投影读取失败：${this.describeError(error)}`);
@@ -2209,16 +2247,17 @@ export class ChatController implements vscode.Disposable {
   /**
    * 父会话的目录变了：把新的上下文推给**正在看它子代理**的窗口。
    *
-   * 界面上那条切换下拉的数据就是这里推的——用户停在子代理页时，父会话新注册了
+   * 界面上那条父子上下文的快照就是这里推的——用户停在子代理页时，父会话新注册了
    * 子代理（`registerSubagent`）、兄弟行跑了/停了（`syncSubagentActivity`）、投影或
-   * RPC 刷新了目录（`deliverSubagentList` 的全部调用点），下拉都要跟上。
+   * RPC 刷新了目录（`deliverSubagentList` 的全部调用点），上下文都要跟上；整棵树的
+   * 变化另行由 `redeliverSubagentTrees` 扇出。
    */
   private syncSubagentContext(parentSessionId: string): void {
     for (const scope of this.scopes.values()) {
       if (scope.subagentAddress?.parentSessionId !== parentSessionId) continue;
       this.deliver(scope.sessionId, {
         type: "patch",
-        patch: sessionPatch(this.sessionSource(scope), ["subagent"]),
+        patch: sessionPatch(this.sessionSource(scope), ["subagent", "subagentTree"]),
       });
     }
   }
@@ -4198,6 +4237,9 @@ export class ChatController implements vscode.Disposable {
       // 描述符 label，目录里只拿得到会话 id，见 `subagentTitles`）。变化在列表整份
       // 装好之后再推（`sweepSubagentTitles` 要读新的会话列表算父会话标题）。
       const titleChanges = this.collectSubagentTitles(value.items ?? []);
+      // 同一份原始行重建跨域血缘（多层树的父子关系与自身子代理身份）：标题点击后的
+      // 清单要列到没打开过的层级，不能只靠当前父域的目录
+      this.noteSubagentIndexFromList(value.items ?? []);
       // 判定时间账本（用户消息那一半）与标题同一份原始行：会话列表就是它的权威来路，
       // 变化在列表整份装好之后再推（那时父会话标题也才是新的）
       // @ 提及候选过滤的打底（判据与用途见 `subagentSessionIds` 与 sessionList.ts）
@@ -4307,6 +4349,8 @@ export class ChatController implements vscode.Disposable {
       this.sweepSubagentTitles(titleChanges, "会话列表");
       // 顺序变了也要重推：目录内容没变但先后变了的话，界面会停在旧顺序上
       this.redeliverSubagentRows(activityChanges);
+      // 血缘索引来自同一份列表：已绑定的窗口（含子代理页）都可能是第一次拿到完整的树
+      this.redeliverSubagentTrees();
     } catch (error) {
       this.log(`[sessions] 列表获取失败：${this.describeError(error)}`);
     }
@@ -4628,7 +4672,9 @@ export class ChatController implements vscode.Disposable {
       this.leftGeneratingSessionIds.delete(sessionId);
       this.subagentRunning.delete(sessionId);
       this.clearSubagentOrder(sessionId);
+      this.forgetSubagentIndex(sessionId);
       this.emitSessionLists();
+      this.redeliverSubagentTrees();
       setTimeout(() => void this.refreshSessions(), 500);
     } catch (error) {
       this.reportError(vscode.l10n.t("Failed to archive the session"), error);
@@ -4724,6 +4770,7 @@ export class ChatController implements vscode.Disposable {
     this.leftGeneratingSessionIds.delete(sessionId);
     // 状态账本同理：这条会话不可能再出现在任何目录里
     this.subagentRunning.delete(sessionId);
+    this.forgetSubagentIndex(sessionId);
     this.clearSubagentOrder(sessionId);
     // 这条会话的占位登记一并收掉（它已经不在任何列表里了）。上面那条占用保护保证此刻
     // 没有窗口绑着它，这里清的是可能残留的**预留**（另一个窗口正飞在落壳路上）——
@@ -4731,6 +4778,7 @@ export class ChatController implements vscode.Disposable {
     this.blankReservations.delete(sessionId);
     this.blankOccupants.delete(sessionId);
     this.emitSessionLists();
+    this.redeliverSubagentTrees();
     if (!removed) {
       this.log(
         `[sessions] 会话 ${sessionId} 的日志目录已不存在，已从列表中移除（服务端内存中的副本仍存活到 dsh 进程退出）`,
@@ -5743,12 +5791,17 @@ export class ChatController implements vscode.Disposable {
       if (existing.subagentAddress || subagent) existing.subagentAddress = subagent;
       if (existing.subagentAddress && subagent) {
         this.log(`[subagents] 会话=${sessionId} 地址对齐：父会话=${subagent.parentSessionId}（原=${existing.subagentAddress.parentSessionId}）`);
+        this.noteSubagentIndex(subagent.parentSessionId, {
+          id: sessionId,
+          label: this.subagentDisplayName(existing) ?? sessionId,
+          mode: subagent.mode,
+        });
       }
       if (existing.subagentAddress) {
         // 上下文是现算的：地址变了就重推（面包屑 / 切换下拉立即正确）
         this.deliver(sessionId, {
           type: "patch",
-          patch: sessionPatch(this.sessionSource(existing), ["subagent"]),
+          patch: sessionPatch(this.sessionSource(existing), ["subagent", "subagentTree"]),
         });
       }
       return existing;
@@ -5757,6 +5810,13 @@ export class ChatController implements vscode.Disposable {
     const scope = new SessionScope(sessionId);
     scope.subagentAddress = subagent;
     if (subagent) {
+      // 地址就是血缘：恢复路径直接落到子代理页、列表与父目录都还没回来时，树也要
+      // 至少画得出「顶层会话 → 自己」这一条
+      this.noteSubagentIndex(subagent.parentSessionId, {
+        id: sessionId,
+        label: sessionId,
+        mode: subagent.mode,
+      });
       const parent = this.scopes.get(subagent.parentSessionId);
       // 父目录快照：种子（切换时随行的最新一份）优先；没有种子才读父会话域——
       // 它此刻**多半已被回收**（视图离开就回收，见 `dropViewers`），读不到就是 []。
@@ -5765,6 +5825,10 @@ export class ChatController implements vscode.Disposable {
         : parent
           ? [...parent.subagentEntries]
           : [];
+      // 种子里的兄弟行也补进血缘索引（它们的父就是这条子代理的直接父会话）
+      for (const sibling of scope.subagentSiblings) {
+        this.noteSubagentIndex(subagent.parentSessionId, sibling);
+      }
       // **running 打底**：普通会话用会话列表里的权威值（`SessionSummary.running`）；
       // 子代理会话不在列表里，用父目录里那一行的 `activity`（官方客户端的 Session
       // 实例同样在建立时用列表摘要喂一次——`manager.ts` 的 `session.handleRunning`）。
@@ -7008,8 +7072,10 @@ export class ChatController implements vscode.Disposable {
     let changed = false;
     for (const entry of entries) {
       // catalog 的三个来源（事件 / RPC / 投影）都汇到这里：顺带记进 @ 提及候选的
-      // 过滤集合（见 `subagentSessionIds`），与「已在册」无关、每次都要记
+      // 过滤集合（见 `subagentSessionIds`）与跨域血缘索引（标题点击后的树要画到
+      // 没打开过的祖先 / 兄弟）
       this.subagentSessionIds.add(entry.id);
+      this.noteSubagentIndex(scope.sessionId, entry);
       // 目录来源给不出驻留状态与「用户已读」，两项都由宿主账本补齐（见 `decorateSubagent`）
       const known = this.decorateSubagent(entry);
       const existing = next.find((item) => item.id === known.id);
@@ -7088,6 +7154,9 @@ export class ChatController implements vscode.Disposable {
       if (!orderChanged) this.deliverSubagentList(scope);
     }
     if (orderChanged) this.redeliverSubagentRows(new Set([childSessionId]));
+    // 树里的深层节点可能不在任何打开域的目录里（只存在于血缘索引）：状态变化同样
+    // 要刷新整棵树，否则标题清单里的状态点停在旧的
+    this.redeliverSubagentTrees();
     // 收尾那一刻标题已经落地（它是这条会话自己的首轮产出的）→ 补一次标题账本。
     // 界面因此既不必点开这个子代理、也不必等下一次菜单打开就能看到它的名字。
     if (!running && this.isKnownSubagent(childSessionId)) this.scheduleSubagentTitles();
@@ -7208,9 +7277,11 @@ export class ChatController implements vscode.Disposable {
       if (!scope.subagentSiblings.some((entry) => changed.has(entry.id))) continue;
       this.deliver(scope.sessionId, {
         type: "patch",
-        patch: sessionPatch(this.sessionSource(scope), ["subagent"]),
+        patch: sessionPatch(this.sessionSource(scope), ["subagent", "subagentTree"]),
       });
     }
+    // 显示名 / 排序变了，标题清单里对应的树节点也要跟上（深层节点可能没有打开域）
+    this.redeliverSubagentTrees();
   }
 
   /**
@@ -7244,8 +7315,12 @@ export class ChatController implements vscode.Disposable {
         const items = value.items ?? [];
         // 同一份 `session/list` 顺带把判定时间账本（用户消息那一半）刷新到最新：菜单打开
         // 就是要「把最新的要一遍」，先后也应该按最新的算
+        this.noteSubagentIndexFromList(items);
         this.sweepSubagentTitles(this.collectSubagentTitles(items), "会话列表");
         this.redeliverSubagentRows(activityChanges);
+        // 菜单打开那一下正是「把整棵树的最新血缘要一遍」：新层级 / 新兄弟要在这次
+        // 回来后就出现在标题清单里
+        this.redeliverSubagentTrees();
       } catch (error) {
         // 拿不到就保持现状（名字停在会话 id 或上一次算出来的那一个），只记一行
         this.log(`[subagents] 标题补齐失败：${this.describeError(error)}`);
@@ -7274,7 +7349,7 @@ export class ChatController implements vscode.Disposable {
   /**
    * 目录变了就下发（唯一的列表帧，见 `shared/ipc.ts`）。
    *
-   * 同时把**父目录快照**同步进正在看这个会话子代理的窗口（切换下拉的数据，
+   * 同时把**父目录快照**同步进正在看这个会话子代理的窗口（子代理上下文的数据，
    * 见 `syncSubagentContext`）——目录的三条来源（事件 / 投影 / RPC）都汇到
    * `deliverSubagentList`，这里就是唯一的扇出点。
    *
@@ -7288,6 +7363,8 @@ export class ChatController implements vscode.Disposable {
       entries: this.orderedCatalog(scope.subagentEntries).map((entry) => this.resolveSubagentDisplay(entry)),
     });
     this.syncSubagentContext(scope.sessionId);
+    // 目录变了，整棵树也可能多 / 少节点或层级（标题清单与目录共用同一份血缘）
+    this.redeliverSubagentTrees();
   }
 
   /**
@@ -7299,6 +7376,171 @@ export class ChatController implements vscode.Disposable {
    */
   private orderedCatalog(entries: readonly SubagentView[]): SubagentView[] {
     return orderSubagentEntries(entries, this.subagentActivityAt);
+  }
+
+  /**
+   * 记一条**跨域血缘**（父子关系 + 画树要用的显示字段）。
+   *
+   * 与 `mergeSubagentEntries` 的区别：那里只维护「某个父会话自己的目录」，这里维护
+   * 整棵树。两个来源缺的字段不同（`session/list` 有父链、事件 / 投影有 label 与
+   * 创建时刻），所以是并入而不是覆盖：新来源没带的 label / createdAt 保留已知值。
+   */
+  private noteSubagentIndex(parentSessionId: string, entry: SubagentView): void {
+    if (!parentSessionId || !entry.id || parentSessionId === entry.id) return;
+    const existing = this.subagentIndex.get(entry.id);
+    const label = entry.label && entry.label !== entry.id ? entry.label : existing?.label;
+    const createdAt = entry.createdAt ?? existing?.createdAt;
+    this.subagentIndex.set(entry.id, {
+      id: entry.id,
+      parentSessionId,
+      mode: entry.mode,
+      ...(label ? { label } : {}),
+      ...(createdAt === undefined ? {} : { createdAt }),
+    });
+  }
+
+  /**
+   * `session/list` 的原始行 → 血缘索引。
+   *
+   * 这是**跨进程 / 跨窗口**的权威来路：会话列表带 `parentSessionId` 与
+   * `projections.values.subagent`（自身子代理身份），所以不必打开任何子代理会话
+   * 就能知道多层树长什么样。显式不是子代理的行按「肯定证据」退掉索引；
+   * 已删除 / 归档的行同样不画进树。
+   */
+  private noteSubagentIndexFromList(items: readonly SessionSummaryWire[]): void {
+    for (const item of items) {
+      const id = item.sessionId;
+      if (this.deletedSessionIds.has(id) || this.archivedSessionIds.has(id)) {
+        // 只有**索引里确实是子代理**的 id 才连带清理下级；顶层会话不在索引里，
+        // 不能因为它的状态变化把无辜的下级一起删掉
+        if (this.subagentIndex.has(id)) this.forgetSubagentIndex(id);
+        continue;
+      }
+      if (item.origin !== "subagent") {
+        // 肯定证据：同一个 id 不可能是两种身份。目录可能先到、列表后到时才纠正；
+        // 同样只处理索引里已经登记的 id（顶层会话不在索引里，迭代它的下级是误伤）
+        if (this.subagentIndex.has(id)) this.forgetSubagentIndex(id);
+        continue;
+      }
+      const parentSessionId = typeof item.parentSessionId === "string" && item.parentSessionId
+        ? item.parentSessionId
+        : this.subagentIndex.get(id)?.parentSessionId;
+      if (!parentSessionId) continue;
+      const identity = subagentIdentityFromProjection(item.projections?.values?.subagent);
+      const existing = this.subagentIndex.get(id);
+      this.noteSubagentIndex(parentSessionId, {
+        id,
+        label: identity?.label ?? existing?.label ?? id,
+        mode: identity?.mode ?? existing?.mode ?? "one-shot",
+      });
+    }
+  }
+
+  /** 退掉一条子代理及其所有下级（删除 / 归档 / 列表明确说它不再是子代理）。 */
+  private forgetSubagentIndex(sessionId: string): void {
+    const queue = [sessionId];
+    const seen = new Set<string>();
+    while (queue.length) {
+      const id = queue.pop()!;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      this.subagentIndex.delete(id);
+      for (const entry of this.subagentIndex.values()) {
+        if (entry.parentSessionId === id) queue.push(entry.id);
+      }
+    }
+  }
+
+  /** 索引行 → 目录行（`activity` / `unread` 由宿主账本补齐；显示名仍由发帧时解析）。 */
+  private subagentRowOfIndex(entry: IndexedSubagent): SubagentView {
+    const activity = this.knownSubagentActivity(entry.id);
+    return {
+      id: entry.id,
+      label: entry.label ?? entry.id,
+      mode: entry.mode,
+      ...(entry.createdAt === undefined ? {} : { createdAt: entry.createdAt }),
+      ...(activity ? { activity } : {}),
+      unread: this.unreadSessionIds.has(entry.id),
+    };
+  }
+
+  /**
+   * 某一级子代理的**直接下级**（已按判定时间排序）。
+   *
+   * 树与切换清单共用它：顺序口径只能有一处（见 `subagentOrder.ts`）。
+   */
+  private subagentChildrenOf(parentId: string): SubagentView[] {
+    const rows: SubagentView[] = [];
+    for (const entry of this.subagentIndex.values()) {
+      if (entry.parentSessionId !== parentId) continue;
+      if (this.deletedSessionIds.has(entry.id) || this.archivedSessionIds.has(entry.id)) continue;
+      rows.push(this.subagentRowOfIndex(entry));
+    }
+    return orderSubagentEntries(rows, this.subagentActivityAt);
+  }
+
+  /** 从当前会话往上找顶层祖先；父链缺失时退回子代理地址里的直接父会话。 */
+  private subagentRootId(sessionId: string): string {
+    let current = sessionId;
+    const seen = new Set<string>();
+    while (!seen.has(current)) {
+      seen.add(current);
+      const parent = this.subagentIndex.get(current)?.parentSessionId
+        ?? this.scopes.get(current)?.subagentAddress?.parentSessionId;
+      if (!parent || parent === current) break;
+      current = parent;
+    }
+    return current;
+  }
+
+  /**
+   * 当前窗口所在会话的**子代理树**（顶层会话 + 先序扁平节点）。
+   *
+   * 普通会话没有任何子代理、自己也不是子代理时返回 `undefined`（标题不变成可点，
+   * 界面上也不占位）。正在看子代理时至少要含它自己——恢复路径直接落到子代理页时，
+   * 上层目录可能还没从列表回来，`ensureScope` 已把它的地址记进索引，树因此画得出来。
+   */
+  private subagentTreeOf(scope: SessionScope | undefined): SubagentTreeView | undefined {
+    if (!scope) return undefined;
+    // 地址是持久事实：新域建好那一刻就补进血缘索引，不必等列表或父目录
+    if (scope.subagentAddress) {
+      this.noteSubagentIndex(scope.subagentAddress.parentSessionId, {
+        id: scope.sessionId,
+        label: this.subagentDisplayName(scope) ?? scope.sessionId,
+        mode: scope.subagentAddress.mode,
+      });
+    }
+    const rootId = this.subagentRootId(scope.sessionId);
+    const summary = this.sessions.find((session) => session.id === rootId);
+    const rootScope = this.scopes.get(rootId);
+    const title = summary?.title
+      || (rootScope ? this.subagentDisplayName(rootScope) : undefined)
+      || this.subagentTitles.get(rootId)
+      || rootId;
+    const tree = buildSubagentTree({
+      root: {
+        id: rootId,
+        title,
+        running: rootScope?.running ?? summary?.running ?? this.subagentRunning.get(rootId) ?? false,
+      },
+      childrenOf: (parentId) => this.subagentChildrenOf(parentId),
+    });
+    if (!tree.nodes.length && !scope.subagentAddress) return undefined;
+    return tree;
+  }
+
+  /** 只带 `subagentTree` 的补丁（不碰目录 / 上下文，避免白算一遍兄弟快照）。 */
+  private subagentTreePatch(scope: SessionScope) {
+    return sessionPatch({ subagentTree: () => this.subagentTreeOf(scope) }, ["subagentTree"]);
+  }
+
+  /** 树变了：把新的树推给**每个已绑定窗口**（同一棵树下的不同子代理页都要看到）。 */
+  private redeliverSubagentTrees(): void {
+    for (const [viewId, sessionId] of this.viewSessions) {
+      const scope = this.scopes.get(sessionId);
+      if (!scope) continue;
+      this.emitToView(viewId, { type: "patch", patch: this.subagentTreePatch(scope) });
+    }
   }
 
   /**
@@ -7371,9 +7613,10 @@ export class ChatController implements vscode.Disposable {
    * 停在旧文案上（已完成 ↔ 可继续 / 一次性）直到下一次目录刷新。
    *
    * 两处都要盖：**父会话域**的目录（普通会话的清单）与子代理域手里那份**父目录快照**
-   * （`subagentSiblings`——父域已被回收时，切换下拉读的就是它）。
+   * （`subagentSiblings`——父域已被回收时，子代理上下文读的就是它）。
    */
   private syncSubagentUnread(childSessionId: string, unread: boolean): void {
+    let treeChanged = false;
     for (const scope of this.scopes.values()) {
       const own = withSubagentUnread(scope.subagentEntries, childSessionId, unread);
       if (own.changed) {
@@ -7385,11 +7628,13 @@ export class ChatController implements vscode.Disposable {
       const siblings = withSubagentUnread(scope.subagentSiblings, childSessionId, unread);
       if (!siblings.changed) continue;
       scope.subagentSiblings = siblings.entries;
+      treeChanged = true;
       this.deliver(scope.sessionId, {
         type: "patch",
-        patch: sessionPatch(this.sessionSource(scope), ["subagent"]),
+        patch: sessionPatch(this.sessionSource(scope), ["subagent", "subagentTree"]),
       });
     }
+    if (treeChanged) this.redeliverSubagentTrees();
   }
 
   /**
@@ -11348,16 +11593,12 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
-   * 标题旁导航打开时的按需刷新（按该窗口绑定的会话）。
+   * 标题点击展开时的按需刷新（按该窗口绑定的会话）。
    *
-   * **刷新的是「列表根部」的目录**（官方同款：展开行调 `refreshProjection(parentId)`）：
-   * 普通会话刷自己的目录；**正在看子代理时刷父会话的**——切换下拉列出的是父目录
-   * （兄弟行），刷当前会话（子代理）自己的目录对那份清单没有任何帮助，反而会在
-   * 子代理会话上白发一次 RPC。
-   *
-   * 另外**并一条标题账本刷新**（不 await，不拖慢菜单）：目录里缺 label 的行（workflow
-   * 派发的子代理）要在这一刻拿到会话标题，否则名字停在 uuid——这与「打开就要最新」是
-   * 同一取舍，见 `refreshSubagentTitles`。
+   * 清单现在是**整棵多层树**（`subagentTree`，来自跨域血缘索引），所以打开时先补
+   * 一份 `session/list`（不 await，不拖慢菜单）——那是父链与自身子代理身份的权威
+   * 来路；同时刷新当前视图所属的那级目录，label / activity 也能更到最新：
+   * 普通会话刷自己的目录；正在看子代理时刷父会话的（直接兄弟行）。
    */
   private async refreshSubagents(viewId: string): Promise<void> {
     const scope = this.scopeOfView(viewId);
@@ -11367,8 +11608,8 @@ export class ChatController implements vscode.Disposable {
     }
     void this.refreshSubagentTitles();
     if (scope.subagentAddress) {
-      // 子代理页：清单是父目录（兄弟行），要最新就把父目录刷一遍（父域开着时
-      // RPC 那条完整检索会并入父域并回推上下文；父域不在时投影 RPC 直接补快照）
+      // 子代理页：父域开着时 RPC 那条完整检索会并入父域并回推上下文；
+      // 父域不在时投影 RPC 直接补快照
       const parent = this.scopes.get(scope.subagentAddress.parentSessionId);
       if (parent) await this.refreshSubagentCatalog(parent);
       else await this.fetchParentCatalog(scope);
@@ -11382,15 +11623,11 @@ export class ChatController implements vscode.Disposable {
    * 同构：窗口整个绑到子代理会话上，消息流、生成状态、输入框都换成它的（可继续
    * 子代理可以接着对话，不再只读）。
    *
-   * 目标子代理的**父会话**由当前视图推出——**层级不能因为切换而变深**（用户
-   * 2026-09-24 口径）：
-   * - 当前在普通会话上 → 目录里那一行的父会话就是本会话；
-   * - 当前在子代理上 → 只在**父目录**（兄弟行）里找目标，父会话还是原父会话。
-   *   刻意**不去**搜当前会话自己的目录——那是「本会话的下级」，把它当查找空间
-   *   就等于把切换变成「进入更深一层」（先查自身目录的写法就有这个歧义）。
-   *
-   * 地址的 `mode` 来自目录行：硬编码 `continuable` 打开 one-shot 子代理会被宿主以
-   * `subagent/unauthorized` 拒绝（address 是宿主鉴权的一部分，不是提示）。
+   * 用户 2026-10-20 口径：标题清单是整棵多层树，**点哪一层都算切换**（不再限定
+   * 只能切兄弟）。目标的父会话与 `mode` 都从跨域血缘索引读：父层由
+   * `session/list` 的 `parentSessionId` / 目录事件的父域给出，模式来自真实目录行。
+   * 硬编码 `continuable` 打开 one-shot 子代理会被宿主以 `subagent/unauthorized`
+   * 拒绝（address 是鉴权的一部分，不是提示）。
    */
   private async openSubagent(viewId: string, childSessionId: string): Promise<void> {
     if (!this.client) return;
@@ -11398,27 +11635,44 @@ export class ChatController implements vscode.Disposable {
     if (!scope) return;
     // 已经在这个子代理上：什么都不做（重绑会把粘性显示值清掉后等不到回填）
     if (scope.sessionId === childSessionId) return;
-    // 目标行与它的父会话。查找空间**只有一份**：普通会话查自己的目录（目标 = 自己
-    // 的子代理）；子代理会话查父目录（目标 = 兄弟），父会话保持不变。两条空间互斥，
-    // 「从子代理页切换」永远不可能把父会话算成当前会话（层级不变）。
-    // 命中的那份目录同时作为**父目录种子**随行（`openSession` → `ensureScope`）：
-    // 切换会回收当前域、新域建好那一刻父域多半已被回收，等不到投影 RPC 快照就要发——
-    // 种子让切换后的第一帧就有完整的兄弟清单（2026-09-25 报障的根因之一）。
+    /**
+     * 目标行、它的**真实父会话**与父目录种子。
+     *
+     * 用户 2026-10-20 口径：标题清单是整棵多层树，点任何一层都算切换（不再限制
+     * 「只能切兄弟、层级不能变深」）。父会话与模式都从**跨域血缘索引**读——
+     * 那里有 `session/list` 的 `parentSessionId` 与目录事件的真实 mode；硬编码
+     * 模式会被 `subagent/unauthorized` 拒绝，猜父层则会把树画错。
+     *
+     * 命中的父目录同时作为 `openSession` 的种子随行：切换会回收当前域、新域建好
+     * 那一刻父域多半已被回收，等不到投影 RPC 快照就要发（见 `ensureScope`）。
+     */
     const resolve = (): { entry: SubagentView; parentId: string; catalog: SubagentView[] } | undefined => {
+      const indexed = this.subagentIndex.get(childSessionId);
+      if (indexed) {
+        const parentId = indexed.parentSessionId;
+        const catalog = this.orderedCatalog(this.subagentChildrenOf(parentId))
+          .map((entry) => this.resolveSubagentDisplay(entry));
+        const entry = catalog.find((item) => item.id === childSessionId)
+          ?? this.resolveSubagentDisplay(this.subagentRowOfIndex(indexed));
+        return { entry, parentId, catalog };
+      }
+      // 兜底：索引还没建立时沿用当前视图手里那份目录（旧路径的种子语义不变）
       const address = scope.subagentAddress;
       if (address) {
         const catalog = this.parentCatalogOf(scope);
         const sibling = catalog.find((entry) => entry.id === childSessionId);
-        if (sibling) return { entry: sibling, parentId: address.parentSessionId, catalog };
-        return undefined;
+        return sibling ? { entry: sibling, parentId: address.parentSessionId, catalog } : undefined;
       }
       const own = scope.subagentEntries.find((entry) => entry.id === childSessionId);
-      return own ? { entry: own, parentId: scope.sessionId, catalog: this.orderedCatalog(scope.subagentEntries) } : undefined;
+      return own
+        ? { entry: own, parentId: scope.sessionId, catalog: this.orderedCatalog(scope.subagentEntries) }
+        : undefined;
     };
     let hit = resolve();
     if (!hit) {
-      // 刷新的也是**查找空间所属**的目录（子代理页 = 父目录；见 refreshSubagents
-      // 同一条口径），而不是当前会话自己的目录——兄弟行的 label / activity 靠它补齐
+      // 索引缺这条：先按 `session/list` 重建整份血缘（跨进程 / 多层子代理都在那里），
+      // 再按旧口径刷新当前视图所属的目录（label / activity 也要最新）
+      await this.refreshSubagentTitles();
       if (scope.subagentAddress) {
         const parent = this.scopes.get(scope.subagentAddress.parentSessionId);
         if (parent) await this.refreshSubagentCatalog(parent);
@@ -11441,9 +11695,8 @@ export class ChatController implements vscode.Disposable {
       return;
     }
     this.log(`[subagents] 进入子代理 ${hit.entry.label}（${childSessionId}, ${hit.entry.mode}），父会话=${hit.parentId}`);
-    // 地址的 mode 来自目录行：硬编码 `continuable` 打开 one-shot 子代理会被宿主以
-    // `subagent/unauthorized` 拒绝（address 是宿主鉴权的一部分，不是提示）。
-    // 父目录随行（第四参）：新域建好那一刻父域多半已被回收，快照里就得有兄弟行。
+    // 地址的 mode 来自目录行 / 血缘索引：硬编码 `continuable` 打开 one-shot 子代理
+    // 会被宿主以 `subagent/unauthorized` 拒绝（address 是鉴权的一部分，不是提示）。
     await this.openSession(viewId, childSessionId, {
       parentSessionId: hit.parentId,
       mode: hit.entry.mode,

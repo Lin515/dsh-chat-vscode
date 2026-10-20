@@ -61,7 +61,7 @@ npm run package  # Releases/dsh-chat-<version>.vsix
 
 可在活动栏、辅助侧栏或编辑器中使用。命令「DSH: 在编辑器中打开对话」与界面头部按钮将对话开到已有编辑器分组；来源已在编辑器时沿用同一分组。编辑器标题栏的鲸鱼按钮在当前分组新建会话。
 
-历史列表只显示当前工作区的会话，支持新建、归档、删除与「从这里分支」；分支标题带「分支: 」前缀。子代理入口可查看执行记录，一次性子代理只读，可继续子代理支持续聊。后台任务抽屉分两个分区：**自动化任务**（模型用 `schedule_create` 安排的定时任务，显示频率与下次运行，可展开看执行记录、修改运行时间、删除）与**后台任务**（bash / pwsh 等，可展开看实时输出）。抽屉里有后台任务在跑、或还有待执行的自动化任务时，顶栏那颗入口按钮会亮起（有任务真的在跑时还会呼吸；只是排着时不闪）。轨迹提供账本、时间线与详情检查器。服务端设置通过「在浏览器中打开」进入官方 Web UI；当前连的是桌面端内置服务时那颗按钮改为「打开 DSH 桌面端」（那套服务不向浏览器开放）。
+历史列表只显示当前工作区的会话，支持新建、归档、删除与「从这里分支」；分支标题带「分支: 」前缀。有子代理时点击标题可展开顶层会话与多层子代理树，切换任意层级；标题后显示当前会话的子代理数，一次性子代理只读，可继续子代理支持续聊。后台任务抽屉分两个分区：**自动化任务**（模型用 `schedule_create` 安排的定时任务，显示频率与下次运行，可展开看执行记录、修改运行时间、删除）与**后台任务**（bash / pwsh 等，可展开看实时输出）。抽屉里有后台任务在跑、或还有待执行的自动化任务时，顶栏那颗入口按钮会亮起（有任务真的在跑时还会呼吸；只是排着时不闪）。轨迹提供账本、时间线与详情检查器。服务端设置通过「在浏览器中打开」进入官方 Web UI；当前连的是桌面端内置服务时那颗按钮改为「打开 DSH 桌面端」（那套服务不向浏览器开放）。
 
 ### 消息通知
 
@@ -174,7 +174,7 @@ The desktop app (Electron) already runs a DSH service of its own, and the extens
 
 Use the activity bar, secondary sidebar or editor area. **DSH: Open in Editor** and the header button open a tab in an existing editor group; an editor source keeps its own group. The whale button in the editor title bar creates a session in the current group.
 
-History is scoped to the current workspace and supports new, archive, delete and branch-from-here; branch titles have a “Branch: ” prefix. Open subagents to view their records: one-shot agents are read-only, continuable agents support follow-up chat. The jobs drawer has two sections: **Scheduled tasks** (scheduled by the model through `schedule_create`, showing frequency and next run, with expandable execution records, rescheduling and deletion) and **Background jobs** (bash / pwsh and similar jobs, with expandable live output). The header button lights up while a background job is running or a scheduled task is pending; it pulses only while something is actually running, not just scheduled. Trajectory provides a ledger, timeline and inspector. “Open in browser” leads to the official server settings; while attached to the DSH desktop app's built-in service that button opens the desktop app itself instead, because the service is not exposed to browsers.
+History is scoped to the current workspace and supports new, archive, delete and branch-from-here; branch titles have a “Branch: ” prefix. Click the title when subagents exist to switch across the top-level session and the multi-level subagent tree; the count after the title shows how many subagents the current session has. One-shot agents are read-only, continuable agents support follow-up chat. The jobs drawer has two sections: **Scheduled tasks** (scheduled by the model through `schedule_create`, showing frequency and next run, with expandable execution records, rescheduling and deletion) and **Background jobs** (bash / pwsh and similar jobs, with expandable live output). The header button lights up while a background job is running or a scheduled task is pending; it pulses only while something is actually running, not just scheduled. Trajectory provides a ledger, timeline and inspector. “Open in browser” leads to the official server settings; while attached to the DSH desktop app's built-in service that button opens the desktop app itself instead, because the service is not exposed to browsers.
 
 ### Notifications
 

@@ -56,6 +56,7 @@ React / 浏览器环境，不使用 Node API。上层边界见[源码导航](<..
 - [imageCopyFailure.ts](<imageCopyFailure.ts>) — 界面本地复制图片失败的归属上报端口（捕获发起会话、过期丢弃、失败报告序号），宿主入队见[消息通知设计](<../../docs/design-notifications.md>)。
 - [activity.ts](<activity.ts>) — 子代理 / 任务入口活性（后台任务在跑，或还有待执行的自动化任务）。
 - [subagentRow.ts](<subagentRow.ts>) — 运行、已读与生命周期模式合成显示。
+- [subagentTree.ts](<subagentTree.ts>) — 标题清单的界面读法：当前会话的多层后代计数与当前节点定位。
 - [contextMenu.ts](<contextMenu.ts>) — 原生 / 自绘右键判据，见[右键设计](<../../docs/design-context-menu.md>)。
 - [nodeOpen.ts](<nodeOpen.ts>) — 消息持有的节点展开态。
 - [turnProcess.ts](<turnProcess.ts>) — 连续过程折叠。

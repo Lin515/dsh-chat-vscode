@@ -469,22 +469,18 @@ export const MESSAGES = {
   dropHint: { zh: "松开即添加为附件", en: "Release to attach" },
 
   subagents: { zh: "子代理", en: "Subagents" },
-  // 标题旁的计数触发器（官方 count.* 同款：总数恒显、有在跑的再亮状态点）
+  // 标题后的计数（官方 count.* 同款：总数恒显、有在跑的再亮状态点）
   subagentCount: {
     zh: (count: number) => `${count} 个子代理`,
     en: (count: number) => (count === 1 ? "1 subagent" : `${count} subagents`),
   },
-  // 切换下拉里「本级子代理」那一节的标题（正在看子代理时，它的下级）
-  subagentChildren: { zh: "下级子代理", en: "Nested subagents" },
-  // 面包屑左半（父会话标题）的 title：点了返回父会话
-  backToParent: {
-    zh: (title: string) => `返回「${title}」`,
-    en: (title: string) => `Back to "${title}"`,
-  },
-  // 面包屑右半（当前子代理标题 + 切换图标）的 aria / 语义提示（官方 switcher.aria 同句）
-  subagentSwitcher: {
-    zh: (title: string) => `切换子代理：${title}`,
-    en: (title: string) => `Switch subagent: ${title}`,
+  // 标题点击后清单的两节：顶层会话 / 子代理会话（树形，第 1 层与顶层会话同级对齐）
+  subagentTopLevel: { zh: "顶层会话", en: "Top-level session" },
+  subagentSessions: { zh: "子代理会话", en: "Subagent sessions" },
+  // 标题（会话切换入口）的无障碍 / 悬停提示
+  switchSession: {
+    zh: (title: string) => `切换会话：${title}`,
+    en: (title: string) => `Switch session: ${title}`,
   },
   // 一次性子代理的只读说明（官方 readonly.oneShot.* 同口径，替代整个输入区）
   subagentReadonlyTitle: { zh: "一次性子代理记录", en: "One-shot subagent record" },

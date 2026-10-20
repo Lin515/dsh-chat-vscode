@@ -24,6 +24,7 @@
 - [projectionIngest.ts](<projectionIngest.ts>) — 投影键的形状读取 / 效果唯一登记。
 - [projections.ts](<projections.ts>) — goal / subagent / todo 等形状解析纯函数。
 - [subagentOrder.ts](<subagentOrder.ts>) — 子代理目录的显示顺序（用户消息与一轮收尾取新，过程消息不参与）。
+- [subagentTree.ts](<subagentTree.ts>) — 跨域血缘索引到多层子代理树的先序组装（第 1 层与顶层会话同级，父链断开 / 环不画错）。
 - [produced.ts](<produced.ts>) — 成功第一方变更调用产生的本轮文件。
 - [queueView.ts](<queueView.ts>) — 两代队列形状、附件还原计划与肯定身份去重；不可还原时禁止摘队列。
 - [jobView.ts](<jobView.ts>) — 任务新旧帧与单任务输出。

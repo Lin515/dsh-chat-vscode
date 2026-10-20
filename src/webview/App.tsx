@@ -59,18 +59,20 @@ import {
 import { usePageContextMenu } from "./contextMenu";
 import { jobsEntrySignal, subagentsBusy } from "./activity";
 import { subagentRowFace } from "./subagentRow";
+import { subagentCurrentNode, subagentDescendants } from "./subagentTree";
 import { sessionDirPath } from "./sessionDir";
 import { splitPath } from "./pathDisplay";
 import { LocaleContext, TextsContext, dictionaryFor, normalizeLocale, resolveText, useTexts } from "./texts";
-import type { SubagentView } from "../shared/chat";
+import type { SubagentTreeView, SubagentView } from "../shared/chat";
 
 /**
  * 顶部只有一排图标按钮——Continue 的聊天页没有传统工具栏，
  * 这里保留最少的入口：新建、历史、后台任务、在编辑器中打开、
  * 打开（官方 Web UI / 桌面端应用窗口，见 `state.desktopConnected`）。
  *
- * 子代理**没有**按钮（官方 Web 端也没有）：它的入口在标题右侧——普通会话显示
- * 目录计数触发器、子代理页显示面包屑（见 `SubagentNav`），没有子代理时什么都不占。
+ * 子代理**没有**单独的按钮：切换入口在标题上（用户 2026-10-20 口径）——有子代理时
+ * 标题可点，展开「顶层会话 + 多层子代理树」，标题后的计数提示保留；没有子代理时
+ * 标题保持纯文本。见 `SessionTitle`。
  *
  * 这里曾经还有一颗**设置**按钮（自绘的 DSH 服务端设置面板）。它被删掉了：
  * Web 端的设置页是各功能插件自绘的页面组合（`settings.section` 槽），没有任何
@@ -98,10 +100,6 @@ function Header({
   // 那一档亮而不呼吸。
   const agentsBusy = subagentsBusy(state.subagentEntries, state.jobs);
   const jobsSignal = jobsEntrySignal(state.jobs, state.schedules);
-  // 子代理页：标题栏显示的本来就是「主会话的标题」——把它变成可点的返回入口
-  // （官方 crumbs 左半的 openTitle 同款），后面只接 `/ 子代理标题`，不重复一节。
-  const child = state.subagent;
-  const title = child ? child.parentTitle : (state.session?.title || texts.untitled);
 
   return (
     <div className="header">
@@ -110,24 +108,9 @@ function Header({
       </span>
       {/* 执行目录放在标题前方；未打开文件夹或与工作区目录不同时显示，见 sessionDirPath。 */}
       <HeaderDir state={state} />
-      {child ? (
-        // 子代理页：标题 = 主会话标题，可点返回主会话（官方 .crumb 的可点形态）
-        <button
-          type="button"
-          className="header-title"
-          title={texts.backToParent(child.parentTitle)}
-          onClick={() => post({ type: "openSession", sessionId: child.parentSessionId })}
-        >
-          {title}
-        </button>
-      ) : (
-        // 侧栏容器名已经是「DSH Chat」，这里只放会话名，不再重复产品名
-        <span className="header-title">{title}</span>
-      )}
-      {/* 子代理导航（官方同款）：普通会话显示「N 个子代理 ▾」，子代理页只接
-          「/ 当前子代理标题 ▾」（返回主会话由左边可点的标题承担）；没有子代理时
-          整个不渲染。点击展开 / 再点关闭（不搞悬停自动展开）。 */}
-      <SubagentNav state={state} agentsBusy={agentsBusy} />
+      {/* 标题本身就是切换入口（用户 2026-10-20 口径）：有子代理时变成可点击，
+          点击展开「顶层会话 + 多层子代理树」；标题后的计数仍在。 */}
+      <SessionTitle state={state} agentsBusy={agentsBusy} />
       <span className="header-spacer" />
       <button className="icon-btn" title={texts.newChat} onClick={() => post({ type: "newSession" })}>
         <IconPlus size={15} />
@@ -258,19 +241,24 @@ function BrandMark() {
 }
 
 /**
- * 目录树里的一行（官方 `CatalogRows` 的行结构：状态点列 + 标题/副文两行 + 右侧箭头）。
+ * 树里的一行（官方 `CatalogRows` 的行结构：状态点列 + 标题/副文两行 + 右侧箭头）。
  * 点行进入该子代理；当前所在的那一行标题加粗、不可再点（与官方 `aria-current` 同义）。
  *
  * 状态点与副文字都来自 `subagentRowFace`（状态表与三条纪律在那个模块的文件头）：
  * **点恒画**——一次性子代理从前整行没有点，用户分不出「生成中」与「已完成」。
+ *
+ * `depth` 只用于缩进：第 1 层（顶层会话直接调用的子代理）与顶层会话行同级，
+ * 第 2 层起逐级缩进。
  */
 function SubagentCatalogRow({
   entry,
   current,
+  depth,
   onOpen,
 }: {
   entry: SubagentView;
   current: boolean;
+  depth: number;
   onOpen: (id: string) => void;
 }) {
   const texts = useTexts();
@@ -279,8 +267,11 @@ function SubagentCatalogRow({
     <button
       className={`subagent-row${current ? " is-current" : ""}`}
       title={entry.label}
+      data-depth={depth}
       // 当前行不可再点（已经在这里了）：点别行才切换
       disabled={current || undefined}
+      // 缩进写在行内：层级是数据（`SubagentTreeView.nodes[].depth`），不靠固定几档
+      style={depth > 1 ? { paddingLeft: dpLength(6 + (depth - 1) * 14) } : undefined}
       onClick={() => onOpen(entry.id)}
     >
       {/* 状态点**独享一格**（格内居中）：色调由显示状态决定，只有运行中才有呼吸动画 */}
@@ -298,35 +289,109 @@ function SubagentCatalogRow({
   );
 }
 
-/**
- * 标题右侧的子代理导航（官方 `dsh-client-ui-subagent` 目录触发的移植，按用户口径
- * 收敛交互）：
- *
- * - **普通会话**：目录非空时显示一枚「N 个子代理 ▾」触发器（有在跑的先亮状态点）；
- *   **点击展开**一个固定宽度的树形列表（官方 336px 目录菜单的同款皮肤），**再点
- *   关闭**；点行进入该子代理（`openSubagent`，会话级切换）。目录为空（或还没拿到）
- *   时**整个不渲染**。
- * - **正在看子代理**：只接「/ 当前子代理标题 ▾」一节（返回主会话由左边可点的
- *   主会话标题承担，见 `Header`）；点 ▾ 展开父目录，当前行加粗、不可再点，点
- *   兄弟行切换。
- *
- * 开合**只认点击**（用户 2026-09-24 口径：不要悬停自动展开）；展开时点外部 / Esc
- * 收起；展开那一刻补一次 `listSubagents` 刷新——投影那一路可能落后于服务端的
- * 完整检索，打开菜单这一下就是「把最新的要一遍」。
- */
-function SubagentNav({ state, agentsBusy }: { state: AppState; agentsBusy: boolean }) {
+/** 顶层会话那一行：与第 1 层子代理同级对齐，靠分组标题与「子代理会话」区分。 */
+function SessionCatalogRow({
+  title,
+  running,
+  onOpen,
+}: {
+  title: string;
+  running: boolean;
+  onOpen: () => void;
+}) {
   const texts = useTexts();
-  const child = state.subagent;
+  return (
+    <button
+      className="subagent-row subagent-root-row"
+      title={title}
+      onClick={onOpen}
+    >
+      <span className="subagent-row-state">
+        {/* 顶层会话不是子代理，没有「一次性 / 可继续」这种模式点：不在跑时留空，
+            只有确证在跑才画运行圆点（与子代理行的状态口径一致）。 */}
+        {running ? <span className="dot dot-running" /> : null}
+      </span>
+      <span className="subagent-row-content">
+        <span className="subagent-row-label">{title || texts.untitled}</span>
+      </span>
+      <span className="subagent-row-arrow" aria-hidden>
+        <IconChevronRight size={12} />
+      </span>
+    </button>
+  );
+}
+
+/**
+ * 宿主还没把 `subagentTree` 送到的极短窗口里，用手里已有的目录拼一棵**浅树**：
+ * 普通会话的根是自己，子代理页的根是直接父会话。等正式树一到就换成它（正式树
+ * 才有跨域血缘与多层嵌套）。没有子代理时返回 `undefined`，标题保持纯文本。
+ */
+function fallbackSubagentTree(state: AppState): SubagentTreeView | undefined {
+  const sessionId = state.session?.id;
+  if (!sessionId) return undefined;
+  if (state.subagent) {
+    const parentId = state.subagent.parentSessionId;
+    return {
+      root: { id: parentId, title: state.subagent.parentTitle, running: false },
+      nodes: state.subagent.parentEntries.map((entry) => ({
+        ...entry,
+        parentSessionId: parentId,
+        depth: 1,
+      })),
+    };
+  }
+  if (!state.subagentEntries.length) return undefined;
+  return {
+    root: { id: sessionId, title: state.session?.title ?? "", running: state.running },
+    nodes: state.subagentEntries.map((entry) => ({
+      ...entry,
+      parentSessionId: sessionId,
+      depth: 1,
+    })),
+  };
+}
+
+/**
+ * 标题 + 子代理计数 = 会话切换入口（用户 2026-10-20 口径）。
+ *
+ * - **有子代理时标题可点**（子代理页本来就在树里，也可点）：点击展开固定宽度的
+ *   清单，再点标题关闭；点外部 / Esc 收起。开合只认点击，不搞悬停。
+ * - 清单分两组：**顶层会话**（只在正在看子代理时出现，作为回顶层的入口）与
+ *   **子代理会话**（整棵多层树）。由顶层会话直接调用的子代理是第 1 层，与顶层
+ *   会话行同级对齐；更深层逐级缩进。当前是顶层会话时不再重复列它自己；
+ *   当前所在行加粗且不可再点。
+ * - 标题后的计数是**当前会话下面全部子代理**（含多层后代），不是只数直接下级；
+ *   有在跑的仍保留运行圆点。
+ *
+ * 展开那一刻补一次 `listSubagents`：服务端会话列表是跨域血缘与最新状态的权威
+ * 来路（见宿主 `refreshSubagents`），打开菜单这一下就是「把最新的要一遍」。
+ */
+function SessionTitle({ state, agentsBusy }: { state: AppState; agentsBusy: boolean }) {
+  const texts = useTexts();
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLSpanElement>(null);
+  const sessionId = state.session?.id;
+  const tree = state.subagentTree ?? fallbackSubagentTree(state);
+  const currentNode = subagentCurrentNode(sessionId, tree?.nodes ?? []);
+  // 标题与清单里的当前行同源：优先用树里的 label（目录解析后的显示名），
+  // 拿不到才退回会话标题
+  const title = currentNode?.label || state.session?.title || texts.untitled;
+  const descendants = subagentDescendants(sessionId, tree?.nodes ?? []);
+  const count = descendants.length;
+  const treeBusy = descendants.some((node) => node.activity === "running");
+  const switchable = !!tree && (tree.nodes.length > 0 || !!state.subagent);
 
   // 换了会话：展开着的那份内容属于上一次的上下文，收起来重开
   useEffect(() => {
     setOpen(false);
-  }, [child?.parentSessionId, state.session?.id]);
+  }, [sessionId]);
 
-  // 展开时点外部收起（悬停不参与开合——那是上一版被否掉的交互）。ESC 收起走归属链：
-  // 本层活跃期间登记，消费一次就关掉自己（不再压全局「ESC 停止生成」）
+  // 树的入口消失（子代理被删 / 切回空态）：不许留着一个没有内容的浮层
+  useEffect(() => {
+    if (!switchable) setOpen(false);
+  }, [switchable]);
+
+  // 展开时点外部收起；ESC 走归属链，本层活跃期间登记、消费一次就关掉自己
   useEffect(() => {
     if (!open) return;
     const onDown = (event: PointerEvent) => {
@@ -337,64 +402,76 @@ function SubagentNav({ state, agentsBusy }: { state: AppState; agentsBusy: boole
   }, [open]);
   useEscapeLayer(ESC_LAYER.floating, open, () => setOpen(false));
 
-  const entries = child ? child.parentEntries : state.subagentEntries;
-  const currentId = child ? state.session?.id : undefined;
-  // 触发器上的标题 = 目录里当前那一行的 label——与列表行**同一个来源同一个值**，
-  // 不会出现「列表里叫 A、标题上叫 B」（子代理会话自己的自动标题是另一套字段，
-  // 不做切换入口的显示名）。
-  const currentLabel = child
-    ? (entries.find((entry) => entry.id === currentId)?.label ?? state.session?.title)
-    : undefined;
-
-  // 目录为空（或还没拿到）时整个不渲染：没有子代理就没有这个入口（官方同口径）
-  if (entries.length === 0) return null;
+  const openSubagent = (id: string): void => {
+    setOpen(false);
+    post({ type: "openSubagent", id });
+  };
+  const openRoot = (rootId: string): void => {
+    setOpen(false);
+    post({ type: "openSession", sessionId: rootId });
+  };
 
   return (
-    <span ref={rootRef} className="subagent-nav">
-      {/* 子代理页：标题后面只接一节「/ 子代理标题 ▾」（主会话标题在左边，可点返回） */}
-      {child ? (
-        <span className="subagent-crumb-sep" aria-hidden>
-          /
+    <span ref={rootRef} className="header-title-group">
+      {switchable ? (
+        <button
+          type="button"
+          className={`header-title is-switcher${open ? " is-open" : ""}`}
+          aria-haspopup="true"
+          aria-expanded={open}
+          title={texts.switchSession(title)}
+          onClick={() => {
+            // 展开那一刻要最新的整棵树：会话列表补父子关系与自身身份，
+            // 目录那条路补齐 label / activity
+            post({ type: "listSubagents" });
+            setOpen((value) => !value);
+          }}
+        >
+          <span className="header-title-text">{title}</span>
+          <IconChevronDown size={11} className={open ? "is-open" : undefined} />
+        </button>
+      ) : (
+        // 侧栏容器名已经是「DSH Chat」，这里只放会话名，不再重复产品名
+        <span className="header-title">{title}</span>
+      )}
+      {count > 0 ? (
+        <span className="header-subagent-count" title={texts.subagentCount(count)}>
+          {agentsBusy || treeBusy ? <span className="dot dot-running" /> : null}
+          {texts.subagentCount(count)}
         </span>
       ) : null}
-      <button
-        type="button"
-        className={`subagent-trigger${child ? " is-current" : ""}${agentsBusy ? " is-busy" : ""}`}
-        aria-haspopup="true"
-        aria-expanded={open}
-        title={child ? texts.subagentSwitcher(currentLabel ?? "") : texts.subagents}
-        aria-label={child ? undefined : texts.subagentCount(entries.length)}
-        onClick={() => {
-          // 展开那一刻要最新的目录：普通会话拉自己的、子代理页拉本级的（父目录由宿主推）
-          post({ type: "listSubagents" });
-          setOpen((v) => !v);
-        }}
-      >
-        {child ? (
-          <span className="subagent-trigger-title">{currentLabel}</span>
-        ) : (
-          <>
-            {agentsBusy ? <span className="dot dot-running" /> : null}
-            <span className="subagent-trigger-count">{texts.subagentCount(entries.length)}</span>
-          </>
-        )}
-        <IconChevronDown size={12} className={open ? "is-open" : undefined} />
-      </button>
-      {open ? (
+      {open && tree ? (
         <div className="subagent-menu" role="menu">
-          <div className="subagent-menu-head">{texts.subagents}</div>
-          <div className="subagent-menu-body" role="tree" aria-label={texts.subagents}>
-            {entries.map((entry) => (
-              <SubagentCatalogRow
-                key={entry.id}
-                entry={entry}
-                current={entry.id === currentId}
-                onOpen={(id) => {
-                  setOpen(false);
-                  post({ type: "openSubagent", id });
-                }}
-              />
-            ))}
+          <div className="subagent-menu-body">
+            {/* 用户 2026-10-20 口径：本会话已经是顶层会话时不显示「上层会话」
+                （标题就是它，清单里再列一遍是冗余）；正在看子代理时才列顶层会话，
+                作为回顶层的入口，并与第 1 层子代理同级对齐。 */}
+            {tree.root.id === sessionId ? null : (
+              <div className="subagent-menu-group">
+                <div className="subagent-menu-head">{texts.subagentTopLevel}</div>
+                <SessionCatalogRow
+                  title={tree.root.title}
+                  running={tree.root.running}
+                  onOpen={() => openRoot(tree.root.id)}
+                />
+              </div>
+            )}
+            {tree.nodes.length ? (
+              <div className="subagent-menu-group">
+                <div className="subagent-menu-head">{texts.subagentSessions}</div>
+                <div role="tree" aria-label={texts.subagentSessions}>
+                  {tree.nodes.map((node) => (
+                    <SubagentCatalogRow
+                      key={node.id}
+                      entry={node}
+                      current={node.id === sessionId}
+                      depth={node.depth}
+                      onOpen={openSubagent}
+                    />
+                  ))}
+                </div>
+              </div>
+            ) : null}
           </div>
         </div>
       ) : null}

@@ -1442,6 +1442,17 @@
             { id: "t3", content: "补充回归测试", status: "pending" }
           ],
           subagentEntries: [],
+          // 标题上的会话切换清单（用户 2026-10-20 口径）：顶层会话 + 多层子代理树。
+          // 第 1 层（sub-1/2/3）与顶层会话行同级对齐，sub-1-1 是第 2 层。
+          subagentTree: {
+            root: { id: "s1", title: "重构 server 启动流程", running: false },
+            nodes: [
+              { id: "sub-1", label: "调研 MCP 工具清单", mode: "continuable", activity: "running", parentSessionId: "s1", depth: 1 },
+              { id: "sub-1-1", label: "展开分支里的标准库调用", mode: "continuable", activity: "inactive", parentSessionId: "sub-1", depth: 2 },
+              { id: "sub-2", label: "扫描未使用导出", mode: "one-shot", activity: "inactive", parentSessionId: "s1", depth: 1 },
+              { id: "sub-3", label: "补齐投影的字段表", mode: "continuable", activity: "inactive", parentSessionId: "s1", depth: 1 }
+            ]
+          },
           messages: [
             {
               id: "u:1",
@@ -2093,6 +2104,17 @@
           state.subagentEntries = oneShot ? [] : [
             { id: "sub-1-1", label: "展开分支里的标准库调用", mode: "continuable", activity: "inactive" }
           ];
+          // 标题清单按整棵树渲染：根仍是顶层会话，第 1 层与根同级对齐，
+          // sub-1-1 在第 2 层；当前所在行由 state.session.id 标出。
+          state.subagentTree = {
+            root: { id: "s1", title: "把这两个文件的启动逻辑合并到一个入口", running: false },
+            nodes: [
+              { ...parentEntries[0], parentSessionId: "s1", depth: 1 },
+              { id: "sub-1-1", label: "展开分支里的标准库调用", mode: "continuable", activity: "inactive", parentSessionId: "sub-1", depth: 2 },
+              { ...parentEntries[1], parentSessionId: "s1", depth: 1 },
+              { ...parentEntries[2], parentSessionId: "s1", depth: 1 }
+            ]
+          };
           state.running = current.activity === "running";
           if (oneShot) {
             state.messages = [

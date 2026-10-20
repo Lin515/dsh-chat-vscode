@@ -1,11 +1,12 @@
 /**
- * 子代理导航与会话级切换（2026-09-24 口径：与官方 Web 端同构）：
+ * 子代理切换（用户 2026-10-20 口径）：入口在标题上，不再是标题右侧的导航。
  *
- * 1. **入口在标题右侧**（官方 `SubagentHeaderLineage` / `SubagentCatalogAction`），
- *    没有独立的子代理按钮；目录为空时整个不渲染；
+ * 1. **有子代理时标题可点**，点击展开「顶层会话 + 多层子代理树」；没有子代理时
+ *    标题保持纯文本；标题后的计数提示保留；
  * 2. **进入子代理 = 会话级切换**（`openSession` 带子代理地址）：消息流、输入框、
  *    生成状态全来自子代理会话本身——可继续子代理**可以接着对话**，不再只读；
- * 3. 面包屑点**左半**返回父会话；右半（标题 + 切换图标）弹出父目录切换兄弟；
+ * 3. 正在看子代理时，清单里出现顶层会话行（回顶层的入口）；当前是顶层会话时
+ *    不重复列它。第 1 层子代理与顶层会话行同级对齐，深层缩进；
  * 4. 一次性子代理的对话是**只读**记录（输入区换成说明）；
  * 5. 发送与停止按地址路由（`subagents/prompt` / `subagents/interruptByParent`）。
  *
@@ -25,7 +26,7 @@ const controller = read("src", "dsh", "controller.ts");
 const messages = read("src", "webview", "messages.ts");
 const css = read("src", "webview", "styles", "app.css");
 
-// ---------- 1. 入口：标题右侧，没有独立按钮，无子代理时不占位 ----------
+// ---------- 1. 入口：标题本身，没有独立按钮，无子代理时不占位 ----------
 {
   assert.ok(
     !/panel === "subagents"/.test(app),
@@ -33,94 +34,127 @@ const css = read("src", "webview", "styles", "app.css");
   );
   assert.ok(
     !/SubagentsPanel|SubagentTranscriptPanel/.test(app),
-    "两个子代理面板组件不再被 App 使用（入口换成标题右侧的导航）",
+    "两个子代理面板组件不再被 App 使用（入口换成标题上的切换）",
   );
   const panels = read("src", "webview", "components", "Panels.tsx");
   assert.ok(
     !/SubagentsPanel|SubagentTranscriptPanel/.test(panels),
     "Panels.tsx 里不应再有两个子代理面板的实现（历史 / 后台任务仍在）",
   );
-  // 导航组件在标题之后：面包屑读起来才是「标题 / 子代理」
-  const headerAt = app.indexOf("<span className=\"header-title\">");
-  const navAt = app.indexOf("<SubagentNav state={state} agentsBusy={agentsBusy} />");
+  // 标题让位给 `SessionTitle`：它自带「标题 + 计数 + 展开清单」，仍然在弹性空隙之前
+  const titleAt = app.indexOf("<SessionTitle state={state} agentsBusy={agentsBusy} />");
   const spacerAt = app.indexOf('<span className="header-spacer" />');
-  assert.ok(headerAt > 0 && navAt > headerAt && spacerAt > navAt, "导航要挂在标题右侧、弹性空隙之前");
-  // 普通会话：目录为空就整个不渲染（官方：empty catalog 隐藏触发器）。
-  // 判据统一收口在「展开用的那份清单」上——普通会话取自己的目录、子代理页取父目录。
+  assert.ok(titleAt > 0 && spacerAt > titleAt, "标题切换入口要挂在标题栏原位、弹性空隙之前");
   assert.ok(
-    /if \(entries\.length === 0\) return null;/.test(app),
-    "目录为空时导航整个不渲染（不占位置，与官方同口径）",
+    !/<SubagentNav/.test(app),
+    "标题右侧的旧导航已删除：切换入口只在标题上",
   );
-  // 触发器发一次按需刷新（下拉里的清单要拿最新的）
+  // 标题后的计数提示保留（用户 2026-10-20 口径）
+  assert.ok(
+    /className="header-subagent-count"/.test(app) &&
+      /texts\.subagentCount\(count\)/.test(app),
+    "标题后要保留当前会话的子代理计数提示",
+  );
+  // 有子代理时标题才可点：树为空且不是子代理页时保持纯文本
+  assert.ok(
+    /const switchable = !!tree && \(tree\.nodes\.length > 0 \|\| !!state\.subagent\);/.test(app),
+    "没有子代理时标题保持纯文本（不占位、不可点）",
+  );
+  // 点击标题发一次按需刷新（清单要拿最新的血缘 / 状态）
   assert.ok(
     /post\(\{ type: "listSubagents" \}\)/.test(app),
-    "打开 / 悬停触发器要发 listSubagents 刷新目录",
+    "打开标题清单要发 listSubagents 刷新",
+  );
+  // 清单以 `subagentTree` 为主，宿主帧还没到时才退回浅树
+  assert.ok(
+    /const tree = state\.subagentTree \?\? fallbackSubagentTree\(state\);/.test(app),
+    "清单画的是宿主下发的整棵 subagentTree（缺失时才用浅树兜底）",
   );
 }
-console.log("subagentPanel: 入口在标题右侧、空目录不渲染 ✓");
+console.log("subagentPanel: 入口在标题上、计数保留、空树不可点 ✓");
 
-// ---------- 2. 返回主会话 = 点标题栏的主会话标题；切换列表 = 点「/ 子代理标题 ▾」 ----------
+// ---------- 2. 标题清单：顶层会话 + 子代理树（多层、分组对齐） ----------
 {
-  // 标题栏本身就有主会话标题：子代理页把它变成可点按钮（不重复加一节「父标题 /」）
+  // 标题按钮的悬停提示与可点形态
   assert.ok(
-    /className="header-title"\s+title=\{texts\.backToParent\(child\.parentTitle\)\}\s+onClick=\{\(\) => post\(\{ type: "openSession", sessionId: child\.parentSessionId \}\)\}/.test(
+    /className=\{`header-title is-switcher\$\{open \? " is-open" : ""\}`\}/.test(app) &&
+      /title=\{texts\.switchSession\(title\)\}/.test(app),
+    "标题要变成带开合态的可点按钮（提示走 switchSession）",
+  );
+  // 两组标题：顶层会话 / 子代理会话
+  assert.ok(
+    /texts\.subagentTopLevel/.test(app) && /texts\.subagentSessions/.test(app),
+    "清单必须分成「顶层会话」与「子代理会话」两组",
+  );
+  // 顶层会话组只在「当前不是顶层会话」时出现（用户 2026-10-20 口径：顶层会话
+  // 不用把上层会话再列一遍）；正在看子代理时点它回顶层
+  assert.ok(
+    /\{tree\.root\.id === sessionId \? null : \(\s*<div className="subagent-menu-group">\s*<div className="subagent-menu-head">\{texts\.subagentTopLevel\}/.test(
       app,
     ),
-    "子代理页的主会话标题要变成可点按钮（点击返回主会话，openSession 不带地址 = 普通会话）",
-  );
-  // 导航里不许再有第二份「父会话标题」（否则标题重复一节）
-  assert.ok(
-    !/subagent-crumb-root/.test(app),
-    "导航里不许再渲染父会话标题（返回入口就是标题栏已有的那颗标题）",
+    "本会话已经是顶层会话时不渲染「顶层会话」组；看子代理时才列顶层会话",
   );
   assert.ok(
-    /current=\{entry\.id === currentId\}/.test(app) && /const currentId = child \? state\.session\?\.id : undefined;/.test(app),
-    "父目录里要标出当前所在的那一行（current 行不可再点）",
-  );
-  // 清单两路合一：子代理页取父目录（兄弟行含自己），普通会话取自己的目录；
-  // 列表里 current 行标记当前所在（兄弟切换 / 下级进入共用同一份渲染）
-  assert.ok(
-    /const entries = child \? child\.parentEntries : state\.subagentEntries;/.test(app) &&
-      /entries\.map\(\(entry\) =>/.test(app),
-    "切换列表的数据两路合一（父目录 / 自身目录），当前行可识别",
-  );
-  // 触发器标题与列表行**同源**（目录里当前那一行的 label）：子代理会话的自动标题
-  // 是另一套字段，不会出现「列表里叫 A、触发器上叫 B」（2026-09-24 报的不一致）
-  assert.ok(
-    /const currentLabel = child\s*\?\s*\(entries\.find\(\(entry\) => entry\.id === currentId\)\?\.label \?\? state\.session\?\.title\)/.test(
-      app,
-    ),
-    "触发器的标题必须取目录里当前行的 label（与列表行同一个来源同一个值）",
-  );
-  // 词典：计数 / 返回 / 切换的提示都要中英两套（双语硬规则）
-  assert.ok(
-    /subagentCount:\s*\{\s*zh: \(count: number\)/.test(messages),
-    "计数触发器的文案（含个数）在消息表里",
+    /<SessionCatalogRow\s+title=\{tree\.root\.title\}\s+running=\{tree\.root\.running\}/.test(app),
+    "顶层会话行是回顶层的入口（当前行由子代理树自己标出）",
   );
   assert.ok(
-    /backToParent:\s*\{\s*zh: \(title: string\)/.test(messages) &&
-      /subagentSwitcher:\s*\{\s*zh: \(title: string\)/.test(messages),
-    "返回提示（主会话标题的 title）与切换提示在消息表里",
+    /onOpen=\{\(\) => openRoot\(tree\.root\.id\)\}/.test(app) &&
+      /post\(\{ type: "openSession", sessionId: rootId \}\)/.test(app),
+    "点顶层会话行要回到顶层会话（openSession，不带子代理地址）",
   );
-  // 样式：可点标题 / 触发器 / 弹出列表都在（官方 CatalogDropdown 的同款皮肤）
+  // 子代理树：先序节点带 depth，点任何一层都发 openSubagent
   assert.ok(
-    /button\.header-title \{/.test(css) && /\.subagent-trigger \{/.test(css) && /\.subagent-menu \{/.test(css),
-    "app.css 要有导航的样式（可点标题 / 触发器 / 定宽列表）",
+    /tree\.nodes\.map\(\(node\) =>/.test(app) &&
+      /depth=\{node\.depth\}/.test(app) &&
+      /post\(\{ type: "openSubagent", id \}\)/.test(app),
+    "子代理会话按树形节点渲染，点任意一层都走 openSubagent",
   );
-  // 列表是「点了展开」的固定宽度菜单（官方 .menu 同款），不是每次渲染都挂着的浮层
+  // 第 1 层（顶层会话直接调用的子代理）不加缩进，与顶层会话行同级；第 2 层起缩进
   assert.ok(
-    /\{open \? \(\s*<div className="subagent-menu"/.test(app),
+    /style=\{depth > 1 \? \{ paddingLeft: dpLength\(6 \+ \(depth - 1\) \* 14\) \} : undefined\}/.test(app),
+    "第 1 层与顶层会话同级对齐，深层按 depth 缩进",
+  );
+  // 当前行加粗、不可再点
+  assert.ok(
+    /current=\{node\.id === sessionId\}/.test(app) &&
+      /disabled=\{current \|\| undefined\}/.test(app),
+    "当前所在行要标出来且不可再点",
+  );
+  // 计数 = 当前会话下面的**全部后代**（多层），不是只数直接下级
+  assert.ok(
+    /const descendants = subagentDescendants\(sessionId, tree\?\.nodes \?\? \[\]\);/.test(app) &&
+      /const count = descendants\.length;/.test(app),
+    "标题后的计数必须是当前会话的多层后代总数",
+  );
+  // 词典：两组标题 / 切换提示都要中英两套
+  assert.ok(
+    /subagentTopLevel:\s*\{ zh: "顶层会话"/.test(messages) &&
+      /subagentSessions:\s*\{ zh: "子代理会话"/.test(messages) &&
+      /switchSession:\s*\{\s*zh: \(title: string\)/.test(messages),
+    "顶层会话 / 子代理会话 / 切换提示在消息表里（中英两套）",
+  );
+  // 样式：可点标题 / 分组 / 计数都在
+  assert.ok(
+    /button\.header-title\.is-switcher \{/.test(css) &&
+      /\.header-title-group \{/.test(css) &&
+      /\.header-subagent-count \{/.test(css) &&
+      /\.subagent-menu-group \+ \.subagent-menu-group \{/.test(css),
+    "app.css 要有标题切换入口、计数与分组样式",
+  );
+  // 列表是「点了展开」的固定宽度菜单，不是每次渲染都挂着的浮层
+  assert.ok(
+    /\{open && tree \? \(\s*<div className="subagent-menu"/.test(app),
     "目录列表随 open 条件渲染（点击展开，点外部 / Esc 收起）",
   );
   // 开合**只认点击**（用户 2026-09-24 口径：不要悬停自动展开）；再点一次关闭
-  const nav = app.slice(app.indexOf("function SubagentNav"), app.indexOf("const CONNECT_POST"));
   assert.ok(
-    !/onMouseEnter|onMouseLeave/.test(nav),
-    "触发器不许带悬停展开 / 移开收起（用户口径：只认点击）",
+    !/onMouseEnter|onMouseLeave/.test(app.slice(app.indexOf("function SessionTitle"), app.indexOf("const CONNECT_POST"))),
+    "标题切换不许带悬停展开 / 移开收起（用户口径：只认点击）",
   );
   assert.ok(
-    /setOpen\(\(v\) => !v\)/.test(nav),
-    "触发器点击是 toggle：展开后再点一次关闭",
+    /setOpen\(\(value\) => !value\)/.test(app),
+    "标题点击是 toggle：展开后再点一次关闭",
   );
 }
 
@@ -165,31 +199,39 @@ console.log("subagentPanel: 入口在标题右侧、空目录不渲染 ✓");
     /text: "@subagentNotFound"/.test(controller),
     "目录里查不到的子代理要如实提示，不把窗口切到开不出来的会话上",
   );
-  // **层级不能因为切换而变深**（用户 2026-09-24 口径）：子代理页上的查找空间**只有
-  // 父目录**——先查当前会话自己目录的写法会把「切换兄弟」变成「进入下级」
+  // 用户 2026-10-20 口径：标题清单是整棵多层树，**点哪一层都算切换**——
+  // 目标的父会话与真实模式都来自跨域血缘索引，不再按「只能切兄弟」限制查找空间
   const resolveBlock = requestLines.slice(
     requestLines.indexOf("const resolve = ()"),
     requestLines.indexOf("let hit = resolve()"),
   );
   assert.ok(
-    /if \(address\) \{[\s\S]{0,300}return undefined;[\s\S]{0,80}\}/.test(resolveBlock),
-    "子代理页上的查找必须先按地址分流：只在父目录里找兄弟，查不到就放弃",
+    /const indexed = this\.subagentIndex\.get\(childSessionId\)/.test(resolveBlock) &&
+      /const parentId = indexed\.parentSessionId;/.test(resolveBlock),
+    "openSubagent 要从血缘索引读目标的真实父会话（多层树里点任意一层都能开）",
   );
   assert.ok(
-    resolveBlock.indexOf("if (address)") < resolveBlock.indexOf("scope.subagentEntries.find"),
-    "查找空间要先判「自己在子代理页」：兄弟查找优先、自身目录只在普通会话时才参与",
+    /await this\.refreshSubagentTitles\(\);/.test(requestLines),
+    "索引缺目标时先补一份 session/list（跨进程 / 跨层级血缘的权威来路）",
   );
-  // 打开菜单 / 切换前刷新的也是「列表根部」的目录（官方 refreshProjection(parentId)）：
-  // 子代理页刷父目录，普通会话刷自己的
+  assert.ok(
+    !/层级不能因为切换而变深/.test(openBody),
+    "旧的「只能切兄弟、层级不能变深」限制必须去掉（整套交互已改成多层树切换）",
+  );
+  // 打开菜单 / 切换前仍要刷新当前视图所属的那级目录：label / activity 才是最新的
   const refresh = controller.slice(
     controller.indexOf("private async refreshSubagents"),
     controller.indexOf("private async openSubagent"),
   );
   assert.ok(
+    /void this\.refreshSubagentTitles\(\);/.test(refresh),
+    "打开标题清单要补一次 session/list（整棵树的血缘与标题）",
+  );
+  assert.ok(
     /if \(scope\.subagentAddress\) \{[\s\S]{0,500}refreshSubagentCatalog\(parent\)|fetchParentCatalog\(scope\)/.test(
       refresh,
     ),
-    "子代理页打开导航要刷父目录（兄弟行的 label / activity 才是最新的）",
+    "子代理页打开清单要刷父目录（直接兄弟行的 label / activity 才是最新的）",
   );
 }
 console.log("subagentPanel: 会话级切换（真实模式 + 地址化 follow/page）✓");
@@ -282,14 +324,16 @@ console.log("subagentPanel: 一次性子代理只读 ✓");
   // `subagent` 是会话状态片段的一个键：快照全字段下发，切回普通会话时折成 null 清掉
   const sessionView = read("src", "dsh", "sessionView.ts");
   assert.ok(
-    /"subagentEntries",\s*"subagent",\s*"jobs",/.test(sessionViewKeys(sessionViewText())),
-    "SessionView 的键清单里要有 subagent（切换会话时随快照整体换掉）",
+    /"subagentEntries",\s*"subagent",\s*"subagentTree",\s*"jobs",/.test(sessionViewKeys(sessionViewText())),
+    "SessionView 的键清单里要有 subagent 与 subagentTree（切换会话时随快照整体换掉）",
   );
   assert.ok(
     /subagent: \{\s*read: \(source\) => source\.subagent\?\.\(\) as SessionView\["subagent"\],\s*\}/.test(
       sessionViewText(),
+    ) && /subagentTree: \{\s*read: \(source\) => source\.subagentTree\?\.\(\) as SessionView\["subagentTree"\],\s*\}/.test(
+      sessionViewText(),
     ),
-    "字段表里要有 subagent 的取值与折返条目（三处生产者共用一张表）",
+    "字段表里要有 subagent / subagentTree 的取值与折返条目（三处生产者共用一张表）",
   );
   function sessionViewText(): string {
     return read("src", "dsh", "sessionView.ts");

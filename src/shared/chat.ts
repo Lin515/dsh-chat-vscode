@@ -872,14 +872,14 @@ export interface GoalView {
  * 当前窗口正在查看**子代理会话**时的上下文（普通会话没有这个字段）。
  *
  * 官方把「正在看子代理」建模成**会话地址**（`SubagentAddress`）：会话视图整个换成
- * 子代理的对话，消息流、生成状态、队列全部来自子代理会话本身，只有标题旁边多出
- * 一条「父会话 / 当前子代理」的面包屑（`dsh-client-ui-subagent` 的
- * `SubagentHeaderLineage`）。这里带的就是那条面包屑与切换下拉要用的全部信息。
+ * 子代理的对话，消息流、生成状态、队列全部来自子代理会话本身。标题上的切换清单
+ * 读的是整棵 `SubagentTreeView`；这里保留地址本身（恢复 / 发送 / 停止 / 只读判定）
+ * 与直接父目录快照（进入时随行的兄弟种子）。
  */
 export interface SubagentContextView {
-  /** 父会话 id：点面包屑左半返回它（`openSession` 的目标）。 */
+  /** 直接父会话 id：面包屑 / 恢复地址 / 发送与停止路由都以它为权威。 */
   parentSessionId: string;
-  /** 父会话标题（面包屑左半的文字；还没有标题时退回父会话 id）。 */
+  /** 直接父会话标题（还没有标题时退回父会话 id）。 */
   parentTitle: string;
   /**
    * 生命周期模式。`one-shot` 的对话是**只读**记录（官方 `SubagentReadOnlyComposer`
@@ -887,10 +887,11 @@ export interface SubagentContextView {
    */
   mode: "one-shot" | "continuable";
   /**
-   * 父会话的子代理目录（含当前这个）：面包屑旁那个切换下拉的第一节。
+   * 父会话的直接子代理目录（含当前这个）。
    *
-   * 来源是父会话域的目录快照；父会话域不在时至少含当前这一个（它的地址必须成立，
-   * 否则根本进不来）。
+   * 切换清单改画整棵 `subagentTree` 之后，它仍保留：进入子代理时随行的父目录
+   * 种子、恢复路径回填，以及「当前这一层的兄弟有哪些」。父会话域不在时至少含
+   * 当前这一个（它的地址必须成立，否则根本进不来）。
    */
   parentEntries: SubagentView[];
 }
@@ -959,6 +960,43 @@ export interface SubagentView {
    * （可继续 / 一次性）。
    */
   unread?: boolean;
+}
+
+/**
+ * 子代理树的根：当前窗口所在会话的**顶层会话**。
+ *
+ * 用户 2026-10-20 口径：切换入口在标题上，展开的清单先列顶层会话、再列它下面的
+ * 子代理树。正在看顶层会话时根就是它自己；正在看子代理时根是它的最上层祖先。
+ */
+export interface SubagentTreeRootView {
+  id: string;
+  /** 顶层会话标题（还没有标题时退回会话 id，界面再按语言兜底）。 */
+  title: string;
+  running: boolean;
+}
+
+/**
+ * 子代理树的一行（先序展开的扁平节点）。
+ *
+ * `depth` 从 1 起：**由顶层会话直接调用的子代理就是第 1 层，与顶层会话行同级对齐**；
+ * 更深一层 `depth + 1`，界面按它缩进。树里保留 `parentSessionId`，界面据此计算
+ * 「当前会话一共有多少子代理」以及避免把祖先 / 兄弟认错。
+ */
+export interface SubagentTreeNodeView extends SubagentView {
+  parentSessionId: string;
+  depth: number;
+}
+
+/**
+ * 当前窗口所在会话所属的**子代理树**（顶层会话 + 先序扁平节点）。
+ *
+ * 宿主现算、随会话状态片段下发：树可以在同一个顶层会话的不同子代理页之间复用，
+ * 所以它不放在 `SubagentContextView`（那里的地址只描述当前这一条子代理）。
+ * 普通会话没有子代理、且它自己也不是子代理时，这个键缺省。
+ */
+export interface SubagentTreeView {
+  root: SubagentTreeRootView;
+  nodes: SubagentTreeNodeView[];
 }
 
 /**
@@ -1448,12 +1486,17 @@ export interface ChatState {
    */
   subagentEntries: SubagentView[];
   /**
-   * 当前窗口正在查看**子代理会话**时的上下文（面包屑、切换下拉、只读判定的来源）。
+   * 当前窗口正在查看**子代理会话**时的上下文（恢复地址、父目录种子、只读判定的来源）。
    *
    * 绑定的是普通会话时**没有这个键**（快照里折成 `null` 清掉）；键存在即代表
    * 「视图整个在子代理上」。形状见 `SubagentContextView`。
    */
   subagent?: SubagentContextView;
+  /**
+   * 当前窗口所在会话的**子代理树**（顶层会话 + 多层子代理）：标题点击后的切换清单
+   * 直接画它。普通会话没有子代理、且自己也不是子代理时没有这个键。
+   */
+  subagentTree?: SubagentTreeView;
   /** 后台任务（bash / pwsh / 子代理等），来自 session/control 的 jobs 帧。 */
   jobs: JobItemView[];
   /**

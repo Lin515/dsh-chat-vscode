@@ -1,9 +1,9 @@
 /**
- * 子代理页切换到兄弟的**行为级**回归（驱动真 `ChatController`，不是读源码正则）：
+ * 子代理切换的**行为级**回归（驱动真 `ChatController`，不是读源码正则）。
  *
- * 用户 2026-09-24 报障的现场：主会话 M 有子代理 A、B——从 M 进 A 时切换下拉是
- * 父层目录 [A, B]（官方口径）；**再从 A 切到 B 时，下拉里只剩 B 自己**，同级兄弟
- * 不可见（观感上像又下钻了一层）。根因（离线回路 2026-09-25 实证）：
+ * 用户 2026-09-24 报障的现场：主会话 M 有子代理 A、B——从 M 进 A 时父目录快照是
+ * [A, B]（官方口径）；**再从 A 切到 B 时，只剩 B 自己**，同级兄弟不可见（观感上像
+ * 又下钻了一层）。根因（离线回路 2026-09-25 实证）：
  *
  * 1. 视图离开会话时域被整个回收（`bindViewToSession` → `dropViewers` →
  *    `destroyScope`）——M 的域在第一跳就没了，建 B 域时父域不在 `scopes` 里，
@@ -15,8 +15,11 @@
  *
  * 修法：切换时把**手里的父目录**随行传给新域（`openSubagent` → `openSession` →
  * `ensureScope` 的 seed）；`fetchParentCatalog` 补齐后把修正的 subagent 上下文直接
- * 发给看这个会话的窗口。本测试在修复前必须红（第二跳目录/显示名、恢复路径回填），
- * 修复后全绿。
+ * 发给看这个会话的窗口。这条兄弟切换的回归继续保留。
+ *
+ * 用户 2026-10-20 追加：标题清单改成**整棵多层树**，从 M 可直接点 A1（A 的下级），
+ * 目标父会话必须是 A；只靠 `session/list` 的 `parentSessionId` + 自身 `subagent`
+ * 身份投影也要能重建同一棵树（场景三、四）。
  *
  * vscode 依赖由 esbuild.scripts.mjs 的 alias 指到 `vscodeTestStub.ts`（离线、
  * 无网络、无 token、亚秒级）。
@@ -34,8 +37,10 @@ const { ChatController } = await import("../src/dsh/controller");
 const ID_M = "session-main";
 const ID_A = "child-aaaa";
 const ID_B = "child-bbbb";
+const ID_A1 = "grandchild-cccc";
 const LABEL_A = "子代理A";
 const LABEL_B = "子代理B";
+const LABEL_A1 = "子代理A1";
 
 interface Captured {
   target: string;
@@ -43,9 +48,21 @@ interface Captured {
 }
 type SubagentEntry = { id: string; label: string };
 type SubagentContext = { parentSessionId?: string; parentEntries: SubagentEntry[] };
+type SessionRow = {
+  sessionId: string;
+  updatedAt: number;
+  cwd: string;
+  origin?: string;
+  parentSessionId?: string;
+  running?: boolean;
+  projections?: { asOfSeq: number; values: Record<string, unknown> };
+};
 
 /** 静默假客户端：只实现本场景碰到的面；`subagents/list` 按新版口径不存在（HTTP 404）。 */
-const fakeClient = () => ({
+const fakeClient = (items: SessionRow[] = []) => ({
+  async listSessions() {
+    return { items };
+  },
   async request(method: string) {
     if (method === "commands/list") return [];
     if (method === "subagents/list") throw new Error("subagents/list 失败：HTTP 404");
@@ -99,7 +116,7 @@ const fakeMemento = () => {
   };
 };
 
-function makeController() {
+function makeController(items: SessionRow[] = []) {
   const controller = new ChatController(
     fakeServer() as never,
     () => undefined,
@@ -117,12 +134,14 @@ function makeController() {
     bindView(viewId: string): void;
     openSession(viewId: string, sessionId: string, subagent?: unknown, seed?: unknown): Promise<void>;
     openSubagent(viewId: string, id: string): Promise<void>;
+    refreshSessions(): Promise<void>;
+    snapshotFor(viewId: string): Record<string, unknown>;
     registerSubagent(scope: unknown, entry: unknown): void;
     client: unknown;
     connection: string;
     scopes: Map<string, unknown>;
   };
-  c.client = fakeClient() as never;
+  c.client = fakeClient(items) as never;
   c.connection = "connected";
   return { c, frames };
 }
@@ -141,6 +160,16 @@ function subagentOf(state: Record<string, unknown> | undefined): SubagentContext
   return { parentSessionId: sub?.parentSessionId, parentEntries: sub?.parentEntries ?? [] };
 }
 type SubagentContextViewOf = { parentSessionId?: string; parentEntries: SubagentEntry[] };
+
+type TreeOf = {
+  root: { id: string; title: string };
+  nodes: { id: string; label: string; parentSessionId: string; depth: number }[];
+};
+
+/** 帧（patch 或 state）里的子代理树。 */
+function treeOf(state: Record<string, unknown> | undefined): TreeOf | undefined {
+  return state?.subagentTree as TreeOf | undefined;
+}
 
 const idsOf = (context: SubagentContextViewOf) => context.parentEntries.map((entry) => entry.id);
 const hasBoth = (context: SubagentContextViewOf) => idsOf(context).includes(ID_A) && idsOf(context).includes(ID_B);
@@ -197,7 +226,7 @@ console.log("subagentSwitch: 驱动真控制器（offline stub）");
     current?.label === LABEL_B,
     `切换入口的显示名取目录行 label（${LABEL_B}），不退回会话 id；实际 ${String(current?.label)}`,
   );
-  console.log("  M → A → B：目录随行、层级不变深、显示名同源 ✓");
+  console.log("  M → A → B：目录随行、兄弟父会话不变、显示名同源 ✓");
 }
 
 // ---------- 场景二：恢复路径直接落到子代理页（父域不在），异步回填要能到屏 ----------
@@ -229,4 +258,95 @@ console.log("subagentSwitch: 驱动真控制器（offline stub）");
   console.log("  恢复路径：回填到屏、最终态含兄弟 ✓");
 }
 
-console.log("subagentSwitch: 切换目录随行、回填到屏、层级不变深、显示名同源 ✓");
+// ---------- 场景三：多层树（用户 2026-10-20 口径） ----------
+//
+// M → A → A1：标题点击后的清单要同时列出 A（第 1 层，与 M 同级对齐）与 A1
+// （第 2 层）。从 M 直接点 A1 也要能进——父会话是它的**真实父会话 A**，不是 M。
+{
+  const { c, frames } = makeController();
+  c.bindView("v3");
+  await c.openSession("v3", ID_M);
+  const mScope = c.scopes.get(ID_M);
+  assert.ok(mScope, "M 的域应已建立（多层树前提）");
+  c.registerSubagent(mScope, { id: ID_A, label: LABEL_A, mode: "continuable", activity: "inactive" });
+
+  await c.openSubagent("v3", ID_A);
+  const aScope = c.scopes.get(ID_A);
+  assert.ok(aScope, "A 的域应已建立（先注册它的下级）");
+  c.registerSubagent(aScope, { id: ID_A1, label: LABEL_A1, mode: "one-shot", activity: "inactive" });
+
+  // 回到顶层会话：此时树必须已经包含 A 与 A1（A1 是 A 的下级）
+  await c.openSession("v3", ID_M);
+  const top = treeOf(lastState(frames, "v3"));
+  assert.ok(top, "顶层会话也要收到 subagentTree（标题入口的数据）");
+  assert.strictEqual(top.root.id, ID_M, "树根是顶层会话 M");
+  assert.deepStrictEqual(
+    top.nodes.map((node) => `${node.id}@${String(node.depth)}<${node.parentSessionId}>`),
+    [`${ID_A}@1<${ID_M}>`, `${ID_A1}@2<${ID_A}>`],
+    "树节点先序、A 是第 1 层（与 M 同级）、A1 是第 2 层且父是 A",
+  );
+
+  // 从顶层直接点第 2 层：真实父会话必须是 A（点任意一层都算切换）
+  frames.length = 0;
+  await c.openSubagent("v3", ID_A1);
+  const state = lastState(frames, "v3");
+  const context = subagentOf(state);
+  assert.strictEqual(context.parentSessionId, ID_A, "A1 的父会话是 A（不是顶层 M）");
+  assert.strictEqual(treeOf(state)?.root.id, ID_M, "看子代理页时树根仍是顶层会话");
+  const a1 = treeOf(state)?.nodes.find((node) => node.id === ID_A1);
+  assert.strictEqual(a1?.label, LABEL_A1, "当前子代理在树里的显示名来自目录 / 标题账本");
+  console.log("  M → A → A1：多层树、真实父会话、点任意一层可切换 ✓");
+}
+
+// ---------- 场景四：仅凭 session/list 重建多层树（不打开任何子代理） ----------
+//
+// 跨进程 / 别的窗口建出来的子代理只会出现在会话列表里：每一行带 `parentSessionId`
+// 与自身的 `subagent` 身份投影。标题清单必须能只靠这份列表画出多层树。
+{
+  const cwd = "C:/work/demo";
+  const rows: SessionRow[] = [
+    { sessionId: ID_M, updatedAt: 1, cwd, projections: { asOfSeq: 1, values: { title: "主会话" } } },
+    {
+      sessionId: ID_A,
+      updatedAt: 2,
+      cwd,
+      origin: "subagent",
+      parentSessionId: ID_M,
+      projections: {
+        asOfSeq: 2,
+        values: { subagent: { mode: "continuable", label: LABEL_A, seq: 1 }, title: "A 的标题" },
+      },
+    },
+    {
+      sessionId: ID_A1,
+      updatedAt: 3,
+      cwd,
+      origin: "subagent",
+      parentSessionId: ID_A,
+      projections: {
+        asOfSeq: 3,
+        values: { subagent: { mode: "one-shot", label: LABEL_A1, seq: 1 } },
+      },
+    },
+  ];
+  const { c } = makeController(rows);
+  c.bindView("v4");
+  await c.refreshSessions();
+  await c.openSession("v4", ID_M);
+  const tree = treeOf(c.snapshotFor("v4"));
+  assert.strictEqual(tree?.root.id, ID_M, "列表里主会话是树根");
+  assert.strictEqual(tree?.root.title, "主会话", "树根标题来自会话列表");
+  assert.deepStrictEqual(
+    tree?.nodes.map((node) => `${node.id}@${String(node.depth)}<${node.parentSessionId}>`),
+    [`${ID_A}@1<${ID_M}>`, `${ID_A1}@2<${ID_A}>`],
+    "只看 session/list 也能画出 A → A1 的多层树",
+  );
+  assert.strictEqual(
+    tree?.nodes.find((node) => node.id === ID_A)?.label,
+    LABEL_A,
+    "显示名优先取自身子代理身份投影里的 label",
+  );
+  console.log("  session/list 单源重建多层树 ✓");
+}
+
+console.log("subagentSwitch: 切换目录随行、回填到屏、多层树可切换、显示名同源 ✓");

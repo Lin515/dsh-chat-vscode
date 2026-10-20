@@ -132,8 +132,9 @@
 - [blankSessionReuse.test.ts](<blankSessionReuse.test.ts>) — 「空态必有壳、首条消息发给谁」：`reusableBlank` 的本地 blank 位（不许把已经说过话的会话当空壳接回来）、空壳上选的模型留得住、已经在一条空壳上再点「+」是完全 no-op（不写回模型、也不另接一条别人的壳）。
 - [blankSessionNoop.test.ts](<blankSessionNoop.test.ts>) — 「点「+」」在用户 2026-10-17 21:00 口径下的行为级回归（真 `ChatController` + 假服务端）：当前已经停在一条**空壳**上时**完全 no-op**——不清输入框 / 附件 / 待发与失败回显、不改模型 / 思考强度 / 权限 / 预设 / 工作目录，不换绑定、不认领、不连后台、不发任何 RPC、不另建也不删（改过标题 / 计划 / 目标 / 挂着自动化任务、甚至断连的壳同样 no-op）；无壳 / 内容会话则照旧落壳：接回没人占用的现成空壳（同步换绑 + 一次指名认领）或真新建；空壳按窗口独占，两个窗口并发点「+」互不干扰。
 - [blankPresetAdopt.test.ts](<blankPresetAdopt.test.ts>) — 空壳日志里记着的 agent 预设被删掉之后还切不切得动：接回要指名 `sessionId`、先照原样报一次预设、服务端回 not-found 时不带预设再认领一次（退回部署默认），以及已在空壳上再点「+」完全 no-op、空壳被别的窗口拿着时不共享。
-- [subagentPanel.test.ts](<subagentPanel.test.ts>) — 子代理导航与会话级切换（入口在标题右侧、进子代理 = 切会话）。
-- [subagentSwitch.test.ts](<subagentSwitch.test.ts>) — 子代理页切到兄弟的行为级回归（下拉里同级兄弟必须可见）。
+- [subagentPanel.test.ts](<subagentPanel.test.ts>) — 子代理切换入口在标题上：标题点击展开「顶层会话 + 多层子代理树」，计数提示保留，当前行不可再点。
+- [subagentSwitch.test.ts](<subagentSwitch.test.ts>) — 子代理页切换的行为级回归：兄弟 / 多层树任意一层都能切，目标父会话与真实模式来自血缘索引，父目录随行且回收后回填到屏。
+- [subagentTree.test.ts](<subagentTree.test.ts>) — 子代理树的组装与界面计数：先序 / 层级、父链断开与环截断、当前会话多层后代计数、`subagentTree` 走会话状态片段。
 - [subagentRowState.test.ts](<subagentRowState.test.ts>) — 子代理目录行的显示状态（生成中 / 已完成 / 可继续 / 一次性 + 状态点色调）：驻留状态的到达顺序、进出子代理页、已读位与界面口径。
 - [subagentTitle.test.ts](<subagentTitle.test.ts>) — 子代理显示名：目录条目缺 label（workflow 派发的子代理）时默认显示会话标题，且来源重放 / 重新打开菜单 / 子域回收后都不退回会话 id。
 - [subagentOrder.test.ts](<subagentOrder.test.ts>) — 子代理目录的显示顺序：用户消息时间与一轮收尾取新、agent 过程消息不参与、进子代理再退出来不改变先后。

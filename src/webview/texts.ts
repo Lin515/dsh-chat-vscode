@@ -288,18 +288,18 @@ export interface Texts {
   dropHint: string;
 
   /**
-   * 子代理导航（标题右侧，官方 `dsh-client-ui-subagent` 同款）。
+   * 子代理切换（用户 2026-10-20 口径：入口在标题上）。
    *
-   * `subagents` 是触发器的 title；`subagentCount` 是计数触发器上的文字（含个数）；
-   * `subagentChildren` 是切换下拉里「本级子代理」那一节的标题；`backToParent` /
-   * `subagentSwitcher` 是面包屑两半的 title；`subagentReadonly*` 是一次性子代理
-   * 的只读说明（替代整个输入区）。
+   * `subagents` 仍是菜单的无障碍名；`subagentCount` 是标题后的计数文字（含个数）；
+   * `subagentTopLevel` / `subagentSessions` 是清单两组的分组标题；`switchSession`
+   * 是标题按钮的悬停提示；`subagentReadonly*` 是一次性子代理的只读说明（替代整个
+   * 输入区）。
    */
   subagents: string;
   subagentCount: (count: number) => string;
-  subagentChildren: string;
-  backToParent: (title: string) => string;
-  subagentSwitcher: (title: string) => string;
+  subagentTopLevel: string;
+  subagentSessions: string;
+  switchSession: (title: string) => string;
   subagentReadonlyTitle: string;
   subagentReadonlyBody: string;
   subagentOneShot: string;

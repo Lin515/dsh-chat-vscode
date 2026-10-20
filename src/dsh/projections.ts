@@ -108,6 +108,29 @@ export function subagentCatalogFromProjection(value: unknown): SubagentCatalogEn
 export type SubagentCatalogEntryView = Pick<SubagentView, "id" | "createdAt" | "label" | "mode">;
 
 /**
+ * `subagent` 投影 → 这一条会话**自己的子代理身份**。
+ *
+ * 契约（`SubagentIdentityProjection`）：`{mode:'one-shot', label?, seq}` 或
+ * `{mode:'continuable', label, seq}`。它回答「这条会话属于哪一级子代理」，而父链
+ * 来自 `session/list` 每一行的 `parentSessionId`——两者合起来，宿主不必打开每一条
+ * 子代理会话就能画出多层树。
+ *
+ * `mode` 认不出时按 one-shot：拿它去 follow 不会被鉴权拒绝，反过来会
+ * （与 `subagentCatalogFromProjection` 同一条保守护栏）。
+ */
+export function subagentIdentityFromProjection(
+  value: unknown,
+): { label?: string; mode: SubagentView["mode"] } | undefined {
+  const identity = value as { mode?: unknown; label?: unknown } | null | undefined;
+  if (!identity || typeof identity !== "object") return undefined;
+  const label = typeof identity.label === "string" && identity.label ? identity.label : undefined;
+  return {
+    ...(label ? { label } : {}),
+    mode: identity.mode === "continuable" ? "continuable" : "one-shot",
+  };
+}
+
+/**
  * `subagents/list` RPC 行 → 子代理列表（**旧服务端专用**：该端点在 0.1.7-alpha.1 被删除）。
  *
  * 这里是 `SubagentListEntry`：`kind:'child'` 才是可用子代理，`kind:'diagnostic'`

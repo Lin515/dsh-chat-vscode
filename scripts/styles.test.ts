@@ -318,20 +318,20 @@ console.log("styles: 运行中节点呼吸发光与图标同色、完成态保�
     ".subagent-row-state 要有明确的边长（独享空间）",
   );
 
-  // 导航本体要存在（可点的主会话标题 / 触发器 / 弹出列表 / 只读说明）
+  // 导航本体要存在（标题上的切换入口 / 计数 / 弹出列表 / 只读说明）
   for (const selector of [
     "button.header-title",
-    ".subagent-nav",
-    ".subagent-trigger",
+    ".header-title-group",
+    ".header-subagent-count",
     ".subagent-menu",
     ".subagent-row",
     ".composer-readonly",
   ]) {
-    assert.ok(css.indexOf(selector) >= 0, `app.css 必须有 ${selector}（标题旁导航与只读说明的样式）`);
+    assert.ok(css.indexOf(selector) >= 0, `app.css 必须有 ${selector}（标题上的切换入口与只读说明的样式）`);
   }
-  // 触发器的 chevron 要有开合旋转（官方 .triggerOpen 同款）
-  const chevron = rule(".subagent-trigger > svg.is-open");
-  assert.ok(/transform:\s*rotate/.test(chevron), ".subagent-trigger 的 chevron 开合要旋转（官方 triggerOpen）");
+  // 标题切换入口的 chevron 要有开合旋转
+  const chevron = rule("button.header-title.is-switcher > svg.is-open");
+  assert.ok(/transform:\s*rotate/.test(chevron), "标题切换入口的 chevron 开合要旋转");
 }
 console.log("styles: 面板入口的活性态与子代理导航样式 ✓");
 

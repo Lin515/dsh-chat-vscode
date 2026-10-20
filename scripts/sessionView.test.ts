@@ -58,6 +58,7 @@ const EXPECTED_SESSION_KEYS = [
   "todos",
   "subagentEntries",
   "subagent",
+  "subagentTree",
   "jobs",
   "schedules",
   "schedulesStatus",
@@ -104,6 +105,7 @@ function fullSessionSource(): SessionViewSource {
     todos: () => [],
     subagentEntries: () => [],
     subagent: () => undefined,
+    subagentTree: () => undefined,
     jobs: () => [],
     schedules: () => [],
     schedulesStatus: () => undefined,
@@ -344,8 +346,8 @@ console.log("sessionView: 宿主侧接线（只走构造器 + 每个字段有取
 
   const app = readFileSync(files["webview/App.tsx"], "utf8");
   assert.ok(
-    /child \? child\.parentEntries : state\.subagentEntries/.test(app),
-    "App.tsx 的子代理导航必须直接消费 state.subagentEntries（不再有跨名桥）",
+    /const tree = state\.subagentTree \?\? fallbackSubagentTree\(state\);/.test(app),
+    "App.tsx 的标题切换入口必须直接消费 state.subagentTree（正式树缺失时才退回浅树）",
   );
   const chat = readFileSync(files["shared/chat.ts"], "utf8");
   assert.ok(

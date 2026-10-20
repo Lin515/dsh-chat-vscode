@@ -269,6 +269,8 @@ const entries = {
   "build/submission-receipts.test.mjs": "scripts/submissionReceipts.test.ts",
   "build/dsh-contract.test.mjs": "scripts/dshContract.test.ts",
   "build/subagent-switch.test.mjs": "scripts/subagentSwitch.test.ts",
+  // 子代理树的组装与界面计数（多层嵌套 / 第 1 层与顶层会话同级 / 环截断）：必须登记，否则 npm test 静默不跑
+  "build/subagent-tree.test.mjs": "scripts/subagentTree.test.ts",
   "build/subagent-row-state.test.mjs": "scripts/subagentRowState.test.ts",
   // 子代理目录的显示顺序（判定时间：用户消息与一轮收尾取新）：驱真 ChatController + stub，必须登记
   "build/subagent-order.test.mjs": "scripts/subagentOrder.test.ts",

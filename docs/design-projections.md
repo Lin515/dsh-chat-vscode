@@ -60,6 +60,8 @@ Auto review 只在 `permissionPresets/catalog.options` 明确含 auto 时开放�
 
 打开、follow、page、prompt 与 stop 均按真实地址路由：continuable 可继续，one-shot 只读，unknown 模式不得猜成 continuable。
 
+标题点击后的切换清单画的是**整棵多层树**（`subagentTree`，用户 2026-10-20 口径）。宿主维护一份跨域的 `subagentIndex`：`session/list` 原始行的 `parentSessionId` 给出父链，`projections.values.subagent` 给出这条会话自身的模式与 label，各目录并入点再补描述符 label / 创建时刻。树由 `subagentTree.ts` 先序展开：第 1 层是顶层会话直接调用的子代理，与顶层会话行同级对齐；更深层按 `depth` 缩进。普通会话没有子代理、自己也不是子代理时不发这个键，标题保持纯文本；正在看子代理时树根永远是顶层祖先。父链断掉的节点不硬塞到根下，环只出现一次。切换任意一层由同一份索引给出真实父会话与模式，不再限制只能切兄弟。
+
 目录行的**显示顺序**按判定时间从新到旧（`subagentOrder.ts`）：用户消息（`sessionListMetadata.lastPromptAt`，经 session/list 行的 `updatedAt`）与一轮收尾（宿主亲历的 `api-session/status` running→false）两者取新、不加优先级，agent 的过程消息不参与判定；并列按创建时刻（更晚建的在前），再并列才退回发现顺序。创建时刻来自投影 / durable 事件的 `createdAt`，对两条路径是同一份事实，所以父会话目录与子代理页的父目录快照永远给出同一个顺序。排序键在下发与父目录快照两处**现算**，不写回目录——否则重放会用旧顺序盖回去。
 
 收尾证据独立于展示用 running：仅 `api-session/status` 的 true 登记待结算证据，false 一次性消费。列表 true 只是打底，不算亲历开轮；列表 false 不抹掉已经亲历的 true，也不直接记收尾，因此列表刷新穿插与同名迟到 false 都不会漏记或重复刷新顺序。
@@ -105,7 +107,7 @@ DSH 的定时任务由模型工具 `schedule_create` 建立，服务端把「规
 
 ## 会话视图字段一致性
 
-`sessionView.ts` 是快照与 patch 的共同字段登记表。切会话须带 `historyLoading`、`subagentEntries` 等清空值；宿主字段与视图字段不能混用。JSON 清空发 `null`，不发会被序列化丢弃的 `undefined`，与 `jsonSafeFrame` / `mergeWirePatch` 配套。
+`sessionView.ts` 是快照与 patch 的共同字段登记表。切会话须带 `historyLoading`、`subagentEntries`、`subagentTree` 等清空值；宿主字段与视图字段不能混用。JSON 清空发 `null`，不发会被序列化丢弃的 `undefined`，与 `jsonSafeFrame` / `mergeWirePatch` 配套。
 
 ## 验证与未覆盖边界
 

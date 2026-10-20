@@ -54,6 +54,13 @@ export interface SessionView {
    * 值来自域的 `subagentAddress` + 父会话摘要 + 父目录快照（见 `SubagentContextView`）。
    */
   subagent?: ChatState["subagent"];
+  /**
+   * 当前窗口所在会话的**子代理树**（顶层会话 + 多层子代理）。
+   *
+   * 与 `subagent` 并列而不是塞进它：树属于「这一整条顶层会话」，同一棵树下的
+   * 不同子代理页看到的清单相同。普通会话没有子代理、自己也不是子代理时缺省。
+   */
+  subagentTree?: ChatState["subagentTree"];
   jobs: ChatState["jobs"];
   /**
    * 本会话的自动化任务（DSH `schedule`）。
@@ -117,6 +124,7 @@ export const SESSION_VIEW_KEYS = [
   "todos",
   "subagentEntries",
   "subagent",
+  "subagentTree",
   "jobs",
   "schedules",
   "schedulesStatus",
@@ -210,6 +218,9 @@ export const SESSION_FIELDS = {
   },
   subagent: {
     read: (source) => source.subagent?.() as SessionView["subagent"],
+  },
+  subagentTree: {
+    read: (source) => source.subagentTree?.() as SessionView["subagentTree"],
   },
   jobs: {
     read: (source) => (source.jobs?.() ?? []) as SessionView["jobs"],
@@ -402,6 +413,11 @@ export function sessionSourceOf(
    * （见 `dsh/subagentOrder.ts`），而这个模块够不到那本账；不传就退回域上的原始顺序。
    */
   subagentEntries?: SessionView["subagentEntries"],
+  /**
+   * 子代理树：由控制器按跨域血缘索引现算（见 `dsh/subagentTree.ts`）。它够不到
+   * 整棵树，所以和 `subagent` 一样由调用方传入。
+   */
+  subagentTree?: SessionView["subagentTree"],
 ): SessionViewSource {
   const adapter: SessionAdapter | undefined = scope?.adapter;
   return {
@@ -419,6 +435,7 @@ export function sessionSourceOf(
     todos: () => scope?.todos,
     subagentEntries: () => subagentEntries ?? scope?.subagentEntries,
     subagent: () => subagent,
+    subagentTree: () => subagentTree,
     jobs: () => scope?.jobs,
     schedules: () => scope?.schedules,
     schedulesStatus: () => scope?.schedulesStatus,

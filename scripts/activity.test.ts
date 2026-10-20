@@ -155,14 +155,14 @@ console.log("activity: 投影目录 + 后台任务兜底 ✓");
     /const jobsSignal = jobsEntrySignal\(state\.jobs, state\.schedules\);/.test(app),
     "Header 的后台任务按钮必须用 jobsEntrySignal（喂后台任务 + 自动化任务两条来源）",
   );
-  // 子代理没有独立按钮了：信号落在标题右侧的触发器上（.subagent-trigger）
+  // 子代理没有独立按钮：信号落在标题上的切换入口 / 计数提示（用户 2026-10-20 口径）
   assert.ok(
-    /<SubagentNav state=\{state\} agentsBusy=\{agentsBusy\} \/>/.test(app),
-    "子代理导航要挂在标题右侧（无子代理时整个不渲染，入口只有它）",
+    /<SessionTitle state=\{state\} agentsBusy=\{agentsBusy\} \/>/.test(app),
+    "标题本身就是会话切换入口（无子代理时保持纯文本，不占位）",
   );
   assert.ok(
-    /className=\{`subagent-trigger\$\{child \? " is-current" : ""\}\$\{agentsBusy \? " is-busy" : ""\}`\}/.test(app),
-    "子代理触发器要有 is-busy 态",
+    /className="header-subagent-count"/.test(app) && /<span className="dot dot-running" \/>/.test(app),
+    "标题后的计数提示要保留，有在跑时仍亮状态点",
   );
   assert.ok(
     /className=\{`icon-btn\$\{state\.panel === "jobs" \? " is-active" : ""\}\$\{\s*\n?\s*jobsSignal === "busy" \? " is-busy" : jobsSignal === "pending" \? " is-pending" : ""\s*\n?\s*\}`\}/.test(
