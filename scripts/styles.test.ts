@@ -2597,22 +2597,30 @@ console.log("styles: 三颗「打开」按钮图标两两不同（编辑区=方�
     "App.tsx 不许自己接线滚动信号（滚轮 / 触摸 / 手势判定 / rAF 合并都在 autoScroll 模块里）；它只留「滚到顶取更早历史」那一条监听",
   );
 
-  // 意愿置假只有两个入口：① 手势 + 确实离底（onScroll）；② 轮次横条的显式释放
-  // （`release()`——程序化滚动不算手势，不显式放掉的话 settle 会把视口钉回底部，
+  // 意愿置假只有两个入口：① 手势 + （位置往上走 或 确实离底）（onScroll）；② 轮次横条的
+  // 显式释放（`release()`——程序化滚动不算手势，不显式放掉的话 settle 会把视口钉回底部，
   // 跳转等于没跳）。出现第三个就是几何推断回来了。
   const followWrites = (module.match(/following = false;/g) ?? []).length;
   assert.strictEqual(
     followWrites,
     2,
-    "脱离跟随只允许「手势离底」与「显式 release」两个入口（模块里两处写入），出现第三个就是几何推断回来了",
+    "脱离跟随只允许「手势 + 方向 / 离底」与「显式 release」两个入口（模块里两处写入），出现第三个就是几何推断回来了",
   );
   assert.ok(
-    /else if \(this\.gestures\.recently\(now\)\)/.test(module),
-    "脱贴必须同时满足「近期有手势 + 确实离底」：没有手势的离底（位置被浏览器夹走 / 重排 / 端口变矮）是布局事故，不许写成脱贴",
+    /const gesture = this\.gestures\.recently\(now\);/.test(module),
+    "脱贴必须同时满足「近期有手势」：没有手势的位移（位置被浏览器夹走 / 重排 / 端口变矮）是布局事故，不许写成脱贴",
   );
   assert.ok(
-    /recently\(now: number\): boolean \{\s*\n\s*return active \|\|/.test(module),
-    "手势判据要包含「按下到松开」的活跃区间（触摸、拖滚动条）",
+    /const leave = gesture && \(movedUp \? dist > 0 : !atBottom\(dist\)\);/.test(module),
+    "贴底时的小步上滚（movedUp）也要脱贴：只看「确实离底」会把 40px 容差内的第一小步判回贴底，Issue #1 就是这条",
+  );
+  assert.ok(
+    /recently\(now: number\): boolean \{\s*\n\s*return \(\s*\n\s*active \|\|/.test(module),
+    "手势判据要包含「按下到松开」的活跃区间（触摸、拖滚动条、中键自动滚动）",
+  );
+  assert.ok(
+    /button === 1/.test(module) && /autoscroll/.test(module),
+    "中键自动滚动要记成手势：它只有 scroll 没有 wheel，而且松开中键后仍随鼠标位置继续",
   );
 
   // ③ 模块里：信号面齐备（少一个就会在真实场景里丢一次钉底）
@@ -2640,7 +2648,7 @@ console.log("styles: 三颗「打开」按钮图标两两不同（编辑区=方�
   // ④ 幂等钉底：合并到 rAF，赋值只在「想跟」分支里；胶囊按实测距离亮
   assert.ok(/requestAnimationFrame\(callback\)/.test(module), "钉底要合并到下一帧（绘制之前跑，不闪）");
   assert.ok(
-    /if \(state\.following\) \{\s*\n\s*if \(dist > 0\) el\.scrollTop = el\.scrollHeight;/.test(module),
+    /if \(state\.following\) \{\s*\n\s*if \(dist > 0\) \{\s*\n\s*el\.scrollTop = el\.scrollHeight;/.test(module),
     "跟随本体：想跟就把视口钉到底（幂等）",
   );
   assert.ok(

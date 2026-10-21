@@ -11,11 +11,17 @@ import { onHostFrame } from "./bridge";
  * - 组件从**同一个**绑定取「滚谁 / 放跟随 / 回最新 / 亮不亮胶囊」，不再各自接一半
  *   （`Composer` 只剩一个 `chatScroll` prop）。
  *
- * 行为一个字都没改（2026-09-16 三次修订的定稿口径）：
+ * 行为基线是 2026-09-16 三次修订的定稿口径；2026-10-21 修 Issue #1 的贴底吸附：
  *
- * 1. **意愿（`following`）只由输入决定**——距底超过阈值**且**近期有滚动手势
- *    （滚轮 / 触摸 / 键盘 / 拖滚动条）才算"用户要看上面"；位置回到距底容差内、或
- *    用户显式要最新（发消息、切会话、点胶囊）就重新贴上。
+ * 1. **意愿（`following`）只由输入决定**——近期有滚动手势（滚轮 / 键盘 / 触摸 /
+ *    拖滚动条 / 中键自动滚动）且位置**正在往上走**才算"用户要看上面"；位置向下回到
+ *    距底容差内、或用户显式要最新（发消息、切会话、点胶囊）就重新贴上。
+ *
+ *    为什么"正在往上走"不能退化成只看距底：贴底时任何一次滚动都从小位移开始
+ *    （平滑滚动的单帧位移、高分辨率滚轮、拖滚动条时的手部移动、中键自动滚动都可能
+ *    落在 40px 容差内）。只看距底会把这一小步判成"还在底部"，settle 又钉回去，
+ *    下一次滚动仍从底部开始——表现是贴底吸附、要大力滚 / 拖很远才能挣脱，拖动
+ *    滚动条时还会抽搐（用户 Issue #1）。方向只用来表达**意愿**，距离仍按实测算。
  *
  *    为什么不能从几何里推断：`scroll` 事件是**异步**派发的，处理器当场读到的
  *    `scrollTop` 可能来自**已经过去的布局**（位置被浏览器夹过），而 `scrollHeight`
@@ -25,7 +31,8 @@ import { onHostFrame } from "./bridge";
  *    `following=false` **再没有任何东西会翻回来**，症状是"最新内容留在视野下方 +
  *    胶囊亮着 + 永不恢复"，且**用户根本没有操作**（2026-09-16 实测复现，见
  *    `test/scroll-probe.html` 的 P1）。同一类还有端口变矮（插话排队条 / 待办面板 /
- *    提示条：`scrollTop` 不变、连 `scroll` 事件都没有）。
+ *    提示条：`scrollTop` 不变、连 `scroll` 事件都没有）。现在方向判断同样要求
+ *    **近期有手势**，没有手势的位移（浏览器夹位置、重排）仍按布局事故处理。
  *
  * 2. **只要想跟，就把视口钉在底部**：任何"内容 / 端口 / 可见性可能变了"的信号都只置一个
  *    脏标记，rAF 里**幂等**重贴一次。没有"之前是否在底部"这个记忆值，因此不存在
@@ -90,7 +97,12 @@ export function shouldShowJump(following: boolean, gap: number): boolean {
 }
 
 /**
- * 手势记录：滚轮 / 键盘各自记最近一次时刻，触摸与拖滚动条记"按住期间"。
+ * 手势记录：滚轮 / 键盘各自记最近一次时刻，触摸 / 拖滚动条 / 中键自动滚动记"期间"。
+ *
+ * 中键自动滚动（Chromium 原生 autoscroll）**不产生 wheel**，只产生 scroll；而且中键
+ * 松开后它仍随鼠标位置继续滚动，所以不能像拖滚动条那样在 pointerup 结束。不把它记成
+ * 手势的话，贴底状态下向上自动滚动产生的每一小步都会被当成布局事故钉回底部，
+ * 表现就是「向下正常、向上几乎不动」。
  *
  * **初始值必须是 `-Infinity` 而不是 0**：`performance.now()` 在新文档里从 0 附近开始，
  * 用 0 当"还没发生过"会让页面刚加载的头 400ms 里 `now - 0 < GESTURE_WINDOW_MS` 恒真
@@ -99,9 +111,16 @@ export function shouldShowJump(following: boolean, gap: number): boolean {
 export interface GestureTracker {
   noteWheel(deltaY: number): void;
   noteKey(key: string): void;
-  /** 拖滚动条：按下点落在 `clientWidth` 右边那一条（滑块与轨道都算）。 */
-  notePointerDown(clientX: number, rectLeft: number, clientWidth: number): void;
+  /**
+   * 按下：拖滚动条（滑块与轨道）或中键自动滚动。
+   * `button` 取 `PointerEvent.button`；中键是 1，缺省按左键处理。
+   */
+  notePointerDown(clientX: number, rectLeft: number, clientWidth: number, button?: number): void;
+  /** 松开：中键松开**不**结束自动滚动；其它键结束拖滚动条。 */
+  notePointerUp(button?: number): void;
   setActive(active: boolean): void;
+  /** 结束原生自动滚动（失焦 / 文档隐藏 / 滚轮或键盘接管）。 */
+  cancelAutoscroll(): void;
   recently(now: number): boolean;
 }
 
@@ -109,23 +128,45 @@ export function createGestureTracker(): GestureTracker {
   let wheelAt = -Infinity;
   let keyAt = -Infinity;
   let active = false;
+  let autoscroll = false;
   return {
     noteWheel(deltaY: number): void {
+      autoscroll = false;
       // 向下滚不该脱贴（只有"想看上面"才是放手）
       if (deltaY < 0) wheelAt = performance.now();
     },
     noteKey(key: string): void {
+      autoscroll = false;
       if (key === "PageUp" || key === "Home" || key === "ArrowUp") keyAt = performance.now();
     },
-    notePointerDown(clientX: number, rectLeft: number, clientWidth: number): void {
+    notePointerDown(clientX: number, rectLeft: number, clientWidth: number, button = 0): void {
+      if (button === 1) {
+        // 中键：原生自动滚动。若平台 / 浏览器禁用了它，这个标记最多留到下一次点击 /
+        // 按键 / 失焦；期间不会自己制造滚动，因此不会凭空改写意愿。
+        autoscroll = true;
+        return;
+      }
+      autoscroll = false; // 任意其它键按下都会结束原生自动滚动
       if (clientX - rectLeft > clientWidth) active = true;
+    },
+    notePointerUp(button = 0): void {
+      if (button === 1) return; // 自动滚动在中键松开后仍进行
+      active = false;
     },
     setActive(next: boolean): void {
       active = next;
     },
-    /** 近期有手势（含"按住期间"）：没有它，任何离底都只是布局事故。 */
+    cancelAutoscroll(): void {
+      autoscroll = false;
+    },
+    /** 近期有手势（含"按住期间"）：没有它，任何位移都只是布局事故。 */
     recently(now: number): boolean {
-      return active || now - wheelAt < GESTURE_WINDOW_MS || now - keyAt < GESTURE_WINDOW_MS;
+      return (
+        active ||
+        autoscroll ||
+        now - wheelAt < GESTURE_WINDOW_MS ||
+        now - keyAt < GESTURE_WINDOW_MS
+      );
     },
   };
 }
@@ -135,19 +176,24 @@ export function createGestureTracker(): GestureTracker {
  *
  * 抽出来的理由：意愿怎么翻（手势 vs 布局事故）是这条链路唯一有分歧的地方，
  * 以前只能靠正则从 `App.tsx` 的源码里读。现在它是一组真调用——
- * `scripts/autoScroll.test.ts` 直接喂 `(dist, now)` 断言翻不翻，注入回归能红。
+ * `scripts/autoScroll.test.ts` 直接喂 `(dist, now, movedUp)` 断言翻不翻，注入回归能红。
  */
 export interface ScrollFollowState {
   /** 是否跟着最新（意愿）。 */
   readonly following: boolean;
-  /** 滚轮 / 键盘 / 触摸 / 滚动条的手势记录。 */
+  /** 滚轮 / 键盘 / 触摸 / 滚动条 / 中键自动滚动的手势记录。 */
   readonly gestures: GestureTracker;
-  /** 最近一次滚动位置：**只用于**从轨迹视图回来时复原阅读位置，不参与意愿判断。 */
+  /** 最近一次滚动位置：复原阅读位置 + 判断本次位移方向，不参与贴底距离判断。 */
   readonly lastTop: { current: number };
-  /** 用户手势 + 确实离底 ⇒ 放开跟随（唯一一条"脱贴"路径）。 */
+  /** 用户手势 + 位置往上走 ⇒ 放开跟随（唯一一条"脱贴"路径）。 */
   release(): void;
-  /** 滚一下：回到容差内即恢复跟随；离底且近期有手势才脱贴；其余按布局事故处理。 */
-  scroll(dist: number, now: number): void;
+  /**
+   * 滚一下：
+   * - 近期有手势且位置往上走 ⇒ 脱贴，**即使仍在 40px 容差内**（否则小步上滚会被吸附）；
+   * - 位置向下回到容差内 ⇒ 恢复跟随；
+   * - 其余（没有手势的离底 / 重排 / 浏览器夹位置）不动意愿，下一次 settle 钉回底部。
+   */
+  scroll(dist: number, now: number, movedUp?: boolean): void;
   /**
    * 切会话 / 点胶囊 / 发消息：恢复跟随（"显式要最新"的**唯一**实现）。
    *
@@ -167,13 +213,17 @@ export function createScrollFollow(): ScrollFollowState {
     release(): void {
       following = false;
     },
-    scroll(dist: number, now: number): void {
-      if (atBottom(dist)) {
-        following = true; // 回到（近）底部即恢复跟随
-      } else if (this.gestures.recently(now)) {
-        // **只有**"用户手势 + 确实离底"才算要看上面。没有手势的离底（位置被浏览器夹走、
-        // 重排、端口变矮）一律按布局事故处理：不动意愿，下一次 settle 把它钉回底部。
+    scroll(dist: number, now: number, movedUp = false): void {
+      const gesture = this.gestures.recently(now);
+      // 手势把位置往上带了（哪怕只动 1px、仍落在贴底容差内），或者手势下确实离底，
+      // 都是「要看上面」。`dist > 0` 排除「内容塌缩把 scrollTop 夹小」：那种位移没有
+      // 可看的上面，不应把跟随放掉。没有手势的离底（浏览器夹位置、重排、端口变矮）
+      // 一律按布局事故处理：不动意愿，下一次 settle 把它钉回底部。
+      const leave = gesture && (movedUp ? dist > 0 : !atBottom(dist));
+      if (leave) {
         following = false;
+      } else if (atBottom(dist)) {
+        following = true; // 向下回到（近）底部即恢复跟随
       }
     },
     rearm(): void {
@@ -242,7 +292,12 @@ export function setupAutoScroll(
   const settle = (): void => {
     const dist = bottomGap(el);
     if (state.following) {
-      if (dist > 0) el.scrollTop = el.scrollHeight;
+      if (dist > 0) {
+        el.scrollTop = el.scrollHeight;
+        // 程序化钉底会异步产生 scroll 事件；先把方向基线挪到新位置，免得紧接着的
+        // 一次真实上滚拿旧基线比出「向下」而重新贴底。
+        state.lastTop.current = el.scrollTop;
+      }
       setShowJump(false);
     } else {
       setShowJump(dist > STICK_THRESHOLD_PX);
@@ -278,12 +333,17 @@ export function setupAutoScroll(
     state.rearm();
     dirty = true;
     el.scrollTop = el.scrollHeight;
+    state.lastTop.current = el.scrollTop;
     setShowJump(false);
   };
 
   const onScroll = (): void => {
-    state.lastTop.current = el.scrollTop;
-    state.scroll(bottomGap(el), env.now());
+    const top = el.scrollTop;
+    // 方向必须和上一次**看到的**位置比：scroll 事件可能合并多次滚动，也可能带着
+    // 浏览器夹过的位置到来；距离仍由 bottomGap 现算，方向只用来表达意愿。
+    const movedUp = top < state.lastTop.current;
+    state.lastTop.current = top;
+    state.scroll(bottomGap(el), env.now(), movedUp);
     schedule();
   };
   const onWheel = (event: WheelEvent): void => {
@@ -294,10 +354,11 @@ export function setupAutoScroll(
   };
   const onPointerDown = (event: PointerEvent): void => {
     const rect = el.getBoundingClientRect();
-    state.gestures.notePointerDown(event.clientX, rect.left, el.clientWidth);
+    state.gestures.notePointerDown(event.clientX, rect.left, el.clientWidth, event.button);
   };
-  const onPointerUp = (): void => {
-    state.gestures.setActive(false);
+  const onPointerUp = (event: PointerEvent): void => {
+    // 中键松开后原生自动滚动仍在进行（它跟着鼠标位置走），不能在这里结束手势。
+    state.gestures.notePointerUp(event.button);
   };
   const onTouchStart = (): void => {
     state.gestures.setActive(true);
@@ -306,7 +367,15 @@ export function setupAutoScroll(
     state.gestures.setActive(false);
   };
   const onVisibility = (): void => {
-    if (!document.hidden) schedule();
+    if (document.hidden) {
+      state.gestures.cancelAutoscroll();
+      return;
+    }
+    schedule();
+  };
+  const onBlur = (): void => {
+    state.gestures.cancelAutoscroll();
+    state.gestures.setActive(false);
   };
 
   env.observeResize(content, schedule);
@@ -323,6 +392,7 @@ export function setupAutoScroll(
   el.addEventListener("touchcancel", onTouchEnd, { passive: true });
   document.addEventListener("visibilitychange", onVisibility);
   window.addEventListener("focus", schedule);
+  window.addEventListener("blur", onBlur);
   schedule();
 
   return {
@@ -338,6 +408,7 @@ export function setupAutoScroll(
       el.removeEventListener("touchcancel", onTouchEnd);
       document.removeEventListener("visibilitychange", onVisibility);
       window.removeEventListener("focus", schedule);
+      window.removeEventListener("blur", onBlur);
     },
   };
 }
@@ -386,6 +457,8 @@ export function useAutoScroll(active: boolean, sessionId: string | undefined): A
         ? el.scrollHeight
         : Math.min(state.lastTop.current, Math.max(0, el.scrollHeight - el.clientHeight));
     }
+    // 复原 / 钉底也是程序化写入：方向基线跟着落到实际值（否则紧接着的上滚会被误读成下滚）
+    if (el) state.lastTop.current = el.scrollTop;
     // 重挂后先按当前意愿同步一次胶囊（`previous` 是上一次挂载留下的值，
     // 元素还没量到时不动它——紧接着的 settle 会给出实测距离）
     const show = el !== null && shouldShowJump(state.following, bottomGap(el));

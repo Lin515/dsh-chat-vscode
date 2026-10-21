@@ -269,10 +269,19 @@
             check("胶囊亮（I3）", u.jump() === true, "jump=" + u.jump());
             const a = u.anchor();
             const top0 = a ? a.top() : null;
+            const scroll0 = u.el.scrollTop;
             for (let i = 0; i < 3; i += 1) await u.appendTool("p4-" + i);
             u.mark("脱贴后追加 3 条");
             const top1 = a ? a.top() : null;
-            check("脱贴期间位置不被改动（I2）", top0 !== null && Math.abs(top1 - top0) <= 1, "锚点 " + top0 + " → " + top1 + "（身份 " + (a ? a.id ?? a.key : "取不到锚点") + "）");
+            // 侧栏矮到没有一条消息能完整落进视口时，锚点取不到；退化为比较 scrollTop
+            // （I2 的本意就是「位置不被程序化改动」，锚点只是更细的代理）。
+            check(
+              "脱贴期间位置不被改动（I2）",
+              a ? top0 !== null && Math.abs(top1 - top0) <= 1 : u.el.scrollTop === scroll0,
+              a
+                ? "锚点 " + top0 + " → " + top1 + "（身份 " + (a.id ?? a.key) + "）"
+                : "无完整可见消息，按 scrollTop 比较：" + scroll0 + " → " + u.el.scrollTop,
+            );
             check("脱贴期间不追最新（I1 反向）", u.dist() > 40, "dist=" + u.dist());
             const pill = u.win.document.querySelector(".jump-latest");
             if (pill) pill.click();
@@ -300,10 +309,17 @@
             check("胶囊亮（I3）", u.jump() === true, "jump=" + u.jump());
             const a = u.anchor();
             const top0 = a ? a.top() : null;
+            const scroll0 = u.el.scrollTop;
             await u.appendTool("p5");
             u.mark("脱贴后追加一条");
             const top1 = a ? a.top() : null;
-            check("脱贴期间位置不被改动（I2）", top0 !== null && Math.abs(top1 - top0) <= 1, "锚点 " + top0 + " → " + top1 + "（身份 " + (a ? a.id ?? a.key : "取不到锚点") + "）");
+            check(
+              "脱贴期间位置不被改动（I2）",
+              a ? top0 !== null && Math.abs(top1 - top0) <= 1 : u.el.scrollTop === scroll0,
+              a
+                ? "锚点 " + top0 + " → " + top1 + "（身份 " + (a.id ?? a.key) + "）"
+                : "无完整可见消息，按 scrollTop 比较：" + scroll0 + " → " + u.el.scrollTop,
+            );
             u.releaseScrollbar();
             return { notes, history: u.history };
           },
@@ -329,6 +345,75 @@
             await u.appendTool("p6-after");
             u.mark("回来后追加一条");
             check("回来后继续跟随（I1）", u.dist() <= 40, "dist=" + u.dist());
+            return { notes, history: u.history };
+          },
+        },
+        {
+          name: "P10 贴底小步上滚（平滑滚动 / 高分辨率滚轮）：每步都不许被吸回",
+          async run() {
+            const u = ui(await reload());
+            const { check, notes } = makeChecker(u.history);
+            await u.bottom();
+            const start = u.el.scrollTop;
+            u.mark("起始贴底");
+            u.wheelUp(-60);
+            // Issue #1：真实滚轮在平滑滚动下每个 scroll 事件只有几像素。旧口径「距底 ≤ 40
+            // 就恢复跟随」会把每一小步都判成「还在底部」，settle 再钉回去。
+            for (let step = 1; step <= 5; step += 1) {
+              u.el.scrollTop = start - step * 10;
+              await u.settle();
+              u.mark("第 " + step + " 小步后");
+              check(
+                "第 " + step + " 小步没被拉回（10px）",
+                Math.abs(u.el.scrollTop - (start - step * 10)) <= 1,
+                "top=" + u.el.scrollTop + " 期望 " + (start - step * 10),
+              );
+            }
+            check("小步上滚后脱贴（I1 反向）", u.dist() > 40, "dist=" + u.dist());
+            check("小步上滚后胶囊亮（I3）", u.jump() === true, "jump=" + u.jump());
+            return { notes, history: u.history };
+          },
+        },
+        {
+          name: "P11 中键自动滚动（只有 scroll 没有 wheel）：向上可用，松键后继续",
+          async run() {
+            const u = ui(await reload());
+            const { check, notes } = makeChecker(u.history);
+            await u.bottom();
+            const start = u.el.scrollTop;
+            const box = u.el.getBoundingClientRect();
+            const pointer = (type, button) =>
+              u.el.dispatchEvent(
+                new u.win.PointerEvent(type, {
+                  clientX: box.left + 60,
+                  clientY: box.top + 60,
+                  button,
+                  bubbles: true,
+                }),
+              );
+            u.mark("起始贴底");
+            pointer("pointerdown", 1);
+            for (let step = 1; step <= 7; step += 1) {
+              u.el.scrollTop = start - step * 6;
+              await u.settle();
+              u.mark("中键第 " + step + " 小步后");
+              check(
+                "中键第 " + step + " 小步没被拉回（6px）",
+                Math.abs(u.el.scrollTop - (start - step * 6)) <= 1,
+                "top=" + u.el.scrollTop + " 期望 " + (start - step * 6),
+              );
+            }
+            pointer("pointerup", 1);
+            u.el.scrollTop = start - 8 * 6;
+            await u.settle();
+            u.mark("松开中键后再上滚");
+            check(
+              "松开中键后自动滚动仍然有效（不结束手势）",
+              Math.abs(u.el.scrollTop - (start - 8 * 6)) <= 1,
+              "top=" + u.el.scrollTop + " 期望 " + (start - 8 * 6),
+            );
+            pointer("pointerdown", 0); // 任意左键点击结束原生自动滚动
+            check("中键自动滚动后脱贴（I1 反向）", u.dist() > 40, "dist=" + u.dist());
             return { notes, history: u.history };
           },
         },
@@ -436,13 +521,20 @@
             await u.settle();
             const a = u.anchor();
             const top0 = a ? a.top() : null;
+            const scroll0 = u.el.scrollTop;
             u.mark("上滑脱贴");
             await toggleTrajectory();
             await toggleTrajectory();
             u.mark("脱贴后往返回来");
             check("脱贴往返回来不贴底（I1 反向）", u.dist() > 40, "dist=" + u.dist());
             const top1 = a ? a.top() : null;
-            check("脱贴往返回来位置基本不动（I2）", top0 !== null && Math.abs(top1 - top0) <= 40, "锚点 " + top0 + " → " + top1 + "（身份 " + (a ? a.id ?? a.key : "取不到锚点") + "）");
+            check(
+              "脱贴往返回来位置基本不动（I2）",
+              a ? top0 !== null && Math.abs(top1 - top0) <= 40 : Math.abs(u.el.scrollTop - scroll0) <= 40,
+              a
+                ? "锚点 " + top0 + " → " + top1 + "（身份 " + (a.id ?? a.key) + "）"
+                : "无完整可见消息，按 scrollTop 比较：" + scroll0 + " → " + u.el.scrollTop,
+            );
             return { notes, history: u.history };
           },
         },

@@ -201,6 +201,14 @@ console.log("auto-scroll: 假宿主环境就绪（真事件派发 + 手动放帧
     "没有手势的离底必须按布局事故处理：旧实现就是在这一条上把「浏览器自己夹一下位置」误判成用户上滑，且永不恢复",
   );
 
+  // 方向本身也不是证据：没有手势时，位置往上走（浏览器夹位置 / 重排）仍是布局事故
+  follow.scroll(30, clock, true);
+  assert.strictEqual(
+    follow.following,
+    true,
+    "没有手势的向上位移不许脱贴（方向只用来表达用户意愿，不能取代手势证据）",
+  );
+
   // 滚轮向上 = 用户确实要看上面 → 脱贴
   follow.gestures.noteWheel(-120);
   follow.scroll(500, clock);
@@ -635,6 +643,116 @@ console.log("auto-scroll: 发消息 / 插话 / 胶囊共用同一个「回最新
   handle.detach();
 }
 console.log("auto-scroll: 阅读定位端口（先放跟随再落位、无效目标不放）✓");
+
+// ---------- 12. 从底部小步上滚：不许被 40px 容差吸回去 ----------
+//
+// 用户 Issue #1：贴底后滚轮向上有概率「滚不动」，拖动滚动条抽搐，中键自动滚动向上
+// 几乎不可用。共同点是**单次 scroll 事件的位移小于 STICK_THRESHOLD_PX**（平滑滚动、
+// 高分辨率滚轮、拖动时逐像素移动）。旧口径「距底 ≤ 40 就恢复跟随」会在第一小步把
+// 意愿翻回 true，随后 settle 钉底；下一次滚动又从底部开始，于是永远迈不出这 40px。
+{
+  const el = fakeScroller();
+  const port = stubPort(el);
+  const state = createScrollFollow();
+  const dom = controlledEnv();
+  const handle = setupAutoScroll(port, state, () => undefined, dom.env);
+  dom.drainFrames();
+
+  // 滚轮上 + 逐帧 10px：第一帧离底只有 10px，仍在容差内
+  emit(el, "wheel", { deltaY: -40 });
+  for (let step = 1; step <= 4; step += 1) {
+    el.scrollTop -= 10;
+    emit(el, "scroll");
+    dom.hostFrame(); // 模拟生成中宿主帧照常到达
+    dom.drainFrames();
+    assert.strictEqual(
+      el.scrollTop,
+      600 - step * 10,
+      `第 ${step} 小步上滚（10px，距底仍在 40px 内）不许被钉回底部`,
+    );
+  }
+  assert.strictEqual(state.following, false, "离开底部的小步上滚必须放开跟随");
+  handle.detach();
+}
+console.log("auto-scroll: 贴底小步上滚不被容差吸回（滚轮平滑滚动）✓");
+
+// 拖滚动条：按下后逐小步向上，任何一步都不许被 pin 拽回
+{
+  const el = fakeScroller();
+  const port = stubPort(el);
+  const state = createScrollFollow();
+  const dom = controlledEnv();
+  const handle = setupAutoScroll(port, state, () => undefined, dom.env);
+  dom.drainFrames();
+
+  emit(fakeWindow, "pointerdown", { clientX: 320, button: 0 });
+  for (let step = 1; step <= 4; step += 1) {
+    el.scrollTop -= 8;
+    emit(el, "scroll");
+    dom.hostFrame();
+    dom.drainFrames();
+    assert.strictEqual(
+      el.scrollTop,
+      600 - step * 8,
+      `拖滚动条第 ${step} 步（8px）不许被钉回底部`,
+    );
+  }
+  assert.strictEqual(state.following, false, "拖滚动条向上必须放开跟随");
+  emit(fakeWindow, "pointerup", { button: 0 });
+  handle.detach();
+}
+console.log("auto-scroll: 贴底拖滚动条逐小步向上不被吸回 ✓");
+
+// 中键自动滚动：没有 wheel / key，scroll 事件本身就是手势；松开中键后仍在进行
+{
+  const el = fakeScroller();
+  const port = stubPort(el);
+  const state = createScrollFollow();
+  const dom = controlledEnv();
+  const handle = setupAutoScroll(port, state, () => undefined, dom.env);
+  dom.drainFrames();
+
+  emit(fakeWindow, "pointerdown", { clientX: 150, button: 1 });
+  assert.strictEqual(
+    state.gestures.recently(clock + GESTURE_WINDOW_MS * 10),
+    true,
+    "中键按下 = 自动滚动手势（没有 wheel 事件也必须算用户滚动）",
+  );
+  for (let step = 1; step <= 3; step += 1) {
+    el.scrollTop -= 6;
+    emit(el, "scroll");
+    dom.hostFrame();
+    dom.drainFrames();
+    assert.strictEqual(
+      el.scrollTop,
+      600 - step * 6,
+      `中键自动滚动第 ${step} 步（6px）不许被钉回底部`,
+    );
+  }
+  assert.strictEqual(state.following, false, "中键向上自动滚动必须放开跟随");
+
+  emit(fakeWindow, "pointerup", { button: 1 });
+  assert.strictEqual(
+    state.gestures.recently(clock + GESTURE_WINDOW_MS * 10),
+    true,
+    "中键松开后自动滚动仍在进行，手势不能结束",
+  );
+  el.scrollTop -= 6;
+  emit(el, "scroll");
+  dom.hostFrame();
+  dom.drainFrames();
+  assert.strictEqual(el.scrollTop, 600 - 4 * 6, "松开中键之后的自动滚动仍然不许被钉回");
+
+  // 任意其它按键/点击结束自动滚动；之后没有滚轮手势的位移按布局事故处理
+  emit(fakeWindow, "pointerdown", { clientX: 150, button: 0 });
+  assert.strictEqual(
+    state.gestures.recently(clock + GESTURE_WINDOW_MS * 10),
+    false,
+    "左键按下结束自动滚动",
+  );
+  handle.detach();
+}
+console.log("auto-scroll: 中键自动滚动向上可用，左键结束手势 ✓");
 
 // ---------- 收尾：还原全局桩 ----------
 Object.defineProperty(globalThis, "performance", {
