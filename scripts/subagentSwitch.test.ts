@@ -137,6 +137,12 @@ function makeController(items: SessionRow[] = []) {
     refreshSessions(): Promise<void>;
     snapshotFor(viewId: string): Record<string, unknown>;
     registerSubagent(scope: unknown, entry: unknown): void;
+    onEventFrame(frame: Record<string, unknown>): Promise<void>;
+    deliver(sessionId: string, frame: Record<string, unknown>): void;
+    setSessionUnread(sessionId: string, unread: boolean): void;
+    teardownStreams(): void;
+    subagentIndex: Map<string, { id: string; label?: string }>;
+    leftGeneratingSessionIds: Set<string>;
     client: unknown;
     connection: string;
     scopes: Map<string, unknown>;
@@ -163,12 +169,28 @@ type SubagentContextViewOf = { parentSessionId?: string; parentEntries: Subagent
 
 type TreeOf = {
   root: { id: string; title: string };
-  nodes: { id: string; label: string; parentSessionId: string; depth: number }[];
+  nodes: { id: string; label: string; parentSessionId: string; depth: number; unread?: boolean }[];
 };
 
 /** 帧（patch 或 state）里的子代理树。 */
 function treeOf(state: Record<string, unknown> | undefined): TreeOf | undefined {
   return state?.subagentTree as TreeOf | undefined;
+}
+
+/**
+ * 最近一条**真实过线的**树补丁（`patch.subagentTree`）。
+ *
+ * 只看内存里的 `subagentTreeOf` 会漏掉「账本算对了、最后一帧却是旧的」这类缺陷：
+ * `syncSubagentActivity` 先推一帧（旧未读），随后的未读结算必须再推一帧收尾。
+ */
+function lastTreePatch(frames: Captured[], viewId: string): TreeOf | undefined {
+  for (let index = frames.length - 1; index >= 0; index -= 1) {
+    const { target, frame } = frames[index];
+    if (target !== viewId || frame.type !== "patch") continue;
+    const patch = frame.patch as { subagentTree?: TreeOf | null } | undefined;
+    if (patch && Object.hasOwn(patch, "subagentTree")) return patch.subagentTree ?? undefined;
+  }
+  return undefined;
 }
 
 const idsOf = (context: SubagentContextViewOf) => context.parentEntries.map((entry) => entry.id);
@@ -349,4 +371,221 @@ console.log("subagentSwitch: 驱动真控制器（offline stub）");
   console.log("  session/list 单源重建多层树 ✓");
 }
 
-console.log("subagentSwitch: 切换目录随行、回填到屏、多层树可切换、显示名同源 ✓");
+// ---------- 场景五：树行显示名（list-only 标题 → 后续变化 → 真 label 优先） ----------
+//
+// 父目录里没有这一行、也没打开子代理域时，树完全靠 `session/list`：标题账本必须
+// 在**发帧那一刻**生效，且不能被后续重放写回索引（回退标题不是真 label）。
+{
+  const cwd = "C:/work/demo";
+  const TITLE_1 = "第一条工作流标题";
+  const TITLE_2 = "更新后的工作流标题";
+  const LABEL = "真正的描述符名字";
+  const state: SessionRow[] = [
+    { sessionId: ID_M, updatedAt: 1, cwd, projections: { asOfSeq: 1, values: { title: "主会话" } } },
+    {
+      sessionId: ID_A,
+      updatedAt: 2,
+      cwd,
+      origin: "subagent",
+      parentSessionId: ID_M,
+      projections: {
+        asOfSeq: 2,
+        values: { subagent: { mode: "one-shot", seq: 1 }, title: TITLE_1 },
+      },
+    },
+  ];
+  const { c, frames } = makeController(state);
+  c.bindView("v5");
+  await c.openSession("v5", ID_M);
+  await c.refreshSessions();
+
+  assert.strictEqual(
+    lastTreePatch(frames, "v5")?.nodes[0]?.label,
+    TITLE_1,
+    "只靠 session/list 的标题账本也要让树行显示标题（不是会话 id）",
+  );
+  assert.strictEqual(
+    c.subagentIndex.get(ID_A)?.label,
+    undefined,
+    "回退标题不许写进血缘索引冒充真 label",
+  );
+
+  state[1] = {
+    ...state[1],
+    projections: {
+      asOfSeq: 3,
+      values: { subagent: { mode: "one-shot", seq: 1 }, title: TITLE_2 },
+    },
+  };
+  await c.refreshSessions();
+  assert.strictEqual(
+    lastTreePatch(frames, "v5")?.nodes[0]?.label,
+    TITLE_2,
+    "后续标题变化要在下一次发帧现算出来（索引里没有旧标题挡路）",
+  );
+
+  state[1] = {
+    ...state[1],
+    projections: {
+      asOfSeq: 4,
+      values: { subagent: { mode: "one-shot", label: LABEL, seq: 2 }, title: TITLE_1 },
+    },
+  };
+  await c.refreshSessions();
+  assert.strictEqual(
+    lastTreePatch(frames, "v5")?.nodes[0]?.label,
+    LABEL,
+    "真 label 优先于会话标题",
+  );
+  assert.strictEqual(c.subagentIndex.get(ID_A)?.label, LABEL, "真 label 才进索引");
+  console.log("  树行显示名：list-only 标题 / 后续变化 / 真 label 优先 ✓");
+}
+
+// ---------- 场景六：索引内节点的未读变化必须落到**最后一帧**树补丁 ----------
+//
+// 真实时序：`api-session/status` 先经 `syncSubagentActivity` 推一帧树（此刻未读还是
+// false），随后 `settleRunningChange` 才记未读。只改内存账本不发帧的话，界面停在
+// 「已完成」之前的旧树上。读后消除同样要再发一帧。
+{
+  const cwd = "C:/work/demo";
+  const state: SessionRow[] = [
+    { sessionId: ID_M, updatedAt: 1, cwd },
+    {
+      sessionId: ID_A,
+      updatedAt: 2,
+      cwd,
+      origin: "subagent",
+      parentSessionId: ID_M,
+      projections: { asOfSeq: 2, values: { subagent: { mode: "one-shot", seq: 1 }, title: "收尾的子代理" } },
+    },
+  ];
+  const { c, frames } = makeController(state);
+  c.bindView("v6");
+  await c.openSession("v6", ID_M);
+  await c.refreshSessions();
+
+  c.leftGeneratingSessionIds.add(ID_A);
+  frames.length = 0;
+  await c.onEventFrame({ type: "emit", event: "api-session/status", args: [ID_A, false] });
+  assert.strictEqual(
+    lastTreePatch(frames, "v6")?.nodes[0]?.unread,
+    true,
+    "完成未读结算之后必须再推一帧树，最后一帧的 unread 是 true",
+  );
+
+  frames.length = 0;
+  c.setSessionUnread(ID_A, false);
+  assert.strictEqual(
+    lastTreePatch(frames, "v6")?.nodes[0]?.unread,
+    false,
+    "读后消除也要发一帧树（否则蓝点会留在标题清单里）",
+  );
+  console.log("  索引内节点未读：完成 true / 读后 false 的最终 wire patch 一致 ✓");
+}
+
+// ---------- 场景七：旧连接迟到的父目录 / 目录 RPC 不得回填已清理的索引 ----------
+//
+// `fetchParentCatalog` 与 `refreshSubagentCatalog` 都在 await 后写目录并登记血缘。
+// 连接收线（清空索引）后才返回的结果必须整条丢弃；否则删掉 / 换掉的节点会从旧 RPC
+// 里「复活」，下一次读树又把它画出来。
+{
+  const cwd = "C:/work/demo";
+  const state: SessionRow[] = [
+    { sessionId: ID_M, updatedAt: 1, cwd },
+    { sessionId: ID_A, updatedAt: 2, cwd, origin: "subagent", parentSessionId: ID_M },
+  ];
+  const { c } = makeController(state);
+  const client = c.client as unknown as {
+    sessionProjections(parentId: string): Promise<unknown>;
+    request(method: string, payload?: unknown): Promise<unknown>;
+  };
+  let releaseProjections!: (value: unknown) => void;
+  let releaseCatalog!: (value: unknown) => void;
+  const originalRequest = client.request.bind(client);
+  client.sessionProjections = () =>
+    new Promise((resolve) => {
+      releaseProjections = resolve;
+    });
+  client.request = (method, payload) =>
+    method === "subagents/list"
+      ? new Promise((resolve) => {
+          releaseCatalog = resolve;
+        })
+      : originalRequest(method, payload);
+
+  c.bindView("v7");
+  await c.openSession("v7", ID_A, { parentSessionId: ID_M, mode: "one-shot" });
+  assert.ok(c.subagentIndex.has(ID_A), "前置：建域时地址已登记进索引");
+  c.teardownStreams();
+  assert.strictEqual(c.subagentIndex.size, 0, "连接收线清空索引");
+
+  releaseProjections({
+    values: {
+      subagentCatalog: [
+        { id: ID_A, mode: "one-shot", label: LABEL_A },
+        { id: ID_B, mode: "one-shot", label: LABEL_B },
+      ],
+    },
+  });
+  releaseCatalog({
+    entries: [
+      { kind: "child", id: ID_A, mode: "one-shot", label: LABEL_A },
+      { kind: "child", id: ID_B, mode: "one-shot", label: LABEL_B },
+    ],
+  });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.strictEqual(
+    c.subagentIndex.size,
+    0,
+    "旧连接迟到的父目录 / 目录 RPC 不许把已清理的节点重新登记回血缘索引",
+  );
+  console.log("  旧连接迟到的父目录 / 目录 RPC 不回填索引 ✓");
+}
+
+// ---------- 场景八：重开已有子代理域不把会话标题冻成真 label ----------
+//
+// `ensureScope` 的 existing 分支会重新登记地址。它只能登记**描述符 label**；
+// 会话标题是显示名兜底，写进索引后就再也不会跟着后续标题变化更新了。
+{
+  const cwd = "C:/work/demo";
+  const TITLE_1 = "打开时的会话标题";
+  const TITLE_2 = "后来更新的会话标题";
+  const state: SessionRow[] = [
+    { sessionId: ID_M, updatedAt: 1, cwd },
+    { sessionId: ID_A, updatedAt: 2, cwd, origin: "subagent", parentSessionId: ID_M },
+  ];
+  const { c, frames } = makeController(state);
+  // 父目录投影不提供这个子代理（否则会从真实目录拿到描述符 label，测不到标题兜底）
+  (c.client as unknown as { sessionProjections(): Promise<unknown> }).sessionProjections =
+    async () => ({ values: {} });
+  c.bindView("v8");
+  await c.openSession("v8", ID_A, { parentSessionId: ID_M, mode: "one-shot" });
+  const scope = c.scopes.get(ID_A) as {
+    adapter?: { selfDescriptorLabel(): string | undefined; sessionTitle(): string | undefined };
+  };
+  assert.ok(scope && scope.adapter, "子代理域已建立且带适配器");
+  let currentTitle = TITLE_1;
+  // 只替换求职口径的两个方法，保留适配器其余能力（快照等）
+  scope.adapter.selfDescriptorLabel = () => undefined;
+  scope.adapter.sessionTitle = () => currentTitle;
+
+  // 同一 scope 再次 ensureScope（真实入口：另一个窗口也打开同一子代理，existing 分支）
+  await c.openSession("v8b", ID_A, { parentSessionId: ID_M, mode: "one-shot" });
+  assert.strictEqual(
+    c.subagentIndex.get(ID_A)?.label,
+    undefined,
+    "会话标题不能被登记成真 label（只有描述符 label 才有这个资格）",
+  );
+  assert.strictEqual(lastTreePatch(frames, "v8")?.nodes[0]?.label, TITLE_1, "树行仍按当前标题显示");
+
+  currentTitle = TITLE_2;
+  await c.refreshSessions();
+  assert.strictEqual(
+    lastTreePatch(frames, "v8")?.nodes[0]?.label,
+    TITLE_2,
+    "后续会话标题变化仍要现算到树行（旧标题不许冻在索引里）",
+  );
+  console.log("  重开已有域：会话标题不冒充真 label，后续标题仍更新 ✓");
+}
+
+console.log("subagentSwitch: 切换目录随行、回填到屏、多层树可切换、显示名同源、未读落帧、迟到 RPC 不回填、标题不冻结 ✓");

@@ -108,8 +108,8 @@ console.log("subagentTree: 树组装与界面计数");
     "宿主必须有现算整棵树的唯一入口",
   );
   assert.ok(
-    /this\.noteSubagentIndexFromList\(value\.items \?\? \[\]\);/.test(controller),
-    "session/list 是跨域血缘的权威来路，刷新时要重建索引",
+    /this\.noteSubagentIndexFromList\(items, indexCandidates\);/.test(controller),
+    "session/list 是跨域血缘的权威来路，刷新时要按在途候选重建索引",
   );
   assert.ok(
     /private redeliverSubagentTrees\(\): void/.test(controller),

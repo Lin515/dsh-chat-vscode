@@ -44,6 +44,7 @@ const ID_M = "session-main";
 const ID_A = "child-aaaa";
 const ID_B = "child-bbbb";
 const ID_C = "child-cccc";
+const ID_A1 = "grandchild-aaaa1";
 /** 会话行的工作目录（中性虚构名，别写本机路径）。 */
 const CWD = "C:/work/demo";
 
@@ -155,6 +156,10 @@ function makeDriver(state: { items: SummaryRow[] }) {
     subagentActivityAt: Map<string, number>;
     subagentSettlementsPending: Set<string>;
     subagentOrderPruneCandidates: Set<Set<string>>;
+    subagentIndexPruneCandidates: Set<Set<string>>;
+    subagentIndex: Map<string, { id: string; parentSessionId: string; label?: string }>;
+    sessionCwds: Map<string, string>;
+    noteSubagentIndex(parentSessionId: string, entry: SubagentView): void;
     refreshSubagentTitles(): Promise<void>;
     teardownStreams(): void;
     archiveSession(sessionId: string): Promise<void>;
@@ -174,6 +179,8 @@ function makeDriver(state: { items: SummaryRow[] }) {
     /** 点目录里的一行：真实的「进子代理」入口（会话级切换）。 */
     enter: (viewId: string, id: string) => internals.openSubagent(viewId, id),
     refresh: () => controller.refreshSessions(),
+    /** 菜单打开 / 收尾防抖走的那份列表（同一套索引裁剪与在途候选保护）。 */
+    titles: () => internals.refreshSubagentTitles(),
     /** 首帧快照（`state` 帧的取值来源）：目录顺序也要与 `subagents/list` 帧同一个。 */
     snapshot: (viewId: string) =>
       controller.snapshotFor(viewId) as unknown as {
@@ -219,6 +226,22 @@ function lastParentIds(frames: Captured[], viewId: string): string[] | undefined
       | undefined;
     const parentEntries = source?.subagent?.parentEntries;
     if (parentEntries) return parentEntries.map((entry) => entry.id);
+  }
+  return undefined;
+}
+
+type TreeView = {
+  root: { id: string };
+  nodes: { id: string; label: string; unread?: boolean; parentSessionId: string }[];
+};
+
+/** 最近一帧**真实过线**的树补丁（`patch.subagentTree`，不是内存里现算的那份）。 */
+function lastTree(frames: Captured[], viewId: string): TreeView | undefined {
+  for (let index = frames.length - 1; index >= 0; index -= 1) {
+    const { target, frame } = frames[index];
+    if (target !== viewId || frame.type !== "patch") continue;
+    const patch = frame.patch as { subagentTree?: TreeView | null } | undefined;
+    if (patch && Object.hasOwn(patch, "subagentTree")) return patch.subagentTree ?? undefined;
   }
   return undefined;
 }
@@ -440,6 +463,7 @@ for (const cleanup of ["absent", "ordinary", "delete", "archive", "workspaceArch
   await d.status(ID_A, true);
   assert.ok(d.internals.subagentActivityAt.has(ID_A), `${cleanup}: 前置有排序时间`);
   assert.ok(d.internals.subagentSettlementsPending.has(ID_A), `${cleanup}: 前置有待收尾证据`);
+  assert.ok(d.internals.subagentIndex.has(ID_A), `${cleanup}: 前置有血缘索引`);
   if (cleanup === "absent" || cleanup === "ordinary") {
     state.items = cleanup === "absent" ? [parentRow()] : [parentRow(), { sessionId: ID_A, updatedAt: 100 }];
     await d.refresh();
@@ -461,6 +485,7 @@ for (const cleanup of ["absent", "ordinary", "delete", "archive", "workspaceArch
   }
   assert.ok(!d.internals.subagentActivityAt.has(ID_A), `${cleanup}: 清理排序时间`);
   assert.ok(!d.internals.subagentSettlementsPending.has(ID_A), `${cleanup}: 清理待收尾证据`);
+  assert.ok(!d.internals.subagentIndex.has(ID_A), `${cleanup}: 清理血缘索引`);
   await d.status(ID_A, false);
   assert.ok(!d.internals.subagentActivityAt.has(ID_A), `${cleanup}: 迟到 false 不复活收尾时间`);
   if (cleanup === "delete" || cleanup === "archive" || cleanup === "workspaceArchive" || cleanup === "workspaceReplace") {
@@ -469,6 +494,7 @@ for (const cleanup of ["absent", "ordinary", "delete", "archive", "workspaceArch
     await d.status(ID_A, false);
     assert.ok(!d.internals.subagentActivityAt.has(ID_A), `${cleanup}: 服务端残留行 / status 不复活排序账本`);
     assert.ok(!d.internals.subagentSettlementsPending.has(ID_A), `${cleanup}: 服务端残留行 / status 不复活待结算账本`);
+    assert.ok(!d.internals.subagentIndex.has(ID_A), `${cleanup}: 服务端残留行 / status 不复活血缘索引`);
   }
 }
 console.log("  ⑦ 新账本七条清理路径与迟到帧 ✓");
@@ -489,6 +515,7 @@ console.log("  ⑦ 新账本七条清理路径与迟到帧 ✓");
   await inflight;
   assert.strictEqual(d.internals.subagentActivityAt.size, 0, "连接收线后旧列表响应不能重建排序账本");
   assert.strictEqual(d.internals.subagentSettlementsPending.size, 0, "连接收线后亲历证据保持清空");
+  assert.strictEqual(d.internals.subagentIndex.size, 0, "连接收线后旧列表响应不能回填血缘索引");
 }
 console.log("  ⑧ 重连打底与在途列表切代 ✓");
 
@@ -511,6 +538,7 @@ for (const route of ["sessions", "titles"] as const) for (const existing of [fal
   await inflight;
   assert.strictEqual(d.internals.subagentOrderPruneCandidates.size, 0, "响应后回收在途候选");
   assert.ok(d.internals.subagentSettlementsPending.has(ID_A), `${route}/${existing}: 旧快照缺席不清请求期间的 status true`);
+  assert.ok(d.internals.subagentIndex.has(ID_A), `${route}/${existing}: 旧快照缺席不清请求期间有 status 的索引节点`);
   await d.status(ID_A, false);
   assert.deepStrictEqual(lastIds(d.frames, "v1"), [ID_A, ID_B], "亲历收尾仍重排");
   // 下一份没有穿插实时更新的完整列表仍能清理，不能把保护变成永久豁免。
@@ -518,7 +546,135 @@ for (const route of ["sessions", "titles"] as const) for (const existing of [fal
   state.items = [parentRow(), childRow(ID_B, 300)];
   await d.refresh();
   assert.ok(!d.internals.subagentActivityAt.has(ID_A), "后续权威缺席清理仍生效");
+  assert.ok(!d.internals.subagentIndex.has(ID_A), "后续权威缺席也清理索引");
 }
 console.log("  ⑨ 在途旧快照不清实时新证据，后续权威清理仍生效 ✓");
+
+// ---------- ⑩ 完整列表缺席清理索引：旧父节点不误删等待期新注册的后代 ----------
+{
+  const state = { items: [parentRow(), childRow(ID_A, 100)] };
+  const d = makeDriver(state);
+  await d.open("v1", ID_M);
+  await d.refresh();
+  assert.ok(d.internals.subagentIndex.has(ID_A), "前置：列表里的子代理已进索引");
+
+  let release!: (value: { items: SummaryRow[] }) => void;
+  d.internals.client = { listSessions: () => new Promise((resolve) => { release = resolve; }) };
+  const inflight = d.refresh();
+  // 等待期间实时事实：旧父节点 A 下新登记了 A1，顶层又新登记了 C
+  d.internals.noteSubagentIndex(ID_A, { id: ID_A1, label: ID_A1, mode: "one-shot" });
+  d.internals.noteSubagentIndex(ID_M, { id: ID_C, label: ID_C, mode: "one-shot" });
+
+  // 旧快照整份缺席：A 被裁剪，但等待期新注册的后代 / 兄弟不是这次请求的候选
+  release({ items: [parentRow()] });
+  await inflight;
+  assert.ok(!d.internals.subagentIndex.has(ID_A), "完整列表缺席 → 旧父节点退掉");
+  assert.ok(d.internals.subagentIndex.has(ID_A1), "清理旧父节点不许误删等待期新注册的后代");
+  assert.ok(d.internals.subagentIndex.has(ID_C), "清理旧节点不许误删等待期新注册的兄弟");
+  assert.deepStrictEqual(
+    lastTree(d.frames, "v1")?.nodes.map((node) => node.id) ?? [],
+    [ID_C],
+    "树收敛到等待期新注册的兄弟（旧父节点已退）",
+  );
+
+  // 下一份没有穿插实时更新的完整列表仍能清掉它们（保护不是永久豁免）
+  d.internals.client = { listSessions: async () => ({ items: [parentRow()] }) };
+  await d.refresh();
+  assert.ok(!d.internals.subagentIndex.has(ID_A1), "后续权威缺席清理新后代");
+  assert.ok(!d.internals.subagentIndex.has(ID_C), "后续权威缺席清理新兄弟");
+}
+console.log("  ⑩ 完整列表缺席裁剪：旧父不误杀等待期新节点 ✓");
+
+// ---------- ⑪ 并发完整列表：先发后到的旧快照整份拒收（两个方向） ----------
+{
+  const state = { items: [parentRow(), childRow(ID_A, 100)] };
+  const d = makeDriver(state);
+  await d.open("v1", ID_M);
+  await d.refresh();
+  assert.ok(d.internals.subagentIndex.has(ID_A), "前置：索引里有 child");
+
+  let releaseOlder!: (value: { items: SummaryRow[] }) => void;
+  let releaseNewer!: (value: { items: SummaryRow[] }) => void;
+  let calls = 0;
+  d.internals.client = {
+    listSessions: () =>
+      new Promise((resolve) => {
+        if (calls === 0) releaseOlder = resolve;
+        else releaseNewer = resolve;
+        calls += 1;
+      }),
+  };
+  const older = d.refresh();
+  const newer = d.refresh();
+  // 后发的新列表先回：child 已不在 → 完成清理
+  releaseNewer({ items: [parentRow()] });
+  await newer;
+  assert.ok(!d.internals.subagentIndex.has(ID_A), "后发列表的缺席先完成裁剪");
+  assert.deepStrictEqual(lastTree(d.frames, "v1")?.nodes.map((node) => node.id) ?? [], [], "树已收敛");
+
+  // 先发的旧列表迟到且仍含 child：整份拒收，不能重建幽灵节点，也不能改标题 / running
+  releaseOlder({ items: [parentRow(), childRow(ID_A, 100)] });
+  await older;
+  assert.ok(!d.internals.subagentIndex.has(ID_A), "先发后到的旧快照不许复活已删除节点");
+  assert.deepStrictEqual(lastTree(d.frames, "v1")?.nodes.map((node) => node.id) ?? [], [], "最后一帧树仍是空");
+}
+console.log("  ⑪ 并发列表按已采纳水位拒收旧快照 ✓");
+
+// ---------- ⑫ helper 已判定 → 调用者续体恢复之间的收线空档 ----------
+//
+// `listSessionsForSubagentOrder` 返回时 `applied` 还是 true，但调用者要等一个微任务
+// 才恢复。这中间可能已经收线 / 采纳了更新的列表；只信布尔快照会把旧结果写回
+// cwd / 会话列表。调用者必须按**当前** generation 与已采纳序号复查。
+{
+  const state = { items: [parentRow(), childRow(ID_A, 100)] };
+  const d = makeDriver(state);
+  await d.open("v1", ID_M);
+  await d.refresh();
+  assert.strictEqual(d.internals.sessionCwds.size, 2, "前置：cwd 账本已由完整列表建立");
+
+  let release!: (value: { items: SummaryRow[] }) => void;
+  const rawList = new Promise<{ items: SummaryRow[] }>((resolve) => { release = resolve; });
+  d.internals.client = { listSessions: () => rawList };
+  const inflight = d.refresh();
+  // 关键时序：rawList 的 await 续体（helper）先恢复，然后这个回调收线，
+  // 最后才是 refreshSessions 的续体。旧实现会在这之后把旧快照写回。
+  void rawList.then(() => d.internals.teardownStreams());
+  release({ items: state.items });
+  await inflight;
+
+  assert.strictEqual(d.internals.sessionCwds.size, 0, "收线空档里的旧快照不许重建 cwd 账本");
+  assert.strictEqual(d.internals.subagentIndex.size, 0, "收线空档里的旧快照不许回填血缘索引");
+  assert.ok(!d.internals.subagentIndex.has(ID_A), "旧节点不复活");
+}
+console.log("  ⑫ helper 返回与调用者续体之间的收线空档拒收旧快照 ✓");
+
+// ---------- ⑬ 旧列表的「普通会话」行不能抹掉等待期间的新 catalog 身份 ----------
+//
+// 候选保护不能只覆盖被清理节点的后代：如果这一条本身在等待期间已经收到新事实
+// （catalog / status），它已从候选里摘除，旧快照说它「不再是子代理」同样不能生效。
+{
+  const state = { items: [parentRow(), childRow(ID_A, 100)] };
+  const d = makeDriver(state);
+  await d.open("v1", ID_M);
+  await d.refresh();
+  assert.ok(d.internals.subagentIndex.has(ID_A), "前置：child 已是子代理");
+
+  let release!: (value: { items: SummaryRow[] }) => void;
+  d.internals.client = { listSessions: () => new Promise((resolve) => { release = resolve; }) };
+  const inflight = d.refresh();
+  // 等待期间实时目录重新确认了它的子代理身份（同一 id 的新事实）
+  d.internals.noteSubagentIndex(ID_M, { id: ID_A, label: "更新的目录名字", mode: "one-shot" });
+
+  // 旧快照把它写成普通会话：不许按这一行删索引（候选保护必须包含节点自身）
+  release({ items: [parentRow(), { sessionId: ID_A, updatedAt: 100, cwd: CWD }] });
+  await inflight;
+  assert.ok(d.internals.subagentIndex.has(ID_A), "旧列表的普通行不能抹掉等待期的新 catalog 身份");
+
+  // 没有穿插实时事实的下一份权威列表仍可纠正（保护不是永久豁免）
+  d.internals.client = { listSessions: async () => ({ items: [parentRow(), { sessionId: ID_A, updatedAt: 100, cwd: CWD }] }) };
+  await d.refresh();
+  assert.ok(!d.internals.subagentIndex.has(ID_A), "后续权威普通行仍能纠正索引");
+}
+console.log("  ⑬ 旧普通行不删等待期新目录身份（候选含节点自身）✓");
 
 console.log("\nsubagentOrder: all assertions passed");
