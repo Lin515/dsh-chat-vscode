@@ -170,7 +170,7 @@
 - [hostLog.test.ts](<hostLog.test.ts>) — 日志写入器在输出通道已关闭时必须活下来（防 `EADDRINUSE` 级联缺陷）。
 - [configChanges.test.ts](<configChanges.test.ts>) — 配置文件热重载：`$events` 的 emit 帧 → 客户端要重读的动作。
 - [invariants.test.ts](<invariants.test.ts>) — 源码级不变量：`switch` 里不得有重复 `case`。
-- [manifest.test.ts](<manifest.test.ts>) — `package.json` 图标口径（编辑器标题栏「新建对话窗口」必须是鲸鱼）。
+- [manifest.test.ts](<manifest.test.ts>) — `package.json` 图标口径（编辑器标题栏「新建对话窗口」必须是鲸鱼），以及发布包白名单与 Node 版本单一来源（`.nvmrc`）。
 - [windowState.test.ts](<windowState.test.ts>) — 工作区窗口状态缓存的跨重启往返语义。
 - [readRange.test.ts](<readRange.test.ts>) — `read` 工具行号区间解析（meta 优先，整篇读取不标注）。
 - [sessionCookie.test.ts](<sessionCookie.test.ts>) — `DshClient` 会话 cookie 语义（跨重启复用的基础）。

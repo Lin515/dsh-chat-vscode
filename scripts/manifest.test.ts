@@ -21,6 +21,7 @@ const manifest = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "u
   icon: string;
   l10n: string;
   files?: string[];
+  engines?: { node?: string };
   contributes?: {
     commands?: { command: string; icon?: unknown }[];
   };
@@ -118,3 +119,29 @@ console.log("manifest: newSessionInGroup = 鲸鱼图标（两份单色 SVG，与
   }
 }
 console.log("manifest: 发布包走 files 白名单，且清单引用的位置都被覆盖 ✓");
+
+// ---------- 4. 开发用 Node 版本只有一个来源 ----------
+//
+// Windows、WSL 与 CI 必须跑同一个补丁版本：WSL 曾因 Node 较旧而漏掉 zstd 尾随字节的
+// 行为变化，本地全绿、CI 变红。`.nvmrc` 是唯一来源；工作流与 engines 只许跟着它走。
+{
+  const root = process.cwd();
+  const nvmrc = readFileSync(join(root, ".nvmrc"), "utf8").trim();
+  assert.match(nvmrc, /^\d+\.\d+\.\d+$/, ".nvmrc 必须是精确版本号（x.y.z）");
+  const nodeRange = manifest.engines?.node;
+  assert.ok(nodeRange, "package.json 的 engines 必须声明 node");
+  assert.ok(
+    nodeRange.includes(`>=${nvmrc}`),
+    `engines.node 的下限必须与 .nvmrc 一致（期望 >=${nvmrc}，实际 ${nodeRange}）`,
+  );
+  const workflow = readFileSync(join(root, ".github", "workflows", "release.yml"), "utf8");
+  assert.ok(
+    /node-version-file:\s*\.nvmrc/.test(workflow),
+    "release 工作流必须用 node-version-file 读取 .nvmrc",
+  );
+  assert.ok(
+    !/node-version:\s*["']?\d/.test(workflow),
+    "release 工作流不得写死 node-version（会与 .nvmrc 漂移）",
+  );
+}
+console.log("manifest: Node 版本由 .nvmrc 单一来源固定，CI 与 engines 跟它一致 ✓");

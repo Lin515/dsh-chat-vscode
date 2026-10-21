@@ -91,7 +91,7 @@ npm run package  # Releases/dsh-chat-<version>.vsix
 
 ## 开发与验证
 
-先读 [AGENTS.md](AGENTS.md)。设计与契约入口见 [docs/README.md](docs/README.md)，测试与诊断入口见 [scripts/README.md](scripts/README.md)。常规验证不调用模型：
+先读 [AGENTS.md](AGENTS.md)。设计与契约入口见 [docs/README.md](docs/README.md)，测试与诊断入口见 [scripts/README.md](scripts/README.md)。构建使用 Node 24.22.1（见 `.nvmrc`）。常规验证不调用模型：
 
 ```bash
 npm run typecheck
@@ -207,7 +207,7 @@ The UI offers Chinese/English, context usage, goals and turn navigation. Window 
 
 ## Development
 
-Read [AGENTS.md](AGENTS.md) first. See [docs/README.md](docs/README.md) for designs and contracts, and [scripts/README.md](scripts/README.md) for tests and diagnostics. Routine validation makes no model calls:
+Read [AGENTS.md](AGENTS.md) first. See [docs/README.md](docs/README.md) for designs and contracts, and [scripts/README.md](scripts/README.md) for tests and diagnostics. Builds use Node 24.22.1 (see `.nvmrc`). Routine validation makes no model calls:
 
 ```bash
 npm run typecheck
