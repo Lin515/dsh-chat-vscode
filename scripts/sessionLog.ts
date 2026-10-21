@@ -10,7 +10,7 @@
  * 两个实现要点（踩过的坑）：
  * 1. 会话日志是 `session.v3.jsonl.zstd`，**多帧** zstd（每次追加一个 frame）。
  *    Node 的 `zstdDecompressSync` 只解第一帧（拿到的是那行 session 头），
- *    所以这里按帧魔数切开逐帧解码再拼起来。
+ *    所以这里逐帧走出帧边界、逐帧解码再拼起来。
  * 2. **帧边界不能靠「切在哪里能解码」猜**，也不能无条件相信引擎「解出来了」：
  *    - 切在帧内部魔数处的截断前缀会被 zstd 当成**完整的空帧**（`info: true` 下
  *      `bytesWritten` 等于该前缀长度、buffer 为 0 字节），旧启发式于是走过真边界，
@@ -19,11 +19,11 @@
  *      **垃圾被读成空内容**（Node 24.20 起引擎自己抛 `Z_BUF_ERROR`；宽容入口的结果不能随
  *      运行期 Node 版本变，所以这一层不依赖引擎的脾气）。
  *
- *    现在改成：先按帧格式规范检查**帧头合法性**（RFC 8878 §3.1.1.1：Reserved_bit 必须为 0、
- *    描述符声明的可选字段与至少一个块头都放得下，见 {@link validFrameHeader}），再由引擎回报
- *    这一帧消耗了多少输入（`engine.bytesWritten`），并校验边界落在文件末尾或下一个帧魔数上。
- *    两条正确契约由 `scripts/sessionLog.test.ts` 的「帧内部出现魔数」与「非法帧头」用例钉住
- *    （前者：合法帧必须解出全部内容；后者：垃圾不得被读成空内容）。
+ *    现在改成：先按帧格式规范**走完整帧边界**（RFC 8878 §3.1.1 与 §3.1.2 的帧头、块与校验和，
+ *    见 {@link walkZstdFrame}），再把**恰好这一帧**的切片交给引擎解压。边界不靠引擎对尾随字节的
+ *    宽严：Node 24.19 及更早会忽略帧后的残片，Node 24.22 起直接拒绝，同一份日志的结果不能随
+ *    运行期 Node 版本变化。两条正确契约由 `scripts/sessionLog.test.ts` 的「帧内部出现魔数」与
+ *    「非法帧头」用例钉住（前者：合法帧必须解出全部内容；后者：垃圾不得被读成空内容）。
  *
  * **这一条路（`decodeSessionLogBytes`）刻意保持宽容**：它要向后兼容追加式日志的残尾
  * （写到一半就中断）与「完整前缀 + 垃圾」，因此**不**声称整份输入完整。
@@ -63,48 +63,18 @@ function hasMagicFrom(buf: Buffer, from: number): boolean {
 }
 
 /**
- * `at` 处的魔数后面是不是一个**合法帧头**（只看帧头，不解析块）。
- *
- * 为什么必须有这一层：**旧版 Node（24.19 及更早）**的 `zstdDecompressSync` 会把
- * 「魔数 + 几个垃圾字节」当成一个**完整的空帧**接受（`info: true` 下 `bytesWritten` 正好等于
- * 输入长度、buffer 为 0 字节），于是一段垃圾被静默读成空内容；Node 24.20 起引擎自己抛
- * `Z_BUF_ERROR`。宽容入口的结果不能随运行期 Node 版本变，所以这里不依赖引擎的脾气，
- * 改按 zstd 帧格式规范（RFC 8878 §3.1.1.1）里最小、无歧义的三条自己判：
- *
- * 1. 至少有魔数 + 描述符（5 字节）；
- * 2. **Reserved_bit（描述符 bit 3）必须为 0** —— 规范明确要求解码器把置了该位的帧当作损坏；
- * 3. 描述符声明的可选字段（非 single-segment 的窗口描述符、Dictionary_ID、Frame_Content_Size）
- *    必须都在字节里，且后面还留得下**至少一个块头**（块头 3 字节，最后一块带 Last_Block 标志）。
- *
- * 这不是块级解析：字段尺寸由描述符直接给出，只做「放得下 / 位数合法」检查。
- */
-function validFrameHeader(buf: Buffer, at: number): boolean {
-  if (at + 5 > buf.length) return false;
-  const descriptor = buf[at + 4];
-  // RFC 8878 §3.1.1.1.1：保留位必须为 0，置位即视为损坏帧
-  if ((descriptor & 0x08) !== 0) return false;
-  const fcsFlag = descriptor >> 6;
-  const singleSegment = (descriptor & 0x20) !== 0;
-  const dictionaryIdSize = [0, 1, 2, 4][descriptor & 0x03] ?? 0;
-  const frameContentSizeSize = fcsFlag === 0 ? (singleSegment ? 1 : 0) : 1 << (fcsFlag - 1);
-  const headerSize = 4 + 1 + (singleSegment ? 0 : 1) + dictionaryIdSize + frameContentSizeSize;
-  // 帧头之后必须至少有一个块头（3 字节）
-  return at + headerSize + 3 <= buf.length;
-}
-
-/**
  * 多帧 zstd 字节 → 整份 jsonl 文本。解不出来返回 `undefined`。
  *
  * **只看传入的这段 view**（`byteOffset` / `byteLength` 决定边界）：绝不能写成
  * `Buffer.from(bytes.buffer)` —— 那会把 view 之外的前缀 / 尾部垃圾一起读进来。
  *
- * 每一帧的处理顺序：**先验帧头合法性**（{@link validFrameHeader}），再由引擎回报这一帧
- * 消耗了多少输入（`info: true` 的 `engine.bytesWritten`），并校验边界落在文件末尾或下一个
- * 帧魔数上。
+ * 每一帧的处理顺序：**先按 RFC 8878 走出这一帧的结束偏移**（{@link walkZstdFrame}），
+ * 再把恰好这一帧的切片交给引擎解压。帧边界不依赖引擎对尾随字节的宽严，因此同一份日志
+ * 在 Node 24.19 与 24.22 上得到相同结果。
  *
  * 边界（明写在契约里，不当保证）：
- * - 帧头不合法且**前面还没有解出任何帧** → 整体 `undefined`（不得把垃圾读成空内容）；
- * - 帧头不合法/中段对不上，但前面已有完整帧 → 当作**追加式日志的残尾**（写了一半就中断），
+ * - 帧不完整 / 帧头不合法且**前面还没有解出任何帧** → 整体 `undefined`（不得把垃圾读成空内容）；
+ * - 帧不完整 / 帧头不合法，但前面已有完整帧 → 当作**追加式日志的残尾**（写了一半就中断），
  *   保留已解出的完整帧并停止。这正是 `readFileSync` 时代的旧容忍行为，保持不变；
  * - 中段还有帧起点却对不上 → 整体 `undefined`（不给半份内容）。
  */
@@ -115,40 +85,36 @@ export function decodeSessionLogBytes(bytes: Uint8Array): string | undefined {
   const parts: Buffer[] = [];
   let start = 0;
   while (start < buf.length) {
-    if (!isMagicAt(buf, start)) return parts.length === 0 ? undefined : finish(parts);
-    if (!validFrameHeader(buf, start)) return parts.length === 0 ? undefined : finish(parts);
+    const end = walkZstdFrame(buf, start);
+    if (end === undefined) {
+      if (parts.length === 0) return undefined;
+      // 纯尾部垃圾 → 保留已解出的帧；中段还有帧起点 → 这一段对不上
+      if (!isMagicAt(buf, start) && hasMagicFrom(buf, start)) return undefined;
+      return finish(parts);
+    }
     let frame: Buffer;
-    let consumed: number;
     try {
       /**
        * `@types/node` 目前只有「返回 Buffer」这一个 `zstdDecompressSync` 重载，而运行期
        * `info: true` 按官方文档返回 `{buffer, engine}`（`ZstdOptions.info` 在类型里存在）。
        * 这里显式窄化，并在下面**先验证运行期形状**再使用 —— 形状不符就按解码失败处理。
        */
-      const result = zlib.zstdDecompressSync(buf.subarray(start), { info: true }) as unknown as {
+      const result = zlib.zstdDecompressSync(buf.subarray(start, end), { info: true }) as unknown as {
         buffer?: Buffer;
         engine?: { bytesWritten?: number };
       };
-      if (!Buffer.isBuffer(result?.buffer) || typeof result?.engine?.bytesWritten !== "number") {
+      if (
+        !Buffer.isBuffer(result?.buffer)
+        || result?.engine?.bytesWritten !== end - start
+      ) {
         return parts.length === 0 ? undefined : finish(parts);
       }
       frame = result.buffer;
-      consumed = result.engine.bytesWritten;
     } catch {
       return parts.length === 0 ? undefined : finish(parts);
     }
-    // 引擎必须真的前进：0 字节消费既是防死循环，也挡住「空帧当成功」的假边界
-    if (!(consumed > 0)) return parts.length === 0 ? undefined : finish(parts);
     parts.push(frame);
-    const next = start + consumed;
-    if (next >= buf.length) break;
-    if (isMagicAt(buf, next)) {
-      start = next;
-      continue;
-    }
-    // 中段还有帧起点 → 这一段对不上；纯尾部垃圾 → 保留已解出的帧（旧容忍行为）
-    if (hasMagicFrom(buf, next)) return undefined;
-    break;
+    start = end;
   }
   // 一个帧都没解出来（空输入 / 只有垃圾）→ undefined，不能返回空串当成功
   return parts.length === 0 ? undefined : finish(parts);
@@ -243,6 +209,7 @@ function frameContentSizeWidth(descriptor: number): number {
  * 是否还有 4 字节校验和。**只有整帧字节都在输入里才算走通**。
  */
 function walkZstdFrame(buf: Buffer, at: number): number | undefined {
+  if (!isMagicAt(buf, at)) return undefined; // 起始不是帧魔数
   if (at + 5 > buf.length) return undefined; // 魔数 + 描述符都放不下
   const descriptor = buf[at + 4];
   // Unused_bit（bit4）忽略；Reserved_bit（bit3）必须为 0，置位即视为损坏帧
