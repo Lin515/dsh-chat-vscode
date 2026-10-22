@@ -1022,6 +1022,12 @@ export function Composer({
                   segment.text
                 ),
               )}
+              {/* 草稿以换行结尾时补回最后那一行空行：文本域会为它留出行盒，而块级
+                  `pre-wrap` 会丢掉块尾的最后一个换行，镜像层因此比文本域矮一行。草稿
+                  长过上限、贴底滚动时，`mirror.scrollTop` 会被浏览器夹在少一行的位置上，
+                  看得见的字与光标 / 点击落点整体错开一行（用户 2026-10-22 报的现场：
+                  滚动条出现、最后一行可见，光标渲染位置与实际位置不同）。 */}
+              {displayDraft.endsWith("\n") ? <br /> : null}
             </div>
             {/* 触发词（`@` / `/`）的 ref 与 onChange / onKeyUp / onClick / onFocus /
                 onKeyDown 全在 `completion.textareaProps` 里：ESC 优先级链、Enter/Tab 的

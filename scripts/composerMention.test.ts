@@ -45,6 +45,8 @@ const sessionToken = (label: string, id: string): string =>
     "接上 @[某个旧会话](dsh-session:%%%%) 继续",
     "两处引用 @src/a.ts 和 @src/b.ts 都在",
     "换行\n也要对上 @src/a.ts\n第三行",
+    "结尾带一个换行\n",
+    "结尾带两个换行\n\n",
   ];
   for (const draft of drafts) {
     const joined = draftSegments(draft)
@@ -222,6 +224,12 @@ const sessionToken = (label: string, id: string): string =>
   assert.ok(
     /mirror\.scrollTop = el\.scrollTop/.test(composer),
     "草稿长过上限内滚时，镜像层跟着滚（否则蓝字停在原处）",
+  );
+  assert.ok(
+    /displayDraft\.endsWith\("\\n"\) \? <br \/> : null/.test(composer),
+    "草稿以换行结尾时，镜像层要补一个 <br>：文本域会给最后那一行空行留出行盒，" +
+      "块级 pre-wrap 却会丢掉块尾的最后一个换行。镜像层因此比文本域矮一行，贴底滚动时" +
+      "`mirror.scrollTop` 被夹在少一行的位置，看得见的字与光标 / 点击落点整体错开一行",
   );
   assert.ok(
     /new ResizeObserver\(\(\) => syncMirror\(\)\)/.test(composer),
