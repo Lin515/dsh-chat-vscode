@@ -39,6 +39,7 @@ import { clickGestureHandler, sendButtonView, watchModifierKeys } from "../compo
 import { hitsAnyRect } from "../composerMention";
 import { ComposerSessionDraft } from "../composerSessionDraft";
 import { openMentionTarget } from "../mentionOpen";
+import { scanCommandLinks, useCommandLinks } from "../commandLinks";
 import { openAttachment } from "../attachmentOpen";
 import { usePickerFocus } from "../pickerFocus";
 import { presetDisplayText } from "../presetDisplay";
@@ -350,7 +351,9 @@ export function Composer({
    * `pick` vs `drill`、光标落点、ESC 优先级链、弹层键盘导航与弹层 JSX），
    * 也拥有宿主下发的「插到光标处」请求。组件这边只剩布局 / 工具行 / 文本域。
    */
+  const commandLinks = useCommandLinks();
   const completion = useComposerCompletion({
+    commandRequest: commandLinks.request,
     draft: displayDraft,
     sessionDraft,
     commands: state.commands,
@@ -375,6 +378,9 @@ export function Composer({
     // 补全 hook 与下面的自适应量高 / 焦点归还要用**同一个**文本域节点
     textareaRef,
   });
+  useEffect(() => {
+    if (commandLinks.request) commandLinks.acknowledge?.(commandLinks.request.id);
+  }, [commandLinks.request?.id]);
   // 「有没有在等审批 / 提问」不在这个组件里再推一遍：它就是 `pending` 这个 prop
   // 本身（选举结果见 `pendingInteraction.ts`），下面的运行中那行直接读它。
 
@@ -468,7 +474,7 @@ export function Composer({
   const hitsMentionAt = (x: number, y: number): boolean => {
     const mirror = mirrorRef.current;
     if (!mirror) return false;
-    for (const mark of mirror.querySelectorAll<HTMLElement>(".mention-mark")) {
+    for (const mark of mirror.querySelectorAll<HTMLElement>(".mention-mark:not(.is-inert)")) {
       if (hitsAnyRect(mark.getClientRects(), x, y)) return true;
     }
     return false;
@@ -1013,9 +1019,9 @@ export function Composer({
               aria-hidden
               ref={mirrorRef}
             >
-              {sessionDraft.segments().map((segment) =>
-                segment.link ? (
-                  <span className="mention-mark" key={segment.at}>
+              {sessionDraft.segments(state.commands).map((segment) =>
+                segment.link || segment.highlighted ? (
+                  <span className={`mention-mark${segment.link ? "" : " is-inert"}`} key={segment.at}>
                     {segment.text}
                   </span>
                 ) : (
@@ -1047,8 +1053,13 @@ export function Composer({
                 completion.textareaProps.onClick?.(event);
                 // 不按 Ctrl 时什么都不做：普通单击只管定位光标
                 if (!event.ctrlKey && !event.metaKey) return;
-                const target = sessionDraft.targetAt(event.currentTarget.selectionStart ?? 0);
-                if (target) openMentionTarget(target);
+                const caret = event.currentTarget.selectionStart ?? 0;
+                const target = sessionDraft.targetAt(caret, state.commands);
+                if (target) openMentionTarget(target, (name) => {
+                  const span = scanCommandLinks(displayDraft, state.commands)
+                    .find((item) => caret >= item.start && caret <= item.end);
+                  commandLinks.openMenu(name, span && { start: span.start, end: span.end });
+                });
               }}
               // 手指光标：划到引用上方且按着修饰键才出现（判据与上面那条 onClick 同源）
               onMouseMove={(event) => {

@@ -1190,6 +1190,10 @@ export interface QueuedMessageView {
 
 /** 斜杠命令描述符（commands/list）。 */
 export interface CommandView {
+  /** 官方插件身份；本地化不能仅凭命令名覆盖同名自定义命令。 */
+  definitionId?: string;
+  /** 技能提供方发布的指令文件；虚拟技能可以不提供。 */
+  skillPath?: string;
   name: string;
   description: string;
   hint?: string;

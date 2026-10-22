@@ -9,6 +9,7 @@ import { ImageGallery, LocalImageGallery, type ImageSource } from "./Images";
 import { formatClock, useSelectionFreeze } from "./primitives";
 import { ApprovalCard, CommandRow, FileChips, InjectedRow, MessageImages, NoticeRow, QuestionCard, ThinkingRow, ToolRow, TurnProcessRow, TurnStatsButton, UnknownBlockRow } from "./Rows";
 import { openMentionTarget } from "../mentionOpen";
+import { scanCommandLinks, useCommandLinks, type CommandLinksPort } from "../commandLinks";
 import { canOpenAttachment, openAttachment } from "../attachmentOpen";
 import { readableMentionText, scanMentionLinks, type MentionLinkTarget } from "../mentionLinks";
 import { useTexts, resolveText, type Texts } from "../texts";
@@ -44,6 +45,7 @@ const USER_COLLAPSE_LINES = 5;
 function mentionTitle(texts: Texts, target: MentionLinkTarget): string {
   if (target.kind === "file") return texts.mentionOpenFile;
   if (target.kind === "directory") return texts.mentionRevealFolder;
+  if (target.kind === "command") return texts.commandOpenMenu;
   return texts.mentionOpenSession;
 }
 
@@ -66,9 +68,13 @@ function mentionTitle(texts: Texts, target: MentionLinkTarget): string {
 function renderMentionText(
   text: string,
   texts: Texts,
-  sessionRefs?: readonly MessageSessionRef[],
+  sessionRefs: readonly MessageSessionRef[] | undefined,
+  commandLinks: CommandLinksPort,
 ): ReactNode[] {
-  const spans = scanMentionLinks(text, sessionRefs);
+  const mentions = scanMentionLinks(text, sessionRefs);
+  const commands = scanCommandLinks(text, commandLinks.commands)
+    .filter((span) => !mentions.some((mention) => span.start < mention.end && span.end > mention.start));
+  const spans = [...mentions, ...commands].sort((a, b) => a.start - b.start);
   if (spans.length === 0) return [text];
   const nodes: ReactNode[] = [];
   let cursor = 0;
@@ -76,7 +82,9 @@ function renderMentionText(
     if (span.start > cursor) nodes.push(text.slice(cursor, span.start));
     const target = span.target;
     if (target === undefined) {
-      nodes.push(span.text);
+      nodes.push(commands.includes(span)
+        ? <span key={span.start} className="mention-link is-inert">{span.text}</span>
+        : span.text);
     } else {
       nodes.push(
         <button
@@ -84,7 +92,7 @@ function renderMentionText(
           type="button"
           className="mention-link"
           title={mentionTitle(texts, target)}
-          onClick={() => openMentionTarget(target)}
+          onClick={() => openMentionTarget(target, commandLinks.openMenu)}
         >
           {span.text}
         </button>,
@@ -128,6 +136,7 @@ function UserBubble({
   nodeRef: RefObject<HTMLDivElement>;
 }) {
   const texts = useTexts();
+  const commandLinks = useCommandLinks();
   return (
     <div
       ref={nodeRef}
@@ -137,7 +146,7 @@ function UserBubble({
       style={{ "--user-clamp-lines": USER_COLLAPSE_LINES } as CSSProperties}
     >
       {/* 正文里的 `@` 引用渲染成可点链接（一条消息里可能好几处），其余照旧纯文本 */}
-      {renderMentionText(text, texts, sessionRefs)}
+      {renderMentionText(text, texts, sessionRefs, commandLinks)}
     </div>
   );
 }

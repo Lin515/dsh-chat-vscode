@@ -39,7 +39,9 @@ export type MentionLinkTarget =
   /** 目录：在资源管理器里展开（路径保留结尾 `/`，与引用原文一致）。 */
   | { kind: "directory"; path: string }
   /** 会话：新开一个会话标签打开它。 */
-  | { kind: "session"; sessionId: string };
+  | { kind: "session"; sessionId: string }
+  /** 指令引用：只打开筛选菜单，不立即执行。 */
+  | { kind: "command"; name: string };
 
 /** 正文里一段 `@` 引用的位置与目标（`[start, end)` 是它在原文里的区间）。 */
 export interface MentionLinkSpan {

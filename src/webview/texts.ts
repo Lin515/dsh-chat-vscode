@@ -31,6 +31,13 @@ export type Locale = "zh" | "en";
  * `dictionaryFor("zh").copied` 这类调用点编译期仍然受约束（缺键直接报错）。
  */
 export interface Texts {
+  commandGoalDescription: string;
+  commandPlanDescription: string;
+  commandFeedbackDescription: string;
+  commandCompactDescription: string;
+  commandPermissionDescription: string;
+  commandExportDescription: string;
+  commandOpenMenu: string;
   newChat: string;
   history: string;
   openInEditor: string;

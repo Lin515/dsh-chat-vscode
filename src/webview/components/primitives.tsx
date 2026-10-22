@@ -71,7 +71,7 @@ export function Row({
   children,
 }: {
   icon?: ReactNode;
-  title: string;
+  title: ReactNode;
   detail?: string;
   /**
    * 紧跟在 detail 之后的**不可压缩**片段（读取节点的 `:100-120`）。

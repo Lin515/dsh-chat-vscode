@@ -39,6 +39,7 @@ React / 浏览器环境，不使用 Node API。上层边界见[源码导航](<..
 - [composerMention.ts](<composerMention.ts>) — 草稿引用镜像、Ctrl 命中与同排版几何。
 - [mentionLinks.ts](<mentionLinks.ts>) — 已发正文的文件 / 目录 / 会话目标，sessionRefs 恢复会话身份。
 - [mentionOpen.ts](<mentionOpen.ts>) — 已发链接与草稿 Ctrl 点击的 IPC 分派。
+- [commandLinks.tsx](<commandLinks.tsx>) — 斜杠目录识别、官方内置命令双语描述与筛选菜单端口；技能只打开服务端提供的指令文件。
 - [mentionNav.ts](<mentionNav.ts>) — 候选「上一层」的查询串：工作区内逐层回退、绝对形态（盘符 / UNC / POSIX 根）回退与盘根回工作区的回路，以及含 `..` 段相对查询按会话 cwd 深度的段算术（退到根就停）。
 - [pathDisplay.ts](<pathDisplay.ts>) — 路径的展示口径：单行标题的拆分省略，以及把候选 / 「上一层」行的展示路径解析成完整绝对路径（悬停标题，绝对与相对两侧都按根锚定语义消掉 `..`）。
 - [segment.ts](<segment.ts>) — 思考档位列数。

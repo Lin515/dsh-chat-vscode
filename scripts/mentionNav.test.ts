@@ -56,6 +56,7 @@ const POSTED: Array<Record<string, unknown>> = [];
 });
 const {
   candidateRows,
+  commandMenuDraft,
   clickAction,
   ComposerCompletionState,
   findTrigger,
@@ -913,7 +914,7 @@ function hitPropsOf(node: ReactNode): Array<Record<string, unknown>> {
     if (typeof value !== "object" || value === null) return;
     const props = (value as { props?: Record<string, unknown> }).props;
     if (!props) return;
-    if (typeof props.className === "string" && /(^|\s)popover-item-hit(\s|$)/.test(props.className)) {
+    if (typeof props.className === "string" && props.className.split(/\s+/u).includes("popover-item-hit")) {
       hits.push(props);
     }
     visit(props.children);
@@ -1955,4 +1956,45 @@ console.log("completion(hook): M2 宿主「上一层」行（Enter / Tab / 点�
 }
 console.log("mentionNav: M3 相对 `..` 向上（深度算术 / 盘根与共享根止步 / 无 cwd 回退 / 陈旧帧不掺入） ✓");
 
+// 官方命令目录只有英文摘要；菜单应复用官方 Web 的本地化描述。
+{
+  const commands = [{ name: "plan", definitionId: "@deepseek-ai/dsh-plan-mode", description: "Enter plan mode" }];
+  const zh = frame("/pl", 3, { commands });
+  assert.ok(zh.html.includes("进入或退出计划模式"), "中文 / 列表必须使用官方中文描述");
+  const en = frame("/pl", 3, { commands, texts: dictionaryFor("en") });
+  assert.ok(en.html.includes("Enter or leave plan mode"), "英文 / 列表必须使用官方英文描述");
+}
+// 链接仅定位或插入 /命令，筛选继续使用文本域补全，不再维护独立输入。
+{
+  const original = "before /plan keep";
+  const located = commandMenuDraft({ id: 1, query: "plan", range: { start: 7, end: 12 } }, original, 9);
+  assert.deepEqual(located, { text: original, caret: 12 }, "草稿点击不重复插入、不吞参数");
+  const inserted = commandMenuDraft({ id: 2, query: "plan" }, "before after", 7);
+  assert.deepEqual(inserted, { text: "before /plan after", caret: 12 });
+  assert.deepEqual(commandMenuDraft({ id: 3, query: "plan" }, "", 0), { text: "/plan", caret: 5 });
+  let submitted = 0;
+  const opened = frame(located.text, located.caret, { onSubmit: () => submitted++ });
+  assert.ok(opened.html.includes(">/plan<") && !opened.html.includes(">/compact<"), "打开即按命令名筛选");
+  assert.ok(!/<input\b/.test(opened.html), "菜单不提供额外筛选框");
+  assert.deepEqual(opened.written, []);
+  assert.equal(press(opened, "Escape").prevented, 1);
+  assert.equal(nextFrame(opened).html, "");
+  assert.equal(submitted, 0);
+  assert.equal(opened.draft, original);
+
+  // 直接编辑文本域里的 / 后内容即可改变结果。
+  const edit = frame(inserted.text, inserted.caret, { onSubmit: () => submitted++ });
+  edit.node.value = "before /zero after";
+  edit.node.selectionStart = 12;
+  edit.props.onChange?.({ target: edit.node } as never);
+  const filtered = nextFrame(edit, { onSubmit: () => submitted++ });
+  assert.ok(filtered.html.includes("/zerocandidate") && !filtered.html.includes(">/plan<"));
+  press(filtered, "Enter", { nativeEvent: { isComposing: true } });
+  assert.equal(filtered.draft, "before /zero after", "输入法确认不得选择命令");
+  const posted = pressAndPost(filtered, "Enter");
+  assert.equal(filtered.draft, "before /zerocandidate after");
+  assert.equal(submitted, 0, "选择命令不得直接发送");
+  assert.deepEqual(posted.map((entry) => entry.type), ["setDraft"]);
+}
+console.log("completion(hook): 斜杠链接复用文本域筛选，无额外输入或执行 ✓");
 console.log("\nmentionNav: all assertions passed");

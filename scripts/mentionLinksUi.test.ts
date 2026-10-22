@@ -27,7 +27,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { MessageView } from "../src/shared/chat";
+import type { CommandView, MessageView } from "../src/shared/chat";
+import { CommandLinksContext, scanCommandLinks, commandDescription } from "../src/webview/commandLinks";
 import { TextsContext, dictionaryFor } from "../src/webview/texts";
 
 // `bridge.ts` 在模块求值期就挂了 `window.addEventListener`（webview 里那是真实存在的
@@ -37,7 +38,10 @@ import { TextsContext, dictionaryFor } from "../src/webview/texts";
   removeEventListener: () => {},
 };
 
+const posted: unknown[] = [];
+(globalThis as { acquireVsCodeApi?: unknown }).acquireVsCodeApi = () => ({ postMessage: (message: unknown) => posted.push(message) });
 const { Message } = await import("../src/webview/components/Message");
+const { openMentionTarget } = await import("../src/webview/mentionOpen");
 
 const zh = dictionaryFor("zh");
 
@@ -71,13 +75,15 @@ const render = (
   text: string,
   locale: "zh" | "en" = "zh",
   sessionRefs?: MessageView["sessionRefs"],
+  commands: readonly CommandView[] = [],
 ): string =>
   quietly(() =>
     renderToStaticMarkup(
       createElement(
         TextsContext.Provider,
         { value: dictionaryFor(locale) },
-        createElement(Message, { message: userMessage(text, sessionRefs) }),
+        createElement(CommandLinksContext.Provider, { value: { commands, openMenu() {} } },
+          createElement(Message, { message: userMessage(text, sessionRefs) })),
       ),
     ),
   );
@@ -218,4 +224,58 @@ const sessionToken = (label: string, id: string): string =>
     "键盘聚焦要有焦点环（真按钮就得键盘可达）",
   );
   console.log("mentionLinksUi: .mention-link 行内、不撑高行盒、观感同正文链接 ✓");
+}
+
+// 目录确认的斜杠：真命令打开筛选菜单，文件技能打开其 Markdown，虚拟技能只着色。
+{
+  const commands: CommandView[] = [
+    { name: "plan", definitionId: "@deepseek-ai/dsh-plan-mode", description: "Enter plan mode" },
+    { name: "audit", description: "Audit", skill: true, skillPath: "skills/audit/SKILL.md" },
+    { name: "virtual", description: "Virtual", skill: true },
+  ];
+  const text = "先用 /plan，再看 /audit 和 /virtual。";
+  const spans = scanCommandLinks(text, commands);
+  assert.deepEqual(spans.map((span) => span.text), ["/plan", "/audit", "/virtual"]);
+  assert.deepEqual(spans.map((span) => text.slice(span.start, span.end)), spans.map((span) => span.text));
+  assert.deepEqual(spans.map((span) => span.target), [
+    { kind: "command", name: "plan" }, { kind: "file", path: "skills/audit/SKILL.md" }, undefined,
+  ]);
+  const html = render(text, "zh", undefined, commands);
+  assert.match(html, /<button[^>]*class="mention-link"[^>]*>\/plan<\/button>/);
+  assert.match(html, /<button[^>]*class="mention-link"[^>]*>\/audit<\/button>/);
+  assert.match(html, /<span class="mention-link is-inert">\/virtual<\/span>/);
+  assert.ok(html.includes(`title="${zh.commandOpenMenu}"`) && html.includes(`title="${zh.mentionOpenFile}"`));
+  assert.deepEqual(scanCommandLinks("https://host/plan /plan/file /plan.md /planner /unknown", commands), []);
+  assert.equal(scanCommandLinks("(/plan) /plan.", commands).length, 2, "句末标点不属于命令");
+  const collision = scanCommandLinks("/plan", [{ ...commands[1], name: "plan" }, commands[0]]);
+  assert.deepEqual(collision[0]?.target, { kind: "command", name: "plan" }, "真命令与同名技能冲突时按发送目录优先");
+  const overlap = render(`接上 ${sessionToken("含 /plan 的标题", "s1")} 后用 /plan`, "zh", undefined, commands);
+  assert.equal((overlap.match(/title="打开并筛选斜杠命令"/gu) ?? []).length, 1, "会话引用内部不嵌套斜杠链接");
+  const opened: string[] = [];
+  openMentionTarget(spans[0].target!, (name) => opened.push(name));
+  assert.deepEqual(opened, ["plan"]);
+  assert.deepEqual(posted, [], "点击命令只打开菜单，绝不执行或写入草稿");
+  openMentionTarget(spans[1].target!);
+  assert.deepEqual(posted, [{ type: "openFile", path: "skills/audit/SKILL.md", line: undefined, link: true }]);
+  console.log("mentionLinksUi: 斜杠渲染、边界、重叠与打开分派 ✓");
+}
+
+// 精确使用官方描述；不能把同名第三方命令误译成内置命令。
+{
+  const cases = [
+    ["@deepseek-ai/dsh-command-goal", "设置或查看长期任务目标", "Set or view the goal for a long-running task"],
+    ["@deepseek-ai/dsh-plan-mode", "进入或退出计划模式", "Enter or leave plan mode"],
+    ["@deepseek-ai/dsh-command-feedback", "发送关于当前会话的反馈", "Record feedback about this session"],
+    ["@deepseek-ai/dsh-command-compact", "压缩以上对话内容", "Compact older conversation history"],
+    ["@deepseek-ai/dsh-permission-presets", "切换权限预设（沙箱模式与审批策略）", "Switch the permission preset (sandbox mode + approval policy)"],
+    ["@deepseek-ai/dsh-session-log-export", "将当前会话内容导出为 ZIP", "Download this Session log as a ZIP archive"],
+  ];
+  for (const [definitionId, chinese, english] of cases) {
+    const command = { name: "alias", definitionId, description: "server fallback" };
+    assert.equal(commandDescription(command, zh), chinese);
+    assert.equal(commandDescription(command, dictionaryFor("en")), english);
+  }
+  assert.equal(commandDescription({ name: "plan", description: "Third-party description" }, zh), "Third-party description");
+  assert.equal(commandDescription({ name: "plan", definitionId: cases[1][0], skill: true, description: "Skill description" }, zh), "Skill description");
+  console.log("mentionLinksUi: 官方六项双语与单语言原文回退 ✓");
 }

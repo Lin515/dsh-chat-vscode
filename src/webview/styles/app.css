@@ -933,6 +933,11 @@ button.header-title.is-switcher > svg.is-open {
   text-decoration: underline;
 }
 
+.mention-link.is-inert {
+  cursor: inherit;
+  text-decoration: none;
+}
+
 .mention-link:focus-visible {
   outline: 1px solid var(--link);
   outline-offset: calc(1 * var(--dp));
@@ -4091,7 +4096,7 @@ button.meta-chip:hover {
    静止态只给颜色、不给下划线，是用户 2026-10-10 的口径：颜色说明「这是引用」，
    下划线说明「现在按下去会打开」——两种状态各有各的信号，不必让下划线常驻。
    `text-decoration` 不参与排版，于是镜像层与文本域的行盒仍然逐像素一致。 */
-.composer-mirror.is-modifier .mention-mark {
+.composer-mirror.is-modifier .mention-mark:not(.is-inert) {
   text-decoration: underline;
 }
 

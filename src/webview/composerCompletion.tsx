@@ -65,6 +65,7 @@ import { mentionParent } from "./mentionNav";
 import { resolveDisplayPath } from "./pathDisplay";
 import { formatClock } from "./components/primitives";
 import type { Texts } from "./texts";
+import { commandDescription, type CommandMenuRequest } from "./commandLinks";
 
 /* ============================ 纯逻辑（可离线断言） ============================ */
 
@@ -569,10 +570,21 @@ function drillQueryToken(path: string): string {
   return formatFileMention(normalized, "directory") ?? `@${normalized}/`;
 }
 
+/** 草稿链接只移动光标；转写链接插入命令，复用文本域自身的补全筛选。 */
+export function commandMenuDraft(request: CommandMenuRequest, draft: string, caret: number): { text: string; caret: number } {
+  if (request.range) return { text: draft, caret: clampIndex(request.range.end, draft.length) };
+  const at = clampIndex(caret, draft.length);
+  const token = `/${request.query}`;
+  const inserted = insertToken(draft, token, at);
+  return { text: inserted.value, caret: inserted.value.indexOf(token, at) + token.length };
+}
+
 /* ============================ hook ============================ */
 
 /** `useComposerCompletion` 的输入。 */
 export interface UseComposerCompletionInput {
+  /** 从草稿或转写定位命令补全，不执行命令。 */
+  commandRequest?: CommandMenuRequest;
   /** 当前草稿（受控：组件持有 state，这里只读）。 */
   draft: string;
   /** 光标位置；缺省按草稿末尾。 */
@@ -714,6 +726,7 @@ function useCompletion(
     onSubmit,
     insertRequest,
     quoteRequest,
+    commandRequest,
     textareaRef,
   }: UseComposerCompletionInput,
   useStateImpl: ComposerCompletionStateHook,
@@ -889,6 +902,27 @@ function useCompletion(
   useEffect(() => {
     setHighlight(0);
   }, [shownKey]);
+
+  const handledCommandId = useRef(0);
+  useEffect(() => {
+    const request = commandRequest;
+    if (!request || request.id === handledCommandId.current) return;
+    handledCommandId.current = request.id;
+    const current = latest.current;
+    const at = ref.current?.selectionStart ?? caret ?? current.draft.length;
+    const next = commandMenuDraft(request, current.draft, at);
+    const written = next.text === current.draft ? next
+      : writeDraft(next.text, next.caret, { start: at, end: at });
+    const node = ref.current;
+    if (node) {
+      node.value = written.text;
+      node.setSelectionRange(written.caret, written.caret);
+      node.focus();
+    }
+    dismissedRef.current = null;
+    setTrigger(findTrigger(written.text, written.caret, current.sessionDraft));
+    setHighlight(0);
+  }, [commandRequest?.id]);
 
   /**
    * 宿主要求把文本插到光标处（选了不能内嵌的路径：目录 / 二进制 / 非 UTF-8…）。
@@ -1098,20 +1132,21 @@ function useCompletion(
       if (outcome.type === "command") {
         const replaced = replaceToken(current.draft, trigger, `/${outcome.name}`);
         const result = writeDraft(replaced.text, replaced.caret, tokenSpan(latest.current.draft, trigger));
-        setTrigger(undefined);
         // 光标同步落到命令名之后：接下来直接打参数，再按回车就是执行。
         // 同步改 textarea 的 DOM 值与光标——React 这帧提交时 prop 值已相同、
         // 不会再重置光标，于是这次 Enter 随后的 keyup 读到的正是「新文本+新光标」。
         // 把同一对记进「已关闭」标记：keyup 重新探测时命中它、列表保持关闭。
         // 不记的话（尤其光标还停在 `/` 后面），findTrigger 会再次命中触发词，
         // 弹层关了又弹出——即「按回车命令列表闪一下」
-        dismissedRef.current = { value: result.text, caret: result.caret };
         const node = ref.current;
         if (node) {
-          node.focus();
           node.value = result.text;
           node.setSelectionRange(result.caret, result.caret);
+          node.focus();
         }
+        // 聚焦可能同步触发 onFocus；最后再关闭，不能被其重探测覆盖。
+        dismissedRef.current = { value: result.text, caret: result.caret };
+        setTrigger(undefined);
         return;
       }
       if (outcome.type === "session") {
@@ -1226,6 +1261,7 @@ function useCompletion(
 
   const onKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      if (event.nativeEvent.isComposing) return;
       if (popoverOpen) {
         // ESC 关掉候选弹层：优先级最高。记下文本+光标防止随后的 keyup 重新
         // 探测把列表弹回来；consumeEscape 让这次 ESC 归元素层（不再落到「停止生成」
@@ -1466,8 +1502,8 @@ function useCompletion(
                             {/* 上一层就是根目录时没有路径可显示，退回说明文案 */}
                             {row.path || texts.mentionParent}
                           </span>
-                        ) : isCommand && row.description ? (
-                          <span className="popover-item-sub">{row.description}</span>
+                        ) : isCommand && commandDescription(row, texts) ? (
+                          <span className="popover-item-sub">{commandDescription(row, texts)}</span>
                         ) : shape.session ? (
                           // 对话候选的次要说明照官方 `sessionCandidate`：非同工作区时给
                           // 工作目录（没有记录给「无工作目录」占位），再接时间。

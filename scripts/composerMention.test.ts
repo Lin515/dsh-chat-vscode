@@ -175,7 +175,7 @@ const sessionToken = (label: string, id: string): string =>
     "引用取链接色（与正文里的 `.mention-link` 同一档）",
   );
   assert.ok(
-    /\.composer-mirror\.is-modifier \.mention-mark\s*\{[^}]*text-decoration:\s*underline/.test(css),
+    /\.composer-mirror\.is-modifier \.mention-mark:not\(\.is-inert\)\s*\{[^}]*text-decoration:\s*underline/.test(css),
     "按住 Ctrl / Cmd 时给引用补下划线：静止态的颜色说明「这是引用」，下划线说明" +
       "「现在按下去会打开」（用户 2026-10-10 口径）",
   );
@@ -206,7 +206,7 @@ const sessionToken = (label: string, id: string): string =>
     "utf8",
   );
   assert.ok(
-    /sessionDraft\.segments\(\)/.test(composer) && /value=\{displayDraft\}/.test(composer),
+    /sessionDraft\.segments\(state\.commands\)/.test(composer) && /value=\{displayDraft\}/.test(composer),
     "镜像层和文本域共用会话草稿端口的可见投影（绑定与渲染只有一处）",
   );
   assert.ok(

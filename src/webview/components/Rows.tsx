@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent } from "react";
 import { post } from "../bridge";
+import { useCommandLinks } from "../commandLinks";
 import { consumeEscape } from "../escapeOwner";
 import type {
   ApprovalView,
@@ -1438,6 +1439,19 @@ export function NoticeRow({ level, text }: { level: "info" | "warn" | "error"; t
  */
 export function CommandRow({ command, node }: { command: CommandRunView; node: NodeOpenPort }) {
   const texts = useTexts();
+  const commandLinks = useCommandLinks();
+  const commandLink = (
+    <span className="mention-link" role="link" tabIndex={0} title={texts.commandOpenMenu}
+      onClick={(event) => { event.stopPropagation(); commandLinks.openMenu(command.name); }}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          event.stopPropagation();
+          commandLinks.openMenu(command.name);
+        }
+      }}
+    >{`/${command.name || texts.commands}`}</span>
+  );
   const open = node.open ?? false;
   const failed = command.state === "error";
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -1454,14 +1468,14 @@ export function CommandRow({ command, node }: { command: CommandRunView; node: N
         </span>
       }
       tone={failed ? "error" : undefined}
-      title={`/${command.name || texts.commands}`}
+      title={commandLink}
       detail={command.args}
       meta={failed ? texts.commandFailed : command.state === "running" ? texts.commandRunning : undefined}
       open={open}
       onToggle={() => node.setOpen(!open, command.state === "running")}
     >
       <div ref={bodyRef} className="row-body mono row-command">
-        <div className="row-command-line">{`/${command.name}${command.args ? ` ${command.args}` : ""}`}</div>
+        <div className="row-command-line">{commandLink}{command.args ? ` ${command.args}` : ""}</div>
         {command.text ? <div className="row-command-result">{command.text}</div> : null}
       </div>
     </Row>

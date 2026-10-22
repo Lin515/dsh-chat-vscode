@@ -62,6 +62,7 @@ import { subagentRowFace } from "./subagentRow";
 import { subagentCurrentNode, subagentDescendants } from "./subagentTree";
 import { sessionDirParts, sessionDirPath } from "./sessionDir";
 import { LocaleContext, TextsContext, dictionaryFor, normalizeLocale, resolveText, useTexts } from "./texts";
+import { CommandLinksContext, type CommandMenuRequest } from "./commandLinks";
 import type { SubagentTreeView, SubagentView } from "../shared/chat";
 
 /**
@@ -742,10 +743,20 @@ function usePagePaste(state: AppState) {
 
 export function App() {
   const { state, dispatch } = useAppState();
+  const [commandRequest, setCommandRequest] = useState<CommandMenuRequest>();
+  const commandRequestId = useRef(0);
+  const commandLinks = useMemo(() => ({
+    commands: state.commands,
+    request: commandRequest,
+    openMenu: (query: string, range?: { start: number; end: number }) =>
+      setCommandRequest({ id: ++commandRequestId.current, query, range }),
+    acknowledge: (id: number) => setCommandRequest((current) => current?.id === id ? undefined : current),
+  }), [state.commands, commandRequest]);
   // 会话页是否在场：轨迹视图下它整块卸载，两个滚动 hook 都要能重挂
   const chatActive = state.panel !== "trajectory";
   // 当前会话 id：进 useAutoScroll（切会话时恢复贴底、回最新）与轨迹刷新（下方）
   const sessionId = state.session?.id;
+  useEffect(() => { setCommandRequest(undefined); }, [sessionId]);
   /**
    * 把当前会话 id 写进 VS Code 的 webview state。
    *
@@ -1029,6 +1040,7 @@ export function App() {
 
   return (
     <TextsContext.Provider value={texts}>
+      <CommandLinksContext.Provider value={commandLinks}>
       {/* 语言本身也下一层：服务端给的本地化文案（审批的 displayReason）要在渲染时按它挑 */}
       <LocaleContext.Provider value={state.locale}>
       {/* 界面倍率也下一层：要按设计像素算尺寸的组件（阈值、拖动范围、刻点位置）从它取 */}
@@ -1234,6 +1246,7 @@ export function App() {
       <ContextMenuLayer />
       </UiScaleContext.Provider>
       </LocaleContext.Provider>
+      </CommandLinksContext.Provider>
     </TextsContext.Provider>
   );
 }

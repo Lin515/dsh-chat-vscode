@@ -12,9 +12,11 @@
  * 本模块只切输入切片，不负责折叠。会话引用先由 `ComposerSessionDraft` 投影成 `@标题`，
  * 文本域和镜像同时使用投影；落盘与发送则由该端口序列化回完整 token。
  *
- * 纯函数、不碰 DOM 也不引 React：断言见 `scripts/composerMention.test.ts`。
+ * 纯函数、不碰 DOM：断言见 `scripts/composerMention.test.ts`。
  */
 import { scanMentionLinks } from "./mentionLinks";
+import { scanCommandLinks } from "./commandLinks";
+import type { CommandView } from "../shared/chat";
 
 /** 草稿按引用切出来的一段（各段拼起来**逐字**等于整份草稿）。 */
 export interface DraftSegment {
@@ -22,6 +24,8 @@ export interface DraftSegment {
   text: string;
   /** 是不是一条**可打开**的引用（镜像层给它上链接色）。解不开会话 id 的那类不算。 */
   link: boolean;
+  /** 目录中的虚拟技能也着色，但没有文件路径时不伪造打开动作。 */
+  highlighted?: boolean;
   /** 这一段在草稿里的起始下标（React 列表键：原文里唯一）。 */
   at: number;
 }
@@ -31,8 +35,11 @@ export interface DraftSegment {
  *
  * 空草稿返回空表：镜像层不渲染任何东西，与空文本域完全一致。
  */
-export function draftSegments(draft: string): DraftSegment[] {
-  const spans = scanMentionLinks(draft);
+export function draftSegments(draft: string, commands: readonly CommandView[] = []): DraftSegment[] {
+  const mentions = scanMentionLinks(draft);
+  const commandSpans = scanCommandLinks(draft, commands)
+    .filter((span) => !mentions.some((mention) => span.start < mention.end && span.end > mention.start));
+  const spans = [...mentions, ...commandSpans].sort((a, b) => a.start - b.start);
   if (spans.length === 0) return draft ? [{ text: draft, link: false, at: 0 }] : [];
   const out: DraftSegment[] = [];
   let cursor = 0;
@@ -44,6 +51,7 @@ export function draftSegments(draft: string): DraftSegment[] {
     out.push({
       text: draft.slice(span.start, span.end),
       link: span.target !== undefined,
+      ...(commandSpans.includes(span) ? { highlighted: true } : {}),
       at: span.start,
     });
     cursor = span.end;

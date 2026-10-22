@@ -104,6 +104,14 @@ export type MessageTable = Record<Marker, LocalizedMessage>;
  * 两份字典（`Texts`）与 `resolveText()` 都由这张表派生，见 `texts.ts`。
  */
 export const MESSAGES = {
+  // 官方 dsh-client-ui-commands 0.2.1-alpha.2 的 description 词条，保持原文。
+  commandGoalDescription: { zh: "设置或查看长期任务目标", en: "Set or view the goal for a long-running task" },
+  commandPlanDescription: { zh: "进入或退出计划模式", en: "Enter or leave plan mode" },
+  commandFeedbackDescription: { zh: "发送关于当前会话的反馈", en: "Record feedback about this session" },
+  commandCompactDescription: { zh: "压缩以上对话内容", en: "Compact older conversation history" },
+  commandPermissionDescription: { zh: "切换权限预设（沙箱模式与审批策略）", en: "Switch the permission preset (sandbox mode + approval policy)" },
+  commandExportDescription: { zh: "将当前会话内容导出为 ZIP", en: "Download this Session log as a ZIP archive" },
+  commandOpenMenu: { zh: "打开并筛选斜杠命令", en: "Open and filter slash commands" },
   newChat: { zh: "新建对话", en: "New chat" },
   history: { zh: "历史对话", en: "Chat history" },
   openInEditor: { zh: "在编辑器中打开", en: "Open in editor" },

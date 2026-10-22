@@ -35,7 +35,7 @@
 - [injectedSource.test.ts](<injectedSource.test.ts>) — 上下文注入条目 `source` 的按 form 分派解析（全有或全无）。
 - [interactionSync.test.ts](<interactionSync.test.ts>) — 多窗口下问卷 / 审批的收场判据（`$events` 的 `cancel` 帧）与 `@` 对话引用接线。
 - [composerDraft.test.ts](<composerDraft.test.ts>) — 草稿在「提交」链路上的顺序契约（界面乐观清空与宿主草稿表时序）。
-- [composerSessionDraft.test.ts](<composerSessionDraft.test.ts>) — 会话标题投影、同名区间绑定、编辑失效与完整标题重匹配、真实补全事件写回和 Ctrl 目标；纯离线覆盖中英界面。
+- [composerSessionDraft.test.ts](<composerSessionDraft.test.ts>) — 会话标题投影、同名区间绑定、编辑失效与完整标题重匹配、真实补全事件写回和 Ctrl 目标；斜杠扫描不侵入会话标题，镜像与打开目标区间一致；纯离线覆盖中英界面。
 - [pendingEcho.test.ts](<pendingEcho.test.ts>) — 乐观回显行为级回归：按下发送那一刻同步产生、只收「已经发出去」的那类。
 - [unreadMarker.test.ts](<unreadMarker.test.ts>) — 「生成完毕未读」行为级回归：只有离开时正在生成才点亮蓝标题。
 - [notificationQueue.test.ts](<notificationQueue.test.ts>) — 消息通知行为级回归：合并判据（归属 / 级别 / 类型 / 关键内容）、确认后复发新建、迟到确认不吞新发生、每会话 `seq` 水位拒重发（1000 条之后仍拒）、已确认 500 上限与未确认不淘汰、无持久化；驱动真 `ChatController` 覆盖多视图镜像只算一次、按会话过滤、确认跨视图同步、执行目录只在 live 真实变更时通知（开帧 / baseline / null 清空 / 同水位静默）、删除会话清理水位。
@@ -123,10 +123,10 @@
 - [fileRefListing.test.ts](<fileRefListing.test.ts>) — `@` 目录列举补全与工作区外发现：服务器 20 条上限之外的尾巴按官方同一套排序补齐、信任门关时不扩越界、绝对路径（M1）与相对 `..`（M3）的列举与档位筛选、宿主下发的「上一层」行（M2，帧内 `items[0]` 与门关不发）、不支持的根 / 盘符形态零 FS 调用，以及注入 fs 的 UNC / 符号链接段 / 盘根边界（真盘临时目录 + 真控制器）。
 - [localAccess.test.ts](<localAccess.test.ts>) — 本地 FS 访问层：一条查询一条 1500ms 预算（不逐步重置）、全局未完成操作上限（挂死操作只放弃等待、槽位等底层结算）、排队者的接棒与「作废 / 预算耗尽后不启动」、作废 / 过期后的 ok 结果不写缓存，以及信任门的形态、只缓存肯定通过与「哪些路径写法不做本地解释」。
 - [mentionResolve.test.ts](<mentionResolve.test.ts>) — 「光标所在的 `@` 块已经能引用到内容时不弹列表」的宿主侧判据：路径在盘上 / 带行号区间 / 对话引用 token，裸会话 id 必须照旧弹，信任门关时不凭本机 stat 抑制，盘符裸写是浏览入口且不查对话候选，不支持的根形态（`/foo`）不按 cwd 推断（真控制器 + 真盘临时目录）。
-- [mentionNav.test.ts](<mentionNav.test.ts>) — `@` / `/` 补全规则集、「上一层」导航（工作区内回退、M2 宿主下发行、M3 含 `..` 的段算术与根止步、陈旧帧不掺入其候选）、`@` 块的两层判定（块认得出来 + 抑制门：浏览入口恒弹、判定说能引用就不弹；带引号空格目录解包整块）、刷新期间原地留屏（只换一次内容、留屏期间键位与点击冻结、换块与触发词消失后不复用）、焦点回到输入框算新编辑动作、目录块整段替换与候选行的悬停完整路径。
+- [mentionNav.test.ts](<mentionNav.test.ts>) — `@` / `/` 补全规则集、「上一层」导航（工作区内回退、M2 宿主下发行、M3 含 `..` 的段算术与根止步、陈旧帧不掺入其候选）、`@` 块的两层判定（块认得出来 + 抑制门：浏览入口恒弹、判定说能引用就不弹；带引号空格目录解包整块）、刷新期间原地留屏（只换一次内容、留屏期间键位与点击冻结、换块与触发词消失后不复用）、焦点回到输入框算新编辑动作、目录块整段替换与候选行的悬停完整路径；斜杠链接定位草稿或插入命令后复用原生补全，无额外筛选框，官方描述双语。
 - [mentionLinks.test.ts](<mentionLinks.test.ts>) — 正文里 `@` 引用的判定：文件 / 目录按形状，会话按「草稿里的原始 token」或「已发出消息的 `sessionRefs` 清单」两种来路。
-- [mentionLinksUi.test.ts](<mentionLinksUi.test.ts>) — 上面那份判定真的渲染成可点行内按钮（悬停说明按三档目标给），以及 `.mention-link` 的行内样式。
-- [emptyComposer.test.ts](<emptyComposer.test.ts>) — 空态下 `/` 命令栏与 `@` 候选的行为级回归（空态就绑在壳上，菜单读它、不另建）。
+- [mentionLinksUi.test.ts](<mentionLinksUi.test.ts>) — 引用与目录确认的斜杠渲染成行内链接，覆盖命令筛选/技能文件打开分派、路径与会话区间排除、官方六项双语及原文回退、`.mention-link` 行内样式。
+- [emptyComposer.test.ts](<emptyComposer.test.ts>) — 空态下 `/` 命令栏与 `@` 候选的行为级回归（空态就绑在壳上，菜单读它、不另建），以及官方命令身份与技能 Markdown 路径过线。
 - [composerSend.test.ts](<composerSend.test.ts>) — 发送按钮的手势链路：按住 Ctrl / Cmd 时文字换成这一次真会走的那条路、点按钮发加速手势（真事件链 + 真 `Composer` 渲染），空闲仍发送、运行中无草稿仍是停止；**附件未就绪只置灰**（保留排队 / 插话文案、外层悬停给原因），不把生成中的发送变成停止。
 - [escapeOwner.test.ts](<escapeOwner.test.ts>) — ESC 归属链：手写事件链驱动真处理器（轨迹绘图区 `timelineEscape` + window 兜底 `escapeFallbackListener`），钉住菜单 > 原图 > 抽屉 > 并列浮层的先后、元素层消费后不停止生成、**只有会话页占据前景才停止**（轨迹页与抽屉在前景时不中止会话）、兜底唯一挂点与注销清理。
 - [blankSessionReuse.test.ts](<blankSessionReuse.test.ts>) — 「空态必有壳、首条消息发给谁」：`reusableBlank` 的本地 blank 位（不许把已经说过话的会话当空壳接回来）、空壳上选的模型留得住、已经在一条空壳上再点「+」是完全 no-op（不写回模型、也不另接一条别人的壳）。

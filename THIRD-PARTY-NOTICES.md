@@ -30,6 +30,8 @@ DSH Chat 自身以 **MIT** 许可发布（见 `LICENSE`）。
 > 协议类型声明必然与上游一致——它们描述的就是同一个服务端线格式。
 > `THIRD-PARTY` 比对中「逐字相同的行」大多属于这一类。
 
+此外，`src/webview/messages.ts` 的六项内置斜杠命令描述取自 `@deepseek-ai/dsh-client-ui-commands@0.2.1-alpha.2` 的中英文 `description.*` 词条；`src/webview/commandLinks.tsx` 按其官方命令定义身份选择描述，未复用上游组件实现。
+
 MIT 许可证全文见本文末「附录 A」。
 
 ### 1.1 `src/vendor/` 里的**源码逐字副本**（MIT）

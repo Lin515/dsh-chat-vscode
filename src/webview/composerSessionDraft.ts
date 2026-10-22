@@ -6,6 +6,8 @@
 import { decodeSessionReferenceUri, sessionMentionPattern } from "../shared/mentions";
 import { draftSegments, type DraftSegment } from "./composerMention";
 import { scanMentionLinks, type MentionLinkTarget } from "./mentionLinks";
+import { scanCommandLinks } from "./commandLinks";
+import type { CommandView } from "../shared/chat";
 
 interface SessionBlock {
   start: number;
@@ -118,17 +120,19 @@ export class ComposerSessionDraft {
   }
 
   /** 镜像与 Ctrl 点击共用的精确目标，失效标题不能被误当作文件路径。 */
-  targetAt(caret: number): MentionLinkTarget | undefined {
+  targetAt(caret: number, commands: readonly CommandView[] = []): MentionLinkTarget | undefined {
     const block = this.blocks.find((item) => caret >= item.start && caret <= item.end);
     if (block) return block.sessionId ? { kind: "session", sessionId: block.sessionId } : undefined;
-    return scanMentionLinks(this.text).find((span) => caret >= span.start && caret <= span.end)?.target;
+    const mention = scanMentionLinks(this.text).find((span) => caret >= span.start && caret <= span.end);
+    if (mention) return mention.target;
+    return scanCommandLinks(this.text, commands).find((span) => caret >= span.start && caret <= span.end)?.target;
   }
 
-  segments(): DraftSegment[] {
+  segments(commands: readonly CommandView[] = []): DraftSegment[] {
     const out: DraftSegment[] = [];
     let cursor = 0;
     const append = (start: number, end: number) => {
-      out.push(...draftSegments(this.text.slice(start, end)).map((segment) => ({ ...segment, at: segment.at + start })));
+      out.push(...draftSegments(this.text.slice(start, end), commands).map((segment) => ({ ...segment, at: segment.at + start })));
     };
     for (const block of this.blocks) {
       append(cursor, block.start);

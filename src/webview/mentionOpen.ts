@@ -18,8 +18,11 @@ import { post } from "./bridge";
 import { mentionAt, type MentionLinkTarget } from "./mentionLinks";
 
 /** 按目标种类打开一条引用。 */
-export function openMentionTarget(target: MentionLinkTarget): void {
+export function openMentionTarget(target: MentionLinkTarget, openCommand?: (name: string) => void): void {
   switch (target.kind) {
+    case "command":
+      openCommand?.(target.name);
+      return;
     case "file":
       post({ type: "openFile", path: target.path, line: target.line, link: true });
       return;

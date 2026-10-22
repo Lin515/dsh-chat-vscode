@@ -11888,7 +11888,7 @@ export class ChatController implements vscode.Disposable {
     }
     try {
       const rows = await this.client.request<
-        { name: string; description?: string; input?: { hint?: string } }[]
+        { name: string; definitionId?: string; description?: string; input?: { hint?: string } }[]
       >("commands/list", { agentId: scope.sessionId });
       // 目录同时用于把「手打的 /xxx」路由到命令通道（见 slashCommandOf）：
       // 只有真正存在的命令才该被拦下来，打错的 `/foo` 仍按普通消息发出去。
@@ -11901,6 +11901,7 @@ export class ChatController implements vscode.Disposable {
         commands: [
           ...(rows ?? []).map((row) => ({
             name: row.name,
+            definitionId: typeof row.definitionId === "string" ? row.definitionId : undefined,
             description: row.description ?? "",
             hint: row.input?.hint,
           })),
@@ -11931,7 +11932,7 @@ export class ChatController implements vscode.Disposable {
   private async skillCommands(scope: SessionScope): Promise<CommandView[]> {
     try {
       const value = await this.client!.request<{
-        skills?: { name?: string; description?: string; whenToUse?: string }[];
+        skills?: { name?: string; path?: string; description?: string; whenToUse?: string }[];
       }>("skills/list", { request: { sessionId: scope.sessionId } });
       return (value?.skills ?? [])
         .filter((skill) => typeof skill?.name === "string" && skill.name)
@@ -11939,6 +11940,7 @@ export class ChatController implements vscode.Disposable {
           name: skill.name!,
           description: skill.description ?? "",
           hint: skill.whenToUse,
+          skillPath: typeof skill.path === "string" && skill.path.trim() ? skill.path : undefined,
           skill: true,
         }));
     } catch (error) {

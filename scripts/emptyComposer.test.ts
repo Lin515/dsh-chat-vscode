@@ -25,6 +25,9 @@
  * 无 token、亚秒级）。
  */
 import assert from "node:assert";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import type { CommandView } from "../src/shared/chat";
 
 process.on("unhandledRejection", (error) => {
   console.error("[emptyComposer] 未处理的异步拒绝（当作失败）：", error);
@@ -95,17 +98,21 @@ function fakeClient() {
       if (method === "agentPresets/list") return { presets: [] };
       if (method === "subagents/list") return { entries: [] };
       if (method === "session/projections") return { values: {} };
+      if (method === "skills/list") {
+        const request = params?.request as { sessionId?: string } | undefined;
+        assert.ok(rows.some((row) => row.sessionId === request?.sessionId), "技能目录按 request.sessionId 寻址");
+        return { skills: [{ name: "nav-test", description: "Skill description", path: join(tmpdir(), "skills", "nav-test", "SKILL.md"), modelInvocable: true }] };
+      }
       const agentId = String(params?.agentId ?? "");
       if (!rows.some((row) => row.sessionId === agentId)) throw new Error("session not found");
       if (method === "commands/list") {
         return [
-          { name: "plan", description: "切换计划模式" },
+          { name: "plan", definitionId: "@deepseek-ai/dsh-plan-mode", description: "Enter plan mode" },
           { name: "compact", description: "压缩上下文" },
         ];
       }
       if (method === "fileReferences/list") return [{ path: "src/index.ts", kind: "file" }];
       if (method === "sessionReferenceResolver/candidates") return [];
-      if (method === "skills/list") return { skills: [] };
       return undefined;
     },
     async scheduleCatalog() {
@@ -250,11 +257,14 @@ console.log("emptyComposer: 空态下的 / 命令栏与 @ 候选（驱动真控�
 
   frames.length = 0;
   await openMenus(c, "v1");
-  const commands = (lastFrame(frames, "v1", "commands/list")?.commands ?? []) as { name?: string }[];
+  const commands = (lastFrame(frames, "v1", "commands/list")?.commands ?? []) as CommandView[];
   const items = (lastFrame(frames, "v1", "files/list")?.items ?? []) as { path?: string }[];
   console.log(`  / 命令栏：${commands.length} 条 ${commands.map((row) => row.name).join(", ")}`);
   console.log(`  @ 候选：${items.length} 条 ${items.map((row) => row.path).join(", ")}`);
   assert.ok(commands.length > 0, "空态下输入 `/` 必须弹出命令栏（报障现场：一条都没有）");
+  assert.equal(commands.find((row) => row.name === "plan")?.definitionId, "@deepseek-ai/dsh-plan-mode", "命令身份完整过线，供官方双语描述选取");
+  assert.equal(commands.find((row) => row.name === "nav-test")?.skillPath, join(tmpdir(), "skills", "nav-test", "SKILL.md"), "技能文件路径不得在目录映射时丢失");
+  assert.equal(commands.find((row) => row.name === "nav-test")?.skill, true);
   assert.ok(items.length > 0, "空态下输入 `@` 必须列出文件候选（报障现场：列表为空）");
   assert.strictEqual(client.rows.length, 1, "两个菜单读的是同一条空壳，谁都不再另建会话");
   assert.strictEqual(c.viewSessions.get("v1"), shell, "打开菜单不会把窗口换到别的会话上");

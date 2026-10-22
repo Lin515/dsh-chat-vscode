@@ -31,6 +31,25 @@ for (const raw of ["@[未绑定](dsh-session:%%%%)", "@[普通](https://example.
   assert.equal(model(raw).text, raw, "不凭相似形状折叠或创建绑定");
 }
 
+// 命令扫描不得进入会话标题，目标和镜像必须使用同一套区间。
+{
+  const draft = model(`${token("含 /plan 的标题", "s1")} 正文 /plan /audit /virtual`);
+  const commands = [
+    { name: "plan", description: "" },
+    { name: "audit", description: "", skill: true, skillPath: "skills/audit/SKILL.md" },
+    { name: "virtual", description: "", skill: true },
+  ];
+  assert.deepEqual(draft.targetAt(draft.text.indexOf("/plan") + 2, commands), target("s1"));
+  assert.deepEqual(draft.targetAt(draft.text.lastIndexOf("/plan") + 2, commands), { kind: "command", name: "plan" });
+  assert.deepEqual(draft.targetAt(draft.text.indexOf("/audit") + 2, commands), { kind: "file", path: "skills/audit/SKILL.md" });
+  assert.equal(draft.targetAt(draft.text.indexOf("/virtual") + 2, commands), undefined);
+  const segments = draft.segments(commands);
+  assert.equal(segments.map((segment) => segment.text).join(""), draft.text);
+  assert.deepEqual(segments.filter((segment) => segment.highlighted).map((segment) => [segment.text, segment.link]), [
+    ["/plan", true], ["/audit", true], ["/virtual", false],
+  ]);
+}
+
 // 同名会话按每一次出现分别绑定；改正文、插前缀、插普通文本不丢失身份。
 {
   const a = token("同名 title", "a");
