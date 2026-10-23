@@ -49,10 +49,13 @@ type Listener = (event: ChainEvent) => void;
 /** 一次按键：只带归属链会读 / 会写的面。 */
 class ChainEvent {
   readonly key: string;
+  /** 真实键盘事件的组字标记：输入法候选未上屏时为真（取消组字要吃掉这一键）。 */
+  readonly isComposing: boolean;
   defaultPrevented = false;
   stopped = false;
-  constructor(key: string) {
+  constructor(key: string, isComposing = false) {
     this.key = key;
+    this.isComposing = isComposing;
   }
   preventDefault(): void {
     this.defaultPrevented = true;
@@ -113,8 +116,8 @@ class ChainNode {
     return event;
   }
 
-  press(key: string): ChainEvent {
-    return this.dispatch(new ChainEvent(key));
+  press(key: string, isComposing = false): ChainEvent {
+    return this.dispatch(new ChainEvent(key, isComposing));
   }
 }
 
@@ -359,6 +362,73 @@ function activeLayer(priority: number, label: string, log: string[]) {
   const syntheticStop = stops();
   fallback("none", true, syntheticStop.stop)(native);
   assert.deepStrictEqual(syntheticStop.calls, [], "原生事件上认得这次消费，不再兜底停止");
+}
+
+/* ==================== 4b. 输入法组字中的 ESC：谁都不许认领 ==================== */
+
+{
+  // 现场：候选未上屏时按 ESC 只该取消组字。补全弹层的 onKeyDown 在
+  // `nativeEvent.isComposing` 时直接早退（不能 consumeEscape，否则输入法拿不到这一键），
+  // 同一个原生 Escape 继续冒到 window 兜底；兜底此前不认组字状态，于是关掉浮层、
+  // 甚至把正在跑的那一轮停掉。归属链必须在最前认出组字并原样放过。
+  //
+  // 真实链路：活跃浮层 + App 的 window 兜底。组字中的 ESC 既不许关浮层，也不许停止生成。
+  const { window, plot } = chain();
+  const log: string[] = [];
+  const stop = stops();
+  window.addEventListener("keydown", fallback("none", true, stop.stop));
+  const layer = activeLayer(ESC_LAYER.floating, "layer", log);
+  const composing = plot.press("Escape", true);
+  assert.deepStrictEqual(log, [], "组字中的 ESC 不许关掉活跃浮层（现场：输入法取消组字把弹层关了）");
+  assert.strictEqual(layer.state.open, true, "浮层照旧开着");
+  assert.deepStrictEqual(stop.calls, [], "组字中的 ESC 不许停止正在跑的那一轮");
+  assert.strictEqual(
+    composing.defaultPrevented,
+    false,
+    "组字中的 ESC 不拦浏览器默认（输入法要靠它取消组字）",
+  );
+  assert.strictEqual(composing.stopped, false, "组字中的 ESC 谁都不许截胡");
+
+  // 原生形态：dispatchEscape 一眼放过，连传播状态都不许碰。
+  const native = new ChainEvent("Escape", true);
+  assert.strictEqual(dispatchEscape(native), "ignored", "组字中的 ESC 不属于归属链");
+  assert.strictEqual(
+    native.defaultPrevented,
+    false,
+    "组字中的 ESC 留给输入法取消组字（不许 preventDefault）",
+  );
+  assert.strictEqual(native.stopped, false, "组字中的 ESC 不许 stopPropagation");
+
+  // React 合成事件的形态：React 不复制 `isComposing`，它只在 nativeEvent 上——
+  // 判据必须读原生那一面，否则元素层早退后这条链照样认领它。
+  const nativeBehindSynthetic = new ChainEvent("Escape", true);
+  const synthetic = {
+    key: "Escape",
+    nativeEvent: nativeBehindSynthetic,
+    preventDefault: () => nativeBehindSynthetic.preventDefault(),
+    stopPropagation: () => nativeBehindSynthetic.stopPropagation(),
+  };
+  assert.strictEqual(dispatchEscape(synthetic), "ignored", "合成事件要读 nativeEvent.isComposing");
+  assert.strictEqual(nativeBehindSynthetic.defaultPrevented, false, "合成形态也不许 preventDefault");
+  assert.strictEqual(nativeBehindSynthetic.stopped, false, "合成形态也不许 stopPropagation");
+
+  // 合成形态直接落到兜底（元素层没拦冒泡的那种接线）：同样什么都不做。
+  const syntheticAgain = new ChainEvent("Escape", true);
+  fallback("none", true, stop.stop)({
+    key: "Escape",
+    nativeEvent: syntheticAgain,
+    preventDefault: () => syntheticAgain.preventDefault(),
+    stopPropagation: () => syntheticAgain.stopPropagation(),
+  });
+  assert.deepStrictEqual(stop.calls, [], "合成形态落到兜底也不许停止生成");
+  assert.deepStrictEqual(log, [], "合成形态落到兜底也不许关浮层");
+  assert.strictEqual(syntheticAgain.defaultPrevented, false);
+
+  // 组字结束后的普通 ESC 照旧：关浮层、不停止。
+  plot.press("Escape");
+  assert.deepStrictEqual(log, ["layer"], "普通 ESC 照旧归活跃浮层");
+  assert.strictEqual(layer.state.open, false, "普通 ESC 才关掉浮层");
+  assert.deepStrictEqual(stop.calls, [], "浮层消费了就不停止生成");
 }
 
 /* ==================== 5. 不拿 defaultPrevented 当消费证据 ==================== */

@@ -26,6 +26,9 @@
  * 吃掉的事件到不了它；活跃浮层按层级消费；都没有、会话页在前景且生成中，才停止生成。
  * 会话切换不需要「清空归属栈」——层活着就登记着、浮层关了或组件卸载就注销（见
  * `useEscapeLayer`），无条件 reset 只会让仍然开着的浮层变成没人接管的键。
+ *
+ * 输入法组字中的 ESC 不参与这条链：元素层因 `isComposing` 早退（不盖章，输入法要拿
+ * 这一键取消候选），同一个原生事件仍会冒到兜底，兜底必须把它原样放回输入法。
  */
 
 import { useEffect, useRef } from "react";
@@ -59,6 +62,11 @@ export const ESC_LAYER = {
 /** 归属链要读的按键面：真的 `KeyboardEvent` 与 React 合成事件都满足。 */
 export interface EscapeKeyEvent {
   key: string;
+  /**
+   * 这次按键是否发生在**输入法组字中**（候选未上屏）。React 合成事件不复制这个字段，
+   * 它只出现在 `nativeEvent` 上；判据两处都读（见 `isComposingKey`）。
+   */
+  isComposing?: boolean;
   preventDefault(): void;
   stopPropagation(): void;
   /**
@@ -76,7 +84,7 @@ export type EscapeOutcome =
   | "layer"
   /** 没人认领：由调用方按「会话页在前景且生成中」决定要不要停止生成。 */
   | "unclaimed"
-  /** 不是 ESC：一律放过。 */
+  /** 不是 ESC，或发生在输入法组字中：一律放过（后者连传播状态都不碰）。 */
   | "ignored";
 
 /** 一个全局浮层登记进归属链时要交的两样东西。 */
@@ -142,6 +150,17 @@ function orderedLayers(): ActiveLayer[] {
   );
 }
 
+/** 这次按键是否发生在**输入法组字中**（候选未上屏）。 */
+function isComposingKey(event: EscapeKeyEvent): boolean {
+  if (event.isComposing === true) return true;
+  const native = event.nativeEvent;
+  return (
+    typeof native === "object" &&
+    native !== null &&
+    (native as { isComposing?: unknown }).isComposing === true
+  );
+}
+
 /**
  * 元素层消费一次 ESC：盖章 + 让浏览器别再处理 + 不再往上冒。
  *
@@ -161,8 +180,14 @@ export function consumeEscape(event: EscapeKeyEvent): void {
  * 已经把键吃掉的元素层通常连事件都到不了这里（它 `stopPropagation` 了）；这里仍先认
  * 自己的消费标记，是为了让「谁消费了」只有一个判据——将来某个元素层不方便拦冒泡时，
  * 兜底也不会把这一轮停掉。
+ *
+ * 输入法组字中的按键最先放过：元素层会因 `isComposing` 早退（不能 `consumeEscape`，
+ * 否则输入法拿不到取消组字的那一键），同一个原生事件随后照样冒到 window 兜底。若不
+ * 在这里认出来，这次 ESC 会被当成无人认领——关掉浮层、甚至停止正在跑的那一轮。它归
+ * 输入法，所以连 `preventDefault` / `stopPropagation` 都不许做。
  */
 export function dispatchEscape(event: EscapeKeyEvent): EscapeOutcome {
+  if (isComposingKey(event)) return "ignored";
   if (event.key !== "Escape") return "ignored";
   if (isEscapeConsumed(event)) return "element";
   for (const layer of orderedLayers()) {
