@@ -113,7 +113,7 @@ export function contextMenuValue(): ContextMenuValue | null {
 const EDITABLE = "input, textarea, [contenteditable='true']";
 
 /**
- * 会话正文区里当前选中的文字。
+ * 会话正文区里当前选中的原始文字（保留空白；菜单调用方自行裁去首尾）。
  *
  * 选区**两端都必须在正文区里**才作数：只按「有选区」判的话，头部 / 抽屉里残留的
  * 选区会被引进来（用户看不到选区，却引用了一段别处的文字）。
@@ -122,7 +122,7 @@ export function chatSelectionText(chat: Element | null): string {
   if (!chat) return "";
   const selection = window.getSelection();
   if (!selection || selection.isCollapsed || selection.rangeCount === 0) return "";
-  const text = selection.toString().trim();
+  const text = selection.toString();
   if (!text) return "";
   const inside = (node: Node | null): boolean => {
     if (!node) return false;
@@ -130,6 +130,24 @@ export function chatSelectionText(chat: Element | null): string {
     return !!element && chat.contains(element);
   };
   return inside(selection.anchorNode) && inside(selection.focusNode) ? text : "";
+}
+
+/**
+ * 会话选区的复制快捷键，先于 VS Code 内层 iframe 的 window 键盘转发处理。
+ * 只接管非编辑区域中的 Ctrl+C / Cmd+C；保留原始空白，宿主负责写剪贴板。
+ */
+export function handleChatCopy(event: KeyboardEvent): void {
+  if (event.defaultPrevented || event.isComposing || event.repeat) return;
+  if (event.key.toLowerCase() !== "c" || event.ctrlKey === event.metaKey || event.altKey || event.shiftKey) return;
+  const editable = (target: EventTarget | null): boolean => target instanceof Element
+    && (!!target.closest(EDITABLE) || (target as HTMLElement).isContentEditable);
+  if (editable(event.target) || editable(document.activeElement)) return;
+  const text = chatSelectionText(document.querySelector(".chat-scroll"));
+  if (!text) return;
+  event.preventDefault();
+  // 不再让宿主把同一个快捷键转发为原生复制，避免重复处理或覆盖刚写入的内容。
+  event.stopPropagation();
+  post({ type: "copy", text });
 }
 
 /** 右键落点上的图片：缩略图是 `<button class="image-thumb">` 包着 `<img>`，落点常在按钮上。 */
@@ -190,7 +208,7 @@ export function usePageContextMenu(dispatch: (action: Action) => void, texts: Te
 
       const chat = target.closest(".chat-scroll");
       const image = imageAt(target);
-      const selectedText = chatSelectionText(chat);
+      const selectedText = chatSelectionText(chat).trim();
       const kind = contextMenuKind({
         editable: !!target.closest(EDITABLE),
         image: !!image,
@@ -264,6 +282,10 @@ export function usePageContextMenu(dispatch: (action: Action) => void, texts: Te
       });
     };
     document.addEventListener("contextmenu", onContextMenu);
-    return () => document.removeEventListener("contextmenu", onContextMenu);
+    document.addEventListener("keydown", handleChatCopy);
+    return () => {
+      document.removeEventListener("contextmenu", onContextMenu);
+      document.removeEventListener("keydown", handleChatCopy);
+    };
   }, [dispatch, texts]);
 }

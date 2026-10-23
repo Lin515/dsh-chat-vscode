@@ -24,6 +24,15 @@ contextMenuKind 按下表优先级判断：
 
 「引用」由 composerCompletion.quoteBlock 把选区插成整行 Markdown 引用块，不自动发送：需要时前补换行，后补换行使光标落在块外。
 
+## 会话选区快捷复制
+
+`handleChatCopy` 与右键接取一起在 document 冒泡阶段登记、卸载时一起清理：晚于 React 已处理的按键，早于 VS Code 的 window 快捷键转发。仅接管未处理、非组字、非重复的 Ctrl+C / Cmd+C（无 Alt / Shift，也不同时按 Ctrl 与 Cmd）。
+
+- 选区非折叠且两端都在 `.chat-scroll` 时，保留原始空白与换行，经既有 `copy` 帧交给宿主 `vscode.env.clipboard.writeText`，随后阻止默认行为与继续冒泡，避免重复转发。
+- 事件目标或当前焦点在 input / textarea / contenteditable 时保留原生编辑；无有效选区、跨正文边界、其它快捷键及已处理事件全部让路。不会接管剪切、粘贴或菜单复制。
+- `chatSelectionText` 返回原始选区；右键的「复制 / 引用」仍在菜单入口去首尾空白，不改变既有菜单语义。
+- 静态预览可以核验按键到 `copy` 帧的链路；只有安装端验收才能证明 VS Code 宿主已将内容写入系统剪贴板。
+
 ## 图片复制与保存
 
 **复制**在界面完成：[imageClipboard.ts](<../src/webview/imageClipboard.ts>) 将 img 画到 canvas，转 PNG，再 navigator.clipboard.write。宿主只有纯文本剪贴板 API，webview iframe 允许 clipboard-write。
@@ -38,6 +47,6 @@ contextMenuKind 按下表优先级判断：
 
 ## 回归
 
-- [contextMenu.test.ts](<../scripts/contextMenu.test.ts>)：判定矩阵、引用落点、建议文件名。
+- [contextMenu.test.ts](<../scripts/contextMenu.test.ts>)：判定矩阵、引用落点、建议文件名；调用真实快捷复制处理器，覆盖 Ctrl / Cmd、跨消息空白换行保真、编辑焦点、组合键、组字、重复事件、选区包含性与空选区让路。
 - [imageFiles.test.ts](<../scripts/imageFiles.test.ts>)：data URL 白名单、上限与文件名。
 - [styles.test.ts](<../scripts/styles.test.ts>)：document 接取、无抽屉重复处理、浮层装配、视口定位、图片层之上与一行截断。

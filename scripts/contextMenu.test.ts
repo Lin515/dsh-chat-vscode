@@ -22,10 +22,11 @@ import type { ContextMenuProbe } from "../src/webview/contextMenu";
   addEventListener: () => {},
   removeEventListener: () => {},
 };
+const POSTED: unknown[] = [];
 (globalThis as { acquireVsCodeApi?: unknown }).acquireVsCodeApi = () => ({
-  postMessage: () => undefined,
+  postMessage: (message: unknown) => POSTED.push(message),
 });
-const { contextMenuKind, suggestedFileName } = await import("../src/webview/contextMenu");
+const { contextMenuKind, suggestedFileName, chatSelectionText, handleChatCopy } = await import("../src/webview/contextMenu");
 const { quoteBlock } = await import("../src/webview/composerCompletion");
 
 /** 默认探针：正文区里选中了一段文字（最常见的形态）。 */
@@ -150,5 +151,96 @@ assert.strictEqual(suggestedFileName(img("")), undefined);
 assert.strictEqual(suggestedFileName(img("   ")), undefined);
 
 console.log("contextMenu: 保存的建议文件名 ✓");
+
+// ---------- 4. 会话复制快捷键：真实处理器 + 选区包含性 + 宿主消息 ----------
+class CopyElement {
+  readonly nodeType = 1;
+  constructor(readonly parentElement: CopyElement | null = null, readonly editable = false) {}
+  get isContentEditable() { return this.editable; }
+  closest(_selector: string): CopyElement | null {
+    return this.editable ? this : this.parentElement?.closest(_selector) ?? null;
+  }
+  contains(node: CopyElement | null): boolean {
+    return node === this || !!node?.parentElement && this.contains(node.parentElement);
+  }
+}
+const chat = new CopyElement();
+const firstMessage = new CopyElement(chat);
+const secondMessage = new CopyElement(chat);
+const outside = new CopyElement();
+const input = new CopyElement(chat, true);
+let active: CopyElement | null = null;
+let selection: Record<string, unknown> | null;
+Object.assign(globalThis, {
+  Element: CopyElement,
+  Node: { ELEMENT_NODE: 1 },
+  document: {
+    get activeElement() { return active; },
+    querySelector: () => chat,
+  },
+});
+Object.assign(window, { getSelection: () => selection });
+function select(text = "  第一行\n\n第二行  ", anchor: CopyElement = firstMessage, focus: CopyElement = secondMessage) {
+  selection = {
+    isCollapsed: false, rangeCount: 1,
+    anchorNode: { nodeType: 3, parentElement: anchor },
+    focusNode: { nodeType: 3, parentElement: focus },
+    toString: () => text,
+  };
+}
+function copyKey(overrides: Record<string, unknown> = {}) {
+  const event = {
+    key: "c", ctrlKey: true, metaKey: false, altKey: false, shiftKey: false,
+    isComposing: false, repeat: false, defaultPrevented: false, stopped: false,
+    target: firstMessage,
+    preventDefault() { this.defaultPrevented = true; },
+    stopPropagation() { this.stopped = true; },
+    ...overrides,
+  };
+  return event;
+}
+function runCopy(overrides: Record<string, unknown> = {}) {
+  POSTED.length = 0;
+  const event = copyKey(overrides);
+  handleChatCopy(event as unknown as KeyboardEvent);
+  return event;
+}
+for (const modifiers of [{}, { ctrlKey: false, metaKey: true }]) {
+  select();
+  const event = runCopy(modifiers);
+  assert.deepStrictEqual(POSTED, [{ type: "copy", text: "  第一行\n\n第二行  " }], "跨消息复制保留原始空白与换行");
+  assert.ok(event.defaultPrevented && event.stopped, "先于宿主转发接住复制");
+  handleChatCopy(event as unknown as KeyboardEvent);
+  assert.strictEqual(POSTED.length, 1, "已处理的同一事件不重复复制");
+}
+for (const overrides of [
+  { ctrlKey: false }, { ctrlKey: true, metaKey: true }, { altKey: true },
+  { shiftKey: true }, { key: "v" }, { key: "x" }, { repeat: true },
+  { isComposing: true }, { defaultPrevented: true }, { target: input },
+]) {
+  select();
+  const event = runCopy(overrides);
+  assert.deepStrictEqual(POSTED, [], `不抢原生/无关快捷键 ${JSON.stringify(overrides)}`);
+  assert.strictEqual(event.stopped, false);
+}
+active = input;
+select();
+assert.strictEqual(runCopy().stopped, false, "可编辑区域聚焦时保留原生复制，即使正文残留选区");
+active = null;
+for (const endpoints of [[outside, secondMessage], [firstMessage, outside], [outside, outside]]) {
+  select("text", endpoints[0], endpoints[1]);
+  assert.strictEqual(runCopy().defaultPrevented, false, "选区越界不接管");
+  assert.deepStrictEqual(POSTED, []);
+}
+select(" \n  ");
+runCopy();
+assert.deepStrictEqual(POSTED, [{ type: "copy", text: " \n  " }], "仅空白的有效选区也照实复制");
+for (const absent of [null, { isCollapsed: true }, { isCollapsed: false, rangeCount: 0 }]) {
+  selection = absent;
+  assert.strictEqual(runCopy().defaultPrevented, false, "无有效选区不覆盖剪贴板");
+  assert.deepStrictEqual(POSTED, []);
+}
+assert.strictEqual(chatSelectionText(null), "");
+console.log("contextMenu: 会话 Ctrl+C / Cmd+C 选区与原生编辑边界 ✓");
 
 console.log("\ncontextMenu: all assertions passed");
