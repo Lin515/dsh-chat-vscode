@@ -39,6 +39,23 @@ function designPx(value: string | undefined): number | undefined {
   return raw ? Number(raw[1]) : undefined;
 }
 
+// 链接状态的声明守卫；真实 computed-style 矩阵仍由窄侧栏预览验收，不能用类名存在代替。
+{
+  const body = rule(".mention-link");
+  for (const declaration of ["display: inline", "padding: 0", "margin: 0", "background: none", "font: inherit", "color: var(--link)", "cursor: pointer"]) {
+    assert.ok(body.includes(declaration), `正文链接保留行内文字外观：${declaration}`);
+  }
+  assert.match(rule(".mention-link:hover"), /text-decoration:\s*underline/, "正文悬停才显示下划线");
+  assert.match(rule(".mention-link.is-inert"), /cursor:\s*inherit/, "无文件路径的技能不能显示可点击光标");
+  assert.match(rule(".mention-link.is-inert"), /text-decoration:\s*none/, "不可打开的技能悬停也不显示下划线");
+  assert.ok(css.indexOf(".mention-link.is-inert {") > css.indexOf(".mention-link:hover {"), "相同特异性下 inert 必须覆盖 hover");
+  assert.match(rule(".composer-mirror .mention-mark"), /color:\s*var\(--link\)/, "输入镜像与正文共用链接色");
+  assert.doesNotMatch(rule(".composer-mirror .mention-mark"), /text-decoration:\s*underline/, "普通输入镜像不常驻下划线");
+  assert.match(rule(".composer-mirror.is-modifier .mention-mark:not(.is-inert)"), /text-decoration:\s*underline/, "Ctrl/Cmd 只强调可操作的镜像链接");
+  assert.doesNotMatch(css, /\.composer-mirror\.is-modifier\s+\.mention-mark\s*\{/, "修饰键规则不能绕过 inert 排除条件");
+}
+console.log("styles: 正文与输入镜像的普通、悬停、修饰键及 inert 链接状态 ✓");
+
 // ---------- 1. 弹层宽度必须视口感知，否则窄侧栏会被裁掉 ----------
 //
 // 实测：`min-width: 224px` 这种固定下限 + 触发按钮距左边缘约 66px，

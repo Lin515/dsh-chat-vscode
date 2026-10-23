@@ -111,7 +111,7 @@
 - [pickerFocus.test.ts](<pickerFocus.test.ts>) — 模型弹层「打开即定位到选中项」：起点判定、方向键移动（只走模型列表这一段）、高亮样式可见，以及「滚动只归模型列表、思考档位区常驻在滚动容器之外、模型不支持可选档位时整块（含分隔线）不渲染」的结构与样式契约。
 - [toolbarFit.test.ts](<toolbarFit.test.ts>) — 工具栏档位分配、极窄保底与布局盒判据；使用可注入观察者验证节点替换、幂等挂载、StrictMode 重挂与清理，并覆盖旧生命周期的负对照。
 - [connectView.test.ts](<connectView.test.ts>) — 连接条三类状态、文案与按钮矩阵。
-- [contextMenu.test.ts](<contextMenu.test.ts>) — 会话右键菜单判据、「引用」落点算术、保存建议文件名。
+- [contextMenu.test.ts](<contextMenu.test.ts>) — 会话右键菜单判据、「引用」落点算术、保存建议文件名；真实快捷复制处理器覆盖 Ctrl / Cmd、跨消息空白换行保真、编辑焦点、修饰键、组字、重复与已处理事件、选区包含性和空选区让路。
 - [questionFlow.test.ts](<questionFlow.test.ts>) — 问卷展示口径：一次展开 vs 依次问答（`dshChat.questionBatch`）。
 - [questionRender.test.ts](<questionRender.test.ts>) — 问卷卡片渲染断言（答完的问题展开后显示用户回答）。
 - [planReview.test.ts](<planReview.test.ts>) — 计划审阅（`exit_plan_mode`）请求的识别与收窄规则。
@@ -123,12 +123,12 @@
 - [fileRefListing.test.ts](<fileRefListing.test.ts>) — `@` 目录列举补全与工作区外发现：服务器 20 条上限之外的尾巴按官方同一套排序补齐、信任门关时不扩越界、绝对路径（M1）与相对 `..`（M3）的列举与档位筛选、宿主下发的「上一层」行（M2，帧内 `items[0]` 与门关不发）、不支持的根 / 盘符形态零 FS 调用，以及注入 fs 的 UNC / 符号链接段 / 盘根边界（真盘临时目录 + 真控制器）。
 - [localAccess.test.ts](<localAccess.test.ts>) — 本地 FS 访问层：一条查询一条 1500ms 预算（不逐步重置）、全局未完成操作上限（挂死操作只放弃等待、槽位等底层结算）、排队者的接棒与「作废 / 预算耗尽后不启动」、作废 / 过期后的 ok 结果不写缓存，以及信任门的形态、只缓存肯定通过与「哪些路径写法不做本地解释」。
 - [mentionResolve.test.ts](<mentionResolve.test.ts>) — 「光标所在的 `@` 块已经能引用到内容时不弹列表」的宿主侧判据：路径在盘上 / 带行号区间 / 对话引用 token，裸会话 id 必须照旧弹，信任门关时不凭本机 stat 抑制，盘符裸写是浏览入口且不查对话候选，不支持的根形态（`/foo`）不按 cwd 推断（真控制器 + 真盘临时目录）。
-- [mentionNav.test.ts](<mentionNav.test.ts>) — `@` / `/` 补全规则集、「上一层」导航（工作区内回退、M2 宿主下发行、M3 含 `..` 的段算术与根止步、陈旧帧不掺入其候选）、`@` 块的两层判定（块认得出来 + 抑制门：浏览入口恒弹、判定说能引用就不弹；带引号空格目录解包整块）、刷新期间原地留屏（只换一次内容、留屏期间键位与点击冻结、换块与触发词消失后不复用）、焦点回到输入框算新编辑动作、目录块整段替换与候选行的悬停完整路径；斜杠链接定位草稿或插入命令后复用原生补全，无额外筛选框，官方描述双语。
+- [mentionNav.test.ts](<mentionNav.test.ts>) — `@` / `/` 补全规则集、「上一层」导航（工作区内回退、M2 宿主下发行、M3 含 `..` 的段算术与根止步、陈旧帧不掺入其候选）、`@` 块的两层判定（块认得出来 + 抑制门：浏览入口恒弹、判定说能引用就不弹；带引号空格目录解包整块）、刷新期间原地留屏（只换一次内容、留屏期间键位与点击冻结、换块与触发词消失后不复用）、焦点回到输入框算新编辑动作、目录块整段替换与候选行的悬停完整路径；斜杠链接定位草稿或插入命令后复用原生补全，无额外筛选框，官方描述双语；执行真实请求 effect 验证包装标点命令的定位、聚焦与筛选，真实 hook 与同一 nativeEvent 的 ESC 兜底链覆盖组字放行。
 - [mentionLinks.test.ts](<mentionLinks.test.ts>) — 正文里 `@` 引用的判定：文件 / 目录按形状，会话按「草稿里的原始 token」或「已发出消息的 `sessionRefs` 清单」两种来路。
-- [mentionLinksUi.test.ts](<mentionLinksUi.test.ts>) — 引用与目录确认的斜杠渲染成行内链接，覆盖命令筛选/技能文件打开分派、路径与会话区间排除、官方六项双语及原文回退、`.mention-link` 行内样式。
+- [mentionLinksUi.test.ts](<mentionLinksUi.test.ts>) — 引用与目录确认的斜杠渲染成行内链接，覆盖命令筛选/技能文件打开分派、路径与会话区间排除、官方六项双语及原文回退、包装标点与路径边界、`.mention-link` 行内样式。
 - [emptyComposer.test.ts](<emptyComposer.test.ts>) — 空态下 `/` 命令栏与 `@` 候选的行为级回归（空态就绑在壳上，菜单读它、不另建），以及官方命令身份与技能 Markdown 路径过线。
 - [composerSend.test.ts](<composerSend.test.ts>) — 发送按钮的手势链路：按住 Ctrl / Cmd 时文字换成这一次真会走的那条路、点按钮发加速手势（真事件链 + 真 `Composer` 渲染），空闲仍发送、运行中无草稿仍是停止；**附件未就绪只置灰**（保留排队 / 插话文案、外层悬停给原因），不把生成中的发送变成停止。
-- [escapeOwner.test.ts](<escapeOwner.test.ts>) — ESC 归属链：手写事件链驱动真处理器（轨迹绘图区 `timelineEscape` + window 兜底 `escapeFallbackListener`），钉住菜单 > 原图 > 抽屉 > 并列浮层的先后、元素层消费后不停止生成、**只有会话页占据前景才停止**（轨迹页与抽屉在前景时不中止会话）、兜底唯一挂点与注销清理。
+- [escapeOwner.test.ts](<escapeOwner.test.ts>) — ESC 归属链：手写事件链驱动真处理器（轨迹绘图区 `timelineEscape` + window 兜底 `escapeFallbackListener`），钉住菜单 > 原图 > 抽屉 > 并列浮层的先后、元素层消费后不停止生成、**只有会话页占据前景才停止**（轨迹页与抽屉在前景时不中止会话）、兜底唯一挂点与注销清理；原生 / 合成事件组字标记均放行，不关闭浮层、不停止、不阻止输入法默认行为。
 - [blankSessionReuse.test.ts](<blankSessionReuse.test.ts>) — 「空态必有壳、首条消息发给谁」：`reusableBlank` 的本地 blank 位（不许把已经说过话的会话当空壳接回来）、空壳上选的模型留得住、已经在一条空壳上再点「+」是完全 no-op（不写回模型、也不另接一条别人的壳）。
 - [blankSessionNoop.test.ts](<blankSessionNoop.test.ts>) — 「点「+」」在用户 2026-10-17 21:00 口径下的行为级回归（真 `ChatController` + 假服务端）：当前已经停在一条**空壳**上时**完全 no-op**——不清输入框 / 附件 / 待发与失败回显、不改模型 / 思考强度 / 权限 / 预设 / 工作目录，不换绑定、不认领、不连后台、不发任何 RPC、不另建也不删（改过标题 / 计划 / 目标 / 挂着自动化任务、甚至断连的壳同样 no-op）；无壳 / 内容会话则照旧落壳：接回没人占用的现成空壳（同步换绑 + 一次指名认领）或真新建；空壳按窗口独占，两个窗口并发点「+」互不干扰。
 - [blankPresetAdopt.test.ts](<blankPresetAdopt.test.ts>) — 空壳日志里记着的 agent 预设被删掉之后还切不切得动：接回要指名 `sessionId`、先照原样报一次预设、服务端回 not-found 时不带预设再认领一次（退回部署默认），以及已在空壳上再点「+」完全 no-op、空壳被别的窗口拿着时不共享。
@@ -148,7 +148,7 @@
 - [produced.test.ts](<produced.test.ts>) — 「本轮产出文件」推导（`producedPath`，按成功的写类调用）。
 - [fileChange.test.ts](<fileChange.test.ts>) — 「哪些文件算有改动」判定（`git.openChange` 静默无操作防线）。
 - [diff.test.ts](<diff.test.ts>) — `shared/diff.ts`（`diffLines` / `hunkFromTexts` / `hunksFromMeta` 等）。
-- [styles.test.ts](<styles.test.ts>) — 样式不变量：`app.css` 上关键声明的文本断言（CSS 布局结果无头环境测不了）。
+- [styles.test.ts](<styles.test.ts>) — 样式不变量：`app.css` 上关键声明的文本断言，包括链接的行内布局、普通 / 悬停 / 修饰键与不可点击态覆盖顺序；声明断言不替代浏览器 computed style 验收。
 
 ### 工具行 / 工具卡契约
 

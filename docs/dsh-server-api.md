@@ -1087,7 +1087,7 @@ export type SettingsPathOpView = { op:'set'; path:string[]; value:JsonValue } | 
 → {"ok":true,"value":{"skills":[{"name":"build","description":"…","whenToUse":"…","modelInvocable":true}]}}
 ```
 
-`SkillEntry`（`⟨P⟩\dsh-api-session-controller\lib\types\types.d.ts:220-234`）。冷会话也能列，用的是记录下来的 preset 的 standing scope，**不会启动 Agent**。
+`SkillEntry`（`dsh-api-session-controller` 的 `lib/types/types.d.ts`）。冷会话也能列，用的是记录下来的 preset 的 standing scope，**不会启动 Agent**。0.2.1-rc.2 类型还提供可选的 `path?: string`：文件系统 provider 提供绝对 `SKILL.md` 路径，其它 provider 可以省略。扩展将有效非空字符串保留为 `skillPath`，只用服务端提供的路径打开指令文件；缺失路径的技能仍可补全与上色，不凭名字构造本机路径。技能不进入命令执行目录。
 
 ### 4.9 斜杠命令
 
@@ -1096,7 +1096,7 @@ POST /api/commands/list     {"args":{"agentId":"01J..."}}                     �
 POST /api/commands/execute  {"args":{"agentId":"01J...","line":"/compact","submittedAttachments":[]}} → CommandExecution | undefined
 ```
 
-`CommandDescriptor` = `{name, description, input?:{hint, attachments?}}`；`value === undefined` 表示**没有匹配任何命令**（不是错误）。
+`CommandDescriptor` = `{definitionId?, name, description, input?:{hint, attachments?}}`；`value === undefined` 表示**没有匹配任何命令**（不是错误）。0.2.1-rc.2 的 `dsh-commands/lib/types/types.d.ts` 将 `definitionId` 定义为稳定、由插件拥有的可选身份。扩展按此身份选取官方内置命令的中英文描述，不按可能同名的 `name` 猜身份；缺失或未知身份保留服务端 `description`，不翻译技能或第三方原文。
 `CommandExecution` = `{commandId, result: {kind:'success', text?, sourceEventSeq?} | {kind:'error', text}}`。
 
 **0.1.2 → 0.1.5 破坏性改名**：第三参数由 `images` 改为 `submittedAttachments`；`commands/list` 描述符里 `input.images` 改为 `input.attachments`。第三方实现用「新名优先、旧名回退」+ 记忆可用名来兼容（`⟨W⟩\src\dsh\apiClient.ts:485-523`）——**这是目前在跨版本客户端里唯一稳妥的做法**。

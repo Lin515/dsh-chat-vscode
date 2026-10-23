@@ -2211,4 +2211,43 @@ console.log("completion(hook): 斜杠链接复用文本域筛选，无额外输�
   assert.strictEqual(stale.html, "", "对照：没有 `/` 的草稿不会凭空开命令菜单");
 }
 console.log("completion(hook): 点击包装标点里的 /命令经 request effect 打开过滤菜单 ✓");
+// 真实补全 hook 的合成事件早退后，同一个 nativeEvent 仍会抵达 App 的 window 兜底。
+// 仅验证 onKeyDown 没 preventDefault 不足以保证生成未被误停，必须把整条归属链接起来。
+{
+  const { escapeFallbackListener, registerEscapeLayer, ESC_LAYER } = await import("../src/webview/escapeOwner");
+  for (const draft of ["plain text", "/pl"]) {
+    const current = frame(draft, draft.length);
+    const calls = { prevented: 0, stopped: 0, layer: 0, generation: 0 };
+    const native = {
+      key: "Escape", isComposing: true,
+      preventDefault: () => { calls.prevented++; },
+      stopPropagation: () => { calls.stopped++; },
+    };
+    const fallback = escapeFallbackListener({
+      isConversationForeground: () => true,
+      isRunning: () => true,
+      stop: () => { calls.generation++; },
+    });
+    const release = registerEscapeLayer({ priority: ESC_LAYER.floating, consume: () => { calls.layer++; return true; } });
+    try {
+      current.props.onKeyDown?.({ ...native, nativeEvent: native, currentTarget: current.node } as unknown as KeyboardEvent<HTMLTextAreaElement>);
+      fallback(native);
+      assert.deepStrictEqual(calls, { prevented: 0, stopped: 0, layer: 0, generation: 0 }, "组字 ESC 穿过真实 hook 和 window 兜底，不能消费、关层或停止生成");
+      const after = frame(draft, draft.length, {}, current.store);
+      assert.strictEqual(!!after.html, !!current.html, "组字 ESC 前后的候选可见状态保持不变");
+    } finally {
+      release();
+    }
+    // 无活跃全局层时，同一个组字事件也不能变成无人认领后的停止生成。
+    fallback(native);
+    assert.strictEqual(calls.generation, 0);
+
+    const ordinary = { ...native, isComposing: false };
+    current.props.onKeyDown?.({ ...ordinary, nativeEvent: ordinary, currentTarget: current.node } as unknown as KeyboardEvent<HTMLTextAreaElement>);
+    fallback(ordinary);
+    assert.strictEqual(calls.generation, draft === "/pl" ? 0 : 1, "非组字对照：补全消费 ESC，否则由会话兜底停止生成");
+    assert.strictEqual(calls.prevented, draft === "/pl" ? 1 : 0);
+  }
+}
+console.log("completion(hook): 组字 ESC 经同一个 nativeEvent 到达全局兜底仍完整放行 ✓");
 console.log("\nmentionNav: all assertions passed");
