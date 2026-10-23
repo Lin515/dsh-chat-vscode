@@ -260,6 +260,84 @@ const sessionToken = (label: string, id: string): string =>
   console.log("mentionLinksUi: 斜杠渲染、边界、重叠与打开分派 ✓");
 }
 
+// 命令前界：句子的引号 / 括号 / 包装标点属于上下文，不属于命令名；路径、URI、
+// 盘符、UNC 与 markdown 目标不凭形状染色。扫描与输入框触发共用同一条前界规则。
+{
+  const commands: CommandView[] = [
+    { name: "plan", definitionId: "@deepseek-ai/dsh-plan-mode", description: "Enter plan mode" },
+    { name: "audit", description: "Audit", skill: true, skillPath: "skills/audit/SKILL.md" },
+  ];
+  const wrapped = [
+    "/plan",
+    "(/plan)",
+    "（/plan）",
+    "【/plan】",
+    "「/plan」",
+    "『/plan』",
+    "《/plan》",
+    "[/plan]",
+    "{/plan}",
+    "\"/plan\"",
+    "'/plan'",
+    "`/plan`",
+    "**/plan**",
+    "“/plan”",
+    "先看 (/plan) 再继续",
+  ];
+  for (const text of wrapped) {
+    const spans = scanCommandLinks(text, commands);
+    assert.equal(spans.length, 1, `包装标点旁的一条完整命令必须被认出来：${text}`);
+    const span = spans[0]!;
+    assert.equal(
+      text.slice(span.start, span.end),
+      "/plan",
+      `区间只覆盖 /plan，包装标点留在正文里：${text}`,
+    );
+    assert.deepEqual(span.target, { kind: "command", name: "plan" }, `目标必须还是那条命令：${text}`);
+  }
+
+  const rejected: Array<[string, string]> = [
+    ["https://host/plan", "URI 路径里的 /plan 不是命令"],
+    ["file:///C:/plan", "file URI 里的 /plan 不是命令"],
+    ["C:/plan", "盘符路径里的 /plan 不是命令"],
+    ["\\\\server\\share/plan", "UNC 路径里的 /plan 不是命令"],
+    ["src/plan", "相对路径里的 /plan 不是命令"],
+    ["./plan", "当前目录路径里的 /plan 不是命令"],
+    ["../plan", "父目录路径里的 /plan 不是命令"],
+    ["word/plan", "单词与命令之间没有分隔符"],
+    ["//plan", "双斜杠不是命令前界"],
+    ["@/plan", "mention 的 @/ 路径不是命令"],
+    ["__/plan__", "下划线是合法命令字符，不能当下划线包装"],
+    ["[标签](/plan)", "markdown 链接目标不是命令"],
+    ["@[标签](/plan)", "mention 的链接目标不是命令"],
+    ["/planner", "完整名优先，/plan 不能从 /planner 里切一段"],
+    ["/plan.md", "扩展名说明这不是一条完整命令"],
+    ["/plan/file", "子路径说明这不是一条完整命令"],
+    ["/plan\\file", "反斜杠子路径说明这不是一条完整命令"],
+    ["/plan-x", "- 是命令名字符，不能切断命令名"],
+    ["/plan_x", "_ 是命令名字符，不能切断命令名"],
+    ["/unknown", "目录里没有的名字不凭形状染色"],
+  ];
+  for (const [text, message] of rejected) {
+    assert.deepEqual(scanCommandLinks(text, commands), [], `${message}：${text}`);
+  }
+
+  // 包装标点必须原样留在按钮外：切段只按扫描区间，不能把句子的引号 / 括号吃进链接。
+  const html = render("【/plan】与 **/audit**", "zh", undefined, commands);
+  assert.match(
+    html,
+    /【<button[^>]*class="mention-link"[^>]*>\/plan<\/button>】/u,
+    `【】必须留在链接外：${html}`,
+  );
+  assert.match(
+    html,
+    /\*\*<button[^>]*class="mention-link"[^>]*>\/audit<\/button>\*\*/u,
+    `** 必须留在链接外：${html}`,
+  );
+  assert.ok(html.includes(`title="${zh.commandOpenMenu}"`), "可点命令仍用「打开并筛选」那一档提示");
+  console.log("mentionLinksUi: 命令前界（包装标点 / 路径 / URI / mention） ✓");
+}
+
 // 精确使用官方描述；不能把同名第三方命令误译成内置命令。
 {
   const cases = [

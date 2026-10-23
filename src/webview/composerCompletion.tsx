@@ -21,7 +21,7 @@
  *    动作有效：焦点重新进入输入框时清掉，见 `onFocus`）；
  * 5. ESC：弹层打开时由**元素层**（本次输入）消费——关掉弹层，且不让这次按键落到
  *    归属链的「停止生成」兜底上（见 `./escapeOwner.ts`）；
- * 6. `/` 只有在**行首或空白后**且名字在命令目录里才走命令通道；`@` 走自己的内容块判定
+ * 6. `/` 只有在**行首、空白或包装标点之后**且名字在命令目录里才走命令通道；`@` 走自己的内容块判定
  *    （见 `findTrigger`），两条通道的边界规则相同、判据不同；
  * 7. 指针悬停改高亮**只认 `mousemove`**：列表为露出键盘选中的那行而滚动时，浏览器会把
  *    `mouseenter` 补发给「刚滚到静止指针底下」的行，等于凭空抢走键盘的高亮（官方
@@ -65,7 +65,7 @@ import { mentionParent } from "./mentionNav";
 import { resolveDisplayPath } from "./pathDisplay";
 import { formatClock } from "./components/primitives";
 import type { Texts } from "./texts";
-import { commandDescription, type CommandMenuRequest } from "./commandLinks";
+import { commandDescription, isCommandTokenEnd, isCommandTokenStart, type CommandMenuRequest } from "./commandLinks";
 
 /* ============================ 纯逻辑（可离线断言） ============================ */
 
@@ -114,9 +114,10 @@ interface PaintedCandidates {
  * 找出光标前正在输入的触发词。
  *
  * `/` 与 `@` **不是同一条规则**：
- * - `/`：以「行首或空白」为边界（只认行首的话，用户在已有文字后打空格再输 `/` 就弹不出
- *   菜单，很常见）；而路径里的 `/`（`src/dsh/controller.ts`）前面是非空白字符，
- *   用空白边界就能既允许句中触发、又不误判路径。查询串就是光标前那一段。
+ * - `/`：以「行首、空白或包装标点」为边界（只认行首的话，用户在已有文字后打空格再输 `/`
+ *   就弹不出菜单，很常见；`(/plan)`、`【/plan】` 这类句子包装也常见）；而路径里的 `/`
+ *   （`src/dsh/controller.ts`）、URI / 盘符 / UNC 与 mention 里的 `/` 前面都不是这些
+ *   边界字符，用同一条白名单既允许句中触发、又不误判路径。查询串就是光标前那一段。
  * - `@`：光标落在哪个 `@` 内容块里（见 {@link mentionBlockAt}）就以**整块**为查询串，
  *   块里有内容就触发——打会话 id / 名字片段（`@session-…`、`@web`）与目录块一样要弹，
  *   服务端正是拿这个查询串列目录、筛对话（用户 2026-10-11 报的现场：会话 id 打进去
@@ -157,12 +158,25 @@ export function findTrigger(text: string, caret: number, sessions?: ComposerSess
     }
   }
   const before = text.slice(0, at);
-  const command = /(^|\s)\/([^\s/]*)$/.exec(before);
-  if (command) {
-    const query = command[2] ?? "";
-    return { kind: "command", start: before.length - query.length - 1, query };
-  }
+  const command = commandTriggerAt(before);
+  if (command) return command;
   return undefined;
+}
+
+/**
+ * 光标前的 `/命令` 触发词。
+ *
+ * 前界与扫描共用 {@link isCommandTokenStart}：行首、空白与包装标点都算；路径 /
+ * URI / 盘符 / UNC / mention / 单词之后的 `/` 不算。查询串只要求不含空白——输入
+ * 补全容许尚未匹配任何命令的前缀（例如 `/pl`、`(/zzz`），目录过滤交给
+ * `rankCandidates`，不在这里提前禁掉。
+ */
+function commandTriggerAt(before: string): Trigger | undefined {
+  const start = before.lastIndexOf("/");
+  if (start < 0 || !isCommandTokenStart(before, start)) return undefined;
+  const query = before.slice(start + 1);
+  if (/\s/u.test(query)) return undefined;
+  return { kind: "command", start, query };
 }
 
 /**
@@ -579,6 +593,34 @@ export function commandMenuDraft(request: CommandMenuRequest, draft: string, car
   return { text: inserted.value, caret: inserted.value.indexOf(token, at) + token.length };
 }
 
+/**
+ * 命令请求落点之后应该出现的触发词。
+ *
+ * 带 `range` 的请求来自正文 / 草稿里**已经存在**的命令链接：扫描时排除了路径、
+ * URI 与包装标点，这个 range 就是当时认出来的那一段。点击后光标落在 `range.end`，
+ * 若这里再让 `findTrigger` 对着同一个位置重扫一遍，就会把「扫描认得出、触发规则
+ * 认不出」的差异变成「链接蓝且可点、点开却没有菜单」（用户报的 `(/plan)` 现场）。
+ *
+ * 所以 range **逐字命中**当前文本时直接构造触发词；只要文本、位置或前后界与
+ * 当时不再一致（草稿被改、链接被移走），就**不**凭旧请求伪造触发词，也不退回
+ * 重扫去猜另一条命令。没有 range 的请求（宿主插入 `/命令`）仍按插入后的文本重扫。
+ */
+export function commandRequestTrigger(
+  request: CommandMenuRequest,
+  text: string,
+  caret: number,
+  sessions?: ComposerSessionDraft,
+): Trigger | undefined {
+  if (request.range) {
+    const { start, end } = request.range;
+    const exact = start >= 0 && end >= start && end <= text.length && caret === end &&
+      text.slice(start, end) === `/${request.query}` &&
+      isCommandTokenStart(text, start) && isCommandTokenEnd(text, end);
+    return exact ? { kind: "command", start, query: request.query } : undefined;
+  }
+  return findTrigger(text, caret, sessions);
+}
+
 /* ============================ hook ============================ */
 
 /** `useComposerCompletion` 的输入。 */
@@ -920,7 +962,7 @@ function useCompletion(
       node.focus();
     }
     dismissedRef.current = null;
-    setTrigger(findTrigger(written.text, written.caret, current.sessionDraft));
+    setTrigger(commandRequestTrigger(request, written.text, written.caret, current.sessionDraft));
     setHighlight(0);
   }, [commandRequest?.id]);
 

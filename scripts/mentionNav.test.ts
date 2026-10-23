@@ -21,6 +21,7 @@
 import assert from "node:assert";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import * as ReactRuntime from "react";
 import {
   createElement,
   type ChangeEvent,
@@ -57,6 +58,7 @@ const POSTED: Array<Record<string, unknown>> = [];
 const {
   candidateRows,
   commandMenuDraft,
+  commandRequestTrigger,
   clickAction,
   ComposerCompletionState,
   findTrigger,
@@ -70,6 +72,7 @@ const {
 type ComposerCompletionStateHook = import("../src/webview/composerCompletion").ComposerCompletionStateHook;
 type MentionCandidate = import("../src/webview/composerCompletion").MentionCandidate;
 type UseComposerCompletionInput = import("../src/webview/composerCompletion").UseComposerCompletionInput;
+const { scanCommandLinks } = await import("../src/webview/commandLinks");
 
 /**
  * 界面文案（中文词典）：分组标题、`Tab 进入目录` 提示这些都在它里面。
@@ -364,7 +367,7 @@ console.log("completion: Tab 进入目录 / Enter 引用整个目录（「..」�
 // `scripts/mentionResolve.test.ts`。**浏览入口**（裸 `@`、以分隔符结尾的路径）不做判定、
 // 恒弹：那是「进去看这一层」的意思，目录在不在都要能进去。
 {
-  // `/` 命令通道**不动**：只认行首 / 空白后的 `/`，查询就是光标前那一段
+  // `/` 命令通道：行首 / 空白 / 包装标点之后；查询就是光标前那一段（路径与 URI 不算）
   assert.deepStrictEqual(findTrigger("/", 1), { kind: "command", start: 0, query: "" }, "行首一个 `/` 就触发命令");
   assert.deepStrictEqual(findTrigger("/pl", 3), { kind: "command", start: 0, query: "pl" });
   assert.deepStrictEqual(
@@ -634,6 +637,82 @@ console.log("completion: Tab 进入目录 / Enter 引用整个目录（「..」�
 }
 console.log("completion: 触发词判定（`/` 行首不变；`@` 认整块，弹不弹由宿主判） ✓");
 
+// ---------- 8b. `/` 前界与包装标点：扫描 / 触发 / 点击共用同一条规则 ----------
+//
+// 用户报障：`(/plan)` 在正文里蓝且可点（扫描允许左括号），点开却拿不到菜单——
+// `findTrigger` 只认行首或空白，range 末尾重扫得到 null。两端必须同一条前界：
+// 行首、空白与句子的包装标点（引号 / 方括号 / 中文书名号 / markdown 的 ** 等）；
+// 单词、路径、URI、盘符、UNC、mention 与下划线包装都不算（`_` 是合法命令字符）。
+// 后界仍是「完整命令名」：扩展名 / 子路径 / 名字后续字符都不能切一半。
+{
+  const plan: CommandView = { name: "plan", description: "计划模式" };
+  const wrapped: Array<[string, number, number]> = [
+    ["(/plan)", 6, 1],
+    ["（/plan）", 6, 1],
+    ["( /plan", 7, 2],
+    ["【/plan】", 6, 1],
+    ["「/plan」", 6, 1],
+    ["『/plan』", 6, 1],
+    ["《/plan》", 6, 1],
+    ["[/plan]", 6, 1],
+    ["{/plan}", 6, 1],
+    ['"/plan"', 6, 1],
+    ["'/plan'", 6, 1],
+    ["`/plan`", 6, 1],
+    ["**/plan**", 7, 2],
+    ["“/plan”", 6, 1],
+  ];
+  for (const [text, caret, start] of wrapped) {
+    assert.deepStrictEqual(
+      findTrigger(text, caret),
+      { kind: "command", start, query: "plan" },
+      `包装标点旁的 /plan 必须触发命令通道：${text}`,
+    );
+  }
+
+  // 点击路径同源：扫描出的区间末尾正是触发词末尾（`(/plan)` 后面那个 `)` 不属于 token）。
+  const clicked = "先看 (/plan) 再继续";
+  const clickedSpan = scanCommandLinks(clicked, [plan])[0];
+  assert.ok(clickedSpan, "前提：扫描能认出 `(/plan)`");
+  assert.deepStrictEqual(
+    findTrigger(clicked, clickedSpan.end),
+    { kind: "command", start: clickedSpan.start, query: "plan" },
+    "点击区间末尾重扫仍要得到同一个触发词（旧实现只认空白，重扫得 null）",
+  );
+  assert.strictEqual(clickedSpan.end, clicked.indexOf("/plan") + "/plan".length, "区间不含右括号");
+
+  // 输入补全仍容许未匹配前缀 / 未知查询：这里不做目录过滤，只负责认出触发词。
+  assert.deepStrictEqual(findTrigger("【/pl", 5), { kind: "command", start: 1, query: "pl" }, "包装标点里的部分前缀仍触发");
+  assert.deepStrictEqual(findTrigger("(/zzz", 5), { kind: "command", start: 1, query: "zzz" }, "未知查询仍交给候选过滤（不能在这里禁掉补全）");
+  assert.deepStrictEqual(findTrigger("(/", 3), { kind: "command", start: 1, query: "" }, "左括号后刚敲下 / 就要弹");
+
+  const rejected: Array<[string, string]> = [
+    ["https://host/plan", "URI 路径里的 /plan"],
+    ["file:///C:/plan", "file URI 里的 /plan"],
+    ["C:/plan", "盘符路径里的 /plan"],
+    ["\\\\server\\share/plan", "UNC 路径里的 /plan"],
+    ["src/plan", "相对路径里的 /plan"],
+    ["./plan", "当前目录路径里的 /plan"],
+    ["../plan", "父目录路径里的 /plan"],
+    ["word/plan", "单词之后的 /plan"],
+    ["__/plan", "下划线是合法命令字符，不能当下划线包装"],
+    ["//plan", "双斜杠"],
+    ["/plan mode", "命令参数之后"],
+    ["(/plan mode)", "包装标点里的命令参数之后"],
+  ];
+  for (const [text, message] of rejected) {
+    assert.strictEqual(findTrigger(text, text.length), undefined, `${message}不得触发：${text}`);
+  }
+  // `@/plan` 走 mention 通道（不是命令）：同一条前界白名单里没有 `@`，所以命令分支
+  // 不会接它；但 `@` 自己的内容块判定仍要把它认成 mention。
+  assert.deepStrictEqual(
+    findTrigger("@/plan", 6),
+    { kind: "mention", start: 0, query: "/plan" },
+    "mention 的 @/ 路径仍归 mention 通道，不能被命令通道抢走",
+  );
+}
+console.log("completion: 命令前界（包装标点允许；单词 / 路径 / URI / 参数不误触发） ✓");
+
 // ---------- 9. 弹层可见性 ----------
 {
   assert.strictEqual(popoverVisible(undefined, 3), false, "没有触发词就没有弹层");
@@ -666,6 +745,50 @@ console.log("completion: 弹层何时出现 ✓");
 
 /* ================= hook 的行为（真实渲染，事件走假对象） ================= */
 
+/**
+ * `react-dom/server` 不执行 passive effect（`useEffect` 只在浏览器提交阶段跑）。
+ *
+ * 但「点击链接之后 commandRequest 的 effect 真的改写草稿 / 落光标 / 开菜单」正是
+ * 这一轮要钉的链路，只调 `commandMenuDraft` + 再渲染一帧会把 effect 整段跳过。
+ * 于是渲染期间把 React 的当前 dispatcher 上的 `useEffect` 换成一个**收集器**：
+ * 组件照常按 hook 规则登记，回调攒在这一帧上，由 `flushEffects` 在渲染结束后
+ * 手动执行（此时闭包、ref 与假 `setState` 都是真的，只有「浏览器何时调用它」被
+ * 换成了测试驱动）。
+ *
+ * 只替换 `useEffect`：`useLayoutEffect` 在 server 上本来就是 no-op，本文件另有
+ * 断言（候选滚动）走元素 props，不需要它。
+ */
+interface EffectDispatcher {
+  useEffect?: (create: () => void | (() => void), deps?: readonly unknown[]) => void;
+}
+
+const REACT_INTERNALS = (
+  ReactRuntime as unknown as {
+    __SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED?: {
+      ReactCurrentDispatcher?: { current?: EffectDispatcher };
+    };
+  }
+).__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED;
+
+function captureEffects(effects: Array<() => void>): () => void {
+  const dispatcher = REACT_INTERNALS?.ReactCurrentDispatcher?.current;
+  if (!dispatcher) return () => {};
+  const original = dispatcher.useEffect;
+  dispatcher.useEffect = (create) => {
+    effects.push(() => {
+      create();
+    });
+  };
+  return () => {
+    dispatcher.useEffect = original;
+  };
+}
+
+/** 执行这一帧捕获到的全部 passive effect（= 浏览器提交后的那一次）。 */
+function flushEffects(frame: Frame): void {
+  for (const effect of frame.effects.splice(0, frame.effects.length)) effect();
+}
+
 /** 假文本域节点：只带 hook 会读 / 会写的字段，并记下最后一次落光标的位置。 */
 function fakeTextarea(value: string, caret: number) {
   const node = {
@@ -680,6 +803,8 @@ function fakeTextarea(value: string, caret: number) {
     setSelectionRange(start: number) {
       node.lastSelection = start;
     },
+    addEventListener() {},
+    removeEventListener() {},
   };
   return node;
 }
@@ -702,6 +827,8 @@ interface Frame {
   popoverNode: ReactNode;
   props: ReturnType<typeof useComposerCompletion>["textareaProps"];
   node: FakeTextarea;
+  /** 这一帧登记、尚未执行的 passive effect（由 `flushEffects` 手动驱动）。 */
+  effects: Array<() => void>;
   /** 假 `useState` 的状态表（跨帧保留走它）。 */
   store: Map<number, unknown>;
 }
@@ -746,6 +873,7 @@ function frame(
     html: "",
     popoverNode: null,
     node,
+    effects: [],
     store,
     props: {} as Frame["props"],
   };
@@ -764,26 +892,33 @@ function frame(
 
   let captured: ReturnType<typeof useComposerCompletion> | undefined;
   function Probe() {
-    captured = useComposerCompletion({
-      draft,
-      caret,
-      commands: COMMANDS,
-      // `fileRefs.query` 是**服务器那次查询的查询串**（`files/list` 帧带回来的那一个），
-      // 对 `@` 块就是整块的查询串——与真实宿主同形。界面按它判「这一帧是不是这一层的」
-      // （旧帧的文件行不许充当这一层的候选），所以夹具不能拿整份草稿当查询串。
-      fileRefs: {
-        query: findTrigger(draft, caret, undefined)?.query ?? "",
-        items: FILES,
-        sessions: SESSIONS,
-      },
-      texts: TEXTS,
-      onDraft: (text) => {
-        out.draft = text;
-        out.written.push(text);
-      },
-      textareaRef: { current: node as unknown as HTMLTextAreaElement },
-      ...overrides,
-    });
+    // 只在本组件跑 hook 的这段时间里换掉 dispatcher 的 `useEffect`：回调攒到
+    // `out.effects`，跑完立即还原，后续渲染弹层元素不受影响。
+    const restore = captureEffects(out.effects);
+    try {
+      captured = useComposerCompletion({
+        draft,
+        caret,
+        commands: COMMANDS,
+        // `fileRefs.query` 是**服务器那次查询的查询串**（`files/list` 帧带回来的那一个），
+        // 对 `@` 块就是整块的查询串——与真实宿主同形。界面按它判「这一帧是不是这一层的」
+        // （旧帧的文件行不许充当这一层的候选），所以夹具不能拿整份草稿当查询串。
+        fileRefs: {
+          query: findTrigger(draft, caret, undefined)?.query ?? "",
+          items: FILES,
+          sessions: SESSIONS,
+        },
+        texts: TEXTS,
+        onDraft: (text) => {
+          out.draft = text;
+          out.written.push(text);
+        },
+        textareaRef: { current: node as unknown as HTMLTextAreaElement },
+        ...overrides,
+      });
+    } finally {
+      restore();
+    }
     return null;
   }
   // 状态钩子经 context 注入（见 frame 的注释）。
@@ -1997,4 +2132,83 @@ console.log("mentionNav: M3 相对 `..` 向上（深度算术 / 盘根与共享�
   assert.deepEqual(posted.map((entry) => entry.type), ["setDraft"]);
 }
 console.log("completion(hook): 斜杠链接复用文本域筛选，无额外输入或执行 ✓");
+
+// ---------- 21. 点击被包装标点包住的 `/命令`：真实 commandRequest effect 开过滤菜单 ----------
+//
+// 用户报障：`(/plan)` 在正文里是蓝的、也点了，菜单却不出来。原因是点击把光标落到
+// `range.end`（命令名末尾，右括号之前），随后重扫触发词的规则只认空白。
+//
+// 这里不手工拼下一帧：`frame(..., { commandRequest })` 走的是真 hook，effect 回调由
+// `captureEffects` 捕获、`flushEffects` 执行，随后用同一个状态表再渲染，断言 effect
+// 真的落了光标并让菜单按被点的命令名筛出候选。
+{
+  const draft = "先看 (/plan) 再说";
+  const span = scanCommandLinks(draft, COMMANDS).find((item) => item.text === "/plan");
+  assert.ok(span, "前提：`(/plan)` 必须被扫描成可点命令");
+  const request = { id: 71, query: "plan", range: { start: span.start, end: span.end } };
+  const click = frame(draft, 6, { commandRequest: request });
+  assert.ok(click.effects.length > 0, "渲染时必须捕获到 hook 登记的真实 passive effect");
+
+  POSTED.length = 0;
+  flushEffects(click);
+  assert.strictEqual(click.draft, draft, "range 定位不改写草稿（不重复插入、不吞右括号）");
+  assert.strictEqual(click.node.value, draft, "文本域内容保持原样");
+  assert.strictEqual(click.node.lastSelection, span.end, "effect 把光标落到 range.end");
+  assert.ok(click.node.focused > 0, "effect 把焦点还给输入框");
+  assert.deepStrictEqual(
+    POSTED.filter((entry) => entry.type === "setDraft"),
+    [],
+    "只打开筛选菜单，不写草稿、不发送",
+  );
+
+  // 同一状态表再渲染一帧：trigger 必须已经是 /plan（这来自 effect 里的 setTrigger）。
+  const opened = frame(click.node.value, click.node.lastSelection ?? click.caret, { commandRequest: undefined }, click.store);
+  assert.ok(opened.html.includes("popover-item"), "effect 之后必须画出候选弹层");
+  assert.ok(opened.html.includes(">/plan<"), "菜单必须按被点的命令名过滤");
+  assert.ok(!opened.html.includes(">/zerocandidate<"), "其他命令不得混进来");
+
+  // range 复核：命中当前文本就按 range 构造触发词；前界 / 后界 / 文本任何一处对不上
+  // 都不许凭旧请求伪造（陈旧点击最多是“没反应”，不能打开另一条命令）。
+  assert.deepStrictEqual(
+    commandRequestTrigger(request, draft, span.end),
+    { kind: "command", start: span.start, query: "plan" },
+    "range 与当前文本逐字匹配：直接构造触发词，不依赖重扫",
+  );
+  assert.strictEqual(
+    commandRequestTrigger(request, draft, 0),
+    undefined,
+    "range 只在它自己的落点上生效（光标别处不按旧请求开菜单）",
+  );
+  assert.strictEqual(
+    commandRequestTrigger(request, "先看 x/plan", span.end),
+    undefined,
+    "range 前界已失效（换成单词字符）：不伪造触发词",
+  );
+  assert.strictEqual(
+    commandRequestTrigger(request, "先看 (/plan.md)", span.end),
+    undefined,
+    "range 后界已失效（多了扩展名）：不当作完整命令",
+  );
+  assert.strictEqual(
+    commandRequestTrigger(request, "先看 plan 再说", span.end),
+    undefined,
+    "range 已对不上当前文本：不凭旧请求开菜单",
+  );
+  assert.deepStrictEqual(
+    commandRequestTrigger({ id: 73, query: "plan" }, "before /plan after", 12),
+    { kind: "command", start: 7, query: "plan" },
+    "没有 range 的插入请求仍按插入后的文本重扫",
+  );
+
+  // 对照：宿主下发“插入 /命令”时没有 range，effect 走插入分支并写出草稿。
+  const insert = frame("before after", 7, { commandRequest: { id: 72, query: "plan" } });
+  flushEffects(insert);
+  assert.strictEqual(insert.draft, "before /plan after", "无 range 的请求仍按光标处插入");
+  assert.strictEqual(insert.node.lastSelection, insert.draft.indexOf("/plan") + "/plan".length, "光标落在插入的命令名之后");
+  assert.strictEqual(insert.effects.length, 0, "这一帧的 effect 已经执行完");
+
+  const stale = frame("先看 plan 再说", 9);
+  assert.strictEqual(stale.html, "", "对照：没有 `/` 的草稿不会凭空开命令菜单");
+}
+console.log("completion(hook): 点击包装标点里的 /命令经 request effect 打开过滤菜单 ✓");
 console.log("\nmentionNav: all assertions passed");
