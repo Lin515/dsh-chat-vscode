@@ -5,8 +5,9 @@
  * 为什么要有镜像层：输入框是 `<textarea>`，它里面是**一段连续的纯文本**，没有任何
  * 行内结构——CSS 选不中「其中某几个字」。所以可见的字全部由这层 `div` 画（文本域
  * 自己的字是透明的，见 `styles/app.css` 的 `.composer-input`），两层用**同一个
- * 类名**保证字号 / 行高 / 折行口径逐字一致；宽度、高度与滚动位置由组件从文本域同步
- * （镜像层自己量不出文本域的可视区）。
+ * 类名**保证字号 / 行高 / 折行口径逐字一致；宽度取文本域 content box 的**分数值**、
+ * 高度与滚动位置由组件从文本域同步（镜像层自己量不出文本域的可视区；`clientWidth` 是
+ * 取整后的值，见 {@link mirrorBoxWidth}）。
  *
  * 第一条硬约束是：**镜像层与文本域的可见文本必须逐字相同**——否则后续文字全部错位。
  * 本模块只切输入切片，不负责折叠。会话引用先由 `ComposerSessionDraft` 投影成 `@标题`，
@@ -58,6 +59,35 @@ export function draftSegments(draft: string, commands: readonly CommandView[] = 
   }
   if (cursor < draft.length) out.push({ text: draft.slice(cursor), link: false, at: cursor });
   return out;
+}
+
+/**
+ * 镜像层（border-box）应有的宽度。
+ *
+ * 文本域真正用来排字的宽度是 **content box 的分数值**：布局单位是 1/64 CSS px，
+ * 面板宽度、内边距与滚动条都会带小数。`clientWidth` 只会给出四舍五入后的整数
+ * （实测 400.59375 的文本域 `clientWidth` 是 401），直接拿它当镜像层宽度，镜像层
+ * 就比文本域宽出零点几个像素——恰好卡在折行边界上时，最后一两个字在镜像层留在
+ * 第一行，而文本域（光标、选区、点击落点都由它排版）已经把它排到第二行，于是
+ * 光标看起来比文字多走了一个「虚空字」。宽度必须来自分数值：优先用
+ * `ResizeObserver` 的 content box（已扣掉滚动条与内边距），取不到时用
+ * border-box 宽度减掉「边框 + 滚动条」。
+ */
+export function mirrorBoxWidth(input: {
+  /** ResizeObserver 报的 content box 宽度；还没报过时省略。 */
+  contentWidth?: number;
+  /** `getBoundingClientRect().width`（border box，分数值）。 */
+  borderWidth: number;
+  /** `offsetWidth - clientWidth`（边框 + 滚动条，整数）。 */
+  borderAndScrollbar: number;
+  paddingLeft: number;
+  paddingRight: number;
+}): number {
+  const padding = input.paddingLeft + input.paddingRight;
+  if (input.contentWidth !== undefined && Number.isFinite(input.contentWidth)) {
+    return input.contentWidth + padding;
+  }
+  return input.borderWidth - input.borderAndScrollbar;
 }
 
 /** 一个矩形：`getClientRects()` 的元素就够用，测试里也不必造真的 `DOMRect`。 */

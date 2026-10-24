@@ -45,7 +45,7 @@ import type { PendingInteraction } from "../pendingInteraction";
 import { useComposerCompletion } from "../composerCompletion";
 import { consumeEscape } from "../escapeOwner";
 import { clickGestureHandler, sendButtonView, watchModifierKeys } from "../composerSend";
-import { hitsAnyRect } from "../composerMention";
+import { hitsAnyRect, mirrorBoxWidth } from "../composerMention";
 import { ComposerSessionDraft } from "../composerSessionDraft";
 import { openMentionTarget } from "../mentionOpen";
 import { scanCommandLinks, useCommandLinks } from "../commandLinks";
@@ -394,18 +394,30 @@ export function Composer({
   // 本身（选举结果见 `pendingInteraction.ts`），下面的运行中那行直接读它。
 
   /**
-   * 把镜像层的几何对齐到文本域：宽度取它的 content box（`clientWidth` 已扣掉滚动条与
-   * 内边距）、高度与滚动位置照抄。镜像层自己量不出这些——它是个绝对定位的浮层，不知道
-   * 文本域此刻多宽、滚到了哪一行。
+   * 把镜像层的几何对齐到文本域：宽度取**分数值**的 content box、高度与滚动位置照抄。
+   * 镜像层自己量不出这些——它是个绝对定位的浮层，不知道文本域此刻多宽、滚到了哪一行。
+   *
+   * 宽度不能取 `clientWidth`：那是四舍五入后的整数，比真实排字宽度最多多/少 0.5px，
+   * 折行边界会因此差一个字（判据与实测见 `mirrorBoxWidth`）。`contentWidth` 由下面
+   * 盯尺寸的 `ResizeObserver` 给；绘制前那次调用还没有它，按 border box 减边框与
+   * 滚动条算，两者在滚动条宽度为整数时相等。
    *
    * 只读两个 ref，所以可以稳定（空依赖）：绘制前那一处与下面盯尺寸的 `ResizeObserver`
    * 共用同一个对齐动作。
    */
-  const syncMirror = useCallback(() => {
+  const syncMirror = useCallback((contentWidth?: number) => {
     const el = textareaRef.current;
     const mirror = mirrorRef.current;
     if (!el || !mirror) return;
-    mirror.style.width = `${el.clientWidth}px`;
+    const style = getComputedStyle(el);
+    const px = (value: string) => Number.parseFloat(value) || 0;
+    mirror.style.width = `${mirrorBoxWidth({
+      contentWidth,
+      borderWidth: el.getBoundingClientRect().width,
+      borderAndScrollbar: el.offsetWidth - el.clientWidth,
+      paddingLeft: px(style.paddingLeft),
+      paddingRight: px(style.paddingRight),
+    })}px`;
     mirror.style.height = `${el.clientHeight}px`;
     mirror.scrollTop = el.scrollTop;
   }, []);
@@ -452,12 +464,16 @@ export function Composer({
    * 上面那个 layout effect 只在草稿 / 字号变时跑：拖侧栏、开合面板、切分编辑器都不会
    * 动草稿，而文本域的宽度一变，镜像层的换行位置就停在旧宽度上——整段蓝字与文字错位，
    * 直到用户敲下一个字才恢复。`ResizeObserver` 盯的就是文本域自己的盒子，宽度、高度
-   * （含滚动条出现那一下）都收得住。
+   * （含滚动条出现那一下）都收得住；这里把 content box 的**分数宽度**一并带过去，
+   * 镜像层才能和文本域在同一个折行宽度上排版。
    */
   useEffect(() => {
     const el = textareaRef.current;
     if (!el || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(() => syncMirror());
+    const observer = new ResizeObserver((entries) => {
+      const size = entries[0]?.contentBoxSize?.[0]?.inlineSize ?? entries[0]?.contentRect.width;
+      syncMirror(size);
+    });
     observer.observe(el);
     return () => observer.disconnect();
   }, [syncMirror]);

@@ -11,6 +11,9 @@
  *    的位置都会跟着漂，用户看到的就是一串错位的蓝字；
  * 2. **谁上色**：只有解得开目标的引用上链接色（解不开会话 id 的那种点不开，也不该看着
  *    像链接）。纯切段函数不改变输入；会话标题投影与绑定由会话草稿端口另行验证。
+ * 3. **宽度用分数值**：镜像层的宽度必须等于文本域 content box 的分数宽度 + 内边距。
+ *    `clientWidth` 是四舍五入后的整数，卡在折行边界上会让镜像层与文本域差一个字，
+ *    光标（文本域排版）与看得见的字（镜像层）因此错开（`mirrorBoxWidth`）。
  *
  * 另有一组样式 / 接线断言：镜像层必须复用 `.composer-input` 的排版（自己另写一份字号 /
  * 行高 / 内边距就一定会与文本域漂开）、文本域字形透明但光标可见、选区半透明（不透明会把
@@ -21,7 +24,7 @@
 import assert from "node:assert";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { draftSegments, hitsAnyRect } from "../src/webview/composerMention";
+import { draftSegments, hitsAnyRect, mirrorBoxWidth } from "../src/webview/composerMention";
 
 /**
  * 会话引用的**原始 token**（草稿 / 提交给服务端的就是它；服务端落盘时才折成 `@标题`）。
@@ -199,7 +202,56 @@ const sessionToken = (label: string, id: string): string =>
   console.log("composerMention: 镜像层复用排版、选区半透明、占位符可见 ✓");
 }
 
-// ---------- 8. 接线：镜像渲染、几何同步、命中判定的那几处不能各写一份 ----------
+// ---------- 8. 镜像层宽度：用分数值，不能拿四舍五入后的 clientWidth ----------
+{
+  /**
+   * 2026-10-24 现场（预览页 420.59375px 宽）：文本域 border box 400.59375、
+   * `clientWidth` 401、左右内边距各 10，真实排字宽度 380.59375。镜像层若按
+   * `clientWidth` 设成 401（content 381），一行宽 380.984375 的字会在镜像层里
+   * 留在第一行，文本域却已经折到第二行——光标比看得见的文字多走一个「虚空字」。
+   */
+  const exact = mirrorBoxWidth({
+    contentWidth: 380.59375,
+    borderWidth: 400.59375,
+    borderAndScrollbar: 0,
+    paddingLeft: 10,
+    paddingRight: 10,
+  });
+  assert.strictEqual(exact, 400.59375, "镜像层宽度 = 分数 content box + 内边距");
+  assert.notStrictEqual(exact, 401, "不许沿用 clientWidth 的整数值：折行边界会差一个字");
+
+  // 出垂直滚动条时 content box 已扣掉滚动条；回退路径用 border box 减「边框 + 滚动条」，
+  // 两条路必须落在同一个宽度上。
+  assert.strictEqual(
+    mirrorBoxWidth({
+      contentWidth: 365.59375,
+      borderWidth: 400.59375,
+      borderAndScrollbar: 15,
+      paddingLeft: 10,
+      paddingRight: 10,
+    }),
+    mirrorBoxWidth({
+      borderWidth: 400.59375,
+      borderAndScrollbar: 15,
+      paddingLeft: 10,
+      paddingRight: 10,
+    }),
+    "ResizeObserver 还没报过宽度时，回退算出的值必须与它一致",
+  );
+
+  // 界面倍率不是 1 时内边距带小数，必须原样加上（不能用取整后的盒子倒推）。
+  const scaled = mirrorBoxWidth({
+    contentWidth: 380.5,
+    borderWidth: 0,
+    borderAndScrollbar: 0,
+    paddingLeft: 11.538461538461538,
+    paddingRight: 11.538461538461538,
+  });
+  assert.ok(Math.abs(scaled - (380.5 + 23.076923076923077)) < 1e-9, "小数内边距要逐位加进去");
+  console.log("composerMention: 镜像层宽度取分数 content box（不取 clientWidth）✓");
+}
+
+// ---------- 9. 接线：镜像渲染、几何同步、命中判定的那几处不能各写一份 ----------
 {
   const composer = readFileSync(
     join(process.cwd(), "src", "webview", "components", "Composer.tsx"),
@@ -218,8 +270,15 @@ const sessionToken = (label: string, id: string): string =>
       "并在按住 Ctrl / Cmd 时挂 `is-modifier`——下划线是渲染结果，必须由状态驱动",
   );
   assert.ok(
-    /mirror\.style\.width = `\$\{el\.clientWidth\}px`/.test(composer),
-    "镜像层的宽度从文本域同步：出滚动条时文本域的内容宽度会窄一条，不同步就错位",
+    /mirror\.style\.width = `\$\{mirrorBoxWidth\(\{/.test(composer),
+    "镜像层宽度必须走 `mirrorBoxWidth`（分数 content box + 内边距）；直接用 " +
+      "`clientWidth` 会带四舍五入误差，折行边界上差一个字",
+  );
+  assert.ok(
+    /contentWidth,\s*\n\s*borderWidth: el\.getBoundingClientRect\(\)\.width,/.test(composer) &&
+      /borderAndScrollbar: el\.offsetWidth - el\.clientWidth,/.test(composer),
+    "宽度同步既要 ResizeObserver 的分数 content box，也要能在它报之前用 border box - " +
+      "（边框 + 滚动条）算回退值：出滚动条时内容宽度会窄一条",
   );
   assert.ok(
     /mirror\.scrollTop = el\.scrollTop/.test(composer),
@@ -232,9 +291,12 @@ const sessionToken = (label: string, id: string): string =>
       "`mirror.scrollTop` 被夹在少一行的位置，看得见的字与光标 / 点击落点整体错开一行",
   );
   assert.ok(
-    /new ResizeObserver\(\(\) => syncMirror\(\)\)/.test(composer),
+    /const size = entries\[0\]\?\.contentBoxSize\?\.\[0\]\?\.inlineSize \?\? entries\[0\]\?\.contentRect\.width;/.test(
+      composer,
+    ) && /syncMirror\(size\)/.test(composer),
     "文本域尺寸变了（拖侧栏 / 开合面板）也要重新对齐：那种改动不动草稿，" +
-      "绘制前那一处不会重跑，镜像层会停在旧宽度上整段错位",
+      "绘制前那一处不会重跑，镜像层会停在旧宽度上整段错位；并且必须把 content box 的" +
+      "分数宽度交给 `syncMirror`（整数 clientWidth 是上一版错位的根因）",
   );
   assert.ok(
     /hitsAnyRect\(mark\.getClientRects\(\), x, y\)/.test(composer),
