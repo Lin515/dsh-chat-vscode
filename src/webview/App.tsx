@@ -365,6 +365,8 @@ function fallbackSubagentTree(state: AppState): SubagentTreeView | undefined {
  *
  * 展开那一刻补一次 `listSubagents`：服务端会话列表是跨域血缘与最新状态的权威
  * 来路（见宿主 `refreshSubagents`），打开菜单这一下就是「把最新的要一遍」。
+ * **先后不靠这一次**：用户消息时间由 `api-session/activity` 实时记下
+ * （宿主 `applySessionActivity`），菜单一打开就是排好的，不会再停约一秒才跳位。
  */
 function SessionTitle({ state, agentsBusy }: { state: AppState; agentsBusy: boolean }) {
   const texts = useTexts();

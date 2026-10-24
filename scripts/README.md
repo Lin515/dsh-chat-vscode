@@ -22,6 +22,7 @@
 - [wire.test.ts](<wire.test.ts>) — 过线语义：宿主 → webview 的帧被 JSON 序列化会丢 `undefined` 键，清空字段必须发 `null`。
 - [sessionView.test.ts](<sessionView.test.ts>) — 「一个会话在界面上的状态」只有唯一生产者，字段集合不得在生产者之间漂移。
 - [sessionStatus.test.ts](<sessionStatus.test.ts>) — `api-session/status` 状态位中继的解码与采纳策略（服务端权威的「这轮在不在跑」）。
+- [sessionActivity.test.ts](<sessionActivity.test.ts>) — `api-session/activity` 活动时间中继的解码（子代理目录排序里用户消息的实时来路，形状不可信时返回 `undefined`）。
 - [sessionList.test.ts](<sessionList.test.ts>) — 会话列表行可见性与分支呈现（用 `origin` 而非 `parentSessionId` 区分子代理），以及发帧前的**按窗口收窄**判据（无文件夹时跟随该窗口当前会话的 cwd）。
 - [parseToolResult.test.ts](<parseToolResult.test.ts>) — `dsh/adapter.ts` 的 `parseToolResult`（read 信封等工具结果解析）。
 - [commandNode.test.ts](<commandNode.test.ts>) — 斜杠命令节点与「本轮文件改动」适配（`command/run`↔`done`、deliverables 呈现、write/edit 推导）。
@@ -138,7 +139,7 @@
 - [subagentTree.test.ts](<subagentTree.test.ts>) — 子代理树的组装与界面计数：先序 / 层级、父链断开与环截断、当前会话多层后代计数、`subagentTree` 走会话状态片段。
 - [subagentRowState.test.ts](<subagentRowState.test.ts>) — 子代理目录行的显示状态（生成中 / 已完成 / 可继续 / 一次性 + 状态点色调）：驻留状态的到达顺序、进出子代理页、已读位与界面口径。
 - [subagentTitle.test.ts](<subagentTitle.test.ts>) — 子代理显示名：目录条目缺 label（workflow 派发的子代理）时默认显示会话标题，且来源重放 / 重新打开菜单 / 子域回收后都不退回会话 id。
-- [subagentOrder.test.ts](<subagentOrder.test.ts>) — 子代理目录的显示顺序：用户消息时间与一轮收尾取新、agent 过程消息不参与、进子代理再退出来不改变先后；血缘索引随完整列表缺席 / 普通化 / 删除 / 归档 / 连接收线清理，等待期新 catalog / status 受保护，旧父节点不误删新后代，并发列表拒收先发后到的旧快照。
+- [subagentOrder.test.ts](<subagentOrder.test.ts>) — 子代理目录的显示顺序：用户消息时间（`api-session/activity` 实时来路 + `session/list` 打底）与一轮收尾取新、agent 过程消息不参与、进子代理再退出来不改变先后；血缘索引随完整列表缺席 / 普通化 / 删除 / 归档 / 连接收线清理，等待期新 catalog / status / activity 受保护，旧父节点不误删新后代，并发列表拒收先发后到的旧快照。
 - [activity.test.ts](<activity.test.ts>) — 顶栏子代理 / 后台任务入口「有东西在跑」判据（只认活的那份数据）。
 - [occupancy.test.ts](<occupancy.test.ts>) — 上下文占用环：常驻显示、每轮刷新、口径唯一。
 - [cacheHit.test.ts](<cacheHit.test.ts>) — 会话累计缓存命中率、缺数据隐藏与工具栏 / 悬停读数同源。

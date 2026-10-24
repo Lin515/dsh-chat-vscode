@@ -258,6 +258,8 @@ const entries = {
   "build/subagent-panel.test.mjs": "scripts/subagentPanel.test.ts",
   "build/session-dir.test.mjs": "scripts/sessionDir.test.ts",
   "build/session-status.test.mjs": "scripts/sessionStatus.test.ts",
+  // 会话活动时间（api-session/activity）的解码：子代理目录排序的实时来路，必须登记
+  "build/session-activity.test.mjs": "scripts/sessionActivity.test.ts",
   "build/preset-display.test.mjs": "scripts/presetDisplay.test.ts",
   "build/preset-match.test.mjs": "scripts/presetMatch.test.ts",
   "build/composer-draft.test.mjs": "scripts/composerDraft.test.ts",

@@ -13,6 +13,7 @@
 - [sessionView.ts](<sessionView.ts>) — 会话视图字段唯一生产者，快照 / patch / 切会话共用。
 - [sessionList.ts](<sessionList.ts>) — 工作区 / 窗口 cwd 可见性与子代理、分支血缘。
 - [sessionStatus.ts](<sessionStatus.ts>) — api-session/status 的解码与采纳。
+- [sessionActivity.ts](<sessionActivity.ts>) — api-session/activity 的解码（子代理目录排序里「用户消息」的实时来路）。
 - [historyPaging.ts](<historyPaging.ts>) — 单页 loadOlder 与到目标 loadThrough。
 - [inboxClaim.ts](<inboxClaim.ts>) — next-step 领取账本，提问 / steering 的共同判据。
 - [submissionReceipts.ts](<submissionReceipts.ts>) — 提交在服务端收件箱里的回执：判定「受理了却没落盘」。

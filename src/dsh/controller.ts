@@ -142,6 +142,7 @@ import { NotificationQueue, type NoticeInput, type NoticeRecord } from "./notifi
 import { deriveTrajectoryModel } from "./trajectory";
 import { backfillTrajectorySchemas, missingSchemaAnchor } from "./trajectoryBackfill";
 import { normalizePath, upperDriveLetter, visibleForView, visibleForWorkspace, visibleSessionCandidates, visibleSessionRows } from "./sessionList";
+import { decodeSessionActivity } from "./sessionActivity";
 import { acceptSessionStatus, decodeSessionStatus } from "./sessionStatus";
 import { orderSubagentEntries } from "./subagentOrder";
 import { buildSubagentTree } from "./subagentTree";
@@ -1117,12 +1118,14 @@ export class ChatController implements vscode.Disposable {
    * 从上到下排（见 `subagentOrder.ts`）。判定条目只有两类，**agent 的过程消息**（思考、
    * 工具调用、逐段正文）不进这个账本——否则生成中每来一条事件就要重排一次。
    *
-   * 写入口两条，都取**新**、不互相覆盖：
+   * 写入口三条，都取**新**、不互相覆盖：
    *
    * - `noteSubagentTimes`（`session/list` 的原始子代理行）：服务端
    *   `sessionListMetadata.lastPromptAt`（`SessionSummary.updatedAt` =
-   *   `max(createdAt, lastPromptAt)`）——**用户消息**那一半，服务端时间戳，不随 agent 的
-   *   产出变化；
+   *   `max(createdAt, lastPromptAt)`）——**用户消息**那一半的整份打底；
+   * - `applySessionActivity`（`api-session/activity`）：同一条用户消息的**实时来路**，
+   *   `updatedAt` 就是那次 `user/message` 的 `event.time`，与上面那份是同一个值。少了
+   *   它，顺序要等到打开菜单那一次 `session/list` 回来才纠正（用户报的约一秒延迟）；
    * - `syncSubagentActivity`（`api-session/status` 由 running 转 false，且我们此前知道它
    *   在跑）：**一轮收尾**那一半。服务端没有「最后一条助手消息的时间」这种字段
    *   （投影与摘要都只有 `lastPromptAt`），所以这一半取宿主**亲历**的收尾时刻——中继就是
@@ -4442,6 +4445,54 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
+   * 子代理**判定时间**的实时来路（`api-session/activity`，`args = [sessionId, updatedAt]`）。
+   *
+   * 服务端在每条 `source.kind === 'user'` 的 `user/message` 落盘时发这条，`updatedAt`
+   * 与 `session/list` 行的 `updatedAt`（`max(createdAt, lastPromptAt)`）取的是同一个
+   * `event.time`（见 `sessionActivity.ts`）。于是「用户消息」那一半不必等菜单打开那趟
+   * 列表：收到就记进账本并重推受影响的目录 / 树，顺序在后台实时跟上——打开标题清单
+   * 时看到的已经是排好的先后，不会再停顿约一秒才跳位。
+   *
+   * 已知子代理收到就记进账本并重推；**目录事实还没到**的子代理只记时间、不重推（行登记
+   * 时直接用它，见下面的分支）。普通会话的用户消息同样会发这条，它们不进账本（不在本
+   * 窗口列表里的个别 id 由下一份完整列表按 `origin` 裁掉）。删除 / 归档后的残留事件不许
+   * 重新填账——与 `noteSubagentSettlement` 同一条清理口径。
+   *
+   * @returns 这条帧认不认。认得就由这里消费掉，不再交给配置变更路由。
+   */
+  private applySessionActivity(event: string, args: readonly unknown[]): boolean {
+    if (event !== "api-session/activity") return false;
+    const activity = decodeSessionActivity(args);
+    if (!activity) {
+      // 认得但形状不对：记一行日志（服务端换口径时这是唯一线索），当无事发生。
+      this.log(`[subagents] api-session/activity 参数形状不认识：${JSON.stringify(args)}`);
+      return true;
+    }
+    if (this.deletedSessionIds.has(activity.sessionId) || this.archivedSessionIds.has(activity.sessionId)) {
+      return true;
+    }
+    if (!this.isKnownSubagent(activity.sessionId)) {
+      // 目录事实可能还没到：子代理的初始任务先落盘（这条中继同步发出），`subagent/catalog`
+      // 随后才写进父会话——两条流不同源，顺序不保证。时间先记进账本，行登记时直接用它；
+      // 此刻没有可重推的行。本窗口列表里的普通会话不记（账本只服务子代理目录）；不在
+      // 列表里的（别的工作区 / 刚建出来的）留给下一份完整列表按 `origin` 裁掉。
+      if (this.sessions.some((session) => session.id === activity.sessionId)) return true;
+      for (const candidates of this.subagentOrderPruneCandidates) candidates.delete(activity.sessionId);
+      for (const candidates of this.subagentIndexPruneCandidates) candidates.delete(activity.sessionId);
+      this.noteSubagentTime(activity.sessionId, activity.updatedAt);
+      return true;
+    }
+    // 这是一条「等待期间的新事实」：正在飞的那份完整列表若按旧快照缺席了它，不许把
+    // 刚记下的时间裁掉（与 `noteSubagentSettlement` 同一保护）。
+    for (const candidates of this.subagentOrderPruneCandidates) candidates.delete(activity.sessionId);
+    for (const candidates of this.subagentIndexPruneCandidates) candidates.delete(activity.sessionId);
+    if (!this.noteSubagentTime(activity.sessionId, activity.updatedAt)) return true;
+    this.log(`[subagents] 用户消息时间 ${activity.updatedAt}（${activity.sessionId}）→ 重推目录顺序`);
+    this.redeliverSubagentRows(new Set([activity.sessionId]));
+    return true;
+  }
+
+  /**
    * 把一条**被拒收**的权威状态位重新过一遍采纳策略（见 `pendingStatuses`）。
    *
    * 调用点只有一个：域被回收时（适配器随之消失 = 本地「本轮还开着」的证据没了）。重判通过
@@ -7249,6 +7300,9 @@ export class ChatController implements vscode.Disposable {
   /** 这个 id 是不是已知的子代理（目录并入点与 `session/list` 的子代理行两处账本）。 */
   private isKnownSubagent(sessionId: string): boolean {
     if (this.subagentSessionIds.has(sessionId)) return true;
+    // 跨域血缘索引是第三条账本：多层子代理的父域 / 兄弟域没打开时，目录里找不到它，
+    // 但索引仍记得它（状态 / 判定时间都要能落到这种节点上）。
+    if (this.subagentIndex.has(sessionId)) return true;
     for (const scope of this.scopes.values()) {
       if (scope.subagentEntries.some((entry) => entry.id === sessionId)) return true;
       if (scope.subagentSiblings.some((entry) => entry.id === sessionId)) return true;
@@ -8024,6 +8078,9 @@ export class ChatController implements vscode.Disposable {
       // 变更，所以在交给配置路由之前先接住——此前它落进 `ConfigChangeRouter` 的 default
       // 被静默丢掉，而官方前端正是靠这条中继维护 running（见 `dsh/sessionStatus.ts`）。
       if (this.applySessionStatus(frame.event, frame.args ?? [])) return;
+      // `api-session/activity` 是**用户消息时间**的实时来路（args = `[sessionId, updatedAt]`）：
+      // 子代理目录的先后靠它当场跟上，而不是等打开清单那一次 `session/list`。
+      if (this.applySessionActivity(frame.event, frame.args ?? [])) return;
       // 自动化任务集变了（另一个窗口改了时间、删了任务，或某个任务到点投递后状态
       // 变了）：只刷新**已经读过**的会话域。从没打开过面板的会话不因此多打一次 RPC，
       // 它下次打开时会现读一次（`listSchedules`）。

@@ -12,8 +12,10 @@
  * 判定条目只有两类：
  *
  * - **用户消息**：服务端 `sessionListMetadata.lastPromptAt`（`session/list` 行的
- *   `updatedAt` 就是 `max(createdAt, lastPromptAt)`，见 `SessionSummary`），由
- *   `controller` 的判定时间账本记下；
+ *   `updatedAt` 就是 `max(createdAt, lastPromptAt)`，见 `SessionSummary`）。实时来路是
+ *   `api-session/activity`（`[sessionId, updatedAt]`，与那个投影同取一次 `user/message`
+ *   的 `event.time`，见 `sessionActivity.ts`），`session/list` 的整份行只作打底与兜底；
+ *   两条都由 `controller` 的判定时间账本记下；
  * - **一轮的收尾**（agent 轮次结果正文落地的那一刻）：宿主亲历的 `api-session/status`
  *   由 running 转 false（服务端没有下发「最后一条助手消息的时间」这样的字段，判据与
  *   来路见 `controller.subagentActivityAt`）。

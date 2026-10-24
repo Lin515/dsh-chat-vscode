@@ -9,7 +9,8 @@
  * 判定条目的两个来源（见 `src/dsh/subagentOrder.ts` 与 `controller.subagentActivityAt`）：
  *
  * - **用户消息**：`session/list` 行的 `updatedAt`——服务端 `sessionListMetadata.lastPromptAt`
- *   与创建时刻取新，也就是「最后一条人类消息」，agent 的产出不改它；
+ *   与创建时刻取新，也就是「最后一条人类消息」，agent 的产出不改它；实时来路是
+ *   `api-session/activity`（`updatedAt` 与前者同取那次 `user/message` 的 `event.time`）；
  * - **一轮收尾**：宿主亲历的 `api-session/status` 由 running 转 false。服务端没有下发
  *   「最后一条助手消息的时间」这种字段（投影与摘要都只有 `lastPromptAt`），所以这一半取
  *   收尾那一刻；「重连后打底的一条 false」不是亲历的收尾，不算判定条目。
@@ -203,6 +204,9 @@ function makeDriver(state: { items: SummaryRow[] }) {
     /** `api-session/status` 中继（`args = [sessionId, running]`）。 */
     status: (sessionId: string, running: boolean) =>
       internals.onEventFrame({ type: "emit", event: "api-session/status", args: [sessionId, running] }),
+    /** `api-session/activity` 中继（`args = [sessionId, updatedAt]`，用户消息的实时来路）。 */
+    activity: (sessionId: string, updatedAt: number) =>
+      internals.onEventFrame({ type: "emit", event: "api-session/activity", args: [sessionId, updatedAt] }),
   };
 }
 
@@ -676,5 +680,51 @@ console.log("  ⑫ helper 返回与调用者续体之间的收线空档拒收旧
   assert.ok(!d.internals.subagentIndex.has(ID_A), "后续权威普通行仍能纠正索引");
 }
 console.log("  ⑬ 旧普通行不删等待期新目录身份（候选含节点自身）✓");
+
+// ---------- ⑭ 用户消息的实时中继：顺序当场跟上，打开清单不再等一次列表 ----------
+//
+// 用户 2026-10-24 报的现场：菜单打开一秒后行才按「最后消息时间」排好。成因是「用户消息」
+// 那一半只从 `session/list` 读，而打开清单那一下才会拉一整份（约一秒）。`api-session/activity`
+// 是服务端在每条用户消息落盘时发的实时来路，收到就记进账本并重推目录 / 树。
+{
+  const state = { items: [parentRow(), childRow(ID_A, 100), childRow(ID_B, 300), childRow(ID_C, 200)] };
+  const d = makeDriver(state);
+  await d.open("v1", ID_M);
+  await d.refresh();
+  d.catalog(ID_M, ID_A);
+  d.catalog(ID_M, ID_B);
+  d.catalog(ID_M, ID_C);
+  assert.deepStrictEqual(lastIds(d.frames, "v1"), [ID_B, ID_C, ID_A], "前置：按列表里的用户消息时间排");
+
+  // A 又来了一条用户消息（服务端 event.time = 500）：不必点开清单，顺序当场翻到前面
+  await d.activity(ID_A, 500);
+  assert.deepStrictEqual(lastIds(d.frames, "v1"), [ID_A, ID_B, ID_C], "activity 中继当场重排");
+  assert.deepStrictEqual(
+    lastTree(d.frames, "v1")?.nodes.map((node) => node.id) ?? [],
+    [ID_A, ID_B, ID_C],
+    "标题清单的树同源跟上",
+  );
+
+  // 打开标题清单时那趟整份列表回来：账本已经是同一时间，打开就是对的、不跳位
+  state.items[1].updatedAt = 500;
+  await d.titles();
+  assert.deepStrictEqual(lastIds(d.frames, "v1"), [ID_A, ID_B, ID_C], "菜单刷新不再改顺序（一打开就是对的）");
+
+  // 较旧的 activity 不回退时间；普通会话的用户消息不进子代理排序账本
+  await d.activity(ID_A, 50);
+  await d.activity(ID_M, 900);
+  assert.strictEqual(d.internals.subagentActivityAt.get(ID_A), 500, "较旧的时间不回退");
+  assert.ok(!d.internals.subagentActivityAt.has(ID_M), "普通会话不进子代理排序账本");
+  assert.deepStrictEqual(lastIds(d.frames, "v1"), [ID_A, ID_B, ID_C], "顺序不动");
+
+  // 目录事实还没到也一样：初始任务先落盘（activity 先到）、`subagent/catalog` 后到。
+  // 时间不许丢，否则这一行登记后仍要等菜单那次整份列表才排到位。
+  await d.activity(ID_A1, 900);
+  assert.strictEqual(d.internals.subagentActivityAt.get(ID_A1), 900, "未登记的子代理也先记下时间（登记时直接用）");
+  assert.deepStrictEqual(lastIds(d.frames, "v1"), [ID_A, ID_B, ID_C], "行还没登记，目录不动");
+  d.catalog(ID_M, ID_A1);
+  assert.deepStrictEqual(lastIds(d.frames, "v1"), [ID_A1, ID_A, ID_B, ID_C], "登记时直接用已记下的时间排");
+}
+console.log("  ⑭ 用户消息实时重排、目录后到也不丢时间、菜单打开不跳位 ✓");
 
 console.log("\nsubagentOrder: all assertions passed");
