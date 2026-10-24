@@ -228,6 +228,10 @@ console.log("fileLinks: 行内代码 → 按钮（跳过代码块与锚点，绘
     "页内锚点（模型写的 `[小节](#锚点)`）交给浏览器自己滚，不能被拦成死键",
   );
   assert.ok(
+    /event\.preventDefault\(\);\s*\n\s*event\.stopPropagation\(\);/.test(markdown),
+    "接手的锚点点击必须掐断冒泡：VS Code webview 外层还有一条 did-click-link，不看 defaultPrevented，不掐就是一次点击开两次（用户 2026-10-25 报）",
+  );
+  assert.ok(
     /event\.preventDefault\(\);/.test(markdown),
     "其余链接一律拦下：webview 里让 <a> 自己导航会把整个聊天界面换掉",
   );

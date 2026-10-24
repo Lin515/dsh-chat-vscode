@@ -43,6 +43,13 @@ function openFile(
  *
  * 本地文件里，HTML 家族按住 Ctrl/Cmd 时改走系统浏览器（`browserOpenRequested`）；
  * 普通单击仍交给 VS Code 按资源类型打开，与文件芯片一致。
+ *
+ * `stopPropagation` 是**必须**的，不是保险：VS Code 的 webview 外层页在内容窗口上挂了
+ * 一个 click 监听（`handleInnerClick`），凡是锚点就向宿主发 `did-click-link`，而且
+ * **不看 `defaultPrevented`**。不掐断冒泡，一次点击会开两次——扩展这条 `openExternal`
+ * （系统会按受信域名问一次）和它那条 `did-click-link` 各开一次（用户 2026-10-25 报
+ * 「点一下开两次」即此）。冒泡只到 React 根容器为止，宿主那条链接通道就不会再收到；
+ * 页内锚点在上面已经放行，仍由它滚到目标。
  */
 function activateAnchor(event: ReactMouseEvent<HTMLDivElement>): void {
   const target = event.target;
@@ -52,6 +59,7 @@ function activateAnchor(event: ReactMouseEvent<HTMLDivElement>): void {
   // 页内锚点（模型写的 `[小节](#锚点)`）交给浏览器自己滚，不抢
   if (href === "" || href.startsWith("#")) return;
   event.preventDefault();
+  event.stopPropagation();
   const file = parseFileLink(href);
   if (file) {
     // 流式期间也开（用户 2026-09-26 口径，见 fileLinks.ts）：目标要等 markdown
