@@ -2,6 +2,7 @@ import { useCallback, useEffect, useInsertionEffect, useLayoutEffect, useMemo, u
 import type { ChatState, MessageView, PendingMessageView } from "../shared/chat";
 import type { HostToWebview } from "../shared/ipc";
 import { persistIdentity, post, subscribe } from "./bridge";
+import { installModifierHeld } from "./modifierHeld";
 import { useAutoScroll } from "./autoScroll";
 import { useReadingPort } from "./readingPlacement";
 import { Composer } from "./components/Composer";
@@ -745,6 +746,8 @@ function usePagePaste(state: AppState) {
 
 export function App() {
   const { state, dispatch } = useAppState();
+  // 修饰键按住时给「可打开文件」的节点加下划线：只切根元素上的一个类，不重渲染消息树。
+  useEffect(() => installModifierHeld(), []);
   const [commandRequest, setCommandRequest] = useState<CommandMenuRequest>();
   const commandRequestId = useRef(0);
   const commandLinks = useMemo(() => ({
@@ -754,6 +757,20 @@ export function App() {
       setCommandRequest({ id: ++commandRequestId.current, query, range }),
     acknowledge: (id: number) => setCommandRequest((current) => current?.id === id ? undefined : current),
   }), [state.commands, commandRequest]);
+  /**
+   * 技能名 → 服务端给的 `SKILL.md` 路径（`skills/list` 的 `path`，随命令目录下发）。
+   *
+   * 只服务工具行的「Ctrl/Cmd 单击打开 SKILL.md」：没有路径的技能不在这张表里，
+   * 对应的技能节点也就不给动作——不按名字拼本机路径（见 `docs/dsh-server-api.md`
+   * 的 `skills/list` 一节）。
+   */
+  const skillPaths = useMemo(() => {
+    const paths = new Map<string, string>();
+    for (const command of state.commands) {
+      if (command.skill && command.skillPath) paths.set(command.name, command.skillPath);
+    }
+    return paths;
+  }, [state.commands]);
   // 会话页是否在场：轨迹视图下它整块卸载，两个滚动 hook 都要能重挂
   const chatActive = state.panel !== "trajectory";
   // 当前会话 id：进 useAutoScroll（切会话时恢复贴底、回最新）与轨迹刷新（下方）
@@ -1133,6 +1150,8 @@ export function App() {
                         turnProcessThreshold={state.turnProcessThreshold}
                         // 悬停里的完整路径按当前执行目录补全（点击仍由宿主解析）
                         cwd={state.workingDirectory ?? state.session?.cwd}
+                        // 技能节点的 SKILL.md 路径只认服务端 `skills/list` 提供的那份
+                        skillPaths={skillPaths}
                         // 改动文件卡片：坐标在消息上，清单在 state 的缓存里（键带会话 id，
                         // 见 shared/changesSummary.ts）。没绑会话（空态）时不传，卡片不渲染。
                         sessionId={state.session?.id}

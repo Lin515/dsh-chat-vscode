@@ -30,7 +30,8 @@
 - [thinkingStream.test.ts](<thinkingStream.test.ts>) — 思考完毕鲸鱼仍发光、用户消息未置顶两个缺陷的宿主侧成因。
 - [renderOrder.test.ts](<renderOrder.test.ts>) — 段顺序：活路径（真流式）与离线重放必须给出同一个顺序。
 - [steeringPlacement.test.ts](<steeringPlacement.test.ts>) — 用户消息落位：本轮提问（插到轮首）与生成中插话（追加 + 切段）的分界只看 next-step 的**本次领取**，子代理开轮的会话里插话不得被抬到本轮顶部。
-- [toolView.test.ts](<toolView.test.ts>) — 工具行运行中数据：长命令要能完整带出供展开区显示。
+- [toolView.test.ts](<toolView.test.ts>) — 工具行运行中数据：长命令要能完整带出供展开区显示；读 / 写 / 编辑的可打开路径与技能名只从参数取，不构造本机路径。
+- [skill.test.ts](<skill.test.ts>) — `skill` 节点的文本事实：合法技能名、半截参数不猜、只从结果信封取 `<skill_instructions>` 正文。
 - [unknownEvent.test.ts](<unknownEvent.test.ts>) — 「不认识的事件」告警的边界：已知但不渲染的簿记事件不得告警。
 - [injected.test.ts](<injected.test.ts>) — 自动载入提示词节点（`system/message`、插件注入）的正确呈现。
 - [injectedSource.test.ts](<injectedSource.test.ts>) — 上下文注入条目 `source` 的按 form 分派解析（全有或全无）。
@@ -116,6 +117,8 @@
 - [contextMenu.test.ts](<contextMenu.test.ts>) — 会话右键菜单判据、「引用」落点算术、保存建议文件名；真实快捷复制处理器覆盖 Ctrl / Cmd、跨消息空白换行保真、编辑焦点、修饰键、组字、重复与已处理事件、选区包含性和空选区让路。
 - [questionFlow.test.ts](<questionFlow.test.ts>) — 问卷展示口径：一次展开 vs 依次问答（`dshChat.questionBatch`）。
 - [questionRender.test.ts](<questionRender.test.ts>) — 问卷卡片渲染断言（答完的问题展开后显示用户回答）。
+- [toolRowRender.test.ts](<toolRowRender.test.ts>) — 工具节点渲染断言：技能节点只显示 SKILL 正文（无参数 / 输出标题），读 / 写 / 编辑与技能只在真有可打开目标时提示 Ctrl/Cmd 单击打开。
+- [modifierHeld.test.ts](<modifierHeld.test.ts>) — Ctrl/Cmd 全局修饰键状态：按住时给可打开文件节点加下划线的根类来源、指针事件补键盘焦点缺席、失焦 / 页面隐藏清理与引用计数卸载。
 - [planReview.test.ts](<planReview.test.ts>) — 计划审阅（`exit_plan_mode`）请求的识别与收窄规则。
 - [pendingInteraction.test.ts](<pendingInteraction.test.ts>) — 待处理交互的选举与抑制（官方 `registerPendingInteraction` 优先级）。
 - [pendingInteractions.test.ts](<pendingInteractions.test.ts>) — `dsh/pendingInteractions.ts` 的四条内部规则（真 API 断言）。

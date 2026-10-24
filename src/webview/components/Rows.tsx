@@ -16,6 +16,7 @@ import type {
   TurnStatsView,
 } from "../../shared/chat";
 import { classifyTool, toolTitleKey } from "../../shared/toolMeta";
+import { skillInstructions } from "../../shared/skill";
 import { MAX_CATALOG_ENTRIES } from "../../shared/injectedSource";
 import { formatDuration, Popover, Row, useElapsed, useSelectionFreeze, useStickyBody } from "./primitives";
 import { canSubmit, isAnswered, questionMode } from "../questionFlow";
@@ -112,10 +113,17 @@ export function ToolRow({
   tool,
   diffLayout,
   node,
+  skillPath,
   onInspectCall,
 }: {
   tool: ToolCallView;
   diffLayout?: DiffLayout;
+  /**
+   * 技能节点的 `SKILL.md` 路径，来自服务端 `skills/list` 的 `path`（当前会话的
+   * 命令目录）。缺席 = 服务端没给路径（或目录还没到）：不挂 Ctrl/Cmd 单击动作，
+   * 也不按名字拼本机路径。
+   */
+  skillPath?: string;
   /**
    * 展开态与展开意图（由 `Message` 持有，见 `../nodeOpen.ts`）：**不在行里自持**，
    * 否则过程折叠把这一段卸载后状态就丢了。
@@ -159,6 +167,14 @@ export function ToolRow({
   const hasCard = Boolean(card) && codeCard === undefined;
   // 出错时结果文本（失败原因）比 diff 更有用，两者都显示
   const showOutput = Boolean(tool.output) && (!hasDiff || tool.status === "error");
+  /**
+   * 技能节点（`skill` 工具）的正文**只有 SKILL 内容**：不渲染输入参数，也不给
+   * 「输出」标题。`skillInstructions` 去掉模型侧的信封，只留 `<skill_instructions>`
+   * 里的正文；出错 / 旧结果没有信封时原样显示。
+   */
+  const isSkill = tool.name === "skill";
+  const skillText = isSkill ? skillInstructions(tool.output ?? "") : "";
+  const showSkill = skillText !== "";
   // 运行中还没有结果，但展开区仍有东西可看：实时耗时 +（认得出的话）完整命令。
   // 一律可展开——任何正在跑的节点都该能点开确认「它还活着」，这正是长任务的需要。
   const runningBody = running;
@@ -227,7 +243,7 @@ export function ToolRow({
    * （`card = running ? undefined : tool.card`），跑 `run_code` / 长命令这类调用时，
    * 展开区里唯一能撑出滚动条的就是这段 IN（参数 JSON）。
    */
-  const showIoCard = !hasDiff && !hasCard && ((Boolean(inputText) && !codeCard) || showOutput);
+  const showIoCard = !isSkill && !hasDiff && !hasCard && ((Boolean(inputText) && !codeCard) || showOutput);
   const ioRef = useRef<HTMLDivElement>(null);
   // 工具展开区（diff / 卡片 / IN-OUT / 运行状态）：**还在跑就贴底**（最新输出才是要看的），
   // 跑完则回到顶部（成型的内容从第一行读起）——判据与理由见 `useStickyBody` 的文件头。
@@ -238,7 +254,7 @@ export function ToolRow({
   const diffRef = useRef<HTMLDivElement>(null);
   useStickyBody(diffRef, open && hasDiff, running, node.openedWhileActive);
   useStickyBody(bodyRef, open && !hasDiff && (showOutput || hasCard || Boolean(codeCard)), running, node.openedWhileActive);
-  useStickyBody(ioRef, open && showIoCard, running, node.openedWhileActive);
+  useStickyBody(ioRef, open && (showIoCard || showSkill), running, node.openedWhileActive);
   useStickyBody(runningRef, open && runningBody, running, node.openedWhileActive);
   // 展开区只显示「解析后的有价值信息」：编辑类给 diff，其余给 IN/OUT 两段
   // （读取出的文本 / 运行输出 / 搜索结果等）。
@@ -252,8 +268,8 @@ export function ToolRow({
     hasDiff ||
     hasCard ||
     Boolean(codeCard) ||
-    showOutput ||
-    Boolean(inputText) ||
+    showSkill ||
+    (!isSkill && (showOutput || Boolean(inputText))) ||
     runningBody ||
     Boolean(exitMeta) ||
     (tool.images?.length ?? 0) > 0 ||
@@ -273,6 +289,20 @@ export function ToolRow({
     : tool.readLines
       ? `:${tool.readLines.start}-${tool.readLines.end}`
       : undefined;
+
+  /**
+   * 按住 Ctrl/Cmd 单击要打开的文件：文件类节点用参数里的路径，技能节点用服务端
+   * `skills/list` 给的 `SKILL.md` 路径。两者都没有就不挂动作（连悬停提示也不给）。
+   */
+  const fileTarget = isSkill ? skillPath : tool.filePath;
+  const openFileAction = fileTarget
+    ? () => post({ type: "openFile", path: fileTarget, diff: false })
+    : undefined;
+  const modifierHint = openFileAction
+    ? isSkill
+      ? texts.toolOpenSkillHint
+      : texts.toolOpenFileHint
+    : undefined;
 
   const row = (
     <Row
@@ -297,10 +327,14 @@ export function ToolRow({
       // 这里只在路径确实存在（不是命令行/查询串）时才挂链接——`tool.command` 类
       // 的 detail 点了会去打开一个不存在的文件。
       onDetailActivate={
-        tool.detail && !tool.command
+        // 已有「Ctrl/Cmd 单击打开」的节点不再把详情做成普通点击链接：同一行不能
+        // 一半要求修饰键、一半不要求（文件类节点的 `command` 通常就是路径，本就走不到这里）。
+        tool.detail && !tool.command && !openFileAction
           ? () => post({ type: "openFile", path: tool.detail as string, diff: false })
           : undefined
       }
+      {...(openFileAction === undefined ? {} : { onModifierActivate: openFileAction })}
+      {...(modifierHint === undefined ? {} : { modifierHint })}
       meta={meta}
       open={open}
       onToggle={() => {
@@ -339,6 +373,15 @@ export function ToolRow({
       {codeCard ? (
         <div ref={bodyRef} className="row-body card-body">
           <CodeBlock lang="typescript" code={codeCard.code} />
+        </div>
+      ) : null}
+      {/* 技能节点：只要 SKILL 正文——不渲染参数（IN），也不给「输出」标题。
+          与官方 `SkillRow` 的「说明」区同义，但用户口径是**直接给内容**。 */}
+      {showSkill ? (
+        <div ref={ioRef} className="row-body io-card">
+          <span className={`io-text${tool.status === "error" ? " is-error" : ""}`}>
+            {skillText}
+          </span>
         </div>
       ) : null}
       {/* 通用工具（官方 GenericToolCard）的展开体按 IN/OUT 两段呈现：

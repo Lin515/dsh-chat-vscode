@@ -181,6 +181,7 @@ export const Message = memo(function Message({
   changesSummary,
   changesCardShown = false,
   cwd,
+  skillPaths,
   onInspectCall,
 }: {
   message: MessageView;
@@ -238,6 +239,13 @@ export const Message = memo(function Message({
    * 由宿主按自己的权威 cwd 解析（界面不拿它代替宿主的解析结果）。
    */
   cwd?: string;
+  /**
+   * 当前会话的技能名 → 服务端 `skills/list` 给出的 `SKILL.md` 路径。
+   *
+   * 只用来给 `skill` 工具行挂「Ctrl/Cmd 单击打开 SKILL.md」：路径缺失（服务端没给、
+   * 目录还没到）时该行不给动作与提示，**不按技能名拼本机路径**。
+   */
+  skillPaths?: ReadonlyMap<string, string>;
   /**
    * 「在轨迹里查看这次调用」的落点（官方 `inspectCall`，往下透到工具行）。
    * 缺省 = 工具行不渲染那颗按钮（没有这条链路的宿主不给一颗点了没反应的按钮）。
@@ -504,12 +512,16 @@ export const Message = memo(function Message({
             />
           );
         }
+        const skillPath = segment.tool.skillName
+          ? skillPaths?.get(segment.tool.skillName)
+          : undefined;
         return (
           <ToolRow
             key={segment.id}
             node={node}
             tool={segment.tool}
             diffLayout={diffLayout}
+            {...(skillPath === undefined ? {} : { skillPath })}
             {...(onInspectCall === undefined ? {} : { onInspectCall })}
           />
         );

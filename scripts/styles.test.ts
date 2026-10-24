@@ -516,7 +516,9 @@ console.log("styles: 主文字优先完整、描述先省略 ✓");
     join(process.cwd(), "src", "webview", "components", "primitives.tsx"),
     "utf8",
   );
-  const detailBlock = /<span className="row-detail" title=\{detail\}>([\s\S]*?)<\/span>\s*\) : detail \?/.exec(
+  // title 现在是 `hint ? 路径+提示 : 路径`：只要还是同一个 `.row-detail` 块即可，
+  // 断言的仍是「文件名之后紧跟 detailSuffix」这一层结构。
+  const detailBlock = /<span className="row-detail" title=\{[\s\S]*?\}>([\s\S]*?)<\/span>\s*\) : detail \?/.exec(
     primitives,
   )?.[1] ?? "";
   const inner =
@@ -535,6 +537,35 @@ console.log("styles: 主文字优先完整、描述先省略 ✓");
   );
 }
 console.log("styles: 行号紧跟文件名、时长先让位 ✓");
+
+// ---------- 6b. Ctrl/Cmd 打开文件的路径下划线提示 ----------
+//
+// 用户口径：按住 Ctrl/Cmd 时所有可打开文件的节点都出下划线；鼠标悬停也出下划线，
+// 但单击行为不变（只是提示）。两档都要落在路径本身上，而不是整行。
+{
+  const primitives = readFileSync(
+    join(process.cwd(), "src", "webview", "components", "primitives.tsx"),
+    "utf8",
+  );
+  const app = readFileSync(join(process.cwd(), "src", "webview", "App.tsx"), "utf8");
+  const group =
+    /\.row-head\.is-file-openable:hover \.row-detail-dir,[\s\S]*?text-decoration:\s*underline;/u.exec(css)?.[0] ?? "";
+  assert.ok(
+    group.includes(".row-head.is-file-openable:hover .row-detail-name") &&
+      group.includes(".is-modifier-held .row-head.is-file-openable .row-detail-dir") &&
+      group.includes(".is-modifier-held .row-head.is-file-openable .row-detail-name"),
+    "悬停与按住修饰键两档都要给目录段 / 文件名段加下划线",
+  );
+  assert.ok(
+    primitives.includes("is-file-openable"),
+    "Row 只在真有 Ctrl/Cmd 打开动作时挂 is-file-openable（没有目标不能出提示）",
+  );
+  assert.ok(
+    /installModifierHeld\(\)/u.test(app),
+    "App 要接上修饰键根类（按住 Ctrl/Cmd 时所有可打开节点一起出下划线）",
+  );
+}
+console.log("styles: Ctrl/Cmd / 悬停给可打开文件的路径加下划线（单击行为不变） ✓");
 
 // ---------- 7. 节点名与文件路径之间要有呼吸空间，且目录渐隐只在真被裁时出现 ----------
 //
@@ -973,7 +1004,7 @@ console.log("styles: 思考段恒折叠 + 摘要口径对齐官方 ✓");
   const rows = readFileSync(join(process.cwd(), "src", "webview", "components", "Rows.tsx"), "utf8");
   assert.ok(
     // 判据抽成 `showIoCard` 一份（渲染与滚动定位共用它，见第 16c 段）
-    /const showIoCard = !hasDiff && !hasCard && \(\(Boolean\(inputText\) && !codeCard\) \|\| showOutput\);/.test(rows) &&
+    /const showIoCard = !isSkill && !hasDiff && !hasCard && \(\(Boolean\(inputText\) && !codeCard\) \|\| showOutput\);/.test(rows) &&
       /\{showIoCard \? \(/.test(rows),
     "IN/OUT 只在**既没有 diff 也没有卡片**时渲染（官方 diff 类给 DiffBlock、读取/搜索/终端/网页给各自的卡，再套 IN/OUT 就是重复）",
   );
@@ -1398,13 +1429,13 @@ console.log("styles: 复制按钮归属（工具卡内容有 / 工具串没有 /
   // ref，于是永远停在顶部——用户报的正是这个形态。渲染判据与定位判据必须是同一份
   // `showIoCard`，两处各写一份必然漂移。
   assert.ok(
-    /const showIoCard = !hasDiff && !hasCard && \(\(Boolean\(inputText\) && !codeCard\) \|\| showOutput\);/.test(rows),
-    "IN/OUT 卡的渲染判据只留一份（showIoCard），渲染与滚动定位共用它",
+    /const showIoCard = !isSkill && !hasDiff && !hasCard && \(\(Boolean\(inputText\) && !codeCard\) \|\| showOutput\);/.test(rows),
+    "IN/OUT 卡的渲染判据只留一份（showIoCard），渲染与滚动定位共用它；技能节点明确排除",
   );
   assert.ok(
-    /useStickyBody\(ioRef, open && showIoCard, running, node\.openedWhileActive\)/.test(rows) &&
+    /useStickyBody\(ioRef, open && \(showIoCard \|\| showSkill\), running, node\.openedWhileActive\)/.test(rows) &&
       /\{showIoCard \? \(\s*\n\s*<div ref=\{ioRef\} className="row-body io-card">/.test(rows),
-    "IN 卡要真的绑上 ioRef 并传 running（少了 ref，那条滚动条永远停在顶部）",
+    "IN 卡要真的绑上 ioRef 并传 running（少了 ref，那条滚动条永远停在顶部）；技能正文共用同一个盒子",
   );
   assert.ok(
     /useStickyBody\(runningRef, open && runningBody, running, node\.openedWhileActive\)/.test(rows) &&

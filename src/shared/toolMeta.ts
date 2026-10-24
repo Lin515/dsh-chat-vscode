@@ -57,6 +57,7 @@ const TOOL_TITLE_KEYS: Readonly<Record<string, string>> = {
   cordis_undefine: "toolRemoveCordis",
   pwsh: "toolPwsh",
   read_image: "toolReadImage",
+  skill: "toolSkill",
 };
 
 /** 精确分类（官方 `classifyTool`）。 */

@@ -7,7 +7,7 @@
 - `Markdown.tsx` — markdown 正文渲染：块切分 + 本地图片 / 文件链接的注水（hydrate），锚点悬停补完整路径 / 外链地址，HTML 文件按修饰键分流浏览器。
 - `CodeBlock.tsx` — 代码块卡片（复制 / 插入按钮；markdown 与工具卡共用，避免工具行被 DOMPurify 牵连）。
 - `ToolCards.tsx` — 按工具语义画的卡片（读 / 搜索 / 终端 / 网页），有卡片时不再展示参数 JSON。
-- `Rows.tsx` — 通用行组件：审批卡、命令行、文件芯片、注入行、提问卡、思考行、工具行、轮统计等（文件芯片悬停首行是完整路径）。问卷「自定义回答」输入框里的 ESC 取消选中用 `../escapeOwner.ts` 的 `consumeEscape` 消费（文字保留）。
+- `Rows.tsx` — 通用行组件：审批卡、命令行、文件芯片、注入行、提问卡、思考行、工具行、轮统计等（文件芯片悬停首行是完整路径）。读 / 写 / 编辑与技能节点支持按住 Ctrl/Cmd 单击直接打开对应文件（技能只认服务端给的 `SKILL.md` 路径，没有就不提示）；这些节点的路径在悬停或按住修饰键时显示下划线，单击行为仍是开合；技能节点展开只显示 SKILL 正文，不显示参数与输出标题。问卷「自定义回答」输入框里的 ESC 取消选中用 `../escapeOwner.ts` 的 `consumeEscape` 消费（文字保留）。
 - `Diff.tsx` — diff 渲染：单栏 / 双栏两种排版。
 - `Images.tsx` — 会话图片的统一呈现（用户 / 模型 / 工具 / 正文引用三处合成一套）+ 图片预览层。预览层的 ESC 按 `../escapeOwner.ts` 的 `ESC_LAYER.imagePreview` 登记（右键菜单压过它）。
 - `ChangesCard.tsx` — 轮尾改动文件卡片（数据来自宿主认证路由 `/api/changes.summary`；行悬停给完整路径）。

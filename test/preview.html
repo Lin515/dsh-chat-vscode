@@ -1508,7 +1508,7 @@
               segments: [
                 { step: 0, id: "r1", kind: "thinking", text: "先看两个文件各自的初始化路径。\nindex.ts 里创建了 server 并调用了 listen，config.ts 又从环境变量里读了一遍端口，两处会打架。", streaming: false },
                 { step: 0, id: "t1", kind: "text", text: "我看了两个文件，重复初始化的根因是端口和中间件被注册了两次。" },
-                { step: 0, id: "tool1", kind: "tool", tool: { id: "call_1", name: "read", title: "", detail: "src/server/index.ts", status: "ok", input: '{"file_path":"src/server/index.ts"}', output: "export function bootstrap() {…}", card: { kind: "read", label: "src/server/index.ts", lang: "typescript", totalLines: 6, lines: [
+                { step: 0, id: "tool1", kind: "tool", tool: { id: "call_1", name: "read", title: "", detail: "src/server/index.ts", filePath: "src/server/index.ts", status: "ok", input: '{"file_path":"src/server/index.ts"}', output: "export function bootstrap() {…}", card: { kind: "read", label: "src/server/index.ts", lang: "typescript", totalLines: 6, lines: [
                   { number: 1, text: "import { createServer } from \"./server\";" },
                   { number: 2, text: "import { loadConfig } from \"./config\";" },
                   { number: 3, text: "" },
@@ -1518,7 +1518,7 @@
                 ] }, startedAt: now - 234000, endedAt: now - 233400 } },
                 // 读取节点：只读了一段 → 行号缀在文件名后（含一个很长的路径，验证窄侧栏下不被截掉），
                 // 展开区是读取卡：行号槽 + 内容，20 行超过 8 行上限 → 中间出现「… 其余 12 行」
-                { step: 0, id: "tool1b", kind: "tool", tool: { id: "call_1b", name: "read", title: "", detail: "…/dsh/controller.ts", command: "d:\\dev\\demo-app\\src\\dsh\\controller.ts", readLines: { start: 3201, end: 3220 }, status: "ok", input: '{"file_path":"d:\\\\dev\\\\demo-app\\\\src\\\\dsh\\\\controller.ts","offset":3201,"limit":20}', output: "3201: …", card: { kind: "read", label: "d:\\dev\\demo-app\\src\\dsh\\controller.ts", lang: "typescript", totalLines: 4610, lines: Array.from({ length: 20 }, (_, i) => ({ number: 3201 + i, text: i === 0 ? "  private async handle(message: WebviewToHost, viewId: string): Promise<void> {" : i === 19 ? "  }" : `    // 第 ${3201 + i} 行：真实会话里的源码行` })) }, startedAt: now - 233900, endedAt: now - 233500 } },
+                { step: 0, id: "tool1b", kind: "tool", tool: { id: "call_1b", name: "read", title: "", detail: "…/dsh/controller.ts", command: "d:\\dev\\demo-app\\src\\dsh\\controller.ts", filePath: "d:\\dev\\demo-app\\src\\dsh\\controller.ts", readLines: { start: 3201, end: 3220 }, status: "ok", input: '{"file_path":"d:\\\\dev\\\\demo-app\\\\src\\\\dsh\\\\controller.ts","offset":3201,"limit":20}', output: "3201: …", card: { kind: "read", label: "d:\\dev\\demo-app\\src\\dsh\\controller.ts", lang: "typescript", totalLines: 4610, lines: Array.from({ length: 20 }, (_, i) => ({ number: 3201 + i, text: i === 0 ? "  private async handle(message: WebviewToHost, viewId: string): Promise<void> {" : i === 19 ? "  }" : `    // 第 ${3201 + i} 行：真实会话里的源码行` })) }, startedAt: now - 233900, endedAt: now - 233500 } },
                 // 搜索卡（grep）：命中按文件分组、每组带条数，超过 8 行时中间给展开钮
                 { step: 0, id: "tool2", kind: "tool", tool: { id: "call_2", name: "grep", title: "", detail: "listen(", status: "ok", input: '{"pattern":"listen\\\\("}', output: "src/server/index.ts:24\nsrc/config.ts:11", card: { kind: "search", shape: "matches", total: 4, truncated: false, files: [
                   { path: "src/server/index.ts", matches: [{ lineNumber: 24, line: "  server.listen(options.port);" }, { lineNumber: 31, line: "  server.listen(3080);" }] },
@@ -1536,7 +1536,7 @@
                 // 正文夹在两枚按钮之间——折叠后不会被并进最后那段回答，见 turnProcess.ts）。
                 { step: 1, id: "t1b", kind: "text", text: "根因找到了：端口被读了两遍，配置和入口各读一次。" },
                 // 编辑类节点：结构化 diff（结果 meta 里的 hunk）
-                { step: 1, id: "tool3", kind: "tool", tool: { id: "call_3", name: "edit", title: "", detail: "…/server/index.ts", status: "ok",
+                { step: 1, id: "tool3", kind: "tool", tool: { id: "call_3", name: "edit", title: "", detail: "…/server/index.ts", filePath: "D:/dev/app/src/server/index.ts", status: "ok",
                   input: '{"file_path":"D:/dev/app/src/server/index.ts"}',
                   output: "The file D:/dev/app/src/server/index.ts has been updated successfully.",
                   diff: [{ path: "D:/dev/app/src/server/index.ts", added: 3, removed: 2, lines: [
@@ -1552,7 +1552,7 @@
                     { kind: "context", text: "}" }
                   ] }],
                   startedAt: now - 232000, endedAt: now - 231000 } },
-                { step: 1, id: "tool4", kind: "tool", tool: { id: "call_4", name: "write", title: "", detail: "…/config.ts", status: "ok",
+                { step: 1, id: "tool4", kind: "tool", tool: { id: "call_4", name: "write", title: "", detail: "…/config.ts", filePath: "D:/dev/app/src/config.ts", status: "ok",
                   input: '{"file_path":"D:/dev/app/src/config.ts"}',
                   output: "Created file",
                   diff: [{ path: "D:/dev/app/src/config.ts", added: 4, removed: 0, lines: [
@@ -1596,6 +1596,7 @@
                 { id: "tool7", kind: "tool", tool: { id: "call_7", name: "read", title: "", status: "stopped",
                   detail: "D:/dev/app/src/server/index.ts",
                   command: "D:/dev/app/src/server/index.ts",
+                  filePath: "D:/dev/app/src/server/index.ts",
                   input: '{"file_path":"D:/dev/app/src/server/index.ts"}',
                   startedAt: now - 90000, endedAt: now - 88000 } },
                 // 模型重试提示（`llm/retry`）：官方 web 端也渲染，此前是静默的
@@ -1711,6 +1712,7 @@
                     name: "read_image",
                     title: "",
                     detail: "demo-photo.jpg",
+                    filePath: "demo-photo.jpg",
                     status: "ok",
                     input: '{"file_path":"demo-photo.jpg"}',
                     output: "<path>demo-photo.jpg</path>\n<type>image</type>\n<content>…</content>",

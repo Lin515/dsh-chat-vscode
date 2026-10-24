@@ -28,7 +28,8 @@ import {
   parseRelaySender,
   parseSnapshotSections,
 } from "../shared/injectedSource";
-import { classifyTool, parseExitStatus, summaryKeys, terminalFailed } from "../shared/toolMeta";
+import { classifyTool, filePathFrom, parseExitStatus, summaryKeys, terminalFailed } from "../shared/toolMeta";
+import { skillNameFromArgs } from "../shared/skill";
 import { deriveToolSummary, parseToolArgs, todoProgressOf, toolCardOf } from "../shared/toolCard";
 import {
   questionAnswersFromResult,
@@ -454,7 +455,15 @@ function sameOccupancy(
 function summarizeTool(
   name: string,
   argsRaw: string,
-): { detail?: string; input?: string; command?: string; diff?: DiffHunkView[]; todo?: { done: number; total: number; active?: string; extra?: number } } {
+): {
+  detail?: string;
+  input?: string;
+  command?: string;
+  diff?: DiffHunkView[];
+  todo?: { done: number; total: number; active?: string; extra?: number };
+  filePath?: string;
+  skillName?: string;
+} {
   const args = parseToolArgs(argsRaw) ?? {};
   // 摘要口径完全交给 `shared/toolCard.deriveToolSummary`（官方 `deriveSummary` 的
   // 逐条对齐）：queries 数组拼接 → 变体字段表 → 参数里第一个非空字符串 → 原始首行。
@@ -480,9 +489,19 @@ function summarizeTool(
       input: argsRaw,
       diff: hunksFromToolArgs(name, argsRaw),
       todo: todoProgressOf(argsRaw),
+      // 「能打开的文件」只认官方 `FILE_PATH_VARIANTS`：`read` 变体里的 `web_fetch`
+      // 用 url，不算文件路径（见 `shared/toolMeta.filePathFrom`）。
+      filePath: filePathFrom(name, args),
     };
   }
-  return { detail, command: detail, input: argsRaw, todo: todoProgressOf(argsRaw) };
+  return {
+    detail,
+    command: detail,
+    input: argsRaw,
+    todo: todoProgressOf(argsRaw),
+    // 技能节点的文件路径只能来自服务端 `skills/list`，这里只记名字。
+    skillName: name === "skill" ? skillNameFromArgs(argsRaw) : undefined,
+  };
 }
 
 /**
@@ -3080,6 +3099,8 @@ export class SessionAdapter {
         segment.tool.input = argsRaw;
         segment.tool.diff = summary.diff;
         segment.tool.todo = summary.todo;
+        segment.tool.filePath = summary.filePath;
+        segment.tool.skillName = summary.skillName;
         // 唯一在这里能拿到运行中卡片的时刻：结算时会按结果重算（可能变成 undefined，
         // 例如带 description 的 bash 调用出错 → 官方退回通用 IN/OUT）
         segment.tool.card = runningCard;
@@ -3102,6 +3123,8 @@ export class SessionAdapter {
       input: argsRaw,
       diff: summary.diff,
       todo: summary.todo,
+      filePath: summary.filePath,
+      skillName: summary.skillName,
       card: runningCard,
       startedAt: ts,
     };

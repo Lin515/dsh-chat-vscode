@@ -113,6 +113,12 @@ const entries = {
   "build/session-cookie.test.mjs": "scripts/sessionCookie.test.ts",
   "build/tool-view.test.mjs": "scripts/toolView.test.ts",
   "build/tool-card.test.mjs": "scripts/toolCard.test.ts",
+  // 技能节点的文本事实（技能名 / 只取 SKILL 正文）：必须登记，否则 npm test 静默不跑
+  "build/skill.test.mjs": "scripts/skill.test.ts",
+  // 技能 / 文件节点的展开体与 Ctrl/Cmd 悬停提示（服务端渲染）：必须登记，否则 npm test 静默不跑
+  "build/tool-row-render.test.mjs": "scripts/toolRowRender.test.ts",
+  // Ctrl/Cmd 全局修饰键状态（根类开关 / 指针事件 / 失焦清理）：必须登记，否则 npm test 静默不跑
+  "build/modifier-held.test.mjs": "scripts/modifierHeld.test.ts",
   "build/thinking-stream.test.mjs": "scripts/thinkingStream.test.ts",
   "build/injected.test.mjs": "scripts/injected.test.ts",
   "build/node-open.test.mjs": "scripts/nodeOpen.test.ts",

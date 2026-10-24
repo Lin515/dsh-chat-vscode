@@ -64,6 +64,8 @@ export function Row({
   detailSuffix,
   diffStat,
   onDetailActivate,
+  onModifierActivate,
+  modifierHint,
   meta,
   open,
   onToggle,
@@ -95,6 +97,15 @@ export function Row({
    * 保住键盘可达，点击时 `stopPropagation` 免得顺手把行展开了。
    */
   onDetailActivate?: () => void;
+  /**
+   * 按住 Ctrl/Cmd 单击整行时执行的动作（文件类节点的「直接打开对应文件」）。
+   *
+   * 普通单击仍是开合节点；只有修饰键这一档改变行为，且**只在真有动作时**才挂
+   * `modifierHint` 与拦截修饰键——没有可打开目标的节点不能提示一个不存在的操作。
+   */
+  onModifierActivate?: () => void;
+  /** 修饰键动作的悬停说明（`onModifierActivate` 缺席时忽略）。 */
+  modifierHint?: string;
   meta?: ReactNode;
   open: boolean;
   onToggle: () => void;
@@ -110,9 +121,24 @@ export function Row({
   // 目录段真的被裁时才做左侧渐隐（见 useClipped）
   const dirRef = useRef<HTMLSpanElement>(null);
   const dirClipped = useClipped(dirRef, parts?.dir);
+  // 只有真有动作时才挂提示：没有可打开目标的节点不该出现「按住 Ctrl 打开」。
+  const hint = onModifierActivate ? modifierHint : undefined;
   return (
     <div className={`row${open ? " is-open" : ""}`}>
-      <button className="row-head" onClick={onToggle} aria-expanded={open}>
+      <button
+        className={`row-head${onModifierActivate ? " is-file-openable" : ""}`}
+        title={hint}
+        onClick={(event) => {
+          // Ctrl/Cmd+单击 = 直接打开这个节点对应的文件；其余单击照旧开合。
+          if (onModifierActivate && (event.ctrlKey || event.metaKey)) {
+            event.preventDefault();
+            onModifierActivate();
+            return;
+          }
+          onToggle();
+        }}
+        aria-expanded={open}
+      >
         <span className="row-chevron">
           <IconChevronRight size={11} />
         </span>
@@ -131,7 +157,9 @@ export function Row({
         {/* detail 过长时会被裁掉，所以补 title：即使截断，悬停仍能看到完整内容。
             路径类 detail 若带 onDetailActivate，则整块变成可点的文件链接。 */}
         {parts ? (
-          <span className="row-detail" title={detail}>
+          // detail 自己的 title 会盖住行头的 title：把修饰键提示追加在这里，
+          // 悬停在路径上（正是用户最想去点的地方）也能看到它。
+          <span className="row-detail" title={hint ? `${detail}\n${hint}` : detail}>
             {parts.dir ? (
               <span
                 ref={dirRef}
@@ -165,7 +193,7 @@ export function Row({
             {detailSuffix ? <span className="row-detail-suffix">{detailSuffix}</span> : null}
           </span>
         ) : detail ? (
-          <span className="row-detail is-text" title={detail}>
+          <span className="row-detail is-text" title={hint ? `${detail}\n${hint}` : detail}>
             <span className="row-detail-name">{detail}</span>
             {detailSuffix ? <span className="row-detail-suffix">{detailSuffix}</span> : null}
           </span>

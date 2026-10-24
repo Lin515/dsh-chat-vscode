@@ -214,6 +214,22 @@ export interface ToolCallView {
    * 把行号拼在末尾会在窄侧栏被截掉，正好丢掉这个信息。
    */
   readLines?: { start: number; end: number };
+  /**
+   * 这次调用对应的**工程文件**（`read` / `read_image` / `write` / `edit` 的参数路径）。
+   *
+   * 只放官方 `FILE_PATH_VARIANTS` 认出来的文件路径：URL、命令行、查询串都不算。
+   * 界面按住 Ctrl/Cmd 单击节点时用它直接打开文件（普通单击仍只开合节点）；
+   * 路径可能是相对会话工作目录的拼写，由宿主 `openFile` 按权威 cwd 解析。
+   */
+  filePath?: string;
+  /**
+   * `skill` 工具加载的技能名（参数里的 `name`）。
+   *
+   * 技能文件路径**不在**这里：它只能来自服务端 `skills/list` 的 `path`（文件系统
+   * provider 给绝对 `SKILL.md` 路径），界面用当前会话的技能目录查它；查不到就不给
+   * 可点击反馈，绝不按名字拼本机路径。
+   */
+  skillName?: string;
   status: ToolStatus;
   /** 原始参数载荷（流式期逐 delta 累积，durable 事件到达后重新摘要）。界面不直接渲染。 */
   input?: string;

@@ -98,6 +98,31 @@ console.log("toolView: pwsh 完整命令 ✓");
 }
 console.log("toolView: 读文件完整路径（省略交给界面） ✓");
 
+// 3b. Ctrl/Cmd 单击要用的「可打开文件」与技能名
+//
+// `command` 只是展开区显示的完整原文；`filePath` 才是「这是工程文件、修饰键单击
+// 直接打开」的判据。技能节点同理：只记名字，SKILL.md 路径由服务端 `skills/list`
+// 提供（宿主命令目录），适配器不按名字拼本地路径。
+{
+  const read = toolFrom("read", { file_path: "src/a.ts" });
+  assert.strictEqual(read.filePath, "src/a.ts", "读节点要带可打开的文件路径");
+  const write = toolFrom("write", { path: "src/b.ts" });
+  assert.strictEqual(write.filePath, "src/b.ts");
+  const edit = toolFrom("edit", { file_path: "src/c.ts" });
+  assert.strictEqual(edit.filePath, "src/c.ts");
+  // `read` 变体里的 web_fetch 用 url，不是工程文件
+  assert.strictEqual(toolFrom("web_fetch", { url: "https://example.com/a" }).filePath, undefined);
+  // 未知工具即便参数里带 file_path 也不算（只认官方 FILE_PATH_VARIANTS）
+  assert.strictEqual(toolFrom("some_external_tool", { file_path: "src/a.ts" }).filePath, undefined);
+
+  const skill = toolFrom("skill", { name: "build" });
+  assert.strictEqual(skill.skillName, "build", "技能节点要带技能名，供界面查服务端路径");
+  assert.strictEqual(skill.filePath, undefined, "适配器不得按技能名构造 SKILL.md 路径");
+  // 不合技能名语法的参数不认：等补全，不猜名字
+  assert.strictEqual(toolFrom("skill", { name: "Build" }).skillName, undefined);
+}
+console.log("toolView: 文件路径与技能名只从参数取，不构造本机路径 ✓");
+
 // 4. 认不出参数的未知工具：摘要是原始参数的首行（官方 `deriveSummary` 的最后一级兜底）
 //
 // 官方对未知工具（`SUMMARY_KEYS.others` 空表）的顺序是「参数里第一个非空字符串 →

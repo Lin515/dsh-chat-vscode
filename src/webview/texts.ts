@@ -229,6 +229,9 @@ export interface Texts {
   /** 工具行展开体的两段标签（官方 `row.input` / `row.output`：zh「输入/输出」、en「IN/OUT」）。 */
   toolInput: string;
   toolOutput: string;
+  /** 节点悬停的「按住 Ctrl/Cmd 单击打开…」提示（只挂在真能打开文件的节点上）。 */
+  toolOpenFileHint: string;
+  toolOpenSkillHint: string;
   /** 可点路径的无障碍/悬停说明（官方把摘要做成 fileLink，点了预览该文件）。 */
   /** 认不出的内容块的标签（官方 `message.unknownBlock` 逐字）。 */
   unknownBlock: string;
@@ -840,6 +843,8 @@ export interface Texts {
   /** `others` 变体的兜底标题（官方 `tool.title.generic`）。 */
   toolGeneric: string;
   toolCode: string;
+  /** `skill` 工具的自有标题（官方 `SkillRow` 的 `row.title`）。 */
+  toolSkill: string;
   /** 非零退出码的标注（官方 `terminal.exitCode`）。 */
   toolExitCode: (code: number) => string;
   /** 被信号杀死的标注（官方 `terminal.signal`）。 */

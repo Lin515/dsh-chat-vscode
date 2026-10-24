@@ -1156,6 +1156,8 @@ export const MESSAGES = {
   toolRemoveCordis: { zh: "移除插件", en: "Remove plugin" },
   toolGeneric: { zh: "工具调用", en: "Tool call" },
   toolCode: { zh: "代码", en: "Code" },
+  /** `skill` 工具节点自有标题（官方 `SkillRow` 的 `row.title`）。 */
+  toolSkill: { zh: "加载技能", en: "Skill" },
   toolExitCode: { zh: (code: number) => `退出码 ${code}`, en: (code: number) => `exit code ${code}` },
   toolSignal: { zh: (signal: string) => `被信号 ${signal} 终止`, en: (signal: string) => `killed by signal ${signal}` },
   /**
@@ -1184,6 +1186,20 @@ export const MESSAGES = {
   },
   toolInput: { zh: "输入", en: "IN" },
   toolOutput: { zh: "输出", en: "OUT" },
+  /**
+   * 节点悬停的修饰键提示：只有**按住 Ctrl/Cmd 单击会打开文件**的节点才挂。
+   *
+   * 读 / 写 / 编辑节点指向这次调用操作的文件；技能节点指向服务端 `skills/list`
+   * 给出的 `SKILL.md`。普通单击仍是开合节点，提示只承诺修饰键那一档。
+   */
+  toolOpenFileHint: {
+    zh: "按住 Ctrl/Cmd 单击打开文件",
+    en: "Ctrl/Cmd+click to open the file",
+  },
+  toolOpenSkillHint: {
+    zh: "按住 Ctrl/Cmd 单击打开 SKILL.md",
+    en: "Ctrl/Cmd+click to open SKILL.md",
+  },
   unknownBlock: { zh: "未知内容块", en: "Unknown content block" },
   contextInstructions: { zh: "上下文指令", en: "Context instructions" },
   contextAdded: { zh: "已新增", en: "Added" },

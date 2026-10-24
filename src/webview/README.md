@@ -60,6 +60,7 @@ React / 浏览器环境，不使用 Node API。上层边界见[源码导航](<..
 - [subagentTree.ts](<subagentTree.ts>) — 标题清单的界面读法：当前会话的多层后代计数与当前节点定位。
 - [contextMenu.ts](<contextMenu.ts>) — 原生 / 自绘右键判据与会话选区 Ctrl+C / Cmd+C 的宿主复制桥；编辑区快捷键让路，见[右键设计](<../../docs/design-context-menu.md>)。
 - [nodeOpen.ts](<nodeOpen.ts>) — 消息持有的节点展开态。
+- [modifierHeld.ts](<modifierHeld.ts>) — 全局 Ctrl/Cmd 按住状态 → 根元素 `is-modifier-held` 类（可打开文件节点的路径下划线提示）；指针事件补键盘焦点缺席，失焦 / 页面隐藏清理。
 - [turnProcess.ts](<turnProcess.ts>) — 连续过程折叠。
 - [todoPanel.ts](<todoPanel.ts>) — 会话单槽位开合与收起时保留项。
 - [turnFiles.ts](<turnFiles.ts>) — 交付 / 本轮改动文件去重。

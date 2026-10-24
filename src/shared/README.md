@@ -12,6 +12,7 @@
 - `trajectory.ts` — 轨迹视图的线格式与视图模型（记录种类逐字对齐官方契约；**含请求表 `TrajectoryRequest`**——请求级检查器吃的选项 / 用量含会话累计 / 请求计时都在这张表里；时间线投影已 vendor 到 `src/vendor/`，这里只剩类型与域坐标换算）。
 - `toolMeta.ts` — 工具行的契约事实：工具分类、退出码解析（`[exit code: N]`）、running/ok/error/stopped 状态语义，纯数据与纯函数。
 - `toolCard.ts` — 工具卡契约事实：从「工具名 + 参数 + 结果元数据」折出卡片数据（对齐官方 `deriveSummary`）。
+- `skill.ts` — `skill` 工具节点的文本事实：从参数认合法技能名、从结果信封里只取 `<skill_instructions>` 正文；不构造路径（SKILL.md 路径只认服务端 `skills/list`）。
 - `toolQuestion.ts` — `ask_user_question` 问卷事实：题目在调用参数、答案在工具结果，两份 durable 材料折出问卷记录（重载后卡片不丢）。
 - `turnProcessThreshold.ts` — 连续过程折叠的阈值（默认值与特殊语义只写这一份，两边共用）。
 - `imageRef.ts` — 正文图片引用分类（远程 / 内联 / 本地路径）：判断哪些该交给宿主读成 data URL。
