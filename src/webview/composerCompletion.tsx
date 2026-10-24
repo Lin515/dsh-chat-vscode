@@ -13,7 +13,8 @@
  * 行为与搬家前**逐字一致**——每一条都对应一条断言（`@` 入口的口径除外，它在
  * 2026-10-10 与 2026-10-11 两轮里改过：现在是「光标落在哪个 `@` 块里就以整块为查询串，
  * 块里有内容就触发，但宿主说这块**已经能引用到内容**时整块不弹」，见 `findTrigger` 与
- * `resolvedSuppressed`）：
+ * `resolvedSuppressed`；`/` 的抑制门同理，完整有效命令 / 技能块不弹，见
+ * `commandResolvedAt` 与 `commandSuppressed`）：
  * 1. 草稿的两次写（`onDraft` 本地 state + `post({type:"setDraft"})` 宿主持久化）顺序与内容不变；
  * 2. 落光标仍在 `requestAnimationFrame` 里（否则 caret 会被 React 的重渲染顶掉）；
  * 3. `pick`（引用 token / 命令名）与 `drill`（进目录）的差别；
@@ -21,8 +22,10 @@
  *    动作有效：焦点重新进入输入框时清掉，见 `onFocus`）；
  * 5. ESC：弹层打开时由**元素层**（本次输入）消费——关掉弹层，且不让这次按键落到
  *    归属链的「停止生成」兜底上（见 `./escapeOwner.ts`）；
- * 6. `/` 只有在**行首、空白或包装标点之后**且名字在命令目录里才走命令通道；`@` 走自己的内容块判定
- *    （见 `findTrigger`），两条通道的边界规则相同、判据不同；
+ * 6. `/` 只有在**行首、空白或包装标点之后**才走命令通道；`@` 走自己的内容块判定
+ *    （见 `findTrigger`），两条通道的边界规则相同、判据不同。命令通道还要过自己的抑制门：
+ *    完整有效命令 / 技能块（含光标在名字中间）不再主动弹，半截前缀照常弹，点击链接的
+ *    显式请求例外（见 `commandResolvedAt` / `commandSuppressed`）；
  * 7. 指针悬停改高亮**只认 `mousemove`**：列表为露出键盘选中的那行而滚动时，浏览器会把
  *    `mouseenter` 补发给「刚滚到静止指针底下」的行，等于凭空抢走键盘的高亮（官方
  *    `MenuView` 同一判词，现场与断言见行上的注释与 `scripts/mentionNav.test.ts` 的
@@ -65,7 +68,13 @@ import { mentionParent } from "./mentionNav";
 import { resolveDisplayPath } from "./pathDisplay";
 import { formatClock } from "./components/primitives";
 import type { Texts } from "./texts";
-import { commandDescription, isCommandTokenEnd, isCommandTokenStart, type CommandMenuRequest } from "./commandLinks";
+import {
+  commandDescription,
+  isCommandTokenEnd,
+  isCommandTokenStart,
+  scanCommandLinks,
+  type CommandMenuRequest,
+} from "./commandLinks";
 
 /* ============================ 纯逻辑（可离线断言） ============================ */
 
@@ -78,6 +87,12 @@ export interface Trigger {
   /** 折叠会话块的完整可编辑区间，允许标题含空白。 */
   end?: number;
   sessionOnly?: boolean;
+  /**
+   * 这一条来自**显式请求**（点击正文 / 草稿里的命令链接，或点命令目录里的条目），
+   * 不是光标自动探测出来的。显式请求要能打开一条完整命令的筛选菜单，所以不吃
+   * `commandResolvedAt` 那道抑制门；文本或光标一变，下一帧探测就又回到自动档。
+   */
+  explicit?: true;
 }
 
 /**
@@ -111,6 +126,19 @@ interface PaintedCandidates {
 }
 
 /**
+ * 一次**显式**打开命令菜单的请求，以及它落定时的文本与光标。
+ *
+ * 只对「文本和光标都没变」的这一段有效：keyup / 焦点回来这类重探测会命中它、继续把
+ * 菜单留在屏上（点击链接之后用户还要用 ↑↓ 选）；一旦文本或光标真的动了，它就失效，
+ * 回到自动探测（`commandResolvedAt` 会按住完整命令的列表）。
+ */
+interface RequestedCommand {
+  value: string;
+  caret: number;
+  trigger: Trigger;
+}
+
+/**
  * 找出光标前正在输入的触发词。
  *
  * `/` 与 `@` **不是同一条规则**：
@@ -118,6 +146,8 @@ interface PaintedCandidates {
  *   就弹不出菜单，很常见；`(/plan)`、`【/plan】` 这类句子包装也常见）；而路径里的 `/`
  *   （`src/dsh/controller.ts`）、URI / 盘符 / UNC 与 mention 里的 `/` 前面都不是这些
  *   边界字符，用同一条白名单既允许句中触发、又不误判路径。查询串就是光标前那一段。
+ *   这里只负责「有没有触发词」；一条完整有效命令 / 技能是否要让位，由
+ *   {@link commandResolvedAt} 在弹层那一层判（半截前缀仍要弹，不能提前在这里禁掉）。
  * - `@`：光标落在哪个 `@` 内容块里（见 {@link mentionBlockAt}）就以**整块**为查询串，
  *   块里有内容就触发——打会话 id / 名字片段（`@session-…`、`@web`）与目录块一样要弹，
  *   服务端正是拿这个查询串列目录、筛对话（用户 2026-10-11 报的现场：会话 id 打进去
@@ -177,6 +207,30 @@ function commandTriggerAt(before: string): Trigger | undefined {
   const query = before.slice(start + 1);
   if (/\s/u.test(query)) return undefined;
   return { kind: "command", start, query };
+}
+
+/**
+ * 光标所在的那条 `/` token 是不是命令目录里的**完整**命令 / 技能。
+ *
+ * 这是 `/` 通道的抑制判据（与 `@` 由宿主回答「这块已经能引用到内容」同形）：光标停在
+ * 一条已经写好的命令名里（含紧贴名字末尾那一格、或在名字中间移动）时，补全列表不该
+ * 再冒出来。半截前缀（`/pl`）、未知名字与命令参数都不算——前缀仍要弹，否则补全没法用；
+ * 名字之后跟空白就是参数区，`findTrigger` 本来也不会触发。
+ *
+ * 判据复用 {@link scanCommandLinks}：它与草稿里命令链接的蓝色、Ctrl/Cmd 单击的命中面
+ * 是**同一份**扫描结果，所以「看起来是一条有效命令」与「补全要不要让位」不会分家。
+ * 技能也在目录里（`CommandView.skill`），因此 `/build` 这类技能名同样让位。
+ *
+ * 显式请求（`Trigger.explicit`）在调用处排除：点击一条命令链接仍然要打开筛选菜单。
+ */
+export function commandResolvedAt(
+  text: string,
+  trigger: Trigger,
+  commands: readonly CommandView[],
+): boolean {
+  if (trigger.kind !== "command") return false;
+  const caret = clampIndex(trigger.start + 1 + trigger.query.length, text.length);
+  return scanCommandLinks(text, commands).some((span) => caret >= span.start && caret <= span.end);
 }
 
 /**
@@ -794,6 +848,14 @@ function useCompletion(
    * 挪一下光标才弹」正是它（挪光标让位置变了，记忆才失效）。
    */
   const dismissedRef = useRef<{ value: string; caret: number } | null>(null);
+  /**
+   * 显式命令请求的落点（见 {@link RequestedCommand}）。
+   *
+   * 与 `paintedBox` 一样挂在可注入的状态钩子上：离线断言逐帧重渲，`useRef` 在那一侧
+   * 每次归零，而这条规则要跨「effect 落定 → 下一帧」保留；生产里它就是一次 `useState`
+   * 的初始值，此后只改 `.current`、不再 `set`，不会引起重渲染。
+   */
+  const [requestedBox] = useStateImpl<{ current: RequestedCommand | null }>(() => ({ current: null }));
   /** 候选行的容器（`.popover-list`，弹层里**唯一**可滚的那一层），键盘导航要滚它。 */
   const popoverRef = useRef<HTMLDivElement | null>(null);
   /** 这一次高亮变化是不是键盘导航引起的（鼠标悬停不滚动列表）。 */
@@ -955,6 +1017,14 @@ function useCompletion(
     const next = commandMenuDraft(request, current.draft, at);
     const written = next.text === current.draft ? next
       : writeDraft(next.text, next.caret, { start: at, end: at });
+    const found = commandRequestTrigger(request, written.text, written.caret, current.sessionDraft);
+    // 点击命令链接 / 点目录里的命令名是**显式**请求：即使落点已经是一条完整命令，
+    // 也要把筛选菜单打开（见 `RequestedCommand`）。先记落点再聚焦——`onFocus` 会
+    // 立刻重探测一次，它必须能认出这是同一次显式请求。
+    const requested = found ? { ...found, explicit: true as const } : undefined;
+    requestedBox.current = requested
+      ? { value: written.text, caret: written.caret, trigger: requested }
+      : null;
     const node = ref.current;
     if (node) {
       node.value = written.text;
@@ -962,7 +1032,7 @@ function useCompletion(
       node.focus();
     }
     dismissedRef.current = null;
-    setTrigger(commandRequestTrigger(request, written.text, written.caret, current.sessionDraft));
+    setTrigger(requested);
     setHighlight(0);
   }, [commandRequest?.id]);
 
@@ -1188,6 +1258,7 @@ function useCompletion(
         }
         // 聚焦可能同步触发 onFocus；最后再关闭，不能被其重探测覆盖。
         dismissedRef.current = { value: result.text, caret: result.caret };
+        requestedBox.current = null;
         setTrigger(undefined);
         return;
       }
@@ -1234,11 +1305,20 @@ function useCompletion(
       const dismissed = dismissedRef.current;
       if (dismissed && dismissed.value === value && dismissed.caret === at) {
         // ESC 刚关闭、文本与光标都没变：保持关闭，不重新弹出
+        requestedBox.current = null;
         setTrigger(undefined);
         return;
       }
-      // 任何真实的文本 / 光标变化都解除「已关闭」标记
+      const requested = requestedBox.current;
+      if (requested && requested.value === value && requested.caret === at) {
+        // 显式请求刚打开的菜单：同一次落点上的 keyup / 焦点回来仍归它，↑↓ 才能继续选。
+        dismissedRef.current = null;
+        setTrigger(requested.trigger);
+        return;
+      }
+      // 任何真实的文本 / 光标变化都解除「已关闭」与「显式请求」标记
       dismissedRef.current = null;
+      requestedBox.current = null;
       setTrigger(findTrigger(value, at, latest.current.sessionDraft));
     },
     [],
@@ -1270,6 +1350,19 @@ function useCompletion(
     fileRefs.resolved === true;
 
   /**
+   * `/` 也有自己的抑制门：光标停在一条**完整有效**的命令 / 技能 token 里时不再弹列表。
+   *
+   * 与 `@` 的 `resolvedSuppressed` 同形，但判据在本地（命令目录由 `commands/list` 下发，
+   * 不是要查盘的事实）：`scanCommandLinks` 认得出完整名字就算「已经有一条可用的引用」，
+   * 光标随后在名字中间移动、或从参数区移回名字里都不该再冒出候选。半截前缀不算，所以
+   * 正在打 `/pl` 时照常弹；`Trigger.explicit` 是点击链接那一档，显式要看菜单，不吃这道门。
+   */
+  const commandSuppressed =
+    trigger?.kind === "command" &&
+    trigger.explicit !== true &&
+    commandResolvedAt(draft, trigger, commands);
+
+  /**
    * 这一类普通 `@` 查询**还没画过**、而这一帧的判定还在路上：先不弹。
    *
    * 画过的（`stale`）继续画——那一份原地留屏，**不塌也不重画**（见 `candidates`）。
@@ -1290,7 +1383,11 @@ function useCompletion(
    * ——Enter 照旧是发送，↑↓ 照旧挪光标，ESC 交给归属链的兜底（没有画出来的东西可关）。
    * 官方 `ui-input-trigger` 的 `arbitrate` 第一句同样是 `if (!state.open) return 'pass'`。
    */
-  const popoverOpen = !resolvedSuppressed && !waiting && popoverVisible(trigger, candidates.length, noWorkspace);
+  const popoverOpen =
+    !resolvedSuppressed &&
+    !commandSuppressed &&
+    !waiting &&
+    popoverVisible(trigger, candidates.length, noWorkspace);
 
   // 记下**这一帧真的画出来了什么**：下一次 pending 就靠它原地留屏（见 `paintedBox`）。
   // 冻结中的那一份不再重记——它的 key 属于旧查询，重记会把 key 换成新的、把高亮抹掉；
@@ -1314,6 +1411,7 @@ function useCompletion(
             value: draft,
             caret: event.currentTarget.selectionStart ?? draft.length,
           };
+          requestedBox.current = null;
           setTrigger(undefined);
           return;
         }

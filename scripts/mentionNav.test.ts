@@ -2108,7 +2108,13 @@ console.log("mentionNav: M3 相对 `..` 向上（深度算术 / 盘根与共享�
   assert.deepEqual(inserted, { text: "before /plan after", caret: 12 });
   assert.deepEqual(commandMenuDraft({ id: 3, query: "plan" }, "", 0), { text: "/plan", caret: 5 });
   let submitted = 0;
-  const opened = frame(located.text, located.caret, { onSubmit: () => submitted++ });
+  const request = { id: 1, query: "plan", range: { start: 7, end: 12 } };
+  const clicked = frame(located.text, located.caret, {
+    commandRequest: request,
+    onSubmit: () => submitted++,
+  });
+  flushEffects(clicked);
+  const opened = nextFrame(clicked, { commandRequest: undefined, onSubmit: () => submitted++ });
   assert.ok(opened.html.includes(">/plan<") && !opened.html.includes(">/compact<"), "打开即按命令名筛选");
   assert.ok(!/<input\b/.test(opened.html), "菜单不提供额外筛选框");
   assert.deepEqual(opened.written, []);
@@ -2211,6 +2217,78 @@ console.log("completion(hook): 斜杠链接复用文本域筛选，无额外输�
   assert.strictEqual(stale.html, "", "对照：没有 `/` 的草稿不会凭空开命令菜单");
 }
 console.log("completion(hook): 点击包装标点里的 /命令经 request effect 打开过滤菜单 ✓");
+
+// ---------- 22. `/` 完整命令 / 技能块：光标进入或块内移动不再主动弹列表 ----------
+//
+// 用户口径（与 `@` 的 resolved 抑制门同形）：一条 `/` token 已经是命令目录里的完整
+// 名字（命令或技能）时，光标移进去、停在名字中间或末尾都不该再冒出候选；只有半截
+// 前缀仍要弹。显式点击链接的菜单由 `Trigger.explicit` 放行（第 20、21 节已覆盖）。
+{
+  const commands: CommandView[] = [
+    ...COMMANDS,
+    { name: "build", description: "构建项目", skill: true },
+  ];
+
+  for (const [label, draft, caret] of [
+    ["命令名末尾", "/plan", 5],
+    ["命令名中间", "/plan", 3],
+    ["紧贴 `/` 后", "/plan", 1],
+    ["包装标点里的完整命令", "先看 (/plan) 再说", 7],
+    ["完整技能名", "/build", 6],
+  ] as const) {
+    const f = frame(draft, caret, { commands });
+    assert.strictEqual(f.html, "", `${label}：完整有效命令 / 技能块不主动弹列表`);
+  }
+
+  // 半截前缀照旧弹：补全正是用来把它补全的。未知名字不抑制，但没有候选时命令菜单
+  // 本来就不画（`popoverVisible` 的口径），所以这里只钉前缀。
+  const partial = frame("/pl", 3, { commands });
+  assert.ok(partial.html.includes(">/plan<"), "半截前缀仍要弹候选");
+  const partialSkill = frame("/buil", 5, { commands });
+  assert.ok(partialSkill.html.includes(">/build<"), "技能名的半截前缀同样要弹");
+
+  // 真实编辑链：敲完最后一个字符 → 列表收起；退一格回到前缀 → 列表回来。
+  const typing = typeAt(frame("/pla", 4, { commands }), "/plan", 5, { commands });
+  assert.strictEqual(typing.html, "", "敲到完整命令名的最后一个字符，列表不再弹");
+  const back = typeAt(typing, "/pla", 4, { commands });
+  assert.ok(back.html.includes(">/plan<"), "退回半截前缀后补全要回来");
+
+  // 光标从参数区移回命令名里：之前没有触发词，移进去也不许弹。
+  const args = frame("/plan mode", 9, { commands });
+  assert.strictEqual(args.html, "", "前提：光标在参数区时没有命令菜单");
+  args.node.selectionStart = 5;
+  args.node.selectionEnd = 5;
+  args.props.onKeyUp?.({
+    currentTarget: args.node as unknown as HTMLTextAreaElement,
+  } as unknown as KeyboardEvent<HTMLTextAreaElement>);
+  const entered = nextFrame(args, { commands });
+  assert.strictEqual(entered.html, "", "光标移进完整命令名内不再弹（此前会在块内任意位置重开）");
+
+  // 抑制门与键盘用同一份判据：列表没画出来时 Enter 归发送、↑↓ 归光标、ESC 归归属链。
+  const sent: string[] = [];
+  const held = frame("/plan", 5, { commands, onSubmit: (gesture) => sent.push(gesture) });
+  press(held, "Enter");
+  assert.strictEqual(held.draft, "/plan", "完整命令块不弹时 Enter 不改写正文");
+  assert.deepStrictEqual(sent, ["enter"], "Enter 归发送");
+  assert.strictEqual(press(held, "ArrowDown").prevented, 0, "↑↓ 归光标");
+  assert.strictEqual(press(held, "Escape").prevented, 0, "没有画出来的列表不消费 ESC");
+
+  // 选完一条命令之后从同一位置挪光标：`dismissed` 的记忆只压同一次落点，
+  // 光标真的动了仍由完整命令判据继续按住（用户报的「光标进入块内又弹」现场）。
+  const pick = frame("/pl", 3, { commands });
+  assert.ok(pick.html.includes(">/plan<"), "前提：半截前缀菜单开着");
+  press(pick, "Enter");
+  const picked = nextFrame(pick, { commands });
+  assert.strictEqual(picked.html, "", "选完同一次落点不重开");
+  picked.node.selectionStart = 3;
+  picked.node.selectionEnd = 3;
+  picked.props.onClick?.({
+    currentTarget: picked.node as unknown as HTMLTextAreaElement,
+  } as never);
+  assert.strictEqual(nextFrame(picked, { commands }).html, "", "光标在完整命令块内移动不再弹");
+}
+console.log("completion(hook): `/` 完整命令 / 技能块内不主动弹列表（半截前缀与显式请求例外） ✓");
+
 // 真实补全 hook 的合成事件早退后，同一个 nativeEvent 仍会抵达 App 的 window 兜底。
 // 仅验证 onKeyDown 没 preventDefault 不足以保证生成未被误停，必须把整条归属链接起来。
 {
