@@ -804,6 +804,9 @@ export class SessionAdapter {
    */
   private turnRunning = false;
 
+  /** 本轮起点（`turn/start` 的 `event.time`，官方 `startTime`）；与 `turnRunning` 同一生命周期。 */
+  private runStartedAt: number | undefined = undefined;
+
   /**
    * 这一窗里**出现过轮次边界**吗（`turn/start` 或 `turn/end`）。
    *
@@ -1235,7 +1238,10 @@ export class SessionAdapter {
       // 说明确实还没跑过。两者都不成立时**不发帧**，由宿主保留已有的值——那是由
       // 会话列表打底、`api-session/status` 中继纠偏的（控制器 `applySessionStatus`）。
       if (this.turnRunning || this.sawTurnBoundary || !this.hasMore) {
-        this.emit({ type: "patch", patch: { running: this.turnRunning } });
+        this.emit({
+          type: "patch",
+          patch: { running: this.turnRunning, runStartedAt: this.turnRunning ? this.runStartedAt ?? null : null },
+        });
       }
       // 历史里可能有旧轮次的文件芯片：回放完安排一次分类（旧文件多已定型，
       // 这一批通常一次 fs.stat + 一次 git 状态读取就出结果）
@@ -1415,6 +1421,9 @@ export class SessionAdapter {
     this.turnPart = 1;
     this.currentStep = 0;
     this.stepFirstTokenAt = undefined;
+    // 起点跟着重折一起重认（重放里那条 `turn/start` 会带回来）；不清的话，翻页重折
+    // 后窗口被截断、看不到本轮 `turn/start` 时，界面上会挂着上一轮的数字
+    this.runStartedAt = undefined;
     this.sequence = 0;
     // 领取账本同样从头重建（它只吃 durable 事件，重放里就会走回同一个状态；
     // 留着旧窗口的集合会给新到达的消息定性）
@@ -1629,8 +1638,9 @@ export class SessionAdapter {
         const message = this.ensureAssistantMessage(event.time);
         message.streaming = true;
         this.turnRunning = true;
+        this.runStartedAt = event.time;
         this.sawTurnBoundary = true;
-        this.emit({ type: "patch", patch: { running: true } });
+        this.emit({ type: "patch", patch: { running: true, runStartedAt: event.time } });
         this.emit({ type: "message/upsert", message: { ...message } });
         break;
       }
@@ -1700,7 +1710,8 @@ export class SessionAdapter {
         this.synthesizeInterrupted(event.time);
         this.emit({ type: "message/upsert", message: { ...message } });
         this.turnRunning = false;
-        this.emit({ type: "patch", patch: { running: false } });
+        this.runStartedAt = undefined;
+        this.emit({ type: "patch", patch: { running: false, runStartedAt: null } });
         // 这一轮收场了：把「领走了却没落盘」的那些提交定性（见 settleLostSubmissions）
         this.settleLostSubmissions(event.seq);
         // 轮次结束 = 文件都落盘了：先推一次 Git 重扫再分类，让芯片的
@@ -2660,6 +2671,7 @@ export class SessionAdapter {
     this.liveTurn = undefined;
     this.liveStep = undefined;
     this.turnRunning = false;
+    this.runStartedAt = undefined;
     // 新开窗 = 重新认识这一窗：轮次边界也要重新数（见字段注释）
     this.sawTurnBoundary = false;
     // 继承前缀的边界同理由新窗口的记录重新给（分叉会话的快照里必然带 `session/end-seed`）

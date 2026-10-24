@@ -32,6 +32,8 @@ DSH Chat 自身以 **MIT** 许可发布（见 `LICENSE`）。
 
 此外，`src/webview/messages.ts` 的六项内置斜杠命令描述取自 `@deepseek-ai/dsh-client-ui-commands@0.2.1-alpha.2` 的中英文 `description.*` 词条；`src/webview/commandLinks.tsx` 按其官方命令定义身份选择描述，未复用上游组件实现。
 
+`src/webview/assets/running-whale@2x.png` 是官方运行态鲸鱼尾动图（APNG，60 帧）的原样副本，用作「深度求索中」前的图标：像素未改动，仅以 CSS 遮罩取字形、由 `currentColor` 上色。
+
 MIT 许可证全文见本文末「附录 A」。
 
 ### 1.1 `src/vendor/` 里的**源码逐字副本**（MIT）

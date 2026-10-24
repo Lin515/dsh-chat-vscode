@@ -282,19 +282,25 @@ export const MESSAGES = {
   turnClock: {
     zh: (ms: number) => {
       const total = Math.max(0, Math.floor(ms / 1000));
-      const minutes = Math.floor(total / 60);
+      const hours = Math.floor(total / 3600);
+      const minutes = Math.floor(total / 60) % 60;
       const seconds = total % 60;
-      return minutes > 0
-        ? `${minutes}分${String(seconds).padStart(2, "0")}秒`
-        : `${seconds}秒`;
+      const parts: string[] = [];
+      if (hours > 0) parts.push(`${hours}时`);
+      if (total >= 60) parts.push(`${minutes}分`);
+      parts.push(`${seconds}秒`);
+      return parts.join("");
     },
     en: (ms: number) => {
       const total = Math.max(0, Math.floor(ms / 1000));
-      const minutes = Math.floor(total / 60);
+      const hours = Math.floor(total / 3600);
+      const minutes = Math.floor(total / 60) % 60;
       const seconds = total % 60;
-      return minutes > 0
-        ? `${minutes}m ${String(seconds).padStart(2, "0")}s`
-        : `${seconds}s`;
+      const parts: string[] = [];
+      if (hours > 0) parts.push(`${hours}h`);
+      if (total >= 60) parts.push(`${minutes}m`);
+      parts.push(`${seconds}s`);
+      return parts.join(" ");
     },
   },
   turnRanFor: { zh: (duration: string) => `用时 ${duration}`, en: (duration: string) => `Ran for ${duration}` },
@@ -858,6 +864,11 @@ export const MESSAGES = {
   },
 
   running: { zh: "深度求索中", en: "Deep diving" },
+  /** 运行状态的计时文案；末尾那组点由 `<Ellipsis />` 画（官方 `chat.deepDivingFor`）。 */
+  runningElapsed: {
+    zh: (duration: string) => `深度求索中，用时${duration}`,
+    en: (duration: string) => `Deep diving for ${duration}`,
+  },
   queued: { zh: "待发送 {n} 条", en: "{n} queued" },
   queueRemove: { zh: "取消这条消息", en: "Remove this message" },
   queueEdit: { zh: "取回重新编辑", en: "Take back to edit" },

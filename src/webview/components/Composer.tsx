@@ -1,4 +1,5 @@
 import {
+  memo,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -17,7 +18,6 @@ import {
   IconCheck,
   IconChevronDown,
   IconClose,
-  IconDsh,
   IconPause,
   IconPencil,
   IconPlay,
@@ -30,7 +30,16 @@ import {
   IconStop,
   IconTarget,
 } from "../icons";
-import { CtxText, Ellipsis, Popover, Spinner, contextDetailLines, contextNumbers, formatDuration } from "./primitives";
+import {
+  CtxText,
+  Ellipsis,
+  Popover,
+  Spinner,
+  contextDetailLines,
+  contextNumbers,
+  formatDuration,
+  useElapsed,
+} from "./primitives";
 import { ApprovalCard, PlanReviewCard, QuestionCard, formatTps } from "./Rows";
 import type { PendingInteraction } from "../pendingInteraction";
 import { useComposerCompletion } from "../composerCompletion";
@@ -917,10 +926,10 @@ export function Composer({
           与「没有 waiting 的审批/提问」是同一件事——这里不再自己 `.some(...)` 推第三遍。 */}
       {state.running && !pending ? (
         <div className="running-line">
-          <span className="lump-thinking" aria-hidden>
-            <IconDsh size={13} />
-          </span>
-          <span>{texts.running}</span>
+          {/* 官方 running-whale 的 60 帧 APNG，遮罩取字形、按鲸鱼蓝上色；
+              动画由图片自身的时间轴驱动（见 `.running-whale`）。 */}
+          <span className="running-whale" aria-hidden />
+          <RunClock startedAt={state.runStartedAt} />
           <Ellipsis />
           <span className="lump-hint">
             {state.queueItems.length > 0 ? texts.runningHintQueue : texts.runningHint}
@@ -1495,6 +1504,22 @@ function GoalBar({ goal }: { goal: GoalView | undefined }) {
     </div>
   );
 }
+
+/**
+ * 运行状态的计时（官方 `RunningStatus`）：整秒刷新只重画这一小段。
+ *
+ * 起点由宿主给（`runStartedAt`）；认不出起点时不显示计时——不拿 `Date.now()` 现算，
+ * 否则切走再回来会从 0 开始。不足一秒按 1 秒显示。
+ */
+const RunClock = memo(function RunClock({ startedAt }: { startedAt: number | undefined }) {
+  const texts = useTexts();
+  const elapsed = useElapsed(startedAt, startedAt !== undefined);
+  // 等宽数字：整秒跳动时右边的提示不会被推来推去
+  const label = startedAt === undefined
+    ? texts.running
+    : texts.runningElapsed(texts.turnClock(Math.max(1000, elapsed)));
+  return <span className="running-text">{label}</span>;
+});
 
 /**
  * 输入框上方的状态条。按优先级显示当前最该被看到的状态——与 Continue 的

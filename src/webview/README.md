@@ -1,6 +1,6 @@
 # src/webview/ — 自绘界面
 
-React / 浏览器环境，不使用 Node API。上层边界见[源码导航](<../README.md>)；子目录见[组件](<components/README.md>)、[样式](<styles/README.md>)。本页定位职责，不重复设计规格。
+React / 浏览器环境，不使用 Node API。上层边界见[源码导航](<../README.md>)；子目录见[组件](<components/README.md>)、[样式](<styles/README.md>)、[资源](<assets/README.md>)。本页定位职责，不重复设计规格。
 
 ## 应用与文案
 

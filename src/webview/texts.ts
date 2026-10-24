@@ -152,9 +152,11 @@ export interface Texts {
   goalCollapse: string;
 
   /**
-   * 轮尾「用时 X」里的时长。格式与官方 `formatRunDuration` 逐字一致
-   * （zh「42秒」「1分05秒」/ en「42s」「1m 05s」），**不能**复用界面里工具行的
-   * `formatDuration`：那是本扩展自己的紧凑格式（「1m 5s」「0.8s」），单位口径不同。
+   * 时长口径：轮尾「用时 X」，以及运行状态的「深度求索中，用时 X」。格式与官方
+   * `formatRunDuration` 逐字一致（zh「42秒」「1分5秒」「1时2分3秒」/ en「42s」
+   * 「1m 5s」「1h 2m 3s」）——**秒不补零**，满一分钟才出现「分」，满一小时才出现「时」。
+   * **不能**复用界面里工具行的 `formatDuration`：那是本扩展自己的紧凑格式
+   * （「1m 5s」「0.8s」），单位口径不同。
    */
   turnClock: (ms: number) => string;
   /**
@@ -517,6 +519,8 @@ export interface Texts {
   mentionClickHint: string;
 
   running: string;
+  /** 运行状态的计时文案（时长由 `turnClock` 格式化，末尾的点由 `<Ellipsis />` 画）。 */
+  runningElapsed: (duration: string) => string;
   queued: string;
   queueRemove: string;
   /** 把排队消息取回输入框重新编辑。 */

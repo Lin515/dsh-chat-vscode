@@ -39,6 +39,8 @@ export interface SessionView {
   session?: ChatState["session"];
   messages: ChatState["messages"];
   running: ChatState["running"];
+  /** 本轮起点（官方 `startTime`）；`running` 为假或认不出起点时没有这个键。 */
+  runStartedAt?: ChatState["runStartedAt"];
   queueItems: ChatState["queueItems"];
   models: ChatState["models"];
   model?: ChatState["model"];
@@ -116,6 +118,7 @@ export const SESSION_VIEW_KEYS = [
   "session",
   "messages",
   "running",
+  "runStartedAt",
   "queueItems",
   "models",
   "model",
@@ -194,6 +197,9 @@ export const SESSION_FIELDS = {
   },
   running: {
     read: (source) => (source.running?.() ?? false) as SessionView["running"],
+  },
+  runStartedAt: {
+    read: (source) => source.runStartedAt?.() as SessionView["runStartedAt"],
   },
   queueItems: {
     read: (source) => (source.queueItems?.() ?? []) as SessionView["queueItems"],
@@ -427,6 +433,7 @@ export function sessionSourceOf(
     session: () => session,
     messages: () => adapter?.snapshotMessages(),
     running: () => scope?.running,
+    runStartedAt: () => scope?.runStartedAt,
     queueItems: () => scope?.queueItems,
     models: () => models,
     model: () => (scope ? scope.model : pending?.model?.()),

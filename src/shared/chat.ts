@@ -1413,6 +1413,8 @@ export interface ChatState {
   pendingMessages: PendingMessageView[];
   /** 当前会话是否正在生成。 */
   running: boolean;
+  /** 本轮生成的起点（官方 `startTime`：`turn/start` 的事件时刻），只在 `running` 为真时下发。 */
+  runStartedAt?: number;
   /**
    * 新会话将使用的工作目录（空态页的提示行）。
    *

@@ -3640,12 +3640,21 @@ button.meta-chip:hover {
   color: var(--description);
 }
 
-/* 运行中状态条的「思考」图标：思考时发光 */
-.lump-thinking {
+/* 运行中状态条的鲸鱼尾：官方 running-whale 的 60 帧 APNG（28×28 @2x）作遮罩，
+   按鲸鱼蓝上色；动画由图片自身驱动，不叠呼吸光（减少动画时同样保留）。 */
+.running-whale {
   flex: 0 0 auto;
-  display: inline-flex;
+  display: inline-block;
+  width: calc(14 * var(--dp));
+  height: calc(14 * var(--dp));
   color: var(--info);
-  animation: icon-glow 1.6s ease-in-out infinite;
+  background-color: currentColor;
+  mask: url("../assets/running-whale@2x.png") center / 100% 100% no-repeat;
+}
+
+/* 运行状态的文字：等宽数字，整秒跳动时不推右邻 */
+.running-text {
+  font-variant-numeric: tabular-nums;
 }
 
 /* 图标呼吸发光：drop-shadow 呼吸（运行状态条、流式思考行、运行中的节点图标共用）。

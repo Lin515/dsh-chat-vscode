@@ -55,6 +55,8 @@ export class SessionScope {
 
   /** 本会话是否正在生成（由适配器的 running patch 帧同步）。 */
   running = false;
+  /** 本轮的起点（`turn/start` 的事件时刻，官方 `startTime`）；与 `running` 同源更新，空闲即清。 */
+  runStartedAt: number | undefined = undefined;
   /**
    * 本会话是否有一页更早的历史正在取（`loadMore` 的并发闸门）。
    *

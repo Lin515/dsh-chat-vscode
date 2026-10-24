@@ -1731,7 +1731,12 @@ export class ChatController implements vscode.Disposable {
   private deliver(sessionId: string, frame: HostToWebview): void {
     if (frame.type === "patch" && typeof frame.patch.running === "boolean") {
       const scope = this.scopes.get(sessionId);
-      if (scope) scope.running = frame.patch.running;
+      if (scope) {
+        scope.running = frame.patch.running;
+        // 起点跟 running 同一趟更新（收尾清掉，避免下一轮开跑前还挂着上一轮的数字）
+        if (!frame.patch.running) scope.runStartedAt = undefined;
+        else if (typeof frame.patch.runStartedAt === "number") scope.runStartedAt = frame.patch.runStartedAt;
+      }
     }
     // 会话标题变了：编辑区标签跟着更新。放在投递之前——即使此刻没有任何窗口绑着
     // 这条会话，标签也该跟着走。子代理面包屑的左半（父会话标题）也在这里跟进
@@ -4457,9 +4462,11 @@ export class ChatController implements vscode.Disposable {
   private writeScopeRunning(scope: SessionScope, running: boolean): void {
     if (scope.running === running) return;
     scope.running = running;
+    // 权威 running 给不出起点：写回空闲时顺手清掉，免得留着上一轮的时间戳
+    if (!running) scope.runStartedAt = undefined;
     this.deliver(scope.sessionId, {
       type: "patch",
-      patch: sessionPatch(this.sessionSource(scope), ["running"]),
+      patch: sessionPatch(this.sessionSource(scope), ["running", "runStartedAt"]),
     });
   }
 
@@ -9558,11 +9565,8 @@ export class ChatController implements vscode.Disposable {
         scope.adapter?.hasOpenTurn() === true ||
         this.sessions.some((item) => item.id === scope.sessionId && item.running);
       if (optimistic && !evidence && scope.running) {
-        scope.running = false;
-        this.deliver(scope.sessionId, {
-          type: "patch",
-          patch: sessionPatch(this.sessionSource(scope), ["running"]),
-        });
+        // 走同一个写入口：域值、界面帧与起点清理（本轮没有 `turn/start`）一次到位
+        this.writeScopeRunning(scope, false);
       }
       // 这一轮没提交成功：那一行标成失败并带上服务端 / 传输层的原因（**不回填输入框**，
       // 用户口径 2026-09-25：正文留在那一行里，重发用行上的按钮）。
@@ -10403,11 +10407,7 @@ export class ChatController implements vscode.Disposable {
     if (!(await this.waitUntilIdle(scope))) {
       // 界面上那盏「生成中」以**域**为准（`deliver` 的 patch 与这里写的是同一个值，
       // 但域是权威：下一个读 `scope.running` 的地方不该看到与界面不一致的旧值）
-      scope.running = false;
-      this.deliver(scope.sessionId, {
-        type: "patch",
-        patch: sessionPatch(this.sessionSource(scope), ["running"]),
-      });
+      this.writeScopeRunning(scope, false);
     }
   }
 
