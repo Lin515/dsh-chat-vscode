@@ -134,6 +134,7 @@ const HOST_MARKERS: string[] = [
   "callId",
   // 连接 / 鉴权 / 服务器
   "connectionLost",
+  "restartingInternal",
   "authNeedsToken",
   "authTokenRejected",
   "serverSpawnFailed",

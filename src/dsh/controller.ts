@@ -3793,6 +3793,10 @@ export class ChatController implements vscode.Disposable {
     // 这一次要的是「只收连接」：不作废轮次、不中止等待（`server.restart` 自己会叫醒等待），
     // 也不交还占用——重启完还要接上同一套后台
     this.attempts.detach();
+    // 发起窗口**知道**这次断线是自己造成的：给一条「正在重启」的专用文案，不走
+    // `connectionLost`（旁观窗口才是被动掉线，那条文案归它们）。从前这里只改
+    // `connectPhase` 而不动 `connection`，整个等待期连接条仍是隐藏的，看起来毫无反应。
+    this.setConnection("connecting", "@restartingInternal");
     try {
       // 显式传目标：manager 记的上一次目标可能是外部（用户正连着备用），不传的话
       // 「重启」会在那一侧变成静默空转（见 `SupervisorManager.restart`）
@@ -3806,6 +3810,10 @@ export class ChatController implements vscode.Disposable {
         return;
       }
       throw error;
+    } finally {
+      // 正常完成时下面 `ensureConnected` 会立刻改写这句；失败时别把「正在重启」留在条上。
+      // 管理器若在这期间已落成 `error`（连接条上是更准确的失败原因），判据不成立，不覆盖它。
+      if (this.connectionDetail === "@restartingInternal") this.setConnection("connecting");
     }
     // 「重启内部 DSH」是用户显式动作：允许拉起一套（关掉自动连接时也算数）
     await this.ensureConnected({ start: true, target: "internal" });

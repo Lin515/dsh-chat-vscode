@@ -965,6 +965,13 @@ export const MESSAGES = {
     en: "The server requires authentication and the token obtained automatically was rejected. Restart it with “DSH: Restart Internal DSH” from the Command Palette.",
   },
   connectionLost: { zh: "与服务器的连接已断开，正在重连…", en: "Lost the connection to the server; reconnecting…" },
+  /**
+   * 发起「重启内部 DSH」的窗口自己的等待文案（**只进连接条**）。
+   *
+   * 它不能复用 `connectionLost`：这个窗口的断线是自己造成的，说“连接已断开、正在重连”
+   * 与事实不符；而旁观窗口确实是被动掉线，仍走 `connectionLost`。两条文案互斥。
+   */
+  restartingInternal: { zh: "正在重启内部 DSH…", en: "Restarting the internal DSH…" },
   serverSpawnFailed: {
     vscode: true,
     // 界面用 `fill()` 的具名占位符，VS Code 的 l10n 用位置占位符 `{0}`

@@ -680,6 +680,8 @@ export interface Texts {
   authTokenRejected: string;
   /** 连接失败条：连接断开，正在重连。 */
   connectionLost: string;
+  /** 连接条：发起「重启内部 DSH」的窗口正在等新地址（不是被动掉线）。 */
+  restartingInternal: string;
   /** 连接失败条：dsh 进程起不来（原因来自 spawn）。 */
   serverSpawnFailed: (detail: string) => string;
   /** 连接失败条：后台没能就绪（缺地址或令牌；**不再有"等超时"这一档**）。 */
