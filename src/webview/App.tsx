@@ -1129,6 +1129,8 @@ export function App() {
                         fileKinds={state.fileKinds}
                         questionBatch={state.questionBatch}
                         turnProcessThreshold={state.turnProcessThreshold}
+                        // 悬停里的完整路径按当前执行目录补全（点击仍由宿主解析）
+                        cwd={state.workingDirectory ?? state.session?.cwd}
                         // 改动文件卡片：坐标在消息上，清单在 state 的缓存里（键带会话 id，
                         // 见 shared/changesSummary.ts）。没绑会话（空态）时不传，卡片不渲染。
                         sessionId={state.session?.id}

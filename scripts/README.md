@@ -98,6 +98,7 @@
 - [markdown.test.ts](<markdown.test.ts>) — Markdown 安全与能力边界（DOMPurify 白名单放行 GFM 复选框、外链图片加固、Windows 反斜杠路径的链接 / 图片目标不被 CommonMark 转义吃掉）。
 - [footnotes.test.ts](<footnotes.test.ts>) — 脚注 marked 扩展行为断言（真 marked + 真扩展）。
 - [fileLinks.test.ts](<fileLinks.test.ts>) — 正文文件链接三段链路（判定 / DOM 落地 / 样式）。
+- [linkHovers.test.ts](<linkHovers.test.ts>) — 链接悬停标题（完整路径 / 完整地址）与 HTML 文件的浏览器打开判据（扩展名白名单、Ctrl/Cmd 分流与两端接线）。
 - [autoScroll.test.ts](<autoScroll.test.ts>) — `.chat-scroll` 自动滚动行为断言（真调用纯状态机）；末尾一节把阅读定位端口接到真 `AutoScrollPort` 上验「先放跟随再落位」。
 - [readingPlacement.test.ts](<readingPlacement.test.ts>) — 阅读定位端口行为断言：release 在写 `scrollTop` 之前、无效目标 no-op、取历史前后各放一次、300 帧跟踪与手势让位、查找两帧等待期的手势 / 切会话 / 换元素竞争（可注入 DOM 与帧源，真调用）。
 - [nodeOpen.test.ts](<nodeOpen.test.ts>) — 折叠节点展开态 + 过程折叠新口径（主动点开跑完不收回、新盒子贴底）。

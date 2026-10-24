@@ -78,6 +78,7 @@ npm run package  # Releases/dsh-chat-<version>.vsix
 - `/` 打开命令与技能菜单；`@` 引用文件、目录或历史会话，写入 `@path`、`@dir/` 或 `@[标题](dsh-session:…)`，由模型自行读取，不占附件通道。
 - 目录行主体进入目录，右侧「整个目录」按钮引用目录；键盘用 Enter 引用、Tab 进入。已发送的引用直接点击；草稿引用按住 `Ctrl` 点击。会话引用在新标签页打开，沿用编辑器分组规则。
 - `Alt+Shift+2` 将编辑器选区加入为 `@path#L12-L40` 引用。
+- 会话正文里的文件链接悬停显示完整路径，web 链接显示完整地址；HTML 文件（`.html` / `.htm` / `.xhtml` / `.shtml`）按住 `Ctrl/Cmd` 单击用系统浏览器打开，普通单击仍在 VS Code 编辑器中打开。
 - 回形针选择文件：图片发送为内容块，其余文件上传，芯片显示上传状态。此路径通道不受拖放的 8 MB 限制。
 - 拖放须按住 `Shift`：文件走字节通道，单文件最多 8 MB，不支持目录。Windows 复制文件或目录后粘贴可由宿主取回真路径：文件走附件、目录变成正文引用；其它平台与截图粘贴回退到同一字节通道。纯文本粘贴不变。粘贴进来的图片按会话内序号命名（中文界面 `图1.png`、英文界面 `image1.png`），编号只增不回收，便于在对话里直接指代。
 - 图片另受服务端准入限制：单张不超过 20 MiB、宽 × 高不超过 64,000,000 像素、单边不超过 8192，一条消息最多 20 张且合计不超过 200 MiB（默认值，可配置）。进不了内容块的图片不会被当成图片发送，而是**作为文件上传**（内容寻址的只读副本，远端部署下模型也能用工具处理它）：逐图超限的副本模型需先缩小才能直接查看，张数或总量超出的副本模型可直接读取。提示报的是上限（像素按「6400万」这类缩写），不会只说「太大了」。
@@ -194,6 +195,7 @@ Open the notification drawer with **Show history** or **DSH: View Notifications*
 - `/` opens commands and skills; `@` references files, folders or past sessions using `@path`, `@dir/` or `@[title](dsh-session:…)`. The model reads references itself; they are not attachments.
 - A folder row navigates into it; its “Entire folder” button references it. Enter references, Tab navigates. Click references in sent messages directly; hold `Ctrl` to click draft references. Session links open a new tab using the same editor-group rules.
 - `Alt+Shift+2` inserts an editor selection as `@path#L12-L40`.
+- Hovering a file link in conversation content shows its full path and hovering a web link shows its full URL. Hold `Ctrl/Cmd` and click an HTML file (`.html` / `.htm` / `.xhtml` / `.shtml`) to open it in the system browser; a plain click still opens it in VS Code.
 - The paperclip sends images as content blocks and uploads other files, showing upload status on their chips. This path channel is not subject to the drop channel's 8 MB cap.
 - Hold `Shift` to drop files. Drops use bytes, allow up to 8 MB per file and do not support folders. On Windows, pasting copied files/folders retrieves their paths: files become attachments, folders become text references. Other platforms and pasted screenshots use the same byte channel. Plain-text paste is unchanged. Pasted images are named by session order (`图1.png` in the Chinese interface, `image1.png` in the English one); numbers only grow and are never reused, so you can refer to an image by name in the conversation.
 - Images are also subject to server admission limits: at most 20 MiB each, 64,000,000 pixels (width × height), 8192 per side, and 20 images per message totalling at most 200 MiB (defaults; configurable). An image over a limit is never sent as an image; it is **uploaded as a file** instead (a content-addressed read-only copy the model can process with tools even on a remote deployment). A copy that broke a per-image limit must be downscaled before the model can view it, while one that only broke the count or total-byte limit can be read directly. Messages state the limit (pixel counts are abbreviated, e.g. 64M) rather than just "too large".

@@ -505,6 +505,12 @@ export interface Texts {
   mentionRevealFolder: string;
   mentionOpenSession: string;
   /**
+   * 文件链接指向 HTML 家族时，悬停提示里追加的一行：按住 Ctrl/Cmd 单击
+   * 用系统浏览器打开（普通单击仍在编辑器里打开）。`linkHovers.ts` 与
+   * `fileMentions.ts` 共用这一条。
+   */
+  webFileBrowserHint: string;
+  /**
    * **草稿区**的引用提示（输入框的 title）：草稿里的引用要按住 Ctrl 才点得开，
    * 不说明的话没人会去试（正文里已发出的引用是直接可点的，不必提示）。
    */

@@ -417,6 +417,19 @@ export type WebviewToHost =
    */
   | { type: "openFile"; path: string; diff?: boolean; line?: number; link?: true }
   /**
+   * 用**系统浏览器**打开一个本地 web 文件（正文文件链接按住 Ctrl/Cmd 单击）。
+   *
+   * 只服务 HTML 家族（`.html` / `.htm` / `.xhtml` / `.shtml`，白名单在
+   * `shared/webFile.ts`）：普通单击仍走 `openFile` 交给 VS Code，这一条是
+   * 「看渲染结果」的入口。`path` 与 `openFile` 同一口径（原样拼写，可能相对
+   * 会话工作目录，宿主用 `resolveChipPath` 解析）。
+   *
+   * 宿主**必须再验一次扩展名**：webview 发来的帧不可信，放宽这条等于把任意
+   * 本地文件（含可执行文件）交给系统默认程序。目标不存在或系统拒绝打开时
+   * 明确告知，不静默。
+   */
+  | { type: "openFileInBrowser"; path: string }
+  /**
    * 在**资源管理器中展开**一个目录（用户消息里 `@目录` 引用点开时走这条）。
    *
    * 与 `openFile` 同一口径：`path` 是引用上的原样拼写，可能相对会话工作目录，

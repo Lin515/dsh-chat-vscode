@@ -188,6 +188,12 @@
 - 技能有 `skillPath` 时打开该文件；服务端未提供路径时仅高亮，不显示可点击反馈，不按名字拼接路径。官方命令描述按 `definitionId` 选择中英文本，未知身份保留服务端描述。
 - 正文链接悬停显示下划线，输入框镜像只在 Ctrl/Cmd 按住时为可点击目标显示下划线；无路径技能在两处均不显示下划线或手形。
 
+## 已发出引用的悬停
+
+- 已发出的 `@文件` / `@目录` 悬停先给**完整路径**（按会话 cwd 归一；拿不到 cwd 时不猜绝对位置），再给这一档的动作说明。HTML 家族文件额外追加「按住 Ctrl/Cmd 单击在浏览器中打开」。
+- HTML 文件的本地链接支持 `Ctrl/Cmd` 单击改用系统浏览器，普通单击仍在编辑器打开；markdown 锚点、行内代码与已发出的 `@文件` 共用 `browserOpenRequested` 与 `shared/webFile.ts` 白名单，宿主再验一次。文件芯片的修饰键另有「直接打开、不要 diff」的含义，不叠加浏览器行为。
+- 草稿区不参与浏览器分流：那里的 Ctrl/Cmd 单击本来就是打开引用的入口。
+
 ## 实现与回归
 
 入口为 controller 的 menuQueries / mentionResolves、`shared/mentions.ts`、`composerCompletion.tsx` 与 IPC 的 files/list / files/sessions。回归见 mentionCandidates 与 mentionNav，覆盖过期批次、目录判据、整块查询、有效引用抑制、未知证据放行、刷新期间原地留屏（内容只换一次、留屏期间键位与点击冻结）与焦点重开；工作区外发现另见 fileRefListing 与本节「分阶段落地与回归」。宿主 / webview 帧改动须双端构建。

@@ -80,6 +80,7 @@ import { matchPresetInput } from "../shared/presetMatch";
 import { presetMatchNames } from "../webview/presetDisplay";
 import { resolveForVsCode } from "./hostText";
 import { normalizeTurnProcessThreshold } from "../shared/turnProcessThreshold";
+import { isBrowserOpenableFile } from "../shared/webFile";
 import { chooseTarget, describeFacts, externalStateOf, type TargetFacts } from "./connectTarget";
 import { DesktopCredentialError, DesktopStartError } from "./desktopAttach";
 import { DshApiError, DshAuthError, DshClient, endpointAbsent, type SessionReferenceCandidateWire, type SessionSummaryWire } from "./client";
@@ -8909,6 +8910,13 @@ export class ChatController implements vscode.Disposable {
         break;
       }
 
+      case "openFileInBrowser": {
+        // 正文文件链接按住 Ctrl/Cmd：HTML 家族交给系统浏览器。路径解析与
+        // openFile 同一口径，扩展名白名单在宿主这层再验一次（见 openFileInBrowser）。
+        await this.openFileInBrowser(viewId, message.path);
+        break;
+      }
+
       case "revealPath": {
         // 目录引用（用户消息里的 `@目录`）：解析口径与 openFile 完全一致
         // （引用上原样拼写 + 会话工作目录），只是动作换成 VS Code 自己的「在资源管理器
@@ -11238,6 +11246,61 @@ export class ChatController implements vscode.Disposable {
       await vscode.commands.executeCommand("vscode.open", uri, { preview: true });
     } catch (error) {
       this.log(`[open] 打开失败 ${path}：${this.describeError(error)}`);
+    }
+  }
+
+  /**
+   * 用**系统浏览器**打开本地 web 文件（正文链接按住 Ctrl/Cmd 单击的那一档）。
+   *
+   * 路径口径与 `openFile` 完全一致：链接上是**原样拼写**，先经 `resolveChipPath` 按
+   * 会话 cwd 解析成绝对路径再动手；解析不了（相对拼写 + 拿不到工作目录）时明确告知，
+   * 不静默。文件不在那儿时复用链接那条的 `fileNotFound` 措辞（带绝对路径）。
+   *
+   * **扩展名白名单在宿主这层再验一次**（`shared/webFile.ts`）：webview 发来的帧
+   * 不该被当成可信输入，放宽等于允许把任意本地文件交给系统默认程序。不是 HTML
+   * 家族就拒绝并提示，绝不改走「打开编辑器」——那会让用户以为浏览器没有打开。
+   *
+   * 不存在时先查盘再调 `openExternal`：系统对不存在的 `file:` URI 往往只回
+   * `false` 或什么都不做，先查一次才能给出「找不到文件」这种可行动的信息。
+   */
+  private async openFileInBrowser(viewId: string, path: string): Promise<void> {
+    // 归属在发起这一刻捕获（下面有 await），切走之后这条失败不该画进新会话
+    const sessionId = this.viewSessions.get(viewId);
+    const scope = this.scopeOfView(viewId);
+    const resolved = resolveChipPath(scope ? this.cwdOf(scope) : undefined, path);
+    if (!resolved) {
+      this.log(`[open] 路径解析不了（相对且缺会话工作目录），放弃用浏览器打开：${path}`);
+      this.notify({
+        sessionId,
+        level: "warn",
+        kind: "chipPathUnresolved",
+        text: "@chipPathUnresolved",
+      });
+      return;
+    }
+    if (!isBrowserOpenableFile(resolved)) {
+      this.log(`[open] 不是可直接用浏览器打开的 web 文件，拒绝：${resolved}`);
+      this.notify({
+        sessionId,
+        level: "warn",
+        kind: "openExternalFailed",
+        text: "@openExternalFailed",
+      });
+      return;
+    }
+    if ((await this.fileExistence(vscode.Uri.file(resolved))) === "absent") {
+      this.reportMissingFile(viewId, sessionId, resolved, true);
+      return;
+    }
+    const opened = await vscode.env.openExternal(vscode.Uri.file(resolved));
+    if (!opened) {
+      this.log(`[open] 系统没有接受用浏览器打开的请求：${resolved}`);
+      this.notify({
+        sessionId,
+        level: "warn",
+        kind: "openExternalFailed",
+        text: "@openExternalFailed",
+      });
     }
   }
 

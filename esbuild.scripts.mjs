@@ -144,6 +144,8 @@ const entries = {
   "build/image-files.test.mjs": "scripts/imageFiles.test.ts",
   "build/path-display.test.mjs": "scripts/pathDisplay.test.ts",
   "build/file-links.test.mjs": "scripts/fileLinks.test.ts",
+  // 链接悬停标题与 HTML 文件的浏览器打开（修饰键判据 / 白名单 / 两端接线）：必须登记
+  "build/link-hovers.test.mjs": "scripts/linkHovers.test.ts",
   "build/system-prompt-probe.mjs": "scripts/systemPromptProbe.ts",
   "build/effort-probe.mjs": "scripts/effortProbe.ts",
   "build/read-range-probe.mjs": "scripts/readRangeProbe.ts",

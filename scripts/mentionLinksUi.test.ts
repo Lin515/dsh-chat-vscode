@@ -76,6 +76,7 @@ const render = (
   locale: "zh" | "en" = "zh",
   sessionRefs?: MessageView["sessionRefs"],
   commands: readonly CommandView[] = [],
+  cwd?: string,
 ): string =>
   quietly(() =>
     renderToStaticMarkup(
@@ -83,7 +84,7 @@ const render = (
         TextsContext.Provider,
         { value: dictionaryFor(locale) },
         createElement(CommandLinksContext.Provider, { value: { commands, openMenu() {} } },
-          createElement(Message, { message: userMessage(text, sessionRefs) })),
+          createElement(Message, { message: userMessage(text, sessionRefs), cwd })),
       ),
     ),
   );
@@ -106,8 +107,8 @@ const sessionToken = (label: string, id: string): string =>
     `@src/a.ts 必须渲染成可点的行内按钮（class=mention-link）：${html}`,
   );
   assert.ok(
-    html.includes(`title="${zh.mentionOpenFile}"`),
-    "悬停说明要用「打开文件」那一档（用户点之前得知道会发生什么）",
+    html.includes(`title="src/a.ts\n${zh.mentionOpenFile}"`),
+    "悬停说明要先给完整路径、再说「打开文件」（用户点之前得知道会发生什么）",
   );
   assert.ok(
     html.includes("先看 ") && html.includes(" 再改别的"),
@@ -124,10 +125,27 @@ const sessionToken = (label: string, id: string): string =>
     `@src/ 必须渲染成可点链接（目录与文件是两种目标）：${html}`,
   );
   assert.ok(
-    html.includes(`title="${zh.mentionRevealFolder}"`),
-    "目录引用的悬停说明必须是「展开目录」，不能与「打开文件」混用",
+    html.includes(`title="src/\n${zh.mentionRevealFolder}"`),
+    "目录引用的悬停说明要先给完整路径，再用「展开目录」，不能与「打开文件」混用",
   );
   console.log("mentionLinksUi: 目录引用用「展开目录」那一档提示 ✓");
+}
+
+// ---------- 2b. HTML 文件引用：完整路径 + 浏览器修饰键提示 ----------
+{
+  const html = render("看 @out/index.html 的渲染结果", "zh", undefined, [], "D:/dev/app");
+  assert.ok(
+    html.includes(`title="D:/dev/app/out/index.html\n${zh.webFileBrowserHint}\n${zh.mentionOpenFile}"`),
+    `HTML 文件引用要先给完整路径，再给 Ctrl/Cmd 浏览器提示与普通单击的动作：${html}`,
+  );
+  posted.length = 0;
+  openMentionTarget({ kind: "file", path: "out/index.html" }, undefined, true);
+  assert.deepEqual(posted, [{ type: "openFileInBrowser", path: "out/index.html" }]);
+  posted.length = 0;
+  openMentionTarget({ kind: "file", path: "out/index.html" });
+  assert.deepEqual(posted, [{ type: "openFile", path: "out/index.html", line: undefined, link: true }]);
+  posted.length = 0;
+  console.log("mentionLinksUi: HTML 文件引用显示完整路径并按修饰键分流浏览器 ✓");
 }
 
 // ---------- 3. 纯文本消息：一个链接按钮都不该出现 ----------
@@ -194,7 +212,7 @@ const sessionToken = (label: string, id: string): string =>
   // 同一条正文**没有**清单时按形状是文件引用——这份清单就是这两种引用唯一的分界
   const shapeOnly = render(text);
   assert.ok(
-    shapeOnly.includes(`title="${zh.mentionOpenFile}"`),
+    shapeOnly.includes(`\n${zh.mentionOpenFile}"`),
     `没有召回清单时按形状当文件引用（就是用户报的那个现象）：${shapeOnly}`,
   );
   console.log("mentionLinksUi: 已发出的会话引用按召回清单认成会话 ✓");
@@ -244,7 +262,10 @@ const sessionToken = (label: string, id: string): string =>
   assert.match(html, /<button[^>]*class="mention-link"[^>]*>\/plan<\/button>/);
   assert.match(html, /<button[^>]*class="mention-link"[^>]*>\/audit<\/button>/);
   assert.match(html, /<span class="mention-link is-inert">\/virtual<\/span>/);
-  assert.ok(html.includes(`title="${zh.commandOpenMenu}"`) && html.includes(`title="${zh.mentionOpenFile}"`));
+  assert.ok(
+    html.includes(`title="${zh.commandOpenMenu}"`) &&
+      html.includes(`title="skills/audit/SKILL.md\n${zh.mentionOpenFile}"`),
+  );
   assert.deepEqual(scanCommandLinks("https://host/plan /plan/file /plan.md /planner /unknown", commands), []);
   assert.equal(scanCommandLinks("(/plan) /plan.", commands).length, 2, "句末标点不属于命令");
   const collision = scanCommandLinks("/plan", [{ ...commands[1], name: "plan" }, commands[0]]);

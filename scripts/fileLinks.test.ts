@@ -147,8 +147,12 @@ console.log("fileLinks: 词表去重且不带 undefined ✓");
     "已经被换过的节点不再处理（异常形态下也别把 DOM 套两层）",
   );
   assert.ok(
-    /button\.title = path/.test(mentions),
-    "按钮要带上**解析后的完整路径**：正文里常只写文件名，悬停得能看出开的是哪个",
+    /button\.title = fileLinkHoverTitle\(cwd, path, texts\)/.test(mentions),
+    "按钮要带上**完整路径**与 HTML 文件的浏览器提示：正文里常只写文件名，悬停得能看出开的是哪个",
+  );
+  assert.ok(
+    /open\(path, event\);/.test(mentions),
+    "点击要把原始事件交给调用方：按住 Ctrl/Cmd 时 HTML 文件改走系统浏览器",
   );
   assert.ok(
     /const token = code\.textContent \?\? ""/.test(mentions) &&
@@ -166,16 +170,18 @@ console.log("fileLinks: 词表去重且不带 undefined ✓");
 
   const markdown = read("src", "webview", "components", "Markdown.tsx");
   assert.ok(
-    /const undoMentions = hydrateFileMentions\(root, fileLinks, openFile\);/.test(markdown),
-    "Markdown 的 HtmlBlock 要把词表交给 hydrate（否则行内代码永远是纯文本）",
+    /const undoMentions = hydrateFileMentions\(\s*\n\s*root,\s*\n\s*fileLinks,\s*\n\s*cwd,\s*\n\s*texts,/.test(
+      markdown,
+    ),
+    "Markdown 的 HtmlBlock 要把词表、cwd 与文案交给 hydrate（否则行内代码永远是纯文本、悬停缺完整路径）",
   );
   assert.ok(
     /useLayoutEffect\(\(\) => \{[\s\S]*?hydrateFileMentions/.test(markdown),
     "换成按钮要**在绘制前**做完（与本地图同一理由：先画一帧纯文本再跳成按钮会闪）",
   );
   assert.ok(
-    /undoImages\(\);\s*\n\s*undoMentions\(\);/.test(markdown),
-    "两个 hydrate 的清理都要跑",
+    /undoImages\(\);\s*\n\s*undoTitles\(\);\s*\n\s*undoMentions\(\);/.test(markdown),
+    "图片、锚点标题与行内链接的清理都要跑",
   );
 }
 console.log("fileLinks: 行内代码 → 按钮（跳过代码块与锚点，绘制前完成，可还原） ✓");
@@ -191,6 +197,21 @@ console.log("fileLinks: 行内代码 → 按钮（跳过代码块与锚点，绘
   assert.ok(
     /const file = parseFileLink\(href\);/.test(markdown),
     "锚点要按 parseFileLink 判定是不是本地文件",
+  );
+  assert.ok(
+    /openFile\(file\.path, file\.line, event\);/.test(markdown) &&
+      /if \(event && browserOpenRequested\(event, path\)\) \{\s*\n\s*post\(\{ type: "openFileInBrowser", path \}\);/u.test(
+        markdown,
+      ),
+    "本地文件点击统一交给 openFile：HTML 文件按住 Ctrl/Cmd 时由它改发 openFileInBrowser（普通文件仍发 openFile）",
+  );
+  assert.ok(
+    /const undoTitles = hydrateLinkTitles\(root, cwd, texts\);/.test(markdown),
+    "锚点的悬停标题要在绘制后补上（完整路径 / 外链地址）",
+  );
+  assert.ok(
+    /\(path, event\) => openFile\(path, undefined, event\)/.test(markdown),
+    "行内代码文件链接同样把事件交给 openFile（按修饰键分流到系统浏览器）",
   );
   assert.ok(
     !/settled/.test(markdown),
@@ -272,8 +293,8 @@ console.log("fileLinks: 净化层保留盘符 href（正斜杠 / 反斜杠 / %5C
     "词表必须是 produced ∪ deliverables（官方 producedFileMentions 同一份来源）",
   );
   assert.ok(
-    /<StreamText key=\{segment\.id\} text=\{segment\.text\} fileLinks=\{fileLinks\} \/>/.test(message),
-    "词表要传给正文段（不传的话行内代码永远不会变成链接）",
+    /<StreamText key=\{segment\.id\} text=\{segment\.text\} fileLinks=\{fileLinks\} cwd=\{cwd\} \/>/.test(message),
+    "词表与 cwd 要传给正文段（不传的话行内代码永远不会变成链接、悬停也补不出完整路径）",
   );
 }
 console.log("fileLinks: 词表 = 本轮 produced ∪ deliverables ✓");
@@ -317,6 +338,16 @@ console.log("fileLinks: 词表 = 本轮 produced ∪ deliverables ✓");
       /if \(!opened\) \{/.test(controller),
     "系统没接受打开请求时要明确提示，不能静默（「点了没反应」正是本条要避免的失败）",
   );
+  assert.ok(
+    /case "openFileInBrowser": \{[\s\S]*?await this\.openFileInBrowser\(viewId, message\.path\);/.test(controller),
+    "宿主要有 openFileInBrowser 分支（HTML 文件的 Ctrl/Cmd 单击）",
+  );
+  assert.ok(
+    /private async openFileInBrowser\(viewId: string, path: string\): Promise<void> \{[\s\S]*?if \(!isBrowserOpenableFile\(resolved\)\) \{[\s\S]*?const opened = await vscode\.env\.openExternal\(vscode\.Uri\.file\(resolved\)\);/.test(
+      controller,
+    ),
+    "宿主这层要用同一份 web 文件白名单再验一次，并用文件 URI 交给系统默认程序",
+  );
 
   const ipc = read("src", "shared", "ipc.ts");
   assert.ok(
@@ -324,6 +355,10 @@ console.log("fileLinks: 词表 = 本轮 produced ∪ deliverables ✓");
     "openFile 要带可选行号与「来自链接」标记",
   );
   assert.ok(/\{ type: "openExternal"; url: string \}/.test(ipc), "要有 openExternal 这条帧");
+  assert.ok(
+    /\{ type: "openFileInBrowser"; path: string \}/.test(ipc),
+    "要有 openFileInBrowser 这条帧（与 openFile 分开，宿主才能按 web 文件白名单收窄）",
+  );
 }
 console.log("fileLinks: 宿主侧行号落位 + 相对路径解析 + 外链白名单 ✓");
 

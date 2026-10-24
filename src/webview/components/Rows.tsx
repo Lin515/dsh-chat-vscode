@@ -32,6 +32,7 @@ import { ImageGallery } from "./Images";
 import { ToolCardBody } from "./ToolCards";
 import { fill, useLocale, useTexts, resolveText } from "../texts";
 import { pickLocalizedText } from "../../shared/localizedText";
+import { resolvedFilePath } from "../linkHovers";
 import type { NodeOpenPort } from "../nodeOpen";
 import {
   IconAlert,
@@ -1500,11 +1501,14 @@ export function FileChips({
   label,
   paths,
   kinds,
+  cwd,
 }: {
   label: string;
   paths: { path: string; description?: string }[];
   /** 芯片路径 → 改动种类（宿主按 git 状态判定，查不到 = 还没分类完，不标记号）。 */
   kinds?: Record<string, FileChangeKind>;
+  /** 会话工作目录：悬停标题据此把相对路径补成完整路径。 */
+  cwd?: string;
 }) {
   const texts = useTexts();
   // 每行独立记忆展开态；消息重渲染（新 segment 追加）不重置
@@ -1520,16 +1524,18 @@ export function FileChips({
       {shown.map((file) => {
         const kind = kinds?.[file.path];
         const deleted = kind === "deleted";
+        // 悬停第一行始终是**完整路径**：芯片上只画文件名，正文里也可能是相对拼写
+        const fullPath = resolvedFilePath(cwd, file.path);
         return (
           <button
             key={file.path}
             className={`file-chip${deleted ? " is-deleted" : ""}`}
             title={
               deleted
-                ? `${file.path}\n${texts.fileDeletedHint}`
+                ? `${fullPath}\n${texts.fileDeletedHint}`
                 : file.description
-                  ? `${file.description}\n${texts.openChangesHint}`
-                  : `${file.path}\n${texts.openChangesHint}`
+                  ? `${fullPath}\n${file.description}\n${texts.openChangesHint}`
+                  : `${fullPath}\n${texts.openChangesHint}`
             }
             // 无障碍标题走词典：旧写法在这里用模板串硬拼中文全角括号
             // （`${path}（${...}）`），英文界面下会露出全角括号

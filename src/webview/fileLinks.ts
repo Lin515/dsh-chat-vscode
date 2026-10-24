@@ -16,6 +16,7 @@
  * 纯函数、不碰 DOM 也不引 React：断言见 `scripts/fileLinks.test.ts`。DOM 那一步
  * （把命中的行内代码换成按钮）在 `webview/fileMentions.ts`。
  */
+import { isBrowserOpenableFile } from "../shared/webFile";
 
 /** 一个本地文件链接的目标：路径 + 可选起始行（1 基）。 */
 export interface FileLinkTarget {
@@ -106,6 +107,25 @@ export function externalLinkUrl(value: string): string | undefined {
     // 相对地址（`./doc`）在这里就失败——那是文件链接那条路的事
     return undefined;
   }
+}
+
+/**
+ * 这一下点击要不要把本地 web 文件交给系统浏览器。
+ *
+ * 三处入口（正文锚点、行内代码链接、用户消息里的 `@` 引用）共用这一条判据，
+ * 语义才不会各走各的：**只有按住 Ctrl/Cmd、且目标是浏览器能直接打开的本地
+ * web 文件**才换路；其余点击行为一个字都不变（普通文件仍开编辑器、外链仍直接
+ * 交给系统浏览器）。文件芯片不在此列：那里的 Ctrl/Cmd 已经有「直接打开文件、
+ * 不要 diff」的含义，不能再叠一层。
+ *
+ * @param event 只读键盘修饰键的鼠标事件。
+ * @param path 链接目标里的本地路径。
+ */
+export function browserOpenRequested(
+  event: { readonly ctrlKey: boolean; readonly metaKey: boolean },
+  path: string,
+): boolean {
+  return (event.ctrlKey || event.metaKey) && isBrowserOpenableFile(path);
 }
 
 /**

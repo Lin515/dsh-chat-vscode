@@ -7,6 +7,7 @@
  *
  * - 文件 → `openFile`（`link: true`，与正文里助手那条文件链接同口径，见
  *   `components/Markdown.tsx` 的 `openFile`：打不开时的措辞按「正文链接」那一档给）；
+ *   按住 Ctrl/Cmd 且目标是 HTML 家族时改发 `openFileInBrowser`（系统浏览器）；
  * - 目录 → `revealPath`（宿主在资源管理器里展开它）；
  * - 会话 → `openInEditor` + `sessionId`（宿主**新开一个标签页**打开那条会话；不是
  *   `openSession`——那条会把**当前窗口**切走，点一条引用就换掉正在看的对话太唐突）。
@@ -17,14 +18,25 @@
 import { post } from "./bridge";
 import { mentionAt, type MentionLinkTarget } from "./mentionLinks";
 
-/** 按目标种类打开一条引用。 */
-export function openMentionTarget(target: MentionLinkTarget, openCommand?: (name: string) => void): void {
+/**
+ * 按目标种类打开一条引用。
+ *
+ * @param browser 只对文件目标有意义：HTML 家族文件由调用方按修饰键判出来后，
+ *   把这一下改走系统浏览器。草稿区的 Ctrl/Cmd+单击不带这一档——那里的修饰键
+ *   本来就是「打开引用」的入口，不能再兼作浏览器开关。
+ */
+export function openMentionTarget(
+  target: MentionLinkTarget,
+  openCommand?: (name: string) => void,
+  browser = false,
+): void {
   switch (target.kind) {
     case "command":
       openCommand?.(target.name);
       return;
     case "file":
-      post({ type: "openFile", path: target.path, line: target.line, link: true });
+      if (browser) post({ type: "openFileInBrowser", path: target.path });
+      else post({ type: "openFile", path: target.path, line: target.line, link: true });
       return;
     case "directory":
       post({ type: "revealPath", path: target.path });

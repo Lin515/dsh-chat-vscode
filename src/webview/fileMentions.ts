@@ -1,4 +1,5 @@
 import { matchFileMention, type FileLinkPort } from "./fileLinks";
+import { fileLinkHoverTitle, type LinkHoverTexts } from "./linkHovers";
 
 /**
  * 正文里**行内代码文件链接**的那一步 DOM 变换（webview 侧）。
@@ -28,7 +29,10 @@ const MENTION_CLASS = "file-mention";
  * @param port 本轮文件词表；`undefined` 或词表为空时不做任何事。流式期间词表
  *   可能还不全——只对**已经命中**的 token 动手（见 `fileLinks.ts` 的口径），
  *   词表随轮次增长时靠清理函数还原后重判。
- * @param open 打开文件的动作（界面侧只负责发帧，路径解析在宿主）。
+ * @param cwd 会话工作目录：悬停标题据此把相对路径补成完整路径（拿不到就原样给）。
+ * @param texts 悬停标题要用的文案（HTML 类文件的修饰键提示）。
+ * @param open 打开文件的动作（界面侧只负责发帧，路径解析在宿主）；第二参数是
+ *   原始鼠标事件，由调用方按修饰键决定是否改走系统浏览器。
  * @returns 清理函数：还原被换掉的节点，让下一次 hydrate 能重新判定
  *   （词表可能**晚于**正文到达——流式期间每写出一个文件词表就变一次、轮次结束时
  *   正文不变而 `produced` 才到齐，React 不会重设 `innerHTML`，不还原就永远补不上按钮）。
@@ -36,7 +40,9 @@ const MENTION_CLASS = "file-mention";
 export function hydrateFileMentions(
   root: HTMLElement,
   port: FileLinkPort | undefined,
-  open: (path: string) => void,
+  cwd: string | undefined,
+  texts: LinkHoverTexts,
+  open: (path: string, event: MouseEvent) => void,
 ): () => void {
   if (!port || port.paths.length === 0) return () => {};
   const restore: (() => void)[] = [];
@@ -55,14 +61,14 @@ export function hydrateFileMentions(
     button.type = "button";
     button.className = MENTION_CLASS;
     // 悬停看到**打开的是哪个文件**：正文里可能只写了 `App.tsx`，
-    // 而词表把它对到了某个完整路径上
-    button.title = path;
+    // 而词表把它对到了某个完整路径上；HTML 类文件再补一句浏览器打开提示。
+    button.title = fileLinkHoverTitle(cwd, path, texts);
     button.textContent = token;
     const onClick = (event: MouseEvent): void => {
       // 别让正文容器上的委托也处理这一下（它管的是锚点与图片）
       event.stopPropagation();
       event.preventDefault();
-      open(path);
+      open(path, event);
     };
     button.addEventListener("click", onClick);
     code.replaceChildren(button);

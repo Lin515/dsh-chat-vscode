@@ -3,14 +3,14 @@
 运行环境：webview（浏览器环境，React）。上一层的说明见 [../README.md](../README.md)。
 
 - `Composer.tsx` — 底部输入框：目标条、附件、发送 / 排队（队列行真的被截断时悬停看全文），弹层规则在 `../composerCompletion.tsx`，草稿里引用的蓝字镜像与 Ctrl 悬停手指光标在 `../composerMention.ts`（本组件只渲染镜像层并同步它的几何）；发送按钮的文字 / 停止态与点击手势走 `../composerSend.ts`，本组件只把按住态与事件交给它。局部编辑（改目标正文）里的 ESC 用 `../escapeOwner.ts` 的 `consumeEscape` 消费。
-- `Message.tsx` — 单条消息：按 `MessageView` 种类装配正文、图片、工具行、折叠过程、轮尾文件。
-- `Markdown.tsx` — markdown 正文渲染：块切分 + 本地图片 / 文件链接的注水（hydrate）。
+- `Message.tsx` — 单条消息：按 `MessageView` 种类装配正文、图片、工具行、折叠过程、轮尾文件；已发出的 `@` 引用悬停给完整路径（HTML 文件另给浏览器提示），按住 Ctrl/Cmd 时把 HTML 文件改交系统浏览器。
+- `Markdown.tsx` — markdown 正文渲染：块切分 + 本地图片 / 文件链接的注水（hydrate），锚点悬停补完整路径 / 外链地址，HTML 文件按修饰键分流浏览器。
 - `CodeBlock.tsx` — 代码块卡片（复制 / 插入按钮；markdown 与工具卡共用，避免工具行被 DOMPurify 牵连）。
 - `ToolCards.tsx` — 按工具语义画的卡片（读 / 搜索 / 终端 / 网页），有卡片时不再展示参数 JSON。
-- `Rows.tsx` — 通用行组件：审批卡、命令行、文件芯片、注入行、提问卡、思考行、工具行、轮统计等。问卷「自定义回答」输入框里的 ESC 取消选中用 `../escapeOwner.ts` 的 `consumeEscape` 消费（文字保留）。
+- `Rows.tsx` — 通用行组件：审批卡、命令行、文件芯片、注入行、提问卡、思考行、工具行、轮统计等（文件芯片悬停首行是完整路径）。问卷「自定义回答」输入框里的 ESC 取消选中用 `../escapeOwner.ts` 的 `consumeEscape` 消费（文字保留）。
 - `Diff.tsx` — diff 渲染：单栏 / 双栏两种排版。
 - `Images.tsx` — 会话图片的统一呈现（用户 / 模型 / 工具 / 正文引用三处合成一套）+ 图片预览层。预览层的 ESC 按 `../escapeOwner.ts` 的 `ESC_LAYER.imagePreview` 登记（右键菜单压过它）。
-- `ChangesCard.tsx` — 轮尾改动文件卡片（数据来自宿主认证路由 `/api/changes.summary`）。
+- `ChangesCard.tsx` — 轮尾改动文件卡片（数据来自宿主认证路由 `/api/changes.summary`；行悬停给完整路径）。
 - `TodoPanel.tsx` — 会话底部的「任务清单」面板（`todo_write` 投影）：抬头带进度、可折叠，展开 / 收起走同一段行渲染；收起只留当前执行项（没有在执行的则留最后执行过的那条），抬头箭头展开朝下、收起朝上；开合态由 `App` 按会话记账（见 `../todoPanel.ts`）。
 - [Trajectory.tsx](<Trajectory.tsx>) — 轨迹装配与账本／两个互斥检查器；折叠与搜索规则委托[行投影模块](<../trajectoryLedgerRows.ts>)，所有选择、focus、range、定位与视口通过[同一交互端口](<../trajectoryInteraction.ts>)。请求概述分别计工具／子工具，结果链接定位到助手消息或压缩记录。
 - [TrajectoryTimeline.tsx](<TrajectoryTimeline.tsx>) — 时间线呈现层：只接收一个完整交互端口（含 plot ref），负责 ResizeObserver 与归一化跨度绘制，不另持有一套选择／手势状态。绘图区聚焦时的 ESC 由 `timelineEscape` 清选区与选中，并经 `../escapeOwner.ts` 的 `consumeEscape` 消费（不许落到「停止生成」兜底）。

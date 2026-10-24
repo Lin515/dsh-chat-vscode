@@ -836,6 +836,14 @@ export const MESSAGES = {
   mentionRevealFolder: { zh: "在资源管理器中展开这个目录", en: "Reveal this folder in the Explorer" },
   mentionOpenSession: { zh: "在新标签页中打开这个会话", en: "Open this session in a new tab" },
   /**
+   * HTML 家族文件的悬停提示（正文锚点 / 行内代码 / 已发出的 `@` 引用共用）。
+   * 普通单击仍在编辑器里打开，所以文案只承诺修饰键这一档。
+   */
+  webFileBrowserHint: {
+    zh: "按住 Ctrl/Cmd 单击，在浏览器中打开",
+    en: "Ctrl/Cmd+click to open in browser",
+  },
+  /**
    * **草稿区**的引用提示（输入框的 title）：草稿里的引用要按住 Ctrl 才点得开，
    * 不说明的话没人会去试（正文里已发出的引用是直接可点的，不必提示）。
    */

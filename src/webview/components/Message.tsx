@@ -2,7 +2,8 @@ import { memo, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, t
 import type { ChangesSummaryView, DiffLayout, FileChangeKind, MessageSessionRef, MessageView, Segment } from "../../shared/chat";
 import { localImageMediaType } from "../../shared/imageRef";
 import { post } from "../bridge";
-import { fileLinkPort, type FileLinkPort } from "../fileLinks";
+import { browserOpenRequested, fileLinkPort, type FileLinkPort } from "../fileLinks";
+import { fileLinkHoverTitle, resolvedFilePath } from "../linkHovers";
 import { IconBranch, IconCopy } from "../icons";
 import { Markdown } from "./Markdown";
 import { ImageGallery, LocalImageGallery, type ImageSource } from "./Images";
@@ -22,12 +23,12 @@ import { ChangesCard } from "./ChangesCard";
  * 助手正文块。流式期间正文每个 token 都在变，用户划选时冻结渲染保住选区
  * （只影响界面，后台 agent 不受影响），选区消失后立刻恢复跟随最新内容。
  */
-function StreamText({ text, fileLinks }: { text: string; fileLinks?: FileLinkPort }) {
+function StreamText({ text, fileLinks, cwd }: { text: string; fileLinks?: FileLinkPort; cwd?: string }) {
   const ref = useRef<HTMLDivElement>(null);
   const shown = useSelectionFreeze(ref, text);
   return (
     <div ref={ref} className="md-wrapper">
-      <Markdown text={shown} fileLinks={fileLinks} />
+      <Markdown text={shown} fileLinks={fileLinks} cwd={cwd} />
     </div>
   );
 }
@@ -41,10 +42,18 @@ function StreamText({ text, fileLinks }: { text: string; fileLinks?: FileLinkPor
  */
 const USER_COLLAPSE_LINES = 5;
 
-/** 一条引用链接的悬停说明：三档目标各说各的（见 `../texts` 的 `mentionOpenFile` 那几条）。 */
-function mentionTitle(texts: Texts, target: MentionLinkTarget): string {
-  if (target.kind === "file") return texts.mentionOpenFile;
-  if (target.kind === "directory") return texts.mentionRevealFolder;
+/**
+ * 一条引用链接的悬停说明：先给**完整路径**，再说点开做什么（见 `../texts` 的
+ * `mentionOpenFile` 那几条）。HTML 类文件的那一行浏览器提示来自同一份构造器，
+ * 与正文锚点 / 行内代码链接保持一致。
+ */
+function mentionTitle(texts: Texts, target: MentionLinkTarget, cwd?: string): string {
+  if (target.kind === "file") {
+    return `${fileLinkHoverTitle(cwd, target.path, texts)}\n${texts.mentionOpenFile}`;
+  }
+  if (target.kind === "directory") {
+    return `${resolvedFilePath(cwd, target.path)}\n${texts.mentionRevealFolder}`;
+  }
   if (target.kind === "command") return texts.commandOpenMenu;
   return texts.mentionOpenSession;
 }
@@ -70,6 +79,7 @@ function renderMentionText(
   texts: Texts,
   sessionRefs: readonly MessageSessionRef[] | undefined,
   commandLinks: CommandLinksPort,
+  cwd: string | undefined,
 ): ReactNode[] {
   const mentions = scanMentionLinks(text, sessionRefs);
   const commands = scanCommandLinks(text, commandLinks.commands)
@@ -91,8 +101,12 @@ function renderMentionText(
           key={span.start}
           type="button"
           className="mention-link"
-          title={mentionTitle(texts, target)}
-          onClick={() => openMentionTarget(target, commandLinks.openMenu)}
+          title={mentionTitle(texts, target, cwd)}
+          onClick={(event) => {
+            // 已发出的引用普通单击照旧打开；HTML 文件按住 Ctrl/Cmd 时改走浏览器。
+            const browser = target.kind === "file" && browserOpenRequested(event, target.path);
+            openMentionTarget(target, commandLinks.openMenu, browser);
+          }}
         >
           {span.text}
         </button>,
@@ -122,12 +136,15 @@ function UserBubble({
   text,
   expanded,
   sessionRefs,
+  cwd,
   nodeRef,
 }: {
   text: string;
   expanded: boolean;
   /** 这条消息里**已经发出去**的会话引用（见 `renderMentionText`）。 */
   sessionRefs?: readonly MessageSessionRef[];
+  /** 会话工作目录：文件引用的悬停标题按它补成完整路径。 */
+  cwd?: string;
   /**
    * **不能叫 `ref`**：React 18 里 `ref` 是函数组件的保留 prop，传进去不会出现在
    * props 里（会警告「Function components cannot be given refs」），
@@ -146,7 +163,7 @@ function UserBubble({
       style={{ "--user-clamp-lines": USER_COLLAPSE_LINES } as CSSProperties}
     >
       {/* 正文里的 `@` 引用渲染成可点链接（一条消息里可能好几处），其余照旧纯文本 */}
-      {renderMentionText(text, texts, sessionRefs, commandLinks)}
+      {renderMentionText(text, texts, sessionRefs, commandLinks, cwd)}
     </div>
   );
 }
@@ -163,6 +180,7 @@ export const Message = memo(function Message({
   sessionId,
   changesSummary,
   changesCardShown = false,
+  cwd,
   onInspectCall,
 }: {
   message: MessageView;
@@ -213,6 +231,13 @@ export const Message = memo(function Message({
    * 往往挂在前一段，按消息判定就会让两样在同一轮尾部并排（用户 2026-09-21 报告）。
    */
   changesCardShown?: boolean;
+  /**
+   * 会话工作目录（`workingDirectory` 投影，缺失时取会话创建目录）。
+   *
+   * 只用于**悬停标题**把链接上的相对路径补成完整路径：点击仍交原样拼写，
+   * 由宿主按自己的权威 cwd 解析（界面不拿它代替宿主的解析结果）。
+   */
+  cwd?: string;
   /**
    * 「在轨迹里查看这次调用」的落点（官方 `inspectCall`，往下透到工具行）。
    * 缺省 = 工具行不渲染那颗按钮（没有这条链路的宿主不给一颗点了没反应的按钮）。
@@ -325,6 +350,7 @@ export const Message = memo(function Message({
           text={message.text ?? ""}
           expanded={bubbleOpen}
           sessionRefs={message.sessionRefs}
+          cwd={cwd}
           nodeRef={bubbleRef}
         />
         {attachments.length ? (
@@ -451,7 +477,7 @@ export const Message = memo(function Message({
     const node = nodeOpen.portOf(segment.id);
     switch (segment.kind) {
       case "text":
-        return <StreamText key={segment.id} text={segment.text} fileLinks={fileLinks} />;
+        return <StreamText key={segment.id} text={segment.text} fileLinks={fileLinks} cwd={cwd} />;
       case "thinking":
         return (
           <ThinkingRow
@@ -573,17 +599,18 @@ export const Message = memo(function Message({
             **它显示出来了才让下面那行让位**——清单拿不到（Host 重启过 / 还没读到）
             时，「本轮改动」行照旧，信息不会两头都丢。 */}
         {!message.streaming && message.changes && sessionId ? (
-          <ChangesCard sessionId={sessionId} coordinates={message.changes} summary={changesSummary} />
+          <ChangesCard sessionId={sessionId} coordinates={message.changes} summary={changesSummary} cwd={cwd} />
         ) : null}
         {!message.streaming && !changesCardShown && producedFiles.length ? (
           <FileChips
             label={texts.producedLabel}
             paths={producedFiles.map((path) => ({ path }))}
             kinds={fileKinds}
+            cwd={cwd}
           />
         ) : null}
         {!message.streaming && deliverables.length ? (
-          <FileChips label={texts.presentedLabel} paths={deliverables} kinds={fileKinds} />
+          <FileChips label={texts.presentedLabel} paths={deliverables} kinds={fileKinds} cwd={cwd} />
         ) : null}
         {/*
           `message.error` 有两种来源：真正的失败（`turn/end` 的 error 原因、服务端

@@ -3,6 +3,7 @@ import type { ChangesSummaryView } from "../../shared/chat";
 import { CHANGES_CARD_VISIBLE, visibleChangeFiles } from "../../shared/changesSummary";
 import { post } from "../bridge";
 import { IconChevronDown } from "../icons";
+import { resolvedFilePath } from "../linkHovers";
 import { useTexts } from "../texts";
 
 /**
@@ -25,12 +26,15 @@ export function ChangesCard({
   sessionId,
   coordinates,
   summary,
+  cwd,
 }: {
   sessionId: string;
   /** 该轮最新一条 `workspace/changes` 宣告的坐标（轮号 + 事件 seq）。 */
   coordinates: { turn: number; seq: number };
   /** 清单：`undefined` = 还没问过，`null` = Host 说没有。 */
   summary: ChangesSummaryView | null | undefined;
+  /** 会话工作目录：行悬停给出完整路径（清单里的 `path` 可能是相对拼写）。 */
+  cwd?: string;
 }) {
   const texts = useTexts();
   const [expanded, setExpanded] = useState(false);
@@ -85,7 +89,7 @@ export function ChangesCard({
             type="button"
             key={file.path}
             className="changes-card-row"
-            title={`${file.path}\n${texts.openChangesHint}`}
+            title={`${resolvedFilePath(cwd, file.path)}\n${texts.openChangesHint}`}
             aria-label={texts.openChangesAria(file.display)}
             onClick={(event) =>
               post({ type: "openFile", path: file.path, diff: !hasModifier(event) })
