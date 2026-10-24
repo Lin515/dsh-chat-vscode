@@ -118,6 +118,8 @@ const entries = {
   "build/node-open.test.mjs": "scripts/nodeOpen.test.ts",
   "build/unknown-event.test.mjs": "scripts/unknownEvent.test.ts",
   "build/changes-card.test.mjs": "scripts/changesCard.test.ts",
+  // 本轮快照对比（/api/changes.diff → VS Code diff）：hunk 拼两侧文本与卡片坐标接线
+  "build/changes-diff.test.mjs": "scripts/changesDiff.test.ts",
   "build/todo-collapse.test.mjs": "scripts/todoCollapse.test.ts",
   "build/tail-rows-probe.mjs": "scripts/tailRowsProbe.ts",
   "build/projections.test.mjs": "scripts/projections.test.ts",

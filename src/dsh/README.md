@@ -34,6 +34,8 @@
 - [trajectoryBackfill.ts](<trajectoryBackfill.ts>) — 窗口没带进 `request/header` 时按需回补更早事件（判据 + 循环）。
 - [readRange.ts](<readRange.ts>) — read 工具的整文件 / 片段行号区间。
 - [changes.ts](<changes.ts>) — workspace/changes 形状校验。
+- [changesDiff.ts](<changesDiff.ts>) — 本轮改动的逐文件对比（hunk 校验与两侧文本拼装）。
+- [agentDiffDocuments.ts](<agentDiffDocuments.ts>) — 「Agent 改动」对比窗口的只读虚拟文档。
 - [fileChange.ts](<fileChange.ts>) — 文件状态与普通打开 / 对比入口。
 
 ## 附件、引用与图片

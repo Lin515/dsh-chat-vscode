@@ -179,11 +179,11 @@ console.log("fileChange: 相邻路径不误判 ✓");
   // 「首帧快照带没带上某个字段」这类断言现在要同时看那个文件。
   const sessionViewModule = readFileSync(join(process.cwd(), "src", "dsh", "sessionView.ts"), "utf8");
   assert.ok(
-    /await this\.openFile\(\s*\n\s*message\.path,\s*\n\s*message\.diff,\s*\n\s*viewId,\s*\n\s*scope \? this\.cwdOf\(scope\) : undefined,\s*\n\s*message\.line,\s*\n\s*message\.link === true,\s*\n\s*\)/.test(
+    /await this\.openFile\(\s*\n\s*message\.path,\s*\n\s*message\.diff,\s*\n\s*viewId,\s*\n\s*scope \? this\.cwdOf\(scope\) : undefined,\s*\n\s*message\.line,\s*\n\s*message\.link === true,\s*\n\s*message\.changes,\s*\n\s*\)/.test(
       controller,
     ),
     "openFile 分支必须把 diff、viewId（删除提示 toast 要发给对应窗口）、会话 cwd（相对路径解析基准）、" +
-      "正文链接给的行号与「来自链接」这个标记一起传下去",
+      "正文链接给的行号、「来自链接」这个标记与改动坐标一起传下去",
   );
   assert.ok(
     /adapter\.classifyFiles = \(paths\) => this\.classifyFiles\(this\.cwdOf\(scope\), paths\)/.test(controller),

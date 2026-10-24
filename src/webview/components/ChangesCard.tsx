@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ChangesSummaryView } from "../../shared/chat";
 import { CHANGES_CARD_VISIBLE, visibleChangeFiles } from "../../shared/changesSummary";
 import { post } from "../bridge";
@@ -40,11 +40,31 @@ export function ChangesCard({
   const [expanded, setExpanded] = useState(false);
   const { seq } = coordinates;
   const missing = summary === undefined;
+  /** 已经发过预热的行（同一行在一次卡片生命周期内只发一帧，悬停进出不刷宿主）。 */
+  const prefetched = useRef(new Set<number>());
 
   useEffect(() => {
     if (!missing) return;
     post({ type: "requestChanges", sessionId, seq });
   }, [missing, sessionId, seq]);
+
+  // 同一轮后来的宣告会换 seq：预热记的是「这份清单的哪些行」，换清单就重新记
+  useEffect(() => {
+    prefetched.current.clear();
+  }, [seq]);
+
+  /**
+   * 悬停 / 聚焦时预热这一行的对比。
+   *
+   * 只取数、不打开编辑器（见 `shared/ipc.ts` 的 `prefetchChanges`）：用户从悬停到
+   * 按下鼠标通常有几十到几百毫秒，这段时间足够宿主把 `/api/changes.diff` 取回来；
+   * 真正点击时直接命中缓存，不再等「点了才去加载」。
+   */
+  const prefetch = (index: number): void => {
+    if (prefetched.current.has(index)) return;
+    prefetched.current.add(index);
+    post({ type: "prefetchChanges", seq, index });
+  };
 
   if (!summary || summary.files.length === 0) return null;
 
@@ -84,15 +104,26 @@ export function ChangesCard({
         <div className="changes-card-head">{heading}</div>
       )}
       <div className="changes-card-files">
-        {shown.map((file) => (
+        {shown.map((file, index) => (
           <button
             type="button"
             key={file.path}
             className="changes-card-row"
             title={`${resolvedFilePath(cwd, file.path)}\n${texts.openChangesHint}`}
             aria-label={texts.openChangesAria(file.display)}
+            // 悬停 / 键盘聚焦即预热：点击时大概率已经命中缓存（见上面的 prefetch）
+            onPointerEnter={() => prefetch(index)}
+            onFocus={() => prefetch(index)}
             onClick={(event) =>
-              post({ type: "openFile", path: file.path, diff: !hasModifier(event) })
+              // 坐标带的是 Host 清单里的**原始下标**：折叠只是不铺出来，不重排
+              // `files`，所以 `shown` 里的位置与它一致（可见行总是从 0 开始切）。
+              // 有了这份坐标，宿主才能打开本轮快照的对比——提交之后照样看得到。
+              post({
+                type: "openFile",
+                path: file.path,
+                diff: !hasModifier(event),
+                changes: { seq, index, turn: summary.turn },
+              })
             }
           >
             <span className="changes-card-path">{file.display}</span>

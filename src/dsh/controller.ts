@@ -30,9 +30,11 @@ import type {
   SubagentView,
   TodoView,
 } from "../shared/chat";
-import type { HostToWebview, WebviewToHost } from "../shared/ipc";
+import type { ChangeCoordinates, HostToWebview, WebviewToHost } from "../shared/ipc";
 import { SessionAdapter, type ImageRef } from "./adapter";
 import { decodeChangesSummary } from "./changes";
+import { buildAgentDiffTexts, decodeChangesDiff, type AgentDiff } from "./changesDiff";
+import type { AgentDiffDocuments } from "./agentDiffDocuments";
 import { changesSummaryKey } from "../shared/changesSummary";
 import { localizedTextFrom } from "../shared/localizedText";
 import {
@@ -655,6 +657,35 @@ function connectionFieldsOf(input: ConnectionFieldsInput): ConnectionFields {
     serverUrl: input.serverUrl,
   };
 }
+
+/** 比较两个宿主路径是否指同一文件（分隔符归一、忽略结尾分隔符；大小写按平台）。 */
+function sameHostPath(left: string, right: string): boolean {
+  // Windows / macOS 的文件系统默认不区分大小写；Linux 区分。放宽只会在「仅大小写
+  // 不同的两个文件」上把另一个文件的对比开出来，宁可严格一点。
+  const fold = process.platform === "win32" || process.platform === "darwin";
+  const key = (path: string): string => {
+    const normalized = path.replace(/\\/g, "/").replace(/\/+$/, "");
+    return fold ? normalized.toLowerCase() : normalized;
+  };
+  return key(left) === key(right);
+}
+
+/**
+ * 回填 turn-start 全文时允许读取的当前文件字节上限。
+ *
+ * Host 的对比本身按 2 MB 截（超过判 `oversized`），但当前文件可能在本轮之后被换成
+ * 更大的东西；读它只为验证 hunk，没有值得付出内存代价的收益——超过这条线就按
+ * 「读不到」处理，退回 hunk 片段。
+ */
+const AGENT_DIFF_READ_LIMIT = 8 * 1024 * 1024;
+
+/**
+ * `agentDiffs` 的条数上限。
+ *
+ * 每一条是一次点击 / 悬停带来的逐文件对比；正常使用只会同时关心最近几轮，32 条
+ * （约 10–30 个文件）足够，又不会让长会话攒下几百 MB 的 hunk 正文。
+ */
+const AGENT_DIFF_CACHE_LIMIT = 32;
 
 /** 服务器 → webview 的会话内容总控。 */
 export class ChatController implements vscode.Disposable {
@@ -1329,6 +1360,27 @@ export class ChatController implements vscode.Disposable {
    * 附近各写一句 clear——赋值点有七八处，漏一处就是拿旧 Host 的清单渲染新 Host 的会话。
    */
   private changesSummaryOwner: DshClient | undefined;
+  /**
+   * 本轮改动对比的**取数缓存**（键 = 会话 id + seq + 清单下标）。
+   *
+   * 与清单缓存同一套纪律：缓存成功结果与「Host 明确说没有」（`null`），网络 / 认证
+   * 失败不缓存。它解决的是**点击前那一段等待**——`/api/changes.diff` 要让 Host
+   * 现算 hunk（可能还要读两侧快照），每次点击都重跑一遍既慢又浪费；悬停预热与
+   * 二次点击都直接命中这里。
+   *
+   * 上限按条数截：一轮改动可能几百个文件，长时间会话里不能无限攒正文（每条最多
+   * 是 Host 的逐文件对比，通常几 KB 到 2 MB）。Map 的插入顺序就是淘汰顺序。
+   */
+  private readonly agentDiffs = new Map<string, AgentDiff | null>();
+  /**
+   * 同一坐标**正在取**的对比（悬停与点击可能同时到）。
+   *
+   * 只做 in-flight 合并，不承担缓存：请求结束会删掉自己，结果由 `agentDiffs` 收。
+   * 与 `agentDiffs` 一起随连接切换整体作废（seq 只在同一条连接里有意义）。
+   */
+  private readonly agentDiffRequests = new Map<string, Promise<AgentDiff | null>>();
+  /** 上面两张表属于哪条连接（取用时发现换了就整体清空，见 `changesSummaryOwner`）。 */
+  private agentDiffOwner: DshClient | undefined;
   private models: ProviderGroupView[] = [];
   /**
    * 部署默认模型（`agent-default-model` 设置命名空间）。
@@ -1459,6 +1511,13 @@ export class ChatController implements vscode.Disposable {
      * ——生产路径的行为与从前逐字相同，只有离线测试会换掉它来驱动连接行为。
      */
     createClient?: DshClientFactory,
+    /**
+     * 「Agent 改动」对比窗口的虚拟文档表（见 `agentDiffDocuments.ts`）。
+     *
+     * 不给时点击退回 git 的工作区对比——离线测试不会注册这个提供者，生产路径由
+     * `extension.ts` 在激活期装好。
+     */
+    private readonly agentDiff?: AgentDiffDocuments,
   ) {
     // 连接尝试的账本与收场：管理器那一下、跟随流清理、界面回按钮态三处是窄回调，
     // 客户端创建走 seam、当前客户端存在本类那个字段里（单一存放点）；四个收场意图的
@@ -8978,6 +9037,7 @@ export class ChatController implements vscode.Disposable {
           scope ? this.cwdOf(scope) : undefined,
           message.line,
           message.link === true,
+          message.changes,
         );
         break;
       }
@@ -9011,6 +9071,14 @@ export class ChatController implements vscode.Disposable {
         // 卡片要渲染时才问（见 shared/ipc.ts 的 requestChanges）：宿主按 seq 缓存，
         // 命中直接回帧，没命中才去 Host 读一次
         void this.loadChangesSummary(message.sessionId, message.seq);
+        break;
+      }
+
+      case "prefetchChanges": {
+        // 悬停 / 聚焦改动卡片行：只把对比取进缓存，不打开任何编辑器。点击时
+        // `openAgentChanges` 命中同一份缓存，省掉取数与 Host 现算的那一段等待。
+        // 失败在这里是静默的——预热本来就不该有用户可见的副作用。
+        this.prefetchAgentChanges(viewId, message.seq, message.index);
         break;
       }
 
@@ -11199,12 +11267,17 @@ export class ChatController implements vscode.Disposable {
   /**
    * 在编辑器里打开一个文件。
    *
-   * `diff` 表示**想看改动**（文件芯片的普通点击）：有可对比的改动就打开 VS Code
-   * 的改动对比窗口（等同 SCM 里的「打开更改」），否则回落成普通打开——拿不到
+   * `diff` 表示**想看改动**（文件芯片的普通点击）：优先打开**本轮快照**的对比
+   * （`changes` 坐标 + `/api/changes.diff`，提交之后仍然看得到，见
+   * `openAgentChanges`）；没有坐标或 Host 不再提供那份对比时，退回 VS Code 的
+   * 工作区改动对比窗口（等同 SCM 里的「打开更改」），否则回落成普通打开——拿不到
    * 改动不是错误，「点了什么都不发生」才是。回落逻辑按文件种类分（见
    * `fileChangeKind`）：新文件/无改动 → 直接打开文件本身（用户新增 2026-09-14 的
    * 口径：新建文件点开就是看文件，不是 diff）；已删除 → git 里还有旧内容就开
    * 对比窗口（左边 HEAD、右边空 = 查看被删前的内容），真找不回再明确告知。
+   *
+   * `changes` 来自改动文件卡片 / 交付行上的坐标（`ChangeCoordinates`）：它让
+   * 「看改动」认的是**这一轮 Agent 改了什么**，而不是工作区当前脏不脏。
    *
    * `path` 是芯片上的原样拼写，可能是**相对**会话工作目录的路径（工具调用
    * 参数原样保留）：先经 `resolveChipPath` 用会话 cwd 解析成绝对路径再动手——
@@ -11228,6 +11301,7 @@ export class ChatController implements vscode.Disposable {
     cwd?: string,
     line?: number,
     fromLink = false,
+    changes?: ChangeCoordinates,
   ): Promise<void> {
     // 芯片路径可能是相对会话工作目录的拼写：先解析成绝对路径再动手，
     // 不解析的话 Uri.file 拼不出可解析的 URI，「已删除」提示与打开失败
@@ -11268,6 +11342,10 @@ export class ChatController implements vscode.Disposable {
     }
     const uri = vscode.Uri.file(resolved);
     if (diff === true) {
+      // **先看本轮快照**：提交之后 git 的工作区对比已经没有了，而 Host 仍持有
+      // 这一轮的 turn-start / turn-end 对比（Session 存活期间）。坐标由改动卡片 /
+      // 交付行带下来；没有坐标（工具行芯片等）或 Host 不再提供时才退回 git。
+      if (changes && (await this.openAgentChanges(uri, changes, notifySession, cwd))) return;
       if (await this.openChanges(uri)) return;
       if (existence === "absent") {
         // 磁盘上没有了、git 也没有记录 → 内容找不回。明确说一声，别静默。
@@ -11278,6 +11356,7 @@ export class ChatController implements vscode.Disposable {
       // 按住修饰键 = 「直接打开文件本身」，但磁盘上已经没有这个文件了，
       // 打开必然失败。这里退化成和普通点击同一条链（先试改动对比），
       // 而不是静默失败：对被删除的文件来说，能看到删除前的内容已经是最好的结果。
+      if (changes && (await this.openAgentChanges(uri, changes, notifySession, cwd))) return;
       if (await this.openChanges(uri)) return;
       this.reportMissingFile(viewId, notifySession, resolved, fromLink);
       return;
@@ -11629,6 +11708,179 @@ export class ChatController implements vscode.Disposable {
     if (!opened) {
       this.log(`[open] 系统没有接受这次打开请求：${url}`);
       refuse();
+    }
+  }
+
+  /**
+   * 悬停 / 聚焦改动卡片行时的预热：只把对比取进缓存，不打开任何编辑器。
+   *
+   * 会话取**发起悬停的那个窗口**当前绑定的会话（与点击同一口径）；窗口还没绑会话
+   * 就什么也不做。取数失败是静默的——预热不该有用户可见的副作用，真正点击时还会
+   * 再走一次（网络类失败不进缓存）。
+   */
+  private prefetchAgentChanges(viewId: string, seq: number, index: number): void {
+    const sessionId = this.viewSessions.get(viewId);
+    if (!sessionId) return;
+    void this.loadAgentDiff(sessionId, seq, index);
+  }
+
+  /**
+   * 取一条本轮对比：`fetch-once` 缓存 + 同坐标的 in-flight 合并。
+   *
+   * 返回 `null` = 没有可用对比（Host 404、形状不合规、网络 / 认证失败）。404 与
+   * 形状不合规**进缓存**（同一份数据再问也不会有）；网络类失败**不进缓存**（Host
+   * 可能只是忙，下一次点击值得重试）。
+   *
+   * 键带会话 id：seq 是每个会话各自编号的，只用 seq 会让两个会话的同号事件串数据
+   * （与 `changesSummaryKey` 同一条教训）。连接换了就整体清空——旧 Host 的 seq
+   * 在新连接里没有意义。
+   */
+  private loadAgentDiff(sessionId: string, seq: number, index: number): Promise<AgentDiff | null> {
+    const client = this.client;
+    if (!client) return Promise.resolve(null);
+    if (this.agentDiffOwner !== client) {
+      this.agentDiffOwner = client;
+      this.agentDiffs.clear();
+      this.agentDiffRequests.clear();
+    }
+    const key = `${sessionId}\u0000${seq}\u0000${index}`;
+    if (this.agentDiffs.has(key)) {
+      // 命中即刷新到队尾：淘汰的是「最久没被再用过」的那条，而不是最早取过的
+      const cached = this.agentDiffs.get(key) ?? null;
+      this.agentDiffs.delete(key);
+      this.agentDiffs.set(key, cached);
+      return Promise.resolve(cached);
+    }
+    const inflight = this.agentDiffRequests.get(key);
+    if (inflight) return inflight;
+    const run = async (): Promise<AgentDiff | null> => {
+      let raw: unknown;
+      try {
+        raw = await client.getJson(
+          `/api/changes.diff?${new URLSearchParams({
+            sessionId,
+            seq: String(seq),
+            index: String(index),
+          })}`,
+        );
+      } catch (error) {
+        this.log(
+          `[changes] 本轮改动对比读取失败 seq=${seq} index=${index}：${this.describeError(error)}`,
+        );
+        return null;
+      }
+      // 期间换了连接：这份结果属于上一个 Host，丢掉（更不能写进新连接的表）
+      if (this.agentDiffOwner !== client) return null;
+      const diff = raw === undefined ? null : decodeChangesDiff(raw);
+      this.agentDiffs.set(key, diff);
+      while (this.agentDiffs.size > AGENT_DIFF_CACHE_LIMIT) {
+        const oldest = this.agentDiffs.keys().next().value;
+        if (oldest === undefined) break;
+        this.agentDiffs.delete(oldest);
+      }
+      return diff;
+    };
+    let task: Promise<AgentDiff | null>;
+    task = run().finally(() => {
+      // 只删自己：连接切换时清过表，之后可能已经在同一坐标上发了新请求
+      if (this.agentDiffRequests.get(key) === task) this.agentDiffRequests.delete(key);
+    });
+    this.agentDiffRequests.set(key, task);
+    return task;
+  }
+
+  /**
+   * 打开**这一轮**该文件的对比（Host 的 turn-start / turn-end 快照），返回是否开出来了。
+   *
+   * 与 `openChanges` 的分工：那个认的是**工作区当前脏不脏**（`git.openChange`），
+   * 提交之后就看不出 Agent 改了什么；这里认的是 `workspace/changes` 宣告的那一轮，
+   * 数据来自认证路由 `GET /api/changes.diff`（与官方 web 端的复查面板同一份契约）。
+   *
+   * Host 只给 hunk，所以两侧文本由 `buildAgentDiffTexts` 拼：整份新建 / 删除 / 粗粒度
+   * 直接拼整侧；两边都在时用磁盘上的当前文件验证 hunk 后回填；对不上（文件在本轮
+   * 之后又变过）就退化成带省略标记的片段，并用标题说明「片段」。
+   *
+   * 拿不到（旧会话 / Host 重启过 / 二进制 / 过大 / 没注册虚拟文档表）时返回 `false`，
+   * 由调用方退回 git 对比或普通打开——「点了没反应」是这里最不能接受的结果。
+   *
+   * `sessionId` 是**发起点击那个窗口**绑定的会话：清单与对比都按它去 Host 取。
+   * `cwd` 只用来复核路由回来的 `path` 是不是点中的那个文件（换了 Host 之后，同一个
+   * `seq` / `index` 可能是别的文件；宁可退回 git，也不能把别人的改动画到这个文件上）。
+   */
+  private async openAgentChanges(
+    uri: vscode.Uri,
+    coordinates: ChangeCoordinates,
+    sessionId: string | undefined,
+    cwd: string | undefined,
+  ): Promise<boolean> {
+    const client = this.client;
+    if (!client || !this.agentDiff || !sessionId) return false;
+    const started = Date.now();
+    const fetchStarted = Date.now();
+    const diff = await this.loadAgentDiff(sessionId, coordinates.seq, coordinates.index);
+    const fetchedMs = Date.now() - fetchStarted;
+    // 期间换了连接：这份对比属于上一个 Host，丢掉（不能把 A 的改动画在 B 的会话上）
+    if (!diff || this.client !== client) {
+      this.log(
+        `[open] 没有可用的本轮改动对比（旧会话 / 已重启 / 形状不合规 / 取数失败），退回 git：` +
+          `${uri.fsPath} seq=${coordinates.seq} index=${coordinates.index}（取数 ${fetchedMs}ms）`,
+      );
+      return false;
+    }
+    if (diff.kind !== "text") {
+      // 二进制 / 过大没有行可铺：git 那一路至少还能按它自己的方式提示
+      this.log(`[open] 本轮改动对比不可铺成文本（${diff.kind}），退回 git：${uri.fsPath}`);
+      return false;
+    }
+    // 坐标是界面给的，跨 Host / 重连后可能与这份清单对不上：只认路由自己报的路径。
+    // （换了 Host 之后同一个 seq/index 完全可能是另一个文件，按坐标硬开等于把别人的
+    // 改动画到这个芯片上。）
+    const listed = resolveChipPath(cwd, diff.path);
+    if (!listed || !sameHostPath(listed, uri.fsPath)) {
+      this.log(
+        `[open] 本轮改动对比的路径与点击目标不一致，退回 git：` +
+          `${diff.path} ≠ ${uri.fsPath}（seq=${coordinates.seq} index=${coordinates.index}）`,
+      );
+      return false;
+    }
+    const current = await this.readTextFile(uri);
+    // **新文件口径不跟着变**（用户 2026-09-14 拍板）：点开就是看文件，不是看
+    // 「空 → 全文」的 diff。磁盘上还在就交回普通打开；只有文件已经不在了（内容
+    // 眼看要丢）才用本轮快照把它显示出来。
+    if (!diff.before && current !== undefined) return false;
+    const texts = buildAgentDiffTexts(diff, current, (lines) =>
+      vscode.l10n.t("… {0} unchanged lines omitted …", lines),
+    );
+    const pair = this.agentDiff.create(diff.display, texts.before, texts.after);
+    const title = texts.excerpt
+      ? vscode.l10n.t("Agent changes: {0} (turn {1}, excerpts)", diff.display, coordinates.turn)
+      : vscode.l10n.t("Agent changes: {0} (turn {1})", diff.display, coordinates.turn);
+    try {
+      await vscode.commands.executeCommand("vscode.diff", pair.before, pair.after, title, {
+        preview: true,
+      });
+      this.log(
+        `[open] 本轮改动对比：${diff.display}（第 ${coordinates.turn} 轮${texts.excerpt ? "，片段" : ""}）` +
+          `耗时 ${Date.now() - started}ms（取数 ${fetchedMs}ms）`,
+      );
+      return true;
+    } catch (error) {
+      this.log(`[open] 打开本轮改动对比失败 ${diff.display}：${this.describeError(error)}`);
+      return false;
+    }
+  }
+
+  /** 读磁盘上的文本（虚拟文档 / 二进制文件读不了时 undefined，调用方按「没有」处理）。 */
+  private async readTextFile(uri: vscode.Uri): Promise<string | undefined> {
+    try {
+      // 本轮对比的正文上限由 Host 控制（2 MB）；当前文件如果在本轮之后被换成更大的
+      // 东西，读进来只会白占内存。超过一档就放弃回填，改用 hunk 片段（无需读盘）。
+      const stat = await vscode.workspace.fs.stat(uri);
+      if (stat.size > AGENT_DIFF_READ_LIMIT) return undefined;
+      const bytes = await vscode.workspace.fs.readFile(uri);
+      return Buffer.from(bytes).toString("utf8");
+    } catch {
+      return undefined;
     }
   }
 

@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { ChatViewProvider } from "./chatView";
 import { ChatController } from "./dsh/controller";
+import { AGENT_DIFF_SCHEME, AgentDiffDocuments } from "./dsh/agentDiffDocuments";
 import { resolveForVsCode } from "./dsh/hostText";
 import { selectionLines } from "./dsh/selection";
 import { createHostLog } from "./dsh/hostLog";
@@ -81,6 +82,15 @@ export function activate(context: vscode.ExtensionContext): void {
     log,
   });
 
+  // 「Agent 改动」对比窗口的两侧是**本轮快照**，不能落盘成临时文件（工作区里不该
+  // 多出来源不明的文件），走只读虚拟文档。提供者必须先于控制器注册好：用户点开
+  // 改动时它已经在服务，否则对比窗口会拿到空内容。
+  const agentDiff = new AgentDiffDocuments();
+  context.subscriptions.push(
+    vscode.workspace.registerTextDocumentContentProvider(AGENT_DIFF_SCHEME, agentDiff),
+    agentDiff,
+  );
+
   const controller = new ChatController(
     server,
     log,
@@ -91,6 +101,9 @@ export function activate(context: vscode.ExtensionContext): void {
     // 它落在 VS Code 的 workspaceStorage 下，不往项目目录里写任何文件。
     context.workspaceState,
     context.secrets,
+    // 客户端创建走真实实现；离线测试用 seam 换掉
+    undefined,
+    agentDiff,
   );
   // 两个侧栏视图容器各挂一个带标识的实例：日志里能区分视图来自主侧栏还是辅助侧栏
   const provider = new ChatViewProvider(context, controller, "primary", log);

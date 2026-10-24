@@ -351,8 +351,8 @@ console.log("fileLinks: 词表 = 本轮 produced ∪ deliverables ✓");
 
   const ipc = read("src", "shared", "ipc.ts");
   assert.ok(
-    /\{ type: "openFile"; path: string; diff\?: boolean; line\?: number; link\?: true \}/.test(ipc),
-    "openFile 要带可选行号与「来自链接」标记",
+    /\{ type: "openFile"; path: string; diff\?: boolean; line\?: number; link\?: true; changes\?: ChangeCoordinates \}/.test(ipc),
+    "openFile 要带可选行号、「来自链接」标记与改动坐标",
   );
   assert.ok(/\{ type: "openExternal"; url: string \}/.test(ipc), "要有 openExternal 这条帧");
   assert.ok(

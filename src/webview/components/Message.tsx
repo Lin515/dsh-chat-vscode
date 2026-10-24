@@ -607,10 +607,33 @@ export const Message = memo(function Message({
             paths={producedFiles.map((path) => ({ path }))}
             kinds={fileKinds}
             cwd={cwd}
+            changes={
+              message.changes && changesSummary
+                ? {
+                    seq: message.changes.seq,
+                    turn: message.changes.turn,
+                    files: changesSummary.files,
+                  }
+                : undefined
+            }
           />
         ) : null}
         {!message.streaming && deliverables.length ? (
-          <FileChips label={texts.presentedLabel} paths={deliverables} kinds={fileKinds} cwd={cwd} />
+          <FileChips
+            label={texts.presentedLabel}
+            paths={deliverables}
+            kinds={fileKinds}
+            cwd={cwd}
+            changes={
+              message.changes && changesSummary
+                ? {
+                    seq: message.changes.seq,
+                    turn: message.changes.turn,
+                    files: changesSummary.files,
+                  }
+                : undefined
+            }
+          />
         ) : null}
         {/*
           `message.error` 有两种来源：真正的失败（`turn/end` 的 error 原因、服务端

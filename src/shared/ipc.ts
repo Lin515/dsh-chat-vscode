@@ -24,6 +24,22 @@ import type {
 export type WirePatch = { [K in keyof ChatState]?: ChatState[K] | null };
 export type WireState = { [K in keyof ChatState]: ChatState[K] | null };
 
+/**
+ * 一条 `workspace/changes` 清单里某个文件的坐标。
+ *
+ * `openFile` 带上它时，宿主优先打开**本轮快照**的对比（`/api/changes.diff`）；
+ * 拿不到时才退回 git 的工作区对比。`index` 是 Host 清单里的**原始下标**（折叠只
+ * 影响界面铺几行，不重排服务端的 `files`），`turn` 只用于对比窗口的标题。
+ */
+export interface ChangeCoordinates {
+  /** 宣告本轮改动的事件 seq。 */
+  seq: number;
+  /** 文件在 `files` 里的下标。 */
+  index: number;
+  /** 被汇总的轮号（标题里的「第 N 轮」）。 */
+  turn: number;
+}
+
 export type HostToWebview =
   /** 首次连接时的一次性全量快照。 */
   | { type: "state"; state: WireState }
@@ -402,10 +418,12 @@ export type WebviewToHost =
   /**
    * 在编辑器中打开文件。
    *
-   * `diff` 表示「想看改动」：宿主查到可对比的改动就开 VS Code 的改动对比窗口
-   * （SCM 的「打开更改」）；拿不到改动时不会静默——文件没改过、根本不是 git 仓库
-   * 由宿主回落成普通打开，未跟踪的新文件则由 git 自己解析成打开文件本身
-   * （判定见 `dsh/fileChange.ts`）。
+   * `diff` 表示「想看改动」：宿主优先按 `changes` 给出的坐标向 Host 取**本轮快照**
+   * 的逐文件对比（提交之后仍然看得到，见 `dsh/changesDiff.ts`）；没有坐标或 Host
+   * 已不再提供那份对比（旧会话、Host 重启过、二进制 / 过大）时，退回 VS Code 的
+   * 工作区改动对比（SCM 的「打开更改」）。仍然拿不到改动时不会静默——文件没改过、
+   * 根本不是 git 仓库由宿主回落成普通打开，未跟踪的新文件则由 git 自己解析成打开
+   * 文件本身（判定见 `dsh/fileChange.ts`）。
    *
    * `line` 是 1 基起始行（正文里 `[…](src/a.ts#L12)` 这种带行号的链接）：
    * 打开后光标落在这一行。宿主会先验证它是不是正整数，非法就当没给。
@@ -415,7 +433,7 @@ export type WebviewToHost =
    * 就没指对地方（相对的不是会话工作目录、或把行号写进了目标），所以链接那条路
    * 要把**解析出来的绝对路径**报出来（见 `controller.reportMissingFile`）。
    */
-  | { type: "openFile"; path: string; diff?: boolean; line?: number; link?: true }
+  | { type: "openFile"; path: string; diff?: boolean; line?: number; link?: true; changes?: ChangeCoordinates }
   /**
    * 用**系统浏览器**打开一个本地 web 文件（正文文件链接按住 Ctrl/Cmd 单击）。
    *
@@ -489,6 +507,17 @@ export type WebviewToHost =
    * 宿主侧按 `seq` 做 fetch-once 缓存（见 controller 的 `loadChangesSummary`）。
    */
   | { type: "requestChanges"; sessionId: string; seq: number }
+  /**
+   * **预热**一条改动文件的对比（悬停 / 聚焦改动卡片行时发出）。
+   *
+   * 只取数、不打开任何编辑器：宿主按 `(连接, 会话, seq, index)` 缓存，用户真正点击
+   * 时直接命中，省掉 `GET /api/changes.diff` 与 Host 现算对比的那一段等待。
+   *
+   * 重复帧由宿主合并（同一坐标同时只发一次请求），所以界面不必自己记账；会话按
+   * **发起悬停的窗口**取（不是这条帧里另带一个 id），切走窗口后迟到的请求也只会
+   * 落进它自己的缓存。
+   */
+  | { type: "prefetchChanges"; seq: number; index: number }
   /**
    * 在编辑器区**新开一个**聊天面板（新的标签页）。
    *
