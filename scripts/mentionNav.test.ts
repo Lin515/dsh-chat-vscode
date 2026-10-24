@@ -2289,6 +2289,44 @@ console.log("completion(hook): 点击包装标点里的 /命令经 request effec
 }
 console.log("completion(hook): `/` 完整命令 / 技能块内不主动弹列表（半截前缀与显式请求例外） ✓");
 
+// ---------- 23. 发送按钮清空草稿：旧触发词不许按旧查询复活 ----------
+//
+// 现场：粘贴一段以完整 `/plan` 结尾的文本，列表被抑制门按住；点发送后正文清空，
+// 但 `trigger` 仍是事件驱动留下的 `/plan`。抑制门拿**空草稿**重算就放行，列表按旧
+// 查询重新弹出——看得见的是「输入框已经空了，命令列表反而冒出来，还只筛出 /plan」。
+// 草稿清空不是文本域事件，`trigger` 必须按当前正文复核，正文里已经没有那条 token
+// 就不能再拿它画列表。
+{
+  const commands: CommandView[] = COMMANDS;
+  const send = frame("/plan", 5, { commands });
+  assert.strictEqual(send.html, "", "前提：完整命令块不弹列表");
+  send.draft = "";
+  send.caret = 0;
+  send.node.value = "";
+  send.node.selectionStart = 0;
+  send.node.selectionEnd = 0;
+  const submitted: string[] = [];
+  const cleared = nextFrame(send, { commands, onSubmit: (gesture) => submitted.push(gesture) });
+  assert.strictEqual(cleared.html, "", "发送清空草稿后，旧命令列表不得按旧查询重新出现");
+  press(cleared, "Enter");
+  assert.deepStrictEqual(submitted, ["enter"], "旧列表没画出来，Enter 仍归发送");
+
+  // 发送前半截前缀的列表正开着：清空后同样不能拿旧查询留在屏上。
+  const partial = frame("/pl", 3, { commands });
+  assert.ok(partial.html.includes(">/plan<"), "前提：半截前缀菜单开着");
+  partial.draft = "";
+  partial.caret = 0;
+  partial.node.value = "";
+  partial.node.selectionStart = 0;
+  partial.node.selectionEnd = 0;
+  assert.strictEqual(nextFrame(partial, { commands }).html, "", "清空草稿后，半截命令的旧列表也不复活");
+
+  // 旧触发词作废不等于永久关闭：清空后重新敲半截前缀，补全照常回来。
+  const retyped = typeAt(cleared, "/pl", 3, { commands });
+  assert.ok(retyped.html.includes(">/plan<"), "清空后重新输入半截前缀，补全仍要弹");
+}
+console.log("completion(hook): 发送清空草稿后旧命令列表不复活 ✓");
+
 // 真实补全 hook 的合成事件早退后，同一个 nativeEvent 仍会抵达 App 的 window 兜底。
 // 仅验证 onKeyDown 没 preventDefault 不足以保证生成未被误停，必须把整条归属链接起来。
 {

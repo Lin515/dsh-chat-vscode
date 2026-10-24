@@ -25,7 +25,9 @@
  * 6. `/` 只有在**行首、空白或包装标点之后**才走命令通道；`@` 走自己的内容块判定
  *    （见 `findTrigger`），两条通道的边界规则相同、判据不同。命令通道还要过自己的抑制门：
  *    完整有效命令 / 技能块（含光标在名字中间）不再主动弹，半截前缀照常弹，点击链接的
- *    显式请求例外（见 `commandResolvedAt` / `commandSuppressed`）；
+ *    显式请求例外（见 `commandResolvedAt` / `commandSuppressed`）。触发词只在正文里
+ *    仍找得到同一条 token 时有效：发送清空草稿这类不经过文本域事件的改写不会让旧查询
+ *    复活（见 `triggerInDraft`）；
  * 7. 指针悬停改高亮**只认 `mousemove`**：列表为露出键盘选中的那行而滚动时，浏览器会把
  *    `mouseenter` 补发给「刚滚到静止指针底下」的行，等于凭空抢走键盘的高亮（官方
  *    `MenuView` 同一判词，现场与断言见行上的注释与 `scripts/mentionNav.test.ts` 的
@@ -123,6 +125,32 @@ interface PaintedCandidates {
   /** 这一份属于哪一次查询（高亮只在它变的时候回到第一条，见 `shownKey`）。 */
   key: string;
   candidates: MentionCandidate[];
+}
+
+/**
+ * 当前正文里这条触发词还算不算数。
+ *
+ * `trigger` 是文本域事件算出来的，事件之外的正文改写（发送后清空草稿、宿主还原草稿、
+ * 切会话）不会经过 `refreshTrigger`，旧触发词会留在状态里。最典型的是发送：正文清空
+ * 后 `commandResolvedAt` 拿空草稿重算就放行，列表按旧查询重新弹出——用户看到的正是
+ * 「输入框已经空了，命令列表反而冒出来，还只筛出 `/plan`」。
+ *
+ * 复核让 {@link findTrigger} 在**这条触发词原来的落点**重跑一遍：结果必须还是同一条
+ * （通道、起点、查询串与结束位置一致）才算数。命令按 `/` 之后查询串的长度回推落点，
+ * 提及按 `@` 右侧那一格回推（落在整块里，引号形态与整块查询都由同一条判定还原）。
+ * 正文被清空、改短或换掉时结果自然不同，触发词按不存在处理。
+ */
+function triggerInDraft(text: string, trigger: Trigger, sessions?: ComposerSessionDraft): boolean {
+  const at = trigger.kind === "command"
+    ? trigger.start + 1 + trigger.query.length
+    : trigger.start + 1;
+  const found = findTrigger(text, at, sessions);
+  return found !== undefined &&
+    found.kind === trigger.kind &&
+    found.start === trigger.start &&
+    found.query === trigger.query &&
+    found.end === trigger.end &&
+    found.sessionOnly === trigger.sessionOnly;
 }
 
 /**
@@ -868,7 +896,16 @@ function useCompletion(
    * `useState(undefined)` 逐字等价。传了 `caret`（测试与独立使用）时才能从第一帧
    * 就看见触发词，否则「弹层该不该渲染」这类断言没法离线跑。
    */
-  const [trigger, setTrigger] = useStateImpl<Trigger | undefined>(() => findTrigger(draft, caret ?? draft.length, sessionDraft));
+  const [triggerState, setTrigger] = useStateImpl<Trigger | undefined>(() => findTrigger(draft, caret ?? draft.length, sessionDraft));
+  /**
+   * 这一帧可以使用的触发词：状态里的那一条**必须仍存在于当前正文**（见
+   * {@link triggerInDraft}）。
+   *
+   * 状态本身仍由事件更新，不在渲染里回写；这里只把外部改写草稿后留下的旧触发词遮住。
+   * 之后任何文本域事件都会按新正文重算并覆盖状态，所以不必为「清空」单独造一条重置
+   * 通道，也不会因为渲染期改 state 多出一帧。
+   */
+  const trigger = triggerState !== undefined && triggerInDraft(draft, triggerState, sessionDraft) ? triggerState : undefined;
   const [highlight, setHighlight] = useStateImpl<number>(0);
   /**
    * 上一次**画在屏上**的那一份候选（`@` 弹层的 stale-while-revalidate，见文件头第 9 条）。
