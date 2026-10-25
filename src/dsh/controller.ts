@@ -10998,7 +10998,12 @@ export class ChatController implements vscode.Disposable {
     requestId?: string,
   ): { draft: string; attachments: Attachment[] } {
     const existing = this.drafts.get(key) ?? "";
-    const next = existing.trim() ? `${existing.replace(/\s+$/, "")}\n${text}` : text;
+    // 纯附件提交的正文是空串：只把附件还回去，不在用户正在写的草稿末尾补一个空行。
+    const next = text.trim()
+      ? existing.trim()
+        ? `${existing.replace(/\s+$/, "")}\n${text}`
+        : text
+      : existing;
     this.drafts.set(key, next);
     if (requestId) {
       this.settleSubmissionRecord(requestId);

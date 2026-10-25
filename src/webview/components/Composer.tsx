@@ -551,11 +551,14 @@ export function Composer({
    * 文件附件未就绪（上传中 / 上传失败）也拦：发送装配只收 `ready`（见
    * `buildPromptContent`），放过去等于静默少发文件。图片是内联的，不参与这道门
    * （判据与原因见 `shared/attachmentGate.ts`）。
+   *
+   * 正文为空但有附件时**也能发**（官方 `empty = draft.trim() === '' && attachments.length === 0`）：
+   * 用户只发一枚附件、不配说明是正常用法。
    */
   const draftText = draft.trim();
-  const hasDraft = draftText.length > 0;
+  const hasContent = draftText.length > 0 || state.attachments.length > 0;
   const uploadBlock = attachmentUploadBlock(state.attachments);
-  const canSend = hasDraft && uploadBlock === undefined && (state.connection === "ready" || state.connection === "stopped");
+  const canSend = hasContent && uploadBlock === undefined && (state.connection === "ready" || state.connection === "stopped");
 
   /**
    * 把草稿发出去。
@@ -813,8 +816,8 @@ export function Composer({
   const ctxDetailTitle = contextDetailLines(ctxProps, texts).join("\n") || undefined;
 
   // 运行中的主按钮（官方 `primaryStops = running && (empty || blocked)`）：
-  // - 草稿为空 → 停止（生成中还能"点一下停"，这是用户最需要的动作；按住修饰键也不变）；
-  // - 草稿非空 → **发送**，文字按这一次的手势预告走哪条路（见 `../composerSend`：
+  // - 正文与附件都没有 → 停止（生成中还能"点一下停"，这是用户最需要的动作；按住修饰键也不变）；
+  // - 有正文或附件 → **发送**，文字按这一次的手势预告走哪条路（见 `../composerSend`：
   //   按住 Ctrl / Cmd 时换成加速手势对应的那一条，与键盘 Ctrl/Cmd+Enter 一致）。
   //
   // 点击的手势**读事件当下的修饰键**（`clickGestureHandler`），不读上面那份渲染期
@@ -822,7 +825,7 @@ export function Composer({
   const sendView = sendButtonView({
     running: state.running,
     canSend,
-    hasDraft,
+    hasContent,
     uploadBlock,
     busyEnter: state.busyEnter,
     modifierHeld,
@@ -1067,7 +1070,15 @@ export function Composer({
               className="composer-input"
               rows={1}
               value={displayDraft}
-              placeholder={state.messages.length ? texts.placeholderFollowUp : texts.placeholderFirst}
+              // 有附件时不给占位文案（官方 `showPlaceholder = draft === '' && attachments.length === 0`）：
+              // 芯片已经说明这一条要发什么，正文空着不是「还没开始写」。
+              placeholder={
+                state.attachments.length
+                  ? undefined
+                  : state.messages.length
+                    ? texts.placeholderFollowUp
+                    : texts.placeholderFirst
+              }
               // 草稿里的引用要按住 Ctrl（macOS 上 Cmd）单击才打开——文本域是**纯文本**，
               // 做不出真正的行内链接，只能按光标位置判（见 `../mentionOpen`）。
               title={texts.mentionClickHint}

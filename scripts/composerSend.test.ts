@@ -5,8 +5,9 @@
  * `composerCompletion.tsx`，由 `mentionNav.test.ts` 的第 14 节守着，本任务不动它）；
  * 发送按钮要跟它**同一条判据**——按住修饰键时按钮文字换成这一次真会走的那条路
  * （默认 queue 时按住显示「插话发送」，默认 steer 时按住显示「排队发送」），
- * 按住修饰键点按钮发的是 `accelerated`。空闲照旧发送、运行中无草稿照旧是停止
- * （不把停止改成发送）。判定只有一份，在 `webview/composerSend.ts`。
+ * 按住修饰键点按钮发的是 `accelerated`。空闲照旧发送、运行中正文与附件都没有照旧是停止
+ * （不把停止改成发送）；只有附件、正文为空也算有内容（与官方 `empty` 同口径）。
+ * 判定只有一份，在 `webview/composerSend.ts`。
  *
  * 四层各钉一段，最后一段把它们扣在一起：
  * 1. **手势判定**（`submitGesture`）：Ctrl / Cmd 一条判据，点击这条链用它；
@@ -179,7 +180,7 @@ const en = dictionaryFor("en");
   console.log("composerSend: 点击手势读事件本身（ctrlKey / metaKey）✓");
 }
 
-// ---------- 5. 文案表：运行中按手势切、空闲恒「发送」、无草稿恒「停止」----------
+// ---------- 5. 文案表：运行中按手势切、空闲恒「发送」、无内容恒「停止」----------
 {
   for (const [busyEnter, held, expected] of [
     ["queue", false, zh.sendQueue],
@@ -187,7 +188,7 @@ const en = dictionaryFor("en");
     ["steer", false, zh.sendSteer],
     ["steer", true, zh.sendQueue],
   ] as const) {
-    const view = sendButtonView({ running: true, canSend: true, hasDraft: true, uploadBlock: undefined, busyEnter, modifierHeld: held, texts: zh });
+    const view = sendButtonView({ running: true, canSend: true, hasContent: true, uploadBlock: undefined, busyEnter, modifierHeld: held, texts: zh });
     assert.strictEqual(view.kind, "send", "有草稿时是发送按钮");
     assert.strictEqual(
       view.label,
@@ -200,25 +201,44 @@ const en = dictionaryFor("en");
   // 空闲：设置值不参与，按住修饰键也不参与（它就是一次普通发送）
   for (const busyEnter of ["queue", "steer"] as const) {
     for (const held of [false, true]) {
-      const view = sendButtonView({ running: false, canSend: true, hasDraft: true, uploadBlock: undefined, busyEnter, modifierHeld: held, texts: zh });
+      const view = sendButtonView({ running: false, canSend: true, hasContent: true, uploadBlock: undefined, busyEnter, modifierHeld: held, texts: zh });
       assert.strictEqual(view.label, zh.send, "空闲时按钮就是「发送」");
       assert.strictEqual(view.title, zh.sendTitle, "空闲时提示是「发送（Enter）」");
     }
   }
 
-  // 运行中且草稿为空：停止，且**按住修饰键也不变成发送**（用户口径：不把停止改成发送）
+  // 运行中且正文与附件都没有：停止，且**按住修饰键也不变成发送**（用户口径：不把停止改成发送）
   for (const held of [false, true]) {
-    const view = sendButtonView({ running: true, canSend: false, hasDraft: false, uploadBlock: undefined, busyEnter: "queue", modifierHeld: held, texts: zh });
+    const view = sendButtonView({ running: true, canSend: false, hasContent: false, uploadBlock: undefined, busyEnter: "queue", modifierHeld: held, texts: zh });
     assert.strictEqual(view.kind, "stop", `无草稿 + 运行中 = 停止（按住修饰键=${held} 也一样）`);
     assert.strictEqual(view.title, zh.stopTitle, "停止按钮的悬停是「停止生成」");
     assert.strictEqual(view.label, "", "停止按钮上没有发送字样（它只有一枚停止图标）");
+  }
+
+  // 只有附件、正文为空：官方 `empty` 把附件算进内容，空闲可发、运行中仍是发送而不是停止
+  for (const [running, expectedLabel] of [
+    [false, zh.send],
+    [true, zh.sendQueue],
+  ] as const) {
+    const view = sendButtonView({
+      running,
+      canSend: true,
+      hasContent: true,
+      uploadBlock: undefined,
+      busyEnter: "queue",
+      modifierHeld: false,
+      texts: zh,
+    });
+    assert.strictEqual(view.kind, "send", `纯附件（运行中=${running}）不是停止按钮`);
+    assert.strictEqual(view.disabled, false, `纯附件（运行中=${running}）可以发送`);
+    assert.strictEqual(view.label, expectedLabel, "空闲显示「发送」，运行中按手势预告排队 / 插话");
   }
 
   // 英文下同一套
   const englishHeld = sendButtonView({
     running: true,
     canSend: true,
-    hasDraft: true,
+    hasContent: true,
     uploadBlock: undefined,
     busyEnter: "queue",
     modifierHeld: true,
@@ -232,8 +252,8 @@ const en = dictionaryFor("en");
 // ---------- 5b. 附件未就绪：发送按钮置灰，但不把运行中的按钮变成停止 ----------
 //
 // 用户 2026-10-19 口径：文件还在上传 / 上传失败时不许发（含 Enter 与 Ctrl/Cmd+Enter，
-// 两者都走同一个 `send` 早退）；生成中且有正文时保留「排队 / 插话」文案、只置灰，
-// 正文为空才照旧是停止。悬停要说清是哪一种原因。
+// 两者都走同一个 `send` 早退）；生成中已有正文或附件时保留「排队 / 插话」文案、只置灰，
+// 两者都没有才照旧是停止。悬停要说清是哪一种原因。
 {
   for (const [uploadBlock, expectedTitle] of [
     ["uploading", zh.sendBlockedUploading],
@@ -243,7 +263,7 @@ const en = dictionaryFor("en");
     const idle = sendButtonView({
       running: false,
       canSend: false,
-      hasDraft: true,
+      hasContent: true,
       uploadBlock,
       busyEnter: "queue",
       modifierHeld: false,
@@ -254,11 +274,11 @@ const en = dictionaryFor("en");
     assert.strictEqual(idle.disabled, true, `空闲 + ${uploadBlock} 必须置灰`);
     assert.strictEqual(idle.title, expectedTitle, `空闲 + ${uploadBlock} 的悬停要说明原因`);
 
-    // 生成中且有正文：**不是停止**，保留排队 / 插话文案，只置灰
+    // 生成中且已有内容：**不是停止**，保留排队 / 插话文案，只置灰
     const busy = sendButtonView({
       running: true,
       canSend: false,
-      hasDraft: true,
+      hasContent: true,
       uploadBlock,
       busyEnter: "queue",
       modifierHeld: false,
@@ -270,11 +290,11 @@ const en = dictionaryFor("en");
     assert.strictEqual(busy.title, expectedTitle, "悬停给附件原因，而不是排队文案");
   }
 
-  // 连接不可用（不是附件原因）仍按原来的停止行为：hasDraft 为真但 uploadBlock 为空
+  // 连接不可用（不是附件原因）仍按原来的停止行为：hasContent 为真但 uploadBlock 为空
   const offline = sendButtonView({
     running: true,
     canSend: false,
-    hasDraft: true,
+    hasContent: true,
     uploadBlock: undefined,
     busyEnter: "queue",
     modifierHeld: false,
@@ -286,7 +306,7 @@ const en = dictionaryFor("en");
   const both = sendButtonView({
     running: false,
     canSend: false,
-    hasDraft: true,
+    hasContent: true,
     uploadBlock: "error",
     busyEnter: "queue",
     modifierHeld: false,
@@ -343,7 +363,7 @@ function sendButtonOf(html: string): { attribute: string; text: string } {
     const expected = sendButtonView({
       running: true,
       canSend: true,
-      hasDraft: true,
+      hasContent: true,
       uploadBlock: undefined,
       busyEnter,
       modifierHeld: held,
@@ -364,10 +384,40 @@ function sendButtonOf(html: string): { attribute: string; text: string } {
   assert.ok(stop.attribute.includes(`title="${zh.stopTitle}"`), "并且悬停是「停止生成」");
   assert.strictEqual(stop.text, "", "停止按钮上不出现发送文字");
 
-  // 空闲 + 无草稿：是发送按钮但不可点（与改动前一致）
+  // 空闲 + 无草稿：是发送按钮但不可点（没有正文也没有附件）
   const idle = sendButtonOf(renderComposer({ running: false, busyEnter: "queue", draft: "" }));
   assert.strictEqual(idle.text, zh.send, "空闲时按钮文字是「发送」");
-  assert.ok(idle.attribute.includes("disabled"), "没有草稿时不可点");
+  assert.ok(idle.attribute.includes("disabled"), "没有正文与附件时不可点");
+
+  // 只有附件、正文为空：真 Composer 也算作有内容（官方 `empty` 把附件算进去），
+  // 空闲可点、运行中仍是发送而不是停止；有附件时也不显示占位文案。
+  for (const attachment of [
+    { id: "f1", kind: "file", name: "note.txt", upload: { status: "ready", receiptId: "r1" } },
+    { id: "i1", kind: "image", name: "shot.png", dataUrl: "data:image/png;base64,AA==" },
+  ]) {
+    const readyHtml = renderComposer({
+      running: false,
+      busyEnter: "queue",
+      draft: "",
+      attachments: [attachment] as never,
+    });
+    const ready = sendButtonOf(readyHtml);
+    assert.strictEqual(ready.text, zh.send, `纯附件（${attachment.kind}）空闲时显示「发送」`);
+    assert.ok(!ready.attribute.includes("disabled"), `纯附件（${attachment.kind}）空闲时可以发送`);
+    assert.ok(!/<textarea[^>]*placeholder=/.test(readyHtml), "有附件时不显示占位文案");
+
+    const busy = sendButtonOf(
+      renderComposer({
+        running: true,
+        busyEnter: "queue",
+        draft: "",
+        attachments: [attachment] as never,
+      }),
+    );
+    assert.ok(!busy.attribute.includes("is-stop"), `运行中 + 纯附件（${attachment.kind}）不是停止按钮`);
+    assert.strictEqual(busy.text, zh.sendQueue, "运行中 + 纯附件保留排队文案");
+    assert.ok(!busy.attribute.includes("disabled"), "附件已就绪时运行中也能排队发送");
+  }
 
   // 附件未就绪：真渲染出来的是置灰按钮，原因挂在外层（禁用的 button 收不到 hover）
   for (const [upload, expectedTitle, expectedLabel] of [

@@ -9,7 +9,7 @@
 | `context:ring` | 0 | P0 pinned，占用环最高优先级；精确数值另属 P2 |
 | `permission:icon` | 1 | P0 pinned，盾牌入口，title 给全称，无下箭头 |
 | `model:full` | 2 | P0 pinned，当前模型名，max-width 150px，无下箭头 |
-| `send:full` | 3 | P0 pinned，运行且草稿空为停止；否则按 busyEnter / 当下 Ctrl、Cmd 手势显示发送模式 |
+| `send:full` | 3 | P0 pinned，运行且正文与附件都没有为停止；否则按 busyEnter / 当下 Ctrl、Cmd 手势显示发送模式 |
 | `effort:full` | 4 | P1，只读思考等级，点击 toggle 同一模型弹层 |
 | `attach:full` | 5 | P1，通用附件入口，不随模型是否收图隐藏 |
 | `tps:full` | 6 | P1，会话平均输出速度（Σ 输出 token / Σ 解码窗口），与 hover 同源同格式 |
@@ -36,7 +36,7 @@ P0 四项无条件落位，极窄也留 DOM。P1 / P2 各档按渲染左右次�
 
 ## 行为约定
 
-发送按钮与 Ctrl/Cmd+Enter 共用 `composerSend`：默认 queue 时加速手势为 steer，默认 steer 时为 queue；按钮在点击当下读修饰键，界面只发手势，宿主解析模式。文件附件未就绪（上传中 / 上传失败）时发送按钮置灰，悬停说明原因；生成中且有正文时保留排队 / 插话文案、不变成停止，正文为空才仍是停止（判据见 `shared/attachmentGate.ts`）。
+发送按钮与 Ctrl/Cmd+Enter 共用 `composerSend`：默认 queue 时加速手势为 steer，默认 steer 时为 queue；按钮在点击当下读修饰键，界面只发手势，宿主解析模式。只有附件、正文为空也能发送（官方 `empty` 把附件算作内容），此时不显示输入框占位文案。文件附件未就绪（上传中 / 上传失败）时发送按钮置灰，悬停说明原因；生成中已有正文或附件时保留排队 / 插话文案、不变成停止，两者都没有才仍是停止（发送门判据见 `shared/attachmentGate.ts`）。
 
 预设标签只在 messages.length 非零时显示，与空态判据一致。目录或当前 id 未到不画空壳；展示共用 presetDisplayText，内置四个走词典，用户自写原文，未知 id 原样。空态的可点预设选择与开轮后的只读标签不能混用。
 

@@ -81,7 +81,7 @@ export function busySubmitIntent(
 
 /** 主按钮这一帧长什么样（文字 / 悬停 / 是发送还是停止）。 */
 export interface SendButtonView {
-  /** `stop` = 运行中且草稿为空（官方 `primaryStops`），`send` = 其余。 */
+  /** `stop` = 运行中且正文与附件都没有（官方 `primaryStops`），`send` = 其余。 */
   kind: "stop" | "send";
   /** 按钮上的文字（停止态没有文字，只有一枚停止图标）。 */
   label: string;
@@ -93,20 +93,21 @@ export interface SendButtonView {
 
 /**
  * 主按钮的显示判定（官方 `primaryStops = running && (empty || blocked)`）：
- * 运行中且草稿为空 → **停止**（按住修饰键也不许变成发送）；空闲 → 「发送」；
+ * 运行中且正文与附件都没有 → **停止**（按住修饰键也不许变成发送）；空闲 → 「发送」；
  * 运行中 → 按这一次的手势预告走哪条路。
  *
  * 附件未就绪是**另一种**原因：它只把发送按钮置灰，**不**把运行中的按钮变成停止
- * （用户 2026-10-19 口径：有正文、只是文件还在传时，停止与排队都该留在原地）。
+ * （用户 2026-10-19 口径：有内容、只是文件还在传时，停止与排队都该留在原地）。
  * 连接不可用仍按原来的停止行为，不借道这条分支。
  *
- * @param input - 这一帧的运行状态、草稿可用性、附件阻塞原因、设置值与按住态。
+ * @param input - 这一帧的运行状态、是否已有正文或附件、附件阻塞原因、设置值与按住态。
  * @returns 按钮要显示的文字与悬停。
  */
 export function sendButtonView(input: {
   running: boolean;
   canSend: boolean;
-  hasDraft: boolean;
+  /** 正文或附件至少有一项（官方 `empty` 的反面）；只有附件也算。 */
+  hasContent: boolean;
   uploadBlock: AttachmentUploadBlock | undefined;
   busyEnter: ChatState["busyEnter"];
   modifierHeld: boolean;
@@ -118,7 +119,7 @@ export function sendButtonView(input: {
       : input.uploadBlock === "error"
         ? input.texts.sendBlockedUploadFailed
         : undefined;
-  if (input.running && (!input.hasDraft || (!input.canSend && blockedTitle === undefined))) {
+  if (input.running && (!input.hasContent || (!input.canSend && blockedTitle === undefined))) {
     return { kind: "stop", label: "", title: input.texts.stopTitle, disabled: false };
   }
   if (!input.running) {

@@ -132,7 +132,7 @@
 - [mentionLinks.test.ts](<mentionLinks.test.ts>) — 正文里 `@` 引用的判定：文件 / 目录按形状，会话按「草稿里的原始 token」或「已发出消息的 `sessionRefs` 清单」两种来路。
 - [mentionLinksUi.test.ts](<mentionLinksUi.test.ts>) — 引用与目录确认的斜杠渲染成行内链接，覆盖命令筛选/技能文件打开分派、路径与会话区间排除、官方六项双语及原文回退、包装标点与路径边界、`.mention-link` 行内样式。
 - [emptyComposer.test.ts](<emptyComposer.test.ts>) — 空态下 `/` 命令栏与 `@` 候选的行为级回归（空态就绑在壳上，菜单读它、不另建），以及官方命令身份与技能 Markdown 路径过线。
-- [composerSend.test.ts](<composerSend.test.ts>) — 发送按钮的手势链路：按住 Ctrl / Cmd 时文字换成这一次真会走的那条路、点按钮发加速手势（真事件链 + 真 `Composer` 渲染），空闲仍发送、运行中无草稿仍是停止；**附件未就绪只置灰**（保留排队 / 插话文案、外层悬停给原因），不把生成中的发送变成停止。
+- [composerSend.test.ts](<composerSend.test.ts>) — 发送按钮的手势链路：按住 Ctrl / Cmd 时文字换成这一次真会走的那条路、点按钮发加速手势（真事件链 + 真 `Composer` 渲染），空闲仍发送、运行中正文与附件都没有仍是停止，只有附件也能发；**附件未就绪只置灰**（保留排队 / 插话文案、外层悬停给原因），不把生成中的发送变成停止。
 - [escapeOwner.test.ts](<escapeOwner.test.ts>) — ESC 归属链：手写事件链驱动真处理器（轨迹绘图区 `timelineEscape` + window 兜底 `escapeFallbackListener`），钉住菜单 > 原图 > 抽屉 > 并列浮层的先后、元素层消费后不停止生成、**只有会话页占据前景才停止**（轨迹页与抽屉在前景时不中止会话）、兜底唯一挂点与注销清理；原生 / 合成事件组字标记均放行，不关闭浮层、不停止、不阻止输入法默认行为。
 - [blankSessionReuse.test.ts](<blankSessionReuse.test.ts>) — 「空态必有壳、首条消息发给谁」：`reusableBlank` 的本地 blank 位（不许把已经说过话的会话当空壳接回来）、空壳上选的模型留得住、已经在一条空壳上再点「+」是完全 no-op（不写回模型、也不另接一条别人的壳）。
 - [blankSessionNoop.test.ts](<blankSessionNoop.test.ts>) — 「点「+」」在用户 2026-10-17 21:00 口径下的行为级回归（真 `ChatController` + 假服务端）：当前已经停在一条**空壳**上时**完全 no-op**——不清输入框 / 附件 / 待发与失败回显、不改模型 / 思考强度 / 权限 / 预设 / 工作目录，不换绑定、不认领、不连后台、不发任何 RPC、不另建也不删（改过标题 / 计划 / 目标 / 挂着自动化任务、甚至断连的壳同样 no-op）；无壳 / 内容会话则照旧落壳：接回没人占用的现成空壳（同步换绑 + 一次指名认领）或真新建；空壳按窗口独占，两个窗口并发点「+」互不干扰。
