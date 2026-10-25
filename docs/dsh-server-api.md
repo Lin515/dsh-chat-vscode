@@ -1629,6 +1629,36 @@ export type TurnEndReason =
 `display` 排好序；`total` / `added` / `deleted` 是**含被 Host 上限截掉的文件**在内的
 完整合计。认证与其它 `/api/*` 相同（cookie，由 `GET /?token=` 换取）。
 
+`/api/changes.diff` 返回的对比形状如下，字段与类型对齐 `@deepseek-ai/dsh-workspace-changes`
+的 `types.ts`，说明为中文：
+
+```ts
+/** 一个 unified diff 段，带 3 行上下文；每行保留 `+` / `-` / 空格前缀。 */
+export interface WorkspaceDiffHunk {
+  oldStart: number   // 该段在 turn-start 内容里的首行（1 基）；该侧没有行时为 1
+  oldLines: number   // 该段取自 turn-start 内容的行数；该侧没有行时为 0
+  newStart: number   // 该段在 turn-end 内容里的首行（1 基）；该侧没有行时为 1
+  newLines: number   // 该段取自 turn-end 内容的行数；该侧没有行时为 0
+  lines: string[]    // 段体按序，每行保留 `+` / `-` / 空格前缀
+}
+
+/** 清单中一个文件的 turn-start / turn-end 对比，按需现算。 */
+export type WorkspaceFileDiff =
+  | {
+    kind: 'text'
+    path: string               // 该文件在清单里的 `path`
+    display: string            // 该文件在清单里的 `display`
+    before: boolean            // turn 开始时文件是否存在
+    after: boolean             // turn 结束时文件是否存在
+    hunks: WorkspaceDiffHunk[] // 按文件顺序；两侧行相同时为空
+    coarse: boolean            // 行比较超过 `diffTimeoutMs` 时为 true，整份内容按「全删 + 全增」展示
+  }
+  | { kind: 'binary'; path: string; display: string }    // 某一侧是二进制或含 NUL 字节，不给行
+  | { kind: 'oversized'; path: string; display: string } // 某一侧超过 `maxFileBytes`，不给行
+```
+
+Host 只在 Session 存活期间现算这份对比，Session 释放或 Host 重启后该路由 404。
+
 > **未确认**：`team/member`、`team/message/delivered`、`team/message/queued`、`team/task` 在 `KNOWN_SESSION_EVENT_TYPES` 里，但**安装树里没有任何 `.d.ts` 声明它们的 data 形状**。推测属于未安装的 experimental agent-team 包。客户端应按 `ignorable` 规则处理。
 
 ### 6.4 内容块（ContentBlock）
