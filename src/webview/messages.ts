@@ -286,7 +286,7 @@ export const MESSAGES = {
       const minutes = Math.floor(total / 60) % 60;
       const seconds = total % 60;
       const parts: string[] = [];
-      if (hours > 0) parts.push(`${hours}时`);
+      if (hours > 0) parts.push(`${hours}小时`);
       if (total >= 60) parts.push(`${minutes}分`);
       parts.push(`${seconds}秒`);
       return parts.join("");
@@ -866,7 +866,7 @@ export const MESSAGES = {
   running: { zh: "深度求索中", en: "Deep diving" },
   /** 运行状态的计时文案；末尾那组点由 `<Ellipsis />` 画（官方 `chat.deepDivingFor`）。 */
   runningElapsed: {
-    zh: (duration: string) => `深度求索中，用时${duration}`,
+    zh: (duration: string) => `深度求索中，用时 ${duration}`,
     en: (duration: string) => `Deep diving for ${duration}`,
   },
   queued: { zh: "待发送 {n} 条", en: "{n} queued" },

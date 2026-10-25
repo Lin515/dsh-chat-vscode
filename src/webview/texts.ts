@@ -153,8 +153,9 @@ export interface Texts {
 
   /**
    * 时长口径：轮尾「用时 X」，以及运行状态的「深度求索中，用时 X」。格式与官方
-   * `formatRunDuration` 逐字一致（zh「42秒」「1分5秒」「1时2分3秒」/ en「42s」
-   * 「1m 5s」「1h 2m 3s」）——**秒不补零**，满一分钟才出现「分」，满一小时才出现「时」。
+   * `formatRunDuration` 一致——秒不补零、满一分钟才出现「分」、满一小时才出现「小时」
+   * （zh「42秒」「1分5秒」「1小时2分3秒」/ en「42s」「1m 5s」「1h 2m 3s」）；
+   * 单位词与「用时」后的空格取官方 `duration.hourUnit` / `chat.deepDivingFor`。
    * **不能**复用界面里工具行的 `formatDuration`：那是本扩展自己的紧凑格式
    * （「1m 5s」「0.8s」），单位口径不同。
    */
