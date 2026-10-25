@@ -864,9 +864,13 @@ export const MESSAGES = {
   },
 
   running: { zh: "深度求索中", en: "Deep diving" },
-  /** 运行状态的计时文案；末尾那组点由 `<Ellipsis />` 画（官方 `chat.deepDivingFor`）。 */
+  /**
+   * 运行状态的计时文案；末尾那组点由 `<Ellipsis />` 画（官方 `chat.deepDivingFor`）。
+   * 中文「用时」后**不留空格**（「用时12秒」）是用户指定的刻意行为，不是漏对齐官方：
+   * 官方 `chat.deepDivingFor` 那里有空格，不要再照着补回去。
+   */
   runningElapsed: {
-    zh: (duration: string) => `深度求索中，用时 ${duration}`,
+    zh: (duration: string) => `深度求索中，用时${duration}`,
     en: (duration: string) => `Deep diving for ${duration}`,
   },
   queued: { zh: "待发送 {n} 条", en: "{n} queued" },
