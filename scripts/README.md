@@ -118,6 +118,7 @@
 - [questionFlow.test.ts](<questionFlow.test.ts>) — 问卷展示口径：一次展开 vs 依次问答（`dshChat.questionBatch`）。
 - [questionRender.test.ts](<questionRender.test.ts>) — 问卷卡片渲染断言（答完的问题展开后显示用户回答）。
 - [toolRowRender.test.ts](<toolRowRender.test.ts>) — 工具节点渲染断言：技能节点只显示 SKILL 正文（无参数 / 输出标题），读 / 写 / 编辑与技能只在真有可打开目标时提示 Ctrl/Cmd 单击打开。
+- [codeBlock.test.ts](<codeBlock.test.ts>) — 代码块默认折展：超过 20 行默认收起（含 `aria-expanded` 与完整正文），20 行及以内没有折展入口、保持展开。
 - [modifierHeld.test.ts](<modifierHeld.test.ts>) — Ctrl/Cmd 全局修饰键状态：按住时给可打开文件节点加下划线的根类来源、指针事件补键盘焦点缺席、失焦 / 页面隐藏清理与引用计数卸载。
 - [planReview.test.ts](<planReview.test.ts>) — 计划审阅（`exit_plan_mode`）请求的识别与收窄规则。
 - [pendingInteraction.test.ts](<pendingInteraction.test.ts>) — 待处理交互的选举与抑制（官方 `registerPendingInteraction` 优先级）。

@@ -13,10 +13,13 @@ import { IconChevronDown, IconCopy, IconPencil } from "../icons";
 import { useTexts } from "../texts";
 
 export function CodeBlock({ lang, code }: { lang?: string; code: string }) {
-  const [collapsed, setCollapsed] = useState(false);
   const texts = useTexts();
   const lines = useMemo(() => code.split("\n"), [code]);
   const long = lines.length > 20;
+  // 没点过折展箭头时按内容长度取默认：长块收起、短块展开（短块没有箭头，收起就打不开）。
+  // 即使把长块收起过，内容变成短块时也强制展开；点过之后，长块沿用用户的选择。
+  const [chosenCollapsed, setChosenCollapsed] = useState<boolean | null>(null);
+  const collapsed = long && (chosenCollapsed ?? true);
 
   return (
     <div className={`code-block${collapsed ? " is-collapsed" : ""}`}>
@@ -50,7 +53,7 @@ export function CodeBlock({ lang, code }: { lang?: string; code: string }) {
           className="code-block-expand"
           aria-expanded={!collapsed}
           aria-label={collapsed ? texts.codeBlockExpandAria : texts.codeBlockCollapseAria}
-          onClick={() => setCollapsed((v) => !v)}
+          onClick={() => setChosenCollapsed(!collapsed)}
         >
           {/* 图标恒为朝下的 chevron：收起态朝下（还能展开），展开后由样式转 180° 朝上
               （表示收起），与本应用其它正文折展箭头同口径 */}
