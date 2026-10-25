@@ -18,7 +18,15 @@ import type {
 import { classifyTool, toolTitleKey } from "../../shared/toolMeta";
 import { skillInstructions } from "../../shared/skill";
 import { MAX_CATALOG_ENTRIES } from "../../shared/injectedSource";
-import { formatDuration, Popover, Row, useElapsed, useSelectionFreeze, useStickyBody } from "./primitives";
+import {
+  formatDuration,
+  Popover,
+  Row,
+  type RowModifierAction,
+  useElapsed,
+  useSelectionFreeze,
+  useStickyBody,
+} from "./primitives";
 import { canSubmit, isAnswered, questionMode } from "../questionFlow";
 import {
   clearQuestionDraft,
@@ -107,6 +115,28 @@ function useDescribeTool(): (name: string) => { icon: JSX.Element; iconClass: st
     // 运行中由 .icon-glow 以同色呼吸发光
     return { icon, iconClass: `node-${variant}`, verb };
   };
+}
+
+/**
+ * 按住 Ctrl/Cmd 单击这一行要打开什么：可打开的文件路径，读取节点再带上起始行。
+ *
+ * - 技能节点只用服务端 `skills/list` 给的 `SKILL.md` 路径（`skillPath`），
+ *   没有就是 undefined——绝不按技能名拼本机路径；
+ * - 其它节点用 `tool.filePath`（路径为 `undefined` 时同样没有打开目标）；
+ * - 只有读取节点在本次读取带了行号区间（`tool.readLines`，1 基）时才带上
+ *   `line: start`。编辑节点的调用与结果里都没有行号，**不猜**行号：只打开文件。
+ */
+export function modifierTargetOf(
+  tool: ToolCallView,
+  skillPath?: string,
+): { path: string; line?: number } | undefined {
+  if (tool.name === "skill") {
+    return skillPath ? { path: skillPath } : undefined;
+  }
+  if (!tool.filePath) return undefined;
+  const line =
+    classifyTool(tool.name) === "read" && tool.readLines ? tool.readLines.start : undefined;
+  return line === undefined ? { path: tool.filePath } : { path: tool.filePath, line };
 }
 
 export function ToolRow({
@@ -292,16 +322,23 @@ export function ToolRow({
 
   /**
    * 按住 Ctrl/Cmd 单击要打开的文件：文件类节点用参数里的路径，技能节点用服务端
-   * `skills/list` 给的 `SKILL.md` 路径。两者都没有就不挂动作（连悬停提示也不给）。
+   * `skills/list` 给的 `SKILL.md` 路径；读取节点在本次读取带行号区间时打开到
+   * 起始行（编辑节点没有行号数据，只打开文件，见 `modifierTargetOf`）。
+   * 没有可打开目标就不构造端口对象——行头既没有修饰键动作，也没有悬停说明
+   * （见 `RowModifierAction`）。
    */
-  const fileTarget = isSkill ? skillPath : tool.filePath;
-  const openFileAction = fileTarget
-    ? () => post({ type: "openFile", path: fileTarget, diff: false })
-    : undefined;
-  const modifierHint = openFileAction
-    ? isSkill
-      ? texts.toolOpenSkillHint
-      : texts.toolOpenFileHint
+  const openTarget = modifierTargetOf(tool, skillPath);
+  const modifier: RowModifierAction | undefined = openTarget
+    ? {
+        activate: () =>
+          post({
+            type: "openFile",
+            path: openTarget.path,
+            diff: false,
+            ...(openTarget.line === undefined ? {} : { line: openTarget.line }),
+          }),
+        hint: isSkill ? texts.toolOpenSkillHint : texts.toolOpenFileHint,
+      }
     : undefined;
 
   const row = (
@@ -329,12 +366,11 @@ export function ToolRow({
       onDetailActivate={
         // 已有「Ctrl/Cmd 单击打开」的节点不再把详情做成普通点击链接：同一行不能
         // 一半要求修饰键、一半不要求（文件类节点的 `command` 通常就是路径，本就走不到这里）。
-        tool.detail && !tool.command && !openFileAction
+        tool.detail && !tool.command && !modifier
           ? () => post({ type: "openFile", path: tool.detail as string, diff: false })
           : undefined
       }
-      {...(openFileAction === undefined ? {} : { onModifierActivate: openFileAction })}
-      {...(modifierHint === undefined ? {} : { modifierHint })}
+      {...(modifier === undefined ? {} : { modifier })}
       meta={meta}
       open={open}
       onToggle={() => {

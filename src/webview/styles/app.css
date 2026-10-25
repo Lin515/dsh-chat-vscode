@@ -1872,12 +1872,15 @@ button.header-title.is-switcher > svg.is-open {
 
 /* 支持 Ctrl/Cmd 单击打开文件的节点：悬停或按住修饰键时给文件路径加下划线。
    两档都是**纯提示**——普通单击仍然只开合节点（行为在 primitives.tsx 的 Row）。
+   行号后缀与路径同属可打开目标，一起加下划线。
    `is-modifier-held` 挂在根元素上（webview/modifierHeld.ts），按住 Ctrl/Cmd 时
    所有可打开文件的节点一起提示；悬停这一档不依赖键盘焦点，单独也能成立。 */
 .row-head.is-file-openable:hover .row-detail-dir,
 .row-head.is-file-openable:hover .row-detail-name,
+.row-head.is-file-openable:hover .row-detail-suffix,
 .is-modifier-held .row-head.is-file-openable .row-detail-dir,
-.is-modifier-held .row-head.is-file-openable .row-detail-name {
+.is-modifier-held .row-head.is-file-openable .row-detail-name,
+.is-modifier-held .row-head.is-file-openable .row-detail-suffix {
   text-decoration: underline;
 }
 

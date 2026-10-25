@@ -23,7 +23,7 @@ import type { NodeOpenPort } from "../src/webview/nodeOpen";
   removeEventListener: () => {},
 };
 
-const { ToolRow } = await import("../src/webview/components/Rows");
+const { ToolRow, modifierTargetOf } = await import("../src/webview/components/Rows");
 const { TextsContext, dictionaryFor } = await import("../src/webview/texts");
 
 /** 展开态的端口：测试里恒为展开，才能看到展开体。 */
@@ -137,5 +137,71 @@ for (const name of ["read", "write", "edit"]) {
   );
 }
 console.log("toolRowRender: 读 / 写 / 编辑节点只在有路径时提示 Ctrl/Cmd 打开文件 ✓");
+
+// ---------- 2b. 修饰键目标：读取节点带起始行，编辑节点不猜行号 ----------
+
+{
+  const readTool = (overrides: Partial<ToolCallView> = {}): ToolCallView => ({
+    id: "call-read",
+    name: "read",
+    title: "",
+    detail: "src/a.ts",
+    status: "ok",
+    input: '{"file_path":"src/a.ts"}',
+    filePath: "src/a.ts",
+    ...overrides,
+  });
+
+  assert.deepStrictEqual(
+    modifierTargetOf(readTool({ readLines: { start: 12, end: 40 } })),
+    { path: "src/a.ts", line: 12 },
+    "读取节点带行号区间时，打开目标要带起始行",
+  );
+  assert.deepStrictEqual(
+    modifierTargetOf(readTool()),
+    { path: "src/a.ts" },
+    "读取节点没有带行号区间时只打开文件，不带行号",
+  );
+
+  assert.deepStrictEqual(
+    modifierTargetOf({
+      id: "call-edit",
+      name: "edit",
+      title: "",
+      detail: "src/a.ts",
+      status: "ok",
+      input: '{"file_path":"src/a.ts"}',
+      filePath: "src/a.ts",
+      diff: [{ path: "src/a.ts", lines: [{ kind: "add", text: "x" }], added: 1, removed: 0 }],
+    }),
+    { path: "src/a.ts" },
+    "编辑节点没有行号数据，只打开文件、不猜行号",
+  );
+
+  assert.deepStrictEqual(
+    modifierTargetOf(skillTool(), "/skills/build/SKILL.md"),
+    { path: "/skills/build/SKILL.md" },
+    "技能节点用服务端给的 SKILL.md 路径，不带行号",
+  );
+  assert.strictEqual(
+    modifierTargetOf(skillTool()),
+    undefined,
+    "没有 SKILL.md 路径时不得按技能名拼路径",
+  );
+
+  assert.strictEqual(
+    modifierTargetOf({
+      id: "call-pwsh",
+      name: "pwsh",
+      title: "",
+      detail: "npm test",
+      status: "ok",
+      input: '{"command":"npm test"}',
+    }),
+    undefined,
+    "没有文件路径的普通节点没有打开目标",
+  );
+}
+console.log("toolRowRender: 读取节点带起始行，编辑节点只打开文件、不猜行号 ✓");
 
 console.log("\ntoolRowRender: all assertions passed");

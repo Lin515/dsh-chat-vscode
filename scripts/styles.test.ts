@@ -16,10 +16,10 @@ import { lineThickness } from "../src/webview/uiScale";
 
 const css = readFileSync(join(process.cwd(), "src", "webview", "styles", "app.css"), "utf8");
 
-/** 取出一个选择器的声明块（第一个匹配）。 */
+/** 取出一个选择器的声明块（选择器须独占一行，包括逗号分组里各占一行的情况）。 */
 function rule(selector: string): string {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = new RegExp(`${escaped}\\s*\\{([\\s\\S]*?)\\}`, "u").exec(css);
+  const match = new RegExp(`^[ \\t]*${escaped}[ \\t]*\\{([\\s\\S]*?)\\}`, "mu").exec(css);
   assert.ok(match, `app.css 里找不到选择器 ${selector}`);
   return match[1];
 }
@@ -551,10 +551,13 @@ console.log("styles: 行号紧跟文件名、时长先让位 ✓");
   const group =
     /\.row-head\.is-file-openable:hover \.row-detail-dir,[\s\S]*?text-decoration:\s*underline;/u.exec(css)?.[0] ?? "";
   assert.ok(
-    group.includes(".row-head.is-file-openable:hover .row-detail-name") &&
+    group.includes(".row-head.is-file-openable:hover .row-detail-dir") &&
+      group.includes(".row-head.is-file-openable:hover .row-detail-name") &&
+      group.includes(".row-head.is-file-openable:hover .row-detail-suffix") &&
       group.includes(".is-modifier-held .row-head.is-file-openable .row-detail-dir") &&
-      group.includes(".is-modifier-held .row-head.is-file-openable .row-detail-name"),
-    "悬停与按住修饰键两档都要给目录段 / 文件名段加下划线",
+      group.includes(".is-modifier-held .row-head.is-file-openable .row-detail-name") &&
+      group.includes(".is-modifier-held .row-head.is-file-openable .row-detail-suffix"),
+    "悬停与按住修饰键两档都要给目录段 / 文件名段 / 行号后缀加下划线",
   );
   assert.ok(
     primitives.includes("is-file-openable"),

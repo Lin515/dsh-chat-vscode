@@ -56,6 +56,19 @@ function useClipped(ref: RefObject<HTMLElement>, content: string | undefined): b
   return clipped;
 }
 
+/**
+ * 行头的修饰键动作：按住 Ctrl/Cmd 单击整行时打开对应的文件。
+ *
+ * 动作与悬停说明住在**同一个端口对象**里：对象在，两者就都在；对象缺席，Row 既
+ * 不拦截修饰键也不提示——调用方不必再单独维护「有没有动作」的第二份判据。
+ */
+export interface RowModifierAction {
+  /** 按住 Ctrl/Cmd 单击行头时执行（普通单击仍是开合节点）。 */
+  activate: () => void;
+  /** 修饰键动作的悬停说明（与动作同生共死）。 */
+  hint: string;
+}
+
 /** 一个可折叠的单行过程行（思考、工具、用量…），沿用 Continue 的导轨观感。 */
 export function Row({
   icon,
@@ -64,8 +77,7 @@ export function Row({
   detailSuffix,
   diffStat,
   onDetailActivate,
-  onModifierActivate,
-  modifierHint,
+  modifier,
   meta,
   open,
   onToggle,
@@ -98,14 +110,13 @@ export function Row({
    */
   onDetailActivate?: () => void;
   /**
-   * 按住 Ctrl/Cmd 单击整行时执行的动作（文件类节点的「直接打开对应文件」）。
+   * 按住 Ctrl/Cmd 单击整行时执行的文件动作（文件类节点的「直接打开对应文件」）。
    *
-   * 普通单击仍是开合节点；只有修饰键这一档改变行为，且**只在真有动作时**才挂
-   * `modifierHint` 与拦截修饰键——没有可打开目标的节点不能提示一个不存在的操作。
+   * 缺席 = 这一行没有可打开目标：不挂 `is-file-openable`、不设 `title`，单击照旧
+   * 只开合节点。动作与悬停说明捆在同一个对象里（见 `RowModifierAction`），
+   * 不会出现「有提示没动作」或反之。
    */
-  onModifierActivate?: () => void;
-  /** 修饰键动作的悬停说明（`onModifierActivate` 缺席时忽略）。 */
-  modifierHint?: string;
+  modifier?: RowModifierAction;
   meta?: ReactNode;
   open: boolean;
   onToggle: () => void;
@@ -121,18 +132,18 @@ export function Row({
   // 目录段真的被裁时才做左侧渐隐（见 useClipped）
   const dirRef = useRef<HTMLSpanElement>(null);
   const dirClipped = useClipped(dirRef, parts?.dir);
-  // 只有真有动作时才挂提示：没有可打开目标的节点不该出现「按住 Ctrl 打开」。
-  const hint = onModifierActivate ? modifierHint : undefined;
+  // 只有真有动作时才挂类名与提示：没有可打开目标的节点不该出现「按住 Ctrl 打开」。
+  const openable = modifier !== undefined;
   return (
     <div className={`row${open ? " is-open" : ""}`}>
       <button
-        className={`row-head${onModifierActivate ? " is-file-openable" : ""}`}
-        title={hint}
+        className={`row-head${openable ? " is-file-openable" : ""}`}
+        title={modifier?.hint}
         onClick={(event) => {
           // Ctrl/Cmd+单击 = 直接打开这个节点对应的文件；其余单击照旧开合。
-          if (onModifierActivate && (event.ctrlKey || event.metaKey)) {
+          if (openable && (event.ctrlKey || event.metaKey)) {
             event.preventDefault();
-            onModifierActivate();
+            modifier.activate();
             return;
           }
           onToggle();
@@ -157,9 +168,9 @@ export function Row({
         {/* detail 过长时会被裁掉，所以补 title：即使截断，悬停仍能看到完整内容。
             路径类 detail 若带 onDetailActivate，则整块变成可点的文件链接。 */}
         {parts ? (
-          // detail 自己的 title 会盖住行头的 title：把修饰键提示追加在这里，
+          // detail 自己的 title 会盖住行头的 title：把修饰键动作的说明追加在这里，
           // 悬停在路径上（正是用户最想去点的地方）也能看到它。
-          <span className="row-detail" title={hint ? `${detail}\n${hint}` : detail}>
+          <span className="row-detail" title={openable ? `${detail}\n${modifier.hint}` : detail}>
             {parts.dir ? (
               <span
                 ref={dirRef}
@@ -193,7 +204,7 @@ export function Row({
             {detailSuffix ? <span className="row-detail-suffix">{detailSuffix}</span> : null}
           </span>
         ) : detail ? (
-          <span className="row-detail is-text" title={hint ? `${detail}\n${hint}` : detail}>
+          <span className="row-detail is-text" title={openable ? `${detail}\n${modifier.hint}` : detail}>
             <span className="row-detail-name">{detail}</span>
             {detailSuffix ? <span className="row-detail-suffix">{detailSuffix}</span> : null}
           </span>
