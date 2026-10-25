@@ -9,7 +9,7 @@
  */
 import { useMemo, useState } from "react";
 import { post } from "../bridge";
-import { IconChevronDown, IconChevronRight, IconCopy, IconPencil } from "../icons";
+import { IconChevronDown, IconCopy, IconPencil } from "../icons";
 import { useTexts } from "../texts";
 
 export function CodeBlock({ lang, code }: { lang?: string; code: string }) {
@@ -45,8 +45,16 @@ export function CodeBlock({ lang, code }: { lang?: string; code: string }) {
         </pre>
       </div>
       {long ? (
-        <button className="code-block-expand" onClick={() => setCollapsed((v) => !v)}>
-          {collapsed ? <IconChevronDown size={16} /> : <IconChevronRight size={16} />}
+        <button
+          type="button"
+          className="code-block-expand"
+          aria-expanded={!collapsed}
+          aria-label={collapsed ? texts.codeBlockExpandAria : texts.codeBlockCollapseAria}
+          onClick={() => setCollapsed((v) => !v)}
+        >
+          {/* 图标恒为朝下的 chevron：收起态朝下（还能展开），展开后由样式转 180° 朝上
+              （表示收起），与本应用其它正文折展箭头同口径 */}
+          <IconChevronDown size={16} />
         </button>
       ) : null}
     </div>

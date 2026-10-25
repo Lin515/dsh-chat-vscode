@@ -1215,6 +1215,9 @@ export const MESSAGES = {
   },
   contextRecallTruncated: { zh: "已截断", en: "Truncated" },
   toolCollapse: { zh: "收起", en: "Collapse" },
+  /** 代码块长内容底部那枚居中箭头（`CodeBlock` 的 `code-block-expand`）。 */
+  codeBlockExpandAria: { zh: "展开代码块全文", en: "Expand the full code block" },
+  codeBlockCollapseAria: { zh: "收起代码块", en: "Collapse the code block" },
   readWindow: { zh: (shown: number, total: number) => `显示 ${shown} / ${total} 行`, en: (shown: number, total: number) => `Showing ${shown} of ${total} lines` },
   readExpandRest: { zh: (count: number) => `… 其余 ${count} 行`, en: (count: number) => `… ${count} more lines` },
   readExpandAria: { zh: (count: number) => `展开其余 ${count} 行`, en: (count: number) => `Expand ${count} more lines` },

@@ -1834,6 +1834,17 @@ button.header-title.is-switcher > svg.is-open {
   color: var(--fg);
 }
 
+/* 折展箭头口径与本应用其它正文折展一致：图标本身朝下（收起态，表示还能展开），
+   展开后转 180° 朝上（表示收起）。此前展开态换成了朝右的 chevron，用户
+   2026-10-25 报「展开后应当是收缩态的朝上箭头」。过渡时长沿用 120ms。 */
+.code-block-expand svg {
+  transition: transform 120ms ease;
+}
+
+.code-block-expand[aria-expanded="true"] svg {
+  transform: rotate(180deg);
+}
+
 /* ============================ inline rows ============================ */
 
 .row {

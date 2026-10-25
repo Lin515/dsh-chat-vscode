@@ -869,6 +869,9 @@ export interface Texts {
   // 计数文案必须齐全：读了多少行、命中多少处、退出码是多少、来源截断没有。
   /** 卡片的通用「收起」（官方 `collapse`）。 */
   toolCollapse: string;
+  /** 代码块长内容底部那枚居中折展箭头的无障碍名（`CodeBlock` 的 `code-block-expand`）。 */
+  codeBlockExpandAria: string;
+  codeBlockCollapseAria: string;
   /** 读取卡：只读了一段时的「显示 X / Y 行」（官方 `read.window`）。 */
   readWindow: (shown: number, total: number) => string;
   /** 读取卡：中间那枚展开钮的文案（官方 `read.expandRest`）。 */
