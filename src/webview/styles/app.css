@@ -2386,7 +2386,11 @@ button.header-title.is-switcher > svg.is-open {
   justify-content: center;
   padding: calc(24 * var(--dp));
   background: rgba(0, 0, 0, 0.72);
-  cursor: zoom-out;
+  /* 点背景会关闭预览，但光标仍是普通箭头：缩放光标只属于「点这里会缩放」的动作，
+     放在会关掉图片的背景上会让动作看起来是另一回事（用户 2026-10-25 口径）。 */
+  cursor: default;
+  /* 放大后的图会被 transform 撑出可用区域；浮层自己裁掉，别让它在视口外制造滚动 */
+  overflow: hidden;
 }
 
 .image-preview img {
@@ -2394,6 +2398,25 @@ button.header-title.is-switcher > svg.is-open {
   max-height: 100%;
   border-radius: var(--radius-sm);
   cursor: default;
+  /* 拖动由指针事件接管：关掉原生图片拖动与文字选择 */
+  user-select: none;
+  -webkit-user-drag: none;
+  transform-origin: center center;
+  will-change: transform;
+}
+
+/* 放大后才有可拖的余量：图片上给四向移动光标。这里**不用** grab/grabbing——
+   用户在轨迹顶条点过名，`styles.test.ts` 也禁止 app.css 再出现手掌光标。 */
+.image-preview.is-zoomed img {
+  cursor: move;
+}
+
+.image-preview.is-dragging {
+  cursor: default;
+}
+
+.image-preview.is-dragging img {
+  cursor: move;
 }
 
 .image-preview-close {

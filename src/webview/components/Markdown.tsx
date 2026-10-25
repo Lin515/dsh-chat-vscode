@@ -7,7 +7,7 @@ import { browserOpenRequested, externalLinkUrl, parseFileLink, type FileLinkPort
 import { hydrateLinkTitles } from "../linkHovers";
 import { post } from "../bridge";
 import { CodeBlock } from "./CodeBlock";
-import { openImagePreview } from "./Images";
+import { openImagePreview } from "../imagePreview";
 
 /**
  * 打开正文里点到的一个文件。

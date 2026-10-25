@@ -627,6 +627,8 @@ export interface Texts {
   imageCopyFailed: string;
   /** 图片右键菜单第二项：另存到用户选的路径（宿主弹保存对话框）。 */
   imageSave: string;
+  /** 原图浮层右键菜单的「复原」：缩放与拖动之后回到适配视口、居中的状态。 */
+  imageReset: string;
   /** 保存图片失败（字节取不回来 / 写盘失败）。宿主发出。 */
   imageSaveFailed: string;
   stopped: string;

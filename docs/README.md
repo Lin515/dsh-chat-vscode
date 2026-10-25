@@ -26,7 +26,7 @@
 | [消息通知](<design-notifications.md>) | 常驻通知、会话归属、确认与通知历史 |
 | [输入工具栏](<design-composer.md>) | 实测宽度、优先级前缀、节点观察与权限弹层 |
 | [界面尺度](<design-ui-scale.md>) | 设计像素、CSS / JS 几何、断点、字号变量与测量顺序 |
-| [右键菜单](<design-context-menu.md>) | 事件接管、判定矩阵、会话选区快捷复制、图片复制与保存 |
+| [右键菜单](<design-context-menu.md>) | 事件接管、判定矩阵、会话选区快捷复制、图片复制与保存、原图缩放拖动与复原 |
 | [轨迹面板](<design-trajectory.md>) | 第二次事件折叠、请求时序、交互、受控验证与性能重评边界 |
 | [安全边界](<design-security.md>) | 跨模块安全不变量、正文图片范围、外传风险与资源上限 |
 

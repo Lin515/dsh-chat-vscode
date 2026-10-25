@@ -935,6 +935,8 @@ export const MESSAGES = {
   imageCopyFailed: { zh: "复制图片失败", en: "Could not copy the image" },
   // 图片右键菜单的「保存」与它的失败提示（成功不提示：路径是用户自己选的）
   imageSave: { zh: "保存", en: "Save" },
+  // 原图浮层右键菜单的「复原」：缩放与拖动之后回到适配视口、居中的状态
+  imageReset: { zh: "复原", en: "Reset" },
   imageSaveFailed: { zh: "保存图片失败", en: "Could not save the image" },
   stopped: { zh: "已停止", en: "Stopped" },
 

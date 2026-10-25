@@ -1,6 +1,26 @@
-import { useEffect, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import { ESC_LAYER, useEscapeLayer } from "../escapeOwner";
 import { IconClose } from "../icons";
+import {
+  bindImagePreviewReset,
+  closeImagePreview,
+  imagePreviewValue,
+  openImagePreview,
+  panImageView,
+  resetImageView,
+  subscribeImagePreview,
+  zoomImageView,
+  type ImagePreviewValue,
+  type ImageView,
+  type ImageViewGeometry,
+} from "../imagePreview";
 import { failedImageText, resolveLocalImages } from "../localImages";
 import { useTexts } from "../texts";
 
@@ -119,30 +139,44 @@ export function LocalImageGallery({ paths }: { paths: string[] }) {
   return <ImageGallery alt={texts.messageImageAlt} sources={sources} />;
 }
 
-/** 浮层当前显示的图。 */
-type PreviewValue = { src: string; alt: string } | null;
-let previewValue: PreviewValue = null;
-const previewListeners = new Set<(value: PreviewValue) => void>();
-
-/**
- * 打开原图浮层。
- *
- * 走模块级订阅而不是 React Context：**markdown 注入的 `<img>` 也要能打开**
- * （见 `Markdown.tsx` 的点击委托），那条路不在某个组件的 props 树里。
- */
-export function openImagePreview(src: string, alt: string): void {
-  previewValue = { src, alt };
-  for (const listener of previewListeners) listener(previewValue);
+/** 浮层几何 + 基准中心（视口坐标）。图片基准中心就是可用区域中心。 */
+interface PreviewGeometry extends ImageViewGeometry {
+  centerX: number;
+  centerY: number;
 }
 
-/** 关掉原图浮层（点背景 / 关闭按钮 / ESC 都走这里）。 */
-export function closeImagePreview(): void {
-  previewValue = null;
-  for (const listener of previewListeners) listener(null);
+/**
+ * 读浮层与图片的当前几何。
+ *
+ * 图片的 `offsetWidth/offsetHeight` 是**未受 transform 影响**的布局尺寸，正好是倍率 1
+ * 时的尺寸；可用区域要去掉浮层的内边距（`max-width/height: 100%` 的百分比基准就是它）。
+ * 每次滚轮 / 拖动都现读，窗口尺寸变化后不需要另记一份缓存。
+ */
+function previewGeometry(overlay: HTMLElement, image: HTMLImageElement): PreviewGeometry {
+  const style = getComputedStyle(overlay);
+  const paddingLeft = parseFloat(style.paddingLeft) || 0;
+  const paddingTop = parseFloat(style.paddingTop) || 0;
+  const paddingRight = parseFloat(style.paddingRight) || 0;
+  const paddingBottom = parseFloat(style.paddingBottom) || 0;
+  const viewportWidth = Math.max(0, overlay.clientWidth - paddingLeft - paddingRight);
+  const viewportHeight = Math.max(0, overlay.clientHeight - paddingTop - paddingBottom);
+  const rect = overlay.getBoundingClientRect();
+  return {
+    width: image.offsetWidth,
+    height: image.offsetHeight,
+    viewportWidth,
+    viewportHeight,
+    centerX: rect.left + paddingLeft + viewportWidth / 2,
+    centerY: rect.top + paddingTop + viewportHeight / 2,
+  };
 }
 
 /**
  * 原图浮层。挂在 App 根部**一次**，任何来源的图片共用它。
+ *
+ * 操作口径：滚轮以光标为锚点缩放（向上放大、向下缩小），左键按住放大后的图片拖动，
+ * 右键菜单的「复原」把倍率与平移一起清零。拖动只在放大后成立——缩到适配视口或更小
+ * 时图片本来就整个可见，拖动只会把它从中间挪开。
  *
  * ESC 归**归属链**（见 `../escapeOwner.ts`）：本层在活跃期间按
  * `ESC_LAYER.imagePreview` 登记，关掉即注销。层级低于右键菜单，于是菜单开在原图上时
@@ -150,30 +184,152 @@ export function closeImagePreview(): void {
  */
 export function ImagePreviewLayer() {
   const texts = useTexts();
-  const [value, setValue] = useState<PreviewValue>(previewValue);
+  const [value, setValue] = useState<ImagePreviewValue | null>(imagePreviewValue);
+  const [view, setView] = useState<ImageView>(resetImageView);
+  const [dragging, setDragging] = useState(false);
+  const overlayRef = useRef<HTMLDivElement | null>(null);
+  const imageRef = useRef<HTMLImageElement | null>(null);
+  const viewRef = useRef(view);
+  const dragRef = useRef<{ pointerId: number; x: number; y: number; moved: boolean } | null>(null);
+  /** 拖动松手后浏览器仍可能补一个 click：别让它被当成「点了背景」。 */
+  const suppressClickRef = useRef(false);
 
   useEffect(() => {
-    previewListeners.add(setValue);
-    return () => {
-      previewListeners.delete(setValue);
-    };
+    setValue(imagePreviewValue());
+    return subscribeImagePreview(setValue);
   }, []);
+
+  const commit = useCallback((next: ImageView) => {
+    viewRef.current = next;
+    setView(next);
+  }, []);
+
+  const reset = useCallback(() => {
+    dragRef.current = null;
+    suppressClickRef.current = false;
+    setDragging(false);
+    commit(resetImageView());
+  }, [commit]);
+
+  // 换一张图（或重新打开）都从适配视口开始；layout effect 保证首帧之前就复位，
+  // 不会先闪一下上一张的缩放位置
+  useLayoutEffect(() => {
+    if (value) reset();
+    else {
+      dragRef.current = null;
+      setDragging(false);
+    }
+  }, [value, reset]);
+
+  // 右键菜单通过这个端口执行「复原」（菜单在页面级接取，拿不到本组件的 state）
+  useEffect(() => bindImagePreviewReset(reset), [reset]);
 
   // ESC 关预览走归属链：层级在原图浮层这一档——右键菜单开着时（层级更高）先关菜单，
   // 下一次 ESC 才轮到它；没有浮层时才会落到「停止生成」
   useEscapeLayer(ESC_LAYER.imagePreview, value !== null, closeImagePreview);
 
+  // 滚轮必须用原生监听 + passive: false：React 的 onWheel 在根节点上是被动监听，
+  // 拦不住 webview 的滚动 / 浏览器缩放。缩放锚在光标上，见 `zoomImageView`。
+  useEffect(() => {
+    const overlay = overlayRef.current;
+    if (!overlay || !value) return;
+    const onWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      const image = imageRef.current;
+      if (!image) return;
+      const geometry = previewGeometry(overlay, image);
+      if (!geometry.viewportWidth || !geometry.viewportHeight) return;
+      // 行 / 页模式换算成像素；鼠标滚轮通常是像素模式（deltaMode 0）
+      const deltaY =
+        event.deltaMode === 1
+          ? event.deltaY * 16
+          : event.deltaMode === 2
+            ? event.deltaY * geometry.viewportHeight
+            : event.deltaY;
+      commit(
+        zoomImageView(
+          viewRef.current,
+          { x: event.clientX - geometry.centerX, y: event.clientY - geometry.centerY },
+          deltaY,
+          geometry,
+        ),
+      );
+    };
+    overlay.addEventListener("wheel", onWheel, { passive: false });
+    return () => overlay.removeEventListener("wheel", onWheel);
+  }, [value, commit]);
+
+  const onPointerDown = (event: ReactPointerEvent<HTMLImageElement>) => {
+    suppressClickRef.current = false;
+    // 只接管左键、且只接管放大后的图；缩到适配视口或更小时没有可拖的余量
+    if (event.button !== 0 || viewRef.current.scale <= 1) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    dragRef.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, moved: false };
+    setDragging(true);
+  };
+
+  const onPointerMove = (event: ReactPointerEvent<HTMLImageElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const overlay = overlayRef.current;
+    const image = imageRef.current;
+    if (!overlay || !image) return;
+    const dx = event.clientX - drag.x;
+    const dy = event.clientY - drag.y;
+    if (!dx && !dy) return;
+    drag.x = event.clientX;
+    drag.y = event.clientY;
+    drag.moved = true;
+    commit(panImageView(viewRef.current, dx, dy, previewGeometry(overlay, image)));
+  };
+
+  const finishDrag = (event: ReactPointerEvent<HTMLImageElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    dragRef.current = null;
+    setDragging(false);
+    // 拖动结束时不要顺手把浮层关掉：这一次 click 是拖动的尾巴，不是「点背景」
+    if (drag.moved) suppressClickRef.current = true;
+  };
+
   if (!value) return null;
   return (
     <div
-      className="image-preview"
+      ref={overlayRef}
+      className={`image-preview${view.scale > 1 ? " is-zoomed" : ""}${dragging ? " is-dragging" : ""}`}
       role="dialog"
       aria-modal="true"
       aria-label={texts.imagePreview}
-      onClick={closeImagePreview}
+      onPointerDown={() => {
+        suppressClickRef.current = false;
+      }}
+      onClick={() => {
+        if (suppressClickRef.current) {
+          suppressClickRef.current = false;
+          return;
+        }
+        closeImagePreview();
+      }}
     >
-      {/* 点图本身不该关掉浮层（只有点背景才关） */}
-      <img src={value.src} alt={value.alt} onClick={(event) => event.stopPropagation()} />
+      {/* 点图本身不该关掉浮层（只有点背景才关）；拖动后的尾巴 click 同样不允许穿透 */}
+      <img
+        ref={imageRef}
+        src={value.src}
+        alt={value.alt}
+        draggable={false}
+        style={{ transform: `translate3d(${view.x}px, ${view.y}px, 0) scale(${view.scale})` }}
+        onClick={(event) => {
+          event.stopPropagation();
+          suppressClickRef.current = false;
+        }}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={finishDrag}
+        onPointerCancel={finishDrag}
+        onLostPointerCapture={finishDrag}
+      />
       <button
         type="button"
         className="image-preview-close"

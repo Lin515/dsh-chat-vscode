@@ -3,12 +3,14 @@ import { localImageMediaType } from "../shared/imageRef";
 import { post } from "./bridge";
 import { copyImageElement } from "./imageClipboard";
 import { imageCopyFailureSession, reportImageCopyFailure } from "./imageCopyFailure";
+import { resetImagePreviewView } from "./imagePreview";
 import type { Action } from "./state";
 import type { Texts } from "./texts";
 
 /**
- * 会话里的**自绘右键菜单**：正文给「复制 / 引用」，图片给「复制 / 保存」；
- * 其余地方的**原生菜单一律拦掉**，只有「右键压在自己选中的文字上」时才放行。
+ * 会话里的**自绘右键菜单**：正文给「复制 / 引用」，图片给「复制 / 保存」；原图浮层
+ * 另外多一条「复原」。其余地方的**原生菜单一律拦掉**，只有「右键压在自己选中的文字上」
+ * 时才放行。
  *
  * ## 为什么必须自绘 / 必须全局接管
  *
@@ -31,6 +33,7 @@ import type { Texts } from "./texts";
  * 1. **可编辑元素**（输入框、问卷填空、目标编辑器）→ 放行原生菜单（自绘菜单做不了粘贴，
  *    吃掉它等于把粘贴删掉）；
  * 2. **图片**（缩略图 / 原图浮层 / 正文与子代理记录里的图）→ 自绘「复制 / 保存」；
+ *    原图浮层里再加一条「复原」（把缩放与平移清零，见 `imagePreview.ts`）；
  * 3. **会话正文区里有选中的文字** → 自绘「复制 / 引用」；
  * 4. **右键落点压在选中的文字上** → 放行原生菜单（那里有真正有用的 Copy）；
  * 5. 其余一切（正文区里没选区、头部、历史抽屉、子代理 / 后台任务面板、轨迹页……）
@@ -231,6 +234,9 @@ export function usePageContextMenu(dispatch: (action: Action) => void, texts: Te
           closeContextMenu();
           return;
         }
+        // 原图浮层里的图多一条「复原」：缩放 / 拖动之后回得到适配视口的状态。
+        // 缩略图上不给——那时浮层根本没开，点了也不会发生任何事。
+        const inPreview = !!target.closest(".image-preview");
         // **菜单构造那一刻**的会话就是这次复制的手势归属：菜单开着的时候外部命令
         // （VS Code 命令面板 / 另一个窗口）可能已经把本窗口切到别的会话，等到点
         // 「复制」再从模块 scope 读就会把 S1 的失败算给 S2。归属在这里捕获，`run`
@@ -240,6 +246,15 @@ export function usePageContextMenu(dispatch: (action: Action) => void, texts: Te
           x: event.clientX,
           y: event.clientY,
           items: [
+            ...(inPreview
+              ? [
+                  {
+                    id: "reset",
+                    label: texts.imageReset,
+                    run: resetImagePreviewView,
+                  },
+                ]
+              : []),
             {
               id: "copy",
               label: texts.copy,

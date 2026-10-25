@@ -89,6 +89,7 @@ const entries = {
   "build/local-images.test.mjs": "scripts/localImages.test.ts",
   "build/image-render.test.mjs": "scripts/imageRender.test.ts",
   "build/image-hydrate.test.mjs": "scripts/imageHydrate.test.ts",
+  "build/image-preview.test.mjs": "scripts/imagePreview.test.ts",
   "build/image-attachments.test.mjs": "scripts/imageAttachments.test.ts",
   "build/turn-process.test.mjs": "scripts/turnProcess.test.ts",
   "build/injected-source.test.mjs": "scripts/injectedSource.test.ts",

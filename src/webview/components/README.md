@@ -9,7 +9,7 @@
 - `ToolCards.tsx` — 按工具语义画的卡片（读 / 搜索 / 终端 / 网页），有卡片时不再展示参数 JSON。
 - `Rows.tsx` — 通用行组件：审批卡、命令行、文件芯片、注入行、提问卡、思考行、工具行、轮统计等（文件芯片悬停首行是完整路径）。读 / 写 / 编辑与技能节点支持按住 Ctrl/Cmd 单击直接打开对应文件（技能只认服务端给的 `SKILL.md` 路径，没有就不提示）；这些节点的路径在悬停或按住修饰键时显示下划线，单击行为仍是开合；技能节点展开只显示 SKILL 正文，不显示参数与输出标题。问卷「自定义回答」输入框里的 ESC 取消选中用 `../escapeOwner.ts` 的 `consumeEscape` 消费（文字保留）。
 - `Diff.tsx` — diff 渲染：单栏 / 双栏两种排版。
-- `Images.tsx` — 会话图片的统一呈现（用户 / 模型 / 工具 / 正文引用三处合成一套）+ 图片预览层。预览层的 ESC 按 `../escapeOwner.ts` 的 `ESC_LAYER.imagePreview` 登记（右键菜单压过它）。
+- `Images.tsx` — 会话图片的统一呈现（用户 / 模型 / 工具 / 正文引用三处合成一套）+ 图片预览层。预览层支持滚轮以光标为锚点缩放、放大后左键拖动，右键菜单「复原」把倍率与平移清零；几何在 `../imagePreview.ts`。ESC 按 `../escapeOwner.ts` 的 `ESC_LAYER.imagePreview` 登记（右键菜单压过它）。
 - `ChangesCard.tsx` — 轮尾改动文件卡片（数据来自宿主认证路由 `/api/changes.summary`；行悬停给完整路径）。
 - `TodoPanel.tsx` — 会话底部的「任务清单」面板（`todo_write` 投影）：抬头带进度、可折叠，展开 / 收起走同一段行渲染；收起只留当前执行项（没有在执行的则留最后执行过的那条），抬头箭头展开朝下、收起朝上；开合态由 `App` 按会话记账（见 `../todoPanel.ts`）。
 - [Trajectory.tsx](<Trajectory.tsx>) — 轨迹装配与账本／两个互斥检查器；折叠与搜索规则委托[行投影模块](<../trajectoryLedgerRows.ts>)，所有选择、focus、range、定位与视口通过[同一交互端口](<../trajectoryInteraction.ts>)。请求概述分别计工具／子工具，结果链接定位到助手消息或压缩记录。

@@ -15,7 +15,7 @@ contextMenuKind 按下表优先级判断：
 | 落点 | 处理 |
 |---|---|
 | input / textarea / contenteditable | 放原生菜单；自绘不能替代粘贴 |
-| 图片（缩略图、原图、正文或子代理记录） | 自绘「复制 / 保存」 |
+| 图片（缩略图、原图、正文或子代理记录） | 自绘「复制 / 保存」；原图浮层另加「复原」 |
 | 会话正文区内有选中文字 | 自绘「复制 / 引用」 |
 | 其它区域的落点压在自己的选区上 | 放原生菜单，允许复制选区 |
 | 其余 | preventDefault，不弹菜单 |
@@ -45,8 +45,20 @@ contextMenuKind 按下表优先级判断：
 
 默认名字依次取有效图片 alt、地址文件名、image；扩展名按真实媒体类型，不跟建议名走。默认目录是会话 cwd，取消不报错，成功不弹提示；取字节或写盘失败才提示。
 
+## 原图浮层的缩放、拖动与复原
+
+原图浮层（[Images.tsx](<../src/webview/components/Images.tsx>)）支持滚轮缩放与左键拖动，纯几何在 [imagePreview.ts](<../src/webview/imagePreview.ts>)。
+
+- 倍率 1 = 图片适配浮层内容区；向上滚放大、向下滚缩小，倍率夹在 0.25–8。缩到 1 以下时图片仍居中，只是变小。
+- 缩放以光标为锚点：滚轮之后，光标下的图片细节留在原处。平移受边界约束，最多把放大后多出来的那一半移出去，不会把图拖丢或让一侧露出大片背景。
+- 左键拖动只在放大后成立；缩到适配视口或更小时没有可拖余量，指针按下不接管。拖动结束补发的 click 不关闭浮层。
+- 右键菜单的「复原」只在原图浮层里出现，把倍率与平移一起清零；缩略图菜单没有这一项。菜单只调 `resetImagePreviewView` 端口，不直接持有浮层组件状态。
+
+滚轮监听必须用原生 `addEventListener(..., { passive: false })` 并 `preventDefault`：React 的 `onWheel` 在根节点上是被动监听，拦不住 webview 的滚动与浏览器缩放。
+
 ## 回归
 
 - [contextMenu.test.ts](<../scripts/contextMenu.test.ts>)：判定矩阵、引用落点、建议文件名；调用真实快捷复制处理器，覆盖 Ctrl / Cmd、跨消息空白换行保真、编辑焦点、组合键、组字、重复事件、选区包含性与空选区让路。
+- [imagePreview.test.ts](<../scripts/imagePreview.test.ts>)：缩放方向与上下限、光标锚定、拖动边界、复原端口，以及滚轮 / 指针 / 菜单 / 样式接线。
 - [imageFiles.test.ts](<../scripts/imageFiles.test.ts>)：data URL 白名单、上限与文件名。
 - [styles.test.ts](<../scripts/styles.test.ts>)：document 接取、无抽屉重复处理、浮层装配、视口定位、图片层之上与一行截断。

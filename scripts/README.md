@@ -91,6 +91,7 @@
 - [imageAttachments.test.ts](<imageAttachments.test.ts>) — 图片链路适配器侧：`attachmentId` → data URL 异步补字节。
 - [imageFiles.test.ts](<imageFiles.test.ts>) — 图片地址 → 字节与保存对话框默认文件名（扩展名按真实媒体类型）。
 - [imageRender.test.ts](<imageRender.test.ts>) — 会话图片渲染断言（服务端渲染出 HTML，覆盖三处来源）。
+- [imagePreview.test.ts](<imagePreview.test.ts>) — 原图浮层的缩放方向 / 上下限 / 光标锚定 / 拖动边界 / 复原端口，以及滚轮、指针、右键菜单与样式的接线。
 - [localImages.test.ts](<localImages.test.ts>) — 本地图片引用解析与白名单（工作目录内、图片扩展名、stat + 字节上限、失败文案里缀的引用标签）。
 
 ### 视图与界面行为

@@ -81,6 +81,7 @@ React / 浏览器环境，不使用 Node API。上层边界见[源码导航](<..
 - [linkHovers.ts](<linkHovers.ts>) — 正文链接的悬停标题（完整路径 / 完整地址、HTML 修饰键提示）与锚点 title 的渲染后注入。
 - [fileMentions.ts](<fileMentions.ts>) — 文件 token 到按钮的 DOM 变换；按钮带上完整路径悬停，点击把事件交给调用方分流浏览器。
 - [localImages.ts](<localImages.ts>) — 正文图片交宿主读取，缓存按会话隔离。
+- [imagePreview.ts](<imagePreview.ts>) — 原图浮层的开合订阅、滚轮缩放 / 拖动几何与「复原」端口；1 为适配视口，缩放锚定光标、平移受边界约束。
 - [imageClipboard.ts](<imageClipboard.ts>) — canvas 转 PNG 写剪贴板。
 - [attachIntake.ts](<attachIntake.ts>) — drop / paste 字节通道，真路径归宿主。
 - [attachmentOpen.ts](<attachmentOpen.ts>) — 单击打开附件的 IPC 分派与可点判据。
