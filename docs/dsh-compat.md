@@ -165,6 +165,7 @@ npm run dsh:diff -- <旧版本> <新版本>   # 只求差
   `dsh:check` 会报一条 `package-added`）。`0.2.1-alpha.2` 加入 `@deepseek-ai/dsh-schedule`
   （自动化任务）时就是这么做的：删掉本地那份快照再 `npm run dsh:snapshot -- 0.2.1-alpha.2`。
 - 执行目录适配消费 `@deepseek-ai/dsh-working-directory`，已加入包清单；投影值为 `string | null`，缺失回退会话创建目录。工作区归属与执行目录分离的消费规则见[投影设计的执行目录](<design-projections.md#执行目录>)。
+- 文件路径的目标消费规则见[文件路径](<design-paths.md>)：普通相对引用用创建目录，工具目标 / 终端目录用执行时记录值，工具行与产物各按自己的回退判据，文件内容与存在性由执行世界裁决。2026-10-26 对照官方 `dsh-v0.2.1-alpha.2` 与 `dsh-v0.2.1-rc.3`（后者提交 `1f81c047fc48fa190a683e469daa699857e9afe8`）核验核心路径规则相同；本次只修正设计，不推进发布基准、不宣称扩展已完成对齐。后续实现或推进基准时人工复核 `dsh-util-workspace-path` 的文件地址与媒体 URL、`dsh-client-ui-tool` 的 `recordedAbsolutePath` / `toolRowModel` / `terminalCardModel`、`dsh-client-ui-deliverables` 的 `mutationResultPath` / `producedFileMentions` / `handleChangesOpen`、`dsh-workspace-changes` 的 `durablePathOf` 与 recorder 根，以及工作区文件 API 和 `/api/file` 的执行世界读取权限。类型快照不能替代这些行为判据。
 - 报告里出现 `⚠ 有 N 个包没取到` 时必须人工确认：缺证据不等于没影响。
 
 ---
