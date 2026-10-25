@@ -1811,12 +1811,21 @@ button.header-title.is-switcher > svg.is-open {
   overflow: hidden;
 }
 
+/* 渐隐层左右各留一条 1px 透明边框：卡片的描边是 `outline`（1px 发丝线，画在盒内侧），
+   而绝对定位的伪元素会盖在 outline 上面——横跨整宽时，最底下 48dp 的左右描边被渐变
+   压暗到看不见，到折展行又突然恢复，交界处就成了「边框消失再冒出来」的缺口。
+   让开的宽度必须等于描边本身（发丝线不随界面倍率走），所以用透明边框加
+   `padding-box` 裁切，不写成裸 px 的 `inset`，也不写成会随倍率放大的设计像素。
+   注意 `background-clip` 必须写在 `background` 简写之后，否则会被简写重置。
+   折展行（`.code-block-expand`）完全不受影响。 */
 .code-block.is-collapsed .code-block-body::after {
   content: "";
   position: absolute;
   inset: auto 0 0 0;
+  border-inline: 1px solid transparent;
   height: calc(48 * var(--dp));
   background: linear-gradient(transparent, var(--editor-bg));
+  background-clip: padding-box;
   pointer-events: none;
 }
 

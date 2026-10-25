@@ -1079,6 +1079,28 @@ console.log("styles: 工具行 IN/OUT + 改动统计 + 可点路径 ✓");
 }
 console.log("styles: 代码块自动换行（官方 pre-wrap） ✓");
 
+// ---------- 16b. 收起态的渐隐层不能吃掉卡片描边 ----------
+//
+// 卡片描边是 1px `outline`（画在盒内侧），而渐隐层是绝对定位的后代，会盖在 outline
+// 上面。渐隐层横跨整宽时，最底下 48dp 的左右描边被渐变抹掉、到折展行又突然恢复，
+// 交界处出现一截缺口。让开的宽度必须等于描边这条发丝线本身，所以是「透明内联边框 +
+// `padding-box` 裁切」：写成裸 px 的 `inset` 会违反尺度约定，写成设计像素又会在
+// 倍率 ≠ 1 时让开得比描边宽或窄。
+{
+  const fade = rule(".code-block.is-collapsed .code-block-body::after");
+  assert.match(
+    fade,
+    /border-inline:\s*1px solid transparent/,
+    "收起态渐隐层要用 1px 透明内联边框让开左右描边，否则卡片边框在交界处会断",
+  );
+  assert.match(fade, /background-clip:\s*padding-box/, "渐隐层的渐变得裁到 padding box，才不盖住那两条透明边框");
+  assert.ok(
+    fade.indexOf("background-clip") > fade.indexOf("background:"),
+    "`background-clip` 必须写在 `background` 简写之后——简写会把它重置回 border-box",
+  );
+}
+console.log("styles: 收起态渐隐不吃卡片描边 ✓");
+
 // ---------- 17. 待处理的审批 / 提问卡接管输入区 ----------
 //
 // 官方把两者注册进 `conversation.composer` 槽（`select: ({pendingInteraction}) => …`），
