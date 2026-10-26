@@ -104,6 +104,15 @@ compaction-image-offload 包里声明，契约快照里那份 `SessionEventMap` 
 
 本扩展当前对齐：DSH `0.2.1-rc.3`（rc 渠道；2026-10-26 核对基准之后的 `0.2.1-alpha.3` 至 `0.2.1-rc.3` 六个版本：与基准求差的 P0 均为 0，变化只有新增（P1）与无关变化（P2）；`@deepseek-ai/dsh-agent-presets` 已被 `dsh-agent-preset-registry` 取代、旧包不再发布，缺包告警已人工确认；按「判定 → 动作 → 发布去向」不跟进 P1，未改代码、未发版）<!-- dsh-compat:baseline -->
 
+### 暂缓待办：连接层 WebSocket 载体适配（P1）
+
+**登记日 2026-10-26；不涉及旧版分支代码，因此不进「兼容层登记」，也没有移除期限。**
+
+- **现状（不是缺口）**：本扩展的一元 RPC 走 HTTP POST，事件与回复流走官方 `/api/remote.mux` WebSocket（`src/dsh/client.ts` 自建 `ws` 连接，按 `streamId` 多路复用；`src/dsh/scope.ts` 的 `session/follow` 就是其中一条）。官方把两条载体都写成长期口径——`packages/client/connection/README.zh.md` 记「Gateway 将该 origin 用于 WebSocket，HTTP 传输仍独立选择」——没有任何弃用 HTTP 的表述。
+- **官方新增（0.2.1-rc.3 相对 alpha.2）**：`@deepseek-ai/dsh-client-connection` 新类型 `ConnectionWebSocket`、`ConnectionWebSocketEventMap`、`ConnectionWebSocketFactory`、`ConnectionAdmission`、`ConnectionInteractions`、`PeerOptions`（P1）；`HostConnectionHandle` 增加 `browserPeer` / `createPeer` / `admitConnection`，`ClientTransportHooks` 增加 `createWebSocket`，`ConnectionHandle` 增加 `interactions` / `openWebSocket`，`ConnectionFetchHandler` 与 `ConnectionInstallOptions` 相应增加 `peer` / `interactions`（P2）。它们把 peer、准入与交互作用域统一到两条载体之上，并允许非页面载体注入自己的 WebSocket 工厂。
+- **为什么搁置**：这是官方浏览器壳／桌面壳的连接层实现面，本扩展的连接实现独立（`src/dsh/client.ts`）；按「有 P1、无 P0 → 可跟进，不跟进也推进基准」的判定，不跟进不会崩，当前也没有需要这些抽象才能做的界面能力。
+- **重新评估的时机**：官方把一元调用或事件分发迁到这些抽象，或本扩展需要 `interactions` / `admitConnection` 语义时。届时按「判定 → 动作 → 发布去向」重新核对，结论仍以 `dsh:check` 报告与官方源码为准。
+
 ---
 
 ## 五、兼容层登记
