@@ -1,10 +1,11 @@
 /**
- * vscode API 的离线 stub：只给 `subagentSwitch.test.ts` 用——那条测试要驱动**真的**
- * `ChatController`（它 `import * as vscode from "vscode"`，离线起不了实例）。
+ * vscode API 的离线 stub：给需要驱动**真的**宿主模块的测试用（`ChatController` 等
+ * `import * as vscode from "vscode"`，离线起不了实例）。
  *
  * esbuild.scripts.mjs 用 `alias` 把裸说明符 `vscode` 指到本文件：不 import vscode
- * 的测试条目完全不受影响，仍然打真包。这里只覆盖该场景会碰到的面（构造、订阅、
- * 配置读取、连接快照），没覆盖到的调用会在测试里以 TypeError 暴露，按需补。
+ * 的测试条目完全不受影响，仍然打真包。这里要覆盖到**导入期就会读**的面（枚举、
+ * 错误构造器、事件发射器），否则缺项只会得到 `undefined`，等到某个场景真走到才炸；
+ * 其余调用按场景需要补。
  */
 
 class DisposableLike {
@@ -107,6 +108,13 @@ export const Uri = Object.assign(
     file: (v: string) => ({ fsPath: v, scheme: "file" }),
     parse: (v: string) => ({ fsPath: v }),
     joinPath: (...parts: { fsPath: string }[]) => parts[0],
+    // `Uri.from({scheme, path, query})`：自定义 scheme 的展示 URI 用它构造
+    from: (parts: { scheme: string; path?: string; query?: string }) => ({
+      fsPath: parts.path ?? "",
+      scheme: parts.scheme,
+      path: parts.path ?? "",
+      query: parts.query ?? "",
+    }),
   },
 );
 export function Position(line: number, character: number) {
@@ -116,6 +124,54 @@ export function Position(line: number, character: number) {
 export function Range(start: unknown, end: unknown) {
   this.start = start;
   this.end = end;
+}
+/**
+ * 只读资源注册用到的几样 VS Code 面：枚举、错误构造器与事件发射器。
+ *
+ * 离线测试不跑真实编辑器，但被绑进测试包的宿主模块会在**导入期**读这些值；
+ * 缺了它们只会得到 `undefined`，等到某个场景真的走到 provider 才炸，而且报错
+ * 与实现缺陷混在一起。这里给出与官方同形的行为，测试仍按自己的替身断言。
+ */
+export const FileType = { Unknown: 0, File: 1, Directory: 2, SymbolicLink: 64 };
+export const FileChangeType = { Changed: 1, Created: 2, Deleted: 3 };
+
+export class FileSystemError extends Error {
+  constructor(
+    message: string,
+    readonly code: string,
+  ) {
+    super(message);
+    this.name = "FileSystemError";
+  }
+  static FileNotFound(uri?: { fsPath?: string }) {
+    return new FileSystemError(`File not found: ${uri?.fsPath ?? ""}`, "FileNotFound");
+  }
+  static FileNotADirectory(uri?: { fsPath?: string }) {
+    return new FileSystemError(`File is not a directory: ${uri?.fsPath ?? ""}`, "FileNotADirectory");
+  }
+  static FileIsADirectory(uri?: { fsPath?: string }) {
+    return new FileSystemError(`File is a directory: ${uri?.fsPath ?? ""}`, "FileIsADirectory");
+  }
+  static NoPermissions(uri?: { fsPath?: string }) {
+    return new FileSystemError(`No permissions: ${uri?.fsPath ?? ""}`, "NoPermissions");
+  }
+  static Unavailable(message?: string) {
+    return new FileSystemError(message ?? "Unavailable", "Unavailable");
+  }
+}
+
+export class EventEmitter<T> {
+  private readonly listeners = new Set<(value: T) => void>();
+  readonly event = (listener: (value: T) => void) => {
+    this.listeners.add(listener);
+    return new DisposableLike(() => this.listeners.delete(listener));
+  };
+  fire(value: T): void {
+    for (const listener of [...this.listeners]) listener(value);
+  }
+  dispose(): void {
+    this.listeners.clear();
+  }
 }
 /**
  * `executeCommand` 的**全部**调用记录（按调用顺序）。
