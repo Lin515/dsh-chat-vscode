@@ -58,7 +58,7 @@ import { AttachmentOpenIndex, attachmentTempRoot, materializeAttachment, parseBa
 import { readAttachmentTarget, readOriginalTarget, writeAttachmentTarget } from "./attachmentOpenStore";
 import { saveChatImage } from "./imageFiles";
 import { ConfigChangeRouter } from "./configChanges";
-import { fileChangeKind, isNotFoundError, resolveChipPath, splitPathLineSuffix, type FileExistence } from "./fileChange";
+import { fileChangeKind, isNotFoundError, resolveChipPath, sessionCreationCwd, splitPathLineSuffix, type FileExistence } from "./fileChange";
 import { missingDirectoryEntries, parentDirectoryEntry } from "./fileRefListing";
 import {
   hostPlatform,
@@ -73,7 +73,7 @@ import {
   HostFileAccess,
   HostFileError,
   describeHostFileError,
-  isExecutionWorldAbsolute,
+  resolveExecutionWorldPath,
   sameExecutionPath,
   type HostFileStat,
 } from "./remoteFiles";
@@ -654,6 +654,17 @@ const AGENT_DIFF_READ_LIMIT = 8 * 1024 * 1024;
  * （约 10–30 个文件）足够，又不会让长会话攒下几百 MB 的 hunk 正文。
  */
 const AGENT_DIFF_CACHE_LIMIT = 32;
+
+/**
+ * 一次打开目标的解析结果：三态不能合并。
+ *
+ * `absent` 只来自 Host 的 `workspace-file/not-found`；`unavailable` 覆盖权限 /
+ * 离线 / 连接关闭 / 形状错误，调用方只能给中性提示。
+ */
+type OpenTarget =
+  | { kind: "present"; stat: HostFileStat; path: string; line?: number }
+  | { kind: "absent" }
+  | { kind: "unavailable"; error: unknown };
 
 /** 服务器 → webview 的会话内容总控。 */
 export class ChatController implements vscode.Disposable {
@@ -4431,6 +4442,8 @@ export class ChatController implements vscode.Disposable {
         this.settleRunningChange(view.id, view.running);
       }
       this.sessions = views;
+      // 权威 cwd 账本刚整份重建：给已建域的适配器补一次创建目录展示值（只补不清）。
+      this.syncScopeSessionCwds();
       this.emitSessionLists();
       // running 的**权威打底**：列表是服务端算的（`SessionSummary.running`），域存在时
       // 按它对齐——官方 `ui-session` 的 `reconcileStatus()` 是同一口径。适配器那一路只从
@@ -6087,7 +6100,17 @@ export class ChatController implements vscode.Disposable {
       void this.loadAttachmentImages(sessionId, refs, done);
     };
     // 文件芯片种类：适配器交路径，宿主问 DSH 执行世界（`workspaceFiles.stat`）。
-    adapter.classifyFiles = (paths) => this.classifyFiles(sessionId, paths);
+    // 这里**捕获建域这一刻的 client / access / generation**：去抖后的迟到回调不能拿
+    // 新连接的 access 去解释旧会话的路径，也不能把旧结论写进新域。
+    const classifyClient = streamClient;
+    const classifyAccess = this.hostFiles;
+    adapter.classifyFiles = (paths) =>
+      this.classifyFiles(sessionId, paths, {
+        access: classifyAccess,
+        isCurrent: () =>
+          classifyAccess !== undefined &&
+          this.followIsCurrent(scope, classifyClient, generation),
+      });
     // 创建目录交给适配器（字段由另一侧新增；本分支用结构类型赋值，合入后自然成立）。
     (adapter as SessionAdapter & { sessionCwd?: string }).sessionCwd = this.cwdOf(scope);
     // 未知事件（内核冒出的新词汇）记进输出通道：用户侧那条通知会进队列（确认之后还能在
@@ -11282,9 +11305,12 @@ export class ChatController implements vscode.Disposable {
    * 也不因本机同名文件存在就改读本机。相对路径原样交给 Host 解析（缺创建目录时
    * 由服务端的 sandbox 根裁决），客户端不拿 VS Code 工作区兜底。
    *
-   * `diff` 表示想看本轮改动：只走 Host 的 `/api/changes.diff` 快照；没有坐标或
-   * 快照不可用时**不再回落本机 git**——本机 git 清单没有经过验证的执行世界映射。
-   * 拿不到改动就打开文件本身（或在明确 absent 时给出可行动提示）。
+   * `diff` 表示想看本轮改动：**先按 Host 清单坐标取快照**，不把「当前文件还能
+   * stat 到」当成历史对比的前提——文件在本轮之后被删掉，删除对比仍然打得开。
+   * 快照不可用或新文件仍在时才回落普通打开。没有坐标时不再查本机 git。
+   *
+   * 当前目标的三态保留到提示处：只有 Host 明确 `workspace-file/not-found` 才能
+   * 说「文件已删除」；权限、离线、连接关闭与形状错误一律是中性不可用。
    *
    * 行号是导航参数，不是资源身份；打开后用文本文档定位，不生成另一个 URI。
    */
@@ -11306,16 +11332,22 @@ export class ChatController implements vscode.Disposable {
         this.notify({
           sessionId: notifySession,
           level: "warn",
-          kind: "chipPathUnresolved",
-          text: "@chipPathUnresolved",
+          kind: "fileAccessUnavailable",
+          text: "@fileAccessUnavailable",
         });
       }
       return;
     }
-    const opened = await this.statOpenTarget(access, sessionId, path, line);
+    // 先试历史快照：坐标为 session + seq + index，是 Host 清单里的唯一身份。
+    // 当前文件读不到只影响「补上下文」，不影响快照本身。
+    if (diff === true && changes) {
+      if (await this.openAgentChanges(sessionId, path, changes)) return;
+      if (this.client !== client || this.hostFiles !== access) return; // 迟到结果属于旧连接
+    }
+    const target = await this.statOpenTarget(access, sessionId, path, line);
     if (this.client !== client || this.hostFiles !== access) return; // 迟到结果属于旧连接
-    if (!opened) {
-      this.log(`[open] 执行世界没有可打开的普通文件：${path}`);
+    if (target.kind === "absent") {
+      this.log(`[open] 执行世界明确没有这个文件：${path}`);
       if (viewId) {
         this.notify({
           sessionId: notifySession,
@@ -11327,25 +11359,25 @@ export class ChatController implements vscode.Disposable {
       }
       return;
     }
+    if (target.kind === "unavailable") {
+      // 读不出来 ≠ 已删除：权限 / 离线 / 未知错误给中性提示，不能宣称内容丢失。
+      this.log(`[open] 暂时读不到执行世界路径 ${path}：${describeHostFileError(target.error)}`);
+      if (viewId) {
+        this.notify({
+          sessionId: notifySession,
+          level: "warn",
+          kind: "fileAccessUnavailable",
+          text: "@fileAccessUnavailable",
+        });
+      }
+      return;
+    }
+    const opened = target;
     const uri = remoteFileUri({
       connectionId: access.connectionId,
       sessionId,
       path: opened.stat.absolutePath,
     });
-    if (diff === true) {
-      // 只认 Host 的本轮快照；没有坐标或 Host 不再提供时打开文件本身。
-      if (
-        changes &&
-        (await this.openAgentChanges(
-          sessionId,
-          opened.path,
-          opened.stat.absolutePath,
-          changes,
-        ))
-      ) {
-        return;
-      }
-    }
     if (isLineNumber(opened.line)) {
       try {
         const document = await vscode.workspace.openTextDocument(uri);
@@ -11369,32 +11401,35 @@ export class ChatController implements vscode.Disposable {
   /**
    * 问 Host 这个打开目标是否存在；字面路径 not-found 时再试「路径:行号」。
    *
-   * 返回 undefined = 明确没有普通文件 / 读不出来。权限、离线与形状错误都不会被
-   * 当成「已删除」；调用方只负责提示打不开，不猜本机同名文件。
+   * **三态**：`present` 才能打开；`absent` 只来自 `workspace-file/not-found`；
+   * 权限、离线、连接关闭与形状错误都是 `unavailable`——它们不是删除证据，调用方
+   * 必须给中性提示。原 `undefined` 把三者压成一档，曾让权限错误被说成文件已删除。
    */
   private async statOpenTarget(
     access: HostFileAccess,
     sessionId: string,
     path: string,
     line: number | undefined,
-  ): Promise<{ stat: HostFileStat; path: string; line?: number } | undefined> {
+  ): Promise<OpenTarget> {
     try {
-      return { stat: await access.stat(sessionId, path), path, ...(line ? { line } : {}) };
+      return { kind: "present", stat: await access.stat(sessionId, path), path, ...(line ? { line } : {}) };
     } catch (error) {
-      if (!(error instanceof HostFileError) || error.reason !== "absent" || isLineNumber(line)) {
+      if (!(error instanceof HostFileError) || error.reason !== "absent") {
         this.log(`[open] 读取执行世界路径失败 ${path}：${describeHostFileError(error)}`);
-        return undefined;
+        return { kind: "unavailable", error };
       }
+      if (isLineNumber(line) || !splitPathLineSuffix(path)) return { kind: "absent" };
     }
     const split = splitPathLineSuffix(path);
-    if (!split) return undefined;
+    if (!split) return { kind: "absent" };
     try {
       const stat = await access.stat(sessionId, split.path);
       this.log(`[open] 「${path}」按文件找不到，按「路径:行号」重试：${split.path}:${split.line}`);
-      return { stat, path: split.path, line: split.line };
+      return { kind: "present", stat, path: split.path, line: split.line };
     } catch (error) {
+      if (error instanceof HostFileError && error.reason === "absent") return { kind: "absent" };
       this.log(`[open] 「${path}」按「路径:行号」重试仍失败：${describeHostFileError(error)}`);
-      return undefined;
+      return { kind: "unavailable", error };
     }
   }
 
@@ -11417,7 +11452,12 @@ export class ChatController implements vscode.Disposable {
     const access = this.hostFiles;
     if (!sessionId || !client || !access) {
       this.log(`[open] 没有可用的会话/连接，放弃用 Host 打开：${path}`);
-      this.notify({ sessionId: notifySession, level: "warn", kind: "openExternalFailed", text: "@openExternalFailed" });
+      this.notify({
+        sessionId: notifySession,
+        level: "warn",
+        kind: "hostOpenUnavailable",
+        text: "@hostOpenUnavailable",
+      });
       return;
     }
     let stat: HostFileStat;
@@ -11425,39 +11465,55 @@ export class ChatController implements vscode.Disposable {
       stat = await access.stat(sessionId, path);
     } catch (error) {
       this.log(`[open] Host 原生打开取目标失败 ${path}：${describeHostFileError(error)}`);
-      this.notify({ sessionId: notifySession, level: "warn", kind: "openExternalFailed", text: "@openExternalFailed" });
+      this.notify({
+        sessionId: notifySession,
+        level: "warn",
+        kind: "hostOpenUnavailable",
+        text: "@hostOpenUnavailable",
+      });
       return;
     }
     if (this.client !== client || this.hostFiles !== access) return;
     if (!isBrowserOpenableFile(stat.absolutePath)) {
       this.log(`[open] 不是可直接用浏览器打开的文件，拒绝 Host 原生打开：${stat.absolutePath}`);
-      this.notify({ sessionId: notifySession, level: "warn", kind: "openExternalFailed", text: "@openExternalFailed" });
+      this.notify({
+        sessionId: notifySession,
+        level: "warn",
+        kind: "hostOpenUnavailable",
+        text: "@hostOpenUnavailable",
+      });
       return;
     }
-    await this.openThroughHost(client, stat.absolutePath, "open");
+    await this.openThroughHost(client, stat.absolutePath, "open", sessionId);
   }
 
   /**
    * 「在资源管理器中展开这个目录」（用户消息里的 `@目录` 引用点开时走这条）。
    *
-   * Host 的 `openWorkspacePath` 只接受 Host 进程能复核的绝对路径。相对目录无法
-   * 先经 `workspaceFiles.stat`（它只服务普通文件）取得绝对路径，因此**明确不猜**
-   * 本机工作区或当前执行目录；绝对输入原样交给 Host 复核，失败明确提示。
+   * Host 的 `openWorkspacePath` 只接受 Host 进程能复核的绝对路径。相对目录按
+   * **会话创建目录**（header.cwd）做纯字符串拼接，得到候选绝对路径后原样交给
+   * Host 复核映射；不使用最新执行目录、扩展进程 cwd 或 VS Code 工作区。缺创建
+   * 目录时无法得到绝对路径，明确报不可定位，不猜本机路径。
    */
   private async revealPath(viewId: string, path: string): Promise<void> {
-    const sessionId = this.viewSessions.get(viewId);
+    const scope = this.scopeOfView(viewId);
+    const sessionId = scope?.sessionId;
     const client = this.client;
     if (!sessionId || !client) {
       this.log(`[reveal] 没有可用的会话/连接，放弃展开：${path}`);
       this.notify({ sessionId, level: "warn", kind: "chipPathUnresolved", text: "@chipPathUnresolved" });
       return;
     }
-    if (!isExecutionWorldAbsolute(path)) {
-      this.log(`[reveal] 相对目录没有 Host 绝对目标，客户端不猜本机路径：${path}`);
+    const absolute = resolveExecutionWorldPath(
+      scope ? this.cwdOf(scope) : undefined,
+      path,
+    );
+    if (!absolute) {
+      this.log(`[reveal] 相对目录缺会话创建目录，无法得到绝对目标：${path}`);
       this.notify({ sessionId, level: "warn", kind: "chipPathUnresolved", text: "@chipPathUnresolved" });
       return;
     }
-    await this.openThroughHost(client, path, "reveal");
+    await this.openThroughHost(client, absolute, "reveal", sessionId);
   }
 
   /**
@@ -11465,19 +11521,26 @@ export class ChatController implements vscode.Disposable {
    *
    * `canOpenWorkspacePath()` 只决定「这个 Host 有没有桌面能力」；真正的路径映射由
    * `openWorkspacePath` 在 Host 内复核。客户端不按 loopback、本机同名文件或
-   * `Uri.file` 推断它能在本机打开。
+   * `Uri.file` 推断它能在本机打开。失败提示必须带**发起这一刻**的会话归属：
+   * 用户切走后不能把失败画进新会话。
    */
   private async openThroughHost(
     client: DshClient,
     absolutePath: string,
     action: "open" | "reveal",
+    sessionId: string | undefined,
   ): Promise<void> {
     try {
       const canOpen = await client.request<boolean>("session/canOpenWorkspacePath", {});
       if (this.client !== client) return;
       if (canOpen !== true) {
         this.log(`[open] Host 没有原生打开能力，拒绝本机代打开：${absolutePath}`);
-        this.notify({ level: "warn", kind: "openExternalFailed", text: "@openExternalFailed" });
+        this.notify({
+          sessionId,
+          level: "warn",
+          kind: "hostOpenUnavailable",
+          text: "@hostOpenUnavailable",
+        });
         return;
       }
       await client.request("session/openWorkspacePath", {
@@ -11486,7 +11549,12 @@ export class ChatController implements vscode.Disposable {
       this.log(`[open] 已请求 Host ${action}：${absolutePath}`);
     } catch (error) {
       this.log(`[open] Host ${action} 失败 ${absolutePath}：${this.describeError(error)}`);
-      this.notify({ level: "warn", kind: "openExternalFailed", text: "@openExternalFailed" });
+      this.notify({
+        sessionId,
+        level: "warn",
+        kind: "hostOpenUnavailable",
+        text: "@hostOpenUnavailable",
+      });
     }
   }
 
@@ -11799,19 +11867,23 @@ export class ChatController implements vscode.Disposable {
    * 直接拼整侧；两边都在时用**同一执行世界**里按 `diff.path` 读到的当前文本验证
    * hunk 后回填；对不上（文件在本轮之后又变过）就退化成带省略标记的片段。
    *
+   * **身份是坐标，不是当前 stat**：`sessionId + seq + index` 是 Host 清单里的唯一
+   * 目标，快照的可用性不依赖当前文件还在不在。当前文件读不到（已删除、权限、
+   * 离线）时仍用 hunk 片段展示历史；绝不从本机同名文件回填。
+   *
    * **不再退回本机 git**：本机 git 清单没有经过验证的执行世界映射。拿不到快照
-   * （旧会话 / Host 重启 / 二进制 / 过大 / 当前文本不可用）时返回 `false`，由调用方
+   * （旧会话 / Host 重启 / 二进制 / 过大 / 形状不合规）时返回 `false`，由调用方
    * 打开普通虚拟资源。
    *
-   * `targetPath` / `targetAbsolute` 是点击目标（原样拼写 + Host 绝对路径）；路由
-   * 回来的 `diff.path` 必须能证明是同一目标（当前文本的 `absolutePath` 优先，
-   * 读不到时只做不猜的字符串比对），否则宁可不开。
+   * `targetAbsolute` 是可选的防错信息（点击目标已经过 Host stat 时的绝对路径）；
+   * 有它且能读到当前文本时才要求路径一致。没有它时不能因为「路径拼写不同」或
+   * 「当前读不到」就否掉坐标对应的历史快照。
    */
   private async openAgentChanges(
     sessionId: string,
     targetPath: string,
-    targetAbsolute: string,
     coordinates: ChangeCoordinates,
+    targetAbsolute?: string,
   ): Promise<boolean> {
     const client = this.client;
     const access = this.hostFiles;
@@ -11824,12 +11896,12 @@ export class ChatController implements vscode.Disposable {
     if (!diff || this.client !== client || this.hostFiles !== access) {
       this.log(
         `[open] 没有可用的本轮改动对比（旧会话 / 已重启 / 形状不合规 / 取数失败），打开文件本身：` +
-          `${targetAbsolute} seq=${coordinates.seq} index=${coordinates.index}（取数 ${fetchedMs}ms）`,
+          `${targetPath} seq=${coordinates.seq} index=${coordinates.index}（取数 ${fetchedMs}ms）`,
       );
       return false;
     }
     if (diff.kind !== "text") {
-      this.log(`[open] 本轮改动对比不可铺成文本（${diff.kind}），打开文件本身：${targetAbsolute}`);
+      this.log(`[open] 本轮改动对比不可铺成文本（${diff.kind}），打开文件本身：${targetPath}`);
       return false;
     }
     let current: string | undefined;
@@ -11843,10 +11915,13 @@ export class ChatController implements vscode.Disposable {
       this.log(`[open] 本轮对比的当前文本不可用 ${diff.path}：${describeHostFileError(error)}`);
     }
     if (this.client !== client || this.hostFiles !== access) return false;
-    const matched = currentAbsolute !== undefined
-      ? sameExecutionPath(currentAbsolute, targetAbsolute)
-      : sameExecutionPath(diff.path, targetPath) || sameExecutionPath(diff.path, targetAbsolute);
-    if (!matched) {
+    // 只有「当前文本读到了、而且点击目标有 Host 绝对路径」时才做防错比对；
+    // 否则身份完全由坐标承担，不能把 stat 当成历史快照的前提。
+    if (
+      targetAbsolute !== undefined &&
+      currentAbsolute !== undefined &&
+      !sameExecutionPath(currentAbsolute, targetAbsolute)
+    ) {
       this.log(
         `[open] 本轮改动对比的路径与点击目标不一致，打开文件本身：` +
           `${diff.path} ≠ ${targetAbsolute}（seq=${coordinates.seq} index=${coordinates.index}）`,
@@ -11881,9 +11956,31 @@ export class ChatController implements vscode.Disposable {
 
   /**
    * 会话的工作目录（仅供适配器展示与创建目录语义使用；**不是**芯片路径的解析基准）。
+   *
+   * 优先读**权威 cwd 账本** `sessionCwds`：它在 `refreshSessions` 里从 `session/list`
+   * 原始行整份重建（可见性过滤之前），子代理 / 被折叠的会话也有创建目录。`this.sessions`
+   * 是可见列表，过滤后可能没有这一行；只有账本还没有时才退它，绝不拿执行目录
+   * （`workingDirectory`）或窗口 cwd 兜底。
    */
   private cwdOf(scope: SessionScope): string | undefined {
-    return this.sessions.find((s) => s.id === scope.sessionId)?.cwd;
+    return sessionCreationCwd(this.sessionCwds, this.sessions, scope.sessionId);
+  }
+
+  /**
+   * 权威列表刷新后补齐已建域适配器的创建目录展示值。
+   *
+   * `openScopeFollow` 建适配器时账本可能还没到（窗口先绑会话、`session/list` 后到）；
+   * 这里只补适配器的展示上下文，不改会话 header，也不触发执行目录变化。已有值不回退。
+   */
+  private syncScopeSessionCwds(): void {
+    for (const scope of this.scopes.values()) {
+      const adapter = scope.adapter as
+        | (SessionAdapter & { sessionCwd?: string })
+        | undefined;
+      if (!adapter) continue;
+      const cwd = this.cwdOf(scope);
+      if (cwd !== undefined) adapter.sessionCwd = cwd;
+    }
   }
 
   /**
@@ -11898,16 +11995,21 @@ export class ChatController implements vscode.Disposable {
   private async classifyFiles(
     sessionId: string,
     paths: readonly string[],
+    context: {
+      /** 建域时捕获的访问实例；空 = 当时还没有连接。 */
+      readonly access: HostFileAccess | undefined;
+      /** 仍是同一次开流、同一条连接吗（迟到结果直接丢）。 */
+      readonly isCurrent: () => boolean;
+    },
   ): Promise<Record<string, FileChangeKind>> {
-    const client = this.client;
-    const access = this.hostFiles;
-    if (!client || !access) return {};
+    const access = context.access;
+    if (!access || access.isClosed || !context.isCurrent()) return {};
     const entries = await Promise.all(
       paths.map(async (path): Promise<[string, FileChangeKind] | undefined> => {
         try {
           const existence: FileExistence = await access.classify(sessionId, path);
-          // 期间换了连接：旧连接的存在性结论不能写进新域。
-          if (this.client !== client || this.hostFiles !== access) return undefined;
+          // 期间换了连接 / 重开了域：旧连接的存在性结论不能写进新域。
+          if (access.isClosed || !context.isCurrent()) return undefined;
           const kind = fileChangeKind(existence);
           return kind ? [path, kind] : undefined;
         } catch {

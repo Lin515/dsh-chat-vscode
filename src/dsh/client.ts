@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import WebSocket from "ws";
+import { decodeBinaryRpcResponse } from "./binaryRpc";
 import {
   METHODS,
   STREAMS,
@@ -323,6 +324,18 @@ export class DshClient {
         body: JSON.stringify(message),
         signal: cancel,
       });
+      // 二进制一元 RPC（`workspaceFiles/readBytes`）的响应体是 multipart，
+      // `data` 等字段由附件回填（见 `binaryRpc.ts` 的信封校验）。其余方法仍是
+      // JSON；不能先按 JSON 读，那会把字节响应直接读坏。
+      const mediaType = res.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase();
+      if (res.ok && mediaType === "multipart/form-data") {
+        const binary = await decodeBinaryRpcResponse(await res.formData());
+        if (binary.rpcId !== message.rpcId) {
+          throw new Error(`${method} 的二进制响应 rpcId 不匹配`);
+        }
+        const body: ServerResponse = { type: "server-response", rpcId: binary.rpcId, result: { ok: true, value: binary.value } };
+        return { status: res.status, rpcId: message.rpcId, body };
+      }
       const body = res.ok ? ((await res.json()) as ServerResponse) : undefined;
       return { status: res.status, rpcId: message.rpcId, body };
     };

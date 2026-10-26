@@ -124,6 +124,10 @@ export interface HostFileBytes {
   readonly stat: HostFileStat;
   readonly data: Uint8Array;
   readonly mediaType?: string;
+  /** 0 起的首字节；`readBytes` 的字节窗口回填。 */
+  readonly offset?: number;
+  /** 窗口是否含文件最后一个字节。 */
+  readonly eof?: boolean;
 }
 
 /** 文本读取的预算；都是**本客户端的传输预算**，不是 provider 的读权限。 */
@@ -132,15 +136,32 @@ export interface HostTextOptions {
   readonly maxBytes?: number;
 }
 
+/** 字节窗口；官方 `WorkspaceFileBytes.options.range`（0 起算）。 */
+export interface HostByteRange {
+  readonly offset?: number;
+  readonly length?: number;
+}
+
 /** 字节读取的预算；不给就完全由 Host 的服务端限额裁决。 */
 export interface HostBytesOptions {
   /** 已知完整文件大小时，超过此值的请求不发。 */
   readonly maxBytes?: number;
+  /** 字节窗口；缺省读完整文件（上限由 provider / 服务端裁决）。 */
+  readonly range?: HostByteRange;
+  /**
+   * 相对 `path` 从另一个文件所在目录解析（官方 `baseFile` 契约）。
+   *
+   * 目前没有界面消费它，但端口保留：普通文件字节不再走 `/api/file`，这条能力
+   * 只能由二进制 RPC 承载。
+   */
+  readonly baseFile?: string;
 }
 
 const DEFAULT_MAX_TEXT_BYTES = 8 * 1024 * 1024;
 const PAGE_TIMEOUT_MS = 60_000;
 const BYTES_TIMEOUT_MS = 60_000;
+/** 完整字节读取的服务端上限是 32 MiB，给握手与传输留足时间。 */
+const BINARY_RPC_TIMEOUT_MS = 120_000;
 
 /** 安全整数且非负。 */
 function isCount(value: unknown): value is number {
@@ -161,6 +182,29 @@ export function isExecutionWorldAbsolute(path: string): boolean {
   if (/^[A-Za-z]:[\\/]/u.test(path)) return true;
   if (/^\\\\[^\\]/u.test(path)) return true;
   return false;
+}
+
+/**
+ * 把会话创建目录与相对拼写拼成一个**执行世界绝对路径**（官方
+ * `resolveWorkspacePath` 的纯字符串口径）。
+ *
+ * 只做拼接：绝对输入原样返回，相对输入沿用创建目录的分隔符风格，不消 `.` /
+ * `..`、不做本机 realpath、不按扩展宿主平台改写。缺创建目录时相对输入返回
+ * `undefined`——调用方不能声称知道它的绝对位置。这个结果还要交 Host 复核映射，
+ * 客户端不拿它当读取坐标。
+ */
+export function resolveExecutionWorldPath(
+  cwd: string | undefined,
+  path: string,
+): string | undefined {
+  if (!path) return undefined;
+  if (isExecutionWorldAbsolute(path)) return path;
+  if (!cwd) return undefined;
+  const windows = /^[A-Za-z]:[\\/]/u.test(cwd) || /^\\\\/u.test(cwd);
+  const separator = windows && cwd.includes("\\") ? "\\" : "/";
+  const base = cwd.replace(/[/\\]+$/u, "");
+  const relative = path.replace(/^[/\\]+/u, "");
+  return `${base}${separator}${relative}`;
 }
 
 /** 该路径是否为 UNC（媒体路由明确拒绝）。 */
@@ -285,6 +329,83 @@ function pageFromWire(
     lines: record.lines,
     eof: record.eof,
   };
+}
+
+/** 一条完整字节结果：stat + 0 起算的窗口与原始字节。 */
+function bytesFromWire(value: unknown, path: string): HostFileBytes {
+  const stat = statFromWire(value, path);
+  const record = value as { offset?: unknown; data?: unknown; eof?: unknown };
+  if (!isCount(record.offset)) {
+    throw new HostFileError("unknown", `workspaceFiles.readBytes returned an invalid offset for "${path}"`);
+  }
+  if (typeof record.eof !== "boolean") {
+    throw new HostFileError("unknown", `workspaceFiles.readBytes returned an invalid eof for "${path}"`);
+  }
+  if (!(record.data instanceof Uint8Array)) {
+    throw new HostFileError("unknown", `workspaceFiles.readBytes returned no bytes for "${path}"`);
+  }
+  return {
+    stat,
+    data: record.data,
+    offset: record.offset,
+    eof: record.eof,
+  };
+}
+
+/**
+ * 字节窗口自洽：客户端不能把「截片」冒充完整文件，也不能接受错位的窗口。
+ *
+ * 无 `range` 时要求 offset 0、eof true，且（Host 报了大小时）长度等于完整大小；
+ * 有 `range` 时要求回显的 offset 与请求一致、数据不超过请求 length，并核对
+ * offset + 数据长度与 `stat.bytes` 的 eof 关系。
+ */
+function assertByteWindow(
+  bytes: HostFileBytes,
+  range: HostByteRange | undefined,
+  path: string,
+): void {
+  const offset = bytes.offset;
+  const eof = bytes.eof;
+  if (offset === undefined || eof === undefined) {
+    throw new HostFileError("unknown", `workspaceFiles.readBytes returned no window for "${path}"`);
+  }
+  const expectedOffset = range?.offset ?? 0;
+  if (offset !== expectedOffset) {
+    throw new HostFileError(
+      "unknown",
+      `workspaceFiles.readBytes returned offset ${offset} for a request at ${expectedOffset} for "${path}"`,
+    );
+  }
+  if (bytes.data.byteLength === 0 && !eof) {
+    throw new HostFileError("unknown", `workspaceFiles.readBytes returned an empty window before EOF for "${path}"`);
+  }
+  if (!range) {
+    if (offset !== 0 || !eof) {
+      throw new HostFileError("unknown", `workspaceFiles.readBytes returned a partial file for "${path}"`);
+    }
+    if (bytes.stat.bytes !== undefined && bytes.data.byteLength !== bytes.stat.bytes) {
+      throw new HostFileError("unknown", `workspaceFiles.readBytes returned a truncated file for "${path}"`);
+    }
+    return;
+  }
+  if (range.length !== undefined && bytes.data.byteLength > range.length) {
+    throw new HostFileError("unknown", `workspaceFiles.readBytes returned more bytes than requested for "${path}"`);
+  }
+  const end = offset + bytes.data.byteLength;
+  if (bytes.stat.bytes !== undefined) {
+    if (end > bytes.stat.bytes) {
+      throw new HostFileError("unknown", `workspaceFiles.readBytes returned a window past EOF for "${path}"`);
+    }
+    if (eof && end !== bytes.stat.bytes) {
+      throw new HostFileError("unknown", `workspaceFiles.readBytes claimed EOF before the file ended for "${path}"`);
+    }
+    if (!eof && end >= bytes.stat.bytes) {
+      throw new HostFileError("unknown", `workspaceFiles.readBytes missed EOF at the end of the file for "${path}"`);
+    }
+  }
+  if (range.length !== undefined && bytes.data.byteLength < range.length && !eof) {
+    throw new HostFileError("unknown", `workspaceFiles.readBytes returned a short window without EOF for "${path}"`);
+  }
 }
 
 /** 服务端错误码 → 本模块的失败原因；只有 not-found 是 absent。 */
@@ -434,10 +555,15 @@ export class HostFileAccess {
   }
 
   /**
-   * 读取完整文件或原始字节。
+   * 读取完整文件或原始字节（**普通文件**：`workspaceFiles/readBytes` 二进制 RPC）。
    *
-   * 先由 `workspaceFiles.stat` 取得 Host 认可的绝对路径与版本，再用已认证的
-   * `GET /api/file` 取字节；不把相对路径或原始拼写直接塞进媒体路由。
+   * 这条通道承载任意普通文件，不经过媒体路由的 MIME / 图片限额；`data` 是原始
+   * 字节，`stat` 与窗口字段逐项校验。相对路径由 Host 按会话根解析；`baseFile`
+   * 保留官方契约（相对 `path` 从该文件所在目录解释）。
+   *
+   * 需要 `/api/file` 的消费方（正文图片、媒体预览）走 {@link readBytesAt}：那条
+   * 路由的部署限额由 Host 裁决，不能拿这个 RPC 冒充，也不能反过来把媒体路由当
+   * 通用文件系统。
    */
   async readBytes(
     sessionId: string,
@@ -445,18 +571,47 @@ export class HostFileAccess {
     options: HostBytesOptions = {},
   ): Promise<HostFileBytes> {
     this.assertOpen();
-    const stat = await this.stat(sessionId, path);
-    if (options.maxBytes !== undefined && stat.bytes !== undefined && stat.bytes > options.maxBytes) {
-      throw new HostFileError("too-large", `"${path}" exceeds the client byte budget`);
+    const range = options.range;
+    if (range) {
+      if (range.offset !== undefined && !isCount(range.offset)) {
+        throw new HostFileError("unknown", `invalid byte range offset for "${path}"`);
+      }
+      if (range.length !== undefined && (!isCount(range.length) || range.length === 0)) {
+        throw new HostFileError("unknown", `invalid byte range length for "${path}"`);
+      }
     }
-    return this.readBytesAt(stat, path, options);
+    const wire: Record<string, unknown> = {};
+    if (range) {
+      const wireRange: Record<string, number> = {};
+      if (range.offset !== undefined) wireRange.offset = range.offset;
+      if (range.length !== undefined) wireRange.length = range.length;
+      wire.range = wireRange;
+    }
+    if (options.baseFile !== undefined) wire.baseFile = options.baseFile;
+    try {
+      const raw = await this.transport.request<unknown>(
+        "workspaceFiles/readBytes",
+        { workspaceFileScopeId: sessionId, path, options: wire },
+        BINARY_RPC_TIMEOUT_MS,
+      );
+      this.assertOpen();
+      const bytes = bytesFromWire(raw, path);
+      assertByteWindow(bytes, range, path);
+      if (options.maxBytes !== undefined && bytes.data.byteLength > options.maxBytes) {
+        throw new HostFileError("too-large", `"${path}" exceeds the client byte budget`);
+      }
+      return bytes;
+    } catch (error) {
+      throw errorFromTransport(error);
+    }
   }
 
   /**
-   * 已知 stat 时直接取字节（媒体批量读取用，避免第二次 stat）。
+   * 从**已知 stat** 取原始字节（媒体走已认证的 `GET /api/file`）。
    *
    * `stat.absolutePath` 必须来自本连接的 `workspaceFiles.stat`；调用方不得用本机
-   * 路径拼它。
+   * 路径拼它。媒体路由的部署限额（官方图片字节上限）由 Host 裁决，客户端不另造
+   * 图片字节门；普通文件不经过这里，走 {@link readBytes} 的二进制 RPC。
    */
   async readBytesAt(stat: HostFileStat, path: string, options: HostBytesOptions = {}): Promise<HostFileBytes> {
     this.assertOpen();
@@ -485,6 +640,8 @@ export class HostFileAccess {
     return {
       stat,
       data: response.bytes,
+      offset: 0,
+      eof: true,
       ...(mediaTypeOf(response.mediaType) === undefined ? {} : { mediaType: mediaTypeOf(response.mediaType) }),
     };
   }

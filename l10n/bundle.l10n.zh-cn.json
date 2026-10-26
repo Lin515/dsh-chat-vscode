@@ -20,6 +20,8 @@
   "No editor is open; the code was copied to the clipboard.": "没有打开的编辑器，代码已复制到剪贴板。",
   "Agent changes: {0} (turn {1})": "Agent 改动：{0}（第 {1} 轮）",
   "Agent changes: {0} (turn {1}, excerpts)": "Agent 改动：{0}（第 {1} 轮，片段）",
+  "The DSH connection that owns this file has closed.": "拥有这个文件的 DSH 连接已关闭。",
+  "The DSH connection that owns this file is no longer available.": "拥有这个文件的 DSH 连接已不可用。",
   "… {0} unchanged lines omitted …": "… 省略 {0} 行未改动内容 …",
   "Add attachments": "添加附件",
   "Add folder reference": "添加目录引用",

@@ -36,11 +36,13 @@
 - [changes.ts](<changes.ts>) — workspace/changes 形状校验。
 - [changesDiff.ts](<changesDiff.ts>) — 本轮改动的逐文件对比（hunk 校验与两侧文本拼装）。
 - [agentDiffDocuments.ts](<agentDiffDocuments.ts>) — 「Agent 改动」对比窗口的只读虚拟文档。
-- [fileChange.ts](<fileChange.ts>) — 执行世界文件存在性分类（只有 Host not-found 才算已删除）与本机附件 source 的路径解析；不查本机 git。
-- [remoteFiles.ts](<remoteFiles.ts>) — 执行世界文件访问的唯一边界：`workspaceFiles.stat` / 分页 `read`、认证 `/api/file` 字节、连接身份、错误三态与有界 change feed。
+- [fileChange.ts](<fileChange.ts>) — 执行世界文件存在性分类（只有 Host not-found 才算已删除）、本机附件 source 的路径解析，以及创建目录「权威账本优先」的纯判据；不查本机 git。
+- [binaryRpc.ts](<binaryRpc.ts>) — Connection 二进制一元 RPC 的 multipart 响应解码（metadata 信封 + 字节附件回填，坏形状整份拒绝）。
+- [remoteFiles.ts](<remoteFiles.ts>) — 执行世界文件访问的唯一边界：`workspaceFiles.stat` / 分页 `read` / 普通文件二进制 `readBytes`、媒体认证 `/api/file`、连接身份、错误三态与有界 change feed。
 - [remoteFileAddress.ts](<remoteFileAddress.ts>) — 资源 URI 的「连接 + 会话 + 路径」编码与 basename（纯字符串）。
-- [remoteFileSystem.ts](<remoteFileSystem.ts>) — VS Code 只读虚拟文件系统 provider：按原连接 id 解析、快照内容、change feed + 有界 restat。
-- [localImages.ts](<localImages.ts>) — 正文图片经执行世界读取成 data URL；不设创建目录/扩展名授权门，UNC 与控制字符在客户端拒绝。
+- [remoteFileSync.ts](<remoteFileSync.ts>) — 资源观察核心（不依赖 vscode）：版本→稳定递增 mtime、同 URI 引用计数、删除后保留观察并可恢复、单飞轮询与有界表。
+- [remoteFileSystem.ts](<remoteFileSystem.ts>) — VS Code 只读虚拟文件系统 provider：按原连接 id 解析、普通文件走二进制 RPC、change feed + 有界 restat。
+- [localImages.ts](<localImages.ts>) — 正文图片经执行世界读取成 data URL；全部引用都处理（只限并发），不设创建目录/扩展名/本地字节授权门，UNC 与控制字符在客户端拒绝。
 
 ## 附件、引用与图片
 

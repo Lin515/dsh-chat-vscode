@@ -4,10 +4,13 @@
  * 这里没有本机 fs：fake transport 可以返回「与扩展宿主同形同名的另一份内容」，
  * 断言读到的始终是 Host 的字节；相对路径原样交给 Host（缺 cwd 也可以），绝对
  * 根外路径不由客户端按目录拒绝；UNC / 控制字符在客户端就拒绝。
+ *
+ * 张数不截断（全部处理，只限并发），单图大小由 Host 媒体路由裁决：客户端不再有
+ * 16 MiB / 24 张这类本地门。
  */
 import assert from "node:assert";
 import {
-  LOCAL_IMAGE_MAX_BYTES,
+  LOCAL_IMAGE_CONCURRENCY,
   readHostImages,
 } from "../src/dsh/localImages";
 import { HostFileAccess, type HostFileBytesResponse, type HostFileTransport } from "../src/dsh/remoteFiles";
@@ -15,6 +18,8 @@ import { HostFileAccess, type HostFileBytesResponse, type HostFileTransport } fr
 class Fake implements HostFileTransport {
   readonly calls: { method: string; args: Record<string, unknown> }[] = [];
   readonly bytesCalls: string[] = [];
+  activeBytes = 0;
+  maxActiveBytes = 0;
   constructor(
     private readonly files: Record<string, { bytes: Uint8Array; absolutePath?: string; mediaType?: string; size?: number }>,
     private readonly fail?: (path: string) => { code: string } | undefined,
@@ -36,14 +41,21 @@ class Fake implements HostFileTransport {
 
   async getBytes(path: string): Promise<HostFileBytesResponse | undefined> {
     this.bytesCalls.push(path);
-    const decoded = decodeURIComponent(new URLSearchParams(path.split("?")[1]).get("path") ?? "");
-    const absolute = decoded;
-    for (const file of Object.values(this.files)) {
-      if ((file.absolutePath ?? `/world/${Object.keys(this.files).find((key) => this.files[key] === file)}`) === absolute) {
-        return { bytes: file.bytes, ...(file.mediaType ? { mediaType: file.mediaType } : {}) };
+    this.activeBytes += 1;
+    this.maxActiveBytes = Math.max(this.maxActiveBytes, this.activeBytes);
+    try {
+      // 让出一拍，制造真正交错的机会（并发窗口才有观测意义）。
+      await new Promise((resolve) => setImmediate(resolve));
+      const absolute = decodeURIComponent(new URLSearchParams(path.split("?")[1]).get("path") ?? "");
+      for (const [reference, file] of Object.entries(this.files)) {
+        if ((file.absolutePath ?? `/world/${reference}`) === absolute) {
+          return { bytes: file.bytes, ...(file.mediaType ? { mediaType: file.mediaType } : {}) };
+        }
       }
+      return undefined;
+    } finally {
+      this.activeBytes -= 1;
     }
-    return undefined;
   }
 }
 
@@ -102,21 +114,41 @@ console.log("local-images: UNC / 控制字符拒绝，扩展名不设白名单 �
 }
 console.log("local-images: 权限未知只记失败，不落 data URL ✓");
 
-// ---------- 5. 客户端预算 / 张数上限 ----------
+// ---------- 5. 不截断张数：30 张全部处理，只限并发 ----------
+{
+  const refs = Array.from({ length: 30 }, (_, index) => `shots/${index}.png`);
+  const files: Record<string, { bytes: Uint8Array; mediaType: string }> = {};
+  refs.forEach((reference, index) => {
+    files[reference] = { bytes: new Uint8Array([index + 1]), mediaType: "image/png" };
+  });
+  const transport = new Fake(files);
+  const access = new HostFileAccess(transport);
+  const result = await readHostImages(access, "s1", refs);
+  assert.strictEqual(Object.keys(result.urls).length, 30, "第 25 张及以后不能被丢弃");
+  assert.strictEqual(transport.bytesCalls.length, 30);
+  assert.ok(transport.maxActiveBytes <= LOCAL_IMAGE_CONCURRENCY, "并发不得超过窗口");
+  assert.ok(transport.maxActiveBytes > 1, "并发窗口应真正并行，而不是串行");
+}
+console.log("local-images: 全部引用都读，仅限制并发 ✓");
+
+// ---------- 6. 单图大小由 Host 裁决：stat 报大也不预拒绝 ----------
 {
   const transport = new Fake({
     "huge.png": {
-      bytes: new Uint8Array(LOCAL_IMAGE_MAX_BYTES + 1),
+      // stat 报一个很大的大小，但 /api/file 只回了 1 字节：客户端不再有 16 MiB 门，
+      // 真正的限额在 Host 的媒体路由（超限会是 413）。
+      bytes: new Uint8Array([1]),
+      size: 32 * 1024 * 1024,
       absolutePath: "/world/huge.png",
       mediaType: "image/png",
     },
   });
   const access = new HostFileAccess(transport);
   const result = await readHostImages(access, "s1", ["huge.png"]);
-  assert.deepStrictEqual(result.urls, {});
-  assert.match(result.failures["huge.png"] ?? "", /client transfer budget/u);
-  assert.ok(!transport.bytesCalls.length, "超过客户端预算不发 /api/file");
+  assert.ok(result.urls["huge.png"]?.startsWith("data:image/png;base64,"));
+  assert.deepStrictEqual(result.failures, {});
+  assert.strictEqual(transport.bytesCalls.length, 1, "客户端不按 stat.bytes 预先拒绝");
 }
-console.log("local-images: 单张传输预算生效 ✓");
+console.log("local-images: 单图限额交给 Host 媒体路由 ✓");
 
 console.log("\nlocal-images: all assertions passed");

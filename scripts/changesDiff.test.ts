@@ -212,8 +212,8 @@ console.log("changesDiff: 无 hunk 时显示「没有行差异」，不假装有
   );
   assert.ok(/private async openAgentChanges\(/.test(controller), "要有打开本轮快照对比的入口");
   assert.ok(
-    /changes &&\s*\(await this\.openAgentChanges\(/u.test(controller),
-    "「看改动」要先试本轮快照；没有坐标时打开文件本身（不再回落本机 git）",
+    /diff === true && changes[\s\S]{0,160}?openAgentChanges\(sessionId, path, changes\)/u.test(controller),
+    "「看改动」要先按坐标试本轮快照，不先 stat 当前文件；没有坐标时打开文件本身（不再回落本机 git）",
   );
   assert.ok(
     /await vscode\.commands\.executeCommand\("vscode\.diff"/u.test(controller),
@@ -228,9 +228,9 @@ console.log("changesDiff: 无 hunk 时显示「没有行差异」，不假装有
     "新文件仍遵旧口径：执行世界还在就打开文件，不显示「空 → 全文」的 diff",
   );
   assert.ok(
-    /sameExecutionPath\(currentAbsolute, targetAbsolute\)/u.test(controller) &&
-      /sameExecutionPath\(diff\.path, targetPath\)/u.test(controller),
-    "路由回来的 path 必须能证明是点击目标（当前文本权威绝对路径优先，读不到时只做字符串比对）",
+    /targetAbsolute\?: string/u.test(controller) &&
+      /sameExecutionPath\(currentAbsolute, targetAbsolute\)/u.test(controller),
+    "坐标是历史快照的身份；绝对路径只在能同时读到当前文本时做防错比对，当前读不到不否掉快照",
   );
   assert.ok(
     /if \(diff\.kind !== "text"\)/u.test(controller),

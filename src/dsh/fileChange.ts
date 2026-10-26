@@ -34,6 +34,23 @@ export function fileChangeKind(existence: FileExistence): FileChangeKind | undef
 }
 
 /**
+ * 会话的创建目录：**权威账本优先**，可见列表只作账本尚未到达时的回退。
+ *
+ * `session/list` 的原始行会建一份过滤前的 cwd 账本；子代理 / 被折叠的会话不进
+ * 可见列表，但它们的创建目录仍是权威事实。绝不能用执行目录（`workingDirectory`）
+ * 或窗口 cwd 兜底——那些不是「会话创建时确定的身份」。
+ */
+export function sessionCreationCwd(
+  authority: ReadonlyMap<string, string> | undefined,
+  visible: readonly { readonly id: string; readonly cwd?: string }[],
+  sessionId: string,
+): string | undefined {
+  const known = authority?.get(sessionId);
+  if (known) return known;
+  return visible.find((row) => row.id === sessionId)?.cwd;
+}
+
+/**
  * 本机附件来源路径的解析（**不是**模型路径）。
  *
  * 用户上传前的本地附件原件属于已记录的本地来源：相对拼写按扩展宿主 cwd / 工作区

@@ -347,7 +347,7 @@ console.log("fileLinks: 词表 = 本轮 produced ∪ deliverables ✓");
     "宿主要有 openFileInBrowser 分支（HTML 文件的 Ctrl/Cmd 单击）",
   );
   assert.ok(
-    /private async openFileInBrowser\(viewId: string, path: string\): Promise<void> \{[\s\S]*?if \(!isBrowserOpenableFile\(stat\.absolutePath\)\) \{[\s\S]*?await this\.openThroughHost\(client, stat\.absolutePath, "open"\)/.test(
+    /private async openFileInBrowser\(viewId: string, path: string\): Promise<void> \{[\s\S]*?if \(!isBrowserOpenableFile\(stat\.absolutePath\)\) \{[\s\S]*?await this\.openThroughHost\(client, stat\.absolutePath, "open", sessionId\)/.test(
       controller,
     ),
     "宿主这层要用同一份 web 文件白名单再验一次，并交给 Host 原生打开（不 Uri.file / 不本机 openExternal）",
@@ -376,7 +376,7 @@ console.log("fileLinks: 宿主侧行号落位 + 相对路径解析 + 外链白�
 {
   const controller = read("src", "dsh", "controller.ts");
   assert.ok(
-    /error\.reason !== "absent" \|\| isLineNumber\(line\)/.test(controller) &&
+    /if \(isLineNumber\(line\) \|\| !splitPathLineSuffix\(path\)\) return \{ kind: "absent" \}/.test(controller) &&
       /const split = splitPathLineSuffix\(path\);/.test(controller) &&
       /await access\.stat\(sessionId, split\.path\)/.test(controller),
     "字面路径 not-found 时按「路径:行号」重试一次（字面优先：真叫 `a:12` 的文件照样开得到）",

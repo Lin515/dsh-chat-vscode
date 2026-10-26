@@ -144,6 +144,8 @@ const entries = {
   "build/turn-files.test.mjs": "scripts/turnFiles.test.ts",
   "build/file-change.test.mjs": "scripts/fileChange.test.ts",
   "build/remote-files.test.mjs": "scripts/remoteFiles.test.ts",
+  "build/remote-file-sync.test.mjs": "scripts/remoteFileSync.test.ts",
+  "build/binary-rpc.test.mjs": "scripts/binaryRpc.test.ts",
   "build/styles.test.mjs": "scripts/styles.test.ts",
   "build/toolbar-fit.test.mjs": "scripts/toolbarFit.test.ts",
   "build/permission-icons.test.mjs": "scripts/permissionIcons.test.ts",

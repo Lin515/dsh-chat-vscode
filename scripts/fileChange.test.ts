@@ -12,6 +12,7 @@ import {
   fileChangeKind,
   isNotFoundError,
   resolveChipPath,
+  sessionCreationCwd,
   splitPathLineSuffix,
 } from "../src/dsh/fileChange";
 
@@ -34,6 +35,33 @@ console.log("fileChange: 执行世界存在性三态分类 ✓");
   assert.strictEqual(resolveChipPath(cwd, ""), undefined);
 }
 console.log("fileChange: 本机附件 source 路径解析 ✓");
+
+// ---------- 2b. 创建目录账本优先：被隐藏的子代理也拿得到 ----------
+{
+  const authority = new Map([["sub", "/work/sub"]]);
+  const visible = [{ id: "parent", cwd: "/work/parent" }];
+  assert.strictEqual(
+    sessionCreationCwd(authority, visible, "sub"),
+    "/work/sub",
+    "可见列表里没有的子代理，创建目录从权威账本取",
+  );
+  assert.strictEqual(
+    sessionCreationCwd(authority, visible, "parent"),
+    "/work/parent",
+    "账本与可见列表都有时以账本为准",
+  );
+  assert.strictEqual(
+    sessionCreationCwd(new Map(), visible, "parent"),
+    "/work/parent",
+    "账本未到时才回退可见列表",
+  );
+  assert.strictEqual(
+    sessionCreationCwd(undefined, visible, "missing"),
+    undefined,
+    "两处都不知道就不猜（绝不用执行目录 / 窗口 cwd）",
+  );
+}
+console.log("fileChange: 创建目录权威账本优先 ✓");
 
 // ---------- 3. 尾部行号拆分 ----------
 {
@@ -79,7 +107,7 @@ console.log("fileChange: 本机附件 stat 的 not-found 判据 ✓");
   assert.ok(/vscode\.Uri\.file\(resolved\)/u.test(controller), "本机附件 source 仍允许 Uri.file（与模型路径分开）");
   assert.ok(/this\.adoptClient\(client\)/u.test(controller), "连接换代统一收口");
   assert.ok(/resolveHostFileConnection/u.test(controller), "provider 只按原连接 id 解析资源");
-  assert.ok(/classifyFiles\(sessionId, paths\)/u.test(controller), "芯片分类带会话 scope");
+  assert.ok(/classifyFiles\(sessionId, paths, \{/u.test(controller), "芯片分类带会话 scope 并捕获建域连接");
   assert.ok(/readHostImages\(access, sessionId/u.test(controller), "正文图片按会话执行世界读取");
   assert.ok(/const defaultDir =\s*vscode\.workspace\.workspaceFolders/u.test(controller), "保存对话框默认本机目的地");
 

@@ -10,6 +10,7 @@ import {
   HostFileAccess,
   HostFileError,
   isExecutionWorldAbsolute,
+  resolveExecutionWorldPath,
   sameExecutionPath,
   unsupportedMediaPath,
   type HostFileBytesResponse,
@@ -92,6 +93,39 @@ const stat = (absolutePath: string, bytes?: number) => ({
   );
 }
 console.log("remote-files: stat 形状与执行世界绝对路径 ✓");
+
+// ---------- 1b. 会话创建目录的纯字符串拼接（不按本机平台猜） ----------
+{
+  assert.strictEqual(resolveExecutionWorldPath("/home/u/app", "src/a.ts"), "/home/u/app/src/a.ts");
+  assert.strictEqual(resolveExecutionWorldPath("/home/u/app/", "src/a.ts"), "/home/u/app/src/a.ts");
+  assert.strictEqual(
+    resolveExecutionWorldPath("C:\\work\\app", "src\\a.ts"),
+    "C:\\work\\app\\src\\a.ts",
+    "Windows 创建目录沿用反斜杠",
+  );
+  assert.strictEqual(
+    resolveExecutionWorldPath("C:/work/app", "src/a.ts"),
+    "C:/work/app/src/a.ts",
+    "斜杠拼写的 Windows 创建目录沿用正斜杠",
+  );
+  assert.strictEqual(
+    resolveExecutionWorldPath("/home/u/app", "C:\\other\\a.ts"),
+    "C:\\other\\a.ts",
+    "绝对输入原样返回，不拼目录",
+  );
+  assert.strictEqual(
+    resolveExecutionWorldPath(undefined, "src/a.ts"),
+    undefined,
+    "缺创建目录时不能声称知道绝对位置",
+  );
+  assert.strictEqual(resolveExecutionWorldPath(undefined, "/abs/a.ts"), "/abs/a.ts");
+  assert.strictEqual(
+    resolveExecutionWorldPath("/home/u/app", "../a.ts"),
+    "/home/u/app/../a.ts",
+    "不消点：规范化由 Host 负责",
+  );
+}
+console.log("remote-files: 相对路径只按创建目录拼接、缺目录不猜 ✓");
 
 // ---------- 2. 只有 not-found 是 absent ----------
 {
@@ -185,25 +219,127 @@ console.log("remote-files: not-found 与权限/未知严格分开 ✓");
 }
 console.log("remote-files: 分页自洽 / 版本一致 / 不推测末尾换行 ✓");
 
-// ---------- 4. 字节只走 /api/file，预算必须拦住 stat 未报大小的响应 ----------
+// ---------- 4. 媒体字节走 /api/file，预算必须拦住 stat 未报大小的响应 ----------
 {
   const transport = new FakeTransport(() => ({ absolutePath: "/w/p.png", version: "v1" }));
   transport.bytes = { bytes: new Uint8Array([1, 2, 3, 4, 5]), mediaType: "image/png; charset=binary" };
   const access = new HostFileAccess(transport);
+  const mediaStat = { absolutePath: "/w/p.png", version: "v1" };
   await assert.rejects(
-    () => access.readBytes("s1", "p.png", { maxBytes: 4 }),
+    () => access.readBytesAt(mediaStat, "p.png", { maxBytes: 4 }),
     (error: unknown) => error instanceof HostFileError && error.reason === "too-large",
     "stat 未报 bytes 时也要按响应实际长度执行客户端预算",
   );
-  const ok = await access.readBytes("s1", "p.png", { maxBytes: 8 });
+  const ok = await access.readBytesAt(mediaStat, "p.png", { maxBytes: 8 });
   assert.deepStrictEqual([...ok.data], [1, 2, 3, 4, 5]);
   assert.strictEqual(ok.mediaType, "image/png", "媒体类型去掉参数");
+  assert.strictEqual(transport.calls.length, 0, "媒体读取不该再问 workspaceFiles/readBytes");
   assert.ok(
     transport.bytesCalls[0]?.startsWith("/api/file?path=%2Fw%2Fp.png"),
-    `字节路由必须使用 Host 返回的绝对路径，实际：${transport.bytesCalls[0]}`,
+    `媒体路由必须使用 Host 返回的绝对路径，实际：${transport.bytesCalls[0]}`,
   );
 }
-console.log("remote-files: 字节走 api/file 且预算生效 ✓");
+console.log("remote-files: 媒体字节走 api/file 且预算生效 ✓");
+
+// ---------- 4b. 普通文件走 workspaceFiles/readBytes，窗口逐字段核对 ----------
+{
+  const rpcCalls: Record<string, unknown>[] = [];
+  const transport = new FakeTransport((method, args) => {
+    assert.strictEqual(method, "workspaceFiles/readBytes");
+    rpcCalls.push(args);
+    const range = args.options as { range?: { offset?: number; length?: number } };
+    if (range.range) {
+      return {
+        absolutePath: "/w/a.bin",
+        version: "v1",
+        bytes: 5,
+        offset: 2,
+        data: new Uint8Array([3, 4, 5]),
+        eof: true,
+      };
+    }
+    return {
+      absolutePath: "/w/a.bin",
+      version: "v1",
+      bytes: 3,
+      offset: 0,
+      data: new Uint8Array([1, 2, 3]),
+      eof: true,
+    };
+  });
+  const access = new HostFileAccess(transport);
+
+  const complete = await access.readBytes("s1", "a.bin");
+  assert.deepStrictEqual([...complete.data], [1, 2, 3]);
+  assert.strictEqual(complete.offset, 0);
+  assert.strictEqual(complete.eof, true);
+  assert.deepStrictEqual(rpcCalls[0], {
+    workspaceFileScopeId: "s1",
+    path: "a.bin",
+    options: {},
+  });
+  assert.strictEqual(transport.bytesCalls.length, 0, "普通文件不经过 /api/file");
+
+  const window = await access.readBytes("s1", "a.bin", { range: { offset: 2, length: 5 } });
+  assert.deepStrictEqual([...window.data], [3, 4, 5]);
+  assert.deepStrictEqual(rpcCalls[1], {
+    workspaceFileScopeId: "s1",
+    path: "a.bin",
+    options: { range: { offset: 2, length: 5 } },
+  });
+
+  const rejects = async (
+    resolver: (method: string, args: Record<string, unknown>) => unknown,
+    options: Record<string, unknown>,
+    pattern: RegExp,
+    why: string,
+  ): Promise<void> => {
+    const bad = new HostFileAccess(new FakeTransport(resolver));
+    await assert.rejects(
+      () => bad.readBytes("s1", "a.bin", options),
+      (error: unknown) => error instanceof HostFileError && error.reason === "unknown" && pattern.test(error.message),
+      why,
+    );
+  };
+  const base = { absolutePath: "/w/a.bin", version: "v1", bytes: 5 };
+  await rejects(
+    () => ({ ...base, offset: 1, data: new Uint8Array([1]), eof: true }),
+    {},
+    /offset/u,
+    "无 range 时 offset 必须为 0",
+  );
+  await rejects(
+    () => ({ ...base, offset: 0, data: new Uint8Array([1, 2, 3]), eof: false }),
+    {},
+    /partial file|EOF/u,
+    "无 range 且 eof false 不能冒充完整文件",
+  );
+  await rejects(
+    () => ({ ...base, offset: 0, data: new Uint8Array([1]), eof: true }),
+    {},
+    /truncated/u,
+    "无 range 时字节数必须等于 stat.bytes",
+  );
+  await rejects(
+    () => ({ ...base, offset: 1, data: new Uint8Array([1]), eof: false }),
+    { range: { offset: 2 } },
+    /offset/u,
+    "range 回显的 offset 必须与请求一致",
+  );
+  await rejects(
+    () => ({ ...base, offset: 2, data: new Uint8Array([1, 2, 3, 4]), eof: true }),
+    { range: { offset: 2, length: 2 } },
+    /more bytes/u,
+    "range 返回长度不得超过请求 length",
+  );
+  await rejects(
+    () => ({ ...base, offset: 2, data: new Uint8Array([1]), eof: true }),
+    { range: { offset: 2 } },
+    /EOF/u,
+    "声称 eof 时窗口末尾必须正是文件末尾",
+  );
+}
+console.log("remote-files: 普通文件 RPC 字节、range 与 eof 逐字段核对 ✓");
 
 // ---------- 5. 连接关闭：旧 access 不再产生结果 ----------
 {

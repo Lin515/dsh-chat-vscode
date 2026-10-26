@@ -1536,7 +1536,7 @@ await scenario("二.24 全来源不可用只报一次附件提示，普通删文
   await h.c.handle({ type: "openFile", path: missing }, "v1");
   assert.strictEqual(diffs, 0, "普通 openFile 不再回退未验证的本机 git diff");
   assert.ok(
-    noticesOf(h, "v1").some((notice) => notice.text === "@chipPathUnresolved"),
+    noticesOf(h, "v1").some((notice) => notice.text === "@fileAccessUnavailable"),
     "没有执行世界连接时明确提示，而不是打开本机同名文件",
   );
 });
