@@ -22,6 +22,11 @@
  */
 
 import { randomUUID } from "node:crypto";
+import {
+  isAbsoluteWorkspacePath,
+  resolveWorkspacePath,
+  workspacePathKey,
+} from "../shared/workspacePath";
 
 /** `/api/file` 取回的一小段：原始字节与 Host 给出的媒体类型。 */
 export interface HostFileBytesResponse {
@@ -173,15 +178,10 @@ function isCount(value: unknown): value is number {
  *
  * **不能用 `node:path.isAbsolute`**：它按扩展宿主平台判断，在 Windows 客户端上看
  * 不出远端 POSIX 的 `/home/x`，在 Linux 客户端上也会把 `C:\x` 当相对路径。这里
- * 只看字符串形态，不做任何规范化。
+ * 只看字符串形态，不做任何规范化——判据本身与 `shared/workspacePath` 共用。
  */
 export function isExecutionWorldAbsolute(path: string): boolean {
-  if (!path) return false;
-  // POSIX 根：官方判据就是 `startsWith('/')`（`//host/share` 也先算绝对，媒体层再拒 UNC）。
-  if (path.startsWith("/")) return true;
-  if (/^[A-Za-z]:[\\/]/u.test(path)) return true;
-  if (/^\\\\[^\\]/u.test(path)) return true;
-  return false;
+  return path.length > 0 && isAbsoluteWorkspacePath(path);
 }
 
 /**
@@ -198,13 +198,8 @@ export function resolveExecutionWorldPath(
   path: string,
 ): string | undefined {
   if (!path) return undefined;
-  if (isExecutionWorldAbsolute(path)) return path;
-  if (!cwd) return undefined;
-  const windows = /^[A-Za-z]:[\\/]/u.test(cwd) || /^\\\\/u.test(cwd);
-  const separator = windows && cwd.includes("\\") ? "\\" : "/";
-  const base = cwd.replace(/[/\\]+$/u, "");
-  const relative = path.replace(/^[/\\]+/u, "");
-  return `${base}${separator}${relative}`;
+  const resolved = resolveWorkspacePath(cwd, path);
+  return isAbsoluteWorkspacePath(resolved) ? resolved : undefined;
 }
 
 /** 该路径是否为 UNC（媒体路由明确拒绝）。 */
@@ -231,20 +226,15 @@ export function unsupportedMediaPath(path: string): string | undefined {
   return undefined;
 }
 
-/** 明确 Windows 形态：盘符绝对或 UNC。只有这类路径才把 `/` 归一成 `\\`。 */
-function isWindowsPathForm(path: string): boolean {
-  return /^[A-Za-z]:[\\/]/u.test(path) || /^\\\\/u.test(path);
-}
-
 /**
  * 路径比较键：**只对明确 Windows 形态**统一分隔符并去掉结尾分隔符。
  *
  * 不无条件把 `\` 换成 `/`：POSIX 的 `a\b` 是合法文件名，与 `a/b` 不是同一个目标。
  * 不消 `.` / `..`，也不按扩展宿主平台猜大小写；绝对化与规范化由 Host 负责。
+ * 判据本身与 `shared/workspacePath` 共用（见其 `workspacePathKey`）。
  */
 export function executionPathKey(path: string): string {
-  if (isWindowsPathForm(path)) return path.replace(/\//gu, "\\").replace(/\\+$/u, "");
-  return path.replace(/\/+$/u, "");
+  return workspacePathKey(path);
 }
 
 /**
@@ -255,8 +245,7 @@ export function executionPathKey(path: string): string {
  */
 export function sameExecutionPath(left: string, right: string): boolean {
   const a = executionPathKey(left);
-  const b = executionPathKey(right);
-  return a.length > 0 && a === b;
+  return a.length > 0 && a === executionPathKey(right);
 }
 
 /** 媒体类型只取 mime 本体，不带参数。 */
@@ -512,7 +501,8 @@ export class HostFileAccess {
     this.assertOpen();
     const maxBytes = options.maxBytes ?? this.maxTextBytes;
     try {
-      const first = await this.readPage(sessionId, path, 1);      const stat: HostFileStat = {
+      const first = await this.readPage(sessionId, path, 1);
+      const stat: HostFileStat = {
         absolutePath: first.absolutePath,
         version: first.version,
         ...(first.bytes === undefined ? {} : { bytes: first.bytes }),
@@ -733,4 +723,3 @@ export function describeHostFileError(error: unknown): string {
   }
   return error instanceof Error ? error.message : String(error);
 }
-

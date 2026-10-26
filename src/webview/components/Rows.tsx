@@ -1645,6 +1645,12 @@ export function FileChips({
             }}
           >
             <IconFile size={12} />
+<<<<<<< HEAD
+=======
+            {/* 新建文件（git 未跟踪）标 [新增]：它没有可对比的基线，点击直接
+                打开文件而不是开 diff——记号让「为什么行为不一样」看得见 */}
+            {kind === "new" ? <span className="file-chip-tag">{texts.fileNewTag}</span> : null}
+>>>>>>> 4824bfe (收敛重复的路径、basename 与 JSON 值判据)
             {/* 窄侧栏里要一眼认出是哪个文件（官方 `presented.basename` 等价物） */}
             <span className="file-chip-name">{basenameWorkspacePath(file.path)}</span>
           </button>

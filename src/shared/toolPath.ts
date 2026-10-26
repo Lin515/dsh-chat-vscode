@@ -15,6 +15,7 @@
  * terminal-card-model}.ts` 与 `ui-deliverables/src/client/turn-deliverables.ts`。
  */
 
+import { isRecord } from "./jsonValue";
 import { isFilePathTool } from "./toolMeta";
 import {
   isAbsoluteWorkspacePath,
@@ -22,11 +23,6 @@ import {
   recordedAbsolutePath,
   resolveWorkspacePath,
 } from "./workspacePath";
-
-/** 反序列化后的参数对象（官方 `isRecord`）。 */
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 /** 合法 JSON 对象参数；流式半截字符串按「没有参数」处理。 */
 function parseArgs(argsRaw: string): Record<string, unknown> | undefined {

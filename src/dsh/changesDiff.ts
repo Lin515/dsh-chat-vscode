@@ -19,6 +19,7 @@
  * 纯函数、不引 `vscode`：断言见 `scripts/changesDiff.test.ts`。
  */
 import { toLines } from "../shared/diff";
+import { isRecord } from "../shared/jsonValue";
 
 /** 一段 hunk：行首保留 `+` / `-` / 空格标记，与 Host 的 `WorkspaceDiffHunk` 同形。 */
 export interface AgentDiffHunk {
@@ -62,11 +63,6 @@ export interface AgentDiffTexts {
    * 标题据此说明「片段」：用户不会误以为没展示的内容在本轮里也没动过。
    */
   excerpt: boolean;
-}
-
-/** 数组的每一项都是一个对象（不是 null / 数组）。 */
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /** 非负安全整数。 */

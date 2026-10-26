@@ -14,10 +14,7 @@
  * 界面拿到的是已经折好的 `MessageView.produced`（保留每次操作与参数别名）。
  */
 
-/** 反序列化后的参数对象（官方 `isRecord`）。 */
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
+import { isRecord } from "../shared/jsonValue";
 
 /** 非空路径保留原样拼写。 */
 function pathValue(value: unknown): string | undefined {

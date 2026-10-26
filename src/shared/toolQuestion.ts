@@ -20,11 +20,8 @@
  * 纯函数、不引宿主：断言见 `scripts/toolQuestion.test.ts`。
  */
 import type { QuestionAnswerView, QuestionItemView, QuestionOption } from "./chat";
+import { isRecord } from "./jsonValue";
 import { parseToolArgs } from "./toolCard";
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 /**
  * 一组题目的**身份**：题目 id 排序后 JSON 编码（顺序无关，且 id 里出现任何字符

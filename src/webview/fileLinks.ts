@@ -16,6 +16,7 @@
  * 纯函数、不碰 DOM 也不引 React：断言见 `scripts/fileLinks.test.ts`。DOM 那一步
  * （把命中的行内代码换成按钮）在 `webview/fileMentions.ts`。
  */
+import { basenameWorkspacePath } from "../shared/workspacePath";
 import { isBrowserOpenableFile } from "../shared/webFile";
 
 /** 一个本地文件链接的目标：路径 + 可选起始行（1 基）。 */
@@ -67,10 +68,13 @@ export function parseFileLink(value: string): FileLinkTarget | undefined {
   return { path, line };
 }
 
-/** 路径的最后一段（官方 `basename`：只按分隔符切，不做别的归一化）。 */
+/**
+ * 路径的最后一段（官方 `basename`：只按分隔符切，不做别的归一化）。
+ *
+ * 判据与宿主共用 `shared/workspacePath`，两边的「唯一 basename 匹配」不能各写一份。
+ */
 export function basename(path: string): string {
-  const at = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
-  return at === -1 ? path : path.slice(at + 1);
+  return basenameWorkspacePath(path);
 }
 
 /**

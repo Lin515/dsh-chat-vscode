@@ -11,10 +11,7 @@
  * 不必起真实 Host。
  */
 import type { ChangedFileView, ChangesSummaryView } from "../shared/chat";
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
+import { isRecord } from "../shared/jsonValue";
 
 /**
  * 一条改动文件记录是否合规。

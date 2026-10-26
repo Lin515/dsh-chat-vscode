@@ -14,15 +14,12 @@
  * 交进来，行为断言见 `scripts/binaryRpc.test.ts`。
  */
 
+import { isRecord } from "../shared/jsonValue";
+
 /** 解出的一条二进制响应：信封里的 rpcId 与已回填字节的值。 */
 export interface BinaryRpcResponse {
   readonly rpcId: string;
   readonly value: unknown;
-}
-
-/** 值里只有普通对象才有「自有路径段」语义。 */
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /** 官方信封的形状收窄：只接受 `type: "server-response"` + ok:true。 */

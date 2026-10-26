@@ -8,6 +8,9 @@
  * 纯字符串模块，不 import `vscode`：URI 形态本身可离线断言。
  */
 
+import { isRecord } from "../shared/jsonValue";
+import { basenameWorkspacePath } from "../shared/workspacePath";
+
 /** 一份执行世界文件资源的身份。 */
 export interface RemoteFileAddress {
   /** 产生这条路径的 DSH 连接身份；连接关闭后这个地址不再解析。 */
@@ -21,10 +24,6 @@ export interface RemoteFileAddress {
    * 同一资源因不同写法拿到不同身份。
    */
   readonly path: string;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /** 把三元组编码成 URL-safe 的 authority 片段。 */
@@ -60,10 +59,8 @@ export function decodeRemoteFileAddress(token: string): RemoteFileAddress | unde
  * URI 末段（展示用 basename）。
  *
  * 同时认 `/` 与 `\`：路径可能来自 POSIX 或 Windows 执行世界，不能按扩展宿主平台
- * 取 basename。
+ * 取 basename。判据与 `shared/workspacePath` 共用；空名回退成占位文件名。
  */
 export function remoteFileBasename(path: string): string {
-  const at = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
-  const name = at === -1 ? path : path.slice(at + 1);
-  return name || "file";
+  return basenameWorkspacePath(path) || "file";
 }
