@@ -34,7 +34,7 @@ import { useTexts } from "../texts";
  * `src` 可能是三种东西，组件不区分（浏览器也不该区分）：
  * - `data:` URL——服务端 durable 附件（`session/attachment` 换回来的字节）；
  * - `https:` URL——模型写在 markdown 里的外链（渲染时已加 `no-referrer`）；
- * - `data:` URL——宿主按会话工作目录读回来的本地文件图（见 `dsh/localImages.ts`）。
+ * - `data:` URL——宿主按会话创建目录读回来的本地文件图（见 `dsh/localImages.ts`）。
  */
 
 export interface ImageSource {

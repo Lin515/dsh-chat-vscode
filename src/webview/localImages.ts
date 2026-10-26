@@ -7,10 +7,11 @@ import type { Texts } from "./texts";
  *
  * markdown 渲染出来的 `<img src="out/chart.png">` 在 webview 里是死链：它会被
  * 解析成 `vscode-webview://…/out/chart.png`。这里把这类引用交给宿主读成 data URL
- * （宿主侧的白名单与上限见 `dsh/localImages.ts`），再把 DOM 上的 `src` 换掉。
+ * （宿主侧以执行世界读取与 Host 报告的媒体类型为准，见 `dsh/localImages.ts`），再把
+ * DOM 上的 `src` 换掉。
  *
  * 四个必须的约束：
- * - **缓存按会话隔离**：相对路径的基准是会话工作目录，切了会话之后
+ * - **缓存按会话隔离**：相对路径的基准是会话创建目录，切了会话之后
  *   `out/chart.png` 是另一个文件，沿用旧结果就会张冠李戴（`setLocalImageScope`）；
  * - **读不到的也记一笔**（空串）：否则每次重渲染（流式期间每个 token 都重渲染）
  *   都会把同一个不存在的路径再问一遍宿主；
@@ -56,7 +57,7 @@ subscribe((message) => {
   const entry = pending.get(message.requestId);
   if (!entry) return;
   pending.delete(message.requestId);
-  // 期间切过会话：结果是按另一个工作目录解析的，丢掉（见 setLocalImageScope）。
+  // 期间切过会话：结果是按另一个会话的创建目录解析的，丢掉（见 setLocalImageScope）。
   // 请求发出时身份还没确定（空 scope）的那批照样接受——那时浏览器里的图正是
   // 当前会话的图，丢掉就白请求了。
   entry.resolve(isCurrentSession(entry.scope) ? message.urls : {});

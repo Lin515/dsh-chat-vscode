@@ -27,8 +27,8 @@
  *   动它等于取消整条转义语义（行内代码 `` `D:\a\.b` `` 本来就不受影响）。
  *
  * 断言见 `scripts/markdown.test.ts` 的「Windows 反斜杠路径的链接 / 图片目标」一段：
- * 渲染产物喂真实 `parseFileLink`、`localImagePath` 与宿主白名单
- * （`dsh/localImages.ts` 的 `resolveLocalImagePath`），落到盘上真实文件。
+ * 渲染产物喂真实 `parseFileLink`、`localImagePath` 与宿主执行世界读取
+ * （`dsh/localImages.ts`），落到盘上真实文件。
  * 结论与刻意偏离官方的边界见 `docs/design-messages.md`「Windows 路径链接」与 `docs/design-security.md`。
  */
 

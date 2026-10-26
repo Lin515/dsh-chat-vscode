@@ -82,7 +82,7 @@ npm run package  # Releases/dsh-chat-<version>.vsix
 - 回形针选择文件：图片发送为内容块，其余文件上传，芯片显示上传状态。此路径通道不受拖放的 8 MB 限制。
 - 拖放须按住 `Shift`：文件走字节通道，单文件最多 8 MB，不支持目录。Windows 复制文件或目录后粘贴可由宿主取回真路径：文件走附件、目录变成正文引用；其它平台与截图粘贴回退到同一字节通道。纯文本粘贴不变。粘贴进来的图片按会话内序号命名（中文界面 `图1.png`、英文界面 `image1.png`），编号只增不回收，便于在对话里直接指代。
 - 图片另受服务端准入限制：单张不超过 20 MiB、宽 × 高不超过 64,000,000 像素、单边不超过 8192，一条消息最多 20 张且合计不超过 200 MiB（默认值，可配置）。进不了内容块的图片不会被当成图片发送，而是**作为文件上传**（内容寻址的只读副本，远端部署下模型也能用工具处理它）：逐图超限的副本模型需先缩小才能直接查看，张数或总量超出的副本模型可直接读取。提示报的是上限（像素按「6400万」这类缩写），不会只说「太大了」。
-- 用户、模型与工具返回的图片，以及交付或本轮生成的图片文件均可预览。正文本地图片仅在会话工作目录内读取；HTTPS 图片不发送 referrer。点击看原图，`Esc` 关闭。
+- 用户、模型与工具返回的图片，以及交付或本轮生成的图片文件均可预览。正文本地图片经受认证的执行世界读取，相对引用按会话创建目录解析；HTTPS 图片不发送 referrer。点击看原图，`Esc` 关闭。
 
 ### 生成与交互
 
@@ -199,7 +199,7 @@ Open the notification drawer with **Show history** or **DSH: View Notifications*
 - The paperclip sends images as content blocks and uploads other files, showing upload status on their chips. This path channel is not subject to the drop channel's 8 MB cap.
 - Hold `Shift` to drop files. Drops use bytes, allow up to 8 MB per file and do not support folders. On Windows, pasting copied files/folders retrieves their paths: files become attachments, folders become text references. Other platforms and pasted screenshots use the same byte channel. Plain-text paste is unchanged. Pasted images are named by session order (`图1.png` in the Chinese interface, `image1.png` in the English one); numbers only grow and are never reused, so you can refer to an image by name in the conversation.
 - Images are also subject to server admission limits: at most 20 MiB each, 64,000,000 pixels (width × height), 8192 per side, and 20 images per message totalling at most 200 MiB (defaults; configurable). An image over a limit is never sent as an image; it is **uploaded as a file** instead (a content-addressed read-only copy the model can process with tools even on a remote deployment). A copy that broke a per-image limit must be downscaled before the model can view it, while one that only broke the count or total-byte limit can be read directly. Messages state the limit (pixel counts are abbreviated, e.g. 64M) rather than just "too large".
-- Preview images from users, models, tools, deliverables and files generated this turn. Local answer images are read only inside the session working directory; HTTPS images send no referrer. Click for the original; `Esc` closes it.
+- Preview images from users, models, tools, deliverables and files generated this turn. Local images in messages are read through the authenticated execution world, with relative references resolved against the session's creation directory; HTTPS images send no referrer. Click for the original; `Esc` closes it.
 
 ### Generation and interaction
 

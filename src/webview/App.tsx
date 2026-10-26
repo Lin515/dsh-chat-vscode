@@ -803,7 +803,7 @@ export function App() {
       ),
     [state.messages, state.changesSummaries, sessionId],
   );
-  // 正文里本地图片的解析缓存按会话隔离：相对路径的基准是会话工作目录，
+  // 正文里本地图片的解析缓存按会话隔离：相对路径的基准是会话创建目录，
   // 切了会话之后同名路径是另一个文件（见 webview/localImages.ts）
   useEffect(() => {
     setLocalImageScope(sessionId ?? "");
