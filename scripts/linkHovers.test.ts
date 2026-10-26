@@ -147,8 +147,9 @@ console.log("linkHovers: 锚点 title 注入完整目标、保留作者标题、
   );
   const controller = read("src", "dsh", "controller.ts");
   assert.ok(
-    /if \(!isBrowserOpenableFile\(resolved\)\)/.test(controller),
-    "宿主必须用同一份白名单再验一次（webview 帧不可信）",
+    /if \(!isBrowserOpenableFile\(stat\.absolutePath\)\)/.test(controller) &&
+      /openThroughHost\(client, stat\.absolutePath, "open"\)/.test(controller),
+    "宿主必须用同一份白名单再验一次（webview 帧不可信），并交给 Host 原生打开",
   );
   const messages = read("src", "webview", "messages.ts");
   assert.ok(

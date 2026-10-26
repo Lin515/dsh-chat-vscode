@@ -238,6 +238,59 @@ export class DshClient {
   }
 
   /**
+   * 读一条认证的 Host 字节路由（`GET /api/file?path=…`）。
+   *
+   * 与 `getJson` 的区别只在响应体：图片/普通文件的真实字节不能当 JSON 解析，也
+   * 不能按扩展名在本机重新读盘。这里保留部署前缀（`baseUrl` 自带路径）与 cookie，
+   * 并**禁止重定向**：`redirect: "error"` 确保 cookie 不会被 30x 带到别的 origin。
+   *
+   * `404` 与 `getJson` 同一口径，返回 `undefined`；413（超过 Host 的部署限额）与
+   * 其它非 2xx 抛 `DshApiError`，调用方按「不可用 / 过大」处理，不回退本机。
+   */
+  async getBytes(
+    path: string,
+    timeoutMs = 60_000,
+  ): Promise<{ bytes: Uint8Array; mediaType?: string } | undefined> {
+    if (!path.startsWith("/api/")) {
+      throw new DshApiError("host/bytes", `refusing a non-API byte route: ${path}`, undefined);
+    }
+    const base = new URL(this.baseUrl);
+    const url = new URL(`${this.baseUrl}${path}`);
+    if (url.origin !== base.origin) {
+      throw new DshApiError("host/bytes", "refusing a byte route outside the DSH origin", undefined);
+    }
+    const headers: Record<string, string> = { accept: "*/*" };
+    if (this.cookie) headers.cookie = this.cookie;
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: "GET",
+        headers,
+        // 不跟随重定向：浏览器/Node 的自动跟随会把 cookie 带到新 origin。
+        redirect: "error",
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+    } catch (error) {
+      throw new DshApiError(
+        "host/bytes",
+        `GET ${path} 失败：${error instanceof Error ? error.message : String(error)}`,
+        undefined,
+      );
+    }
+    if (res.status === 404) return undefined;
+    if (res.status === 401 || res.status === 403) {
+      throw new DshAuthError(`服务器要求授权（HTTP ${res.status}）。`);
+    }
+    if (res.status === 413) {
+      throw new DshApiError("host/file-too-large", `GET ${path} 失败：HTTP 413`, undefined);
+    }
+    if (!res.ok) throw new DshApiError("host/bytes", `GET ${path} 失败：HTTP ${res.status}`, undefined);
+    const mediaType = res.headers.get("content-type")?.split(";")[0]?.trim() || undefined;
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    return { bytes, ...(mediaType ? { mediaType } : {}) };
+  }
+
+  /**
    * 一元调用。
    *
    * `signal` 是**调用方**的取消信号（可选），与超时信号合成一个：
@@ -804,6 +857,29 @@ export class DshClient {
       { request: { sessionId, jobId, ...(from !== undefined ? { from } : {}) } },
       callbacks,
     );
+  }
+
+  /**
+   * 跟随一个执行世界文件 / 目录的变更（`workspaceFiles/changes`，stream）。
+   *
+   * payload 是 `{workspaceFileScopeId, path}`（官方 `changes()` 的两个位置参数；
+   * 旧 API 档案只列了 scope，已核对 alpha.2 与 rc.3 的 `client/change-feed.ts`、
+   * `changes.ts` 与生成契约一致）。帧由 `HostFileAccess.watch` 验形状，这里只转原样。
+   */
+  watchWorkspaceFile(
+    sessionId: string,
+    path: string,
+    callbacks: {
+      readonly onFrame: (frame: unknown) => void;
+      readonly onEnd?: () => void;
+      readonly onError?: (error: unknown) => void;
+    },
+  ): StreamHandle {
+    return this.openStream("workspaceFiles/changes", { workspaceFileScopeId: sessionId, path }, {
+      onItem: callbacks.onFrame,
+      ...(callbacks.onEnd ? { onEnd: callbacks.onEnd } : {}),
+      ...(callbacks.onError ? { onError: (error) => callbacks.onError?.(error) } : {}),
+    });
   }
 
   /**

@@ -1,90 +1,105 @@
-import { readFile, stat } from "node:fs/promises";
-import { isAbsolute, relative, resolve } from "node:path";
-import { localImageMediaType, localImagePath } from "../shared/imageRef";
-
 /**
- * 正文里引用的**本地图片**：把模型写的路径读成 data URL。
+ * 正文里引用的**执行世界图片**：经 DSH 的认证读取通道换成 data URL。
  *
- * 为什么非得宿主来做：webview 读不了磁盘，`<img src="out/chart.png">` 在
- * `vscode-webview://` 下只会 404。这是「agent 生成的图表/截图看不见」的根因。
+ * 路径是模型可控的外部输入，但它属于 DSH 执行世界，不是扩展宿主本机：
+ * - 相对路径原样交给 `workspaceFiles.stat`，由 Host 用会话创建目录解析；缺创建
+ *   目录也不回退 VS Code 工作区，不猜本机基准。
+ * - 绝对路径不重新拼目录；根外能否读取由 provider 的访问策略裁决，**创建目录
+ *   不是媒体白名单**，扩展名也不是授权条件。
+ * - 客户端只拒绝 UNC、控制字符与盘符相对这类无法安全/无歧义表达的媒体路径；
+ *   字节限额由 Host 的部署限额裁决。`LOCAL_IMAGE_MAX_BYTES` 只是本客户端的 IPC
+ *   传输预算，不是官方读取权限。
  *
- * **安全口径**——这些路径是**模型可控的字符串**，必须当外部输入看：
- * - 解析后的绝对路径必须落在**当前会话的工作目录内**。模型可以写任意路径，
- *   宿主顺着它读盘，等于把整个磁盘变成可读内容；如果模型同时被注入着写外链图片，
- *   那就是一条「读本地文件 → 编进 URL 外传」的完整链路（`docs/design-security.md`
- *   记的同一条外传面）。工作目录之外一律不读，界面退回原样的文本引用。
- * - 扩展名必须在图片表里（[`localImageMediaType`]：png/jpg/jpeg/webp/gif/**svg**），
- *   与附件准入那张表分开——那张表管"模型能不能读字节"，这张管"浏览器能不能画"；
- * - 有大小上限，且**先 `stat` 再读**——不先看大小就把一个大文件读进内存，
- *   一个 2 GB 的 `huge.png` 就能把扩展宿主拖垮。
+ * 读取失败按引用原文记一条失败原因（诊断日志用），不进 data URL 表；界面那条图
+ * 落到既有「加载失败」降级。回帧之前浏览器那次失败仍由 webview 的
+ * `hydrateLocalImages` 处理（不在本模块）。
  */
 
-/** 单张本地图片的读取上限（字节）。超过就不读，界面显示「加载失败」。 */
-export const LOCAL_IMAGE_MAX_BYTES = 8 * 1024 * 1024;
+import { localImageMediaType, localImagePath } from "../shared/imageRef";
+import {
+  HostFileError,
+  describeHostFileError,
+  unsupportedMediaPath,
+  type HostFileAccess,
+} from "./remoteFiles";
 
 /**
- * 一次请求最多读几张。
- *
- * 路径全由模型输出决定，一段正文里塞几百个引用是它一句话的事——不设上限就等于
- * 给了个「一次读满磁盘小块」的按钮。截断而不是报错：多出来的图不显示，
- * 正文其余部分照常。
+ * 一次请求最多读几张：一段正文塞几百个引用是模型一句话的事，不设上限等于给一个
+ * 「一次读满执行世界小块」的按钮。截断而不是报错，正文其余部分照常。
  */
 export const LOCAL_IMAGE_MAX_REFS = 24;
 
 /**
- * 引用 → 可读的绝对路径（不合格就 undefined）。
+ * 单张图片的客户端传输预算（字节）。
  *
- * 只做判断，不碰磁盘：调用方拿着它去 `stat`/`readFile`，测试也就能纯函数地
- * 覆盖白名单本身。
+ * **不是** provider 的读权限，也不代表官方限额：官方 `/api/file` 的限额由部署配置
+ * 决定（可能大于或小于此值）。这里只防止一次 IPC 搬回一个过大的字符串。
  */
-export function resolveLocalImagePath(cwd: string | undefined, src: string): string | undefined {
-  if (!cwd) return undefined;
-  const path = localImagePath(src);
-  if (!path) return undefined;
-  let absolute: string;
-  try {
-    absolute = resolve(cwd, path);
-  } catch {
-    return undefined;
-  }
-  const inside = relative(cwd, absolute);
-  // 跨盘符时 `relative` 会回一个绝对路径（`C:\x`），与 `..` 一样算越界；
-  // `inside === ""` 是 cwd 自己（目录），扩展名那关也会拦掉
-  if (!inside || inside.startsWith("..") || isAbsolute(inside)) return undefined;
-  if (!localImageMediaType(absolute)) return undefined;
-  return absolute;
+export const LOCAL_IMAGE_MAX_BYTES = 16 * 1024 * 1024;
+
+/** 一批引用的解析结果：成功表 + 失败原因表（键都是引用原文）。 */
+export interface HostImageResult {
+  /** 引用原文 → data URL。读不到的不进这张表。 */
+  readonly urls: Record<string, string>;
+  /** 引用原文 → 失败原因（只进日志，不改写正文）。 */
+  readonly failures: Record<string, string>;
+}
+
+/** Host 给出的媒体类型优先；它不认时只按扩展名补一个「浏览器能画」的类型。 */
+function displayMediaType(path: string, reported: string | undefined): string | undefined {
+  if (reported && reported.startsWith("image/")) return reported;
+  return localImageMediaType(path);
+}
+
+function toDataUrl(bytes: Uint8Array, mediaType: string): string {
+  return `data:${mediaType};base64,${Buffer.from(bytes).toString("base64")}`;
 }
 
 /**
- * 读一批引用 → `{ 引用原文: data URL }`。
+ * 读一批引用 → data URL 表。
  *
- * 键是**引用原文**（界面拿它匹配 `<img src>`，不能改写过的路径）；读不到的直接
- * 不进表——界面那条图会落到「加载失败」，而不是一直等一个不会来的响应。
+ * 键保持**引用原文**（界面拿它匹配 `<img src>`，不能改写过的路径）。
  */
-export async function readLocalImages(
-  cwd: string | undefined,
+export async function readHostImages(
+  access: HostFileAccess,
+  sessionId: string,
   refs: readonly string[],
-): Promise<Record<string, string>> {
+): Promise<HostImageResult> {
   const urls: Record<string, string> = {};
+  const failures: Record<string, string> = {};
   await Promise.all(
     refs.slice(0, LOCAL_IMAGE_MAX_REFS).map(async (ref) => {
-      const absolute = resolveLocalImagePath(cwd, ref);
-      if (!absolute) return;
-      const url = await readOneImage(absolute);
-      if (url) urls[ref] = url;
+      const path = localImagePath(ref);
+      if (!path) {
+        failures[ref] = "unsupported reference";
+        return;
+      }
+      const unsupported = unsupportedMediaPath(path);
+      if (unsupported) {
+        failures[ref] = unsupported;
+        return;
+      }
+      try {
+        const stat = await access.stat(sessionId, path);
+        if (stat.bytes !== undefined && stat.bytes > LOCAL_IMAGE_MAX_BYTES) {
+          failures[ref] = `over the client transfer budget (${stat.bytes} bytes)`;
+          return;
+        }
+        const file = await access.readBytesAt(stat, path, { maxBytes: LOCAL_IMAGE_MAX_BYTES });
+        if (file.data.byteLength === 0) {
+          failures[ref] = "empty file";
+          return;
+        }
+        const mediaType = displayMediaType(path, file.mediaType);
+        if (!mediaType) {
+          failures[ref] = "no image media type";
+          return;
+        }
+        urls[ref] = toDataUrl(file.data, mediaType);
+      } catch (error) {
+        failures[ref] = error instanceof HostFileError ? error.reason : describeHostFileError(error);
+      }
     }),
   );
-  return urls;
-}
-
-async function readOneImage(absolute: string): Promise<string | undefined> {
-  try {
-    const info = await stat(absolute);
-    if (!info.isFile() || info.size <= 0 || info.size > LOCAL_IMAGE_MAX_BYTES) return undefined;
-    const bytes = await readFile(absolute);
-    const mediaType = localImageMediaType(absolute) ?? "image/png";
-    return `data:${mediaType};base64,${bytes.toString("base64")}`;
-  } catch {
-    return undefined;
-  }
+  return { urls, failures };
 }

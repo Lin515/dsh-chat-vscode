@@ -36,7 +36,11 @@
 - [changes.ts](<changes.ts>) — workspace/changes 形状校验。
 - [changesDiff.ts](<changesDiff.ts>) — 本轮改动的逐文件对比（hunk 校验与两侧文本拼装）。
 - [agentDiffDocuments.ts](<agentDiffDocuments.ts>) — 「Agent 改动」对比窗口的只读虚拟文档。
-- [fileChange.ts](<fileChange.ts>) — 文件状态与普通打开 / 对比入口。
+- [fileChange.ts](<fileChange.ts>) — 执行世界文件存在性分类（只有 Host not-found 才算已删除）与本机附件 source 的路径解析；不查本机 git。
+- [remoteFiles.ts](<remoteFiles.ts>) — 执行世界文件访问的唯一边界：`workspaceFiles.stat` / 分页 `read`、认证 `/api/file` 字节、连接身份、错误三态与有界 change feed。
+- [remoteFileAddress.ts](<remoteFileAddress.ts>) — 资源 URI 的「连接 + 会话 + 路径」编码与 basename（纯字符串）。
+- [remoteFileSystem.ts](<remoteFileSystem.ts>) — VS Code 只读虚拟文件系统 provider：按原连接 id 解析、快照内容、change feed + 有界 restat。
+- [localImages.ts](<localImages.ts>) — 正文图片经执行世界读取成 data URL；不设创建目录/扩展名授权门，UNC 与控制字符在客户端拒绝。
 
 ## 附件、引用与图片
 
@@ -47,7 +51,6 @@
 - [attachmentLifecycle.ts](<attachmentLifecycle.ts>) — 附件唯一归属表、上传轮次与提交租约。
 - [attachmentOpen.ts](<attachmentOpen.ts>) — 打开附件的临时副本命名 / 落盘与内容身份索引。
 - [attachmentOpenStore.ts](<attachmentOpenStore.ts>) — 同一条「内容身份 → 本地路径」的持久化口径（`globalState`，跨宿主重启；原文件与临时副本分开记）。
-- [localImages.ts](<localImages.ts>) — 会话 cwd 内的本地图片读取。
 - [imageBytes.ts](<imageBytes.ts>) — data / http(s) 图片到字节。
 - [imageSize.ts](<imageSize.ts>) — 图片头部（png / jpeg / webp / gif）的宽高读数，供服务端的像素与单边准入预检。
 - [imageFiles.ts](<imageFiles.ts>) — 保存图片对话框与写盘。

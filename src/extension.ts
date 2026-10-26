@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import { ChatViewProvider } from "./chatView";
 import { ChatController } from "./dsh/controller";
 import { AGENT_DIFF_SCHEME, AgentDiffDocuments } from "./dsh/agentDiffDocuments";
+import { REMOTE_FILE_SCHEME, RemoteFileSystemProvider } from "./dsh/remoteFileSystem";
 import { resolveForVsCode } from "./dsh/hostText";
 import { selectionLines } from "./dsh/selection";
 import { createHostLog } from "./dsh/hostLog";
@@ -104,6 +105,18 @@ export function activate(context: vscode.ExtensionContext): void {
     // 客户端创建走真实实现；离线测试用 seam 换掉
     undefined,
     agentDiff,
+  );
+  // 执行世界文件资源：只读虚拟 FS，内容与存在性回问产生该资源的 DSH 连接。
+  // 必须与控制器一起持有；连接换代后旧 URI 由 provider 明确报不可用，不回退当前连接。
+  const remoteFiles = new RemoteFileSystemProvider((connectionId) =>
+    controller.resolveHostFileConnection(connectionId),
+  );
+  context.subscriptions.push(
+    vscode.workspace.registerFileSystemProvider(REMOTE_FILE_SCHEME, remoteFiles, {
+      isCaseSensitive: true,
+      isReadonly: true,
+    }),
+    remoteFiles,
   );
   // 两个侧栏视图容器各挂一个带标识的实例：日志里能区分视图来自主侧栏还是辅助侧栏
   const provider = new ChatViewProvider(context, controller, "primary", log);

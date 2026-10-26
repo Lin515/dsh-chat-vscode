@@ -92,7 +92,7 @@
 - [imageFiles.test.ts](<imageFiles.test.ts>) — 图片地址 → 字节与保存对话框默认文件名（扩展名按真实媒体类型）。
 - [imageRender.test.ts](<imageRender.test.ts>) — 会话图片渲染断言（服务端渲染出 HTML，覆盖三处来源）。
 - [imagePreview.test.ts](<imagePreview.test.ts>) — 原图浮层的缩放方向 / 上下限 / 光标锚定 / 拖动边界 / 复原端口，以及滚轮、指针、右键菜单与样式的接线。
-- [localImages.test.ts](<localImages.test.ts>) — 本地图片引用解析与白名单（工作目录内、图片扩展名、stat + 字节上限、失败文案里缀的引用标签）。
+- [localImages.test.ts](<localImages.test.ts>) — 正文图片经执行世界 `stat` + 认证 `/api/file` 取字节：同形同名不读本机、根外/缺 cwd 交 Host、UNC/控制字符拒绝、权限未知不伪装删除。
 
 ### 视图与界面行为
 
@@ -154,7 +154,8 @@
 - [changesCard.test.ts](<changesCard.test.ts>) — 改动文件卡片三段链路（`workspace/changes` 事件 → `/api/changes.summary` → 渲染）。
 - [changesDiff.test.ts](<changesDiff.test.ts>) — 本轮快照对比（`/api/changes.diff`）的 hunk 校验、两侧文本拼装与「看改动」接线。
 - [produced.test.ts](<produced.test.ts>) — 「本轮产出文件」推导（`producedPath`，按成功的写类调用）。
-- [fileChange.test.ts](<fileChange.test.ts>) — 「哪些文件算有改动」判定（`git.openChange` 静默无操作防线）。
+- [fileChange.test.ts](<fileChange.test.ts>) — 执行世界存在性三态、本机附件 source 边界，以及 controller / provider 不再走本机 stat / git 的接线。
+- [remoteFiles.test.ts](<remoteFiles.test.ts>) — 执行世界文件访问：fake transport 驱动 stat / 分页 / `/api/file`、连接关闭、权限不等于 absent、change feed 目标校验与资源地址身份。
 - [diff.test.ts](<diff.test.ts>) — `shared/diff.ts`（`diffLines` / `hunkFromTexts` / `hunksFromMeta` 等）。
 - [styles.test.ts](<styles.test.ts>) — 样式不变量：`app.css` 上关键声明的文本断言，包括链接的行内布局、普通 / 悬停 / 修饰键与不可点击态覆盖顺序；声明断言不替代浏览器 computed style 验收。
 

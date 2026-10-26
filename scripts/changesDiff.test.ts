@@ -212,29 +212,32 @@ console.log("changesDiff: 无 hunk 时显示「没有行差异」，不假装有
   );
   assert.ok(/private async openAgentChanges\(/.test(controller), "要有打开本轮快照对比的入口");
   assert.ok(
-    /changes && \(await this\.openAgentChanges\(uri, changes, notifySession, cwd\)\)/.test(controller),
-    "「看改动」要先试本轮快照，再退回 git（提交后 git 已经没有可对比的改动）",
+    /changes &&\s*\(await this\.openAgentChanges\(/u.test(controller),
+    "「看改动」要先试本轮快照；没有坐标时打开文件本身（不再回落本机 git）",
   );
   assert.ok(
-    /await vscode\.commands\.executeCommand\("vscode\.diff"/.test(controller),
+    /await vscode\.commands\.executeCommand\("vscode\.diff"/u.test(controller),
     "两侧文本要交给 VS Code 原生对比窗口",
   );
   assert.ok(
-    /buildAgentDiffTexts\(diff, current,/.test(controller),
+    /buildAgentDiffTexts\(diff, current,/u.test(controller),
     "两侧文本必须由共用拼装函数生成（片段 / 整份的判据只有一份）",
   );
   assert.ok(
-    /if \(!diff\.before && current !== undefined\) return false;/.test(controller),
-    "新文件仍遵旧口径：文件还在磁盘上就打开文件，不显示「空 → 全文」的 diff",
+    /if \(!diff\.before && current !== undefined\) return false;/u.test(controller),
+    "新文件仍遵旧口径：执行世界还在就打开文件，不显示「空 → 全文」的 diff",
   );
   assert.ok(
-    /if \(!listed \|\| !sameHostPath\(listed, uri\.fsPath\)\)/.test(controller),
-    "路由回来的 path 必须与点击目标核对（跨 Host 后 seq/index 可能指向别的文件）",
+    /sameExecutionPath\(currentAbsolute, targetAbsolute\)/u.test(controller) &&
+      /sameExecutionPath\(diff\.path, targetPath\)/u.test(controller),
+    "路由回来的 path 必须能证明是点击目标（当前文本权威绝对路径优先，读不到时只做字符串比对）",
   );
   assert.ok(
-    /if \(diff\.kind !== "text"\)/.test(controller),
-    "二进制 / 过大没有行可铺，要退回 git 而不是开一个空对比",
+    /if \(diff\.kind !== "text"\)/u.test(controller),
+    "二进制 / 过大没有行可铺：打开文件本身",
   );
+  assert.ok(!/readTextFile\(/u.test(controller), "当前文本必须从执行世界分页读取，不再本机 readFile");
+  assert.ok(!/openChanges\(/u.test(controller), "不再回落未验证的本机 git");
   // 点击延迟：取数缓存 + 悬停预热 + in-flight 合并，三者缺一都会回到「点了才去加载」
   assert.ok(/private loadAgentDiff\(/.test(controller), "对比取数要有独立的缓存入口");
   assert.ok(

@@ -1,211 +1,122 @@
 /**
- * 正文里**本地图片**引用的解析与白名单断言。
+ * 正文图片：执行世界的 stat + `/api/file` 字节 → data URL。
  *
- * 这条链路是「agent 生成的图表看不见」的修复，同时也是**外部输入**入口：
- * 引用原文完全由模型输出决定，模型可以写 `![](../../.ssh/id_rsa)`、
- * `![](C:/Users/x/.aws/credentials)`。所以白名单必须逐条钉住：
- *
- * 1. **只有工作目录内的路径才读**（越界、跨盘符一律不读）；
- * 2. **只有图片扩展名才读**（不能变成任意文件读取）；
- * 3. **先 `stat` 再读**，有字节上限（不能一个 2 GB 的文件把宿主读爆）；
- * 4. 引用原文 → 键原样回给界面（界面按它匹配 `<img src>`）。
- *
- * 另一半（webview 侧的缓存、水合与降级）在 `imageHydrate.test.ts` 与
- * `src/webview/localImages.ts` 里。这里钉的是白名单与读盘——那才是危险的那一半；
- * 水合那半靠手写的 DOM 桩驱动真模块，因为「浏览器那次失败与宿主回帧谁先到」
- * 是时序问题，纯函数覆盖不到。
- *
- * 运行：npm test（已登记到 esbuild.scripts.mjs 的 entries）
+ * 这里没有本机 fs：fake transport 可以返回「与扩展宿主同形同名的另一份内容」，
+ * 断言读到的始终是 Host 的字节；相对路径原样交给 Host（缺 cwd 也可以），绝对
+ * 根外路径不由客户端按目录拒绝；UNC / 控制字符在客户端就拒绝。
  */
 import assert from "node:assert";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import { imageRefLabel, isRemoteImageRef, localImageMediaType, localImagePath } from "../src/shared/imageRef";
 import {
   LOCAL_IMAGE_MAX_BYTES,
-  LOCAL_IMAGE_MAX_REFS,
-  readLocalImages,
-  resolveLocalImagePath,
+  readHostImages,
 } from "../src/dsh/localImages";
+import { HostFileAccess, type HostFileBytesResponse, type HostFileTransport } from "../src/dsh/remoteFiles";
 
-// ---------- 1. 引用分类：远程/内联 vs 本地候选 ----------
-{
-  for (const remote of [
-    "https://example.com/a.png",
-    "http://example.com/a.png",
-    "data:image/png;base64,AAAA",
-    "blob:https://x/1",
-    "vscode-webview://x/a.png",
-    "",
-  ]) {
-    assert.strictEqual(isRemoteImageRef(remote), true, `${remote} 应当交给浏览器/CSP，不该问宿主`);
-  }
-  for (const local of ["./out/chart.png", "out/chart.png", "C:/shots/a.png", "file:///C:/shots/a.png",
-    "/home/x/a.png", "..\\up.png"]) {
-    assert.strictEqual(isRemoteImageRef(local), false, `${local} 是本地候选，必须交给宿主去读`);
-  }
-  console.log("local-images: 引用分类（远程 vs 本地）✓");
-}
+class Fake implements HostFileTransport {
+  readonly calls: { method: string; args: Record<string, unknown> }[] = [];
+  readonly bytesCalls: string[] = [];
+  constructor(
+    private readonly files: Record<string, { bytes: Uint8Array; absolutePath?: string; mediaType?: string; size?: number }>,
+    private readonly fail?: (path: string) => { code: string } | undefined,
+  ) {}
 
-// ---------- 2. 路径还原（file: 外壳 / 转义 / 查询串） ----------
-{
-  const cases: [string, string | undefined][] = [
-    ["file:///C:/shots/a.png", "C:/shots/a.png"],
-    ["file:///home/x/a.png", "/home/x/a.png"],
-    ["out/my%20chart.png", "out/my chart.png"],
-    ["./a.png?raw=1#top", "./a.png"],
-    ["https://example.com/a.png", undefined],
-    ["data:image/png;base64,AA", undefined],
-    ["bad%zz.png", undefined],
-  ];
-  for (const [input, expected] of cases) {
-    assert.strictEqual(localImagePath(input), expected, `${input} 的路径还原不对`);
-  }
-  console.log("local-images: file:/转义/查询串 还原 ✓");
-}
-
-// ---------- 2b. 扩展名表：含 svg，且只看最后一段 ----------
-//
-// 这张表**故意**与附件准入那张（png/jpg/jpeg/webp/gif）不同：那张管「模型能不能读
-// 字节」，这张管「浏览器能不能画」。agent 生成的插画常见就是 `.svg`（2026-09-18
-// 实测那次就是），把它排除掉等于「agent 说给你一张图，界面上什么都没有」。
-{
-  assert.strictEqual(localImageMediaType("a/b/c.png"), "image/png");
-  assert.strictEqual(localImageMediaType("C:\\shots\\scene.JPG"), "image/jpeg", "大小写不敏感");
-  assert.strictEqual(localImageMediaType("scene.svg?v=2"), "image/svg+xml", "查询串不算扩展名");
-  assert.strictEqual(localImageMediaType("shot.webp#top"), "image/webp");
-  assert.strictEqual(localImageMediaType("notes.txt"), undefined);
-  assert.strictEqual(localImageMediaType("archive.png.zip"), undefined, "扩展名只看最后一段");
-  console.log("local-images: 图片扩展名表（含 svg）✓");
-}
-
-// ---------- 2c. 失败文案里缀的引用标签 ----------
-//
-// 加载失败的降级文案要把「是哪一张」说出来：本地引用给**规整后的路径**，远程引用
-// 给原样 URL；`data:` 与空引用没有可缀的东西（渲染侧据此退回不带引用那一句）。
-{
-  const cases: [string, string | undefined][] = [
-    ["out/chart.png", "out/chart.png"],
-    ["./out/my%20chart.png", "./out/my chart.png"],
-    ["file:///C:/shots/a.png", "C:/shots/a.png"],
-    ["https://example.com/a.png", "https://example.com/a.png"],
-    ["data:image/png;base64,AAAA", undefined],
-    ["", undefined],
-    ["   ", undefined],
-  ];
-  for (const [input, expected] of cases) {
-    assert.strictEqual(imageRefLabel(input), expected, `${input} 的失败标签不对`);
-  }
-  console.log("local-images: 失败文案的引用标签 ✓");
-}
-
-// ---------- 3. 白名单：工作目录内才读 ----------
-const root = await mkdtemp(join(tmpdir(), "dsh-local-img-"));
-try {
-  const workdir = join(root, "work");
-  await mkdir(join(workdir, "out"), { recursive: true });
-  await writeFile(join(workdir, "out", "chart.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
-  await writeFile(join(workdir, "notes.txt"), "not an image");
-  // agent 生成的插画（本次实测里 agent 就是写了一张 svg 再 present 它）
-  await writeFile(join(workdir, "scene.svg"), '<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"/>');
-  // 工作目录**之外**的一张真图：读得到也不读（越界就是越界）
-  await writeFile(join(root, "secret.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
-
-  assert.strictEqual(
-    resolveLocalImagePath(workdir, "out/chart.png"),
-    join(workdir, "out", "chart.png"),
-    "工作目录内的相对路径要解析成绝对路径",
-  );
-  assert.strictEqual(
-    resolveLocalImagePath(workdir, "./out/chart.png"),
-    join(workdir, "out", "chart.png"),
-    "`./` 前缀不影响解析",
-  );
-  assert.strictEqual(resolveLocalImagePath(workdir, "../secret.png"), undefined, "`../` 越界必须拒绝");
-  assert.strictEqual(
-    resolveLocalImagePath(workdir, resolve(root, "secret.png")),
-    undefined,
-    "工作目录外的绝对路径必须拒绝",
-  );
-  assert.strictEqual(
-    resolveLocalImagePath(workdir, "file:///" + resolve(root, "secret.png").replace(/\\/g, "/")),
-    undefined,
-    "file:// 外壳不能绕过越界检查",
-  );
-  assert.strictEqual(resolveLocalImagePath(workdir, "notes.txt"), undefined, "非图片扩展名必须拒绝");
-  assert.strictEqual(resolveLocalImagePath(undefined, "out/chart.png"), undefined, "没有工作目录就不读");
-  assert.strictEqual(
-    resolveLocalImagePath(workdir, "scene.svg"),
-    join(workdir, "scene.svg"),
-    "svg 是能画的图片（agent 生成的插画多半是它）",
-  );
-  if (process.platform === "win32") {
-    assert.strictEqual(
-      resolveLocalImagePath("C:\\workspace", "D:/other/a.png"),
-      undefined,
-      "跨盘符（relative 会回绝对路径）必须拒绝",
-    );
-  }
-  console.log("local-images: 越界/非图片/无 cwd 全部拒绝 ✓");
-
-  // ---------- 4. 真读一张图 → data URL ----------
-  {
-    const urls = await readLocalImages(workdir, ["out/chart.png", "../secret.png", "missing.png"]);
-    assert.deepStrictEqual(
-      Object.keys(urls),
-      ["out/chart.png"],
-      "只有工作目录内那张真的存在且合格的图进表（越界与不存在都不进）",
-    );
-    assert.ok(
-      urls["out/chart.png"].startsWith("data:image/png;base64,"),
-      `进表的必须是 data URL，实际：${urls["out/chart.png"]}`,
-    );
-    console.log("local-images: 读成 data URL（越界/缺失不进表）✓");
+  async request<T>(method: string, args: Record<string, unknown>): Promise<T> {
+    this.calls.push({ method, args });
+    const path = String(args.path);
+    const failure = this.fail?.(path);
+    if (failure) throw failure;
+    const file = this.files[path];
+    if (!file) throw { code: "workspace-file/not-found" };
+    return {
+      absolutePath: file.absolutePath ?? `/world/${path}`,
+      version: "v1",
+      bytes: file.size ?? file.bytes.byteLength,
+    } as T;
   }
 
-  // ---------- 4b. svg 的 data URL 媒体类型 ----------
-  {
-    const urls = await readLocalImages(workdir, ["scene.svg"]);
-    assert.ok(
-      urls["scene.svg"]?.startsWith("data:image/svg+xml;base64,"),
-      `svg 的媒体类型要是 image/svg+xml，实际：${urls["scene.svg"]}`,
-    );
-    console.log("local-images: svg 读成 data:image/svg+xml ✓");
-  }
-
-  // ---------- 5. 上限：超大文件与目录都不读 ----------
-  {
-    const huge = join(workdir, "huge.png");
-    await writeFile(huge, Buffer.alloc(LOCAL_IMAGE_MAX_BYTES + 1, 1));
-    const urls = await readLocalImages(workdir, ["huge.png"]);
-    assert.deepStrictEqual(Object.keys(urls), [], "超过上限的图不读（先 stat 再读，不能读进内存再判断）");
-
-    // 目录带图片扩展名（`shots.png/` 这种东西真会出现）：不是普通文件就不读
-    await mkdir(join(workdir, "folder.png"), { recursive: true });
-    const dirUrls = await readLocalImages(workdir, ["folder.png"]);
-    assert.deepStrictEqual(Object.keys(dirUrls), [], "目录不读");
-    console.log("local-images: 超大文件与目录都不读 ✓");
-  }
-
-  // ---------- 6. 单次批量有上限（模型能写几百个引用） ----------
-  {
-    const paths: string[] = [];
-    for (let index = 0; index < LOCAL_IMAGE_MAX_REFS + 8; index += 1) {
-      const name = `b${index}.png`;
-      await writeFile(join(workdir, name), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
-      paths.push(name);
+  async getBytes(path: string): Promise<HostFileBytesResponse | undefined> {
+    this.bytesCalls.push(path);
+    const decoded = decodeURIComponent(new URLSearchParams(path.split("?")[1]).get("path") ?? "");
+    const absolute = decoded;
+    for (const file of Object.values(this.files)) {
+      if ((file.absolutePath ?? `/world/${Object.keys(this.files).find((key) => this.files[key] === file)}`) === absolute) {
+        return { bytes: file.bytes, ...(file.mediaType ? { mediaType: file.mediaType } : {}) };
+      }
     }
-    const urls = await readLocalImages(workdir, paths);
-    assert.strictEqual(
-      Object.keys(urls).length,
-      LOCAL_IMAGE_MAX_REFS,
-      `一次最多读 ${LOCAL_IMAGE_MAX_REFS} 张（多的截断，正文其余部分照常）`,
-    );
-    console.log("local-images: 单次批量截断 ✓");
+    return undefined;
   }
-} finally {
-  await rm(root, { recursive: true, force: true });
 }
+
+// ---------- 1. 同名但内容不同：读到的是 Host 字节 ----------
+{
+  const transport = new Fake({
+    "out/chart.png": { bytes: new Uint8Array([9, 9, 9]), absolutePath: "/remote/out/chart.png", mediaType: "image/png" },
+  });
+  const access = new HostFileAccess(transport);
+  const result = await readHostImages(access, "s1", ["out/chart.png"]);
+  assert.ok(result.urls["out/chart.png"]?.startsWith("data:image/png;base64,"));
+  assert.deepStrictEqual(result.failures, {});
+  assert.deepStrictEqual(transport.calls[0]?.args, { workspaceFileScopeId: "s1", path: "out/chart.png" });
+  assert.ok(transport.bytesCalls[0]?.includes(encodeURIComponent("/remote/out/chart.png")));
+}
+console.log("local-images: 执行世界字节（不是本机同名文件）✓");
+
+// ---------- 2. 根外绝对路径与缺 cwd 相对路径都交给 Host ----------
+{
+  const transport = new Fake({
+    "/etc/shots/a.png": { bytes: new Uint8Array([1]), absolutePath: "/etc/shots/a.png", mediaType: "image/png" },
+    "rel.png": { bytes: new Uint8Array([2]), absolutePath: "/root/rel.png", mediaType: "image/png" },
+  });
+  const access = new HostFileAccess(transport);
+  const result = await readHostImages(access, "s1", ["/etc/shots/a.png", "rel.png"]);
+  assert.deepStrictEqual(Object.keys(result.urls).sort(), ["/etc/shots/a.png", "rel.png"]);
+  assert.strictEqual(transport.calls[1]?.args.path, "rel.png", "相对路径不拼本机 cwd");
+}
+console.log("local-images: 根外绝对 / 缺 cwd 相对路径由 Host 裁决 ✓");
+
+// ---------- 3. UNC / 控制字符客户端拒绝；扩展名不是授权门 ----------
+{
+  const transport = new Fake({});
+  const access = new HostFileAccess(transport);
+  const result = await readHostImages(access, "s1", [
+    "\\\\host\\share\\a.png",
+    "//host/share/b.png",
+    "bad\u0000.png",
+    "notes.txt",
+  ]);
+  assert.deepStrictEqual(Object.keys(result.urls), []);
+  assert.strictEqual(result.failures["\\\\host\\share\\a.png"], "UNC path");
+  assert.strictEqual(result.failures["//host/share/b.png"], "UNC path");
+  assert.strictEqual(result.failures["bad\u0000.png"], "control character");
+  assert.strictEqual(result.failures["notes.txt"], "absent", "非图片扩展名不被客户端拒绝，交给 Host；Host 没有就是 absent");
+  assert.strictEqual(transport.calls.length, 1, "UNC/控制字符在发请求前就拒绝（只有 notes.txt 问了一次）");
+}
+console.log("local-images: UNC / 控制字符拒绝，扩展名不设白名单 ✓");
+
+// ---------- 4. 权限错误是失败原因，不是「不存在」 ----------
+{
+  const access = new HostFileAccess(new Fake({}, () => ({ code: "EACCES" })));
+  const result = await readHostImages(access, "s1", ["a.png"]);
+  assert.deepStrictEqual(result.urls, {});
+  assert.strictEqual(result.failures["a.png"], "unknown", "权限/未知错误不伪装成删除或空图");
+}
+console.log("local-images: 权限未知只记失败，不落 data URL ✓");
+
+// ---------- 5. 客户端预算 / 张数上限 ----------
+{
+  const transport = new Fake({
+    "huge.png": {
+      bytes: new Uint8Array(LOCAL_IMAGE_MAX_BYTES + 1),
+      absolutePath: "/world/huge.png",
+      mediaType: "image/png",
+    },
+  });
+  const access = new HostFileAccess(transport);
+  const result = await readHostImages(access, "s1", ["huge.png"]);
+  assert.deepStrictEqual(result.urls, {});
+  assert.match(result.failures["huge.png"] ?? "", /client transfer budget/u);
+  assert.ok(!transport.bytesCalls.length, "超过客户端预算不发 /api/file");
+}
+console.log("local-images: 单张传输预算生效 ✓");
 
 console.log("\nlocal-images: all assertions passed");

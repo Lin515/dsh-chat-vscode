@@ -28,7 +28,7 @@ import { cjkStrongTokenizers } from "../src/webview/cjkStrong";
 import { parseFileLink } from "../src/webview/fileLinks";
 import { windowsPathTokenizers } from "../src/webview/linkDestinations";
 import { localImagePath } from "../src/shared/imageRef";
-import { resolveLocalImagePath } from "../src/dsh/localImages";
+import { isExecutionWorldAbsolute, unsupportedMediaPath } from "../src/dsh/remoteFiles";
 import { dictionaryFor } from "../src/webview/texts";
 
 const read = (...parts: string[]): string => readFileSync(join(process.cwd(), ...parts), "utf8");
@@ -355,7 +355,8 @@ const source = read("src", "webview", "markdown.ts");
     "markdown.ts 必须从 linkDestinations 导入 windowsPathTokenizers",
   );
 
-  // 落到真实文件：真渲染 → 真判定 → 真宿主解析（`resolveLocalImagePath` 的白名单）→ 盘上有这张图
+  // 落到真实文件：真渲染 → 真判定 → 真宿主路径形态（执行世界绝对路径）→ 盘上有这张图。
+  // 读取权限由 DSH provider 裁决；这里只钉「渲染出来的目标能交给 Host」。
   {
     const root = mkdtempSync(join(tmpdir(), "markdown-links-"));
     try {
@@ -368,24 +369,24 @@ const source = read("src", "webview", "markdown.ts");
       writeFileSync(log, "exit=0\n");
       // 目标用尖括号写（临时目录路径里可能有空格，裸写法本来就不是合法目标）
       const live = render(withFix, `![图](<${png}>)与[日志](<${log}>)`);
-      const resolvedImage = resolveLocalImagePath(cwd, attr(live, "src"));
-      assert.strictEqual(resolvedImage, png, `宿主白名单要解析出工作目录内那张真实图片，实际：${resolvedImage}`);
-      assert.ok(existsSync(resolvedImage as string), "解析结果必须真的在盘上");
+      const hostPath = localImagePath(attr(live, "src"));
+      assert.strictEqual(hostPath, png, `渲染出的图片目标要原样交给 Host，实际：${hostPath}`);
+      assert.ok(hostPath && isExecutionWorldAbsolute(hostPath), "宿主拿到的是执行世界绝对路径");
+      assert.strictEqual(unsupportedMediaPath(hostPath ?? ""), undefined, "绝对路径不是客户端媒体拒绝项");
+      assert.ok(existsSync(hostPath as string), "夹具本身确实在盘上");
       const link = parseFileLink(attr(live, "href"));
       assert.deepStrictEqual(link, { path: log }, "点击判定要拿回原始路径");
       assert.ok(existsSync(resolve(cwd, link.path)), "点开时宿主解析出来的路径必须真的在盘上");
-      if (process.platform === "win32") {
-        assert.strictEqual(
-          resolveLocalImagePath(cwd, "\\\\host\\share\\.agent\\a.png"),
-          undefined,
-          "UNC 图片引用必须继续被白名单拒绝（修复只保住路径文本）",
-        );
-      }
+      assert.strictEqual(
+        unsupportedMediaPath("\\\\host\\share\\.agent\\a.png"),
+        "UNC path",
+        "UNC 图片引用必须在客户端媒体层拒绝",
+      );
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
   }
-  console.log("markdown: Windows 反斜杠路径的链接/图片目标（真 marked → 真判定 → 真宿主解析）✓");
+  console.log("markdown: Windows 反斜杠路径的链接/图片目标（真 marked → 真判定 → 执行世界路径形态）✓");
 }
 
 // ---------- 7. 中文标点收尾的加粗（官方 cjkFriendlyStrong 口径） ----------

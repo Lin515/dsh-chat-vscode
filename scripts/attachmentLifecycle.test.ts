@@ -1400,12 +1400,11 @@ await scenario("二.19 普通打开发 vscode.open；带行号才走文本文档
   assert.deepStrictEqual(editorCalls.opened, [], "普通打开不经过文本编辑器 API");
   assert.deepStrictEqual(noticesOf(h, "v1"), [], "成功时不弹提示");
 
-  // 正文链接那种**带行号**的打开（`[…](src/a.ts#L12)`）仍走文本文档：光标要按真实行数夹取，
-  // 越界的 `Position` 在 VS Code 里是抛异常而不是夹取
+  // 模型/链接路径不再按本机文件打开：没有执行世界连接时只提示，不 Uri.file。
   editorCalls.reset();
   await h.c.handle({ type: "openFile", path: notes, line: 7 }, "v1");
-  assert.deepStrictEqual(editorCalls.opened, [notes], "带行号时先取文本文档");
-  assert.deepStrictEqual(editorCalls.shown, [notes], "再把那份文档显示出来");
+  assert.deepStrictEqual(editorCalls.opened, [], "不再把本机路径交给文本编辑器");
+  assert.deepStrictEqual(editorCalls.openedViaCommand, [], "也不回退本机 Uri.file");
 });
 
 // ---------- 二.20 不按类型分流：不是图片的二进制一样开得出来；带行号指到二进制也不静默 ----------
@@ -1430,17 +1429,12 @@ await scenario("二.20 二进制附件照常打开；带行号那条路失败也
   assert.deepStrictEqual(editorCalls.openedViaCommand, [copy], "vscode.open 照样把文件开出来");
   rmSync(dirname(copy), { recursive: true, force: true });
 
-  // 带行号打开指到一个二进制上（`![](pic.png#L3)` 那种链接）：文本那条路在真机上必失败
-  // （桩按扩展名复刻），必须退到普通打开——不能只留一行日志
+  // 模型路径不再按本机文件打开；没有执行世界连接时明确不打开。
   editorCalls.reset();
   const pic = absoluteFixturePath("pic.png");
   await h.c.handle({ type: "openFile", path: pic, line: 3 }, "v1");
-  assert.deepStrictEqual(editorCalls.opened, [], "二进制拿不到文本文档");
-  assert.deepStrictEqual(editorCalls.openedViaCommand, [pic], "退回普通打开，仍然开出来");
-  assert.ok(
-    (noticesOf(h, "v1").length === 0),
-    "这条退让不需要提示（用户拿到了文件）",
-  );
+  assert.deepStrictEqual(editorCalls.opened, [], "不再拿本机路径取文本文档");
+  assert.deepStrictEqual(editorCalls.openedViaCommand, [], "也不回退本机 Uri.file");
 });
 
 /** 打开链的离线台：查真实临时文件，服务端字节只由场景注入。 */
@@ -1537,11 +1531,14 @@ await scenario("二.24 全来源不可用只报一次附件提示，普通删文
   assert.deepStrictEqual(noticesOf(h, "v1").map((notice) => notice.text), ["@attachmentUnavailable"]);
 
   let diffs = 0;
-  h.c.openChanges = async (uri) => { assert.strictEqual(uri.fsPath, missing); diffs++; return true; };
+  h.c.openChanges = async () => { diffs++; return true; };
   h.frames.length = 0;
   await h.c.handle({ type: "openFile", path: missing }, "v1");
-  assert.strictEqual(diffs, 1, "普通 openFile 的 git 删除文件退路保持不变");
-  assert.deepStrictEqual(noticesOf(h, "v1"), []);
+  assert.strictEqual(diffs, 0, "普通 openFile 不再回退未验证的本机 git diff");
+  assert.ok(
+    noticesOf(h, "v1").some((notice) => notice.text === "@chipPathUnresolved"),
+    "没有执行世界连接时明确提示，而不是打开本机同名文件",
+  );
 });
 
 await scenario("二.25 原件存在时优先打开，按会话 cwd 解析相对路径", async () => {
@@ -1584,7 +1581,7 @@ await scenario("二.26 编辑器拒绝原件后继续副本，全部拒绝只报
   }) as typeof execute;
   try {
     await h.c.handle({ type: "openAttachment", kind: "image", name, id: "rejected", path: original }, "v1");
-    assert.deepStrictEqual(attempted, [original, copy], "不能把 openFile 的 void 当打开成功");
+    assert.deepStrictEqual(attempted, [copy], "界面的 message.path 不当本机原件；只打开账本副本");
     assert.deepStrictEqual(editorCalls.openedViaCommand, [copy]);
     assert.deepStrictEqual(noticesOf(h, "v1"), []);
     rejectAll = true;

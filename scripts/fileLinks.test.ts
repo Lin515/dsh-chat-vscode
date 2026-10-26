@@ -308,10 +308,10 @@ console.log("fileLinks: 词表 = 本轮 produced ∪ deliverables ✓");
 {
   const controller = read("src", "dsh", "controller.ts");
   assert.ok(
-    /await this\.openFile\(\s*\n\s*message\.path,\s*\n\s*message\.diff,\s*\n\s*viewId,\s*\n\s*scope \? this\.cwdOf\(scope\) : undefined,\s*\n\s*message\.line,/.test(
+    /await this\.openFile\(\s*\n\s*message\.path,\s*\n\s*message\.diff,\s*\n\s*viewId,\s*\n\s*scope\?\.sessionId,\s*\n\s*message\.line,/.test(
       controller,
     ),
-    "openFile 分支要把行号与会话 cwd 一起传下去（相对路径的基准只有宿主知道）",
+    "openFile 分支要把行号与会话身份一起传下去（相对路径的基准由 Host 会话决定）",
   );
   assert.ok(
     /function isLineNumber\(value: number \| undefined\): value is number \{\s*\n\s*return value !== undefined && Number\.isSafeInteger\(value\) && value >= 1;/.test(
@@ -347,10 +347,10 @@ console.log("fileLinks: 词表 = 本轮 produced ∪ deliverables ✓");
     "宿主要有 openFileInBrowser 分支（HTML 文件的 Ctrl/Cmd 单击）",
   );
   assert.ok(
-    /private async openFileInBrowser\(viewId: string, path: string\): Promise<void> \{[\s\S]*?if \(!isBrowserOpenableFile\(resolved\)\) \{[\s\S]*?const opened = await vscode\.env\.openExternal\(vscode\.Uri\.file\(resolved\)\);/.test(
+    /private async openFileInBrowser\(viewId: string, path: string\): Promise<void> \{[\s\S]*?if \(!isBrowserOpenableFile\(stat\.absolutePath\)\) \{[\s\S]*?await this\.openThroughHost\(client, stat\.absolutePath, "open"\)/.test(
       controller,
     ),
-    "宿主这层要用同一份 web 文件白名单再验一次，并用文件 URI 交给系统默认程序",
+    "宿主这层要用同一份 web 文件白名单再验一次，并交给 Host 原生打开（不 Uri.file / 不本机 openExternal）",
   );
 
   const ipc = read("src", "shared", "ipc.ts");
@@ -376,19 +376,18 @@ console.log("fileLinks: 宿主侧行号落位 + 相对路径解析 + 外链白�
 {
   const controller = read("src", "dsh", "controller.ts");
   assert.ok(
-    /if \(existence === "absent" && !isLineNumber\(effectiveLine\)\) \{[\s\S]*?const split = splitPathLineSuffix\(path\);[\s\S]*?await this\.fileExistence\(vscode\.Uri\.file\(retry\)\)\) === "present"/.test(
-      controller,
-    ),
-    "字面路径不存在时要按「路径:行号」重试一次（字面优先：真叫 `a:12` 的文件照样开得到）",
+    /error\.reason !== "absent" \|\| isLineNumber\(line\)/.test(controller) &&
+      /const split = splitPathLineSuffix\(path\);/.test(controller) &&
+      /await access\.stat\(sessionId, split\.path\)/.test(controller),
+    "字面路径 not-found 时按「路径:行号」重试一次（字面优先：真叫 `a:12` 的文件照样开得到）",
   );
   assert.ok(
     /const split = splitPathLineSuffix\(path\);/.test(controller),
     "重试必须走 splitPathLineSuffix（判定口径只有一份）",
   );
   assert.ok(
-    /private reportMissingFile\([\s\S]{0,240}?\): void \{/.test(controller) &&
-      /text: fromLink \? `@fileNotFound:\$\{resolved\}` : "@chipFileDeleted"/.test(controller),
-    "链接（@fileNotFound，带解析出的绝对路径）与文件芯片（@chipFileDeleted）的措辞必须分开",
+    /text: fromLink \? `@fileNotFound:\$\{path\}` : "@chipFileDeleted"/.test(controller),
+    "链接（@fileNotFound，带目标路径）与文件芯片（@chipFileDeleted）的措辞必须分开",
   );
 
   const messages = read("src", "webview", "messages.ts");

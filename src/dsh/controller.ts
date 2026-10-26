@@ -58,7 +58,7 @@ import { AttachmentOpenIndex, attachmentTempRoot, materializeAttachment, parseBa
 import { readAttachmentTarget, readOriginalTarget, writeAttachmentTarget } from "./attachmentOpenStore";
 import { saveChatImage } from "./imageFiles";
 import { ConfigChangeRouter } from "./configChanges";
-import { fileChangeKind, hasWorkingChange, isNotFoundError, resolveChipPath, splitPathLineSuffix, type FileExistence, type GitChangeStateLike } from "./fileChange";
+import { fileChangeKind, isNotFoundError, resolveChipPath, splitPathLineSuffix, type FileExistence } from "./fileChange";
 import { missingDirectoryEntries, parentDirectoryEntry } from "./fileRefListing";
 import {
   hostPlatform,
@@ -68,7 +68,16 @@ import {
   probeExistence,
   unsupportedLocalPathForm,
 } from "./localAccess";
-import { readLocalImages } from "./localImages";
+import { readHostImages } from "./localImages";
+import {
+  HostFileAccess,
+  HostFileError,
+  describeHostFileError,
+  isExecutionWorldAbsolute,
+  sameExecutionPath,
+  type HostFileStat,
+} from "./remoteFiles";
+import { remoteFileUri } from "./remoteFileSystem";
 import { shouldContinuePaging } from "./historyPaging";
 import { formatFileMention } from "./references";
 import {
@@ -500,35 +509,6 @@ const IMAGE_INLINE_HARD_CAP = 64 * 1024 * 1024;
 type IngestSource = "button" | "drop" | "paste";
 
 /**
- * 内建 git 扩展导出对象的**结构**视图。
- *
- * `@types/vscode` 只带 VS Code 自己的 API，git 扩展的 API 类型不随包发布，
- * 所以这里按用到的字段自己声明。形状是读内建扩展的实现确认的（VS Code 1.137
- * `extensions/git/dist/main.js`）：
- * - `getAPI(1).getRepository(uri).state` 上确实有 `workingTreeChanges` /
- *   `indexChanges` / `mergeChanges` 三个清单（同一个文件里的
- *   `git.api.getRepositoryState` 也是这么取的）；
- * - `getAPI(1).repositories` 返回数组（`get repositories(){return this.#e.repositories.map(...)}`），
- *   每个元素有 `async status(): Promise<void>`（`await this.run(ae.Status)`）
- *   —— 这就是轮次结束后主动推 Git 状态刷新用的那个方法。
- */
-interface GitApiLike {
-  /** 全部已打开仓库（写类调用可能落在别的仓库里，刷新要全覆盖）。 */
-  readonly repositories?: readonly GitRepositoryLike[];
-  getRepository(uri: vscode.Uri): GitRepositoryLike | null;
-}
-
-interface GitRepositoryLike {
-  readonly state?: GitChangeStateLike;
-  /** 重跑一次 `git status` 并刷新扩展里的 `state`。 */
-  status(): Promise<void>;
-}
-
-interface GitExtensionExportsLike {
-  getAPI(version: number): GitApiLike;
-}
-
-/**
  * 连接那组界面字段的输入：**管理器只读快照** + **本窗口自己的观测** + **本轮的结算**。
  *
  * 三者刻意分开，因为它们的所有权不同（见 `ChatController` 里那几个字段的注释）：
@@ -658,18 +638,6 @@ function connectionFieldsOf(input: ConnectionFieldsInput): ConnectionFields {
   };
 }
 
-/** 比较两个宿主路径是否指同一文件（分隔符归一、忽略结尾分隔符；大小写按平台）。 */
-function sameHostPath(left: string, right: string): boolean {
-  // Windows / macOS 的文件系统默认不区分大小写；Linux 区分。放宽只会在「仅大小写
-  // 不同的两个文件」上把另一个文件的对比开出来，宁可严格一点。
-  const fold = process.platform === "win32" || process.platform === "darwin";
-  const key = (path: string): string => {
-    const normalized = path.replace(/\\/g, "/").replace(/\/+$/, "");
-    return fold ? normalized.toLowerCase() : normalized;
-  };
-  return key(left) === key(right);
-}
-
 /**
  * 回填 turn-start 全文时允许读取的当前文件字节上限。
  *
@@ -702,6 +670,15 @@ export class ChatController implements vscode.Disposable {
    * `attempts` 经 `clientSlot` 经手（接管 / 收场都在那边按定死的顺序做，绕不过去）。
    */
   private client: DshClient | undefined;
+  /**
+   * 当前连接的执行世界文件访问（`workspaceFiles` + 认证 `/api/file`）。
+   *
+   * 每条连接一份；`hostFileConnections` 是资源 URI 的解析表。连接换代时旧表清空、
+   * 旧实例关闭，已打开的虚拟资源因此明确失效，绝不改由新连接解释（见
+   * `remoteFiles.ts` / `remoteFileSystem.ts`）。
+   */
+  private hostFiles: HostFileAccess | undefined;
+  private readonly hostFileConnections = new Map<string, HostFileAccess>();
   private sessions: SessionSummaryView[] = [];
   /**
    * **会话落在哪个目录**的权威账本（会话 id → cwd），来自 `session/list` 的**原始行**。
@@ -1514,7 +1491,7 @@ export class ChatController implements vscode.Disposable {
     /**
      * 「Agent 改动」对比窗口的虚拟文档表（见 `agentDiffDocuments.ts`）。
      *
-     * 不给时点击退回 git 的工作区对比——离线测试不会注册这个提供者，生产路径由
+     * 不给时「看改动」只打开普通虚拟资源——离线测试不会注册这个提供者，生产路径由
      * `extension.ts` 在激活期装好。
      */
     private readonly agentDiff?: AgentDiffDocuments,
@@ -1529,7 +1506,7 @@ export class ChatController implements vscode.Disposable {
       clientSlot: {
         get: () => this.client,
         set: (client) => {
-          this.client = client;
+          this.adoptClient(client);
         },
       },
       createClient: createClient ?? ((baseUrl, token) => new DshClient(baseUrl, token, log)),
@@ -3895,6 +3872,30 @@ export class ChatController implements vscode.Disposable {
   }
 
   /** 服务器状态变化时同步给界面。 */
+  /**
+   * 接上一条新连接：旧的执行世界资源表整体作废。
+   *
+   * 连接对象是路径语义的一部分（同一个远端路径在另一条连接里是另一套 provider）。
+   * 旧 URI 只能解析到旧实例，而旧实例已 `close()`——绝不回退当前连接。
+   */
+  private adoptClient(client: DshClient | undefined): void {
+    if (this.client === client) return;
+    this.hostFileConnections.clear();
+    this.hostFiles?.close();
+    this.client = client;
+    this.hostFiles = client ? new HostFileAccess(client) : undefined;
+    if (this.hostFiles) this.hostFileConnections.set(this.hostFiles.connectionId, this.hostFiles);
+  }
+
+  /**
+   * 虚拟文件 URI 的解析口：只认**原连接**。未知 / 已关闭的 id 返回 undefined，
+   * 由 provider 明确报不可用，不以当前连接兜底。
+   */
+  resolveHostFileConnection(connectionId: string): HostFileAccess | undefined {
+    const access = this.hostFileConnections.get(connectionId);
+    return access && !access.isClosed ? access : undefined;
+  }
+
   onServerStatus(status: ServerStatus): void {
     // **当前目标不是内部时，管理器的内部那套状态一律不影响界面**（2026-09-19 建立，
     // 2026-10-18 扩到桌面端）：我们连的不是它。内部那套可能仍在跑（别的窗口在用），
@@ -6085,9 +6086,10 @@ export class ChatController implements vscode.Disposable {
     adapter.loadImages = (refs, done) => {
       void this.loadAttachmentImages(sessionId, refs, done);
     };
-    // 文件芯片种类（[新增] / 删除线）的分类回调：适配器交路径，宿主查 git 与磁盘。
-    // 带上会话 cwd：芯片路径可能是相对会话工作目录的拼写，解析不了会误判 deleted
-    adapter.classifyFiles = (paths) => this.classifyFiles(this.cwdOf(scope), paths);
+    // 文件芯片种类：适配器交路径，宿主问 DSH 执行世界（`workspaceFiles.stat`）。
+    adapter.classifyFiles = (paths) => this.classifyFiles(sessionId, paths);
+    // 创建目录交给适配器（字段由另一侧新增；本分支用结构类型赋值，合入后自然成立）。
+    (adapter as SessionAdapter & { sessionCwd?: string }).sessionCwd = this.cwdOf(scope);
     // 未知事件（内核冒出的新词汇）记进输出通道：用户侧那条通知会进队列（确认之后还能在
     // 通知历史里回看），日志那一份则是可追溯的诊断细节（含事件数据摘要）。
     // 带会话 id——多会话并存时要知道是哪个会话冒出来的。
@@ -6120,9 +6122,8 @@ export class ChatController implements vscode.Disposable {
     // 回放的用户消息带上「本机那个原文件在哪」：芯片悬停显示它，点开也是它。跨宿主重启
     // 之后只能靠持久记录（`attachmentOpenStore.ts`）——那一层只认原文件，临时副本不算。
     adapter.originalPathFor = (attachmentId) => readOriginalTarget(this.state, attachmentId);
-    // 轮次结束时先推一次 Git 重扫：否则刚写完的文件还没进改动清单，用户第一次
-    // 点芯片看到的是完整文件而不是 diff（见 refreshGitState 的注释）
-    adapter.refreshFiles = () => this.refreshGitState();
+    // **不再在轮次结束刷新本机 git**：芯片路径属于执行世界，本机 git 清单没有经过
+    // 验证的映射（见 `docs/design-paths.md`）。轮尾只按 Host 的 changes 快照取对比。
     adapter.setSession(
       // 子代理会话不在会话列表里：用目录行（label）合成头部信息，标题由此正确
       this.summaryOfSession(sessionId) ?? {
@@ -9034,7 +9035,7 @@ export class ChatController implements vscode.Disposable {
           message.path,
           message.diff,
           viewId,
-          scope ? this.cwdOf(scope) : undefined,
+          scope?.sessionId,
           message.line,
           message.link === true,
           message.changes,
@@ -9094,17 +9095,14 @@ export class ChatController implements vscode.Disposable {
 
       case "saveImage": {
         // 「保存图片」（图片右键菜单）：解析字节 → 用户选路径 → 写盘。
-        // 默认目录与本地图解析同一口径（会话 cwd → 打开的工作区 → 用户目录）：
-        // 会话目录拿不到时退回工作区，仍是用户明确打开的目录，只是基准换了。
+        // 默认目录是**本机下载目的地**（VS Code 工作区 / 用户目录），不是执行世界
+        // 的会话目录；远端图片另存为副本时必须落在用户本机。
         // 保存成功**不发通知**（与「复制成功不入队」同一条口径：结果在界面上就能感知
         // ——路径是用户自己选的）；取不到字节 / 写盘失败才入队（黄色：局部操作失败）。
         // 归属在**发起这一刻**捕获：保存要等用户选路径，期间用户可以切走。
         const sessionId = this.viewSessions.get(viewId);
-        const scope = this.scopeOfView(viewId);
         const defaultDir =
-          (scope ? this.cwdOf(scope) : undefined) ??
-          vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ??
-          homedir();
+          vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? homedir();
         const result = await saveChatImage(message.src, message.name, defaultDir);
         if (result.status === "failed") {
           this.log(`[image] 保存失败：${result.reason}`);
@@ -9317,29 +9315,36 @@ export class ChatController implements vscode.Disposable {
         break;
 
       case "resolveImages": {
-        // 正文里的本地图（`![](out/chart.png)`）：按**该窗口会话**的工作目录解析。
-        // 跨目录一律不读（白名单在 `dsh/localImages.ts`）。
-        //
-        // 会话 cwd 拿不到时（窗口刚起来、会话还没进列表）**退回当前工作区**：那仍是
-        // 用户明确打开的目录，白名单的边界没有放宽，只是基准从「会话目录」换成
-        // 「工作区目录」——而两者在绝大多数情况下就是同一个目录。不兜底的话，
-        // 这一类失败是**全有全无**的：一张图都显示不出来，且完全静默。
+        // 正文里的本地图（`![](out/chart.png)`）：路径属于该窗口会话的**执行世界**。
+        // 相对路径原样交给 Host（缺创建目录由服务端 sandbox 根裁决），不退回 VS Code
+        // 工作区；绝对路径根外能否读取由 provider 裁决，扩展名不是授权条件。
         const scope = this.scopeOfView(viewId);
-        const sessionCwd = scope ? this.cwdOf(scope) : undefined;
-        const cwd = sessionCwd ?? vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-        const urls = await readLocalImages(cwd, message.paths);
-        const missed = message.paths.filter((path) => !(path in urls));
+        const client = this.client;
+        const access = this.hostFiles;
+        if (!scope || !client || !access) {
+          this.log(`[images] 没有可用的会话/连接，正文图片不解析（${message.paths.length} 张）`);
+          this.emitToView(viewId, { type: "images/resolved", requestId: message.requestId, urls: {} });
+          break;
+        }
+        const sessionId = scope.sessionId;
+        const result = await readHostImages(access, sessionId, message.paths);
+        // 迟到结果属于原连接/原会话：用户切走或换连接后不再发给新范围。
+        if (
+          this.client !== client ||
+          this.hostFiles !== access ||
+          this.viewSessions.get(viewId) !== sessionId
+        ) {
+          this.log(`[images] 丢弃迟到的图片解析结果（会话=${sessionId}）`);
+          break;
+        }
+        const missed = message.paths.filter((path) => !(path in result.urls));
         if (missed.length) {
-          // 这条日志是**诊断的落点**：界面只有一句「图片加载失败」，看不出是
-          // 拿不到基准目录、路径越界、扩展名不在图片表里，还是读盘失败。
           this.log(
-            `[images] 本地图片未解析 ${missed.length}/${message.paths.length} 张：` +
-              `基准=${cwd ?? "（没有会话 cwd，也没有打开的工作区）"}` +
-              `${sessionCwd ? "" : "（会话 cwd 缺失，已退回工作区路径）"}；` +
-              `未解析：${missed.join(", ")}`,
+            `[images] 执行世界图片未解析 ${missed.length}/${message.paths.length} 张（会话=${sessionId}）：` +
+              missed.map((path) => `${path}（${result.failures[path] ?? "unknown"}）`).join("、"),
           );
         }
-        this.emitToView(viewId, { type: "images/resolved", requestId: message.requestId, urls });
+        this.emitToView(viewId, { type: "images/resolved", requestId: message.requestId, urls: result.urls });
         break;
       }
 
@@ -11270,55 +11275,33 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
-   * 在编辑器里打开一个文件。
+   * 在编辑器里打开一个文件（普通文件走 VS Code 的**只读虚拟资源**）。
    *
-   * `diff` 表示**想看改动**（文件芯片的普通点击）：优先打开**本轮快照**的对比
-   * （`changes` 坐标 + `/api/changes.diff`，提交之后仍然看得到，见
-   * `openAgentChanges`）；没有坐标或 Host 不再提供那份对比时，退回 VS Code 的
-   * 工作区改动对比窗口（等同 SCM 里的「打开更改」），否则回落成普通打开——拿不到
-   * 改动不是错误，「点了什么都不发生」才是。回落逻辑按文件种类分（见
-   * `fileChangeKind`）：新文件/无改动 → 直接打开文件本身（用户新增 2026-09-14 的
-   * 口径：新建文件点开就是看文件，不是 diff）；已删除 → git 里还有旧内容就开
-   * 对比窗口（左边 HEAD、右边空 = 查看被删前的内容），真找不回再明确告知。
+   * 路径属于 DSH 执行世界：先问 `workspaceFiles.stat` 取得 Host 认可的绝对路径，
+   * 再生成绑定「连接 + 会话 + 路径」的 `dsh-chat-world:` URI；绝不 `Uri.file`，
+   * 也不因本机同名文件存在就改读本机。相对路径原样交给 Host 解析（缺创建目录时
+   * 由服务端的 sandbox 根裁决），客户端不拿 VS Code 工作区兜底。
    *
-   * `changes` 来自改动文件卡片 / 交付行上的坐标（`ChangeCoordinates`）：它让
-   * 「看改动」认的是**这一轮 Agent 改了什么**，而不是工作区当前脏不脏。
+   * `diff` 表示想看本轮改动：只走 Host 的 `/api/changes.diff` 快照；没有坐标或
+   * 快照不可用时**不再回落本机 git**——本机 git 清单没有经过验证的执行世界映射。
+   * 拿不到改动就打开文件本身（或在明确 absent 时给出可行动提示）。
    *
-   * `path` 是芯片上的原样拼写，可能是**相对**会话工作目录的路径（工具调用
-   * 参数原样保留）：先经 `resolveChipPath` 用会话 cwd 解析成绝对路径再动手——
-   * 不解析的话 `Uri.file` 拼不出可解析的 URI，「已删除」提示与打开失败都会
-   * 对无辜文件发生。解析不了（拿不到 cwd）时**明确告知**用户，不再只写日志：
-   * 「点了什么都不发生」正是本文件反复要避免的那种失败。
-   *
-   * `preview: true` 是既有行为：单击芯片只是预览，不挤掉已经打开的文件。
-   *
-   * **打开动作本身不按文件类型分流**：普通打开一律是 `vscode.open` 命令，由 VS Code
-   * 按资源类型挑编辑器。唯一自己动手的是「带行号打开」（见方法末尾那一支的注释）。
-   *
-   * `line` 是正文里带行号的链接给的**1 基起始行**：打开后把光标落在那一行。
-   * 只有普通打开这条路才用得上（要看改动时开的是对比窗口，行号在那儿没有落点）；
-   * 不是正整数、或超出文件行数时按没给处理（越界的位置 `Position` 会抛）。
+   * 行号是导航参数，不是资源身份；打开后用文本文档定位，不生成另一个 URI。
    */
   private async openFile(
     path: string,
     diff?: boolean,
     viewId?: string,
-    cwd?: string,
+    sessionId?: string,
     line?: number,
     fromLink = false,
     changes?: ChangeCoordinates,
   ): Promise<void> {
-    // 芯片路径可能是相对会话工作目录的拼写：先解析成绝对路径再动手，
-    // 不解析的话 Uri.file 拼不出可解析的 URI，「已删除」提示与打开失败
-    // 都会对无辜文件发生（与 classifyFiles 同一口径，见 resolveChipPath）
-    // 归属在**发起这一刻**捕获（下面有 await：文件存在性检查、编辑器打开），
-    // 用户在等待期间切走之后，这些失败不该画进新会话
     const notifySession = viewId ? this.viewSessions.get(viewId) : undefined;
-    let resolved = resolveChipPath(cwd, path);
-    if (!resolved) {
-      // 只可能发生在「相对路径 + 拿不到会话工作目录」时（会话还没进列表）。
-      // 以前这里只写日志 → 用户点了完全没反应，不知道发生了什么。
-      this.log(`[open] 路径解析不了（相对且缺会话工作目录），放弃打开：${path}`);
+    const client = this.client;
+    const access = this.hostFiles;
+    if (!sessionId || !access || !client) {
+      this.log(`[open] 没有可用的会话/连接，放弃打开：${path}`);
       if (viewId) {
         this.notify({
           sessionId: notifySession,
@@ -11329,66 +11312,51 @@ export class ChatController implements vscode.Disposable {
       }
       return;
     }
-    let effectiveLine = line;
-    let existence = await this.fileExistence(vscode.Uri.file(resolved));
-    // **字面路径不存在时，再试一次「路径:行号」**：链接目标里的行号有两种写法，
-    // 模型常把 `#L24` 写成 `:24` / `:24-40`（标签约定串进了目标），那样整条
-    // `src/a.ts:24` 会当成文件名去查盘，必然找不到——用户看到的「文件不存在」
-    // 有一大半是这一条。**字面优先**：真有一个叫 `a:12` 的文件时先开它。
-    if (existence === "absent" && !isLineNumber(effectiveLine)) {
-      const split = splitPathLineSuffix(path);
-      const retry = split ? resolveChipPath(cwd, split.path) : undefined;
-      if (split && retry && (await this.fileExistence(vscode.Uri.file(retry))) === "present") {
-        this.log(`[open] 「${path}」按文件找不到，按「路径:行号」重试：${split.path}:${split.line}`);
-        resolved = retry;
-        effectiveLine = split.line;
-        existence = "present";
+    const opened = await this.statOpenTarget(access, sessionId, path, line);
+    if (this.client !== client || this.hostFiles !== access) return; // 迟到结果属于旧连接
+    if (!opened) {
+      this.log(`[open] 执行世界没有可打开的普通文件：${path}`);
+      if (viewId) {
+        this.notify({
+          sessionId: notifySession,
+          level: "warn",
+          kind: fromLink ? "fileNotFound" : "chipFileDeleted",
+          key: fromLink ? path : "",
+          text: fromLink ? `@fileNotFound:${path}` : "@chipFileDeleted",
+        });
       }
-    }
-    const uri = vscode.Uri.file(resolved);
-    if (diff === true) {
-      // **先看本轮快照**：提交之后 git 的工作区对比已经没有了，而 Host 仍持有
-      // 这一轮的 turn-start / turn-end 对比（Session 存活期间）。坐标由改动卡片 /
-      // 交付行带下来；没有坐标（工具行芯片等）或 Host 不再提供时才退回 git。
-      if (changes && (await this.openAgentChanges(uri, changes, notifySession, cwd))) return;
-      if (await this.openChanges(uri)) return;
-      if (existence === "absent") {
-        // 磁盘上没有了、git 也没有记录 → 内容找不回。明确说一声，别静默。
-        this.reportMissingFile(viewId, notifySession, resolved, fromLink);
-        return;
-      }
-    } else if (existence === "absent") {
-      // 按住修饰键 = 「直接打开文件本身」，但磁盘上已经没有这个文件了，
-      // 打开必然失败。这里退化成和普通点击同一条链（先试改动对比），
-      // 而不是静默失败：对被删除的文件来说，能看到删除前的内容已经是最好的结果。
-      if (changes && (await this.openAgentChanges(uri, changes, notifySession, cwd))) return;
-      if (await this.openChanges(uri)) return;
-      this.reportMissingFile(viewId, notifySession, resolved, fromLink);
       return;
     }
-    // **不按文件类型分流**：打开就是「把这个资源交给 VS Code」，由它按资源类型挑编辑器
-    // ——图片进内置预览、文本进文本编辑器、其余进它自己的对应编辑器，与在资源管理器里
-    // 双击同一个行为。这里曾经用 `openTextDocument` 打开，它对一张 PNG 直接抛「文件似乎
-    // 是二进制文件，不能作为文本打开」，日志里只留一行 `[open] 打开失败`，用户看到的就是
-    // 「单击没有反应」（2026-10-13 实测踩中）；也曾经在这里按 `isImagePath` 自己分流，
-    // 那只是把同一件事判了第二遍。
-    //
-    // **唯一需要自己动手的是「带行号打开」**（正文链接的 `#L24`，只有它会给 `line`）：
-    // 光标位置要按文件真实行数夹取（越界的 `Position` 是抛异常，不是夹取），所以那一条
-    // 仍走文本文档。它失败（链接指到一个二进制上）就退到普通打开，不静默。
-    if (isLineNumber(effectiveLine)) {
+    const uri = remoteFileUri({
+      connectionId: access.connectionId,
+      sessionId,
+      path: opened.stat.absolutePath,
+    });
+    if (diff === true) {
+      // 只认 Host 的本轮快照；没有坐标或 Host 不再提供时打开文件本身。
+      if (
+        changes &&
+        (await this.openAgentChanges(
+          sessionId,
+          opened.path,
+          opened.stat.absolutePath,
+          changes,
+        ))
+      ) {
+        return;
+      }
+    }
+    if (isLineNumber(opened.line)) {
       try {
         const document = await vscode.workspace.openTextDocument(uri);
-        const position = this.revealLine(document, effectiveLine);
+        const position = this.revealLine(document, opened.line);
         await vscode.window.showTextDocument(document, {
           preview: true,
           ...(position ? { selection: new vscode.Range(position, position) } : {}),
         });
         return;
       } catch (error) {
-        this.log(
-          `[open] 带行号打开失败（${path}）：${this.describeError(error)}；退回普通打开`,
-        );
+        this.log(`[open] 带行号打开失败（${path}）：${this.describeError(error)}；退回普通打开`);
       }
     }
     try {
@@ -11399,106 +11367,126 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
-   * 用**系统浏览器**打开本地 web 文件（正文链接按住 Ctrl/Cmd 单击的那一档）。
+   * 问 Host 这个打开目标是否存在；字面路径 not-found 时再试「路径:行号」。
    *
-   * 路径口径与 `openFile` 完全一致：链接上是**原样拼写**，先经 `resolveChipPath` 按
-   * 会话 cwd 解析成绝对路径再动手；解析不了（相对拼写 + 拿不到工作目录）时明确告知，
-   * 不静默。文件不在那儿时复用链接那条的 `fileNotFound` 措辞（带绝对路径）。
+   * 返回 undefined = 明确没有普通文件 / 读不出来。权限、离线与形状错误都不会被
+   * 当成「已删除」；调用方只负责提示打不开，不猜本机同名文件。
+   */
+  private async statOpenTarget(
+    access: HostFileAccess,
+    sessionId: string,
+    path: string,
+    line: number | undefined,
+  ): Promise<{ stat: HostFileStat; path: string; line?: number } | undefined> {
+    try {
+      return { stat: await access.stat(sessionId, path), path, ...(line ? { line } : {}) };
+    } catch (error) {
+      if (!(error instanceof HostFileError) || error.reason !== "absent" || isLineNumber(line)) {
+        this.log(`[open] 读取执行世界路径失败 ${path}：${describeHostFileError(error)}`);
+        return undefined;
+      }
+    }
+    const split = splitPathLineSuffix(path);
+    if (!split) return undefined;
+    try {
+      const stat = await access.stat(sessionId, split.path);
+      this.log(`[open] 「${path}」按文件找不到，按「路径:行号」重试：${split.path}:${split.line}`);
+      return { stat, path: split.path, line: split.line };
+    } catch (error) {
+      this.log(`[open] 「${path}」按「路径:行号」重试仍失败：${describeHostFileError(error)}`);
+      return undefined;
+    }
+  }
+
+  /**
+   * 用**Host 的原生打开**处理 web 文件（正文链接按住 Ctrl/Cmd 那一档）。
    *
-   * **扩展名白名单在宿主这层再验一次**（`shared/webFile.ts`）：webview 发来的帧
-   * 不该被当成可信输入，放宽等于允许把任意本地文件交给系统默认程序。不是 HTML
-   * 家族就拒绝并提示，绝不改走「打开编辑器」——那会让用户以为浏览器没有打开。
+   * 不再调本机 `vscode.env.openExternal(Uri.file(…))`：那会把执行世界路径当成扩展
+   * 宿主本机文件。这里先用 `workspaceFiles.stat` 取得 Host 认可的绝对路径，再走
+   * 认证的 `session/openWorkspacePath`；Host 自己用
+   * `processPathFromHostPath` + `resolve` 复核映射，不可映射会拒绝。`canOpenWorkspacePath`
+   * 只报告 Host 是否有原生桌面能力，不代表扩展宿主能打开本机同路径。
    *
-   * 不存在时先查盘再调 `openExternal`：系统对不存在的 `file:` URI 往往只回
-   * `false` 或什么都不做，先查一次才能给出「找不到文件」这种可行动的信息。
+   * 扩展名白名单仍在本层校验：它是「浏览器是否适合显示」的展示判据，不是文件读取
+   * 权限；被拒绝时明确提示，不改走编辑器。
    */
   private async openFileInBrowser(viewId: string, path: string): Promise<void> {
-    // 归属在发起这一刻捕获（下面有 await），切走之后这条失败不该画进新会话
     const sessionId = this.viewSessions.get(viewId);
-    const scope = this.scopeOfView(viewId);
-    const resolved = resolveChipPath(scope ? this.cwdOf(scope) : undefined, path);
-    if (!resolved) {
-      this.log(`[open] 路径解析不了（相对且缺会话工作目录），放弃用浏览器打开：${path}`);
-      this.notify({
-        sessionId,
-        level: "warn",
-        kind: "chipPathUnresolved",
-        text: "@chipPathUnresolved",
-      });
+    const notifySession = sessionId;
+    const client = this.client;
+    const access = this.hostFiles;
+    if (!sessionId || !client || !access) {
+      this.log(`[open] 没有可用的会话/连接，放弃用 Host 打开：${path}`);
+      this.notify({ sessionId: notifySession, level: "warn", kind: "openExternalFailed", text: "@openExternalFailed" });
       return;
     }
-    if (!isBrowserOpenableFile(resolved)) {
-      this.log(`[open] 不是可直接用浏览器打开的 web 文件，拒绝：${resolved}`);
-      this.notify({
-        sessionId,
-        level: "warn",
-        kind: "openExternalFailed",
-        text: "@openExternalFailed",
-      });
+    let stat: HostFileStat;
+    try {
+      stat = await access.stat(sessionId, path);
+    } catch (error) {
+      this.log(`[open] Host 原生打开取目标失败 ${path}：${describeHostFileError(error)}`);
+      this.notify({ sessionId: notifySession, level: "warn", kind: "openExternalFailed", text: "@openExternalFailed" });
       return;
     }
-    if ((await this.fileExistence(vscode.Uri.file(resolved))) === "absent") {
-      this.reportMissingFile(viewId, sessionId, resolved, true);
+    if (this.client !== client || this.hostFiles !== access) return;
+    if (!isBrowserOpenableFile(stat.absolutePath)) {
+      this.log(`[open] 不是可直接用浏览器打开的文件，拒绝 Host 原生打开：${stat.absolutePath}`);
+      this.notify({ sessionId: notifySession, level: "warn", kind: "openExternalFailed", text: "@openExternalFailed" });
       return;
     }
-    const opened = await vscode.env.openExternal(vscode.Uri.file(resolved));
-    if (!opened) {
-      this.log(`[open] 系统没有接受用浏览器打开的请求：${resolved}`);
-      this.notify({
-        sessionId,
-        level: "warn",
-        kind: "openExternalFailed",
-        text: "@openExternalFailed",
-      });
-    }
+    await this.openThroughHost(client, stat.absolutePath, "open");
   }
 
   /**
    * 「在资源管理器中展开这个目录」（用户消息里的 `@目录` 引用点开时走这条）。
    *
-   * 与 `openFile` 同一口径的两件事：`path` 是引用上的**原样拼写**（可能相对会话工作
-   * 目录），先经 `resolveChipPath` 用会话 cwd 解析成绝对路径再动手；解析不了（相对
-   * 拼写 + 拿不到会话工作目录）时**明确告知**用户，不静默（见 `openFile` 的同段注释）。
-   *
-   * **目录不在那儿必须说一声**：VS Code 的 `revealInExplorer` 对不存在的路径只是什么
-   * 都不做，静默就退化成「点了没反应」——本文件反复要避免的那种失败。措辞走界面词典的
-   * `folderNotFound`，并带上**解析出来的绝对路径**（相对拼写对用户没有意义，他要的是
-   * 宿主到底去哪儿找了）。
-   *
-   * 不复用 `openFile`：那条路是「打开文件」，拿目录去开会把目录当文件读，报的是
-   * 「文件不存在」。这里只借它的路径解析口径，动作是 VS Code 自己的命令。
+   * Host 的 `openWorkspacePath` 只接受 Host 进程能复核的绝对路径。相对目录无法
+   * 先经 `workspaceFiles.stat`（它只服务普通文件）取得绝对路径，因此**明确不猜**
+   * 本机工作区或当前执行目录；绝对输入原样交给 Host 复核，失败明确提示。
    */
   private async revealPath(viewId: string, path: string): Promise<void> {
-    // 归属在发起这一刻捕获（下面有 await 的存在性检查），切走之后不该画进新会话
     const sessionId = this.viewSessions.get(viewId);
-    const scope = this.scopeOfView(viewId);
-    const resolved = resolveChipPath(scope ? this.cwdOf(scope) : undefined, path);
-    if (!resolved) {
-      this.log(`[reveal] 路径解析不了（相对且缺会话工作目录），放弃展开：${path}`);
-      this.notify({
-        sessionId,
-        level: "warn",
-        kind: "chipPathUnresolved",
-        text: "@chipPathUnresolved",
-      });
+    const client = this.client;
+    if (!sessionId || !client) {
+      this.log(`[reveal] 没有可用的会话/连接，放弃展开：${path}`);
+      this.notify({ sessionId, level: "warn", kind: "chipPathUnresolved", text: "@chipPathUnresolved" });
       return;
     }
-    if ((await this.fileExistence(vscode.Uri.file(resolved))) === "absent") {
-      this.log(`[reveal] 目录不存在，放弃展开：${resolved}`);
-      // 目录路径是「关键内容」：不同目录各成一条，不会被合并成第一次那个
-      this.notify({
-        sessionId,
-        level: "warn",
-        kind: "folderNotFound",
-        key: resolved,
-        text: `@folderNotFound:${resolved}`,
-      });
+    if (!isExecutionWorldAbsolute(path)) {
+      this.log(`[reveal] 相对目录没有 Host 绝对目标，客户端不猜本机路径：${path}`);
+      this.notify({ sessionId, level: "warn", kind: "chipPathUnresolved", text: "@chipPathUnresolved" });
       return;
     }
+    await this.openThroughHost(client, path, "reveal");
+  }
+
+  /**
+   * 调 Host 的原生打开 / reveal。
+   *
+   * `canOpenWorkspacePath()` 只决定「这个 Host 有没有桌面能力」；真正的路径映射由
+   * `openWorkspacePath` 在 Host 内复核。客户端不按 loopback、本机同名文件或
+   * `Uri.file` 推断它能在本机打开。
+   */
+  private async openThroughHost(
+    client: DshClient,
+    absolutePath: string,
+    action: "open" | "reveal",
+  ): Promise<void> {
     try {
-      await vscode.commands.executeCommand("revealInExplorer", vscode.Uri.file(resolved));
+      const canOpen = await client.request<boolean>("session/canOpenWorkspacePath", {});
+      if (this.client !== client) return;
+      if (canOpen !== true) {
+        this.log(`[open] Host 没有原生打开能力，拒绝本机代打开：${absolutePath}`);
+        this.notify({ level: "warn", kind: "openExternalFailed", text: "@openExternalFailed" });
+        return;
+      }
+      await client.request("session/openWorkspacePath", {
+        request: { path: absolutePath, ...(action === "reveal" ? { action } : {}) },
+      });
+      this.log(`[open] 已请求 Host ${action}：${absolutePath}`);
     } catch (error) {
-      this.log(`[reveal] 展开失败 ${path}：${this.describeError(error)}`);
+      this.log(`[open] Host ${action} 失败 ${absolutePath}：${this.describeError(error)}`);
+      this.notify({ level: "warn", kind: "openExternalFailed", text: "@openExternalFailed" });
     }
   }
 
@@ -11507,34 +11495,30 @@ export class ChatController implements vscode.Disposable {
    *
    * 界面只交身份，四步解析**从「最接近原件」到「最兜底」**，全在这一处：
    *
-   * 1. `path`：原文件路径（路径通道进来的附件；回放消息也能从本地提交记录借到它）。
-   *    打开的就是用户自己那个文件，之后他改了什么，这里看得见。
-   * 2. 账本里那一条（`id` 命中草稿或提交租约）：`dataUrl`（粘贴 / 截图的字节）或
-   *    **还没释放**的暂存字节，落一份临时副本再打开——这是「磁盘上从来没有过这个文件」
-   *    的那一类唯一的机会（见 `dsh/attachmentOpen.ts` 的文件头）。
-   * 3. `attachmentId`（durable 句柄）：先查宿主的上传索引与 `globalState` 里的持久记录
-   *    （路径通道记原路径、字节通道上传成功时留的临时副本；记录跨宿主重启还在，见
-   *    `dsh/attachmentOpenStore.ts`），命中且文件还在就直接开；否则图片再经 `session/attachment`
-   *    换一次字节落临时副本（回放的历史图片走这条；服务端返回的是**归一化**过的副本，
-   *    不是原始字节）。
-   * 4. 都拿不到 → `@attachmentUnavailable`。**不静默**：点了没反应是最难查的失败。
+   * 1. 账本里那一条（`id` 命中草稿或提交租约）：原文件路径只从宿主账本取，绝不信
+   *    webview 回传的 `message.path`。这是用户自己的文件，之后改了什么这里看得见。
+   * 2. 账号本里那枚 durable 句柄的**已验证本机目标**（`attachmentOpenStore` / 索引）：
+   *    路径通道记原路径、字节通道上传成功时留的临时副本；命中且文件还在就直接开。
+   * 3. 图片 durable 字节：经 `session/attachment` 换一次字节落临时副本（回放的历史
+   *    图片走这条；服务端返回的是归一化过的副本，不是原始字节）。
+   * 4. 最后才把界面的 `path` 当成**执行世界路径**交给 `workspaceFiles.stat` 打开虚拟
+   *    资源；它无法证明是本机文件，因此绝不走 `Uri.file` / 本机编辑器。
+   * 5. 都拿不到 → `@attachmentUnavailable`，不静默。
    */
   private async openAttachment(
     viewId: string,
     message: { name: string; kind: "file" | "image"; path?: string; id?: string; attachmentId?: string; mediaType?: string },
   ): Promise<void> {
     const scope = this.scopeOfView(viewId);
-    const cwd = scope ? this.cwdOf(scope) : undefined;
     // 归属在发起这一刻捕获：下面全是 await（字节换算、临时副本落盘），
     // 用户切走之后这条失败不该画进新会话
     const sessionId = scope?.sessionId;
 
-    if (message.path && await this.tryOpenAttachmentPath(message.path, cwd)) return;
-
-    // 账本里那一枚：只有草稿与乐观回显的 id 在这个命名空间里（durable 行的 `m<序号>` 落空）
+    // 账本里那一枚：只有草稿与乐观回显的 id 在这个命名空间里（durable 行的 `m<序号>` 落空）。
+    // 本机 source 只从这里取——`message.path` 是界面输入，不能直接当本机路径。
     const entry = message.id ? this.attachments.find(message.id) : undefined;
     if (entry) {
-      if (entry.attachment.path && await this.tryOpenAttachmentPath(entry.attachment.path, cwd)) return;
+      if (entry.attachment.path && await this.tryOpenAttachmentPath(entry.attachment.path)) return;
       const inline = entry.attachment.dataUrl ? parseBase64DataUrl(entry.attachment.dataUrl) : undefined;
       const bytes = inline?.bytes ?? entry.bytes;
       if (bytes) {
@@ -11543,24 +11527,23 @@ export class ChatController implements vscode.Disposable {
           name: entry.attachment.name,
           mediaType: inline?.mediaType ?? entry.attachment.mediaType,
         });
-        if (path && await this.tryOpenAttachmentPath(path, cwd)) return;
+        if (path && await this.tryOpenAttachmentPath(path)) return;
       }
     }
 
     const durable = message.attachmentId ?? entry?.attachment.attachmentId;
     if (durable) {
       // 两处都查：内存索引里可能还挂着「临时副本正在落盘」，而这份记录也可能是**上一个
-      // 宿主进程**留下的——那条就在 `globalState` 里，点一次现查一次（见
-      // `dsh/attachmentOpenStore.ts`，文件附件没有回服务端取字节的第二条路）。
+      // 宿主进程**留下的——那条就在 `globalState` 里，点一次现查一次。
       const candidates = [
         await this.attachmentTargets.pathFor(durable),
         readAttachmentTarget(this.state, durable)?.path,
       ];
       for (const candidate of new Set(candidates)) {
-        if (candidate && await this.tryOpenAttachmentPath(candidate, cwd)) return;
+        if (candidate && await this.tryOpenAttachmentPath(candidate)) return;
       }
-      if (message.kind === "image" && scope) {
-        const fetched = await this.fetchAttachmentBytes(scope.sessionId, durable);
+      if (message.kind === "image" && sessionId) {
+        const fetched = await this.fetchAttachmentBytes(sessionId, durable);
         if (fetched) {
           const path = await this.materializeAttachmentCopy({
             bytes: fetched.bytes,
@@ -11571,11 +11554,15 @@ export class ChatController implements vscode.Disposable {
             // 落下来的副本同样是「这条句柄的本地那一份」：下次点击不必再问一次线上
             // （但它不是用户的文件，悬停提示不拿它当路径，见 `readOriginalTarget`）
             this.rememberLocalTarget(durable, path, true);
-            if (await this.tryOpenAttachmentPath(path, cwd)) return;
+            if (await this.tryOpenAttachmentPath(path)) return;
           }
         }
       }
     }
+
+    // durable 里没有本机 source 时，界面给的原样 path 只能按执行世界解释。
+    // 它可能正是 provider 记录的路径；Host 的 stat/读取权限负责裁决。
+    if (message.path && sessionId && await this.openHostAttachmentPath(sessionId, message.path)) return;
 
     this.log(
       `[open] 附件没有可打开的本地内容：name=${message.name} kind=${message.kind} ` +
@@ -11590,12 +11577,35 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
-   * 附件的一条本地来路：解析不了、确认缺失或编辑器拒绝都交回解析链继续尝试。
-   * 不借 openFile 的 void 判断成功，也不走它的 git 删除文件对比与中途提示。
-   * stat 不确定不是缺失证据：仍可交给编辑器，只有命令完成才算打开成功。
+   * 附件的**执行世界**来路：stat → 只读虚拟资源 → `vscode.open`。
+   *
+   * 不把路径变成 `file:`，也不把「本机同名文件存在」当成功；失败回 false，让调用方
+   * 继续走最终提示。
    */
-  private async tryOpenAttachmentPath(path: string, cwd: string | undefined): Promise<boolean> {
-    const resolved = resolveChipPath(cwd, path);
+  private async openHostAttachmentPath(sessionId: string, path: string): Promise<boolean> {
+    const access = this.hostFiles;
+    const client = this.client;
+    if (!access || !client) return false;
+    try {
+      const stat = await access.stat(sessionId, path);
+      if (this.client !== client || this.hostFiles !== access) return false;
+      const uri = remoteFileUri({ connectionId: access.connectionId, sessionId, path: stat.absolutePath });
+      await vscode.commands.executeCommand("vscode.open", uri, { preview: true });
+      return true;
+    } catch (error) {
+      this.log(`[open] 附件执行世界路径打开失败 ${path}：${describeHostFileError(error)}`);
+      return false;
+    }
+  }
+
+  /**
+   * 附件的一条**本机 source**：只接受宿主账本 / 已验证上传索引给出的绝对路径。
+   *
+   * 不用会话 cwd 拼接（那是执行世界目录，不是扩展宿主目录）。解析不了、确认缺失或
+   * 编辑器拒绝都交回解析链继续尝试；stat 不确定不是缺失证据，仍可交给编辑器。
+   */
+  private async tryOpenAttachmentPath(path: string): Promise<boolean> {
+    const resolved = resolveChipPath(undefined, path);
     if (!resolved) return false;
     const uri = vscode.Uri.file(resolved);
     if (await this.fileExistence(uri) === "absent") return false;
@@ -11605,6 +11615,21 @@ export class ChatController implements vscode.Disposable {
     } catch (error) {
       this.log(`[open] 附件路径打开失败 ${resolved}：${this.describeError(error)}`);
       return false;
+    }
+  }
+
+  /**
+   * **本机附件 source** 的存在性（只服务账本 / 已验证目标，不服务模型路径）。
+   *
+   * 只有 VS Code 明确报 `FileNotFound` 才算 absent；权限 / 离线是 unknown，仍交给
+   * 编辑器尝试。执行世界路径的三态由 `HostFileAccess.classify` 负责。
+   */
+  private async fileExistence(uri: vscode.Uri): Promise<FileExistence> {
+    try {
+      await vscode.workspace.fs.stat(uri);
+      return "present";
+    } catch (error) {
+      return isNotFoundError(error) ? "absent" : "unknown";
     }
   }
 
@@ -11630,34 +11655,6 @@ export class ChatController implements vscode.Disposable {
       this.log(`[open] 附件临时副本落盘失败（${input.name}）：${this.describeError(error)}`);
       return undefined;
     }
-  }
-
-  /**
-   * 「这个文件打不开」要说什么。
-   *
-   * **两种来路的话不一样**：芯片/交付行来自工具调用，文件确实存在过，说「已删除」
-   * 是诚实的；正文里点的**链接**却常常从一开始就没指对地方（相对的不是会话工作目录、
-   * 或者把行号写进了目标），这时说「文件已删除」是误导——用户会去 git 里找一个
-   * 根本没删过的文件。链接这条路因此**把解析出来的绝对路径说出来**：
-   * 「怎么算出来的」一眼可见，用户才能自己判断基准对不对。
-   */
-  private reportMissingFile(
-    viewId: string | undefined,
-    sessionId: string | undefined,
-    resolved: string,
-    fromLink: boolean,
-  ): void {
-    if (!viewId) return;
-    // 归属是**发起打开那一刻**的会话（`sessionId` 由调用方捕获），不是完成时视图绑着谁；
-    // 链接那条按文件成 key，同一份文件失败多次合并，不同文件各自成条
-    this.notify({
-      sessionId,
-      level: "warn",
-      kind: fromLink ? "fileNotFound" : "chipFileDeleted",
-      key: fromLink ? resolved : "",
-      // 带 `:` 的绝对路径照旧整条当参数（`@key:arg` 只按第一个 `:` 切，见 i18n 断言）
-      text: fromLink ? `@fileNotFound:${resolved}` : "@chipFileDeleted",
-    });
   }
 
   /**
@@ -11797,61 +11794,68 @@ export class ChatController implements vscode.Disposable {
   /**
    * 打开**这一轮**该文件的对比（Host 的 turn-start / turn-end 快照），返回是否开出来了。
    *
-   * 与 `openChanges` 的分工：那个认的是**工作区当前脏不脏**（`git.openChange`），
-   * 提交之后就看不出 Agent 改了什么；这里认的是 `workspace/changes` 宣告的那一轮，
-   * 数据来自认证路由 `GET /api/changes.diff`（与官方 web 端的复查面板同一份契约）。
+   * 数据来自认证路由 `GET /api/changes.diff`（与官方 web 端复查面板同一份契约）。
+   * Host 只给 hunk，两侧文本由 `buildAgentDiffTexts` 拼：整份新建 / 删除 / 粗粒度
+   * 直接拼整侧；两边都在时用**同一执行世界**里按 `diff.path` 读到的当前文本验证
+   * hunk 后回填；对不上（文件在本轮之后又变过）就退化成带省略标记的片段。
    *
-   * Host 只给 hunk，所以两侧文本由 `buildAgentDiffTexts` 拼：整份新建 / 删除 / 粗粒度
-   * 直接拼整侧；两边都在时用磁盘上的当前文件验证 hunk 后回填；对不上（文件在本轮
-   * 之后又变过）就退化成带省略标记的片段，并用标题说明「片段」。
+   * **不再退回本机 git**：本机 git 清单没有经过验证的执行世界映射。拿不到快照
+   * （旧会话 / Host 重启 / 二进制 / 过大 / 当前文本不可用）时返回 `false`，由调用方
+   * 打开普通虚拟资源。
    *
-   * 拿不到（旧会话 / Host 重启过 / 二进制 / 过大 / 没注册虚拟文档表）时返回 `false`，
-   * 由调用方退回 git 对比或普通打开——「点了没反应」是这里最不能接受的结果。
-   *
-   * `sessionId` 是**发起点击那个窗口**绑定的会话：清单与对比都按它去 Host 取。
-   * `cwd` 只用来复核路由回来的 `path` 是不是点中的那个文件（换了 Host 之后，同一个
-   * `seq` / `index` 可能是别的文件；宁可退回 git，也不能把别人的改动画到这个文件上）。
+   * `targetPath` / `targetAbsolute` 是点击目标（原样拼写 + Host 绝对路径）；路由
+   * 回来的 `diff.path` 必须能证明是同一目标（当前文本的 `absolutePath` 优先，
+   * 读不到时只做不猜的字符串比对），否则宁可不开。
    */
   private async openAgentChanges(
-    uri: vscode.Uri,
+    sessionId: string,
+    targetPath: string,
+    targetAbsolute: string,
     coordinates: ChangeCoordinates,
-    sessionId: string | undefined,
-    cwd: string | undefined,
   ): Promise<boolean> {
     const client = this.client;
-    if (!client || !this.agentDiff || !sessionId) return false;
+    const access = this.hostFiles;
+    if (!client || !access || !this.agentDiff) return false;
     const started = Date.now();
     const fetchStarted = Date.now();
     const diff = await this.loadAgentDiff(sessionId, coordinates.seq, coordinates.index);
     const fetchedMs = Date.now() - fetchStarted;
     // 期间换了连接：这份对比属于上一个 Host，丢掉（不能把 A 的改动画在 B 的会话上）
-    if (!diff || this.client !== client) {
+    if (!diff || this.client !== client || this.hostFiles !== access) {
       this.log(
-        `[open] 没有可用的本轮改动对比（旧会话 / 已重启 / 形状不合规 / 取数失败），退回 git：` +
-          `${uri.fsPath} seq=${coordinates.seq} index=${coordinates.index}（取数 ${fetchedMs}ms）`,
+        `[open] 没有可用的本轮改动对比（旧会话 / 已重启 / 形状不合规 / 取数失败），打开文件本身：` +
+          `${targetAbsolute} seq=${coordinates.seq} index=${coordinates.index}（取数 ${fetchedMs}ms）`,
       );
       return false;
     }
     if (diff.kind !== "text") {
-      // 二进制 / 过大没有行可铺：git 那一路至少还能按它自己的方式提示
-      this.log(`[open] 本轮改动对比不可铺成文本（${diff.kind}），退回 git：${uri.fsPath}`);
+      this.log(`[open] 本轮改动对比不可铺成文本（${diff.kind}），打开文件本身：${targetAbsolute}`);
       return false;
     }
-    // 坐标是界面给的，跨 Host / 重连后可能与这份清单对不上：只认路由自己报的路径。
-    // （换了 Host 之后同一个 seq/index 完全可能是另一个文件，按坐标硬开等于把别人的
-    // 改动画到这个芯片上。）
-    const listed = resolveChipPath(cwd, diff.path);
-    if (!listed || !sameHostPath(listed, uri.fsPath)) {
+    let current: string | undefined;
+    let currentAbsolute: string | undefined;
+    try {
+      const read = await access.readText(sessionId, diff.path, { maxBytes: AGENT_DIFF_READ_LIMIT });
+      current = read.text;
+      currentAbsolute = read.stat.absolutePath;
+    } catch (error) {
+      // 当前文件不在了 / 读不了：仍可用 hunk 片段，但不能从另一世界回填。
+      this.log(`[open] 本轮对比的当前文本不可用 ${diff.path}：${describeHostFileError(error)}`);
+    }
+    if (this.client !== client || this.hostFiles !== access) return false;
+    const matched = currentAbsolute !== undefined
+      ? sameExecutionPath(currentAbsolute, targetAbsolute)
+      : sameExecutionPath(diff.path, targetPath) || sameExecutionPath(diff.path, targetAbsolute);
+    if (!matched) {
       this.log(
-        `[open] 本轮改动对比的路径与点击目标不一致，退回 git：` +
-          `${diff.path} ≠ ${uri.fsPath}（seq=${coordinates.seq} index=${coordinates.index}）`,
+        `[open] 本轮改动对比的路径与点击目标不一致，打开文件本身：` +
+          `${diff.path} ≠ ${targetAbsolute}（seq=${coordinates.seq} index=${coordinates.index}）`,
       );
       return false;
     }
-    const current = await this.readTextFile(uri);
     // **新文件口径不跟着变**（用户 2026-09-14 拍板）：点开就是看文件，不是看
-    // 「空 → 全文」的 diff。磁盘上还在就交回普通打开；只有文件已经不在了（内容
-    // 眼看要丢）才用本轮快照把它显示出来。
+    // 「空 → 全文」的 diff。执行世界里还在就交回普通打开；只有文件已经不在了
+    // （内容眼看要丢）才用本轮快照把它显示出来。
     if (!diff.before && current !== undefined) return false;
     const texts = buildAgentDiffTexts(diff, current, (lines) =>
       vscode.l10n.t("… {0} unchanged lines omitted …", lines),
@@ -11875,78 +11879,8 @@ export class ChatController implements vscode.Disposable {
     }
   }
 
-  /** 读磁盘上的文本（虚拟文档 / 二进制文件读不了时 undefined，调用方按「没有」处理）。 */
-  private async readTextFile(uri: vscode.Uri): Promise<string | undefined> {
-    try {
-      // 本轮对比的正文上限由 Host 控制（2 MB）；当前文件如果在本轮之后被换成更大的
-      // 东西，读进来只会白占内存。超过一档就放弃回填，改用 hunk 片段（无需读盘）。
-      const stat = await vscode.workspace.fs.stat(uri);
-      if (stat.size > AGENT_DIFF_READ_LIMIT) return undefined;
-      const bytes = await vscode.workspace.fs.readFile(uri);
-      return Buffer.from(bytes).toString("utf8");
-    } catch {
-      return undefined;
-    }
-  }
-
   /**
-   * 有可对比的改动时打开 VS Code 的对比窗口，返回是否开出来了。
-   *
-   * 复用 git 扩展的 `git.openChange`（左边是 HEAD/暂存版本、右边是工作区文件），
-   * 但**先自己判定有没有改动**：该命令对不在 SCM 改动清单里的文件是静默无操作
-   * （内部 `getSCMResource()` 找不到资源就 return），直接调用会「点了没反应」。
-   * 判定口径见 `fileChange.ts`——只认工作区/暂存/合并三组（`getSCMResource()` 查的
-   * 就是这三组）。未跟踪文件在默认配置（`git.untrackedChanges: "mixed"`）下**也在**
-   * 工作区组里，所以这条命令找得到它；只是 git 自己解析不出左侧、最终执行的是
-   * `vscode.open`（打开文件本身）——新文件点开就是看文件，正是要的语义。
-   * 设成 `"separate"` 时它在未跟踪组、这里判定为「没改动」→ 回落普通打开，结果一样。
-   *
-   * 判定只做**一次**、落空立即回落，绝不等待（用户 2026-09-14 拍板）：曾试过
-   * 「轻推 SCM 重扫 + 限时轮询」来救「第一次点不出 diff」的竞态（git
-   * 扩展按 fs 事件去抖刷新，刚写完的文件还没进改动清单），但代价是「真没改动」
-   * 的点击（无改动的交付文件、被忽略的文件）每次都要白等 1.2s——点击的即时感
-   * 优先，宁可偶尔第一下先看到文件、第二下才是 diff。
-   */
-  private async openChanges(uri: vscode.Uri): Promise<boolean> {
-    try {
-      const git = vscode.extensions.getExtension<GitExtensionExportsLike>("vscode.git");
-      if (!git) return false;
-      // 内建扩展按需激活：没激活时 exports 还是空的
-      const exports = git.isActive ? git.exports : await git.activate();
-      const repo = exports?.getAPI?.(1)?.getRepository(uri);
-      if (!repo) return false;
-      // 对比窗口只在这里开：确认在改动清单里才会走进来
-      if (hasWorkingChange(repo.state, uri.fsPath)) {
-        await vscode.commands.executeCommand("git.openChange", uri);
-        return true;
-      }
-      return false;
-    } catch (error) {
-      // git 扩展缺失 / 命令失败都不该让「点文件」整个失败：回落普通打开
-      this.log(`[open] 改动对比不可用，改为直接打开 ${uri.fsPath}：${this.describeError(error)}`);
-      return false;
-    }
-  }
-
-  // ---------- 文件芯片分类（[新增] / 删除线记号的数据来源） ----------
-  /**
-   * 文件在磁盘上的存在性（`vscode.workspace.fs` 是宿主内的标准异步入口）。
-   *
-   * **只有 stat 明确报「找不到」才算 `absent`**，其余异常一律 `unknown`——
-   * 拿不到证据时不动（见 `FileExistence` 与 `isNotFoundError` 的注释）。
-   */
-  private async fileExistence(uri: vscode.Uri): Promise<FileExistence> {
-    try {
-      await vscode.workspace.fs.stat(uri);
-      return "present";
-    } catch (error) {
-      return isNotFoundError(error) ? "absent" : "unknown";
-    }
-  }
-
-  /**
-   * 会话的工作目录（芯片**相对**路径的解析基准）；会话还没进列表时 undefined
-   * （调用方按「解析不了 = 不确定」处理，不猜）。
+   * 会话的工作目录（仅供适配器展示与创建目录语义使用；**不是**芯片路径的解析基准）。
    */
   private cwdOf(scope: SessionScope): string | undefined {
     return this.sessions.find((s) => s.id === scope.sessionId)?.cwd;
@@ -11955,28 +11889,26 @@ export class ChatController implements vscode.Disposable {
   /**
    * 给一批芯片路径做种类判定（供适配器下发表格给界面）。
    *
-   * 每个路径独立判定；单个失败不影响其它（那条退化为无记号）。判定靠
-   * `fileChangeKind`（git 状态 + 磁盘存在性），**没有**轮询——那是点击链路
-   * （`openChanges`）的专属：分类慢半拍顶多晚一点显示记号，点击必须当场给出
-   * 正确行为，二者要求不同。
+   * 每个路径独立问 Host 的执行世界；只有 `not-found` 才是删除线，权限 / 离线 /
+   * 连接失效都不标记号。**不再查本机 git**：没有经过验证的映射，不能用 git 清单
+   * 给执行世界文件贴 [新增] / 已改动。
    *
-   * 芯片路径可能是**相对**会话工作目录的拼写（工具调用参数原样保留）：先经
-   * `resolveChipPath` 解析成绝对路径再查盘 / 查 git，否则 `stat` 必失败、
-   * 被改过的文件会被误判成 `deleted`。表格键保持芯片上的原样路径（界面按它查）。
+   * 表格键保持芯片上的原样路径（界面按它查）。
    */
   private async classifyFiles(
-    cwd: string | undefined,
+    sessionId: string,
     paths: readonly string[],
   ): Promise<Record<string, FileChangeKind>> {
+    const client = this.client;
+    const access = this.hostFiles;
+    if (!client || !access) return {};
     const entries = await Promise.all(
       paths.map(async (path): Promise<[string, FileChangeKind] | undefined> => {
         try {
-          const resolved = resolveChipPath(cwd, path);
-          if (!resolved) return undefined; // 解析不了 = 不确定，不猜 deleted
-          const uri = vscode.Uri.file(resolved);
-          const existence = await this.fileExistence(uri);
-          const state = this.gitStateFor(uri);
-          const kind = fileChangeKind(state, uri.fsPath, existence);
+          const existence: FileExistence = await access.classify(sessionId, path);
+          // 期间换了连接：旧连接的存在性结论不能写进新域。
+          if (this.client !== client || this.hostFiles !== access) return undefined;
+          const kind = fileChangeKind(existence);
           return kind ? [path, kind] : undefined;
         } catch {
           return undefined;
@@ -11988,54 +11920,6 @@ export class ChatController implements vscode.Disposable {
       if (entry) kinds[entry[0]] = entry[1];
     }
     return kinds;
-  }
-
-  /**
-   * 主动让 git 扩展重新算一次状态（**轮次结束时**调一次，不在点击链路里）。
-   *
-   * 为什么需要：git 扩展按文件系统事件去抖刷新，模型刚写完的文件往往还没进
-   * 改动清单。于是用户第一次点文件芯片时 `hasWorkingChange` 判定为「没改动」，
-   * 回落成普通打开——看到的是完整文件内容而不是 diff；过一会儿（或点第二次）
-   * 刷新到了才是 diff。在轮次结束、文件都已落盘之后主动推一次，用户几秒后
-   * 再点就是 diff 了。
-   *
-   * 与「点击时轻推重扫 + 轮询」的区别：那个是**点击当场等**（真没改动也要白等
-   * 1.2s，用户 2026-09-14 拍板撤掉）；这里是**轮次结束时推一次**，不占点击的
-   * 任何时间。刷新是尽力而为：失败只记日志，分类照旧（拿不到就无记号）。
-   */
-  private async refreshGitState(): Promise<void> {
-    try {
-      const git = vscode.extensions.getExtension<GitExtensionExportsLike>("vscode.git");
-      if (!git) return;
-      // 这里**要**激活：用户马上就会点芯片，状态必须是对的
-      const exports = git.isActive ? git.exports : await git.activate();
-      const repositories = exports?.getAPI?.(1)?.repositories ?? [];
-      await Promise.all(
-        repositories.map(async (repository) => {
-          try {
-            await repository.status();
-          } catch (error) {
-            this.log(`[files] 刷新 git 状态失败：${this.describeError(error)}`);
-          }
-        }),
-      );
-    } catch (error) {
-      this.log(`[files] 取 git 扩展失败：${this.describeError(error)}`);
-    }
-  }
-
-  /** git 扩展里该路径所属仓库的状态；扩展缺失 / 不在仓库里时返回 undefined。 */
-  private gitStateFor(uri: vscode.Uri): GitChangeStateLike | undefined {
-    try {
-      const git = vscode.extensions.getExtension<GitExtensionExportsLike>("vscode.git");
-      const exports = git?.isActive ? git.exports : undefined;
-      // 注意：这里**不**主动激活 git 扩展——分类是锦上添花，不值得为一批记号
-      // 把整个内建扩展拉起来；没激活就当没有（点击 diff 链路会激活它，
-      // 轮次结束的 `refreshGitState` 也会）。
-      return exports?.getAPI?.(1)?.getRepository(uri)?.state;
-    } catch {
-      return undefined;
-    }
   }
 
   private async insertIntoEditor(text: string): Promise<void> {
@@ -12671,6 +12555,10 @@ export class ChatController implements vscode.Disposable {
 
   dispose(): void {
     this.disposed = true;
+    // 已打开的执行世界资源随连接一起失效：关闭后 provider 明确报不可用。
+    this.hostFileConnections.clear();
+    this.hostFiles?.close();
+    this.hostFiles = undefined;
     // 作废在途轮（迟到的完成一律静默让位）+ 收跟随流 + dispose 客户端：三件事的顺序在
     // 模块里定死（见 `ConnectionAttempts.dispose`），这里不再自己排
     this.attempts.dispose();
