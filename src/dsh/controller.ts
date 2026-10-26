@@ -11971,6 +11971,8 @@ export class ChatController implements vscode.Disposable {
    *
    * `openScopeFollow` 建适配器时账本可能还没到（窗口先绑会话、`session/list` 后到）；
    * 这里只补适配器的展示上下文，不改会话 header，也不触发执行目录变化。已有值不回退。
+   * 补上之后还要让**已经下发**的终端卡重算一次目录标签：那些卡在折的时候没有创建
+   * 目录可回退（见 `SessionAdapter.refreshTerminalCwds`）。
    */
   private syncScopeSessionCwds(): void {
     for (const scope of this.scopes.values()) {
@@ -11979,7 +11981,10 @@ export class ChatController implements vscode.Disposable {
         | undefined;
       if (!adapter) continue;
       const cwd = this.cwdOf(scope);
-      if (cwd !== undefined) adapter.sessionCwd = cwd;
+      if (cwd === undefined) continue;
+      const changed = adapter.sessionCwd !== cwd;
+      adapter.sessionCwd = cwd;
+      if (changed) adapter.refreshTerminalCwds();
     }
   }
 

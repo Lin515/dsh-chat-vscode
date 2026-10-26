@@ -262,4 +262,46 @@ console.log("pathAdapter: 终端记录 cwd 原样、旧根调用回退、运行/
 }
 console.log("pathAdapter: 历史重放与实时结算得到同一目标 / 产物坐标 ✓");
 
+// ---------- 7. 创建目录后到：补齐已下发终端卡的标签 ----------
+{
+  const { adapter, tool, frames } = harness();
+  // 窗口恢复先绑会话（`session/list` 还没回来）：适配器建域时没有创建目录
+  call(adapter, "t1", "bash", { command: "pwd", workdir: "sub", description: "inspect" });
+  result(adapter, "t1", {});
+  const before = tool("t1").card;
+  assert.ok(before && before.kind === "terminal");
+  assert.strictEqual(before.cwd, "sub", "缺创建目录时相对 workdir 只做原样规范化，不是绝对目标");
+
+  // 有记录值的卡不能被补算覆盖；嵌套调用仍不借创建目录回退
+  call(adapter, "t2", "bash", { command: "pwd", description: "recorded" });
+  result(adapter, "t2", { meta: { cwd: "/B/recorded" } });
+  call(adapter, "t3", "bash", { command: "pwd", workdir: "sub", description: "nested" }, { parentCallId: "root" });
+  result(adapter, "t3", {});
+
+  const framesBefore = frames.length;
+  adapter.sessionCwd = "/A";
+  adapter.refreshTerminalCwds();
+
+  const after = tool("t1").card;
+  assert.ok(after && after.kind === "terminal");
+  assert.strictEqual(after.cwd, "/A/sub", "创建目录后到后补算相对 workdir 的标签");
+  assert.ok(
+    frames.slice(framesBefore).some((frame) => frame.type === "message/segment"),
+    "补算要重发对应段落，否则界面上的卡不会更新",
+  );
+
+  const recorded = tool("t2").card;
+  assert.ok(recorded && recorded.kind === "terminal");
+  assert.strictEqual(recorded.cwd, "/B/recorded", "已有记录值的卡不被补算覆盖");
+
+  const nested = tool("t3").card;
+  assert.ok(nested && nested.kind === "terminal");
+  assert.strictEqual(nested.cwd, undefined, "嵌套调用不因创建目录后到而获得回退标签");
+
+  const framesAfterFirst = frames.length;
+  adapter.refreshTerminalCwds();
+  assert.strictEqual(frames.length, framesAfterFirst, "已补齐的卡不再重复重发");
+}
+console.log("pathAdapter: 创建目录后到只补缺失标签，不覆盖记录值、不补嵌套 ✓");
+
 console.log("\npathAdapter: all assertions passed");

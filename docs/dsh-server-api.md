@@ -1916,6 +1916,7 @@ export interface TokenUsageProjection {
 | 往上翻更早的消息 | `session/page`，`beforeSeq = ` 当前最老记录的 seq，`throughSeq` 沿用开帧 cursor |
 | 渲染人类对话记录 | 只取 `surfaceOp === 'append'` 的 `user/message` / `assistant/message` / `tool/result` / `system/message`（**不要**用 surface 折叠） |
 | 渲染工具卡片 | `tool/call`（`name` + 原始 JSON `arguments`）+ `tool/result`（`message.content` 里的 `tool-result` 块，`isError`）+ 可选 `meta` |
+| 还原 PTC 嵌套调用 | `tool/ptc-dispatch-start` / `tool/ptc-dispatch`（`rootCallId`、`parentCallId`、`subCallId`、`name`、`arguments`、`content`、`meta`）。**`tool/call` 不带 `parentCallId`**：官方 `packages/core/agent-loop` 只写 `{turn, step, callId, name, arguments}`，嵌套关系只在上面两个事件上，官方 Web 端也按它们建调用树 |
 | 渲染思考 | `reasoning` 内容块（durable）或 `reasoning-delta`（实时） |
 | 显示上下文占用 / token | 投影 `tokenUsage` / `contextPressure` / `contextBreakdown` |
 | 显示标题 | 投影 `title`（不要自己从第一条消息截断） |

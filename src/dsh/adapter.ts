@@ -32,12 +32,13 @@ import {
 import { classifyTool, parseExitStatus, summaryKeys, terminalFailed } from "../shared/toolMeta";
 import { skillNameFromArgs } from "../shared/skill";
 import { deriveToolSummary, parseToolArgs, todoProgressOf, toolCardOf } from "../shared/toolCard";
-import { mutationResultPath, toolRowFilePath } from "../shared/toolPath";
+import { mutationResultPath, terminalCwdOf, toolRowFilePath } from "../shared/toolPath";
 import {
   questionAnswersFromResult,
   questionItemsFromArgs,
   questionKeyOf,
 } from "../shared/toolQuestion";
+import { isAbsoluteWorkspacePath } from "../shared/workspacePath";
 import { readRangeFromMeta, readRangeFromOutput } from "./readRange";
 import { applyNextStepSplice, claimedByNextStep, type InboxState } from "./inboxClaim";
 import {
@@ -1173,6 +1174,44 @@ export class SessionAdapter {
   /** 窗口外是否还有更早的历史（首帧快照要带，见字段注释）。 */
   hasMoreHistory(): boolean {
     return this.hasMore;
+  }
+
+  /**
+   * 创建目录**后到**时补齐已下发终端卡的目录标签。
+   *
+   * `openScopeFollow` 建适配器时 `session/list` 可能还没回来（窗口恢复直接打开历史
+   * 会话），那一批已结算的根 shell 卡在 `terminalCwdOf` 里取不到创建目录，标签缺席；
+   * 控制器拿到权威账本后调这里补算并重发对应段落。
+   *
+   * 只处理**没有记录值**的已结算终端卡，也就是标签缺席、或只有相对 `workdir` 规范化
+   * 出来的相对拼写（都不是可读取的绝对目标）。有记录值的卡第一轮就已经有绝对标签，
+   * 运行中的卡本来不给创建目录回退，两者都不动。`meta` 没有留在视图里也不需要它——
+   * 能走到这里说明这张卡原先走的就是回退档（见 `terminalCwdOf` 的优先级）。
+   */
+  refreshTerminalCwds(): void {
+    if (this.sessionCwd === undefined || this.sessionCwd === "") return;
+    for (const entry of this.toolSegments.values()) {
+      const message = this.byId.get(entry.messageId);
+      const segment = message?.segments.find((candidate) => candidate.id === entry.segmentId);
+      if (!message || !segment || segment.kind !== "tool") continue;
+      const tool = segment.tool;
+      const card = tool.card;
+      if (card === undefined || card.kind !== "terminal") continue;
+      if (card.running === true) continue;
+      // 记录值一定已经是绝对路径（`recordedAbsolutePath`），所以「已有绝对标签」就说明
+      // 这张卡不需要创建目录回退；剩下缺席或相对拼写两种都要重算。
+      if (card.cwd !== undefined && isAbsoluteWorkspacePath(card.cwd)) continue;
+      const cwd = terminalCwdOf({
+        name: tool.name,
+        argsRaw: tool.input ?? "",
+        settled: true,
+        parentCallId: tool.parentCallId,
+        sessionCwd: this.sessionCwd,
+      });
+      if (cwd === undefined) continue;
+      tool.card = { ...card, cwd };
+      this.emit({ type: "message/segment", messageId: message.id, segment: { ...segment } });
+    }
   }
 
   /**
