@@ -1137,9 +1137,11 @@ POST /api/commands/execute  {"args":{"agentId":"01J...","line":"/compact","submi
 | `/api/file?path=<绝对路径>` | GET/HEAD | 读任意绝对路径文件；`mime-types` 推断类型；超过 `maxImageBytes`（通常 20 MiB）→ 413；响应带 `private, no-store`、`nosniff` 与 sandbox CSP |
 | `/api/session.export?...` | GET/HEAD | 会话日志下载（gzip） |
 | `/api/present.host` | GET | 交付物的宿主能力查询（JSON） |
-| `/api/present.open?action=open\|reveal&sessionId=...&id=...` | POST | 打开/定位交付物 |
+| `/api/present.open?action=open\|reveal&sessionId=...&seq=...&index=...` | GET/POST | 打开/定位交付物；GET 返回该路径可用的应用列表，POST 执行（`action` 可省，默认 `open`；可带 `application`） |
 
 证据：`⟨P⟩\dsh-api-session-controller\lib\index.js:2369-2375`（`path: "/api/file"`）、`⟨P⟩\dsh-session-log-export\lib\index.js:463`（`SESSION_LOG_EXPORT_PATH = "/api/session.export"`）、`⟨P⟩\dsh-client-ui-deliverables\lib\index.js:4-6`（`PRESENT_OPEN_PATH = "/api/present.open"`、`PRESENT_HOST_PATH = "/api/present.host"`）。
+
+读取限额由各路由自己的部署配置决定，互不通用：`/api/file` 受附件图片限额 `maxImageBytes`（默认 20 MiB）约束，超限 413；`workspaceFiles/readBytes` 的整份读取受 `maxFileBytes`（默认 32 MiB）约束，超限拒绝而不是截断；`workspace/changes` 的 diff 采集另有 `maxFileBytes`（默认 2 MiB），超过时该文件以 `oversized` 返回。客户端不复制这些常量，按各路由的状态码或结果字段处理。
 
 > 第三方扩展想在 VS Code 里显示 Agent 生成的图片，就用 `/api/file?path=<绝对路径>`。
 
@@ -1623,7 +1625,7 @@ export type TurnEndReason =
 |---|---|---|---|
 | `/api/changes.summary` | GET | `sessionId`, `seq` | `{turn, files[], total, added, deleted}`；Host 不再持有该清单时 **404** |
 | `/api/changes.diff` | GET | `sessionId`, `seq`, `index` | `WorkspaceFileDiff`（`text` / `binary` / `oversized`）；清单或下标不在时 404 |
-| `/api/changes.open` | POST | `sessionId`, `seq`, `index` | 在 Host 桌面上打开该文件；204 |
+| `/api/changes.open` | POST | `sessionId`, `seq`, `index`, 可选 `action=open\|reveal`（默认 `open`） | 在 Host 桌面上打开该文件；204 |
 
 `files[]` 每一项是 `{path, display, added, deleted, binary?, oversized?}`，Host 已按
 `display` 排好序；`total` / `added` / `deleted` 是**含被 Host 上限截掉的文件**在内的
@@ -2089,7 +2091,7 @@ export interface TokenUsageProjection {
 | `workspace/follow` | *（无）*（**stream**） |
 | `workspaceFiles/list`/`stat`/`readAll`/`readBytes`/`readRelated` | `workspaceFileScopeId`, `path` (+ …) |
 | `workspaceFiles/read` | `workspaceFileScopeId`, `path`, `range` |
-| `workspaceFiles/changes` | `workspaceFileScopeId`（**stream**） |
+| `workspaceFiles/changes` | `workspaceFileScopeId`, `path`（**stream**） |
 | `directoryPicker/list` | `path` |
 | `directoryPicker/pick` | *（无）* |
 | `directoryPicker/createDirectory` | `path`, `name` |
@@ -2106,7 +2108,7 @@ export interface TokenUsageProjection {
 | `session/follow` | `{request: SessionFollowRequest}` | `SessionFollowFrame` |
 | `session/control` | `{}` | `SessionControlFrame` |
 | `workspace/follow` | `{}` | `WorkspaceFollowFrame` |
-| `workspaceFiles/changes` | `{workspaceFileScopeId}` | `WorkspaceFileWatchFrame` |
+| `workspaceFiles/changes` | `{workspaceFileScopeId, path}` | `WorkspaceFileWatchFrame` |
 | `$events` | `{}`（**必须空对象**） | `ready` / `emit` / `waterfall` / `cancel` |
 
 ### 9.4 错误码速查
