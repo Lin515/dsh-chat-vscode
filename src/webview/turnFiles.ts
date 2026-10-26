@@ -16,7 +16,7 @@
  * 另一条与去重并列的口径：**净效果为零的文件两行都不列**（见 `withoutVanished`）。
  */
 
-import type { FileChangeKind } from "../shared/chat";
+import type { DeliverableView, FileChangeKind } from "../shared/chat";
 import { workspacePathKey } from "../shared/workspacePath";
 
 /** 交付文件（`deliverables` / `presented`）里判重需要的最小形状。 */
@@ -69,6 +69,27 @@ export function producedOnly(
   if (!deliverables?.length) return unique;
   const delivered = new Set(deliverables.map((file) => pathKey(file.path)));
   return unique.filter((path) => !delivered.has(pathKey(path)));
+}
+
+/**
+ * 轮尾交付行要显示的文件：**同一路径只留最后一次申报**。
+ *
+ * `present` 可以在同一轮里被调用多次，适配器把每次事件的合法文件都累积下来，于是
+ * 同一路径可能出现多条。显示口径与官方 `presentedForClosing` 一致：按路径首次出现
+ * 的位置排列，值取**最后一次**申报（那次带的说明才是最终的）。
+ *
+ * 去重键用 `workspacePathKey`（只合并能证明相同的拼写，不转小写、不消点）。
+ */
+export function deliverablesForClosing(
+  deliverables: readonly DeliverableView[] | undefined,
+): DeliverableView[] {
+  if (!deliverables?.length) return [];
+  const byPath = new Map<string, DeliverableView>();
+  for (const file of deliverables) {
+    if (typeof file?.path !== "string" || file.path === "") continue;
+    byPath.set(pathKey(file.path), file);
+  }
+  return [...byPath.values()];
 }
 
 /**

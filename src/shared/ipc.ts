@@ -28,7 +28,7 @@ export type WireState = { [K in keyof ChatState]: ChatState[K] | null };
  * 一条 `workspace/changes` 清单里某个文件的坐标。
  *
  * `openFile` 带上它时，宿主优先打开**本轮快照**的对比（`/api/changes.diff`）；
- * 拿不到时才退回 git 的工作区对比。`index` 是 Host 清单里的**原始下标**（折叠只
+ * 拿不到时按执行世界普通打开，不回退本机 Git。`index` 是 Host 清单里的**原始下标**（折叠只
  * 影响界面铺几行，不重排服务端的 `files`），`turn` 只用于对比窗口的标题。
  */
 export interface ChangeCoordinates {
@@ -192,15 +192,16 @@ export type HostToWebview =
    * （宿主侧更早就作废了旧查询，见 `controller.queryFiles` 的作废口径）。
    */
   | { type: "files/sessions"; query: string; sessions: SessionRefView[]; cwd?: string; sessionId?: string }
+  /** 执行世界连接换代；页面就绪时补发，断开时明确发 null。 */
+  | { type: "images/scope"; connectionId: string | null }
   /**
    * 正文里本地图片引用的解析结果（`resolveImages` 的回帧）。
    *
    * 键是**引用原文**（`out/chart.png` 这样），值是 data URL；读不到的不在表里。
-   * `requestId` 原样回带：界面按它把结果配给发起的那次请求——缓存按会话隔离，
-   * 切会话后旧请求的响应必须丢掉，不能按路径盲配（不同会话的同名相对路径
-   * 是两个文件）。
+   * 请求号、连接与会话原样回带：换范围时界面结算旧请求并清缓存，迟到帧不能
+   * 按同名路径写进新范围（同一会话在另一条连接里也属于另一套执行世界）。
    */
-  | { type: "images/resolved"; requestId: number; urls: Record<string, string> }
+  | { type: "images/resolved"; requestId: number; connectionId: string | null; sessionId: string; urls: Record<string, string> }
   /**
    * 把一段文本插到输入框的**光标处**（不是替换整个草稿）。
    *
@@ -416,70 +417,40 @@ export type WebviewToHost =
   /** 更新草稿（宿主侧保留，重载后不丢）。 */
   | { type: "setDraft"; text: string }
   /**
-   * 在编辑器中打开文件。
+   * 在编辑器中打开一个文件目标（正文链接、工具行或附件之外的普通文件）。
    *
-   * `diff` 表示「想看改动」：宿主优先按 `changes` 给出的坐标向 Host 取**本轮快照**
-   * 的逐文件对比（提交之后仍然看得到，见 `dsh/changesDiff.ts`）；没有坐标或 Host
-   * 已不再提供那份对比（旧会话、Host 重启过、二进制 / 过大）时，退回 VS Code 的
-   * 工作区改动对比（SCM 的「打开更改」）。仍然拿不到改动时不会静默——文件没改过、
-   * 根本不是 git 仓库由宿主回落成普通打开，未跟踪的新文件则由 git 自己解析成打开
-   * 文件本身（判定见 `dsh/fileChange.ts`）。
+   * `path` 是引用上的原样拼写；宿主按会话创建目录解析，只有执行世界确认了目标与
+   * 本机映射时才打开。`diff` 表示想看改动：有 `changes` 坐标时按 Host 记录的轮次
+   * 快照取对比，否则由宿主决定可用的回顾方式；拿不到对比不会伪装成成功。
    *
-   * `line` 是 1 基起始行（正文里 `[…](src/a.ts#L12)` 这种带行号的链接）：
-   * 打开后光标落在这一行。宿主会先验证它是不是正整数，非法就当没给。
-   *
-   * `link` 表示这次点击来自**正文里的文件链接**（不是工具行的文件芯片）：
-   * 两者「文件不在那儿」时的措辞不同——芯片的文件确实存在过，链接却常常一开始
-   * 就没指对地方（相对的不是会话工作目录、或把行号写进了目标），所以链接那条路
-   * 要把**解析出来的绝对路径**报出来（见 `controller.reportMissingFile`）。
+   * `line` 是导航参数（正整数，非法时忽略），不构成另一个文件身份。`link` 区分
+   * 正文链接与文件芯片，仅影响「目标不可用」时的措辞。
    */
   | { type: "openFile"; path: string; diff?: boolean; line?: number; link?: true; changes?: ChangeCoordinates }
   /**
-   * 用**系统浏览器**打开一个本地 web 文件（正文文件链接按住 Ctrl/Cmd 单击）。
+   * 用**系统浏览器**打开一个可渲染的 web 文件（正文文件链接按住 Ctrl/Cmd 单击）。
    *
-   * 只服务 HTML 家族（`.html` / `.htm` / `.xhtml` / `.shtml`，白名单在
-   * `shared/webFile.ts`）：普通单击仍走 `openFile` 交给 VS Code，这一条是
-   * 「看渲染结果」的入口。`path` 与 `openFile` 同一口径（原样拼写，可能相对
-   * 会话工作目录，宿主用 `resolveChipPath` 解析）。
-   *
-   * 宿主**必须再验一次扩展名**：webview 发来的帧不可信，放宽这条等于把任意
-   * 本地文件（含可执行文件）交给系统默认程序。目标不存在或系统拒绝打开时
-   * 明确告知，不静默。
+   * 只服务 HTML 家族（白名单在 `shared/webFile.ts`）：普通单击仍走 `openFile`。
+   * `path` 与 `openFile` 同一口径；宿主须重新验扩展名，并在执行世界确认目标与
+   * 本机映射后才交给系统浏览器。不可用或系统拒绝时明确告知，不静默。
    */
   | { type: "openFileInBrowser"; path: string }
   /**
-   * 在**资源管理器中展开**一个目录（用户消息里 `@目录` 引用点开时走这条）。
+   * 在**文件管理器中定位**一个目录（用户消息里 `@目录` 引用点开时走这条）。
    *
-   * 与 `openFile` 同一口径：`path` 是引用上的原样拼写，可能相对会话工作目录，
-   * 宿主先用 `resolveChipPath` 按会话 cwd 解析成绝对路径再动手。目录不在那儿时
-   * **明确告知**（`@folderNotFound:<绝对路径>`）——VS Code 的 `revealInExplorer`
-   * 对不存在的路径什么都不做，静默就等于「点了没反应」（见 controller.revealPath）。
-   *
-   * 不复用 `openFile`：那条路是「打开文件」，拿目录去开会把目录当文件读，报的是
-   * 文件不存在。这里走的是 VS Code 自己的 `revealInExplorer` 命令。
+   * `path` 与 `openFile` 同一口径；宿主解析并验证映射后才展开，验证不了就明确
+   * 告知，不能落到本机同名目录。不复用 `openFile`：文件与目录是两种动作。
    */
   | { type: "revealPath"; path: string }
   /**
-   * 在编辑器里**打开一枚附件**（输入框芯片、消息里的附件、用户消息里的图片缩略图）。
+   * 在编辑器中**打开一枚附件**（输入框芯片、消息里的附件、用户消息里的图片缩略图）。
    *
-   * 界面只交它手上有的**身份**，宿主按下面的顺序找本地可打开的东西——找法全在
-   * `controller.openAttachment`，界面不猜（它读不了磁盘、也读不了服务端附件存储）：
+   * 界面只交它手上有的**身份**（`path` / 账本 `id` / durable `attachmentId`），
+   * 由宿主在附件账本与执行世界中解析可打开的对象；界面不猜路径，也不读磁盘或服务端
+   * 存储。都解析不到时明确提示（`@attachmentUnavailable`），不静默。
    *
-   * 1. `path`：原文件的绝对路径（路径通道进来的附件，以及同一次会话里从本地提交记录
-   *    借到路径的回放消息）；
-   * 2. `id`：宿主账本里的附件 id（草稿芯片与乐观回显那几枚）——账本里那一条还带着
-   *    `dataUrl`（粘贴 / 截图的字节）或还没释放的暂存字节，都从内存落一份临时文件；
-   * 3. `attachmentId`：服务端 durable 句柄。图片经 `session/attachment` 换字节，文件
-   *    按内容摘要查宿主的上传索引（路径通道记原路径、字节通道在上传成功时留一份临时
-   *    副本）；
-   * 4. 都没有 → 发 `@attachmentUnavailable`，不静默。
-   *
-   * `kind` 只用来决定第 3 步要不要去问线上（`session/attachment` 只服务图片，文件问
-   * 必然失败）。`name` 是落临时文件时的展示名（VS Code 靠扩展名挑编辑器）；`mediaType`
-   * 只在名字给不出扩展名时用来补一个。
-   *
-   * 为什么走临时文件：VS Code 内置的图片预览只认真实文件 URI，内存里的虚拟文档
-   * （`TextDocumentContentProvider`）按文本渲染，一张 PNG 只会是一片乱码。
+   * `kind` 决定 durable 句柄是否值得向服务端换取字节；`name` 是落临时副本时的展示名，
+   * `mediaType` 只在名字给不出扩展名时补充。副本只声明为副本，不冒充执行世界原件。
    */
   | {
       type: "openAttachment";
@@ -671,7 +642,8 @@ export type WebviewToHost =
   /**
    * 解析正文里的**本地图片引用**（`![](out/chart.png)`）。
    *
-   * webview 读不了磁盘，只能把引用原文交给宿主：宿主按会话工作目录解析、
-   * 校验在工作目录内、读成 data URL 回帧（见 `dsh/localImages.ts`）。
+   * webview 读不了磁盘，只能把引用原文交给宿主：相对引用按会话创建目录解析、
+   * 绝对路径原样，经受认证的执行世界读取（Host 报告媒体类型）后读成 data URL
+   * 回帧（见 `dsh/localImages.ts`）。
    */
-  | { type: "resolveImages"; requestId: number; paths: string[] };
+  | { type: "resolveImages"; requestId: number; connectionId: string | null; sessionId: string; paths: string[] };

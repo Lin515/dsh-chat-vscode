@@ -104,6 +104,10 @@ const HOST_MARKERS: string[] = [
   "attachmentUnavailable",
   // 正文里的文件链接（打不开时把解析出来的绝对路径报出来）
   "fileNotFound",
+  // 执行世界读取失败（权限 / 离线 / 连接关闭）：与「已删除」分开报
+  "fileAccessUnavailable",
+  // Host 原生打开 / reveal 没能完成，或执行世界读不到目标
+  "hostOpenUnavailable",
   // 拖放
   "dropUnreadable",
   "dropTooLarge",

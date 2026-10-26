@@ -5,7 +5,7 @@
 ## 会话主链路
 
 - [controller.ts](<controller.ts>) — 会话域生命周期、IPC 接线、状态合流、单流失败重开与回调身份守卫。
-- [adapter.ts](<adapter.ts>) — durable 事件折为聊天 MessageView；工具打开目标、本轮产物与终端目录按 `shared/toolPath` 的独立判据结算，并保留参数别名与事件坐标。
+- [adapter.ts](<adapter.ts>) — durable 事件折为聊天 MessageView；工具打开目标、本轮产物与终端目录按 `shared/toolPath` 的独立判据结算，并保留参数别名与事件坐标；交付申报按事件累积，同一路径的显示去重在界面侧完成。
 - [client.ts](<client.ts>) — RPC / WebSocket 流；业务、认证与端点不存在的错误分类。
 - [protocol.ts](<protocol.ts>) — 客户端消费的线格式类型。
 - [assistantStream.ts](<assistantStream.ts>) — activeAttempt 紧凑记录展开与重开 follow 恢复。

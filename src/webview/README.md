@@ -63,7 +63,7 @@ React / 浏览器环境，不使用 Node API。上层边界见[源码导航](<..
 - [modifierHeld.ts](<modifierHeld.ts>) — 全局 Ctrl/Cmd 按住状态 → 根元素 `is-modifier-held` 类（可打开文件节点的路径下划线提示）；指针事件补键盘焦点缺席，失焦 / 页面隐藏清理。
 - [turnProcess.ts](<turnProcess.ts>) — 连续过程折叠。
 - [todoPanel.ts](<todoPanel.ts>) — 会话单槽位开合与收起时保留项。
-- [turnFiles.ts](<turnFiles.ts>) — 交付 / 本轮改动文件去重：展示路径按首次出现去重，身份键不转小写/不消点（POSIX 同名不同大小写各留一行），交付重复只按能证明的拼写去掉。
+- [turnFiles.ts](<turnFiles.ts>) — 交付 / 本轮改动文件去重：展示路径按首次出现去重，身份键不转小写/不消点（POSIX 同名不同大小写各留一行），交付重复只按能证明的拼写去掉；多次 `present` 的显示取同路径最后一次申报。
 - [pendingInteraction.ts](<pendingInteraction.ts>) — plan-review > 提问 > 审批的输入接管。
 - [pendingMessage.ts](<pendingMessage.ts>) — 乐观回显身份、去重与插入位置。
 - [questionFlow.ts](<questionFlow.ts>) — questionBatch 分页问答。

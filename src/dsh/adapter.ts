@@ -3,6 +3,7 @@ import type {
   Attachment,
   ChatState,
   CommandRunView,
+  DeliverableView,
   DiffHunkView,
   FileChangeKind,
   InjectedSourceView,
@@ -941,8 +942,8 @@ export class SessionAdapter {
    * 文件芯片的分类回调（由控制器注入，像 `loadImages` 一样）。
    *
    * 适配器只负责「这里有哪些路径」（`produced` / `deliverables`），而「每个文件是
-   * 新建 / 改动 / 已删除」要看 git 状态与磁盘，那是控制器（vscode API）的事。
-   * 注入为空（比如子代理转录的适配器）就跳过分类，界面维持无记号的现状。
+   * 新建 / 改动 / 已删除」由控制器按其文件访问边界判定。注入为空（比如子代理转录
+   * 的适配器）就跳过分类，界面维持无记号的现状。
    *
    * 键 = 芯片上的原样路径，值 = 种类；判定细节见 `dsh/fileChange.ts`。
    */
@@ -951,22 +952,22 @@ export class SessionAdapter {
   /**
    * 会话的**创建目录**（`header.cwd`，由控制器注入）。
    *
-   * 只用于旧终端结果没有 `meta.cwd` 时的目录标签回退（相对 `workdir` 拼它、省略则
-   * 显示它）。它不是普通文件路径的解析基准——历史操作的准确目标由执行时的记录值
-   * 承担，普通相对链接仍按创建目录在宿主侧打开时解析。
+   * 本字段只给旧终端结果缺少 `meta.cwd` 时的**目录标签回退**用（相对 `workdir`
+   * 拼它、省略则显示它）。普通相对路径与历史操作目标的解析不读这个字段：前者由
+   * 宿主按创建目录解析，后者由执行时的记录值承担。
    *
    * 未注入（离线测试 / 子代理转录）时该档回退自然缺席，不会拿本机目录顶替。
    */
   sessionCwd: string | undefined;
 
   /**
-   * 「刷新 git 状态」回调（由控制器注入）：**轮次结束**时先推一次 Git 重扫，
+   * 「刷新文件状态」回调（由控制器注入）：**轮次结束**时先请宿主刷新一次文件状态，
    * 再分类。
    *
-   * 为什么要这个钩子：git 扩展按文件系统事件去抖刷新，模型刚写完的文件往往还
-   * 不在改动清单里。不推这一下，用户第一次点芯片会被判定成「没改动」→ 打开的是
-   * 完整文件而不是 diff，点第二次才是 diff。刷新放在**轮次结束**（文件都落盘了）
-   * 而不是点击时，是为了不占用点击的响应时间。
+   * 刷新来源（工作区、版本控制或执行世界的其它事实）与可用性由控制器决定，适配器
+   * 不假定本机形态。不推这一下，模型刚写完的文件可能还没进入改动清单，用户第一次
+   * 点芯片就被判定成「没改动」。刷新放在**轮次结束**（文件都落盘了）而不是点击时，
+   * 是为了不占用点击的响应时间。
    */
   refreshFiles: (() => Promise<void>) | undefined;
 
@@ -2079,13 +2080,25 @@ export class SessionAdapter {
       case "deliverables/presented": {
         const files = Array.isArray(data.files) ? data.files : [];
         const message = this.currentAssistantMessage() ?? this.ensureAssistantMessage(event.time);
-        message.deliverables = files.map((file: any) => ({
-          path: String(file?.path ?? ""),
-          description: typeof file?.description === "string" ? file.description : undefined,
-        }));
-        this.emit({ type: "message/upsert", message: { ...message } });
-        // 申报的路径同样要分类（交付行与改动行共用一套记号）
-        this.scheduleFileKinds();
+        // 同一轮可以多次 `present`：累积而不是覆盖，否则后一次申报会把前面那批
+        // 文件从交付行上抹掉。同一路径重复申报时两条都留着，展示层按路径取最后
+        // 一次（见 `webview/turnFiles.ts` 的 `deliverablesForClosing`，与官方
+        // `presentedForClosing` 同口径）。实时事件与整份快照重折走同一条
+        // `applyEvent`，因此重放得到同样的顺序。
+        const presented: DeliverableView[] = [];
+        for (const file of files) {
+          if (typeof file?.path !== "string" || file.path.trim() === "") continue;
+          presented.push({
+            path: file.path,
+            description: typeof file.description === "string" ? file.description : undefined,
+          });
+        }
+        if (presented.length > 0) {
+          message.deliverables = [...(message.deliverables ?? []), ...presented];
+          this.emit({ type: "message/upsert", message: { ...message } });
+          // 申报的路径同样要分类（交付行与改动行共用一套记号）
+          this.scheduleFileKinds();
+        }
         break;
       }
 

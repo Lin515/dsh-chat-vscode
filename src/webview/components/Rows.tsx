@@ -44,6 +44,7 @@ import { fill, useLocale, useTexts, resolveText } from "../texts";
 import { pickLocalizedText } from "../../shared/localizedText";
 import { resolvedFilePath } from "../linkHovers";
 import { changeIndexForPath } from "../../shared/changesSummary";
+import { basenameWorkspacePath } from "../../shared/workspacePath";
 import type { NodeOpenPort } from "../nodeOpen";
 import {
   IconAlert,
@@ -1574,7 +1575,8 @@ export function CommandRow({ command, node }: { command: CommandRunView; node: N
  * 只有静态计数，展开/收起是扩展自己的便利能力，交互形态与官方交付行的
  * 展开/收起按钮一致）。
  *
- * 芯片的**普通点击是看改动**（`diff`，宿主有改动就开 VS Code 的对比窗口），
+ * 芯片的**普通点击是看改动**（`diff`：有清单坐标时宿主打开本轮快照对比；没有
+ * 可用对比时由宿主按执行世界的文件三态决定怎么开，界面不假定本机 Git），
  * 按住修饰键时才直接打开文件本身——两行用同一套点击语义，同一个文件不会因为
  * 模型申报没申报交付而行为不同（见 `wantsChanges`）。
  */
@@ -1587,7 +1589,7 @@ export function FileChips({
 }: {
   label: string;
   paths: { path: string; description?: string }[];
-  /** 芯片路径 → 改动种类（宿主按 git 状态判定，查不到 = 还没分类完，不标记号）。 */
+  /** 芯片路径 → 删除标记（Host 明确 not-found 才有）；查不到 = 还没分类完/不确定，不标记号。 */
   kinds?: Record<string, FileChangeKind>;
   /** 会话**创建目录**：悬停标题据此把相对路径补成完整路径，也用来对上清单里的路径。 */
   cwd?: string;
@@ -1595,7 +1597,7 @@ export function FileChips({
    * 本轮改动清单（`message.changes` 的坐标 + 已取到的 `files`）。
    *
    * 有它时，芯片会带上文件在清单里的下标，宿主据此打开**本轮快照**的对比，而不是
-   * git 的工作区对比——后者在提交之后什么都看不到。清单里没有这个文件（申报的交付
+   * 工作区对比——后者在提交之后什么都看不到。清单里没有这个文件（申报的交付
    * 文件不一定是本轮改的）就不带坐标，行为与从前一致。
    */
   changes?: { seq: number; turn: number; files: readonly ChangedFileView[] };
@@ -1616,6 +1618,7 @@ export function FileChips({
         const deleted = kind === "deleted";
         // 悬停第一行始终是**完整路径**：芯片上只画文件名，正文里也可能是相对拼写
         const fullPath = resolvedFilePath(cwd, file.path);
+        const coordinates = changeCoordinates(changes, cwd, file.path);
         return (
           <button
             key={file.path}
@@ -1633,7 +1636,6 @@ export function FileChips({
               deleted ? texts.deletedFileAria(file.path) : texts.openChangesAria(file.path)
             }
             onClick={(event) => {
-              const coordinates = changeCoordinates(changes, cwd, file.path);
               post({
                 type: "openFile",
                 path: file.path,
@@ -1643,10 +1645,8 @@ export function FileChips({
             }}
           >
             <IconFile size={12} />
-            {/* 新建文件（git 未跟踪）标 [新增]：它没有可对比的基线，点击直接
-                打开文件而不是开 diff——记号让「为什么行为不一样」看得见 */}
-            {kind === "new" ? <span className="file-chip-tag">{texts.fileNewTag}</span> : null}
-            <span className="file-chip-name">{basename(file.path)}</span>
+            {/* 窄侧栏里要一眼认出是哪个文件（官方 `presented.basename` 等价物） */}
+            <span className="file-chip-name">{basenameWorkspacePath(file.path)}</span>
           </button>
         );
       })}
@@ -1686,16 +1686,11 @@ function changeCoordinates(
 }
 
 /**
- * 文件芯片点击的意图：默认**看改动**（宿主优先开本轮快照对比，没有则退回 git；
- * 两者都没有才回落成普通打开）；按住 Alt/Ctrl/Cmd/Shift 时直接打开文件本身
- * ——对比窗口里看内容不方便时的逃生口，同一份文件不必另找入口。
+ * 文件芯片点击的意图：默认**看改动**（有清单坐标时宿主按坐标取本轮快照对比；
+ * 没有可用对比时由宿主按执行世界的访问结果决定，不在界面假定本机 Git 回退）；
+ * 按住 Alt/Ctrl/Cmd/Shift 时直接打开文件本身——对比窗口里看内容不方便时的
+ * 逃生口，同一份文件不必另找入口。
  */
 function wantsChanges(event: MouseEvent): boolean {
   return !(event.altKey || event.ctrlKey || event.metaKey || event.shiftKey);
-}
-
-/** 路径的末段：窄侧栏里要一眼认出是哪个文件（官方 `presented.basename` 等价物）。 */
-function basename(path: string): string {
-  const cut = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
-  return cut >= 0 ? path.slice(cut + 1) : path;
 }

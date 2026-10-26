@@ -431,6 +431,9 @@
               // 真实宿主是异步回帧的（webview → 扩展进程 → postMessage 回来），
               // 这里用宏任务复刻同样的时序：effect 里的 ready 发完，脚本才继续定义 __buildState
               setTimeout(function () {
+                // 执行世界连接的范围（预览页没有宿主：固定一条即可，见上方 resolveImages
+                // 的回帧——它必须原样回带这里给的 connectionId 与请求里的 sessionId）
+                window.__push({ type: "images/scope", connectionId: "preview-connection-1" });
                 var snapshot = window.__buildState();
                 // 通知队列的夹具从**同一份快照**起：之后确认 / 新发生的回帧都改这一份
                 // （宿主那边队列也只有一份，镜像按窗口过滤）
@@ -479,7 +482,10 @@
               setTimeout(function () {
                 window.__push({
                   type: "images/resolved",
+                  // 回帧必须原样回带请求的连接与会话：界面按这对身份拒收迟到帧
                   requestId: message.requestId,
+                  connectionId: message.connectionId,
+                  sessionId: message.sessionId,
                   urls: urls,
                 });
               }, 0);
@@ -1741,6 +1747,8 @@
                 "D:/dev/app/src/util/retry.ts",
                 "D:/dev/app/package.json"
               ],
+              // 每条交付可以带说明；同一路径多次申报时显示取最后一次
+              // （见 webview/turnFiles.ts 的 deliverablesForClosing）。
               deliverables: [
                 { path: "D:/dev/app/docs/merge-plan.md", description: "合并方案" },
                 { path: "D:/dev/app/docs/merge-plan.md.bak" },
@@ -2191,22 +2199,13 @@
         return applyTrajectoryFixture(state, trajectoryFixtureNameOf(location.search));
       };
       // 文件芯片的种类表（`patch.fileKinds`）：形状与真实宿主一致（键 = 芯片上的
-      // 原样路径，值 = "new" | "edited" | "deleted"，见 src/dsh/fileChange.ts）。
-      // 夹具按「一条 edited / 一条 new / 一条 deleted」铺开，三种记号一次看全。
+      // 原样路径，值只有 "deleted"，见 src/dsh/fileChange.ts）。
+      // 夹具只铺一条已删除路径：删除线是执行世界唯一能证明的记号。
       window.__fileKinds = function () {
         window.__push({
           type: "patch",
           patch: {
             fileKinds: {
-              "D:/dev/app/src/server/index.ts": "edited",
-              "D:/dev/app/src/config.ts": "edited",
-              "D:/dev/app/src/bootstrap.ts": "new",
-              "D:/dev/app/src/client.ts": "edited",
-              "D:/dev/app/src/auth/middleware.ts": "edited",
-              "D:/dev/app/src/routes/api.ts": "edited",
-              "D:/dev/app/src/util/retry.ts": "edited",
-              "D:/dev/app/package.json": "edited",
-              "D:/dev/app/docs/merge-plan.md": "edited",
               "D:/dev/app/docs/merge-plan.md.bak": "deleted"
             }
           }

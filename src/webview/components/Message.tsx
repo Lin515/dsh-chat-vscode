@@ -14,7 +14,7 @@ import { scanCommandLinks, useCommandLinks, type CommandLinksPort } from "../com
 import { canOpenAttachment, openAttachment } from "../attachmentOpen";
 import { readableMentionText, scanMentionLinks, type MentionLinkTarget } from "../mentionLinks";
 import { useTexts, resolveText, type Texts } from "../texts";
-import { producedOnly, withoutVanished } from "../turnFiles";
+import { deliverablesForClosing, producedOnly, withoutVanished } from "../turnFiles";
 import { foldTurnProcess, type TurnProcessRun } from "../turnProcess";
 import { hasUserOpenedNode, useNodeOpen } from "../nodeOpen";
 import { ChangesCard } from "./ChangesCard";
@@ -187,7 +187,7 @@ export const Message = memo(function Message({
   message: MessageView;
   /** 编辑类节点的 diff 排版（来自设置；缺省自适应）。 */
   diffLayout?: DiffLayout;
-  /** 文件芯片的种类表（宿主按 git 判定后整表下发；缺省不标记号）。 */
+  /** 文件芯片的种类表（宿主按执行世界的文件状态整表下发；缺省不标记号）。 */
   fileKinds?: Record<string, FileChangeKind>;
   /** 问卷一次展开几道题（`dshChat.questionBatch`；缺省用默认阈值）。 */
   questionBatch?: number;
@@ -437,17 +437,20 @@ export const Message = memo(function Message({
     .map((s) => s.text)
     .join("\n\n");
 
+  // 同一轮可以多次 `present`，适配器按事件累积；
+  // 显示时同一路径只留最后一次申报（官方 `presentedForClosing` 同口径）。
+  const presented = deliverablesForClosing(message.deliverables);
   // 「本轮改动」里刨掉已经申报交付的文件：模型申报的通常就是它刚改的那几个，
   // 两行都列一遍看着像同一件事说了两遍（口径见 turnFiles.ts）。
-  // 再刨掉**净效果为零**的文件（写了又删、git 完全不认识，宿主分类为 `gone`）：
+  // 再刨掉**净效果为零**的文件（写了又删、宿主分类为 `gone`）：
   // 模型提交时写的 `commit.msg.txt` 正是这一类。
   const producedFiles = withoutVanished(
-    producedOnly(message.produced, message.deliverables),
+    producedOnly(message.produced, presented),
     fileKinds,
     (path) => path,
   );
   const deliverables = withoutVanished(
-    message.deliverables ?? [],
+    presented,
     fileKinds,
     (file) => file.path,
   );
@@ -600,8 +603,8 @@ export const Message = memo(function Message({
             none（`dsh-client-ui-chat/lib/client.js` 的 turnTailDefinition）——即
             数据在轮次进行中就累积，但**节点不发布、行不渲染**。轮次没完就画一行
             不断变长的文件名，既与官方不一致，也让「本轮改了什么」看起来像已经定稿。
-            宿主侧同一个时机还会先推一次 Git 重扫，所以行出现时记号与 diff 状态都是
-            准的（见 `adapter.refreshFiles`）。
+            宿主侧同一个时机还会先请宿主刷新一次文件状态，所以行出现时记号与对比
+            状态都是准的（刷新来源由宿主决定，见 `adapter.refreshFiles`）。
 
             申报过交付的文件不再在本行重复，只留在下面的交付行。 */}
         {!message.streaming && imageFiles.length ? (

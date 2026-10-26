@@ -228,9 +228,14 @@ console.log("changesDiff: 无 hunk 时显示「没有行差异」，不假装有
     "新文件仍遵旧口径：执行世界还在就打开文件，不显示「空 → 全文」的 diff",
   );
   assert.ok(
-    /targetAbsolute\?: string/u.test(controller) &&
-      /sameExecutionPath\(currentAbsolute, targetAbsolute\)/u.test(controller),
-    "坐标是历史快照的身份；绝对路径只在能同时读到当前文本时做防错比对，当前读不到不否掉快照",
+    /private async openAgentChanges\(\s*sessionId: string,\s*targetPath: string,\s*coordinates: ChangeCoordinates,\s*\)/u.test(
+      controller,
+    ),
+    "打开本轮快照只收坐标（sessionId + seq + index），不再附带点击目标的绝对路径",
+  );
+  assert.ok(
+    !/targetAbsolute/u.test(controller) && !/currentAbsolute/u.test(controller),
+    "坐标是历史快照的身份：不要求当前 stat 成功，也不拿绝对路径否掉历史快照",
   );
   assert.ok(
     /if \(diff\.kind !== "text"\)/u.test(controller),
@@ -274,7 +279,11 @@ console.log("changesDiff: 无 hunk 时显示「没有行差异」，不假装有
     /changes: \{ seq, index, turn: summary\.turn \}/.test(card),
     "改动卡片每行要把清单下标带下去（折叠不重排下标）",
   );
-  assert.ok(/shown\.map\(\(file, index\)/.test(card), "下标取自 files 里的原始位置");
+  assert.ok(
+    /visibleChangeFiles\(summary\.files, expanded\)/.test(card) &&
+      /shown\.map\(\(file, index\)/.test(card),
+    "下标取自 files 里的原始位置（折叠只减少可见行，不重编号）",
+  );
   assert.ok(
     /post\(\{ type: "prefetchChanges", seq, index \}\)/.test(card),
     "悬停 / 聚焦要发预热帧（只取数，点击时才打开编辑器）",

@@ -140,19 +140,17 @@ export interface DiffHunkView {
 export type DiffLayout = "auto" | "unified" | "split";
 
 /**
- * 文件芯片的改动种类（宿主按 git 状态 + 磁盘存在性分类，见 dsh/fileChange.ts）。
+ * 文件芯片的改动种类（只问 Host 执行世界的当前存在性，见 dsh/fileChange.ts）。
  *
- * - `new`：git 未跟踪（模型本轮新建）→ 芯片标 `[新增]`，点击直接打开文件。
- *   **两种 `git.untrackedChanges` 配置都算**：默认 `"mixed"` 下它在工作区清单里、
- *   靠 `status === UNTRACKED` 认出来，`"separate"` 下才在 `untrackedChanges` 里
- *   （只认后者的症状是新文件永远不标 [新增]，见 `dsh/fileChange.ts` 的 `isUntracked`）；
- * - `edited`：有可对比的工作区/暂存/合并改动 → 点击开 VS Code 的对比窗口；
- * - `deleted`：文件已不在磁盘上（且 git 知道它）→ 芯片名画删除线，点击尝试打开旧内容；
- * - `gone`：磁盘上没有、git 也**完全不知道**它（不在工作区/暂存/合并/未跟踪任何
- *   一张清单里）→ 本轮「写了又删、净效果为零」的临时文件（`commit.msg.txt` 这类），
- *   界面**不渲染**这一条：它不代表任何改动，画成删除线只会让人以为仓库脏了。
+ * 执行世界只能证明**当前不是普通文件**，不能证明它变过：
+ * - `deleted`：Host 明确回 `workspace-file/not-found`（`FileNotFound`）→ 芯片名画
+ *   删除线，点击尝试打开旧内容。
+ *
+ * **不据本机 git 标 [新增] / 已改动**：没有经过验证的本机映射，产物清单里的路径
+ * 不等于本机仓库里的同一个文件。也**不再有 gone**：写后删的净效果为零，无法由
+ * 执行世界证明，这类路径与其它路径一样只按当前存在性显示。
  */
-export type FileChangeKind = "new" | "edited" | "deleted" | "gone";
+export type FileChangeKind = "deleted";
 
 /**
  * 一张**还在等用户回答**的审批卡。
@@ -561,6 +559,7 @@ export interface ContextOccupancyView {
 }
 
 export interface DeliverableView {
+  /** Host 规范化后的交付路径（执行世界里的目标，不是展示用的相对拼写）。 */
   path: string;
   description?: string;
 }
@@ -1489,11 +1488,11 @@ export interface ChatState {
   /** 编辑类节点的 diff 排版（对应 dshChat.diffLayout）。 */
   diffLayout?: DiffLayout;
   /**
-   * 文件芯片的改动种类表（键 = 芯片上的原样路径，值 = git/磁盘判定的种类）。
+   * 文件芯片的改动种类表（键 = 芯片上的原样路径，值 = 宿主按执行世界判定的种类）。
    *
    * 宿主在会话加载与每轮写类调用后**整表**重算下发（patch 顶层合并，整表替换）；
-   * 界面只查表渲染 `[新增]` / 删除线，不做任何自己的判定。查不到的路径（还没
-   * 分类完、或不在 git 仓库）就没有记号——没有记号不是「没改动」，只是「不确定」。
+   * 界面只查表渲染删除线，不做任何自己的判定。查不到的路径（还没分类完、或
+   * Host 没能明确报 not-found）就没有记号——没有记号不是「没改动」，只是「不确定」。
    */
   fileKinds?: Record<string, FileChangeKind>;
   /**

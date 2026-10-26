@@ -78,4 +78,34 @@ console.log("changesPath: Windows 分隔符可合并，POSIX 反斜杠保持字�
 }
 console.log("changesPath: 空清单 / 空候选安全 ✓");
 
+// ---------- 6. 唯一命中才挂坐标：多行可证明同一目标时返回 undefined ----------
+//
+// 真实 Host 的清单通常不重复，但外部 wire / 规范化拼写仍可能造出「相对 x」与
+// 「绝对 cwd/x」并存、或同一路径出现两次。首次命中即返回会静默选第一行；设计禁止
+// 这种推断——猜错会让一行打开另一行的快照。
+{
+  const cwd = "D:/w";
+  assert.strictEqual(
+    changeIndexForPath([file("src/x.ts"), file("D:/w/src/x.ts")], cwd, "src/x.ts"),
+    undefined,
+    "相对行与绝对行都能被同一候选证明时，不能取先出现的那一行",
+  );
+  assert.strictEqual(
+    changeIndexForPath([file("D:/w/src/x.ts"), file("src/x.ts")], cwd, "D:/w/src/x.ts"),
+    undefined,
+    "反过来的顺序同样歧义",
+  );
+  assert.strictEqual(
+    changeIndexForPath([file("src/x.ts"), file("src/x.ts")], cwd, "src/x.ts"),
+    undefined,
+    "同一路径重复出现也是多行，不能默选第一行",
+  );
+  assert.strictEqual(
+    changeIndexForPath([file("src/x.ts"), file("src/y.ts")], cwd, "src/x.ts"),
+    0,
+    "唯一命中照旧给下标",
+  );
+}
+console.log("changesPath: 多行可证明同一目标时不挂坐标（唯一才关联） ✓");
+
 console.log("\nchangesPath: all assertions passed");

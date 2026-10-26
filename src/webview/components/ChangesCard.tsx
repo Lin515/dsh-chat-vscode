@@ -68,6 +68,7 @@ export function ChangesCard({
 
   if (!summary || summary.files.length === 0) return null;
 
+  // 每行带**清单原始下标**：折叠只减少可见行，不重排 `files`，预热与对比都靠它。
   const shown = visibleChangeFiles(summary.files, expanded);
   const hidden = summary.files.length - shown.length;
   const foldable = summary.files.length > CHANGES_CARD_VISIBLE;

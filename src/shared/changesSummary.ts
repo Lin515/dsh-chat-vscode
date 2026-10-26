@@ -23,7 +23,8 @@ export const CHANGES_CARD_VISIBLE = 3;
  * 卡片当前该显示哪些文件行。
  *
  * 折叠只看 `files`（Host 已按 `display` 排好序），`total` 只用于标题里的计数——
- * 被 Host 上限截掉的文件根本没进 `files`，展开也变不出来。
+ * 被 Host 上限截掉的文件根本没进 `files`，展开也变不出来。折叠不重排 `files`，
+ * 可见行下标与 `files` 里的原始下标一致（从 0 起连续），调用方据此把清单坐标带下去。
  */
 export function visibleChangeFiles<T>(files: readonly T[], expanded: boolean): T[] {
   return expanded ? [...files] : files.slice(0, CHANGES_CARD_VISIBLE);
@@ -94,18 +95,21 @@ function comparableChangeSpellings(cwd: string | undefined, path: string): strin
  * @param path 候选（产物记录值或交付路径）。
  */
 export function changeIndexForPath(
-  files: readonly ChangedFileView[],
+  files: readonly Pick<ChangedFileView, "path">[],
   cwd: string | undefined,
   path: string,
 ): number | undefined {
   const target = comparableChangeSpellings(cwd, path);
   if (target.length === 0) return undefined;
   const wanted = new Set(target);
+  const matches = new Set<number>();
   for (let index = 0; index < files.length; index += 1) {
     const file = files[index];
     if (!file) continue;
     const fileSpellings = comparableChangeSpellings(cwd, file.path);
-    if (fileSpellings.some((spelling) => wanted.has(spelling))) return index;
+    if (fileSpellings.some((spelling) => wanted.has(spelling))) matches.add(index);
   }
-  return undefined;
+  // **唯一**才挂坐标：同一候选命中多行（重复路径、相对 + 绝对两种拼写、外部 wire
+  // 造出的重复项）时不能猜。猜错会让一行打开另一行的快照，比没有动作更糟。
+  return matches.size === 1 ? matches.values().next().value : undefined;
 }

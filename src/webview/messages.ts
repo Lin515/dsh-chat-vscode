@@ -375,13 +375,17 @@ export const MESSAGES = {
     zh: "收起改动文件列表",
     en: "Collapse the changed-file list",
   },
+  // Host 原生打开 / reveal 没能完成，或执行世界读不到目标。两者都是中性措辞：
+  // 路由层决定确切原因（桌面能力不可用、映射复核失败、权限或连接问题），
+  // 这里不替它断言「文件被删除」。
+  hostOpenUnavailable: { zh: "Host 无法在桌面端打开此文件", en: "The Host could not open this file on the desktop" },
+  fileAccessUnavailable: { zh: "无法访问此文件，请检查权限及连接状态", en: "Cannot access this file. Check permissions and the connection." },
   producedMore: { zh: (count: number) => `+ ${count} 个文件`, en: (count: number) => `+ ${count} file${count === 1 ? "" : "s"}` },
   openChangesAria: { zh: (name: string) => `查看 ${name} 的改动`, en: (name: string) => `View changes in ${name}` },
   openChangesHint: { zh: "点击查看改动对比；按住 Alt 直接打开文件", en: "Click to view changes; hold Alt to open the file" },
   filesExpandAria: { zh: (count: number) => `展开全部 ${count} 个文件`, en: (count: number) => `Show all ${count} file${count === 1 ? "" : "s"}` },
   filesCollapse: { zh: "收起", en: "Collapse" },
   filesCollapseAria: { zh: "收起文件列表", en: "Collapse file list" },
-  fileNewTag: { zh: "[新增]", en: "[new]" },
   fileDeletedHint: { zh: "文件已从磁盘删除；点击尝试查看删除前的内容", en: "This file is no longer on disk; click to try to view its content before deletion" },
   deletedFileAria: { zh: (name: string) => `已删除的文件 ${name}`, en: (name: string) => `Deleted file ${name}` },
   chipFileDeleted: { zh: "文件已删除，内容找不回来了", en: "The file was deleted; its content is no longer available" },
@@ -857,12 +861,6 @@ export const MESSAGES = {
     zh: "按住 Ctrl 单击可打开这个引用",
     en: "Ctrl+click to open this reference",
   },
-  /** 正文里点的**目录**引用找不到（`@src/` 那种；文件那条走 `fileNotFound`）。 */
-  folderNotFound: {
-    zh: (path: string) => `找不到目录：${path}`,
-    en: (path: string) => `No such folder: ${path}`,
-  },
-
   running: { zh: "深度求索中", en: "Deep diving" },
   /**
    * 运行状态的计时文案；末尾那组点由 `<Ellipsis />` 画（官方 `chat.deepDivingFor`）。
