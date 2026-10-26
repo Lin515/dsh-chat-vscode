@@ -347,6 +347,88 @@ console.log("thinkingStream: 空白的正文 / 思考块不留行，且不吞掉
 }
 console.log("thinkingStream: 轮尾用时/速度按整轮累加（官方 deriveStats 口径） ✓");
 
+// ---------- A0c. 重载窗口后速度与 TTFT 仍在：从 durable 的 `data.stream` 折出 ----------
+//
+// 实时累加器（`turnMetrics`）在扩展内存里，重载窗口后随进程消失；这时 `usage` 与
+// `data.stream` 是 durable 事件自带的，必须能折出与实时**逐字相同**的数值。
+// 判据要与实时一致：首个 `text-delta` / `reasoning-delta` 帧，**空文本也算**。
+{
+  const t = 1_789_147_200_000;
+  const chunks = [
+    { time: t + 300, chunk: { type: "reasoning-delta", index: 0, text: "" } },
+    { time: t + 900, chunk: { type: "reasoning-delta", index: 0, text: "想一下" } },
+    { time: t + 1500, chunk: { type: "text-delta", index: 1, text: "hi" } },
+    { time: t + 2200, chunk: { type: "text-delta", index: 1, text: " there" } },
+  ];
+  /** 按 DSH 的打包规则压成紧凑记录（连续同 index 的 delta 合并进 `dt` / `texts`）。 */
+  const pack = () => {
+    const records: Record<string, any>[] = [];
+    for (const item of chunks) {
+      const chunk = item.chunk as { type: string; index: number; text: string };
+      const type = chunk.type === "text-delta" ? "text-chunks" : "reasoning-chunks";
+      const previous = records.at(-1);
+      if (previous && previous.type === type && previous.index === chunk.index) {
+        previous.dt.push(item.time - previous.lastTime);
+        previous.texts.push(chunk.text);
+        previous.lastTime = item.time;
+      } else {
+        records.push({
+          type,
+          time0: item.time,
+          index: chunk.index,
+          dt: [],
+          texts: [chunk.text],
+          lastTime: item.time,
+        });
+      }
+    }
+    return records;
+  };
+  const run = (withLiveChunks: boolean) => {
+    const { adapter, messages } = harness();
+    adapter.applyEvent({ type: "turn/start", seq: 1, time: t, data: { turn: 1 } });
+    if (withLiveChunks) {
+      adapter.applyAssistantStream({ type: "start", attemptId: "x", revision: 1, turn: 1, step: 0 });
+      chunks.forEach((item, index) => {
+        adapter.applyAssistantStream({
+          type: "chunk",
+          attemptId: "x",
+          revision: 1,
+          index,
+          time: item.time,
+          chunk: item.chunk,
+        } as never);
+      });
+    }
+    adapter.applyEvent({
+      type: "assistant/message",
+      seq: 2,
+      time: t + 9000,
+      data: {
+        turn: 1,
+        step: 0,
+        usage: { inputTokens: 5, outputTokens: 200, totalTokens: 205 },
+        stream: pack(),
+        message: { id: "m", role: "assistant", content: [{ type: "text", text: "hi" }] },
+      },
+    } as never);
+    adapter.applyEvent({
+      type: "turn/end",
+      seq: 3,
+      time: t + 20_000,
+      data: { turn: 1, reason: { kind: "completed" } },
+    });
+    return messages.find((m) => m.role === "assistant")?.turnStats;
+  };
+
+  const live = run(true);
+  const replayed = run(false);
+  assert.deepStrictEqual(replayed, live, "只重放 durable 事件也必须折出与实时逐字相同的用时/速度/TTFT");
+  assert.strictEqual(replayed?.ttftMs, 300, "首 token 取**第一个 delta 帧**（空文本也算），与实时同判据");
+  assert.ok(replayed?.tokensPerSecond !== undefined, "重载之后速度不能消失");
+}
+console.log("thinkingStream: 重载后从 durable stream 折出同样的速度与 TTFT ✓");
+
 // ---------- A. 思考时的流式叠加层必须被 durable 消息清掉 ----------
 
 {

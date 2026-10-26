@@ -50,7 +50,7 @@ import {
 } from "./submissionReceipts";
 import { subagentFromCatalogEvent } from "./projections";
 import { includedAttachments } from "./attachments";
-import { expandAssistantStream } from "./assistantStream";
+import { assistantStreamFirstTokenTime, expandAssistantStream } from "./assistantStream";
 import { producedPath } from "./produced";
 import { headerTools, type TrajectoryCallCatalog } from "./trajectory";
 import type { HostToWebview } from "../shared/ipc";
@@ -2338,7 +2338,13 @@ export class SessionAdapter {
     this.dropReclaimed(message, reclaimed);
 
     // decode 窗口：本 step 首个 token delta → 该 durable 消息（均为服务端时钟）
-    const firstTokenAt = this.stepFirstTokenAt;
+    //
+    // 实时流开着时 `stepFirstTokenAt` 已经由 chunk 帧填好；重载窗口 / 重放 / 中途加入
+    // 这些没有实时帧的路径上它是空的，此时从 durable 的 `data.stream` 折出同一个时刻
+    // ——否则轮尾速度与 TTFT 只剩内存里那一份，重载之后就没了（用时算得出来，因为它
+    // 只依赖 `turn/end` 与事件时间）。两条路径的口径必须一致，见
+    // `assistantStream.ts` 的 `assistantStreamFirstTokenTime`。
+    const firstTokenAt = this.stepFirstTokenAt ?? assistantStreamFirstTokenTime(data.stream);
     const usage = toUsage(data.usage, {
       firstTokenAt,
       endedAt: event.time,

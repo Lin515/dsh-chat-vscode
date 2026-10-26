@@ -8,7 +8,7 @@
 - [adapter.ts](<adapter.ts>) — durable 事件折为聊天 MessageView；工具打开目标、本轮产物与终端目录按 `shared/toolPath` 的独立判据结算，并保留参数别名与事件坐标；交付申报按事件累积，同一路径的显示去重在界面侧完成。
 - [client.ts](<client.ts>) — RPC / WebSocket 流；业务、认证与端点不存在的错误分类。
 - [protocol.ts](<protocol.ts>) — 客户端消费的线格式类型。
-- [assistantStream.ts](<assistantStream.ts>) — activeAttempt 紧凑记录展开与重开 follow 恢复。
+- [assistantStream.ts](<assistantStream.ts>) — activeAttempt 紧凑记录展开、首 token 时刻复原与重开 follow 恢复。
 - [scope.ts](<scope.ts>) — 会话投影、适配器与视图装配容器。
 - [sessionView.ts](<sessionView.ts>) — 会话视图字段唯一生产者，快照 / patch / 切会话共用。
 - [sessionList.ts](<sessionList.ts>) — 工作区 / 窗口 cwd 可见性与子代理、分支血缘。
