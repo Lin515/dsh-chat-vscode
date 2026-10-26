@@ -14,7 +14,7 @@ import { scanCommandLinks, useCommandLinks, type CommandLinksPort } from "../com
 import { canOpenAttachment, openAttachment } from "../attachmentOpen";
 import { readableMentionText, scanMentionLinks, type MentionLinkTarget } from "../mentionLinks";
 import { useTexts, resolveText, type Texts } from "../texts";
-import { deliverablesForClosing, producedOnly, withoutVanished } from "../turnFiles";
+import { deliverablesForClosing, producedOnly } from "../turnFiles";
 import { foldTurnProcess, type TurnProcessRun } from "../turnProcess";
 import { hasUserOpenedNode, useNodeOpen } from "../nodeOpen";
 import { ChangesCard } from "./ChangesCard";
@@ -442,18 +442,8 @@ export const Message = memo(function Message({
   const presented = deliverablesForClosing(message.deliverables);
   // 「本轮改动」里刨掉已经申报交付的文件：模型申报的通常就是它刚改的那几个，
   // 两行都列一遍看着像同一件事说了两遍（口径见 turnFiles.ts）。
-  // 再刨掉**净效果为零**的文件（写了又删、宿主分类为 `gone`）：
-  // 模型提交时写的 `commit.msg.txt` 正是这一类。
-  const producedFiles = withoutVanished(
-    producedOnly(message.produced, presented),
-    fileKinds,
-    (path) => path,
-  );
-  const deliverables = withoutVanished(
-    presented,
-    fileKinds,
-    (file) => file.path,
-  );
+  const producedFiles = producedOnly(message.produced, presented);
+  const deliverables = presented;
 
   // 本轮**生成或申报交付**的图片文件：这是 agent 表达「给你一张图」最常用的方式
   // （`present` 申报、或直接 write 出来），而它此前只长成一行文件芯片——用户在界面上
@@ -603,8 +593,8 @@ export const Message = memo(function Message({
             none（`dsh-client-ui-chat/lib/client.js` 的 turnTailDefinition）——即
             数据在轮次进行中就累积，但**节点不发布、行不渲染**。轮次没完就画一行
             不断变长的文件名，既与官方不一致，也让「本轮改了什么」看起来像已经定稿。
-            宿主侧同一个时机还会先请宿主刷新一次文件状态，所以行出现时记号与对比
-            状态都是准的（刷新来源由宿主决定，见 `adapter.refreshFiles`）。
+            宿主侧同一个时机还会重新分类一次文件状态，所以行出现时删除线是准的
+            （分类只问 Host 的执行世界，见 `adapter.scheduleFileKinds`）。
 
             申报过交付的文件不再在本行重复，只留在下面的交付行。 */}
         {!message.streaming && imageFiles.length ? (

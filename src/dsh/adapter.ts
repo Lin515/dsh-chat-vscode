@@ -942,9 +942,9 @@ export class SessionAdapter {
   /**
    * 文件芯片的分类回调（由控制器注入，像 `loadImages` 一样）。
    *
-   * 适配器只负责「这里有哪些路径」（`produced` / `deliverables`），而「每个文件是
-   * 新建 / 改动 / 已删除」由控制器按其文件访问边界判定。注入为空（比如子代理转录
-   * 的适配器）就跳过分类，界面维持无记号的现状。
+   * 适配器只负责「这里有哪些路径」（`produced` / `deliverables`），而「每个文件在
+   * 执行世界是否已明确不存在」由控制器按其文件访问边界判定。注入为空（比如子代理
+   * 转录的适配器）就跳过分类，界面维持无记号的现状。
    *
    * 键 = 芯片上的原样路径，值 = 种类；判定细节见 `dsh/fileChange.ts`。
    */
@@ -960,17 +960,6 @@ export class SessionAdapter {
    * 未注入（离线测试 / 子代理转录）时该档回退自然缺席，不会拿本机目录顶替。
    */
   sessionCwd: string | undefined;
-
-  /**
-   * 「刷新文件状态」回调（由控制器注入）：**轮次结束**时先请宿主刷新一次文件状态，
-   * 再分类。
-   *
-   * 刷新来源（工作区、版本控制或执行世界的其它事实）与可用性由控制器决定，适配器
-   * 不假定本机形态。不推这一下，模型刚写完的文件可能还没进入改动清单，用户第一次
-   * 点芯片就被判定成「没改动」。刷新放在**轮次结束**（文件都落盘了）而不是点击时，
-   * 是为了不占用点击的响应时间。
-   */
-  refreshFiles: (() => Promise<void>) | undefined;
 
   /**
    * 子代理建立事实（`subagent/catalog` durable 事件）的落点（由控制器注入）。
@@ -1059,9 +1048,6 @@ export class SessionAdapter {
   /** 文件分类的去抖计时器（见 `scheduleFileKinds`）。 */
   private fileKindsTimer: ReturnType<typeof setTimeout> | undefined;
 
-  /** 下次分类前是否要先推一次 Git 重扫（轮次结束时置位）。 */
-  private fileKindsRefreshPending = false;
-
   /**
    * 最近一次下发的分类表。**要进首帧快照**（`fileKindsState()`）：
    * 页面重载或第二个窗口绑上同一会话时，新窗口只有靠快照才拿得到记号；
@@ -1081,16 +1067,12 @@ export class SessionAdapter {
   /**
    * 安排一次文件分类（去抖 250ms）。
    *
-   * 一轮里 write/edit 可能连发十几次，每次都分类既浪费也让 git 状态来回抖；
-   * 并起来一批做完，等 `tool/result` 的连发平息后再问一次 git。历史回放
-   * （快照 / 加载更早）也走这里——旧轮次的芯片同样要有记号。
-   *
-   * @param refreshGit 轮次结束时传 true：先推一次 Git 重扫再分类，让刚写完的
-   *   文件立刻进改动清单（见 `refreshFiles`）。
+   * 一轮里 write/edit 可能连发十几次，每次都分类既浪费也让状态来回抖；
+   * 并起来一批做完，等 `tool/result` 的连发平息后再问一次 Host 的执行世界。
+   * 历史回放（快照 / 加载更早）也走这里——旧轮次的芯片同样要有删除线。
    */
-  scheduleFileKinds(refreshGit = false): void {
+  scheduleFileKinds(): void {
     if (!this.classifyFiles) return;
-    if (refreshGit) this.fileKindsRefreshPending = true;
     if (this.fileKindsTimer) clearTimeout(this.fileKindsTimer);
     this.fileKindsTimer = setTimeout(() => {
       this.fileKindsTimer = undefined;
@@ -1102,14 +1084,6 @@ export class SessionAdapter {
   private async deliverFileKinds(): Promise<void> {
     const classify = this.classifyFiles;
     if (!classify) return;
-    if (this.fileKindsRefreshPending) {
-      this.fileKindsRefreshPending = false;
-      try {
-        await this.refreshFiles?.();
-      } catch {
-        // 刷新失败不致命：分类照旧（拿不到状态的条目退化为无记号）
-      }
-    }
     const paths: string[] = [];
     const seen = new Set<string>();
     for (const message of this.messages) {
@@ -1781,10 +1755,8 @@ export class SessionAdapter {
         this.emit({ type: "patch", patch: { running: false, runStartedAt: null } });
         // 这一轮收场了：把「领走了却没落盘」的那些提交定性（见 settleLostSubmissions）
         this.settleLostSubmissions(event.seq);
-        // 轮次结束 = 文件都落盘了：先推一次 Git 重扫再分类，让芯片的
-        // [新增] / 删除线立刻是准的，也让「用户随后点芯片」直接看到 diff
-        // （不推的话刚写完的文件还没进改动清单，第一次点只会打开完整文件）。
-        this.scheduleFileKinds(true);
+        // 轮次结束 = 文件都落盘了：重新分类，让当前存在性（删除线）跟上
+        this.scheduleFileKinds();
         break;
       }
 
@@ -3475,7 +3447,7 @@ export class SessionAdapter {
       ...(turn === undefined ? {} : { turn }),
     });
     this.emit({ type: "message/upsert", message: { ...message } });
-    // 新路径进芯片了：安排一次分类（去抖），让 [新增]/删除线跟上来
+    // 新路径进芯片了：安排一次分类（去抖），让删除线/存在性跟上来
     this.scheduleFileKinds();
   }
 

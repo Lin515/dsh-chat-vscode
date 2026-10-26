@@ -3092,16 +3092,8 @@ button.changes-card-head:hover .changes-card-chevron,
   white-space: nowrap;
 }
 
-/* 新建文件（git 未跟踪）的 [新增] 记号：弱化成「附注」而不是第二个文件名——
-   芯片的主角仍是文件名，记号只负责解释「为什么这个芯片点开不是 diff」。 */
-.file-chip-tag {
-  flex: 0 0 auto;
-  color: var(--muted);
-  letter-spacing: 0.02em;
-}
-
-/* 已删除的文件：文件名画删除线 + 整体褪色。芯片仍然可点（git 跟踪中的删除
-   点开还能看到删除前的内容），但外观要明确说出「这个文件已经不在了」。 */
+/* 已删除的文件：文件名画删除线 + 整体褪色。芯片仍然可点（Host 明确 not-found 时
+   点开还能尝试看删除前的内容），但外观要明确说出「这个文件已经不在了」。 */
 .file-chip.is-deleted {
   color: var(--muted);
   border-style: dashed;

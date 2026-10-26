@@ -10,7 +10,7 @@
  * - `absent`：只有 `workspace-file/not-found`（`FileNotFound`）才算；
  * - `unknown`：权限、离线、连接失效、形状不合规等一律不算删除。
  *
- * 由于没有经过验证的本机映射，**不再据 git 清单标记 [新增] / 已改动**；仍然保留
+ * 由于没有经过验证的本机映射，**不据本机 git 判改动记号**；只保留
  * 「明确不存在」的删除线。点击时的改动对比只走 Host 的 `changes.diff` 快照。
  *
  * 本文件同时保留给**用户上传前的本机附件来源**用的 `resolveChipPath`：那不是模型
@@ -26,8 +26,8 @@ export type FileExistence = "present" | "absent" | "unknown";
 /**
  * 芯片种类：只把**明确不存在**画成删除线。
  *
- * `present` 不标记号：没有本机 git 的可靠映射，不能把「在产物清单里」冒充
- * 「新增」；`unknown` 同样不标记号（拿不到证据时不动）。
+ * `present` 不标记号：没有本机映射能证明它「变过」，产物清单里出现不等于任何改动；
+ * `unknown` 同样不标记号（拿不到证据时不动）。
  */
 export function fileChangeKind(existence: FileExistence): FileChangeKind | undefined {
   return existence === "absent" ? "deleted" : undefined;
