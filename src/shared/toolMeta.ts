@@ -110,16 +110,16 @@ export function summaryKeys(variant: ToolVariant): readonly string[] {
  * 可打开的工作区文件。
  */
 const FILE_PATH_VARIANTS: ReadonlySet<ToolVariant> = new Set<ToolVariant>(["read", "write", "edit"]);
-const FILE_PATH_KEYS = ["path", "file_path"] as const;
 
-/** 从工具参数里取出「可打开的工程文件路径」；不是文件类变体时返回 undefined。 */
-export function filePathFrom(name: string, args: Record<string, unknown>): string | undefined {
-  if (!FILE_PATH_VARIANTS.has(classifyTool(name))) return undefined;
-  for (const key of FILE_PATH_KEYS) {
-    const value = args[key];
-    if (typeof value === "string" && value.trim()) return value;
-  }
-  return undefined;
+/**
+ * 这个工具名是否属于官方的文件路径变体（`FILE_PATH_VARIANTS`）。
+ *
+ * 工具行的打开目标与产物别名只对这三类变体有意义；`web_fetch` 虽然落在 `read`
+ * 变体里，但它通常用 `url`——调用方还必须只认 `path` / `file_path` 键
+ * （见 `shared/toolPath.argumentPathOf`）。
+ */
+export function isFilePathTool(name: string): boolean {
+  return FILE_PATH_VARIANTS.has(classifyTool(name));
 }
 
 /** 终端结果的解析产物（官方 `parseExitStatus`）。 */

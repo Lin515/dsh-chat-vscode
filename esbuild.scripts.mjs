@@ -157,6 +157,14 @@ const entries = {
   "build/context-menu.test.mjs": "scripts/contextMenu.test.ts",
   "build/image-files.test.mjs": "scripts/imageFiles.test.ts",
   "build/path-display.test.mjs": "scripts/pathDisplay.test.ts",
+  // 跨平台工作区路径（绝对形态 / 拼接 / 记录值 / 身份键 / 终端标签折叠）：必须登记
+  "build/workspace-path.test.mjs": "scripts/workspacePath.test.ts",
+  // 工具行 / 产物 / 终端目录三套独立判据：必须登记
+  "build/tool-path.test.mjs": "scripts/toolPath.test.ts",
+  // 适配器把 parentCallId、meta、seq、turn 透传到上述判据（实时与重放同路）：必须登记
+  "build/path-adapter.test.mjs": "scripts/pathAdapter.test.ts",
+  // 改动清单坐标关联（根内相对 / 根外绝对 / 规范化根只做确定关联）：必须登记
+  "build/changes-path.test.mjs": "scripts/changesPath.test.ts",
   "build/file-links.test.mjs": "scripts/fileLinks.test.ts",
   // 链接悬停标题与 HTML 文件的浏览器打开（修饰键判据 / 白名单 / 两端接线）：必须登记
   "build/link-hovers.test.mjs": "scripts/linkHovers.test.ts",

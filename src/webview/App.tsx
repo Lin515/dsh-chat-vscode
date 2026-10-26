@@ -1148,8 +1148,9 @@ export function App() {
                         fileKinds={state.fileKinds}
                         questionBatch={state.questionBatch}
                         turnProcessThreshold={state.turnProcessThreshold}
-                        // 悬停里的完整路径按当前执行目录补全（点击仍由宿主解析）
-                        cwd={state.workingDirectory ?? state.session?.cwd}
+                        // 普通正文链接 / 悬停按会话**创建目录**解释；执行目录只属于
+                        // 工具与终端（历史目标由记录值承担），不拿来补普通相对路径。
+                        cwd={state.session?.cwd}
                         // 技能节点的 SKILL.md 路径只认服务端 `skills/list` 提供的那份
                         skillPaths={skillPaths}
                         // 改动文件卡片：坐标在消息上，清单在 state 的缓存里（键带会话 id，

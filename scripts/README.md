@@ -30,7 +30,11 @@
 - [thinkingStream.test.ts](<thinkingStream.test.ts>) — 思考完毕鲸鱼仍发光、用户消息未置顶两个缺陷的宿主侧成因。
 - [renderOrder.test.ts](<renderOrder.test.ts>) — 段顺序：活路径（真流式）与离线重放必须给出同一个顺序。
 - [steeringPlacement.test.ts](<steeringPlacement.test.ts>) — 用户消息落位：本轮提问（插到轮首）与生成中插话（追加 + 切段）的分界只看 next-step 的**本次领取**，子代理开轮的会话里插话不得被抬到本轮顶部。
-- [toolView.test.ts](<toolView.test.ts>) — 工具行运行中数据：长命令要能完整带出供展开区显示；读 / 写 / 编辑的可打开路径与技能名只从参数取，不构造本机路径。
+- [toolView.test.ts](<toolView.test.ts>) — 工具行打开目标的运行/结算/失败/嵌套矩阵：相对参数只在成功结算的根调用上可用，绝对记录值优先；技能名只从参数取，不构造本机路径。
+- [workspacePath.test.ts](<workspacePath.test.ts>) — 跨平台路径纯字符串判据：绝对形态（POSIX / 盘符 / UNC）、只拼接不规范的相对解析、记录值只认绝对字符串、身份键不转小写/不消点、终端标签的点段与 UNC 根折叠。
+- [toolPath.test.ts](<toolPath.test.ts>) — 工具行 / 产物 / 终端目录三套独立判据：流式完整 `file_path` 与 `path` 的边界、`mutationResultPath` 三档、`meta.cwd` 原样与运行/嵌套/terminal_send 分档。
+- [pathAdapter.test.ts](<pathAdapter.test.ts>) — 适配器接线：`parentCallId` / `meta` / `seq` / `turn` 透传，产物保留全部参数别名与坐标，失败与 PTC 子调用不进根产物，实时与历史重放同路。
+- [changesPath.test.ts](<changesPath.test.ts>) — 改动清单坐标关联：根内相对 / 根外绝对、规范化根拼不上就不挂、大小写与点段不作身份、Windows 分隔符与 POSIX 字面反斜杠的边界。
 - [skill.test.ts](<skill.test.ts>) — `skill` 节点的文本事实：合法技能名、半截参数不猜、只从结果信封取 `<skill_instructions>` 正文。
 - [unknownEvent.test.ts](<unknownEvent.test.ts>) — 「不认识的事件」告警的边界：已知但不渲染的簿记事件不得告警。
 - [injected.test.ts](<injected.test.ts>) — 自动载入提示词节点（`system/message`、插件注入）的正确呈现。

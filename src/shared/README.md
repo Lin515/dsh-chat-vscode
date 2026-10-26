@@ -11,7 +11,9 @@
 - `changesSummary.ts` — 改动清单的缓存键（必须带会话 id，事件 seq 是按会话各自编号的）。
 - `trajectory.ts` — 轨迹视图的线格式与视图模型（记录种类逐字对齐官方契约；**含请求表 `TrajectoryRequest`**——请求级检查器吃的选项 / 用量含会话累计 / 请求计时都在这张表里；时间线投影已 vendor 到 `src/vendor/`，这里只剩类型与域坐标换算）。
 - `toolMeta.ts` — 工具行的契约事实：工具分类、退出码解析（`[exit code: N]`）、running/ok/error/stopped 状态语义，纯数据与纯函数。
-- `toolCard.ts` — 工具卡契约事实：从「工具名 + 参数 + 结果元数据」折出卡片数据（对齐官方 `deriveSummary`）。
+- `workspacePath.ts` — 跨平台路径的纯字符串判据：POSIX / 盘符 / UNC 的绝对形态、只拼接不规范的相对解析、记录值读取、终端标签的点段折叠，以及**不转小写、不消点**的身份比较键（身份只能由执行世界规范化）。
+- `toolPath.ts` — 工具路径模型：工具行打开目标（记录值优先且不凭空造动作、运行/失败/嵌套只对绝对参数放行）、产物三档（`mutationResultPath`）、终端目录标签（记录 cwd 原样、旧根调用按创建目录回退、运行/嵌套不猜）。
+- `toolCard.ts` — 工具卡契约事实：从「工具名 + 参数 + 结果元数据」折出卡片数据（对齐官方 `deriveSummary`，终端目录按 `toolPath` 的判据取值）。
 - `skill.ts` — `skill` 工具节点的文本事实：从参数认合法技能名、从结果信封里只取 `<skill_instructions>` 正文；不构造路径（SKILL.md 路径只认服务端 `skills/list`）。
 - `toolQuestion.ts` — `ask_user_question` 问卷事实：题目在调用参数、答案在工具结果，两份 durable 材料折出问卷记录（重载后卡片不丢）。
 - `turnProcessThreshold.ts` — 连续过程折叠的阈值（默认值与特殊语义只写这一份，两边共用）。

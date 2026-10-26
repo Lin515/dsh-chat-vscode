@@ -29,17 +29,40 @@ console.log("turnFiles: 两行完全相同 → 只留交付行 ✓");
 }
 console.log("turnFiles: 部分重叠只去掉申报过的 ✓");
 
-// ---------- 3. 同一文件的两种写法要判成同一个 ----------
+// ---------- 3. 同一文件的两种写法要判成同一个（只限能证明的拼写） ----------
 //
-// 写类调用与 present 申报是两次独立的工具调用，分隔符与大小写不保证一致。
+// 写类调用与 present 申报是两次独立的工具调用，分隔符可能不同。Windows 形态路径的
+// 两种分隔符在 provider 里等价，可以合并；**大小写不能**：POSIX 上 `A.ts` 与 `a.ts`
+// 是两个文件，「多半是同一个」不是身份证据。
 {
   const left = producedOnly(
     ["D:\\dev\\app\\src\\config.ts", "D:/dev/app/src/other.ts"],
-    [{ path: "d:/dev/app/src/config.ts" }],
+    [{ path: "D:/dev/app/src/config.ts" }],
   );
-  assert.deepStrictEqual(left, ["D:/dev/app/src/other.ts"], "反斜杠/大小写不同仍是同一个文件");
+  assert.deepStrictEqual(left, ["D:/dev/app/src/other.ts"], "反斜杠/正斜杠不同仍是同一个文件");
 }
-console.log("turnFiles: 分隔符与大小写不影响判重 ✓");
+{
+  const left = producedOnly(
+    ["D:\\dev\\app\\src\\Config.ts", "D:/dev/app/src/other.ts"],
+    [{ path: "D:/dev/app/src/config.ts" }],
+  );
+  assert.deepStrictEqual(
+    left,
+    ["D:\\dev\\app\\src\\Config.ts", "D:/dev/app/src/other.ts"],
+    "大小写不同的全路径是两个身份，不按本机平台一刀切",
+  );
+  assert.deepStrictEqual(
+    producedOnly(["/work/A.ts", "/work/a.ts"], []),
+    ["/work/A.ts", "/work/a.ts"],
+    "POSIX 同名不同大小写必须各自保留",
+  );
+  assert.deepStrictEqual(
+    producedOnly([{ path: "/work/A.ts" }, { path: "/work/A.ts" }], []),
+    ["/work/A.ts"],
+    "完全相同的展示路径仍只列一次",
+  );
+}
+console.log("turnFiles: 分隔符可合并；大小写/点段不当作同一身份 ✓");
 
 // ---------- 4. 边界：只有一边有内容 ----------
 {

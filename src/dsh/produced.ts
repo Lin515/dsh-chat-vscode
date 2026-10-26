@@ -1,14 +1,17 @@
 /**
- * 「本轮产生了哪些文件」的推导。
+ * 「本轮产生了哪些文件」的**参数路径**判据。
  *
  * 依据是**成功的第一方变更调用**（write / edit / str_replace_editor），不是收尾
  * 正文里的点名——模型记得与否都该列出来。逐字对齐官方
- * `dsh-client-ui-deliverables` 的 `mutationPath`（`lib/client.js:289-322`）：
- * 读类工具、不认识的工具、参数残缺的调用一律不算，路径保持调用参数里的原样拼写
- * （不归一化，界面直接拿它去开文件）。
+ * `dsh-client-ui-deliverables` 的 `mutationPath`：读类工具、不认识的工具、参数残缺
+ * 的调用一律不算，路径保持调用参数里的原样拼写（不归一化）。
+ *
+ * 最终登记的目标还要过一步官方 `mutationResultPath`（三档，见
+ * `shared/toolPath.ts`）：结果记录了绝对 `meta.path` 时以记录值为准，无效记录值
+ * 也不能凭空把相对参数提升成产物。本文件只负责「参数里点名了哪个路径」。
  *
  * 为什么放宿主侧：判定要看 `tool/result` 是否成功，而那只有适配器知道；
- * 界面拿到的是已经折好的 `MessageView.produced`。
+ * 界面拿到的是已经折好的 `MessageView.produced`（保留每次操作与参数别名）。
  */
 
 /** 反序列化后的参数对象（官方 `isRecord`）。 */

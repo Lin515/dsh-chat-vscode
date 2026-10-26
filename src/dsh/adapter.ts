@@ -28,9 +28,10 @@ import {
   parseRelaySender,
   parseSnapshotSections,
 } from "../shared/injectedSource";
-import { classifyTool, filePathFrom, parseExitStatus, summaryKeys, terminalFailed } from "../shared/toolMeta";
+import { classifyTool, parseExitStatus, summaryKeys, terminalFailed } from "../shared/toolMeta";
 import { skillNameFromArgs } from "../shared/skill";
 import { deriveToolSummary, parseToolArgs, todoProgressOf, toolCardOf } from "../shared/toolCard";
+import { mutationResultPath, toolRowFilePath } from "../shared/toolPath";
 import {
   questionAnswersFromResult,
   questionItemsFromArgs,
@@ -461,7 +462,6 @@ function summarizeTool(
   command?: string;
   diff?: DiffHunkView[];
   todo?: { done: number; total: number; active?: string; extra?: number };
-  filePath?: string;
   skillName?: string;
 } {
   const args = parseToolArgs(argsRaw) ?? {};
@@ -489,9 +489,6 @@ function summarizeTool(
       input: argsRaw,
       diff: hunksFromToolArgs(name, argsRaw),
       todo: todoProgressOf(argsRaw),
-      // 「能打开的文件」只认官方 `FILE_PATH_VARIANTS`：`read` 变体里的 `web_fetch`
-      // 用 url，不算文件路径（见 `shared/toolMeta.filePathFrom`）。
-      filePath: filePathFrom(name, args),
     };
   }
   return {
@@ -952,6 +949,17 @@ export class SessionAdapter {
   classifyFiles: ((paths: string[]) => Promise<Record<string, FileChangeKind>>) | undefined;
 
   /**
+   * 会话的**创建目录**（`header.cwd`，由控制器注入）。
+   *
+   * 只用于旧终端结果没有 `meta.cwd` 时的目录标签回退（相对 `workdir` 拼它、省略则
+   * 显示它）。它不是普通文件路径的解析基准——历史操作的准确目标由执行时的记录值
+   * 承担，普通相对链接仍按创建目录在宿主侧打开时解析。
+   *
+   * 未注入（离线测试 / 子代理转录）时该档回退自然缺席，不会拿本机目录顶替。
+   */
+  sessionCwd: string | undefined;
+
+  /**
    * 「刷新 git 状态」回调（由控制器注入）：**轮次结束**时先推一次 Git 重扫，
    * 再分类。
    *
@@ -1103,10 +1111,10 @@ export class SessionAdapter {
     const paths: string[] = [];
     const seen = new Set<string>();
     for (const message of this.messages) {
-      for (const path of message.produced ?? []) {
-        if (path && !seen.has(path)) {
-          seen.add(path);
-          paths.push(path);
+      for (const operation of message.produced ?? []) {
+        if (operation.path && !seen.has(operation.path)) {
+          seen.add(operation.path);
+          paths.push(operation.path);
         }
       }
       for (const file of message.deliverables ?? []) {
@@ -1910,7 +1918,8 @@ export class SessionAdapter {
         if (!callId) break;
         const name = String(data.name ?? "tool");
         const argsRaw = typeof data.arguments === "string" ? data.arguments : JSON.stringify(data.arguments ?? {});
-        this.upsertToolCall(event.time, callId, name, argsRaw);
+        const parentCallId = typeof data.parentCallId === "string" ? data.parentCallId : undefined;
+        this.upsertToolCall(event.time, callId, name, argsRaw, undefined, parentCallId);
         break;
       }
 
@@ -1929,7 +1938,9 @@ export class SessionAdapter {
             ? (data.error as { code: string }).code
             : undefined;
         const toolName = this.toolNameOf(callId);
-        this.finishToolCall(event.time, callId, text, isError, data.meta, parts.content, errorCode);
+        const turn =
+          typeof data.turn === "number" && Number.isInteger(data.turn) ? data.turn : undefined;
+        this.finishToolCall(event.time, callId, text, isError, event.seq, data.meta, parts.content, errorCode, turn);
         // 问卷的**权威收场信号**：结果里就是用户答案（不论哪个窗口答的）。
         // 权限审批不需要在这里处理：它有专门的 `approval/decided` 审计事件。
         if (toolName === "ask_user_question") this.applyQuestionAnswers(text);
@@ -3076,9 +3087,32 @@ export class SessionAdapter {
     }
   }
 
-  private upsertToolCall(ts: number, callId: string, name: string, argsRaw: string, messageId?: string): void {
+  private upsertToolCall(
+    ts: number,
+    callId: string,
+    name: string,
+    argsRaw: string,
+    messageId?: string,
+    parentCallId?: string,
+  ): void {
     const message = (messageId ? this.byId.get(messageId) : undefined) ?? this.ensureAssistantMessage(ts);
     const summary = summarizeTool(name, argsRaw);
+    const existing = this.toolSegments.get(callId);
+    const existingSegment = existing
+      ? this.byId.get(existing.messageId)?.segments.find((segment) => segment.id === existing.segmentId)
+      : undefined;
+    // 流式补全的后续 tool/call 可能没带 parentCallId；已经记下的身份不能被覆盖掉。
+    const effectiveParentCallId =
+      parentCallId ?? (existingSegment?.kind === "tool" ? existingSegment.tool.parentCallId : undefined);
+    // 打开目标与参数摘要分开：运行中的相对参数还不是可证明的历史目标，只有绝对参数
+    // 能直接给动作；记录值要等结算结果（官方 `toolRowModel`）。
+    const filePath = toolRowFilePath({
+      name,
+      argsRaw,
+      settled: false,
+      isError: false,
+      parentCallId: effectiveParentCallId,
+    });
     // 运行中也要算卡片：终端类在跑的时候官方就画「命令 + 运行中」（`terminalCardModel`
     // 的 running 分支），`run_code` 的参数也在同一刻就能给出代码正文。
     const runningCard = toolCardOf({
@@ -3087,19 +3121,21 @@ export class SessionAdapter {
       isError: false,
       interrupted: false,
       settled: false,
+      parentCallId: effectiveParentCallId,
+      sessionCwd: this.sessionCwd,
     });
-    const existing = this.toolSegments.get(callId);
     if (existing) {
       const target = this.byId.get(existing.messageId);
       const segment = target?.segments.find((s) => s.id === existing.segmentId);
       if (target && segment && segment.kind === "tool") {
         segment.tool.name = name;
+        segment.tool.parentCallId = effectiveParentCallId;
         segment.tool.detail = summary.detail;
         segment.tool.command = summary.command;
         segment.tool.input = argsRaw;
         segment.tool.diff = summary.diff;
         segment.tool.todo = summary.todo;
-        segment.tool.filePath = summary.filePath;
+        segment.tool.filePath = filePath;
         segment.tool.skillName = summary.skillName;
         // 唯一在这里能拿到运行中卡片的时刻：结算时会按结果重算（可能变成 undefined，
         // 例如带 description 的 bash 调用出错 → 官方退回通用 IN/OUT）
@@ -3123,7 +3159,8 @@ export class SessionAdapter {
       input: argsRaw,
       diff: summary.diff,
       todo: summary.todo,
-      filePath: summary.filePath,
+      filePath,
+      parentCallId: effectiveParentCallId,
       skillName: summary.skillName,
       card: runningCard,
       startedAt: ts,
@@ -3150,16 +3187,18 @@ export class SessionAdapter {
     callId: string,
     output: string,
     isError: boolean,
+    seq: number,
     meta?: unknown,
     content?: ContentBlock[],
     errorCode?: string,
+    turn?: number,
   ): void {
     const entry = this.toolSegments.get(callId);
     if (!entry) {
       // tool/call 落在跟随窗口之外（`maxMessages` 截断）：结果本身仍有价值，
       // 不能整条丢掉。官方在这种情况下回退成一张只有结果、头部显示 callId 的
       // 卡片（`rootResult` 的 `call: null`），这里同样补一个占位卡片。
-      this.orphanToolCall(ts, callId, output, isError, meta, content, errorCode);
+      this.orphanToolCall(ts, callId, output, isError, seq, meta, content, errorCode, turn);
       return;
     }
     const message = this.byId.get(entry.messageId);
@@ -3171,10 +3210,10 @@ export class SessionAdapter {
       // 「运行中」（鲸鱼一直发光，看着像任务卡死）。整份文件的纪律是"宁可显示一条
       // 信息不全的记录，也不要静默丢弃"，所以退回占位卡片那条路（与"call 落在
       // 跟随窗口之外"同一种收场）。
-      this.orphanToolCall(ts, callId, output, isError, meta, content, errorCode);
+      this.orphanToolCall(ts, callId, output, isError, seq, meta, content, errorCode, turn);
       return;
     }
-    this.settleTool(message, segment, ts, output, isError, meta, { content, errorCode });
+    this.settleTool(message, segment, ts, output, isError, meta, { content, errorCode, seq, turn });
   }
 
   /**
@@ -3191,7 +3230,7 @@ export class SessionAdapter {
     output: string,
     isError: boolean,
     meta: unknown,
-    options: { interrupted?: boolean; content?: unknown; errorCode?: string } = {},
+    options: { interrupted?: boolean; content?: unknown; errorCode?: string; seq?: number; turn?: number } = {},
   ): void {
     const tool = segment.tool;
     // 终端类结果：先把尾部标记行剥掉并取出退出状态。
@@ -3205,6 +3244,16 @@ export class SessionAdapter {
     }
     const failed = isError || (terminal !== undefined && terminalFailed(terminal));
     tool.status = options.interrupted ? "stopped" : failed ? "error" : "ok";
+    // 打开目标按结算后的完整事实重算：记录值优先，且**只覆盖已有的参数路径**。
+    // 相对参数只有在成功结算的根调用上才成为目标；失败 / 中断 / 嵌套不会。
+    tool.filePath = toolRowFilePath({
+      name: tool.name,
+      argsRaw: tool.input ?? "",
+      meta,
+      settled: true,
+      isError: failed,
+      parentCallId: tool.parentCallId,
+    });
     // 展开区的卡片按**结算后**的事实重算（可能从有变无：出错 / 持久 shell / spill 预览
     // 都退回通用 IN/OUT，官方同口径）。终端卡片的输出用**剥掉退出标记**的那一份，
     // 搜索结果被截断时的 recovery 用原始正文（官方 `flattenContent`）。
@@ -3219,6 +3268,8 @@ export class SessionAdapter {
       isError,
       interrupted: options.interrupted === true,
       settled: true,
+      parentCallId: tool.parentCallId,
+      sessionCwd: this.sessionCwd,
     });
     // 结果里的真实 hunk（3 行上下文，由工具自己算）优先于参数推导的预览
     const fromMeta = hunksFromMeta(meta);
@@ -3260,7 +3311,7 @@ export class SessionAdapter {
       messageId: message.id,
       segment: { ...segment, tool: { ...tool } } as Segment,
     });
-    this.rememberProduced(message, tool, failed);
+    this.rememberProduced(message, tool, failed, meta, options.seq, options.turn);
   }
 
   /**
@@ -3275,9 +3326,11 @@ export class SessionAdapter {
     callId: string,
     output: string,
     isError: boolean,
+    seq: number,
     meta: unknown,
     content?: ContentBlock[],
     errorCode?: string,
+    turn?: number,
   ): void {
     const message = this.ensureAssistantMessage(ts);
     if (this.toolSegments.has(callId)) return;
@@ -3297,6 +3350,8 @@ export class SessionAdapter {
     this.settleTool(message, segment as Extract<Segment, { kind: "tool" }>, ts, output, isError, meta, {
       content,
       errorCode,
+      seq,
+      turn,
     });
   }
 
@@ -3328,19 +3383,45 @@ export class SessionAdapter {
    * 记下本轮**产生**的文件（成功的写类调用）。
    *
    * 与 `deliverables/presented`（`present` 工具的显式申报）是两条独立来源，官方
-   * 也分开算：这一条不依赖模型记得在收尾正文里点名。路径按首次出现去重排序，
-   * 所以同一轮里「先写后改」的文件只列一次。
+   * 也分开算：这一条不依赖模型记得在收尾正文里点名。
+   *
+   * 每一条是**一次操作**：官方 `DeliverablesTurnData.produced` 同样保留 path、
+   * 别名 `argumentPath` 与结算 seq，展示时才按 path 首次出现去重。这里不做去重，
+   * 否则同一路径的多个参数别名会丢，正文行内代码的唯一匹配就少一份证据。
+   *
+   * 目标按官方 `mutationResultPath` 三档取值（与工具行的回退不同）：
+   * 结果没有自有 `path` 时回退参数拼写；记录值无效时只有绝对参数才保留。
+   * 只有根级 `tool/call` 会进入这里——PTC 分发子调用没有自己的 `tool/call`，
+   * 因而不会被重新计成根产物。
    *
    * 用 `message/upsert` 整体下发：`produced` 是消息级字段，`message/segment`
    * 只更新单段，界面收不到它。
    */
-  private rememberProduced(message: MessageView, tool: ToolCallView, isError: boolean): void {
-    if (isError) return;
-    const path = producedPath(tool.name, tool.input ?? "");
-    if (!path) return;
+  private rememberProduced(
+    message: MessageView,
+    tool: ToolCallView,
+    isError: boolean,
+    meta: unknown,
+    seq: number | undefined,
+    turn: number | undefined,
+  ): void {
+    if (isError || seq === undefined) return;
+    // 只有根级 `tool/call` 是产物的定义来源：带 parentCallId 的嵌套调用不重新计成
+    // 根产物（官方 `deliverablesDefinition` 只消费根 `tool/call`）。
+    if (tool.parentCallId !== undefined) return;
+    const argumentPath = producedPath(tool.name, tool.input ?? "");
+    if (!argumentPath) return;
+    const path = mutationResultPath(argumentPath, meta);
+    if (path === null) return;
     const list = message.produced ?? (message.produced = []);
-    if (list.includes(path)) return;
-    list.push(path);
+    // 同一结果重复投递（迟到重放）不应再登记一次；不同调用即使落在同一 seq 也各自保留。
+    if (list.some((operation) => operation.seq === seq && operation.path === path && operation.argumentPath === (path === argumentPath ? undefined : argumentPath))) return;
+    list.push({
+      path,
+      ...(path === argumentPath ? {} : { argumentPath }),
+      seq,
+      ...(turn === undefined ? {} : { turn }),
+    });
     this.emit({ type: "message/upsert", message: { ...message } });
     // 新路径进芯片了：安排一次分类（去抖），让 [新增]/删除线跟上来
     this.scheduleFileKinds();

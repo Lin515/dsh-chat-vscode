@@ -215,13 +215,20 @@ export interface ToolCallView {
    */
   readLines?: { start: number; end: number };
   /**
-   * 这次调用对应的**工程文件**（`read` / `read_image` / `write` / `edit` 的参数路径）。
+   * 这次调用对应的**工程文件打开目标**（`shared/toolPath.toolRowFilePath`）。
    *
    * 只放官方 `FILE_PATH_VARIANTS` 认出来的文件路径：URL、命令行、查询串都不算。
-   * 界面按住 Ctrl/Cmd 单击节点时用它直接打开文件（普通单击仍只开合节点）；
-   * 路径可能是相对会话工作目录的拼写，由宿主 `openFile` 按权威 cwd 解析。
+   * 已结算且记录值为绝对路径时是记录目标；旧结果 / 成功根调用可能是相对参数拼写，
+   * 由宿主 `openFile` 按权威 cwd 解析。运行中、失败、嵌套调用的相对参数不成为目标。
    */
   filePath?: string;
+  /**
+   * 嵌套调用（PTC 子调用）的父调用 id；根调用的 `tool/call` 没有这个字段。
+   *
+   * 判据（工具行 / 终端目录 / 产物登记）要一直拿到它：相对参数在嵌套调用里不是
+   * 历史打开目标，子调用也不能被重新计成根产物。
+   */
+  parentCallId?: string;
   /**
    * `skill` 工具加载的技能名（参数里的 `name`）。
    *
@@ -340,7 +347,11 @@ export type ToolCardView =
       kind: "terminal";
       /** 命令行原文（可多行）。 */
       command: string;
-      /** 工作目录（调用方给的原样路径；界面只显示末段，见官方 `xm()`）。 */
+      /**
+       * 目录标签（`terminalCwdOf` 的产物）：已结算优先记录 `meta.cwd` 原样，旧根
+       * shell 调用按创建目录回退；运行中 / 嵌套只给请求里的绝对 `workdir`。界面只
+       * 显示末段（见官方 `xm()`）。
+       */
       cwd?: string;
       /** 去掉退出标记之后的输出。运行中为空。 */
       output: string;
@@ -555,6 +566,24 @@ export interface DeliverableView {
 }
 
 /**
+ * 一次**成功的第一方变更调用**登记的产物。
+ *
+ * 与官方 `DeliverablesTurnData.produced` 同构：同一目标被多次写入会留下多条操作
+ * （每条带自己的结算 `seq` 与轮次），展示层才按 `path` 首次出现去重。`argumentPath`
+ * 只在「记录值覆盖了参数拼写」时保留，是正文行内代码别名唯一匹配的来源之一。
+ */
+export interface ProducedFileView {
+  /** 登记的目标路径；旧结果没有记录值时可能是相对的参数拼写。 */
+  path: string;
+  /** 发生覆盖时保留的原始参数拼写（别名）；与 `path` 相同时省略。 */
+  argumentPath?: string;
+  /** 登记这次产物的 `tool/result` 事件 seq。 */
+  seq: number;
+  /** 所属轮次；无法确定时省略。 */
+  turn?: number;
+}
+
+/**
  * 一条 `workspace/changes` 宣告的改动清单里的一项。
  *
  * 形状照抄 Host 的 `WorkspaceChangedFile`（`dsh-workspace-changes/lib/types`），
@@ -684,10 +713,13 @@ export interface MessageView {
    * 本轮**产生**的文件（成功的 write / edit / str_replace_editor 调用）。
    *
    * 与 `deliverables`（`present` 工具的显式申报）是两回事：官方也分开算——
-   * 这是从工具参数推导的，不依赖模型记得在正文里点名（`dsh-client-ui-deliverables`
-   * 的 `producedForClosing`）。界面在轮尾列出它们。
+   * 这是从工具调用与结算结果推导的，不依赖模型记得在正文里点名
+   * （`dsh-client-ui-deliverables` 的 `producedForClosing`）。界面在轮尾列出它们。
+   *
+   * 每条是**一次操作**而不是一个去重后的路径：同一文件先写后改会留下两条，参数
+   * 别名（`argumentPath`）也不能因为展示去重而丢掉——正文行内代码的唯一匹配要用它。
    */
-  produced?: string[];
+  produced?: ProducedFileView[];
   /**
    * 本轮**改动文件卡片**的坐标：该轮最新一条 `workspace/changes` 宣告。
    *

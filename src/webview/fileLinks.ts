@@ -74,21 +74,39 @@ export function basename(path: string): string {
 }
 
 /**
- * 行内代码 token 在本轮文件词表里指向哪个文件。
+ * 一份产物操作的两个拼写：记录目标与（发生覆盖时的）参数别名。
  *
- * 先按**原样路径**精确匹配（`a/style.css` 这种全路径写法即使重名也认得出），
- * 再按**唯一同名**匹配（正文里通常只写 `style.css`）；同名文件不止一个时**不猜**，
- * 保持惰性代码——猜错会打开另一个文件，这比点不开更糟。
- *
- * @param paths 本轮写过或申报交付的文件路径（保持原样拼写）。
- * @param token 行内代码的全文（必须是完整 token，前后没有别的字符）。
- * @returns 命中的完整路径；对不上或同名歧义时 undefined。
+ * 与 `MessageView.produced` 的条目同构；别名答案只在**唯一**指向一个目标时才采用。
  */
-export function matchFileMention(paths: readonly string[], token: string): string | undefined {
+export interface FileMentionOperation {
+  readonly path: string;
+  readonly argumentPath?: string;
+}
+
+/**
+ * 官方 `producedFileMentions.resolve` 的集合唯一匹配。
+ *
+ * 三路证据并入**同一个集合**，最后只有一个目标才算命中：
+ * 1. 本轮 produced / presented 路径里的精确匹配；
+ * 2. 这些路径里的唯一 basename 匹配；
+ * 3. 成功变更操作里 `argumentPath` 与 token 精确相等的记录目标。
+ *
+ * 不是「先匹配到的优先」，也不跨轮次借别名：同一别名对应两个目标时保持不可点击。
+ */
+export function resolveFileMention(
+  paths: readonly string[],
+  operations: readonly FileMentionOperation[],
+  token: string,
+): string | undefined {
   if (!token) return undefined;
-  if (paths.includes(token)) return token;
-  const matches = paths.filter((path) => basename(path) === token);
-  return matches.length === 1 ? matches[0] : undefined;
+  const matches = new Set<string>();
+  for (const path of paths) {
+    if (path === token || basename(path) === token) matches.add(path);
+  }
+  for (const operation of operations) {
+    if (operation.argumentPath === token) matches.add(operation.path);
+  }
+  return matches.size === 1 ? matches.values().next().value : undefined;
 }
 
 /**
@@ -143,19 +161,44 @@ export function browserOpenRequested(
 export interface FileLinkPort {
   /** 本轮写过或申报交付的文件（行内代码只有能对上它们时才可点）。 */
   readonly paths: readonly string[];
+  /**
+   * 行内代码 token → 唯一目标（官方 `producedFileMentions.resolve`）。
+   *
+   * 悬停与点击必须共用它的结果，不能各自按路径 / 别名重新推导：否则同一个 token
+   * 可能悬停显示一个文件、点开另一个。
+   */
+  resolve(token: string): string | undefined;
 }
 
 /**
- * 组装一份词表（去重，保持遇见顺序）。
+ * 组装一份词表：produced 操作（保留参数别名）+ 交付路径。
  *
- * @param paths 本轮写过或申报交付的文件（可能有 undefined 空档）。
+ * `paths` 是展示与精确 / basename 匹配用的去重路径（保持遇见顺序）；别名匹配另走
+ * `operations`，所以同一 canonical 多次不同参数写法的记录不会被展示去重吞掉。
+ *
+ * @param produced 本轮产物操作（对象带 path/argumentPath，或旧的裸路径字符串）。
+ * @param presented `present` 申报的交付路径（同样进入匹配集合）。
  */
 export function fileLinkPort(
-  paths: readonly (string | undefined)[],
+  produced: readonly (string | FileMentionOperation | undefined)[] = [],
+  presented: readonly string[] = [],
 ): FileLinkPort {
   const unique: string[] = [];
-  for (const path of paths) {
+  const operations: FileMentionOperation[] = [];
+  for (const entry of produced) {
+    if (entry === undefined) continue;
+    const path = typeof entry === "string" ? entry : entry.path;
+    if (!path) continue;
+    if (!unique.includes(path)) unique.push(path);
+    if (typeof entry !== "string" && entry.argumentPath !== undefined) {
+      operations.push({ path: entry.path, argumentPath: entry.argumentPath });
+    }
+  }
+  for (const path of presented) {
     if (path && !unique.includes(path)) unique.push(path);
   }
-  return { paths: unique };
+  return {
+    paths: unique,
+    resolve: (token) => resolveFileMention(unique, operations, token),
+  };
 }

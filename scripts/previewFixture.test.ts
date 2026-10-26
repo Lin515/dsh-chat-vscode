@@ -6,7 +6,7 @@
 // 这正是文档里记过的坑（`test/preview.html` 曾编过 5 个思考档位）。
 import { readFileSync } from "node:fs";
 import { foldTurnProcess } from "../src/webview/turnProcess";
-import { fileLinkPort, matchFileMention } from "../src/webview/fileLinks";
+import { fileLinkPort } from "../src/webview/fileLinks";
 import { pickLocalizedText } from "../src/shared/localizedText";
 import type { AppState } from "../src/webview/state";
 
@@ -226,31 +226,32 @@ const must: [string, () => unknown][] = [
     "正文里的文件链接（markdown 链接 + 命中的行内代码 + 命中的例外）",
     () => {
       type Seg = { kind: string; text?: string };
-      type Msg = { produced?: string[]; deliverables?: { path: string }[]; streaming?: boolean; segments: Seg[] };
+      type Produced = { path: string; argumentPath?: string };
+      type Msg = { produced?: Produced[]; deliverables?: { path: string }[]; streaming?: boolean; segments: Seg[] };
       const textsOf = (m: Msg): string[] =>
         m.segments.flatMap((s) => (s.kind === "text" && s.text ? [s.text] : []));
       const tokensOf = (text: string): string[] =>
         [...text.matchAll(/`([^`\n]+)`/g)].map((match) => match[1]);
       // 词表按**消息**算（界面就是这么算的：`produced ∪ deliverables` 去重后再判）。
       // 全局拼一起会把别的轮次的同名文件算进来——`config.ts` 因此在两处各出现一次、
-      // 被判成「同名歧义」，判定跟着失真。
+      // 被判成「同名歧义」，判定跟着失真。produced 的操作保留参数别名。
       const portOf = (m: Msg) =>
-        fileLinkPort([
-          ...(m.produced ?? []),
-          ...(m.deliverables ?? []).map((file) => file.path),
-        ]);
+        fileLinkPort(
+          m.produced ?? [],
+          (m.deliverables ?? []).map((file) => file.path),
+        );
       const allTexts = state.messages.flatMap((m: Msg) => textsOf(m));
       const hasLineLink = allTexts.some((text: string) => /\]\([^)\s]+#L\d+\)/.test(text));
       const resolved = state.messages.some((m: Msg) => {
         const port = portOf(m);
         return textsOf(m).some((text) =>
-          tokensOf(text).some((token) => matchFileMention(port.paths, token) !== undefined),
+          tokensOf(text).some((token) => port.resolve(token) !== undefined),
         );
       });
       // 点不开的那些也要留着：夹具里全是可点的，就看不出「对不上就不猜」这条口径
       const inert = state.messages.some((m: Msg) =>
         textsOf(m).some((text) =>
-          tokensOf(text).some((token) => matchFileMention(portOf(m).paths, token) === undefined),
+          tokensOf(text).some((token) => portOf(m).resolve(token) === undefined),
         ),
       );
       return hasLineLink && resolved && inert;

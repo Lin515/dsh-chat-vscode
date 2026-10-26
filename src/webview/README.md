@@ -63,7 +63,7 @@ React / 浏览器环境，不使用 Node API。上层边界见[源码导航](<..
 - [modifierHeld.ts](<modifierHeld.ts>) — 全局 Ctrl/Cmd 按住状态 → 根元素 `is-modifier-held` 类（可打开文件节点的路径下划线提示）；指针事件补键盘焦点缺席，失焦 / 页面隐藏清理。
 - [turnProcess.ts](<turnProcess.ts>) — 连续过程折叠。
 - [todoPanel.ts](<todoPanel.ts>) — 会话单槽位开合与收起时保留项。
-- [turnFiles.ts](<turnFiles.ts>) — 交付 / 本轮改动文件去重。
+- [turnFiles.ts](<turnFiles.ts>) — 交付 / 本轮改动文件去重：展示路径按首次出现去重，身份键不转小写/不消点（POSIX 同名不同大小写各留一行），交付重复只按能证明的拼写去掉。
 - [pendingInteraction.ts](<pendingInteraction.ts>) — plan-review > 提问 > 审批的输入接管。
 - [pendingMessage.ts](<pendingMessage.ts>) — 乐观回显身份、去重与插入位置。
 - [questionFlow.ts](<questionFlow.ts>) — questionBatch 分页问答。
@@ -77,9 +77,9 @@ React / 浏览器环境，不使用 Node API。上层边界见[源码导航](<..
 - [footnotes.ts](<footnotes.ts>) — 脚注扩展。
 - [cjkStrong.ts](<cjkStrong.ts>) — tokenizer 放宽中文标点收尾的加粗闭合（官方 cjkFriendlyStrong 口径）。
 - [linkDestinations.ts](<linkDestinations.ts>) — tokenizer 保护 Windows 反斜杠目标。
-- [fileLinks.ts](<fileLinks.ts>) — Markdown 路径锚点与本轮文件 token；另给「修饰键 + HTML 文件才换走浏览器」的唯一判据。
+- [fileLinks.ts](<fileLinks.ts>) — Markdown 路径锚点与本轮文件 token；行内代码按「精确 / 唯一 basename / 产物参数别名」并入同一集合，只有唯一目标才可点；另给「修饰键 + HTML 文件才换走浏览器」的唯一判据。
 - [linkHovers.ts](<linkHovers.ts>) — 正文链接的悬停标题（完整路径 / 完整地址、HTML 修饰键提示）与锚点 title 的渲染后注入。
-- [fileMentions.ts](<fileMentions.ts>) — 文件 token 到按钮的 DOM 变换；按钮带上完整路径悬停，点击把事件交给调用方分流浏览器。
+- [fileMentions.ts](<fileMentions.ts>) — 文件 token 到按钮的 DOM 变换；悬停与点击共用词表解析出的同一个目标，点击把事件交给调用方分流浏览器。
 - [localImages.ts](<localImages.ts>) — 正文图片交宿主读取，缓存按会话隔离。
 - [imagePreview.ts](<imagePreview.ts>) — 原图浮层的开合订阅、滚轮缩放 / 拖动几何与「复原」端口；1 为适配视口，缩放锚定光标、平移受边界约束。
 - [imageClipboard.ts](<imageClipboard.ts>) — canvas 转 PNG 写剪贴板。

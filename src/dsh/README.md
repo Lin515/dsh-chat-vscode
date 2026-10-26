@@ -5,7 +5,7 @@
 ## 会话主链路
 
 - [controller.ts](<controller.ts>) — 会话域生命周期、IPC 接线、状态合流、单流失败重开与回调身份守卫。
-- [adapter.ts](<adapter.ts>) — durable 事件折为聊天 MessageView。
+- [adapter.ts](<adapter.ts>) — durable 事件折为聊天 MessageView；工具打开目标、本轮产物与终端目录按 `shared/toolPath` 的独立判据结算，并保留参数别名与事件坐标。
 - [client.ts](<client.ts>) — RPC / WebSocket 流；业务、认证与端点不存在的错误分类。
 - [protocol.ts](<protocol.ts>) — 客户端消费的线格式类型。
 - [assistantStream.ts](<assistantStream.ts>) — activeAttempt 紧凑记录展开与重开 follow 恢复。
@@ -26,7 +26,7 @@
 - [projections.ts](<projections.ts>) — goal / subagent / todo 等形状解析纯函数。
 - [subagentOrder.ts](<subagentOrder.ts>) — 子代理目录的显示顺序（用户消息与一轮收尾取新，过程消息不参与）。
 - [subagentTree.ts](<subagentTree.ts>) — 跨域血缘索引到多层子代理树的先序组装（第 1 层与顶层会话同级，父链断开 / 环不画错）。
-- [produced.ts](<produced.ts>) — 成功第一方变更调用产生的本轮文件。
+- [produced.ts](<produced.ts>) — 成功第一方变更调用的**参数路径**判据（结果记录值的三档由 `shared/toolPath.mutationResultPath` 承担）。
 - [queueView.ts](<queueView.ts>) — 两代队列形状、附件还原计划与肯定身份去重；不可还原时禁止摘队列。
 - [jobView.ts](<jobView.ts>) — 任务新旧帧与单任务输出。
 - [scheduleView.ts](<scheduleView.ts>) — 自动化任务的目录 / 执行记录 / 变更结果读取，以及编辑基准（`expected`）的字段投影。

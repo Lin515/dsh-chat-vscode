@@ -12,7 +12,6 @@
  */
 import assert from "node:assert";
 import { SessionAdapter } from "../src/dsh/adapter";
-import { filePathFrom } from "../src/shared/toolMeta";
 import type { HostToWebview } from "../src/shared/ipc";
 import type { ToolCallView } from "../src/shared/chat";
 
@@ -57,18 +56,8 @@ const LONG_BUILD = "cmake --build build-agent --config RelWithDebInfo --target d
 //
 // 这是 `FILE_PATH_VARIANTS` 那道闸：`command` 只是「展开区要显示的完整文本」，
 // 什么工具都可能有；而「这是不是工作区里的文件、能不能点开」是另一回事。
-// 混为一谈会让未知工具的参数被当成可打开路径。
-{
-  assert.strictEqual(filePathFrom("read", { file_path: "a.ts" }), "a.ts");
-  assert.strictEqual(filePathFrom("write", { path: "a.ts" }), "a.ts");
-  assert.strictEqual(filePathFrom("edit", { file_path: "a.ts" }), "a.ts");
-  // 未知工具即便参数里有 file_path，也不算文件（官方 FILE_PATH_VARIANTS 只含三者）
-  assert.strictEqual(filePathFrom("some_unknown_tool", { file_path: "D:/x/y.ts" }), undefined);
-  // `read` 变体里的 `web_fetch` 用 url：官方**刻意**不把 url 当路径键
-  assert.strictEqual(filePathFrom("web_fetch", { url: "https://example.com/a" }), undefined);
-  // 空白路径不算
-  assert.strictEqual(filePathFrom("read", { file_path: "   " }), undefined);
-}
+// 混为一谈会让未知工具的参数被当成可打开路径。参数门的逐条矩阵见
+// `toolPath.test.ts`，这里只从适配器侧确认未知工具不会长出打开目标。
 console.log("toolView: others 变体不编造文件语义；路径语义只给 read/write/edit ✓");
 console.log("toolView: build 完整命令 ✓");
 
@@ -104,12 +93,89 @@ console.log("toolView: 读文件完整路径（省略交给界面） ✓");
 // 直接打开」的判据。技能节点同理：只记名字，SKILL.md 路径由服务端 `skills/list`
 // 提供（宿主命令目录），适配器不按名字拼本地路径。
 {
-  const read = toolFrom("read", { file_path: "src/a.ts" });
-  assert.strictEqual(read.filePath, "src/a.ts", "读节点要带可打开的文件路径");
-  const write = toolFrom("write", { path: "src/b.ts" });
-  assert.strictEqual(write.filePath, "src/b.ts");
-  const edit = toolFrom("edit", { file_path: "src/c.ts" });
-  assert.strictEqual(edit.filePath, "src/c.ts");
+  /** 灌 call + result，取回结算后的工具视图。 */
+  function settledTool(
+    name: string,
+    args: unknown,
+    options: { meta?: unknown; isError?: boolean; parentCallId?: string } = {},
+  ): ToolCallView {
+    const frames: HostToWebview[] = [];
+    const adapter = new SessionAdapter((frame) => frames.push(frame));
+    const time = Date.now();
+    adapter.applyEvent({
+      type: "tool/call",
+      seq: 1,
+      time,
+      data: {
+        callId: "c-path",
+        name,
+        arguments: JSON.stringify(args),
+        ...(options.parentCallId === undefined ? {} : { parentCallId: options.parentCallId }),
+      },
+    });
+    adapter.applyEvent({
+      type: "tool/result",
+      seq: 2,
+      time: time + 1,
+      data: {
+        turn: 1,
+        step: 1,
+        ...(options.meta === undefined ? {} : { meta: options.meta }),
+        message: {
+          id: "m-path",
+          role: "tool",
+          toolCallId: "c-path",
+          isError: options.isError === true,
+          content: [{ type: "text", text: options.isError ? "boom" : "ok" }],
+          source: { kind: "tool", callId: "c-path" },
+        },
+      },
+    });
+    const segments = frames.filter((frame) => frame.type === "message/segment");
+    const last = segments[segments.length - 1] as Extract<HostToWebview, { type: "message/segment" }>;
+    assert.strictEqual(last.segment.kind, "tool");
+    return (last.segment as Extract<typeof last.segment, { kind: "tool" }>).tool;
+  }
+
+  // 运行中：相对参数不成为打开目标（等结果给出记录值）；绝对参数可以直接开
+  assert.strictEqual(toolFrom("read", { file_path: "src/a.ts" }).filePath, undefined);
+  assert.strictEqual(
+    toolFrom("read", { file_path: "D:/repo/src/a.ts" }).filePath,
+    "D:/repo/src/a.ts",
+    "运行中的绝对参数可以成为打开目标",
+  );
+  // 已成功结算的根调用：相对参数可用
+  assert.strictEqual(settledTool("read", { file_path: "src/a.ts" }).filePath, "src/a.ts");
+  assert.strictEqual(settledTool("write", { path: "src/b.ts", content: "x" }).filePath, "src/b.ts");
+  assert.strictEqual(
+    settledTool("edit", { file_path: "src/c.ts", old_string: "a", new_string: "b" }).filePath,
+    "src/c.ts",
+  );
+  // 记录值优先，且可以覆盖成功根调用的相对参数
+  assert.strictEqual(
+    settledTool("read", { file_path: "src/a.ts" }, { meta: { path: "D:/exec-world/a.ts" } }).filePath,
+    "D:/exec-world/a.ts",
+  );
+  // 失败 / 中断：相对参数不可用；绝对记录值仍优先（记录值不另加成功条件）
+  assert.strictEqual(
+    settledTool("read", { file_path: "src/a.ts" }, { isError: true }).filePath,
+    undefined,
+  );
+  assert.strictEqual(
+    settledTool("read", { file_path: "src/a.ts" }, { isError: true, meta: { path: "D:/exec-world/a.ts" } })
+      .filePath,
+    "D:/exec-world/a.ts",
+  );
+  // 嵌套调用：相对参数不可用
+  assert.strictEqual(
+    settledTool("read", { file_path: "src/a.ts" }, { parentCallId: "root" }).filePath,
+    undefined,
+  );
+  // 没有参数路径时，孤立的 meta.path 不凭空造打开动作
+  assert.strictEqual(
+    settledTool("some_external_tool", { query: "x" }, { meta: { path: "D:/exec-world/a.ts" } }).filePath,
+    undefined,
+  );
   // `read` 变体里的 web_fetch 用 url，不是工程文件
   assert.strictEqual(toolFrom("web_fetch", { url: "https://example.com/a" }).filePath, undefined);
   // 未知工具即便参数里带 file_path 也不算（只认官方 FILE_PATH_VARIANTS）
@@ -121,7 +187,7 @@ console.log("toolView: 读文件完整路径（省略交给界面） ✓");
   // 不合技能名语法的参数不认：等补全，不猜名字
   assert.strictEqual(toolFrom("skill", { name: "Build" }).skillName, undefined);
 }
-console.log("toolView: 文件路径与技能名只从参数取，不构造本机路径 ✓");
+console.log("toolView: 打开目标按运行中/结算/失败/嵌套/记录值分别判定，技能名不构造路径 ✓");
 
 // 4. 认不出参数的未知工具：摘要是原始参数的首行（官方 `deriveSummary` 的最后一级兜底）
 //

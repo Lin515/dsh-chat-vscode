@@ -33,7 +33,7 @@ export function ChangesCard({
   coordinates: { turn: number; seq: number };
   /** 清单：`undefined` = 还没问过，`null` = Host 说没有。 */
   summary: ChangesSummaryView | null | undefined;
-  /** 会话工作目录：行悬停给出完整路径（清单里的 `path` 可能是相对拼写）。 */
+  /** 会话**创建目录**：行悬停给出完整路径（清单里的 `path` 可能是相对拼写）。 */
   cwd?: string;
 }) {
   const texts = useTexts();

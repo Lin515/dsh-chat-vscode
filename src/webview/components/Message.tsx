@@ -233,10 +233,9 @@ export const Message = memo(function Message({
    */
   changesCardShown?: boolean;
   /**
-   * 会话工作目录（`workingDirectory` 投影，缺失时取会话创建目录）。
-   *
-   * 只用于**悬停标题**把链接上的相对路径补成完整路径：点击仍交原样拼写，
-   * 由宿主按自己的权威 cwd 解析（界面不拿它代替宿主的解析结果）。
+   * 会话**创建目录**（`session.cwd`）：普通正文链接、行内代码链接的悬停都按它补
+   * 完整路径；点击仍交原样拼写，由宿主按自己的权威 cwd 解析。缺失时保留原样相对
+   * 拼写——**不**拿执行目录或 VS Code 工作区兜底。
    */
   cwd?: string;
   /**
@@ -271,17 +270,19 @@ export const Message = memo(function Message({
    * 见 `../fileLinks.ts`）。
    *
    * 词表就是**本轮写过或申报交付的文件**（官方 `producedFileMentions` 同一份来源：
-   * `produced ∪ presented`），不是「看起来像路径的都算」——后者会把正文里的普通
-   * 代码变成一堆假链接。流式期间词表随轮次增长，已命中的照样可点（同文件头口径）。
+   * `produced ∪ presented`）。produced 保留每次操作与其参数别名：展示路径去重，
+   * 别名匹配仍按全部操作累计，再要求集合里只有一个目标。不是「看起来像路径的都算」
+   * ——后者会把正文里的普通代码变成一堆假链接。流式期间词表随轮次增长，已命中的
+   * 照样可点（同文件头口径）。
    *
    * 只有助手消息有词表；用户消息的正文是纯文本（不经 markdown 渲染）。
    */
   const fileLinks = useMemo(
     () =>
-      fileLinkPort([
-        ...(message.produced ?? []),
-        ...(message.deliverables ?? []).map((file) => file.path),
-      ]),
+      fileLinkPort(
+        message.produced ?? [],
+        (message.deliverables ?? []).map((file) => file.path),
+      ),
     [message.produced, message.deliverables],
   );
 

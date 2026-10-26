@@ -1,4 +1,4 @@
-import { matchFileMention, type FileLinkPort } from "./fileLinks";
+import type { FileLinkPort } from "./fileLinks";
 import { fileLinkHoverTitle, type LinkHoverTexts } from "./linkHovers";
 
 /**
@@ -54,7 +54,7 @@ export function hydrateFileMentions(
     if (code.closest("a")) continue;
     if (code.childElementCount > 0) continue;
     const token = code.textContent ?? "";
-    const path = matchFileMention(port.paths, token);
+    const path = port.resolve(token);
     if (path === undefined) continue;
 
     const button = document.createElement("button");
@@ -62,6 +62,7 @@ export function hydrateFileMentions(
     button.className = MENTION_CLASS;
     // 悬停看到**打开的是哪个文件**：正文里可能只写了 `App.tsx`，
     // 而词表把它对到了某个完整路径上；HTML 类文件再补一句浏览器打开提示。
+    // 标题与点击共用同一个 `path`——不在两处各自重新推导目标。
     button.title = fileLinkHoverTitle(cwd, path, texts);
     button.textContent = token;
     const onClick = (event: MouseEvent): void => {

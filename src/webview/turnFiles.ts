@@ -17,6 +17,7 @@
  */
 
 import type { FileChangeKind } from "../shared/chat";
+import { workspacePathKey } from "../shared/workspacePath";
 
 /** 交付文件（`deliverables` / `presented`）里判重需要的最小形状。 */
 export interface DeliverablePath {
@@ -24,32 +25,50 @@ export interface DeliverablePath {
   description?: string;
 }
 
+/** 产物条目的最小形状（`MessageView.produced` 的操作或旧版裸路径）。 */
+export interface ProducedPath {
+  path: string;
+}
+
 /**
- * 比较用的路径键：分隔符统一成 `/`、去掉结尾分隔符、大小写不敏感。
+ * 比较用的路径键：交给跨平台纯字符串判据（见 `shared/workspacePath.ts`）。
  *
- * 同一个文件在两处可能写成 `D:/dev/app/src/config.ts` 与 `d:\dev\app\src\config.ts`
- * （写类调用与 `present` 申报是两次独立的工具调用，写法不必一致），
- * 直接按字符串比会漏判、让重复又冒出来。
+ * Windows 形态的路径统一分隔符并去尾分隔符；**不**转小写、**不**消 `.` / `..`：
+ * POSIX 上 `A.ts` 与 `a.ts` 是两个文件，符号链接下 `link/../x` 与 `x` 也可能不同。
+ * 展示去重只允许合并能证明相同的拼写。
  */
 function pathKey(path: string): string {
-  return path.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  return workspacePathKey(path);
 }
 
 /**
  * 「本轮文件改动」行最终要列的文件：从 `produced` 里去掉已经申报交付的那些。
  *
- * @param produced 本轮成功的写类调用推导出的路径（保持原顺序）。
+ * 产物按**展示路径**首次出现去重（官方 `producedForClosing` 同口径），但产物操作
+ * 本身不去重——同一路径的多个参数别名留在 `message.produced` 里供正文行内代码匹配。
+ *
+ * @param produced 本轮成功的写类调用登记的操作（或旧的裸路径，保持原顺序）。
  * @param deliverables `present` 申报的交付文件。
  * @returns 仍需在「本轮文件改动」里出现的路径；空数组表示这一行不该显示。
  */
 export function producedOnly(
-  produced: readonly string[] | undefined,
+  produced: readonly (string | ProducedPath)[] | undefined,
   deliverables: readonly DeliverablePath[] | undefined,
 ): string[] {
   if (!produced?.length) return [];
-  if (!deliverables?.length) return [...produced];
+  const unique: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of produced) {
+    const path = typeof entry === "string" ? entry : entry.path;
+    if (typeof path !== "string" || path === "") continue;
+    const key = pathKey(path);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(path);
+  }
+  if (!deliverables?.length) return unique;
   const delivered = new Set(deliverables.map((file) => pathKey(file.path)));
-  return produced.filter((path) => !delivered.has(pathKey(path)));
+  return unique.filter((path) => !delivered.has(pathKey(path)));
 }
 
 /**

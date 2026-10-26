@@ -30,7 +30,7 @@ function harness() {
             id: string;
             segments: { kind: string; id: string; command?: Record<string, unknown> }[];
             deliverables?: { path: string; description?: string }[];
-            produced?: string[];
+            produced?: { path: string; argumentPath?: string; seq: number; turn?: number }[];
           };
         }
       }
@@ -169,10 +169,20 @@ console.log("commandNode: 缺字段的事件不建节点 ✓");
   call("c6", "write", { file_path: "src/d.ts" });
   result("c6");
 
+  const produced = message("a:1").produced ?? [];
   assert.deepStrictEqual(
-    message("a:1").produced,
-    ["src/a.ts", "src/b.ts"],
-    "只计成功的变更调用，按首次出现排序、同一路径去重",
+    produced.map((operation) => operation.path),
+    ["src/a.ts", "src/b.ts", "src/a.ts"],
+    "只计成功的变更调用；每次操作各留一条（同一路径先写后改不吞掉操作），展示层再去重",
+  );
+  assert.deepStrictEqual(
+    produced.map((operation) => operation.turn),
+    [1, 1, 1],
+    "每条产物保留所属轮次",
+  );
+  assert.ok(
+    produced.every((operation) => Number.isInteger(operation.seq)),
+    "每条产物保留结算事件的 seq",
   );
   assert.ok(
     message("a:1").segments.every((segment) => segment.kind !== "command" || true),

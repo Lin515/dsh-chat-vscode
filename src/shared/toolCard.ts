@@ -39,6 +39,7 @@
  */
 import type { ToolCardView, WebSourceView } from "./chat";
 import { classifyTool, summaryKeys } from "./toolMeta";
+import { terminalCwdOf } from "./toolPath";
 
 /** 折卡片需要的全部事实（适配器在「建卡」与「结算」两处都能给齐）。 */
 export interface ToolCardFacts {
@@ -58,6 +59,13 @@ export interface ToolCardFacts {
   interrupted: boolean;
   /** 是否已结算（false = 还在跑）。 */
   settled: boolean;
+  /** 嵌套调用（PTC 子调用）的父调用 id：终端目录回退不替嵌套调用猜创建目录。 */
+  parentCallId?: string;
+  /**
+   * 会话的**创建目录**：只用于旧终端结果没有 `meta.cwd` 时的目录标签回退
+   * （相对 `workdir` 拼它、省略则显示它），不是普通文件路径的解析基准。
+   */
+  sessionCwd?: string;
 }
 
 /** 解析参数 JSON；不是对象（数组 / 标量 / 半截）一律按「没有参数」处理。 */
@@ -333,8 +341,16 @@ export function toolCardOf(facts: ToolCardFacts): ToolCardView | undefined {
   if (variant === "bash") {
     const call = shellCall(facts.name, args);
     if (!call || call.background) return undefined;
+    const cwd = terminalCwdOf({
+      name: facts.name,
+      argsRaw: facts.argsRaw,
+      meta: facts.meta,
+      settled: facts.settled,
+      parentCallId: facts.parentCallId,
+      sessionCwd: facts.sessionCwd,
+    });
     if (!facts.settled) {
-      return { kind: "terminal", command: call.command, cwd: call.workdir, output: "", running: true };
+      return { kind: "terminal", command: call.command, cwd, output: "", running: true };
     }
     // 出错、持久 shell、spill 预览都退回通用 IN/OUT（官方同口径：
     // 这三种情形没有唯一的进程退出状态可推断）
@@ -345,7 +361,7 @@ export function toolCardOf(facts: ToolCardFacts): ToolCardView | undefined {
     return {
       kind: "terminal",
       command: call.command,
-      cwd: call.workdir,
+      cwd,
       output,
       ...(facts.exitCode === undefined ? {} : { exitCode: facts.exitCode }),
       ...(facts.signal === undefined ? {} : { signal: facts.signal }),

@@ -5,6 +5,13 @@
  * 同号事件互相串清单——界面上表现为「这个会话的卡片显示的是另一个会话改的文件」，
  * 而它恰好只在两个会话都跑过、且改动轮次的 seq 编号撞上时出现，极难现场复现。
  */
+import type { ChangedFileView } from "./chat";
+import {
+  isAbsoluteWorkspacePath,
+  resolveWorkspacePath,
+  workspacePathKey,
+} from "./workspacePath";
+
 export function changesSummaryKey(sessionId: string, seq: number): string {
   return `${sessionId}\u0000${seq}`;
 }
@@ -49,4 +56,56 @@ export function turnsWithChangesCard<T extends ChangesCardMessage>(
     if (summary && summary.files.length > 0) turns.add(coordinates.turn);
   }
   return turns;
+}
+
+/**
+ * 一个候选路径在「改动清单的固定根」下的等价拼写。
+ *
+ * 清单里的 `path` 由 Host 的 `durablePathOf` 生成：**根内相对、根外绝对**，根是
+ * recorder 确定的规范化创建目录。这里的候选来自产物 / 交付（`present` 由服务端
+ * 规范成绝对路径，旧产物可能是相对参数）。字符串层面只能做两种比较：
+ *
+ * - 原样键：绝对对绝对、相对对相对；
+ * - 相对路径拼上**创建目录**后的键：让根内相对行能与绝对候选对上。
+ *
+ * 拼接不做 realpath、不消 `.` / `..`：规范化根与 header 原始拼写可能不同（符号链接），
+ * 拼不上就说明**证明不了**，此时宁可不挂坐标。交给执行世界验证的那一步仍由清单
+ * 自身的 `seq` / `index` 完成。
+ */
+function comparableChangeSpellings(cwd: string | undefined, path: string): string[] {
+  const spellings = new Set<string>();
+  const direct = workspacePathKey(path);
+  if (direct !== "") spellings.add(direct);
+  if (!isAbsoluteWorkspacePath(path) && cwd !== undefined && isAbsoluteWorkspacePath(cwd)) {
+    spellings.add(workspacePathKey(resolveWorkspacePath(cwd, path)));
+  }
+  return [...spellings];
+}
+
+/**
+ * 芯片路径 → 本轮改动清单里的下标；证明不了同一目标时返回 undefined。
+ *
+ * 这是**展示关联**，不是文件身份：真正打开时只用清单自己的 `seq` / `index`。因此
+ * 只做能确定目标的字符串比较——不用 basename、不转小写、不消点、不拿最新执行目录
+ * 猜。大小写不同的 POSIX 路径因此保持为两行，不会被错误地挂到彼此的快照上。
+ *
+ * @param files Host 清单里的文件（`path` 根内相对、根外绝对）。
+ * @param cwd 会话**创建目录**（header.cwd 的原始拼写）。
+ * @param path 候选（产物记录值或交付路径）。
+ */
+export function changeIndexForPath(
+  files: readonly ChangedFileView[],
+  cwd: string | undefined,
+  path: string,
+): number | undefined {
+  const target = comparableChangeSpellings(cwd, path);
+  if (target.length === 0) return undefined;
+  const wanted = new Set(target);
+  for (let index = 0; index < files.length; index += 1) {
+    const file = files[index];
+    if (!file) continue;
+    const fileSpellings = comparableChangeSpellings(cwd, file.path);
+    if (fileSpellings.some((spelling) => wanted.has(spelling))) return index;
+  }
+  return undefined;
 }

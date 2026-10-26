@@ -21,9 +21,13 @@ import {
   basename,
   externalLinkUrl,
   fileLinkPort,
-  matchFileMention,
   parseFileLink,
+  resolveFileMention,
 } from "../src/webview/fileLinks";
+
+/** 裸路径词表的精确 / 唯一 basename 匹配（无产物别名）。 */
+const matchFileMention = (paths: readonly string[], token: string) =>
+  resolveFileMention(paths, [], token);
 
 const read = (...parts: string[]): string => readFileSync(join(process.cwd(), ...parts), "utf8");
 
@@ -92,6 +96,53 @@ console.log("fileLinks: markdown 链接目标 → 本地文件 + 行号（URL/�
 }
 console.log("fileLinks: 行内代码只认本轮文件词表（精确 / 唯一同名，歧义与未知都不猜） ✓");
 
+// ---------- 2b. 集合唯一匹配：参数别名并入同一集合，任一歧义都不点 ----------
+//
+// 官方 `producedFileMentions`：先累计精确与 basename 匹配，再把成功操作里
+// `argumentPath === token` 的记录目标加入同一集合，只有集合大小为 1 才可点。
+// 「最先匹配到的优先」与「别名覆盖精确匹配」都不允许。
+{
+  const first = "D:/project/one/out/report.txt";
+  const second = "D:/project/two/out/report.txt";
+  const aliases = [
+    { path: first, argumentPath: "out/report.txt" },
+    { path: first, argumentPath: "./out/report.txt" },
+  ];
+  // 同一 canonical 的两个别名都指向唯一目标
+  assert.strictEqual(resolveFileMention([first], aliases, "out/report.txt"), first);
+  assert.strictEqual(resolveFileMention([first], aliases, "./out/report.txt"), first);
+  // 另一个完整路径前缀不是别名，不猜
+  assert.strictEqual(resolveFileMention([first], aliases, "one/out/report.txt"), undefined);
+  // 两个目标共享同一别名 → 集合有两个目标，保持惰性
+  assert.strictEqual(
+    resolveFileMention([first, second], [
+      { path: first, argumentPath: "out/report.txt" },
+      { path: second, argumentPath: "out/report.txt" },
+    ], "out/report.txt"),
+    undefined,
+  );
+  // 裸 path 与另一个 canonical 的 basename 同名：集合仍有两个目标（官方同口径）
+  assert.strictEqual(
+    resolveFileMention(["report.txt", "/project/child/report.txt"], [], "report.txt"),
+    undefined,
+    "旧的裸路径不能盖过同名的另一个完整路径",
+  );
+  assert.strictEqual(
+    resolveFileMention(["report.txt", "/project/child/report.txt"], [], "/project/child/report.txt"),
+    "/project/child/report.txt",
+    "完整路径仍可精确命中",
+  );
+  // 端口：悬停与点击共用 resolve 的结果；paths 仍去重且保持顺序
+  const port = fileLinkPort([
+    { path: first, argumentPath: "out/report.txt" },
+    { path: first, argumentPath: "./out/report.txt" },
+  ], [second]);
+  assert.deepStrictEqual(port.paths, [first, second]);
+  assert.strictEqual(port.resolve("out/report.txt"), first);
+  assert.strictEqual(port.resolve("report.txt"), undefined, "basename 装了第一行但别名不参与 basename");
+}
+console.log("fileLinks: producedFileMentions 集合唯一匹配（含参数别名，歧义保持惰性） ✓");
+
 // ---------- 3. 外链白名单：只认 http / https / mailto ----------
 //
 // 模型输出不可信：多认一个 scheme 就等于多开一条宿主动作（`file:` 会把本地路径
@@ -156,8 +207,13 @@ console.log("fileLinks: 词表去重且不带 undefined ✓");
   );
   assert.ok(
     /const token = code\.textContent \?\? ""/.test(mentions) &&
-      /const path = matchFileMention\(port\.paths, token\)/.test(mentions),
-    "判定必须用行内代码的**全文**去对词表（部分匹配会切出半截路径）",
+      /const path = port\.resolve\(token\)/.test(mentions),
+    "判定必须用行内代码的**全文**交给词表的唯一解析（部分匹配会切出半截路径）",
+  );
+  assert.ok(
+    /button\.title = fileLinkHoverTitle\(cwd, path, texts\)/.test(mentions) &&
+      /open\(path, event\);/.test(mentions),
+    "悬停与点击必须共用同一个已解析目标（不在两处各自重新推导）",
   );
   assert.ok(
     /if \(!port \|\| port\.paths\.length === 0\) return \(\) => \{\}/.test(mentions),
@@ -291,10 +347,10 @@ console.log("fileLinks: 净化层保留盘符 href（正斜杠 / 反斜杠 / %5C
 {
   const message = read("src", "webview", "components", "Message.tsx");
   assert.ok(
-    /fileLinkPort\(\[\s*\n\s*\.\.\.\(message\.produced \?\? \[\]\),\s*\n\s*\.\.\.\(message\.deliverables \?\? \[\]\)\.map\(\(file\) => file\.path\),\s*\n\s*\]\)/.test(
+    /fileLinkPort\(\s*\n\s*message\.produced \?\? \[\],\s*\n\s*\(message\.deliverables \?\? \[\]\)\.map\(\(file\) => file\.path\),\s*\n\s*\)/.test(
       message,
     ),
-    "词表必须是 produced ∪ deliverables（官方 producedFileMentions 同一份来源）",
+    "词表必须是 produced 操作 ∪ deliverables（官方 producedFileMentions 同一份来源，produced 保留参数别名）",
   );
   assert.ok(
     /<StreamText key=\{segment\.id\} text=\{segment\.text\} fileLinks=\{fileLinks\} cwd=\{cwd\} \/>/.test(message),
