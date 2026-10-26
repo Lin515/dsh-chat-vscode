@@ -19,8 +19,9 @@ import { post } from "./bridge";
  * 帧里只有归属与请求号：失败文案与级别都是**固定的宿主文案**（`@imageCopyFailed`），
  * 界面没有携带任意 level / text / path 的通道。
  *
- * 「此刻是哪条会话」用模块级登记（与 `localImages.ts` 的 `setLocalImageScope` 同一套
- * 写法）：`App` 在会话变化时登记一次，`contextMenu.ts` 在菜单打开时读它来捕获手势归属。
+ * 「此刻是哪条会话」用模块级登记：`App` 在会话变化时登记一次，`contextMenu.ts`
+ * 在菜单打开时读它来捕获手势归属（与图片解析范围 `localImages.ts` 分开：那一个
+ * 由帧同步、带连接身份，见 `images/scope`）。
  */
 
 /** 此刻这个窗口绑定的会话（`App` 登记；未登记 = 没有绑定会话）。 */

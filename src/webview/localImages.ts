@@ -1,3 +1,4 @@
+import { useSyncExternalStore } from "react";
 import { imageRefLabel, isRemoteImageRef } from "../shared/imageRef";
 import { post, subscribe } from "./bridge";
 import type { Texts } from "./texts";
@@ -10,65 +11,179 @@ import type { Texts } from "./texts";
  * （宿主侧以执行世界读取与 Host 报告的媒体类型为准，见 `dsh/localImages.ts`），再把
  * DOM 上的 `src` 换掉。
  *
- * 四个必须的约束：
- * - **缓存按会话隔离**：相对路径的基准是会话创建目录，切了会话之后
- *   `out/chart.png` 是另一个文件，沿用旧结果就会张冠李戴（`setLocalImageScope`）；
+ * 五个必须的约束：
+ * - **缓存按范围隔离**：范围是「执行世界连接 + 会话」两张牌一起定的——相对路径的基准
+ *   是会话创建目录，而同一会话在另一条连接里也属于另一套执行世界（宿主广播
+ *   `images/scope`，会话 id 随 `state` / `patch` 帧同步）；
  * - **读不到的也记一笔**（空串）：否则每次重渲染（流式期间每个 token 都重渲染）
  *   都会把同一个不存在的路径再问一遍宿主；
  * - **失败要有降级**：外链被 CSP 拦、文件被删、超上限，都得说一句「图片加载失败」，
  *   而不是留一个破图图标；**知道是哪一张时把引用缀在后面**（见 `failedImageText`）；
  * - **回帧之前浏览器那次失败不算数**：原始引用必然加载不了，而它失败得比宿主回帧早，
- *   先降级就会把数据 URL 甩在一个已经不在文档里的元素上（见 `hydrateLocalImages`）。
+ *   先降级就会把数据 URL 甩在一个已经不在文档里的元素上（见 `hydrateLocalImages`）；
+ * - **换范围结算旧请求**：旧请求的 Promise 必须结算（否则调用方的 `.then` 永远悬着），
+ *   而且旧闭包、迟到帧都不许写进新范围的缓存。
  */
 
 /** 引用原文 → data URL；空串表示「宿主确认读不了」。 */
 const cache = new Map<string, string>();
-const pending = new Map<number, { scope: string; resolve: (urls: Record<string, string>) => void }>();
+
+/** 在途请求：请求号 → 发起时的范围与结算动作。 */
+const pending = new Map<number, PendingRequest>();
 let nextRequestId = 1;
 
-/** 当前会话标识（`state.session.id`）。空串 = 还没进任何会话。 */
-let scope = "";
+interface PendingRequest {
+  /** 发起时的范围键（见 `scopeKeyOf`）。 */
+  readonly scopeKey: string;
+  readonly connectionId: string | null;
+  readonly sessionId: string;
+  /** 本次问到 + 上次命中的表（结算时与回帧合并）。 */
+  readonly known: Record<string, string>;
+  /** 本次要问的引用（回帧里缺席的记成空串，避免每帧重问）。 */
+  readonly missing: string[];
+  readonly resolve: (urls: Record<string, string>) => void;
+}
 
 /**
- * 会话变了：缓存清空、在途请求作废。
- *
- * 在途请求不是简单丢掉回调——那样 `resolveLocalImages` 的 promise 永远不结算，
- * 调用方的 `.then` 就成了悬空引用；这里把它们**结算成空表**（图落到加载失败，
- * 下一帧按新会话重新请求）。
- *
- * **`"" → id` 这一跳不算「切换」**：界面挂载时子组件的 `useLayoutEffect`
- * （正文里扫图片的那一步）先于 App 的 effect 跑，那一刻 `scope` 还是空的——
- * 把这一批请求当「切了会话」作废掉，正文里的图会**全部**落到「加载失败」
- * （预览页实测踩到）。从空到有只是「会话身份确定了」，不是换了会话。
+ * 当前范围：`connectionId` 由宿主的 `images/scope` 帧决定（`null` = 还没连上执行世界），
+ * `sessionId` 是 `state.session.id`（空串 = 还没进任何会话）。
  */
-export function setLocalImageScope(next: string): void {
-  if (next === scope) return;
-  const previous = scope;
-  scope = next;
+let connectionId: string | null = null;
+let sessionId = "";
+let scopeVersion = 0;
+
+const scopeListeners = new Set<() => void>();
+
+/** 范围键：`null` 与空串是两件事，用 JSON 数组编码避免分隔串碰撞。 */
+function scopeKeyOf(connection: string | null, session: string): string {
+  return JSON.stringify([connection, session]);
+}
+
+function currentScopeKey(): string {
+  return scopeKeyOf(connectionId, sessionId);
+}
+
+/**
+ * 换范围：清缓存、结算在途请求（空表）、通知订阅者。
+ *
+ * 结算不是简单丢掉回调——那样 `resolveLocalImages` 的 promise 永远不结算；这里把它们
+ * 结算成**空表**（图落到加载失败，重新水合时按新范围重新请求）。旧闭包在结算时**不写
+ * 缓存**（见 `isCurrentScope`），迟到帧同理（见 `images/resolved` 的订阅）。
+ *
+ * 订阅者（`components/Markdown.tsx` 的正文块、`components/Images.tsx` 的图库）靠版本号
+ * 重新设置 innerHTML 并水合，所以「已换过的 data URL」与「已经落地的失败占位」都会被
+ * 重新读一遍，而不是停在旧范围的结论上。
+ */
+function applyScope(nextConnectionId: string | null, nextSessionId: string): void {
+  if (nextConnectionId === connectionId && nextSessionId === sessionId) return;
+  connectionId = nextConnectionId;
+  sessionId = nextSessionId;
   cache.clear();
-  if (!previous) return;
   const inFlight = [...pending.values()];
   pending.clear();
+  scopeVersion += 1;
+  for (const listener of scopeListeners) listener();
+  // 结算旧 Promise：结果一律空表，绝不能让发起时的闭包写进新范围的缓存
   for (const entry of inFlight) entry.resolve({});
 }
 
+/**
+ * 范围的版本号与订阅（`useSyncExternalStore` 的数据源）。
+ *
+ * 任何一次范围变化（连接换代、会话切换）都 +1；组件按它重新水合。
+ */
+export function localImageScopeVersion(): number {
+  return scopeVersion;
+}
+
+export function subscribeLocalImageScope(listener: () => void): () => void {
+  scopeListeners.add(listener);
+  return () => {
+    scopeListeners.delete(listener);
+  };
+}
+
+/** 当前范围版本：正文块与图库在依赖里带上它，范围一变就重新解析。 */
+export function useLocalImageScopeVersion(): number {
+  return useSyncExternalStore(subscribeLocalImageScope, localImageScopeVersion, localImageScopeVersion);
+}
+
+/**
+ * 宿主帧 → 范围。
+ *
+ * `images/scope` 定连接；`state` / `patch` 在**消费帧的那一刻**同步会话 id——不能等
+ * App 的 effect：子组件的 `useLayoutEffect` 先于父 effect 跑，那一刻会话还没登记，
+ * 正文里的图就会按上一个范围解析（甚至被当成范围不完整而整批失败）。
+ */
 subscribe((message) => {
+  if (message.type === "images/scope") {
+    const next = message.connectionId;
+    if (next !== null && typeof next !== "string") return;
+    applyScope(next, sessionId);
+    return;
+  }
+  if (message.type === "state") {
+    const snapshot = message.state;
+    if (typeof snapshot !== "object" || snapshot === null) return;
+    applyScope(connectionId, snapshot.session?.id ?? "");
+    return;
+  }
+  if (message.type === "patch") {
+    const patch = message.patch;
+    if (typeof patch !== "object" || patch === null) return;
+    if (!Object.prototype.hasOwnProperty.call(patch, "session")) return;
+    applyScope(connectionId, patch.session?.id ?? "");
+    return;
+  }
   if (message.type !== "images/resolved") return;
+  // 逐字段验形状：外部帧不可信，坏的整条丢（在途请求留在表里，只由换范围结算）
+  if (!Number.isSafeInteger(message.requestId)) return;
+  if (message.connectionId !== null && typeof message.connectionId !== "string") return;
+  if (typeof message.sessionId !== "string") return;
+  const urls = message.urls;
+  if (typeof urls !== "object" || urls === null || Array.isArray(urls)) return;
+  if (!Object.values(urls).every((url) => typeof url === "string")) return;
   const entry = pending.get(message.requestId);
   if (!entry) return;
   pending.delete(message.requestId);
-  // 期间切过会话：结果是按另一个会话的创建目录解析的，丢掉（见 setLocalImageScope）。
-  // 请求发出时身份还没确定（空 scope）的那批照样接受——那时浏览器里的图正是
-  // 当前会话的图，丢掉就白请求了。
-  entry.resolve(isCurrentSession(entry.scope) ? message.urls : {});
+  // 迟到帧 / 换过范围：帧里回带的连接与会话必须与发起时完全一致，否则拒收（空表）。
+  if (!isCurrentScope(entry)) {
+    entry.resolve({});
+    return;
+  }
+  if (message.connectionId !== entry.connectionId || message.sessionId !== entry.sessionId) {
+    entry.resolve({});
+    return;
+  }
+  // 只认**这次真的问过**的键：多带的路径不属于本次请求，不许借回帧写进缓存。
+  const answered: Record<string, string> = {};
+  for (const path of entry.missing) {
+    const url = urls[path];
+    if (typeof url !== "string") continue;
+    if (url) {
+      cache.set(path, url);
+      answered[path] = url;
+    } else {
+      // 空串把「读不了」也长记性，避免每帧重问
+      cache.set(path, "");
+    }
+  }
+  // 回帧里缺席的同样记成「读不了」，否则每帧都会重问同一个不存在的路径
+  for (const path of entry.missing) if (!(path in answered) && !cache.has(path)) cache.set(path, "");
+  entry.resolve({ ...entry.known, ...answered });
 });
 
-/** 结果是否仍属于当前会话：请求时没有身份（空）也算，见 `setLocalImageScope`。 */
-function isCurrentSession(requestScope: string): boolean {
-  return !requestScope || requestScope === scope;
+/** 发起请求的那个范围是否仍是当前范围。 */
+function isCurrentScope(entry: PendingRequest): boolean {
+  return entry.scopeKey === currentScopeKey();
 }
 
-/** 向宿主换一批本地引用。返回「本次问到 + 上次缓存」的表（读不到的不在表里）。 */
+/** 范围是否已经齐了：没有执行世界连接或还没进会话时，请求不会有结果。 */
+function scopeReady(): boolean {
+  return connectionId !== null && sessionId !== "";
+}
+
+/** 向宿主换一批本地引用。返回「本次问到 + 上次缓存」的表（读不到、读不了的不在表里）。 */
 export function resolveLocalImages(paths: readonly string[]): Promise<Record<string, string>> {
   const known: Record<string, string> = {};
   const missing: string[] = [];
@@ -78,19 +193,28 @@ export function resolveLocalImages(paths: readonly string[]): Promise<Record<str
     else if (hit === undefined) missing.push(path);
   }
   if (!missing.length) return Promise.resolve(known);
+  // 范围还没齐（首次 state / 连接帧未到）：不发请求，直接结算成空表。等范围到位，
+  // `images/scope` / `state` 帧会让版本号 +1，正文与图库按新范围重新解析。
+  if (!scopeReady()) return Promise.resolve({});
   const requestId = nextRequestId++;
-  const requestScope = scope;
+  const requestConnection = connectionId;
+  const requestSession = sessionId;
   return new Promise((resolve) => {
     pending.set(requestId, {
-      scope: requestScope,
-      resolve: (urls) => {
-        for (const [path, url] of Object.entries(urls)) cache.set(path, url);
-        // 空串把「读不了」也长记性，避免每帧重问
-        for (const path of missing) if (!(path in urls)) cache.set(path, "");
-        resolve({ ...known, ...urls });
-      },
+      scopeKey: scopeKeyOf(requestConnection, requestSession),
+      connectionId: requestConnection,
+      sessionId: requestSession,
+      known,
+      missing,
+      resolve,
     });
-    post({ type: "resolveImages", requestId, paths: [...missing] });
+    post({
+      type: "resolveImages",
+      requestId,
+      connectionId: requestConnection,
+      sessionId: requestSession,
+      paths: [...missing],
+    });
   });
 }
 
@@ -111,6 +235,10 @@ export function failedImageText(texts: Texts, ref: string | undefined): string {
  * 把一段注入的 HTML 里的本地图片引用换成 data URL，并给**任何**加载失败的图
  * （本地读不到、外链被 CSP 拦）挂一句降级文案。返回清理函数（调用方在
  * `<img>` 树被替换或组件卸载时调用）。
+ *
+ * 范围变化时调用方必须重新水合（`hooks` 依赖范围版本，且重设 innerHTML）：
+ * 缓存已被清空，这里再跑一遍就是按新连接 / 新会话重新问宿主。等待中的 promise
+ * 若在清理后回帧，`cancelled` 会挡住 DOM 写入，不会覆盖新范围的结果。
  *
  * @param root 已渲染的容器（`dangerouslySetInnerHTML` 的那个 div）。
  * @param texts 词典：失败文案取 `imageLoadFailed` / `imageLoadFailedAt`（渲染器不写死）。
@@ -138,6 +266,7 @@ export function hydrateLocalImages(root: HTMLElement, texts: Texts): () => void 
   root.addEventListener("error", onError, true);
 
   const groups = new Map<string, HTMLImageElement[]>();
+  const ready = scopeReady();
   for (const image of root.querySelectorAll("img")) {
     const src = image.getAttribute("src") ?? "";
     if (!src || isRemoteImageRef(src)) continue;
@@ -148,6 +277,13 @@ export function hydrateLocalImages(root: HTMLElement, texts: Texts): () => void 
     if (hit !== undefined) {
       if (hit) image.setAttribute("src", hit);
       else markFailed(image, texts);
+      continue;
+    }
+    // 范围没齐：先不动它（不发请求、不降级），范围到了会带新版本再水合一次。
+    // 但要先记进 `awaiting`：范围未就绪时浏览器对原始引用的那次失败同样不是结论，
+    // 否则会先闪一片「图片加载失败」，之后又被新范围的结果替换掉。
+    if (!ready) {
+      awaiting.add(image);
       continue;
     }
     const list = groups.get(src) ?? [];

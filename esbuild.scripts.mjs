@@ -89,6 +89,9 @@ const entries = {
   "build/local-images.test.mjs": "scripts/localImages.test.ts",
   "build/image-render.test.mjs": "scripts/imageRender.test.ts",
   "build/image-hydrate.test.mjs": "scripts/imageHydrate.test.ts",
+  // 图片解析范围的宿主行为（连接换代广播 / 回帧回带身份 / 迟到只回空表 / 请求校验）：
+  // 驱真 ChatController + fake transport，必须登记，否则 npm test 静默不跑
+  "build/image-scope-host.test.mjs": "scripts/imageScopeHost.test.ts",
   "build/image-preview.test.mjs": "scripts/imagePreview.test.ts",
   "build/image-attachments.test.mjs": "scripts/imageAttachments.test.ts",
   "build/turn-process.test.mjs": "scripts/turnProcess.test.ts",

@@ -21,7 +21,7 @@ import {
   type ImageView,
   type ImageViewGeometry,
 } from "../imagePreview";
-import { failedImageText, resolveLocalImages } from "../localImages";
+import { failedImageText, resolveLocalImages, useLocalImageScopeVersion } from "../localImages";
 import { useTexts } from "../texts";
 
 /**
@@ -118,25 +118,43 @@ export function ImageGallery({ sources, alt }: { sources: ImageSource[]; alt: st
  */
 export function LocalImageGallery({ paths }: { paths: string[] }) {
   const texts = useTexts();
-  const [urls, setUrls] = useState<Record<string, string>>({});
+  /**
+   * 解析结果**带着它的来源**：`key`（这批路径）与 `version`（图片范围版本）。
+   *
+   * 不能只存一张 `urls` 表：换范围后 effect 要等下一轮才跑到，先渲染的那一帧会拿
+   * 旧范围的 data URL 画出**另一套执行世界的图**。所以渲染时就按当前的 key 与版本
+   * 比对，对不上就当空表（那几帧不画图，比画错图好）。
+   */
+  const [resolved, setResolved] = useState<{
+    key: string;
+    version: number;
+    urls: Record<string, string>;
+  }>({ key: "", version: -1, urls: {} });
+  // 图片解析范围（连接换代 / 切会话）的版本：范围一变，旧结果立刻作废并重新解析
+  const scopeVersion = useLocalImageScopeVersion();
   // 路径数组每次渲染都是新的：用拼出来的键做依赖，避免每帧重复请求
   const key = paths.join("\n");
+  const urls = resolved.key === key && resolved.version === scopeVersion ? resolved.urls : {};
   useEffect(() => {
     if (!paths.length) return;
     let cancelled = false;
     // 缓存命中时同步返回（`resolveLocalImages` 会先查缓存），所以重渲染不会重新读盘
-    void resolveLocalImages(paths).then((resolved) => {
-      if (!cancelled) setUrls(resolved);
+    void resolveLocalImages(paths).then((next) => {
+      // 旧范围 / 旧路径的在途结果不许覆盖新结果（cleanup 之后才到的也要挡住）
+      if (!cancelled) setResolved({ key, version: scopeVersion, urls: next });
     });
     return () => {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key]);
+  }, [key, scopeVersion]);
   const sources = paths
     .filter((path) => urls[path])
     .map((path) => ({ src: urls[path], alt: path, ref: path }));
-  return <ImageGallery alt={texts.messageImageAlt} sources={sources} />;
+  // `ImageGallery` 内部按 **index** 记 `failed` / `loaded`：换范围（或换路径集）不重挂的话，
+  // 旧范围那次浏览器 decode 失败会一直遮住新范围的有效 `src`——那几行只剩降级文案。
+  // key 里带范围版本与路径键，两件事任一变化都重挂一份干净的失败/已加载表。
+  return <ImageGallery key={`${scopeVersion}:${key}`} alt={texts.messageImageAlt} sources={sources} />;
 }
 
 /** 浮层几何 + 基准中心（视口坐标）。图片基准中心就是可用区域中心。 */
@@ -193,11 +211,24 @@ export function ImagePreviewLayer() {
   const dragRef = useRef<{ pointerId: number; x: number; y: number; moved: boolean } | null>(null);
   /** 拖动松手后浏览器仍可能补一个 click：别让它被当成「点了背景」。 */
   const suppressClickRef = useRef(false);
+  /**
+   * 换图片范围（连接换代 / 切会话）时关掉浮层：浮层里挂的是**旧范围**解析出来的
+   * data URL，留着看的是上一套执行世界的图；而新范围也不会再解析它。
+   */
+  const scopeVersion = useLocalImageScopeVersion();
+  const shownScopeRef = useRef(scopeVersion);
 
   useEffect(() => {
     setValue(imagePreviewValue());
     return subscribeImagePreview(setValue);
   }, []);
+
+  // layout effect：换范围的那次提交里就把浮层关掉，别先画一帧旧执行世界的图
+  useLayoutEffect(() => {
+    if (shownScopeRef.current === scopeVersion) return;
+    shownScopeRef.current = scopeVersion;
+    if (imagePreviewValue()) closeImagePreview();
+  }, [scopeVersion]);
 
   const commit = useCallback((next: ImageView) => {
     viewRef.current = next;

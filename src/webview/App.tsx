@@ -30,7 +30,6 @@ import {
 import { attachDroppedFiles, attachPastedFiles, clipboardFiles, dragHasFiles } from "./attachIntake";
 import { createPastedImageSequence, visibleImageNames } from "./pastedImageNames";
 import { setImageCopyFailureScope } from "./imageCopyFailure";
-import { setLocalImageScope } from "./localImages";
 import { dp, dpLength, uiScaleOf, UiScaleContext } from "./uiScale";
 import { TurnRail } from "./components/TurnRail";
 import { useTurnRailItems, useTurnRailNav } from "./turnRailNav";
@@ -803,11 +802,10 @@ export function App() {
       ),
     [state.messages, state.changesSummaries, sessionId],
   );
-  // 正文里本地图片的解析缓存按会话隔离：相对路径的基准是会话创建目录，
-  // 切了会话之后同名路径是另一个文件（见 webview/localImages.ts）
-  useEffect(() => {
-    setLocalImageScope(sessionId ?? "");
-  }, [sessionId]);
+  // 正文里本地图片的解析缓存按「执行世界连接 + 会话」隔离：相对路径的基准是会话
+  // 创建目录，同一会话在另一条连接里也是另一套执行世界。这个范围由 `localImages`
+  // 自己在消费 `images/scope` / `state` / `patch` 帧时同步（子组件的 layout effect
+  // 先于父 effect，不能等到这里才登记），见 webview/localImages.ts。
   // 全页拖放：拖文件进会话页的任何位置都算添加附件（dragActive 时亮出浮层）
   const dragActive = usePageFileDrop();
   // 全页粘贴：Ctrl+V 贴图片 / 文件同样算添加附件（没有浮层可亮，纯文本仍走原生）
@@ -865,9 +863,8 @@ export function App() {
   /**
    * 「复制图片失败」的归属登记（见 `imageCopyFailure.ts`）。
    *
-   * 与上面 `setLocalImageScope` 同一套写法：模块级只记「此刻是哪条会话」，
-   * 真正的失败会带上**发起那一刻**捕获的归属，回帧前再与这里核对一次——切走之后
-   * 才失败的复制不画进新会话。
+   * 模块级只记「此刻是哪条会话」，真正的失败会带上**发起那一刻**捕获的归属，
+   * 回帧前再与这里核对一次——切走之后才失败的复制不画进新会话。
    */
   useEffect(() => {
     setImageCopyFailureScope(sessionId);

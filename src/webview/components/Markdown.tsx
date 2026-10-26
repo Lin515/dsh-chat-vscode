@@ -1,7 +1,7 @@
 import { memo, useLayoutEffect, useMemo, useRef, type MouseEvent as ReactMouseEvent } from "react";
 import { splitMarkdownBlocks, type MarkdownBlock } from "../markdown";
 import { useTexts } from "../texts";
-import { hydrateLocalImages } from "../localImages";
+import { hydrateLocalImages, useLocalImageScopeVersion } from "../localImages";
 import { hydrateFileMentions } from "../fileMentions";
 import { browserOpenRequested, externalLinkUrl, parseFileLink, type FileLinkPort } from "../fileLinks";
 import { hydrateLinkTitles } from "../linkHovers";
@@ -84,6 +84,16 @@ const HtmlBlock = memo(function HtmlBlock({
 }) {
   const texts = useTexts();
   const ref = useRef<HTMLDivElement>(null);
+  // 图片解析范围（连接换代 / 切会话）的版本：变了就要**重新设 innerHTML 再水合**。
+  //
+  // 只重跑水合不够：上一次已经换上去的 data URL 还留在注入的 HTML 里（那是命令式改的
+  // DOM，React 不知道），而它属于旧范围——同一会话在另一条连接里也属于另一套执行世界。
+  // 所以把 `html` 原样写回去（React 的 dangerouslySetInnerHTML 只在 html 变时才重设），
+  // 再按新范围水合；已经落地的失败占位同样会被还原成 `<img>` 后重新判定。
+  const scopeVersion = useLocalImageScopeVersion();
+  /** 上一次水合时的 html 与范围版本（判断「这次提交是不是只换了范围」）。 */
+  const htmlRef = useRef(html);
+  const scopeVersionRef = useRef(scopeVersion);
   // html 已在 markdown.ts 里经 DOMPurify 过滤。
   //
   // `useLayoutEffect` 而不是 `useEffect`：正文里的本地图片要**在绘制前**换成
@@ -93,6 +103,14 @@ const HtmlBlock = memo(function HtmlBlock({
   useLayoutEffect(() => {
     const root = ref.current;
     if (!root) return;
+    // 换范围：先把注入的 HTML 还原成模型给的那一份，再按新范围水合。
+    // 只在 html **没变**时手动写回——html 变了的话 React 这次提交已经重设过 innerHTML
+    // （再写一遍会白白丢一次图片解码状态）。首次挂载不算「换范围」。
+    const scopeChanged = scopeVersionRef.current !== scopeVersion;
+    scopeVersionRef.current = scopeVersion;
+    const htmlChanged = htmlRef.current !== html;
+    htmlRef.current = html;
+    if (scopeChanged && !htmlChanged) root.innerHTML = html;
     const undoImages = hydrateLocalImages(root, texts);
     const undoTitles = hydrateLinkTitles(root, cwd, texts);
     const undoMentions = hydrateFileMentions(
@@ -107,7 +125,7 @@ const HtmlBlock = memo(function HtmlBlock({
       undoTitles();
       undoMentions();
     };
-  }, [html, fileLinks, cwd, texts.imageLoadFailed, texts.imageLoadFailedAt, texts.webFileBrowserHint]);
+  }, [html, scopeVersion, fileLinks, cwd, texts.imageLoadFailed, texts.imageLoadFailedAt, texts.webFileBrowserHint]);
   return (
     <div
       ref={ref}

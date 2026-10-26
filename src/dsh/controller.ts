@@ -3895,6 +3895,8 @@ export class ChatController implements vscode.Disposable {
     this.client = client;
     this.hostFiles = client ? new HostFileAccess(client) : undefined;
     if (this.hostFiles) this.hostFileConnections.set(this.hostFiles.connectionId, this.hostFiles);
+    // 图片字节同样属于原连接：即使会话 id 没变，也要让页面作废缓存与在途请求。
+    this.emitAll({ type: "images/scope", connectionId: this.hostFiles?.connectionId ?? null });
   }
 
   /**
@@ -8600,6 +8602,7 @@ export class ChatController implements vscode.Disposable {
         // 连接（`awaitActivationConnect`）——整个连接期间快照都出不去，界面只能停在词典
         // 缺省（英文）上，直到连接结算才翻成中文（用户报的「启动总是先英文」）。
         // 能收到 `ready` 就说明 webview 的监听已挂上，此刻推帧不会丢。
+        this.emitToView(viewId, { type: "images/scope", connectionId: this.hostFiles?.connectionId ?? null });
         this.emitToView(viewId, { type: "state", state: this.snapshotFor(viewId) });
         // 这个窗口在就绪之前收到的开面板指令（命令面板入口可能比页面加载更早按下）：
         // 放在快照**之后**补发，抽屉打开时界面已经有全量状态了。
@@ -9340,12 +9343,27 @@ export class ChatController implements vscode.Disposable {
         // 正文里的本地图（`![](out/chart.png)`）：路径属于该窗口会话的**执行世界**。
         // 相对路径原样交给 Host（缺创建目录由服务端 sandbox 根裁决），不退回 VS Code
         // 工作区；绝对路径根外能否读取由 provider 裁决，扩展名不是授权条件。
+        if (
+          !Number.isSafeInteger(message.requestId) || message.requestId < 1 ||
+          !Array.isArray(message.paths) || !message.paths.every((path) => typeof path === "string") ||
+          (message.connectionId !== null && typeof message.connectionId !== "string") ||
+          typeof message.sessionId !== "string"
+        ) break;
         const scope = this.scopeOfView(viewId);
         const client = this.client;
         const access = this.hostFiles;
-        if (!scope || !client || !access) {
-          this.log(`[images] 没有可用的会话/连接，正文图片不解析（${message.paths.length} 张）`);
-          this.emitToView(viewId, { type: "images/resolved", requestId: message.requestId, urls: {} });
+        const responseScope = {
+          requestId: message.requestId,
+          connectionId: message.connectionId,
+          sessionId: message.sessionId,
+        };
+        if (
+          !scope || !client || !access ||
+          message.connectionId !== access.connectionId || message.sessionId !== scope.sessionId
+        ) {
+          // 可能是页面尚未收到换代通知的旧请求；先补当前连接，再结算原请求。
+          this.emitToView(viewId, { type: "images/scope", connectionId: access?.connectionId ?? null });
+          this.emitToView(viewId, { type: "images/resolved", ...responseScope, urls: {} });
           break;
         }
         const sessionId = scope.sessionId;
@@ -9357,6 +9375,7 @@ export class ChatController implements vscode.Disposable {
           this.viewSessions.get(viewId) !== sessionId
         ) {
           this.log(`[images] 丢弃迟到的图片解析结果（会话=${sessionId}）`);
+          this.emitToView(viewId, { type: "images/resolved", ...responseScope, urls: {} });
           break;
         }
         const missed = message.paths.filter((path) => !(path in result.urls));
@@ -9366,7 +9385,7 @@ export class ChatController implements vscode.Disposable {
               missed.map((path) => `${path}（${result.failures[path] ?? "unknown"}）`).join("、"),
           );
         }
-        this.emitToView(viewId, { type: "images/resolved", requestId: message.requestId, urls: result.urls });
+        this.emitToView(viewId, { type: "images/resolved", ...responseScope, urls: result.urls });
         break;
       }
 
