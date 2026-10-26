@@ -151,4 +151,21 @@ console.log("local-images: 全部引用都读，仅限制并发 ✓");
 }
 console.log("local-images: 单图限额交给 Host 媒体路由 ✓");
 
+// ---------- 7. Host 报了非图片媒体类型就按非图片失败，不由扩展名翻案 ----------
+{
+  const transport = new Fake({
+    // Host 明确说这不是图片：扩展名 .png 不能把非图片字节包装成 data:image/*。
+    "report.png": { bytes: new Uint8Array([1, 2, 3]), mediaType: "application/octet-stream" },
+    // Host 没有报媒体类型：这时才用扩展名兜底。
+    "fallback.png": { bytes: new Uint8Array([4, 5, 6]) },
+  });
+  const access = new HostFileAccess(transport);
+  const result = await readHostImages(access, "s1", ["report.png", "fallback.png"]);
+  assert.deepStrictEqual(Object.keys(result.urls), ["fallback.png"], "只有缺媒体类型的那张进 data URL 表");
+  assert.ok(result.urls["fallback.png"]?.startsWith("data:image/png;base64,"));
+  assert.strictEqual(result.failures["report.png"], "no image media type", "Host 的非图片结论为权威");
+  assert.strictEqual(result.failures["fallback.png"], undefined);
+}
+console.log("local-images: Host 报非图片媒体类型时不由扩展名翻案 ✓");
+
 console.log("\nlocal-images: all assertions passed");

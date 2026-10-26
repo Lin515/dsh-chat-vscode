@@ -8,6 +8,8 @@
  *   不是媒体白名单**，扩展名也不是授权条件。
  * - 客户端只拒绝 UNC、控制字符与盘符相对这类无法安全/无歧义表达的媒体路径；
  *   字节限额由 Host 的 `/api/file` 部署限额裁决，客户端**不另造图片字节门**。
+ * - 媒体类型同样以 Host 报出的结论为准：报了非 `image/*` 就按非图片失败，只有
+ *   Host 没报时才用扩展名兜底，扩展名不能推翻 Host 的判断。
  *
  * 张数也不截断：一段正文里几百个引用时，全部都要尝试，只把并发压在一个有界
  * 窗口里——截断会让第 25 张永久看不见，而这从来不是读取权限问题。
@@ -41,9 +43,15 @@ export interface HostImageResult {
   readonly failures: Record<string, string>;
 }
 
-/** Host 给出的媒体类型优先；它不认时只按扩展名补一个「浏览器能画」的类型。 */
+/**
+ * 决定写进 data URL 的媒体类型。
+ *
+ * Host 报出的媒体类型就是权威结论：只有它是 `image/*` 才可用，否则这张引用按
+ * 「不是图片」失败——扩展名不能推翻 Host 的判断，否则会把非图片字节包装成
+ * `data:image/*`。只有 Host 没有报媒体类型时，才按扩展名给一个候选。
+ */
 function displayMediaType(path: string, reported: string | undefined): string | undefined {
-  if (reported && reported.startsWith("image/")) return reported;
+  if (reported !== undefined) return reported.startsWith("image/") ? reported : undefined;
   return localImageMediaType(path);
 }
 
