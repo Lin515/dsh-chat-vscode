@@ -74,7 +74,6 @@ import {
   HostFileError,
   describeHostFileError,
   resolveExecutionWorldPath,
-  sameExecutionPath,
   type HostFileStat,
 } from "./remoteFiles";
 import { remoteFileUri } from "./remoteFileSystem";
@@ -6111,8 +6110,8 @@ export class ChatController implements vscode.Disposable {
           classifyAccess !== undefined &&
           this.followIsCurrent(scope, classifyClient, generation),
       });
-    // 创建目录交给适配器（字段由另一侧新增；本分支用结构类型赋值，合入后自然成立）。
-    (adapter as SessionAdapter & { sessionCwd?: string }).sessionCwd = this.cwdOf(scope);
+    // 创建目录交给适配器：账本还没到也没关系，`syncScopeSessionCwds` 会补。
+    adapter.sessionCwd = this.cwdOf(scope);
     // 未知事件（内核冒出的新词汇）记进输出通道：用户侧那条通知会进队列（确认之后还能在
     // 通知历史里回看），日志那一份则是可追溯的诊断细节（含事件数据摘要）。
     // 带会话 id——多会话并存时要知道是哪个会话冒出来的。
@@ -11874,16 +11873,11 @@ export class ChatController implements vscode.Disposable {
    * **不再退回本机 git**：本机 git 清单没有经过验证的执行世界映射。拿不到快照
    * （旧会话 / Host 重启 / 二进制 / 过大 / 形状不合规）时返回 `false`，由调用方
    * 打开普通虚拟资源。
-   *
-   * `targetAbsolute` 是可选的防错信息（点击目标已经过 Host stat 时的绝对路径）；
-   * 有它且能读到当前文本时才要求路径一致。没有它时不能因为「路径拼写不同」或
-   * 「当前读不到」就否掉坐标对应的历史快照。
    */
   private async openAgentChanges(
     sessionId: string,
     targetPath: string,
     coordinates: ChangeCoordinates,
-    targetAbsolute?: string,
   ): Promise<boolean> {
     const client = this.client;
     const access = this.hostFiles;
@@ -11905,29 +11899,14 @@ export class ChatController implements vscode.Disposable {
       return false;
     }
     let current: string | undefined;
-    let currentAbsolute: string | undefined;
     try {
       const read = await access.readText(sessionId, diff.path, { maxBytes: AGENT_DIFF_READ_LIMIT });
       current = read.text;
-      currentAbsolute = read.stat.absolutePath;
     } catch (error) {
       // 当前文件不在了 / 读不了：仍可用 hunk 片段，但不能从另一世界回填。
       this.log(`[open] 本轮对比的当前文本不可用 ${diff.path}：${describeHostFileError(error)}`);
     }
     if (this.client !== client || this.hostFiles !== access) return false;
-    // 只有「当前文本读到了、而且点击目标有 Host 绝对路径」时才做防错比对；
-    // 否则身份完全由坐标承担，不能把 stat 当成历史快照的前提。
-    if (
-      targetAbsolute !== undefined &&
-      currentAbsolute !== undefined &&
-      !sameExecutionPath(currentAbsolute, targetAbsolute)
-    ) {
-      this.log(
-        `[open] 本轮改动对比的路径与点击目标不一致，打开文件本身：` +
-          `${diff.path} ≠ ${targetAbsolute}（seq=${coordinates.seq} index=${coordinates.index}）`,
-      );
-      return false;
-    }
     // **新文件口径不跟着变**（用户 2026-09-14 拍板）：点开就是看文件，不是看
     // 「空 → 全文」的 diff。执行世界里还在就交回普通打开；只有文件已经不在了
     // （内容眼看要丢）才用本轮快照把它显示出来。

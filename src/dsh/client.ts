@@ -252,13 +252,20 @@ export class DshClient {
     path: string,
     timeoutMs = 60_000,
   ): Promise<{ bytes: Uint8Array; mediaType?: string } | undefined> {
-    if (!path.startsWith("/api/")) {
-      throw new DshApiError("host/bytes", `refusing a non-API byte route: ${path}`, undefined);
-    }
     const base = new URL(this.baseUrl);
     const url = new URL(`${this.baseUrl}${path}`);
     if (url.origin !== base.origin) {
       throw new DshApiError("host/bytes", "refusing a byte route outside the DSH origin", undefined);
+    }
+    // 部署可能挂在子路径下，所以「在 /api/ 下」要相对这个前缀判断，并验
+    // **规范化后**的路径（`/api/../x` 会被 URL 折到 API 之外）。
+    const apiPrefix = `${base.pathname.replace(/\/+$/, "")}/api/`;
+    if (!url.pathname.startsWith(apiPrefix)) {
+      throw new DshApiError(
+        "host/bytes",
+        `refusing a byte route that resolves outside ${apiPrefix}: ${path}`,
+        undefined,
+      );
     }
     const headers: Record<string, string> = { accept: "*/*" };
     if (this.cookie) headers.cookie = this.cookie;

@@ -191,6 +191,8 @@ export class RemoteFileSystemProvider implements vscode.FileSystemProvider {
     try {
       // 普通文件走 workspaceFiles/readBytes；`/api/file` 只服务正文图片/媒体，
       // 不能把它的 MIME 与部署限额套到任意普通文件上。
+      // 不传 maxBytes：限额由 Host 的 workspaceFiles.maxFileBytes（官方默认 32 MiB）
+      // 裁决，客户端不复制部署限额。
       const file = await access.readBytes(address.sessionId, address.path);
       this.sync.mtimeFor(uri.toString(), file.stat.version);
       return file.data;
