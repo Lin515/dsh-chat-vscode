@@ -161,6 +161,63 @@ const userMessage = (attachments: MessageView["attachments"]): MessageView => ({
   console.log("image: 附件芯片单击打开编辑器、悬停显示路径 ✓");
 }
 
+// ---------- 3c. 顺序：正文 → 附件芯片 → 图片，全在气泡内部（折叠只夹正文） ----------
+//
+// 用户 2026-10-26 口径：用户消息的附件要画在消息框**里面**，不是气泡下方另起一块；
+// 顺序是正文最前，然后是文件芯片块，最后是图片。折叠高度只能落在正文 `.bubble-text`
+// 上——夹在 `.bubble` 上会把图与芯片一起裁掉。
+{
+  const html = quietly(() =>
+    render({
+      id: "u:1",
+      role: "user",
+      ts: Date.now(),
+      text: "看看这张图",
+      segments: [],
+      attachments: [
+        { id: "a1", kind: "image", name: "shot.png", attachmentId: "sha256:a", dataUrl: JPEG },
+        { id: "a2", kind: "file", name: "notes.md", path: "notes.md" },
+      ],
+    }),
+  );
+  // 气泡从 `<div class="bubble` 开始，到操作行 `.msg-actions` 之前结束：正文、芯片与
+  // 图片都必须落在这段里，且依次是正文 → `.msg-chips` → 图片。
+  const bubbleOpen = html.indexOf('<div class="bubble');
+  const actionsAt = html.indexOf('class="msg-actions"');
+  assert.ok(bubbleOpen >= 0 && actionsAt > bubbleOpen, `用户消息必须有气泡与操作行，实际：${html}`);
+  const textAt = html.indexOf('<div class="bubble-text">');
+  const chipsAt = html.indexOf('<div class="msg-chips">');
+  const imageAt = html.indexOf('<div class="row-body-images">');
+  assert.ok(
+    textAt > bubbleOpen && textAt < actionsAt,
+    `正文要在气泡里，且是气泡的第一块内容：${html}`,
+  );
+  assert.ok(
+    chipsAt > textAt && chipsAt < actionsAt,
+    `文件芯片在正文之后（正文最前，其次附件块）：${html}`,
+  );
+  assert.ok(
+    imageAt > chipsAt && imageAt < actionsAt,
+    `图片在附件芯片之后（顺序：正文 → 芯片 → 图片）：${html}`,
+  );
+  assert.ok(
+    html.indexOf("<img") > imageAt,
+    "缩略图落在图片块里，同样在气泡内部",
+  );
+
+  // 折叠高度只能夹正文：`.bubble.is-clamped` 自身不设 max-height / overflow
+  const css = readFileSync(join(process.cwd(), "src", "webview", "styles", "app.css"), "utf8");
+  const clamped = /^[ \t]*\.msg-user \.bubble\.is-clamped \.bubble-text[ \t]*\{([\s\S]*?)\}/mu.exec(css)?.[1];
+  assert.ok(clamped, "折叠高度必须写在 .msg-user .bubble.is-clamped .bubble-text 上（只夹正文）");
+  assert.match(clamped, /max-height:/, "正文折叠要有 max-height");
+  assert.match(clamped, /overflow:\s*hidden/, "正文折叠要裁掉溢出");
+  assert.ok(
+    !/\.msg-user \.bubble\.is-clamped \{[^}]*max-height/u.test(css),
+    "气泡自身不许设折叠高度（那会把附件一起夹掉）",
+  );
+  console.log("image: 正文 → 芯片 → 图片同在气泡里、折叠只夹正文 ✓");
+}
+
 // ---------- 4. 助手消息里的图片块：`images` 段渲染成图库 ----------
 {
   const message: MessageView = {

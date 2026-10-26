@@ -75,6 +75,9 @@ export interface ReadingEnv {
    * 必须**点按钮**（带 `aria-expanded` 的那一颗）而不是自己撕 class：`is-clamped` 是
    * React 状态画的，手改 class 撑不过下一次渲染。展开按钮与失败回显行的「重发 / 撤回」
    * 共用 `msg-expand` 类，所以选择器必须带上 `aria-expanded`。
+   *
+   * 折叠态落在 `.bubble` 上，夹的却是气泡里的正文 `.bubble-text`（附件不折叠，见
+   * `Message.tsx` 的 `UserBubble`），所以命中的宿主节点要往上找到气泡再判。
    */
   expandClamped(anchor: HTMLElement): void;
 }

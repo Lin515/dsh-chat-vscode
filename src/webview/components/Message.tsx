@@ -119,11 +119,69 @@ function renderMentionText(
 }
 
 /**
- * 用户消息正文（只渲染气泡；「展开 / 收起」按钮在消息的**操作行**里，见下面）。
+ * 用户消息里的附件区：文件芯片在上、图片在下（用户 2026-10-26 口径）。
  *
- * 溢出判定必须**在折叠态下量**：`is-clamped` 一直在（未展开时），于是
- * `scrollHeight > clientHeight` 就是「内容比 5 行高」这个事实本身。展开后不再
- * 重算（那时量不出区别），按钮由已知的溢出状态决定去留。
+ * 它画在**气泡里面**、正文之后：发出去的图与文件本来就是这条消息的内容，和正文
+ * 分开摆在气泡下方会读成两块东西。折叠因此只能夹正文（`.bubble-text`），不能连
+ * 附件一起夹掉。
+ *
+ * 附件分两路：图片附件一旦拿到字节（服务端 durable 句柄换的 data URL）就画成缩略图；
+ * 还没到 / 取不回来、以及文件附件，退回文件名芯片——用户至少能确认「我发出去的是
+ * 哪些东西」，而不是一片空白或一个碎图图标。
+ */
+function UserMedia({ attachments }: { attachments: NonNullable<MessageView["attachments"]> }) {
+  const texts = useTexts();
+  if (!attachments.length) return null;
+  // 图片缩略图单击出来的是**原图浮层**（`ImageGallery` 的默认动作，与助手消息、工具行、
+  // 正文外链的图同一套待遇）；下面那些**附件芯片**才是「在编辑器里打开本地那一份」的入口。
+  const images: ImageSource[] = attachments
+    .filter((attachment) => attachment.kind === "image" && attachment.dataUrl)
+    .map((attachment) => ({
+      src: attachment.dataUrl as string,
+      alt: attachment.name,
+      width: attachment.width,
+      height: attachment.height,
+    }));
+  const chips = attachments.filter((attachment) => attachment.kind !== "image" || !attachment.dataUrl);
+  return (
+    <div className="msg-media">
+      {chips.length ? (
+        <div className="msg-chips">
+          {chips.map((attachment) =>
+            // 打得开的画成按钮（单击在编辑器里打开，见 `../attachmentOpen`）；
+            // 只有服务端副本的那些仍是一枚静态芯片——做成按钮却点了没反应更糟
+            canOpenAttachment(attachment) ? (
+              <button
+                className="chip chip-open"
+                key={attachment.id}
+                // 悬停给**原文件完整路径**（回放的消息靠宿主按内容身份查出来，见
+                // `dsh/attachmentOpenStore.ts`）；查不到就不给提示，不拿文件名凑数。
+                // 「单击会打开」不写进提示：可点光标本身就是提示。
+                title={attachment.path}
+                onClick={() => openAttachment(attachment)}
+              >
+                <span className="chip-name">{attachment.name}</span>
+              </button>
+            ) : (
+              <span className="chip" key={attachment.id}>
+                <span className="chip-name">{attachment.name}</span>
+              </span>
+            ),
+          )}
+        </div>
+      ) : null}
+      {images.length ? <ImageGallery alt={texts.messageImageAlt} sources={images} /> : null}
+    </div>
+  );
+}
+
+/**
+ * 用户消息气泡：正文在上，其下依次是文件芯片与图片，「展开 / 收起」按钮在消息的
+ * **操作行**里，见下面。
+ *
+ * 溢出判定必须**在折叠态下量**：`is-clamped` 一直在（未展开时），而折叠高度只落在
+ * 正文节点 `.bubble-text` 上，于是它的 `scrollHeight > clientHeight` 就是「正文比
+ * 5 行高」这个事实本身。展开后不再重算（那时量不出区别），按钮由已知的溢出状态决定去留。
  *
  * 状态与测量都由**父组件**（`Message`）持有：「展开」按用户口径要和时间、复制
  * 同一行、且最靠右——那三个按钮都在 `.msg-actions` 里，气泡在它上面。hooks 因此
@@ -137,7 +195,8 @@ function UserBubble({
   expanded,
   sessionRefs,
   cwd,
-  nodeRef,
+  textRef,
+  media,
 }: {
   text: string;
   expanded: boolean;
@@ -146,24 +205,32 @@ function UserBubble({
   /** 会话工作目录：文件引用的悬停标题按它补成完整路径。 */
   cwd?: string;
   /**
+   * 折叠高度量的就是这一个节点：附件不参与折叠，所以 ref 不能挂在气泡上。
+   *
    * **不能叫 `ref`**：React 18 里 `ref` 是函数组件的保留 prop，传进去不会出现在
    * props 里（会警告「Function components cannot be given refs」），
-   * `bubbleRef.current` 于是永远是 null、溢出永远测不出来——按钮就不出现。
+   * `textRef.current` 于是永远是 null、溢出永远测不出来——按钮就不出现。
    */
-  nodeRef: RefObject<HTMLDivElement>;
+  textRef: RefObject<HTMLDivElement>;
+  /** 气泡里的附件区（文件芯片 + 图片缩略图），见 `UserMedia`。 */
+  media?: ReactNode;
 }) {
   const texts = useTexts();
   const commandLinks = useCommandLinks();
   return (
     <div
-      ref={nodeRef}
       className={`bubble${expanded ? "" : " is-clamped"}`}
       // 折叠行数只写在这一个常量里，CSS 通过自定义属性读它（见 app.css 的
-      // `.bubble.is-clamped`）——两处各写一个 5 迟早会对不上。
+      // `.bubble.is-clamped .bubble-text`）——两处各写一个 5 迟早会对不上。
       style={{ "--user-clamp-lines": USER_COLLAPSE_LINES } as CSSProperties}
     >
       {/* 正文里的 `@` 引用渲染成可点链接（一条消息里可能好几处），其余照旧纯文本 */}
-      {renderMentionText(text, texts, sessionRefs, commandLinks, cwd)}
+      {text !== "" ? (
+        <div ref={textRef} className="bubble-text">
+          {renderMentionText(text, texts, sessionRefs, commandLinks, cwd)}
+        </div>
+      ) : null}
+      {media}
     </div>
   );
 }
@@ -262,7 +329,8 @@ export const Message = memo(function Message({
   const [runChoice, setRunChoice] = useState<ReadonlyMap<string, boolean>>(() => new Map());
   // 用户消息的收缩态与「内容比 5 行高」这个事实（同上，必须在早退之前）。
   // 按钮画在操作行里、气泡在它上面，所以状态只能由这里持有。
-  const bubbleRef = useRef<HTMLDivElement>(null);
+  // ref 量的是**正文节点**而不是整个气泡：附件也在气泡里，但它们不该被折叠夹掉。
+  const bubbleTextRef = useRef<HTMLDivElement>(null);
   const [bubbleOpen, setBubbleOpen] = useState(false);
   const [bubbleOverflowing, setBubbleOverflowing] = useState(false);
   /**
@@ -288,7 +356,7 @@ export const Message = memo(function Message({
 
   useLayoutEffect(() => {
     if (message.role !== "user") return;
-    const el = bubbleRef.current;
+    const el = bubbleTextRef.current;
     if (!el || bubbleOpen) return;
     const measure = () => setBubbleOverflowing(el.scrollHeight - el.clientHeight > 2);
     measure();
@@ -303,21 +371,9 @@ export const Message = memo(function Message({
   }, [message.role, message.text, bubbleOpen]);
 
   if (message.role === "user") {
-    // 附件分两路：图片附件一旦拿到字节（服务端 durable 句柄换的 data URL）就画成
-    // 缩略图；还没到 / 取不回来、以及文件附件，退回文件名芯片——用户至少能确认
-    // 「我发出去的是哪些东西」，而不是一片空白或一个碎图图标。
+    // 附件（图片缩略图 + 文件芯片）画在**气泡里面**，见 `UserMedia`。这里只判「有没有」：
+    // 正文空、只有附件的那条消息也照常画气泡。
     const attachments = message.attachments ?? [];
-    // 图片缩略图单击出来的是**原图浮层**（`ImageGallery` 的默认动作，与助手消息、工具行、
-    // 正文外链的图同一套待遇）；下面那些**附件芯片**才是「在编辑器里打开本地那一份」的入口。
-    const images: ImageSource[] = attachments
-      .filter((attachment) => attachment.kind === "image" && attachment.dataUrl)
-      .map((attachment) => ({
-        src: attachment.dataUrl as string,
-        alt: attachment.name,
-        width: attachment.width,
-        height: attachment.height,
-      }));
-    const chips = attachments.filter((attachment) => attachment.kind !== "image" || !attachment.dataUrl);
     /**
      * 乐观回显的行状态（真实行没有 `sendState`，这一段整块不渲染）。
      *
@@ -360,38 +416,9 @@ export const Message = memo(function Message({
           expanded={bubbleOpen}
           sessionRefs={message.sessionRefs}
           cwd={cwd}
-          nodeRef={bubbleRef}
+          textRef={bubbleTextRef}
+          media={attachments.length ? <UserMedia attachments={attachments} /> : undefined}
         />
-        {attachments.length ? (
-          <div className="msg-media">
-            {images.length ? <ImageGallery alt={texts.messageImageAlt} sources={images} /> : null}
-            {chips.length ? (
-              <div className="composer-chips">
-                {chips.map((attachment) =>
-                  // 打得开的画成按钮（单击在编辑器里打开，见 `../attachmentOpen`）；
-                  // 只有服务端副本的那些仍是一枚静态芯片——做成按钮却点了没反应更糟
-                  canOpenAttachment(attachment) ? (
-                    <button
-                      className="chip chip-open"
-                      key={attachment.id}
-                      // 悬停给**原文件完整路径**（回放的消息靠宿主按内容身份查出来，见
-                      // `dsh/attachmentOpenStore.ts`）；查不到就不给提示，不拿文件名凑数。
-                      // 「单击会打开」不写进提示：可点光标本身就是提示。
-                      title={attachment.path}
-                      onClick={() => openAttachment(attachment)}
-                    >
-                      <span className="chip-name">{attachment.name}</span>
-                    </button>
-                  ) : (
-                    <span className="chip" key={attachment.id}>
-                      <span className="chip-name">{attachment.name}</span>
-                    </span>
-                  ),
-                )}
-              </div>
-            ) : null}
-          </div>
-        ) : null}
         {/* 用户消息也有操作行：官方 `MessageIconActions` 是用户与助手**共用**的，
             用户那一支给「时钟（start）+ 复制」、**没有分支**（分支必须锚在
             `turn/end` 上，用户消息不是锚点）。此前用户消息完全没有操作行，

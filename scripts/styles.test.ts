@@ -3234,6 +3234,40 @@ console.log("styles: 后台任务详情（输出限高内滚 + 行主体不溢�
 }
 console.log("styles: 失败回显行的动作与原因 ✓");
 
+// ---------- 用户消息的附件在气泡里，折叠只夹正文 ----------
+//
+// 用户 2026-10-26 口径：附件画在消息框**里面**，不另起一块浮在气泡下方；折叠高度
+// 只能落在正文 `.bubble-text` 上——夹在 `.bubble` 上会把图与文件芯片一起裁掉，
+// 而「展开 / 收起」按钮量的正是正文的溢出。坏掉的后果是静默的：图片直接消失。
+{
+  const bubble = rule(".msg-user .bubble");
+  assert.ok(
+    /display:\s*flex/.test(bubble) && /flex-direction:\s*column/.test(bubble),
+    "气泡是列向 flex：附件在上、正文在下（与输入框「芯片在前、正文在后」同一顺序）",
+  );
+  assert.ok(
+    /white-space:\s*pre-wrap/.test(bubble),
+    "正文的换行口径仍在气泡上（正文节点只是折叠容器，不另写一份排版）",
+  );
+
+  const clamp = rule(".msg-user .bubble.is-clamped .bubble-text");
+  assert.ok(/max-height:/.test(clamp), "折叠高度写在正文节点上（只夹正文）");
+  assert.ok(/overflow:\s*hidden/.test(clamp), "正文节点要裁掉溢出");
+  assert.ok(
+    !/^[ \t]*\.msg-user \.bubble\.is-clamped[ \t]*\{/mu.test(css),
+    "气泡自身不能再有折叠规则（会把附件一起夹掉）",
+  );
+
+  const media = rule(".msg-media");
+  assert.ok(/min-width:\s*0/.test(media), "附件区要能收缩（长文件名与超大图不能把气泡撑破）");
+  const chips = rule(".msg-chips");
+  assert.ok(
+    /flex-wrap:\s*wrap/.test(chips),
+    "气泡里的附件芯片要能换行（窄侧栏下多枚芯片不能把气泡顶宽）",
+  );
+}
+console.log("styles: 用户消息附件在气泡里、折叠只夹正文 ✓");
+
 // ---------- 会话查找条：高亮走 Custom Highlight API，计数格不许折行 ----------
 //
 // 高亮配色**必须**挂在 `::highlight()` 伪元素上、并直接取编辑器查找的主题变量：

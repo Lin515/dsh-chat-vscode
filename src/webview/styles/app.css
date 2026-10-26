@@ -888,7 +888,12 @@ button.header-title.is-switcher > svg.is-open {
   padding: calc(8 * var(--dp)) calc(6 * var(--dp)) calc(4 * var(--dp));
 }
 
+/* 附件与正文同在一枚气泡里（用户 2026-10-26 口径）：正文在上，其下依次是文件芯片
+   与图片。列向 flex 负责那一档间距，折叠只夹正文。 */
 .msg-user .bubble {
+  display: flex;
+  flex-direction: column;
+  gap: calc(6 * var(--dp));
   padding: calc(6 * var(--dp)) calc(10 * var(--dp));
   border: 1px solid var(--command-border);
   border-radius: var(--radius);
@@ -900,12 +905,12 @@ button.header-title.is-switcher > svg.is-open {
   line-height: 1.5;
 }
 
-/* 超过 5 行的用户消息默认收缩。行数来自 `Message.tsx` 的 `USER_COLLAPSE_LINES`
-   （经自定义属性传进来，只写一份）：`1.5em × 行数` 是正文高度，`+ 12px` 是气泡
-   自己的上下内边距（全局 `box-sizing: border-box`，内边距要从上限里让出来）。
-   `overflow: hidden` 让折满之后的内容不占位、也不半行露头。 */
-.msg-user .bubble.is-clamped {
-  max-height: calc(1.5em * var(--user-clamp-lines, 5) + 12 * var(--dp));
+/* 超过 5 行的**正文**默认收缩。行数来自 `Message.tsx` 的 `USER_COLLAPSE_LINES`
+   （经自定义属性传进来，只写一份）：`1.5em × 行数` 就是正文高度。
+   `overflow: hidden` 让折满之后的内容不占位、也不半行露头。
+   **只夹正文**（`.bubble-text`）：气泡里还有附件，夹在气泡上会把图与芯片一起裁掉。 */
+.msg-user .bubble.is-clamped .bubble-text {
+  max-height: calc(1.5em * var(--user-clamp-lines, 5));
   overflow: hidden;
 }
 
@@ -2355,17 +2360,27 @@ button.header-title.is-switcher > svg.is-open {
   overflow-wrap: anywhere;
 }
 
-/* 用户消息的附件区：图在上、芯片在下，顺着气泡一侧排 */
+/* 用户消息气泡里的附件区：文件芯片在上、图片在下（在气泡内部、正文之后）。
+   `min-width: 0` 是长文件名与超大图能在气泡里收住的前提。 */
 .msg-media {
   display: flex;
   flex-direction: column;
-  gap: calc(2 * var(--dp));
+  gap: calc(4 * var(--dp));
+  min-width: 0;
+}
+
+/* 附件芯片排在气泡里时没有输入框那圈内边距，间距与换行自己给（观感仍与输入框那排
+   芯片一致：`.chip` 本身共用）。 */
+.msg-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: calc(4 * var(--dp));
   min-width: 0;
 }
 
 /* 用户消息里的图库不带工具行正文那 18px 左缩进（那是给工具展开体对齐用的） */
 .msg-user .row-body-images {
-  margin: calc(4 * var(--dp)) 0 0;
+  margin: 0;
 }
 
 /* 助手消息里的图库同理：`images` 段（模型回带的图块）与轮尾交付的图片文件都是
