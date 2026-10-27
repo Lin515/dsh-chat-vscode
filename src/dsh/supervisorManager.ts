@@ -192,6 +192,14 @@ export interface StopOptions {
 }
 
 /**
+ * **这一次 stop 请求实际发给谁**：`stop()` 创建发送任务时同步选定，`stoppedGeneration`
+ * 与发送共用这一份。活连接优先（即使磁盘已换代）；没有活连接才用磁盘快照走临时接入。
+ */
+type StopSendTarget =
+  | { kind: "connection"; connection: SupervisorConnection }
+  | { kind: "detached"; state: SupervisorState | undefined };
+
+/**
  * **本窗口与「这一套后台」现在是什么关系**的只读快照（`snapshot()`）。
  *
  * 全是普通值、没有方法：调用方（控制器）只渲染它，不必再去镜像 `status` / `target` /
@@ -372,6 +380,17 @@ export class SupervisorManager {
    */
   private detachedByUser = false;
   private state: SupervisorState | undefined;
+  /**
+   * **当前这条活连接自己接入的那一代**（`generationOf`：pid@启动时刻）。
+   *
+   * 与 `this.state` 分开是刻意的：`this.state` 会被就绪轮询的 `onTick`（读磁盘）或
+   * 状态推送改写，而 `this.connection` 仍指向当初接入的那一条 socket。用户停止时必须
+   * 把 `stoppedGeneration` 记成**实际发送对象**的那一代，不能拿被磁盘覆写过的缓存记账
+   * ——否则会误挡真正的新一代，或漏挡请求实际发给的旧一代。
+   *
+   * 只在连接建立/状态推送时更新，连接收掉时清空。
+   */
+  private connectionGeneration: string | undefined;
   /**
    * 当前这一轮要连的目标（**粘性**，见文件头）。
    *
@@ -1018,6 +1037,7 @@ export class SupervisorManager {
     const held = this.connection !== undefined || this.state !== undefined;
     this.connection?.close();
     this.connection = undefined;
+    this.connectionGeneration = undefined;
     this.state = undefined;
     this.launched = false;
     this.clientCount = 1;
@@ -1191,7 +1211,7 @@ export class SupervisorManager {
       idleSec: clampIdleSec(this.options.idleSec ?? IDLE_SEC_DEFAULT),
       launcher: this.launcher,
       log: this.options.log,
-      usable: (state) => this.usable(state),
+      exists: (state) => this.existsForStartup(state),
     });
     if (ensured.error) {
       // 走 `@serverSpawnFailed` 标记而不是直接写文案：这条详情既进连接条（界面词典
@@ -1202,8 +1222,10 @@ export class SupervisorManager {
       throw new Error(detail);
     }
     this.launched = ensured.launched;
-    // 已经就绪的话直接用；否则等（supervisor 正在起 dsh）
-    let state = ensured.state && ensured.state.baseUrl ? ensured.state : undefined;
+    // 已经就绪的话直接用；否则等（supervisor 正在起 dsh）。
+    // **退场中的状态不算就绪**：`existsForStartup` 会把它当作"存在"返回（避免另起一套），
+    // 但这里必须把它交给就绪等待重新判断，而不是直接 `publishReady`。
+    let state = ensured.state && ensured.state.baseUrl && ensured.state.stopping !== true ? ensured.state : undefined;
     if (!state) {
       state = await waitForReadyState({
         group: this.group,
@@ -1230,6 +1252,13 @@ export class SupervisorManager {
    * 会合文件里那份令牌：`token` 是 supervisor 写进去的、跨窗口共用的唯一凭据。
    */
   private async publishReady(state: SupervisorState): Promise<ServerInfo> {
+    // 防御：等待与推送都已排除退场状态；万一调用点仍递来一份退场状态，宁可如实报不可用，
+    // 也不能把"正在被杀的后台"发布成就绪（同一条纪律见 `usable` 的 stopping 判据）。
+    if (state.stopping === true) {
+      this.options.log("[supervisor] 会合状态显示正在退场，本次不发布就绪");
+      this.setStatus({ state: "stopped", detail: "previous supervisor stopping", cause: "gone" });
+      throw new ServerNotRunningError();
+    }
     if (!state.baseUrl || !state.token) throw this.startFailure(state);
     const info: ServerInfo = {
       baseUrl: state.baseUrl,
@@ -1262,7 +1291,10 @@ export class SupervisorManager {
   }
 
   /**
-   * 会合文件里那一套还可用吗：supervisor 进程在 + （就绪后）地址连得上。
+   * 会合文件里那一套**能不能宣称就绪**：没在退场、supervisor 进程在、（就绪后）地址连得上。
+   *
+   * `stopping` 一律不可用：退场中的守护进程还活着、地址与端口也可能照旧可达，但它不是
+   * 可用后台。就绪轮询必须在**等待途中**也排除它，不能只在 `bringUpWith` 的入口筛一次。
    *
    * **整体包 try/catch**：它是轮询里的判据，任何一处抛出去都会把"等待就绪"整段打断，
    * 而错误信息会伪装成一次失败（实测踩到：探针里表现为几百毫秒就报失败，
@@ -1271,12 +1303,31 @@ export class SupervisorManager {
    */
   private async usable(state: SupervisorState): Promise<boolean> {
     try {
+      if (state.stopping === true) return false;
       if (!isProcessAlive(state.supervisorPid)) return false;
       if (!state.baseUrl) return state.starting; // 正在启动：算"可用"，交给等待逻辑
       return await this.tcpReachable(state.baseUrl);
     } catch {
       return false;
     }
+  }
+
+  /**
+   * `ensureSupervisor` 的**启动存在性**判据：这一套还在不在，要不要因此放弃 spawn。
+   *
+   * 与 `usable` 分开：退场中的守护进程仍然存在，必须等它收尾或换代，**绝不能**因为它
+   * 已经不可就绪就另起第二套（那会在旧进程还没杀完时抢端口/抢会合文件）。非退场状态
+   * 沿用原来的复用口径，避免把"进程活着但 DSH 暂不可达"的行为一起改掉。
+   */
+  private async existsForStartup(state: SupervisorState): Promise<boolean> {
+    if (state.stopping === true) {
+      try {
+        return isProcessAlive(state.supervisorPid);
+      } catch {
+        return false;
+      }
+    }
+    return this.usable(state);
   }
 
   /**
@@ -1324,6 +1375,7 @@ export class SupervisorManager {
           this.options.log(`[supervisor] supervisor 告别（${reason}）`);
           if (this.connection !== connection) return;
           this.connection = undefined;
+          this.connectionGeneration = undefined;
           if (this.target !== "internal") return;
           // `reason` 本身就是那一档：stop / idle 是终结，replaced 只是被顶掉
           this.setStatus({ state: "stopped", detail: `supervisor ${reason}`, cause: reason });
@@ -1332,6 +1384,7 @@ export class SupervisorManager {
           this.options.log(`[supervisor] 与 supervisor 的连接断开：${reason}`);
           if (this.connection !== connection) return;
           this.connection = undefined;
+          this.connectionGeneration = undefined;
         },
         onError: (kind, message) => {
           // 守护进程内部异常：它自己的日志用户在
@@ -1355,6 +1408,9 @@ export class SupervisorManager {
       return;
     }
     this.connection = connection;
+    // 这条连接接入的是哪一代：停止记账必须把停止请求绑到**这个发送对象**，
+    // 不能被随后读磁盘的 `this.state` 覆写（见字段注释）。
+    this.connectionGeneration = generationOf(state);
     this.startHeartbeat();
   }
 
@@ -1362,11 +1418,19 @@ export class SupervisorManager {
     if (!next) return;
     const previous = this.state;
     this.state = next;
+    // 同一这条活连接收到的推送就是它的世代；连接身份由 `onState` 回调先核对过。
+    this.connectionGeneration = generationOf(next);
     if (typeof clients === "number" && clients > 0) {
       if (clients !== this.clientCount) {
         this.options.log(`[supervisor] 在用的窗口数：${this.clientCount} → ${clients}`);
       }
       this.clientCount = clients;
+    }
+    // 退场中的状态可能仍带地址/令牌、端口也还能连，但它不是可用后台：不发布 ready。
+    // 真正的终结由随后的 goodbye(stop/idle) 报；这里不另造生命周期判断。
+    if (next.stopping === true) {
+      this.options.log("[supervisor] 收到退场中的状态推送，不发布就绪");
+      return;
     }
     const changed = !previous || previous.baseUrl !== next.baseUrl || previous.serverPid !== next.serverPid;
     if (next.baseUrl && next.token) {
@@ -1563,7 +1627,9 @@ export class SupervisorManager {
    *    等于把这些调用点请守护进程收场的那一步**静默删掉**。要"只收连接"请显式写 `stop({})`；
    * 2. **闸与等待先落，且不受并发合并影响**：它们都不发控制帧、都幂等，所以无论这一轮是被合并
    *    掉的还是真正执行的那一个，`detachedByUser` / `stoppedByUser` / 中止等待都一定生效
-   *    （否则"连点两次、第二次只复用 promise"会漏掉第二组 flag）；
+   *    （否则"连点两次、第二次只复用 promise"会漏掉第二组 flag）。`stoppedGeneration` 是例外：
+   *    它必须绑定**这一条实际要发出去的请求**，所以只在真正创建 `stopPromise` 的那一次记账，
+   *    被合并的调用不拿自己读到的另一代去覆盖它。
    * 3. **返回值的语义与旧 `stopAndExit()` 是同一句**："停止请求有没有真的发出去"。不收连接、
    *    也没请守护进程收场的那些档没有请求可发，如实给 `false`。
    *
@@ -1588,20 +1654,32 @@ export class SupervisorManager {
     const cancelWait = resolved.cancelWait === true || askSupervisor;
 
     // ① 两道闸 + 在途等待：幂等、不发控制帧，先落（见上面第 2 条）。
-    if (askSupervisor) {
-      this.stoppedByUser = true;
-      // 记下"用户要停的是哪一代"：请求丢失 / 收尾较慢时，心跳不许再把同一代接回来。
-      // 用磁盘那份而不是只读 `this.state`：分离态（刚交还占用、或从没连过）也能记准。
-      const current = this.state ?? readState(this.directory);
-      this.stoppedGeneration = current ? generationOf(current) : undefined;
-    }
+    if (askSupervisor) this.stoppedByUser = true;
     if (release) this.detachedByUser = true;
     if (cancelWait) this.abortWaits();
 
     // ② 「请守护进程收场」：唯一会发控制帧的一支，**整段合并**（连点只发一条，理由见
     //    `stopPromise` 字段注释）。合并只覆盖这一段，所以第 ① 步不会因为被合并而漏掉。
     if (askSupervisor) {
-      this.stopPromise ??= this.askSupervisorToStop().finally(() => {
+      // 已经被合并：不要再按本轮读到的状态改写 `stoppedGeneration`——真正要发的请求
+      // 属于在飞的那一趟，记账必须继续指向它的发送对象。
+      if (this.stopPromise) return this.stopPromise;
+      // **在这里同步选定实际发送对象**，并只按它记账：
+      // - 有活连接：用这条连接自己的世代（`this.state` 可能已被轮询读盘覆写成别的代）；
+      // - 没有活连接：快照一次磁盘状态，临时接入就用这一份，不再另读。
+      // 没有状态时记 undefined：没有可指的世代，不凭猜测挡掉将来出现的后台。
+      const connection = this.connection?.connected === true ? this.connection : undefined;
+      const detached = connection ? undefined : readState(this.directory);
+      this.stoppedGeneration = connection
+        ? // 只用连接自己的世代：`this.state` 可能已被轮询读盘覆写成另一代，不能拿来兜底。
+          this.connectionGeneration
+        : detached
+          ? generationOf(detached)
+          : undefined;
+      const target: StopSendTarget = connection
+        ? { kind: "connection", connection }
+        : { kind: "detached", state: detached };
+      this.stopPromise = this.askSupervisorToStop(target).finally(() => {
         this.stopPromise = undefined;
       });
       return this.stopPromise;
@@ -1626,20 +1704,28 @@ export class SupervisorManager {
    * 活连接"而不是"目标是不是内部"：**"没连着"不等于"没有可停的东西"**（守护进程可能
    * 正被别的窗口用着，也可能刚刚被本窗口交还、还在空闲窗口里活着）。
    * 少了这一条，命令面板上写着「停止内部 DSH」却什么都不做，回执还会谎报"没有在运行"。
+   *
+   * `target` 是 `stop()` 创建发送任务时**同步选定的同一份对象**：连接或会合状态是哪个，
+   * `stoppedGeneration` 就记哪个，这里不再重新读盘/重新挑连接。
    */
-  private async askSupervisorToStop(): Promise<boolean> {
+  private async askSupervisorToStop(target: StopSendTarget): Promise<boolean> {
     // **心跳继续跑**（不 stopHeartbeat）：别的窗口把后台重新起起来时，本窗口要能自动接上。
     // `stop()` 顺带置 `stoppedByUser`（只进日志与快照，见字段注释）。
-    const connection = this.connection;
-    if (connection?.connected !== true) return this.stopDetachedInternal();
+    const connection = target.kind === "connection" ? target.connection : undefined;
+    if (connection?.connected !== true) {
+      return this.stopDetachedInternal(target.kind === "detached" ? target.state : undefined);
+    }
     this.options.log("[supervisor] 停止请求：交给 supervisor 执行");
     connection.control("stop");
     connection.close();
-    this.connection = undefined;
-    // 后台已经被要求收场了：手里那份"内部就绪"的记忆一并作废（否则 `peekState()` 与诊断
-    // 还会把它当成现行的后台列出来，而它马上就不在了）
-    this.state = undefined;
-    this.launched = false;
+    if (this.connection === connection) {
+      this.connection = undefined;
+      this.connectionGeneration = undefined;
+      // 后台已经被要求收场了：手里那份"内部就绪"的记忆一并作废（否则 `peekState()` 与诊断
+      // 还会把它当成现行的后台列出来，而它马上就不在了）
+      this.state = undefined;
+      this.launched = false;
+    }
     // `stop`：本窗口请守护进程连 dsh 一起收场——对控制器而言与它的告别同档（已知终结）
     this.setStatus({ state: "stopped", detail: "stopped by user", cause: "stop" });
     return true;
@@ -1667,9 +1753,13 @@ export class SupervisorManager {
    *
    * 它就是 `stop({ askSupervisor: true })` 在"手里没有活连接"那一支的**执行体**
    * （`askSupervisorToStop` 直接调它）；旧名字原样保留，并行进行的探针重写还在用它。
+   *
+   * `state` 由 `stop()` 在选定发送对象时快照传入，**这里不再重新读盘**：`stoppedGeneration`
+   * 记的就是这一份。没有状态（或状态里的守护进程已死）就是没有可停的东西，回执给 `false`；
+   * 临时连接打不开时请求没发出去，但仍保留刚记下的世代——用户确实要求停那一代，
+   * 不让心跳把它接回来，才留得出空闲退场的兜底窗口。
    */
-  private async stopDetachedInternal(): Promise<boolean> {
-    const state = readState(this.directory);
+  private async stopDetachedInternal(state: SupervisorState | undefined): Promise<boolean> {
     if (!state || !isProcessAlive(state.supervisorPid)) {
       this.options.log("[supervisor] 「停止内部 DSH」：内部守护进程不在，没有可停的东西");
       return false;
@@ -1709,6 +1799,7 @@ export class SupervisorManager {
     this.stopHeartbeat();
     this.connection?.close();
     this.connection = undefined;
+    this.connectionGeneration = undefined;
   }
 
   /**

@@ -22,6 +22,12 @@
  * - **换目标是彻底的**（2026-09-19，第 7 组）：切到外部时，本窗口与内部守护进程之间的
  *   连接必须**真的断开**（判据是"对面看到几条活连接"，所以这里起一个真的 socket 服务端来数
  *   ——那条连接只要在，守护进程就会一直把 dsh 拎着不放，诊断里也还是内部那一套）。
+ * - **停止世代绑定实际发送对象**（第 11/12 组）：缓存旧代、磁盘新代、或活连接与缓存分属
+ *   不同代时，`stoppedGeneration` 必须记 stop 实际发给的那一代；临时接入不再另读磁盘，
+ *   并发连点也不许用第二次读到的代覆盖在飞请求的记账。
+ * - **退场状态既不可就绪、也不得当作"不存在"**（第 13/14 组）：等待途中同代转 `stopping`
+ *   不能发布 ready（仍可叫停）；`ensureSupervisor` 的决策窗口出现退场状态时，宁可等它，
+ *   也不另起第二套。
  *
  * 全程不 spawn 任何真实进程：启动器是假的，会合文件由断言自己写，端口用本地
  * `net.createServer` 真监听（"服务在不在"必须用事实判据，不能用假函数）。
@@ -31,7 +37,7 @@
 import assert from "node:assert";
 import { spawnSync } from "node:child_process";
 import { createServer, type Server } from "node:net";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 // 纯协议模块（只 `import type` 会合协议，运行时不读环境变量），可以静态引入
@@ -41,7 +47,7 @@ import { DesktopStartError, type DesktopDeps } from "../src/dsh/desktopAttach";
 const TEST_ROOT = mkdtempSync(join(tmpdir(), "dsh-chat-policy-"));
 process.env.DSH_CHAT_SUPERVISOR_DIR = TEST_ROOT;
 const { ServerNotRunningError, SupervisorManager, WaitCancelledError } = await import("../src/dsh/supervisorManager");
-const { STATE_VERSION, socketPathIn, supervisorDirectory, writeState } = await import("../src/dsh/supervisorProtocol");
+const { STATE_VERSION, socketPathIn, supervisorDirectory, readState, writeState } = await import("../src/dsh/supervisorProtocol");
 
 let failures = 0;
 function check(label: string, ok: boolean, detail = ""): void {
@@ -93,13 +99,18 @@ function publishState(
     serverPid?: number;
     /** true = 正在退场（supervisor 还活着，但 dsh 马上会被带走）。 */
     stopping?: boolean;
+    /**
+     * 显式启动时刻：世代 = `pid@startedAt`。世代相关的断言用它固定 G1/G2，
+     * 不依赖两次 `Date.now()` 恰好不同（同毫秒会让两个世代撞在一起）。
+     */
+    startedAt?: number;
   } = {},
 ): void {
   const directory = supervisorDirectory(group);
   writeState(directory, {
     version: STATE_VERSION,
     supervisorPid: options.supervisorPid ?? process.pid,
-    startedAt: Date.now(),
+    startedAt: options.startedAt ?? Date.now(),
     serverPid: options.serverPid ?? 4242,
     baseUrl: options.baseUrl,
     token: options.token,
@@ -109,6 +120,18 @@ function publishState(
     starting: options.starting ?? false,
     stopping: options.stopping,
   });
+}
+
+/**
+ * 给一组独立的守护进程 socket 准备地址（世代测试要让 G1/G2 落在不同的监听上）。
+ *
+ * POSIX 的 AF_UNIX 节点必须在已存在的目录里，所以这里先建目录；Windows 用命名管道，
+ * 目录只是顺带建出来。socket 名由**各自的目录**派生，与生产同一条算法。
+ */
+function socketFor(name: string): string {
+  const directory = supervisorDirectory(name);
+  mkdirSync(directory, { recursive: true });
+  return socketPathIn(directory, name);
 }
 
 /**
@@ -901,7 +924,7 @@ try {
 
   // ---------- 10b. 用户停止后：心跳不许把**同一代**接回来 ----------
   //
-  // 这一条是空闲退场的最后一道保险：停止请求丢了、或守护进程正在杀 dsh 时，心跳若把
+  // 这一条是空闲退场的最后一道保险：停止请求未生效（丢了 / 没执行）时，心跳若把
   // 连接接回去，`clients.size` 就永远回不到 0，`idleSec` 到了也不会退场。
   {
     const group = "policy-stop-no-reattach";
@@ -914,7 +937,8 @@ try {
 
     await manager.ensure({ start: false, target: "internal" });
     await waitFor(() => daemon.clients() === 1);
-    // 假守护进程只记录 control、不真的退场：模拟"stop 丢了 / 收尾很慢"
+    // 假守护进程只记录 control、不真的退场：模拟"请求未生效"（丢了 / 没执行）时的兜底，
+    // 这一档才需要 stoppedGeneration 挡住同代复接；正常收到 stop 会先落 stopping，不走这里。
     await manager.stop();
     await waitFor(() => daemon.clients() === 0);
 
@@ -940,6 +964,256 @@ try {
     await daemon.close();
     await internalUrl.close();
   }
+
+  // ---------- 11. 停止记账绑定**实际发送对象**（缓存 G1 / 磁盘 G2，且没活连接） ----------
+  //
+  // 旧实现先按 `this.state ?? readState()` 记 `stoppedGeneration`，临时发送路径却另读
+  // 一次磁盘：缓存 G1、磁盘 G2 时会记 G1 却把 stop 发给 G2，于是心跳误放行 G2 —— 请求
+  // 实际没生效，客户端却马上又接回去，空闲退场永远等不到。
+  {
+    const group = "policy-stop-generation-detached";
+    const g1Socket = socketFor("policy-stop-generation-detached-g1");
+    const g2Socket = socketFor("policy-stop-generation-detached-g2");
+    const g3Socket = socketFor("policy-stop-generation-detached-g3");
+    const g1Url = await listen();
+    const g2Url = await listen();
+    const g3Url = await listen();
+    const daemon1 = await listenDaemon(g1Socket);
+    const daemon2 = await listenDaemon(g2Socket);
+    const daemon3 = await listenDaemon(g3Socket);
+    const manager = new SupervisorManager({
+      group,
+      url: "",
+      command: "dsh web --port 0 --no-open",
+      autoConnect: false,
+      launcher: fakeLauncher().launcher as never,
+      log: () => undefined,
+    });
+    managers.push(manager);
+    try {
+      // G1：先真的接上一次，留下「缓存 G1」。
+      publishState(group, { baseUrl: g1Url.baseUrl, token: "g1", socket: g1Socket, startedAt: 1_000 });
+      const first = await manager.ensure({ start: false, target: "internal" });
+      await waitFor(() => daemon1.clients() === 1);
+      check("前置：已接上 G1", first.baseUrl === g1Url.baseUrl && daemon1.clients() === 1, `clients=${daemon1.clients()}`);
+
+      // 丢掉活连接，但**保留缓存**（模拟窗口刚失联、状态缓存还是 G1）。
+      (manager as unknown as { connection?: { close(): void } }).connection?.close();
+      await waitFor(() => manager.snapshot().connected === false);
+      check("前置：活连接已断、缓存仍记着 G1", !manager.snapshot().connected && manager.peekState()?.startedAt === 1_000);
+
+      // 磁盘换成 G2（显式世代，不靠 Date.now 碰巧不同）。
+      publishState(group, { baseUrl: g2Url.baseUrl, token: "g2", socket: g2Socket, startedAt: 2_000 });
+      const stopped = await manager.stop();
+      await waitFor(() => daemon2.controls().includes("stop"));
+      check(
+        "(a) 缓存 G1 / 磁盘 G2 且无常驻连接：stop 实际发给磁盘上的 G2",
+        stopped === true && daemon2.controls().includes("stop"),
+        `ret=${stopped} g2=${daemon2.controls().join(",") || "（无）"}`,
+      );
+      check("(a) 没有误发给缓存的旧代 G1", !daemon1.controls().includes("stop"), daemon1.controls().join(",") || "（无）");
+      await waitFor(() => daemon2.clients() === 0);
+
+      // 假守护进程只记录、不执行停止：请求未生效时，心跳不能把**实际发送的 G2** 接回来。
+      await (manager as unknown as { heartbeatTick(): Promise<void> }).heartbeatTick();
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      check(
+        "(a) G2 未处理 stop：心跳仍不回连 G2（记账的是实际发送代）",
+        daemon2.clients() === 0,
+        `clients=${daemon2.clients()}`,
+      );
+
+      // 但「停止内部这一轴」不是被焊死：后来启动的**真新代** G3 仍可自动接入。
+      publishState(group, { baseUrl: g3Url.baseUrl, token: "g3", socket: g3Socket, startedAt: 3_000 });
+      await (manager as unknown as { heartbeatTick(): Promise<void> }).heartbeatTick();
+      await waitFor(() => daemon3.clients() === 1);
+      check("(a) 之后的新代 G3 仍可接入（挡的是同一代，不是内部轴）", daemon3.clients() === 1, `clients=${daemon3.clients()}`);
+    } finally {
+      manager.dispose();
+      await daemon1.close();
+      await daemon2.close();
+      await daemon3.close();
+      await g1Url.close();
+      await g2Url.close();
+      await g3Url.close();
+    }
+  }
+
+  // ---------- 12. 活连接 G1 / 缓存被轮询写成 G2：并发连点仍只对 G1 记账 ----------
+  //
+  // 这里刻意把 `this.state` 改成磁盘上的 G2（就绪轮询的 `onTick` 会这么干），而
+  // `this.connection` 仍是 G1。第一次 stop 必须把 `stoppedGeneration` 记成 G1；紧接着的
+  // 第二次调用此时已看不到活连接、只能读到 G2，但它必须被 `stopPromise` 合并，**不能**
+  // 把记账改写成 G2（否则心跳会挡掉真正的新代）。
+  {
+    const group = "policy-stop-generation-live";
+    const directory = supervisorDirectory(group);
+    const g1Socket = socketFor("policy-stop-generation-live-g1");
+    const g2Socket = socketFor("policy-stop-generation-live-g2");
+    const g1Url = await listen();
+    const g2Url = await listen();
+    const daemon1 = await listenDaemon(g1Socket);
+    const daemon2 = await listenDaemon(g2Socket);
+    const manager = new SupervisorManager({
+      group,
+      url: "",
+      command: "dsh web --port 0 --no-open",
+      autoConnect: false,
+      launcher: fakeLauncher().launcher as never,
+      log: () => undefined,
+    });
+    managers.push(manager);
+    try {
+      publishState(group, { baseUrl: g1Url.baseUrl, token: "g1", socket: g1Socket, startedAt: 1_000 });
+      await manager.ensure({ start: false, target: "internal" });
+      await waitFor(() => daemon1.clients() === 1);
+      check("前置：活连接确实接在 G1 上", daemon1.clients() === 1, `clients=${daemon1.clients()}`);
+
+      // 磁盘换代成 G2；模拟就绪轮询把缓存覆写为 G2（活连接仍指 G1）。
+      publishState(group, { baseUrl: g2Url.baseUrl, token: "g2", socket: g2Socket, startedAt: 2_000 });
+      (manager as unknown as { state?: unknown }).state = readState(directory);
+      check("前置：缓存已被覆写为 G2，但活连接仍是 G1", manager.peekState()?.startedAt === 2_000);
+
+      // 同步连点两次：第二次执行时 connection 已被第一次清掉，只能看到磁盘 G2；
+      // 它必须被合并，既不发第二条帧，也不改 `stoppedGeneration`。
+      const firstStop = manager.stop();
+      const inFlight = manager.snapshot().stopping;
+      const secondStop = manager.stop();
+      const [stopA, stopB] = await Promise.all([firstStop, secondStop]);
+      await waitFor(() => daemon1.controls().includes("stop"));
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      const stopFramesOnG1 = daemon1.controls().filter((action) => action === "stop").length;
+      check(
+        "(b) 活连接 G1：stop 实际发给 G1，只发一条帧",
+        stopA === true && stopB === true && inFlight === true && stopFramesOnG1 === 1,
+        `a=${stopA} b=${stopB} inFlight=${inFlight} g1 帧=${stopFramesOnG1}`,
+      );
+      check(
+        "(b) 并发第二次（只看到磁盘 G2）没有另开临时连接、没有误发 G2",
+        daemon2.opened() === 0 && !daemon2.controls().includes("stop"),
+        `opened=${daemon2.opened()} controls=${daemon2.controls().join(",") || "（无）"}`,
+      );
+
+      // 心跳看到磁盘 G2：如果记账被第二次改写成 G2，这里会被挡住；正确结果应接上 G2。
+      await (manager as unknown as { heartbeatTick(): Promise<void> }).heartbeatTick();
+      await waitFor(() => daemon2.clients() === 1);
+      check(
+        "(b) 记账留在实际发送的 G1：心跳仍能接上真新代 G2",
+        daemon2.clients() === 1 && manager.snapshot().connected,
+        `clients=${daemon2.clients()} connected=${manager.snapshot().connected}`,
+      );
+    } finally {
+      manager.dispose();
+      await daemon1.close();
+      await daemon2.close();
+      await g1Url.close();
+      await g2Url.close();
+    }
+  }
+
+  // ---------- 13. 等就绪途中转 stopping：不能宣称 ready，且仍可 cancelWaiting ----------
+  {
+    const group = "policy-stopping-during-wait";
+    const directory = supervisorDirectory(group);
+    const socket = socketPathIn(directory, group);
+    const url = await listen();
+    publishState(group, { starting: true, socket, startedAt: 1_000 });
+    const daemon = await listenDaemon(socket);
+    const manager = makeManager(group, false, fakeLauncher().launcher);
+    managers.push(manager);
+    let settled: Error | "resolved" | undefined;
+    const pending = manager.ensure({ start: false, target: "internal" }).then(
+      () => {
+        settled = "resolved";
+      },
+      (error: unknown) => {
+        settled = error instanceof Error ? error : new Error(String(error));
+      },
+    );
+    try {
+      await waitFor(() => daemon.clients() === 1);
+      check("前置：等就绪那一轮已接上守护进程", daemon.clients() === 1, `clients=${daemon.clients()}`);
+
+      // 同一代（startedAt 不变）在等待途中退场：地址与 TCP 都还在，旧判据会把它当 ready。
+      publishState(group, {
+        baseUrl: url.baseUrl,
+        token: "stopping-token",
+        socket,
+        startedAt: 1_000,
+        stopping: true,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 900));
+      check(
+        "(c) 等待途中状态转 stopping 且地址可通：不发布 ready",
+        manager.getStatus().state !== "ready",
+        manager.getStatus().state,
+      );
+      check(
+        "(c) 这一轮仍在等待（没有把退场误当成就绪收尾）",
+        settled === undefined && manager.snapshot().state?.stopping === true,
+        `settled=${String(settled)} stopping=${String(manager.snapshot().state?.stopping)}`,
+      );
+
+      manager.cancelWaiting();
+      await pending;
+      check("(c) 仍可由 cancelWaiting 叫停（WaitCancelledError）", settled instanceof WaitCancelledError, String(settled));
+    } finally {
+      manager.cancelWaiting();
+      manager.dispose();
+      await daemon.close();
+      await url.close();
+    }
+  }
+
+  // ---------- 14. ensureSupervisor 决策窗口出现 stopping：不 spawn 第二套 ----------
+  //
+  // 初始读盘为空 → 进入 `ensureSupervisor` 的 300ms settle 复查；复查前写入一份
+  // 「正在退场、进程还活着」的会合状态（地址可达）。这条路径上若把"不可 ready"当成
+  // "不存在"（例如把就绪判据直接交给 ensureSupervisor），就会在这里 spawn 第二套。
+  {
+    const group = "policy-ensure-stopping";
+    const directory = supervisorDirectory(group);
+    const socket = socketPathIn(directory, group);
+    const url = await listen();
+    const launcher = fakeLauncher();
+    const manager = makeManager(group, false, launcher.launcher);
+    managers.push(manager);
+    let settled: Error | "resolved" | undefined;
+    const pending = manager.ensure({ start: true, target: "internal" }).then(
+      () => {
+        settled = "resolved";
+      },
+      (error: unknown) => {
+        settled = error instanceof Error ? error : new Error(String(error));
+      },
+    );
+    try {
+      // 同步落盘：此时 ensureSupervisor 已经完成首次/重读检查、正处在 settle 的 300ms 等待里。
+      publishState(group, {
+        baseUrl: url.baseUrl,
+        token: "stopping-token",
+        socket,
+        startedAt: 1_500,
+        stopping: true,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 900));
+      check(
+        "(e) ensureSupervisor 复查窗口出现 stopping：零 spawn（不另起第二套）",
+        launcher.calls() === 0,
+        `calls=${launcher.calls()}`,
+      );
+      check("(e) 退场状态没有被直接发布成 ready", manager.getStatus().state !== "ready", manager.getStatus().state);
+      check("(e) 这一轮仍在等待而不是伪造成功", settled === undefined, String(settled));
+
+      manager.cancelWaiting();
+      await pending;
+      check("(e) 仍可由 cancelWaiting 收场", settled instanceof WaitCancelledError, String(settled));
+    } finally {
+      manager.cancelWaiting();
+      manager.dispose();
+      await url.close();
+    }
+  }
 } finally {
   for (const manager of managers) manager.dispose();
   await background.close().catch(() => undefined);
@@ -951,7 +1225,7 @@ if (failures > 0) {
   process.exitCode = 1;
 } else {
   console.log(
-    "\n✓ supervisor 启动/重连决策（许可 / 空命令即没有内部那一轴 / 复用 / 令牌来自会合文件 / 只读探测 / 等待可中断 / 外部也等到底 / 换目标彻底断开 / 停止连接交还占用且心跳不接回 / 交还后重启仍是真重启 / 停止入口收敛且连点只发一条控制帧）全通过",
+    "\n✓ supervisor 启动/重连决策（许可 / 空命令即没有内部那一轴 / 复用与退场中不另起 / 令牌来自会合文件 / 只读探测 / 等待可中断且不把 stopping 当就绪 / 外部也等到底 / 换目标彻底断开 / 停止连接交还占用且心跳不接回 / 交还后重启仍是真重启 / 停止入口收敛、并发只发一条控制帧且停止世代绑定实际发送对象）全通过",
   );
   assert.ok(true);
 }

@@ -67,9 +67,10 @@
 - [clientDispose.test.ts](<clientDispose.test.ts>) — `DshClient.dispose()` 真能停掉自己的无限重连。
 - [autoConnectConfig.test.ts](<autoConnectConfig.test.ts>) — `dshChat.autoConnect` 改动即时生效、只更新自动路径的许可，不提示重载窗口，也不再触发连接。
 - [autoConnectOnce.test.ts](<autoConnectOnce.test.ts>) — **自动连接只在扩展启动时做一次**（真 `ChatController` + 假客户端 / 假服务端）：重复调用只一条链、关掉不自动连、迟到的激活期选路给用户动作让位、心跳只接上（`start: false`）不拉起、改开关不触发连接、`ready` / 恢复早于激活期连接时先留着 hint 并在连上后接回历史会话；首次手动新建保存桌面端粘性目标，换端口后只接上新端点、不启动。
-- [supervisorPolicy.test.ts](<supervisorPolicy.test.ts>) — 启动 / 重连决策：没许可不许拉起、复用优先；切桌面端立即交还内部 socket，初始发现期间停止 / 释放后的迟到结果不得启动应用或发布就绪，释放后不能复活。
+- [supervisorPolicy.test.ts](<supervisorPolicy.test.ts>) — 启动 / 重连决策：没许可不许拉起、复用优先；等待途中排除退场状态，启动决策遇到仍存活的退场后台不另起；停止世代绑定实际发送对象，并发合并不改记账、同代不回连而新代可接入；切桌面端立即交还内部 socket，初始发现期间停止 / 释放后的迟到结果不得启动应用或发布就绪，释放后不能复活。
 - [supervisorNoRespawn.test.ts](<supervisorNoRespawn.test.ts>) — 管理器级**不被自动拉起**（真 socket 假守护进程、假启动器、隔离会合目录）：多窗口同生共死（A 窗口 `stop()` 后 B 收到 `goodbye(stop)` 且三轮心跳 0 次 spawn）、socket 瞬断只复接现有那套、后台终结后回按钮态不复活、许可与显式 `start: true` 语义不变。
 - [supervisorProtocol.test.ts](<supervisorProtocol.test.ts>) — supervisor 会合协议（状态文件 / 启动锁 / socket 寻址）与运行时解析。
+- [supervisorClose.test.ts](<supervisorClose.test.ts>) — 控制连接主动关闭先冲刷写队列：真 socket 验证 hello 后的 stop 完整送达，且不触发意外断线回调。
 - [supervisorErrors.test.ts](<supervisorErrors.test.ts>) — 守护进程错误上报器的三条纪律（两处都发、互不影响）。
 - [queueOrder.test.ts](<queueOrder.test.ts>) — 待发送队列显示形态：插话排在排队上方、带附件的行首芯片。
 - [queueHover.test.ts](<queueHover.test.ts>) — 队列行实测溢出时用原生 title 展示全文，不加展开按钮或自绘浮层。

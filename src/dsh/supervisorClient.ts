@@ -1,5 +1,6 @@
 /**
- * 扩展侧：找 supervisor、必要时拉起它、并保持一条长连接（设计见 `docs/design-supervisor.md`「启动协议」「长连接与自检」）。
+ * 扩展侧：找 supervisor、必要时拉起它、并保持一条长连接（设计见 `docs/design-supervisor.md`
+ * 「有则复用，没有才启动」「传输层与磁盘协议」）。
  *
  * **纪律（本次架构改动最重要的一条）**：扩展只负责"找到/拉起/连上"和"关自己的连接"。
  * 杀 dsh 永远是 supervisor 的事——今天所有麻烦都源于"扩展也在杀 dsh"。
@@ -235,6 +236,10 @@ export interface EnsureSupervisorResult {
  *
  * 抢不到锁说明别的窗口正在起：返回 `state: undefined, launched: false`，
  * 由上层轮询等待（不要在这里 sleep，上层才知道该等多久、要不要给界面反馈）。
+ *
+ * **这里只问"这一套还在不在"，不问"能不能就绪"**：正在退场的守护进程仍然存在，必须
+ * 复用/等它，绝不能因为它不可用就另起第二套；退场状态是否可用由上层
+ * `waitForReadyState` 的就绪判据另行排除。
  */
 export async function ensureSupervisor(options: {
   group: string;
@@ -242,12 +247,17 @@ export async function ensureSupervisor(options: {
   idleSec?: number;
   launcher: SupervisorLauncher;
   log: (line: string) => void;
-  /** 判定"会合文件里那一套还可用吗"（上层用进程存活 + socket 连接一起判）。 */
-  usable: (state: SupervisorState) => Promise<boolean>;
+  /**
+   * 会合文件里的这一套是否仍然存在（守护进程还活着；**正在退场也算存在**）。
+   *
+   * 三个检查点（首次读取、抢锁后重读、settle 复查）都用它来挡"另起一套"，
+   * 因此它不能兼作就绪判据，也不能在退场状态上返回 false。
+   */
+  exists: (state: SupervisorState) => Promise<boolean>;
 }): Promise<EnsureSupervisorResult> {
   const directory = supervisorDirectory(options.group);
   const existing = readState(directory);
-  if (existing && (await options.usable(existing))) {
+  if (existing && (await options.exists(existing))) {
     return { state: existing, launched: false };
   }
 
@@ -258,7 +268,7 @@ export async function ensureSupervisor(options: {
   try {
     // 抢到锁后再读一次：可能在抢锁前的几毫秒里别人已经写好了
     const reread = readState(directory);
-    if (reread && (await options.usable(reread))) {
+    if (reread && (await options.exists(reread))) {
       return { state: reread, launched: false };
     }
     // 抢锁只保证"同一时刻一个窗口在决策"，但**拿锁与 spawn 之间仍有几毫秒**：
@@ -267,7 +277,7 @@ export async function ensureSupervisor(options: {
     // 第二代检测收敛掉，但代价是两个 supervisor 同时去 spawn dsh，固定端口下就会撞车。
     await delay(START_DECISION_SETTLE_MS);
     const settled = readState(directory);
-    if (settled && (await options.usable(settled))) {
+    if (settled && (await options.exists(settled))) {
       options.log("[supervisor] 我拿到锁之前别的窗口已经把它起好了，直接接入");
       return { state: settled, launched: false };
     }
@@ -293,6 +303,12 @@ export async function ensureSupervisor(options: {
  */
 export async function waitForReadyState(options: {
   group: string;
+  /**
+   * 这一份状态**能不能宣称就绪**。
+   *
+   * 调用方必须排除退场状态：`stopping` 仍可能有地址、端口也还能连上，但它不是可用后台。
+   * 这里只按判据取结论，不替调用方解释"存在"与"就绪"的差别。
+   */
   usable: (state: SupervisorState) => Promise<boolean>;
   onTick?: (state: SupervisorState | undefined) => void;
   /** 用户按钮（「停止连接」/「停止服务器」）的中断信号：abort 后立刻返回 undefined。 */
