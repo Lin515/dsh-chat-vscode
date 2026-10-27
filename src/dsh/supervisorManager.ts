@@ -349,6 +349,16 @@ export class SupervisorManager {
    */
   private stoppedByUser = false;
   /**
+   * 用户要求停止的那一代（`generationOf`：pid@启动时刻）。
+   *
+   * 同一代**不再**由心跳自动接回：停止请求可能丢、可能正在杀 dsh，这时接回去只会让守护
+   * 进程继续保持 `clients.size > 0`，空闲退场永远等不到。换了一代（别的窗口重新拉起）才
+   * 允许接上——那正是 `stoppedByUser` 想保留的"别的窗口起来时自动接上"。
+   *
+   * `bringUp`（用户显式动作）清掉它；`stop()` 每次按当时的会合状态重新记。
+   */
+  private stoppedGeneration: string | undefined;
+  /**
    * 用户点了「停止连接」：本窗口**主动放弃**内部后台的使用权，心跳**不许**再把它接回来
    * （2026-09-19 用户口径：不连就不占用）。
    *
@@ -599,7 +609,7 @@ export class SupervisorManager {
     if (!state) {
       return { hasState: false, supervisorAlive: false, serverAlive: false, starting: false };
     }
-    const supervisorAlive = isProcessAlive(state.supervisorPid);
+    const supervisorAlive = !state.stopping && isProcessAlive(state.supervisorPid);
     const serverAlive = supervisorAlive && Boolean(state.baseUrl) && (await this.tcpReachable(state.baseUrl!));
     return {
       hasState: true,
@@ -1102,6 +1112,7 @@ export class SupervisorManager {
     // dispose 是单向的：复活只能由新建一个管理器来做。
     if (this.disposed) throw new WaitCancelledError();
     this.stoppedByUser = false;
+    this.stoppedGeneration = undefined;
     // 走到这里 = 有人**显式**要这套后台了（点连接按钮 / 发消息 / 重启 / 激活期选路）：
     // 「停止连接」那道闸随之撤销（见 `detachedByUser`）
     this.detachedByUser = false;
@@ -1120,7 +1131,20 @@ export class SupervisorManager {
    */
   private async bringUpWith(signal: AbortSignal): Promise<ServerInfo> {
     // ① 守护进程还活着 → **只接入，绝不另起一套**（见文件头的启动决策）
-    const existing = readState(this.directory);
+    let existing = readState(this.directory);
+    // 会合文件亲口说"正在退场"：它仍活着、socket 也开着，但 dsh 马上要被带走。等它清完
+    // 再判断，**绝不能**把它当成"内部在跑"接上去（那正是"停止内部 DSH 之后新窗口又连回
+    // 内部"的另一半）。等不到就如实落按钮态，由下一次心跳 / 用户动作重试。
+    if (existing?.stopping) {
+      await this.waitForStopping(existing, signal);
+      if (signal.aborted) throw new WaitCancelledError();
+      existing = readState(this.directory);
+      if (existing?.stopping && isProcessAlive(existing.supervisorPid)) {
+        this.options.log("[supervisor] 上一套仍在退场，本次不接入、也不另起一套");
+        this.setStatus({ state: "stopped", detail: "previous supervisor stopping", cause: "gone" });
+        throw new ServerNotRunningError();
+      }
+    }
     if (existing && isProcessAlive(existing.supervisorPid)) {
       this.launched = false;
       this.state = existing;
@@ -1253,6 +1277,26 @@ export class SupervisorManager {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * 等一份"正在退场"的会合状态清干净（或被别的世代顶替）。
+   *
+   * `shutdown` 先落 `stopping` 再杀 dsh 的进程树，实测这一段约 2 秒，最坏受 taskkill/netstat
+   * 的 15 秒超时约束。这里给 30 秒上限只是**本次调用的**判断上限，不是"后台的死期"：
+   * 等不到就退还按钮态，让用户 / 下一次心跳再来，绝不会因为等不及就去起第二套。
+   */
+  private async waitForStopping(state: SupervisorState, signal: AbortSignal): Promise<void> {
+    const generation = generationOf(state);
+    this.options.log("[supervisor] 会合文件显示上一套正在退场，等它清完再判断");
+    const deadline = Date.now() + 30_000;
+    while (!signal.aborted && Date.now() < deadline) {
+      const next = readState(this.directory);
+      if (!next || generationOf(next) !== generation) return;
+      if (!isProcessAlive(state.supervisorPid)) return;
+      await delay(200, undefined, { signal }).catch(() => undefined);
+    }
+    if (!signal.aborted) this.options.log("[supervisor] 上一套退场超过 30 秒仍未清干净，本次不再等");
   }
 
   /**
@@ -1390,7 +1434,15 @@ export class SupervisorManager {
     if (this.connection?.connected) return;
     // 连接没了：先看会合文件里那一套还在不在；在就接上（连接本身就是"我在用"）
     const state = readState(this.directory);
+    // 正在退场：socket 可能还开着，但它的 dsh 正在被杀。接上去只会把"还有人在用"
+    // 重新写回去，甚至让空闲退场等不到 `clients.size === 0` 的完整窗口。
+    if (state?.stopping) return;
     if (state && isProcessAlive(state.supervisorPid)) {
+      // 用户刚要求停的就是这一代：请求可能丢、也可能还在收尾，**不许**把它接回来。
+      // 这一道让空闲退场成为真正的兜底；换了一代（别的窗口重新拉起）才继续往下接。
+      if (this.stoppedByUser && this.stoppedGeneration !== undefined && generationOf(state) === this.stoppedGeneration) {
+        return;
+      }
       this.state = state;
       await this.connect(state);
       return;
@@ -1536,7 +1588,13 @@ export class SupervisorManager {
     const cancelWait = resolved.cancelWait === true || askSupervisor;
 
     // ① 两道闸 + 在途等待：幂等、不发控制帧，先落（见上面第 2 条）。
-    if (askSupervisor) this.stoppedByUser = true;
+    if (askSupervisor) {
+      this.stoppedByUser = true;
+      // 记下"用户要停的是哪一代"：请求丢失 / 收尾较慢时，心跳不许再把同一代接回来。
+      // 用磁盘那份而不是只读 `this.state`：分离态（刚交还占用、或从没连过）也能记准。
+      const current = this.state ?? readState(this.directory);
+      this.stoppedGeneration = current ? generationOf(current) : undefined;
+    }
     if (release) this.detachedByUser = true;
     if (cancelWait) this.abortWaits();
 
@@ -1632,8 +1690,7 @@ export class SupervisorManager {
     }
     this.options.log("[supervisor] 「停止内部 DSH」：临时接入守护进程并发 stop（本窗口不保留这条连接）");
     connection.control("stop");
-    // 让对面先把请求读走再断：控制帧是刚写进 socket 的，立刻 destroy 有可能把它丢掉
-    await delay(300);
+    // 控制帧交给 close() 冲刷：它只 end()，排队的 stop 会先写到对端再断开。
     connection.close();
     return true;
   }

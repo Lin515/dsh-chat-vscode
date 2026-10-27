@@ -217,6 +217,8 @@ const entries = {
   "build/supervisor-protocol.test.mjs": "scripts/supervisorProtocol.test.ts",
   "build/supervisor-errors.test.mjs": "scripts/supervisorErrors.test.ts",
   "build/supervisor-policy.test.mjs": "scripts/supervisorPolicy.test.ts",
+  // 控制帧（stop/restart）必须在断开前刷到对端：真 socket + 迷你服务端（否则 npm test 静默不跑）
+  "build/supervisor-close.test.mjs": "scripts/supervisorClose.test.ts",
   "build/connect-target.test.mjs": "scripts/connectTarget.test.ts",
   // 桌面端内置服务的发现与接入（认人 / 找口 / 四个解析器 / 四种结论 / 拉起等就绪）：必须登记
   "build/desktop-attach.test.mjs": "scripts/desktopAttach.test.ts",

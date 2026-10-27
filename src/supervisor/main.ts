@@ -495,6 +495,7 @@ export async function runSupervisor(options: Options): Promise<number> {
     socket: socketPath,
     serverStartedAt: server.baseUrl ? startedAt : undefined,
     starting: serverStarting,
+    stopping: stopping || undefined,
     runtime: {
       execPath: process.execPath,
       node: process.version,
@@ -643,6 +644,11 @@ export async function runSupervisor(options: Options): Promise<number> {
     // 也没清（日志停在「收到客户端的 stop 请求」那一行）。上一轮加 `guard` 时漏掉了调用。
     runGuarded("shutdown", () => {
       log(`[supervisor] 退场（${reason}）：没有人再使用这个后台`);
+      // **先让"正在退场"落盘，再杀 dsh**：杀进程树走 taskkill/netstat，实测要 2 秒左右；
+      // 这段时间里 supervisor 还活着、socket 也还开着，新窗口若只看 supervisorAlive 就会
+      // 选中一套马上要告别的后台。落盘后 `probeRunning()` 会把它当成"内部没在跑"。
+      // 不广播 state 帧：客户端马上会收到 goodbye，提前推一份"还带着地址"的状态反而误导。
+      writeState(options.directory, stateOf());
       killServer(server.child?.pid, server.baseUrl, log);
       server = {};
       goodbye(reason);

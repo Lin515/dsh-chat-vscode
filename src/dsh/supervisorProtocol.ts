@@ -58,6 +58,13 @@ export interface SupervisorState {
   serverStartedAt?: number;
   /** true = 正在拉起 dsh（扩展据此等待，而不是自己起一个）。 */
   starting: boolean;
+  /**
+   * true = 已收到退场请求、正在收尾（先清 dsh 的进程树，再清会合文件）。
+   *
+   * 扩展**不得**把这种状态当成"内部还在跑"：此刻 supervisor 仍活着、socket 也还开着，
+   * 但它的 dsh 正在被杀掉，选它只会让新窗口连到一个马上告别的后台。
+   */
+  stopping?: boolean;
   /** 运行时自述（排查用：supervisor 崩了之后这是唯一线索之一）。 */
   runtime?: { execPath: string; node: string; electron?: string };
 }
@@ -340,6 +347,7 @@ export function decodeState(value: unknown, options: DecodeStateOptions = {}): S
     socket,
     serverStartedAt,
     starting: raw.starting === true,
+    stopping: raw.stopping === true ? true : undefined,
     runtime: decodeRuntime(raw.runtime),
   };
 }

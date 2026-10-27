@@ -91,6 +91,8 @@ function publishState(
     socket?: string;
     /** dsh 子进程 pid（第 9 组要"换了新进程"这个事实）。 */
     serverPid?: number;
+    /** true = 正在退场（supervisor 还活着，但 dsh 马上会被带走）。 */
+    stopping?: boolean;
   } = {},
 ): void {
   const directory = supervisorDirectory(group);
@@ -105,6 +107,7 @@ function publishState(
     idleSec: 10,
     socket: options.socket ?? DEAD_SOCKET,
     starting: options.starting ?? false,
+    stopping: options.stopping,
   });
 }
 
@@ -299,6 +302,15 @@ try {
     const alive = await manager.probeRunning();
     check("守护进程在本进程 + 端口在听 → supervisorAlive/serverAlive 都是真", alive.supervisorAlive && alive.serverAlive);
     check("probeRunning 不启动任何东西", launcher.calls() === 0, `calls=${launcher.calls()}`);
+
+    // 正在退场：supervisor 与端口都还活着，但 dsh 马上会被带走——选路不许把它当"内部在跑"
+    publishState("policy-probe", { baseUrl: background.baseUrl, stopping: true });
+    const stopping = await manager.probeRunning();
+    check(
+      "会合文件说正在退场 → supervisorAlive=false（新窗口不再选内部）",
+      stopping.hasState && !stopping.supervisorAlive && !stopping.serverAlive,
+      JSON.stringify(stopping),
+    );
 
     // 进程已死的守护进程：拿一个刚退出的子进程 pid（真实事实判据，不靠猜）
     const exited = spawnSync(process.execPath, ["-e", ""], { windowsHide: true });
@@ -843,7 +855,7 @@ try {
     await waitFor(() => daemon.clients() === 0);
     check("临时接入发完就断（本窗口不保留它：对面 0 条）", daemon.clients() === 0, `clients=${daemon.clients()}`);
 
-    // 这一支是**真的异步**（要开连接 + 等 300ms）：没有在飞标记就会开出两条连接、发出两条帧
+    // 这一支是**真的异步**（要先建连接）：没有在飞标记就会开出两条连接、发出两条帧
     const beforeDouble = stopFrames();
     const openedBeforeDouble = daemon.opened();
     const [doubleA, doubleB] = await Promise.all([
@@ -885,6 +897,48 @@ try {
     manager.dispose();
     await daemon.close();
     await url.close();
+  }
+
+  // ---------- 10b. 用户停止后：心跳不许把**同一代**接回来 ----------
+  //
+  // 这一条是空闲退场的最后一道保险：停止请求丢了、或守护进程正在杀 dsh 时，心跳若把
+  // 连接接回去，`clients.size` 就永远回不到 0，`idleSec` 到了也不会退场。
+  {
+    const group = "policy-stop-no-reattach";
+    const socket = socketPathIn(supervisorDirectory(group), group);
+    const internalUrl = await listen();
+    publishState(group, { baseUrl: internalUrl.baseUrl, token: "token-1", socket });
+    const daemon = await listenDaemon(socket);
+    const manager = makeManager(group, false, fakeLauncher().launcher);
+    managers.push(manager);
+
+    await manager.ensure({ start: false, target: "internal" });
+    await waitFor(() => daemon.clients() === 1);
+    // 假守护进程只记录 control、不真的退场：模拟"stop 丢了 / 收尾很慢"
+    await manager.stop();
+    await waitFor(() => daemon.clients() === 0);
+
+    await (manager as unknown as { heartbeatTick(): Promise<void> }).heartbeatTick();
+    check(
+      "用户停止后心跳不接回同一代（空闲退场才有机会发生）",
+      daemon.clients() === 0 && manager.snapshot().connected === false,
+      `clients=${daemon.clients()} connected=${manager.snapshot().connected}`,
+    );
+
+    // 别的窗口重新拉起一套（新世代）时仍要接上：挡的是"同一代"，不是"内部这一轴"
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    publishState(group, { baseUrl: internalUrl.baseUrl, token: "token-2", socket });
+    await (manager as unknown as { heartbeatTick(): Promise<void> }).heartbeatTick();
+    await waitFor(() => daemon.clients() === 1);
+    check(
+      "换了一代后心跳仍会自动接上（没有把“别的窗口拉起”一起挡掉）",
+      daemon.clients() === 1 && manager.snapshot().connected,
+      `clients=${daemon.clients()} connected=${manager.snapshot().connected}`,
+    );
+
+    manager.dispose();
+    await daemon.close();
+    await internalUrl.close();
   }
 } finally {
   for (const manager of managers) manager.dispose();

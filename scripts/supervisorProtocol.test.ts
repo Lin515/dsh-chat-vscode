@@ -201,6 +201,12 @@ function stateOf(patch: Record<string, unknown> = {}) {
     return state?.supervisorPid === 1234 && state.baseUrl === "http://127.0.0.1:1234" && state.token === "tok";
   })());
 
+  check("stopping 原样解出（缺省不算 true）", (() => {
+    const stopping = decodeState({ ...good, stopping: true });
+    const absent = decodeState(good);
+    return stopping?.stopping === true && absent?.stopping === undefined;
+  })());
+
   // 逐条：**每一条从前都只长在管道路的 `checkState` 上**，现在两条路都过这一套
   const rejected: [string, unknown][] = [
     ["不是对象", "x"],

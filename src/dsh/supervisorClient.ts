@@ -165,13 +165,28 @@ export class SupervisorConnection {
   close(): void {
     this.closed = true;
     this.stopTimer();
-    try {
-      this.socket?.end();
-      this.socket?.destroy();
-    } catch {
-      // 忽略
-    }
+    const socket = this.socket;
     this.socket = undefined;
+    if (!socket) return;
+    // **不要 end() 之后立刻 destroy()**：控制帧（stop / restart）刚写进 socket，
+    // 紧接着的 destroy 会把排队中的第二次 write 丢掉——实测（命名管道，500 次）
+    // 先 hello 再 stop 时，对端 500/500 只收到 hello，stop 永远到不了守护进程，
+    // 于是「停止内部 DSH」看似成功、后台却一直活着，新窗口又按「内部优先」连上它。
+    // `end()` 会先冲刷排队数据再发 FIN；对端若迟迟不关，再由定时器兜底收掉句柄。
+    let force: NodeJS.Timeout | undefined;
+    const clearForce = (): void => {
+      if (force) clearTimeout(force);
+    };
+    socket.once("close", clearForce);
+    socket.once("error", clearForce);
+    try {
+      socket.end();
+    } catch {
+      socket.destroy();
+      return;
+    }
+    force = setTimeout(() => socket.destroy(), 2_000);
+    force.unref?.();
   }
 
   get connected(): boolean {
