@@ -20,6 +20,7 @@
 ### 会话主链路与协议适配
 
 - [wire.test.ts](<wire.test.ts>) — 过线语义：宿主 → webview 的帧被 JSON 序列化会丢 `undefined` 键，清空字段必须发 `null`。
+- [sessionFollow.test.ts](<sessionFollow.test.ts>) — 跟随请求显式激活会话，与官方界面保持一致，同时兼容旧服务端忽略未知字段的行为。
 - [sessionView.test.ts](<sessionView.test.ts>) — 「一个会话在界面上的状态」只有唯一生产者，字段集合不得在生产者之间漂移。
 - [sessionStatus.test.ts](<sessionStatus.test.ts>) — `api-session/status` 状态位中继的解码与采纳策略（服务端权威的「这轮在不在跑」）。
 - [sessionActivity.test.ts](<sessionActivity.test.ts>) — `api-session/activity` 活动时间中继的解码（子代理目录排序里用户消息的实时来路，形状不可信时返回 `undefined`）。
@@ -86,7 +87,7 @@
 
 - [pathInsert.test.ts](<pathInsert.test.ts>) — 附件归类（`classifyPath`，含**进不了内容块的图**＝ 变成文件附件 + `notInlined` 原因）+ 路径插入光标处 + `@` 目录块的整段替换（含引号空格目录的闭引号边界，真实临时文件）。
 - [attachments.test.ts](<attachments.test.ts>) — 扩展名 → mediaType 纯映射、`showOpenDialog` 跨平台约束、拖放 / 粘贴两条字节通道、**图片去向**（进不了内容块改按文件上传、五项判据与整批额度、提示标记形状）、三个入口共用的 `planIntake` 与发送装配、**发送门与装配同源**（允许发送 ⇔ 文件都会进 prompt）。
-- [attachmentLifecycle.test.ts](<attachmentLifecycle.test.ts>) — 附件草稿的归属、上传生命周期与**提交租约**：账本 module 的移走 / 归还 / 交接 / 释放（含越过告警阈值只记日志不销毁）与真控制器的受控 Promise 上传链（切会话结算、就绪才提交、未就绪 send 被拦、失败回填、失败行重发带真回执、窗口下线与撤回的回收口径）。
+- [attachmentLifecycle.test.ts](<attachmentLifecycle.test.ts>) — 附件草稿的归属、上传生命周期与**提交租约**：账本 module 的移走 / 归还 / 交接 / 释放（含越过告警阈值只记日志不销毁）与真控制器的受控 Promise 上传链（切会话结算、就绪才提交、未就绪 send 被拦、失败回填、失败行重发带真回执、窗口下线与撤回的回收口径），以及图片读取协议的缓存、升级 / 回滚重协商与非格式错误不重试。
 - [attachIntakeGate.test.ts](<attachIntakeGate.test.ts>) — 附件接入的**会话门**：点附件时没有目录 / 后台未连接 / 会话未就绪三档直接拒收（连文件框都不弹）与对应提示、断线拒收通知按会话隔离（未绑定时共享）、混批一并拒收、正常空态只弹文件选择框并照旧上传、宿主 `send` 兜底重推草稿。
 - [clipboardPaths.test.ts](<clipboardPaths.test.ts>) — 系统剪贴板路径读取的判据（解析、大小上限、目录粘贴、shell 顺序：7 优先以免每次粘贴付 5.1 的一秒启动）。
 - [pastedImageNames.test.ts](<pastedImageNames.test.ts>) — 粘贴图片的会话内编号名（`图N.png` / `imageN.png`）：编号识别、起始编号的基线、只改图片、被拒条目不编号。

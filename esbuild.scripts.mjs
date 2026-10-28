@@ -242,6 +242,8 @@ const entries = {
   "build/reading-placement.test.mjs": "scripts/readingPlacement.test.ts",
   "build/find.test.mjs": "scripts/find.test.ts",
   "build/client-dispose.test.mjs": "scripts/clientDispose.test.ts",
+  // `session/follow` 请求体（显式激活 / 跟随窗口 / assistantStream）：必须登记，否则 npm test 静默不跑
+  "build/session-follow.test.mjs": "scripts/sessionFollow.test.ts",
   "build/pinger.mjs": "scripts/pinger.ts",
   "build/supervisor-reload-probe.mjs": "scripts/supervisorReloadProbe.ts",
   "build/supervisor-idle-probe.mjs": "scripts/supervisorIdleProbe.ts",

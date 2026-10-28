@@ -73,6 +73,9 @@ const CONTRACT_PACKAGES = [
   "@deepseek-ai/dsh-agent-presets",
   "@deepseek-ai/dsh-agent-preset-registry",
   "@deepseek-ai/dsh-permission-presets",
+  // `modelSelection` 投影的类型声明 0.2.2-alpha.2 起住在这里（值形状 `{lastUsed, next}` 未变，
+  // 控制器包只剩键名）。不放进清单，这个投影的类型面就没有证据。
+  "@deepseek-ai/dsh-agent",
   "@deepseek-ai/dsh-llm",
   "@deepseek-ai/dsh-session",
   "@deepseek-ai/dsh-session-projection",

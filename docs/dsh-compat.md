@@ -102,7 +102,7 @@ compaction-image-offload 包里声明，契约快照里那份 `SessionEventMap` 
 - 基准**单调向前**：它之前的官方版本不需要核对（从最早的 tag 补起会把二十多个历史版本变成待办）。
   要看两个历史版本之间的差异，用 `npm run dsh:diff -- <旧版本> <新版本>`。
 
-本扩展当前对齐：DSH `0.2.1-rc.3`（rc 渠道；2026-10-26 核对基准之后的 `0.2.1-alpha.3` 至 `0.2.1-rc.3` 六个版本：与基准求差的 P0 均为 0，变化只有新增（P1）与无关变化（P2）；`@deepseek-ai/dsh-agent-presets` 已被 `dsh-agent-preset-registry` 取代、旧包不再发布，缺包告警已人工确认；按「判定 → 动作 → 发布去向」不跟进 P1，未改代码、未发版）<!-- dsh-compat:baseline -->
+本扩展当前对齐：DSH `0.2.2-alpha.2`（alpha 渠道；2026-10-28 核对基准之后的 `0.2.1-rc.4` 与 `0.2.2-alpha.2`：rc.4 无差异；alpha.2 的 5 处 P0 已处理——`session/attachment` 改收完整图片引用（已实现并保留旧代回退）、`session/follow` 默认只读（已固定请求激活）、投影摘要收窄（列表只读 `title` / `agentPreset` / `subagent`，不受影响）、`SessionSummary` 的同名条目是官方客户端视图类型（误报，宿主列表类型只多了摘要收窄）、`ModelSelectionProjection` 类型搬到 `@deepseek-ai/dsh-agent`（该包已加入契约清单并重抓基准快照，键与值形状未变）；`@deepseek-ai/dsh-agent-presets` 仍不发布、缺包告警已人工确认；按「判定 → 动作 → 发布去向」不跟进 P1）<!-- dsh-compat:baseline -->
 
 ### 暂缓待办：连接层 WebSocket 载体适配（P1）
 
@@ -129,6 +129,7 @@ compaction-image-offload 包里声明，契约快照里那份 `SessionEventMap` 
 | 预设 roster 的 `trust` 字段（内置预设的判据） | ≤ 0.1.6-alpha.2 | `src/dsh/projections.ts` 的 `agentPresetsFromList`、`src/webview/presetDisplay.ts` 的 `isBuiltInPresetOption` | 2026-09-23 | 2026-11-23 | 0.1.7-alpha.1 删掉了该字段，判定改用官方 `isBuiltInPreset`（不发布 `name` 的已知 id 即内置）。有 `trust` 时仍以它为准，否则用户自写的同名预设会被静默改名 |
 | 预设选择的可见性判据（roster 的 `modeSelectionEnabled`） | ≤ 0.1.7-rc.1 | `src/dsh/projections.ts` 的 `agentPresetsFromList`、`src/dsh/controller.ts` 的 `loadAgentPresets` / `publishAgentPresets` / `applyDeveloperTools` | 2026-09-24 | 2026-11-24 | 0.1.7-rc.2 起服务端不再有这个策略（官方 `a44534e274` 把选择可见性并进客户端的「代码工作工具」开关，宿主持久化在 `ui-settings`）；旧服务端仍以 roster 字段为准，两代都读 |
 | 审批原因的旧形态（只有 `reason`） | ≤ 0.1.7-rc.1 | `src/dsh/controller.ts` 的 `deliverEventToScope`、`src/webview/components/Rows.tsx` 的 `ApprovalCard` | 2026-09-24 | 2026-11-24 | 0.1.7-rc.2 起 asker 可附只用于展示的本地化 `displayReason`（官方界面优先用它）；没有它时仍显示审计用的 `reason` |
+| `session/attachment` 的旧请求体（`{sessionId, attachmentId}`） | ≤ 0.2.1-rc.3 | `src/dsh/controller.ts` 的 `fetchAttachmentBytes`（`attachmentReferencePayload`） | 2026-10-28 | 2026-12-28 | 0.2.2-alpha.2 把请求体改成完整 `ImageAttachmentRef`：服务端按引用自带的 `mediaType/bytes/width/height` 校验存储对象，不再扫会话历史授权。旧服务端仍只认 id，且收到新字段会因缺 `attachmentId` 报 `gateway/input-invalid`；首次优先新代，后续优先成功过的格式；只在这个错误上尝试另一代并更新记忆，同一客户端重连后的升级与回滚均可重新协商 |
 | 浏览器会话 cookie 的内部形状（名字前缀 `dsh-auth-`、v1 载荷、HMAC 口径、凭据记录键 `client-connection/browser-session`） | 依赖内部实现，非公开契约（0.2.1-rc.2 起，含桌面端内置宿主） | `src/dsh/browserSession.ts`、`src/dsh/desktopAttach.ts` | 2026-10-18 | 2026-12-18 | 桌面端不从命令行启动、启动令牌拿不到，扩展只能自铸等价凭据（见[桌面端接入](<design-desktop.md>)）。它是 `dsh-client-connection` 的内部实现，不在 `CONTRACT_PACKAGES` 里，所以每次推进基准要人工对拍这四个常量 |
 | `dsh-desktop-host` 的入口与 spawn 形态（命令行含该签名、loopback 端口随机、无票 `GET /` 回 401） | 依赖桌面端实现，非公开契约（0.2.1-rc.2 起） | `src/dsh/desktopSession.ts`、`src/dsh/processTable.ts`、`src/dsh/desktopAttach.ts` | 2026-10-18 | 2026-12-18 | 认人只能按命令行签名匹配、认领只能按"无票 401"判断（见[桌面端接入](<design-desktop.md>)「端点发现」）。官方改了入口路径、spawn 形态或那道 401 握手时这条支路会静默失效（表现为"找不到桌面端服务"），所以每次推进基准要人工对拍 |
 <!-- dsh-compat:layers:end -->
@@ -174,7 +175,7 @@ npm run dsh:diff -- <旧版本> <新版本>   # 只求差
   `dsh:check` 会报一条 `package-added`）。`0.2.1-alpha.2` 加入 `@deepseek-ai/dsh-schedule`
   （自动化任务）时就是这么做的：删掉本地那份快照再 `npm run dsh:snapshot -- 0.2.1-alpha.2`。
 - 执行目录适配消费 `@deepseek-ai/dsh-working-directory`，已加入包清单；投影值为 `string | null`，缺失回退会话创建目录。工作区归属与执行目录分离的消费规则见[投影设计的执行目录](<design-projections.md#执行目录>)。
-- 文件路径的目标消费规则见[文件路径](<design-paths.md>)：普通相对引用用创建目录，工具目标 / 终端目录用执行时记录值，工具行与产物各按自己的回退判据，文件内容与存在性由执行世界裁决。2026-10-26 对照官方 `dsh-v0.2.1-alpha.2` 与 `dsh-v0.2.1-rc.3`（后者提交 `1f81c047fc48fa190a683e469daa699857e9afe8`）核验核心路径规则相同，同日把契约基准推进到 `0.2.1-rc.3`。后续修改这些消费规则或再推进基准时人工复核 `dsh-util-workspace-path` 的文件地址与媒体 URL、`dsh-client-ui-tool` 的 `recordedAbsolutePath` / `toolRowModel` / `terminalCardModel`、`dsh-client-ui-deliverables` 的 `mutationResultPath` / `producedFileMentions` / `handleChangesOpen`、`dsh-workspace-changes` 的 `durablePathOf` 与 recorder 根，以及工作区文件 API 和 `/api/file` 的执行世界读取权限。类型快照不能替代这些行为判据。
+- 文件路径的目标消费规则见[文件路径](<design-paths.md>)：普通相对引用用创建目录，工具目标 / 终端目录用执行时记录值，工具行与产物各按自己的回退判据，文件内容与存在性由执行世界裁决。2026-10-26 对照官方 `dsh-v0.2.1-alpha.2` 与 `dsh-v0.2.1-rc.3`（后者提交 `1f81c047fc48fa190a683e469daa699857e9afe8`）核验核心路径规则相同。2026-10-28 再对照 `dsh-v0.2.2-alpha.2`：`resolveWorkspacePath` 现在也丢掉开头的 `./`（`../` 仍保留），本扩展的 `src/shared/workspacePath.ts` 已跟；`recordedAbsolutePath`、`mutationResultPath`、终端目录标签与改动清单的取数口径未变；交付的 produced / presented 不再按收尾回复的 seq 截断，而本扩展的轮尾两行本来就按整条助手消息累积、没有这道截断，无需改动。后续修改这些消费规则或再推进基准时人工复核 `dsh-util-workspace-path` 的文件地址与媒体 URL、`dsh-client-ui-tool` 的 `recordedAbsolutePath` / `toolRowModel` / `terminalCardModel`、`dsh-client-ui-deliverables` 的 `mutationResultPath` / `producedFileMentions` / `handleChangesOpen`、`dsh-workspace-changes` 的 `durablePathOf` 与 recorder 根，以及工作区文件 API 和 `/api/file` 的执行世界读取权限。类型快照不能替代这些行为判据。
 - 报告里出现 `⚠ 有 N 个包没取到` 时必须人工确认：缺证据不等于没影响。
 
 ---
@@ -212,6 +213,16 @@ npm run dsh:diff -- <旧版本> <新版本>   # 只求差
   `package-removed` / `package-added` 两行，那个包**内部的逐字段差异一条都不会报**。所以看到这种
   成对的两行，必须把两边同名的类型**逐条对拍**。对拍命令：拿两个快照 JSON 的
   `packages[*].types[<类型名>]` 直接比字符串数组。
+- **类型在包之间搬家会被报成消失**（`ModelSelectionProjection` 就是实例）：0.2.2-alpha.2 把
+  `modelSelection` 投影的类型从 `dsh-api-session-controller` 移进 `@deepseek-ai/dsh-agent`，
+  值形状一个字没变，但基准快照里没有目标包，于是报告只给一条 `type-removed`。处理办法是把
+  目标包补进 `CONTRACT_PACKAGES` 并重抓基准快照，然后**在两边同名的类型上逐条对拍**确认形状
+  未变；不要因为一条 `type-removed` 就删掉消费代码。
+- **同名类型可能来自另一个声明**：`dsh-api-session-controller` 的产物里同时有宿主侧
+  `SessionSummary`（`session/list` 的行，带 `projections`）与官方客户端侧的视图类型（同一名字，
+  带 `projectionValues`）；快照按类型名合并，后扫到的那份会覆盖前一份。所以报告里
+  `<类型> 成员变了` 先确认**是哪个声明**——我们消费的是服务端那一边时，客户端侧的字段收窄
+  属于误报。
 - **不在清单里的包 = 那块契约没有证据**：`approval/request` 与 `user-questions/request` 两个
   waterfall 的载荷类型分别住在 `@deepseek-ai/dsh-user-approval` / `@deepseek-ai/dsh-user-questions`
   里，两者都不在 `CONTRACT_PACKAGES` 中，所以它们的字段增删工具**一声不响**（`displayReason` 就是

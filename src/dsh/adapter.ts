@@ -210,10 +210,20 @@ function injectedSourceFields(form: string | undefined, source: unknown): Inject
   return Object.values(fields).some((value) => value !== undefined) ? fields : undefined;
 }
 
-/** 图片句柄（不透明 id + 元数据），用于向服务端换取可显示的字节。 */
+/**
+ * 图片句柄（不透明 id + 元数据），用于向服务端换取可显示的字节。
+ *
+ * `bytes` / `width` / `height` 不是展示用的装饰：0.2.2-alpha.2 起
+ * `session/attachment` 收的是**完整引用**，并按这几项校验存储对象
+ * （`ImageAttachmentRef`，缺一项都算引用不合法）。所以内容块里有多少就带多少，
+ * 别在半路只留下 id。
+ */
 export interface ImageRef {
   attachmentId: string;
   mediaType?: string;
+  bytes?: number;
+  width?: number;
+  height?: number;
   name?: string;
 }
 
@@ -229,13 +239,24 @@ function imageAttachments(content: unknown): ImageRef[] {
   const refs: ImageRef[] = [];
   for (const block of content as ContentBlock[]) {
     if (!block || typeof block !== "object" || block.type !== "image") continue;
-    const attachment = (block as { attachment?: { attachmentId?: unknown; mediaType?: unknown; name?: unknown } })
-      .attachment;
+    const attachment = (block as {
+      attachment?: {
+        attachmentId?: unknown;
+        mediaType?: unknown;
+        bytes?: unknown;
+        width?: unknown;
+        height?: unknown;
+        name?: unknown;
+      };
+    }).attachment;
     const id = attachment?.attachmentId;
     if (typeof id !== "string" || !id) continue;
     refs.push({
       attachmentId: id,
       mediaType: typeof attachment?.mediaType === "string" ? attachment.mediaType : undefined,
+      bytes: typeof attachment?.bytes === "number" ? attachment.bytes : undefined,
+      width: typeof attachment?.width === "number" ? attachment.width : undefined,
+      height: typeof attachment?.height === "number" ? attachment.height : undefined,
       name: typeof attachment?.name === "string" ? attachment.name : undefined,
     });
   }
@@ -363,11 +384,16 @@ function userMedia(
       const attachment = (block as { attachment?: Record<string, unknown> }).attachment ?? {};
       const name = typeof attachment.name === "string" && attachment.name ? attachment.name : "image";
       const attachmentId = typeof attachment.attachmentId === "string" ? attachment.attachmentId : undefined;
-      // 同序的回显附件里已经有本地字节（同一次提交）：借它的 dataUrl 与固有宽高，
+      // 同序的回显附件里已经有本地字节（同一次提交）：借它的 dataUrl，
       // 句柄仍用 durable 的那一个（`hydrateUserMedia` 照旧会去换一次，只是不再赶时间）
       const localEntry = local?.[index];
       // 路径两个来源：同一次提交的本地账本（更近），或本机记着的那份原文件
       const localPath = localEntry?.path ?? (attachmentId ? originalPathFor?.(attachmentId) : undefined);
+      // 宽高以内容块（服务端存储的那份）为准：回显那份是**原始文件**的固有尺寸，服务端
+      // 归一化（缩放到准入上限、换编码）之后可能与存储对象不一致。0.2.2-alpha.2 起这几项
+      // 要回传给 `session/attachment` 做校验，拿错一份会直接被判成引用不合法。
+      const width = typeof attachment.width === "number" ? attachment.width : localEntry?.width;
+      const height = typeof attachment.height === "number" ? attachment.height : localEntry?.height;
       media.push({
         id: `m${index++}`,
         kind: "image",
@@ -375,11 +401,9 @@ function userMedia(
         bytes: typeof attachment.bytes === "number" ? attachment.bytes : undefined,
         ...(attachmentId ? { attachmentId } : {}),
         ...(typeof attachment.mediaType === "string" ? { mediaType: attachment.mediaType } : {}),
-        ...(typeof attachment.width === "number" ? { width: attachment.width } : {}),
-        ...(typeof attachment.height === "number" ? { height: attachment.height } : {}),
+        ...(typeof width === "number" ? { width } : {}),
+        ...(typeof height === "number" ? { height } : {}),
         ...(localEntry?.kind === "image" && localEntry.dataUrl ? { dataUrl: localEntry.dataUrl } : {}),
-        ...(typeof localEntry?.width === "number" ? { width: localEntry.width } : {}),
-        ...(typeof localEntry?.height === "number" ? { height: localEntry.height } : {}),
         ...(localPath ? { path: localPath } : {}),
       });
       continue;
@@ -2389,6 +2413,9 @@ export class SessionAdapter {
       .map((attachment) => ({
         attachmentId: attachment.attachmentId as string,
         mediaType: attachment.mediaType,
+        bytes: attachment.bytes,
+        width: attachment.width,
+        height: attachment.height,
         name: attachment.name,
       }));
     if (!refs.length || !this.loadImages) return;

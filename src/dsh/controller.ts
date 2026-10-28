@@ -482,6 +482,36 @@ function frameCwd(cwd: string | undefined): { cwd?: string } {
  */
 const PRESET_UNAVAILABLE_CODES = new Set(["agent-preset/not-found", "agent-preset/invalid", "agent-preset/conflict"]);
 
+/** `session/attachment` 的请求体代数（见控制器里的 `fetchAttachmentBytes`）。 */
+type AttachmentRequestShape = "reference" | "id";
+
+/** 网关把「request 内字段与契约对不上」报成这个码（缺必填字段也在内）。 */
+function isInputInvalid(error: unknown): boolean {
+  return error instanceof DshApiError && error.code === "gateway/input-invalid";
+}
+
+/**
+ * 收窄出一份可以回传给 `session/attachment` 的图片引用。
+ *
+ * 新代请求要按 `mediaType/bytes/width/height` 校验存储对象，缺一项都过不了；
+ * 缺项时返回 undefined，由调用方改走旧代（只认 id）。
+ */
+function attachmentReferencePayload(ref: ImageRef): Record<string, unknown> | undefined {
+  const { mediaType, bytes, width, height } = ref;
+  if (typeof mediaType !== "string"
+    || typeof bytes !== "number"
+    || typeof width !== "number"
+    || typeof height !== "number") return undefined;
+  return {
+    attachmentId: ref.attachmentId,
+    mediaType,
+    bytes,
+    width,
+    height,
+    ...(ref.name ? { name: ref.name } : {}),
+  };
+}
+
 /**
  * `ATTACH_BYTES_LIMIT` 对应的 base64 字符数上限（+3 给 padding 波动留余量）。
  *
@@ -1309,6 +1339,13 @@ export class ChatController implements vscode.Disposable {
    * 文件附件没有「回服务端取字节」这条路，路径一忘就只能提示打不开。
    */
   private readonly attachmentTargets = new AttachmentOpenIndex();
+  /**
+   * 这条连接上 `session/attachment` 认哪种请求体（见 `fetchAttachmentBytes`）。
+   *
+   * 键是客户端对象，换 Host 后不沿用旧结论。同一客户端的传输重连可能接到升级或回滚
+   * 后的服务端；缓存只调整尝试顺序，格式不匹配时仍重新协商，不把旧结论当永久能力。
+   */
+  private readonly attachmentRequestShapes = new WeakMap<DshClient, AttachmentRequestShape>();
   /**
    * 乐观回显账本（见 `shared/chat.ts` 的 `PendingMessageView`）。
    *
@@ -6417,59 +6454,85 @@ export class ChatController implements vscode.Disposable {
       return;
     }
     const results = await Promise.all(
-      refs.map((ref) => this.fetchAttachmentDataUrl(sessionId, ref.attachmentId, ref.mediaType)),
+      refs.map((ref) => this.fetchAttachmentDataUrl(sessionId, ref)),
     );
     done(results);
   }
 
   /**
-   * 一个 durable 附件句柄 → data URL（取不到返回空串）。
+   * 一个 durable 图片引用 → data URL（取不到返回空串）。
    *
    * 两个消费方共用这一处 RPC：回放的图片（`loadAttachmentImages`）与「队列消息取回
    * 重新编辑」时从内容块还原的图片（`editQueuedMessage`）。
    */
-  private async fetchAttachmentDataUrl(
-    sessionId: string,
-    attachmentId: string,
-    mediaType: string | undefined,
-  ): Promise<string> {
-    const fetched = await this.fetchAttachmentBytes(sessionId, attachmentId);
+  private async fetchAttachmentDataUrl(sessionId: string, ref: ImageRef): Promise<string> {
+    const fetched = await this.fetchAttachmentBytes(sessionId, ref);
     if (!fetched) return "";
     // 服务端只回 base64 与字节，媒体类型在句柄里（拿不到就按 png——
     // 浏览器对 data URL 的 MIME 很宽容，错的类型仍会渲染）
-    return `data:${mediaType ?? fetched.mediaType ?? "image/png"};base64,${fetched.bytes.toString("base64")}`;
+    return `data:${ref.mediaType ?? fetched.mediaType ?? "image/png"};base64,${fetched.bytes.toString("base64")}`;
   }
 
   /**
-   * 一个 durable 附件句柄 → **字节**（取不到返回 undefined）。
+   * 一个 durable 图片引用 → **字节**（取不到返回 undefined）。
    *
-   * `session/attachment` 只服务图片（服务端按会话日志里的图片块授权，见
-   * `docs/dsh-server-api.md` 的其他端点速查）：文件没有这条回头路，只能靠本地上传时
-   * 记下的那一份（`attachmentTargets`）。
+   * `session/attachment` 只服务图片：文件没有这条回头路，只能靠本地上传时记下的那一份
+   * （`attachmentTargets`）。第三个消费方是「打开附件」——回放的历史图片本地已经没有
+   * 字节，只能换回来落临时副本。
    *
-   * 第三个消费方是「打开附件」：回放的历史图片本地已经没有字节，只能换回来落临时副本。
+   * **请求体有两代**（`0.2.2-alpha.2` 起）：
+   * - 新一代 `{sessionId, attachment}`：服务端直接按引用里自带的
+   *   `mediaType/bytes/width/height` 校验存储对象，不再扫会话历史；
+   * - 旧代 `{sessionId, attachmentId}`：只认不透明 id，按会话日志里的图片块授权。
+   *
+   * 网关对 `args` 的字段名严格（多一个少一个都拒），但对 `request` 内的未知字段是
+   * **剥离**；所以旧服务端收到新代请求会因缺 `attachmentId` 报 `gateway/input-invalid`。
+   * 首次按新代发，后续优先使用成功过的格式；只在**这个错误**上尝试另一代并更新记忆。
+   * 这样同一客户端重连后也能适应服务端升级或回滚；别的失败（网络、认证、引用损坏）
+   * 不改变协议判断，也不额外发送 RPC。
+   * 引用缺元数据时没法组新代请求——那种情况只有旧服务端能读，直接发旧代。
    */
   private async fetchAttachmentBytes(
     sessionId: string,
-    attachmentId: string,
+    ref: ImageRef,
   ): Promise<{ bytes: Buffer; mediaType?: string } | undefined> {
-    if (!this.client) return undefined;
-    try {
-      const value = await this.client.request<{ attachment?: unknown; data?: unknown }>(
-        "session/attachment",
-        { request: { sessionId, attachmentId } },
-      );
-      const data = typeof value?.data === "string" ? value.data : "";
-      if (!data) return undefined;
-      const mediaType = (value?.attachment as { mediaType?: unknown } | undefined)?.mediaType;
-      return {
-        bytes: Buffer.from(data, "base64"),
-        ...(typeof mediaType === "string" ? { mediaType } : {}),
-      };
-    } catch (error) {
-      this.log(`[attachment] 读取图片失败：${this.describeError(error)}`);
-      return undefined;
+    const client = this.client;
+    if (!client) return undefined;
+    const reference = attachmentReferencePayload(ref);
+    const known = this.attachmentRequestShapes.get(client);
+    // 缺元数据时只能构造旧请求；有完整引用时让已知格式先行，但始终保留另一代作为
+    // input-invalid 的退路。客户端对象不随传输重连更换，不能只尝试缓存中的格式。
+    const order: AttachmentRequestShape[] = reference === undefined
+      ? ["id"]
+      : known === "id" ? ["id", "reference"] : ["reference", "id"];
+    let lastError: unknown;
+    for (const shape of order) {
+      if (shape === "reference" && reference === undefined) continue;
+      try {
+        const value = await client.request<{ attachment?: unknown; data?: unknown }>(
+          "session/attachment",
+          {
+            request: shape === "reference"
+              ? { sessionId, attachment: reference }
+              : { sessionId, attachmentId: ref.attachmentId },
+          },
+        );
+        this.attachmentRequestShapes.set(client, shape);
+        const data = typeof value?.data === "string" ? value.data : "";
+        if (!data) return undefined;
+        const mediaType = (value?.attachment as { mediaType?: unknown } | undefined)?.mediaType;
+        return {
+          bytes: Buffer.from(data, "base64"),
+          ...(typeof mediaType === "string" ? { mediaType } : {}),
+        };
+      } catch (error) {
+        lastError = error;
+        // 只有请求体格式不匹配才尝试另一代；升级与回滚均可恢复，其余失败原样记日志。
+        if (!isInputInvalid(error)) break;
+      }
     }
+    this.log(`[attachment] 读取图片失败：${this.describeError(lastError)}`);
+    return undefined;
   }
 
   /**
@@ -11197,11 +11260,14 @@ export class ChatController implements vscode.Disposable {
     const restoredAttachments = [...plan.attachments];
     let unrestorable = plan.unrestorable;
     for (const pending of plan.pendingImages) {
-      const dataUrl = await this.fetchAttachmentDataUrl(
-        sessionId,
-        pending.attachmentId,
-        pending.attachment.mediaType,
-      );
+      const dataUrl = await this.fetchAttachmentDataUrl(sessionId, {
+        attachmentId: pending.attachmentId,
+        mediaType: pending.attachment.mediaType,
+        bytes: pending.attachment.bytes,
+        width: pending.attachment.width,
+        height: pending.attachment.height,
+        name: pending.attachment.name,
+      });
       if (dataUrl) restoredAttachments.push({ ...pending.attachment, dataUrl });
       else unrestorable += 1;
     }
@@ -11593,7 +11659,17 @@ export class ChatController implements vscode.Disposable {
    */
   private async openAttachment(
     viewId: string,
-    message: { name: string; kind: "file" | "image"; path?: string; id?: string; attachmentId?: string; mediaType?: string },
+    message: {
+      name: string;
+      kind: "file" | "image";
+      path?: string;
+      id?: string;
+      attachmentId?: string;
+      mediaType?: string;
+      bytes?: number;
+      width?: number;
+      height?: number;
+    },
   ): Promise<void> {
     const scope = this.scopeOfView(viewId);
     // 归属在发起这一刻捕获：下面全是 await（字节换算、临时副本落盘），
@@ -11629,7 +11705,17 @@ export class ChatController implements vscode.Disposable {
         if (candidate && await this.tryOpenAttachmentPath(candidate)) return;
       }
       if (message.kind === "image" && sessionId) {
-        const fetched = await this.fetchAttachmentBytes(sessionId, durable);
+        // 新代 `session/attachment` 要完整引用，且按这几项校验存储对象。只用**界面带上来的
+        // 内容块元数据**：账本里那份是原始文件（可能与服务端归一化后的存储对象不一致，
+        // 见 `SessionAdapter` 的 `userMedia`），拿它拼引用会被判成损坏。
+        const fetched = await this.fetchAttachmentBytes(sessionId, {
+          attachmentId: durable,
+          ...(message.mediaType ? { mediaType: message.mediaType } : {}),
+          ...(message.bytes !== undefined ? { bytes: message.bytes } : {}),
+          ...(message.width !== undefined ? { width: message.width } : {}),
+          ...(message.height !== undefined ? { height: message.height } : {}),
+          ...(message.name ? { name: message.name } : {}),
+        });
         if (fetched) {
           const path = await this.materializeAttachmentCopy({
             bytes: fetched.bytes,

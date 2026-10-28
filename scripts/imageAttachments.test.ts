@@ -75,6 +75,11 @@ const imageBlock = (id: string, name: string, mediaType: string, width = 1024, h
     [["sha256:cat"]],
     "适配器要把句柄交给注入的装载回调",
   );
+  // 0.2.2-alpha.2 起 `session/attachment` 按完整引用校验存储对象：这几项少一个就会被判
+  // 引用不合法（或者只能退回旧代、在新服务端上根本读不出来）。
+  assert.strictEqual(asked[0]?.[0]?.bytes, 1234, "字节数要跟着句柄走");
+  assert.strictEqual(asked[0]?.[0]?.width, 1024, "固有宽度要跟着句柄走");
+  assert.strictEqual(asked[0]?.[0]?.height, 768, "固有高度要跟着句柄走");
   assert.strictEqual(
     attachment?.dataUrl,
     "data:image/jpeg;base64,AAA",

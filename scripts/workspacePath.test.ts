@@ -44,8 +44,13 @@ console.log("workspacePath: 绝对形态按 POSIX / 盘符 / UNC 识别，单反
   assert.strictEqual(resolveWorkspacePath("D:\\work", "C:\\other\\a.ts"), "C:\\other\\a.ts");
   assert.strictEqual(resolveWorkspacePath(undefined, "a.ts"), "a.ts", "缺根时不猜绝对位置");
   assert.strictEqual(resolveWorkspacePath("", "a.ts"), "a.ts");
+  // 0.2.2-alpha.2 起官方把开头的 `./` 也当成「根上不要的前缀」丢掉（`../` 不丢）。
+  assert.strictEqual(resolveWorkspacePath("/work", "./a.ts"), "/work/a.ts");
+  assert.strictEqual(resolveWorkspacePath("C:\\work", ".\\a.ts"), "C:\\work\\a.ts");
+  assert.strictEqual(resolveWorkspacePath("/work", "././a.ts"), "/work/a.ts");
+  assert.strictEqual(resolveWorkspacePath("/work", "../a.ts"), "/work/../a.ts", "`../` 仍原样保留");
 }
-console.log("workspacePath: 相对路径只做字符串拼接（不消点、缺根不猜） ✓");
+console.log("workspacePath: 相对路径只做字符串拼接（去掉根上前缀、不消内部点、缺根不猜） ✓");
 
 // ---------- 3. 末段、相对化、记录值 ----------
 {

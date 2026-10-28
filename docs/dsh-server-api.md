@@ -110,6 +110,25 @@
   （`WorkspaceUnarchiveSessionRequest = {sessionId}`），回同一个 `WorkspaceArchiveValue`
   （`archivedSessionIds` 是**完整集合**，每次都是权威值）。归档在本摘录那一版就有，恢复是
   后加的：旧服务端（≤ 0.1.5-rc.3）请求它得 404，而恢复**没有替代路径**，界面只给一条失败通知。
+- **图片读取改收完整引用**（0.2.2-alpha.2）：`session/attachment` 的请求体由
+  `{sessionId, attachmentId}` 改成 `{sessionId, attachment: ImageAttachmentRef}`。新服务端
+  只按引用自带的 `mediaType/bytes/width/height` 校验存储对象，**不再扫会话历史**确认这枚图
+  属于该会话（`sessionId` 只剩网关权限范围）。旧服务端仍只认 `attachmentId`；两代靠
+  请求体识别（见「附件引用」）。
+- **`session/follow` 默认不再激活会话**（0.2.2-alpha.2）：新增可选 `activate`，不传就是只读
+  跟随；旧版没有这个字段而是**无条件**把准备好的会话提升成活 Agent。官方 Web 客户端固定传
+  `activate: true`。网关对 `request` 内的未知字段是剥离，所以两代可以同发。
+- **会话摘要只带「摘要白名单」里的投影**（0.2.2-alpha.2）：`session/list` 的
+  `SessionProjectionHints.values` 由全量投影值收窄成 `Partial<SessionProjectionSummaryValues>`；
+  `todos` / `turnOutline` / `sessionStats` / `actionCards` / `imageLimits` 这些在注册时声明
+  `summary: false` 的键不再出现在列表行里（打开的会话仍从 `session/follow` 开帧拿全量）。
+- **新增无头会话观察端点**（0.2.2-alpha.2，未消费）：`session/state`、`session/wait`、
+  `session/events`、`session/observeState`、`session/observeEvent`、`session/observeProjections`。
+  它们把「状态快照 + 等待 + 事件/投影订阅」拆成独立端点，官方 CLI 一类的无头客户端用它；
+  本扩展仍走 `session/control` + `session/follow`。
+- **模型选择投影的类型搬家**（0.2.2-alpha.2）：`modelSelection` 投影键与值形状
+  `{lastUsed, next}` 未变，声明从 `dsh-api-session-controller` 移到 `@deepseek-ai/dsh-agent`
+  （`CONTRACT_PACKAGES` 已补该包）。
 
 ---
 
@@ -434,7 +453,7 @@ POST /api/session/list
 ]}}
 ```
 
-`SessionSummary`（逐字，`⟨P⟩\dsh-api-session-controller\lib\types\types.d.ts:144-154`）：
+`SessionSummary`（逐字，`⟨P⟩\dsh-api-session-controller\lib\types\types.d.ts`，0.2.2-alpha.2）：
 
 ```ts
 export interface SessionSummary {
@@ -448,6 +467,12 @@ export interface SessionSummary {
     readonly projections?: SessionProjectionHints;
 }
 ```
+
+`projections.values` 是 **`SessionProjectionHints`**：`{kind: 'cached' | 'sequenced', asOfSeq, values}`，
+0.2.2-alpha.2 起只带「摘要键」——注册时声明 `summary: false` 的投影（`todos` / `turnOutline` /
+`sessionStats` / `actionCards` / `imageLimits`）不会出现在列表行里。扩展在列表里只读
+`title` / `agentPreset` / `subagent`，都不在排除集；打开会话后的全量投影仍来自
+`session/follow` 开帧与 `session/control` 的 baseline。
 
 > 激活策略：**只读存储 header + 投影缓存行**，不会唤起 Agent（`⟨P⟩\dsh-api-session-controller\README.md`「Each endpoint states its activation policy」）。
 
@@ -587,15 +612,18 @@ WS 逻辑流，`endpoint: "session/follow"`：
 {"type":"open","streamId":"<uuid>","endpoint":"session/follow",
  "payload":{"args":{"request":{
    "address":{"kind":"session","sessionId":"01J..."},
+   "activate":true,
    "maxMessages":50,
    "assistantStream":true}}}}
 ```
 
-`SessionFollowRequest`（`⟨P⟩\dsh-api-session-controller\lib\types\types.d.ts:416-422`）：
+`SessionFollowRequest`（`⟨P⟩\dsh-api-session-controller\lib\types\types.d.ts`，0.2.2-alpha.2）：
 
 ```ts
 export interface SessionFollowRequest {
     readonly address: SessionAddress;
+    /** Request background activation; omission leaves the read passive. */
+    readonly activate?: boolean;
     readonly maxMessages?: number;
     /** Include process-local assistant presentation frames for the Web client. */
     readonly assistantStream?: true;
@@ -612,6 +640,10 @@ export type SessionAddress = {
 ```
 
 **`assistantStream: true` 是拿到逐 token 流式增量的唯一途径**——不传就只有 durable 事件（`assistant/message` 一次性提交）。
+
+**`activate` 决定这次跟随要不要顺手唤起会话**：0.2.2-alpha.2 起不传就是只读跟随，官方 Web
+客户端固定传 `true`；0.2.1-rc.3 及更早没有这个字段，follow **总是**把准备好的会话提升成活
+Agent。网关对 `request` 里多出来的字段是剥离（不是拒绝），所以同一个请求体可以两代同发。
 
 > **`assistantStream` 是字面量 `true`，不是布尔开关**（2026-09-22 实测）。写 `false`
 > 会被网关的边界校验把**整条** `request` 拒掉：
@@ -682,8 +714,11 @@ POST /api/session/page
 ```ts
 export interface SessionPageRequest {
     readonly address: SessionAddress;
-    /** Inclusive log cut obtained from the corresponding follow opening frame. */
-    readonly throughSeq: number;
+    /**
+     * Inclusive log cut; omission selects the observed log end. A follow opening
+     * reports the cut it covered so a caller can pin the same point.
+     */
+    readonly throughSeq?: number;
     readonly beforeSeq?: number;
     readonly maxMessages?: number;
 }
@@ -692,7 +727,9 @@ export interface SessionPage { readonly records: readonly SessionHistoryRecord[]
 
 响应：`{"ok":true,"value":{"records":[{"type":"event","event":{...}}],"hasMore":true}}`
 
-**关键约束**：`throughSeq` **必须**来自同一会话某次 `session/follow` 开帧的 `snapshot.cursor`；不传或来自别处会校验失败。第三方实现记录了 0.1.2 起的这条契约（`⟨W⟩\src\dsh\apiClient.ts:467-470`）。
+**关键约束**：`throughSeq` 传值时必须来自同一会话某次 `session/follow` 开帧的 `snapshot.cursor`；
+0.2.2-alpha.2 起它可以省略，省略即「观测到的日志末尾」。第三方实现记录了 0.1.2 起「必须传」的
+旧形态（`⟨W⟩\src\dsh\apiClient.ts:467-470`）。
 
 分页按**消息对齐**：默认 50 条消息（`DEFAULT_MAX_MESSAGES = 50`），只保留 `user/message` / `assistant/message` 中 `surfaceOp === 'append'` 的（`⟨P⟩\dsh-api-session-controller\lib\index.js:1329, 1602-1623`），并按 `sourceEventSeqs` 分组——所以一页返回的 `records` 条数 ≠ 消息条数。
 
@@ -832,6 +869,9 @@ export interface ModelSelectionProjection {
     readonly next: ModelSelection | null;       // 下一次请求将使用的选择（回退到 lastUsed）
 }
 ```
+
+该投影键与值形状自引入以来未变；0.2.2-alpha.2 只是把它从 `dsh-api-session-controller` 移到了
+`@deepseek-ai/dsh-agent`（`CONTRACT_PACKAGES` 已补该包，类型面继续受追踪）。
 
 ### 4.3 Agent preset
 
@@ -1107,7 +1147,7 @@ POST /api/commands/execute  {"args":{"agentId":"01J...","line":"/compact","submi
 |---|---|---|
 | `fileReferences/list` | `{agentId, query}` | `@` 文件/目录候选，`{path, kind:'file'\|'directory'}[]` |
 | `sessionReferenceResolver/candidates` | `{agentId, query}` | `@` 会话候选，`{sessionId, label, cwd?, createdAt, mention}[]` |
-| `session/attachment` | `{request:{sessionId, attachmentId}}` | 读 durable 图片，`{attachment, data: base64}` |
+| `session/attachment` | `{request:{sessionId, attachment: ImageAttachmentRef}}`（≤ 0.2.1-rc.3 为 `{sessionId, attachmentId}`） | 读 durable 图片，`{attachment, data: base64}` |
 | `session/canOpenWorkspacePath` | `{}` | `boolean` |
 | `session/openWorkspacePath` | `{request:{path, action?:'reveal'}}` | `{opened:true}` |
 | `workspace/create` | `{request:{path}}` | `{workspace: WorkspaceView, created: boolean}` |
@@ -1729,6 +1769,17 @@ export interface FileAttachmentRef {
 ```
 
 `AttachmentIdType` 只是 `AttachmentId` 的别名（`⟨P⟩\dsh-attachment\lib\types\index.d.ts:10`）。取图片字节：`session/attachment`（返回 base64），或直接 `GET /api/file?path=<绝对路径>`。
+
+`session/attachment` 的请求体在 0.2.2-alpha.2 改成**完整引用**：
+`SessionAttachmentRequest = {sessionId, attachment: ImageAttachmentRef}`。新服务端按引用自带的
+`mediaType / bytes / width / height` 校验存储对象（`readImageFile` 会与字节头逐项比对），
+`sessionId` 只剩网关权限范围；旧服务端（≤ 0.2.1-rc.3）只认不透明 `attachmentId`，并且会扫
+会话历史确认这枚图属于该会话。跨版本客户端首次优先完整引用，后续优先成功过的格式；只有
+`gateway/input-invalid` 才尝试另一代并更新记忆，以适应同一客户端重连后的升级或回滚。
+网关分发用的是**普通** codec，未知字段会被剥离，所以旧
+服务端收到完整引用时会因缺 `attachmentId` 报 `gateway/input-invalid`；新服务端收到 id 也同样
+拒绝。两个字段一起给在当前的剥离语义下也能通过，但客户端不该把兼容性建立在「未知字段一定被
+剥离」上——严格 codec 一旦启用，双写就会整条失败。
 
 ### 6.7 流式块（StreamChunk）
 

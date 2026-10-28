@@ -451,6 +451,10 @@ export type WebviewToHost =
    *
    * `kind` 决定 durable 句柄是否值得向服务端换取字节；`name` 是落临时副本时的展示名，
    * `mediaType` 只在名字给不出扩展名时补充。副本只声明为副本，不冒充执行世界原件。
+   *
+   * `bytes` / `width` / `height` 是 0.2.2-alpha.2 起 `session/attachment` 的入参：
+   * 新服务端按**完整图片引用**校验存储对象，只有 id 会被拒。界面从芯片上原样交回，
+   * 宿主只拿它拼请求，不据此裁决任何身份。
    */
   | {
       type: "openAttachment";
@@ -460,6 +464,9 @@ export type WebviewToHost =
       id?: string;
       attachmentId?: string;
       mediaType?: string;
+      bytes?: number;
+      width?: number;
+      height?: number;
     }
   /**
    * 用**系统默认程序**打开一条外链（正文里 `[说明](https://…)` 这类链接）。

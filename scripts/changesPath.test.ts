@@ -54,11 +54,13 @@ console.log("changesPath: 规范化根不同且拼不上时宁可没有坐标 �
   assert.strictEqual(changeIndexForPath(files, "/work", "src/a.ts"), undefined, "POSIX 大小写是不同身份");
   assert.strictEqual(changeIndexForPath(files, "/work", "/work/src/A.ts"), 0);
   assert.strictEqual(changeIndexForPath(files, "/work", "/work/src/a.ts"), undefined);
-  // 不消 `.` / `..`：字符串层面证明不了（符号链接下还可能真的不同）
-  assert.strictEqual(changeIndexForPath(files, "/work", "./src/A.ts"), undefined);
+  // 开头的 `./` 是可丢的语法前缀（0.2.2-alpha.2 起官方 `resolveWorkspacePath` 也丢掉它）：
+  // 拼出来就是 `/work/src/A.ts`，可以关联。内部的 `.` / `..` 仍然证明不了（符号链接下
+  // 还可能真的不同），不消。
+  assert.strictEqual(changeIndexForPath(files, "/work", "./src/A.ts"), 0);
   assert.strictEqual(changeIndexForPath(files, "/work", "src/../src/A.ts"), undefined);
 }
-console.log("changesPath: 不 lowercase、不消点（错误关联比没有坐标更糟） ✓");
+console.log("changesPath: 不 lowercase、只丢根上前缀、不消内部点（错误关联比没有坐标更糟） ✓");
 
 // ---------- 4. 分隔符：只对 Windows 形态做等价合并 ----------
 {

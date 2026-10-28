@@ -8,6 +8,7 @@ import {
   type RemoteEventOutcome,
   type RpcError,
   type ServerResponse,
+  type SessionAddress,
   type SessionFollowRequest,
 } from "./protocol";
 
@@ -811,6 +812,11 @@ export class DshClient {
    * `subagent` 给出时用**子代理地址**打开（`{kind:'subagent', …}`）：地址是宿主
    * 鉴权的一部分，`mode` 必须是子代理的真实模式，硬编码 `continuable` 打开
    * one-shot 子代理会被 `subagent/unauthorized` 拒绝。
+   *
+   * `activate: true` 是 0.2.2-alpha.2 起的新字段：那一版把 follow 改成**默认只读**
+   * （不再顺手激活会话），官方 Web 客户端显式要求激活；不传的话，打开一条准备好的
+   * 会话不会再把它恢复成活的 Agent。旧服务端没有这个字段，但网关对 `request` 内的
+   * 未知字段是**剥离**而不是拒绝（见 `SessionFollowRequest`），所以两代同发。
    */
   followSession(
     sessionId: string,
@@ -827,15 +833,7 @@ export class DshClient {
       : { kind: "session" as const, sessionId };
     return this.openStream(
       STREAMS.sessionFollow,
-      {
-        request: {
-          address,
-          // 跟随窗口带多少条消息。默认 60：够渲染一屏多的上下文，又不至于每次
-          // 打开会话都把整段历史搬过来。往前翻页用 session/page（见 page()）。
-          maxMessages: 60,
-          assistantStream: true,
-        } satisfies SessionFollowRequest,
-      },
+      { request: sessionFollowRequest(address) },
       callbacks,
     );
   }
@@ -934,6 +932,27 @@ export interface SessionSummaryWire {
   origin?: string;
   agentPreset?: string;
   projections?: { asOfSeq: number; values: Record<string, unknown> };
+}
+
+/**
+ * `session/follow` 的请求体（见 `DshClient.followSession`）。
+ *
+ * 单独抽出来是为了让它可被离线断言：`activate` 只影响服务端的后台激活，写丢在界面上
+ * 没有任何报错，只会表现成「打开的会话停在只读历史、后台不恢复」。
+ *
+ * - `activate: true`：0.2.2-alpha.2 起 follow 默认只读，必须显式要求激活；旧服务端没有
+ *   这个字段，但网关对 `request` 内的未知字段是剥离，不会拒绝。
+ * - `maxMessages: 60`：够渲染一屏多的上下文，又不至于每次打开会话都把整段历史搬过来；
+ *   往前翻页用 `page()`。
+ * - `assistantStream: true`：逐 token 增量的唯一开关（字面量，不是布尔）。
+ */
+export function sessionFollowRequest(address: SessionAddress): SessionFollowRequest {
+  return {
+    address,
+    activate: true,
+    maxMessages: 60,
+    assistantStream: true,
+  };
 }
 
 /**

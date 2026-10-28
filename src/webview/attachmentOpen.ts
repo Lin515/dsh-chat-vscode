@@ -25,6 +25,9 @@ export function openAttachment(attachment: Attachment): void {
     ...(attachment.id ? { id: attachment.id } : {}),
     ...(attachment.attachmentId ? { attachmentId: attachment.attachmentId } : {}),
     ...(attachment.mediaType ? { mediaType: attachment.mediaType } : {}),
+    ...(attachment.bytes !== undefined ? { bytes: attachment.bytes } : {}),
+    ...(attachment.width !== undefined ? { width: attachment.width } : {}),
+    ...(attachment.height !== undefined ? { height: attachment.height } : {}),
   });
 }
 

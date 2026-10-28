@@ -32,6 +32,8 @@ import * as vscode from "vscode";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Attachment } from "../src/shared/chat";
+import { DshApiError } from "../src/dsh/client";
+import type { ImageRef } from "../src/dsh/adapter";
 import { attachmentTempRoot, contentDigest } from "../src/dsh/attachmentOpen";
 import { readOriginalTarget } from "../src/dsh/attachmentOpenStore";
 
@@ -612,6 +614,7 @@ interface Internals {
   addPaths?(viewId: string, paths: readonly string[], source: string): Promise<void>;
   fileExistence(uri: { fsPath: string }): Promise<"present" | "absent" | "unknown">;
   openChanges(uri: { fsPath: string }): Promise<boolean>;
+  fetchAttachmentBytes(sessionId: string, ref: ImageRef): Promise<{ bytes: Buffer; mediaType?: string } | undefined>;
   sessions: { id: string; cwd: string }[];
   bindView(viewId: string): void;
   unbindView(viewId: string): void;
@@ -1517,6 +1520,131 @@ await scenario("二.23 失效原路径后先取上传索引，再取 durable 图
     rmSync(root, { recursive: true, force: true });
     rmSync(dirname(copy), { recursive: true, force: true });
   }
+});
+
+await scenario("二.23b 附件读取按完整引用发请求，旧服务端回退 id 并记住", async () => {
+  const h = await openHarness();
+  const bytes = Buffer.from("reference-read-bytes");
+  const name = "reference-read.png";
+  const copy = join(attachmentTempRoot(tmpdir()), contentDigest(bytes).slice(0, 12), name);
+  const requests: unknown[] = [];
+  const client = h.c.client as unknown as {
+    request: (method: string, params: { request: Record<string, unknown> }) => Promise<unknown>;
+  };
+  client.request = async (method, params) => {
+    assert.strictEqual(method, "session/attachment", "只允许离线附件读数");
+    requests.push(params.request);
+    // 按旧服务端的行为：认不出 `attachment`，缺 `attachmentId` → input-invalid
+    if ("attachment" in params.request) {
+      throw new DshApiError("gateway/input-invalid", `wire field "request" failed boundary validation`);
+    }
+    return { data: bytes.toString("base64"), attachment: { mediaType: "image/png" } };
+  };
+  const open = (attachmentId: string) => h.c.handle({
+    type: "openAttachment",
+    kind: "image",
+    name,
+    attachmentId,
+    mediaType: "image/png",
+    bytes: bytes.byteLength,
+    width: 7,
+    height: 5,
+  }, "v1");
+  try {
+    await open("sha256:reference");
+    assert.deepStrictEqual(requests, [
+      {
+        sessionId: A,
+        attachment: {
+          attachmentId: "sha256:reference",
+          mediaType: "image/png",
+          bytes: bytes.byteLength,
+          width: 7,
+          height: 5,
+          name,
+        },
+      },
+      { sessionId: A, attachmentId: "sha256:reference" },
+    ], "先发完整引用；只有 input-invalid 才回退 id");
+    assert.strictEqual(readFileSync(copy, "utf8"), bytes.toString(), "回退后的字节照样落成临时副本");
+
+    // 同一连接换了另一枚句柄：旧代结论要保留，不再先撞一次 input-invalid。
+    editorCalls.reset();
+    requests.length = 0;
+    await open("sha256:reference-2");
+    assert.deepStrictEqual(
+      requests,
+      [{ sessionId: A, attachmentId: "sha256:reference-2" }],
+      "同一连接记住旧代请求体",
+    );
+    assert.deepStrictEqual(editorCalls.openedViaCommand, [copy], "旧代结论不影响打开");
+  } finally {
+    rmSync(dirname(copy), { recursive: true, force: true });
+  }
+});
+
+await scenario("二.23c 同一客户端升级或回滚后重新协商，其他错误不重试", async () => {
+  const h = harness();
+  const bytes = Buffer.from("protocol-renegotiation");
+  const ref: ImageRef = {
+    attachmentId: `sha256:${"a".repeat(64)}`,
+    mediaType: "image/png",
+    bytes: bytes.byteLength,
+    width: 7,
+    height: 5,
+  };
+  const requests: string[] = [];
+  let server: "old" | "new" = "old";
+  let failure: Error | undefined;
+  const client = h.c.client as {
+    request: (method: string, params: { request: Record<string, unknown> }) => Promise<unknown>;
+  };
+  client.request = async (method, params) => {
+    assert.strictEqual(method, "session/attachment");
+    const shape = "attachment" in params.request ? "reference" : "id";
+    requests.push(shape);
+    if (failure) throw failure;
+    if ((server === "old" && shape === "reference") || (server === "new" && shape === "id")) {
+      throw new DshApiError("gateway/input-invalid", "missing required field");
+    }
+    return { data: bytes.toString("base64"), attachment: { mediaType: "image/png" } };
+  };
+  const read = async (expected: string[]) => {
+    requests.length = 0;
+    const value = await h.c.fetchAttachmentBytes(A, ref);
+    assert.deepStrictEqual(requests, expected);
+    assert.deepStrictEqual(value, { bytes, mediaType: "image/png" });
+    assert.strictEqual(h.c.client, client, "协议变化没有更换客户端对象");
+  };
+  const rejectWithoutRetry = async (shape: string) => {
+    for (const error of [
+      new Error("offline network failure"),
+      new DshApiError("gateway/unauthorized", "unauthorized"),
+      new DshApiError("gateway/internal", "internal error"),
+      new DshApiError("session/attachment-invalid", "reference mismatch"),
+    ]) {
+      failure = error;
+      requests.length = 0;
+      assert.strictEqual(await h.c.fetchAttachmentBytes(A, ref), undefined);
+      assert.deepStrictEqual(requests, [shape], "非格式错误不触发协议协商");
+    }
+    failure = undefined;
+  };
+
+  await read(["reference", "id"]);
+  await read(["id"]);
+  await rejectWithoutRetry("id");
+  server = "new";
+  await read(["id", "reference"]);
+  await read(["reference"]);
+  await rejectWithoutRetry("reference");
+  requests.length = 0;
+  assert.strictEqual(await h.c.fetchAttachmentBytes(A, { attachmentId: ref.attachmentId }), undefined);
+  assert.deepStrictEqual(requests, ["id"], "缺少元数据时只尝试可构造的请求体");
+  await read(["reference"]);
+  server = "old";
+  await read(["reference", "id"]);
+  await read(["id"]);
 });
 
 await scenario("二.24 全来源不可用只报一次附件提示，普通删文件仍走 git diff", async () => {

@@ -65,6 +65,14 @@ export type SessionAddress =
  */
 export interface SessionFollowRequest {
   address: SessionAddress;
+  /**
+   * 请求后台激活这个会话（`0.2.2-alpha.2` 起才有，官方 Web 客户端固定传 `true`）。
+   *
+   * 不传就是**只读跟随**：`0.2.1-rc.3` 及更早的版本没有这个字段，follow 会顺手把
+   * 准备好的会话 `promote` 成活 Agent，所以旧版不传也照样激活。网关对 `request`
+   * 内的未知字段是剥离而不是拒绝，两代可以同发（见 `client.followSession`）。
+   */
+  activate?: boolean;
   maxMessages?: number;
   assistantStream?: true;
 }

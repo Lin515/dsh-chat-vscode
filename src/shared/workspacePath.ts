@@ -33,15 +33,17 @@ export function isAbsoluteWorkspacePath(path: string): boolean {
 /**
  * 把相对路径拼到工作目录上（官方 `resolveWorkspacePath`）。
  *
- * 只做字符串拼接，**不**消 `.` / `..`、不转分隔符、不校验存在性：最终规范化由
- * 执行世界的 provider 完成。工作目录缺失时原样返回相对拼写，绝不猜绝对位置。
+ * 只做字符串拼接，**不**消内部的 `.` / `..`、不转分隔符、不校验存在性：最终规范化由
+ * 执行世界的 provider 完成。**开头**的 `./` 与分隔符会被丢掉（0.2.2-alpha.2 起官方
+ * 也这么处理：`./a.ts` 与 `/a.ts` 拼出来是同一个目标），而 `../a.ts` 原样保留——
+ * 越过根是上层要裁决的事。工作目录缺失时原样返回相对拼写，绝不猜绝对位置。
  */
 export function resolveWorkspacePath(cwd: string | undefined, path: string): string {
   if (isAbsoluteWorkspacePath(path)) return path;
   if (cwd === undefined || cwd === "") return path;
   const separator = isWindowsStylePath(cwd) && cwd.includes("\\") ? "\\" : "/";
   const base = cwd.replace(/[/\\]+$/, "");
-  const relative = path.replace(/^[/\\]+/, "");
+  const relative = path.replace(/^(?:\.?[/\\])+/, "");
   return `${base}${separator}${relative}`;
 }
 
