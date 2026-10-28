@@ -3,6 +3,18 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 This project follows [Semantic Versioning](https://semver.org/).
 
+## 0.11.6（2026-10-29）
+
+### 中文
+
+- 修复：行内代码里的文件链接折行时，芯片不再错位，各行文字从同一起点排。
+- 修复：正文中引用的本地图片在新版服务端上不再一律显示「加载失败」，可正常读取显示。
+
+### English
+
+- Fixed: File links inside inline code no longer misalign when they wrap; every line starts at the same position.
+- Fixed: Local images referenced in message text are no longer always reported as failed to load on newer servers and now display normally.
+
 ## 0.11.5（2026-10-28）
 
 ### 中文
