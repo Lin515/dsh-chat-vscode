@@ -147,6 +147,8 @@ const entries = {
   "build/turn-files.test.mjs": "scripts/turnFiles.test.ts",
   "build/file-change.test.mjs": "scripts/fileChange.test.ts",
   "build/remote-files.test.mjs": "scripts/remoteFiles.test.ts",
+  // Host 的 /api/file 版本化 302：字节路由必须跟一次同源跳转，且 cookie 不出 origin
+  "build/media-redirect.test.mjs": "scripts/mediaRedirect.test.ts",
   "build/remote-file-sync.test.mjs": "scripts/remoteFileSync.test.ts",
   "build/binary-rpc.test.mjs": "scripts/binaryRpc.test.ts",
   "build/styles.test.mjs": "scripts/styles.test.ts",

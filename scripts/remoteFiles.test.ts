@@ -238,6 +238,10 @@ console.log("remote-files: 分页自洽 / 版本一致 / 不推测末尾换行 �
     transport.bytesCalls[0]?.startsWith("/api/file?path=%2Fw%2Fp.png"),
     `媒体路由必须使用 Host 返回的绝对路径，实际：${transport.bytesCalls[0]}`,
   );
+  assert.ok(
+    transport.bytesCalls[0]?.includes("v=v1"),
+    `媒体路由要带 stat 的版本号，否则 Host 会先 302 一跳，实际：${transport.bytesCalls[0]}`,
+  );
 }
 console.log("remote-files: 媒体字节走 api/file 且预算生效 ✓");
 

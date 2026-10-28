@@ -243,8 +243,13 @@ export class DshClient {
    * 读一条认证的 Host 字节路由（`GET /api/file?path=…`）。
    *
    * 与 `getJson` 的区别只在响应体：图片/普通文件的真实字节不能当 JSON 解析，也
-   * 不能按扩展名在本机重新读盘。这里保留部署前缀（`baseUrl` 自带路径）与 cookie，
-   * 并**禁止重定向**：`redirect: "error"` 确保 cookie 不会被 30x 带到别的 origin。
+   * 不能按扩展名在本机重新读盘。这里保留部署前缀（`baseUrl` 自带路径）与 cookie。
+   *
+   * **同源跳转只跟一次**：Host 的 `/api/file` 用 `v=<版本>` 标识「这一份字节」，
+   * 缺版本号或版本已变时回一条指向带版本 URL 的相对 302。不跟这条跳转就等于把整条
+   * 媒体路由判成失败（正文里每张本地图都会「加载失败」）；无条件跟随又会把 cookie
+   * 带去别的 origin。所以第一跳由这里手看：目标必须同源、仍落在部署前缀的 `/api/`
+   * 下，才发第二次请求，且第二次不再跟随。
    *
    * `404` 与 `getJson` 同一口径，返回 `undefined`；413（超过 Host 的部署限额）与
    * 其它非 2xx 抛 `DshApiError`，调用方按「不可用 / 过大」处理，不回退本机。
@@ -254,37 +259,32 @@ export class DshClient {
     timeoutMs = 60_000,
   ): Promise<{ bytes: Uint8Array; mediaType?: string } | undefined> {
     const base = new URL(this.baseUrl);
-    const url = new URL(`${this.baseUrl}${path}`);
-    if (url.origin !== base.origin) {
-      throw new DshApiError("host/bytes", "refusing a byte route outside the DSH origin", undefined);
-    }
-    // 部署可能挂在子路径下，所以「在 /api/ 下」要相对这个前缀判断，并验
-    // **规范化后**的路径（`/api/../x` 会被 URL 折到 API 之外）。
-    const apiPrefix = `${base.pathname.replace(/\/+$/, "")}/api/`;
-    if (!url.pathname.startsWith(apiPrefix)) {
-      throw new DshApiError(
-        "host/bytes",
-        `refusing a byte route that resolves outside ${apiPrefix}: ${path}`,
-        undefined,
-      );
-    }
+    const first = this.byteRoute(`${this.baseUrl}${path}`, base, path);
     const headers: Record<string, string> = { accept: "*/*" };
     if (this.cookie) headers.cookie = this.cookie;
-    let res: Response;
-    try {
-      res = await fetch(url, {
-        method: "GET",
-        headers,
-        // 不跟随重定向：浏览器/Node 的自动跟随会把 cookie 带到新 origin。
-        redirect: "error",
-        signal: AbortSignal.timeout(timeoutMs),
-      });
-    } catch (error) {
-      throw new DshApiError(
-        "host/bytes",
-        `GET ${path} 失败：${error instanceof Error ? error.message : String(error)}`,
-        undefined,
-      );
+    const send = async (url: URL, redirect: "manual" | "error"): Promise<Response> => {
+      try {
+        return await fetch(url, {
+          method: "GET",
+          headers,
+          redirect,
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+      } catch (error) {
+        throw new DshApiError(
+          "host/bytes",
+          `GET ${path} 失败：${error instanceof Error ? error.message : String(error)}`,
+          undefined,
+        );
+      }
+    };
+    let res = await send(first, "manual");
+    if (res.status >= 300 && res.status < 400) {
+      const location = res.headers.get("location");
+      if (!location) {
+        throw new DshApiError("host/bytes", `GET ${path} 失败：重定向缺少 Location`, undefined);
+      }
+      res = await send(this.byteRoute(new URL(location, first).href, base, path), "error");
     }
     if (res.status === 404) return undefined;
     if (res.status === 401 || res.status === 403) {
@@ -297,6 +297,30 @@ export class DshClient {
     const mediaType = res.headers.get("content-type")?.split(";")[0]?.trim() || undefined;
     const bytes = new Uint8Array(await res.arrayBuffer());
     return { bytes, ...(mediaType ? { mediaType } : {}) };
+  }
+
+  /**
+   * 校验一条字节路由：与部署同源，且**规范化后**仍落在部署前缀的 `/api/` 下
+   * （`/api/../x` 会被 URL 折到 API 之外）。跳转目标同样过这一关。
+   */
+  private byteRoute(raw: string, base: URL, path: string): URL {
+    const url = new URL(raw);
+    if (url.origin !== base.origin) {
+      throw new DshApiError(
+        "host/bytes",
+        `refusing a byte route outside the DSH origin: ${path}`,
+        undefined,
+      );
+    }
+    const apiPrefix = `${base.pathname.replace(/\/+$/, "")}/api/`;
+    if (!url.pathname.startsWith(apiPrefix)) {
+      throw new DshApiError(
+        "host/bytes",
+        `refusing a byte route that resolves outside ${apiPrefix}: ${path}`,
+        undefined,
+      );
+    }
+    return url;
   }
 
   /**

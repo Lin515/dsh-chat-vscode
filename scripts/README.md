@@ -162,6 +162,7 @@
 - [produced.test.ts](<produced.test.ts>) — 「本轮产出文件」推导（`producedPath`，按成功的写类调用）。
 - [fileChange.test.ts](<fileChange.test.ts>) — 执行世界存在性三态、本机附件 source 边界、创建目录权威账本优先，以及 controller / provider 不再走本机 stat / git 的接线。
 - [remoteFiles.test.ts](<remoteFiles.test.ts>) — 执行世界文件访问：fake transport 驱动 stat / 分页 / 普通文件二进制 `readBytes`（offset/eof/完整性与 range 核对）/ 媒体 `/api/file`、连接关闭、权限不等于 absent、change feed 目标校验与资源地址身份。
+- [mediaRedirect.test.ts](<mediaRedirect.test.ts>) — `DshClient.getBytes` 对 Host 媒体路由的版本化 302：同源跟一次拿到字节、跨源与跳出 `/api/` 的目标整份拒绝且不泄露 cookie（本机 HTTP 对端驱动）。
 - [binaryRpc.test.ts](<binaryRpc.test.ts>) — Connection 二进制 RPC 的 multipart 解码：附件回填、嵌套路径，以及重复字段 / 重复 part / 原型链路径 / 非 null 占位 / 多余字段整份拒绝。
 - [remoteFileSync.test.ts](<remoteFileSync.test.ts>) — 只读资源观察核心的行为级回归：同版本 mtime 稳定、双 watch 引用计数、删除后 Created 恢复、权限不 Deleted、慢 stat 单飞与事件竞态、ready 补查、版本/timer 有界清理。
 - [diff.test.ts](<diff.test.ts>) — `shared/diff.ts`（`diffLines` / `hunkFromTexts` / `hunksFromMeta` 等）。

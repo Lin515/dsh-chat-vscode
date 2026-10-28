@@ -602,6 +602,9 @@ export class HostFileAccess {
    * `stat.absolutePath` 必须来自本连接的 `workspaceFiles.stat`；调用方不得用本机
    * 路径拼它。媒体路由的部署限额（官方图片字节上限）由 Host 裁决，客户端不另造
    * 图片字节门；普通文件不经过这里，走 {@link readBytes} 的二进制 RPC。
+   *
+   * 查询串带 `path` 与 `v`（`stat.version`）：Host 的这条路由以版本号标识「哪一份
+   * 字节」，缺版本号时回相对 302。跟随这一跳在 {@link HostFileTransport.getBytes}。
    */
   async readBytesAt(stat: HostFileStat, path: string, options: HostBytesOptions = {}): Promise<HostFileBytes> {
     this.assertOpen();
@@ -611,7 +614,10 @@ export class HostFileAccess {
     if (!isExecutionWorldAbsolute(stat.absolutePath)) {
       throw new HostFileError("unknown", `"${path}" has no execution-world absolute path`);
     }
-    const query = new URLSearchParams({ path: stat.absolutePath });
+    // `v` 是 Host 的版本号：带上它，媒体路由直接回这一份字节；不带（或版本已变）
+    // 会被相对 302 指到带版本的 URL。客户端跟随这一跳（见 `DshClient.getBytes`），
+    // 但能少一跳就少一跳——正文里可能一次几十张图。
+    const query = new URLSearchParams({ path: stat.absolutePath, v: stat.version });
     let response: HostFileBytesResponse | undefined;
     try {
       response = await this.transport.getBytes(`/api/file?${query.toString()}`, BYTES_TIMEOUT_MS);
