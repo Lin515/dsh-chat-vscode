@@ -1608,6 +1608,31 @@ console.log("styles: 节点展开体统一是「节点框」（问卷记录 / �
 }
 console.log("styles: 正文图限高 360px（官方式缩略图）+ 原图浮层不受该上限 ✓");
 
+// ---------- 16c'''. 行内代码文件链接跨行时：芯片包住整个按钮，文字逐行左对齐 ----------
+//
+// 用户 2026-10-28 报「引用块内容是链接时，窗口宽度不够、内容超两行会出现渲染异常」。
+// 截图里长路径的第二行只剩一条一行高的芯片底、文字从中间起排，上半截裸在背景上。
+// 现场是 `` `D:/…/x.md` `` 命中本轮文件词表后被换成 `<code><button class="file-mention">`
+// （见 webview/fileMentions.ts）。按钮是原子行内盒（Chrome 连 `display: inline` 也按
+// inline-block 处理），外层 `code` 仍是 inline 时，它的底色只画在自己的**空行盒**上，
+// 包不住按钮的两行文字；按钮内部换行又按 UA 的 `text-align: center` 居中。
+// 两条声明缺一不可：`code` 收成 inline-block 让芯片包住按钮，按钮改左对齐。
+// 布局结果由窄侧栏预览验收（见 AGENTS.md「构建与验证」），这里钉住这两条成因。
+{
+  const chip = rule(".md code:has(> .file-mention)");
+  assert.ok(
+    /display:\s*inline-block/.test(chip),
+    `含文件链接的行内代码必须收成 inline-block（现在 "${chip.trim()}"）——否则跨行时` +
+      "外层 inline 的底色只画在最后一行，包不住按钮里的长路径",
+  );
+  const mention = rule(".md code > .file-mention");
+  assert.ok(
+    /text-align:\s*start/.test(mention),
+    "文件链接按钮的文字要逐行左对齐：按钮默认居中，长路径换行后第二行会从中间起排",
+  );
+}
+console.log("styles: 行内代码文件链接跨行时芯片包住按钮、文字左对齐 ✓");
+
 // ---------- 16d. 轨迹是整页视图：打开就占用整个会话窗口，输入区让位 ----------
 //
 // 用户 2026-09-16 口径：「轨迹页面应当打开就是占用整个会话窗口，但是切换回会话时要能

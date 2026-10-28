@@ -1641,7 +1641,16 @@ button.header-title.is-switcher > svg.is-open {
    （见 webview/fileMentions.ts），样式与官方 `.fileMention` 同口径——仍然是一枚
    代码芯片（底色/圆角/内边距都由外层 `code` 给，按钮自己不画），但按链接的样子
    给信号：静止态**不给**下划线（等宽字的下伸部会和它打架），悬停 / 键盘聚焦时
-   才出现虚线下划线与环境色。 */
+   才出现虚线下划线与环境色。
+
+   含按钮的 `code` 必须收成 inline-block：表单控件是原子行内盒（浏览器把按钮的
+   `display: inline` 也当 inline-block），外层 inline 的底色只会画在自己的**空
+   行盒**上——文件路径一跨行，芯片就只剩最后一行一条窄底，上半截裸在背景上。
+   收成 inline-block 后底色 / 圆角 / 内边距才包住整个按钮。 */
+.md code:has(> .file-mention) {
+  display: inline-block;
+}
+
 .md code > .file-mention {
   margin: 0;
   padding: 0;
@@ -1650,6 +1659,9 @@ button.header-title.is-switcher > svg.is-open {
   font: inherit;
   color: var(--link);
   cursor: pointer;
+  /* 按钮默认居中：长路径在按钮内部换行时，第二行会从中间起排，与首行错开。
+     芯片本身的左边缘才是链接的起点，文字必须逐行左对齐。 */
+  text-align: start;
 }
 
 .md code > .file-mention:hover,
