@@ -1,6 +1,25 @@
-# 更新日志
+# 更新日志 / Changelog
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
+This project follows [Semantic Versioning](https://semver.org/).
+
+## 0.11.5（2026-10-28）
+
+### 中文
+
+- 修复：对齐 DeepSeek Harness `0.2.2-alpha.2`，历史图片可正常显示与打开，并兼容旧版服务端及重连后的服务端升级或回滚。
+- 修复：打开已有会话时与官方界面一致地恢复其后台运行状态，不再仅以只读方式跟随历史记录。
+- 修复：停止或重启内部 DSH 时可靠送达操作请求，停止后不再自动接回正在退出的后台，也不影响当前外部连接或后来启动的新后台。
+- 修复：连接和启动期间不再将正在退出的后台误判为可用，也不会重复启动后台或阻碍连接外部服务。
+- 修复：文件路径带有前导相对路径标记时，仍可正确关联本轮改动并打开对应文件。
+
+### English
+
+- Fixed: Aligned with DeepSeek Harness `0.2.2-alpha.2` so historical images display and open correctly, while retaining compatibility with older servers and server upgrades or rollbacks after reconnection.
+- Fixed: Opening an existing session now restores its background execution state as in the official interface, rather than only following its history in read-only mode.
+- Fixed: Internal DSH stop and restart requests are delivered reliably, and stopping no longer reconnects to the exiting background service or disrupts the current external connection or a newly started background service.
+- Fixed: Connecting or starting no longer treats an exiting background service as available, starts duplicate background services, or blocks connections to external services.
+- Fixed: File paths with leading relative-path markers now match the current turn’s changes and open the corresponding files correctly.
 
 ## 0.11.4（2026-10-26）
 
