@@ -759,7 +759,7 @@ export function App() {
   /**
    * 技能名 → 服务端给的 `SKILL.md` 路径（`skills/list` 的 `path`，随命令目录下发）。
    *
-   * 只服务工具行的「Ctrl/Cmd 单击打开 SKILL.md」：没有路径的技能不在这张表里，
+   * 只服务工具行的「Ctrl/Cmd 单击打开真实 SKILL.md」：没有路径的技能不在这张表里，
    * 对应的技能节点也就不给动作——不按名字拼本机路径（见 `docs/dsh-server-api.md`
    * 的 `skills/list` 一节）。
    */

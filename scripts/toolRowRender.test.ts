@@ -16,6 +16,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ToolCallView } from "../src/shared/chat";
 import type { NodeOpenPort } from "../src/webview/nodeOpen";
+import { altLabel } from "../src/webview/modifierLabel";
 
 // `bridge.ts` 在模块求值期挂 `window` 监听；无头环境补最小实现，见 questionRender。
 (globalThis as { window?: unknown }).window = {
@@ -25,6 +26,7 @@ import type { NodeOpenPort } from "../src/webview/nodeOpen";
 
 const { ToolRow, modifierTargetOf } = await import("../src/webview/components/Rows");
 const { TextsContext, dictionaryFor } = await import("../src/webview/texts");
+const alt = altLabel();
 
 /** 展开态的端口：测试里恒为展开，才能看到展开体。 */
 const openNode: NodeOpenPort = {
@@ -82,18 +84,18 @@ const skillTool = (overrides: Partial<ToolCallView> = {}): ToolCallView => ({
   assert.ok(!html.includes("&quot;name&quot;"), "不再显示调用参数 JSON");
   assert.ok(html.includes("加载技能"), "技能节点用自有标题");
   assert.ok(
-    html.includes('title="按住 Ctrl/Cmd 单击打开 SKILL.md"'),
-    "服务端给了 SKILL.md 路径时，行头要有修饰键提示",
+    html.includes(`title="按住 ${alt} 单击打开可编辑的 SKILL.md"`),
+    "服务端给了 SKILL.md 路径时，行头要有真实文件修饰键提示",
   );
 }
-console.log("toolRowRender: 技能节点只显示 SKILL 正文，并提示 Ctrl/Cmd 打开 SKILL.md ✓");
+console.log("toolRowRender: 技能节点只显示 SKILL 正文，并提示修饰键打开真实 SKILL.md ✓");
 
 // ---------- 1b. 服务端没给路径：不挂动作，也不提示 ----------
 
 {
   const html = render(skillTool());
   assert.ok(html.includes("先读文档，再构建。"), "正文照旧显示");
-  assert.ok(!html.includes("Ctrl/Cmd"), "没有 SKILL.md 路径时不得提示一个不存在的动作");
+  assert.ok(!html.includes("打开可编辑的真实文件"), "没有 SKILL.md 路径时不得提示一个不存在的动作");
 }
 console.log("toolRowRender: 缺少 SKILL.md 路径时不提示、不构造本机路径 ✓");
 
@@ -119,8 +121,8 @@ for (const name of ["read", "write", "edit"]) {
     filePath: "src/a.ts",
   });
   assert.ok(
-    withPath.includes("按住 Ctrl/Cmd 单击打开文件"),
-    `${name}: 有文件路径时行头要有修饰键提示`,
+    withPath.includes(`按住 ${alt} 单击打开可编辑的真实文件`),
+    `${name}: 有文件路径时行头要有真实文件修饰键提示`,
   );
 
   const withoutPath = render({
@@ -132,8 +134,8 @@ for (const name of ["read", "write", "edit"]) {
     input: '{"file_path":"src/a.ts"}',
   });
   assert.ok(
-    !withoutPath.includes("Ctrl/Cmd"),
-    `${name}: 没有可打开路径时不得提示修饰键动作`,
+    !withoutPath.includes("is-file-openable"),
+    `${name}: 没有 filePath 时行头不得挂修饰键动作（detail 自己的普通点击是另一档）`,
   );
 }
 console.log("toolRowRender: 读 / 写 / 编辑节点只在有路径时提示 Ctrl/Cmd 打开文件 ✓");

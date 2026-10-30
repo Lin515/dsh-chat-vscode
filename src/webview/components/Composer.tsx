@@ -48,6 +48,7 @@ import { clickGestureHandler, sendButtonView, watchModifierKeys } from "../compo
 import { hitsAnyRect, mirrorBoxWidth } from "../composerMention";
 import { ComposerSessionDraft } from "../composerSessionDraft";
 import { openMentionTarget } from "../mentionOpen";
+import { altLabel, modifierLabel } from "../modifierLabel";
 import { scanCommandLinks, useCommandLinks } from "../commandLinks";
 import { openAttachment } from "../attachmentOpen";
 import { usePickerFocus } from "../pickerFocus";
@@ -505,11 +506,11 @@ export function Composer({
     return false;
   };
 
-  /** 按当下的修饰键状态给文本域一个光标：命中引用且按着 Ctrl / Cmd = 手指。 */
-  const applyMentionCursor = (x: number, y: number): void => {
+  /** 按当下的修饰键状态给文本域一个光标：命中引用且按着 Alt / Ctrl / Cmd = 手指。 */
+  const applyMentionCursor = (x: number, y: number, alt = false): void => {
     const el = textareaRef.current;
     if (!el) return;
-    const next = modifierHeld && hitsMentionAt(x, y) ? "pointer" : "";
+    const next = (modifierHeld || alt) && hitsMentionAt(x, y) ? "pointer" : "";
     if (el.style.cursor !== next) el.style.cursor = next;
   };
 
@@ -1079,28 +1080,29 @@ export function Composer({
                     ? texts.placeholderFollowUp
                     : texts.placeholderFirst
               }
-              // 草稿里的引用要按住 Ctrl（macOS 上 Cmd）单击才打开——文本域是**纯文本**，
-              // 做不出真正的行内链接，只能按光标位置判（见 `../mentionOpen`）。
-              title={texts.mentionClickHint}
+              // 草稿里的引用：Alt 打开真实文件，Ctrl/Cmd 打开引用（原有的只读动作）。
+              // 文本域是**纯文本**，做不出真正的行内链接，只能按光标位置判（见 `../mentionOpen`）。
+              title={texts.mentionClickHint(altLabel(), modifierLabel())}
               {...completion.textareaProps}
               // 写在摊开之后：文本域只有一个 `onClick`，这里**接着**补全那边的光标刷新
               // 再判一次 Ctrl+单击，而不是把它顶掉（否则候选菜单不再跟着光标走）。
               onClick={(event) => {
                 completion.textareaProps.onClick?.(event);
-                // 不按 Ctrl 时什么都不做：普通单击只管定位光标
-                if (!event.ctrlKey && !event.metaKey) return;
+                // Alt 打开真实文件；Ctrl/Cmd 打开引用（原有动作）。其余单击只管定位光标。
+                const real = event.altKey;
+                if (!real && !event.ctrlKey && !event.metaKey) return;
                 const caret = event.currentTarget.selectionStart ?? 0;
                 const target = sessionDraft.targetAt(caret, state.commands);
                 if (target) openMentionTarget(target, (name) => {
                   const span = scanCommandLinks(displayDraft, state.commands)
                     .find((item) => caret >= item.start && caret <= item.end);
                   commandLinks.openMenu(name, span && { start: span.start, end: span.end });
-                });
+                }, real ? "real" : "read");
               }}
               // 手指光标：划到引用上方且按着修饰键才出现（判据与上面那条 onClick 同源）
               onMouseMove={(event) => {
                 pointerAt.current = { x: event.clientX, y: event.clientY };
-                applyMentionCursor(event.clientX, event.clientY);
+                applyMentionCursor(event.clientX, event.clientY, event.altKey);
               }}
               onMouseLeave={(event) => {
                 pointerAt.current = null;

@@ -4,6 +4,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type MouseEvent as ReactMouseEvent,
   type ReactNode,
   type RefObject,
 } from "react";
@@ -57,15 +58,18 @@ function useClipped(ref: RefObject<HTMLElement>, content: string | undefined): b
 }
 
 /**
- * 行头的修饰键动作：按住 Ctrl/Cmd 单击整行时打开对应的文件。
+ * 行头的修饰键动作：Alt 打开可编辑的真实文件，Ctrl/Cmd 保留原来的直接打开只读文件。
  *
- * 动作与悬停说明住在**同一个端口对象**里：对象在，两者就都在；对象缺席，Row 既
- * 不拦截修饰键也不提示——调用方不必再单独维护「有没有动作」的第二份判据。
+ * 动作与悬停说明住在**同一个端口对象**里：对象在，两个动作与提示就都在；对象缺席，
+ * Row 既不拦截修饰键也不提示——调用方不必再单独维护「有没有动作」的第二份判据。
+ * 悬停提示只承诺 Alt 这一档（Ctrl/Cmd 是原有动作，不额外说明）。
  */
 export interface RowModifierAction {
-  /** 按住 Ctrl/Cmd 单击行头时执行（普通单击仍是开合节点）。 */
+  /** Ctrl/Cmd：原动作（只读直接打开，不要 diff）。 */
   activate: () => void;
-  /** 修饰键动作的悬停说明（与动作同生共死）。 */
+  /** Alt：打开可编辑的真实文件。 */
+  activateReal: () => void;
+  /** Alt 真实文件动作的悬停说明（与动作同生共死）。 */
   hint: string;
 }
 
@@ -77,6 +81,7 @@ export function Row({
   detailSuffix,
   diffStat,
   onDetailActivate,
+  detailHint,
   modifier,
   meta,
   open,
@@ -101,16 +106,21 @@ export function Row({
    */
   diffStat?: { added: number; removed: number };
   /**
-   * detail 是**可点的文件路径**时给一个动作（官方把摘要做成 `fileLink` 按钮，
-   * 点了用侧栏预览打开该文件）。
+   * detail 是**可点的文件路径**时给一个动作（官方把摘要做成 `fileLink` 按钮）。
    *
-   * 这里做成行内 `<span role="link">` 而不是嵌套 `<button>`：行头本身已经是一个
-   * 切换展开的按钮，HTML 不允许按钮嵌套按钮。用 role/tabIndex + Enter/Space
-   * 保住键盘可达，点击时 `stopPropagation` 免得顺手把行展开了。
+   * 普通单击仍开只读预览；带 Alt 的事件由调用方判成真实文件。这里做成行内
+   * `<span role="link">` 而不是嵌套 `<button>`：行头本身已经是一个切换展开的按钮，
+   * HTML 不允许按钮嵌套按钮。用 role/tabIndex + Enter/Space 保住键盘可达，点击时
+   * `stopPropagation` 免得顺手把行展开了。
    */
-  onDetailActivate?: () => void;
+  onDetailActivate?: (event?: ReactMouseEvent<HTMLElement>) => void;
   /**
-   * 按住 Ctrl/Cmd 单击整行时执行的文件动作（文件类节点的「直接打开对应文件」）。
+   * detail 的动作提示（没有行头 `modifier` 的路径行用）：只在该 detail 真的可点时给。
+   * 与 `onDetailActivate` 同生共死，避免出现「有提示没动作」。
+   */
+  detailHint?: string;
+  /**
+   * 行头的修饰键动作：Alt 打开可编辑真实文件，Ctrl/Cmd 保留原来的只读直接打开。
    *
    * 缺席 = 这一行没有可打开目标：不挂 `is-file-openable`、不设 `title`，单击照旧
    * 只开合节点。动作与悬停说明捆在同一个对象里（见 `RowModifierAction`），
@@ -134,13 +144,24 @@ export function Row({
   const dirClipped = useClipped(dirRef, parts?.dir);
   // 只有真有动作时才挂类名与提示：没有可打开目标的节点不该出现「按住 Ctrl 打开」。
   const openable = modifier !== undefined;
+  const detailTitle = openable
+    ? `${detail}\n${modifier.hint}`
+    : detailHint !== undefined && detail !== undefined
+      ? `${detail}\n${detailHint}`
+      : detail;
   return (
     <div className={`row${open ? " is-open" : ""}`}>
       <button
         className={`row-head${openable ? " is-file-openable" : ""}`}
         title={modifier?.hint}
         onClick={(event) => {
-          // Ctrl/Cmd+单击 = 直接打开这个节点对应的文件；其余单击照旧开合。
+          // Alt = 打开可编辑的真实文件；Ctrl/Cmd = 原来的直接打开只读文件；
+          // 其余单击照旧开合。
+          if (openable && event.altKey) {
+            event.preventDefault();
+            modifier.activateReal();
+            return;
+          }
           if (openable && (event.ctrlKey || event.metaKey)) {
             event.preventDefault();
             modifier.activate();
@@ -170,7 +191,7 @@ export function Row({
         {parts ? (
           // detail 自己的 title 会盖住行头的 title：把修饰键动作的说明追加在这里，
           // 悬停在路径上（正是用户最想去点的地方）也能看到它。
-          <span className="row-detail" title={openable ? `${detail}\n${modifier.hint}` : detail}>
+          <span className="row-detail" title={detailTitle}>
             {parts.dir ? (
               <span
                 ref={dirRef}
@@ -187,7 +208,7 @@ export function Row({
                 onClick={(event) => {
                   // 别顺手把行展开了（这也是用 span 而不是嵌套 button 的原因）
                   event.stopPropagation();
-                  onDetailActivate();
+                  onDetailActivate(event);
                 }}
                 onKeyDown={(event) => {
                   if (event.key !== "Enter" && event.key !== " ") return;

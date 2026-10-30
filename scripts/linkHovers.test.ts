@@ -3,7 +3,8 @@
  *
  * 这一份只测纯函数与接线：
  * - `isBrowserOpenableFile`：哪些扩展名可以交给系统浏览器（白名单，界面与宿主共用）；
- * - `browserOpenRequested`：修饰键 + 扩展名同时成立才换路；
+ * - `browserOpenRequested`：Ctrl/Cmd + 扩展名同时成立才换路；
+ * - `fileOpenIntent` / `modifierLabelFor` / `altLabelFor`：Alt 真实文件、平台标签；
  * - `fileLinkHoverTitle` / `externalLinkHoverTitle`：悬停给完整路径 / 完整地址；
  * - 渲染与宿主两端的接线（DOM 那一步在真实 webview 里，Node 断言环境没 DOM）。
  *
@@ -13,11 +14,15 @@ import assert from "node:assert";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { isBrowserOpenableFile } from "../src/shared/webFile";
-import { browserOpenRequested } from "../src/webview/fileLinks";
+import { browserOpenRequested, fileOpenIntent } from "../src/webview/fileLinks";
 import { externalLinkHoverTitle, fileLinkHoverTitle, hydrateLinkTitles } from "../src/webview/linkHovers";
+import { altLabelFor, modifierLabelFor } from "../src/webview/modifierLabel";
 
 const read = (...parts: string[]): string => readFileSync(join(process.cwd(), ...parts), "utf8");
-const texts = { webFileBrowserHint: "按住 Ctrl/Cmd 单击，在浏览器中打开" };
+const texts = {
+  openRealFileHint: (alt: string) => `按住 ${alt} 单击打开可编辑的真实文件`,
+  webFileBrowserHint: (modifier: string) => `按住 ${modifier} 单击，在浏览器中打开`,
+};
 
 // ---------- 1. web 文件白名单：只认 HTML 家族 ----------
 {
@@ -49,37 +54,67 @@ const texts = { webFileBrowserHint: "按住 Ctrl/Cmd 单击，在浏览器中打
 }
 console.log("linkHovers: 浏览器可直接打开的文件只认 HTML 家族（大小写 / 查询串不影响） ✓");
 
-// ---------- 2. 修饰键：Ctrl/Cmd + HTML 文件才换路 ----------
+// ---------- 1b. 平台修饰键标签：Mac 是 Cmd，其余是 Ctrl ----------
 {
-  const ctrl = { ctrlKey: true, metaKey: false };
-  const meta = { ctrlKey: false, metaKey: true };
-  const plain = { ctrlKey: false, metaKey: false };
+  assert.strictEqual(modifierLabelFor("MacIntel"), "Cmd");
+  assert.strictEqual(modifierLabelFor("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"), "Cmd");
+  assert.strictEqual(modifierLabelFor("Win32"), "Ctrl");
+  assert.strictEqual(modifierLabelFor("Mozilla/5.0 (Windows NT 10.0; Win64; x64)"), "Ctrl");
+  assert.strictEqual(modifierLabelFor("Linux x86_64"), "Ctrl");
+  assert.strictEqual(modifierLabelFor(undefined), "Ctrl");
+  assert.strictEqual(altLabelFor("MacIntel"), "Option");
+  assert.strictEqual(altLabelFor("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"), "Option");
+  assert.strictEqual(altLabelFor("Win32"), "Alt");
+  assert.strictEqual(altLabelFor("Linux x86_64"), "Alt");
+  assert.strictEqual(altLabelFor(undefined), "Alt");
+}
+console.log("linkHovers: 平台标签 Mac→Cmd/Option、Win/Linux→Ctrl/Alt ✓");
+
+// ---------- 2. 点击意图：Alt 打开真实文件，Ctrl/Cmd + HTML 走浏览器 ----------
+{
+  const alt = { altKey: true, ctrlKey: false, metaKey: false };
+  const ctrl = { altKey: false, ctrlKey: true, metaKey: false };
+  const meta = { altKey: false, ctrlKey: false, metaKey: true };
+  const plain = { altKey: false, ctrlKey: false, metaKey: false };
   assert.strictEqual(browserOpenRequested(ctrl, "out/index.html"), true);
   assert.strictEqual(browserOpenRequested(meta, "out/index.html"), true);
+  assert.strictEqual(browserOpenRequested(alt, "out/index.html"), false);
   assert.strictEqual(browserOpenRequested(plain, "out/index.html"), false);
-  // 普通文件按住修饰键仍是打开编辑器：不扩大宿主动作
+  // 普通文件按住 Ctrl/Cmd 仍是只读预览
   assert.strictEqual(browserOpenRequested(ctrl, "src/a.ts"), false);
-}
-console.log("linkHovers: 只有 Ctrl/Cmd + HTML 文件才改走浏览器 ✓");
 
-// ---------- 3. 悬停标题：完整路径 / 完整链接 ----------
+  assert.strictEqual(fileOpenIntent(alt, "src/a.ts"), "real");
+  assert.strictEqual(fileOpenIntent(alt, "out/index.html"), "real");
+  assert.strictEqual(fileOpenIntent(ctrl, "out/index.html"), "browser");
+  assert.strictEqual(fileOpenIntent(ctrl, "src/a.ts"), "read");
+  assert.strictEqual(fileOpenIntent(plain, "src/a.ts"), "read");
+}
+console.log("linkHovers: Alt 走真实文件、Ctrl/Cmd+HTML 走浏览器、普通文件 Ctrl 仍只读 ✓");
+
+// ---------- 3. 悬停标题：完整路径 / 完整链接 / 真实文件与浏览器提示 ----------
 {
   assert.strictEqual(
-    fileLinkHoverTitle("D:/dev/app", "src/index.html", texts),
-    `D:/dev/app/src/index.html\n${texts.webFileBrowserHint}`,
+    fileLinkHoverTitle("D:/dev/app", "src/index.html", texts, "Alt", "Ctrl"),
+    `D:/dev/app/src/index.html\n${texts.openRealFileHint("Alt")}\n${texts.webFileBrowserHint("Ctrl")}`,
   );
-  // 绝对路径归一（盘符保留、分隔符统一）
+  // 绝对路径归一（盘符保留、分隔符统一）；macOS 标签
   assert.strictEqual(
-    fileLinkHoverTitle("D:/dev/app", "D:\\dev\\demo\\index.html", texts),
-    `D:/dev/demo/index.html\n${texts.webFileBrowserHint}`,
+    fileLinkHoverTitle("D:/dev/app", "D:\\dev\\demo\\index.html", texts, "Option", "Cmd"),
+    `D:/dev/demo/index.html\n${texts.openRealFileHint("Option")}\n${texts.webFileBrowserHint("Cmd")}`,
   );
-  // 普通文件只给路径，不补浏览器提示
-  assert.strictEqual(fileLinkHoverTitle("D:/dev/app", "src/a.ts", texts), "D:/dev/app/src/a.ts");
+  // 普通文件只给路径与真实文件提示，不补浏览器提示
+  assert.strictEqual(
+    fileLinkHoverTitle("D:/dev/app", "src/a.ts", texts, "Alt", "Ctrl"),
+    `D:/dev/app/src/a.ts\n${texts.openRealFileHint("Alt")}`,
+  );
   // 没有 cwd 时不猜绝对位置：保留链接上的原样拼写
-  assert.strictEqual(fileLinkHoverTitle(undefined, "src/index.html", texts), `src/index.html\n${texts.webFileBrowserHint}`);
+  assert.strictEqual(
+    fileLinkHoverTitle(undefined, "src/index.html", texts, "Alt", "Ctrl"),
+    `src/index.html\n${texts.openRealFileHint("Alt")}\n${texts.webFileBrowserHint("Ctrl")}`,
+  );
   assert.strictEqual(externalLinkHoverTitle("https://example.com/a"), "https://example.com/a");
 }
-console.log("linkHovers: 文件链接给完整路径、外链给完整地址（HTML 再补修饰键提示） ✓");
+console.log("linkHovers: 文件链接给完整路径、Alt 真实文件提示（HTML 再加 Ctrl/Cmd 浏览器） ✓");
 
 // ---------- 3b. 锚点 title 注入与还原（最小节点替身，只实现用到的 DOM 面） ----------
 {
@@ -108,17 +143,17 @@ console.log("linkHovers: 文件链接给完整路径、外链给完整地址（H
     querySelectorAll: (selector: string) => (selector === "a[href]" ? anchors : []),
   } as unknown as HTMLElement;
 
-  const undo = hydrateLinkTitles(root, "D:/dev/app", texts);
+  const undo = hydrateLinkTitles(root, "D:/dev/app", texts, "Alt", "Ctrl");
   assert.strictEqual(
     file.attributes.get("title"),
-    `D:/dev/app/src/index.html\n${texts.webFileBrowserHint}`,
+    `D:/dev/app/src/index.html\n${texts.openRealFileHint("Alt")}\n${texts.webFileBrowserHint("Ctrl")}`,
   );
   assert.strictEqual(link.attributes.get("title"), "https://example.com/a");
   assert.strictEqual(page.attributes.get("title"), undefined, "页内锚点不编标题");
   assert.strictEqual(
     authored.attributes.get("title"),
-    `作者写的说明\nD:/dev/app/src/a.ts`,
-    "markdown 自带的标题保留，完整目标追加在后",
+    `作者写的说明\nD:/dev/app/src/a.ts\n${texts.openRealFileHint("Alt")}`,
+    "markdown 自带的标题保留，完整目标与真实文件提示追加在后",
   );
   undo();
   assert.strictEqual(file.attributes.get("title"), undefined, "清理要把新加的 title 摘掉");
@@ -135,10 +170,11 @@ console.log("linkHovers: 锚点 title 注入完整目标、保留作者标题、
     "锚点的 title 要在渲染后补（注入的 HTML 不在 React props 树里）",
   );
   assert.ok(
-    /openFileInBrowser/.test(markdown) &&
-      /if \(event && browserOpenRequested\(event, path\)\) \{/.test(markdown) &&
+    /fileOpenIntent/.test(markdown) &&
+      /if \(intent === "browser"\) \{/.test(markdown) &&
+      /intent === "real" \? \{ real: true \}/.test(markdown) &&
       /openFile\(file\.path, file\.line, event\)/.test(markdown),
-    "本地文件点击统一走 openFile，按住修饰键时由它发 openFileInBrowser",
+    "本地文件点击统一走 openFile：Alt+HTML 发 openFileInBrowser，Ctrl/Cmd 发 real，其余只读",
   );
   const mentions = read("src", "webview", "fileMentions.ts");
   assert.ok(
@@ -153,10 +189,12 @@ console.log("linkHovers: 锚点 title 注入完整目标、保留作者标题、
   );
   const messages = read("src", "webview", "messages.ts");
   assert.ok(
-    /webFileBrowserHint: \{\s*\n\s*zh:/.test(messages) && /en:/.test(messages),
-    "浏览器提示必须中英各一条",
+    /openRealFileHint: \{\s*\n\s*zh:/.test(messages) &&
+      /webFileBrowserHint: \{\s*\n\s*zh:/.test(messages) &&
+      /en:/.test(messages),
+    "真实文件与浏览器提示必须中英各一条",
   );
 }
-console.log("linkHovers: 悬停标题与浏览器打开在渲染 / 宿主两端都接上 ✓");
+console.log("linkHovers: 悬停标题与真实文件 / 浏览器分流在渲染 / 宿主两端都接上 ✓");
 
 console.log("\nlinkHovers: all assertions passed");

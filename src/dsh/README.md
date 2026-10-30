@@ -42,6 +42,7 @@
 - [remoteFileAddress.ts](<remoteFileAddress.ts>) — 资源 URI 的「连接 + 会话 + 路径」编码与 basename（纯字符串）。
 - [remoteFileSync.ts](<remoteFileSync.ts>) — 资源观察核心（不依赖 vscode）：版本→稳定递增 mtime、同 URI 引用计数、删除后保留观察并可恢复、单飞轮询与有界表。
 - [remoteFileSystem.ts](<remoteFileSystem.ts>) — VS Code 只读虚拟文件系统 provider：按原连接 id 解析、普通文件走二进制 RPC、change feed + 有界 restat。
+- [localPath.ts](<localPath.ts>) — 真实文件档的本机判据：平台路径形态、回环端点与逐字节身份比较（纯函数）。
 - [localImages.ts](<localImages.ts>) — 正文图片经执行世界读取成 data URL；全部引用都处理（只限并发），不设创建目录/扩展名/本地字节授权门，UNC 与控制字符在客户端拒绝。
 
 ## 附件、引用与图片

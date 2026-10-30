@@ -425,14 +425,27 @@ export type WebviewToHost =
    *
    * `line` 是导航参数（正整数，非法时忽略），不构成另一个文件身份。`link` 区分
    * 正文链接与文件芯片，仅影响「目标不可用」时的措辞。
+   *
+   * `real` 是用户按住 Alt 的显式档：宿主仅在本机执行世界、路径形态、本机
+   * 存在性、大小与（有上限的）字节校验都通过时用 `file:` 打开可编辑的真实文件；
+   * 否则回退默认的只读虚拟资源并提示。与 `diff` 同时出现时 `real` 优先。
    */
-  | { type: "openFile"; path: string; diff?: boolean; line?: number; link?: true; changes?: ChangeCoordinates }
+  | {
+      type: "openFile";
+      path: string;
+      diff?: boolean;
+      line?: number;
+      link?: true;
+      real?: true;
+      changes?: ChangeCoordinates;
+    }
   /**
    * 用**系统浏览器**打开一个可渲染的 web 文件（正文文件链接按住 Ctrl/Cmd 单击）。
    *
-   * 只服务 HTML 家族（白名单在 `shared/webFile.ts`）：普通单击仍走 `openFile`。
-   * `path` 与 `openFile` 同一口径；宿主须重新验扩展名，并在执行世界确认目标与
-   * 本机映射后才交给系统浏览器。不可用或系统拒绝时明确告知，不静默。
+   * 只服务 HTML 家族（白名单在 `shared/webFile.ts`）：普通单击仍走 `openFile`，
+   * Alt 走 `openFile` 的 `real`。`path` 与 `openFile` 同一口径；宿主须重新验
+   * 扩展名，并在执行世界确认目标与本机映射后才交给系统浏览器。不可用或系统拒绝时
+   * 明确告知，不静默。
    */
   | { type: "openFileInBrowser"; path: string }
   /**

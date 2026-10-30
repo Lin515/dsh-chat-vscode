@@ -1,14 +1,14 @@
 /**
  * 全局修饰键状态 → 根元素上的 `is-modifier-held` 类。
  *
- * 为什么用根类而不是 React state：按住 Ctrl/Cmd 时**所有**可打开文件的节点都要出
- * 下划线提示；走 App 的 state 会把整棵消息树重渲染一遍，这里只切一个类，样式由
- * CSS 负责（见 `styles/app.css` 的 `.is-modifier-held` 规则）。
+ * 为什么用根类而不是 React state：按住 Alt / Ctrl / Cmd 时**所有**可打开文件的节点
+ * 都要出下划线提示；走 App 的 state 会把整棵消息树重渲染一遍，这里只切一个类，
+ * 样式由 CSS 负责（见 `styles/app.css` 的 `.is-modifier-held` 规则）。
  *
  * 事件来源：
  * - `keydown` / `keyup`：键盘焦点在 webview 时的主路径；
  * - `pointermove` / `pointerdown`：焦点不在 webview 时收不到 keydown，但指针事件
- *   自带修饰键位（例如按住 Ctrl 从别的应用移回聊天面板）；
+ *   自带修饰键位（例如按住 Alt 从别的应用移回聊天面板）；
  * - `blur` / `visibilitychange`：键盘状态不可靠时清掉，避免下划线永久挂着。
  *
  * 只读修饰键位，不拦截事件、不 preventDefault。
@@ -32,7 +32,7 @@ function apply(next: boolean): void {
 
 function sync(event: Event): void {
   const modifier = event as KeyboardEvent;
-  apply(modifier.ctrlKey === true || modifier.metaKey === true);
+  apply(modifier.altKey === true || modifier.ctrlKey === true || modifier.metaKey === true);
 }
 
 function clear(): void {

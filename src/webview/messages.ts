@@ -380,9 +380,21 @@ export const MESSAGES = {
   // 这里不替它断言「文件被删除」。
   hostOpenUnavailable: { zh: "Host 无法在桌面端打开此文件", en: "The Host could not open this file on the desktop" },
   fileAccessUnavailable: { zh: "无法访问此文件，请检查权限及连接状态", en: "Cannot access this file. Check permissions and the connection." },
+  /**
+   * 按修饰键打开真实文件失败：执行世界不在本机、路径形态不是本机绝对路径、
+   * 本机副本缺失或字节不一致、编辑器打开失败。随后已按只读预览打开，措辞要说明
+   * 不是“文件不存在”（Path 的 not-found 另走 `fileNotFound`）。
+   */
+  realFileUnavailable: {
+    zh: "无法在本机打开可编辑的真实文件（执行世界可能不在本机），已按只读方式打开",
+    en: "The editable real file is not available on this machine (the execution world may be remote); opened read-only instead",
+  },
   producedMore: { zh: (count: number) => `+ ${count} 个文件`, en: (count: number) => `+ ${count} file${count === 1 ? "" : "s"}` },
   openChangesAria: { zh: (name: string) => `查看 ${name} 的改动`, en: (name: string) => `View changes in ${name}` },
-  openChangesHint: { zh: "点击查看改动对比；按住 Alt 直接打开文件", en: "Click to view changes; hold Alt to open the file" },
+  openChangesHint: {
+    zh: (alt: string) => `点击查看改动对比；按住 ${alt} 打开可编辑的真实文件`,
+    en: (alt: string) => `Click to view changes; hold ${alt} to open the editable real file`,
+  },
   filesExpandAria: { zh: (count: number) => `展开全部 ${count} 个文件`, en: (count: number) => `Show all ${count} file${count === 1 ? "" : "s"}` },
   filesCollapse: { zh: "收起", en: "Collapse" },
   filesCollapseAria: { zh: "收起文件列表", en: "Collapse file list" },
@@ -846,20 +858,30 @@ export const MESSAGES = {
   mentionRevealFolder: { zh: "在资源管理器中展开这个目录", en: "Reveal this folder in the Explorer" },
   mentionOpenSession: { zh: "在新标签页中打开这个会话", en: "Open this session in a new tab" },
   /**
-   * HTML 家族文件的悬停提示（正文锚点 / 行内代码 / 已发出的 `@` 引用共用）。
-   * 普通单击仍在编辑器里打开，所以文案只承诺修饰键这一档。
+   * 文件链接的真实文件提示（正文锚点 / 行内代码 / 已发出的 `@` 引用共用）。
+   * 参数是平台 Alt 标签（macOS `Option`，其余 `Alt`）。
    */
-  webFileBrowserHint: {
-    zh: "按住 Ctrl/Cmd 单击，在浏览器中打开",
-    en: "Ctrl/Cmd+click to open in browser",
+  openRealFileHint: {
+    zh: (alt: string) => `按住 ${alt} 单击打开可编辑的真实文件`,
+    en: (alt: string) => `Hold ${alt} and click to open the editable real file`,
   },
   /**
-   * **草稿区**的引用提示（输入框的 title）：草稿里的引用要按住 Ctrl 才点得开，
-   * 不说明的话没人会去试（正文里已发出的引用是直接可点的，不必提示）。
+   * HTML 家族文件的悬停提示（正文锚点 / 行内代码 / 已发出的 `@` 引用共用）。
+   * Ctrl/Cmd 是原有的浏览器动作；参数是平台修饰键标签。
+   */
+  webFileBrowserHint: {
+    zh: (modifier: string) => `按住 ${modifier} 单击，在浏览器中打开`,
+    en: (modifier: string) => `${modifier}+click to open in browser`,
+  },
+  /**
+   * **草稿区**的引用提示（输入框的 title）：Alt 打开真实文件，Ctrl/Cmd 打开引用
+   * （原有动作）。两个标签都按平台传入。
    */
   mentionClickHint: {
-    zh: "按住 Ctrl 单击可打开这个引用",
-    en: "Ctrl+click to open this reference",
+    zh: (alt: string, modifier: string) =>
+      `按住 ${alt} 单击打开可编辑的真实文件；按住 ${modifier} 单击打开引用`,
+    en: (alt: string, modifier: string) =>
+      `Hold ${alt} and click to open the editable real file; hold ${modifier} and click to open this reference`,
   },
   running: { zh: "深度求索中", en: "Deep diving" },
   /**
@@ -1191,18 +1213,18 @@ export const MESSAGES = {
   toolInput: { zh: "输入", en: "IN" },
   toolOutput: { zh: "输出", en: "OUT" },
   /**
-   * 节点悬停的修饰键提示：只有**按住 Ctrl/Cmd 单击会打开文件**的节点才挂。
+   * 节点悬停的修饰键提示：只有**按住 Alt 单击会打开可编辑真实文件**的节点才挂。
    *
    * 读 / 写 / 编辑节点指向这次调用操作的文件；技能节点指向服务端 `skills/list`
-   * 给出的 `SKILL.md`。普通单击仍是开合节点，提示只承诺修饰键那一档。
+   * 给出的 `SKILL.md`。普通单击仍是开合节点，Ctrl/Cmd 保留原来的只读直接打开。
    */
   toolOpenFileHint: {
-    zh: "按住 Ctrl/Cmd 单击打开文件",
-    en: "Ctrl/Cmd+click to open the file",
+    zh: (alt: string) => `按住 ${alt} 单击打开可编辑的真实文件`,
+    en: (alt: string) => `Hold ${alt} and click to open the editable real file`,
   },
   toolOpenSkillHint: {
-    zh: "按住 Ctrl/Cmd 单击打开 SKILL.md",
-    en: "Ctrl/Cmd+click to open SKILL.md",
+    zh: (alt: string) => `按住 ${alt} 单击打开可编辑的 SKILL.md`,
+    en: (alt: string) => `Hold ${alt} and click to open the editable SKILL.md`,
   },
   unknownBlock: { zh: "未知内容块", en: "Unknown content block" },
   contextInstructions: { zh: "上下文指令", en: "Context instructions" },

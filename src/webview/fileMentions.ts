@@ -30,9 +30,9 @@ const MENTION_CLASS = "file-mention";
  *   可能还不全——只对**已经命中**的 token 动手（见 `fileLinks.ts` 的口径），
  *   词表随轮次增长时靠清理函数还原后重判。
  * @param cwd 会话工作目录：悬停标题据此把相对路径补成完整路径（拿不到就原样给）。
- * @param texts 悬停标题要用的文案（HTML 类文件的修饰键提示）。
+ * @param texts 悬停标题要用的文案（Alt 真实文件 / HTML 的 Ctrl/Cmd 浏览器提示）。
  * @param open 打开文件的动作（界面侧只负责发帧，路径解析在宿主）；第二参数是
- *   原始鼠标事件，由调用方按修饰键决定是否改走系统浏览器。
+ *   原始鼠标事件，由调用方按修饰键决定真实文件、浏览器或只读。
  * @returns 清理函数：还原被换掉的节点，让下一次 hydrate 能重新判定
  *   （词表可能**晚于**正文到达——流式期间每写出一个文件词表就变一次、轮次结束时
  *   正文不变而 `produced` 才到齐，React 不会重设 `innerHTML`，不还原就永远补不上按钮）。
@@ -61,7 +61,8 @@ export function hydrateFileMentions(
     button.type = "button";
     button.className = MENTION_CLASS;
     // 悬停看到**打开的是哪个文件**：正文里可能只写了 `App.tsx`，
-    // 而词表把它对到了某个完整路径上；HTML 类文件再补一句浏览器打开提示。
+    // 而词表把它对到了某个完整路径上；再给「Alt 打开真实文件」与
+    // HTML 的 Ctrl/Cmd 浏览器提示。
     // 标题与点击共用同一个 `path`——不在两处各自重新推导目标。
     button.title = fileLinkHoverTitle(cwd, path, texts);
     button.textContent = token;

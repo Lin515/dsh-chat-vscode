@@ -164,6 +164,8 @@ const entries = {
   "build/path-display.test.mjs": "scripts/pathDisplay.test.ts",
   // 跨平台工作区路径（绝对形态 / 拼接 / 记录值 / 身份键 / 终端标签折叠）：必须登记
   "build/workspace-path.test.mjs": "scripts/workspacePath.test.ts",
+  // 真实文件打开的本机判据（平台形态 / 回环端点 / 字节身份）：必须登记
+  "build/local-path.test.mjs": "scripts/localPath.test.ts",
   // 工具行 / 产物 / 终端目录三套独立判据：必须登记
   "build/tool-path.test.mjs": "scripts/toolPath.test.ts",
   // 适配器把 parentCallId、meta、seq、turn 透传到上述判据（实时与重放同路）：必须登记

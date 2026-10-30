@@ -5,9 +5,9 @@
  * 已发出消息里的链接（`components/Message.tsx` 的 `renderMentionText`）与草稿区的
  * Ctrl/Cmd+单击（`components/Composer.tsx`）共用这一份分派，三档目标各一条帧：
  *
- * - 文件 → `openFile`（`link: true`，与正文里助手那条文件链接同口径，见
- *   `components/Markdown.tsx` 的 `openFile`：打不开时的措辞按「正文链接」那一档给）；
- *   按住 Ctrl/Cmd 且目标是 HTML 家族时改发 `openFileInBrowser`（系统浏览器）；
+ * - 文件 → 按 `FileOpenIntent` 三档：普通 `openFile`（只读虚拟资源）、
+ *   `real: true`（Alt，可编辑的真实文件）、`openFileInBrowser`（Ctrl/Cmd + HTML，
+ *   原有系统浏览器动作）；
  * - 目录 → `revealPath`（宿主在资源管理器里展开它）；
  * - 会话 → `openInEditor` + `sessionId`（宿主**新开一个标签页**打开那条会话；不是
  *   `openSession`——那条会把**当前窗口**切走，点一条引用就换掉正在看的对话太唐突）。
@@ -16,27 +16,36 @@
  * （`controller.openFile` 经 `resolveChipPath` 解析，与文件芯片同一条路）。
  */
 import { post } from "./bridge";
+import type { FileOpenIntent } from "./fileLinks";
 import { mentionAt, type MentionLinkTarget } from "./mentionLinks";
 
 /**
  * 按目标种类打开一条引用。
  *
- * @param browser 只对文件目标有意义：HTML 家族文件由调用方按修饰键判出来后，
- *   把这一下改走系统浏览器。草稿区的 Ctrl/Cmd+单击不带这一档——那里的修饰键
- *   本来就是「打开引用」的入口，不能再兼作浏览器开关。
+ * @param intent 只对文件目标有意义：`"read"` 普通只读、`"real"` Alt 可编辑真实文件、
+ *   `"browser"` Ctrl/Cmd + HTML 交系统浏览器。目录 / 会话 / 命令目标忽略它。
  */
 export function openMentionTarget(
   target: MentionLinkTarget,
   openCommand?: (name: string) => void,
-  browser = false,
+  intent: FileOpenIntent = "read",
 ): void {
   switch (target.kind) {
     case "command":
       openCommand?.(target.name);
       return;
     case "file":
-      if (browser) post({ type: "openFileInBrowser", path: target.path });
-      else post({ type: "openFile", path: target.path, line: target.line, link: true });
+      if (intent === "browser") {
+        post({ type: "openFileInBrowser", path: target.path });
+      } else {
+        post({
+          type: "openFile",
+          path: target.path,
+          line: target.line,
+          link: true,
+          ...(intent === "real" ? { real: true } : {}),
+        });
+      }
       return;
     case "directory":
       post({ type: "revealPath", path: target.path });
@@ -53,12 +62,11 @@ export function openMentionTarget(
  * 光标落在 `end` 上，那一下显然还是冲着这条引用来的。不可点的段（会话 id 解不开）
  * 不算命中，于是这里**既不发帧也不给提示**。
  *
- * @returns 是否真的打开了。调用方据此决定要不要拦下这一下（当前不拦：光标照旧
- *   落位，不按 Ctrl 时的普通定位行为一个字都不受影响）。
+ * @returns 是否真的打开了。
  */
 export function openMentionAt(text: string, index: number): boolean {
   const span = mentionAt(text, index);
   if (span?.target === undefined) return false;
-  openMentionTarget(span.target);
+  openMentionTarget(span.target, undefined, "read");
   return true;
 }

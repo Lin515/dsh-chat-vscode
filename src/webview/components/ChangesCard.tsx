@@ -3,7 +3,9 @@ import type { ChangesSummaryView } from "../../shared/chat";
 import { CHANGES_CARD_VISIBLE, visibleChangeFiles } from "../../shared/changesSummary";
 import { post } from "../bridge";
 import { IconChevronDown } from "../icons";
+import { realFileRequested } from "../fileLinks";
 import { resolvedFilePath } from "../linkHovers";
+import { altLabel } from "../modifierLabel";
 import { useTexts } from "../texts";
 
 /**
@@ -37,6 +39,7 @@ export function ChangesCard({
   cwd?: string;
 }) {
   const texts = useTexts();
+  const altKeyLabel = altLabel();
   const [expanded, setExpanded] = useState(false);
   const { seq } = coordinates;
   const missing = summary === undefined;
@@ -110,22 +113,25 @@ export function ChangesCard({
             type="button"
             key={file.path}
             className="changes-card-row"
-            title={`${resolvedFilePath(cwd, file.path)}\n${texts.openChangesHint}`}
+            title={`${resolvedFilePath(cwd, file.path)}\n${texts.openChangesHint(altKeyLabel)}`}
             aria-label={texts.openChangesAria(file.display)}
             // 悬停 / 键盘聚焦即预热：点击时大概率已经命中缓存（见上面的 prefetch）
             onPointerEnter={() => prefetch(index)}
             onFocus={() => prefetch(index)}
-            onClick={(event) =>
+            onClick={(event) => {
               // 坐标带的是 Host 清单里的**原始下标**：折叠只是不铺出来，不重排
               // `files`，所以 `shown` 里的位置与它一致（可见行总是从 0 开始切）。
               // 有了这份坐标，宿主才能打开本轮快照的对比——提交之后照样看得到。
+              // 任意修饰键仍是原来的「直接打开只读文件、不要 diff」；Alt 另叠真实文件档。
+              const direct = hasModifier(event);
               post({
                 type: "openFile",
                 path: file.path,
-                diff: !hasModifier(event),
+                diff: !direct,
+                ...(realFileRequested(event) ? { real: true } : {}),
                 changes: { seq, index, turn: summary.turn },
-              })
-            }
+              });
+            }}
           >
             <span className="changes-card-path">{file.display}</span>
             {/* 二进制 / 过大没有行数可言（Host 给的计数是 0），照实说明而不是印「+0 −0」。
@@ -161,7 +167,7 @@ export function ChangesCard({
   );
 }
 
-/** 与文件芯片同一套点击意图：默认看改动，按住 Alt/Ctrl/Cmd/Shift 时直接打开文件。 */
+/** 与文件芯片同一套点击意图：默认看改动，Alt 打开真实文件，其余修饰键保持原只读直接打开。 */
 function hasModifier(event: { altKey: boolean; ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }): boolean {
   return event.altKey || event.ctrlKey || event.metaKey || event.shiftKey;
 }

@@ -231,9 +231,9 @@ export interface Texts {
   /** 工具行展开体的两段标签（官方 `row.input` / `row.output`：zh「输入/输出」、en「IN/OUT」）。 */
   toolInput: string;
   toolOutput: string;
-  /** 节点悬停的「按住 Ctrl/Cmd 单击打开…」提示（只挂在真能打开文件的节点上）。 */
-  toolOpenFileHint: string;
-  toolOpenSkillHint: string;
+  /** 节点悬停的「按住 Alt 单击打开可编辑的真实文件」提示（只挂在真能打开文件的节点上）。 */
+  toolOpenFileHint: (alt: string) => string;
+  toolOpenSkillHint: (alt: string) => string;
   /** 可点路径的无障碍/悬停说明（官方把摘要做成 fileLink，点了预览该文件）。 */
   /** 认不出的内容块的标签（官方 `message.unknownBlock` 逐字）。 */
   unknownBlock: string;
@@ -248,8 +248,8 @@ export interface Texts {
   contextRelayFrom: (session: string) => string;
   contextRecallCounts: (retained: number, omitted: number) => string;
   contextRecallTruncated: string;
-  /** 文件芯片的悬停说明：默认看改动、按住修饰键直接打开文件。 */
-  openChangesHint: string;
+  /** 文件芯片的悬停说明：默认看改动、按住 Alt 打开可编辑的真实文件。 */
+  openChangesHint: (alt: string) => string;
   /** 文件芯片行「展开全部」按钮的无障碍标题。 */
   filesExpandAria: (count: number) => string;
   /** 文件芯片行展开后的「收起」文案。 */
@@ -505,16 +505,21 @@ export interface Texts {
   mentionRevealFolder: string;
   mentionOpenSession: string;
   /**
-   * 文件链接指向 HTML 家族时，悬停提示里追加的一行：按住 Ctrl/Cmd 单击
-   * 用系统浏览器打开（普通单击仍在编辑器里打开）。`linkHovers.ts` 与
-   * `fileMentions.ts` 共用这一条。
+   * 文件链接的真实文件提示（正文锚点 / 行内代码 / 已发出的 `@` 引用共用）。
+   * 参数是平台 Alt 标签：macOS `Option`，其余 `Alt`。
    */
-  webFileBrowserHint: string;
+  openRealFileHint: (alt: string) => string;
   /**
-   * **草稿区**的引用提示（输入框的 title）：草稿里的引用要按住 Ctrl 才点得开，
-   * 不说明的话没人会去试（正文里已发出的引用是直接可点的，不必提示）。
+   * 文件链接指向 HTML 家族时，悬停提示里追加的一行：按住 Ctrl/Cmd 单击
+   * 用系统浏览器打开（普通单击仍是只读预览）。参数是平台 Ctrl/Cmd 标签。
+   * `linkHovers.ts` 与 `fileMentions.ts` 共用这一条。
    */
-  mentionClickHint: string;
+  webFileBrowserHint: (modifier: string) => string;
+  /**
+   * **草稿区**的引用提示（输入框的 title）：Alt 打开真实文件，Ctrl/Cmd 打开引用。
+   * 两个参数分别是平台 Alt 标签与 Ctrl/Cmd 标签。
+   */
+  mentionClickHint: (alt: string, modifier: string) => string;
 
   running: string;
   /** 运行状态的计时文案（时长由 `turnClock` 格式化，末尾的点由 `<Ellipsis />` 画）。 */

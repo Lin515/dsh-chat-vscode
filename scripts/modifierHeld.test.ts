@@ -80,10 +80,13 @@ const held = (): boolean => classes.has("is-modifier-held");
   windowTarget.fire("keydown", { key: "Meta", ctrlKey: false, metaKey: true });
   assert.strictEqual(held(), true, "Cmd（Meta）同样算修饰键");
 
+  windowTarget.fire("keydown", { key: "Alt", altKey: true, ctrlKey: false, metaKey: false });
+  assert.strictEqual(held(), true, "Alt 也要挂类（真实文件档）");
+
   uninstall();
   assert.strictEqual(held(), false, "卸载时要收掉根类");
 }
-console.log("modifierHeld: 按住 / 松开 Ctrl、Cmd 切根类；卸载收干净 ✓");
+console.log("modifierHeld: 按住 / 松开 Alt、Ctrl、Cmd 切根类；卸载收干净 ✓");
 
 // ---------- 2. 指针事件补「没有键盘焦点」的一档 ----------
 
@@ -97,6 +100,9 @@ console.log("modifierHeld: 按住 / 松开 Ctrl、Cmd 切根类；卸载收干�
 
   windowTarget.fire("pointerdown", { ctrlKey: false, metaKey: true });
   assert.strictEqual(held(), true, "pointerdown 同样更新状态");
+
+  windowTarget.fire("pointermove", { altKey: true, ctrlKey: false, metaKey: false });
+  assert.strictEqual(held(), true, "指针事件带 Alt 时也要挂类");
   uninstall();
 }
 console.log("modifierHeld: 指针事件补上键盘焦点不在本窗口的一档 ✓");

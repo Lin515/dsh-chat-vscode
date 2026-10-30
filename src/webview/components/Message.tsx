@@ -2,7 +2,7 @@ import { memo, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, t
 import type { ChangesSummaryView, DiffLayout, FileChangeKind, MessageSessionRef, MessageView, Segment } from "../../shared/chat";
 import { localImageMediaType } from "../../shared/imageRef";
 import { post } from "../bridge";
-import { browserOpenRequested, fileLinkPort, type FileLinkPort } from "../fileLinks";
+import { fileLinkPort, fileOpenIntent, type FileLinkPort } from "../fileLinks";
 import { fileLinkHoverTitle, resolvedFilePath } from "../linkHovers";
 import { IconBranch, IconCopy } from "../icons";
 import { Markdown } from "./Markdown";
@@ -44,7 +44,7 @@ const USER_COLLAPSE_LINES = 5;
 
 /**
  * 一条引用链接的悬停说明：先给**完整路径**，再说点开做什么（见 `../texts` 的
- * `mentionOpenFile` 那几条）。HTML 类文件的那一行浏览器提示来自同一份构造器，
+ * `mentionOpenFile` 那几条）。真实文件与 HTML 浏览器两档来自同一个构造器，
  * 与正文锚点 / 行内代码链接保持一致。
  */
 function mentionTitle(texts: Texts, target: MentionLinkTarget, cwd?: string): string {
@@ -103,9 +103,10 @@ function renderMentionText(
           className="mention-link"
           title={mentionTitle(texts, target, cwd)}
           onClick={(event) => {
-            // 已发出的引用普通单击照旧打开；HTML 文件按住 Ctrl/Cmd 时改走浏览器。
-            const browser = target.kind === "file" && browserOpenRequested(event, target.path);
-            openMentionTarget(target, commandLinks.openMenu, browser);
+            // 已发出的引用普通单击仍是只读预览；Alt 打开可编辑的真实文件，
+            // Ctrl/Cmd + HTML 文件改走系统浏览器（原有动作）。
+            const intent = target.kind === "file" ? fileOpenIntent(event, target.path) : "read";
+            openMentionTarget(target, commandLinks.openMenu, intent);
           }}
         >
           {span.text}
@@ -308,7 +309,7 @@ export const Message = memo(function Message({
   /**
    * 当前会话的技能名 → 服务端 `skills/list` 给出的 `SKILL.md` 路径。
    *
-   * 只用来给 `skill` 工具行挂「Ctrl/Cmd 单击打开 SKILL.md」：路径缺失（服务端没给、
+   * 只用来给 `skill` 工具行挂「Ctrl/Cmd 单击打开真实 SKILL.md」：路径缺失（服务端没给、
    * 目录还没到）时该行不给动作与提示，**不按技能名拼本机路径**。
    */
   skillPaths?: ReadonlyMap<string, string>;

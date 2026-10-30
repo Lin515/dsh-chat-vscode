@@ -103,8 +103,14 @@ console.log("fileChange: 本机附件 stat 的 not-found 判据 ✓");
   assert.ok(/remoteFileUri\(/u.test(controller), "普通文件打开走执行世界资源 URI");
   assert.ok(!/git\.openChange/u.test(controller), "不再有未验证的本机 git 回退");
   assert.ok(!/hasWorkingChange/u.test(controller), "不再按本机 git 清单分类");
-  assert.ok(!/vscode\.Uri\.file\((?:opened|stat|absolute)/u.test(controller), "模型路径不再直接 Uri.file");
-  assert.ok(/vscode\.Uri\.file\(resolved\)/u.test(controller), "本机附件 source 仍允许 Uri.file（与模型路径分开）");
+  assert.ok(
+    /private async openRealFile\([\s\S]*?vscode\.Uri\.file\(stat\.absolutePath\)/u.test(controller),
+    "模型路径只有真实文件那一档才 Uri.file，且必须在本机校验链里",
+  );
+  assert.ok(
+    /vscode\.Uri\.file\(resolved\)/u.test(controller),
+    "本机附件 source 仍允许 Uri.file（与模型路径分开）",
+  );
   assert.ok(/this\.adoptClient\(client\)/u.test(controller), "连接换代统一收口");
   assert.ok(/resolveHostFileConnection/u.test(controller), "provider 只按原连接 id 解析资源");
   assert.ok(/classifyFiles\(sessionId, paths, \{/u.test(controller), "芯片分类带会话 scope 并捕获建域连接");

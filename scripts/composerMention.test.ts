@@ -303,8 +303,8 @@ const sessionToken = (label: string, id: string): string =>
     "命中判定读引用**实际画出来**的矩形（按字符位置估在等宽 + CJK 混排下必偏）",
   );
   assert.ok(
-    /const next = modifierHeld && hitsMentionAt\(x, y\) \? "pointer" : "";/.test(composer),
-    "手指光标与下划线同一个判据（按着 Ctrl / Cmd 且命中引用），不能各写一份",
+    /\(modifierHeld \|\| alt\) && hitsMentionAt\(x, y\) \? "pointer" : "";/.test(composer),
+    "手指光标与可打开引用同一判据（按着 Alt / Ctrl / Cmd 且命中引用），不能各写一份",
   );
   console.log("composerMention: 镜像渲染 / 几何同步 / 命中判定各自只有一处 ✓");
 }

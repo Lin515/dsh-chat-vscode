@@ -199,11 +199,11 @@ console.log("fileLinks: 词表去重且不带 undefined ✓");
   );
   assert.ok(
     /button\.title = fileLinkHoverTitle\(cwd, path, texts\)/.test(mentions),
-    "按钮要带上**完整路径**与 HTML 文件的浏览器提示：正文里常只写文件名，悬停得能看出开的是哪个",
+    "按钮要带上**完整路径**与真实文件 / HTML 浏览器提示：正文里常只写文件名，悬停得能看出开的是哪个",
   );
   assert.ok(
     /open\(path, event\);/.test(mentions),
-    "点击要把原始事件交给调用方：按住 Ctrl/Cmd 时 HTML 文件改走系统浏览器",
+    "点击要把原始事件交给调用方：由它按修饰键分流真实文件 / 浏览器 / 只读",
   );
   assert.ok(
     /const token = code\.textContent \?\? ""/.test(mentions) &&
@@ -247,19 +247,18 @@ console.log("fileLinks: 行内代码 → 按钮（跳过代码块与锚点，绘
 {
   const markdown = read("src", "webview", "components", "Markdown.tsx");
   assert.ok(
-    /post\(\{ type: "openFile", path, line, link: true \}\)/.test(markdown),
-    "文件链接要带上行号与「来自链接」标记发 openFile（后者决定打不开时的措辞）",
+    /type: "openFile"/.test(markdown) && /link: true/.test(markdown) && /real: true/.test(markdown),
+    "文件链接要带上行号、来自链接标记与 real 分流（后者决定是否打开真实文件）",
   );
   assert.ok(
     /const file = parseFileLink\(href\);/.test(markdown),
     "锚点要按 parseFileLink 判定是不是本地文件",
   );
   assert.ok(
-    /openFile\(file\.path, file\.line, event\);/.test(markdown) &&
-      /if \(event && browserOpenRequested\(event, path\)\) \{\s*\n\s*post\(\{ type: "openFileInBrowser", path \}\);/u.test(
-        markdown,
-      ),
-    "本地文件点击统一交给 openFile：HTML 文件按住 Ctrl/Cmd 时由它改发 openFileInBrowser（普通文件仍发 openFile）",
+    /fileOpenIntent\(event, path\)/.test(markdown) &&
+      /openFile\(file\.path, file\.line, event\);/.test(markdown) &&
+      /type: "openFileInBrowser"/.test(markdown),
+    "本地文件点击统一交给 openFile：Alt 发 real，Ctrl/Cmd+HTML 发 openFileInBrowser，普通只读",
   );
   assert.ok(
     /const undoTitles = hydrateLinkTitles\(root, cwd, texts\);/.test(markdown),
@@ -267,7 +266,7 @@ console.log("fileLinks: 行内代码 → 按钮（跳过代码块与锚点，绘
   );
   assert.ok(
     /\(path, event\) => openFile\(path, undefined, event\)/.test(markdown),
-    "行内代码文件链接同样把事件交给 openFile（按修饰键分流到系统浏览器）",
+    "行内代码文件链接同样把事件交给 openFile（按修饰键分流真实文件 / 浏览器 / 只读）",
   );
   assert.ok(
     !/settled/.test(markdown),
@@ -399,6 +398,16 @@ console.log("fileLinks: 词表 = 本轮 produced ∪ deliverables ✓");
     "系统没接受打开请求时要明确提示，不能静默（「点了没反应」正是本条要避免的失败）",
   );
   assert.ok(
+    /case "openFile": \{[\s\S]*?message\.real === true/.test(controller),
+    "openFile 帧要把 real 标记传给宿主（缺省只读，显式才尝试真实文件）",
+  );
+  assert.ok(
+    /private async openRealFile\(/.test(controller) &&
+      /isLocalAbsolutePath\(stat\.absolutePath, platform\)/.test(controller) &&
+      /sameBytes\(remote\.data, localBytes\)/.test(controller),
+    "真实文件打开要有本机路径形态、本机存在性与字节身份校验",
+  );
+  assert.ok(
     /case "openFileInBrowser": \{[\s\S]*?await this\.openFileInBrowser\(viewId, message\.path\);/.test(controller),
     "宿主要有 openFileInBrowser 分支（HTML 文件的 Ctrl/Cmd 单击）",
   );
@@ -411,8 +420,8 @@ console.log("fileLinks: 词表 = 本轮 produced ∪ deliverables ✓");
 
   const ipc = read("src", "shared", "ipc.ts");
   assert.ok(
-    /\{ type: "openFile"; path: string; diff\?: boolean; line\?: number; link\?: true; changes\?: ChangeCoordinates \}/.test(ipc),
-    "openFile 要带可选行号、「来自链接」标记与改动坐标",
+    /type: "openFile"[\s\S]*?real\?: true/.test(ipc),
+    "openFile 要带可选行号、「来自链接」标记、真实文件标记与改动坐标",
   );
   assert.ok(/\{ type: "openExternal"; url: string \}/.test(ipc), "要有 openExternal 这条帧");
   assert.ok(

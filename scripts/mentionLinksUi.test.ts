@@ -29,6 +29,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { CommandView, MessageView } from "../src/shared/chat";
 import { CommandLinksContext, scanCommandLinks, commandDescription } from "../src/webview/commandLinks";
+import { altLabel, modifierLabel } from "../src/webview/modifierLabel";
 import { TextsContext, dictionaryFor } from "../src/webview/texts";
 
 // `bridge.ts` 在模块求值期就挂了 `window.addEventListener`（webview 里那是真实存在的
@@ -44,6 +45,8 @@ const { Message } = await import("../src/webview/components/Message");
 const { openMentionTarget } = await import("../src/webview/mentionOpen");
 
 const zh = dictionaryFor("zh");
+const modifier = modifierLabel();
+const alt = altLabel();
 
 /**
  * SSR 下 `useLayoutEffect` 会打一条「does nothing on the server」的警告。
@@ -107,8 +110,8 @@ const sessionToken = (label: string, id: string): string =>
     `@src/a.ts 必须渲染成可点的行内按钮（class=mention-link）：${html}`,
   );
   assert.ok(
-    html.includes(`title="src/a.ts\n${zh.mentionOpenFile}"`),
-    "悬停说明要先给完整路径、再说「打开文件」（用户点之前得知道会发生什么）",
+    html.includes(`title="src/a.ts\n${zh.openRealFileHint(alt)}\n${zh.mentionOpenFile}"`),
+    "悬停说明要先给完整路径、Alt 真实文件提示，再说「打开文件」",
   );
   assert.ok(
     html.includes("先看 ") && html.includes(" 再改别的"),
@@ -131,21 +134,28 @@ const sessionToken = (label: string, id: string): string =>
   console.log("mentionLinksUi: 目录引用用「展开目录」那一档提示 ✓");
 }
 
-// ---------- 2b. HTML 文件引用：完整路径 + 浏览器修饰键提示 ----------
+// ---------- 2b. HTML 文件引用：完整路径 + Alt 真实文件 + Ctrl/Cmd 浏览器提示 ----------
 {
   const html = render("看 @out/index.html 的渲染结果", "zh", undefined, [], "D:/dev/app");
   assert.ok(
-    html.includes(`title="D:/dev/app/out/index.html\n${zh.webFileBrowserHint}\n${zh.mentionOpenFile}"`),
-    `HTML 文件引用要先给完整路径，再给 Ctrl/Cmd 浏览器提示与普通单击的动作：${html}`,
+    html.includes(
+      `title="D:/dev/app/out/index.html\n${zh.openRealFileHint(alt)}\n${zh.webFileBrowserHint(modifier)}\n${zh.mentionOpenFile}"`,
+    ),
+    `HTML 文件引用要先给完整路径，再给 Alt 真实文件、Ctrl/Cmd 浏览器与普通单击的动作：${html}`,
   );
   posted.length = 0;
-  openMentionTarget({ kind: "file", path: "out/index.html" }, undefined, true);
+  openMentionTarget({ kind: "file", path: "out/index.html" }, undefined, "browser");
   assert.deepEqual(posted, [{ type: "openFileInBrowser", path: "out/index.html" }]);
+  posted.length = 0;
+  openMentionTarget({ kind: "file", path: "out/index.html" }, undefined, "real");
+  assert.deepEqual(posted, [
+    { type: "openFile", path: "out/index.html", line: undefined, link: true, real: true },
+  ]);
   posted.length = 0;
   openMentionTarget({ kind: "file", path: "out/index.html" });
   assert.deepEqual(posted, [{ type: "openFile", path: "out/index.html", line: undefined, link: true }]);
   posted.length = 0;
-  console.log("mentionLinksUi: HTML 文件引用显示完整路径并按修饰键分流浏览器 ✓");
+  console.log("mentionLinksUi: HTML 文件引用显示完整路径并按修饰键分流浏览器 / 真实文件 ✓");
 }
 
 // ---------- 3. 纯文本消息：一个链接按钮都不该出现 ----------
@@ -264,7 +274,7 @@ const sessionToken = (label: string, id: string): string =>
   assert.match(html, /<span class="mention-link is-inert">\/virtual<\/span>/);
   assert.ok(
     html.includes(`title="${zh.commandOpenMenu}"`) &&
-      html.includes(`title="skills/audit/SKILL.md\n${zh.mentionOpenFile}"`),
+      html.includes(`title="skills/audit/SKILL.md\n${zh.openRealFileHint(alt)}\n${zh.mentionOpenFile}"`),
   );
   assert.deepEqual(scanCommandLinks("https://host/plan /plan/file /plan.md /planner /unknown", commands), []);
   assert.equal(scanCommandLinks("(/plan) /plan.", commands).length, 2, "句末标点不属于命令");

@@ -13,6 +13,10 @@
  * 这类普通代码会被猜成一堆假链接，而真正的路径本来就来自本轮的工具调用——那正是
  * 词表里有的东西。对不上（或同名文件不止一个）就保持惰性。
  *
+ * 点开分三档（`fileOpenIntent`）：普通单击只读、Alt 打开可编辑真实文件、
+ * Ctrl/Cmd + HTML 家族交系统浏览器（原有动作）。文件芯片 / 改动卡片不走这一档
+ * ——它们的普通单击已经是「看改动」，Alt 直接打开真实文件，其余修饰键保持原只读打开。
+ *
  * 纯函数、不碰 DOM 也不引 React：断言见 `scripts/fileLinks.test.ts`。DOM 那一步
  * （把命中的行内代码换成按钮）在 `webview/fileMentions.ts`。
  */
@@ -132,13 +136,29 @@ export function externalLinkUrl(value: string): string | undefined {
 }
 
 /**
+ * 文件类链接这一下点击要做什么。
+ *
+ * - `read`：现有只读虚拟资源（普通单击）；
+ * - `real`：按住 Alt，在本机打开可编辑的真实文件（见宿主 `controller.openFile`
+ *   的 `real` 分支；远端 / WSL / 容器会回退只读并提示）；
+ * - `browser`：按住 Ctrl/Cmd 且目标是浏览器能直接打开的本地 web 文件，交给 Host
+ *   原生打开（原有动作）。
+ */
+export type FileOpenIntent = "read" | "real" | "browser";
+
+/** 按住 Alt：打开真实文件这一档。 */
+export function realFileRequested(event: { readonly altKey: boolean }): boolean {
+  return event.altKey;
+}
+
+/**
  * 这一下点击要不要把本地 web 文件交给系统浏览器。
  *
  * 三处入口（正文锚点、行内代码链接、用户消息里的 `@` 引用）共用这一条判据，
- * 语义才不会各走各的：**只有按住 Ctrl/Cmd、且目标是浏览器能直接打开的本地
- * web 文件**才换路；其余点击行为一个字都不变（普通文件仍开编辑器、外链仍直接
- * 交给系统浏览器）。文件芯片不在此列：那里的 Ctrl/Cmd 已经有「直接打开文件、
- * 不要 diff」的含义，不能再叠一层。
+ * 语义才不会各走各的：**只有按住 Ctrl/Cmd、且目标是浏览器能直接打开的本地 web
+ * 文件**才换路（原有动作）。Alt 被真实文件档占用，不参与浏览器分流；普通文件
+ * 按住 Ctrl/Cmd 仍是只读预览。文件芯片 / 改动卡片不在此列：那里 Alt 表示
+ * “打开真实文件”，Ctrl/Cmd 等其它修饰键仍是原来的“直接打开只读文件、不要 diff”。
  *
  * @param event 只读键盘修饰键的鼠标事件。
  * @param path 链接目标里的本地路径。
@@ -148,6 +168,25 @@ export function browserOpenRequested(
   path: string,
 ): boolean {
   return (event.ctrlKey || event.metaKey) && isBrowserOpenableFile(path);
+}
+
+/**
+ * 文件链接点击意图的唯一判据（正文锚点、行内代码、已发出的 `@文件` 共用）。
+ *
+ * Alt 优先于 Ctrl/Cmd：Alt 是明确的“打开真实文件”，同时按住两键时按这一档处理。
+ * 文件芯片 / 改动卡片的“Alt 真实文件、其余修饰键只读直接打开”不走这里，它们自己判。
+ */
+export function fileOpenIntent(
+  event: {
+    readonly altKey: boolean;
+    readonly ctrlKey: boolean;
+    readonly metaKey: boolean;
+  },
+  path: string,
+): FileOpenIntent {
+  if (realFileRequested(event)) return "real";
+  if (browserOpenRequested(event, path)) return "browser";
+  return "read";
 }
 
 /**

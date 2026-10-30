@@ -3,7 +3,7 @@ import { splitMarkdownBlocks, type MarkdownBlock } from "../markdown";
 import { useTexts } from "../texts";
 import { hydrateLocalImages, useLocalImageScopeVersion } from "../localImages";
 import { hydrateFileMentions } from "../fileMentions";
-import { browserOpenRequested, externalLinkUrl, parseFileLink, type FileLinkPort } from "../fileLinks";
+import { externalLinkUrl, fileOpenIntent, parseFileLink, type FileLinkPort } from "../fileLinks";
 import { hydrateLinkTitles } from "../linkHovers";
 import { post } from "../bridge";
 import { CodeBlock } from "./CodeBlock";
@@ -18,19 +18,31 @@ import { openImagePreview } from "../imagePreview";
  * `link` 标记这条帧来自**正文里的文件链接**：打不开时的措辞与文件芯片不同
  * （见 `shared/ipc.ts` 的 `openFile`）。
  *
- * 给了鼠标事件且目标是可以直接用浏览器打开的 HTML 文件、又按住 Ctrl/Cmd 时，
- * 改发 `openFileInBrowser`（唯一一份分流；锚点与行内代码共用这个入口）。
+ * 给了鼠标事件时按 `fileOpenIntent` 分三档：Alt 打开可编辑的真实文件（宿主校验失败
+ * 会回退只读并提示）；Ctrl/Cmd + HTML 文件交系统浏览器（原有动作）；其余普通单击
+ * 仍是只读预览。锚点与行内代码共用这个入口。
  */
 function openFile(
   path: string,
   line?: number,
-  event?: { readonly ctrlKey: boolean; readonly metaKey: boolean },
+  event?: {
+    readonly altKey: boolean;
+    readonly ctrlKey: boolean;
+    readonly metaKey: boolean;
+  },
 ): void {
-  if (event && browserOpenRequested(event, path)) {
+  const intent = event ? fileOpenIntent(event, path) : "read";
+  if (intent === "browser") {
     post({ type: "openFileInBrowser", path });
     return;
   }
-  post({ type: "openFile", path, line, link: true });
+  post({
+    type: "openFile",
+    path,
+    line,
+    link: true,
+    ...(intent === "real" ? { real: true } : {}),
+  });
 }
 
 /**
@@ -41,8 +53,9 @@ function openFile(
  * 其余（`javascript:`、`command:` 之类，以及页内锚点之外的 scheme）一律拦下不动手——
  * webview 里让链接自己导航会把整个聊天界面换掉。
  *
- * 本地文件里，HTML 家族按住 Ctrl/Cmd 时改走系统浏览器（`browserOpenRequested`）；
- * 普通单击仍交给 VS Code 按资源类型打开，与文件芯片一致。
+ * 本地文件里，Alt 打开可编辑的真实文件；HTML 家族按住 Ctrl/Cmd 时改走系统浏览器
+ * （`browserOpenRequested`，原有动作）；普通单击仍交给 VS Code 的只读虚拟资源，
+ * 与文件芯片的普通单击（看改动）不是同一档。
  *
  * `stopPropagation` 是**必须**的，不是保险：VS Code 的 webview 外层页在内容窗口上挂了
  * 一个 click 监听（`handleInnerClick`），凡是锚点就向宿主发 `did-click-link`，而且
@@ -125,7 +138,7 @@ const HtmlBlock = memo(function HtmlBlock({
       undoTitles();
       undoMentions();
     };
-  }, [html, scopeVersion, fileLinks, cwd, texts.imageLoadFailed, texts.imageLoadFailedAt, texts.webFileBrowserHint]);
+  }, [html, scopeVersion, fileLinks, cwd, texts.imageLoadFailed, texts.imageLoadFailedAt, texts.webFileBrowserHint, texts.openRealFileHint]);
   return (
     <div
       ref={ref}

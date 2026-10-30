@@ -38,7 +38,7 @@ React / 浏览器环境，不使用 Node API。上层边界见[源码导航](<..
 - [composerSessionDraft.ts](<composerSessionDraft.ts>) — 可见会话标题与确定性 token 的区间绑定、编辑失效与重匹配；引用与斜杠命令的镜像分段和 Ctrl/Cmd 点击目标，绑定会话区间优先。
 - [composerMention.ts](<composerMention.ts>) — 草稿引用与斜杠命令的镜像分段、Ctrl/Cmd 命中与同排版几何，引用区间不被命令覆盖。
 - [mentionLinks.ts](<mentionLinks.ts>) — 已发正文的文件 / 目录 / 会话目标，sessionRefs 恢复会话身份。
-- [mentionOpen.ts](<mentionOpen.ts>) — 已发链接与草稿 Ctrl/Cmd 点击的分派：文件 / 会话走 IPC，命令通过菜单端口定位输入框。
+- [mentionOpen.ts](<mentionOpen.ts>) — 已发链接与草稿 Alt / Ctrl/Cmd 点击的分派：文件按只读 / 真实文件 / Ctrl+HTML 浏览器三档走 IPC，目录 / 会话 / 命令各走自己的入口。
 - [commandLinks.tsx](<commandLinks.tsx>) — 斜杠目录识别、扫描与补全共用的词法边界、官方内置命令双语描述与筛选菜单端口；技能只打开服务端提供的指令文件，无路径时仅高亮。
 - [mentionNav.ts](<mentionNav.ts>) — 候选「上一层」的查询串：工作区内逐层回退、绝对形态（盘符 / UNC / POSIX 根）回退与盘根回工作区的回路，以及含 `..` 段相对查询按会话 cwd 深度的段算术（退到根就停）。
 - [pathDisplay.ts](<pathDisplay.ts>) — 路径的展示口径：单行标题的拆分省略，以及把候选 / 「上一层」行的展示路径解析成完整绝对路径（悬停标题，绝对与相对两侧都按根锚定语义消掉 `..`）。
@@ -60,7 +60,7 @@ React / 浏览器环境，不使用 Node API。上层边界见[源码导航](<..
 - [subagentTree.ts](<subagentTree.ts>) — 标题清单的界面读法：当前会话的多层后代计数与当前节点定位。
 - [contextMenu.ts](<contextMenu.ts>) — 原生 / 自绘右键判据与会话选区 Ctrl+C / Cmd+C 的宿主复制桥；编辑区快捷键让路，见[右键设计](<../../docs/design-context-menu.md>)。
 - [nodeOpen.ts](<nodeOpen.ts>) — 消息持有的节点展开态。
-- [modifierHeld.ts](<modifierHeld.ts>) — 全局 Ctrl/Cmd 按住状态 → 根元素 `is-modifier-held` 类（可打开文件节点的路径下划线提示）；指针事件补键盘焦点缺席，失焦 / 页面隐藏清理。
+- [modifierHeld.ts](<modifierHeld.ts>) — 全局 Alt / Ctrl / Cmd 按住状态 → 根元素 `is-modifier-held` 类（可打开文件节点的路径下划线提示）；指针事件补键盘焦点缺席，失焦 / 页面隐藏清理。
 - [turnProcess.ts](<turnProcess.ts>) — 连续过程折叠。
 - [todoPanel.ts](<todoPanel.ts>) — 会话单槽位开合与收起时保留项。
 - [turnFiles.ts](<turnFiles.ts>) — 交付 / 本轮改动文件去重：展示路径按首次出现去重，身份键不转小写/不消点（POSIX 同名不同大小写各留一行），交付重复只按能证明的拼写去掉；多次 `present` 的显示取同路径最后一次申报。
@@ -77,9 +77,10 @@ React / 浏览器环境，不使用 Node API。上层边界见[源码导航](<..
 - [footnotes.ts](<footnotes.ts>) — 脚注扩展。
 - [cjkStrong.ts](<cjkStrong.ts>) — tokenizer 放宽中文标点收尾的加粗闭合（官方 cjkFriendlyStrong 口径）。
 - [linkDestinations.ts](<linkDestinations.ts>) — tokenizer 保护 Windows 反斜杠目标。
-- [fileLinks.ts](<fileLinks.ts>) — Markdown 路径锚点与本轮文件 token；行内代码按「精确 / 唯一 basename / 产物参数别名」并入同一集合，只有唯一目标才可点；另给「修饰键 + HTML 文件才换走浏览器」的唯一判据。
-- [linkHovers.ts](<linkHovers.ts>) — 正文链接的悬停标题（完整路径 / 完整地址、HTML 修饰键提示）与锚点 title 的渲染后注入。
-- [fileMentions.ts](<fileMentions.ts>) — 文件 token 到按钮的 DOM 变换；悬停与点击共用词表解析出的同一个目标，点击把事件交给调用方分流浏览器。
+- [fileLinks.ts](<fileLinks.ts>) — Markdown 路径锚点与本轮文件 token；行内代码按「精确 / 唯一 basename / 产物参数别名」并入同一集合，只有唯一目标才可点；另给 `fileOpenIntent`（Alt 真实文件 / Ctrl+HTML 浏览器 / 普通只读）的唯一判据。
+- [linkHovers.ts](<linkHovers.ts>) — 正文链接的悬停标题（完整路径 / 完整地址、Alt 真实文件、HTML 的 Ctrl/Cmd 浏览器提示）与锚点 title 的渲染后注入。
+- [fileMentions.ts](<fileMentions.ts>) — 文件 token 到按钮的 DOM 变换；悬停与点击共用词表解析出的同一个目标，点击把事件交给调用方按 `fileOpenIntent` 分流。
+- [modifierLabel.ts](<modifierLabel.ts>) — 悬停文案的平台修饰键标签（Mac→Cmd，Win/Linux→Ctrl）；点击判据仍只看 ctrlKey / metaKey。
 - [localImages.ts](<localImages.ts>) — 正文图片交宿主读取，缓存按会话隔离。
 - [imagePreview.ts](<imagePreview.ts>) — 原图浮层的开合订阅、滚轮缩放 / 拖动几何与「复原」端口；1 为适配视口，缩放锚定光标、平移受边界约束。
 - [imageClipboard.ts](<imageClipboard.ts>) — canvas 转 PNG 写剪贴板。

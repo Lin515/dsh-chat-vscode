@@ -69,6 +69,7 @@ import {
   unsupportedLocalPathForm,
 } from "./localAccess";
 import { readHostImages } from "./localImages";
+import { isLocalAbsolutePath, isLoopbackUrl, localPlatform, sameBytes } from "./localPath";
 import {
   HostFileAccess,
   HostFileError,
@@ -675,6 +676,15 @@ function connectionFieldsOf(input: ConnectionFieldsInput): ConnectionFields {
  * 「读不到」处理，退回 hunk 片段。
  */
 const AGENT_DIFF_READ_LIMIT = 8 * 1024 * 1024;
+
+/**
+ * 打开真实文件时，最多读多少字节做**逐字节身份校验**。
+ *
+ * 本机副本与执行世界可能是同一台机器上的两份同形路径（远端 / 容器 / WSL）；只有
+ * 存在性和大小还不够。源码类文件远小于这条线，超过它则退回「大小 + 存在性」，
+ * 避免为了点开一个大日志把整份文件搬进扩展宿主内存。
+ */
+const REAL_FILE_VERIFY_BYTES = 8 * 1024 * 1024;
 
 /**
  * `agentDiffs` 的条数上限。
@@ -9127,12 +9137,13 @@ export class ChatController implements vscode.Disposable {
           message.line,
           message.link === true,
           message.changes,
+          message.real === true,
         );
         break;
       }
 
       case "openFileInBrowser": {
-        // 正文文件链接按住 Ctrl/Cmd：HTML 家族交给系统浏览器。路径解析与
+        // 正文文件链接按住 Ctrl/Cmd：HTML 家族交给系统浏览器（原有动作）。路径解析与
         // openFile 同一口径，扩展名白名单在宿主这层再验一次（见 openFileInBrowser）。
         await this.openFileInBrowser(viewId, message.path);
         break;
@@ -11382,16 +11393,18 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
-   * 在编辑器里打开一个文件（普通文件走 VS Code 的**只读虚拟资源**）。
+   * 打开一个文件：默认走 VS Code 的**只读虚拟资源**，`real` 时尝试本机真实文件。
    *
-   * 路径属于 DSH 执行世界：先问 `workspaceFiles.stat` 取得 Host 认可的绝对路径，
-   * 再生成绑定「连接 + 会话 + 路径」的 `dsh-chat-world:` URI；绝不 `Uri.file`，
-   * 也不因本机同名文件存在就改读本机。相对路径原样交给 Host 解析（缺创建目录时
-   * 由服务端的 sandbox 根裁决），客户端不拿 VS Code 工作区兜底。
+   * 路径属于 DSH 执行世界：先问 `workspaceFiles.stat` 取得 Host 认可的绝对路径。
+   * 默认再生成绑定「连接 + 会话 + 路径」的 `dsh-chat-world:` URI，绝不 `Uri.file`；
+   * `real`（用户按住 Alt）时才在**本机端点**且路径形态、存在性、大小与字节
+   * 校验都通过的前提下用 `file:` 打开，失败回退只读并提示。相对路径原样交给 Host
+   * 解析（缺创建目录时由服务端的 sandbox 根裁决），客户端不拿 VS Code 工作区兜底。
    *
    * `diff` 表示想看本轮改动：**先按 Host 清单坐标取快照**，不把「当前文件还能
    * stat 到」当成历史对比的前提——文件在本轮之后被删掉，删除对比仍然打得开。
    * 快照不可用或新文件仍在时才回落普通打开。没有坐标时不再查本机 git。
+   * `real` 与 `diff` 同时出现时以 `real` 为准：显式要编辑，不再转成对比。
    *
    * 当前目标的三态保留到提示处：只有 Host 明确 `workspace-file/not-found` 才能
    * 说「文件已删除」；权限、离线、连接关闭与形状错误一律是中性不可用。
@@ -11406,6 +11419,7 @@ export class ChatController implements vscode.Disposable {
     line?: number,
     fromLink = false,
     changes?: ChangeCoordinates,
+    real = false,
   ): Promise<void> {
     const notifySession = viewId ? this.viewSessions.get(viewId) : undefined;
     const client = this.client;
@@ -11423,8 +11437,8 @@ export class ChatController implements vscode.Disposable {
       return;
     }
     // 先试历史快照：坐标为 session + seq + index，是 Host 清单里的唯一身份。
-    // 当前文件读不到只影响「补上下文」，不影响快照本身。
-    if (diff === true && changes) {
+    // 当前文件读不到只影响「补上下文」，不影响快照本身。显式真实文件优先。
+    if (!real && diff === true && changes) {
       if (await this.openAgentChanges(sessionId, path, changes)) return;
       if (this.client !== client || this.hostFiles !== access) return; // 迟到结果属于旧连接
     }
@@ -11457,6 +11471,19 @@ export class ChatController implements vscode.Disposable {
       return;
     }
     const opened = target;
+    if (real) {
+      if (await this.openRealFile(access, sessionId, opened.stat, opened.line)) return;
+      if (this.client !== client || this.hostFiles !== access) return; // 迟到结果属于旧连接
+      this.log(`[open] 真实文件不可用，回退只读虚拟资源：${opened.stat.absolutePath}`);
+      if (viewId) {
+        this.notify({
+          sessionId: notifySession,
+          level: "warn",
+          kind: "realFileUnavailable",
+          text: "@realFileUnavailable",
+        });
+      }
+    }
     const uri = remoteFileUri({
       connectionId: access.connectionId,
       sessionId,
@@ -11480,6 +11507,99 @@ export class ChatController implements vscode.Disposable {
     } catch (error) {
       this.log(`[open] 打开失败 ${path}：${this.describeError(error)}`);
     }
+  }
+
+  /**
+   * 尝试把执行世界文件当**本机真实文件**打开（Alt 那一档）。
+   *
+   * 四道门缺一不可：
+   * 1. 这条连接属于本机执行世界（内部 / 桌面端，或回环端点）；
+   * 2. Host 给的绝对路径形态属于扩展宿主平台（Windows 盘符 / UNC，POSIX `/`）；
+   * 3. 本机 `workspace.fs` 能 stat 到同一个普通文件，且大小与 Host 报告一致；
+   * 4. 文件 ≤ {@link REAL_FILE_VERIFY_BYTES} 时，再与 Host `readBytes` 逐字节比较。
+   *
+   * 任何一道失败都返回 `false`，由调用方回退现有的只读虚拟资源并提示——绝不因为
+   * 本机有同路径文件就直接打开。成功时返回 `true`，真实文件在编辑器里可正常编辑。
+   */
+  private async openRealFile(
+    access: HostFileAccess,
+    sessionId: string,
+    stat: HostFileStat,
+    line?: number,
+  ): Promise<boolean> {
+    if (!this.isLocalExecutionTarget()) {
+      this.log(`[open] 当前执行世界不是本机端点，拒绝打开真实文件：${stat.absolutePath}`);
+      return false;
+    }
+    const platform = localPlatform(process.platform);
+    if (!isLocalAbsolutePath(stat.absolutePath, platform)) {
+      this.log(`[open] 执行世界路径不是本机 ${platform} 绝对路径：${stat.absolutePath}`);
+      return false;
+    }
+    const uri = vscode.Uri.file(stat.absolutePath);
+    try {
+      const local = await vscode.workspace.fs.stat(uri);
+      if (local.type !== vscode.FileType.File) {
+        this.log(`[open] 本机同路径不是普通文件，拒绝打开：${stat.absolutePath}`);
+        return false;
+      }
+      if (stat.bytes !== undefined && local.size !== stat.bytes) {
+        this.log(
+          `[open] 本机副本大小不一致（Host ${stat.bytes} / 本机 ${local.size}），拒绝打开：${stat.absolutePath}`,
+        );
+        return false;
+      }
+      if (stat.bytes !== undefined && stat.bytes <= REAL_FILE_VERIFY_BYTES) {
+        const remote = await access.readBytes(sessionId, stat.absolutePath);
+        const localBytes = await vscode.workspace.fs.readFile(uri);
+        if (!sameBytes(remote.data, localBytes)) {
+          this.log(`[open] 本机副本与执行世界字节不一致，拒绝打开：${stat.absolutePath}`);
+          return false;
+        }
+      }
+    } catch (error) {
+      this.log(`[open] 真实文件的本机校验失败 ${stat.absolutePath}：${this.describeError(error)}`);
+      return false;
+    }
+    try {
+      if (isLineNumber(line)) {
+        try {
+          const document = await vscode.workspace.openTextDocument(uri);
+          const position = this.revealLine(document, line);
+          await vscode.window.showTextDocument(document, {
+            preview: true,
+            ...(position ? { selection: new vscode.Range(position, position) } : {}),
+          });
+          this.log(`[open] 已在编辑器中打开真实文件：${stat.absolutePath}:${line}`);
+          return true;
+        } catch (error) {
+          this.log(
+            `[open] 真实文件带行号打开失败（${stat.absolutePath}）：${this.describeError(error)}；退回普通打开`,
+          );
+        }
+      }
+      await vscode.commands.executeCommand("vscode.open", uri, { preview: true });
+      this.log(`[open] 已在编辑器中打开真实文件：${stat.absolutePath}`);
+      return true;
+    } catch (error) {
+      this.log(`[open] 真实文件打开失败 ${stat.absolutePath}：${this.describeError(error)}`);
+      return false;
+    }
+  }
+
+  /**
+   * 当前连接是否可视为**本机执行世界**。
+   *
+   * `ownership` 是这一轮真正建起连接的那份服务信息：`self` / `peer` 是扩展拉起的
+   * 内部后台（同一台机器，另一窗口拉起的也算），`desktop` 是本机桌面端。`external`
+   * 只有端点主机是回环时才可能在本机（用户手动在本机起的 `dsh web`）；端口转发到
+   * 远端的情况由后面的路径 / 字节校验兜底。拿不到 `ownership` 时退回粘性目标。
+   */
+  private isLocalExecutionTarget(): boolean {
+    const ownership = this.server.snapshot().status.info?.ownership;
+    if (ownership === "self" || ownership === "peer" || ownership === "desktop") return true;
+    if (ownership === "external") return isLoopbackUrl(this.client?.baseUrl);
+    return this.target?.kind === "internal" || this.target?.kind === "desktop";
   }
 
   /**
@@ -11525,6 +11645,7 @@ export class ChatController implements vscode.Disposable {
    * 认证的 `session/openWorkspacePath`；Host 自己用
    * `processPathFromHostPath` + `resolve` 复核映射，不可映射会拒绝。`canOpenWorkspacePath`
    * 只报告 Host 是否有原生桌面能力，不代表扩展宿主能打开本机同路径。
+   * Alt 则走 `openFile` 的 `real` 分支，两档互不重叠。
    *
    * 扩展名白名单仍在本层校验：它是「浏览器是否适合显示」的展示判据，不是文件读取
    * 权限；被拒绝时明确提示，不改走编辑器。

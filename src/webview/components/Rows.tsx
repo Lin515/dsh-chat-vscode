@@ -43,6 +43,8 @@ import { ToolCardBody } from "./ToolCards";
 import { fill, useLocale, useTexts, resolveText } from "../texts";
 import { pickLocalizedText } from "../../shared/localizedText";
 import { resolvedFilePath } from "../linkHovers";
+import { realFileRequested } from "../fileLinks";
+import { altLabel } from "../modifierLabel";
 import { changeIndexForPath } from "../../shared/changesSummary";
 import { basenameWorkspacePath } from "../../shared/workspacePath";
 import type { NodeOpenPort } from "../nodeOpen";
@@ -172,6 +174,7 @@ export function ToolRow({
   const open = node.open ?? false;
   const describeTool = useDescribeTool();
   const texts = useTexts();
+  const altKeyLabel = altLabel();
   const { icon, iconClass, verb } = describeTool(tool.name);
   const bodyRef = useRef<HTMLDivElement>(null);
   const running = tool.status === "running" || tool.status === "pending";
@@ -322,9 +325,18 @@ export function ToolRow({
       : undefined;
 
   /**
-   * 按住 Ctrl/Cmd 单击要打开的文件：文件类节点用参数里的路径，技能节点用服务端
+   * 按住 Alt 单击要打开可编辑的真实文件；Ctrl/Cmd 保留原来的只读直接打开。
+   * 文件类节点用参数里的路径，技能节点用服务端
    * `skills/list` 给的 `SKILL.md` 路径；读取节点在本次读取带行号区间时打开到
    * 起始行（编辑节点没有行号数据，只打开文件，见 `modifierTargetOf`）。
+   * 没有可打开目标就不构造端口对象——行头既没有修饰键动作，也没有悬停说明
+   * （见 `RowModifierAction`）。
+   */
+  /**
+   * 行头两个修饰键动作：Ctrl/Cmd 保留原来的「直接打开只读文件」，Alt 打开可编辑的
+   * 真实文件。文件类节点用参数里的路径，技能节点用服务端 `skills/list` 给的
+   * `SKILL.md` 路径；读取节点在本次读取带行号区间时打开到起始行（编辑节点没有
+   * 行号数据，只打开文件，见 `modifierTargetOf`）。
    * 没有可打开目标就不构造端口对象——行头既没有修饰键动作，也没有悬停说明
    * （见 `RowModifierAction`）。
    */
@@ -338,7 +350,15 @@ export function ToolRow({
             diff: false,
             ...(openTarget.line === undefined ? {} : { line: openTarget.line }),
           }),
-        hint: isSkill ? texts.toolOpenSkillHint : texts.toolOpenFileHint,
+        activateReal: () =>
+          post({
+            type: "openFile",
+            path: openTarget.path,
+            diff: false,
+            real: true,
+            ...(openTarget.line === undefined ? {} : { line: openTarget.line }),
+          }),
+        hint: isSkill ? texts.toolOpenSkillHint(altKeyLabel) : texts.toolOpenFileHint(altKeyLabel),
       }
     : undefined;
 
@@ -368,7 +388,18 @@ export function ToolRow({
         // 已有「Ctrl/Cmd 单击打开」的节点不再把详情做成普通点击链接：同一行不能
         // 一半要求修饰键、一半不要求（文件类节点的 `command` 通常就是路径，本就走不到这里）。
         tool.detail && !tool.command && !modifier
-          ? () => post({ type: "openFile", path: tool.detail as string, diff: false })
+          ? (event) =>
+              post({
+                type: "openFile",
+                path: tool.detail as string,
+                diff: false,
+                ...(event && realFileRequested(event) ? { real: true } : {}),
+              })
+          : undefined
+      }
+      detailHint={
+        tool.detail && !tool.command && !modifier
+          ? texts.openRealFileHint(altKeyLabel)
           : undefined
       }
       {...(modifier === undefined ? {} : { modifier })}
@@ -481,7 +512,15 @@ export function ToolRow({
             <button
               key={file.path}
               className="lump-btn"
-              onClick={(event) => post({ type: "openFile", path: file.path, diff: wantsChanges(event) })}
+              title={`${file.path}\n${texts.openRealFileHint(altKeyLabel)}`}
+              onClick={(event) =>
+                post({
+                  type: "openFile",
+                  path: file.path,
+                  diff: wantsChanges(event),
+                  ...(realFileRequested(event) ? { real: true } : {}),
+                })
+              }
             >
               <IconExternal size={12} />
               {file.path}
@@ -1577,8 +1616,9 @@ export function CommandRow({ command, node }: { command: CommandRunView; node: N
  *
  * 芯片的**普通点击是看改动**（`diff`：有清单坐标时宿主打开本轮快照对比；没有
  * 可用对比时由宿主按执行世界的文件三态决定怎么开，界面不假定本机 Git），
- * 按住修饰键时才直接打开文件本身——两行用同一套点击语义，同一个文件不会因为
- * 模型申报没申报交付而行为不同（见 `wantsChanges`）。
+ * 按住 Alt 才打开可编辑的真实文件；Ctrl/Cmd/Shift 保留原来的只读直接打开。
+ * 两行用同一套点击语义，同一个文件不会因为模型申报没申报交付而行为不同
+ * （见 `wantsChanges`）。
  */
 export function FileChips({
   label,
@@ -1603,6 +1643,7 @@ export function FileChips({
   changes?: { seq: number; turn: number; files: readonly ChangedFileView[] };
 }) {
   const texts = useTexts();
+  const altKeyLabel = altLabel();
   // 每行独立记忆展开态；消息重渲染（新 segment 追加）不重置
   const [expanded, setExpanded] = useState(false);
   // 收起按钮的显隐只看「有没有被藏过的文件」：展开后 shown 就是全部，
@@ -1627,8 +1668,8 @@ export function FileChips({
               deleted
                 ? `${fullPath}\n${texts.fileDeletedHint}`
                 : file.description
-                  ? `${fullPath}\n${file.description}\n${texts.openChangesHint}`
-                  : `${fullPath}\n${texts.openChangesHint}`
+                  ? `${fullPath}\n${file.description}\n${texts.openChangesHint(altKeyLabel)}`
+                  : `${fullPath}\n${texts.openChangesHint(altKeyLabel)}`
             }
             // 无障碍标题走词典：旧写法在这里用模板串硬拼中文全角括号
             // （`${path}（${...}）`），英文界面下会露出全角括号
@@ -1636,10 +1677,13 @@ export function FileChips({
               deleted ? texts.deletedFileAria(file.path) : texts.openChangesAria(file.path)
             }
             onClick={(event) => {
+              // 任意修饰键仍是原来的「直接打开、不要 diff」；Alt 另叠真实文件档。
+              const direct = !wantsChanges(event);
               post({
                 type: "openFile",
                 path: file.path,
-                diff: wantsChanges(event),
+                diff: !direct,
+                ...(realFileRequested(event) ? { real: true } : {}),
                 ...(coordinates ? { changes: coordinates } : {}),
               });
             }}
@@ -1688,8 +1732,8 @@ function changeCoordinates(
 /**
  * 文件芯片点击的意图：默认**看改动**（有清单坐标时宿主按坐标取本轮快照对比；
  * 没有可用对比时由宿主按执行世界的访问结果决定，不在界面假定本机 Git 回退）；
- * 按住 Alt/Ctrl/Cmd/Shift 时直接打开文件本身——对比窗口里看内容不方便时的
- * 逃生口，同一份文件不必另找入口。
+ * Ctrl/Cmd/Shift 是原来的「直接打开只读文件、不要 diff」，Alt 则打开可编辑的真实
+ * 文件——对比窗口里看内容不方便时的逃生口，同一份文件不必另找入口。
  */
 function wantsChanges(event: MouseEvent): boolean {
   return !(event.altKey || event.ctrlKey || event.metaKey || event.shiftKey);
