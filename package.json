@@ -256,7 +256,7 @@
         },
         "dshChat.questionBatch": {
           "type": "integer",
-          "default": 3,
+          "default": 1,
           "minimum": 0,
           "markdownDescription": "%config.questionBatch%"
         },

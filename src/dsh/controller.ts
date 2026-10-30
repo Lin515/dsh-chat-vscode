@@ -340,11 +340,11 @@ function readFontSize(): number | undefined {
  * 一份问卷一次展开几道题（`dshChat.questionBatch`）。
  *
  * 合法域是**整数 ≥0**：`0` 表示始终一次展开全部；题目数**多于**它时界面改为
- * 依次问答。坏值（负数、小数、非数字）一律回退默认 3——手写 settings.json 能
+ * 依次问答。坏值（负数、小数、非数字）一律回退默认 1——手写 settings.json 能
  * 绕开设置页的校验，而「负数」既不是「全部展开」也不是「一题一题」，
  * 猜它的意图不如用默认值（与 `readFontSize` 同一条判据纪律）。
  */
-const DEFAULT_QUESTION_BATCH = 3;
+const DEFAULT_QUESTION_BATCH = 1;
 function readQuestionBatch(): number {
   const value = vscode.workspace.getConfiguration("dshChat").get<number>("questionBatch");
   if (typeof value === "number" && Number.isInteger(value) && value >= 0) return value;

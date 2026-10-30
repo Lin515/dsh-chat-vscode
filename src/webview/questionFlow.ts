@@ -15,7 +15,7 @@ import type { QuestionItemView } from "../shared/chat";
  */
 
 /** 配置缺失或坏值时的默认阈值（与 `package.json` 的 default 一致）。 */
-export const DEFAULT_QUESTION_BATCH = 3;
+export const DEFAULT_QUESTION_BATCH = 1;
 
 /** 一份问卷的展示模式。 */
 export type QuestionMode = "all" | "stepped";

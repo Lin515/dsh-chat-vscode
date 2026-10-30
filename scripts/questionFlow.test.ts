@@ -25,6 +25,7 @@ const items: QuestionItemView[] = [
   assert.strictEqual(questionMode(3, 3), "all", "题目数 == 阈值：一次展开（用户口径是「> 3 才依次问答」）");
   assert.strictEqual(questionMode(4, 3), "stepped", "题目数 > 阈值：依次问答");
   assert.strictEqual(questionMode(1, 3), "all", "只有一道题当然一次展开");
+  assert.strictEqual(questionMode(2, undefined), "stepped", "默认阈值 1：两道题也依次问答");
   assert.strictEqual(questionMode(12, 0), "all", "配置 0 = 始终展开全部题目");
   assert.strictEqual(questionMode(12, undefined), "stepped", `缺省阈值是 ${DEFAULT_QUESTION_BATCH}`);
   // 坏值（手写 settings.json 能绕过设置页校验）一律回退默认阈值，不猜意图
