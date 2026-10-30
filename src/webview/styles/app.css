@@ -2716,7 +2716,16 @@ button.header-title.is-switcher > svg.is-open {
 }
 
 /* 行内的编辑框：边框与内边距由行提供，输入框自己不要再套一层，
-   否则会出现「框里还有一个框」；高度给两行起步，允许往下拉 */
+   否则会出现「框里还有一个框」。高度由脚本按内容量（最多 5 行，见 questionInput.ts）：
+   `rows` 给两行下限；不超 5 行时不显示滚动条，超过后由脚本把 `overflow-y` 放开，
+   在框内滚动。`resize: vertical` 让右下角可手动拖高——用户一旦手动拖过高度，
+   脚本就让位、不再自动改高（见 Rows.tsx 的 CustomAnswerInput）。
+   `line-height` 必须是确定的数值，脚本靠它算高度。
+
+   滚动条由**这一条输入框自己画**（项目其余滚动条仍交给 VS Code 主题）：原生 resizer
+   的边框只有在自绘滚动条下才能单独隐藏，而 Chromium 在 `scrollbar-color` 不是 auto 时
+   会整组忽略 `::-webkit-scrollbar*`。所以这里用 auto，再自绘轨道 / 滑块：轨道与
+   角落透明、滑块用主题的滚动条滑块色，右下角不垫任何底色。 */
 .question-custom .question-input {
   width: 100%;
   min-width: 0;
@@ -2725,7 +2734,68 @@ button.header-title.is-switcher > svg.is-open {
   background: none;
   font: inherit;
   color: inherit;
+  line-height: 1.5;
+  overflow-y: hidden;
   resize: vertical;
+  scrollbar-color: auto;
+}
+
+/* 自绘滚动条：12 设计像素槽位，滑块两侧各留 3 设计像素透明边（实际可见 6），
+   与原生滚动条的视觉厚度接近；轨道与右下角透明，避免给拖拽把手垫色。
+   几何量走 `--dp`，与界面倍率一起缩放。 */
+.question-custom .question-input::-webkit-scrollbar {
+  width: calc(12 * var(--dp));
+  height: calc(12 * var(--dp));
+}
+
+.question-custom .question-input::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.question-custom .question-input::-webkit-scrollbar-thumb {
+  background-color: var(--vscode-scrollbarSlider-background, rgba(77, 77, 77, 0.5));
+  background-clip: padding-box;
+  border: calc(3 * var(--dp)) solid transparent;
+  border-radius: calc(6 * var(--dp));
+}
+
+.question-custom .question-input::-webkit-scrollbar-thumb:hover {
+  background-color: var(--vscode-scrollbarSlider-hoverBackground, rgba(100, 100, 100, 0.7));
+  background-clip: padding-box;
+}
+
+.question-custom .question-input::-webkit-scrollbar-thumb:active {
+  background-color: var(--vscode-scrollbarSlider-activeBackground, rgba(191, 191, 191, 0.4));
+  background-clip: padding-box;
+}
+
+.question-custom .question-input::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* 隐藏原生 resizer 的图形（连它自带的那圈边框一起）：改边框色会把两条斜线也抹掉，
+   所以整个图形交给下面那颗 SVG 把手。`resize` 仍是 vertical，原生拖拽区域还在，
+   SVG 只负责外观（pointer-events: none，事件穿透给底下的 resizer）。 */
+.question-custom .question-input::-webkit-resizer {
+  border-color: transparent;
+  background-color: transparent;
+}
+
+.question-input-wrap {
+  position: relative;
+  display: flex;
+  width: 100%;
+  min-width: 0;
+}
+
+.question-input-grip {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: calc(12 * var(--dp));
+  height: calc(12 * var(--dp));
+  color: var(--vscode-descriptionForeground, rgba(200, 200, 200, 0.8));
+  pointer-events: none;
 }
 
 .question-input {

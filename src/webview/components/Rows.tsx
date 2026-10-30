@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import type { MouseEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent } from "react";
 import { post } from "../bridge";
 import { useCommandLinks } from "../commandLinks";
 import { consumeEscape } from "../escapeOwner";
@@ -28,6 +28,8 @@ import {
   useStickyBody,
 } from "./primitives";
 import { canSubmit, isAnswered, questionMode } from "../questionFlow";
+import { customAnswerSize } from "../questionInput";
+import { useUiScale } from "../uiScale";
 import {
   clearQuestionDraft,
   questionDraftKey,
@@ -946,6 +948,148 @@ export function PlanReviewCard({
   );
 }
 
+/** 自定义回答输入框的基准行数（`rows`）：空输入框保持两行高，也是量高的起点。 */
+const CUSTOM_ANSWER_ROWS = 2;
+
+/**
+ * 自定义回答的输入框：**跟着内容自动长高，最多 5 行**，再长就在框内滚动。
+ *
+ * 高度必须量出来（行高 + 内外边距叠加），不能只靠 CSS：`scrollHeight` 是内容高度，
+ * 上限按 `customAnswerSize` 算；`rows` 同时给了两行的下限，所以只有一两个字时不会
+ * 缩成一行。宽度变化（拖侧栏）会改变折行位置，`ResizeObserver` 只盯宽度、重新量一次；
+ * 自己改高度引起的尺寸回调直接跳过，免得来回震荡。
+ *
+ * 右下角的拖拽把手由浏览器原生提供（`resize: vertical`）：自动长高是默认行为，用户一旦
+ * 从把手手动拖过高度，就以他定的高度为准、不再自动改高——否则下一次输入会把拖拽结果
+ * 弹回去，把手等于白拖。手动定高后放开滚动条，内容超出时仍能滚动查看。
+ */
+function CustomAnswerInput(props: {
+  value: string;
+  ariaLabel: string;
+  placeholder: string;
+  onChange: (value: string) => void;
+  onFocus: () => void;
+  onKeyDown: (event: ReactKeyboardEvent<HTMLTextAreaElement>) => void;
+}) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+  const uiScale = useUiScale();
+  /** 用户是否已经从右下角手动拖过高度（此后自动增高让位）。 */
+  const manual = useRef(false);
+  /** 在右下角把手按下时记下的起始高度：高度真的变了才算手动拖拽，避免误触。 */
+  const gripStart = useRef<number | null>(null);
+  /**
+   * 量一次并写回高度。
+   *
+   * 先塌回 `auto` 再量：文本域当前高度就是上一次量出来的，不塌回只会越量越高。
+   * 塌回的一瞬可视高度变矮，若原本贴底（光标在末尾、刚敲字），滚动位置要重新钉底，
+   * 否则超过 5 行后每输入一次光标就往下掉一行；其余情况恢复原滚动位置。
+   */
+  const grow = useCallback(() => {
+    const el = ref.current;
+    if (!el || manual.current) return;
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= 1;
+    const previousTop = el.scrollTop;
+    el.style.height = "auto";
+    const style = getComputedStyle(el);
+    const px = (value: string) => Number.parseFloat(value) || 0;
+    const size = customAnswerSize({
+      scrollHeight: el.scrollHeight,
+      // CSS 给了确定的 `line-height`（见 app.css），算不出像素时按 1.5 倍字号兜底
+      lineHeight: px(style.lineHeight) || px(style.fontSize) * 1.5,
+      paddingTop: px(style.paddingTop),
+      paddingBottom: px(style.paddingBottom),
+      borderTopWidth: px(style.borderTopWidth),
+      borderBottomWidth: px(style.borderBottomWidth),
+    });
+    el.style.height = `${size.height}px`;
+    el.style.overflowY = size.scroll ? "auto" : "hidden";
+    el.scrollTop = atBottom ? el.scrollHeight : previousTop;
+  }, []);
+  /**
+   * 结束一次把手拖拽：高度真的离开按下时的起点，才交出高度控制权。
+   *
+   * 指针抬起时补做一次判断：极快的拖动可能整个发生在一次 `ResizeObserver` 回调之前，
+   * 只靠观察器会漏掉，下一次输入就把用户拖好的高度弹回去。
+   */
+  const finishGrip = () => {
+    const el = ref.current;
+    const start = gripStart.current;
+    gripStart.current = null;
+    if (!el || start === null) return;
+    if (Math.abs(el.getBoundingClientRect().height - start) <= 1) return;
+    manual.current = true;
+    el.style.overflowY = "auto";
+  };
+  // 绘制前定高，避免先按两行画出来再跳高；字号倍率变了行高也变，必须重量
+  useLayoutEffect(() => {
+    grow();
+  }, [grow, props.value, uiScale]);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    let width = el.getBoundingClientRect().width;
+    const observer = new ResizeObserver(() => {
+      const current = ref.current;
+      if (!current) return;
+      const rect = current.getBoundingClientRect();
+      // 右下角把手拖过：高度偏离按下时的起点，就交出高度控制权
+      const startHeight = gripStart.current;
+      if (startHeight !== null && Math.abs(rect.height - startHeight) > 1) {
+        manual.current = true;
+        gripStart.current = null;
+        // 手动改矮后内容可能装不下：放开滚动条，别让文字被裁掉又滚不到
+        current.style.overflowY = "auto";
+      }
+      if (Math.abs(rect.width - width) < 0.5) return;
+      width = rect.width;
+      grow();
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [grow]);
+  return (
+    <div className="question-input-wrap">
+      <textarea
+        ref={ref}
+        className="question-input"
+        rows={CUSTOM_ANSWER_ROWS}
+        aria-label={props.ariaLabel}
+        placeholder={props.placeholder}
+        value={props.value}
+        onChange={(event) => props.onChange(event.target.value)}
+        onFocus={props.onFocus}
+        // 原生 resize 只能从右下角把手开始：记下按下时的起始高度，交给
+        // ResizeObserver 判断这次是不是真的拖动了。只点一下把手不会关掉自动增高。
+        onPointerDown={(event) => {
+          const rect = event.currentTarget.getBoundingClientRect();
+          if (event.clientX < rect.right - 20 || event.clientY < rect.bottom - 20) return;
+          gripStart.current = rect.height;
+        }}
+        onPointerUp={finishGrip}
+        onPointerCancel={finishGrip}
+        onKeyDown={props.onKeyDown}
+      />
+      {/* 原生 resizer 自带一圈边框，改边框会连它的双斜线图形一起抹掉，所以把原生
+          图形整个隐藏，改用这颗 SVG 把手。`resize` 仍是 vertical，原生拖拽区域还在；
+          SVG 只负责外观（pointer-events: none，指针事件穿透给底下的原生 resizer）。 */}
+      <svg
+        className="question-input-grip"
+        viewBox="0 0 12 12"
+        aria-hidden="true"
+        focusable="false"
+      >
+        <path
+          d="M11 4 5 10M11 8 9 10"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1"
+          strokeLinecap="round"
+        />
+      </svg>
+    </div>
+  );
+}
+
 /**
  * 问卷卡片（`ask_user_question`）。
  *
@@ -1280,14 +1424,11 @@ function QuestionCardState({
               >
                 {texts.questionCustomTitle}
               </span>
-              <textarea
-                className="question-input"
-                // 多行输入：Enter 换行（见下面的 onKeyDown），框本身给两行高、可往下拉
-                rows={2}
-                aria-label={texts.questionCustomAria}
-                placeholder={texts.questionPlaceholder}
+              <CustomAnswerInput
                 value={customValue}
-                onChange={(event) => writeCustom(item.id, event.target.value, item.multiSelect)}
+                ariaLabel={texts.questionCustomAria}
+                placeholder={texts.questionPlaceholder}
+                onChange={(value) => writeCustom(item.id, value, item.multiSelect)}
                 // 焦点进到编辑区同样算「选了它」（键盘 Tab、程序性 focus 都走这里）。
                 // 只置真不切换，见 `chooseCustom`。
                 onFocus={() => chooseCustom(item.id, item.multiSelect)}

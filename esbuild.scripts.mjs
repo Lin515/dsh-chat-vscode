@@ -192,6 +192,8 @@ const entries = {
   "build/config-changes.test.mjs": "scripts/configChanges.test.ts",
   "build/footnotes.test.mjs": "scripts/footnotes.test.ts",
   "build/question-flow.test.mjs": "scripts/questionFlow.test.ts",
+  // 自定义回答输入框的自增高（最多 5 行、超出才滚动）：纯函数 + 接线，必须登记，否则 npm test 静默不跑
+  "build/question-input.test.mjs": "scripts/questionInput.test.ts",
   // 问卷半填草稿的内存表：切会话恢复、按会话隔离、上限淘汰（必须登记，否则静默不跑）
   "build/question-draft.test.mjs": "scripts/questionDraft.test.ts",
   "build/tool-question.test.mjs": "scripts/toolQuestion.test.ts",
