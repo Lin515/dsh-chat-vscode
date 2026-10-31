@@ -69,7 +69,7 @@ import {
   unsupportedLocalPathForm,
 } from "./localAccess";
 import { readHostImages } from "./localImages";
-import { isLocalAbsolutePath, isLoopbackUrl, localPlatform, sameBytes } from "./localPath";
+import { isLocalAbsolutePath, isNativeDshCommand, localPlatform, sameBytes } from "./localPath";
 import {
   HostFileAccess,
   HostFileError,
@@ -11397,7 +11397,7 @@ export class ChatController implements vscode.Disposable {
    *
    * 路径属于 DSH 执行世界：先问 `workspaceFiles.stat` 取得 Host 认可的绝对路径。
    * 默认再生成绑定「连接 + 会话 + 路径」的 `dsh-chat-world:` URI，绝不 `Uri.file`；
-   * `real`（用户按住 Alt）时才在**本机端点**且路径形态、存在性、大小与字节
+   * `real`（用户按住 Alt）时才在**已知原生启动链路**且路径形态、存在性、大小与字节
    * 校验都通过的前提下用 `file:` 打开，失败回退只读并提示。相对路径原样交给 Host
    * 解析（缺创建目录时由服务端的 sandbox 根裁决），客户端不拿 VS Code 工作区兜底。
    *
@@ -11513,7 +11513,7 @@ export class ChatController implements vscode.Disposable {
    * 尝试把执行世界文件当**本机真实文件**打开（Alt 那一档）。
    *
    * 四道门缺一不可：
-   * 1. 这条连接属于本机执行世界（内部 / 桌面端，或回环端点）；
+   * 1. 已就绪的受控原生内部后台或本机桌面端；外部与未知启动命令均拒绝；
    * 2. Host 给的绝对路径形态属于扩展宿主平台（Windows 盘符 / UNC，POSIX `/`）；
    * 3. 本机 `workspace.fs` 能 stat 到同一个普通文件，且大小与 Host 报告一致；
    * 4. 文件 ≤ {@link REAL_FILE_VERIFY_BYTES} 时，再与 Host `readBytes` 逐字节比较。
@@ -11528,7 +11528,7 @@ export class ChatController implements vscode.Disposable {
     line?: number,
   ): Promise<boolean> {
     if (!this.isLocalExecutionTarget()) {
-      this.log(`[open] 当前执行世界不是本机端点，拒绝打开真实文件：${stat.absolutePath}`);
+      this.log(`[open] 当前连接不是已知原生启动链路，拒绝打开真实文件：${stat.absolutePath}`);
       return false;
     }
     const platform = localPlatform(process.platform);
@@ -11543,13 +11543,13 @@ export class ChatController implements vscode.Disposable {
         this.log(`[open] 本机同路径不是普通文件，拒绝打开：${stat.absolutePath}`);
         return false;
       }
-      if (stat.bytes !== undefined && local.size !== stat.bytes) {
+      if (stat.bytes === undefined || local.size !== stat.bytes) {
         this.log(
           `[open] 本机副本大小不一致（Host ${stat.bytes} / 本机 ${local.size}），拒绝打开：${stat.absolutePath}`,
         );
         return false;
       }
-      if (stat.bytes !== undefined && stat.bytes <= REAL_FILE_VERIFY_BYTES) {
+      if (stat.bytes <= REAL_FILE_VERIFY_BYTES) {
         const remote = await access.readBytes(sessionId, stat.absolutePath);
         const localBytes = await vscode.workspace.fs.readFile(uri);
         if (!sameBytes(remote.data, localBytes)) {
@@ -11588,18 +11588,22 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
-   * 当前连接是否可视为**本机执行世界**。
+   * 只允许已就绪的、已知使用宿主原生文件系统的启动链路。
    *
-   * `ownership` 是这一轮真正建起连接的那份服务信息：`self` / `peer` 是扩展拉起的
-   * 内部后台（同一台机器，另一窗口拉起的也算），`desktop` 是本机桌面端。`external`
-   * 只有端点主机是回环时才可能在本机（用户手动在本机起的 `dsh web`）；端口转发到
-   * 远端的情况由后面的路径 / 字节校验兜底。拿不到 `ownership` 时退回粘性目标。
+   * 桌面端由本机进程与所属监听端口验证；内部后台还须核对当前后台的实际启动命令，
+   * 不能读可能已被修改的配置。self / peer 本身不排除 WSL / SSH / 容器包装器。
+   * 外部连接一律未知（包括 loopback），不以地址、同路径或相同内容推断映射，
+   * 也不以粘性目标替代实际连接证据。不提供用户手工映射配置。
    */
   private isLocalExecutionTarget(): boolean {
-    const ownership = this.server.snapshot().status.info?.ownership;
-    if (ownership === "self" || ownership === "peer" || ownership === "desktop") return true;
-    if (ownership === "external") return isLoopbackUrl(this.client?.baseUrl);
-    return this.target?.kind === "internal" || this.target?.kind === "desktop";
+    const { status, state, remembered } = this.server.snapshot();
+    if (status.state !== "ready") return false;
+    const ownership = status.info?.ownership;
+    if (ownership === "desktop") return true;
+    return (
+      (ownership === "self" || ownership === "peer") && remembered &&
+      state?.baseUrl === status.info?.baseUrl && isNativeDshCommand(state?.command)
+    );
   }
 
   /**

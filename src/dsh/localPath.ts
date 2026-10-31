@@ -1,8 +1,8 @@
 /**
  * 「这个执行世界文件能不能在本机当**真实文件**打开」的纯判据。
  *
- * 宿主在 Alt 打开真实文件前要连过几道门：端点是不是本机、路径形态是不是
- * 扩展宿主平台的本机绝对路径、本机副本是否存在且与执行世界同一份字节。这里只放
+ * 宿主在 Alt 打开真实文件前要连过几道门：启动链路是不是已知原生链路、路径形态是不是
+ * 扩展宿主平台的本机绝对路径、原生文件是否存在且与执行世界内容一致。这里只放
  * 可以离线断言的字符串 / 字节判断，不碰 `vscode` 与文件系统；真正的 `stat` /
  * `readFile` 在 `controller.openFile` 的 `real` 分支里。
  *
@@ -33,30 +33,27 @@ export function isLocalAbsolutePath(path: string, platform: LocalPlatform): bool
 }
 
 /**
- * 主机名是不是回环地址。
+ * 受控内部后台是否使用已知的原生启动命令。
  *
- * `external` 端点可能是用户在本机手动起的 `dsh web`（`127.0.0.1` / `localhost` /
- * `[::1]`），这时执行世界仍在本机；端口转发到远端的场景则由后面的存在性与字节
- * 校验兜底，不会仅凭回环就认定可编辑。
+ * 只认标准 dsh web 及已使用的端口 / 禁止自动开浏览器参数；包装器、shell 组合、
+ * 额外选项和缺失命令均按未知处理。这是对可信本机 DSH 安装的保守准入，不认证 PATH
+ * 中被替换的程序，也不把字符串匹配当作任意外部端点的文件系统证明。
  */
-export function isLoopbackHostname(hostname: string): boolean {
-  const normalized = hostname
-    .trim()
-    .toLowerCase()
-    .replace(/^\[|\]$/gu, "")
-    .replace(/\.$/u, "");
-  if (normalized === "localhost" || normalized === "::1") return true;
-  return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/u.test(normalized);
-}
-
-/** 端点 URL 的主机是不是回环；坏 URL 一律不是。 */
-export function isLoopbackUrl(url: string | undefined): boolean {
-  if (url === undefined || url === "") return false;
-  try {
-    return isLoopbackHostname(new URL(url).hostname);
-  } catch {
-    return false;
+export function isNativeDshCommand(command: string | undefined): boolean {
+  if (!command || /[\r\n]/u.test(command)) return false;
+  const [executable, subcommand, ...args] = command.trim().split(/[ \t]+/u);
+  if (!/^dsh(?:\.cmd|\.exe)?$/u.test(executable ?? "") || subcommand !== "web") return false;
+  const seen = new Set<string>();
+  for (let index = 0; index < args.length; index += 1) {
+    const option = args[index];
+    if (seen.has(option)) return false;
+    seen.add(option);
+    if (option === "--no-open") continue;
+    if (option !== "--port") return false;
+    const port = args[++index];
+    if (!port || !/^\d{1,5}$/u.test(port) || Number(port) > 65_535) return false;
   }
+  return true;
 }
 
 /** 两段字节是否完全一致（长度 + 逐字节）。 */
