@@ -21,8 +21,19 @@ import { SessionAdapter } from "../src/dsh/adapter";
 import { decodeChangesSummary } from "../src/dsh/changes";
 import { CHANGES_CARD_VISIBLE, changesSummaryKey, turnsWithChangesCard, visibleChangeFiles } from "../src/shared/changesSummary";
 import { reducer, initialState, type AppState } from "../src/webview/state";
+import { dictionaryFor } from "../src/webview/texts";
 
 const SRC = join(process.cwd(), "src");
+
+// 悬停提示只保留修饰键操作；普通点击语义仍由无障碍名称提供。
+for (const alt of ["Alt", "Option"]) {
+  const zh = dictionaryFor("zh");
+  const en = dictionaryFor("en");
+  assert.strictEqual(zh.openChangesHint(alt), `按住 ${alt} 打开可编辑的真实文件`);
+  assert.strictEqual(en.openChangesHint(alt), `Hold ${alt} to open the editable real file`);
+  assert.strictEqual(zh.openChangesAria("a.ts"), "查看 a.ts 的改动");
+  assert.strictEqual(en.openChangesAria("a.ts"), "View changes in a.ts");
+}
 
 // ---------- 1. 清单形状校验：验不过就整份丢弃 ----------
 

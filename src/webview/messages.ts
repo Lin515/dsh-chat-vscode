@@ -392,8 +392,8 @@ export const MESSAGES = {
   producedMore: { zh: (count: number) => `+ ${count} 个文件`, en: (count: number) => `+ ${count} file${count === 1 ? "" : "s"}` },
   openChangesAria: { zh: (name: string) => `查看 ${name} 的改动`, en: (name: string) => `View changes in ${name}` },
   openChangesHint: {
-    zh: (alt: string) => `点击查看改动对比；按住 ${alt} 打开可编辑的真实文件`,
-    en: (alt: string) => `Click to view changes; hold ${alt} to open the editable real file`,
+    zh: (alt: string) => `按住 ${alt} 打开可编辑的真实文件`,
+    en: (alt: string) => `Hold ${alt} to open the editable real file`,
   },
   filesExpandAria: { zh: (count: number) => `展开全部 ${count} 个文件`, en: (count: number) => `Show all ${count} file${count === 1 ? "" : "s"}` },
   filesCollapse: { zh: "收起", en: "Collapse" },

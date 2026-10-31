@@ -989,6 +989,8 @@ function CustomAnswerInput(props: {
     if (!el || manual.current) return;
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= 1;
     const previousTop = el.scrollTop;
+    // 先撤掉旧滚动条再量：滚动条占宽会多折一行，导致删回五行后仍被判为溢出。
+    el.style.overflowY = "hidden";
     el.style.height = "auto";
     const style = getComputedStyle(el);
     const px = (value: string) => Number.parseFloat(value) || 0;

@@ -97,6 +97,18 @@ const metricsOf = (scrollHeight: number, overrides: Partial<CustomAnswerMetrics>
     /customAnswerSize\(\{[\s\S]{0,500}?scrollHeight: el\.scrollHeight/.test(rows),
     "高度必须量 scrollHeight 后交给 customAnswerSize",
   );
+  // 曾经溢出后，旧滚动条占宽使原本五行的内容多折一行；量高必须先恢复完整宽度。
+  const grow = rows.slice(rows.indexOf("  const grow = useCallback("), rows.indexOf("  const finishGrip ="));
+  const resetOverflow = grow.indexOf('el.style.overflowY = "hidden"');
+  const measure = grow.indexOf("scrollHeight: el.scrollHeight");
+  assert.ok(resetOverflow >= 0 && resetOverflow < measure, "量内容高度前必须撤掉旧滚动条，避免删除内容后滚动条滞留");
+  const savedTop = grow.indexOf("const previousTop = el.scrollTop");
+  assert.ok(
+    savedTop >= 0 && savedTop < resetOverflow &&
+      grow.indexOf('el.style.overflowY = size.scroll ? "auto" : "hidden"') > measure &&
+      grow.indexOf("el.scrollTop = atBottom ? el.scrollHeight : previousTop") > measure,
+    "重测前保存滚动位置，重测后恢复溢出状态与滚动位置",
+  );
   assert.ok(
     /useLayoutEffect\(\(\) => \{\s*grow\(\);\s*\}, \[grow, props\.value, uiScale\]\)/.test(rows),
     "量高在绘制前（useLayoutEffect），内容或字号倍率变化都要重量",
