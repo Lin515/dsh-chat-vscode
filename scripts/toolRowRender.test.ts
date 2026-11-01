@@ -206,4 +206,29 @@ console.log("toolRowRender: 读 / 写 / 编辑节点只在有路径时提示 Ctr
 }
 console.log("toolRowRender: 读取节点带起始行，编辑节点只打开文件、不猜行号 ✓");
 
+// write 内容在参数尚未完成时也必须是原文，不影响 edit 或既有 diff。
+{
+  const write = (input: string, overrides: Partial<ToolCallView> = {}): ToolCallView => ({
+    id: "write-stream", name: "write", title: "", detail: "a.ts", status: "running", input, ...overrides,
+  });
+  const html = render(write(String.raw`{"file_path":"a.ts","content":"  one\r\n\t<script>two</script>\\n`));
+  assert.ok(html.includes("write-preview"));
+  assert.ok(html.includes("  one\r\n\t&lt;script&gt;two&lt;/script&gt;\\n"), "真实CRLF/缩进与字面反斜杠n；HTML保持文本");
+  assert.ok(!html.includes("&quot;content&quot;"), "不展示参数JSON");
+  assert.ok(html.includes("参数尚未完整"));
+  assert.ok(html.includes("不代表已写入文件"));
+  assert.ok(render(write('{"content":""}')).includes("write-preview"), "空content也可展开");
+  for (const status of ["error", "stopped"] as const) {
+    const interrupted = render(write('{"content":"partial', { status, output: "not saved" }));
+    assert.ok(interrupted.includes("partial") && interrupted.includes("参数尚未完整") && interrupted.includes("not saved"));
+  }
+  assert.ok(!render(write(String.raw`{"content":"bad\q"}`)).includes("write-preview"), "无效JSON回退原参数");
+  assert.ok(!render(write('{"content":"edit"}', { name: "edit" })).includes("write-preview"));
+  const diff = render(write('{"content":"raw preview"}', {
+    status: "ok", diff: [{ path: "a.ts", lines: [{ kind: "add", text: "final diff" }], added: 1, removed: 0 }],
+  }));
+  assert.ok(diff.includes("final diff") && !diff.includes("raw preview"), "既有diff接管，不重复展示");
+}
+console.log("toolRowRender: write 原文/空内容/失败中断/安全回退/仅write/diff交接 ✓");
+
 console.log("\ntoolRowRender: all assertions passed");

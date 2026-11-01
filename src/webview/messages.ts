@@ -1212,6 +1212,9 @@ export const MESSAGES = {
   },
   toolInput: { zh: "输入", en: "IN" },
   toolOutput: { zh: "输出", en: "OUT" },
+  toolWritePreview: { zh: "写入内容预览", en: "Write content preview" },
+  toolWritePreviewHint: { zh: "仅为参数预览，不代表已写入文件", en: "Arguments preview only; does not confirm the file was saved" },
+  toolWritePreviewPartialHint: { zh: "参数尚未完整，仅显示已解码内容；不代表已写入文件", en: "Arguments incomplete; showing decoded content only, not a saved file" },
   /**
    * 节点悬停的修饰键提示：只有**按住 Alt 单击会打开可编辑真实文件**的节点才挂。
    *

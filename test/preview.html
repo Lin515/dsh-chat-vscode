@@ -440,6 +440,7 @@
                 previewNotifications = (snapshot.notifications || []).slice();
                 previewNotificationSession = snapshot.session ? snapshot.session.id : null;
                 window.__push({ type: "state", state: snapshot });
+                if (new URLSearchParams(location.search).get("write") === "1") window.__writePreview();
                 // 自动化任务：真实宿主在**会话域建起来时**就静默预取一次（不等人打开
                 // 面板）——抽屉入口的指示灯就是吃这份数据。这里复刻同一时序，
                 // 否则预览里那颗按钮要等点开面板才会亮。
@@ -548,6 +549,43 @@
         window.dispatchEvent(new MessageEvent("message", { data: JSON.parse(JSON.stringify(frame)) }));
       };
       // 验证「清空目标」这条链路：宿主发的就是 `goal: null`（过线后 undefined 会消失）
+      // 只读取已登记的脱敏真实输出；累计前缀是UI回放，不声称原始chunk/时序。
+      // ==== write-preview-wiring:start ====
+      window.__writePreview = async function () {
+        const response = await fetch("fixtures/trajectory/real-long.json", { cache: "no-store" });
+        if (!response.ok) throw new Error("write-preview-fixture-unavailable");
+        const payload = await response.json();
+        let source;
+        function visit(value) {
+          if (source || !value || typeof value !== "object") return;
+          if (value.toolName === "write" && typeof value.inputDetail === "string") {
+            try {
+              const args = JSON.parse(value.inputDetail);
+              if (typeof args.content === "string" && args.content.length > 3000) source = { cell: value, args: args };
+            } catch (_) { /* 继续找完整参数，不猜补。 */ }
+          }
+          Object.values(value).forEach(visit);
+        }
+        visit(payload.model);
+        if (!source) throw new Error("write-preview-no-real-content");
+        const input = source.cell.inputDetail;
+        const state = window.__buildState();
+        state.panel = null;
+        state.goal = null;
+        state.plan = null;
+        state.messages = [{ id: "write-preview-message", role: "assistant", ts: Date.now(), segments: [] }];
+        window.__writePreviewInfo = { path: "fixtures/trajectory/real-long.json", callId: source.cell.callId, seq: source.cell.seq, input: input, content: source.args.content };
+        window.__writePreview.set = function (end, status, diff) {
+          state.messages[0].segments = [{ step: 1, id: "write-preview-segment", kind: "tool", tool: {
+            id: "write-preview-tool", name: "write", title: "", detail: source.args.file_path,
+            status: status || "running", input: input.slice(0, end), diff: diff,
+          } }];
+          window.__push({ type: "state", state: state });
+        };
+        window.__writePreview.set(Math.floor(input.length / 2));
+      };
+      // ==== write-preview-wiring:end ====
+
       window.__clearGoal = function () {
         window.__push({ type: "patch", patch: { goal: null } });
       };

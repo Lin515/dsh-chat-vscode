@@ -121,6 +121,7 @@ const entries = {
   "build/skill.test.mjs": "scripts/skill.test.ts",
   // 技能 / 文件节点的展开体与 Ctrl/Cmd 悬停提示（服务端渲染）：必须登记，否则 npm test 静默不跑
   "build/tool-row-render.test.mjs": "scripts/toolRowRender.test.ts",
+  "build/write-preview.test.mjs": "scripts/writePreview.test.ts",
   // 代码块默认折展（长块收起、短块保持展开）：必须登记，否则 npm test 静默不跑
   "build/code-block.test.mjs": "scripts/codeBlock.test.ts",
   // Ctrl/Cmd 全局修饰键状态（根类开关 / 指针事件 / 失焦清理）：必须登记，否则 npm test 静默不跑

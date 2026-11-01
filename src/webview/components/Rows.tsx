@@ -38,6 +38,8 @@ import {
 } from "../questionDraft";
 import { planReviewAnswer, planReviewOf, type PlanReviewView } from "../planReview";
 import { DiffView } from "./Diff";
+import { WriteBody } from "./WriteBody";
+import { WritePreviewReader } from "../writePreview";
 import { CodeBlock } from "./CodeBlock";
 import { Markdown } from "./Markdown";
 import { ImageGallery } from "./Images";
@@ -186,6 +188,11 @@ export function ToolRow({
   // 编辑类工具：结构化 diff（结果里的 hunk，或结果未回时参数推导的预览）
   const diff = tool.diff?.filter((hunk) => hunk.lines.length > 0);
   const hasDiff = Boolean(diff?.length);
+  const writeReader = useRef<WritePreviewReader | null>(null);
+  writeReader.current ??= new WritePreviewReader();
+  const writePreview = writeReader.current.update(tool.id, tool.name, tool.input);
+  // 只认精确 write；原始参数仍在视图模型里，轨迹与其它工具不变。
+  const showWriteBody = tool.name === "write" && (writePreview !== undefined || hasDiff);
   /**
    * 工具卡（官方 `ToolRow` 的 card 槽位）：读取 / 搜索 / 终端 / 网页。
    *
@@ -259,10 +266,10 @@ export function ToolRow({
    * 「输入」段的内容：模型实际传的参数（官方 `cardBody`）。
    *
    * 官方这里给的是**解析后的卡片体**，所以我们把线格式的 JSON 缩进后显示；
-   * 解析不了（半截 JSON、非 JSON 参数）就原样透出——总比什么都不显示强。
+   * 解析不了（半截 JSON、非 JSON 参数）就原样透出；精确 write 的原文预览另走 WriteBody。
    */
   const inputText = (() => {
-    if (!tool.input) return undefined;
+    if (!tool.input || showWriteBody) return undefined;
     try {
       const parsed = JSON.parse(tool.input) as unknown;
       return JSON.stringify(parsed, null, 2);
@@ -281,14 +288,14 @@ export function ToolRow({
    */
   const showIoCard = !isSkill && !hasDiff && !hasCard && ((Boolean(inputText) && !codeCard) || showOutput);
   const ioRef = useRef<HTMLDivElement>(null);
-  // 工具展开区（diff / 卡片 / IN-OUT / 运行状态）：**还在跑就贴底**（最新输出才是要看的），
-  // 跑完则回到顶部（成型的内容从第一行读起）——判据与理由见 `useStickyBody` 的文件头。
+  // 工具展开区（diff / 卡片 / IN-OUT / 运行状态）：活跃时贴底，用户离开底部或划选则暂停。
+  // 打开已结束节点从顶部读；已打开节点收尾不抢位置——判据见 `useStickyBody`。
   //
   // **一个滚动盒子一个 ref**（2026-09-17 起的口径）：同一次展开里可能同时存在两段
   // （编辑类出错时 `hasDiff && showOutput`；运行时「状态块 + IN 卡」），共用一个 ref 时
   // React 只保留最后绑上的那个元素，另一段就永远拿不到定位。
   const diffRef = useRef<HTMLDivElement>(null);
-  useStickyBody(diffRef, open && hasDiff, running, node.openedWhileActive);
+  useStickyBody(diffRef, open && hasDiff && !showWriteBody, running, node.openedWhileActive);
   useStickyBody(bodyRef, open && !hasDiff && (showOutput || hasCard || Boolean(codeCard)), running, node.openedWhileActive);
   useStickyBody(ioRef, open && (showIoCard || showSkill), running, node.openedWhileActive);
   useStickyBody(runningRef, open && runningBody, running, node.openedWhileActive);
@@ -301,6 +308,7 @@ export function ToolRow({
   // 所以它必须算进 `hasBody`：否则「只有图、没有别的正文」的调用会变成一行**点不开**
   // 的节点，那条路正好把图片彻底锁死（比难看严重得多）。
   const hasBody =
+    showWriteBody ||
     hasDiff ||
     hasCard ||
     Boolean(codeCard) ||
@@ -425,7 +433,11 @@ export function ToolRow({
           <div className="row-running-hint">{texts.toolRunningHint}</div>
         </div>
       ) : null}
-      {hasDiff && diff ? (
+      {showWriteBody ? (
+        <WriteBody key={`${tool.id}:${tool.name}`} preview={writePreview} diff={hasDiff ? diff : undefined}
+          layout={diffLayout} active={running} openedWhileActive={node.openedWhileActive} />
+      ) : null}
+      {hasDiff && diff && !showWriteBody ? (
         <div ref={diffRef} className="row-body diff-body">
           {/* 写入节点固化单栏：整篇新建，双栏会有一整列是空的（用户 2026-09-16 口径） */}
           <DiffView hunks={diff} layout={diffLayout} unified={classifyTool(tool.name) === "write"} />

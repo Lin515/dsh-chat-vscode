@@ -125,7 +125,8 @@
 - [contextMenu.test.ts](<contextMenu.test.ts>) — 会话右键菜单判据、「引用」落点算术、保存建议文件名；真实快捷复制处理器覆盖 Ctrl / Cmd、跨消息空白换行保真、编辑焦点、修饰键、组字、重复与已处理事件、选区包含性和空选区让路。
 - [questionFlow.test.ts](<questionFlow.test.ts>) — 问卷展示口径：一次展开 vs 依次问答（`dshChat.questionBatch`）。
 - [questionRender.test.ts](<questionRender.test.ts>) — 问卷卡片渲染断言（答完的问题展开后显示用户回答）。
-- [toolRowRender.test.ts](<toolRowRender.test.ts>) — 工具节点渲染断言：技能节点只显示 SKILL 正文（无参数 / 输出标题），读 / 写 / 编辑与技能只在真有可打开目标时提示 Ctrl/Cmd 单击打开。
+- [toolRowRender.test.ts](<toolRowRender.test.ts>) — 工具节点渲染断言：技能节点只显示 SKILL 正文（无参数 / 输出标题），读 / 写 / 编辑与技能只在真有可打开目标时提示 Ctrl/Cmd 单击打开；write 未完成原文、空内容、中断失败、安全文本、仅 write 与 diff 交接。
+- [writePreview.test.ts](<writePreview.test.ts>) — 同一生产解码接口的完整／不完整 JSON、每个二段切点及逐字符切分、转义／代理对／CRLF／末尾空白、根键与嵌套干扰、无效回退、身份／替换重置、重放及大文本追加。
 - [codeBlock.test.ts](<codeBlock.test.ts>) — 代码块默认折展：超过 20 行默认收起（含 `aria-expanded` 与完整正文），20 行及以内没有折展入口、保持展开。
 - [modifierHeld.test.ts](<modifierHeld.test.ts>) — Ctrl/Cmd 全局修饰键状态：按住时给可打开文件节点加下划线的根类来源、指针事件补键盘焦点缺席、失焦 / 页面隐藏清理与引用计数卸载。
 - [planReview.test.ts](<planReview.test.ts>) — 计划审阅（`exit_plan_mode`）请求的识别与收窄规则。
@@ -194,7 +195,7 @@
 - [readRange.test.ts](<readRange.test.ts>) — `read` 工具行号区间解析（meta 优先，整篇读取不标注）。
 - [sessionCookie.test.ts](<sessionCookie.test.ts>) — `DshClient` 会话 cookie 语义（跨重启复用的基础）。
 - [processRegistry.test.ts](<processRegistry.test.ts>) — 外部服务器令牌流程（本地 HTTP stub）+ 进程判活。
-- [previewFixture.test.ts](<previewFixture.test.ts>) — `test/preview.html` 夹具体检（键重复 / 语法错让预览静默显示旧内容的防线）。
+- [previewFixture.test.ts](<previewFixture.test.ts>) — `test/preview.html` 夹具体检（键重复 / 语法错让预览静默显示旧内容的防线）；执行 write 真实夹具装载／正式工具帧接线，并跨生产解码接口检查累计前缀与来源锚点。
 
 ### 补充专项断言
 

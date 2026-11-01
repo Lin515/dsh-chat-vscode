@@ -1446,9 +1446,17 @@ console.log("styles: 复制按钮归属（工具卡内容有 / 工具串没有 /
   const rows = readFileSync(join(process.cwd(), "src", "webview", "components", "Rows.tsx"), "utf8");
   // 工具行：`running` = status 还在跑（running / pending）
   assert.ok(
-    /useStickyBody\(diffRef, open && hasDiff, running, node\.openedWhileActive\)/.test(rows) &&
+    /useStickyBody\(diffRef, open && hasDiff && !showWriteBody, running, node\.openedWhileActive\)/.test(rows) &&
       /useStickyBody\(bodyRef, open && !hasDiff && \(showOutput \|\| hasCard \|\| Boolean\(codeCard\)\), running, node\.openedWhileActive\)/.test(rows),
     "工具行的两个 body（diff 段 / 结果-卡片段）都要传 `running`：跑着就贴底看最新输出",
+  );
+  const writeBody = readFileSync(join(process.cwd(), "src", "webview", "components", "WriteBody.tsx"), "utf8");
+  assert.ok(
+    /useStickyBody\(ref, true, active, openedWhileActive\)/.test(writeBody) &&
+      /useSelectionFreeze\(ref, \{ preview, diff, layout \}\)/.test(writeBody) &&
+      /<div ref=\{ref\} className=/.test(writeBody) &&
+      /active=\{running\} openedWhileActive=\{node\.openedWhileActive\}/.test(rows),
+    "write 原文与 diff 必须共用阅读盒子和完整选区冻结，活性沿用工具状态",
   );
   // 运行中的工具行**唯一的**滚动盒子是 IN 卡（卡片在跑的时候不渲染），它此前压根没有
   // ref，于是永远停在顶部——用户报的正是这个形态。渲染判据与定位判据必须是同一份

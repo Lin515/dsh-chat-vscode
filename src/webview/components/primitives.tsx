@@ -623,12 +623,12 @@ export function hasSelectionInside(el: HTMLElement): boolean {
  * 只影响界面渲染，不中断后台 agent——新内容照常到达并保存在状态里，
  * 选区一取消即显示最新内容。
  */
-export function useSelectionFreeze(
+export function useSelectionFreeze<T>(
   ref: RefObject<HTMLElement | null>,
-  text: string,
-): string {
-  const [frozen, setFrozen] = useState<string | undefined>(undefined);
-  // 冻结取「当前已渲染的源文本」而不是 DOM textContent：
+  text: T,
+): T {
+  const [frozen, setFrozen] = useState<T | undefined>(undefined);
+  // 冻结取「当前已渲染的源值」（文本或完整呈现快照）而不是 DOM textContent：
   // 正文按 Markdown 渲染，textContent 会丢掉语法、重新渲染可能改变结构
   const liveRef = useRef(text);
   liveRef.current = text;

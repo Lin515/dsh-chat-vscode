@@ -5,6 +5,8 @@
 // 后者覆盖前者）或语法错都会让预览静默显示旧内容——调样式时照着假数据调，
 // 这正是文档里记过的坑（`test/preview.html` 曾编过 5 个思考档位）。
 import { readFileSync } from "node:fs";
+import assert from "node:assert/strict";
+import { WritePreviewReader } from "../src/webview/writePreview";
 import { foldTurnProcess } from "../src/webview/turnProcess";
 import { fileLinkPort } from "../src/webview/fileLinks";
 import { pickLocalizedText } from "../src/shared/localizedText";
@@ -912,6 +914,45 @@ for (const [label, check] of must) {
     && entry.capabilities?.subtool === false);
   console.log(`  ${noRunCodeSample ? "✓" : "✗"} 能力矩阵：三份真实夹具都没有 run_code / subtool 样本（PTC 留缺席契约）`);
   if (!noRunCodeSample) failed += 1;
+}
+
+// 6) 实际执行 write 装载/推帧接线，检查正式 segment 形状并跨生产解码接口。
+{
+  const start = html.indexOf("// ==== write-preview-wiring:start ====");
+  const end = html.indexOf("// ==== write-preview-wiring:end ====");
+  assert.ok(start >= 0 && end > start, "write 夹具接线必须存在");
+  type PreviewLoader = (() => Promise<void>) & { set(end: number, status?: string, diff?: unknown[]): void };
+  const frames: AppState[] = [];
+  const host: { __buildState(): AppState; __push(frame: { state: AppState }): void;
+    __writePreview?: PreviewLoader; __writePreviewInfo?: { input: string; content: string; callId: string; seq: number } } = {
+    __buildState: () => buildStateWith("zh-cn"),
+    __push: (frame) => { frames.push(JSON.parse(JSON.stringify(frame.state)) as AppState); },
+  };
+  const fetchFixture = async (path: string) => ({ ok: true, json: async () => JSON.parse(readFileSync(`test/${path}`, "utf8")) });
+  new Function("window", "fetch", html.slice(start, end))(host, fetchFixture);
+  await host.__writePreview!();
+  const info = host.__writePreviewInfo!;
+  assert.ok(info.callId && typeof info.seq === "number", "真实来源必须有可定位锚点");
+  const reader = new WritePreviewReader();
+  const currentTool = () => {
+    const segment = frames.at(-1)!.messages[0].segments[0];
+    assert.equal(segment.kind, "tool");
+    assert.ok(segment.id && segment.step === 1);
+    if (segment.kind !== "tool") throw new Error("write 夹具没有正式 tool segment");
+    return segment.tool;
+  };
+  const partial = currentTool();
+  const preview = reader.update(partial.id, partial.name, partial.input);
+  assert.ok(preview && !preview.complete && preview.text.length > 1000);
+  assert.ok(info.content.startsWith(preview.text));
+  host.__writePreview!.set(info.input.length, "stopped");
+  const stopped = currentTool();
+  assert.equal(stopped.status, "stopped");
+  assert.deepEqual(reader.update(stopped.id, stopped.name, stopped.input), { text: info.content, complete: true });
+  host.__writePreview!.set(info.input.length, "ok", []);
+  assert.equal(currentTool().status, "ok");
+  assert.deepEqual(currentTool().diff, []);
+  console.log("  ✓ write 真实夹具：正式工具帧、来源锚点、累计前缀解码、中断与diff入口");
 }
 
 console.log(failed === 0 ? "\npreview: 夹具结构完整" : `\npreview: ${failed} 项不合规`);

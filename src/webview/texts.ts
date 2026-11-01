@@ -231,6 +231,10 @@ export interface Texts {
   /** 工具行展开体的两段标签（官方 `row.input` / `row.output`：zh「输入/输出」、en「IN/OUT」）。 */
   toolInput: string;
   toolOutput: string;
+  /** write 参数原文预览，不表示实际文件写入。 */
+  toolWritePreview: string;
+  toolWritePreviewHint: string;
+  toolWritePreviewPartialHint: string;
   /** 节点悬停的「按住 Alt 单击打开可编辑的真实文件」提示（只挂在真能打开文件的节点上）。 */
   toolOpenFileHint: (alt: string) => string;
   toolOpenSkillHint: (alt: string) => string;
