@@ -23,6 +23,7 @@
 | [附件与引用接入](<design-attachments.md>) | 接入矩阵、上传租约、引用表示、平台限制与准入缺口 |
 | [引用补全](<design-mentions.md>) | 整块查询、已解析引用抑制、发现范围（工作区外）、两帧候选与目录导航 |
 | [消息、工具与交付](<design-messages.md>) | 非文本内容、工具收尾、产物入口、Markdown 路径与文案登记 |
+| [代码高亮与公式渲染](<design-markdown-rendering.md>) | 待实施：完成态增强、文档编译 Seam、隔离渲染槽、安全与资源验收 |
 | [文件路径](<design-paths.md>) | 创建 / 执行目录分工、记录路径与参数别名、执行世界文件访问、清单坐标与验证边界 |
 | [消息通知](<design-notifications.md>) | 常驻通知、会话归属、确认与通知历史 |
 | [输入工具栏](<design-composer.md>) | 实测宽度、优先级前缀、节点观察与权限弹层 |

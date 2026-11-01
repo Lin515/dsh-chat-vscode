@@ -3,6 +3,20 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 This project follows [Semantic Versioning](https://semver.org/).
 
+## 0.11.7（2026-11-01）
+
+### 中文
+
+- 改进：问卷默认逐题展开，自定义回答输入框随内容增高，缩短内容后不再残留多余滚动条。
+- 新增：文件入口支持按住 Alt/Option 单击打开可编辑的真实文件，仅在受控本机连接且文件校验通过时生效，否则回退只读预览并提示原因。
+- 改进：精简本轮改动的悬停说明，减少重复信息。
+
+### English
+
+- Improved: Questionnaires now expand one question at a time by default, and custom-answer fields grow with their content without leaving unnecessary scrollbars after text is shortened.
+- Added: Alt/Option-click on file entries opens the editable local file when a managed local connection and file validation permit it; otherwise, a read-only preview opens with an explanation.
+- Improved: Shorter tooltips for the current turn’s changes reduce repeated information.
+
 ## 0.11.6（2026-10-29）
 
 ### 中文
