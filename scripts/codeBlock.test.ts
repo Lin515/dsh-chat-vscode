@@ -11,6 +11,8 @@
  * 运行：npm test（登记在 esbuild.scripts.mjs 的 entries）
  */
 import assert from "node:assert";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
@@ -63,3 +65,29 @@ for (const phase of ["settled", "streaming"] as const) {
   assert.ok(html.includes("const v3 = 3;"), `${phase} 的 SSR 输出保留完整代码文本`);
 }
 console.log("codeBlock: SSR 不初始化高亮、输出纯文本 ✓");
+
+// ---------- 4. 复制 / 插入取精确 code，数学源文逐字保留 ----------
+// 源码接线 + SSR 文本断言，不冒充 DOM 点击或系统剪贴板证明。
+{
+  const source = readFileSync(
+    join(process.cwd(), "src", "webview", "components", "CodeBlock.tsx"),
+    "utf8",
+  );
+  assert.match(
+    source,
+    /onClick=\{\(\) => post\(\{ type: "copy", text: code \}\)\}/,
+    "复制按钮载荷是组件收到的原 code",
+  );
+  assert.match(
+    source,
+    /onClick=\{\(\) => post\(\{ type: "insertText", text: code \}\)\}/,
+    "插入按钮载荷是同一份原 code",
+  );
+
+  const mathSource = "行内 $x+y$ 与分式 \\frac{a}{b}";
+  const html = render(mathSource);
+  assert.ok(html.includes("$x+y$"), "代码块里的 $x+y$ 逐字保留");
+  assert.ok(html.includes("\\frac{a}{b}"), "代码块里的 \\frac 逐字保留");
+  assert.ok(!html.includes("data-math-view"), "代码块不把数学源码解析成公式");
+}
+console.log("codeBlock: 复制 / 插入取精确 code、数学源文不解析 ✓");

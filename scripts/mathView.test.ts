@@ -12,9 +12,12 @@
  * 运行：npm test（已登记到 esbuild.scripts.mjs 的 entries）
  */
 import assert from "node:assert";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Markdown } from "../src/webview/components/Markdown";
+import { readableMentionText } from "../src/webview/mentionLinks";
 import { mathViewIdentity } from "../src/webview/components/MathView";
 import type { MathRenderSource } from "../src/webview/markdown/mathRender";
 import type { MarkdownPhase } from "../src/webview/markdown/types";
@@ -233,5 +236,38 @@ console.log("mathView: 失败 / 安全原文只做文本回退 ✓");
 }
 
 console.log("mathView: 渲染身份覆盖五个事实且 NUL 不碰撞 ✓");
+
+// ---------- 7. 整条消息复制取原始 message text，不取 DOM ----------
+// 源码接线 + `readableMentionText` 纯变换断言，不冒充 DOM 点击或系统剪贴板证明。
+{
+  const source = readFileSync(
+    join(process.cwd(), "src", "webview", "components", "Message.tsx"),
+    "utf8",
+  );
+  assert.match(
+    source,
+    /onClick=\{\(\) => post\(\{ type: "copy", text: readableMentionText\(message\.text \?\? ""\) \}\)\}/,
+    "用户消息复制载荷来自 message.text 的纯变换",
+  );
+  assert.match(
+    source,
+    /const fullText = message\.segments\s*\.filter\(\(s\): s is Extract<Segment, \{ kind: "text" \}> => s\.kind === "text"\)\s*\.map\(\(s\) => s\.text\)\s*\.join\("\\n\\n"\)/,
+    "助手消息复制的 fullText 由原始 text 段拼成",
+  );
+  assert.match(
+    source,
+    /onClick=\{\(\) => post\(\{ type: "copy", text: fullText \}\)\}/,
+    "助手消息复制按钮接的是同一份 fullText",
+  );
+
+  const raw = "含行内 $x+y$ 与分式 \\frac{a}{b} 的原始消息";
+  assert.strictEqual(
+    readableMentionText(raw),
+    raw,
+    "复制载荷的纯变换不丢 $x+y$ / \\frac 的源字符串",
+  );
+}
+
+console.log("mathView: 整条消息复制取原始 message text、数学源文逐字保留 ✓");
 
 console.log("\nmathView: all assertions passed");

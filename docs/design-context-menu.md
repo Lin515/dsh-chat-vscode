@@ -20,7 +20,7 @@ contextMenuKind 按下表优先级判断：
 | 其它区域的落点压在自己的选区上 | 放原生菜单，允许复制选区 |
 | 其余 | preventDefault，不弹菜单 |
 
-正文选区必须两端都在 `.chat-scroll`（chatSelectionText）。其它区域用 selectionCovers(target) / Range.intersectsNode 判断落点，不能因正文别处有选区就放行。
+正文选区必须两端都在 `.chat-scroll`（chatSelectionText）。其它区域用 selectionCovers(target) / Range.intersectsNode 判断落点，不能因正文别处有选区就放行。选区文本按原生 `Selection.toString()` 读取；公式的 MathML / annotation 副本可能进入文本，属本次接受的边界，不做数学选区去重。
 
 「引用」由 composerCompletion.quoteBlock 把选区插成整行 Markdown 引用块，不自动发送：需要时前补换行，后补换行使光标落在块外。
 
@@ -31,6 +31,7 @@ contextMenuKind 按下表优先级判断：
 - 选区非折叠且两端都在 `.chat-scroll` 时，保留原始空白与换行，经既有 `copy` 帧交给宿主 `vscode.env.clipboard.writeText`，随后阻止默认行为与继续冒泡，避免重复转发。
 - 事件目标或当前焦点在 input / textarea / contenteditable 时保留原生编辑；无有效选区、跨正文边界、其它快捷键及已处理事件全部让路。不会接管剪切、粘贴或菜单复制。
 - `chatSelectionText` 返回原始选区；右键的「复制 / 引用」仍在菜单入口去首尾空白，不改变既有菜单语义。
+- 复制与引用不做数学选区去重：可能连同 KaTeX 的 MathML / annotation 辅助文本或不同格式的空白进入剪贴板 / 引用块，这是与官方对齐后接受的边界；不克隆副本、不写临时 style、不改 live DOM / Selection。
 - 静态预览可以核验按键到 `copy` 帧的链路；只有安装端验收才能证明 VS Code 宿主已将内容写入系统剪贴板。
 
 ## 图片复制与保存

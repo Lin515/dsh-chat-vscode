@@ -34,6 +34,7 @@ import {
   stepActive,
 } from "../find";
 import { ESC_LAYER, useEscapeLayer } from "../escapeOwner";
+import { isOwnedMathAux } from "../mathDom";
 import type { ReadingPort } from "../readingPlacement";
 import { useTexts } from "../texts";
 import { IconChevronDown, IconClose, IconSearch } from "../icons";
@@ -68,15 +69,18 @@ function highlightCtor(): HighlightCtor | undefined {
 /**
  * 按文档序采出滚动正文里的全部文本节点。
  *
- * 排除两类：空节点（对拼接串没有贡献）与「加载更早」按钮的文字（界面文案，
- * 不是会话内容）。折叠的段 / 工具卡中段根本不在 DOM 里，天然不进来。
+ * 排除三类：空节点（对拼接串没有贡献）、「加载更早」按钮的文字（界面文案，
+ * 不是会话内容）与可信 MathView 的辅助层（MathML / annotation 是同一公式的
+ * 不可见副本）。视觉层 `.katex-html` 虽然带 `aria-hidden`，但它是用户看到的
+ * 文字，必须保留；这里只认结构，不按 aria-hidden 过滤。折叠的段 / 工具卡中段
+ * 根本不在 DOM 里，天然不进来。
  */
 function collectTextNodes(root: HTMLElement): Text[] {
   const nodes: Text[] = [];
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
     acceptNode(node: Text): number {
       const parent = node.parentElement;
-      if (parent === null || parent.closest(".history-more") !== null) {
+      if (parent === null || parent.closest(".history-more") !== null || isOwnedMathAux(parent)) {
         return NodeFilter.FILTER_REJECT;
       }
       return node.data.length > 0 ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;

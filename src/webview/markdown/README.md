@@ -1,6 +1,6 @@
 # src/webview/markdown/ — 正文 Markdown 管线
 
-正文入口在 [components/Markdown.tsx](<../components/Markdown.tsx>)；本目录负责解析、代码源文提取、Windows 目标修复、完成态代码高亮、完成态数学**解析事实**、KaTeX 引擎 / 私有净化与整棵 mdast → React 渲染，业务只传文本、`phase` 与文件词表，不接触 mdast 类型。设计、阶段状态与验收见[Markdown 渲染设计](<../../../docs/design-markdown-rendering.md>)。阶段 3 已接入完成态代码高亮；阶段 4 的数学解析事实、KaTeX 引擎 seam、私有净化、本地 WOFF2 资源、MathView / 正文接线、display 段落切分与选区冻结已落地并通过主真实 UI 验收，FindBar / 搜索 / 复制去重与安装验收仍在收尾；原始 HTML 按字面文本输出。
+正文入口在 [components/Markdown.tsx](<../components/Markdown.tsx>)；本目录负责解析、代码源文提取、Windows 目标修复、完成态代码高亮、完成态数学**解析事实**、KaTeX 引擎 / 私有净化与整棵 mdast → React 渲染，业务只传文本、`phase` 与文件词表，不接触 mdast 类型。设计、阶段状态与验收见[Markdown 渲染设计](<../../../docs/design-markdown-rendering.md>)。阶段 3 已接入完成态代码高亮；阶段 4 的数学解析事实、KaTeX 引擎 seam、私有净化、本地 WOFF2 资源、MathView / 正文接线、display 段落切分与选区冻结已落地并通过主真实 UI 验收，FindBar 已接入搜索辅助层过滤，复制沿用原生选区（不做数学去重），安装验收仍在收尾；原始 HTML 按字面文本输出。
 
 - [parse.ts](<parse.ts>) — `parseMarkdown(source, phase = "settled")` / `parseGfmMarkdown`：按 phase 选择 vendor GFM 或本地数学臂，随后修复 Windows 目标、收集文档级参考 / 脚注定义；缺失定义的脚注引用恢复为 `footnoteReference`，文中有代码时附带 `codeSources`。生产 `Markdown` 已改为 `parseMarkdown(text, phase)`：streaming 只走 GFM，settled 进入数学臂。
 - [math.ts](<math.ts>) — 完成态数学解析适配：与 vendor 同集合单遍装配，包装公开 `math()` 文本 construct 做保守金额否决，包装 `mathFromMarkdown()` 的 `mathFlowFence` 记录权威闭合；`MathSource` 把 `form` / 定界符 / `closed` / 源码 offset / `raw` / 有效 `tex` 写进节点 data。`math` 围栏在 settled 由 `render.tsx` 经 `mathFenceSource` 转成 MathView，streaming 仍为 CodeBlock；`tex` / `latex` 仍走 CodeBlock。
