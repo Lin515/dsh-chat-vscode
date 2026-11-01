@@ -134,11 +134,20 @@
         "sha256": "e281b4120306987cce9cf6d8bccfeddec2fe0c7b7b1cc190966f6dcbfd320b1b"
       },
       "upstreamNormalizedSha256": "58475850b71f1a741cde520c119291b95d84cd69199ab952193c5dcb7b533c69",
-      "vendorNormalizedSha256": "460a3c3f7c8935d58248532241d0292fe7e228e02acc41dfd0e2ec7d47fa9fef",
+      "vendorNormalizedSha256": "58475850b71f1a741cde520c119291b95d84cd69199ab952193c5dcb7b533c69",
       "relation": "verbatim",
-      "declaredEdits": [
-        "省略 `parseGfmWithMath` 整支与 3 个 math 依赖（`ui-trajectory` 包内零引用，预览投影只走 `parseGfm`）"
-      ]
+      "declaredEdits": []
+    },
+    "src/vendor/ui-primitives/markdown/mathCompatibility.ts": {
+      "upstream": {
+        "path": "packages/client/ui-primitives/src/markdown/mathCompatibility.ts",
+        "bytes": 11301,
+        "sha256": "5f8cec86fd613fd2f67510e22b0a9d661f4173b3d49fb13fef71b25f4abb652b"
+      },
+      "upstreamNormalizedSha256": "edb506a639d79e7da387739d08fa7a1c58a6f60dc885b3f1fc4830af9fac991f",
+      "vendorNormalizedSha256": "edb506a639d79e7da387739d08fa7a1c58a6f60dc885b3f1fc4830af9fac991f",
+      "relation": "verbatim",
+      "declaredEdits": []
     },
     "src/vendor/ui-primitives/markdown/cjkFriendlyStrong.ts": {
       "upstream": {

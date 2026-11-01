@@ -2,16 +2,16 @@
  * M01：`src/vendor/**` 官方纯逻辑副本的**源锁**断言（零 token、不联网、不读用户目录）。
  *
  * 判据本体在 `scripts/vendorSourceLock.ts`，登记在 `scripts/vendorSourceLock.json`，
- * 上游那一侧的凭据是仓库内 11/11 份离线见证素材
+ * 上游那一侧的凭据是仓库内 12/12 份离线见证素材
  * （`test/fixtures/vendor-sources/dsh-v0.2.0-rc.2/**`，逐字节等于固定 tag 上的原文）。
  *
- * 这一份做三件事：①基线（真实磁盘副本 + 真实锁清单 + **全部 11 份素材**）必须无漂移；
+ * 这一份做三件事：①基线（真实磁盘副本 + 真实锁清单 + **全部 12 份素材**）必须无漂移；
  * ②**可证伪** —— 逐类构造突变，判据必须红（含「素材缺一份 / 多一份 / 改一个字节」与
  * 「规范化规则被改」）；③**允许的漂移**必须绿（登记的说明符改写、已登记的类型壳 /
  * 省略 math 臂 / 本地图片判据差异、以及有意的排版与注释漂移）。
  *
  * 突变全部在**内存**里做（`structuredClone` 一份夹具），不碰 `src/vendor/**` 的真实文件，
- * 也不碰素材目录里的那 11 份原文。
+ * 也不碰素材目录里的那 12 份原文。
  *
  * 运行：npm test
  */
@@ -49,13 +49,12 @@ const ROOT = process.cwd();
 const LOCK = lockJson as unknown as VendorSourceLock;
 const VENDOR_FILES = collectVendorSources(ROOT);
 const VENDOR_README = readFileSync(join(ROOT, "src", "vendor", "README.md"), "utf8");
-/** 上游那一侧的 11/11 离线见证（官方相对路径 → 原文）。 */
+/** 上游那一侧的 12/12 离线见证（官方相对路径 → 原文）。 */
 const FIXTURES = collectUpstreamFixtures(ROOT, LOCK.upstream.fixtureDir, LOCK.upstream.tag);
 
 const TIMELINE = "src/vendor/ui-trajectory/timeline.ts";
 const RECORD = "src/vendor/ui-trajectory/trajectory-record.ts";
 const PREVIEW = "src/vendor/ui-trajectory/trajectory-preview.ts";
-const PARSE = "src/vendor/ui-primitives/markdown/parse.ts";
 const LOCAL_IMAGE = "src/vendor/ui-primitives/markdown/local-image-syntax.ts";
 const INBOX = "src/vendor/ui-trajectory/inbox-state.ts";
 const TURN_MODEL = "src/vendor/ui-trajectory/trajectory-turn-model.ts";
@@ -137,7 +136,7 @@ function mutateFixture(draft: Draft, upstreamPath: string, from: string, to: str
   draft.upstreamFiles[index] = { path: upstreamPath, text: after };
 }
 
-// ---------- 1. 基线：真实磁盘副本 + 真实锁清单 + 全部 11 份素材 ----------
+// ---------- 1. 基线：真实磁盘副本 + 真实锁清单 + 全部 12 份素材 ----------
 {
   const problems = vendorSourceProblems({
     lock: LOCK,
@@ -154,7 +153,7 @@ function mutateFixture(draft: Draft, upstreamPath: string, from: string, to: str
   );
 }
 
-// ---------- 2. 登记与来源：形式、固定身份、11/11 覆盖、已登记差异 ----------
+// ---------- 2. 登记与来源：形式、固定身份、12/12 覆盖、已登记差异 ----------
 {
   assert.strictEqual(
     Object.keys(LOCK.files).length,
@@ -164,7 +163,7 @@ function mutateFixture(draft: Draft, upstreamPath: string, from: string, to: str
   assert.strictEqual(LOCK.upstream.tag, FIXED_UPSTREAM.tag);
   assert.strictEqual(LOCK.upstream.sha, FIXED_UPSTREAM.sha);
 
-  // 上游那一侧：**11/11 逐字素材**，路径是官方相对路径，一条不多一条不少
+  // 上游那一侧：**12/12 逐字素材**，路径是官方相对路径，一条不多一条不少
   const upstreamPaths = [
     ...new Set(Object.values(LOCK.files).map((entry) => entry.upstream.path)),
   ].sort();
@@ -181,7 +180,7 @@ function mutateFixture(draft: Draft, upstreamPath: string, from: string, to: str
     );
     assert.ok(!file.path.includes("\\") && !file.path.startsWith("/"), "素材路径不许带本机痕迹");
   }
-  // 素材字节与登记值逐份相符（原始字节数）；这一条是「11/11」的落点
+  // 素材字节与登记值逐份相符（原始字节数）；这一条是「12/12」的落点
   for (const [vendorPath, entry] of Object.entries(LOCK.files)) {
     const file = required(
       FIXTURES.find((candidate) => candidate.path === entry.upstream.path),
@@ -195,7 +194,8 @@ function mutateFixture(draft: Draft, upstreamPath: string, from: string, to: str
   }
 
   // 已登记的本地差异：摘要必须**真的**不同，否则是死登记
-  for (const path of [RECORD, PARSE, LOCAL_IMAGE, INBOX, TURN_MODEL]) {
+  // parse.ts 恢复完整上游后是逐字等价（只加文件头 / 去 .ts 后缀），不再列入「摘要不同」的差异表。
+  for (const path of [RECORD, LOCAL_IMAGE, INBOX, TURN_MODEL]) {
     const entry = required(LOCK.files[path], `${path} 要登记`);
     assert.ok(entry.declaredEdits.length > 0, `${path} 的本地差异要逐条登记`);
     assert.notStrictEqual(
@@ -518,4 +518,4 @@ function mutateFixture(draft: Draft, upstreamPath: string, from: string, to: str
   );
 }
 
-console.log("\nvendor-source-lock: 内容锁 / 双向登记 / 11/11 上游见证 / 来源自洽（含突变自证） ✓");
+console.log("\nvendor-source-lock: 内容锁 / 双向登记 / 12/12 上游见证 / 来源自洽（含突变自证） ✓");

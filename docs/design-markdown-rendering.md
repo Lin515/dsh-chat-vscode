@@ -9,7 +9,7 @@
 | 1 | 基线、来源锁定与本文设计 | 已完成 |
 | 2 | 解析 / 渲染管线切换，保持标准 Markdown 的视觉与行为；原始 HTML 改为字面文本 | 已落地 |
 | 3 | 完成态代码高亮（Shiki） | 已完成离线 / 静态验收；安装端待验 |
-| 4 | 完成态数学（KaTeX）与隔离净化 | 未实施 |
+| 4 | 完成态数学（KaTeX）与隔离净化 | 解析语法已恢复；适配 / 排版未实施 |
 | 5 | 安装端 CSP / 字体 / VSIX 资源验收 | 未完成 |
 
 阶段 2 的实现入口是 `src/webview/markdown/`：`parse.ts` 调用 vendor `parseGfm`，再做本地 Windows 链接目标修复与文档级定义收集；`source.ts` 用 micromark 事件流提取代码源文；`render.tsx` 把整棵 mdast 递归映射为 React。正文不再有整篇 HTML、`innerHTML` 或渲染后水合。阶段 3 已接入完成态代码高亮：`highlight.ts` 提供受控 token 与有界缓存，`CodeBlock` 只在 settled 生效并处理迟到结果与选区冻结；streaming 仍为纯文本，公式排版留待阶段 4，数学与 `tex` / `latex` 围栏按原文显示。
@@ -31,7 +31,8 @@
 ### 固定来源与适配
 
 - 当前 vendor 基准为 `@deepseek-ai/dsh-client-ui-primitives@0.2.0-rc.2`，tag `dsh-v0.2.0-rc.2`，commit `639ed015397290b3745d163aafe02ffee4aa3f84`；来源与锁定流程见[vendor 说明](<../src/vendor/README.md>)。不得把本机 HEAD 或最新文档当作该发布版的证据。
-- vendor 的 [parse.ts](<../src/vendor/ui-primitives/markdown/parse.ts>) 只搬入 `parseGfm`，现在同时服务轨迹纯文本投影与正文解析。数学接入（阶段 4）时按固定 commit 核对并恢复 `parseGfmWithMath`、`mathCompatibility` 及配套依赖；届时保留 `parseGfm` 的投影语义，不得为了正文迁移顺手改变轨迹摘要、搜索索引或事件投影。
+- vendor 的 [parse.ts](<../src/vendor/ui-primitives/markdown/parse.ts>) 已按固定 commit 恢复 `parseGfm` 与 `parseGfmWithMath` 两个语法臂，并补入 [mathCompatibility.ts](<../src/vendor/ui-primitives/markdown/mathCompatibility.ts>) 及配套依赖；轨迹纯文本投影与正文 streaming 仍只用 `parseGfm`，不得为了正文迁移改变轨迹摘要、搜索索引或事件投影。
+- **解析语法恢复不等于数学接入完成。** settled 的本地金额 / 未闭合 / 容器源码适配，以及 `MathView`、KaTeX 净化与布局尚未实现；当前生产没有消费 `parseGfmWithMath`，公式仍按原文显示。阶段 4 验收前不得把被恢复的 vendor 语法臂当作可用功能；金额启发式的反例与后续方向见下文「数学语法、排版与安全」的已确认难点，不在实现里静默改源文。
 - vendor 内仅保留获准的原文适配；Windows 链接修复、扩展资源策略、完成态高亮、安全限额和 UI 差异放在本地 Implementation。新搬文件必须同步原文夹具、文件头、来源锁和第三方声明；变更已有允许适配须说明理由，不能只改摘要求绿。
 - 官方 `render.tsx`、`highlight.ts`、`katex.tsx` 可提供遍历、别名、CSS 变量主题和排版参考，但不原样复制。原始 HTML 显示为字面文本的规则直接对齐；链接与图片准入保留扩展契约，KaTeX 输出另做独立净化和资源限制。需要本地行为的派生实现放在 webview 层，注明固定来源及差异，不假称逐字 vendor。
 - 官方 Markdown / DOM / 恶意 TeX 夹具可复用输入，断言必须改为本扩展契约，不能直接采用官方 DOM 快照并顺带改变 UI。
@@ -112,7 +113,7 @@ type CodeBlockProps = {
 
 ### 语法与来源
 
-- 阶段 2 使用 `fromMarkdown` 的成对 GFM 扩展（`gfm()` + `gfmFromMarkdown()`）并注册官方 `cjkFriendlyStrong`；数学的 `mathCompatibility()` / `math()` + `mathFromMarkdown()` 留到阶段 4。只注册词法扩展而不接树编译扩展不算完成迁移，版本以锁文件为准。
+- 阶段 2 使用 `fromMarkdown` 的成对 GFM 扩展（`gfm()` + `gfmFromMarkdown()`）并注册官方 `cjkFriendlyStrong`；数学的 `mathCompatibility()` / `math()` + `mathFromMarkdown()` 已按固定来源成对恢复依赖，但 settled 的本地适配与渲染尚未接线。只注册词法扩展而不接树编译扩展不算完成迁移，版本以锁文件为准。
 - 阶段 2 的流式与完成态都用官方 `parseGfm`，没有增量解析器；阶段 4 完成后完成态改用 `parseGfmWithMath`，结构变化只允许发生在数学等有意的增强边界。两者都对当前整篇文本解析。生成中的反斜杠仍可能按 CommonMark 转义显示；“公式原文”表示不排版，不承诺每个定界符逐字可见，也不另写一套实时数学扫描器。
 - Windows 路径修复在本地解析 Seam 完成：`windowsDestinations.ts` 在解析后按链接 / 图片节点的源码位置回原文取目标，仅对呈 Windows 绝对路径形状的 `\` 编码为 `%5C`。上游 `recoverLocalImages` 先跑、本地修复后跑，已用含 `%5C` 的重叠夹具验证不会二次编码；不能对全文替换反斜杠。代码、标签、参考定义、非 Windows 目标和 UNC 访问边界不变。
 - 中文强强调沿用官方 `cjkFriendlyStrong`，已用迁移前的中文标点、西文、单星、三星、代码内星号夹具对拍；不能以“官方如此”为理由静默扩大既有偏差。
@@ -193,7 +194,14 @@ GFM 对多段脚注、重复定义、复杂分隔符等边缘输入可能与迁�
 
 ## 数学语法、排版与安全
 
-阶段 4 尚未实施：当前数学与 `tex` / `latex` 围栏都按原文显示，`$…$` 不进入排版；以下为待实现的契约。
+阶段 4 尚未实施：vendor 的数学解析语法已恢复，但本地 settled 适配、`MathView` 与 KaTeX 排版都未接线，生产仍把数学与 `tex` / `latex` 围栏按原文显示，`$…$` 不进入排版；以下为待实现的契约。
+
+已确认的本地适配难点（未实现，禁止当成已完成）：
+
+- 官方 `micromark-extension-math` 的 `singleDollarTextMath` 默认开启，普通金额 `Costs $5 and $10.`、`Costs $5.00、$10.00`、`Pay $5 and $x$` 会被官方解析吞成行内公式；不能靠关闭全部单美元解决，也不能用全文占位符替换后盲还原（会损坏正文里同字符或实体的原文）。
+- 官方 flow 在 EOF 也会产出 `math` 节点（例如 `$$\nx+y\n` 未闭合仍带 raw 全源码）；简单检查 raw 后缀 `$$` 也会把 `$$\nx+y $$` 误判为已闭合。必须依据权威关闭 token / 行容器事实，而不是字符串后缀。
+- 容器内 flow 的 raw 包含 `> ` 等 Markdown 前缀；适配层从 raw 推出的 content 不能直接交给 KaTeX，TeX 有效内容必须取去容器缩进后的载荷（与 raw 回退边界分开）。
+- 本地适配若以多遍完整 GFM 重解析纠正候选，必须有可靠终止条件与性能证据；当前试做的占位符 + 32 次重解析方案已因上述反例被否决，不作为后续实现基础。
 
 - 完成态使用固定官方数学扩展：行内 `$…$`、`\(...\)`，块级 `$$…$$`、`\[...\]`，以及 `math` 围栏；`latex` / `tex` 围栏仍显示源码。streaming 不调用 KaTeX，math 围栏此时仍为代码。
 - 金额、转义、空公式、定界符旁空白 / 数字、奇偶反斜杠、同段 `$$`、多行、未闭合和容器边界，先采用固定来源实际规则并移植其夹具；单美元不能把 `$5 and $10` 误认。不得复制上一版文档的手写 tokenizer 规则另建一套“等价语法”。
@@ -215,7 +223,7 @@ GFM 对多段脚注、重复定义、复杂分隔符等边缘输入可能与迁�
 
 ## 构建、依赖与资源
 
-- 复用已有 micromark / mdast 依赖；阶段 3 已补齐 Shiki 精选入口（`shiki@4.5.0`、`@shikijs/langs@4.5.0`）并锁定版本，阶段 4 再补齐 math 配对与 KaTeX 精选入口。阶段 2 已确认全仓无 marked 消费者并删除该依赖与声明条目；同时删除旧脚注 / 中文加粗 / 目标 tokenizer 与 `imageHydrate` 测试。DOMPurify 仍保留在依赖中，供阶段 4 数学输出净化使用；正文不再有整篇净化入口。
+- 复用已有 micromark / mdast 依赖；阶段 3 已补齐 Shiki 精选入口（`shiki@4.5.0`、`@shikijs/langs@4.5.0`）并锁定版本，阶段 4 已补入 `micromark-extension-math@3.1.0` 与 `mdast-util-math@3.0.0` 作为解析依赖（尚未被生产消费），KaTeX 排版与精选入口仍未接入。阶段 2 已确认全仓无 marked 消费者并删除该依赖与声明条目；同时删除旧脚注 / 中文加粗 / 目标 tokenizer 与 `imageHydrate` 测试。DOMPurify 仍保留在依赖中，供阶段 4 数学输出净化使用；正文不再有整篇净化入口。
 - 构建为 KaTeX CSS / 字体补本地资源流程，优先 WOFF2，产物在 dist 范围；CSS URL 相对最终样式文件可解析，不留下 node_modules、开发服务器、绝对本机地址。无外部字体、额外脚本分包、WASM 或网络权限。
 - 核对既有 font-src、style-src、localResourceRoots 与文件白名单，保持脚本 nonce / 无 unsafe-eval。分别验证静态预览和 VS Code webview 的字体路径 / CSP，前者成功不代表后者已验收。
 - 更新锁文件、[第三方声明](<../THIRD-PARTY-NOTICES.md>)、vendor 原文 / 来源锁、资源清单及目录 README。新本地派生源码须披露官方来源；Shiki grammar / theme 和 KaTeX 字体的许可证按实际发布资源核对。
@@ -226,7 +234,7 @@ GFM 对多段脚注、重复定义、复杂分隔符等边缘输入可能与迁�
 1. **先固定基线与兼容性。** 采集现有真实输出预览夹具、代表性 DOM / computed style / 截图、复制和宿主帧；固定官方来源、原始 HTML 字面输出的有意差异及代码源码保真方案。其余安全 / 普通显示不一致未解决前，不以着色掩盖迁移问题。（已完成）
 2. **只切换管线。** 建立官方解析适配与完整 React 渲染，迁移全部消费入口、脚注、路径、图片和节点所有权；此时不接高亮 / 公式排版，用无增强基线证明标准 Markdown 与原界面一致，原始 HTML 则按新契约验证只输出文字。测试阶段可对旧 / 新输出作差分，不保留生产双引擎、功能开关或长期回退分支。（已落地；旧管线、旧测试与已无消费者的依赖一并删除）
 3. **接入完成态代码。** 正文和 run_code 共用引擎 / 代码卡，完成主题、别名、原文、折展、缓存、超限和失败回归；streaming 与静态 phase 各自固定。（已完成离线 / 静态验收；安装端待验）
-4. **接入完成态公式。** 恢复配套数学解析入口，落实隔离净化、字体和局部布局，再打通搜索 / 选区去重；核对辅助语义和 React 18 MathML 行为。（未开始）
+4. **接入完成态公式。** 恢复配套数学解析入口，落实隔离净化、字体和局部布局，再打通搜索 / 选区去重；核对辅助语义和 React 18 MathML 行为。（解析语法已恢复；本地适配 / KaTeX 未实施）
 5. **收尾与安装验收。** 检查会话 / 连接切换、选区延迟、异步高度、轨迹测量、主题 / 尺度与 VSIX 资源；用户功能说明与 CHANGELOG 在版本发布时更新。（未完成）
 
 阶段提交应可定位与回滚；发现安全或现有行为回归优先整体回滚对应阶段，不通过运行时开关保留两套长期管线。字体 / CSP、系统剪贴板等安装端结果未完成时应明确列为未验证，不得用构建成功代替。

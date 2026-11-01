@@ -54,7 +54,8 @@ MIT 许可证全文见本文末「附录 A」。
 | `src/vendor/ui-trajectory/trajectory-search-index.ts` | 同名 | import 路径 |
 | `src/vendor/ui-trajectory/inbox-state.ts` | `trajectory-message-definitions.ts` 的状态机摘录 | 参数类型换成本地形状；函数体逐字相同 |
 | `src/vendor/ui-trajectory/code-program.ts` | 同名 | 去掉 `.ts` import 后缀；函数体与常量逐字相同 |
-| `src/vendor/ui-primitives/markdown/parse.ts` | 同名 | **只搬流式臂**（省略 math 臂与其依赖）；去掉 `.ts` 后缀 |
+| `src/vendor/ui-primitives/markdown/parse.ts` | 同名 | 完整搬入两个语法臂（`parseGfm` / `parseGfmWithMath`）；去掉 `.ts` 后缀 |
+| `src/vendor/ui-primitives/markdown/mathCompatibility.ts` | 同名 | 文件头补充来源与改动说明；函数体逐字相同 |
 | `src/vendor/ui-primitives/markdown/plain-text.ts` | 同名 | 去掉 `.ts` 后缀 |
 | `src/vendor/ui-primitives/markdown/cjkFriendlyStrong.ts` | 同名 | 去掉 `.ts` 后缀 |
 | `src/vendor/ui-primitives/markdown/local-image-syntax.ts` | 同名 | `classifyFileType` 换成本地等价判定；去掉 `.ts` 后缀 |

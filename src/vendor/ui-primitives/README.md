@@ -10,6 +10,6 @@
 上游这个包的大头（`MarkdownText.tsx`、`render.tsx`、`highlight.ts`、`CodeBlock.tsx`、
 `FileTypeIcon.tsx` 等）**没有搬**：它们是渲染器与图标。本扩展的正文渲染由本地
 [webview/markdown/](<../../webview/markdown/README.md>) 适配层复用这里的
-`parseGfm` / `cjkFriendlyStrong`，UI 与 React 渲染仍由本地组件承担。
+`parseGfm` / `parseGfmWithMath` / `cjkFriendlyStrong`，UI 与 React 渲染仍由本地组件承担。
 
-阶段 2 已按固定上游来源复用 micromark / mdast 解析，本地 React 渲染适配保留扩展 UI 与安全行为；不整搬官方组件，也不改变轨迹纯文本投影语义。范围、来源锁与验收见[Markdown 渲染设计](<../../../docs/design-markdown-rendering.md>)。
+阶段 2 / 3 已按固定上游来源复用 micromark / mdast 解析与完成态高亮；阶段 4 解析接线补回 settled math 语法臂，本地 React 渲染适配保留扩展 UI 与安全行为，不整搬官方组件，也不改变轨迹纯文本投影语义。范围、来源锁与验收见[Markdown 渲染设计](<../../../docs/design-markdown-rendering.md>)。

@@ -15,7 +15,7 @@
 | 上游仓库 | https://github.com/deepseek-ai/deepseek-harness |
 | 许可 | MIT（Copyright (c) 2026 DeepSeek）——归属说明见[第三方声明](<../../THIRD-PARTY-NOTICES.md>) |
 | 固定 commit | `639ed015397290b3745d163aafe02ffee4aa3f84` |
-| 离线来源见证 | [11 份官方原文](<../../test/fixtures/vendor-sources/README.md>) |
+| 离线来源见证 | [12 份官方原文](<../../test/fixtures/vendor-sources/README.md>) |
 | 自动来源锁 | [登记](<../../scripts/vendorSourceLock.json>)、[校验模块](<../../scripts/vendorSourceLock.ts>)、[正式回归](<../../scripts/vendorSourceLock.test.ts>) |
 
 选这个版本是因为它与[DSH 兼容基准](<../../docs/dsh-compat.md>)是同一个版本。

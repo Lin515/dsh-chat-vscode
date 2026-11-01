@@ -95,20 +95,25 @@ function searchHits(index: TrajectorySearchIndex, query: string): ReadonlySet<st
   );
 }
 
-// ---------- 3. 语法臂只搬了 Gfm 那一支（省略 math 是刻意的） ----------
+// ---------- 3. 两个语法臂都在；轨迹投影仍只用 parseGfm ----------
 {
   const source = readFileSync(
     join(process.cwd(), "src", "vendor", "ui-primitives", "markdown", "parse.ts"),
     "utf8",
   );
   assert.ok(/export function parseGfm\(/.test(source), "流式臂（预览投影用的就是它）");
+  assert.ok(/export function parseGfmWithMath\(/.test(source), "结算臂（阶段 4 解析语法）");
   assert.ok(
-    !/parseGfmWithMath/.test(source.replace(/\/\*\*[\s\S]*?\*\//gu, "")),
-    "结算臂（math）没有搬——轨迹的消费方零引用它；要搬就整支搬（含 math 依赖），不许只搬一半",
+    /mathCompatibility\(\)[\s\S]*?math\(\)[\s\S]*?mathFromMarkdown\(\)/u.test(source),
+    "math 语法扩展与 mdast 编译扩展必须成对登记，不许只搬一半",
   );
   assert.ok(
     /micromark-extension-gfm/.test(source),
     "GFM 扩展在（官方预览与渲染器共用同一套语法）",
+  );
+  assert.ok(
+    /micromark-extension-math/.test(source) && /mdast-util-math/.test(source),
+    "结算臂的 math 依赖在（成对恢复）",
   );
 }
 
