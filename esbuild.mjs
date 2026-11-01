@@ -1,5 +1,6 @@
 import esbuild from "esbuild";
 import { rmSync } from "node:fs";
+import { katexAssetsPlugin } from "./scripts/katexAssets.mjs";
 
 const watch = process.argv.includes("--watch");
 const production = process.argv.includes("--production");
@@ -34,7 +35,11 @@ const webview = {
   // 根 tsconfig 是给宿主用的（不含 jsx），这里显式指定自动运行时，
   // 否则 esbuild 会退回经典转换并要求 React 全局变量
   jsx: "automatic",
-  loader: { ".svg": "dataurl", ".png": "dataurl" },
+  loader: { ".svg": "dataurl", ".png": "dataurl", ".woff2": "file" },
+  // KaTeX 字体只保留 WOFF2，产物落在 dist/fonts/<name>-<hash>.woff2；
+  // 插件同时把 CSS 的 @font-face 收敛为单个相对 `./fonts/...` URL 并在构建后核对。
+  assetNames: "fonts/[name]-[hash]",
+  plugins: [katexAssetsPlugin({ cssFile: "dist/webview.css", fontsDir: "dist/fonts" })],
   define: {
     "process.env.NODE_ENV": JSON.stringify(production ? "production" : "development"),
   },

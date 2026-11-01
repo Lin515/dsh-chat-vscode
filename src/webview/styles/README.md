@@ -5,6 +5,8 @@ webview 的两份 CSS，上层见[界面导航](<../README.md>)。
 - [tokens.css](<tokens.css>) — 设计 token：语义色先解析到 VS Code 主题变量，无主题变量时落硬编码回退。
 - [app.css](<app.css>) — 顶栏、消息流、输入框等各分区外观。
 
+[main.tsx](<../main.tsx>) 在 `tokens.css` 之后、`app.css` 之前引入 `katex/dist/katex.min.css`；构建时每个 `@font-face` 只保留 WOFF2，字体产物在 `dist/fonts/`，本目录不维护这份上游样式。
+
 字号档位、设计像素、换算例外、断点、根 token、测量顺序与滚动条决策统一见[界面尺度](<../../../docs/design-ui-scale.md>)，本页不维护第二套规则。
 
 ## 残影：状态高亮不许越出行盒 / 刻线盒

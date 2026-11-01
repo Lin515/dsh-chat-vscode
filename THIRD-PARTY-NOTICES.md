@@ -148,6 +148,7 @@ Apache-2.0 的义务说明：
 | `react` / `react-dom` | MIT | webview 界面 |
 | `mdast-util-from-markdown` / `mdast-util-gfm` / `micromark` / `micromark-extension-gfm`（及 `micromark-*` 传递依赖） | MIT | 正文 mdast 渲染与 `src/vendor/` 的 Markdown 纯文本投影（预览文本） |
 | `dompurify` | Apache-2.0 / MPL-2.0 双许可 | 为后续数学输出净化保留；当前正文不再整篇净化 HTML |
+| `katex` | MIT（JS/CSS）；SIL OFL 1.1（字体） | 完成态数学排版；随包只分发本地 WOFF2 字体，不使用 CDN 或网络资源 |
 | `shiki` / `@shikijs/langs` | MIT | 完成态代码高亮的细粒度 core、JavaScript 正则引擎与静态精选 grammar；不含 Oniguruma WASM、全量语言包、CDN 或网络资源 |
 | `diff` | BSD-3-Clause | 系统提示词变更页签的行级差分（与官方轨迹同一实现） |
 | `ws` | MIT | 宿主侧 WebSocket |
@@ -164,6 +165,36 @@ Apache-2.0 的义务说明：
 不使用 Oniguruma WASM、全量语言包、CDN 或网络资源；主题颜色由本地 CSS 变量提供，
 未分发独立 TextMate 主题文件。MIT 许可证全文见「附录 A」。
 
+### 4.1 KaTeX 字体（SIL OFL 1.1，不是 MIT）
+
+KaTeX 的 JS / CSS 以 MIT 发布（`Copyright (c) 2013-2020 Khan Academy and other
+contributors`，全文见「附录 A」）；**字体是独立的 SIL Open Font License 1.1 授权，
+不能只按 MIT 归属**。本扩展从官方 npm 包 `katex@0.16.47` 的 `dist/fonts/` 原样
+复制 WOFF2 字节，仅把 CSS 的 `@font-face` 收敛为该 WOFF2 来源；没有修改字体，
+也没有以保留字体名称发布修改版。
+
+字体版权行（20 份字体文件的 name 表一致）：
+
+```text
+Copyright (c) 2009-2010 Design Science, Inc. (<www.mathjax.org>)
+Copyright (c) 2014-2018 Khan Academy (<www.khanacademy.org>)
+```
+
+保留字体名称（Reserved Font Name）按字体族列出：
+
+- `KaTeX_AMS`
+- `KaTeX_Caligraphic`
+- `KaTeX_Fraktur`
+- `KaTeX_Main`
+- `KaTeX_Math`
+- `KaTeX_SansSerif`
+- `KaTeX_Script`
+- `KaTeX_Size1`、`KaTeX_Size2`、`KaTeX_Size3`、`KaTeX_Size4`
+- `KaTeX_Typewriter`
+
+SIL OFL 1.1 全文见「附录 C」。上游对字体与 JS/CSS 许可分界的说明：
+<https://github.com/KaTeX/KaTeX/issues/339#issuecomment-135518223>。
+
 四档权限图标直接复用 DeepSeek Harness 的
 `packages/client/ui-primitives/src/PermissionIcon.tsx`（MIT，Copyright (c) 2026 DeepSeek），
 来源为 tag `dsh-v0.2.1-alpha.2`、提交 `d743267388641bc76f17c45ce8b4c231aed1d32c`。
@@ -174,7 +205,8 @@ Apache-2.0 的义务说明：
 
 ## 附录 A：MIT 许可证全文
 
-以下 MIT 文本适用于第 1、2 节所述的上游项目与第 4 节的 `shiki` / `@shikijs/langs`（各自版权行见对应章节）。
+以下 MIT 文本适用于第 1、2 节所述的上游项目与第 4 节的 `shiki` / `@shikijs/langs`
+及 KaTeX JS/CSS（各自版权行见对应章节）。
 
 ```
 MIT License
@@ -203,6 +235,7 @@ SOFTWARE.
 - DeepSeek Harness：`Copyright (c) 2026 DeepSeek`
 - DeepSeek-Harness-for-VS-Code：`Copyright (c) 2025 dsh-chat contributors`
 - Shiki：`Copyright (c) 2021 Pine Wu`；`Copyright (c) 2023 Anthony Fu <https://github.com/antfu>`
+- KaTeX JS/CSS：`Copyright (c) 2013-2020 Khan Academy and other contributors`
 
 Continue（Apache-2.0）的版权行为 `Copyright 2023 Continue Dev, Inc.`，
 许可证全文见 https://www.apache.org/licenses/LICENSE-2.0 。
@@ -244,4 +277,95 @@ SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
 CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
+
+---
+
+## 附录 C：SIL Open Font License 1.1 全文（KaTeX 字体）
+
+以下文本适用于第 4.1 节列出的 KaTeX WOFF2 字体。
+
+```
+SIL OPEN FONT LICENSE Version 1.1 - 26 February 2007
+
+PREAMBLE
+The goals of the Open Font License (OFL) are to stimulate worldwide
+development of collaborative font projects, to support the font creation
+efforts of academic and linguistic communities, and to provide a free and
+open framework in which fonts may be shared and improved in partnership
+with others.
+
+The OFL allows the licensed fonts to be used, studied, modified and
+redistributed freely as long as they are not sold by themselves. The
+fonts, including any derivative works, can be bundled, embedded,
+redistributed and/or sold with any software provided that any reserved
+names are not used by derivative works. The fonts and derivatives,
+however, cannot be released under any other type of license. The
+requirement for fonts to remain under this license does not apply to any
+document created using the fonts or their derivatives.
+
+DEFINITIONS
+"Font Software" refers to the set of files released by the Copyright
+Holder(s) under this license and clearly marked as such. This may include
+source files, build scripts and documentation.
+
+"Reserved Font Name" refers to any names specified as such after the
+copyright statement(s).
+
+"Original Version" refers to the collection of Font Software components as
+distributed by the Copyright Holder(s).
+
+"Modified Version" refers to any derivative made by adding to, deleting,
+or substituting -- in part or in whole -- any of the components of the
+Original Version, by changing formats or by porting the Font Software to a
+new environment.
+
+"Author" refers to any designer, engineer, programmer, technical writer or
+other person who contributed to the Font Software.
+
+PERMISSION & CONDITIONS
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of the Font Software, to use, study, copy, merge, embed, modify,
+redistribute, and sell modified and unmodified copies of the Font
+Software, subject to the following conditions:
+
+1) Neither the Font Software nor any of its individual components, in
+Original or Modified Versions, may be sold by itself.
+
+2) Original or Modified Versions of the Font Software may be bundled,
+redistributed and/or sold with any software, provided that each copy
+contains the above copyright notice and this license. These can be
+included either as stand-alone text files, human-readable headers or in
+the appropriate machine-readable metadata fields within text or binary
+files as long as those fields can be easily viewed by the user.
+
+3) No Modified Version of the Font Software may use the Reserved Font
+Name(s) unless explicit written permission is granted by the corresponding
+Copyright Holder. This restriction only applies to the primary font name as
+presented to the users.
+
+4) The name(s) of the Copyright Holder(s) or the Author(s) of the Font
+Software shall not be used to promote, endorse or advertise any Modified
+Version, except to acknowledge the contribution(s) of the Copyright
+Holder(s) and the Author(s) or with their explicit written permission.
+
+5) The Font Software, modified or unmodified, in part or in whole, must be
+distributed entirely under this license, and must not be distributed under
+any other license. The requirement for fonts to remain under this license
+does not apply to any document created using the Font Software.
+
+TERMINATION
+This license becomes null and void if any of the above conditions are not
+met.
+
+DISCLAIMER
+THE FONT SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO ANY WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT OF
+COPYRIGHT, PATENT, TRADEMARK, OR OTHER RIGHT. IN NO EVENT SHALL THE
+COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+INCLUDING ANY GENERAL, SPECIAL, INDIRECT, INCIDENTAL, OR CONSEQUENTIAL
+DAMAGES, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM OTHER
+DEALINGS IN THE FONT SOFTWARE.
 ```

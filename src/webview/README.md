@@ -4,7 +4,7 @@ React / 浏览器环境，不使用 Node API。上层边界见[源码导航](<..
 
 ## 应用与文案
 
-- [main.tsx](<main.tsx>) — 挂载 App 与引入样式。
+- [main.tsx](<main.tsx>) — 挂载 App 与引入样式（含 KaTeX 官方 CSS，字体由构建收敛为本地 WOFF2）。
 - [App.tsx](<App.tsx>) — 布局、路由与宿主帧分发。
 - [state.ts](<state.ts>) — ChatState reducer、patch 与派生状态。
 - [bridge.ts](<bridge.ts>) — acquireVsCodeApi 单例、IPC 与状态持久化。
