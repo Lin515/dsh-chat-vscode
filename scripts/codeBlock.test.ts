@@ -26,12 +26,12 @@ const { TextsContext, dictionaryFor } = await import("../src/webview/texts");
 const codeWith = (lineCount: number): string =>
   Array.from({ length: lineCount }, (_, index) => `const v${index + 1} = ${index + 1};`).join("\n");
 
-function render(code: string): string {
+function render(code: string, phase?: "streaming" | "settled"): string {
   return renderToStaticMarkup(
     createElement(
       TextsContext.Provider,
       { value: dictionaryFor("zh") },
-      createElement(CodeBlock, { lang: "ts", code }),
+      createElement(CodeBlock, { lang: "ts", code, phase }),
     ),
   );
 }
@@ -54,3 +54,12 @@ function render(code: string): string {
 }
 
 console.log("codeBlock: 长代码块默认收起、短块保持展开 ✓");
+
+// ---------- 3. SSR：不初始化高亮引擎，settled / streaming 都输出纯文本 ----------
+for (const phase of ["settled", "streaming"] as const) {
+  const html = render(codeWith(3), phase);
+  assert.ok(!html.includes("md-code-token"), `${phase} 的 SSR 输出不能有高亮 span`);
+  assert.ok(!html.includes("var(--md-code-"), `${phase} 的 SSR 输出不能出现主题变量`);
+  assert.ok(html.includes("const v3 = 3;"), `${phase} 的 SSR 输出保留完整代码文本`);
+}
+console.log("codeBlock: SSR 不初始化高亮、输出纯文本 ✓");

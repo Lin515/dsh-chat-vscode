@@ -14,6 +14,8 @@
  * 不会被高亮标记冲掉。
  */
 
+import { rangeConnected, type RangeLike } from "./selectionRange";
+
 /** 一处命中落在单个文本节点上的区间（`end` 不含）。 */
 export interface MatchSpan {
   /** 文本节点在节点序列里的下标。 */
@@ -95,4 +97,14 @@ export function stepActive(current: number, total: number, delta: number): numbe
   if (total <= 0) return 0;
   const next = (current + delta) % total;
   return next < 0 ? next + total : next;
+}
+
+/**
+ * 一处命中是否可以导航：每段 Range 的两端都必须仍连在文档上。
+ *
+ * DOM 更新（流式追加、节点展开、代码高亮替换文本）会让旧 Range 脱树，拿它滚动或
+ * 测量只会落在已卸载节点上；此时不导航，等 MutationObserver 触发重算。
+ */
+export function matchNavigable(ranges: readonly RangeLike[]): boolean {
+  return ranges.length > 0 && ranges.every((range) => rangeConnected(range));
 }

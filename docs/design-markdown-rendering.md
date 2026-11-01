@@ -8,15 +8,15 @@
 |---|---|---|
 | 1 | 基线、来源锁定与本文设计 | 已完成 |
 | 2 | 解析 / 渲染管线切换，保持标准 Markdown 的视觉与行为；原始 HTML 改为字面文本 | 已落地 |
-| 3 | 完成态代码高亮（Shiki） | 未实施 |
+| 3 | 完成态代码高亮（Shiki） | 已完成离线 / 静态验收；安装端待验 |
 | 4 | 完成态数学（KaTeX）与隔离净化 | 未实施 |
 | 5 | 安装端 CSP / 字体 / VSIX 资源验收 | 未完成 |
 
-阶段 2 的实现入口是 `src/webview/markdown/`：`parse.ts` 调用 vendor `parseGfm`，再做本地 Windows 链接目标修复与文档级定义收集；`source.ts` 用 micromark 事件流提取代码源文；`render.tsx` 把整棵 mdast 递归映射为 React。正文不再有整篇 HTML、`innerHTML` 或渲染后水合。streaming 与 settled 目前只差 `phase` 取值，代码高亮与公式排版都未接入，因此界面仍不显示语法高亮，数学与 `tex` / `latex` 围栏按原文显示。
+阶段 2 的实现入口是 `src/webview/markdown/`：`parse.ts` 调用 vendor `parseGfm`，再做本地 Windows 链接目标修复与文档级定义收集；`source.ts` 用 micromark 事件流提取代码源文；`render.tsx` 把整棵 mdast 递归映射为 React。正文不再有整篇 HTML、`innerHTML` 或渲染后水合。阶段 3 已接入完成态代码高亮：`highlight.ts` 提供受控 token 与有界缓存，`CodeBlock` 只在 settled 生效并处理迟到结果与选区冻结；streaming 仍为纯文本，公式排版留待阶段 4，数学与 `tex` / `latex` 围栏按原文显示。
 
-- 正文已从 marked / HTML 分块迁到官方同源的 micromark → mdast → React 管线；后续阶段再把 Shiki 与 KaTeX 接进同一棵文档树。普通 Markdown、代码与数学共享一套节点所有权，不再建设 marked 私有槽、骨架标记和 React portal 方案。
+- 正文已从 marked / HTML 分块迁到官方同源的 micromark → mdast → React 管线；阶段 3 已把 Shiki 接进同一棵文档树，阶段 4 再接入 KaTeX。普通 Markdown、代码与数学共享一套节点所有权，不再建设 marked 私有槽、骨架标记和 React portal 方案。
 - **迁移不是界面重设计。** 保留标准 Markdown 的字体、间距、代码卡片、折展、复制、插入、链接、图片、脚注、搜索和阅读行为；不整搬官方 UI、CSS Modules、工具栏或主题系统。原始 HTML 按官方作为字面文本显示，是明确接受的兼容差异，不再保留现有有限 HTML 渲染。
-- 助手生成期间仍展示普通 Markdown；阶段 2 尚无完成态增强，代码始终不着色、公式不排版。阶段 3 / 4 接入后，生成结束、停止、失败或截断才进入完成态增强。不做增量解析、增量高亮、自动补围栏或“围栏刚闭合就增强”。
+- 助手生成期间仍展示普通 Markdown；阶段 3 起，生成结束、停止、失败或截断后的 settled 代码块进入完成态高亮，streaming 期间不初始化引擎、不着色。阶段 4 接入公式后同样只在完成态排版。不做增量解析、增量高亮、自动补围栏或“围栏刚闭合就增强”。
 - 历史消息和已确定的计划、工具详情直接使用完成态。阶段 3 起，`run_code` 完整调用参数可立即着色；工具运行状态不等于代码还在生成。
 - 用户气泡仍显示原始文本；终端、文件预览、diff、JSON 检查器、轨迹源码与请求差分不纳入。不改协议、持久化消息或宿主权限，不加功能开关。
 
@@ -40,7 +40,7 @@
 
 ### 对外 Interface
 
-业务仍只消费 `Markdown` 和 `CodeBlock`，不接触 micromark、mdast、语言注册、字体、净化器或渲染内部节点。阶段 2 已按下列 Interface 落地（`phase` 暂只透传，增强在阶段 3 / 4 接入）：
+业务仍只消费 `Markdown` 和 `CodeBlock`，不接触 micromark、mdast、语言注册、字体、净化器或渲染内部节点。阶段 2 已按下列 Interface 落地，阶段 3 在 `CodeBlock` 内按 `phase` 接入完成态高亮：
 
 ```ts
 type MarkdownPhase = "streaming" | "settled";
@@ -78,7 +78,7 @@ type CodeBlockProps = {
 | 文件 / 图片接入 | 复用现有路径判据、宿主动作和图片作用域，只调整 DOM 所有权与挂载方式 |
 | 搜索 / 选择 / 阅读 | 通过现有查找、选区复制、readingPlacement / autoScroll Seam 整合，不另建全局管理器 |
 
-阶段 2 按上述职责拆成 `src/webview/markdown/` 的 `parse.ts`、`source.ts`、`windowsDestinations.ts`、`render.tsx` 与 `types.ts`，文件清单见该目录 README；组件入口仍是 `components/Markdown.tsx`。阶段 3 / 4 新增文件沿用同一分层，不建没有第二个真实 Adapter 的注册平台。
+阶段 2 按上述职责拆成 `src/webview/markdown/` 的 `parse.ts`、`source.ts`、`windowsDestinations.ts`、`render.tsx` 与 `types.ts`，文件清单见该目录 README；组件入口仍是 `components/Markdown.tsx`。阶段 3 新增 `markdown/highlight.ts`（引擎 / 缓存 / 受控 token）与 `webview/selectionRange.ts`（选区相交 / 脱树判据），沿用同一分层，不建没有第二个真实 Adapter 的注册平台。
 
 ## 消费面与影响清单
 
@@ -118,7 +118,7 @@ type CodeBlockProps = {
 - 中文强强调沿用官方 `cjkFriendlyStrong`，已用迁移前的中文标点、西文、单星、三星、代码内星号夹具对拍；不能以“官方如此”为理由静默扩大既有偏差。
 - 代码依赖 `code` 节点，不再全文围栏正则切分；较长围栏、波浪、未闭合、缩进代码以及列表 / 引用 / 脚注内代码均保留所属容器。未知树节点按 `sourceFallback` 回退为安全源码片段，不沿用官方“默认返回空”吞内容。
 - 文档级定义统一收集在 `MarkdownDocument.definitions` / `footnotes`：参考链接与图片可跨代码块解析，脚注编号与重复引用计数只属于本次文档。脚注定义重复时 last-wins，参考定义 first-wins，沿用迁移前口径。
-- 使用稳定的文档身份和节点 key；同一代码块从 streaming 到 settled、着色初始化完成、主题或词表变化时，不重建卡片而丢失用户折展选择（阶段 3 接入着色时按此检查）。源码 offset 不能单独作为跨消息身份，不能跨连接复用交互闭包。
+- 使用稳定的文档身份和节点 key；同一代码块从 streaming 到 settled、着色初始化完成、主题或词表变化时，不重建卡片而丢失用户折展选择；阶段 3 已按此保持卡片 DOM 与折展状态。源码 offset 不能单独作为跨消息身份，不能跨连接复用交互闭包。
 
 ### 代码原文保真
 
@@ -140,7 +140,7 @@ mdast 的 `code.value` 会经过语法规范化，不能默认等同旧 CodeBloc
 
 ## 视觉与行为不变量
 
-阶段 2 的有意变化只有两处：正确呈现旧正则未覆盖的合法嵌套代码，以及原始 HTML 改为字面文字；阶段 3 / 4 再增加代码颜色与完成态数学排版。其余标准 Markdown 内容不得借迁移重排、换肤或改操作，已由静态浏览器回放逐项对拍。
+阶段 2 的有意变化只有两处：正确呈现旧正则未覆盖的合法嵌套代码，以及原始 HTML 改为字面文字；阶段 3 再增加完成态代码颜色，阶段 4 增加完成态数学排版。其余标准 Markdown 内容不得借迁移重排、换肤或改操作，已由静态浏览器回放逐项对拍。
 
 | 区域 | 保持要求与容易遗漏的差异 |
 |---|---|
@@ -170,13 +170,26 @@ GFM 对多段脚注、重复定义、复杂分隔符等边缘输入可能与迁�
 
 ## 代码高亮
 
-阶段 3 尚未实施：当前 `CodeBlock` 接收 `phase` 但不着色，以下为待实现的契约。
+阶段 3 已完成离线 / 静态验收：typecheck、184 套离线断言、build、diff-check，以及受控浏览器下的严格 CSP、断网组件、跨段 / 跨卡选区、精确桥帧、语言别名切换、四主题、全 App FindBar 与增强前后几何一致性均通过。安装端 CSP / 字体 / VSIX 与系统剪贴板仍未验收。实现分为纯模块 `src/webview/markdown/highlight.ts` 与 `CodeBlock` 的接线两部分。
 
-- Shiki fine-grained core + JavaScript 正则引擎 + 显式静态语言集合；无 Oniguruma WASM、CDN、网络或 unsafe-eval。单文件 IIFE 首版不复制官方动态分包 / 增量会话。
-- 首批目标为 JavaScript / TypeScript / JSX / TSX、JSON / JSONC、Python、Shell、PowerShell、C / C++、C#、Go、Rust、Java、HTML、CSS、SQL、YAML、Markdown、diff。嵌入语法依赖显式登记；JS 引擎不能准确支持或有兼容异常的 grammar 纯文本回退，不用宽松模式制造看似正确的颜色。最终集合在实现验证后锁定，不自动猜语言。
-- 用首个语言标识和显式 Map 归一化 js / ts / py / sh / ps1 / yml 等别名，显示仍保留原标签；`constructor` / `__proto__` 不得命中对象继承成员。无语言 / 未知语言均可读。
-- 每 webview 一个按需初始化实例；初始化失败不让卡片消失。结构化 token 生成 React span，不将 `codeToHtml` 拼回普通 HTML；主题使用受控 CSS 变量，明暗 / 高对比无需每次重新生成全部 token，不承诺匹配所有用户 TextMate 主题。
-- 精确源码、归一化语言及主题策略版本决定缓存；失败也可缓存。条数与总字符量双限，过长代码跳过增强；保留尾部空行 / 换行，不盲抄上游按行输出时裁掉末行的实现。限额在实现时以命名常量登记并验证临界值。
+### 引擎、语言与主题
+
+- 细粒度 `createHighlighterCore` + `createJavaScriptRegexEngine` + `createCssVariablesTheme`；无 Oniguruma WASM、CDN、网络或 unsafe-eval。单文件 IIFE 首版不复制官方动态分包 / 增量会话。
+- 显式静态语言集合：JavaScript / TypeScript / JSX / TSX、JSON / JSONC、Python、Shell、PowerShell、C / C++、C#、Go、Rust、Java、HTML、CSS、SQL、YAML、Markdown、diff。语言模块按 `name` 去重（HTML 模块自带 JS / CSS、TSX 复用 TS / JSX 依赖）；嵌入语法依赖显式登记。JS 引擎不能准确支持的 grammar 纯文本回退，不用宽松模式制造看似正确的颜色。最终集合在实现验证后锁定，不自动猜语言。
+- `normalizeLang` 取首个语言标识并用显式 `Map` 归一化 js / ts / py / sh / ps1 / yml 等别名；`constructor` / `__proto__` / `toString` 不命中对象继承成员。显示仍保留原标签；高亮身份与请求使用归一化语言，因此 `ts` / `TypeScript` / `ts title=x` 之间切换不拆已有 span、不重新请求。
+- 每 webview 一个按需初始化实例；初始化失败不让卡片消失。结构化 token 生成 React span，不将 `codeToHtml` 拼回普通 HTML；主题变量只接受 `var(--md-code-foreground|token-*)`。CSS 在 `.code-block` 定义四类 `body.vscode-light/dark/high-contrast/high-contrast-light` 回退，并用 `@media (prefers-color-scheme: light)` 覆盖无 VS Code 主题类的预览浅色；高亮 span 只改受控颜色与 `is-italic` / `is-bold` / `is-underlined` 字形修饰，不改字号、字体、行高、背景、padding、换行或卡片布局。不承诺匹配所有用户 TextMate 主题。
+
+### 缓存、限额与文本保真
+
+- 缓存 key = 主题策略版本 + 归一化语言 + 原 code；成功与失败都缓存，同 key 的并发请求共享一次 tokenize 与一次记账。条数上限 `MAX_CACHE_ENTRIES = 64`、总字符上限 `MAX_CACHE_CHARS = 200000`；单块超过 `MAX_HIGHLIGHT_CHARS = 50000` 字符跳过增强；单行超过 `MAX_HIGHLIGHT_LINE_CHARS = 4000` 字符时先于引擎整块回退纯文本（JavaScript 正则单行耗时随行长近似平方增长），单行 tokenize 另设 `tokenizeTimeLimit = 500ms`；单块最多 `MAX_SPANS = 4000` 段。空代码、未知 / 不支持语言、映射缺失与引擎或 token 校验失败都原位显示纯文本。
+- token 偏移必须是源码上的安全整数、单调、不越界；每段显示文本用原 `code` 切片，token 间缺口（CRLF / 空行 / 尾部空白）与末尾由原 code 补齐。唯一允许的内容差异是 Shiki 把 NUL 规范化为 U+FFFD，显示仍取源码。任何偏移或长度校验失败整块回退，不输出错位颜色。CRLF、空行、尾空白、NUL、空代码与末尾换行逐字保真；显示文本、code prop 与复制载荷一致，行数判定仍是 `code.split("\n").length > 20`。
+
+### React 接线与生命周期
+
+- `CodeBlock` 只在 `phase === "settled"` 的 effect 里调 `highlightCode`；streaming / SSR 只输出纯文本，effect 不跑就不会初始化引擎。普通父级重渲染、locale / cwd / 文件词表变化不触发着色；只有 `code`、归一化语言与 `phase` 变化重新请求。
+- 每个请求带取消标记与 key；卸载、代码或语言变化时取消旧结果，渲染前再核对当前 key，避免旧高亮覆盖新代码。`code` 改变的第一帧即退回纯文本，不等异步结果。
+- 结果抵达时若活动选区与 `<code>` 相交（`selectionIntersectsElement` 用 `Range.intersectsNode`，含从段落拖进代码、跨两张卡；没有该 API 时回退到共同祖先双向包含），先暂存该结果，监听 `selectionchange`；选区清空 / 移开后再应用最新一份。请求被新代码 / 语言 / phase 取代或组件卸载时丢弃暂存，不应用旧结果。
+- span 文本由原 `code` 切片生成，不拼 `innerHTML`；复制 / 插入仍用原 `code`。卡片 DOM 身份、折展状态和完整选择文本在着色前后保持不变。
 
 ## 数学语法、排版与安全
 
@@ -196,23 +209,23 @@ GFM 对多段脚注、重复定义、复杂分隔符等边缘输入可能与迁�
 - KaTeX HTML、MathML、TeX annotation 有重复文本；查找只采集视觉层，排除辅助层 / 注释。内部公式标识由组件生成且有来源，不由模型 class 触发特殊路径；搜索和选区提取共用同一去重判据。不能泛化为排除所有 aria-hidden，KaTeX 视觉层可能恰带该属性。
 - 会话 Ctrl/Cmd+C、右键复制和引用继续共用 `chatSelectionText`，普通选区空白 / 换行不变；右键入口仍按既有规则去首尾空白。选中公式给一次可读文本，不承诺还原 TeX；整条消息复制是原 Markdown，代码按钮是精确 code，不加公式按钮。
 - 数学去重必须按实际 Range 裁切，不能把仅选中部分公式替换成整个公式，也不能吞掉相邻正文、跨消息换行。焦点在 input / textarea / contenteditable、跨正文边界、组字或特殊组合键时仍让原生处理，不扩展快捷键范围。
-- 结束时有选区先冻结 `{text, phase}`，没有选区才统一增强。异步高亮 / 字体 / 图片结果不得改写仍被选中的内容；必要时叶节点延迟提交增强，不能只冻结父 props 却让内部异步结果替换 DOM。
-- DOM 更新会使旧 Range / 查找高亮失效，应通过现有查找版本与 readingPlacement 作废 / 重建，不持有已卸载节点。代码折展、公式排版、字体就绪及图片变化引起高度变化时，原本贴底才继续跟随；用户上翻不抢底，不新建第二套 scrollTop 仲裁。
+- 结束时有选区先冻结 `{text, phase}`，没有选区才统一增强。异步高亮 / 字体 / 图片结果不得改写仍被选中的内容；代码卡在结果抵达时若活动选区与 `<code>` 相交，暂存结果并监听 `selectionchange`，等选区清空 / 移开再应用最新一份。不能只冻结父 props 却让内部异步结果替换 DOM。
+- DOM 更新会使旧 Range / 查找高亮失效：查找在 MutationObserver 回调里立即清空旧 Range 与注册表，保留计数与激活位置，再按 150ms 防抖重算；导航前检查 Range 两端 `isConnected`，脱树不导航，不持有已卸载节点。代码折展、公式排版、字体就绪及图片变化引起高度变化时，原本贴底才继续跟随；用户上翻不抢底，不新建第二套 scrollTop 仲裁。
 - 轨迹内变化继续服从其现有虚拟化测量、pin 与定位回执；不能只验证聊天正文就假定轨迹摘要 / 详情的高度与锚点也正确。
 
 ## 构建、依赖与资源
 
-- 复用已有 micromark / mdast 依赖，阶段 3 / 4 再补齐 math 配对和 Shiki / KaTeX 精选入口并锁定实际版本。阶段 2 已确认全仓无 marked 消费者并删除该依赖与声明条目；同时删除旧脚注 / 中文加粗 / 目标 tokenizer 与 `imageHydrate` 测试。DOMPurify 仍保留在依赖中，供阶段 4 数学输出净化使用；正文不再有整篇净化入口。
+- 复用已有 micromark / mdast 依赖；阶段 3 已补齐 Shiki 精选入口（`shiki@4.5.0`、`@shikijs/langs@4.5.0`）并锁定版本，阶段 4 再补齐 math 配对与 KaTeX 精选入口。阶段 2 已确认全仓无 marked 消费者并删除该依赖与声明条目；同时删除旧脚注 / 中文加粗 / 目标 tokenizer 与 `imageHydrate` 测试。DOMPurify 仍保留在依赖中，供阶段 4 数学输出净化使用；正文不再有整篇净化入口。
 - 构建为 KaTeX CSS / 字体补本地资源流程，优先 WOFF2，产物在 dist 范围；CSS URL 相对最终样式文件可解析，不留下 node_modules、开发服务器、绝对本机地址。无外部字体、额外脚本分包、WASM 或网络权限。
 - 核对既有 font-src、style-src、localResourceRoots 与文件白名单，保持脚本 nonce / 无 unsafe-eval。分别验证静态预览和 VS Code webview 的字体路径 / CSP，前者成功不代表后者已验收。
 - 更新锁文件、[第三方声明](<../THIRD-PARTY-NOTICES.md>)、vendor 原文 / 来源锁、资源清单及目录 README。新本地派生源码须披露官方来源；Shiki grammar / theme 和 KaTeX 字体的许可证按实际发布资源核对。
-- 实施前后记录 JS / CSS / 字体 / VSIX 体积、首次初始化、长文解析和结算延迟。缓存有界，不全局永久保存整棵文档、敏感正文或宿主闭包。当前没有首次初始化与长文解析延迟的量测结果，不编造耗时通过数字；有明确阻塞再评估 worker、语言裁剪或分包，不预先引入增量复杂度。
+- 实施前后记录 JS / CSS / 字体 / VSIX 体积、首次初始化、长文解析和结算延迟。缓存有界，不全局永久保存整棵文档、敏感正文或宿主闭包。阶段 3 已按实际长行耗时测试收紧单行上限（见「代码高亮」）；首次初始化与结算延迟仍以本地复测为准，不把单机数字写成通用 SLA。有明确阻塞再评估 worker、语言裁剪或分包，不预先引入增量复杂度。
 
 ## 迁移顺序与退出条件
 
 1. **先固定基线与兼容性。** 采集现有真实输出预览夹具、代表性 DOM / computed style / 截图、复制和宿主帧；固定官方来源、原始 HTML 字面输出的有意差异及代码源码保真方案。其余安全 / 普通显示不一致未解决前，不以着色掩盖迁移问题。（已完成）
 2. **只切换管线。** 建立官方解析适配与完整 React 渲染，迁移全部消费入口、脚注、路径、图片和节点所有权；此时不接高亮 / 公式排版，用无增强基线证明标准 Markdown 与原界面一致，原始 HTML 则按新契约验证只输出文字。测试阶段可对旧 / 新输出作差分，不保留生产双引擎、功能开关或长期回退分支。（已落地；旧管线、旧测试与已无消费者的依赖一并删除）
-3. **接入完成态代码。** 正文和 run_code 共用引擎 / 代码卡，完成主题、别名、原文、折展、缓存、超限和失败回归；streaming 与静态 phase 各自固定。（未开始）
+3. **接入完成态代码。** 正文和 run_code 共用引擎 / 代码卡，完成主题、别名、原文、折展、缓存、超限和失败回归；streaming 与静态 phase 各自固定。（已完成离线 / 静态验收；安装端待验）
 4. **接入完成态公式。** 恢复配套数学解析入口，落实隔离净化、字体和局部布局，再打通搜索 / 选区去重；核对辅助语义和 React 18 MathML 行为。（未开始）
 5. **收尾与安装验收。** 检查会话 / 连接切换、选区延迟、异步高度、轨迹测量、主题 / 尺度与 VSIX 资源；用户功能说明与 CHANGELOG 在版本发布时更新。（未完成）
 
@@ -234,9 +247,9 @@ GFM 对多段脚注、重复定义、复杂分隔符等边缘输入可能与迁�
 | 视觉预览 | 同输入 / 主题 / 语言 / 字号 / 宽度前后截图与 computed style 对拍；明 / 暗 / 高对比、窄侧栏、代表性小中大字号，中英标题 / 按钮、代码渐隐和换行、宽表 / 宽公式、字体加载前后与离线加载 |
 | 集成 / 发布 | 全部消费入口、SSR / Node 导入、vendor 来源锁、依赖裁剪；构建 CSS URL、字体与声明白名单、无全量语言包 / CDN / WASM；安装端 CSP / 字体、原生插入 / 文件打开与系统剪贴板 |
 
-阶段 2 已保留 [markdown.test.ts](<../scripts/markdown.test.ts>)、[footnotes.test.ts](<../scripts/footnotes.test.ts>)、[styles.test.ts](<../scripts/styles.test.ts>) 中的业务断言，并淘汰仅固定 marked 调用形状的断言；同步 fileLinks、localImageResolve、localImages、contextMenu、questionRender、trajectoryVendor、vendorSourceLock、manifest 等关联回归，没有因旧测试不再匹配而整段删除安全要求。新增测试已登记[脚本构建入口](<../esbuild.scripts.mjs>) entries；图片 / 链接的真实 DOM 时序由受控浏览器回放，Node 静态源码检查不等同浏览器证据。
+阶段 2 已保留 [markdown.test.ts](<../scripts/markdown.test.ts>)、[footnotes.test.ts](<../scripts/footnotes.test.ts>)、[styles.test.ts](<../scripts/styles.test.ts>) 中的业务断言，并淘汰仅固定 marked 调用形状的断言；同步 fileLinks、localImageResolve、localImages、contextMenu、questionRender、trajectoryVendor、vendorSourceLock、manifest 等关联回归，没有因旧测试不再匹配而整段删除安全要求。阶段 3 新增 [highlight.test.ts](<../scripts/highlight.test.ts>) 与 [selectionRange.test.ts](<../scripts/selectionRange.test.ts>)，并扩展 [find.test.ts](<../scripts/find.test.ts>) 的脱树导航判据；全部登记在[脚本构建入口](<../esbuild.scripts.mjs>) entries。图片 / 链接 / 选区的真实 DOM 时序由受控浏览器回放，Node 静态源码检查不等同浏览器证据。
 
-阶段 2 运行 typecheck 与离线测试，并由受控浏览器做静态回放；不启动真实 DSH、不发送真实消息。安装端另验 CSP、字体、IPC 和系统剪贴板，分别记录已验证与未验证。未经当次批准，不运行模型 smoke / 探针。
+阶段 3 已完成离线 / 静态验收（typecheck、184 套离线断言、build、diff-check 与受控浏览器检查）；代码高亮的 SSR / streaming 不初始化由 `CodeBlock` 的 settled effect 保证，静态断言只覆盖纯模块。安装端 CSP / 字体 / VSIX 与系统剪贴板尚未验证，阶段 4 / 5 未完成。不启动真实 DSH、不发送真实消息。未经当次批准，不运行模型 smoke / 探针。
 
 ## 资料与重评条件
 

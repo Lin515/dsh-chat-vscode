@@ -106,6 +106,8 @@
 
 - [markdown.test.ts](<markdown.test.ts>) — 正文 SSR 行为：任务列表、表格、原始 HTML 字面、软硬换行、查找分隔、图片 title / 三属性 / 危险 scheme、Windows 目标与 CJK 加粗；断言用户真正看到 / 点到的 HTML，不再检查净化源码形状。
 - [markdownSource.test.ts](<markdownSource.test.ts>) — 代码块源文逐字符：围栏 / 缩进 / 引用与列表前缀 / tab 视觉列 / CRLF / 尾空行 / 未闭合 / NUL 与部分 tab 组合。
+- [highlight.test.ts](<highlight.test.ts>) — 完成态代码高亮纯模块：语言别名 / 继承成员、21 种静态 grammar、CRLF / 空行 / 尾空白 / NUL 逐字保真、颜色白名单、成功 / 失败缓存与条数 / 字符双限、并发同 key 单次记账、总长与超长单行回退。
+- [selectionRange.test.ts](<selectionRange.test.ts>) — 选区相交判据：折叠 / 跨边界 / 多 Range / 无 `intersectsNode` 回退 / detach，以及脱树 Range 不导航；不替代真实 DOM 验收。
 - [footnotes.test.ts](<footnotes.test.ts>) — GFM / mdast 脚注：首次与重复引用、缺定义、重复定义 last-wins、代码与转义、嵌套、仅有定义。
 - [fileLinks.test.ts](<fileLinks.test.ts>) — 正文文件链接三段链路（判定 / DOM 落地 / 样式）。
 - [linkHovers.test.ts](<linkHovers.test.ts>) — 链接悬停标题（完整路径 / Alt 真实文件 / 完整地址）与 HTML 文件的浏览器打开判据（扩展名白名单、Ctrl/Cmd 分流与两端接线）。
@@ -128,7 +130,7 @@
 - [questionRender.test.ts](<questionRender.test.ts>) — 问卷卡片渲染断言（答完的问题展开后显示用户回答）。
 - [toolRowRender.test.ts](<toolRowRender.test.ts>) — 工具节点渲染断言：技能节点只显示 SKILL 正文（无参数 / 输出标题），读 / 写 / 编辑与技能只在真有可打开目标时提示 Ctrl/Cmd 单击打开；write 未完成原文、空内容、中断失败、安全文本、仅 write 与 diff 交接。
 - [writePreview.test.ts](<writePreview.test.ts>) — 同一生产解码接口的完整／不完整 JSON、每个二段切点及逐字符切分、转义／代理对／CRLF／末尾空白、根键与嵌套干扰、无效回退、身份／替换重置、重放及大文本追加。
-- [codeBlock.test.ts](<codeBlock.test.ts>) — 代码块默认折展：超过 20 行默认收起（含 `aria-expanded` 与完整正文），20 行及以内没有折展入口、保持展开。
+- [codeBlock.test.ts](<codeBlock.test.ts>) — 代码块默认折展：超过 20 行默认收起（含 `aria-expanded` 与完整正文），20 行及以内没有折展入口、保持展开；SSR 在 settled / streaming 都不初始化高亮引擎，输出纯文本。
 - [modifierHeld.test.ts](<modifierHeld.test.ts>) — Ctrl/Cmd 全局修饰键状态：按住时给可打开文件节点加下划线的根类来源、指针事件补键盘焦点缺席、失焦 / 页面隐藏清理与引用计数卸载。
 - [planReview.test.ts](<planReview.test.ts>) — 计划审阅（`exit_plan_mode`）请求的识别与收窄规则。
 - [pendingInteraction.test.ts](<pendingInteraction.test.ts>) — 待处理交互的选举与抑制（官方 `registerPendingInteraction` 优先级）。
@@ -201,7 +203,7 @@
 ### 补充专项断言
 
 - [sessionListScope.test.ts](<sessionListScope.test.ts>) — 历史列表跟随**当前会话 cwd**：没有打开文件夹时两个面板各开一个目录，历史按各自的 cwd 隔离（切换 / 换选目录 / 空态未绑 / 无 cwd 兜底逐条覆盖），打开着文件夹时仍是「所有窗口同一份 + 注册表 + 已打开域兜底」的旧口径；还覆盖**绑在子代理会话**上的窗口（它的 cwd 只在权威 `session/list` 里、不在可见历史里）与权威 cwd 账本的生命周期（列表里消失即淘汰、换连接清空）。
-- [find.test.ts](<find.test.ts>) — 会话查找的跨文本节点匹配与命中位置环绕；不替代真实 DOM 高亮验收。
+- [find.test.ts](<find.test.ts>) — 会话查找的跨文本节点匹配、命中位置环绕与导航前脱树判据；不替代真实 DOM 高亮验收。
 - [blankRestoreRace.test.ts](<blankRestoreRace.test.ts>) — 恢复历史会话与自动补空会话并发时，驱动真实控制器验证绑定不被覆盖。
 - [workspaceDirRepick.test.ts](<workspaceDirRepick.test.ts>) — 未打开文件夹时空态页的目录胶囊：每次都弹选择框、换目录真的落到新目录那条壳上（先切后建、取消保持原状、换回复用旧壳）；打开着文件夹时仍是锁定口径。
 - [localImageResolve.test.ts](<localImageResolve.test.ts>) — 本地图片 loader 的范围隔离 / 回帧 / 去重 / 迟到帧，以及回帧前浏览器失败不触发最终降级；组件 DOM 时序由受控浏览器回放。

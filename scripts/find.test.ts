@@ -10,7 +10,8 @@
  *   npm run build:scripts && node build/find.test.mjs
  */
 import assert from "node:assert";
-import { computeMatches, stepActive, type TextMatch } from "../src/webview/find";
+import { computeMatches, matchNavigable, stepActive, type TextMatch } from "../src/webview/find";
+import type { RangeLike } from "../src/webview/selectionRange";
 
 // ---------- 1. 基本定位 ----------
 
@@ -113,5 +114,21 @@ console.log("find: 环绕推进 ✓");
   assert.strictEqual(matches[0].length, 2);
 }
 console.log("find: TextMatch 形状 ✓");
+
+// ---------- 8. 导航前脱树判据（FindBar 的 reveal 前置检查） ----------
+
+{
+  const range = (startConnected: boolean, endConnected: boolean) =>
+    ({
+      startContainer: { isConnected: startConnected },
+      endContainer: { isConnected: endConnected },
+    }) as unknown as RangeLike;
+  assert.strictEqual(matchNavigable([range(true, true)]), true);
+  assert.strictEqual(matchNavigable([range(true, true), range(true, true)]), true, "跨节点命中每段都在树上");
+  assert.strictEqual(matchNavigable([range(true, false)]), false, "任一端脱树就不导航");
+  assert.strictEqual(matchNavigable([range(true, true), range(false, true)]), false, "多段命中任一段脱树就不导航");
+  assert.strictEqual(matchNavigable([]), false, "空命中不导航");
+}
+console.log("find: 脱树 Range 不导航 ✓");
 
 console.log("\nfind: all assertions passed");

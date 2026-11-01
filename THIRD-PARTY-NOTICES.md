@@ -147,6 +147,7 @@ Apache-2.0 的义务说明：
 | `react` / `react-dom` | MIT | webview 界面 |
 | `mdast-util-from-markdown` / `mdast-util-gfm` / `micromark` / `micromark-extension-gfm`（及 `micromark-*` 传递依赖） | MIT | 正文 mdast 渲染与 `src/vendor/` 的 Markdown 纯文本投影（预览文本） |
 | `dompurify` | Apache-2.0 / MPL-2.0 双许可 | 为后续数学输出净化保留；当前正文不再整篇净化 HTML |
+| `shiki` / `@shikijs/langs` | MIT | 完成态代码高亮的细粒度 core、JavaScript 正则引擎与静态精选 grammar；不含 Oniguruma WASM、全量语言包、CDN 或网络资源 |
 | `diff` | BSD-3-Clause | 系统提示词变更页签的行级差分（与官方轨迹同一实现） |
 | `ws` | MIT | 宿主侧 WebSocket |
 | `esbuild` | MIT | 打包 |
@@ -155,6 +156,12 @@ Apache-2.0 的义务说明：
 
 除四档权限图标外，`src/webview/icons.tsx` 中的 SVG 线条图标由本项目自行编写，
 风格对齐 heroicons outline（MIT）的观感。
+
+`shiki` 与 `@shikijs/langs` 以 MIT 发布（`Copyright (c) 2021 Pine Wu`；
+`Copyright (c) 2023 Anthony Fu <https://github.com/antfu>`）。本扩展只打包
+`createHighlighterCore`、JavaScript 正则引擎、CSS 变量主题与显式静态 grammar，
+不使用 Oniguruma WASM、全量语言包、CDN 或网络资源；主题颜色由本地 CSS 变量提供，
+未分发独立 TextMate 主题文件。MIT 许可证全文见「附录 A」。
 
 四档权限图标直接复用 DeepSeek Harness 的
 `packages/client/ui-primitives/src/PermissionIcon.tsx`（MIT，Copyright (c) 2026 DeepSeek），
@@ -166,7 +173,7 @@ Apache-2.0 的义务说明：
 
 ## 附录 A：MIT 许可证全文
 
-以下 MIT 文本适用于第 1、2 节所述的上游项目（各自版权行见对应章节）。
+以下 MIT 文本适用于第 1、2 节所述的上游项目与第 4 节的 `shiki` / `@shikijs/langs`（各自版权行见对应章节）。
 
 ```
 MIT License
@@ -194,6 +201,7 @@ SOFTWARE.
 
 - DeepSeek Harness：`Copyright (c) 2026 DeepSeek`
 - DeepSeek-Harness-for-VS-Code：`Copyright (c) 2025 dsh-chat contributors`
+- Shiki：`Copyright (c) 2021 Pine Wu`；`Copyright (c) 2023 Anthony Fu <https://github.com/antfu>`
 
 Continue（Apache-2.0）的版权行为 `Copyright 2023 Continue Dev, Inc.`，
 许可证全文见 https://www.apache.org/licenses/LICENSE-2.0 。

@@ -30,6 +30,7 @@ import {
   computeMatches,
   FIND_ALL_HIGHLIGHT,
   FIND_CURRENT_HIGHLIGHT,
+  matchNavigable,
   stepActive,
 } from "../find";
 import { ESC_LAYER, useEscapeLayer } from "../escapeOwner";
@@ -125,10 +126,13 @@ function clearMarks(): void {
 /**
  * 跳到一处命中：交给阅读定位端口的 `revealMatch`——展开折叠的用户气泡、先放跟随、
  * 两帧后把**命中所在那一行**居中，四步的顺序与取消都在端口里。
+ *
+ * 导航前先确认 Range 两端仍连在文档上：DOM 更新会使旧 Range 脱树，拿它滚动 /
+ * 测量只会落在已卸载的节点上。脱树时不导航，等待 MutationObserver 触发重算。
  */
 function reveal(match: Range[], port: ReadingPort): void {
+  if (!matchNavigable(match)) return;
   const range = match[0];
-  if (range === undefined) return;
   port.revealMatch(range);
 }
 
@@ -209,12 +213,16 @@ export function FindBar({
     schedule(TYPING_DELAY_MS, search);
   }, [open, query, schedule, search]);
 
-  // 正文一变就重算（节流）：流式追加、图片落位、节点展开都在这里进来
+  // 正文一变立即作废旧 Range / 高亮（它们可能指向即将卸载的节点），再合并重算。
+  // 计数与激活位置保留到重算完成，避免流式期间每次 DOM 变更都把「3/17」闪成 0/0。
   useEffect(() => {
     const root = contentEl.current;
     if (!root) return;
     const observer = new MutationObserver(() => {
-      if (openRef.current && queryRef.current !== "") schedule(RESCAN_DELAY_MS, search);
+      if (!openRef.current || queryRef.current === "") return;
+      matchesRef.current = [];
+      clearMarks();
+      schedule(RESCAN_DELAY_MS, search);
     });
     observer.observe(root, { childList: true, subtree: true, characterData: true });
     return () => observer.disconnect();

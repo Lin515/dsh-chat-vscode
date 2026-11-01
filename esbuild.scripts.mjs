@@ -90,6 +90,8 @@ const entries = {
   "build/markdown-source.test.mjs": "scripts/markdownSource.test.ts",
   "build/local-image-resolve.test.mjs": "scripts/localImageResolve.test.ts",
   "build/local-images.test.mjs": "scripts/localImages.test.ts",
+  "build/highlight.test.mjs": "scripts/highlight.test.ts",
+  "build/selection-range.test.mjs": "scripts/selectionRange.test.ts",
   "build/image-render.test.mjs": "scripts/imageRender.test.ts",
   // 图片解析范围的宿主行为（连接换代广播 / 回帧回带身份 / 迟到只回空表 / 请求校验）：
   // 驱真 ChatController + fake transport，必须登记，否则 npm test 静默不跑
