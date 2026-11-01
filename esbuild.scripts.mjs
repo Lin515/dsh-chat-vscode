@@ -86,6 +86,9 @@ const entries = {
   "build/cookie-survives-restart.mjs": "scripts/cookieSurvivesRestart.ts",
   "build/parse-tool-result.test.mjs": "scripts/parseToolResult.test.ts",
   "build/markdown.test.mjs": "scripts/markdown.test.ts",
+  // 完成态数学解析事实（保守金额 / 权威围栏闭合 / 容器 raw 与 TeX 载荷 / 官方臂等价）：
+  // 必须登记，否则 npm test 静默不跑
+  "build/math.test.mjs": "scripts/math.test.ts",
   // 代码块源文保真（容器 / tab 视觉列 / EOL / NUL）与图片 loader 的范围时序：必须登记
   "build/markdown-source.test.mjs": "scripts/markdownSource.test.ts",
   "build/local-image-resolve.test.mjs": "scripts/localImageResolve.test.ts",

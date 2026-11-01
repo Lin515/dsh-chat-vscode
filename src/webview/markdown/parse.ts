@@ -6,15 +6,33 @@ import type {
   RootContent,
 } from "mdast";
 import { parseGfm } from "../../vendor/ui-primitives/markdown/parse";
+import { parseSettledRoot } from "./math";
 import { collectCodeSources, type CodeSource } from "./source";
 import { fixWindowsDestinations } from "./windowsDestinations";
+import type { MarkdownPhase } from "./types";
+
+export {
+  mathFenceSource,
+  mathSourceOf,
+  parseSettledRoot,
+  type MathFenceSource,
+  type MathSource,
+} from "./math";
 
 /**
- * 正文的解析适配：官方 `parseGfm`（GFM + 中文加粗 + 本地图片语法恢复）之后，
- * 只补本扩展的 Windows 链接目标修复，并收集文档级参考定义 / 脚注定义。
+ * 正文的解析适配：官方 GFM（+ 中文加粗 + 本地图片语法恢复）之后，只补本扩展的
+ * Windows 链接目标修复，并收集文档级参考定义 / 脚注定义。
  *
- * 阶段 2 不启用数学语法：这里不调用 `parseGfmWithMath`，也不注册 math 扩展。
- * 轨迹的纯文本投影继续直接消费 vendor `parseGfm`，语义不变。
+ * 两个语法臂按 `phase` 选择：
+ *
+ * - `streaming`：vendor `parseGfm`，不含数学，生成中的 TeX 不会闪成公式；
+ * - `settled`（缺省）：本地 [parseSettledRoot] 使用与 vendor `parseGfmWithMath`
+ *   相同的扩展集合，并补上保守金额否决与围栏 / 源码事实（见 [math.ts](<math.ts>)）。
+ *
+ * 阶段 4 的 KaTeX / MathView 尚未接线：正文组件在接线前**显式**调用
+ * [parseGfmMarkdown]，所以生产渲染仍走普通 GFM；`parseMarkdown` 的 settled 臂
+ * 目前供正式解析测试与后继接线使用。轨迹的纯文本投影继续直接消费 vendor
+ * `parseGfm`，语义不变。
  *
  * mdast 类型只在本适配层与渲染层之间流转；业务的 `Markdown` 接口只接收文本。
  */
@@ -30,9 +48,21 @@ export interface MarkdownDocument {
 }
 
 /** 解析一份正文。脚注与参考定义按整篇文档收集，不跨文档复用状态。 */
-export function parseMarkdown(source: string): MarkdownDocument {
+export function parseMarkdown(source: string, phase: MarkdownPhase = "settled"): MarkdownDocument {
   const text = source ?? "";
-  const root = fixWindowsDestinations(parseGfm(text), text);
+  return finalizeDocument(text, phase === "streaming" ? parseGfm(text) : parseSettledRoot(text));
+}
+
+/**
+ * 正文渲染在 KaTeX / MathView 接线前的显式入口：即使消息已经 settled，也只解析
+ * 普通 GFM，避免 math 节点进入尚不认识的渲染树。接线后改回 `parseMarkdown(text, phase)`。
+ */
+export function parseGfmMarkdown(source: string): MarkdownDocument {
+  return parseMarkdown(source, "streaming");
+}
+
+function finalizeDocument(text: string, root: Root): MarkdownDocument {
+  fixWindowsDestinations(root, text);
   const definitions = new Map<string, Definition>();
   const footnotes = new Map<string, FootnoteDefinition>();
   let hasCode = false;
@@ -41,6 +71,8 @@ export function parseMarkdown(source: string): MarkdownDocument {
   });
   restoreMissingFootnoteReferences(root, text, footnotes);
   // 有代码才跑那次同源事件流；一份文档至多一次，不按代码块重复解析全文。
+  // 数学臂不改变代码围栏的识别（math flow 内部的围栏在 settled 树里不是 code 节点），
+  // 因此两种臂共用 GFM 事件流取代码载荷。
   const codeSources = hasCode ? collectCodeSources(text) : new Map<number, CodeSource>();
   return { source: text, root, definitions, footnotes, codeSources };
 }

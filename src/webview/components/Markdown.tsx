@@ -1,6 +1,6 @@
 import { memo, useMemo } from "react";
 import type { FileLinkPort } from "../fileLinks";
-import { parseMarkdown } from "../markdown/parse";
+import { parseGfmMarkdown } from "../markdown/parse";
 import { renderMarkdownDocument } from "../markdown/render";
 import type { MarkdownPhase } from "../markdown/types";
 import { useTexts } from "../texts";
@@ -14,6 +14,10 @@ import { useTexts } from "../texts";
  *
  * `phase` 缺省 `settled`：历史消息、工具详情、计划与轨迹预览都是完成态；
  * 只有助手正文在生成期间显式传 `streaming`（见 `Message.tsx` 的 `StreamText`）。
+ *
+ * 阶段 4 的 KaTeX / MathView 尚未接线：即使消息 settled，这里也显式走普通 GFM
+ * 臂（[parseGfmMarkdown]），不让 math 节点进入尚不认识的渲染树。接线后改用
+ * `parseMarkdown(text, phase)`。
  */
 export const Markdown = memo(function Markdown({
   text,
@@ -30,7 +34,7 @@ export const Markdown = memo(function Markdown({
   cwd?: string;
 }) {
   const texts = useTexts();
-  const document = useMemo(() => parseMarkdown(text), [text]);
+  const document = useMemo(() => parseGfmMarkdown(text), [text]);
   return (
     <div className="md">
       {renderMarkdownDocument(document, { phase, fileLinks, cwd, texts })}

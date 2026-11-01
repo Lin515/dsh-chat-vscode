@@ -4,7 +4,10 @@
 的源码副本。来源、版本与同步流程见 [../../README.md](../../README.md)；改写约束见 [../../AGENTS.md](../../AGENTS.md)。
 
 这条链以**投影**（Markdown 原文 → 单行纯文本）为主，同时是正文渲染的语法来源：
-`webview/markdown/parse.ts` 直接消费 `parseGfm` / `parseGfmWithMath`，不复制语法。
+`webview/markdown/parse.ts` 消费 `parseGfm`；`settled` 数学由
+`webview/markdown/math.ts` 以**相同扩展集合**装配，并在公开 construct / handler
+外补金额否决与围栏事实。`parseGfmWithMath` 仍保留为官方语法基准与等价性断言来源，
+本地适配不复制语法规则。
 
 | 文件 | 上游对应 | 作用 | 本仓库的改动 |
 |---|---|---|---|
@@ -19,7 +22,9 @@
 1. **两臂完整搬入**。阶段 2 只搬流式臂；阶段 4 解析接线按固定上游把
    `parseGfmWithMath`、`mathCompatibility.ts`、`mdast-util-math` 与
    `micromark-extension-math` 成对补回。轨迹纯文本投影仍只用 `parseGfm`，语义不变；
-   正文 streaming 继续 `parseGfm`，settled 才走带 math 的臂。
+   正文 streaming 继续 `parseGfm`，settled 由本地 `webview/markdown/math.ts` 用
+   相同扩展集合装配（包装公开 construct / handler 记录金额与围栏事实），
+   `parseGfmWithMath` 作为官方语法基准保留。
 2. **`classifyFileType` 换成本地判定**。上游那里是
    `classifyFileType(path) === 'image'`，而 `classifyFileType` 住在
    `FileTypeIcon.tsx`（连同十几个 React 图标组件），搬它等于搬整个图标模块。
