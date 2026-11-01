@@ -13,6 +13,6 @@
 `parseGfm` / `cjkFriendlyStrong`；settled 数学由本地 `math.ts` 用相同扩展集合装配，
 `parseGfmWithMath` 作为官方语法基准与等价性断言来源。UI 与 React 渲染仍由本地组件承担。
 
-阶段 2 / 3 已按固定上游来源复用 micromark / mdast 解析与完成态高亮；阶段 4 已落地
-本地数学解析事实（保守金额、权威围栏闭合、源码 / 有效 TeX 分离），KaTeX 排版仍未接线，
-生产组件继续显式走 GFM。范围、来源锁与验收见[Markdown 渲染设计](<../../../docs/design-markdown-rendering.md>)。
+生产正文在 streaming 走 GFM，settled 走本地数学解析与 `MathView` / KaTeX 排版；
+失败、超限或未闭合的公式按原文回退。完成态代码高亮、数学净化、资源与验收边界统一见
+[Markdown 渲染设计](<../../../docs/design-markdown-rendering.md>)。

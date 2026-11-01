@@ -38,7 +38,7 @@ const KATEX_CLASSES = new Set(
   katex-html katex-mathml large-op leqno llap mainrm mathbb mathbf mathboldfrak
   mathboldsf mathcal mathfrak mathit mathitsf mathnormal mathrm mathscr mathsf
   mathsfit mathtt mbin mclose mfrac minner mml-eqn-num mop mopen mord mover mpunct
-  mrel mspace msupsub mtable mtight mtr-glue mult munder newline nulldelimiter
+  mrel mspace msupsub mtable mtight mtr-glue mult munder newline nobreak nulldelimiter
   op-limits op-symbol overlay overline overline-line pstrut reset-size1 reset-size10
   reset-size11 reset-size2 reset-size3 reset-size4 reset-size5 reset-size6
   reset-size7 reset-size8 reset-size9 rlap root rule size1 size10 size11 size2 size3

@@ -6,12 +6,13 @@
  * 视觉列（部分消费的 tab 变成空格）都不能丢或多吃。这里穿过真实解析入口
  * `parseMarkdown`，从 `codeSources` 取事件流结果，逐字符比较。
  *
- * 另钉住：内容字符以源码为准，不被 micromark 的 NUL → U+FFFD 规范化改写。
+ * 另钉住：内容字符以源码为准，不被 micromark 的 NUL → U+FFFD 规范化改写；
+ * 完成态公式内的围栏不干扰后续代码的源码索引，普通代码内的数学定界符不解析。
  *
  * 运行：npm test（已登记到 esbuild.scripts.mjs 的 entries）
  */
 import assert from "node:assert";
-import { parseMarkdown } from "../src/webview/markdown/parse";
+import { mathFenceSource, parseMarkdown } from "../src/webview/markdown/parse";
 import { codePayload } from "../src/webview/markdown/source";
 
 type RootContent = { type: string; children?: RootContent[] };
@@ -69,16 +70,69 @@ const cases: [string, string, string][] = [
   ],
 ];
 
-for (const [name, source, expected] of cases) {
-  const document = parseMarkdown(source);
-  const nodes = codeNodes(document.root as unknown as RootContent);
-  assert.strictEqual(nodes.length, 1, `${name}: 应当只有一个代码节点`);
-  const node = nodes[0]! as never;
-  const payload = codePayload(node, source, document.codeSources);
-  assert.strictEqual(payload.origin, "source", `${name}: 合法代码必须走源码边界，不能回落 node.value`);
-  assert.deepStrictEqual(payload.text, expected, `${name}: 代码载荷逐字符相等`);
+for (const phase of ["streaming", "settled"] as const) {
+  for (const [name, source, expected] of cases) {
+    const document = parseMarkdown(source, phase);
+    const nodes = codeNodes(document.root as unknown as RootContent);
+    assert.strictEqual(nodes.length, 1, `${phase}/${name}: 应当只有一个代码节点`);
+    const node = nodes[0]! as never;
+    const payload = codePayload(node, source, document.codeSources);
+    assert.strictEqual(payload.origin, "source", `${phase}/${name}: 合法代码必须走源码边界，不能回落 node.value`);
+    assert.deepStrictEqual(payload.text, expected, `${phase}/${name}: 代码载荷逐字符相等`);
+  }
 }
-console.log(`markdown-source: ${cases.length} 条代码原文（容器 / tab 视觉列 / EOL / NUL）逐字符相等 ✓`);
+console.log(`markdown-source: 两种 phase 下 ${cases.length} 条代码原文（容器 / tab 视觉列 / EOL / NUL）逐字符相等 ✓`);
+
+// 公式内部的围栏不是代码起点，不能让后续真正的代码块失去源码索引。
+for (const eol of ["\n", "\r\n", "\r"]) {
+  for (const fence of ["~~~", "```"]) {
+    for (const [open, close] of [["$$", "$$"], ["\\[", "\\]"]]) {
+      const prefix = [open, fence, "x", close, "", ""].join(eol);
+      const following: [string, string, string, boolean][] = [
+        ["unclosed", `${fence}js${eol}a${eol}`, `a${eol}`, false],
+        ["closed-nul", `${fence}js${eol}a\u0000b${eol}${fence}`, "a\u0000b", true],
+        ["closed-blank", `${fence}js${eol}\ta  ${eol}${eol}${fence}`, `\ta  ${eol}`, true],
+        ["math-fence", `${fence}math${eol}x+y${eol}${fence}`, "x+y", true],
+      ];
+      for (const [name, code, expected, closed] of following) {
+        const source = prefix + code;
+        const label = `${JSON.stringify(eol)}/${fence}/${open}/${name}`;
+        const document = parseMarkdown(source, "settled");
+        const nodes = codeNodes(document.root as unknown as RootContent);
+        assert.strictEqual(nodes.length, 1, `${label}: 只识别公式外的代码块`);
+        assert.strictEqual(document.codeSources.size, 1, `${label}: 源码索引也只包含真实代码块`);
+        const node = nodes[0]! as never;
+        assert.deepStrictEqual(
+          codePayload(node, source, document.codeSources),
+          { text: expected, origin: "source" },
+          `${label}: 公式后的代码原文逐字符保留`,
+        );
+        const extracted = document.codeSources.get(prefix.length);
+        assert.ok(extracted, `${label}: 源码索引起点匹配真实围栏`);
+        assert.strictEqual(extracted.kind, "fenced");
+        assert.strictEqual(extracted.closed, closed, `${label}: 真实围栏闭合事实不变`);
+        if (name === "math-fence") {
+          const fact = mathFenceSource(node, source, document.codeSources);
+          assert.ok(fact, `${label}: math 围栏事实不能丢失`);
+          assert.strictEqual(fact.closed, true);
+          assert.strictEqual(fact.tex, expected);
+        }
+      }
+    }
+  }
+}
+console.log("markdown-source: 公式内围栏不干扰后续代码的 EOL / NUL / 空白 / 闭合事实 ✓");
+
+// 普通代码内部的数学定界符仍是原文，不生成公式节点。
+for (const phase of ["streaming", "settled"] as const) {
+  const expected = "$$\r\nx+y\r\n$$\r\n$z$ \\(a\\)";
+  const source = `~~~text\r\n${expected}\r\n~~~`;
+  const document = parseMarkdown(source, phase);
+  assert.deepStrictEqual(document.root.children.map((node) => node.type), ["code"]);
+  const node = document.root.children[0]! as never;
+  assert.deepStrictEqual(codePayload(node, source, document.codeSources), { text: expected, origin: "source" });
+}
+console.log("markdown-source: 普通代码里的数学定界符在两种 phase 下均原样保留 ✓");
 
 // 同一文档内多个代码块各自取自己的源码，不串行、不互相污染。
 {

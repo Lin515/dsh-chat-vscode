@@ -1,6 +1,7 @@
 import type { Code, RootContent } from "mdast";
 import { parse, postprocess, preprocess } from "micromark";
 import { gfm } from "micromark-extension-gfm";
+import type { Extension } from "micromark-util-types";
 import { cjkFriendlyStrong } from "../../vendor/ui-primitives/markdown/cjkFriendlyStrong";
 
 /**
@@ -17,8 +18,9 @@ import { cjkFriendlyStrong } from "../../vendor/ui-primitives/markdown/cjkFriend
  * （它同时会把 NUL 规范成 U+FFFD，不能整段当作源文）。因此每份文档只按需跑
  * **一次**额外解析并按下标建索引，不按代码块数重复解析全文。
  *
- * 阶段 2 的语法与 `parseGfm` 必须一致（GFM + 中文加粗）；轨迹投影仍直接消费
- * vendor `parseGfm`，这里不改变它的语义。
+ * 语法必须与当前 phase 的 mdast 解析一致：缺省为 streaming 的 GFM + 中文加粗，
+ * settled 由调用方传入同源数学语法，避免公式中的围栏干扰后续代码边界。
+ * 轨迹投影仍直接消费 vendor `parseGfm`，这里不改变它的语义。
  */
 
 export interface CodePayload {
@@ -41,12 +43,15 @@ export interface CodeSource {
  * 调用方只在 mdast 里确实有 `code` 节点时调用，避免无代码消息多解析一遍。
  * 返回值属于这份文档（随文档树一起丢弃），不做模块级缓存。
  */
-export function collectCodeSources(source: string): ReadonlyMap<number, CodeSource> {
+export function collectCodeSources(
+  source: string,
+  extensions: Extension[] = [gfm(), cjkFriendlyStrong()],
+): ReadonlyMap<number, CodeSource> {
   const sources = new Map<number, CodeSource>();
   if (source === "") return sources;
 
   const events = postprocess(
-    parse({ extensions: [gfm(), cjkFriendlyStrong()] })
+    parse({ extensions })
       .document()
       .write(preprocess()(source, undefined, true)),
   );

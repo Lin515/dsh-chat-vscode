@@ -6,7 +6,7 @@ import type {
   RootContent,
 } from "mdast";
 import { parseGfm } from "../../vendor/ui-primitives/markdown/parse";
-import { parseSettledRoot } from "./math";
+import { createSettledSyntax, parseSettledRoot } from "./math";
 import { collectCodeSources, type CodeSource } from "./source";
 import { fixWindowsDestinations } from "./windowsDestinations";
 import type { MarkdownPhase } from "./types";
@@ -49,7 +49,7 @@ export interface MarkdownDocument {
 /** 解析一份正文。脚注与参考定义按整篇文档收集，不跨文档复用状态。 */
 export function parseMarkdown(source: string, phase: MarkdownPhase = "settled"): MarkdownDocument {
   const text = source ?? "";
-  return finalizeDocument(text, phase === "streaming" ? parseGfm(text) : parseSettledRoot(text));
+  return finalizeDocument(text, phase === "streaming" ? parseGfm(text) : parseSettledRoot(text), phase);
 }
 
 /**
@@ -60,7 +60,7 @@ export function parseGfmMarkdown(source: string): MarkdownDocument {
   return parseMarkdown(source, "streaming");
 }
 
-function finalizeDocument(text: string, root: Root): MarkdownDocument {
+function finalizeDocument(text: string, root: Root, phase: MarkdownPhase): MarkdownDocument {
   fixWindowsDestinations(root, text);
   const definitions = new Map<string, Definition>();
   const footnotes = new Map<string, FootnoteDefinition>();
@@ -70,9 +70,11 @@ function finalizeDocument(text: string, root: Root): MarkdownDocument {
   });
   restoreMissingFootnoteReferences(root, text, footnotes);
   // 有代码才跑那次同源事件流；一份文档至多一次，不按代码块重复解析全文。
-  // 数学臂不改变代码围栏的识别（math flow 内部的围栏在 settled 树里不是 code 节点），
-  // 因此两种臂共用 GFM 事件流取代码载荷。
-  const codeSources = hasCode ? collectCodeSources(text) : new Map<number, CodeSource>();
+  // 必须与当前 phase 的 mdast 语法一致：settled 公式中的围栏不是代码，不能用
+  // streaming 的 GFM 边界去索引后续代码，否则会回落 node.value 丢失尾换行 / NUL。
+  const codeSources = hasCode
+    ? collectCodeSources(text, phase === "settled" ? createSettledSyntax(text) : undefined)
+    : new Map<number, CodeSource>();
   return { source: text, root, definitions, footnotes, codeSources };
 }
 

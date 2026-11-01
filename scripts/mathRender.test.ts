@@ -14,7 +14,8 @@
  *   expression / 注释 / 转义 / `!important`，不误删 400em、400000 viewBox、
  *   calc、text-shadow 与命名颜色；
  * - 属性白名单按 namespace + tag 校验，拒绝 script / 事件 / href / xlink /
- *   img / data 等，接受 KaTeX 真实的 MathML / SVG 属性；
+ *   img / data 等，接受 KaTeX 真实的 MathML / SVG 属性；不换行空格的真实
+ *   span class 均通过白名单，混入项目类或换到其他 namespace / tag 仍拒绝；
  * - 真实 KaTeX 的 `\mathop{lim}` 产生 `<mo><mi>…`，HTML parser 会把这些 token
  *   建成 HTML namespace；只允许零属性纯文本的直接 `mo` token 折叠成文本，
  *   其余混入的 HTML 元素一律判为不可信（真实 DOM 净化由主代理验收）。
@@ -160,6 +161,24 @@ const inline = await renderKatexHtml("x^2", false);
 assert.ok(inline !== undefined);
 assert.doesNotMatch(inline, /class="katex-display"/u);
 assert.match(inline, /class="katex-mathml"/u);
+
+// 不换行空格：真实 KaTeX 的 span class 必须全部通过净化属性校验。
+for (const tex of ["~~~\nx", "x~y", "x\\nobreakspace y"]) {
+  for (const display of [false, true]) {
+    const html = await renderKatexHtml(tex, display);
+    assert.ok(html !== undefined, `KaTeX 未排版不换行空格：${tex}`);
+    assert.match(html, /class="mspace nobreak"/u);
+    for (const match of html.matchAll(/<span\b[^>]*\bclass="([^"]*)"/gu)) {
+      assert.equal(
+        isAllowedMathAttribute("html", "span", "class", match[1]!),
+        true,
+        `KaTeX 排版 class 应通过净化：${match[1]}`,
+      );
+    }
+  }
+}
+assert.equal(isAllowedMathAttribute("html", "span", "class", "mspace nobreak composer"), false);
+assert.equal(isAllowedMathAttribute("mathml", "mtd", "class", "nobreak"), false);
 
 // 失败与限额：不可恢复的宏展开、未知命令、超大尺寸。
 assert.equal(await renderKatexHtml("\\def\\a{\\a}\\a", false), undefined);

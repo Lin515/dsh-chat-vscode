@@ -45,8 +45,9 @@ import { codePayload, type CodeSource } from "./source";
  * `> `、缩进已被官方剥掉）。缺位置或无法确认关闭事实时不标事实，渲染层继续用
  * `sourceFallback` 原文回退。
  *
- * `math` 围栏仍是 `code` 节点，本轮不转换成公式；[mathFenceSource] 只用已有
- * `codeSources` 预留 raw / 精确载荷 / 权威闭合事实，`tex` / `latex` 永不进入。
+ * 解析层的 `math` 围栏仍是 `code` 节点；[mathFenceSource] 用已有 `codeSources`
+ * 提供 raw / 精确载荷 / 权威闭合事实，供渲染层在 settled 转成 MathView。
+ * `tex` / `latex` 围栏仍按普通代码处理。
  */
 
 /** 数学定界符；`$$` / `\[` 在产品契约里是 display，即使官方产的是 inlineMath。 */
@@ -72,7 +73,7 @@ export interface MathSource {
   readonly tex: string;
 }
 
-/** `math` 围栏仍是代码卡；这里只预留后继转换所需的事实。`closed=false` 时只作原文回退，不排版。 */
+/** `math` 围栏在解析层仍是代码节点；这些事实供 settled 渲染转换使用，未闭合时原文回退。 */
 export interface MathFenceSource {
   readonly form: "display";
   readonly closed: boolean;
@@ -112,6 +113,19 @@ interface FlowFenceFacts {
 export function parseSettledRoot(source: string): Root {
   const text = source ?? "";
   const flow = recordFlowFences(mathFromMarkdown());
+  const root = recoverLocalImages(
+    fromMarkdown(text, {
+      extensions: createSettledSyntax(text),
+      mdastExtensions: [gfmFromMarkdown(), flow.extension],
+    }),
+    text,
+  );
+  annotateMathSources(root, text, flow.facts);
+  return root;
+}
+
+/** mdast 与代码源码事件流必须复用同一套完成态语法，包括扩展顺序与金额否决。 */
+export function createSettledSyntax(source: string): Extension[] {
   const syntax = math();
   const dollarText = syntax.text?.[codes.dollarSign];
   if (dollarText === undefined || Array.isArray(dollarText)) {
@@ -120,25 +134,16 @@ export function parseSettledRoot(source: string): Root {
   const vetoedText: Construct = {
     ...dollarText,
     tokenize(this: TokenizeContext, effects: Effects, ok: State, nok: State): State {
-      if (isCurrencyDollar(text, this.now().offset)) return nok;
+      if (isCurrencyDollar(source, this.now().offset)) return nok;
       return dollarText.tokenize.call(this, effects, ok, nok);
     },
   };
-  const extensions: Extension[] = [
+  return [
     gfm(),
     cjkFriendlyStrong(),
     mathCompatibility(),
     { ...syntax, text: { ...(syntax.text ?? {}), [codes.dollarSign]: vetoedText } },
   ];
-  const root = recoverLocalImages(
-    fromMarkdown(text, {
-      extensions,
-      mdastExtensions: [gfmFromMarkdown(), flow.extension],
-    }),
-    text,
-  );
-  annotateMathSources(root, text, flow.facts);
-  return root;
 }
 
 /** 读取某个节点上的公式事实；未标记（未识别 / 缺位置）返回 undefined。 */
@@ -148,7 +153,7 @@ export function mathSourceOf(node: RootContent): MathSource | undefined {
 }
 
 /**
- * `math` 围栏的展示事实（仍由代码卡拥有，本轮不转换）。
+ * `math` 围栏的展示事实，供渲染层在 settled 转成 MathView。
  *
  * 闭合事实来自 [CodeSource.closed]（micromark 围栏 token 计数），载荷来自
  * [codePayload]；`tex` / `latex` 围栏不进入。
