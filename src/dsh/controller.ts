@@ -1040,33 +1040,16 @@ export class ChatController implements vscode.Disposable {
    */
   private readonly engagedSessions = new Set<string>();
   /**
-   * 已被某个窗口**当作当前会话**绑着的空壳：`会话 id → 窗口 id`。
+   * 同一个工作目录**同一时刻只跑一趟落壳**：`归一后的目录 → 队尾 promise`。
    *
-   * 一条空壳同一时刻只属于一个窗口：别的窗口再进空态时另建一条，不接别人的壳。
-   * 内容会话不受影响——两个窗口看同一条已经开始的对话照旧。
+   * 空壳由窗口共享（不按窗口独占）：多个窗口同时进空态时，第一个负责落壳，其余等它
+   * 落完再扫一遍列表，接到**同一条**壳上。不串行的话，它们都在列表里看不到对方正在
+   * 建的那条，于是各建一条——「开几个标签就有几条空壳」正是这条路径要消除的。
    *
-   * **只在运行期存在**（宿主内存，不落盘）：扩展重启后表是空的，任何会话被打开之前
-   * 一律没有占用。
-   *
-   * 与 `blankReservations` 的分工：这一张是**已经绑上**的事实（用来算界面上的 `occupied`
-   * 与删除保护），那一张是**还没绑上**的预留（防并发窗口在 await 期间挑同一条）。
+   * 键是目录而不是某个窗口：没有打开文件夹时，目录就是用户在新会话页上选定的那个
+   * （见 `workspacePath`）。**只在运行期存在**：宿主内存，不落盘。
    */
-  private readonly blankOccupants = new Map<string, string>();
-  /**
-   * 已经被某个窗口**预留**的空壳（异步落壳期间）：`会话 id → {窗口, 代号}`。
-   *
-   * 为什么需要它：`reuseOrCreateBlank` 从判据到写绑定跨了至少一个 await
-   * （`ensureWorkspace` / `session/create` / `refreshSessions`），两个窗口同时点「+」
-   * 会各自扫到**同一条**空壳，于是两个窗口最后绑到同一条上——正是「不同会话窗口不可
-   * 共享」要挡的现场。判据与预留在**同一个同步步骤**里完成（`reserveReusableBlank`），
-   * 之后那条壳对其他窗口就不可见了。
-   *
-   * **代号（token）是给释放用的身份**：一次预留被放弃（失败 / 窗口被别人绑走 /
-   * 换绑）后，迟到的 finally 不许把**后来者**的预留删掉——释放只认自己那一号的条目
-   * （见 `releaseBlankReservation`）。只增不减的 `blankReservationSeq` 保证代号不复用。
-   */
-  private readonly blankReservations = new Map<string, { viewId: string; token: number }>();
-  private blankReservationSeq = 0;
+  private readonly blankEnsures = new Map<string, Promise<void>>();
   /**
    * 每个窗口**最近一次用户动作**的代号：点「+」、打开 / 恢复一条会话、关窗各占一号。
    *
@@ -2746,13 +2729,9 @@ export class ChatController implements vscode.Disposable {
     // 窗口关掉时它那条后台任务观察流必须一起收（否则流会跟着扩展宿主一直活着）
     this.closeJobWatch(viewId);
     this.viewSessions.delete(viewId);
-    // 这个窗口不再占着那条空壳（关窗 = 释放占用，界面上的行随之解锁、别人可以再用它）。
-    // 只放**这一条**的占用；预留按窗口整体放掉（关窗时可能还飞着一次落壳，那张表按会话
-    // 建、会一直留着，`releaseBlankReservation` 不带代号即按窗口兜底）。
-    // `unbindView` 不经过 `emitViewScopedState`（那条路只在绑定 / 解绑会话时走），所以这里
-    // 要自己重发一次列表帧：别的窗口那一行的占用锁必须跟着解开
-    this.freeBlank(viewId, sessionId);
-    this.releaseBlankReservation(viewId);
+    // 这个窗口不再看着那条空壳：界面上那一行的占用锁按当下绑定现算
+    // （`groupSessionLists` 的 `occupied`），别的窗口得收到一份新列表才会解开
+    if (this.sessions.find((item) => item.id === sessionId)?.blank === true) this.emitSessionLists();
     // 未绑定会话的窗口按 viewId 存回显：viewId 是每个 webview 实例现铸的（`chatView.attach`），
     // 这个键不会再有人用，连同清掉。绑过会话的那一份挂在**会话键**上、刻意留着（用户口径：
     // 失败的那行要能重新打开这条会话继续操作），窗口下线不构成删它的理由
@@ -2981,14 +2960,6 @@ export class ChatController implements vscode.Disposable {
     }
     this.viewSessions.set(viewId, sessionId);
     scope.viewers += 1;
-    // 空壳占位：**按窗口先把旧的收干净**——换绑走了的占用、以及这次落壳用的预留
-    // （它到这一刻的使命结束，壳由「预留」转成「占用」）。顺序是先清旧的、再记新的；
-    // 判据用同步的 `this.sessions`，绑定是同步步骤，不引入任何 await
-    this.freeBlank(viewId);
-    this.releaseBlankReservation(viewId);
-    if (this.sessions.find((item) => item.id === sessionId)?.blank === true) {
-      this.blankOccupants.set(sessionId, viewId);
-    }
     // 「谁还在看哪条会话」此刻才是真相，离开标记必须在这之后判：切走时它若还在生成，
     // 且没有别的视图接着看，就记一笔（见 `noteSessionLeft`）
     if (previous) this.noteSessionLeft(previous, previousWasGenerating);
@@ -4462,22 +4433,6 @@ export class ChatController implements vscode.Disposable {
       const views = raw.map((item) =>
         item.blank === true && this.engagedSessions.has(item.id) ? { ...item, blank: false } : item,
       );
-      // **空壳登记的清理路径**：服务端**明确说它已经不是空壳**（有人说过话）时，占用与
-      // 预留都没有留下的理由。判据按肯定证据写——**列表里找不到那一行时一律保留**：
-      // 列表是拉的，刚建好的壳与正在飞的预留可能还没出现（`blankReservations`），
-      // 按「不在列表里就清」会把它们误杀，那条壳接着就能被别的窗口抢走。
-      // 只增不减不是问题：条目由绑定 / 预留自己收（两张表都按会话建、条数与窗口同阶）。
-      for (const id of [...this.blankOccupants.keys(), ...this.blankReservations.keys()]) {
-        const row = views.find((item) => item.id === id);
-        if (row === undefined || row.blank === true) continue;
-        this.blankOccupants.delete(id);
-        this.blankReservations.delete(id);
-      }
-      // 发霉的占位条目（记着的窗口已经不绑它了）在这里收敛：这张表的判据是「他还在看」，
-      // 清掉它不影响任何**有效**占用（`blankHolder` 本来就不认它）
-      for (const [id, occupant] of [...this.blankOccupants]) {
-        if (this.viewSessions.get(occupant) !== id) this.blankOccupants.delete(id);
-      }
       // 分支不再缩进（用户 2026-09-19 口径：和普通会话同级，靠标题前缀「分支: 」区分），
       // 所以这里不再算血缘深度——那个字段的唯一用途就是缩进。
       // 列表整份替换也会造成 running 变化（服务端算的权威值落下来），同样要结算
@@ -4832,9 +4787,10 @@ export class ChatController implements vscode.Disposable {
   /**
    * 把全局列表折成界面的两个列表：归档过的进归档那一份。
    *
-   * **空壳照样进列表**：它是一条普通的可管理行，只是多一位 `occupied`——被会话窗口拿着
-   * （绑着或正在落壳）的空壳在界面上锁住（不可勾选、不给归档 / 删除按钮，见
-   * `sessionSelection.sessionLocked`），没被拿着的照常可删。
+   * **空壳照样进列表**：它是一条普通的可管理行，只是多一位 `occupied`——**本宿主有窗口
+   * 正停在它上面**时锁住（不可勾选、不给归档 / 删除按钮，见
+   * `sessionSelection.sessionLocked`），没人停在它上面就照常可删。空壳由窗口共享，
+   * 这一位只是「在用」，不是独占（见 `occupiedBlank`）。
    *
    * 仍然留在 `this.sessions` 里：cwd 解析、恢复窗口、复用都要读这一行。
    */
@@ -4846,7 +4802,7 @@ export class ChatController implements vscode.Disposable {
     const archived: SessionSummaryView[] = [];
     for (const session of rows) {
       // unread 不落在行对象上（列表整份替换时行是新建的），按权威集合现算；
-      // occupied 同理，按**当下这一刻**的占用表现算（不落进 `this.sessions`）
+      // occupied 同理，按**当下这一刻**的绑定现算（不落进 `this.sessions`）
       const row: SessionSummaryView = {
         ...session,
         unread: this.unreadSessionIds.has(session.id),
@@ -4925,9 +4881,8 @@ export class ChatController implements vscode.Disposable {
    * 文件删掉了，这里不再报错。
    *
    * 保护：运行中的会话不能删（服务端还在往里写）；还有窗口正看着的会话不能删
-   * （删完无处可看，且服务端内存里还开着它）；**被任何窗口拿着的空壳**也不能删
-   * （界面上那颗垃圾桶本就不给这种行，见 `sessionSelection.sessionLocked`，这里是
-   * 宿主侧的第二道）。
+   * （删完无处可看，且服务端内存里还开着它）。**空壳同样走这一条**——本宿主有窗口停在
+   * 它上面时界面上那颗垃圾桶本就不给（`sessionSelection.sessionLocked` 的 `occupied`）。
    */
   private async deleteSession(sessionId: string): Promise<void> {
     const session = this.sessions.find((s) => s.id === sessionId);
@@ -4947,16 +4902,6 @@ export class ChatController implements vscode.Disposable {
     if (session.running) {
       void vscode.window.showWarningMessage(
         vscode.l10n.t("This session is running and cannot be deleted."),
-      );
-      return;
-    }
-    // **被窗口拿着的空壳不能删**：它正被某个窗口当作「新会话」用着（或马上要用），删掉
-    // 等于从别人脚下抽走会话。这一条对**本窗口**也成立（`isSessionViewed` 那条只挡
-    // 「当前这个窗口」）——界面上那颗垃圾桶本来就不给这种行（`sessionLocked`），这里是
-    // 宿主侧的第二道。
-    if (this.occupiedBlank(sessionId)) {
-      void vscode.window.showWarningMessage(
-        vscode.l10n.t("This blank session is in use and cannot be deleted."),
       );
       return;
     }
@@ -4988,11 +4933,6 @@ export class ChatController implements vscode.Disposable {
     this.subagentRunning.delete(sessionId);
     this.forgetSubagentIndex(sessionId);
     this.clearSubagentOrder(sessionId);
-    // 这条会话的占位登记一并收掉（它已经不在任何列表里了）。上面那条占用保护保证此刻
-    // 没有窗口绑着它，这里清的是可能残留的**预留**（另一个窗口正飞在落壳路上）——
-    // 它的下一次检查会发现条目没了，然后另建一条，不会把一条已删的会话接回来
-    this.blankReservations.delete(sessionId);
-    this.blankOccupants.delete(sessionId);
     this.emitSessionLists();
     this.redeliverSubagentTrees();
     if (!removed) {
@@ -5168,16 +5108,11 @@ export class ChatController implements vscode.Disposable {
     // 点「+」本身占一号：同一次点击的这一趟是唯一有权写绑定 / 做兜底的那一趟；也是让别的
     // 路径（`openSession` 的 `ensureConnected` 往返）回来时发现意图已经换人的那一下。
     this.beginViewAction(viewId);
-    // 手里已经有一条现成的空壳（且没被别的窗口拿着）：**先预留、再同步换过去**
-    // （0 往返），界面下一帧就是空态。判据与预留是同一个同步步骤，否则两个窗口同时点
-    // 「+」会挑中同一条壳（见 `blankReservations`）
-    const reusable = this.reserveReusableBlank(viewId);
-    if (reusable !== undefined) {
-      if (this.switchToBlankSync(viewId, reusable.sessionId)) return;
-      this.releaseBlankReservation(viewId, reusable);
-    }
-    // 还没有现成的壳（列表还没拉过、或这个工作区还没建过），或预留拿到的壳在这中间被别人
-    // 认走了：先退回空态，再去建。
+    // 手里已经有一条现成的空壳：**同步换过去**（0 往返），界面下一帧就是空态。
+    // 空壳由窗口共享：别的标签停着的也是这一条，这里照常接上去（见 `reusableBlank`）
+    const reusable = this.reusableBlank();
+    if (reusable !== undefined && this.switchToBlankSync(viewId, reusable)) return;
+    // 还没有现成的壳（列表还没拉过、或这个工作区还没建过）：先退回空态，再去建。
     // 「+」是用户显式动作（`AGENTS.md` 的「能不能启动后台」那一档明确列了「新建」），
     // 所以允许拉起后台；但**不弹目录选择器**——没有工作目录时窗口就停在「无会话的空态」，
     // 界面那句「未选择工作区」说清原因，选目录留在那一行的按钮上（用户 2026-09-24 口径）。
@@ -5200,9 +5135,6 @@ export class ChatController implements vscode.Disposable {
    * 空壳的值由投影帧回填（这条路上不落实任何待建参数，理由见 `reuseOrCreateBlank`）。
    * 认领（让服务端激活它、顺带弄清它记着的预设还在不在）由 `adoptBlankInBackground`
    * 随后补上——它是一趟往返，绝不能挡在切换前面。
-   *
-   * 空壳由调用方**先预留**（`reserveReusableBlank`）：`bindViewToSession` 把它从「预留」
-   * 转成「占用」，别的窗口在这中间不会挑走它。
    *
    * @returns 换绑成功 → true；拿不到域（客户端已经不在了）→ false，调用方退回异步那条路。
    */
@@ -5236,10 +5168,6 @@ export class ChatController implements vscode.Disposable {
    * **同一个窗口的并发调用共用一次尝试**：`@` 候选每敲一个字符重取一次，不合并就会
    * 各建一条会话（见 `sessionEnsures`）。
    *
-   * `options.avoid` 点名这次**绝不能再挑回来**的那条壳（`openSession` 打开一条被别的窗口
-   * 拿着的空壳时传它的 id）：它刚被解绑，`blankHolder` 已经看不到它的占用，不显式排除就会
-   * 被立刻复用回来，「落一条本窗口自己的新壳」根本不成立。
-   *
    * @returns 会话域；用户取消了目录选择、没有工作目录、或客户端不可用 → undefined
    *          （调用方什么都不做，草稿留在输入框里）。
    */
@@ -5248,7 +5176,6 @@ export class ChatController implements vscode.Disposable {
     options: {
       start: boolean;
       askDir: boolean;
-      avoid?: string;
     },
   ): Promise<SessionScope | undefined> {
     const existing = this.scopeOfView(viewId);
@@ -5294,23 +5221,9 @@ export class ChatController implements vscode.Disposable {
         // 这条路上不弹选择器，窗口就停在「无会话的空态」。
         return undefined;
       }
-      // 挑选与预留放在这里（而不是函数开头）：上面那条 `await ensureConnected` 之后
-      // 列表可能才第一次到手，而「判据 + 预留」必须在**同一个同步步骤**里完成。
-      // 这一次尝试只持有这一个预留，由下面的 `finally` 按代号释放（迟到的收尾删不掉
-      // 后来者的预留）。
-      if (!this.sessions.length) await this.refreshSessions();
-      const reserved = this.reserveReusableBlank(viewId, options.avoid);
-      // 「这一次尝试手里最终占着哪一条壳」由落壳链回报（`onHold`）：新建出来的那条 id 与
-      // 认领那条不同，预留要跟着换过去，而释放**只认代号**（见 `releaseBlankReservation`），
-      // 换过 key 也能放得掉。
-      let held = reserved;
-      try {
-        return await this.reuseOrCreateBlank(viewId, reserved, (next) => {
-          held = next;
-        });
-      } finally {
-        if (held !== undefined) this.releaseBlankReservation(viewId, held);
-      }
+      // 落壳串行化与扫描都在 `reuseOrCreateBlank` 里：上面那条 `await ensureConnected`
+      // 之后列表可能才第一次到手，判据要在那里重新读（见 `blankEnsures`）
+      return await this.reuseOrCreateBlank(viewId);
     })();
     this.sessionEnsures.set(viewId, attempt);
     try {
@@ -5344,62 +5257,41 @@ export class ChatController implements vscode.Disposable {
    * **权限**两条路都落实（与部署默认不同的那笔在绑定后补发一次 `/permission`）：它是
    * 「这次要用的权限」，用户刚在空态页上点过。
    *
-   * `reserved` 是 `ensureSession` 在判据那一刻**同步**占下的那条可复用空壳（见
-   * `blankReservations`）。它只对本窗口可见，所以这里直接认领它；认领失败（预设被删、
-   * 服务端不接受这条空壳）时清掉它上面的选择再认领一次（见 `adoptBlankShell`），
-   * **认领不了就另建一条**——用户点这一下要的是一条能用的新会话，不该卡在一条坏壳上。
-   *
-   * **拿到 id 就当场占住它**（`onHold` 回报最终那一份预留）：认领那条路上 id 可能就是它，
-   * 而**新建**那条路上我们手里原本什么都没有——不占的话，下面那次 `refreshSessions` 的
-   * 往返期间另一个窗口（B）就能在列表里看到这条新壳、预留并绑走它，等我们回来再一绑，
-   * 两个窗口共享同一条壳、占用表还被覆盖成后来者。
-   *
-   * **绑定临界区还要再确认 holder**：预留表只保护「还没人拿起」的壳，一旦 B 已经**绑上**
-   * 就是占用表说话。不是自己就让位（另铸一条），绝不绑别人的壳。
+   * **同一个目录只落一条壳**：扫描、认领 / 新建、拉列表这一段在 `blankEnsures` 的闸里
+   * 串行执行（见 `withBlankGate`）。空壳由窗口共享，闸只保证并发进入空态的窗口接到同
+   * 一条壳上，不再是「一个窗口一条壳」，也不再有预留 / 占用账本。
    */
-  private async reuseOrCreateBlank(
-    viewId: string,
-    reserved?: { sessionId: string; token: number },
-    onHold?: (held: { sessionId: string; token: number }) => void,
-  ): Promise<SessionScope | undefined> {
+  private async reuseOrCreateBlank(viewId: string): Promise<SessionScope | undefined> {
     if (!this.client) return undefined;
     try {
       const preset = this.agentPresetFor(viewId);
       const workspaceId = await this.ensureWorkspace();
-      // 预留仍归本窗口时认领它；这中间被释放 / 被别人接管了就当没有预留
-      const reusable = reserved !== undefined && this.reservationIsMine(viewId, reserved)
-        ? reserved.sessionId
-        : undefined;
-      if (reusable !== undefined) this.log(`[new] 窗口=${viewId} 复用空壳 ${reusable}`);
-      const created =
-        reusable !== undefined
-          ? await this.adoptBlankShell(reusable)
-          : await this.createSessionInWorkspace(workspaceId, preset);
+      // 闸按**目录**分：同一个目录里同时进空态的窗口排成一队，后到的在闸内重新扫列表
+      const gateKey = normalizePath(this.workspacePath());
+      const created = await this.withBlankGate(gateKey, async () => {
+        // 扫描前先确保手里有一份列表：`reusableBlank` 扫的就是 `this.sessions`，而它可能
+        // 还没拉过（窗口刚就绪、恢复路径没走到）——空着扫会把**别的窗口建好的壳**漏掉，
+        // 于是又建一条
+        if (!this.sessions.length) await this.refreshSessions();
+        const reusable = this.reusableBlank();
+        if (reusable !== undefined) this.log(`[new] 窗口=${viewId} 复用空壳 ${reusable}`);
+        const result =
+          reusable !== undefined
+            ? await this.adoptBlankShell(reusable)
+            : await this.createSessionInWorkspace(workspaceId, preset);
+        // 新壳要出现在 `this.sessions` 里才找得到（`reusableBlank` 扫的就是它），本地 blank
+        // 位也在这里与服务端对齐一次。放在闸内：排队的那几个窗口要靠这份列表看到它
+        await this.refreshSessions();
+        return { reusable, result };
+      });
       // 「这条会话是这次**真新建**的吗」：认领那条路上服务端也可能回一条**另铸**的会话
       // （点名的空壳已经不是空壳 / 写者不放手，见服务端的 `claim`），那条就等同于新建
-      let fresh = reusable === undefined || created.sessionId !== reusable;
-      // **当场占住它**（这一步是同步的，后面那次 `refreshSessions` 之前完成）：占住之后
-      // 别的窗口在列表里看到它也挑不走它（`reusableBlank` 跳过 `blankHolder` 非空的）。
-      let target = created.sessionId;
-      let hold = this.reserveBlankFor(viewId, target, reserved?.token);
-      onHold?.(hold);
-      const occupant = this.blankHolder(target);
-      if (occupant !== undefined && occupant !== viewId) {
-        // B 在我们创建之后把它绑走了：这条壳不再是我们的。另铸一条，绝不共享
-        this.log(`[new] 窗口=${viewId} 刚拿到的空壳 ${target} 已被窗口 ${occupant} 占用：另铸一条`);
-        const again = await this.createSessionInWorkspace(workspaceId, preset);
-        target = again.sessionId;
-        fresh = true;
-        hold = this.reserveBlankFor(viewId, target);
-        onHold?.(hold);
-      }
+      const fresh = created.reusable === undefined || created.result.sessionId !== created.reusable;
+      const target = created.result.sessionId;
       // 空态页选过的权限在**绑定前**读走（`bindViewToSession` 会清掉它）
       const wantedPermission = this.viewPermission.get(viewId);
-      // 拉一次列表：新壳要出现在 `this.sessions` 里才找得到（`reusableBlank` 扫的就是它），
-      // 本地 blank 位也在这里与服务端对齐一次
-      await this.refreshSessions();
       // **写绑定前复查**：从上面的判据走到这里跨了至少一个 await（`ensureWorkspace` /
-      // `session/create` / 这次 `refreshSessions`），期间恢复路径或用户点历史里的一条
+      // `session/create` / `refreshSessions`），期间恢复路径或用户点历史里的一条
       // 完全可能已经把这个窗口绑走了。绑定是既成事实——让位，不要把它顶掉：顶掉的表现
       // 就是「会话内容先出现、随后一闪变成空会话」（用户 2026-10-02 报的现场）。
       // 本次真新建的那条空壳留着（服务端没有删除 API，它本来就该给以后进空态的窗口
@@ -5412,15 +5304,6 @@ export class ChatController implements vscode.Disposable {
       // 肯定证据（`bindView` 登记、`unbindView` 摘掉），比时间戳可靠
       if (!this.viewOrder.includes(viewId)) {
         this.log(`[new] 窗口=${viewId} 已在落壳期间关闭：不写绑定（会话 ${target} 留作以后复用）`);
-        this.freeBlank(viewId, target);
-        return undefined;
-      }
-      // 这条壳在 `refreshSessions` 期间有没有被别的窗口**绑上**（占用表比预留表晚说话）：
-      // 是别人就让位，不共享、也不覆盖占用账本
-      const lateOccupant = this.blankHolder(target);
-      if (lateOccupant !== undefined && lateOccupant !== viewId) {
-        this.log(`[new] 窗口=${viewId} 要绑的 ${target} 已被窗口 ${lateOccupant} 占用：不绑，留作以后复用`);
-        this.releaseBlankReservation(viewId, hold);
         return undefined;
       }
       // **域到这里才建**（`ensureScope` 会开 follow / jobs 两条长活流）：上面任何一条早退
@@ -5430,7 +5313,7 @@ export class ChatController implements vscode.Disposable {
       // 投影帧要晚一点才到，先用服务端的答复给域一个初值（`agentPreset` 那条路见
       // `applyAgentPresetProjection`）。认领那条路这一笔尤其有用：服务端回的正是那条
       // 会话**最终**认下的预设（照日志记着的那个，或退回的部署默认）。
-      if (created.agentPreset !== undefined && target === created.sessionId) scope.agentPreset = created.agentPreset;
+      if (created.result.agentPreset !== undefined) scope.agentPreset = created.result.agentPreset;
       if (fresh) {
         // 界面上显示的模型在这里落实：用户点过的优先；没点过就是空态页展示着的
         // 部署默认（`agent-default-model` 配置）——记成 `pendingModel` 后第一次发送
@@ -5474,8 +5357,6 @@ export class ChatController implements vscode.Disposable {
     // 旧任务的输出（帧里只有 jobId，界面认不出这是别人的）
     this.closeJobWatch(viewId);
     this.viewSessions.delete(viewId);
-    // 这个窗口不再占着那条空壳（退回空态 = 释放占用，界面上的行随之解锁、别人可以再用它）
-    this.freeBlank(viewId, previous);
     const draft = this.drafts.get(previous);
     if (draft !== undefined) {
       this.drafts.set(viewId, draft);
@@ -5606,144 +5487,61 @@ export class ChatController implements vscode.Disposable {
    * - 且本地 blank 位没标它已经说过话（`engagedSessions`）：列表是拉的，服务端的
    *   `blank` 会晚到，缺了这条就会把已经用过的会话当空壳接回去（见那张表的注释）；
    * - 且它落在**本工作区**（`normalizePath` 后相同）——换个目录不能顶替；
-   * - 且不是归档 / 子代理会话；
-   * - 且**当前没有窗口拿着它**（占用或预留：空壳不跨窗口共享）。同一个窗口自己用过、
-   *   此刻没人接着的壳**仍然可以拿**（换目录换回来就是这一档：那条壳空着，接回来比每条
-   *   目录堆一条壳好）。
-   * - 且不是 `avoid`（调用方点名**这次绝不能再挑回来**的那条：它刚被解绑，这里已经看不到
-   *   它的占用，不显式排除就会被立刻复用回去——点「+」判定要另开一条时正是这种情形）。
+   * - 且不是归档 / 子代理会话。
+   *
+   * **空壳由窗口共享**（用户 2026-11-02 口径：不再按标签各占一条）：别的窗口正停着的
+   * 那一条同样可以接回来——接回来就是两个窗口看同一条会话，与内容会话的共享是同一件事。
+   * 并发进入空态的窗口由 `blankEnsures` 串行化，保证它们接到同一条上（见 `withBlankGate`）。
    *
    * 找不到就返回 undefined，调用方照常 `session/create`。
    */
-  private reusableBlank(avoid?: string): string | undefined {
+  private reusableBlank(): string | undefined {
     const target = normalizePath(this.workspacePath());
     for (const row of this.sessions) {
       if (row.blank !== true) continue;
-      if (row.id === avoid) continue;
       if (this.engagedSessions.has(row.id)) continue;
       if (this.archivedSessionIds.has(row.id) || this.subagentSessionIds.has(row.id)) continue;
       if (normalizePath(row.cwd) !== target) continue;
-      if (this.blankHolder(row.id) !== undefined) continue;
       return row.id;
     }
     return undefined;
   }
 
   /**
-   * 这条壳**此刻被谁拿着**：已经绑上的窗口（占用），或正在落壳的窗口（预留）。
+   * 在「同一个目录只落一条空壳」的闸内执行一段异步逻辑（见 `blankEnsures`）。
    *
-   * 占位表里记的窗口**必须真的还绑着它**——`bindViewToSession` / `detachView` / `unbindView`
-   * 都会同步清，所以这条判据是「他还在看」的肯定证据，而不是一张可能发霉的名册；
-   * 发霉的条目在这里**不参与任何判定**（连同 `blankHolder` 的返回值一起被忽略）。
+   * 后到的一次先等前一次收尾：前一次在里面已经拉过列表，后来者据此就能扫到刚建好的
+   * 那条壳并接上去，而不是各建一条。闸只罩「扫描 → 认领 / 新建 → 刷新列表」这一段；
+   * 绑定会话是同步步骤，留在闸内也不增加等待。调用方抛错同样会放开闸，后来者不会卡死。
    */
-  private blankHolder(sessionId: string): string | undefined {
-    const occupant = this.blankOccupants.get(sessionId);
-    if (occupant !== undefined && this.viewSessions.get(occupant) === sessionId) return occupant;
-    return this.blankReservations.get(sessionId)?.viewId;
-  }
-
-  /**
-   * **同步**挑一条可用的空壳并为这个窗口预留它（0 往返，见 `blankReservations`）。
-   *
-   * 判据与预留必须在同一个同步步骤里完成——先判后预留（中间隔着 await）正是并发窗口
-   * 挑中同一条壳的根因。`avoid` 是**这一次绝不能再挑回来**的壳（点「+」判定要另开一条时
-   * 那条旧壳：它刚被解绑，`blankHolder` 已经看不到它，不显式排除就会被立刻复用）。
-   *
-   * 预留是「这条壳马上有人用」，会改变 `occupiedBlank` 与界面上的锁，所以这里要重发列表帧。
-   *
-   * @returns 预留到的壳与它的**代号**；没有可用的（本工作区没有空壳、或都被拿着）→ undefined
-   */
-  private reserveReusableBlank(
-    viewId: string,
-    avoid?: string,
-  ): { sessionId: string; token: number } | undefined {
-    const found = this.reusableBlank(avoid);
-    if (found === undefined) return undefined;
-    this.blankReservationSeq += 1;
-    const token = this.blankReservationSeq;
-    this.blankReservations.set(found, { viewId, token });
-    this.emitSessionLists();
-    return { sessionId: found, token };
-  }
-
-  /** 这次预留**还是不是我的那一次**（代号对得上，见 `blankReservations` 的注释）。 */
-  private reservationIsMine(viewId: string, reserved: { sessionId: string; token: number }): boolean {
-    const entry = this.blankReservations.get(reserved.sessionId);
-    return entry !== undefined && entry.viewId === viewId && entry.token === reserved.token;
-  }
-
-  /**
-   * **把一条具体的壳当场占住**（判据已经由调用方负责）：落壳链拿到 id 之后立刻做这一步，
-   * 否则下面那次 `refreshSessions` 的往返期间别的窗口就能把这条刚出现的壳挑走。
-   *
-   * 一个窗口名下至多一份预留：旧的（认领那条路上原来那份）随新的一次作废。
-   *
-   * @param token 沿用哪一号（`ensureSession` 按**代号**释放，换了 key 也放得掉）；省略则新铸
-   * @returns 这一次占住的预留（调用方要把它回报给 `ensureSession` 的 `finally`）
-   */
-  private reserveBlankFor(
-    viewId: string,
-    sessionId: string,
-    token?: number,
-  ): { sessionId: string; token: number } {
-    this.blankReservationSeq += 1;
-    const held = { sessionId, token: token ?? this.blankReservationSeq };
-    this.releaseBlankReservation(viewId);
-    this.blankReservations.set(sessionId, { viewId, token: held.token });
-    this.emitSessionLists();
-    return held;
-  }
-
-  /**
-   * 释放预留。**只认自己那一号**：`token` 给出时条目必须还是那一次预留，否则什么都不做
-   * ——迟到的 `finally` 不许把后来者的预留删掉（那正是「只存不比」会踩的坑）。
-   *
-   * 判据**只看代号**，不看会话 id：落壳链会把同一份预留从「认领的那条壳」换 key 到
-   * 「新建出来的那条壳」（见 `reserveBlankFor`），会话 id 换了、这一次预留的身份没变。
-   * 代号是只增不减的全局序号，不会重复，所以按它比较仍然等价于「只认自己那一号」。
-   *
-   * @param reserved 这次要放的预留（省略 = 这个窗口名下**所有**预留一起放：窗口下线）
-   */
-  private releaseBlankReservation(viewId: string, reserved?: { sessionId: string; token: number }): void {
-    let changed = false;
-    for (const [id, entry] of [...this.blankReservations]) {
-      if (entry.viewId !== viewId) continue;
-      if (reserved !== undefined && entry.token !== reserved.token) continue;
-      this.blankReservations.delete(id);
-      changed = true;
+  private async withBlankGate<T>(key: string, run: () => Promise<T>): Promise<T> {
+    const previous = this.blankEnsures.get(key);
+    let release!: () => void;
+    const mine = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    // 队尾 = 前一次收尾之后再轮到我：后来者等的是这一条链，不是 `mine` 本身
+    const tail = previous === undefined ? mine : previous.then(() => mine);
+    this.blankEnsures.set(key, tail);
+    if (previous !== undefined) await previous;
+    try {
+      return await run();
+    } finally {
+      release();
+      // 只有自己还是队尾时才清条目：后面有人排着队的话，那张表的当前值已经换人了
+      if (this.blankEnsures.get(key) === tail) this.blankEnsures.delete(key);
     }
-    if (changed) this.emitSessionLists();
   }
 
   /**
-   * 这个窗口不再用这条空壳了：把占用放掉（绑到别处、退回空态、窗口下线）。
+   * 这条空壳**此刻在用**：本宿主有窗口正停在它上面（界面那一行锁住、删除也拒）。
    *
-   * 只放**自己**那一份：别的窗口拿着的那条纹丝不动（`blankHolder` 已经保证同样的壳不会
-   * 被两个窗口同时拿到，这里是它的第二道）。预留由 `releaseBlankReservation` 单独收
-   * （它有代号守卫）。
-   *
-   * @param sessionId 省略 = 这个窗口名下**所有**占用一起放（关窗、换绑到别处时用）
-   */
-  private freeBlank(viewId: string, sessionId?: string): void {
-    let changed = false;
-    for (const [id, occupant] of [...this.blankOccupants]) {
-      if (occupant !== viewId) continue;
-      if (sessionId !== undefined && id !== sessionId) continue;
-      this.blankOccupants.delete(id);
-      changed = true;
-    }
-    if (changed) this.emitSessionLists();
-  }
-
-  /**
-   * 这条空壳**此刻有人拿着**（绑着或正被预留）：界面上那一行锁住，删除 / 归档也拒。
-   *
-   * 两个消费点，判据同源：界面行上的 `occupied` 投影（`groupSessionLists`）与删除的实时
-   * 保护（`deleteSession`）——列表帧可能有延迟，而删除是破坏性动作，取当下这一刻。
-   * **预留也算**：预留是「马上就有窗口要它」，此刻删掉它等于把那次落壳抽空。
+   * 空壳由窗口共享（见 `design-sessions.md`），这一位**不是独占**：两个窗口同时停在同
+   * 一条空壳上同样是「在用」。判据只看绑定表，不另设账本——`viewSessions` 是同步维护的，
+   * 窗口切走 / 关掉即失效（`groupSessionLists` 按当下这一刻现算）。
    */
   private occupiedBlank(sessionId: string): boolean {
-    return this.blankHolder(sessionId) !== undefined;
+    return this.isSessionViewed(sessionId);
   }
 
   /**
@@ -5790,16 +5588,10 @@ export class ChatController implements vscode.Disposable {
    *   `blank` 要等 `turn/start`、再等一次 `session/list` 才到得了；
    * - **把本地那一行 `blank` 翻面**：只服务显示侧（`emitSessionLists` 挡不挡这一行、
    *   `blankSessionIds` 挡不挡 `@` 对话候选），所以这一句刻意**不推帧**——界面下一次列表帧
-   *   自然收敛（发出去的那一刻服务端的 status 帧就会来一趟）。**但释放了占用 / 预留时要推**：
-   *   别的窗口那一行的占用锁得跟着解开，那不能等下一次列表。
+   *   自然收敛（发出去的那一刻服务端的 status 帧就会来一趟）。
    */
   private markSessionEngaged(sessionId: string): void {
     this.engagedSessions.add(sessionId);
-    // 说过话的会话不再是空壳：占位与预留登记到此为止（`refreshSessions` 那条清理路径的
-    // 提前版——本地 blank 位是**实时**的，服务端的 blank 还要等一轮往返才翻）
-    const dropped = this.blankOccupants.delete(sessionId);
-    const released = this.blankReservations.delete(sessionId);
-    if (dropped || released) this.emitSessionLists();
     const row = this.sessions.find((item) => item.id === sessionId);
     if (row?.blank !== true) return;
     this.sessions = this.sessions.map((item) =>
@@ -5921,9 +5713,8 @@ export class ChatController implements vscode.Disposable {
    * 少了它这条会话的 Agent 不会活——预设切不动、消息发不出去（见 `adoptBlankShell`）。
    * 认领是往返，排在**推完快照之后**（先切、后建那条口径的同一件事）。
    *
-   * 目标是一条**被别的窗口拿着的空壳**时**不共享**：它此刻是那个窗口的「新会话」，从别人
-   * 脚下抽走不行——这里改成给本窗口落一条自己的新壳。**内容会话照旧共享**（两个窗口看
-   * 同一条已开始的对话是容许的）。
+   * **空壳与内容会话一样共享**：别的窗口正停在一条空壳上时，这里照常把本窗口绑上去
+   * （用户 2026-11-02 口径：不再按标签各占一条空壳）。
    */
   async openSession(
     viewId: string,
@@ -5947,18 +5738,6 @@ export class ChatController implements vscode.Disposable {
       return;
     }
     if (!this.client) return;
-    // 被**别的窗口**拿着（绑着或正预留）的空壳：不共享，改落一条本窗口的新壳。
-    // 判据只看 `blankHolder`（绑定 + 预留两张表），**不要求列表里那一行说 blank**：
-    // 列表可能还没拉到那条行（`isBlankShell` 因此为 false），而占用 / 预留表已经证明它是
-    // 别人正在用的空壳——缺行正是预留要覆盖的那一档。这个窗口自己拿着它的情形走不到这里：
-    // 函数开头已经把「已经在这条会话上」挡掉了。
-    if (!subagent && this.blankHolder(sessionId) !== undefined) {
-      this.log(`[bind] 窗口=${viewId} 要打开的空壳 ${sessionId} 已被别的窗口占用：改落一条新壳`);
-      this.detachView(viewId);
-      this.emitToView(viewId, { type: "state", state: this.snapshotFor(viewId) });
-      await this.ensureSession(viewId, { start: true, askDir: false, avoid: sessionId });
-      return;
-    }
     const scope = this.ensureScope(sessionId, subagent, seedSiblings);
     if (!scope) return;
     this.bindViewToSession(viewId, sessionId, scope);
@@ -6782,16 +6561,6 @@ export class ChatController implements vscode.Disposable {
     // 同一份原始行上的预设账本一并作废（`adoptBlankShell` 照它报预设：另一台服务端上
     // 那个 id 的含义不再保证，宁可退回部署默认也不要递一个别处的预设过去）
     this.sessionPresets.clear();
-    // **预留**作废：这一次连接尝试可能就此结束，留着一条「预留」会让那条壳永远不可用
-    // （释放要靠发起它的那条落壳链，而它已经断了）。
-    // **占用刻意不清**：它由 `viewSessions` 里仍然成立的绑定支撑（`blankHolder` 要求
-    // 占用者真的还绑着它），重连后各窗口还看着同一条会话，清了它们占的空壳会被别的窗口
-    // 抢走。扩展重启是另一回事：控制器是新的，两张表天然是空的（用户口径「重启后任何会话
-    // 打开前均 false」）。
-    if (this.blankReservations.size > 0) {
-      this.blankReservations.clear();
-      this.emitSessionLists();
-    }
     this.subagentOrderGeneration += 1;
     this.subagentOrderPruneCandidates.clear();
     this.subagentActivityAt.clear();

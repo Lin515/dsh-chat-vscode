@@ -157,6 +157,7 @@ type Internals = {
   teardownStreams(): void;
   notificationMirror(viewId: string): NotificationView[];
   newSession(viewId: string): Promise<void>;
+  refreshSessions(): Promise<void>;
   ensureConnected(options?: unknown): Promise<void>;
   addPaths(viewId: string, paths: readonly string[], source: string): Promise<void>;
   handle(message: Record<string, unknown>, viewId: string): Promise<void>;
@@ -284,6 +285,12 @@ try {
     await c.newSession("v1");
     const sessionA = c.viewSessions.get("v1");
     assert.ok(sessionA, "发起视图已绑定会话 A");
+    // 让 A 变成「已经说过话」（服务端 blank 翻假并拉一次列表）：空壳由窗口共享，
+    // 不这样的话 v2 点「+」会接到同一条上，这一档要的却是两个不同的会话
+    const rowA = client.rows.find((row) => row.sessionId === sessionA);
+    assert.ok(rowA, "前置：A 在服务端列表里");
+    rowA.blank = false;
+    await c.refreshSessions();
     c.bindView("v2");
     await c.newSession("v2");
     const sessionB = c.viewSessions.get("v2");

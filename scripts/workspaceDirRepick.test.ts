@@ -473,12 +473,12 @@ console.log("workspaceDirRepick: 空态页的目录胶囊能反复改目录（�
   }
 }
 
-// ---------- 八、换回原目录：接回那条还没说过话的旧壳（同目录、且没人占着） ----------
+// ---------- 八、换回原目录：接回那条还没说过话的旧壳 ----------
 //
 // 旧壳只是「不再被这个窗口用」，没有被丢掉（服务端没有删除 API）。换回它的目录时
-// `reusableBlank` 按 **cwd** 匹配**且**要求没人占着它（用户 2026-10-17 口径：空壳按
-// 会话窗口独占）——这条壳只有这个窗口用过、此刻空着，所以接回来是对的：反复换目录
-// 不该每条都堆一条壳。这条同时证明「按 cwd 复用」不会把新目录的窗口带回旧目录。
+// `reusableBlank` 按 **cwd** 匹配，把这条还空着的壳接回来是对的：反复换目录不该每条都
+// 堆一条壳（空壳由窗口共享，用户 2026-11-02 口径）。这条同时证明「按 cwd 复用」不会把
+// 新目录的窗口带回旧目录。
 {
   const dialog = stubDialog([DIR_A, DIR_B, DIR_A]);
   try {
@@ -494,7 +494,7 @@ console.log("workspaceDirRepick: 空态页的目录胶囊能反复改目录（�
       `  A → B → A：${shellA} → ${shellB} → ${back}（服务端共 ${client.rows.length} 条会话）`,
     );
     assert.strictEqual(client.rows.length, 2, "来回换目录不该每条都堆一条壳（同目录那条还空着就接回来）");
-    assert.strictEqual(back, shellA, "换回原目录接回那条还没说过话、又没人占着的旧壳");
+    assert.strictEqual(back, shellA, "换回原目录接回那条还没说过话的旧壳");
     assert.strictEqual(cwdOf(client, back), DIR_A, "复用回来的那条 cwd 就是原目录");
     assert.notStrictEqual(back, shellB, "不许把新目录那条壳带回来");
   } finally {

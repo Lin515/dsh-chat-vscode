@@ -558,7 +558,7 @@ console.log("sessionList: 控制器与界面都接上了 ✓");
     "subagentSessionIds 必须由子代理目录的并入点（mergeSubagentEntries）实时补充",
   );
   // 历史列表是否还挡空会话是**行为**（不是源码形状）：由 `emptyComposer.test.ts` 的
-  // 「空会话进历史列表」一段驱动真控制器断言（空壳在列、被窗口拿着的带 occupied 锁）。
+  // 「空会话进历史列表」一段驱动真控制器断言（空壳在列、有窗口停着的带 occupied 锁，空壳由窗口共享）。
 }
 console.log("sessionList: @ 对话候选隐藏子代理会话与空会话 ✓");
 

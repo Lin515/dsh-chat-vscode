@@ -25,8 +25,9 @@
  * `subagentSessionIds`），这里只出纯函数。
  *
  * **空壳会话照常进历史列表**（用户 2026-10-17 口径）：它是一条普通可管理行，只多一位
- * `occupied`（被会话窗口拿着时锁住），占用位由 `controller.groupSessionLists` 现算。
- * 挡空会话的只剩 **@ 提及的对话候选**那一侧（`visibleSessionCandidates`）。
+ * `occupied`（正被某个窗口用时锁住；空壳由窗口共享，见用户 2026-11-02 口径），这一位由
+ * `controller.groupSessionLists` 现算。挡空会话的只剩 **@ 提及的对话候选**那一侧
+ * （`visibleSessionCandidates`）。
  *
  * **发帧那一步还要按窗口收窄**（`visibleForView`）：没有打开文件夹时，每个会话可以
  * 各自选一个工作目录（用户 2026-10-10 口径），历史列表必须跟着**这个窗口当前那条

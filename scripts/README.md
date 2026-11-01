@@ -150,9 +150,9 @@
 - [emptyComposer.test.ts](<emptyComposer.test.ts>) — 空态下 `/` 命令栏与 `@` 候选的行为级回归（空态就绑在壳上，菜单读它、不另建），以及官方命令身份与技能 Markdown 路径过线。
 - [composerSend.test.ts](<composerSend.test.ts>) — 发送按钮的手势链路：按住 Ctrl / Cmd 时文字换成这一次真会走的那条路、点按钮发加速手势（真事件链 + 真 `Composer` 渲染），空闲仍发送、运行中正文与附件都没有仍是停止，只有附件也能发；**附件未就绪只置灰**（保留排队 / 插话文案、外层悬停给原因），不把生成中的发送变成停止。
 - [escapeOwner.test.ts](<escapeOwner.test.ts>) — ESC 归属链：手写事件链驱动真处理器（轨迹绘图区 `timelineEscape` + window 兜底 `escapeFallbackListener`），钉住菜单 > 原图 > 抽屉 > 并列浮层的先后、元素层消费后不停止生成、**只有会话页占据前景才停止**（轨迹页与抽屉在前景时不中止会话）、兜底唯一挂点与注销清理；原生 / 合成事件组字标记均放行，不关闭浮层、不停止、不阻止输入法默认行为。
-- [blankSessionReuse.test.ts](<blankSessionReuse.test.ts>) — 「空态必有壳、首条消息发给谁」：`reusableBlank` 的本地 blank 位（不许把已经说过话的会话当空壳接回来）、空壳上选的模型留得住、已经在一条空壳上再点「+」是完全 no-op（不写回模型、也不另接一条别人的壳）。
-- [blankSessionNoop.test.ts](<blankSessionNoop.test.ts>) — 「点「+」」在用户 2026-10-17 21:00 口径下的行为级回归（真 `ChatController` + 假服务端）：当前已经停在一条**空壳**上时**完全 no-op**——不清输入框 / 附件 / 待发与失败回显、不改模型 / 思考强度 / 权限 / 预设 / 工作目录，不换绑定、不认领、不连后台、不发任何 RPC、不另建也不删（改过标题 / 计划 / 目标 / 挂着自动化任务、甚至断连的壳同样 no-op）；无壳 / 内容会话则照旧落壳：接回没人占用的现成空壳（同步换绑 + 一次指名认领）或真新建；空壳按窗口独占，两个窗口并发点「+」互不干扰。
-- [blankPresetAdopt.test.ts](<blankPresetAdopt.test.ts>) — 空壳日志里记着的 agent 预设被删掉之后还切不切得动：接回要指名 `sessionId`、先照原样报一次预设、服务端回 not-found 时不带预设再认领一次（退回部署默认），以及已在空壳上再点「+」完全 no-op、空壳被别的窗口拿着时不共享。
+- [blankSessionReuse.test.ts](<blankSessionReuse.test.ts>) — 「空态必有壳、首条消息发给谁」：`reusableBlank` 的本地 blank 位（不许把已经说过话的会话当空壳接回来）、空壳上选的模型留得住、已经在一条空壳上再点「+」是完全 no-op、**空壳由窗口共享**（第二个窗口接回同一条，并发进入也只落一条）。
+- [blankSessionNoop.test.ts](<blankSessionNoop.test.ts>) — 「点「+」」在用户 2026-10-17 21:00 口径下的行为级回归（真 `ChatController` + 假服务端）：当前已经停在一条**空壳**上时**完全 no-op**——不清输入框 / 附件 / 待发与失败回显、不改模型 / 思考强度 / 权限 / 预设 / 工作目录，不换绑定、不认领、不连后台、不发任何 RPC、不另建也不删（改过标题 / 计划 / 目标 / 挂着自动化任务、甚至断连的壳同样 no-op）；无壳 / 内容会话则照旧落壳：接回现成空壳（同步换绑 + 一次指名认领）或真新建；空壳由窗口共享，两个窗口停同一条时各自点「+」也都是 no-op。
+- [blankPresetAdopt.test.ts](<blankPresetAdopt.test.ts>) — 空壳日志里记着的 agent 预设被删掉之后还切不切得动：接回要指名 `sessionId`、先照原样报一次预设、服务端回 not-found 时不带预设再认领一次（退回部署默认），以及已在空壳上再点「+」完全 no-op、第二个窗口进空态共用同一条空壳。
 - [subagentPanel.test.ts](<subagentPanel.test.ts>) — 子代理切换入口在标题上：标题点击展开「顶层会话 + 多层子代理树」，计数提示保留，当前行不可再点。
 - [subagentSwitch.test.ts](<subagentSwitch.test.ts>) — 子代理页切换的行为级回归：兄弟 / 多层树任意一层都能切，目标父会话与真实模式来自血缘索引，父目录随行且回收后回填到屏；树行显示名（list-only 标题 / 真 label 优先 / 后续标题变化）、索引节点完成未读与读后消除的最后一帧 wire patch，以及旧连接迟到的父目录 / 目录 RPC 不回填索引。
 - [subagentTree.test.ts](<subagentTree.test.ts>) — 子代理树的组装与界面计数：先序 / 层级、父链断开与环截断、当前会话多层后代计数、`subagentTree` 走会话状态片段。

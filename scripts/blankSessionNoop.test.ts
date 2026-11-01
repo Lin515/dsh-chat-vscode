@@ -9,10 +9,10 @@
  * 改过的标题、计划模式、目标 / 待办、自动化任务都不影响这一下。
  *
  * 同一份回归里保留的其它口径（这些不能被上面那条吞掉）：
- * - 内容会话 / 无壳时点「+」照旧落一条空壳：能接回没被占用的现成壳就接回（同步换绑 + 一次
+ * - 内容会话 / 无壳时点「+」照旧落一条空壳：能接回现成的壳就接回（同步换绑 + 一次
  *   指名认领，见下），否则新建一条；
- * - 空壳按窗口独占：别人拿着的空壳不共享，各自落自己的；
- * - 普通导航的动作代号守卫（`openSession`）与占用账本照旧。
+ * - 空壳由窗口共享：别的窗口停着的那一条照常接回来（用户 2026-11-02 口径）；
+ * - 普通导航的动作代号守卫（`openSession`）照旧。
  *
  * 最后一档摆上**真 `workspaceFolders`**、并在会话日志里放上 MCP 状态卡与子代理策略两笔开场
  * 事件、同时让模型目录取失败：现场「目录不可用 / 有开场上下文」在这条口径下同样一笔请求都
@@ -328,8 +328,6 @@ interface ControllerInternals {
   scopes: Map<string, unknown>;
   drafts: Map<string, string>;
   pendingMessages: Map<string, unknown[]>;
-  blankOccupants: Map<string, string>;
-  blankReservations: Map<string, { viewId: string; token: number }>;
   viewActions: Map<string, number>;
   attachments: { list(key: string): unknown[] };
   newSessionCwd?: string;
@@ -339,7 +337,6 @@ interface ControllerInternals {
   handle(message: Record<string, unknown>, viewId: string): Promise<void>;
   refreshSessions(): Promise<void>;
   loadAgentPresets(): Promise<void>;
-  occupiedBlank(sessionId: string): boolean;
 }
 
 type Fake = ReturnType<typeof fakeClient>;
@@ -583,9 +580,9 @@ console.log("blankSessionNoop: 停在空壳上点「+」完全 no-op（驱动真
   }
 }
 
-// ---------- 六、无壳 / 未占用空壳 / 内容会话：照旧正常新建或复用 ----------
+// ---------- 六、无壳 / 现成空壳 / 内容会话：照旧正常新建或复用 ----------
 {
-  // 6a. 全新窗口 + 池子里有一条没人占用的空壳：**接回**它（同步换绑 + 一次指名认领）
+  // 6a. 全新窗口 + 池子里有一条现成空壳：**接回**它（同步换绑 + 一次指名认领）
   const { c, client, frames } = makeController([{ sessionId: "shell-free" }]);
   c.bindView("v1");
   await clickPlus(c, "v1");
@@ -625,33 +622,31 @@ console.log("blankSessionNoop: 停在空壳上点「+」完全 no-op（驱动真
   assert.ok(!c.deletedSessionIds.has("chat-1"), "内容会话的日志目录不删");
 }
 
-// ---------- 七、空壳按窗口独占：别人拿着的空壳不共享 ----------
+// ---------- 七、空壳由窗口共享：第二个窗口接回同一条 ----------
 {
   const { c, client } = makeController([]);
   c.bindView("v1");
   const first = await landOnShell(c, client, "v1");
   c.bindView("v2");
   const second = await landOnShell(c, client, "v2");
-  assert.notStrictEqual(first, second, "两个窗口各落各的空壳（不共享）");
-  assert.strictEqual(c.blankOccupants.get(first), "v1", "第一条壳的占用者是 v1");
-  assert.strictEqual(c.blankOccupants.get(second), "v2", "第二条壳的占用者是 v2");
+  assert.strictEqual(first, second, "两个窗口共用同一条空壳（用户 2026-11-02 口径）");
+  assert.strictEqual(client.rows.length, 1, "第二个窗口不再另建一条");
 
-  // v2 去打开 v1 手里那条空壳：不共享，改落自己的一条
+  // v2 去打开 v1 手里那条空壳：共享，直接停上去
   await c.handle({ type: "openSession", sessionId: first }, "v2");
   await settle();
-  const landed = String(c.viewSessions.get("v2"));
-  assert.notStrictEqual(landed, first, "被别人拿着的空壳不共享");
-  assert.strictEqual(c.blankOccupants.get(first), "v1", "v1 的占用不被覆盖");
-  assert.strictEqual(landed, second, "v2 仍在自己那条上（已有的壳先复用）");
+  assert.strictEqual(c.viewSessions.get("v2"), first, "别的窗口停着的空壳照常可以打开");
+  assert.strictEqual(c.viewSessions.get("v1"), first, "v1 的绑定不被打扰");
 }
 
-// ---------- 八、双窗口并发点「+」之后各自 no-op：互不影响 ----------
+// ---------- 八、两个窗口都停在同一条空壳上再点「+」：各自 no-op ----------
 {
   const { c, client } = makeController([]);
   c.bindView("v1");
   const a = await landOnShell(c, client, "v1");
   c.bindView("v2");
   const b = await landOnShell(c, client, "v2");
+  assert.strictEqual(a, b, "前置：两个窗口在同一条空壳上");
 
   const beforeA = observable(c, client, "v1");
   const beforeB = observable(c, client, "v2");
@@ -660,8 +655,8 @@ console.log("blankSessionNoop: 停在空壳上点「+」完全 no-op（驱动真
   await settle();
   assert.deepStrictEqual(observable(c, client, "v1"), beforeA, "v1 的 no-op 不改变自己的状态");
   assert.deepStrictEqual(observable(c, client, "v2"), beforeB, "v2 的 no-op 不改变自己的状态");
-  assert.strictEqual(c.viewSessions.get("v1"), a, "v1 仍在自己的壳上");
-  assert.strictEqual(c.viewSessions.get("v2"), b, "v2 仍在自己的壳上");
+  assert.strictEqual(c.viewSessions.get("v1"), a, "v1 仍在这条壳上");
+  assert.strictEqual(c.viewSessions.get("v2"), a, "v2 仍在这条壳上");
   assert.strictEqual(client.calls.length, callsBefore, "两个窗口的 no-op 都不发 RPC");
 }
 

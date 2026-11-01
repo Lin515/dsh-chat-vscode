@@ -3,8 +3,8 @@
  *
  * 用户 2026-10-15 口径：历史抽屉里加多选，可对选中项**归档或删除**；切到归档列表复用
  * 同一套逻辑，只是归档那颗变成**恢复**，删除两边一致、同样要二次确认；「全选」在还没
- * 全选时选中全部、已经全选时取消全部。用户 2026-10-17 补一条：空壳进历史列表，被会话
- * 窗口占着的那条锁住（`occupied`）。
+ * 全选时选中全部、已经全选时取消全部。用户 2026-10-17 补一条：空壳进历史列表，正被某个
+ * 窗口用着的那条锁住（`occupied`；用户 2026-11-02 起空壳由窗口共享，这一位只表示「在用」）。
  *
  * 这里只钉纯判据（哪些行可选、选择集怎么跟当前列表对齐、全选怎么翻转）——它们错了以后
  * 现场很难复现（只有点下去那一刻才知道选中的是谁）。组件里的接线与宿主侧的恢复链路在
@@ -34,11 +34,12 @@ const row = (
   ...extra,
 });
 
-// ---------- 1. 可选判据：运行中的会话、当前会话、被别的窗口占用的空壳都不进批量操作 ----------
+// ---------- 1. 可选判据：运行中的会话、当前会话、在用的空壳都不进批量操作 ----------
 //
 // 前两类宿主一律拒（controller 的 `deleteSession`：运行中的服务端还在往里写、当前会话
-// 删完无处可看）；第三类是用户 2026-10-17 口径（空壳按会话窗口独占：被占着的那条不能
-// 从别人脚下抽走）。批量操作把它们混进去，用户点一次删除会连着收到几条拒绝提示。
+// 删完无处可看）；第三类是用户 2026-10-17 口径的延续（`occupied`：那条壳正被某个窗口当作
+// 当前会话用着，从这里删掉等于从它脚下抽走）。批量操作把它们混进去，用户点一次删除会连着
+// 收到几条拒绝提示。
 {
   assert.strictEqual(sessionLocked(row("running", { running: true }), "current"), true, "运行中不可选");
   assert.strictEqual(sessionLocked(row("current"), "current"), true, "当前会话不可选");
@@ -47,12 +48,12 @@ const row = (
   assert.strictEqual(
     sessionLocked(row("held", { blank: true, occupied: true }), undefined),
     true,
-    "被别的会话窗口占着的空壳不可选（占用位由宿主现算，见 SessionSummaryView.occupied）",
+    "正被某个会话窗口用着的空壳不可选（占用位由宿主现算，见 SessionSummaryView.occupied）",
   );
   assert.strictEqual(
     sessionLocked(row("free", { blank: true, occupied: false }), undefined),
     false,
-    "没被占用的空壳照样可选（空壳不再整行藏起来）",
+    "没人用着的空壳照样可选（空壳不再整行藏起来）",
   );
   assert.strictEqual(
     sessionLocked(row("shared-content", { blank: false }), undefined),
@@ -70,7 +71,7 @@ const row = (
   assert.deepStrictEqual(
     selectableSessionIds(rows, "current"),
     ["a", "b"],
-    "可选集按列表顺序给，运行中、当前会话与被占用的空壳都退掉",
+    "可选集按列表顺序给，运行中、当前会话与在用的空壳都退掉",
   );
   assert.deepStrictEqual(
     selectableSessionIds(rows, undefined),
@@ -79,7 +80,7 @@ const row = (
   );
   assert.deepStrictEqual(selectableSessionIds([], "current"), [], "空列表给出空集合");
 }
-console.log("sessionSelection: 可选判据（运行中 / 当前会话 / 被占用的空壳）✓");
+console.log("sessionSelection: 可选判据（运行中 / 当前会话 / 在用的空壳）✓");
 
 // ---------- 2. 选择集跟随当前列表：看不见的选中项要退掉 ----------
 //

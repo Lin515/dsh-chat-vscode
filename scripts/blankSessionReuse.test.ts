@@ -17,8 +17,8 @@
  * 1. 点「+」之后窗口**立刻**落在本工作区那条空壳会话上（不再有「无会话的空态」）；
  * 2. 连开几个新对话，每条首消息都必须落在一条**没说过话**的会话上（报障现场）；
  * 3. 还没说过话的空壳要接回来；说过话的绝不再接；
- * 4. 空壳**按窗口独占**（用户 2026-10-17 口径，取代 2026-10-01 的「两个窗口共用一条」）：
- *    第二个窗口进空态另建一条，谁也不接别人正在用的壳。
+ * 4. 空壳**由窗口共享**（用户 2026-11-02 口径，取代 2026-10-17 的「按窗口独占」）：第二个
+ *    窗口进空态接回**同一条**壳，并发进入时也只落一条（`blankEnsures` 的闸）。
  *
  * 假服务端与真服务端同形：`session/create` 造出 `blank:true` 的行，`session/list`
  * 只在被查时才交出新值。`lag` 那一档模拟「服务端还没跟上 `turn/start`」——
@@ -216,6 +216,8 @@ function makeController(
     scopes: Map<string, unknown>;
     /** 本地 blank 位（官方 `engagedSessions`：我们亲眼见它说过话的会话）。 */
     engagedSessions: Set<string>;
+    /** 「同一个目录只落一条壳」的闸（运行期，见 controller 的 `blankEnsures`）。 */
+    blankEnsures: Map<string, Promise<void>>;
     newSessionCwd?: string;
     bindView(viewId: string): void;
     newSession(viewId?: string): Promise<void>;
@@ -364,11 +366,11 @@ console.log("blankSessionReuse: 点「+」之后第一条消息发给谁（驱�
   console.log("  未用过的空壳仍被复用 ✓");
 }
 
-// ---------- 五、两个窗口进空态：**各占一条**（空壳不跨窗口共享） ----------
+// ---------- 五、两个窗口进空态：**共用一条**（用户 2026-11-02 口径） ----------
 //
-// 用户 2026-10-17 口径取代了 2026-10-01 的「两个窗口进空态共用同一条空壳（官方字面
-// 行为）」：空壳按窗口独占——它正被某个窗口当「新会话」用着，别人再进空态就另建一条。
-// 两个窗口看同一条**已经开始的对话**（内容会话）照旧是容许的共享形态，不在这一条里。
+// 空壳由窗口共享：一个工作区只有一条空壳，谁进空态都接它（官方字面行为）。两个窗口同时
+// 停在同一条壳上，与两个窗口看同一条已经开始的对话是同一件事。并发进入时由 `blankEnsures`
+// 的闸串行化，保证不会各建一条。
 {
   const { c, client } = makeController({ dir: CWD });
   c.bindView("v1");
@@ -378,9 +380,25 @@ console.log("blankSessionReuse: 点「+」之后第一条消息发给谁（驱�
   await clickPlus(c, "v2");
   const second = c.viewSessions.get("v2");
   console.log(`  窗口 v1/v2 → ${c.viewSessions.get("v1")} / ${second}（服务端 ${client.rows.length} 条）`);
-  assert.strictEqual(client.rows.length, 2, "第二个窗口进空态要另建一条（第一条被 v1 占着）");
-  assert.notStrictEqual(second, first, "空壳不跨窗口共享（用户 2026-10-17 口径）");
+  assert.strictEqual(client.rows.length, 1, "第二个窗口进空态接回同一条壳，不另建");
+  assert.strictEqual(second, first, "空壳由窗口共享（用户 2026-11-02 口径）");
   assert.strictEqual(c.viewSessions.get("v1"), first, "第一个窗口的绑定不被打扰");
+
+  // 并发进入空态（两个窗口同时点「+」、列表还是空的）：闸保证只落一条
+  const concurrent = makeController({ dir: CWD });
+  concurrent.c.bindView("v1");
+  concurrent.c.bindView("v2");
+  await Promise.all([clickPlus(concurrent.c, "v1"), clickPlus(concurrent.c, "v2")]);
+  console.log(
+    `  并发进入：v1/v2 → ${concurrent.c.viewSessions.get("v1")} / ${concurrent.c.viewSessions.get("v2")}（服务端 ${concurrent.client.rows.length} 条）`,
+  );
+  assert.strictEqual(concurrent.client.rows.length, 1, "并发进空态也只落一条空壳");
+  assert.strictEqual(
+    concurrent.c.viewSessions.get("v1"),
+    concurrent.c.viewSessions.get("v2"),
+    "并发的那两个窗口接到同一条壳上",
+  );
+  assert.strictEqual(concurrent.c.blankEnsures.size, 0, "闸收尾后要清掉条目（这张表不能只增不减）");
 }
 
 // ---------- 六、服务端还没跟上时，本地 blank 位自己顶住（effectiveBlank 的另一半） ----------
@@ -513,7 +531,7 @@ console.log("blankSessionReuse: 点「+」之后第一条消息发给谁（驱�
   await sendMessage(c, "v1", "先说一句，把这条壳用掉");
   const used = String(c.viewSessions.get("v1"));
   assert.ok(c.engagedSessions.has(used), "前置：这条壳已经用过了（+ 才会走「没有现成壳」那条路）");
-  // 那条用过的壳仍被本窗口占着（说过话之后它不再是空壳，占用随之释放），所以「+」要另建
+  // 那条用过的会话不再是空壳（说过话就翻假），所以「+」要另建
   frames.length = 0;
 
   const pending = c.handle({ type: "newSession" }, "v1"); // 刻意**不** await
@@ -540,4 +558,4 @@ console.log("blankSessionReuse: 点「+」之后第一条消息发给谁（驱�
   assert.ok(settled.length > early.length, "落壳完成后再补一份带会话的快照");
 }
 
-console.log("blankSessionReuse: 空态必有壳、首条消息只发给没说过话的会话、空壳按窗口独占 ✓");
+console.log("blankSessionReuse: 空态必有壳、首条消息只发给没说过话的会话、空壳由窗口共享 ✓");

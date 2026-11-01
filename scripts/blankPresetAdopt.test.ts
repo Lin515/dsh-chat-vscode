@@ -24,7 +24,7 @@
  * 3. 修好之后**预设切得动**（用户报的那件事本身）；
  * 4. 已经在一条空壳上再点「+」：**完全 no-op**（用户 2026-10-17 21:00 口径）——目录保留、
  *    id 不变、绑定不动，它记着的预设 / 模型也原样留着；
- * 5. 两个窗口进空态**不共用**同一条空壳（同上口径：空壳按窗口独占）。
+ * 5. 两个窗口进空态**共用**同一条空壳（用户 2026-11-02 口径：空壳由窗口共享）。
  *
  * vscode 依赖由 esbuild.scripts.mjs 的 alias 指到 `vscodeTestStub.ts`（离线、无网络、
  * 无 token、亚秒级）；假的 `session/create` / `agentPresets/select` 按真服务端那两条
@@ -431,10 +431,10 @@ console.log("blankPresetAdopt: 空壳记着的预设被删掉之后还切不切�
   );
 }
 
-// ---------- 五、两个窗口都进空态：**不许共用**同一条空壳 ----------
+// ---------- 五、两个窗口都进空态：**共用**同一条空壳 ----------
 //
-// 用户 2026-10-17 口径取代了 2026-10-01 的「多窗口共用一条空壳是官方字面行为」：
-// 空壳按窗口独占（运行期占用）。第二个窗口进空态时另建一条，谁都不动别人的会话。
+// 用户 2026-11-02 口径取代了 2026-10-17 的「按窗口独占」：空壳由窗口共享，第二个窗口
+// 进空态接回同一条（官方字面行为），不再另建一条。
 {
   const { c, client } = makeController([{ sessionId: SHELL, preset: DEFAULT_PRESET }]);
   c.bindView("v1");
@@ -448,16 +448,16 @@ console.log("blankPresetAdopt: 空壳记着的预设被删掉之后还切不切�
 
   const second = String(c.viewSessions.get("v2"));
   console.log(`  两个窗口各自进空态：v1=${c.viewSessions.get("v1")}；v2=${second}`);
-  assert.notStrictEqual(second, SHELL, "第二个窗口不许共用第一条空壳（空壳不跨窗口共享）");
-  assert.ok(client.rows.some((row) => row.sessionId === second), "第二条是服务端上真实存在的一条");
+  assert.strictEqual(second, SHELL, "第二个窗口共用同一条空壳（不再按窗口独占）");
+  assert.strictEqual(client.rows.length, 1, "没有另铸会话");
   assert.strictEqual(c.viewSessions.get("v1"), SHELL, "第一个窗口的绑定不被打扰");
   assert.ok(!c.deletedSessionIds.has(SHELL), "任何一条都不许因此被删");
 
-  // 第一个窗口点「+」：no-op 自己那条，不许把第二个窗口的壳抢过来
+  // 两个窗口都停在同一条壳上之后再点「+」：各自 no-op，谁也不换会话
   await c.handle({ type: "newSession" }, "v1");
   await settle();
-  assert.strictEqual(c.viewSessions.get("v1"), SHELL, "v1 仍在自己那条上（no-op）");
-  assert.strictEqual(c.viewSessions.get("v2"), second, "v2 的会话照旧");
+  assert.strictEqual(c.viewSessions.get("v1"), SHELL, "v1 仍在这一条上（no-op）");
+  assert.strictEqual(c.viewSessions.get("v2"), SHELL, "v2 的会话照旧");
 }
 
-console.log("blankPresetAdopt: 空壳认领、停在空壳上点「+」的 no-op 与窗口独占 ✓");
+console.log("blankPresetAdopt: 空壳认领、停在空壳上点「+」的 no-op 与窗口共享 ✓");
