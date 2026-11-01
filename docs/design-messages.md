@@ -63,21 +63,21 @@ Host 只给 hunk，两侧文本由 `changesDiff.ts` 拼：整份新建 / 删除 
 - 读 / 写 / 编辑节点按住 `Alt` 单击打开**可编辑的真实文件**（普通单击仍是开合节点，Ctrl/Cmd 打开只读副本）：读取节点在本次读取带行号区间时打开到起始行，编辑节点没有行号数据，只打开文件。技能节点同样打开对应的 `SKILL.md`；悬停只要真有可打开目标就给两行提示——按住 Ctrl/Cmd 单击打开只读副本（原有动作）在前，按住 Alt 单击打开可编辑的真实文件在后。技能路径只取服务端 `skills/list` 的 `path`（随当前会话命令目录下发），缺失时不挂动作、不提示、也不按名字拼本机路径。技能节点的展开体只显示 `<skill_instructions>` 正文，不显示参数与「输入 / 输出」标题。真实文件只在本机执行世界且校验通过时生效，否则回退只读并提示（见[文件路径](<design-paths.md>)）。
 - 可打开文件的节点在**鼠标悬停**或**按住 Alt / Ctrl / Cmd** 时给路径加下划线（只是手势提示，单击行为不变）：悬停这一档不依赖键盘焦点，按住修饰键这一档由根元素上的 `is-modifier-held` 类驱动，避免为一次按键重渲染整棵消息树。
 
-## Markdown 迁移、代码高亮与公式渲染（待实施）
+## Markdown 渲染管线
 
-当前正文仍由 marked + DOMPurify 渲染，代码块已有折叠、复制与插入编辑器，尚无语法高亮；公式仍按原文显示。待实施的官方 micromark / mdast → React 管线、视觉与行为兼容、完成态增强及验收统一见[Markdown 渲染设计](<design-markdown-rendering.md>)。生成期间不高亮、不排版公式，结束后统一增强，不引入增量引擎；本文后续路径、中文加粗和脚注等现有规则均须通过迁移回归，不能照搬官方 UI 改变既有行为；原始 HTML 明确跟随官方显示为字面文本，不再保留现有有限 HTML 渲染。设计文档落地不代表功能已经实现。
+正文已切换到 `src/webview/markdown/` 的 micromark → mdast → React 管线：整篇解析后递归渲染，代码块保留折叠、复制与插入编辑器，尚无语法高亮；公式仍按原文显示。标准 Markdown 的视觉与交互保持迁移前行为；原始 HTML 跟随官方显示为字面文本，不再保留旧的有限 HTML 渲染。阶段 3 的完成态高亮与阶段 4 的公式排版见[Markdown 渲染设计](<design-markdown-rendering.md>)。生成期间不高亮、不排版公式；后续阶段接入后也统一在结束时增强，不引入增量引擎。本文后续路径、中文加粗和脚注等规则继续由迁移后的实现承担，不能照搬官方 UI 改变既有行为。
 
 ## Windows 路径链接
 
-CommonMark 把反斜杠加 ASCII 标点视为转义，会吞掉 Windows 绝对路径中点目录等分隔符。`linkDestinations.ts` 在 tokenizer 层保留原目标，将 Windows 绝对路径中的反斜杠编码为 `%5C`，由 fileLinks / imageRef 解码；这是刻意偏离官方同类解析行为的修复。
+CommonMark 把反斜杠加 ASCII 标点视为转义，会吞掉 Windows 绝对路径中点目录等分隔符。`markdown/windowsDestinations.ts` 在解析后按行内链接 / 图片的源码位置恢复目标，将 Windows 绝对路径中的反斜杠编码为 `%5C`，由 fileLinks / imageRef 解码；这是刻意偏离官方同类解析行为的修复。
 
 只修行内链接与图片的目标，不改链接标签、裸路径文本、参考式定义或非 Windows 目标；括号配平等分歧保持默认解析。保住 UNC 文本不等于允许访问远端，宿主准入仍拒绝 UNC。Markdown 渲染正确与文件 / 图片可安全打开是两个边界。
 
 ## 中文标点收尾的加粗
 
-CommonMark 的定界符 run 规则要求闭合 `**` 是 right-flanking，`…不够。**分页…` 这种「前是中文标点、后紧跟汉字」的收尾不满足，星号会当字面文本露在正文里（同一段里闭合符后是换行或标点的加粗照常生效，所以看着像模型写错了标记）。官方渲染链用 `cjkFriendlyStrong` 扩展放宽这条规则，`cjkStrong.ts` 在 tokenizer 层补上同一判据：星号数 ≥ 2、前一字符是 Unicode 标点、后一字符属 CJK 文字系统。这一条是**向官方对齐**，与上一节的刻意偏离不同。
+CommonMark 的定界符 run 规则要求闭合 `**` 是 right-flanking，`…不够。**分页…` 这种「前是中文标点、后紧跟汉字」的收尾不满足，星号会当字面文本露在正文里（同一段里闭合符后是换行或标点的加粗照常生效，所以看着像模型写错了标记）。官方渲染链用 `cjkFriendlyStrong` 扩展放宽这条规则，vendor 内的同一实现：星号数 ≥ 2、前一字符是 Unicode 标点、后一字符属 CJK 文字系统。这一条是**向官方对齐**，与上一节的刻意偏离不同。
 
-只放宽正好两个星号的 `**`，且只在默认解析找不到闭合时生效；西文相邻、单星号 em、三星号组合、代码里的星号一律保持 marked 原语义。
+只放宽正好两个星号的 `**`，且只在默认解析找不到闭合时生效；西文相邻、单星号 em、三星号组合、代码里的星号一律保持扩展前的默认语义。
 
 ## 文案登记完整性
 
@@ -87,4 +87,4 @@ CommonMark 的定界符 run 规则要求闭合 `**` 是 right-flanking，`…不
 
 ## 回归入口
 
-produced、commandNode、references、thinkingStream、unknownEvent、markdown、i18n 与 styles 覆盖对应链路；本地图片另见 localImages / imageHydrate。离线断言固定确定事实，不能将无异常、预览可见或文案完整推广为系统剪贴板、安装端 IPC 或全部事件时序已验证。
+produced、commandNode、references、thinkingStream、unknownEvent、markdown、i18n 与 styles 覆盖对应链路；本地图片另见 localImages / localImageResolve。离线断言固定确定事实，不能将无异常、预览可见或文案完整推广为系统剪贴板、安装端 IPC 或全部事件时序已验证。

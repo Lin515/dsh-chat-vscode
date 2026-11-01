@@ -16,7 +16,7 @@
  *
  * 读取失败按引用原文记一条失败原因（诊断日志用），不进 data URL 表；界面那条图
  * 落到既有「加载失败」降级。回帧之前浏览器那次失败仍由 webview 的
- * `hydrateLocalImages` 处理（不在本模块）。
+ * `MarkdownImage` 叶节点处理（不在本模块）。
  */
 
 import { localImageMediaType, localImagePath } from "../shared/imageRef";

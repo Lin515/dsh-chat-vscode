@@ -104,8 +104,9 @@
 
 - [permissionIcons.test.ts](<permissionIcons.test.ts>) — 四档官方权限 SVG 的渲染断言：路径与属性指纹、Regular 描边、设计像素尺寸和权限档位接线。
 
-- [markdown.test.ts](<markdown.test.ts>) — Markdown 安全与能力边界（DOMPurify 白名单放行 GFM 复选框、外链图片加固、Windows 反斜杠路径的链接 / 图片目标不被 CommonMark 转义吃掉）。
-- [footnotes.test.ts](<footnotes.test.ts>) — 脚注 marked 扩展行为断言（真 marked + 真扩展）。
+- [markdown.test.ts](<markdown.test.ts>) — 正文 SSR 行为：任务列表、表格、原始 HTML 字面、软硬换行、查找分隔、图片 title / 三属性 / 危险 scheme、Windows 目标与 CJK 加粗；断言用户真正看到 / 点到的 HTML，不再检查净化源码形状。
+- [markdownSource.test.ts](<markdownSource.test.ts>) — 代码块源文逐字符：围栏 / 缩进 / 引用与列表前缀 / tab 视觉列 / CRLF / 尾空行 / 未闭合 / NUL 与部分 tab 组合。
+- [footnotes.test.ts](<footnotes.test.ts>) — GFM / mdast 脚注：首次与重复引用、缺定义、重复定义 last-wins、代码与转义、嵌套、仅有定义。
 - [fileLinks.test.ts](<fileLinks.test.ts>) — 正文文件链接三段链路（判定 / DOM 落地 / 样式）。
 - [linkHovers.test.ts](<linkHovers.test.ts>) — 链接悬停标题（完整路径 / Alt 真实文件 / 完整地址）与 HTML 文件的浏览器打开判据（扩展名白名单、Ctrl/Cmd 分流与两端接线）。
 - [localPath.test.ts](<localPath.test.ts>) — 真实文件原生准入：启动命令 / 平台路径 / 字节纯判据，以及真控制器的受控原生打开、外部或未知环境零本机读取和原连接只读回退。
@@ -203,7 +204,7 @@
 - [find.test.ts](<find.test.ts>) — 会话查找的跨文本节点匹配与命中位置环绕；不替代真实 DOM 高亮验收。
 - [blankRestoreRace.test.ts](<blankRestoreRace.test.ts>) — 恢复历史会话与自动补空会话并发时，驱动真实控制器验证绑定不被覆盖。
 - [workspaceDirRepick.test.ts](<workspaceDirRepick.test.ts>) — 未打开文件夹时空态页的目录胶囊：每次都弹选择框、换目录真的落到新目录那条壳上（先切后建、取消保持原状、换回复用旧壳）；打开着文件夹时仍是锁定口径。
-- [imageHydrate.test.ts](<imageHydrate.test.ts>) — 驱动本地图片水合模块，验证宿主回帧之前的失败不提前替换图片，回帧后的真实失败正常降级。
+- [localImageResolve.test.ts](<localImageResolve.test.ts>) — 本地图片 loader 的范围隔离 / 回帧 / 去重 / 迟到帧，以及回帧前浏览器失败不触发最终降级；组件 DOM 时序由受控浏览器回放。
 - [trajectoryPre.test.ts](<trajectoryPre.test.ts>) — 轨迹原文呈现的默认不换行、渲染不写偏好以及复制与换行入口。
 - [trajectoryPromptDiff.test.ts](<trajectoryPromptDiff.test.ts>) — 系统提示词和工具目录的行级差分、上下文窗口与相同内容省略规则。
 - [sessionLog.test.ts](<sessionLog.test.ts>) — 受控合成 zstd 材料上的字节与路径入口对照、帧内部魔数以及非零字节视图边界；不读取用户日志。

@@ -1621,7 +1621,7 @@ console.log("styles: 正文图限高 360px（官方式缩略图）+ 原图浮层
 // 用户 2026-10-28 报「引用块内容是链接时，窗口宽度不够、内容超两行会出现渲染异常」。
 // 截图里长路径的第二行只剩一条一行高的芯片底、文字从中间起排，上半截裸在背景上。
 // 现场是 `` `D:/…/x.md` `` 命中本轮文件词表后被换成 `<code><button class="file-mention">`
-// （见 webview/fileMentions.ts）。按钮是原子行内盒（Chrome 连 `display: inline` 也按
+// （见 webview/markdown/render.tsx）。按钮是原子行内盒（Chrome 连 `display: inline` 也按
 // inline-block 处理），外层 `code` 仍是 inline 时，它的底色只画在自己的**空行盒**上，
 // 包不住按钮的两行文字；按钮内部换行又按 UA 的 `text-align: center` 居中。
 // 两条声明缺一不可：`code` 收成 inline-block 让芯片包住按钮，按钮改左对齐。

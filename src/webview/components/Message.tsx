@@ -22,13 +22,31 @@ import { ChangesCard } from "./ChangesCard";
 /**
  * 助手正文块。流式期间正文每个 token 都在变，用户划选时冻结渲染保住选区
  * （只影响界面，后台 agent 不受影响），选区消失后立刻恢复跟随最新内容。
+ *
+ * 冻结的是 `{ text, phase }` **整份显示快照**：只在文本或完成态真的变化时
+ * 换新对象，父级重渲染不制造无意义的新快照；冻结期间两者都不更新，释放后
+ * 一次性追上。完成态由 `message.streaming` 显式给出，不从围栏是否闭合推断。
  */
-function StreamText({ text, fileLinks, cwd }: { text: string; fileLinks?: FileLinkPort; cwd?: string }) {
+function StreamText({
+  text,
+  streaming,
+  fileLinks,
+  cwd,
+}: {
+  text: string;
+  streaming: boolean;
+  fileLinks?: FileLinkPort;
+  cwd?: string;
+}) {
   const ref = useRef<HTMLDivElement>(null);
-  const shown = useSelectionFreeze(ref, text);
+  const snapshot = useMemo(
+    () => ({ text, phase: streaming ? ("streaming" as const) : ("settled" as const) }),
+    [text, streaming],
+  );
+  const shown = useSelectionFreeze(ref, snapshot);
   return (
     <div ref={ref} className="md-wrapper">
-      <Markdown text={shown} fileLinks={fileLinks} cwd={cwd} />
+      <Markdown text={shown.text} phase={shown.phase} fileLinks={fileLinks} cwd={cwd} />
     </div>
   );
 }
@@ -510,7 +528,15 @@ export const Message = memo(function Message({
     const node = nodeOpen.portOf(segment.id);
     switch (segment.kind) {
       case "text":
-        return <StreamText key={segment.id} text={segment.text} fileLinks={fileLinks} cwd={cwd} />;
+        return (
+          <StreamText
+            key={segment.id}
+            text={segment.text}
+            streaming={message.streaming === true}
+            fileLinks={fileLinks}
+            cwd={cwd}
+          />
+        );
       case "thinking":
         return (
           <ThinkingRow

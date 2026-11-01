@@ -9,14 +9,12 @@
  *   链接上的路径，**不猜**绝对位置；
  * - 外链给出 `externalLinkUrl` 认下的那个地址（http / https / mailto）。
  *
- * 锚点是 `dangerouslySetInnerHTML` 注入的，不在 React props 树里，所以标题只能在
- * **渲染之后**补（`hydrateLinkTitles`）。行内代码的文件链接同理，那一份在
- * `fileMentions.ts` 里与按钮一起补。
+ * 锚点由 React 渲染树直接拥有，标题在渲染时由 `mergeHoverTitle` 合到 `<a>` 上，
+ * 不在渲染后扫描 DOM 注入；行内代码的文件按钮同理，见 `markdown/render.tsx`。
  *
- * 纯函数与 DOM 变换各就各位：断言见 `scripts/linkHovers.test.ts`。
+ * 纯函数与测试：见 `scripts/linkHovers.test.ts`。
  */
 import { isBrowserOpenableFile } from "../shared/webFile";
-import { externalLinkUrl, parseFileLink } from "./fileLinks";
 import { altLabel, modifierLabel } from "./modifierLabel";
 import { resolveDisplayPath } from "./pathDisplay";
 
@@ -60,37 +58,17 @@ export function externalLinkHoverTitle(url: string): string {
 }
 
 /**
- * 给已渲染的正文锚点补 `title`。
+ * 合并作者写的 `title` 与完整目标提示。
  *
- * 只碰三档里**认得出来**的两档（本地文件 / 外链）：`javascript:`、页内锚点之类
- * 保持原样，不编一个会误导人的标题。锚点上原本就有 markdown 自己写的标题时
- * **保留它、把完整目标追加在后面**——悬停既要能确认目标，也不能吞掉作者写的说明。
- *
- * @returns 清理函数：把标题还原成 hydrate 之前的样子（词表 / cwd 变化后会重新跑）。
+ * 作者写了说明就保留它，把目标追加在后；没写就只给目标。渲染层直接把它放到
+ * 锚点上，不再由渲染后的 DOM 注入。
  */
-export function hydrateLinkTitles(
-  root: HTMLElement,
-  cwd: string | undefined,
-  texts: LinkHoverTexts,
-  alt: string = altLabel(),
-  modifier: string = modifierLabel(),
-): () => void {
-  const restore: (() => void)[] = [];
-  for (const anchor of root.querySelectorAll("a[href]")) {
-    const href = anchor.getAttribute("href") ?? "";
-    if (href === "" || href.startsWith("#")) continue;
-    const file = parseFileLink(href);
-    const hint = file ? fileLinkHoverTitle(cwd, file.path, texts, alt, modifier) : externalLinkUrl(href);
-    if (hint === undefined) continue;
-    const previous = anchor.getAttribute("title");
-    const title = previous && previous !== hint ? `${previous}\n${hint}` : hint;
-    anchor.setAttribute("title", title);
-    restore.push(() => {
-      if (previous === null) anchor.removeAttribute("title");
-      else anchor.setAttribute("title", previous);
-    });
-  }
-  return () => {
-    for (const undo of restore) undo();
-  };
+export function mergeHoverTitle(
+  authored: string | null | undefined,
+  hint: string | undefined,
+): string | undefined {
+  if (!hint) return authored === null ? undefined : authored;
+  return authored !== null && authored !== undefined && authored !== "" && authored !== hint
+    ? `${authored}\n${hint}`
+    : hint;
 }

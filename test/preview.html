@@ -1681,15 +1681,15 @@
                 },
                 { step: 3, id: "c1", kind: "text", text: "```ts\n" + codeSample + "\n```", streaming: true },
                 // markdown 脚注（官方 `markdown.footnotes`）：引用是上标数字，定义收进
-                // 文末的 `section.footnotes`。**净化链能否保住这个容器**只有真实浏览器
-                // 里看得出来（DOMPurify 需要 DOM），所以夹具里必须有一段。
+                // 文末的 `section.footnotes`。脚注容器与文末箭头由 React 树直接生成，
+                // 只有真实浏览器里看得出来，所以夹具里必须有一段。
                 //
                 // 这一段同时也是**正文里的图片**那三种来源的落点（它是一轮里最后那段正文，
                 // 默认不会被折进按钮，预览页直接看得见）：
                 // 1. **本地路径** `![](./out/chart.png)`——webview 读不了盘，引用交给宿主读成
-                //    data URL（白名单与上限见 src/dsh/localImages.ts；预览页由 stub 代答）；
+                //    data URL（执行世界读取与媒体类型判定见 src/dsh/localImages.ts；预览页由 stub 代答）；
                 // 2. **外链**——模型写的 https 图，渲染时加了 `referrerpolicy="no-referrer"`
-                //    与 `loading="lazy"`（markdown.ts 的 afterSanitizeAttributes 钩子）。
+                //    与 `loading="lazy"`（`markdown/render.tsx` 的图片叶节点直接写这两个属性）。
                 //    离线时它会加载失败，正好能看到「图片加载失败」的降级；
                 // 3. **读不到的本地路径**——同上一条，走同一个降级；降级文案后面缀着
                 //    引用（这一条在预览页里就是「图片加载失败：./out/missing.png」），
@@ -1714,7 +1714,7 @@
                     "落地在 `bootstrap.ts`，入口那一处见 [index.ts](src/server/index.ts#L12)；" +
                     "没写过的 `not-written.ts`、普通代码 `2/3` 都保持惰性。" +
                     "绝对路径盘符写法 [AGENTS.md](D:/dev/app/AGENTS.md) 同样要点得开" +
-                    "（DOMPurify 不许剥盘符 href，用户 2026-09-28 报的问题）。\n\n" +
+                    "（盘符目标不能被解析或渲染链剥掉，用户 2026-09-28 报的问题）。\n\n" +
                     "方案图：\n\n" +
                     "![本地生成的图表](./out/chart.png)\n\n" +
                     "![外链示例](https://www.w3.org/Icons/w3c_home.png)\n\n" +

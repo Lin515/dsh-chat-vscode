@@ -1,308 +1,209 @@
 /**
- * Markdown 渲染的**安全与能力边界**。
+ * 正文 Markdown 的**行为与安全边界**（真实解析 + 服务端渲染，无浏览器）。
  *
- * 两件事必须钉住，都属于「静默失效」那一类——界面不报错，功能却没了：
+ * 迁移后正文走 `webview/markdown/` 的 micromark → mdast → React 单文档树；这里
+ * 不再断言 marked 配置或净化源码形状，而是把用户真正会看到 / 点到的 HTML 渲染
+ * 出来断言：
  *
- * 1. **GFM 任务列表的复选框**：marked 会渲染 `<input type="checkbox" disabled>`，
- *    而 DOMPurify 的白名单里没有 `input` 时，整个复选框被**静默剥掉**——
- *    `- [x] 做完的事` 与 `- 没做的事` 在界面上长得一模一样（官方渲染链带
- *    taskList 扩展，复选框是真的画出来的）。
- * 2. **只放行复选框**：白名单一旦允许 `input`，模型输出里的
- *    `<input type="text">` / `type="file"` 也会活下来，在消息正文里长出一个
- *    可交互的控件。所以有个 `uponSanitizeElement` 钩子把非 checkbox 的 input 删掉。
+ * - GFM 任务列表复选框只由列表语法产生；模型写的原始 HTML 只显示文字；
+ * - 软 / 硬换行保持 CommonMark 口径；
+ * - 查找所依赖的文本节点分隔（列表项 / 表格单元格）不跨视觉单元串词；
+ * - 图片保留作者 title、HTTPS 三属性、危险 scheme 不进入 DOM，HTTP 仍由 CSP 拒载；
+ * - Windows 反斜杠的链接 / 图片目标保真，且不放宽到非 Windows 形状；
+ * - 中文标点收尾的加粗（官方 cjkFriendlyStrong）；
+ * - 文件链接 / 外链 / 页内锚点 / 行内代码文件按钮的准入与悬停。
  *
- * 为什么这里是「结构断言 + marked 输出实测」而不是跑一遍 `renderMarkdown`：
- * DOMPurify 需要真实 DOM，本仓库的 Node 测试环境没有 jsdom/happy-dom（不为测试
- * 引入依赖），所以净化本身**在真实浏览器里验证过**（`npm run preview` 的页面，
- * Playwright 实测记录见下面第 3 段注释）。这里钉住的是「配置与钩子还在」，
- * 防止以后有人「顺手清理」掉。
- *
- * 运行：npm test
+ * 运行：npm test（已登记到 esbuild.scripts.mjs 的 entries）
  */
 import assert from "node:assert";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import { Marked } from "marked";
-import { cjkStrongTokenizers } from "../src/webview/cjkStrong";
-import { parseFileLink } from "../src/webview/fileLinks";
-import { windowsPathTokenizers } from "../src/webview/linkDestinations";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { parseFileLink, fileLinkPort } from "../src/webview/fileLinks";
+import { Markdown } from "../src/webview/components/Markdown";
+import { parseMarkdown } from "../src/webview/markdown/parse";
+import { parseGfm } from "../src/vendor/ui-primitives/markdown/parse";
 import { localImagePath } from "../src/shared/imageRef";
 import { isExecutionWorldAbsolute, unsupportedMediaPath } from "../src/dsh/remoteFiles";
-import { dictionaryFor } from "../src/webview/texts";
+import { TextsContext, dictionaryFor } from "../src/webview/texts";
 
 const read = (...parts: string[]): string => readFileSync(join(process.cwd(), ...parts), "utf8");
-const source = read("src", "webview", "markdown.ts");
+const texts = dictionaryFor("zh");
 
-// ---------- 1. marked 确实会产出复选框（白名单为什么必须带上 input） ----------
-{
-  const marked = new Marked({ gfm: true, breaks: true });
-  const html = marked.parse("- [x] 做完的事\n- [ ] 没做的事\n", { async: false }) as string;
-  assert.ok(
-    /<input[^>]*type="checkbox"/.test(html),
-    `marked 的任务列表应当产出 checkbox，实际：${html}`,
+/** 渲染一份正文（与业务组件同一个入口）。 */
+const render = (text: string, fileLinks?: ReturnType<typeof fileLinkPort>): string =>
+  renderToStaticMarkup(
+    createElement(
+      TextsContext.Provider,
+      { value: texts },
+      createElement(Markdown, { text, fileLinks }),
+    ),
   );
-  assert.ok(/checked/.test(html), "`[x]` 那一项要带 checked");
-  assert.ok(/disabled/.test(html), "任务列表的复选框应当是 disabled（消息里的框不该能点）");
-  console.log("markdown: marked 的 GFM 任务列表产出复选框 ✓");
+
+const firstUrl = (source: string, kind: "link" | "image"): string | undefined => {
+  const document = parseMarkdown(source);
+  let found: string | undefined;
+  const visit = (node: { type: string; url?: string; children?: unknown[] }): void => {
+    if (found === undefined && node.type === kind) found = node.url;
+    for (const child of (node.children ?? []) as { type: string; children?: unknown[] }[]) visit(child);
+  };
+  visit(document.root as unknown as { type: string; children?: unknown[] });
+  return found;
+};
+
+// ---------- 1. GFM 任务列表与原始 HTML ----------
+{
+  const html = render("- [x] 做完的事\n- [ ] 没做的事\n");
+  assert.strictEqual(
+    [...html.matchAll(/<input[^>]*>/g)].length,
+    2,
+    "两个任务项各一个复选框",
+  );
+  assert.match(html, /<input type="checkbox" disabled="" readonly="" checked=""\/>/);
+  assert.match(html, /<input type="checkbox" disabled="" readonly=""\/>/);
+  assert.ok(!/<input[^>]*type="text"/.test(html), "任务项之外不能出现文本输入框");
+
+  const hostile = "<script>alert(1)</script><input type=\"text\" value=\"boom\"><img src=x onerror=alert(1)>";
+  const literal = render(`文本 ${hostile}`);
+  assert.ok(literal.includes("&lt;script&gt;alert(1)&lt;/script&gt;"), "原始 HTML 按字面显示");
+  assert.ok(!/<(?:script|input|img|svg|iframe)\b/i.test(literal), "原始 HTML 不生成脚本 / 输入框 / 图片等节点");
+  assert.ok(!/class="file-mention"/.test(literal), "原始 HTML 不获得内部组件能力");
 }
+console.log("markdown: 任务复选框只读、原始 HTML 只显示文字 ✓");
 
-// ---------- 2. 白名单与钩子（净化配置的结构不变量） ----------
+// ---------- 2. 软换行 / 硬换行 ----------
 {
-  assert.ok(
-    /ALLOWED_TAGS:\s*\[[\s\S]*?"input"/.test(source),
-    "ALLOWED_TAGS 必须允许 input：否则任务列表的复选框会被静默剥掉（两种待办长得一样）",
-  );
-  for (const attr of ["type", "checked", "disabled"]) {
-    assert.ok(
-      new RegExp(`ALLOWED_ATTR:\\s*\\[[^\\]]*"${attr}"`).test(source),
-      `ALLOWED_ATTR 必须允许 ${attr}（复选框的形态与只读状态）`,
-    );
+  const soft = render("第一行\n第二行\n");
+  assert.ok(!soft.includes("<br"), `单个换行保持软换行，实际：${soft}`);
+  assert.ok(soft.includes("第一行\n第二行"), "软换行保留文本分隔");
+  const hard = render("第一行  \n第二行\n");
+  assert.match(hard, /第一行<br\/>\n第二行/, "行尾两个空格是硬换行");
+}
+console.log("markdown: 软换行并段、硬换行断行 ✓");
+
+// ---------- 3. 查找文本节点分隔：列表项 / 表格单元格 ----------
+{
+  const list = render("- tight one\n- tight two\n");
+  assert.match(list, /<ul>\n<li>/, "列表首项前有分隔文本");
+  assert.match(list, /<\/li>\n<li>/, "列表项之间有分隔文本");
+  assert.match(list, /<\/li>\n<\/ul>/, "列表末项后有分隔文本");
+  const table = render("| left | right |\n| - | - |\n| alpha | beta |\n| gamma | delta |\n");
+  assert.match(table, /<td>alpha<\/td>\n<td>beta<\/td>/, "同一行单元格之间有分隔文本");
+  assert.match(table, /<\/tr>\n<tr>/, "表格行之间有分隔文本");
+  assert.ok(!table.includes("leftright") && !table.includes("alphabeta"), "单元格之间不能直接粘连");
+  const textNodes = list.replace(/<[^>]*>/g, "");
+  assert.ok(!textNodes.includes("tight onetight two") && textNodes.includes("tight one\ntight two"));
+}
+console.log("markdown: 列表 / 表格的查找文本有语义分隔 ✓");
+
+// ---------- 4. 图片：title、三属性、scheme 准入 ----------
+{
+  const remote = render("![图](https://example.com/a.png \"标题\")\n");
+  assert.match(remote, /src="https:\/\/example\.com\/a\.png"/);
+  assert.match(remote, /alt="图"/);
+  assert.match(remote, /title="标题"/);
+  assert.match(remote, /referrerpolicy="no-referrer"/i, "外链图不带来源");
+  assert.match(remote, /loading="lazy"/, "外链图懒加载");
+  assert.match(remote, /decoding="async"/);
+
+  const referenced = render("![图][img]\n\n[img]: https://example.com/a.png \"参考标题\"\n");
+  assert.match(referenced, /title="参考标题"/, "参考定义的图片 title 同样保留");
+
+  for (const [source, expected] of [
+    ["![x](http://example.com/a.png)", "http://example.com/a.png"],
+    ["![x](file:///C:/a.png)", "file:///C:/a.png"],
+    ["![x](data:image/png;base64,AAAA)", "data:image/png;base64,AAAA"],
+    ["![x](D:\\app\\a.png)", "D:%5Capp%5Ca.png"],
+  ] as const) {
+    const html = render(source);
+    assert.ok(html.includes(`<img src="${expected}"`), `可渲染的图片地址：${source} → ${html}`);
   }
-  assert.ok(
-    // 实例按环境解析（`resolvePurify()`：浏览器里默认导出就是实例，Node 下要现造），
-    // 所以这里只钉「挂上了这个钩子」，不钉接收者叫什么名字
-    /\.addHook\(\s*"uponSanitizeElement"/.test(source),
-    "必须有 uponSanitizeElement 钩子：白名单允许了 input，就得把非 checkbox 的挡掉",
-  );
-  assert.ok(
-    /data\.tagName !== "input"/.test(source) && /type !== "checkbox"/.test(source),
-    "钩子必须是「只放行 checkbox」这一条判据（按肯定证据写），别放宽成放行所有 input",
-  );
-  assert.ok(
-    /node\.parentNode\?\.removeChild\(node\)/.test(source),
-    "非 checkbox 的 input 要**整个删掉**，不是只清属性",
-  );
-  console.log("markdown: 白名单放行复选框 + 钩子只放行 checkbox ✓");
-}
 
-// ---------- 3. 真实浏览器实测记录（无法在 Node 复现，故写成断言注释） ----------
-//
-// `npm run preview`（test/preview.html）+ Playwright 实推一条含任务列表与
-// 恶意 input 的消息，实测结果：
-//   - 两个复选框都在：`[x]` → checked=true/disabled=true，`[ ]` → checked=false
-//   - 非 checkbox 的 input 数量 = 0（`type="text"`、`type="file"` 都被钩子删掉）
-//   - `<script>` 数量 = 0，`<img onerror>` 的 onerror 属性为 null
-//   - 正文里搜不到那个 input 的 value（"boom"）
-// 这几条是本文件的「净化真的生效」证据；Node 侧跑不了不是遗漏，是没有 DOM。
-{
-  assert.ok(
-    // 用解析出来的实例（`purify`）调用，而不是直接 `DOMPurify.sanitize`：Node 下
-    // 默认导出是工厂函数，没有 DOM 时 `sanitize()` 会显式报错而不是放行
-    /purify\.sanitize\(/.test(source),
-    "渲染前必须经 DOMPurify.sanitize（模型输出不可信）",
-  );
-  console.log("markdown: 净化链路存在（真实浏览器实测记录见本文件注释） ✓");
-}
+  const dangerous = render("![图](javascript:alert(1))");
+  assert.ok(!/<img/i.test(dangerous), "危险 scheme 不生成 img");
+  assert.match(dangerous, /class="image-failed"/, "按加载失败降级");
+  assert.ok(dangerous.includes("javascript:alert(1)"), "失败占位保留原引用，便于识别");
 
-// ---------- 3. 软换行口径与官方一致（breaks: false） ----------
-//
-// 官方渲染链是 CommonMark：单个换行当空格，只有硬换行（行尾两个空格 / 反斜杠）
-// 才断行。`breaks: true` 会把每个单换行变成 `<br>`——那是本扩展自己的选择，
-// 现在按官方对齐（这是**可见的行为改变**：模型输出里不带标记的短行会被并成一段）。
-{
-  const marked = new Marked({ gfm: true, breaks: false });
-  const soft = marked.parse("第一行\n第二行\n", { async: false }) as string;
-  assert.ok(
-    !/<br\s*\/?>/.test(soft),
-    `单个换行不该变成 <br>（CommonMark 软换行），实际：${soft}`,
-  );
-  const hard = marked.parse("第一行  \n第二行\n", { async: false }) as string;
-  assert.ok(/<br\s*\/?>/.test(hard), "行尾两个空格是硬换行，必须断行");
-  assert.ok(
-    /^\s*breaks:\s*false,/m.test(source),
-    "markdown.ts 必须是 breaks: false（官方 CommonMark 口径）",
-  );
-  // 只看**配置行**：注释里会提到旧写法（`breaks: true`），别把说明文字当成配置
-  assert.ok(
-    !/^\s*breaks:\s*true,/m.test(source),
-    "不能退回 breaks: true（那是本扩展自己的口径）",
-  );
-  console.log("markdown: 软换行口径对齐官方（breaks: false） ✓");
-}
-
-// ---------- 4. 未知内容块不再静默丢弃（官方默认分支的 JsonBlock） ----------
-//
-// 官方渲染链对认不出的内容块走 default 分支：画一个标签为「未知内容块」的 JSON
-// 记录（`message.unknownBlock`）。此前我们的适配器只认 text/reasoning/image，
-// 其余块**整块消失**——模型给的东西在界面上连痕迹都没有。
-{
-  const adapter = readFileSync(join(process.cwd(), "src", "dsh", "adapter.ts"), "utf8");
-  assert.ok(
-    /kind: "unknown"/.test(adapter),
-    "适配器要有一个「未知块」的落点，而不是 continue 掉",
-  );
-  const segment = readFileSync(join(process.cwd(), "src", "shared", "chat.ts"), "utf8");
-  assert.ok(
-    /\{ kind: "unknown"; id: string; type: string; json: string \}/.test(segment),
-    "Segment 要有 unknown 变体（type + json）",
-  );
-  assert.strictEqual(dictionaryFor("zh").unknownBlock, "未知内容块", "标签与官方逐字一致（中文）");
-  assert.strictEqual(dictionaryFor("en").unknownBlock, "Unknown content block", "标签与官方逐字一致（英文）");
-  console.log("markdown: 未知内容块有落点 ✓");
-}
-
-// ---------- 5. 正文里的图片：外链放行，但三件加固必须都在 ----------
-//
-// 模型写的 `![](https://…)` 是一张浏览器**真的会去拉**的图。用户 2026-09-17 拍板
-// 保留这个显示能力（去掉 `img-src https:` 就能堵住外传通道，但回答里的外链图
-// 也就没了），代价用三条加固来压：不带来源、不急着拉、明文 http 不放行。
-// 这三条一旦被「顺手清理」掉，界面看不出任何异常——只是悄悄开始把信息带出去。
-{
-  const marked = new Marked({ gfm: true, breaks: false });
-  const html = marked.parse("![图](https://example.com/a.png)", { async: false }) as string;
-  assert.ok(
-    /<img[^>]*src="https:\/\/example\.com\/a\.png"/.test(html),
-    `marked 会把图片渲染成 <img>，实际：${html}`,
-  );
-  assert.ok(
-    /ALLOWED_TAGS:\s*\[[\s\S]*?"img"/.test(source),
-    "ALLOWED_TAGS 必须放行 img：否则正文里的图整块消失（静默）",
-  );
-  assert.ok(
-    /\.addHook\(\s*"afterSanitizeAttributes"/.test(source),
-    "必须有 afterSanitizeAttributes 钩子给图片加固",
-  );
-  assert.ok(
-    /node\.nodeName !== "IMG"/.test(source),
-    "加固钩子只对 IMG 生效（别顺手改到其它标签上）",
-  );
-  for (const attr of ["referrerpolicy", "loading", "decoding"]) {
-    assert.ok(
-      new RegExp(`ALLOWED_ATTR:\\s*\\[[^\\]]*"${attr}"`).test(source),
-      `ALLOWED_ATTR 必须允许 ${attr}（图片加固用的属性）`,
-    );
-  }
-  assert.ok(
-    /setAttribute\("referrerpolicy", "no-referrer"\)/.test(source),
-    "外链图片必须带 no-referrer：否则每个外链图都会把「谁在什么来源下打开了它」带出去",
-  );
-  assert.ok(
-    /setAttribute\("loading", "lazy"\)/.test(source),
-    "外链图片必须 lazy：不滚到的图不该在打开消息时就全拉一遍",
-  );
-
-  // CSP 是最后一道：明文 http 不放行（会被拦下 → 界面按「加载失败」降级）
-  const chatView = readFileSync(join(process.cwd(), "src", "chatView.ts"), "utf8");
+  // CSP 是明文 HTTP 的最后一道：img-src 只放行 data: 与 https:
+  const chatView = read("src", "chatView.ts");
   assert.ok(
     /img-src \$\{webview\.cspSource\} data: https:/.test(chatView),
     "CSP 的 img-src 必须只放行 data: 与 https:（宿主产生的图是 data URL）",
   );
-  assert.ok(
-    !/img-src[^`]*http:(?!\/)/.test(chatView),
-    "img-src 不能放行明文 http:（可被中间人替换，且和 https 一样带外传面）",
-  );
-  console.log("markdown: 外链图片放行 + 三条加固（no-referrer / lazy / 只 https）✓");
+  assert.ok(!/img-src[^`]*http:(?!\/)/.test(chatView), "img-src 不能放行明文 http:");
 }
+console.log("markdown: 图片 title / 三属性 / 危险 scheme 降级 / HTTP 交 CSP ✓");
 
-// ---------- 6. Windows 反斜杠路径的链接 / 图片目标不被 CommonMark 当转义吃掉 ----------
-//
-// CommonMark 规定链接目标里「`\` + ASCII 标点」是转义序列，marked 的 `Tokenizer.link`
-// 据此把 `D:\app\demo\.agent\a.log` 里 `\.` 的反斜杠吞掉——路径里每一个「反斜杠 +
-// ASCII 标点」的分隔符都会丢，`\.agent` 只是最常见的形状（`\_cache`、`\-tmp` 同样
-// 中招），后面跟字母的 `\dev`、`\temp` 不受影响。用户会看到两件看着无关、其实同源
-// 的事：链接点开报「找不到文件：`…\demo.agent\a.log`」、正文里的本地图片显示
-// 「图片加载失败」。修复在 `webview/linkDestinations.ts`（tokenizer 层把 Windows
-// 形状目标里的反斜杠预编码成 `%5C`），本段用**真 marked + 真下游判定**钉住它，
-// 并钉住「没有放宽任何东西」。
-//
-// 净化那一步在 Node 里没有 DOM（本文件上面几条「白名单与钩子」「外链图片放行」
-// 的断言也是这个口径），所以补一步等价的：把 `markdown.ts` 的 `ALLOWED_URI_REGEXP`
-// 取出来对**渲染产物**真跑一遍——DOMPurify 判 `href` / `src` 用的就是这条正则，
-// 缺了它会出现「Node 全绿、真实浏览器里 href 被剥掉」的静默缺口。浏览器里的净化
-// 与请求回路仍由 `npm run preview` 验收（判据见本文件开头那段实测记录）。
+// ---------- 5. Windows 反斜杠的链接 / 图片目标 ----------
 {
-  const withFix = new Marked({ gfm: true, breaks: false, tokenizer: windowsPathTokenizers() });
-  const withoutFix = new Marked({ gfm: true, breaks: false });
-  const render = (marked: Marked, src: string): string => marked.parse(src, { async: false }) as string;
-  const attrs = (html: string, name: "href" | "src"): string[] =>
-    [...html.matchAll(new RegExp(`${name}="([^"]*)"`, "gu"))].map((match) => match[1]);
-  const attr = (html: string, name: "href" | "src"): string => attrs(html, name)[0] ?? "";
-  /** 题述症状里的点目录形状（`D:\app\demo\.agent\temp\vm`）。 */
   const dotted = "D:\\app\\demo\\.agent\\temp\\vm";
-
-  // 点目录：图片与链接两条路都要拿回**原始**路径（下游一律 decodeURIComponent）
   const body = `视觉证据：![XP 上 10 个样例窗口](${dotted}\\xp-samples.png)`
     + `（截图存于 [xp-samples.png](${dotted}\\xp-samples.png)，`
     + `进程与窗口标题原始记录在 [lin-xp-run.log](${dotted}\\lin-xp-run.log)）`;
-  const rendered = render(withFix, body);
+  const rendered = render(body);
+  const hrefs = [...rendered.matchAll(/href="([^"]*)"/g)].map((match) => match[1]!);
   assert.deepStrictEqual(
-    attrs(rendered, "src").map(decodeURIComponent),
-    [`${dotted}\\xp-samples.png`],
-    `本地图片的 Windows 路径要在 src 里原样保留，实际：${rendered}`,
-  );
-  assert.deepStrictEqual(
-    attrs(rendered, "href").map(decodeURIComponent),
+    hrefs.map(decodeURIComponent),
     [`${dotted}\\xp-samples.png`, `${dotted}\\lin-xp-run.log`],
-    `链接目标要原样保留且顺序不变（否则点到的是另一个文件），实际：${rendered}`,
+    "链接目标保住每个反斜杠且顺序不变",
   );
-  assert.deepStrictEqual(
-    parseFileLink(attr(rendered, "href")),
-    { path: `${dotted}\\xp-samples.png` },
-    "点击判定要拿回原始路径（丢了 `\\.` 就会报「找不到文件」）",
-  );
-  assert.strictEqual(
-    localImagePath(attr(rendered, "src")),
-    `${dotted}\\xp-samples.png`,
-    "本地图片那条路也要拿回原始路径（丢了就显示「图片加载失败」）",
-  );
+  const src = /src="([^"]*)"/.exec(rendered)?.[1] ?? "";
+  assert.strictEqual(decodeURIComponent(src), `${dotted}\\xp-samples.png`, "图片目标同样保真");
+  assert.deepStrictEqual(parseFileLink(hrefs[0]!), { path: `${dotted}\\xp-samples.png` });
+  assert.strictEqual(localImagePath(src), `${dotted}\\xp-samples.png`);
 
-  // 行号锚点（起始行 / 区间）与修复共存
-  for (const [fragment, line, label] of [["#L12", 12, "起始行"], ["#L12-L40", 12, "区间"]] as const) {
+  // 行号锚点与修复共存
+  for (const [fragment, line] of [["#L12", 12], ["#L12-L40", 12]] as const) {
     assert.deepStrictEqual(
-      parseFileLink(attr(render(withFix, `[t](${dotted}\\a.ts${fragment})`), "href")),
+      parseFileLink(firstUrl(`[t](${dotted}\\a.ts${fragment})`, "link") ?? ""),
       { path: `${dotted}\\a.ts`, line },
-      `行号锚点（${label}）要和反斜杠路径修复共存`,
     );
   }
 
-  // 不止点目录：任何「反斜杠 + ASCII 标点」开头的目录名都会丢分隔符（`\_cache`），
-  // 同一条修复覆盖它们（不扩实现，只钉住这一条规则的方向）
-  const underscored = render(withFix, "[t](D:\\app\\demo\\_cache\\a.txt)");
-  assert.deepStrictEqual(
-    parseFileLink(attr(underscored, "href")),
-    { path: "D:\\app\\demo\\_cache\\a.txt" },
-    `下划线开头的目录同样要保住分隔符，实际：${underscored}`,
-  );
-
-  // 尖括号目标：文件名里有空格与中文时只能这么写
-  const spaced = render(withFix, "![中文 图](<D:\\app\\demo\\.agent\\截图 目录\\我的 图.png>)");
+  // 尖括号目标（空格与中文）
+  const spaced = render("![中文 图](<D:\\app\\demo\\.agent\\截图 目录\\我的 图.png>)");
   assert.strictEqual(
-    decodeURIComponent(attr(spaced, "src")),
+    decodeURIComponent(/src="([^"]*)"/.exec(spaced)?.[1] ?? ""),
     "D:\\app\\demo\\.agent\\截图 目录\\我的 图.png",
-    `尖括号目标（含空格与中文）要逐字保留，实际：${spaced}`,
   );
 
-  // 代码文本不变：行内与围栏代码里的路径是字面量，不该长出链接、也不该被改
-  const coded = render(withFix, "行内 `D:\\app\\.agent\\a.png`\n\n```\nD:\\app\\.agent\\b.png\n```\n");
-  assert.strictEqual(
-    attrs(coded, "href").length + attrs(coded, "src").length,
-    0,
-    `代码里的路径不该变成链接或图片，实际：${coded}`,
-  );
-  assert.ok(
-    coded.includes("D:\\app\\.agent\\a.png") && coded.includes("D:\\app\\.agent\\b.png"),
-    `行内与围栏代码里的反斜杠要逐字保留，实际：${coded}`,
-  );
-
-  // 刻意只保护**目标**：链接文字仍是普通 Markdown 转义（本修复不动 text）
-  const labeled = render(withFix, `[${dotted}\\a.log](${dotted}\\a.log)`);
-  assert.strictEqual(
-    /<a[^>]*>([\s\S]*?)<\/a>/u.exec(labeled)?.[1],
-    "D:\\app\\demo.agent\\temp\\vm\\a.log",
-    "链接文字保持 CommonMark 原语义（点目录前的反斜杠仍被当转义），实际：" + labeled,
-  );
-  assert.strictEqual(
-    decodeURIComponent(attr(labeled, "href")),
-    `${dotted}\\a.log`,
-    "同一条链接的目标要保住",
+  // 标签里有未配对 backtick / HTML 属性含 `]`：新解析器认出的合法链接不能丢目标字符
+  for (const label of ["a ` b", "a <b title=\"x]y\"> b", "a `]` b"]) {
+    const source = `[${label}](D:\\app\\.file)`;
+    assert.deepStrictEqual(
+      parseFileLink(firstUrl(source, "link") ?? ""),
+      { path: "D:\\app\\.file" },
+      `标签形状不得影响目标提取：${label}`,
+    );
+  }
+  assert.deepStrictEqual(
+    parseFileLink(firstUrl("![a ` b](D:\\app\\.file.png)", "image") ?? ""),
+    { path: "D:\\app\\.file.png" },
   );
 
-  // 没放宽任何东西：非 Windows 形状的目标，挂与不挂修复必须产出**逐字相同**的 HTML
+  // 已经带 %5C 的不二次编码
+  assert.strictEqual(firstUrl("[x](D:%5Capp%5C.file)", "link"), "D:%5Capp%5C.file");
+  assert.ok(!render("[x](D:%5Capp%5C.file)").includes("%255C"), "不得二次编码");
+
+  // 参考式定义保持 CommonMark 原语义（修复只针对行内目标）
+  const defined = parseMarkdown("[x][r]\n\n[r]: D:\\a\\.b\n");
+  assert.ok(!(defined.definitions.get("R")?.url ?? "").includes("%5C"), "参考定义不在此修复范围");
+
+  // 代码里的路径是字面量：不变成链接 / 图片，也不被改写
+  const coded = render("行内 `D:\\app\\.agent\\a.png`\n\n```\nD:\\app\\.agent\\b.png\n```\n");
+  assert.ok(!/href="[^"]*app/.test(coded) && !/src="[^"]*app/.test(coded), "代码里的路径不生成链接");
+  assert.ok(coded.includes("D:\\app\\.agent\\a.png") && coded.includes("D:\\app\\.agent\\b.png"));
+
+  // 链接文字仍是普通 Markdown 转义（修复只保护目标）
+  const labeled = render(`[${dotted}\\a.log](${dotted}\\a.log)`);
+  assert.match(labeled, />D:\\app\\demo\.agent\\temp\\vm\\a\.log<\/a>/, "链接文字按 CommonMark 转义");
+
+  // 没放宽任何东西：非 Windows 形状的目标与 vendor 解析结果逐字相同
   for (const untouched of [
-    "[x](a\\.b)",                                 // 普通转义语义（刻意不修）
+    "[x](a\\.b)",
     "[x](a/b/c.md)",
-    "[x](src\\a.ts)",                             // 相对路径里的反斜杠不算 Windows 绝对路径
+    "[x](src\\a.ts)",
     "[x](javascript:alert(1))",
     "[x](data:text/html,x)",
     "[x](file:///etc/passwd)",
@@ -311,179 +212,123 @@ const source = read("src", "webview", "markdown.ts");
     "[x](#页内锚点)",
     "![x](https://example.com/a.png)",
   ]) {
+    const kind = untouched.startsWith("![") ? "image" : "link";
     assert.strictEqual(
-      render(withFix, untouched),
-      render(withoutFix, untouched),
-      `非 Windows 形状的目标不得被这次修复改动：${untouched}`,
+      firstUrl(untouched, kind),
+      firstUrlOfRoot(parseGfm(untouched), kind),
+      `非 Windows 形状不得被修复改动：${untouched}`,
     );
   }
-  // UNC 只保住路径文本，准入照旧拒绝（`parseFileLink` 的 UNC 分支）
+  // 负向对照：vendor 解析会把 `\.` 当转义吃掉——修复是必要的
+  assert.ok(
+    !(firstUrlOfRoot(parseGfm(`[t](${dotted}\\a.log)`), "link") ?? "").includes("%5C"),
+    "vendor 解析本身不保留 Windows 反斜杠",
+  );
+
+  // UNC 只保住路径文本，点击准入照旧拒绝
   assert.strictEqual(
-    parseFileLink(attr(render(withFix, "[x](\\\\host\\share\\.agent\\a.txt)"), "href")),
+    parseFileLink(firstUrl("[x](\\\\host\\share\\.agent\\a.txt)", "link") ?? ""),
     undefined,
     "UNC 链接在修复后仍被点击判定拒绝",
   );
 
-  // 负向对照：没有这层修复时 `\.` 就被当转义吃了——这正是要修的那条 CommonMark 语义。
-  // marked 升级后此处若变红，说明上游改了这条规则，需重新评估 `linkDestinations` 是否还必要。
-  assert.deepStrictEqual(
-    parseFileLink(attr(render(withoutFix, `[t](${dotted}\\a.log)`), "href")),
-    { path: "D:\\app\\demo.agent\\temp\\vm\\a.log" },
-    "负向对照：默认管线会把点目录前的反斜杠吃掉",
-  );
-
-  // 净化层：DOMPurify 的 URI 白名单必须放行渲染产物里的每一条引用。
-  // 这条闸此前咬过一次（盘符 href 被整个剥掉，锚点成空壳），所以这里不满足于
-  // `fileLinks.test.ts` 里那份手写样张，而是拿**本次渲染产物**去跑同一条正则。
-  const literal = /ALLOWED_URI_REGEXP\s*=\s*\/([\s\S]*?)\/([a-z]*)\s*;/u.exec(source);
-  assert.ok(literal, "markdown.ts 里必须有一份显式的 ALLOWED_URI_REGEXP 字面量");
-  const allowed = new RegExp(literal[1], literal[2]);
-  for (const ref of [...attrs(rendered, "src"), ...attrs(rendered, "href")]) {
-    assert.ok(
-      allowed.test(ref),
-      `净化层必须放行渲染产物里的引用（被剥掉时界面看着像文件不存在）：${ref}`,
-    );
-  }
-  // 接线不变量：注释掉一行也算「没接」，所以这里要求它是一行**真配置**
-  // （行首只允许空白，不含 `//`），并连 import 一起钉住
-  assert.ok(
-    /^[ \t]*tokenizer: \{ \.\.\.windowsPathTokenizers\(\), \.\.\.cjkStrongTokenizers\(\) \},$/mu.test(source),
-    "markdown.ts 的 marked 实例必须真的接入 windowsPathTokenizers()（挂漏或注释掉都是静默失效）",
-  );
-  assert.ok(
-    /import \{ windowsPathTokenizers \} from "\.\/linkDestinations";/u.test(source),
-    "markdown.ts 必须从 linkDestinations 导入 windowsPathTokenizers",
-  );
-
-  // 落到真实文件：真渲染 → 真判定 → 真宿主路径形态（执行世界绝对路径）→ 盘上有这张图。
-  // 读取权限由 DSH provider 裁决；这里只钉「渲染出来的目标能交给 Host」。
+  // 落到真实文件：渲染目标能交给宿主，且盘上确实有
   {
+    const { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
     const root = mkdtempSync(join(tmpdir(), "markdown-links-"));
     try {
-      const cwd = join(root, "proj");
-      const vm = join(cwd, ".agent", "temp", "vm");
+      const vm = join(root, ".agent", "temp", "vm");
       mkdirSync(vm, { recursive: true });
       const png = join(vm, "xp-samples.png");
-      const log = join(vm, "lin-xp-run.log");
       writeFileSync(png, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
-      writeFileSync(log, "exit=0\n");
-      // 目标用尖括号写（临时目录路径里可能有空格，裸写法本来就不是合法目标）
-      const live = render(withFix, `![图](<${png}>)与[日志](<${log}>)`);
-      const hostPath = localImagePath(attr(live, "src"));
-      assert.strictEqual(hostPath, png, `渲染出的图片目标要原样交给 Host，实际：${hostPath}`);
-      assert.ok(hostPath && isExecutionWorldAbsolute(hostPath), "宿主拿到的是执行世界绝对路径");
-      assert.strictEqual(unsupportedMediaPath(hostPath ?? ""), undefined, "绝对路径不是客户端媒体拒绝项");
-      assert.ok(existsSync(hostPath as string), "夹具本身确实在盘上");
-      const link = parseFileLink(attr(live, "href"));
-      assert.deepStrictEqual(link, { path: log }, "点击判定要拿回原始路径");
-      assert.ok(existsSync(resolve(cwd, link.path)), "点开时宿主解析出来的路径必须真的在盘上");
-      assert.strictEqual(
-        unsupportedMediaPath("\\\\host\\share\\.agent\\a.png"),
-        "UNC path",
-        "UNC 图片引用必须在客户端媒体层拒绝",
-      );
+      const live = render(`![图](<${png}>)`);
+      const hostPath = localImagePath(/src="([^"]*)"/.exec(live)?.[1] ?? "");
+      assert.strictEqual(hostPath, png, "渲染出的图片目标原样交给宿主");
+      assert.ok(hostPath && isExecutionWorldAbsolute(hostPath), "宿主拿到执行世界绝对路径");
+      assert.strictEqual(unsupportedMediaPath(hostPath ?? ""), undefined);
+      assert.ok(existsSync(hostPath as string), "夹具本身在盘上");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
   }
-  console.log("markdown: Windows 反斜杠路径的链接/图片目标（真 marked → 真判定 → 执行世界路径形态）✓");
 }
+console.log("markdown: Windows 反斜杠目标保真、非 Windows 不放宽、UNC 仍拒绝 ✓");
 
-// ---------- 7. 中文标点收尾的加粗（官方 cjkFriendlyStrong 口径） ----------
-//
-// CommonMark 要求闭合 `**` 是 right-flanking：前一字符不是标点，或者前一字符是标点但
-// **后一字符是空白或标点**。中英混排最常见的收尾 `…不够。**分页…`（前是 `。`、后是
-// 汉字）两条都不满足，于是加粗失效、星号直接露在正文里；同一段里闭合符后是换行或标点
-// 的加粗却照常生效，看着像模型把标记写错了。官方渲染链为这条规则补过扩展
-// （`cjkFriendlyStrong`），本扩展在 `webview/cjkStrong.ts` 补上同一判据（向官方对齐），
-// 本段用真 marked 钉住「修好」与「没放宽别的形状」两侧。
+// ---------- 6. 中文标点收尾的加粗 ----------
 {
-  const withFix = new Marked({
-    gfm: true,
-    breaks: false,
-    tokenizer: { ...windowsPathTokenizers(), ...cjkStrongTokenizers() },
-  });
-  const withoutFix = new Marked({ gfm: true, breaks: false, tokenizer: windowsPathTokenizers() });
-  const render = (marked: Marked, src: string): string => marked.parse(src, { async: false }) as string;
-  const strongs = (html: string): string[] =>
-    [...html.matchAll(/<strong>([\s\S]*?)<\/strong>/gu)].map((match) => match[1] as string);
-
-  // 用户报的那一句（会话原文，含前后文）
   const reported = "建议把路径来源基准保存到消息或工具视图模型中；回放时结合目录变更事件恢复。"
     + "**变化可能发生在同一轮内部，只按轮次记目录也不够。**"
     + "分页历史缺少前置目录状态时，应补齐基准或明确无法解析，不能拿最新目录猜。";
-  const rendered = render(withFix, reported);
-  assert.deepStrictEqual(
-    strongs(rendered),
-    ["变化可能发生在同一轮内部，只按轮次记目录也不够。"],
-    `中文标点收尾的加粗必须成对，实际：${rendered}`,
-  );
-  assert.ok(!rendered.includes("**"), `加粗成对后星号不得留在正文里，实际：${rendered}`);
+  assert.match(render(reported), /<strong>变化可能发生在同一轮内部，只按轮次记目录也不够。<\/strong>/);
 
-  // 同形状的其它收尾标点，以及行首开场（官方 e2e 的用例形状）
   for (const [src, expected] of [
     ["**句号。**后续", "句号。"],
     ["恢复。**变化不够。**分页", "变化不够。"],
     ["提醒！**先存盘！**再改", "先存盘！"],
     ["先确认？**还早？**接着走", "还早？"],
+    ["あ。**あ。**あ", "あ。"],
+    ["ア。**ア。**ア", "ア。"],
+    ["가。**가。**나", "가。"],
+    ["ㄅ。**ㄅ。**ㄆ", "ㄅ。"],
   ] as const) {
-    const html = render(withFix, src);
-    assert.deepStrictEqual(strongs(html), [expected], `标点收尾的加粗要成对：${src} → ${html}`);
-    assert.ok(!html.includes("**"), `星号不得留在正文里：${src} → ${html}`);
+    const html = render(src);
+    assert.ok(html.includes(`<strong>${expected}</strong>`), `标点收尾的加粗要成对：${src} → ${html}`);
+    assert.ok(!html.includes("**"), `星号不得留在正文里：${src}`);
   }
 
-  // 加粗内部仍是真解析：行内代码之类的标记照常递归
-  assert.deepStrictEqual(
-    strongs(render(withFix, "**加 `code` 的收尾。**后续")),
-    ["加 <code>code</code> 的收尾。"],
-    "放宽闭合不得把加粗内部降级成字面文本",
-  );
-
-  // 没放宽任何别的形状：挂与不挂这层修复必须产出**逐字相同**的 HTML。
-  // （西文相邻、单星号 em、三星号组合都不在官方判据里；代码里的星号是字面量）
-  for (const untouched of [
-    "**Period.**next",
-    "*斜体。*后续",
-    "***粗斜。***后续",
-    "**我赞成这个方向。**\n让 VS Code 打开",
-    "**补全**：使用当前执行目录。",
-    "正文**加粗**文字",
-    "行内 `**变化不够。**分页`",
-    "```\n**变化不够。**分页\n```",
-  ]) {
-    assert.strictEqual(
-      render(withFix, untouched),
-      render(withoutFix, untouched),
-      `这次修复不得改动其它形状：${untouched}`,
-    );
-  }
-
-  // 负向对照：没有这层修复时那一对星号就是字面文本——这正是要修的那条 CommonMark 语义。
-  // marked 升级后此处若变红，说明上游自己改成了 CJK 友好，需重新评估 cjkStrong 是否还必要。
-  const unfixed = render(withoutFix, "恢复。**变化不够。**分页");
-  assert.ok(
-    !unfixed.includes("<strong>") && unfixed.includes("**变化不够。**"),
-    `负向对照：默认管线必须把星号留成字面文本，实际：${unfixed}`,
-  );
-
-  // 接线不变量：注释掉一行也算「没接」，所以要求它是一行**真配置**并连 import 一起钉住
-  assert.ok(
-    /^[ \t]*tokenizer: \{ \.\.\.windowsPathTokenizers\(\), \.\.\.cjkStrongTokenizers\(\) \},$/mu.test(source),
-    "markdown.ts 的 marked 实例必须接入 cjkStrongTokenizers()（挂漏或注释掉都是静默失效）",
-  );
-  assert.ok(
-    /import \{ cjkStrongTokenizers \} from "\.\/cjkStrong";/u.test(source),
-    "markdown.ts 必须从 cjkStrong 导入 cjkStrongTokenizers",
-  );
-  // 判据的文字系统要与官方扩展逐条一致（少一个都会让对应语言的收尾漏回字面星号）
-  const cjkSource = read("src", "webview", "cjkStrong.ts");
-  for (const script of ["Han", "Hiragana", "Katakana", "Hangul", "Bopomofo"]) {
-    assert.ok(
-      new RegExp(`Script_Extensions=${script}`).test(cjkSource),
-      `cjkStrong 的 CJK 判据缺 ${script}（应与官方 cjkFriendlyStrong 一致）`,
-    );
-  }
-  console.log("markdown: 中文标点收尾的加粗成对（官方 cjkFriendlyStrong 口径）✓");
+  // 加粗内部仍真解析；代码里的星号保持字面
+  assert.match(render("**加 `code` 的收尾。**后续"), /<strong>加 <code>code<\/code> 的收尾。<\/strong>/);
+  assert.match(render("行内 `**变化不够。**分页`"), /<code>\*\*变化不够。\*\*分页<\/code>/);
+  assert.ok(render("```\n**变化不够。**分页\n```").includes("**变化不够。**分页"), "围栏代码保持字面");
 }
+console.log("markdown: 中文 / 日文 / 韩文标点收尾的加粗成对 ✓");
+
+// ---------- 7. 链接、页内锚点与行内代码文件按钮 ----------
+{
+  const links = render(
+    "[文件](D:\\app\\.file) 与 [外链](https://example.com/a?q=1#L2) 与 [锚点](#x) 与 [危险](javascript:alert(1))",
+  );
+  assert.match(links, /<a href="D:%5Capp%5C.file"/, "文件链接保留目标");
+  assert.match(links, /title="[^"]*按住 Alt 单击打开可编辑的真实文件"/, "本地文件悬停带真实文件提示");
+  assert.match(links, /<a href="https:\/\/example\.com\/a\?q=1#L2"/, "外链保留完整地址");
+  assert.match(links, /<a href="#x"/, "页内锚点放行");
+  assert.match(links, /<a>危险<\/a>/, "危险 scheme 不给 href");
+
+  const port = fileLinkPort(["src/bootstrap.ts"]);
+  const mentioned = render("配置只读一次：`bootstrap.ts`", port);
+  assert.match(
+    mentioned,
+    /<code><button type="button" class="file-mention" title="[^"]*bootstrap\.ts[^"]*">bootstrap\.ts<\/button><\/code>/,
+    "命中词表的行内代码渲染成文件按钮",
+  );
+  const plain = render("配置只读一次：`bootstrap.ts`");
+  assert.ok(!plain.includes("file-mention"), "没有词表时保持普通行内代码");
+  const inAnchor = render("[看 `bootstrap.ts` 这一段](https://example.com)", port);
+  assert.ok(!inAnchor.includes("file-mention"), "锚点内不再嵌套可交互按钮");
+}
+console.log("markdown: 文件 / 外链 / 页内锚点 / 危险 scheme 与行内代码按钮 ✓");
+
+// ---------- 8. 未知内容块仍有落点（适配器不在本次迁移范围） ----------
+{
+  const adapter = read("src", "dsh", "adapter.ts");
+  assert.ok(/kind: "unknown"/.test(adapter), "适配器要有「未知块」落点，而不是 continue 掉");
+  const segment = read("src", "shared", "chat.ts");
+  assert.ok(/\{ kind: "unknown"; id: string; type: string; json: string \}/.test(segment));
+  assert.strictEqual(dictionaryFor("zh").unknownBlock, "未知内容块");
+  assert.strictEqual(dictionaryFor("en").unknownBlock, "Unknown content block");
+}
+console.log("markdown: 未知内容块有落点 ✓");
 
 console.log("\nmarkdown: all assertions passed");
+
+/** 从任意 mdast 根取第一个链接 / 图片的 url（本文件断言用）。 */
+function firstUrlOfRoot(root: unknown, kind: "link" | "image"): string | undefined {
+  let found: string | undefined;
+  const visit = (node: { type: string; url?: string; children?: unknown[] }): void => {
+    if (found === undefined && node.type === kind) found = node.url;
+    for (const child of (node.children ?? []) as { type: string; children?: unknown[] }[]) visit(child);
+  };
+  visit(root as { type: string; children?: unknown[] });
+  return found;
+}

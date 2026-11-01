@@ -46,7 +46,7 @@
 - 认证按 `ownership === "external"` 分叉，peer 窗口也用会合令牌换 cookie。连接条区分 `stopped` 按钮态、需用户动作的 `error` 与持续重试的 `connecting`。选路见 `connectTarget.chooseTarget`，完整规则见 `docs/design-supervisor.md`。
 - JSON 帧清空字段必须发 `null`，不能发会被序列化丢弃的 `undefined`；宿主 `jsonSafeFrame` 与界面 `mergeWirePatch` 配套，见 `src/shared/wire.ts` 和 `scripts/wire.test.ts`。
 - 一条交互链只暴露一个端口对象，合并容器 ref 与动作；参考 `AutoScrollPort`。不要拆成多个 prop 后分散维护规则。
-- 本地图片解析回帧之前的加载失败不能触发最终降级；见 `hydrateLocalImages` 与 `scripts/imageHydrate.test.ts`。
+- 本地图片解析回帧之前的加载失败不能触发最终降级；见 `MarkdownImage`（`src/webview/markdown/render.tsx`）与 `scripts/localImageResolve.test.ts`。
 - 附件的 base64 只在需要它的地方过线：草稿列表的整份下发剥掉 `dataUrl`（`withoutAttachmentDataUrls`，芯片不读它），`send` 帧不带附件、发送取宿主账本（`attachments.list`），粘贴编码走 `FileReader`。界面与宿主是两条 IPC，几 MB 的字符串来回搬运会直接变成用户可感知的等待。
 - 进不了内容块的**图片**一律**改按文件上传**（附件变文件、立即上传），**不**用正文里的 `@` 引用当退路：引用依赖「执行世界能读到本地路径」，远端部署下是空头支票；上传副本还按 sha256 去重、且是快照。提示只报上限（像素按「6400万」这类缩写，不报实测像素数），并照实说副本能不能被模型直接读：逐图超限（内联字节 / 像素 / 单边）的副本模型也得先缩小，整批超限（张数 / 总字节）的副本可直接读。
 - CSS 同特异性遵循后者覆盖前者；样式改动为同语义元素补一致性断言，例如活性指示器动画开关。

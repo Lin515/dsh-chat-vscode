@@ -5,8 +5,7 @@
  *
  * 1. **判定**（`webview/fileLinks.ts`，纯函数）——markdown 链接目标与行内代码 token
  *    是不是本地文件。逐字对齐官方 `parseFileLink` / `producedFileMentions`；
- * 2. **落地**（`webview/fileMentions.ts` + `components/Markdown.tsx`）——把命中的
- *    行内代码换成按钮、把锚点点击交给宿主；
+ * 2. **落地**（`webview/markdown/render.tsx`）——把命中的行内代码换成按钮、把锚点点击交给宿主；
  * 3. **打开**（`dsh/controller.ts`）——解析相对路径、按行号落位、只认三种 scheme。
  *
  * 第 2、3 段的断言是**结构断言**（读源码正则）：它们跑在真实 DOM 与 VS Code 里，
@@ -17,6 +16,10 @@
 import assert from "node:assert";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { Markdown } from "../src/webview/components/Markdown";
+import { TextsContext, dictionaryFor } from "../src/webview/texts";
 import {
   basename,
   externalLinkUrl,
@@ -48,8 +51,8 @@ const read = (...parts: string[]): string => readFileSync(join(process.cwd(), ..
   // 百分号编码：带空格的文件名
   assert.deepStrictEqual(parseFileLink("src/my%20file.ts"), { path: "src/my file.ts" });
 
-  // marked 的 `encodeURI` 会把反斜杠写成 `%5C`，而净化层放行的正是这个形态——
-  // 也就是说这是 Windows 绝对路径在 DOM 里的**实际 href**，点击委托原样交给这里
+  // Windows 目标修复会把反斜杠编码成 `%5C`（见 webview/markdown/windowsDestinations.ts），
+  // 这是 Windows 绝对路径在 DOM 里的**实际 href**，点击委托原样交给这里
   assert.deepStrictEqual(parseFileLink("D:%5Cdev%5Cdemo-app%5Cindex.html"), {
     path: "D:\\dev\\demo-app\\index.html",
   });
@@ -173,173 +176,87 @@ console.log("fileLinks: 外链只认 http/https/mailto（相对地址与其它 s
 }
 console.log("fileLinks: 词表去重且不带 undefined ✓");
 
-// ---------- 5. 落地：行内代码换成按钮，且不在代码块 / 锚点里动手 ----------
-
+// ---------- 5. 落地：行内代码按钮 / 代码块与锚点里不动（React 文档树） ----------
 {
-  const mentions = read("src", "webview", "fileMentions.ts");
-  assert.ok(
-    /createElement\("button"\)/.test(mentions) && /button\.className = MENTION_CLASS/.test(mentions),
-    "命中的行内代码要换成真的 <button>（自带键盘可达与语义，不必放宽净化白名单）",
+  const render = (text: string, port?: ReturnType<typeof fileLinkPort>): string =>
+    renderToStaticMarkup(
+      createElement(
+        TextsContext.Provider,
+        { value: dictionaryFor("zh") },
+        createElement(Markdown, { text, fileLinks: port }),
+      ),
+    );
+  const port = fileLinkPort(["src/webview/App.tsx"]);
+  const mentioned = render("入口在 `App.tsx`，注意大小写。", port);
+  assert.match(
+    mentioned,
+    /<code><button type="button" class="file-mention" title="[^"]*App\.tsx[^"]*">App\.tsx<\/button><\/code>/,
+    "命中的行内代码渲染成真的 <button>，title 带完整路径与真实文件提示",
   );
   assert.ok(
-    /const MENTION_CLASS = "file-mention"/.test(mentions),
-    "类名必须是 file-mention（样式与断言都按它找）",
+    !render("```\nApp.tsx\n```", port).includes("file-mention"),
+    "围栏代码块不是行内代码，不能变成文件按钮",
   );
   assert.ok(
-    /code\.closest\("pre"\)/.test(mentions),
-    "缩进写法的代码块（`pre > code`）不是行内代码，不能变成链接",
+    !render("[看 `App.tsx`](https://example.com)", port).includes("file-mention"),
+    "锚点里的行内代码保持惰性（按钮不能嵌在链接里）",
+  );
+  assert.ok(!render("入口在 `App.tsx`").includes("file-mention"), "没有词表时保持普通行内代码");
+  assert.ok(
+    /const file = parseFileLink\(node\.url\)/.test(read("src", "webview", "markdown", "render.tsx")),
+    "锚点按 parseFileLink 判定是不是本地文件",
   );
   assert.ok(
-    /code\.closest\("a"\)/.test(mentions),
-    "锚点里的 token 保持惰性（官方同口径：按钮不能嵌在链接里）",
-  );
-  assert.ok(
-    /code\.childElementCount > 0/.test(mentions),
-    "已经被换过的节点不再处理（异常形态下也别把 DOM 套两层）",
-  );
-  assert.ok(
-    /button\.title = fileLinkHoverTitle\(cwd, path, texts\)/.test(mentions),
-    "按钮要带上**完整路径**与真实文件 / HTML 浏览器提示：正文里常只写文件名，悬停得能看出开的是哪个",
-  );
-  assert.ok(
-    /open\(path, event\);/.test(mentions),
-    "点击要把原始事件交给调用方：由它按修饰键分流真实文件 / 浏览器 / 只读",
-  );
-  assert.ok(
-    /const token = code\.textContent \?\? ""/.test(mentions) &&
-      /const path = port\.resolve\(token\)/.test(mentions),
-    "判定必须用行内代码的**全文**交给词表的唯一解析（部分匹配会切出半截路径）",
-  );
-  assert.ok(
-    /button\.title = fileLinkHoverTitle\(cwd, path, texts\)/.test(mentions) &&
-      /open\(path, event\);/.test(mentions),
-    "悬停与点击必须共用同一个已解析目标（不在两处各自重新推导）",
-  );
-  assert.ok(
-    /if \(!port \|\| port\.paths\.length === 0\) return \(\) => \{\}/.test(mentions),
-    "没有词表时不做任何事；流式期间词表不全也照样对已命中的 token 动手（用户 2026-09-26 口径）",
-  );
-  assert.ok(
-    /code\.replaceChildren\(token\)/.test(mentions),
-    "清理要把节点还原：词表可能**晚于**正文到达（轮次结束时正文没变），不还原就永远补不上按钮",
-  );
-
-  const markdown = read("src", "webview", "components", "Markdown.tsx");
-  assert.ok(
-    /const undoMentions = hydrateFileMentions\(\s*\n\s*root,\s*\n\s*fileLinks,\s*\n\s*cwd,\s*\n\s*texts,/.test(
-      markdown,
-    ),
-    "Markdown 的 HtmlBlock 要把词表、cwd 与文案交给 hydrate（否则行内代码永远是纯文本、悬停缺完整路径）",
-  );
-  assert.ok(
-    /useLayoutEffect\(\(\) => \{[\s\S]*?hydrateFileMentions/.test(markdown),
-    "换成按钮要**在绘制前**做完（与本地图同一理由：先画一帧纯文本再跳成按钮会闪）",
-  );
-  assert.ok(
-    /undoImages\(\);\s*\n\s*undoTitles\(\);\s*\n\s*undoMentions\(\);/.test(markdown),
-    "图片、锚点标题与行内链接的清理都要跑",
+    /event\.preventDefault\(\);\s*\n\s*event\.stopPropagation\(\);/m.test(read("src", "webview", "markdown", "render.tsx")),
+    "接手的锚点点击必须掐断冒泡（VS Code 外层还有不看 defaultPrevented 的 did-click-link）",
   );
 }
-console.log("fileLinks: 行内代码 → 按钮（跳过代码块与锚点，绘制前完成，可还原） ✓");
+console.log("fileLinks: 行内代码 → 按钮（跳过代码块与锚点，悬停与点击同一目标） ✓");
 
-// ---------- 6. 落地：锚点点击委托的三分类 ----------
-
+// ---------- 6. 落地：锚点三分类与行内代码文件按钮（React 渲染） ----------
 {
-  const markdown = read("src", "webview", "components", "Markdown.tsx");
+  const render = (text: string, port?: ReturnType<typeof fileLinkPort>): string =>
+    renderToStaticMarkup(
+      createElement(
+        TextsContext.Provider,
+        { value: dictionaryFor("zh") },
+        createElement(Markdown, { text, fileLinks: port }),
+      ),
+    );
+  const html = render(
+    "[文件](src/webview/App.tsx#L12) 与 [外链](https://example.com/a) 与 [锚点](#x) 与 [危险](javascript:alert(1))",
+  );
+  assert.match(html, /<a href="src\/webview\/App\.tsx#L12"/, "本地文件链接保留目标与行号");
+  assert.match(html, /title="[^"]*App\.tsx[^"]*"/, "本地文件悬停给完整路径");
+  assert.match(html, /<a href="https:\/\/example\.com\/a"/, "外链保留完整地址");
+  assert.match(html, /<a href="#x"/, "页内锚点放行");
+  assert.match(html, /<a>危险<\/a>/, "其余 scheme 不给 href，点下去不导航");
   assert.ok(
-    /type: "openFile"/.test(markdown) && /link: true/.test(markdown) && /real: true/.test(markdown),
-    "文件链接要带上行号、来自链接标记与 real 分流（后者决定是否打开真实文件）",
+    !/href="javascript:/.test(html),
+    "危险 scheme 不进入 href",
   );
   assert.ok(
-    /const file = parseFileLink\(href\);/.test(markdown),
-    "锚点要按 parseFileLink 判定是不是本地文件",
-  );
-  assert.ok(
-    /fileOpenIntent\(event, path\)/.test(markdown) &&
-      /openFile\(file\.path, file\.line, event\);/.test(markdown) &&
-      /type: "openFileInBrowser"/.test(markdown),
-    "本地文件点击统一交给 openFile：Alt 发 real，Ctrl/Cmd+HTML 发 openFileInBrowser，普通只读",
-  );
-  assert.ok(
-    /const undoTitles = hydrateLinkTitles\(root, cwd, texts\);/.test(markdown),
-    "锚点的悬停标题要在绘制后补上（完整路径 / 外链地址）",
-  );
-  assert.ok(
-    /\(path, event\) => openFile\(path, undefined, event\)/.test(markdown),
-    "行内代码文件链接同样把事件交给 openFile（按修饰键分流真实文件 / 浏览器 / 只读）",
-  );
-  assert.ok(
-    !/settled/.test(markdown),
-    "锚点点击不得再按 settled 短路：流式期间的文件链接也要开（用户 2026-09-26 口径）",
-  );
-  assert.ok(
-    /const external = externalLinkUrl\(href\);\s*\n\s*if \(external\) post\(\{ type: "openExternal", url: external \}\);/.test(
-      markdown,
-    ),
-    "外链交给宿主用系统浏览器打开（webview 自己开不了，让 <a> 导航会把聊天界面换掉）",
-  );
-  assert.ok(
-    /if \(href === "" \|\| href\.startsWith\("#"\)\) return;/.test(markdown),
-    "页内锚点（模型写的 `[小节](#锚点)`）交给浏览器自己滚，不能被拦成死键",
-  );
-  assert.ok(
-    /event\.preventDefault\(\);\s*\n\s*event\.stopPropagation\(\);/.test(markdown),
-    "接手的锚点点击必须掐断冒泡：VS Code webview 外层还有一条 did-click-link，不看 defaultPrevented，不掐就是一次点击开两次（用户 2026-10-25 报）",
-  );
-  assert.ok(
-    /event\.preventDefault\(\);/.test(markdown),
-    "其余链接一律拦下：webview 里让 <a> 自己导航会把整个聊天界面换掉",
+    /externalLinkUrl\(node\.url\)/.test(read("src", "webview", "markdown", "render.tsx")),
+    "外链判定仍走 externalLinkUrl 白名单",
   );
 }
-console.log("fileLinks: 锚点点击三分类（本地文件 / 外链 / 其余拦下，页内锚点放行） ✓");
+console.log("fileLinks: 锚点三分类（本地文件 / 外链 / 其余拦下，页内锚点放行） ✓");
 
-// ---------- 6b. 净化层不许剥盘符 href ----------
-//
-// DOMPurify 的默认 URI 白名单不认 `D:`（单字母 + 冒号像 scheme），会把 href 整个
-// 剥掉——锚点变成无 href 空壳，悬停是文本光标、点了没反应
-// （用户 2026-09-28 报「绝对路径盘符写法打不开」即此）。
-//
-// **marked 会先 `encodeURI`**：反斜杠在净化之前就成了 `%5C`，所以只放行字面分隔符的
-// 白名单对 `D:\…` 依然失效（用户 2026-10-01 报同一现象即此）。净化本身在真实 DOM 上
-// 做、Node 断言环境没有 DOM，但「哪种 href 能过这道闸」是**纯正则行为**：把白名单从
-// 源码里取出来真跑一遍，三种分隔符形态都必须放行。
+// ---------- 6b. 代码块源文保真：链接修复不改代码内容 ----------
 {
-  const md = read("src", "webview", "markdown.ts");
-  const literal = /ALLOWED_URI_REGEXP\s*=\s*\/([\s\S]*?)\/([a-z]*)\s*;/u.exec(md);
-  assert.ok(literal, "markdown.ts 里必须有一份显式的 ALLOWED_URI_REGEXP 字面量");
-  const allowed = new RegExp(literal[1], literal[2]);
-
-  // 放行：正斜杠、字面反斜杠、marked 编码后的 `%5C`（两种大小写），以及相对路径与外链
-  for (const href of [
-    "D:/dev/app/src/a.ts",
-    "D:\\dev\\app\\src\\a.ts",
-    "D:%5Cdev%5Cdemo-app%5Cindex.html",
-    "d:%5cdev%5ca.ts",
-    "src%5Cdsh%5Ca.ts",
-    "demo-app/index.html",
-    "https://example.com/a",
-    "mailto:someone@example.com",
-  ]) {
-    assert.ok(allowed.test(href), `白名单必须放行 ${href}（否则 href 被剥、锚点变死键）`);
-  }
-
-  // 拒绝：别的 scheme 一律不放行（多认一个就等于多开一条宿主动作）
-  for (const href of [
-    "javascript:alert(1)",
-    "data:text/html,x",
-    "file:///etc/passwd",
-    "vscode://x/y",
-    "command:workbench.action.terminal.new",
-  ]) {
-    assert.ok(!allowed.test(href), `白名单不该放行 ${href}`);
-  }
-
-  assert.ok(
-    /ALLOWED_URI_REGEXP,/.test(md),
-    "sanitize 配置要真的把 ALLOWED_URI_REGEXP 传给 DOMPurify（只定义不传等于没改）",
-  );
+  const render = (text: string): string =>
+    renderToStaticMarkup(
+      createElement(
+        TextsContext.Provider,
+        { value: dictionaryFor("zh") },
+        createElement(Markdown, { text }),
+      ),
+    );
+  const coded = render("行内 `D:\\app\\.agent\\a.ts`\n\n```\nD:\\app\\.agent\\b.ts\n```\n");
+  assert.ok(!/href="[^"]*D:/.test(coded) && !/src="[^"]*D:/.test(coded), "代码里的路径不生成链接");
+  assert.ok(coded.includes("D:\\app\\.agent\\a.ts") && coded.includes("D:\\app\\.agent\\b.ts"), "反斜杠逐字保留");
 }
-console.log("fileLinks: 净化层保留盘符 href（正斜杠 / 反斜杠 / %5C 三种形态都放行） ✓");
+console.log("fileLinks: 代码块里的路径不生成链接、反斜杠逐字保留 ✓");
 
 // ---------- 7. 助手正文的词表来源：produced ∪ presented ----------
 
@@ -352,8 +269,12 @@ console.log("fileLinks: 净化层保留盘符 href（正斜杠 / 反斜杠 / %5C
     "词表必须是 produced 操作 ∪ deliverables（官方 producedFileMentions 同一份来源，produced 保留参数别名）",
   );
   assert.ok(
-    /<StreamText key=\{segment\.id\} text=\{segment\.text\} fileLinks=\{fileLinks\} cwd=\{cwd\} \/>/.test(message),
+    /<StreamText[\s\S]*?text=\{segment\.text\}[\s\S]*?fileLinks=\{fileLinks\}[\s\S]*?cwd=\{cwd\}/.test(message),
     "词表与 cwd 要传给正文段（不传的话行内代码永远不会变成链接、悬停也补不出完整路径）",
+  );
+  assert.ok(
+    /streaming=\{message\.streaming === true\}/.test(message),
+    "完成态由 message.streaming 显式给出，不从围栏闭合推断",
   );
 }
 console.log("fileLinks: 词表 = 本轮 produced ∪ deliverables ✓");

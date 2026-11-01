@@ -1572,6 +1572,17 @@ button.header-title.is-switcher > svg.is-open {
   margin-bottom: 0;
 }
 
+/* 代码卡此前是 `.md` 的**兄弟**（旧分块把代码段单独交给 CodeBlock），
+   所以从未被 `.md > *:first-child/last-child` 清零；单文档树后它成了 `.md` 的
+   直接子节点，若不补这两条例外，首 / 尾代码块的 8dp 外边距会凭空消失。 */
+.md > .code-block:first-child {
+  margin-top: calc(8 * var(--dp));
+}
+
+.md > .code-block:last-child {
+  margin-bottom: calc(8 * var(--dp));
+}
+
 .md p {
   margin: calc(4 * var(--dp)) 0;
 }
@@ -1813,6 +1824,9 @@ button.header-title.is-switcher > svg.is-open {
 .code-block code {
   background: none;
   padding: 0;
+  /* 单文档树后 `.md code` 也会命中代码卡里的 code：芯片的圆角必须显式复位，
+     否则未覆盖的 `border-radius` 会留在代码卡内部（无底色时不可见，但计算样式不同）。 */
+  border-radius: 0;
   font-family: var(--mono);
   font-size: var(--mono-size);
   line-height: 1.5;

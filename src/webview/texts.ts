@@ -521,7 +521,7 @@ export interface Texts {
   /**
    * 文件链接指向 HTML 家族时，悬停提示里追加的一行：按住 Ctrl/Cmd 单击
    * 用系统浏览器打开（普通单击仍是只读预览）。参数是平台 Ctrl/Cmd 标签。
-   * `linkHovers.ts` 与 `fileMentions.ts` 共用这一条。
+   * `linkHovers.ts` 与 `markdown/render.tsx` 共用这一条。
    */
   webFileBrowserHint: (modifier: string) => string;
   /**

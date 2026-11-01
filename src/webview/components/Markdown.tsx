@@ -1,194 +1,39 @@
-import { memo, useLayoutEffect, useMemo, useRef, type MouseEvent as ReactMouseEvent } from "react";
-import { splitMarkdownBlocks, type MarkdownBlock } from "../markdown";
+import { memo, useMemo } from "react";
+import type { FileLinkPort } from "../fileLinks";
+import { parseMarkdown } from "../markdown/parse";
+import { renderMarkdownDocument } from "../markdown/render";
+import type { MarkdownPhase } from "../markdown/types";
 import { useTexts } from "../texts";
-import { hydrateLocalImages, useLocalImageScopeVersion } from "../localImages";
-import { hydrateFileMentions } from "../fileMentions";
-import { externalLinkUrl, fileOpenIntent, parseFileLink, type FileLinkPort } from "../fileLinks";
-import { hydrateLinkTitles } from "../linkHovers";
-import { post } from "../bridge";
-import { CodeBlock } from "./CodeBlock";
-import { openImagePreview } from "../imagePreview";
 
 /**
- * 打开正文里点到的一个文件。
+ * 助手正文的 Markdown 入口（薄包装）。
  *
- * 界面只交**原样拼写**：相对路径的基准是会话工作目录，那只有宿主知道
- * （`controller.openFile` 经 `resolveChipPath` 解析，与文件芯片同一条路）。
+ * 解析与渲染都在 `webview/markdown/`：这里只把文本、完成态与文件词表交给
+ * 同一棵 React 文档树，不再切分 HTML 块、不再用 innerHTML，也不在渲染后
+ * hydrate / replaceChildren。图片、文件按钮与链接都由 React 叶节点拥有。
  *
- * `link` 标记这条帧来自**正文里的文件链接**：打不开时的措辞与文件芯片不同
- * （见 `shared/ipc.ts` 的 `openFile`）。
- *
- * 给了鼠标事件时按 `fileOpenIntent` 分三档：Alt 打开可编辑的真实文件（宿主校验失败
- * 会回退只读并提示）；Ctrl/Cmd + HTML 文件交系统浏览器（原有动作）；其余普通单击
- * 仍是只读预览。锚点与行内代码共用这个入口。
- */
-function openFile(
-  path: string,
-  line?: number,
-  event?: {
-    readonly altKey: boolean;
-    readonly ctrlKey: boolean;
-    readonly metaKey: boolean;
-  },
-): void {
-  const intent = event ? fileOpenIntent(event, path) : "read";
-  if (intent === "browser") {
-    post({ type: "openFileInBrowser", path });
-    return;
-  }
-  post({
-    type: "openFile",
-    path,
-    line,
-    link: true,
-    ...(intent === "real" ? { real: true } : {}),
-  });
-}
-
-/**
- * 正文里锚点的点击委托。
- *
- * 注入的 HTML 不在任何组件的 props 树里，点击只能从容器上接回来（图片那条路同）。
- * 三分类**按肯定证据**：是本地文件就开文件、是 http(s)/mailto 就交给系统浏览器、
- * 其余（`javascript:`、`command:` 之类，以及页内锚点之外的 scheme）一律拦下不动手——
- * webview 里让链接自己导航会把整个聊天界面换掉。
- *
- * 本地文件里，Alt 打开可编辑的真实文件；HTML 家族按住 Ctrl/Cmd 时改走系统浏览器
- * （`browserOpenRequested`，原有动作）；普通单击仍交给 VS Code 的只读虚拟资源，
- * 与文件芯片的普通单击（看改动）不是同一档。
- *
- * `stopPropagation` 是**必须**的，不是保险：VS Code 的 webview 外层页在内容窗口上挂了
- * 一个 click 监听（`handleInnerClick`），凡是锚点就向宿主发 `did-click-link`，而且
- * **不看 `defaultPrevented`**。不掐断冒泡，一次点击会开两次——扩展这条 `openExternal`
- * （系统会按受信域名问一次）和它那条 `did-click-link` 各开一次（用户 2026-10-25 报
- * 「点一下开两次」即此）。冒泡只到 React 根容器为止，宿主那条链接通道就不会再收到；
- * 页内锚点在上面已经放行，仍由它滚到目标。
- */
-function activateAnchor(event: ReactMouseEvent<HTMLDivElement>): void {
-  const target = event.target;
-  const anchor = target instanceof Element ? target.closest("a[href]") : null;
-  if (!anchor) return;
-  const href = anchor.getAttribute("href") ?? "";
-  // 页内锚点（模型写的 `[小节](#锚点)`）交给浏览器自己滚，不抢
-  if (href === "" || href.startsWith("#")) return;
-  event.preventDefault();
-  event.stopPropagation();
-  const file = parseFileLink(href);
-  if (file) {
-    // 流式期间也开（用户 2026-09-26 口径，见 fileLinks.ts）：目标要等 markdown
-    // 语法写完整才会渲染成锚点，此刻点到的目标已经是完整的
-    openFile(file.path, file.line, event);
-    return;
-  }
-  const external = externalLinkUrl(href);
-  if (external) post({ type: "openExternal", url: external });
-}
-
-const HtmlBlock = memo(function HtmlBlock({
-  html,
-  fileLinks,
-  cwd,
-}: {
-  html: string;
-  /** 文件链接词表（只有助手正文有；其余调用方缺省，锚点照旧可点）。 */
-  fileLinks?: FileLinkPort;
-  /** 会话工作目录：正文里的相对路径悬停时补成完整路径（缺省给链接原样拼写）。 */
-  cwd?: string;
-}) {
-  const texts = useTexts();
-  const ref = useRef<HTMLDivElement>(null);
-  // 图片解析范围（连接换代 / 切会话）的版本：变了就要**重新设 innerHTML 再水合**。
-  //
-  // 只重跑水合不够：上一次已经换上去的 data URL 还留在注入的 HTML 里（那是命令式改的
-  // DOM，React 不知道），而它属于旧范围——同一会话在另一条连接里也属于另一套执行世界。
-  // 所以把 `html` 原样写回去（React 的 dangerouslySetInnerHTML 只在 html 变时才重设），
-  // 再按新范围水合；已经落地的失败占位同样会被还原成 `<img>` 后重新判定。
-  const scopeVersion = useLocalImageScopeVersion();
-  /** 上一次水合时的 html 与范围版本（判断「这次提交是不是只换了范围」）。 */
-  const htmlRef = useRef(html);
-  const scopeVersionRef = useRef(scopeVersion);
-  // html 已在 markdown.ts 里经 DOMPurify 过滤。
-  //
-  // `useLayoutEffect` 而不是 `useEffect`：正文里的本地图片要**在绘制前**换成
-  // data URL。等到 paint 之后才换，浏览器会先画一帧破图；流式期间 html 每个
-  // token 都变（innerHTML 被 React 整体重置），这一帧每帧都会出现。
-  // 行内代码的文件链接同在绘制前换成按钮，理由相同。
-  useLayoutEffect(() => {
-    const root = ref.current;
-    if (!root) return;
-    // 换范围：先把注入的 HTML 还原成模型给的那一份，再按新范围水合。
-    // 只在 html **没变**时手动写回——html 变了的话 React 这次提交已经重设过 innerHTML
-    // （再写一遍会白白丢一次图片解码状态）。首次挂载不算「换范围」。
-    const scopeChanged = scopeVersionRef.current !== scopeVersion;
-    scopeVersionRef.current = scopeVersion;
-    const htmlChanged = htmlRef.current !== html;
-    htmlRef.current = html;
-    if (scopeChanged && !htmlChanged) root.innerHTML = html;
-    const undoImages = hydrateLocalImages(root, texts);
-    const undoTitles = hydrateLinkTitles(root, cwd, texts);
-    const undoMentions = hydrateFileMentions(
-      root,
-      fileLinks,
-      cwd,
-      texts,
-      (path, event) => openFile(path, undefined, event),
-    );
-    return () => {
-      undoImages();
-      undoTitles();
-      undoMentions();
-    };
-  }, [html, scopeVersion, fileLinks, cwd, texts.imageLoadFailed, texts.imageLoadFailedAt, texts.webFileBrowserHint, texts.openRealFileHint]);
-  return (
-    <div
-      ref={ref}
-      className="md"
-      // 正文里的图片（外链、本地图、解析后的 data URL）都点得开：注入的 HTML
-      // 不在任何组件的 props 树里，只能用事件委托把点击接回浮层；文件链接同。
-      onClick={(event) => {
-        const target = event.target;
-        if (target instanceof HTMLImageElement && target.src) {
-          openImagePreview(target.src, target.alt || texts.messageImageAlt);
-          return;
-        }
-        activateAnchor(event);
-      }}
-      dangerouslySetInnerHTML={{ __html: html }}
-    />
-  );
-});
-
-/**
- * 助手正文。按代码围栏切块，HTML 段交给净化后的 innerHTML，
- * 代码段用 React 渲染以附带工具栏（`CodeBlock` 与工具卡共用，见它的文件头）。
+ * `phase` 缺省 `settled`：历史消息、工具详情、计划与轨迹预览都是完成态；
+ * 只有助手正文在生成期间显式传 `streaming`（见 `Message.tsx` 的 `StreamText`）。
  */
 export const Markdown = memo(function Markdown({
   text,
+  phase = "settled",
   fileLinks,
   cwd,
 }: {
   text: string;
+  /** 生成中 / 完成态。阶段 2 只透传，代码高亮与公式在后续阶段接入。 */
+  phase?: MarkdownPhase;
   /** 文件链接词表（助手正文由 `Message` 按本轮文件给出，见 `fileLinks.ts`）。 */
   fileLinks?: FileLinkPort;
   /** 会话工作目录：相对路径的悬停标题按它补全；缺省保留链接上的原样拼写。 */
   cwd?: string;
 }) {
   const texts = useTexts();
-  // 脚注区的无障碍标题走词典（官方键名 `markdown.footnotes`）；语言切换时
-  // 词典变了、这里跟着重渲染
-  const blocks: MarkdownBlock[] = useMemo(
-    () => splitMarkdownBlocks(text, { footnoteLabel: texts.markdownFootnotes }),
-    [text, texts.markdownFootnotes],
-  );
+  const document = useMemo(() => parseMarkdown(text), [text]);
   return (
-    <>
-      {blocks.map((block, index) =>
-        block.kind === "code" ? (
-          <CodeBlock key={index} lang={block.lang} code={block.content} />
-        ) : (
-          <HtmlBlock key={index} html={block.content} fileLinks={fileLinks} cwd={cwd} />
-        ),
-      )}
-    </>
+    <div className="md">
+      {renderMarkdownDocument(document, { phase, fileLinks, cwd, texts })}
+    </div>
   );
 });

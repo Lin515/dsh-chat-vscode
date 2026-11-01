@@ -5,10 +5,11 @@
 
 这里只搬了**一个子目录**：
 
-- `markdown/` — Markdown → 纯文本的投影链（轨迹预览文本的权威实现）→ [markdown/README.md](markdown/README.md)
+- `markdown/` — Markdown 解析与纯文本投影链（轨迹预览文本的权威实现，正文解析的语法来源）→ [markdown/README.md](markdown/README.md)
 
 上游这个包的大头（`MarkdownText.tsx`、`render.tsx`、`highlight.ts`、`CodeBlock.tsx`、
-`FileTypeIcon.tsx` 等）**没有搬**：它们是渲染器与图标，本扩展的正文渲染走自己的
-[markdown.ts](<../../webview/markdown.ts>)（marked + DOMPurify），两者目前互不替代。
+`FileTypeIcon.tsx` 等）**没有搬**：它们是渲染器与图标。本扩展的正文渲染由本地
+[webview/markdown/](<../../webview/markdown/README.md>) 适配层复用这里的
+`parseGfm` / `cjkFriendlyStrong`，UI 与 React 渲染仍由本地组件承担。
 
-待实施的正文迁移将按固定上游来源复用 micromark / mdast 解析，仍由本地 React 渲染适配保留扩展 UI 与安全行为；不整搬官方组件，也不改变现有轨迹纯文本投影语义。范围、来源锁与验收见[Markdown 渲染设计](<../../../docs/design-markdown-rendering.md>)。
+阶段 2 已按固定上游来源复用 micromark / mdast 解析，本地 React 渲染适配保留扩展 UI 与安全行为；不整搬官方组件，也不改变轨迹纯文本投影语义。范围、来源锁与验收见[Markdown 渲染设计](<../../../docs/design-markdown-rendering.md>)。

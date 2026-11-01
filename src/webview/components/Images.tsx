@@ -110,7 +110,7 @@ export function ImageGallery({ sources, alt }: { sources: ImageSource[]; alt: st
  * 用途是**agent 交付图片**的两种表达：`present` 申报的文件、以及本轮 write 出来的
  * 文件。实测（2026-09-18）agent 被要求"发一张图"时做的正是这两件事——下载一张 jpg、
  * 写一张 svg、再 `present` 它们——而界面上此前只有两行文件芯片，一张图都看不到。
- * 正文里显式写 `![](…)` 的那条路由 `Markdown` 的 `hydrateLocalImages` 处理，这里
+ * 正文里显式写 `![](…)` 的那条路由 `Markdown` 的 `MarkdownImage` 叶节点处理，这里
  * 补的是"没有 markdown 引用"的情形。
  *
  * 解析不出来的（工作目录之外、文件被删、超上限）**不渲染任何东西**：那些路径在同一

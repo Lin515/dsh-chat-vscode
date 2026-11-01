@@ -129,7 +129,7 @@ Host 为轮次 recorder 一次确定创建目录的规范化根。`durablePathOf
 
 ## 验收要求
 
-现有 `fileChange`、`fileLinks`、`produced`、`toolView`、`toolCard`、`changesCard`、`localImages` 与 `imageHydrate` 是扩充入口，不代表下列场景已被覆盖。
+现有 `fileChange`、`fileLinks`、`produced`、`toolView`、`toolCard`、`changesCard`、`localImages` 与 `markdown/render.tsx` 的图片叶节点是扩充入口，不代表下列场景已被覆盖。
 
 - **目录错位**：创建目录 A、执行目录 B，分别存在同名文件；工具行 / 产物使用指向 B 的记录值，正文绝对图片引用 B 时也不读 A 的同名副本。继续切到 C、重连及历史重放后结果不漂移；普通手写相对链接与相对图片仍遵创建目录边界。
 - **取值矩阵**：运行中 / 成功 / 失败 / 中断、根 / 嵌套、绝对 / 相对参数、缺 meta / 缺自有键 / 无效字段 / 绝对记录；工具行与产物分别断言，不用一个函数覆盖两者。

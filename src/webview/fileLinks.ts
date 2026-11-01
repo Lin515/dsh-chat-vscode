@@ -18,7 +18,7 @@
  * ——它们的普通单击已经是「看改动」，Alt 直接打开真实文件，其余修饰键保持原只读打开。
  *
  * 纯函数、不碰 DOM 也不引 React：断言见 `scripts/fileLinks.test.ts`。DOM 那一步
- * （把命中的行内代码换成按钮）在 `webview/fileMentions.ts`。
+ * （把命中的行内代码换成按钮）在 `webview/markdown/render.tsx`。
  */
 import { basenameWorkspacePath } from "../shared/workspacePath";
 import { isBrowserOpenableFile } from "../shared/webFile";

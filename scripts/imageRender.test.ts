@@ -336,7 +336,7 @@ console.log("image: 只有图的调用可展开 ✓");
 
 // ---------- 7b. 降级文案按引用选：知道是哪一张就缀上，`data:` / 空引用只给一句 ----------
 //
-// 正文里的图（`hydrateLocalImages`，要 DOM）与图库共用这条纯函数，所以这里能钉住
+// 正文里的图（`markdown/render.tsx` 的 `MarkdownImage`）与图库共用这条纯函数，所以这里能钉住
 // 「哪种引用会进文案」这件用户看得见的事（`data:` 是几兆的内联字节，缀上去没意义）。
 {
   const { failedImageText } = await import("../src/webview/localImages");

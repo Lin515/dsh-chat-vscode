@@ -73,9 +73,13 @@ export function onHostFrame(listener: FrameListener): () => void {
   return () => frameListeners.delete(listener);
 }
 
-window.addEventListener("message", (event: MessageEvent) => {
-  const message = event.data as HostToWebview | undefined;
-  if (!message || typeof message !== "object" || typeof message.type !== "string") return;
-  for (const listener of frameListeners) listener();
-  for (const listener of listeners) listener(message);
-});
+// 无头 / SSR 导入时没有 window；webview 里恒存在。这里只跳过事件挂载，
+// 不改变浏览器路径的任何行为。
+if (typeof window !== "undefined") {
+  window.addEventListener("message", (event: MessageEvent) => {
+    const message = event.data as HostToWebview | undefined;
+    if (!message || typeof message !== "object" || typeof message.type !== "string") return;
+    for (const listener of frameListeners) listener();
+    for (const listener of listeners) listener(message);
+  });
+}

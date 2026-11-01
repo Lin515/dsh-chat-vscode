@@ -145,9 +145,8 @@ Apache-2.0 的义务说明：
 | 组件 | 许可 | 用途 |
 | --- | --- | --- |
 | `react` / `react-dom` | MIT | webview 界面 |
-| `marked` | MIT | Markdown 解析 |
-| `mdast-util-from-markdown` / `mdast-util-gfm` / `micromark-extension-gfm`（及 `micromark-*` 传递依赖） | MIT | `src/vendor/` 的 Markdown 纯文本投影（预览文本） |
-| `dompurify` | Apache-2.0 / MPL-2.0 双许可 | 渲染前净化 HTML |
+| `mdast-util-from-markdown` / `mdast-util-gfm` / `micromark` / `micromark-extension-gfm`（及 `micromark-*` 传递依赖） | MIT | 正文 mdast 渲染与 `src/vendor/` 的 Markdown 纯文本投影（预览文本） |
+| `dompurify` | Apache-2.0 / MPL-2.0 双许可 | 为后续数学输出净化保留；当前正文不再整篇净化 HTML |
 | `diff` | BSD-3-Clause | 系统提示词变更页签的行级差分（与官方轨迹同一实现） |
 | `ws` | MIT | 宿主侧 WebSocket |
 | `esbuild` | MIT | 打包 |
