@@ -23,7 +23,7 @@ import { useTexts } from "../texts";
 import { IconChevronDown, IconChevronRight } from "../icons";
 import { Markdown } from "./Markdown";
 import { CopyButton } from "./CopyButton";
-import { splitSpansByLine } from "../markdown/highlight";
+import { resolveLanguage, splitSpansByLine } from "../markdown/highlight";
 import { renderHighlighted } from "./HighlightedText";
 import { useCodeHighlight } from "./useCodeHighlight";
 
@@ -86,10 +86,16 @@ function ReadCard({ card }: { card: Extract<ToolCardView, { kind: "read" }> }) {
   // 行文本按契约不含换行；真出现换行时 join 后的行数与窗口行数对不上，
   // 宁可整卡纯文，也不用错位的行映射。
   const alignable = useMemo(() => card.lines.every((entry) => !entry.text.includes("\n")), [card.lines]);
+  /**
+   * 语言解析：`meta.lang` 优先（DSH 读卡持久化的是 tsx / ts / json 这类短 id）；
+   * 旧记录或未映射扩展名可能没有 `lang`，此时按横幅里的路径回退到扩展名，
+   * 否则整张卡静默纯文。显式 `text` / `plaintext` 仍保持纯文（见 `resolveLanguage`）。
+   */
+  const lang = resolveLanguage(card.lang, card.label);
   const bodyRef = useRef<HTMLDivElement>(null);
   const highlightSpans = useCodeHighlight({
     code: raw,
-    lang: alignable ? card.lang : undefined,
+    lang: alignable ? lang : undefined,
     // read 卡只在结算后出现（running 时 ToolRow 还没有 card），挂载即完成态。
     active: true,
     elementRef: bodyRef,

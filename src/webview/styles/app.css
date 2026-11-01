@@ -1807,21 +1807,23 @@ button.header-title.is-switcher > svg.is-open {
 
 /* ---- code blocks: an editor-coloured card outlined rather than bordered ---- */
 
-/* 高亮 token 的受控颜色变量：默认深色回退，VS Code 主题变量优先（symbolIcon /
-   textLink / gitDecoration），不新增主题注册。四类 `body.vscode-*` 与预览的 OS
-   浅色各自给出可读回退；不能假定 VS Code 主题等于操作系统配色。
+/* 高亮 token 的受控颜色变量：语法色按四类 `body.vscode-*` 主题各用一组固定的
+   可读回退值，**不取 symbolIcon.***——那是大纲 / 补全图标色，主题完全可以把
+   它设成与正文相同，于是 span 明明存在也可能看起来没高亮（例如 import 与正文同色）。
+   只有前景 / 链接 / git 增删这类有真正语义的 VS Code 主题变量才透传；不新增主题注册。
+   四类主题与预览的 OS 浅色各自给出可读回退；不能假定 VS Code 主题等于操作系统配色。
    只提供变量，不引入任何卡片几何：代码卡、read 卡、diff、IN/OUT 文本都挂
    `.md-code-surface` 语义类；它们各自的底色 / 字号 / 行高保持原样。 */
 .code-block,
 .md-code-surface {
   --md-code-foreground: var(--vscode-editor-foreground, #d4d4d4);
-  --md-code-token-comment: var(--vscode-symbolIcon-commentForeground, #6a9955);
-  --md-code-token-string: var(--vscode-symbolIcon-stringForeground, #ce9178);
-  --md-code-token-string-expression: var(--vscode-symbolIcon-stringForeground, #ce9178);
-  --md-code-token-constant: var(--vscode-symbolIcon-constantForeground, #b5cea8);
-  --md-code-token-keyword: var(--vscode-symbolIcon-keywordForeground, #569cd6);
-  --md-code-token-parameter: var(--vscode-symbolIcon-variableForeground, #9cdcfe);
-  --md-code-token-function: var(--vscode-symbolIcon-functionForeground, #dcdcaa);
+  --md-code-token-comment: #6a9955;
+  --md-code-token-string: #ce9178;
+  --md-code-token-string-expression: #ce9178;
+  --md-code-token-constant: #b5cea8;
+  --md-code-token-keyword: #569cd6;
+  --md-code-token-parameter: #9cdcfe;
+  --md-code-token-function: #dcdcaa;
   --md-code-token-punctuation: var(--vscode-editor-foreground, #d4d4d4);
   --md-code-token-link: var(--vscode-textLink-foreground, #4daafc);
   --md-code-token-inserted: var(--vscode-gitDecoration-addedResourceForeground, #81b88b);
@@ -1832,13 +1834,13 @@ button.header-title.is-switcher > svg.is-open {
 body.vscode-dark .code-block,
 body.vscode-dark .md-code-surface {
   --md-code-foreground: var(--vscode-editor-foreground, #d4d4d4);
-  --md-code-token-comment: var(--vscode-symbolIcon-commentForeground, #6a9955);
-  --md-code-token-string: var(--vscode-symbolIcon-stringForeground, #ce9178);
-  --md-code-token-string-expression: var(--vscode-symbolIcon-stringForeground, #ce9178);
-  --md-code-token-constant: var(--vscode-symbolIcon-constantForeground, #b5cea8);
-  --md-code-token-keyword: var(--vscode-symbolIcon-keywordForeground, #569cd6);
-  --md-code-token-parameter: var(--vscode-symbolIcon-variableForeground, #9cdcfe);
-  --md-code-token-function: var(--vscode-symbolIcon-functionForeground, #dcdcaa);
+  --md-code-token-comment: #6a9955;
+  --md-code-token-string: #ce9178;
+  --md-code-token-string-expression: #ce9178;
+  --md-code-token-constant: #b5cea8;
+  --md-code-token-keyword: #569cd6;
+  --md-code-token-parameter: #9cdcfe;
+  --md-code-token-function: #dcdcaa;
   --md-code-token-punctuation: var(--vscode-editor-foreground, #d4d4d4);
   --md-code-token-link: var(--vscode-textLink-foreground, #4daafc);
   --md-code-token-inserted: var(--vscode-gitDecoration-addedResourceForeground, #81b88b);
@@ -1849,13 +1851,13 @@ body.vscode-dark .md-code-surface {
 body.vscode-light .code-block,
 body.vscode-light .md-code-surface {
   --md-code-foreground: var(--vscode-editor-foreground, #000000);
-  --md-code-token-comment: var(--vscode-symbolIcon-commentForeground, #008000);
-  --md-code-token-string: var(--vscode-symbolIcon-stringForeground, #a31515);
-  --md-code-token-string-expression: var(--vscode-symbolIcon-stringForeground, #a31515);
-  --md-code-token-constant: var(--vscode-symbolIcon-constantForeground, #098658);
-  --md-code-token-keyword: var(--vscode-symbolIcon-keywordForeground, #0000ff);
-  --md-code-token-parameter: var(--vscode-symbolIcon-variableForeground, #001080);
-  --md-code-token-function: var(--vscode-symbolIcon-functionForeground, #795e26);
+  --md-code-token-comment: #008000;
+  --md-code-token-string: #a31515;
+  --md-code-token-string-expression: #a31515;
+  --md-code-token-constant: #098658;
+  --md-code-token-keyword: #0000ff;
+  --md-code-token-parameter: #001080;
+  --md-code-token-function: #795e26;
   --md-code-token-punctuation: var(--vscode-editor-foreground, #000000);
   --md-code-token-link: var(--vscode-textLink-foreground, #0451a5);
   --md-code-token-inserted: var(--vscode-gitDecoration-addedResourceForeground, #008000);
@@ -1866,13 +1868,13 @@ body.vscode-light .md-code-surface {
 body.vscode-high-contrast .code-block,
 body.vscode-high-contrast .md-code-surface {
   --md-code-foreground: var(--vscode-editor-foreground, #ffffff);
-  --md-code-token-comment: var(--vscode-symbolIcon-commentForeground, #7ca668);
-  --md-code-token-string: var(--vscode-symbolIcon-stringForeground, #ce9178);
-  --md-code-token-string-expression: var(--vscode-symbolIcon-stringForeground, #ce9178);
-  --md-code-token-constant: var(--vscode-symbolIcon-constantForeground, #b5cea8);
-  --md-code-token-keyword: var(--vscode-symbolIcon-keywordForeground, #569cd6);
-  --md-code-token-parameter: var(--vscode-symbolIcon-variableForeground, #9cdcfe);
-  --md-code-token-function: var(--vscode-symbolIcon-functionForeground, #dcdcaa);
+  --md-code-token-comment: #7ca668;
+  --md-code-token-string: #ce9178;
+  --md-code-token-string-expression: #ce9178;
+  --md-code-token-constant: #b5cea8;
+  --md-code-token-keyword: #569cd6;
+  --md-code-token-parameter: #9cdcfe;
+  --md-code-token-function: #dcdcaa;
   --md-code-token-punctuation: var(--vscode-editor-foreground, #ffffff);
   --md-code-token-link: var(--vscode-textLink-foreground, #3794ff);
   --md-code-token-inserted: var(--vscode-gitDecoration-addedResourceForeground, #89d185);
@@ -1883,13 +1885,13 @@ body.vscode-high-contrast .md-code-surface {
 body.vscode-high-contrast-light .code-block,
 body.vscode-high-contrast-light .md-code-surface {
   --md-code-foreground: var(--vscode-editor-foreground, #292929);
-  --md-code-token-comment: var(--vscode-symbolIcon-commentForeground, #515151);
-  --md-code-token-string: var(--vscode-symbolIcon-stringForeground, #811f3f);
-  --md-code-token-string-expression: var(--vscode-symbolIcon-stringForeground, #811f3f);
-  --md-code-token-constant: var(--vscode-symbolIcon-constantForeground, #0000ff);
-  --md-code-token-keyword: var(--vscode-symbolIcon-keywordForeground, #0f4a85);
-  --md-code-token-parameter: var(--vscode-symbolIcon-variableForeground, #001080);
-  --md-code-token-function: var(--vscode-symbolIcon-functionForeground, #795e26);
+  --md-code-token-comment: #515151;
+  --md-code-token-string: #811f3f;
+  --md-code-token-string-expression: #811f3f;
+  --md-code-token-constant: #0000ff;
+  --md-code-token-keyword: #0f4a85;
+  --md-code-token-parameter: #001080;
+  --md-code-token-function: #795e26;
   --md-code-token-punctuation: var(--vscode-editor-foreground, #292929);
   --md-code-token-link: var(--vscode-textLink-foreground, #0f4a85);
   --md-code-token-inserted: var(--vscode-gitDecoration-addedResourceForeground, #587c0c);
@@ -1903,13 +1905,13 @@ body.vscode-high-contrast-light .md-code-surface {
   .code-block,
   .md-code-surface {
     --md-code-foreground: var(--vscode-editor-foreground, #000000);
-    --md-code-token-comment: var(--vscode-symbolIcon-commentForeground, #008000);
-    --md-code-token-string: var(--vscode-symbolIcon-stringForeground, #a31515);
-    --md-code-token-string-expression: var(--vscode-symbolIcon-stringForeground, #a31515);
-    --md-code-token-constant: var(--vscode-symbolIcon-constantForeground, #098658);
-    --md-code-token-keyword: var(--vscode-symbolIcon-keywordForeground, #0000ff);
-    --md-code-token-parameter: var(--vscode-symbolIcon-variableForeground, #001080);
-    --md-code-token-function: var(--vscode-symbolIcon-functionForeground, #795e26);
+    --md-code-token-comment: #008000;
+    --md-code-token-string: #a31515;
+    --md-code-token-string-expression: #a31515;
+    --md-code-token-constant: #098658;
+    --md-code-token-keyword: #0000ff;
+    --md-code-token-parameter: #001080;
+    --md-code-token-function: #795e26;
     --md-code-token-punctuation: var(--vscode-editor-foreground, #000000);
     --md-code-token-link: var(--vscode-textLink-foreground, #0451a5);
     --md-code-token-inserted: var(--vscode-gitDecoration-addedResourceForeground, #008000);

@@ -85,6 +85,9 @@ const LANGUAGE_ALIASES = new Map<string, string>([
   ["cts", "typescript"],
   ["jsx", "jsx"],
   ["tsx", "tsx"],
+  // VS Code language id（其它客户端 / 旧持久化 meta 可能给这种形态）
+  ["javascriptreact", "jsx"],
+  ["typescriptreact", "tsx"],
   ["json", "json"],
   ["jsonc", "jsonc"],
   ["py", "python"],
@@ -176,14 +179,20 @@ function highlighter(): Promise<HighlighterCore> {
   return engine;
 }
 
+/** 首个语言标识（小写）；空串 / 空白返回 undefined。 */
+function firstLangId(lang: string | undefined): string | undefined {
+  if (lang === undefined) return undefined;
+  const first = lang.trim().toLowerCase().split(/[\s,{}[\]()]/u)[0] ?? "";
+  return first === "" ? undefined : first;
+}
+
 /**
  * 首个语言标识归一化：`ts`, `TypeScript`, `ts title=x` 都取第一个词。
  * 用显式 Map，`constructor` / `__proto__` / `toString` 等继承成员不会命中。
  */
 export function normalizeLang(lang: string | undefined): string | undefined {
-  if (lang === undefined) return undefined;
-  const first = lang.trim().toLowerCase().split(/[\s,{}[\]()]/u)[0] ?? "";
-  return first === "" ? undefined : LANGUAGE_ALIASES.get(first);
+  const first = firstLangId(lang);
+  return first === undefined ? undefined : LANGUAGE_ALIASES.get(first);
 }
 
 /**
@@ -200,6 +209,25 @@ export function languageForPath(path: string | undefined): string | undefined {
   const dot = name.lastIndexOf(".");
   if (dot <= 0 || dot === name.length - 1) return undefined;
   return LANGUAGE_ALIASES.get(name.slice(dot + 1).toLowerCase());
+}
+
+/**
+ * 服务端给的语言提示 + 路径扩展名 → 可高亮的规范语言。
+ *
+ * - 可识别的语言标识优先（`tsx` / `typescriptreact` / `json` …）；
+ * - 显式的 `text` / `plaintext` 是服务端的「就是纯文」意图，保持纯文，
+ *   不能按路径扩展名反悔；
+ * - 语言标识缺失或未识别时才回退到 `path` 的扩展名；
+ * - 未知扩展名仍返回 undefined（纯文），不猜内容。
+ *
+ * 只查 `LANGUAGE_ALIASES` 显式表，继承成员与任意语言名不会进入引擎。
+ */
+export function resolveLanguage(lang: string | undefined, path: string | undefined): string | undefined {
+  const normalized = normalizeLang(lang);
+  if (normalized !== undefined) return normalized;
+  const first = firstLangId(lang);
+  if (first === "text" || first === "plaintext") return undefined;
+  return languageForPath(path);
 }
 
 /** 只接受本地 css-variables 主题生成的变量名，拒绝任何内联 CSS。 */

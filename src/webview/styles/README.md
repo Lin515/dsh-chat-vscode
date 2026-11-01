@@ -17,6 +17,10 @@ webview 的两份 CSS，上层见[界面导航](<../README.md>)。
 
 内容字号只取 `--font-size`（来自 `dshChat.fontSize`），等宽内容只换 `--mono` 字族并使用 1.5 行高；不再有 `--mono-size`，也不读取 `--vscode-editor-font-size`。路径、行号、计数等辅助标注仍可用更小的档位；Markdown 标题与数学保持相对字号。任务态审批 / 待答问卷 / 输入区计划审阅是交互面板，不使用节点阅读框。
 
+## 代码高亮配色
+
+`.code-block` 与 `.md-code-surface` 上的 `--md-code-*` 变量只给代码 token 上色：语法色（keyword / string / constant / comment / function / parameter）按 base / dark / light / high-contrast / high-contrast-light 各用一组固定受控值，**不得改取 `--vscode-symbolIcon-*`**——那是大纲 / 补全图标色，不是 TextMate tokenColors，主题可把它设成与正文相同，于是 span 存在也看不出高亮。只有 `--vscode-editor-foreground`、`textLink-foreground` 与 git 增删色这类有真正语义的主题变量可以透传。四主题 + 预览浅色都要同步；[styles 回归](<../../../scripts/styles.test.ts>)在「图标色全部等于正文」的模拟下断言语法角色仍互相分色。
+
 ## 残影：状态高亮不许越出行盒 / 刻线盒
 
 撤掉高亮时可能原地留薄残影：旧像素落在新状态盒外，按新盒子清帧时失去归属。两条已知通路：

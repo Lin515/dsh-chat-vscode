@@ -177,8 +177,8 @@ GFM 对多段脚注、重复定义、复杂分隔符等边缘输入可能与迁�
 
 - 细粒度 `createHighlighterCore` + `createJavaScriptRegexEngine` + `createCssVariablesTheme`；无 Oniguruma WASM、CDN、网络或 unsafe-eval。单文件 IIFE 首版不复制官方动态分包 / 增量会话。
 - 显式静态语言集合：JavaScript / TypeScript / JSX / TSX、JSON / JSONC、Python、Shell、PowerShell、C / C++、C#、Go、Rust、Java、HTML、CSS、SQL、YAML、Markdown、diff。语言模块按 `name` 去重（HTML 模块自带 JS / CSS、TSX 复用 TS / JSX 依赖）；嵌入语法依赖显式登记。JS 引擎不能准确支持的 grammar 纯文本回退，不用宽松模式制造看似正确的颜色。最终集合在实现验证后锁定，不自动猜语言。
-- `normalizeLang` 取首个语言标识并用显式 `Map` 归一化 js / ts / py / sh / ps1 / yml 等别名；`constructor` / `__proto__` / `toString` 不命中对象继承成员。显示仍保留原标签；高亮身份与请求使用归一化语言，因此 `ts` / `TypeScript` / `ts title=x` 之间切换不拆已有 span、不重新请求。
-- 每 webview 一个按需初始化实例；初始化失败不让卡片消失。结构化 token 生成 React span，不将 `codeToHtml` 拼回普通 HTML；主题变量只接受 `var(--md-code-foreground|token-*)`。CSS 在 `.code-block` 与只带变量的 `.md-code-surface` 上定义四类 `body.vscode-light/dark/high-contrast/high-contrast-light` 回退，并用 `@media (prefers-color-scheme: light)` 覆盖无 VS Code 主题类的预览浅色；`.md-code-surface` 不复制卡片底色、描边、内边距或字体规则。高亮 span 只改受控颜色与 `is-italic` / `is-bold` / `is-underlined` 字形修饰，不改字号、字体、行高、背景、padding、换行或卡片布局。不承诺匹配所有用户 TextMate 主题。
+- `normalizeLang` 取首个语言标识并用显式 `Map` 归一化 js / ts / py / sh / ps1 / yml 等别名，以及 VS Code language id `typescriptreact` / `javascriptreact`；`constructor` / `__proto__` / `toString` 不命中对象继承成员。显示仍保留原标签；高亮身份与请求使用归一化语言，因此 `ts` / `TypeScript` / `ts title=x` 之间切换不拆已有 span、不重新请求。`resolveLanguage` 供工具卡把服务端语言提示与文件路径合成语言：可识别提示优先，显式 `text` / `plaintext` 保持纯文，提示缺失或未识别时才按扩展名回退，未知扩展名仍纯文。
+- 每 webview 一个按需初始化实例；初始化失败不让卡片消失。结构化 token 生成 React span，不将 `codeToHtml` 拼回普通 HTML；主题变量只接受 `var(--md-code-foreground|token-*)`。CSS 在 `.code-block` 与只带变量的 `.md-code-surface` 上定义四类 `body.vscode-light/dark/high-contrast/high-contrast-light` 回退，并用 `@media (prefers-color-scheme: light)` 覆盖无 VS Code 主题类的预览浅色；`.md-code-surface` 不复制卡片底色、描边、内边距或字体规则。语法 token 色**不取 `symbolIcon.*`**——那是大纲 / 补全图标色，主题可把它设成与正文相同，span 正确也会看起来没高亮；keyword / string / constant / comment / function / parameter 按四类主题各用固定受控值，只有 foreground / 链接 / git 增删透传真正语义的 VS Code 主题变量。高亮 span 只改受控颜色与 `is-italic` / `is-bold` / `is-underlined` 字形修饰，不改字号、字体、行高、背景、padding、换行或卡片布局。不承诺匹配所有用户 TextMate 主题。
 
 ### 缓存、限额与文本保真
 
@@ -196,13 +196,14 @@ GFM 对多段脚注、重复定义、复杂分隔符等边缘输入可能与迁�
 
 同一套纯模块与受控 span 已接入五类工具节点，范围仅为基础语法 token 着色，不做语义分析、LSP 或诊断，也不重做工具布局：
 
-- **read**：一次 tokenize **完整返回窗口**（行文本按 `\n` 连接）后再按行切 token，不能用 `capRows` 的显示子集去 tokenize——否则被折叠的首尾会丢掉多行注释等跨行上下文。语言取结果 `meta.lang`；行文本按契约不含换行，异常时整卡回退纯文。行号槽、折展、复制文本与窗口计数不变。
+- **read**：一次 tokenize **完整返回窗口**（行文本按 `\n` 连接）后再按行切 token，不能用 `capRows` 的显示子集去 tokenize——否则被折叠的首尾会丢掉多行注释等跨行上下文。语言以结果 `meta.lang` 优先，缺失或未识别时按 `meta.path`（横幅里的路径）扩展名回退；显式 `text` / `plaintext` 仍纯文，未知扩展名也纯文。行文本按契约不含换行，异常时整卡回退纯文。行号槽、折展、复制文本与窗口计数不变。
 - **write / edit**：只有工具结算后才着色，`active` / `phase` 由调用方明确传入，不能凭参数 JSON 是否完整推断 settled。write 无 diff 时按参数目标路径扩展名给预览取语言；有 diff 时以 hunk 的 `path` 为准，缺失才回退参数路径。运行中的 edit 即使已有参数级 diff 预览也保持纯文。
 - **diff**：每个 hunk 独立把旧侧（context + del）与新侧（context + add）用 `\n` 连接后分别 tokenize，再按原 hunk 行序映射回单栏 / 双栏的每一行。只重建本 hunk 内的连续片段，不跨 hunk / 不连续片段拼整文件；缺上下文是安全近似，不解析 `+` / `-` 前缀为源码，也不改底色、增删计数、截断与符号。
-- **workflow**：只认精确工具名，从完整参数取脚本字段（真实现行 schema 的 `script` 优先，旧包 `code` 兜底），以 JavaScript 进代码块；同一份参数去掉该字段后，其余参数仍以 IN JSON 显示，不丢信息也不重复脚本。
+- **workflow**：只认精确工具名，从完整参数取脚本字段（真实现行 schema 的 `script` 优先，旧包 `code` 兜底），以 JavaScript 进代码块；同一份参数去掉该字段后，其余参数仍以 IN JSON 显示并着色，不丢信息也不重复脚本。
+- **通用 IN JSON**：参数完整解析为对象 / 数组时，结算后按 JSON 着色；标量参数、半截 JSON、非 JSON 原文与运行中都保持纯文，不猜日志、不拆字段树。IN 从第一帧起由同一个 `CodeText` 承载，只切换 `lang` / `active`，不按 JSON 资格替换宿主；参数原文到缩进 JSON 的既有显示行为不变。
 - **inspect / schema JSON**：只对精确身份表（`cordis_inspect_list` / `cordis_inspect_query` / `cordis_inspect_self` / `cordis_package_inspect` / `cordis_runtime_inspect` / `session_event_read`）且**成功、整段可解析为对象 / 数组**的 OUT 按 JSON 着色。显示仍是完整原字符串（含 `inputSchema` / `outputSchema` 等深层字段），不拆字段树、不把所有 OUT 误当 JSON；错误、半截、标量与其它工具原样纯文，`session_event_read` 的标题 + 围栏文本也因整段不可解析而回退。
 - **共享样式与文本保真**：新着色面挂 `.md-code-surface` 语义类，只提供 `--md-code-*` 主题变量，不引入卡片几何；高亮 span 的字形修饰规则不再限定在 `.code-block` 内。diff 背景、read 卡布局、IN/OUT 文本排版与 `CodeBlock` 均保持原规则。所有显示文本仍由原字符串切片，复制载荷（read 窗口行、diff 行、完整 OUT、脚本与参数）不变；未知语言、超限、引擎失败与 SSR / 运行中都回退纯文。
-- **验收状态**：typecheck 4/4、189/189 离线断言（并发 8）、vendor 12/12、build / diff-check 通过且无 duplicate-case。受控真实浏览器已覆盖五面 token / 文本与状态切换：read 12 行 head/tail 折叠时，隐藏中间关闭注释后 tail 仍保留关键词色；split 同一 context 行旧侧注释色、新侧关键词色不同，且第二个 hunk 不串状态；write / edit running 无 token 且选区保持，read 语言增强与别名切换保持；inspect 资格变化时原 OUT TextNode 保留（稳定宿主），清选区后 87 token；write 无 diff 的 CRLF / tab / 尾 EOL 完整；四主题节点复用、复制三帧精确、FindBar `const total` 跨 span 计数 1/3；未知语言 / 超长 / 换行 / 错误 / JSON 失效等回退通过。未覆盖安装端、系统剪贴板与真实模型。
+- **验收状态**：typecheck 4/4、189/189 离线断言（并发 8）、vendor 12/12、build / diff-check 通过且无 duplicate-case。受控真实浏览器已覆盖五面 token / 文本与状态切换：read 12 行 head/tail 折叠时，隐藏中间关闭注释后 tail 仍保留关键词色；split 同一 context 行旧侧注释色、新侧关键词色不同，且第二个 hunk 不串状态；write / edit running 无 token 且选区保持，read 语言增强与别名切换保持；inspect 资格变化时原 OUT TextNode 保留（稳定宿主），清选区后 87 token；write 无 diff 的 CRLF / tab / 尾 EOL 完整；四主题节点复用、复制三帧精确、FindBar `const total` 跨 span 计数 1/3；未知语言 / 超长 / 换行 / 错误 / JSON 失效等回退通过。本轮 read 缺 `lang` / VS Code language id 回退、通用 IN JSON 与语法 palette 去 `symbolIcon` 化已由主静态 DOM / 四主题 computed 与离线断言复验：图标色全部等于正文时 import / from / export / type 与 JSON key / string / constant 仍分色，15 项资格边界、running→ok 原 TextNode / 选区保持到释放、read 全 6067 字符复制与 JSON Ctrl+C 桥帧通过；本轮未做安装端验收，安装端 / 系统剪贴板 / 真实模型仍未覆盖。
 
 ## 数学语法、排版与安全
 

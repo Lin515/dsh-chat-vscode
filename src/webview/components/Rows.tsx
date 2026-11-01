@@ -290,26 +290,38 @@ export function ToolRow({
       )
     : undefined;
   /**
-   * 「输入」段的内容：模型实际传的参数（官方 `cardBody`）。
+   * 「输入」段的内容与 JSON 着色资格：模型实际传的参数（官方 `cardBody`）。
    *
    * 官方这里给的是**解析后的卡片体**，所以我们把线格式的 JSON 缩进后显示；
    * 解析不了（半截 JSON、非 JSON 参数）就原样透出；精确 write 的原文预览另走 WriteBody。
+   * `json` 只对完整解析成对象 / 数组的参数为真：半截 JSON 与标量参数仍是纯文，
+   * 不猜日志、不拆字段。运行中即使参数已完整也先不着色（`active` 见渲染处）。
    */
-  const inputText = (() => {
+  const input = (() => {
     if (!tool.input || showWriteBody) return undefined;
     // workflow：脚本已经交给代码块，IN 只放其余参数；空对象不画一条无信息的 "{}"。
     if (workflow !== undefined) {
       return Object.keys(workflow.rest).length === 0
         ? undefined
-        : JSON.stringify(workflow.rest, null, 2);
+        : { text: JSON.stringify(workflow.rest, null, 2), json: true };
     }
     try {
       const parsed = JSON.parse(tool.input) as unknown;
-      return JSON.stringify(parsed, null, 2);
+      return {
+        text: JSON.stringify(parsed, null, 2),
+        json: parsed !== null && typeof parsed === "object",
+      };
     } catch {
-      return tool.input;
+      return { text: tool.input, json: false };
     }
   })();
+  const inputText = input?.text;
+  /**
+   * IN 的 JSON 着色只在结算后启用：运行中参数可能还在变，先保持纯文；
+   * `CodeText` 宿主从第一帧起就存在（标量 / 半截 / JSON 都走同一个根 span），
+   * 这里只改 `lang` / `active`，不按资格切换组件，选区不会因宿主卸载丢失。
+   */
+  const jsonInput = input?.json === true && !running;
   /**
    * IN / OUT 卡的渲染判据，**只有这一份**：同一个式子既决定它渲不渲染，也决定要不要
    * 给它做滚动定位——两处各写一份必然漂移（改了渲染忘了定位，那条滚动条就永远停在
@@ -514,7 +526,12 @@ export function ToolRow({
           {inputText && !codeCard ? (
             <div className="io-section">
               <span className="io-label">{texts.toolInput}</span>
-              <span className="io-text mono">{inputText}</span>
+              <CodeText
+                className="io-text mono"
+                text={inputText}
+                lang={jsonInput ? "json" : undefined}
+                active={jsonInput}
+              />
             </div>
           ) : null}
           {inputText && !codeCard && showOutput ? <span className="io-divider" aria-hidden /> : null}

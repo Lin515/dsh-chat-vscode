@@ -1637,6 +1637,66 @@ console.log("styles: 节点展开后——进行中的贴底、已结束的置�
 }
 console.log("styles: 节点内容共用同一阅读框与扩展字号（工具卡/代码卡不套第二圈） ✓");
 
+// ---------- 16c. 语法 token 配色不依赖 symbolIcon ----------
+//
+// symbolIcon.* 是 Outline / breadcrumb / 补全图标色，不是 TextMate tokenColors；
+// 主题完全可以把 keyword 图标设成与正文相同，此时即便 span 正确也会看起来没高亮
+// （例如 import 与正文同色）。语法色因此按四类主题各取一组固定受控值，只有
+// foreground / 链接 / git 增删这类有真正语义的主题变量才透传。
+{
+  const themes: readonly (readonly [selector: string, name: string])[] = [
+    [".md-code-surface", "base"],
+    ["body.vscode-dark .md-code-surface", "dark"],
+    ["body.vscode-light .md-code-surface", "light"],
+    ["body.vscode-high-contrast .md-code-surface", "hc"],
+    ["body.vscode-high-contrast-light .md-code-surface", "hc-light"],
+  ];
+  const roles = ["keyword", "string", "constant", "comment", "function", "parameter"] as const;
+  /** 最坏主题：正文与所有 symbolIcon 图标色相同。 */
+  const mock = new Map<string, string>([["--vscode-editor-foreground", "#123456"]]);
+  for (const role of ["comment", "string", "constant", "keyword", "variable", "function"]) {
+    mock.set(`--vscode-symbolIcon-${role}Foreground`, "#123456");
+  }
+  const resolve = (value: string): string => {
+    let out = value.trim();
+    for (let depth = 0; depth < 8; depth += 1) {
+      const match = /^var\(\s*(--[a-z0-9-]+)\s*(?:,\s*(.+))?\)$/iu.exec(out);
+      if (!match) break;
+      const replacement = mock.get(match[1]) ?? match[2]?.trim();
+      if (replacement === undefined || replacement === out) break;
+      out = replacement;
+    }
+    return out;
+  };
+  const declarations = (block: string): Map<string, string> => {
+    const map = new Map<string, string>();
+    for (const match of block.matchAll(/(--md-code-[a-z-]+)\s*:\s*([^;]+);/gu)) {
+      map.set(match[1], match[2].trim());
+    }
+    return map;
+  };
+
+  assert.doesNotMatch(css, /var\(--vscode-symbolIcon-/, "语法配色不得引用任何 symbolIcon 图标色");
+  for (const [selector, name] of themes) {
+    const vars = declarations(rule(selector));
+    const foreground = resolve(vars.get("--md-code-foreground") ?? "");
+    assert.strictEqual(foreground, "#123456", `${name}: 模拟的正文色应被解析出来`);
+    const colors = new Map<string, string>();
+    for (const role of roles) {
+      const value = vars.get(`--md-code-token-${role}`);
+      assert.ok(value, `${name}: 缺少 --md-code-token-${role}`);
+      colors.set(role, resolve(value));
+      assert.notStrictEqual(colors.get(role), foreground, `${name}: ${role} 不能与正文同色`);
+    }
+    assert.strictEqual(
+      new Set(colors.values()).size,
+      roles.length,
+      `${name}: 关键词 / 字符串 / 常量 / 注释 / 函数 / 参数必须互相分色`,
+    );
+  }
+}
+console.log("styles: 语法 token 配色不依赖 symbolIcon，图标色=正文时仍分色 ✓");
+
 // ---------- 16c''. 正文里的图有官方那一档尺寸上限：超出的按比例缩，原图点开看 ----------
 //
 // 官方 dsh web 的正文图（`MarkdownText.module.css` 的 `.image` + `.imageButton .image`）：

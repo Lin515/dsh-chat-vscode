@@ -22,6 +22,7 @@ import {
   MAX_HIGHLIGHT_LINE_CHARS,
   normalizeLang,
   resetHighlightCache,
+  resolveLanguage,
   splitSpansByLine,
   type HighlightSpan,
 } from "../src/webview/markdown/highlight";
@@ -37,6 +38,15 @@ function textOf(code: string, spans: readonly HighlightSpan[]): string {
     cursor = span.end;
   }
   return out + code.slice(cursor);
+}
+
+/** 断言 literal 落在单个 token 内，返回该 token 的颜色。 */
+function colorOf(code: string, spans: readonly HighlightSpan[], literal: string): string | undefined {
+  const at = code.indexOf(literal);
+  assert.ok(at >= 0, `语料必须包含 ${literal}`);
+  const span = spans.find((candidate) => candidate.start <= at && candidate.end >= at + literal.length);
+  assert.ok(span !== undefined, `${literal} 必须落在单个 token 内`);
+  return span.color;
 }
 
 // ---------- 1. 别名与不支持的输入 ----------
@@ -74,6 +84,23 @@ console.log("highlight: 语言别名与继承成员不命中 ✓");
   assert.strictEqual(languageForPath(undefined), undefined);
 }
 console.log("highlight: 文件路径扩展名映射只认显式语言 ✓");
+
+// ---------- 1c. read 卡语言：可识别 lang 优先，缺失按路径回退，显式纯文不反悔 ----------
+{
+  assert.strictEqual(normalizeLang("typescriptreact"), "tsx", "VS Code language id 归一化");
+  assert.strictEqual(normalizeLang("javascriptreact"), "jsx");
+  assert.strictEqual(resolveLanguage("typescriptreact", "Editor.tsx"), "tsx");
+  assert.strictEqual(resolveLanguage("javascriptreact", "Editor.jsx"), "jsx");
+  assert.strictEqual(resolveLanguage(undefined, "src/Rows.tsx"), "tsx", "缺 lang 时按 .tsx 回退");
+  assert.strictEqual(resolveLanguage(undefined, "schema.json"), "json", "缺 lang 的 read JSON 也着色");
+  assert.strictEqual(resolveLanguage("json", "notes.txt"), "json", "服务端 lang 优先于扩展名");
+  assert.strictEqual(resolveLanguage("text", "src/Rows.tsx"), undefined, "显式 text 保持纯文");
+  assert.strictEqual(resolveLanguage("plaintext", "schema.json"), undefined, "显式 plaintext 保持纯文");
+  assert.strictEqual(resolveLanguage(undefined, "src/a.unknown"), undefined, "未知扩展名仍纯文");
+  assert.strictEqual(resolveLanguage("cobol", "src/a.cob"), undefined, "未识别 lang + 未知扩展名仍纯文");
+  assert.strictEqual(resolveLanguage("constructor", "src/a.ts"), "typescript", "继承成员不命中语言表，回退路径");
+}
+console.log("highlight: read 语言提示优先、缺失按扩展名回退、显式纯文保持纯文 ✓");
 
 // ---------- 2. 源码逐字保真（CRLF / 空行 / 尾空白 / NUL） ----------
 {
@@ -156,6 +183,52 @@ console.log("highlight: CRLF / 空行 / 尾空白 / NUL 由原 code 切片逐字
   assert.strictEqual(await highlightLines("x", "brainfuck"), null, "未知语言仍回退纯文");
 }
 console.log("highlight: 整段 token 按行裁剪、CRLF / tab / NUL / 多行注释保真 ✓");
+
+// ---------- 2c. 真实 token 色：关键词 / JSON 词元不等于 foreground，且语义分色 ----------
+{
+  const foreground = "var(--md-code-foreground)";
+  const keyword = "var(--md-code-token-keyword)";
+  const stringExpression = "var(--md-code-token-string-expression)";
+  const constant = "var(--md-code-token-constant)";
+
+  const source = 'import { value } from "mod";\nexport type T = { count: number; flag: boolean };\n// note\n';
+  const spans = await highlightCode(source, "typescriptreact");
+  assert.ok(spans !== null, "VS Code typescriptreact 标识必须能高亮");
+  for (const word of ["import", "from", "export", "type"]) {
+    assert.strictEqual(colorOf(source, spans, word), keyword, `${word} 必须是 keyword 色`);
+  }
+  const modColor = colorOf(source, spans, '"mod"');
+  assert.strictEqual(modColor, stringExpression, "模块字符串必须是 string-expression 色");
+  assert.notStrictEqual(modColor, keyword, "字符串与关键词必须分色");
+  const commentColor = colorOf(source, spans, "// note");
+  assert.notStrictEqual(commentColor, foreground, "注释不能落回 foreground");
+  assert.notStrictEqual(commentColor, keyword, "注释与关键词必须分色");
+  assert.notStrictEqual(modColor, commentColor, "字符串与注释必须分色");
+
+  const jsonSource = '{\n  "key": "value",\n  "count": 123,\n  "flag": true,\n  "none": null\n}\n';
+  const jsonSpans = await highlightCode(jsonSource, "json");
+  assert.ok(jsonSpans !== null);
+  const keyColor = colorOf(jsonSource, jsonSpans, '"key"');
+  const valueColor = colorOf(jsonSource, jsonSpans, '"value"');
+  const countColor = colorOf(jsonSource, jsonSpans, "123");
+  const boolColor = colorOf(jsonSource, jsonSpans, "true");
+  assert.strictEqual(keyColor, keyword, "JSON 键必须是 keyword 色");
+  assert.strictEqual(valueColor, stringExpression, "JSON 字符串值必须是 string-expression 色");
+  assert.strictEqual(countColor, constant, "JSON 数字必须是 constant 色");
+  assert.strictEqual(boolColor, constant, "JSON 布尔必须是 constant 色");
+  for (const [label, color] of [
+    ["键", keyColor],
+    ["字符串值", valueColor],
+    ["数字", countColor],
+    ["布尔", boolColor],
+  ] as const) {
+    assert.notStrictEqual(color, foreground, `JSON ${label}不能落回 foreground`);
+  }
+  assert.notStrictEqual(keyColor, valueColor, "JSON 键与字符串值必须分色");
+  assert.notStrictEqual(keyColor, countColor, "JSON 键与数字必须分色");
+  assert.notStrictEqual(valueColor, countColor, "JSON 字符串值与数字必须分色");
+}
+console.log("highlight: import/from/export/type 与 JSON key/string/number/bool 词元色 ≠ foreground 且语义分色 ✓");
 
 // ---------- 3. 静态精选语言都能工作 ----------
 {

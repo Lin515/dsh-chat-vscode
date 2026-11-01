@@ -327,14 +327,19 @@ console.log("toolRowRender: 节点内容各段套同一阅读框，工具卡/代
   assert.ok(packageInspect.includes("md-code-surface"), "本地实际存在的 package inspect 也覆盖");
   assert.ok(packageInspect.includes("packageId"), "完整 OUT 原字符串仍显示");
 
+  // IN 的完整参数本身也会挂 JSON 着色面，所以这些反例都按**数量**钉 OUT 没有第二面。
   const generic = render(inspect("custom_tool", '{"providers":[{"id":"a"}]}'));
-  assert.ok(!generic.includes("md-code-surface"), "其它工具的 JSON 形 OUT 不按 JSON 着色");
+  assert.strictEqual(
+    (generic.match(/md-code-surface/g) ?? []).length,
+    1,
+    "其它工具的 JSON 形 OUT 不按 JSON 着色（只有 IN 那一面）",
+  );
 
   const partial = render(inspect("cordis_inspect_query", '{"data":[1,2'));
-  assert.ok(!partial.includes("md-code-surface"), "半截 JSON 纯文回退");
+  assert.strictEqual((partial.match(/md-code-surface/g) ?? []).length, 1, "半截 OUT 纯文回退（只有 IN 那一面）");
 
   const failed = render(inspect("cordis_inspect_self", '{"plugins":[]}', { status: "error", output: "boom" }));
-  assert.ok(!failed.includes("md-code-surface"), "错误结果纯文回退");
+  assert.strictEqual((failed.match(/md-code-surface/g) ?? []).length, 1, "错误 OUT 纯文回退（只有 IN 那一面）");
 
   // running 的同一段 OUT 先由原 span 纯文承载；切 ok 后仍是同一个 CodeText 宿主，
   // 只切换 lang/active，不能按 jsonOutput 条件替换成另一个组件（会卸载 TextNode）。
@@ -372,8 +377,26 @@ console.log("toolRowRender: inspect JSON 只对明确工具与完整成功结果
   });
   assert.ok(read.includes("md-code-surface"), "read 卡正文用共享着色面（窗口整段 tokenize 后切行）");
   assert.ok(read.includes("/* multi") && read.includes("line */"), "多行注释原文完整");
+
+  // 旧记录 / 未映射扩展名可能没有 meta.lang：语言解析必须按横幅里的路径回退，
+  // 否则整卡 0 token（缺 lang 的旧记录形态）。显式 text / plaintext 由 resolveLanguage 保持纯文。
+  const noLang = render({
+    id: "call-read-nolang", name: "read", title: "", detail: "Rows.tsx", status: "ok",
+    input: '{"file_path":"Rows.tsx"}', filePath: "Rows.tsx",
+    card: {
+      kind: "read", label: "Rows.tsx", totalLines: 1,
+      lines: [{ number: 1, text: 'import { x } from "y";' }],
+    },
+  });
+  assert.ok(noLang.includes("import { x } from"), "缺 lang 时正文仍完整");
+  const toolCardsSource = readFileSync(join(process.cwd(), "src", "webview", "components", "ToolCards.tsx"), "utf8");
+  assert.match(
+    toolCardsSource,
+    /resolveLanguage\(card\.lang, card\.label\)/,
+    "ReadCard 的语言解析必须带 meta.path（card.label）扩展名回退",
+  );
 }
-console.log("toolRowRender: read 卡共享着色面与完整窗口正文 ✓");
+console.log("toolRowRender: read 卡共享着色面、完整窗口正文与缺 lang 路径回退 ✓");
 
 // ---------- 7. 状态接线：running 的 write/edit 明确传 streaming，不凭参数完整推 settled ----------
 {
@@ -391,5 +414,35 @@ console.log("toolRowRender: read 卡共享着色面与完整窗口正文 ✓");
   assert.match(rowsSource, /phase=\{running \? "streaming" : "settled"\}/, "Rows 把 running 明确翻译成 streaming");
 }
 console.log("toolRowRender: 运行中 write/edit 保持纯文（phase/active 显式传入）✓");
+
+// ---------- 8. 工具 IN：完整 JSON 对象 / 数组在结算后按 JSON 着色，宿主始终同一 CodeText ----------
+{
+  const tool = (input: string, overrides: Partial<ToolCallView> = {}): ToolCallView => ({
+    id: "call-in-json", name: "custom_tool", title: "", detail: "demo", status: "ok",
+    input, output: "", ...overrides,
+  });
+  const json = render(tool('{"key":"value","count":1}'));
+  assert.match(json, /<span[^>]*class="io-text mono md-code-surface"/, "完整 JSON 对象 IN 挂共享着色面");
+  assert.ok(json.includes("&quot;key&quot;"), "IN 仍显示完整参数");
+  const array = render(tool("[true,1]"));
+  assert.match(array, /class="io-text mono md-code-surface"/, "JSON 数组同样着色");
+  const running = render(tool('{"key":"value"}', { status: "running" }));
+  assert.ok(!running.includes("md-code-surface"), "运行中先纯文，结算后才着色");
+  const half = render(tool('{"key":"val'));
+  assert.ok(!half.includes("md-code-surface"), "半截 JSON 不着色");
+  const scalar = render(tool('"just-text"'));
+  assert.ok(!scalar.includes("md-code-surface"), "JSON 标量参数不着色");
+  const nonJson = render(tool("not json"));
+  assert.ok(!nonJson.includes("md-code-surface"), "非 JSON 参数保持原样纯文");
+  // IN 从第一帧起就是 CodeText；资格变化只改 lang/active，不替换组件（选区不随宿主卸载丢失）。
+  const rowsSource = readFileSync(join(process.cwd(), "src", "webview", "components", "Rows.tsx"), "utf8");
+  assert.match(
+    rowsSource,
+    /<CodeText\s+className="io-text mono"\s+text=\{inputText\}\s+lang=\{jsonInput \? "json" : undefined\}\s+active=\{jsonInput\}/,
+    "IN 始终由同一个 CodeText 承载，资格只控 lang/active",
+  );
+  assert.doesNotMatch(rowsSource, /\{jsonInput \? \(\s*<CodeText/, "不能按 JSON 资格切换 IN 宿主组件");
+}
+console.log("toolRowRender: IN 完整 JSON 结算后着色，半截/标量/运行中纯文且宿主稳定 ✓");
 
 console.log("\ntoolRowRender: all assertions passed");
