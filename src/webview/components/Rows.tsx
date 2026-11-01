@@ -232,6 +232,16 @@ export function ToolRow({
   // 出错时结果文本（失败原因）比 diff 更有用，两者都显示
   const showOutput = Boolean(tool.output) && (!hasDiff || tool.status === "error");
   /**
+   * 结果里**真的拿到了字节**的图（`read_image`、截图等工具的 image 内容块）。
+   * 字节到达前数组里是空串（`ImageGallery` 自己会滤掉并返回 null），按长度算会先
+   * 闪一个空框。
+   *
+   * 图是**输出的一部分**，不是另一段内容：有 IN/OUT 卡时接在「输出」正文下方、
+   * 共用同一个阅读框（用户 2026-11-02 口径）；只有走卡片 / diff / 代码这些形态时
+   * 才退回独立的图库块。
+   */
+  const hasImages = (tool.images ?? []).some((src) => src !== "");
+  /**
    * 技能节点（`skill` 工具）的正文**只有 SKILL 内容**：不渲染输入参数，也不给
    * 「输出」标题。`skillInstructions` 去掉模型侧的信封，只留 `<skill_instructions>`
    * 里的正文；出错 / 旧结果没有信封时原样显示。
@@ -331,7 +341,8 @@ export function ToolRow({
    * （`card = running ? undefined : tool.card`），跑 `run_code` / 长命令这类调用时，
    * 展开区里唯一能撑出滚动条的就是这段 IN（参数 JSON）。
    */
-  const showIoCard = !isSkill && !hasDiff && !hasCard && ((Boolean(inputText) && !codeCard) || showOutput);
+  const showIoCard =
+    !isSkill && !hasDiff && !hasCard && ((Boolean(inputText) && !codeCard) || showOutput || hasImages);
   const ioRef = useRef<HTMLDivElement>(null);
   // 工具展开区（diff / 卡片 / IN-OUT / 运行状态）：活跃时贴底，用户离开底部或划选则暂停。
   // 打开已结束节点从顶部读；已打开节点收尾不抢位置——判据见 `useStickyBody`。
@@ -361,7 +372,7 @@ export function ToolRow({
     (!isSkill && (showOutput || Boolean(inputText))) ||
     runningBody ||
     Boolean(exitMeta) ||
-    (tool.images?.length ?? 0) > 0 ||
+    hasImages ||
     (tool.files?.length ?? 0) > 0;
 
   // `todo_write`：官方 `TodoRow` 的标题与进度摘要（`{done}/{total} 已完成 · 正在做 X`，
@@ -522,7 +533,8 @@ export function ToolRow({
           所以这里只在**两者都没有**时渲染——否则同一份内容会出现两次；
           `run_code` 例外：它的输入已经是上面的代码块（官方同样不再渲染 IN）。 */}
       {showIoCard ? (
-        <div ref={ioRef} className="row-body io-card">
+        // 含图时不吃文本展开体的 320px 限高与内滚（图是拿来看的），与旧图库块同一档
+        <div ref={ioRef} className={`row-body io-card${hasImages ? " is-media" : ""}`}>
           {inputText && !codeCard ? (
             <div className="io-section">
               <span className="io-label">{texts.toolInput}</span>
@@ -534,16 +546,26 @@ export function ToolRow({
               />
             </div>
           ) : null}
-          {inputText && !codeCard && showOutput ? <span className="io-divider" aria-hidden /> : null}
-          {showOutput ? (
+          {inputText && !codeCard && (showOutput || hasImages) ? <span className="io-divider" aria-hidden /> : null}
+          {showOutput || hasImages ? (
             <div className="io-section">
               <span className="io-label">{texts.toolOutput}</span>
-              <CodeText
-                className={`io-text mono${tool.status === "error" ? " is-error" : ""}`}
-                text={shownOutput}
-                lang={jsonOutput ? "json" : undefined}
-                active={jsonOutput}
-              />
+              {showOutput ? (
+                <CodeText
+                  className={`io-text mono${tool.status === "error" ? " is-error" : ""}`}
+                  text={shownOutput}
+                  lang={jsonOutput ? "json" : undefined}
+                  active={jsonOutput}
+                />
+              ) : null}
+              {/* 图直接接在输出正文下方，**同一条**阅读框里（用户 2026-11-02 口径：
+                  不要再为图片单独开一个块） */}
+              {hasImages ? (
+                <ImageGallery
+                  alt={texts.toolImageAlt}
+                  sources={(tool.images ?? []).map((src) => ({ src }))}
+                />
+              ) : null}
             </div>
           ) : null}
         </div>
@@ -565,16 +587,13 @@ export function ToolRow({
           不会替一个看不见的盒子解码图片（`read_image` 多的会话里这是几十张图）。
           来源含 `read_image`、截图等任何工具回带的 image 块（`tool.images`）。
 
-          图库自己也套进**节点框**（`.row-body.is-media`，用户 2026-10-02 口径）：
-          此前它只有一段 18px 缩进、没有边框，几张图直接浮在会话流里，看不出属于
-          上面那一行节点。`.is-media` 去掉文本类展开体的 320px 限高——图是拿来看的，
-          给个内滚只会让人多拖一次滚动条。
-
-          判据是「至少有一张拿到了字节」而不是 `images.length`：字节到达前数组里是
-          空串（`ImageGallery` 自己会滤掉并返回 null），按长度渲染会先闪一个**空框**。 */}
-      {tool.images?.some((src) => src) ? (
+          **有 IN/OUT 卡时图已经接在上面「输出」正文下方**（同一条阅读框）：这段只在
+          卡片 / diff / 代码 / 技能正文这些非 IN/OUT 形态里兜底（实际只有卡片类工具
+          回带 image 块才走得到）。`.is-media` 去掉文本类展开体的 320px 限高——图是
+          拿来看的，给个内滚只会让人多拖一次滚动条。 */}
+      {hasImages && !showIoCard ? (
         <div className="row-body is-media">
-          <ImageGallery alt={texts.toolImageAlt} sources={tool.images.map((src) => ({ src }))} />
+          <ImageGallery alt={texts.toolImageAlt} sources={(tool.images ?? []).map((src) => ({ src }))} />
         </div>
       ) : null}
       {tool.files?.length ? (

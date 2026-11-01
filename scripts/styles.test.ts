@@ -1006,8 +1006,9 @@ console.log("styles: 思考段恒折叠 + 摘要口径对齐官方 ✓");
 {
   const rows = readFileSync(join(process.cwd(), "src", "webview", "components", "Rows.tsx"), "utf8");
   assert.ok(
-    // 判据抽成 `showIoCard` 一份（渲染与滚动定位共用它，见第 16c 段）
-    /const showIoCard = !isSkill && !hasDiff && !hasCard && \(\(Boolean\(inputText\) && !codeCard\) \|\| showOutput\);/.test(rows) &&
+    // 判据抽成 `showIoCard` 一份（渲染与滚动定位共用它，见第 16c 段）。
+    // 图片是输出的一部分：只回带图片、没有文本输出时也要给 IN/OUT 卡，图才有落点。
+    /const showIoCard =\s*!isSkill && !hasDiff && !hasCard && \(\(Boolean\(inputText\) && !codeCard\) \|\| showOutput \|\| hasImages\);/.test(rows) &&
       /\{showIoCard \? \(/.test(rows),
     "IN/OUT 只在**既没有 diff 也没有卡片**时渲染（官方 diff 类给 DiffBlock、读取/搜索/终端/网页给各自的卡，再套 IN/OUT 就是重复）",
   );
@@ -1463,12 +1464,12 @@ console.log("styles: 复制按钮归属（工具卡内容有 / 工具串没有 /
   // ref，于是永远停在顶部——用户报的正是这个形态。渲染判据与定位判据必须是同一份
   // `showIoCard`，两处各写一份必然漂移。
   assert.ok(
-    /const showIoCard = !isSkill && !hasDiff && !hasCard && \(\(Boolean\(inputText\) && !codeCard\) \|\| showOutput\);/.test(rows),
-    "IN/OUT 卡的渲染判据只留一份（showIoCard），渲染与滚动定位共用它；技能节点明确排除",
+    /const showIoCard =\s*!isSkill && !hasDiff && !hasCard && \(\(Boolean\(inputText\) && !codeCard\) \|\| showOutput \|\| hasImages\);/.test(rows),
+    "IN/OUT 卡的渲染判据只留一份（showIoCard），渲染与滚动定位共用它；技能节点明确排除；图片结果也算输出",
   );
   assert.ok(
     /useStickyBody\(ioRef, open && \(showIoCard \|\| showSkill\), running, node\.openedWhileActive\)/.test(rows) &&
-      /\{showIoCard \? \(\s*\n\s*<div ref=\{ioRef\} className="row-body io-card">/.test(rows),
+      /\{showIoCard \? \(\s*\n\s*\/\/[^\n]*\n\s*<div ref=\{ioRef\} className=\{`row-body io-card\$\{hasImages \? " is-media" : ""\}`\}>/.test(rows),
     "IN 卡要真的绑上 ioRef 并传 running（少了 ref，那条滚动条永远停在顶部）；技能正文共用同一个盒子",
   );
   assert.ok(
@@ -1592,11 +1593,23 @@ console.log("styles: 节点展开后——进行中的贴底、已结束的置�
     "节点代码卡收起渐隐必须用与外框合成后的实色，半透明底色遮不住文字",
   );
 
-  // ③ 工具行的结果图片
+  // ③ 工具行的结果图片：与「输出」正文共用同一个阅读框，不再另开一块
+  // （用户 2026-11-02 口径）。含图的 IN/OUT 卡挂 `is-media` 取消限高；
+  // 只有卡片 / diff / 代码这些非 IN/OUT 形态才退回独立图库块兜底。
   const rowsSrc = readFileSync(join(process.cwd(), "src", "webview", "components", "Rows.tsx"), "utf8");
   assert.ok(
-    /<div className="row-body is-media">\s*\n\s*<ImageGallery/.test(rowsSrc),
-    "工具行的结果图片要套进阅读框（`.row-body.is-media`）——此前它只有一段缩进，几张图直接浮在会话流里",
+    /className=\{`row-body io-card\$\{hasImages \? " is-media" : ""\}`\}/.test(rowsSrc),
+    "含图时 IN/OUT 卡自己挂 is-media（图不再单独占一个 `.row-body.is-media`）",
+  );
+  assert.match(
+    rowsSrc,
+    /\{showOutput \|\| hasImages \? \([\s\S]{0,1200}?<ImageGallery/,
+    "图要渲染在「输出」这一节里（输出正文之后），而不是另起一个阅读框",
+  );
+  assert.match(
+    rowsSrc,
+    /\{hasImages && !showIoCard \? \([\s\S]{0,200}?<ImageGallery/,
+    "独立图库块只作为卡片 / diff / 代码形态的兜底，不能与 IN/OUT 卡同时出现",
   );
   const media = rule(".row-body.is-media");
   assert.ok(
@@ -1606,6 +1619,10 @@ console.log("styles: 节点展开后——进行中的贴底、已结束的置�
   assert.ok(
     /\.row-body \.row-body-images\s*\{[^}]*margin:\s*0/.test(css),
     "进框之后图库自己不再留那 18px 缩进（缩进由框提供）",
+  );
+  assert.ok(
+    /\.row-body \.io-section \.row-body-images\s*\{[^}]*margin:\s*calc\(4 \* var\(--dp\)\) 0 0/.test(css),
+    "接在「输出」正文下方的图与正文留 4dp 间距，但不另加缩进 / 外框",
   );
   assert.ok(
     /\.msg-assistant \.row-body-images\s*\{[^}]*margin:\s*calc\(4 \* var\(--dp\)\) 0;/.test(css),

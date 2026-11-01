@@ -313,6 +313,53 @@ console.log("toolRowRender: workflow script/code 代码块与其余参数共存�
 }
 console.log("toolRowRender: 节点内容各段套同一阅读框，工具卡/代码卡不套第二圈 ✓");
 
+// ---------- 4c. 结果图：跟「输出」正文共用同一个阅读框，不单独开块 ----------
+//
+// 用户 2026-11-02 口径：读取图片节点此前把图放在输出框下方**另一个**带框的块里，
+// 看起来像与这次调用并列的另一段内容。图是这次调用的输出，应直接接在「输出」正文
+// 下方、共用同一个阅读框。任何回带 image 内容块的工具走同一条通用 IN/OUT 路径，
+// 所以这里同时钉 read_image 与普通工具。
+{
+  const imageTool = (name: string, overrides: Partial<ToolCallView> = {}): ToolCallView => ({
+    id: `call-${name}`, name, title: "", detail: "D:\\pics\\shot.png", status: "ok",
+    input: '{"file_path":"D:\\\\pics\\\\shot.png"}',
+    output: "image/png image, 685x382 px, 15715 bytes",
+    images: ["data:image/png;base64,QUJD"],
+    ...overrides,
+  });
+
+  const rowBodies = (html: string) => (html.match(/class="row-body(?!-)/g) ?? []).length;
+
+  for (const name of ["read_image", "browser_take_screenshot"]) {
+    const html = render(imageTool(name));
+    assert.strictEqual(
+      rowBodies(html),
+      1,
+      `${name}: 结果图不再单独开一个阅读框（整节点只有一个输出框）`,
+    );
+    assert.match(
+      html,
+      /class="row-body io-card is-media"/,
+      `${name}: 含图的 IN/OUT 卡不吃文本展开体的 320px 限高`,
+    );
+    assert.match(
+      html,
+      /<div class="io-section"><span class="io-label">输出<\/span>[\s\S]*?image\/png image[\s\S]*?class="row-body-images"[\s\S]*?<img/,
+      `${name}: 图必须排在「输出」正文之后、同一个 \`.io-section\` 里`,
+    );
+  }
+
+  const imageOnly = render(imageTool("read_image", { output: "" }));
+  assert.strictEqual(rowBodies(imageOnly), 1, "只有图、没有结果文本时也只有一个框");
+  assert.ok(imageOnly.includes("输出"), "图片本身就是输出，仍给「输出」标题");
+  assert.ok(imageOnly.includes("row-body-images"));
+
+  const pending = render(imageTool("read_image", { images: [""] }));
+  assert.ok(!pending.includes("row-body-images"), "字节未到的空图不占位");
+  assert.ok(!pending.includes("io-card is-media"), "没有真实图片时不挂不限高档");
+}
+console.log("toolRowRender: 结果图接在输出正文下方、与输出共用阅读框 ✓");
+
 // ---------- 5. inspect：只有明确工具 + 成功 + 整段 JSON 才挂 JSON 着色面 ----------
 {
   const inspect = (name: string, output: string, overrides: Partial<ToolCallView> = {}): ToolCallView => ({

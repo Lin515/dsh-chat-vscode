@@ -306,7 +306,7 @@ const userMessage = (attachments: MessageView["attachments"]): MessageView => ({
 {
   const rows = readFileSync(join(process.cwd(), "src", "webview", "components", "Rows.tsx"), "utf8");
   assert.ok(
-    /\(tool\.images\?\.length \?\? 0\) > 0 \|\|/.test(rows),
+    /const hasBody =[\s\S]{0,500}?hasImages \|\|/.test(rows),
     "图片必须算进 hasBody：只有图的调用也要点得开",
   );
 }

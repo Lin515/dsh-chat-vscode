@@ -2336,8 +2336,10 @@ body.vscode-high-contrast-light .md-code-surface {
   background: linear-gradient(transparent, var(--node-body-solid));
 }
 
-/* 图片展开体：同一个节点框，但不限高。图是拿来看的，给个 320px 的内滚只会让人
-   多拖一次滚动条（`.row-body` 的限高是给文本类展开体的）。 */
+/* 含图的展开体：同一个节点框，但不限高。图是拿来看的，给个 320px 的内滚只会让人
+   多拖一次滚动条（`.row-body` 的限高是给文本类展开体的）。现在主要是 IN/OUT 卡
+   带图时挂这一档（图接在「输出」正文下方，与正文共用同一个框）；卡片 / diff 这类
+   非 IN/OUT 形态回带的图仍用独立的图库块兜底。 */
 .row-body.is-media {
   max-height: none;
   overflow: visible;
@@ -2533,6 +2535,12 @@ body.vscode-high-contrast-light .md-code-surface {
 /* 工具行的结果图片进节点框之后（见 Rows.tsx 的 ToolRow）：缩进与内边距由框提供 */
 .row-body .row-body-images {
   margin: 0;
+}
+
+/* IN/OUT 卡里的结果图接在「输出」正文下方：与正文留一点间距，但不再自带外框 /
+   左缩进（用户 2026-11-02 口径：图片属于输出内容，不单独开一个块）。 */
+.row-body .io-section .row-body-images {
+  margin: calc(4 * var(--dp)) 0 0;
 }
 
 .row-body-images img {
