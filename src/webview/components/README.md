@@ -6,7 +6,7 @@
 - `Message.tsx` — 单条消息：按 `MessageView` 种类装配正文、图片、工具行、折叠过程、轮尾文件；用户消息的正文在最前，其后是气泡内的附件区（文件芯片 `UserMedia`，再下面是图片缩略图），折叠只夹正文节点 `.bubble-text`（`UserBubble`）；已发出的 `@` 引用悬停给完整路径与 Alt 真实文件提示，HTML 文件另给 Ctrl/Cmd 浏览器提示（文件引用不复述「打开这个文件」——链接外观已经说明单击能打开）；Alt 打开可编辑真实文件，Ctrl/Cmd+HTML 交系统浏览器。
 - `Markdown.tsx` — 正文入口的薄包装：把文本、phase 与文件词表交给 `../markdown/` 的解析与 React 文档树；streaming 只走 GFM，settled 解析数学；链接悬停补完整路径、Alt 真实文件提示与外链地址，点击按 `fileOpenIntent` 分流只读 / 真实文件 / Ctrl+HTML 浏览器。
 - `MathView.tsx` — 私有公式视图：只接解析层确认的 `MathRenderSource` 与 phase；SSR / 首帧显示 `raw`，settled 后懒调 `renderMath` 并注入已净化 HTML，失败继续原文。结果带 `{phase, form, closed, raw, tex}` 的 JSON 渲染身份，render 期只显示匹配当前身份的那份，source 变 invalid 时第一帧回原文；选区冻结复用 `useSelectionFreeze` 保留完整 `{source, phase}` 快照（含 raw / form），应用异步结果前再用 `selectionIntersectsElement` 检查跨段 / 多 Range 选区，相交时等选区解除。主真实 UI 的布局、异步替换与选区冻结已通过；根 span 的 `data-math-view` 是搜索识别自有数学的唯一来源标识，不开放任意 HTML；查找据此跳过 MathML / annotation 辅助层，复制仍读原生选区、不再做数学去重。
-- `CodeBlock.tsx` — 代码块卡片（复制 / 插入按钮；markdown 与工具卡共用同一张卡片）；仅在 settled 阶段异步初始化语法高亮，迟到结果按请求代次隔离，活动选区与代码相交时冻结结果，span 文本始终由原 code 切片。正文 Markdown 里保留自己的卡片分区；被工具节点直接包住时不画第二圈外框，阅读框归 `.row-body`。字号取 `--font-size`，等宽只换字族。
+- `CodeBlock.tsx` — 代码块卡片（复制按钮；markdown 与工具卡共用同一张卡片）；仅在 settled 阶段异步初始化语法高亮，迟到结果按请求代次隔离，活动选区与代码相交时冻结结果，span 文本始终由原 code 切片。正文 Markdown 里保留自己的卡片分区；被工具节点直接包住时不画第二圈外框，阅读框归 `.row-body`。字号取 `--font-size`，等宽只换字族。
 - `useCodeHighlight.ts` — 代码高亮共享接线：归一化语言 + code 身份、异步取消、渲染前 key 核对与选区冻结；CodeBlock / read 卡 / diff 两侧 / 预览与 JSON 输出都复用它。
 - `HighlightedText.tsx` — 受控 token 的 React 切片渲染与单块 `CodeText`（自带只提供主题变量的 `md-code-surface` 语义类，不引入卡片几何）。
 - `ToolCards.tsx` — 按工具语义画的卡片（读 / 搜索 / 终端 / 网页），有卡片时不再展示参数 JSON；读卡在挂载时一次性 tokenize 完整返回窗口再按行切分（不逐行重置、不按显示上限截断上下文）。卡片只保留内部排版，阅读外框统一归外层 `.row-body`；内容字号取 `--font-size`。

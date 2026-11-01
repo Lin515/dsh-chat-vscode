@@ -65,7 +65,7 @@ Host 只给 hunk，两侧文本由 `changesDiff.ts` 拼：整份新建 / 删除 
 
 ## Markdown 渲染管线
 
-正文已切换到 `src/webview/markdown/` 的 micromark → mdast → React 管线：整篇解析后递归渲染，代码块保留折叠、复制与插入编辑器；完成态代码块提供语法高亮（streaming 仍为纯文本），公式仍按原文显示。标准 Markdown 的视觉与交互保持迁移前行为；原始 HTML 跟随官方显示为字面文本，不再保留旧的有限 HTML 渲染。完成态高亮的边界、缓存与主题，以及阶段 4 的公式排版见[Markdown 渲染设计](<design-markdown-rendering.md>)。生成期间不高亮、不排版公式，统一在结束时增强，不引入增量引擎。本文后续路径、中文加粗和脚注等规则继续由迁移后的实现承担，不能照搬官方 UI 改变既有行为。
+正文已切换到 `src/webview/markdown/` 的 micromark → mdast → React 管线：整篇解析后递归渲染，代码块保留折叠与复制；完成态代码块提供语法高亮，公式经 `MathView` / KaTeX 排版，失败、超限或未闭合时按原文回退（streaming 保持纯文本）。标准 Markdown 的视觉与交互保持迁移前行为；原始 HTML 跟随官方显示为字面文本，不再保留旧的有限 HTML 渲染。完成态高亮的边界、缓存与主题，以及阶段 4 的公式排版见[Markdown 渲染设计](<design-markdown-rendering.md>)。生成期间不高亮、不排版公式，统一在结束时增强，不引入增量引擎。本文后续路径、中文加粗和脚注等规则继续由迁移后的实现承担，不能照搬官方 UI 改变既有行为。
 
 ## Windows 路径链接
 

@@ -44,7 +44,7 @@ function render(code: string, phase?: "streaming" | "settled"): string {
   assert.match(html, /class="code-block is-collapsed"/, "超过 20 行的代码块必须默认收起");
   assert.match(html, /aria-expanded="false"/, "默认收起时箭头读作「已收起」");
   assert.match(html, /aria-label="展开代码块全文"/, "收起态的入口是「展开」，不是「收起」");
-  assert.ok(html.includes("const v21 = 21;"), "收起只是视觉折叠，完整正文仍要留在 DOM 里（复制 / 插入读整份）");
+  assert.ok(html.includes("const v21 = 21;"), "收起只是视觉折叠，完整正文仍要留在 DOM 里（复制读整份）");
 }
 
 // ---------- 2. 阈值内：没有箭头，必须展开 ----------
@@ -66,7 +66,7 @@ for (const phase of ["settled", "streaming"] as const) {
 }
 console.log("codeBlock: SSR 不初始化高亮、输出纯文本 ✓");
 
-// ---------- 4. 复制 / 插入取精确 code，数学源文逐字保留 ----------
+// ---------- 4. 复制取精确 code，数学源文逐字保留 ----------
 // 源码接线 + SSR 文本断言，不冒充 DOM 点击或系统剪贴板证明。
 {
   const source = readFileSync(
@@ -78,10 +78,15 @@ console.log("codeBlock: SSR 不初始化高亮、输出纯文本 ✓");
     /onClick=\{\(\) => post\(\{ type: "copy", text: code \}\)\}/,
     "复制按钮载荷是组件收到的原 code",
   );
-  assert.match(
-    source,
-    /onClick=\{\(\) => post\(\{ type: "insertText", text: code \}\)\}/,
-    "插入按钮载荷是同一份原 code",
+
+  // 头部只留复制一枚按钮：用户 2026-11-02 口径是「插入到当前编辑器」没有用处
+  // （插入位置由当时的活动编辑器决定，与该代码块无关；没有编辑器时又退化成复制）。
+  assert.ok(!source.includes("insertText"), "卡片头部不再有「插入到当前编辑器」按钮");
+  const header = render(codeWith(2));
+  assert.strictEqual(
+    header.split('class="icon-btn"').length - 1,
+    1,
+    "代码块头部只有一枚图标按钮（复制）；不许残留第二枚",
   );
 
   const mathSource = "行内 $x+y$ 与分式 \\frac{a}{b}";
@@ -90,4 +95,4 @@ console.log("codeBlock: SSR 不初始化高亮、输出纯文本 ✓");
   assert.ok(html.includes("\\frac{a}{b}"), "代码块里的 \\frac 逐字保留");
   assert.ok(!html.includes("data-math-view"), "代码块不把数学源码解析成公式");
 }
-console.log("codeBlock: 复制 / 插入取精确 code、数学源文不解析 ✓");
+console.log("codeBlock: 复制取精确 code、数学源文不解析 ✓");

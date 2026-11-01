@@ -964,7 +964,6 @@ export const MESSAGES = {
 
   copy: { zh: "复制", en: "Copy" },
   copied: { zh: "已复制到剪贴板", en: "Copied to clipboard" },
-  insertToEditor: { zh: "插入到当前编辑器", en: "Insert into the active editor" },
   // 会话正文右键菜单的两条（自绘，见 `webview/contextMenu.ts`）
   quoteSelection: { zh: "引用", en: "Quote" },
   // 复制图片失败：跨域图污染画布、剪贴板被占、浏览器不给写——都在界面里判，宿主不知情

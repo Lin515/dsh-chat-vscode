@@ -520,8 +520,6 @@ export type WebviewToHost =
    * 经 `chatView.openPanel(sessionId)` 建面板并 `openSession` 绑上新窗口。
    */
   | { type: "openInEditor"; sessionId?: string }
-  /** 把代码块内容插入当前编辑器。 */
-  | { type: "insertText"; text: string }
   /** 复制到剪贴板（webview 里 navigator.clipboard 受限，交给宿主）。 */
   | { type: "copy"; text: string }
   /**

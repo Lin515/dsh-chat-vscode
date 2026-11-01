@@ -14,13 +14,13 @@
  * - 异步结果按请求取消标记隔离，旧结果绝不写进新代码；渲染前再核对当前 key，避免
  *   切换瞬间旧 span 覆盖新 `code`；
  * - 结果抵达时若活动选区与 `<code>` 相交（含从段落拖进代码、跨两张卡），先暂存，
- *   等选区清空 / 移开后再应用；卡片 DOM、折展状态和复制 / 插入的 `code` 都不变；
+ *   等选区清空 / 移开后再应用；卡片 DOM、折展状态和复制用的 `code` 都不变；
  * - span 文本全部由原 `code` 切片生成，不拼 HTML、不用 `dangerouslySetInnerHTML`。
  */
 import { useRef, useState } from "react";
 import type { MarkdownPhase } from "../markdown/types";
 import { post } from "../bridge";
-import { IconChevronDown, IconCopy, IconPencil } from "../icons";
+import { IconChevronDown, IconCopy } from "../icons";
 import { useTexts } from "../texts";
 import { renderHighlighted } from "./HighlightedText";
 import { useCodeHighlight } from "./useCodeHighlight";
@@ -62,13 +62,6 @@ export function CodeBlock({
       <div className="code-block-head">
         <span className="code-block-lang">{lang || "text"}</span>
         <span className="code-block-actions">
-          <button
-            className="icon-btn"
-            title={texts.insertToEditor}
-            onClick={() => post({ type: "insertText", text: code })}
-          >
-            <IconPencil size={13} />
-          </button>
           <button
             className="icon-btn"
             title={texts.copy}

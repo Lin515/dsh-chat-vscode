@@ -8951,10 +8951,6 @@ export class ChatController implements vscode.Disposable {
         break;
       }
 
-      case "insertText":
-        await this.insertIntoEditor(message.text);
-        break;
-
       case "copy":
         // 只写剪贴板，**不发「已复制」toast**（用户 2026-09-17 口径：复制成功从
         // 界面上就能感知——按钮/选中内容还在，信息条反而是打扰）。
@@ -12005,18 +12001,6 @@ export class ChatController implements vscode.Disposable {
       if (entry) kinds[entry[0]] = entry[1];
     }
     return kinds;
-  }
-
-  private async insertIntoEditor(text: string): Promise<void> {
-    const editor = vscode.window.activeTextEditor;
-    if (!editor) {
-      await vscode.env.clipboard.writeText(text);
-      void vscode.window.showInformationMessage(
-      vscode.l10n.t("No editor is open; the code was copied to the clipboard."),
-    );
-      return;
-    }
-    await editor.edit((builder) => builder.insert(editor.selection.active, text));
   }
 
   // ---------- 子代理 ----------
