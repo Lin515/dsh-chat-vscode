@@ -136,7 +136,7 @@ trajectoryTexts.ts 唯一登记 zh / en，参数函数；缺时长为不可用�
 
 两者逻辑行 2047 / 297，DOM 40–53 行、padding=2，说明 DOM 窗口化不等于未构造窗口外行。空闲 rAF 中位 / p95 / max 为 5.9 / 7.2 / 14.4ms，不能解释上述慢帧；早期约 1 秒空闲调度只保历史，不归因产品，具体节流机制未唯一定位。
 
-优化先查[组件](<../src/webview/components/Trajectory.tsx>)虚拟窗口前 `allRows = ledgerRows.map(...)` 的全量 JSX：先规划窗口，再构造可见 / pinned 行。窗口累计 CPU 可含多次调用，不能当单次耗时；long 11 个刷新窗有 12 次调用。第二优先级是完整搜索索引（long 单次 CPU 373.9ms），3 秒节流不消除执行阻塞。候选未实施、收益未证，见[待评估](<../ToDo.md>)。
+优化先查[组件](<../src/webview/components/Trajectory.tsx>)虚拟窗口前 `allRows = ledgerRows.map(...)` 的全量 JSX：先规划窗口，再构造可见 / pinned 行。窗口累计 CPU 可含多次调用，不能当单次耗时；long 11 个刷新窗有 12 次调用。第二优先级是完整搜索索引（long 单次 CPU 373.9ms），3 秒节流不消除执行阻塞。上述优化尚未实施，收益尚未验证。
 
 优化不得截掉来源、恢复最近 N 条窗口或新增 outputBlocks；须保完整搜索、摘要、pin 顺序、首次定位和互斥选择，再以同消费 seam 红→修→独验。历史量测不代表当前流畅、全字段等价或安装真机通过。
 

@@ -73,7 +73,6 @@
 |---|---|
 | `README.md` | 中英文安装、连接、配置与功能说明 |
 | `CONTEXT.md` | 项目领域词表 |
-| `ToDo.md` | 尚未处理或待复现的问题 |
 | `CHANGELOG.md`、`LICENSE`、`THIRD-PARTY-NOTICES.md` | 发布记录、许可证与来源披露 |
 | `package.json`、`package-lock.json` | 扩展清单、命令与依赖锁定 |
 | `package.nls*.json`、`l10n/` | VS Code 原生文案与翻译 |

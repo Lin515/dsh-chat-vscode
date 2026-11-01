@@ -1,39 +1,43 @@
-# 代码高亮与公式渲染设计
+# Markdown 管线迁移、代码高亮与公式渲染
 
 ## 状态与范围
 
-本文是待实施设计，不是当前功能说明。登记于 0.11.7 的准备工作；该版本的版本号和文档变更不代表高亮或公式能力已经实现。实施入口见 [ToDo](<../ToDo.md>)。
+本文是待实施设计，不代表功能已经上线。本轮只落地文档，不安装依赖、不改渲染实现、不更新功能说明或版本号。
 
-- 为现有 Markdown 显示增加 Shiki 语法高亮与 KaTeX 数学公式；沿用现有复制、插入编辑器、代码折叠、路径链接、图片和脚注行为。
-- 助手回答生成期间保留现有 Markdown 展示，代码不着色，公式显示原文；回答结束后统一增强。不开启“围栏一闭合就高亮”，也不做流式增量高亮。
-- 既有历史、轨迹中已完成的 Markdown、已确定内容的计划和工具详情直接按完成态渲染。`run_code` 的完整调用参数可以立即高亮，不能把工具正在运行误认为源码还在生成。
-- 用户气泡继续显示原始文本。终端、文件预览、diff、JSON 检查器与轨迹源码视图不纳入本次改造；不因为它们也显示代码就统一更换展示链。
-- 不修改服务端协议、持久化内容或宿主消息语义，不增加功能开关。依赖、资源与第三方声明在实施阶段引入，本轮不安装。
+- 将正文从 marked / HTML 分块迁移到官方同源的 micromark → mdast → React 管线，再接入 Shiki 与 KaTeX。普通 Markdown、代码与数学走同一棵文档树，不再建设 marked 私有槽、骨架标记和 React portal 方案。
+- **迁移不是界面重设计。** 保留标准 Markdown 的字体、间距、代码卡片、折展、复制、插入、链接、图片、脚注、搜索和阅读行为；不整搬官方 UI、CSS Modules、工具栏或主题系统。原始 HTML 按官方作为字面文本显示，是明确接受的兼容差异，不再保留现有有限 HTML 渲染。
+- 助手生成期间仍展示普通 Markdown，代码不着色、公式不排版；生成结束、停止、失败或截断后才进入完成态增强。不做增量解析、增量高亮、自动补围栏或“围栏刚闭合就增强”。
+- 历史消息和已确定的计划、工具详情直接使用完成态。`run_code` 完整调用参数可立即着色，工具运行状态不等于代码还在生成。
+- 用户气泡仍显示原始文本；终端、文件预览、diff、JSON 检查器、轨迹源码与请求差分不纳入。不改协议、持久化消息或宿主权限，不加功能开关。
 
-消息与链接现有规则见[消息设计](<design-messages.md>)；文件与图片访问仍服从[文件路径](<design-paths.md>)和[安全边界](<design-security.md>)。
+现有消息约束见[消息设计](<design-messages.md>)；文件访问见[文件路径](<design-paths.md>)；图片与外传边界见[安全设计](<design-security.md>)；尺度与复制分别见[界面尺度](<design-ui-scale.md>)、[右键菜单](<design-context-menu.md>)。
 
-## 现状与关键取舍
+## 决策与官方复用边界
 
-现有 `CodeBlock` 已负责代码标题、超过 20 行默认收起、复制和插入编辑器，正文与 `run_code` 共用；缺少的是语法着色。现有 `splitMarkdownBlocks` 用正则提取完整的三反引号围栏，不能作为新功能的语法基础：较长围栏、波浪围栏、未闭合围栏及列表或引用内的代码需要交给 Markdown 词法分析器。
+现有 [markdown.ts](<../src/webview/markdown.ts>) 使用 marked、自有脚注、Windows 路径和中文加粗扩展，再由 DOMPurify 净化；`splitMarkdownBlocks` 只用正则抽取完整三反引号围栏。继续在其上补数学 token、私有槽和来源验证，会同时维护两套树与挂载生命周期。现在统一语法基础，成本集中在一次兼容迁移，后续语法、嵌套、代码与公式共享同一 Seam。
 
-现有 [markdown.ts](<../src/webview/markdown.ts>) 使用 marked、Windows 路径与中文加粗扩展、整篇脚注状态和严格 DOMPurify 白名单。白名单不允许公式排版所需的部分属性和元素，因此不能把 KaTeX 的 HTML 直接拼进原路径，也不能为公式全局放宽模型 HTML 的权限。
+官方已有 GFM / 数学解析、中文加粗、图片语法修复、mdast 渲染、Shiki 和 KaTeX；复用其语法与测试输入，而不是将整套组件作为黑盒替换。本扩展不需要官方流式缓存、增量会话、桌面图片路由、链接组件或整套主题依赖。
 
-保留 marked，不迁移整套 Markdown 引擎。原因是路径修复、中文加粗、脚注和链接水合已经形成回归面；只为两种叶节点迁移解析器会扩大行为变化。使用整篇 token 树识别代码与数学语法，普通 Markdown 仍经现有 HTML 净化链，增强内容通过隔离的渲染槽进入原位置。
+### 固定来源与适配
 
-官方客户端源码已有 Shiki 增量高亮与 KaTeX 完成态渲染，可参考语法夹具和失败处理；本扩展有意不跟进增量高亮。官方源码能力不等于所有发布版本均有同样行为，也不直接复制其构建和主题体系。
+- 当前 vendor 基准为 `@deepseek-ai/dsh-client-ui-primitives@0.2.0-rc.2`，tag `dsh-v0.2.0-rc.2`，commit `639ed015397290b3745d163aafe02ffee4aa3f84`；来源与锁定流程见[vendor 说明](<../src/vendor/README.md>)。不得把本机 HEAD 或最新文档当作该发布版的证据。
+- 现有 [parse.ts](<../src/vendor/ui-primitives/markdown/parse.ts>) 只搬入 `parseGfm`，供轨迹纯文本投影使用。实施时按固定 commit 核对并恢复 `parseGfmWithMath`、`mathCompatibility` 及配套依赖，保留现有 `parseGfm` 的投影语义；不得为了正文迁移顺手改变轨迹摘要、搜索索引或事件投影。
+- vendor 内仅保留获准的原文适配；Windows 链接修复、扩展资源策略、完成态高亮、安全限额和 UI 差异放在本地 Implementation。新搬文件必须同步原文夹具、文件头、来源锁和第三方声明；变更已有允许适配须说明理由，不能只改摘要求绿。
+- 官方 `render.tsx`、`highlight.ts`、`katex.tsx` 可提供遍历、别名、CSS 变量主题和排版参考，但不原样复制。原始 HTML 显示为字面文本的规则直接对齐；链接与图片准入保留扩展契约，KaTeX 输出另做独立净化和资源限制。需要本地行为的派生实现放在 webview 层，注明固定来源及差异，不假称逐字 vendor。
+- 官方 Markdown / DOM / 恶意 TeX 夹具可复用输入，断言必须改为本扩展契约，不能直接采用官方 DOM 快照并顺带改变 UI。
 
 ## Module、Interface 与 Seam
 
 ### 对外 Interface
 
-渲染 Module 的外部 Seam 仍放在现有 Markdown 与代码显示入口，调用方只传内容及内容是否仍在增长，不接触语言注册、公式命令、净化器、字体加载或渲染槽。拟议类型如下，具体声明在实施时随调用方一起调整：
+业务仍只消费 `Markdown` 和 `CodeBlock`，不接触 micromark、mdast、语言注册、字体、净化器或渲染内部节点。拟议 Interface：
 
 ```ts
 type MarkdownPhase = "streaming" | "settled";
 
 type MarkdownProps = {
   text: string;
-  phase?: MarkdownPhase; // 缺省 settled：用于已经确定的静态内容
+  phase?: MarkdownPhase; // 缺省 settled，静态调用方不必传
   fileLinks?: FileLinkPort;
   cwd?: string;
 };
@@ -41,127 +45,187 @@ type MarkdownProps = {
 type CodeBlockProps = {
   code: string;
   lang?: string;
-  phase?: MarkdownPhase; // 缺省 settled：工具调用参数不是生成中的回答
+  phase?: MarkdownPhase; // 完整工具调用参数可直接 settled
 };
 ```
 
-Interface 还包括下列约束：
+- 助手正文由 `message.streaming` 显式推导 phase，不能靠闭合围栏、工具是否运行或文档是否命中缓存推断。
+- `StreamText` 将 `{ text, phase }` 作为不可变显示快照交给选区冻结；冻结期间两者都不更新，释放后一次追上最新状态。扩展 `useSelectionFreeze` 时保持思考等现有字符串调用方行为不变，避免每次 render 新建对象造成无意义更新。
+- 整条消息复制仍取原始消息文本；代码复制与插入仍取 `code`，不能从 DOM、着色 token 或 KaTeX 文本反向生成源数据。
+- 未知语言、无效 TeX、超限和增强失败原位回落可读源码，不吞整条消息、不弹全局通知；日志不包含整份正文、TeX 或可能带秘密的异常片段。
+- 普通父级重渲染不能重新初始化引擎；streaming 不调用 Shiki / KaTeX。改变词表、cwd 或语言只更新对应交互 / 文案，不应重新做无关的代码着色。
 
-- 助手正文必须显式传 phase，由现有 `message.streaming` 推导；不能根据是否含闭合围栏推断回答已经结束。停止、失败、截断等终结状态同样进入 settled，但不把残缺公式强行补齐。
-- text 与 phase 是同一份显示快照。`StreamText` 选区冻结时同时冻结两者，避免文本没变化、phase 却先进入 settled 而替换用户正在选择的 DOM；选区释放后一次追上最新快照。现有只接受字符串的 `useSelectionFreeze` 应支持不可变快照，同时保持其他字符串调用方行为不变。
-- 复制整条回答仍使用原始消息文本；代码复制与插入编辑器仍使用原始 code。展示 token、规范化语言名和 KaTeX 输出不得反向覆盖源数据。
-- 未知语言、无效 TeX、资源限制和增强失败均保留可读源文本，不抛出到整条消息、不阻塞交互、不发全局错误通知。开发日志不得输出整份正文或带敏感内容的解析错误。
-- 不对每个 chunk 运行高亮或 KaTeX；相同的完成态内容不能因父级普通重渲染重新初始化引擎。
+这是一个 deep Module：小 Interface 隐藏语法、来源、安全、主题、缓存与降级；同一实现服务正文和工具，带来 Leverage，规则和测试集中维护以保持 Locality。不是转发参数的浅包装，也不建立没有第二个真实 Adapter 的引擎插件框架。
 
-这是一个 deep Module：小 Interface 隐藏词法、安全、主题、降级及缓存，产生跨正文与工具代码的 Leverage；维护和验证集中在同一处，保持 Locality。删除它后这些规则将重新散落到多个调用点，因而不是只转发参数的浅封装。
+### 内部职责
 
-### Implementation 内部 Seam
-
-内部按职责拆分，但不把拆分变成调用方的新 Interface：
-
-| 职责 | 放置位置与范围 |
+| 职责 | Implementation 与边界 |
 |---|---|
-| 整篇编译 | 在现有 [markdown.ts](<../src/webview/markdown.ts>) 附近组织，统一词法、脚注、参考式链接、普通 HTML 净化与槽描述；不暴露 marked 类型给显示调用方 |
-| 文档挂载 | 在现有 `Markdown` / `HtmlBlock` 内集中处理槽挂载、React portal、图片与文件链接水合及清理 |
-| 代码着色 | 独立内部实现管理精选语言、别名、单例和结构化 token，`CodeBlock` 复用 |
-| 数学语法与排版 | 分开组织 token 扩展与 KaTeX 展示，识别源码与生成排版不能互相猜测 |
-| 交互整合 | 接入既有搜索、会话选区复制和阅读定位，不为公式再建一套全局交互管理器 |
+| 解析适配 | 在现有 markdown 模块附近封装官方解析入口、扩展特有路径兼容与源码位置；外部不导出 vendor 类型 |
+| 文档渲染 | 统一收集参考定义和脚注，再递归映射 mdast 到现有 React / HTML 元素；无整篇 HTML 骨架与 portal |
+| 原始 HTML | mdast 的 html 节点按官方输出为 React 文本；不导入 HTML、不提供标签白名单或模型属性驱动的富组件 |
+| 代码 / 数学叶节点 | 代码复用现有 `CodeBlock`；数学进入私有 MathView；各自管理增强失败与有界缓存 |
+| 文件 / 图片接入 | 复用现有路径判据、宿主动作和图片作用域，只调整 DOM 所有权与挂载方式 |
+| 搜索 / 选择 / 阅读 | 通过现有查找、选区复制、readingPlacement / autoScroll Seam 整合，不另建全局管理器 |
 
-具体新增文件在实施时按这些职责命名，并登记所在目录 README。不要提前建立通用 `RendererAdapter`、可替换高亮引擎框架或插件注册平台；目前没有第二个真实 Adapter，不能以假想变体制造 Interface。
+文件可随实现按上述职责拆分，新增文件登记目录 README；不在文档阶段预建空目录或公共适配器注册平台。
 
-## 整篇编译与隔离渲染槽
+## 消费面与影响清单
 
-目标管线：
+以下是当前入口，实施时须再次搜索调用方，防止新增消费面遗漏。
+
+| 消费面 | 接入与必须保留的内容 |
+|---|---|
+| [Message.tsx](<../src/webview/components/Message.tsx>) 的 `StreamText` | 助手正文显式 phase，保留 `md-wrapper`、本轮 `fileLinks`、cwd、消息身份与选区冻结；历史回放直接 settled |
+| [Rows.tsx](<../src/webview/components/Rows.tsx>) 的 `run_code` | 复用相同 CodeBlock、默认 settled；不改工具折展、参数提取、按钮帧与执行状态 |
+| Rows 的 `review.plan`、`item.detail` | 审阅计划与思考详情继续走 Markdown；默认 settled，不把问卷、审批或计划动作搬进渲染 Module |
+| [ToolCards.tsx](<../src/webview/components/ToolCards.tsx>) 的 `card.answer` | 网页搜索答案与正文采用同一语法 / 安全链；不凭空获得助手本轮文件词表 |
+| [Trajectory.tsx](<../src/webview/components/Trajectory.tsx>) 的 `previewMarkdown`、`outputDetail` | 已投影的 Markdown 按完成态显示；不改 ledger、虚拟化、定位回执、源记录视图和纯文本摘要算法 |
+| [Markdown.tsx](<../src/webview/components/Markdown.tsx>) / [CodeBlock.tsx](<../src/webview/components/CodeBlock.tsx>) | 统一文档树和叶节点入口，旧分块、整篇 innerHTML、对应水合所有权须一起迁移 |
+| [FindBar.tsx](<../src/webview/components/FindBar.tsx>)、[contextMenu.ts](<../src/webview/contextMenu.ts>) | 着色 span 跨节点搜索、数学去重、复制 / 引用及边界判定；不扩大快捷键接管区域 |
+| [fileMentions.ts](<../src/webview/fileMentions.ts>)、[linkHovers.ts](<../src/webview/linkHovers.ts>)、[localImages.ts](<../src/webview/localImages.ts>) | 保留目标判据和作用域；可改为 React 叶节点接入，不能保留与 React 同时改同一节点的旧水合 |
+| [app.css](<../src/webview/styles/app.css>)、[tokens.css](<../src/webview/styles/tokens.css>) | 适配树结构引起的选择器差异，保留现有视觉 token 与尺度；限定高亮、数学新增样式的作用域 |
+| [chatView.ts](<../src/chatView.ts>)、[esbuild.mjs](<../esbuild.mjs>)、[package.json](<../package.json>) | 本地字体、CSS URL、发布白名单、依赖裁剪及 CSP 验证；无协议和宿主能力新增 |
+| [markdown.test.ts](<../scripts/markdown.test.ts>)、[footnotes.test.ts](<../scripts/footnotes.test.ts>) 等 | 从 marked 配置 / 源码形状断言迁移到真实新入口，保留夹具所表达的安全和行为不变量 |
+
+## 整篇解析与 React 文档树
+
+目标主链：
 
 ```text
 原始 Markdown + phase
-  → 整篇 marked token 树（保留文档级定义与嵌套关系）
-  → 普通 Markdown HTML + 本次编译私有的代码/公式槽描述
-  → 严格净化后的文档骨架
-  → 按槽描述挂载 CodeBlock / MathView
-  → 在同一文档根执行现有链接和图片水合
+  → 扩展解析适配（官方 micromark / mdast 语法）
+  → 整篇 mdast + 文档级参考定义 / 脚注上下文 + 源码位置
+  → 递归 React 树（现有样式、链接 / 图片组件、CodeBlock / MathView）
+  → 现有搜索、选区和阅读端口
 ```
 
-- 代码使用 marked 的 code token，不再对源字符串做全文围栏正则切分。列表、引用和表格等容器保持完整，槽在所属容器内；不能把一个列表拆成多个 HTML 根再把代码卡片夹在外面。
-- 整篇只做一次词法分析，保留参考式链接定义表；所有脚注共用一次编号与文末输出。不在代码块两侧分别解析源码，也不把脚注定义中的代码或数学语法排除在遍历之外。
-- 编译产物是内部类型，包含已净化骨架及只读槽描述。槽描述持有原始 code / TeX、语言提示、显示模式和 phase，不携带任意回调或模型提供的 HTML。`renderMarkdown` 与 `splitMarkdownBlocks` 的旧测试迁移到这条真实编译路径；生产中不保留另一套独立词法规则。
-- 槽宿主只使用合法的 HTML 容器：行内公式用 span，块公式与代码用块容器。渲染器必须避免把块容器放进 p 等无效位置，浏览器修正 DOM 后仍须验槽结构。
-- 槽标识属性是 Implementation 保留命名空间。原始 HTML token 在输出前按 HTML 属性语义检查；包含保留标识或无法安全判定的此类标签按字面文本输出。不得仅用大小写敏感的字符串替换检查属性。普通净化器仅为编译器生成的槽保留该标识，其他模型 HTML 权限不变。
-- 只有“本次编译的描述表中存在、在净化后骨架里唯一出现、元素类型与预期位置匹配”的槽才可挂载；缺失、重复、未知、错类型均不增强。不能凭模型能写出的 class、连续编号或 DOM 查询结果直接调用富渲染器。标识是否可预测不是安全保证。
-- 增强输出只进入已验证的槽，不以整篇字符串替换拼接已信任 HTML。React portal 保留 `CodeBlock` 的交互和上下文，普通 HtmlBlock 仍不具备渲染任意增强 HTML 的能力。
-- 文档替换时先卸载 portal 和清理异步水合，再替换骨架。槽映射只活到该文档版本，不进入全局 Map。会话 / 连接 scope 变化必须沿用现有失效规则，旧水合结果不能回写新文档。
-- 文档根更新后再运行图片、文件提及和悬停水合；不要扫描或改写公式、代码卡片内部。图片失败占位与连接撤销规则不变。新槽不能获得发宿主消息或访问文件的额外权限。
+### 语法与来源
 
-槽完整性是安全验收项，不是可稍后补充的实现细节。若锁定版本的 marked 不能可靠隔离原始 HTML token，先调整为有明确来源的文档树再实施，禁止以“随机标识足够难猜”代替来源验证。
+- 使用 `fromMarkdown` 的成对扩展：GFM 为 `gfm()` + `gfmFromMarkdown()`，数学为 `mathCompatibility()` / `math()` + `mathFromMarkdown()`。只注册词法扩展而不接树编译扩展不算完成迁移，版本以锁文件为准。
+- 流式使用官方 `parseGfm` 语法，完成态使用 `parseGfmWithMath`；没有增量解析器。两者都对当前整篇文本解析，结构变化只允许发生在数学等有意的增强边界。生成中的反斜杠仍可能按 CommonMark 转义显示；“公式原文”表示不排版，不承诺每个定界符逐字可见，也不另写一套实时数学扫描器。
+- Windows 路径修复在本地解析 Seam 完成：保留行内链接 / 图片的原始绝对 Windows 目标及 `%5C` 往返，不能对全文替换反斜杠；代码、标签、参考定义、非 Windows 目标和 UNC 访问边界不变。若需借源位置恢复目标，须正确定位目标而不是按显示文字反查。上游 `recoverLocalImages` 与本地修复的先后顺序须用重叠夹具证明不会二次编码。
+- 中文强强调沿用官方 `cjkFriendlyStrong`，用既有中文标点、西文、单星、三星、代码内星号夹具对拍；不能以“官方如此”为理由静默扩大既有偏差。语法差异必须在切换前列明，视觉 / 行为不一致先修复或另行确认。
+- 代码依赖 `code` 节点，不再全文围栏正则切分；较长围栏、波浪、未闭合、缩进代码以及列表 / 引用 / 脚注内代码均保留所属容器。未知树节点不能沿用官方“默认返回空”吞内容，应以安全源码片段回退，并限制日志信息。
+- 文档级定义统一收集，参考链接与图片可跨代码块解析。脚注编号、定义表和重复引用计数只属于本次文档，使用显式上下文，不保留当前模块级可变 `active`。
+- 使用稳定的文档身份和节点 key；同一代码块从 streaming 到 settled、着色初始化完成、主题或词表变化时，不重建卡片而丢失用户折展选择。源码 offset 不能单独作为跨消息身份，不能跨连接复用交互闭包。
+
+### 代码原文保真
+
+mdast 的 `code.value` 会经过语法规范化，不能默认等同旧 CodeBlock 接到的源代码。实现须分清“带围栏的原始片段”“去掉围栏和容器缩进的代码载荷”“着色 token”。
+
+既有顶层三反引号的复制 / 插入结果作为基线；末尾换行、连续空行、空代码、CRLF、tab、缩进和行尾空格不得因 AST 迁移或 Shiki 按行输出丢失。新支持的嵌套代码应去掉 Markdown 列表 / 引用前缀，而非将其复制为代码。源位置切片须结合语法 token / 容器规则提取，不能直接 slice 整个 code 节点，也不能用 trim / split-join 猜回原文。高亮显示文本、code prop 与复制载荷须逐字符一致；同一载荷的行数判定保持 `code.split("\n").length > 20` 的现有边界。
+
+### 原始 HTML 跟随官方显示为文字
+
+扩展没有向 agent 约定额外的 HTML 渲染能力，不为低收益的历史白名单增加 HTML 导入器、跨节点拼接、二次解析或双引擎。mdast 的 `html` 节点直接作为 React 文本子节点输出，不删除内容、不解释标签，也不提供兼容开关。无需改变 agent 提示词。
+
+- 标准 Markdown 生成的表格、加粗、链接、图片、任务列表等仍正常渲染；它们来自已知语法节点，不是开放原始 HTML。Markdown 的硬换行继续有效，直接写的 `<br>` 则显示标签文字。
+- 原始 `<span>`、`<a>`、`<img>`、`<pre><code>` 等不生成排版、导航、网络请求、代码卡片或文件按钮；模型提供的 class、id、data 属性不生成任何 DOM 属性或内部身份。代码围栏中的 HTML 始终仍为代码。
+- 标签周围的 Markdown 按官方语法解析，不另做浏览器式 HTML 嵌套修复；只要求 html 节点的原始内容不被当作 DOM。混排夹具覆盖行内 / 块级、注释、危险标签和伪造组件标记。
+- **有意的兼容差异：** 少量历史回答中原来可显示的有限 HTML 会变成标签文字，不做历史数据迁移、不按消息新旧分叉。实现完成后在版本更新说明中明确该变化，不能将其误报为所有旧输出完全等价。
+- KaTeX 的内部 HTML / MathML 是私有 MathView 的排版产物，只能从数学节点进入隔离净化流程，不意味着允许回答中的任意 HTML。普通 Markdown 不再经过整篇 HTML 净化 / 导入链。
+
+## 视觉与行为不变量
+
+有意变化仅限代码颜色、完成态数学排版、正确呈现旧正则未覆盖的合法嵌套代码，以及原始 HTML 改为字面文字。其余标准 Markdown 内容不得借迁移重排、换肤或改操作。
+
+| 区域 | 保持要求与容易遗漏的差异 |
+|---|---|
+| 正文根与边距 | 保留 `md-wrapper` / `.md` 语义；多个旧 HtmlBlock 合成一个文档根后，首尾 margin 归零、代码前后段距、相邻列表与脚注不得改变。不能直接把旧 `.md > *` 假定为等价 |
+| 基础排版 | 段落、标题层级、列表缩进 / 起始序号、紧凑 / 松散列表、引用边框、分隔线、删除线、实体、软 / 硬换行维持现状；表格继续局部横向滚动，不撑宽会话 |
+| 行内代码与文件按钮 | 保留代码芯片底色、圆角、字号和 `code > button.file-mention`，长路径左对齐和整体底色；锚点内不再嵌可交互按钮 |
+| 任务列表 | 已完成 / 未完成有可见区别，checkbox 只读且 disabled；模型不能藉 HTML 引入 text / file 等输入控件 |
+| 代码卡片 | 沿用 `.code-block*`、编辑器底色、outline、标题和悬停 / focus-within 按钮；不增加行号、工具栏或逐行操作，不换官方卡片 |
+| 代码换行与折展 | 继续 `pre-wrap` + `break-all` 自动换行，不改为横向滚动；超过 20 行默认收起，160dp 裁切和 48dp 渐隐、箭头方向 / 120ms 过渡、用户展开选择保留；变短强制展开 |
+| 代码字体 | 继续 `--mono`、`--mono-size` 与 1.5 行高，高亮 span 只改受控颜色 / 字形修饰，不覆盖字号、背景、padding、换行或行高；必须检查 `.md code` 对新嵌套卡片的级联 |
+| 图片 | 尺寸上限仍为 `min(100%, 640dp)` × 360dp，按比例缩放，点击原图、zoom-in 光标、右键复制 / 保存、失败占位和替代文本一致 |
+| 脚注 | 首次引用编号、重复引用同号、仅有定义不输出、缺定义不输出空脚注区；`sup`、`.footnotes`、`.sr-only` 标题、文末箭头及重复上标保持，不顺便加可点击回跳链接；中英标题随语言切换 |
+| 主题与尺度 | 保留 VS Code 明 / 暗 / 高对比、编辑器字号联动和 `--dp`；不写覆盖全局的 KaTeX reset，不改变主题滚动条，不另用 zoom；非默认字号验证窄栏布局 |
+| 可访问性 | 保留按钮焦点 / title / aria-expanded、键盘操作和只读任务语义；新增数学辅助层可读但不重复朗读，不能为美观隐藏全部 MathML |
+
+GFM 对多段脚注、重复定义、复杂分隔符等边缘输入可能与自有解析器不同；在第一阶段用旧 / 新两条测试路径记录差异。新增标准语法支持可以有意扩展，但不能以“遵循标准”掩盖丢文本、改已有编号或现有夹具退化。
+
+## 链接、图片与生命周期
+
+- 复用 `parseFileLink`、`fileOpenIntent`、现有悬停文本和宿主帧。普通单击只读、Alt 打开校验后的真实文件、Ctrl/Cmd + HTML 家族走系统浏览器；校验失败的只读回退与提示不改。`#` 页内锚点保持原路，危险 / 未认可 scheme 不导航。
+- 外链仍只发一次 `openExternal`，必须 `preventDefault` + `stopPropagation` 防止 VS Code 外层再开一次。不能复制官方 URL 白名单而丢相对路径、盘符路径、带行号目标、`%5C` 或邮件链接等现有判据。
+- 行内代码的文件目标继续由 `FileLinkPort` 精确 / 唯一别名判定，不能按“像路径”猜。词表晚于正文到达、cwd 变化、语言变化时按钮与悬停必须更新，悬停和点击持有同一个解析目标，歧义时不挂动作。
+- 图片沿用 `localImages` 的执行世界读取、连接 + 会话缓存、有限并发和失败占位。HTTPS 图保留 no-referrer / lazy / async，HTTP 图仍拒绝；不增加远端 fetch、桌面文件路由、本机读盘回退或认证重定向。
+- React 渲染的图片 / 按钮应由 React 或专用叶节点完全拥有。旧 `hydrateFileMentions` 直接 replaceChildren、`hydrateLocalImages` 换 src / 失败节点、scope 改变重写根 innerHTML，不能继续作用于 React 管理的普通树。把可复用判据 / 请求端口与命令式 DOM 改写分开，停止使用的水合分支及时删除。
+- scope 改变即使 text 不变，也要清掉旧 data URL、失败占位和目标闭包，按新连接 / 会话重新请求；迟到 Promise / 回帧不得写新树。回帧前浏览器加载失败不是最终失败。卸载 / 重挂、同内容换会话、重连与重试都须回归。
+- SSR / Node 测试导入不能在模块顶层强制访问 DOM、创建引擎或加载字体。普通 React Markdown 和直接 CodeBlock 可被无头测试导入；公式排版在无 DOM / 净化不可用时安全回退，不假造净化结果；原始 HTML 本来就只输出文字。
 
 ## 代码高亮
 
-- 采用 Shiki fine-grained core、JavaScript 正则引擎和显式静态语言集合，不引入 Oniguruma WASM，不放宽 CSP 的脚本策略，不使用网络或 CDN。
-- 首批覆盖 JavaScript / TypeScript / JSX / TSX、JSON / JSONC、Python、Shell、PowerShell、C / C++、C#、Go、Rust、Java、HTML、CSS、SQL、YAML、Markdown、diff。嵌入语法依赖随目标 grammar 明确登记；语言集合可在实现验证后缩减，缺失始终诚实降级，不做自动语言猜测。
-- 标签取首个语言标识并按显式别名表归一化，例如 js、ts、py、sh、ps1、yml；保留原标签用于界面显示。使用 Map，`constructor`、`__proto__` 等输入不得命中对象继承成员。
-- 高亮器为每个 webview 一个实例，按首次需要初始化，不随代码卡片重复创建。当前构建是单文件 IIFE，首版静态引入精选语言，不照搬依赖动态分包的加载方案；主题和语言初始化失败时回落原文。
-- 使用结构化 token 生成 React span，不使用未经隔离的 `codeToHtml` 字符串。配色集中到受控 CSS 变量主题，覆盖 VS Code 明、暗与高对比类别；不承诺匹配用户安装的每套 TextMate 主题，也不调用宿主逐段着色。
-- 不增加行号、编辑器、逐行操作或新工具栏。原代码的缩进、空白、换行、长块折叠与选择能力保持，颜色样式不得改变字体和行高。
-- 完成态结果按精确源码、规范化语言及主题策略版本缓存；未知或失败结果也可缓存。缓存按条数与总字符量双重约束，超长源码直接纯文本展示。具体上限在实现阶段通过长代码夹具确定并写成命名常量，不宣称目前已经量测。
+- Shiki fine-grained core + JavaScript 正则引擎 + 显式静态语言集合；无 Oniguruma WASM、CDN、网络或 unsafe-eval。单文件 IIFE 首版不复制官方动态分包 / 增量会话。
+- 首批目标为 JavaScript / TypeScript / JSX / TSX、JSON / JSONC、Python、Shell、PowerShell、C / C++、C#、Go、Rust、Java、HTML、CSS、SQL、YAML、Markdown、diff。嵌入语法依赖显式登记；JS 引擎不能准确支持或有兼容异常的 grammar 纯文本回退，不用宽松模式制造看似正确的颜色。最终集合在实现验证后锁定，不自动猜语言。
+- 用首个语言标识和显式 Map 归一化 js / ts / py / sh / ps1 / yml 等别名，显示仍保留原标签；`constructor` / `__proto__` 不得命中对象继承成员。无语言 / 未知语言均可读。
+- 每 webview 一个按需初始化实例；初始化失败不让卡片消失。结构化 token 生成 React span，不将 `codeToHtml` 拼回普通 HTML；主题使用受控 CSS 变量，明暗 / 高对比无需每次重新生成全部 token，不承诺匹配所有用户 TextMate 主题。
+- 精确源码、归一化语言及主题策略版本决定缓存；失败也可缓存。条数与总字符量双限，过长代码跳过增强；保留尾部空行 / 换行，不盲抄上游按行输出时裁掉末行的实现。限额在实现时以命名常量登记并验证临界值。
 
-## 数学语法与排版
+## 数学语法、排版与安全
 
-### 识别规则
+- 完成态使用固定官方数学扩展：行内 `$…$`、`\(...\)`，块级 `$$…$$`、`\[...\]`，以及 `math` 围栏；`latex` / `tex` 围栏仍显示源码。streaming 不调用 KaTeX，math 围栏此时仍为代码。
+- 金额、转义、空公式、定界符旁空白 / 数字、奇偶反斜杠、同段 `$$`、多行、未闭合和容器边界，先采用固定来源实际规则并移植其夹具；单美元不能把 `$5 and $10` 误认。不得复制上一版文档的手写 tokenizer 规则另建一套“等价语法”。
+- 数学只来自语法确认的节点，不用 auto-render 扫描整篇 DOM，不在代码、链接 / 图片目标或 html 节点内容中二次识别；标签周围若被官方语法解析为独立 Markdown / 数学节点，按其节点处理，不另建 HTML 感知规则。未闭合不补齐。用源码位置保留无效公式回退片段及定界符，不能只回退已去定界符的 node.value。
+- KaTeX 固定 `trust: false`、有限 `maxSize` / `maxExpand`、单公式长度上限；不接收模型 options，不跨公式共享可变宏表。限额写命名常量并验证临界与超限；失败显示文本，不插异常消息或错误 HTML。
+- 默认 HTML + MathML，保留辅助语义。仅在私有 MathView 内独立净化固定版本 KaTeX 输出，再转为 React / 局部受控 DOM；这条私有链不接受原始 HTML 节点，不能将“来自可信库”当作跳过净化的理由。
+- 数学净化只允许实际需要的 MathML、SVG 几何、排版元素 / 属性；style 按排版属性及值域校验，拒绝脚本、事件、foreignObject、外链、URL 和任意 CSS。React 18 下 MathML namespace、属性映射与辅助技术行为须实测，不能把普通 createElement 的无异常当作正确渲染证据。
+- 块公式独立块容器局部横向滚动，不能 p 包 div、撑宽聊天或缩小整篇；行内公式基线和字号跟随现有正文尺度。分式、根式、矩阵、伸缩括号、重音等须证明净化未破坏排版。
 
-- 支持行内 `$…$`、`\(...\)`，块级 `$$…$$`、`\[...\]`；完成态的 math 围栏按块公式处理。latex / tex 围栏仍是源码代码，不自动改成公式。
-- 行内单美元必须有非空内容，开符后和闭符前不能是空白，不能跨行；闭符后紧跟数字时不闭合，以免把 `$5 and $10` 误作数学。转义的美元和没有配对的定界符保留原文；歧义价格文本可用 `\$` 明确表达，不做自然语言猜测。
-- 双美元支持独占行的多行块，以及同一段中成对的单行展示公式；块公式必须形成独立的块结构，不能留下 p 包 div。块不得越过所属列表 / 引用的语法范围寻找闭符。
-- 反斜杠形式先于 CommonMark 转义处理，但不得越过 code、codespan、链接目标、图片目标或原始 HTML 取内容；原始 HTML 内不启用自动公式扫描。需要核对 tokenizer 优先级，并覆盖奇偶反斜杠、嵌套起符、代码里的美元和字符串反斜杠。
-- 不使用 KaTeX auto-render 扫描整篇 DOM；数学只从词法层确认的 token 进入。两种 phase 共用数学识别规则：streaming 将已识别片段连同定界符按文本输出，不调用 KaTeX；settled 才排版。这样完整的 `\(...\)` 不会先被普通转义规则吞掉反斜杠。未闭合片段保留普通 Markdown 的现有处理，未识别到的转义仍可能按 CommonMark 展示；不得为追求暂态外观自动补括号或补定界符。无效的已识别公式回退原始片段。
+## 搜索、复制、选区与阅读
 
-### 安全与失败
+- 高亮 span 的合并文本必须等于 code，现有跨文本节点查找继续生效；覆盖跨 token、空白、中文、末行和折叠代码的既有查找策略，不顺便扩大隐藏内容搜索范围。
+- KaTeX HTML、MathML、TeX annotation 有重复文本；查找只采集视觉层，排除辅助层 / 注释。内部公式标识由组件生成且有来源，不由模型 class 触发特殊路径；搜索和选区提取共用同一去重判据。不能泛化为排除所有 aria-hidden，KaTeX 视觉层可能恰带该属性。
+- 会话 Ctrl/Cmd+C、右键复制和引用继续共用 `chatSelectionText`，普通选区空白 / 换行不变；右键入口仍按既有规则去首尾空白。选中公式给一次可读文本，不承诺还原 TeX；整条消息复制是原 Markdown，代码按钮是精确 code，不加公式按钮。
+- 数学去重必须按实际 Range 裁切，不能把仅选中部分公式替换成整个公式，也不能吞掉相邻正文、跨消息换行。焦点在 input / textarea / contenteditable、跨正文边界、组字或特殊组合键时仍让原生处理，不扩展快捷键范围。
+- 结束时有选区先冻结 `{text, phase}`，没有选区才统一增强。异步高亮 / 字体 / 图片结果不得改写仍被选中的内容；必要时叶节点延迟提交增强，不能只冻结父 props 却让内部异步结果替换 DOM。
+- DOM 更新会使旧 Range / 查找高亮失效，应通过现有查找版本与 readingPlacement 作废 / 重建，不持有已卸载节点。代码折展、公式排版、字体就绪及图片变化引起高度变化时，原本贴底才继续跟随；用户上翻不抢底，不新建第二套 scrollTop 仲裁。
+- 轨迹内变化继续服从其现有虚拟化测量、pin 与定位回执；不能只验证聊天正文就假定轨迹摘要 / 详情的高度与锚点也正确。
 
-- KaTeX 固定 `trust: false`，采用有限 `maxSize`、`maxExpand`，并限制单公式输入长度；不接收模型提供的 options，不跨公式共享可变宏表。具体资源限额在实施时定义为常量并测试临界值。
-- 默认采用 HTML + MathML，保留辅助技术可读语义。输出只由固定版本 KaTeX 生成，在 MathView 内单独净化，使用精确的数学元素 / 属性清单和排版样式约束；普通 Markdown 的 DOMPurify 白名单不放宽。不得直接将整个 KaTeX 输出按“可信库”跳过验证。
-- 公式专用净化只允许 KaTeX 实际需要的 MathML、SVG 几何和排版属性；不允许脚本、事件属性、foreignObject、外链资源或任意 CSS。style 值按排版属性与值域校验，拒绝 URL 和资源加载。实施时用分式、根式、矩阵、伸缩括号等夹具证明未因净化破坏排版。
-- 捕获解析或资源错误后显示原始 TeX 片段，按文本节点输出，不直接插入异常消息或 KaTeX 错误 HTML。过大公式不会让整条消息消失。
-- 块公式在自身容器横向滚动，不撑宽整个会话，也不全局缩小正文；行内公式与正文基线一致，字体变化服从现有界面尺度策略。
+## 构建、依赖与资源
 
-## 搜索、复制、选区与滚动
+- 复用已有 micromark / mdast 依赖，补齐 math 配对和 Shiki / KaTeX 精选入口，锁定实际版本。迁移完成且全仓无消费者后删除 marked 与其自有脚注 / 中文加粗 / 目标 tokenizer；DOMPurify 按数学输出净化所需保留，不再保留原始 HTML 白名单和整篇净化入口；先检查全仓其他消费者，再删无用代码 / 依赖。
+- 构建为 KaTeX CSS / 字体补本地资源流程，优先 WOFF2，产物在 dist 范围；CSS URL 相对最终样式文件可解析，不留下 node_modules、开发服务器、绝对本机地址。无外部字体、额外脚本分包、WASM 或网络权限。
+- 核对既有 font-src、style-src、localResourceRoots 与文件白名单，保持脚本 nonce / 无 unsafe-eval。分别验证静态预览和 VS Code webview 的字体路径 / CSP，前者成功不代表后者已验收。
+- 更新锁文件、[第三方声明](<../THIRD-PARTY-NOTICES.md>)、vendor 原文 / 来源锁、资源清单及目录 README。新本地派生源码须披露官方来源；Shiki grammar / theme 和 KaTeX 字体的许可证按实际发布资源核对。
+- 实施前后记录 JS / CSS / 字体 / VSIX 体积、首次初始化、长文解析和结算延迟。缓存有界，不全局永久保存整棵文档、敏感正文或宿主闭包。当前没有量测结果，不编造耗时 / 包体通过数字；有明确阻塞再评估 worker、语言裁剪或分包，不预先引入增量复杂度。
 
-- 代码 span 不改变字符内容，现有跨文本节点搜索可继续使用；需回归空白和跨 token 命中。
-- 公式的 MathML、TeX annotation 与视觉 HTML 含重复文本。`collectTextNodes` 只采集公式视觉层，排除辅助层与源码注释；不把屏幕阅读文本重复计入命中，也不承诺用完整 TeX 命令搜索排版后的公式。
-- 会话选区的 Ctrl/Cmd+C、右键复制及引用共用现有 `chatSelectionText`，增强后须统一排除辅助层重复内容。普通选区保留原始空白；涉及公式的选区给出一次可读文本，不承诺还原可重新编译的 TeX。整条消息复制仍是原始 Markdown，代码按钮仍是原始 code；不增加公式专用按钮。
-- 公式 DOM 上保留内部可识别的视觉层与辅助层标识，搜索与选区文本提取共用这些判据。禁止为排除隐藏内容而泛化成“排除所有 aria-hidden”，因为 KaTeX 的视觉层本身可能带该属性。
-- 生成结束时，选区冻结优先于视觉增强；滚动继续经既有 readingPlacement / autoScroll 端口管理。公式排版与字体完成引起高度变化时，只在原本跟随底部时保持跟随，用户已向上阅读则不抢回底部。
+## 迁移顺序与退出条件
 
-## 构建、资源与第三方声明
+1. **先固定基线与兼容性。** 采集现有真实输出预览夹具、代表性 DOM / computed style / 截图、复制和宿主帧；固定官方来源、原始 HTML 字面输出的有意差异及代码源码保真方案。其余安全 / 普通显示不一致未解决前，不以着色掩盖迁移问题。
+2. **只切换管线。** 建立官方解析适配与完整 React 渲染，迁移全部消费入口、脚注、路径、图片和节点所有权；此时不接高亮 / 公式排版，用无增强基线证明标准 Markdown 与原界面一致，原始 HTML 则按新契约验证只输出文字。测试阶段可对旧 / 新输出作差分，不保留生产双引擎、功能开关或长期回退分支。
+3. **接入完成态代码。** 正文和 run_code 共用引擎 / 代码卡，完成主题、别名、原文、折展、缓存、超限和失败回归；streaming 与静态 phase 各自固定。
+4. **接入完成态公式。** 恢复配套数学解析入口，落实隔离净化、字体和局部布局，再打通搜索 / 选区去重；核对辅助语义和 React 18 MathML 行为。
+5. **收尾与安装验收。** 检查会话 / 连接切换、选区延迟、异步高度、轨迹测量、主题 / 尺度与 VSIX 资源；删除所有已无消费的旧解析 / 水合 / 测试路径，确认后才改用户功能说明，更新版本时再写 CHANGELOG。
 
-- 字体与样式随扩展离线发布。扩展构建为字体补 file loader 与稳定的资源路径，优先 WOFF2，产物放入 dist 管理范围；CSS 中的字体 URL 相对最终样式文件解析。不能留下指向 node_modules、开发服务器或本机目录的链接。
-- 既有 font-src 允许扩展本地资源；不为此增加远程字体、unsafe-eval、WASM 或网络权限。预览与 VS Code webview 分别验证字体地址，静态预览成功不能替代 webview CSP 验收。
-- 更新依赖锁文件与[第三方声明](<../THIRD-PARTY-NOTICES.md>)，核对 KaTeX 字体、Shiki 语言和主题资源的实际许可证；打包白名单须包含所需产物和声明。
-- 实施前后记录 webview JS / CSS、字体集合与 VSIX 体积，观察首次初始化和长内容结算延迟，再决定是否需要语法裁剪或 worker。当前没有这些实测数据，不设置虚构的性能通过数字。
+阶段提交应可定位与回滚；发现安全或现有行为回归优先整体回滚对应阶段，不通过运行时开关保留两套长期管线。字体 / CSP、系统剪贴板等安装端结果未完成时应明确列为未验证，不得用构建成功代替。
 
-## 验证与实施顺序
+## 验收矩阵与证据
 
-1. 先建立文档编译与槽挂载的单一消费路径，替换围栏正则，跑通现有 Markdown、脚注、链接和图片回归；暂不引入着色与公式。
-2. 接入代码高亮，覆盖正文与 `run_code`，落实语言、主题、缓存、超限与失败降级。
-3. 接入数学扩展、隔离排版、样式与本地字体，再整合搜索和选区复制。
-4. 回归完成态切换、选区冻结、连接 / 会话切换、异步高度变化与资源打包，确认后才更新用户功能说明；实现版本的[更新日志](<../CHANGELOG.md>)不提前写入本次版本。
+测试穿过同一 Interface / Seam，不以 import 文本、CSS class 出现或“没有抛错”证明功能。安全内部 Seam 可以独立测试，但不向业务公开测试开关。
 
-测试从同一 Interface 穿过 Seam，不能只断言“导入了 Shiki”或“字符串里有 katex”。内部编译 / 挂载 Seam 允许针对安全性质单独测试，不向业务调用方开放测试开关：
-
-| 测试层 | 必须覆盖 |
+| 层级 | 必须覆盖与判定 |
 |---|---|
-| 离线编译与渲染 | 较长 / 波浪 / 嵌套 / 未闭合围栏、参考式链接跨代码、脚注内代码和公式、GFM 表格与任务、中文加粗和 Windows 路径不退化 |
-| 代码 Interface | 每类精选语言、别名 / 未知 / 恶意标签、streaming 不调用引擎、原文复制 / 插入保真、缓存命中 / 淘汰 / 超限、引擎失败 |
-| 数学 Interface | 四种定界符与 math 围栏、美元金额 / 转义 / 不完整输入、代码和链接不误识别、无效语法 / 宏展开 / 超尺寸降级 |
-| 真实 DOM 安全 | 模型 HTML 保留标识伪造、重复槽 / 错类型 / 上轮标识、事件与危险 URI、TeX 不可信命令、样式 / MathML / SVG 净化，普通白名单未扩大 |
-| 无模型静态预览 | 明暗 / 高对比、窄侧栏、长代码 / 宽公式、字体离线加载、搜索无重复、选区复制 / 引用、流式结束但选区仍在、释放后追上最新状态 |
-| 作用域与阅读 | 切换连接 / 会话清理旧 portal 与在途水合，滚动跟随和用户上翻互不干扰 |
-| 资源检查 | 构建输出和发布白名单覆盖字体 / 声明，CSS 无远端与本机路径、无意外全量语言包 |
+| 解析 / 源码 | GFM 表格、任务、软硬换行、引用 / 图片定义跨代码、中文加粗、Windows 正反斜杠 / `%5C` / 点目录 / 中文 / 行号 / UNC / 非目标文本；参考定义、嵌套脚注、缺定义与重复引用；已知差异逐项审查 |
+| 树结构 / 普通 DOM | 根首尾边距、段落 / 列表 / 引用嵌套、表格容器、脚注结构；三反引号 / 长 / 波浪 / 缩进 / 未闭合代码正确在原容器内；原始 HTML 的行内 / 块级 / 跨节点标签和注释显示为文字，混排时不解释为 DOM、不修复标签嵌套、不吞源码 |
+| 代码 Interface | 语言 / 别名 / 未知 / 恶意标签、JS 正则不支持的 grammar；token 文本逐字相等，CRLF / 空代码 / 尾换行 / tab 保真；20 / 21 行、折展状态跨 phase 保持、变短展开；streaming 零增强调用、缓存淘汰 / 超限 / 初始化失败 |
+| 数学 Interface | 四类定界符和 math / tex / latex 围栏、金额 / 转义 / 空白 / 数字 / 未配对、容器边界；代码 / URL / HTML 不误识别；无效 TeX / 长度 / 宏展开 / 尺寸降级；分式 / 矩阵 / 根式 / SVG 伸缩排版 |
+| 真实 DOM 安全 | 危险 scheme、编码 / 混淆 URI、事件 / script / style / form / 主动资源、伪造内部 class / 属性 / 标签不能获得组件能力；任务只读；MathML / SVG / style 专用净化，无远程资源与可信 TeX 命令；净化失败安全回退 |
+| 文件与图片交互 | 锚点 / 行内代码同目标、外链一次、页内锚点、Alt / Ctrl / Cmd、词表晚到 / 歧义；本地与 HTTPS、HTTP 拒绝、回帧前失败、最终占位、范围更换与迟到结果、原图 / 复制 / 保存 |
+| 选择 / 搜索 / 阅读 | 跨 span 命中、MathML / annotation 不重复、部分公式选区 / 跨消息 / 普通空白保真、编辑焦点让路、右键引用；结束仍选中不增强，释放后追上；贴底与上翻、旧 Range 作废、轨迹虚拟化高度 |
+| 视觉预览 | 同输入 / 主题 / 语言 / 字号 / 宽度前后截图与 computed style 对拍；明 / 暗 / 高对比、窄侧栏、代表性小中大字号，中英标题 / 按钮、代码渐隐和换行、宽表 / 宽公式、字体加载前后与离线加载 |
+| 集成 / 发布 | 全部消费入口、SSR / Node 导入、vendor 来源锁、依赖裁剪；构建 CSS URL、字体与声明白名单、无全量语言包 / CDN / WASM；安装端 CSP / 字体、原生插入 / 文件打开与系统剪贴板 |
 
-新增离线脚本登记到[脚本构建入口](<../esbuild.scripts.mjs>)的 entries。真实 DOM 测试应使用受控浏览器夹具，不能以 Node 中未执行 DOMPurify 的结构断言证明净化安全。常规实施验收运行 typecheck、test、build 与不消耗模型的静态预览；安装端剪贴板、VS Code CSP 与完整 VSIX 资源须另行验收，不冒充已经验证。真实 DSH、模型 smoke 或探针仍须当次明确批准。
+保留 [markdown.test.ts](<../scripts/markdown.test.ts>)、[footnotes.test.ts](<../scripts/footnotes.test.ts>)、[styles.test.ts](<../scripts/styles.test.ts>) 中的业务断言，淘汰仅固定 marked 调用形状的断言；同步 fileLinks、imageHydrate、localImages、contextMenu、questionRender、trajectoryVendor、vendorSourceLock、manifest 等关联回归，不能因旧测试不再匹配而整段删除安全要求。新增测试登记[脚本构建入口](<../esbuild.scripts.mjs>) entries；真实 DOM 净化测试须由受控浏览器执行，Node 静态源码检查不等同净化证据。
 
-## 资料与重新评估条件
+纯文档阶段只做文档 / 链接 / diff 检查。实现阶段运行 typecheck、test、build 与不消耗模型的静态预览；安装端另验 CSP、字体、IPC 和系统剪贴板，分别记录已验证与未验证。未经当次批准，不启动真实 DSH、发送真实消息或运行模型 smoke / 探针。
 
-- [Marked 扩展机制](https://marked.js.org/using_pro)：tokenizer、renderer 与文档 token 遍历；实施须以锁定版本的实际类型和行为为准，不能直接套最新示例。
-- [Shiki 精简构建](https://shiki.style/guide/best-performance)、[JavaScript 正则引擎](https://shiki.style/guide/regex-engines)：静态精选语法、引擎限制与纯文本降级。
-- [KaTeX 安全说明](https://katex.org/docs/security)、[选项](https://katex.org/docs/options)：不可信 TeX、命令权限和资源限制。
+## 资料与重评条件
 
-仅当完成态着色的等待、精选语言覆盖或结算卡顿有实际证据时，再评估语言分包、worker 或增量处理；不因官方支持就自动增加流式复杂度。公式语法误识别以可复现夹具调整，不用自然语言启发式不断扩大识别范围。
+- [mdast-util-from-markdown](https://github.com/syntax-tree/mdast-util-from-markdown)：语法与树扩展须配对；位置来自实际解析输入，源码适配不得破坏偏移关系。
+- [官方源码](https://github.com/deepseek-ai/deepseek-harness/tree/639ed015397290b3745d163aafe02ffee4aa3f84/packages/client/ui-primitives/src/markdown)：按固定来源核对 parse、render、mathCompatibility、highlight 与 katex，UI 与安全差异按本文适配。
+- [Shiki 精简构建](https://shiki.style/guide/best-performance)、[JS 正则引擎](https://shiki.style/guide/regex-engines)；[KaTeX 安全](https://katex.org/docs/security)、[选项](https://katex.org/docs/options)。最新资料只作参考，实际依赖版本和浏览器能力必须另核。
+
+只有实际包体 / 结算卡顿、明确的语言覆盖缺口或可复现数学误识别，才重评对应内部实现；不因官方支持就增加流式复杂度。原始 HTML 按本文有意收敛到官方行为，其余既有视觉与行为不为省实现成本牺牲。
