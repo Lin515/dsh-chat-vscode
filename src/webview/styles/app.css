@@ -1068,7 +1068,8 @@ button.header-title.is-switcher > svg.is-open {
 .io-text {
   min-width: 0;
   color: var(--description);
-  font-size: var(--font-size-xs);
+  font-size: var(--font-size);
+  line-height: 1.5;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -1087,7 +1088,7 @@ button.header-title.is-switcher > svg.is-open {
    展开区的「卡片」形态：读取给行号 + 内容、搜索给文件 + 命中行、终端给命令 + 输出、
    网页给答案 + 来源。**有卡片时不再渲染 IN/OUT**，参数 JSON 因此不出现在界面上。
    布局与官方一致的三段：横幅（标签 + 语言/计数）→ 正文（行）→ 可选展开钮。
-   它同时就是所在展开体的「节点框」：外层的 `.row-body.card-body` 不再自套一层
+   唯一阅读框归外层 `.row-body`：这里只负责内部排版，不再自带边框 / 底色 / 内边距
    （见 `.row-body` 那一组选择器）。 */
 
 .tool-card {
@@ -1095,10 +1096,6 @@ button.header-title.is-switcher > svg.is-open {
   flex-direction: column;
   gap: calc(4 * var(--dp));
   min-width: 0;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--editor-bg);
-  padding: calc(5 * var(--dp)) calc(7 * var(--dp));
 }
 
 .tool-card-banner {
@@ -1157,7 +1154,8 @@ button.header-title.is-switcher > svg.is-open {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  font-size: var(--font-size-xs);
+  font-size: var(--font-size);
+  line-height: 1.5;
   color: var(--description);
 }
 
@@ -1256,10 +1254,14 @@ button.header-title.is-switcher > svg.is-open {
   flex-direction: column;
   gap: calc(1 * var(--dp));
   min-width: 0;
+  /* 终端命令行是内容主体，不跟着横幅的辅助小字；状态胶囊那一行再单独压小。 */
+  font-size: var(--font-size);
+  line-height: 1.5;
 }
 
 .tool-card-state {
   color: var(--muted);
+  font-size: var(--font-size-2xs);
 }
 
 .tool-card-promptline {
@@ -1299,7 +1301,8 @@ button.header-title.is-switcher > svg.is-open {
 
 .tool-card-answer {
   min-width: 0;
-  font-size: var(--font-size-xs);
+  font-size: var(--font-size);
+  line-height: 1.5;
   color: var(--fg);
 }
 
@@ -1310,7 +1313,8 @@ button.header-title.is-switcher > svg.is-open {
   flex-direction: column;
   gap: calc(4 * var(--dp));
   min-width: 0;
-  font-size: var(--font-size-xs);
+  font-size: var(--font-size);
+  line-height: 1.5;
 }
 
 .tool-card-link {
@@ -1325,7 +1329,8 @@ button.header-title.is-switcher > svg.is-open {
 
 .tool-card-snippet {
   color: var(--description);
-  font-size: var(--font-size-2xs);
+  font-size: var(--font-size);
+  line-height: 1.5;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -1393,7 +1398,8 @@ button.header-title.is-switcher > svg.is-open {
   display: flex;
   flex-direction: column;
   gap: calc(4 * var(--dp));
-  font-size: var(--font-size-xs);
+  font-size: var(--font-size);
+  line-height: 1.5;
   color: var(--description);
 }
 
@@ -1978,7 +1984,7 @@ body.vscode-high-contrast-light .md-code-surface {
      否则未覆盖的 `border-radius` 会留在代码卡内部（无底色时不可见，但计算样式不同）。 */
   border-radius: 0;
   font-family: var(--mono);
-  font-size: var(--mono-size);
+  font-size: var(--font-size);
   line-height: 1.5;
 }
 
@@ -2273,12 +2279,14 @@ body.vscode-high-contrast-light .md-code-surface {
   font-variant-numeric: tabular-nums;
 }
 
-/* 节点展开体的统一「节点框」（用户 2026-10-02 口径）。
-   展开出来的内容必须一眼看出属于上面那一行节点。此前只有一条 1px 左边线，
-   问卷记录与工具行的图片连那一条都没有，展开后读起来和正文同级；现在统一成一张
-   卡片：缩进到节点名之下 + 圆角 + 1px 边框 + 一层极淡的提亮底。
-   **同一套框也给了** `.row-exit`（退出状态）与 `.question.is-record`（问卷记录）——
-   三个选择器共用一份声明，避免各自漂移。 */
+/* 节点展开体的统一「阅读框」。
+   展开出来的每一段**阅读内容**（同节点可以有多个：IN/OUT、diff 与输出、注入的
+   结构字段与原文……）各自套一次这份声明：缩进到节点名之下 + 圆角 + 1px 边框 +
+   一层极淡的提亮底 + 统一内边距。多段保留各自的 ref / 滚动盒，不合并——合并会
+   破坏贴底、划选与每段自己的限高。
+   **同一套框也给了** `.row-exit`（退出状态）与 `.question.is-record`（问卷记录）：
+   三个选择器共用一份声明，避免各自漂移。`.row-body.is-action` 是动作行而不是内容，
+   仍无框（见下）。 */
 .row-body,
 .row-exit,
 .question.is-record {
@@ -2287,23 +2295,43 @@ body.vscode-high-contrast-light .md-code-surface {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--node-body-bg);
+  font-size: var(--font-size);
+  line-height: 1.5;
 }
 
 .row-body {
   color: var(--description);
-  font-size: var(--font-size-sm);
+  font-size: var(--font-size);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   max-height: calc(320 * var(--dp));
   overflow: auto;
 }
 
-/* 展开体里**自带卡片**的两种（工具卡 `.tool-card`、代码卡 `.code-block`）：
-   框归内层，外层只留缩进与滚动——两层边框叠在一起会像「卡里还套着一张卡」。 */
-.row-body.card-body {
-  padding: 0;
-  border: none;
+/* 节点正文的代码卡（workflow / run_code）：外层 `.row-body` 已经给出边框、底色、
+   圆角与内边距，内层只留代码排版。`>` 很关键：正文 Markdown 里嵌套的代码块不是
+   `.row-body` 的直接子元素，继续使用它自己的卡片分区。 */
+.row-body > .code-block {
+  margin: 0;
+  border-radius: 0;
   background: none;
+  outline: none;
+}
+
+.row-body > .code-block .code-block-head {
+  min-height: 0;
+  padding: 0 0 calc(4 * var(--dp));
+}
+
+.row-body > .code-block pre {
+  padding: 0;
+}
+
+/* 收起态的渐隐要淡到节点框的底色，而不是代码卡自己的编辑器底色——后者在这里
+   已被外层阅读框取代。`--node-body-solid` 是 4% 提亮叠在页面底色后的等价实色，
+   用半透明的 `--node-body-bg` 作渐变终点会透出下面的代码，遮不住文字。 */
+.row-body > .code-block.is-collapsed .code-block-body::after {
+  background: linear-gradient(transparent, var(--node-body-solid));
 }
 
 /* 图片展开体：同一个节点框，但不限高。图是拿来看的，给个 320px 的内滚只会让人
@@ -2315,7 +2343,7 @@ body.vscode-high-contrast-light .md-code-surface {
 
 .row-body.mono {
   font-family: var(--mono);
-  font-size: var(--mono-size);
+  font-size: var(--font-size);
   line-height: 1.5;
 }
 
@@ -2370,27 +2398,22 @@ body.vscode-high-contrast-light .md-code-surface {
 }
 
 /* 自动载入的提示词节点（系统提示词 / 插件注入…）：淡化处理，表明这不是
-   用户或模型写的内容；展开后仍可读，所以只压字号与颜色，不压内容。 */
+   用户或模型写的内容；展开后仍可读，所以只压颜色，字号随统一的内容基准。 */
 .row-injected {
-  max-height: calc(400 * var(--dp));
   color: var(--muted);
-  font-size: var(--font-size-2xs);
+  font-size: var(--font-size);
 }
 
 /* ============================ diff（编辑类节点） ============================
    展开区渲染结构化 diff：单栏（`+`/`-` 前缀 + 底色）或双栏（左旧右新）。
-   自适应模式由容器宽度决定（见 components/Diff.tsx）。 */
-
-.diff-body {
-  /* 行底色要铺满整行，去掉 row-body 的左右内边距 */
-  padding: calc(4 * var(--dp)) 0;
-}
+   自适应模式由容器宽度决定（见 components/Diff.tsx）。红绿底色只铺在行内，不为了
+   全幅去改外层阅读框的内边距；外框的 padding 与其它节点完全一致。 */
 
 .diff {
   display: flex;
   flex-direction: column;
   font-family: var(--mono);
-  font-size: var(--mono-size);
+  font-size: var(--font-size);
   line-height: 1.5;
 }
 
@@ -2799,7 +2822,8 @@ body.vscode-high-contrast-light .md-code-surface {
 
 .approval-detail {
   color: var(--description);
-  font-size: var(--mono-size);
+  font-size: var(--font-size);
+  line-height: 1.5;
   font-family: var(--mono);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -3034,14 +3058,9 @@ body.vscode-high-contrast-light .md-code-surface {
 }
 
 /* 已答完 / 已撤回的问卷：它和别的展开体一样是**上面那一行节点的内容**，
-   所以用同一张「节点框」（缩进、圆角、边框、底色见 .row-body 那一组选择器）。
-   此前这里刻意把外框与留白整个去掉，理由是「已经是一条记录」——实测展开后整段
-   题目与选项和助手正文同级，看不出它属于上面那个提问节点（用户 2026-10-02 报的
-   正是这个），所以撤销那条口径。
-   这里只补回问卷自己的强调色左边：等待态那张卡也是这个颜色，两种形态应当同族。 */
-.question.is-record {
-  border-left: 2px solid var(--accent);
-}
+   外框、缩进、内边距全部由 `.row-body` 那一组共用声明给出，这里不再补任何
+   边宽或 padding 覆盖——外框与其它阅读盒完全一致。等待态那张交互面板仍保留
+   自己的强调色，那是输入区交互卡，不是折叠节点内容。 */
 
 /* 题目的补充正文（`detail`，官方 `QuestionComposer` 的 `.detail`）：排在选项**上方**，
    与助手正文同一个 markdown 渲染器。计划审阅的计划正文也走这里（记录态展开时）。
@@ -3051,6 +3070,11 @@ body.vscode-high-contrast-light .md-code-surface {
   margin: calc(2 * var(--dp)) 0 calc(4 * var(--dp));
   font-size: var(--font-size-sm);
   line-height: 1.7;
+}
+
+/* 记录态是节点阅读内容，行高跟共用阅读框的 1.5；等待态那张交互面板仍保持 1.7。 */
+.question.is-record .question-detail {
+  line-height: 1.5;
 }
 
 /* 计划审阅卡（`exit_plan_mode`）——官方 `PlanReviewPanel` 的三段式：
@@ -3173,19 +3197,15 @@ body.vscode-high-contrast-light .md-code-surface {
 
 /* 终端退出状态：非零退出码 / 信号终止。放在展开区，不与正文混在一起
    （结果正文里那行标记已被剥掉，改由这里承载）。
-   它同样是节点展开体的一员：框与缩进走 `.row-body` 那一组共用声明，
-   这里只换边框的左边那道为警告色。 */
+   它同样是节点展开体的一员：外框、缩进与内边距全部走 `.row-body` 那一组共用
+   声明，这里只用文字颜色表达警告 / 错误，不再改边宽或内边距。 */
 .row-exit {
-  padding: calc(4 * var(--dp)) calc(10 * var(--dp));
-  border-left: 2px solid var(--warning);
   color: var(--warning);
   font-family: var(--mono);
-  font-size: var(--font-size-xs);
   font-variant-numeric: tabular-nums;
 }
 
 .row-exit.is-error {
-  border-left-color: var(--error);
   color: var(--error);
 }
 

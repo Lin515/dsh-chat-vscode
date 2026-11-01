@@ -79,8 +79,11 @@
 
   /* 节点展开体的底：在界面底色上极淡地提一层（浅色主题下就是压暗一层）。
      展开的内容靠它 + 一圈边框圈成「属于上面那一行节点」的卡片，见 app.css 的
-     `.row-body` 那一组选择器。用前景色混合而不是写死一个灰：亮/暗两套主题都不跑偏。 */
+     `.row-body` 那一组选择器。用前景色混合而不是写死一个灰：亮/暗两套主题都不跑偏。
+     `--node-body-solid` 是它叠在页面底色 `--bg` 上之后的等价实色，只给需要真正
+     遮住文字的渐隐层用（半透明色做渐变终点会透出下面的代码）。 */
   --node-body-bg: color-mix(in srgb, var(--fg) 4%, transparent);
+  --node-body-solid: color-mix(in srgb, var(--fg) 4%, var(--bg));
 
   /* ---- interactive rows / lists ---- */
   --hover: var(--vscode-list-hoverBackground, #383838);
@@ -123,9 +126,9 @@
   --font-size-2xs: calc(var(--font-size) - 2px);
   --font-size-xs: calc(var(--font-size) - 1px);
   --font-size-sm: var(--font-size);
-  /* 代码字号跟随编辑器字号**与界面倍率**：今天「代码比正文略大」的关系在任何倍率下都
-     保住；倍率 ≤1 时它只被界面字号顶起来（界面字号本身就是配置值）。 */
-  --mono-size: max(calc(var(--vscode-editor-font-size, 12px) * var(--ui-scale)), calc(var(--font-size) - 1px));
+  /* 节点内容（含代码、终端、搜索结果、diff、注入正文）一律使用扩展字号基准
+     `--font-size`；`--mono` 只决定字族，不再另设会跟随 `editor.fontSize` 的字号档。
+     编辑器字号只影响 VS Code 编辑器本体，不进入 webview 的任何内容字号。 */
   --mono: var(
     --vscode-editor-font-family,
     "SF Mono",

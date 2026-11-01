@@ -4,7 +4,7 @@
 
 ## 基准与换算
 
-基准字号为 13px，VS Code 注入的 `--vscode-font-size` 恒为 13px，不随 `editor.fontSize`（后者在 `--vscode-editor-font-size`）。`dshChat.fontSize=0`（auto）采用基准，界面倍率为 1。
+基准字号为 13px，VS Code 注入的 `--vscode-font-size` 恒为 13px。`editor.fontSize`（`--vscode-editor-font-size`）只影响 VS Code 编辑器本体，webview 的内容字号不读它；`dshChat.fontSize=0`（auto）采用基准，界面倍率为 1。
 
 CSS 在 `tokens.css` 的 `:root` 推导 `--ui-scale: calc(var(--font-size) / 13px)` 与 `--dp: calc(1px * var(--ui-scale))`，几何量写成 `calc(N * var(--dp))`。JS 几何通过 `uiScale.ts` 的统一入口取得倍率与 `dpLength(N)`；基准 `UI_SCALE_BASE_PX` 与 CSS 分母由 styles 回归对齐，不在组件另定义基准。
 
@@ -23,7 +23,7 @@ CSS 在 `tokens.css` 的 `:root` 推导 `--ui-scale: calc(var(--font-size) / 13p
 | ±1 / ±2px 防抖、贴底容差与时长 | 不随倍率 |
 | 内容需要多宽的断点 | 随倍率换算，不按固定物理宽度判断 |
 
-代码块字号为 `max(编辑器字号 × 倍率, 界面字号 − 1px)`，保持代码与正文的相对大小。SVG 的尺寸属性不接受所需 calc，图标尺寸用 inline style 的 `dpLength(N)`，包括品牌标、上下文圆环与 spinner；描边随图标整体等比变化，不加 non-scaling-stroke。新增 CSS svg 尺寸覆盖须考虑 inline style 的优先级。
+代码块字号不再单独计算：节点内容（源码、终端输出、搜索结果、diff、注入正文等）统一取界面字号基准 `--font-size`，等宽内容只换字族 `--mono` 并用 1.5 行高。`dshChat.fontSize` 是内容字号的唯一来源，编辑器字号不参与。辅助标注（路径、行号、计数等）可用更小的文字档位；Markdown 标题的 em 与数学保持固有相对字号。SVG 的尺寸属性不接受所需 calc，图标尺寸用 inline style 的 `dpLength(N)`，包括品牌标、上下文圆环与 spinner；描边随图标整体等比变化，不加 non-scaling-stroke。新增 CSS svg 尺寸覆盖须考虑 inline style 的优先级。
 
 容器查询用 `calc(N em / 13)`，em 相对查询容器字号。媒体查询的 em 固定相对初始 16px，不能用于字号联动；轨迹断点挂在 `.trajectory-view` 的 inline-size 容器上。JS 中的迷你模式、diff 双栏与检查器宽度阈值按倍率换算，并让倍率进入 effect 依赖。
 
@@ -40,6 +40,10 @@ CSS 在 `tokens.css` 的 `:root` 推导 `--ui-scale: calc(var(--font-size) / 13p
 Chromium 的 zoom 会分裂坐标系：倍率 2 时 getBoundingClientRect 返回缩放后值（如 440），clientWidth / offsetWidth / scrollHeight / computed style 仍是布局值（如 220）。工具栏分配、迷你模式、diff、贴底、检查器拖动与找词定位混用这些量，会静默错判。现有字号已缩放文字，再叠 zoom 还会二次缩放，因此采用显式设计像素而不是整页 zoom。
 
 不另建 `--d-4` / `--d-6` 等刻度 token 层：大量非刻度尺寸仍需 calc，增加第二套选值规则而没有统一收益。
+
+### 内容字号只跟扩展配置
+
+节点展开内容、工具卡、终端输出、搜索结果、diff 与正文代码块统一使用 `--font-size`，不读取 `--vscode-editor-font-size`，也不保留会随编辑器字号放大的 `--mono-size` 档。这样用户只调扩展字号时，读取、diff、workflow、inspect 等节点的文字不会一个大一个小；等宽只表达字族，不表达字号。节点阅读盒的共享外框见[样式导航](<../src/webview/styles/README.md>)。
 
 ### 滚动条交给 VS Code
 

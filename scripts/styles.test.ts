@@ -1517,57 +1517,86 @@ console.log("styles: 复制按钮归属（工具卡内容有 / 工具串没有 /
 }
 console.log("styles: 节点展开后——进行中的贴底、已结束的置顶（跑完不重定位；运行中点开的贴底） ✓");
 
-// ---------- 16c'. 节点展开体统一是「节点框」：内容不许和正文同级 ----------
+// ---------- 16c'. 节点展开体统一是同一张「阅读框」 ----------
 //
 // 用户 2026-10-02 报的「已完成的问卷、读取图片展开后，内容和正文同级，看不出属于
 // 上面那一行节点」。此前展开体只有一条 1px 左边线（`.row-body` 的 `border-left`），
 // 问卷记录（`.question.is-record` 曾把外框整个去掉）与工具行的结果图库
 // （`.row-body-images`，只有一段缩进）连那一条都没有。
 //
-// 现在三处共用同一张卡（同一组选择器里的一份声明），这条钉住三件事：
-// ① 共用声明还在，且各自只补自己的强调色；
-// ② 展开体里**自带卡片**的两种（工具卡 / 代码卡）不再往外层叠一层边框；
-// ③ 工具行的结果图片真的套进了节点框，且图片那一档不吃文本档的 320px 限高。
+// 用户 2026-11-02 进一步要求所有节点内容的**外框完全统一**：同一份 margin /
+// padding / 1px 边框 / 圆角 / 底色，工具卡与节点代码卡不能再套第二圈。同节点有
+// 多个阅读盒时各套一次同样的框，不合并滚动盒。这条钉住：
+// ① 共用声明还在，且没有 padding / 边宽的局部覆盖；
+// ② 工具卡与节点直系代码卡清掉自己的框；正文 Markdown 里的代码卡仍是独立卡片；
+// ③ 图片框只取消限高；④ 内容字号取 --font-size，不再读编辑器字号。
 {
   const shared = /\.row-body,\s*\.row-exit,\s*\.question\.is-record\s*\{([\s\S]*?)\n\}/.exec(css);
   assert.ok(
     shared,
-    "`.row-body` / `.row-exit` / `.question.is-record` 必须共用同一组「节点框」声明——分成三处写迟早各自漂移",
+    "`.row-body` / `.row-exit` / `.question.is-record` 必须共用同一组阅读框声明——分成三处写迟早各自漂移",
   );
   const frame = shared[1];
-  assert.ok(/border:\s*1px solid/.test(frame), `节点框要有整圈边框（不是只有一条左边线），现在是 "${frame.trim()}"`);
-  assert.ok(/border-radius:/.test(frame), "节点框要有圆角");
-  assert.ok(/background:\s*var\(--node-body-bg\)/.test(frame), "节点框要有那层极淡的底色（token 见 tokens.css）");
+  assert.ok(/border:\s*1px solid/.test(frame), `阅读框要有整圈边框（不是只有一条左边线），现在是 "${frame.trim()}"`);
+  assert.ok(/border-radius:\s*var\(--radius-sm\)/.test(frame), "阅读框要统一用 radius-sm");
+  assert.ok(/background:\s*var\(--node-body-bg\)/.test(frame), "阅读框要有那层极淡的底色（token 见 tokens.css）");
+  assert.ok(
+    /padding:\s*calc\(8 \* var\(--dp\)\) calc\(10 \* var\(--dp\)\)/.test(frame),
+    "阅读框的外壳 padding 必须统一为 8/10dp",
+  );
   assert.ok(
     /margin:\s*[^;]*calc\(18 \* var\(--dp\)\)/.test(frame),
-    "节点框要缩进到节点名之下（左 18 个设计像素，与行首图标对齐），否则又和正文同级了",
+    "阅读框要缩进到节点名之下（左 18 个设计像素，与行首图标对齐），否则又和正文同级了",
   );
+  assert.ok(/font-size:\s*var\(--font-size\)/.test(frame), "阅读框的内容字号统一取 --font-size");
+  assert.ok(/line-height:\s*1\.5/.test(frame), "阅读框内容行高统一 1.5");
 
-  // ① 问卷记录只补强调色左边：等待态那张卡也是这个颜色，两种形态应当同族
-  // （不能走 `rule()`：共用那组选择器里也有 `.question.is-record`，首个匹配拿到的是那一份）
+  // ① 问卷记录 / 退出状态只共用外框，不许再留自己的 padding / 边宽 / 字号覆盖
   const recordBlocks = [...css.matchAll(/\.question\.is-record\s*\{([^}]*)\}/g)].map((match) => match[1]);
-  assert.ok(recordBlocks.length > 0, "应当有 `.question.is-record` 的声明（共用那组 + 自己的补充）");
-  assert.ok(
-    recordBlocks.some((block) => /border-left:\s*2px solid var\(--accent\)/.test(block)),
-    "问卷记录要保留问卷自己的强调色左边（与等待态那张卡同族）",
+  assert.strictEqual(
+    recordBlocks.length,
+    1,
+    "问卷记录只出现在共用阅读框声明里，不再单独覆盖 padding / 左边强调线",
   );
-  assert.ok(
-    !recordBlocks.some((block) => /border:\s*none/.test(block) || /background:\s*none/.test(block)),
-    "问卷记录不许再把节点框整个去掉——那正是「展开后和正文同级」这个缺陷的成因",
-  );
+  assert.ok(!/border-left:/.test(recordBlocks[0]), "问卷记录不许再把外框左边加粗");
+  const recordDetail = rule(".question.is-record .question-detail");
+  assert.ok(/line-height:\s*1\.5/.test(recordDetail), "问卷记录的计划正文行高跟共用阅读框（1.5）");
+  const exit = rule(".row-exit");
+  assert.ok(!/padding:/.test(exit), "退出状态不许改外框 padding");
+  assert.ok(!/border-left:/.test(exit), "退出状态不许把外框左边加粗成强调线");
+  assert.ok(!/font-size:/.test(exit), "退出状态字号随共用阅读框，不再单独压小");
+  assert.ok(/color:\s*var\(--warning\)/.test(exit), "退出状态用文字颜色表达警告");
 
-  // ② 自带卡片的展开体：框由内层（.tool-card / .code-block）提供
-  const cardBody = rule(".row-body.card-body");
+  // ② 工具卡 / 节点代码卡：唯一阅读框归外层 .row-body
+  const toolCard = rule(".tool-card");
   assert.ok(
-    /border:\s*none/.test(cardBody) && /background:\s*none/.test(cardBody) && /padding:\s*0/.test(cardBody),
-    "`.row-body.card-body` 只留缩进与滚动：再叠一层边框就成了「卡里还套着一张卡」",
+    !/border:/.test(toolCard) && !/background:/.test(toolCard) && !/padding:/.test(toolCard) && !/border-radius:/.test(toolCard),
+    `工具卡只保留内部排版，不能再画第二圈框：${toolCard.trim()}`,
+  );
+  const nodeCode = rule(".row-body > .code-block");
+  assert.ok(
+    /margin:\s*0/.test(nodeCode) &&
+      /background:\s*none/.test(nodeCode) &&
+      /outline:\s*none/.test(nodeCode) &&
+      /border-radius:\s*0/.test(nodeCode),
+    `节点直系代码卡要让出外框：${nodeCode.trim()}`,
+  );
+  const mdCode = rule(".code-block");
+  assert.ok(
+    /background:\s*var\(--editor-bg\)/.test(mdCode) && /outline:\s*1px solid/.test(mdCode),
+    "正文 Markdown 里的代码卡仍保留自己的卡片分区",
+  );
+  const fade = rule(".row-body > .code-block.is-collapsed .code-block-body::after");
+  assert.ok(
+    /var\(--node-body-solid\)/.test(fade) && !/var\(--node-body-bg\)/.test(fade),
+    "节点代码卡收起渐隐必须用与外框合成后的实色，半透明底色遮不住文字",
   );
 
   // ③ 工具行的结果图片
   const rowsSrc = readFileSync(join(process.cwd(), "src", "webview", "components", "Rows.tsx"), "utf8");
   assert.ok(
     /<div className="row-body is-media">\s*\n\s*<ImageGallery/.test(rowsSrc),
-    "工具行的结果图片要套进节点框（`.row-body.is-media`）——此前它只有一段缩进，几张图直接浮在会话流里",
+    "工具行的结果图片要套进阅读框（`.row-body.is-media`）——此前它只有一段缩进，几张图直接浮在会话流里",
   );
   const media = rule(".row-body.is-media");
   assert.ok(
@@ -1583,8 +1612,30 @@ console.log("styles: 节点展开后——进行中的贴底、已结束的置�
     "助手消息里的图库要跟正文一条左边界——`images` 段与轮尾交付的图都是正文的一部分，" +
       "带着节点展开体那 18px 缩进却没有框，看起来正像一个没了框的节点展开体",
   );
+
+  // ④ 内容字号：一律取扩展字号 --font-size，不再有编辑器字号 / mono-size 档
+  const rowBody = rule(".row-body");
+  assert.ok(/font-size:\s*var\(--font-size\)/.test(rowBody), ".row-body 内容字号必须取 --font-size");
+  for (const selector of [
+    ".tool-card-body",
+    ".tool-card-answer",
+    ".tool-card-sources",
+    ".tool-card-snippet",
+    ".tool-card-prompt",
+    ".io-text",
+    ".diff",
+    ".code-block code",
+    ".ctx-body",
+    ".row-injected",
+    ".approval-detail",
+  ]) {
+    assert.ok(
+      /font-size:\s*var\(--font-size\)/.test(rule(selector)),
+      `${selector} 的内容字号必须取 var(--font-size)（不再跟随编辑器字号或另设小档）`,
+    );
+  }
 }
-console.log("styles: 节点展开体统一是「节点框」（问卷记录 / 图片 / 退出状态与其它展开体同框） ✓");
+console.log("styles: 节点内容共用同一阅读框与扩展字号（工具卡/代码卡不套第二圈） ✓");
 
 // ---------- 16c''. 正文里的图有官方那一档尺寸上限：超出的按比例缩，原图点开看 ----------
 //
@@ -3390,15 +3441,21 @@ console.log("styles: 会话查找条的高亮与计数格 ✓");
     assert.ok(!rem, `${name} 里不许再用 rem 写尺寸（"${rem?.[0]}"）——它不跟界面倍率走`);
   }
 
-  // 圆角与代码字号都要跟倍率
+  // 圆角仍跟倍率；内容字号不再跟编辑器字号
   assert.ok(
     /--radius:\s*calc\(8 \* var\(--dp\)\)/.test(tokens) && /--radius-sm:\s*calc\(6 \* var\(--dp\)\)/.test(tokens),
     "--radius / --radius-sm 必须按设计像素定义（8 / 6），否则圆角在字号变化时不动",
   );
+  // 内容字号只认扩展字号：`editor.fontSize` 不进入 webview，旧的 --mono-size 档已删除
   assert.ok(
-    /--mono-size:\s*max\(calc\(var\(--vscode-editor-font-size,[^)]*\) \* var\(--ui-scale\)\)/.test(tokens),
-    "--mono-size 的编辑器字号那一支要乘 --ui-scale（代码字号跟随倍率，界面字号那一支本身就是配置值）",
+    !/--mono-size/.test(tokens) && !/--mono-size/.test(css),
+    "--mono-size 必须删除：代码 / 工具内容与正文同取 --font-size，不再另设编辑器字号档",
   );
+  assert.ok(
+    !/--vscode-editor-font-size/.test(tokens) && !/--vscode-editor-font-size/.test(css),
+    "内容字号不许再读 --vscode-editor-font-size（编辑器字号只影响编辑器本体）",
+  );
+  assert.ok(/--mono:\s*var\(/.test(tokens), "等宽字族 --mono 仍保留（用户只要求字号来源统一）");
 
   // 滚动条**不在**设计像素的账上：它由 VS Code 的主题决定宽度与配色，我们不自绘
   // （口径与实测见上面第 35 段）。这条只钉「它没有被误拉进倍率体系」。

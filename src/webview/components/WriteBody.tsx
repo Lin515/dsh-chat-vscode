@@ -25,7 +25,7 @@ export function WriteBody({ preview, diff, layout, active, openedWhileActive, pa
   const lang = languageForPath(path);
   useStickyBody(ref, true, active, openedWhileActive);
   return (
-    <div ref={ref} className={`row-body ${hasDiff ? "diff-body" : "io-card write-preview"}`}>
+    <div ref={ref} className={`row-body${hasDiff ? "" : " io-card write-preview"}`}>
       {hasDiff && shown.diff ? (
         <DiffView
           hunks={shown.diff}

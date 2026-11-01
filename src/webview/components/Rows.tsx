@@ -468,7 +468,7 @@ export function ToolRow({
           layout={diffLayout} active={running} openedWhileActive={node.openedWhileActive} path={tool.filePath} />
       ) : null}
       {hasDiff && diff && !showWriteBody ? (
-        <div ref={diffRef} className="row-body diff-body">
+        <div ref={diffRef} className="row-body">
           {/* 写入节点固化单栏：整篇新建，双栏会有一整列是空的（用户 2026-09-16 口径） */}
           <DiffView
             hunks={diff}
@@ -483,14 +483,14 @@ export function ToolRow({
           有卡片时**不渲染 IN/OUT**——参数 JSON 就此不再出现在展开区，这与用户
           2026-09-16 的口径一致（工具的展开区重在与可读性 + 输出内容）。 */}
       {hasCard && card ? (
-        <div ref={bodyRef} className="row-body card-body">
+        <div ref={bodyRef} className="row-body">
           <ToolCardBody card={card} />
         </div>
       ) : null}
       {/* `run_code` 与 workflow：正文是代码块；`run_code` 下面照旧给 OUT
           （官方对 code 变体只省掉 IN），workflow 的其余参数仍走 IN。 */}
       {codeSource ? (
-        <div ref={bodyRef} className="row-body card-body">
+        <div ref={bodyRef} className="row-body">
           <CodeBlock lang={codeSource.lang} code={codeSource.code} />
         </div>
       ) : null}

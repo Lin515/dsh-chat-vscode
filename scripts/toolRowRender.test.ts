@@ -271,6 +271,48 @@ console.log("toolRowRender: write 原文/空内容/失败中断/安全回退/仅
 }
 console.log("toolRowRender: workflow script/code 代码块与其余参数共存、不重复 ✓");
 
+// ---------- 4b. 节点阅读盒：每个内容段各套一层 .row-body，内部卡片不再套第二圈 ----------
+//
+// 外框的视觉规则归 CSS；这里钉的是**产出的 DOM 结构**：工具卡 / 节点代码卡是
+// `.row-body` 的直接子元素，内部不再出现 `card-body` 之类的第二层框；同节点有
+// 多段阅读内容（workflow 的脚本 + 其余参数）时，每段各自是一个 `.row-body`，
+// 不强行合并成一个滚动盒。单卡只应有一个阅读框。
+{
+  const read = render({
+    id: "call-read-frame", name: "read", title: "", detail: "a.ts", status: "ok",
+    input: '{"file_path":"a.ts"}', filePath: "a.ts",
+    card: {
+      kind: "read", label: "a.ts", totalLines: 1, lang: "ts",
+      lines: [{ number: 1, text: "const value = 1;" }],
+    },
+  });
+  assert.match(
+    read,
+    /<div class="row-body"><div class="tool-card is-read">/,
+    "工具卡必须是 .row-body 的直接子元素（外框只有一层）",
+  );
+  assert.ok(!read.includes('class="card-body"'), "不再用 .card-body 把外框让给内层卡片");
+  assert.strictEqual((read.match(/class="row-body/g) ?? []).length, 1, "单卡节点只应有一个阅读框");
+
+  const workflow = render({
+    id: "call-workflow-frame", name: "workflow", title: "", detail: "demo", status: "ok",
+    input: JSON.stringify({ script: "const value = 1;", objective: "demo" }),
+    output: "workflow done",
+  });
+  assert.match(
+    workflow,
+    /<div class="row-body"><div class="code-block/,
+    "节点正文代码卡必须是 .row-body 的直接子元素（不让代码卡再画一圈 outline）",
+  );
+  assert.ok(!workflow.includes('class="card-body"'), "节点代码卡也不再走 .card-body 让框");
+  assert.strictEqual(
+    (workflow.match(/class="row-body/g) ?? []).length,
+    2,
+    "代码与其余参数是两个阅读段，各自套一次同样的框（不合并滚动盒）",
+  );
+}
+console.log("toolRowRender: 节点内容各段套同一阅读框，工具卡/代码卡不套第二圈 ✓");
+
 // ---------- 5. inspect：只有明确工具 + 成功 + 整段 JSON 才挂 JSON 着色面 ----------
 {
   const inspect = (name: string, output: string, overrides: Partial<ToolCallView> = {}): ToolCallView => ({
