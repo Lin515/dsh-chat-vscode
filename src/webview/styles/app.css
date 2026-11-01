@@ -1804,8 +1804,10 @@ button.header-title.is-switcher > svg.is-open {
 /* 高亮 token 的受控颜色变量：默认深色回退，VS Code 主题变量优先（symbolIcon /
    textLink / gitDecoration），不新增主题注册。四类 `body.vscode-*` 与预览的 OS
    浅色各自给出可读回退；不能假定 VS Code 主题等于操作系统配色。
-   这些变量只服务语法着色，代码卡底色仍是 `--editor-bg`、字号行高仍是卡片规则。 */
-.code-block {
+   只提供变量，不引入任何卡片几何：代码卡、read 卡、diff、IN/OUT 文本都挂
+   `.md-code-surface` 语义类；它们各自的底色 / 字号 / 行高保持原样。 */
+.code-block,
+.md-code-surface {
   --md-code-foreground: var(--vscode-editor-foreground, #d4d4d4);
   --md-code-token-comment: var(--vscode-symbolIcon-commentForeground, #6a9955);
   --md-code-token-string: var(--vscode-symbolIcon-stringForeground, #ce9178);
@@ -1821,7 +1823,8 @@ button.header-title.is-switcher > svg.is-open {
   --md-code-token-changed: var(--vscode-gitDecoration-modifiedResourceForeground, #e2c08d);
 }
 
-body.vscode-dark .code-block {
+body.vscode-dark .code-block,
+body.vscode-dark .md-code-surface {
   --md-code-foreground: var(--vscode-editor-foreground, #d4d4d4);
   --md-code-token-comment: var(--vscode-symbolIcon-commentForeground, #6a9955);
   --md-code-token-string: var(--vscode-symbolIcon-stringForeground, #ce9178);
@@ -1837,7 +1840,8 @@ body.vscode-dark .code-block {
   --md-code-token-changed: var(--vscode-gitDecoration-modifiedResourceForeground, #e2c08d);
 }
 
-body.vscode-light .code-block {
+body.vscode-light .code-block,
+body.vscode-light .md-code-surface {
   --md-code-foreground: var(--vscode-editor-foreground, #000000);
   --md-code-token-comment: var(--vscode-symbolIcon-commentForeground, #008000);
   --md-code-token-string: var(--vscode-symbolIcon-stringForeground, #a31515);
@@ -1853,7 +1857,8 @@ body.vscode-light .code-block {
   --md-code-token-changed: var(--vscode-gitDecoration-modifiedResourceForeground, #0451a5);
 }
 
-body.vscode-high-contrast .code-block {
+body.vscode-high-contrast .code-block,
+body.vscode-high-contrast .md-code-surface {
   --md-code-foreground: var(--vscode-editor-foreground, #ffffff);
   --md-code-token-comment: var(--vscode-symbolIcon-commentForeground, #7ca668);
   --md-code-token-string: var(--vscode-symbolIcon-stringForeground, #ce9178);
@@ -1869,7 +1874,8 @@ body.vscode-high-contrast .code-block {
   --md-code-token-changed: var(--vscode-gitDecoration-modifiedResourceForeground, #e2c08d);
 }
 
-body.vscode-high-contrast-light .code-block {
+body.vscode-high-contrast-light .code-block,
+body.vscode-high-contrast-light .md-code-surface {
   --md-code-foreground: var(--vscode-editor-foreground, #292929);
   --md-code-token-comment: var(--vscode-symbolIcon-commentForeground, #515151);
   --md-code-token-string: var(--vscode-symbolIcon-stringForeground, #811f3f);
@@ -1888,7 +1894,8 @@ body.vscode-high-contrast-light .code-block {
 /* 浏览器预览没有 VS Code 的 body 主题类：只按 OS 浅色补一份回退。
    VS Code webview 一定有 `body.vscode-*`，其特异性更高，不会被这里颠倒。 */
 @media (prefers-color-scheme: light) {
-  .code-block {
+  .code-block,
+  .md-code-surface {
     --md-code-foreground: var(--vscode-editor-foreground, #000000);
     --md-code-token-comment: var(--vscode-symbolIcon-commentForeground, #008000);
     --md-code-token-string: var(--vscode-symbolIcon-stringForeground, #a31515);
@@ -1976,16 +1983,17 @@ body.vscode-high-contrast-light .code-block {
 }
 
 /* 高亮 span 只允许受控颜色（行内 `var(--md-code-*)`）与字形修饰；字号 / 字体 /
-   行高 / 背景 / padding / 换行 / 字距全部沿用上面的卡片规则，着色不能改变排版。 */
-.code-block code .md-code-token.is-italic {
+   行高 / 背景 / padding / 换行 / 字距全部沿用各自主体的规则，着色不能改变排版。
+   `.md-code-surface` 只带主题变量，read 卡、diff、IN/OUT 文本不因此获得卡片几何。 */
+.md-code-token.is-italic {
   font-style: italic;
 }
 
-.code-block code .md-code-token.is-bold {
+.md-code-token.is-bold {
   font-weight: 600;
 }
 
-.code-block code .md-code-token.is-underlined {
+.md-code-token.is-underlined {
   text-decoration: underline;
 }
 

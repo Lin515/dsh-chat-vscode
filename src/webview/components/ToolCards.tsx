@@ -17,12 +17,15 @@
  *    中间一枚展开钮（「… 其余 N 行」），点开铺满；
  * 3. 终端卡在会话行里**不截断**（官方 `maxLines: Infinity`），没输出时给「无输出」。
  */
-import { useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import type { ToolCardView } from "../../shared/chat";
 import { useTexts } from "../texts";
 import { IconChevronDown, IconChevronRight } from "../icons";
 import { Markdown } from "./Markdown";
 import { CopyButton } from "./CopyButton";
+import { splitSpansByLine } from "../markdown/highlight";
+import { renderHighlighted } from "./HighlightedText";
+import { useCodeHighlight } from "./useCodeHighlight";
 
 /** 卡片正文在会话流里最多显示多少行（官方 `CHAT_READ_MAX_LINES` / `CHAT_SEARCH_MAX_LINES`）。 */
 const CHAT_CARD_MAX_LINES = 8;
@@ -77,17 +80,42 @@ function CardExpander({
 function ReadCard({ card }: { card: Extract<ToolCardView, { kind: "read" }> }) {
   const texts = useTexts();
   const [expanded, setExpanded] = useState(false);
+  // 一次 tokenize **完整返回窗口**再切行：capRows 只决定显示哪几行，不能拿显示
+  // 子集去 tokenize，否则首尾被截断的多行注释会丢掉真实上下文。
+  const raw = useMemo(() => card.lines.map((entry) => entry.text).join("\n"), [card.lines]);
+  // 行文本按契约不含换行；真出现换行时 join 后的行数与窗口行数对不上，
+  // 宁可整卡纯文，也不用错位的行映射。
+  const alignable = useMemo(() => card.lines.every((entry) => !entry.text.includes("\n")), [card.lines]);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const highlightSpans = useCodeHighlight({
+    code: raw,
+    lang: alignable ? card.lang : undefined,
+    // read 卡只在结算后出现（running 时 ToolRow 还没有 card），挂载即完成态。
+    active: true,
+    elementRef: bodyRef,
+  });
+  const spansByLine = useMemo(() => {
+    if (highlightSpans === null) return undefined;
+    const lines = splitSpansByLine(raw, highlightSpans);
+    // 行号严格递增且不重复（toolCard.readMeta 已校验），用 number 做稳定键。
+    return new Map(card.lines.map((entry, index) => [entry.number, lines[index] ?? []] as const));
+  }, [card.lines, highlightSpans, raw]);
   const { head, tail, hidden } = capRows(card.lines, expanded);
   const partial = card.lines.length < card.totalLines;
-  const copyText = card.lines.map((line) => line.text).join("\n");
-  const line = (entry: { number: number; text: string }) => (
-    <div className="tool-card-line" key={entry.number}>
-      <span className="tool-card-gutter" aria-hidden>
-        {entry.number}
-      </span>
-      <span className="tool-card-text">{entry.text}</span>
-    </div>
-  );
+  const copyText = raw;
+  const line = (entry: { number: number; text: string }) => {
+    const spans = spansByLine?.get(entry.number);
+    return (
+      <div className="tool-card-line" key={entry.number}>
+        <span className="tool-card-gutter" aria-hidden>
+          {entry.number}
+        </span>
+        <span className="tool-card-text">
+          {spans === undefined ? entry.text : renderHighlighted(entry.text, spans)}
+        </span>
+      </div>
+    );
+  };
   return (
     <div className="tool-card is-read">
       <div className="tool-card-banner">
@@ -100,7 +128,7 @@ function ReadCard({ card }: { card: Extract<ToolCardView, { kind: "read" }> }) {
           {card.lines.length > 0 ? <CopyButton text={copyText} /> : null}
         </span>
       </div>
-      <div className="tool-card-body mono">
+      <div ref={bodyRef} className="tool-card-body mono md-code-surface">
         {head.map(line)}
         {hidden > 0 ? (
           <CardExpander

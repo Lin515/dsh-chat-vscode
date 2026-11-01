@@ -17,6 +17,7 @@ import type {
 } from "../../shared/chat";
 import { classifyTool, toolTitleKey } from "../../shared/toolMeta";
 import { skillInstructions } from "../../shared/skill";
+import { isInspectJsonOutput, workflowScriptOf } from "../../shared/toolSource";
 import { MAX_CATALOG_ENTRIES } from "../../shared/injectedSource";
 import {
   formatDuration,
@@ -40,7 +41,9 @@ import { planReviewAnswer, planReviewOf, type PlanReviewView } from "../planRevi
 import { DiffView } from "./Diff";
 import { WriteBody } from "./WriteBody";
 import { WritePreviewReader } from "../writePreview";
+import { languageForPath } from "../markdown/highlight";
 import { CodeBlock } from "./CodeBlock";
+import { CodeText } from "./HighlightedText";
 import { Markdown } from "./Markdown";
 import { ImageGallery } from "./Images";
 import { ToolCardBody } from "./ToolCards";
@@ -192,6 +195,13 @@ export function ToolRow({
   const writeReader = useRef<WritePreviewReader | null>(null);
   writeReader.current ??= new WritePreviewReader();
   const writePreview = writeReader.current.update(tool.id, tool.name, tool.input);
+  // workflow 的脚本字段：真实现行 schema 是 `script`，旧包 `code` 兜底。只在参数
+  // 是**完整 JSON** 时取；半截参数保持原样（参数原文仍由下面的 inputText 透出）。
+  const workflow = useMemo(
+    () => workflowScriptOf(tool.name, tool.input ?? ""),
+    [tool.name, tool.input],
+  );
+  const workflowScript = workflow?.code;
   // 只认精确 write；原始参数仍在视图模型里，轨迹与其它工具不变。
   const showWriteBody = tool.name === "write" && (writePreview !== undefined || hasDiff);
   /**
@@ -209,6 +219,16 @@ export function ToolRow({
   const card = running ? undefined : tool.card;
   const codeCard = card?.kind === "code" ? card : undefined;
   const hasCard = Boolean(card) && codeCard === undefined;
+  /**
+   * 有语言的源码正文：`run_code`（TypeScript，官方 code 分支）与 workflow 的
+   * `script`（JavaScript）。workflow 的其它参数仍走 IN 段，只把脚本字段拿出来，
+   * 避免同一段脚本在代码块与 JSON 里重复出现。
+   */
+  const codeSource = codeCard !== undefined
+    ? { lang: "typescript", code: codeCard.code }
+    : workflowScript !== undefined
+      ? { lang: "javascript", code: workflowScript }
+      : undefined;
   // 出错时结果文本（失败原因）比 diff 更有用，两者都显示
   const showOutput = Boolean(tool.output) && (!hasDiff || tool.status === "error");
   /**
@@ -230,6 +250,12 @@ export function ToolRow({
   const runningRef = useRef<HTMLDivElement>(null);
   // 结果行仍可能被后续更新刷新；用户在其中划选时冻结渲染，保住选区
   const shownOutput = useSelectionFreeze(bodyRef, tool.output ?? "");
+  /**
+   * inspect 类工具的 OUT 只有**成功且整段可解析成 JSON** 时才按 JSON 着色；
+   * 显示与复制仍是完整原字符串（不拆字段树）。错误 / 半截 / 其它工具一律纯文。
+   * `session_event_read` 的「标题 + 围栏」文本解析失败，自然走纯文。
+   */
+  const jsonOutput = tool.status === "ok" && showOutput && isInspectJsonOutput(tool.name, shownOutput);
 
   // 官方 `leadingFor`：**只有** error 与 stopped 画状态点，running/ok 显示工具图标。
   // 此前只要传了 tone 就画点，于是所有工具图标都不可见（docs/design-messages.md）。
@@ -271,6 +297,12 @@ export function ToolRow({
    */
   const inputText = (() => {
     if (!tool.input || showWriteBody) return undefined;
+    // workflow：脚本已经交给代码块，IN 只放其余参数；空对象不画一条无信息的 "{}"。
+    if (workflow !== undefined) {
+      return Object.keys(workflow.rest).length === 0
+        ? undefined
+        : JSON.stringify(workflow.rest, null, 2);
+    }
     try {
       const parsed = JSON.parse(tool.input) as unknown;
       return JSON.stringify(parsed, null, 2);
@@ -297,7 +329,7 @@ export function ToolRow({
   // React 只保留最后绑上的那个元素，另一段就永远拿不到定位。
   const diffRef = useRef<HTMLDivElement>(null);
   useStickyBody(diffRef, open && hasDiff && !showWriteBody, running, node.openedWhileActive);
-  useStickyBody(bodyRef, open && !hasDiff && (showOutput || hasCard || Boolean(codeCard)), running, node.openedWhileActive);
+  useStickyBody(bodyRef, open && !hasDiff && (showOutput || hasCard || Boolean(codeSource)), running, node.openedWhileActive);
   useStickyBody(ioRef, open && (showIoCard || showSkill), running, node.openedWhileActive);
   useStickyBody(runningRef, open && runningBody, running, node.openedWhileActive);
   // 展开区只显示「解析后的有价值信息」：编辑类给 diff，其余给 IN/OUT 两段
@@ -312,7 +344,7 @@ export function ToolRow({
     showWriteBody ||
     hasDiff ||
     hasCard ||
-    Boolean(codeCard) ||
+    Boolean(codeSource) ||
     showSkill ||
     (!isSkill && (showOutput || Boolean(inputText))) ||
     runningBody ||
@@ -433,12 +465,18 @@ export function ToolRow({
       ) : null}
       {showWriteBody ? (
         <WriteBody key={`${tool.id}:${tool.name}`} preview={writePreview} diff={hasDiff ? diff : undefined}
-          layout={diffLayout} active={running} openedWhileActive={node.openedWhileActive} />
+          layout={diffLayout} active={running} openedWhileActive={node.openedWhileActive} path={tool.filePath} />
       ) : null}
       {hasDiff && diff && !showWriteBody ? (
         <div ref={diffRef} className="row-body diff-body">
           {/* 写入节点固化单栏：整篇新建，双栏会有一整列是空的（用户 2026-09-16 口径） */}
-          <DiffView hunks={diff} layout={diffLayout} unified={classifyTool(tool.name) === "write"} />
+          <DiffView
+            hunks={diff}
+            layout={diffLayout}
+            unified={classifyTool(tool.name) === "write"}
+            phase={running ? "streaming" : "settled"}
+            fallbackLang={languageForPath(tool.filePath)}
+          />
         </div>
       ) : null}
       {/* 工具卡（官方 `ToolRow` 的 card 槽）：读取 / 搜索 / 终端 / 网页。
@@ -449,10 +487,11 @@ export function ToolRow({
           <ToolCardBody card={card} />
         </div>
       ) : null}
-      {/* `run_code`：正文是代码块，**下面照旧给 OUT**（官方对 code 变体只省掉 IN） */}
-      {codeCard ? (
+      {/* `run_code` 与 workflow：正文是代码块；`run_code` 下面照旧给 OUT
+          （官方对 code 变体只省掉 IN），workflow 的其余参数仍走 IN。 */}
+      {codeSource ? (
         <div ref={bodyRef} className="row-body card-body">
-          <CodeBlock lang="typescript" code={codeCard.code} />
+          <CodeBlock lang={codeSource.lang} code={codeSource.code} />
         </div>
       ) : null}
       {/* 技能节点：只要 SKILL 正文——不渲染参数（IN），也不给「输出」标题。
@@ -482,9 +521,12 @@ export function ToolRow({
           {showOutput ? (
             <div className="io-section">
               <span className="io-label">{texts.toolOutput}</span>
-              <span className={`io-text mono${tool.status === "error" ? " is-error" : ""}`}>
-                {shownOutput}
-              </span>
+              <CodeText
+                className={`io-text mono${tool.status === "error" ? " is-error" : ""}`}
+                text={shownOutput}
+                lang={jsonOutput ? "json" : undefined}
+                active={jsonOutput}
+              />
             </div>
           ) : null}
         </div>

@@ -186,6 +186,22 @@ export function normalizeLang(lang: string | undefined): string | undefined {
   return first === "" ? undefined : LANGUAGE_ALIASES.get(first);
 }
 
+/**
+ * 按文件路径末段的扩展名选语言；只查显式别名表，不碰文件系统、不猜内容。
+ *
+ * 供工具节点（read 窗口之外的 diff / write 预览）在只有 `path` 时取语言。
+ * 无扩展名、点号在开头（`.bashrc`）、未知扩展名一律 undefined → 纯文本。
+ * `constructor` / `__proto__` 等继承成员不会命中 `Map`。
+ */
+export function languageForPath(path: string | undefined): string | undefined {
+  if (path === undefined) return undefined;
+  const slash = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+  const name = slash === -1 ? path : path.slice(slash + 1);
+  const dot = name.lastIndexOf(".");
+  if (dot <= 0 || dot === name.length - 1) return undefined;
+  return LANGUAGE_ALIASES.get(name.slice(dot + 1).toLowerCase());
+}
+
 /** 只接受本地 css-variables 主题生成的变量名，拒绝任何内联 CSS。 */
 const SAFE_COLOR = /^var\(--md-code-(?:foreground|token-[a-z-]+)\)$/u;
 
@@ -297,6 +313,56 @@ function spansFromTokens(code: string, tokens: readonly { content: string; offse
     if (spans.length > MAX_SPANS) return undefined;
   }
   return cursor <= code.length ? spans : undefined;
+}
+
+/**
+ * 把整段源码的 token 段切成逐行局部偏移：第 N 项只含该行的 span，`start`/`end`
+ * 相对这一行文本（不含行尾换行）。切行只做区间相交，不改 token 颜色 / 字形，
+ * 也不重新 tokenize——多行注释等跨行语法的事实已在整段 token 里。
+ *
+ * 行数严格等于 `code.split("\n").length`；空行给空数组。跨行 span（通常是 token
+ * 之间的换行缺口）按行裁剪，不属于任何一行的换行字符不进入渲染。
+ */
+export function splitSpansByLine(code: string, spans: readonly HighlightSpan[]): HighlightSpan[][] {
+  const lines: HighlightSpan[][] = [];
+  let lineStart = 0;
+  let spanIndex = 0;
+  for (;;) {
+    const newline = code.indexOf("\n", lineStart);
+    const lineEnd = newline === -1 ? code.length : newline;
+    const lineSpans: HighlightSpan[] = [];
+    while (spanIndex < spans.length && spans[spanIndex].end <= lineStart) spanIndex += 1;
+    for (let index = spanIndex; index < spans.length && spans[index].start < lineEnd; index += 1) {
+      const span = spans[index];
+      const start = Math.max(span.start, lineStart);
+      const end = Math.min(span.end, lineEnd);
+      if (end > start) {
+        lineSpans.push({
+          start: start - lineStart,
+          end: end - lineStart,
+          ...(span.color === undefined ? {} : { color: span.color }),
+          ...(span.fontStyle === undefined ? {} : { fontStyle: span.fontStyle }),
+        });
+      }
+      // 跨行的 span 留给下一行继续裁剪；后面的 span 起点更晚，这一行不用再看。
+      if (span.end > lineEnd) break;
+    }
+    lines.push(lineSpans);
+    if (newline === -1) return lines;
+    lineStart = newline + 1;
+  }
+}
+
+/**
+ * 高亮一段源码并切成逐行 span：整段只 tokenize 一次，返回与
+ * `code.split("\n")` 对齐的数组；不支持 / 超长 / 失败返回 null。
+ *
+ * read 卡与 diff 的每一侧都用这一份结果按行取 span，不能逐行调用
+ * `highlightCode`——逐行重置会让多行注释、跨行字符串丢掉前文状态。
+ */
+export async function highlightLines(code: string, lang: string | undefined): Promise<HighlightSpan[][] | null> {
+  const spans = await highlightCode(code, lang);
+  return spans === null ? null : splitSpansByLine(code, spans);
 }
 
 /**

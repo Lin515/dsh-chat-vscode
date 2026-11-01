@@ -1018,8 +1018,9 @@ console.log("styles: 思考段恒折叠 + 摘要口径对齐官方 ✓");
     "有卡片时要渲染工具卡（用户 2026-09-16：工具的展开区重在与可读性与输出，不显示完整参数）",
   );
   assert.ok(
-    /codeCard \? \([\s\S]{0,120}?<CodeBlock lang="typescript" code=\{codeCard\.code\}/.test(rows),
-    "run_code 的正文用 CodeBlock（官方 `formatToolBody` 的 code 分支）",
+    /const codeSource = codeCard !== undefined[\s\S]{0,240}?workflowScript !== undefined/.test(rows) &&
+      /<CodeBlock lang=\{codeSource\.lang\} code=\{codeSource\.code\} \/>/.test(rows),
+    "run_code / workflow 的正文用 CodeBlock（官方 `formatToolBody` 的 code 分支）",
   );
   assert.ok(
     /\(Boolean\(inputText\) && !codeCard\) \|\| showOutput/.test(rows),
@@ -1038,8 +1039,8 @@ console.log("styles: 思考段恒折叠 + 摘要口径对齐官方 ✓");
     "路径类 detail 可点开预览（官方 fileLink）；命令行类的 detail 不能当路径打开",
   );
   assert.ok(
-    /<DiffView hunks=\{diff\} layout=\{diffLayout\} unified=\{classifyTool\(tool\.name\) === "write"\}/.test(rows),
-    "写入节点固化单栏（双栏对整篇新建没有意义——用户 2026-09-16 口径）",
+    /<DiffView\s+hunks=\{diff\}[\s\S]{0,200}?unified=\{classifyTool\(tool\.name\) === "write"\}[\s\S]{0,120}?phase=\{running \? "streaming" : "settled"\}/.test(rows),
+    "写入节点固化单栏（双栏对整篇新建没有意义——用户 2026-09-16 口径），且运行中不启高亮",
   );
 
   const primitives = readFileSync(
@@ -1447,7 +1448,7 @@ console.log("styles: 复制按钮归属（工具卡内容有 / 工具串没有 /
   // 工具行：`running` = status 还在跑（running / pending）
   assert.ok(
     /useStickyBody\(diffRef, open && hasDiff && !showWriteBody, running, node\.openedWhileActive\)/.test(rows) &&
-      /useStickyBody\(bodyRef, open && !hasDiff && \(showOutput \|\| hasCard \|\| Boolean\(codeCard\)\), running, node\.openedWhileActive\)/.test(rows),
+      /useStickyBody\(bodyRef, open && !hasDiff && \(showOutput \|\| hasCard \|\| Boolean\(codeSource\)\), running, node\.openedWhileActive\)/.test(rows),
     "工具行的两个 body（diff 段 / 结果-卡片段）都要传 `running`：跑着就贴底看最新输出",
   );
   const writeBody = readFileSync(join(process.cwd(), "src", "webview", "components", "WriteBody.tsx"), "utf8");

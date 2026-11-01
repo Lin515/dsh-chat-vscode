@@ -8,7 +8,7 @@
 |---|---|---|
 | 1 | 基线、来源锁定与本文设计 | 已完成 |
 | 2 | 解析 / 渲染管线切换，保持标准 Markdown 的视觉与行为；原始 HTML 改为字面文本 | 已落地 |
-| 3 | 完成态代码高亮（Shiki） | 已完成离线 / 静态与安装端渲染验收（安装窗口 10 个高亮 span） |
+| 3 | 完成态代码高亮（Shiki） | 正文代码卡已通过既有安装端渲染验收；本轮五类工具节点已过离线 / 受控浏览器，新增节点安装端 / 系统剪贴板 / 真实模型未覆盖 |
 | 4 | 完成态数学（KaTeX）与隔离净化 | 引擎 / 净化 / 资源已通过真实 DOM 验收（37×2、24 攻击、20 字体）；MathView / 正文 / display / 选区冻结已接线并通过主真实 UI 验收；FindBar 辅助层过滤与复制按钮已通过主真实浏览器验收；阶段 4 离线 / 静态完成；安装端见阶段 5 |
 | 5 | 安装端 CSP / 字体 / VSIX 资源验收 | 资源包 / 专用目录安装 / CSP / 字体通过；系统剪贴板端到端与屏幕阅读器实际朗读未覆盖 |
 
@@ -171,14 +171,14 @@ GFM 对多段脚注、重复定义、复杂分隔符等边缘输入可能与迁�
 
 ## 代码高亮
 
-阶段 3 已完成离线 / 静态验收：typecheck、187 套离线断言、build、diff-check，以及受控浏览器下的严格 CSP、断网组件、跨段 / 跨卡选区、精确桥帧、语言别名切换、四主题、全 App FindBar 与增强前后几何一致性均通过。安装端资源 / CSP / 字体已通过，系统剪贴板端到端未覆盖，见「安装端验收（最终）」。实现分为纯模块 `src/webview/markdown/highlight.ts` 与 `CodeBlock` 的接线两部分。
+阶段 3 已完成离线 / 静态验收：typecheck 4/4、189/189 离线断言（并发 8）、vendor 12/12、build 与 diff-check 通过且无 duplicate-case；受控真实浏览器已覆盖正文代码卡与五类工具节点（read / write / edit、workflow 脚本、明确 inspect 工具的整段 JSON OUT），五面 token / 文本、四主题、复制帧与 FindBar 均通过。工具节点复用同一纯模块 `src/webview/markdown/highlight.ts` 与 `useCodeHighlight` / `HighlightedText` / `.md-code-surface` 接线，不再另造引擎。安装端 / 系统剪贴板 / 真实模型未在本轮高亮验收中覆盖；安装端总体验收见「安装端验收（最终）」。
 
 ### 引擎、语言与主题
 
 - 细粒度 `createHighlighterCore` + `createJavaScriptRegexEngine` + `createCssVariablesTheme`；无 Oniguruma WASM、CDN、网络或 unsafe-eval。单文件 IIFE 首版不复制官方动态分包 / 增量会话。
 - 显式静态语言集合：JavaScript / TypeScript / JSX / TSX、JSON / JSONC、Python、Shell、PowerShell、C / C++、C#、Go、Rust、Java、HTML、CSS、SQL、YAML、Markdown、diff。语言模块按 `name` 去重（HTML 模块自带 JS / CSS、TSX 复用 TS / JSX 依赖）；嵌入语法依赖显式登记。JS 引擎不能准确支持的 grammar 纯文本回退，不用宽松模式制造看似正确的颜色。最终集合在实现验证后锁定，不自动猜语言。
 - `normalizeLang` 取首个语言标识并用显式 `Map` 归一化 js / ts / py / sh / ps1 / yml 等别名；`constructor` / `__proto__` / `toString` 不命中对象继承成员。显示仍保留原标签；高亮身份与请求使用归一化语言，因此 `ts` / `TypeScript` / `ts title=x` 之间切换不拆已有 span、不重新请求。
-- 每 webview 一个按需初始化实例；初始化失败不让卡片消失。结构化 token 生成 React span，不将 `codeToHtml` 拼回普通 HTML；主题变量只接受 `var(--md-code-foreground|token-*)`。CSS 在 `.code-block` 定义四类 `body.vscode-light/dark/high-contrast/high-contrast-light` 回退，并用 `@media (prefers-color-scheme: light)` 覆盖无 VS Code 主题类的预览浅色；高亮 span 只改受控颜色与 `is-italic` / `is-bold` / `is-underlined` 字形修饰，不改字号、字体、行高、背景、padding、换行或卡片布局。不承诺匹配所有用户 TextMate 主题。
+- 每 webview 一个按需初始化实例；初始化失败不让卡片消失。结构化 token 生成 React span，不将 `codeToHtml` 拼回普通 HTML；主题变量只接受 `var(--md-code-foreground|token-*)`。CSS 在 `.code-block` 与只带变量的 `.md-code-surface` 上定义四类 `body.vscode-light/dark/high-contrast/high-contrast-light` 回退，并用 `@media (prefers-color-scheme: light)` 覆盖无 VS Code 主题类的预览浅色；`.md-code-surface` 不复制卡片底色、描边、内边距或字体规则。高亮 span 只改受控颜色与 `is-italic` / `is-bold` / `is-underlined` 字形修饰，不改字号、字体、行高、背景、padding、换行或卡片布局。不承诺匹配所有用户 TextMate 主题。
 
 ### 缓存、限额与文本保真
 
@@ -191,6 +191,18 @@ GFM 对多段脚注、重复定义、复杂分隔符等边缘输入可能与迁�
 - 每个请求带取消标记与 key；卸载、代码或语言变化时取消旧结果，渲染前再核对当前 key，避免旧高亮覆盖新代码。`code` 改变的第一帧即退回纯文本，不等异步结果。
 - 结果抵达时若活动选区与 `<code>` 相交（`selectionIntersectsElement` 用 `Range.intersectsNode`，含从段落拖进代码、跨两张卡；没有该 API 时回退到共同祖先双向包含），先暂存该结果，监听 `selectionchange`；选区清空 / 移开后再应用最新一份。请求被新代码 / 语言 / phase 取代或组件卸载时丢弃暂存，不应用旧结果。
 - span 文本由原 `code` 切片生成，不拼 `innerHTML`；复制 / 插入仍用原 `code`。卡片 DOM 身份、折展状态和完整选择文本在着色前后保持不变。
+
+### 工具节点扩展
+
+同一套纯模块与受控 span 已接入五类工具节点，范围仅为基础语法 token 着色，不做语义分析、LSP 或诊断，也不重做工具布局：
+
+- **read**：一次 tokenize **完整返回窗口**（行文本按 `\n` 连接）后再按行切 token，不能用 `capRows` 的显示子集去 tokenize——否则被折叠的首尾会丢掉多行注释等跨行上下文。语言取结果 `meta.lang`；行文本按契约不含换行，异常时整卡回退纯文。行号槽、折展、复制文本与窗口计数不变。
+- **write / edit**：只有工具结算后才着色，`active` / `phase` 由调用方明确传入，不能凭参数 JSON 是否完整推断 settled。write 无 diff 时按参数目标路径扩展名给预览取语言；有 diff 时以 hunk 的 `path` 为准，缺失才回退参数路径。运行中的 edit 即使已有参数级 diff 预览也保持纯文。
+- **diff**：每个 hunk 独立把旧侧（context + del）与新侧（context + add）用 `\n` 连接后分别 tokenize，再按原 hunk 行序映射回单栏 / 双栏的每一行。只重建本 hunk 内的连续片段，不跨 hunk / 不连续片段拼整文件；缺上下文是安全近似，不解析 `+` / `-` 前缀为源码，也不改底色、增删计数、截断与符号。
+- **workflow**：只认精确工具名，从完整参数取脚本字段（真实现行 schema 的 `script` 优先，旧包 `code` 兜底），以 JavaScript 进代码块；同一份参数去掉该字段后，其余参数仍以 IN JSON 显示，不丢信息也不重复脚本。
+- **inspect / schema JSON**：只对精确身份表（`cordis_inspect_list` / `cordis_inspect_query` / `cordis_inspect_self` / `cordis_package_inspect` / `cordis_runtime_inspect` / `session_event_read`）且**成功、整段可解析为对象 / 数组**的 OUT 按 JSON 着色。显示仍是完整原字符串（含 `inputSchema` / `outputSchema` 等深层字段），不拆字段树、不把所有 OUT 误当 JSON；错误、半截、标量与其它工具原样纯文，`session_event_read` 的标题 + 围栏文本也因整段不可解析而回退。
+- **共享样式与文本保真**：新着色面挂 `.md-code-surface` 语义类，只提供 `--md-code-*` 主题变量，不引入卡片几何；高亮 span 的字形修饰规则不再限定在 `.code-block` 内。diff 背景、read 卡布局、IN/OUT 文本排版与 `CodeBlock` 均保持原规则。所有显示文本仍由原字符串切片，复制载荷（read 窗口行、diff 行、完整 OUT、脚本与参数）不变；未知语言、超限、引擎失败与 SSR / 运行中都回退纯文。
+- **验收状态**：typecheck 4/4、189/189 离线断言（并发 8）、vendor 12/12、build / diff-check 通过且无 duplicate-case。受控真实浏览器已覆盖五面 token / 文本与状态切换：read 12 行 head/tail 折叠时，隐藏中间关闭注释后 tail 仍保留关键词色；split 同一 context 行旧侧注释色、新侧关键词色不同，且第二个 hunk 不串状态；write / edit running 无 token 且选区保持，read 语言增强与别名切换保持；inspect 资格变化时原 OUT TextNode 保留（稳定宿主），清选区后 87 token；write 无 diff 的 CRLF / tab / 尾 EOL 完整；四主题节点复用、复制三帧精确、FindBar `const total` 跨 span 计数 1/3；未知语言 / 超长 / 换行 / 错误 / JSON 失效等回退通过。未覆盖安装端、系统剪贴板与真实模型。
 
 ## 数学语法、排版与安全
 
@@ -279,9 +291,9 @@ GFM 对多段脚注、重复定义、复杂分隔符等边缘输入可能与迁�
 | 视觉预览 | 同输入 / 主题 / 语言 / 字号 / 宽度前后截图与 computed style 对拍；明 / 暗 / 高对比、窄侧栏、代表性小中大字号，中英标题 / 按钮、代码渐隐和换行、宽表 / 宽公式、字体加载前后与离线加载 |
 | 集成 / 发布 | 全部消费入口、SSR / Node 导入、vendor 来源锁、依赖裁剪；构建 CSS URL、字体与声明白名单、无全量语言包 / CDN / WASM；安装端 CSP / 字体、原生插入 / 文件打开与系统剪贴板 |
 
-阶段 2 已保留 [markdown.test.ts](<../scripts/markdown.test.ts>)、[footnotes.test.ts](<../scripts/footnotes.test.ts>)、[styles.test.ts](<../scripts/styles.test.ts>) 中的业务断言，并淘汰仅固定 marked 调用形状的断言；同步 fileLinks、localImageResolve、localImages、contextMenu、questionRender、trajectoryVendor、vendorSourceLock、manifest 等关联回归，没有因旧测试不再匹配而整段删除安全要求。阶段 3 新增 [highlight.test.ts](<../scripts/highlight.test.ts>) 与 [selectionRange.test.ts](<../scripts/selectionRange.test.ts>)，并扩展 [find.test.ts](<../scripts/find.test.ts>) 的脱树导航判据；阶段 4 新增 [math.test.ts](<../scripts/math.test.ts>) 覆盖金额、围栏闭合、容器源码 / 载荷分离与官方臂树等价，[mathRender.test.ts](<../scripts/mathRender.test.ts>) 覆盖引擎 seam、限额、宏隔离、trust 真实行为与净化纯函数，以及 [mathView.test.ts](<../scripts/mathView.test.ts>) 覆盖 SSR 首帧原文、四类定界符 / 金额、display 脱 p、strong / em / link / footnote 拆段、tex / latex 回退与渲染身份的五个事实 / NUL 不碰撞；真实异步与选区冻结已由主真实浏览器验收通过（15/15 布局、宽公式局部滚动、`newsource → invalid` 首帧 raw、跨段 / 跨公式选区冻结）。复制按钮取原始 message text / 精确 code 由 `mathView.test.ts` / `codeBlock.test.ts` 的源码接线与纯文本断言固定，不冒充 DOM / 系统剪贴板证明。全部登记在[脚本构建入口](<../esbuild.scripts.mjs>) entries。图片 / 链接 / 选区的真实 DOM 时序由受控浏览器回放，Node 静态源码检查不等同浏览器证据。
+阶段 2 已保留 [markdown.test.ts](<../scripts/markdown.test.ts>)、[footnotes.test.ts](<../scripts/footnotes.test.ts>)、[styles.test.ts](<../scripts/styles.test.ts>) 中的业务断言，并淘汰仅固定 marked 调用形状的断言；同步 fileLinks、localImageResolve、localImages、contextMenu、questionRender、trajectoryVendor、vendorSourceLock、manifest 等关联回归，没有因旧测试不再匹配而整段删除安全要求。阶段 3 新增 [highlight.test.ts](<../scripts/highlight.test.ts>)、[diffHighlight.test.ts](<../scripts/diffHighlight.test.ts>)、[toolSource.test.ts](<../scripts/toolSource.test.ts>) 与 [selectionRange.test.ts](<../scripts/selectionRange.test.ts>)，并扩展 [find.test.ts](<../scripts/find.test.ts>) 的脱树导航判据；阶段 4 新增 [math.test.ts](<../scripts/math.test.ts>) 覆盖金额、围栏闭合、容器源码 / 载荷分离与官方臂树等价，[mathRender.test.ts](<../scripts/mathRender.test.ts>) 覆盖引擎 seam、限额、宏隔离、trust 真实行为与净化纯函数，以及 [mathView.test.ts](<../scripts/mathView.test.ts>) 覆盖 SSR 首帧原文、四类定界符 / 金额、display 脱 p、strong / em / link / footnote 拆段、tex / latex 回退与渲染身份的五个事实 / NUL 不碰撞；真实异步与选区冻结已由主真实浏览器验收通过（15/15 布局、宽公式局部滚动、`newsource → invalid` 首帧 raw、跨段 / 跨公式选区冻结）。复制按钮取原始 message text / 精确 code 由 `mathView.test.ts` / `codeBlock.test.ts` 的源码接线与纯文本断言固定，不冒充 DOM / 系统剪贴板证明。全部登记在[脚本构建入口](<../esbuild.scripts.mjs>) entries。图片 / 链接 / 选区的真实 DOM 时序由受控浏览器回放，Node 静态源码检查不等同浏览器证据。
 
-阶段 3 已完成离线 / 静态验收（typecheck、187 套离线断言、build、diff-check 与受控浏览器检查）；代码高亮的 SSR / streaming 不初始化由 `CodeBlock` 的 settled effect 保证，静态断言只覆盖纯模块。阶段 4 的本地解析适配、KaTeX 引擎 seam、私有净化与本地字体资源已通过 focused typecheck、`math.test.ts`、`mathRender.test.ts`、临时资源复现构建与真实 Chromium 验收：37 条有效语料 × inline/display 共 74 例全文 / 几何 / annotation / `aria-hidden` 一致，24 条攻击在无 CSP 负控中未留下能力，20 个 WOFF2 在严格 CSP 静态预览中全部加载。`MathView` / 正文接线、display 拆 p 与选区冻结已落地，focused typecheck 与 `mathView.test.ts` / `math.test.ts` / `markdown.test.ts` 离线断言通过，主真实浏览器 15/15 布局、宽公式局部滚动、`newsource → invalid` 首帧 raw、跨段 / 跨公式选区冻结也通过；FindBar 与复制路径的主真实浏览器验收通过：3 个已排版公式所在消息的 copy 帧逐字等于原始 Markdown（含定界符与 CRLF 围栏），代码 copy / insert 两帧逐字等于原 code；原生全选 Ctrl+C 帧等于 `Selection.toString()`，正文 mutation 为 0、原 DOM 与选区稳定、3 个可信辅助层保留；FindBar 搜 `x+y` 计数 1/2（两个命中：一个视觉公式 + 一个代码字面，辅助层未计入），两段命中 Range 均 connected 且非辅助层；打开查找仍取原生种子（单行 input 自动去 CRLF，不是去重）。复制沿用原生选区、不做数学去重，静态 copy 帧与原生 Ctrl+C 已验；VS Code 宿主写入系统剪贴板端到端未覆盖，见下节。阶段 4 离线 / 静态完成，安装端资源 / 专用目录安装 / CSP / 字体通过；功能交付完成，未覆盖边界照实保留。未启动真实 DSH、未发送真实消息。未经当次批准，不运行模型 smoke / 探针。
+阶段 3 已完成离线 / 静态验收（typecheck 4/4、189 套离线断言、vendor 12/12、build、diff-check 与受控浏览器检查）；代码高亮的 SSR / streaming 不初始化由 `CodeBlock` 的 settled effect 保证，静态断言只覆盖纯模块。五类工具节点的高亮接线另由 [toolRowRender.test.ts](<../scripts/toolRowRender.test.ts>) 固定宿主身份、状态门控与运行时纯文回退，真实浏览器五面验收见「工具节点扩展」。阶段 4 的本地解析适配、KaTeX 引擎 seam、私有净化与本地字体资源已通过 focused typecheck、`math.test.ts`、`mathRender.test.ts`、临时资源复现构建与真实 Chromium 验收：37 条有效语料 × inline/display 共 74 例全文 / 几何 / annotation / `aria-hidden` 一致，24 条攻击在无 CSP 负控中未留下能力，20 个 WOFF2 在严格 CSP 静态预览中全部加载。`MathView` / 正文接线、display 拆 p 与选区冻结已落地，focused typecheck 与 `mathView.test.ts` / `math.test.ts` / `markdown.test.ts` 离线断言通过，主真实浏览器 15/15 布局、宽公式局部滚动、`newsource → invalid` 首帧 raw、跨段 / 跨公式选区冻结也通过；FindBar 与复制路径的主真实浏览器验收通过：3 个已排版公式所在消息的 copy 帧逐字等于原始 Markdown（含定界符与 CRLF 围栏），代码 copy / insert 两帧逐字等于原 code；原生全选 Ctrl+C 帧等于 `Selection.toString()`，正文 mutation 为 0、原 DOM 与选区稳定、3 个可信辅助层保留；FindBar 搜 `x+y` 计数 1/2（两个命中：一个视觉公式 + 一个代码字面，辅助层未计入），两段命中 Range 均 connected 且非辅助层；打开查找仍取原生种子（单行 input 自动去 CRLF，不是去重）。复制沿用原生选区、不做数学去重，静态 copy 帧与原生 Ctrl+C 已验；VS Code 宿主写入系统剪贴板端到端未覆盖，见下节。阶段 4 离线 / 静态完成，安装端资源 / 专用目录安装 / CSP / 字体通过；功能交付完成，未覆盖边界照实保留。未启动真实 DSH、未发送真实消息。未经当次批准，不运行模型 smoke / 探针。
 
 ### 安装端验收（最终）
 

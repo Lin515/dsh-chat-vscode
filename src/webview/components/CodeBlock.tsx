@@ -17,55 +17,13 @@
  *   等选区清空 / 移开后再应用；卡片 DOM、折展状态和复制 / 插入的 `code` 都不变；
  * - span 文本全部由原 `code` 切片生成，不拼 HTML、不用 `dangerouslySetInnerHTML`。
  */
-import { useEffect, useRef, useState, type ReactNode } from "react";
-import { highlightCode, normalizeLang, type HighlightSpan } from "../markdown/highlight";
+import { useRef, useState } from "react";
 import type { MarkdownPhase } from "../markdown/types";
-import { selectionIntersectsElement } from "../selectionRange";
 import { post } from "../bridge";
 import { IconChevronDown, IconCopy, IconPencil } from "../icons";
 import { useTexts } from "../texts";
-
-/** 高亮结果的身份：code + 归一化语言；别名（ts / TypeScript / ts title=x）共享同一份结果。 */
-function highlightKey(lang: string | undefined, code: string): string {
-  return `${lang ?? ""}\u0000${code}`;
-}
-
-/** TextMate fontStyle 位 → 受控 class（1 斜体 / 2 粗体 / 4 下划线）。 */
-function fontStyleClass(style: number | undefined): string | undefined {
-  if (style === undefined) return undefined;
-  const classes: string[] = [];
-  if ((style & 1) !== 0) classes.push("is-italic");
-  if ((style & 2) !== 0) classes.push("is-bold");
-  if ((style & 4) !== 0) classes.push("is-underlined");
-  return classes.length === 0 ? undefined : classes.join(" ");
-}
-
-/** 按源码偏移段渲染：普通缺口也取原 `code` 切片，保证文本逐字等于代码。 */
-function renderHighlighted(code: string, spans: readonly HighlightSpan[]): ReactNode[] {
-  const nodes: ReactNode[] = [];
-  let cursor = 0;
-  for (const span of spans) {
-    if (span.start > cursor) nodes.push(code.slice(cursor, span.start));
-    const text = code.slice(span.start, span.end);
-    const className = fontStyleClass(span.fontStyle);
-    if (span.color === undefined && className === undefined) {
-      nodes.push(text);
-    } else {
-      nodes.push(
-        <span
-          key={span.start}
-          className={className === undefined ? "md-code-token" : `md-code-token ${className}`}
-          style={span.color === undefined ? undefined : { color: span.color }}
-        >
-          {text}
-        </span>,
-      );
-    }
-    cursor = span.end;
-  }
-  if (cursor < code.length) nodes.push(code.slice(cursor));
-  return nodes;
-}
+import { renderHighlighted } from "./HighlightedText";
+import { useCodeHighlight } from "./useCodeHighlight";
 
 /**
  * 阶段 3 起，`phase` 决定是否做完成态高亮；缺省 settled（静态调用方与 `run_code`
@@ -89,52 +47,15 @@ export function CodeBlock({
   const [chosenCollapsed, setChosenCollapsed] = useState<boolean | null>(null);
   const collapsed = long && (chosenCollapsed ?? true);
   const codeElRef = useRef<HTMLElement | null>(null);
-  const [highlight, setHighlight] = useState<{ key: string; spans: HighlightSpan[] } | null>(null);
-  // 身份与请求都按归一化语言：`ts` / `TypeScript` / `ts title=x` 只是同一个语法的
-  // 不同标签，切换标签不能拆掉已有 span、重新请求或破坏正在拖动的选区。
-  const normalizedLang = normalizeLang(lang);
-  const key = highlightKey(normalizedLang, code);
-  // 渲染前核身份：代码 / 语言一变，上一份 span 立即退回纯文本，绝不错位着色。
-  const activeSpans = phase === "settled" && highlight !== null && highlight.key === key ? highlight.spans : null;
-
-  useEffect(() => {
-    if (phase !== "settled" || normalizedLang === undefined) {
-      setHighlight(null);
-      return;
-    }
-    let cancelled = false;
-    let detach: (() => void) | undefined;
-    setHighlight(null);
-    const apply = (spans: HighlightSpan[]) => {
-      if (!cancelled) setHighlight({ key, spans });
-    };
-    /** 选区与本卡片相交时先冻结，等选区清空 / 移开再应用最新一份结果。 */
-    const waitForSelection = (spans: HighlightSpan[]) => {
-      const element = codeElRef.current;
-      if (element === null || !selectionIntersectsElement(element)) {
-        apply(spans);
-        return;
-      }
-      const onSelectionChange = () => {
-        if (cancelled) return;
-        const current = codeElRef.current;
-        if (current !== null && selectionIntersectsElement(current)) return;
-        detach?.();
-        detach = undefined;
-        apply(spans);
-      };
-      document.addEventListener("selectionchange", onSelectionChange);
-      detach = () => document.removeEventListener("selectionchange", onSelectionChange);
-    };
-    void highlightCode(code, normalizedLang).then((spans) => {
-      if (cancelled || spans === null) return;
-      waitForSelection(spans);
-    });
-    return () => {
-      cancelled = true;
-      detach?.();
-    };
-  }, [code, normalizedLang, phase]);
+  // 身份、请求取消与选区冻结都在共享 hook 里；这里只把 phase 翻译成 active。
+  // `ts` / `TypeScript` / `ts title=x` 只是同一个语法的不同标签，切换标签不会拆掉
+  // 已有 span、重新请求或破坏正在拖动的选区。
+  const activeSpans = useCodeHighlight({
+    code,
+    lang,
+    active: phase === "settled",
+    elementRef: codeElRef,
+  });
 
   return (
     <div className={`code-block${collapsed ? " is-collapsed" : ""}`}>

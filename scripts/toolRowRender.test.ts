@@ -14,6 +14,8 @@
  * 运行：npm test（登记在 esbuild.scripts.mjs 的 entries）
  */
 import assert from "node:assert";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ToolCallView } from "../src/shared/chat";
@@ -248,5 +250,104 @@ console.log("toolRowRender: 读取节点带起始行，编辑节点只打开文�
   assert.ok(diff.includes("final diff") && !diff.includes("raw preview"), "既有diff接管，不重复展示");
 }
 console.log("toolRowRender: write 原文/空内容/失败中断/安全回退/仅write/diff交接 ✓");
+
+// ---------- 4. workflow：script（旧 code 兜底）走代码块，其余参数留在 IN ----------
+{
+  const workflow = (input: string, overrides: Partial<ToolCallView> = {}): ToolCallView => ({
+    id: "call-workflow", name: "workflow", title: "", detail: "demo", status: "ok",
+    input, output: 'workflow "demo" completed (1 agent).\nReturn value:\n{"ok":true}', ...overrides,
+  });
+  const current = render(workflow(JSON.stringify({ script: "const value = 1;", objective: "demo" })));
+  assert.ok(current.includes("code-block"), "workflow 脚本用代码块");
+  assert.ok(current.includes("const value = 1;"), "脚本原文进入正文");
+  assert.ok(current.includes("objective"), "其余参数仍显示");
+  assert.ok(!current.includes("&quot;script&quot;"), "脚本字段不在 IN JSON 里重复出现");
+
+  const legacy = render(workflow(JSON.stringify({ code: "return 1;", task: "old" })));
+  assert.ok(legacy.includes("return 1;") && legacy.includes("task"), "旧 code 字段兼容且其余参数不丢");
+
+  const running = render(workflow('{"script":"const value', { status: "running", output: "" }));
+  assert.ok(!running.includes("code-block"), "半截参数不提前把脚本当完整代码块");
+}
+console.log("toolRowRender: workflow script/code 代码块与其余参数共存、不重复 ✓");
+
+// ---------- 5. inspect：只有明确工具 + 成功 + 整段 JSON 才挂 JSON 着色面 ----------
+{
+  const inspect = (name: string, output: string, overrides: Partial<ToolCallView> = {}): ToolCallView => ({
+    id: `call-${name}`, name, title: "", detail: "inspect", status: "ok",
+    input: '{"query":"x"}', output, ...overrides,
+  });
+  const json = render(inspect("cordis_inspect_list", '{"providers":[{"id":"a"}]}'));
+  assert.ok(json.includes("md-code-surface"), "inspect 成功且整段 JSON 时用共享 JSON 着色面");
+  assert.ok(json.includes("providers"), "完整 OUT 原字符串仍显示（不拆字段）");
+
+  const packageInspect = render(inspect("cordis_package_inspect", '{"packageId":"a","props":null}'));
+  assert.ok(packageInspect.includes("md-code-surface"), "本地实际存在的 package inspect 也覆盖");
+  assert.ok(packageInspect.includes("packageId"), "完整 OUT 原字符串仍显示");
+
+  const generic = render(inspect("custom_tool", '{"providers":[{"id":"a"}]}'));
+  assert.ok(!generic.includes("md-code-surface"), "其它工具的 JSON 形 OUT 不按 JSON 着色");
+
+  const partial = render(inspect("cordis_inspect_query", '{"data":[1,2'));
+  assert.ok(!partial.includes("md-code-surface"), "半截 JSON 纯文回退");
+
+  const failed = render(inspect("cordis_inspect_self", '{"plugins":[]}', { status: "error", output: "boom" }));
+  assert.ok(!failed.includes("md-code-surface"), "错误结果纯文回退");
+
+  // running 的同一段 OUT 先由原 span 纯文承载；切 ok 后仍是同一个 CodeText 宿主，
+  // 只切换 lang/active，不能按 jsonOutput 条件替换成另一个组件（会卸载 TextNode）。
+  const running = render(inspect("cordis_inspect_query", '{\n  "provider": "fix', { status: "running" }));
+  assert.ok(running.includes("provider"), "running 的 OUT 原样显示");
+  assert.ok(!running.includes("md-code-surface"), "running 不挂 JSON 面、不请求高亮");
+  const sameOutput = '{\n  "provider": "fix"}';
+  const settled = render(inspect("cordis_inspect_query", sameOutput, { status: "ok" }));
+  assert.ok(settled.includes("md-code-surface"), "同 output 切 ok 后才挂 JSON 面");
+  assert.ok(settled.includes("provider"), "OUT 承载文本不变");
+
+  const rowsSource = readFileSync(join(process.cwd(), "src", "webview", "components", "Rows.tsx"), "utf8");
+  assert.match(
+    rowsSource,
+    /\{showOutput \? \([\s\S]{0,600}?<CodeText[\s\S]{0,220}?lang=\{jsonOutput \? "json" : undefined\}[\s\S]{0,80}?active=\{jsonOutput\}/,
+    "OUT 始终由同一个 CodeText 承载，JSON 资格只控 lang/active",
+  );
+  assert.doesNotMatch(
+    rowsSource,
+    /\{jsonOutput \? \(\s*<CodeText/,
+    "不能用 jsonOutput 条件切换 OUT 宿主组件（选区会随 TextNode 卸载丢失）",
+  );
+}
+console.log("toolRowRender: inspect JSON 只对明确工具与完整成功结果生效 ✓");
+
+// ---------- 6. read 卡：共享着色面挂在完整窗口的正文上 ----------
+{
+  const read = render({
+    id: "call-read", name: "read", title: "", detail: "a.ts", status: "ok",
+    input: '{"file_path":"a.ts"}', filePath: "a.ts",
+    card: {
+      kind: "read", label: "a.ts", totalLines: 2, lang: "ts",
+      lines: [{ number: 1, text: "/* multi" }, { number: 2, text: "line */" }],
+    },
+  });
+  assert.ok(read.includes("md-code-surface"), "read 卡正文用共享着色面（窗口整段 tokenize 后切行）");
+  assert.ok(read.includes("/* multi") && read.includes("line */"), "多行注释原文完整");
+}
+console.log("toolRowRender: read 卡共享着色面与完整窗口正文 ✓");
+
+// ---------- 7. 状态接线：running 的 write/edit 明确传 streaming，不凭参数完整推 settled ----------
+{
+  const diffSource = readFileSync(join(process.cwd(), "src", "webview", "components", "Diff.tsx"), "utf8");
+  assert.match(diffSource, /phase = "streaming"/, "DiffView 缺省不启高亮（调用方必须显式 settled）");
+  assert.match(
+    diffSource,
+    /useCodeHighlight\(\{ code: sides\.oldText, lang, active, elementRef: rootRef \}\)/,
+    "diff 两侧按 active 统一门控",
+  );
+  const writeBody = readFileSync(join(process.cwd(), "src", "webview", "components", "WriteBody.tsx"), "utf8");
+  assert.match(writeBody, /phase=\{active \? "streaming" : "settled"\}/, "write/ edit 的 diff 由工具活性决定");
+  assert.match(writeBody, /active=\{!active\}/, "write 原文预览只在水合后着色");
+  const rowsSource = readFileSync(join(process.cwd(), "src", "webview", "components", "Rows.tsx"), "utf8");
+  assert.match(rowsSource, /phase=\{running \? "streaming" : "settled"\}/, "Rows 把 running 明确翻译成 streaming");
+}
+console.log("toolRowRender: 运行中 write/edit 保持纯文（phase/active 显式传入）✓");
 
 console.log("\ntoolRowRender: all assertions passed");

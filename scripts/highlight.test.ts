@@ -13,13 +13,16 @@
 import assert from "node:assert";
 import {
   highlightCode,
+  highlightLines,
   highlightCacheStats,
+  languageForPath,
   MAX_CACHE_CHARS,
   MAX_CACHE_ENTRIES,
   MAX_HIGHLIGHT_CHARS,
   MAX_HIGHLIGHT_LINE_CHARS,
   normalizeLang,
   resetHighlightCache,
+  splitSpansByLine,
   type HighlightSpan,
 } from "../src/webview/markdown/highlight";
 
@@ -56,6 +59,22 @@ function textOf(code: string, spans: readonly HighlightSpan[]): string {
 }
 console.log("highlight: 语言别名与继承成员不命中 ✓");
 
+// ---------- 1b. 文件路径 → 语言：只看显式扩展名 ----------
+{
+  assert.strictEqual(languageForPath("src/a.ts"), "typescript", "普通 POSIX 路径");
+  assert.strictEqual(languageForPath("C:\\x\\A.TSX"), "tsx", "Windows 路径与大小写");
+  assert.strictEqual(languageForPath("README.md"), "markdown");
+  assert.strictEqual(languageForPath("a.jsonc"), "jsonc");
+  assert.strictEqual(languageForPath("a.patch"), "diff");
+  assert.strictEqual(languageForPath("noext"), undefined, "无扩展名回退");
+  assert.strictEqual(languageForPath(".bashrc"), undefined, "点号在开头不算扩展名");
+  assert.strictEqual(languageForPath("a."), undefined, "空扩展名回退");
+  assert.strictEqual(languageForPath("a.constructor"), undefined, "继承成员不命中");
+  assert.strictEqual(languageForPath("dir\\constructor"), undefined);
+  assert.strictEqual(languageForPath(undefined), undefined);
+}
+console.log("highlight: 文件路径扩展名映射只认显式语言 ✓");
+
 // ---------- 2. 源码逐字保真（CRLF / 空行 / 尾空白 / NUL） ----------
 {
   resetHighlightCache();
@@ -80,6 +99,63 @@ console.log("highlight: 语言别名与继承成员不命中 ✓");
   assert.strictEqual(textOf(markdownCode, mdSpans), markdownCode);
 }
 console.log("highlight: CRLF / 空行 / 尾空白 / NUL 由原 code 切片逐字保真 ✓");
+
+// ---------- 2b. 整段 token → 逐行局部 span（一次 tokenize，不逐行重置） ----------
+{
+  // 纯区间切分：跨行 span 按行裁剪，换行字符不进入任何一行。
+  const code = "ab\ncd\n";
+  const spans: HighlightSpan[] = [
+    { start: 0, end: 2, color: "var(--md-code-token-keyword)" },
+    { start: 2, end: 3 },
+    { start: 3, end: 5, color: "var(--md-code-token-string)" },
+    { start: 5, end: 6 },
+  ];
+  const lines = splitSpansByLine(code, spans);
+  assert.strictEqual(lines.length, 3, "行数等于 split(\\n) 的长度（含末尾空行）");
+  assert.deepStrictEqual(lines[0], [{ start: 0, end: 2, color: "var(--md-code-token-keyword)" }]);
+  assert.deepStrictEqual(lines[1], [{ start: 0, end: 2, color: "var(--md-code-token-string)" }]);
+  assert.deepStrictEqual(lines[2], []);
+  assert.strictEqual(textOf(code.split("\n")[0], lines[0]), "ab");
+  assert.strictEqual(textOf(code.split("\n")[1], lines[1]), "cd");
+
+  const cross = splitSpansByLine(code, [{ start: 1, end: 4, color: "var(--md-code-token-comment)" }]);
+  assert.deepStrictEqual(cross[0], [{ start: 1, end: 2, color: "var(--md-code-token-comment)" }]);
+  assert.deepStrictEqual(cross[1], [{ start: 0, end: 1, color: "var(--md-code-token-comment)" }]);
+
+  // 真实引擎：CRLF / tab / 尾空白 / 多行注释 / NUL。整段先 tokenize 再切行，
+  // 每一行按局部 span 重建出的文本必须逐字等于原行。
+  const source = "const a = 1;\r\n\tconst b = 2;  \n/* multi\nline */\nconst c = \"x\";\n";
+  const full = await highlightCode(source, "typescript");
+  assert.ok(full !== null);
+  const perLine = splitSpansByLine(source, full);
+  const expected = source.split("\n");
+  assert.strictEqual(perLine.length, expected.length);
+  for (let index = 0; index < expected.length; index++) {
+    assert.strictEqual(textOf(expected[index], perLine[index]), expected[index], `第 ${index} 行保真`);
+  }
+  const comment = "var(--md-code-token-comment)";
+  assert.ok(perLine[2].some((span) => span.color === comment), "多行注释首行有注释色");
+  assert.ok(perLine[3].some((span) => span.color === comment), "多行注释续行仍有注释色（未逐行重置）");
+
+  const nul = "A\u0000\uFFFD\r\n\tB  \r\n\r\n";
+  const nulSpans = await highlightCode(nul, "javascript");
+  assert.ok(nulSpans !== null);
+  const nulLines = splitSpansByLine(nul, nulSpans);
+  const nulExpected = nul.split("\n");
+  assert.strictEqual(nulLines.length, nulExpected.length);
+  for (let index = 0; index < nulExpected.length; index++) {
+    assert.strictEqual(textOf(nulExpected[index], nulLines[index]), nulExpected[index], `NUL 第 ${index} 行保真`);
+  }
+  assert.ok(textOf(nulExpected[0], nulLines[0]).includes("\u0000"), "切行后仍保留真实 NUL");
+
+  resetHighlightCache();
+  const highlighted = await highlightLines("const a = 1;\nconst b = 2;", "ts");
+  assert.ok(highlighted !== null);
+  assert.strictEqual(highlighted.length, 2);
+  assert.strictEqual(textOf("const a = 1;", highlighted[0]), "const a = 1;");
+  assert.strictEqual(await highlightLines("x", "brainfuck"), null, "未知语言仍回退纯文");
+}
+console.log("highlight: 整段 token 按行裁剪、CRLF / tab / NUL / 多行注释保真 ✓");
 
 // ---------- 3. 静态精选语言都能工作 ----------
 {

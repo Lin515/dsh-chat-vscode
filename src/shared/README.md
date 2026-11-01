@@ -15,6 +15,7 @@
 - `workspacePath.ts` — 跨平台路径的纯字符串判据：POSIX / 盘符 / UNC 的绝对形态、只拼接不规范的相对解析、记录值读取、终端标签的点段折叠，以及**不转小写、不消点**的身份比较键（身份只能由执行世界规范化）。
 - `toolPath.ts` — 工具路径模型：工具行打开目标（记录值优先且不凭空造动作、运行/失败/嵌套只对绝对参数放行）、产物三档（`mutationResultPath`）、终端目录标签（记录 cwd 原样、旧根调用按创建目录回退、运行/嵌套不猜）。
 - `toolCard.ts` — 工具卡契约事实：从「工具名 + 参数 + 结果元数据」折出卡片数据（对齐官方 `deriveSummary`，终端目录按 `toolPath` 的判据取值）。
+- `toolSource.ts` — 工具节点里「语言可确定」的源码事实：workflow 的 `script`（旧 `code` 兜底）与精确 inspect 工具（含本地 `cordis_package_inspect` / `cordis_runtime_inspect`）的整段 JSON OUT 判据；不解析字段树。
 - `skill.ts` — `skill` 工具节点的文本事实：从参数认合法技能名、从结果信封里只取 `<skill_instructions>` 正文；不构造路径（SKILL.md 路径只认服务端 `skills/list`）。
 - `toolQuestion.ts` — `ask_user_question` 问卷事实：题目在调用参数、答案在工具结果，两份 durable 材料折出问卷记录（重载后卡片不丢）。
 - `turnProcessThreshold.ts` — 连续过程折叠的阈值（默认值与特殊语义只写这一份，两边共用）。
