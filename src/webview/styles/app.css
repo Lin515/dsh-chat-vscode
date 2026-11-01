@@ -1587,6 +1587,45 @@ button.header-title.is-switcher > svg.is-open {
   margin: calc(4 * var(--dp)) 0;
 }
 
+/* 私有 MathView 根：inline 随正文，display 用块级 span（不是 div）局部横滚。
+   display 的中段段落由 render.tsx 切成独立 p；heading / 表格单元格等不可拆
+   容器里仍保持合法 DOM。成功渲染后 KaTeX 自带 margin 清零，由根统一间距。 */
+.math-view {
+  color: inherit;
+}
+
+.math-view-inline {
+  display: inline;
+}
+
+.math-view-display {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  margin: calc(4 * var(--dp)) 0;
+}
+
+.math-content {
+  display: contents;
+}
+
+.math-view-display .katex-display {
+  margin: 0;
+}
+
+/* KaTeX 的 display 默认居中；窄容器里把宽度收到内容宽度并居中，超宽时
+   从左开始溢出，避免居中把左侧内容推到不可滚动区域。 */
+.math-view-display .katex-display > .katex {
+  width: fit-content;
+  margin-inline: auto;
+}
+
+.math-view-source {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .md ul,
 .md ol {
   margin: calc(4 * var(--dp)) 0;

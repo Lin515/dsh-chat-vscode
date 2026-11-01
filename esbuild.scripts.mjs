@@ -92,6 +92,8 @@ const entries = {
   // KaTeX 引擎 seam（无 DOM 不加载 / 限额 / 宏隔离 / trust 真实行为）与净化纯函数：
   // 必须登记，否则 npm test 静默不跑
   "build/math-render.test.mjs": "scripts/mathRender.test.ts",
+  // MathView / 正文接线、display 段落切分与 SSR 原文回退：必须登记
+  "build/math-view.test.mjs": "scripts/mathView.test.ts",
   // 代码块源文保真（容器 / tab 视觉列 / EOL / NUL）与图片 loader 的范围时序：必须登记
   "build/markdown-source.test.mjs": "scripts/markdownSource.test.ts",
   "build/local-image-resolve.test.mjs": "scripts/localImageResolve.test.ts",

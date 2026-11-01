@@ -29,10 +29,9 @@ export {
  * - `settled`（缺省）：本地 [parseSettledRoot] 使用与 vendor `parseGfmWithMath`
  *   相同的扩展集合，并补上保守金额否决与围栏 / 源码事实（见 [math.ts](<math.ts>)）。
  *
- * 阶段 4 的 KaTeX / MathView 尚未接线：正文组件在接线前**显式**调用
- * [parseGfmMarkdown]，所以生产渲染仍走普通 GFM；`parseMarkdown` 的 settled 臂
- * 目前供正式解析测试与后继接线使用。轨迹的纯文本投影继续直接消费 vendor
- * `parseGfm`，语义不变。
+ * 阶段 4 已接线：正文组件调用 `parseMarkdown(text, phase)`，settled 的数学节点
+ * 进入 `MathView`；[parseGfmMarkdown] 只保留给显式要求普通 GFM 的调用方 / 测试。
+ * 轨迹的纯文本投影继续直接消费 vendor `parseGfm`，语义不变。
  *
  * mdast 类型只在本适配层与渲染层之间流转；业务的 `Markdown` 接口只接收文本。
  */
@@ -54,8 +53,8 @@ export function parseMarkdown(source: string, phase: MarkdownPhase = "settled"):
 }
 
 /**
- * 正文渲染在 KaTeX / MathView 接线前的显式入口：即使消息已经 settled，也只解析
- * 普通 GFM，避免 math 节点进入尚不认识的渲染树。接线后改回 `parseMarkdown(text, phase)`。
+ * 显式只解析普通 GFM 的入口：即使消息已经 settled 也不产生数学节点。
+ * 生产正文已走 `parseMarkdown(text, phase)`；本函数仅供只接受普通 GFM 的调用方 / 测试。
  */
 export function parseGfmMarkdown(source: string): MarkdownDocument {
   return parseMarkdown(source, "streaming");

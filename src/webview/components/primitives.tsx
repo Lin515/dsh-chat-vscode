@@ -12,6 +12,7 @@ import type { ChatState } from "../../shared/chat";
 import { ESC_LAYER, useEscapeLayer } from "../escapeOwner";
 import { IconChevronRight } from "../icons";
 import { splitPath } from "../pathDisplay";
+import { selectionIntersectsElement } from "../selectionRange";
 import { useTexts, type Texts } from "../texts";
 import { dpLength } from "../uiScale";
 
@@ -637,7 +638,7 @@ export function useSelectionFreeze<T>(
   useEffect(() => {
     const onChange = () => {
       const el = ref.current;
-      if (el && hasSelectionInside(el)) setFrozen((prev) => prev ?? liveRef.current);
+      if (el && selectionIntersectsElement(el)) setFrozen((prev) => prev ?? liveRef.current);
       else setFrozen(undefined);
     };
     document.addEventListener("selectionchange", onChange);

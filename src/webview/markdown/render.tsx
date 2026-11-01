@@ -23,6 +23,7 @@ import type {
 import { isRemoteImageRef } from "../../shared/imageRef";
 import { post } from "../bridge";
 import { CodeBlock } from "../components/CodeBlock";
+import { MathView } from "../components/MathView";
 import { externalLinkUrl, fileOpenIntent, parseFileLink, type FileLinkPort } from "../fileLinks";
 import { openImagePreview } from "../imagePreview";
 import {
@@ -35,6 +36,7 @@ import {
 import { externalLinkHoverTitle, fileLinkHoverTitle, mergeHoverTitle } from "../linkHovers";
 import type { Texts } from "../texts";
 import type { MarkdownDocument } from "./parse";
+import { mathFenceSource, mathSourceOf, type MathSource } from "./math";
 import { codePayload, sourceFallback, type CodeSource } from "./source";
 import type { MarkdownPhase } from "./types";
 
@@ -159,12 +161,177 @@ function renderChildren(nodes: readonly RootContent[], context: RenderContext, p
   return nodes.map((node, index) => renderNode(node, `${prefix}:${index}`, context));
 }
 
+/** 段落内的一段：普通 inline 内容，或一个被切出来的 display 公式。 */
+type InlinePart =
+  | { readonly kind: "inline"; readonly nodes: RootContent[] }
+  | { readonly kind: "display"; readonly source: MathSource };
+
+/** 包装节点（strong / emphasis / link 等）被切开后的单段。 */
+type WrappedPart =
+  | { readonly kind: "inline"; readonly node: RootContent }
+  | { readonly kind: "display"; readonly source: MathSource };
+
+/**
+ * 读取 `inlineMath` 的 display 事实：`$$…$$` 与 `\\[…\\]` 即使仍是
+ * inlineMath 节点也按产品契约显示成块级公式。
+ */
+function displayMathSourceOf(node: RootContent): MathSource | undefined {
+  if (node.type !== "inlineMath") return undefined;
+  const source = mathSourceOf(node);
+  return source?.form === "display" ? source : undefined;
+}
+
+/**
+ * 递归切开 inline 子树，把 display 公式提升成段落级边界。
+ *
+ * `strong` / `emphasis` / `delete` / `link` 以及已解析定义的 `linkReference`
+ * 会按公式两侧拆成多个同形包装；未解析的引用保持原样，避免复制 `[…][id]`
+ * 括号或吞掉回退文本。公式两侧的文本、链接与脚注引用各自只渲染一次。
+ */
+function splitInlineChildren(
+  nodes: readonly RootContent[],
+  prefix: string,
+  context: RenderContext,
+): InlinePart[] {
+  const parts: InlinePart[] = [];
+  let inline: RootContent[] = [];
+  const flush = (): void => {
+    if (inline.length === 0) return;
+    parts.push({ kind: "inline", nodes: inline });
+    inline = [];
+  };
+  for (const [index, node] of nodes.entries()) {
+    const display = displayMathSourceOf(node);
+    if (display !== undefined) {
+      flush();
+      parts.push({ kind: "display", source: display });
+      continue;
+    }
+    const wrapped = splitInlineWrapper(node, `${prefix}:${index}`, context);
+    if (wrapped === undefined) {
+      inline.push(node);
+      continue;
+    }
+    for (const part of wrapped) {
+      if (part.kind === "display") {
+        flush();
+        parts.push(part);
+      } else {
+        inline.push(part.node);
+      }
+    }
+  }
+  flush();
+  return parts;
+}
+
+function splitInlineWrapper(
+  node: RootContent,
+  prefix: string,
+  context: RenderContext,
+): WrappedPart[] | undefined {
+  if (node.type !== "strong"
+    && node.type !== "emphasis"
+    && node.type !== "delete"
+    && node.type !== "link"
+    && node.type !== "linkReference") {
+    return undefined;
+  }
+  if (node.type === "linkReference" && !context.definitions.has(node.identifier.toUpperCase())) {
+    return undefined;
+  }
+  const inner = splitInlineChildren(node.children as readonly RootContent[], prefix, context);
+  if (!inner.some((part) => part.kind === "display")) return undefined;
+  return inner.map((part): WrappedPart => part.kind === "display"
+    ? part
+    : { kind: "inline", node: { ...node, children: part.nodes } as RootContent });
+}
+
+/**
+ * 段落渲染：没有 display 时保持原来的单个 `<p>`；有 display 时切成
+ * `<p>…</p>` + 块级公式 + `<p>…</p>`，不产生空段落，也不把块级内容塞回 p。
+ */
+function renderParagraph(
+  node: Extract<RootContent, { type: "paragraph" }>,
+  key: Key,
+  context: RenderContext,
+): ReactNode {
+  const parts = splitInlineChildren(node.children, `${String(key)}:p`, context);
+  if (!parts.some((part) => part.kind === "display")) {
+    return <p key={key}>{renderChildren(node.children, context, `${String(key)}:p`)}</p>;
+  }
+  const output: ReactNode[] = [];
+  for (const [index, part] of parts.entries()) {
+    if (part.kind === "display") {
+      output.push(renderMathSource(part.source, context));
+    } else {
+      output.push(
+        <p key={`${String(key)}:p${index}`}>
+          {renderChildren(part.nodes, context, `${String(key)}:p${index}`)}
+        </p>,
+      );
+    }
+  }
+  return <Fragment key={key}>{separated(output)}</Fragment>;
+}
+
+function renderMathSource(source: MathSource, context: RenderContext): ReactNode {
+  return <MathView key={`math:${source.start}`} source={source} phase={context.phase} />;
+}
+
+/** 没有解析事实（缺位置 / 未确认）时只把源码作为文本回退，不补定界符。 */
+function renderMathFallback(raw: string, form: "inline" | "display", key: Key): ReactNode {
+  if (form === "inline") {
+    return (
+      <span key={key} className="math-view math-view-inline math-view-source" data-math-view="inline">
+        {raw}
+      </span>
+    );
+  }
+  // display 即使落在不可拆容器（heading / 表格单元格 / 回退引用）里，也用
+  // 文本节点把两侧内容隔开，后继 FindBar 不会把 before / after 与公式拼词。
+  return (
+    <Fragment key={key}>
+      {"\n"}
+      <span className="math-view math-view-display math-view-source" data-math-view="display">
+        {raw}
+      </span>
+      {"\n"}
+    </Fragment>
+  );
+}
+
+function renderInlineMath(node: RootContent, key: Key, context: RenderContext): ReactNode {
+  const source = mathSourceOf(node);
+  if (source === undefined) {
+    return renderMathFallback(sourceFallback(node, context.source), "inline", key);
+  }
+  if (source.form === "display") {
+    return (
+      <Fragment key={key}>
+        {"\n"}
+        {renderMathSource(source, context)}
+        {"\n"}
+      </Fragment>
+    );
+  }
+  return renderMathSource(source, context);
+}
+
+function renderFlowMath(node: RootContent, key: Key, context: RenderContext): ReactNode {
+  const source = mathSourceOf(node);
+  if (source === undefined) {
+    return renderMathFallback(sourceFallback(node, context.source), "display", key);
+  }
+  return renderMathSource(source, context);
+}
+
 function renderNode(node: RootContent, key: Key, context: RenderContext): ReactNode {
   switch (node.type) {
     case "text":
       return node.value;
     case "paragraph":
-      return <p key={key}>{renderChildren(node.children, context, `${String(key)}:p`)}</p>;
+      return renderParagraph(node, key, context);
     case "heading":
       return createElement(
         `h${node.depth}`,
@@ -194,10 +361,21 @@ function renderNode(node: RootContent, key: Key, context: RenderContext): ReactN
       return <del key={key}>{renderChildren(node.children, context, `${String(key)}:d`)}</del>;
     case "inlineCode":
       return renderInlineCode(node.value, key, context);
+    case "inlineMath":
+      return renderInlineMath(node, key, context);
+    case "math":
+      return renderFlowMath(node, key, context);
     case "html":
       // 不解析 HTML：模型给的标签、注释、属性都只是文字。
       return node.value;
-    case "code":
+    case "code": {
+      // math 围栏在 settled 才转公式；tex / latex 永不进入，仍走精确 CodeBlock。
+      if (context.phase === "settled" && (node.lang ?? "").trim().toLowerCase() === "math") {
+        const fence = mathFenceSource(node, context.source, context.codeSources);
+        if (fence !== undefined) {
+          return <MathView key={`math-fence:${fence.start}`} source={fence} phase={context.phase} />;
+        }
+      }
       return (
         <CodeBlock
           key={codeKey(node, key)}
@@ -206,6 +384,7 @@ function renderNode(node: RootContent, key: Key, context: RenderContext): ReactN
           phase={context.phase}
         />
       );
+    }
     case "list":
       return renderList(node, key, context);
     case "listItem":
@@ -282,11 +461,34 @@ function renderList(node: List, key: Key, context: RenderContext): ReactNode {
   );
 }
 
+interface ListEntry {
+  paragraph?: ReactNode[];
+  element?: ReactNode;
+  display?: MathSource;
+}
+
 function renderListItem(item: ListItem, loose: boolean, key: Key, context: RenderContext): ReactNode {
-  const entries: ({ paragraph: ReactNode[] } | { element: ReactNode })[] = [];
+  const entries: ListEntry[] = [];
   for (const [index, child] of item.children.entries()) {
     if (child.type === "paragraph") {
-      entries.push({ paragraph: renderChildren(child.children, context, `${String(key)}:p${index}`) });
+      // 段落里的 display 也要在 tight / loose 列表内切成块级公式；不能只在
+      // 外层 paragraph 分支处理，否则 `- before $$x$$ after` 会被塞回同一个 p。
+      const parts = splitInlineChildren(child.children, `${String(key)}:p${index}`, context);
+      if (!parts.some((part) => part.kind === "display")) {
+        entries.push({
+          paragraph: renderChildren(child.children, context, `${String(key)}:p${index}`),
+        });
+      } else {
+        for (const [partIndex, part] of parts.entries()) {
+          if (part.kind === "display") {
+            entries.push({ display: part.source });
+          } else {
+            entries.push({
+              paragraph: renderChildren(part.nodes, context, `${String(key)}:p${index}:${partIndex}`),
+            });
+          }
+        }
+      }
     } else {
       const element = renderNode(child, `${String(key)}:${index}`, context);
       if (element !== null) entries.push({ element });
@@ -304,10 +506,11 @@ function renderListItem(item: ListItem, loose: boolean, key: Key, context: Rende
       />
     );
     const first = entries[0];
-    if (first !== undefined && "paragraph" in first) {
-      first.paragraph = first.paragraph.length > 0
-        ? [checkbox, " ", ...first.paragraph]
-        : [checkbox];
+    if (first !== undefined && first.paragraph !== undefined) {
+      const nodes = first.paragraph;
+      entries[0] = {
+        paragraph: nodes.length > 0 ? [checkbox, " ", ...nodes] : [checkbox],
+      };
     } else {
       entries.unshift({ paragraph: [checkbox] });
     }
@@ -317,7 +520,7 @@ function renderListItem(item: ListItem, loose: boolean, key: Key, context: Rende
   for (const [index, entry] of entries.entries()) {
     const paragraph = "paragraph" in entry;
     if (loose || index !== 0 || !paragraph) parts.push("\n");
-    if (!paragraph) parts.push(entry.element);
+    if (!paragraph) parts.push(entry.display !== undefined ? renderMathSource(entry.display, context) : entry.element);
     else if (loose) parts.push(<p key={`${String(key)}:p${index}`}>{entry.paragraph}</p>);
     else parts.push(<Fragment key={`${String(key)}:p${index}`}>{entry.paragraph}</Fragment>);
   }
@@ -494,13 +697,33 @@ function renderFootnoteSection(context: RenderContext): ReactNode {
     const body: ReactNode[] = [];
     for (const [childIndex, child] of children.entries()) {
       if (child.type === "paragraph" && childIndex === children.length - 1) {
-        body.push(
-          <p key={`${identifier}:p`}>
-            {renderChildren(child.children, context, `${identifier}:p`)}
-            {" "}
-            {backrefs}
-          </p>,
-        );
+        // 脚注的最后一段也要按 display 切开；回跳箭头只放到最后一段 inline
+        // 内容之后，纯公式结尾时作为裸文本追加，避免重复引用计数。
+        const parts = splitInlineChildren(child.children, `${identifier}:p`, context);
+        if (!parts.some((part) => part.kind === "display")) {
+          body.push(
+            <p key={`${identifier}:p`}>
+              {renderChildren(child.children, context, `${identifier}:p`)}
+              {" "}
+              {backrefs}
+            </p>,
+          );
+        } else {
+          const renderedParts = parts.map((part, partIndex) => {
+            if (part.kind === "display") return renderMathSource(part.source, context);
+            return (
+              <p key={`${identifier}:p${partIndex}`}>
+                {renderChildren(part.nodes, context, `${identifier}:p${partIndex}`)}
+                {partIndex === parts.length - 1 ? <>{" "}{backrefs}</> : null}
+              </p>
+            );
+          });
+          body.push(...separated(renderedParts));
+          if (parts[parts.length - 1]?.kind === "display") {
+            body.push(" ");
+            body.push(...backrefs);
+          }
+        }
       } else {
         const rendered = renderNode(child, `${identifier}:${childIndex}`, context);
         if (rendered !== null) body.push(rendered);

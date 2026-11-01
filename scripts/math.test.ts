@@ -393,11 +393,11 @@ function assertPlain(source: string, label: string): void {
   console.log("math: 未知命令 / 无效括号 / 危险命令 / 宏 / 巨尺寸等载荷事实保留 ✓");
 }
 
-// ---------- 9. phase 与生产 GFM 中间态 ----------
+// ---------- 9. phase 与 MathView 接线 ----------
 {
   assert.strictEqual(sourcesOf("$x$").length, 1, "settled 缺省解析数学");
   assert.deepStrictEqual(mathSources(parseMarkdown("$x$", "streaming").root), [], "streaming 不解析数学");
-  assert.deepStrictEqual(mathSources(parseGfmMarkdown("$x$").root), [], "渲染入口显式走 GFM");
+  assert.deepStrictEqual(mathSources(parseGfmMarkdown("$x$").root), [], "显式 GFM 臂仍不含数学");
 
   const texts = dictionaryFor("zh");
   const render = (text: string): string => renderToStaticMarkup(
@@ -407,13 +407,17 @@ function assertPlain(source: string, label: string): void {
       createElement(Markdown, { text }),
     ),
   );
-  for (const text of ["$x$", "$$x$$", "Costs $5 and $10."]) {
+  for (const [text, form] of [["$x$", "inline"], ["$$x$$", "display"]] as const) {
     const html = render(text);
-    assert.ok(html.includes(text), `UI 中间态仍显示原文：${text}`);
-    assert.ok(!/language-math|math-display|math-inline/.test(html), "UI 不生成数学节点");
+    assert.ok(html.includes(text), `SSR 保留公式原文：${text}`);
+    assert.ok(html.includes(`data-math-view="${form}"`), `MathView 标记：${text}`);
+    assert.ok(!/class="katex/u.test(html), "SSR 不初始化 KaTeX");
   }
+  const currency = render("Costs $5 and $10.");
+  assert.ok(currency.includes("Costs $5 and $10."), "金额仍按原文显示");
+  assert.ok(!currency.includes("data-math-view"), "金额不生成公式");
 
-  // 即使调用方把 settled 文档直接交给渲染层，未识别的 math 节点也按源码回退。
+  // 即使调用方把 settled 文档直接交给渲染层，未确认的 math 节点也按源码回退。
   const settled = parseMarkdown("$x$");
   const fallback = renderToStaticMarkup(
     createElement(
@@ -422,9 +426,9 @@ function assertPlain(source: string, label: string): void {
       createElement("div", null, renderMarkdownDocument(settled, { phase: "settled", texts })),
     ),
   );
-  assert.ok(fallback.includes("$x$"), "未接线的 math 节点不吞内容");
-  assert.ok(!/language-math/.test(fallback));
-  console.log("math: settled 解析就绪，生产组件仍在 GFM 中间态，未识别 math 原文回退 ✓");
+  assert.ok(fallback.includes("$x$"), "MathView 首帧 / 无 DOM 回退原文");
+  assert.ok(fallback.includes('data-math-view="inline"'), "MathView 来源标识");
+  console.log("math: settled 接线 MathView，SSR / streaming 保持原文且不初始化引擎 ✓");
 }
 
 // ---------- 10. 与 vendor 官方臂的树等价（防止本地装配漂移） ----------
