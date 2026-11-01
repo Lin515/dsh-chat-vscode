@@ -3,15 +3,15 @@
 运行环境：webview（浏览器环境，React）。上一层的说明见 [../README.md](../README.md)。
 
 - `Composer.tsx` — 底部输入框：目标条、附件、发送 / 排队（队列行真的被截断时悬停看全文），弹层规则在 `../composerCompletion.tsx`，草稿里引用的蓝字镜像与 Ctrl 悬停手指光标在 `../composerMention.ts`（本组件只渲染镜像层并同步它的几何）；发送按钮的文字 / 停止态与点击手势走 `../composerSend.ts`，本组件只把按住态与事件交给它。局部编辑（改目标正文）里的 ESC 用 `../escapeOwner.ts` 的 `consumeEscape` 消费。
-- `Message.tsx` — 单条消息：按 `MessageView` 种类装配正文、图片、工具行、折叠过程、轮尾文件；用户消息的正文在最前，其后是气泡内的附件区（文件芯片 `UserMedia`，再下面是图片缩略图），折叠只夹正文节点 `.bubble-text`（`UserBubble`）；已发出的 `@` 引用悬停给完整路径与 Alt 真实文件提示，HTML 文件另给 Ctrl/Cmd 浏览器提示；Alt 打开可编辑真实文件，Ctrl/Cmd+HTML 交系统浏览器。
+- `Message.tsx` — 单条消息：按 `MessageView` 种类装配正文、图片、工具行、折叠过程、轮尾文件；用户消息的正文在最前，其后是气泡内的附件区（文件芯片 `UserMedia`，再下面是图片缩略图），折叠只夹正文节点 `.bubble-text`（`UserBubble`）；已发出的 `@` 引用悬停给完整路径与 Alt 真实文件提示，HTML 文件另给 Ctrl/Cmd 浏览器提示（文件引用不复述「打开这个文件」——链接外观已经说明单击能打开）；Alt 打开可编辑真实文件，Ctrl/Cmd+HTML 交系统浏览器。
 - `Markdown.tsx` — markdown 正文渲染：块切分 + 本地图片 / 文件链接的注水（hydrate），锚点悬停补完整路径、Alt 真实文件提示与外链地址，按 `fileOpenIntent` 分流只读 / 真实文件 / Ctrl+HTML 浏览器。
 - `CodeBlock.tsx` — 代码块卡片（复制 / 插入按钮；markdown 与工具卡共用，避免工具行被 DOMPurify 牵连）。
 - `ToolCards.tsx` — 按工具语义画的卡片（读 / 搜索 / 终端 / 网页），有卡片时不再展示参数 JSON。
-- `Rows.tsx` — 通用行组件：审批卡、命令行、文件芯片、注入行、提问卡、思考行、工具行、轮统计等（文件芯片悬停首行是完整路径；默认点击是看对比，Alt 打开可编辑的真实文件，Ctrl/Cmd/Shift 保留原只读直接打开）。读 / 写 / 编辑与技能节点支持按住 Alt 单击打开可编辑的真实文件，Ctrl/Cmd 保留原来的只读直接打开（技能只认服务端给的 `SKILL.md` 路径，没有就不提示）；这些节点的路径在悬停或按住修饰键时显示下划线，单击行为仍是开合；技能节点展开只显示 SKILL 正文，不显示参数与输出标题。问卷「自定义回答」输入框里的 ESC 取消选中用 `../escapeOwner.ts` 的 `consumeEscape` 消费（文字保留）；输入框随内容自动长高，最多 5 行，再长在框内滚动，右下角可手动拖高、手动拖过后以手动高度为准（口径与算术在 `../questionInput.ts`）。
+- `Rows.tsx` — 通用行组件：审批卡、命令行、文件芯片、注入行、提问卡、思考行、工具行、轮统计等（文件芯片悬停依次给完整路径、按住 Ctrl/Cmd 单击打开只读副本、按住 Alt 打开可编辑的真实文件；默认点击是看对比，Ctrl/Cmd/Shift 保留原只读直接打开）。读 / 写 / 编辑与技能节点同一口径：按住 Alt 单击打开可编辑的真实文件、按住 Ctrl/Cmd 单击打开只读副本，两条提示各占一行、只读在前（技能只认服务端给的 `SKILL.md` 路径，没有就不提示）；这些节点的路径在悬停或按住修饰键时显示下划线，单击行为仍是开合；技能节点展开只显示 SKILL 正文，不显示参数与输出标题。问卷「自定义回答」输入框里的 ESC 取消选中用 `../escapeOwner.ts` 的 `consumeEscape` 消费（文字保留）；输入框随内容自动长高，最多 5 行，再长在框内滚动，右下角可手动拖高、手动拖过后以手动高度为准（口径与算术在 `../questionInput.ts`）。
 - [WriteBody.tsx](<WriteBody.tsx>) — 仅 write 的参数原文预览与既有 diff 交接；共用阅读盒子、划选冻结与用户可脱离的贴底，不解释源码为 HTML／Markdown。
 - `Diff.tsx` — diff 渲染：单栏 / 双栏两种排版。
 - `Images.tsx` — 会话图片的统一呈现（用户 / 模型 / 工具 / 正文引用三处合成一套）+ 图片预览层。预览层支持滚轮以光标为锚点缩放、放大后左键拖动，右键菜单「复原」把倍率与平移清零；几何在 `../imagePreview.ts`。ESC 按 `../escapeOwner.ts` 的 `ESC_LAYER.imagePreview` 登记（右键菜单压过它）。
-- `ChangesCard.tsx` — 轮尾改动文件卡片（数据来自宿主认证路由 `/api/changes.summary`；行悬停给完整路径与 Alt 真实文件提示）。普通单击看本轮快照对比，Alt 打开可编辑的真实文件，Ctrl/Cmd/Shift 保留原只读直接打开；每行带清单里的**原始下标**（折叠只减少可见行，不重编号）用于打开对比与悬停预热。
+- `ChangesCard.tsx` — 轮尾改动文件卡片（数据来自宿主认证路由 `/api/changes.summary`；行悬停依次给完整路径、按住 Ctrl/Cmd 单击打开只读副本、按住 Alt 打开可编辑的真实文件）。普通单击看本轮快照对比，Alt 打开可编辑的真实文件，Ctrl/Cmd/Shift 保留原只读直接打开；每行带清单里的**原始下标**（折叠只减少可见行，不重编号）用于打开对比与悬停预热。
 - `TodoPanel.tsx` — 会话底部的「任务清单」面板（`todo_write` 投影）：抬头带进度、可折叠，展开 / 收起走同一段行渲染；收起只留当前执行项（没有在执行的则留最后执行过的那条），抬头箭头展开朝下、收起朝上；开合态由 `App` 按会话记账（见 `../todoPanel.ts`）。
 - [Trajectory.tsx](<Trajectory.tsx>) — 轨迹装配与账本／两个互斥检查器；折叠与搜索规则委托[行投影模块](<../trajectoryLedgerRows.ts>)，所有选择、focus、range、定位与视口通过[同一交互端口](<../trajectoryInteraction.ts>)。请求概述分别计工具／子工具，结果链接定位到助手消息或压缩记录。
 - [TrajectoryTimeline.tsx](<TrajectoryTimeline.tsx>) — 时间线呈现层：只接收一个完整交互端口（含 plot ref），负责 ResizeObserver 与归一化跨度绘制，不另持有一套选择／手势状态。绘图区聚焦时的 ESC 由 `timelineEscape` 清选区与选中，并经 `../escapeOwner.ts` 的 `consumeEscape` 消费（不许落到「停止生成」兜底）。

@@ -110,8 +110,8 @@ const sessionToken = (label: string, id: string): string =>
     `@src/a.ts 必须渲染成可点的行内按钮（class=mention-link）：${html}`,
   );
   assert.ok(
-    html.includes(`title="src/a.ts\n${zh.openRealFileHint(alt)}\n${zh.mentionOpenFile}"`),
-    "悬停说明要先给完整路径、Alt 真实文件提示，再说「打开文件」",
+    html.includes(`title="src/a.ts\n${zh.openRealFileHint(alt)}"`),
+    "悬停说明先给完整路径、再给 Alt 真实文件提示；单击打开是链接外观本身的事，不复述",
   );
   assert.ok(
     html.includes("先看 ") && html.includes(" 再改别的"),
@@ -139,9 +139,9 @@ const sessionToken = (label: string, id: string): string =>
   const html = render("看 @out/index.html 的渲染结果", "zh", undefined, [], "D:/dev/app");
   assert.ok(
     html.includes(
-      `title="D:/dev/app/out/index.html\n${zh.openRealFileHint(alt)}\n${zh.webFileBrowserHint(modifier)}\n${zh.mentionOpenFile}"`,
+      `title="D:/dev/app/out/index.html\n${zh.openRealFileHint(alt)}\n${zh.webFileBrowserHint(modifier)}"`,
     ),
-    `HTML 文件引用要先给完整路径，再给 Alt 真实文件、Ctrl/Cmd 浏览器与普通单击的动作：${html}`,
+    `HTML 文件引用要先给完整路径，再给 Alt 真实文件与 Ctrl/Cmd 浏览器提示：${html}`,
   );
   posted.length = 0;
   openMentionTarget({ kind: "file", path: "out/index.html" }, undefined, "browser");
@@ -215,14 +215,14 @@ const sessionToken = (label: string, id: string): string =>
     "悬停说明必须是「在新标签页打开这个会话」，不能是「打开这个文件」",
   );
   assert.ok(
-    !html.includes(`title="${zh.mentionOpenFile}"`),
+    !html.includes(zh.openRealFileHint(alt)),
     `不能同时挂着文件那一档的提示：${html}`,
   );
 
   // 同一条正文**没有**清单时按形状是文件引用——这份清单就是这两种引用唯一的分界
   const shapeOnly = render(text);
   assert.ok(
-    shapeOnly.includes(`\n${zh.mentionOpenFile}"`),
+    shapeOnly.includes(`\n${zh.openRealFileHint(alt)}"`),
     `没有召回清单时按形状当文件引用（就是用户报的那个现象）：${shapeOnly}`,
   );
   console.log("mentionLinksUi: 已发出的会话引用按召回清单认成会话 ✓");
@@ -274,7 +274,7 @@ const sessionToken = (label: string, id: string): string =>
   assert.match(html, /<span class="mention-link is-inert">\/virtual<\/span>/);
   assert.ok(
     html.includes(`title="${zh.commandOpenMenu}"`) &&
-      html.includes(`title="skills/audit/SKILL.md\n${zh.openRealFileHint(alt)}\n${zh.mentionOpenFile}"`),
+      html.includes(`title="skills/audit/SKILL.md\n${zh.openRealFileHint(alt)}"`),
   );
   assert.deepEqual(scanCommandLinks("https://host/plan /plan/file /plan.md /planner /unknown", commands), []);
   assert.equal(scanCommandLinks("(/plan) /plan.", commands).length, 2, "句末标点不属于命令");

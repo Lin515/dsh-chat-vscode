@@ -2,8 +2,10 @@
  * 工具节点的渲染事实（服务端渲染，无浏览器）：
  *
  * 1. 技能节点**只显示 SKILL 正文**：不显示参数（输入），也不显示「输入 / 输出」标题；
- * 2. 读 / 写 / 编辑节点与技能节点在真有可打开目标时，行头带「按住 Ctrl/Cmd 单击打开…」
- *    的悬停提示；没有目标（例如服务端没给技能路径）时不提示一个不存在的操作。
+ * 2. 读 / 写 / 编辑节点与技能节点在真有可打开目标时，行头带两行悬停提示：
+ *    按住 Ctrl/Cmd 单击打开只读副本（原有动作）、按住 Alt 单击打开可编辑的真实
+ *    文件 / SKILL.md；没有目标（例如服务端没给技能路径）时不提示一个不存在的操作。
+ *    只读那一档排在真实文件之前（见 `readonlyCopyHint` 与 `toolOpenFileHint`）。
  *
  * 用 `react-dom/server` 的 `renderToStaticMarkup`：断言落在产出的 HTML 上，而不是
  * 源码正则上。Ctrl/Cmd 单击本身是事件处理器，静态标记看不到；这里钉住的是
@@ -16,7 +18,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ToolCallView } from "../src/shared/chat";
 import type { NodeOpenPort } from "../src/webview/nodeOpen";
-import { altLabel } from "../src/webview/modifierLabel";
+import { altLabel, modifierLabel } from "../src/webview/modifierLabel";
 
 // `bridge.ts` 在模块求值期挂 `window` 监听；无头环境补最小实现，见 questionRender。
 (globalThis as { window?: unknown }).window = {
@@ -27,6 +29,7 @@ import { altLabel } from "../src/webview/modifierLabel";
 const { ToolRow, modifierTargetOf } = await import("../src/webview/components/Rows");
 const { TextsContext, dictionaryFor } = await import("../src/webview/texts");
 const alt = altLabel();
+const modifier = modifierLabel();
 
 /** 展开态的端口：测试里恒为展开，才能看到展开体。 */
 const openNode: NodeOpenPort = {
@@ -84,8 +87,19 @@ const skillTool = (overrides: Partial<ToolCallView> = {}): ToolCallView => ({
   assert.ok(!html.includes("&quot;name&quot;"), "不再显示调用参数 JSON");
   assert.ok(html.includes("加载技能"), "技能节点用自有标题");
   assert.ok(
-    html.includes(`title="按住 ${alt} 单击打开可编辑的 SKILL.md"`),
+    html.includes(`按住 ${alt} 单击打开可编辑的 SKILL.md`),
     "服务端给了 SKILL.md 路径时，行头要有真实文件修饰键提示",
+  );
+  assert.ok(
+    html.includes(`按住 ${modifier} 单击打开只读副本`),
+    "只读副本那一档也要提示，并排在真实文件那一行之前",
+  );
+  // 行头的 title 是这段说明的唯一出口：两行的**先后**也在这里真渲染一次，
+  // 光有子串断言时把顺序写反照样绿。
+  const headTitle = /<button[^>]*class="row-head[^"]*"[^>]*title="([^"]*)"/.exec(html)?.[1] ?? "";
+  assert.ok(
+    headTitle.indexOf("只读副本") >= 0 && headTitle.indexOf("只读副本") < headTitle.indexOf("可编辑的 SKILL.md"),
+    `行头悬停必须是「只读副本」在前、「真实 SKILL.md」在后：${headTitle}`,
   );
 }
 console.log("toolRowRender: 技能节点只显示 SKILL 正文，并提示修饰键打开真实 SKILL.md ✓");
@@ -123,6 +137,10 @@ for (const name of ["read", "write", "edit"]) {
   assert.ok(
     withPath.includes(`按住 ${alt} 单击打开可编辑的真实文件`),
     `${name}: 有文件路径时行头要有真实文件修饰键提示`,
+  );
+  assert.ok(
+    withPath.includes(`按住 ${modifier} 单击打开只读副本`),
+    `${name}: 只读副本那一档也要提示，并排在真实文件那一行之前`,
   );
 
   const withoutPath = render({

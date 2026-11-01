@@ -254,6 +254,11 @@ export interface Texts {
   contextRecallTruncated: string;
   /** 文件芯片的悬停说明：默认看改动、按住 Alt 打开可编辑的真实文件。 */
   openChangesHint: (alt: string) => string;
+  /**
+   * 修饰键的只读副本那一档（节点行 / 文件芯片 / 本轮改动行共用）：
+   * 按住 Ctrl/Cmd 单击打开只读副本。排在 Alt 那一档前一行。
+   */
+  readonlyCopyHint: (modifier: string) => string;
   /** 文件芯片行「展开全部」按钮的无障碍标题。 */
   filesExpandAria: (count: number) => string;
   /** 文件芯片行展开后的「收起」文案。 */
@@ -263,10 +268,11 @@ export interface Texts {
   /**
    * 已删除芯片（文件名画删除线）的悬停说明。
    *
-   * 只陈述**磁盘上没有了**这个事实，并给出可试的动作——**不能**说「内容找不回来
-   * 了」：被跟踪的文件删除后仍在工作区改动清单里，点开对比窗口就能看到删除前的
-   * 内容（见 `dsh/fileChange.ts` 的 `fileChangeKind` 与 `fileChange.test.ts` 的
-   * 「跟踪中的删除」断言）。真正找不回时才由宿主发 `@chipFileDeleted`。
+   * 只陈述**磁盘上没有了**这个事实——点开能做什么由芯片本身的可点外观说明，
+   * 提示不再复述。**不能**说「内容找不回来了」：被跟踪的文件删除后仍在工作区改动
+   * 清单里，点开对比窗口就能看到删除前的内容（见 `dsh/fileChange.ts` 的
+   * `fileChangeKind` 与 `fileChange.test.ts` 的「跟踪中的删除」断言）。真正找不回
+   * 时才由宿主发 `@chipFileDeleted`。
    */
   fileDeletedHint: string;
   /** 已删除芯片的无障碍标题（与 `openChangesAria` 同构，不带语言特有的括号）。 */
@@ -500,12 +506,11 @@ export interface Texts {
   /** 对话候选没有工作目录时的占位（官方 `reference.candidate.noCwd`）。 */
   mentionNoCwd: string;
   /**
-   * 正文里 `@` 引用做成链接之后的三条悬停提示（`webview/mentionLinks.ts` 判种类）。
+   * 正文里 `@` 引用做成链接之后的悬停提示（`webview/mentionLinks.ts` 判种类）。
    *
-   * 三种引用点开的行为不同（文件开文件、目录展开资源管理器、会话开新标签页），
-   * 提示必须各说各的——合并成「打开引用」用户点之前不知道会发生什么。
+   * 文件引用不给「打开这个文件」——链接外观已经说明单击能打开；目录与会话保留
+   * 去向说明（资源管理器 / 新标签页），那不是从外观猜得到的。
    */
-  mentionOpenFile: string;
   mentionRevealFolder: string;
   mentionOpenSession: string;
   /**

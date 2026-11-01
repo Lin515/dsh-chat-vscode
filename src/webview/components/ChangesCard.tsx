@@ -5,7 +5,7 @@ import { post } from "../bridge";
 import { IconChevronDown } from "../icons";
 import { realFileRequested } from "../fileLinks";
 import { resolvedFilePath } from "../linkHovers";
-import { altLabel } from "../modifierLabel";
+import { altLabel, modifierLabel } from "../modifierLabel";
 import { useTexts } from "../texts";
 
 /**
@@ -40,6 +40,7 @@ export function ChangesCard({
 }) {
   const texts = useTexts();
   const altKeyLabel = altLabel();
+  const modifierKeyLabel = modifierLabel();
   const [expanded, setExpanded] = useState(false);
   const { seq } = coordinates;
   const missing = summary === undefined;
@@ -113,7 +114,7 @@ export function ChangesCard({
             type="button"
             key={file.path}
             className="changes-card-row"
-            title={`${resolvedFilePath(cwd, file.path)}\n${texts.openChangesHint(altKeyLabel)}`}
+            title={`${resolvedFilePath(cwd, file.path)}\n${texts.readonlyCopyHint(modifierKeyLabel)}\n${texts.openChangesHint(altKeyLabel)}`}
             aria-label={texts.openChangesAria(file.display)}
             // 悬停 / 键盘聚焦即预热：点击时大概率已经命中缓存（见上面的 prefetch）
             onPointerEnter={() => prefetch(index)}

@@ -35,6 +35,14 @@ for (const alt of ["Alt", "Option"]) {
   assert.strictEqual(en.openChangesAria("a.ts"), "View changes in a.ts");
 }
 
+// 两条修饰键动作各占一行：Ctrl/Cmd 只读副本在前，Alt 真实文件在后。
+for (const modifier of ["Ctrl", "Cmd"]) {
+  const zh = dictionaryFor("zh");
+  const en = dictionaryFor("en");
+  assert.strictEqual(zh.readonlyCopyHint(modifier), `按住 ${modifier} 单击打开只读副本`);
+  assert.strictEqual(en.readonlyCopyHint(modifier), `Hold ${modifier} and click to open a read-only copy`);
+}
+
 // ---------- 1. 清单形状校验：验不过就整份丢弃 ----------
 
 const goodSummary = {
@@ -277,6 +285,14 @@ console.log("changesCard: 宿主按需读取（认证路由 + 按连接作废）
   assert.ok(/post\(\{ type: "requestChanges", sessionId, seq \}\)/.test(card), "缺清单时卡片要发一次请求");
   assert.ok(/summary === undefined/.test(card), "「还没问过」与「Host 说没有」在卡片里必须分开判");
   assert.ok(/summary\.files\.length === 0\) return null/.test(card), "Host 没列出文件时没有卡片");
+  // 文件行的悬停：完整路径 → Ctrl/Cmd 只读副本 → Alt 真实文件。只读那一档排前面，
+  // 两条修饰键动作各占一行，普通单击（看改动）不复述。
+  const rowTitle = card.slice(card.indexOf('className="changes-card-row"'), card.indexOf("aria-label={texts.openChangesAria"));
+  assert.ok(
+    rowTitle.indexOf("resolvedFilePath(") < rowTitle.indexOf("readonlyCopyHint(") &&
+      rowTitle.indexOf("readonlyCopyHint(") < rowTitle.indexOf("openChangesHint("),
+    "悬停顺序必须是路径、只读副本、真实文件",
+  );
 
   const message = readFileSync(join(SRC, "webview", "components", "Message.tsx"), "utf8");
   assert.ok(/<ChangesCard sessionId=\{sessionId\}/.test(message), "轮尾要渲染卡片");

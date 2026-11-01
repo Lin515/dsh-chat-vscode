@@ -48,7 +48,7 @@ import { fill, useLocale, useTexts, resolveText } from "../texts";
 import { pickLocalizedText } from "../../shared/localizedText";
 import { resolvedFilePath } from "../linkHovers";
 import { realFileRequested } from "../fileLinks";
-import { altLabel } from "../modifierLabel";
+import { altLabel, modifierLabel } from "../modifierLabel";
 import { changeIndexForPath } from "../../shared/changesSummary";
 import { basenameWorkspacePath } from "../../shared/workspacePath";
 import type { NodeOpenPort } from "../nodeOpen";
@@ -179,6 +179,7 @@ export function ToolRow({
   const describeTool = useDescribeTool();
   const texts = useTexts();
   const altKeyLabel = altLabel();
+  const modifierKeyLabel = modifierLabel();
   const { icon, iconClass, verb } = describeTool(tool.name);
   const bodyRef = useRef<HTMLDivElement>(null);
   const running = tool.status === "running" || tool.status === "pending";
@@ -335,15 +336,7 @@ export function ToolRow({
       : undefined;
 
   /**
-   * 按住 Alt 单击要打开可编辑的真实文件；Ctrl/Cmd 保留原来的只读直接打开。
-   * 文件类节点用参数里的路径，技能节点用服务端
-   * `skills/list` 给的 `SKILL.md` 路径；读取节点在本次读取带行号区间时打开到
-   * 起始行（编辑节点没有行号数据，只打开文件，见 `modifierTargetOf`）。
-   * 没有可打开目标就不构造端口对象——行头既没有修饰键动作，也没有悬停说明
-   * （见 `RowModifierAction`）。
-   */
-  /**
-   * 行头两个修饰键动作：Ctrl/Cmd 保留原来的「直接打开只读文件」，Alt 打开可编辑的
+   * 行头两个修饰键动作：Ctrl/Cmd 打开只读副本（原有动作），Alt 打开可编辑的
    * 真实文件。文件类节点用参数里的路径，技能节点用服务端 `skills/list` 给的
    * `SKILL.md` 路径；读取节点在本次读取带行号区间时打开到起始行（编辑节点没有
    * 行号数据，只打开文件，见 `modifierTargetOf`）。
@@ -368,7 +361,12 @@ export function ToolRow({
             real: true,
             ...(openTarget.line === undefined ? {} : { line: openTarget.line }),
           }),
-        hint: isSkill ? texts.toolOpenSkillHint(altKeyLabel) : texts.toolOpenFileHint(altKeyLabel),
+        hint: [
+          // 只读副本（原有动作）在前，Alt 真实文件在后：同一枚元素上两条修饰键
+          // 各占一行，普通单击仍是开合节点。
+          texts.readonlyCopyHint(modifierKeyLabel),
+          isSkill ? texts.toolOpenSkillHint(altKeyLabel) : texts.toolOpenFileHint(altKeyLabel),
+        ].join("\n"),
       }
     : undefined;
 
@@ -526,7 +524,7 @@ export function ToolRow({
             <button
               key={file.path}
               className="lump-btn"
-              title={`${file.path}\n${texts.openRealFileHint(altKeyLabel)}`}
+              title={`${file.path}\n${texts.readonlyCopyHint(modifierKeyLabel)}\n${texts.openRealFileHint(altKeyLabel)}`}
               onClick={(event) =>
                 post({
                   type: "openFile",
@@ -1799,6 +1797,7 @@ export function FileChips({
 }) {
   const texts = useTexts();
   const altKeyLabel = altLabel();
+  const modifierKeyLabel = modifierLabel();
   // 每行独立记忆展开态；消息重渲染（新 segment 追加）不重置
   const [expanded, setExpanded] = useState(false);
   // 收起按钮的显隐只看「有没有被藏过的文件」：展开后 shown 就是全部，
@@ -1821,10 +1820,11 @@ export function FileChips({
             className={`file-chip${deleted ? " is-deleted" : ""}`}
             title={
               deleted
-                ? `${fullPath}\n${texts.fileDeletedHint}`
+                ? // 已删除的文件没有「只读副本」可开（磁盘上已经没有了），只说明事实
+                  `${fullPath}\n${texts.fileDeletedHint}`
                 : file.description
-                  ? `${fullPath}\n${file.description}\n${texts.openChangesHint(altKeyLabel)}`
-                  : `${fullPath}\n${texts.openChangesHint(altKeyLabel)}`
+                  ? `${fullPath}\n${file.description}\n${texts.readonlyCopyHint(modifierKeyLabel)}\n${texts.openChangesHint(altKeyLabel)}`
+                  : `${fullPath}\n${texts.readonlyCopyHint(modifierKeyLabel)}\n${texts.openChangesHint(altKeyLabel)}`
             }
             // 无障碍标题走词典：旧写法在这里用模板串硬拼中文全角括号
             // （`${path}（${...}）`），英文界面下会露出全角括号

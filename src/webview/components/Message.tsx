@@ -44,12 +44,15 @@ const USER_COLLAPSE_LINES = 5;
 
 /**
  * 一条引用链接的悬停说明：先给**完整路径**，再说点开做什么（见 `../texts` 的
- * `mentionOpenFile` 那几条）。真实文件与 HTML 浏览器两档来自同一个构造器，
- * 与正文锚点 / 行内代码链接保持一致。
+ * `mentionRevealFolder` / `mentionOpenSession`）。真实文件与 HTML 浏览器两档来自
+ * 同一个构造器，与正文锚点 / 行内代码链接保持一致。
+ *
+ * 文件引用只给路径与修饰键提示，**不写「打开这个文件」**：链接外观（蓝色、悬停
+ * 下划线）已经说明单击能打开，再复述动作是噪音。
  */
 function mentionTitle(texts: Texts, target: MentionLinkTarget, cwd?: string): string {
   if (target.kind === "file") {
-    return `${fileLinkHoverTitle(cwd, target.path, texts)}\n${texts.mentionOpenFile}`;
+    return fileLinkHoverTitle(cwd, target.path, texts);
   }
   if (target.kind === "directory") {
     return `${resolvedFilePath(cwd, target.path)}\n${texts.mentionRevealFolder}`;

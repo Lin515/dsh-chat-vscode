@@ -395,10 +395,26 @@ export const MESSAGES = {
     zh: (alt: string) => `按住 ${alt} 打开可编辑的真实文件`,
     en: (alt: string) => `Hold ${alt} to open the editable real file`,
   },
+  /**
+   * 修饰键的**只读副本**那一档（Ctrl/Cmd 单击，原有动作）：节点行、文件芯片、
+   * 本轮改动行共用。
+   *
+   * 这些位置普通单击是开合节点 / 看改动 / 看快照对比，只读打开只在按住修饰键时
+   * 发生——没有提示就没人知道这条路。它排在 Alt 那一档**前面一行**：同一枚元素上
+   * 先给原有动作，再给扩展新增的真实文件动作。
+   */
+  readonlyCopyHint: {
+    zh: (modifier: string) => `按住 ${modifier} 单击打开只读副本`,
+    en: (modifier: string) => `Hold ${modifier} and click to open a read-only copy`,
+  },
   filesExpandAria: { zh: (count: number) => `展开全部 ${count} 个文件`, en: (count: number) => `Show all ${count} file${count === 1 ? "" : "s"}` },
   filesCollapse: { zh: "收起", en: "Collapse" },
   filesCollapseAria: { zh: "收起文件列表", en: "Collapse file list" },
-  fileDeletedHint: { zh: "文件已从磁盘删除；点击尝试查看删除前的内容", en: "This file is no longer on disk; click to try to view its content before deletion" },
+  /**
+   * 已删除芯片的悬停说明：只说事实，不复述点开能做什么（芯片本身是可点的）。
+   * 见 `texts.ts` 同名条目：删除后仍能在对比里看到删除前的内容，这句话不能反着说。
+   */
+  fileDeletedHint: { zh: "文件已从磁盘删除", en: "This file is no longer on disk" },
   deletedFileAria: { zh: (name: string) => `已删除的文件 ${name}`, en: (name: string) => `Deleted file ${name}` },
   chipFileDeleted: { zh: "文件已删除，内容找不回来了", en: "The file was deleted; its content is no longer available" },
   /**
@@ -849,12 +865,12 @@ export const MESSAGES = {
   mentionDrillKey: { zh: "Tab", en: "Tab" },
   mentionNoCwd: { zh: "（无工作目录）", en: "(no cwd)" },
   /**
-   * 正文里 `@` 引用做成链接之后的三条悬停提示（`webview/mentionLinks.ts` 判种类）。
+   * 正文里 `@` 引用做成链接之后的悬停提示（`webview/mentionLinks.ts` 判种类）。
    *
-   * 三种引用点开的行为不同（文件开文件、目录展开资源管理器、会话开新标签页），
-   * 提示必须各说各的——合并成「打开引用」用户点之前不知道会发生什么。
+   * 文件引用**不写**「打开这个文件」：链接本身就是视觉提示，单击即可打开，再复述
+   * 一遍动作是噪音。目录与会话保留说明——它们的去向（资源管理器 / 新标签页）
+   * 不是从链接外观能猜到的，点之前必须说清。
    */
-  mentionOpenFile: { zh: "打开这个文件", en: "Open this file" },
   mentionRevealFolder: { zh: "在资源管理器中展开这个目录", en: "Reveal this folder in the Explorer" },
   mentionOpenSession: { zh: "在新标签页中打开这个会话", en: "Open this session in a new tab" },
   /**
@@ -1216,10 +1232,11 @@ export const MESSAGES = {
   toolWritePreviewHint: { zh: "仅为参数预览，不代表已写入文件", en: "Arguments preview only; does not confirm the file was saved" },
   toolWritePreviewPartialHint: { zh: "参数尚未完整，仅显示已解码内容；不代表已写入文件", en: "Arguments incomplete; showing decoded content only, not a saved file" },
   /**
-   * 节点悬停的修饰键提示：只有**按住 Alt 单击会打开可编辑真实文件**的节点才挂。
+   * 节点悬停的修饰键提示：只有**真有可打开目标**的节点才挂。
    *
    * 读 / 写 / 编辑节点指向这次调用操作的文件；技能节点指向服务端 `skills/list`
-   * 给出的 `SKILL.md`。普通单击仍是开合节点，Ctrl/Cmd 保留原来的只读直接打开。
+   * 给出的 `SKILL.md`。普通单击仍是开合节点；Ctrl/Cmd 打开只读副本、Alt 打开
+   * 可编辑的真实文件，两条提示各占一行、只读那一档在前（见 `readonlyCopyHint`）。
    */
   toolOpenFileHint: {
     zh: (alt: string) => `按住 ${alt} 单击打开可编辑的真实文件`,

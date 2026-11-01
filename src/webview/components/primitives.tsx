@@ -58,18 +58,19 @@ function useClipped(ref: RefObject<HTMLElement>, content: string | undefined): b
 }
 
 /**
- * 行头的修饰键动作：Alt 打开可编辑的真实文件，Ctrl/Cmd 保留原来的直接打开只读文件。
+ * 行头的修饰键动作：Alt 打开可编辑的真实文件，Ctrl/Cmd 打开只读副本（原动作）。
  *
  * 动作与悬停说明住在**同一个端口对象**里：对象在，两个动作与提示就都在；对象缺席，
  * Row 既不拦截修饰键也不提示——调用方不必再单独维护「有没有动作」的第二份判据。
- * 悬停提示只承诺 Alt 这一档（Ctrl/Cmd 是原有动作，不额外说明）。
+ * 悬停说明给**两行**（Ctrl/Cmd 只读副本在前、Alt 真实文件在后），由调用方按
+ * `readonlyCopyHint` / `toolOpenFileHint` 拼好再传进来：同一份说明也挂在 detail 上。
  */
 export interface RowModifierAction {
-  /** Ctrl/Cmd：原动作（只读直接打开，不要 diff）。 */
+  /** Ctrl/Cmd：原动作（只读打开，不要 diff）。 */
   activate: () => void;
   /** Alt：打开可编辑的真实文件。 */
   activateReal: () => void;
-  /** Alt 真实文件动作的悬停说明（与动作同生共死）。 */
+  /** 两个修饰键动作的悬停说明（多行），与动作同生共死。 */
   hint: string;
 }
 
