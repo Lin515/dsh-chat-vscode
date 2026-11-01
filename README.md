@@ -88,7 +88,7 @@ npm run package  # Releases/dsh-chat-<version>.vsix
 
 工具行可展开完整参数、结果与结构化 diff，运行时显示耗时。审批、问卷和计划审阅有专属卡片；问卷可放弃整组回答。未被图片、菜单或编辑操作消费的 `Esc` 停止当前轮；队列非空时会按原序重发待发消息。
 
-界面提供中英双语、上下文占用、目标条与轮次导航。窗口布局与会话身份存于 VS Code 工作区缓存，不写入项目；消息记录从 DSH 恢复，展开状态保留在界面内存中，不保证跨重载恢复。Markdown 支持任务列表、表格、脚注与嵌套代码，原始 HTML 按文字显示；完成态代码块提供语法高亮，可折叠、复制与插入编辑器；完成态公式已接入正文；整条消息与代码复制按钮取原文，选区复制沿用原生读取。
+界面提供中英双语、上下文占用、目标条与轮次导航。窗口布局与会话身份存于 VS Code 工作区缓存，不写入项目；消息记录从 DSH 恢复，展开状态保留在界面内存中，不保证跨重载恢复。Markdown 支持任务列表、表格、脚注与嵌套代码，原始 HTML 按文字显示；完成态代码块提供语法高亮，可折叠与复制；完成态公式已接入正文；整条消息与代码复制按钮取原文，选区复制沿用原生读取。
 
 ## 开发与验证
 
@@ -205,7 +205,7 @@ Open the notification drawer with **Show history** or **DSH: View Notifications*
 
 Expand tool rows for full arguments, results and structured diffs; running tools show elapsed time. Approvals, questionnaires and plan reviews have dedicated cards, and a questionnaire can be abandoned as a group. An `Esc` not consumed by an image, menu or edit stops the turn; queued messages are then resent in their original order.
 
-The UI offers Chinese/English, context usage, goals and turn navigation. Window layout and session identity are cached per workspace by VS Code, not written to project files. Message history is restored from DSH; expansion state is held in UI memory and is not guaranteed to survive a reload. Markdown supports task lists, tables, footnotes and nested code, with raw HTML shown as text; settled code blocks are syntax-highlighted and can be folded, copied and inserted into the editor. Settled math is rendered in messages; whole-message and code copy buttons use the original source, while selection copying uses the native selection.
+The UI offers Chinese/English, context usage, goals and turn navigation. Window layout and session identity are cached per workspace by VS Code, not written to project files. Message history is restored from DSH; expansion state is held in UI memory and is not guaranteed to survive a reload. Markdown supports task lists, tables, footnotes and nested code, with raw HTML shown as text; settled code blocks are syntax-highlighted and can be folded and copied. Settled math is rendered in messages; whole-message and code copy buttons use the original source, while selection copying uses the native selection.
 
 ## Development
 

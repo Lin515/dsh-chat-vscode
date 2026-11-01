@@ -3,6 +3,32 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 This project follows [Semantic Versioning](https://semver.org/).
 
+## 0.12.0（2026-11-02）
+
+### 中文
+
+- 新增：正文改为整篇解析渲染，列表、引用与脚注里的代码与嵌套结构按原文完整呈现；原始 HTML 按文字显示，不再解析成富文本。
+- 新增：回答结束后的正文代码、读取内容、写入与编辑预览、diff、脚本与 JSON 输出按语言着色，配色按浅色、深色与高对比主题分别适配。
+- 新增：回答结束后的公式排版展示，支持 `$…$`、`$$…$$`、`\(…\)`、`\[…\]` 与 `math` 围栏；未闭合、超长或无效的公式显示原文，金额不会被误判为公式。
+- 新增：write 工具行在参数生成过程中即可查看写入内容原文，并说明这只是参数预览、不代表文件已写入。
+- 改进：图片结果并入工具输出的阅读框，与输出正文同框显示。
+- 改进：读取、写入、编辑与技能节点悬停时给出两行提示，按住 Ctrl/Cmd 单击打开只读副本，按住 Alt 单击打开可编辑的真实文件。
+- 改进：代码与工具内容的字号统一跟随扩展字号设置，不再随编辑器字号变化；各节点展开内容共用同一种阅读外框。
+- 改进：移除代码块头部的「插入到当前编辑器」按钮，只保留复制。
+- 改进：同一目录下的多个新会话标签共享同一条空会话，不再每个标签各占一条，也不再以「正在使用中」阻止删除。
+
+### English
+
+- Added: Message text is now parsed and rendered as a whole document, so code and nesting inside lists, blockquotes and footnotes are preserved; raw HTML is shown as text instead of rendering a limited rich-text subset.
+- Added: After a turn ends, message code, read output, write and edit previews, diffs, scripts and JSON output are syntax-highlighted, with palettes adapted to light, dark and high-contrast themes.
+- Added: Settled math is rendered, supporting `$…$`, `$$…$$`, `\(…\)`, `\[…\]` and `math` fences; unclosed, oversized or invalid math falls back to its source text, and amounts of money are not mistaken for formulas.
+- Added: A write tool row shows the file content from its arguments while they are still streaming, labeled as an argument preview that does not confirm the file was saved.
+- Improved: Image results now sit inside the tool output reading frame, sharing one frame with the output text.
+- Improved: Hovering read, write, edit and skill rows gives two hints: hold Ctrl/Cmd to open a read-only copy and hold Alt to open the editable real file.
+- Improved: Code and tool content now follow the extension font-size setting instead of the editor font size, and all expanded node content shares one reading frame.
+- Improved: The “insert into the active editor” button is gone from code block headers; only copy remains.
+- Improved: New session tabs in the same folder share one blank session instead of one per tab, and blank sessions are no longer blocked from deletion as “in use”.
+
 ## 0.11.7（2026-11-01）
 
 ### 中文
