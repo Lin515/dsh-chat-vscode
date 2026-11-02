@@ -1276,6 +1276,13 @@ button.copy-btn.is-copied:hover {
 
 /* ---- 终端卡：提示符行 + 状态胶囊 + 输出 ---- */
 
+/* 横幅是「左侧多行命令行 + 右侧动作条（退出码胶囊 / 复制）」。
+   默认的 `align-items: center` 会把右侧动作条垂到命令块的**中间行**，看着像贴在
+   命令上；终端卡一律顶部对齐，那一行与状态文字齐平（用户 2026-11-02 口径）。 */
+.tool-card.is-terminal .tool-card-banner {
+  align-items: flex-start;
+}
+
 .tool-card-prompt {
   display: flex;
   flex-direction: column;

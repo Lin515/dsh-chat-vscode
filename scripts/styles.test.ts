@@ -1353,6 +1353,13 @@ console.log("styles: 连接条按钮不被裁切、文字可让位 ✓");
     !/\.tool-card\.is-terminal \.tool-card-body/.test(css),
     "终端卡不许再给自己加一层滚动区——那就是「两层垂直滚动条」的来源",
   );
+  // 横幅顶部对齐：左侧命令行可能有多行，`align-items: center` 会把右侧的复制按钮
+  // 与退出码胶囊垂到命令块的中间行，看着像贴在命令上（用户 2026-11-02 口径）。
+  assert.match(
+    rule(".tool-card.is-terminal .tool-card-banner"),
+    /align-items:\s*flex-start/,
+    "终端卡的横幅要顶部对齐：动作条与状态那一行齐平，不能被多行命令行垂到中间",
+  );
 }
 console.log("styles: 工具卡只有一层滚动条 ✓");
 
