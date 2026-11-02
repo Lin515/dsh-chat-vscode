@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent, ReactNode } from "react";
 import { post } from "../bridge";
 import { useCommandLinks } from "../commandLinks";
 import { consumeEscape } from "../escapeOwner";
@@ -11,6 +11,7 @@ import type {
   FileChangeKind,
   InjectedSourceView,
   InjectedView,
+  QuestionItemView,
   QuestionView,
   ToolCallView,
   TurnStatsView,
@@ -522,6 +523,13 @@ export function ToolRow({
           与官方 `SkillRow` 的「说明」区同义，但用户口径是**直接给内容**。 */}
       {showSkill ? (
         <div ref={ioRef} className="row-body io-card">
+          {/* 技能节点复制的是展开区里的 SKILL 正文（`skillInstructions` 已去掉模型侧
+              信封，就是屏幕上这段原文）。运行中结果还在到达时同样取当前显示的这份。 */}
+          {skillText.trim() !== "" ? (
+            <div className="node-copy-actions">
+              <CopyButton text={skillText} />
+            </div>
+          ) : null}
           <span className={`io-text${tool.status === "error" ? " is-error" : ""}`}>
             {skillText}
           </span>
@@ -711,6 +719,14 @@ export function ThinkingRow({
       onToggle={() => node.setOpen(!open, streaming === true)}
     >
       <div ref={bodyRef} className="row-body">
+        {/* 复制的是**当前显示的这份思考**（`shownText` 是划选冻结后的快照）：
+            流式中途复制不会因为随后的 token 到达而变，与屏幕上看到的一致。
+            空内容（还没吐出正文）不出按钮。 */}
+        {shownText.trim() !== "" ? (
+          <div className="node-copy-actions">
+            <CopyButton text={shownText} />
+          </div>
+        ) : null}
         {shownText}
       </div>
     </Row>
@@ -774,6 +790,107 @@ function useDescribeInjected(): (injected: InjectedView) => { label: string; det
 }
 
 /**
+ * 注入条目有没有可画的结构化正文。
+ *
+ * 判据只放这一份：`InjectedFormBody` 用它决定画不画、`InjectedRow` 用它决定
+ * 复制按钮落在结构化正文还是原文正文的开头——两处各写一份必然漂移。
+ */
+function hasInjectedStructure(source?: InjectedSourceView): boolean {
+  return Boolean(
+    source &&
+      ((source.changes?.length ?? 0) > 0 ||
+        (source.entries?.length ?? 0) > 0 ||
+        (source.sections?.length ?? 0) > 0 ||
+        source.senderSessionId ||
+        (source.references?.length ?? 0) > 0),
+  );
+}
+
+/** `injectedCopyText` 需要的界面标签（纯函数不引 React / 词典）。 */
+export interface InjectedCopyLabels {
+  instructions: string;
+  added: string;
+  updated: string;
+  removed: string;
+  catalog: string;
+  supersedes: string;
+  relay: (session: string) => string;
+  recallCounts: (retained: number, omitted: number) => string;
+  recallTruncated: string;
+}
+
+/**
+ * 注入节点的剪贴板载荷：**结构化字段在前、正文原文在后**，与展开区自上而下的
+ * 阅读顺序一致。
+ *
+ * 结构化字段只取 `InjectedSourceView` 里真实存在的值，并按界面已有的词典标签
+ * 逐条写出（不补协议字段、不把「没有」写成「空」）。原文正文由调用方传入
+ * **当前显示的那份**（`shownText` 是划选冻结后的快照）。没有结构化字段时就只有
+ * 原文，不额外加标题。
+ */
+export function injectedCopyText(
+  injected: Pick<InjectedView, "source">,
+  text: string,
+  labels: InjectedCopyLabels,
+): string {
+  const source = injected.source;
+  const blocks: string[] = [];
+
+  if (source?.changes?.length) {
+    const actionOf = (action: "set" | "replace" | "remove") =>
+      action === "remove" ? labels.removed : action === "set" ? labels.added : labels.updated;
+    blocks.push(
+      [labels.instructions, ...source.changes.map((change) => `${actionOf(change.action)}: ${change.path}`)].join(
+        "\n",
+      ),
+    );
+  }
+
+  if (source?.entries?.length) {
+    blocks.push(
+      [
+        labels.catalog,
+        ...source.entries.map((entry) =>
+          entry.description === "" ? entry.name : `${entry.name}: ${entry.description}`,
+        ),
+      ].join("\n"),
+    );
+  }
+
+  if (source?.sections?.length) {
+    blocks.push(
+      [
+        labels.supersedes,
+        ...source.sections.map((section) => `${section.name}\n${section.text}`),
+      ].join("\n\n"),
+    );
+  }
+
+  if (source?.senderSessionId) {
+    blocks.push(labels.relay(source.senderSessionId));
+  }
+
+  if (source?.references?.length) {
+    blocks.push(
+      source.references
+        .map((reference) => {
+          const counts = labels.recallCounts(
+            reference.retainedMessages,
+            reference.omittedMessages,
+          );
+          return `${reference.label}: ${counts}${
+            reference.truncated ? ` · ${labels.recallTruncated}` : ""
+          }`;
+        })
+        .join("\n"),
+    );
+  }
+
+  if (text !== "") blocks.push(text);
+  return blocks.join("\n\n");
+}
+
+/**
  * 自动载入的提示词节点（系统提示词 / 插件注入 / 项目指令 / 技能目录…）。
  *
  * 默认收起：这些内容动辄数千字符（技能目录实测 6.9K），展开全部会把对话淹没。
@@ -791,6 +908,29 @@ export function InjectedRow({ injected, node }: { injected: InjectedView; node: 
   useStickyBody(bodyRef, open);
   const shownText = useSelectionFreeze(bodyRef, injected.text);
   const firstLine = injected.text.split("\n").find((line) => line.trim())?.trim() ?? "";
+  /**
+   * 复制载荷：结构化字段（若有）按展开区顺序写在前面，正文用当前显示的原文。
+   * 按钮落在**展开体最上面那一段**的右上角：有结构化正文时由 `InjectedFormBody`
+   * 收下，否则放进原文阅读框。
+   */
+  const copyText = injectedCopyText(injected, shownText, {
+    instructions: texts.contextInstructions,
+    added: texts.contextAdded,
+    updated: texts.contextUpdated,
+    removed: texts.contextRemoved,
+    catalog: texts.contextCatalogReplaced,
+    supersedes: texts.contextSnapshotSupersedes,
+    relay: texts.contextRelayFrom,
+    recallCounts: texts.contextRecallCounts,
+    recallTruncated: texts.contextRecallTruncated,
+  });
+  const copyAction =
+    copyText.trim() === "" ? null : (
+      <div className="node-copy-actions">
+        <CopyButton text={copyText} />
+      </div>
+    );
+  const structured = hasInjectedStructure(injected.source);
 
   return (
     <Row
@@ -809,8 +949,12 @@ export function InjectedRow({ injected, node }: { injected: InjectedView; node: 
           指令逐条列「文件 + 已新增/已更新/已移除」，目录列条目，快照列分节，
           回忆给「保留 N 条 · 省略 M 条」。形状认不出时这些块不渲染，
           下面的正文原样兜底——不显示半截列表。 */}
-      <InjectedFormBody source={injected.source} />
+      <InjectedFormBody
+        source={injected.source}
+        action={structured ? copyAction : undefined}
+      />
       <div ref={bodyRef} className="row-body mono row-injected">
+        {structured ? null : copyAction}
         {shownText}
       </div>
     </Row>
@@ -818,13 +962,21 @@ export function InjectedRow({ injected, node }: { injected: InjectedView; node: 
 }
 
 /** 上下文条目的 per-form 正文（官方 `ContextBody` 的对应部分）。 */
-function InjectedFormBody({ source }: { source?: InjectedSourceView }) {
+function InjectedFormBody({
+  source,
+  action,
+}: {
+  source?: InjectedSourceView;
+  /** 展开体首的复制动作（有结构化正文时归这里，见 `InjectedRow`）。 */
+  action?: ReactNode;
+}) {
   const texts = useTexts();
-  if (!source) return null;
+  if (!hasInjectedStructure(source)) return null;
 
-  if (source.changes?.length) {
-    return (
-      <div className="row-body ctx-body">
+  let body: ReactNode = null;
+  if (source?.changes?.length) {
+    body = (
+      <>
         <div className="ctx-title">{texts.contextInstructions}</div>
         <ul className="ctx-list">
           {source.changes.map((change) => (
@@ -840,14 +992,12 @@ function InjectedFormBody({ source }: { source?: InjectedSourceView }) {
             </li>
           ))}
         </ul>
-      </div>
+      </>
     );
-  }
-
-  if (source.entries?.length) {
+  } else if (source?.entries?.length) {
     const shown = source.entries.slice(0, MAX_CATALOG_ENTRIES);
-    return (
-      <div className="row-body ctx-body">
+    body = (
+      <>
         <div className="ctx-title">{texts.contextCatalogReplaced}</div>
         <ul className="ctx-list">
           {shown.map((entry) => (
@@ -862,13 +1012,11 @@ function InjectedFormBody({ source }: { source?: InjectedSourceView }) {
             {texts.contextCatalogMore(source.entries.length - shown.length)}
           </div>
         ) : null}
-      </div>
+      </>
     );
-  }
-
-  if (source.sections?.length) {
-    return (
-      <div className="row-body ctx-body">
+  } else if (source?.sections?.length) {
+    body = (
+      <>
         <div className="ctx-title">{texts.contextSnapshotSupersedes}</div>
         {source.sections.map((section) => (
           <div className="ctx-section" key={section.name}>
@@ -876,37 +1024,33 @@ function InjectedFormBody({ source }: { source?: InjectedSourceView }) {
             <div className="ctx-desc">{section.text}</div>
           </div>
         ))}
-      </div>
+      </>
+    );
+  } else if (source?.senderSessionId) {
+    body = <div className="ctx-title">{texts.contextRelayFrom(source.senderSessionId)}</div>;
+  } else if (source?.references?.length) {
+    body = (
+      <ul className="ctx-list">
+        {source.references.map((reference) => (
+          <li key={reference.label}>
+            <span className="ctx-value">{reference.label}</span>
+            <span className="ctx-desc">
+              {texts.contextRecallCounts(reference.retainedMessages, reference.omittedMessages)}
+              {reference.truncated ? ` · ${texts.contextRecallTruncated}` : ""}
+            </span>
+          </li>
+        ))}
+      </ul>
     );
   }
 
-  if (source.senderSessionId) {
-    return (
-      <div className="row-body ctx-body">
-        <div className="ctx-title">{texts.contextRelayFrom(source.senderSessionId)}</div>
-      </div>
-    );
-  }
-
-  if (source.references?.length) {
-    return (
-      <div className="row-body ctx-body">
-        <ul className="ctx-list">
-          {source.references.map((reference) => (
-            <li key={reference.label}>
-              <span className="ctx-value">{reference.label}</span>
-              <span className="ctx-desc">
-                {texts.contextRecallCounts(reference.retainedMessages, reference.omittedMessages)}
-                {reference.truncated ? ` · ${texts.contextRecallTruncated}` : ""}
-              </span>
-            </li>
-          ))}
-        </ul>
-      </div>
-    );
-  }
-
-  return null;
+  if (body === null) return null;
+  return (
+    <div className="row-body ctx-body">
+      {action}
+      {body}
+    </div>
+  );
 }
 
 /** 字数：上千用 K，与 token 的展示口径分开（这是字符数，不是 token）。 */
@@ -914,6 +1058,19 @@ function formatChars(chars: number): string {
   if (chars >= 10_000) return `${Math.round(chars / 1000)}K`;
   if (chars >= 1000) return `${(chars / 1000).toFixed(1)}K`;
   return String(chars);
+}
+
+/**
+ * 审批卡的剪贴板载荷：**工具名、理由、详情**按屏幕上的顺序各占一行。
+ *
+ * 三份都是展示层已经解析过的文本（工具名与详情走 `resolveText`，理由已按当前
+ * 语言选过 `displayReason`）。缺哪一项就跳过哪一行，不留空行——「没有理由」与
+ * 「理由为空串」在剪贴板里没有区别，也不需要编一个占位词。
+ *
+ * 纯函数、不引 React：断言见 `scripts/copyNodes.test.ts`。
+ */
+export function approvalCopyText(toolName: string, reason: string, detail: string): string {
+  return [toolName, reason, detail].filter((part) => part.trim() !== "").join("\n");
 }
 
 /**
@@ -928,13 +1085,23 @@ export function ApprovalCard({ approval }: { approval: ApprovalView }) {
   // 服务端给了本地化展示文案就用它（0.1.7-rc.2 起），否则退回审计用的原文——
   // 与官方 `ApprovalPanel` 同口径；语言在渲染时取，切语言即时生效
   const reason = pickLocalizedText(approval.displayReason, useLocale()) ?? approval.reason;
+  const toolName = resolveText(approval.toolName, texts);
+  const detail = approval.detail ? resolveText(approval.detail, texts) : "";
+  const copyText = approvalCopyText(toolName, reason ?? "", detail);
 
   return (
     <div className="approval">
       <div className="approval-title">
         <IconAlert size={14} />
         <b>{texts.approvalTitle}</b>
-        <span className="row-detail">{resolveText(approval.toolName, texts)}</span>
+        <span className="row-detail">{toolName}</span>
+        {/* 卡头动作靠右（`.card-copy-actions` 由样式统一给 `margin-left: auto`）；
+            行头不是按钮，这里可以安全地放按钮。 */}
+        {copyText.trim() !== "" ? (
+          <span className="card-copy-actions">
+            <CopyButton text={copyText} />
+          </span>
+        ) : null}
       </div>
       {reason ? <div className="approval-detail">{reason}</div> : null}
       {approval.detail ? (
@@ -966,6 +1133,21 @@ export function ApprovalCard({ approval }: { approval: ApprovalView }) {
       </div>
     </div>
   );
+}
+
+/**
+ * 计划审阅**记录**的剪贴板载荷：计划原文在前，当时的决定在后。
+ *
+ * 记录卡原来的复制只有 `questionReplyText`（每题「题头 + 回答」），对计划审阅
+ * 来说就只剩「回答：确认执行」——计划本身反而丢了。这里保留回答，同时把计划
+ * 正文原文补在前面；任一方为空就只给另一方，不留下分隔空行。
+ *
+ * 纯函数、不引 React：断言见 `scripts/copyNodes.test.ts`。
+ */
+export function planReviewRecordCopyText(plan: string, reply: string): string {
+  if (plan.trim() === "") return reply;
+  if (reply === "") return plan;
+  return `${plan}\n\n${reply}`;
 }
 
 /**
@@ -1016,6 +1198,12 @@ export function PlanReviewCard({
       <div className="plan-review-strip">
         <span className="plan-review-dot" aria-hidden />
         {texts.planReviewHeader}
+        {/* 计划原文就是这张卡的主体；条带不参与滚动，复制入口始终可见。 */}
+        {review.plan.trim() !== "" ? (
+          <span className="card-copy-actions">
+            <CopyButton text={review.plan} />
+          </span>
+        ) : null}
       </div>
       <div className="plan-review-body">
         <Markdown text={review.plan} />
@@ -1192,6 +1380,46 @@ function CustomAnswerInput(props: {
 }
 
 /**
+ * 待答问卷的剪贴板载荷：**整组题目 + 选项 / 说明 + 当前已填的选择**。
+ *
+ * 这里复制的是「填写草稿」而不是回答，所以刻意不复用 `questionReplyText` 的
+ * 「回答：… / 已跳过」措辞：未提交的选择与已提交的答案在文字上不能长得一样。
+ * 选项前的 `[x]` / `[ ]` 是语言无关的勾选标记，只表示屏幕上当前选中了什么；
+ * 自定义回答沿用界面已有标题「自定义回答」，并且**只有真的选中且写了内容**才出现
+ * （未选中的输入框文字不算答案，与 `QuestionCard` 的 `effectiveCustom` 同口径）。
+ *
+ * `items` 传**全部题目**而不是当前分页的那一道：依次问答时复制的是整份问卷。
+ * 纯函数、不引 React：断言见 `scripts/copyNodes.test.ts`。
+ */
+export function pendingQuestionCopyText(
+  items: readonly QuestionItemView[],
+  selected: Record<string, string[]>,
+  custom: Record<string, string>,
+  labels: { custom: string },
+): string {
+  return items
+    .map((item) => {
+      const heading =
+        item.header !== undefined && item.header !== "" && item.header !== item.question
+          ? `${item.header} — ${item.question}`
+          : item.question;
+      const lines = [heading];
+      if (item.detail) lines.push(item.detail);
+      const chosen = selected[item.id] ?? [];
+      for (const option of item.options) {
+        const mark = chosen.includes(option.label) ? "[x]" : "[ ]";
+        lines.push(
+          option.description ? `${mark} ${option.label} — ${option.description}` : `${mark} ${option.label}`,
+        );
+      }
+      const typed = custom[item.id] ?? "";
+      if (typed.trim() !== "") lines.push(`[x] ${labels.custom}: ${typed}`);
+      return lines.join("\n");
+    })
+    .join("\n\n");
+}
+
+/**
  * 问卷卡片（`ask_user_question`）。
  *
  * **记录形态现在挂在工具节点上**（用户 2026-09-24 口径：答案与问卷合并成一个节点）：
@@ -1352,6 +1580,22 @@ function QuestionCardState({
     for (const item of items) map[item.id] = customChosenOf(item.id) ? customOf(item.id) : "";
     return map;
   }, [items, question.answers, custom, customChosen]);
+  /**
+   * 待答问卷的复制载荷：整组题目与当前**填写状态**（不是「回答」）。
+   *
+   * 刻意只读本地草稿（`selected` / `customChosen` / `custom`），不走 `selectedOf` /
+   * `customChosenOf` 那条「优先宿主 answers」的回退：这张卡还在等回答，本地状态才是
+   * 用户此刻填的东西；复制里也不能用「回答」措辞把未提交的选择说成已提交。
+   */
+  const draftSelected: Record<string, string[]> = {};
+  const draftCustom: Record<string, string> = {};
+  for (const item of items) {
+    draftSelected[item.id] = selected[item.id] ?? [];
+    draftCustom[item.id] = customChosen[item.id] === true ? (custom[item.id] ?? "") : "";
+  }
+  const draftCopyText = pendingQuestionCopyText(items, draftSelected, draftCustom, {
+    custom: texts.questionCustomTitle,
+  });
 
   const toggle = (itemId: string, label: string, multi?: boolean) => {
     setSelected((prev) => {
@@ -1581,11 +1825,18 @@ function QuestionCardState({
   // 记录态的复制载荷（每题「题头 + 当时选了什么」）口径照官方 `QuestionReplyView`
   // 的 `replyClipboardText`（见 `questionFlow.questionReplyText`）：复制的是**整份
   // 记录**，与展开与否无关；计划审阅卡的「回答」就是批准 / 拒绝的选项值。
+  //
+  // 先算好再进「不是等待态」那个分支：那里到 `open={expanded}` 的窗口要保持紧凑
+  // （`questionFlow.test.ts` 用它确认记录卡默认收起），别把载荷计算塞进 JSX 之前。
+  const review = planReviewOf(items);
+  const replyText = questionReplyText(items, question.answers, {
+    answer: texts.questionAnswerLabel,
+    skipped: texts.questionAnswerSkipped,
+  });
+  // 计划审阅的记录除了「批准 / 拒绝」还要能带走计划正文本身：只回 `replyText`
+  // 的话，整份计划在剪贴板里就消失了（记录卡展开体里明明有 `detail`）。
+  const recordCopyText = review ? planReviewRecordCopyText(review.plan, replyText) : replyText;
   if (!waiting) {
-    const replyText = questionReplyText(items, question.answers, {
-      answer: texts.questionAnswerLabel,
-      skipped: texts.questionAnswerSkipped,
-    });
     return (
       <Row
         icon={
@@ -1593,7 +1844,7 @@ function QuestionCardState({
             <IconQuestion size={13} />
           </span>
         }
-        title={planReviewOf(items) ? texts.planReviewHeader : texts.questionHead}
+        title={review ? texts.planReviewHeader : texts.questionHead}
         detail={
           cancelled && !question.answers
             ? texts.questionCancelled(items.length)
@@ -1606,7 +1857,7 @@ function QuestionCardState({
           {/* 复制按钮放体首右上角：行头整体是一个开合按钮，不能嵌按钮（Row 同口径）。 */}
           {items.length > 0 ? (
             <div className="question-record-actions">
-              <CopyButton text={replyText} />
+              <CopyButton text={recordCopyText} />
             </div>
           ) : null}
           {items.map(renderItem)}
@@ -1623,6 +1874,14 @@ function QuestionCardState({
 
   return (
     <div className="question">
+      {/* 待答卡没有卡头（整张卡就是题目区），复制入口放展开体首一行：
+          行头与卡内都没有可嵌套的按钮，这里可以安全放。载荷是整组题目与当前
+          填写状态——不含「回答」措辞，避免把未提交的选择说成已提交。 */}
+      {items.length > 0 && draftCopyText.trim() !== "" ? (
+        <div className="node-copy-actions">
+          <CopyButton text={draftCopyText} />
+        </div>
+      ) : null}
       {shown.map(renderItem)}
       {/* 只读（子代理记录）：不画提交行——那份记录属于另一个会话 */}
       {interactive ? (
@@ -1800,15 +2059,54 @@ export function UnknownBlockRow({
       open={open}
       onToggle={() => node.setOpen(!open)}
     >
-      <div className="row-body mono">{block.json}</div>
+      <div className="row-body mono">
+        {block.json.trim() !== "" ? (
+          <div className="node-copy-actions">
+            <CopyButton text={block.json} />
+          </div>
+        ) : null}
+        {block.json}
+      </div>
     </Row>
   );
 }
 
+/**
+ * 轮级提示（`message/notice` 与消息尾部的 `message.error`）。
+ *
+ * 复制的是 `resolveText` 之后的**显示内容**（`@key` 标记已经翻成当前语言），
+ * 与屏幕上完全一致；正文为空时不画按钮。
+ */
 export function NoticeRow({ level, text }: { level: "info" | "warn" | "error"; text: string }) {
   const texts = useTexts();
   const cls = level === "error" ? "notice notice-error" : level === "warn" ? "notice notice-warn" : "notice";
-  return <div className={cls}>{resolveText(text, texts)}</div>;
+  const content = resolveText(text, texts);
+  return (
+    <div className={cls}>
+      <span className="notice-content">{content}</span>
+      {content.trim() !== "" ? (
+        <span className="notice-copy">
+          <CopyButton text={content} />
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * 斜杠命令记录的剪贴板载荷：**命令行 + 参数 + 结果**。
+ *
+ * 命令行与展开区第一行同一拼法（`/name` 后接参数）；结果只在处理器给了正文时
+ * 才另起一段（空一行），没有结果就不留空行。`name` 为空时由调用方传入界面用的
+ * 「命令」兜底标签，保证复制出来的仍是屏幕上那条 `/…`。
+ *
+ * 纯函数、不引 React：断言见 `scripts/copyNodes.test.ts`。
+ */
+export function commandCopyText(
+  command: Pick<CommandRunView, "name" | "args" | "text">,
+): string {
+  const line = `/${command.name}${command.args ? ` ${command.args}` : ""}`;
+  return command.text ? `${line}\n\n${command.text}` : line;
 }
 
 /**
@@ -1855,6 +2153,15 @@ export function CommandRow({ command, node }: { command: CommandRunView; node: N
       onToggle={() => node.setOpen(!open, command.state === "running")}
     >
       <div ref={bodyRef} className="row-body mono row-command">
+        <div className="node-copy-actions">
+          <CopyButton
+            text={commandCopyText({
+              name: command.name || texts.commands,
+              args: command.args,
+              text: command.text,
+            })}
+          />
+        </div>
         <div className="row-command-line">{commandLink}{command.args ? ` ${command.args}` : ""}</div>
         {command.text ? <div className="row-command-result">{command.text}</div> : null}
       </div>
