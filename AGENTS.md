@@ -37,6 +37,7 @@
 - 探针定位以文件头为准；`supervisorProbeEnv.ts` 提供一次性隔离环境。长探针须留足前台超时。
 - 新增测试登记到 `esbuild.scripts.mjs` 的 `entries`，否则 `npm test` 不执行。检查构建中的 `[duplicate-case]` 与重复键警告，类型检查不能覆盖它们。
 - **走文件系统解析的夹具路径必须按宿主平台算绝对**（用 `join(tmpdir(), …)` 拼），不能写死 Windows 形态：`node:path` 的 `isAbsolute` 是平台相关的，`C:\…` 在 Linux 上会被当成相对路径。只做字符串断言（分隔符清洗之类）的夹具不受此限。
+- **改动版本号时必须额外在 WSL 上跑一次 `npm test`**（不是等到打标签才跑）；只改文案、样式且不动版本号的小改动不必跑。
 - 界面预览夹具须来自真实输出。跨宿主与 webview 的改动须同时更新 `dist/extension.js` 与 `dist/webview.js`；需要安装验收时用 `npm run package` 和 `npm run install:vsix`，核对两份产物均已更新。
 - 发布包采用 `package.json` 的 `files` 白名单，不与 `.vscodeignore` 共存。新增发布资源须入白名单，包括更新日志、许可证、译文与第三方声明；`scripts/manifest.test.ts` 检查资源覆盖。
 
