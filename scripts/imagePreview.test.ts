@@ -164,11 +164,32 @@ assert.ok(
   /const inPreview = !!target\.closest\("\.image-preview"\)/.test(menu),
   "只有原图浮层里的图片才给「复原」",
 );
+// 图片菜单按 `...(inPreview ? [{…复原…}] : [])` 拼装，之后才是复制项。
+// 这里按**结构**判断谁在哪一支，不用「若干字符内出现某词」的滑窗：滑窗按字符计数，
+// CRLF 每行多一个字符，同一个窗口在 Windows 检出与 Linux 检出里覆盖的行数不同，
+// 会得出相反结论（CI 就栽在这上面）。
+const imageMenu = menu.slice(menu.indexOf('target.closest(".image-preview")'));
+const callOpen = imageMenu.indexOf("openContextMenu({");
+const branchOpen = imageMenu.indexOf("...(inPreview");
+const branchEmpty = imageMenu.indexOf(": [])");
+const resetLabel = imageMenu.indexOf("label: texts.imageReset");
+const resetRun = imageMenu.indexOf("run: resetImagePreviewView");
+assert.ok(callOpen >= 0 && branchOpen > callOpen, "图片菜单由 openContextMenu 构造，第一项就是 inPreview 分支");
 assert.ok(
-  /\.\.\.\(inPreview[\s\S]{0,200}label: texts\.imageReset[\s\S]{0,120}run: resetImagePreviewView/.test(menu),
-  "「复原」接在原图菜单的最前面，并调用浮层端口",
+  !/id: "/.test(imageMenu.slice(callOpen, branchOpen)),
+  "「复原」排在图片菜单最前面，前面不夹别的菜单项",
 );
-assert.ok(!/openContextMenu\(\{[\s\S]{0,200}imageReset/.test(menu), "缩略图的菜单不该出现「复原」");
+assert.ok(
+  branchEmpty > branchOpen && resetLabel > branchOpen && resetLabel < branchEmpty,
+  "「复原」只写在 inPreview 的真分支里，缩略图走空数组那一支",
+);
+assert.ok(resetRun > resetLabel && resetRun < branchEmpty, "「复原」这一项调用浮层端口");
+assert.ok(
+  !/id: "copy"|label: texts\.copy/.test(imageMenu.slice(resetLabel, resetRun)),
+  "「复原」与它调用的动作之间不夹别的菜单项",
+);
+assert.strictEqual((imageMenu.match(/id: "reset"/g) ?? []).length, 1, "「复原」只登记一次");
+assert.strictEqual((menu.match(/texts\.imageReset/g) ?? []).length, 1, "「复原」文案只引用一次");
 
 const css = readFileSync(join(root, "src", "webview", "styles", "app.css"), "utf8");
 assert.ok(
