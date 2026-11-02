@@ -239,7 +239,7 @@ console.log("mathView: 渲染身份覆盖五个事实且 NUL 不碰撞 ✓");
 
 // ---------- 7. 整条消息复制取原始 message text，不取 DOM ----------
 // 源码接线 + `readableMentionText` 纯变换断言，不冒充 DOM 点击或系统剪贴板证明。
-// 复制按钮统一走 `IconCopyButton`（1s 成功态在 webview/copyFeedback.ts），载荷不变。
+// 复制按钮统一走 `CopyButton`（1s 成功态在 webview/copyFeedback.ts），载荷不变。
 {
   const source = readFileSync(
     join(process.cwd(), "src", "webview", "components", "Message.tsx"),
@@ -257,7 +257,7 @@ console.log("mathView: 渲染身份覆盖五个事实且 NUL 不碰撞 ✓");
   );
   assert.match(
     source,
-    /<IconCopyButton text=\{fullText\} title=\{texts\.copy\} size=\{14\} \/>/,
+    /<CopyButton text=\{fullText\} title=\{texts\.copy\} size=\{14\} \/>/,
     "助手消息复制按钮接的是同一份 fullText",
   );
 

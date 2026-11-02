@@ -68,7 +68,7 @@ console.log("codeBlock: SSR 不初始化高亮、输出纯文本 ✓");
 
 // ---------- 4. 复制取精确 code，数学源文逐字保留 ----------
 // 源码接线 + SSR 文本断言，不冒充 DOM 点击或系统剪贴板证明。复制按钮走
-// `IconCopyButton`（反馈状态机在 webview/copyFeedback.ts），载荷仍是组件收到的原 code。
+// `CopyButton`（反馈状态机在 webview/copyFeedback.ts），载荷仍是组件收到的原 code。
 {
   const source = readFileSync(
     join(process.cwd(), "src", "webview", "components", "CodeBlock.tsx"),
@@ -76,7 +76,7 @@ console.log("codeBlock: SSR 不初始化高亮、输出纯文本 ✓");
   );
   assert.match(
     source,
-    /<IconCopyButton text=\{code\} title=\{texts\.copy\} \/>/,
+    /<CopyButton text=\{code\} title=\{texts\.copy\} \/>/,
     "复制按钮载荷是组件收到的原 code，且走统一的复制按钮（自带 1s 成功态）",
   );
   assert.ok(

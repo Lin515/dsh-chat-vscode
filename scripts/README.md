@@ -130,7 +130,7 @@
 - [toolbarFit.test.ts](<toolbarFit.test.ts>) — 工具栏档位分配、极窄保底与布局盒判据；使用可注入观察者验证节点替换、幂等挂载、StrictMode 重挂与清理，并覆盖旧生命周期的负对照。
 - [connectView.test.ts](<connectView.test.ts>) — 连接条三类状态、文案与按钮矩阵。
 - [contextMenu.test.ts](<contextMenu.test.ts>) — 会话右键菜单判据、「引用」落点算术、保存建议文件名；真实快捷复制处理器覆盖 Ctrl / Cmd、跨消息空白换行保真、编辑焦点、修饰键、组字、重复与已处理事件、选区包含性和空选区让路。
-- [copyFeedback.test.ts](<copyFeedback.test.ts>) — 复制反馈收口：`copy` 帧只有一个发射点、所有复制按钮走 `CopyButton` / `IconCopyButton` 并逐文件清点数量（含 diff / 写入预览 / IN-OUT / 问卷记录四处新入口）、1s 状态机只在 `copyFeedback.ts`；非按钮入口（右键菜单 / 选区快捷键）提示的落点、替换、自动消失与样式约束（提示层不抢指针、压过右键菜单、动画时长等于 `COPIED_MS`、成功态特异性能压过容器的 Muted 色）。
+- [copyFeedback.test.ts](<copyFeedback.test.ts>) — 复制反馈收口：`copy` 帧只有一个发射点、所有复制按钮都走同一个 `CopyButton`（图标按钮、无文字标签）并逐文件清点数量（含 diff / 写入预览 / IN-OUT / 问卷记录四处新入口）、1s 状态机只在 `copyFeedback.ts`；非按钮入口（右键菜单 / 选区快捷键）提示的落点、替换、自动消失与样式约束（提示层只闪对勾、不抢指针、压过右键菜单、动画时长等于 `COPIED_MS`、成功态特异性能压过容器的 Muted 色）。
 - [questionFlow.test.ts](<questionFlow.test.ts>) — 问卷展示口径：一次展开 vs 依次问答（`dshChat.questionBatch`）；问卷记录复制载荷 `questionReplyText`（多选、自定义答案、没答写「已跳过」、计划审阅、题头去重）。
 - [questionRender.test.ts](<questionRender.test.ts>) — 问卷卡片渲染断言（答完的问题展开后显示用户回答）。
 - [toolRowRender.test.ts](<toolRowRender.test.ts>) — 工具节点渲染断言：技能节点只显示 SKILL 正文（无参数 / 输出标题），读 / 写 / 编辑与技能只在真有可打开目标时提示 Ctrl/Cmd 单击打开；write 未完成原文、空内容、中断失败、安全文本、仅 write 与 diff 交接。

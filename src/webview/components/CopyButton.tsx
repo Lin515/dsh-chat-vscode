@@ -1,13 +1,19 @@
 /**
- * 复制按钮的外观（文字版 `CopyButton`、图标版 `IconCopyButton`、自动换行开关
- * `WrapLinesButton`）与「没有按钮可换文案」那种复制入口的提示层 `CopyFlashLayer`。
+ * 复制按钮的**唯一**外观，加上「没有按钮可换文案」那种复制入口的提示层
+ * （`CopyFlashLayer`）与轨迹检查器的自动换行开关（`WrapLinesButton`）。
  *
  * 状态机、计时与剪贴板写入都在 `../copyFeedback.ts`：本文件只管**长什么样**。
- * 这样所有复制按钮的反馈时长、重复点击语义与成功态文案只维护一份，新增一处复制
- * 按钮不会得到「这里 1s、那里 2s」的差异。
  *
- * 宿主侧**不发**「已复制」通知（用户 2026-09-17 口径）：按钮自己换外观作反馈，
- * 菜单条目与快捷键由 `CopyFlashLayer` 在触发点闪一条提示。
+ * ## 只有一个图标，不带文字
+ *
+ * 用户 2026-11-02 口径：所有复制入口统一成**一枚图标按钮**，不显示「复制」文字标签；
+ * 点一下成功态只把图标换成对勾（并上成功色），**不换文案、不弹提示**。于是
+ * 「复制什么」由悬停说明（`title` / `aria-label`）交代，不再占用一行宽度——工具卡、
+ * diff 头部、IN/OUT 标签行、问卷记录、后台任务、历史会话、代码块、消息操作行、
+ * 轨迹原文全部复用这一个组件，不再有「文字版 / 图标版」两套外观要各自维护。
+ *
+ * 视觉上不出现文字，但成功与否仍要让读屏知道：按钮里带一段 `sr-only` 的
+ * `aria-live` 文本，只在成功的那 1s 里有内容（`copyFeedback.ts` 的 `COPIED_MS`）。
  */
 import { useEffect, useState, type CSSProperties } from "react";
 import {
@@ -20,55 +26,29 @@ import { useTexts } from "../texts";
 import { IconCheck, IconCopy, IconWrapLines } from "../icons";
 
 /**
- * 文字版：给放得下一行文字的位置用（工具卡横幅、diff 头部、IN/OUT 标签行、后台任务
- * 详情），成功态换文案 + 对勾。
+ * 复制按钮：给所有复制入口用。
  *
- * `title` 覆盖初始与成功态的文案：同一张卡里出现两枚文字版按钮时（工具的「输入」与
- * 「输出」），读屏要能分开听，默认那句通用的「复制」就不够了。成功态仍是整界面共用
- * 的那一句——反馈说的都是同一件事。
+ * `title` 是「复制什么」的唯一说明（头像悬停与读屏都读它）：默认是整个界面通用的
+ * 「复制」；同一张卡里出现两枚时要区分（IN / OUT 给「复制输入」「复制输出」），
+ * 历史会话行给「复制会话 ID」，轨迹各段按内容给。
+ *
+ * `size` 默认 13：与相邻的节点图标同档；消息操作行那颗给 14。
+ *
+ * 两态共用同一个 `title` / `aria-label`：成功态是**按钮自己的图标**在变，文案不变，
+ * 所以悬停说明不会在 1s 后自己跳回另一句。
  */
-export function CopyButton({ text, title }: { text: string; title?: string }) {
-  const texts = useTexts();
-  const { copied, copy } = useCopyFeedback();
-  const label = copied ? texts.copied : title ?? texts.copy;
-  return (
-    <button
-      type="button"
-      className={`copy-btn${copied ? " is-copied" : ""}`}
-      title={label}
-      onClick={() => copy(text)}
-    >
-      {copied ? <IconCheck size={12} /> : <IconCopy size={12} />}
-      <span>{label}</span>
-    </button>
-  );
-}
-
-/**
- * 图标版复制按钮：给**放不下文字标签**的紧凑位置用（历史会话行右侧那排操作、
- * 消息操作行、代码块头部、轨迹检查器每段原文）。
- *
- * 反馈与 `CopyButton` 同一套口径：1s 内图标换成对勾（`is-copied` 上色）。`title`
- * 由调用方给：不同位置的「复制什么」不一样（会话行复制的是会话 ID，不是那段正文）。
- *
- * `copiedTitle` 覆盖成功态的悬停说明：默认那句是**整个界面通用**的「已复制到剪贴板」，
- * 换一条（例如官方轨迹那句更短的「复制成功」）只是文案覆盖，反馈计时与状态机不变。
- * `size` 默认 13：消息操作行那颗与分支图标同尺寸（14），调用方显式给。
- */
-export function IconCopyButton({
+export function CopyButton({
   text,
   title,
-  copiedTitle,
   size = 13,
 }: {
   text: string;
-  title: string;
-  copiedTitle?: string;
+  title?: string;
   size?: number;
 }) {
   const texts = useTexts();
   const { copied, copy } = useCopyFeedback();
-  const label = copied ? (copiedTitle ?? texts.copied) : title;
+  const label = title ?? texts.copy;
   return (
     <button
       type="button"
@@ -78,6 +58,10 @@ export function IconCopyButton({
       onClick={() => copy(text)}
     >
       {copied ? <IconCheck size={size} /> : <IconCopy size={size} />}
+      {/* 视觉上没有文字，读屏仍要听见「已复制」：live region 先存在、后填内容 */}
+      <span className="sr-only" aria-live="polite">
+        {copied ? texts.copied : ""}
+      </span>
     </button>
   );
 }
@@ -113,11 +97,13 @@ export function WrapLinesButton({
 }
 
 /**
- * 复制提示层（App 根部挂一次）：没有按钮可换文案的复制入口用它。
+ * 复制提示层（App 根部挂一次）：没有按钮可换文案的复制入口用它——右键菜单「复制」、
+ * 会话选区 Ctrl+C / Cmd+C。
  *
- * 外层常驻（`role="status"` 的 live region 要先在 DOM 里，屏幕阅读器才会念出随后
- * 插入的内容）；提示本身按闪烁身份重挂，于是同一位置连点两次也会重新播动画。
- * 整层 `pointer-events: none`：它盖在正文上，不能抢走选择、滚动或右键。
+ * 与按钮同一套反馈语言：**只有一个对勾**，不带文字说明（文字只留给读屏）。外层
+ * `role="status"` 的 live region 常驻，屏幕阅读器才会念出随后插入的内容；提示本身
+ * 按闪烁身份重挂，于是同一位置连点两次也会重新播动画。整层 `pointer-events: none`：
+ * 它盖在正文上，不能抢走选择、滚动或右键。
  */
 export function CopyFlashLayer() {
   const texts = useTexts();
@@ -129,13 +115,9 @@ export function CopyFlashLayer() {
   return (
     <div className="copy-flash-layer" role="status" aria-live="polite">
       {flash ? (
-        <span
-          key={flash.id}
-          className={`copy-flash${flash.anchor ? "" : " is-centered"}`}
-          style={flashStyle(flash)}
-        >
+        <span key={flash.id} className={`copy-flash${flash.anchor ? "" : " is-centered"}`} style={flashStyle(flash)}>
           <IconCheck size={12} />
-          {texts.copied}
+          <span className="sr-only">{texts.copied}</span>
         </span>
       ) : null}
     </div>

@@ -11,7 +11,7 @@ import {
   toggleAllSelection,
   toggleSelection,
 } from "../sessionSelection";
-import { IconCopyButton } from "./CopyButton";
+import { CopyButton } from "./CopyButton";
 import { formatClock } from "./primitives";
 import { useTexts } from "../texts";
 
@@ -267,7 +267,7 @@ export function HistoryPanel({
               <span className="session-item-actions">
                 {/* 复制会话 ID：**与 locked 无关**，当前会话与运行中的会话同样要有
                     这颗按钮（用户 2026-10-01 口径），位置固定在归档按钮左边。 */}
-                <IconCopyButton text={session.id} title={texts.copySessionId} />
+                <CopyButton text={session.id} title={texts.copySessionId} />
                 {locked ? null : (
                   <>
                     {/* 归档视图里这颗是**恢复**：同一个位置、同一套行为，只把方向反过来

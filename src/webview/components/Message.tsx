@@ -5,7 +5,7 @@ import { post } from "../bridge";
 import { fileLinkPort, fileOpenIntent, type FileLinkPort } from "../fileLinks";
 import { fileLinkHoverTitle, resolvedFilePath } from "../linkHovers";
 import { IconBranch } from "../icons";
-import { IconCopyButton } from "./CopyButton";
+import { CopyButton } from "./CopyButton";
 import { Markdown } from "./Markdown";
 import { ImageGallery, LocalImageGallery, type ImageSource } from "./Images";
 import { formatClock, useSelectionFreeze } from "./primitives";
@@ -460,7 +460,7 @@ export const Message = memo(function Message({
             </span>
           ) : null}
           <span className="msg-time">{formatClock(message.ts)}</span>
-          <IconCopyButton
+          <CopyButton
             text={readableMentionText(message.text ?? "")}
             title={texts.copy}
             size={14}
@@ -734,7 +734,7 @@ export const Message = memo(function Message({
               一段正文都没有时，这条消息没有可复制的正文，按钮不出现；单张工具卡
               展开的内容仍有各自的复制按钮（见 ToolCards.tsx）。 */}
           {fullText !== "" ? (
-            <IconCopyButton text={fullText} title={texts.copy} size={14} />
+            <CopyButton text={fullText} title={texts.copy} size={14} />
           ) : null}
           {/* 轮尾「用时 X」胶囊：官方把它挂在操作条的 usageAction 槽里（最新一轮常显、
               其余轮悬停出现），点开是「本轮总用时 / 输出速度 / 首 token 用时」明细。

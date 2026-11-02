@@ -101,13 +101,13 @@ console.log("sessionList: 分支与普通会话同级（标题前缀区分）✓
     "utf8",
   );
   const actionsStart = history.indexOf('<span className="session-item-actions">');
-  const copyButton = history.indexOf("<IconCopyButton", actionsStart);
+  const copyButton = history.indexOf("<CopyButton", actionsStart);
   const lockedBranch = history.indexOf("{locked ? null : (", actionsStart);
   const archiveButton = history.indexOf("<IconArchive size={13}", actionsStart);
   assert.ok(actionsStart > 0, "取不到会话行的操作区（.session-item-actions）");
   assert.ok(copyButton > actionsStart, "会话行操作区里必须有复制会话 ID 按钮");
   assert.ok(
-    /<IconCopyButton text=\{session\.id\} title=\{texts\.copySessionId\} \/>/.test(history),
+    /<CopyButton text=\{session\.id\} title=\{texts\.copySessionId\} \/>/.test(history),
     "复制按钮复制的是 session.id，title 走词典的 copySessionId（中英各一份）",
   );
   assert.ok(

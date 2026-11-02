@@ -33,8 +33,7 @@
  */
 import { useContext, useState } from "react";
 import { createPortal } from "react-dom";
-import { IconCopyButton, WrapLinesButton } from "./CopyButton";
-import { useTexts } from "../texts";
+import { CopyButton, WrapLinesButton } from "./CopyButton";
 import { readWrapPreference, toggleWrap, writeWrapPreference } from "../trajectoryPre";
 import { TrajectoryActionsHostContext } from "./TrajectorySection";
 
@@ -49,7 +48,6 @@ export function TrajectoryPre({
   /** 自动换行开关的悬停说明（官方 `record.wrapLines`，全页同一句）。 */
   wrapTitle: string;
 }) {
-  const texts = useTexts();
   // 惰性初值：全局默认只在**这段渲染时**采样一次（官方 `useState(initialWrapped)` 同口径）
   const [wrapped, setWrapped] = useState(readWrapPreference);
   const host = useContext(TrajectoryActionsHostContext);
@@ -64,7 +62,7 @@ export function TrajectoryPre({
           writeWrapPreference(next);
         }}
       />
-      <IconCopyButton text={text} title={copyTitle} copiedTitle={texts.copied} />
+      <CopyButton text={text} title={copyTitle} />
     </div>
   );
   return (

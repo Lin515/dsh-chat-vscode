@@ -168,8 +168,8 @@
   animation: none;
 }
 
-/* 复制成功的那 1s：图标换成对勾并亮成成功色（整界面共用，`IconCopyButton` /
-   `CopyButton` 两处同款）。`:hover` 那条必须一起写——`.icon-btn:hover` 与本条
+/* 复制成功的那 1s：图标换成对勾并亮成成功色（所有复制入口共用同一个
+   `components/CopyButton.tsx`）。`:hover` 那条必须一起写——`.icon-btn:hover` 与本条
    同特异性，后写的赢，只写一条会在悬停时被吃回灰。
 
    选择器带 `button` 是**刻意的特异性提升**：消息操作行与代码块头部给自己的图标
@@ -1080,7 +1080,7 @@ button.header-title.is-switcher > svg.is-open {
   min-width: 0;
 }
 
-.io-head .copy-btn {
+.io-head .icon-btn {
   margin-left: auto;
 }
 
@@ -1149,32 +1149,17 @@ button.header-title.is-switcher > svg.is-open {
   white-space: nowrap;
 }
 
-/* 复制按钮（工具卡与后台任务详情共用，见 components/CopyButton.tsx）：
-   小号文字按钮，悬停提亮，点后 1s 换「已复制」文案作反馈（宿主不弹 toast）。 */
-.copy-btn {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  gap: calc(3 * var(--dp));
-  border: none;
-  background: none;
-  color: var(--muted);
-  font-size: var(--font-size-2xs);
-  padding: 0 calc(2 * var(--dp));
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.copy-btn:hover {
-  color: var(--fg);
-}
-
-/* 文字版复制成功的那 1s：与 `.icon-btn.is-copied` 同一档成功色。`:hover` 那条必须
-   一起写——`.copy-btn:hover` 与本条同特异性，后写的赢。带 `button` 与图标版同一个
-   理由：工具卡横幅这类容器以后若要压 Muted 色，成功态必须仍然看得见。 */
-button.copy-btn.is-copied,
-button.copy-btn.is-copied:hover {
-  color: var(--success);
+/* 复制按钮（`components/CopyButton.tsx`）是一个 `.icon-btn`：**只有图标、没有文字**，
+   点后 1s 图标换成对勾（宿主不弹 toast）。它在这些「辅助行」里跟行高走：工具卡横幅、
+   diff 头部、IN/OUT 标签行、问卷记录、写入预览与轨迹原文动作条都不用 24dp 的方盒，
+   否则会把一行 16px 的小字撑高 8px。 */
+.tool-card-banner .icon-btn,
+.diff-head .icon-btn,
+.io-head .icon-btn,
+.question-record-actions .icon-btn,
+.trajectory-pre-actions .icon-btn {
+  width: calc(20 * var(--dp));
+  height: calc(20 * var(--dp));
 }
 
 .tool-card-body {
@@ -2758,6 +2743,7 @@ body.vscode-high-contrast-light .md-code-surface {
 
 /* 复制成功的短暂提示（见 components/CopyButton.tsx 的 `CopyFlashLayer`）：右键菜单的
    「复制」与会话选区 Ctrl+C 没有按钮可换文案，由它在触发点附近亮一下。
+   **与按钮同一套语言：只有一个对勾**，不带文字（文字只留给读屏，见组件里的 `sr-only`）。
    整层不接收指针事件——它盖在正文上方，不能抢走选择、滚动或右键；外层的 live region
    常驻（`role="status"` 要先在 DOM 里，屏幕阅读器才会念出随后插入的内容）。
    z-index 压过右键菜单（50）：菜单先收、提示出现在同一处。 */
@@ -2772,21 +2758,18 @@ body.vscode-high-contrast-light .md-code-surface {
   position: absolute;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: calc(4 * var(--dp));
-  /* 宽度随语言变化：只留视口上限，落点由行内 left/right 决定，不写死宽度 */
+  /* 只有一枚 12px 的对勾：方盒留一点呼吸，不按文字宽度撑成胶囊 */
   max-width: calc(100vw - 24 * var(--dp));
-  padding: calc(3 * var(--dp)) calc(9 * var(--dp));
+  padding: calc(4 * var(--dp)) calc(6 * var(--dp));
+  line-height: 1;
   border: 1px solid var(--border);
   border-radius: var(--radius-pill);
   background: var(--vscode-editorWidget-background, var(--editor-bg));
-  /* 文字用正文色，只把对勾点成成功色：这一条是「动作已生效」的轻提示，
-     整条染绿在深色主题下比正文还抢眼 */
-  color: var(--fg);
   box-shadow: 0 calc(2 * var(--dp)) calc(8 * var(--dp)) var(--vscode-widget-shadow, rgba(0, 0, 0, 0.36));
-  font-size: var(--font-size-2xs);
   white-space: nowrap;
   overflow: hidden;
-  text-overflow: ellipsis;
   /* 时长与 `copyFeedback.ts` 的 COPIED_MS 对齐：淡入、停留、在到点卸载前淡出 */
   animation: copy-flash 1s ease-out both;
 }

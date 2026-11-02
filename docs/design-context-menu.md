@@ -36,13 +36,13 @@ contextMenuKind 按下表优先级判断：
 
 ## 复制反馈
 
-所有复制入口共用 [copyFeedback.ts](<../src/webview/copyFeedback.ts>)：`copyText()` 是唯一的 `copy` 帧发射点，成功反馈分两档。
+所有复制入口共用 [copyFeedback.ts](<../src/webview/copyFeedback.ts>)：`copyText()` 是唯一的 `copy` 帧发射点，成功反馈分两档，且**视觉上只有一枚对勾**。
 
-- **有按钮的位置**（工具卡、工具 IN / OUT、diff 头部、写入预览、问卷记录、后台任务详情、历史会话 ID、代码块、消息操作行、轨迹原文）由 `useCopyFeedback` 亮 1s：文字版换「已复制到剪贴板」文案与对勾，图标版换对勾并上成功色（`components/CopyButton.tsx`）。
-- **没有按钮可换文案的位置**（右键菜单「复制」、会话选区 Ctrl+C / Cmd+C）由 `flashCopied()` 在触发点右下闪一条「已复制到剪贴板」；拿不到选区矩形时回落到视口底部中间。提示层 `CopyFlashLayer` 挂在 App 根部一次，整层不接收指针事件，1s 后自己收掉。
+- **有按钮的位置**（工具卡、工具 IN / OUT、diff 头部、写入预览、问卷记录、后台任务详情、历史会话 ID、代码块、消息操作行、轨迹原文）全部复用同一个 `components/CopyButton.tsx`：按钮**只有一个图标，不带文字标签**；点一下的 1s 内图标换成对勾并上成功色，悬停说明不变、也不弹提示。`title` / `aria-label` 说明「复制什么」（IN / OUT 分别是「复制输入」「复制输出」）。文字只保留在读屏的 `sr-only` live region 里。
+- **没有按钮可换文案的位置**（右键菜单「复制」、会话选区 Ctrl+C / Cmd+C）由 `flashCopied()` 在触发点右下闪**一枚对勾**（同样不带文字），拿不到选区矩形时回落到视口底部中间。提示层 `CopyFlashLayer` 挂在 App 根部一次，整层不接收指针事件，1s 后自己收掉。
 - 菜单的「复制」按 **菜单弹出点** 定位提示（菜单先收、提示后出现），图片复制要等 `copyImageElement` 真的成功才闪；失败仍走 `reportImageCopyFailure` 的宿主通知，不闪成功提示。
 - 三类内容的复制载荷都是纯函数，不从 DOM 或着色 token 反向拼：diff 走 `shared/diff.ts` 的 `diffClipboardText`（路径行 + `- ` / `+ ` / 两个空格前缀，覆盖全部 hunk 与被折叠的行）；问卷记录走 `questionFlow.ts` 的 `questionReplyText`（每题「题头 + 回答」，没答写「已跳过」，与官方 `replyClipboardText` 同口径）；IN / OUT 直接取原文。
-- 工具 IN / OUT 的复制是本扩展**有意多给**的入口：官方通用 IN/OUT 不出复制，它的复制落在详情卡的 code 段里。两枚按钮的文案区分为「复制输入」「复制输出」，读屏能分开听。
+- 工具 IN / OUT 的复制是本扩展**有意多给**的入口：官方通用 IN/OUT 不出复制，它的复制落在详情卡的 code 段里。两枚按钮靠悬停说明区分，读屏也能分开听。
 - 图片的「保存」不在此列：路径由用户自己在系统对话框里选，取消与成功都不提示，只有取字节或写盘失败才入通知队列。
 
 ## 图片复制与保存

@@ -21,7 +21,7 @@ import { useRef, useState } from "react";
 import type { MarkdownPhase } from "../markdown/types";
 import { IconChevronDown } from "../icons";
 import { useTexts } from "../texts";
-import { IconCopyButton } from "./CopyButton";
+import { CopyButton } from "./CopyButton";
 import { renderHighlighted } from "./HighlightedText";
 import { useCodeHighlight } from "./useCodeHighlight";
 
@@ -62,7 +62,7 @@ export function CodeBlock({
       <div className="code-block-head">
         <span className="code-block-lang">{lang || "text"}</span>
         <span className="code-block-actions">
-          <IconCopyButton text={code} title={texts.copy} />
+          <CopyButton text={code} title={texts.copy} />
         </span>
       </div>
       <div className="code-block-body">

@@ -2,12 +2,14 @@
  * 复制反馈的唯一实现（`src/webview/copyFeedback.ts` + `components/CopyButton.tsx`）。
  *
  * 用户 2026-11-02 口径：复制按钮点完要有反馈，且这一套反馈收口成一个模块；右键菜单
- * 「复制」与会话选区 Ctrl+C / Cmd+C 这类没有按钮可换文案的入口也要有。
+ * 「复制」与会话选区 Ctrl+C / Cmd+C 这类没有按钮可换文案的入口也要有。同一天的第二条
+ * 口径把所有复制入口统一成**一枚图标按钮**（无文字标签、成功态只换对勾），所以这里也钉
+ * 「只有一种外观」。
  *
  * 这里钉四类事实，都不冒充 DOM 点击或系统剪贴板证明：
  * 1. **唯一入口**：`copy` 帧只在 `copyFeedback.ts` 里发（其余源码只许调 `copyText`）；
- * 2. **清点**：每个复制按钮都走 `CopyButton` / `IconCopyButton`，数量一起钉住；
- * 3. **状态机只有一份**：两个按钮组件都不自己计时，1s 常量只有 `copyFeedback.ts`；
+ * 2. **清点**：每个复制按钮都走同一个 `CopyButton`，数量一起钉住；
+ * 3. **状态机只有一份**：组件不自己计时，1s 常量只有 `copyFeedback.ts`；
  * 4. **提示的来去**：右键菜单 / 快捷键触发的提示在 1s 后自己消失，落点缺失时回落居中。
  *
  * 运行：npm test（登记在 esbuild.scripts.mjs 的 entries）
@@ -34,9 +36,7 @@ const { COPIED_MS, copyText, copyFlashValue, flashCopied, subscribeCopyFlash } =
   "../src/webview/copyFeedback"
 );
 type CopyFlashValue = import("../src/webview/copyFeedback").CopyFlashValue;
-const { CopyButton, IconCopyButton, CopyFlashLayer } = await import(
-  "../src/webview/components/CopyButton"
-);
+const { CopyButton, CopyFlashLayer } = await import("../src/webview/components/CopyButton");
 const { TextsContext, dictionaryFor } = await import("../src/webview/texts");
 
 const webviewDir = join(process.cwd(), "src", "webview");
@@ -84,7 +84,7 @@ console.log("copyFeedback: copy 帧只有一个发射点 ✓");
 
 // ---------- 2. 清点：每个复制按钮都走共享组件 ----------
 //
-// 复制按钮的位置（用户 2026-11-02 清点，第二批补齐后）：
+// 复制按钮的位置（用户 2026-11-02 清点，第二批补齐后统一成图标按钮）：
 // - 工具卡 4 处（读 / 搜索 / 终端横幅 + 网页搜索卡内容右上角）；
 // - 工具行 IN / OUT 标签行各 1 处（有意超集：官方通用 IN/OUT 不出复制）；
 // - 问卷记录的展开体首右上角 1 处（已答 / 已取消 / 计划审阅共用同一份记录形态）；
@@ -103,10 +103,10 @@ console.log("copyFeedback: copy 帧只有一个发射点 ✓");
     ["Diff.tsx", /<CopyButton\b/g, 1],
     ["WriteBody.tsx", /<CopyButton\b/g, 1],
     ["Panels.tsx", /<CopyButton\b/g, 1],
-    ["History.tsx", /<IconCopyButton\b/g, 1],
-    ["TrajectoryPre.tsx", /<IconCopyButton\b/g, 1],
-    ["CodeBlock.tsx", /<IconCopyButton\b/g, 1],
-    ["Message.tsx", /<IconCopyButton\b/g, 2],
+    ["History.tsx", /<CopyButton\b/g, 1],
+    ["TrajectoryPre.tsx", /<CopyButton\b/g, 1],
+    ["CodeBlock.tsx", /<CopyButton\b/g, 1],
+    ["Message.tsx", /<CopyButton\b/g, 2],
   ];
   for (const [file, pattern, expected] of inventory) {
     assert.strictEqual(count(file, pattern), expected, `${file} 的复制按钮数量变了，需要同步确认反馈`);
@@ -115,34 +115,40 @@ console.log("copyFeedback: copy 帧只有一个发射点 ✓");
   // 除了共享组件自己，任何组件都不许再手写复制按钮的标记（否则就是绕开反馈）
   const handRolled = sourceFiles(componentsDir)
     .filter((path) => !path.endsWith(join("components", "CopyButton.tsx")))
-    .filter((path) => /<IconCopy\b|className="copy-btn"/.test(readFileSync(path, "utf8")))
+    .filter((path) => /<IconCopy\b/.test(readFileSync(path, "utf8")))
     .map((path) => relative(process.cwd(), path));
-  assert.deepStrictEqual(handRolled, [], "复制按钮只能由 CopyButton.tsx 提供（图标 / 文案 / 反馈一套）");
+  assert.deepStrictEqual(handRolled, [], "复制按钮只能由 CopyButton.tsx 提供（图标 / 反馈一套）");
 }
 console.log("copyFeedback: 所有复制按钮都走共享组件 ✓");
 
-// ---------- 3. 状态机只有一份 ----------
+// ---------- 3. 状态机只有一份、外观只有一种（图标 + 对勾）----------
 {
   const source = read(componentsDir, "CopyButton.tsx");
-  assert.match(source, /useCopyFeedback/, "两个按钮组件都从 copyFeedback.ts 取反馈状态机");
+  assert.match(source, /useCopyFeedback/, "按钮从 copyFeedback.ts 取反馈状态机");
   assert.ok(!/setTimeout/.test(source), "组件里不许再各写一份计时器（时长与重复点击口径只留一份）");
+  assert.ok(!/export function IconCopyButton/.test(source), "不再有「图标版 / 文字版」两套外观");
   const core = read(webviewDir, "copyFeedback.ts");
   assert.match(core, /export const COPIED_MS = 1000/, "反馈时长是 1000ms（与提示动画同一档）");
   assert.strictEqual(COPIED_MS, 1000);
 
-  // 初始态：还没有点击，两个按钮都不显示成功态
-  const icon = render(createElement(IconCopyButton, { text: "正文", title: "复制" }));
-  assert.match(icon, /class="icon-btn"/, "图标版复制按钮不带成功态");
-  assert.match(icon, /title="复制"/, "初始悬停说明是「复制」");
-  assert.match(icon, /aria-label="复制"/, "图标按钮要有无障碍名");
-  assert.ok(!icon.includes("is-copied"), "点击前没有成功态");
+  // 初始态：没有点击，按钮只有图标，不显示成功态、也没有文字标签
+  const button = render(createElement(CopyButton, { text: "正文" }));
+  assert.match(button, /class="icon-btn"/, "复制按钮是图标按钮");
+  assert.match(button, /title="复制"/, "默认悬停说明是「复制」");
+  assert.match(button, /aria-label="复制"/, "图标按钮要有无障碍名");
+  assert.ok(!button.includes("is-copied"), "点击前没有成功态");
+  assert.ok(
+    !/<span>(复制|已复制到剪贴板)<\/span>/.test(button),
+    "按钮里不许有可见文字（用户 2026-11-02 口径：只显示图标）",
+  );
+  assert.match(button, /class="sr-only" aria-live="polite"/, "成功提示只留给读屏（视觉上只有一个对勾）");
 
-  const text = render(createElement(CopyButton, { text: "正文" }));
-  assert.match(text, /class="copy-btn"/, "文字版复制按钮不带成功态");
-  assert.ok(text.includes("复制"), "初始文案是「复制」");
-  assert.ok(!text.includes("已复制到剪贴板"), "点击前不显示成功文案");
+  // title 覆盖「复制什么」；同一张卡里的两枚（IN / OUT）因此能分开听
+  const input = render(createElement(CopyButton, { text: "正文", title: "复制输入" }));
+  assert.match(input, /title="复制输入"/);
+  assert.match(input, /aria-label="复制输入"/);
 }
-console.log("copyFeedback: 反馈状态机只有一份、初始态正确 ✓");
+console.log("copyFeedback: 反馈状态机只有一份、外观只有图标一种 ✓");
 
 // ---------- 4. 非按钮入口的提示：落点、替换与自动消失 ----------
 {
@@ -177,7 +183,15 @@ console.log("copyFeedback: 反馈状态机只有一份、初始态正确 ✓");
   assert.match(anchored, /role="status"/, "提示层是 live region");
   assert.match(anchored, /class="copy-flash"/, "有提示时画出胶囊");
   assert.match(anchored, /left:612px;top:312px/, "提示贴着触发点右下");
-  assert.ok(anchored.includes("已复制到剪贴板"), "提示文案是整界面共用的那句");
+  assert.match(
+    anchored,
+    /<span class="sr-only">已复制到剪贴板<\/span>/,
+    "提示与按钮同一套语言：只有一个对勾，文字只留给读屏",
+  );
+  assert.ok(
+    !/class="copy-flash[^"]*">[^<]*已复制/.test(anchored),
+    "提示胶囊里不许出现可见文字",
+  );
 
   flashCopied();
   const centered = render(createElement(CopyFlashLayer));
@@ -218,11 +232,17 @@ console.log("copyFeedback: 提示的落点、替换与自动消失 ✓");
   const seconds = Number(/animation:\s*copy-flash\s+([\d.]+)s/.exec(flash)?.[1]);
   assert.strictEqual(Math.round(seconds * 1000), COPIED_MS, "提示动画时长必须等于 COPIED_MS");
 
-  // 成功态的特异性提升：两个按钮各一条，且都带 `button`（压得过上下文的 muted 色）
-  for (const selector of ["button.icon-btn.is-copied", "button.copy-btn.is-copied"]) {
-    assert.ok(css.includes(selector), `${selector} 必须存在（否则正文里的成功态会被容器色压回灰）`);
-    assert.match(ruleBody(`${selector},`), /color:\s*var\(--success\)/, `${selector} 用成功色`);
-  }
+  // 成功态的特异性提升：只有图标按钮一种外观，且带 `button`（压得过上下文的 muted 色）
+  const success = "button.icon-btn.is-copied";
+  assert.ok(css.includes(success), `${success} 必须存在（否则正文里的成功态会被容器色压回灰）`);
+  assert.match(ruleBody(`${success},`), /color:\s*var\(--success\)/, `${success} 用成功色`);
+  assert.ok(!css.includes(".copy-btn"), "统一成图标按钮后，文字版按钮的样式不该再留着");
+  // 辅助行里的复制按钮跟行高走：20dp 而不是 24dp 的方盒（用户 2026-11-02 口径）
+  assert.match(
+    ruleBody(".tool-card-banner .icon-btn,"),
+    /width:\s*calc\(20 \* var\(--dp\)\)/,
+    "工具卡横幅等辅助行里的复制按钮用 20dp，别把一行小字撑高",
+  );
 
   // 淡入淡出是装饰性动效：与其它装饰动画同住文件末尾唯一的 reduce 块
   const reduced = /@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{([\s\S]*?)\n\}/.exec(css);

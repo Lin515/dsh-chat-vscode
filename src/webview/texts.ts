@@ -640,7 +640,10 @@ export interface Texts {
   planReviewDiscuss: string;
 
   copy: string;
-  /** 复制按钮的 1s 瞬时反馈（按钮文案自换；宿主不再发「已复制」toast）。 */
+  /**
+   * 复制成功的 1s 里给读屏的那句话：按钮视觉上只有一枚对勾、提示层也只有对勾，
+   * 这句文字只走 `sr-only` 的 live region（宿主不再发「已复制」toast）。
+   */
   copied: string;
   /** 正文右键菜单第二项：把选中文字以引用块插进输入框（引用自己占整行）。 */
   quoteSelection: string;
