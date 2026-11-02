@@ -59,6 +59,7 @@ MIT 许可证全文见本文末「附录 A」。
 | `src/vendor/ui-primitives/markdown/plain-text.ts` | 同名 | 去掉 `.ts` 后缀 |
 | `src/vendor/ui-primitives/markdown/cjkFriendlyStrong.ts` | 同名 | 去掉 `.ts` 后缀 |
 | `src/vendor/ui-primitives/markdown/local-image-syntax.ts` | 同名 | `classifyFileType` 换成本地等价判定；去掉 `.ts` 后缀 |
+| `src/vendor/ui-primitives/markdown/katex.tsx` | 同名 | 逐字搬入 KaTeX → React 适配器；仅文件头补来源说明，函数体与 KaTeX 选项不变 |
 
 每个文件头部都注明来源、版本与「本仓库改了哪几处」；逐处改动的理由与同步流程见
 `src/vendor/README.md`。
@@ -147,7 +148,7 @@ Apache-2.0 的义务说明：
 | --- | --- | --- |
 | `react` / `react-dom` | MIT | webview 界面 |
 | `mdast-util-from-markdown` / `mdast-util-gfm` / `micromark` / `micromark-extension-gfm`（及 `micromark-*` 传递依赖） | MIT | 正文 mdast 渲染与 `src/vendor/` 的 Markdown 纯文本投影（预览文本） |
-| `dompurify` | Apache-2.0 / MPL-2.0 双许可 | 为后续数学输出净化保留；当前正文不再整篇净化 HTML |
+| `jsdom` / `@types/jsdom` | MIT | 离线测试的完整 DOM 环境（`DOMParser` / `Node` / HTML 与 MathML 解析）；仅开发依赖，不打包进扩展 |
 | `katex` | MIT（JS/CSS）；SIL OFL 1.1（字体） | 完成态数学排版；随包只分发本地 WOFF2 字体，不使用 CDN 或网络资源 |
 | `shiki` / `@shikijs/langs` | MIT | 完成态代码高亮的细粒度 core、JavaScript 正则引擎与静态精选 grammar；不含 Oniguruma WASM、全量语言包、CDN 或网络资源 |
 | `diff` | BSD-3-Clause | 系统提示词变更页签的行级差分（与官方轨迹同一实现） |
@@ -171,7 +172,8 @@ KaTeX 的 JS / CSS 以 MIT 发布（`Copyright (c) 2013-2020 Khan Academy and ot
 contributors`，全文见「附录 A」）；**字体是独立的 SIL Open Font License 1.1 授权，
 不能只按 MIT 归属**。本扩展从官方 npm 包 `katex@0.16.47` 的 `dist/fonts/` 原样
 复制 WOFF2 字节，仅把 CSS 的 `@font-face` 收敛为该 WOFF2 来源；没有修改字体，
-也没有以保留字体名称发布修改版。
+也没有以保留字体名称发布修改版。上游 DeepSeek Harness 客户端的 KaTeX → React
+适配器 `katex.tsx` 作为源码副本收录，归属见 1.1 节。
 
 字体版权行（20 份字体文件的 name 表一致）：
 

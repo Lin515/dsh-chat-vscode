@@ -106,7 +106,7 @@
 
 - [markdown.test.ts](<markdown.test.ts>) — 正文 SSR 行为：任务列表、表格、原始 HTML 字面、软硬换行、查找分隔、图片 title / 三属性 / 危险 scheme、Windows 目标与 CJK 加粗；断言用户真正看到 / 点到的 HTML，不再检查净化源码形状。
 - [math.test.ts](<math.test.ts>) — 完成态数学解析事实：保守金额、权威围栏闭合、容器 raw 与有效 TeX 分离、容器边界、phase 与 MathView 接线，以及与 vendor `parseGfmWithMath` 去事实键后的树等价。
-- [mathRender.test.ts](<mathRender.test.ts>) — KaTeX 引擎 seam 与净化纯函数：无 DOM / 超长 / 未闭合先拒、真实引擎有效语料、`maxExpand` / `maxSize`、每式新宏表与 `\gdef` 隔离、`trust:false` 的真实降级行为、`\text{katex-error}` 不误判，以及 style / 属性白名单（含继承键拒绝）与 `mo` 内 token 折叠判据；不冒充真实 DOMPurify DOM 验收。
+- [mathRender.test.ts](<mathRender.test.ts>) / [mathDomBrowser.ts](<mathDomBrowser.ts>) — 无 DOM / 超长 / 未闭合守卫，以及隔离 jsdom 中的 KaTeX → 官方 React → React DOM 完整链：中文 / 表格、官方树对拍、错误回退、独立宏表、危险命令、普通代码字面、迟到结果和 raw / 已排版选区冻结。同一入口可在 Chromium 运行，补 jsdom 缺少 `MathMLElement.style` 的语料；不以 jsdom 证明字体、布局或辅助技术。
 - [mathView.test.ts](<mathView.test.ts>) — MathView / 正文接线的 SSR 与 display 所有权：四定界符、金额、未闭合 / 超长原文回退、math 围栏与 tex / latex 分流、段落 / strong / emphasis / link / 引用 / tight-loose 列表 / 表格 / 脚注的 display 切段与逻辑换行、无 p 包 div 与危险原文；不冒充真实浏览器异步 / 选区验收。
 - [markdownSource.test.ts](<markdownSource.test.ts>) — 代码块源文逐字符：围栏 / 缩进 / 引用与列表前缀 / tab 视觉列 / CRLF / 尾空行 / 未闭合 / NUL 与部分 tab 组合。
 - [highlight.test.ts](<highlight.test.ts>) — 完成态代码高亮纯模块：语言别名 / 继承成员、21 种静态 grammar、CRLF / 空行 / 尾空白 / NUL 逐字保真、颜色白名单、成功 / 失败缓存与条数 / 字符双限、并发同 key 单次记账、总长与超长单行回退。
@@ -302,7 +302,7 @@
 - [dshContract.ts](<dshContract.ts>) — DSH 契约快照与差异分析纯逻辑（官方契约面 × 本扩展消费面 = 影响面）。
 - [dshContract.test.ts](<dshContract.test.ts>) — 上述逻辑的离线断言（版本判读、差异分级规则）。
 - [dshCompat.ts](<dshCompat.ts>) — `watch`／`snapshot <版本>`／`check` 服务端契约追踪；**不覆盖官方 UI 语义**，远端版本／契约获取可能访问网络，不耗模型 token 不等于断网。
-- [vendorSourceLock.ts](<vendorSourceLock.ts>)、[登记表](<vendorSourceLock.json>)、[离线回归](<vendorSourceLock.test.ts>) — 11 份官方原字节见证与 vendor 文件集合双向锁；只归一化模块说明符，保留 literal／template／regex／ASI 语义。基准为固定官方提交，不用本地 HEAD；自洽摘要不能认证历史来源。原字节见证与授权边界见[夹具索引](<../test/fixtures/README.md>)。
+- [vendorSourceLock.ts](<vendorSourceLock.ts>)、[登记表](<vendorSourceLock.json>)、[离线回归](<vendorSourceLock.test.ts>) — 13 份官方原字节见证与 vendor 文件集合双向锁；只归一化模块说明符，保留 literal／template／regex／ASI 语义。基准为固定官方提交，不用本地 HEAD；自洽摘要不能认证历史来源。原字节见证与授权边界见[夹具索引](<../test/fixtures/README.md>)。
 
 ## 工具脚本（`*.mjs`）
 

@@ -21,6 +21,7 @@
     "src/webview/**/*.ts",
     "src/webview/**/*.tsx",
     "src/shared/**/*.ts",
-    "src/vendor/**/*.ts"
+    "src/vendor/**/*.ts",
+    "src/vendor/**/*.tsx"
   ]
 }

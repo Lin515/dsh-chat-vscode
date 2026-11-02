@@ -7,7 +7,8 @@
 `webview/markdown/parse.ts` 消费 `parseGfm`；`settled` 数学由
 `webview/markdown/math.ts` 以**相同扩展集合**装配，并在公开 construct / handler
 外补金额否决与围栏事实。`parseGfmWithMath` 仍保留为官方语法基准与等价性断言来源，
-本地适配不复制语法规则。
+本地适配不复制语法规则。`katex.tsx` 是完成态数学的 **KaTeX→React 适配器**原文，
+`MathView` 直接消费它，不再自写元素树映射。
 
 | 文件 | 上游对应 | 作用 | 本仓库的改动 |
 |---|---|---|---|
@@ -16,6 +17,14 @@
 | `plain-text.ts` | 同名文件 | mdast 树 → 纯文本（三种边界：全文 / 首行 / 首段） | 去掉 `.ts` 后缀 |
 | `cjkFriendlyStrong.ts` | 同名文件 | micromark 扩展：让星号粗体在「标点后紧接 CJK」时正确闭合 | 去掉 `.ts` 后缀 |
 | `local-image-syntax.ts` | 同名文件 | 把「带空格的本地图片路径」那种单图片段落恢复成图片节点（预览时留 alt） | 见下：`classifyFileType` 换成本地 `isImageFilePath()`；去掉 `.ts` 后缀 |
+| `katex.tsx` | 同名文件 | TeX → React：`katex.renderToString` 的 HTML 经 `DOMParser` 转 DOM，再映射为 React 元素树（严格渲染 / `strict: 'ignore'` 重试 / 错误 span 三臂） | 逐字搬入；仅文件头补来源说明；来源锁按 TSX / JSX 解析 |
+
+## KaTeX 适配器
+
+`katex.tsx` **不改任何 KaTeX 选项**：仍用默认的 `throwOnError: true` 严格渲染、
+`strict: 'ignore'` 重试与 `#cc0000` 错误色。模块内不做 HTML 净化，信任边界与上游一致
+（KaTeX 只输出静态 span / MathML / SVG 词汇，没有原始用户 HTML）。React 18 没有 MathML
+命名空间支持，`.katex-mathml` 子树落在 HTML 命名空间的行为也按上游注释保持原样。
 
 ## 两处本地差异
 

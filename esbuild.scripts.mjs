@@ -89,7 +89,7 @@ const entries = {
   // 完成态数学解析事实（保守金额 / 权威围栏闭合 / 容器 raw 与 TeX 载荷 / 官方臂等价）：
   // 必须登记，否则 npm test 静默不跑
   "build/math.test.mjs": "scripts/math.test.ts",
-  // KaTeX 引擎 seam（无 DOM 不加载 / 限额 / 宏隔离 / trust 真实行为）与净化纯函数：
+  // 官方 KaTeX → React 与完整 DOM 回归（中文 / 表格 / 安全 / 选区；无 DOM 不加载）：
   // 必须登记，否则 npm test 静默不跑
   "build/math-render.test.mjs": "scripts/mathRender.test.ts",
   // MathView / 正文接线、display 段落切分与 SSR 原文回退：必须登记

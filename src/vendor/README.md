@@ -1,10 +1,11 @@
-# src/vendor/ — 从上游逐字搬进来的官方纯决策模块
+# src/vendor/ — 从上游逐字搬进来的官方客户端源码
 
 这个目录放的是**上游官方客户端的源码副本**（不是我们写的；改写约束见 [AGENTS.md](AGENTS.md)）。
-存在理由只有一个：轨迹这一页有若干「一行显示什么 / 时间线怎么摆 / 搜索怎么匹配」
-的**纯决策**，我们从前是照着官方文档与源码**手工等价实现**的——手抄必然漂移
+来源分两类：轨迹这一页「一行显示什么 / 时间线怎么摆 / 搜索怎么匹配」的**纯决策**，
+以及正文完成态数学的 **KaTeX→React 适配器**。纯决策从前是照着官方文档与源码**手工等价实现**的
+——手抄必然漂移
 （真踩过：`duration` 模式的轮次边界把原始 Unix 毫秒当域值，每一根边界都被渲染端丢掉）。
-搬进来之后这些口径只有一份实现，且那一份是官方原文。
+搬进来之后这些口径只有一份实现，且那一份是官方原文；KaTeX 适配器则让元素树与官方逐字一致。
 
 ## 来源与版本
 
@@ -15,16 +16,17 @@
 | 上游仓库 | https://github.com/deepseek-ai/deepseek-harness |
 | 许可 | MIT（Copyright (c) 2026 DeepSeek）——归属说明见[第三方声明](<../../THIRD-PARTY-NOTICES.md>) |
 | 固定 commit | `639ed015397290b3745d163aafe02ffee4aa3f84` |
-| 离线来源见证 | [12 份官方原文](<../../test/fixtures/vendor-sources/README.md>) |
+| 离线来源见证 | [13 份官方原文](<../../test/fixtures/vendor-sources/README.md>) |
 | 自动来源锁 | [登记](<../../scripts/vendorSourceLock.json>)、[校验模块](<../../scripts/vendorSourceLock.ts>)、[正式回归](<../../scripts/vendorSourceLock.test.ts>) |
 
 选这个版本是因为它与[DSH 兼容基准](<../../docs/dsh-compat.md>)是同一个版本。
-来源锁校验双向文件集合、原文字节与允许适配后的摘要；规范化只处理 AST 模块说明符、注释与排版，保留字符串／模板／正则空白和 ASI 语义。锁与原文自洽不是外部签名认证。
+来源锁校验双向文件集合、原文字节与允许适配后的摘要；枚举 `src/vendor/**/*.ts` 与 `*.tsx`，
+`.tsx` 按 TSX（JSX AST）解析。规范化只处理 AST 模块说明符、注释与排版，保留字符串／模板／正则空白和 ASI 语义。锁与原文自洽不是外部签名认证。
 
 ## 子目录
 
 - [ui-trajectory](<ui-trajectory/README.md>) — 预览投影、记录身份、时间线、搜索索引、PTC 代码程序。
-- [ui-primitives](<ui-primitives/README.md>) — Markdown 纯文本投影（预览投影的依赖）。
+- [ui-primitives](<ui-primitives/README.md>) — Markdown 纯文本投影（预览投影的依赖）与 KaTeX→React 数学适配器。
 
 常驻约束（不许手改、允许的偏差、消费方要求、升级先 diff）见 [AGENTS.md](AGENTS.md)，本页不重复。
 

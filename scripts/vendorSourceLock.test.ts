@@ -1,17 +1,17 @@
 /**
- * M01：`src/vendor/**` 官方纯逻辑副本的**源锁**断言（零 token、不联网、不读用户目录）。
+ * M01：`src/vendor/**` 官方 UI 副本的**源锁**断言（零 token、不联网、不读用户目录）。
  *
  * 判据本体在 `scripts/vendorSourceLock.ts`，登记在 `scripts/vendorSourceLock.json`，
- * 上游那一侧的凭据是仓库内 12/12 份离线见证素材
+ * 上游那一侧的凭据是仓库内 13/13 份离线见证素材
  * （`test/fixtures/vendor-sources/dsh-v0.2.0-rc.2/**`，逐字节等于固定 tag 上的原文）。
  *
- * 这一份做三件事：①基线（真实磁盘副本 + 真实锁清单 + **全部 12 份素材**）必须无漂移；
+ * 这一份做三件事：①基线（真实磁盘副本 + 真实锁清单 + **全部 13 份素材**）必须无漂移；
  * ②**可证伪** —— 逐类构造突变，判据必须红（含「素材缺一份 / 多一份 / 改一个字节」与
  * 「规范化规则被改」）；③**允许的漂移**必须绿（登记的说明符改写、已登记的类型壳 /
  * 本地图片判据差异、以及有意的排版与注释漂移）。
  *
  * 突变全部在**内存**里做（`structuredClone` 一份夹具），不碰 `src/vendor/**` 的真实文件，
- * 也不碰素材目录里的那 12 份原文。
+ * 也不碰素材目录里的那 13 份原文。
  *
  * 运行：npm test
  */
@@ -49,7 +49,7 @@ const ROOT = process.cwd();
 const LOCK = lockJson as unknown as VendorSourceLock;
 const VENDOR_FILES = collectVendorSources(ROOT);
 const VENDOR_README = readFileSync(join(ROOT, "src", "vendor", "README.md"), "utf8");
-/** 上游那一侧的 12/12 离线见证（官方相对路径 → 原文）。 */
+/** 上游那一侧的 13/13 离线见证（官方相对路径 → 原文）。 */
 const FIXTURES = collectUpstreamFixtures(ROOT, LOCK.upstream.fixtureDir, LOCK.upstream.tag);
 
 const TIMELINE = "src/vendor/ui-trajectory/timeline.ts";
@@ -58,9 +58,11 @@ const PREVIEW = "src/vendor/ui-trajectory/trajectory-preview.ts";
 const LOCAL_IMAGE = "src/vendor/ui-primitives/markdown/local-image-syntax.ts";
 const INBOX = "src/vendor/ui-trajectory/inbox-state.ts";
 const TURN_MODEL = "src/vendor/ui-trajectory/trajectory-turn-model.ts";
+const KATEX = "src/vendor/ui-primitives/markdown/katex.tsx";
 
 const TIMELINE_UPSTREAM = "packages/client/ui-trajectory/src/client/timeline.ts";
 const PREVIEW_UPSTREAM = "packages/client/ui-trajectory/src/client/trajectory-preview.ts";
+const KATEX_UPSTREAM = "packages/client/ui-primitives/src/markdown/katex.tsx";
 
 interface Draft {
   lock: Mutable<VendorSourceLock>;
@@ -136,7 +138,7 @@ function mutateFixture(draft: Draft, upstreamPath: string, from: string, to: str
   draft.upstreamFiles[index] = { path: upstreamPath, text: after };
 }
 
-// ---------- 1. 基线：真实磁盘副本 + 真实锁清单 + 全部 12 份素材 ----------
+// ---------- 1. 基线：真实磁盘副本 + 真实锁清单 + 全部 13 份素材 ----------
 {
   const problems = vendorSourceProblems({
     lock: LOCK,
@@ -153,17 +155,31 @@ function mutateFixture(draft: Draft, upstreamPath: string, from: string, to: str
   );
 }
 
-// ---------- 2. 登记与来源：形式、固定身份、12/12 覆盖、已登记差异 ----------
+// ---------- 2. 登记与来源：形式、固定身份、13/13 覆盖、已登记差异 ----------
 {
   assert.strictEqual(
     Object.keys(LOCK.files).length,
     VENDOR_FILES.length,
-    "登记条数要与磁盘上的 *.ts 一致（多一份少一份都由双向登记判据报红）",
+    "登记条数要与磁盘上的 *.ts / *.tsx 一致（多一份少一份都由双向登记判据报红）",
+  );
+  // 枚举必须真的把新搬的 .tsx 收进来（否则「集合相等」会双双漏掉它而误绿）
+  assert.ok(
+    VENDOR_FILES.some((file) => file.path === KATEX),
+    `全量枚举必须覆盖 TSX 副本：${KATEX}`,
+  );
+  assert.ok(
+    FIXTURES.some((file) => file.path === KATEX_UPSTREAM),
+    `全量枚举必须覆盖 TSX 上游见证：${KATEX_UPSTREAM}`,
+  );
+  assert.ok(
+    VENDOR_FILES.some((file) => file.path.endsWith(".ts")) &&
+      VENDOR_FILES.some((file) => file.path.endsWith(".tsx")),
+    "枚举要同时覆盖 *.ts 与 *.tsx",
   );
   assert.strictEqual(LOCK.upstream.tag, FIXED_UPSTREAM.tag);
   assert.strictEqual(LOCK.upstream.sha, FIXED_UPSTREAM.sha);
 
-  // 上游那一侧：**12/12 逐字素材**，路径是官方相对路径，一条不多一条不少
+  // 上游那一侧：**13/13 逐字素材**，路径是官方相对路径，一条不多一条不少
   const upstreamPaths = [
     ...new Set(Object.values(LOCK.files).map((entry) => entry.upstream.path)),
   ].sort();
@@ -180,7 +196,7 @@ function mutateFixture(draft: Draft, upstreamPath: string, from: string, to: str
     );
     assert.ok(!file.path.includes("\\") && !file.path.startsWith("/"), "素材路径不许带本机痕迹");
   }
-  // 素材字节与登记值逐份相符（原始字节数）；这一条是「12/12」的落点
+  // 素材字节与登记值逐份相符（原始字节数）；这一条是「13/13」的落点
   for (const [vendorPath, entry] of Object.entries(LOCK.files)) {
     const file = required(
       FIXTURES.find((candidate) => candidate.path === entry.upstream.path),
@@ -209,7 +225,7 @@ function mutateFixture(draft: Draft, upstreamPath: string, from: string, to: str
     assert.strictEqual(entry.relation, "excerpt", `${path} 是从官方更大的文件里摘的`);
     assert.ok((entry.upstreamExtract ?? "").length > 0, `${path} 要写明摘的是哪一段`);
   }
-  for (const path of [TIMELINE, PREVIEW]) {
+  for (const path of [TIMELINE, PREVIEW, KATEX]) {
     const entry = required(LOCK.files[path], `${path} 要登记`);
     assert.strictEqual(entry.declaredEdits.length, 0, `${path} 与上游逐字等价`);
     assert.strictEqual(entry.vendorNormalizedSha256, entry.upstreamNormalizedSha256);
@@ -241,6 +257,13 @@ function mutateFixture(draft: Draft, upstreamPath: string, from: string, to: str
       "export function deriveTrajectoryTimeline(",
       "const LOCAL_ONLY_FLAG = true\n\nexport function deriveTrajectoryTimeline(",
     );
+  });
+  // TSX 副本的负对照：改选项 / 改 JSX 属性都必须被内容锁抓到。
+  expectRed("内容漂移：" + KATEX, "改 KaTeX 渲染选项（`throwOnError: true` → `false`）", (draft) => {
+    mutateVendorText(draft, KATEX, "throwOnError: true", "throwOnError: false");
+  });
+  expectRed("内容漂移：" + KATEX, "改错误 span 的 JSX className", (draft) => {
+    mutateVendorText(draft, KATEX, 'className="katex-error"', 'className="katex-errors"');
   });
 }
 
@@ -424,8 +447,10 @@ function mutateFixture(draft: Draft, upstreamPath: string, from: string, to: str
 // ---------- 11. 规范化：只改模块说明符，字面量 / 模板串 / 正则 / ASI 一律不许被吞 ----------
 {
   const NORM = LOCK.normalization;
-  const normalized = (source: string): string => normalizeVendorSource(source, NORM);
-  const digest = (source: string): string => vendorSourceDigest(source, NORM);
+  const normalized = (source: string, path = "vendor-source.ts"): string =>
+    normalizeVendorSource(source, NORM, path);
+  const digest = (source: string, path = "vendor-source.ts"): string =>
+    vendorSourceDigest(source, NORM, path);
 
   // 只有 import / export 的模块说明符会被改写；同名文本出现在字符串里不算
   const literalFixture = `import { a } from './layout.ts'\nconst s = './layout.ts'\n`;
@@ -468,6 +493,42 @@ function mutateFixture(draft: Draft, upstreamPath: string, from: string, to: str
   assert.ok(
     normalized("const t = `./layout.ts`\n").includes("`./layout.ts`"),
     "模板串里的 ./layout.ts 不许被改写",
+  );
+
+  // `.tsx` 必须走 TSX（JSX AST）：同一段 JSX 按 `.ts` 解析会被打印成类型断言碎片
+  const jsxFixture = 'const el = <span className="katex-error">{value}</span>\n';
+  assert.strictEqual(
+    normalized(jsxFixture, "snippet.tsx"),
+    'const el = <span className="katex-error">{value}</span>;\n',
+    "TSX 的 JSX 元素必须原样保留",
+  );
+  assert.notStrictEqual(
+    normalized(jsxFixture, "snippet.ts"),
+    normalized(jsxFixture, "snippet.tsx"),
+    "扩展名必须决定解析语法（.ts 与 .tsx 对同一段 JSX 不能给出同一份 AST）",
+  );
+  assert.notStrictEqual(
+    digest(jsxFixture, "snippet.ts"),
+    digest(jsxFixture, "snippet.tsx"),
+    "摘要也要带路径：TSX 副本不能按 TS 语法算",
+  );
+  const katexSource = required(
+    VENDOR_FILES.find((file) => file.path === KATEX),
+    "夹具里应当有 katex.tsx",
+  ).text;
+  const katexNormalized = normalized(katexSource, KATEX);
+  assert.ok(
+    katexNormalized.includes('className="katex-error"'),
+    "katex.tsx 里的错误 span 必须按 JSX 打印，而不是类型断言碎片",
+  );
+  assert.ok(
+    !katexNormalized.includes("【vendor】"),
+    "本地来源头是注释，规范化时应当被打印器去掉（否则逐字副本会显得有逻辑差异）",
+  );
+  assert.strictEqual(
+    normalized(katexNormalized, KATEX),
+    katexNormalized,
+    "TSX 规范化也要幂等",
   );
 
   // `return` 换行（ASI）：打印器不许把它接成 `return 1`
@@ -518,4 +579,4 @@ function mutateFixture(draft: Draft, upstreamPath: string, from: string, to: str
   );
 }
 
-console.log("\nvendor-source-lock: 内容锁 / 双向登记 / 12/12 上游见证 / 来源自洽（含突变自证） ✓");
+console.log("\nvendor-source-lock: 内容锁 / 双向登记 / 13/13 上游见证 / 来源自洽（含突变自证） ✓");

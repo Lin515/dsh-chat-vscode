@@ -172,6 +172,17 @@
       "declaredEdits": [
         "`classifyFileType(match[2]) === 'image'` → `isImageFilePath(match[2])`（判据等价，理由登记在 `src/vendor/ui-primitives/markdown/README.md`）"
       ]
+    },
+    "src/vendor/ui-primitives/markdown/katex.tsx": {
+      "upstream": {
+        "path": "packages/client/ui-primitives/src/markdown/katex.tsx",
+        "bytes": 3956,
+        "sha256": "8227e04d29333d2568021ed012143237b457852bce25d82cf394d72b941e74a5"
+      },
+      "upstreamNormalizedSha256": "563db7dc7d640caa7d3d36ade56cb0468ad2da2fcba23ee620b64e0c1440bc1d",
+      "vendorNormalizedSha256": "563db7dc7d640caa7d3d36ade56cb0468ad2da2fcba23ee620b64e0c1440bc1d",
+      "relation": "verbatim",
+      "declaredEdits": []
     }
   }
 }

@@ -1,5 +1,5 @@
 /**
- * M01：**官方 UI 纯逻辑 vendor 副本的源锁**（内容锁 + 双向登记 + 来源自洽）。
+ * M01：**官方 UI vendor 副本的源锁**（内容锁 + 双向登记 + 来源自洽）。
  *
  * ## 为什么要有这一层
  *
@@ -8,7 +8,7 @@
  * 某个 `> 0` 改成 `>= 0` 而负值路径没有对拍样本、对副本以外的地方排序……
  * 都能在行为断言全绿的情况下溜过去（`previousPromptTools` 那次就是这么过了一个季度的）。
  *
- * 这一层补的是**内容级**判据：`src/vendor/**\/*.ts` 与 `scripts/vendorSourceLock.json`
+ * 这一层补的是**内容级**判据：`src/vendor/**\/*.ts`、`*.tsx` 与 `scripts/vendorSourceLock.json`
  * 之间的双向登记 + 每份副本的规范化摘要 + 来源声明自洽。它**不替代**行为断言，
  * 两者互补：行为断言管口径，源锁管「这份字节还是不是当初那份」。
  *
@@ -17,8 +17,9 @@
  * 上游原文与本仓库副本的**排版与注释本来就不同**（官方单行压缩 style、副本带一段
  * 中文「本仓库改动」头注释），所以摘要前先过一遍 `normalizeVendorSource`：
  *
- * - 用 TypeScript 解析源码（`createSourceFile`），把 `import` / `export ... from` 的
- *   **模块说明符**按 `normalization.specifierRewrites` 改写，再按
+ * - 用 TypeScript 解析源码（`createSourceFile`）；按扩展名选 `ScriptKind.TS` 或
+ *   `ScriptKind.TSX`（JSX 必须走 TSX 语法，否则打印器拿到的是被当成类型断言的 token），
+ *   把 `import` / `export ... from` 的**模块说明符**按 `normalization.specifierRewrites` 改写，再按
  *   `stripRelativeTsExtension` 去掉相对说明符的 `.ts`（本仓库构建不启用
  *   `allowImportingTsExtensions`）；
  * - 用 `createPrinter({ removeComments: true, newLine: LineFeed })` 打印。
@@ -32,12 +33,12 @@
  * 还报绿。走 AST 是**打印器负责排版、AST 负责语义**；`scripts/vendorSourceLock.test.ts`
  * 里对这几类陷阱各有一条正反断言。
  *
- * ## 上游那一侧的凭据（12/12 离线见证，不是签名认证）
+ * ## 上游那一侧的凭据（13/13 离线见证，不是签名认证）
  *
  * `npm test` **不联网、不读官方 checkout（也不用 HEAD）**。上游那一侧的唯一凭据是仓库内的
  * 固定见证素材：`<upstream.fixtureDir>/<upstream.tag>/<官方相对路径>`，逐字节等于固定 tag
- * 上的那一份（导出方式与逐份摘要见 `.agent/temp/trajectory-20261009/s01-m01-implementer/`
- * 的 `fixture-manifest.json`：每份都有字节数 / 文件 sha256 / git blob SHA）。
+ * 上的那一份，由 GitHub API 按固定提交导出。登记表逐份保存原文字节数与 SHA-256；
+ * 不以当前 checkout 或本地副本替代官方原文。
  *
  * 判据在 `upstreamCoverage: "complete"` 下要求**每一条登记都有原文**：
  * 素材少一份、多一份、改一个字节、或换了规范化规则，都会红——不只是「清单自己跟自己对得上」。
@@ -120,7 +121,7 @@ export interface VendorSourceLock {
      * 仓库内**离线见证素材**的根目录（仓库相对）：
      * `<fixtureDir>/<tag>/<官方相对路径>`，逐字节等于固定 tag 上的那一份。
      *
-     * 它是「上游那一侧」的唯一凭据来源：判据拿全部 12 份逐一核对原始字节数 /
+     * 它是「上游那一侧」的唯一凭据来源：判据拿全部 13 份逐一核对原始字节数 /
      * 原始 sha256 / 规范化摘要。素材是**仓库内的固定见证**，不是外部签名认证——
      * 它证明的是「这份字节从那时起没被改过」，不是「有人为它签过名」。
      */
@@ -160,6 +161,10 @@ export interface VendorSourceCheckInput {
 const SHA256_HEX = /^[0-9a-f]{64}$/;
 const SHA1_HEX = /^[0-9a-f]{40}$/;
 const VENDOR_DIR = "src/vendor";
+/** vendor 副本可以是 `.ts` 或 `.tsx`（后者带 JSX，规范化必须按 TSX 解析）。 */
+const SOURCE_EXTENSIONS = [".ts", ".tsx"] as const;
+/** 一条登记路径的形状：`src/vendor/` 下的 `.ts` / `.tsx`。 */
+const VENDOR_SOURCE_PATH = /\.(?:ts|tsx)$/;
 /** 官方客户端包的固定前缀：`@deepseek-ai/dsh-client-<目录名>`（包名与仓库目录同名）。 */
 const PACKAGE_PREFIX = "dsh-client-";
 /** 官方 monorepo 里客户端包的位置：`packages/client/<目录>/…`。 */
@@ -198,15 +203,20 @@ function rewriteSpecifier(text: string, normalization: VendorNormalization): str
  *
  * @param source - 源码原文（本地副本或上游原文都走这一条）。
  * @param normalization - 允许漂移的说明符规则。
+ * @param path - 源码路径（只用来选解析语法：`.tsx` 走 `ScriptKind.TSX`，其余走 `ScriptKind.TS`）。
  * @returns 规范化文本（注释已去、排版已定、说明符已改写）。
  */
-export function normalizeVendorSource(source: string, normalization: VendorNormalization): string {
+export function normalizeVendorSource(
+  source: string,
+  normalization: VendorNormalization,
+  path = "vendor-source.ts",
+): string {
   const sourceFile = ts.createSourceFile(
-    "vendor-source.ts",
+    path,
     source,
     ts.ScriptTarget.Latest,
     /*setParentNodes*/ true,
-    ts.ScriptKind.TS,
+    path.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
   );
   const rewrite = (node: StringLiteral): StringLiteral => {
     // 无论改没改都换成合成节点：打印器对「原文节点」直接切原字节、对合成节点按 AST 打印，
@@ -257,14 +267,21 @@ export function normalizeVendorSource(source: string, normalization: VendorNorma
  *
  * @param source - 源码原文。
  * @param normalization - 允许漂移的说明符规则。
+ * @param path - 源码路径（`.tsx` 按 TSX 解析，与 `normalizeVendorSource` 同一条规则）。
  * @returns 64 位十六进制摘要。
  */
-export function vendorSourceDigest(source: string, normalization: VendorNormalization): string {
-  return createHash("sha256").update(normalizeVendorSource(source, normalization), "utf8").digest("hex");
+export function vendorSourceDigest(
+  source: string,
+  normalization: VendorNormalization,
+  path = "vendor-source.ts",
+): string {
+  return createHash("sha256")
+    .update(normalizeVendorSource(source, normalization, path), "utf8")
+    .digest("hex");
 }
 
 /**
- * 递归枚举一个目录下的 `*.ts`，返回的路径以 `pathBase` 为基准（`/` 分隔）。
+ * 递归枚举一个目录下的 `*.ts` / `*.tsx`，返回的路径以 `pathBase` 为基准（`/` 分隔）。
  *
  * @param dir - 要遍历的绝对目录。
  * @param pathBase - 生成相对路径用的基准目录。
@@ -276,7 +293,10 @@ function collectSourceFiles(dir: string, pathBase: string): VendorSourceText[] {
     for (const entry of readdirSync(absoluteDir, { withFileTypes: true })) {
       const absolute = join(absoluteDir, entry.name);
       if (entry.isDirectory()) walk(absolute);
-      else if (entry.isFile() && entry.name.endsWith(".ts")) {
+      else if (
+        entry.isFile() &&
+        SOURCE_EXTENSIONS.some((extension) => entry.name.endsWith(extension))
+      ) {
         found.push({
           path: relative(pathBase, absolute).split(sep).join("/"),
           text: readFileSync(absolute, "utf8"),
@@ -290,7 +310,7 @@ function collectSourceFiles(dir: string, pathBase: string): VendorSourceText[] {
 }
 
 /**
- * 枚举 `src/vendor/` 下全部 `*.ts`（递归，路径用 `/` 分隔、仓库相对）。
+ * 枚举 `src/vendor/` 下全部 `*.ts` / `*.tsx`（递归，路径用 `/` 分隔、仓库相对）。
  *
  * 清单**不硬编码在判据里**：登记完整性靠它与锁清单做集合相等——磁盘上多一份要红、
  * 锁清单里多一条也要红。
@@ -303,7 +323,7 @@ export function collectVendorSources(root: string): VendorSourceText[] {
 }
 
 /**
- * 枚举仓库内**上游离线见证素材**：`<fixtureDir>/<tag>/**\/*.ts`，路径是**官方相对路径**。
+ * 枚举仓库内**上游离线见证素材**：`<fixtureDir>/<tag>/**\/*.ts` 与 `*.tsx`，路径是**官方相对路径**。
  *
  * 目录不存在会直接抛（带一句说明），不静默返回空表——素材整目录丢失必须是响亮的失败。
  *
@@ -347,7 +367,7 @@ function isRepoRelative(path: string): boolean {
  *
  * 判据分五组：①双向登记完整性；②本地副本内容锁；③来源声明自洽（tag / repo / 包集合 /
  * SHA / 路径形态，并与 `src/vendor/README.md` 交叉）；④登记自洽（`declaredEdits` 与
- * `relation` 是否解释得了两侧摘要的异同）；⑤上游原文校验（仓库内 12 份离线见证的
+ * `relation` 是否解释得了两侧摘要的异同）；⑤上游原文校验（仓库内 13 份离线见证的
  * 字节数 / 原始 sha256 / 规范化摘要，外加**覆盖完整**与**归属唯一**两条）。
  *
  * @param input - 锁清单、磁盘副本、README 正文、可选上游文本与身份锚。
@@ -468,8 +488,12 @@ export function vendorSourceProblems(input: VendorSourceCheckInput): string[] {
   // ---- ②④⑤ 逐条登记 ----
   for (const path of locked) {
     const entry = lock.files[path];
-    if (!isRepoRelative(path) || !path.startsWith(`${VENDOR_DIR}/`) || !path.endsWith(".ts")) {
-      problems.push(`登记自洽：${path} 不是 src/vendor 下的仓库相对路径`);
+    if (
+      !isRepoRelative(path) ||
+      !path.startsWith(`${VENDOR_DIR}/`) ||
+      !VENDOR_SOURCE_PATH.test(path)
+    ) {
+      problems.push(`登记自洽：${path} 不是 src/vendor 下的仓库相对 TS / TSX 路径`);
     }
     if (!isRepoRelative(entry.upstream.path)) {
       problems.push(`登记自洽：${path} 的上游路径不是仓库相对路径（${entry.upstream.path}）`);
@@ -509,12 +533,12 @@ export function vendorSourceProblems(input: VendorSourceCheckInput): string[] {
     // 内容锁：磁盘上的字节必须就是登记的那一份
     const file = vendorFiles.find((candidate) => candidate.path === path);
     if (file === undefined) continue; // 上面已经报过「多登记」
-    const actual = vendorSourceDigest(file.text, norm);
+    const actual = vendorSourceDigest(file.text, norm, path);
     if (actual !== entry.vendorNormalizedSha256) {
       problems.push(`内容漂移：${path}（规范化摘要与登记不一致）`);
     }
 
-    // 上游原文校验（正式判据会提供全部 12 份素材）
+    // 上游原文校验（正式判据会提供全部 13 份素材）
     const upstreamText = upstreamTexts.get(entry.upstream.path);
     if (upstreamText === undefined) {
       if (input.upstreamCoverage === "complete") {
@@ -531,7 +555,7 @@ export function vendorSourceProblems(input: VendorSourceCheckInput): string[] {
     if (rawSha256(upstreamText) !== entry.upstream.sha256) {
       problems.push(`上游原文漂移：${path}（原始摘要与登记不一致）`);
     }
-    const upstreamDigest = vendorSourceDigest(upstreamText, norm);
+    const upstreamDigest = vendorSourceDigest(upstreamText, norm, entry.upstream.path);
     if (upstreamDigest !== entry.upstreamNormalizedSha256) {
       problems.push(`上游内容漂移：${path}（规范化摘要与登记不一致）`);
     }

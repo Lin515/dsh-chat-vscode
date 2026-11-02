@@ -3,7 +3,7 @@
  *
  * 识别数学只能看组件写在根上的 `data-math-view`，不能看 `.math-view` / `.katex`
  * 这类 class：class 可以出现在任意字符串里，根属性才是 React 自持的来源。KaTeX
- * 的辅助层由净化链保证结构（`.katex-mathml` 里的 `math` / `annotation`），所以
+ * 的辅助层来自固定官方适配器（`.katex-mathml` 里的 `math` / `annotation`），所以
  * 判据仍要求它落在带来源标识的根内。
  *
  * 不按 `aria-hidden` 判断辅助层：KaTeX 的**视觉层** `.katex-html` 恰好也带

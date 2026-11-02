@@ -14,7 +14,7 @@
  *   回退为原文，不吞内容；
  * - 与 vendor `parseGfmWithMath`（非金额语料）去事实键后树等价，防止本地装配漂移。
  *
- * KaTeX 排版 / 净化 / FindBar 去重 / 选区分片不在本文件断言范围，留给后继模块。
+ * KaTeX → 官方 React 排版、FindBar 辅助层过滤与选区冻结由对应视图测试覆盖。
  * 运行：npm test（已登记到 esbuild.scripts.mjs 的 entries）
  */
 import assert from "node:assert";
