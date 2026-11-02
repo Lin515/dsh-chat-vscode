@@ -99,6 +99,8 @@ const entries = {
   "build/local-image-resolve.test.mjs": "scripts/localImageResolve.test.ts",
   "build/local-images.test.mjs": "scripts/localImages.test.ts",
   "build/highlight.test.mjs": "scripts/highlight.test.ts",
+  // 官方高亮到正文 / 工具 DOM、语法就绪与选区屏障：必须登记
+  "build/highlight-dom.test.mjs": "scripts/highlightDom.test.ts",
   "build/diff-highlight.test.mjs": "scripts/diffHighlight.test.ts",
   "build/tool-source.test.mjs": "scripts/toolSource.test.ts",
   "build/selection-range.test.mjs": "scripts/selectionRange.test.ts",

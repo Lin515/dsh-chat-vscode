@@ -1,10 +1,10 @@
 # 固定上游源码见证
 
-本目录保存来源锁需要的 **13 份官方原文字节**，不保存用户日志、不进扩展发布包，也不是业务实现的第二份副本。
+本目录保存来源锁需要的 **15 份官方原文字节**，不保存用户日志、不进扩展发布包，也不是业务实现的第二份副本。
 
 - 来源：DeepSeek Harness，固定 tag `dsh-v0.2.0-rc.2`。
 - 固定 commit：`639ed015397290b3745d163aafe02ffee4aa3f84`，见[上游固定树](<https://github.com/deepseek-ai/deepseek-harness/tree/639ed015397290b3745d163aafe02ffee4aa3f84>)。
-- 子目录以 tag 命名，内部保留官方仓库相对路径；包括轨迹纯逻辑 7 份、Markdown 纯逻辑 5 份，以及 KaTeX→React 适配器 `katex.tsx` 1 份。
+- 子目录以 tag 命名，内部保留官方仓库相对路径；包括轨迹纯逻辑 7 份、Markdown 解析 / 投影 / 高亮纯逻辑 6 份、KaTeX→React 适配器 `katex.tsx` 1 份，以及 `packages/util/code-language` 的路径语言表 1 份。
 - [锁登记](<../../../scripts/vendorSourceLock.json>)逐份登记官方路径、原字节数、原文 SHA-256、规范化摘要及允许适配。
 - [来源校验模块](<../../../scripts/vendorSourceLock.ts>)与[正式回归](<../../../scripts/vendorSourceLock.test.ts>)共同读取这些文件；不会依赖本机上游 checkout 或联网获取。
 

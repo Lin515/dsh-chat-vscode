@@ -1,50 +1,20 @@
 /**
- * 完成态代码高亮的**纯模块**：Shiki 细粒度 core + 原生 RegExp 引擎，静态精选语法。
+ * 官方高亮核心的宿主适配层。语法、别名、引擎、主题和 token 样式由固定来源的
+ * vendor/highlight 提供；路径语言由官方 code-language 提供，不维护第二份语言表。
  *
- * 设计边界（见 docs/design-markdown-rendering.md 的「代码高亮」）：
- * - 不 import `shiki` / `shiki/bundle/*` / `shiki/langs`（后者是全量语法包）；
- * - 无 Oniguruma WASM、CDN、网络或 unsafe-eval；
- * - 引擎只在浏览器里按需创建（React effect 调 `highlightCode`），模块顶层不初始化，
- *   Node / SSR 导入本模块不会加载 grammar 之外的运行时；
- * - 输出的是**源码偏移 + 受控颜色/字体修饰**，React 层用原 `code` 切片渲染 span，
- *   不生成 HTML、不经过 `dangerouslySetInnerHTML`。
- *
- * 文本保真：`token.offset` 相对输入代码；每个 token 显示源码切片，token 之间的缺口
- * （CRLF / 空行 / 其它未被 token 覆盖的字符）作为普通文本补齐。校验 offset 为安全
- * 整数、单调、不越界，切片与 token.content 相符（仅允许 NUL→U+FFFD 这一条 Shiki
- * 规范差异）；任何异常都回退纯文本，绝不用错位 offset 着色。
+ * 本层只保留：宿主输入兼容、官方语法异步就绪、--shiki-* 到既有调色变量的映射、
+ * 原文偏移校验、资源上限与有界缓存。显示始终切原 code；不使用 HTML 高亮臂。
+ * 正文及工具面的 phase、身份隔离和选区冻结继续由 useCodeHighlight 控制。
  */
+import {
+  grammarForHint,
+  StreamingHighlightSession,
+  subscribeGrammarLoaded,
+  type HighlightSpan as VendorSpan,
+} from "../../vendor/ui-primitives/markdown/highlight";
+import { languageForPath as officialLanguageForPath } from "../../vendor/code-language";
 
-import { createCssVariablesTheme, createHighlighterCore, type HighlighterCore } from "shiki/core";
-import { createJavaScriptRegexEngine } from "shiki/engine/javascript";
-
-import javascript from "@shikijs/langs/javascript";
-import typescript from "@shikijs/langs/typescript";
-import jsx from "@shikijs/langs/jsx";
-import tsx from "@shikijs/langs/tsx";
-import json from "@shikijs/langs/json";
-import jsonc from "@shikijs/langs/jsonc";
-import python from "@shikijs/langs/python";
-import shellscript from "@shikijs/langs/shellscript";
-import powershell from "@shikijs/langs/powershell";
-import c from "@shikijs/langs/c";
-import cpp from "@shikijs/langs/cpp";
-import csharp from "@shikijs/langs/csharp";
-import go from "@shikijs/langs/go";
-import rust from "@shikijs/langs/rust";
-import java from "@shikijs/langs/java";
-import html from "@shikijs/langs/html";
-import css from "@shikijs/langs/css";
-import sql from "@shikijs/langs/sql";
-import yaml from "@shikijs/langs/yaml";
-import markdown from "@shikijs/langs/markdown";
-import diff from "@shikijs/langs/diff";
-
-/** 主题名同时是 `codeToTokensBase` 的 theme 参数。 */
-const THEME_NAME = "md-code";
-/** 主题策略版本：颜色变量名或修饰规则变化时递增，旧缓存自然失效。 */
-const THEME_VERSION = 1;
-
+const THEME_VERSION = 2;
 /** 单块代码超过这个字符数就不增强（纯文本仍可读）。 */
 export const MAX_HIGHLIGHT_CHARS = 50_000;
 /**
@@ -55,8 +25,6 @@ export const MAX_HIGHLIGHT_CHARS = 50_000;
  * 保守折衷：常见生成代码的压缩行仍可着色，极端长行保留原文、不阻塞界面。
  */
 export const MAX_HIGHLIGHT_LINE_CHARS = 4_000;
-/** 单行 tokenize 的时间上限（ms）：防多 token 的超长行累加拖住主线程。 */
-const TOKENIZE_TIME_LIMIT_MS = 500;
 /** 单块最多多少段（含普通文本缺口），防止极碎 token 撑出几十万节点。 */
 const MAX_SPANS = 4_000;
 /** 缓存条数上限。 */
@@ -64,119 +32,13 @@ export const MAX_CACHE_ENTRIES = 64;
 /** 缓存总字符上限（按 key 的代码长度累计）。 */
 export const MAX_CACHE_CHARS = 200_000;
 
-/** 受控文本修饰位（TextMate fontStyle）：1 斜体 / 2 粗体 / 4 下划线。 */
+/** 受控文本修饰位（TextMate fontStyle）：1 斜体 / 2 粗体 / 4 下划线 / 8 删除线。 */
 export interface HighlightSpan {
   readonly start: number;
   readonly end: number;
   /** 只可能是本地主题生成的 `var(--md-code-*)` 之一；普通缺口为空。 */
   readonly color?: string;
   readonly fontStyle?: number;
-}
-
-/** 规范语言名（首个标识 + 显式别名表）；不支持 / 未知返回 undefined。 */
-const LANGUAGE_ALIASES = new Map<string, string>([
-  ["js", "javascript"],
-  ["javascript", "javascript"],
-  ["mjs", "javascript"],
-  ["cjs", "javascript"],
-  ["ts", "typescript"],
-  ["typescript", "typescript"],
-  ["mts", "typescript"],
-  ["cts", "typescript"],
-  ["jsx", "jsx"],
-  ["tsx", "tsx"],
-  // VS Code language id（其它客户端 / 旧持久化 meta 可能给这种形态）
-  ["javascriptreact", "jsx"],
-  ["typescriptreact", "tsx"],
-  ["json", "json"],
-  ["jsonc", "jsonc"],
-  ["py", "python"],
-  ["python", "python"],
-  ["sh", "shellscript"],
-  ["bash", "shellscript"],
-  ["zsh", "shellscript"],
-  ["shell", "shellscript"],
-  ["shellscript", "shellscript"],
-  ["ps1", "powershell"],
-  ["pwsh", "powershell"],
-  ["powershell", "powershell"],
-  ["c", "c"],
-  ["h", "c"],
-  ["cpp", "cpp"],
-  ["c++", "cpp"],
-  ["cc", "cpp"],
-  ["cxx", "cpp"],
-  ["hpp", "cpp"],
-  ["csharp", "csharp"],
-  ["cs", "csharp"],
-  ["c#", "csharp"],
-  ["go", "go"],
-  ["rust", "rust"],
-  ["rs", "rust"],
-  ["java", "java"],
-  ["html", "html"],
-  ["htm", "html"],
-  ["css", "css"],
-  ["sql", "sql"],
-  ["yaml", "yaml"],
-  ["yml", "yaml"],
-  ["markdown", "markdown"],
-  ["md", "markdown"],
-  ["diff", "diff"],
-  ["patch", "diff"],
-]);
-
-/** 静态注册的语法：显式列出，不按 name 动态加载包。 */
-const LANG_MODULES = [
-  javascript,
-  typescript,
-  jsx,
-  tsx,
-  json,
-  jsonc,
-  python,
-  shellscript,
-  powershell,
-  c,
-  cpp,
-  csharp,
-  go,
-  rust,
-  java,
-  html,
-  css,
-  sql,
-  yaml,
-  markdown,
-  diff,
-];
-
-/** 按 name 去重后的静态语法表（html / tsx 模块自带嵌入依赖）。 */
-const STATIC_LANGS = (() => {
-  const byName = new Map<string, (typeof LANG_MODULES)[number][number]>();
-  for (const item of LANG_MODULES.flat()) byName.set(item.name, item);
-  return [...byName.values()];
-})();
-
-let engine: Promise<HighlighterCore> | undefined;
-
-/** 按需创建的唯一高亮实例；失败后清掉 promise，下次可重试。 */
-function highlighter(): Promise<HighlighterCore> {
-  engine ??= createHighlighterCore({
-    langs: STATIC_LANGS,
-    themes: [
-      createCssVariablesTheme({
-        name: THEME_NAME,
-        variablePrefix: "--md-code-",
-        fontStyle: true,
-      }),
-    ],
-    engine: createJavaScriptRegexEngine(),
-  }).catch((error: unknown) => {
-    engine = undefined;
-    throw error;
-  });
-  return engine;
 }
 
 /** 首个语言标识（小写）；空串 / 空白返回 undefined。 */
@@ -186,52 +48,31 @@ function firstLangId(lang: string | undefined): string | undefined {
   return first === "" ? undefined : first;
 }
 
-/**
- * 首个语言标识归一化：`ts`, `TypeScript`, `ts title=x` 都取第一个词。
- * 用显式 Map，`constructor` / `__proto__` / `toString` 等继承成员不会命中。
- */
+/** 仅兼容宿主既有元数据；其余别名与语法选择全部由官方表决定。 */
+const HOST_HINTS = new Map([
+  ["typescriptreact", "tsx"], ["javascriptreact", "jsx"],
+  ["pwsh", "powershell"], ["c++", "cpp"], ["c#", "csharp"],
+]);
+
+/** info string 取首个标识后，交给官方别名 / 文件扩展名表。 */
 export function normalizeLang(lang: string | undefined): string | undefined {
   const first = firstLangId(lang);
-  return first === undefined ? undefined : LANGUAGE_ALIASES.get(first);
+  if (first === undefined) return undefined;
+  const hint = HOST_HINTS.get(first) ?? first;
+  return grammarForHint(hint) ?? grammarForHint(officialLanguageForPath(`file.${hint}`));
 }
 
-/**
- * 按文件路径末段的扩展名选语言；只查显式别名表，不碰文件系统、不猜内容。
- *
- * 供工具节点（read 窗口之外的 diff / write 预览）在只有 `path` 时取语言。
- * 无扩展名、点号在开头（`.bashrc`）、未知扩展名一律 undefined → 纯文本。
- * `constructor` / `__proto__` 等继承成员不会命中 `Map`。
- */
+/** 直接复用官方路径语义，包含 .env、jsonl、psm1、vue 等扩展名。 */
 export function languageForPath(path: string | undefined): string | undefined {
-  if (path === undefined) return undefined;
-  const slash = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
-  const name = slash === -1 ? path : path.slice(slash + 1);
-  const dot = name.lastIndexOf(".");
-  if (dot <= 0 || dot === name.length - 1) return undefined;
-  return LANGUAGE_ALIASES.get(name.slice(dot + 1).toLowerCase());
+  return path === undefined ? undefined : officialLanguageForPath(path);
 }
 
-/**
- * 服务端给的语言提示 + 路径扩展名 → 可高亮的规范语言。
- *
- * - 可识别的语言标识优先（`tsx` / `typescriptreact` / `json` …）；
- * - 显式的 `text` / `plaintext` 是服务端的「就是纯文」意图，保持纯文，
- *   不能按路径扩展名反悔；
- * - 语言标识缺失或未识别时才回退到 `path` 的扩展名；
- * - 未知扩展名仍返回 undefined（纯文），不猜内容。
- *
- * 只查 `LANGUAGE_ALIASES` 显式表，继承成员与任意语言名不会进入引擎。
- */
+/** 可识别元数据优先；显式纯文不按路径反悔；其余回退官方路径语言。 */
 export function resolveLanguage(lang: string | undefined, path: string | undefined): string | undefined {
-  const normalized = normalizeLang(lang);
-  if (normalized !== undefined) return normalized;
   const first = firstLangId(lang);
   if (first === "text" || first === "plaintext") return undefined;
-  return languageForPath(path);
+  return normalizeLang(lang) ?? normalizeLang(languageForPath(path));
 }
-
-/** 只接受本地 css-variables 主题生成的变量名，拒绝任何内联 CSS。 */
-const SAFE_COLOR = /^var\(--md-code-(?:foreground|token-[a-z-]+)\)$/u;
 
 /** 是否存在超过单行上限的行（按 LF / CRLF / CR 切分，行尾不计数）。 */
 function hasOversizedLine(code: string): boolean {
@@ -239,16 +80,6 @@ function hasOversizedLine(code: string): boolean {
     if (line.length > MAX_HIGHLIGHT_LINE_CHARS) return true;
   }
   return false;
-}
-
-function safeColor(color: string | undefined): string | undefined {
-  return color !== undefined && SAFE_COLOR.test(color) ? color : undefined;
-}
-
-function safeFontStyle(style: number | undefined): number | undefined {
-  if (style === undefined) return undefined;
-  const masked = style & 7;
-  return masked === 0 ? undefined : masked;
 }
 
 // —— 缓存：key = code + 规范语言 + 主题策略版本；成功与失败都缓存 ——
@@ -303,44 +134,80 @@ export function resetHighlightCache(): void {
   cacheFailures = 0;
 }
 
-function normalizeNul(value: string): string {
-  return value.replace(/\0/gu, "\uFFFD");
+/** 官方只产出主题变量；映射到扩展已有四主题变量，不接受任意 CSS。 */
+function hostColor(value: unknown): string | undefined {
+  return typeof value === "string" && /^var\(--shiki-(?:foreground|token-[a-z-]+)\)$/u.test(value)
+    ? value.replace("--shiki-", "--md-code-") : undefined;
+}
+
+/** 官方样式对象只取本宿主可呈现的字形，不改官方 token 的计算。 */
+function hostFontStyle(style: VendorSpan["style"]): number | undefined {
+  const decoration = typeof style.textDecoration === "string" ? style.textDecoration.split(/\s+/u) : [];
+  const bits = (style.fontStyle === "italic" ? 1 : 0) | (style.fontWeight === "bold" ? 2 : 0)
+    | (decoration.includes("underline") ? 4 : 0) | (decoration.includes("line-through") ? 8 : 0);
+  return bits === 0 ? undefined : bits;
 }
 
 /**
- * token 列表 → 源码偏移段。任何越界、倒序、长度或内容不符都返回 undefined（整块回退）。
+ * 官方提供逐行文本 run，宿主将它们对齐到原文行（保留 CRLF/CR/LF 的独立缺口）。
+ * 仅允许引擎 NUL→U+FFFD 差异；任何行数 / 内容不符都整块回退，绝不猜偏移。
  */
-function spansFromTokens(code: string, tokens: readonly { content: string; offset?: number; color?: string; fontStyle?: number }[]): HighlightSpan[] | undefined {
+function spansFromRuns(code: string, lines: readonly VendorSpan[][]): HighlightSpan[] | undefined {
   const spans: HighlightSpan[] = [];
-  let cursor = 0;
-  for (const token of tokens) {
-    const start = token.offset;
-    const length = token.content.length;
-    if (start === undefined || !Number.isSafeInteger(start) || start < cursor || length === 0) return undefined;
-    const end = start + length;
-    if (!Number.isSafeInteger(end) || end > code.length) return undefined;
-    const slice = code.slice(start, end);
-    if (slice.length !== length) return undefined;
-    // 允许的唯一规范差异：Shiki 把 NUL 写成 U+FFFD；显示的仍是源码切片。
-    if (slice !== token.content && normalizeNul(slice) !== token.content) return undefined;
-    if (start > cursor) {
-      spans.push({ start: cursor, end: start });
+  const sourceLines = code.split(/\r\n|\r|\n/u);
+  if (lines.length > sourceLines.length) return undefined;
+  let offset = 0;
+  for (let index = 0; index < sourceLines.length; index += 1) {
+    const source = sourceLines[index];
+    const runs = lines[index] ?? [];
+    let column = 0;
+    for (const run of runs) {
+      const text = source.slice(column, column + run.text.length);
+      if (text.length !== run.text.length || (text !== run.text && text.replace(/\0/gu, "\uFFFD") !== run.text)) return undefined;
+      if (run.text.length === 0) continue;
+      const color = hostColor(run.style.color);
+      const fontStyle = hostFontStyle(run.style);
+      spans.push({ start: offset + column, end: offset + column + text.length,
+        ...(color === undefined ? {} : { color }), ...(fontStyle === undefined ? {} : { fontStyle }) });
+      column += text.length;
       if (spans.length > MAX_SPANS) return undefined;
     }
-    spans.push({
-      start,
-      end,
-      ...(safeColor(token.color) === undefined ? {} : { color: safeColor(token.color) }),
-      ...(safeFontStyle(token.fontStyle) === undefined ? {} : { fontStyle: safeFontStyle(token.fontStyle) }),
-    });
-    cursor = end;
-    if (spans.length > MAX_SPANS) return undefined;
+    if (column !== source.length) return undefined;
+    offset += source.length;
+    const eol = code.startsWith("\r\n", offset) ? 2 : /[\r\n]/u.test(code[offset] ?? "") ? 1 : 0;
+    if (eol > 0) {
+      spans.push({ start: offset, end: offset + eol });
+      offset += eol;
+      if (spans.length > MAX_SPANS) return undefined;
+    }
   }
-  if (cursor < code.length) {
-    spans.push({ start: cursor, end: code.length });
-    if (spans.length > MAX_SPANS) return undefined;
-  }
-  return cursor <= code.length ? spans : undefined;
+  return offset === code.length ? spans : undefined;
+}
+
+/**
+ * 使用官方会保留字形的 span 臂；新会话只做一次完整高亮，不开启产品流式高亮。
+ * 先订阅再请求，异步语法就绪后重试；超时解绑，不永久持有源码 / listener。
+ */
+function officialRuns(code: string, lang: string): Promise<readonly VendorSpan[][] | undefined> {
+  return new Promise((resolve) => {
+    const session = new StreamingHighlightSession();
+    let detach: (() => void) | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finish = (value: readonly VendorSpan[][] | undefined) => {
+      detach?.();
+      if (timer !== undefined) clearTimeout(timer);
+      resolve(value);
+    };
+    const attempt = () => {
+      try {
+        const runs = session.update(code, lang);
+        if (runs !== undefined) finish(runs);
+      } catch { finish(undefined); }
+    };
+    detach = subscribeGrammarLoaded(attempt);
+    timer = setTimeout(() => finish(undefined), 10_000);
+    attempt();
+  });
 }
 
 /**
@@ -421,13 +288,8 @@ export async function highlightCode(code: string, lang: string | undefined): Pro
 
 async function tokenize(code: string, lang: string, key: string): Promise<HighlightSpan[] | null> {
   try {
-    const shiki = await highlighter();
-    const lines = shiki.codeToTokensBase(code, {
-      lang,
-      theme: THEME_NAME,
-      tokenizeTimeLimit: TOKENIZE_TIME_LIMIT_MS,
-    });
-    const spans = spansFromTokens(code, lines.flat());
+    const lines = await officialRuns(code, lang);
+    const spans = lines === undefined ? undefined : spansFromRuns(code, lines);
     remember(key, spans ?? null, code.length);
     return spans ?? null;
   } catch {

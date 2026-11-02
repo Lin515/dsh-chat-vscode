@@ -11,6 +11,8 @@
  * 运行：npm test（登记在 esbuild.scripts.mjs 的 entries）
  */
 import assert from "node:assert";
+import { grammarForHint, StreamingHighlightSession } from "../src/vendor/ui-primitives/markdown/highlight";
+import { CODE_HIGHLIGHT_EXTENSIONS, languageForPath as officialLanguageForPath } from "../src/vendor/code-language";
 import {
   highlightCode,
   highlightLines,
@@ -51,7 +53,7 @@ function colorOf(code: string, spans: readonly HighlightSpan[], literal: string)
 
 // ---------- 1. 别名与不支持的输入 ----------
 {
-  assert.strictEqual(normalizeLang("js"), "javascript");
+  assert.strictEqual(normalizeLang("js"), "typescript", "官方 JS 家族统一使用 TypeScript grammar");
   assert.strictEqual(normalizeLang("TS"), "typescript");
   assert.strictEqual(normalizeLang("ts title=demo"), "typescript");
   assert.strictEqual(normalizeLang("sh"), "shellscript");
@@ -69,13 +71,18 @@ function colorOf(code: string, spans: readonly HighlightSpan[], literal: string)
 }
 console.log("highlight: 语言别名与继承成员不命中 ✓");
 
-// ---------- 1b. 文件路径 → 语言：只看显式扩展名 ----------
+// ---------- 1b. 官方路径语言表（不再维护本地副本） ----------
 {
   assert.strictEqual(languageForPath("src/a.ts"), "typescript", "普通 POSIX 路径");
-  assert.strictEqual(languageForPath("C:\\x\\A.TSX"), "tsx", "Windows 路径与大小写");
+  assert.strictEqual(languageForPath("C:\\x\\A.TSX"), "typescript", "Windows 路径与大小写");
   assert.strictEqual(languageForPath("README.md"), "markdown");
-  assert.strictEqual(languageForPath("a.jsonc"), "jsonc");
+  assert.strictEqual(languageForPath("a.jsonc"), "json");
   assert.strictEqual(languageForPath("a.patch"), "diff");
+  assert.strictEqual(languageForPath(".env"), "dotenv");
+  assert.strictEqual(languageForPath("data.jsonl"), "json");
+  assert.strictEqual(languageForPath("config.toml"), "toml");
+  assert.strictEqual(languageForPath("module.psm1"), "powershell");
+  assert.strictEqual(languageForPath("View.vue"), "vue");
   assert.strictEqual(languageForPath("noext"), undefined, "无扩展名回退");
   assert.strictEqual(languageForPath(".bashrc"), undefined, "点号在开头不算扩展名");
   assert.strictEqual(languageForPath("a."), undefined, "空扩展名回退");
@@ -87,11 +94,11 @@ console.log("highlight: 文件路径扩展名映射只认显式语言 ✓");
 
 // ---------- 1c. read 卡语言：可识别 lang 优先，缺失按路径回退，显式纯文不反悔 ----------
 {
-  assert.strictEqual(normalizeLang("typescriptreact"), "tsx", "VS Code language id 归一化");
-  assert.strictEqual(normalizeLang("javascriptreact"), "jsx");
-  assert.strictEqual(resolveLanguage("typescriptreact", "Editor.tsx"), "tsx");
-  assert.strictEqual(resolveLanguage("javascriptreact", "Editor.jsx"), "jsx");
-  assert.strictEqual(resolveLanguage(undefined, "src/Rows.tsx"), "tsx", "缺 lang 时按 .tsx 回退");
+  assert.strictEqual(normalizeLang("typescriptreact"), "typescript", "VS Code language id 归一化");
+  assert.strictEqual(normalizeLang("javascriptreact"), "typescript");
+  assert.strictEqual(resolveLanguage("typescriptreact", "Editor.tsx"), "typescript");
+  assert.strictEqual(resolveLanguage("javascriptreact", "Editor.jsx"), "typescript");
+  assert.strictEqual(resolveLanguage(undefined, "src/Rows.tsx"), "typescript", "缺 lang 时按 .tsx 回退");
   assert.strictEqual(resolveLanguage(undefined, "schema.json"), "json", "缺 lang 的 read JSON 也着色");
   assert.strictEqual(resolveLanguage("json", "notes.txt"), "json", "服务端 lang 优先于扩展名");
   assert.strictEqual(resolveLanguage("text", "src/Rows.tsx"), undefined, "显式 text 保持纯文");
@@ -261,7 +268,7 @@ console.log("highlight: import/from/export/type 与 JSON key/string/number/bool 
     assert.strictEqual(textOf(code, spans), code, `${lang} 文本保真`);
   }
 }
-console.log("highlight: 21 种静态语法均可 tokenize 且文本保真 ✓");
+console.log("highlight: 21 种语言样例均经官方核心 tokenize 且文本保真 ✓");
 
 // ---------- 4. 未知 / 超长 / 超长单行 / 空代码回退 ----------
 {
@@ -335,5 +342,43 @@ console.log("highlight: 成功 / 失败缓存与条数、字符双限清理 ✓"
   for (const result of failedResults) assert.strictEqual(result, null);
 }
 console.log("highlight: 并发同 key 只 tokenize / 记账一次 ✓");
+
+// ---------- 官方输出逐字符样式对照：真实语法 / 主题 / 字形均来自同一源码 ----------
+{
+  for (const ext of CODE_HIGHLIGHT_EXTENSIONS) {
+    assert.strictEqual(languageForPath(`src/file.${ext}`), officialLanguageForPath(`src/file.${ext}`));
+  }
+  for (const [lang, code] of [
+    ["typescript", 'const n: number = 42; // hello\n'],
+    ["json", '{"value":true,"count":42}\n'],
+    ["python", 'def greet(name):\n    return "hello " + name\n'],
+    ["toml", '[server]\nport = 8080\n'],
+    ["markdown", '**bold** *italic* [link](https://example.com)\n'],
+  ]) {
+    assert.strictEqual(normalizeLang(lang), grammarForHint(lang));
+    const spans = await highlightCode(code, lang);
+    assert.ok(spans !== null, `官方懒加载语法最终就绪：${lang}`);
+    const runs = new StreamingHighlightSession().update(code, lang);
+    assert.ok(runs !== undefined);
+    const expected: { color?: string; fontStyle?: number }[] = [];
+    for (const [i, line] of runs.entries()) {
+      if (i > 0) expected.push({});
+      for (const run of line) {
+        const style = run.style;
+        const decoration = typeof style.textDecoration === "string" ? style.textDecoration : "";
+        const bits = (style.fontStyle === "italic" ? 1 : 0) | (style.fontWeight === "bold" ? 2 : 0)
+          | (decoration.includes("underline") ? 4 : 0) | (decoration.includes("line-through") ? 8 : 0);
+        const color = typeof style.color === "string" ? style.color.replace("--shiki-", "--md-code-") : undefined;
+        for (const _char of run.text.split("")) expected.push({ ...(color === undefined ? {} : { color }), ...(bits === 0 ? {} : { fontStyle: bits }) });
+      }
+    }
+    const actual = Array.from({ length: code.length }, (_, index) => {
+      const span = spans.find((span) => index >= span.start && index < span.end);
+      return { ...(span?.color === undefined ? {} : { color: span.color }), ...(span?.fontStyle === undefined ? {} : { fontStyle: span.fontStyle }) };
+    });
+    assert.deepStrictEqual(actual, expected, `只映射主题变量，不重算官方样式：${lang}`);
+  }
+}
+console.log("highlight: 官方路径表、语法、主题与字形逐字符对照 ✓");
 
 console.log("\nhighlight: all assertions passed");

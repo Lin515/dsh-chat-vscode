@@ -2005,6 +2005,14 @@ body.vscode-high-contrast-light .md-code-surface {
   text-decoration: underline;
 }
 
+.md-code-token.is-struck {
+  text-decoration: line-through;
+}
+
+.md-code-token.is-underlined.is-struck {
+  text-decoration: underline line-through;
+}
+
 /* collapsed long block: 160px cap with a gradient mask and a 16px arrow */
 .code-block-body {
   position: relative;

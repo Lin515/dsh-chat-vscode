@@ -6,7 +6,8 @@
     "sha": "639ed015397290b3745d163aafe02ffee4aa3f84",
     "packages": [
       "@deepseek-ai/dsh-client-ui-trajectory",
-      "@deepseek-ai/dsh-client-ui-primitives"
+      "@deepseek-ai/dsh-client-ui-primitives",
+      "@deepseek-ai/dsh-util-code-language"
     ],
     "fixtureDir": "test/fixtures/vendor-sources"
   },
@@ -181,6 +182,28 @@
       },
       "upstreamNormalizedSha256": "563db7dc7d640caa7d3d36ade56cb0468ad2da2fcba23ee620b64e0c1440bc1d",
       "vendorNormalizedSha256": "563db7dc7d640caa7d3d36ade56cb0468ad2da2fcba23ee620b64e0c1440bc1d",
+      "relation": "verbatim",
+      "declaredEdits": []
+    },
+    "src/vendor/ui-primitives/markdown/highlight.ts": {
+      "upstream": {
+        "path": "packages/client/ui-primitives/src/markdown/highlight.ts",
+        "bytes": 25982,
+        "sha256": "518069013f4da8f1fcf4192873be178e1ea594ad2efd95c4d69cbbdf64b97750"
+      },
+      "upstreamNormalizedSha256": "c1ae3f7651f2eb09ccdef2a54e40e72d651a94f395095629d97a047b650f55a7",
+      "vendorNormalizedSha256": "c1ae3f7651f2eb09ccdef2a54e40e72d651a94f395095629d97a047b650f55a7",
+      "relation": "verbatim",
+      "declaredEdits": []
+    },
+    "src/vendor/code-language/index.ts": {
+      "upstream": {
+        "path": "packages/util/code-language/src/index.ts",
+        "bytes": 8419,
+        "sha256": "98edcfd8abd18ed277ba024a135a50b0d33c30e3a9786f88cceacbe523f48649"
+      },
+      "upstreamNormalizedSha256": "42515db8106b73b325f39db1e48ff6e22345fb9fe1cddd0047ddcb8da8722485",
+      "vendorNormalizedSha256": "42515db8106b73b325f39db1e48ff6e22345fb9fe1cddd0047ddcb8da8722485",
       "relation": "verbatim",
       "declaredEdits": []
     }

@@ -167,27 +167,29 @@ GFM 对多段脚注、重复定义、复杂分隔符等边缘输入可能与迁�
 - 图片沿用 `localImages` 的执行世界读取、连接 + 会话缓存、有限并发和失败占位。HTTPS 图保留 no-referrer / lazy / async，HTTP 图仍拒绝；不增加远端 fetch、桌面文件路由、本机读盘回退或认证重定向。
 - React 渲染的图片 / 按钮由 React 叶节点完全拥有。旧 `hydrateFileMentions`（replaceChildren）与 `hydrateLocalImages`（换 src / 失败节点）已在阶段 2 删除；图片 pending / ready / failed 由 `markdown/render.tsx` 的 `MarkdownImage` 自持，链接 title 在渲染时合并，不再有渲染后 DOM 改写。
 - scope 改变即使 text 不变，也要清掉旧 data URL、失败占位和目标闭包，按新连接 / 会话重新请求；迟到 Promise / 回帧不得写新树。回帧前浏览器加载失败不是最终失败。卸载 / 重挂、同内容换会话、重连与重试都已回归。
-- SSR / Node 测试导入不能在模块顶层强制访问 DOM、创建引擎或加载字体。普通 React Markdown 和直接 CodeBlock 可被无头测试导入；阶段 4 的公式排版须在无 DOM 时安全回退，不在导入期初始化排版；原始 HTML 本来就只输出文字。
+- SSR / Node 测试导入不能在模块顶层强制访问 DOM 或加载字体；代码高亮沿用官方无 DOM 的延迟预热。普通 React Markdown 和直接 CodeBlock 可被无头测试导入；阶段 4 的公式排版须在无 DOM 时安全回退，不在导入期初始化排版；原始 HTML 本来就只输出文字。
 
 ## 代码高亮
 
-阶段 3 已完成离线 / 静态验收：typecheck 4/4、189/189 离线断言（并发 8）、vendor 12/12、build 与 diff-check 通过且无 duplicate-case；受控真实浏览器已覆盖正文代码卡与五类工具节点（read / write / edit、workflow 脚本、明确 inspect 工具的整段 JSON OUT），五面 token / 文本、四主题、复制帧与 FindBar 均通过。工具节点复用同一纯模块 `src/webview/markdown/highlight.ts` 与 `useCodeHighlight` / `HighlightedText` / `.md-code-surface` 接线，不再另造引擎。安装端 / 系统剪贴板 / 真实模型未在本轮高亮验收中覆盖；安装端总体验收见「安装端验收（最终）」。
+当前验收：typecheck 4/4、190/190 离线断言（并发 8）、vendor 15/15、build 与 diff-check 通过。官方核心对拍覆盖路径语言、逐字符颜色 / 字形及原文保真；同一 DOM 入口在隔离 jsdom 和标准模式 Chromium 覆盖正文代码卡与 read / write / edit / workflow / inspect 五类工具节点，验证语法就绪、选区节点保护及旧结果隔离。各工具继续共用 `src/webview/markdown/highlight.ts`、`useCodeHighlight` / `HighlightedText` / `.md-code-surface`，不另造引擎。安装端 / 字体视觉 / 系统剪贴板 / 真实模型不由这些断言证明；安装端总体验收见「安装端验收（最终）」。
 
 ### 引擎、语言与主题
 
-- 细粒度 `createHighlighterCore` + `createJavaScriptRegexEngine` + `createCssVariablesTheme`；无 Oniguruma WASM、CDN、网络或 unsafe-eval。单文件 IIFE 首版不复制官方动态分包 / 增量会话。
-- 显式静态语言集合：JavaScript / TypeScript / JSX / TSX、JSON / JSONC、Python、Shell、PowerShell、C / C++、C#、Go、Rust、Java、HTML、CSS、SQL、YAML、Markdown、diff。语言模块按 `name` 去重（HTML 模块自带 JS / CSS、TSX 复用 TS / JSX 依赖）；嵌入语法依赖显式登记。JS 引擎不能准确支持的 grammar 纯文本回退，不用宽松模式制造看似正确的颜色。最终集合在实现验证后锁定，不自动猜语言。
-- `normalizeLang` 取首个语言标识并用显式 `Map` 归一化 js / ts / py / sh / ps1 / yml 等别名，以及 VS Code language id `typescriptreact` / `javascriptreact`；`constructor` / `__proto__` / `toString` 不命中对象继承成员。显示仍保留原标签；高亮身份与请求使用归一化语言，因此 `ts` / `TypeScript` / `ts title=x` 之间切换不拆已有 span、不重新请求。`resolveLanguage` 供工具卡把服务端语言提示与文件路径合成语言：可识别提示优先，显式 `text` / `plaintext` 保持纯文，提示缺失或未识别时才按扩展名回退，未知扩展名仍纯文。
-- 每 webview 一个按需初始化实例；初始化失败不让卡片消失。结构化 token 生成 React span，不将 `codeToHtml` 拼回普通 HTML；主题变量只接受 `var(--md-code-foreground|token-*)`。CSS 在 `.code-block` 与只带变量的 `.md-code-surface` 上定义四类 `body.vscode-light/dark/high-contrast/high-contrast-light` 回退，并用 `@media (prefers-color-scheme: light)` 覆盖无 VS Code 主题类的预览浅色；`.md-code-surface` 不复制卡片底色、描边、内边距或字体规则。语法 token 色**不取 `symbolIcon.*`**——那是大纲 / 补全图标色，主题可把它设成与正文相同，span 正确也会看起来没高亮；keyword / string / constant / comment / function / parameter 按四类主题各用固定受控值，只有 foreground / 链接 / git 增删透传真正语义的 VS Code 主题变量。高亮 span 只改受控颜色与 `is-italic` / `is-bold` / `is-underlined` 字形修饰，不改字号、字体、行高、背景、padding、换行或卡片布局。不承诺匹配所有用户 TextMate 主题。
+- 高亮核心逐字复用固定来源的官方 `src/vendor/ui-primitives/markdown/highlight.ts`；文件语言表逐字复用 `src/vendor/code-language/index.ts`，与其余 vendor 一起锁定 tag / commit、原始见证字节及规范化摘要。不在宿主适配层重写 grammar、别名表、引擎、主题规则或 token 样式计算。
+- 官方核心使用细粒度同步 Shiki core、JavaScript 正则引擎与 CSS 变量主题；TypeScript / Shell / JSON 三种启动 grammar，其余由官方显式清单异步导入。既有单文件 IIFE 构建会内联这些模块，运行时注册仍按需，不新增网络请求、WASM 或动态代码求值。官方启动定时预热照用（Node 定时器 unref）；SSR 不访问 DOM、输出仍为纯文，但不再宣称导入后绝不预热引擎。
+- 语言语义跟随官方：JS / JSX / TSX 统一使用 TypeScript grammar（JSX 近似），JSONC 使用 JSON grammar；宿主不另造专用引擎臂。`normalizeLang` 仅提取 info string 首个标识，兼容 VS Code 的 `typescriptreact` / `javascriptreact` 及既有 `pwsh`、`c++`、`c#` 提示，随后委托官方别名或官方扩展名表。路径映射包括 .env、jsonl、toml、psm1、vue 等，未知语言仍纯文。`resolveLanguage` 保留提示优先、未知提示回退路径、显式 text / plaintext 不反悔的宿主规则。
+- 宿主使用官方 `StreamingHighlightSession.update` 的结构化 span 臂，单次完整输入；**不因此启用产品流式高亮，也不改变数学 streaming 行为**。官方懒加载完成通知驱动重试，10 秒未就绪则解除订阅并回退。`highlightToHtml` 不进入宿主 DOM。
+- 仅将官方 `var(--shiki-foreground|token-*)` 映射到已有 `--md-code-*` 四主题变量；字形保留斜体 / 粗体 / 下划线 / 删除线，其他任意样式不透传。`.md-code-surface` 不增加卡片几何，字号 / 行高 / 背景 / padding / 换行不变。语法色仍用固定受控值，不取可能等于正文色的 `symbolIcon.*`，不承诺匹配任意 TextMate 主题。
 
 ### 缓存、限额与文本保真
 
-- 缓存 key = 主题策略版本 + 归一化语言 + 原 code；成功与失败都缓存，同 key 的并发请求共享一次 tokenize 与一次记账。条数上限 `MAX_CACHE_ENTRIES = 64`、总字符上限 `MAX_CACHE_CHARS = 200000`；单块超过 `MAX_HIGHLIGHT_CHARS = 50000` 字符跳过增强；单行超过 `MAX_HIGHLIGHT_LINE_CHARS = 4000` 字符时先于引擎整块回退纯文本（JavaScript 正则单行耗时随行长近似平方增长），单行 tokenize 另设 `tokenizeTimeLimit = 500ms`；单块最多 `MAX_SPANS = 4000` 段。空代码、未知 / 不支持语言、映射缺失与引擎或 token 校验失败都原位显示纯文本。
-- token 偏移必须是源码上的安全整数、单调、不越界；每段显示文本用原 `code` 切片，token 间缺口（CRLF / 空行 / 尾部空白）与末尾由原 code 补齐。唯一允许的内容差异是 Shiki 把 NUL 规范化为 U+FFFD，显示仍取源码。任何偏移或长度校验失败整块回退，不输出错位颜色。CRLF、空行、尾空白、NUL、空代码与末尾换行逐字保真；显示文本、code prop 与复制载荷一致，行数判定仍是 `code.split("\n").length > 20`。
+- 缓存 key = 主题策略版本 + 官方归一化语言 + 原 code；成功 / 失败缓存与同 key 并发合并保留。条数上限 64、总字符上限 200000、单块 50000 字符、单行 4000 字符，均由宿主在请求前判断；最多 4000 段。tokenize 的选项使用锁定官方核心。未知 / 空 / 超限 / 引擎失败均原位纯文。
+- 官方提供逐行文本 run；宿主按原文 LF / CRLF / CR 行界转成偏移，每行拼接必须逐字符一致（仅允许 NUL → U+FFFD 的引擎差异），否则整块回退，绝不猜偏移。行间分隔符与未着色部分仍切原 code，保留 CRLF、空行、tab、NUL、尾空白与末尾换行。复制仍读取原 code，折展行数规则不变。
+- `highlight.test.ts` 对照官方完整语言后缀表，并用 TS / JSON / Python / TOML / Markdown 的真实官方结果逐字符对照主题与字形；原有缓存、上限、多行、原文保真断言继续执行。DOM 回归还覆盖正文 / 工具共用接线、语法就绪、选区屏障与旧请求隔离；来源锁防止官方副本漂移，不能由功能断言代替。
 
 ### React 接线与生命周期
 
-- `CodeBlock` 只在 `phase === "settled"` 的 effect 里调 `highlightCode`；streaming / SSR 只输出纯文本，effect 不跑就不会初始化引擎。普通父级重渲染、locale / cwd / 文件词表变化不触发着色；只有 `code`、归一化语言与 `phase` 变化重新请求。
+- `CodeBlock` 只在 `phase === "settled"` 的 effect 里调 `highlightCode`；streaming / SSR 只输出纯文本，effect 不跑就不请求着色；官方模块可独立预热引擎。普通父级重渲染、locale / cwd / 文件词表变化不触发着色；只有 `code`、归一化语言与 `phase` 变化重新请求。
 - 每个请求带取消标记与 key；卸载、代码或语言变化时取消旧结果，渲染前再核对当前 key，避免旧高亮覆盖新代码。`code` 改变的第一帧即退回纯文本，不等异步结果。
 - 结果抵达时若活动选区与 `<code>` 相交（`selectionIntersectsElement` 用 `Range.intersectsNode`，含从段落拖进代码、跨两张卡；没有该 API 时回退到共同祖先双向包含），先暂存该结果，监听 `selectionchange`；选区清空 / 移开后再应用最新一份。请求被新代码 / 语言 / phase 取代或组件卸载时丢弃暂存，不应用旧结果。
 - span 文本由原 `code` 切片生成，不拼 `innerHTML`；复制仍用原 `code`。卡片 DOM 身份、折展状态和完整选择文本在着色前后保持不变。
@@ -295,7 +297,7 @@ GFM 对多段脚注、重复定义、复杂分隔符等边缘输入可能与迁�
 
 阶段 2 已保留 [markdown.test.ts](<../scripts/markdown.test.ts>)、[footnotes.test.ts](<../scripts/footnotes.test.ts>)、[styles.test.ts](<../scripts/styles.test.ts>) 中的业务断言，并淘汰仅固定 marked 调用形状的断言；同步 fileLinks、localImageResolve、localImages、contextMenu、questionRender、trajectoryVendor、vendorSourceLock、manifest 等关联回归，没有因旧测试不再匹配而整段删除安全要求。阶段 3 新增 [highlight.test.ts](<../scripts/highlight.test.ts>)、[diffHighlight.test.ts](<../scripts/diffHighlight.test.ts>)、[toolSource.test.ts](<../scripts/toolSource.test.ts>) 与 [selectionRange.test.ts](<../scripts/selectionRange.test.ts>)，并扩展 [find.test.ts](<../scripts/find.test.ts>) 的脱树导航判据；阶段 4 新增 [math.test.ts](<../scripts/math.test.ts>) 覆盖金额、围栏闭合、容器源码 / 载荷分离与官方臂树等价，[mathRender.test.ts](<../scripts/mathRender.test.ts>) 及其隔离浏览器入口覆盖官方树对拍、中文 / 表格、限额、宏隔离、安全和选区完整 DOM 链，以及 [mathView.test.ts](<../scripts/mathView.test.ts>) 覆盖 SSR 首帧原文、四类定界符 / 金额、display 脱 p、strong / em / link / footnote 拆段、tex / latex 回退与渲染身份的五个事实 / NUL 不碰撞；真实异步与选区冻结已由主真实浏览器验收通过（15/15 布局、宽公式局部滚动、`newsource → invalid` 首帧 raw、跨段 / 跨公式选区冻结）。复制按钮取原始 message text / 精确 code 由 `mathView.test.ts` / `codeBlock.test.ts` 的源码接线与纯文本断言固定，不冒充 DOM / 系统剪贴板证明。全部登记在[脚本构建入口](<../esbuild.scripts.mjs>) entries。图片 / 链接 / 选区的真实 DOM 时序由受控浏览器回放，Node 静态源码检查不等同浏览器证据。
 
-阶段 3 的代码高亮已有离线 / 受控浏览器验收。当前数学由 `mathRender.test.ts` 的完整 DOM 链与真实 Chromium 分别验证，来源锁包含 13 份副本。既有资源 / 安装记录见下节，只证明其记录时的资源与宿主环境，不替代当前官方 React 排版的回归。原生复制仍读 `Selection.toString()`；VS Code 系统剪贴板与屏幕阅读器朗读不在本次自动化覆盖内。不启动真实 DSH、不发送真实消息或运行模型探针。
+阶段 3 的代码高亮已有离线 / 受控浏览器验收。当前数学由 `mathRender.test.ts` 的完整 DOM 链与真实 Chromium 分别验证，来源锁包含 15 份副本。既有资源 / 安装记录见下节，只证明其记录时的资源与宿主环境，不替代当前官方 React 排版的回归。原生复制仍读 `Selection.toString()`；VS Code 系统剪贴板与屏幕阅读器朗读不在本次自动化覆盖内。不启动真实 DSH、不发送真实消息或运行模型探针。
 
 ### 安装端验收（已有资源证据）
 

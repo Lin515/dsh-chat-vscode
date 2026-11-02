@@ -1,6 +1,6 @@
 /**
  * 高亮 token 的受控渲染：只把源码偏移段切成 React span，颜色仅来自本地主题的
- * `var(--md-code-*)`，字形修饰仅 `is-italic` / `is-bold` / `is-underlined`。
+ * `var(--md-code-*)`，字形修饰仅斜体 / 粗体 / 下划线 / 删除线。
  *
  * 不拼 HTML、不经过 `dangerouslySetInnerHTML`；普通缺口与末尾始终取原 `text`
  * 切片，因此显示文本逐字等于源文（CRLF / tab / NUL / 尾空白不变）。
@@ -12,13 +12,14 @@ import { useRef, type ReactNode } from "react";
 import type { HighlightSpan } from "../markdown/highlight";
 import { useCodeHighlight } from "./useCodeHighlight";
 
-/** TextMate fontStyle 位 → 受控 class（1 斜体 / 2 粗体 / 4 下划线）。 */
+/** 官方 token 字形 → 受控 class（1 斜体 / 2 粗体 / 4 下划线 / 8 删除线）。 */
 export function fontStyleClass(style: number | undefined): string | undefined {
   if (style === undefined) return undefined;
   const classes: string[] = [];
   if ((style & 1) !== 0) classes.push("is-italic");
   if ((style & 2) !== 0) classes.push("is-bold");
   if ((style & 4) !== 0) classes.push("is-underlined");
+  if ((style & 8) !== 0) classes.push("is-struck");
   return classes.length === 0 ? undefined : classes.join(" ");
 }
 

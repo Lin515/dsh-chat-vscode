@@ -1,17 +1,17 @@
 /**
- * M01：`src/vendor/**` 官方 UI 副本的**源锁**断言（零 token、不联网、不读用户目录）。
+ * M01：`src/vendor/**` 官方源码副本的**源锁**断言（零 token、不联网、不读用户目录）。
  *
  * 判据本体在 `scripts/vendorSourceLock.ts`，登记在 `scripts/vendorSourceLock.json`，
- * 上游那一侧的凭据是仓库内 13/13 份离线见证素材
+ * 上游那一侧的凭据是仓库内 15/15 份离线见证素材
  * （`test/fixtures/vendor-sources/dsh-v0.2.0-rc.2/**`，逐字节等于固定 tag 上的原文）。
  *
- * 这一份做三件事：①基线（真实磁盘副本 + 真实锁清单 + **全部 13 份素材**）必须无漂移；
+ * 这一份做三件事：①基线（真实磁盘副本 + 真实锁清单 + **全部 15 份素材**）必须无漂移；
  * ②**可证伪** —— 逐类构造突变，判据必须红（含「素材缺一份 / 多一份 / 改一个字节」与
  * 「规范化规则被改」）；③**允许的漂移**必须绿（登记的说明符改写、已登记的类型壳 /
  * 本地图片判据差异、以及有意的排版与注释漂移）。
  *
  * 突变全部在**内存**里做（`structuredClone` 一份夹具），不碰 `src/vendor/**` 的真实文件，
- * 也不碰素材目录里的那 13 份原文。
+ * 也不碰素材目录里的那 15 份原文。
  *
  * 运行：npm test
  */
@@ -49,7 +49,7 @@ const ROOT = process.cwd();
 const LOCK = lockJson as unknown as VendorSourceLock;
 const VENDOR_FILES = collectVendorSources(ROOT);
 const VENDOR_README = readFileSync(join(ROOT, "src", "vendor", "README.md"), "utf8");
-/** 上游那一侧的 13/13 离线见证（官方相对路径 → 原文）。 */
+/** 上游那一侧的 15/15 离线见证（官方相对路径 → 原文）。 */
 const FIXTURES = collectUpstreamFixtures(ROOT, LOCK.upstream.fixtureDir, LOCK.upstream.tag);
 
 const TIMELINE = "src/vendor/ui-trajectory/timeline.ts";
@@ -59,10 +59,14 @@ const LOCAL_IMAGE = "src/vendor/ui-primitives/markdown/local-image-syntax.ts";
 const INBOX = "src/vendor/ui-trajectory/inbox-state.ts";
 const TURN_MODEL = "src/vendor/ui-trajectory/trajectory-turn-model.ts";
 const KATEX = "src/vendor/ui-primitives/markdown/katex.tsx";
+const HIGHLIGHT = "src/vendor/ui-primitives/markdown/highlight.ts";
+const CODE_LANGUAGE = "src/vendor/code-language/index.ts";
 
 const TIMELINE_UPSTREAM = "packages/client/ui-trajectory/src/client/timeline.ts";
 const PREVIEW_UPSTREAM = "packages/client/ui-trajectory/src/client/trajectory-preview.ts";
 const KATEX_UPSTREAM = "packages/client/ui-primitives/src/markdown/katex.tsx";
+const HIGHLIGHT_UPSTREAM = "packages/client/ui-primitives/src/markdown/highlight.ts";
+const CODE_LANGUAGE_UPSTREAM = "packages/util/code-language/src/index.ts";
 
 interface Draft {
   lock: Mutable<VendorSourceLock>;
@@ -138,7 +142,7 @@ function mutateFixture(draft: Draft, upstreamPath: string, from: string, to: str
   draft.upstreamFiles[index] = { path: upstreamPath, text: after };
 }
 
-// ---------- 1. 基线：真实磁盘副本 + 真实锁清单 + 全部 13 份素材 ----------
+// ---------- 1. 基线：真实磁盘副本 + 真实锁清单 + 全部 15 份素材 ----------
 {
   const problems = vendorSourceProblems({
     lock: LOCK,
@@ -155,8 +159,13 @@ function mutateFixture(draft: Draft, upstreamPath: string, from: string, to: str
   );
 }
 
-// ---------- 2. 登记与来源：形式、固定身份、13/13 覆盖、已登记差异 ----------
+// ---------- 2. 登记与来源：形式、固定身份、15/15 覆盖、已登记差异 ----------
 {
+  assert.strictEqual(
+    Object.keys(LOCK.files).length,
+    15,
+    "锁清单固定登记 15 份官方副本（新增或移除必须显式改这里与素材 / README / 声明）",
+  );
   assert.strictEqual(
     Object.keys(LOCK.files).length,
     VENDOR_FILES.length,
@@ -176,10 +185,21 @@ function mutateFixture(draft: Draft, upstreamPath: string, from: string, to: str
       VENDOR_FILES.some((file) => file.path.endsWith(".tsx")),
     "枚举要同时覆盖 *.ts 与 *.tsx",
   );
+  // 跨包新副本必须真的被枚举到（漏搬或路径写错时，光靠「集合相等」发现不了）
+  assert.ok(
+    VENDOR_FILES.some((file) => file.path === HIGHLIGHT) &&
+      FIXTURES.some((file) => file.path === HIGHLIGHT_UPSTREAM),
+    `全量枚举必须覆盖官方高亮器原文：${HIGHLIGHT}`,
+  );
+  assert.ok(
+    VENDOR_FILES.some((file) => file.path === CODE_LANGUAGE) &&
+      FIXTURES.some((file) => file.path === CODE_LANGUAGE_UPSTREAM),
+    `全量枚举必须覆盖官方路径语言表原文：${CODE_LANGUAGE}`,
+  );
   assert.strictEqual(LOCK.upstream.tag, FIXED_UPSTREAM.tag);
   assert.strictEqual(LOCK.upstream.sha, FIXED_UPSTREAM.sha);
 
-  // 上游那一侧：**13/13 逐字素材**，路径是官方相对路径，一条不多一条不少
+  // 上游那一侧：**15/15 逐字素材**，路径是官方相对路径，一条不多一条不少
   const upstreamPaths = [
     ...new Set(Object.values(LOCK.files).map((entry) => entry.upstream.path)),
   ].sort();
@@ -191,12 +211,12 @@ function mutateFixture(draft: Draft, upstreamPath: string, from: string, to: str
   assert.strictEqual(FIXTURES.length, Object.keys(LOCK.files).length, "每条登记各有一份原文");
   for (const file of FIXTURES) {
     assert.ok(
-      !file.path.startsWith("src/") && /^packages\/client\/[^/]+\/src\//.test(file.path),
+      !file.path.startsWith("src/") && /^packages\/(?:client|util)\/[^/]+\/src\//.test(file.path),
       `素材路径要保持官方相对路径：${file.path}`,
     );
     assert.ok(!file.path.includes("\\") && !file.path.startsWith("/"), "素材路径不许带本机痕迹");
   }
-  // 素材字节与登记值逐份相符（原始字节数）；这一条是「13/13」的落点
+  // 素材字节与登记值逐份相符（原始字节数）；这一条是「15/15」的落点
   for (const [vendorPath, entry] of Object.entries(LOCK.files)) {
     const file = required(
       FIXTURES.find((candidate) => candidate.path === entry.upstream.path),
@@ -225,7 +245,7 @@ function mutateFixture(draft: Draft, upstreamPath: string, from: string, to: str
     assert.strictEqual(entry.relation, "excerpt", `${path} 是从官方更大的文件里摘的`);
     assert.ok((entry.upstreamExtract ?? "").length > 0, `${path} 要写明摘的是哪一段`);
   }
-  for (const path of [TIMELINE, PREVIEW, KATEX]) {
+  for (const path of [TIMELINE, PREVIEW, KATEX, HIGHLIGHT, CODE_LANGUAGE]) {
     const entry = required(LOCK.files[path], `${path} 要登记`);
     assert.strictEqual(entry.declaredEdits.length, 0, `${path} 与上游逐字等价`);
     assert.strictEqual(entry.vendorNormalizedSha256, entry.upstreamNormalizedSha256);
@@ -264,6 +284,38 @@ function mutateFixture(draft: Draft, upstreamPath: string, from: string, to: str
   });
   expectRed("内容漂移：" + KATEX, "改错误 span 的 JSX className", (draft) => {
     mutateVendorText(draft, KATEX, 'className="katex-error"', 'className="katex-errors"');
+  });
+  // 官方高亮器：别名表与 JS 正则引擎选项都是语义，必须被内容锁抓到。
+  expectRed("内容漂移：" + HIGHLIGHT, "把 `ts` 别名改指向另一门 grammar", (draft) => {
+    mutateVendorText(draft, HIGHLIGHT, "['ts', 'typescript'],", "['ts', 'javascript'],");
+  });
+  expectRed("内容漂移：" + HIGHLIGHT, "改 JS 正则引擎的懒编译阈值（引擎选项）", (draft) => {
+    mutateVendorText(
+      draft,
+      HIGHLIGHT,
+      "lazyCompileLength: Number.POSITIVE_INFINITY,",
+      "lazyCompileLength: 3_000,",
+    );
+  });
+  expectRed("内容漂移：" + HIGHLIGHT, "关掉正则引擎的宽容 arm", (draft) => {
+    mutateVendorText(draft, HIGHLIGHT, "forgiving: true,", "forgiving: false,");
+  });
+  // 官方路径语言表：扩展名映射与 read 卡片短 id 都要逐字锁住。
+  expectRed("内容漂移：" + CODE_LANGUAGE, "路径语言映射少一个扩展名（`cts` 被删）", (draft) => {
+    mutateVendorText(
+      draft,
+      CODE_LANGUAGE,
+      "typescript: ['ts', 'tsx', 'mts', 'cts'],",
+      "typescript: ['ts', 'tsx', 'mts'],",
+    );
+  });
+  expectRed("内容漂移：" + CODE_LANGUAGE, "read 卡片短 id 漂移（`tsx` → `ts`）", (draft) => {
+    mutateVendorText(
+      draft,
+      CODE_LANGUAGE,
+      "['tsx', 'tsx'], ['jsx', 'jsx'],",
+      "['tsx', 'ts'], ['jsx', 'jsx'],",
+    );
   });
 }
 
@@ -579,4 +631,4 @@ function mutateFixture(draft: Draft, upstreamPath: string, from: string, to: str
   );
 }
 
-console.log("\nvendor-source-lock: 内容锁 / 双向登记 / 13/13 上游见证 / 来源自洽（含突变自证） ✓");
+console.log("\nvendor-source-lock: 内容锁 / 双向登记 / 15/15 上游见证 / 来源自洽（含突变自证） ✓");

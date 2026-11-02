@@ -109,7 +109,8 @@
 - [mathRender.test.ts](<mathRender.test.ts>) / [mathDomBrowser.ts](<mathDomBrowser.ts>) — 无 DOM / 超长 / 未闭合守卫，以及隔离 jsdom 中的 KaTeX → 官方 React → React DOM 完整链：中文 / 表格、官方树对拍、错误回退、独立宏表、危险命令、普通代码字面、迟到结果和 raw / 已排版选区冻结。同一入口可在 Chromium 运行，补 jsdom 缺少 `MathMLElement.style` 的语料；不以 jsdom 证明字体、布局或辅助技术。
 - [mathView.test.ts](<mathView.test.ts>) — MathView / 正文接线的 SSR 与 display 所有权：四定界符、金额、未闭合 / 超长原文回退、math 围栏与 tex / latex 分流、段落 / strong / emphasis / link / 引用 / tight-loose 列表 / 表格 / 脚注的 display 切段与逻辑换行、无 p 包 div 与危险原文；不冒充真实浏览器异步 / 选区验收。
 - [markdownSource.test.ts](<markdownSource.test.ts>) — 代码块源文逐字符：围栏 / 缩进 / 引用与列表前缀 / tab 视觉列 / CRLF / 尾空行 / 未闭合 / NUL 与部分 tab 组合。
-- [highlight.test.ts](<highlight.test.ts>) — 完成态代码高亮纯模块：语言别名 / 继承成员、21 种静态 grammar、CRLF / 空行 / 尾空白 / NUL 逐字保真、颜色白名单、成功 / 失败缓存与条数 / 字符双限、并发同 key 单次记账、总长与超长单行回退。
+- [highlight.test.ts](<highlight.test.ts>) — 官方高亮适配：完整路径语言表对拍、21 种语言样例、官方逐字符颜色 / 字形对照、CRLF / 空行 / 尾空白 / NUL 保真、有界缓存、并发去重与超限回退。
+- [highlightDom.test.ts](<highlightDom.test.ts>) / [highlightDomBrowser.tsx](<highlightDomBrowser.tsx>) — 官方高亮经正文、read / write / edit / workflow / inspect 工具生产组件落地；异步语法、迟到结果、选区节点保留与受控主题。隔离 jsdom 只补空几何端口，不证明布局；同一入口用于真实 Chromium。
 - [selectionRange.test.ts](<selectionRange.test.ts>) — 选区相交判据：折叠 / 跨边界 / 多 Range / 无 `intersectsNode` 回退 / detach，以及脱树 Range 不导航；不替代真实 DOM 验收。
 - [footnotes.test.ts](<footnotes.test.ts>) — GFM / mdast 脚注：首次与重复引用、缺定义、重复定义 last-wins、代码与转义、嵌套、仅有定义。
 - [fileLinks.test.ts](<fileLinks.test.ts>) — 正文文件链接三段链路（判定 / DOM 落地 / 样式）。
@@ -302,7 +303,7 @@
 - [dshContract.ts](<dshContract.ts>) — DSH 契约快照与差异分析纯逻辑（官方契约面 × 本扩展消费面 = 影响面）。
 - [dshContract.test.ts](<dshContract.test.ts>) — 上述逻辑的离线断言（版本判读、差异分级规则）。
 - [dshCompat.ts](<dshCompat.ts>) — `watch`／`snapshot <版本>`／`check` 服务端契约追踪；**不覆盖官方 UI 语义**，远端版本／契约获取可能访问网络，不耗模型 token 不等于断网。
-- [vendorSourceLock.ts](<vendorSourceLock.ts>)、[登记表](<vendorSourceLock.json>)、[离线回归](<vendorSourceLock.test.ts>) — 13 份官方原字节见证与 vendor 文件集合双向锁；只归一化模块说明符，保留 literal／template／regex／ASI 语义。基准为固定官方提交，不用本地 HEAD；自洽摘要不能认证历史来源。原字节见证与授权边界见[夹具索引](<../test/fixtures/README.md>)。
+- [vendorSourceLock.ts](<vendorSourceLock.ts>)、[登记表](<vendorSourceLock.json>)、[离线回归](<vendorSourceLock.test.ts>) — 15 份官方原字节见证与 vendor 文件集合双向锁；只归一化模块说明符，保留 literal／template／regex／ASI 语义。基准为固定官方提交，不用本地 HEAD；自洽摘要不能认证历史来源。原字节见证与授权边界见[夹具索引](<../test/fixtures/README.md>)。
 
 ## 工具脚本（`*.mjs`）
 

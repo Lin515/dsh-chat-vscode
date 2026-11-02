@@ -44,6 +44,10 @@
     // M01 vendor 源锁与回归
     "scripts/vendorSourceLock.ts",
     "scripts/vendorSourceLock.test.ts",
+    // 官方高亮核心对拍与生产 DOM 回归（与来源锁一同检查）
+    "scripts/highlight.test.ts",
+    "scripts/highlightDom.test.ts",
+    "scripts/highlightDomBrowser.tsx",
     // 轨迹页：宿主折叠、界面投影、交互端口、账本行、检查器、提示词差分、vendor 适配
     "scripts/trajectory.test.ts",
     "scripts/trajectoryDisplay.test.ts",
