@@ -159,6 +159,7 @@ const entries = {
   "build/preview-fixture.test.mjs": "scripts/previewFixture.test.ts",
   "build/i18n.test.mjs": "scripts/i18n.test.ts",
   "build/occupancy.test.mjs": "scripts/occupancy.test.ts",
+  "build/format-clock.test.mjs": "scripts/formatClock.test.ts",
   "build/invariants.test.mjs": "scripts/invariants.test.ts",
   "build/wire.test.mjs": "scripts/wire.test.ts",
   "build/turn-files.test.mjs": "scripts/turnFiles.test.ts",

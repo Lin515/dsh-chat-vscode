@@ -722,13 +722,23 @@ export function formatDuration(ms: number): string {
   return `${hours}h ${minutes % 60}m`;
 }
 
-export function formatClock(ts: number): string {
+/**
+ * 时刻写法（轮尾时间、会话列表、任务行共用）：**只看离「现在」有多远**，
+ * - 当日：`hh:mm`；
+ * - 同日历年但不同日：`mm-dd hh:mm`；
+ * - 跨年：`yyyy-mm-dd hh:mm`。
+ *
+ * 日期段一律补零，保证一列时刻等宽对齐；`now` 只给测试固定基准，产品路径用系统当前时间。
+ */
+export function formatClock(ts: number, now: Date = new Date()): string {
   const date = new Date(ts);
-  const now = new Date();
-  const time = `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+  const time = `${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
   if (date.toDateString() === now.toDateString()) return time;
-  if (date.getFullYear() === now.getFullYear()) {
-    return `${date.getMonth() + 1}/${date.getDate()} ${time}`;
-  }
-  return `${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()} ${time}`;
+  const monthDay = `${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+  if (date.getFullYear() === now.getFullYear()) return `${monthDay} ${time}`;
+  return `${date.getFullYear()}-${monthDay} ${time}`;
+}
+
+function pad2(value: number): string {
+  return String(value).padStart(2, "0");
 }
