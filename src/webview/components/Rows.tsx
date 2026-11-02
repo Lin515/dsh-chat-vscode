@@ -28,7 +28,7 @@ import {
   useSelectionFreeze,
   useStickyBody,
 } from "./primitives";
-import { canSubmit, isAnswered, questionMode } from "../questionFlow";
+import { canSubmit, isAnswered, questionMode, questionReplyText } from "../questionFlow";
 import { customAnswerSize } from "../questionInput";
 import { useUiScale } from "../uiScale";
 import {
@@ -44,6 +44,7 @@ import { WritePreviewReader } from "../writePreview";
 import { languageForPath } from "../markdown/highlight";
 import { CodeBlock } from "./CodeBlock";
 import { CodeText } from "./HighlightedText";
+import { CopyButton } from "./CopyButton";
 import { Markdown } from "./Markdown";
 import { ImageGallery } from "./Images";
 import { ToolCardBody } from "./ToolCards";
@@ -537,7 +538,13 @@ export function ToolRow({
         <div ref={ioRef} className={`row-body io-card${hasImages ? " is-media" : ""}`}>
           {inputText && !codeCard ? (
             <div className="io-section">
-              <span className="io-label">{texts.toolInput}</span>
+              {/* 复制按钮与标签同一行、靠右：这是本扩展**有意多给**的入口（官方通用
+                  IN/OUT 不出复制，它的复制在详情卡 code 段里）。复制的是原文——即便
+                  OUT 被着色成 JSON，也不从 token 反向拼。 */}
+              <div className="io-head">
+                <span className="io-label">{texts.toolInput}</span>
+                <CopyButton text={inputText} title={texts.toolCopyInput} />
+              </div>
               <CodeText
                 className="io-text mono"
                 text={inputText}
@@ -549,7 +556,11 @@ export function ToolRow({
           {inputText && !codeCard && (showOutput || hasImages) ? <span className="io-divider" aria-hidden /> : null}
           {showOutput || hasImages ? (
             <div className="io-section">
-              <span className="io-label">{texts.toolOutput}</span>
+              <div className="io-head">
+                <span className="io-label">{texts.toolOutput}</span>
+                {/* 只有真的输出了正文才给复制：纯图片的 OUT 没有可复制的文本 */}
+                {showOutput ? <CopyButton text={shownOutput} title={texts.toolCopyOutput} /> : null}
+              </div>
               {showOutput ? (
                 <CodeText
                   className={`io-text mono${tool.status === "error" ? " is-error" : ""}`}
@@ -1566,7 +1577,15 @@ function QuestionCardState({
   // 题目与选项和助手正文同级，看不出属于上面那个提问节点（用户 2026-10-02 口径）。
   // 计划审阅的记录换个标题：它那次不是「提问」而是「把计划交给人放行」，
   // 展开体里除了选项还有整份计划（`detail`）。
+  //
+  // 记录态的复制载荷（每题「题头 + 当时选了什么」）口径照官方 `QuestionReplyView`
+  // 的 `replyClipboardText`（见 `questionFlow.questionReplyText`）：复制的是**整份
+  // 记录**，与展开与否无关；计划审阅卡的「回答」就是批准 / 拒绝的选项值。
   if (!waiting) {
+    const replyText = questionReplyText(items, question.answers, {
+      answer: texts.questionAnswerLabel,
+      skipped: texts.questionAnswerSkipped,
+    });
     return (
       <Row
         icon={
@@ -1583,7 +1602,15 @@ function QuestionCardState({
         open={expanded}
         onToggle={() => setExpanded(!expanded)}
       >
-        <div className="question is-record">{items.map(renderItem)}</div>
+        <div className="question is-record">
+          {/* 复制按钮放体首右上角：行头整体是一个开合按钮，不能嵌按钮（Row 同口径）。 */}
+          {items.length > 0 ? (
+            <div className="question-record-actions">
+              <CopyButton text={replyText} />
+            </div>
+          ) : null}
+          {items.map(renderItem)}
+        </div>
       </Row>
     );
   }

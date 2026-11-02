@@ -1,4 +1,4 @@
-import type { QuestionItemView } from "../shared/chat";
+import type { QuestionAnswerView, QuestionItemView } from "../shared/chat";
 
 /**
  * 问卷（`ask_user_question`）的展示口径：**一次展开**还是**依次问答**。
@@ -63,4 +63,49 @@ export function canSubmit(
   custom: Record<string, string>,
 ): boolean {
   return items.length > 0 && answeredCount(items, selected, custom) === items.length;
+}
+
+/**
+ * 一道题的答案值：选中的选项 label（按原顺序）+ 非空的自定义回答。
+ *
+ * 顺序与官方 `replyAnswerValues` 一致（选中项在前、自定义答案补在最后），
+ * 自定义文本只去首尾空白，不从中间删字符。
+ */
+export function answerValues(
+  item: QuestionItemView,
+  answers: Record<string, QuestionAnswerView> | undefined,
+): string[] {
+  const answer = answers?.[item.id];
+  const custom = answer?.custom?.trim() ?? "";
+  return [...(answer?.selected ?? []), ...(custom === "" ? [] : [custom])];
+}
+
+/**
+ * 问卷记录的**剪贴板载荷**：每题「题头 + 回答」，题与题之间空一行。
+ *
+ * 口径照官方 `question-reply.ts` 的 `replyClipboardText`：
+ * - 题头 = `header — question`（header 与 question 不同才带）或 `question`；
+ * - 回答 = `回答：值1, 值2`（多选按原顺序、逗号分隔），没答写「已跳过」；
+ * - 与气泡展开与否无关：复制的是完整记录，不是当前可见的那几行。
+ *
+ * 计划审阅卡复用同一份记录形态，「回答」就是当时的选项值（批准 / 拒绝），照常拼。
+ * `labels` 由调用方从词典取，纯函数不引 React，断言见 `scripts/questionFlow.test.ts`。
+ */
+export function questionReplyText(
+  items: readonly QuestionItemView[],
+  answers: Record<string, QuestionAnswerView> | undefined,
+  labels: { answer: string; skipped: string },
+): string {
+  return items
+    .map((item) => {
+      const heading =
+        item.header !== undefined && item.header !== "" && item.header !== item.question
+          ? `${item.header} — ${item.question}`
+          : item.question;
+      const values = answerValues(item, answers);
+      const answer =
+        values.length === 0 ? labels.skipped : `${labels.answer}${values.join(", ")}`;
+      return `${heading}\n${answer}`;
+    })
+    .join("\n\n");
 }

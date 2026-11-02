@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import type { DiffHunkView, DiffLayout, DiffLineView } from "../../shared/chat";
-import { splitDiffEnabled } from "../../shared/diff";
+import { diffClipboardText, splitDiffEnabled } from "../../shared/diff";
 import { languageForPath, splitSpansByLine, type HighlightSpan } from "../markdown/highlight";
 import type { MarkdownPhase } from "../markdown/types";
 import { diffLineSides } from "../diffHighlight";
 import { renderHighlighted } from "./HighlightedText";
+import { CopyButton } from "./CopyButton";
 import { useCodeHighlight } from "./useCodeHighlight";
 import { useTexts } from "../texts";
 import { dp, useUiScale } from "../uiScale";
@@ -86,7 +87,7 @@ function sign(line: DiffLineView | undefined): string {
   return line.kind === "add" ? "+" : line.kind === "del" ? "-" : " ";
 }
 
-function HunkHead({ hunk }: { hunk: DiffHunkView }) {
+function HunkHead({ hunk, copy }: { hunk: DiffHunkView; copy?: ReactNode }) {
   return (
     <div className="diff-head">
       {hunk.path ? (
@@ -98,6 +99,7 @@ function HunkHead({ hunk }: { hunk: DiffHunkView }) {
         {hunk.added ? <span className="diff-add">+{hunk.added}</span> : null}
         {hunk.removed ? <span className="diff-del">-{hunk.removed}</span> : null}
       </span>
+      {copy}
     </div>
   );
 }
@@ -150,7 +152,7 @@ function SplitLines({ lines, spanFor }: { lines: DiffLineView[]; spanFor: SpanFo
 }
 
 /** 一个 hunk：单栏或双栏；两侧各自 tokenize 整段连续片段。 */
-function Hunk({ hunk, split, phase, lang }: { hunk: DiffHunkView; split: boolean; phase: MarkdownPhase; lang?: string }) {
+function Hunk({ hunk, split, phase, lang, copy }: { hunk: DiffHunkView; split: boolean; phase: MarkdownPhase; lang?: string; copy?: ReactNode }) {
   const texts = useTexts();
   const rootRef = useRef<HTMLDivElement>(null);
   const active = phase === "settled";
@@ -174,7 +176,7 @@ function Hunk({ hunk, split, phase, lang }: { hunk: DiffHunkView; split: boolean
 
   return (
     <div ref={rootRef} className="diff-hunk">
-      <HunkHead hunk={hunk} />
+      <HunkHead hunk={hunk} copy={copy} />
       {split ? <SplitLines lines={hunk.lines} spanFor={spanFor} /> : <UnifiedLines lines={hunk.lines} spanFor={spanFor} />}
       {hunk.truncated ? <div className="diff-more">{texts.diffTruncated}</div> : null}
     </div>
@@ -200,6 +202,17 @@ export function DiffView({
   const ref = useRef<HTMLDivElement>(null);
   const wide = useWideEnough(ref);
   const split = splitDiffEnabled({ hunks, layout, wide, unified });
+  const diffText = useMemo(() => diffClipboardText(hunks), [hunks]);
+  /**
+   * 复制入口挂在**第一段** hunk 的头部（路径 + 计数那一行）。
+   *
+   * 官方用一条 `CodeToolbar` 横在正文上方；我们的每段 hunk 本来就有那一行，
+   * 再单独加一条工具条会多出一行空白。放头部也不压正文首行（不浮动、占布局），
+   * 与官方「工具条占布局」的要求一致。复制的是**整张卡**的全部 hunk，不是第一段。
+   *
+   * 载荷按 `hunks` 身份记忆：流式期每次增量都会重渲染，没必要每次重拼整段文本。
+   */
+  const copyNode = hunks.length === 0 ? undefined : <CopyButton text={diffText} />;
   return (
     <div ref={ref} className={`diff md-code-surface${split ? " is-split" : ""}`}>
       {hunks.map((hunk, index) => (
@@ -209,6 +222,7 @@ export function DiffView({
           split={split}
           phase={phase}
           lang={languageForPath(hunk.path) ?? fallbackLang}
+          {...(index === 0 && copyNode !== undefined ? { copy: copyNode } : {})}
         />
       ))}
     </div>

@@ -19,19 +19,27 @@ import {
 import { useTexts } from "../texts";
 import { IconCheck, IconCopy, IconWrapLines } from "../icons";
 
-/** 文字版：给放得下一行文字的位置用（工具卡横幅、后台任务详情），成功态换文案 + 对勾。 */
-export function CopyButton({ text }: { text: string }) {
+/**
+ * 文字版：给放得下一行文字的位置用（工具卡横幅、diff 头部、IN/OUT 标签行、后台任务
+ * 详情），成功态换文案 + 对勾。
+ *
+ * `title` 覆盖初始与成功态的文案：同一张卡里出现两枚文字版按钮时（工具的「输入」与
+ * 「输出」），读屏要能分开听，默认那句通用的「复制」就不够了。成功态仍是整界面共用
+ * 的那一句——反馈说的都是同一件事。
+ */
+export function CopyButton({ text, title }: { text: string; title?: string }) {
   const texts = useTexts();
   const { copied, copy } = useCopyFeedback();
+  const label = copied ? texts.copied : title ?? texts.copy;
   return (
     <button
       type="button"
       className={`copy-btn${copied ? " is-copied" : ""}`}
-      title={copied ? texts.copied : texts.copy}
+      title={label}
       onClick={() => copy(text)}
     >
       {copied ? <IconCheck size={12} /> : <IconCopy size={12} />}
-      <span>{copied ? texts.copied : texts.copy}</span>
+      <span>{label}</span>
     </button>
   );
 }

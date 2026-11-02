@@ -5,6 +5,7 @@ import type { WritePreview } from "../writePreview";
 import { useTexts } from "../texts";
 import { DiffView } from "./Diff";
 import { CodeText } from "./HighlightedText";
+import { CopyButton } from "./CopyButton";
 import { useSelectionFreeze, useStickyBody } from "./primitives";
 
 /** write 原文与既有 diff 共用一个阅读盒子，划选期间连同呈现方式一并冻结。 */
@@ -36,7 +37,15 @@ export function WriteBody({ preview, diff, layout, active, openedWhileActive, pa
         />
       ) : (
         <div className="io-section">
-          <span className="io-label">{texts.toolWritePreview}</span>
+          <div className="io-head">
+            <span className="io-label">{texts.toolWritePreview}</span>
+            {/* 预览态没有 diff（结果还没回来，或结果里没有 hunk）：复制的是屏幕上那段
+                原文，与官方写入节点的代码工具条同义——真有了 diff 就由 DiffView 自己给
+                复制入口，这里整段不渲染。 */}
+            {(shown.preview?.text ?? "") !== "" ? (
+              <CopyButton text={shown.preview?.text ?? ""} />
+            ) : null}
+          </div>
           <span className="row-running-hint">{shown.preview?.complete ? texts.toolWritePreviewHint : texts.toolWritePreviewPartialHint}</span>
           <CodeText
             className="io-text mono"

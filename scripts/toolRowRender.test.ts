@@ -344,7 +344,7 @@ console.log("toolRowRender: 节点内容各段套同一阅读框，工具卡/代
     );
     assert.match(
       html,
-      /<div class="io-section"><span class="io-label">输出<\/span>[\s\S]*?image\/png image[\s\S]*?class="row-body-images"[\s\S]*?<img/,
+      /<div class="io-section"><div class="io-head"><span class="io-label">输出<\/span>[\s\S]*?image\/png image[\s\S]*?class="row-body-images"[\s\S]*?<img/,
       `${name}: 图必须排在「输出」正文之后、同一个 \`.io-section\` 里`,
     );
   }

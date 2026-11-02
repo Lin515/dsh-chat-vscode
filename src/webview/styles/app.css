@@ -1070,6 +1070,20 @@ button.header-title.is-switcher > svg.is-open {
   text-transform: uppercase;
 }
 
+/* IN/OUT 各段的标签行：标签靠左、复制按钮靠右。复制是**本扩展有意多给**的入口
+   （官方通用 IN/OUT 不出复制），所以放在标签同一行而不是另起一条工具条：不占正文
+   首行的高度，也不改变两段之间的间隔。 */
+.io-head {
+  display: flex;
+  align-items: center;
+  gap: calc(6 * var(--dp));
+  min-width: 0;
+}
+
+.io-head .copy-btn {
+  margin-left: auto;
+}
+
 .io-text {
   min-width: 0;
   color: var(--description);
@@ -3173,6 +3187,14 @@ body.vscode-high-contrast-light .md-code-surface {
 /* 记录态是节点阅读内容，行高跟共用阅读框的 1.5；等待态那张交互面板仍保持 1.7。 */
 .question.is-record .question-detail {
   line-height: 1.5;
+}
+
+/* 问卷记录的复制入口：体首右上角一行（行头整块是开合按钮，按钮不能嵌在按钮里）。
+   复制的是整份记录（含未展开时的全部题目），不是当前可见的那几行。 */
+.question-record-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: calc(-6 * var(--dp));
 }
 
 /* 计划审阅卡（`exit_plan_mode`）——官方 `PlanReviewPanel` 的三段式：

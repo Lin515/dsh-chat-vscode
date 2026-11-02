@@ -130,8 +130,8 @@
 - [toolbarFit.test.ts](<toolbarFit.test.ts>) — 工具栏档位分配、极窄保底与布局盒判据；使用可注入观察者验证节点替换、幂等挂载、StrictMode 重挂与清理，并覆盖旧生命周期的负对照。
 - [connectView.test.ts](<connectView.test.ts>) — 连接条三类状态、文案与按钮矩阵。
 - [contextMenu.test.ts](<contextMenu.test.ts>) — 会话右键菜单判据、「引用」落点算术、保存建议文件名；真实快捷复制处理器覆盖 Ctrl / Cmd、跨消息空白换行保真、编辑焦点、修饰键、组字、重复与已处理事件、选区包含性和空选区让路。
-- [copyFeedback.test.ts](<copyFeedback.test.ts>) — 复制反馈收口：`copy` 帧只有一个发射点、所有复制按钮走 `CopyButton` / `IconCopyButton` 并逐文件清点数量、1s 状态机只在 `copyFeedback.ts`；非按钮入口（右键菜单 / 选区快捷键）提示的落点、替换、自动消失与样式约束（提示层不抢指针、压过右键菜单、动画时长等于 `COPIED_MS`、成功态特异性能压过容器的 Muted 色）。
-- [questionFlow.test.ts](<questionFlow.test.ts>) — 问卷展示口径：一次展开 vs 依次问答（`dshChat.questionBatch`）。
+- [copyFeedback.test.ts](<copyFeedback.test.ts>) — 复制反馈收口：`copy` 帧只有一个发射点、所有复制按钮走 `CopyButton` / `IconCopyButton` 并逐文件清点数量（含 diff / 写入预览 / IN-OUT / 问卷记录四处新入口）、1s 状态机只在 `copyFeedback.ts`；非按钮入口（右键菜单 / 选区快捷键）提示的落点、替换、自动消失与样式约束（提示层不抢指针、压过右键菜单、动画时长等于 `COPIED_MS`、成功态特异性能压过容器的 Muted 色）。
+- [questionFlow.test.ts](<questionFlow.test.ts>) — 问卷展示口径：一次展开 vs 依次问答（`dshChat.questionBatch`）；问卷记录复制载荷 `questionReplyText`（多选、自定义答案、没答写「已跳过」、计划审阅、题头去重）。
 - [questionRender.test.ts](<questionRender.test.ts>) — 问卷卡片渲染断言（答完的问题展开后显示用户回答）。
 - [toolRowRender.test.ts](<toolRowRender.test.ts>) — 工具节点渲染断言：技能节点只显示 SKILL 正文（无参数 / 输出标题），读 / 写 / 编辑与技能只在真有可打开目标时提示 Ctrl/Cmd 单击打开；write 未完成原文、空内容、中断失败、安全文本、仅 write 与 diff 交接。
 - [writePreview.test.ts](<writePreview.test.ts>) — 同一生产解码接口的完整／不完整 JSON、每个二段切点及逐字符切分、转义／代理对／CRLF／末尾空白、根键与嵌套干扰、无效回退、身份／替换重置、重放及大文本追加。
@@ -175,7 +175,7 @@
 - [mediaRedirect.test.ts](<mediaRedirect.test.ts>) — `DshClient.getBytes` 对 Host 媒体路由的版本化 302：同源跟一次拿到字节、跨源与跳出 `/api/` 的目标整份拒绝且不泄露 cookie（本机 HTTP 对端驱动）。
 - [binaryRpc.test.ts](<binaryRpc.test.ts>) — Connection 二进制 RPC 的 multipart 解码：附件回填、嵌套路径，以及重复字段 / 重复 part / 原型链路径 / 非 null 占位 / 多余字段整份拒绝。
 - [remoteFileSync.test.ts](<remoteFileSync.test.ts>) — 只读资源观察核心的行为级回归：同版本 mtime 稳定、双 watch 引用计数、删除后 Created 恢复、权限不 Deleted、慢 stat 单飞与事件竞态、ready 补查、版本/timer 有界清理。
-- [diff.test.ts](<diff.test.ts>) — `shared/diff.ts`（`diffLines` / `hunkFromTexts` / `hunksFromMeta` 等）。
+- [diff.test.ts](<diff.test.ts>) — `shared/diff.ts`（`diffLines` / `hunkFromTexts` / `hunksFromMeta`，以及复制载荷 `diffClipboardText` 的前缀与截断口径）。
 - [styles.test.ts](<styles.test.ts>) — 样式不变量：`app.css` 上关键声明的文本断言，包括链接的行内布局、普通 / 悬停 / 修饰键与不可点击态覆盖顺序；声明断言不替代浏览器 computed style 验收。
 
 ### 工具行 / 工具卡契约

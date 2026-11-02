@@ -70,7 +70,7 @@ React / 浏览器环境，不使用 Node API。上层边界见[源码导航](<..
 - [turnFiles.ts](<turnFiles.ts>) — 交付 / 本轮改动文件去重：展示路径按首次出现去重，身份键不转小写/不消点（POSIX 同名不同大小写各留一行），交付重复只按能证明的拼写去掉；多次 `present` 的显示取同路径最后一次申报。
 - [pendingInteraction.ts](<pendingInteraction.ts>) — plan-review > 提问 > 审批的输入接管。
 - [pendingMessage.ts](<pendingMessage.ts>) — 乐观回显身份、去重与插入位置。
-- [questionFlow.ts](<questionFlow.ts>) — questionBatch 分页问答。
+- [questionFlow.ts](<questionFlow.ts>) — questionBatch 分页问答；问卷记录复制载荷 `questionReplyText`（每题「题头 + 回答」，与官方 `replyClipboardText` 同口径）。
 - [questionInput.ts](<questionInput.ts>) — 自定义回答输入框的自增高：最多 5 行，超出才出现垂直滚动条；手动拖拽可覆盖自动高度。
 - [questionDraft.ts](<questionDraft.ts>) — 问卷半填草稿的内存表：按会话 + 问卷 id 归档、上限淘汰、收场即清；只用于切会话恢复，不落盘。
 - [planReview.ts](<planReview.ts>) — 计划审阅识别与收窄。

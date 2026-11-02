@@ -954,6 +954,10 @@ export const MESSAGES = {
   },
   questionCustomTitle: { zh: "自定义回答", en: "Custom answer" },
   questionCustomAria: { zh: "自定义回答（选中后其它选项会被取消）", en: "Custom answer (selecting it clears the other options)" },
+  // 问卷记录复制载荷里的两段（官方 `reply.answerLabel` / `reply.skipped` 逐字）：
+  // 「回答：」自带全角冒号，英文「Answer: 」自带半角冒号加空格，拼串时不要再补
+  questionAnswerLabel: { zh: "回答：", en: "Answer: " },
+  questionAnswerSkipped: { zh: "已跳过", en: "Skipped" },
   // 官方 `nav.cancel` 逐字：关掉整份还没答的问卷（官方 `QuestionComposer` 头部的 ✕），
   // 不是「跳过某道题」——服务端收到的是 `ASK_CANCELLED` 拒绝，等待方据此收场
   questionDismissAll: { zh: "放弃整组问题", en: "Dismiss all questions" },
@@ -1227,6 +1231,8 @@ export const MESSAGES = {
   },
   toolInput: { zh: "输入", en: "IN" },
   toolOutput: { zh: "输出", en: "OUT" },
+  toolCopyInput: { zh: "复制输入", en: "Copy input" },
+  toolCopyOutput: { zh: "复制输出", en: "Copy output" },
   toolWritePreview: { zh: "写入内容预览", en: "Write content preview" },
   toolWritePreviewHint: { zh: "仅为参数预览，不代表已写入文件", en: "Arguments preview only; does not confirm the file was saved" },
   toolWritePreviewPartialHint: { zh: "参数尚未完整，仅显示已解码内容；不代表已写入文件", en: "Arguments incomplete; showing decoded content only, not a saved file" },

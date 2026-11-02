@@ -8,7 +8,7 @@
 - `wire.ts` — 宿主 → webview 的过线语义：JSON 过线会丢 `undefined` 键，清空字段必须发 `null`（`jsonSafeFrame` / `mergeWirePatch`）。
 - `jsonValue.ts` — 未知 JSON 值的形状收窄：`isRecord` 只认普通对象（排除 `null` 与数组），读字段前先过这一道。
 - `attachmentGate.ts` — 发送门的唯一判据：文件附件是否就绪、阻止发送的原因是上传中还是上传失败；宿主兜底、界面按钮与 `buildPromptContent` 同源。
-- `diff.ts` — 编辑类节点的 diff：两条来源归一成 `DiffHunkView`，只做行序列与增删计数，排版交给界面。
+- `diff.ts` — 编辑类节点的 diff：两条来源归一成 `DiffHunkView`，只做行序列与增删计数，排版交给界面；`diffClipboardText` 给复制按钮拼纯文本载荷（路径行 + `- ` / `+ ` / 两个空格前缀，覆盖被折叠的行）。
 - `changesSummary.ts` — 改动清单的缓存键（必须带会话 id，事件 seq 是按会话各自编号的）、卡片可见行，以及只在唯一命中时成立的路径关联。
 - `trajectory.ts` — 轨迹视图的线格式与视图模型（记录种类逐字对齐官方契约；**含请求表 `TrajectoryRequest`**——请求级检查器吃的选项 / 用量含会话累计 / 请求计时都在这张表里；时间线投影已 vendor 到 `src/vendor/`，这里只剩类型与域坐标换算）。
 - `toolMeta.ts` — 工具行的契约事实：工具分类、退出码解析（`[exit code: N]`）、running/ok/error/stopped 状态语义，纯数据与纯函数。

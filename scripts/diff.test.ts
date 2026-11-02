@@ -1,5 +1,12 @@
 import assert from "node:assert";
-import { diffLines, hunkFromTexts, hunksFromMeta, hunksFromToolArgs, splitDiffEnabled } from "../src/shared/diff";
+import {
+  diffClipboardText,
+  diffLines,
+  hunkFromTexts,
+  hunksFromMeta,
+  hunksFromToolArgs,
+  splitDiffEnabled,
+} from "../src/shared/diff";
 
 // 1. 新文件（oldText = null）：整体算新增
 assert.deepStrictEqual(diffLines(null, "a\nb"), [
@@ -157,6 +164,34 @@ assert.strictEqual(longHunk.added, 1200);
     false,
     "写入节点 + 纯新增：两条否决同时成立",
   );
+}
+
+// 17. 复制载荷：路径行 + `- ` / `+ ` / 两个空格前缀，逐段写路径
+//
+// 官方 `DiffBlock.tsx` 的 `copyText()` 同款前缀；我们的每个 hunk 在界面上都自带
+// 路径头，所以复制文本也逐段写（不是官方的「路径变了才写」）。
+{
+  const hunks = [
+    hunkFromTexts("a.ts", "a\nb\nc", "a\nB\nc"),
+    hunkFromTexts("b.ts", null, "x\n\ny"),
+  ];
+  assert.strictEqual(
+    diffClipboardText(hunks),
+    ["a.ts", "  a", "- b", "+ B", "  c", "b.ts", "+ x", "+ ", "+ y"].join("\n"),
+    "路径 + 前缀；空行也照原样带前缀（不吞行）",
+  );
+
+  // 没有路径的 hunk（参数里缺 file_path）：不写头部空行，直接从正文开始
+  assert.strictEqual(diffClipboardText([hunkFromTexts(undefined, null, "only")]), "+ only");
+
+  // 截断的 hunk：只复制模型给出的那些行，不补省略号
+  const longText = Array.from({ length: 900 }, (_, i) => `l${i}`).join("\n");
+  const copied = diffClipboardText([hunkFromTexts("big.txt", null, longText)]).split("\n");
+  assert.strictEqual(copied.length, 801, "路径 1 行 + 截断保留的 800 行");
+  assert.ok(!copied.includes("…"), "截断不补省略号（粘贴回去不该多一条内容）");
+
+  // 空数组：空字符串（调用方据此不画按钮）
+  assert.strictEqual(diffClipboardText([]), "");
 }
 
 console.log("diff: all assertions passed");

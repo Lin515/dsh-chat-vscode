@@ -10,8 +10,16 @@
 import assert from "node:assert";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { QuestionItemView } from "../src/shared/chat";
-import { DEFAULT_QUESTION_BATCH, answeredCount, canSubmit, isAnswered, questionMode } from "../src/webview/questionFlow";
+import type { QuestionAnswerView, QuestionItemView } from "../src/shared/chat";
+import {
+  DEFAULT_QUESTION_BATCH,
+  answeredCount,
+  answerValues,
+  canSubmit,
+  isAnswered,
+  questionMode,
+  questionReplyText,
+} from "../src/webview/questionFlow";
 
 const items: QuestionItemView[] = [
   { id: "q1", question: "一?", options: [{ label: "A" }, { label: "B" }] },
@@ -161,5 +169,64 @@ console.log("questionFlow: 提交闸门覆盖全部题目 ✓");
   assert.strictEqual(config.default, DEFAULT_QUESTION_BATCH, "默认值与代码里的缺省阈值一致");
 }
 console.log("questionFlow: 界面与配置接上了口径 ✓");
+
+// ---------- 5. 问卷记录的复制载荷（官方 `replyClipboardText` 口径）----------
+//
+// 载荷与界面是否展开无关：复制的是整份记录。四种形状都要覆盖——多选、自定义答案、
+// 没答（已撤回 / 跳过）、计划审阅（回答就是「确认执行 / 拒绝」这类选项值）。
+{
+  const labels = { answer: "回答：", skipped: "已跳过" };
+  const copyItems: QuestionItemView[] = [
+    { id: "scope", header: "范围", question: "覆盖到哪一层？", options: [{ label: "全部" }, { label: "入口" }], multiSelect: true },
+    { id: "docs", header: "文档", question: "文档", options: [{ label: "要" }] },
+    { id: "extra", question: "还有别的吗？", options: [] },
+    { id: "plan", header: "计划审阅", question: "确认执行", options: [{ label: "确认执行" }, { label: "拒绝" }] },
+  ];
+  const answers: Record<string, QuestionAnswerView> = {
+    // 多选：按原顺序、逗号分隔
+    scope: { selected: ["全部", "入口"] },
+    // 单选 + 自定义文本：selected 为空，自定义答案补在最后
+    docs: { selected: [], custom: "  顺便更新 CHANGELOG  " },
+    // extra 缺席 = 没答
+    plan: { selected: ["确认执行"] },
+  };
+
+  assert.deepStrictEqual(answerValues(copyItems[0], answers), ["全部", "入口"], "多选题的全部选中值");
+  assert.deepStrictEqual(answerValues(copyItems[1], answers), ["顺便更新 CHANGELOG"], "自定义答案去首尾空白后补在最后");
+  assert.deepStrictEqual(answerValues(copyItems[2], answers), [], "没答的题没有值");
+
+  assert.strictEqual(
+    questionReplyText(copyItems, answers, labels),
+    [
+      "范围 — 覆盖到哪一层？",
+      "回答：全部, 入口",
+      "",
+      // header 与 question 相同：不重复写两遍（官方同口径）
+      "文档",
+      "回答：顺便更新 CHANGELOG",
+      "",
+      "还有别的吗？",
+      "已跳过",
+      "",
+      "计划审阅 — 确认执行",
+      "回答：确认执行",
+    ].join("\n"),
+    "每题「题头 + 回答」，题与题之间空一行；没答写「已跳过」",
+  );
+
+  // 已撤回（没有任何 answers）：每题都落成「已跳过」，不抛错也不产出空串
+  const cancelled = questionReplyText(copyItems.slice(0, 2), undefined, labels);
+  assert.strictEqual(cancelled, ["范围 — 覆盖到哪一层？", "已跳过", "", "文档", "已跳过"].join("\n"));
+
+  // 英文标签由调用方给：载荷本身不含语言判断（同一条纯函数服务两种语言）
+  assert.strictEqual(
+    questionReplyText([copyItems[3]], { plan: { selected: ["拒绝"] } }, { answer: "Answer: ", skipped: "Skipped" }),
+    "计划审阅 — 确认执行\nAnswer: 拒绝",
+  );
+
+  // 空问卷：空串（调用方据此不画按钮）
+  assert.strictEqual(questionReplyText([], {}, labels), "");
+}
+console.log("questionFlow: 问卷记录的复制载荷 ✓");
 
 console.log("\nquestionFlow: all assertions passed");

@@ -231,6 +231,14 @@ export interface Texts {
   /** 工具行展开体的两段标签（官方 `row.input` / `row.output`：zh「输入/输出」、en「IN/OUT」）。 */
   toolInput: string;
   toolOutput: string;
+  /**
+   * IN / OUT 各那枚复制按钮的悬停说明。
+   *
+   * 官方通用 IN/OUT 不出复制（这是本扩展**有意多给**的入口），所以也不能借用官方的
+   * 通用「复制」：同一张卡里两枚按钮读屏时得能分开听（复制输入 / 复制输出）。
+   */
+  toolCopyInput: string;
+  toolCopyOutput: string;
   /** write 参数原文预览，不表示实际文件写入。 */
   toolWritePreview: string;
   toolWritePreviewHint: string;
@@ -609,6 +617,13 @@ export interface Texts {
   questionCustomTitle: string;
   /** 自定义回答那一行的无障碍说明（它和普通选项一样可以选，只是带编辑框）。 */
   questionCustomAria: string;
+  /**
+   * 问卷记录复制载荷里的「回答」前缀（官方 `reply.answerLabel`：「回答：」/「Answer: 」）。
+   * 标签自带分隔符，调用方直接接答案值，不再补冒号——中英文的标点与空格不同。
+   */
+  questionAnswerLabel: string;
+  /** 问卷记录里没人作答的那道题（官方 `reply.skipped`：「已跳过」/「Skipped」）。 */
+  questionAnswerSkipped: string;
   /**
    * 待答卡上的「放弃整组问题」（官方 `nav.cancel` 逐字）：点了不是回答，宿主回
    * `rejected` + `ASK_CANCELLED` 把整份等待收场（见 `Rows.tsx` 的 `dismiss`）。

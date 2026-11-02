@@ -159,6 +159,30 @@ export function hunkFromTexts(
   };
 }
 
+/**
+ * diff 的**剪贴板载荷**：一段纯文本，不依赖 DOM 与着色结果。
+ *
+ * 格式照官方 `DiffBlock` 的 `copyText()`：删除行 `- `、新增行 `+ `、上下文行两个
+ * 空格前缀，缩进与正文一字不改。差异在于路径行——官方按「路径变了才写」去重，
+ * 我们的每个 hunk 在界面上都自带路径头（`.diff-head`），所以逐段写，复制出来的
+ * 文本与看到的排版一一对应。
+ *
+ * 覆盖**模型里的全部行**，包括界面上被高度上限折叠 / 截断的那些：复制取的是数据，
+ * 不是可见 DOM。`truncated` 的 hunk 只带模型给出的前 `MAX_LINES_PER_HUNK` 行，
+ * 这里不补省略号——凭空多一行会让粘贴回去的补丁多一条内容。
+ */
+export function diffClipboardText(hunks: readonly DiffHunkView[]): string {
+  const out: string[] = [];
+  for (const hunk of hunks) {
+    if (hunk.path) out.push(hunk.path);
+    for (const line of hunk.lines) {
+      const prefix = line.kind === "add" ? "+ " : line.kind === "del" ? "- " : "  ";
+      out.push(`${prefix}${line.text}`);
+    }
+  }
+  return out.join("\n");
+}
+
 /** 收窄 `tool/result.meta` 里的 `diffs`（形状不对就当没有，绝不抛错）。 */
 export function hunksFromMeta(meta: unknown): DiffHunkView[] | undefined {
   const diffs = (meta as { diffs?: unknown } | undefined)?.diffs;
