@@ -184,7 +184,7 @@ GFM 对多段脚注、重复定义、复杂分隔符等边缘输入可能与迁�
 ### 缓存、限额与文本保真
 
 - 缓存 key = 主题策略版本 + 官方归一化语言 + 原 code；成功 / 失败缓存与同 key 并发合并保留。条数上限 64、总字符上限 200000、单块 50000 字符、单行 4000 字符，均由宿主在请求前判断；最多 4000 段。tokenize 的选项使用锁定官方核心。未知 / 空 / 超限 / 引擎失败均原位纯文。
-- 官方提供逐行文本 run；宿主按原文 LF / CRLF / CR 行界转成偏移，每行拼接必须逐字符一致（仅允许 NUL → U+FFFD 的引擎差异），否则整块回退，绝不猜偏移。行间分隔符与未着色部分仍切原 code，保留 CRLF、空行、tab、NUL、尾空白与末尾换行。复制仍读取原 code，折展行数规则不变。
+- 官方提供逐行文本 run；宿主使用相同的 LF / CRLF 行界转成原文偏移，孤立 CR 作为行内容保留，不额外切行；单行 4000 字符上限也采用同一分行规则，不能用孤立 CR 拆短引擎实际处理的行。每行拼接必须逐字符一致（仅允许 NUL → U+FFFD 的引擎差异），否则整块回退，绝不猜偏移。行间分隔符与未着色部分仍切原 code，保留 CR、CRLF、空行、tab、NUL、尾空白与末尾换行。复制仍读取原 code，折展行数规则不变。
 - `highlight.test.ts` 对照官方完整语言后缀表，并用 TS / JSON / Python / TOML / Markdown 的真实官方结果逐字符对照主题与字形；原有缓存、上限、多行、原文保真断言继续执行。DOM 回归还覆盖正文 / 工具共用接线、语法就绪、选区屏障与旧请求隔离；来源锁防止官方副本漂移，不能由功能断言代替。
 
 ### React 接线与生命周期
@@ -209,7 +209,7 @@ GFM 对多段脚注、重复定义、复杂分隔符等边缘输入可能与迁�
 
 ## 数学语法、排版与安全
 
-完成态公式由本地语法事实与固定来源的官方 TeX → React 适配器组成。`math` 围栏在 settled 转公式，`tex` / `latex` 围栏仍为源码；普通代码内部不做数学识别。完整 DOM 测试覆盖中文 `	ext{或}`、表格 `$1,800	ext{ 年}$`、不换行空格、复杂公式和宿主生命周期，不以分段 class 许可证明最终渲染成功。
+完成态公式由本地语法事实与固定来源的官方 TeX → React 适配器组成。`math` 围栏在 settled 转公式，`tex` / `latex` 围栏仍为源码；普通代码内部不做数学识别。完整 DOM 测试覆盖中文 `\text{或}`、表格 `$1,800\text{ 年}$`、不换行空格、复杂公式和宿主生命周期，不以分段 class 许可证明最终渲染成功。
 
 ### 本地解析适配（已落地）
 
@@ -224,7 +224,7 @@ GFM 对多段脚注、重复定义、复杂分隔符等边缘输入可能与迁�
 ### 官方 KaTeX → React 与本地资源
 
 - **固定来源直接复用。** [vendor katex.tsx](<../src/vendor/ui-primitives/markdown/katex.tsx>) 的 `renderTexToReact(value, displayMode)` 保留上游实现：KaTeX 首次严格排版，失败后按 `strict: "ignore"` / `throwOnError: false` 重试，再由 `DOMParser` 解析库输出并直接映射为 React。没有本地 class / style / tag 白名单、DOMPurify、namespace 折叠或 HTML 注入。源码与 TSX 原文见证由来源锁校验。
-- **宿主边界。** [mathRender.ts](<../src/webview/markdown/mathRender.ts>) 只接受解析确认的事实；未闭合、超过 4000 UTF-16 code units 或无 DOM 均在加载适配器前回退。只缓存加载 Promise，不缓存公式、渲染树或宏表。官方错误树中真实的 `katex-error` class token 触发 raw 回退，正文 `	ext{katex-error}` 不误判；未知命令的可恢复文本表现保持官方行为。
+- **宿主边界。** [mathRender.ts](<../src/webview/markdown/mathRender.ts>) 只接受解析确认的事实；未闭合、超过 4000 UTF-16 code units 或无 DOM 均在加载适配器前回退。只缓存加载 Promise，不缓存公式、渲染树或宏表。官方错误树中真实的 `katex-error` class token 触发 raw 回退，正文 `\text{katex-error}` 不误判；未知命令的可恢复文本表现保持官方行为。
 - **安全与限额。** 不接收模型 options；使用固定 `katex@0.16.47` 与官方选项，默认 `trust: false`、`maxExpand: 1000`、每式独立宏表。没有本地 `maxSize: 10` 夹限或 HTML 长度限额；尺寸采用官方默认，宽公式由 MathView 局部滚动承载。危险命令不能启用链接、图像、任意 HTML / class / style / data 能力。原始 Markdown HTML 始终为 React 文本，不能进入该库输出映射链。
 - **DOM 边界。** 与固定官方实现一致，`DOMParser` 读取 KaTeX 输出，React 自行创建 MathML / SVG 子树；不自建 namespace 修补器。视觉层是 `.katex-html`，辅助层标签 / annotation 保留；辅助技术实际朗读不以 DOM 存在冒充。jsdom 未实现 `MathMLElement.style`，带该样式的 `\pmb` 语料留给同一入口的真实 Chromium 验证，不用伪造 style 属性把测试刷绿。
 - **本地资源。** [katexAssets.mjs](<../scripts/katexAssets.mjs>) 在 esbuild 读取 `katex.min.css` 时把 20 个 `@font-face` 各收敛为恰好一个 WOFF2，file loader 输出 `dist/fonts/<name>-<hash>.woff2`，CSS URL 为相对 `./fonts/`；构建后核对每个 URL 存在且没有 WOFF / TTF / 远程来源。`main.tsx` 在 `tokens.css` 之后、`app.css` 之前引入同一份 KaTeX CSS，仍只有 `dist/webview.css` 一个样式产物；`dist` 文件白名单、`font-src ${webview.cspSource}` 与 `localResourceRoots: dist` 不变，预览服务器补 `.woff2` MIME。

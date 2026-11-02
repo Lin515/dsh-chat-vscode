@@ -12,12 +12,13 @@
 [webview/markdown/](<../../webview/markdown/README.md>) 适配层复用这里的
 `parseGfm` / `cjkFriendlyStrong`；settled 数学由本地 `math.ts` 用相同扩展集合装配，
 `parseGfmWithMath` 作为官方语法基准与等价性断言来源。**例外是 `katex.tsx` 与 `highlight.ts`**：
-KaTeX → React 适配器与语法高亮核心逐字搬入，`MathView` 直接调用 `renderTexToReact`，
+KaTeX → React 适配器与语法高亮核心逐字搬入，`MathView` 经
+[mathRender.ts](<../../webview/markdown/mathRender.ts>) 调用 `renderTexToReact`，
 `webview/markdown/highlight.ts` 直接消费 `grammarForHint` / `StreamingHighlightSession`；
 高亮所需的扩展名 → 语言映射来自同仓库的 [code-language](<../code-language/README.md>) 副本。
 其余 UI 与 React 渲染仍由本地组件承担。
 
-生产正文在 streaming 走 GFM，settled 走本地数学解析，再由 `MathView` 调用 vendor 的
-KaTeX→React 适配器排版；失败、超限或未闭合的公式按原文回退。完成态代码高亮同样由 vendor
+生产正文在 streaming 走 GFM，settled 走本地数学解析，再由 `MathView` 经 `mathRender.ts`
+调用 vendor 的 KaTeX→React 适配器排版；失败、超限或未闭合的公式按原文回退。完成态代码高亮同样由 vendor
 的语法高亮核心 tokenize，本地适配层只做主题变量映射、原文偏移校验与资源上限。数学排版、
 高亮资源与验收边界统一见 [Markdown 渲染设计](<../../../docs/design-markdown-rendering.md>)。

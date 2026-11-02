@@ -74,9 +74,9 @@ export function resolveLanguage(lang: string | undefined, path: string | undefin
   return normalizeLang(lang) ?? normalizeLang(languageForPath(path));
 }
 
-/** 是否存在超过单行上限的行（按 LF / CRLF / CR 切分，行尾不计数）。 */
+/** 按官方 LF / CRLF 行界检查长度；孤立 CR 属于行内容，不能借此绕过上限。 */
 function hasOversizedLine(code: string): boolean {
-  for (const line of code.split(/\r\n|\r|\n/u)) {
+  for (const line of code.split(/\r?\n/u)) {
     if (line.length > MAX_HIGHLIGHT_LINE_CHARS) return true;
   }
   return false;
@@ -149,12 +149,12 @@ function hostFontStyle(style: VendorSpan["style"]): number | undefined {
 }
 
 /**
- * 官方提供逐行文本 run，宿主将它们对齐到原文行（保留 CRLF/CR/LF 的独立缺口）。
- * 仅允许引擎 NUL→U+FFFD 差异；任何行数 / 内容不符都整块回退，绝不猜偏移。
+ * 官方提供按 LF / CRLF 切分的逐行文本 run；孤立 CR 留在 run 内对齐原文。
+ * 行间分隔符保留为原文缺口；仅允许引擎 NUL→U+FFFD 差异，行数 / 内容不符整块回退。
  */
 function spansFromRuns(code: string, lines: readonly VendorSpan[][]): HighlightSpan[] | undefined {
   const spans: HighlightSpan[] = [];
-  const sourceLines = code.split(/\r\n|\r|\n/u);
+  const sourceLines = code.split(/\r?\n/u);
   if (lines.length > sourceLines.length) return undefined;
   let offset = 0;
   for (let index = 0; index < sourceLines.length; index += 1) {
@@ -174,7 +174,7 @@ function spansFromRuns(code: string, lines: readonly VendorSpan[][]): HighlightS
     }
     if (column !== source.length) return undefined;
     offset += source.length;
-    const eol = code.startsWith("\r\n", offset) ? 2 : /[\r\n]/u.test(code[offset] ?? "") ? 1 : 0;
+    const eol = code.startsWith("\r\n", offset) ? 2 : code[offset] === "\n" ? 1 : 0;
     if (eol > 0) {
       spans.push({ start: offset, end: offset + eol });
       offset += eol;

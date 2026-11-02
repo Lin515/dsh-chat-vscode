@@ -9,7 +9,8 @@
 `webview/markdown/math.ts` 以**相同扩展集合**装配，并在公开 construct / handler
 外补金额否决与围栏事实。`parseGfmWithMath` 仍保留为官方语法基准与等价性断言来源，
 本地适配不复制语法规则。`katex.tsx` 是完成态数学的 **KaTeX→React 适配器**原文，
-`MathView` 直接消费它，不再自写元素树映射。`highlight.ts` 是客户端唯一的**语法高亮核心**，
+`MathView` 经 [mathRender.ts](<../../../webview/markdown/mathRender.ts>) 消费它，不再自写元素树映射。
+`highlight.ts` 是客户端唯一的**语法高亮核心**，
 `webview/markdown/highlight.ts` 只在其上做宿主适配，不另维护别名表或 token 样式。
 
 | 文件 | 上游对应 | 作用 | 本仓库的改动 |

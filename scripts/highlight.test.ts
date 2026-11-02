@@ -134,6 +134,27 @@ console.log("highlight: read 语言提示优先、缺失按扩展名回退、显
 }
 console.log("highlight: CRLF / 空行 / 尾空白 / NUL 由原 code 切片逐字保真 ✓");
 
+// ---------- 2a. 孤立 CR 不额外切分官方 run，混合换行仍精确对齐 ----------
+{
+  for (const code of [
+    "const a = 1;\rconst b = 2;",
+    "\rconst a = 1;\r",
+    "const a = 1;\r\rconst b = 2;\r",
+    "const a = 1;\rconst b = 2;\r\n\tconst c = 3;\n\rconst d = 4;\r",
+    "const a = 'A\u0000';\rconst b = 2;\r\n",
+  ]) {
+    const spans = await highlightCode(code, "ts");
+    assert.ok(spans !== null, "孤立 CR 与混合换行不能导致整块回退");
+    assert.ok(spans.some((span) => span.color !== undefined), "包含 CR 的代码仍有受控颜色");
+    assert.strictEqual(textOf(code, spans), code, "CR / CRLF / LF / NUL 原文逐字保留");
+    const lines = splitSpansByLine(code, spans);
+    for (const [index, line] of code.split("\n").entries()) {
+      assert.strictEqual(textOf(line, lines[index]), line, `混合换行第 ${index} 行局部偏移保真`);
+    }
+  }
+}
+console.log("highlight: 孤立 CR 与混合换行保持高亮及原文偏移 ✓");
+
 // ---------- 2b. 整段 token → 逐行局部 span（一次 tokenize，不逐行重置） ----------
 {
   // 纯区间切分：跨行 span 按行裁剪，换行字符不进入任何一行。
@@ -286,6 +307,8 @@ console.log("highlight: 21 种语言样例均经官方核心 tokenize 且文本�
   resetHighlightCache();
   assert.strictEqual(await highlightCode(overCap, "ts"), null, "LF 超长单行整块回退");
   assert.strictEqual(await highlightCode(`${overCap}\r\nconst b = 2;\r\n`, "ts"), null, "CRLF 超长单行整块回退");
+  const crJoinedOverCap = `${"x".repeat(MAX_HIGHLIGHT_LINE_CHARS / 2)}\r${"y".repeat(MAX_HIGHLIGHT_LINE_CHARS / 2)}`;
+  assert.strictEqual(await highlightCode(crJoinedOverCap, "ts"), null, "孤立 CR 不得拆短官方单行以绕过长度上限");
   assert.strictEqual(highlightCacheStats().entries, 0, "超长单行回退不写缓存");
   const crlfAtCap = `${atCap}\r\nconst b = 2;\r\n`;
   assert.ok(await highlightCode(crlfAtCap, "ts") !== null, "CRLF 下行尾不计入单行长度");
@@ -350,6 +373,8 @@ console.log("highlight: 并发同 key 只 tokenize / 记账一次 ✓");
   }
   for (const [lang, code] of [
     ["typescript", 'const n: number = 42; // hello\n'],
+    ["typescript", 'const a = 1;\rconst b = 2;'],
+    ["typescript", '\rconst a = 1;\r'],
     ["json", '{"value":true,"count":42}\n'],
     ["python", 'def greet(name):\n    return "hello " + name\n'],
     ["toml", '[server]\nport = 8080\n'],
