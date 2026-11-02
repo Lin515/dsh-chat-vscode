@@ -3,6 +3,26 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 This project follows [Semantic Versioning](https://semver.org/).
 
+## 0.12.1（2026-11-02）
+
+### 中文
+
+- 修复：公式紧邻中文等非拉丁文字时不再回退成原文，排版与官方实现一致。
+- 改进：代码着色改用官方高亮与语言映射，JS / JSX 按 TypeScript 语法着色，`.env`、`.toml`、`.vue` 等文件路径也能识别语言；着色逐字符保留原文，含孤立回车符的内容不再整块回退。
+- 新增：全部复制入口统一为一枚图标按钮，点击后只把图标换成对勾；回答末尾的复制只复制该段正文，中间正文不再各挂按钮，用户消息仍可整条复制。
+- 新增：思考、注入、技能正文、命令、提示、未知块、审批卡、待答问卷、待审计划、已答记录、diff、工具输入与输出、写入预览都能复制。
+- 改进：轮尾时刻在非当日补上日期，非当年补上年份。
+- 改进：终端卡命令行折行时，复制按钮与退出码和命令首行对齐。
+
+### English
+
+- Fixed: Math next to Chinese or other non-Latin text no longer falls back to its source and now matches the official layout.
+- Improved: Syntax highlighting now uses the official highlighter and language map, so JS and JSX are highlighted as TypeScript and paths such as `.env`, `.toml` and `.vue` resolve to a language; highlighting preserves the source character by character, and content with lone carriage returns is no longer reverted as a whole.
+- Added: Every copy entry is now a single icon button that switches to a check mark after clicking; the copy action at the end of a reply copies only that final body text, intermediate text no longer gets its own button, and user messages can still be copied whole.
+- Added: Thinking, injected content, skill text, commands, prompts, unknown blocks, approval cards, pending questionnaires, plans awaiting review, answered records, diffs, tool input and output, and write previews can all be copied.
+- Improved: Turn-end times include the date when not today and the year when not the current year.
+- Improved: In terminal cards, the copy button and exit-code chip stay aligned with the command’s first line when it wraps.
+
 ## 0.12.0（2026-11-02）
 
 ### 中文
