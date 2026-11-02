@@ -16,7 +16,7 @@ import { canOpenAttachment, openAttachment } from "../attachmentOpen";
 import { readableMentionText, scanMentionLinks, type MentionLinkTarget } from "../mentionLinks";
 import { useTexts, resolveText, type Texts } from "../texts";
 import { deliverablesForClosing, producedOnly } from "../turnFiles";
-import { foldTurnProcess, type TurnProcessRun } from "../turnProcess";
+import { foldTurnProcess, lastTextSegment, type TurnProcessRun } from "../turnProcess";
 import { hasUserOpenedNode, useNodeOpen } from "../nodeOpen";
 import { ChangesCard } from "./ChangesCard";
 
@@ -27,6 +27,10 @@ import { ChangesCard } from "./ChangesCard";
  * 冻结的是 `{ text, phase }` **整份显示快照**：只在文本或完成态真的变化时
  * 换新对象，父级重渲染不制造无意义的新快照；冻结期间两者都不更新，释放后
  * 一次性追上。完成态由 `message.streaming` 显式给出，不从围栏是否闭合推断。
+ *
+ * 复制入口**不在正文段上**（用户 2026-11-02 口径）：官方只在回答末尾给一枚，复制
+ * 正文本身；中间那些进度叙述各挂一枚按钮反而碍眼，用户要复制可以划选。轮尾入口
+ * 的载荷见下面的 `replyText`。
  */
 function StreamText({
   text,
@@ -480,11 +484,6 @@ export const Message = memo(function Message({
     );
   }
 
-  const fullText = message.segments
-    .filter((s): s is Extract<Segment, { kind: "text" }> => s.kind === "text")
-    .map((s) => s.text)
-    .join("\n\n");
-
   // 同一轮可以多次 `present`，适配器按事件累积；
   // 显示时同一路径只留最后一次申报（官方 `presentedForClosing` 同口径）。
   const presented = deliverablesForClosing(message.deliverables);
@@ -506,6 +505,11 @@ export const Message = memo(function Message({
   // 流式期间不折（官方要求 turnClosed）；阈值来自 `dshChat.turnProcessThreshold`
   // （默认 5，0 = 永不折）。口径与官方的差异见 turnProcess.ts 的文件头。
   const fold = foldTurnProcess(message.segments, !message.streaming, turnProcessThreshold);
+
+  // 轮尾复制的载荷 = 本轮**最后一段正文**（与折叠边界同一条，见 `lastTextSegment`）。
+  // 不把工具前后的正文拼成「整条消息」：拼接会忽略工具内容、丢语义，而中间那些
+  // 进度叙述也不该冒充回答（用户 2026-11-02 口径，官方轮尾同样只复制回答正文）。
+  const replyText = lastTextSegment(message.segments)?.text ?? "";
 
   /**
    * 这一段过程展不展开：**用户点过按钮就听他的**，没点过则看这一段里有没有
@@ -730,11 +734,11 @@ export const Message = memo(function Message({
           >
             <IconBranch size={14} />
           </button>
-          {/* 复制不给「工具串」（用户 2026-09-17 澄清口径）：整轮只有连续工具调用、
-              一段正文都没有时，这条消息没有可复制的正文，按钮不出现；单张工具卡
-              展开的内容仍有各自的复制按钮（见 ToolCards.tsx）。 */}
-          {fullText !== "" ? (
-            <CopyButton text={fullText} title={texts.copy} size={14} />
+          {/* 复制不给「工具串」（用户 2026-09-17 澄清口径）：只复制本轮最后那段正文
+              （`replyText`），中间正文与工具内容都不拼进来；整轮没有正文时按钮不出现。
+              复制入口只在轮尾这一处，不在每段正文上（用户 2026-11-02 口径）。 */}
+          {replyText.trim() !== "" ? (
+            <CopyButton text={replyText} title={texts.copy} size={14} />
           ) : null}
           {/* 轮尾「用时 X」胶囊：官方把它挂在操作条的 usageAction 槽里（最新一轮常显、
               其余轮悬停出现），点开是「本轮总用时 / 输出速度 / 首 token 用时」明细。

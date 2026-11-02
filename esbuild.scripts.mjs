@@ -142,6 +142,8 @@ const entries = {
   "build/code-block.test.mjs": "scripts/codeBlock.test.ts",
   // 复制反馈收口（唯一 copy 帧 / 按钮清点 / 非按钮入口的 1s 提示）：必须登记
   "build/copy-feedback.test.mjs": "scripts/copyFeedback.test.ts",
+  // 生产节点复制点击与正文段原文 / 冻结快照：离线 jsdom，不连接真实 DSH
+  "build/node-copy.test.mjs": "scripts/nodeCopy.test.ts",
   // Ctrl/Cmd 全局修饰键状态（根类开关 / 指针事件 / 失焦清理）：必须登记，否则 npm test 静默不跑
   "build/modifier-held.test.mjs": "scripts/modifierHeld.test.ts",
   "build/thinking-stream.test.mjs": "scripts/thinkingStream.test.ts",

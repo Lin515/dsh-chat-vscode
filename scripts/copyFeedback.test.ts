@@ -88,18 +88,19 @@ console.log("copyFeedback: copy 帧只有一个发射点 ✓");
 // - 工具卡 4 处（读 / 搜索 / 终端横幅 + 网页搜索卡内容右上角）；
 // - 工具行 IN / OUT 标签行各 1 处（有意超集：官方通用 IN/OUT 不出复制）；
 // - 问卷记录的展开体首右上角 1 处（已答 / 已取消 / 计划审阅共用同一份记录形态）；
+// - 思考 / 注入 / 技能 / 命令 / 提示 / 未知块 6 处，待答审批 / 计划 / 问卷 3 处；
 // - diff 头部 1 处（write / edit 的 hunk 头，复制整张卡的全部 hunk）；
 // - write 原文预览 1 处（还没有 diff 时复制屏幕上那段原文）；
 // - 后台任务详情的命令头 1 处；
 // - 历史会话行的「复制会话 ID」1 处；
 // - 轨迹检查器每段原文 1 处（`TrajectoryPre` 收口，实例数随原文段数变）；
 // - 代码块头部 1 处；
-// - 消息操作行 2 处（用户消息 / 助手轮尾）。
+// - 消息 2 处（用户气泡整条 / 助手轮尾的最后一段正文，中间正文不挂按钮）。
 {
   const count = (file: string, pattern: RegExp) => (read(componentsDir, file).match(pattern) ?? []).length;
   const inventory: [string, RegExp, number][] = [
     ["ToolCards.tsx", /<CopyButton\b/g, 4],
-    ["Rows.tsx", /<CopyButton\b/g, 3],
+    ["Rows.tsx", /<CopyButton\b/g, 12],
     ["Diff.tsx", /<CopyButton\b/g, 1],
     ["WriteBody.tsx", /<CopyButton\b/g, 1],
     ["Panels.tsx", /<CopyButton\b/g, 1],

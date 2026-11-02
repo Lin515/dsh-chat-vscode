@@ -38,10 +38,11 @@ contextMenuKind 按下表优先级判断：
 
 所有复制入口共用 [copyFeedback.ts](<../src/webview/copyFeedback.ts>)：`copyText()` 是唯一的 `copy` 帧发射点，成功反馈分两档，且**视觉上只有一枚对勾**。
 
-- **有按钮的位置**（工具卡、工具 IN / OUT、diff 头部、写入预览、问卷记录、后台任务详情、历史会话 ID、代码块、消息操作行、轨迹原文）全部复用同一个 `components/CopyButton.tsx`：按钮**只有一个图标，不带文字标签**；点一下的 1s 内图标换成对勾并上成功色，悬停说明不变、也不弹提示。`title` / `aria-label` 说明「复制什么」（IN / OUT 分别是「复制输入」「复制输出」）。文字只保留在读屏的 `sr-only` live region 里。
+- **有按钮的位置**（用户气泡、助手轮尾、思考、注入、技能正文、命令、提示、未知块、审批与问卷 / 计划卡、工具卡、工具 IN / OUT、diff 头部、写入预览、后台任务详情、历史会话 ID、代码块、轨迹原文）全部复用同一个 `components/CopyButton.tsx`：按钮**只有一个图标，不带文字标签**；点一下的 1s 内图标换成对勾并上成功色，悬停说明不变、也不弹提示。`title` / `aria-label` 说明「复制什么」（IN / OUT 分别是「复制输入」「复制输出」）。文字只保留在读屏的 `sr-only` live region 里。
 - **没有按钮可换文案的位置**（右键菜单「复制」、会话选区 Ctrl+C / Cmd+C）由 `flashCopied()` 在触发点右下闪**一枚对勾**（同样不带文字），拿不到选区矩形时回落到视口底部中间。提示层 `CopyFlashLayer` 挂在 App 根部一次，整层不接收指针事件，1s 后自己收掉。
 - 菜单的「复制」按 **菜单弹出点** 定位提示（菜单先收、提示后出现），图片复制要等 `copyImageElement` 真的成功才闪；失败仍走 `reportImageCopyFailure` 的宿主通知，不闪成功提示。
-- 三类内容的复制载荷都是纯函数，不从 DOM 或着色 token 反向拼：diff 走 `shared/diff.ts` 的 `diffClipboardText`（路径行 + `- ` / `+ ` / 两个空格前缀，覆盖全部 hunk 与被折叠的行）；问卷记录走 `questionFlow.ts` 的 `questionReplyText`（每题「题头 + 回答」，没答写「已跳过」，与官方 `replyClipboardText` 同口径）；IN / OUT 直接取原文。
+- 所有文本复制都不从 DOM 或着色 token 反向拼：diff 走 `shared/diff.ts` 的 `diffClipboardText`（路径行 + `- ` / `+ ` / 两个空格前缀，覆盖全部 hunk 与被折叠的行）；问卷记录沿用 `questionFlow.ts` 的 `questionReplyText`（每题「题头 + 回答」，没答写「已跳过」），计划记录额外保留计划正文。待答问卷复制题面、详情、选项及当前填写状态，不将尚未提交的草稿写成回答；待审计划复制完整计划原文。IN / OUT 与技能正文取原文；思考取当前显示的冻结快照，流式期间也可复制；注入含对应结构字段，命令含名称 / 参数 / 结果，提示含当前本地化文案，未知块保留原始 JSON。
+- 助手只在**回答末尾**给一枚复制入口（用户 2026-11-02 口径，与官方一致）：载荷是本轮最后一段正文的 Markdown 原文，不跨越工具节点拼接，也不在中间正文上各挂按钮——要复制中间进度可以划选。用户消息仍可整条复制。没有正文的轮不提供空复制，折叠行的复制在展开体内，不嵌套到折叠按钮。
 - 工具 IN / OUT 的复制是本扩展**有意多给**的入口：官方通用 IN/OUT 不出复制，它的复制落在详情卡的 code 段里。两枚按钮靠悬停说明区分，读屏也能分开听。
 - 图片的「保存」不在此列：路径由用户自己在系统对话框里选，取消与成功都不提示，只有取字节或写盘失败才入通知队列。
 
@@ -72,6 +73,7 @@ contextMenuKind 按下表优先级判断：
 
 - [contextMenu.test.ts](<../scripts/contextMenu.test.ts>)：判定矩阵、引用落点、建议文件名；调用真实快捷复制处理器，覆盖 Ctrl / Cmd、跨消息空白换行保真、编辑焦点、组合键、组字、重复事件、选区包含性与空选区让路。
 - [copyFeedback.test.ts](<../scripts/copyFeedback.test.ts>)：`copy` 帧唯一发射点、复制按钮与 `CopyButton` / `IconCopyButton` 的清点、状态机只有一份，以及非按钮入口提示的落点、替换与自动消失。
+- [nodeCopy.test.ts](<../scripts/nodeCopy.test.ts>) / [nodeCopyBrowser.tsx](<../scripts/nodeCopyBrowser.tsx>)：在离线 DOM 中点击生产组件，核验新增节点、待答卡、计划记录、工具前后两段正文、用户整条与流式选区冻结快照的 copy 帧；不声称验证系统剪贴板。
 - [imagePreview.test.ts](<../scripts/imagePreview.test.ts>)：缩放方向与上下限、光标锚定、拖动边界、复原端口，以及滚轮 / 指针 / 菜单 / 样式接线。
 - [imageFiles.test.ts](<../scripts/imageFiles.test.ts>)：data URL 白名单、上限与文件名。
 - [styles.test.ts](<../scripts/styles.test.ts>)：document 接取、无抽屉重复处理、浮层装配、视口定位、图片层之上与一行截断。

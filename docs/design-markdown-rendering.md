@@ -62,7 +62,7 @@ type CodeBlockProps = {
 
 - 助手正文由 `message.streaming` 显式推导 phase，不能靠闭合围栏、工具是否运行或文档是否命中缓存推断。阶段 2 已接入 `StreamText` 与 `useSelectionFreeze`。
 - `StreamText` 将 `{ text, phase }` 作为不可变显示快照交给选区冻结；冻结期间两者都不更新，释放后一次追上最新状态。扩展 `useSelectionFreeze` 时保持思考等现有字符串调用方行为不变，避免每次 render 新建对象造成无意义更新。
-- 整条消息复制仍取原始消息文本；代码复制仍取 `code`，不能从 DOM、着色 token 或 KaTeX 文本反向生成源数据。
+- 复制一律取原文，不能从 DOM、着色 token 或 KaTeX 文本反向生成源数据：用户消息的整条复制取原始消息文本；助手消息只在**轮尾**给一枚入口，取本轮最后一段正文的 Markdown 原文（`turnProcess` 的 `lastTextSegment`，与折叠边界同一条），不跨越工具节点拼接——拼接会忽略工具内容、丢语义，中间正文也没有各自的按钮；代码复制取 `code`。
 - 未知语言、无效 TeX、超限和增强失败原位回落可读源码，不吞整条消息、不弹全局通知；日志不包含整份正文、TeX 或可能带秘密的异常片段。
 - 普通父级重渲染不能重新初始化引擎；streaming 不调用 Shiki / KaTeX。改变词表、cwd 或语言只更新对应交互 / 文案，不应重新做无关的代码着色。
 
@@ -87,7 +87,7 @@ type CodeBlockProps = {
 
 | 消费面 | 接入与必须保留的内容 |
 |---|---|
-| [Message.tsx](<../src/webview/components/Message.tsx>) 的 `StreamText` | 助手正文显式 phase，保留 `md-wrapper`、本轮 `fileLinks`、cwd、消息身份与选区冻结；历史回放直接 settled |
+| [Message.tsx](<../src/webview/components/Message.tsx>) 的 `StreamText` | 助手正文显式 phase，保留 `md-wrapper`、本轮 `fileLinks`、cwd、消息身份与选区冻结；正文段本身不带复制入口（轮尾那一枚取最后一段原文，见 `lastTextSegment`）；历史回放直接 settled |
 | [Rows.tsx](<../src/webview/components/Rows.tsx>) 的 `run_code` | 复用相同 CodeBlock、默认 settled；不改工具折展、参数提取、按钮帧与执行状态 |
 | Rows 的 `review.plan`、`item.detail` | 审阅计划与思考详情继续走 Markdown；默认 settled，不把问卷、审批或计划动作搬进渲染 Module |
 | [ToolCards.tsx](<../src/webview/components/ToolCards.tsx>) 的 `card.answer` | 网页搜索答案与正文采用同一语法 / 安全链；不凭空获得助手本轮文件词表 |
@@ -255,7 +255,7 @@ GFM 对多段脚注、重复定义、复杂分隔符等边缘输入可能与迁�
 - 高亮 span 的合并文本必须等于 code，现有跨文本节点查找继续生效；覆盖跨 token、空白、中文、末行和折叠代码的既有查找策略，不顺便扩大隐藏内容搜索范围。
 - FindBar 打开时的种子文字取原生 `Selection.toString()`；辅助层过滤只作用于采集正文的文本节点，不改变种子路径。
 - KaTeX HTML、MathML、TeX annotation 有重复文本；查找只采集视觉层，排除可信辅助层 / 注释。内部公式标识由 `data-math-view` 来源属性给出，不由模型 class 触发特殊路径。该辅助层判据只服务查找；复制与选区提取不再共用去重判据。不能泛化为排除所有 aria-hidden，KaTeX 视觉层可能恰带该属性。
-- 会话 Ctrl/Cmd+C、右键复制和引用继续共用 `chatSelectionText`（原生 `Selection.toString()`），普通选区空白 / 换行不变；右键入口仍按既有规则去首尾空白。选区可能包含 MathML / annotation 或不同格式的空白，这是本次接受的边界。整条消息复制按钮取原始 message text（不取 DOM），代码按钮复制取精确 code，两者都不做重复内容清理；MathML 仍保留在渲染输出中供辅助技术使用，不加公式按钮。
+- 会话 Ctrl/Cmd+C、右键复制和引用继续共用 `chatSelectionText`（原生 `Selection.toString()`），普通选区空白 / 换行不变；右键入口仍按既有规则去首尾空白。选区可能包含 MathML / annotation 或不同格式的空白，这是本次接受的边界。用户整条消息复制按钮取原始 message text、助手轮尾复制取最后一段正文的 Markdown 原文（都不取 DOM），代码按钮复制取精确 code，三者都不做重复内容清理；MathML 仍保留在渲染输出中供辅助技术使用，不加公式按钮。
 - 数学选区去重不列入目标：不克隆副本、不写临时 style、不建哨兵 / 镜像、不改 live DOM / Selection，也不把原生选区替换成视觉层文本。用户已明确该能力复杂、小众且易出 BUG，复制沿用原生读取。焦点在 input / textarea / contenteditable、跨正文边界、组字或特殊组合键时仍让原生处理，不扩展快捷键范围。
 - 结束时有选区先冻结 `{text, phase}`，没有选区才统一增强。异步高亮 / 字体 / 图片结果不得改写仍被选中的内容；代码卡在结果抵达时若活动选区与 `<code>` 相交，暂存结果并监听 `selectionchange`，等选区清空 / 移开再应用最新一份。不能只冻结父 props 却让内部异步结果替换 DOM。
 - DOM 更新会使旧 Range / 查找高亮失效：查找在 MutationObserver 回调里立即清空旧 Range 与注册表，保留计数与激活位置，再按 150ms 防抖重算；导航前检查 Range 两端 `isConnected`，脱树不导航，不持有已卸载节点。代码折展、公式排版、字体就绪及图片变化引起高度变化时，原本贴底才继续跟随；用户上翻不抢底，不新建第二套 scrollTop 仲裁。
@@ -295,7 +295,7 @@ GFM 对多段脚注、重复定义、复杂分隔符等边缘输入可能与迁�
 | 视觉预览 | 同输入 / 主题 / 语言 / 字号 / 宽度前后截图与 computed style 对拍；明 / 暗 / 高对比、窄侧栏、代表性小中大字号，中英标题 / 按钮、代码渐隐和换行、宽表 / 宽公式、字体加载前后与离线加载 |
 | 集成 / 发布 | 全部消费入口、SSR / Node 导入、vendor 来源锁、依赖裁剪；构建 CSS URL、字体与声明白名单、无全量语言包 / CDN / WASM；安装端 CSP / 字体、文件打开与系统剪贴板 |
 
-阶段 2 已保留 [markdown.test.ts](<../scripts/markdown.test.ts>)、[footnotes.test.ts](<../scripts/footnotes.test.ts>)、[styles.test.ts](<../scripts/styles.test.ts>) 中的业务断言，并淘汰仅固定 marked 调用形状的断言；同步 fileLinks、localImageResolve、localImages、contextMenu、questionRender、trajectoryVendor、vendorSourceLock、manifest 等关联回归，没有因旧测试不再匹配而整段删除安全要求。阶段 3 新增 [highlight.test.ts](<../scripts/highlight.test.ts>)、[diffHighlight.test.ts](<../scripts/diffHighlight.test.ts>)、[toolSource.test.ts](<../scripts/toolSource.test.ts>) 与 [selectionRange.test.ts](<../scripts/selectionRange.test.ts>)，并扩展 [find.test.ts](<../scripts/find.test.ts>) 的脱树导航判据；阶段 4 新增 [math.test.ts](<../scripts/math.test.ts>) 覆盖金额、围栏闭合、容器源码 / 载荷分离与官方臂树等价，[mathRender.test.ts](<../scripts/mathRender.test.ts>) 及其隔离浏览器入口覆盖官方树对拍、中文 / 表格、限额、宏隔离、安全和选区完整 DOM 链，以及 [mathView.test.ts](<../scripts/mathView.test.ts>) 覆盖 SSR 首帧原文、四类定界符 / 金额、display 脱 p、strong / em / link / footnote 拆段、tex / latex 回退与渲染身份的五个事实 / NUL 不碰撞；真实异步与选区冻结已由主真实浏览器验收通过（15/15 布局、宽公式局部滚动、`newsource → invalid` 首帧 raw、跨段 / 跨公式选区冻结）。复制按钮取原始 message text / 精确 code 由 `mathView.test.ts` / `codeBlock.test.ts` 的源码接线与纯文本断言固定，不冒充 DOM / 系统剪贴板证明。全部登记在[脚本构建入口](<../esbuild.scripts.mjs>) entries。图片 / 链接 / 选区的真实 DOM 时序由受控浏览器回放，Node 静态源码检查不等同浏览器证据。
+阶段 2 已保留 [markdown.test.ts](<../scripts/markdown.test.ts>)、[footnotes.test.ts](<../scripts/footnotes.test.ts>)、[styles.test.ts](<../scripts/styles.test.ts>) 中的业务断言，并淘汰仅固定 marked 调用形状的断言；同步 fileLinks、localImageResolve、localImages、contextMenu、questionRender、trajectoryVendor、vendorSourceLock、manifest 等关联回归，没有因旧测试不再匹配而整段删除安全要求。阶段 3 新增 [highlight.test.ts](<../scripts/highlight.test.ts>)、[diffHighlight.test.ts](<../scripts/diffHighlight.test.ts>)、[toolSource.test.ts](<../scripts/toolSource.test.ts>) 与 [selectionRange.test.ts](<../scripts/selectionRange.test.ts>)，并扩展 [find.test.ts](<../scripts/find.test.ts>) 的脱树导航判据；阶段 4 新增 [math.test.ts](<../scripts/math.test.ts>) 覆盖金额、围栏闭合、容器源码 / 载荷分离与官方臂树等价，[mathRender.test.ts](<../scripts/mathRender.test.ts>) 及其隔离浏览器入口覆盖官方树对拍、中文 / 表格、限额、宏隔离、安全和选区完整 DOM 链，以及 [mathView.test.ts](<../scripts/mathView.test.ts>) 覆盖 SSR 首帧原文、四类定界符 / 金额、display 脱 p、strong / em / link / footnote 拆段、tex / latex 回退与渲染身份的五个事实 / NUL 不碰撞；真实异步与选区冻结已由主真实浏览器验收通过（15/15 布局、宽公式局部滚动、`newsource → invalid` 首帧 raw、跨段 / 跨公式选区冻结）。用户整条与助手轮尾复制分别取原始 `message.text` 与最后一段正文的 Markdown 原文、代码复制取精确 code，由 `mathView.test.ts` / `codeBlock.test.ts` 的源码接线与纯文本断言固定，不冒充 DOM / 系统剪贴板证明。全部登记在[脚本构建入口](<../esbuild.scripts.mjs>) entries。图片 / 链接 / 选区的真实 DOM 时序由受控浏览器回放，Node 静态源码检查不等同浏览器证据。
 
 阶段 3 的代码高亮已有离线 / 受控浏览器验收。当前数学由 `mathRender.test.ts` 的完整 DOM 链与真实 Chromium 分别验证，来源锁包含 15 份副本。既有资源 / 安装记录见下节，只证明其记录时的资源与宿主环境，不替代当前官方 React 排版的回归。原生复制仍读 `Selection.toString()`；VS Code 系统剪贴板与屏幕阅读器朗读不在本次自动化覆盖内。不启动真实 DSH、不发送真实消息或运行模型探针。
 

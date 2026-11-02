@@ -52,6 +52,19 @@ function lastTextIndex(segments: readonly Segment[]): number {
   return -1;
 }
 
+/**
+ * 本轮最后一段正文——折叠边界的那一段，也是助手轮尾复制按钮的载荷来源。
+ *
+ * 轮尾复制只取这一段，**不跨工具节点拼接**（用户 2026-11-02 口径：官方轮尾的复制
+ * 只给正文）。整轮没有正文时返回 `undefined`：没有可复制的内容，就不画按钮。
+ */
+export function lastTextSegment(
+  segments: readonly Segment[],
+): Extract<Segment, { kind: "text" }> | undefined {
+  const index = lastTextIndex(segments);
+  return index < 0 ? undefined : (segments[index] as Extract<Segment, { kind: "text" }>);
+}
+
 export interface TurnProcessCounts {
   toolCalls: number;
   /** 折进去的**中途消息**（正文段）条数——按钮文案的第二段（官方 `messageCount`）。 */

@@ -987,11 +987,8 @@ button.header-title.is-switcher > svg.is-open {
   padding: 0 calc(8 * var(--dp));
 }
 
-/* 轮尾操作条：**常驻**显示（不再靠悬停揭示）。
-   以前 `opacity: 0` + 悬停显示，一轮结束后的那条操作行在视觉上就是一整段空白
-   ——「复制 / 分支 / 用时」本来是该轮唯一可点的东西，却要先把鼠标移上去才知道
-   它在那儿（用户 2026-09-14 口径）。时间与按钮都是低对比度的弱化色，常驻也不会
-   抢正文的注意力。 */
+/* 轮尾操作条常驻显示时间与分支；用户消息保留气泡复制，助手正文在各段末尾复制。
+   时间与按钮使用弱化色，不依赖悬停才能发现动作。 */
 .msg-actions {
   display: flex;
   align-items: center;
@@ -1007,6 +1004,21 @@ button.header-title.is-switcher > svg.is-open {
   width: calc(22 * var(--dp));
   height: calc(22 * var(--dp));
   color: var(--muted);
+}
+
+/* 内容节点各自复制原文；动作条占布局，不浮在文字上，不与折叠按钮嵌套。 */
+.node-copy-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-width: 0;
+  white-space: normal;
+}
+
+.card-copy-actions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  margin-left: auto;
 }
 
 /* 发送失败的那一行（乐观回显的失败态）：气泡走错误色（用户 2026-09-25 口径：
@@ -1157,6 +1169,9 @@ button.header-title.is-switcher > svg.is-open {
 .diff-head .icon-btn,
 .io-head .icon-btn,
 .question-record-actions .icon-btn,
+.node-copy-actions .icon-btn,
+.card-copy-actions .icon-btn,
+.notice-copy .icon-btn,
 .trajectory-pre-actions .icon-btn {
   width: calc(20 * var(--dp));
   height: calc(20 * var(--dp));
@@ -3270,6 +3285,19 @@ body.vscode-high-contrast-light .md-code-surface {
   font-size: var(--font-size-xs);
   color: var(--description);
   padding: calc(2 * var(--dp)) 0;
+}
+
+.notice-content {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.notice-copy {
+  display: inline-flex;
+  flex: 0 0 auto;
+  margin-left: auto;
 }
 
 .notice-error {

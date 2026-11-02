@@ -237,7 +237,7 @@ console.log("mathView: 失败 / 安全原文只做文本回退 ✓");
 
 console.log("mathView: 渲染身份覆盖五个事实且 NUL 不碰撞 ✓");
 
-// ---------- 7. 整条消息复制取原始 message text，不取 DOM ----------
+// ---------- 7. 用户整条 / 助手末尾正文复制原文，不取 DOM ----------
 // 源码接线 + `readableMentionText` 纯变换断言，不冒充 DOM 点击或系统剪贴板证明。
 // 复制按钮统一走 `CopyButton`（1s 成功态在 webview/copyFeedback.ts），载荷不变。
 {
@@ -252,14 +252,12 @@ console.log("mathView: 渲染身份覆盖五个事实且 NUL 不碰撞 ✓");
   );
   assert.match(
     source,
-    /const fullText = message\.segments\s*\.filter\(\(s\): s is Extract<Segment, \{ kind: "text" \}> => s\.kind === "text"\)\s*\.map\(\(s\) => s\.text\)\s*\.join\("\\n\\n"\)/,
-    "助手消息复制的 fullText 由原始 text 段拼成",
+    /const replyText = lastTextSegment\(message\.segments\)\?\.text \?\? ""/,
+    "助手轮尾复制取本轮最后一段正文的 Markdown 原文",
   );
-  assert.match(
-    source,
-    /<CopyButton text=\{fullText\} title=\{texts\.copy\} size=\{14\} \/>/,
-    "助手消息复制按钮接的是同一份 fullText",
-  );
+  assert.match(source, /<CopyButton text=\{replyText\} title=\{texts\.copy\} size=\{14\} \/>/, "轮尾复制的载荷就是该段原文");
+  assert.doesNotMatch(source, /const fullText|text=\{fullText\}/, "不把忽略工具的文本拼接冒充整条消息复制");
+  assert.doesNotMatch(source, /segment-copy-actions/, "中间正文不各自挂复制按钮");
 
   const raw = "含行内 $x+y$ 与分式 \\frac{a}{b} 的原始消息";
   assert.strictEqual(
@@ -269,6 +267,6 @@ console.log("mathView: 渲染身份覆盖五个事实且 NUL 不碰撞 ✓");
   );
 }
 
-console.log("mathView: 整条消息复制取原始 message text、数学源文逐字保留 ✓");
+console.log("mathView: 用户整条 / 助手末尾正文复制原文、数学源文逐字保留 ✓");
 
 console.log("\nmathView: all assertions passed");

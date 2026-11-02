@@ -901,7 +901,7 @@ console.log("styles: 目标条默认一行截断 + 展开切全文 ✓");
   );
   const userBranch = message.slice(
     message.indexOf('if (message.role === "user")'),
-    message.indexOf("const fullText"),
+    message.indexOf("const presented"),
   );
   assert.ok(userBranch.length > 0, "应当能找到用户消息分支");
   assert.ok(
@@ -1363,14 +1363,11 @@ console.log("styles: 连接条按钮不被裁切、文字可让位 ✓");
 }
 console.log("styles: 工具卡只有一层滚动条 ✓");
 
-// ---------- 16b'. 复制按钮的归属：工具卡内容有、工具串没有（用户 2026-09-17 口径） ----------
-//
-// 这条口径澄清过一轮（第一轮误读成「工具卡一律不给复制」），钉死完整版：
-// - 每张**有内容**的工具卡都有复制按钮：读/搜索/终端在横幅右侧，网页搜索卡
-//   借横幅行补在内容右上角；web_fetch 只有链接没有内容体，不给。
-// - 「工具串」不给：整轮只有连续工具调用、没有正文的消息，轮尾复制按钮
-//   必须包在 `fullText !== ""` 条件里。
-// - 生成过程中整条操作行（时间/分支/复制）都不画。
+// ---------- 16b'. 复制归属：工具卡各自复制，助手只在轮尾复制最后一段正文 ----------
+// - 有内容的工具卡保留自己的入口；只有链接的 web_fetch 没有内容体，不给。
+// - 助手中间正文不挂按钮（官方轮尾同样只给一枚），轮尾复制只取最后一段正文，
+//   不跨工具节点拼成有缺漏的「整条消息」。
+// - 轮尾时间 / 分支 / 复制只在结束后显示：生成过程中复制的内容还没定稿。
 {
   const toolCards = readFileSync(join(process.cwd(), "src", "webview", "components", "ToolCards.tsx"), "utf8");
   assert.strictEqual(
@@ -1380,22 +1377,36 @@ console.log("styles: 工具卡只有一层滚动条 ✓");
   );
 
   const message = readFileSync(join(process.cwd(), "src", "webview", "components", "Message.tsx"), "utf8");
-  const assistant = message.slice(message.indexOf("const fullText"));
+  const assistant = message.slice(message.indexOf("const presented"));
   assert.ok(assistant.length > 0, "应当能找到助手消息分支");
-  const copyAt = assistant.indexOf("text={fullText}");
-  assert.ok(copyAt > 0, "轮尾复制按钮应把 fullText 交给统一的复制按钮");
-  assert.ok(
-    /fullText !== "" \? \(/.test(assistant.slice(Math.max(0, copyAt - 800), copyAt)),
-    "轮尾复制按钮必须包在「有正文」的条件里——工具串（无正文的整轮）不给复制",
+  assert.match(
+    assistant,
+    /const replyText = lastTextSegment\(message\.segments\)\?\.text \?\? ""/,
+    "轮尾复制载荷取本轮最后一段正文",
   );
+  assert.match(
+    assistant,
+    /replyText\.trim\(\) !== "" \? \(\s*<CopyButton text=\{replyText\} title=\{texts\.copy\} size=\{14\} \/>/,
+    "轮尾复制只给正文，空回答不画按钮",
+  );
+  assert.doesNotMatch(message, /segment-copy-actions/, "中间正文不挂复制按钮");
+  assert.doesNotMatch(message, /const fullText|<CopyButton text=\{shown\.text\}/, "正文段不再各自挂复制");
   const actionsAt = assistant.indexOf('className="msg-actions"');
   assert.ok(actionsAt > 0, "助手消息应有操作行");
   assert.ok(
     /!message\.streaming/.test(assistant.slice(Math.max(0, actionsAt - 200), actionsAt)),
-    "操作行（时间/分支/复制/用时）必须包在 !message.streaming 里：生成过程中右下角不画",
+    "轮尾操作行（时间/分支/复制/用时）必须包在 !message.streaming 里：生成过程中右下角不画",
   );
 }
-console.log("styles: 复制按钮归属（工具卡内容有 / 工具串没有 / 生成中不画） ✓");
+console.log("styles: 工具卡各自复制，助手轮尾只复制最后一段正文 ✓");
+
+{
+  assert.ok(css.includes(".node-copy-actions {"), "节点复制用动作条布局");
+  assert.match(rule(".node-copy-actions"), /white-space:\s*normal/, "动作条不继承正文 pre-wrap 的源码排版");
+  assert.strictEqual(css.includes(".segment-copy-actions"), false, "正文段不再有复制动作条样式");
+  assert.match(rule(".notice-content"), /min-width:\s*0/, "长提示允许收缩，不挤走复制按钮");
+  assert.match(rule(".notice-copy"), /flex:\s*0 0 auto/, "提示复制按钮不被长文压扁");
+}
 
 // ---------- 16c. 节点展开后：还在跑的贴底，已结束的置顶 ----------
 //

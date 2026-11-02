@@ -1067,7 +1067,7 @@ function formatChars(chars: number): string {
  * 语言选过 `displayReason`）。缺哪一项就跳过哪一行，不留空行——「没有理由」与
  * 「理由为空串」在剪贴板里没有区别，也不需要编一个占位词。
  *
- * 纯函数、不引 React：断言见 `scripts/copyNodes.test.ts`。
+ * 纯函数、不引 React：断言见 `scripts/nodeCopyBrowser.tsx`。
  */
 export function approvalCopyText(toolName: string, reason: string, detail: string): string {
   return [toolName, reason, detail].filter((part) => part.trim() !== "").join("\n");
@@ -1142,7 +1142,7 @@ export function ApprovalCard({ approval }: { approval: ApprovalView }) {
  * 来说就只剩「回答：确认执行」——计划本身反而丢了。这里保留回答，同时把计划
  * 正文原文补在前面；任一方为空就只给另一方，不留下分隔空行。
  *
- * 纯函数、不引 React：断言见 `scripts/copyNodes.test.ts`。
+ * 纯函数、不引 React：断言见 `scripts/nodeCopyBrowser.tsx`。
  */
 export function planReviewRecordCopyText(plan: string, reply: string): string {
   if (plan.trim() === "") return reply;
@@ -1389,7 +1389,7 @@ function CustomAnswerInput(props: {
  * （未选中的输入框文字不算答案，与 `QuestionCard` 的 `effectiveCustom` 同口径）。
  *
  * `items` 传**全部题目**而不是当前分页的那一道：依次问答时复制的是整份问卷。
- * 纯函数、不引 React：断言见 `scripts/copyNodes.test.ts`。
+ * 纯函数、不引 React：断言见 `scripts/nodeCopyBrowser.tsx`。
  */
 export function pendingQuestionCopyText(
   items: readonly QuestionItemView[],
@@ -2100,7 +2100,7 @@ export function NoticeRow({ level, text }: { level: "info" | "warn" | "error"; t
  * 才另起一段（空一行），没有结果就不留空行。`name` 为空时由调用方传入界面用的
  * 「命令」兜底标签，保证复制出来的仍是屏幕上那条 `/…`。
  *
- * 纯函数、不引 React：断言见 `scripts/copyNodes.test.ts`。
+ * 纯函数、不引 React：断言见 `scripts/nodeCopyBrowser.tsx`。
  */
 export function commandCopyText(
   command: Pick<CommandRunView, "name" | "args" | "text">,
