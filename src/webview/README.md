@@ -56,11 +56,12 @@ React / 浏览器环境，不使用 Node API。上层边界见[源码导航](<..
 - [sessionSelection.ts](<sessionSelection.ts>) — 历史列表多选：可选判据、选择集跟随列表、全选翻转。
 - [connectView.ts](<connectView.ts>) — 连接条状态、文案与按钮矩阵。
 - [notifications.ts](<notifications.ts>) — 消息通知的展示口径（顶部取哪条、抽屉列表与时间格式化、级别到 `.notice` 修饰类），宿主权威队列见 `dsh/notificationQueue.ts`。
+- [copyFeedback.ts](<copyFeedback.ts>) — 复制反馈的唯一实现：唯一 `copy` 帧入口 `copyText`、按钮的 1s 成功态状态机，以及右键菜单 / 会话选区快捷键在触发点的短暂提示（`flashCopied`），见[右键设计](<../../docs/design-context-menu.md#复制反馈>)。
 - [imageCopyFailure.ts](<imageCopyFailure.ts>) — 界面本地复制图片失败的归属上报端口（捕获发起会话、过期丢弃、失败报告序号），宿主入队见[消息通知设计](<../../docs/design-notifications.md>)。
 - [activity.ts](<activity.ts>) — 子代理 / 任务入口活性（后台任务在跑，或还有待执行的自动化任务）。
 - [subagentRow.ts](<subagentRow.ts>) — 运行、已读与生命周期模式合成显示。
 - [subagentTree.ts](<subagentTree.ts>) — 标题清单的界面读法：当前会话的多层后代计数与当前节点定位。
-- [contextMenu.ts](<contextMenu.ts>) — 原生 / 自绘右键判据与会话选区 Ctrl+C / Cmd+C 的宿主复制桥；编辑区快捷键让路，见[右键设计](<../../docs/design-context-menu.md>)。
+- [contextMenu.ts](<contextMenu.ts>) — 原生 / 自绘右键判据与会话选区 Ctrl+C / Cmd+C 的宿主复制桥；编辑区快捷键让路，复制成功在触发点闪一条提示，见[右键设计](<../../docs/design-context-menu.md>)。
 - [nodeOpen.ts](<nodeOpen.ts>) — 消息持有的节点展开态。
 - [writePreview.ts](<writePreview.ts>) — 仅 write 参数的增量 JSON 语法与原文解码投影；身份／参数替换重置，无效参数安全回退，保留原始输入。
 - [modifierHeld.ts](<modifierHeld.ts>) — 全局 Alt / Ctrl / Cmd 按住状态 → 根元素 `is-modifier-held` 类（可打开文件节点的路径下划线提示）；指针事件补键盘焦点缺席，失焦 / 页面隐藏清理。

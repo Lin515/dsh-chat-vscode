@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { localImageMediaType } from "../shared/imageRef";
 import { post } from "./bridge";
+import { copyText, flashCopied } from "./copyFeedback";
 import { copyImageElement } from "./imageClipboard";
 import { imageCopyFailureSession, reportImageCopyFailure } from "./imageCopyFailure";
 import { resetImagePreviewView } from "./imagePreview";
@@ -42,6 +43,10 @@ import type { Texts } from "./texts";
  * 「引用」把选中文字以 **markdown 引用块**插进输入框（换行独立成块），落点算术在
  * `composerCompletion.quoteBlock`；「保存」走宿主（界面弹不了系统对话框、也读不了
  * 磁盘），见 `shared/ipc.ts` 的 `saveImage`。
+ *
+ * 菜单条目与 Ctrl/Cmd+C 都没有按钮可换文案：复制成功后由 `copyFeedback.ts` 的
+ * `flashCopied` 在触发点闪一条「已复制到剪贴板」（图片复制要等真的写进剪贴板才闪，
+ * 失败仍走 `reportImageCopyFailure` 的宿主通知）。
  */
 
 /** 右键该弹哪一种菜单。`native` = 不拦，交给系统；`blocked` = 拦下且不弹。 */
@@ -136,8 +141,25 @@ export function chatSelectionText(chat: Element | null): string {
 }
 
 /**
+ * 选区末尾的视口坐标：给复制提示定位用。
+ *
+ * 拿不到矩形（无头环境、选区结构不完整、浏览器不支持）时返回 `undefined`，提示层
+ * 回落到视口底部中间——反馈本身不因此消失。
+ */
+function chatSelectionAnchor(): { x: number; y: number } | undefined {
+  const selection = window.getSelection();
+  if (!selection || selection.rangeCount === 0 || typeof selection.getRangeAt !== "function") {
+    return undefined;
+  }
+  const rect = selection.getRangeAt(0).getBoundingClientRect();
+  if (!rect || (!rect.width && !rect.height)) return undefined;
+  return { x: rect.left + rect.width / 2, y: rect.bottom };
+}
+
+/**
  * 会话选区的复制快捷键，先于 VS Code 内层 iframe 的 window 键盘转发处理。
  * 只接管非编辑区域中的 Ctrl+C / Cmd+C；保留原始空白，宿主负责写剪贴板。
+ * 复制成功后与右键菜单同一个反馈：在选区末尾闪一条「已复制到剪贴板」。
  */
 export function handleChatCopy(event: KeyboardEvent): void {
   if (event.defaultPrevented || event.isComposing || event.repeat) return;
@@ -150,7 +172,8 @@ export function handleChatCopy(event: KeyboardEvent): void {
   event.preventDefault();
   // 不再让宿主把同一个快捷键转发为原生复制，避免重复处理或覆盖刚写入的内容。
   event.stopPropagation();
-  post({ type: "copy", text });
+  copyText(text);
+  flashCopied(chatSelectionAnchor());
 }
 
 /** 右键落点上的图片：缩略图是 `<button class="image-thumb">` 包着 `<img>`，落点常在按钮上。 */
@@ -242,9 +265,11 @@ export function usePageContextMenu(dispatch: (action: Action) => void, texts: Te
         // 「复制」再从模块 scope 读就会把 S1 的失败算给 S2。归属在这里捕获，`run`
         // 闭包用它；`reportImageCopyFailure` 随后还会因已换会话把这次上报丢掉。
         const originSession = imageCopyFailureSession();
+        // 复制提示的落点：菜单就是用这个点弹出来的，复制成功后提示贴着它出现
+        const anchor = { x: event.clientX, y: event.clientY };
         openContextMenu({
-          x: event.clientX,
-          y: event.clientY,
+          x: anchor.x,
+          y: anchor.y,
           items: [
             ...(inPreview
               ? [
@@ -260,9 +285,11 @@ export function usePageContextMenu(dispatch: (action: Action) => void, texts: Te
               label: texts.copy,
               run: () => {
                 void copyImageElement(image).then((ok) => {
-                  // 失败由宿主入队（文案 / 级别是宿主的固定文案，界面不发任意文本）：
-                  // 端口只在仍属同一会话时才回帧，见 `imageCopyFailure.ts`
-                  if (!ok) reportImageCopyFailure(originSession);
+                  // 成功给一眼可见的反馈（缩略图 / 原图本身不会变），失败由宿主入队
+                  // （文案 / 级别是宿主的固定文案，界面不发任意文本）：端口只在仍属
+                  // 同一会话时才回帧，见 `imageCopyFailure.ts`
+                  if (ok) flashCopied(anchor);
+                  else reportImageCopyFailure(originSession);
                 });
               },
             },
@@ -277,15 +304,21 @@ export function usePageContextMenu(dispatch: (action: Action) => void, texts: Te
         return;
       }
 
+      // 菜单条的落点就是复制反馈的落点（菜单本身收掉之后，提示就在同一处出现）
+      const anchor = { x: event.clientX, y: event.clientY };
       openContextMenu({
-        x: event.clientX,
-        y: event.clientY,
+        x: anchor.x,
+        y: anchor.y,
         items: [
           {
             id: "copy",
             label: texts.copy,
-            // 与「复制」按钮同一个入口（webview 里 navigator.clipboard 受限，交给宿主）
-            run: () => post({ type: "copy", text: selectedText }),
+            // 与「复制」按钮同一个入口（webview 里 navigator.clipboard 受限，交给宿主）；
+            // 菜单收掉之后没有按钮可换文案，所以由提示层在落点附近闪一条
+            run: () => {
+              copyText(selectedText);
+              flashCopied(anchor);
+            },
           },
           {
             id: "quote",

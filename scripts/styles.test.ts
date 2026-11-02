@@ -909,7 +909,7 @@ console.log("styles: 目标条默认一行截断 + 展开切全文 ✓");
     "用户消息必须有操作行（否则复制不了自己发过的内容）",
   );
   assert.ok(
-    /post\(\{ type: "copy", text: readableMentionText\(message\.text \?\? ""\) \}\)/.test(userBranch),
+    /text=\{readableMentionText\(message\.text \?\? ""\)\}/.test(userBranch),
     "用户消息的复制按钮要把**可读文本**发出去（会话引用的原始 token 折成 `@标题`，见 readableMentionText；text 可空，不能是 undefined）",
   );
   assert.ok(
@@ -1375,8 +1375,8 @@ console.log("styles: 工具卡只有一层滚动条 ✓");
   const message = readFileSync(join(process.cwd(), "src", "webview", "components", "Message.tsx"), "utf8");
   const assistant = message.slice(message.indexOf("const fullText"));
   assert.ok(assistant.length > 0, "应当能找到助手消息分支");
-  const copyAt = assistant.indexOf('post({ type: "copy", text: fullText })');
-  assert.ok(copyAt > 0, "轮尾复制按钮应把 fullText 发给宿主");
+  const copyAt = assistant.indexOf("text={fullText}");
+  assert.ok(copyAt > 0, "轮尾复制按钮应把 fullText 交给统一的复制按钮");
   assert.ok(
     /fullText !== "" \? \(/.test(assistant.slice(Math.max(0, copyAt - 800), copyAt)),
     "轮尾复制按钮必须包在「有正文」的条件里——工具串（无正文的整轮）不给复制",

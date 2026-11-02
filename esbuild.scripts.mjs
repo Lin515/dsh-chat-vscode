@@ -140,6 +140,8 @@ const entries = {
   "build/write-preview.test.mjs": "scripts/writePreview.test.ts",
   // 代码块默认折展（长块收起、短块保持展开）：必须登记，否则 npm test 静默不跑
   "build/code-block.test.mjs": "scripts/codeBlock.test.ts",
+  // 复制反馈收口（唯一 copy 帧 / 按钮清点 / 非按钮入口的 1s 提示）：必须登记
+  "build/copy-feedback.test.mjs": "scripts/copyFeedback.test.ts",
   // Ctrl/Cmd 全局修饰键状态（根类开关 / 指针事件 / 失焦清理）：必须登记，否则 npm test 静默不跑
   "build/modifier-held.test.mjs": "scripts/modifierHeld.test.ts",
   "build/thinking-stream.test.mjs": "scripts/thinkingStream.test.ts",

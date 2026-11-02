@@ -19,9 +19,9 @@
  */
 import { useRef, useState } from "react";
 import type { MarkdownPhase } from "../markdown/types";
-import { post } from "../bridge";
-import { IconChevronDown, IconCopy } from "../icons";
+import { IconChevronDown } from "../icons";
 import { useTexts } from "../texts";
+import { IconCopyButton } from "./CopyButton";
 import { renderHighlighted } from "./HighlightedText";
 import { useCodeHighlight } from "./useCodeHighlight";
 
@@ -62,13 +62,7 @@ export function CodeBlock({
       <div className="code-block-head">
         <span className="code-block-lang">{lang || "text"}</span>
         <span className="code-block-actions">
-          <button
-            className="icon-btn"
-            title={texts.copy}
-            onClick={() => post({ type: "copy", text: code })}
-          >
-            <IconCopy size={13} />
-          </button>
+          <IconCopyButton text={code} title={texts.copy} />
         </span>
       </div>
       <div className="code-block-body">

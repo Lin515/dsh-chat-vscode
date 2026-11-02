@@ -170,9 +170,14 @@
 
 /* 复制成功的那 1s：图标换成对勾并亮成成功色（整界面共用，`IconCopyButton` /
    `CopyButton` 两处同款）。`:hover` 那条必须一起写——`.icon-btn:hover` 与本条
-   同特异性，后写的赢，只写一条会在悬停时被吃回灰。 */
-.icon-btn.is-copied,
-.icon-btn.is-copied:hover {
+   同特异性，后写的赢，只写一条会在悬停时被吃回灰。
+
+   选择器带 `button` 是**刻意的特异性提升**：消息操作行与代码块头部给自己的图标
+   按钮设了 `.msg-actions .icon-btn` / `.code-block-actions .icon-btn { color: muted }`
+   （同为 0-2-0，但排在后面）。不加这一档的话，复制成功态在正文里会被那两条压回
+   灰色——预览里实测过。`is-danger`（0-3-0）仍然压过它，删除确认态不受影响。 */
+button.icon-btn.is-copied,
+button.icon-btn.is-copied:hover {
   color: var(--success);
 }
 
@@ -1148,6 +1153,14 @@ button.header-title.is-switcher > svg.is-open {
 
 .copy-btn:hover {
   color: var(--fg);
+}
+
+/* 文字版复制成功的那 1s：与 `.icon-btn.is-copied` 同一档成功色。`:hover` 那条必须
+   一起写——`.copy-btn:hover` 与本条同特异性，后写的赢。带 `button` 与图标版同一个
+   理由：工具卡横幅这类容器以后若要压 Muted 色，成功态必须仍然看得见。 */
+button.copy-btn.is-copied,
+button.copy-btn.is-copied:hover {
+  color: var(--success);
 }
 
 .tool-card-body {
@@ -2722,6 +2735,73 @@ body.vscode-high-contrast-light .md-code-surface {
   color: var(--vscode-menu-selectionForeground, var(--active-fg));
 }
 
+/* 复制成功的短暂提示（见 components/CopyButton.tsx 的 `CopyFlashLayer`）：右键菜单的
+   「复制」与会话选区 Ctrl+C 没有按钮可换文案，由它在触发点附近亮一下。
+   整层不接收指针事件——它盖在正文上方，不能抢走选择、滚动或右键；外层的 live region
+   常驻（`role="status"` 要先在 DOM 里，屏幕阅读器才会念出随后插入的内容）。
+   z-index 压过右键菜单（50）：菜单先收、提示出现在同一处。 */
+.copy-flash-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 55;
+  pointer-events: none;
+}
+
+.copy-flash {
+  position: absolute;
+  display: inline-flex;
+  align-items: center;
+  gap: calc(4 * var(--dp));
+  /* 宽度随语言变化：只留视口上限，落点由行内 left/right 决定，不写死宽度 */
+  max-width: calc(100vw - 24 * var(--dp));
+  padding: calc(3 * var(--dp)) calc(9 * var(--dp));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--vscode-editorWidget-background, var(--editor-bg));
+  /* 文字用正文色，只把对勾点成成功色：这一条是「动作已生效」的轻提示，
+     整条染绿在深色主题下比正文还抢眼 */
+  color: var(--fg);
+  box-shadow: 0 calc(2 * var(--dp)) calc(8 * var(--dp)) var(--vscode-widget-shadow, rgba(0, 0, 0, 0.36));
+  font-size: var(--font-size-2xs);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  /* 时长与 `copyFeedback.ts` 的 COPIED_MS 对齐：淡入、停留、在到点卸载前淡出 */
+  animation: copy-flash 1s ease-out both;
+}
+
+.copy-flash > svg {
+  flex: 0 0 auto;
+  color: var(--success);
+}
+
+/* 没有可用落点（拿不到选区矩形）时落在视口底部中间：宽度随内容，不铺满整层 */
+.copy-flash.is-centered {
+  left: 0;
+  right: 0;
+  bottom: calc(72 * var(--dp));
+  width: fit-content;
+  margin-inline: auto;
+}
+
+@keyframes copy-flash {
+  0% {
+    opacity: 0;
+  }
+  12% {
+    opacity: 1;
+  }
+  78% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+/* 提示的淡入淡出是装饰性动效：减少动画偏好在文件末尾**唯一的**那条
+   `@media (prefers-reduced-motion: reduce)` 里统一关掉（提示仍显示到卸载为止） */
+
 /* status dot for tool rows */
 .dot {
   flex: 0 0 auto;
@@ -4291,6 +4371,12 @@ button.meta-chip:hover {
     transition: none;
     animation: none;
     scroll-behavior: auto;
+  }
+
+  /* 复制提示的淡入淡出（`components/CopyButton.tsx` 的 CopyFlashLayer）同样是装饰：
+     关掉动画，提示仍会在 1s 后由计时器收掉 */
+  .copy-flash {
+    animation: none;
   }
 }
 

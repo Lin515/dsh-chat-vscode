@@ -67,7 +67,8 @@ for (const phase of ["settled", "streaming"] as const) {
 console.log("codeBlock: SSR 不初始化高亮、输出纯文本 ✓");
 
 // ---------- 4. 复制取精确 code，数学源文逐字保留 ----------
-// 源码接线 + SSR 文本断言，不冒充 DOM 点击或系统剪贴板证明。
+// 源码接线 + SSR 文本断言，不冒充 DOM 点击或系统剪贴板证明。复制按钮走
+// `IconCopyButton`（反馈状态机在 webview/copyFeedback.ts），载荷仍是组件收到的原 code。
 {
   const source = readFileSync(
     join(process.cwd(), "src", "webview", "components", "CodeBlock.tsx"),
@@ -75,8 +76,12 @@ console.log("codeBlock: SSR 不初始化高亮、输出纯文本 ✓");
   );
   assert.match(
     source,
-    /onClick=\{\(\) => post\(\{ type: "copy", text: code \}\)\}/,
-    "复制按钮载荷是组件收到的原 code",
+    /<IconCopyButton text=\{code\} title=\{texts\.copy\} \/>/,
+    "复制按钮载荷是组件收到的原 code，且走统一的复制按钮（自带 1s 成功态）",
+  );
+  assert.ok(
+    !/type: "copy"/.test(source),
+    "代码块不再直接发 copy 帧：写入剪贴板只经 copyFeedback.ts 的 copyText",
   );
 
   // 头部只留复制一枚按钮：用户 2026-11-02 口径是「插入到当前编辑器」没有用处

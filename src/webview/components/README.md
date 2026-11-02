@@ -30,5 +30,5 @@
 - `FindBar.tsx` — 会话查找条（Ctrl+F）：CSS Custom Highlight API 高亮 + 计数 + 上一处/下一处；纯逻辑在 `../find.ts`，跳命中（展开折叠气泡 → 放跟随 → 居中）走 `../readingPlacement.ts` 的同一个 `ReadingPort`。采文本时跳过可信 MathView 的辅助层、保留视觉层；inline 公式与相邻正文仍按文档序连续匹配，不另插块边界。打开查找的种子文字仍取原生 `Selection.toString()`。ESC 关查找走 `../escapeOwner.ts` 的浮层层级（不再自己挂 document 监听）。
 - `EmptyMeta.tsx` — 空态页元信息：会话工作目录与 agent 预设。
 - `ContextMenu.tsx` — 自绘右键菜单浮层（根部挂一次，只管画）。ESC 收菜单按 `../escapeOwner.ts` 的 `ESC_LAYER.contextMenu` 登记：压过原图浮层，一次 ESC 只关它。
-- `CopyButton.tsx` — 复制按钮（工具卡与后台任务详情共用，1s 文案反馈）。
+- `CopyButton.tsx` — 复制按钮的三种外观：文字版 `CopyButton`（工具卡与后台任务详情）、图标版 `IconCopyButton`（历史会话 ID、消息操作行、代码块、轨迹原文）、开关 `WrapLinesButton`（轨迹自动换行），以及没有按钮可换文案的复制入口用的提示层 `CopyFlashLayer`。成功反馈统一 1s；状态机、计时与剪贴板写入在 `../copyFeedback.ts`，本文件只画外观。
 - `primitives.tsx` — 小组件与格式化工具（Popover、`formatClock`、路径拆分展示等）；Popover 带可选 `className` 作为分区挂点（模型弹层靠它把可滚的模型列表与常驻的思考档位区拆成两层，见 `Composer.tsx`）。上下文占用的圆环与它的悬停明细也在这里，明细拼法 `contextDetailLines` 是**唯一一份**（工具栏那枚缓存命中读数的悬停也读它，两处信息刻意保持一致）。

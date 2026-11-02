@@ -10,6 +10,7 @@ import { EmptyMeta } from "./components/EmptyMeta";
 import { HistoryPanel } from "./components/History";
 import { ImagePreviewLayer } from "./components/Images";
 import { ContextMenuLayer } from "./components/ContextMenu";
+import { CopyFlashLayer } from "./components/CopyButton";
 import { FindBar } from "./components/FindBar";
 import { Message } from "./components/Message";
 import { JobsPanel } from "./components/Panels";
@@ -1265,6 +1266,10 @@ export function App() {
       {/* 右键菜单浮层：同样是全屏定位层，且要盖在原图浮层之上（在原图上点右键时
           它就是弹在原图上） */}
       <ContextMenuLayer />
+      {/* 复制提示层：右键菜单的「复制」与会话选区 Ctrl+C 没有按钮可换文案，由它在
+          触发点附近闪一条「已复制到剪贴板」（见 copyFeedback.ts）。挂在菜单之后：
+          菜单先收，提示后出现，z-index 也压过菜单。 */}
+      <CopyFlashLayer />
       </UiScaleContext.Provider>
       </LocaleContext.Provider>
       </CommandLinksContext.Provider>

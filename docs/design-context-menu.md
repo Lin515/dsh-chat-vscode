@@ -28,11 +28,20 @@ contextMenuKind 按下表优先级判断：
 
 `handleChatCopy` 与右键接取一起在 document 冒泡阶段登记、卸载时一起清理：晚于 React 已处理的按键，早于 VS Code 的 window 快捷键转发。仅接管未处理、非组字、非重复的 Ctrl+C / Cmd+C（无 Alt / Shift，也不同时按 Ctrl 与 Cmd）。
 
-- 选区非折叠且两端都在 `.chat-scroll` 时，保留原始空白与换行，经既有 `copy` 帧交给宿主 `vscode.env.clipboard.writeText`，随后阻止默认行为与继续冒泡，避免重复转发。
+- 选区非折叠且两端都在 `.chat-scroll` 时，保留原始空白与换行，经 `copyFeedback.ts` 的 `copyText()` 写 `copy` 帧交给宿主 `vscode.env.clipboard.writeText`，随后阻止默认行为与继续冒泡，避免重复转发。成功后由 `flashCopied()` 在选区末尾闪一条「已复制到剪贴板」（见下节）。
 - 事件目标或当前焦点在 input / textarea / contenteditable 时保留原生编辑；无有效选区、跨正文边界、其它快捷键及已处理事件全部让路。不会接管剪切、粘贴或菜单复制。
 - `chatSelectionText` 返回原始选区；右键的「复制 / 引用」仍在菜单入口去首尾空白，不改变既有菜单语义。
 - 复制与引用不做数学选区去重：可能连同 KaTeX 的 MathML / annotation 辅助文本或不同格式的空白进入剪贴板 / 引用块，这是与官方对齐后接受的边界；不克隆副本、不写临时 style、不改 live DOM / Selection。
 - 静态预览可以核验按键到 `copy` 帧的链路；只有安装端验收才能证明 VS Code 宿主已将内容写入系统剪贴板。
+
+## 复制反馈
+
+所有复制入口共用 [copyFeedback.ts](<../src/webview/copyFeedback.ts>)：`copyText()` 是唯一的 `copy` 帧发射点，成功反馈分两档。
+
+- **有按钮的位置**（工具卡、后台任务详情、历史会话 ID、代码块、消息操作行、轨迹原文）由 `useCopyFeedback` 亮 1s：文字版换「已复制到剪贴板」文案与对勾，图标版换对勾并上成功色（`components/CopyButton.tsx`）。
+- **没有按钮可换文案的位置**（右键菜单「复制」、会话选区 Ctrl+C / Cmd+C）由 `flashCopied()` 在触发点右下闪一条「已复制到剪贴板」；拿不到选区矩形时回落到视口底部中间。提示层 `CopyFlashLayer` 挂在 App 根部一次，整层不接收指针事件，1s 后自己收掉。
+- 菜单的「复制」按 **菜单弹出点** 定位提示（菜单先收、提示后出现），图片复制要等 `copyImageElement` 真的成功才闪；失败仍走 `reportImageCopyFailure` 的宿主通知，不闪成功提示。
+- 图片的「保存」不在此列：路径由用户自己在系统对话框里选，取消与成功都不提示，只有取字节或写盘失败才入通知队列。
 
 ## 图片复制与保存
 
@@ -60,6 +69,7 @@ contextMenuKind 按下表优先级判断：
 ## 回归
 
 - [contextMenu.test.ts](<../scripts/contextMenu.test.ts>)：判定矩阵、引用落点、建议文件名；调用真实快捷复制处理器，覆盖 Ctrl / Cmd、跨消息空白换行保真、编辑焦点、组合键、组字、重复事件、选区包含性与空选区让路。
+- [copyFeedback.test.ts](<../scripts/copyFeedback.test.ts>)：`copy` 帧唯一发射点、复制按钮与 `CopyButton` / `IconCopyButton` 的清点、状态机只有一份，以及非按钮入口提示的落点、替换与自动消失。
 - [imagePreview.test.ts](<../scripts/imagePreview.test.ts>)：缩放方向与上下限、光标锚定、拖动边界、复原端口，以及滚轮 / 指针 / 菜单 / 样式接线。
 - [imageFiles.test.ts](<../scripts/imageFiles.test.ts>)：data URL 白名单、上限与文件名。
 - [styles.test.ts](<../scripts/styles.test.ts>)：document 接取、无抽屉重复处理、浮层装配、视口定位、图片层之上与一行截断。
