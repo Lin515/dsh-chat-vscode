@@ -1,10 +1,10 @@
 /**
  * 「这个执行世界文件能不能在本机当**真实文件**打开」的纯判据。
  *
- * 宿主在 Alt 打开真实文件前要连过几道门：启动链路是不是已知原生链路、路径形态是不是
- * 扩展宿主平台的本机绝对路径、原生文件是否存在且与执行世界内容一致。这里只放
- * 可以离线断言的字符串 / 字节判断，不碰 `vscode` 与文件系统；真正的 `stat` /
- * `readFile` 在 `controller.openFile` 的 `real` 分支里。
+ * 宿主在 Alt 打开真实文件前要连过几道门：路径形态是不是扩展宿主平台的本机绝对路径、
+ * 原生文件是否存在且与执行世界内容一致。这里只放可以离线断言的字符串 / 字节判断，
+ * 不碰 `vscode` 与文件系统；真正的 `stat` / `readFile` 在 `controller.openFile` 的
+ * `real` 分支里。
  *
  * 为什么需要这一层：执行世界的绝对路径可能是 POSIX、盘符、WSL 或容器里的路径，
  * 而扩展宿主的 `Uri.file` 只解释**它自己这台机器**的路径。不能因为字符串以 `/`
@@ -30,30 +30,6 @@ export function localPlatform(platform: NodeJS.Platform): LocalPlatform {
 export function isLocalAbsolutePath(path: string, platform: LocalPlatform): boolean {
   if (platform === "win32") return isWindowsStylePath(path);
   return path.startsWith("/") && !isWindowsStylePath(path);
-}
-
-/**
- * 受控内部后台是否使用已知的原生启动命令。
- *
- * 只认标准 dsh web 及已使用的端口 / 禁止自动开浏览器参数；包装器、shell 组合、
- * 额外选项和缺失命令均按未知处理。这是对可信本机 DSH 安装的保守准入，不认证 PATH
- * 中被替换的程序，也不把字符串匹配当作任意外部端点的文件系统证明。
- */
-export function isNativeDshCommand(command: string | undefined): boolean {
-  if (!command || /[\r\n]/u.test(command)) return false;
-  const [executable, subcommand, ...args] = command.trim().split(/[ \t]+/u);
-  if (!/^dsh(?:\.cmd|\.exe)?$/u.test(executable ?? "") || subcommand !== "web") return false;
-  const seen = new Set<string>();
-  for (let index = 0; index < args.length; index += 1) {
-    const option = args[index];
-    if (seen.has(option)) return false;
-    seen.add(option);
-    if (option === "--no-open") continue;
-    if (option !== "--port") return false;
-    const port = args[++index];
-    if (!port || !/^\d{1,5}$/u.test(port) || Number(port) > 65_535) return false;
-  }
-  return true;
 }
 
 /** 两段字节是否完全一致（长度 + 逐字节）。 */

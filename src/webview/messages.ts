@@ -381,13 +381,13 @@ export const MESSAGES = {
   hostOpenUnavailable: { zh: "Host 无法在桌面端打开此文件", en: "The Host could not open this file on the desktop" },
   fileAccessUnavailable: { zh: "无法访问此文件，请检查权限及连接状态", en: "Cannot access this file. Check permissions and the connection." },
   /**
-   * 按修饰键打开真实文件失败：执行世界不在本机、路径形态不是本机绝对路径、
-   * 本机副本缺失或字节不一致、编辑器打开失败。随后已按只读预览打开，措辞要说明
+   * 按修饰键打开真实文件失败：路径形态不是本机绝对路径、本机副本缺失、大小或字节
+   * 不一致、超过逐字节校验上限、编辑器打开失败。随后已按只读预览打开，措辞要说明
    * 不是“文件不存在”（Path 的 not-found 另走 `fileNotFound`）。
    */
   realFileUnavailable: {
-    zh: "无法在本机打开可编辑的真实文件（执行世界可能不在本机），已按只读方式打开",
-    en: "The editable real file is not available on this machine (the execution world may be remote); opened read-only instead",
+    zh: "无法在本机打开可编辑的真实文件（本机文件缺失、内容不一致或无法校验），已按只读方式打开",
+    en: "The editable real file is not available on this machine (missing, different content, or could not be verified); opened read-only instead",
   },
   producedMore: { zh: (count: number) => `+ ${count} 个文件`, en: (count: number) => `+ ${count} file${count === 1 ? "" : "s"}` },
   openChangesAria: { zh: (name: string) => `查看 ${name} 的改动`, en: (name: string) => `View changes in ${name}` },

@@ -1,8 +1,11 @@
 /**
- * 真实文件打开的原生准入（纯判据 + 真 ChatController 离线行为）。
+ * 真实文件打开的本机一致性校验（纯判据 + 真 ChatController 离线行为）。
  *
- * 标准内部启动 / 本机桌面端才允许编辑；外部回环、包装命令和证据缺失保持只读。
- * 路径形态与内容比较只是附加一致性检查，不能证明不同执行世界的副本是原件。
+ * 连接类型不参与准入：内部后台、桌面端与外部连接都只在路径形态、本机存在性、
+ * 大小与逐字节内容一致时用 `file:` 打开；任何一项不满足都回退只读并提示。
+ * 外部连接不再因为“地址不是本机”被提前拒绝，但内容比较也不证明另一执行世界的
+ * 副本就是原件——这是用户显式按住 Alt 时接受的风险。
+ *
  * VS Code 和文件读取使用替身，不启动 DSH，不访问网络、不消耗模型 token。
  *
  * 运行：npm test（已在 esbuild.scripts.mjs 的 entries 里登记）
@@ -12,14 +15,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as vscode from "vscode";
 import { ChatController } from "../src/dsh/controller";
-import type { Ownership, ServerState } from "../src/dsh/supervisorManager";
 import { decodeRemoteFileAddress } from "../src/dsh/remoteFileAddress";
-import {
-  isLocalAbsolutePath,
-  isNativeDshCommand,
-  localPlatform,
-  sameBytes,
-} from "../src/dsh/localPath";
+import { isLocalAbsolutePath, localPlatform, sameBytes } from "../src/dsh/localPath";
 
 // ---------- 1. 平台家族 ----------
 {
@@ -49,21 +46,7 @@ console.log("localPath: process.platform 归一到 win32 / posix ✓");
 }
 console.log("localPath: 本机绝对路径形态按平台收窄（盘符 / UNC / POSIX 根） ✓");
 
-// ---------- 3. 已知原生启动命令 ----------
-{
-  for (const command of ["dsh web", "dsh web --port 0 --no-open", "dsh.cmd web --no-open --port 65535", " dsh.exe\tweb "]) {
-    assert.strictEqual(isNativeDshCommand(command), true, `应认标准原生启动：${command}`);
-  }
-  for (const command of [undefined, "", "wsl dsh web", "ssh host dsh web", "docker run image dsh web",
-    "bash -c 'dsh web'", "custom-launcher web", "/opt/tools/dsh web", "dsh web && ssh host",
-    "dsh web; echo ready", "dsh web\nssh host", "dsh web --unknown", "dsh web --port", "dsh web --port -1",
-    "dsh web --port 65536", "dsh web --port 0 --port 1", "dsh web --no-open --no-open"]) {
-    assert.strictEqual(isNativeDshCommand(command), false, `未知启动不能算原生：${command}`);
-  }
-}
-console.log("localPath: 原生启动命令收窄，WSL / SSH / 容器 / shell 包装一律未知 ✓");
-
-// ---------- 4. 字节身份 ----------
+// ---------- 3. 字节身份 ----------
 {
   const base = new Uint8Array([1, 2, 3]);
   assert.strictEqual(sameBytes(base, new Uint8Array([1, 2, 3])), true);
@@ -73,15 +56,9 @@ console.log("localPath: 原生启动命令收窄，WSL / SSH / 容器 / shell �
 }
 console.log("localPath: 本机副本与执行世界必须逐字节一致 ✓");
 
-// ---------- 5. 真打开链：原生准入 / 只读回退 ----------
+// ---------- 4. 真打开链：外部也按内容准入 / 不一致回退 ----------
 interface Scenario {
-  ownership?: Ownership;
-  command?: string;
-  state?: ServerState;
-  remembered?: boolean;
-  stateUrl?: string;
   baseUrl?: string;
-  target?: "internal" | "desktop";
   real?: boolean;
   size?: number;
   missingSize?: boolean;
@@ -96,7 +73,8 @@ interface OpenPort {
 }
 const FILE = join(tmpdir(), "dsh-chat-native-open", "sample.txt");
 const DATA = new Uint8Array([1, 2, 3]);
-// 只替换 IO：控制器的 statOpenTarget、真实文件准入与只读回退均运行生产实现。
+const VERIFY_LIMIT = 8 * 1024 * 1024;
+// 只替换 IO：控制器的 statOpenTarget、真实文件校验与只读回退均运行生产实现。
 async function openScenario(options: Scenario) {
   const opened: { scheme: string; path?: string; query?: string }[] = [];
   const notifications: { text?: string }[] = [];
@@ -114,16 +92,9 @@ async function openScenario(options: Scenario) {
     },
     async readBytes() { hostReads++; return { stat, data: DATA }; },
   };
-  const baseUrl = options.baseUrl ?? "http://127.0.0.1:3456";
   const controller = Object.assign(Object.create(ChatController.prototype), {
-    client: { baseUrl }, hostFiles: access,
-    target: { kind: options.target ?? "internal" },
+    client: { baseUrl: options.baseUrl ?? "http://127.0.0.1:3456" }, hostFiles: access,
     viewSessions: new Map([["native-view", "native-session"]]),
-    server: { snapshot: () => ({
-      status: { state: options.state ?? "ready", info: { ownership: options.ownership, baseUrl } },
-      state: { command: options.command, baseUrl: options.stateUrl ?? baseUrl },
-      remembered: options.remembered ?? true,
-    }) },
     log: () => undefined,
     notify: (notification: { text?: string }) => notifications.push(notification),
   }) as OpenPort;
@@ -149,6 +120,14 @@ async function openScenario(options: Scenario) {
   }
   return { opened, notifications, localStats, localReads, hostReads };
 }
+function assertReal(result: Awaited<ReturnType<typeof openScenario>>): void {
+  assert.strictEqual(result.opened.length, 1);
+  assert.strictEqual(result.opened[0].scheme, "file");
+  assert.strictEqual(result.notifications.length, 0);
+  assert.strictEqual(result.localStats, 1);
+  assert.strictEqual(result.localReads, 1);
+  assert.strictEqual(result.hostReads, 1);
+}
 function assertReadonly(result: Awaited<ReturnType<typeof openScenario>>, notify = true): void {
   assert.strictEqual(result.opened.length, 1);
   assert.strictEqual(result.opened[0].scheme, "dsh-chat-world");
@@ -157,45 +136,47 @@ function assertReadonly(result: Awaited<ReturnType<typeof openScenario>>, notify
   assert.strictEqual(identity?.connectionId, "native-open-connection", "回退仍绑定原连接");
   assert.deepStrictEqual(result.notifications.map((item) => item.text), notify ? ["@realFileUnavailable"] : []);
 }
-for (const ownership of ["self", "peer", "desktop"] as const) {
-  const result = await openScenario({ ownership, command: ownership === "desktop" ? undefined : "dsh web --port 0 --no-open" });
-  assert.strictEqual(result.opened[0]?.scheme, "file", `${ownership} 原生链路可开真实文件`);
-  assert.strictEqual(result.localStats, 1);
-  assert.strictEqual(result.localReads, 1);
-  assert.strictEqual(result.hostReads, 1);
-  assert.strictEqual(result.notifications.length, 0);
-}
-// 同名、同内容的本地副本也不能给外部连接提供原件身份；大文件不比较字节也不能绕过。
+// 外部连接（含远端地址）也走同一套内容校验：本机同路径且内容一致即可编辑。
 for (const baseUrl of ["http://127.0.0.1:3456", "http://localhost:3456", "http://[::1]:3456", "https://remote.example"]) {
-  for (const size of [DATA.length, 9 * 1024 * 1024]) {
-    const result = await openScenario({ ownership: "external", command: "dsh web", baseUrl, size });
-    assertReadonly(result);
-    assert.strictEqual(result.localStats + result.localReads + result.hostReads, 0, "未知环境不得尝试本机副本");
-  }
+  assertReal(await openScenario({ baseUrl }));
 }
+// 路径形态不符：不得碰本机文件系统。
+{
+  const result = await openScenario({
+    absolutePath: process.platform === "win32" ? "/remote/sample.txt" : "C:/remote/sample.txt",
+  });
+  assertReadonly(result);
+  assert.strictEqual(result.localStats + result.localReads + result.hostReads, 0, "形态不符不得读本机或 Host");
+}
+// 本机缺失 / 大小不一致 / Host 缺大小 / 内容不一致：回退只读。
+assertReadonly(await openScenario({ localMissing: true }));
 for (const scenario of [
-  { target: "internal" }, { target: "desktop" },
-  { ownership: "self" }, { ownership: "peer", command: "wsl dsh web" },
-  { ownership: "self", command: "ssh host dsh web" },
-  { ownership: "self", command: "docker run image dsh web" },
-  { ownership: "self", command: "dsh web", remembered: false },
-  { ownership: "self", command: "dsh web", stateUrl: "http://127.0.0.1:9999" },
-  { ownership: "desktop", state: "stopped" },
-] satisfies Scenario[]) {
+  { localSize: 4 },
+  { missingSize: true },
+  { localData: new Uint8Array([1, 2, 4]) },
+]) {
   const result = await openScenario(scenario);
   assertReadonly(result);
-  assert.strictEqual(result.localStats, 0, "目标偏好、旧状态和未知启动都不是原生证据");
+  assert.strictEqual(result.localStats, 1, "走到本机校验后才判定不一致");
 }
-for (const scenario of [
-  { missingSize: true }, { localSize: 4 }, { localData: new Uint8Array([1, 2, 4]) }, { localMissing: true },
-  { absolutePath: process.platform === "win32" ? "/remote/sample.txt" : "C:/remote/sample.txt" },
-]) {
-  assertReadonly(await openScenario({ ownership: "self", command: "dsh web", ...scenario }));
+{
+  const result = await openScenario({ localData: new Uint8Array([1, 2, 4]) });
+  assert.strictEqual(result.localReads, 1);
+  assert.strictEqual(result.hostReads, 1);
 }
-for (const ownership of ["self", "external"] as const) {
-  const result = await openScenario({ ownership, command: "dsh web", real: false });
+// 超过逐字节校验上限：无法证明内容一致，不读本机字节也不读 Host 字节。
+{
+  const size = VERIFY_LIMIT + 1;
+  const result = await openScenario({ size, localSize: size });
+  assertReadonly(result);
+  assert.strictEqual(result.localReads, 0, "超限文件不得读本机字节");
+  assert.strictEqual(result.hostReads, 0, "超限文件不得读 Host 字节");
+}
+// 普通单击仍只读，不进入本机校验。
+{
+  const result = await openScenario({ baseUrl: "https://remote.example", real: false });
   assertReadonly(result, false);
   assert.strictEqual(result.localStats, 0, "普通单击仍只读，不进入本机校验");
 }
-console.log("localPath: 真 ChatController 验证原生打开、外部/未知零本机读取、原会话只读回退与一致性守门 ✓");
+console.log("localPath: 真 ChatController 验证按内容打开、不一致零误读与原连接只读回退 ✓");
 console.log("\nlocalPath: all assertions passed");

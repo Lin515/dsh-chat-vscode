@@ -69,7 +69,7 @@ import {
   unsupportedLocalPathForm,
 } from "./localAccess";
 import { readHostImages } from "./localImages";
-import { isLocalAbsolutePath, isNativeDshCommand, localPlatform, sameBytes } from "./localPath";
+import { isLocalAbsolutePath, localPlatform, sameBytes } from "./localPath";
 import {
   HostFileAccess,
   HostFileError,
@@ -681,7 +681,7 @@ const AGENT_DIFF_READ_LIMIT = 8 * 1024 * 1024;
  * 打开真实文件时，最多读多少字节做**逐字节身份校验**。
  *
  * 本机副本与执行世界可能是同一台机器上的两份同形路径（远端 / 容器 / WSL）；只有
- * 存在性和大小还不够。源码类文件远小于这条线，超过它则退回「大小 + 存在性」，
+ * 存在性和大小还不够。源码类文件远小于这条线；超过它就无法证明内容一致，回退只读，
  * 避免为了点开一个大日志把整份文件搬进扩展宿主内存。
  */
 const REAL_FILE_VERIFY_BYTES = 8 * 1024 * 1024;
@@ -11162,9 +11162,9 @@ export class ChatController implements vscode.Disposable {
    *
    * 路径属于 DSH 执行世界：先问 `workspaceFiles.stat` 取得 Host 认可的绝对路径。
    * 默认再生成绑定「连接 + 会话 + 路径」的 `dsh-chat-world:` URI，绝不 `Uri.file`；
-   * `real`（用户按住 Alt）时才在**已知原生启动链路**且路径形态、存在性、大小与字节
-   * 校验都通过的前提下用 `file:` 打开，失败回退只读并提示。相对路径原样交给 Host
-   * 解析（缺创建目录时由服务端的 sandbox 根裁决），客户端不拿 VS Code 工作区兜底。
+   * `real`（用户按住 Alt）时才在路径形态、存在性、大小与（限额内）字节校验都通过
+   * 的前提下用 `file:` 打开，失败回退只读并提示。相对路径原样交给 Host 解析
+   * （缺创建目录时由服务端的 sandbox 根裁决），客户端不拿 VS Code 工作区兜底。
    *
    * `diff` 表示想看本轮改动：**先按 Host 清单坐标取快照**，不把「当前文件还能
    * stat 到」当成历史对比的前提——文件在本轮之后被删掉，删除对比仍然打得开。
@@ -11277,14 +11277,15 @@ export class ChatController implements vscode.Disposable {
   /**
    * 尝试把执行世界文件当**本机真实文件**打开（Alt 那一档）。
    *
-   * 四道门缺一不可：
-   * 1. 已就绪的受控原生内部后台或本机桌面端；外部与未知启动命令均拒绝；
-   * 2. Host 给的绝对路径形态属于扩展宿主平台（Windows 盘符 / UNC，POSIX `/`）；
-   * 3. 本机 `workspace.fs` 能 stat 到同一个普通文件，且大小与 Host 报告一致；
-   * 4. 文件 ≤ {@link REAL_FILE_VERIFY_BYTES} 时，再与 Host `readBytes` 逐字节比较。
+   * 三道门缺一不可：
+   * 1. Host 给的绝对路径形态属于扩展宿主平台（Windows 盘符 / UNC，POSIX `/`）；
+   * 2. 本机 `workspace.fs` 能 stat 到同一个普通文件，且大小与 Host 报告一致；
+   * 3. 文件不超过 {@link REAL_FILE_VERIFY_BYTES}，并与 Host `readBytes` 逐字节一致。
    *
-   * 任何一道失败都返回 `false`，由调用方回退现有的只读虚拟资源并提示——绝不因为
-   * 本机有同路径文件就直接打开。成功时返回 `true`，真实文件在编辑器里可正常编辑。
+   * 连接类型（内部 / 外部 / 桌面端）不参与准入：外部连接也可能就是本机执行世界，
+   * 只要本机同路径文件的内容一致就按真实文件打开。任何一道失败都返回 `false`，
+   * 由调用方回退现有的只读虚拟资源并提示——绝不因为本机有同路径文件就直接打开。
+   * 超过校验上限的文件无法证明内容一致，同样回退。成功时返回 `true`。
    */
   private async openRealFile(
     access: HostFileAccess,
@@ -11292,10 +11293,6 @@ export class ChatController implements vscode.Disposable {
     stat: HostFileStat,
     line?: number,
   ): Promise<boolean> {
-    if (!this.isLocalExecutionTarget()) {
-      this.log(`[open] 当前连接不是已知原生启动链路，拒绝打开真实文件：${stat.absolutePath}`);
-      return false;
-    }
     const platform = localPlatform(process.platform);
     if (!isLocalAbsolutePath(stat.absolutePath, platform)) {
       this.log(`[open] 执行世界路径不是本机 ${platform} 绝对路径：${stat.absolutePath}`);
@@ -11308,19 +11305,27 @@ export class ChatController implements vscode.Disposable {
         this.log(`[open] 本机同路径不是普通文件，拒绝打开：${stat.absolutePath}`);
         return false;
       }
-      if (stat.bytes === undefined || local.size !== stat.bytes) {
+      if (stat.bytes === undefined) {
+        this.log(`[open] Host 没有给出文件大小，无法校验本机副本：${stat.absolutePath}`);
+        return false;
+      }
+      if (local.size !== stat.bytes) {
         this.log(
           `[open] 本机副本大小不一致（Host ${stat.bytes} / 本机 ${local.size}），拒绝打开：${stat.absolutePath}`,
         );
         return false;
       }
-      if (stat.bytes <= REAL_FILE_VERIFY_BYTES) {
-        const remote = await access.readBytes(sessionId, stat.absolutePath);
-        const localBytes = await vscode.workspace.fs.readFile(uri);
-        if (!sameBytes(remote.data, localBytes)) {
-          this.log(`[open] 本机副本与执行世界字节不一致，拒绝打开：${stat.absolutePath}`);
-          return false;
-        }
+      if (stat.bytes > REAL_FILE_VERIFY_BYTES) {
+        this.log(
+          `[open] 文件超过逐字节校验上限 ${REAL_FILE_VERIFY_BYTES} 字节，拒绝打开：${stat.absolutePath}`,
+        );
+        return false;
+      }
+      const remote = await access.readBytes(sessionId, stat.absolutePath);
+      const localBytes = await vscode.workspace.fs.readFile(uri);
+      if (!sameBytes(remote.data, localBytes)) {
+        this.log(`[open] 本机副本与执行世界字节不一致，拒绝打开：${stat.absolutePath}`);
+        return false;
       }
     } catch (error) {
       this.log(`[open] 真实文件的本机校验失败 ${stat.absolutePath}：${this.describeError(error)}`);
@@ -11350,25 +11355,6 @@ export class ChatController implements vscode.Disposable {
       this.log(`[open] 真实文件打开失败 ${stat.absolutePath}：${this.describeError(error)}`);
       return false;
     }
-  }
-
-  /**
-   * 只允许已就绪的、已知使用宿主原生文件系统的启动链路。
-   *
-   * 桌面端由本机进程与所属监听端口验证；内部后台还须核对当前后台的实际启动命令，
-   * 不能读可能已被修改的配置。self / peer 本身不排除 WSL / SSH / 容器包装器。
-   * 外部连接一律未知（包括 loopback），不以地址、同路径或相同内容推断映射，
-   * 也不以粘性目标替代实际连接证据。不提供用户手工映射配置。
-   */
-  private isLocalExecutionTarget(): boolean {
-    const { status, state, remembered } = this.server.snapshot();
-    if (status.state !== "ready") return false;
-    const ownership = status.info?.ownership;
-    if (ownership === "desktop") return true;
-    return (
-      (ownership === "self" || ownership === "peer") && remembered &&
-      state?.baseUrl === status.info?.baseUrl && isNativeDshCommand(state?.command)
-    );
   }
 
   /**
