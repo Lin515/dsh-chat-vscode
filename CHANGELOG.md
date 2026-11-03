@@ -3,6 +3,18 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 This project follows [Semantic Versioning](https://semver.org/).
 
+## 0.12.2（2026-11-03）
+
+### 中文
+
+- 改进：按住 Alt 单击文件入口时不再按连接类型拒绝真实文件；本机同路径文件存在且内容一致即可编辑，内容不一致、缺失或超过 8 MiB 无法校验时回退只读。
+- 改进：真实文件回退提示改为说明本机文件缺失、内容不一致或无法校验，不再笼统归因于执行世界不在本机。
+
+### English
+
+- Improved: Alt-clicking a file entry no longer refuses the editable real file based on the connection type; a local file at the same path opens for editing when its content matches, while a missing, different, or unverifiable file above 8 MiB falls back to read-only.
+- Improved: The real-file fallback notice now explains that the local file is missing, different, or could not be verified instead of broadly blaming a remote execution world.
+
 ## 0.12.1（2026-11-02）
 
 ### 中文
