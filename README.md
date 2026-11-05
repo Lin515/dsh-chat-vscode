@@ -50,7 +50,7 @@ npm run package  # Releases/dsh-chat-<version>.vsix
 | `dshChat.diffLayout` | `auto` | 编辑 diff：窄单栏 / 宽双栏，或固定 `unified` / `split` |
 | `dshChat.language` | `auto` | 聊天语言：跟随 VS Code，或 `zh-cn` / `en` |
 | `dshChat.fontSize` | `0` | 整数 px；`0` 跟随 VS Code，非零值最小 8 px，基准为 13px。字体会直接使用设定值，整个界面会根据设定值与基准值的比例进行缩放 |
-| `dshChat.questionBatch` | `1` | 问卷一次展开的题数；超出时依次问答，`0` 即总是展开 |
+| `dshChat.questionBatch` | `1` | 问卷一次展开的题数；超出时逐题作答，已答记录默认收起、点开后也逐题复看，`0` 始终显示全部 |
 | `dshChat.turnProcessThreshold` | `5` | 结束后的过程段达到该工具数才折叠；含子代理派发；`0` 不折，`1–2` 总是折叠，不过单个调用仍平铺 |
 | `dshChat.agentPreset` | 空 | 新会话预设 id 或中英文显示名；空值使用服务端默认预设 |
 
@@ -168,7 +168,7 @@ The desktop app (Electron) already runs a DSH service of its own, and the extens
 | `dshChat.diffLayout` | `auto` | Narrow unified / wide split diff, or fixed `unified` / `split` |
 | `dshChat.language` | `auto` | Follow VS Code, or use `zh-cn` / `en` |
 | `dshChat.fontSize` | `0` | Integer px; `0` follows VS Code, nonzero values are at least 8 px, baseline 13px. The font uses the value directly and the whole UI scales by its ratio to the baseline |
-| `dshChat.questionBatch` | `1` | Number of questions expanded together; larger sets run sequentially, `0` always shows all |
+| `dshChat.questionBatch` | `1` | Number of questions shown together; larger sets use one question per page, including completed records when opened (collapsed by default); `0` always shows all |
 | `dshChat.turnProcessThreshold` | `5` | Fold a finished process segment at this many tool calls, including subagent dispatches; `0` never folds, `1–2` always folds, single-call segments stay flat |
 | `dshChat.agentPreset` | empty | New-session preset id or Chinese/English display name; empty uses the server default |
 

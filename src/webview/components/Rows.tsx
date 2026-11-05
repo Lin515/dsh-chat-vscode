@@ -29,7 +29,13 @@ import {
   useSelectionFreeze,
   useStickyBody,
 } from "./primitives";
-import { canSubmit, isAnswered, questionMode, questionReplyText } from "../questionFlow";
+import {
+  canSubmit,
+  isAnswered,
+  questionMode,
+  questionReplyText,
+  recordExpanded,
+} from "../questionFlow";
 import { customAnswerSize } from "../questionInput";
 import { useUiScale } from "../uiScale";
 import {
@@ -1445,11 +1451,15 @@ export function pendingQuestionCopyText(
  *    所有题目一起铺开，全部作答后才能提交；
  * 2. **待回答 · 依次问答**（题目数更多）：一次一道，带「第 N / M 题」与上一题 /
  *    下一题；单选点一下就前进（官方 `choose` 同口径），最后一题变成提交；
- * 3. **已答完**：默认**收缩成一行**（`已作答 N 题`），点行头可再展开看当时的题目
- *    与**用户当时选了什么**——答案取自 `question.answers`（宿主写进卡片的数据），
+ * 3. **已答完**：用户没手动开合过时，按**当前**阈值决定默认展开——题目数不超过
+ *    阈值（或阈值 `0`）时**默认展开**，直接看当时的题目与**用户当时选了什么**；
+ *    超过阈值则收缩成一行（`已作答 N 题`），点行头再展开复看（用户 2026-11-05
+ *    口径）；展开后也按阈值逐题复看，而非全部铺开。复看页码与填写页码独立，
+ *    不受「必须答完才能下一题」限制。答案取自 `question.answers`（宿主写进卡片的数据），
  *    不是组件自己的 state：换会话回来、另一个窗口答的、页面重载之后，本地 state
  *    都是空的（用户 2026-09-15 报的「展开后没有显示用户的回答」就是这个）；
- * 4. **已撤回**（`cancelled`，没人回答过）：同样收缩成一行（`已取消 N 题`）。
+ * 4. **已撤回**（`cancelled`，没人回答过）：默认收缩成一行（`已取消 N 题`）；
+ *    计划审阅的记录同样默认收缩（展开体里是整份计划，体积与题数无关）。
  *
  * 待答卡的**半填状态**（选项 / 自定义文本 / 自定义回答选中态 / 依次问答停在第几题）
  * 会写进 `../questionDraft` 的**内存表**，切走会话再回来时恢复；不落盘（DSH 重启后
@@ -1515,8 +1525,8 @@ function QuestionCardState({
     () => restored?.customChosen ?? {},
   );
   const [index, setIndex] = useState(restored?.index ?? 0);
-  // 已答完的问卷默认收缩；用户点开看记录后不再自动收起
-  const [expanded, setExpanded] = useState(false);
+  // 复看从第一题开始，不继承待答卡提交时停留的最后一题，也不写回填写草稿。
+  const [recordIndex, setRecordIndex] = useState(0);
   /**
    * 「放弃整组问题」已点下（官方 `cancelFlow` 的 busy='cancel' 同一刻）：
    * 收场 patch 回来之前先把提交 / 放弃两个按钮按住，免得这段窗口里重复发帧、
@@ -1528,12 +1538,29 @@ function QuestionCardState({
   const waiting = question.state === "waiting";
   const cancelled = question.state === "cancelled";
   const items = question.items;
+  const review = planReviewOf(items);
+  /**
+   * 记录卡的展开态（用户 2026-11-05 口径）：用户没手动开合过就**每次按当前阈值**
+   * 重算默认值（题目一次铺得下就展开，超过阈值收缩成一行；计划审阅与已撤回不参与，
+   * 见 `recordExpanded`）。不把挂载那一刻的判定冻在 state 里：首帧 `questionBatch`
+   * 迟到、或用户改了配置，记录卡都要跟着当前口径走。
+   *
+   * `undefined` = 用户还没碰过；点过之后（`userOpen` 有值）就听用户的选择，配置
+   * 再变也不自动切换。
+   */
+  const [userOpen, setUserOpen] = useState<boolean | undefined>(undefined);
+  const expanded = recordExpanded(items.length, batch, {
+    planReview: review !== undefined,
+    cancelled,
+    userOpen,
+  });
   const mode = questionMode(items.length, batch);
   const interactive = waiting;
-  const stepped = interactive && mode === "stepped";
-  // 依次问答只渲染当前这一题；题目被服务端更新（数组变短）时夹住下标，
-  // 免得 `items[current]` 变成 undefined 把整张卡渲染成空白
-  const current = stepped ? Math.min(index, Math.max(0, items.length - 1)) : 0;
+  const stepped = mode === "stepped";
+  // 待答与复看共用展示规则，只有页码归属不同；题数变短时夹住下标。
+  const pageIndex = waiting ? index : recordIndex;
+  const setPageIndex = waiting ? setIndex : setRecordIndex;
+  const current = stepped ? Math.min(pageIndex, Math.max(0, items.length - 1)) : 0;
   const shown = stepped ? items.slice(current, current + 1) : items;
 
   /**
@@ -1840,8 +1867,37 @@ function QuestionCardState({
     );
   };
 
-  // 已答完 / 已撤回：收缩成一行（行头可点开复看题目与当时的回答）。用与工具行
-  // 同一套 `Row`，视觉语言不分家：这同样是「对话里发生过的一件事」。
+  const currentAnswered = isAnswered(
+    effectiveSelected[items[current]?.id ?? ""],
+    effectiveCustom[items[current]?.id ?? ""],
+  );
+  // 只读记录也可自由前后复看，包括当时跳过的题；不能沿用待答卡的作答门槛。
+  const pager = stepped ? (
+    <div className="question-pager">
+      <span className="question-step">{texts.questionStep(current + 1, items.length)}</span>
+      <button
+        className="btn btn-ghost"
+        disabled={current === 0}
+        onClick={() => setPageIndex(Math.max(0, current - 1))}
+      >
+        {texts.questionPrev}
+      </button>
+      {/* 待答卡最后一题由提交接棒；记录卡保留禁用的下一题，明确复看边界。 */}
+      {!waiting || current < items.length - 1 ? (
+        <button
+          className="btn"
+          disabled={current === items.length - 1 || (waiting && !currentAnswered)}
+          onClick={() => setPageIndex(Math.min(items.length - 1, current + 1))}
+        >
+          {texts.questionNext}
+        </button>
+      ) : null}
+    </div>
+  ) : null;
+
+  // 已答完 / 已撤回：默认展开与否按**当前**阈值算（`recordExpanded`；计划审阅与
+  // 已撤回默认收缩），用户手动开合过则听用户的；行头随时可点开复看题目与当时的
+  // 回答。用与工具行同一套 `Row`，视觉语言不分家：这同样是「对话里发生过的一件事」。
   // 展开体（`.question.is-record`）走与其它展开体**同一张节点框**（缩进 + 边框 +
   // 底色，见 app.css 的 `.row-body` 那一组选择器）：它此前刻意不带框，展开后整段
   // 题目与选项和助手正文同级，看不出属于上面那个提问节点（用户 2026-10-02 口径）。
@@ -1851,10 +1907,6 @@ function QuestionCardState({
   // 记录态的复制载荷（每题「题头 + 当时选了什么」）口径照官方 `QuestionReplyView`
   // 的 `replyClipboardText`（见 `questionFlow.questionReplyText`）：复制的是**整份
   // 记录**，与展开与否无关；计划审阅卡的「回答」就是批准 / 拒绝的选项值。
-  //
-  // 先算好再进「不是等待态」那个分支：那里到 `open={expanded}` 的窗口要保持紧凑
-  // （`questionFlow.test.ts` 用它确认记录卡默认收起），别把载荷计算塞进 JSX 之前。
-  const review = planReviewOf(items);
   const replyText = questionReplyText(items, question.answers, {
     answer: texts.questionAnswerLabel,
     skipped: texts.questionAnswerSkipped,
@@ -1880,24 +1932,22 @@ function QuestionCardState({
             : texts.questionAnswered(items.length)
         }
         open={expanded}
-        onToggle={() => setExpanded(!expanded)}
+        onToggle={() => setUserOpen(!expanded)}
       >
         <div className="question is-record">
-          {/* 复制按钮落在**第一题题头行的右端**：行头（`Row` 那一行）整体是开合按钮，
+          {/* 复制按钮落在**当前首个可见题头行的右端**，载荷始终为完整问卷：
+              行头（`Row` 那一行）整体是开合按钮，
               不能嵌按钮；题头行是普通元素，可以安全地放在同一行的行尾——不再另起
               一行让一枚图标白占高度。 */}
-          {items.map((item, index) =>
+          {shown.map((item, index) =>
             renderItem(item, index === 0 ? recordCopy : undefined),
           )}
+          {pager ? <div className="question-footer">{pager}</div> : null}
         </div>
       </Row>
     );
   }
 
-  const currentAnswered = isAnswered(
-    effectiveSelected[items[current]?.id ?? ""],
-    effectiveCustom[items[current]?.id ?? ""],
-  );
   const ready = canSubmit(items, effectiveSelected, effectiveCustom);
 
   return (
@@ -1923,29 +1973,7 @@ function QuestionCardState({
             <IconClose size={12} />
             {texts.questionDismissAll}
           </button>
-          {stepped ? (
-            <div className="question-pager">
-              <span className="question-step">{texts.questionStep(current + 1, items.length)}</span>
-              <button
-                className="btn btn-ghost"
-                disabled={current === 0}
-                onClick={() => setIndex(Math.max(0, current - 1))}
-              >
-                {texts.questionPrev}
-              </button>
-              {/* 最后一题的「下一题」就是提交，不再单独放一个按钮（与官方
-                  `submit`/`action.next` 同一个按钮同一条语义） */}
-              {current < items.length - 1 ? (
-                <button
-                  className="btn"
-                  disabled={!currentAnswered}
-                  onClick={() => setIndex(Math.min(items.length - 1, current + 1))}
-                >
-                  {texts.questionNext}
-                </button>
-              ) : null}
-            </div>
-          ) : null}
+          {pager}
           <span className="spacer" />
           <button className="btn btn-primary" disabled={!ready || closing} onClick={submit}>
             {texts.submit}

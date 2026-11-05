@@ -135,7 +135,8 @@
 - [nodeCopy.test.ts](<nodeCopy.test.ts>) / [nodeCopyBrowser.tsx](<nodeCopyBrowser.tsx>) — 独立 jsdom realm 点击生产节点按钮，核验思考 / 注入 / 技能 / 命令 / 提示 / 未知块、审批 / 待答问卷 / 计划 / 计划记录的复制载荷、空内容让路、助手只在轮尾复制最后一段正文（中间正文不挂按钮、不跨工具拼接）、用户整条复制与流式选区冻结渲染。可同入口在 Chromium 运行；不连接真实 DSH、不验证系统剪贴板。
 - [copyFeedback.test.ts](<copyFeedback.test.ts>) — 复制反馈收口：`copy` 帧只有一个发射点、所有复制按钮都走同一个 `CopyButton`（图标按钮、无文字标签）并逐文件清点数量（含助手轮尾、内容节点、交互卡与既有工具 / diff / 代码入口）、1s 状态机只在 `copyFeedback.ts`；非按钮入口（右键菜单 / 选区快捷键）提示的落点、替换、自动消失与样式约束（提示层只闪对勾、不抢指针、压过右键菜单、动画时长等于 `COPIED_MS`、成功态特异性能压过容器的 Muted 色）。
 - [questionFlow.test.ts](<questionFlow.test.ts>) — 问卷展示口径：一次展开 vs 依次问答（`dshChat.questionBatch`）；问卷记录复制载荷 `questionReplyText`（多选、自定义答案、没答写「已跳过」、计划审阅、题头去重）。
-- [questionRender.test.ts](<questionRender.test.ts>) — 问卷卡片渲染断言（答完的问题展开后显示用户回答）。
+- [questionRender.test.ts](<questionRender.test.ts>) — 问卷卡片 SSR 渲染与默认开合阈值断言。
+- [questionRecord.test.ts](<questionRecord.test.ts>) / [questionRecordBrowser.tsx](<questionRecordBrowser.tsx>) — 独立 DOM realm 点击生产 Message 的 tool/question 记录入口，验证中英文、阈值/坏值、逐题前后复看、只读权威答案、整组复制、配置/题数变化与填写提交后的记录交接；同入口可在 Chromium 执行，不连接真实 DSH。
 - [toolRowRender.test.ts](<toolRowRender.test.ts>) — 工具节点渲染断言：技能节点只显示 SKILL 正文（无参数 / 输出标题），读 / 写 / 编辑与技能只在真有可打开目标时提示 Ctrl/Cmd 单击打开；write 未完成原文、空内容、中断失败、安全文本、仅 write 与 diff 交接。
 - [writePreview.test.ts](<writePreview.test.ts>) — 同一生产解码接口的完整／不完整 JSON、每个二段切点及逐字符切分、转义／代理对／CRLF／末尾空白、根键与嵌套干扰、无效回退、身份／替换重置、重放及大文本追加。
 - [codeBlock.test.ts](<codeBlock.test.ts>) — 代码块默认折展：超过 20 行默认收起（含 `aria-expanded` 与完整正文），20 行及以内没有折展入口、保持展开；SSR 在 settled / streaming 都不初始化高亮引擎，输出纯文本。

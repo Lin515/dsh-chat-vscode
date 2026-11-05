@@ -15,10 +15,9 @@
  * 用 `react-dom/server` 的 `renderToStaticMarkup`：断言落在**产出的 HTML** 上而不是
  * 源码正则上——正则只能证明「代码里有这行字」，渲染能证明「用户真能看见」。
  *
- * **记录卡默认是收起的**（`Row` 只在 `open` 时挂载 children，用户 2026-09-14 的口径），
- * 所以「展开后长什么样」在无头环境里渲染不到：那一层的证据是这里第 2 组（同一对
- * `selectedOf` / `customOf` 读取器）+ `scripts/interactionSync.test.ts`（答案确实被写进
- * `question.answers`）+ 预览页 `test/preview.html`（夹具里带 answers，可肉眼核）。
+ * 记录卡当前按阈值决定默认开合；超阈值时 `Row` 不挂载 children，SSR 只能验证
+ * 初始状态。点击展开、逐题复看、配置变化及提交到记录的交接由
+ * `scripts/questionRecord.test.ts` 的独立 DOM realm 验证。
  *
  * 运行：npm test（记得登记到 esbuild.scripts.mjs 的 entries）
  */
@@ -50,12 +49,13 @@ const render = (
   question: QuestionView,
   locale: "zh" | "en" = "zh",
   sessionId?: string,
+  batch = 3,
 ): string =>
   renderToStaticMarkup(
     createElement(
       TextsContext.Provider,
       { value: dictionaryFor(locale) },
-      createElement(QuestionCard, { question, batch: 3, sessionId }),
+      createElement(QuestionCard, { question, batch, sessionId }),
     ),
   );
 
@@ -75,7 +75,7 @@ const items: QuestionView["items"] = [
 ];
 
 const selectedLabels = (html: string): string[] =>
-  [...html.matchAll(/<button class="question-option is-selected">[\s\S]*?<span class="question-option-label">([^<]*)<\/span>/g)].map(
+  [...html.matchAll(/<button class="question-option is-selected"(?:\s[^>]*)?>[\s\S]*?<span class="question-option-label">([^<]*)<\/span>/g)].map(
     (match) => match[1],
   );
 
@@ -184,27 +184,104 @@ console.log("questionRender: 复制入口与第一题题头同一行 ✓");
 }
 console.log("questionRender: 选项高亮与自定义文本都由 answers 驱动 ✓");
 
-// ---------- 3. 已答完：收缩成一行（正文不进首帧 HTML），摘要是「已作答 N 题」 ----------
+// ---------- 3. 已答完：默认展开状态跟随 `dshChat.questionBatch` ----------
+//
+// 用户 2026-11-05 口径：记录卡也听阈值——题目能在一次里铺完（不超过阈值，或阈值
+// `0` = 始终一次展开）时**默认展开**，直接看当时的问答；超过阈值仍收缩成一行，
+// 点行头再复看，免得长问卷一答完就占满屏幕。摘要始终是「已作答 N 题」。
 {
+  // 2 题、阈值 3：一次铺得下 → 首帧就展开，题目正文与当时的回答都在
   const html = render({
     requestId: "ev3",
     state: "answered",
     items,
-    answers: { scope: { selected: ["一起收敛"] }, docs: { selected: ["要"] } },
+    answers: { scope: { selected: ["连同配置读取一起收敛"] }, docs: { selected: ["要"] } },
   });
   assert.ok(html.includes("已作答 2 题"), `收场摘要要在：${html.slice(0, 240)}`);
-  assert.ok(!html.includes("question-options"), "已答完默认**收起**（2026-09-14 口径），正文不挂载");
-  assert.ok(!/<input/.test(html) && !/<textarea/.test(html), "收起时也不该有可编辑的输入框");
-  // 行头可点开复看：aria-expanded=false 且是个按钮
-  assert.ok(/<button class="row-head" aria-expanded="false">/.test(html), "行头是「可展开」的按钮");
+  assert.ok(
+    /<button class="row-head" aria-expanded="true">/.test(html),
+    `题目数在阈值内时记录卡默认展开：${html.slice(0, 240)}`,
+  );
+  assert.ok(html.includes("question-options"), "展开后题目正文直接挂载");
+  assert.deepStrictEqual(
+    selectedLabels(html),
+    ["连同配置读取一起收敛", "要"],
+    "展开后显示用户当时的回答",
+  );
+  assert.ok(!/<textarea/.test(html), "记录卡只读：展开体里没有可编辑的输入框");
+
+  // 2 题、阈值 1：铺不下 → 仍收缩成一行，正文不进首帧
+  const collapsed = render(
+    { requestId: "ev3-stepped", state: "answered", items },
+    "zh",
+    undefined,
+    1,
+  );
+  assert.ok(collapsed.includes("已作答 2 题"), "收缩时摘要照旧");
+  assert.ok(
+    /<button class="row-head" aria-expanded="false">/.test(collapsed),
+    "题目数超过阈值时记录卡默认收缩",
+  );
+  assert.ok(!collapsed.includes("question-options"), "收缩时正文不挂载");
+  assert.ok(!/<input/.test(collapsed) && !/<textarea/.test(collapsed), "收缩时也不该有输入框");
+
+  // 阈值 0 = 始终一次展开全部题目：记录卡同样默认展开
+  const always = render(
+    { requestId: "ev3-zero", state: "answered", items },
+    "zh",
+    undefined,
+    0,
+  );
+  assert.ok(
+    /<button class="row-head" aria-expanded="true">/.test(always),
+    "阈值 0 表示始终一次展开：记录卡默认展开",
+  );
+  assert.ok(always.includes("question-options"), "阈值 0 时正文直接挂载");
 }
-console.log("questionRender: 已答完的问卷默认收起、摘要正确 ✓");
+console.log("questionRender: 已答完的记录卡按阈值决定默认展开 ✓");
+
+// ---------- 3b. 计划审阅的记录不参与阈值：始终收缩 ----------
+//
+// 它的展开体里是整份计划，体积由计划长度决定、与题数无关；按「1 题 ≤ 阈值」把它
+// 默认摊开会在消息流里直接铺一整份计划。用户 2026-11-05 的口径只针对问卷本身，
+// 计划记录保持原来的默认收起。
+{
+  const planItems: QuestionView["items"] = [
+    {
+      id: "plan",
+      header: "计划审阅",
+      question: "同意这份计划吗？",
+      detail: "# Plan\n\n- step",
+      options: [{ label: "Approve" }, { label: "Reject" }],
+      intent: { kind: "plan-review", approve: "Approve" },
+    },
+  ];
+  const html = render({
+    requestId: "ev-plan",
+    state: "answered",
+    items: planItems,
+    answers: { plan: { selected: ["Approve"] } },
+  });
+  assert.ok(html.includes("计划待审"), `计划记录要画出自己的标题：${html.slice(0, 240)}`);
+  assert.ok(
+    /<button class="row-head" aria-expanded="false">/.test(html),
+    "计划审阅记录始终默认收缩（展开体是整份计划，不由题数决定）",
+  );
+  assert.ok(!html.includes("question-options"), "计划正文不在首帧展开");
+}
+console.log("questionRender: 计划审阅的记录始终收缩 ✓");
 
 // ---------- 4. 已撤回：摘要与「已作答」分开 ----------
 {
   const html = render({ requestId: "ev4", state: "cancelled", items });
   assert.ok(html.includes("已取消 2 题"), `撤回的问卷要说「已取消」：${html.slice(0, 240)}`);
   assert.ok(!html.includes("已作答"), "没人回答过就不能写「已作答」");
+  // 撤回不是「完成」：没有回答可看，不参与阈值，始终收缩
+  assert.ok(
+    /<button class="row-head" aria-expanded="false">/.test(html),
+    "已撤回的记录始终默认收缩",
+  );
+  assert.ok(!html.includes("question-options"), "撤回时正文不挂载");
 }
 console.log("questionRender: 撤回的问卷与已作答分得开 ✓");
 
@@ -430,8 +507,13 @@ console.log("questionRender: 只撤下被输入区接管的那一条 ✓");
   assert.ok(html.includes("已作答 1 题"), `工具节点要画成问卷记录卡：${html.slice(0, 400)}`);
   assert.ok(!/io-card/.test(html), "不再画通用 IN/OUT（参数 JSON 与答案 JSON 都不出现）");
   assert.ok(!html.includes("questions"), "参数 JSON 不该露出来");
-  // 记录卡默认收起（与独立记录段同一形态），展开体由 `QuestionCard` 那一层钉住
-  assert.ok(!/question-option/.test(html), "默认收起时不挂载题目正文");
+  // 这道题在默认阈值 1 内：记录卡默认展开（用户 2026-11-05 口径），并显示当时的回答
+  assert.ok(
+    /<button class="row-head" aria-expanded="true">/.test(html),
+    "阈值内的问卷记录在工具节点上也默认展开",
+  );
+  assert.ok(/class="question-option is-selected"/.test(html), "展开体里显示用户当时选的答案");
+  assert.ok(!/<textarea/.test(html), "记录卡只读：没有输入框");
 
   // 已取消的形态同样画记录卡（撤回 / 中止之后没人回答过）
   const cancelled = renderToStaticMarkup(
@@ -452,7 +534,49 @@ console.log("questionRender: 只撤下被输入区接管的那一条 ✓");
     ),
   );
   assert.ok(cancelled.includes("已取消 1 题"), `撤回/中止之后也是同一张记录卡：${cancelled.slice(0, 400)}`);
+  assert.ok(
+    /<button class="row-head" aria-expanded="false">/.test(cancelled),
+    "已取消的记录始终收缩（没有回答可看）",
+  );
 }
 console.log("questionRender: ask_user_question 节点渲染成问卷记录 ✓");
+
+// ---------- 9. 相同配置必须同时约束待答卡、独立交互段与 durable 工具记录 ----------
+// 不直接给 QuestionCard 塞 batch 就宣称链路正确：生产中的已答问卷从 Message 的
+// tool 段进入，待答问卷则由输入区接管。两条入口必须在同一题数 / 配置矩阵上对拍。
+{
+  const question: QuestionView = {
+    requestId: "batch-record",
+    state: "answered",
+    items,
+    answers: { scope: { selected: ["连同配置读取一起收敛"] }, docs: { selected: ["要"] } },
+  };
+  for (const batch of [1, 2, 0]) {
+    const expectedOpen = batch !== 1;
+    const waiting = render({ ...question, state: "waiting", answers: undefined }, "zh", undefined, batch);
+    assert.strictEqual(
+      (waiting.match(/<div class="question-item">/g) ?? []).length,
+      expectedOpen ? 2 : 1,
+      `待答问卷：阈值 ${batch} 决定是否一次展开两题`,
+    );
+    for (const kind of ["question", "tool"] as const) {
+      const segment = kind === "question"
+        ? { id: "batch-segment", kind, question }
+        : { id: "batch-segment", kind, tool: {
+            id: "batch-record", name: "ask_user_question", title: "", detail: "", status: "ok" as const, question,
+          } };
+      const html = renderToStaticMarkup(createElement(TextsContext.Provider, { value: dictionaryFor("zh") },
+        createElement(Message, { message: { id: "batch-message", role: "assistant", ts: 1, segments: [segment] },
+          questionBatch: batch, turnProcessThreshold: 0 })));
+      assert.ok(html.includes("已作答 2 题"), `${kind} 入口必须实际渲染记录卡`);
+      assert.ok(
+        html.includes(`class="row-head" aria-expanded="${expectedOpen}"`),
+        `${kind} 入口的两题已答记录必须遵循阈值 ${batch}（预期展开 ${expectedOpen}）：${html}`,
+      );
+      assert.strictEqual(html.includes("question-options"), expectedOpen, `${kind} 入口的正文挂载与展开态一致`);
+    }
+  }
+}
+console.log("questionRender: 待答问卷与消息中两种记录入口遵循同一配置 ✓");
 
 console.log("\nquestionRender: all assertions passed");
