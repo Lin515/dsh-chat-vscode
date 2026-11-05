@@ -2,8 +2,8 @@
  * 正文里引用的**执行世界图片**：经 DSH 的认证读取通道换成 data URL。
  *
  * 路径是模型可控的外部输入，但它属于 DSH 执行世界，不是扩展宿主本机：
- * - 相对路径原样交给 `workspaceFiles.stat`，由 Host 用会话创建目录解析；缺创建
- *   目录也不回退 VS Code 工作区，不猜本机基准。
+ * - 相对路径由调用方按当前执行目录（缺失时用创建目录）解析，再交给执行世界；
+ *   两者都缺失时保持相对拼写，不回退 VS Code 工作区。
  * - 绝对路径不重新拼目录；根外能否读取由 provider 的访问策略裁决，**创建目录
  *   不是媒体白名单**，扩展名也不是授权条件。
  * - 客户端只拒绝 UNC、控制字符与盘符相对这类无法安全/无歧义表达的媒体路径；
@@ -66,6 +66,7 @@ async function readOne(
   ref: string,
   urls: Record<string, string>,
   failures: Record<string, string>,
+  resolvePath: (path: string) => string,
 ): Promise<void> {
   const path = localImagePath(ref);
   if (!path) {
@@ -78,7 +79,7 @@ async function readOne(
     return;
   }
   try {
-    const stat = await access.stat(sessionId, path);
+    const stat = await access.stat(sessionId, resolvePath(path));
     // 字节预算交给 Host 的媒体路由：这里不按 stat.bytes 预拒绝，也不传客户端
     // maxBytes —— 那等于把本地常量冒充部署限额。
     const file = await access.readBytesAt(stat, path);
@@ -107,6 +108,7 @@ export async function readHostImages(
   access: HostFileAccess,
   sessionId: string,
   refs: readonly string[],
+  resolvePath: (path: string) => string = (path) => path,
 ): Promise<HostImageResult> {
   const urls: Record<string, string> = {};
   const failures: Record<string, string> = {};
@@ -117,7 +119,7 @@ export async function readHostImages(
       cursor += 1;
       const ref = refs[index];
       if (ref === undefined) return;
-      await readOne(access, sessionId, ref, urls, failures);
+      await readOne(access, sessionId, ref, urls, failures, resolvePath);
     }
   };
   const workers = Math.min(LOCAL_IMAGE_CONCURRENCY, refs.length);

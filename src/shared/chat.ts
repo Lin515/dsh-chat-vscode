@@ -1125,6 +1125,12 @@ export interface ScheduleItemView {
   id: string;
   /** 任务归属的会话（原始绑定，官方口径：编辑与删除都按它走）。 */
   sessionId: string;
+  /** 新目录的管理/投递相关会话；空表不退回旧绑定。 */
+  involvedSessionIds?: string[];
+  /** 新目录使用全局 edit/history API。 */
+  api?: "edit";
+  updatedAt?: string;
+  rrule?: string;
   /** 任务名（创建时必填，最多 120 字符）；界面**一律**用它命名任务。 */
   title: string;
   /** 到点要送进原会话的指令正文。 */
@@ -1192,7 +1198,8 @@ export type ScheduleTimingChangeView =
   | { kind: "every"; every_seconds: number }
   | { kind: "daily"; daily: { time: string; time_zone: string } }
   | { kind: "weekly"; weekly: { time: string; time_zone: string; weekdays: number[] } }
-  | { kind: "cron"; cron: { expression: string; time_zone: string } };
+  | { kind: "cron"; cron: { expression: string; time_zone: string } }
+  | { kind: "rrule"; rrule: string };
 
 /**
  * 一条任务当前的读取状态（供 `schedule/history` 的响应与界面空态判据共用）。

@@ -24,6 +24,7 @@ import {
   ingestControlBaseline,
   ingestFollowSnapshot,
   ingestProjection,
+  ingestProjectionFrame,
   isProjectionKey,
   readProjection,
   type ProjectionHandlers,
@@ -265,3 +266,23 @@ console.log("projectionIngest: 没有 asOfSeq 的 baseline 不清空 ✓");
 console.log("projectionIngest: 执行目录开帧、增量、旧水位拒绝和清空 ✓");
 
 console.log("\nprojectionIngest: all assertions passed");
+
+// rc.1 批量格式：全批先入库；空批权威；旧单键仅在缺少新字段时回退。
+{
+  const scope = new SessionScope("batch");
+  const { handlers, seen } = recorder();
+  handlers.title = () => { assert.deepEqual(scope.projections.get("plan"), { active: true }); };
+  ingestProjectionFrame(handlers, scope, { seq: 10, changes: [
+    { key: "title", val: "batch" }, { key: "plan", val: { active: true } }, { key: "future", val: null },
+  ] });
+  assert.equal(scope.projections.get("title"), "batch");
+  assert.equal(seen.length, 1);
+  ingestProjectionFrame(handlers, scope, { seq: 9, changes: [{ key: "title", val: "stale" }] });
+  assert.equal(scope.projections.get("title"), "batch");
+  ingestProjectionFrame(handlers, scope, { seq: 11, changes: [], key: "title", value: "ignored" });
+  assert.equal(scope.projections.get("title"), "batch");
+  ingestProjectionFrame(handlers, scope, { seq: 11, key: "future", value: "legacy" });
+  assert.equal(scope.projections.get("future"), "legacy");
+  ingestProjectionFrame(handlers, scope, { seq: 12, changes: [{ key: "future", val: null }, null, { key: 4, val: 1 }] });
+  assert.equal(scope.projections.get("future"), null);
+}

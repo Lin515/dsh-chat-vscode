@@ -81,7 +81,7 @@ React / 浏览器环境，不使用 Node API。上层边界见[源码导航](<..
 - [fileLinks.ts](<fileLinks.ts>) — Markdown 路径锚点与本轮文件 token；行内代码按「精确 / 唯一 basename / 产物参数别名」并入同一集合，只有唯一目标才可点；另给 `fileOpenIntent`（Alt 真实文件 / Ctrl+HTML 浏览器 / 普通只读）的唯一判据。
 - [linkHovers.ts](<linkHovers.ts>) — 正文链接的悬停标题（完整路径 / 完整地址、Alt 真实文件、HTML 的 Ctrl/Cmd 浏览器提示）；标题由 `markdown/render.tsx` 在渲染时合并，不再做渲染后 DOM 注入。
 - [modifierLabel.ts](<modifierLabel.ts>) — 悬停文案的平台修饰键标签（Mac→Cmd，Win/Linux→Ctrl）；点击判据仍只看 ctrlKey / metaKey。
-- [localImages.ts](<localImages.ts>) — 正文图片交宿主读取，缓存按会话隔离；图片叶节点自持 pending / ready / failed。
+- [localImages.ts](<localImages.ts>) — 正文图片交宿主读取，缓存按连接、会话与有效执行目录隔离；图片叶节点自持 pending / ready / failed。
 - [imagePreview.ts](<imagePreview.ts>) — 原图浮层的开合订阅、滚轮缩放 / 拖动几何与「复原」端口；1 为适配视口，缩放锚定光标、平移受边界约束。
 - [imageClipboard.ts](<imageClipboard.ts>) — canvas 转 PNG 写剪贴板。
 - [attachIntake.ts](<attachIntake.ts>) — drop / paste 字节通道，真路径归宿主。

@@ -683,39 +683,46 @@ export class DshClient {
     id: string,
     limit: number,
     before?: string,
+    modern = false,
   ): Promise<unknown> {
     return this.request(METHODS.scheduleHistory, {
-      request: { sessionId, id, limit, ...(before !== undefined ? { before } : {}) },
+      request: { ...(modern ? {} : { sessionId }), id, limit, ...(before !== undefined ? { before } : {}) },
     });
   }
 
   /**
-   * 改一条任务的运行时间（`schedule/update`，比较并交换）。
+   * 改一条任务的运行时间（比较并交换：新代 edit，旧代 update）。
    *
-   * `expected` 必须是**编辑开始时读到的完整规则**（逐字段取自目录条目），服务端拿它
-   * 做比较：期间被投递推进过或被别的客户端改过就回 `schedule_conflict`，不覆盖。
-   * 返回值同样刻意是 `unknown`——`updated: true` / `updated: false` + `code` /
-   * 工具错误三支由 `scheduleView.ts` 的 `scheduleUpdateOutcome` 读。
+   * 新目录用 `revision.updatedAt` 比较，缺失明确发 null；旧目录才用完整规则 `expected`。
+   * 新代直接返回目录条目，旧代返回 `updated`，冲突均带 `code`；统一在
+   * `scheduleView.ts` 的 `scheduleUpdateOutcome` 收窄，不尝试另一个变更端点。
    */
   scheduleUpdate(
     sessionId: string,
     id: string,
     expected: Record<string, unknown>,
     change: unknown,
+    revision?: { updatedAt?: string },
   ): Promise<unknown> {
+    if (revision) return this.request(METHODS.scheduleEdit, {
+      request: { id, action: "update", patch: { timing: change }, expectedUpdatedAt: revision.updatedAt ?? null },
+    });
     return this.request(METHODS.scheduleUpdate, {
       request: { sessionId, id, expected, change },
     });
   }
 
   /**
-   * 删掉一条自动化任务（`schedule/delete`）。
+   * 删掉一条自动化任务（新目录走 `schedule/edit`，旧目录保留 `schedule/delete`）。
    *
    * 删除是**硬删**：任务行与它的投递记录一起没了，不再触发、也不再出现在目录里；
    * 原会话与已排队的消息不受影响。任务本来就不在时回 `{deleted: false,
    * code: 'schedule_not_found'}`——那是正常结果，不是异常。
    */
-  scheduleDelete(sessionId: string, id: string): Promise<unknown> {
+  scheduleDelete(sessionId: string, id: string, revision?: { updatedAt?: string }): Promise<unknown> {
+    if (revision) return this.request(METHODS.scheduleEdit, {
+      request: { id, action: "delete", expectedUpdatedAt: revision.updatedAt ?? null },
+    });
     return this.request(METHODS.scheduleDelete, { request: { sessionId, id } });
   }
 

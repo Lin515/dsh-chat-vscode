@@ -225,11 +225,11 @@ console.log("markdown: 图片 title / 三属性 / 危险 scheme 降级 / HTTP �
     "vendor 解析本身不保留 Windows 反斜杠",
   );
 
-  // UNC 只保住路径文本，点击准入照旧拒绝
-  assert.strictEqual(
+  // rc.1 的文件链接保留 UNC；读取准入由执行世界判定，媒体路径另有约束。
+  assert.deepStrictEqual(
     parseFileLink(firstUrl("[x](\\\\host\\share\\.agent\\a.txt)", "link") ?? ""),
-    undefined,
-    "UNC 链接在修复后仍被点击判定拒绝",
+    { path: "\\\\host\\share\\.agent\\a.txt" },
+    "UNC 链接保留原路径交由执行世界判定",
   );
 
   // 落到真实文件：渲染目标能交给宿主，且盘上确实有

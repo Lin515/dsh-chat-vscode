@@ -162,6 +162,8 @@ export function scheduleFrequency(
       if (item.time === undefined || item.timeZone === undefined || item.weekdays === undefined) return undefined;
       return texts.scheduleWeekly(formatWeekdays(item.weekdays, texts), clockLabel(item.time), zoneText(item.timeZone, zone));
     }
+    case "rrule":
+      return item.rrule?.replace(/\r?\n/g, " · ");
     case "cron": {
       if (item.expression === undefined || item.timeZone === undefined) return undefined;
       return texts.scheduleCron(item.expression, zoneText(item.timeZone, zone));
@@ -398,7 +400,7 @@ export function orderSchedules(items: readonly ScheduleItemView[], now: number):
 // ---------- 运行时间编辑 ----------
 
 /** 运行时间卡片上的「重复」档（与官方 Repeat 菜单的常用档一一对应）。 */
-export type ScheduleRepeat = "once" | "every" | "daily" | "weekly" | "cron";
+export type ScheduleRepeat = "once" | "every" | "daily" | "weekly" | "cron" | "rrule";
 
 /** 一次编辑会话里的原生输入值（全部是**字符串**：输入框里就是文本）。 */
 export interface ScheduleTimingDraft {
@@ -417,6 +419,7 @@ export interface ScheduleTimingDraft {
   weekdays: number[];
   /** `cron` 的五段表达式。 */
   expression: string;
+  rrule?: string;
 }
 
 const UNIT_SECONDS_OF: Record<ScheduleTimingDraft["unit"], number> = {
@@ -450,6 +453,8 @@ export function scheduleDraft(item: ScheduleItemView): ScheduleTimingDraft {
     expression: "0 9 * * *",
   };
   switch (item.kind) {
+    case "rrule":
+      return { ...base, repeat: "rrule", rrule: item.rrule ?? "" };
     case "after":
     case "at": {
       const zone = scheduleRuleZone(item);
@@ -508,6 +513,7 @@ const TIME_PATTERN = /^\d{2}:\d{2}(:\d{2})?(\.\d{1,3})?$/;
  * 定论，本地拦一道只会把合法的输入挡掉（服务端拒绝时界面照实显示它的错误码）。
  */
 export function scheduleChangeFromDraft(draft: ScheduleTimingDraft): ScheduleDraftResult {
+  if (draft.repeat === "rrule") return draft.rrule?.trim() ? { change: { kind: "rrule", rrule: draft.rrule.trim() } } : { error: "invalid_rule" };
   if (draft.timeZone.trim() === "") return { error: "invalid_time_zone" };
   const zone = draft.timeZone.trim();
   switch (draft.repeat) {
@@ -557,6 +563,7 @@ export function scheduleChangeFromDraft(draft: ScheduleTimingDraft): ScheduleDra
  * `09:00` 与 `09:00:00` 这种等价写法误报成有修改。
  */
 export function scheduleDraftDiffers(draft: ScheduleTimingDraft, item: ScheduleItemView): boolean {
+  if (draft.repeat === "rrule") return item.kind !== "rrule" || draft.rrule?.trim() !== item.rrule;
   switch (draft.repeat) {
     case "once": {
       if (item.kind !== "at" && item.kind !== "after") return true;

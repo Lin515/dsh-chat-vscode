@@ -13,6 +13,7 @@ import assert from "node:assert";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ScheduleItemView } from "../src/shared/chat";
+import { DshClient } from "../src/dsh/client";
 import {
   clockLabel,
   cronFieldError,
@@ -451,7 +452,7 @@ console.log("schedule: 绝对时间文本 ✓");
 
   const controller = read("src", "dsh", "controller.ts");
   assert.ok(
-    /scheduleCatalog\(\)/.test(controller) && /scheduleEntriesFromCatalog\(value\)\.filter\(\(entry\) => entry\.item\.sessionId === scope\.sessionId\)/.test(controller),
+    /scheduleCatalog\(\)/.test(controller) && /entry\.item\.involvedSessionIds\.includes\(scope\.sessionId\) : entry\.item\.sessionId === scope\.sessionId/.test(controller),
     "宿主读全局目录后按当前会话过滤（left: 会显示跑完的 inactive 任务）",
   );
   assert.ok(
@@ -471,7 +472,7 @@ console.log("schedule: 绝对时间文本 ✓");
     "后台刷新失败要保留上次结果（一次抖动不许把「已读到」改写成「读取失败」）",
   );
   assert.ok(
-    /case "deleteSchedule"[\s\S]*?scheduleDelete\(item\.sessionId, message\.id\)/.test(controller),
+    /case "deleteSchedule"[\s\S]*?scheduleDelete\(item\.sessionId, message\.id,/.test(controller),
     "删除请求要带原始会话绑定（界面只给 id）",
   );
   assert.ok(
@@ -495,7 +496,7 @@ console.log("schedule: 绝对时间文本 ✓");
     "四个端点都要走 METHODS 的登记名（不写字面量）",
   );
   assert.ok(
-    /request: \{ sessionId, id, limit, \.\.\.\(before !== undefined \? \{ before \} : \{\}\) \}/.test(client),
+    /request: \{ \.\.\.\(modern \? \{\} : \{ sessionId \}\), id, limit, \.\.\.\(before !== undefined \? \{ before \} : \{\}\) \}/.test(client),
     "执行记录的 limit 必填、before 是排他游标（不给就不带这个字段）",
   );
 
@@ -566,6 +567,55 @@ console.log("schedule: 绝对时间文本 ✓");
   assert.ok(/nowrap/.test(block(".schedule-btn")), "按钮文案不许折行");
 }
 console.log("schedule: 接线与样式 ✓");
+
+// 不建立网络连接，直接核对新旧客户端请求载荷（包括缺失比较基准的 null）。
+{
+  const calls: unknown[] = [];
+  const client = Object.create(DshClient.prototype) as DshClient;
+  client.request = async <T>(method: string, params: unknown): Promise<T> => {
+    calls.push({ method, params });
+    return undefined as T;
+  };
+  const timing = { kind: "rrule", rrule: "DTSTART:20261106T090000Z\nRRULE:FREQ=DAILY" };
+  const expected = { kind: "every", everySeconds: 300 };
+  void client.scheduleHistory("creator", "task", 20, "cursor", true);
+  void client.scheduleUpdate("creator", "task", expected, timing, { updatedAt: "revision" });
+  void client.scheduleDelete("creator", "task", {});
+  void client.scheduleHistory("legacy", "task", 20);
+  void client.scheduleUpdate("legacy", "task", expected, timing);
+  void client.scheduleDelete("legacy", "task");
+  assert.deepEqual(calls, [
+    { method: "schedule/history", params: { request: { id: "task", limit: 20, before: "cursor" } } },
+    { method: "schedule/edit", params: { request: { id: "task", action: "update", patch: { timing }, expectedUpdatedAt: "revision" } } },
+    { method: "schedule/edit", params: { request: { id: "task", action: "delete", expectedUpdatedAt: null } } },
+    { method: "schedule/history", params: { request: { sessionId: "legacy", id: "task", limit: 20 } } },
+    { method: "schedule/update", params: { request: { sessionId: "legacy", id: "task", expected, change: timing } } },
+    { method: "schedule/delete", params: { request: { sessionId: "legacy", id: "task" } } },
+  ]);
+}
+
+// rc.1 的全局目录、RRULE 与直接返回目录条目的编辑结果。
+{
+  const rrule = "DTSTART;TZID=Asia/Shanghai:20261106T090000\nRRULE:FREQ=DAILY";
+  const current = entry({ kind: "rrule", rrule, sessionId: undefined, target: { kind: "new", create: {} }, involvedSessionIds: ["creator", "editor"], updatedAt: "2026-11-05T00:00:00Z" });
+  const parsed = scheduleEntriesFromCatalog([current]);
+  assert.equal(parsed.length, 1);
+  assert.deepEqual(parsed[0].item.involvedSessionIds, ["creator", "editor"]);
+  assert.equal(parsed[0].item.api, "edit");
+  assert.equal(parsed[0].item.updatedAt, current.updatedAt);
+  assert.equal(parsed[0].item.editable, true);
+  const draft = scheduleDraft(parsed[0].item);
+  assert.equal(draft.repeat, "rrule");
+  assert.equal(scheduleDraftDiffers(draft, parsed[0].item), false);
+  assert.equal(scheduleDraftDiffers({ ...scheduleDraft(item()), repeat: "rrule" }, item()), true);
+  assert.deepEqual(scheduleChangeFromDraft({ ...draft, rrule: " " }), { error: "invalid_rule" });
+  assert.deepEqual(scheduleChangeFromDraft(draft), { change: { kind: "rrule", rrule } });
+  assert.deepEqual(scheduleUpdateOutcome(current), { ok: true, code: undefined });
+  assert.deepEqual(scheduleUpdateOutcome({ id: "x", code: "schedule_conflict" }), { ok: false, code: "schedule_conflict" });
+  assert.equal(scheduleEntriesFromCatalog([{ ...current, involvedSessionIds: ["creator", 12] }]).length, 0);
+  assert.deepEqual(scheduleEntriesFromCatalog([{ ...current, involvedSessionIds: [] }])[0].item.involvedSessionIds, []);
+}
+
 
 // ---------- 11. 文案登记：条目齐全，且一律走词典 ----------
 {

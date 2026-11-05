@@ -803,8 +803,8 @@ export function App() {
       ),
     [state.messages, state.changesSummaries, sessionId],
   );
-  // 正文里本地图片的解析缓存按「执行世界连接 + 会话」隔离：相对路径的基准是会话
-  // 创建目录，同一会话在另一条连接里也是另一套执行世界。这个范围由 `localImages`
+  // 正文里本地图片的解析缓存按「执行世界连接 + 会话 + 有效执行目录」隔离：相对路径
+  // 使用当前执行目录，缺失时回退创建目录。这个范围由 `localImages`
   // 自己在消费 `images/scope` / `state` / `patch` 帧时同步（子组件的 layout effect
   // 先于父 effect，不能等到这里才登记），见 webview/localImages.ts。
   // 全页拖放：拖文件进会话页的任何位置都算添加附件（dragActive 时亮出浮层）
@@ -1146,9 +1146,9 @@ export function App() {
                         fileKinds={state.fileKinds}
                         questionBatch={state.questionBatch}
                         turnProcessThreshold={state.turnProcessThreshold}
-                        // 普通正文链接 / 悬停按会话**创建目录**解释；执行目录只属于
-                        // 工具与终端（历史目标由记录值承担），不拿来补普通相对路径。
+                        // 正文引用消费最新执行目录；历史工具与改动卡片保留创建目录坐标。
                         cwd={state.session?.cwd}
+                        workingDirectory={state.workingDirectory}
                         // 技能节点的 SKILL.md 路径只认服务端 `skills/list` 提供的那份
                         skillPaths={skillPaths}
                         // 改动文件卡片：坐标在消息上，清单在 state 的缓存里（键带会话 id，

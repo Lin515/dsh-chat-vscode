@@ -92,19 +92,20 @@
   （未消费）。
 - **两处只增成员**（0.2.0-rc.2，未消费）：网关多了 `hasLiveClient()`；`session/fork` 的参数多了
   可选的 `onCreated` 回调（子会话进目录之后、可选改名之前触发）。
-- **自动化任务可管理**（0.1.7-rc.2 起，`@deepseek-ai/dsh-schedule` 的 `schedule` 命名空间；本扩展
-  自 0.10.6 起消费）：五个一元端点，参数一律走 `{request: {…}}`（`catalog` 零形参）——
-  `schedule/catalog`（回全部任务，每条是 `ScheduleRecord` + `sessionId` + `status` +
-  `lastDelivery`）、`schedule/list`（只回**某会话的活跃**任务）、`schedule/history`
-  （`{sessionId, id, limit: 1–100, before?}`，回最新在前的 `records` / `nextBefore` /
-  `earlierRecordsUnavailable` / `earlierRecordsPruned` / `retention`；任务或游标找不到时回
-  `code` 而不是抛错）、`schedule/update`（比较并交换：`{sessionId, id, expected, change?, title?,
-  prompt?}`，`expected` 是编辑开始时读到的完整记录；`updated: false` 带
-  `schedule_conflict` / `schedule_ended` / `schedule_not_found`）、`schedule/delete`
-  （`{deleted: true}` 或 `{deleted: false, code: 'schedule_not_found'}`；**硬删**，任务行与投递
-  记录一起没）。规则种类是 `after` / `at` / `every` / `daily` / `weekly` / `cron`，`change`
-  只接受后五档（相对延迟不可改）；提交与变更后由 `schedule/changed`（零载荷 emit）通知客户端
-  重取目录。旧服务端（≤ 0.1.7-rc.1）没有这个命名空间，请求 404。
+- **自动化任务管理**（`@deepseek-ai/dsh-schedule`，对齐 0.2.2-rc.1）：
+  `schedule/catalog` 零形参，返回全局目录；条目是 `ScheduleRecord` 加 `target`、
+  `involvedSessionIds`、`status: 'active' | 'paused' | 'ended'`、可选 `updatedAt` 与最近投递。
+  当前会话面板按 `involvedSessionIds` 过滤，不把目标或创建会话等同于唯一归属。
+  `schedule/history` 参数 `{request:{id, limit, before?}}`，成功仍回 `records` / `nextBefore` /
+  `earlierRecordsUnavailable` / `earlierRecordsPruned` / `retention`；未找到任务或游标时回 `code`。
+  `schedule/edit` 替代旧更新 / 删除端点：更新传 `{request:{id, action:'update',
+  patch:{timing}, expectedUpdatedAt}}`，成功直接返回目录条目；删除传 `{request:{id,
+  action:'delete', expectedUpdatedAt}}`，成功回 `{deleted:true, id}`。比较基准缺失时发 `null`，
+  冲突与未找到由 `code` 表示，输入不合法抛 `schedule/input-invalid`，具体原因在 `details.code`。
+  规则保留 `after` / `at` / `every` / `daily` / `weekly` / `cron`，新增 `{kind:'rrule', rrule}`，
+  文本为一行 DTSTART 与一行 RRULE。`schedule/changed` 仍为零载荷 emit，收到后重读目录。
+  旧代目录的 `sessionId` / `inactive`、history 的会话参数及 `schedule/update` /
+  `schedule/delete` 保留兼容，新目录不尝试旧变更端点。创建、手动执行与全局列表新入口未消费。
 - **新增端点 `workspace/unarchiveSession`**（0.1.6-alpha.1 起，本扩展消费）：恢复归档会话，
   与 §3.9 的 `workspace/archiveSession` 配对——请求体同样只有 `sessionId`
   （`WorkspaceUnarchiveSessionRequest = {sessionId}`），回同一个 `WorkspaceArchiveValue`
@@ -752,7 +753,7 @@ export type SessionControlFrame =
 ```
 
 **队列没有自己的帧**：待发消息在 **`inbox` 投影**里——baseline 的
-`projections[sid].values.inbox` 全量下发，之后是 `{type:'projection', key:'inbox', value}`
+`projections[sid].values.inbox` 全量下发，之后是 `{type:'projection', changes:[{key:'inbox', val}]}`（旧代为 `key` / `value`）
 增量。值的形状是 `{'next-turn': UserMessage[], 'next-step': UserMessage[]}`
 （`packages/core/agent-loop/src/inbox.ts` 的 `inboxProjectionDefinition`）：
 `next-turn` = 排队等下一轮，`next-step` = 等下一个 step 的插话。消息体自带
@@ -1924,7 +1925,7 @@ export interface TokenUsageProjection {
 
 1. `session/follow` 开帧的 `snapshot.projections`：`{asOfSeq, values}`（`asOfSeq` 恒等于 `snapshot.cursor`）。
 2. `session/list` 每行的 `projections?: {asOfSeq, values}`（可能是缓存的**陈旧提示**）。
-3. `session/control` 流的 `{type:'baseline'} ` 帧里 `value.projections: Record<SessionId, SessionProjectionBaseline>`，以及其后的 `{type:'projection', sessionId, key, value, seq}` 增量。
+3. `session/control` 流的 `{type:'baseline'} ` 帧里 `value.projections: Record<SessionId, SessionProjectionBaseline>`，以及其后的 `{type:'projection', sessionId, changes:[{key, val}], seq}`（旧代为 `key` / `value`） 增量。
 
 **客户端消费规则**（`⟨P⟩\dsh-api-session-controller\lib\types\client\sessions\projection-store.d.ts:39-48`，逐字）：
 

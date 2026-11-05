@@ -68,6 +68,7 @@ import {
   probeExistence,
   unsupportedLocalPathForm,
 } from "./localAccess";
+import { resolveWorkspacePath } from "../shared/workspacePath";
 import { readHostImages } from "./localImages";
 import { isLocalAbsolutePath, localPlatform, sameBytes } from "./localPath";
 import {
@@ -144,7 +145,7 @@ import type { ModelSelectionDecoded, SubagentCatalogEntryView } from "./projecti
 import {
   ingestControlBaseline,
   ingestFollowSnapshot,
-  ingestProjection,
+  ingestProjectionFrame,
   replayFollowSnapshot,
   type ProjectionHandlers,
   type ProjectionSource,
@@ -6733,7 +6734,7 @@ export class ChatController implements vscode.Disposable {
       // `frame.seq` 是官方投影单元送出这个值时的水位（`protocol.ts` 的
       // `SessionControlFrame.seq`）：契约要求「lower-or-equal seq loses」，重放的旧帧
       // 不能把新值顶回去——跟着流与控制流分居两条 socket，重连后这种交错是真的。
-      ingestProjection(this.projectionHandlers, scope, String(frame.key ?? ""), frame.value, frame.seq);
+      ingestProjectionFrame(this.projectionHandlers, scope, frame);
     }
   }
 
@@ -6804,7 +6805,7 @@ export class ChatController implements vscode.Disposable {
   };
 
   /**
-   * 执行目录变化只影响当前输入与标题；创建目录、分组和历史路径保持原语义。
+   * 执行目录变化影响当前输入、标题与正文相对引用；创建目录、分组和历史记录目标不变。
    *
    * **只有 live 且真的换了一个目录才进通知队列**（绿色，见
    * `docs/design-notifications.md`）：follow 开帧、控制流 baseline 与重连都会把同一批
@@ -7888,7 +7889,7 @@ export class ChatController implements vscode.Disposable {
       return;
     }
     if (this.scopes.get(scope.sessionId) !== scope || this.client !== client) return;
-    const entries = scheduleEntriesFromCatalog(value).filter((entry) => entry.item.sessionId === scope.sessionId);
+    const entries = scheduleEntriesFromCatalog(value).filter((entry) => entry.item.involvedSessionIds ? entry.item.involvedSessionIds.includes(scope.sessionId) : entry.item.sessionId === scope.sessionId);
     scope.schedules = entries.map((entry) => entry.item);
     scope.scheduleExpected.clear();
     for (const entry of entries) {
@@ -7935,7 +7936,7 @@ export class ChatController implements vscode.Disposable {
     // 那一条带着它，拿当前窗口绑的会话去问在跨会话的场景下会查不到（`schedule_not_found`）。
     const binding = scope.schedules.find((entry) => entry.id === id)?.sessionId ?? scope.sessionId;
     try {
-      const value = await client.scheduleHistory(binding, id, SCHEDULE_HISTORY_PAGE, before);
+      const value = await client.scheduleHistory(binding, id, SCHEDULE_HISTORY_PAGE, before, scope.schedules.find((entry) => entry.id === id)?.api === "edit");
       const page = scheduleHistoryFromWire(value);
       if (!page) {
         this.emitToView(viewId, {
@@ -8899,7 +8900,7 @@ export class ChatController implements vscode.Disposable {
       case "openFile": {
         const scope = this.scopeOfView(viewId);
         await this.openFile(
-          message.path,
+          message.link === true ? this.sessionFilePath(scope, message.path) : message.path,
           message.diff,
           viewId,
           scope?.sessionId,
@@ -9099,6 +9100,7 @@ export class ChatController implements vscode.Disposable {
             message.id,
             expected,
             message.change,
+            item.api === "edit" ? { updatedAt: item.updatedAt } : undefined,
           );
           const outcome = scheduleUpdateOutcome(value);
           this.log(
@@ -9143,7 +9145,7 @@ export class ChatController implements vscode.Disposable {
           break;
         }
         try {
-          const value = await this.client.scheduleDelete(item.sessionId, message.id);
+          const value = await this.client.scheduleDelete(item.sessionId, message.id, item.api === "edit" ? { updatedAt: item.updatedAt } : undefined);
           const outcome = scheduleDeleteOutcome(value);
           this.log(
             `[schedule] 删除${outcome.ok ? "已完成" : "未生效"}（id=${message.id}` +
@@ -9206,7 +9208,7 @@ export class ChatController implements vscode.Disposable {
           break;
         }
         const sessionId = scope.sessionId;
-        const result = await readHostImages(access, sessionId, message.paths);
+        const result = await readHostImages(access, sessionId, message.paths, (path) => this.sessionFilePath(scope, path));
         // 迟到结果属于原连接/原会话：用户切走或换连接后不再发给新范围。
         if (
           this.client !== client ||
@@ -11157,14 +11159,19 @@ export class ChatController implements vscode.Disposable {
     this.emitToView(viewId, { type: "ui/insertText", text: mention });
   }
 
+  /** 正文引用按手势时的执行目录解析，缺失时回退创建目录。 */
+  private sessionFilePath(scope: SessionScope | undefined, path: string): string {
+    return resolveWorkspacePath(scope ? scope.workingDirectory ?? this.cwdOf(scope) : undefined, path);
+  }
+
   /**
    * 打开一个文件：默认走 VS Code 的**只读虚拟资源**，`real` 时尝试本机真实文件。
    *
    * 路径属于 DSH 执行世界：先问 `workspaceFiles.stat` 取得 Host 认可的绝对路径。
    * 默认再生成绑定「连接 + 会话 + 路径」的 `dsh-chat-world:` URI，绝不 `Uri.file`；
    * `real`（用户按住 Alt）时才在路径形态、存在性、大小与（限额内）字节校验都通过
-   * 的前提下用 `file:` 打开，失败回退只读并提示。相对路径原样交给 Host 解析
-   * （缺创建目录时由服务端的 sandbox 根裁决），客户端不拿 VS Code 工作区兜底。
+   * 的前提下用 `file:` 打开，失败回退只读并提示。正文引用由调用方按执行目录解析；
+   * 其余相对输入仍由 Host 的创建根或 sandbox 根裁决，客户端不拿 VS Code 工作区兜底。
    *
    * `diff` 表示想看本轮改动：**先按 Host 清单坐标取快照**，不把「当前文件还能
    * stat 到」当成历史对比的前提——文件在本轮之后被删掉，删除对比仍然打得开。
@@ -11406,6 +11413,7 @@ export class ChatController implements vscode.Disposable {
    * 权限；被拒绝时明确提示，不改走编辑器。
    */
   private async openFileInBrowser(viewId: string, path: string): Promise<void> {
+    path = this.sessionFilePath(this.scopeOfView(viewId), path);
     const sessionId = this.viewSessions.get(viewId);
     const notifySession = sessionId;
     const client = this.client;

@@ -31,44 +31,31 @@ export interface FileLinkTarget {
   line?: number;
 }
 
+/** 显式文件路径先于 URL 解释，包含 UNC 与盘符路径。 */
+export function isExplicitFilePath(value: string): boolean {
+  return /^(?:[\\/]|\.{1,2}[\\/]|[a-z]:[\\/])/i.test(value);
+}
+
 /**
- * markdown 链接目标 → 本地文件与可选起始行。
- *
- * 文件名里真的带 `?` / `#` 时必须百分号编码，所以这两者在目标里出现就说明这条链接
- * 不是文件（`?` 是查询串、`#` 之后按行号锚点解析）。
- *
- * @param value markdown 解析出来的链接目标（未解码）。
- * @returns 本地路径与可选起始行；URL、页内锚点、查询串、坏编码、非法行号一律 undefined。
+ * 正文链接目标：支持行片段、行范围与行列后缀；无效定位只取消选行。
+ * 文件名中的问号、井号和数字冒号后缀须百分号编码。
  */
 export function parseFileLink(value: string): FileLinkTarget | undefined {
   const hash = value.indexOf("#");
   const destination = hash < 0 ? value : value.slice(0, hash);
   if (destination.includes("?")) return undefined;
   let path: string;
-  try {
-    path = decodeURIComponent(destination);
-  } catch {
-    // 坏掉的百分号转义指不明一个文件（`%zz`），不猜
-    return undefined;
-  }
-  if (
-    path.length === 0 ||
-    // 控制字符（含 NUL）不可能是路径的一部分；UNC/网络前缀（`\\host`、`//host`）
-    // 打开的是**另一台机器**上的东西，不做
-    /[\u0000-\u001f\u007f]/u.test(path) ||
-    /^[\\/]{2}/u.test(path) ||
-    // 带 scheme 的一律不是文件——但 Windows 盘符（`C:\` / `C:/`）要放行
-    (/^[a-z][a-z\d+.-]*:/iu.test(path) && !/^[a-z]:[\\/]/iu.test(path))
-  ) {
-    return undefined;
-  }
-  if (hash < 0) return { path };
-  const fragment = value.slice(hash + 1);
-  const match = /^L([1-9]\d*)(?:-L([1-9]\d*))?$/u.exec(fragment);
-  if (match === null) return undefined;
+  try { path = decodeURIComponent(destination); } catch { return undefined; }
+  if (path.length === 0 || /[\u0000-\u001f\u007f]/u.test(path)) return undefined;
+  if (!isExplicitFilePath(path) && URL.canParse(path)) return undefined;
+  const suffix = hash < 0 ? /:(\d+)(?::\d+|-(\d+))?$/.exec(destination) : null;
+  if (suffix !== null) path = path.slice(0, -suffix[0].length);
+  if (path.length === 0) return undefined;
+  const match = suffix ?? (hash < 0 ? null : /^L(\d+)(?:-L(\d+))?$/.exec(value.slice(hash + 1)));
+  if (match === null) return { path };
   const line = Number(match[1]);
   const end = match[2] === undefined ? line : Number(match[2]);
-  if (!Number.isSafeInteger(line) || !Number.isSafeInteger(end) || end < line) return undefined;
+  if (!Number.isSafeInteger(line) || !Number.isSafeInteger(end) || line < 1 || end < line) return { path };
   return { path, line };
 }
 

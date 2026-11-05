@@ -408,6 +408,9 @@ export interface Texts {
   scheduleRepeatEvery: string;
   scheduleRepeatDaily: string;
   scheduleRepeatWeekly: string;
+  scheduleRepeatRrule: string;
+  scheduleFieldRrule: string;
+  schedulePaused: string;
   scheduleRepeatCron: string;
   scheduleFieldDate: string;
   scheduleFieldTime: string;

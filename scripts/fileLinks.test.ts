@@ -48,6 +48,15 @@ const read = (...parts: string[]): string => readFileSync(join(process.cwd(), ..
   assert.deepStrictEqual(parseFileLink("src/a.ts#L12"), { path: "src/a.ts", line: 12 });
   assert.deepStrictEqual(parseFileLink("src/a.ts#L12-L40"), { path: "src/a.ts", line: 12 });
 
+  for (const fragment of ["#L0", "#L5-L2", "#Lstart"]) {
+    assert.deepStrictEqual(parseFileLink(`src/a.ts${fragment}`), { path: "src/a.ts" });
+  }
+  assert.deepStrictEqual(parseFileLink("//host/share/a.ts"), { path: "//host/share/a.ts" });
+  assert.deepStrictEqual(parseFileLink("src/a.ts:12:3"), { path: "src/a.ts", line: 12 });
+  assert.deepStrictEqual(parseFileLink("./src/a.ts:12-40"), { path: "./src/a.ts", line: 12 });
+  assert.deepStrictEqual(parseFileLink("src/a.ts:0"), { path: "src/a.ts" });
+  assert.deepStrictEqual(parseFileLink("src/a.ts:12#L4"), { path: "src/a.ts:12", line: 4 });
+  assert.deepStrictEqual(parseFileLink("src/a.ts%3A12"), { path: "src/a.ts:12" });
   // 百分号编码：带空格的文件名
   assert.deepStrictEqual(parseFileLink("src/my%20file.ts"), { path: "src/my file.ts" });
 
@@ -64,12 +73,7 @@ const read = (...parts: string[]): string => readFileSync(join(process.cwd(), ..
     "mailto:someone@example.com",
     "#section",
     "src/a.ts?raw=1",
-    "//host/share/a.ts",
-    "\\\\host\\share\\a.ts",
     "%zz.ts",
-    "src/a.ts#L0",       // 行号从 1 起
-    "src/a.ts#L5-L2",    // 区间反了
-    "src/a.ts#Lstart",   // 不是行号锚点
     "src/a.\u0000ts",
   ]) {
     assert.strictEqual(parseFileLink(value), undefined, `不该当成本地文件：${JSON.stringify(value)}`);
@@ -269,7 +273,7 @@ console.log("fileLinks: 代码块里的路径不生成链接、反斜杠逐字�
     "词表必须是 produced 操作 ∪ deliverables（官方 producedFileMentions 同一份来源，produced 保留参数别名）",
   );
   assert.ok(
-    /<StreamText[\s\S]*?text=\{segment\.text\}[\s\S]*?fileLinks=\{fileLinks\}[\s\S]*?cwd=\{cwd\}/.test(message),
+    /<StreamText[\s\S]*?text=\{segment\.text\}[\s\S]*?fileLinks=\{fileLinks\}[\s\S]*?cwd=\{workingDirectory \?\? cwd\}/.test(message),
     "词表与 cwd 要传给正文段（不传的话行内代码永远不会变成链接、悬停也补不出完整路径）",
   );
   assert.ok(
@@ -284,10 +288,10 @@ console.log("fileLinks: 词表 = 本轮 produced ∪ deliverables ✓");
 {
   const controller = read("src", "dsh", "controller.ts");
   assert.ok(
-    /await this\.openFile\(\s*\n\s*message\.path,\s*\n\s*message\.diff,\s*\n\s*viewId,\s*\n\s*scope\?\.sessionId,\s*\n\s*message\.line,/.test(
+    /await this\.openFile\(\s*\n\s*message\.link === true \? this\.sessionFilePath\(scope, message\.path\) : message\.path,\s*\n\s*message\.diff,\s*\n\s*viewId,\s*\n\s*scope\?\.sessionId,\s*\n\s*message\.line,/.test(
       controller,
     ),
-    "openFile 分支要把行号与会话身份一起传下去（相对路径的基准由 Host 会话决定）",
+    "openFile 仅将正文引用按当前执行目录解析，并保留行号与会话身份",
   );
   assert.ok(
     /function isLineNumber\(value: number \| undefined\): value is number \{\s*\n\s*return value !== undefined && Number\.isSafeInteger\(value\) && value >= 1;/.test(

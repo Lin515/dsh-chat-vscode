@@ -275,6 +275,7 @@ export const Message = memo(function Message({
   changesSummary,
   changesCardShown = false,
   cwd,
+  workingDirectory,
   skillPaths,
   onInspectCall,
 }: {
@@ -327,11 +328,11 @@ export const Message = memo(function Message({
    */
   changesCardShown?: boolean;
   /**
-   * 会话**创建目录**（`session.cwd`）：普通正文链接、行内代码链接的悬停都按它补
-   * 完整路径；点击仍交原样拼写，由宿主按自己的权威 cwd 解析。缺失时保留原样相对
-   * 拼写——**不**拿执行目录或 VS Code 工作区兜底。
+   * 会话创建目录：用于改动卡片与历史产物坐标。正文引用使用 workingDirectory。
    */
   cwd?: string;
+  /** 正文引用的当前执行目录，缺失时回退创建目录。 */
+  workingDirectory?: string;
   /**
    * 当前会话的技能名 → 服务端 `skills/list` 给出的 `SKILL.md` 路径。
    *
@@ -442,7 +443,7 @@ export const Message = memo(function Message({
           text={message.text ?? ""}
           expanded={bubbleOpen}
           sessionRefs={message.sessionRefs}
-          cwd={cwd}
+          cwd={workingDirectory ?? cwd}
           textRef={bubbleTextRef}
           media={attachments.length ? <UserMedia attachments={attachments} /> : undefined}
         />
@@ -537,7 +538,7 @@ export const Message = memo(function Message({
             text={segment.text}
             streaming={message.streaming === true}
             fileLinks={fileLinks}
-            cwd={cwd}
+            cwd={workingDirectory ?? cwd}
           />
         );
       case "thinking":

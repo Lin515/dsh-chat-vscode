@@ -102,7 +102,7 @@ compaction-image-offload 包里声明，契约快照里那份 `SessionEventMap` 
 - 基准**单调向前**：它之前的官方版本不需要核对（从最早的 tag 补起会把二十多个历史版本变成待办）。
   要看两个历史版本之间的差异，用 `npm run dsh:diff -- <旧版本> <新版本>`。
 
-本扩展当前对齐：DSH `0.2.2-alpha.2`（alpha 渠道；2026-10-28 核对基准之后的 `0.2.1-rc.4` 与 `0.2.2-alpha.2`：rc.4 无差异；alpha.2 的 5 处 P0 已处理——`session/attachment` 改收完整图片引用（已实现并保留旧代回退）、`session/follow` 默认只读（已固定请求激活）、投影摘要收窄（列表只读 `title` / `agentPreset` / `subagent`，不受影响）、`SessionSummary` 的同名条目是官方客户端视图类型（误报，宿主列表类型只多了摘要收窄）、`ModelSelectionProjection` 类型搬到 `@deepseek-ai/dsh-agent`（该包已加入契约清单并重抓基准快照，键与值形状未变）；`@deepseek-ai/dsh-agent-presets` 仍不发布、缺包告警已人工确认；按「判定 → 动作 → 发布去向」不跟进 P1）<!-- dsh-compat:baseline -->
+本扩展当前对齐：DSH `0.2.2-rc.1`（next 渠道；2026-11-05 逐版核对 `0.2.2-alpha.3` 与 `0.2.2-rc.1`，两版契约一致；批量投影、新自动化目录与管理端点的 P0 已适配并保留旧代兼容。人工复核事件集合、审批与问卷、认证 cookie、desktop-host 连接边界及文件路径与媒体读取；正文引用改按当前执行目录解析。未消费的新建、暂停、手动执行与目标编辑入口不跟进；旧 `dsh-agent-presets` 缺包已由 `dsh-agent-preset-registry` 覆盖。）<!-- dsh-compat:baseline -->
 
 ### 暂缓待办：连接层 WebSocket 载体适配（P1）
 
@@ -132,6 +132,8 @@ compaction-image-offload 包里声明，契约快照里那份 `SessionEventMap` 
 | `session/attachment` 的旧请求体（`{sessionId, attachmentId}`） | ≤ 0.2.1-rc.3 | `src/dsh/controller.ts` 的 `fetchAttachmentBytes`（`attachmentReferencePayload`） | 2026-10-28 | 2026-12-28 | 0.2.2-alpha.2 把请求体改成完整 `ImageAttachmentRef`：服务端按引用自带的 `mediaType/bytes/width/height` 校验存储对象，不再扫会话历史授权。旧服务端仍只认 id，且收到新字段会因缺 `attachmentId` 报 `gateway/input-invalid`；首次优先新代，后续优先成功过的格式；只在这个错误上尝试另一代并更新记忆，同一客户端重连后的升级与回滚均可重新协商 |
 | 浏览器会话 cookie 的内部形状（名字前缀 `dsh-auth-`、v1 载荷、HMAC 口径、凭据记录键 `client-connection/browser-session`） | 依赖内部实现，非公开契约（0.2.1-rc.2 起，含桌面端内置宿主） | `src/dsh/browserSession.ts`、`src/dsh/desktopAttach.ts` | 2026-10-18 | 2026-12-18 | 桌面端不从命令行启动、启动令牌拿不到，扩展只能自铸等价凭据（见[桌面端接入](<design-desktop.md>)）。它是 `dsh-client-connection` 的内部实现，不在 `CONTRACT_PACKAGES` 里，所以每次推进基准要人工对拍这四个常量 |
 | `dsh-desktop-host` 的入口与 spawn 形态（命令行含该签名、loopback 端口随机、无票 `GET /` 回 401） | 依赖桌面端实现，非公开契约（0.2.1-rc.2 起） | `src/dsh/desktopSession.ts`、`src/dsh/processTable.ts`、`src/dsh/desktopAttach.ts` | 2026-10-18 | 2026-12-18 | 认人只能按命令行签名匹配、认领只能按"无票 401"判断（见[桌面端接入](<design-desktop.md>)「端点发现」）。官方改了入口路径、spawn 形态或那道 401 握手时这条支路会静默失效（表现为"找不到桌面端服务"），所以每次推进基准要人工对拍 |
+| 控制流投影的旧单键帧（`key` / `value`） | ≤ 0.2.2-alpha.2 | `src/dsh/projectionIngest.ts` 的 `ingestProjectionFrame` | 2026-11-05 | 2027-01-05 | 新代改为同水位 `changes` 批量；仅缺新字段时读取旧单键，防止空批被旧值覆盖 |
+| 自动化任务旧目录与管理端点（`sessionId`、`schedule/update` / `schedule/delete`） | ≤ 0.2.2-alpha.2 | `src/dsh/scheduleView.ts`、`src/dsh/client.ts`、`src/dsh/controller.ts` | 2026-11-05 | 2027-01-05 | 新目录以相关会话集合过滤，使用全局 history 与带时间戳比较基准的 edit；按目录形状选择代际，不对变更请求试错 |
 <!-- dsh-compat:layers:end -->
 
 登记之外还有三条仍然有效的口径（来自核对时的取舍，不随上述条目到期）：
@@ -175,7 +177,7 @@ npm run dsh:diff -- <旧版本> <新版本>   # 只求差
   `dsh:check` 会报一条 `package-added`）。`0.2.1-alpha.2` 加入 `@deepseek-ai/dsh-schedule`
   （自动化任务）时就是这么做的：删掉本地那份快照再 `npm run dsh:snapshot -- 0.2.1-alpha.2`。
 - 执行目录适配消费 `@deepseek-ai/dsh-working-directory`，已加入包清单；投影值为 `string | null`，缺失回退会话创建目录。工作区归属与执行目录分离的消费规则见[投影设计的执行目录](<design-projections.md#执行目录>)。
-- 文件路径的目标消费规则见[文件路径](<design-paths.md>)：普通相对引用用创建目录，工具目标 / 终端目录用执行时记录值，工具行与产物各按自己的回退判据，文件内容与存在性由执行世界裁决。2026-10-26 对照官方 `dsh-v0.2.1-alpha.2` 与 `dsh-v0.2.1-rc.3`（后者提交 `1f81c047fc48fa190a683e469daa699857e9afe8`）核验核心路径规则相同。2026-10-28 再对照 `dsh-v0.2.2-alpha.2`：`resolveWorkspacePath` 现在也丢掉开头的 `./`（`../` 仍保留），本扩展的 `src/shared/workspacePath.ts` 已跟；`recordedAbsolutePath`、`mutationResultPath`、终端目录标签与改动清单的取数口径未变；交付的 produced / presented 不再按收尾回复的 seq 截断，而本扩展的轮尾两行本来就按整条助手消息累积、没有这道截断，无需改动。后续修改这些消费规则或再推进基准时人工复核 `dsh-util-workspace-path` 的文件地址与媒体 URL、`dsh-client-ui-tool` 的 `recordedAbsolutePath` / `toolRowModel` / `terminalCardModel`、`dsh-client-ui-deliverables` 的 `mutationResultPath` / `producedFileMentions` / `handleChangesOpen`、`dsh-workspace-changes` 的 `durablePathOf` 与 recorder 根，以及工作区文件 API 和 `/api/file` 的执行世界读取权限。类型快照不能替代这些行为判据。
+- 文件路径的目标消费规则见[文件路径](<design-paths.md>)：正文相对链接与图片用动作时的执行目录（缺失时回退创建目录），工具目标 / 终端目录用执行时记录值，改动清单用固定根；文件内容与存在性由执行世界裁决。推进基准时人工复核 `dsh-util-workspace-path` 的文件地址与媒体 URL、`dsh-client-ui-chat` 的 `sessionFilePath`、`dsh-client-ui-primitives` 的 `parseFileLink`、`dsh-client-ui-tool` 的 `recordedAbsolutePath` / `toolRowModel` / `terminalCardModel`、`dsh-client-ui-deliverables` 的 `mutationResultPath` / `producedFileMentions` / `handleChangesOpen`、`dsh-workspace-changes` 的 `durablePathOf` 与 recorder 根，以及工作区文件 API 和 `/api/file` 的执行世界读取权限。类型快照不能替代这些行为判据。
 - 报告里出现 `⚠ 有 N 个包没取到` 时必须人工确认：缺证据不等于没影响。
 
 ---

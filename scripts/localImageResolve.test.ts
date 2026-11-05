@@ -204,4 +204,31 @@ console.log("local-image-resolve: 换范围清缓存、旧请求结算、迟到�
 }
 console.log("local-image-resolve: 回帧只认本次问过的键 ✓");
 
+// rc.1：同会话换执行目录也必须失效，包括成功/失败缓存与在途请求。
+{
+  push({ type: "state", state: { session: { id: "s1", cwd: "/creation" }, workingDirectory: "/first" } });
+  const first = resolveLocalImage("relative.png");
+  const stale = lastRequest();
+  const before = localImageScopeVersion();
+  push({ type: "patch", patch: { workingDirectory: "/second" } });
+  assert.equal(localImageScopeVersion(), before + 1);
+  assert.equal(await first, undefined, "旧目录在途请求必须结算");
+  const second = resolveLocalImage("relative.png");
+  const current = lastRequest();
+  push({ ...stale, type: "images/resolved", urls: { "relative.png": PNG2 } });
+  push({ ...current, type: "images/resolved", urls: { "relative.png": PNG } });
+  assert.equal(await second, PNG, "旧目录迟到帧不污染同会话的新目录");
+  const count = sent.length;
+  assert.equal(await resolveLocalImage("relative.png"), PNG);
+  assert.equal(sent.length, count, "同目录仍有缓存");
+  push({ type: "patch", patch: { workingDirectory: null } });
+  const fallback = resolveLocalImage("relative.png");
+  assert.equal(sent.length, count + 1, "回退创建目录也重取");
+  push({ ...lastRequest(), type: "images/resolved", urls: { "relative.png": "" } });
+  assert.equal(await fallback, undefined);
+  push({ type: "patch", patch: { workingDirectory: "/creation" } });
+  assert.equal(await resolveLocalImage("relative.png"), undefined);
+  assert.equal(sent.length, count + 1, "有效目录未变，不重复读取失败缓存");
+}
+
 console.log("\nlocal-image-resolve: all assertions passed");

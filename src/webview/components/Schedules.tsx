@@ -172,6 +172,7 @@ function ScheduleRow({
     item.timeZone ?? "",
     (item.weekdays ?? []).join(","),
     item.expression ?? "",
+    item.rrule ?? "",
   ].join("|");
   useEffect(() => {
     setDraft((previous) => (scheduleDraftDiffers(previous, item) ? previous : scheduleDraft(item)));
@@ -234,7 +235,9 @@ function ScheduleRow({
   const statusText =
     item.status === "active"
       ? texts.scheduleActive
-      : item.status === "inactive"
+      : item.status === "paused"
+        ? texts.schedulePaused
+      : item.status === "inactive" || item.status === "ended"
         ? texts.scheduleInactive
         : item.status === "unknown"
           ? texts.scheduleUnknownStatus
@@ -329,7 +332,7 @@ function ScheduleRow({
           <ScheduleTimingCard
             item={item}
             draft={draft}
-            active={active}
+            active={active || item.api === "edit"}
             editable={item.editable !== false}
             dirty={dirty}
             saving={savePhase === "saving"}
@@ -354,7 +357,7 @@ function ScheduleRow({
  * 运行时间卡片（规则编辑）。
  *
  * 三件事按官方口径定：
- * - **已结束的任务只读**（服务端会以 `schedule_ended` 拒绝修改）；
+ * - 旧代已结束任务只读；新代 edit 允许修改已暂停或结束任务的规则；
  * - 提交的是**完整的新规则**（`change` 带齐该种类的所有字段），服务端按它重锚目标；
  * - `after` 与 `at` 共用「一次」这一档：相对延迟这个选择器**不能**用于修改
  *   （契约里 `change` 就没有 `after` 这一支），编辑时它展示的是已提交的那个时刻。
@@ -407,6 +410,7 @@ function ScheduleTimingCard({
           <option value="daily">{texts.scheduleRepeatDaily}</option>
           <option value="weekly">{texts.scheduleRepeatWeekly}</option>
           <option value="cron">{texts.scheduleRepeatCron}</option>
+          {item.api === "edit" ? <option value="rrule">{texts.scheduleRepeatRrule}</option> : null}
         </select>
       </div>
 
@@ -505,6 +509,15 @@ function ScheduleTimingCard({
               );
             })}
           </div>
+        </div>
+      ) : null}
+
+      {draft.repeat === "rrule" ? (
+        <div className="schedule-field is-stacked">
+          <label htmlFor={`schedule-rrule-${item.id}`}>{texts.scheduleFieldRrule}</label>
+          <textarea id={`schedule-rrule-${item.id}`} rows={3} value={draft.rrule ?? ""}
+            style={{ width: "100%", minWidth: 0, boxSizing: "border-box", resize: "vertical" }}
+            disabled={disabled} spellCheck={false} onChange={(event) => onPatch({ rrule: event.target.value })} />
         </div>
       ) : null}
 

@@ -6,13 +6,13 @@
  *
  * 1. **目录**（`schedule/catalog` 的 `ScheduleCatalogEntry[]`）→ 界面行 + 编辑基准；
  * 2. **执行记录**（`schedule/history` 的 `ScheduleDeliveryHistoryResult`）；
- * 3. **两个变更结果**（`schedule/update` / `schedule/delete`）。
+ * 3. **变更结果**（新代 `schedule/edit`，旧代 `schedule/update` / `schedule/delete`）。
  *
  * 两条纪律贯穿全文：
  *
  * - **认不出就不动手**：`undefined` 表示「这一帧不是我能用的形状」（丢了、不改现有
  *   状态），与「空表 / 空记录」严格分开——后者是服务端明确说「没有」。
- * - **编辑基准（`expected`）只投影持久化的规则字段**。目录条目比记录多三个成员
+ * - 新代用 `updatedAt` 比较并交换；旧代**编辑基准（`expected`）只投影持久化的规则字段**。目录条目比记录多三个成员
  *   （`sessionId` / `status` / `lastDelivery`），把它们原样回传给 `schedule/update`
  *   就是让服务端的比较基准多出三个它不认识的字段。官方的 `timingSnapshot()` 做的
  *   正是同一件事，这里逐字段照做。
@@ -91,6 +91,10 @@ export function scheduleExpectedOf(entry: ScheduleCatalogEntryWire): Record<stri
   }
   const common = { id, kind, title, prompt, scheduledAt };
   switch (kind) {
+    case "rrule": {
+      const rrule = nonEmptyString(entry.rrule);
+      return rrule === undefined ? undefined : { ...common, rrule };
+    }
     case "at":
       return common;
     case "after": {
@@ -141,7 +145,12 @@ export function scheduleEntriesFromCatalog(value: unknown): ScheduleEntryView[] 
     const entry = raw as ScheduleCatalogEntryWire | null;
     if (entry === null || typeof entry !== "object") continue;
     const id = nonEmptyString(entry.id);
-    const sessionId = nonEmptyString(entry.sessionId);
+    // 新目录以 involvedSessionIds 为归属权威，不将 new 目标误当成本会话绑定。
+    const modern = "involvedSessionIds" in entry || "target" in entry;
+    const involved = Array.isArray(entry.involvedSessionIds) && entry.involvedSessionIds.every((id) => typeof id === "string" && id !== "")
+      ? entry.involvedSessionIds as string[] : undefined;
+    const sessionId = modern ? involved?.[0] ?? "" : nonEmptyString(entry.sessionId);
+    if (modern && involved === undefined) continue;
     const scheduledAt = nonEmptyString(entry.scheduledAt);
     const kind = nonEmptyString(entry.kind);
     // 身份三件套（id / 归属会话 / 目标时刻）缺一条就整条丢弃：面板的行键、编辑与
@@ -151,6 +160,8 @@ export function scheduleEntriesFromCatalog(value: unknown): ScheduleEntryView[] 
     const item: ScheduleItemView = {
       id,
       sessionId,
+      ...(modern ? { api: "edit" as const, involvedSessionIds: involved, updatedAt: optionalString(entry.updatedAt) } : {}),
+      rrule: optionalString(entry.rrule),
       title: nonEmptyString(entry.title) ?? id,
       prompt: typeof entry.prompt === "string" ? entry.prompt : "",
       kind,
@@ -223,7 +234,7 @@ export function scheduleHistoryFromWire(value: unknown): ScheduleHistoryView | u
   };
 }
 
-/** 一次更新的结果：`ok` = 服务端**确实改成了**（`updated: true`）。 */
+/** 一次更新的结果：新代返回目录条目，旧代明确返回 `updated: true`。 */
 export interface ScheduleUpdateOutcome {
   ok: boolean;
   /** 未改成的稳定错误码（`schedule_conflict` / `schedule_ended` / …）。 */
@@ -239,7 +250,7 @@ export interface ScheduleUpdateOutcome {
 export function scheduleUpdateOutcome(value: unknown): ScheduleUpdateOutcome {
   const frame = value as ScheduleUpdateResultWire | null | undefined;
   const code = nonEmptyString(frame?.code);
-  if (frame?.updated === true) return { ok: true, code: undefined };
+  if (frame?.updated === true || (!code && scheduleEntriesFromCatalog([value]).some((entry) => entry.item.api === "edit"))) return { ok: true, code: undefined };
   return { ok: false, code: code ?? "internal_error" };
 }
 

@@ -122,6 +122,7 @@ export interface SessionControlFrame {
   /** 旧通道（`type: "queue"`）的 `SessionQueuedItem[]`。 */
   items?: unknown[];
   jobs?: unknown[];
+  changes?: unknown;
   key?: string;
   value?: unknown;
   seq?: number;
@@ -260,6 +261,7 @@ export const METHODS = {
    */
   scheduleCatalog: "schedule/catalog",
   scheduleHistory: "schedule/history",
+  scheduleEdit: "schedule/edit",
   scheduleUpdate: "schedule/update",
   scheduleDelete: "schedule/delete",
   eventsResult: "$events/result",
@@ -374,6 +376,10 @@ export interface ScheduleCatalogEntryWire {
   timeZone?: unknown;
   weekdays?: unknown;
   expression?: unknown;
+  rrule?: unknown;
+  target?: unknown;
+  involvedSessionIds?: unknown;
+  updatedAt?: unknown;
   sessionId?: unknown;
   status?: unknown;
   lastDelivery?: unknown;

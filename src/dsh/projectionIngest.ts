@@ -210,6 +210,25 @@ export function ingestProjection(
   return true;
 }
 
+/** 同一水位的一批变更先全部入库，再派发效果；新数组存在时不再读取旧单键载荷。 */
+export function ingestProjectionFrame(
+  handlers: ProjectionHandlers,
+  scope: SessionScope,
+  frame: { changes?: unknown; key?: unknown; value?: unknown; seq?: number },
+): void {
+  if (frame.changes !== undefined) {
+    if (!Array.isArray(frame.changes)) return;
+    const touched = new Set<ProjectionKey>();
+    for (const change of frame.changes) {
+      if (!change || typeof change !== "object" || typeof change.key !== "string" || !("val" in change)) continue;
+      if (scope.projections.apply(change.key, change.val, frame.seq) && isProjectionKey(change.key)) touched.add(change.key);
+    }
+    for (const key of touched) dispatch(handlers, scope, key, "live");
+  } else if (typeof frame.key === "string") {
+    ingestProjection(handlers, scope, frame.key, frame.value, frame.seq);
+  }
+}
+
 /** baseline 块里的 `values`（形状不对就是空的）。 */
 function blockValues(block: ProjectionBlockWire | undefined): Record<string, unknown> {
   return block?.values && typeof block.values === "object"

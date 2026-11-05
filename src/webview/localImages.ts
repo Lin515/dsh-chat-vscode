@@ -12,8 +12,8 @@ import type { Texts } from "./texts";
  * DOM 上的 `src` 换掉。
  *
  * 五个必须的约束：
- * - **缓存按范围隔离**：范围是「执行世界连接 + 会话」两张牌一起定的——相对路径的基准
- *   是会话创建目录，而同一会话在另一条连接里也属于另一套执行世界（宿主广播
+ * - **缓存按范围隔离**：范围由「执行世界连接 + 会话 + 有效执行目录」决定——相对路径
+ *   跟随当前执行目录，缺失时用创建目录；同一会话换连接也属于另一套执行世界（宿主广播
  *   `images/scope`，会话 id 随 `state` / `patch` 帧同步）；
  * - **读不到的也记一笔**（空串）：否则每次重渲染（流式期间每个 token 都重渲染）
  *   都会把同一个不存在的路径再问一遍宿主；
@@ -60,13 +60,16 @@ interface PendingRequest {
  */
 let connectionId: string | null = null;
 let sessionId = "";
+let creationDirectory: string | undefined;
+let workingDirectory: string | undefined;
+let directory: string | undefined;
 let scopeVersion = 0;
 
 const scopeListeners = new Set<() => void>();
 
 /** 范围键：`null` 与空串是两件事，用 JSON 数组编码避免分隔串碰撞。 */
 function scopeKeyOf(connection: string | null, session: string): string {
-  return JSON.stringify([connection, session]);
+  return JSON.stringify([connection, session, directory]);
 }
 
 function currentScopeKey(): string {
@@ -84,7 +87,9 @@ function currentScopeKey(): string {
  * 版本号重新渲染并按新范围重新请求，不会停在旧范围的结论上。
  */
 function applyScope(nextConnectionId: string | null, nextSessionId: string): void {
-  if (nextConnectionId === connectionId && nextSessionId === sessionId) return;
+  const nextDirectory = workingDirectory ?? creationDirectory;
+  if (nextConnectionId === connectionId && nextSessionId === sessionId && nextDirectory === directory) return;
+  directory = nextDirectory;
   connectionId = nextConnectionId;
   sessionId = nextSessionId;
   cache.clear();
@@ -100,7 +105,7 @@ function applyScope(nextConnectionId: string | null, nextSessionId: string): voi
 /**
  * 范围的版本号与订阅（`useSyncExternalStore` 的数据源）。
  *
- * 任何一次范围变化（连接换代、会话切换）都 +1；组件按它重新水合。
+ * 任何一次范围变化（连接换代、会话切换、有效执行目录变化）都 +1；组件按它重新水合。
  */
 export function localImageScopeVersion(): number {
   return scopeVersion;
@@ -135,14 +140,23 @@ subscribe((message) => {
   if (message.type === "state") {
     const snapshot = message.state;
     if (typeof snapshot !== "object" || snapshot === null) return;
+    creationDirectory = typeof snapshot.session?.cwd === "string" ? snapshot.session.cwd : undefined;
+    workingDirectory = typeof snapshot.workingDirectory === "string" ? snapshot.workingDirectory : undefined;
     applyScope(connectionId, snapshot.session?.id ?? "");
     return;
   }
   if (message.type === "patch") {
     const patch = message.patch;
     if (typeof patch !== "object" || patch === null) return;
-    if (!Object.prototype.hasOwnProperty.call(patch, "session")) return;
-    applyScope(connectionId, patch.session?.id ?? "");
+    const hasSession = Object.prototype.hasOwnProperty.call(patch, "session");
+    const hasDirectory = Object.prototype.hasOwnProperty.call(patch, "workingDirectory");
+    if (!hasSession && !hasDirectory) return;
+    if (hasSession) {
+      if (patch.session?.id !== sessionId) workingDirectory = undefined;
+      creationDirectory = typeof patch.session?.cwd === "string" ? patch.session.cwd : undefined;
+    }
+    if (hasDirectory) workingDirectory = typeof patch.workingDirectory === "string" ? patch.workingDirectory : undefined;
+    applyScope(connectionId, hasSession ? patch.session?.id ?? "" : sessionId);
     return;
   }
   if (message.type !== "images/resolved") return;

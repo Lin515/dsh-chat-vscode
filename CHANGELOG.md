@@ -3,6 +3,22 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 This project follows [Semantic Versioning](https://semver.org/).
 
+## 0.12.3（2026-11-05）
+
+### 中文
+
+- 改进：对齐 DSH 0.2.2-rc.1，适配批量状态更新及新版自动化任务目录、运行记录、规则修改和删除，并保留旧版兼容。
+- 新增：自动化任务支持查看与编辑 RRULE 规则，并区分暂停与结束状态。
+- 改进：正文相对文件链接与图片跟随当前执行目录，文件链接支持行列后缀与 UNC 路径，无效行号不再阻止打开文件。
+- 改进：复制按钮与相邻标题同行，问卷记录按提交批次决定默认展开。
+
+### English
+
+- Improved: Aligned with DSH 0.2.2-rc.1, including batched state updates and the new automation catalog, history, rule editing, and deletion, while retaining compatibility with older versions.
+- Added: Automation tasks support viewing and editing RRULE rules and distinguish paused from ended states.
+- Improved: Relative file links and images in messages follow the current execution directory; file links support line/column suffixes and UNC paths, and invalid line numbers no longer block opening a file.
+- Improved: Copy buttons share a row with adjacent headings, and questionnaire records expand by submission batch.
+
 ## 0.12.2（2026-11-03）
 
 ### 中文

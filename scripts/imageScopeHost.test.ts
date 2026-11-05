@@ -16,7 +16,9 @@ interface Harness {
   pendingNotificationsOpen: boolean;
   viewKinds: Map<string, string>;
   pendingPanelOpens: Map<string, string>;
-  scopeOfView(viewId: string): { sessionId: string };
+  sessionCwds: Map<string, string>;
+  sessions: [];
+  scopeOfView(viewId: string): { sessionId: string; workingDirectory?: string };
   log(message: string): void;
   snapshotFor(viewId: string): object;
   resumeRestoreHint(viewId: string): Promise<void>;
@@ -31,9 +33,12 @@ function deferred() {
 }
 function fakeClient(gate?: { entered: ReturnType<typeof deferred>; released: ReturnType<typeof deferred> }) {
   let reads = 0;
+  const paths: string[] = [];
   return {
     get reads() { return reads; },
-    async request() {
+    paths,
+    async request(_method: string, params: { path: string }) {
+      paths.push(params.path);
       reads++;
       return { absolutePath: "/world/chart.png", version: "v1", bytes: 3 };
     },
@@ -50,7 +55,10 @@ const frames: HostToWebview[] = [];
 c.listeners = new Set([(_target, frame) => frames.push(frame)]);
 c.hostFileConnections = new Map();
 c.viewSessions = new Map([["v1", "s1"]]);
-c.scopeOfView = () => ({ sessionId: "s1" });
+const scope = { sessionId: "s1", workingDirectory: "/execution" as string | undefined };
+c.scopeOfView = () => scope;
+c.sessionCwds = new Map([["s1", "/creation"]]);
+c.sessions = [];
 c.log = () => {};
 const first = fakeClient();
 c.adoptClient(first);
@@ -77,6 +85,13 @@ let response = frames.at(-1) as ImageFrame;
 assert.equal(response.urls["chart.png"], "data:image/png;base64,AQID");
 assert.equal(response.connectionId, secondId);
 assert.equal(response.sessionId, "s1");
+assert.equal(second.paths.at(-1), "/execution/chart.png");
+scope.workingDirectory = "/next";
+await c.handle(request, "v1");
+assert.equal(second.paths.at(-1), "/next/chart.png", "每次请求读取最新执行目录");
+scope.workingDirectory = undefined;
+await c.handle(request, "v1");
+assert.equal(second.paths.at(-1), "/creation/chart.png", "缺执行目录回退创建目录");
 const reads = second.reads;
 await c.handle({ ...request, requestId: 2, connectionId: firstAccess.connectionId }, "v1");
 assert.equal(second.reads, reads, "旧连接请求不得在新执行世界读取");
