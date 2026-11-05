@@ -24,7 +24,8 @@
 - `PromptDiff.tsx` — 轨迹检查器「差异」页签里的一节行级差分（对齐官方 `PromptDiffSection()`）：标题 + 逐行着色；行序列由 `../trajectoryPromptDiff.ts` 算。
 - `TurnRail.tsx` — 右侧轮次横条组件：固定间距刻点、悬停预览卡、点击跳轮。
 - `Panels.tsx` — 顶栏面板：后台任务抽屉（自动化任务分区 + 任务详情：实时输出、停止按钮）、子代理等抽屉。抽屉外壳（后台任务等）按 `../escapeOwner.ts` 的 `ESC_LAYER.drawer` 登记自己的关闭动作。
-- [Schedules.tsx](<Schedules.tsx>) — 后台任务抽屉里的**自动化任务**分区（DSH `schedule`）：清单（四种读取状态各自成档）、运行时间编辑（草稿与已存规则比对后才亮保存栏）、执行记录（按需分页）与两段式删除。口径见[投影设计](<../../docs/design-projections.md#自动化任务schedule>)。
+- [Schedules.tsx](<Schedules.tsx>) — 后台任务抽屉里的**自动化任务**分区（DSH `schedule`）：本会话 / 全部任务两种视图（同一份全局目录上的派生过滤）、状态筛选、手动创建、立即运行（先本地确认）、暂停恢复、编辑、执行记录（按需分页）与两段式删除；同一行的变更共用一个 busy，成功结算只认自己那次操作标识，归档目标只按宿主归档列表判。口径见[自动化任务设计](<../../docs/design-schedules.md>)。
+- [ScheduleEditor.tsx](<ScheduleEditor.tsx>) — 创建与编辑共用的字段组：名称、指令、投递目标（会话 / 首次新建 / 每次新建，可选目录）与运行时间规则（一次 / 固定间隔 / 每天 / 每周 / cron / RRULE），给出本地 cron 校验、空会话占位与旧代只读基础字段的开关。
 - `History.tsx` — 会话历史抽屉：搜索、顶部多选开关（在归档切换左边）切出的多选形态（形态下整行点选、全选、批量归档 / 恢复 / 删除，删除两次点击确认，与行内垃圾桶同一条口径）、行内归档 / 恢复 / 删除。多选判据在 `../sessionSelection.ts`，复选框自绘（样式在 `../styles/app.css`）。归档视图复用同一套逻辑、归档那颗换成恢复（`unarchiveSession`）。ESC 关抽屉走 `../escapeOwner.ts` 的 `ESC_LAYER.drawer`（自己消费，不落到会话页的停止生成）。
 - [Notifications.tsx](<Notifications.tsx>) — 顶部常驻通知条与通知抽屉（宿主权威镜像，见[消息通知设计](<../../docs/design-notifications.md>)）：顶部只画最近一条未确认（文本区限高内滚，两颗按钮不被长正文挤掉），抽屉按最近发生顺序列出并逐条标出确认状态、时间、次数与完整会话 ID，逐条确认、没有全确认。选择 / 分组 / 时间格式化在 `../notifications.ts`；确认只回 `acknowledgeNotification`，界面不改本地列表。ESC 关抽屉走 `../escapeOwner.ts` 的 `ESC_LAYER.drawer`（只收起，不确认、不停生成）。
 - `FindBar.tsx` — 会话查找条（Ctrl+F）：CSS Custom Highlight API 高亮 + 计数 + 上一处/下一处；纯逻辑在 `../find.ts`，跳命中（展开折叠气泡 → 放跟随 → 居中）走 `../readingPlacement.ts` 的同一个 `ReadingPort`。采文本时跳过可信 MathView 的辅助层、保留视觉层；inline 公式与相邻正文仍按文档序连续匹配，不另插块边界。打开查找的种子文字仍取原生 `Selection.toString()`。ESC 关查找走 `../escapeOwner.ts` 的浮层层级（不再自己挂 document 监听）。

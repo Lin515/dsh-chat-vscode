@@ -130,6 +130,12 @@ const entries = {
   "build/job-view.test.mjs": "scripts/jobView.test.ts",
   // 自动化任务（schedule）：线格式收窄 / 频率文本 / 运行时间编辑 / 接线与样式
   "build/schedule.test.mjs": "scripts/schedule.test.ts",
+  // 自动化任务的管理面：创建 / 立即运行 / 暂停恢复 / 编辑目标 / 全局目录 / 运行状态
+  "build/schedule-manage.test.mjs": "scripts/scheduleManage.test.ts",
+  // 详情区离线回归：编辑状态机、入口策略、结算账本、会话选择渲染
+  "build/schedule-editor.test.mjs": "scripts/scheduleEditor.test.ts",
+  // 变更路由的上下文隔离：驱真控制器 + 假客户端（成功先刷新、迟到不写当前域）
+  "build/schedule-concurrency.test.mjs": "scripts/scheduleConcurrency.test.ts",
   "build/session-cookie.test.mjs": "scripts/sessionCookie.test.ts",
   "build/tool-view.test.mjs": "scripts/toolView.test.ts",
   "build/tool-card.test.mjs": "scripts/toolCard.test.ts",

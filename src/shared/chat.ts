@@ -1109,13 +1109,39 @@ export interface JobItemView {
  * `daily` / `weekly` / `cron` 才带隐含时区的墙上时钟。种类身份属于服务端，这里原样
  * 保留（见 `dsh/scheduleView.ts` 的收窄）。
  */
-export type ScheduleKind = "after" | "at" | "every" | "daily" | "weekly" | "cron";
+export type ScheduleKind = "after" | "at" | "every" | "daily" | "weekly" | "cron" | "rrule";
+
+/** 任务状态（官方 `ScheduleCatalogEntry.status`；旧代只有 `active` / `inactive`）。 */
+export type ScheduleStatus = "active" | "paused" | "ended" | "inactive" | (string & {});
+
+/**
+ * 投递目标（官方 `ScheduleTarget` 的界面投影）。
+ *
+ * - `session`：每次投递都进同一个已存在的会话；
+ * - `new_once`：第一次投递新建一个会话，之后都投给它（`sessionId` 是预留的会话 id）；
+ * - `new`：每次投递都新建一个会话（没有被复用的目标会话，`sessionId` 只在有过投递时出现）。
+ */
+export interface ScheduleTargetView {
+  kind: "session" | "new_once" | "new" | (string & {});
+  /** 这条任务的投递落点（官方 `taskSessionId` 口径；没有时为 `undefined`）。 */
+  sessionId?: string;
+  /** `new` / `new_once` 的创建目录（`target.create.cwd`）；用来判断「目录改过没有」。 */
+  cwd?: string;
+  /**
+   * `new` / `new_once` 的创建预设（`target.create.agentPreset`）。
+   *
+   * 不显示，只在目录未改时原样带回：编辑一次名称就把用户选的预设丢掉，是
+   * 一次静默的数据丢失（官方 `draftTarget` 同口径）。
+   */
+  agentPreset?: string;
+}
 
 /**
  * 一条自动化任务（`schedule/catalog` 的一条，宿主已收窄）。
  *
  * 服务端把「规则」与「投递状态」放在同一条记录上（`ScheduleCatalogEntry` =
- * `ScheduleRecord` + `sessionId` + `status` + `lastDelivery`）。界面要的正是这两半：
+ * `ScheduleRecord` + `target` + `involvedSessionIds` + `status` + 可选 `updatedAt` /
+ * `executionActive` / `deliveryFloorEndsAt` / `lastDelivery`）。界面要的正是这两半：
  * 规则用来显示频率、也是编辑时的比较基准；状态与最近一次投递用来显示「已结束」。
  *
  * **指令正文（`prompt`）也在里面**：官方详情页把完整指令显示出来，而这段文字只由
@@ -1123,27 +1149,43 @@ export type ScheduleKind = "after" | "at" | "every" | "daily" | "weekly" | "cron
  */
 export interface ScheduleItemView {
   id: string;
-  /** 任务归属的会话（原始绑定，官方口径：编辑与删除都按它走）。 */
+  /**
+   * 任务的投递落点（不是「归谁管」）。
+   *
+   * 旧代目录把它当原始绑定（编辑 / 删除都按它走），所以旧代仍按旧字段读；
+   * 新代按 `target` 的 `taskSessionId` 口径折算（见 `scheduleTargetView`），`new` 目标
+   * 首次投递前可以是空串。**归属**判据是 `involvedSessionIds`，两者不要混用。
+   */
   sessionId: string;
-  /** 新目录的管理/投递相关会话；空表不退回旧绑定。 */
+  /** 新代目录：目标与投递相关的会话集合（创建 / 编辑 / 目标会话），不是投递目标本身。 */
   involvedSessionIds?: string[];
-  /** 新目录使用全局 edit/history API。 */
+  /** 新代使用全局 edit/history API。 */
   api?: "edit";
+  /** 新代目录的编辑基准（乐观并发）；旧代没有。 */
   updatedAt?: string;
+  /** 新代的投递目标（旧代没有，按 `sessionId` 归到 `session`）。 */
+  target?: ScheduleTargetView;
+  /** 新代：最近一次投递仍在目标会话里排队或执行（`new` 目标不设这一位）。 */
+  executionActive?: boolean;
+  /** 新代：最小投递间隔结束时刻（未来才有这一位；这之前手动执行会被拒）。 */
+  deliveryFloorEndsAt?: string;
+  /** 新代：创建时刻。 */
+  createdAt?: string;
   rrule?: string;
   /** 任务名（创建时必填，最多 120 字符）；界面**一律**用它命名任务。 */
   title: string;
-  /** 到点要送进原会话的指令正文。 */
+  /** 到点要送进目标会话的指令正文。 */
   prompt: string;
   kind: ScheduleKind | (string & {});
   /**
-   * `active` = 还会触发；`inactive` = 已结束（一次性任务投递后、或服务端停用它）。
+   * `active` = 还会触发；`paused` = 用户暂停；`ended` = 已结束（一次性任务投递后、
+   * 或服务端停用它）；旧代的 `inactive` 与 `ended` 同义。
    *
    * 与 `JobItemView.status` 同一条纪律：**保留原字符串、不折成已知值**——服务端将来
    * 多一个状态时，界面按原样显示，不猜成「启用中」。
    */
-  status: "active" | "inactive" | (string & {});
-  /** 已提交的下一次目标（`inactive` 时是最后一次），RFC3339 UTC。 */
+  status: ScheduleStatus;
+  /** 已提交的下一次目标（`ended` / `paused` 时是最后一次），RFC3339 UTC。 */
   scheduledAt: string;
   /** `kind: 'after'` 的原始延迟秒数。 */
   afterSeconds?: number;
@@ -1560,7 +1602,12 @@ export interface ChatState {
   /** 后台任务（bash / pwsh / 子代理等），来自 session/control 的 jobs 帧。 */
   jobs: JobItemView[];
   /**
-   * 本会话的自动化任务（DSH `schedule`，来自 `schedule/catalog` 按会话过滤）。
+   * 自动化任务的**全局目录**（DSH `schedule`，来自零形参的 `schedule/catalog`）。
+   *
+   * 目录本身没有会话参数：服务端一次返回全部任务，本扩展也**原样保留全部**，
+   * 「本会话」只是界面上的一个派生过滤（`scheduleForSession`，按 `involvedSessionIds`
+   * 与投递落点判断）。这样全局视图与全局操作都不必再打一次请求、也不会被当前会话
+   * 过滤拦住——两个独立请求状态会变成两份互相打脸的「权威」。
    *
    * 与 `jobs` 同一个面板、同一条会话字段管线：切会话时跟着整体换掉（快照里恒有这一
    * 个键），宿主只在面板真的打开过之后才去读它（见 `schedulesStatus`）。
@@ -1575,6 +1622,18 @@ export interface ChatState {
    * 三件事，把它们都折成「没有自动化任务」就是替一个没问过的问题下结论。
    */
   schedulesStatus?: "loading" | "ready" | "unsupported" | "error";
+  /**
+   * 服务端的代际能力：`modern` = 有创建 / 立即执行 / 暂停恢复 / 目标编辑
+   * （`schedule/create`、`schedule/run`、`schedule/edit` 的完整 patch）；
+   * `legacy` = 只有旧代查看 / 改时间 / 删除；`unknown` = 目录为空且只读探针没给出
+   * 确定答案（**不能**当成旧代：地址不存在与这次没拿到是两回事）。
+   *
+   * 判据见 `dsh/scheduleView.ts` 的 `scheduleCapabilityOf`：非空目录按目录形状判，
+   * 空目录才用零形参的 `schedule/deliveryLimits` 探一次（只读、无副作用）。
+   */
+  schedulesCapability?: "modern" | "legacy" | "unknown";
+  /** 每次新建会话的最小投递间隔（秒，`deliveryLimits` 的权威值）；未知时没有。 */
+  newSessionIntervalSeconds?: number;
   /** 历史是否还有更早的内容可加载。 */
   hasMoreHistory?: boolean;
   /**

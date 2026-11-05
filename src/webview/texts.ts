@@ -462,6 +462,68 @@ export interface Texts {
   scheduleRecordsOffline: string;
   scheduleRecordNoPrompt: string;
   scheduleRecordTitle: (occurrence: string, delivered: string) => string;
+  /** 视图范围与筛选（同一份全局目录上的两种视图）。 */
+  scheduleViewSession: string;
+  scheduleViewAll: string;
+  scheduleFilterAll: string;
+  scheduleFilterActive: string;
+  scheduleFilterPaused: string;
+  scheduleFilterEnded: string;
+  scheduleEmptyAll: string;
+  scheduleEmptyFilter: string;
+  scheduleEmptyAllHint: string;
+  /** 手动创建。 */
+  scheduleNew: string;
+  scheduleCreateTitle: string;
+  scheduleCreate: string;
+  scheduleCreating: string;
+  scheduleCreated: string;
+  scheduleFieldTitle: string;
+  scheduleFieldTitlePlaceholder: string;
+  scheduleFieldPrompt: string;
+  scheduleFieldPromptPlaceholder: string;
+  scheduleFieldTarget: string;
+  /** 目标为会话时的目标会话字段名（候选列表可能包含非当前会话）。 */
+  scheduleFieldSession: string;
+  scheduleTargetSession: string;
+  scheduleTargetNewOnce: string;
+  scheduleTargetNewOnceHelp: string;
+  scheduleTargetNew: string;
+  scheduleTargetNewHelp: string;
+  scheduleFieldCwd: string;
+  /** 投递目标为会话、但还没选中任何会话时的占位项。 */
+  scheduleChooseSession: string;
+  scheduleCwdDefault: string;
+  scheduleNewSessionInterval: (interval: string) => string;
+  scheduleNewSessionIntervalUnknown: string;
+  /** 立即运行（本地确认门；不改变原计划时刻）。 */
+  scheduleRunNow: string;
+  scheduleRunAria: (title: string) => string;
+  scheduleRunConfirmTitle: string;
+  scheduleRunConfirmNote: string;
+  scheduleRunConfirmAction: string;
+  scheduleRunning: string;
+  scheduleRunQueued: string;
+  scheduleRunPending: string;
+  /** 运行状态与间隔限制。 */
+  scheduleExecutionActive: string;
+  scheduleDeliveryFloor: (time: string) => string;
+  schedulePause: string;
+  scheduleResume: string;
+  schedulePauseAria: (title: string) => string;
+  scheduleResumeAria: (title: string) => string;
+  scheduleCapabilityLegacy: string;
+  scheduleCapabilityUnknown: string;
+  /** 编辑（名称 / 指令 / 目标）与冲突重放。 */
+  scheduleEditTitle: string;
+  scheduleConflictNotice: string;
+  scheduleReapply: string;
+  scheduleErrUnsupported: string;
+  scheduleErrStale: string;
+  scheduleErrInvalidPrompt: string;
+  scheduleErrInvalidTarget: string;
+  scheduleErrTargetArchived: string;
+  scheduleStatusActive: string;
   /** 斜杠命令 */
   commands: string;
   commandsEmpty: string;

@@ -102,19 +102,43 @@ export class SessionScope {
   subagentSiblings: SubagentView[] = [];
   jobs: JobItemView[] = [];
   /**
-   * 本会话的自动化任务（`schedule/catalog` 按会话过滤后的视图模型）。
+   * 自动化任务的**全局目录**（`schedule/catalog` 的整份视图模型）。
    *
    * 与 `jobs` 并列而不是合并：两者的生命周期与操作完全不同（任务行有停止按钮与
    * 实时输出，自动化任务有运行时间编辑、执行记录与删除），合成一条列表就得在每一处
    * 再按种类分叉。面板把它们放在同一个抽屉里的两个分区（见 `Schedules.tsx`）。
+   *
+   * 这里存**全部**任务而不是本会话过滤后的子集：「本会话」是界面上的派生视图
+   * （`scheduleForSession`），全局视图与全局操作直接用整份目录——否则就要维护两份
+   * 互相打脸的「权威」。
    */
   schedules: ScheduleItemView[] = [];
+  /**
+   * 服务端代际（新代有创建 / 立即执行 / 暂停恢复 / 目标编辑；旧代只有查看、改时间与删除）。
+   *
+   * 判据见 `dsh/scheduleView.ts` 的 `scheduleCapabilityOf`：目录非空按形状判，空目录
+   * 用零形参只读的 `schedule/deliveryLimits` 探一次；只有明确的 `endpointAbsent` 才是
+   * 旧代，传输失败只能是 `unknown`。
+   */
+  schedulesCapability: "modern" | "legacy" | "unknown" | undefined;
+  /** 每次新建会话的最小投递间隔（秒）；只在目标是 `new` 时展示。 */
+  newSessionIntervalSeconds: number | undefined;
+  /**
+   * 自动化任务目录的**读取代号**（每次 `loadSchedules` 自增）。
+   *
+   * 同一域可能同时有两次读取在飞（面板打开时的正式读 + `schedule/changed` 的后台
+   * 刷新，或一次变更之后的重读）：先发的旧读晚回来，**不许**覆盖后发那次已经落地的
+   * 结果——否则界面会退回变更之前的目录。成功、失败与空目录探针的每条 await 之后
+   * 都比对这个号。
+   */
+  schedulesEpoch = 0;
   /**
    * 每条自动化任务的**编辑基准**（键 = 任务 id，值 = 目录原文里那份完整规则）。
    *
    * `schedule/update` 是「比较并交换」：提交的 `expected` 必须与读到的规则完全一致。
    * 视图模型是给界面看的、已经丢掉了原始拼写，所以基准只留在这里——界面只回任务
-   * id 与新的运行时间，别的一律由宿主按这份原文拼。
+   * id 与新的运行时间，别的一律由宿主按这份原文拼。新代走 `updatedAt`：那份基准是
+   * 用户开始编辑时看到的版本，由界面随请求带回，宿主不在这张表里现读。
    */
   readonly scheduleExpected = new Map<string, Record<string, unknown>>();
   /**

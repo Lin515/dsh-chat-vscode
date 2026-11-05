@@ -95,17 +95,26 @@
 - **自动化任务管理**（`@deepseek-ai/dsh-schedule`，对齐 0.2.2-rc.1）：
   `schedule/catalog` 零形参，返回全局目录；条目是 `ScheduleRecord` 加 `target`、
   `involvedSessionIds`、`status: 'active' | 'paused' | 'ended'`、可选 `updatedAt` 与最近投递。
-  当前会话面板按 `involvedSessionIds` 过滤，不把目标或创建会话等同于唯一归属。
+  目录是**全局**的：宿主保留整份，「本会话」只是界面上的派生过滤（与官方
+  `taskInvolvesSession` 同口径：`involvedSessionIds` 或投递落点 `taskSessionId` 命中即算），
+  全局视图与全局操作因此不必再发第二次请求、也不会被当前会话过滤拦住。
   `schedule/history` 参数 `{request:{id, limit, before?}}`，成功仍回 `records` / `nextBefore` /
   `earlierRecordsUnavailable` / `earlierRecordsPruned` / `retention`；未找到任务或游标时回 `code`。
   `schedule/edit` 替代旧更新 / 删除端点：更新传 `{request:{id, action:'update',
-  patch:{timing}, expectedUpdatedAt}}`，成功直接返回目录条目；删除传 `{request:{id,
-  action:'delete', expectedUpdatedAt}}`，成功回 `{deleted:true, id}`。比较基准缺失时发 `null`，
-  冲突与未找到由 `code` 表示，输入不合法抛 `schedule/input-invalid`，具体原因在 `details.code`。
+  patch:{title?, prompt?, timing?, target?, active?}, expectedUpdatedAt}}`，成功直接返回目录条目；
+  删除传 `{request:{id, action:'delete', expectedUpdatedAt}}`，成功回 `{deleted:true, id}`。
+  比较基准缺失时发 `null`，冲突与未找到由 `code` 表示，输入不合法抛 `schedule/input-invalid`，
+  具体原因在 `details.code`（同上，编辑 / 创建 / 立即执行的拒绝都走这一类）。
+  `schedule/create` 收 `{request: ScheduleCreateRequest}`（`title` / `prompt` / `timing` /
+  可选 `target`，缺省目标为 `new_once`），回目录条目；`schedule/run` 收 `{request:{id}}`，
+  **立即投递一次但不消耗、不移动原计划时刻**，被同一任务的另一次执行占住时回
+  `{id, code:'schedule_execution_pending'}`，目标会话已归档时抛 `schedule/target-archived`。
+  `schedule/deliveryLimits` **零形参**，回 `{newSessionIntervalSeconds}`（每次新建会话的最小
+  投递间隔，仅约束 `target.kind === 'new'`）；旧代没有这个端点，404 才是旧代的肯定证据。
   规则保留 `after` / `at` / `every` / `daily` / `weekly` / `cron`，新增 `{kind:'rrule', rrule}`，
   文本为一行 DTSTART 与一行 RRULE。`schedule/changed` 仍为零载荷 emit，收到后重读目录。
   旧代目录的 `sessionId` / `inactive`、history 的会话参数及 `schedule/update` /
-  `schedule/delete` 保留兼容，新目录不尝试旧变更端点。创建、手动执行与全局列表新入口未消费。
+  `schedule/delete` 保留兼容，新目录不尝试旧变更端点。
 - **新增端点 `workspace/unarchiveSession`**（0.1.6-alpha.1 起，本扩展消费）：恢复归档会话，
   与 §3.9 的 `workspace/archiveSession` 配对——请求体同样只有 `sessionId`
   （`WorkspaceUnarchiveSessionRequest = {sessionId}`），回同一个 `WorkspaceArchiveValue`

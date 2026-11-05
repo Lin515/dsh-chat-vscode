@@ -264,6 +264,18 @@ export const METHODS = {
   scheduleEdit: "schedule/edit",
   scheduleUpdate: "schedule/update",
   scheduleDelete: "schedule/delete",
+  /**
+   * 人的手动管理入口（0.2.2-rc.1 起，`@deepseek-ai/dsh-schedule` 的 Remote 描述符）：
+   * 创建 `{request: ScheduleCreateRequest}`、立即执行 `{request: {id}}`、
+   * 投递间隔 `deliveryLimits` **零形参**、全表 `list` `{request: {active?, limit?, offset?}}`。
+   *
+   * 它们与 `catalog` / `edit` 同属一个命名空间：旧服务端整个 `schedule` 命名空间都不存在，
+   * 所以任何一条 404 都构成「没有这组能力」的肯定证据（`endpointAbsent`）。
+   * 能力判定不能只看某一次请求失败：传输错误只说明**这次没拿到**。
+   */
+  scheduleCreate: "schedule/create",
+  scheduleRun: "schedule/run",
+  scheduleDeliveryLimits: "schedule/deliveryLimits",
   eventsResult: "$events/result",
 } as const;
 
@@ -361,8 +373,11 @@ export interface JobChunkWire {
  *
  * 逐字段是 `unknown`：形状读取在 `dsh/scheduleView.ts` 一处完成（与 `JobViewWire`
  * 同一条纪律——那里放宽成具体类型只是因为 job 的字段是扩展自己窄化过的）。
- * 这一条带三个**只在目录里**的成员：`sessionId`（原始绑定）、`status`
- * （`active` / `inactive`）与 `lastDelivery`（最近一次收件箱投递）。
+ * 这一条带三个**只在目录里**的成员：`sessionId`（旧代的原始绑定）、`status`
+ * （`active` / `paused` / `ended`，旧代是 `inactive`）、`lastDelivery`（最近一次收件箱投递）；
+ * 新代另带 `target`（投递目标）、`involvedSessionIds`（相关会话）、`updatedAt`（编辑基准）、
+ * `executionActive`（最近一次投递仍在目标会话里排队 / 执行）与 `deliveryFloorEndsAt`
+ * （最小投递间隔的结束时刻）。
  */
 export interface ScheduleCatalogEntryWire {
   id?: unknown;
@@ -380,6 +395,9 @@ export interface ScheduleCatalogEntryWire {
   target?: unknown;
   involvedSessionIds?: unknown;
   updatedAt?: unknown;
+  createdAt?: unknown;
+  executionActive?: unknown;
+  deliveryFloorEndsAt?: unknown;
   sessionId?: unknown;
   status?: unknown;
   lastDelivery?: unknown;
@@ -416,6 +434,18 @@ export interface ScheduleDeleteResultWire {
   id?: unknown;
   deleted?: unknown;
   code?: unknown;
+}
+
+/**
+ * `schedule/deliveryLimits` 的响应（零形参的只读能力读取）。
+ *
+ * 唯一成员是「每次新建会话」这类投递之间的最小间隔（秒）。它**只**约束
+ * `target.kind === 'new'`：`new_once` 首次建会话后复用同一个会话，不受这条间隔限制。
+ * 它同时是「这个服务端有没有新代管理端点」的零副作用探针（见 `dsh/scheduleView.ts`
+ * 的 `scheduleCapabilityOf`）。
+ */
+export interface ScheduleDeliveryLimitsWire {
+  newSessionIntervalSeconds?: unknown;
 }
 
 /**

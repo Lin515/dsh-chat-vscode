@@ -134,10 +134,26 @@ export interface AppState extends ChatState {
    * 最近一次自动化任务变更的结算（宿主 `schedules/result` 帧的落点）。
    *
    * 与 `jobKill` 同一条纪律：**每次结算都换新对象**（同一行连着两次失败也是两帧），
-   * 详情区按引用相等识别「来了一条新结算」，把「正在保存 / 删除中」推进到失败并
+   * 详情区按引用相等识别「来了一条新结算」，把「正在保存 / 正在投递」推进到失败并
    * 显示对应文案。
+   *
+   * `opId` 是界面发请求时带的操作标识（宿主原样回显）：行组件用它把**迟到帧**
+   * 排除掉——用户已经翻篇的那次操作的结算，不该结算新界面上的同一行。
    */
-  scheduleResult?: { op: "update" | "delete"; id: string; ok: boolean; code?: string };
+  scheduleResult?: {
+    op: "update" | "delete" | "create" | "run" | "active";
+    id?: string;
+    opId?: number;
+    ok: boolean;
+    code?: string;
+  };
+  /**
+   * 投递限制（`schedule/deliveryLimits` 的零形参只读读取）。
+   *
+   * 只有目标为 `new`（每次新建会话）时才需要它；`unsupported` = 旧代没有这个端点，
+   * 界面不显示说明（不是失败）。`error` 与 `unsupported` 分开：前者这次没拿到。
+   */
+  scheduleLimits?: { newSessionIntervalSeconds?: number; unsupported?: boolean; error?: string };
 }
 
 /** 一条任务的执行记录（界面侧累积，见 `AppState.scheduleHistory`）。 */
@@ -160,6 +176,13 @@ export interface ScheduleHistoryState {
   hostUnavailable?: boolean;
   /** 服务端 / 传输层的原样报错（不翻译）。 */
   error?: string;
+  /**
+   * 这一份记录最后一次被哪一次请求结算（请求侧的操作标识）。
+   *
+   * 迟到的旧页（例如「加载更早」的响应在用户刷新之后才回来）不许接进新列表：
+   * reducer 按它丢弃比现有记录更早的帧。
+   */
+  opId?: number;
 }
 
 export const initialState: AppState = {
@@ -264,7 +287,7 @@ export type Action =
    * 等宿主回帧才动状态的话，那一段往返里详情区会显示上一次的结论（或空态）。
    * `reset` 是「这一下从第一页重读」（打开详情、刷新），据此丢掉旧游标。
    */
-  | { type: "ui/scheduleHistoryRequest"; id: string; reset?: boolean };
+  | { type: "ui/scheduleHistoryRequest"; id: string; reset?: boolean; opId?: number };
 
 export function reducer(state: AppState, action: Action): AppState {
   switch (action.type) {
@@ -385,6 +408,11 @@ export function reducer(state: AppState, action: Action): AppState {
       // `append` = 加载更早的那一页）：界面不自己按「这次请求带没带游标」推断——
       // 同一时刻可能有一前一后两次请求在飞，按请求侧的记忆拼会把两页接反。
       const previous = state.scheduleHistory?.[action.id];
+      // 回帧必须与**最近一次请求**的操作标识相等：更小的是迟到帧（刷新先回来、旧的
+      // 「加载更早」后到），更大的在单体发号器下不可能是这次请求的答案（请求一定先于
+      // 回帧登记）——两种都整帧丢掉，否则旧页会接进新列表、记录倒着长。旧宿主不回
+      // `opId` 时退回按 id 收下。
+      if (action.opId !== undefined && previous?.opId !== undefined && action.opId !== previous.opId) return state;
       const replacing = action.mode === "replace";
       const failed = action.error !== undefined || action.hostUnavailable === true;
       const entry: ScheduleHistoryState = {
@@ -404,6 +432,9 @@ export function reducer(state: AppState, action: Action): AppState {
         code: action.code,
         hostUnavailable: action.hostUnavailable,
         error: action.error,
+        ...(action.opId === undefined
+          ? (previous?.opId === undefined ? {} : { opId: previous.opId })
+          : { opId: action.opId }),
       };
       return { ...state, scheduleHistory: { ...state.scheduleHistory, [action.id]: entry } };
     }
@@ -413,8 +444,28 @@ export function reducer(state: AppState, action: Action): AppState {
       // 详情区的状态机。删除成功时顺手丢掉那条执行记录——任务已经不存在了。
       return {
         ...state,
-        scheduleResult: { op: action.op, id: action.id, ok: action.ok, code: action.code },
-        ...(action.op === "delete" && action.ok ? { scheduleHistory: withoutKey(state.scheduleHistory, action.id) } : {}),
+        scheduleResult: {
+          op: action.op,
+          ...(action.id === undefined ? {} : { id: action.id }),
+          ...(action.opId === undefined ? {} : { opId: action.opId }),
+          ok: action.ok,
+          ...(action.code === undefined ? {} : { code: action.code }),
+        },
+        ...(action.op === "delete" && action.ok && action.id !== undefined
+          ? { scheduleHistory: withoutKey(state.scheduleHistory, action.id) }
+          : {}),
+      };
+
+    case "schedules/limits":
+      return {
+        ...state,
+        scheduleLimits: {
+          ...(action.newSessionIntervalSeconds === undefined
+            ? {}
+            : { newSessionIntervalSeconds: action.newSessionIntervalSeconds }),
+          ...(action.unsupported === true ? { unsupported: true } : {}),
+          ...(action.error === undefined ? {} : { error: action.error }),
+        },
       };
 
     case "trajectory": {
@@ -506,6 +557,14 @@ export function reducer(state: AppState, action: Action): AppState {
       // 先把「正在读取」置上再发请求（见 Action 注释）。`reset` 从第一页重读：
       // 旧游标此刻已经不能用了，留着它会让「加载更早」接着一个过期的位置取。
       const previous = state.scheduleHistory?.[action.id];
+      // 请求侧的操作标识**只增不减**：行重挂 / 卡片重开之后若有一个更旧的请求动作
+      // 落到这里，退回去的号码会让随后到达的旧回帧被当成当前这次。
+      const opId =
+        action.opId === undefined
+          ? previous?.opId
+          : previous?.opId === undefined || action.opId > previous.opId
+            ? action.opId
+            : previous.opId;
       const entry: ScheduleHistoryState = action.reset === true || !previous
         ? {
             records: action.reset === true ? [] : (previous?.records ?? []),
@@ -513,8 +572,16 @@ export function reducer(state: AppState, action: Action): AppState {
             pruned: false,
             loading: true,
             loaded: previous?.loaded ?? false,
+            ...(opId === undefined ? {} : { opId }),
           }
-        : { ...previous, loading: true, error: undefined, hostUnavailable: undefined, code: undefined };
+        : {
+            ...previous,
+            loading: true,
+            error: undefined,
+            hostUnavailable: undefined,
+            code: undefined,
+            ...(opId === undefined ? {} : { opId }),
+          };
       return { ...state, scheduleHistory: { ...state.scheduleHistory, [action.id]: entry } };
     }
 

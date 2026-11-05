@@ -89,6 +89,9 @@ React / 浏览器环境，不使用 Node API。上层边界见[源码导航](<..
 - [pastedImageNames.ts](<pastedImageNames.ts>) — 粘贴图片的会话内编号名（图N / imageN）。
 - [jobObserve.ts](<jobObserve.ts>) — 观察身份与重连锚点的输出累积。
 - [jobsKill.ts](<jobsKill.ts>) — armed → pending 停止状态机。
+- [scheduleOps.ts](<scheduleOps.ts>) — 自动化任务操作的结算账本：webview 生命周期内唯一、单调递增的操作标识与「这一帧是否结算当前这次等待」（迟到帧、别的行、别的操作一律不结算）。
+- [scheduleEditorState.ts](<scheduleEditorState.ts>) — 详情区草稿与编辑基线的状态机：判修改 / 装配 patch 都相对基线，无本地修改时跟随权威目录，保存成功后一起换成权威值。
+- [scheduleControls.ts](<scheduleControls.ts>) — 一行上保存 / 删除 / 暂停 / 立即运行与表单只读的统一判据（busy、目录权威、归档、执行中、投递间隔）。
 - [jobsOrder.ts](<jobsOrder.ts>) — live / 开始时间顺序，排除 subagent 行。
 - [queueOrder.ts](<queueOrder.ts>) — 插话在前，仅改显示顺序。
 - [queueHover.ts](<queueHover.ts>) — 实测截断与全文浮层几何。

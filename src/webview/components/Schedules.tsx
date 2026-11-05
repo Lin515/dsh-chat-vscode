@@ -1,72 +1,110 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import type { ChatState, ScheduleItemView } from "../../shared/chat";
+import { useEffect, useMemo, useReducer, useRef, useState } from "react";
+import type { ChatState, ScheduleItemView, SessionSummaryView } from "../../shared/chat";
 import {
   deviceZone,
   formatScheduleStamp,
-  formatZoneLabel,
   orderSchedules,
   relativeText,
   scheduleChangeFromDraft,
-  scheduleDraft,
-  scheduleDraftDiffers,
+  scheduleCreateDraft,
+  scheduleCreateRequestOf,
+  scheduleForSession,
   scheduleFrequency,
+  scheduleIsActive,
+  scheduleNextRunAt,
+  schedulePatchOf,
+  scheduleStatusOf,
+  scheduleTargetError,
+  scheduleTargetSessionId,
   storedZoneOf,
-  unitText,
-  zoneChoices,
-  type CronField,
-  type ScheduleRepeat,
+  type ScheduleEditorDraft,
   type ScheduleTexts,
-  type ScheduleTimingDraft,
 } from "../../shared/schedule";
 import { post } from "../bridge";
 import { autoResetMs, killSettled, pressKill, type KillPhase } from "../jobsKill";
-import { IconChevronDown, IconTrash } from "../icons";
+import { IconChevronDown, IconPause, IconPlay, IconPlus, IconTrash } from "../icons";
 import { useLocale, useTexts, type Texts } from "../texts";
-import type { ScheduleHistoryState } from "../state";
+import type { ScheduleHistoryState, AppState } from "../state";
+import { scheduleNextOpId, scheduleResultSettles, type SchedulePendingOp } from "../scheduleOps";
+import { scheduleRowControls } from "../scheduleControls";
+import {
+  scheduleEditorReducer,
+  scheduleEditorState,
+  scheduleEditorStateConflict,
+  scheduleEditorStateDirty,
+} from "../scheduleEditorState";
+import { ScheduleEditor, scheduleTimingCronError } from "./ScheduleEditor";
 
 /**
  * 后台任务抽屉里的**自动化任务**分区（DSH `schedule`）。
  *
- * 服务端那边一个任务就是一条持久记录（规则 + 原始会话绑定 + 状态 + 最近一次投递），
- * 这里的每一行都按官方同名界面命名：**一律用存下来的 `title`**，不从句指令推名字
- * （旧记录才有「从指令首行兜底」那种做法，本扩展不消费那种记录）。
+ * 数据只有一条来源：宿主读一次零形参的 `schedule/catalog`，把**整份目录**落到会话
+ * 字段里。这里再按 `involvedSessionIds` / 投递落点分出「本会话」这一档（`scheduleForSession`）
+ * ——「全部任务」直接用整份目录，于是全局视图与全局操作都不会被当前会话过滤拦住，
+ * 也不必维护第二份互相打脸的清单。
  *
  * 三种视图状态各自独立，不许合并成一句「没有任务」：
  * - 清单：`loading` / `ready`（可能是空表）/ `unsupported`（服务端没这组端点）/ `error`；
- * - 详情：规则（可编辑）与执行记录（按需分页读取）分开；
- * - 变更结算：保存 / 删除各有一条来自宿主的结算帧（`schedules/result`）。
+ * - 详情：名称 / 指令 / 目标 / 运行时间（可编辑）与执行记录（按需分页读取）分开；
+ * - 变更结算：每次请求都等一条来自宿主的 `schedules/result` 帧，且只认**自己这一次**
+ *   操作标识（见 `scheduleOps.ts`）。
  *
- * 面板是**按会话**的：清单由宿主读全局目录后按 `sessionId` 过滤（见 controller 的
- * `loadSchedules`），所以切会话时这份数据整份换掉，不需要在这里做任何缓存失效。
+ * 服务端代际决定入口：旧代（`legacy`）只保留查看、改时间与删除；创建 / 立即运行 /
+ * 暂停恢复 / 目标编辑都是新代才有的能力，旧代一律不暴露。
  */
 
 /** 面板要向界面状态机发的动作（收窄，别的发不出去）。 */
-export type ScheduleAction = { type: "ui/scheduleHistoryRequest"; id: string; reset?: boolean };
+export type ScheduleAction = {
+  type: "ui/scheduleHistoryRequest";
+  id: string;
+  reset?: boolean;
+  opId?: number;
+};
 
 /** 执行记录的读取状态（`AppState.scheduleHistory` 的一条）。 */
 type HistoryEntry = ScheduleHistoryState;
 
+/** 视图范围：本会话（派生过滤）或全部任务（整份目录）。 */
+type ScheduleScopeView = "session" | "all";
+/** 状态筛选。 */
+type ScheduleStatusFilter = "all" | "active" | "paused" | "ended";
+
 export function SchedulesSection({
   sessionId,
+  sessions,
   schedules,
   status,
+  capability,
+  archivedSessionIds,
+  newSessionIntervalSeconds,
+  limits,
   history,
   result,
   dispatch,
 }: {
-  /** 当前窗口绑定的会话：它变了就要重新读一次本会话的清单。 */
+  /** 当前窗口绑定的会话：它变了就重读一次目录，并把本地展开 / 表单收起来。 */
   sessionId?: string;
+  /** 会话列表（目标的会话候选与创建目录候选都来自这里的真实值）。 */
+  sessions: readonly SessionSummaryView[];
+  /** 整份全局目录（不再只是本会话的子集）。 */
   schedules: ScheduleItemView[];
   status: ChatState["schedulesStatus"];
+  capability: ChatState["schedulesCapability"];
+  /** 宿主归档列表里的会话 id：目标会话已归档时「立即运行」不可用（肯定证据）。 */
+  archivedSessionIds?: readonly string[];
+  newSessionIntervalSeconds?: number;
+  limits?: AppState["scheduleLimits"];
   history?: Record<string, HistoryEntry>;
-  result?: { op: "update" | "delete"; id: string; ok: boolean; code?: string };
+  result?: AppState["scheduleResult"];
   dispatch: (action: ScheduleAction) => void;
 }) {
   const texts = useTexts();
+  const [scopeView, setScopeView] = useState<ScheduleScopeView>("session");
+  const [statusFilter, setStatusFilter] = useState<ScheduleStatusFilter>("all");
   // 展开的那一行（同一时刻只看一条详情，与后台任务的输出区同口径）
   const [expanded, setExpanded] = useState<string>();
+  const [creating, setCreating] = useState(false);
   // 相对时间与「过期在前」的排序都要一个当前时刻：面板开着时每 30 秒重算一次
-  // （比后台任务的 1 秒慢：这里最细的单位是秒级的「还有多久」，没有逐秒变化的东西）
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     setNow(Date.now());
@@ -74,37 +112,161 @@ export function SchedulesSection({
     const timer = setInterval(() => setNow(Date.now()), 30_000);
     return () => clearInterval(timer);
   }, [schedules.length]);
-  // 打开面板 / 换会话：读一次清单。宿主只在**读过**的会话上重建（见 controller），
+
+  // 打开面板 / 换会话：读一次目录。宿主只在**读过**的会话上重建（见 controller），
   // 所以这一下不会变成每次切会话的固定开销之外的东西。
   useEffect(() => {
     post({ type: "listSchedules" });
   }, [sessionId]);
-  // 展开的那一行离开了名册（被删掉、或别的客户端删了）→ 收起，别留一段没有主人
-  // 的详情在屏上
+
+  // 换会话：本地展开的行与未提交的新建表单都属于上一个会话的上下文，收起来。
+  useEffect(() => {
+    setExpanded(undefined);
+    setCreating(false);
+  }, [sessionId]);
+
+  // 展开的那一行离开了目录（被删掉、或别的客户端删了）→ 收起
   useEffect(() => {
     if (expanded !== undefined && !schedules.some((item) => item.id === expanded)) setExpanded(undefined);
   }, [schedules, expanded]);
 
-  const sorted = useMemo(() => orderSchedules(schedules, now), [schedules, now]);
+  // 投递间隔到点要**准时**让「立即运行」变得可用：30 秒的周期会晚最多半分钟，
+  // 所以额外在 floor 结束那一刻叫醒一次。
+  const floorWake = schedules.reduce((earliest, item) => {
+    const at = item.deliveryFloorEndsAt === undefined ? Number.POSITIVE_INFINITY : Date.parse(item.deliveryFloorEndsAt);
+    return at > now && at < earliest ? at : earliest;
+  }, Number.POSITIVE_INFINITY);
+  useEffect(() => {
+    if (!Number.isFinite(floorWake)) return;
+    const timer = setTimeout(() => setNow(Date.now()), Math.max(0, floorWake - Date.now()));
+    return () => clearTimeout(timer);
+  }, [floorWake]);
+
+  const scoped = useMemo(
+    () => (scopeView === "all" ? schedules : scheduleForSession(schedules, sessionId)),
+    [scopeView, schedules, sessionId],
+  );
+  const filtered = useMemo(
+    () =>
+      scoped.filter((item) => {
+        if (statusFilter === "all") return true;
+        const status = scheduleStatusOf(item);
+        if (statusFilter === "paused") return status === "paused";
+        if (statusFilter === "ended") return status === "ended";
+        return status === "active";
+      }),
+    [scoped, statusFilter],
+  );
+  const sorted = useMemo(() => orderSchedules(filtered, now), [filtered, now]);
+  // 旧代（或整组端点缺席）不暴露创建入口；`unknown` 允许试一次——真 404 会被宿主
+  // 记成旧代，随后入口消失。
+  const canCreate = capability !== "legacy" && status !== "unsupported";
+  // 归档证据只认宿主的归档列表：目标会话不在活跃列表里不等于归档（可能只是别的目录）。
+  const archived = useMemo(() => new Set(archivedSessionIds ?? []), [archivedSessionIds]);
 
   return (
     <div className="panel-section">
       <div className="panel-section-title">{texts.scheduleSection}</div>
+      <div className="schedule-toolbar">
+        <div className="schedule-tabs" role="group" aria-label={texts.scheduleSection}>
+          <button
+            type="button"
+            className={`schedule-tab${scopeView === "session" ? " is-on" : ""}`}
+            aria-pressed={scopeView === "session"}
+            onClick={() => setScopeView("session")}
+          >
+            {texts.scheduleViewSession}
+          </button>
+          <button
+            type="button"
+            className={`schedule-tab${scopeView === "all" ? " is-on" : ""}`}
+            aria-pressed={scopeView === "all"}
+            onClick={() => setScopeView("all")}
+          >
+            {texts.scheduleViewAll}
+          </button>
+        </div>
+        {canCreate && !creating ? (
+          <button type="button" className="schedule-btn is-primary" onClick={() => setCreating(true)}>
+            <IconPlus size={11} />
+            {texts.scheduleNew}
+          </button>
+        ) : null}
+      </div>
+
+      {capability === "legacy" ? <div className="job-notice">{texts.scheduleCapabilityLegacy}</div> : null}
+      {capability === "unknown" ? <div className="job-notice">{texts.scheduleCapabilityUnknown}</div> : null}
+
+      <div className="schedule-filters" role="group" aria-label={texts.scheduleSection}>
+        {(["all", "active", "paused", "ended"] as const).map((value) => (
+          <button
+            key={value}
+            type="button"
+            className={`schedule-chip${statusFilter === value ? " is-on" : ""}`}
+            aria-pressed={statusFilter === value}
+            onClick={() => setStatusFilter(value)}
+          >
+            {value === "all"
+              ? texts.scheduleFilterAll
+              : value === "active"
+                ? texts.scheduleFilterActive
+                : value === "paused"
+                  ? texts.scheduleFilterPaused
+                  : texts.scheduleFilterEnded}
+          </button>
+        ))}
+      </div>
+
+      {creating ? (
+        <ScheduleCreateCard
+          key={`create:${sessionId ?? ""}`}
+          sessionId={sessionId}
+          sessions={sessions}
+          newSessionIntervalSeconds={newSessionIntervalSeconds}
+          limits={limits}
+          result={result}
+          onClose={() => setCreating(false)}
+        />
+      ) : null}
+
       {sorted.length > 0 ? (
-        sorted.map((item) => (
-          <ScheduleRow
-            key={item.id}
-            item={item}
-            now={now}
-            open={expanded === item.id}
-            history={history?.[item.id]}
-            result={result}
-            dispatch={dispatch}
-            onToggle={() => setExpanded(expanded === item.id ? undefined : item.id)}
-          />
-        ))
+        sorted.map((item) => {
+          // 官方 `targetArchived = task.target.kind !== 'new' && linkedState === 'archived'`：
+          // `new` 目标每次新建会话，没有会被归档的固定落点。
+          const targetSessionId = scheduleTargetSessionId(item);
+          const targetArchived =
+            item.target?.kind !== "new" &&
+            targetSessionId !== undefined &&
+            archived.has(targetSessionId);
+          return (
+            <ScheduleRow
+              key={`${sessionId ?? ""}:${item.id}`}
+              item={item}
+              now={now}
+              open={expanded === item.id}
+              modern={capability === "modern"}
+              capabilityKnown={capability === "modern" || capability === "legacy"}
+              catalogStatus={status}
+              targetArchived={targetArchived}
+              newSessionIntervalSeconds={newSessionIntervalSeconds}
+              limits={limits}
+              sessionId={sessionId}
+              sessions={sessions}
+              history={history?.[item.id]}
+              result={result}
+              dispatch={dispatch}
+              onToggle={() => setExpanded(expanded === item.id ? undefined : item.id)}
+            />
+          );
+        })
       ) : (
-        <ScheduleListNotice status={status} texts={texts} />
+        <ScheduleListNotice
+          status={status}
+          scopeView={scopeView}
+          filtered={scoped.length > 0 && sorted.length === 0}
+          hasAny={schedules.length > 0}
+          texts={texts}
+        />
       )}
     </div>
   );
@@ -116,30 +278,164 @@ export function SchedulesSection({
  * `undefined`（还没问过）与 `loading` 都按「正在读取」显示：两者都还没到能给结论的
  * 时候，显示空态就是替一次还没落定的读取下结论。
  */
-function ScheduleListNotice({ status, texts }: { status: ChatState["schedulesStatus"]; texts: Texts }) {
+function ScheduleListNotice({
+  status,
+  scopeView,
+  filtered,
+  hasAny,
+  texts,
+}: {
+  status: ChatState["schedulesStatus"];
+  scopeView: ScheduleScopeView;
+  /** 这一档里有任务，但当前筛选把它们全滤掉了。 */
+  filtered: boolean;
+  /** 全局目录本身不为空（用来区分「本会话没有」与「一条都没有」）。 */
+  hasAny: boolean;
+  texts: Texts;
+}) {
   if (status === "unsupported") return <div className="job-notice">{texts.scheduleUnsupported}</div>;
   if (status === "error") return <div className="job-notice is-error">{texts.scheduleLoadFailed}</div>;
   if (status === undefined || status === "loading") {
     return <div className="popover-empty">{texts.scheduleLoading}</div>;
   }
+  if (filtered) return <div className="popover-empty">{texts.scheduleEmptyFilter}</div>;
+  if (scopeView === "session" && hasAny) {
+    return (
+      <div className="popover-empty">
+        {texts.scheduleEmpty}
+        <div className="job-notice">{texts.scheduleEmptyHint}</div>
+      </div>
+    );
+  }
   return (
     <div className="popover-empty">
-      {texts.scheduleEmpty}
-      <div className="job-notice">{texts.scheduleEmptyHint}</div>
+      {texts.scheduleEmptyAll}
+      <div className="job-notice">{texts.scheduleEmptyAllHint}</div>
+    </div>
+  );
+}
+
+/** 新建任务卡：字段与编辑共用一套，提交走 `schedule/create`。 */
+function ScheduleCreateCard({
+  sessionId,
+  sessions,
+  newSessionIntervalSeconds,
+  limits,
+  result,
+  onClose,
+}: {
+  sessionId?: string;
+  sessions: readonly SessionSummaryView[];
+  newSessionIntervalSeconds?: number;
+  limits?: AppState["scheduleLimits"];
+  result?: AppState["scheduleResult"];
+  onClose: () => void;
+}) {
+  const texts = useTexts();
+  const [draft, setDraft] = useState<ScheduleEditorDraft>(() =>
+    scheduleCreateDraft({ target: "new_once", sessionId: sessionId ?? "" }),
+  );
+  const [pending, setPending] = useState<SchedulePendingOp>();
+  const [failure, setFailure] = useState<string>();
+  const [created, setCreated] = useState(false);
+
+  // 目标为「每次新建会话」时读一次间隔说明（零形参只读；旧代没有这个端点）。
+  useEffect(() => {
+    if (draft.target !== "new") return;
+    if (limits?.newSessionIntervalSeconds !== undefined || limits?.unsupported === true) return;
+    post({ type: "scheduleLimits" });
+  }, [draft.target, limits?.newSessionIntervalSeconds, limits?.unsupported]);
+
+  useEffect(() => {
+    if (result === undefined || !scheduleResultSettles(pending, result)) return;
+    setPending(undefined);
+    if (result.op === "create" && result.ok) {
+      setCreated(true);
+      return;
+    }
+    setFailure(changeErrorText(result.code, texts));
+  }, [result]);
+
+  const cronError = scheduleTimingCronError(draft.timing);
+  const missingTarget = scheduleTargetError(draft) !== undefined;
+  const submit = () => {
+    const built = scheduleCreateRequestOf(draft);
+    if ("error" in built) {
+      setFailure(draftErrorText(built.error, texts));
+      return;
+    }
+    const opId = scheduleNextOpId();
+    setPending({ op: "create", opId });
+    setFailure(undefined);
+    post({ type: "createSchedule", request: built.request, opId });
+  };
+
+  const saving = pending !== undefined;
+  const interval = newSessionIntervalSeconds ?? limits?.newSessionIntervalSeconds;
+
+  return (
+    <div className="schedule-card is-create">
+      <div className="schedule-card-title">{texts.scheduleCreateTitle}</div>
+      {created ? <div className="job-notice">{texts.scheduleCreated}</div> : null}
+      <ScheduleEditor
+        idPrefix="schedule-create"
+        draft={draft}
+        onChange={(next) => {
+          setDraft(next);
+          setFailure(undefined);
+        }}
+        disabled={saving}
+        basicDisabled={false}
+        allowRrule
+        sessions={sessions}
+        currentSessionId={sessionId}
+        storedTargetSessionId={undefined}
+        texts={texts}
+      />
+      {draft.target === "new" ? (
+        <NewSessionIntervalNotice interval={interval} limits={limits} texts={texts} />
+      ) : null}
+      {failure ? <div className="job-notice is-error">{failure}</div> : null}
+      <div className="schedule-actions">
+        {/* 新建表单本来就是空的：这里不放「有未保存的修改」——那句话对一张空表单是噪音 */}
+        <span className="schedule-unsaved" />
+        <span className="spacer" />
+        <button type="button" className="schedule-btn" disabled={saving} onClick={onClose}>
+          {texts.scheduleCancel}
+        </button>
+        <button
+          type="button"
+          className="schedule-btn is-primary"
+          disabled={saving || created || cronError !== undefined || missingTarget || !draft.title.trim() || !draft.prompt.trim()}
+          onClick={submit}
+        >
+          {saving ? texts.scheduleCreating : texts.scheduleCreate}
+        </button>
+      </div>
     </div>
   );
 }
 
 /**
- * 一行自动化任务：装订行主体、删除按钮、规则编辑与执行记录。
+ * 一行任务：摘要、运行 / 暂停恢复 / 删除动作、编辑表单与执行记录。
  *
- * 本地草稿活在**行组件**里（不是面板）：行离开名册时草稿跟着消失，不会留下一份
- * 指向已经不存在的任务的未保存修改。
+ * 本地草稿活在**行组件**里（不是面板）：行离开名册时草稿跟着消失。草稿与编辑
+ * 基线的推进规则在 `webview/scheduleEditorState.ts` 的状态机里（纯函数，离线可断言）：
+ * 「有没有改」「提交什么」都相对基线；没有本地修改时跟着权威目录走；保存成功后
+ * 两者一起换成权威值。后台刷新只改别的字段时，不会凭空制造一次未保存修改。
  */
-function ScheduleRow({
+export function ScheduleRow({
   item,
   now,
   open,
+  modern,
+  capabilityKnown,
+  catalogStatus,
+  targetArchived,
+  newSessionIntervalSeconds,
+  limits,
+  sessionId,
+  sessions,
   history,
   result,
   dispatch,
@@ -148,79 +444,100 @@ function ScheduleRow({
   item: ScheduleItemView;
   now: number;
   open: boolean;
+  /** 服务端支持新代管理端点（创建 / 运行 / 暂停 / 目标编辑）。 */
+  modern: boolean;
+  /** 代际已经判明（不是 `unknown`）。 */
+  capabilityKnown: boolean;
+  /** 目录读取状态：读取中 / 失败时变更按钮没有可靠基准。 */
+  catalogStatus: ChatState["schedulesStatus"];
+  /** 目标会话已归档（肯定证据；`new` 目标不参与）。 */
+  targetArchived: boolean;
+  /** 宿主读到的「每次新建会话」最小投递间隔（秒）。 */
+  newSessionIntervalSeconds?: number;
+  /** 按需读取投递限制的状态（旧代没有该端点）。 */
+  limits?: AppState["scheduleLimits"];
+  sessionId?: string;
+  sessions: readonly SessionSummaryView[];
   history?: HistoryEntry;
-  result?: { op: "update" | "delete"; id: string; ok: boolean; code?: string };
+  result?: AppState["scheduleResult"];
   dispatch: (action: ScheduleAction) => void;
   onToggle: () => void;
 }) {
   const texts = useTexts();
   const locale = useLocale();
-  const [draft, setDraft] = useState<ScheduleTimingDraft>(() => scheduleDraft(item));
-  const [savePhase, setSavePhase] = useState<"idle" | "saving" | "failed">("idle");
-  const [saveError, setSaveError] = useState<string>();
+  const [editor, dispatchEditor] = useReducer(scheduleEditorReducer, item, scheduleEditorState);
+  const { draft, base } = editor;
+  const [pending, setPending] = useState<SchedulePendingOp>();
+  const [failure, setFailure] = useState<string>();
+  const [runConfirm, setRunConfirm] = useState(false);
   const [deletePhase, setDeletePhase] = useState<KillPhase>();
   const [deleteError, setDeleteError] = useState<string>();
+  // 结算帧按引用相等识别；它带来的 `item` 由下面这个 ref 取**最新一次渲染**的值
+  // （结算帧在权威目录刷新之后才到，见 controller 的变更路由）。
+  const itemRef = useRef(item);
+  itemRef.current = item;
 
-  // 服务端刷新（保存成功读回、别的窗口改了、到点投递推进了目标）后，**没有未保存
-  // 修改**的草稿跟着换成新值；有未保存修改时保留草稿——用服务端值覆盖用户正在写的
-  // 东西是丢数据（官方同口径）。
-  const ruleKey = [
-    item.kind,
-    item.scheduledAt,
-    item.everySeconds ?? "",
-    item.time ?? "",
-    item.timeZone ?? "",
-    (item.weekdays ?? []).join(","),
-    item.expression ?? "",
-    item.rrule ?? "",
-  ].join("|");
+  // 服务端刷新（保存成功读回、别的窗口改了、到点投递推进了目标）后，状态机决定：
+  // 没有本地修改 → 草稿与基线一起跟上；有未保存修改 → 两者都保留。
   useEffect(() => {
-    setDraft((previous) => (scheduleDraftDiffers(previous, item) ? previous : scheduleDraft(item)));
-  }, [ruleKey]);
+    dispatchEditor({ type: "catalog", item });
+  }, [item]);
+
+  // 目标切到「每次新建会话」时才读一次间隔说明（零形参只读；旧代没有这个端点，
+  // 明确缺席时宿主回 `unsupported`，界面不显示这一行）。`new_once` 不受这条间隔
+  // 约束，因此也不显示。
+  useEffect(() => {
+    if (!open || draft.target !== "new") return;
+    if (limits?.newSessionIntervalSeconds !== undefined || limits?.unsupported === true) return;
+    post({ type: "scheduleLimits" });
+  }, [open, draft.target, limits?.newSessionIntervalSeconds, limits?.unsupported]);
 
   // 展开详情时按需读一次执行记录（只读一次；失败与成功都算落定，别在这里循环）
   useEffect(() => {
     if (!open) return;
     // `code`（任务不存在 / 游标失效）**不算落定**：那种情形下重新展开应当再读一次第一页
-    // ——游标失效后本地那份记录接不下去，重读是最省事的出路（文案也让用户「重新打开记录」，
-    // 这一条就是让那句话真的成立）。
     const settled =
       (history?.loaded === true && history?.code === undefined) ||
       history?.error !== undefined ||
       history?.hostUnavailable === true;
     if (history !== undefined && (history.loading || settled)) return;
-    dispatch({ type: "ui/scheduleHistoryRequest", id: item.id, reset: true });
-    post({ type: "scheduleHistory", id: item.id });
+    const opId = scheduleNextOpId();
+    dispatch({ type: "ui/scheduleHistoryRequest", id: item.id, reset: true, opId });
+    post({ type: "scheduleHistory", id: item.id, opId });
   }, [open, history, item.id]);
 
-  /**
-   * 又投递过一次 → 重读最新一页。
-   *
-   * 官方同一口径（「最新一条的 messageId 变了就刷新最新一页」）：服务端的
-   * `schedule/changed` 会让清单刷新，但**执行记录是按需读的**——不跟着重读，展开着的
-   * 详情就会少掉刚发生的那一次。`deliveredAt` 是这里能拿到的、与 messageId 等价的
-   * 「又投递过一次」信号。
-   */
+  /** 又投递过一次 → 重读最新一页（记录按需读；不跟着刷新就会少掉刚发生的那次）。 */
   const deliveredAt = item.lastDelivery?.deliveredAt;
   const seenDelivery = useRef<string | undefined>(deliveredAt);
   useEffect(() => {
     if (seenDelivery.current === deliveredAt) return;
     seenDelivery.current = deliveredAt;
     if (!open || history === undefined) return;
-    dispatch({ type: "ui/scheduleHistoryRequest", id: item.id, reset: true });
-    post({ type: "scheduleHistory", id: item.id });
+    const opId = scheduleNextOpId();
+    dispatch({ type: "ui/scheduleHistoryRequest", id: item.id, reset: true, opId });
+    post({ type: "scheduleHistory", id: item.id, opId });
   }, [deliveredAt, open, item.id]);
 
-  // 变更结算：更新与删除共用一条帧，按 `op` 分派
+  // 结算：只认**自己这次**操作（opId 由宿主回显），迟到帧不许结算新界面
   useEffect(() => {
-    if (!result || result.id !== item.id) return;
-    if (result.op === "update") {
-      setSavePhase(result.ok ? "idle" : "failed");
-      setSaveError(result.ok ? undefined : changeErrorText(result.code, texts));
+    if (result === undefined || !scheduleResultSettles(pending, result)) return;
+    setPending(undefined);
+    if (result.op === "delete") {
+      setDeletePhase(killSettled({ key: item.id, state: "pending" }, item.id, result.ok));
+      setDeleteError(result.ok ? undefined : deleteErrorText(result.code, texts));
       return;
     }
-    setDeletePhase(killSettled({ key: item.id, state: "pending" }, item.id, result.ok));
-    setDeleteError(result.ok ? undefined : deleteErrorText(result.code, texts));
+    if (result.ok) {
+      setFailure(undefined);
+      setRunConfirm(false);
+      // 保存成功：宿主已经重读过权威目录再发这一帧，草稿与基线一起换成那条新值。
+      // 只清失败提示不推进基线，会让下一次目录刷新把刚保存的这版误判成冲突。
+      if (result.op === "update") dispatchEditor({ type: "saved", item: itemRef.current });
+      return;
+    }
+    setFailure(
+      result.op === "run" ? runErrorText(result.code, texts) : changeErrorText(result.code, texts),
+    );
   }, [result]);
 
   // armed / failed 到点自动复位；pending 要等结算帧收场（与停止按钮同一台状态机）
@@ -231,47 +548,116 @@ function ScheduleRow({
     return () => clearTimeout(timer);
   }, [deletePhase]);
 
-  const active = item.status === "active";
+  const active = scheduleIsActive(item);
+  const ended = scheduleStatusOf(item) === "ended";
   const statusText =
     item.status === "active"
       ? texts.scheduleActive
       : item.status === "paused"
         ? texts.schedulePaused
-      : item.status === "inactive" || item.status === "ended"
-        ? texts.scheduleInactive
-        : item.status === "unknown"
-          ? texts.scheduleUnknownStatus
-          : item.status;
+        : item.status === "inactive" || item.status === "ended"
+          ? texts.scheduleInactive
+          : item.status === "unknown"
+            ? texts.scheduleUnknownStatus
+            : item.status;
   const zone = deviceZone();
   const frequency = scheduleFrequency(item, texts, { system: zone, locale });
-  const relative = relativeText(item.scheduledAt, now, texts);
-  const stamp = formatScheduleStamp(item.scheduledAt, locale, storedZoneOf(item));
-  const dirty = scheduleDraftDiffers(draft, item);
+  const nextRunAt = scheduleNextRunAt(item);
+  const relative = relativeText(nextRunAt, now, texts);
+  const stamp = formatScheduleStamp(nextRunAt, locale, storedZoneOf(item));
+  const canEditDetails = modern && item.api === "edit";
+  const dirty = scheduleEditorStateDirty(editor);
+  const stale = canEditDetails && scheduleEditorStateConflict(editor, item);
+  const floorAt = item.deliveryFloorEndsAt === undefined ? undefined : Date.parse(item.deliveryFloorEndsAt);
+  const floorActive = floorAt !== undefined && floorAt > now;
+  const executionActive = item.executionActive === true;
+  const cronError = scheduleTimingCronError(draft.timing);
+  const missingTarget = scheduleTargetError(draft) !== undefined;
+  const controls = scheduleRowControls({
+    catalogStatus,
+    capabilityKnown,
+    editable: canEditDetails,
+    pending: pending !== undefined,
+    deleting: deletePhase?.state === "pending",
+    dirty,
+    invalid: cronError !== undefined || missingTarget || !draft.title.trim() || !draft.prompt.trim(),
+    executionActive,
+    floorActive,
+    targetArchived,
+    ended,
+  });
 
   const pressDelete = () => {
+    if (!controls.canDelete) return;
     const next = pressKill(deletePhase, item.id);
     setDeletePhase(next);
     setDeleteError(undefined);
     if (next.state !== "pending") return;
-    post({ type: "deleteSchedule", id: item.id });
-  };
-
-  const patch = (values: Partial<ScheduleTimingDraft>) => {
-    setDraft((previous) => ({ ...previous, ...values }));
-    setSaveError(undefined);
-    setSavePhase("idle");
+    const opId = scheduleNextOpId();
+    setPending({ op: "delete", opId, id: item.id });
+    post({
+      type: "deleteSchedule",
+      id: item.id,
+      ...(item.api === "edit" ? { expectedUpdatedAt: base.updatedAt ?? null } : {}),
+      opId,
+    });
   };
 
   const save = () => {
-    const built = scheduleChangeFromDraft(draft);
-    if ("error" in built) {
-      setSavePhase("failed");
-      setSaveError(draftErrorText(built.error, built.field, texts));
+    if (!controls.canSave) return;
+    if (item.api === "edit") {
+      // 只提交**相对编辑基线**改过的字段：用最新目录当比较对象，会把别人刚改的
+      // 字段当成自己的修改再提交回去（一次静默覆盖）。
+      const built = schedulePatchOf(draft, base);
+      if ("error" in built) {
+        setFailure(draftErrorText(built.error, texts));
+        return;
+      }
+      const opId = scheduleNextOpId();
+      setPending({ op: "update", opId, id: item.id });
+      setFailure(undefined);
+      post({
+        type: "editSchedule",
+        id: item.id,
+        patch: built.patch,
+        expectedUpdatedAt: base.updatedAt ?? null,
+        opId,
+      });
       return;
     }
-    setSavePhase("saving");
-    setSaveError(undefined);
-    post({ type: "updateSchedule", id: item.id, change: built.change });
+    // 旧代：只有运行时间编辑这一条路（`schedule/update` 的比较并交换）
+    const built = scheduleChangeFromDraft(draft.timing);
+    if ("error" in built) {
+      setFailure(draftErrorText(built.error, texts));
+      return;
+    }
+    const opId = scheduleNextOpId();
+    setPending({ op: "update", opId, id: item.id });
+    setFailure(undefined);
+    post({ type: "updateSchedule", id: item.id, change: built.change, opId });
+  };
+
+  const setActive = (next: boolean) => {
+    if (item.api !== "edit" || !controls.canPause) return;
+    const opId = scheduleNextOpId();
+    setPending({ op: "active", opId, id: item.id });
+    setFailure(undefined);
+    post({
+      type: "setScheduleActive",
+      id: item.id,
+      active: next,
+      expectedUpdatedAt: base.updatedAt ?? null,
+      opId,
+    });
+  };
+
+  const run = () => {
+    if (controls.runHeld) return;
+    const opId = scheduleNextOpId();
+    setPending({ op: "run", opId, id: item.id });
+    setFailure(undefined);
+    setRunConfirm(false);
+    post({ type: "runSchedule", id: item.id, opId });
   };
 
   return (
@@ -284,7 +670,7 @@ function ScheduleRow({
           aria-label={open ? texts.scheduleCollapseAria(item.title) : texts.scheduleExpandAria(item.title)}
           onClick={onToggle}
         >
-          {/* 状态点：启用中用「有活动含义」的绿点，已结束用中性灰点（不猜色调） */}
+          {/* 状态点：启用中用「有活动含义」的绿点，其余用中性灰点（不猜色调） */}
           <span className={`dot ${active ? "dot-ok" : "dot-muted"}`} />
           <span className="job-label" title={item.title}>
             {item.title}
@@ -292,13 +678,25 @@ function ScheduleRow({
           <span className="job-kind">{statusText}</span>
           <IconChevronDown size={12} className={`job-chevron${open ? " is-open" : ""}`} />
         </button>
+        {controls.pauseVisible ? (
+          <button
+            type="button"
+            className="job-stop"
+            disabled={!controls.canPause}
+            title={active ? texts.schedulePauseAria(item.title) : texts.scheduleResumeAria(item.title)}
+            aria-label={active ? texts.schedulePauseAria(item.title) : texts.scheduleResumeAria(item.title)}
+            onClick={() => setActive(!active)}
+          >
+            {active ? <IconPause size={10} /> : <IconPlay size={10} />}
+          </button>
+        ) : null}
         <button
           type="button"
           className={`job-stop${deletePhase?.state === "armed" ? " is-armed" : ""}${
             deletePhase?.state === "failed" ? " is-failed" : ""
           }`}
           data-kill-state={deletePhase?.state ?? "idle"}
-          disabled={deletePhase?.state === "pending"}
+          disabled={!controls.canDelete}
           title={
             deletePhase?.state === "armed"
               ? texts.scheduleDeleteConfirm
@@ -317,7 +715,7 @@ function ScheduleRow({
       </div>
       <div className="job-meta">
         {frequency ? `${frequency} · ` : ""}
-        {active ? `${texts.scheduleNextRun} ` : `${texts.scheduleLastTarget} `}
+        {active || item.status === "paused" ? `${texts.scheduleNextRun} ` : `${texts.scheduleLastTarget} `}
         {stamp}
         {relative ? `（${relative}）` : ""}
       </div>
@@ -327,25 +725,115 @@ function ScheduleRow({
       {deletePhase?.state === "pending" ? <div className="job-notice">{texts.scheduleDeleting}</div> : null}
       {open ? (
         <div className="job-panel">
-          <div className="schedule-card-title">{texts.schedulePromptLabel}</div>
-          <div className="job-detail schedule-prompt">{item.prompt}</div>
-          <ScheduleTimingCard
-            item={item}
+          {executionActive ? <div className="job-notice">{texts.scheduleExecutionActive}</div> : null}
+          {floorActive && floorAt !== undefined ? (
+            <div className="job-notice">{texts.scheduleDeliveryFloor(formatScheduleStamp(new Date(floorAt).toISOString(), locale))}</div>
+          ) : null}
+          {stale ? (
+            <div className="job-notice is-error">
+              {texts.scheduleConflictNotice}
+              <button
+                type="button"
+                className="schedule-link"
+                onClick={() => {
+                  dispatchEditor({ type: "reapply", item });
+                  setFailure(undefined);
+                }}
+              >
+                {texts.scheduleReapply}
+              </button>
+            </div>
+          ) : null}
+          {targetArchived ? <div className="job-notice">{texts.scheduleErrTargetArchived}</div> : null}
+          <ScheduleEditor
+            idPrefix={`schedule-edit-${item.id}`}
             draft={draft}
-            active={active || item.api === "edit"}
-            editable={item.editable !== false}
-            dirty={dirty}
-            saving={savePhase === "saving"}
-            error={saveError}
-            texts={texts}
-            onPatch={patch}
-            onSave={save}
-            onCancel={() => {
-              setDraft(scheduleDraft(item));
-              setSaveError(undefined);
-              setSavePhase("idle");
+            onChange={(next) => {
+              dispatchEditor({ type: "edit", draft: next });
+              setFailure(undefined);
             }}
+            disabled={controls.fieldsDisabled || item.editable === false}
+            basicDisabled={controls.basicDisabled}
+            allowRrule={item.api === "edit"}
+            sessions={sessions}
+            currentSessionId={sessionId}
+            storedTargetSessionId={scheduleTargetSessionId(item)}
+            texts={texts}
           />
+          {/* 只有「每次新建会话」受投递间隔约束：`new_once` 首次投递之后复用同一
+              会话，不受它限制；加载中不先下结论。 */}
+          {draft.target === "new" ? (
+            <NewSessionIntervalNotice
+              interval={newSessionIntervalSeconds ?? limits?.newSessionIntervalSeconds}
+              limits={limits}
+              texts={texts}
+            />
+          ) : null}
+          {!capabilityKnown ? <div className="job-notice">{texts.scheduleCapabilityUnknown}</div> : null}
+          {item.editable === false ? <div className="job-notice">{texts.scheduleRuleUnreadable}</div> : null}
+          {!canEditDetails && item.api !== "edit" && capabilityKnown ? (
+            <div className="job-notice">{texts.scheduleCapabilityLegacy}</div>
+          ) : null}
+          {failure ? <div className="job-notice is-error">{failure}</div> : null}
+          {dirty && !stale ? (
+            <div className="schedule-actions">
+              <span className="schedule-unsaved">{texts.scheduleUnsaved}</span>
+              <span className="spacer" />
+              <button
+                type="button"
+                className="schedule-btn"
+                disabled={controls.busy}
+                onClick={() => {
+                  dispatchEditor({ type: "discard", item });
+                  setFailure(undefined);
+                }}
+              >
+                {texts.scheduleCancel}
+              </button>
+              <button
+                type="button"
+                className="schedule-btn is-primary"
+                disabled={!controls.canSave}
+                onClick={save}
+              >
+                {pending?.op === "update" ? texts.scheduleSaving : texts.scheduleSave}
+              </button>
+            </div>
+          ) : null}
+          {/* 立即运行是新代能力：旧代整块不出现（不是灰一个按钮）——旧服务端没有
+              这个端点，展示一个永远不可用的入口只会让人以为差一次点击 */}
+          {modern ? (
+            <div className="schedule-actions">
+              <span className="spacer" />
+              {runConfirm ? (
+                <div className="schedule-confirm" role="group" aria-label={texts.scheduleRunConfirmTitle}>
+                  <div className="job-notice">{texts.scheduleRunConfirmNote}</div>
+                  <button type="button" className="schedule-btn" disabled={controls.busy} onClick={() => setRunConfirm(false)}>
+                    {texts.scheduleCancel}
+                  </button>
+                  <button type="button" className="schedule-btn is-primary" disabled={controls.runHeld} onClick={run}>
+                    {pending?.op === "run" ? texts.scheduleRunning : texts.scheduleRunConfirmAction}
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  className="schedule-btn"
+                  disabled={controls.runHeld}
+                  title={
+                    controls.runHeld
+                      ? runHeldReason({ dirty, executionActive, floorActive, targetArchived, authoritative: controls.authoritative }, texts)
+                      : undefined
+                  }
+                  aria-label={texts.scheduleRunAria(item.title)}
+                  onClick={() => setRunConfirm(true)}
+                >
+                  <IconPlay size={10} />
+                  {texts.scheduleRunNow}
+                </button>
+              )}
+            </div>
+          ) : null}
           <ScheduleRecords item={item} entry={history} dispatch={dispatch} />
         </div>
       ) : null}
@@ -353,239 +841,64 @@ function ScheduleRow({
   );
 }
 
-/**
- * 运行时间卡片（规则编辑）。
- *
- * 三件事按官方口径定：
- * - 旧代已结束任务只读；新代 edit 允许修改已暂停或结束任务的规则；
- * - 提交的是**完整的新规则**（`change` 带齐该种类的所有字段），服务端按它重锚目标；
- * - `after` 与 `at` 共用「一次」这一档：相对延迟这个选择器**不能**用于修改
- *   （契约里 `change` 就没有 `after` 这一支），编辑时它展示的是已提交的那个时刻。
- */
-function ScheduleTimingCard({
-  item,
-  draft,
-  active,
-  editable,
-  dirty,
-  saving,
-  error,
-  texts,
-  onPatch,
-  onSave,
-  onCancel,
-}: {
-  item: ScheduleItemView;
-  draft: ScheduleTimingDraft;
-  active: boolean;
-  /** 规则能不能当编辑基准（`false` = 读不出完整规则，只读）。 */
-  editable: boolean;
-  dirty: boolean;
-  saving: boolean;
-  error?: string;
-  texts: Texts;
-  onPatch: (values: Partial<ScheduleTimingDraft>) => void;
-  onSave: () => void;
-  onCancel: () => void;
-}) {
-  const zone = deviceZone();
-  const locale = useLocale();
-  const zones = useMemo(() => zoneChoices(draft.timeZone, zone), [draft.timeZone, zone]);
-  const disabled = !active || !editable || saving;
-  const cronError = draft.repeat === "cron" ? cronFieldOf(draft.expression) : undefined;
-
-  return (
-    <div className="schedule-card">
-      <div className="schedule-card-title">{texts.scheduleRuleLabel}</div>
-      <div className="schedule-field">
-        <label htmlFor={`schedule-repeat-${item.id}`}>{texts.scheduleRepeatLabel}</label>
-        <select
-          id={`schedule-repeat-${item.id}`}
-          value={draft.repeat}
-          disabled={disabled}
-          onChange={(event) => onPatch({ repeat: event.target.value as ScheduleRepeat })}
-        >
-          <option value="once">{texts.scheduleRepeatOnce}</option>
-          <option value="every">{texts.scheduleRepeatEvery}</option>
-          <option value="daily">{texts.scheduleRepeatDaily}</option>
-          <option value="weekly">{texts.scheduleRepeatWeekly}</option>
-          <option value="cron">{texts.scheduleRepeatCron}</option>
-          {item.api === "edit" ? <option value="rrule">{texts.scheduleRepeatRrule}</option> : null}
-        </select>
-      </div>
-
-      {draft.repeat === "once" ? (
-        <>
-          <div className="schedule-field">
-            <label htmlFor={`schedule-date-${item.id}`}>{texts.scheduleFieldDate}</label>
-            <input
-              id={`schedule-date-${item.id}`}
-              type="date"
-              value={draft.date}
-              disabled={disabled}
-              onChange={(event) => onPatch({ date: event.target.value })}
-            />
-          </div>
-          <div className="schedule-field">
-            <label htmlFor={`schedule-time-${item.id}`}>{texts.scheduleFieldTime}</label>
-            <input
-              id={`schedule-time-${item.id}`}
-              type="time"
-              step="1"
-              value={draft.time.slice(0, 8)}
-              disabled={disabled}
-              onChange={(event) => onPatch({ time: event.target.value })}
-            />
-          </div>
-        </>
-      ) : null}
-
-      {draft.repeat === "every" ? (
-        <>
-          <div className="schedule-field">
-            <label htmlFor={`schedule-amount-${item.id}`}>{texts.scheduleFieldAmount}</label>
-            <input
-              id={`schedule-amount-${item.id}`}
-              type="number"
-              min={1}
-              value={draft.amount}
-              disabled={disabled}
-              onChange={(event) => onPatch({ amount: event.target.value })}
-            />
-          </div>
-          <div className="schedule-field">
-            <label htmlFor={`schedule-unit-${item.id}`}>{texts.scheduleFieldUnit}</label>
-            <select
-              id={`schedule-unit-${item.id}`}
-              value={draft.unit}
-              disabled={disabled}
-              onChange={(event) => onPatch({ unit: event.target.value as ScheduleTimingDraft["unit"] })}
-            >
-              <option value="second">{unitText("second", texts, 1)}</option>
-              <option value="minute">{unitText("minute", texts, 1)}</option>
-              <option value="hour">{unitText("hour", texts, 1)}</option>
-            </select>
-          </div>
-        </>
-      ) : null}
-
-      {draft.repeat === "daily" || draft.repeat === "weekly" ? (
-        <div className="schedule-field">
-          <label htmlFor={`schedule-clock-${item.id}`}>{texts.scheduleFieldTime}</label>
-          <input
-            id={`schedule-clock-${item.id}`}
-            type="time"
-            step="1"
-            value={draft.time.slice(0, 8)}
-            disabled={disabled}
-            onChange={(event) => onPatch({ time: event.target.value })}
-          />
-        </div>
-      ) : null}
-
-      {draft.repeat === "weekly" ? (
-        <div className="schedule-field is-stacked">
-          <span className="schedule-field-label">{texts.scheduleFieldWeekdays}</span>
-          <div className="schedule-days">
-            {[1, 2, 3, 4, 5, 6, 7].map((day) => {
-              const on = draft.weekdays.includes(day);
-              const name = weekdayName(day, texts);
-              return (
-                <button
-                  key={day}
-                  type="button"
-                  className={`schedule-day${on ? " is-on" : ""}`}
-                  aria-pressed={on}
-                  disabled={disabled}
-                  title={name}
-                  onClick={() =>
-                    onPatch({
-                      weekdays: on ? draft.weekdays.filter((value) => value !== day) : [...draft.weekdays, day].sort((a, b) => a - b),
-                    })
-                  }
-                >
-                  {name}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      ) : null}
-
-      {draft.repeat === "rrule" ? (
-        <div className="schedule-field is-stacked">
-          <label htmlFor={`schedule-rrule-${item.id}`}>{texts.scheduleFieldRrule}</label>
-          <textarea id={`schedule-rrule-${item.id}`} rows={3} value={draft.rrule ?? ""}
-            style={{ width: "100%", minWidth: 0, boxSizing: "border-box", resize: "vertical" }}
-            disabled={disabled} spellCheck={false} onChange={(event) => onPatch({ rrule: event.target.value })} />
-        </div>
-      ) : null}
-
-      {draft.repeat === "cron" ? (
-        <div className="schedule-field">
-          <label htmlFor={`schedule-cron-${item.id}`}>{texts.scheduleFieldExpression}</label>
-          <input
-            id={`schedule-cron-${item.id}`}
-            type="text"
-            className="schedule-cron-input"
-            value={draft.expression}
-            disabled={disabled}
-            spellCheck={false}
-            onChange={(event) => onPatch({ expression: event.target.value })}
-          />
-        </div>
-      ) : null}
-
-      {draft.repeat === "once" || draft.repeat === "daily" || draft.repeat === "weekly" || draft.repeat === "cron" ? (
-        <div className="schedule-field">
-          <label htmlFor={`schedule-zone-${item.id}`}>{texts.scheduleFieldZone}</label>
-          <select
-            id={`schedule-zone-${item.id}`}
-            value={draft.timeZone}
-            disabled={disabled}
-            onChange={(event) => onPatch({ timeZone: event.target.value })}
-          >
-            {zones.map((name) => {
-              const label = formatZoneLabel(name, locale);
-              return (
-                <option key={name} value={name}>
-                  {name === zone ? texts.scheduleZoneSystem(label) : label}
-                </option>
-              );
-            })}
-          </select>
-        </div>
-      ) : null}
-
-      {cronError !== undefined ? (
-        <div className="job-notice is-error">{texts.scheduleCronInvalid(cronFieldText(cronError, texts))}</div>
-      ) : null}
-      {!editable ? <div className="job-notice">{texts.scheduleRuleUnreadable}</div> : null}
-      {!active ? <div className="job-notice">{texts.scheduleInactiveReadonly}</div> : null}
-      {dirty && active && editable ? (
-        <div className="schedule-actions">
-          <span className="schedule-unsaved">{texts.scheduleUnsaved}</span>
-          <span className="spacer" />
-          <button type="button" className="schedule-btn" disabled={saving} onClick={onCancel}>
-            {texts.scheduleCancel}
-          </button>
-          <button
-            type="button"
-            className="schedule-btn is-primary"
-            disabled={saving || cronError !== undefined}
-            onClick={onSave}
-          >
-            {saving ? texts.scheduleSaving : texts.scheduleSave}
-          </button>
-        </div>
-      ) : null}
-      {error ? <div className="job-notice is-error">{error}</div> : null}
-      <div className="job-meta">{item.id}</div>
-    </div>
-  );
+/** 「立即运行」此刻不可用的原因（按钮的悬停说明；空串表示可用）。 */
+function runHeldReason(
+  state: {
+    dirty: boolean;
+    executionActive: boolean;
+    floorActive: boolean;
+    targetArchived: boolean;
+    authoritative: boolean;
+  },
+  texts: Texts,
+): string | undefined {
+  if (state.dirty) return texts.scheduleUnsaved;
+  if (state.executionActive) return texts.scheduleExecutionActive;
+  if (state.targetArchived) return texts.scheduleErrTargetArchived;
+  if (state.floorActive) return texts.scheduleRunPending;
+  if (!state.authoritative) return texts.scheduleCapabilityUnknown;
+  return undefined;
 }
 
-/** 执行记录区：按需读取、分页续取，三种「没有记录」分开显示。 */
+/** 秒数 → 「1 分钟」「2 小时」这类可读间隔（复用规则编辑的单位词）。 */
+function formatInterval(seconds: number, texts: Texts): string {
+  const scheduleTexts = texts as unknown as ScheduleTexts;
+  if (seconds % 3_600 === 0) {
+    const value = seconds / 3_600;
+    return `${value} ${scheduleTexts.scheduleUnitHour(value)}`;
+  }
+  if (seconds % 60 === 0) {
+    const value = seconds / 60;
+    return `${value} ${scheduleTexts.scheduleUnitMin(value)}`;
+  }
+  return `${seconds} ${scheduleTexts.scheduleUnitSec(seconds)}`;
+}
+
+/**
+ * 投递间隔说明（目标为「每次新建会话」时）。
+ *
+ * 三种状态分开：读到了 → 说具体间隔；这次没读到 → 说读取失败（创建不受影响）；
+ * 旧代没有这个端点 → 什么也别说（不是失败）。还在读的时候也不显示——此时下结论
+ * 等于替一次没落定的读取编一个答案。
+ */
+function NewSessionIntervalNotice({
+  interval,
+  limits,
+  texts,
+}: {
+  interval: number | undefined;
+  limits?: AppState["scheduleLimits"];
+  texts: Texts;
+}) {
+  if (limits?.unsupported === true) return null;
+  if (interval !== undefined) {
+    return <div className="job-notice">{texts.scheduleNewSessionInterval(formatInterval(interval, texts))}</div>;
+  }
+  if (limits?.error !== undefined) {
+    return <div className="job-notice">{texts.scheduleNewSessionIntervalUnknown}</div>;
+  }
+  return null;
+}
 function ScheduleRecords({
   item,
   entry,
@@ -599,12 +912,14 @@ function ScheduleRecords({
   const locale = useLocale();
   const zone = storedZoneOf(item);
   const loadOlder = () => {
-    dispatch({ type: "ui/scheduleHistoryRequest", id: item.id });
-    post({ type: "scheduleHistory", id: item.id, ...(entry?.nextBefore ? { before: entry.nextBefore } : {}) });
+    const opId = scheduleNextOpId();
+    dispatch({ type: "ui/scheduleHistoryRequest", id: item.id, opId });
+    post({ type: "scheduleHistory", id: item.id, ...(entry?.nextBefore ? { before: entry.nextBefore } : {}), opId });
   };
   const reload = () => {
-    dispatch({ type: "ui/scheduleHistoryRequest", id: item.id, reset: true });
-    post({ type: "scheduleHistory", id: item.id });
+    const opId = scheduleNextOpId();
+    dispatch({ type: "ui/scheduleHistoryRequest", id: item.id, reset: true, opId });
+    post({ type: "scheduleHistory", id: item.id, opId });
   };
 
   return (
@@ -635,9 +950,7 @@ function ScheduleRecords({
         <div className="schedule-record-list">
           {entry.records.map((record, index) => (
             <div className="schedule-record" key={`${record.scheduledAt}-${index}`}>
-              <span className="schedule-record-time">
-                {formatScheduleStamp(record.scheduledAt, locale, zone)}
-              </span>
+              <span className="schedule-record-time">{formatScheduleStamp(record.scheduledAt, locale, zone)}</span>
               <span
                 className="schedule-record-prompt"
                 title={texts.scheduleRecordTitle(
@@ -645,9 +958,7 @@ function ScheduleRecords({
                   formatScheduleStamp(record.deliveredAt, locale, zone),
                 )}
               >
-                {record.prompt === undefined || record.prompt === ""
-                  ? texts.scheduleRecordNoPrompt
-                  : record.prompt}
+                {record.prompt === undefined || record.prompt === "" ? texts.scheduleRecordNoPrompt : record.prompt}
               </span>
             </div>
           ))}
@@ -668,18 +979,19 @@ function ScheduleRecords({
   );
 }
 
-/** 草稿自身的校验失败（提交前的本地判定，与 `schedule/update` 的错误码同名）。 */
+/** 本地草稿校验失败（提交前的判定，与 `schedule/update` / `schedule/edit` 的错误码同名）。 */
 function draftErrorText(
-  error: "invalid_rule" | "frequency_too_high" | "invalid_time_zone",
-  field: CronField | undefined,
+  error: "invalid_rule" | "frequency_too_high" | "invalid_time_zone" | "invalid_prompt" | "invalid_target",
   texts: Texts,
 ): string {
   if (error === "frequency_too_high") return texts.scheduleErrInterval;
   if (error === "invalid_time_zone") return texts.scheduleErrZone;
-  return field === undefined ? texts.scheduleErrInvalid : texts.scheduleCronInvalid(cronFieldText(field, texts));
+  if (error === "invalid_prompt") return texts.scheduleErrInvalidPrompt;
+  if (error === "invalid_target") return texts.scheduleErrInvalidTarget;
+  return texts.scheduleErrInvalid;
 }
 
-/** 服务端拒绝更新时的稳定错误码 → 文案（`undefined` = 请求根本没发出去）。 */
+/** 服务端拒绝变更时的稳定错误码 → 文案（`undefined` = 请求根本没发出去）。 */
 function changeErrorText(code: string | undefined, texts: Texts): string {
   switch (code) {
     case "schedule_conflict":
@@ -696,8 +1008,23 @@ function changeErrorText(code: string | undefined, texts: Texts): string {
       return texts.scheduleErrNotFuture;
     case "frequency_too_high":
       return texts.scheduleErrInterval;
+    case "invalid_prompt":
+    case "invalid_title":
+      return texts.scheduleErrInvalidPrompt;
+    case "invalid_target":
+      return texts.scheduleErrInvalidTarget;
+    case "target_archived":
+    case "schedule/target-archived":
+      return texts.scheduleErrTargetArchived;
+    case "unsupported":
+      return texts.scheduleErrUnsupported;
+    case "stale":
+      return texts.scheduleErrStale;
     case "internal_error":
       return texts.scheduleErrInternal;
+    case "invalid_rule":
+    case "invalid_selector":
+      return texts.scheduleErrInvalid;
     case undefined:
       return texts.scheduleErrOffline;
     default:
@@ -705,52 +1032,17 @@ function changeErrorText(code: string | undefined, texts: Texts): string {
   }
 }
 
+/** 立即运行的拒绝文案（「还有一次执行在进行」是**正常的等待**，不是故障）。 */
+function runErrorText(code: string | undefined, texts: Texts): string {
+  if (code === "schedule_execution_pending") return texts.scheduleRunPending;
+  if (code === "schedule_not_found") return texts.scheduleErrNotFound;
+  return changeErrorText(code, texts);
+}
+
 /** 删除失败：任务本来就不在，与别的失败分开说（前者重试也没有意义）。 */
 function deleteErrorText(code: string | undefined, texts: Texts): string {
   if (code === "schedule_not_found") return texts.scheduleErrNotFound;
+  if (code === "schedule_conflict") return texts.scheduleErrConflict;
   if (code === undefined) return texts.scheduleErrOffline;
   return texts.scheduleDeleteFailed;
-}
-
-/** cron 表达式的坏字段（本地校验，与服务端同一套方言）。 */
-function cronFieldOf(expression: string): CronField | undefined {
-  const built = scheduleChangeFromDraft({
-    repeat: "cron",
-    date: "",
-    time: "",
-    timeZone: deviceZone(),
-    amount: "60",
-    unit: "second",
-    weekdays: [1],
-    expression,
-  });
-  return "error" in built ? built.field : undefined;
-}
-
-function cronFieldText(field: CronField, texts: Texts): string {
-  switch (field) {
-    case "minute":
-      return texts.scheduleCronFieldMinute;
-    case "hour":
-      return texts.scheduleCronFieldHour;
-    case "dayOfMonth":
-      return texts.scheduleCronFieldDayOfMonth;
-    case "month":
-      return texts.scheduleCronFieldMonth;
-    case "dayOfWeek":
-      return texts.scheduleCronFieldDayOfWeek;
-  }
-}
-
-function weekdayName(day: number, texts: ScheduleTexts): string {
-  const names = [
-    texts.scheduleWeekday1,
-    texts.scheduleWeekday2,
-    texts.scheduleWeekday3,
-    texts.scheduleWeekday4,
-    texts.scheduleWeekday5,
-    texts.scheduleWeekday6,
-    texts.scheduleWeekday7,
-  ];
-  return names[day - 1] ?? String(day);
 }

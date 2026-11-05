@@ -32,6 +32,8 @@ DSH Chat 自身以 **MIT** 许可发布（见 `LICENSE`）。
 
 此外，`src/webview/messages.ts` 的六项内置斜杠命令描述取自 `@deepseek-ai/dsh-client-ui-commands@0.2.1-alpha.2` 的中英文 `description.*` 词条；`src/webview/commandLinks.tsx` 按其官方命令定义身份选择描述，未复用上游组件实现。
 
+`src/shared/schedule.ts` 与 `src/dsh/scheduleView.ts` 里自动化任务的新代管理纯函数（下一次运行时刻、投递落点、会话归属、编辑草稿与只提交改过的字段、冲突重放、目录字段与请求体收窄）按官方 `packages/client/ui-schedule` 的同名口径实现（上游 tag `dsh-v0.2.2-rc.1`，commit `66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db`）：判定规则与边界逐条对齐，但**不是源码逐字副本**——官方实现依赖它自己的 slot / store 与品牌类型，这里改写成本仓库的视图模型与纯函数接口，注释与结构不同。来源与改动边界同时写在[自动化任务设计](docs/design-schedules.md)的「来源与改动边界」。
+
 `src/webview/assets/running-whale@2x.png` 是官方运行态鲸鱼尾动图（APNG，60 帧）的原样副本，用作「深度求索中」前的图标：像素未改动，仅以 CSS 遮罩取字形、由 `currentColor` 上色。
 
 MIT 许可证全文见本文末「附录 A」。

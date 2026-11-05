@@ -102,7 +102,7 @@ compaction-image-offload 包里声明，契约快照里那份 `SessionEventMap` 
 - 基准**单调向前**：它之前的官方版本不需要核对（从最早的 tag 补起会把二十多个历史版本变成待办）。
   要看两个历史版本之间的差异，用 `npm run dsh:diff -- <旧版本> <新版本>`。
 
-本扩展当前对齐：DSH `0.2.2-rc.1`（next 渠道；2026-11-05 逐版核对 `0.2.2-alpha.3` 与 `0.2.2-rc.1`，两版契约一致；批量投影、新自动化目录与管理端点的 P0 已适配并保留旧代兼容。人工复核事件集合、审批与问卷、认证 cookie、desktop-host 连接边界及文件路径与媒体读取；正文引用改按当前执行目录解析。未消费的新建、暂停、手动执行与目标编辑入口不跟进；旧 `dsh-agent-presets` 缺包已由 `dsh-agent-preset-registry` 覆盖。）<!-- dsh-compat:baseline -->
+本扩展当前对齐：DSH `0.2.2-rc.1`（next 渠道；2026-11-05 逐版核对 `0.2.2-alpha.3` 与 `0.2.2-rc.1`，两版契约一致；批量投影、新自动化目录与管理端点的 P0 已适配并保留旧代兼容。人工复核事件集合、审批与问卷、认证 cookie、desktop-host 连接边界及文件路径与媒体读取；正文引用改按当前执行目录解析。自动化任务在旧代查看 / 改时间 / 删除之上，补了手动创建、立即运行、暂停恢复与名称 / 指令 / 目标编辑，以及「本会话 / 全部任务」两种视图；代际按目录形状判，空目录才用零形参只读的 `schedule/deliveryLimits` 探一次，只有明确 404 才算旧代。旧 `dsh-agent-presets` 缺包已由 `dsh-agent-preset-registry` 覆盖。）<!-- dsh-compat:baseline -->
 
 ### 暂缓待办：连接层 WebSocket 载体适配（P1）
 

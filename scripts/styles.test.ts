@@ -77,6 +77,28 @@ console.log("styles: 正文与输入镜像的普通、悬停、修饰键及 iner
 }
 console.log("styles: 弹层宽度视口感知 ✓");
 
+// ---------- 1a. 自动化任务：窄侧栏下工具条 / 保存栏必须能收缩、按钮不被裁 ----------
+//
+// 320 宽的真实旧代夹具预览（`?width=320`）实测：工具条与保存栏都不横向溢出。关键
+// 声明是「容器允许换行 / 子项允许缩到内容以下」，加上按钮自身不折行；这几条一旦被
+// 删掉，英文文案会把 New task / Save changes 顶出侧栏。
+{
+  const toolbar = rule(".schedule-toolbar");
+  assert.match(toolbar, /flex-wrap:\s*wrap/, "工具条放不下时要换行，不能把按钮顶出侧栏");
+  assert.match(toolbar, /min-width:\s*0/, "工具条必须允许缩到内容宽度以下");
+  const tabs = rule(".schedule-tabs");
+  assert.match(tabs, /min-width:\s*0/, "视图切换组要能收缩（英文标签比中文长）");
+  assert.match(tabs, /overflow:\s*hidden/, "收缩时裁掉多余标签，而不是撑宽面板");
+  const button = rule(".schedule-btn");
+  assert.match(button, /flex:\s*0 0 auto/, "按钮不参与收缩（文字不能被压成省略号）");
+  assert.match(button, /white-space:\s*nowrap/, "按钮文字不折行");
+  const actions = rule(".schedule-actions");
+  assert.match(actions, /min-width:\s*0/, "保存 / 运行操作行必须允许收缩");
+  const confirm = rule(".schedule-confirm");
+  assert.match(confirm, /flex-wrap:\s*wrap/, "运行确认块放不下时换行");
+}
+console.log("styles: 自动化任务窄侧栏可收缩 ✓");
+
 // ---------- 1b. `/` `@` 候选弹层：滚的只有列表那一层，底部提示栏常驻 ----------
 //
 // 用户 2026-09-25 口径：键位提示要单独一栏、始终显示，不许跟着候选列表滚

@@ -23,6 +23,7 @@ import type {
   ProviderGroupView,
   QuestionAnswerView,
   QuestionView,
+  ScheduleItemView,
   SessionRefView,
   SessionSummaryView,
   SubagentContextView,
@@ -108,9 +109,15 @@ import type {
 import { SCHEDULE_CHANGED_EVENT } from "./protocol";
 import { jobFollowFrameFromWire, jobItemsFromWire, jobRowsFromFrame } from "./jobView";
 import {
+  scheduleCapabilityOf,
+  scheduleCreateRequestFromWire,
   scheduleDeleteOutcome,
   scheduleEntriesFromCatalog,
+  scheduleFailureCode,
   scheduleHistoryFromWire,
+  scheduleLimitsFromWire,
+  scheduleMutationOutcome,
+  schedulePatchFromWire,
   scheduleUpdateOutcome,
 } from "./scheduleView";
 import {
@@ -7827,11 +7834,17 @@ export class ChatController implements vscode.Disposable {
   // ---------- 自动化任务（DSH schedule） ----------
 
   /**
-   * 读一次自动化任务目录，按**本会话**过滤后落进域。
+   * 读一次自动化任务的**全局目录**，把整份落到域里（不在宿主侧过滤会话）。
    *
    * 为什么要全局目录而不是 `schedule/list`：`list` 只回当前会话的**活跃**任务，于是
-   * 一条一次性任务投递完就从这个面板里消失了（它变成 `inactive`），用户再也看不到、
-   * 也删不掉它。目录同时带回 `status` 与最近一次投递，正是「跑完的还在不在」要的信息。
+   * 一条一次性任务投递完就从这个面板里消失了（它变成 `inactive` / `ended`），用户再也
+   * 看不到、也删不掉它。目录同时带回 `status`、`target` 与最近一次投递，正是「跑完的
+   * 还在不在」要的信息；「本会话」只是界面上的派生过滤（`scheduleForSession`），于是
+   * 全局视图与全局操作不必再打第二次请求、也不会被当前会话过滤拦住。
+   *
+   * 代际按目录形状判；**空目录**才用零形参只读的 `schedule/deliveryLimits` 探一次
+   * （见 `scheduleCapabilityOf`）：只有明确的 `endpointAbsent` 才算旧代，传输失败一律
+   * `unknown`——把「这次没拿到」当成旧代，等于把一个新服务端永久锁进只读模式。
    *
    * `silent` 是给「后台刷新」（`schedule/changed` 广播、socket 重连）用的：那时**不动**
    * `schedulesStatus`，界面停在已读到的内容上，刷新失败也不把面板打回空态。
@@ -7841,6 +7854,10 @@ export class ChatController implements vscode.Disposable {
    */
   private async loadSchedules(scope: SessionScope, silent = false): Promise<void> {
     const client = this.client;
+    const scheduleFields = ["schedules", "schedulesStatus", "schedulesCapability", "newSessionIntervalSeconds"] as const;
+    // 读取代号：同一个域可能同时有两次读取在飞（正式读 + 后台刷新 / 变更后的重读）。
+    // 先发的旧读晚回来不许覆盖后发那次已经落地的结果——每次 await 之后都拿它比对。
+    const epoch = (scope.schedulesEpoch += 1);
     if (!client) {
       // 没连上：这不是「没有任务」也不是「服务端不支持」。把状态落成 `error`，
       // 面板如实说「读取失败」；`schedulesWanted` 让断线重连后自动补读一次。
@@ -7864,12 +7881,13 @@ export class ChatController implements vscode.Disposable {
     try {
       value = await client.scheduleCatalog();
     } catch (error) {
-      if (this.scopes.get(scope.sessionId) !== scope || this.client !== client) return;
+      if (!this.scheduleReadCurrent(scope, client, epoch)) return;
       // 端点不存在 = 这个部署没有自动化任务能力（≤ 0.1.7-rc.1）：这是一个**结论**，
       // 与「这次没拿到」不同，界面据此显示能力缺失而不是空态。其余失败保留下一次机会。
       if (endpointAbsent(error)) {
         scope.schedulesStatus = "unsupported";
         scope.schedules = [];
+        scope.schedulesCapability = "legacy";
         scope.scheduleExpected.clear();
         this.log(`[schedule] 这个服务端没有 schedule 端点（会话=${scope.sessionId}）：${this.describeError(error)}`);
       } else if (!silent) {
@@ -7884,25 +7902,75 @@ export class ChatController implements vscode.Disposable {
       }
       this.deliver(scope.sessionId, {
         type: "patch",
-        patch: sessionPatch(this.sessionSource(scope), ["schedules", "schedulesStatus"]),
+        patch: sessionPatch(this.sessionSource(scope), [...scheduleFields]),
       });
       return;
     }
-    if (this.scopes.get(scope.sessionId) !== scope || this.client !== client) return;
-    const entries = scheduleEntriesFromCatalog(value).filter((entry) => entry.item.involvedSessionIds ? entry.item.involvedSessionIds.includes(scope.sessionId) : entry.item.sessionId === scope.sessionId);
+    if (!this.scheduleReadCurrent(scope, client, epoch)) return;
+    const entries = scheduleEntriesFromCatalog(value);
+    // 目录非空时形状本身就是证据；只有空目录才需要探针（判据见 `scheduleCapabilityOf`）。
+    let capability: "modern" | "legacy" | "unknown" = scheduleCapabilityOf(entries, "failed");
+    let interval = scope.newSessionIntervalSeconds;
+    if (capability === "unknown") {
+      try {
+        const limits = await client.scheduleDeliveryLimits();
+        if (!this.scheduleReadCurrent(scope, client, epoch)) return;
+        // 只有**有效的契约响应**才算「有新代端点」：认不出的载荷既不能证明能力，
+        // 也不能当成旧代（那是另一种猜测）。
+        const seconds = scheduleLimitsFromWire(limits);
+        capability = seconds === undefined ? "unknown" : "modern";
+        if (seconds !== undefined) interval = seconds;
+      } catch (error) {
+        if (!this.scheduleReadCurrent(scope, client, epoch)) return;
+        capability = endpointAbsent(error) ? "legacy" : "unknown";
+        this.log(`[schedule] 能力探针没给出结论（会话=${scope.sessionId}，按 ${capability}）：${this.describeError(error)}`);
+      }
+    }
     scope.schedules = entries.map((entry) => entry.item);
     scope.scheduleExpected.clear();
     for (const entry of entries) {
       if (entry.expected) scope.scheduleExpected.set(entry.item.id, entry.expected);
     }
     scope.schedulesStatus = "ready";
+    scope.schedulesCapability = capability;
+    scope.newSessionIntervalSeconds = interval;
     this.log(
-      `[schedule] 本会话自动化任务 ${scope.schedules.length} 条（会话=${scope.sessionId}` +
+      `[schedule] 全局自动化任务 ${scope.schedules.length} 条（会话=${scope.sessionId}，代际=${capability}` +
         `${silent ? "，后台刷新" : ""}）`,
     );
     this.deliver(scope.sessionId, {
       type: "patch",
-      patch: sessionPatch(this.sessionSource(scope), ["schedules", "schedulesStatus"]),
+      patch: sessionPatch(this.sessionSource(scope), [...scheduleFields]),
+    });
+  }
+
+  /**
+   * 这次目录读取是否仍然有效：域还在、客户端没被换掉、而且**没有更晚的读取**。
+   *
+   * 三条任一不成立就不再写域、也不再发帧——迟到的旧读覆盖新读会让界面退回变更前的
+   * 目录，那比「这次没拿到」更糟。
+   */
+  private scheduleReadCurrent(scope: SessionScope, client: DshClient, epoch: number): boolean {
+    return (
+      this.scopes.get(scope.sessionId) === scope &&
+      this.client === client &&
+      scope.schedulesEpoch === epoch
+    );
+  }
+
+  /**
+   * 把某个域的服务端代际降为旧代（**肯定证据**：整组管理端点 404）。
+   *
+   * 这里只负责「降」：下一次成功的目录读取仍会按目录形状重新判（`scheduleCapabilityOf`），
+   * 换了服务端、或那条 404 只是某个部署的个别路由缺失时，能力会自己回到正确档位。
+   */
+  private markSchedulesLegacy(scope: SessionScope): void {
+    if (scope.schedulesCapability === "legacy") return;
+    scope.schedulesCapability = "legacy";
+    scope.newSessionIntervalSeconds = undefined;
+    this.deliver(scope.sessionId, {
+      type: "patch",
+      patch: sessionPatch(this.sessionSource(scope), ["schedulesCapability", "newSessionIntervalSeconds"]),
     });
   }
 
@@ -7917,6 +7985,7 @@ export class ChatController implements vscode.Disposable {
     scope: SessionScope | undefined,
     id: string,
     before: string | undefined,
+    opId?: number,
   ): Promise<void> {
     const mode = before === undefined ? "replace" : "append";
     const client = this.client;
@@ -7924,6 +7993,7 @@ export class ChatController implements vscode.Disposable {
       this.emitToView(viewId, {
         type: "schedules/history",
         id,
+        ...(opId === undefined ? {} : { opId }),
         mode,
         records: [],
         earlierRecordsUnavailable: false,
@@ -7934,14 +8004,22 @@ export class ChatController implements vscode.Disposable {
     }
     // 任务的**原始绑定**才是这条读取的会话（契约要求 `{sessionId, id}`）：目录里
     // 那一条带着它，拿当前窗口绑的会话去问在跨会话的场景下会查不到（`schedule_not_found`）。
-    const binding = scope.schedules.find((entry) => entry.id === id)?.sessionId ?? scope.sessionId;
+    const item = scope.schedules.find((entry) => entry.id === id);
+    const binding = item?.sessionId !== undefined && item.sessionId !== "" ? item.sessionId : scope.sessionId;
     try {
-      const value = await client.scheduleHistory(binding, id, SCHEDULE_HISTORY_PAGE, before, scope.schedules.find((entry) => entry.id === id)?.api === "edit");
+      const value = await client.scheduleHistory(binding, id, SCHEDULE_HISTORY_PAGE, before, item?.api === "edit");
+      // 这次读取回来时视图可能已经换绑到别的会话 / 客户端被换掉：结果属于上一个
+      // 上下文，写进界面就会把旧记录接到新详情上。丢掉（不发光了的那一帧）。
+      if (this.scopeOfView(viewId) !== scope || this.client !== client) {
+        this.log(`[schedule] 执行记录的迟到帧已丢弃（id=${id}）`);
+        return;
+      }
       const page = scheduleHistoryFromWire(value);
       if (!page) {
         this.emitToView(viewId, {
           type: "schedules/history",
           id,
+          ...(opId === undefined ? {} : { opId }),
           mode,
           records: [],
           earlierRecordsUnavailable: false,
@@ -7953,6 +8031,7 @@ export class ChatController implements vscode.Disposable {
       this.emitToView(viewId, {
         type: "schedules/history",
         id,
+        ...(opId === undefined ? {} : { opId }),
         mode,
         records: page.records,
         nextBefore: page.nextBefore,
@@ -7963,9 +8042,14 @@ export class ChatController implements vscode.Disposable {
       });
     } catch (error) {
       this.log(`[schedule] 执行记录读取失败（id=${id}）：${this.describeError(error)}`);
+      if (this.scopeOfView(viewId) !== scope || this.client !== client) {
+        this.log(`[schedule] 执行记录的迟到失败帧已丢弃（id=${id}）`);
+        return;
+      }
       this.emitToView(viewId, {
         type: "schedules/history",
         id,
+        ...(opId === undefined ? {} : { opId }),
         mode,
         records: [],
         earlierRecordsUnavailable: false,
@@ -7973,6 +8057,76 @@ export class ChatController implements vscode.Disposable {
         error: this.describeError(error),
       });
     }
+  }
+
+  /**
+   * 一次自动化任务变更的结算帧；**无论哪条路都必须发**（界面只认它收场）。
+   *
+   * 迟到帧的判据在这里统一，三条都要看：视图仍绑定在**同一个域**（`scopeOfView`）、
+   * 那个域还在作用域表里、客户端没有被换掉。任一不成立都说明这次操作的结果落不到
+   * 用户当前看的界面上：帧仍然发（否则界面会一直停在「正在保存」），但带 `stale`，
+   * 界面据此说明「未确认」，而不是把一次没落定的请求说成成功或失败。
+   */
+  private emitScheduleResult(
+    viewId: string,
+    scope: SessionScope | undefined,
+    client: DshClient | undefined,
+    result: { op: "update" | "delete" | "create" | "run" | "active"; id?: string; opId?: number; ok: boolean; code?: string },
+  ): void {
+    const bound = scope === undefined ? undefined : this.scopeOfView(viewId);
+    const current = this.scopes.get(scope?.sessionId ?? "");
+    const stale =
+      scope === undefined ||
+      bound !== scope ||
+      current !== scope ||
+      client === undefined ||
+      this.client !== client;
+    this.emitToView(viewId, {
+      type: "schedules/result",
+      op: result.op,
+      ...(result.id === undefined ? {} : { id: result.id }),
+      ...(result.opId === undefined ? {} : { opId: result.opId }),
+      ok: stale ? false : result.ok,
+      ...(stale ? { code: "stale" } : result.code === undefined ? {} : { code: result.code }),
+    });
+    if (stale) this.log(`[schedule] 迟到的结算帧按「未确认」处理（op=${result.op}）`);
+  }
+
+  /**
+   * 一次变更请求的上下文是否还是**当前**上下文：视图仍绑在同一个域、域还在作用域表、
+   * 客户端没被换掉。
+   *
+   * `await` 之后的副作用（读回目录、合并变更条目、给域降级）都必须先过这一关：
+   * 旧连接的一次 404 会给**当前**域扣上「旧代」，或者用刚换上的新客户端去读旧域的
+   * 目录，把两个连接的数据混在一起。结算帧本身由 `emitScheduleResult` 用同一组判据
+   * 标成 `stale`（界面据此说「未确认」），但迟到请求**不允许写当前状态**。
+   */
+  private scheduleMutationCurrent(viewId: string, scope: SessionScope, client: DshClient): boolean {
+    return (
+      this.scopeOfView(viewId) === scope &&
+      this.scopes.get(scope.sessionId) === scope &&
+      this.client === client
+    );
+  }
+
+  /**
+   * 把变更响应里的权威条目并回域的目录（创建 / 编辑 / 运行都直接回最新条目）。
+   *
+   * 用途只有一个：成功结算在权威刷新之后发出，而刷新可能失败（网络抖动）。那时界面
+   * 仍要拿到「保存后的这一版」，否则保存成功却显示旧值、下一次刷新还会把旧值当成
+   * 基线。整份目录的权威读取仍以 `loadSchedules` 为准，这里只补这一条并推帧。
+   */
+  private applyMutatedSchedule(scope: SessionScope, entry: ScheduleItemView | undefined): void {
+    if (entry === undefined) return;
+    const index = scope.schedules.findIndex((item) => item.id === entry.id);
+    scope.schedules =
+      index < 0
+        ? [...scope.schedules, entry]
+        : scope.schedules.map((item) => (item.id === entry.id ? entry : item));
+    this.deliver(scope.sessionId, {
+      type: "patch",
+      patch: sessionPatch(this.sessionSource(scope), ["schedules"]),
+    });
   }
 
   // ---------- 主机事件（审批 / 提问） ----------
@@ -9066,28 +9220,76 @@ export class ChatController implements vscode.Disposable {
       }
 
       case "scheduleHistory":
-        await this.sendScheduleHistory(viewId, this.scopeOfView(viewId), message.id, message.before);
+        await this.sendScheduleHistory(viewId, this.scopeOfView(viewId), message.id, message.before, message.opId);
         break;
 
+      case "scheduleLimits": {
+        // 零形参只读读取（不加载、不激活任何任务）。旧代没有这个端点：明确缺席时回
+        // `unsupported`，界面不显示「每次新建会话的间隔」那行说明；传输失败只报 error，
+        // 不当成旧代（把「这次没拿到」落实成结论会让说明永久消失）。
+        const client = this.client;
+        const scope = this.scopeOfView(viewId);
+        if (!client) {
+          this.emitToView(viewId, { type: "schedules/limits", error: "unavailable" });
+          break;
+        }
+        try {
+          const value = await client.scheduleDeliveryLimits();
+          const seconds = scheduleLimitsFromWire(value);
+          // 视图 / 域 / 客户端任一换掉，这次读取就属于上一个上下文：不写域、也不
+          // 发帧（旧界面已经不需要它了）。
+          if (this.scopeOfView(viewId) !== scope || this.client !== client) {
+            this.log(`[schedule] 投递间隔的迟到帧已丢弃`);
+            break;
+          }
+          if (scope !== undefined && seconds !== undefined) {
+            scope.newSessionIntervalSeconds = seconds;
+            this.deliver(scope.sessionId, {
+              type: "patch",
+              patch: sessionPatch(this.sessionSource(scope), ["newSessionIntervalSeconds"]),
+            });
+          }
+          this.emitToView(viewId, {
+            type: "schedules/limits",
+            ...(seconds === undefined ? { error: "schedule/deliveryLimits: 认不出的响应" } : { newSessionIntervalSeconds: seconds }),
+          });
+        } catch (error) {
+          // 迟到帧同样先丢掉：**不能**拿一次属于旧上下文的 404 去给当前域降级。
+          if (this.scopeOfView(viewId) !== scope || this.client !== client) {
+            this.log(`[schedule] 投递间隔的迟到失败帧已丢弃`);
+            break;
+          }
+          if (endpointAbsent(error)) {
+            if (scope !== undefined) this.markSchedulesLegacy(scope);
+            this.emitToView(viewId, { type: "schedules/limits", unsupported: true });
+          } else {
+            this.emitToView(viewId, { type: "schedules/limits", error: this.describeError(error) });
+          }
+        }
+        break;
+      }
+
       case "updateSchedule": {
-        // 运行时间编辑（比较并交换）。**每条路都要回 `schedules/result`**：界面的
+        // 旧代的时间编辑（比较并交换）。**每条路都要回 `schedules/result`**：界面的
         // 「正在保存」只认这一帧收场。`expected` 与原始会话绑定都取自读取时留下的
         // 原文——界面那份视图模型已经丢掉了原始拼写（见 `scope.scheduleExpected`）。
         const scope = this.scopeOfView(viewId);
+        const client = this.client;
         const expected = scope?.scheduleExpected.get(message.id);
         const item = scope?.schedules.find((entry) => entry.id === message.id);
-        if (!this.client || !scope || !expected || !item) {
+        if (!client || !scope || !expected || !item) {
           this.log(
-            `[schedule] 修改没法发出：${this.client ? "" : "未连接"}${
-              scope ? (expected ? (item ? "" : "，名册里已没有这一条") : "，没有可用的比较基准") : "没有绑定会话"
+            `[schedule] 修改没法发出：${client ? "" : "未连接"}${
+              scope ? (expected ? (item ? "" : "，目录里已没有这一条") : "，没有可用的比较基准") : "没有绑定会话"
             }（id=${message.id}）`,
           );
           this.emitToView(viewId, {
             type: "schedules/result",
             op: "update",
             id: message.id,
+            ...(message.opId === undefined ? {} : { opId: message.opId }),
             ok: false,
-            // 名册里已经没有这一条 → 任务不存在；名册里有、但基准读不出来（词表外的
+            // 目录里已经没有这一条 → 任务不存在；目录里有、但基准读不出来（词表外的
             // 种类 / 缺字段）→ 按冲突报：界面会说「重新打开详情再改」，而重读一次
             // 正是能拿到可用基准的那条路。
             code: scope === undefined ? undefined : item === undefined ? "schedule_not_found" : "schedule_conflict",
@@ -9095,7 +9297,7 @@ export class ChatController implements vscode.Disposable {
           break;
         }
         try {
-          const value = await this.client.scheduleUpdate(
+          const value = await client.scheduleUpdate(
             item.sessionId,
             message.id,
             expected,
@@ -9107,63 +9309,374 @@ export class ChatController implements vscode.Disposable {
             `[schedule] 修改${outcome.ok ? "已提交" : "未生效"}（id=${message.id}` +
               `${outcome.code ? `，code=${outcome.code}` : ""}）`,
           );
+          // 成功要读回权威值（重锚后的目标时刻只有服务端算得出）；没生效的三种
+          // 「基准过期」类也要重读，否则用户会拿着同一份过期基准反复撞冲突。
+          // 读回只属于**发出这次请求的那个上下文**：换连接 / 换绑窗口之后不许写旧域。
+          const current = this.scheduleMutationCurrent(viewId, scope, client);
+          if (
+            current &&
+            (outcome.ok ||
+              outcome.code === "schedule_conflict" ||
+              outcome.code === "schedule_ended" ||
+              outcome.code === "schedule_not_found")
+          ) {
+            await this.loadSchedules(scope, true);
+          }
+          this.emitScheduleResult(viewId, scope, client, {
+            op: "update",
+            id: message.id,
+            opId: message.opId,
+            ok: outcome.ok,
+            code: outcome.code,
+          });
+        } catch (error) {
+          const code = scheduleFailureCode(error);
+          this.log(`[schedule] 修改请求失败（id=${message.id}）：${this.describeError(error)}`);
+          const current = this.scheduleMutationCurrent(viewId, scope, client);
+          if (current && (code === "schedule_conflict" || code === "schedule_not_found")) {
+            await this.loadSchedules(scope, true);
+          }
+          this.emitScheduleResult(viewId, scope, client, {
+            op: "update",
+            id: message.id,
+            opId: message.opId,
+            ok: false,
+            code,
+          });
+        }
+        break;
+      }
+
+      case "editSchedule": {
+        // 新代的一次原子编辑：`patch` 只带改过的字段（名称 / 指令 / 时间 / 目标 / active），
+        // 比较基准是**用户开始编辑时**看到的 `updatedAt`（界面随请求带回），宿主不现读。
+        const scope = this.scopeOfView(viewId);
+        const client = this.client;
+        const item = scope?.schedules.find((entry) => entry.id === message.id);
+        if (!client || !scope || !item) {
+          this.log(
+            `[schedule] 编辑没法发出：${client ? "" : "未连接"}${scope ? (item ? "" : "，目录里已没有这一条") : "没有绑定会话"}（id=${message.id}）`,
+          );
           this.emitToView(viewId, {
             type: "schedules/result",
             op: "update",
             id: message.id,
+            ...(message.opId === undefined ? {} : { opId: message.opId }),
+            ok: false,
+            code: scope === undefined ? undefined : "schedule_not_found",
+          });
+          break;
+        }
+        if (item.api !== "edit") {
+          // 旧代目录：没有目标 / 名称 / 指令编辑这组 patch，也不去试一个不存在的分支。
+          this.emitScheduleResult(viewId, scope, client, {
+            op: "update",
+            id: message.id,
+            opId: message.opId,
+            ok: false,
+            code: "unsupported",
+          });
+          break;
+        }
+        const validation = schedulePatchFromWire(message.patch);
+        if ("error" in validation) {
+          this.log(`[schedule] 编辑载荷不合法（id=${message.id}，${validation.error}）`);
+          this.emitScheduleResult(viewId, scope, client, {
+            op: "update",
+            id: message.id,
+            opId: message.opId,
+            ok: false,
+            code: validation.error,
+          });
+          break;
+        }
+        try {
+          const value = await client.scheduleEditPatch(message.id, validation.request, message.expectedUpdatedAt);
+          const outcome = scheduleMutationOutcome(value, message.id);
+          this.log(
+            `[schedule] 编辑${outcome.ok ? "已保存" : "未生效"}（id=${message.id}` +
+              `${outcome.code ? `，code=${outcome.code}` : ""}）`,
+          );
+          // 成功要把服务端回的权威条目并回目录、再读一次整份目录：成功结算必须在
+          // 「界面已经看到保存后的那一版」之后才发，否则详情会拿旧基线判断冲突。
+          const current = this.scheduleMutationCurrent(viewId, scope, client);
+          if (current) {
+            if (outcome.ok) this.applyMutatedSchedule(scope, outcome.entry);
+            if (outcome.ok || outcome.code === "schedule_conflict" || outcome.code === "schedule_not_found") {
+              await this.loadSchedules(scope, true);
+            }
+          }
+          this.emitScheduleResult(viewId, scope, client, {
+            op: "update",
+            id: message.id,
+            opId: message.opId,
             ok: outcome.ok,
             code: outcome.code,
           });
-          // 成功要读回权威值（重锚后的目标时刻只有服务端算得出）；没生效的三种
-          // 「基准过期」类也要重读，否则用户会拿着同一份过期基准反复撞冲突。
-          if (outcome.ok || outcome.code === "schedule_conflict" || outcome.code === "schedule_ended" || outcome.code === "schedule_not_found") {
-            void this.loadSchedules(scope, true);
-          }
         } catch (error) {
-          this.log(`[schedule] 修改请求失败（id=${message.id}）：${this.describeError(error)}`);
-          this.emitToView(viewId, { type: "schedules/result", op: "update", id: message.id, ok: false });
+          const code = scheduleFailureCode(error);
+          this.log(`[schedule] 编辑请求失败（id=${message.id}）：${this.describeError(error)}`);
+          const current = this.scheduleMutationCurrent(viewId, scope, client);
+          if (current && (code === "schedule_conflict" || code === "schedule_not_found")) {
+            await this.loadSchedules(scope, true);
+          }
+          this.emitScheduleResult(viewId, scope, client, {
+            op: "update",
+            id: message.id,
+            opId: message.opId,
+            ok: false,
+            code,
+          });
         }
         break;
       }
 
       case "deleteSchedule": {
         const scope = this.scopeOfView(viewId);
+        const client = this.client;
         const item = scope?.schedules.find((entry) => entry.id === message.id);
-        if (!this.client || !scope || !item) {
+        if (!client || !scope || !item) {
           this.log(
-            `[schedule] 删除没法发出：${this.client ? "" : "未连接"}${
-              scope ? (item ? "" : "，名册里已没有这一条") : "没有绑定会话"
-            }（id=${message.id}）`,
+            `[schedule] 删除没法发出：${client ? "" : "未连接"}${scope ? (item ? "" : "，目录里已没有这一条") : "没有绑定会话"}（id=${message.id}）`,
           );
           this.emitToView(viewId, {
             type: "schedules/result",
             op: "delete",
             id: message.id,
+            ...(message.opId === undefined ? {} : { opId: message.opId }),
             ok: false,
             code: item ? undefined : "schedule_not_found",
           });
           break;
         }
         try {
-          const value = await this.client.scheduleDelete(item.sessionId, message.id, item.api === "edit" ? { updatedAt: item.updatedAt } : undefined);
+          // 新代：比较基准是用户在界面上开始操作时看到的那一版（缺失时明确发 null），
+          // 不是宿主现读的 `updatedAt`——现读会把「别人刚改过」静默覆盖掉。
+          const revision =
+            item.api === "edit" ? { updatedAt: message.expectedUpdatedAt ?? undefined } : undefined;
+          const value = await client.scheduleDelete(item.sessionId, message.id, revision);
           const outcome = scheduleDeleteOutcome(value);
           this.log(
             `[schedule] 删除${outcome.ok ? "已完成" : "未生效"}（id=${message.id}` +
               `${outcome.code ? `，code=${outcome.code}` : ""}）`,
           );
-          this.emitToView(viewId, {
-            type: "schedules/result",
+          // 删掉了要读回权威值（列表里那一行才会消失）；「本来就没有」也读一次——
+          // 那说明本地的目录已经过期，正好借这一下对齐。只读当前上下文。
+          const current = this.scheduleMutationCurrent(viewId, scope, client);
+          if (current && (outcome.ok || outcome.code === "schedule_not_found")) {
+            await this.loadSchedules(scope, true);
+          }
+          this.emitScheduleResult(viewId, scope, client, {
             op: "delete",
             id: message.id,
+            opId: message.opId,
             ok: outcome.ok,
             code: outcome.code,
           });
-          // 删掉了要读回权威值（列表里那一行才会消失）；「本来就没有」也读一次——
-          // 那说明本地的名册已经过期，正好借这一下对齐。
-          if (outcome.ok || outcome.code === "schedule_not_found") void this.loadSchedules(scope, true);
         } catch (error) {
           this.log(`[schedule] 删除请求失败（id=${message.id}）：${this.describeError(error)}`);
-          this.emitToView(viewId, { type: "schedules/result", op: "delete", id: message.id, ok: false });
+          this.emitScheduleResult(viewId, scope, client, {
+            op: "delete",
+            id: message.id,
+            opId: message.opId,
+            ok: false,
+            code: scheduleFailureCode(error),
+          });
+        }
+        break;
+      }
+
+      case "createSchedule": {
+        const scope = this.scopeOfView(viewId);
+        const client = this.client;
+        if (!client || !scope) {
+          this.log(`[schedule] 创建没法发出：${client ? "" : "未连接"}${scope ? "" : "，没有绑定会话"}`);
+          this.emitToView(viewId, {
+            type: "schedules/result",
+            op: "create",
+            ...(message.opId === undefined ? {} : { opId: message.opId }),
+            ok: false,
+          });
+          break;
+        }
+        if (scope.schedulesCapability === "legacy") {
+          this.emitScheduleResult(viewId, scope, client, { op: "create", opId: message.opId, ok: false, code: "unsupported" });
+          break;
+        }
+        const validation = scheduleCreateRequestFromWire(message.request);
+        if ("error" in validation) {
+          this.log(`[schedule] 创建载荷不合法（${validation.error}）`);
+          this.emitScheduleResult(viewId, scope, client, {
+            op: "create",
+            opId: message.opId,
+            ok: false,
+            code: validation.error,
+          });
+          break;
+        }
+        try {
+          const value = await client.scheduleCreate(validation.request);
+          const outcome = scheduleMutationOutcome(value);
+          this.log(`[schedule] 创建${outcome.ok ? "已完成" : "未生效"}${outcome.entry ? `（id=${outcome.entry.id}）` : ""}`);
+          const current = this.scheduleMutationCurrent(viewId, scope, client);
+          if (current && outcome.ok) {
+            this.applyMutatedSchedule(scope, outcome.entry);
+            await this.loadSchedules(scope, true);
+          }
+          this.emitScheduleResult(viewId, scope, client, {
+            op: "create",
+            ...(outcome.entry === undefined ? {} : { id: outcome.entry.id }),
+            opId: message.opId,
+            ok: outcome.ok,
+            code: outcome.code,
+          });
+        } catch (error) {          const code = scheduleFailureCode(error);
+          this.log(`[schedule] 创建请求失败：${this.describeError(error)}`);
+          // 整个命名空间缺席（旧代的 `schedule/create` 不存在）：这是能力结论，记住它，
+          // 界面随后不再暴露创建入口。只给**发出这次请求**的当前域降级。
+          const current = this.scheduleMutationCurrent(viewId, scope, client);
+          if (current && endpointAbsent(error)) this.markSchedulesLegacy(scope);
+          this.emitScheduleResult(viewId, scope, client, {
+            op: "create",
+            opId: message.opId,
+            ok: false,
+            code: endpointAbsent(error) ? "unsupported" : code,
+          });
+        }
+        break;
+      }
+
+      case "runSchedule": {
+        // 立即投递一次：**不是**计划变更（不消耗、不移动原计划时刻）。界面已经在本地
+        // 取得用户确认；宿主只转发与结算，绝不自己发起。
+        const scope = this.scopeOfView(viewId);
+        const client = this.client;
+        const item = scope?.schedules.find((entry) => entry.id === message.id);
+        if (!client || !scope || !item) {
+          this.log(
+            `[schedule] 立即执行没法发出：${client ? "" : "未连接"}${scope ? (item ? "" : "，目录里已没有这一条") : "没有绑定会话"}（id=${message.id}）`,
+          );
+          this.emitToView(viewId, {
+            type: "schedules/result",
+            op: "run",
+            id: message.id,
+            ...(message.opId === undefined ? {} : { opId: message.opId }),
+            ok: false,
+            code: item ? undefined : "schedule_not_found",
+          });
+          break;
+        }
+        if (scope.schedulesCapability === "legacy") {
+          this.emitScheduleResult(viewId, scope, client, {
+            op: "run",
+            id: message.id,
+            opId: message.opId,
+            ok: false,
+            code: "unsupported",
+          });
+          break;
+        }
+        try {
+          const value = await client.scheduleRun(message.id);
+          const outcome = scheduleMutationOutcome(value, message.id);
+          this.log(
+            `[schedule] 立即执行${outcome.ok ? "已受理" : "未生效"}（id=${message.id}` +
+              `${outcome.code ? `，code=${outcome.code}` : ""}）`,
+          );
+          // 受理后服务端会推进投递回执与 floor；被拒的两种（正在执行 / 不存在）也重读，
+          // 让界面拿到权威的 executionActive 与 floor。只读当前上下文。
+          const current = this.scheduleMutationCurrent(viewId, scope, client);
+          if (current) {
+            if (outcome.ok) this.applyMutatedSchedule(scope, outcome.entry);
+            if (
+              outcome.ok ||
+              outcome.code === "schedule_execution_pending" ||
+              outcome.code === "schedule_not_found"
+            ) {
+              await this.loadSchedules(scope, true);
+            }
+          }
+          this.emitScheduleResult(viewId, scope, client, {
+            op: "run",
+            id: message.id,
+            opId: message.opId,
+            ok: outcome.ok,
+            code: outcome.code,
+          });
+        } catch (error) {
+          const code = scheduleFailureCode(error);
+          this.log(`[schedule] 立即执行请求失败（id=${message.id}）：${this.describeError(error)}`);
+          if (this.scheduleMutationCurrent(viewId, scope, client) && endpointAbsent(error)) {
+            this.markSchedulesLegacy(scope);
+          }
+          this.emitScheduleResult(viewId, scope, client, {
+            op: "run",
+            id: message.id,
+            opId: message.opId,
+            ok: false,
+            code: endpointAbsent(error) ? "unsupported" : code,
+          });
+        }
+        break;
+      }
+
+      case "setScheduleActive": {
+        // 暂停 / 恢复也走 `schedule/edit` 的 `patch.active`：与其它编辑共用同一套
+        // 乐观并发（基准是用户按下按钮那一刻看到的 `updatedAt`）。
+        const scope = this.scopeOfView(viewId);
+        const client = this.client;
+        const item = scope?.schedules.find((entry) => entry.id === message.id);
+        if (!client || !scope || !item) {
+          this.emitToView(viewId, {
+            type: "schedules/result",
+            op: "active",
+            id: message.id,
+            ...(message.opId === undefined ? {} : { opId: message.opId }),
+            ok: false,
+            code: scope === undefined ? undefined : item === undefined ? "schedule_not_found" : undefined,
+          });
+          break;
+        }
+        if (item.api !== "edit") {
+          this.emitScheduleResult(viewId, scope, client, {
+            op: "active",
+            id: message.id,
+            opId: message.opId,
+            ok: false,
+            code: "unsupported",
+          });
+          break;
+        }
+        try {
+          const value = await client.scheduleEditPatch(message.id, { active: message.active }, message.expectedUpdatedAt);
+          const outcome = scheduleMutationOutcome(value, message.id);
+          this.log(
+            `[schedule] ${message.active ? "恢复" : "暂停"}${outcome.ok ? "已保存" : "未生效"}（id=${message.id}` +
+              `${outcome.code ? `，code=${outcome.code}` : ""}）`,
+          );
+          const current = this.scheduleMutationCurrent(viewId, scope, client);
+          if (current) {
+            if (outcome.ok) this.applyMutatedSchedule(scope, outcome.entry);
+            if (outcome.ok || outcome.code === "schedule_conflict" || outcome.code === "schedule_not_found") {
+              await this.loadSchedules(scope, true);
+            }
+          }
+          this.emitScheduleResult(viewId, scope, client, {
+            op: "active",
+            id: message.id,
+            opId: message.opId,
+            ok: outcome.ok,
+            code: outcome.code,
+          });
+        } catch (error) {
+          this.log(`[schedule] 暂停 / 恢复请求失败（id=${message.id}）：${this.describeError(error)}`);
+          this.emitScheduleResult(viewId, scope, client, {
+            op: "active",
+            id: message.id,
+            opId: message.opId,
+            ok: false,
+            code: scheduleFailureCode(error),
+          });
         }
         break;
       }

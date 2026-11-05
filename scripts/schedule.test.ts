@@ -446,14 +446,15 @@ console.log("schedule: 时区清单 ✓");
 }
 console.log("schedule: 绝对时间文本 ✓");
 
-// ---------- 10. 接线与样式：宿主回帧、界面只交 id、两段式删除、分区渲染 ----------
+// ---------- 10. 接线与样式：宿主回帧、整份目录、界面只交 id、两段式删除、分区渲染 ----------
 {
   const read = (...parts: string[]) => readFileSync(join(process.cwd(), ...parts), "utf8");
 
   const controller = read("src", "dsh", "controller.ts");
   assert.ok(
-    /scheduleCatalog\(\)/.test(controller) && /entry\.item\.involvedSessionIds\.includes\(scope\.sessionId\) : entry\.item\.sessionId === scope\.sessionId/.test(controller),
-    "宿主读全局目录后按当前会话过滤（left: 会显示跑完的 inactive 任务）",
+    /const entries = scheduleEntriesFromCatalog\(value\);/.test(controller) &&
+      /scope\.schedules = entries\.map\(\(entry\) => entry\.item\);/.test(controller),
+    "宿主读全局目录后整份落进域（会话过滤在界面里做，全局操作不被拦住）",
   );
   assert.ok(
     /scope\.schedulesStatus = "unsupported"/.test(controller) && /endpointAbsent\(error\)/.test(controller),
@@ -472,28 +473,31 @@ console.log("schedule: 绝对时间文本 ✓");
     "后台刷新失败要保留上次结果（一次抖动不许把「已读到」改写成「读取失败」）",
   );
   assert.ok(
-    /case "deleteSchedule"[\s\S]*?scheduleDelete\(item\.sessionId, message\.id,/.test(controller),
-    "删除请求要带原始会话绑定（界面只给 id）",
+    /const value = await client\.scheduleDelete\(item\.sessionId, message\.id, revision\)/.test(controller),
+    "删除请求要带原始会话绑定（界面只给 id）；新代另带比较基准",
   );
   assert.ok(
-    /case "updateSchedule"[\s\S]*?scope\?\.scheduleExpected\.get\(message\.id\)/.test(controller),
-    "更新用读取时留下的原文当比较基准",
+    /scope\?\.scheduleExpected\.get\(message\.id\)/.test(controller),
+    "旧代更新用读取时留下的原文当比较基准",
   );
   assert.ok(
-    /schedules\/result/.test(controller) && /schedules\/history/.test(controller),
+    /schedules\/result/.test(controller) && /schedules\/history/.test(controller) && /schedules\/limits/.test(controller),
     "宿主每条路都要回帧——界面「正在保存 / 正在读取」只认它们收场",
   );
 
   const client = read("src", "dsh", "client.ts");
-  for (const method of ["scheduleCatalog", "scheduleHistory", "scheduleUpdate", "scheduleDelete"]) {
+  for (const method of ["scheduleCatalog", "scheduleHistory", "scheduleUpdate", "scheduleDelete", "scheduleCreate", "scheduleRun", "scheduleDeliveryLimits", "scheduleEditPatch"]) {
     assert.ok(new RegExp(`\\n  ${method}\\(`).test(client), `客户端要封装 ${method}`);
   }
   assert.ok(
     /METHODS\.scheduleCatalog/.test(client) &&
       /METHODS\.scheduleHistory/.test(client) &&
       /METHODS\.scheduleUpdate/.test(client) &&
-      /METHODS\.scheduleDelete/.test(client),
-    "四个端点都要走 METHODS 的登记名（不写字面量）",
+      /METHODS\.scheduleDelete/.test(client) &&
+      /METHODS\.scheduleCreate/.test(client) &&
+      /METHODS\.scheduleRun/.test(client) &&
+      /METHODS\.scheduleDeliveryLimits/.test(client),
+    "端点都要走 METHODS 的登记名（不写字面量）",
   );
   assert.ok(
     /request: \{ \.\.\.\(modern \? \{\} : \{ sessionId \}\), id, limit, \.\.\.\(before !== undefined \? \{ before \} : \{\}\) \}/.test(client),
@@ -507,39 +511,43 @@ console.log("schedule: 绝对时间文本 ✓");
 
   const schedules = read("src", "webview", "components", "Schedules.tsx");
   assert.ok(
-    /post\(\{ type: "updateSchedule", id: item\.id, change: built\.change \}\)/.test(schedules),
-    "界面只交任务 id 与新的运行时间（expected 由宿主拼）",
+    /post\(\{\s*type: "updateSchedule", id: item\.id, change: built\.change, opId,?\s*\}\)/.test(schedules) ||
+      /post\(\{ type: "updateSchedule", id: item\.id, change: built\.change, opId \}\)/.test(schedules),
+    "旧代界面只交任务 id 与新的运行时间（expected 由宿主拼）",
   );
   assert.ok(
-    /next\.state !== "pending"\) return;[\s\S]{0,80}post\(\{ type: "deleteSchedule", id: item\.id \}\)/.test(schedules),
+    /next\.state !== "pending"\) return;[\s\S]{0,400}?post\(\{\s*type: "deleteSchedule",/.test(schedules),
     "删除是两段式：只有第二下确认（pressKill 返回 pending）才真的发请求",
   );
   assert.ok(
     /entry\?\.code === "schedule_not_found"/.test(schedules) && /entry\?\.error !== undefined/.test(schedules),
     "「任务不存在」与「这次没拿到」要分开显示",
   );
+  const editorState = read("src", "webview", "scheduleEditorState.ts");
   assert.ok(
-    /scheduleDraftDiffers\(previous, item\) \? previous : scheduleDraft\(item\)/.test(schedules),
-    "服务端刷新不许覆盖用户正在编辑的草稿（没有未保存修改时才换成新值）",
+    /dispatchEditor\(\{ type: "catalog", item \}\)/.test(schedules) &&
+      /scheduleEditorStateDirty\(state\) \? state : scheduleEditorState\(action\.item\)/.test(editorState),
+    "服务端刷新不许覆盖用户正在编辑的草稿，也不许换掉比较基准（没有未保存修改时才换新值）",
   );
   assert.ok(
-    /editable=\{item\.editable !== false\}/.test(schedules) &&
-      /const disabled = !active \|\| !editable \|\| saving;/.test(schedules),
-    "读不出规则基准的行只读（不让用户改完再撞一次冲突）",
+    /basicDisabled=\{controls\.basicDisabled\}/.test(schedules) &&
+      /disabled=\{controls\.fieldsDisabled \|\| item\.editable === false\}/.test(schedules),
+    "读不出规则基准的行只读；旧代基础字段只读但时间仍可改",
   );
   assert.ok(
-    /seenDelivery[\s\S]{0,200}post\(\{ type: "scheduleHistory", id: item\.id \}\)/.test(schedules),
+    /seenDelivery[\s\S]{0,400}?post\(\{ type: "scheduleHistory", id: item\.id, opId \}\)/.test(schedules),
     "又投递过一次要重读最新一页（记录是按需读的，不跟着刷新就会少掉刚发生的那次）",
   );
 
   const panels = read("src", "webview", "components", "Panels.tsx");
   assert.ok(/<SchedulesSection/.test(panels), "后台任务抽屉里要渲染自动化任务分区");
   assert.ok(/status=\{schedulesStatus\}/.test(panels), "分区要拿到清单的读取状态（三态分开）");
+  assert.ok(/sessions=\{sessions\}/.test(panels), "分区要拿到会话列表（目标与目录候选）");
 
   const app = read("src", "webview", "App.tsx");
   assert.ok(
-    /schedules=\{state\.schedules\}[\s\S]{0,400}sessionId=\{state\.session\?\.id\}/.test(app),
-    "App 要把清单、状态、执行记录与结算一并交给 JobsPanel",
+    /schedules=\{state\.schedules\}[\s\S]{0,600}?sessionId=\{state\.session\?\.id\}/.test(app),
+    "App 要把目录、状态、执行记录、结算与会话列表一并交给 JobsPanel",
   );
 
   const state = read("src", "webview", "state.ts");
@@ -548,7 +556,7 @@ console.log("schedule: 绝对时间文本 ✓");
     "replace / append 由宿主的 mode 决定（同一时刻可能两次请求在飞）",
   );
   assert.ok(
-    /case "schedules\/result":/.test(state) && /scheduleResult: \{ op: action\.op, id: action\.id, ok: action\.ok, code: action\.code \}/.test(state),
+    /case "schedules\/result":/.test(state) && /op: action\.op,/.test(state) && /ok: action\.ok,/.test(state),
     "变更结算整对象替换（连着两次失败也要各推进一次）",
   );
 

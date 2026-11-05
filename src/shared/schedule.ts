@@ -14,6 +14,12 @@
  * 刻意**不做**的事：本扩展的列表行对 `cron` 显示规范表达式本身（官方的句子式描述
  * 在表达式的方言解析失败时也正是退回这个形态）。方言校验仍然做（`cronFieldError`），
  * 否则用户要等一次服务端往返才知道表达式写错了。
+ *
+ * 新代管理面的纯函数（`scheduleNextRunAt` / `scheduleTargetSessionId` /
+ * `scheduleInvolvesSession` / 编辑草稿与 patch 装配 / 冲突重放）与官方
+ * `packages/client/ui-schedule` 的同名口径对齐（tag `dsh-v0.2.2-rc.1`，commit
+ * `66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db`）：判定规则逐条保留，实现改写成本仓库的
+ * 视图模型接口，不是逐字副本。改动边界见 `docs/design-schedules.md` 的「来源与改动边界」。
  */
 import type { ScheduleItemView, ScheduleTimingChangeView } from "./chat";
 
@@ -380,15 +386,15 @@ export function storedZoneOf(item: ScheduleItemView): string | undefined {
 /**
  * 显示顺序：**过期的排最前**，其余按目标时刻升序；目标相同时保持服务端给的顺序。
  *
- * 与官方 `orderScheduleRecords` 同口径：过期的意味着「已经该发生但还没落定」，
- * 比任何未来的目标都更值得先看。
+ * 与官方 `orderScheduleRecords` 同口径（它也把「投递间隔 floor 更晚」算进目标时刻）：
+ * 过期的意味着「已经该发生但还没落定」，比任何未来的目标都更值得先看。
  */
 export function orderSchedules(items: readonly ScheduleItemView[], now: number): ScheduleItemView[] {
   return items
     .map((item, index) => ({ item, index }))
     .sort((left, right) => {
-      const leftAt = Date.parse(left.item.scheduledAt);
-      const rightAt = Date.parse(right.item.scheduledAt);
+      const leftAt = Date.parse(scheduleNextRunAt(left.item));
+      const rightAt = Date.parse(scheduleNextRunAt(right.item));
       const leftOverdue = leftAt <= now;
       const rightOverdue = rightAt <= now;
       if (leftOverdue !== rightOverdue) return Number(rightOverdue) - Number(leftOverdue);
@@ -644,4 +650,271 @@ export function cronFieldError(expression: string): CronField | undefined {
     }
   }
   return undefined;
+}
+
+// ---------- 新代目录的展示与编辑草稿 ----------
+//
+// 下列纯函数与官方 `packages/client/ui-schedule` 的同名口径对齐（目标版本
+// `dsh-v0.2.2-rc.1`，commit `66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db`）：
+// `taskNextRunAt` / `taskSessionId` / `taskInvolvesSession` / `taskDraft` /
+// `newTaskDraft` / `taskDraftPatch` / `draftTarget` / `taskDraftIssue`。
+// 改动边界：官方实现依赖它自己的 slot / store 与 `SessionId` 品牌类型，这里改为本仓库
+// 的视图模型与纯函数接口；判定规则逐条保留，不引入官方 UI 组件的运行期依赖。
+
+/** 下一次真正会被投递的时刻：投递间隔（floor）比计划时刻更晚时取 floor。 */
+export function scheduleNextRunAt(
+  item: Pick<ScheduleItemView, "scheduledAt" | "deliveryFloorEndsAt">,
+): string {
+  const floor = item.deliveryFloorEndsAt;
+  if (floor === undefined) return item.scheduledAt;
+  return Date.parse(floor) > Date.parse(item.scheduledAt) ? floor : item.scheduledAt;
+}
+
+/**
+ * 这条任务每一次投递的落点（没有可复用的目标会话时 `undefined`）。
+ *
+ * 与官方 `taskSessionId` 同口径：`new` 目标每次投递都新建会话，落点是**最近一次
+ * 投递**的目标会话（目录读取时已折算进 `target.sessionId`，见 `scheduleTargetView`），
+ * 首次投递前为空；`session` / `new_once` 取目标自己记的会话。
+ */
+export function scheduleTargetSessionId(item: ScheduleItemView): string | undefined {
+  if (item.target !== undefined) {
+    if (item.target.kind === "new") return item.target.sessionId;
+    return item.target.sessionId ?? (item.sessionId === "" ? undefined : item.sessionId);
+  }
+  return item.sessionId === "" ? undefined : item.sessionId;
+}
+
+/**
+ * 一条任务是否属于某个会话：**相关会话集合或投递落点**，两者是「或」。
+ *
+ * 与官方 `taskInvolvesSession` 逐字同口径（目标版本 `dsh-v0.2.2-rc.1`，commit
+ * `66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db` 的 `task-record.ts`）：
+ * `task.involvedSessionIds.includes(sessionId) || taskSessionId(task) === sessionId`。
+ *
+ * 因此空的相关集合**不是**「与任何会话都无关」：目标会话恰好是当前会话时这条任务
+ * 仍然属于这里；只有「集合里没有、落点也不是」才为假。旧代目录没有 `target` 时，
+ * `scheduleTargetSessionId` 退回原始绑定 `sessionId`，与旧代口径一致。
+ */
+export function scheduleInvolvesSession(item: ScheduleItemView, sessionId: string): boolean {
+  return item.involvedSessionIds?.includes(sessionId) === true || scheduleTargetSessionId(item) === sessionId;
+}
+
+/** 「本会话」视图：只留与该会话相关的任务；全局视图直接用整份目录。 */
+export function scheduleForSession(
+  items: readonly ScheduleItemView[],
+  sessionId: string | undefined,
+): ScheduleItemView[] {
+  if (sessionId === undefined) return [];
+  return items.filter((item) => scheduleInvolvesSession(item, sessionId));
+}
+
+/** 展示用的状态档：`inactive` 与 `ended` 同义（旧代只有前者），其余保留原样不猜。 */
+export function scheduleStatusOf(item: ScheduleItemView): "active" | "paused" | "ended" | "unknown" | (string & {}) {
+  if (item.status === "inactive") return "ended";
+  return item.status;
+}
+
+/** 还会不会自己触发。 */
+export function scheduleIsActive(item: ScheduleItemView): boolean {
+  return scheduleStatusOf(item) === "active";
+}
+
+/** 编辑草稿的投递目标档（官方 `TaskEditorDraft.target` 的三档）。 */
+export type ScheduleTargetDraft = "session" | "new_once" | "new";
+
+/**
+ * 一次编辑会话里的完整草稿：名称、指令、目标与运行时间。
+ *
+ * 目标与时间分开存：时间那半仍是 `ScheduleTimingDraft`（既有规则编辑器直接用），
+ * 目标是新代才有的三档。
+ */
+export interface ScheduleEditorDraft {
+  title: string;
+  prompt: string;
+  target: ScheduleTargetDraft;
+  /** `target === 'session'` 时的目标会话。 */
+  sessionId: string;
+  /** `new` / `new_once` 的创建目录；空串 = 用宿主默认。 */
+  cwd: string;
+  timing: ScheduleTimingDraft;
+}
+
+/** 目标种类 → 编辑草稿的三档（认不出的种类按「投递到会话」处理，不会凭空新建）。 */
+function targetDraftOf(kind: string | undefined): ScheduleTargetDraft {
+  if (kind === "new_once") return "new_once";
+  if (kind === "new") return "new";
+  return "session";
+}
+
+/** 目录条目 → 编辑草稿（未支持的规则原样保留在 `timing.rrule` 里，不尝试归一化）。 */
+export function scheduleEditorDraft(item: ScheduleItemView): ScheduleEditorDraft {
+  const target = item.target;
+  const targetDraft: ScheduleTargetDraft = target === undefined ? "session" : targetDraftOf(target.kind);
+  return {
+    title: item.title,
+    prompt: item.prompt,
+    target: targetDraft,
+    sessionId: targetDraft === "session" ? (target?.sessionId ?? item.sessionId) : (target?.sessionId ?? ""),
+    cwd: targetDraft === "session" ? "" : (target?.cwd ?? ""),
+    timing: scheduleDraft(item),
+  };
+}
+
+/** 新建任务的草稿：一次性、一小时后、目标默认 `new_once`（官方同口径）。 */
+export function scheduleCreateDraft(overrides: Partial<Pick<ScheduleEditorDraft, "target" | "sessionId">> = {}): ScheduleEditorDraft {
+  const inAnHour = new Date(Date.now() + 60 * 60_000);
+  const local = new Date(inAnHour.getTime() - inAnHour.getTimezoneOffset() * 60_000);
+  const stamp = local.toISOString();
+  return {
+    title: "",
+    prompt: "",
+    target: overrides.target ?? "new_once",
+    sessionId: overrides.sessionId ?? "",
+    cwd: "",
+    timing: {
+      repeat: "once",
+      date: stamp.slice(0, 10),
+      time: stamp.slice(11, 19),
+      timeZone: deviceZone(),
+      amount: "60",
+      unit: "minute",
+      weekdays: [1],
+      expression: "0 9 * * *",
+    },
+  };
+}
+
+/**
+ * 草稿的投递目标 → 线上 `ScheduleTargetRequest`。
+ *
+ * `cwd` 未改时把原 `agentPreset` 带回去（官方 `draftTarget` 的同一取舍）：只改名称
+ * 的用户不该因为一次编辑丢掉他选的预设。
+ */
+export function scheduleTargetRequest(
+  draft: ScheduleEditorDraft,
+  original?: Pick<ScheduleItemView, "target">,
+): Record<string, unknown> {
+  if (draft.target === "session") return { kind: "session", sessionId: draft.sessionId };
+  const previous = original?.target !== undefined && original.target.kind !== "session" ? original.target : undefined;
+  const create: Record<string, unknown> = {};
+  if (draft.cwd !== "") create.cwd = draft.cwd;
+  if ((previous?.cwd ?? "") === draft.cwd && previous?.agentPreset !== undefined) {
+    create.agentPreset = previous.agentPreset;
+  }
+  return Object.keys(create).length === 0 ? { kind: draft.target } : { kind: draft.target, create };
+}
+
+/** 草稿与目录条目在**目标**上是否有差异（决定要不要提交 `target`）。 */
+export function scheduleTargetDiffers(draft: ScheduleEditorDraft, item: ScheduleItemView): boolean {
+  const target = item.target;
+  const storedKind: ScheduleTargetDraft = target === undefined ? "session" : targetDraftOf(target.kind);
+  if (draft.target !== storedKind) return true;
+  if (draft.target === "session") return draft.sessionId !== (target?.sessionId ?? item.sessionId);
+  return draft.cwd !== (target?.cwd ?? "");
+}
+
+/**
+ * 草稿的目标还缺什么（本地判得准的那一条：发往会话时必须选一个会话）。
+ *
+ * 返回 `undefined` 表示目标完整。目标切换、会话列表为空、选中的会话不在候选里都
+ * 由界面先用它拦住保存——否则用户点一次保存只会拿到 `invalid_target`，甚至看着
+ * 下拉框停在第一个会话上却提交了空 id（下拉框没有匹配项时的默认显示）。
+ */
+export function scheduleTargetError(draft: ScheduleEditorDraft): "invalid_target" | undefined {
+  if (draft.target !== "session") return undefined;
+  return draft.sessionId.trim() === "" ? "invalid_target" : undefined;
+}
+
+/** 草稿是否有任何未保存的修改（名称 / 指令 / 目标 / 运行时间）。 */
+export function scheduleEditorDirty(draft: ScheduleEditorDraft, item: ScheduleItemView): boolean {
+  return (
+    draft.title.trim() !== item.title.trim() ||
+    draft.prompt.trim() !== item.prompt.trim() ||
+    scheduleTargetDiffers(draft, item) ||
+    scheduleDraftDiffers(draft.timing, item)
+  );
+}
+
+/**
+ * 编辑提交的 `patch`：**只带真正改过的字段**（官方 `taskDraftPatch`）。
+ *
+ * 时间规则没动就不带 `timing`——否则一次只改名称的保存会把服务端现有的时刻按草稿
+ * 重新锚定一遍；目标同理。校验失败与创建共用同一套错误码。
+ */
+export function schedulePatchOf(
+  draft: ScheduleEditorDraft,
+  item: ScheduleItemView,
+): { patch: Record<string, unknown> } | { error: "invalid_rule" | "frequency_too_high" | "invalid_time_zone" | "invalid_prompt" | "invalid_target" } {
+  const title = draft.title.trim();
+  const prompt = draft.prompt.trim();
+  if (title === "" || prompt === "") return { error: "invalid_prompt" };
+  if (title.length > 120) return { error: "invalid_prompt" };
+  const patch: Record<string, unknown> = {};
+  if (title !== item.title.trim()) patch.title = title;
+  if (prompt !== item.prompt.trim()) patch.prompt = prompt;
+  if (scheduleTargetDiffers(draft, item)) patch.target = scheduleTargetRequest(draft, item);
+  if (scheduleDraftDiffers(draft.timing, item)) {
+    const built = scheduleChangeFromDraft(draft.timing);
+    if ("error" in built) return { error: built.error };
+    patch.timing = built.change;
+  }
+  if (Object.keys(patch).length === 0) return { error: "invalid_rule" };
+  return { patch };
+}
+
+/** 新建请求：`{title, prompt, timing, target?}`（官方 `ScheduleCreateRequest` 的同一形状）。 */
+export function scheduleCreateRequestOf(
+  draft: ScheduleEditorDraft,
+): { request: Record<string, unknown> } | { error: "invalid_rule" | "frequency_too_high" | "invalid_time_zone" | "invalid_prompt" | "invalid_target" } {
+  const title = draft.title.trim();
+  const prompt = draft.prompt.trim();
+  if (title === "" || prompt === "" || title.length > 120) return { error: "invalid_prompt" };
+  if (draft.target === "session" && draft.sessionId === "") return { error: "invalid_target" };
+  const built = scheduleChangeFromDraft(draft.timing);
+  if ("error" in built) return { error: built.error };
+  const target = scheduleTargetRequest(draft);
+  return { request: { title, prompt, timing: built.change, target } };
+}
+
+/**
+ * 编辑基线是否已被服务端刷新（乐观并发的外层判据）。
+ *
+ * `baseUpdatedAt` 是**用户开始编辑那一刻**看到的值，不是最新目录里的值：后台刷新
+ * 只更新目录，不动这份基线。基线与最新值不同、且草稿确实改过东西时，界面明确要求
+ * 用户确认「重新应用我的修改」，不静默覆盖任何一边。
+ */
+export function scheduleBaselineStale(
+  item: ScheduleItemView,
+  baseUpdatedAt: string | undefined,
+): boolean {
+  return (item.updatedAt ?? undefined) !== (baseUpdatedAt ?? undefined);
+}
+
+/**
+ * 把用户已改的字段组重新应用到**最新**目录条目上（官方 `reapplyTaskDraft` 口径）。
+ *
+ * 冲突时只有这一条路既可以保住用户的输入、又不覆盖别人刚做的修改：逐组比较草稿与
+ * 用户开始编辑时的基线，改过的那一组（名称 / 指令 / 目标 / 运行时间）用草稿值，
+ * 没改过的那一组换用最新值。整份草稿直接覆盖最新值是最糟的做法——它会把别人刚改的
+ * 东西悄悄改回去。
+ */
+export function scheduleReapplyDraft(
+  draft: ScheduleEditorDraft,
+  base: ScheduleItemView,
+  latest: ScheduleItemView,
+): ScheduleEditorDraft {
+  const titleChanged = draft.title.trim() !== base.title.trim();
+  const promptChanged = draft.prompt.trim() !== base.prompt.trim();
+  const targetChanged = scheduleTargetDiffers(draft, base);
+  const timingChanged = scheduleDraftDiffers(draft.timing, base);
+  const seeded = scheduleEditorDraft(latest);
+  return {
+    title: titleChanged ? draft.title : seeded.title,
+    prompt: promptChanged ? draft.prompt : seeded.prompt,
+    target: targetChanged ? draft.target : seeded.target,
+    sessionId: targetChanged ? draft.sessionId : seeded.sessionId,
+    cwd: targetChanged ? draft.cwd : seeded.cwd,
+    timing: timingChanged ? draft.timing : seeded.timing,
+  };
 }

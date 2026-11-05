@@ -18,6 +18,7 @@
 | [后台与连接](<design-supervisor.md>) | supervisor 生命周期、启动许可、粘性选路、认证与停止 |
 | [DSH 桌面端接入](<design-desktop.md>) | 复用桌面端内置服务：端点发现、自铸会话 cookie、桌面端按钮与失败回落 |
 | [投影与面板](<design-projections.md>) | 投影水位、执行目录、模型 / 计划 / 目标 / 权限 / 用量、子代理目录与任务 |
+| [自动化任务](<design-schedules.md>) | 全局目录与会话过滤、代际判定、编辑基线与重放、迟到帧隔离、立即运行的确认与限制 |
 | [会话列表与未读](<design-sessions.md>) | 空壳复用、恢复让位、列表过滤、运行状态对账与未读结算 |
 | [发送、草稿与队列](<design-draft.md>) | 命令仲裁、乐观回显、durable 交接、队列取回与停止续发 |
 | [附件与引用接入](<design-attachments.md>) | 接入矩阵、上传租约、引用表示、平台限制与准入缺口 |

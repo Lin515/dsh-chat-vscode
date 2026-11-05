@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { JobItemView, ScheduleItemView, ChatState } from "../../shared/chat";
+import type { JobItemView, ScheduleItemView, ChatState, SessionSummaryView } from "../../shared/chat";
 import { IconChevronDown, IconClose, IconJobs, IconStop } from "../icons";
 import { ESC_LAYER, useEscapeLayer } from "../escapeOwner";
 import { formatClock, formatDuration } from "./primitives";
@@ -7,7 +7,7 @@ import { CopyButton } from "./CopyButton";
 import { compareJobs, isLiveJob, isObservableJob, isSubagentJob } from "../jobsOrder";
 import { autoResetMs, killSettled, phaseLive, pressKill, type KillPhase } from "../jobsKill";
 import type { JobObserved } from "../jobObserve";
-import type { ScheduleHistoryState } from "../state";
+import type { ScheduleHistoryState, AppState } from "../state";
 import { SchedulesSection, type ScheduleAction } from "./Schedules";
 import { post } from "../bridge";
 import { useTexts } from "../texts";
@@ -141,8 +141,13 @@ export function JobsPanel({
   killResult,
   schedules,
   schedulesStatus,
+  schedulesCapability,
+  archivedSessionIds,
+  newSessionIntervalSeconds,
+  scheduleLimits,
   scheduleHistory,
   scheduleResult,
+  sessions,
   sessionId,
   dispatch,
   onClose,
@@ -152,14 +157,22 @@ export function JobsPanel({
   outputs?: Record<string, JobObserved>;
   /** 最近一条停止请求的结算（宿主 `jobs/killResult` 帧；没有 = 还没停过任何任务）。 */
   killResult?: { jobId: string; ok: boolean };
-  /** 本会话的自动化任务（DSH `schedule`，与后台任务同一个抽屉里的另一个分区）。 */
+  /** 自动化任务的**全局目录**（「本会话」是界面上的派生过滤）。 */
   schedules: ScheduleItemView[];
   schedulesStatus?: ChatState["schedulesStatus"];
+  schedulesCapability?: ChatState["schedulesCapability"];
+  /** 宿主归档列表里的会话 id：目标会话已归档时「立即运行」不可用（肯定证据）。 */
+  archivedSessionIds?: readonly string[];
+  newSessionIntervalSeconds?: number;
+  /** 投递限制的按需读取结果（目标为「每次新建会话」时才需要）。 */
+  scheduleLimits?: AppState["scheduleLimits"];
   /** 各任务的执行记录累积（键 = 任务 id；按需读取，见 `state.ts`）。 */
   scheduleHistory?: Record<string, ScheduleHistoryState>;
   /** 最近一次自动化任务变更的结算（宿主 `schedules/result` 帧）。 */
-  scheduleResult?: { op: "update" | "delete"; id: string; ok: boolean; code?: string };
-  /** 当前窗口绑定的会话（换会话要重新读一次自动化任务清单）。 */
+  scheduleResult?: AppState["scheduleResult"];
+  /** 会话列表（投递目标与新建目录的候选来自这里的真实值）。 */
+  sessions: readonly SessionSummaryView[];
+  /** 当前窗口绑定的会话（换会话要重新读一次自动化任务目录）。 */
   sessionId?: string;
   /** 只放行本面板要用的三条动作，别的一律发不出去。 */
   dispatch: (action: JobOutputAction) => void;
@@ -281,8 +294,13 @@ export function JobsPanel({
           刚跑完的后台任务。两个分区各自有空态，不合并成一句「什么都没有」。 */}
       <SchedulesSection
         sessionId={sessionId}
+        sessions={sessions}
         schedules={schedules}
         status={schedulesStatus}
+        capability={schedulesCapability}
+        archivedSessionIds={archivedSessionIds}
+        newSessionIntervalSeconds={newSessionIntervalSeconds}
+        limits={scheduleLimits}
         history={scheduleHistory}
         result={scheduleResult}
         dispatch={dispatch}

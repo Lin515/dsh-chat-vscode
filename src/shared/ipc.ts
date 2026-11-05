@@ -137,6 +137,7 @@ export type HostToWebview =
   | {
       type: "schedules/history";
       id: string;
+      opId?: number;
       mode: "replace" | "append";
       records: ScheduleDeliveryView[];
       nextBefore?: string;
@@ -150,13 +151,40 @@ export type HostToWebview =
       hostUnavailable?: boolean;
     }
   /**
-   * 一次自动化任务变更的结算（更新运行时间 / 删除）。
+   * 一次自动化任务变更的结算（更新 / 删除 / 创建 / 立即执行 / 暂停恢复）。
    *
    * 与 `jobs/killResult` 同一条纪律：**每次请求都要回一帧**（连失败也一样），
-   * 界面的「保存中 / 删除请求中」只认它收场。`ok: false` 时 `code` 是服务端的稳定
-   * 错误码（`schedule_conflict` / `schedule_ended` / …），文案由界面按语言给。
+   * 界面的「保存中 / 正在投递」只认它收场。`ok: false` 时 `code` 是服务端的稳定
+   * 错误码（`schedule_conflict` / `schedule_ended` / `schedule_execution_pending` /
+   * `invalid_rule` / …），文案由界面按语言给。
+   *
+   * `opId` 是界面在请求里带的**操作标识**（同一次面板里的自增号），宿主原样回显：
+   * 迟到的帧可能属于已经翻篇的那次操作（用户换了行、换了会话、连了另一台服务端），
+   * 界面按它决定「这一帧还算不算当前这件事」。旧宿主不发这一位时按 `undefined` 处理。
    */
-  | { type: "schedules/result"; op: "update" | "delete"; id: string; ok: boolean; code?: string }
+  | {
+      type: "schedules/result";
+      op: "update" | "delete" | "create" | "run" | "active";
+      /** 创建还没有 id（服务端生成了它才回帧）；其余操作必带。 */
+      id?: string;
+      opId?: number;
+      ok: boolean;
+      code?: string;
+    }
+  /**
+   * 投递限制（`schedule/deliveryLimits` 的零形参只读读取，按需拉取）。
+   *
+   * 只有 `target.kind === 'new'`（每次新建会话）受这条间隔约束；`unknown: true` = 这个
+   * 服务端没有该端点（旧代），界面不显示这行说明，也不把它当成读取失败。
+   */
+  | {
+      type: "schedules/limits";
+      newSessionIntervalSeconds?: number;
+      /** 旧代没有这个端点（明确证据），区别于 `error`（这次没拿到）。 */
+      unsupported?: boolean;
+      /** 这次没拿到（连接 / 传输 / 服务端错误）；`undefined` 的两个时间都无从显示。 */
+      error?: string;
+    }
   /** 斜杠命令目录（输入框输入 / 时弹出）。 */
   | { type: "commands/list"; commands: CommandView[] }
   /**
@@ -626,11 +654,13 @@ export type WebviewToHost =
    */
   | { type: "unobserveJob"; jobId: string }
   /**
-   * 请求本会话的自动化任务清单（打开后台任务抽屉时发）。
+   * 请求自动化任务的**全局目录**（打开后台任务抽屉时发）。
    *
-   * 宿主据此读一次 `schedule/catalog` 并按当前会话过滤，结果走会话字段
-   * （`schedules` / `schedulesStatus` 的 patch）——**不是**一条专用帧：那样会绕开
-   * 「切会话要清哪些键」的唯一登记表（见 `dsh/sessionView.ts`）。
+   * 宿主据此读一次零形参的 `schedule/catalog`，把**整份目录**落到会话字段
+   * （`schedules` / `schedulesStatus` / `schedulesCapability` 的 patch）——**不是**
+   * 一条专用帧：那样会绕开「切会话要清哪些键」的唯一登记表（见 `dsh/sessionView.ts`）。
+   * 「本会话」只是界面上的派生过滤（`scheduleForSession`）：全局视图与全局操作因此
+   * 不必再打第二次请求，也不会被当前会话过滤拦住。
    */
   | { type: "listSchedules" }
   /**
@@ -638,22 +668,68 @@ export type WebviewToHost =
    *
    * 带 `before` 就是「加载更早」那一页（游标是上一页最旧的 messageId，排他）；
    * 宿主按它决定回帧的 `mode`。宿主**总是**回一帧 `schedules/history`。
+   * `opId` 是这次读取的标识：迟到的旧页不许结算新详情（见 `schedules/history` 的注释）。
    */
-  | { type: "scheduleHistory"; id: string; before?: string }
+  | { type: "scheduleHistory"; id: string; before?: string; opId?: number }
   /**
-   * 改一条自动化任务的运行时间（`schedule/update` 的比较并交换）。
+   * 改一条自动化任务的运行时间（旧代 `schedule/update` 的比较并交换）。
    *
-   * 界面只交**任务 id** 与新的运行时间：`expected`（编辑开始时读到的完整规则）与
-   * 原始会话绑定都由宿主按读取时留下的原文拼——界面那份视图模型已经把拼写丢了
+   * 界面只交**任务 id** 与新的运行时间：旧代的 `expected`（编辑开始时读到的完整规则）
+   * 与原始会话绑定都由宿主按读取时留下的原文拼——界面那份视图模型已经把拼写丢了
    * （见 `dsh/scope.ts` 的 `scheduleExpected`）。宿主**总是**回一帧 `schedules/result`。
    */
-  | { type: "updateSchedule"; id: string; change: ScheduleTimingChangeView }
+  | { type: "updateSchedule"; id: string; change: ScheduleTimingChangeView; opId?: number }
   /**
-   * 删除一条自动化任务（`schedule/delete`，硬删：任务行与投递记录一起没）。
+   * 新代的一次原子编辑（`schedule/edit` 的 update 分支）。
    *
-   * 界面只交任务 id；宿主**总是**回一帧 `schedules/result`。
+   * `patch` 只带**真正改过的**字段（`title` / `prompt` / `timing` / `target` / `active`），
+   * 由界面按 `schedulePatchOf` 装配；`expectedUpdatedAt` 是**用户开始编辑时**看到的
+   * 那个 `updatedAt`（不是宿主现读的），宿主原样转交、缺失时发 `null`。宿主**总是**
+   * 回一帧带同一 `opId` 的 `schedules/result`。
    */
-  | { type: "deleteSchedule"; id: string }
+  | {
+      type: "editSchedule";
+      id: string;
+      patch: Record<string, unknown>;
+      expectedUpdatedAt: string | null;
+      opId?: number;
+    }
+  /**
+   * 手动创建一条任务（`schedule/create`）。
+   *
+   * 请求体由界面按 `scheduleCreateRequestOf` 装配（`title` / `prompt` / `timing` /
+   * `target`）；宿主逐字段验形状后再转发。宿主**总是**回一帧 `schedules/result`。
+   */
+  | { type: "createSchedule"; request: Record<string, unknown>; opId?: number }
+  /**
+   * 立即投递一次（`schedule/run`）——**不是**一次计划变更。
+   *
+   * 界面必须先在本地取得用户的明确确认（它会向目标会话投递消息、可能消耗模型 token），
+   * 宿主只负责转发与结算；不消耗、也不移动原来的计划时刻。宿主**总是**回一帧
+   * 带同一 `opId` 的 `schedules/result`。
+   */
+  | { type: "runSchedule"; id: string; opId?: number }
+  /**
+   * 暂停 / 恢复（新代 `schedule/edit` 的 `patch.active`）。
+   *
+   * 旧代没有这个能力，宿主按 `schedulesCapability` 判为 `legacy` 时直接回失败帧，
+   * 不去试一个不存在的端点。
+   */
+  | { type: "setScheduleActive"; id: string; active: boolean; expectedUpdatedAt: string | null; opId?: number }
+  /**
+   * 读取投递限制（`schedule/deliveryLimits`，零形参只读）。
+   *
+   * 只有目标为 `new`（每次新建会话）时界面才需要它；旧代没有这个端点，宿主回
+   * `unsupported: true`，界面不显示说明。
+   */
+  | { type: "scheduleLimits" }
+  /**
+   * 删除一条自动化任务（新代 `schedule/edit` 的 delete 分支，旧代 `schedule/delete`）。
+   *
+   * 硬删：任务行与投递记录一起没。新代带上用户开始操作时看到的 `expectedUpdatedAt`
+   * （缺失时发 `null`）；界面只交任务 id。宿主**总是**回一帧 `schedules/result`。
+   */
+  | { type: "deleteSchedule"; id: string; expectedUpdatedAt?: string | null; opId?: number }
   /** 请求斜杠命令目录。 */
   | { type: "listCommands" }
   /** 查询文件引用候选（@ 提及）。 */

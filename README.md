@@ -63,7 +63,7 @@ npm run package  # Releases/dsh-chat-<version>.vsix
 - 历史列表只显示当前工作区的会话，支持新建、归档、删除。
 - 可从会话具体节点分支，分支标题带「分支: 」前缀。
 - 有子代理时点击标题可展开顶层会话与多层子代理树，切换任意层级；标题后显示当前会话的子代理数，一次性子代理只读，可继续子代理支持续聊。
-- 后台任务抽屉分两个分区：**自动化任务**（模型用 `schedule_create` 安排的定时任务，显示频率与下次运行，可展开看执行记录、修改运行时间、删除）与**后台任务**（bash / pwsh 等，可展开看实时输出）。抽屉里有后台任务在跑、或还有待执行的自动化任务时，顶栏那颗入口按钮会亮起（有任务真的在跑时还会呼吸；只是排着时不闪）。
+- 后台任务抽屉分两个分区：**自动化任务**（显示频率、下次运行与当前状态，可展开看执行记录）与**后台任务**（bash / pwsh 等，可展开看实时输出）。自动化任务支持手动创建（名称、指令、运行时间、投递目标）、修改名称 / 指令 / 目标 / 运行时间、暂停与恢复、立即运行（需确认：会向目标会话投递一次，可能消耗模型 token，且不改变原计划时刻）与删除，并可切换「本会话 / 全部任务」两种视图查看所有会话的任务。抽屉里有后台任务在跑、或还有待执行的自动化任务时，顶栏那颗入口按钮会亮起（有任务真的在跑时还会呼吸；只是排着时不闪）。
 - 轨迹提供账本、时间线与详情检查器。
 - 如需进行服务端设置，可通过「在浏览器中打开」进入官方 Web UI；当前连的是桌面端内置服务时那颗按钮改为「打开 DSH 桌面端」（那套服务不向浏览器开放）。
 
@@ -108,7 +108,7 @@ npm run build
 - 接入桌面端内置服务依赖桌面端与 `dsh-client-connection` 的内部实现（凭据记录、`dsh-desktop-host` 的入口与 spawn 形态），已登记在 [dsh-compat.md](docs/dsh-compat.md)，随官方版本对拍。
 - 停止刻意采用「摘空队列 → cancel → 按原序重发」：历史实测中只 cancel 不可靠地接续队列。
 - 生成中的正文会重建 DOM，点击文件链接可能被增量刷新吞掉；轮次结束后再点。后台任务的 ANSI 着色与部分官方统计展示尚未实现。
-- 自动化任务：只列**当前会话**的任务（全局任务页、会话头部的提醒时钟、`schedule_create` 的对话卡片与「活跃指示」尚未实现）；本扩展对 `cron` 显示规范表达式本身，不渲染官方那句自然语言描述。删除是硬删（执行记录一并消失），且不会取消已经在途的那一次投递。
+- 自动化任务：会话头部的提醒时钟、`schedule_create` 的对话卡片与「活跃指示」尚未实现；本扩展对 `cron` 显示规范表达式本身，不渲染官方那句自然语言描述。删除是硬删（执行记录一并消失），且不会取消已经在途的那一次投递。手动创建、立即运行、暂停恢复与目标编辑需要服务端 0.2.2-rc.1 及以上；更老的服务端只保留查看、改时间与删除。
 - 拖放受 VS Code iframe 门控与字节通道限制；其它平台的大文件请用回形针，目录请用 `@`。
 - 面板恢复依赖 VS Code 工作区缓存与 `window.restoreWindows`。
 
@@ -180,7 +180,7 @@ The desktop app (Electron) already runs a DSH service of its own, and the extens
 - History is scoped to the current workspace and supports new, archive and delete.
 - You can branch from a specific session node; branch titles have a “Branch: ” prefix.
 - Click the title when subagents exist to expand the top-level session and the multi-level subagent tree and switch across any level; the count after the title shows how many subagents the current session has. One-shot agents are read-only, continuable agents support follow-up chat.
-- The jobs drawer has two sections: **Scheduled tasks** (scheduled by the model through `schedule_create`, showing frequency and next run, with expandable execution records, rescheduling and deletion) and **Background jobs** (bash / pwsh and similar jobs, with expandable live output). The header button lights up while a background job is running or a scheduled task is pending; it pulses only while something is actually running, not just scheduled.
+- The jobs drawer has two sections: **Scheduled tasks** (frequency, next run and current state, with expandable execution records) and **Background jobs** (bash / pwsh and similar jobs, with expandable live output). Scheduled tasks can be created manually (name, instruction, run time, delivery target), renamed, re-instructed, retargeted or rescheduled, paused and resumed, run once now (with a confirmation: it delivers to the target conversation immediately, may consume model tokens, and does not change the scheduled occurrence) and deleted; a "This session / All tasks" switch shows tasks across sessions. The header button lights up while a background job is running or a scheduled task is pending; it pulses only while something is actually running, not just scheduled.
 - Trajectory provides a ledger, timeline and inspector.
 - To change server-side settings, use **Open in browser** to reach the official Web UI; while attached to the DSH desktop app's built-in service that button becomes **Open DSH Desktop App** instead, because that service is not exposed to browsers.
 
@@ -225,7 +225,7 @@ Use `npm run preview` for the webview and `npm run package` for a VSIX. Smoke te
 - Attaching to the desktop app's built-in service relies on internal implementations of the app and of `dsh-client-connection` (the credential record, and the `dsh-desktop-host` entry and spawn shape); they are registered in [dsh-compat.md](docs/dsh-compat.md) and checked against new upstream versions.
 - Stop intentionally drains the queue, cancels and resends in order: historical probes did not reliably resume queued work after a bare cancel.
 - Streaming text rebuilds its DOM, so an incremental update may swallow a file-link click; retry after the turn ends. ANSI coloring for background jobs and some upstream statistics remain unimplemented.
-- Scheduled tasks: only the **current session's** tasks are listed (the global tasks page, the session-header reminder clock, the `schedule_create` conversation card and its activity indicator are not implemented); `cron` is shown as the expression itself rather than as the upstream natural-language description. Deletion is hard (execution records go with it) and does not cancel a delivery already in flight.
+- Scheduled tasks: the session-header reminder clock, the `schedule_create` conversation card and its activity indicator are not implemented; `cron` is shown as the expression itself rather than as the upstream natural-language description. Deletion is hard (execution records go with it) and does not cancel a delivery already in flight. Manual creation, run now, pause/resume and retargeting require host 0.2.2-rc.1 or newer; older hosts keep viewing, rescheduling and deletion only.
 - Drops are constrained by VS Code's iframe gate and the byte channel. On other platforms, use the paperclip for large files and `@` for folders.
 - Panel restoration depends on VS Code's workspace cache and `window.restoreWindows`.
 

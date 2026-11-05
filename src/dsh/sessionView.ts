@@ -65,14 +65,19 @@ export interface SessionView {
   subagentTree?: ChatState["subagentTree"];
   jobs: ChatState["jobs"];
   /**
-   * 本会话的自动化任务（DSH `schedule`）。
+   * 自动化任务的**全局目录**（DSH `schedule`，来自零形参的 `schedule/catalog`）。
    *
-   * 与 `jobs` 一样是**会话片段**：切会话必须整份换掉，所以它走同一张字段表，
-   * 而不是另开一条按会话投递的帧（后者会绕开「切会话要清哪些键」这条唯一登记）。
+   * 按**作用域**投递的是整份目录，不是「本会话的片段」：宿主一次读全量，「本会话」
+   * 是界面上的派生筛选（`scheduleForSession`）。字段仍在这张表里，是因为切会话必须
+   * 整份换掉旧目录并清掉读取状态——这条「切会话要清哪些键」的登记与 `jobs` 共用。
    */
   schedules: ChatState["schedules"];
   /** 自动化任务的读取状态（`loading` / `ready` / `unsupported`；`undefined` = 没问过）。 */
   schedulesStatus?: ChatState["schedulesStatus"];
+  /** 服务端代际（决定界面是否暴露创建 / 立即执行 / 暂停恢复 / 目标编辑）。 */
+  schedulesCapability?: ChatState["schedulesCapability"];
+  /** 每次新建会话的最小投递间隔（秒）；只在目标为 `new` 时展示。 */
+  newSessionIntervalSeconds?: ChatState["newSessionIntervalSeconds"];
   goal?: ChatState["goal"];
   contextWindow?: ChatState["contextWindow"];
   contextOccupancy?: ChatState["contextOccupancy"];
@@ -131,6 +136,8 @@ export const SESSION_VIEW_KEYS = [
   "jobs",
   "schedules",
   "schedulesStatus",
+  "schedulesCapability",
+  "newSessionIntervalSeconds",
   "goal",
   "contextWindow",
   "contextOccupancy",
@@ -236,6 +243,12 @@ export const SESSION_FIELDS = {
   },
   schedulesStatus: {
     read: (source) => source.schedulesStatus?.() as SessionView["schedulesStatus"],
+  },
+  schedulesCapability: {
+    read: (source) => source.schedulesCapability?.() as SessionView["schedulesCapability"],
+  },
+  newSessionIntervalSeconds: {
+    read: (source) => source.newSessionIntervalSeconds?.() as SessionView["newSessionIntervalSeconds"],
   },
   goal: {
     read: (source) => source.goal?.() as SessionView["goal"],
@@ -446,6 +459,8 @@ export function sessionSourceOf(
     jobs: () => scope?.jobs,
     schedules: () => scope?.schedules,
     schedulesStatus: () => scope?.schedulesStatus,
+    schedulesCapability: () => scope?.schedulesCapability,
+    newSessionIntervalSeconds: () => scope?.newSessionIntervalSeconds,
     goal: () => scope?.goal,
     // 粘性显示值（上下文窗口 / 占用 / 速度）由适配器持有
     contextWindow: () => adapter?.stickyState().contextWindow,

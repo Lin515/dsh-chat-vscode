@@ -49,12 +49,25 @@
       }
       html,
       body {
-        width: 420px;
+        /* 预览模拟的是侧栏（不是全屏浏览器）：默认 420 宽——VS Code 主侧栏的常见
+           宽度。要看更窄的真实窄侧栏，用 `?width=320`（head 里的脚本改这个变量），
+           这样根宽度就是被观察的宽度，不会出现「视口 320、页面仍是 420」的假裁切。 */
+        width: var(--preview-width, 420px);
         height: 900px;
         margin: 0;
         overflow: hidden;
       }
     </style>
+    <script>
+      // 预览宽度：默认 420px；`?width=<240..900>` 用真实组件观察窄侧栏布局。
+      // 根宽度是**有意固定**的（模拟侧栏），不是组件把页面撑宽。
+      (function () {
+        var width = Number(new URLSearchParams(location.search).get("width"));
+        if (Number.isFinite(width) && width >= 240 && width <= 900) {
+          document.documentElement.style.setProperty("--preview-width", width + "px");
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
@@ -446,7 +459,14 @@
                 // 否则预览里那颗按钮要等点开面板才会亮。
                 window.__push({
                   type: "patch",
-                  patch: { schedules: previewSchedules(), schedulesStatus: "ready" },
+                  patch: {
+                    schedules: previewSchedules(),
+                    schedulesStatus: "ready",
+                    // 这套夹具是**旧代目录**（条目只有 sessionId / inactive）：真实宿主
+                    // 会按目录形状判成 legacy。漏掉这一位会让界面停在 unknown（「无法
+                    // 确认服务端能力」），那不是这个夹具想演示的状态。
+                    schedulesCapability: "legacy",
+                  },
                 });
               }, 0);
             }
@@ -504,7 +524,14 @@
               setTimeout(function () {
                 window.__push({
                   type: "patch",
-                  patch: { schedules: previewSchedules(), schedulesStatus: "ready" },
+                  patch: {
+                    schedules: previewSchedules(),
+                    schedulesStatus: "ready",
+                    // 这套夹具是**旧代目录**（条目只有 sessionId / inactive）：真实宿主
+                    // 会按目录形状判成 legacy。漏掉这一位会让界面停在 unknown（「无法
+                    // 确认服务端能力」），那不是这个夹具想演示的状态。
+                    schedulesCapability: "legacy",
+                  },
                 });
               }, 0);
             }
@@ -514,25 +541,40 @@
               }, 120);
             }
             if (message && message.type === "updateSchedule") {
-              // 保存：真实宿主发出 `schedule/update` 后回结算帧并重读目录
+              // 保存：真实宿主先读回权威目录（新时刻 / 新状态），再回结算帧——界面按
+              // 「保存成功即采用刷新后的那一版」推进草稿与基线，顺序不能反。
               setTimeout(function () {
                 applyPreviewChange(message.id, message.change);
-                window.__push({ type: "schedules/result", op: "update", id: message.id, ok: true });
                 window.__push({
                   type: "patch",
-                  patch: { schedules: previewSchedules(), schedulesStatus: "ready" },
+                  patch: {
+                    schedules: previewSchedules(),
+                    schedulesStatus: "ready",
+                    // 这套夹具是**旧代目录**（条目只有 sessionId / inactive）：真实宿主
+                    // 会按目录形状判成 legacy。漏掉这一位会让界面停在 unknown（「无法
+                    // 确认服务端能力」），那不是这个夹具想演示的状态。
+                    schedulesCapability: "legacy",
+                  },
                 });
+                window.__push({ type: "schedules/result", op: "update", id: message.id, ok: true });
               }, 400);
             }
             if (message && message.type === "deleteSchedule") {
-              // 删除：真实宿主回结算帧，删掉后重读目录（那一行随即消失）
+              // 删除：真实宿主先读回目录（那一行随即消失），再回结算帧。
               setTimeout(function () {
                 removePreviewSchedule(message.id);
-                window.__push({ type: "schedules/result", op: "delete", id: message.id, ok: true });
                 window.__push({
                   type: "patch",
-                  patch: { schedules: previewSchedules(), schedulesStatus: "ready" },
+                  patch: {
+                    schedules: previewSchedules(),
+                    schedulesStatus: "ready",
+                    // 这套夹具是**旧代目录**（条目只有 sessionId / inactive）：真实宿主
+                    // 会按目录形状判成 legacy。漏掉这一位会让界面停在 unknown（「无法
+                    // 确认服务端能力」），那不是这个夹具想演示的状态。
+                    schedulesCapability: "legacy",
+                  },
                 });
+                window.__push({ type: "schedules/result", op: "delete", id: message.id, ok: true });
               }, 400);
             }
           },

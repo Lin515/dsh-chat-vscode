@@ -899,6 +899,12 @@ export function App() {
     document.documentElement.lang = normalizeLocale(state.locale);
   }, [state.locale]);
   const closePanel = () => dispatch({ type: "ui/setPanel", panel: "none" });
+  // 归档证据（自动化任务的运行 / 编辑提示要用）：只认宿主归档列表，不从「不在活跃
+  // 列表里」推断——目标会话可能只是属于别的目录。
+  const archivedSessionIds = useMemo(
+    () => state.archivedSessions.map((session) => session.id),
+    [state.archivedSessions],
+  );
 
   /**
    * 「在轨迹里查看这次调用」的待办目标（官方 `viewRequest.focus` 的等价物）。
@@ -1228,8 +1234,13 @@ export function App() {
             killResult={state.jobKill}
             schedules={state.schedules}
             schedulesStatus={state.schedulesStatus}
+            schedulesCapability={state.schedulesCapability}
+            archivedSessionIds={archivedSessionIds}
+            newSessionIntervalSeconds={state.newSessionIntervalSeconds}
+            scheduleLimits={state.scheduleLimits}
             scheduleHistory={state.scheduleHistory}
             scheduleResult={state.scheduleResult}
+            sessions={state.sessions}
             sessionId={state.session?.id}
             dispatch={dispatch}
             onClose={closePanel}

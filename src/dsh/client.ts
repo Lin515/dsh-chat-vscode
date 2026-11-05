@@ -660,9 +660,10 @@ export class DshClient {
   /**
    * 全部自动化任务（`schedule/catalog`，零形参）。
    *
-   * 契约给的是**全局目录**：每条带原始会话绑定、`status` 与最近一次投递。本扩展按
-   * 打开面板的那个会话过滤它（见 controller 的 `loadSchedules`）——一次读取就能同时
-   * 服务「本会话还有哪些、跑完的还在不在」，不必为每个会话各打一次。
+   * 契约给的是**全局目录**：每条带投递目标 / 相关会话、`status` 与最近一次投递。
+   * 本扩展原样收下整份目录（见 controller 的 `loadSchedules`），「本会话」只是界面上
+   * 的派生筛选（`scheduleForSession`）——宿主侧不按窗口过滤，全局视图与全局操作因此
+   * 不必再打第二次请求，也不会被当前会话拦住。
    *
    * 返回值刻意是 `unknown`：形状由 `dsh/scheduleView.ts` 的
    * `scheduleEntriesFromCatalog` 逐字段收窄（纯函数，离线可断言）。
@@ -724,6 +725,60 @@ export class DshClient {
       request: { id, action: "delete", expectedUpdatedAt: revision.updatedAt ?? null },
     });
     return this.request(METHODS.scheduleDelete, { request: { sessionId, id } });
+  }
+
+  /**
+   * 手动创建一条任务（`schedule/create`，参数 `{request: ScheduleCreateRequest}`）。
+   *
+   * 请求体就是契约原文：`{title, prompt, timing, target?}`。`target` 缺省时服务端按
+   * `new_once` 处理（首次投递新建一个会话、之后复用）；**不要**替它补一个默认值——那会
+   * 让「省略」与「显式 new_once」这两种写法在扩展里失去区分。
+   *
+   * 失败由网关抛 `schedule/input-invalid`（`details.code` 是稳定原因）或
+   * `schedule/target-archived`；统一在 `scheduleView.ts` 的 `scheduleFailureCode` 收窄。
+   */
+  scheduleCreate(request: unknown): Promise<unknown> {
+    return this.request(METHODS.scheduleCreate, { request });
+  }
+
+  /**
+   * 立即投递一次（`schedule/run`，参数 `{request: {id}}`）。
+   *
+   * 它**不是**一次计划变更：不消耗、也不移动原来的计划时刻；`executionActive` 或
+   * 投递间隔未到时服务端会以 `{code:'schedule_execution_pending'}` /
+   * 输入错误拒绝，目标会话已归档时抛 `schedule/target-archived`。成功时返回任务当前
+   * 目录条目（可能带新的 `executionActive` / `deliveryFloorEndsAt`）。
+   */
+  scheduleRun(id: string): Promise<unknown> {
+    return this.request(METHODS.scheduleRun, { request: { id } });
+  }
+
+  /**
+   * 读取投递限制（`schedule/deliveryLimits`，**零形参**，只读、不加载也不激活任何任务）。
+   *
+   * 当前唯一成员是 `newSessionIntervalSeconds`（每次新建会话的最小间隔）。本扩展不新增
+   * 同名配置：服务端给的默认值就是权威值。它同时是零副作用的「有没有新代管理端点」探针。
+   */
+  scheduleDeliveryLimits(): Promise<unknown> {
+    return this.request(METHODS.scheduleDeliveryLimits, {});
+  }
+
+  /**
+   * 新代（`schedule/edit`）的一次通用编辑：`patch` 只带**要改的**字段。
+   *
+   * 与 `scheduleUpdate` 的区别是这里接受完整的 `SchedulePatch`（`title` / `prompt` /
+   * `timing` / `target` / `active`），而不是只有运行时间。`expectedUpdatedAt` 由调用方
+   * 传入**用户开始编辑时看到的**那个值（缺失时明确发 `null`），不在宿主侧现读——现读会
+   * 把「保存时才发现别人改过」变成静默覆盖。
+   */
+  scheduleEditPatch(
+    id: string,
+    patch: Record<string, unknown>,
+    expectedUpdatedAt: string | null,
+  ): Promise<unknown> {
+    return this.request(METHODS.scheduleEdit, {
+      request: { id, action: "update", patch, expectedUpdatedAt },
+    });
   }
 
   /**

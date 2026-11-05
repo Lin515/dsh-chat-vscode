@@ -777,6 +777,129 @@ export const MESSAGES = {
     zh: (occurrence: string, delivered: string) => `发生时刻 ${occurrence}，投递确认 ${delivered}`,
     en: (occurrence: string, delivered: string) => `Due ${occurrence}, delivered ${delivered}`,
   },
+  // 视图范围与筛选（全局视图与「本会话」共用一份全局目录，过滤在界面里做）
+  scheduleViewSession: { zh: "本会话", en: "This session" },
+  scheduleViewAll: { zh: "全部任务", en: "All tasks" },
+  scheduleFilterAll: { zh: "全部", en: "All" },
+  scheduleFilterActive: { zh: "启用中", en: "Active" },
+  scheduleFilterPaused: { zh: "已暂停", en: "Paused" },
+  scheduleFilterEnded: { zh: "已结束", en: "Ended" },
+  scheduleEmptyAll: { zh: "还没有自动化任务", en: "No automation tasks yet" },
+  scheduleEmptyFilter: { zh: "没有符合当前筛选的任务", en: "No task matches the current filter" },
+  scheduleEmptyAllHint: {
+    zh: "可以在这里手动创建，也可以在对话里让模型用 schedule_create 安排",
+    en: "Create one here, or ask the model to schedule it with schedule_create",
+  },
+  // 手动创建
+  scheduleNew: { zh: "新建任务", en: "New task" },
+  scheduleCreateTitle: { zh: "新建自动化任务", en: "New automation task" },
+  scheduleCreate: { zh: "创建", en: "Create" },
+  scheduleCreating: { zh: "正在创建…", en: "Creating…" },
+  scheduleCreated: { zh: "任务已创建", en: "Task created" },
+  scheduleFieldTitle: { zh: "名称", en: "Name" },
+  scheduleFieldTitlePlaceholder: { zh: "给这个任务起个名字", en: "Name this task" },
+  scheduleFieldPrompt: { zh: "指令", en: "Instruction" },
+  scheduleFieldPromptPlaceholder: {
+    zh: "到点时发进目标会话的内容",
+    en: "What to send to the target conversation when it fires",
+  },
+  scheduleFieldTarget: { zh: "投递目标", en: "Deliver to" },
+  scheduleFieldSession: { zh: "目标会话", en: "Target conversation" },
+  scheduleTargetSession: { zh: "当前会话", en: "This session" },
+  scheduleTargetNewOnce: { zh: "首次投递新建会话", en: "New conversation on first delivery" },
+  scheduleTargetNewOnceHelp: {
+    zh: "第一次投递时新建会话，之后都投给它",
+    en: "Creates one conversation on the first delivery, then reuses it",
+  },
+  scheduleTargetNew: { zh: "每次投递新建会话", en: "New conversation on every delivery" },
+  scheduleTargetNewHelp: {
+    zh: "每次到点都新建一个会话",
+    en: "Creates a fresh conversation for every delivery",
+  },
+  scheduleFieldCwd: { zh: "项目目录", en: "Project directory" },
+  scheduleChooseSession: { zh: "选择会话", en: "Choose a conversation" },
+  scheduleCwdDefault: { zh: "使用宿主默认目录", en: "Host default directory" },
+  scheduleNewSessionInterval: {
+    zh: (interval: string) => `每次新建会话的投递间隔至少 ${interval}`,
+    en: (interval: string) => `Deliveries that create a conversation are at least ${interval} apart`,
+  },
+  scheduleNewSessionIntervalUnknown: {
+    zh: "读取投递间隔失败，创建不受它影响",
+    en: "Could not read the delivery interval; creation is unaffected",
+  },
+  // 立即运行
+  scheduleRunNow: { zh: "立即运行", en: "Run now" },
+  scheduleRunAria: {
+    zh: (title: string) => `立即运行 ${title}`,
+    en: (title: string) => `Run ${title} now`,
+  },
+  scheduleRunConfirmTitle: { zh: "立即投递一次", en: "Deliver once now" },
+  scheduleRunConfirmNote: {
+    zh: "会立即向目标会话投递这条指令，可能触发模型执行并消耗 token；原来的计划时刻不会被消耗或移动。",
+    en: "This delivers the instruction to the target conversation now; it may run the model and consume tokens. The scheduled occurrence is neither consumed nor moved.",
+  },
+  scheduleRunConfirmAction: { zh: "确认投递", en: "Deliver now" },
+  scheduleRunning: { zh: "正在投递…", en: "Delivering…" },
+  scheduleRunQueued: { zh: "已投递，等待目标会话执行", en: "Delivered; waiting for the target conversation" },
+  scheduleRunPending: {
+    zh: "这个任务还有一次投递在进行，稍后再试",
+    en: "A delivery of this task is already in flight; try again later",
+  },
+  // 状态与限制
+  scheduleExecutionActive: {
+    zh: "正在执行（目标会话尚未处理完上一次投递）",
+    en: "Running (the target conversation has not finished the last delivery)",
+  },
+  scheduleDeliveryFloor: {
+    zh: (time: string) => `最早 ${time} 可再次投递`,
+    en: (time: string) => `Next delivery not before ${time}`,
+  },
+  schedulePause: { zh: "暂停", en: "Pause" },
+  scheduleResume: { zh: "恢复", en: "Resume" },
+  schedulePauseAria: {
+    zh: (title: string) => `暂停 ${title}`,
+    en: (title: string) => `Pause ${title}`,
+  },
+  scheduleResumeAria: {
+    zh: (title: string) => `恢复 ${title}`,
+    en: (title: string) => `Resume ${title}`,
+  },
+  scheduleCapabilityLegacy: {
+    zh: "这个服务端版本只支持查看、改时间与删除任务",
+    en: "This host version only supports viewing, retiming, and deleting tasks",
+  },
+  scheduleCapabilityUnknown: {
+    zh: "暂时无法确认服务端是否支持创建任务（读取失败）",
+    en: "Cannot confirm whether the host supports creating tasks (the read failed)",
+  },
+  // 编辑（名称 / 指令 / 目标）
+  scheduleEditTitle: { zh: "编辑任务", en: "Edit task" },
+  scheduleConflictNotice: {
+    zh: "这条任务在你编辑期间被改过；你的修改还没有提交",
+    en: "This task changed while you were editing; your changes are not submitted yet",
+  },
+  scheduleReapply: { zh: "重新应用我的修改", en: "Reapply my changes" },
+  scheduleErrUnsupported: {
+    zh: "这个 DSH 版本不支持该操作（创建 / 立即运行 / 暂停 / 目标编辑需要 0.2.2-rc.1 及以上）",
+    en: "This DSH version does not support this action (creating, running, pausing, or retargeting requires 0.2.2-rc.1 or newer)",
+  },
+  scheduleErrStale: {
+    zh: "界面已切换会话或连接，这次操作的结果未确认",
+    en: "The session or connection changed; this operation's result was not confirmed",
+  },
+  scheduleErrInvalidPrompt: {
+    zh: "名称与指令不能为空，名称最多 120 个字符",
+    en: "Name and instruction must not be empty; the name is at most 120 characters",
+  },
+  scheduleErrInvalidTarget: {
+    zh: "投递目标不完整（发往会话时必须选一个会话）",
+    en: "The delivery target is incomplete (a conversation must be chosen when delivering to one)",
+  },
+  scheduleErrTargetArchived: {
+    zh: "目标会话已归档，无法投递",
+    en: "The target conversation is archived; delivery is not possible",
+  },
+  scheduleStatusActive: { zh: "启用中", en: "active" },
   commands: { zh: "命令", en: "Commands" },
   commandsEmpty: { zh: "没有可用命令", en: "No commands available" },
   skillTag: { zh: "技能", en: "Skill" },

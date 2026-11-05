@@ -6109,6 +6109,122 @@ textarea.composer-input {
   max-height: calc(96 * var(--dp));
 }
 
+/* ---------- 自动化任务：视图切换、筛选与编辑表单 ---------- */
+
+/* 抬头的一行：左边「本会话 / 全部任务」，右边「新建任务」。
+   两边都用 flex 收缩 + nowrap：英文 "This session" 比中文长，不许把按钮挤到第二行。 */
+.schedule-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: calc(6 * var(--dp));
+  padding: calc(2 * var(--dp)) calc(8 * var(--dp));
+  min-width: 0;
+}
+
+.schedule-tabs {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  gap: calc(2 * var(--dp));
+  overflow: hidden;
+}
+
+/* 工具条右侧的动作（新建）：窄侧栏里被挤到第二行也要完整可见，不许裁掉 */
+.schedule-toolbar > .schedule-btn {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+.schedule-tab {
+  flex: 0 1 auto;
+  min-width: 0;
+  padding: calc(2 * var(--dp)) calc(6 * var(--dp));
+  border: 1px solid transparent;
+  border-radius: calc(4 * var(--dp));
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: var(--font-size-2xs);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.schedule-tab.is-on {
+  border-color: var(--border);
+  background: var(--editor-bg);
+  color: var(--fg);
+}
+
+/* 状态筛选的胶囊：一行横排，放不下就自己换行（不按中文字数布局） */
+.schedule-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: calc(3 * var(--dp));
+  padding: 0 calc(8 * var(--dp)) calc(3 * var(--dp));
+}
+
+.schedule-chip {
+  flex: 0 0 auto;
+  padding: 0 calc(6 * var(--dp));
+  border: 1px solid var(--border);
+  border-radius: calc(999 * var(--dp));
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: var(--font-size-2xs);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.schedule-chip.is-on {
+  border-color: var(--accent);
+  color: var(--fg);
+}
+
+.schedule-card.is-create {
+  margin: 0 calc(8 * var(--dp)) calc(6 * var(--dp));
+}
+
+.schedule-editor {
+  display: flex;
+  flex-direction: column;
+  gap: calc(4 * var(--dp));
+  min-width: 0;
+}
+
+/* 表单里的多行指令与 RRULE 文本：与输入框同样的观感，宽度跟着布局走 */
+.schedule-field textarea {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: calc(2 * var(--dp)) calc(4 * var(--dp));
+  border: 1px solid var(--border);
+  border-radius: calc(4 * var(--dp));
+  background: var(--editor-bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: var(--font-size-xs);
+}
+
+.schedule-field textarea:disabled {
+  opacity: 0.6;
+}
+
+/* 立即运行的确认块：说明文字铺满整行，两个按钮跟在后面 */
+.schedule-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: calc(4 * var(--dp));
+  width: 100%;
+}
+
+.schedule-confirm .job-notice {
+  flex: 1 1 100%;
+}
+
 /* ============================ to-do panel ============================ */
 
 .todos {

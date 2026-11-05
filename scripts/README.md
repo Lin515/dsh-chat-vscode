@@ -84,6 +84,9 @@
 - [jobsOrder.test.ts](<jobsOrder.test.ts>) — 后台任务名册排序口径（官方 `ordered()`）。
 - [jobView.test.ts](<jobView.test.ts>) — job 名册 / 单任务输出流 /「端点不存在」判据（0.1.7 搬运）。
 - [schedule.test.ts](<schedule.test.ts>) — 自动化任务（`schedule`）：目录与编辑基准收窄 / 执行记录与变更结算 / 频率与相对时间 / 运行时间草稿与提交 / cron 方言 / 时区清单 / 接线与样式。
+- [scheduleManage.test.ts](<scheduleManage.test.ts>) — 自动化任务的管理面：目录新字段（目标 / 执行中 / 投递间隔）、归属过滤、编辑草稿与冲突重放、创建请求体、宿主边界校验、客户端载荷、结算账本（迟到帧）、状态机与界面 / 文案接线。
+- [scheduleEditor.test.ts](<scheduleEditor.test.ts>) — 自动化任务详情区：编辑状态机（相对基线的 dirty / patch、保存成功推进、冲突重放）、变更入口策略（unknown 代际 / 目录读取中 / 执行中 / 归档 / 投递间隔）、操作标识与执行记录迟到帧、目标会话占位与归档提示的服务端渲染。
+- [scheduleConcurrency.test.ts](<scheduleConcurrency.test.ts>) — 变更路由的上下文隔离（驱真控制器 + 假客户端）：成功先读回目录再结算、刷新失败仍结算、换绑 / 换连接后不写旧域且结算标 stale、当前上下文 404 才降级、冲突后重读。
 
 ### 附件 / 图片 / 引用
 
