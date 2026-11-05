@@ -1163,12 +1163,11 @@ button.header-title.is-switcher > svg.is-open {
 
 /* 复制按钮（`components/CopyButton.tsx`）是一个 `.icon-btn`：**只有图标、没有文字**，
    点后 1s 图标换成对勾（宿主不弹 toast）。它在这些「辅助行」里跟行高走：工具卡横幅、
-   diff 头部、IN/OUT 标签行、问卷记录、写入预览与轨迹原文动作条都不用 24dp 的方盒，
-   否则会把一行 16px 的小字撑高 8px。 */
+   diff 头部、IN/OUT 标签行、问卷题头与命令行的行尾、写入预览与轨迹原文动作条都不用
+   24dp 的方盒，否则会把一行 16px 的小字撑高 8px。 */
 .tool-card-banner .icon-btn,
 .diff-head .icon-btn,
 .io-head .icon-btn,
-.question-record-actions .icon-btn,
 .node-copy-actions .icon-btn,
 .card-copy-actions .icon-btn,
 .notice-copy .icon-btn,
@@ -1437,7 +1436,16 @@ button.header-title.is-switcher > svg.is-open {
   color: var(--description);
 }
 
+/* 分段抬头行：标题在左、整份注入的复制入口在右。两者同一行，按钮不单独占一行。 */
+.ctx-head {
+  display: flex;
+  align-items: center;
+  gap: calc(6 * var(--dp));
+  min-width: 0;
+}
+
 .ctx-title {
+  min-width: 0;
   color: var(--fg);
   font-weight: 600;
 }
@@ -2972,11 +2980,24 @@ body.vscode-high-contrast-light .md-code-surface {
   gap: calc(6 * var(--dp));
 }
 
+/* 题头行：左侧是题目抬头（英文下会被侧栏挤窄，所以允许省略），右侧是整张问卷的
+   复制入口。两者**同一行**——复制按钮不再单独占一行（2026-11-05 口径）。 */
 .question-head {
+  display: flex;
+  align-items: center;
+  gap: calc(6 * var(--dp));
+  min-width: 0;
   font-size: var(--font-size-2xs);
   color: var(--description);
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+
+.question-head-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .question-text {
@@ -3194,13 +3215,7 @@ body.vscode-high-contrast-light .md-code-surface {
   line-height: 1.5;
 }
 
-/* 问卷记录的复制入口：体首右上角一行（行头整块是开合按钮，按钮不能嵌在按钮里）。
-   复制的是整份记录（含未展开时的全部题目），不是当前可见的那几行。 */
-.question-record-actions {
-  display: flex;
-  justify-content: flex-end;
-  margin-bottom: calc(-6 * var(--dp));
-}
+/* 复制入口不在这里另起一行：它与第一题的题头同一行（见 `.question-head`）。 */
 
 /* 计划审阅卡（`exit_plan_mode`）——官方 `PlanReviewPanel` 的三段式：
    warn 条带 + **可滚动的计划正文** + 固定可见的底部决定行。
@@ -3321,7 +3336,18 @@ body.vscode-high-contrast-light .md-code-surface {
   gap: calc(4 * var(--dp));
 }
 
+/* 命令行与复制按钮同一行：命令行占满剩余宽度（长命令照旧折行），按钮靠右。
+   `align-items: flex-start` 让按钮贴住第一行，而不是跟着折行后的行高居中。 */
+.row-command-head {
+  display: flex;
+  align-items: flex-start;
+  gap: calc(6 * var(--dp));
+  min-width: 0;
+}
+
 .row-command-line {
+  flex: 1 1 auto;
+  min-width: 0;
   color: var(--description);
   white-space: pre-wrap;
   word-break: break-word;

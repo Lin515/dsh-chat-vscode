@@ -61,6 +61,15 @@ export async function run(): Promise<{ checks: number }> {
     } }} />);
     const structured = clickCopy();
     check(structured.includes("skill-a") && structured.includes("完整描述"), "纯结构化注入也能复制有效字段");
+    // 复制入口与首个分段抬头同一行（用户 2026-11-05 口径）
+    check(
+      host.querySelector(".ctx-body .ctx-head .card-copy-actions > button") !== null,
+      "结构化注入的复制入口落在分段抬头行右端",
+    );
+    check(
+      host.querySelector(".ctx-body > .node-copy-actions") === null,
+      "结构化注入不再为复制按钮单独占一行",
+    );
 
     const skill: ToolCallView = { id: "skill", name: "skill", title: "skill", detail: "", status: "ok",
       output: "<skill_instructions>\n# Skill\n\t正文\n</skill_instructions>" };
@@ -69,6 +78,12 @@ export async function run(): Promise<{ checks: number }> {
 
     reset(<CommandRow node={opened} command={{ commandId: "cmd", name: "help", args: "--all", state: "ok", text: "result\nnext" }} />);
     check(clickCopy() === "/help --all\n\nresult\nnext", "命令包含命令、参数和完整结果");
+    // 复制入口与命令行同一行，不再自己占一行（用户 2026-11-05 口径）
+    check(
+      host.querySelector(".row-command-head .card-copy-actions > button") !== null,
+      "命令的复制入口落在命令行行尾",
+    );
+    check(host.querySelector(".row-command .node-copy-actions") === null, "命令不再为复制按钮单独占一行");
     reset(<UnknownBlockRow node={opened} block={{ type: "future", json: '{\n  "keep": true\n}' }} />);
     check(clickCopy() === '{\n  "keep": true\n}', "未知块保留完整 JSON 原文");
     reset(<NoticeRow level="warn" text={raw} />);
@@ -85,6 +100,12 @@ export async function run(): Promise<{ checks: number }> {
     const prompt = clickCopy();
     check(["方向", "选择哪个？", "**背景**", "A", "方案 A", "B"].every((part) => prompt.includes(part)), "待答问卷包含题头、正文、详情与选项");
     check(!prompt.includes(texts.questionAnswerSkipped), "待答复制不把未提交草稿当成已跳过回答");
+    // 复制入口与第一题题头同一行，不再自己占一行（用户 2026-11-05 口径）
+    check(
+      host.querySelectorAll(".question .question-head .card-copy-actions > button").length === 1,
+      "待答问卷的复制入口落在题头行右端",
+    );
+    check(host.querySelector(".question .node-copy-actions") === null, "待答问卷不再为复制按钮单独占一行");
     const plan: QuestionView = { requestId: "plan", state: "waiting", items: [{ id: "p", question: "同意计划？",
       detail: "# Plan\n\n- step", options: [{ label: "Approve" }], intent: { kind: "plan-review", approve: "Approve" } }] };
     reset(<QuestionCard question={plan} />);
@@ -94,6 +115,12 @@ export async function run(): Promise<{ checks: number }> {
     flushSync(() => recordHead!.click());
     const record = clickCopy();
     check(record.includes("# Plan\n\n- step") && record.includes("Approve"), "计划记录同时复制计划正文与已提交回答");
+    // 记录卡展开后同样与第一题题头同一行（用户 2026-11-05 口径）
+    check(
+      host.querySelectorAll(".question.is-record .question-head .card-copy-actions > button").length === 1,
+      "记录卡的复制入口落在第一题题头行右端",
+    );
+    check(host.querySelector(".question-record-actions") === null, "记录卡不再为复制按钮单独占一行");
 
     const message: MessageView = { id: "assistant", role: "assistant", ts: 1, segments: [
       { id: "t1", kind: "text", text: "**before**\n\n第二自然段" },

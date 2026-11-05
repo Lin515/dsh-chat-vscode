@@ -110,6 +110,52 @@ const selectedLabels = (html: string): string[] =>
 }
 console.log("questionRender: 待回答的自定义回答与选项同列表 ✓");
 
+// ---------- 1b. 复制入口与第一题题头**同一行** ----------
+//
+// 用户 2026-11-05 口径：待答问卷的复制按钮此前排在题面上方、自己独占一行，一枚
+// 图标就白占一整行高度；它应当落在「题头」行的右端。这里在产出的 HTML 上确认两者
+// 在同一个父元素里，且不再有独立的复制动作行。记录卡展开后的同一处落点（SSR 不
+// 挂载收起卡的正文）由 `scripts/nodeCopyBrowser.tsx` 在真实 DOM 上确认。
+{
+  const html = render({ requestId: "ev-copy", state: "waiting", items });
+  const head = /<div class="question-head">([\s\S]*?)<\/div>/.exec(html)?.[1] ?? "";
+  assert.match(head, /class="question-head-label"/, `题头文字要在题头行里：${head}`);
+  assert.match(
+    head,
+    /class="card-copy-actions"><button[^>]*title="复制"/,
+    `复制按钮要在题头行右端、与抬头同一行：${head}`,
+  );
+  assert.ok(!html.includes("node-copy-actions"), "复制按钮不再单独占一行");
+  assert.strictEqual(
+    (html.match(/class="card-copy-actions"/g) ?? []).length,
+    1,
+    "整张待答卡只有一枚复制入口（落在第一题题头）",
+  );
+
+  // 依次问答：一次只画一道题，复制入口仍跟着当前题落在卡顶那一行
+  const stepped = renderToStaticMarkup(
+    createElement(
+      TextsContext.Provider,
+      { value: dictionaryFor("zh") },
+      createElement(QuestionCard, { question: { requestId: "ev-copy-step", state: "waiting", items }, batch: 1 }),
+    ),
+  );
+  assert.ok(stepped.includes("第 1 / 2 题"), "阈值 1 时走依次问答");
+  assert.strictEqual(
+    (stepped.match(/<div class="question-item">/g) ?? []).length,
+    1,
+    "依次问答一次只画当前这一题",
+  );
+  assert.strictEqual(
+    (stepped.match(/class="card-copy-actions"/g) ?? []).length,
+    1,
+    "依次问答时复制入口仍在当前题的题头行上",
+  );
+  const steppedHead = /<div class="question-head">([\s\S]*?)<\/div>/.exec(stepped)?.[1] ?? "";
+  assert.match(steppedHead, /class="card-copy-actions"/, "依次问答的复制入口也在题头行里");
+}
+console.log("questionRender: 复制入口与第一题题头同一行 ✓");
+
 // ---------- 2. 有答案时，选项高亮与自定义文本都由 `question.answers` 驱动 ----------
 //
 // 这正是记录卡展开后要走的那对读取器（`selectedOf` / `customOf`）：本地 state 是空的，

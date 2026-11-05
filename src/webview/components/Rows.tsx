@@ -924,12 +924,7 @@ export function InjectedRow({ injected, node }: { injected: InjectedView; node: 
     recallCounts: texts.contextRecallCounts,
     recallTruncated: texts.contextRecallTruncated,
   });
-  const copyAction =
-    copyText.trim() === "" ? null : (
-      <div className="node-copy-actions">
-        <CopyButton text={copyText} />
-      </div>
-    );
+  const copyAction = copyText.trim() === "" ? null : <CopyButton text={copyText} />;
   const structured = hasInjectedStructure(injected.source);
 
   return (
@@ -954,30 +949,47 @@ export function InjectedRow({ injected, node }: { injected: InjectedView; node: 
         action={structured ? copyAction : undefined}
       />
       <div ref={bodyRef} className="row-body mono row-injected">
-        {structured ? null : copyAction}
+        {/* 原文兜底没有标题行：复制按钮仍是正文上方的一条工具行。有结构化正文时
+            它归 `InjectedFormBody`，与首个分段抬头同一行（见那里的 `heading`）。 */}
+        {structured || copyAction === null ? null : (
+          <div className="node-copy-actions">{copyAction}</div>
+        )}
         {shownText}
       </div>
     </Row>
   );
 }
 
-/** 上下文条目的 per-form 正文（官方 `ContextBody` 的对应部分）。 */
+/**
+ * 上下文条目的 per-form 正文（官方 `ContextBody` 的对应部分）。
+ *
+ * 复制入口落在**首个分段抬头那一行的右端**：有抬头就与它同一行，不另起一行；
+ * 没有抬头的形态（回忆条目直接给列表）才退回正文上方的一条工具行。
+ */
 function InjectedFormBody({
   source,
   action,
 }: {
   source?: InjectedSourceView;
-  /** 展开体首的复制动作（有结构化正文时归这里，见 `InjectedRow`）。 */
+  /** 整份注入的复制动作（有结构化正文时归这里，见 `InjectedRow`）。 */
   action?: ReactNode;
 }) {
   const texts = useTexts();
   if (!hasInjectedStructure(source)) return null;
 
+  /** 分段抬头行：标题在左，复制入口在右。 */
+  const heading = (title: string): ReactNode => (
+    <div className="ctx-head">
+      <span className="ctx-title">{title}</span>
+      {action ? <span className="card-copy-actions">{action}</span> : null}
+    </div>
+  );
+
   let body: ReactNode = null;
   if (source?.changes?.length) {
     body = (
       <>
-        <div className="ctx-title">{texts.contextInstructions}</div>
+        {heading(texts.contextInstructions)}
         <ul className="ctx-list">
           {source.changes.map((change) => (
             <li key={change.path}>
@@ -998,7 +1010,7 @@ function InjectedFormBody({
     const shown = source.entries.slice(0, MAX_CATALOG_ENTRIES);
     body = (
       <>
-        <div className="ctx-title">{texts.contextCatalogReplaced}</div>
+        {heading(texts.contextCatalogReplaced)}
         <ul className="ctx-list">
           {shown.map((entry) => (
             <li key={entry.name}>
@@ -1017,7 +1029,7 @@ function InjectedFormBody({
   } else if (source?.sections?.length) {
     body = (
       <>
-        <div className="ctx-title">{texts.contextSnapshotSupersedes}</div>
+        {heading(texts.contextSnapshotSupersedes)}
         {source.sections.map((section) => (
           <div className="ctx-section" key={section.name}>
             <div className="ctx-sub">{section.name}</div>
@@ -1027,30 +1039,29 @@ function InjectedFormBody({
       </>
     );
   } else if (source?.senderSessionId) {
-    body = <div className="ctx-title">{texts.contextRelayFrom(source.senderSessionId)}</div>;
+    body = heading(texts.contextRelayFrom(source.senderSessionId));
   } else if (source?.references?.length) {
     body = (
-      <ul className="ctx-list">
-        {source.references.map((reference) => (
-          <li key={reference.label}>
-            <span className="ctx-value">{reference.label}</span>
-            <span className="ctx-desc">
-              {texts.contextRecallCounts(reference.retainedMessages, reference.omittedMessages)}
-              {reference.truncated ? ` · ${texts.contextRecallTruncated}` : ""}
-            </span>
-          </li>
-        ))}
-      </ul>
+      <>
+        {/* 回忆条目没有分段抬头：复制入口只能留在正文上方一行 */}
+        {action ? <div className="node-copy-actions">{action}</div> : null}
+        <ul className="ctx-list">
+          {source.references.map((reference) => (
+            <li key={reference.label}>
+              <span className="ctx-value">{reference.label}</span>
+              <span className="ctx-desc">
+                {texts.contextRecallCounts(reference.retainedMessages, reference.omittedMessages)}
+                {reference.truncated ? ` · ${texts.contextRecallTruncated}` : ""}
+              </span>
+            </li>
+          ))}
+        </ul>
+      </>
     );
   }
 
   if (body === null) return null;
-  return (
-    <div className="row-body ctx-body">
-      {action}
-      {body}
-    </div>
-  );
+  return <div className="row-body ctx-body">{body}</div>;
 }
 
 /** 字数：上千用 K，与 token 的展示口径分开（这是字符数，不是 token）。 */
@@ -1596,6 +1607,12 @@ function QuestionCardState({
   const draftCopyText = pendingQuestionCopyText(items, draftSelected, draftCustom, {
     custom: texts.questionCustomTitle,
   });
+  // 与记录卡同一处落点：第一题题头行右端（见 `renderItem`）。依次问答时它跟着
+  // 当前题走，视觉位置始终在卡片顶端那一行。
+  const pendingCopy =
+    items.length > 0 && draftCopyText.trim() !== "" ? (
+      <CopyButton text={draftCopyText} />
+    ) : undefined;
 
   const toggle = (itemId: string, label: string, multi?: boolean) => {
     setSelected((prev) => {
@@ -1693,14 +1710,23 @@ function QuestionCardState({
     else if (canSubmit(items, effectiveSelected, effectiveCustom)) submit();
   };
 
-  /** 题目正文（两种形态共用）。 */
-  const renderItem = (item: QuestionView["items"][number]) => {
+  /**
+   * 题目正文（两种形态共用）。
+   *
+   * `action` 是**整张卡**的复制入口，只交给第一题（两处调用见下）：它落在题头行的
+   * 右端，与「本轮目标」这类抬头共用一行，而不是自己占掉一行高度。题头是普通
+   * `div`（不是开合按钮），按钮放在里面不会嵌套。
+   */
+  const renderItem = (item: QuestionView["items"][number], action?: ReactNode) => {
     const customValue = customOf(item.id);
     const customSelected = customChosenOf(item.id);
     return (
       <div className="question-item" key={item.id}>
         <div className="question-head">
-          <IconQuestion size={11} /> {item.header ?? texts.questionHead}
+          <span className="question-head-label">
+            <IconQuestion size={11} /> {item.header ?? texts.questionHead}
+          </span>
+          {action ? <span className="card-copy-actions">{action}</span> : null}
         </div>
         <div className="question-text">{item.question}</div>
         {/* 题目的补充正文（`detail`）：官方把它排在选项**上方**、用与助手正文同一个
@@ -1836,6 +1862,9 @@ function QuestionCardState({
   // 计划审阅的记录除了「批准 / 拒绝」还要能带走计划正文本身：只回 `replyText`
   // 的话，整份计划在剪贴板里就消失了（记录卡展开体里明明有 `detail`）。
   const recordCopyText = review ? planReviewRecordCopyText(review.plan, replyText) : replyText;
+  // 记录卡与待答卡共用同一处复制入口：第一题的题头行右端（见 `renderItem`）。
+  // 有题目就给按钮，这条判据与旧版一致。
+  const recordCopy = items.length > 0 ? <CopyButton text={recordCopyText} /> : undefined;
   if (!waiting) {
     return (
       <Row
@@ -1854,13 +1883,12 @@ function QuestionCardState({
         onToggle={() => setExpanded(!expanded)}
       >
         <div className="question is-record">
-          {/* 复制按钮放体首右上角：行头整体是一个开合按钮，不能嵌按钮（Row 同口径）。 */}
-          {items.length > 0 ? (
-            <div className="question-record-actions">
-              <CopyButton text={recordCopyText} />
-            </div>
-          ) : null}
-          {items.map(renderItem)}
+          {/* 复制按钮落在**第一题题头行的右端**：行头（`Row` 那一行）整体是开合按钮，
+              不能嵌按钮；题头行是普通元素，可以安全地放在同一行的行尾——不再另起
+              一行让一枚图标白占高度。 */}
+          {items.map((item, index) =>
+            renderItem(item, index === 0 ? recordCopy : undefined),
+          )}
         </div>
       </Row>
     );
@@ -1874,15 +1902,10 @@ function QuestionCardState({
 
   return (
     <div className="question">
-      {/* 待答卡没有卡头（整张卡就是题目区），复制入口放展开体首一行：
-          行头与卡内都没有可嵌套的按钮，这里可以安全放。载荷是整组题目与当前
-          填写状态——不含「回答」措辞，避免把未提交的选择说成已提交。 */}
-      {items.length > 0 && draftCopyText.trim() !== "" ? (
-        <div className="node-copy-actions">
-          <CopyButton text={draftCopyText} />
-        </div>
-      ) : null}
-      {shown.map(renderItem)}
+      {/* 复制入口与**第一题题头**同一行（题头行右端）：待答卡没有卡头，旧版把它放在
+          题面上方单独一行，一枚图标就占掉一整行高度（2026-11-05 口径）。载荷是整组
+          题目与当前填写状态——不含「回答」措辞，避免把未提交的选择说成已提交。 */}
+      {shown.map((item, index) => renderItem(item, index === 0 ? pendingCopy : undefined))}
       {/* 只读（子代理记录）：不画提交行——那份记录属于另一个会话 */}
       {interactive ? (
         <div className="question-footer">
@@ -2153,16 +2176,21 @@ export function CommandRow({ command, node }: { command: CommandRunView; node: N
       onToggle={() => node.setOpen(!open, command.state === "running")}
     >
       <div ref={bodyRef} className="row-body mono row-command">
-        <div className="node-copy-actions">
-          <CopyButton
-            text={commandCopyText({
-              name: command.name || texts.commands,
-              args: command.args,
-              text: command.text,
-            })}
-          />
+        {/* 复制按钮与命令行**同一行**：展开体的第一行就是这条命令行，另起一行会让
+            一枚图标白占一行的位置。命令本身既是正文也是这一段的抬头，按钮顶到行尾，
+            命令行折行时仍从第一行开始（2026-11-05 口径）。 */}
+        <div className="row-command-head">
+          <div className="row-command-line">{commandLink}{command.args ? ` ${command.args}` : ""}</div>
+          <span className="card-copy-actions">
+            <CopyButton
+              text={commandCopyText({
+                name: command.name || texts.commands,
+                args: command.args,
+                text: command.text,
+              })}
+            />
+          </span>
         </div>
-        <div className="row-command-line">{commandLink}{command.args ? ` ${command.args}` : ""}</div>
         {command.text ? <div className="row-command-result">{command.text}</div> : null}
       </div>
     </Row>
