@@ -313,7 +313,7 @@
 - [dshContract.ts](<dshContract.ts>) — DSH 契约快照与差异分析纯逻辑（官方契约面 × 本扩展消费面 = 影响面）。
 - [dshContract.test.ts](<dshContract.test.ts>) — 上述逻辑的离线断言（版本判读、差异分级规则）。
 - [dshCompat.ts](<dshCompat.ts>) — `watch`／`snapshot <版本>`／`check` 服务端契约追踪；**不覆盖官方 UI 语义**，远端版本／契约获取可能访问网络，不耗模型 token 不等于断网。
-- [vendorSourceLock.ts](<vendorSourceLock.ts>)、[登记表](<vendorSourceLock.json>)、[离线回归](<vendorSourceLock.test.ts>) — 19 份官方原字节见证与 vendor 文件集合双向锁；只归一化模块说明符，保留 literal／template／regex／ASI 语义。基准为固定官方提交，不用本地 HEAD；自洽摘要不能认证历史来源。原字节见证与授权边界见[夹具索引](<../test/fixtures/README.md>)。
+- [vendorSourceLock.ts](<vendorSourceLock.ts>)、[登记表](<vendorSourceLock.json>)、[离线回归](<vendorSourceLock.test.ts>) — 21 份官方原文字节见证（覆盖 22 份 vendor 副本）与 vendor 文件集合双向锁；只归一化模块说明符，保留 literal／template／regex／ASI 语义。基准为固定官方提交，不用本地 HEAD；自洽摘要不能认证历史来源。原字节见证与授权边界见[夹具索引](<../test/fixtures/README.md>)。
 
 ## 工具脚本（`*.mjs`）
 
