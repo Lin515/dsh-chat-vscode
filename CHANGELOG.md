@@ -3,6 +3,30 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 This project follows [Semantic Versioning](https://semver.org/).
 
+## 0.13.1（2026-11-06）
+
+### 中文
+
+- 改进：自动化任务卡片与操作区布局更清晰，倒计时实时刷新，创建成功后自动收起编辑卡片。
+- 修复：一次性任务不再被误判为已修改，删除、暂停与立即运行操作恢复可用。
+- 改进：对齐 DSH 0.2.2-rc.1 的自动化规则校验、工作目录选择与目标续跑授权状态，重连后不再沿用旧连接的授权结果。
+- 修复：问卷记录始终默认收起，展开后的逐题浏览仍遵循当前显示设置。
+- 修复：重连后的消息回显与待发队列交接更可靠，避免将已受理的消息误判为发送失败。
+- 改进：轨迹面板对齐 DSH 0.2.2-rc.1 的工具结果、请求状态与计时展示，并支持实时查看结果。
+- 修复：切换连接后清除轨迹面板的旧选择，重新选中即可观察新连接的结果，压缩后的助手用时不再计入压缩耗时。
+- 改进：对齐 DSH 0.2.2-rc.1 的 Markdown 路径链接、代码着色与终端状态展示。
+
+### English
+
+- Improved: Automation task cards and controls have a clearer layout, countdowns update live, and the creation card closes automatically after success.
+- Fixed: One-time tasks are no longer incorrectly marked as modified, restoring deletion, pause, and run-now actions.
+- Improved: Automation rule validation, working-directory selection, and goal continuation authorization align with DSH 0.2.2-rc.1, without reusing authorization results from an old connection.
+- Fixed: Questionnaire records always start collapsed, while per-question browsing after expansion still follows the current display setting.
+- Fixed: Message echoes and queued submissions are handed over more reliably after reconnection, avoiding false send failures for accepted messages.
+- Improved: The trajectory panel aligns tool results, request states, and timing with DSH 0.2.2-rc.1 and supports live result viewing.
+- Fixed: Switching connections clears the trajectory panel's old selection so reselecting can observe results on the new connection, and assistant durations after compaction no longer include compaction time.
+- Improved: Markdown path links, syntax highlighting, and terminal status display align with DSH 0.2.2-rc.1.
+
 ## 0.13.0（2026-11-06）
 
 ### 中文
