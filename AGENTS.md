@@ -22,6 +22,7 @@
 
 本扩展自绘界面，但能力与数据语义须与官方 `dsh web` 一致。
 
+- 任何功能的新增，需尽可能直接复用官方代码，减少自我实现。
 - 协议改动先读[服务端契约](<docs/dsh-server-api.md>)，再按[技术文档导航](<docs/README.md>)选择对应主题的消费规则与边界，核对目标版本 API 包的 `lib/types/**/*.d.ts`、`lib/client.js`。不猜载荷形状；需要实测时遵守「构建与验证」的批准要求。
 - 投影的已提交值与 `pending` / `wanted` 待提交值须组合解读，例如 plan 为 `pending ? !active : active`。线格式与视图模型不可混用：`toUsage` 读取 `cacheReadTokens`，不是视图字段 `cachedTokens`。
 - 官方版本、渠道、发布去向与兼容层统一登记在 `docs/dsh-compat.md`。新版先跑 `npm run dsh:watch`，再逐版 `npm run dsh:check -- <版本>`。差异处理完成后才推进基准；涉及发布的用户可见变化写入该版 CHANGELOG，不另建文档台账。
