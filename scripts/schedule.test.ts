@@ -573,6 +573,14 @@ console.log("schedule: 绝对时间文本 ✓");
   assert.ok(/max-height:/.test(block(".schedule-record-prompt")), "记录里的指令限高内滚（长指令不许把面板撑长）");
   assert.ok(/overflow-wrap:\s*anywhere/.test(block(".schedule-record-prompt")), "长 token 也要能断行");
   assert.ok(/nowrap/.test(block(".schedule-btn")), "按钮文案不许折行");
+  assert.match(block(".schedule-row-actions"), /flex-wrap:\s*wrap/, "操作条窄屏自动换行");
+  assert.match(block(".schedule-btn"), /min-height:/, "操作按钮保留可点击高度");
+  assert.match(block(".schedule-btn"), /text-overflow:\s*ellipsis/, "英文长按钮可省略");
+  assert.match(block(".schedule-field"), /flex-direction:\s*column/, "表单标签不挤占英文控件宽度");
+  for (const status of ["active", "paused"]) {
+    assert.match(block(`.schedule-row[data-status="${status}"] .schedule-status`), /color:/, "状态胶囊单独配色");
+  }
+  assert.match(block(".schedule-confirm-actions"), /flex-wrap:\s*wrap/, "确认区按钮也适应窄侧栏");
 }
 console.log("schedule: 接线与样式 ✓");
 

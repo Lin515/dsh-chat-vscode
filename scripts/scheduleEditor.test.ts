@@ -395,6 +395,7 @@ function buttonTag(html: string, aria: string): string {
       modern?: boolean;
       archived?: readonly string[];
       locale?: "zh" | "en";
+      open?: boolean;
     } = {},
   ): string => {
     const row = { ...base, ...overrides };
@@ -403,7 +404,7 @@ function buttonTag(html: string, aria: string): string {
       createElement(ScheduleRow, {
         item: row,
         now: Date.parse(row.scheduledAt) - 60_000,
-        open: true,
+        open: options.open ?? true,
         modern: options.modern ?? true,
         capabilityKnown: options.capabilityKnown ?? true,
         catalogStatus: options.catalogStatus ?? "ready",
@@ -418,6 +419,25 @@ function buttonTag(html: string, aria: string): string {
       options.locale,
     );
   };
+
+  // 操作条不依赖编辑区展开，所有操作都带中英文可见标签。
+  for (const locale of ["zh", "en"] as const) {
+    const texts = dictionaryFor(locale);
+    const collapsed = renderRow({}, { locale, open: false });
+    assert.match(collapsed, /class="job-row schedule-row" data-status="active"/);
+    assert.match(collapsed, /class="schedule-row-actions"/);
+    assert.ok(collapsed.includes(texts.scheduleRunNow));
+    assert.ok(collapsed.includes(texts.schedulePause));
+    assert.ok(collapsed.includes(texts.scheduleDelete));
+    assert.doesNotMatch(collapsed, /class="job-panel"|schedule-confirm/);
+    assert.doesNotMatch(buttonTag(collapsed, texts.scheduleRunAria(base.title)), /disabled/);
+    const paused = renderRow({ status: "paused" }, { locale, open: false });
+    assert.match(paused, /data-status="paused"/);
+    assert.ok(paused.includes(texts.scheduleResume));
+    assert.doesNotMatch(buttonTag(paused, texts.scheduleResumeAria(base.title)), /disabled/);
+    const legacy = renderRow({}, { locale, open: false, modern: false });
+    assert.ok(!legacy.includes(texts.scheduleRunAria(base.title)), "旧代折叠状态也没有运行入口");
+  }
 
   // 执行中：运行、删除、暂停都禁用，表单只读
   const executing = renderRow({ executionActive: true });

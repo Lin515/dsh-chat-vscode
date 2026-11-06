@@ -854,6 +854,7 @@ export const MESSAGES = {
     zh: (time: string) => `最早 ${time} 可再次投递`,
     en: (time: string) => `Next delivery not before ${time}`,
   },
+  scheduleDelete: { zh: "删除", en: "Delete" },
   schedulePause: { zh: "暂停", en: "Pause" },
   scheduleResume: { zh: "恢复", en: "Resume" },
   schedulePauseAria: {

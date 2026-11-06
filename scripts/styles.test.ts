@@ -95,7 +95,8 @@ console.log("styles: 弹层宽度视口感知 ✓");
   const actions = rule(".schedule-actions");
   assert.match(actions, /min-width:\s*0/, "保存 / 运行操作行必须允许收缩");
   const confirm = rule(".schedule-confirm");
-  assert.match(confirm, /flex-wrap:\s*wrap/, "运行确认块放不下时换行");
+  assert.match(confirm, /flex-direction:\s*column/, "运行确认文案独立一行，不与按钮争宽度");
+  assert.match(rule(".schedule-confirm-actions"), /flex-wrap:\s*wrap/, "运行确认按钮放不下时换行");
 }
 console.log("styles: 自动化任务窄侧栏可收缩 ✓");
 

@@ -165,7 +165,7 @@ export function SchedulesSection({
   const archived = useMemo(() => new Set(archivedSessionIds ?? []), [archivedSessionIds]);
 
   return (
-    <div className="panel-section">
+    <div className="panel-section schedule-section">
       <div className="panel-section-title">{texts.scheduleSection}</div>
       <div className="schedule-toolbar">
         <div className="schedule-tabs" role="group" aria-label={texts.scheduleSection}>
@@ -664,7 +664,7 @@ export function ScheduleRow({
   };
 
   return (
-    <div className="job-row">
+    <div className={`job-row schedule-row${open ? " is-open" : ""}`} data-status={scheduleStatusOf(item)}>
       <div className="job-head">
         <button
           type="button"
@@ -678,24 +678,52 @@ export function ScheduleRow({
           <span className="job-label" title={item.title}>
             {item.title}
           </span>
-          <span className="job-kind">{statusText}</span>
+          <span className="schedule-status">{statusText}</span>
           <IconChevronDown size={12} className={`job-chevron${open ? " is-open" : ""}`} />
         </button>
+      </div>
+      <div className="schedule-meta">
+        {frequency ? <span className="schedule-frequency">{frequency}</span> : null}
+        <span>
+          {active || item.status === "paused" ? `${texts.scheduleNextRun} ` : `${texts.scheduleLastTarget} `}
+          {stamp}
+          {relative ? <span className="schedule-relative"> · {relative}</span> : null}
+        </span>
+      </div>
+      <div className="schedule-row-actions" aria-busy={controls.busy}>
+        {modern ? (
+          <button
+            type="button"
+            className="schedule-btn is-run"
+            disabled={controls.runHeld}
+            title={
+              controls.runHeld
+                ? runHeldReason({ dirty, executionActive, floorNotice, targetArchived, authoritative: controls.authoritative }, texts)
+                : undefined
+            }
+            aria-label={texts.scheduleRunAria(item.title)}
+            onClick={() => setRunConfirm(true)}
+          >
+            <IconPlay size={12} />
+            {pending?.op === "run" ? texts.scheduleRunning : texts.scheduleRunNow}
+          </button>
+        ) : null}
         {controls.pauseVisible ? (
           <button
             type="button"
-            className="job-stop"
+            className="schedule-btn"
             disabled={!controls.canPause}
             title={active ? texts.schedulePauseAria(item.title) : texts.scheduleResumeAria(item.title)}
             aria-label={active ? texts.schedulePauseAria(item.title) : texts.scheduleResumeAria(item.title)}
             onClick={() => setActive(!active)}
           >
-            {active ? <IconPause size={10} /> : <IconPlay size={10} />}
+            {active ? <IconPause size={12} /> : <IconPlay size={12} />}
+            {active ? texts.schedulePause : texts.scheduleResume}
           </button>
         ) : null}
         <button
           type="button"
-          className={`job-stop${deletePhase?.state === "armed" ? " is-armed" : ""}${
+          className={`schedule-btn is-danger${deletePhase?.state === "armed" ? " is-armed" : ""}${
             deletePhase?.state === "failed" ? " is-failed" : ""
           }`}
           data-kill-state={deletePhase?.state ?? "idle"}
@@ -707,25 +735,37 @@ export function ScheduleRow({
                 ? texts.scheduleDeleteFailed
                 : texts.scheduleDeleteTitle(item.title)
           }
-          aria-label={texts.scheduleDeleteTitle(item.title)}
+          aria-label={deletePhase?.state === "armed" ? texts.scheduleDeleteConfirmAction : texts.scheduleDeleteTitle(item.title)}
           onClick={pressDelete}
         >
-          <IconTrash size={10} />
-          {deletePhase?.state === "armed" ? (
-            <span className="job-stop-label">{texts.scheduleDeleteConfirmAction}</span>
-          ) : null}
+          <IconTrash size={12} />
+          {deletePhase?.state === "armed"
+            ? texts.scheduleDeleteConfirmAction
+            : deletePhase?.state === "pending"
+              ? texts.scheduleDeleting
+              : deletePhase?.state === "failed"
+                ? texts.scheduleDeleteFailed
+                : texts.scheduleDelete}
         </button>
       </div>
-      <div className="job-meta">
-        {frequency ? `${frequency} · ` : ""}
-        {active || item.status === "paused" ? `${texts.scheduleNextRun} ` : `${texts.scheduleLastTarget} `}
-        {stamp}
-        {relative ? `（${relative}）` : ""}
-      </div>
+      {modern && runConfirm ? (
+        <div className="schedule-confirm" role="group" aria-label={texts.scheduleRunConfirmTitle}>
+          <div className="schedule-card-title">{texts.scheduleRunConfirmTitle}</div>
+          <div className="job-notice">{texts.scheduleRunConfirmNote}</div>
+          <div className="schedule-confirm-actions">
+            <button type="button" className="schedule-btn" disabled={controls.busy} onClick={() => setRunConfirm(false)}>
+              {texts.scheduleCancel}
+            </button>
+            <button type="button" className="schedule-btn is-primary" disabled={controls.runHeld} onClick={run}>
+              {texts.scheduleRunConfirmAction}
+            </button>
+          </div>
+        </div>
+      ) : null}
       {deletePhase?.state === "failed" && deleteError ? (
         <div className="job-notice is-error">{deleteError}</div>
       ) : null}
-      {deletePhase?.state === "pending" ? <div className="job-notice">{texts.scheduleDeleting}</div> : null}
+      {failure ? <div className="job-notice is-error" role="alert">{failure}</div> : null}
       {open ? (
         <div className="job-panel">
           {executionActive ? <div className="job-notice">{texts.scheduleExecutionActive}</div> : null}
@@ -775,7 +815,6 @@ export function ScheduleRow({
           {!canEditDetails && item.api !== "edit" && capabilityKnown ? (
             <div className="job-notice">{texts.scheduleCapabilityLegacy}</div>
           ) : null}
-          {failure ? <div className="job-notice is-error">{failure}</div> : null}
           {dirty && !stale ? (
             <div className="schedule-actions">
               <span className="schedule-unsaved">{texts.scheduleUnsaved}</span>
@@ -799,40 +838,6 @@ export function ScheduleRow({
               >
                 {pending?.op === "update" ? texts.scheduleSaving : texts.scheduleSave}
               </button>
-            </div>
-          ) : null}
-          {/* 立即运行是新代能力：旧代整块不出现（不是灰一个按钮）——旧服务端没有
-              这个端点，展示一个永远不可用的入口只会让人以为差一次点击 */}
-          {modern ? (
-            <div className="schedule-actions">
-              <span className="spacer" />
-              {runConfirm ? (
-                <div className="schedule-confirm" role="group" aria-label={texts.scheduleRunConfirmTitle}>
-                  <div className="job-notice">{texts.scheduleRunConfirmNote}</div>
-                  <button type="button" className="schedule-btn" disabled={controls.busy} onClick={() => setRunConfirm(false)}>
-                    {texts.scheduleCancel}
-                  </button>
-                  <button type="button" className="schedule-btn is-primary" disabled={controls.runHeld} onClick={run}>
-                    {pending?.op === "run" ? texts.scheduleRunning : texts.scheduleRunConfirmAction}
-                  </button>
-                </div>
-              ) : (
-                <button
-                  type="button"
-                  className="schedule-btn"
-                  disabled={controls.runHeld}
-                  title={
-                    controls.runHeld
-                      ? runHeldReason({ dirty, executionActive, floorNotice, targetArchived, authoritative: controls.authoritative }, texts)
-                      : undefined
-                  }
-                  aria-label={texts.scheduleRunAria(item.title)}
-                  onClick={() => setRunConfirm(true)}
-                >
-                  <IconPlay size={10} />
-                  {texts.scheduleRunNow}
-                </button>
-              )}
             </div>
           ) : null}
           <ScheduleRecords item={item} entry={history} dispatch={dispatch} />

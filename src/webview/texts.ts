@@ -508,6 +508,7 @@ export interface Texts {
   /** 运行状态与间隔限制。 */
   scheduleExecutionActive: string;
   scheduleDeliveryFloor: (time: string) => string;
+  scheduleDelete: string;
   schedulePause: string;
   scheduleResume: string;
   schedulePauseAria: (title: string) => string;
