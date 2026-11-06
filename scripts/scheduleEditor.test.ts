@@ -18,7 +18,7 @@
 import assert from "node:assert";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { ScheduleItemView } from "../src/shared/chat";
+import type { ScheduleItemView, SessionSummaryView } from "../src/shared/chat";
 import {
   scheduleCreateDraft,
   scheduleInvolvesSession,
@@ -39,8 +39,8 @@ import {
   scheduleResultSettles,
   type SchedulePendingOp,
 } from "../src/webview/scheduleOps";
-import { initialState, reducer } from "../src/webview/state";
-import { TextsContext, dictionaryFor } from "../src/webview/texts";
+import { initialState, reducer, type ScheduleHistoryState } from "../src/webview/state";
+import { TextsContext, LocaleContext, dictionaryFor } from "../src/webview/texts";
 
 // `bridge.ts` 在模块求值期挂 `window` 监听；无头环境补一个最小的。
 (globalThis as { window?: unknown }).window = {
@@ -48,8 +48,8 @@ import { TextsContext, dictionaryFor } from "../src/webview/texts";
   removeEventListener: () => {},
 };
 
-const { ScheduleRow } = await import("../src/webview/components/Schedules");
-const { ScheduleEditor } = await import("../src/webview/components/ScheduleEditor");
+const { ScheduleRow, scheduleHistoryShouldLoad } = await import("../src/webview/components/Schedules");
+const { ScheduleEditor, scheduleTargetSessionChoices } = await import("../src/webview/components/ScheduleEditor");
 
 /** 一条新代目录条目的视图模型。 */
 function item(overrides: Partial<ScheduleItemView> = {}): ScheduleItemView {
@@ -327,6 +327,30 @@ console.log("scheduleEditor: 操作标识与结算匹配 ✓");
 }
 console.log("scheduleEditor: 执行记录迟到帧 ✓");
 
+// ---------- 6b. 执行记录何时自动读：`code` 是终点，重新展开才放行一次 ----------
+{
+  const entry = (overrides: Partial<ScheduleHistoryState> = {}): ScheduleHistoryState => ({
+    records: [],
+    unavailable: false,
+    pruned: false,
+    loading: false,
+    loaded: true,
+    ...overrides,
+  });
+  assert.equal(scheduleHistoryShouldLoad(false, undefined, false), false, "收起时不读");
+  assert.equal(scheduleHistoryShouldLoad(true, undefined, false), true, "展开且没有记录：读第一页");
+  assert.equal(scheduleHistoryShouldLoad(true, entry({ loading: true, loaded: false }), false), false, "正在读时不重复发");
+  assert.equal(scheduleHistoryShouldLoad(true, entry(), false), false, "成功读过：同一段展开里不再重发");
+  assert.equal(scheduleHistoryShouldLoad(true, entry({ code: "schedule_not_found" }), false), false, "`code` 是终点，不能每次回帧都再发一次（旧实现的无上限往返）");
+  assert.equal(scheduleHistoryShouldLoad(true, entry({ code: "delivery_cursor_not_found" }), false), false);
+  assert.equal(scheduleHistoryShouldLoad(true, entry({ code: "schedule_not_found", loaded: false }), true), true, "重新展开时放行一次重读");
+  assert.equal(scheduleHistoryShouldLoad(true, entry({ error: "boom" }), true), false, "失败仍由手动重试收场，不随展开自动重发");
+  assert.equal(scheduleHistoryShouldLoad(true, entry({ hostUnavailable: true }), true), false);
+  // 手动重试 / 重新展开都走 reset 请求：模拟消费掉展开意图之后，下一次回帧不能再自触发。
+  assert.equal(scheduleHistoryShouldLoad(true, entry({ code: "schedule_not_found" }), false), false);
+}
+console.log("scheduleEditor: 执行记录读取终点与重展开 ✓");
+
 // ---------- 7. 变更入口策略（官方 TaskDetail 条件） ----------
 {
   const baseline = scheduleRowControls(controlsState());
@@ -411,9 +435,38 @@ console.log("scheduleEditor: 变更入口策略 ✓");
   assert.equal(scheduleTargetError({ ...create, target: "session", sessionId: "s1" }), undefined);
 }
 
+// ---------- 8b. 目标会话候选：blank 会话不再被跳过（官方用全部 sessions.ids） ----------
+{
+  const session = (id: string, title: string, blank = false): SessionSummaryView => ({
+    id,
+    title,
+    updatedAt: 0,
+    running: false,
+    ...(blank ? { blank: true } : {}),
+  });
+  const sessions = [session("blank-1", "新对话", true), session("filled-1", "构建")];
+  const choices = scheduleTargetSessionChoices(sessions, "current", "stored");
+  assert.deepEqual(
+    choices.map((choice) => choice.value),
+    ["current", "stored", "blank-1", "filled-1"],
+    "空壳会话与内容会话一样可选（投递到空壳是服务端允许的目标）",
+  );
+  assert.deepEqual(
+    scheduleTargetSessionChoices([], "current", "stored").map((choice) => choice.value),
+    ["current", "stored"],
+    "当前与会话原落点即使在列表外也保留",
+  );
+}
+
 /** 按指定词典渲染一段界面，默认英文（与真实链路同一个 provider）。 */
 const render = (element: ReturnType<typeof createElement>, locale: "zh" | "en" = "en"): string =>
-  renderToStaticMarkup(createElement(TextsContext.Provider, { value: dictionaryFor(locale) }, element));
+  renderToStaticMarkup(
+    createElement(
+      TextsContext.Provider,
+      { value: dictionaryFor(locale) },
+      createElement(LocaleContext.Provider, { value: locale }, element),
+    ),
+  );
 
 /** 取一个带指定 aria-label 的按钮开始标签，用来断言 disabled。 */
 function buttonTag(html: string, aria: string): string {
@@ -434,6 +487,7 @@ function buttonTag(html: string, aria: string): string {
       archived?: readonly string[];
       locale?: "zh" | "en";
       open?: boolean;
+      history?: ScheduleHistoryState;
     } = {},
   ): string => {
     const row = { ...base, ...overrides };
@@ -449,7 +503,7 @@ function buttonTag(html: string, aria: string): string {
         targetArchived: targetId !== undefined && (options.archived ?? []).includes(targetId),
         sessionId: "s1",
         sessions: [],
-        history: undefined,
+        history: options.history,
         result: undefined,
         dispatch: () => {},
         onToggle: () => {},
@@ -488,6 +542,61 @@ function buttonTag(html: string, aria: string): string {
         }
         assert.ok(!once.includes(texts.scheduleUnsaved), "未编辑的一次性任务不显示未保存提示");
       }
+    }
+  }
+
+  // 时区口径：列表“下次运行”按读者设备时区读（官方 formatScheduleAbsolute），执行记录按
+  // 规则自己的时区读（官方 recordTimeZone → DeliveryHistory）。两处曾共用 storedZoneOf，
+  // 列表会给读者看规则时区的钟点，rrule 又会丢掉 DTSTART 的 TZID。
+  {
+    const instant = Date.UTC(new Date().getFullYear(), 5, 15, 12, 0, 0); // 本年度内，避免跨年带年份
+    const iso = new Date(instant).toISOString();
+    const stampIn = (zone?: string): string =>
+      new Intl.DateTimeFormat("en", {
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+        hourCycle: "h23",
+        ...(zone === undefined ? {} : { timeZone: zone }),
+      }).format(instant);
+    const deviceStamp = stampIn();
+    const tokyoStamp = stampIn("Asia/Tokyo");
+    const daily = renderRow({ kind: "daily", time: "09:00:00.000", timeZone: "Asia/Tokyo", scheduledAt: iso });
+    assert.ok(daily.includes(deviceStamp), "下次运行按设备时区显示");
+    if (tokyoStamp !== deviceStamp) {
+      assert.ok(!daily.includes(tokyoStamp), "不能把规则时区的钟点当成读者的钟点");
+    }
+
+    const recordInstant = instant - 3_600_000;
+    const recordIso = new Date(recordInstant).toISOString();
+    const historyEntry: ScheduleHistoryState = {
+      records: [{ scheduledAt: recordIso, deliveredAt: recordIso }],
+      unavailable: false,
+      pruned: false,
+      loading: false,
+      loaded: true,
+    };
+    const records = renderRow(
+      {
+        kind: "rrule",
+        rrule: "DTSTART;TZID=Asia/Tokyo:20260615T090000\nRRULE:FREQ=DAILY",
+        scheduledAt: iso,
+      },
+      { history: historyEntry },
+    );
+    const recordStampIn = (zone?: string): string =>
+      new Intl.DateTimeFormat("en", {
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+        hourCycle: "h23",
+        ...(zone === undefined ? {} : { timeZone: zone }),
+      }).format(recordInstant);
+    assert.ok(records.includes(recordStampIn("Asia/Tokyo")), "rrule 的执行记录按 DTSTART 的 TZID 读");
+    if (recordStampIn("Asia/Tokyo") !== recordStampIn()) {
+      assert.ok(!records.includes(recordStampIn()), "规则时区与设备时区不同时，记录不按设备时区显示");
     }
   }
 

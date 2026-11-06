@@ -255,7 +255,7 @@ export interface ToolCallView {
    * 结果正文里那行 `[exit code: N]` 已被剥掉，改由这两个字段承载；界面据此把
    * 非零退出呈现为失败（bash/pwsh 工具**故意**不把非零退出标成 isError）。
    */
-  exitCode?: number;
+  exitCode?: number | null;
   signal?: string;
   /** 该工具产生的可交付文件。 */
   files?: { path: string; description?: string }[];
@@ -353,7 +353,7 @@ export type ToolCardView =
       cwd?: string;
       /** 去掉退出标记之后的输出。运行中为空。 */
       output: string;
-      exitCode?: number;
+      exitCode?: number | null;
       signal?: string;
       /** 运行中：只画命令与「运行中」，不画输出区。 */
       running?: boolean;
@@ -893,6 +893,15 @@ export interface ModelSelectionView {
 export type GoalPhase = "active" | "paused" | "blocked" | "complete";
 
 /**
+ * 目标续跑授权（官方的**进程内**状态，从不持久化）。
+ *
+ * 值域逐字取自 `dsh-goal` 的 `GoalActivation`（0.2.2-rc.1）。`GoalProjection` 里
+ * 没有它——投影只反映 durable 阶段；要拿它只能读 `goals/get`（`GoalView`）或收
+ * `goal/activation-changed` 事件。缺失 = 还不知道，界面**不得**按 `armed` 猜。
+ */
+export type GoalActivation = "armed" | "disarmed";
+
+/**
  * 目标条的数据（`goal` 投影的**嵌套**形状）。
  *
  * 线格式是
@@ -913,6 +922,30 @@ export interface GoalView {
   maxRounds?: number;
   /** 仅在 `phase === "blocked"` 时给出。 */
   blockedReason?: string;
+  /**
+   * 进程内续跑授权（官方 `GoalView.activation`）。
+   *
+   * 只在 id / revision 与这条目标一致时才有值（官方 `GoalDock` 的匹配判据）；
+   * 其余时候缺席 = 还不知道，目标条据此既不给暂停也不给恢复。
+   */
+  activation?: GoalActivation;
+}
+
+/**
+ * 目标条两个动作的**唯一判据**，逐字取自官方 `GoalBar`：
+ * - `pause`：`phase === 'active' && activation === 'armed'`；
+ * - `resume`：`phase !== 'active' || activation === 'disarmed'`；
+ * - complete 整条不渲染（官方 GoalBar 与本地同一条早退），两个动作都算无。
+ *
+ * 授权**未知**时 active 目标两个都是 false——不把「还没读到」当成 armed，
+ * 也不给一个点了会被服务端拒绝的恢复按钮。
+ */
+export function goalBarActions(goal: GoalView | undefined): { readonly pause: boolean; readonly resume: boolean } {
+  if (!goal || goal.phase === "complete") return { pause: false, resume: false };
+  return {
+    pause: goal.phase === "active" && goal.activation === "armed",
+    resume: goal.phase !== "active" || goal.activation === "disarmed",
+  };
 }
 
 /**

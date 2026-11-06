@@ -31,6 +31,7 @@
 - `modelSelection` 读取 `next ?? lastUsed`。模型目录默认值与 `catalog.default` 的关系、`routableProviders` / `failures` 的完整消费仍需核对，不能声称已阻断不可路由输入。
 - `plan` 有效目标态为 `pending ? !active : active`。进入与退出走命令通道，不靠发给模型的正文或本地乐观值；发送仲裁见[发送设计](<design-draft.md>)。
 - `goal` 是 `{goal: {...}, roundsStarted, createdAt, updatedAt}`：目标在内层，轮次在外层；`null` 清空。形状不对可能不报错而恒为空，解析必须由 `goalFromProjection` 处理。
+- goal 还有一位**进程内**的 `activation`（`armed` / `disarmed`），投影里**没有**它（durable 投影只记 phase）。来路只有 `goals/get` 的 `GoalView.activation` 与 `goal/activation-changed` 广播；恢复会话 / fork 会新建 agent，服务端在那时置 `disarmed`。采用判据与官方 `GoalDock` 一致（`id` 与 `revision` 都相等），合并、ref 与目标条动作判据分别是 `projections.mergeGoalActivation` / `activeGoalRef` 与 `shared/chat.goalBarActions`；active 且**读不到授权**时既不显示暂停也不显示恢复，不能猜 `armed`。旧服务端没有 `goals/get`（404，`endpointAbsent`）时同样保持未知。
 
 ## permissions（权限）
 

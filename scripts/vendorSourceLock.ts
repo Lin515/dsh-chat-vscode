@@ -33,7 +33,7 @@
  * 还报绿。走 AST 是**打印器负责排版、AST 负责语义**；`scripts/vendorSourceLock.test.ts`
  * 里对这几类陷阱各有一条正反断言。
  *
- * ## 上游那一侧的凭据（15/15 离线见证，不是签名认证）
+ * ## 上游那一侧的凭据（19/19 离线见证，不是签名认证）
  *
  * `npm test` **不联网、不读官方 checkout（也不用 HEAD）**。上游那一侧的唯一凭据是仓库内的
  * 固定见证素材：`<upstream.fixtureDir>/<upstream.tag>/<官方相对路径>`，逐字节等于固定 tag
@@ -121,7 +121,7 @@ export interface VendorSourceLock {
      * 仓库内**离线见证素材**的根目录（仓库相对）：
      * `<fixtureDir>/<tag>/<官方相对路径>`，逐字节等于固定 tag 上的那一份。
      *
-     * 它是「上游那一侧」的唯一凭据来源：判据拿全部 15 份逐一核对原始字节数 /
+     * 它是「上游那一侧」的唯一凭据来源：判据拿全部 19 份逐一核对原始字节数 /
      * 原始 sha256 / 规范化摘要。素材是**仓库内的固定见证**，不是外部签名认证——
      * 它证明的是「这份字节从那时起没被改过」，不是「有人为它签过名」。
      */
@@ -368,7 +368,7 @@ function isRepoRelative(path: string): boolean {
  *
  * 判据分五组：①双向登记完整性；②本地副本内容锁；③来源声明自洽（tag / repo / 包集合 /
  * SHA / 路径形态，并与 `src/vendor/README.md` 交叉）；④登记自洽（`declaredEdits` 与
- * `relation` 是否解释得了两侧摘要的异同）；⑤上游原文校验（仓库内 15 份离线见证的
+ * `relation` 是否解释得了两侧摘要的异同）；⑤上游原文校验（仓库内 19 份离线见证的
  * 字节数 / 原始 sha256 / 规范化摘要，外加**覆盖完整**与**归属唯一**两条）。
  *
  * @param input - 锁清单、磁盘副本、README 正文、可选上游文本与身份锚。
@@ -539,7 +539,7 @@ export function vendorSourceProblems(input: VendorSourceCheckInput): string[] {
       problems.push(`内容漂移：${path}（规范化摘要与登记不一致）`);
     }
 
-    // 上游原文校验（正式判据会提供全部 15 份素材）
+    // 上游原文校验（正式判据会提供全部 19 份素材）
     const upstreamText = upstreamTexts.get(entry.upstream.path);
     if (upstreamText === undefined) {
       if (input.upstreamCoverage === "complete") {

@@ -287,7 +287,7 @@ export function ToolRow({
     tool.signal !== undefined
       ? texts.toolSignal(tool.signal)
       : tool.exitCode !== undefined && tool.exitCode !== 0
-        ? texts.toolExitCode(tool.exitCode)
+        ? tool.exitCode === null ? texts.toolNoExitCode : texts.toolExitCode(tool.exitCode)
         : undefined;
 
   const meta =

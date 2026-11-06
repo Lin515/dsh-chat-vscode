@@ -40,11 +40,11 @@ MIT 许可证全文见本文末「附录 A」。
 
 ### 1.1 `src/vendor/` 里的**源码逐字副本**（MIT）
 
-与上面的「协议类型取自官方」不同，这一部分是**把上游源码整份复制进本仓库**（共 15 份）：
+与上面的「协议类型取自官方」不同，这一部分是**搬入上游源码或声明过的纯函数 / 类型摘录**（共 19 份）：
 
 - 上游包：`@deepseek-ai/dsh-client-ui-trajectory`、`@deepseek-ai/dsh-client-ui-primitives`、
-  `@deepseek-ai/dsh-util-code-language`
-- 版本：`0.2.0-rc.2`（上游 tag `dsh-v0.2.0-rc.2`）
+  `@deepseek-ai/dsh-util-code-language`、`@deepseek-ai/dsh-client-ui-tool`、`@deepseek-ai/dsh-util-time`
+- 版本：`0.2.2-rc.1`（上游 tag `dsh-v0.2.2-rc.1`）
 - 版权：Copyright (c) 2026 DeepSeek
 - 许可：MIT
 
@@ -64,6 +64,10 @@ MIT 许可证全文见本文末「附录 A」。
 | `src/vendor/ui-primitives/markdown/local-image-syntax.ts` | 同名 | `classifyFileType` 换成本地等价判定；去掉 `.ts` 后缀 |
 | `src/vendor/ui-primitives/markdown/katex.tsx` | 同名 | 逐字搬入 KaTeX → React 适配器；仅文件头补来源说明，函数体与 KaTeX 选项不变 |
 | `src/vendor/ui-primitives/markdown/highlight.ts` | 同名 | 逐字搬入客户端语法高亮核心；仅文件头补来源说明，别名表、引擎选项与 token 样式不变 |
+| `src/vendor/ui-primitives/markdown/windows-path-destinations.ts` | 同名 | 原文搬入 Windows 目标保真扩展；仅补来源头 |
+| `src/vendor/ui-tool/terminal-status.ts` | `terminal-card-model.ts` 的两个纯函数摘录 | 函数体逐字相同；导出解析函数，模型改为最小本地类型壳 |
+| `src/vendor/util-time/cron-fields.ts` | `cron.ts` 的字段解析闭包摘录 | 函数体 / 常量逐字相同，仅导出解析入口、调整错误类型 import；不搬时区算术 |
+| `src/vendor/util-time/recurrence-error.ts` | `recurrence.ts` 的错误类型 / 类摘录 | 定义逐字相同 |
 | `src/vendor/code-language/index.ts` | 同名（`packages/util/code-language`） | 逐字搬入扩展名 → 语法高亮语言表；仅文件头补来源说明 |
 
 每个文件头部都注明来源、版本与「本仓库改了哪几处」；逐处改动的理由与同步流程见

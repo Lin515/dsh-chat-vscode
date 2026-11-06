@@ -240,6 +240,8 @@ export const METHODS = {
   sessionSelectModel: "session/selectModel",
   sessionUpdateQueue: "session/updateQueue",
   sessionAttachment: "session/attachment",
+  /** 当前目标的进程内视图（含 activation），线参数为 {agentId: sessionId}。 */
+  goalGet: "goals/get",
   /**
    * 人的停止请求（`dsh-api-job-controller` 的 `job.kill`，0.1.7-alpha.1 起）：
    * 参数 `{request: {sessionId, jobId}}`，回 `{outcome: 'requested' | 'already-finished'}`——

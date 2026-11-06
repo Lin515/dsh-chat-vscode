@@ -108,6 +108,14 @@ console.log("toolMeta: SUMMARY_KEYS 逐条对齐（others 是空表） ✓");
   assert.strictEqual(failed.output, "boom\nmore output", "标记行连同它前面的换行一起被剥掉");
   assert.strictEqual(failed.signal, undefined);
 
+  for (const code of [-1, -1073741819, null]) {
+    const result = parseExitStatus(`output\n[exit code: ${code}]`);
+    assert.strictEqual(result.exitCode, code, "官方负退出码 / 显式缺失码不能被当作成功");
+    assert.strictEqual(result.output, "output");
+    assert.strictEqual(terminalFailed(result), true);
+    assert.strictEqual(terminalFailed({ ...result, running: true }), false);
+  }
+
   // 信号优先于退出码（官方先判 signal）
   const killed = parseExitStatus("partial output\n[killed by signal: SIGKILL]");
   assert.strictEqual(killed.signal, "SIGKILL");

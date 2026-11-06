@@ -19,6 +19,7 @@
  */
 import { useMemo, useRef, useState } from "react";
 import type { ToolCardView } from "../../shared/chat";
+import { terminalFailed } from "../../shared/toolMeta";
 import { useTexts } from "../texts";
 import { IconChevronDown, IconChevronRight } from "../icons";
 import { Markdown } from "./Markdown";
@@ -280,13 +281,13 @@ function cwdLabel(cwd: string): string {
 /** 终端卡（官方 `TerminalBlock`）：状态 + 提示符行 + 退出码胶囊 + 输出。 */
 function TerminalCard({ card }: { card: Extract<ToolCardView, { kind: "terminal" }> }) {
   const texts = useTexts();
-  const failed = !card.running && ((card.exitCode !== undefined && card.exitCode !== 0) || card.signal !== undefined);
+  const failed = terminalFailed(card);
   const stateLabel = card.running ? texts.terminalRunning : failed ? texts.terminalFailed : texts.terminalDone;
   const status =
     card.signal !== undefined
       ? texts.toolSignal(card.signal)
       : card.exitCode !== undefined && card.exitCode !== 0
-        ? texts.toolExitCode(card.exitCode)
+        ? card.exitCode === null ? texts.toolNoExitCode : texts.toolExitCode(card.exitCode)
         : undefined;
   const commandLines = (card.command.endsWith("\n") ? card.command.slice(0, -1) : card.command).split("\n");
   const outputLines = card.output === "" ? [] : card.output.replace(/\n$/, "").split("\n");

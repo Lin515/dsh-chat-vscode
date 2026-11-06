@@ -24,7 +24,7 @@ import { deriveToolSummary, todoProgressOf, toolCardOf } from "../src/shared/too
 function settled(
   name: string,
   args: unknown,
-  options: { meta?: unknown; output?: string; content?: unknown; isError?: boolean; exitCode?: number; signal?: string } = {},
+  options: { meta?: unknown; output?: string; content?: unknown; isError?: boolean; exitCode?: number | null; signal?: string } = {},
 ) {
   const output = options.output ?? "";
   return toolCardOf({
@@ -166,6 +166,11 @@ function settled(
   assert.strictEqual(done.running, undefined, "结算后不是 running");
   assert.strictEqual(done.output, " M src/foo.ts");
   assert.strictEqual(done.exitCode, 0);
+  for (const exitCode of [null, -1073741819]) {
+    const failed = settled("pwsh", { command: "exit", description: "run" }, { output: "partial", exitCode });
+    assert.ok(failed?.kind === "terminal");
+    assert.strictEqual(failed.exitCode, exitCode, "null 与负数状态不丢失、不强转成默认成功");
+  }
 
   // **没有 description ⇒ 官方的持久 shell 路径**：结算后没有唯一退出状态，退回通用 IN/OUT
   assert.strictEqual(

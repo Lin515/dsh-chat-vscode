@@ -53,7 +53,7 @@ export interface ToolCardFacts {
   /** 结果的展示元数据（`tool/result` 的 `meta`）。 */
   meta?: unknown;
   /** 终端类结果的退出状态（适配器已用 `parseExitStatus` 解析过）。 */
-  exitCode?: number;
+  exitCode?: number | null;
   signal?: string;
   isError: boolean;
   interrupted: boolean;

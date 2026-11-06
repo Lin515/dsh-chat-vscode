@@ -269,6 +269,7 @@ export const MESSAGES = {
   exitPlanMode: { zh: "退出计划模式", en: "Exit plan mode" },
 
   goalActive: { zh: "进行中的目标", en: "Ongoing Goal" },
+  goalInactive: { zh: "已暂停的目标", en: "Inactive Goal" },
   goalPaused: { zh: "已暂停的目标", en: "Paused Goal" },
   goalBlocked: { zh: "受阻的目标", en: "Blocked Goal" },
   goalPause: { zh: "暂停目标", en: "Pause goal" },
@@ -1331,6 +1332,7 @@ export const MESSAGES = {
   /** `skill` 工具节点自有标题（官方 `SkillRow` 的 `row.title`）。 */
   toolSkill: { zh: "加载技能", en: "Skill" },
   toolExitCode: { zh: (code: number) => `退出码 ${code}`, en: (code: number) => `exit code ${code}` },
+  toolNoExitCode: { zh: "无退出码", en: "No exit code" },
   toolSignal: { zh: (signal: string) => `被信号 ${signal} 终止`, en: (signal: string) => `killed by signal ${signal}` },
   /**
    * 工具行展开区底部那颗「在轨迹里查看这次调用」（官方 `row.inspect`）。

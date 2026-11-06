@@ -52,6 +52,23 @@ const firstUrl = (source: string, kind: "link" | "image"): string | undefined =>
   return found;
 };
 
+// rc.1：单个波浪线是范围字面量，只有双波浪线才删除；两条解析臂一致。
+for (const phase of ["streaming", "settled"] as const) {
+  const root = parseMarkdown("10~20 与 ~目录~，以及 ~~删除~~", phase).root;
+  const nodes = JSON.stringify(root);
+  assert.strictEqual((nodes.match(/\"type\":\"delete\"/g) ?? []).length, 1);
+  assert.ok(nodes.includes("10~20 与 ~目录~"));
+  for (const [source, expected] of [
+    ["[x](D:\\repo\\.github\\a&amp;b.md)", "D:\\repo\\.github\\a&b.md"],
+    ["[x](src\\.config\\a.md)", "src\\.config\\a.md"],
+    ["[x][r]\n\n[r]: D:\\repo\\.github\\a.md", "D:\\repo\\.github\\a.md"],
+  ]) {
+    const document = parseMarkdown(source, phase);
+    const url = source.includes("[r]:") ? document.definitions.get("R")?.url : firstUrlOfRoot(document.root, "link");
+    assert.strictEqual(url, expected, `官方保真、实体解码和参考定义：${phase} ${source}`);
+  }
+}
+
 // ---------- 1. GFM 任务列表与原始 HTML ----------
 {
   const html = render("- [x] 做完的事\n- [ ] 没做的事\n");
@@ -114,7 +131,7 @@ console.log("markdown: 列表 / 表格的查找文本有语义分隔 ✓");
     ["![x](http://example.com/a.png)", "http://example.com/a.png"],
     ["![x](file:///C:/a.png)", "file:///C:/a.png"],
     ["![x](data:image/png;base64,AAAA)", "data:image/png;base64,AAAA"],
-    ["![x](D:\\app\\a.png)", "D:%5Capp%5Ca.png"],
+    ["![x](D:\\app\\a.png)", "D:\\app\\a.png"],
   ] as const) {
     const html = render(source);
     assert.ok(html.includes(`<img src="${expected}"`), `可渲染的图片地址：${source} → ${html}`);
@@ -186,9 +203,9 @@ console.log("markdown: 图片 title / 三属性 / 危险 scheme 降级 / HTTP �
   assert.strictEqual(firstUrl("[x](D:%5Capp%5C.file)", "link"), "D:%5Capp%5C.file");
   assert.ok(!render("[x](D:%5Capp%5C.file)").includes("%255C"), "不得二次编码");
 
-  // 参考式定义保持 CommonMark 原语义（修复只针对行内目标）
+  // 官方保真规则同时覆盖参考式定义。
   const defined = parseMarkdown("[x][r]\n\n[r]: D:\\a\\.b\n");
-  assert.ok(!(defined.definitions.get("R")?.url ?? "").includes("%5C"), "参考定义不在此修复范围");
+  assert.strictEqual(defined.definitions.get("R")?.url, "D:\\a\\.b");
 
   // 代码里的路径是字面量：不变成链接 / 图片，也不被改写
   const coded = render("行内 `D:\\app\\.agent\\a.png`\n\n```\nD:\\app\\.agent\\b.png\n```\n");
@@ -219,10 +236,10 @@ console.log("markdown: 图片 title / 三属性 / 危险 scheme 降级 / HTTP �
       `非 Windows 形状不得被修复改动：${untouched}`,
     );
   }
-  // 负向对照：vendor 解析会把 `\.` 当转义吃掉——修复是必要的
-  assert.ok(
-    !(firstUrlOfRoot(parseGfm(`[t](${dotted}\\a.log)`), "link") ?? "").includes("%5C"),
-    "vendor 解析本身不保留 Windows 反斜杠",
+  assert.strictEqual(
+    firstUrlOfRoot(parseGfm(`[t](${dotted}\\a.log)`), "link"),
+    `${dotted}\\a.log`,
+    "目标保真已由官方解析器提供，不再依赖本地回扫",
   );
 
   // rc.1 的文件链接保留 UNC；读取准入由执行世界判定，媒体路径另有约束。
@@ -289,7 +306,7 @@ console.log("markdown: 中文 / 日文 / 韩文标点收尾的加粗成对 ✓")
   const links = render(
     "[文件](D:\\app\\.file) 与 [外链](https://example.com/a?q=1#L2) 与 [锚点](#x) 与 [危险](javascript:alert(1))",
   );
-  assert.match(links, /<a href="D:%5Capp%5C.file"/, "文件链接保留目标");
+  assert.ok(links.includes('<a href="D:\\app\\.file"'), "文件链接保留目标");
   assert.match(links, /title="[^"]*按住 Alt 单击打开可编辑的真实文件"/, "本地文件悬停带真实文件提示");
   assert.match(links, /<a href="https:\/\/example\.com\/a\?q=1#L2"/, "外链保留完整地址");
   assert.match(links, /<a href="#x"/, "页内锚点放行");

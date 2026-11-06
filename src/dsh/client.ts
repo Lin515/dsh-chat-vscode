@@ -854,6 +854,24 @@ export class DshClient {
   }
 
   /**
+   * 读一条会话当前的 goal 视图（**含进程内 `activation`**）。
+   *
+   * 契约（0.2.2-rc.1，`@deepseek-ai/dsh-goal` 的 Remote 描述符）：
+   * `goals/get(agentId)`，唯一的线参数名就是 `agentId`（网关按声明的名字严格校验）；
+   * 返回 `GoalView | undefined`。官方 Web 的 goal 授权源走的就是它
+   * （`packages/client/ui-goal/src/client/index.ts` 的 `getGoal` → `ctx.remote.goals.get`）。
+   *
+   * 为什么单独一个 RPC：`GoalProjection` 里**没有** `activation`（官方注释写明它是
+   * 进程内、从不持久化），只有 `GoalView` 才带。返回值形状由
+   * `dsh/projections.goalActivationFromView` 校验，这里只负责取回。
+   *
+   * 旧服务端没有这个端点时回 404，调用方按 `endpointAbsent` 认成「这一版没有」。
+   */
+  getGoal(sessionId: string): Promise<unknown> {
+    return this.request(METHODS.goalGet, { agentId: sessionId });
+  }
+
+  /**
    * 读取设置总览。
    *
    * 新会话在第一次对话前 `modelSelection` 投影是 `{lastUsed:null,next:null}`，

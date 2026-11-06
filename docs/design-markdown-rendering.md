@@ -30,10 +30,10 @@
 
 ### 固定来源与适配
 
-- 当前 vendor 基准为 `@deepseek-ai/dsh-client-ui-primitives@0.2.0-rc.2`，tag `dsh-v0.2.0-rc.2`，commit `639ed015397290b3745d163aafe02ffee4aa3f84`；来源与锁定流程见[vendor 说明](<../src/vendor/README.md>)。不得把本机 HEAD 或最新文档当作该发布版的证据。
+- 当前 vendor 基准为 `@deepseek-ai/dsh-client-ui-primitives@0.2.2-rc.1`，tag `dsh-v0.2.2-rc.1`，commit `66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db`；来源与锁定流程见[vendor 说明](<../src/vendor/README.md>)。不得把本机 HEAD 或最新文档当作该发布版的证据。
 - vendor 的 [parse.ts](<../src/vendor/ui-primitives/markdown/parse.ts>) 已按固定 commit 恢复 `parseGfm` 与 `parseGfmWithMath` 两个语法臂，并补入 [mathCompatibility.ts](<../src/vendor/ui-primitives/markdown/mathCompatibility.ts>) 及配套依赖；轨迹纯文本投影与正文 streaming 仍只用 `parseGfm`，不得为了正文迁移改变轨迹摘要、搜索索引或事件投影。settled 数学由本地 [math.ts](<../src/webview/markdown/math.ts>) 用**同一扩展集合**装配并包装公开 construct / handler，不复制 vendor 的语法规则，也不直接改 vendor 文件。
 - **解析与宿主生命周期适配，排版直接复用。** 本地解析层只补金额否决、权威闭合和源码保真；排版由固定来源的官方适配器完成，宿主仅保留 phase、长度 / DOM 守卫、失败原文回退、身份隔离与选区冻结。正文使用 `parseMarkdown(text, phase)`，金额边界见「本地解析适配」。
-- vendor 内仅保留获准的原文适配；Windows 链接修复、扩展资源策略、完成态高亮、安全限额和 UI 差异放在本地 Implementation。新搬文件必须同步原文夹具、文件头、来源锁和第三方声明；变更已有允许适配须说明理由，不能只改摘要求绿。
+- vendor 内仅保留获准的原文适配；Windows 目标保真复用官方扩展，扩展资源策略、完成态高亮、安全限额和 UI 差异放在本地 Implementation。新搬文件必须同步原文夹具、文件头、来源锁和第三方声明；变更已有允许适配须说明理由，不能只改摘要求绿。
 - 官方 `katex.tsx` 原样 vendor，并用原始上游见证与来源锁固定；`mathRender.ts` 是其唯一生产消费者。官方 `render.tsx` / `highlight.ts` 仍提供遍历、别名与主题参考，链接 / 图片准入保留扩展契约；需要本地行为的派生实现放在 webview 层，不伪称逐字 vendor。
 - 官方 Markdown / DOM / 恶意 TeX 夹具可复用输入，断言必须改为本扩展契约，不能直接采用官方 DOM 快照并顺带改变 UI。
 
@@ -79,7 +79,7 @@ type CodeBlockProps = {
 | 文件 / 图片接入 | 复用现有路径判据、宿主动作和图片作用域，只调整 DOM 所有权与挂载方式 |
 | 搜索 / 选择 / 阅读 | 通过现有查找、选区复制、readingPlacement / autoScroll Seam 整合，不另建全局管理器 |
 
-阶段 2 按上述职责拆成 `src/webview/markdown/` 的 `parse.ts`、`source.ts`、`windowsDestinations.ts`、`render.tsx` 与 `types.ts`，文件清单见该目录 README；组件入口仍是 `components/Markdown.tsx`。阶段 3 新增 `markdown/highlight.ts`（引擎 / 缓存 / 受控 token）与 `webview/selectionRange.ts`（选区相交 / 脱树判据），沿用同一分层，不建没有第二个真实 Adapter 的注册平台。
+阶段 2 按上述职责拆成 `src/webview/markdown/` 的 `parse.ts`、`source.ts`、`render.tsx` 与 `types.ts`（原本地 Windows 目标回扫已由官方解析扩展替代），文件清单见该目录 README；组件入口仍是 `components/Markdown.tsx`。阶段 3 新增 `markdown/highlight.ts`（引擎 / 缓存 / 受控 token）与 `webview/selectionRange.ts`（选区相交 / 脱树判据），沿用同一分层，不建没有第二个真实 Adapter 的注册平台。
 
 ## 消费面与影响清单
 
@@ -115,7 +115,7 @@ type CodeBlockProps = {
 
 - 阶段 2 使用 `fromMarkdown` 的成对 GFM 扩展（`gfm()` + `gfmFromMarkdown()`）并注册官方 `cjkFriendlyStrong`；数学的 `mathCompatibility()` / `math()` + `mathFromMarkdown()` 已按固定来源成对恢复依赖。settled 由本地 `math.ts` 以相同扩展集合装配并补金额否决与事实记录，streaming 仍不注册数学；只注册词法扩展而不接树编译扩展不算完成迁移，版本以锁文件为准。
 - 阶段 2 的流式与完成态都用官方 `parseGfm`，没有增量解析器；阶段 4 把 settled 改为本地同集合装配（语法等价于 `parseGfmWithMath`，另加公开 construct / handler 包装），结构变化只允许发生在数学等有意的增强边界。两者都对当前整篇文本解析。生成中的反斜杠仍可能按 CommonMark 转义显示；“公式原文”表示不排版，不承诺每个定界符逐字可见，也不另写一套实时数学扫描器。
-- Windows 路径修复在本地解析 Seam 完成：`windowsDestinations.ts` 在解析后按链接 / 图片节点的源码位置回原文取目标，仅对呈 Windows 绝对路径形状的 `\` 编码为 `%5C`。上游 `recoverLocalImages` 先跑、本地修复后跑，已用含 `%5C` 的重叠夹具验证不会二次编码；不能对全文替换反斜杠。代码、标签、参考定义、非 Windows 目标和 UNC 访问边界不变。
+- Windows 目标保真直接复用官方 `windows-path-destinations.ts`，streaming / settled 两臂都装配该扩展，不再二次回扫目标。覆盖行内链接 / 图片和参考式定义，保留反斜杠并解码实体，不改变 URL scheme、代码与标签文本；宿主文件 / 媒体准入仍独立。GFM 两臂同样沿用官方 `singleTilde: false`：单波浪线保持字面量。
 - 中文强强调沿用官方 `cjkFriendlyStrong`，已用迁移前的中文标点、西文、单星、三星、代码内星号夹具对拍；不能以“官方如此”为理由静默扩大既有偏差。
 - 代码依赖 `code` 节点，不再全文围栏正则切分；较长围栏、波浪、未闭合、缩进代码以及列表 / 引用 / 脚注内代码均保留所属容器。未知树节点按 `sourceFallback` 回退为安全源码片段，不沿用官方“默认返回空”吞内容。
 - 文档级定义统一收集在 `MarkdownDocument.definitions` / `footnotes`：参考链接与图片可跨代码块解析，脚注编号与重复引用计数只属于本次文档。脚注定义重复时 last-wins，参考定义 first-wins，沿用迁移前口径。
@@ -297,7 +297,7 @@ GFM 对多段脚注、重复定义、复杂分隔符等边缘输入可能与迁�
 
 阶段 2 已保留 [markdown.test.ts](<../scripts/markdown.test.ts>)、[footnotes.test.ts](<../scripts/footnotes.test.ts>)、[styles.test.ts](<../scripts/styles.test.ts>) 中的业务断言，并淘汰仅固定 marked 调用形状的断言；同步 fileLinks、localImageResolve、localImages、contextMenu、questionRender、trajectoryVendor、vendorSourceLock、manifest 等关联回归，没有因旧测试不再匹配而整段删除安全要求。阶段 3 新增 [highlight.test.ts](<../scripts/highlight.test.ts>)、[diffHighlight.test.ts](<../scripts/diffHighlight.test.ts>)、[toolSource.test.ts](<../scripts/toolSource.test.ts>) 与 [selectionRange.test.ts](<../scripts/selectionRange.test.ts>)，并扩展 [find.test.ts](<../scripts/find.test.ts>) 的脱树导航判据；阶段 4 新增 [math.test.ts](<../scripts/math.test.ts>) 覆盖金额、围栏闭合、容器源码 / 载荷分离与官方臂树等价，[mathRender.test.ts](<../scripts/mathRender.test.ts>) 及其隔离浏览器入口覆盖官方树对拍、中文 / 表格、限额、宏隔离、安全和选区完整 DOM 链，以及 [mathView.test.ts](<../scripts/mathView.test.ts>) 覆盖 SSR 首帧原文、四类定界符 / 金额、display 脱 p、strong / em / link / footnote 拆段、tex / latex 回退与渲染身份的五个事实 / NUL 不碰撞；真实异步与选区冻结已由主真实浏览器验收通过（15/15 布局、宽公式局部滚动、`newsource → invalid` 首帧 raw、跨段 / 跨公式选区冻结）。用户整条与助手轮尾复制分别取原始 `message.text` 与最后一段正文的 Markdown 原文、代码复制取精确 code，由 `mathView.test.ts` / `codeBlock.test.ts` 的源码接线与纯文本断言固定，不冒充 DOM / 系统剪贴板证明。全部登记在[脚本构建入口](<../esbuild.scripts.mjs>) entries。图片 / 链接 / 选区的真实 DOM 时序由受控浏览器回放，Node 静态源码检查不等同浏览器证据。
 
-阶段 3 的代码高亮已有离线 / 受控浏览器验收。当前数学由 `mathRender.test.ts` 的完整 DOM 链与真实 Chromium 分别验证，来源锁包含 15 份副本。既有资源 / 安装记录见下节，只证明其记录时的资源与宿主环境，不替代当前官方 React 排版的回归。原生复制仍读 `Selection.toString()`；VS Code 系统剪贴板与屏幕阅读器朗读不在本次自动化覆盖内。不启动真实 DSH、不发送真实消息或运行模型探针。
+阶段 3 的代码高亮已有离线 / 受控浏览器验收。当前数学由 `mathRender.test.ts` 的完整 DOM 链与真实 Chromium 分别验证，来源锁包含 19 份副本。既有资源 / 安装记录见下节，只证明其记录时的资源与宿主环境，不替代当前官方 React 排版的回归。原生复制仍读 `Selection.toString()`；VS Code 系统剪贴板与屏幕阅读器朗读不在本次自动化覆盖内。不启动真实 DSH、不发送真实消息或运行模型探针。
 
 ### 安装端验收（已有资源证据）
 
@@ -309,7 +309,7 @@ GFM 对多段脚注、重复定义、复杂分隔符等边缘输入可能与迁�
 ## 资料与重评条件
 
 - [mdast-util-from-markdown](https://github.com/syntax-tree/mdast-util-from-markdown)：语法与树扩展须配对；位置来自实际解析输入，源码适配不得破坏偏移关系。
-- [官方源码](https://github.com/deepseek-ai/deepseek-harness/tree/639ed015397290b3745d163aafe02ffee4aa3f84/packages/client/ui-primitives/src/markdown)：按固定来源核对 parse、render、mathCompatibility、highlight 与 katex，UI 与安全差异按本文适配。
+- [官方源码](https://github.com/deepseek-ai/deepseek-harness/tree/66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db/packages/client/ui-primitives/src/markdown)：按固定来源核对 parse、render、mathCompatibility、highlight 与 katex，UI 与安全差异按本文适配。
 - [Shiki 精简构建](https://shiki.style/guide/best-performance)、[JS 正则引擎](https://shiki.style/guide/regex-engines)；[KaTeX 安全](https://katex.org/docs/security)、[选项](https://katex.org/docs/options)。最新资料只作参考，实际依赖版本和浏览器能力必须另核。
 
 只有实际包体 / 结算卡顿、明确的语言覆盖缺口或可复现数学误识别，才重评对应内部实现；不因官方支持就增加流式复杂度。原始 HTML 按本文有意收敛到官方行为，其余既有视觉与行为不为省实现成本牺牲。

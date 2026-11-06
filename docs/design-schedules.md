@@ -79,6 +79,16 @@
 回归覆盖 `at` / `after` 的 `.000` 与非零毫秒、只改名称不重写时间、真实日期 / 时间 / 时区修改，
 以及中英文展开 / 折叠状态的三个操作按钮。
 
+cron 的「有没有改」与「提交什么」都走**官方规范式**：`src/shared/cron.ts` 的
+`canonicalCronExpression` 是从官方 `packages/util/time/src/cron.ts` 的
+`parseCronExpression` 及其纯字段闭包摘录的同一份实现（只适配失败形状，不另写语法或 STAR
+归约，不引入 Temporal 与时区 / 发生时刻算术；来源锁随 vendor 摘录登记）。于是
+`1,2,3,4,5` 与 `1-5`、前导零 `07` 与 `7`、星期日 `7` 与 `0` 都是同一条规则，不算修改；
+提交也发规范式，避免服务端再改写一次。STAR 标记**不参与归约**：`0 9 * * *` 与
+`0 9 1-31 * *` 在 Vixie 的日 / 星期 AND-OR 判定下不是同一条规则，规范式保留前导 `*`。
+非法的表达式**保持 dirty**，保存时仍由字段级校验（`cronFieldError`，中英文指名哪一段坏了）
+拒绝——不能因为两侧都读不出就把它当成「已完成」。
+
 `patch` 只带**真正改过的字段**（名称 / 指令 / 目标 / 时间 / `active`），由
 `schedulePatchOf` 装配：时间没动就不带 `timing`（否则一次只改名称的保存会把时刻重新锚定），
 目录没变就不带 `target`，并保留原来的 `agentPreset`——只改名字的用户不该丢掉他选的预设。
@@ -124,6 +134,9 @@
    创建在请求时还没有 id，回帧带新 id 也算同一次；旧宿主不回 `opId` 时退回按种类与 id
    匹配（唯一的兼容退路）。执行记录的回帧必须与**最近一次请求**的 `opId` 相等，迟到或
    对不上号的整帧丢弃。
+   `code`（任务不存在 / 游标失效）是这次读取的**终点**：同一次展开里不再自动重发，否则
+   每收到一帧就再发一次，成为无上限往返；界面保留手动重试，收起后再展开会重读一次第一页
+   （`scheduleHistoryShouldLoad`）。失败与宿主不可用同样只由手动重试收场。
 
 真到了「帧回来时上下文已经换了」的地步，仍发一帧带 `code: 'stale'` 的失败：界面据此说
 「未确认」，而不是把一次没落定的请求说成成功或失败，也不会永远停在「正在保存」。
@@ -159,6 +172,19 @@
 只在目标选为「每次新建会话」时显示并按需读取，本扩展**不新增**同名扩展配置——服务端给的默认
 60 秒就是权威值。
 
+### 时间用哪个时区读
+
+两处口径必须分开（与官方 `formatScheduleAbsolute` / `recordTimeZone` 一致）：
+
+- **下次运行**（列表与详情摘要）按**读者设备时区**读：读者拿它和自己的钟表对时。规则自己的
+  时区只出现在频率行（规则时区 ≠ 系统时区时才附标签），`scheduleFrequency` 与
+  `formatScheduleStamp` 的本地实现是仓库自己的写法（固定两位、24 小时制；cron / rrule 显示
+  原文），不宣称与官方逐字等价。
+- **执行记录**按**规则自己的时区**读：`recordTimeZone` 摘录自官方同名函数（daily / weekly /
+  cron 用存的 `timeZone`，rrule 用 `DTSTART;TZID=…`，一次性与固定间隔没有规则时区、按设备
+  时区读）。两处不能共用同一个「规则时区」——那会让列表把规则时区的钟点当成读者钟点，rrule
+  的执行记录又会丢掉 TZID 退回设备时区。
+
 ## 界面结构
 
 - `SchedulesSection`：视图切换（本会话 / 全部任务）+ 状态筛选 + 新建入口 + 行清单；
@@ -166,6 +192,13 @@
 - `ScheduleEditor`：名称、指令、投递目标（会话 / 首次新建 / 每次新建，`new` 类目标可选目录）
   与运行时间规则（一次 / 固定间隔 / 每天 / 每周 / cron / RRULE），创建与编辑共用；
   旧代只放开时间字段（`basicDisabled`）。
+- 目标会话候选包含**空壳会话**（`blank`）：官方候选就是全部 `sessions.ids`，按「有没有内容」
+  筛掉会在界面上凭空少一个用户看得到的会话。
+- 新建任务的默认时刻是「一小时后的**整分**」（`…:00`，官方 `defaultTiming` 口径），不是打开
+  表单那一刻的秒位。
+- **已知缺口**：`new` / `new_once` 的目录候选来自会话列表里出现过的 `cwd`，不是注册的
+  Workspace 列表。webview 目前没有 workspace 注册表的投影，因此「已注册但还没有会话」的
+  Workspace 选不到；补这条通道属于独立工作。
 
 样式类在 `src/webview/styles/app.css` 的自动化任务段（`.schedule-toolbar`、`.schedule-tab`、
 `.schedule-chip`、`.schedule-confirm` 等），按 flex 布局容纳英文，不按字数定宽。窄侧栏用
@@ -183,16 +216,32 @@
 `src/dsh/scheduleView.ts` 与 `src/webview/scheduleEditorState.ts` / `scheduleControls.ts`。
 其中 `taskInvolvesSession` 是**逐条照搬**的「相关会话集合或投递落点」，不是本扩展的改写；
 `TaskDetail` 的 `runHeld` / 保存 / 删除 / 暂停禁用条件也逐条落在 `scheduleControls.ts`。
+
+两处是**摘录**（不是本地重写，来源随 `src/vendor/util-time` 的摘录一起锁）：
+
+- `recordTimeZone`（官方同名函数）：只做字段收窄适配（本仓库 `rrule` 可选），rrule 的 TZID
+  判定与官方一致；
+- `canonicalCronExpression`（官方 `parseCronExpression` 及其纯字段闭包）：只适配失败形状，
+  语法与 STAR 归约沿用官方实现。
+
+显示格式（频率句子、绝对时间文本、cron / rrule 的呈现）是本仓库自己的实现，**不声明**与官方
+`schedule-format.ts` 逐字等价：cron 显示规范表达式而不是句子式描述、rrule 显示原文、时钟固定
+两位 24 小时制。官方实现的运行期依赖（slot / store / 品牌类型）不引入。
+
 官方实现依赖它自己的 slot / store 与品牌类型，本扩展改为自己的视图模型与纯函数接口，
 不引入官方 UI 组件的运行期依赖；界面按本仓库既有自绘风格实现，没有逐字复制官方组件。
 
+**审计缺口（本轮未做）**：创建目录的 Workspace 注册表通道（见「界面结构」）；`TaskManagerPage`
+的搜索与批量清除已结束任务的入口；模型侧 `schedule_create` / `schedule_turn` 卡片的呈现；
+旧代（0.1.x）服务端的真实往返未实测。这些属于独立范围，不与本轮修复混做。
+
 ## 验证边界
 
-离线回归在 `scripts/schedule.test.ts`（线格式、频率、时间编辑、旧代兼容）、
+离线回归在 `scripts/schedule.test.ts`（线格式、频率、时间编辑、cron 规范式与 dirty、旧代兼容）、
 `scripts/scheduleManage.test.ts`（目录字段、归属过滤、请求体校验、客户端载荷、宿主接线、
 界面接线与文案）与 `scripts/scheduleEditor.test.ts`（编辑状态机、变更入口策略、结算账本、
-选中会话的渲染、归档目标提示）以及 `scripts/scheduleConcurrency.test.ts`（驱真控制器 +
-假客户端：成功结算前先读回目录、迟到上下文不写当前域 / 不降级 / 不换客户端读旧域）。
-这些是**纯离线**断言：不启动真实 DSH、不发送模型消息、不调用真实 `schedule/run`。真实
-服务端的端到端行为（限流时序、归档目标、RRULE 的实际推进）不在离线证据范围内，需要时按
-当次批准单独验证。
+执行记录的读取终点与重展开、时区口径、目标会话候选与空壳会话、选中会话的渲染、归档目标提示）
+以及 `scripts/scheduleConcurrency.test.ts`（驱真控制器 + 假客户端：成功结算前先读回目录、
+迟到上下文不写当前域 / 不降级 / 不换客户端读旧域）。这些是**纯离线**断言：不启动真实 DSH、
+不发送模型消息、不调用真实 `schedule/run`。真实服务端的端到端行为（限流时序、归档目标、
+RRULE 的实际推进）不在离线证据范围内，需要时按当次批准单独验证。

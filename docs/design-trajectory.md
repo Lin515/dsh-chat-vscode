@@ -4,11 +4,11 @@
 
 ## 完美搬运的可行边界
 
-官方基准固定为 dsh-v0.2.0-rc.2，commit `639ed015397290b3745d163aafe02ffee4aa3f84`，不是 checkout HEAD。声明与实际装配的 client.js 一起核对；未装配组件与零渲染 key 不代表可见能力。
+当前 vendor 纯决策基准固定为 dsh-v0.2.2-rc.1，commit `66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db`，不是 checkout HEAD。声明与实际装配的 client.js 一起核对；未装配组件与零渲染 key 不代表可见能力。
 
 整包依赖 ConversationNode、插件槽、主题与 primitives，直接搬入会引入另一套运行时。本项目只 vendor 纯决策：预览、稳定 recordId、时间线、搜索、inbox 状态机与 code-program；分组 / 事件折叠在宿主，适配层是唯一接缝。
 
-[Vendor 索引](<../src/vendor/README.md>)登记来源与同步方法；来源锁双向核对 15 份原文字节见证、固定 tag / commit 与规范化摘要。仅允许模块说明符及注释 / 排版适配，不改普通字符串、模板、正则或 ASI；内部自洽不是外部认证，不手改 vendor。dsh:watch / dsh:check 只追服务端消费契约，不检测 UI 漂移；显式同步才更新锁。适配层仍须正确喂入字段，vendor 不能纠正错误形状。
+[Vendor 索引](<../src/vendor/README.md>)登记来源与同步方法；来源锁双向核对 19 份原文字节见证、固定 tag / commit 与规范化摘要。仅允许模块说明符及注释 / 排版适配，不改普通字符串、模板、正则或 ASI；内部自洽不是外部认证，不手改 vendor。dsh:watch / dsh:check 只追服务端消费契约，不检测 UI 漂移；显式同步才更新锁。适配层仍须正确喂入字段，vendor 不能纠正错误形状。
 
 ## 记录与快照
 

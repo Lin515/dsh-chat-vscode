@@ -239,6 +239,7 @@ console.log("scheduleManage: 编辑草稿与重放 ✓");
   assert.equal(draft.target, "new_once");
   assert.equal(draft.timing.repeat, "once");
   assert.ok(draft.timing.date >= new Date().toISOString().slice(0, 10), "默认目标在未来");
+  assert.match(draft.timing.time, /^\d{2}:\d{2}:00$/, "默认时刻取整分（官方 defaultTiming 的 :00 口径）");
   const built = scheduleCreateRequestOf({
     ...draft,
     title: "  提醒  ",

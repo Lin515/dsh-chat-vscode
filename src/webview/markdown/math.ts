@@ -21,6 +21,7 @@ import { codes } from "micromark-util-symbol";
 import { cjkFriendlyStrong } from "../../vendor/ui-primitives/markdown/cjkFriendlyStrong";
 import { recoverLocalImages } from "../../vendor/ui-primitives/markdown/local-image-syntax";
 import { mathCompatibility } from "../../vendor/ui-primitives/markdown/mathCompatibility";
+import { windowsPathDestinations } from "../../vendor/ui-primitives/markdown/windows-path-destinations";
 import { codePayload, type CodeSource } from "./source";
 
 /**
@@ -116,7 +117,7 @@ export function parseSettledRoot(source: string): Root {
   const root = recoverLocalImages(
     fromMarkdown(text, {
       extensions: createSettledSyntax(text),
-      mdastExtensions: [gfmFromMarkdown(), flow.extension],
+      mdastExtensions: [gfmFromMarkdown(), flow.extension, windowsPathDestinations()],
     }),
     text,
   );
@@ -139,7 +140,7 @@ export function createSettledSyntax(source: string): Extension[] {
     },
   };
   return [
-    gfm(),
+    gfm({ singleTilde: false }),
     cjkFriendlyStrong(),
     mathCompatibility(),
     { ...syntax, text: { ...(syntax.text ?? {}), [codes.dollarSign]: vetoedText } },

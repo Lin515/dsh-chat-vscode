@@ -40,11 +40,11 @@ const openNode: NodeOpenPort = {
   setOpen: () => {},
 };
 
-function render(tool: ToolCallView, skillPath?: string): string {
+function render(tool: ToolCallView, skillPath?: string, locale: "zh" | "en" = "zh"): string {
   return renderToStaticMarkup(
     createElement(
       TextsContext.Provider,
-      { value: dictionaryFor("zh") },
+      { value: dictionaryFor(locale) },
       createElement(ToolRow, {
         tool,
         node: openNode,
@@ -491,5 +491,18 @@ console.log("toolRowRender: 运行中 write/edit 保持纯文（phase/active 显
   assert.doesNotMatch(rowsSource, /\{jsonInput \? \(\s*<CodeText/, "不能按 JSON 资格切换 IN 宿主组件");
 }
 console.log("toolRowRender: IN 完整 JSON 结算后着色，半截/标量/运行中纯文且宿主稳定 ✓");
+
+// 终端 null / 负数退出状态必须跨过视图类型边界，不能显示成成功或“退出码 null”。
+for (const locale of ["zh", "en"] as const) {
+  for (const exitCode of [null, -1073741819]) {
+    const tool: ToolCallView = { id: "terminal", name: "pwsh", title: "", detail: "", status: "error", output: "partial output", exitCode };
+    const label = exitCode === null ? dictionaryFor(locale).toolNoExitCode : dictionaryFor(locale).toolExitCode(exitCode);
+    assert.ok(render(tool, undefined, locale).includes(label), `${locale} 通用工具行保留退出状态标签`);
+    tool.card = { kind: "terminal", command: "exit", output: "partial output", exitCode };
+    const card = render(tool, undefined, locale);
+    assert.ok(card.includes(label), `${locale} 终端卡保留退出状态标签`);
+    assert.ok(card.includes(dictionaryFor(locale).terminalFailed), `${locale} null / 负数不误报成功`);
+  }
+}
 
 console.log("\ntoolRowRender: all assertions passed");

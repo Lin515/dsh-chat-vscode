@@ -6,7 +6,7 @@
  * 表现为「这个功能没有」，而不是报错（docs/design-projections.md
  * 形状解析是这一层里最容易错、又最容易测的部分，所以从控制器里挪出来单测。
  */
-import { AUTO_REVIEW_PRESET, type ChatState, type GoalView, type SubagentView, type TodoView } from "../shared/chat";
+import { AUTO_REVIEW_PRESET, type ChatState, type GoalActivation, type GoalView, type SubagentView, type TodoView } from "../shared/chat";
 
 /** workingDirectory 的线格式是 string | null；不按本机平台拒绝远端绝对路径。 */
 export function workingDirectoryFromProjection(value: unknown): string | undefined {
@@ -50,6 +50,94 @@ export function goalFromProjection(value: unknown): GoalView | undefined {
     blockedReason:
       typeof goal.blockedReason?.message === "string" ? goal.blockedReason.message : undefined,
   };
+}
+
+/**
+ * 一条 goal 的**进程内**续跑授权（官方 `GoalActivationChanged['goal']` 与
+ * `GoalView` 里那三个字段的交集）。
+ *
+ * `id` / `revision` 是身份：只有它们与当前目标一致时这份授权才算数
+ * （官方 `GoalDock` 的 `next.id === goalId && next.revision === revision`）。
+ */
+export interface GoalActivationSnapshot {
+  readonly id: string;
+  readonly revision: number;
+  readonly activation: GoalActivation;
+}
+
+/** 词表外的值一律不认（**不降级成 armed**）。 */
+function goalActivationValue(value: unknown): GoalActivation | undefined {
+  return value === "armed" || value === "disarmed" ? value : undefined;
+}
+
+/**
+ * `goals/get` 的返回值（官方 `GoalView | undefined`）→ 续跑授权要的三个字段。
+ *
+ * 这里只取身份与 `activation`：目标本体仍以 `goal` 投影为权威（投影是 durable 的，
+ * RPC 是进程内视图）。形状认不出（没有目标 / 字段缺失 / 词表外）一律 `undefined`
+ * ——不知道就不下结论，目标条不会因此显示暂停或恢复。
+ */
+export function goalActivationFromView(value: unknown): GoalActivationSnapshot | undefined {
+  if (value === null || typeof value !== "object") return undefined;
+  const view = value as { id?: unknown; revision?: unknown; activation?: unknown };
+  const activation = goalActivationValue(view.activation);
+  if (activation === undefined) return undefined;
+  if (typeof view.id !== "string" || !view.id) return undefined;
+  if (typeof view.revision !== "number" || !Number.isFinite(view.revision)) return undefined;
+  return { id: view.id, revision: view.revision, activation };
+}
+
+/**
+ * `goal/activation-changed` 的 emit 参数 → 一条归一化事件。
+ *
+ * 契约（`dsh-goal` 的 `GoalActivationChanged`）：
+ * `{sessionId, goal?: {id, revision, activation}}`。`goal` 缺席表示「当前没有目标」，
+ * 调用方据此清掉快照；`goal` 在但形状认不出时整条不采纳（返回 `undefined`），
+ * **不能**当成清空——那会把一次坏帧变成「没有授权」的假结论。
+ */
+export function goalActivationEventFromArgs(
+  args: readonly unknown[],
+): { readonly sessionId: string; readonly goal?: GoalActivationSnapshot } | undefined {
+  const payload = args[0];
+  if (payload === null || typeof payload !== "object") return undefined;
+  const wire = payload as { sessionId?: unknown; goal?: unknown };
+  if (typeof wire.sessionId !== "string" || !wire.sessionId) return undefined;
+  if (!("goal" in wire) || wire.goal === undefined) return { sessionId: wire.sessionId };
+  const goal = goalActivationFromView(wire.goal);
+  if (goal === undefined) return undefined;
+  return { sessionId: wire.sessionId, goal };
+}
+
+/**
+ * 官方 activation source 的 `activeRef`：只有 durable 阶段是 `active`、且身份完整的
+ * 目标才去读进程内授权（paused / blocked / complete 的状态由 phase 本身表达）。
+ */
+export function activeGoalRef(goal: GoalView | undefined): { readonly id: string; readonly revision: number } | undefined {
+  if (!goal || goal.phase !== "active") return undefined;
+  if (typeof goal.id !== "string" || !goal.id) return undefined;
+  if (typeof goal.revision !== "number" || !Number.isFinite(goal.revision)) return undefined;
+  return { id: goal.id, revision: goal.revision };
+}
+
+/**
+ * 把 activation 快照并进目标条数据；判据与官方 `GoalDock` 逐字一致
+ * （`id` 与 `revision` 都相等才采用）。
+ *
+ * 不匹配、或快照缺席时**明确去掉** `activation`（连同目标数据里上一次合并留下的
+ * 旧值）：界面据此既不给 Pause 也不给 Resume，而不是拿上一版授权继续显示。
+ */
+export function mergeGoalActivation(
+  goal: GoalView | undefined,
+  snapshot: GoalActivationSnapshot | undefined,
+): GoalView | undefined {
+  if (!goal) return undefined;
+  const rest: GoalView = { ...goal };
+  // 先清掉上一版合并留下的授权：不匹配 / 没有快照 = 不知道，不能沿用
+  delete rest.activation;
+  if (snapshot !== undefined && goal.id === snapshot.id && goal.revision === snapshot.revision) {
+    return { ...rest, activation: snapshot.activation };
+  }
+  return rest;
 }
 
 /**

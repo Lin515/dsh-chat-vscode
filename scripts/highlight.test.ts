@@ -406,4 +406,16 @@ console.log("highlight: 并发同 key 只 tokenize / 记账一次 ✓");
 }
 console.log("highlight: 官方路径表、语法、主题与字形逐字符对照 ✓");
 
+// 官方 rc.1 的逐行限额：长行保持纯文本默认前景，不让 regex 阻塞界面；其后短行仍高亮。
+{
+  const code = `const longValue = "${"a".repeat(1000)}";\nconst shortValue = 1;`;
+  const runs = new StreamingHighlightSession().update(code, "typescript");
+  assert.ok(runs !== undefined);
+  assert.strictEqual(runs[0]?.map(run => run.text).join(""), code.split("\n")[0]);
+  assert.strictEqual(runs[0]?.length, 1, "超长行只保留默认前景，不产生关键字 / 字符串语法片段");
+  assert.ok(runs[1]?.some(run => run.style.color !== undefined));
+  const go = "package main\ntype Model struct { // brace } in comment\nValue int\n}\n";
+  assert.ok(await highlightCode(go, "go"), "官方 Go 修补后的 grammar 正常加载，不降级成永久纯文本");
+}
+
 console.log("\nhighlight: all assertions passed");

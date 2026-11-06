@@ -1,7 +1,7 @@
 /**
  * 【vendor】上游 `@deepseek-ai/dsh-client-ui-primitives` 的
- * `src/markdown/parse.ts`，固定版本 `0.2.0-rc.2`（tag `dsh-v0.2.0-rc.2`，
- * commit `639ed015397290b3745d163aafe02ffee4aa3f84`）的完整副本。
+ * `src/markdown/parse.ts`，固定版本 `0.2.2-rc.1`（tag `dsh-v0.2.2-rc.1`，
+ * commit `66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db`）的完整副本。
  *
  * **不要手改**：上游升级时按 `src/vendor/README.md` 的流程重新 diff。
  *
@@ -14,6 +14,7 @@
  * `parseGfmWithMath` 是 settled 的 GFM + TeX math 语法，依赖
  * `mathCompatibility()` 与 `math()` 同时注册。
  */
+
 /**
  * The markdown renderer's two mdast grammars, one per rendering arm. Each
  * arm is internally consistent — the incremental tail parses, the one-shot
@@ -33,6 +34,10 @@ import { gfm } from 'micromark-extension-gfm'
 import { math } from 'micromark-extension-math'
 import { cjkFriendlyStrong } from './cjkFriendlyStrong'
 import { mathCompatibility } from './mathCompatibility'
+import { windowsPathDestinations } from './windows-path-destinations'
+
+/** GFM strikethrough requires `~~`; a single `~` stays literal, as in ranges such as `10~20`. */
+const gfmOptions = { singleTilde: false }
 
 /**
  * Parse GFM markdown (the streaming arm's grammar: no math, so incomplete
@@ -42,8 +47,8 @@ import { mathCompatibility } from './mathCompatibility'
  */
 export function parseGfm(text: string): Root {
   return recoverLocalImages(fromMarkdown(text, {
-    extensions: [gfm(), cjkFriendlyStrong()],
-    mdastExtensions: [gfmFromMarkdown()],
+    extensions: [gfm(gfmOptions), cjkFriendlyStrong()],
+    mdastExtensions: [gfmFromMarkdown(), windowsPathDestinations()],
   }), text)
 }
 
@@ -55,7 +60,7 @@ export function parseGfm(text: string): Root {
  */
 export function parseGfmWithMath(text: string): Root {
   return recoverLocalImages(fromMarkdown(text, {
-    extensions: [gfm(), cjkFriendlyStrong(), mathCompatibility(), math()],
-    mdastExtensions: [gfmFromMarkdown(), mathFromMarkdown()],
+    extensions: [gfm(gfmOptions), cjkFriendlyStrong(), mathCompatibility(), math()],
+    mdastExtensions: [gfmFromMarkdown(), mathFromMarkdown(), windowsPathDestinations()],
   }), text)
 }

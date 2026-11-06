@@ -1,5 +1,5 @@
 /**
- * 工具行的契约事实（与官方客户端逐字对齐，供宿主与界面共用）。
+ * 工具行的契约事实（供宿主与界面共用；退出状态直接复用官方纯函数副本）。
  *
  * 三件事此前都是「本仓库自己发明的近似」，与官方不一致，用户可感知：
  * 1. 工具分类用**子串启发**（`includes("web")`、`includes("list")`…）→ 自定义工具名
@@ -12,8 +12,11 @@
  *
  * 依据（`@deepseek-ai/dsh-client-ui-tool/lib/client.js`）：
  * - `TOOL_VARIANTS` / `TOOL_TITLE_KEYS`（:805-849）
- * - `parseExitStatus`（:656-677）与 `terminalFailed`（:513-525）
+ * - 退出状态已改为固定 rc.1 源码摘录（`src/vendor/ui-tool/terminal-status.ts`），不再依赖旧打包行号
  */
+import { parseExitStatus, terminalFailed as officialTerminalFailed } from "../vendor/ui-tool/terminal-status";
+
+export { parseExitStatus };
 
 /**
  * 工具分类变体（官方 `ToolRowVariant`）。
@@ -123,40 +126,7 @@ export function isFilePathTool(name: string): boolean {
 }
 
 /** 终端结果的解析产物（官方 `parseExitStatus`）。 */
-export interface ExitStatus {
-  /** 剥掉标记行之后的正文。 */
-  output: string;
-  /** 退出码；没有标记时官方给 0（干净退出）。 */
-  exitCode?: number;
-  /** 被信号杀死时的信号名（存在时**优先于**退出码）。 */
-  signal?: string;
-}
-
-/**
- * 从终端结果尾部提取退出状态，并把标记行**剥掉**。
- *
- * 标记是 dsh-shell 自己写的最后一行：
- * - `\n[killed by signal: X]`——先判，信号优先于退出码；
- * - `\n[exit code: N]`；
- * - 两者都没有 → 干净退出，正文原样、`exitCode` 为 0。
- *
- * 为什么要剥掉：这一行是给机器读的，界面上另有「退出码 N」的呈现；
- * 留在正文里会和用户真正想看的输出混在一起。
- *
- * 注意**持久 shell** 用的是另一套词汇（`[shell exited: code N]` 等），
- * 刻意不匹配这里——所以对它们本函数返回原样文本 + exitCode 0。
- */
-export function parseExitStatus(text: string): ExitStatus {
-  const signal = /\n\[killed by signal: ([^\]\n]+)\]$/.exec(text);
-  if (signal?.[1] !== undefined) {
-    return { output: text.slice(0, signal.index), signal: signal[1] };
-  }
-  const exit = /\n\[exit code: (\d+)\]$/.exec(text);
-  if (exit?.[1] !== undefined) {
-    return { output: text.slice(0, exit.index), exitCode: Number(exit[1]) };
-  }
-  return { output: text, exitCode: 0 };
-}
+export type ExitStatus = ReturnType<typeof parseExitStatus>;
 
 /**
  * 终端结果是否算失败（官方 `terminalFailed`）。
@@ -165,7 +135,6 @@ export function parseExitStatus(text: string): ExitStatus {
  * 数据，不是工具失败」。所以客户端必须自己把 `ok` 升级成 `error`，否则
  * `exit 1` 和 `exit 0` 在界面上完全一样。
  */
-export function terminalFailed(status: { exitCode?: number; signal?: string; running?: boolean }): boolean {
-  if (status.running === true) return false;
-  return (status.exitCode !== undefined && status.exitCode !== 0) || status.signal !== undefined;
+export function terminalFailed(status: { exitCode?: number | null; signal?: string; running?: boolean }): boolean {
+  return officialTerminalFailed({ card: status });
 }

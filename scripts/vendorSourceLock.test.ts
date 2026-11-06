@@ -2,22 +2,25 @@
  * M01：`src/vendor/**` 官方源码副本的**源锁**断言（零 token、不联网、不读用户目录）。
  *
  * 判据本体在 `scripts/vendorSourceLock.ts`，登记在 `scripts/vendorSourceLock.json`，
- * 上游那一侧的凭据是仓库内 15/15 份离线见证素材
- * （`test/fixtures/vendor-sources/dsh-v0.2.0-rc.2/**`，逐字节等于固定 tag 上的原文）。
+ * 上游那一侧的凭据是仓库内 19/19 份离线见证素材
+ * （`test/fixtures/vendor-sources/dsh-v0.2.2-rc.1/**`，逐字节等于固定 tag 上的原文）。
  *
- * 这一份做三件事：①基线（真实磁盘副本 + 真实锁清单 + **全部 15 份素材**）必须无漂移；
+ * 这一份做三件事：①基线（真实磁盘副本 + 真实锁清单 + **全部 19 份素材**）必须无漂移；
  * ②**可证伪** —— 逐类构造突变，判据必须红（含「素材缺一份 / 多一份 / 改一个字节」与
  * 「规范化规则被改」）；③**允许的漂移**必须绿（登记的说明符改写、已登记的类型壳 /
  * 本地图片判据差异、以及有意的排版与注释漂移）。
  *
  * 突变全部在**内存**里做（`structuredClone` 一份夹具），不碰 `src/vendor/**` 的真实文件，
- * 也不碰素材目录里的那 15 份原文。
+ * 也不碰素材目录里的那 19 份原文。
  *
  * 运行：npm test
  */
 import assert from "node:assert";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { createRequire } from "node:module";
+import type { Statement } from "typescript";
+const ts: typeof import("typescript") = createRequire(import.meta.url)("typescript");
 import lockJson from "./vendorSourceLock.json";
 import {
   collectUpstreamFixtures,
@@ -31,8 +34,8 @@ import {
 
 /** 任务固定的上游身份：锁清单必须与它一致，**不许**用 HEAD 或别的 tag 替代。 */
 const FIXED_UPSTREAM = {
-  tag: "dsh-v0.2.0-rc.2",
-  sha: "639ed015397290b3745d163aafe02ffee4aa3f84",
+  tag: "dsh-v0.2.2-rc.1",
+  sha: "66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db",
 } as const;
 
 /** 夹具是 `structuredClone` 出来的**可变**副本（判据只读它，突变只发生在这里）。 */
@@ -49,7 +52,7 @@ const ROOT = process.cwd();
 const LOCK = lockJson as unknown as VendorSourceLock;
 const VENDOR_FILES = collectVendorSources(ROOT);
 const VENDOR_README = readFileSync(join(ROOT, "src", "vendor", "README.md"), "utf8");
-/** 上游那一侧的 15/15 离线见证（官方相对路径 → 原文）。 */
+/** 上游那一侧的 19/19 离线见证（官方相对路径 → 原文）。 */
 const FIXTURES = collectUpstreamFixtures(ROOT, LOCK.upstream.fixtureDir, LOCK.upstream.tag);
 
 const TIMELINE = "src/vendor/ui-trajectory/timeline.ts";
@@ -142,7 +145,7 @@ function mutateFixture(draft: Draft, upstreamPath: string, from: string, to: str
   draft.upstreamFiles[index] = { path: upstreamPath, text: after };
 }
 
-// ---------- 1. 基线：真实磁盘副本 + 真实锁清单 + 全部 15 份素材 ----------
+// ---------- 1. 基线：真实磁盘副本 + 真实锁清单 + 全部 19 份素材 ----------
 {
   const problems = vendorSourceProblems({
     lock: LOCK,
@@ -159,12 +162,37 @@ function mutateFixture(draft: Draft, upstreamPath: string, from: string, to: str
   );
 }
 
-// ---------- 2. 登记与来源：形式、固定身份、15/15 覆盖、已登记差异 ----------
+// 新增纯函数摘录还要与独立原文直接对拍，不能仅靠双方登记摘要自洽。
+for (const path of ["src/vendor/ui-tool/terminal-status.ts", "src/vendor/util-time/cron-fields.ts", "src/vendor/util-time/recurrence-error.ts"]) {
+  const local = required(VENDOR_FILES.find(file => file.path === path), path);
+  const entry = required(LOCK.files[path], path);
+  const original = required(FIXTURES.find(file => file.path === entry.upstream.path), entry.upstream.path);
+  const parse = (text: string) => ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true);
+  const nameOf = (node: Statement): string | undefined => {
+    if (ts.isVariableStatement(node)) {
+      const name = node.declarationList.declarations[0]?.name;
+      return name && ts.isIdentifier(name) ? name.text : undefined;
+    }
+    if (ts.isFunctionDeclaration(node) || ts.isInterfaceDeclaration(node) || ts.isClassDeclaration(node) || ts.isTypeAliasDeclaration(node)) return node.name?.text;
+    return undefined;
+  };
+  const upstream = parse(original.text);
+  for (const node of parse(local.text).statements) {
+    if (ts.isImportDeclaration(node)) continue;
+    const name = nameOf(node);
+    if (name === "TerminalCardModel") continue; // 唯一获准的本地模型类型壳。
+    const peer = required(upstream.statements.find(candidate => nameOf(candidate) === name), `${path}:${name}`);
+    const body = (statement: Statement) => statement.getText().replace(/^export\s+/, "");
+    assert.strictEqual(body(node), body(peer), `${path}:${name} 必须是官方原文，仅允许补 export`);
+  }
+}
+
+// ---------- 2. 登记与来源：形式、固定身份、19/19 覆盖、已登记差异 ----------
 {
   assert.strictEqual(
     Object.keys(LOCK.files).length,
-    15,
-    "锁清单固定登记 15 份官方副本（新增或移除必须显式改这里与素材 / README / 声明）",
+    19,
+    "锁清单固定登记 19 份官方副本（新增或移除必须显式改这里与素材 / README / 声明）",
   );
   assert.strictEqual(
     Object.keys(LOCK.files).length,
@@ -199,7 +227,7 @@ function mutateFixture(draft: Draft, upstreamPath: string, from: string, to: str
   assert.strictEqual(LOCK.upstream.tag, FIXED_UPSTREAM.tag);
   assert.strictEqual(LOCK.upstream.sha, FIXED_UPSTREAM.sha);
 
-  // 上游那一侧：**15/15 逐字素材**，路径是官方相对路径，一条不多一条不少
+  // 上游那一侧：**19/19 逐字素材**，路径是官方相对路径，一条不多一条不少
   const upstreamPaths = [
     ...new Set(Object.values(LOCK.files).map((entry) => entry.upstream.path)),
   ].sort();
@@ -216,7 +244,7 @@ function mutateFixture(draft: Draft, upstreamPath: string, from: string, to: str
     );
     assert.ok(!file.path.includes("\\") && !file.path.startsWith("/"), "素材路径不许带本机痕迹");
   }
-  // 素材字节与登记值逐份相符（原始字节数）；这一条是「15/15」的落点
+  // 素材字节与登记值逐份相符（原始字节数）；这一条是「19/19」的落点
   for (const [vendorPath, entry] of Object.entries(LOCK.files)) {
     const file = required(
       FIXTURES.find((candidate) => candidate.path === entry.upstream.path),
@@ -384,7 +412,7 @@ function mutateFixture(draft: Draft, upstreamPath: string, from: string, to: str
       "D:/repo/packages/client/ui-trajectory/src/client/timeline.ts";
   });
   expectRed("来源自洽", "vendor 文件头与锁定 tag 对不上", (draft) => {
-    mutateVendorText(draft, TIMELINE, "dsh-v0.2.0-rc.2", "dsh-v0.2.0-rc.9");
+    mutateVendorText(draft, TIMELINE, "dsh-v0.2.2-rc.1", "dsh-v0.2.0-rc.9");
   });
 }
 
@@ -631,4 +659,4 @@ function mutateFixture(draft: Draft, upstreamPath: string, from: string, to: str
   );
 }
 
-console.log("\nvendor-source-lock: 内容锁 / 双向登记 / 15/15 上游见证 / 来源自洽（含突变自证） ✓");
+console.log("\nvendor-source-lock: 内容锁 / 双向登记 / 19/19 上游见证 / 来源自洽（含突变自证） ✓");

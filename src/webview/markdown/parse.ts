@@ -8,7 +8,6 @@ import type {
 import { parseGfm } from "../../vendor/ui-primitives/markdown/parse";
 import { createSettledSyntax, parseSettledRoot } from "./math";
 import { collectCodeSources, type CodeSource } from "./source";
-import { fixWindowsDestinations } from "./windowsDestinations";
 import type { MarkdownPhase } from "./types";
 
 export {
@@ -20,8 +19,8 @@ export {
 } from "./math";
 
 /**
- * 正文的解析适配：官方 GFM（+ 中文加粗 + 本地图片语法恢复）之后，只补本扩展的
- * Windows 链接目标修复，并收集文档级参考定义 / 脚注定义。
+ * 正文的解析适配：官方 GFM（+ 中文加粗 + 本地图片语法恢复 + Windows 目标保真）
+ * 之后收集文档级参考定义 / 脚注定义；不再维护本地 Windows 目标解析器。
  *
  * 两个语法臂按 `phase` 选择：
  *
@@ -61,7 +60,6 @@ export function parseGfmMarkdown(source: string): MarkdownDocument {
 }
 
 function finalizeDocument(text: string, root: Root, phase: MarkdownPhase): MarkdownDocument {
-  fixWindowsDestinations(root, text);
   const definitions = new Map<string, Definition>();
   const footnotes = new Map<string, FootnoteDefinition>();
   let hasCode = false;

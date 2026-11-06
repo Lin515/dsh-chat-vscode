@@ -1,6 +1,6 @@
 # src/vendor/ui-trajectory/ — 轨迹包的纯决策模块
 
-上游 `@deepseek-ai/dsh-client-ui-trajectory@0.2.0-rc.2`（tag `dsh-v0.2.0-rc.2`）
+上游 `@deepseek-ai/dsh-client-ui-trajectory@0.2.2-rc.1`（tag `dsh-v0.2.2-rc.1`）
 的源码副本。来源、版本与同步流程见 [../README.md](../README.md)；改写约束见 [../AGENTS.md](../AGENTS.md)。
 
 搬的**只有纯决策**：官方整包（`TrajectoryTable.tsx` 3500+ 行、`TrajectoryView.tsx`、

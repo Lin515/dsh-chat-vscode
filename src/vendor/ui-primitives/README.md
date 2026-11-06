@@ -1,6 +1,6 @@
 # src/vendor/ui-primitives/ — 基础组件包的纯决策模块
 
-上游 `@deepseek-ai/dsh-client-ui-primitives@0.2.0-rc.2`（tag `dsh-v0.2.0-rc.2`）
+上游 `@deepseek-ai/dsh-client-ui-primitives@0.2.2-rc.1`（tag `dsh-v0.2.2-rc.1`）
 的源码副本。来源、版本与同步流程见 [../README.md](../README.md)；改写约束见 [../AGENTS.md](../AGENTS.md)。
 
 这里只搬了**一个子目录**：

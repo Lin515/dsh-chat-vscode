@@ -4,6 +4,7 @@ import {
   deviceZone,
   formatScheduleStamp,
   orderSchedules,
+  recordTimeZone,
   relativeText,
   scheduleChangeFromDraft,
   scheduleCreateDraft,
@@ -16,7 +17,6 @@ import {
   scheduleStatusOf,
   scheduleTargetError,
   scheduleTargetSessionId,
-  storedZoneOf,
   type ScheduleEditorDraft,
   type ScheduleTexts,
 } from "../../shared/schedule";
@@ -68,6 +68,29 @@ type HistoryEntry = ScheduleHistoryState;
 type ScheduleScopeView = "session" | "all";
 /** 状态筛选。 */
 type ScheduleStatusFilter = "all" | "active" | "paused" | "ended";
+
+/**
+ * 执行记录此刻该不该自动读第一页（纯函数，离线可断言）。
+ *
+ * 收起时一概不读。一次展开里**成功 / `code` / 失败 / 宿主不可用都是终点**：只有刚
+ * 展开（`expandIntent`）时，上一次的 `code` 才放行一次重读——它曾经每收到一帧就再发
+ * 一次，成为无上限的往返。`code` 与失败都保留界面上的手动重试（与官方
+ * `DeliveryHistory` 的 `delivery.*` 失败态 + 按钮一致）。
+ */
+export function scheduleHistoryShouldLoad(
+  open: boolean,
+  entry: ScheduleHistoryState | undefined,
+  expandIntent: boolean,
+): boolean {
+  if (!open) return false;
+  if (entry === undefined) return true;
+  if (entry.loading) return false;
+  if (entry.code !== undefined) return expandIntent;
+  if (entry.error !== undefined || entry.hostUnavailable === true) return false;
+  if (entry.loaded === true) return false;
+  // reducer 不会产出「既没 loading、也没落定」的中间态；真遇到就再读一次，别永远停在读取中。
+  return true;
+}
 
 export function SchedulesSection({
   sessionId,
@@ -492,15 +515,21 @@ export function ScheduleRow({
     post({ type: "scheduleLimits" });
   }, [open, draft.target, limits?.newSessionIntervalSeconds, limits?.unsupported]);
 
-  // 展开详情时按需读一次执行记录（只读一次；失败与成功都算落定，别在这里循环）
+  // 「展开一次 = 一次读取意图」：收起后再展开仍要重读第一页，但同一段展开里一旦落定
+  // （成功 / `code` / 失败）就不再自动重发。`wasOpen` 只在 effect 里翻转，避免渲染期写 ref。
+  const expandIntent = useRef(false);
+  const wasOpen = useRef(false);
   useEffect(() => {
-    if (!open) return;
-    // `code`（任务不存在 / 游标失效）**不算落定**：那种情形下重新展开应当再读一次第一页
-    const settled =
-      (history?.loaded === true && history?.code === undefined) ||
-      history?.error !== undefined ||
-      history?.hostUnavailable === true;
-    if (history !== undefined && (history.loading || settled)) return;
+    if (open && !wasOpen.current) expandIntent.current = true;
+    wasOpen.current = open;
+  }, [open]);
+
+  // 展开详情时按需读一次执行记录。`code` 是终点（不再自动重发）；重新展开、或用户点
+  // 界面上的重试，才再读一次第一页。
+  useEffect(() => {
+    const force = expandIntent.current;
+    expandIntent.current = false;
+    if (!scheduleHistoryShouldLoad(open, history, force)) return;
     const opId = scheduleNextOpId();
     dispatch({ type: "ui/scheduleHistoryRequest", id: item.id, reset: true, opId });
     post({ type: "scheduleHistory", id: item.id, opId });
@@ -564,7 +593,9 @@ export function ScheduleRow({
   const frequency = scheduleFrequency(item, texts, { system: zone, locale });
   const nextRunAt = scheduleNextRunAt(item);
   const relative = relativeText(nextRunAt, now, texts);
-  const stamp = formatScheduleStamp(nextRunAt, locale, storedZoneOf(item));
+  // 与官方 `formatScheduleAbsolute` 一致：下一运行时刻按**读者设备时区**读（读者拿它
+  // 和自己的钟对时）；规则自己的时区只用于执行记录（见 `recordTimeZone`）。
+  const stamp = formatScheduleStamp(nextRunAt, locale);
   const canEditDetails = modern && item.api === "edit";
   const dirty = scheduleEditorStateDirty(editor);
   const stale = canEditDetails && scheduleEditorStateConflict(editor, item);
@@ -916,7 +947,9 @@ function ScheduleRecords({
 }) {
   const texts = useTexts();
   const locale = useLocale();
-  const zone = storedZoneOf(item);
+  // 与官方 `DeliveryHistory` 的 `recordTimeZone(task)` 一致：投递记录按规则自己的时区读
+  // （rrule 的时区来自 DTSTART 的 TZID；一次性 / 固定间隔没有规则时区，按设备时区读）。
+  const zone = recordTimeZone(item);
   const loadOlder = () => {
     const opId = scheduleNextOpId();
     dispatch({ type: "ui/scheduleHistoryRequest", id: item.id, opId });
@@ -935,11 +968,14 @@ function ScheduleRecords({
         <div className="job-notice">{texts.scheduleRecordsLoading}</div>
       ) : null}
       {entry?.hostUnavailable ? <div className="job-notice">{texts.scheduleRecordsOffline}</div> : null}
-      {entry?.code === "schedule_not_found" ? (
-        <div className="job-notice">{texts.scheduleRecordsMissing}</div>
-      ) : null}
-      {entry?.code === "delivery_cursor_not_found" ? (
-        <div className="job-notice is-error">{texts.scheduleRecordsCursorLost}</div>
+      {entry?.code !== undefined ? (
+        <div className={`job-notice${entry.code === "delivery_cursor_not_found" ? " is-error" : ""}`}>
+          {entry.code === "schedule_not_found" ? texts.scheduleRecordsMissing : texts.scheduleRecordsCursorLost}
+          {/* `code` 不再自动重发（那是无上限往返）；手动重试与重新展开仍可再读第一页。 */}
+          <button type="button" className="schedule-link" onClick={reload}>
+            {texts.scheduleRecordsRetry}
+          </button>
+        </div>
       ) : null}
       {entry?.error !== undefined ? (
         <div className="job-notice is-error">

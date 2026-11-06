@@ -18,11 +18,15 @@
  */
 import assert from "node:assert";
 import {
+  activeGoalRef,
   agentPresetFromProjection,
   agentPresetsFromList,
   contextBreakdownFromProjection,
   contextPressureFromProjection,
+  goalActivationEventFromArgs,
+  goalActivationFromView,
   goalFromProjection,
+  mergeGoalActivation,
   imageLimitsFromProjection,
   modelSelectionFromProjection,
   permissionCatalogHasAuto,
@@ -40,6 +44,7 @@ import {
   withSubagentActivity,
 } from "../src/dsh/projections";
 import { replayFollowSnapshot } from "../src/dsh/projectionIngest";
+import { goalBarActions, type GoalActivation, type GoalView } from "../src/shared/chat";
 
 // ---------- 0. plan：生效状态要算上 pending，不是裸 active ----------
 //
@@ -196,6 +201,309 @@ console.log("projections: goal 为空/被清空时返回 undefined ✓");
   assert.strictEqual(blocked?.blockedReason, "同一条件连续 3 轮");
 }
 console.log("projections: goal 的四态词表+未知值降级+blockedReason ✓");
+
+// ---------- 3b. goal 的进程内 activation：缺失不猜 armed ----------
+//
+// 0.2.2-rc.1 的 goal 状态 = durable `GoalProjection` + **进程内** `activation`。
+// 投影里没有这一位（`dsh-goal/lib/types/types.d.ts` 的注释写明它从不持久化），
+// 官方只能从 `goals/get`（`GoalView.activation`）与 `goal/activation-changed`
+// 广播取，并用 `GoalDock` 的 `id + revision` 相等判据决定用不用。恢复会话 / fork
+// 都会新建 agent，服务端在这一刻把 activation 置 `disarmed`——这一位丢了，目标条
+// 就会把「已暂停」画成「进行中」，而且没有恢复入口。
+{
+  const activeGoal = goalFromProjection({
+    goal: { id: "g-1", revision: 3, objective: "x", phase: "active", maxGoalRounds: 8 },
+    roundsStarted: 1,
+  });
+  assert.ok(activeGoal);
+
+  // 投影本身不带 activation：不能从它猜
+  assert.strictEqual(activeGoal.activation, undefined, "GoalProjection 没有 activation");
+
+  // 没有读到 / 形状坏：保持「不知道」，不降级成 armed
+  assert.strictEqual(goalActivationFromView(undefined), undefined);
+  assert.strictEqual(goalActivationFromView(null), undefined);
+  assert.strictEqual(goalActivationFromView({ id: "g-1", revision: 3 }), undefined, "缺 activation");
+  assert.strictEqual(
+    goalActivationFromView({ id: "g-1", revision: 3, activation: "idle" }),
+    undefined,
+    "词表外的值不能猜成 armed",
+  );
+  const disarmed = { id: "g-1", revision: 3, activation: "disarmed" as const };
+  assert.deepStrictEqual(
+    goalActivationFromView({ id: "g-1", revision: 3, activation: "disarmed" }),
+    disarmed,
+  );
+
+  // 合并判据 = 官方 GoalDock 的 id/revision 相等
+  const merged = mergeGoalActivation(activeGoal, disarmed);
+  assert.strictEqual(merged?.activation, "disarmed");
+  assert.strictEqual(merged?.objective, "x", "合并只动 activation，不碰投影字段");
+  assert.strictEqual(merged?.rounds, 1);
+  assert.strictEqual(merged?.phase, "active");
+  assert.deepStrictEqual(activeGoalRef(merged), { id: "g-1", revision: 3 });
+
+  // revision 变了（编辑 / 暂停 / 恢复都会 +1）：上一版授权不许沿用
+  const bumped = goalFromProjection({
+    goal: { id: "g-1", revision: 4, objective: "x", phase: "active", maxGoalRounds: 8 },
+    roundsStarted: 1,
+  });
+  assert.strictEqual(mergeGoalActivation(bumped, disarmed)?.activation, undefined, "revision 不匹配 = 未知");
+  assert.strictEqual(mergeGoalActivation(activeGoal, undefined)?.activation, undefined);
+
+  // 目标不再是 active 时没有可读的 ref（paused / blocked 由 phase 表达）
+  assert.strictEqual(
+    activeGoalRef(goalFromProjection({ goal: { id: "g-1", revision: 4, objective: "x", phase: "paused", maxGoalRounds: 8 }, roundsStarted: 1 })),
+    undefined,
+  );
+  assert.strictEqual(activeGoalRef(undefined), undefined);
+
+  // 目标条动作：active+armed → pause；active+disarmed → resume；active+未知 → 都不给
+  assert.deepStrictEqual(goalBarActions(merged), { pause: false, resume: true });
+  assert.deepStrictEqual(goalBarActions(activeGoal), { pause: false, resume: false });
+  assert.deepStrictEqual(
+    goalBarActions(mergeGoalActivation(activeGoal, { id: "g-1", revision: 3, activation: "armed" })),
+    { pause: true, resume: false },
+  );
+  const paused = goalFromProjection({
+    goal: { id: "g-1", revision: 4, objective: "x", phase: "paused", maxGoalRounds: 8 },
+    roundsStarted: 1,
+  });
+  assert.deepStrictEqual(goalBarActions(paused), { pause: false, resume: true });
+  const complete = goalFromProjection({
+    goal: { id: "g-1", revision: 4, objective: "x", phase: "complete", maxGoalRounds: 8 },
+    roundsStarted: 1,
+  });
+  assert.deepStrictEqual(goalBarActions(complete), { pause: false, resume: false }, "complete 整条不渲染");
+
+  // 与官方 GoalBar 的判据逐字对照（active 一行，三档授权）
+  const officialPause = (phase: GoalView["phase"], activation?: GoalActivation) =>
+    phase === "active" && activation === "armed";
+  const officialResume = (phase: GoalView["phase"], activation?: GoalActivation) =>
+    phase !== "active" || activation === "disarmed";
+  for (const activation of [undefined, "armed", "disarmed"] as const) {
+    const snapshot = activation === undefined ? undefined : { id: "g-1", revision: 3, activation };
+    const actions = goalBarActions(mergeGoalActivation(activeGoal, snapshot));
+    assert.strictEqual(actions.pause, officialPause("active", activation), `pause / ${activation}`);
+    assert.strictEqual(actions.resume, officialResume("active", activation), `resume / ${activation}`);
+  }
+
+  // `goal/activation-changed` 的 emit 参数（`{sessionId, goal?}`）
+  assert.deepStrictEqual(
+    goalActivationEventFromArgs([{ sessionId: "s-1", goal: { id: "g-1", revision: 3, activation: "disarmed" } }]),
+    { sessionId: "s-1", goal: { id: "g-1", revision: 3, activation: "disarmed" } },
+  );
+  assert.deepStrictEqual(
+    goalActivationEventFromArgs([{ sessionId: "s-1" }]),
+    { sessionId: "s-1" },
+    "goal 缺席 = 当前没有目标（清账本）",
+  );
+  assert.strictEqual(
+    goalActivationEventFromArgs([{ sessionId: "s-1", goal: { id: "g-1", revision: 3, activation: "weird" } }]),
+    undefined,
+    "有 goal 但形状坏：整条不采纳，不能当成清空",
+  );
+  assert.strictEqual(goalActivationEventFromArgs([]), undefined);
+  assert.strictEqual(goalActivationEventFromArgs([{ goal: {} }]), undefined);
+  assert.strictEqual(goalActivationEventFromArgs([null]), undefined);
+
+  // 完整离线生命周期：恢复会话（disarmed 广播）→ 目标条给「恢复」；
+  // 用户恢复后 revision+1 且 armed → 给「暂停」。
+  let lifecycle = mergeGoalActivation(activeGoal, undefined);
+  assert.deepStrictEqual(goalBarActions(lifecycle), { pause: false, resume: false });
+  const restored = goalActivationEventFromArgs([
+    { sessionId: "s-1", goal: { id: "g-1", revision: 3, activation: "disarmed" } },
+  ]);
+  lifecycle = mergeGoalActivation(activeGoal, restored?.goal);
+  assert.deepStrictEqual(goalBarActions(lifecycle), { pause: false, resume: true });
+  const resumedGoal = goalFromProjection({
+    goal: { id: "g-1", revision: 4, objective: "x", phase: "active", maxGoalRounds: 8 },
+    roundsStarted: 1,
+  });
+  lifecycle = mergeGoalActivation(resumedGoal, { id: "g-1", revision: 4, activation: "armed" });
+  assert.deepStrictEqual(goalBarActions(lifecycle), { pause: true, resume: false });
+}
+console.log("projections: goal 的进程内 activation（goals/get + 事件 + id/revision 判据）✓");
+
+// ---------- 3c. goal activation 的完整生命周期（真控制器 + 假客户端） ----------
+//
+// 纯函数正确不代表接线正确：投影到达时读一次 `goals/get`、广播到达时直接采信、
+// revision 变化时旧授权作废、非 active 不读——这几条都由 controller 接起来，这里
+// 用离线控制器逐条钉住（vscode 由构建 alias 换成 stub，无网络、无 token）。
+{
+  const { ChatController } = await import("../src/dsh/controller");
+  const { DshClient } = await import("../src/dsh/client");
+  // 检查真正的 RPC 包装，而不只让假客户端自己声明“参数对了”。不构造客户端、不联网。
+  const rpcCalls: unknown[] = [];
+  const receiver = { request(method: string, args: unknown) { rpcCalls.push([method, args]); return Promise.resolve(undefined); } };
+  await DshClient.prototype.getGoal.call(receiver as unknown as DshClient, "wire-session");
+  assert.deepStrictEqual(rpcCalls, [["goals/get", { agentId: "wire-session" }]]);
+  const VIEW = "view-goal";
+  const SESSION = "session-goal";
+
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+  const fakeServer = () => ({
+    externalUrl: undefined,
+    commandConfigured: true,
+    onHeartbeat() {},
+    snapshot() {
+      return { status: { info: undefined }, supervisorAlive: false };
+    },
+  });
+  const fakeMemento = () => {
+    const map = new Map<string, unknown>();
+    return {
+      get: (key: string, fallback?: unknown) => (map.has(key) ? map.get(key) : fallback),
+      update: async (key: string, value: unknown) => {
+        if (value === undefined) map.delete(key);
+        else map.set(key, value);
+      },
+      keys: () => [...map.keys()],
+    };
+  };
+  const state: { goal: unknown; calls: { method: string; args: Record<string, unknown> }[] } = {
+    goal: undefined,
+    calls: [],
+  };
+  const client = {
+    async getGoal(sessionId: string) {
+      state.calls.push({ method: "goals/get", args: { agentId: sessionId } });
+      return state.goal;
+    },
+    async listSessions() {
+      return { items: [] };
+    },
+    async request(method: string, args: Record<string, unknown>) {
+      state.calls.push({ method, args });
+      if (method === "commands/list") return [];
+      return undefined;
+    },
+    async sessionProjections() {
+      return { values: {} };
+    },
+    async getJson() {
+      return undefined;
+    },
+    async settingsDescribe() {
+      return { namespaces: [] };
+    },
+    followSession() {
+      return { cancel() {} };
+    },
+    followJobs() {
+      return { cancel() {} };
+    },
+    followControl() {
+      return { cancel() {} };
+    },
+  };
+
+  const controller = new ChatController(
+    fakeServer() as never,
+    () => undefined,
+    fakeMemento() as never,
+    fakeMemento() as never,
+    { delete: async () => undefined, get: async () => undefined, store: async () => undefined } as never,
+  );
+  const frames: { target: string; frame: Record<string, unknown> }[] = [];
+  controller.subscribe((target, frame) => frames.push({ target, frame: frame as never }));
+  const internals = controller as unknown as {
+    client: unknown;
+    connection: string;
+    scopes: Map<string, unknown>;
+    applyGoalProjection(scope: unknown, value: unknown, present: boolean): void;
+    onEventFrame(frame: Record<string, unknown>): Promise<void>;
+  };
+  internals.client = client;
+  internals.connection = "connected";
+  await controller.openSession(VIEW, SESSION);
+  const scope = internals.scopes.get(SESSION);
+  assert.ok(scope, "离线控制器必须为会话建出域");
+
+  /** 最近一帧（patch 或 state）里过线的 goal。会话帧的投递目标是**窗口 id**。 */
+  const wiredGoal = (): GoalView | undefined => {
+    for (let index = frames.length - 1; index >= 0; index -= 1) {
+      const { target, frame } = frames[index];
+      if (target !== VIEW) continue;
+      const payload = (frame.type === "patch" ? frame.patch : frame.type === "state" ? frame.state : undefined) as
+        | { goal?: GoalView | null }
+        | undefined;
+      if (payload && Object.hasOwn(payload, "goal")) return payload.goal ?? undefined;
+    }
+    return undefined;
+  };
+  const goalAt = (revision: number) =>
+    goalFromProjection({
+      goal: { id: "g-1", revision, objective: "x", phase: "active", maxGoalRounds: 8 },
+      roundsStarted: 1,
+    });
+
+  // ① 打开 active 目标：投影先到、RPC 返回「没有目标」→ 授权保持未知（不猜 armed）
+  internals.applyGoalProjection(scope, goalAt(3), true);
+  assert.strictEqual(wiredGoal()?.activation, undefined, "投影本身不带 activation");
+  assert.ok(
+    state.calls.some((call) => call.method === "goals/get" && call.args.agentId === SESSION),
+    "active 目标到达时必须读一次 goals/get（参数名就是 agentId）",
+  );
+  await tick();
+  assert.strictEqual(wiredGoal()?.activation, undefined, "RPC 没有目标时不写成 armed");
+  assert.deepStrictEqual(goalBarActions(wiredGoal()), { pause: false, resume: false });
+
+  // ② 恢复会话后服务端广播 disarmed：目标条立刻变成「已暂停 + 恢复」
+  await internals.onEventFrame({
+    type: "emit",
+    event: "goal/activation-changed",
+    args: [{ sessionId: SESSION, goal: { id: "g-1", revision: 3, activation: "disarmed" } }],
+  });
+  assert.strictEqual(wiredGoal()?.activation, "disarmed");
+  assert.deepStrictEqual(goalBarActions(wiredGoal()), { pause: false, resume: true });
+
+  // ③ 坏形状的广播：不写结论、也不清掉已知授权
+  const framesBeforeBad = frames.length;
+  await internals.onEventFrame({
+    type: "emit",
+    event: "goal/activation-changed",
+    args: [{ sessionId: SESSION, goal: { id: "g-1", revision: 3, activation: "weird" } }],
+  });
+  assert.strictEqual(frames.length, framesBeforeBad, "坏形状不推帧");
+  assert.strictEqual(wiredGoal()?.activation, "disarmed", "坏形状不能当成清空");
+
+  // ④ 用户恢复目标：revision 前进先到，旧授权作废；RPC 带回 armed 后才给暂停
+  state.goal = {
+    id: "g-1",
+    revision: 4,
+    objective: "x",
+    phase: "active",
+    maxGoalRounds: 8,
+    roundsStarted: 1,
+    createdAt: 1,
+    updatedAt: 2,
+    activation: "armed",
+  };
+  internals.applyGoalProjection(scope, goalAt(4), true);
+  assert.strictEqual(wiredGoal()?.activation, undefined, "revision 变了，上一版授权不许沿用");
+  await tick();
+  assert.strictEqual(wiredGoal()?.activation, "armed");
+  assert.deepStrictEqual(goalBarActions(wiredGoal()), { pause: true, resume: false });
+
+  // ⑤ paused / blocked 不读 activation（phase 本身已经表达状态）
+  state.calls.length = 0;
+  internals.applyGoalProjection(
+    scope,
+    goalFromProjection({
+      goal: { id: "g-1", revision: 5, objective: "x", phase: "paused", maxGoalRounds: 8 },
+      roundsStarted: 1,
+    }),
+    true,
+  );
+  await tick();
+  assert.strictEqual(wiredGoal()?.activation, undefined);
+  assert.ok(
+    !state.calls.some((call) => call.method === "goals/get"),
+    "非 active 目标不读 activation（官方 activeRef 同款）",
+  );
+}
+console.log("projections: goal activation 生命周期（真控制器：投影/广播/revision/非 active）✓");
 
 // ---------- 4. subagentCatalog 投影：没有 kind/activity ----------
 //

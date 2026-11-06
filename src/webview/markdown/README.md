@@ -1,12 +1,11 @@
 # src/webview/markdown/ — 正文 Markdown 管线
 
-正文入口在 [components/Markdown.tsx](<../components/Markdown.tsx>)；本目录负责同源解析、代码源文保真、Windows 目标修复、完成态高亮与数学宿主适配，以及整棵 mdast → React 渲染。公式排版直接复用固定来源的官方 TeX → React，不维护第二套净化词汇表。streaming 不请求文本增强；原始 HTML 只输出文字，复制沿用原生选区。设计与验证边界见[Markdown 渲染设计](<../../../docs/design-markdown-rendering.md>)。
+正文入口在 [components/Markdown.tsx](<../components/Markdown.tsx>)；本目录负责同源解析、代码源文保真、完成态高亮与数学宿主适配，以及整棵 mdast → React 渲染。公式排版直接复用固定来源的官方 TeX → React，不维护第二套净化词汇表。streaming 不请求文本增强；原始 HTML 只输出文字，复制沿用原生选区。设计与验证边界见[Markdown 渲染设计](<../../../docs/design-markdown-rendering.md>)。
 
-- [parse.ts](<parse.ts>) — `parseMarkdown(source, phase = "settled")` / `parseGfmMarkdown`：按 phase 选择 vendor GFM 或本地数学臂，随后修复 Windows 目标、收集文档级参考 / 脚注定义；缺失定义的脚注引用恢复为 `footnoteReference`，文中有代码时附带 `codeSources`。生产 `Markdown` 已改为 `parseMarkdown(text, phase)`：streaming 只走 GFM，settled 进入数学臂。
+- [parse.ts](<parse.ts>) — `parseMarkdown(source, phase = "settled")` / `parseGfmMarkdown`：按 phase 选择 vendor GFM 或本地数学臂，Windows 目标保真由官方扩展提供；随后收集文档级参考 / 脚注定义；缺失定义的脚注引用恢复为 `footnoteReference`，文中有代码时附带 `codeSources`。生产 `Markdown` 已改为 `parseMarkdown(text, phase)`：streaming 只走 GFM，settled 进入数学臂。
 - [math.ts](<math.ts>) — 完成态数学解析适配：`createSettledSyntax` 为 mdast 与代码源码事件流提供同源语法，与 vendor 同集合单遍装配，包装公开 `math()` 文本 construct 做保守金额否决，包装 `mathFromMarkdown()` 的 `mathFlowFence` 记录权威闭合；`MathSource` 把 `form` / 定界符 / `closed` / 源码 offset / `raw` / 有效 `tex` 写进节点 data。`math` 围栏在 settled 由 `render.tsx` 经 `mathFenceSource` 转成 MathView，streaming 仍为 CodeBlock；`tex` / `latex` 仍走 CodeBlock。
 - [mathRender.ts](<mathRender.ts>) — `renderMath(source)`：闭合 / 4000 code units / DOM 守卫后懒调用 [官方 katex.tsx](<../../vendor/ui-primitives/markdown/katex.tsx>)，返回原有 React 树；只识别真实错误节点做 raw 回退。phase、身份隔离与选区冻结由 [MathView](<../components/MathView.tsx>) 保持，不缓存公式或共享宏表。
 - [source.ts](<source.ts>) — `collectCodeSources` / `codePayload` / `sourceFallback`：用与解析同源的 micromark 事件流提取代码载荷（容器缩进、tab 虚拟列、NUL 与 CRLF 保真）；未知节点回退为安全源码片段。
-- [windowsDestinations.ts](<windowsDestinations.ts>) — `fixWindowsDestinations`：解析后按源码位置恢复行内链接 / 图片的 Windows 绝对目标，把反斜杠编码为 `%5C`，已编码的目标不二次编码。
 - [render.tsx](<render.tsx>) — `renderMarkdownDocument`：整棵 mdast 递归映射为 React（段落、列表、表格、引用、脚注、链接、任务列表、代码卡、MathView）；inline / display 公式按定界符事实进入私有 MathView，math 围栏用 `mathFenceSource`、tex / latex 仍走 CodeBlock；display 在段落 / tight-loose 列表 / 脚注里切成独立块并保留逻辑换行，strong / emphasis / delete / 已解析 link 会随公式拆开而不吞两侧内容。`MarkdownImage` 自持图片 pending / ready / failed，链接标题在渲染时合并，正文与 MathView 均不用 `innerHTML`、不做渲染后水合。
 - [highlight.ts](<highlight.ts>) — 官方高亮核心 / 官方路径语言表的宿主适配：源码偏移保真、主题变量映射、语法就绪、有界缓存与限额；不复制 grammar、引擎或语言表。产品仍仅完成态增强，身份与选区冻结由组件接线维护；官方核心沿用无 DOM 的延迟预热。
 - [types.ts](<types.ts>) — `MarkdownPhase`：`streaming` / `settled`，缺省 `settled`；`CodeBlock` 只在 settled 请求高亮，streaming 与 SSR 保持纯文本。

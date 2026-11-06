@@ -61,7 +61,14 @@ export function weekdayName(day: number, texts: Texts): string {
   return names[day - 1] ?? String(day);
 }
 
-/** 编辑器要显示的可选投递目录（来自会话列表的真实 cwd，去重后给）。 */
+/**
+ * 编辑器要显示的可选投递目录（来自会话列表的真实 cwd，去重后给）。
+ *
+ * 这是本扩展能拿到的**替代来源**：官方 `projectChoices` 用注册的 Workspace 列表
+ * （还带默认 Workspace），本仓库的 webview 没有那份注册表，只能列「已经出现过会话的
+ * 目录」。因此一个已注册但还没有会话的 Workspace 选不到——已知缺口，见
+ * `docs/design-schedules.md` 的「界面结构」一节。
+ */
 export function scheduleDirectoryChoices(sessions: readonly SessionSummaryView[]): { value: string; label: string }[] {
   const seen = new Set<string>();
   const choices: { value: string; label: string }[] = [];
@@ -74,7 +81,13 @@ export function scheduleDirectoryChoices(sessions: readonly SessionSummaryView[]
   return choices;
 }
 
-/** 目标会话候选：当前会话 + 任务原有的目标会话（编辑时）+ 会话列表里的其它会话。 */
+/**
+ * 目标会话候选：当前会话 + 任务原有的目标会话（编辑时）+ 会话列表里的其它会话。
+ *
+ * 空壳会话（`blank`）与有内容的会话一样可选：官方 `useTaskDetail` 的候选就是全部
+ * `sessions.ids`，投递到空壳由服务端受理；按「有没有内容」筛掉目标，只会在界面上
+ * 凭空少一个用户看得到的会话。
+ */
 export function scheduleTargetSessionChoices(
   sessions: readonly SessionSummaryView[],
   currentSessionId: string | undefined,
@@ -92,7 +105,6 @@ export function scheduleTargetSessionChoices(
   push(storedSessionId, byId.get(storedSessionId ?? ""));
   for (const session of sessions) {
     if (session.id === currentSessionId || session.id === storedSessionId) continue;
-    if (session.blank === true) continue;
     push(session.id, session.title);
   }
   return choices;

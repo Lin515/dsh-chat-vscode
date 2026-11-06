@@ -1,6 +1,6 @@
 /**
- * 【vendor】上游 `@deepseek-ai/dsh-client-ui-trajectory`（`0.2.0-rc.2`，检出 tag
- * `dsh-v0.2.0-rc.2`）`src/client/layout.ts` 里的**账本结构类型摘录**。
+ * 【vendor】上游 `@deepseek-ai/dsh-client-ui-trajectory`（`0.2.2-rc.1`，检出 tag
+ * `dsh-v0.2.2-rc.1`）`src/client/layout.ts` 里的**账本结构类型摘录**。
  *
  * **不要手改**：上游升级时按 `src/vendor/README.md` 的流程重新 diff。
  *

@@ -400,8 +400,8 @@ console.log("\ntrajectory-vendor: 搜索索引的输入侧字段 ✓");
 // 所以这是这一刀唯一的防线，每条分支都得钉住。
 //
 // 关键词判据（官方原文）：源码与语言**都不猜**。语言只看调用时那份 schema 里
-// `parameters.properties.code.description`——TypeScript 与 Python **只出现一个**才定语言，
-// 两个都出现（或都不出现）一律 `undefined`。拿源码内容猜语言会在这里红。
+// 顶层 `description` 的 `Execute a program in` 声明与 `parameters.properties.code.description`；
+// TypeScript / Python 有冲突或显式未知语言则 `undefined`。不拿源码内容猜语言。
 {
   const cell = (): TrajectoryCellProps => ({
     index: 1,
@@ -447,6 +447,17 @@ console.log("\ntrajectory-vendor: 搜索索引的输入侧字段 ✓");
       undefined,
       `认不出或坏掉的 schema 一律不给语言：${String(schemaDetail)}`,
     );
+  }
+
+  // rc.1：schema 顶层声明也参与语言身份，未知 / 冲突一律不猜。
+  for (const [description, codeDescription, expected] of [
+    ["Execute a program in `Python`", undefined, "python"],
+    ["Execute a program in `TypeScript`", undefined, "typescript"],
+    ["Execute a program in `Ruby`", "TypeScript program", undefined],
+    ["Execute a program in `Python`", "TypeScript program", undefined],
+  ] as const) {
+    const schemaDetail = JSON.stringify({ description, parameters: { properties: { code: { description: codeDescription } } } });
+    assert.strictEqual(codeProgram({ ...cell(), schemaDetail })?.language, expected);
   }
 
   // 描述缺失 / 空白 → 回落成源码第一行非空内容（**去掉首尾空白**）

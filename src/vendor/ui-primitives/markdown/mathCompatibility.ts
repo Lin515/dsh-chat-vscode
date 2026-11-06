@@ -1,7 +1,7 @@
 /**
  * 【vendor】上游 `@deepseek-ai/dsh-client-ui-primitives` 的
- * `src/markdown/mathCompatibility.ts`，固定版本 `0.2.0-rc.2`
- * （tag `dsh-v0.2.0-rc.2`，commit `639ed015397290b3745d163aafe02ffee4aa3f84`）
+ * `src/markdown/mathCompatibility.ts`，固定版本 `0.2.2-rc.1`
+ * （tag `dsh-v0.2.2-rc.1`，commit `66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db`）
  * 的完整副本。
  *
  * **不要手改**：上游升级时按 `src/vendor/README.md` 的流程重新 diff。

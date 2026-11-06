@@ -22,6 +22,7 @@ import {
   formatScheduleStamp,
   formatWeekdays,
   orderSchedules,
+  recordTimeZone,
   relativeAmount,
   relativeText,
   scheduleChangeFromDraft,
@@ -30,7 +31,6 @@ import {
   scheduleFrequency,
   scheduleRuleZone,
   secondPrecision,
-  storedZoneOf,
   zoneChoices,
   type ScheduleTexts,
 } from "../src/shared/schedule";
@@ -339,8 +339,22 @@ console.log("schedule: 显示顺序 ✓");
   assert.strictEqual(weekly.timeZone, "UTC");
   assert.deepStrictEqual(weekly.weekdays, [1, 3]);
   assert.strictEqual(weekly.time, "09:00:00");
-  assert.strictEqual(storedZoneOf(item({ kind: "weekly", timeZone: "UTC" })), "UTC");
-  assert.strictEqual(storedZoneOf(item({ kind: "at", timeZone: undefined })), undefined);
+  // 规则时区：daily/weekly/cron 存显式时区，rrule 的时区写在 DTSTART 的 TZID 里，
+  // 一次性与固定间隔只存 UTC 时刻（官方 recordTimeZone 口径）
+  assert.strictEqual(recordTimeZone(item({ kind: "weekly", timeZone: "UTC" })), "UTC");
+  assert.strictEqual(recordTimeZone(item({ kind: "cron", timeZone: "Europe/Berlin" })), "Europe/Berlin");
+  assert.strictEqual(recordTimeZone(item({ kind: "at", timeZone: undefined })), undefined);
+  assert.strictEqual(recordTimeZone(item({ kind: "every", timeZone: undefined })), undefined);
+  assert.strictEqual(
+    recordTimeZone(item({ kind: "rrule", rrule: "DTSTART;TZID=Asia/Tokyo:20261106T090000\nRRULE:FREQ=DAILY" })),
+    "Asia/Tokyo",
+    "rrule 的规则时区来自 DTSTART 的 TZID（否则执行记录会用读者设备时区读）",
+  );
+  assert.strictEqual(
+    recordTimeZone(item({ kind: "rrule", rrule: "DTSTART:20261106T090000Z\nRRULE:FREQ=DAILY" })),
+    undefined,
+    "UTC 的 DTSTART 没有 TZID",
+  );
   assert.strictEqual(scheduleRuleZone(item({ kind: "cron", timeZone: "UTC" })), "UTC");
   assert.strictEqual(scheduleRuleZone(item({ kind: "after", timeZone: undefined })), deviceZone());
 
@@ -424,6 +438,75 @@ console.log("schedule: 运行时间草稿与提交 ✓");
 }
 console.log("schedule: cron 方言校验 ✓");
 
+// ---------- 7b. cron 提交与 dirty 用官方规范式（同一份 parser 的摘录，见 src/shared/cron.ts） ----------
+{
+  const cronItem = (expression: string) =>
+    item({ kind: "cron", expression, timeZone: "UTC", scheduledAt: "2026-11-07T01:00:00.000Z" });
+  const draftOf = (expression: string) => ({ ...scheduleDraft(cronItem("0 9 * * 1-5")), expression });
+
+  // 列表 / 范围 / 前导零 / 星期日 7 与 0：同一条规则的不同写法收成同一个规范式
+  const canonical: [string, string][] = [
+    ["0 9 * * 1,2,3,4,5", "0 9 * * 1-5"],
+    ["0 9 * * 1-5", "0 9 * * 1-5"],
+    ["0 9 * * 7", "0 9 * * 0"],
+    ["0 9 * * 0", "0 9 * * 0"],
+    ["07 09 * * 0", "7 9 * * 0"],
+    ["0 9 * * 1-7", "0 9 * * 0-6"],
+    ["0 9 * * 1,3,5", "0 9 * * 1-5/2"],
+    ["*/5 * * * *", "*/5 * * * *"],
+  ];
+  for (const [input, expected] of canonical) {
+    assert.deepStrictEqual(
+      scheduleChangeFromDraft({ ...draftOf(input), timeZone: "UTC" }),
+      { change: { kind: "cron", cron: { expression: expected, time_zone: "UTC" } } },
+      `提交要发规范式：${input} -> ${expected}`,
+    );
+  }
+
+  // 等价写法不算改动；非法仍算 dirty（保存时才由同一个校验拒绝，不能当作 clean）
+  for (const equivalent of ["0 9 * * 1,2,3,4,5", "0 9 * * 1-5", "00 09 * * 1-5"]) {
+    assert.strictEqual(
+      scheduleDraftDiffers(draftOf(equivalent), cronItem("0 9 * * 1-5")),
+      false,
+      `等价写法被误判有修改：${equivalent}`,
+    );
+  }
+  assert.strictEqual(scheduleDraftDiffers(draftOf("0 9 * * 7"), cronItem("0 9 * * 0")), false, "星期日 7 与 0 是同一条规则");
+  assert.strictEqual(scheduleDraftDiffers(draftOf("0 9 * * 1"), cronItem("0 9 * * 1-5")), true, "真正改了星期仍算修改");
+  assert.strictEqual(
+    scheduleDraftDiffers(draftOf("0 9 * * 1-"), cronItem("0 9 * * 1-5")),
+    true,
+    "非法表达式不能因为两侧都读不出而被当成没改",
+  );
+  assert.deepStrictEqual(
+    scheduleChangeFromDraft(draftOf("0 9 * * 1-")),
+    { error: "invalid_rule", field: "dayOfWeek" },
+    "非法表达式仍由字段级校验拒绝（保留中英文细分提示）",
+  );
+
+  // STAR 标记不是等价写法：`*` 参与 Vixie 的 DOM/DOW AND-OR 判定，`1-31` 是受限字段。
+  // 规范式必须保留这一位（不能把 `1-31` 收成 `*`），否则两条规则的匹配语义会被抹平。
+  assert.deepStrictEqual(
+    scheduleChangeFromDraft(draftOf("0 9 * * *")),
+    { change: { kind: "cron", cron: { expression: "0 9 * * *", time_zone: "UTC" } } },
+  );
+  assert.deepStrictEqual(
+    scheduleChangeFromDraft(draftOf("0 9 1-31 * *")),
+    { change: { kind: "cron", cron: { expression: "0 9 1-31 * *", time_zone: "UTC" } } },
+  );
+  assert.strictEqual(
+    scheduleDraftDiffers(draftOf("0 9 1-31 * *"), cronItem("0 9 * * *")),
+    true,
+    "STAR 标记不同就是不同的规则",
+  );
+  assert.strictEqual(
+    scheduleDraftDiffers(draftOf("0 9 */2 * *"), cronItem("0 9 1-31/2 * *")),
+    true,
+    "星号步长与显式范围步长不是同一写法",
+  );
+}
+console.log("schedule: cron 规范式（提交 / dirty / STAR 标记） ✓");
+
 // ---------- 8. 时区清单：系统时区在最前，存的别名不许丢 ----------
 {
   const system = deviceZone();
@@ -436,13 +519,27 @@ console.log("schedule: cron 方言校验 ✓");
 }
 console.log("schedule: 时区清单 ✓");
 
-// ---------- 9. 绝对时间文本：跨年才带年份，墙上时钟按规则时区读 ----------
+// ---------- 9. 绝对时间文本：跨年才带年份；显式时区只给执行记录 ----------
 {
   const stamp = formatScheduleStamp("2026-10-15T02:00:00.000Z", "en", "UTC");
   assert.ok(/Oct 15, 02:00/.test(stamp), `英语的月日与时钟：${stamp}`);
   const nextYear = formatScheduleStamp("2099-01-01T02:00:00.000Z", "en", "UTC");
   assert.ok(/2099/.test(nextYear), `不属于当前年份的目标要带年份：${nextYear}`);
   assert.strictEqual(formatScheduleStamp("bogus", "en"), "bogus", "读不出的时刻原样返回");
+
+  // 不传时区 = 读者设备时区（列表 / 详情的“下次运行”，官方 formatScheduleAbsolute 口径）。
+  const deviceAt = Date.UTC(new Date().getFullYear(), 9, 15, 2, 0, 0);
+  assert.strictEqual(
+    formatScheduleStamp(new Date(deviceAt).toISOString(), "en"),
+    new Intl.DateTimeFormat("en", {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    }).format(deviceAt),
+    "不传时区时按设备时区读（不能把规则时区的钟点当成读者钟点）",
+  );
 }
 console.log("schedule: 绝对时间文本 ✓");
 
@@ -520,8 +617,12 @@ console.log("schedule: 绝对时间文本 ✓");
     "删除是两段式：只有第二下确认（pressKill 返回 pending）才真的发请求",
   );
   assert.ok(
-    /entry\?\.code === "schedule_not_found"/.test(schedules) && /entry\?\.error !== undefined/.test(schedules),
-    "「任务不存在」与「这次没拿到」要分开显示",
+    /entry\?\.code !== undefined/.test(schedules) &&
+      /entry\.code === "schedule_not_found" \? texts\.scheduleRecordsMissing : texts\.scheduleRecordsCursorLost/.test(schedules) &&
+      /entry\.code === "delivery_cursor_not_found" \? " is-error" : ""/.test(schedules) &&
+      /entry\?\.code !== undefined[\s\S]{0,600}?texts\.scheduleRecordsRetry/.test(schedules) &&
+      /entry\?\.error !== undefined/.test(schedules),
+    "「任务不存在」与「这次没拿到」要分开显示；`code` 只保留手动重试，不自动重发",
   );
   const editorState = read("src", "webview", "scheduleEditorState.ts");
   assert.ok(

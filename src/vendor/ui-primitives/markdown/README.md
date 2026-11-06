@@ -1,6 +1,6 @@
 # src/vendor/ui-primitives/markdown/ — Markdown 解析、纯文本投影与语法高亮
 
-上游 `@deepseek-ai/dsh-client-ui-primitives@0.2.0-rc.2`（tag `dsh-v0.2.0-rc.2`）
+上游 `@deepseek-ai/dsh-client-ui-primitives@0.2.2-rc.1`（tag `dsh-v0.2.2-rc.1`）
 的源码副本。来源、版本与同步流程见 [../../README.md](../../README.md)；改写约束见 [../../AGENTS.md](../../AGENTS.md)。
 
 这条链以**投影**（Markdown 原文 → 单行纯文本）与**解析语法**为主，同时包含完成态数学与
@@ -16,6 +16,8 @@
 | 文件 | 上游对应 | 作用 | 本仓库的改动 |
 |---|---|---|---|
 | `parse.ts` | 同名文件 | mdast 两个语法臂：streaming 的 `parseGfm` 与 settled 的 `parseGfmWithMath`（GFM + CJK 友好粗体 + 本地图片恢复 + TeX math） | 完整搬入两个臂；去掉 `.ts` 后缀，文件头补来源说明 |
+| `windows-path-destinations.ts` | 同名文件 | Windows 链接 / 图片 / 参考定义目标保真，保留反斜杠并解码实体 | 逐字搬入；仅文件头补来源说明 |
+| `windows-path-destinations.ts` | 同名文件 | Windows 链接 / 图片 / 参考定义目标保真，保留反斜杠并解码实体 | 逐字搬入；仅文件头补来源说明 |
 | `mathCompatibility.ts` | 同名文件 | micromark 扩展：`\(...\)` / `\[...\]` 与同行 `$$...$$` 复用 math token 词汇 | 逐字搬入；仅文件头补来源说明 |
 | `plain-text.ts` | 同名文件 | mdast 树 → 纯文本（三种边界：全文 / 首行 / 首段） | 去掉 `.ts` 后缀 |
 | `cjkFriendlyStrong.ts` | 同名文件 | micromark 扩展：让星号粗体在「标点后紧接 CJK」时正确闭合 | 去掉 `.ts` 后缀 |

@@ -137,6 +137,8 @@ export interface Texts {
 
   /** 目标条（`goal` 投影）：阶段标签与三个操作。 */
   goalActive: string;
+  /** active 但进程内授权是 disarmed（官方 `phase.active.disarmed`）。 */
+  goalInactive: string;
   goalPaused: string;
   goalBlocked: string;
   goalPause: string;
@@ -941,6 +943,8 @@ export interface Texts {
   toolSkill: string;
   /** 非零退出码的标注（官方 `terminal.exitCode`）。 */
   toolExitCode: (code: number) => string;
+  /** 官方显式缺少退出码（不能当作成功）。 */
+  toolNoExitCode: string;
   /** 被信号杀死的标注（官方 `terminal.signal`）。 */
   toolSignal: (signal: string) => string;
   /**

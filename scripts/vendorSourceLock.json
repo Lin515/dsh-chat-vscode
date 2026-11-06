@@ -1,13 +1,15 @@
 {
   "upstream": {
     "repo": "https://github.com/deepseek-ai/deepseek-harness",
-    "tag": "dsh-v0.2.0-rc.2",
-    "version": "0.2.0-rc.2",
-    "sha": "639ed015397290b3745d163aafe02ffee4aa3f84",
+    "tag": "dsh-v0.2.2-rc.1",
+    "version": "0.2.2-rc.1",
+    "sha": "66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db",
     "packages": [
       "@deepseek-ai/dsh-client-ui-trajectory",
       "@deepseek-ai/dsh-client-ui-primitives",
-      "@deepseek-ai/dsh-util-code-language"
+      "@deepseek-ai/dsh-util-code-language",
+      "@deepseek-ai/dsh-client-ui-tool",
+      "@deepseek-ai/dsh-util-time"
     ],
     "fixtureDir": "test/fixtures/vendor-sources"
   },
@@ -32,11 +34,11 @@
     "src/vendor/ui-trajectory/trajectory-record.ts": {
       "upstream": {
         "path": "packages/client/ui-trajectory/src/client/trajectory-record.ts",
-        "bytes": 5955,
-        "sha256": "fa86cb5f89c99d677793bb673cf723e199baa681ac25f057e04471d6813ba150"
+        "bytes": 6061,
+        "sha256": "99be6143d7c18725a3d699c343beaeba7b4e06d7d8b468a2ebf91ceeddbeb1af"
       },
-      "upstreamNormalizedSha256": "f83439599b118526d32ee82e10ce8b651647bca932dfbedc16bf0a9bd37dc943",
-      "vendorNormalizedSha256": "0856c2dfee88176ee6a072f3a2ce4852f453ff9dab7ffe8b47fc975c23fd009f",
+      "upstreamNormalizedSha256": "3df15f6160f57aff001a1d08acbd156de2fed627559945fe93c694db2f516012",
+      "vendorNormalizedSha256": "4631fd0fc7c72a4cf2bf10b0ab077276f35f2521b97a191a44fe1368adcc658e",
       "relation": "verbatim",
       "declaredEdits": [
         "类型壳：去掉 `extends HTMLAttributes<HTMLDivElement>`（React），只用它当数据结构",
@@ -80,11 +82,11 @@
     "src/vendor/ui-trajectory/code-program.ts": {
       "upstream": {
         "path": "packages/client/ui-trajectory/src/client/code-program.ts",
-        "bytes": 2498,
-        "sha256": "a31b4253ba9c7c2490f942768d060c769ff1b5b4fb653ccf67ab54af1e1593b7"
+        "bytes": 2983,
+        "sha256": "312bb5cb761266a1c0dbda3774db40b2855ab1dbd1a4a273e75572e14aca85a1"
       },
-      "upstreamNormalizedSha256": "787c92f8c54e3d53722e421a05bee48511206fc8a62c7992e4eee535908ddc52",
-      "vendorNormalizedSha256": "787c92f8c54e3d53722e421a05bee48511206fc8a62c7992e4eee535908ddc52",
+      "upstreamNormalizedSha256": "bef4862111d56568daf80835f8fdbb96a61db08399e320f9be8e21bb7c6f9e5c",
+      "vendorNormalizedSha256": "bef4862111d56568daf80835f8fdbb96a61db08399e320f9be8e21bb7c6f9e5c",
       "relation": "verbatim",
       "declaredEdits": []
     },
@@ -106,10 +108,10 @@
     "src/vendor/ui-trajectory/trajectory-turn-model.ts": {
       "upstream": {
         "path": "packages/client/ui-trajectory/src/client/layout.ts",
-        "bytes": 41583,
-        "sha256": "e5760027aee36ab68104cc44bc4259fef229590b1fff6ec9f7c45d4baaa5f8c5"
+        "bytes": 41034,
+        "sha256": "59712c5a03f40498d84beb60a8f272a4d087c8094539809c146ad2491e8d9c3e"
       },
-      "upstreamNormalizedSha256": "7020e1ecbefbfe3432e3839b9a7f034aecbd8070e48eb8ea8a85fe416ca60a5d",
+      "upstreamNormalizedSha256": "222b44e949a15b4ba3260c01e14651e50677fa8ab1136b84c13c0138fb5dd63b",
       "vendorNormalizedSha256": "3dc8438827998106e978497ed37a27b01fe60a69bc668d6ebaf6b8118442774f",
       "relation": "excerpt",
       "upstreamExtract": "官方 `layout.ts` 的 `TrajectoryGroupModel` / `TrajectoryTurnModel` 两个接口（本地只搬类型，不搬 41 KB 布局实现）",
@@ -131,11 +133,11 @@
     "src/vendor/ui-primitives/markdown/parse.ts": {
       "upstream": {
         "path": "packages/client/ui-primitives/src/markdown/parse.ts",
-        "bytes": 1790,
-        "sha256": "e281b4120306987cce9cf6d8bccfeddec2fe0c7b7b1cc190966f6dcbfd320b1b"
+        "bytes": 2078,
+        "sha256": "b7135566b9054d12e77cdbd1ad20d39b0223466e239d4db0beaaf57482635555"
       },
-      "upstreamNormalizedSha256": "58475850b71f1a741cde520c119291b95d84cd69199ab952193c5dcb7b533c69",
-      "vendorNormalizedSha256": "58475850b71f1a741cde520c119291b95d84cd69199ab952193c5dcb7b533c69",
+      "upstreamNormalizedSha256": "fd8bbdcb4f7afcfaca84dc14dbba3ba95e4ed2341b8d187fdf91485710e3583b",
+      "vendorNormalizedSha256": "fd8bbdcb4f7afcfaca84dc14dbba3ba95e4ed2341b8d187fdf91485710e3583b",
       "relation": "verbatim",
       "declaredEdits": []
     },
@@ -188,11 +190,11 @@
     "src/vendor/ui-primitives/markdown/highlight.ts": {
       "upstream": {
         "path": "packages/client/ui-primitives/src/markdown/highlight.ts",
-        "bytes": 25982,
-        "sha256": "518069013f4da8f1fcf4192873be178e1ea594ad2efd95c4d69cbbdf64b97750"
+        "bytes": 28571,
+        "sha256": "8f641cddd716d1d96908784514e8e557a882d8547a2f2a60f6bb8e19855709b0"
       },
-      "upstreamNormalizedSha256": "c1ae3f7651f2eb09ccdef2a54e40e72d651a94f395095629d97a047b650f55a7",
-      "vendorNormalizedSha256": "c1ae3f7651f2eb09ccdef2a54e40e72d651a94f395095629d97a047b650f55a7",
+      "upstreamNormalizedSha256": "5b96ab6becd5cbb9e637a6e4a453d3b58d10a6a3a14380f581b344f8d5be4bda",
+      "vendorNormalizedSha256": "5b96ab6becd5cbb9e637a6e4a453d3b58d10a6a3a14380f581b344f8d5be4bda",
       "relation": "verbatim",
       "declaredEdits": []
     },
@@ -206,6 +208,61 @@
       "vendorNormalizedSha256": "42515db8106b73b325f39db1e48ff6e22345fb9fe1cddd0047ddcb8da8722485",
       "relation": "verbatim",
       "declaredEdits": []
+    },
+    "src/vendor/ui-primitives/markdown/windows-path-destinations.ts": {
+      "upstream": {
+        "path": "packages/client/ui-primitives/src/markdown/windows-path-destinations.ts",
+        "bytes": 1668,
+        "sha256": "28557fbc4ebcdf87f4ffaf3ddfcdd4439c941d299729daf154d34b8880069032"
+      },
+      "relation": "verbatim",
+      "declaredEdits": [],
+      "upstreamNormalizedSha256": "faeaa3f026c95b104816bc0d36ff5cc9ac1a3f72f4517c5306d71202ed73df65",
+      "vendorNormalizedSha256": "faeaa3f026c95b104816bc0d36ff5cc9ac1a3f72f4517c5306d71202ed73df65"
+    },
+    "src/vendor/ui-tool/terminal-status.ts": {
+      "upstream": {
+        "path": "packages/client/ui-tool/src/client/tool/models/terminal-card-model.ts",
+        "bytes": 16150,
+        "sha256": "24baaff342c95411d1b13deb6b40ff976d35c128a7d2cd2db1fb9c69058a6cfc"
+      },
+      "upstreamNormalizedSha256": "ed658e135606613e3d79d32ab9e52d2b58123ab93681f7c2eea2c9492a0244b0",
+      "vendorNormalizedSha256": "849c7a5f6f778fff179520ca3b4056f097f915809be9663362313c1d828eced3",
+      "relation": "excerpt",
+      "upstreamExtract": "terminal-card-model.ts 的 parseExitStatus / terminalFailed 两个纯函数",
+      "declaredEdits": [
+        "摘录：仅搬两个退出状态纯函数，不搬官方工具卡片装配层",
+        "导出 parseExitStatus；TerminalCardModel 换成本地结构类型壳（只含函数读取的 card 字段）"
+      ]
+    },
+    "src/vendor/util-time/cron-fields.ts": {
+      "upstream": {
+        "path": "packages/util/time/src/cron.ts",
+        "bytes": 22767,
+        "sha256": "09be93718d0117858e809678782ce894f9d6849b7777068a1ee2878db1efa63f"
+      },
+      "upstreamNormalizedSha256": "4b90c7d27941a36ca134b39141601004175afc6afd24ee82249ab387735c4e0d",
+      "vendorNormalizedSha256": "5243d5f7531412fc5e17fd5233f1dc62db199c4959c66adff323b977034707f6",
+      "relation": "excerpt",
+      "upstreamExtract": "CronFieldSpec / CRON_FIELDS / ParsedCronField / invalidCronField / cronFieldValue / cronFieldStep / cronFieldValues / cronFieldValueAt / encodeCronField / starWalk / encodeStarCronField / parseCronField / CronFields / parseCronExpression",
+      "declaredEdits": [
+        "纯字段解析摘录，不搬 Temporal 时区/发生时刻算术；函数体和常量逐字相同",
+        "仅导出 parseCronExpression 并把 RecurrenceInputError 的导入指向同目录原文摘录"
+      ]
+    },
+    "src/vendor/util-time/recurrence-error.ts": {
+      "upstream": {
+        "path": "packages/util/time/src/recurrence.ts",
+        "bytes": 2544,
+        "sha256": "dd2091dbede8a01ff1bd5fe1b963a75dd56ff5903ae41eddceae6fd9e125bc93"
+      },
+      "upstreamNormalizedSha256": "8c1ed4b504079bbb65cf45380fdaef55535d1612b4dffccdb284c49f573ceb0b",
+      "vendorNormalizedSha256": "82584f829a9b7b17903ab11f7ee507e22ba02d425dd84b2ccef37bae145f7137",
+      "relation": "excerpt",
+      "upstreamExtract": "RecurrenceRejection / RecurrenceInputError",
+      "declaredEdits": [
+        "仅摘录 RecurrenceRejection 类型与 RecurrenceInputError 类；定义逐字相同"
+      ]
     }
   }
 }

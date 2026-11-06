@@ -1,6 +1,6 @@
 /**
- * 【vendor】上游 `@deepseek-ai/dsh-client-ui-trajectory`（`0.2.0-rc.2`，检出 tag
- * `dsh-v0.2.0-rc.2`）的 `src/client/trajectory-record.ts`，搬的**只有纯函数**
+ * 【vendor】上游 `@deepseek-ai/dsh-client-ui-trajectory`（`0.2.2-rc.1`，检出 tag
+ * `dsh-v0.2.2-rc.1`）的 `src/client/trajectory-record.ts`，搬的**只有纯函数**
  * （`trajectoryRecordId` / `formatDurationMillis` / `formatElapsedSeconds`）与它们
  * 需要的类型。
  *
@@ -109,6 +109,8 @@ export interface TrajectoryCellProps {
   previousPromptDetail?: ConversationPromptSnapshot
   /** Full assistant/tool result content for the details panel. */
   outputDetail?: string
+  /** Committed result event used to inspect a live-only value. */
+  resultSeq?: number
   /** Full assistant reasoning content for the details panel. */
   thinkingDetail?: string
   /** Original message blocks in source order for the details panel. */
@@ -127,7 +129,7 @@ export interface TrajectoryCellProps {
   callId?: string
   /** Recorded tool name; independent of the display summary. */
   toolName?: string
-  /** Tool-only result failure state. */
+  /** Failed operation or interrupted assistant output. */
   isError?: boolean
   /** Own duration in seconds, or `null` when no duration is known. */
   timeSeconds: number | null

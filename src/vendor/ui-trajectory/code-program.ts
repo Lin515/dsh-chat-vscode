@@ -1,6 +1,6 @@
 /**
- * 【vendor】上游 `@deepseek-ai/dsh-client-ui-trajectory`（`0.2.0-rc.2`，检出 tag
- * `dsh-v0.2.0-rc.2`）的 `src/client/code-program.ts` 逐字副本：从录制下来的
+ * 【vendor】上游 `@deepseek-ai/dsh-client-ui-trajectory`（`0.2.2-rc.1`，检出 tag
+ * `dsh-v0.2.2-rc.1`）的 `src/client/code-program.ts` 逐字副本：从录制下来的
  * `run_code` 工具参数与**调用时**的 schema 里读出可重放的 PTC 源码与语言提示。
  *
  * **不要手改**：上游升级时按 `src/vendor/README.md` 的流程重新 diff。
@@ -46,17 +46,24 @@ function parseRecord(value: string | undefined): Record<string, unknown> | undef
 
 function recordedLanguage(schemaRaw: string | undefined): CodeProgram['language'] {
   const schema = parseRecord(schemaRaw)
+  const declaredLanguage = typeof schema?.description === 'string'
+    ? /^Execute a program in `([^`]+)`/.exec(schema.description)?.[1]?.toLowerCase()
+    : undefined
+  if (declaredLanguage !== undefined
+    && declaredLanguage !== 'typescript' && declaredLanguage !== 'python') return undefined
   const properties = record(record(schema?.parameters)?.properties)
   const description = record(properties?.code)?.description
-  if (typeof description !== 'string') return undefined
-  const typescript = /\bTypeScript\b/i.test(description)
-  const python = /\bPython\b/i.test(description)
+  const typescript = declaredLanguage === 'typescript'
+    || (typeof description === 'string' && /\bTypeScript\b/i.test(description))
+  const python = declaredLanguage === 'python'
+    || (typeof description === 'string' && /\bPython\b/i.test(description))
   if (typescript === python) return undefined
   return typescript ? 'typescript' : 'python'
 }
 
 /**
  * Resolve a PTC program without guessing its language from source or current runtime settings.
+ * Unknown explicit languages or conflicting recorded hints leave the source unhighlighted.
  * @param cell - Recorded tool arguments and the schema visible at call time.
  * @returns The program, or undefined for another tool or unsupported arguments.
  */

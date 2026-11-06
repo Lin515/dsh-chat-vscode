@@ -68,8 +68,7 @@ const read = (...parts: string[]): string => readFileSync(join(process.cwd(), ..
   // 百分号编码：带空格的文件名
   assert.deepStrictEqual(parseFileLink("src/my%20file.ts"), { path: "src/my file.ts" });
 
-  // Windows 目标修复会把反斜杠编码成 `%5C`（见 webview/markdown/windowsDestinations.ts），
-  // 这是 Windows 绝对路径在 DOM 里的**实际 href**，点击委托原样交给这里
+  // 同时兼容历史或外部已百分号编码的 Windows 目标；当前官方解析扩展保留原始反斜杠。
   assert.deepStrictEqual(parseFileLink("D:%5Cdev%5Cdemo-app%5Cindex.html"), {
     path: "D:\\dev\\demo-app\\index.html",
   });

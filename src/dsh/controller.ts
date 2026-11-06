@@ -147,8 +147,8 @@ import {
   type QueuedItemEntry,
   type QueueOrigin,
 } from "./queueView";
-import { modelSelectionFromProjection, subagentCatalogFromProjection, subagentIdentityFromProjection, subagentsFromList, sameSubagentRow, upsertSubagent, withSubagentActivity, withSubagentUnread, agentPresetsFromList, permissionCatalogHasAuto } from "./projections";
-import type { ModelSelectionDecoded, SubagentCatalogEntryView } from "./projections";
+import { activeGoalRef, goalActivationEventFromArgs, goalActivationFromView, mergeGoalActivation, modelSelectionFromProjection, subagentCatalogFromProjection, subagentIdentityFromProjection, subagentsFromList, sameSubagentRow, upsertSubagent, withSubagentActivity, withSubagentUnread, agentPresetsFromList, permissionCatalogHasAuto } from "./projections";
+import type { GoalActivationSnapshot, ModelSelectionDecoded, SubagentCatalogEntryView } from "./projections";
 import {
   ingestControlBaseline,
   ingestFollowSnapshot,
@@ -1297,6 +1297,32 @@ export class ChatController implements vscode.Disposable {
    * 值只可能是 `false`——`true` 永远被采纳。
    */
   private readonly pendingStatuses = new Map<string, boolean>();
+  /**
+   * 每会话**进程内 goal 续跑授权**的权威快照（官方 `GoalActivationChanged['goal']`）。
+   *
+   * `GoalProjection` 没有这个字段（durable 投影只记 phase），所以它只有两条来路：
+   * `goals/get` 的 `GoalView.activation` 与 `goal/activation-changed` 广播。键按会话
+   * （不是按域）：域回收时**必须**清掉（见 `destroyScope`），否则重新打开会话、新的
+   * 投影还没到时会把上一份授权当成本次的。
+   *
+   * 值只在 id / revision 与当前目标一致时才并进视图（判据在
+   * `projections.mergeGoalActivation`，与官方 `GoalDock` 同一条）。
+   */
+  private readonly goalActivations = new Map<string, GoalActivationSnapshot>();
+  /**
+   * 每会话 activation 读取的代号：事件 / 投影 / 重连任何一条带来新的权威值，
+   * 都让在飞的 `goals/get` 作废（官方 activation source 的 epoch 守卫同款），
+   * 防止慢读把刚到的 `armed` 顶回 `disarmed`。
+   */
+  private readonly goalActivationEpochs = new Map<string, number>();
+  /**
+   * 这个部署没有 `goals/get`（旧服务端）——`endpointAbsent` 的肯定证据。
+   *
+   * 只记住一次，不再逐会话打 404；换连接后重新试探（见 `onConnected`）。
+   * 没有这个端点时目标条的 `activation` 保持缺席：界面既不给暂停也不给恢复，
+   * **不猜 armed**（暂停按钮只属于确认 armed 的状态）。
+   */
+  private goalActivationUnavailable = false;
   /**
    * 域上**最近一次权威 running 结论**的版本号与值（见 `noteAuthorityRunning`）。
    *
@@ -2908,6 +2934,9 @@ export class ChatController implements vscode.Disposable {
       if (watch.sessionId === scope.sessionId) this.closeJobWatch(viewId);
     }
     scope.adapter = undefined;
+    // 进程内 goal 授权属于这条域：域回收后它的「上次读到的 armed」不能成为下次开窗的
+    // 默认值（那时服务端可能已经 disarmed）。账本随域一起丢，重新打开时由投影 + RPC 重取。
+    this.forgetGoalActivation(scope.sessionId);
     // 适配器没了 ⇒ 「本轮还开着」这条本地证据也就没了：被拒收过的权威状态位到这里可以
     // 定论了（见 `pendingStatuses`）。放在这一句之后——重判看的正是适配器还在不在。
     this.settlePendingStatus(scope.sessionId);
@@ -3739,6 +3768,11 @@ export class ChatController implements vscode.Disposable {
     for (const scope of this.scopes.values()) {
       if (scope.schedulesWanted) void this.loadSchedules(scope, true);
     }
+    // goal 的续跑授权是**进程内**状态：断线期间它可能变了（比如宿主在别处收尾了
+    // 目标驱动），而 `$events` 的广播没有重放。换连接后重新试探端点并逐域重读一次
+    // （官方 activation source 的 `connection/reset` 分支同款）。
+    this.goalActivationUnavailable = false;
+    for (const scope of this.scopes.values()) this.readGoalActivation(scope);
     this.openControlStream();
     this.openEventsStream();
     this.openWorkspaceStream();
@@ -4603,6 +4637,11 @@ export class ChatController implements vscode.Disposable {
       type: "patch",
       patch: sessionPatch(this.sessionSource(scope), ["running", "runStartedAt"]),
     });
+    // 官方 activation source 在会话 running 边缘重读一次（onRunning → startRead）：
+    // 一轮结束前后服务端可能解除续跑授权（不再有活动 driver），而那种变化**不写**
+    // durable 投影（不改 revision），只等投影帧就会永远看不到。没有 active 目标时
+    // `readGoalActivation` 是空操作。
+    this.readGoalActivation(scope);
   }
 
   /**
@@ -7786,11 +7825,129 @@ export class ChatController implements vscode.Disposable {
    * （`docs/design-projections.md`）。键不存在 → 清空目标条。
    */
   private applyGoalProjection(scope: SessionScope, value: GoalView | undefined, present: boolean): void {
-    scope.goal = present ? value : undefined;
+    const next = present ? value : undefined;
+    const previous = scope.goal;
+    // 投影不带 activation：把账本里同一身份的快照并回来（不匹配就是「不知道」）
+    scope.goal = mergeGoalActivation(next, this.goalActivations.get(scope.sessionId));
     this.deliver(scope.sessionId, {
       type: "patch",
       patch: sessionPatch(this.sessionSource(scope), ["goal"]),
     });
+    const ref = activeGoalRef(next);
+    if (ref === undefined) {
+      // durable 阶段不再是 active（paused / blocked / complete / 清空）：进程内授权
+      // 不再有含义，账本一起作废（官方 activation source 在这一刻 publish({})）
+      this.forgetGoalActivation(scope.sessionId);
+      return;
+    }
+    const previousRef = activeGoalRef(previous);
+    const known = this.goalActivations.get(scope.sessionId);
+    // 官方 refreshProjection：active 目标换了身份，或这一版还没有读到授权 ⇒ 读一次
+    if (
+      previousRef?.id !== ref.id ||
+      previousRef.revision !== ref.revision ||
+      known?.id !== ref.id ||
+      known.revision !== ref.revision
+    ) {
+      void this.refreshGoalActivation(scope, ref);
+    }
+  }
+
+  /**
+   * 读一次 `goals/get`（官方 `createGoalActivationSource` 的 `startRead`）。
+   *
+   * 只读、只补 `activation`；**不**用 RPC 覆盖目标本体（投影是 durable 的权威）。
+   * 结果与当前 active 目标身份不一致、读回来的形状不认识、或读失败时都**不写结论**
+   * ——「不知道」在界面上就是不显示暂停 / 恢复，不能猜 armed。
+   */
+  private async refreshGoalActivation(
+    scope: SessionScope,
+    ref: { readonly id: string; readonly revision: number },
+  ): Promise<void> {
+    const client = this.client;
+    if (!client || this.goalActivationUnavailable) return;
+    const epoch = (this.goalActivationEpochs.get(scope.sessionId) ?? 0) + 1;
+    this.goalActivationEpochs.set(scope.sessionId, epoch);
+    try {
+      const value = await client.getGoal(scope.sessionId);
+      if (this.goalActivationEpochs.get(scope.sessionId) !== epoch) return;
+      if (this.scopes.get(scope.sessionId) !== scope || this.client !== client) return;
+      const snapshot = goalActivationFromView(value);
+      if (snapshot === undefined) return;
+      const current = activeGoalRef(scope.goal);
+      if (current === undefined || current.id !== ref.id || current.revision !== ref.revision) return;
+      if (snapshot.id !== ref.id || snapshot.revision !== ref.revision) return;
+      this.writeGoalActivation(scope, snapshot);
+    } catch (error) {
+      if (this.goalActivationEpochs.get(scope.sessionId) !== epoch) return;
+      if (endpointAbsent(error)) {
+        this.goalActivationUnavailable = true;
+        this.log("[goal] 这个服务端没有 goals/get：目标条的续跑授权保持未知（不显示暂停 / 恢复按钮）");
+        return;
+      }
+      this.log(`[goal] goals/get 失败（${scope.sessionId}）：${this.describeError(error)}`);
+    }
+  }
+
+  /**
+   * 写一条权威 activation 快照（或「没有目标」），必要时推 `goal` patch。
+   *
+   * 快照先写账本、再并进当前目标：投影帧晚到时 `applyGoalProjection` 会用它合并。
+   * 只有 `activation` 这一位真的变了才推帧（同一状态重复广播不制造额外渲染）。
+   */
+  private writeGoalActivation(scope: SessionScope, snapshot: GoalActivationSnapshot | undefined): void {
+    // 新的权威值作废所有在飞读（包括本方法是被某次读的返回调用的情形）
+    this.goalActivationEpochs.set(scope.sessionId, (this.goalActivationEpochs.get(scope.sessionId) ?? 0) + 1);
+    if (snapshot === undefined) this.goalActivations.delete(scope.sessionId);
+    else this.goalActivations.set(scope.sessionId, snapshot);
+    const previous = scope.goal?.activation;
+    scope.goal = mergeGoalActivation(scope.goal, snapshot);
+    if (scope.goal?.activation === previous) return;
+    this.deliver(scope.sessionId, {
+      type: "patch",
+      patch: sessionPatch(this.sessionSource(scope), ["goal"]),
+    });
+  }
+
+  /** 作废一条会话的 activation 账本（目标不再是 active / 域回收 / 会话删除）。 */
+  private forgetGoalActivation(sessionId: string): void {
+    this.goalActivationEpochs.set(sessionId, (this.goalActivationEpochs.get(sessionId) ?? 0) + 1);
+    this.goalActivations.delete(sessionId);
+  }
+
+  /**
+   * `goal/activation-changed` 的实时来路（0.2.2-rc.1 的 emit 广播）。
+   *
+   * 负载是 `{sessionId, goal?: {id, revision, activation}}`；`goal` 缺席 = 当前没有
+   * 目标（清账本）。官方 activation source 收到后**直接采信**（eventEpoch 作废在飞读），
+   * 这里同款：先写账本再并进视图，不等下一次投影。
+   *
+   * 没有打开的域时什么都不做：目标条只在打开的会话上渲染，开窗时 `session/follow`
+   * 的投影 + 这次 `goals/get` 会重新取到当前值；不为此留一张永不清理的会话表。
+   *
+   * @returns 这条帧认不认。认得就由这里消费掉，不再交给配置变更路由。
+   */
+  private applyGoalActivationEvent(event: string, args: readonly unknown[]): boolean {
+    if (event !== "goal/activation-changed") return false;
+    const parsed = goalActivationEventFromArgs(args);
+    if (parsed === undefined) {
+      this.log(`[goal] goal/activation-changed 参数形状不认识：${JSON.stringify(args)}`);
+      return true;
+    }
+    const scope = this.scopes.get(parsed.sessionId);
+    if (scope) this.writeGoalActivation(scope, parsed.goal);
+    return true;
+  }
+
+  /**
+   * 官方 activation source 的「running 变化 / 连接重置 → 重读一次」。
+   *
+   * 只在目标 durable 阶段是 active 时读（`activeGoalRef`）；paused / blocked /
+   * complete 的授权对界面没有意义。
+   */
+  private readGoalActivation(scope: SessionScope): void {
+    const ref = activeGoalRef(scope.goal);
+    if (ref !== undefined) void this.refreshGoalActivation(scope, ref);
   }
 
   /**
@@ -8162,6 +8319,9 @@ export class ChatController implements vscode.Disposable {
       // `api-session/activity` 是**用户消息时间**的实时来路（args = `[sessionId, updatedAt]`）：
       // 子代理目录的先后靠它当场跟上，而不是等打开清单那一次 `session/list`。
       if (this.applySessionActivity(frame.event, frame.args ?? [])) return;
+      // `goal/activation-changed` 是**进程内**续跑授权：`goal` 投影里没有它，只在
+      // 恢复会话 / fork 后由服务端置 disarmed 并通过这条广播送达（0.2.2-rc.1）。
+      if (this.applyGoalActivationEvent(frame.event, frame.args ?? [])) return;
       // 自动化任务集变了（另一个窗口改了时间、删了任务，或某个任务到点投递后状态
       // 变了）：只刷新**已经读过**的会话域。从没打开过面板的会话不因此多打一次 RPC，
       // 它下次打开时会现读一次（`listSchedules`）。

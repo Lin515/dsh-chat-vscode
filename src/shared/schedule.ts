@@ -19,8 +19,12 @@
  * `scheduleInvolvesSession` / 编辑草稿与 patch 装配 / 冲突重放）与官方
  * `packages/client/ui-schedule` 的同名口径对齐（tag `dsh-v0.2.2-rc.1`，commit
  * `66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db`）：判定规则逐条保留，实现改写成本仓库的
- * 视图模型接口，不是逐字副本。改动边界见 `docs/design-schedules.md` 的「来源与改动边界」。
+ * 视图模型接口，不是逐字副本。**显示格式也不是逐字副本**：频率与绝对时间文本由本仓库
+ * 自己拼（cron / rrule 显示规范表达式或原文、时钟固定两位 24 小时制）。与官方共享的是
+ * 判定与规范化：`recordTimeZone` 与 `canonicalCronExpression` 是从官方摘录的薄适配
+ * （后者在 `./cron`）。改动边界见 `docs/design-schedules.md` 的「来源与改动边界」。
  */
+import { canonicalCronExpression } from "./cron";
 import type { ScheduleItemView, ScheduleTimingChangeView } from "./chat";
 
 const SECOND_MS = 1_000;
@@ -334,10 +338,14 @@ export function zonedWallClock(instant: string, zone: string): string {
 /**
  * 一个目标的绝对时间文本：月日 + 时钟（跨年时才带年份）。
  *
- * 与官方 `formatScheduleNextRun` 同口径，也是投递记录的读法：
+ * 这是本仓库自己的格式化实现（时钟固定两位、24 小时制），不是官方
+ * `formatScheduleAbsolute` / `formatScheduleNextRun` 的逐字副本；与官方对齐的是
+ * **用哪个时区读**这一半：
+ * - 列表与详情的“下次运行”按**读者设备时区**读（官方 `formatScheduleAbsolute`）：
+ *   读者拿它和自己的钟表对时，所以调用方**不传** `timeZone`；
+ * - 投递记录按**规则自己的时区**读（官方 `formatScheduleNextRun`）：调用方传
+ *   `recordTimeZone(item)`，那一刻在那个时区就是规则说的那个钟点；
  * - 月份由语言的 ICU 数据给（`zh` 出「10月15日」，`en` 出 `Oct 15`），不是零填充数字；
- * - 墙上时钟规则（`daily` / `weekly` / `cron`）**按规则自己的时区**读——那一刻在
- *   那个时区就是规则说的那个钟点；一次性与固定间隔只存 UTC 时刻，用设备时区读；
  * - 年份只在它不属于当前年份时出现：一个几个月后的目标自带年份，当天的目标不啰嗦。
  */
 export function formatScheduleStamp(iso: string, locale: string | undefined, timeZone?: string): string {
@@ -363,13 +371,31 @@ export function formatScheduleStamp(iso: string, locale: string | undefined, tim
 }
 
 /**
- * 任务自己那条规则的时区（只有墙上时钟规则有）；其余种类返回 `undefined`。
+ * 一条任务自己那条规则的 IANA 时区；没有规则时区时返回 `undefined`。
+ *
+ * 摘录自官方 `packages/client/ui-schedule` 的 `recordTimeZone`（基准
+ * `dsh-v0.2.2-rc.1`，commit `66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db`）：
+ * `daily` / `weekly` / `cron` 存显式时区，`rrule` 的时区写在 `DTSTART;TZID=…` 这一行，
+ * `at` / `after` / `every` 只存 UTC 时刻、没有规则时区。这里只做字段收窄的适配
+ * （本仓库的 `rrule` 是可选的，取不到当没有），判定规则不变。
  *
  * 与 `scheduleRuleZone` 不是一回事：那个是**编辑草稿**回退到设备时区后的答案，
- * 这个是**显示**用的事实——一次性任务没有规则时区，显示就该用设备时区。
+ * 这个是**显示**用的事实——投递记录按它读，一次性任务没有规则时区、按设备时区读。
  */
-export function storedZoneOf(item: ScheduleItemView): string | undefined {
-  return item.kind === "daily" || item.kind === "weekly" || item.kind === "cron" ? item.timeZone : undefined;
+export function recordTimeZone(item: ScheduleItemView): string | undefined {
+  if (item.kind === "rrule") return /^DTSTART;TZID=([^:]+):/m.exec(item.rrule ?? "")?.[1];
+  switch (item.kind) {
+    case "after":
+    case "at":
+    case "every":
+      return undefined;
+    case "daily":
+    case "weekly":
+    case "cron":
+      return item.timeZone;
+    default:
+      return undefined;
+  }
 }
 
 /** 相对时间文本（未来 / 过去 / 正好到点）。 */export function relativeText(targetIso: string, now: number, texts: ScheduleTexts): string | undefined {
@@ -554,9 +580,14 @@ export function scheduleChangeFromDraft(draft: ScheduleTimingDraft): ScheduleDra
       };
     }
     case "cron": {
-      const field = cronFieldError(draft.expression);
+      const expression = draft.expression.trim();
+      const field = cronFieldError(expression);
       if (field !== undefined) return { error: "invalid_rule", field };
-      return { change: { kind: "cron", cron: { expression: draft.expression.trim(), time_zone: zone } } };
+      // 官方口径是提交**规范式**（`Cron.parse` 的 `expression`，服务端存的就是它）：
+      // 提交原文会让服务端再改写一次，下一次读取又把「只是写法不同」当成一次修改。
+      const canonical = canonicalCronExpression(expression);
+      if (canonical === undefined) return { error: "invalid_rule" };
+      return { change: { kind: "cron", cron: { expression: canonical, time_zone: zone } } };
     }
   }
 }
@@ -565,8 +596,9 @@ export function scheduleChangeFromDraft(draft: ScheduleTimingDraft): ScheduleDra
  * 草稿与已存规则是否有差异（决定要不要亮出「保存 / 取消」那一行）。
  *
  * 判据是**提交后的形态**与已存字段的比较：`once` 比的是日期与时钟（在规则时区里
- * 展开后的那两个值），其余种类逐字段比。拿「草稿文本」与「原始文本」比会把
- * `09:00` 与 `09:00:00` 这种等价写法误报成有修改。
+ * 展开后的那两个值），`cron` 比的是官方规范式（与服务端存的是同一形态），其余种类
+ * 逐字段比。拿「草稿文本」与「原始文本」比会把 `09:00` 与 `09:00:00` 这种等价写法
+ * 误报成有修改；同理，`1,2,3,4,5` 与 `1-5` 是同一个 cron 规则。
  */
 export function scheduleDraftDiffers(draft: ScheduleTimingDraft, item: ScheduleItemView): boolean {
   if (draft.repeat === "rrule") return item.kind !== "rrule" || draft.rrule?.trim() !== item.rrule;
@@ -598,13 +630,26 @@ export function scheduleDraftDiffers(draft: ScheduleTimingDraft, item: ScheduleI
         weekdays.join(",") !== stored.join(",")
       );
     }
-    case "cron":
+    case "cron": {
       if (item.kind !== "cron") return true;
-      return draft.expression.trim() !== (item.expression ?? "") || draft.timeZone.trim() !== (item.timeZone ?? "");
+      if (draft.timeZone.trim() !== (item.timeZone ?? "")) return true;
+      const draftCanonical = canonicalCronExpression(draft.expression.trim());
+      const storedCanonical = canonicalCronExpression((item.expression ?? "").trim());
+      // 读不出的表达式不当作「没改」：让它保持 dirty，保存时由 `scheduleChangeFromDraft`
+      // 用同一个校验拒绝（否则用户会把一条坏规则看成已经落定的值）。
+      if (draftCanonical === undefined || storedCanonical === undefined) return true;
+      return draftCanonical !== storedCanonical;
+    }
   }
 }
 
 // ---------- cron 方言 ----------
+//
+// 方言校验（`cronFieldError`）只回答「哪一段坏了」，用来给双语字段级提示；它不产出
+// 规范式。规范式来自 `./cron` 的 `canonicalCronExpression`：那是从官方
+// `packages/util/time/src/cron.ts` 的 `parseCronExpression` 及其纯字段闭包摘录的同一份
+// 实现（不引入 Temporal 与时区 / 发生时刻算术，来源锁登记在 `docs/design-schedules.md`），
+// 因此提交与 dirty 比较用的规范式与服务端 `canonicalizeCronExpression` 同形。
 
 /** 五段表达式的字段（报错时要指名哪一段坏了）。 */
 export type CronField = "minute" | "hour" | "dayOfMonth" | "month" | "dayOfWeek";
@@ -639,8 +684,10 @@ function cronElementError(text: string, min: number, max: number): boolean {
  *
  * 只认契约列出的形态（`*` / 单值 / `a-b` / 星号带步长 / `a-b/n` / 逗号列表），
  * 明确拒绝 `L`、`W`、`#`、月份与星期的英文名、`@daily` 这类宏、六段表达式。
- * 服务端才是规范化的权威（它会把 `1,2,3` 收成 `1-3`），这里只负责「别把必然被拒的
- * 表达式发出去」。
+ * 它只挑字段做提示，不是规范化的权威：规范式统一由 `./cron` 的
+ * `canonicalCronExpression` 产出（与官方 `parseCronExpression` 同一份实现）。
+ * 两边的接受集合已经逐条对照过（含前导零、星期日 7/0、`a/n` 单值带步长），这里
+ * 只需保证「本地放过的，官方也放过」，否则提示字段与实际提交会不一致。
  */
 export function cronFieldError(expression: string): CronField | undefined {
   const fields = expression.trim().split(/\s+/);
@@ -763,7 +810,14 @@ export function scheduleEditorDraft(item: ScheduleItemView): ScheduleEditorDraft
   };
 }
 
-/** 新建任务的草稿：一次性、一小时后、目标默认 `new_once`（官方同口径）。 */
+/**
+ * 新建任务的草稿：一次性、一小时后、目标默认 `new_once`（官方 `newTaskDraft` +
+ * `defaultTiming` 同口径）。
+ *
+ * 默认时刻取「一小时后的整分」：官方把当前秒抹成 `:00`，用户看到的是 `20:00:00`
+ * 而不是 `20:07:43`。秒位保留原值会让一次「打开就保存」的任务落在一个没法解释的
+ * 尖秒上，也让同一分钟内两次打开的默认值不稳定。
+ */
 export function scheduleCreateDraft(overrides: Partial<Pick<ScheduleEditorDraft, "target" | "sessionId">> = {}): ScheduleEditorDraft {
   const inAnHour = new Date(Date.now() + 60 * 60_000);
   const local = new Date(inAnHour.getTime() - inAnHour.getTimezoneOffset() * 60_000);
@@ -777,7 +831,7 @@ export function scheduleCreateDraft(overrides: Partial<Pick<ScheduleEditorDraft,
     timing: {
       repeat: "once",
       date: stamp.slice(0, 10),
-      time: stamp.slice(11, 19),
+      time: `${stamp.slice(11, 16)}:00`,
       timeZone: deviceZone(),
       amount: "60",
       unit: "minute",

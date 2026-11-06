@@ -1,6 +1,6 @@
 /**
- * 【vendor】上游 `@deepseek-ai/dsh-client-ui-trajectory`（`0.2.0-rc.2`，检出 tag
- * `dsh-v0.2.0-rc.2`）的 `src/client/trajectory-preview.ts` **逐字副本**。
+ * 【vendor】上游 `@deepseek-ai/dsh-client-ui-trajectory`（`0.2.2-rc.1`，检出 tag
+ * `dsh-v0.2.2-rc.1`）的 `src/client/trajectory-preview.ts` **逐字副本**。
  *
  * **不要手改**：上游升级时按 `src/vendor/README.md` 的流程重新 diff。
  * 本仓库唯一的改动是 import 指向同仓库的 vendor 副本（上游指 `ui-primitives` 包）。

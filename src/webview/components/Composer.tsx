@@ -9,7 +9,7 @@ import {
   type CSSProperties,
   type ReactNode,
 } from "react";
-import { AUTO_REVIEW_PRESET, type GoalView, type QueuedMessageView } from "../../shared/chat";
+import { AUTO_REVIEW_PRESET, goalBarActions, type GoalView, type QueuedMessageView } from "../../shared/chat";
 import { attachmentUploadBlock } from "../../shared/attachmentGate";
 import type { AppState } from "../state";
 import { post } from "../bridge";
@@ -1424,12 +1424,19 @@ function GoalBar({ goal }: { goal: GoalView | undefined }) {
     return () => observer.disconnect();
   }, [expanded, objective]);
   if (!goal || goal.phase === "complete") return null;
+  // 官方 `GoalBar` 的 active 标签分两种：进程内授权 armed 才是「进行中的目标」，
+  // disarmed（恢复会话 / fork 后服务端会解除续跑）显示「已暂停的目标」。
+  // 授权**未知**（`goals/get` 还没回来 / 旧服务端没有这个端点）时不猜 armed，
+  // 按 phase 的原始标签显示（进行中），只是下方既不给暂停也不给恢复。
   const phase =
     goal.phase === "paused"
       ? texts.goalPaused
       : goal.phase === "blocked"
         ? texts.goalBlocked
-        : texts.goalActive;
+        : goal.activation === "disarmed"
+          ? texts.goalInactive
+          : texts.goalActive;
+  const actions = goalBarActions(goal);
   const run = (action: "pause" | "resume" | "clear") =>
     post({ type: "runCommand", line: `/goal ${action}` });
   /**
@@ -1509,15 +1516,18 @@ function GoalBar({ goal }: { goal: GoalView | undefined }) {
           <IconChevronDown size={12} />
         </button>
       ) : null}
-      {goal.phase === "active" ? (
+      {/* 判据与官方 `GoalBar` 逐字一致，集中在 `shared/chat.goalBarActions`：
+          pause 只属于「active 且确认 armed」；resume 属于 paused / blocked / complete，
+          以及 **active 但 disarmed**；active 且授权未知时两个都不出现（不猜 armed）。 */}
+      {actions.pause ? (
         <button className="goal-action" title={texts.goalPause} onClick={() => run("pause")}>
           <IconPause size={12} />
         </button>
-      ) : (
+      ) : actions.resume ? (
         <button className="goal-action" title={texts.goalResume} onClick={() => run("resume")}>
           <IconPlay size={12} />
         </button>
-      )}
+      ) : null}
       {/* 内联编辑：官方 GoalBar 的动作就是 pause/resume、edit（同一横条里的内联表单）
           与 clear 三个，这里对齐 */}
       <button
