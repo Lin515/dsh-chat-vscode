@@ -573,9 +573,11 @@ export function scheduleDraftDiffers(draft: ScheduleTimingDraft, item: ScheduleI
   switch (draft.repeat) {
     case "once": {
       if (item.kind !== "at" && item.kind !== "after") return true;
-      const zone = scheduleRuleZone(item);
-      const clock = zonedWallClock(item.scheduledAt, zone);
-      return draft.date !== clock.slice(0, 10) || secondPrecision(draft.time) !== clock.slice(11);
+      // 官方 taskDraftPatch 将当前草稿与从记录生成的草稿经过同一 timingFromDraft 后比较。
+      // 这里同样比较两边的提交形态：不能用整秒草稿对比带 .mmm 的原始时钟，
+      // 否则连刚加载的 .000 一次性任务也会被误报 dirty，进而禁用删除 / 暂停 / 运行。
+      const seeded = scheduleDraft(item);
+      return JSON.stringify(scheduleChangeFromDraft(draft)) !== JSON.stringify(scheduleChangeFromDraft(seeded));
     }
     case "every": {
       if (item.kind !== "every") return true;

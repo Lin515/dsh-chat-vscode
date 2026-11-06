@@ -151,6 +151,44 @@ console.log("scheduleEditor: 归属 OR 语义 ✓");
 }
 console.log("scheduleEditor: 基线相对 dirty / patch ✓");
 
+// 一次性任务从目录生成草稿后必须仍是干净的；否则删除 / 暂停 / 运行会一起灰掉。
+for (const kind of ["at", "after"] as const) {
+  for (const milliseconds of ["000", "123"]) {
+    const base = item({ kind, scheduledAt: `2026-11-06T11:15:00.${milliseconds}Z` });
+    const state = scheduleEditorState(base);
+    assert.equal(scheduleEditorStateDirty(state), false, `${kind} .${milliseconds}：未编辑的任务不能被误判 dirty`);
+    const controls = scheduleRowControls(controlsState({ dirty: scheduleEditorStateDirty(state) }));
+    assert.equal(controls.canDelete, true, "未编辑的一次性任务可以删除");
+    assert.equal(controls.canPause, true);
+    assert.equal(controls.runHeld, false);
+    const secondsOnly = { ...state.draft, timing: { ...state.draft.timing, time: state.draft.timing.time.slice(0, 8) } };
+    assert.equal(scheduleEditorStateDirty({ ...state, draft: secondsOnly }), false, "时间控件的整秒文本与目录投影一致");
+    for (const timing of [
+      { ...state.draft.timing, date: "2026-11-07" },
+      { ...state.draft.timing, time: "00:01:02" },
+      { ...state.draft.timing, timeZone: state.draft.timing.timeZone === "UTC" ? "Asia/Shanghai" : "UTC" },
+    ]) {
+      const edited = { ...state, draft: { ...state.draft, timing } };
+      assert.equal(scheduleEditorStateDirty(edited), true, "真正修改日期 / 时间 / 时区仍然算 dirty");
+      const controls = scheduleRowControls(controlsState({ dirty: scheduleEditorStateDirty(edited) }));
+      assert.equal(controls.canDelete, false, "真正未保存的修改仍阻止删除，不能简单移除安全条件");
+      assert.equal(controls.canPause, false);
+      assert.equal(controls.runHeld, true);
+      const patch = schedulePatchOf(edited.draft, base);
+      assert.ok("patch" in patch);
+      assert.deepEqual(Object.keys(patch.patch), ["timing"]);
+    }
+    const renamed = schedulePatchOf({ ...state.draft, title: "改名" }, base);
+    assert.ok("patch" in renamed);
+    assert.deepEqual(renamed.patch, { title: "改名" }, "只改名不能重写一次性时刻");
+    const latest = { ...base, title: "后台改名", updatedAt: "rev-2" };
+    const refreshed = scheduleEditorReducer(state, { type: "catalog", item: latest });
+    assert.equal(refreshed.base, latest, "未改动的一次性草稿能跟进目录刷新");
+    assert.equal(scheduleEditorStateDirty(refreshed), false);
+  }
+}
+console.log("scheduleEditor: 一次性任务初始可删除 / 暂停 / 运行 ✓");
+
 // ---------- 3. 保存成功与权威刷新：草稿/基线一起推进，下一次编辑不误判冲突 ----------
 {
   const before = item({ updatedAt: "rev-1" });
@@ -437,6 +475,20 @@ function buttonTag(html: string, aria: string): string {
     assert.doesNotMatch(buttonTag(paused, texts.scheduleResumeAria(base.title)), /disabled/);
     const legacy = renderRow({}, { locale, open: false, modern: false });
     assert.ok(!legacy.includes(texts.scheduleRunAria(base.title)), "旧代折叠状态也没有运行入口");
+  }
+
+  // 复现用户的一次性任务：不论详情展开或折叠，中英文三个入口都应可用。
+  for (const kind of ["at", "after"] as const) {
+    for (const locale of ["zh", "en"] as const) {
+      const texts = dictionaryFor(locale);
+      for (const open of [false, true]) {
+        const once = renderRow({ kind, scheduledAt: "2026-11-06T11:15:00.000Z" }, { locale, open });
+        for (const aria of [texts.scheduleRunAria(base.title), texts.schedulePauseAria(base.title), texts.scheduleDeleteTitle(base.title)]) {
+          assert.doesNotMatch(buttonTag(once, aria), /disabled/, `${kind} ${locale} open=${open}：未改动的任务可以操作`);
+        }
+        assert.ok(!once.includes(texts.scheduleUnsaved), "未编辑的一次性任务不显示未保存提示");
+      }
+    }
   }
 
   // 执行中：运行、删除、暂停都禁用，表单只读
