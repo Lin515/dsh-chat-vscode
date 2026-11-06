@@ -3,6 +3,22 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 This project follows [Semantic Versioning](https://semver.org/).
 
+## 0.13.0（2026-11-06）
+
+### 中文
+
+- 新增：自动化任务支持创建、编辑投递目标与工作目录、暂停恢复和立即运行，并提供本会话与全部任务视图。
+- 改进：自动化任务管理对齐 DSH 0.2.2-rc.1，编辑冲突、执行占用、归档目标与投递间隔均有明确提示。
+- 改进：已答问卷记录遵循当前一次显示题数，超出时可逐题浏览，并保留手动展开状态与整份复制能力。
+- 修复：不带目录的文件名行号链接可正常打开，切换会话或连接后重新读取自动化任务投递限制。
+
+### English
+
+- Added: Automation tasks support creation, editing delivery targets and working directories, pausing and resuming, and running immediately, with views for this session and all tasks.
+- Improved: Automation management aligns with DSH 0.2.2-rc.1, with clear feedback for edit conflicts, active executions, archived targets, and delivery intervals.
+- Improved: Answered questionnaires follow the current question display limit, support per-question browsing when needed, and preserve manual expansion and copying the full questionnaire.
+- Fixed: Bare filenames with line-number suffixes open correctly, and automation delivery limits are read again after switching sessions or connections.
+
 ## 0.12.3（2026-11-05）
 
 ### 中文
