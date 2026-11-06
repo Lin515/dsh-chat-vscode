@@ -1373,11 +1373,19 @@ export class ChatController implements vscode.Disposable {
    */
   private readonly goalActivations = new Map<string, GoalActivationSnapshot>();
   /**
-   * 每会话 activation 读取的代号：事件 / 投影 / 重连任何一条带来新的权威值，
+   * 每域 activation 读取的代号：事件 / 投影 / 重连任何一条带来新的权威值，
    * 都让在飞的 `goals/get` 作废（官方 activation source 的 epoch 守卫同款），
    * 防止慢读把刚到的 `armed` 顶回 `disarmed`。
+   *
+   * 键是**域对象**（`WeakMap`）而不是会话 id：域回收、同一会话重开都不会在长期
+   * 存活的宿主里留下每会话一条索引，旧域也不再可能和新域共用同一个号。号本身取
+   * **全局单调计数**，作废时只删条目、不按域重置：在飞的读只认自己领到的那个号，
+   * 下一次读领取的是更大的新号，于是旧读的迟到成功 / `endpointAbsent` 失败不会
+   * 冒充新读——尤其是那条失败会把全局 `goalActivationUnavailable` 永久置上。
    */
-  private readonly goalActivationEpochs = new Map<string, number>();
+  private readonly goalActivationEpochs = new WeakMap<SessionScope, number>();
+  /** activation 读取代号的全局发号器（只增不减，见 `goalActivationEpochs`）。 */
+  private goalActivationEpochSeq = 0;
   /**
    * 这个部署没有 `goals/get`（旧服务端）——`endpointAbsent` 的肯定证据。
    *
@@ -3011,7 +3019,7 @@ export class ChatController implements vscode.Disposable {
     scope.adapter = undefined;
     // 进程内 goal 授权属于这条域：域回收后它的「上次读到的 armed」不能成为下次开窗的
     // 默认值（那时服务端可能已经 disarmed）。账本随域一起丢，重新打开时由投影 + RPC 重取。
-    this.forgetGoalActivation(scope.sessionId);
+    this.forgetGoalActivation(scope);
     // 适配器没了 ⇒ 「本轮还开着」这条本地证据也就没了：被拒收过的权威状态位到这里可以
     // 定论了（见 `pendingStatuses`）。放在这一句之后——重判看的正是适配器还在不在。
     this.settlePendingStatus(scope.sessionId);
@@ -8032,7 +8040,7 @@ export class ChatController implements vscode.Disposable {
     if (ref === undefined) {
       // durable 阶段不再是 active（paused / blocked / complete / 清空）：进程内授权
       // 不再有含义，账本一起作废（官方 activation source 在这一刻 publish({})）
-      this.forgetGoalActivation(scope.sessionId);
+      this.forgetGoalActivation(scope);
       return;
     }
     const previousRef = activeGoalRef(previous);
@@ -8061,12 +8069,10 @@ export class ChatController implements vscode.Disposable {
   ): Promise<void> {
     const client = this.client;
     if (!client || this.goalActivationUnavailable) return;
-    const epoch = (this.goalActivationEpochs.get(scope.sessionId) ?? 0) + 1;
-    this.goalActivationEpochs.set(scope.sessionId, epoch);
+    const epoch = this.beginGoalActivationEpoch(scope);
     try {
       const value = await client.getGoal(scope.sessionId);
-      if (this.goalActivationEpochs.get(scope.sessionId) !== epoch) return;
-      if (this.scopes.get(scope.sessionId) !== scope || this.client !== client) return;
+      if (!this.goalActivationReadCurrent(scope, client, epoch)) return;
       const snapshot = goalActivationFromView(value);
       if (snapshot === undefined) return;
       const current = activeGoalRef(scope.goal);
@@ -8074,7 +8080,7 @@ export class ChatController implements vscode.Disposable {
       if (snapshot.id !== ref.id || snapshot.revision !== ref.revision) return;
       this.writeGoalActivation(scope, snapshot);
     } catch (error) {
-      if (this.goalActivationEpochs.get(scope.sessionId) !== epoch) return;
+      if (!this.goalActivationReadCurrent(scope, client, epoch)) return;
       if (endpointAbsent(error)) {
         this.goalActivationUnavailable = true;
         this.log("[goal] 这个服务端没有 goals/get：目标条的续跑授权保持未知（不显示暂停 / 恢复按钮）");
@@ -8084,6 +8090,29 @@ export class ChatController implements vscode.Disposable {
     }
   }
 
+  /** 领一个全新的 activation 读取代号，并记为这个域当前在飞的号。 */
+  private beginGoalActivationEpoch(scope: SessionScope): number {
+    this.goalActivationEpochSeq += 1;
+    this.goalActivationEpochs.set(scope, this.goalActivationEpochSeq);
+    return this.goalActivationEpochSeq;
+  }
+
+  /**
+   * 在飞读是否还属于**发起时的那个域与连接**。
+   *
+   * 三个判据缺一不可：代号挡住同一域里更新的权威值；域身份挡住会话关闭后同 id
+   * 重开的新域；客户端身份挡住换连接后迟到返回的旧 RPC。旧实现只在 catch 里看
+   * 代号，于是一条旧连接上迟到的 `endpointAbsent` 会在新连接上把全局
+   * `goalActivationUnavailable` 置上，整条目标条从此不再重试。
+   */
+  private goalActivationReadCurrent(scope: SessionScope, client: DshClient, epoch: number): boolean {
+    return (
+      this.goalActivationEpochs.get(scope) === epoch &&
+      this.scopes.get(scope.sessionId) === scope &&
+      this.client === client
+    );
+  }
+
   /**
    * 写一条权威 activation 快照（或「没有目标」），必要时推 `goal` patch。
    *
@@ -8091,8 +8120,10 @@ export class ChatController implements vscode.Disposable {
    * 只有 `activation` 这一位真的变了才推帧（同一状态重复广播不制造额外渲染）。
    */
   private writeGoalActivation(scope: SessionScope, snapshot: GoalActivationSnapshot | undefined): void {
-    // 新的权威值作废所有在飞读（包括本方法是被某次读的返回调用的情形）
-    this.goalActivationEpochs.set(scope.sessionId, (this.goalActivationEpochs.get(scope.sessionId) ?? 0) + 1);
+    // 新的权威值作废所有在飞读（包括本方法是被某次读的返回调用的情形）。
+    // 只删条目、不按域重置号：下一条读会从全局发号器领到更大的新号，迟到的旧读
+    // 不可能再与新读同号（见 `goalActivationEpochs`）。
+    this.goalActivationEpochs.delete(scope);
     if (snapshot === undefined) this.goalActivations.delete(scope.sessionId);
     else this.goalActivations.set(scope.sessionId, snapshot);
     const previous = scope.goal?.activation;
@@ -8104,10 +8135,11 @@ export class ChatController implements vscode.Disposable {
     });
   }
 
-  /** 作废一条会话的 activation 账本（目标不再是 active / 域回收 / 会话删除）。 */
-  private forgetGoalActivation(sessionId: string): void {
-    this.goalActivationEpochs.set(sessionId, (this.goalActivationEpochs.get(sessionId) ?? 0) + 1);
-    this.goalActivations.delete(sessionId);
+  /** 作废一个域的 activation 账本（目标不再是 active / 域回收 / 会话删除）。 */
+  private forgetGoalActivation(scope: SessionScope): void {
+    // 条目按域对象存：域回收后随对象一起可回收，同 id 重开也拿不到旧条目
+    this.goalActivationEpochs.delete(scope);
+    this.goalActivations.delete(scope.sessionId);
   }
 
   /**

@@ -505,6 +505,301 @@ console.log("projections: goal 的进程内 activation（goals/get + 事件 + id
 }
 console.log("projections: goal activation 生命周期（真控制器：投影/广播/revision/非 active）✓");
 
+// ---------- 3d. activation 账本的回收与迟到读隔离（真控制器 + 假客户端） ----------
+//
+// 复审问题：activation 的读取代号表原本按**会话 id** 建，`forgetGoalActivation` 只递增、
+// 从不删条目，域回收后仍给每个会话留一条索引（长期存活的扩展宿主里只增不减）。若改成
+// 直接删表重置计数，同一会话重开、域重建后旧读的迟到 `endpointAbsent` 会被当成新读的
+// 失败，把全局 `goalActivationUnavailable` 永久置上——那会让新连接上的目标条再也不重试。
+//
+// 修法是「域对象作键 + 全局单调号」：条目的寿命跟着域对象（`WeakMap`），目标不再 active /
+// 域销毁时删除；号只增不减，所以删除后也不可能与旧读撞号。成功与失败都以「号 + 域身份 +
+// 客户端身份」三重守卫。本节逐条钉住清理与迟到回写。
+{
+  const { ChatController } = await import("../src/dsh/controller");
+  const VIEW = "view-goal-epoch";
+  const VIEW2 = "view-goal-epoch-2";
+  const SESSION = "session-goal-epoch";
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  interface Gate<T> {
+    promise: Promise<T>;
+    resolve(value: T): void;
+    reject(error: unknown): void;
+  }
+  const gate = <T>(): Gate<T> => {
+    let resolve!: (value: T) => void;
+    let reject!: (error: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  };
+
+  /** 每次 `goals/get` 都挂起，由测试决定它带回什么（用来制造在飞读）。 */
+  const makeClient = () => {
+    const reads: { sessionId: string; gate: Gate<unknown> }[] = [];
+    return {
+      reads,
+      async getGoal(sessionId: string) {
+        const pending = gate<unknown>();
+        reads.push({ sessionId, gate: pending });
+        return pending.promise;
+      },
+      async listSessions() {
+        return { items: [] };
+      },
+      async request(method: string) {
+        if (method === "commands/list") return [];
+        return undefined;
+      },
+      async sessionProjections() {
+        return { values: {} };
+      },
+      async getJson() {
+        return undefined;
+      },
+      async settingsDescribe() {
+        return { namespaces: [] };
+      },
+      followSession() {
+        return { cancel() {} };
+      },
+      followJobs() {
+        return { cancel() {} };
+      },
+      followControl() {
+        return { cancel() {} };
+      },
+    };
+  };
+  type FakeClient = ReturnType<typeof makeClient>;
+
+  const fakeServer = () => ({
+    externalUrl: undefined,
+    commandConfigured: true,
+    onHeartbeat() {},
+    snapshot() {
+      return { status: { info: undefined }, supervisorAlive: false };
+    },
+  });
+  const fakeMemento = () => {
+    const map = new Map<string, unknown>();
+    return {
+      get: (key: string, fallback?: unknown) => (map.has(key) ? map.get(key) : fallback),
+      update: async (key: string, value: unknown) => {
+        if (value === undefined) map.delete(key);
+        else map.set(key, value);
+      },
+      keys: () => [...map.keys()],
+    };
+  };
+
+  const makeController = async (view: string) => {
+    const controller = new ChatController(
+      fakeServer() as never,
+      () => undefined,
+      fakeMemento() as never,
+      fakeMemento() as never,
+      { delete: async () => undefined, get: async () => undefined, store: async () => undefined } as never,
+    );
+    const frames: { target: string; frame: Record<string, unknown> }[] = [];
+    controller.subscribe((target, frame) => frames.push({ target, frame: frame as never }));
+    const internals = controller as unknown as {
+      client: FakeClient | undefined;
+      connection: string;
+      scopes: Map<string, { sessionId: string }>;
+      goalActivations: Map<string, unknown>;
+      goalActivationEpochs: { has(key: unknown): boolean };
+      goalActivationUnavailable: boolean;
+      applyGoalProjection(scope: unknown, value: unknown, present: boolean): void;
+      onEventFrame(frame: Record<string, unknown>): Promise<void>;
+    };
+    const client = makeClient();
+    internals.client = client;
+    internals.connection = "connected";
+    await controller.openSession(view, SESSION);
+    const scope = internals.scopes.get(SESSION);
+    assert.ok(scope, "离线控制器必须为会话建出域");
+    return { controller, client, frames, internals, scope };
+  };
+
+  const activeGoal = (revision: number) =>
+    goalFromProjection({
+      goal: { id: "g-1", revision, objective: "x", phase: "active", maxGoalRounds: 8 },
+      roundsStarted: 1,
+    });
+  const pausedGoal = (revision: number) =>
+    goalFromProjection({
+      goal: { id: "g-1", revision, objective: "x", phase: "paused", maxGoalRounds: 8 },
+      roundsStarted: 1,
+    });
+
+  const wiredActivation = (frames: { target: string; frame: Record<string, unknown> }[], view: string) => {
+    for (let index = frames.length - 1; index >= 0; index -= 1) {
+      const { target, frame } = frames[index];
+      if (target !== view) continue;
+      const payload = (frame.type === "patch" ? frame.patch : frame.type === "state" ? frame.state : undefined) as
+        | { goal?: GoalView | null }
+        | undefined;
+      if (payload && Object.hasOwn(payload, "goal")) return payload.goal?.activation;
+    }
+    return undefined;
+  };
+  const sessionIndexed = (h: Awaited<ReturnType<typeof makeController>>) =>
+    h.internals.goalActivationEpochs.has(SESSION);
+  const scopeIndexed = (h: Awaited<ReturnType<typeof makeController>>, scope: unknown) =>
+    h.internals.goalActivationEpochs.has(scope);
+
+  // ① 目标不是 active：授权与代号索引都必须清掉（旧实现每遇到非 active 都会补一条会话索引）
+  {
+    const h = await makeController(VIEW);
+    h.internals.applyGoalProjection(h.scope, pausedGoal(2), true);
+    assert.strictEqual(h.internals.goalActivations.has(SESSION), false, "非 active 不保留授权账本");
+    assert.strictEqual(sessionIndexed(h), false, "不活跃会话不得留下按会话 id 的索引");
+    assert.strictEqual(scopeIndexed(h, h.scope), false, "没有在飞读的域上也不留代号");
+    h.controller.unbindView(VIEW);
+  }
+
+  // ② 在飞读的代号按域对象存；域销毁后账本与索引一起回收（旧实现只递增、不清索引）
+  {
+    const h = await makeController(VIEW);
+    h.internals.applyGoalProjection(h.scope, activeGoal(3), true);
+    assert.strictEqual(h.client.reads.length, 1, "active 目标必须读一次 goals/get");
+    assert.strictEqual(sessionIndexed(h), false, "在飞读的代号按域对象存，不按会话 id 建索引");
+    assert.strictEqual(scopeIndexed(h, h.scope), true, "在飞读必须持有自己的代号");
+
+    h.client.reads[0].gate.resolve({ id: "g-1", revision: 3, activation: "armed" });
+    await tick();
+    assert.strictEqual(wiredActivation(h.frames, VIEW), "armed");
+
+    const oldScope = h.scope;
+    h.controller.unbindView(VIEW);
+    assert.strictEqual(h.internals.scopes.size, 0, "最后一个观察者离开后域必须回收");
+    assert.strictEqual(h.internals.goalActivations.has(SESSION), false, "销毁时清授权账本");
+    assert.strictEqual(sessionIndexed(h), false, "销毁时不得保留按会话 id 的索引");
+    assert.strictEqual(scopeIndexed(h, oldScope), false, "旧域对象上也不留代号");
+  }
+
+  // ③ 同 id 重开：旧域迟到的成功不许写进新域（域身份守卫）
+  {
+    const h = await makeController(VIEW);
+    h.internals.applyGoalProjection(h.scope, activeGoal(3), true);
+    const oldScope = h.scope;
+    const oldRead = h.client.reads[0];
+    h.controller.unbindView(VIEW);
+    assert.strictEqual(scopeIndexed(h, oldScope), false);
+    h.controller.bindView(VIEW2);
+    await h.controller.openSession(VIEW2, SESSION);
+    const newScope = h.internals.scopes.get(SESSION);
+    assert.ok(newScope && newScope !== oldScope, "重开必须建出新的域对象");
+    h.internals.applyGoalProjection(newScope, activeGoal(3), true);
+    assert.strictEqual(h.client.reads.length, 2, "新域会重新读一次");
+
+    oldRead.gate.resolve({ id: "g-1", revision: 3, activation: "armed" });
+    await tick();
+    assert.strictEqual(wiredActivation(h.frames, VIEW2), undefined, "旧域迟到的成功不许写进新域");
+
+    h.client.reads[1].gate.resolve({ id: "g-1", revision: 3, activation: "disarmed" });
+    await tick();
+    assert.strictEqual(wiredActivation(h.frames, VIEW2), "disarmed", "新域自己的读照常生效");
+    h.controller.unbindView(VIEW2);
+  }
+
+  // ③b 同 id 重开：旧域迟到的 endpointAbsent 也不许关掉新域 / 新连接的通道
+  {
+    const h = await makeController(VIEW);
+    h.internals.applyGoalProjection(h.scope, activeGoal(3), true);
+    const oldRead = h.client.reads[0];
+    h.controller.unbindView(VIEW);
+    const nextClient = makeClient();
+    h.internals.client = nextClient;
+    h.controller.bindView(VIEW2);
+    await h.controller.openSession(VIEW2, SESSION);
+    const newScope = h.internals.scopes.get(SESSION);
+    assert.ok(newScope);
+    h.internals.applyGoalProjection(newScope, activeGoal(3), true);
+    assert.strictEqual(nextClient.reads.length, 1);
+
+    oldRead.gate.reject(new Error("goals/get 失败：HTTP 404"));
+    await tick();
+    assert.strictEqual(h.internals.goalActivationUnavailable, false, "旧域迟到的失败不许污染全局端点结论");
+    nextClient.reads[0].gate.resolve({ id: "g-1", revision: 3, activation: "armed" });
+    await tick();
+    assert.strictEqual(wiredActivation(h.frames, VIEW2), "armed", "新连接上的读照常生效");
+    h.controller.unbindView(VIEW2);
+  }
+
+  // ③c 同一域里的 ABA：作废不能把计数清零后复用（旧读 A 与目标重激活后的新读 B 同号）
+  //
+  // 目标 paused 再恢复时，A 与 B 的 id / revision 可以完全相同；若作废只是 delete 并按
+  // 域从 0 重新计数，A 迟到的 armed 会冒充 B 的代号，把 B 刚读到的 disarmed 顶掉。
+  {
+    const h = await makeController(VIEW);
+    h.internals.applyGoalProjection(h.scope, activeGoal(3), true);
+    const readA = h.client.reads[0];
+    h.internals.applyGoalProjection(h.scope, pausedGoal(3), true);
+    h.internals.applyGoalProjection(h.scope, activeGoal(3), true);
+    assert.strictEqual(h.client.reads.length, 2, "目标重新 active 必须起一条新的读");
+    const readB = h.client.reads[1];
+
+    readB.gate.resolve({ id: "g-1", revision: 3, activation: "disarmed" });
+    await tick();
+    assert.strictEqual(wiredActivation(h.frames, VIEW), "disarmed");
+
+    readA.gate.resolve({ id: "g-1", revision: 3, activation: "armed" });
+    await tick();
+    assert.strictEqual(
+      wiredActivation(h.frames, VIEW),
+      "disarmed",
+      "旧的 A 读不许冒充重新激活后的 B 读（清零复用计数会让两者同号）",
+    );
+    h.controller.unbindView(VIEW);
+  }
+
+  // ④ 换连接：旧客户端迟到的 endpointAbsent 不许把新连接的目标条永久关掉（客户端身份守卫）
+  {
+    const h = await makeController(VIEW);
+    h.internals.applyGoalProjection(h.scope, activeGoal(3), true);
+    const oldRead = h.client.reads[0];
+    const nextClient = makeClient();
+    h.internals.client = nextClient;
+    oldRead.gate.reject(new Error("goals/get 失败：HTTP 404"));
+    await tick();
+    assert.strictEqual(
+      h.internals.goalActivationUnavailable,
+      false,
+      "旧连接迟到的 endpointAbsent 不许把全局 goalActivationUnavailable 置上",
+    );
+    // 新连接照常重试：同一条 active 目标会再读一次并采信新结果
+    h.internals.applyGoalProjection(h.scope, activeGoal(3), true);
+    assert.strictEqual(nextClient.reads.length, 1, "新连接必须能重新读 goals/get");
+    nextClient.reads[0].gate.resolve({ id: "g-1", revision: 3, activation: "armed" });
+    await tick();
+    assert.strictEqual(wiredActivation(h.frames, VIEW), "armed");
+    h.controller.unbindView(VIEW);
+  }
+
+  // ⑤ 权威广播作废在飞读：迟到的旧读不许把刚到的 disarmed 顶回 armed
+  {
+    const h = await makeController(VIEW);
+    h.internals.applyGoalProjection(h.scope, activeGoal(3), true);
+    const read = h.client.reads[0];
+    await h.internals.onEventFrame({
+      type: "emit",
+      event: "goal/activation-changed",
+      args: [{ sessionId: SESSION, goal: { id: "g-1", revision: 3, activation: "disarmed" } }],
+    });
+    assert.strictEqual(wiredActivation(h.frames, VIEW), "disarmed");
+    read.gate.resolve({ id: "g-1", revision: 3, activation: "armed" });
+    await tick();
+    assert.strictEqual(wiredActivation(h.frames, VIEW), "disarmed", "权威广播之后迟到的旧读不许覆盖新值");
+    h.controller.unbindView(VIEW);
+  }
+}
+console.log("projections: activation 账本按域回收，迟到成功/失败不跨域与连接回写 ✓");
+
 // ---------- 4. subagentCatalog 投影：没有 kind/activity ----------
 //
 // 这是第二个 bug 的核心：投影值是 `{id, createdAt, mode, label?}`，
