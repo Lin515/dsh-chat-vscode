@@ -9695,8 +9695,8 @@ export class ChatController implements vscode.Disposable {
 
       case "resolveImages": {
         // 正文里的本地图（`![](out/chart.png)`）：路径属于该窗口会话的**执行世界**。
-        // 相对路径原样交给 Host（缺创建目录由服务端 sandbox 根裁决），不退回 VS Code
-        // 工作区；绝对路径根外能否读取由 provider 裁决，扩展名不是授权条件。
+        // 相对路径按读取时的执行目录解析，缺失时回退创建目录；两者都缺失则交给 Host
+        // 裁决，不退回 VS Code 工作区；绝对路径根外能否读取由 provider 裁决，扩展名不是授权条件。
         if (
           !Number.isSafeInteger(message.requestId) || message.requestId < 1 ||
           !Array.isArray(message.paths) || !message.paths.every((path) => typeof path === "string") ||

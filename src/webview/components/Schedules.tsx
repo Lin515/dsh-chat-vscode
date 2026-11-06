@@ -570,6 +570,9 @@ export function ScheduleRow({
   const stale = canEditDetails && scheduleEditorStateConflict(editor, item);
   const floorAt = item.deliveryFloorEndsAt === undefined ? undefined : Date.parse(item.deliveryFloorEndsAt);
   const floorActive = floorAt !== undefined && floorAt > now;
+  const floorNotice = floorActive
+    ? texts.scheduleDeliveryFloor(formatScheduleStamp(new Date(floorAt).toISOString(), locale))
+    : undefined;
   const executionActive = item.executionActive === true;
   const cronError = scheduleTimingCronError(draft.timing);
   const missingTarget = scheduleTargetError(draft) !== undefined;
@@ -726,9 +729,7 @@ export function ScheduleRow({
       {open ? (
         <div className="job-panel">
           {executionActive ? <div className="job-notice">{texts.scheduleExecutionActive}</div> : null}
-          {floorActive && floorAt !== undefined ? (
-            <div className="job-notice">{texts.scheduleDeliveryFloor(formatScheduleStamp(new Date(floorAt).toISOString(), locale))}</div>
-          ) : null}
+          {floorNotice ? <div className="job-notice">{floorNotice}</div> : null}
           {stale ? (
             <div className="job-notice is-error">
               {texts.scheduleConflictNotice}
@@ -822,7 +823,7 @@ export function ScheduleRow({
                   disabled={controls.runHeld}
                   title={
                     controls.runHeld
-                      ? runHeldReason({ dirty, executionActive, floorActive, targetArchived, authoritative: controls.authoritative }, texts)
+                      ? runHeldReason({ dirty, executionActive, floorNotice, targetArchived, authoritative: controls.authoritative }, texts)
                       : undefined
                   }
                   aria-label={texts.scheduleRunAria(item.title)}
@@ -846,7 +847,7 @@ function runHeldReason(
   state: {
     dirty: boolean;
     executionActive: boolean;
-    floorActive: boolean;
+    floorNotice?: string;
     targetArchived: boolean;
     authoritative: boolean;
   },
@@ -855,7 +856,7 @@ function runHeldReason(
   if (state.dirty) return texts.scheduleUnsaved;
   if (state.executionActive) return texts.scheduleExecutionActive;
   if (state.targetArchived) return texts.scheduleErrTargetArchived;
-  if (state.floorActive) return texts.scheduleRunPending;
+  if (state.floorNotice !== undefined) return state.floorNotice;
   if (!state.authoritative) return texts.scheduleCapabilityUnknown;
   return undefined;
 }

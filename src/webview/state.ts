@@ -154,6 +154,8 @@ export interface AppState extends ChatState {
    * 界面不显示说明（不是失败）。`error` 与 `unsupported` 分开：前者这次没拿到。
    */
   scheduleLimits?: { newSessionIntervalSeconds?: number; unsupported?: boolean; error?: string };
+  /** 宿主通过 images/scope 通知的客户端身份；同名会话换连接时也须作废限制缓存。 */
+  hostConnectionId?: string | null;
 }
 
 /** 一条任务的执行记录（界面侧累积，见 `AppState.scheduleHistory`）。 */
@@ -314,8 +316,13 @@ export function reducer(state: AppState, action: Action): AppState {
         // 被渲染（面板读的是新会话的任务清单）
         ...(switched ? { scheduleHistory: undefined } : {}),
         ...(switched ? { scheduleResult: undefined } : {}),
+        ...(switched ? { scheduleLimits: undefined } : {}),
       };
     }
+
+    case "images/scope":
+      if (state.hostConnectionId === action.connectionId) return state;
+      return { ...state, hostConnectionId: action.connectionId, scheduleLimits: undefined };
 
     case "patch":
       return mergeWirePatch(state, action.patch);

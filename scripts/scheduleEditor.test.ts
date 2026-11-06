@@ -373,9 +373,9 @@ console.log("scheduleEditor: 变更入口策略 ✓");
   assert.equal(scheduleTargetError({ ...create, target: "session", sessionId: "s1" }), undefined);
 }
 
-/** 在英文词典下渲染一段界面（与真实链路同一个 provider）。 */
-const render = (element: ReturnType<typeof createElement>): string =>
-  renderToStaticMarkup(createElement(TextsContext.Provider, { value: dictionaryFor("en") }, element));
+/** 按指定词典渲染一段界面，默认英文（与真实链路同一个 provider）。 */
+const render = (element: ReturnType<typeof createElement>, locale: "zh" | "en" = "en"): string =>
+  renderToStaticMarkup(createElement(TextsContext.Provider, { value: dictionaryFor(locale) }, element));
 
 /** 取一个带指定 aria-label 的按钮开始标签，用来断言 disabled。 */
 function buttonTag(html: string, aria: string): string {
@@ -394,6 +394,7 @@ function buttonTag(html: string, aria: string): string {
       capabilityKnown?: boolean;
       modern?: boolean;
       archived?: readonly string[];
+      locale?: "zh" | "en";
     } = {},
   ): string => {
     const row = { ...base, ...overrides };
@@ -414,6 +415,7 @@ function buttonTag(html: string, aria: string): string {
         dispatch: () => {},
         onToggle: () => {},
       }),
+      options.locale,
     );
   };
 
@@ -423,6 +425,23 @@ function buttonTag(html: string, aria: string): string {
   assert.match(buttonTag(executing, text.scheduleDeleteTitle(base.title)), /disabled/, "执行中不能删除");
   assert.match(buttonTag(executing, text.schedulePauseAria(base.title)), /disabled/, "执行中不能暂停");
   assert.match(executing, /<input[^>]*id="schedule-edit-task-1-title"[^>]*disabled/, "执行中表单只读");
+
+  // 投递间隔未到不等于仍在执行：中英文悬停说明与详情里的间隔提示一致。
+  for (const locale of ["zh", "en"] as const) {
+    const texts = dictionaryFor(locale);
+    const floor = renderRow({ deliveryFloorEndsAt: "2026-11-06T02:01:00.000Z", executionActive: false }, { locale });
+    const run = buttonTag(floor, texts.scheduleRunAria(base.title));
+    assert.match(run, /disabled/, "投递间隔未到时不能立即运行");
+    assert.ok(!run.includes(texts.scheduleRunPending), "间隔等待不能误报为投递仍在进行");
+    assert.ok(!run.includes(texts.scheduleExecutionActive), "间隔等待不能误报为目标会话仍在执行");
+    const notice = /<div class="job-notice">([^<]+)<\/div>/.exec(floor)?.[1];
+    assert.ok(notice && run.includes(`title="${notice}"`), "悬停与详情共用真实的间隔结束说明");
+
+    const both = renderRow({ deliveryFloorEndsAt: "2026-11-06T02:01:00.000Z", executionActive: true }, { locale });
+    assert.ok(buttonTag(both, texts.scheduleRunAria(base.title)).includes(texts.scheduleExecutionActive), "确实执行中时仍说明执行占用");
+    const expired = renderRow({ deliveryFloorEndsAt: "2026-11-06T01:58:00.000Z", executionActive: false }, { locale });
+    assert.doesNotMatch(buttonTag(expired, texts.scheduleRunAria(base.title)), /disabled|title=/, "间隔到期后恢复运行入口");
+  }
 
   // 目录读取中：三个入口同样禁用
   const loading = renderRow({}, { catalogStatus: "loading" });

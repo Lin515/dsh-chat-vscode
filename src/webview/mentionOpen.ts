@@ -12,8 +12,8 @@
  * - 会话 → `openInEditor` + `sessionId`（宿主**新开一个标签页**打开那条会话；不是
  *   `openSession`——那条会把**当前窗口**切走，点一条引用就换掉正在看的对话太唐突）。
  *
- * 路径与行号一律**原样**交给宿主：相对路径的基准是会话工作目录，只有宿主知道
- * （`controller.openFile` 经 `resolveChipPath` 解析，与文件芯片同一条路）。
+ * 路径与行号一律**原样**交给宿主：相对链接由 `controller.openFile` 经 `sessionFilePath`
+ * 按动作时的执行目录解析，缺失时回退创建目录；已有绝对记录路径不重算。
  */
 import { post } from "./bridge";
 import type { FileOpenIntent } from "./fileLinks";

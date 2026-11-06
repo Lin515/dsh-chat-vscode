@@ -512,6 +512,47 @@ console.log("scheduleManage: 结算账本 ✓");
 }
 console.log("scheduleManage: 界面状态机 ✓");
 
+// 投递限制属于原连接 / 会话；首帧、同范围刷新不丢缓存，换范围必须重读。
+{
+  for (const reply of [
+    { type: "schedules/limits", newSessionIntervalSeconds: 60 },
+    { type: "schedules/limits", unsupported: true },
+    { type: "schedules/limits", error: "offline" },
+  ] as const) {
+    const connected = reducer(initialState, { type: "images/scope", connectionId: "connection-a" });
+    const first = reducer(connected, { type: "state", state: { session: { id: "s1", title: "A", updatedAt: 0, running: false } } });
+    const cached = reducer(first, reply);
+    const refreshed = reducer(cached, { type: "state", state: { session: first.session } });
+    assert.equal(refreshed.scheduleLimits, cached.scheduleLimits, "同一会话快照不丢缓存");
+    assert.equal(
+      reducer(cached, { type: "images/scope", connectionId: "connection-a" }).scheduleLimits,
+      cached.scheduleLimits,
+      "同一连接的范围通知不丢缓存",
+    );
+    assert.equal(
+      reducer(cached, { type: "state", state: { session: { id: "s2", title: "B", updatedAt: 0, running: false } } }).scheduleLimits,
+      undefined,
+      "换会话后不保留旧值、端点缺席或读取失败结论",
+    );
+    assert.equal(
+      reducer(cached, { type: "state", state: { session: null } }).scheduleLimits,
+      undefined,
+      "离开会话后不保留投递限制",
+    );
+    assert.equal(
+      reducer(cached, { type: "images/scope", connectionId: "connection-b" }).scheduleLimits,
+      undefined,
+      "即使会话 id 相同，换连接也必须重读投递限制",
+    );
+    assert.equal(
+      reducer(cached, { type: "images/scope", connectionId: null }).scheduleLimits,
+      undefined,
+      "旧连接被释放时立即作废投递限制",
+    );
+  }
+}
+console.log("scheduleManage: 投递限制按连接与会话隔离 ✓");
+
 // ---------- 13. 宿主接线：一条目录、读取代号、视图绑定、每条路都回帧 ----------
 {
   const controller = read("src", "dsh", "controller.ts");

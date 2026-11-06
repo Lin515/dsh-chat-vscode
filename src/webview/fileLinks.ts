@@ -47,10 +47,11 @@ export function parseFileLink(value: string): FileLinkTarget | undefined {
   let path: string;
   try { path = decodeURIComponent(destination); } catch { return undefined; }
   if (path.length === 0 || /[\u0000-\u001f\u007f]/u.test(path)) return undefined;
-  if (!isExplicitFilePath(path) && URL.canParse(path)) return undefined;
   const suffix = hash < 0 ? /:(\d+)(?::\d+|-(\d+))?$/.exec(destination) : null;
   if (suffix !== null) path = path.slice(0, -suffix[0].length);
   if (path.length === 0) return undefined;
+  // 先剥离原文的定位后缀，避免把 README.md:12 误当协议；编码过的冒号仍是文件名。
+  if (!isExplicitFilePath(path) && URL.canParse(path)) return undefined;
   const match = suffix ?? (hash < 0 ? null : /^L(\d+)(?:-L(\d+))?$/.exec(value.slice(hash + 1)));
   if (match === null) return { path };
   const line = Number(match[1]);

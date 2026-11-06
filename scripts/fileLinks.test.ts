@@ -52,6 +52,14 @@ const read = (...parts: string[]): string => readFileSync(join(process.cwd(), ..
     assert.deepStrictEqual(parseFileLink(`src/a.ts${fragment}`), { path: "src/a.ts" });
   }
   assert.deepStrictEqual(parseFileLink("//host/share/a.ts"), { path: "//host/share/a.ts" });
+  // 裸文件名的冒号后缀不能先被 URL 解析成 scheme。
+  assert.deepStrictEqual(parseFileLink("README.md:12"), { path: "README.md", line: 12 });
+  assert.deepStrictEqual(parseFileLink("App.tsx:12:3"), { path: "App.tsx", line: 12 });
+  assert.deepStrictEqual(parseFileLink("README.md:12-40"), { path: "README.md", line: 12 });
+  assert.deepStrictEqual(parseFileLink("Makefile:12"), { path: "Makefile", line: 12 });
+  assert.deepStrictEqual(parseFileLink("README.md:0"), { path: "README.md" });
+  assert.deepStrictEqual(parseFileLink("README.md:12-4"), { path: "README.md" });
+  assert.deepStrictEqual(parseFileLink("README.md#L12"), { path: "README.md", line: 12 });
   assert.deepStrictEqual(parseFileLink("src/a.ts:12:3"), { path: "src/a.ts", line: 12 });
   assert.deepStrictEqual(parseFileLink("./src/a.ts:12-40"), { path: "./src/a.ts", line: 12 });
   assert.deepStrictEqual(parseFileLink("src/a.ts:0"), { path: "src/a.ts" });
@@ -71,6 +79,10 @@ const read = (...parts: string[]): string => readFileSync(join(process.cwd(), ..
   for (const value of [
     "https://example.com/a/b",
     "mailto:someone@example.com",
+    "https://example.com:443",
+    "mailto:someone@example.com:12",
+    "command:workbench.action.files.openFile:12",
+    "javascript:alert(1):12",
     "#section",
     "src/a.ts?raw=1",
     "%zz.ts",
