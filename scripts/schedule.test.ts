@@ -294,6 +294,12 @@ console.log("schedule: 执行记录与变更结算 ✓");
   assert.strictEqual(relativeText("2026-10-15T02:05:00.000Z", now, texts), "in 5 min");
   assert.strictEqual(relativeText("2026-10-15T01:55:00.000Z", now, texts), "overdue by 5 min");
   assert.strictEqual(relativeText("2026-10-15T02:00:00.000Z", now, texts), "now");
+  const countdownAt = "2026-10-15T02:00:03.000Z";
+  assert.deepStrictEqual(
+    [0, 1_000, 2_000, 3_000, 4_000].map((elapsed) => relativeText(countdownAt, now + elapsed, texts)),
+    ["in 3 sec", "in 2 sec", "in 1 sec", "now", "overdue by 1 sec"],
+    "逐秒推进到期时间，不显示负倒计时；越过目标后按权威状态显示逾期而不自称已执行",
+  );
 }
 console.log("schedule: 频率与相对时间 ✓");
 
@@ -607,6 +613,18 @@ console.log("schedule: 绝对时间文本 ✓");
   }
 
   const schedules = read("src", "webview", "components", "Schedules.tsx");
+  assert.match(
+    schedules,
+    /if \(schedules\.length === 0\) return;\s*const timer = setInterval\(\(\) => setNow\(Date\.now\(\)\), 1_000\);\s*return \(\) => clearInterval\(timer\);/,
+    "非空目录每秒重采样真实时刻，空目录与卸载时清理，不依赖后台任务是否正在运行",
+  );
+  assert.match(schedules, /now=\{now\}/, "时钟传到行，倒计时与排序同拍更新");
+  const createCard = schedules.slice(schedules.indexOf("function ScheduleCreateCard("), schedules.indexOf("export function ScheduleRow("));
+  assert.match(
+    createCard,
+    /if \(result === undefined \|\| !scheduleResultSettles\(pending, result\)\) return;[\s\S]*?if \(result\.op === "create" && result\.ok\) \{\s*setCreated\(true\);\s*onClose\(\);\s*return;\s*\}\s*setFailure\(changeErrorText\(result\.code, texts\)\);/,
+    "只在本次创建成功回执后收起；失败保留草稿，旧回执或其它操作不能关闭新建卡",
+  );
   assert.ok(
     /post\(\{\s*type: "updateSchedule", id: item\.id, change: built\.change, opId,?\s*\}\)/.test(schedules) ||
       /post\(\{ type: "updateSchedule", id: item\.id, change: built\.change, opId \}\)/.test(schedules),

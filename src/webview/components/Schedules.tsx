@@ -127,12 +127,13 @@ export function SchedulesSection({
   // 展开的那一行（同一时刻只看一条详情，与后台任务的输出区同口径）
   const [expanded, setExpanded] = useState<string>();
   const [creating, setCreating] = useState(false);
-  // 相对时间与「过期在前」的排序都要一个当前时刻：面板开着时每 30 秒重算一次
+  // 与官方 ScheduleCatalogAction 的展开态时钟同口径：每秒重采样真实时刻，
+  // 倒计时不等目录回帧，也不逐秒相减（后台节流后不会累计漂移）。空目录 / 卸载时停表。
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     setNow(Date.now());
     if (schedules.length === 0) return;
-    const timer = setInterval(() => setNow(Date.now()), 30_000);
+    const timer = setInterval(() => setNow(Date.now()), 1_000);
     return () => clearInterval(timer);
   }, [schedules.length]);
 
@@ -153,8 +154,7 @@ export function SchedulesSection({
     if (expanded !== undefined && !schedules.some((item) => item.id === expanded)) setExpanded(undefined);
   }, [schedules, expanded]);
 
-  // 投递间隔到点要**准时**让「立即运行」变得可用：30 秒的周期会晚最多半分钟，
-  // 所以额外在 floor 结束那一刻叫醒一次。
+  // 投递间隔到点要**准时**让「立即运行」变得可用，额外在 floor 结束那一刻叫醒一次。
   const floorWake = schedules.reduce((earliest, item) => {
     const at = item.deliveryFloorEndsAt === undefined ? Number.POSITIVE_INFINITY : Date.parse(item.deliveryFloorEndsAt);
     return at > now && at < earliest ? at : earliest;
@@ -374,6 +374,7 @@ function ScheduleCreateCard({
     setPending(undefined);
     if (result.op === "create" && result.ok) {
       setCreated(true);
+      onClose();
       return;
     }
     setFailure(changeErrorText(result.code, texts));
