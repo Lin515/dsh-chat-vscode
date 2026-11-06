@@ -24,7 +24,7 @@ import { TrajectorySearchIndex } from "../src/vendor/ui-trajectory/trajectory-se
 import { deriveTrajectoryTimeline } from "../src/vendor/ui-trajectory/timeline";
 import type { TrajectoryCellProps } from "../src/vendor/ui-trajectory/trajectory-record";
 import type { TrajectoryTurnModel } from "../src/vendor/ui-trajectory/trajectory-turn-model";
-import { vendorCell } from "../src/webview/trajectoryVendor";
+import { vendorCell, trajectoryCellRecordId } from "../src/webview/trajectoryVendor";
 import type { TrajectoryCell, TrajectoryToolSchema } from "../src/shared/trajectory";
 
 /**
@@ -562,6 +562,101 @@ console.log("\ntrajectory-vendor: 搜索索引的输入侧字段 ✓");
   // 界面「对照」页签读的是**宿主**那一列（`Trajectory.tsx` 取 `cell.previousPromptTools`），
   // 所以合成之后宿主字段本身照旧保留；适配层只是不再把它当官方列透传。
   assert.strictEqual(hostCell.previousPromptTools, tools, "宿主字段本身不动");
+}
+
+// ---------- 10. 工具结果字段：resultSeq 透传，搜索吃正文优先的结果 ----------
+//
+// 官方布局把「已提交的结果事件」记在 `resultSeq` 上（检查器定位 / 观察那次结果），
+// 搜索索引又把 `result` 与 `resultPreviewMarkdown` 分别入库。宿主折叠同口径：正文优先时
+// `result` 是空串、原文在预览字段；适配层不得把 `resultSeq` 当宿主私有字段丢掉。
+{
+  const resultCell: TrajectoryCell = {
+    index: 1,
+    kind: "tool",
+    turn: 1,
+    seq: 10,
+    time: 1_700_000_001_000,
+    text: "read",
+    previewMarkdown: '{"file_path":"a.ts"}',
+    result: "",
+    resultPreviewMarkdown: "第一段结果",
+    resultSeq: 12,
+    outputBlocks: [
+      {
+        type: "image",
+        content: '{\n  "type": "image",\n  "attachment": {\n    "name": "a.png"\n  }\n}',
+        attachment: { name: "a.png" },
+      },
+      {
+        type: "file",
+        content: '{\n  "type": "file",\n  "attachment": {\n    "name": "notes.pdf"\n  }\n}',
+        file: { name: "notes.pdf" },
+      },
+    ],
+    callId: "c9",
+    toolName: "read",
+    timeSeconds: 1,
+    startedAt: 1_700_000_000_000,
+  };
+  const vendored = vendorCell(resultCell);
+  assert.strictEqual(vendored.resultSeq, 12, "resultSeq 是官方列，必须透传");
+  assert.strictEqual(vendored.result, "", "正文优先时 result 是空串（不是 undefined）");
+  assert.strictEqual(vendored.resultPreviewMarkdown, "第一段结果");
+  assert.deepStrictEqual(
+    vendored.outputBlocks?.map((block) => block.type),
+    ["image", "file"],
+    "outputBlocks 是官方列，图片 / 文件块都要透传",
+  );
+  assert.strictEqual(
+    vendored.sourceSeq,
+    undefined,
+    "有调用身份的工具格没有单一 sourceSeq（官方布局同口径，用 callId + resultSeq 定位）",
+  );
+  assert.strictEqual(
+    trajectoryCellRecordId(resultCell),
+    "tool\u0000call\u0000c9",
+    "sourceSeq 缺席不影响定位身份：调用格仍按 callId 稳定",
+  );
+
+  const resultOnly = vendorCell({
+    ...resultCell,
+    callId: "missing",
+    toolName: undefined,
+    seq: 12,
+    resultSeq: 12,
+    text: "",
+  });
+  assert.strictEqual(
+    resultOnly.sourceSeq,
+    12,
+    "只有结果没有调用的补行：sourceSeq 与 resultSeq 都是结果事件",
+  );
+  assert.strictEqual(resultOnly.callId, "missing");
+  assert.strictEqual(resultOnly.resultSeq, 12);
+
+  const index = new TrajectorySearchIndex();
+  index.update([[{ turn: 1, groups: [{ title: "第 1 步", cells: [vendored] }] }]]);
+  assert.deepStrictEqual(
+    [...searchHits(index, "第一段结果")],
+    ["tool\u0000call\u0000c9"],
+    "结果原文进搜索面（resultPreviewMarkdown）",
+  );
+  assert.deepStrictEqual(
+    [...searchHits(index, "a.ts")],
+    ["tool\u0000call\u0000c9"],
+    "参数预览仍进搜索面",
+  );
+  // 仅图片 / 文件结果没有正文，附件名只能经 outputBlocks 进入搜索面
+  assert.deepStrictEqual(
+    [...searchHits(index, "a.png")],
+    ["tool\u0000call\u0000c9"],
+    "图片附件名可搜（outputBlocks 的 attachment.name / 块原文）",
+  );
+  assert.deepStrictEqual(
+    [...searchHits(index, "notes.pdf")],
+    ["tool\u0000call\u0000c9"],
+    "文件附件名可搜（outputBlocks 的块原文）",
+  );
 }
 
 console.log("\ntrajectory-vendor: PTC 代码程序的读取（官方单测等价断言） ✓");

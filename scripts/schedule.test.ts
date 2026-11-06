@@ -26,14 +26,17 @@ import {
   relativeAmount,
   relativeText,
   scheduleChangeFromDraft,
+  scheduleCreateDraft,
   scheduleDraft,
   scheduleDraftDiffers,
   scheduleFrequency,
   scheduleRuleZone,
+  scheduleTimingIssue,
   secondPrecision,
   zoneChoices,
   type ScheduleTexts,
 } from "../src/shared/schedule";
+import { rruleIssue } from "../src/shared/scheduleRule";
 import {
   scheduleDeleteOutcome,
   scheduleEntriesFromCatalog,
@@ -513,6 +516,268 @@ console.log("schedule: cron 方言校验 ✓");
 }
 console.log("schedule: cron 规范式（提交 / dirty / STAR 标记） ✓");
 
+// ---------- 7c. RRULE：直接消费官方 RRule.parse 的完整接受集合 ----------
+{
+  const rruleItem = (rrule: string) =>
+    item({ kind: "rrule", rrule, scheduledAt: "2026-11-07T01:00:00.000Z" });
+  const rruleDraft = (rrule: string) => ({ ...scheduleDraft(rruleItem("DTSTART:20260916T010000Z\nRRULE:FREQ=DAILY")), repeat: "rrule" as const, rrule });
+  const rule = (body: string, start = "DTSTART:20260916T010000Z") => `${start}\nRRULE:${body}`;
+
+  // 官方 rrule.spec 的合法边界：COUNT/UNTIL 上界、0100 年、INTERVAL 安全整数、
+  // BY* 的负值/上界、BYDAY 序号、别名时区、以及行首尾空白与空行的归一化。
+  const accepted = [
+    rule("FREQ=DAILY"),
+    rule("FREQ=DAILY;COUNT=1000"),
+    rule("FREQ=DAILY;UNTIL=99991231T235959Z"),
+    rule("FREQ=DAILY", "DTSTART:01000101T000000Z"),
+    rule(`FREQ=DAILY;INTERVAL=${Number.MAX_SAFE_INTEGER}`),
+    rule("FREQ=YEARLY;BYMONTH=1,12;BYMONTHDAY=-31,31;BYHOUR=0,23;BYMINUTE=0,59;BYSECOND=59"),
+    rule("FREQ=YEARLY;BYYEARDAY=-366,366;BYWEEKNO=-53,53;BYDAY=MO"),
+    rule("FREQ=YEARLY;BYDAY=MO,TU,WE,TH,FR,SA,SU;BYSETPOS=-366,366"),
+    rule("FREQ=MONTHLY;BYMONTHDAY=+5"),
+    rule("FREQ=WEEKLY", "DTSTART;TZID=US/Eastern:20260916T010000"),
+    rule("FREQ=DAILY", "DTSTART;TZID=UTC:20260916T010000"),
+  ];
+  for (const rrule of accepted) {
+    assert.deepStrictEqual(
+      scheduleChangeFromDraft(rruleDraft(rrule)),
+      { change: { kind: "rrule", rrule } },
+      `官方接受的 RRULE 被本地拒了：${JSON.stringify(rrule)}`,
+    );
+  }
+  assert.deepStrictEqual(
+    scheduleChangeFromDraft(rruleDraft(" DTSTART:20260916T010000Z\r\n\n RRULE:FREQ=DAILY \n")),
+    { change: { kind: "rrule", rrule: "DTSTART:20260916T010000Z\nRRULE:FREQ=DAILY" } },
+    "两行首尾空白与空行按官方 expression 归一化后再提交",
+  );
+
+  // 官方 rrule.spec 的拒绝集合，按 domain.ts 的 syntax/time_zone/density 映射成
+  // invalid_rule / invalid_time_zone / frequency_too_high。
+  const rejected: [string, "invalid_rule" | "invalid_time_zone" | "frequency_too_high"][] = [
+    ["", "invalid_rule"],
+    ["RRULE:FREQ=DAILY", "invalid_rule"],
+    ["RRULE:FREQ=DAILY\nDTSTART:20260916T010000Z", "invalid_rule"],
+    ["DTSTART:20260916T010000Z\nEXDATE:20260917T010000Z", "invalid_rule"],
+    [rule("FREQ=DAILY", "DTSTART:20260916T010000"), "invalid_rule"],
+    ["DTSTART;VALUE=DATE:20260916\nRRULE:FREQ=DAILY", "invalid_rule"],
+    [rule("FREQ=DAILY", "DTSTART:00991231T000000Z"), "invalid_rule"],
+    [rule("FREQ=DAILY", "DTSTART:20260230T010000Z"), "invalid_rule"],
+    [rule("FREQ=DAILY", "DTSTART;TZID=UTC:20260916T240000"), "invalid_rule"],
+    [rule("FREQ=DAILY", "DTSTART;TZID=America/New_York:20260308T023000"), "invalid_rule"],
+    [rule("NOT_A_RULE"), "invalid_rule"],
+    [rule("=DAILY"), "invalid_rule"],
+    [rule("FREQ="), "invalid_rule"],
+    [rule("FREQ=DAILY;"), "invalid_rule"],
+    [rule("FREQ=DAILY;FREQ=WEEKLY"), "invalid_rule"],
+    [rule("freq=daily"), "invalid_rule"],
+    [rule("FREQ=DAILY;BYEASTER=0"), "invalid_rule"],
+    [rule("INTERVAL=2"), "invalid_rule"],
+    [rule("FREQ=NOTREAL"), "invalid_rule"],
+    [rule("FREQ=DAILY;INTERVAL=0"), "invalid_rule"],
+    [rule("FREQ=DAILY;INTERVAL=-1"), "invalid_rule"],
+    [rule("FREQ=DAILY;INTERVAL=9007199254740992"), "invalid_rule"],
+    [rule("FREQ=DAILY;COUNT=0"), "invalid_rule"],
+    [rule("FREQ=DAILY;COUNT=1001"), "invalid_rule"],
+    [rule("FREQ=DAILY;UNTIL=20260917T010000"), "invalid_rule"],
+    [rule("FREQ=DAILY;UNTIL=20260230T010000Z"), "invalid_rule"],
+    [rule("FREQ=DAILY;UNTIL=00991231T000000Z"), "invalid_rule"],
+    [rule("FREQ=WEEKLY;WKST=XX"), "invalid_rule"],
+    [rule("FREQ=DAILY;BYSECOND=-1"), "invalid_rule"],
+    [rule("FREQ=DAILY;BYMINUTE=60"), "invalid_rule"],
+    [rule("FREQ=DAILY;BYHOUR=9,"), "invalid_rule"],
+    [rule("FREQ=MONTHLY;BYMONTHDAY=0"), "invalid_rule"],
+    [rule("FREQ=YEARLY;BYYEARDAY=367"), "invalid_rule"],
+    [rule("FREQ=YEARLY;BYWEEKNO=+54"), "invalid_rule"],
+    [rule("FREQ=YEARLY;BYMONTH=13"), "invalid_rule"],
+    [rule("FREQ=MONTHLY;BYDAY=MO;BYSETPOS=0"), "invalid_rule"],
+    [rule("FREQ=DAILY;BYHOUR=12,12"), "invalid_rule"],
+    [rule("FREQ=MONTHLY;BYMONTHDAY=1,+1"), "invalid_rule"],
+    [rule("FREQ=DAILY;BYDAY=XX"), "invalid_rule"],
+    [rule("FREQ=MONTHLY;BYDAY=0MO"), "invalid_rule"],
+    [rule("FREQ=YEARLY;BYDAY=54MO"), "invalid_rule"],
+    [rule("FREQ=MONTHLY;BYDAY=2TU,+2TU"), "invalid_rule"],
+    [rule("FREQ=DAILY;COUNT=2;UNTIL=20261001T000000Z"), "invalid_rule"],
+    [rule("FREQ=MINUTELY;BYSECOND=0"), "invalid_rule"],
+    [rule("FREQ=HOURLY;BYDAY=MO"), "invalid_rule"],
+    [rule("FREQ=MONTHLY;BYWEEKNO=1"), "invalid_rule"],
+    [rule("FREQ=DAILY;BYYEARDAY=1"), "invalid_rule"],
+    [rule("FREQ=WEEKLY;BYMONTHDAY=1"), "invalid_rule"],
+    [rule("FREQ=WEEKLY;BYDAY=1MO"), "invalid_rule"],
+    [rule("FREQ=YEARLY;BYWEEKNO=1;BYDAY=1MO"), "invalid_rule"],
+    [rule("FREQ=MONTHLY;BYSETPOS=1"), "invalid_rule"],
+    [rule("FREQ=DAILY;BYSETPOS=1"), "invalid_rule"],
+    [rule("FREQ=DAILY;BYHOUR=9,15;BYSETPOS=3"), "invalid_rule"],
+    [rule(`FREQ=YEARLY;BYDAY=MO;BYSETPOS=${Array.from({ length: 32 }, (_, index) => index + 1).join(",")}`), "invalid_rule"],
+    [rule("FREQ=DAILY", "DTSTART;TZID=Not/A_Zone:20260916T010000"), "invalid_time_zone"],
+    [rule("FREQ=DAILY", "DTSTART;TZID=EST:20260916T010000"), "invalid_time_zone"],
+    [rule("FREQ=SECONDLY;INTERVAL=300"), "frequency_too_high"],
+    [rule("FREQ=SECONDLY;BYSECOND=0"), "frequency_too_high"],
+    [rule("FREQ=DAILY;BYSECOND=0,30"), "frequency_too_high"],
+    [
+      rule(
+        `FREQ=MONTHLY;BYMONTHDAY=${Array.from({ length: 9 }, (_, index) => index + 1).join(",")};BYHOUR=${Array.from({ length: 24 }, (_, index) => index).join(",")};BYMINUTE=${Array.from({ length: 60 }, (_, index) => index).join(",")}`,
+      ),
+      "frequency_too_high",
+    ],
+  ];
+  for (const [rrule, error] of rejected) {
+    assert.deepStrictEqual(
+      scheduleChangeFromDraft(rruleDraft(rrule)),
+      { error },
+      `官方拒绝的 RRULE 被本地放行或报错档不符：${JSON.stringify(rrule)}`,
+    );
+  }
+  assert.strictEqual(rruleIssue(rule("FREQ=DAILY")), undefined);
+  assert.strictEqual(rruleIssue(rule("FREQ=SECONDLY")), "density");
+  assert.strictEqual(rruleIssue(rule("FREQ=DAILY", "DTSTART;TZID=Not/A_Zone:20260916T010000")), "time_zone");
+
+  // dirty：行空白噪声不算修改（官方 timingFromDraft 取 RRule.expression），表达式内容变了才算。
+  const storedRrule = rule("FREQ=WEEKLY;BYDAY=MO;COUNT=3");
+  const storedItem = rruleItem(storedRrule);
+  const noisy = { ...scheduleDraft(storedItem), rrule: `\n ${storedRrule.replace("\n", " \r\n ")} \n` };
+  assert.strictEqual(scheduleDraftDiffers(noisy, storedItem), false, "只加行空白不算修改");
+  assert.strictEqual(
+    scheduleDraftDiffers({ ...scheduleDraft(storedItem), rrule: storedRrule.replace("COUNT=3", "COUNT=4") }, storedItem),
+    true,
+    "真正改了 COUNT 仍算修改",
+  );
+  assert.strictEqual(
+    scheduleDraftDiffers({ ...scheduleDraft(storedItem), rrule: "RRULE:FREQ=WEEKLY;BYDAY=MO" }, storedItem),
+    true,
+    "缺 DTSTART 的坏规则不能被当成「没改」",
+  );
+}
+console.log("schedule: RRULE 官方校验（语法 / TZID / UNTIL / 密度 / dirty） ✓");
+
+// ---------- 7d. 一次性时刻：官方 DTSTART + RRULE 路径的真实日历与 DST 边界 ----------
+{
+  const onceDraft = (date: string, time: string, timeZone: string) => ({
+    ...scheduleCreateDraft().timing,
+    repeat: "once" as const,
+    date,
+    time,
+    timeZone,
+  });
+
+  assert.deepStrictEqual(
+    scheduleChangeFromDraft(onceDraft("2099-01-01", "09:00", "Asia/Shanghai")),
+    { change: { kind: "at", at: { date: "2099-01-01", time: "09:00:00", time_zone: "Asia/Shanghai" } } },
+  );
+  assert.deepStrictEqual(
+    scheduleChangeFromDraft(onceDraft("2000-01-01", "09:00", "UTC")),
+    { change: { kind: "at", at: { date: "2000-01-01", time: "09:00:00", time_zone: "UTC" } } },
+    "未来判据留给服务端（官方 taskDraftIssue 同口径）",
+  );
+  assert.deepStrictEqual(
+    scheduleChangeFromDraft(onceDraft("2099-02-30", "09:00", "UTC")),
+    { error: "invalid_rule" },
+    "不存在的日历日期在提交前被官方 DTSTART 校验拒绝",
+  );
+  assert.deepStrictEqual(
+    scheduleChangeFromDraft(onceDraft("0099-12-31", "09:00", "UTC")),
+    { error: "invalid_rule" },
+    "官方 RRULE 的年份下限是 0100",
+  );
+  assert.deepStrictEqual(
+    scheduleChangeFromDraft(onceDraft("2026-03-08", "02:30", "America/New_York")),
+    { error: "invalid_rule" },
+    "DST 春季前跳缺口里的本地时刻不存在",
+  );
+  assert.deepStrictEqual(
+    scheduleChangeFromDraft(onceDraft("2026-03-08", "03:00", "America/New_York")),
+    { change: { kind: "at", at: { date: "2026-03-08", time: "03:00:00", time_zone: "America/New_York" } } },
+    "缺口之后的第一分钟是合法本地时刻",
+  );
+  assert.deepStrictEqual(
+    scheduleChangeFromDraft(onceDraft("2026-11-01", "01:30", "America/New_York")),
+    { change: { kind: "at", at: { date: "2026-11-01", time: "01:30:00", time_zone: "America/New_York" } } },
+    "DST 秋季重叠的本地时刻存在（服务端与 parser 取较早的一次）",
+  );
+  assert.deepStrictEqual(
+    scheduleChangeFromDraft(onceDraft("2099-01-01", "09:00", "Not/A_Zone")),
+    { error: "invalid_time_zone" },
+  );
+  assert.deepStrictEqual(
+    scheduleChangeFromDraft(onceDraft("2099-01-01", "09:00", "US/Eastern")),
+    { change: { kind: "at", at: { date: "2099-01-01", time: "09:00:00", time_zone: "US/Eastern" } } },
+    "运行时认识的别名时区被接受（规范名由服务端决定）",
+  );
+
+  // daily / weekly / cron 的时区也走官方 canonicalizeTimeZone，不再只判非空。
+  const dailyDraft = (timeZone: string) => ({
+    ...scheduleDraft(item({ kind: "daily", time: "09:00:00.000", timeZone: "UTC" })),
+    timeZone,
+  });
+  assert.deepStrictEqual(scheduleChangeFromDraft(dailyDraft("Invalid/Zone")), { error: "invalid_time_zone" });
+  assert.deepStrictEqual(scheduleChangeFromDraft(dailyDraft("+08:00")), { error: "invalid_time_zone" }, "纯偏移不是 IANA 名");
+  assert.deepStrictEqual(scheduleChangeFromDraft(dailyDraft("US/Eastern")), {
+    change: { kind: "daily", daily: { time: "09:00:00", time_zone: "US/Eastern" } },
+  });
+
+  const weeklyDraft = (timeZone: string) => ({
+    ...scheduleDraft(item({ kind: "weekly", time: "09:00:00.000", timeZone: "UTC", weekdays: [1] })),
+    timeZone,
+  });
+  assert.deepStrictEqual(scheduleChangeFromDraft(weeklyDraft("Invalid/Zone")), { error: "invalid_time_zone" });
+
+  const cronDraft = (expression: string, timeZone: string) => ({
+    ...scheduleDraft(item({ kind: "cron", expression: "0 9 * * *", timeZone: "UTC" })),
+    expression,
+    timeZone,
+  });
+  assert.deepStrictEqual(scheduleChangeFromDraft(cronDraft("0 9 * * *", "Invalid/Zone")), { error: "invalid_time_zone" });
+  assert.deepStrictEqual(
+    scheduleChangeFromDraft(cronDraft("0 9 * * 1-", "Invalid/Zone")),
+    { error: "invalid_rule", field: "dayOfWeek" },
+    "表达式语法先于时区（与 Cron.parse 的顺序一致）",
+  );
+  assert.deepStrictEqual(scheduleChangeFromDraft(cronDraft("0 9 * * 1-5", "US/Eastern")), {
+    change: { kind: "cron", cron: { expression: "0 9 * * 1-5", time_zone: "US/Eastern" } },
+  });
+
+  // 间隔文本与官方 taskDraftIssue 的 `/^[1-9]\d*$/` 同一判据：前导零 / 指数 / 0 都不行。
+  const everyDraft = (amount: string, unit: "second" | "minute" | "hour") => ({
+    ...scheduleDraft(item({ kind: "every", everySeconds: 60 })),
+    amount,
+    unit,
+  });
+  assert.deepStrictEqual(scheduleChangeFromDraft(everyDraft("01", "minute")), { error: "invalid_rule" });
+  assert.deepStrictEqual(scheduleChangeFromDraft(everyDraft("1e2", "minute")), { error: "invalid_rule" });
+  assert.deepStrictEqual(scheduleChangeFromDraft(everyDraft("9007199254740992", "second")), { error: "invalid_rule" });
+  assert.deepStrictEqual(scheduleChangeFromDraft(everyDraft("1", "second")), { error: "frequency_too_high" });
+  assert.deepStrictEqual(scheduleChangeFromDraft(everyDraft("2", "hour")), {
+    change: { kind: "every", every_seconds: 7_200 },
+  });
+
+  // 界面用的统一入口：合法返回 undefined，非法给出与提交同名的错误码。
+  assert.strictEqual(
+    scheduleTimingIssue({ ...scheduleDraft(item({ kind: "daily", time: "09:00:00.000", timeZone: "UTC" })) }),
+    undefined,
+  );
+  assert.deepStrictEqual(
+    scheduleTimingIssue({ ...scheduleCreateDraft().timing, repeat: "rrule", rrule: "RRULE:FREQ=DAILY" }),
+    { error: "invalid_rule" },
+  );
+  assert.deepStrictEqual(scheduleTimingIssue(cronDraft("0 9 * * 1-", "UTC")), {
+    error: "invalid_rule",
+    field: "dayOfWeek",
+  });
+  // 编辑时传比较基线：时间组没改就不重新校验已存规则（官方 changes.timing 短路）。
+  const badStored = item({ kind: "rrule", rrule: "RRULE:FREQ=DAILY", scheduledAt: "2026-11-07T01:00:00.000Z" });
+  assert.strictEqual(
+    scheduleTimingIssue(scheduleDraft(badStored), badStored),
+    undefined,
+    "未触碰的坏 RRULE 不阻止只改名称的保存",
+  );
+  assert.deepStrictEqual(
+    scheduleTimingIssue({ ...scheduleDraft(badStored), rrule: "RRULE:FREQ=WEEKLY" }, badStored),
+    { error: "invalid_rule" },
+    "真正改了规则才校验",
+  );
+}
+console.log("schedule: 一次性 / daily / weekly / cron 的日历、时区与 DST 边界 ✓");
+
+
 // ---------- 8. 时区清单：系统时区在最前，存的别名不许丢 ----------
 {
   const system = deviceZone();
@@ -643,6 +908,18 @@ console.log("schedule: 绝对时间文本 ✓");
     "「任务不存在」与「这次没拿到」要分开显示；`code` 只保留手动重试，不自动重发",
   );
   const editorState = read("src", "webview", "scheduleEditorState.ts");
+
+  // RRULE / 一次性校验必须消费官方原文副本，不允许另写 Intl 日历 / DST 判断。
+  const scheduleRuleSource = read("src", "shared", "scheduleRule.ts");
+  assert.match(scheduleRuleSource, /from "\.\.\/vendor\/dsh-util-time\/rrule"/);
+  assert.match(scheduleRuleSource, /from "\.\.\/vendor\/dsh-util-time\/instant"/);
+  assert.doesNotMatch(scheduleRuleSource, /Intl\.DateTimeFormat/, "不得用 Intl 重写官方 DST 判断");
+  assert.match(
+    read("src", "vendor", "dsh-util-time", "rrule.ts"),
+    /import \* as rrulePackage from 'rrule'/,
+    "rrule 的命名空间导入是唯一声明性绑定适配",
+  );
+
   assert.ok(
     /dispatchEditor\(\{ type: "catalog", item \}\)/.test(schedules) &&
       /scheduleEditorStateDirty\(state\) \? state : scheduleEditorState\(action\.item\)/.test(editorState),

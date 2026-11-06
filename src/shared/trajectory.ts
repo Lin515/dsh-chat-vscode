@@ -116,10 +116,24 @@ export interface TrajectoryRequest {
   step: number;
   /** 开帧事件的 seq（跨记录定位；流式中的请求官方缺席，本扩展用它当身份）。 */
   seq: number;
+  /**
+   * 这次请求**已提交结果**的事件 seq（官方 `RequestView.resultSeq`）。
+   *
+   * 助手请求取最终 `assistant/message` 的 seq（重试把旧 final 作废时一起清掉）；
+   * 压缩请求在收尾后取 `compaction/start` 的 seq。还在跑、以及窗口里没有最终
+   * 节点的请求没有这一项——官方同样只在 `node !== undefined` / `status !== 'running'`
+   * 时给。
+   */
+  resultSeq?: number;
   /** 请求真正开始的时刻（官方取 `step/start` 的事件时刻）。 */
   startedAt: number | null;
   /** 收尾时刻；`null` = 还在跑。 */
   completedAt: number | null;
+  /**
+   * 官方 `assistantRequest()` 的状态：最终节点存在时只看节点（中断 → `error`，
+   * 非中断 → `complete`）；没有节点时看步骤 / 轮次边界；两者都没有就是 `running`。
+   * `llm/retry` 只带诊断，**不参与状态**。
+   */
   status: "running" | "complete" | "error";
   /** 错误文案（`llm/retry` 的失败消息；`AUTH` 码下官方会抹掉文案）。 */
   error?: string;
@@ -260,6 +274,14 @@ export interface TrajectoryCell {
   toolUpdate?: TrajectoryToolUpdate;
   /** 原始内容块（官方 `TrajectorySourceBlock`；搜索索引与详情面板用）。 */
   sourceBlocks?: TrajectorySourceBlock[];
+  /**
+   * 工具结果 / 压缩摘要的**原始输出块**（官方 `TrajectoryCellProps.outputBlocks`）。
+   *
+   * 与 `sourceBlocks` 分开：前者是模型给出的输入块，这里是实际返回的块。图片 / 文件
+   * 块的附件名因此进入搜索面（`trajectory-search-index.ts` 的 `recordSources()` 逐块读
+   * `attachment.name` 与块原文），检查器也能按原始顺序看到结果块。
+   */
+  outputBlocks?: TrajectorySourceBlock[];
   /** 原始 Markdown（预览页签用）；没有就不给。 */
   previewMarkdown?: string;
   /** 这条用户消息是否开启了一个新的模型轮次。 */
@@ -323,10 +345,22 @@ export interface TrajectoryCell {
    * 工具结果的**原始 Markdown**（官方 `resultPreviewMarkdown`）。
    *
    * 官方列表里那一栏显示的是它的预览（`trajectoryPreviewText`），不是宿主截好的
-   * 摘要——宿主只存原文，截断口径在界面侧（`trajectoryDisplay.ts`）。错误结果
-   * 用 `result` 存错误码、不给这一项。
+   * 摘要——宿主只存原文，截断口径在界面侧（`trajectoryDisplay.ts`）。
+   *
+   * **正文优先**（官方 `summarizeResult()` 的判据顺序）：有非空文本块时 `result`
+   * 是空串、这一项是**第一个**非空文本块的原文；只有失败且没有正文时 `result`
+   * 才是错误码。错误结果带正文时仍显示正文（`isError` 只决定颜色/状态）。
    */
   resultPreviewMarkdown?: string;
+  /**
+   * 工具结果在会话事件里的 seq（官方 `TrajectoryCellProps.resultSeq`）。
+   *
+   * 与 `seq` 分开：调用格的生命周期跨 `tool/call` 与 `tool/result` 两个事件，
+   * 官方那条记录没有单一的 `sourceSeq`，用 `resultSeq` 指向**已提交的结果事件**
+   * （检查器据此观察 live-only 结果 / 读取那次结果）。只有结果没有调用的行两个
+   * 值相同。
+   */
+  resultSeq?: number;
   /** 工具结果没有正文可用时的语义摘要（只有图片 / 什么都没有）。 */
   resultSummary?: TrajectoryResultSummary;
   /** 工具调用 id（把助手正文里的调用与工具行连起来）。 */

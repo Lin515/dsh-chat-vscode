@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import { ChatController } from "../src/dsh/controller";
 import { HostFileAccess } from "../src/dsh/remoteFiles";
+import { createTrajectoryResultWatchManager } from "../src/dsh/trajectoryResultWatch";
 import type { HostToWebview, WebviewToHost } from "../src/shared/ipc";
 
 type ImageFrame = Extract<HostToWebview, { type: "images/resolved" }>;
@@ -13,6 +14,7 @@ interface Harness {
   viewSessions: Map<string, string>;
   readyViews: Set<string>;
   copyFailureWatermarks: Map<string, number>;
+  trajectoryResults: ReturnType<typeof createTrajectoryResultWatchManager>;
   pendingNotificationsOpen: boolean;
   viewKinds: Map<string, string>;
   pendingPanelOpens: Map<string, string>;
@@ -128,6 +130,8 @@ assert.equal(response.connectionId, pendingId);
 assert.deepEqual(response.urls, {}, "迟到结果只结算原请求，不能泄漏旧图片字节");
 console.log("image-scope-host: 在途换代后原请求结算但不回旧字节 ✓");
 
+// 该夹具绕过构造器；补齐 ready 新增的真实结果观察器，保留生产生命周期约束。
+c.trajectoryResults = createTrajectoryResultWatchManager();
 c.readyViews = new Set();
 c.copyFailureWatermarks = new Map();
 c.pendingNotificationsOpen = false;

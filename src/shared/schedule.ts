@@ -13,7 +13,9 @@
  *
  * 刻意**不做**的事：本扩展的列表行对 `cron` 显示规范表达式本身（官方的句子式描述
  * 在表达式的方言解析失败时也正是退回这个形态）。方言校验仍然做（`cronFieldError`），
- * 否则用户要等一次服务端往返才知道表达式写错了。
+ * 否则用户要等一次服务端往返才知道表达式写错了。RRULE / 一次性时刻的完整有效性
+ * 直接交给官方 `@deepseek-ai/dsh-util-time` 原文 parser（见 `./scheduleRule`），
+ * 本地不另写日历、时区或 DST 判断；未来时刻与发生时刻枚举仍由服务端定论。
  *
  * 新代管理面的纯函数（`scheduleNextRunAt` / `scheduleTargetSessionId` /
  * `scheduleInvolvesSession` / 编辑草稿与 patch 装配 / 冲突重放）与官方
@@ -21,11 +23,20 @@
  * `66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db`）：判定规则逐条保留，实现改写成本仓库的
  * 视图模型接口，不是逐字副本。**显示格式也不是逐字副本**：频率与绝对时间文本由本仓库
  * 自己拼（cron / rrule 显示规范表达式或原文、时钟固定两位 24 小时制）。与官方共享的是
- * 判定与规范化：`recordTimeZone` 与 `canonicalCronExpression` 是从官方摘录的薄适配
- * （后者在 `./cron`）。改动边界见 `docs/design-schedules.md` 的「来源与改动边界」。
+ * 判定与规范化：`recordTimeZone`、`canonicalCronExpression`、`rruleIssue` 与
+ * `localAtIssue`（后两者直接消费官方原文副本）。改动边界见
+ * `docs/design-schedules.md` 的「来源与改动边界」。
  */
 import { canonicalCronExpression } from "./cron";
 import type { ScheduleItemView, ScheduleTimingChangeView } from "./chat";
+import {
+  localAtIssue,
+  normalizedRrule,
+  rruleIssue,
+  scheduleRuleZoneIssue,
+  submittedRrule,
+  type ScheduleRuleIssue,
+} from "./scheduleRule";
 
 const SECOND_MS = 1_000;
 
@@ -529,38 +540,61 @@ export function scheduleDraft(item: ScheduleItemView): ScheduleTimingDraft {
   }
 }
 
-/** 草稿 → 线上 `change`；**不合法时返回错误码**（与 `schedule/update` 的稳定错误码同名）。 */
-export type ScheduleDraftResult =
-  | { change: ScheduleTimingChangeView }
-  | { error: "invalid_rule" | "frequency_too_high" | "invalid_time_zone"; field?: CronField };
+/** 本地草稿校验失败：错误码与 `schedule/update` / `schedule/edit` 的稳定码同名。 */
+export interface ScheduleDraftError {
+  error: "invalid_rule" | "frequency_too_high" | "invalid_time_zone";
+  /** cron 坏在哪一段（界面给字段级提示）；其它规则没有细分。 */
+  field?: CronField;
+}
+
+/** 草稿 → 线上 `change`；**不合法时返回错误码**。 */
+export type ScheduleDraftResult = { change: ScheduleTimingChangeView } | ScheduleDraftError;
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_PATTERN = /^\d{2}:\d{2}(:\d{2})?(\.\d{1,3})?$/;
+/** 官方 `taskDraftIssue` 的间隔文本：正整数、无前导零、无指数。 */
+const INTERVAL_PATTERN = /^[1-9]\d*$/;
+
+/** 官方拒绝档 → 界面 / 服务端同名错误码（`domain.ts` 的 syntax/time_zone/density 映射）。 */
+function ruleIssueError(issue: ScheduleRuleIssue): ScheduleDraftError {
+  if (issue === "time_zone") return { error: "invalid_time_zone" };
+  if (issue === "density") return { error: "frequency_too_high" };
+  return { error: "invalid_rule" };
+}
 
 /**
  * 草稿 → 提交给 `schedule/update` 的 `change`。
  *
- * 校验只做**本地判得准**的那几条（字段形态、间隔下限、cron 方言、星期非空）：
- * 「目标必须晚于现在」「时区必须被运行时认识」这类要在服务端的时钟与时区表上才有
- * 定论，本地拦一道只会把合法的输入挡掉（服务端拒绝时界面照实显示它的错误码）。
+ * RRULE 与一次性时刻直接交给官方 parser（见 `scheduleRule.ts`），与官方
+ * `taskDraftIssue` 的接受集合相同：RRULE 的两行形态、DTSTART/TZID、UNTIL、BY* 组合、
+ * BYSETPOS 与密度、DST 缺口都在提交前拦下；cron 的时区也走官方
+ * `canonicalizeTimeZone`。本地**不**判断「目标必须晚于现在」与发生时刻是否存在
+ * 未来实例——那要服务端的时钟与枚举结果，官方同样留给 Host。
  */
 export function scheduleChangeFromDraft(draft: ScheduleTimingDraft): ScheduleDraftResult {
-  if (draft.repeat === "rrule") return draft.rrule?.trim() ? { change: { kind: "rrule", rrule: draft.rrule.trim() } } : { error: "invalid_rule" };
-  if (draft.timeZone.trim() === "") return { error: "invalid_time_zone" };
+  if (draft.repeat === "rrule") {
+    const text = draft.rrule?.trim() ?? "";
+    if (text === "") return { error: "invalid_rule" };
+    const issue = rruleIssue(text);
+    if (issue !== undefined) return ruleIssueError(issue);
+    return { change: { kind: "rrule", rrule: normalizedRrule(text) ?? text } };
+  }
   const zone = draft.timeZone.trim();
   switch (draft.repeat) {
     case "once": {
       if (!DATE_PATTERN.test(draft.date) || !TIME_PATTERN.test(draft.time)) return { error: "invalid_rule" };
-      return {
-        change: {
-          kind: "at",
-          at: { date: draft.date, time: secondPrecision(draft.time), time_zone: zone },
-        },
-      };
+      const time = secondPrecision(draft.time);
+      // 官方 `taskDraftIssue` 把一次性草稿按 `DTSTART;TZID=…` + `FREQ=DAILY;COUNT=1`
+      // 交给 RRule.parse：真实日历、年份 0100–9999、TZID、DST 缺口都在那一道判。
+      const issue = localAtIssue(draft.date, time, zone);
+      if (issue !== undefined) return ruleIssueError(issue);
+      return { change: { kind: "at", at: { date: draft.date, time, time_zone: zone } } };
     }
     case "every": {
-      const amount = Number(draft.amount);
-      if (!Number.isSafeInteger(amount) || amount < 1) return { error: "invalid_rule" };
+      const amountText = draft.amount.trim();
+      if (!INTERVAL_PATTERN.test(amountText)) return { error: "invalid_rule" };
+      const amount = Number(amountText);
+      if (!Number.isSafeInteger(amount)) return { error: "invalid_rule" };
       const seconds = amount * UNIT_SECONDS_OF[draft.unit];
       // 服务端的下限是 60 秒（`MIN_EVERY_INTERVAL_SECONDS`）：本地先拦，「每 30 秒」
       // 这种输入不必走一次往返才知道不行
@@ -569,12 +603,16 @@ export function scheduleChangeFromDraft(draft: ScheduleTimingDraft): ScheduleDra
     }
     case "daily": {
       if (!TIME_PATTERN.test(draft.time)) return { error: "invalid_rule" };
+      const zoneIssue = scheduleRuleZoneIssue(zone);
+      if (zoneIssue !== undefined) return ruleIssueError(zoneIssue);
       return { change: { kind: "daily", daily: { time: secondPrecision(draft.time), time_zone: zone } } };
     }
     case "weekly": {
       if (!TIME_PATTERN.test(draft.time)) return { error: "invalid_rule" };
       const weekdays = [...new Set(draft.weekdays)].filter((day) => Number.isInteger(day) && day >= 1 && day <= 7).sort((a, b) => a - b);
       if (weekdays.length === 0) return { error: "invalid_rule" };
+      const zoneIssue = scheduleRuleZoneIssue(zone);
+      if (zoneIssue !== undefined) return ruleIssueError(zoneIssue);
       return {
         change: { kind: "weekly", weekly: { time: secondPrecision(draft.time), time_zone: zone, weekdays } },
       };
@@ -587,29 +625,62 @@ export function scheduleChangeFromDraft(draft: ScheduleTimingDraft): ScheduleDra
       // 提交原文会让服务端再改写一次，下一次读取又把「只是写法不同」当成一次修改。
       const canonical = canonicalCronExpression(expression);
       if (canonical === undefined) return { error: "invalid_rule" };
+      // `Cron.parse` 在表达式通过后还要 canonicalizeTimeZone；本地同样把无效时区
+      // 在提交前拦下，而不是等一次往返。
+      const zoneIssue = scheduleRuleZoneIssue(zone);
+      if (zoneIssue !== undefined) return ruleIssueError(zoneIssue);
       return { change: { kind: "cron", cron: { expression: canonical, time_zone: zone } } };
     }
   }
 }
 
 /**
+ * 运行时间草稿的本地校验结果（`undefined` = 可以提交）。
+ *
+ * 界面用它决定保存 / 创建按钮是否可用，并在 `field` 存在时显示 cron 的字段级提示；
+ * 实际提交仍调 `scheduleChangeFromDraft`，两者共用同一份判定。编辑时把**比较基线**
+ * 一并传入（对应官方 `taskDraftIssue(draft, changes)`）：时间那一组没被改过时**不**重新
+ * 校验已存规则，只改名称 / 指令的旧坏规则仍可保存；创建时省略 `base`，走完整校验。
+ */
+export function scheduleTimingIssue(
+  timing: ScheduleTimingDraft,
+  base?: ScheduleItemView,
+): ScheduleDraftError | undefined {
+  if (base !== undefined && !scheduleDraftDiffers(timing, base)) return undefined;
+  const built = scheduleChangeFromDraft(timing);
+  return "error" in built ? built : undefined;
+}
+
+/**
  * 草稿与已存规则是否有差异（决定要不要亮出「保存 / 取消」那一行）。
  *
  * 判据是**提交后的形态**与已存字段的比较：`once` 比的是日期与时钟（在规则时区里
- * 展开后的那两个值），`cron` 比的是官方规范式（与服务端存的是同一形态），其余种类
- * 逐字段比。拿「草稿文本」与「原始文本」比会把 `09:00` 与 `09:00:00` 这种等价写法
- * 误报成有修改；同理，`1,2,3,4,5` 与 `1-5` 是同一个 cron 规则。
+ * 展开后的那两个值），`cron` 比的是官方规范式（与服务端存的是同一形态），`rrule`
+ * 比的是官方 `RRule.expression`（只归一化行首尾空白与空行，不改表达式），其余种类
+ * 逐字段比。拿「草稿文本」与「原始文本」比会把 `09:00` 与 `09:00:00`、或只多一行
+ * 空白的 RRULE 误报成有修改；同理，`1,2,3,4,5` 与 `1-5` 是同一个 cron 规则。
  */
 export function scheduleDraftDiffers(draft: ScheduleTimingDraft, item: ScheduleItemView): boolean {
-  if (draft.repeat === "rrule") return item.kind !== "rrule" || draft.rrule?.trim() !== item.rrule;
+  if (draft.repeat === "rrule") {
+    if (item.kind !== "rrule") return true;
+    // 官方 taskDraftPatch 比较的是 timingFromDraft（合法 RRULE 取 RRule.expression）。
+    // 只做行归一化：`RRULE:` 的字段顺序、BY* 写法与大小写都不改写。
+    return submittedRrule(draft.rrule ?? "") !== submittedRrule(item.rrule ?? "");
+  }
   switch (draft.repeat) {
     case "once": {
       if (item.kind !== "at" && item.kind !== "after") return true;
       // 官方 taskDraftPatch 将当前草稿与从记录生成的草稿经过同一 timingFromDraft 后比较。
-      // 这里同样比较两边的提交形态：不能用整秒草稿对比带 .mmm 的原始时钟，
-      // 否则连刚加载的 .000 一次性任务也会被误报 dirty，进而禁用删除 / 暂停 / 运行。
+      // 一次性最终提交的是 date + 整秒 time + time_zone；不能用整秒草稿对比带 .mmm 的
+      // 原始时钟，否则连刚加载的 .000 一次性任务也会被误报 dirty，进而禁用删除 / 暂停 /
+      // 运行。也不能比较 change 结果：非法输入在两边都会折成同一个 error，反而把真正
+      // 不同的日期 / 时钟藏起来。
       const seeded = scheduleDraft(item);
-      return JSON.stringify(scheduleChangeFromDraft(draft)) !== JSON.stringify(scheduleChangeFromDraft(seeded));
+      return (
+        draft.date !== seeded.date ||
+        secondPrecision(draft.time) !== secondPrecision(seeded.time) ||
+        draft.timeZone.trim() !== seeded.timeZone.trim()
+      );
     }
     case "every": {
       if (item.kind !== "every") return true;

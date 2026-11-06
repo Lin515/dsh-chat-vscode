@@ -18,7 +18,9 @@
 - previewMarkdown 保原 markdown，全文存 input/output/thinking/schema detail。宿主仅发 attachments / emptySummary / resultSummary / promptChange / toolUpdate 等语义标记，文案在界面本地化。
 - sourceBlocks 保 type/content 与 callId/toolName/attachment.name；reasoning 改名 thinking，tool-call 的 name/arguments 保留在 content 搜索面。
 - 真用户消息 opensTurn；steering 外观 user 但不开轮，按领取落点入组。schemaDetail 捕获调用当时 Schema，不回查新目录；宿主对象身份复用字符串不代表 wire 去重。
-- 工具错误只看 isError；错误码、原文、图片 / 无输出语义分开。缺 startedAt / timeSeconds 为 null，不折成 0；状态与时间是独立事实。请求事实在 requests，行只挂 requestNumber。
+- 工具结果摘要**正文优先**（官方 `summarizeResult()`）：有非空文本块 → `result` 是空串、`resultPreviewMarkdown` 只取**第一个**非空文本块，`outputDetail` 按 `\n` 连接全部文本块（保留尾空白）；失败且没有正文才用错误码，详情是官方 `${error.name}: ${error.code}`；只有图片 / 什么都没有走界面语义。工具错误只看 `isError`；**被中断的助手记录同样置 `isError`**（只决定状态 / 颜色，正文照旧保留）。工具行的 `resultSeq` 指向已提交的结果事件；请求表也有 `resultSeq`（助手取最终 `assistant/message`，压缩取 `startSeq`，retry 作废旧 final 时清掉）。结果页通过 `useTrajectoryResult` 订阅 live 结果，不可用回退已提交内容。缺 `startedAt` / `timeSeconds` 为 null，不折成 0；状态与时间是独立事实。请求事实在 requests，行只挂 requestNumber。
+- 工具格身份来自**助手消息的 `tool-call` 块**（官方 `expandAssistant()`），独立 `tool/call` 只补开始时刻、目录与参数；同一 `callId` 的重复 `tool/call` / 重复结果更新同一格。窗口把独立调用事件切掉时，结果仍按 `callId` 落回助手块展开的行，不退化成无工具名的「只有结果」补行。工具结果 / PTC / 压缩摘要采集 `outputBlocks`，图片 / 文件附件名进入搜索面。
+- 缺 `stepStartTime` 的已结算助手行按官方 `prevAbsTime` 回退时长（上一布局条目的绝对时刻），`startedAt` 仍保持 null；不回退到助手消息或工具格时刻。
 
 user/message.data 就是 UserMessage，不包 message；system/message 与 tool/result 才有包装。tool-call 内容块身份 id，不是事件参数 callId，兼容双读时 id 优先。throughSeq 只能取 follow 开帧 snapshot.cursor，beforeSeq 随窗口推进；官方 gateway 内部切点是否更新仍未知。
 
@@ -30,6 +32,8 @@ user/message.data 就是 UserMessage，不包 message；system/message 与 tool/
 
 step/start 开助手请求并提供起点；compaction 独立占号，不因同一步 overflow 替换助手请求。累计用量最后按请求顺序累加，不按结算到达顺序。
 
+同一 `turn:step` 重复 `step/start` **只保留第一份请求**：官方装配器把它当 `update`，assistant definition 直接 `return context.state`，`startedAt` / `startSeq` / 编号 / 状态 / 首 token 都不重开。后续帧仍挂那一份请求；占位行也沿用第一次 start 的编号。
+
 显式 turn/step 无对应 start 时，结算 / attempt / retry 不借当前请求；无身份畸形帧才回退当前步。孤儿节点保自己的身份与首 token，不挂别人请求号。
 
 effectiveHeader 是最近生效的整份配置，新 start 继承；本步 header 按 locationStep 整份替换，空 / 不可读配置也失效。消息结算不等于 step 关闭，晚 header 仍可属于该步；步骤间 / 收尾后 header 仅供未来继承。
@@ -38,17 +42,19 @@ header 与结算身份分开：message.source 逐字段优先；后到 header �
 
 ### 状态与重试
 
-非中断助手结算 → complete；否则有 retry 或步骤 / 轮次边界 → error；都没有 → running。中断消息本身不是失败证据，行级中断标记另论。关闭边界补 completedAt，不覆写已有结算 / step 结束时刻。
+非中断助手结算 → complete；中断助手结算 → error；没有最终节点时步骤 / 轮次边界 → error，否则 running。**retry 只带诊断、不参与状态**（官方 `assistantRequest()` 的状态分支不看 `state.retry`）；中断消息的账本行另有 `isError` / `@interrupted`。关闭边界补 completedAt，不覆写已有结算 / step 结束时刻。
 
 turn/end.reason 仅 kind=error 提供失败证据，不从文案 / 码反推；只作用该轮最后助手请求，不污染压缩。多次 turn/end 逐条积累，非失败不撤销既有失败，最后边界推进；AUTH 清除此前 retry 文案，空失败文案也替换旧文案。
 
-llm/retry 重置请求结算时刻、诊断与身份，保首 token / 用量；诊断整份替换（AUTH 保码清文案、无码清旧码），身份只用该请求最后有效 header 兜底。账本保每次历史结算，不随请求表回溯。旧 step/end 后再 retry 的不可达边界未补官方位置索引闭合分支，不声称等价。
+llm/retry 重置请求结算时刻、诊断与身份，保首 token / 用量；状态按节点 / 边界重新判定（通常回到 running，边界已成立时仍是 error）。位置索引的 step/end / turn/end 闭合并不随 state 重置消失，step 边界优先于轮次边界。诊断整份替换（AUTH 保码清文案、无码清旧码），身份只用该请求最后有效 header 兜底。账本保每次历史结算，不随请求表回溯。
 
 session/end-seed 将边界前未结算压缩置 error，合成码 trajectory.compaction-interrupted；当前三源没有仍开压缩的边界样本，此规则仅契约回归。
 
 ### 首 token
 
-attempt / message 都读合格 stream delta，先到者胜，不取任意首帧或最小时刻。raw 仅 token delta，packed 按 time0 + Σdt 找首个非空片段；空白文本合法，字符串工具名算 token（raw 空名也合法）。缺字段 / 非字符串跳过是本地加强，不是非法输入等价。
+attempt / message 都读合格 stream delta，先到者胜，不取任意首帧或最小时刻。raw 仅 token delta，packed 按 time0 + Σdt 找首个非空片段；空白文本合法，字符串工具名算 token（raw 空名也合法）。live chunk 的合格 token 同样参与先到者胜（官方 `updateChunk()`），否则 partial 的计时与结算后的 TTFT 都会丢掉更早那份。缺字段 / 非字符串跳过是本地加强，不是非法输入等价。
+
+在跑的流按官方 `state.blocks.length > 0` 成立，**不是**「收到过任何 chunk」：`usage` / `finish` / 未知 type 不动块证据，不构成 partial。partial 的计时与官方同形：`stepStartTime` 取 `step/start`（孤儿身份为 null），`firstTokenTime` 先到者胜，`timeSeconds` 为 null；本扩展的「正在生成」占位行只在真有块证据时挂这份 `assistantMetrics`，没有流式正文行是既定差异。最终节点的 `timingRecorded` 表示计时对象存在（官方同款），缺步骤开始时刻由 `stepStartTime: null` 表达，不拿它反推「未记录」。
 
 晚 attempt 回填同身份首 token 仍空的节点与请求；不跨步、不串身份、已结算步不补运行占位。代表回归 start=1000、非 token=1100、真 token=1700、settle=2000 → TTFT=700、解码=300，不代表所有截断窗口。
 
@@ -63,7 +69,7 @@ attempt / message 都读合格 stream delta，先到者胜，不取任意首帧�
 - 整页轨迹仍保留输入区；默认展开无选择，贴底阈值 2px。运行中视图每 3 秒取数，停止取收尾，切会话重取，关闭不取。JSON 字符串帧保有意义 null。
 - 加载更早共用 loadMore，生成中重折须抄送 CarriedLiveOverlay 保正文 / 工具 / 首 token。只有按钮，无自动上滚加载；每次折全量已加载事件，不截最近 N 条。
 - trajectoryDisplay.ts 统一判据：正文优先思考；仅工具调用须无正文 / 思考且有调用，空结算为破折号。vendor 预览读取 2048，转纯文本折空白，截 512 + 省略号。
-- 搜索 AND，requestOnly 不入索引，身份 recordId；先搜索后折叠，清查询恢复折叠集合。未命中时间线压暗为 14%，索引节流 3000ms，引用不变跳过。
+- 搜索 AND，requestOnly 不入索引，身份 recordId；`result` 与 `resultPreviewMarkdown`、`outputDetail`、`sourceBlocks`、`outputBlocks` 都入索引（正文优先时原文在预览字段，工具结果因此可搜；仅图片 / 文件结果靠 outputBlocks 的附件名与块原文可搜）。先搜索后折叠，清查询恢复折叠集合。未命中时间线压暗为 14%，索引节流 3000ms，引用不变跳过。
 - 折叠轮保 system / requestOnly / 第一内容行，摘要只代表其后内容；摘要无 index、不顶轮标签、不进时间线。步骤摘要只数请求步骤 / 压缩组；调用折叠按 recordId。
 - 轮标签跳过 system / requestOnly / 轮内压缩，绝对定位不占高；首行界线 2px，表首 / 分页后不画。列宽 EN=122、ZH=96，420px 以下 50；编号不显示，标签与种类一起紧凑。摘要支持 Enter / Space。
 - 虚拟化 records>100 或有更早历史，overscan=12，估高 30；按真实布局位置排序，pinned 与窗口分段 padding。record index 不等于含摘要布局位置，DOM 行数不是总数。
@@ -72,7 +78,7 @@ attempt / message 都读合格 stream delta，先到者胜，不取任意首帧�
 
 ### 时间线
 
-vendor 提供 sequence / duration / time / actual：duration 去空闲、保并发重叠，actual 保空闲，非有限起点不入线。开关只 sequence / duration，坐标存归一化域，绘制 / 命中互逆，不混域与像素。
+vendor 提供 sequence / duration / time / actual：duration 去空闲、保并发重叠，actual 保空闲，非有限起点不入线。开关只 sequence / duration，坐标存归一化域，绘制 / 命中互逆，不混域与像素。错误色只看 `isError`：被中断的助手记录带这个标记，所以会着色；`status === "error"` 是宿主状态，不凭它推断官方颜色。
 
 左拖选区、右拖平移（轻点清选区），contextmenu 始终拦，位移<3px 为点击。滚轮锚光标 exp(deltaY*0.0015)，最小窗 sequence=4 条、其他=20ms；边缘 8%（最多 32px）平移。document 监听允许区外抬起并须清理。空白点最近记录并最小选区，条点击选中定位；Escape 清选择、双击先清选择否则复位。
 
@@ -80,7 +86,7 @@ vendor 提供 sequence / duration / time / actual：duration 去空闲、保并�
 
 ### 检查器与文案
 
-记录 / 请求双向跳转；工具→助手按 callIds，认不到不链接。请求计时有助手记录复用，否则读请求起点 / 时长 / 来源，不跨请求兜底；计时标题直达页签，边界回概述。请求选项不入搜索。
+记录 / 请求双向跳转；工具→助手按 callIds，认不到不链接。请求计时有助手记录复用，否则读请求起点 / 时长 / 来源，不跨请求兜底；计时标题直达页签，边界回概述。请求选项不入搜索。工具行与请求的 `resultSeq` 随折叠 / 适配层透传，请求结果链接只按结果 seq 精确定位，缺席才退助手记录。Result 页通过 `useTrajectoryResult` → IPC → controller 每视图观察者 → `toolResults/watch` 订阅当前结果；仅在结果页且 seq 已知时开流。`available:true` 的 null / false / 0 / 空串都原样展示；不可用则回退已提交结果，不补读历史缓存。换行、离开页签、切会话、断线和销毁清值并取消旧流；同 client 重连恢复，换 client 不沿用旧服务器的 session/seq。
 
 system diff 用 structuredPatch(context=3)，system / tools 分开比前后同类快照，相同或缺一份不显示。Schema 用调用时版本。窗口没带进「调用之前那一帧 request/header」时（跟随分页按消息对齐切，而表头不属于任何消息），宿主按需往前补页、只取其中的表头交给折叠：判据是「这条工具行之前有没有表头」，有表头即视为真缺席（那一帧目录里本来就没有这个工具名）不再往回翻；账本一行都不变（回补不进账本，否则往用户正看着的视图上方插行），聊天流的消息、分页锚点与 hasMore 同样不动。「结果在窗口里、调用在窗口外」的结果行没有工具名，仍不可用（官方同口径）。PTC code-program 行显描述、参数叫代码、有程序即使空输出也给结果页签；TypeScript / Python 只按 Schema，不猜源码。PTC 真实零样本，不把契约回归当安装验证。
 
@@ -138,7 +144,7 @@ trajectoryTexts.ts 唯一登记 zh / en，参数函数；缺时长为不可用�
 
 优化先查[组件](<../src/webview/components/Trajectory.tsx>)虚拟窗口前 `allRows = ledgerRows.map(...)` 的全量 JSX：先规划窗口，再构造可见 / pinned 行。窗口累计 CPU 可含多次调用，不能当单次耗时；long 11 个刷新窗有 12 次调用。第二优先级是完整搜索索引（long 单次 CPU 373.9ms），3 秒节流不消除执行阻塞。上述优化尚未实施，收益尚未验证。
 
-优化不得截掉来源、恢复最近 N 条窗口或新增 outputBlocks；须保完整搜索、摘要、pin 顺序、首次定位和互斥选择，再以同消费 seam 红→修→独验。历史量测不代表当前流畅、全字段等价或安装真机通过。
+优化不得截掉来源 / outputBlocks、恢复最近 N 条窗口；须保完整搜索、摘要、pin 顺序、首次定位和互斥选择，再以同消费 seam 红→修→独验。历史量测不代表当前流畅、全字段等价或安装真机通过。
 
 ### 离线复现入口
 
@@ -159,18 +165,18 @@ node build/trajectory-payload-bench.mjs --serve-browser bench-browser --port 878
 
 | 决策 | 理由 / 重评条件 |
 |---|---|
-| 流式助手只出生成占位 | 扩展 live overlay 与官方 PartialAssistant 不同，直映会重复行；重做 overlay 或上游语义变更时重评 |
+| 流式助手只出生成占位 | 扩展 live overlay 与官方 PartialAssistant 不同，直映会重复行；partial 的身份与计时已按官方喂入，重做 overlay 或上游语义变更时重评 |
 | system/message 更新随 request/header 合并 | 不单列每次提示词改写；用户需要完整修改流水时重评 |
 | turn 0 建组前改为 1 | 保系统行第一、显示顺序对应序号，与官方拼组顺序有角落差异 |
 | 更早历史只用按钮 | 与聊天页一致，不自动上滚加载；用户需求变化时重评 |
 | 无轮 / 组表头四列 | 上游对应组件未实际装配，添加会偏离可见 UI |
 | 多复位按钮、双击先清选区 | 时间线的有意超集 / 微差 |
 | 记录检查器显错误 | 官方仅请求检查器显示，本项目自定口径 |
+| 结果页纯文本 JSON | 已接通官方 live-only `toolResults/watch`，有效值用 `JSON.stringify` 显示；不搬 JsonTree，不可用时回退 `outputDetail`，不作历史结果缓存 |
 | promptDetail 不复制 config | 已在 provider/model 与选项面板，搜索面无增量 |
 | 无 AssistantToolCalls 预览入口 | 行右侧与工具行已有落点，原始内容提供跳转 |
 | 不搬 JsonTree / PTC 原始 JSON 开关 | 历史成本 850 行树 + 345 行 CSS + 564 行 Menu + 8 个不存在的主题令牌；当时收益有限，不是当前候选比例结论 |
 | 无 PTC 行号 / 高亮 | 真实受控三源 PTC 零样本，收益未确认；出现真实需求再评 |
-| 不采 outputBlocks | 与 outputDetail / resultPreviewMarkdown 重复；历史约 35k 块 / 7400 万字符，结果图片等对应形态未做 |
 | 无 RecordAttachments 组件 | SourceBlocks 保原始附件兜底；旧零样本不证明永远无需求 |
 | 不做最近 50 节点窗口 | 会损失历史与搜索语义；当前性能问题优先优化可见 / pinned JSX，再搜索，不截来源 |
 
@@ -179,5 +185,5 @@ node build/trajectory-payload-bench.mjs --serve-browser bench-browser --port 878
 - 未知 lane 默认落 0 后，背景色与实际渲染层的角落行为；零渲染 dead key 是否未来有收益。
 - subtool 的真实显示 / 跳转及 PTC 真实渲染，当前三源均无样本。
 - 官方 gateway 的 throughSeq cut-point 内部推进规则。
-- 不可达 step/end → retry、所有无 start 结算以及全部截断窗口的官方等价性。
+- 所有无 start 结算以及全部截断窗口的官方等价性；step/end / turn/end 先于 retry 的位置索引闭合已按官方 `closedBoundary()` 回归。
 - 完整工具组装链路、自然分页、真实用户拖动、VS Code 安装端 IPC：当前受控证据不覆盖这些范围。

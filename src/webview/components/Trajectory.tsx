@@ -40,7 +40,8 @@ import { SourceBlocks } from "./SourceBlocks";
 import { TrajectoryPre } from "./TrajectoryPre";
 import { TrajectorySection } from "./TrajectorySection";
 import { useTexts } from "../texts";
-import { trajectoryAssistantRequestNumber, trajectoryAssistantSummary, trajectoryCallCellIndex, trajectoryCellContent, trajectoryCellError, trajectoryCodeProgram, trajectoryGroupTitle, trajectoryRecordGenerationTime, trajectoryRecordThroughput, trajectoryRecordTotalTime, trajectoryRecordTtft, trajectoryRequestCallCounts, trajectoryRequestCells, trajectoryRowLabel, trajectoryToolUpdateParams, trajectoryTurnSummary, trajectoryUsesSourceBlocks, type TrajectoryRequestCallCounts } from "../trajectoryDisplay";
+import { trajectoryAssistantRequestNumber, trajectoryAssistantSummary, trajectoryCallCellIndex, trajectoryCellContent, trajectoryCellError, trajectoryCodeProgram, trajectoryGroupTitle, trajectoryRecordGenerationTime, trajectoryRecordThroughput, trajectoryRecordTotalTime, trajectoryRecordTtft, trajectoryRequestCallCounts, trajectoryRequestCells, trajectoryRequestResultCell, trajectoryResultText, trajectoryRowLabel, trajectoryToolUpdateParams, trajectoryTurnSummary, trajectoryUsesSourceBlocks, type TrajectoryRequestCallCounts } from "../trajectoryDisplay";
+import { useTrajectoryResult } from "../trajectoryResult";
 import { trajectoryRowPositions, trajectoryWindowPlan, VIRTUALIZATION_THRESHOLD, VIRTUAL_ROW_HEIGHT } from "../trajectoryVirtual";
 import { trajectoryCollapsibleCalls, trajectoryCollapsibleTurns, trajectoryLedgerRows } from "../trajectoryLedgerRows";
 import { useTrajectoryInteraction, type TrajectoryRequestTab } from "../trajectoryInteraction";
@@ -155,10 +156,11 @@ function tabsFor(cell: TrajectoryCell, texts: TrajectoryTexts): Tab[] {
       if (cell.inputDetail !== undefined) {
         tabs.push({ id: "payload", label: program === undefined ? texts.tabPayload : texts.codeSource });
       }
-      // **有代码程序时即使没有结果也出「结果」页签**（官方同一处的
-      // `record.cell.outputDetail || codeProgram(record.cell) !== undefined`）：
-      // PTC 调用的结果就是程序输出，官方给它留一格（跑空了的程序那一格显示「无输出」）。
-      if (cell.outputDetail !== undefined || program !== undefined) {
+      // **有代码程序或已提交结果事件时即使没有 outputDetail 也出「结果」页签**：
+      // 官方 `record.cell.outputDetail || codeProgram(record.cell) !== undefined`，本扩展
+      // 另补 `resultSeq`——只有图片 / 无正文的结果没有 outputDetail，但结果事件存在，
+      // 结果页签要能打开（live seam 或持久化回退）。
+      if (cell.outputDetail !== undefined || program !== undefined || cell.resultSeq !== undefined) {
         tabs.push({ id: "result", label: texts.tabResult });
       }
       tabs.push({ id: "schema", label: texts.tabSchema }, { id: "timing", label: texts.tabTiming });
@@ -427,6 +429,15 @@ function Inspector({
 }) {
   const tabs = useMemo(() => tabsFor(cell, texts), [cell, texts]);
   const [tab, setTab] = useState<TabId>("summary");
+  /**
+   * 结果页签的 live-only 结果（官方 `selected.cell.resultSeq` + `watchToolResult`）。
+   *
+   * 只有在**结果页签**且这一格有已提交结果事件时才订阅；切到别的页签 / 换行 / 卸载时
+   * 传 `undefined`，由 hook 释放订阅。`available:false` 时回退已提交的 `outputDetail`
+   * （不读文件、不读历史缓存）。`value` 可能是 `null` / `false` / `0` / `""`，渲染时
+   * 只判 `available`，不判 truthiness。
+   */
+  const liveResult = useTrajectoryResult(tab === "result" ? cell.resultSeq : undefined);
   const [history, setHistory] = useState<{ key: string; tab: TabId }>({ key: "", tab: "summary" });
   const resizing = useRef<{ x: number; width: number } | null>(null);
   const scale = useUiScale();
@@ -457,6 +468,16 @@ function Inspector({
   const status =
     cell.status === "running" ? texts.statusPending : cell.status === "error" ? texts.statusFailed : texts.statusCompleted;
 
+  /**
+   * 结果页签正文：
+   * - live seam 可用 → `JSON.stringify(value, null, 2)` 原样（0 / false / null / 空串都有效）；
+   * - 否则回退已提交的 `outputDetail`；没有时再用持久化的结果语义（图片计数 / 无输出）。
+   * 不用 truthiness 判 `value`，也不在回退链里读文件或历史缓存。
+   */
+  const liveResultText = tab === "result" && liveResult.available
+    ? (JSON.stringify(liveResult.value, null, 2) ?? "")
+    : undefined;
+  const resultFallback = cell.outputDetail ?? trajectoryResultText(cell, texts);
   /**
    * 各页签的正文**抽在一起**：概述页里的同名分节要显示的就是这一份内容
    * （官方 `overviewSections` 里那几节，点的也是同一个正文组件），
@@ -493,8 +514,10 @@ function Inspector({
     ) : (
       <div className="trajectory-empty">{texts.recordNoPayload}</div>
     ),
-    result: cell.outputDetail ? (
-      <TrajectoryPre text={cell.outputDetail} copyTitle={texts.copyOutput} wrapTitle={texts.wrapLines} />
+    result: liveResultText !== undefined ? (
+      <TrajectoryPre text={liveResultText} copyTitle={texts.copyOutput} wrapTitle={texts.wrapLines} />
+    ) : resultFallback !== undefined ? (
+      <TrajectoryPre text={resultFallback} copyTitle={texts.copyOutput} wrapTitle={texts.wrapLines} />
     ) : program !== undefined ? (
       /*
        * PTC 调用的「结果」那一格：**即使还没有结果也出**（官方 `detailTabs()` 的
@@ -1165,9 +1188,10 @@ function RequestInspector({
             {request.retryDelayMs === undefined
               ? null
               : row(texts.detailsRetryDelay, formatDurationMs(request.retryDelayMs, texts))}
-            {/* 反向链接：请求 → 它落点的那条账本记录（官方 `details.result` 那一行）。
-                行标签是官方的「结果」，链接文字按请求用途取官方的「助手消息」/「已压缩」；
-                **落点不变**（还是 `anchorCellForRequest` 那一条，端口也不动）。 */}
+            {/* 反向链接：请求 → 它那条**已提交结果**（官方 `details.result` 那一行）。
+                行标签是官方的「结果」，链接文字按请求用途取「助手消息」/「已压缩」；
+                落点按 `request.resultSeq` 精确找（助手最终 message / 压缩 startSeq），
+                找不到就不给，不退回助手记录。 */}
             {onOpenRecord !== undefined ? (
               <div className="trajectory-detail-row">
                 <span className="trajectory-detail-label">{texts.detailsResult}</span>
@@ -1579,13 +1603,21 @@ export function TrajectoryView({
     return records.find((cell) => cell.kind === "message") ?? records[0];
   };
   /**
+   * 请求 → 它那条**已提交结果**（官方 `selectedRequestResultTemplate`）：
+   * `resultSeq` 已知时找 `cell.seq === resultSeq` 的记录（助手最终消息 / 压缩 startSeq）；
+   * 找不到就**不给链接**，不退回助手记录——那会点开与这次请求结果无关的行。
+   * `resultSeq` 缺席（还在跑 / 没有最终节点）时才用助手记录回退。
+   */
+  const resultCellForRequest = (entry: TrajectoryRequest): TrajectoryCell | undefined =>
+    trajectoryRequestResultCell(requestCellsAll, entry, assistantForRequest(entry));
+  /**
    * 请求 → 它在账本里的落点（请求面板的「这次请求的记录」那条链接）。
    * 找不到就不给这条链接。
    */
-  const anchorForRequest = (entry: TrajectoryRequest): (() => void) | undefined => {
-    const anchor = anchorCellForRequest(entry);
-    if (anchor === undefined) return undefined;
-    return () => port.openRecord(anchor.index);
+  const resultForRequest = (entry: TrajectoryRequest): (() => void) | undefined => {
+    const result = resultCellForRequest(entry);
+    if (result === undefined) return undefined;
+    return () => port.openRecord(result.index);
   };
   /**
    * 选中的请求在**这一份模型**里还找得到吗（会话切换 / 分页会换掉整份请求表）。
@@ -2152,7 +2184,7 @@ export function TrajectoryView({
             width={inspectorWidth}
             onWidth={setInspectorWidth}
             onClose={() => port.clearSelection()}
-            onOpenRecord={anchorForRequest(selectedRequestInfo)}
+            onOpenRecord={resultForRequest(selectedRequestInfo)}
             initialTab={requestTab}
           />
         ) : null}

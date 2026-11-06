@@ -31,8 +31,9 @@ export interface TrajectoryTimelineSpan {
   width: number;
   startedAt: number | null;
   timeSeconds: number | null;
-  /** 官方判据：`isError === true`。**助手行从不置这个字段**——被中断 / 收尾失败的
-   *  助手条不该被涂成错误色（曾经按 `status === "error"` 判，把它们全涂红了）。 */
+  /** 官方判据：`isError === true`。被中断的助手记录也带这个标记（官方
+   *  `expandAssistant()` 同款），与工具失败一样涂错误色；`status === "error"`
+   *  是宿主的状态事实，不能拿它反推官方着色。 */
   error: boolean;
   /** 助手记录的 TTFT / 解码时长（ms），tooltip 用。 */
   ttftMs: number | null;

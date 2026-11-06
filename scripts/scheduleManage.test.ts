@@ -43,6 +43,7 @@ import {
   schedulePatchFromWire,
   scheduleTargetView,
 } from "../src/dsh/scheduleView";
+import { scheduleProjectChoices, scheduleProjectsFromWire } from "../src/shared/scheduleProjects";
 import { scheduleNextOpId, scheduleResetOpIds, scheduleResultSettles } from "../src/webview/scheduleOps";
 import { initialState, reducer } from "../src/webview/state";
 
@@ -769,5 +770,134 @@ console.log("scheduleManage: 界面接线 ✓");
   }
 }
 console.log("scheduleManage: 文案 ✓");
+
+// ---------- 16. 创建目录候选：注册 Workspace、会话 cwd 回退、去重与空值语义 ----------
+{
+  // 注册表在前、会话 cwd 只补没出现过的；Windows 两种分隔符按 workspacePathKey 视为
+  // 同一拼写（不转小写、不消 `.` / `..`）。空路径不是候选，空标题退回路径。
+  const registered = [
+    { path: "D:\\work\\default", title: "default-workspace" },
+    { path: "D:\\work\\docs", title: "文档" },
+    { path: "D:/work/docs", title: "重复注册" },
+    { path: "", title: "空路径" },
+    { path: "D:\\work\\plain" },
+  ];
+  const choices = scheduleProjectChoices(registered, [
+    "D:/work/docs",
+    "D:\\work\\from-session",
+    "",
+    undefined,
+    "D:/work/plain",
+  ]);
+  assert.deepEqual(
+    choices.items,
+    [
+      { value: "D:\\work\\default", label: "default-workspace" },
+      { value: "D:\\work\\docs", label: "文档" },
+      { value: "D:\\work\\plain", label: "D:\\work\\plain" },
+      { value: "D:\\work\\from-session", label: "D:\\work\\from-session" },
+    ],
+    "已注册目录即使还没有会话也在候选里；会话 cwd 只作回退且不重复",
+  );
+  assert.equal(choices.defaultCwd, "D:\\work\\default", "默认 Workspace 优先于注册表首项");
+
+  // 没有默认标题时取注册表第一条；没有注册表时默认目录是空串（服务端默认），不是首个会话 cwd。
+  const firstOnly = scheduleProjectChoices([{ path: "/b", title: "B" }, { path: "/a", title: "A" }], []);
+  assert.deepEqual(firstOnly.items, [
+    { value: "/b", label: "B" },
+    { value: "/a", label: "A" },
+  ]);
+  assert.equal(firstOnly.defaultCwd, "/b");
+  assert.equal(scheduleProjectChoices(undefined, ["/w"]).defaultCwd, "");
+  assert.deepEqual(
+    scheduleProjectChoices(undefined, ["/w"]).items,
+    [{ value: "/w", label: "/w" }],
+    "旧服务端没有注册表：退回会话 cwd",
+  );
+  assert.deepEqual(
+    scheduleProjectChoices([], ["/w"]).items,
+    [{ value: "/w", label: "/w" }],
+    "注册表为空也不隐藏会话里真实用过的 cwd",
+  );
+
+  // `undefined` = 还没有权威注册表；`[]` = 明确为空；坏条目逐条丢弃。
+  assert.equal(scheduleProjectsFromWire(undefined), undefined);
+  assert.equal(scheduleProjectsFromWire(null), undefined, "null 是清空（没有权威注册表），不是空表");
+  assert.deepEqual(scheduleProjectsFromWire([]), []);
+  assert.deepEqual(scheduleProjectsFromWire([{ path: "/a" }, { path: "/a" }, { path: "" }, { path: 42 }]), [
+    { path: "/a" },
+  ]);
+  assert.deepEqual(scheduleProjectsFromWire([{ path: "/t", title: 7 }]), [{ path: "/t" }]);
+  assert.deepEqual(
+    scheduleProjectChoices([{ path: "/x", title: "default-workspace" }], [], "默认工作区").items,
+    [{ value: "/x", label: "默认工作区" }],
+    "自动标题按调用方给的显示名渲染（官方 workspaceDisplayTitle 口径）",
+  );
+
+  const chat = read("src", "shared", "chat.ts");
+  assert.ok(/scheduleProjects\?: ScheduleProjectView\[\]/.test(chat), "状态里登记注册表候选字段");
+  assert.ok(/export interface ScheduleProjectView/.test(chat), "候选行的形状在共享类型里");
+
+  const controller = read("src", "dsh", "controller.ts");
+  assert.ok(
+    /function workspaceTitle\(value: \{ workspaceId\?: unknown; title\?: unknown \}/.test(controller) &&
+      /workspaceTitleEntries\(frame\?\.value\?\.items\)/.test(controller) &&
+      /this\.workspaceTitles\.set\(row\.workspaceId, workspaceTitle\(frame\.workspace\) \?\? ""\)/.test(controller),
+    "注册表标题单独投影（不改 workspaces 行的既有形状），候选按官方 Workspace 标题显示",
+  );
+  assert.ok(/private scheduleProjectsView\(\): ScheduleProjectView\[\] \| undefined/.test(controller), "宿主把注册表折成候选");
+  assert.ok(
+    /const rows: ScheduleProjectView\[\] = this\.workspaces\.map\(\(row\) => \{/.test(controller) &&
+      /return scheduleProjectsFromWire\(rows\);/.test(controller),
+    "宿主候选复用共享收窄（空路径 / 重复 / 空标题同一套判据）",
+  );
+  assert.ok(
+    /const generation = \(this\.workspaceGeneration \+= 1\);/.test(controller) &&
+      /if \(generation !== this\.workspaceGeneration\) return;/.test(controller) &&
+      /this\.workspaceGeneration \+= 1;\s*this\.controlHandle = undefined;/.test(controller),
+    "旧连接世代的迟到注册表帧整帧丢弃（取消句柄挡不住已排队的回调）",
+  );
+  assert.ok(
+    /private emitScheduleProjects\(\): void \{\s*this\.emitAll\(\{ type: "patch", patch: \{ scheduleProjects: this\.scheduleProjectsView\(\) \} \}\);/.test(
+      controller,
+    ),
+    "候选按全局 patch 广播（正在编辑的表单实时刷新）",
+  );
+  assert.ok(/scheduleProjects: this\.scheduleProjectsView\(\),/.test(controller), "首帧快照也带候选");
+  assert.ok(
+    /frame\?\.type === "order" && Array\.isArray\(frame\.workspaceIds\)/.test(controller) &&
+      /if \(registryChanged\) this\.emitScheduleProjects\(\);/.test(controller),
+    "baseline / upsert / remove / order 都重推候选（顺序跟注册表）",
+  );
+  assert.ok(
+    /this\.workspaceRegistryKnown = false;\s*this\.emitScheduleProjects\(\);/.test(controller),
+    "连接清理时清空注册表并让界面退回会话 cwd 回退",
+  );
+
+  const schedules = read("src", "webview", "components", "Schedules.tsx");
+  assert.ok(/useScheduleProjects\(\)/.test(schedules), "面板订阅注册表候选");
+  assert.ok(
+    (schedules.match(/projects=\{projects\}/g) ?? []).length >= 2,
+    "新建卡与编辑行都把候选交给编辑器",
+  );
+  const editor = read("src", "webview", "components", "ScheduleEditor.tsx");
+  assert.ok(/projects\?: readonly ScheduleProjectView\[\]/.test(editor), "编辑器接收注册表候选");
+  assert.ok(
+    /scheduleProjectChoices\(projects, sessions\.map\(\(session\) => session\.cwd\), texts\.scheduleDefaultWorkspace\)/.test(editor),
+    "候选合并 / 去重 / 默认目录复用共享纯函数，不在组件里另写",
+  );
+  assert.ok(/directories\.defaultCwd/.test(editor), "从会话目标切到新建目标时用注册表默认目录");
+
+  const store = read("src", "webview", "scheduleProjects.ts");
+  assert.ok(/scheduleProjectsFromWire\(state\?\.scheduleProjects\)/.test(store), "首帧快照收窄候选");
+  assert.ok(
+    /hasOwnProperty\.call\(patch, "scheduleProjects"\)/.test(store),
+    "只有 patch 真的带这个键才改（null 清空、缺键不动）",
+  );
+  assert.ok(/message\.type === "images\/scope"/.test(store), "执行世界换代清掉上一条连接的候选");
+  assert.ok(/useSyncExternalStore/.test(store), "候选用专用 store 订阅，不混进会话状态机");
+}
+console.log("scheduleManage: 创建目录候选 ✓");
+
 
 console.log("\nscheduleManage: all assertions passed");

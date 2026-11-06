@@ -119,4 +119,31 @@ console.log("projectionStore: truncate 丢掉比 cut 新的行 ✓");
 }
 console.log("projectionStore: values / clear ✓");
 
+// ---------- 8. seqOf：回执读取与值来自同一行，清空时同步消失 ----------
+
+{
+  const store = new ProjectionStore();
+  assert.strictEqual(store.seqOf("inbox"), undefined, "缺键不能伪造已观察水位");
+  store.apply("inbox", {}, undefined);
+  assert.strictEqual(store.seqOf("inbox"), undefined, "无水位值不能凭空成为零水位回执证据");
+  assert.strictEqual(store.apply("inbox", {}, 0), true, "真实零水位仍能覆盖无水位值");
+  assert.strictEqual(store.seqOf("inbox"), 0, "真实零水位不能当成缺失");
+  store.apply("inbox", {}, 8);
+  store.apply("inbox", { stale: true }, 7);
+  assert.strictEqual(store.seqOf("inbox"), 8, "被拒绝的旧值不能推进或倒退回执水位");
+  store.apply("inbox", {}, undefined);
+  assert.strictEqual(store.seqOf("inbox"), 8, "旧通道无水位更新仍保留原水位");
+  store.seed({ asOfSeq: 9, values: { inbox: {} } });
+  assert.strictEqual(store.seqOf("inbox"), 9, "baseline 水位与入队值一并播种");
+  store.truncate(8);
+  assert.strictEqual(store.seqOf("inbox"), undefined, "truncate 后不得残留确认水位");
+  store.apply("inbox", {}, 10);
+  store.seed({ asOfSeq: 11, values: {} });
+  assert.strictEqual(store.seqOf("inbox"), undefined, "baseline 缺键清值也清水位");
+  store.apply("inbox", {}, 12);
+  store.clear();
+  assert.strictEqual(store.seqOf("inbox"), undefined, "换连接清空时不继承旧服务器水位");
+}
+console.log("projectionStore: seqOf 与值及生命周期同步 ✓");
+
 console.log("\nprojectionStore: all assertions passed");

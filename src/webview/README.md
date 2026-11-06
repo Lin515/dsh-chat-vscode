@@ -21,6 +21,7 @@ React / 浏览器环境，不使用 Node API。上层边界见[源码导航](<..
 - [trajectoryDisplay.ts](<trajectoryDisplay.ts>) — 行、组标题、工具结果与轮摘要的显示文字。
 - [trajectoryTimeline.ts](<trajectoryTimeline.ts>) — 官方时间线投影到归一化域。
 - [trajectoryVendor.ts](<trajectoryVendor.ts>) — vendor 形状与稳定记录身份适配。
+- [trajectoryResult.ts](<trajectoryResult.ts>) — 结果页 live 观察 hook；序号 / watchId / 连接隔离，可用性与合法空 JSON 值分开。
 - [trajectoryPromptDiff.ts](<trajectoryPromptDiff.ts>) — 系统提示词 / 工具目录行级差分。
 - [trajectoryPre.ts](<trajectoryPre.ts>) — 原文换行偏好，只在用户切换时写存储。
 - [trajectoryLedgerRows.ts](<trajectoryLedgerRows.ts>) — 查询优先折叠、摘要与工具隐藏的共享行投影。
@@ -87,6 +88,7 @@ React / 浏览器环境，不使用 Node API。上层边界见[源码导航](<..
 - [attachIntake.ts](<attachIntake.ts>) — drop / paste 字节通道，真路径归宿主。
 - [attachmentOpen.ts](<attachmentOpen.ts>) — 单击打开附件的 IPC 分派与可点判据。
 - [pastedImageNames.ts](<pastedImageNames.ts>) — 粘贴图片的会话内编号名（图N / imageN）。
+- [scheduleProjects.ts](<scheduleProjects.ts>) — 注册项目候选的独立 bridge store；保持缺失、清空与已知空表的区别。
 - [jobObserve.ts](<jobObserve.ts>) — 观察身份与重连锚点的输出累积。
 - [jobsKill.ts](<jobsKill.ts>) — armed → pending 停止状态机。
 - [scheduleOps.ts](<scheduleOps.ts>) — 自动化任务操作的结算账本：webview 生命周期内唯一、单调递增的操作标识与「这一帧是否结算当前这次等待」（迟到帧、别的行、别的操作一律不结算）。

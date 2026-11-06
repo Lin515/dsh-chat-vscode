@@ -295,6 +295,15 @@ function pendingOf(frames: Captured[], viewId: string): PendingMessageView[] | u
   return undefined;
 }
 
+/** 这一路帧里有没有任何一帧把回显画成失败（用于「全程不许出现红行」）。 */
+function failedEchoFrames(frames: Captured[], viewId: string): Captured[] {
+  return frames.filter(({ target, frame }) => {
+    if (target !== viewId || frame.type !== "patch") return false;
+    const pending = (frame.patch as { pendingMessages?: PendingMessageView[] } | undefined)?.pendingMessages;
+    return pending?.some((entry) => entry.status === "failed") === true;
+  });
+}
+
 /** 从一帧 `state` 里取快照（首帧 / 建会话后那一份）。 */
 function stateOf(frames: Captured[], viewId: string): Record<string, any> | undefined {
   const frame = lastFrame(frames, viewId, "state");
@@ -367,6 +376,136 @@ async function waitFor(check: () => boolean, tries = 50): Promise<void> {
     await new Promise((resolve) => setImmediate(resolve));
   }
   assert.ok(check(), "等待条件超时");
+}
+
+/** 测试侧的域 / 控制器私有面（只读或复用既有入口，不改实现）。 */
+interface ScopeInternals {
+  sessionId: string;
+  running: boolean;
+  adapter?: {
+    noteInboxProjection(value: unknown, seq: number | undefined): void;
+    flushAdmittedSubmissions(): void;
+    submissionReceipts?(): Map<string, unknown>;
+  };
+}
+interface SubmissionRecordInternals {
+  at: number;
+  settled?: boolean;
+  receiptClient?: unknown;
+  receipt?: unknown;
+}
+interface ControllerInternals {
+  viewSessions: Map<string, string>;
+  scopes: Map<string, ScopeInternals>;
+  submissions: Map<string, SubmissionRecordInternals>;
+  client: unknown;
+  openScopeFollow(scope: ScopeInternals): void;
+  settleSubmissionRecord(rpcId: string): void;
+}
+
+function internals(c: unknown): ControllerInternals {
+  return c as ControllerInternals;
+}
+
+function scopeOfView(c: unknown, viewId: string): ScopeInternals | undefined {
+  const inner = internals(c);
+  const sessionId = inner.viewSessions.get(viewId);
+  return sessionId === undefined ? undefined : inner.scopes.get(sessionId);
+}
+
+/** 一帧控制流 inbox 投影（与真实 `session/control` 的 projection 帧同形）。 */
+function pushInboxProjection(
+  c: unknown,
+  client: ReturnType<typeof fakeClient>,
+  seq: number | undefined,
+  value: Record<string, unknown[]> = { "next-turn": [], "next-step": [] },
+): void {
+  const scope = scopeOfView(c, "v1");
+  if (!scope) return;
+  client.followers.control?.({
+    type: "projection",
+    sessionId: scope.sessionId,
+    key: "inbox",
+    value,
+    ...(seq === undefined ? {} : { seq }),
+  });
+}
+
+/** 一条 durable 用户消息被 Host 承认（带 rpcId）。 */
+function userMessageOf(rpcId: string, text: string, seq: number): unknown {
+  return {
+    type: "event",
+    event: {
+      type: "user/message",
+      seq,
+      time: Date.now(),
+      surfaceOp: "append",
+      data: {
+        id: `m-${rpcId}`,
+        role: "user",
+        content: [{ type: "text", text }],
+        source: { kind: "user-rpc", rpcId },
+      },
+    },
+  };
+}
+
+/** 一条 durable 队列帧（插入或领取）。 */
+function inboxSpliceOf(seq: number, data: Record<string, unknown>): unknown {
+  return { type: "event", event: { type: "agent/inbox/spliced", seq, time: Date.now(), data } };
+}
+
+/** 收件箱里的一条用户消息（`inbox` 投影 / splice 共用的形状）。 */
+function inboxMessage(rpcId: string, text: string): Record<string, unknown> {
+  return {
+    id: `q-${rpcId}`,
+    source: { kind: "user", rpcId },
+    content: [{ type: "text", text }],
+  };
+}
+
+/** 一条 durable 轮次收尾。 */
+function turnEndOf(seq: number, reason: Record<string, unknown> = { kind: "error" }): unknown {
+  return { type: "event", event: { type: "turn/end", seq, time: Date.now(), data: { turn: 1, reason } } };
+}
+
+/**
+ * 准备一次「运行中排队发送」的本地提交（无回显）并让它在收件箱里留下回执。
+ *
+ * 第一条消息用来把窗口绑上真会话；随后置 running，第二条按 queue 提交（`beginSend`
+ * 不建回显），再推入队 splice 生成回执。返回的 `requestId` 就是这条排队提交。
+ */
+async function queueSendWithReceipt(
+  text: string,
+  withSplice = true,
+): Promise<{
+  c: ReturnType<typeof makeController>["c"];
+  client: ReturnType<typeof fakeClient>;
+  frames: Captured[];
+  scope: ScopeInternals;
+  requestId: string;
+}> {
+  const { c, frames, client } = makeController();
+  c.bindView("v1");
+  await c.handle({ type: "send", text: "第一条", attachments: [], gesture: "enter" }, "v1");
+  client.followers.session?.(userMessageOf(String(client.prompts[0]?.requestId), "第一条", 1));
+  const scope = scopeOfView(c, "v1");
+  assert.ok(scope, "前置：窗口已绑上会话");
+  scope.running = true;
+  await c.handle({ type: "send", text, attachments: [], gesture: "enter" }, "v1");
+  const requestId = String(client.prompts[1]?.requestId);
+  assert.ok(requestId, "前置：排队提交已发出");
+  assert.strictEqual(c.draftOf("v1"), "", "前置：提交那一刻正文已清空");
+  if (withSplice) {
+    client.followers.session?.(
+      inboxSpliceOf(9, {
+        target: "next-turn",
+        start: 0,
+        inserted: [inboxMessage(requestId, text)],
+      }),
+    );
+  }
+  return { c, client, frames, scope, requestId };
 }
 
 console.log("pendingEcho: 用户消息乐观回显（驱动真控制器，offline stub）");
@@ -709,6 +848,8 @@ console.log("pendingEcho: 用户消息乐观回显（驱动真控制器，offlin
   });
   push(10, "turn/start", { turn: 1 });
   push(11, "agent/inbox/spliced", { target: "next-turn", start: 0, removedCount: 1 });
+  // 投影水位追上领取帧（官方 retireAdmittedSubmission 的放行条件）
+  pushInboxProjection(c, client, 11);
   push(12, "user/message", {
     content: [{ type: "text", text: "正常那条" }],
     source: { kind: "user-rpc", rpcId: requestId },
@@ -1140,6 +1281,474 @@ console.log("pendingEcho: 用户消息乐观回显（驱动真控制器，offlin
   );
 }
 console.log("pendingEcho: 无回显的 lost 把正文与附件还原到原会话输入框（重复/迟到/先到回执只还原一次）✓");
+
+// ---------- 三之十、inbox 投影 / 重连 / 身份边界（官方 replaceWindow + observeSubmissionInbox） ----------
+{
+  // A) 开窗截点覆盖到的 receipt = Host 已持有：即使窗口里没有 durable 行、且它已被领取，
+  //    也只收显，不判失败，不回填草稿。
+  const { c, frames, client } = makeController();
+  c.bindView("v1");
+  await c.handle({ type: "send", text: "cut 历史外那条", attachments: [], gesture: "enter" }, "v1");
+  const requestId = String(client.prompts[0]?.requestId);
+  const push = client.followers.session;
+  assert.ok(push, "前置：跟随流回调在");
+  push(
+    inboxSpliceOf(9, {
+      target: "next-turn",
+      start: 0,
+      inserted: [inboxMessage(requestId, "cut 历史外那条")],
+    }),
+  );
+  push(inboxSpliceOf(10, { target: "next-turn", start: 0, removedCount: 1 }));
+  const scope = scopeOfView(c, "v1");
+  assert.ok(scope, "前置：会话域在");
+  internals(c).openScopeFollow(scope);
+  assert.strictEqual(
+    scope.adapter?.submissionReceipts?.().has(requestId),
+    true,
+    "前置：重连后的适配器接上了截点前回执",
+  );
+  const afterReconnect = client.followers.session;
+  assert.ok(afterReconnect, "前置：重连后的跟随流回调在");
+  frames.length = 0;
+  const nativeBefore = nativeErrors.length;
+  afterReconnect({
+    type: "snapshot",
+    header: { version: 4, id: scope.sessionId, createdAt: 0 },
+    cursor: 10,
+    hasMore: false,
+    records: [],
+    projections: {
+      asOfSeq: 10,
+      // 仍排在队列里也要按 Host 已持有收显（官方 pending=true 的分支）
+      values: { inbox: { "next-turn": [inboxMessage(requestId, "cut 历史外那条")], "next-step": [] } },
+    },
+  });
+  assert.deepStrictEqual(c.pendingEchoesOfView("v1"), [], "截点之前的 receipt 按 Host 已持有收显");
+  assert.strictEqual(
+    scope.adapter?.submissionReceipts?.().has(requestId),
+    false,
+    "已按截点收显的 rpcId 不被快照 inbox 重新补成回执",
+  );
+  assert.deepStrictEqual(failedEchoFrames(frames, "v1"), [], "不许把 Host 已持有的那条改判成失败");
+  assert.strictEqual(c.draftOf("v1"), "", "收显不回填草稿");
+  assert.strictEqual(nativeErrors.length, nativeBefore, "也不弹原生失败提示");
+
+  // 后来的领取 / 轮次边界也不许把已收显的这条翻出来
+  afterReconnect(inboxSpliceOf(11, { target: "next-turn", start: 0, removedCount: 1 }));
+  afterReconnect(turnEndOf(12));
+  assert.deepStrictEqual(failedEchoFrames(frames, "v1"), [], "后续边界仍不许翻案");
+  assert.strictEqual(nativeErrors.length, nativeBefore, "也不补弹提示");
+  console.log("  cut 接受历史外 receipt、不判失败 ✓");
+}
+
+{
+  // B) 漏收入队 splice：实时 inbox 投影补位，claim + turn/end 仍能把无回显的队列正文还回输入框。
+  const { c, client, requestId } = await queueSendWithReceipt("实时补位那条");
+  const nativeBefore = nativeErrors.length;
+  pushInboxProjection(c, client, 10, {
+    "next-turn": [inboxMessage(requestId, "实时补位那条")],
+    "next-step": [],
+  });
+  client.followers.session?.(inboxSpliceOf(11, { target: "next-turn", start: 0, removedCount: 1 }));
+  client.followers.session?.(turnEndOf(12));
+  assert.strictEqual(c.draftOf("v1"), "实时补位那条", "投影补出的回执照样能判 lost 并把正文还回输入框");
+  assert.strictEqual(nativeErrors.length, nativeBefore + 1, "没有回显时按老口径弹一次原生提示");
+  assert.deepStrictEqual(c.pendingEchoesOfView("v1"), [], "排队发送本来就没有回显");
+  console.log("  实时 inbox 投影补位 → 无回显 lost 回填 ✓");
+}
+
+{
+  // C) 漏收入队 splice：重连快照的 inbox 同样补位。
+  const { c, client, scope, requestId } = await queueSendWithReceipt("快照补位那条", false);
+  internals(c).openScopeFollow(scope);
+  const push = client.followers.session;
+  assert.ok(push, "前置：重连后的跟随流回调在");
+  const nativeBefore = nativeErrors.length;
+  push({
+    type: "snapshot",
+    header: { version: 4, id: scope.sessionId, createdAt: 0 },
+    cursor: 10,
+    hasMore: false,
+    records: [],
+    projections: {
+      asOfSeq: 10,
+      values: { inbox: { "next-turn": [inboxMessage(requestId, "快照补位那条")], "next-step": [] } },
+    },
+  });
+  push(inboxSpliceOf(11, { target: "next-turn", start: 0, removedCount: 1 }));
+  push(turnEndOf(12));
+  assert.strictEqual(c.draftOf("v1"), "快照补位那条", "快照 inbox 补出的回执也能判 lost 并回填");
+  assert.strictEqual(nativeErrors.length, nativeBefore + 1, "没有回显时提示一次");
+  console.log("  快照 inbox 补位 → 无回显 lost 回填 ✓");
+}
+
+{
+  // D) inbox 投影里出现某条，不收 chat 回显；它仍在等 durable 承认（或失败）。
+  const { c, frames, client } = makeController();
+  c.bindView("v1");
+  await c.handle({ type: "send", text: "inbox 不收 chat", attachments: [], gesture: "enter" }, "v1");
+  const requestId = String(client.prompts[0]?.requestId);
+  pushInboxProjection(c, client, 10, {
+    "next-turn": [inboxMessage(requestId, "inbox 不收 chat")],
+    "next-step": [],
+  });
+  assert.strictEqual(
+    c.pendingEchoesOfView("v1")[0]?.status,
+    "sending",
+    "inbox 里出现不是 chat 回显的收显凭据（官方只收 queued echo）",
+  );
+  assert.deepStrictEqual(failedEchoFrames(frames, "v1"), [], "更不许当场画失败");
+  client.followers.session?.(inboxSpliceOf(11, { target: "next-turn", start: 0, removedCount: 1 }));
+  client.followers.session?.(turnEndOf(12));
+  assert.strictEqual(
+    c.pendingEchoesOfView("v1")[0]?.status,
+    "failed",
+    "真 lost 时才按失败口径收场",
+  );
+  console.log("  inbox 存在不收 chat、真 lost 才收 ✓");
+}
+
+{
+  // E) durable 承认先到、投影水位还没追上领取：先不收显；投影到达时先 queue patch 再收显。
+  const { c, frames, client } = makeController();
+  c.bindView("v1");
+  await c.handle({ type: "send", text: "等水位那条", attachments: [], gesture: "enter" }, "v1");
+  const requestId = String(client.prompts[0]?.requestId);
+  const push = client.followers.session;
+  assert.ok(push, "前置：跟随流回调在");
+  push(inboxSpliceOf(9, { target: "next-turn", start: 0, inserted: [inboxMessage(requestId, "等水位那条")] }));
+  push(inboxSpliceOf(11, { target: "next-turn", start: 0, removedCount: 1 }));
+  pushInboxProjection(c, client, 10);
+  push(userMessageOf(requestId, "等水位那条", 12));
+  assert.strictEqual(
+    c.pendingEchoesOfView("v1")[0]?.status,
+    "sending",
+    "承认先到但投影水位 10 < 领取水位 11：继续等（官方 retireAdmittedSubmission）",
+  );
+
+  frames.length = 0;
+  pushInboxProjection(c, client, 11);
+  assert.deepStrictEqual(c.pendingEchoesOfView("v1"), [], "投影追上领取后收显");
+  const queueAt = frames.findIndex(
+    ({ target, frame }) =>
+      target === "v1" && frame.type === "patch" && "queueItems" in ((frame.patch as object | undefined) ?? {}),
+  );
+  const retireAt = frames.findIndex(
+    ({ target, frame }) =>
+      target === "v1" &&
+      frame.type === "patch" &&
+      Array.isArray((frame.patch as { pendingMessages?: unknown[] } | undefined)?.pendingMessages) &&
+      ((frame.patch as { pendingMessages: unknown[] }).pendingMessages.length === 0),
+  );
+  assert.ok(queueAt >= 0, "投影到达时先发队列 patch");
+  assert.ok(retireAt >= 0, "随后才发收显 patch");
+  assert.ok(queueAt < retireAt, `先 queue patch 再收显（queue=${queueAt} retire=${retireAt}）`);
+  assert.deepStrictEqual(failedEchoFrames(frames, "v1"), [], "等水位不是失败");
+  console.log("  durable 承认等水位、先 queue patch 再收 ✓");
+}
+
+{
+  // F) 投影没有水位：不补位、不造回执；后续 claim/turn/end 因此不产生假的失败。
+  const { c, frames, client } = makeController();
+  c.bindView("v1");
+  await c.handle({ type: "send", text: "无水位那条", attachments: [], gesture: "enter" }, "v1");
+  const requestId = String(client.prompts[0]?.requestId);
+  pushInboxProjection(c, client, undefined, {
+    "next-turn": [inboxMessage(requestId, "无水位那条")],
+    "next-step": [],
+  });
+  assert.strictEqual(c.pendingEchoesOfView("v1")[0]?.status, "sending", "无水位不补回执，也不收 chat");
+  client.followers.session?.(inboxSpliceOf(11, { target: "next-turn", start: 0, removedCount: 1 }));
+  client.followers.session?.(turnEndOf(12));
+  assert.strictEqual(
+    c.pendingEchoesOfView("v1")[0]?.status,
+    "sending",
+    "没有回执就没有失败判据（宁可漏判，不误判）",
+  );
+  assert.deepStrictEqual(failedEchoFrames(frames, "v1"), [], "不许凭未知水位造一条失败");
+  assert.strictEqual(c.draftOf("v1"), "", "也不回填");
+  console.log("  未知水位不补位、不误判 ✓");
+}
+
+{
+  // G) 外来 rpcId：不建本地回执、不回填、不弹本机原生错误；本机 chat 回显也不被牵连。
+  const { c, frames, client } = makeController();
+  c.bindView("v1");
+  await c.handle({ type: "send", text: "第一条", attachments: [], gesture: "enter" }, "v1");
+  client.followers.session?.(userMessageOf(String(client.prompts[0]?.requestId), "第一条", 1));
+  const scope = scopeOfView(c, "v1");
+  assert.ok(scope, "前置：会话域在");
+  scope.running = false;
+  await c.handle({ type: "send", text: "本机那条", attachments: [], gesture: "enter" }, "v1");
+  const nativeBefore = nativeErrors.length;
+  pushInboxProjection(c, client, 10, {
+    "next-turn": [inboxMessage("foreign-rpc", "别人的那条")],
+    "next-step": [],
+  });
+  client.followers.session?.(inboxSpliceOf(11, { target: "next-turn", start: 0, removedCount: 1 }));
+  client.followers.session?.(turnEndOf(12));
+  assert.strictEqual(c.draftOf("v1"), "", "别人的 rpcId 不许把正文回填到本机");
+  assert.strictEqual(nativeErrors.length, nativeBefore, "也不许弹本机原生错误");
+  assert.strictEqual(
+    c.pendingEchoesOfView("v1")[0]?.status,
+    "sending",
+    "本机 chat 回显本来就没有回执，foreign 事件不能改写它",
+  );
+  assert.deepStrictEqual(failedEchoFrames(frames, "v1"), [], "没有任何失败帧");
+  console.log("  foreign rpcId 不回填/不报错 ✓");
+}
+
+{
+  // H) 同 client 重连：admitted 回执随账本搬运，继续等水位，追上后才收。
+  const { c, frames, client } = makeController();
+  c.bindView("v1");
+  await c.handle({ type: "send", text: "重连等水位", attachments: [], gesture: "enter" }, "v1");
+  const requestId = String(client.prompts[0]?.requestId);
+  const push = client.followers.session;
+  assert.ok(push, "前置：跟随流回调在");
+  push(inboxSpliceOf(9, { target: "next-turn", start: 0, inserted: [inboxMessage(requestId, "重连等水位")] }));
+  push(inboxSpliceOf(11, { target: "next-turn", start: 0, removedCount: 1 }));
+  pushInboxProjection(c, client, 10);
+  push(userMessageOf(requestId, "重连等水位", 12));
+  assert.strictEqual(c.pendingEchoesOfView("v1")[0]?.status, "sending", "前置：承认已到、等待水位");
+
+  const scope = scopeOfView(c, "v1");
+  assert.ok(scope, "前置：会话域在");
+  internals(c).openScopeFollow(scope);
+  assert.strictEqual(
+    scope.adapter?.submissionReceipts?.().has(requestId),
+    true,
+    "新适配器确实接上了 admitted 回执",
+  );
+  const afterReconnect = client.followers.session;
+  assert.ok(afterReconnect, "前置：重连后的跟随流回调在");
+  afterReconnect({
+    type: "snapshot",
+    header: { version: 4, id: scope.sessionId, createdAt: 0 },
+    cursor: 10,
+    hasMore: false,
+    records: [],
+    projections: { asOfSeq: 10, values: { inbox: { "next-turn": [], "next-step": [] } } },
+  });
+  assert.strictEqual(
+    c.pendingEchoesOfView("v1")[0]?.status,
+    "sending",
+    "新适配器接上 admitted 回执后仍等水位",
+  );
+  frames.length = 0;
+  pushInboxProjection(c, client, 11);
+  assert.deepStrictEqual(c.pendingEchoesOfView("v1"), [], "水位追上后收显");
+  assert.deepStrictEqual(failedEchoFrames(frames, "v1"), [], "重连等水位不产生失败");
+  console.log("  同 client 重连搬运 admitted 回执 ✓");
+}
+
+{
+  // I) destroy + 重开：未承认的回执随本地提交记录保留，重开域后继续收场。
+  const { c, frames, client, scope, requestId } = await queueSendWithReceipt("切走再回来那条");
+  client.followers.session?.(inboxSpliceOf(11, { target: "next-turn", start: 0, removedCount: 1 }));
+  const sessionId = scope.sessionId;
+  const row = client.rows.find((entry) => entry.sessionId === sessionId);
+  if (row) row.blank = false;
+  const nativeBefore = nativeErrors.length;
+
+  client.rows.push({
+    sessionId: "session-elsewhere",
+    cwd: CWD,
+    blank: false,
+    updatedAt: Date.now() + 10,
+    running: false,
+  });
+  await c.handle({ type: "openSession", sessionId: "session-elsewhere" }, "v1");
+  assert.strictEqual(internals(c).scopes.has(sessionId), false, "前置：切走即回收域");
+  await c.handle({ type: "openSession", sessionId }, "v1");
+  const reopened = scopeOfView(c, "v1");
+  assert.ok(reopened, "前置：重开域");
+  assert.strictEqual(
+    reopened.adapter?.submissionReceipts?.().has(requestId),
+    true,
+    "重开域后未承认回执确实从本地提交记录搬回来了",
+  );
+  const push = client.followers.session;
+  assert.ok(push, "前置：重开后的跟随流回调在");
+  frames.length = 0;
+  push(turnEndOf(12));
+  assert.strictEqual(c.draftOf("v1"), "切走再回来那条", "重开域后仍能按保留的回执把无回显正文还回输入框");
+  assert.strictEqual(nativeErrors.length, nativeBefore + 1, "没有回显时提示一次");
+  assert.deepStrictEqual(failedEchoFrames(frames, "v1"), [], "无回显条目没有失败行");
+  console.log("  destroy + 重开保留未承认回执 ✓");
+}
+
+{
+  // J) 换 client：旧 client 的 receipt 不重建（跨执行世界不搬运）。
+  const { c, scope, requestId } = await queueSendWithReceipt("换 client 那条");
+  const other = fakeClient();
+  internals(c).client = other;
+  internals(c).openScopeFollow(scope);
+  assert.strictEqual(
+    scope.adapter?.submissionReceipts?.().has(requestId),
+    false,
+    "换 client 后旧 receipt 不搬运",
+  );
+  const push = other.followers.session;
+  assert.ok(push, "前置：新 client 的跟随流回调在");
+  const nativeBefore = nativeErrors.length;
+  push(inboxSpliceOf(11, { target: "next-turn", start: 0, removedCount: 1 }));
+  push(turnEndOf(12));
+  assert.strictEqual(c.draftOf("v1"), "", "换 client 后旧 receipt 不重建，不许回填");
+  assert.strictEqual(nativeErrors.length, nativeBefore, "也不弹错误");
+  console.log("  换 client 不重建旧 receipt ✓");
+}
+
+{
+  // K) TTL：过期的本地提交记录不再被当成可搬运回执。
+  const { c, client, scope, requestId } = await queueSendWithReceipt("TTL 那条");
+  const record = internals(c).submissions.get(requestId);
+  assert.ok(record, "前置：本地提交记录在");
+  record.at = Date.now() - 31 * 60 * 1000;
+  internals(c).openScopeFollow(scope);
+  assert.strictEqual(
+    scope.adapter?.submissionReceipts?.().has(requestId),
+    false,
+    "TTL 过期的记录不重建旧回执",
+  );
+  const push = client.followers.session;
+  assert.ok(push, "前置：跟随流回调在");
+  const nativeBefore = nativeErrors.length;
+  push(inboxSpliceOf(11, { target: "next-turn", start: 0, removedCount: 1 }));
+  push(turnEndOf(12));
+  assert.strictEqual(c.draftOf("v1"), "", "TTL 过期不重建回执");
+  assert.strictEqual(nativeErrors.length, nativeBefore, "也不弹错误");
+  console.log("  TTL 过期不重建旧 receipt ✓");
+}
+
+{
+  // L) 已收场（settled）：记录已由承认 / 撤回 / 重发收场，旧回执不再重建。
+  const { c, client, scope, requestId } = await queueSendWithReceipt("settled 那条");
+  internals(c).settleSubmissionRecord(requestId);
+  internals(c).openScopeFollow(scope);
+  assert.strictEqual(
+    scope.adapter?.submissionReceipts?.().has(requestId),
+    false,
+    "已收场的记录不重建旧回执",
+  );
+  const push = client.followers.session;
+  assert.ok(push, "前置：跟随流回调在");
+  const nativeBefore = nativeErrors.length;
+  push(inboxSpliceOf(11, { target: "next-turn", start: 0, removedCount: 1 }));
+  push(turnEndOf(12));
+  assert.strictEqual(c.draftOf("v1"), "", "settled 记录不重建旧回执");
+  assert.strictEqual(nativeErrors.length, nativeBefore, "也不弹错误");
+  console.log("  settled 不重建旧 receipt ✓");
+}
+
+{
+  // M) 控制流替换型 baseline **清掉 inbox 键**：水位回到未知，admitted 继续等；新投影到达才放行。
+  // 这条专门钉 controller 的 present=false 接线（helper 单独绿不代表这条接线在）。
+  const { c, frames, client } = makeController();
+  c.bindView("v1");
+  await c.handle({ type: "send", text: "baseline 清键那条", attachments: [], gesture: "enter" }, "v1");
+  const requestId = String(client.prompts[0]?.requestId);
+  const push = client.followers.session;
+  assert.ok(push, "前置：跟随流回调在");
+  push(inboxSpliceOf(9, { target: "next-turn", start: 0, inserted: [inboxMessage(requestId, "baseline 清键那条")] }));
+  push(inboxSpliceOf(11, { target: "next-turn", start: 0, removedCount: 1 }));
+  // 先把水位抬到 20；如果 baseline 清键没有传到 adapter，admission 会被这个旧高水位提前放行。
+  pushInboxProjection(c, client, 20);
+  assert.strictEqual(
+    c.pendingEchoesOfView("v1")[0]?.status,
+    "sending",
+    "前置：receipt 已领取，但还没有 durable 承认",
+  );
+
+  const scope = scopeOfView(c, "v1");
+  assert.ok(scope, "前置：会话域在");
+  const sessionId = scope.sessionId;
+  const nativeBefore = nativeErrors.length;
+  frames.length = 0;
+  client.followers.control?.({
+    type: "baseline",
+    value: { projections: { [sessionId]: { asOfSeq: 5, values: {} } } },
+  });
+  assert.strictEqual(
+    c.pendingEchoesOfView("v1")[0]?.status,
+    "sending",
+    "baseline 清掉 inbox 后水位回到未知（不能保留 20）",
+  );
+  assert.deepStrictEqual(failedEchoFrames(frames, "v1"), [], "清键不算失败");
+
+  // 承认在这之后才到：若旧高水位还在，会立刻收显；正确行为是继续等。
+  push(userMessageOf(requestId, "baseline 清键那条", 12));
+  assert.strictEqual(
+    c.pendingEchoesOfView("v1")[0]?.status,
+    "sending",
+    "清键后到达的 admitted 必须继续等新水位（controller 的 present=false 接线）",
+  );
+  assert.deepStrictEqual(failedEchoFrames(frames, "v1"), [], "等水位不算失败");
+
+  frames.length = 0;
+  pushInboxProjection(c, client, 11);
+  assert.deepStrictEqual(c.pendingEchoesOfView("v1"), [], "新投影水位追上后收显");
+  assert.deepStrictEqual(failedEchoFrames(frames, "v1"), [], "放行时也不产生失败");
+  assert.strictEqual(nativeErrors.length, nativeBefore, "不弹原生错误");
+  console.log("  controller baseline 清 inbox → admitted 等水位 → 新投影放行 ✓");
+}
+
+{
+  // N) 控制流替换型 baseline 的 inbox **仍在但 seq 降到更低**：同样要按低水位继续等。
+  const { c, frames, client } = makeController();
+  c.bindView("v1");
+  await c.handle({ type: "send", text: "baseline 降水位那条", attachments: [], gesture: "enter" }, "v1");
+  const requestId = String(client.prompts[0]?.requestId);
+  const push = client.followers.session;
+  assert.ok(push, "前置：跟随流回调在");
+  push(
+    inboxSpliceOf(9, {
+      target: "next-turn",
+      start: 0,
+      inserted: [inboxMessage(requestId, "baseline 降水位那条")],
+    }),
+  );
+  push(inboxSpliceOf(11, { target: "next-turn", start: 0, removedCount: 1 }));
+  pushInboxProjection(c, client, 20);
+  assert.strictEqual(c.pendingEchoesOfView("v1")[0]?.status, "sending", "前置：receipt 已领取");
+
+  const scope = scopeOfView(c, "v1");
+  assert.ok(scope, "前置：会话域在");
+  const sessionId = scope.sessionId;
+  frames.length = 0;
+  client.followers.control?.({
+    type: "baseline",
+    value: {
+      projections: {
+        [sessionId]: { asOfSeq: 5, values: { inbox: { "next-turn": [], "next-step": [] } } },
+      },
+    },
+  });
+  assert.strictEqual(
+    c.pendingEchoesOfView("v1")[0]?.status,
+    "sending",
+    "baseline 把水位降到 5（不能保留旧 20）",
+  );
+  assert.deepStrictEqual(failedEchoFrames(frames, "v1"), [], "降水位不算失败");
+
+  // 承认在这之后才到：若旧 20 还在，会立刻收显；正确行为是按 5 继续等。
+  push(userMessageOf(requestId, "baseline 降水位那条", 12));
+  assert.strictEqual(
+    c.pendingEchoesOfView("v1")[0]?.status,
+    "sending",
+    "降水位后到达的 admitted 必须继续等新水位",
+  );
+  assert.deepStrictEqual(failedEchoFrames(frames, "v1"), [], "等水位不算失败");
+
+  frames.length = 0;
+  pushInboxProjection(c, client, 11);
+  assert.deepStrictEqual(c.pendingEchoesOfView("v1"), [], "新投影水位追上后收显");
+  assert.deepStrictEqual(failedEchoFrames(frames, "v1"), [], "放行时也不产生失败");
+  console.log("  controller baseline 降水位 → admitted 等水位 → 新投影放行 ✓");
+}
+
+console.log("pendingEcho: inbox 投影、重连搬运、水位与身份边界 ✓");
 
 // ---------- 四、撤回 / 重发（失败行上的两个按钮） ----------
 {

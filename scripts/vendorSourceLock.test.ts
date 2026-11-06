@@ -2,16 +2,16 @@
  * M01：`src/vendor/**` 官方源码副本的**源锁**断言（零 token、不联网、不读用户目录）。
  *
  * 判据本体在 `scripts/vendorSourceLock.ts`，登记在 `scripts/vendorSourceLock.json`，
- * 上游那一侧的凭据是仓库内 19/19 份离线见证素材
+ * 上游那一侧的凭据是仓库内 21/21 份离线见证素材
  * （`test/fixtures/vendor-sources/dsh-v0.2.2-rc.1/**`，逐字节等于固定 tag 上的原文）。
  *
- * 这一份做三件事：①基线（真实磁盘副本 + 真实锁清单 + **全部 19 份素材**）必须无漂移；
+ * 这一份做三件事：①基线（真实磁盘副本 + 真实锁清单 + **全部 21 份素材**）必须无漂移；
  * ②**可证伪** —— 逐类构造突变，判据必须红（含「素材缺一份 / 多一份 / 改一个字节」与
  * 「规范化规则被改」）；③**允许的漂移**必须绿（登记的说明符改写、已登记的类型壳 /
  * 本地图片判据差异、以及有意的排版与注释漂移）。
  *
  * 突变全部在**内存**里做（`structuredClone` 一份夹具），不碰 `src/vendor/**` 的真实文件，
- * 也不碰素材目录里的那 19 份原文。
+ * 也不碰素材目录里的那 21 份原文。
  *
  * 运行：npm test
  */
@@ -52,7 +52,7 @@ const ROOT = process.cwd();
 const LOCK = lockJson as unknown as VendorSourceLock;
 const VENDOR_FILES = collectVendorSources(ROOT);
 const VENDOR_README = readFileSync(join(ROOT, "src", "vendor", "README.md"), "utf8");
-/** 上游那一侧的 19/19 离线见证（官方相对路径 → 原文）。 */
+/** 上游那一侧的 21/21 离线见证（官方相对路径 → 原文）。 */
 const FIXTURES = collectUpstreamFixtures(ROOT, LOCK.upstream.fixtureDir, LOCK.upstream.tag);
 
 const TIMELINE = "src/vendor/ui-trajectory/timeline.ts";
@@ -145,7 +145,7 @@ function mutateFixture(draft: Draft, upstreamPath: string, from: string, to: str
   draft.upstreamFiles[index] = { path: upstreamPath, text: after };
 }
 
-// ---------- 1. 基线：真实磁盘副本 + 真实锁清单 + 全部 19 份素材 ----------
+// ---------- 1. 基线：真实磁盘副本 + 真实锁清单 + 全部 21 份素材 ----------
 {
   const problems = vendorSourceProblems({
     lock: LOCK,
@@ -159,6 +159,29 @@ function mutateFixture(draft: Draft, upstreamPath: string, from: string, to: str
   console.log(
     `vendor-source-lock: ${VENDOR_FILES.length} 份副本 / ${Object.keys(LOCK.files).length} 条登记 / ` +
       `${FIXTURES.length} 份上游见证，基线无漂移 ✓`,
+  );
+}
+
+// 完整时间库逐份对拍：RRULE 唯一额外适配是 default → namespace 的导入绑定，
+// 以兼容 esbuild 的 CJS __esModule 与 browser ESM；不放宽任何函数 / 常量 / 校验体。
+for (const name of ["rrule", "instant", "recurrence"]) {
+  const path = `src/vendor/dsh-util-time/${name}.ts`;
+  const local = required(VENDOR_FILES.find(file => file.path === path), path);
+  const entry = required(LOCK.files[path], path);
+  const original = required(FIXTURES.find(file => file.path === entry.upstream.path), entry.upstream.path);
+  let comparable = local.text;
+  if (name === "rrule") {
+    const binding = /^import\s+\*\s+as\s+rrulePackage\s+from\s+(['"])rrule\1/gm;
+    assert.strictEqual([...comparable.matchAll(binding)].length, 1, "只允许且必须适配这一条 rrule 导入绑定");
+    assert.strictEqual(entry.declaredEdits.length, 1, "导入绑定形态适配必须单独登记");
+    comparable = comparable.replace(binding, "import rrulePackage from 'rrule'");
+  } else {
+    assert.strictEqual(entry.declaredEdits.length, 0, `${path} 只允许既定模块说明符规范化`);
+  }
+  assert.strictEqual(
+    normalizeVendorSource(comparable, LOCK.normalization, path),
+    normalizeVendorSource(original.text, LOCK.normalization, path),
+    `${path} 除唯一声明导入适配外必须完整逐字等价，不能重写锁来掩盖函数漂移`,
   );
 }
 
@@ -187,12 +210,34 @@ for (const path of ["src/vendor/ui-tool/terminal-status.ts", "src/vendor/util-ti
   }
 }
 
-// ---------- 2. 登记与来源：形式、固定身份、19/19 覆盖、已登记差异 ----------
+// 完整时间库直接与固定原文比较，不允许靠同时重写两边摘要把算法漂移变绿。
+for (const name of ["rrule", "instant", "recurrence"]) {
+  const path = `src/vendor/dsh-util-time/${name}.ts`;
+  const local = required(VENDOR_FILES.find(file => file.path === path), path);
+  const entry = required(LOCK.files[path], path);
+  const original = required(FIXTURES.find(file => file.path === entry.upstream.path), entry.upstream.path);
+  let comparable = local.text;
+  if (name === "rrule") {
+    const binding = "import * as rrulePackage from 'rrule'";
+    assert.strictEqual(local.text.split(binding).length - 1, 1, "仅允许一条明确的 rrule 导入绑定适配");
+    assert.strictEqual(entry.declaredEdits.length, 1, "rrule 导入形态适配必须单独登记");
+    comparable = comparable.replace(binding, "import rrulePackage from 'rrule'");
+  } else {
+    assert.deepStrictEqual(entry.declaredEdits, [], `${path} 不允许额外算法或声明改写`);
+  }
+  assert.strictEqual(
+    normalizeVendorSource(comparable, LOCK.normalization, path),
+    normalizeVendorSource(original.text, LOCK.normalization, entry.upstream.path),
+    `${path} 去掉唯一声明适配后必须与固定原文完整等价`,
+  );
+}
+
+// ---------- 2. 登记与来源：形式、固定身份、21/21 覆盖、已登记差异 ----------
 {
   assert.strictEqual(
     Object.keys(LOCK.files).length,
-    19,
-    "锁清单固定登记 19 份官方副本（新增或移除必须显式改这里与素材 / README / 声明）",
+    22,
+    "锁清单固定登记 22 份官方副本（新增或移除必须显式改这里与素材 / README / 声明）",
   );
   assert.strictEqual(
     Object.keys(LOCK.files).length,
@@ -227,7 +272,7 @@ for (const path of ["src/vendor/ui-tool/terminal-status.ts", "src/vendor/util-ti
   assert.strictEqual(LOCK.upstream.tag, FIXED_UPSTREAM.tag);
   assert.strictEqual(LOCK.upstream.sha, FIXED_UPSTREAM.sha);
 
-  // 上游那一侧：**19/19 逐字素材**，路径是官方相对路径，一条不多一条不少
+  // 上游那一侧：**21/21 逐字素材**，路径是官方相对路径，一条不多一条不少
   const upstreamPaths = [
     ...new Set(Object.values(LOCK.files).map((entry) => entry.upstream.path)),
   ].sort();
@@ -236,7 +281,9 @@ for (const path of ["src/vendor/ui-tool/terminal-status.ts", "src/vendor/util-ti
     upstreamPaths,
     "素材目录里的原文要与登记的上游路径逐条对上（缺一 / 多一都红）",
   );
-  assert.strictEqual(FIXTURES.length, Object.keys(LOCK.files).length, "每条登记各有一份原文");
+  // recurrence.ts 的完整副本与既有 recurrence-error.ts 摘录共用同一份官方原文。
+  assert.strictEqual(FIXTURES.length, upstreamPaths.length, "每个独立上游路径各有一份原文");
+  assert.strictEqual(FIXTURES.length, 21, "22 份副本固定覆盖 21 份独立原文，不允许漏掉共享见证");
   for (const file of FIXTURES) {
     assert.ok(
       !file.path.startsWith("src/") && /^packages\/(?:client|util)\/[^/]+\/src\//.test(file.path),
@@ -244,7 +291,7 @@ for (const path of ["src/vendor/ui-tool/terminal-status.ts", "src/vendor/util-ti
     );
     assert.ok(!file.path.includes("\\") && !file.path.startsWith("/"), "素材路径不许带本机痕迹");
   }
-  // 素材字节与登记值逐份相符（原始字节数）；这一条是「19/19」的落点
+  // 素材字节与登记值逐份相符（原始字节数）；这一条是「21/21」的落点
   for (const [vendorPath, entry] of Object.entries(LOCK.files)) {
     const file = required(
       FIXTURES.find((candidate) => candidate.path === entry.upstream.path),
@@ -659,4 +706,4 @@ for (const path of ["src/vendor/ui-tool/terminal-status.ts", "src/vendor/util-ti
   );
 }
 
-console.log("\nvendor-source-lock: 内容锁 / 双向登记 / 19/19 上游见证 / 来源自洽（含突变自证） ✓");
+console.log("\nvendor-source-lock: 内容锁 / 双向登记 / 21/21 上游见证 / 来源自洽（含突变自证） ✓");

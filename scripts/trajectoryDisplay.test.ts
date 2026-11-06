@@ -38,6 +38,7 @@ import {
   trajectoryRecordTtft,
   trajectoryRequestCallCounts,
   trajectoryRequestCells,
+  trajectoryRequestResultCell,
   trajectoryRowLabel,
   trajectoryToolUpdateParams,
   trajectoryTurnStartsLabel,
@@ -341,6 +342,43 @@ console.log("trajectoryDisplay: 有内容的助手行不会退化成「仅工具
   assert.strictEqual(
     trajectoryCellContent({ ...tool, resultPreviewMarkdown: undefined, resultSummary: { kind: "no-output" } }, texts).result,
     texts.recordNoOutput,
+  );
+  // 「只有结果没有调用」的补行没有工具名前缀：官方 `resultAsText()` 的 text 就是
+  // 本地化后的结果语义，主文本列也要显示它，不能只剩一个破折号。
+  assert.strictEqual(
+    trajectoryCellContent(
+      {
+        ...tool,
+        text: "",
+        toolName: undefined,
+        callId: undefined,
+        previewMarkdown: undefined,
+        inputDetail: undefined,
+        resultSummary: { kind: "images", count: 3 },
+      },
+      texts,
+    ).text,
+    texts.imageCount(3),
+  );
+  assert.strictEqual(
+    trajectoryCellContent(
+      {
+        ...tool,
+        text: "",
+        toolName: undefined,
+        callId: undefined,
+        previewMarkdown: undefined,
+        inputDetail: undefined,
+        resultSummary: { kind: "no-output" },
+      },
+      texts,
+    ).text,
+    texts.recordNoOutput,
+  );
+  // 有工具名（调用格）时主文本列仍是工具名，不被结果语义顶掉
+  assert.strictEqual(
+    trajectoryCellContent({ ...tool, resultSummary: { kind: "images", count: 3 } }, texts).text,
+    'read · {"file_path":"a.ts"}',
   );
   // 失败 → 结果那栏是错误码
   assert.strictEqual(
@@ -815,6 +853,30 @@ console.log("trajectoryDisplay: 记录级计时的四条值（每条各自的「
     undefined,
     "压缩请求没有助手记录 → 请求面板走请求表那一支",
   );
+
+  // 结果链接：官方 `selectedRequestResultTemplate`。resultSeq 已知时按 sourceSeq(=seq) 精确找；
+  // 找不到就是 undefined（不退回助手记录）。resultSeq 缺席才回退助手记录。
+  const assistant = cells[1];
+  assert.strictEqual(
+    trajectoryRequestResultCell(cells, { resultSeq: 2 }, assistant)?.index,
+    2,
+    "resultSeq 命中助手最终消息",
+  );
+  assert.strictEqual(
+    trajectoryRequestResultCell(cells, { resultSeq: 3 }, assistant)?.index,
+    3,
+    "resultSeq 按账本 seq 精确匹配（不按请求号猜）",
+  );
+  assert.strictEqual(
+    trajectoryRequestResultCell(cells, { resultSeq: 99 }, assistant),
+    undefined,
+    "resultSeq 有值但没有对应记录 → 不给链接（官方不退回助手记录）",
+  );
+  assert.strictEqual(
+    trajectoryRequestResultCell(cells, { resultSeq: undefined }, assistant)?.index,
+    2,
+    "resultSeq 缺席 → 官方回退到助手记录",
+  );
 }
 console.log("trajectoryDisplay: 请求 → 记录（助手记录与落点的挑法） ✓");
 
@@ -1102,6 +1164,32 @@ console.log("trajectoryDisplay: 请求概述两行计数（工具 / 子工具分
     assert.strictEqual(count, 2, `${member} 必须在 zh / en 两本词典里各有一条（现在 ${count} 条）`);
   }
   assert.ok(!/requestAnchor/.test(dict), "`requestAnchor` 已从词典删除（避免死键）");
+  // 请求 → 结果必须按 `resultSeq` 精确落点，不是只把字段透传到界面
+  assert.ok(
+    view.includes("trajectoryRequestResultCell(requestCellsAll, entry, assistantForRequest(entry))"),
+    "请求结果链接要接 resultSeq 定位（官方 selectedRequestResultTemplate）",
+  );
+  assert.ok(
+    view.includes("onOpenRecord={resultForRequest(selectedRequestInfo)}"),
+    "请求概述的「结果」链接必须消费 resultForRequest，不能仍用旧 anchor",
+  );
+  // Result 页 live seam：只在结果页且 resultSeq 已知时订阅，value 原样 JSON 化
+  assert.ok(
+    view.includes('useTrajectoryResult(tab === "result" ? cell.resultSeq : undefined)'),
+    "Result 页在有 resultSeq 时订阅 live 结果，其他页签传 undefined",
+  );
+  assert.ok(
+    view.includes("cell.outputDetail !== undefined || program !== undefined || cell.resultSeq !== undefined"),
+    "Result 页签判据含 resultSeq（覆盖仅图片 / 无正文结果）",
+  );
+  assert.ok(
+    view.includes("JSON.stringify(liveResult.value, null, 2)"),
+    "live 值按 JSON 原样渲染（null / false / 0 / 空串都有效）",
+  );
+  assert.ok(
+    view.includes("const resultFallback = cell.outputDetail ?? trajectoryResultText(cell, texts)"),
+    "live 不可用时回退已提交 outputDetail（并覆盖无正文结果语义）",
+  );
 }
 console.log("trajectoryDisplay: 请求概述接线（计数 / 结果跳转 / 双语在册 / 死键已删）✓");
 

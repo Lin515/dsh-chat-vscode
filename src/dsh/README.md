@@ -32,6 +32,7 @@
 - [scheduleView.ts](<scheduleView.ts>) — 自动化任务的目录 / 执行记录 / 变更结果读取，编辑基准（`expected`）的字段投影，新代目录字段（目标 / 执行中 / 投递间隔）、代际判定与外来请求体（创建 / patch）校验。
 - [trajectory.ts](<trajectory.ts>) — 同份 durable 的账本 / 请求表折叠；身份、时序与验收边界见[轨迹设计](<../../docs/design-trajectory.md>)。
 - [trajectoryBackfill.ts](<trajectoryBackfill.ts>) — 窗口没带进 `request/header` 时按需回补更早事件（判据 + 循环）。
+- [trajectoryResultWatch.ts](<trajectoryResultWatch.ts>) — 结果页按 `resultSeq` 观察 live-only 结果；每视图唯一、换行取消、断线清值、同连接恢复，不缓存历史。
 - [readRange.ts](<readRange.ts>) — read 工具的整文件 / 片段行号区间。
 - [changes.ts](<changes.ts>) — workspace/changes 形状校验。
 - [changesDiff.ts](<changesDiff.ts>) — 本轮改动的逐文件对比（hunk 校验与两侧文本拼装）。

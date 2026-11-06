@@ -170,7 +170,7 @@ export function JobsPanel({
   scheduleHistory?: Record<string, ScheduleHistoryState>;
   /** 最近一次自动化任务变更的结算（宿主 `schedules/result` 帧）。 */
   scheduleResult?: AppState["scheduleResult"];
-  /** 会话列表（投递目标与新建目录的候选来自这里的真实值）。 */
+  /** 会话列表：投递目标候选与创建目录的旧端点回退来源（权威目录来自注册 Workspace）。 */
   sessions: readonly SessionSummaryView[];
   /** 当前窗口绑定的会话（换会话要重新读一次自动化任务目录）。 */
   sessionId?: string;

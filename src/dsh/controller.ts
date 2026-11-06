@@ -24,6 +24,7 @@ import type {
   QuestionAnswerView,
   QuestionView,
   ScheduleItemView,
+  ScheduleProjectView,
   SessionRefView,
   SessionSummaryView,
   SubagentContextView,
@@ -33,6 +34,8 @@ import type {
 } from "../shared/chat";
 import type { ChangeCoordinates, HostToWebview, WebviewToHost } from "../shared/ipc";
 import { SessionAdapter, type ImageRef } from "./adapter";
+import { createTrajectoryResultWatchManager } from "./trajectoryResultWatch";
+import type { SubmissionReceipt } from "./submissionReceipts";
 import { decodeChangesSummary } from "./changes";
 import { buildAgentDiffTexts, decodeChangesDiff, type AgentDiff } from "./changesDiff";
 import type { AgentDiffDocuments } from "./agentDiffDocuments";
@@ -70,6 +73,7 @@ import {
   unsupportedLocalPathForm,
 } from "./localAccess";
 import { resolveWorkspacePath } from "../shared/workspacePath";
+import { scheduleProjectsFromWire } from "../shared/scheduleProjects";
 import { readHostImages } from "./localImages";
 import { isLocalAbsolutePath, localPlatform, sameBytes } from "./localPath";
 import {
@@ -242,6 +246,9 @@ interface SubmissionRecord {
   at: number;
   sessionId: string;
   settled?: boolean;
+  /** 回执只能在同一执行世界、同一会话内搬运；复用现有 TTL / 50 条上限。 */
+  receiptClient?: DshClient;
+  receipt?: SubmissionReceipt;
 }
 
 /**
@@ -399,15 +406,21 @@ function readAgentPreset(): string | undefined {
 interface WorkspaceFollowFrameWire {
   type?: string;
   value?: {
-    items?: { workspaceId?: unknown; path?: unknown; sessionIds?: unknown }[];
+    items?: { workspaceId?: unknown; path?: unknown; title?: unknown; sessionIds?: unknown }[];
     archivedSessionIds?: string[];
   };
-  workspace?: { workspaceId?: unknown; path?: unknown; sessionIds?: unknown };
+  workspace?: { workspaceId?: unknown; path?: unknown; title?: unknown; sessionIds?: unknown };
   workspaceId?: string;
+  workspaceIds?: string[];
   archivedSessionIds?: string[];
 }
 
-/** 一条工作区记录的形状校验（坏数据逐条丢弃，不整份丢）。 */
+/**
+ * 一条工作区记录的形状校验（坏数据逐条丢弃，不整份丢）。
+ *
+ * 只保留分组与目录判据要用的字段；`title` 由 `workspaceTitleEntries` 单独记进
+ * `workspaceTitles`，不改这份行的既有形状（历史列表与既有消费者都按这一份读）。
+ */
 function workspaceRow(value: { workspaceId?: unknown; path?: unknown; sessionIds?: unknown } | undefined):
   | { workspaceId: string; path: string; sessionIds: string[] }
   | undefined {
@@ -432,6 +445,32 @@ function workspaceRows(
     if (row) rows.push(row);
   }
   return rows;
+}
+
+/**
+ * 注册表标题（**只**给自动化任务的创建目录候选使用）。
+ *
+ * 与 `workspaces` 分开存：那份行的形状被历史列表与其他消费者按原样读，不能因为
+ * 候选需要标题就多一个键（否则任何按行做深比较的既有断言都会被一个空标题打破）。
+ * `undefined` 表示这一帧没带标题，界面回退路径。
+ */
+function workspaceTitle(value: { workspaceId?: unknown; title?: unknown } | undefined): string | undefined {
+  const workspaceId = typeof value?.workspaceId === "string" ? value.workspaceId : "";
+  if (!workspaceId) return undefined;
+  return typeof value?.title === "string" ? value.title : "";
+}
+
+function workspaceTitleEntries(
+  items: { workspaceId?: unknown; title?: unknown }[] | undefined,
+): Map<string, string> {
+  const titles = new Map<string, string>();
+  if (!Array.isArray(items)) return titles;
+  for (const item of items) {
+    const workspaceId = typeof item?.workspaceId === "string" ? item.workspaceId : "";
+    const title = workspaceTitle(item);
+    if (workspaceId !== "" && title !== undefined) titles.set(workspaceId, title);
+  }
+  return titles;
 }
 
 /**
@@ -916,6 +955,8 @@ export class ChatController implements vscode.Disposable {
    * ——漏一条就是一条永远不结束的流。
    */
   private readonly jobWatches = new Map<string, JobWatch>();
+  /** Result 页每视图唯一的实时观察；值不进 ChatState，也不作历史缓存。 */
+  private readonly trajectoryResults = createTrajectoryResultWatchManager();
   /**
    * 这个服务端**没有** `subagents/list` 这个端点（0.1.7-alpha.1 起官方已删除它）。
    *
@@ -951,6 +992,14 @@ export class ChatController implements vscode.Disposable {
    */
   private readonly interactions = new PendingInteractions();
   private workspaceHandle: { cancel(): void } | undefined;
+  /**
+   * `workspace/follow` 的**开流世代**（每开一条 +1，连接清理也 +1）。
+   *
+   * 取消句柄只保证之后不再收帧，挡不住已经排进事件循环、随后才执行的那一次回调；
+   * 旧世代的帧若在换连接之后落地，会把上一台服务器的注册表 / 候选写回当前域。开流时
+   * 捕获当时的号，回调用它比对——不一致就整帧丢弃。
+   */
+  private workspaceGeneration = 0;
   /**
    * 服务端**工作区注册表**里当前项目那条记录的 id（`workspace/create` 幂等返回）。
    *
@@ -1114,6 +1163,20 @@ export class ChatController implements vscode.Disposable {
    * 历史列表的可见性判据据此写（见 `refreshSessions`）。
    */
   private workspaces: { workspaceId: string; path: string; sessionIds: string[] }[] = [];
+  /**
+   * 注册表行的标题（键 = workspaceId），**只**供自动化任务的创建目录候选。
+   *
+   * 与 `workspaces` 分开：那份行的形状是历史列表与其他消费者的既有契约，不能因为
+   * 候选要显示标题就多一个键；旧帧没有标题时没有条目，界面回退路径。
+   */
+  private readonly workspaceTitles = new Map<string, string>();
+  /**
+   * 注册表流**已经到过权威值**（`baseline` / `replace` / 任一增量）。
+   *
+   * 只在内存里：它区分「注册表明确为空」与「还没拿到注册表」（旧服务端没有这条流、
+   * 或连接刚被清理）。自动化任务的目录候选据此决定要不要保留会话 cwd 回退。
+   */
+  private workspaceRegistryKnown = false;
   /** 已归档会话的权威集合（来自 workspace/follow 流）。 */
   private archivedSessionIds = new Set<string>();
   /**
@@ -2190,6 +2253,9 @@ export class ChatController implements vscode.Disposable {
      * 现在字段清单只有 `dsh/sessionView.ts` 一份：外观态（与会话无关的设置）与
      * 会话态（域 + 适配器）各由自己的构造器出，两边都带全字段，`undefined` 折成
      * `null`（`shared/wire.ts` 的过线口径）只在那两个构造器里做。
+     *
+     * 唯一的例外是 `scheduleProjects`：注册表候选由本函数直接补（它不在会话状态机里，
+     * 也不该随切会话换掉），增量由 `emitScheduleProjects` 走同一条过线口径。
      */
     return {
       // 首帧快照的**键顺序**刻意保持与原实现一致（连接 → 外观 → 会话 → 输入区）：
@@ -2197,6 +2263,10 @@ export class ChatController implements vscode.Disposable {
       // 不该因为这次收敛而变——对拍线上帧时那是最容易白费一轮的噪声。
       ...this.connectionPatch(),
       ...appearanceView(this.appearanceSource(viewId)),
+      // 注册的 Workspace（自动化任务的创建目录候选）。它不是会话片段：切会话不该
+      // 换掉候选；但首帧必须带上，否则编辑表单在收到下一次注册表变化前会少掉
+      // 「已登记但还没有会话」的目录。`undefined` 过线成 `null`（见字段注释）。
+      scheduleProjects: this.scheduleProjectsView(),
       // 窗口级事实（不属于会话片段，也不属于部署设置）：本窗口是不是编辑区标签组里
       // 的会话，见 `ChatState.inEditorTab`
       inEditorTab: this.viewKinds.get(viewId ?? "") === "panel",
@@ -2762,6 +2832,7 @@ export class ChatController implements vscode.Disposable {
     const wasGenerating = this.isSessionGenerating(sessionId);
     // 窗口关掉时它那条后台任务观察流必须一起收（否则流会跟着扩展宿主一直活着）
     this.closeJobWatch(viewId);
+    this.trajectoryResults.close(viewId);
     this.viewSessions.delete(viewId);
     // 这个窗口不再看着那条空壳：界面上那一行的占用锁按当下绑定现算
     // （`groupSessionLists` 的 `occupied`），别的窗口得收到一份新列表才会解开
@@ -2912,6 +2983,10 @@ export class ChatController implements vscode.Disposable {
    * 重算（草稿/附件在控制器侧按会话键保留，不受影响）。
    */
   private destroyScope(scope: SessionScope): void {
+    this.trajectoryResults.closeSession(scope.sessionId);
+    // 已 durable 承认的通知在域销毁前收场；仍未承认的回执随本地提交记录保留。
+    scope.adapter?.flushAdmittedSubmissions();
+    this.saveSubmissionReceipts(scope);
     this.scopes.delete(scope.sessionId);
     // 这张表按会话建：域没了就没有「这个域的跟随流连续失败几次」可言，待触发的那次
     // 重开也必须作废——留存只会得到一条永远不会被清除的条目，重开还会产生一条没有收件人的流
@@ -2960,6 +3035,7 @@ export class ChatController implements vscode.Disposable {
     // 换会话：这个窗口的后台任务观察流是**上一个会话**的，跟着一起收
     // （同一会话的重入在上面那行就返回了，展开中的面板不会被这次绑定打断）
     this.closeJobWatch(viewId);
+    this.trajectoryResults.close(viewId);
     // 打开即已读：历史列表里那条「生成完毕未读」的蓝标题到此结束
     this.setSessionUnread(sessionId, false);
     // 回来看它了：离开标记作废（哪怕它还在生成——此刻用户就盯着它，收尾时不算撇下）。
@@ -3733,6 +3809,9 @@ export class ChatController implements vscode.Disposable {
   }
 
   private async onConnected(): Promise<void> {
+    if (this.client) {
+      this.trajectoryResults.resume(this.client, (viewId) => this.viewSessions.get(viewId));
+    }
     // socket 重建后长活流都要重开：每个打开的域重新跟随（适配器整个重建，
     // 新快照会重放最近 60 条），全局流重开一次
     // 重开是全新的开始：失败计数与还没触发的旧重开一并作废（跨重连的旧 timer 不许再开流）
@@ -5403,6 +5482,7 @@ export class ChatController implements vscode.Disposable {
     // 这个窗口的后台任务观察流属于**上一个会话**：留着它会让新会话的面板收到
     // 旧任务的输出（帧里只有 jobId，界面认不出这是别人的）
     this.closeJobWatch(viewId);
+    this.trajectoryResults.close(viewId);
     this.viewSessions.delete(viewId);
     const draft = this.drafts.get(previous);
     if (draft !== undefined) {
@@ -5932,11 +6012,28 @@ export class ChatController implements vscode.Disposable {
     void this.loadDefaults();
   }
 
+  /** 回执与可恢复正文共用有界记录，不另建跨域的无界账本。 */
+  private saveSubmissionReceipts(scope: SessionScope): void {
+    const receipts = scope.adapter?.submissionReceipts();
+    if (receipts === undefined) return;
+    for (const [rpcId, record] of this.submissions) {
+      if (record.sessionId !== scope.sessionId) continue;
+      record.receipt = record.settled ? undefined : receipts.get(rpcId);
+    }
+  }
+
+  private ownsSubmission(rpcId: string, sessionId: string, client: DshClient): boolean {
+    const record = this.submissions.get(rpcId);
+    return record !== undefined && !record.settled && record.sessionId === sessionId
+      && record.receiptClient === client && Date.now() - record.at <= SUBMISSION_TTL_MS;
+  }
+
   /** 给域开（或 socket 重连后重开）`session/follow` 流；适配器整个重建。 */
   private openScopeFollow(scope: SessionScope): void {
     const sessionId = scope.sessionId;
     const streamClient = this.client;
     if (!streamClient) return;
+    this.saveSubmissionReceipts(scope);
     scope.followHandle?.cancel();
     // 这一次开流的**代号**：回调只认「还是这个 client、还是这个域、还是这一次开流」的那一份。
     // 被取消 / 被替换 / 断线重连之后的旧流还可能送来迟到的 item / error / end——它们既不许
@@ -5997,10 +6094,25 @@ export class ChatController implements vscode.Disposable {
     // 一条人的用户消息被 durable 承认：收回它的乐观回显。重放期间这条回调会被适配器
     // **攒到那一份整份 `messages/reset` 发出去之后再补**（见 `adapter.notifyAdmitted`）
     // ——重连 / 重载窗口后既不留下幽灵回显，也不会先收回、后落位（那就是"闪一下"）
-    adapter.onUserMessage = (message) => this.noteUserAdmitted(sessionId, message);
+    adapter.onUserMessage = (message) => {
+      if (isCurrent()) this.noteUserAdmitted(sessionId, message);
+    };
+    adapter.ownsSubmission = (rpcId) => this.ownsSubmission(rpcId, sessionId, streamClient);
+    adapter.onSubmissionObserved = (rpcId) => {
+      if (!isCurrent() || !adapter.ownsSubmission?.(rpcId)) return;
+      this.retireEcho(rpcId, "observed-snapshot");
+      this.attachments.releaseLease(rpcId);
+      this.settleSubmissionRecord(rpcId);
+    };
+    adapter.adoptSubmissionReceipts(new Map(
+      [...this.submissions].flatMap(([rpcId, record]) =>
+        record.receipt !== undefined && adapter.ownsSubmission?.(rpcId) ? [[rpcId, record.receipt] as const] : []),
+    ));
     // 一条**已经交给服务端**的提交永远到不了 durable（判定见 `dsh/submissionReceipts.ts`）：
     // 「被领走却没落盘」是真的没发出去（标失败留行），「被有意取消」只撤回收显。
-    adapter.onSubmissionLost = (rpcId, reason) => this.settleLostSubmission(rpcId, reason);
+    adapter.onSubmissionLost = (rpcId, reason) => {
+      if (isCurrent() && adapter.ownsSubmission?.(rpcId)) this.settleLostSubmission(rpcId, reason);
+    };
     // 一条本客户端不认识、又不是 ignorable 的会话事件 → 黄色通知（`@unknownEvent:<type>`）。
     // 适配器在重放期间不回调，所以历史重放不会重新产出旧通知；`seq` 一起带过来，
     // 队列按**每会话水位**拒绝重发（不是新的实际发生，见 notificationQueue 文件头）。
@@ -6578,6 +6690,7 @@ export class ChatController implements vscode.Disposable {
   }
 
   private teardownStreams(): void {
+    this.trajectoryResults.suspendAll();
     // 每个域的 follow 流单独取消（域本身保留，重连时由 onConnected 重开）
     // **重试状态与开流代号一并作废**：只取消句柄的话，已经排下的那次重开、以及旧流迟到的
     // error / end，都还会按这个域再开一条流（域对象仍在 `scopes` 里，只看域的身份判据
@@ -6595,6 +6708,9 @@ export class ChatController implements vscode.Disposable {
     this.controlHandle?.cancel();
     this.eventsHandle?.cancel();
     this.workspaceHandle?.cancel();
+    // 作废旧世代：即使某次回调已经排进事件循环，落地时也会被 `openWorkspaceStream` 的
+    // 号判据丢掉，不能再把上一条连接的注册表写回来。
+    this.workspaceGeneration += 1;
     this.controlHandle = undefined;
     this.eventsHandle = undefined;
     this.workspaceHandle = undefined;
@@ -6605,6 +6721,13 @@ export class ChatController implements vscode.Disposable {
     // 那批 id 的含义不再保证（下次 `refreshSessions` 到达时整份重建）。清掉只是让
     // 「拿不到 cwd」这一段回到**未分组**兜底（`visibleForView` 第 3 档），不会遗留错目录。
     this.sessionCwds.clear();
+    // 注册表同样属于上一条连接：历史分组与「创建目录」候选都来自它，换服务器后旧
+    // 条目一个都不能留。清空后把「没有权威注册表」广播出去，界面退回会话 cwd 回退，
+    // 而不是继续显示上一台服务器的目录（新连接的 baseline 到达时会重新推一份）。
+    this.workspaces = [];
+    this.workspaceTitles.clear();
+    this.workspaceRegistryKnown = false;
+    this.emitScheduleProjects();
     // 同一份原始行上的预设账本一并作废（`adoptBlankShell` 照它报预设：另一台服务端上
     // 那个 id 的含义不再保证，宁可退回部署默认也不要递一个别处的预设过去）
     this.sessionPresets.clear();
@@ -6631,13 +6754,47 @@ export class ChatController implements vscode.Disposable {
   private openWorkspaceStream(): void {
     if (!this.client) return;
     this.workspaceHandle?.cancel();
+    // 新开一条流就是一个新世代：旧流已排队的回调拿旧号，落地时被下一条判据丢掉。
+    const generation = (this.workspaceGeneration += 1);
     this.workspaceHandle = this.client.openStream(
       "workspace/follow",
       {},
       {
-        onItem: (value) => this.onWorkspaceFrame(value as WorkspaceFollowFrameWire),
+        onItem: (value) => {
+          if (generation !== this.workspaceGeneration) return;
+          this.onWorkspaceFrame(value as WorkspaceFollowFrameWire);
+        },
       },
     );
+  }
+
+  /**
+   * 注册表 → 自动化任务「创建目录」候选（官方 `projectChoices` 的目录来源）。
+   *
+   * 同一份 `workspaces` 既回答历史分组，也是创建目录的候选：路径非空才成候选，同一
+   * 路径（按 `workspacePathKey`，Windows 两种分隔符等价）只留一条；标题缺失时界面
+   * 回退路径。`undefined` **只在还没有权威注册表时**出现（旧服务端没有这条流，或
+   * 连接刚被清理），与「注册表明确为空」的 `[]` 不是一回事。
+   */
+  private scheduleProjectsView(): ScheduleProjectView[] | undefined {
+    if (!this.workspaceRegistryKnown) return undefined;
+    const rows: ScheduleProjectView[] = this.workspaces.map((row) => {
+      const title = this.workspaceTitles.get(row.workspaceId) ?? "";
+      return title === "" ? { path: row.path } : { path: row.path, title };
+    });
+    // 过滤空路径 / 去重 / 空标题回退与会话那一侧的收窄共用同一份纯函数。
+    return scheduleProjectsFromWire(rows);
+  }
+
+  /**
+   * 把注册表候选广播给所有窗口。
+   *
+   * 这是**部署级**事实（与会话无关），但正在编辑的表单要跟着注册表的新增 / 删除 /
+   * 改名 / 排序实时变化，所以不等下一次首帧；`undefined` 过线时变 `null`（见
+   * `shared/wire.ts`），界面据此退回「只有会话 cwd」的旧口径。
+   */
+  private emitScheduleProjects(): void {
+    this.emitAll({ type: "patch", patch: { scheduleProjects: this.scheduleProjectsView() } });
   }
 
   /**
@@ -6649,6 +6806,8 @@ export class ChatController implements vscode.Disposable {
    *    「未分组」。
    * 2. **已归档会话集合**：每代以一个 `baseline` 开场，其后是 `archived` 增量
    *    （每次都是**完整集合**）。`session/list` 不分归档与否，归档过滤在客户端做。
+   * 3. **自动化任务的创建目录候选**：注册表行的 `path` / `title` 就是官方
+   *    `projectChoices` 的来源，随注册表变化广播给界面（见 `scheduleProjectsView`）。
    *
    * `replace` 落在**增量位**上（`WorkspaceFollowIncrement`），值却是一整份 `baseline`：
    * 同一代内替换此前交付的全部状态，不是新一代的开帧，只由服务端的访问过滤补发
@@ -6658,24 +6817,49 @@ export class ChatController implements vscode.Disposable {
     // 完整值帧：`baseline` 与 `replace` 共用这条应用路径（缺 `value` 的 `replace` 按既有
     // 边界当作坏帧忽略，不误清空）。
     const appliesFullValue = frame?.type === "baseline" || (frame?.type === "replace" && !!frame.value);
-    // 先消化注册表增量：`upsert` 换一条记录、`remove` 去掉一条、`order` 只影响
-    // 顺序（界面上不展示工作区本身，忽略）。`items` 是完整集合，直接替换。
+    // 先消化注册表增量：`upsert` 换一条记录、`remove` 去掉一条、`order` 重排（候选的
+    // 先后与官方 Workspace 列表同口径，必须跟上）。`items` 是完整集合，直接替换。
     let workspacesChanged = false;
+    /** 注册表内容 / 顺序变了：要重推创建目录候选（与会话分组刷新分开）。 */
+    let registryChanged = false;
     if (appliesFullValue) {
       this.workspaces = workspaceRows(frame?.value?.items);
+      this.workspaceTitles.clear();
+      for (const [workspaceId, title] of workspaceTitleEntries(frame?.value?.items)) {
+        this.workspaceTitles.set(workspaceId, title);
+      }
+      this.workspaceRegistryKnown = true;
       workspacesChanged = true;
+      registryChanged = true;
     } else if (frame?.type === "upsert" && frame.workspace) {
       const row = workspaceRow(frame.workspace);
       if (row) {
         const index = this.workspaces.findIndex((item) => item.workspaceId === row.workspaceId);
         if (index >= 0) this.workspaces[index] = row;
         else this.workspaces.push(row);
+        // 标题是候选显示用的独立投影：upsert 是整行替换，缺标题就清掉旧值。
+        this.workspaceTitles.set(row.workspaceId, workspaceTitle(frame.workspace) ?? "");
+        this.workspaceRegistryKnown = true;
         workspacesChanged = true;
+        registryChanged = true;
       }
     } else if (frame?.type === "remove" && frame.workspaceId) {
       const before = this.workspaces.length;
       this.workspaces = this.workspaces.filter((item) => item.workspaceId !== frame.workspaceId);
+      this.workspaceTitles.delete(frame.workspaceId);
       workspacesChanged = this.workspaces.length !== before;
+      this.workspaceRegistryKnown = true;
+      registryChanged = workspacesChanged;
+    } else if (frame?.type === "order" && Array.isArray(frame.workspaceIds)) {
+      const rank = new Map(frame.workspaceIds.map((id, index) => [id, index] as const));
+      const ordered = [...this.workspaces].sort(
+        (left, right) =>
+          (rank.get(left.workspaceId) ?? Number.MAX_SAFE_INTEGER) -
+          (rank.get(right.workspaceId) ?? Number.MAX_SAFE_INTEGER),
+      );
+      registryChanged = ordered.some((row, index) => row !== this.workspaces[index]);
+      this.workspaces = ordered;
+      this.workspaceRegistryKnown = true;
     }
 
     let archivedChanged = false;
@@ -6705,6 +6889,10 @@ export class ChatController implements vscode.Disposable {
         }
       }
     }
+
+    // 注册表（含顺序）变了：先推创建目录候选，再决定要不要重算历史列表。顺序帧只
+    // 影响候选先后，不必整份重拉会话（`workspacesChanged` 仍为假）。
+    if (registryChanged) this.emitScheduleProjects();
 
     if (!workspacesChanged && !archivedChanged) return;
     // 注册表变了**整份重算**：新会话被记进工作区（或工作区被删）会直接改变
@@ -6831,7 +7019,14 @@ export class ChatController implements vscode.Disposable {
    * - **什么都不做**：`title`（历史抽屉那一行有自己的标题兜着）。
    */
   private readonly projectionHandlers: ProjectionHandlers = {
-    inbox: (scope, value) => this.applyInboxProjection(scope, value),
+    inbox: (scope, value, _present, source) => {
+      this.applyInboxProjection(scope, value);
+      // 先发布队列，再交接承认；snapshot 的回执截点与初始化由 adapter 统一处理。
+      // baseline 清键也必须同步未知水位，不能让旧高水位错误放行之后的承认。
+      if (source !== "snapshot") {
+        scope.adapter?.noteInboxProjection(value, scope.projections.seqOf("inbox"));
+      }
+    },
     modelSelection: (scope, value, present) => this.applyModelSelectionProjection(scope, value, present),
     permissions: (scope, value, present) => this.applyPermissionProjection(scope, value, present),
     plan: (scope, value, present) => this.applyPlanProjection(scope, value, present),
@@ -8749,6 +8944,8 @@ export class ChatController implements vscode.Disposable {
   async handle(message: WebviewToHost, viewId: string): Promise<void> {
     switch (message.type) {
       case "ready":
+        // 新页面的 watchId 从头计数；旧页面未卸载干净也不能占住结果观察。
+        this.trajectoryResults.close(viewId);
         // 记下「这个窗口的页面已经就绪」：认领可能比 `ready` 更晚才落下，那一刻要回来
         // 叫醒它（见 `flushRestoreClaims`）
         this.readyViews.add(viewId);
@@ -9338,6 +9535,24 @@ export class ChatController implements vscode.Disposable {
           });
         break;
       }
+
+      case "watchTrajectoryResult": {
+        const scope = this.scopeOfView(viewId);
+        if (!scope || !this.client || this.connection !== "connected") {
+          this.trajectoryResults.close(viewId);
+          this.emitToView(viewId, {
+            type: "trajectory/result", seq: message.seq, watchId: message.watchId, available: false,
+          });
+          break;
+        }
+        // 会话身份取宿主绑定，不接受界面指定另一条会话；只读当前选中的结果。
+        this.trajectoryResults.observe(viewId, message.watchId, scope.sessionId, message.seq,
+          this.client, (frame) => this.emitToView(viewId, frame));
+        break;
+      }
+      case "unwatchTrajectoryResult":
+        this.trajectoryResults.close(viewId, message.watchId);
+        break;
 
       case "observeJob": {
         // 展开一行后台任务 → 开始观察它的实时输出（`job/follow`）。
@@ -10994,6 +11209,7 @@ export class ChatController implements vscode.Disposable {
       content: [...content],
       at: Date.now(),
       sessionId,
+      receiptClient: this.client,
     });
   }
 
@@ -11588,7 +11804,10 @@ export class ChatController implements vscode.Disposable {
   private settleSubmissionRecord(rpcId: string | undefined): void {
     if (!rpcId) return;
     const record = this.submissions.get(rpcId);
-    if (record) record.settled = true;
+    if (record) {
+      record.settled = true;
+      record.receipt = undefined;
+    }
   }
 
   /**
@@ -13291,6 +13510,7 @@ export class ChatController implements vscode.Disposable {
 
   dispose(): void {
     this.disposed = true;
+    this.trajectoryResults.closeAll();
     // 已打开的执行世界资源随连接一起失效：关闭后 provider 明确报不可用。
     this.hostFileConnections.clear();
     this.hostFiles?.close();

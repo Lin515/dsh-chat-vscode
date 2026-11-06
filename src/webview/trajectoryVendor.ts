@@ -10,12 +10,9 @@
  *
  * ## 已知的「喂不满」（都是差距清单里的条目，不是这里写错了）
  *
- * - `outputBlocks`：宿主还没采集。2026-10-04 量过真实日志后判断**不必采**：官方三处
- *   `outputBlocks`（工具结果 35437 处、压缩摘要 8 处、助手消息）里，工具结果那部分的
- *   内容就是内层 text 块的原文（`tool-result` 信封再套一层 JSON），而那份原文已经原样在
- *   `outputDetail` / `resultPreviewMarkdown` 里、搜索面早就有它——再采一遍等于把同一份
- *   结果文本存两份（实测 35k 块、7400 万字符）。详细核算见 `docs/design-trajectory.md`
- *   的「搜索」那条。
+ * - `outputBlocks`：**已在喂**（工具结果 / PTC 子调用 / 压缩摘要的原始输出块）。
+ *   搜索索引按 `attachment.name` 与块原文读图片 / 文件附件名；这是官方
+ *   `TrajectoryCellProps.outputBlocks` 的原样透传，不再省略。
  * - `promptDetail` / `previousPromptDetail`：**已经在喂**（`promptSnapshot()` 把
  *   `systemPromptDetail` + `toolsDetail` 合成官方那个 `{system, tools}` 快照）。
  *   官方那份多带一个 `config`，但 `config` 的四个键（provider / model /
@@ -42,7 +39,8 @@ export const NO_GROUP_TITLE = "";
  *
  * | 我们 | 官方 | 说明 |
  * |---|---|---|
- * | `seq` | `sourceSeq` | 官方用它做跨记录定位与 `recordId` 回退链的二级身份 |
+ * | `seq` | `sourceSeq` | 官方用它做跨记录定位与 `recordId` 回退链的二级身份；工具格有调用身份时不给（见 `toolHasCall`） |
+ * | `resultSeq` | `resultSeq` | 已提交结果事件的 seq（检查器定位那次结果） |
  * | `messageSource` | `messageSource` | 官方原样 JSON 化后进搜索索引 |
  * | `systemPromptDetail` + `toolsDetail` | `promptDetail` | 官方那是一个 `{system, tools}` 快照 |
  * | `previousSystemPromptDetail` | `previousPromptDetail` | 同上，被替换前的那一份 |
@@ -57,13 +55,24 @@ export const NO_GROUP_TITLE = "";
 export function vendorCell(cell: TrajectoryCell): TrajectoryCellProps {
   const prompt = promptSnapshot(cell);
   const previousPrompt = previousPromptSnapshot(cell);
+  /**
+   * 官方工具格的 `sourceSeq` 语义：**有调用身份的格没有单一来源事件**——调用与结果
+   * 是两个事件，布局只给 `resultSeq`（已提交结果）与 `callId`。只有「没有调用、
+   * 只有结果」的补行才把结果事件的 seq 当 `sourceSeq`。本扩展的 `TrajectoryCell.seq`
+   * 在调用格上是**调用事件**（Schema 回补要用它），不能冒充官方 `sourceSeq`；
+   * 有 `callId` 时记录身份仍由它稳定，不受影响。
+   */
+  const toolHasCall =
+    (cell.kind === "tool" || cell.kind === "subtool")
+    && cell.toolName !== undefined
+    && cell.callId !== undefined;
   return {
     index: cell.index,
     kind: cell.kind,
     text: cell.text,
     ...(cell.previewMarkdown === undefined ? {} : { previewMarkdown: cell.previewMarkdown }),
     ...(cell.opensTurn === undefined ? {} : { opensTurn: cell.opensTurn }),
-    sourceSeq: cell.seq,
+    ...(toolHasCall ? {} : { sourceSeq: cell.seq }),
     ...(cell.messageSource === undefined ? {} : { messageSource: cell.messageSource }),
     ...(cell.requestOnly === undefined ? {} : { requestOnly: cell.requestOnly }),
     ...(cell.inputDetail === undefined ? {} : { inputDetail: cell.inputDetail }),
@@ -73,9 +82,11 @@ export function vendorCell(cell: TrajectoryCell): TrajectoryCellProps {
       : { systemPromptDetail: cell.systemPromptDetail }),
     ...(previousPrompt === undefined ? {} : { previousPromptDetail: previousPrompt }),
     ...(cell.outputDetail === undefined ? {} : { outputDetail: cell.outputDetail }),
+    ...(cell.resultSeq === undefined ? {} : { resultSeq: cell.resultSeq }),
     ...(cell.thinkingDetail === undefined ? {} : { thinkingDetail: cell.thinkingDetail }),
     ...(cell.assistantMetrics === undefined ? {} : { assistantMetrics: cell.assistantMetrics }),
     ...(cell.sourceBlocks === undefined ? {} : { sourceBlocks: cell.sourceBlocks }),
+    ...(cell.outputBlocks === undefined ? {} : { outputBlocks: cell.outputBlocks }),
     ...(cell.schemaDetail === undefined ? {} : { schemaDetail: cell.schemaDetail }),
     ...(cell.result === undefined ? {} : { result: cell.result }),
     ...(cell.resultPreviewMarkdown === undefined

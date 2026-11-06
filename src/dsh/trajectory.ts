@@ -287,20 +287,158 @@ function callIdsOf(content: unknown): string[] {
   return ids;
 }
 
+/** 助手内容块里的一次工具调用（官方 `AssistantBlock.kind === 'tool-call'`）。 */
+interface ToolCallBlockView {
+  readonly callId: string;
+  readonly name: string;
+  readonly argsRaw: string;
+}
+
 /**
- * 工具结果正文：**两种信封都认，新形状优先**（与 adapter 的 `toolResultParts` 同口径）。
+ * 助手消息里的工具调用块 → 与官方 `assistantSourceBlock()` / `expandAssistant()` 同一份输入。
+ *
+ * 官方布局从**助手消息的 `tool-call` 块**生成工具格（`blocks.filter(kind==='tool-call')`），
+ * `tool/call` 事件不是它的身份来源。本地过去只按 `tool/call` 建行，窗口里若只有助手块与
+ * 结果（截断把独立的调用事件切掉）就会退化成「只有结果」补行；这里把块本身作为建行输入，
+ * 后续 `tool/call` 只补调用时目录与开始时刻，不再新开一行。
+ */
+function toolCallBlocksOf(content: unknown): ToolCallBlockView[] {
+  if (!Array.isArray(content)) return [];
+  const out: ToolCallBlockView[] = [];
+  for (const block of content) {
+    const typed = block as {
+      type?: unknown;
+      id?: unknown;
+      callId?: unknown;
+      name?: unknown;
+      arguments?: unknown;
+    } | undefined;
+    if (typed?.type !== "tool-call") continue;
+    const rawId = typed.id ?? typed.callId;
+    if (typeof rawId !== "string" || rawId === "") continue;
+    const name = typeof typed.name === "string" ? typed.name : "";
+    const argsRaw =
+      typeof typed.arguments === "string"
+        ? typed.arguments
+        : typed.arguments === undefined ? "" : JSON.stringify(typed.arguments);
+    out.push({ callId: rawId, name, argsRaw });
+  }
+  return out;
+}
+
+/**
+ * 工具结果的**内容块**：两种信封都认，新形状优先（与 adapter 的 `toolResultParts` 同口径）。
  *
  * - 新形状（0.1.7-alpha.1 起）：内容块直接是 `message.content`；
  * - 旧信封（0.1.6-alpha.2 及更早）：文本在**嵌套**的 `tool-result` 块里。
+ *
+ * 官方的 `ToolResultNode.content` 已经是核心内容块；这一层只把旧信封抬成同一形状，
+ * 好让后面几个纯函数（摘要 / 详情 / 图片计数）逐条照官方口径读。没有嵌套块时原样返回。
  */
-function resultText(content: unknown): string {
-  if (!Array.isArray(content)) return "";
+function resultContentBlocks(content: unknown): unknown[] {
+  if (!Array.isArray(content)) return [];
   const nested = content.filter(
     (block): block is { content?: unknown } => (block as { type?: string } | undefined)?.type === "tool-result",
   );
-  if (nested.length === 0) return blocksToText(content);
+  if (nested.length === 0) return content;
   const inner = nested.flatMap((block) => (Array.isArray(block.content) ? (block.content as unknown[]) : []));
-  return blocksToText(inner.length ? inner : content);
+  return inner.length ? inner : content;
+}
+
+/**
+ * 工具结果的文本块正文（官方 `detailResult()` 的 `text` 分支）：只认 `text` 块、
+ * 按顺序用 `\n` 连接，**不 trim**——官方那份保留块内的首尾空白（带尾换行的结果
+ * 原文就是带尾换行）。
+ */
+function resultText(content: unknown): string {
+  return resultContentBlocks(content)
+    .filter(
+      (block): block is { type: "text"; text: string } =>
+        (block as { type?: unknown; text?: unknown } | undefined)?.type === "text"
+        && typeof (block as { text?: unknown }).text === "string",
+    )
+    .map((block) => block.text)
+    .join("\n");
+}
+
+/**
+ * 官方 `summarizeResult()` 的**正文优先**：第一个 `text` 块且 `text !== ""`。
+ *
+ * 不是「把所有文本块拼起来」——列表那一栏只显示首块；全部正文另有 `outputDetail`
+ * （`detailResult()` 用 `\n` 连接）。
+ */
+function firstResultText(content: unknown): string | undefined {
+  for (const block of resultContentBlocks(content)) {
+    const entry = block as { type?: unknown; text?: unknown } | undefined;
+    if (entry?.type === "text" && typeof entry.text === "string" && entry.text !== "") return entry.text;
+  }
+  return undefined;
+}
+
+/**
+ * 官方 `detailResult()`：工具结果详情页的完整正文。
+ *
+ * 判据顺序与官方逐条一致：
+ * 1. 有非空文本（按 `\n` 连接，保留首尾空白）→ 原文；
+ * 2. 失败且没有正文 → `${error.name}: ${error.code}`（缺 `error` 就是 `error`）；
+ * 3. 只有图片 / 什么都没有 → 宿主给**语义**（`resultSummary`），这里不出文案
+ *    （宿主不知道界面语言，官方那两句是本地化文案）；
+ * 4. 其余内容（未知块 / 文件块）→ 整份 JSON。
+ *
+ * @param content - `tool/result` 的线格式内容（新旧信封都认）。
+ * @param error - `data.error`（失败对象）。
+ * @param isError - 失败判据（`resultIsError()`）。
+ * @returns 详情正文；只用语义摘要表示时是 `undefined`。
+ */
+function detailResultOf(content: unknown, error: unknown, isError: boolean): string | undefined {
+  const blocks = resultContentBlocks(content);
+  const text = resultText(content);
+  const hasNonEmptyText = blocks.some(
+    (block) =>
+      (block as { type?: unknown; text?: unknown } | undefined)?.type === "text"
+      && typeof (block as { text?: unknown }).text === "string"
+      && (block as { text: string }).text !== "",
+  );
+  // 官方条件是 `text !== '' && (!node.isError || 至少一个非空 text 块)`：失败时
+  // 只有真正带正文才遮蔽错误详情（多个空块 join 出来的 `\n` 不算正文）。
+  if (text !== "" && (!isError || hasNonEmptyText)) return text;
+  if (isError) {
+    return resultErrorDetail(error);
+  }
+  if (blockCount(blocks, "image") > 0) return undefined;
+  if (
+    blocks.length === 0
+    || blocks.every(
+      (block) =>
+        (block as { type?: unknown; text?: unknown } | undefined)?.type === "text"
+        && typeof (block as { text?: unknown }).text === "string"
+        && (block as { text: string }).text === "",
+    )
+  ) {
+    return undefined;
+  }
+  return JSON.stringify(blocks, null, 2);
+}
+
+/**
+ * 官方 `detailResult()` 的失败正文：`node.error === undefined ? 'error' : `${name}: ${code}``。
+ *
+ * 线格式的 `data.error` 在真实日志里是对象；这里对字符串 / 缺字段的畸形形态做
+ * **适配边界**处理：能读出 `name` / `code` 就按官方拼接，读不出就退回错误码或
+ * 原字符串，不产出 `undefined: undefined`。
+ */
+function resultErrorDetail(error: unknown): string {
+  if (error !== null && typeof error === "object") {
+    const record = error as { name?: unknown; code?: unknown; message?: unknown };
+    const name = typeof record.name === "string" && record.name !== "" ? record.name : undefined;
+    const code = typeof record.code === "string" && record.code !== "" ? record.code : undefined;
+    if (name !== undefined && code !== undefined) return `${name}: ${code}`;
+    if (code !== undefined) return code;
+    if (name !== undefined) return name;
+    if (typeof record.message === "string" && record.message !== "") return record.message;
+  }
+  if (typeof error === "string" && error !== "") return error;
+  return "error";
 }
 
 /** 工具结果是不是失败。
@@ -332,22 +470,25 @@ function resultErrorCode(error: unknown): string {
 /**
  * 官方 `summarizeResult()`：工具结果那一栏显示什么。
  *
- * 四条分支逐字对应官方（`layout.ts`）：
- * - 失败 → `result` 存**错误码**；
- * - 有文本块 → `resultPreviewMarkdown` 存**原文**（不是截好的摘要！截断在界面侧，
- *   官方列表显示的是它的预览）；
- * - 只有图片 → 语义「图片 ×N」（文案在界面侧取，宿主不知道语言）；
- * - 什么都没有 → 语义「无输出」。
+ * 判据顺序与官方逐条一致（**正文优先**）：
+ * 1. **有非空文本块** → `result` 是空串、`resultPreviewMarkdown` 是**第一个**非空
+ *    文本块的原文（不是截好的摘要！截断在界面侧）；
+ * 2. 失败且没有正文 → `result` 存**错误码**；
+ * 3. 只有图片 → 语义「图片 ×N」（文案在界面侧取，宿主不知道语言）；
+ * 4. 什么都没有 → 语义「无输出」。
+ *
+ * 从前把失败判在正文之前：错误结果即使带完整正文也只显示错误码，原文被整段吞掉；
+ * 官方不是这个口径（`isError` 只决定颜色 / 状态，不遮蔽正文）。
  */
 function resultSummaryOf(
   content: unknown,
   error: unknown,
   isError: boolean,
 ): Pick<TrajectoryCell, "result" | "resultPreviewMarkdown" | "resultSummary"> {
+  const text = firstResultText(content);
+  if (text !== undefined) return { result: "", resultPreviewMarkdown: text };
   if (isError) return { result: resultErrorCode(error) };
-  const text = resultText(content);
-  if (text) return { resultPreviewMarkdown: text };
-  const images = blockCount(content, "image");
+  const images = blockCount(resultContentBlocks(content), "image");
   if (images > 0) return { resultSummary: { kind: "images", count: images } };
   return { resultSummary: { kind: "no-output" } };
 }
@@ -395,16 +536,22 @@ function toolCatalogUpdate(
 }
 
 /**
- * 官方 `resultAsText()`：**没有调用只有结果**的行，正文直接取自结果本身
- * （`text` 与 `previewMarkdown` 都是它），而不是「tool」这种占位名。
+ * 官方 `resultAsText()`：**没有调用只有结果**的行，正文直接取自结果摘要本身
+ * （`text` 就是 `result`，原文另给 `previewMarkdown`），而不是「tool」这种占位名。
+ *
+ * 有正文时 `result` 是空串、原文在 `previewMarkdown`——所以这里的 `text` 留空，
+ * 由列表把原文预览拼成结果栏。**不能**像从前那样把预览同时塞进 `text` 和
+ * `previewMarkdown`：界面会拼出「正文 · 正文」两遍。
  */
 function resultAsText(
   summary: Pick<TrajectoryCell, "result" | "resultPreviewMarkdown" | "resultSummary">,
 ): Pick<TrajectoryCell, "text" | "previewMarkdown"> {
-  if (summary.resultPreviewMarkdown !== undefined) {
-    return { text: summary.resultPreviewMarkdown, previewMarkdown: summary.resultPreviewMarkdown };
-  }
-  return { text: summary.result ?? "" };
+  return {
+    text: summary.result ?? "",
+    ...(summary.resultPreviewMarkdown === undefined
+      ? {}
+      : { previewMarkdown: summary.resultPreviewMarkdown }),
+  };
 }
 
 /**
@@ -943,7 +1090,7 @@ export function deriveTrajectoryModel(
    *
    * 本扩展不发布流式正文（刻意差异 1），但布局要用到它的**身份**：官方那个身份进
    * `TrajectorySnapshot.partial`（`buildViewNode()` 的条件是
-   * `node === undefined && boundary === undefined && state.sawChunk`），而布局有两处读它：
+   * `node === undefined && boundary === undefined && state.blocks.length > 0`），而布局有两处读它：
    * 初始提示词行的 `firstVisibleTurn(nodes, partial)` 把 `partial.turn > 0` 并进候选，
    * 系统**更新**行的 `enclosingPromptTurn(nodes, seq, partial)` 在没有随后助手节点时回落到
    * `partial?.turn ?? 1`。拿窗口当前的 `currentTurn` 顶替会在「窗口截断 / 整轮收尾之后再改
@@ -992,8 +1139,23 @@ export function deriveTrajectoryModel(
      * 由 `fallbackState()` 按它自己的帧重放，而那一路**没有 retry 分支**。
      */
     started: boolean;
-    /** 见过任何 `assistant/live-chunk`（`usage` / `finish` / 未知 `type` 同样置位）。 */
-    sawChunk: boolean;
+    /**
+     * `step/start` 的事件时刻（官方 `AssistantState.startTime`）。
+     *
+     * 没有 `step/start` 的孤儿身份由 `fallbackState()` 用第一帧时刻建 state，但
+     * `started: false`，于是官方 `timing.stepStartTime` 仍是 null。重复
+     * `step/start` 不改它（装配器把第二次当 `update`，`initialState()` 不再跑）。
+     */
+    startTime: number | null;
+    /**
+     * 首个 token 时刻（官方 `AssistantState.firstTokenTime`）。
+     *
+     * 三条来源、**先到者胜**：`assistant/live-chunk` 里的合格 token 增量、
+     * `assistant/attempt` / `assistant/message` 的 `stream`（`settleTiming()`）。
+     * `llm/retry` 的 `initialState()` 整份重置会**保留**它（官方显式带
+     * `firstTokenTime: state.firstTokenTime`），所以布局与计时都读这一份。
+     */
+    firstTokenTime: number | undefined;
     /**
      * 当前 `final`（最新一次 `assistant/message`）的事件号；`undefined` = 没有当前节点。
      *
@@ -1025,7 +1187,8 @@ export function deriveTrajectoryModel(
       step,
       firstSeq: seq,
       started: false,
-      sawChunk: false,
+      startTime: null,
+      firstTokenTime: undefined,
       finalSeq: undefined,
       blocks: new Map(),
     };
@@ -1048,7 +1211,7 @@ export function deriveTrajectoryModel(
    * 官方 `updateChunk()` 里与**证据**有关的那部分（逐槽位语义逐字对齐：`block-start`
    * 覆盖成空块、`text-delta` / `reasoning-delta` 同类追加 / 异类替换、`tool-call-delta`
    * 覆盖成工具调用块、`block-end` 整份替换成最终块；`usage` / `finish` / 未知 `type`
-   * 落 `default`，**不动块**，只由调用方置 `sawChunk`）。
+   * 落 `default`，**不动块**）。
    *
    * **肯定证据的类型守卫**：要读的字段形状不对（下标非法、增量不是字符串、`block-end` 的
    * `block` 不是对象 / 没有字符串 `type`、`block-start` 没有字符串 `blockType`）时**不动槽位**
@@ -1122,26 +1285,36 @@ export function deriveTrajectoryModel(
   /**
    * 步骤自己的 `step/end`（官方 `closedBoundary()` 的第一、二条来源：状态机的 `stepEnd`
    * 与位置索引里步骤已关闭——两者指向**同一个事件**），键与 `streamStates` 同套 `turn:step`。
-   * 值取边界帧的 `seq`（合成节点的落点是它减 0.9，只要 `seq`）。后到者胜：官方位置索引里
-   * 一个步骤的 `end` 也是被后一条 `step/end` 覆盖的。
+   * 值取边界帧的 `seq` / `time`：合成节点的落点是 `seq - 0.9`，请求的 `completedAt`
+   * 取 `time`。后到者胜：官方位置索引里一个步骤的 `end` 也是被后一条 `step/end` 覆盖的。
    */
-  const closedSteps = new Map<string, number>();
+  const closedSteps = new Map<string, { seq: number; time: number }>();
   /** 各轮的 `turn/end`（官方第三条来源：位置索引里轮次已关闭 → 边界取 `turn.end`）。 */
-  const closedTurns = new Map<number, number>();
+  const closedTurns = new Map<number, { seq: number; time: number }>();
 
   /**
    * 这个身份的**闭合边界**（官方 `closedBoundary()` 的优先级逐条照搬：步骤自己的
-   * `step/end` 优先，其次它所在轮次已经 `turn/end`）。返回边界帧的 `seq`。
+   * `step/end` 优先，其次它所在轮次已经 `turn/end`）。
    *
    * 两条来源都**不要求**此刻已有流状态：官方第一条读状态机的 `stepEnd`、第二 / 三条读
    * 位置索引（按窗口里的事件算），窗口里没有该身份的状态时官方 `buildViewNode()` 照样
    * 返回 `null`（`currentAssistantNodes()` 只遍历流状态，天然同判）。
+   *
+   * **位置索引不随 `llm/retry` 的 state 重置消失**：状态机的 `stepEnd` 会被重置清掉，
+   * 但 `location.step.status === 'closed'` / `location.turn.status === 'closed'` 仍成立。
+   * 所以 step/end 先于 retry 时，官方 `assistantRequest()` 仍取该边界（状态 error、
+   * `completedAt = boundary.time`）。
    */
-  const boundarySeqOf = (state: AssistantStreamState): number | undefined => {
-    const byStep = closedSteps.get(stepKey(state.turn, state.step));
+  const boundaryOf = (
+    turn: number | null,
+    step: number | null,
+  ): { seq: number; time: number } | undefined => {
+    const byStep = closedSteps.get(stepKey(turn, step));
     if (byStep !== undefined) return byStep;
-    return state.turn === null ? undefined : closedTurns.get(state.turn);
+    return turn === null ? undefined : closedTurns.get(turn);
   };
+  const boundarySeqOf = (state: AssistantStreamState): number | undefined =>
+    boundaryOf(state.turn, state.step)?.seq;
 
   /**
    * 官方的**当前**助手节点表（`TrajectorySnapshot.eventNodes` 里 `kind === 'assistant'`
@@ -1156,13 +1329,13 @@ export function deriveTrajectoryModel(
    * **整窗折完之后按当前贡献导出，不增量维护**：官方快照每次装配都从当前状态重建——
    * `llm/retry` 的整份重置、`block-start` 覆盖掉已可见的证据之后，官方那一个节点当场消失。
    * 增量维护（见过证据就永久留一个节点）会给出官方已经不存在的候选，本批的 P8 就是反例。
-   * 官方另有「还在跑」的 `partial`（`node === undefined && boundary === undefined && sawChunk`），
-   * 那不是节点，另算。
+   * 官方另有「还在跑」的 `partial`（`node === undefined && boundary === undefined
+   * && state.blocks.length > 0`），那不是节点，另算。
    *
    * **一个身份只有一个节点**（官方一个 definition id 一个 Context、快照层每个 key 只留一份
    * 贡献）；本扩展账本侧「每次结算各出一行」是既定差异、只作展示，不参与归轮。
    *
-   * 官方自己的用例（固定 `639ed015…` 的
+   * 官方自己的用例（固定 `66491b0…` 的
    * `packages/client/ui-trajectory/tests/conversation-definitions.client.spec.ts`：
    * `live-chunk{text:'second attempt'}` + `step/end` → `eventNodes: [{ seq: 6.1,
    * interrupted: true, … }]`）说明「chunk 证据还在 + 已闭合边界」同时成立是合法可达的。
@@ -1223,6 +1396,9 @@ export function deriveTrajectoryModel(
     request.completedAt = time;
     request.status = error === undefined ? "complete" : "error";
     if (error !== undefined) request.error = error;
+    // 官方压缩请求的 `resultSeq` 是 `startSeq`（`status !== 'running'` 才给），
+    // 助手请求的 `resultSeq` 另由最终 `assistant/message` 写。
+    if (request.purpose === "compaction") request.resultSeq = request.seq;
   };
 
   /**
@@ -1407,29 +1583,57 @@ export function deriveTrajectoryModel(
          */
         {
           const closedTurn = turn ?? currentTurn;
-          if (closedTurn !== null) closedTurns.set(closedTurn, event.seq);
+          if (closedTurn !== null) closedTurns.set(closedTurn, { seq: event.seq, time });
         }
         locationStep = null;
         break;
       }
 
       case "step/start": {
-        // 每个 step = 一次模型请求：请求编号在这里递增（见文件头的差异 4）
-        requestNumber += 1;
         currentStep = typeof data.step === "number" ? data.step : null;
         locationStep = currentStep;
         if (typeof data.turn === "number") currentTurn = data.turn;
-        startedSteps.set(stepKey(currentTurn, currentStep), {
-          turn: currentTurn,
-          step: currentStep,
-          time,
-          seq: event.seq,
-          requestNumber,
-        });
+        const identity = stepKey(currentTurn, currentStep);
+        /**
+         * 官方请求是**一个 identity 一份**（`assistantRequest()` 由那份 state 投影）：
+         * 同一个 `turn:step` 重复 `step/start` 只走装配器的 `update`（definition 对它
+         * `return context.state`），不新开请求、不改 `startedAt` / `startSeq` / 编号。
+         * 所以这里只为**第一次**出现的 identity 开请求；重复帧只保留原有请求与
+         * `startedSteps` 的首帧编号。
+         */
+        let stepRequest = assistantRequests.get(identity);
+        if (stepRequest === undefined) {
+          requestNumber += 1;
+          startedSteps.set(identity, {
+            turn: currentTurn,
+            step: currentStep,
+            time,
+            seq: event.seq,
+            requestNumber,
+          });
+          stepRequest = startRequest({
+            purpose: "assistant",
+            turn: currentTurn,
+            step: currentStep ?? 0,
+            seq: event.seq,
+            // 官方 `initialState()` 的 `startTime` 就是 `step/start` 的事件时刻
+            startedAt: typeof time === "number" ? time : null,
+            completedAt: null,
+            status: "running",
+          });
+          /**
+           * 这一步还没收到自己的 header 时，先继承「最近生效的配置」（官方
+           * `headerFor()` 的第二条分支：`previous.seq < request.startSeq`）。这一步随后
+           * 收到 header 的话，由 `request/header` 那一支整份替换掉。重复 `step/start`
+           * 不重新继承（官方那一次 update 什么都不改）。
+           */
+          applyHeaderConfig(stepRequest, effectiveHeader);
+        }
         /**
          * `step/start` 是官方那台状态机的 `start`：**重建**这个身份的 state
-         * （`initialState()` → `sawChunk: false` / `final: undefined` / `blocks: []`）。
-         * `firstSeq` 沿用已有条目的：官方 contributions 的先后按它第一次出现的位置算。
+         * （`initialState()` → `final: undefined` / `blocks: []` / `firstTokenTime: undefined`，
+         * `startTime` 取这一帧时刻）。`firstSeq` 沿用已有条目的：官方 contributions 的
+         * 先后按它第一次出现的位置算。
          *
          * `started: true` 是给 `llm/retry` 用的判据：官方装配器只在
          * `context.start !== undefined`（也就是窗口里见过 `step/start`）时才把后续帧交给
@@ -1440,15 +1644,12 @@ export function deriveTrajectoryModel(
          * 一条 `step/start` 时 `context.start` 已经有了，它走 `update`，而 assistant definition
          * 的 `update` 对 `match.event.type === 'step/start'` 落到最后那句 `return context.state`
          * （只有 `llm/retry` 才整份重置）。所以**重复 `step/start` 一个字都不改**：`final`、
-         * `sawChunk`、`stepEnd`（→ 闭合边界与合成中断节点）、块证据全部原样保留。
+         * 块证据、首 token、`stepEnd`（→ 闭合边界与合成中断节点）全部原样保留。
          *
          * 从前这里无条件重建并把布局节点整条删掉，等于把重复 `step/start` 当成官方不存在的
          * 第二次开帧：已结算的当前节点消失、已闭合的中断贡献被撤销（本批 P9/P10/P11）。
-         * 请求表那一份（`startRequest` / `startedSteps` 的开帧编号）仍按每次 `step/start`
-         * 走——那是既定口径，本批不动它，也不宣称与官方请求表等价。
          */
         {
-          const identity = stepKey(currentTurn, currentStep);
           const previousStream = streamStates.get(identity);
           if (previousStream?.started !== true) {
             streamStates.set(identity, {
@@ -1456,28 +1657,13 @@ export function deriveTrajectoryModel(
               step: currentStep,
               firstSeq: previousStream?.firstSeq ?? event.seq,
               started: true,
-              sawChunk: false,
+              startTime: typeof time === "number" ? time : null,
+              firstTokenTime: undefined,
               finalSeq: undefined,
               blocks: new Map(),
             });
           }
         }
-        const stepRequest = startRequest({
-          purpose: "assistant",
-          turn: currentTurn,
-          step: currentStep ?? 0,
-          seq: event.seq,
-          // 官方 `initialState()` 的 `startTime` 就是 `step/start` 的事件时刻
-          startedAt: typeof time === "number" ? time : null,
-          completedAt: null,
-          status: "running",
-        });
-        /**
-         * 这一步还没收到自己的 header 时，先继承「最近生效的配置」（官方
-         * `headerFor()` 的第二条分支：`previous.seq < request.startSeq`）。这一步随后
-         * 收到 header 的话，由 `request/header` 那一支整份替换掉。
-         */
-        applyHeaderConfig(stepRequest, effectiveHeader);
         break;
       }
 
@@ -1485,9 +1671,10 @@ export function deriveTrajectoryModel(
         /**
          * 结算时刻与「还在跑」的判据都用它；助手行自己的 `completedTime` 另有来源。
          *
-         * **不能按状态筛**：重试过的那一步在 `llm/retry` 时已经是 `error`（官方亦然），
-         * 而它照样会被 `step/end` 关掉——按「状态是 running」筛会让失败请求永远
-         * `completedAt === null`，计时面板把一次已经结束的请求画成「运行中」。
+         * **不能按状态筛**：被中断 / 已重试的那一步仍可能停在 `running`（官方状态
+         * 分支只看节点与边界），而它照样会被 `step/end` 关掉——按「状态是 running」筛
+         * 会让失败请求永远 `completedAt === null`，计时面板把一次已经结束的请求画成
+         * 「运行中」。
          * 只给**这一步的助手请求**收尾（按 `turn:step` 找，不是「最后开的请求」——
          * 那可能是这一步中途的压缩），不回溯更早的请求。
          */
@@ -1538,7 +1725,7 @@ export function deriveTrajectoryModel(
         {
           const endTurn = typeof data.turn === "number" ? data.turn : currentTurn;
           const endStep = typeof data.step === "number" ? data.step : currentStep;
-          if (endStep !== null) closedSteps.set(stepKey(endTurn, endStep), event.seq);
+          if (endStep !== null) closedSteps.set(stepKey(endTurn, endStep), { seq: event.seq, time });
         }
         break;
       }
@@ -1590,7 +1777,7 @@ export function deriveTrajectoryModel(
           const failure = displayFailure(data.failure);
           /**
            * 官方 `update` 的 `llm/retry` 分支是**整份重置**（`trajectory-assistant-definition.ts`，
-           * 固定 `639ed015…`）：
+           * 固定 `66491b0…`）：
            *
            *     return { ...initialState(state.turn, state.step, state.startSeq, state.startTime, true),
            *              firstTokenTime: state.firstTokenTime, usage: state.usage, retry: {…} }
@@ -1600,7 +1787,8 @@ export function deriveTrajectoryModel(
            * - `state.final` 没了 → `node` 为 `undefined`：`completedAt = boundary?.time ?? null`
            *   （旧 final 的收尾时刻作废，等新 final 或步骤 / 轮次边界补）、
            *   `providerMetadata` 没有来源（身份随节点一起消失）；
-           * - `state.retry !== undefined` → `error`；
+           * - `state.retry !== undefined` **不参与状态**：状态由 `node` / `boundary`
+           *   重新判定（通常回到 `running`，边界已成立时才是 `error`）；诊断仍取这一条；
            * - `error` / `errorCode` 就是**这一条**的：`AUTH` 空文案规范化为缺席、
            *   没有 `code` 就没有该键——都不保留上一条（从前是「有值才覆盖」，于是
            *   `AUTH` 或第二类无码失败会遗留上一条的诊断）。
@@ -1610,10 +1798,25 @@ export function deriveTrajectoryModel(
            * 本扩展对应 `options`，原样保留。`seq` / `startedAt`（官方的 startSeq / startTime）、
            * `assistantFirstTokenTime`、`usage` 同样由重置原样带过。
            */
-          request.completedAt = null;
+          /**
+           * 重置只清**状态机**里的 final；位置索引的闭合边界仍成立（官方
+           * `closedBoundary()` 的第二 / 第三条来源不随 `initialState()` 消失）。
+           * 所以 step/end 或 turn/end 先于这次 retry 时，边界时刻照旧用于收尾，
+           * 状态直接是 `error`；没有边界才是 `running`。
+           */
+          const retryBoundary = retryKey === undefined ? undefined : boundaryOf(retryTurn, retryStep);
+          request.completedAt = retryBoundary?.time ?? null;
+          // `initialState()` 重置也丢掉旧 final：官方 `assistantRequest()` 在
+          // `node === undefined` 时没有 `resultSeq`。
+          request.resultSeq = undefined;
           request.error = failure.message !== "" ? failure.message : undefined;
           request.errorCode = failure.code;
-          request.status = "error";
+          /**
+           * 官方状态**不看 retry**：`node === undefined && boundary === undefined`
+           * 时是 `running`；边界成立（位置索引仍闭合）→ `error`。重试诊断照旧挂着，
+           * 见 `error` / `retry` 字段。
+           */
+          request.status = retryBoundary === undefined ? "running" : "error";
           // 重试事实整份替换（`maxRetries` 只在 `mode === 'normal'` 时有意义，官方同款）
           request.retry = attempt === undefined
             ? undefined
@@ -1631,17 +1834,18 @@ export function deriveTrajectoryModel(
           applyHeaderConfig(request, appliedHeader.get(request));
         }
         /**
-         * 同一次 `initialState()` 重置也把**流来源**清掉：`sawChunk` 与 `final` 一起复位，
-         * 于是「重试之前流过的内容」不再是 `partial`（官方 `buildViewNode()` 的三条件之一），
-         * 而重试之后新到的 chunk 又能重新武装这个身份。
+         * 同一次 `initialState()` 重置也把**块证据**清掉（`final` 一起复位），于是
+         * 「重试之前流过的内容」不再是 `partial`（官方 `buildViewNode()` 的三条件之一），
+         * 而重试之后新到的 chunk 又能重新武装这个身份。**首 token 保留**（官方
+         * `initialState(…, true)` 之后再显式写回 `firstTokenTime`），`startTime` 同样保留。
          *
          * **只有窗口里开过 `step/start` 的身份才吃这一帧**：官方装配器把 `update` 限定在
          * `context.state !== undefined` 上（`assembler.ts`：`starting = role === 'start' &&
          * context.start === undefined`，之后才 `else if (context.state !== undefined)
          * context.state = definition.update(…)`）。没有 `step/start` 的孤儿身份由
          * `buildViewNode()` 的 `fallbackState()` 按它自己的帧重放，那一支只认
-         * `live-chunk` / `attempt` / `message` / `step/end`——**没有 retry 分支**，于是孤儿流
-         * 的 `sawChunk`（→ `partial`）与孤儿结算的 `final`（→ `node`）都不被它清掉。
+         * `live-chunk` / `attempt` / `message` / `step/end`——**没有 retry 分支**，于是孤儿流的
+         * 块证据（→ `partial`）与孤儿结算的 `final`（→ `node`）都不被它清掉。
          *
          * `closed`（`step/end` / 轮次闭合）**不跟着清**：官方 `closedBoundary()` 的另两条来源
          * 是位置索引的预扫描，与状态机的 `stepEnd` 字段无关，而重试发生在模型调用期间、
@@ -1653,13 +1857,13 @@ export function deriveTrajectoryModel(
           const retryStreamKey = retryStep === null ? undefined : stepKey(retryTurn, retryStep);
           const retryStream = retryStreamKey === undefined ? undefined : streamStates.get(retryStreamKey);
           if (retryStream !== undefined && retryStream.started) {
-            retryStream.sawChunk = false;
-            retryStream.finalSeq = undefined;
             /**
-             * `initialState()` 的 `blocks: []`：**块证据**也随重置清空。否则「重试之前流过的
-             * 那点正文」会在这一帧之后冒充「已闭合的中断贡献」（本批 P6 的反面）——
-             * 重置之后要么由新 chunk 重新武装，要么这个身份在布局上什么都不剩。
+             * `initialState()` 重置：`final` 与 `blocks: []` 一起清，**首 token 保留**
+             * （官方显式 `firstTokenTime: state.firstTokenTime`）——所以重置后新到的
+             * chunk 可以重新武装 partial，而 TTFT 仍取重试之前那一份。`startTime`
+             * 也保留（官方带 `state.startTime` 回 initialState）。
              */
+            retryStream.finalSeq = undefined;
             retryStream.blocks.clear();
           }
         }
@@ -1894,16 +2098,16 @@ export function deriveTrajectoryModel(
 
       /**
        * `assistant/live-chunk`：流式增量。本扩展**不发布流式正文**（刻意差异 1），
-       * 这一支只为**布局**留下「在跑的流」的身份（官方 `TrajectorySnapshot.partial`）。
+       * 这一支为**布局**留下「在跑的流」的身份（官方 `TrajectorySnapshot.partial`），
+       * 并记下官方 `AssistantState.firstTokenTime`（partial 的计时要用它）。
        *
-       * 官方 `updateChunk()` 对**任何** chunk 都置 `state.sawChunk = true`：`usage` 那一支
-       * 与 `finish` / 未知 `type` 落进的 `default` 支都置位，而 `sawChunk` 是
-       * `buildViewNode()` 发不发 `partial` 的三个条件之一。**另一件**是块证据
-       * （`state.blocks`）：只有 `block-start` / `*-delta` / `block-end` 会动它，
-       * `usage` / `finish` / 未知 `type` 不动——即「用了 token 但没有可见块」不算中断证据。
+       * 官方 `buildViewNode()` 发不发 `partial` 看的是**块证据**：`state.blocks.length > 0`。
+       * 只有 `block-start` / `*-delta` / `block-end` 会动它；`usage` / `finish` / 未知 `type`
+       * 不动——即「用了 token 但没有块」不构成 partial，也不算中断证据。首 token 另看
+       * `isTokenDelta()`（与块证据分开：工具调用块是证据但不是 token）。
        *
        * `chunk` 不是对象（畸形帧）时官方那台状态机读到的是不存在的字段，本扩展按**适配边界**
-       * 处理：不置位、不建身份——这与「合法的未知 `type`」是两件事，不拿畸形事件替合法等价。
+       * 处理：不建身份、不记首 token——这与「合法的未知 `type`」是两件事，不拿畸形事件替合法等价。
        */
       case "assistant/live-chunk": {
         const liveChunk = data.chunk;
@@ -1912,12 +2116,28 @@ export function deriveTrajectoryModel(
         const chunkTurn = typeof data.turn === "number" ? data.turn : currentTurn;
         const chunkStep = explicitIdentity ? (data.step as number) : currentStep;
         const chunkState = streamStateOf(chunkTurn, chunkStep, event.seq);
-        chunkState.sawChunk = true;
         /**
-         * 与 `sawChunk` **分开**的那一份：块证据（官方 `updateChunk()` 里 `state.blocks` 的
-         * 等价物）。它只服务 `finalNode()` 合成中断节点的判据
-         * （`hasInterruptionEvidence()` / `closedBoundary()` 那条支），按 `chunk.index`
-         * 覆盖槽位、**不复制流内容**（见 `BlockEvidence`）。
+         * 首个 token 的**第一条来源**（官方 `updateChunk()`：`isTokenDelta(chunk)` 且
+         * `state.firstTokenTime === undefined` 时取这一帧的时刻）。合法但非 token 的
+         * 帧（`usage` / `finish` / 未知 `type` / 空片段）不参与，畸形帧由
+         * `isTokenDelta()` 的肯定判据挡掉。
+         *
+         * 这一步在窗口里开过 `step/start` 时，请求表那一份同步记同一时刻（界面在
+         * 结算前也会读请求级计时）；已经记过的值不覆盖（先到者胜）。
+         */
+        if (isTokenDelta(liveChunk) && chunkState.firstTokenTime === undefined && typeof time === "number") {
+          chunkState.firstTokenTime = time;
+          const request = assistantRequests.get(stepKey(chunkTurn, chunkStep));
+          if (request !== undefined && (request.assistantFirstTokenTime ?? null) === null) {
+            request.assistantFirstTokenTime = time;
+            publishFirstToken(request, time);
+          }
+        }
+        /**
+         * 与首 token **分开**的那一份：块证据（官方 `updateChunk()` 里 `state.blocks` 的
+         * 等价物）。它服务两件事：`buildViewNode()` 的 `partial` 判据
+         * （`state.blocks.length > 0`）与合成中断节点（`hasInterruptionEvidence()`）——
+         * 按 `chunk.index` 覆盖槽位、**不复制流内容**（见 `BlockEvidence`）。
          */
         applyChunkEvidence(chunkState.blocks, liveChunk as Record<string, unknown>);
         break;
@@ -1949,19 +2169,28 @@ export function deriveTrajectoryModel(
         /**
          * 身份本身也要记下：官方 `fallbackState()` 会按这个身份自己的帧重建 state，
          * 之后这一身份第一次出现的先后（`firstSeq`）按它算。`attempt` 只做
-         * `settleTiming()`：**不置也不清** `sawChunk`——只有 attempt 的步骤不是在跑的流。
+         * `settleTiming()`：**不动块证据**——只有 attempt 的步骤不是在跑的流
+         * （官方 `partial` 要有 `state.blocks.length > 0`）。
          */
-        streamStateOf(attemptTurn, attemptStep, event.seq);
+        const attemptState = streamStateOf(attemptTurn, attemptStep, event.seq);
         const streamTime = streamFirstTokenTime(data.stream);
+        /**
+         * 官方 `settleTiming()`：`state.firstTokenTime = state.firstTokenTime ?? stream 首 token`。
+         * attempt 不置也不清块证据——只有 attempt 的步骤不是在跑的流。
+         */
+        if (attemptState.firstTokenTime === undefined && streamTime !== null) {
+          attemptState.firstTokenTime = streamTime;
+        }
         if (streamTime !== null) {
           const byIdentity = attemptKey === undefined ? undefined : assistantRequests.get(attemptKey);
           const request = byIdentity ?? (explicitIdentity ? undefined : lastAssistantRequest);
           if (request !== undefined) {
             if ((request.assistantFirstTokenTime ?? null) === null) {
-              request.assistantFirstTokenTime = streamTime;
+              const firstToken = attemptState.firstTokenTime ?? streamTime;
+              request.assistantFirstTokenTime = firstToken;
               // 这一步可能已经有结算出来的账本行（`assistant/message` 先到、那一帧
               // 又没有 token）：记录级计时也要跟着补上，两份不许各说各话。
-              publishFirstToken(request, streamTime);
+              publishFirstToken(request, firstToken);
             }
           } else if (explicitIdentity && attemptKey !== undefined) {
             /**
@@ -2036,10 +2265,16 @@ export function deriveTrajectoryModel(
          */
         settledSteps.add(stepKey(messageTurn, messageStep));
         /**
-         * 官方 `settleMessage()` 对**流状态**做两件事：落下 `final`（`node` 从此存在）
-         * 并清掉 `sawChunk`——这一步不再是「在跑的流」。两者都要记：`sawChunk` 被清之后
-         * 后到的 chunk 只把它重新置位，`node` 仍挡着 `partial`（官方 `buildViewNode()`
-         * 的 `node === undefined` 不成立）。
+         * 这一帧 `stream` 里的首个 token（官方 `assistantStreamFirstTokenTime()`）。
+         * 在流状态结算前算出来，好走官方 `settleTiming()` 的「先到者胜」：
+         * `state.firstTokenTime ?? 新值`。
+         */
+        const streamToken = streamFirstTokenTime(data.stream);
+        /**
+         * 官方 `settleMessage()` 对**流状态**做三件事：落下 `final`（`node` 从此存在）、
+         * 按 `settleTiming()` 合并首 token、把 `blocks` 换成结算消息自己的块。
+         * `final` 在之后 `partial` 就不成立（官方 `buildViewNode()` 的
+         * `node === undefined` 不成立），后到的 chunk 也不会复活它。
          *
          * 同一个身份在窗口里可以结算**多次**（本扩展「每次结算各出一行」的既定差异），
          * 这里每次结算都按同一套语义更新：最后一次结算仍是这个身份的 `final`，而布局节点
@@ -2047,20 +2282,20 @@ export function deriveTrajectoryModel(
          * ——`currentAssistantNodes()` 每次都由这份状态的**当前贡献**导出，所以后到的结算
          * 自动顶掉前一个，不需要在这里维护第二份表。
          */
-        {
-          const settledStream = streamStateOf(messageTurn, messageStep, event.seq);
-          settledStream.sawChunk = false;
-          settledStream.finalSeq = event.seq;
-          /**
-           * 官方 `settleMessage()` 把 `blocks` 换成**结算消息自己的块**。块证据只在「没有
-           * `final`」时才有用（有 `final` 就走 `finalNode()` 第一条支），而 `final` 只可能
-           * 被首个 `step/start` 与「已 started 的 `llm/retry`」清掉——那两处各自按官方
-           * `initialState()` 把 `blocks` 一起清空。所以这里清掉槽位，与「先换成消息自己的
-           * 块、之后被重置一起清」在**布局判据**上等价，也不必为不发布的正文明细做映射
-           * （重复 `step/start` 不清 `final`，那条路径下也读不到块证据）。
-           */
-          settledStream.blocks.clear();
+        const settledStream = streamStateOf(messageTurn, messageStep, event.seq);
+        if (settledStream.firstTokenTime === undefined && streamToken !== null) {
+          settledStream.firstTokenTime = streamToken;
         }
+        settledStream.finalSeq = event.seq;
+        /**
+         * 官方 `settleMessage()` 把 `blocks` 换成**结算消息自己的块**。块证据只在「没有
+         * `final`」时才有用（有 `final` 就走 `finalNode()` 第一条支），而 `final` 只可能
+         * 被首个 `step/start` 与「已 started 的 `llm/retry`」清掉——那两处各自按官方
+         * `initialState()` 把 `blocks` 一起清空。所以这里清掉槽位，与「先换成消息自己的
+         * 块、之后被重置一起清」在**布局判据**上等价，也不必为不发布的正文明细做映射
+         * （重复 `step/start` 不清 `final`，那条路径下也读不到块证据）。
+         */
+        settledStream.blocks.clear();
         const stepRequest = (messageKey === undefined ? undefined : assistantRequests.get(messageKey))
           ?? (explicitIdentity ? undefined : lastAssistantRequest);
         /**
@@ -2075,11 +2310,10 @@ export function deriveTrajectoryModel(
         const stepStart = stepRequest?.startedAt ?? null;
         /**
          * 首个 token 时刻：**先到者胜**（官方 `settleTiming()` 的
-         * `state.firstTokenTime ?? 新值`）。`assistant/attempt` 可能已经先把它记在请求上，
-         * 而这一帧的 `stream` 未必带 token——所以以请求上那份为准，两边取值同源。
-         * 这一帧自己带的时刻按官方 `assistantStreamFirstTokenTime()` 读。
+         * `state.firstTokenTime ?? 新值`）。`assistant/live-chunk` / `attempt` 可能已经
+         * 先把它记在流状态上；这一帧的 `stream` 未必带 token——所以流状态那份最权威，
+         * 请求表与孤儿步骤的镜像随后再兜底。
          */
-        const streamToken = streamFirstTokenTime(data.stream);
         /**
          * 没有请求的步骤（窗口无 `step/start`）从 `orphanFirstTokens` 取「先到者胜」那一份：
          * 官方 `fallbackState()` 按事件顺序重放该身份自己的帧，`settleTiming()` 就是
@@ -2087,7 +2321,12 @@ export function deriveTrajectoryModel(
          * 那个时刻，而不是 message 自己更晚的那个。
          */
         const orphanToken = messageKey === undefined ? null : orphanFirstTokens.get(messageKey) ?? null;
-        const firstToken = stepRequest?.assistantFirstTokenTime ?? orphanToken ?? streamToken ?? null;
+        const firstToken =
+          settledStream.firstTokenTime
+          ?? stepRequest?.assistantFirstTokenTime
+          ?? orphanToken
+          ?? streamToken
+          ?? null;
         /**
          * 只服务**帧自带身份、且那一步没有请求**的路径：这一次结算的首 token 记回
          * 「先到者胜」那份记忆，并回填**已经产出**的孤儿行——官方一个 step 只有一份 state，
@@ -2110,6 +2349,7 @@ export function deriveTrajectoryModel(
          * `previewMarkdown` / `thinkingDetail`，增量就在这几个块上。
          */
         const callIds = callIdsOf(message?.content);
+        const toolCallBlocks = toolCallBlocksOf(message?.content);
         const sourceBlocks = sourceBlocksOf(message?.content);
         /**
          * 这一步的请求号：优先这一步自己的助手请求。
@@ -2138,8 +2378,13 @@ export function deriveTrajectoryModel(
           ...(thinkingText ? { thinkingDetail: thinkingText } : {}),
           ...(sourceBlocks === undefined ? {} : { sourceBlocks }),
           ...(stepNumber === undefined ? {} : { requestNumber: stepNumber }),
+          // 官方 `expandAssistant()`：被中断的助手记录同样标 `isError: true`——
+          // 时间线按它着色，正文照旧保留（不是把那一行判成没有结果）。
+          ...(data.interrupted === true ? { isError: true } : {}),
           timeSeconds: secondsBetween(stepStart ?? undefined, time),
-          startedAt: stepStart ?? (typeof time === "number" ? time : null),
+          // 官方 `expandAssistant()` 的 message `startedAt` 就是 `timing.stepStartTime`
+          // （没有 step/start 时为 null）；时长回退另由 `prevAbsTime` 那一段处理。
+          startedAt: stepStart,
           status: data.interrupted === true ? "error" : "complete",
           ...(data.interrupted === true ? { error: "@interrupted" } : {}),
           ...(usage ? { usage } : {}),
@@ -2147,7 +2392,10 @@ export function deriveTrajectoryModel(
           ...(retry ? { retry } : {}),
           ...(callIds.length > 0 ? { callIds } : {}),
           assistantMetrics: {
-            timingRecorded: stepStart !== null,
+            // 官方 `expandAssistant()` 是 `timing !== undefined`：最终节点（含孤儿步骤）
+            // 的 `timing` 对象始终存在，只是 `stepStartTime` 可能为 null。「有没有步骤
+            // 开始时刻」由那个字段本身表达，不能用它反推「有没有记过计时」。
+            timingRecorded: true,
             stepStartTime: stepStart,
             firstTokenTime: firstToken,
             completedTime: typeof time === "number" ? time : null,
@@ -2155,6 +2403,36 @@ export function deriveTrajectoryModel(
             outputTokens: usage?.output ?? null,
           },
         });
+        /**
+         * 助手消息里的 `tool-call` 块先生成工具格（官方 `expandAssistant()` 每条
+         * `block.kind === 'tool-call'` 都发一条 `tool` 格）。后续独立的 `tool/call`
+         * 事件只补开始时刻、目录与参数，不另开一行；如果窗口把 `tool/call` 截掉，
+         * 结果仍能按 `callId` 落回这一格，不会被误做成「只有结果」补行。
+         */
+        for (const call of toolCallBlocks) {
+          if (toolCells.has(call.callId)) continue;
+          const schemaDetail = schemaDetailOf(call.name, catalogForCall(event.seq) ?? toolsByName, schemaIntern);
+          const toolCell = push({
+            kind: "tool",
+            turn: messageTurn,
+            step: messageStep ?? 0,
+            seq: event.seq,
+            time,
+            text: call.name,
+            ...(call.argsRaw ? { previewMarkdown: call.argsRaw } : {}),
+            ...(call.argsRaw ? { inputDetail: call.argsRaw } : {}),
+            callId: call.callId,
+            toolName: call.name,
+            ...(schemaDetail === undefined ? {} : { schemaDetail }),
+            ...(stepNumber === undefined ? {} : { requestNumber: stepNumber }),
+            timeSeconds: null,
+            // 真正的 `tool/call` 到了才有时刻；没有独立调用事件时不拿助手消息时刻冒充
+            // 调用开始时刻（否则耗时会把模型生成时间算进去）。
+            startedAt: null,
+            status: "running",
+          });
+          toolCells.set(call.callId, toolCell.index - 1);
+        }
         // 没有请求的步骤：这一行登记进 `orphanCells`，晚到的 attempt 才能回填它的首 token。
         if (orphanKey !== undefined) {
           const producedOrphan = orphanCells.get(orphanKey);
@@ -2164,44 +2442,35 @@ export function deriveTrajectoryModel(
         /**
          * 结算**这一步的助手请求**：用量、收尾时刻、提供方身份、状态。
          *
-         * 状态按官方 `assistantRequest()` 的**节点分支优先**：非中断的
-         * `assistant/message` 就是这次请求的最终节点 → `complete`，之前那次
-         * `llm/retry` 记下的 `error` **不再把状态钉死**（F04：从前是「已经是 error
-         * 就不覆盖」，于是「重试一次才成功」的请求永远显示失败，而账本里的助手行
-         * 是 complete——同一个事实两个状态）。它记的重试事实（次数 / 上限 / 延迟 /
-         * 失败文案与错误码）照旧留在请求上，与官方 payload 同形，这里一个都不清。
+         * 状态按官方 `assistantRequest()` 的**节点分支优先**：`node !== undefined` 时
+         * 只看节点——非中断的 `assistant/message` → `complete`，中断的节点 → `error`。
+         * 之前那次 `llm/retry` 记录的诊断（文案 / 码 / 次数 / 上限 / 延迟）照旧留在请求上，
+         * 但**不参与状态**（官方状态分支不看 `state.retry`）：重试后又成功就是 complete，
+         * 中断则是 error，不需要等步骤 / 轮次边界。
          *
-         * 中断（`interrupted === true`）的帧是官方三分支里的**后两支**（官方
-         * `assistantRequest()`：`node !== undefined && node.interrupted !== true` → `complete`；
-         * 否则 `state.retry !== undefined || boundary !== undefined` → `error`；两者都没有 →
-         * `running`）：中断**本身不是失败证据**，已经有失败证据（`llm/retry` 把它标成 `error`，
-         * 或这一步已经被关掉）就保持 `error`，否则这一次请求仍在跑——`step/end` 与轮次收尾的
-         * 后处理会在边界把它收成 `error`。请求级 `error` 在这一帧上照旧**不写**（官方那一份由
-         * 重试或轮次失败给出，不是中断给的）；账本行上的 `status: "error"` 与 `@interrupted`
-         * 是**另一件事**（界面显示的「被中断」那一行），一个字都不改。
+         * 中断帧的**账本行**还有 `status: "error"` 与 `@interrupted`
+         * （界面显示的「被中断」那一行），与请求级状态是两件事，都按官方保留。
          */
         if (stepRequest !== undefined) {
           settleUsage(stepRequest, usage);
           // 官方取 `node?.time ?? boundary?.time`：结算帧的时刻优先于 `step/end`
           if (typeof time === "number") stepRequest.completedAt = time;
-          if (data.interrupted === true) {
-            // 不把已有的失败证据降级：只有「没有失败证据」的那一种才留在 `running`
-            if (stepRequest.status !== "error") stepRequest.status = "running";
-          } else {
-            stepRequest.status = "complete";
-          }
+          // 官方 `assistantRequest()`：`node !== undefined` 时状态只看节点——
+          // 中断节点是 `error`，非中断节点是 `complete`。retry 诊断不改变这个分支。
+          stepRequest.resultSeq = event.seq;
+          stepRequest.status = data.interrupted === true ? "error" : "complete";
           // 首个 token 时刻（请求级计时面板的 TTFT / 吞吐量要用）。
           // **先到者胜**、且「没取到」不覆盖：`assistant/attempt` 可能已经先给了这一时刻，
           // 而这一帧的 `stream` 未必带 token——无条件赋值会把已经记下的时刻抹成 null。
           if ((stepRequest.assistantFirstTokenTime ?? null) === null) {
-            stepRequest.assistantFirstTokenTime = streamToken;
+            stepRequest.assistantFirstTokenTime = firstToken;
             /**
              * 这一步更早结算出来的行（那一帧的 stream 没有 token）也要跟着补上同一个值：
              * 官方一个 step 一份 state（`settleTiming()` 的 `state.firstTokenTime ?? 新值`），
              * 不能一行停在 null、后一行才有值——与 `assistant/attempt` 那条路
              * （`publishFirstToken()`）同一口径；与孤儿路径的 `publishOrphanFirstToken()` 对称。
              */
-            if (streamToken !== null) publishFirstToken(stepRequest, streamToken);
+            if (firstToken !== null) publishFirstToken(stepRequest, firstToken);
           }
           /**
            * 记下这一步已经产出的账本行：`assistant/attempt` 晚到补首 token 时，
@@ -2234,6 +2503,30 @@ export function deriveTrajectoryModel(
         // 这次调用是**这一步的助手请求**发起的，挂它的号（不是「最后开的请求号」：
         // 同一步中途可能压缩过，那个号属于压缩请求）
         const stepNumber = currentStepRequestNumber();
+        /**
+         * 同一个 `callId` 的工具格可能已经由助手消息的 `tool-call` 块先建好（官方布局的
+         * 身份来源就是那个块），也可能是重复到达的 `tool/call`。**更新同一格**，不再
+         * push 第二行；结果字段 / 状态 / 已有时长不动（只有结果事件能改它们）。
+         */
+        const existing = callId ? toolCells.get(callId) : undefined;
+        if (existing !== undefined) {
+          const cell = cells[existing];
+          cell.turn = typeof data.turn === "number" ? data.turn : currentTurn;
+          cell.step = currentStep ?? 0;
+          // `seq` / `startedAt` 从占位升级成真正的调用事件（Schema 回补按调用前表头找）。
+          cell.seq = event.seq;
+          cell.time = time;
+          cell.text = name;
+          cell.toolName = name;
+          if (args) {
+            cell.previewMarkdown = args;
+            cell.inputDetail = args;
+          }
+          if (schemaDetail !== undefined) cell.schemaDetail = schemaDetail;
+          if (stepNumber !== undefined) cell.requestNumber = stepNumber;
+          if (cell.status === "running") cell.startedAt = typeof time === "number" ? time : null;
+          break;
+        }
         const cell = push({
           kind: "tool",
           turn: typeof data.turn === "number" ? data.turn : currentTurn,
@@ -2260,14 +2553,15 @@ export function deriveTrajectoryModel(
       case "tool/result": {
         const message = data.message as MessageLike | undefined;
         const callId = typeof message?.source?.callId === "string" ? (message.source.callId as string) : "";
-        const text = resultText(message?.content);
         const isError = resultIsError(message, data.error);
         const summary = resultSummaryOf(message?.content, data.error, isError);
+        const detail = detailResultOf(message?.content, data.error, isError);
+        const outputBlocks = sourceBlocksOf(resultContentBlocks(message?.content));
         const index = callId ? toolCells.get(callId) : undefined;
         if (index === undefined) {
           // 调用在窗口之外（分页边界）也有结果：补一行「只有结果」的记录。
-          // 官方无 call 时走 `resultAsText()`：正文取自结果（`text` 与
-          // `previewMarkdown` 都是它），而不是「tool」这个占位名。
+          // 官方无 call 时走 `resultAsText()`：正文取自结果摘要（`text` 是 `result`，
+          // 原文另给 `previewMarkdown`），而不是「tool」这个占位名。
           // 这一行也是**这一步的助手请求**的产物（否则它成了账本里唯一没有请求号的行）
           const stepNumber = currentStepRequestNumber();
           push({
@@ -2279,11 +2573,14 @@ export function deriveTrajectoryModel(
             ...resultAsText(summary),
             ...(callId ? { callId } : {}),
             ...(stepNumber === undefined ? {} : { requestNumber: stepNumber }),
+            // 只有结果没有调用：两个 seq 是同一个事件（官方 `sourceSeq` / `resultSeq` 同值）
+            resultSeq: event.seq,
             timeSeconds: null,
             startedAt: typeof time === "number" ? time : null,
             status: isError ? "error" : "complete",
             ...summary,
-            ...(text ? { outputDetail: text } : {}),
+            ...(detail === undefined ? {} : { outputDetail: detail }),
+            ...(outputBlocks === undefined ? {} : { outputBlocks }),
             isError,
           });
           break;
@@ -2294,8 +2591,12 @@ export function deriveTrajectoryModel(
         cell.result = summary.result;
         cell.resultPreviewMarkdown = summary.resultPreviewMarkdown;
         cell.resultSummary = summary.resultSummary;
-        if (text) cell.outputDetail = text;
+        if (detail !== undefined) cell.outputDetail = detail;
+        if (outputBlocks !== undefined) cell.outputBlocks = outputBlocks;
         cell.isError = isError;
+        // 官方 `expandAssistant()` / `tool-result` 支：`resultSeq` 是**已提交的结果**
+        // 事件，不是发起调用那一帧（调用格的生命周期跨两个事件）。
+        cell.resultSeq = event.seq;
         cell.status = isError ? "error" : "complete";
         cell.timeSeconds = secondsBetween(cell.startedAt ?? undefined, time);
         break;
@@ -2329,17 +2630,20 @@ export function deriveTrajectoryModel(
 
       case "tool/ptc-dispatch": {
         const subCallId = typeof data.subCallId === "string" ? data.subCallId : "";
-        const text = resultText(data.content);
         const index = subCallId ? subCells.get(subCallId) : undefined;
         if (index === undefined) break;
         const cell = cells[index];
         const isError = data.isError === true;
         const summary = resultSummaryOf(data.content, undefined, isError);
+        const detail = detailResultOf(data.content, undefined, isError);
+        const outputBlocks = sourceBlocksOf(resultContentBlocks(data.content));
         cell.result = summary.result;
         cell.resultPreviewMarkdown = summary.resultPreviewMarkdown;
         cell.resultSummary = summary.resultSummary;
-        if (text) cell.outputDetail = text;
+        if (detail !== undefined) cell.outputDetail = detail;
+        if (outputBlocks !== undefined) cell.outputBlocks = outputBlocks;
         cell.isError = isError;
+        cell.resultSeq = event.seq;
         cell.status = isError ? "error" : "complete";
         cell.timeSeconds = secondsBetween(cell.startedAt ?? undefined, time);
         break;
@@ -2380,6 +2684,9 @@ export function deriveTrajectoryModel(
         const summary = blockTexts(data.summary, "text");
         const raw = blocksToText(data.rawOutput);
         if (summary) cell.outputDetail = summary;
+        // 官方压缩支的 `outputBlocks`：摘要自己的原始块（图片 / 文件附件名也进搜索面）。
+        const summaryBlocks = sourceBlocksOf(data.summary);
+        if (summaryBlocks !== undefined) cell.outputBlocks = summaryBlocks;
         // 行摘要按官方口径只留**语义**：正文进 previewMarkdown（界面侧的预览函数
         // 负责去 markdown、压平、截断），`text` 留空（有摘要就不显示「已压缩」）
         cell.text = "";
@@ -2441,6 +2748,7 @@ export function deriveTrajectoryModel(
           request.completedAt = boundaryTime;
           request.status = "error";
           request.error = TRAJECTORY_COMPACTION_INTERRUPTED;
+          request.resultSeq = request.seq;
         }
         for (const cell of cells) {
           if (cell.kind !== "compacted" || cell.status !== "running") continue;
@@ -2479,9 +2787,22 @@ export function deriveTrajectoryModel(
   // 还在跑的步骤补一行「正在生成」（官方那是流式中的助手行；本扩展不出流式正文，
   // 只出占位）。判据取**最后一次 `turn/end` 之后**开的步骤——更早的未结算步骤是
   // 被中断的那一轮，官方由 `assistant/attempt` 还原，我们这里不臆造正文。
+  //
+  // **官方 partial 的计时**（`TrajectoryPartialAssistant.timing`）也要喂进来：有块证据、
+  // 未结算、未闭合的身份在官方就是 `partial`，布局给它的 `assistantMetrics` 是
+  // `timingRecorded: true` / `completedTime: null` / `usageProvided: false`，`startedAt`
+  // 取 `timing.stepStartTime`、`timeSeconds` 为 null。没有块证据的步骤官方没有那一行，
+  // 这里保留占位（既定差异）但不冒充「记过计时」。
   for (const [key, started] of startedSteps) {
     if (settledSteps.has(key)) continue;
     if (started.seq < lastTurnEndSeq) continue;
+    const stream = streamStates.get(key);
+    const streamingPartial =
+      stream !== undefined
+      && stream.blocks.size > 0
+      && stream.finalSeq === undefined
+      && boundarySeqOf(stream) === undefined;
+    const stepStartTime = streamingPartial ? (stream?.startTime ?? started.time) : null;
     push({
       kind: "message",
       turn: started.turn,
@@ -2491,8 +2812,20 @@ export function deriveTrajectoryModel(
       text: "",
       requestNumber: started.requestNumber,
       timeSeconds: null,
-      startedAt: started.time,
+      startedAt: stepStartTime ?? started.time,
       status: "running",
+      ...(streamingPartial
+        ? {
+            assistantMetrics: {
+              timingRecorded: true,
+              stepStartTime,
+              firstTokenTime: stream?.firstTokenTime ?? null,
+              completedTime: null,
+              usageProvided: false,
+              outputTokens: null,
+            },
+          }
+        : {}),
     });
   }
 
@@ -2558,22 +2891,37 @@ export function deriveTrajectoryModel(
   /**
    * 官方的 **`TrajectorySnapshot.partial`**：只留**最后一个**「在跑的流」。
    *
-   * `buildViewNode()` 的条件是 `node === undefined && boundary === undefined && state.sawChunk`
-   * （本扩展不出流式正文行，所以这里只要**身份**）；快照层
+   * `buildViewNode()` 的判据是 `node === undefined && boundary === undefined
+   * && state.blocks.length > 0`（**块证据**，不是「收到过任何 chunk」：只有
+   * `usage` / `finish` 的帧没有块，不构成 partial）。本扩展不出流式正文行，
+   * 但布局归轮与占位行的计时都读它；快照层
    * （`trajectory-snapshot-builder.ts`）按 `anchorSeq` 升序遍历 contributions、
    * `if (data.partial !== null) partial = data.partial`，所以赢的是**身份第一次出现最晚**
    * 的那一个（`firstSeq` 最大），不是最近被更新的那一个。
+   *
+   * 计时按官方 `TrajectoryPartialAssistant.timing` 同形给出（`stepStartTime` 在
+   * 没有 `step/start` 的孤儿身份上为 null；`firstTokenTime` 来自 live chunk / attempt /
+   * message 的先到者胜）。
    */
-  const currentPartial = (): { turn: number; step: number } | undefined => {
+  const currentPartial = ():
+    | { turn: number; step: number; timing: { stepStartTime: number | null; firstTokenTime: number | null } }
+    | undefined => {
     let best: AssistantStreamState | undefined;
     for (const state of streamStates.values()) {
-      if (!state.sawChunk || state.finalSeq !== undefined || boundarySeqOf(state) !== undefined) continue;
+      if (state.blocks.size === 0 || state.finalSeq !== undefined || boundarySeqOf(state) !== undefined) continue;
       if (state.turn === null) continue;
       if (best === undefined || state.firstSeq > best.firstSeq) best = state;
     }
     const turn = best?.turn;
     if (turn === null || turn === undefined) return undefined;
-    return { turn, step: best?.step ?? 0 };
+    return {
+      turn,
+      step: best?.step ?? 0,
+      timing: {
+        stepStartTime: best?.startTime ?? null,
+        firstTokenTime: best?.firstTokenTime ?? null,
+      },
+    };
   };
   const partial = currentPartial();
 
@@ -2667,6 +3015,55 @@ export function deriveTrajectoryModel(
     cells.forEach((cell, index) => {
       cell.index = index + 1;
     });
+  }
+
+  /**
+   * 官方 `expandAssistant()` 的时长回退：`durationSeconds(node.time,
+   * recordedStart ?? prevAbsTime)`。`prevAbsTime` 是**布局条目**上一格的绝对时刻，
+   * 只由 assistant / system / user / context / compaction / 独立 tool-result 推进；
+   * 助手展开出来的工具格和 runningCalls 不推进它。
+   *
+   * 本地在初始 system 前插后按同一份条目顺序遍历一次，只补 `stepStartTime === null`
+   * 且 `timeSeconds === null` 的已结算助手行；`startedAt` 仍按官方保持 `null`。
+   * 不把助手消息时刻或工具格时刻混进 `prevAbsTime`。
+   */
+  {
+    const assistantCallIds = new Set<string>();
+    for (const cell of cells) {
+      if (cell.kind !== "message") continue;
+      for (const callId of cell.callIds ?? []) assistantCallIds.add(callId);
+    }
+    const finiteAbs = (value: number | null | undefined): number | null =>
+      typeof value === "number" && Number.isFinite(value) ? value : null;
+    let previousAbs: number | null = null;
+    for (const cell of cells) {
+      if (cell.kind === "message") {
+        if (
+          cell.assistantMetrics?.stepStartTime === null
+          && cell.timeSeconds === null
+        ) {
+          const end = finiteAbs(cell.time);
+          if (end !== null && previousAbs !== null) {
+            cell.timeSeconds = Math.max(0, (end - previousAbs) / 1000);
+          }
+        }
+        const time = finiteAbs(cell.time);
+        if (time !== null) previousAbs = time;
+        continue;
+      }
+      if (cell.kind === "tool") {
+        const paired = cell.callId !== undefined && assistantCallIds.has(cell.callId);
+        // 助手块展开的工具格与 runningCalls 不是布局条目；只有结果补行推进游标。
+        if (!paired && cell.status !== "running") {
+          const abs = finiteAbs(cell.startedAt) ?? finiteAbs(cell.time);
+          if (abs !== null) previousAbs = abs;
+        }
+        continue;
+      }
+      if (cell.kind === "subtool") continue;
+      const abs = finiteAbs(cell.startedAt) ?? finiteAbs(cell.time);
+      if (abs !== null) previousAbs = abs;
+    }
   }
 
   /**

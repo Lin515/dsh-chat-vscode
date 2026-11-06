@@ -430,6 +430,8 @@ export interface Texts {
   /** 规则读不出来（拼不出编辑基准）时规则区只读的说明。 */
   scheduleRuleUnreadable: string;
   scheduleCronInvalid: (field: string) => string;
+  scheduleRuleInvalid: string;
+  scheduleDefaultWorkspace: string;
   scheduleCronFieldMinute: string;
   scheduleCronFieldHour: string;
   scheduleCronFieldDayOfMonth: string;

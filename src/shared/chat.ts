@@ -1170,6 +1170,24 @@ export interface ScheduleTargetView {
 }
 
 /**
+ * 注册的 Workspace（`workspace/follow` 的 `WorkspaceView` 投影），供自动化任务的
+ * 「创建目录」候选使用。
+ *
+ * 为什么需要它：`session/list` 只带已经创建过会话的 `cwd`，已登记但还没有会话的
+ * Workspace 从会话列表里根本看不到；注册表才是官方 `projectChoices` 的来源。
+ */
+export interface ScheduleProjectView {
+  /** 注册 Workspace 的规范路径（`WorkspaceView.path`）。 */
+  path: string;
+  /**
+   * 用户可读标题（`WorkspaceView.title`）。
+   *
+   * 旧服务端 / 旧帧可能没有；缺失时界面按路径显示，不编一个标题。
+   */
+  title?: string;
+}
+
+/**
  * 一条自动化任务（`schedule/catalog` 的一条，宿主已收窄）。
  *
  * 服务端把「规则」与「投递状态」放在同一条记录上（`ScheduleCatalogEntry` =
@@ -1667,6 +1685,23 @@ export interface ChatState {
   schedulesCapability?: "modern" | "legacy" | "unknown";
   /** 每次新建会话的最小投递间隔（秒，`deliveryLimits` 的权威值）；未知时没有。 */
   newSessionIntervalSeconds?: number;
+  /**
+   * 服务端**注册的 Workspace 列表**（`workspace/follow` 的注册表投影，按注册表顺序）。
+   *
+   * 自动化任务把「发往新会话」的创建目录候选换成这份注册表：会话列表只带已经出现过
+   * 会话的 `cwd`，已登记但还没有会话的 Workspace 选不到（见
+   * [自动化任务设计](<../../docs/design-schedules.md>)）。
+   *
+   * 两种空值必须分开：
+   * - `undefined`（过线后是 `null`）= **还没有权威注册表**（旧服务端没有注册表流、
+   *   或连接刚被清理）：界面退回会话 `cwd`，不能把它当成「一个工作区都没有」；
+   * - `[]` = 注册表流已经到达且明确为空：这是服务端的回答，不是「还没问」。
+   *
+   * 它是部署级（与会话无关）事实，却按会话域投递：注册表变了要立刻刷新正在编辑的
+   * 表单，所以由宿主在 `workspace/follow` 的 baseline / 增量之后单独发 patch；切会话
+   * 不会把它清掉（`sessionView` 不含这个键）。
+   */
+  scheduleProjects?: ScheduleProjectView[];
   /** 历史是否还有更早的内容可加载。 */
   hasMoreHistory?: boolean;
   /**

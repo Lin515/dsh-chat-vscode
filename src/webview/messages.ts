@@ -701,6 +701,8 @@ export const MESSAGES = {
     zh: (field: string) => `cron 表达式里「${field}」不合法`,
     en: (field: string) => `The cron expression's ${field} field is invalid`,
   },
+  scheduleRuleInvalid: { zh: "运行规则不合法，请检查日期、时间和规则", en: "Invalid schedule rule; check the date, time, and rule" },
+  scheduleDefaultWorkspace: { zh: "默认工作区", en: "Default workspace" },
   scheduleCronFieldMinute: { zh: "分钟", en: "minute" },
   scheduleCronFieldHour: { zh: "小时", en: "hour" },
   scheduleCronFieldDayOfMonth: { zh: "日", en: "day of month" },

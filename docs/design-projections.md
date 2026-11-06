@@ -8,6 +8,8 @@
 
 实时帧的 `changes: [{key, val}]` 在同一 `seq` 下先整批写入 store，再派发各键效果；只有新字段缺失才读取旧 `key` / `value`，空数组也是权威值。这样效果读取关联投影时不会看到半批旧值。
 
+`seqOf(key)` 与值读取同一行，供收件箱回执交接比较已观察水位；缺键返回 `undefined`，真实零水位保留为 `0`。seed、truncate 与连接清空同时更新值和水位，不另设会残留旧世代确认的旁路表。
+
 形状解析在 `projections.ts`，读取登记在 `projectionIngest.ts` 的 `PROJECTION_READERS`，新旧判断在 `projectionStore.ts`，效果由 controller 的 `ProjectionHandlers` 映射类型表承接，缺一个键编译即失败。解析、水位与效果分开，新增键须完成整条登记，不另建旁路。
 
 ### 关键决策与取舍

@@ -18,13 +18,17 @@
 import assert from "node:assert";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { ScheduleItemView, SessionSummaryView } from "../src/shared/chat";
+import type { ScheduleItemView, ScheduleProjectView, SessionSummaryView } from "../src/shared/chat";
 import {
   scheduleCreateDraft,
+  scheduleDraftDiffers,
+  scheduleEditorDraft,
   scheduleInvolvesSession,
   schedulePatchOf,
   scheduleTargetError,
   scheduleTargetSessionId,
+  scheduleTimingIssue,
+  type ScheduleEditorDraft,
 } from "../src/shared/schedule";
 import {
   scheduleEditorReducer,
@@ -49,7 +53,7 @@ import { TextsContext, LocaleContext, dictionaryFor } from "../src/webview/texts
 };
 
 const { ScheduleRow, scheduleHistoryShouldLoad } = await import("../src/webview/components/Schedules");
-const { ScheduleEditor, scheduleTargetSessionChoices } = await import("../src/webview/components/ScheduleEditor");
+const { ScheduleEditor, cronFieldText, scheduleTargetSessionChoices } = await import("../src/webview/components/ScheduleEditor");
 
 /** 一条新代目录条目的视图模型。 */
 function item(overrides: Partial<ScheduleItemView> = {}): ScheduleItemView {
@@ -150,6 +154,59 @@ console.log("scheduleEditor: 归属 OR 语义 ✓");
   assert.equal(scheduleEditorStateConflict(untouched, latest), false);
 }
 console.log("scheduleEditor: 基线相对 dirty / patch ✓");
+
+// ---------- 2b. 未触碰的坏 RRULE 保持原样（官方 taskDraftIssue 的 changes.timing 短路） ----------
+{
+  // 坏规则（缺 DTSTART）在官方与本地都不可保存；但只要用户没碰时间那一组，
+  // 它就仍是权威值：改名称不应触发一次规则重写，也不应因此禁用保存。
+  const stored = item({
+    kind: "rrule",
+    rrule: "RRULE:FREQ=DAILY",
+    updatedAt: "rev-1",
+    scheduledAt: "2026-11-07T01:00:00.000Z",
+  });
+  let state = scheduleEditorState(stored);
+  assert.equal(scheduleEditorStateDirty(state), false, "从坏规则生成的草稿本身不算未保存修改");
+  state = scheduleEditorReducer(state, { type: "edit", draft: { ...state.draft, title: "改名" } });
+  const patch = schedulePatchOf(state.draft, state.base);
+  assert.ok("patch" in patch, "只改名称仍可保存");
+  assert.deepEqual(patch.patch, { title: "改名" }, "没碰时间就不带 timing（坏规则原样保留）");
+
+  // 真正改了 RRULE 才进入校验：合法的接住，不合法的由同一个 parser 拒绝。
+  const edited = { ...state.draft, title: "构建检查", timing: { ...state.draft.timing, rrule: "RRULE:FREQ=WEEKLY" } };
+  assert.equal(scheduleDraftDiffers(edited.timing, stored), true);
+  assert.deepEqual(schedulePatchOf(edited, stored), { error: "invalid_rule" });
+  const valid = schedulePatchOf(
+    { ...edited, timing: { ...edited.timing, rrule: "DTSTART:20990101T090000Z\nRRULE:FREQ=WEEKLY;BYDAY=MO" } },
+    stored,
+  );
+  assert.ok("patch" in valid);
+  assert.deepEqual(valid.patch.timing, {
+    kind: "rrule",
+    rrule: "DTSTART:20990101T090000Z\nRRULE:FREQ=WEEKLY;BYDAY=MO",
+  });
+
+  // 行空白噪声与「从目录读到的原文」是同一形态：不制造未保存修改，也不阻止删除。
+  const canonical = item({
+    kind: "rrule",
+    rrule: "DTSTART:20990101T090000Z\nRRULE:FREQ=WEEKLY;BYDAY=MO;COUNT=3",
+    scheduledAt: "2099-01-05T09:00:00.000Z",
+  });
+  const noisy = scheduleEditorState(canonical);
+  const noiseDraft = {
+    ...noisy,
+    draft: {
+      ...noisy.draft,
+      timing: {
+        ...noisy.draft.timing,
+        rrule: `\n ${canonical.rrule!.replace("\n", " \r\n ")} \n`,
+      },
+    },
+  };
+  assert.equal(scheduleDraftDiffers(noiseDraft.draft.timing, canonical), false);
+  assert.equal(scheduleRowControls(controlsState({ dirty: scheduleEditorStateDirty(noiseDraft) })).canDelete, true);
+}
+console.log("scheduleEditor: 未触碰 RRULE 短路与行空白噪声 ✓");
 
 // 一次性任务从目录生成草稿后必须仍是干净的；否则删除 / 暂停 / 运行会一起灰掉。
 for (const kind of ["at", "after"] as const) {
@@ -704,5 +761,144 @@ console.log("scheduleEditor: 归档 / 权威 / 禁用属性的真实渲染 ✓")
   assert.match(outside, /<option[^>]*value="s1"/, "其余候选仍在");
 }
 console.log("scheduleEditor: 选中会话渲染 ✓");
+
+// ---------- 10. 规则提示与目录候选的真实 SSR：坏 RRULE / DST 缺口 / cron 字段 / 注册表 ----------
+{
+  const renderEditor = (
+    draft: ScheduleEditorDraft,
+    texts: ReturnType<typeof dictionaryFor>,
+    options: {
+      locale?: "zh" | "en";
+      timingBase?: ScheduleItemView;
+      projects?: readonly ScheduleProjectView[];
+      sessions?: readonly SessionSummaryView[];
+    } = {},
+  ): string =>
+    render(
+      createElement(ScheduleEditor, {
+        idPrefix: "schedule-render",
+        draft,
+        onChange: () => {},
+        disabled: false,
+        basicDisabled: false,
+        allowRrule: true,
+        projects: options.projects,
+        sessions: options.sessions ?? [],
+        currentSessionId: undefined,
+        storedTargetSessionId: undefined,
+        timingBase: options.timingBase,
+        texts,
+      }),
+      options.locale ?? "en",
+    );
+
+  const noticeOf = (html: string): string | undefined =>
+    /<div class="job-notice is-error">([^<]*)<\/div>/.exec(html)?.[1];
+
+  const en = dictionaryFor("en");
+  const storedBroken = item({ kind: "rrule", rrule: "RRULE:FREQ=DAILY", updatedAt: "rev-broken" });
+  const seededBroken = scheduleEditorDraft(storedBroken);
+
+  // 官方 parser 判定的坏 RRULE：在真实渲染里给出规则级提示，而不是「间隔小于 60 秒」。
+  const brokenDraft: ScheduleEditorDraft = {
+    ...seededBroken,
+    timing: { ...seededBroken.timing, rrule: "not a rule" },
+  };
+  assert.equal(noticeOf(renderEditor(brokenDraft, en)), en.scheduleRuleInvalid, "坏 RRULE 显示规则级提示");
+
+  // 一次性 DST 缺口：官方 DTSTART 校验拒绝；重叠时刻合法，不显示提示。
+  const gapDraft: ScheduleEditorDraft = {
+    ...seededBroken,
+    timing: {
+      ...seededBroken.timing,
+      repeat: "once",
+      date: "2026-03-08",
+      time: "02:30",
+      timeZone: "America/New_York",
+    },
+  };
+  assert.equal(noticeOf(renderEditor(gapDraft, en)), en.scheduleRuleInvalid, "DST 缺口里的本地时刻给出规则级提示");
+  const overlapDraft: ScheduleEditorDraft = {
+    ...gapDraft,
+    timing: { ...gapDraft.timing, date: "2026-11-01", time: "01:30" },
+  };
+  assert.equal(noticeOf(renderEditor(overlapDraft, en)), undefined, "DST 重叠时刻存在，不显示提示");
+
+  // 时区错误单独走时区文案（不混进规则级提示）。
+  const zoneDraft: ScheduleEditorDraft = {
+    ...seededBroken,
+    timing: { ...seededBroken.timing, repeat: "daily", time: "09:00", timeZone: "Invalid/Zone" },
+  };
+  assert.equal(noticeOf(renderEditor(zoneDraft, en)), en.scheduleErrZone, "无效时区显示时区文案");
+
+  // 编辑传 base：时间组没改就不提示，只改名称仍可保存；改了规则才提示。
+  const keptDraft: ScheduleEditorDraft = { ...seededBroken, title: "Renamed" };
+  assert.equal(
+    noticeOf(renderEditor(keptDraft, en, { timingBase: storedBroken })),
+    undefined,
+    "未触碰的坏 RRULE 不产生提示（官方 changes.timing 短路）",
+  );
+  const keptPatch = schedulePatchOf(keptDraft, storedBroken);
+  assert.ok("patch" in keptPatch, "只改名称仍可保存");
+  assert.deepEqual(keptPatch.patch, { title: "Renamed" }, "只提交名称，不重写坏规则");
+  assert.equal(
+    scheduleRowControls(controlsState({
+      dirty: true,
+      invalid: scheduleTimingIssue(keptDraft.timing, storedBroken) !== undefined,
+    })).canSave,
+    true,
+    "未触碰坏规则时保存入口可用",
+  );
+  assert.equal(
+    scheduleRowControls(controlsState({
+      dirty: true,
+      invalid: scheduleTimingIssue(brokenDraft.timing, storedBroken) !== undefined,
+    })).canSave,
+    false,
+    "真正改坏规则时保存入口禁用",
+  );
+  assert.equal(
+    noticeOf(renderEditor(brokenDraft, en, { timingBase: storedBroken })),
+    en.scheduleRuleInvalid,
+    "真正改了规则才提示",
+  );
+
+  // cron 的字段级提示保持不变：仍然指出具体坏字段，而不是泛化为规则级提示。
+  const storedCron = item({
+    kind: "cron",
+    expression: "0 9 * * 1-5",
+    timeZone: "UTC",
+    updatedAt: "rev-cron",
+  });
+  const cronDraft: ScheduleEditorDraft = {
+    ...scheduleEditorDraft(storedCron),
+    timing: { ...scheduleEditorDraft(storedCron).timing, expression: "0 9 * * 1-" },
+  };
+  const cronNotice = noticeOf(renderEditor(cronDraft, en, { timingBase: storedCron }));
+  assert.equal(
+    cronNotice,
+    en.scheduleCronInvalid(cronFieldText("dayOfWeek", en)).replaceAll("'", "&#x27;"),
+    "cron 字段错误保留字段级提示",
+  );
+  assert.notEqual(cronNotice, en.scheduleRuleInvalid, "cron 字段错误不折成规则级提示");
+
+  // 注册表有 Workspace、会话列表为空：候选仍出现，默认标题按语言本地化。
+  for (const locale of ["zh", "en"] as const) {
+    const texts = dictionaryFor(locale);
+    const html = renderEditor(scheduleCreateDraft(), texts, {
+      locale,
+      sessions: [],
+      projects: [
+        { path: "C:\\work", title: "default-workspace" },
+        { path: "D:\\other", title: "Other" },
+      ],
+    });
+    assert.ok(html.includes('value="C:\\work"'), `${locale}：零会话时注册目录仍在候选里`);
+    assert.ok(html.includes(`>${texts.scheduleDefaultWorkspace}</option>`), `${locale}：默认标题已本地化`);
+    assert.ok(html.includes(">Other</option>"), `${locale}：普通标题原样显示`);
+    assert.ok(!html.includes(">default-workspace</"), `${locale}：不把官方内部标题直接呈现给用户`);
+  }
+}
+console.log("scheduleEditor: 规则提示与注册目录候选的真实渲染 ✓");
 
 console.log("\nscheduleEditor: all assertions passed");

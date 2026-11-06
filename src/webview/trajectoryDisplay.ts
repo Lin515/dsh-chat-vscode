@@ -31,6 +31,7 @@ import type {
   TrajectoryCell,
   TrajectoryGroupTitle,
   TrajectoryPromptChange,
+  TrajectoryRequest,
   TrajectorySourceBlock,
   TrajectoryToolUpdate,
   TrajectoryTurn,
@@ -302,6 +303,18 @@ function cellText(cell: TrajectoryCell, texts: TrajectoryTexts): string {
       .join(" · ");
   }
   if (cell.emptySummary?.kind === "images") return texts.imageCount(cell.emptySummary.count);
+  /**
+   * 只有结果没有调用的补行：官方 `resultAsText()` 的 `text` 就是本地化后的
+   * `result`（图片计数 / 无输出）。宿主把这两句存成语义标记，这里在**没有行前缀**
+   * （`cell.text` 为空）时补成当前语言；有调用名的工具行仍以工具名为前缀。
+   */
+  if (
+    (cell.kind === "tool" || cell.kind === "subtool")
+    && cell.text === ""
+  ) {
+    if (cell.resultSummary?.kind === "images") return texts.imageCount(cell.resultSummary.count);
+    if (cell.resultSummary?.kind === "no-output") return texts.recordNoOutput;
+  }
   return cell.text;
 }
 
@@ -473,6 +486,32 @@ export function trajectoryAssistantRequestNumber(
   const number = cell.requestNumber;
   if (number === undefined || !requestNumbers.has(number)) return undefined;
   return number;
+}
+
+/**
+ * 请求 → 它那条**已提交结果记录**（官方 `selectedRequestResultTemplate`）。
+ *
+ * 官方判据：
+ * - `request.resultSeq === undefined` → 用助手记录（`selectedRequestAssistant`）；
+ * - 否则在账本里找 `record.cell.sourceSeq === resultSeq` 的那一条；**找不到就是
+ *   `undefined`**（不退回助手记录，否则会点开一条与请求结果无关的行）。
+ *
+ * 本扩展的 `TrajectoryCell.seq` 就是官方 `sourceSeq` 的来源（助手最终 message /
+ * 压缩 startSeq），所以按 `cell.seq` 找；调用格另有 `resultSeq`，但请求表的
+ * `resultSeq` 不会指向工具调用。
+ *
+ * @param cells - 整份账本的扁平记录（顺序即账本顺序）。
+ * @param request - 当前请求。
+ * @param assistant - 该请求的助手记录（`resultSeq` 缺席时的官方回退）。
+ * @returns 结果链接的记录；没有可链接目标时 `undefined`。
+ */
+export function trajectoryRequestResultCell(
+  cells: readonly TrajectoryCell[],
+  request: Pick<TrajectoryRequest, "resultSeq">,
+  assistant: TrajectoryCell | undefined,
+): TrajectoryCell | undefined {
+  if (request.resultSeq === undefined) return assistant;
+  return cells.find((cell) => cell.seq === request.resultSeq);
 }
 
 /**

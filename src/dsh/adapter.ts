@@ -44,8 +44,12 @@ import { applyNextStepSplice, claimedByNextStep, type InboxState } from "./inbox
 import {
   inboxSpliceOf,
   noteInboxInserted,
+  noteInboxProjection,
   noteInboxSplice,
+  rpcIdOfMessage,
   takeLostSubmissions,
+  takeObservedSubmissions,
+  type SubmissionReceipt,
   type SubmissionReceipts,
 } from "./submissionReceipts";
 import { subagentFromCatalogEvent } from "./projections";
@@ -173,6 +177,16 @@ function boundedJson(block: unknown): string {
  * （`{"turn":1}` 这种），日志的价值是「这个类型长什么样」，不是完整载荷。
  */
 const UNKNOWN_EVENT_DATA_LIMIT = 600;
+
+/**
+ * 已按开窗截点判成「Host 已持有」的提交身份保留上限（FIFO）。
+ *
+ * 这些 rpcId 的本地回执已经删掉，官方也不再保留 settlement；但控制流的 `inbox` 投影
+ * 可能晚于快照到达、仍列着同一条排队消息。若不记住它们，会把刚判成 Host 已持有的提交
+ * 重新补成回执，后面的旧边界帧就会在下一次重连时产出一次假的失败。rpcId 是 UUID，
+ * 不会复用，所以按条数有界即可（不随会话历史增长）。
+ */
+const OBSERVED_SUBMISSION_LIMIT = 256;
 
 /**
  * 未知事件 `data` 的**单行**摘要（日志用）。
@@ -667,6 +681,27 @@ export class SessionAdapter {
    * 重放里那些更旧的事件本来就不该把它顶回去。
    */
   private readonly submissions: SubmissionReceipts = new Map();
+  /**
+   * 已经按开窗截点判成 Host 已持有的提交身份（有界 FIFO，见 `OBSERVED_SUBMISSION_LIMIT`）。
+   *
+   * 只用于挡住「快照之后才到的 `inbox` 投影 / 旧边界帧把同一条重新补成回执」这种污染；
+   * durable 承认走 `submissions.delete`，不依赖这张表。
+   */
+  private readonly observedSubmissions = new Set<string>();
+  /**
+   * 最近一次已知的 `inbox` 投影水位（`seqOf('inbox')` / 开窗 `asOfSeq`）。
+   *
+   * 只在拿到有限数时前进；`undefined` = 还没有任何可用的 inbox 水位（cached 值 /
+   * 控制流没带）。官方 `retireAdmittedSubmission` 用它判断「领取已被投影确认」。
+   */
+  private lastInboxSeq: number | undefined;
+  /**
+   * 已经 durable 承认、但在等 inbox 投影追上领取水位的通知（官方 `retireAdmittedSubmission`）。
+   *
+   * 回执本身还留在 `submissions` 里并标 `admitted`（不参与失败判定）；投影水位推进到
+   * `receipt.seq` 之后才交给控制器收显。这样重连时队列里的旧行不会在收显之后又冒出来。
+   */
+  private readonly pendingAdmitted = new Map<string, { rpcId: string; text: string }>();
   /** 当前 step 首个 token delta 的时间戳（服务端时钟，取自 chunk 帧 time）。 */
   private stepFirstTokenAt: number | undefined;
   /** 当前 step 的**开始**时刻（`turn/start` / `step/start` 的 time）：TTFT 的基准。 */
@@ -879,11 +914,61 @@ export class SessionAdapter {
    * 在 `messages/reset` 发出之后补发（顺序与直播路径一致：先落位帧，后收回帧）。
    */
   private notifyAdmitted(message: { rpcId?: string; text: string }): void {
+    const rpcId = message.rpcId;
+    if (rpcId) {
+      const receipt = this.submissions.get(rpcId);
+      // 官方 `retireAdmittedSubmission`：已经领取（index === null）但 inbox 投影水位还停在
+      // 领取之前时，**先不收显**——那条旧队列行还会再出现一次，收早了会闪、也可能让
+      // 队列区与回显两边都空一帧。回执标成 `admitted` 留在账本里（失败判定跳过它），
+      // 通知攒到投影追上 `receipt.seq` 再交出去。
+      if (receipt && receipt.index === null && (this.lastInboxSeq ?? -1) < receipt.seq) {
+        this.submissions.set(rpcId, { ...receipt, admitted: true });
+        this.pendingAdmitted.set(rpcId, { rpcId, text: message.text });
+        return;
+      }
+      this.submissions.delete(rpcId);
+      this.pendingAdmitted.delete(rpcId);
+    }
     if (this.replaying) {
       this.admittedWhileReplaying.push(message);
       return;
     }
     this.onUserMessage?.(message);
+  }
+
+  /**
+   * inbox 投影推进后，补发那些「已经落盘、只等领取被投影确认」的承认通知。
+   *
+   * 判据与官方 `retireAdmittedSubmission` 同款：回执位次还是 `null`，且投影水位仍早于
+   * 领取帧的水位 ⇒ 继续等；否则摘掉回执并交给控制器收显。水位拿不到时按 -1 处理
+   * （官方 `seqOf(...) ?? -1`），首条 inbox 水位一到就放行。
+   */
+  private flushAdmittedSubmissionsAtWatermark(): void {
+    if (!this.pendingAdmitted.size) return;
+    const watermark = this.lastInboxSeq ?? -1;
+    for (const [rpcId, message] of [...this.pendingAdmitted]) {
+      const receipt = this.submissions.get(rpcId);
+      if (receipt?.index === null && watermark < receipt.seq) continue;
+      this.pendingAdmitted.delete(rpcId);
+      this.submissions.delete(rpcId);
+      this.onUserMessage?.(message);
+    }
+  }
+
+  /**
+   * 收场 / 丢弃适配器之前，把仍在等水位的已承认提交全部交出（官方 dispose 的退休路径）。
+   *
+   * 正常重连不需要调用：`submissionReceipts()` 会把标了 `admitted` 的回执一起交给新适配器，
+   * 由新适配器的快照截点 / 后续投影继续收场。域被回收（切走会话）且不再重建时才需要它，
+   * 否则控制流断开期间收不到投影，回显会一直停在 `sending`。
+   */
+  flushAdmittedSubmissions(): void {
+    if (!this.pendingAdmitted.size) return;
+    for (const [rpcId, message] of [...this.pendingAdmitted]) {
+      this.pendingAdmitted.delete(rpcId);
+      this.submissions.delete(rpcId);
+      this.onUserMessage?.(message);
+    }
   }
 
   /** 重放收尾（那一份 `messages/reset` 已发出）之后，补发攒下的承认通知。 */
@@ -1025,6 +1110,31 @@ export class SessionAdapter {
    * ——界面画成一条正常消息、被 `pendingInsertIndex` 甩到会话最底部（用户 2026-10-16 报的现场）。
    */
   onSubmissionLost: ((rpcId: string, reason: "lost" | "canceled") => void) | undefined;
+
+  /**
+   * 一条提交被 Host **持有**（跟随开窗截点覆盖到它）时的落点（由控制器注入）。
+   *
+   * 只有 `snapshot` 一种来路：`snapshot.projections.asOfSeq` 之前已经有回执的提交，
+   * Host 已经持有；即便那条 durable 行在窗口外或刚被领取，也按「已收下」收回乐观回显
+   * （官方 `replaceWindow` 的 `observed`），**不能**在重连时改判成 `lost`。
+   *
+   * **`inbox` 投影里出现某条不触发这里**：本扩展的 `pendingMessages` 只装空闲时的
+   * 对话回显，运行中排队发送根本不建回显；官方那一步只收 `placement === 'queued'` 的
+   * 回显，本扩展没有这种对象，凭「投影里有它」去收 chat 回显会错误吞掉一条仍在等
+   * durable 承认的消息。chat 回显只由 durable 承认（受 inbox 水位门控）或本回调收回。
+   */
+  onSubmissionObserved: ((rpcId: string) => void) | undefined;
+
+  /**
+   * 这个 rpcId 是不是**本客户端铸的**提交（由控制器注入：`submissions` 账本里有没有它）。
+   *
+   * 收件箱是服务端共享的：别的窗口 / 浏览器标签的待发消息同样会出现在本客户端的
+   * `inbox` 投影与 durable splice 里。没有这道身份边界，本客户端会把别人的 rpcId
+   * 记成自己的回执，别人失败时在这里弹一条「没发出去」、甚至回填不该回填的草稿。
+   *
+   * 未注入（离线测试 / 子代理转录）时按「是」处理，保持既有行为。
+   */
+  ownsSubmission: ((rpcId: string) => boolean) | undefined;
 
   /**
    * 一条**本客户端不认识**、且不是 `ignorable` 的会话事件（由控制器注入）。
@@ -1275,8 +1385,33 @@ export class SessionAdapter {
       // 跟随开帧带 `cursor`（本次开窗的日志截点）与 `hasMore`（窗口外还有没有更早的）。
       // `cursor` 是 `session/page` 的 `throughSeq` **唯一合法来源**，所以必须存下来。
       if (typeof frame.cursor === "number") this.throughSeq = frame.cursor;
+      // 开窗快照的投影截点：**截点之前已有的回执 = Host 已持有**（官方 `replaceWindow`
+      // 的 `observed` 口径，不是「快照清空即 lost」）。必须在重放任何 durable 边界之前摘掉，
+      // 否则窗口里的 `turn/end` 会把这条早已被 Host 收下的提交重判成失败。
+      const cut =
+        typeof frame.projections?.asOfSeq === "number" && Number.isFinite(frame.projections.asOfSeq)
+          ? frame.projections.asOfSeq
+          : undefined;
+      // 水位取**当前这次开窗的权威值**，不是历史最大值：同一适配器若能收到第二次替换快照 /
+      // rebaseline，旧的更高水位不能继续压着新窗口。跟随快照的投影块是「seed 带了的键、
+      // 不清没带的键」（官方 `ProjectionStore.seed` 的跟随分支），所以 inbox 缺键时保留
+      // 上一次已知水位——不能把 `cut` 当成 inbox 的水位。
+      const inboxValues = frame.projections?.values;
+      const inboxPresent =
+        inboxValues !== null &&
+        typeof inboxValues === "object" &&
+        Object.hasOwn(inboxValues, "inbox");
+      if (cut !== undefined && inboxPresent) this.lastInboxSeq = cut;
+      const observed = takeObservedSubmissions(this.submissions, cut);
+      for (const rpcId of observed) this.pendingAdmitted.delete(rpcId);
+      const admitted = new Set<string>();
       for (const record of frame.records ?? []) {
-        if (record?.type === "event") this.remember(record.event);
+        if (record?.type !== "event") continue;
+        this.remember(record.event);
+        if (record.event.type === "user/message") {
+          const rpcId = rpcIdOfMessage(record.event.data);
+          if (rpcId) admitted.add(rpcId);
+        }
       }
       this.refold();
       this.hasMore = Boolean(frame.hasMore);
@@ -1322,6 +1457,28 @@ export class SessionAdapter {
       // durable 行已经随上面那一份整份 reset 交给界面了，这时才收回乐观回显
       // （重放期间攒下的那些，见 `notifyAdmitted`）
       this.flushAdmitted();
+      // 开窗快照里的 `inbox` 同样能补回执：入队 splice 掉线时，Host 当前队列就是唯一
+      // 证据。只补位次，不把「排队受理」当成 durable 承认（它后面仍可能领取失败）；
+      // 已经按截点判为 Host 已持有、或窗口里已经落盘承认的那些不再补回来。
+      if (cut !== undefined && inboxPresent) {
+        noteInboxProjection(
+          this.submissions,
+          frame.projections?.values?.inbox,
+          cut,
+          new Set([...observed, ...admitted]),
+          this.acceptsSubmission,
+        );
+      }
+      // 重放里那些「已落盘、但领取水位还没被投影确认」的提交：截点已经推进到这里，
+      // 该放的放行（官方 installWindow 之后同样会走 retireAdmittedSubmission）。
+      this.flushAdmittedSubmissionsAtWatermark();
+      // 收显放在 `messages/reset` 与 durable 承认之后：真实行先落位，再撤奴才不会中间空一帧。
+      // 已经落盘的那条由 `onUserMessage` 走承认路径，不重复收。
+      for (const rpcId of observed) {
+        if (admitted.has(rpcId)) continue;
+        this.rememberObservedSubmission(rpcId);
+        this.onSubmissionObserved?.(rpcId);
+      }
       return;
     }
     if (frame.type === "event") {
@@ -1331,6 +1488,73 @@ export class SessionAdapter {
     }
     if (frame.type === "assistant-stream") {
       this.applyAssistantStream(frame.frame);
+    }
+  }
+
+  /** 身份边界：只让本客户端铸的 rpcId 进入本地回执账本（未注入时保持旧的「全收」行为）。 */
+  private readonly acceptsSubmission = (rpcId: string): boolean => this.ownsSubmission?.(rpcId) ?? true;
+
+  /**
+   * 外部把一帧 **`inbox` 投影**交给适配器（控制流的 baseline / 增量，或跟随开帧之后的
+   * 投影效果）。它补的是「入队 splice 没收到」的回执缺口，不替代 durable 事件：
+   *
+   * - 只按**存在**补位次；投影里没有的提交一律不动（不反推领取 / 取消）；
+   * - `seq` 必须是这个投影自己的水位。拿不到（cached 值 / 无水位通道）时**不初始化位次**
+   *   （官方 `observeSubmissionInbox` 的同一分支），但末尾的水位收显照跑；
+   * - **不在这里收任何回显**：官方那一步只收 `placement === 'queued'` 的提交，而本扩展
+   *   运行中发送根本不建回显。凭投影存在去收 chat 回显会错误吞掉仍在等 durable 承认的
+   *   消息；chat 只由 durable 承认（受水位门控）或开窗截点收回。
+   */
+  noteInboxProjection(value: unknown, seq: number | undefined): void {
+    // 控制流的 `seq` 是投影存储此刻的权威水位（`seqOf('inbox')` 或 undefined），
+    // 不是「历史最高」：替换型 baseline 可以 truncate 到更低水位，必须跟着它降下来，
+    // 否则旧高水位会提前放行 admitted 的收显。
+    this.lastInboxSeq = seq;
+    const hasSeq = typeof seq === "number" && Number.isFinite(seq);
+    if (hasSeq) {
+      noteInboxProjection(this.submissions, value, seq, this.observedSubmissions, this.acceptsSubmission);
+    }
+    // 官方 `observeSubmissionInbox` 末尾的 `retireAdmittedSubmission`：没有水位也照样跑，
+    // 只是水位不前进时继续等（`lastInboxSeq ?? -1`）。
+    this.flushAdmittedSubmissionsAtWatermark();
+  }
+
+  /**
+   * 这个适配器当前的回执账本**副本**（供同一会话重开跟随流时交给新适配器）。
+   *
+   * 适配器按跟随流重建（重连 / 单流失败重开），而回执属于**本地提交**、不属于某一条
+   * socket：丢了它，快照截点之前已受理的提交在重连后就没有任何收场凭据（回显会永远
+   * 停在 `sending`）。只允许同一会话、同一客户端身份把它交给新适配器；跨会话 / 跨代
+   * 的回执身份不通用，调用方负责按会话键隔离。
+   */
+  submissionReceipts(): SubmissionReceipts {
+    return new Map(this.submissions);
+  }
+
+  /**
+   * 接收上一代适配器交来的回执账本（只用于同一会话的重开跟随流）。
+   *
+   * 仍按水位只许前进合并：已有回执更新时不倒退；`Map` 是复制进来的，之后两边互不影响。
+   * **不要**用它跨会话搬运——rpcId 是客户端铸的，串了会把别人的提交判成自己的。
+   */
+  adoptSubmissionReceipts(carried: ReadonlyMap<string, SubmissionReceipt>): void {
+    for (const [rpcId, receipt] of carried) {
+      if (!this.acceptsSubmission(rpcId)) continue;
+      const existing = this.submissions.get(rpcId);
+      if (existing && existing.seq >= receipt.seq) continue;
+      this.submissions.set(rpcId, receipt);
+      this.observedSubmissions.delete(rpcId);
+      if (receipt.admitted === true) this.pendingAdmitted.set(rpcId, { rpcId, text: "" });
+    }
+  }
+
+  /** 记住一条已经按截点判成 Host 已持有的提交（有界 FIFO，见 `OBSERVED_SUBMISSION_LIMIT`）。 */
+  private rememberObservedSubmission(rpcId: string): void {
+    this.observedSubmissions.add(rpcId);
+    while (this.observedSubmissions.size > OBSERVED_SUBMISSION_LIMIT) {
+      const oldest = this.observedSubmissions.values().next().value;
+      if (oldest === undefined) break;
+      this.observedSubmissions.delete(oldest);
     }
   }
 
@@ -1806,7 +2030,7 @@ export class SessionAdapter {
           for (const rpcId of noteInboxSplice(this.submissions, splice, event.seq)) {
             this.onSubmissionLost?.(rpcId, "canceled");
           }
-          noteInboxInserted(this.submissions, splice, event.seq);
+          noteInboxInserted(this.submissions, splice, event.seq, this.acceptsSubmission);
         }
         this.nextStepInbox = applyNextStepSplice(this.nextStepInbox, data);
         break;
@@ -1828,10 +2052,9 @@ export class SessionAdapter {
         if (kind === "user" || kind === "user-rpc") {
           const rpcId = (message?.source as { rpcId?: unknown } | undefined)?.rpcId;
           const admitted = typeof rpcId === "string" && rpcId ? rpcId : undefined;
-          // 这条提交真的成了历史：它的收件箱回执到此收场——**必须在这里就地清掉**，
-          // 不能等 `notifyAdmitted`（那一个在重放期间会被攒着延后），否则同一批重放里
-          // 后面的 `request/context` 会把这条已经承认的提交误判成「领走了却没落盘」。
-          if (admitted) this.submissions.delete(admitted);
+          // 回执的收场交给 `notifyAdmitted`：它要按 `inbox` 水位决定是否延迟收显。
+          // 即便延迟，回执也会被标成 `admitted`，同一批重放里后面的 `request/context`
+          // 不会把它误判成「领走了却没落盘」（见 `takeLostSubmissions`）。
           /**
            * 承认事实交给控制器的时机是**这条落位并发帧之后**（本分支末尾），不是之前。
            *

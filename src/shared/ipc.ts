@@ -247,8 +247,31 @@ export type HostToWebview =
    * 逐键折回那套语义，也不必在 `wire.ts` 里逐个登记轨迹字段。
    */
   | { type: "trajectory"; json: string }
+  /**
+   * 轨迹「Result」页选中的工具结果（`toolResults/watch` 的一帧）。
+   *
+   * **不是** `patch`：它只服务当前选中结果这一格，不能进会话状态机（`ChatState`），
+   * 否则切会话 / 重连时会被当成一份要持久化的状态。`available:false` 是**清空值**的
+   * 唯一表达；`available:true` 必须带 `value`，其中 `null` / `false` / `0` / `""` /
+   * 空对象都是**有效结果**，不能用 `undefined` 或 truthiness 判空。
+   */
+  | TrajectoryResultFrame
   /** 让界面打开某个右侧抽屉（命令面板入口用，如「DSH: 历史对话」）。 */
   | { type: "ui/openPanel"; panel: string };
+
+/**
+ * 一帧选中的工具结果。
+ *
+ * `value` 只在 `available:true` 时出现；`available:false` 表示「当前不可用 / 已释放」，
+ * 不携带值（避免用 `undefined` 表达清空——过线时会被 JSON 丢掉）。
+ */
+export interface TrajectoryResultFrame {
+  type: "trajectory/result";
+  seq: number;
+  watchId: number;
+  available: boolean;
+  value?: unknown;
+}
 
 export type WebviewToHost =
   /** webview 加载完成，请求首帧状态。 */
@@ -355,6 +378,19 @@ export type WebviewToHost =
    * 是白烧。面板打开时请求一次，之后「一轮结束」时再请求一次（见 App 的接线）。
    */
   | { type: "listTrajectory" }
+  /**
+   * 订阅当前选中结果的**实时值**（`toolResults/watch`）。
+   *
+   * 只服务轨迹的 Result 页；`watchId` 是界面在本页生命周期内单调递增的观察号，宿主
+   * 原样回带。宿主的每视图只保留**一个**观察：同一视图再发一次就是换观察，旧流立即
+   * 释放；迟到的旧 `watchId` 帧不许覆盖新观察。
+   *
+   * 不带 `sessionId`：宿主从**该视图当前绑定的会话**取；未绑定 / 已切走时回
+   * `available:false`，不会把旧会话的观察挂到新会话上。
+   */
+  | { type: "watchTrajectoryResult"; seq: number; watchId: number }
+  /** 释放一次结果观察（关闭 Result 页 / 组件卸载）。旧 `watchId` 是空操作。 */
+  | { type: "unwatchTrajectoryResult"; watchId: number }
   /** 归档会话（服务端 workspace/archiveSession：从工作区分组移出，可再找回）。 */
   | { type: "archiveSession"; sessionId: string }
   /** 恢复归档会话（服务端 workspace/unarchiveSession：移回工作区分组）。 */

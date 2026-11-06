@@ -89,6 +89,35 @@ cron 的「有没有改」与「提交什么」都走**官方规范式**：`src/
 非法的表达式**保持 dirty**，保存时仍由字段级校验（`cronFieldError`，中英文指名哪一段坏了）
 拒绝——不能因为两侧都读不出就把它当成「已完成」。
 
+RRULE 与一次性时刻的有效性**直接用官方 parser**，不写第二套日历 / 时区 / DST 判断
+（`src/shared/scheduleRule.ts`）：
+
+- `RRule.parse(text, { rejectIneffectiveSetPositions: true })` 与官方 `taskDraftIssue`
+  同一入口：两行 DTSTART/RRULE 形态、DTSTART 的 `Z` 或显式 `TZID`、TZID 必须是 UTC /
+  IANA Area/Location、年份 0100–9999、真实日历、DST 缺口里的 DTSTART、FREQ / INTERVAL /
+  COUNT / UNTIL（UNTIL 必须是 UTC `Z`）、WKST 与全部 BY 段的范围 / 去重 / 组合、BYSETPOS
+  上界与「周期只有一个候选时 BYSETPOS 无效」、一个周期最多 10080 个候选的密度上限；
+- 一次性草稿按官方 `timingFromDraft` 的同一形态（`DTSTART;TZID=…` +
+  `FREQ=DAILY;COUNT=1`）交给同一个 parser，因此不存在的日期、DST 春季缺口都会被拦下，
+  秋季重叠按 parser 的「取较早一次」接受；
+- `daily` / `weekly` / `cron` 的时区走官方 `canonicalizeTimeZone`；`once` 的时区错误报
+  `invalid_time_zone`，时间本身不存在报 `invalid_rule`；
+- RRULE 的 dirty 与提交都取官方 `RRule.expression`：只归一化两行的首尾空白与空行，
+  不改写字段顺序或 BY 写法，因此「只多一行空白」不算修改；
+- 拒绝档沿用服务端 `domain.ts` 的映射：`syntax` → `invalid_rule`、`time_zone` →
+  `invalid_time_zone`、`density` → `frequency_too_high`；界面展示规则本身不合法时应优先用
+  规则级提示，而不是把密度问题说成「间隔小于 60 秒」；
+- 未来时刻、发生时刻枚举与「下一次触发不存在」**不**在本地判断（官方 `taskDraftIssue`
+  同样把 `not_future` 留给 Host），服务端仍是权威。`daily` / `weekly` 没有保存规则锚点
+  日期，本地无法复现官方对「锚点日期 + 时钟落在缺口」的那一条检查；这条差异只在编辑
+  跨 DST 的锚点日时出现，提交后由服务端裁决。
+
+**未触碰的已存坏规则保持原样**（官方 `taskDraftIssue` 在 `changes.timing === undefined`
+时直接放行）：只改名称 / 指令 / 目标不触发规则重写，也不因存储里的旧坏文本禁用保存；
+只有用户真正改到时间那一组时才用上面的 parser 校验。界面对应的入口是
+`scheduleTimingIssue(timing, base?)`：创建时省略基线做完整校验，编辑时传入比较基线，
+时间组没变就返回 `undefined`。
+
 `patch` 只带**真正改过的字段**（名称 / 指令 / 目标 / 时间 / `active`），由
 `schedulePatchOf` 装配：时间没动就不带 `timing`（否则一次只改名称的保存会把时刻重新锚定），
 目录没变就不带 `target`，并保留原来的 `agentPreset`——只改名字的用户不该丢掉他选的预设。
@@ -198,9 +227,12 @@ cron 的「有没有改」与「提交什么」都走**官方规范式**：`src/
 - 新建任务的默认时刻是「一小时后的**整分**」（`…:00`，官方 `defaultTiming` 口径），不是打开
   表单那一刻的秒位。本次创建的成功结算回帧到达后自动收起新建卡；失败则保留草稿和错误提示，
   迟到或不匹配的回帧不关闭卡片。
-- **已知缺口**：`new` / `new_once` 的目录候选来自会话列表里出现过的 `cwd`，不是注册的
-  Workspace 列表。webview 目前没有 workspace 注册表的投影，因此「已注册但还没有会话」的
-  Workspace 选不到；补这条通道属于独立工作。
+- `new` / `new_once` 的目录候选先取 Workspace 注册表，再合并会话 `cwd` 回退，按路径身份
+  去重并保持注册顺序；已注册但还没有会话的目录同样可选。默认目录优先取标题为
+  `default-workspace` 的注册项，否则取首个注册项，没有注册表时保留空值交给服务端默认。
+  内部默认标题按中英文显示；注册表基线、增删改序与连接清理经 `scheduleProjects` 专用桥传递，
+  缺键不改、`null` 清空、`[]` 表示已知空表，旧连接迟到帧不回填。新建草稿只在用户尚未选择
+  目录且当前值为空时补入迟到的默认项，不覆盖用户选择。
 
 样式类在 `src/webview/styles/app.css` 的自动化任务段（`.schedule-toolbar`、`.schedule-tab`、
 `.schedule-chip`、`.schedule-confirm` 等），按 flex 布局容纳英文，不按字数定宽。窄侧栏用
@@ -226,6 +258,17 @@ cron 的「有没有改」与「提交什么」都走**官方规范式**：`src/
 - `canonicalCronExpression`（官方 `parseCronExpression` 及其纯字段闭包）：只适配失败形状，
   语法与 STAR 归约沿用官方实现。
 
+RRULE 与本地时刻的校验不是摘录，而是**整份官方原文副本**：`src/vendor/dsh-util-time/`
+下的 `rrule.ts`、`instant.ts`、`recurrence.ts` 与 `@deepseek-ai/dsh-util-time@0.2.2-rc.1`
+（commit 固定同前）逐字相同，只去掉同目录相对 import 的 `.ts` 后缀；另外 `rrule.ts` 有一处
+**导入绑定**适配：`import rrulePackage from 'rrule'` 改为命名空间导入，因为 esbuild 对带
+`__esModule` 的 CJS 产物不补 `default`，而 webview 的 browser 构建又会取该包无 `default` 的
+ESM 入口；函数、常量与校验体不变。运行期依赖是两个与官方
+`packages/util/time/package.json` 一致的精确版本（`@js-temporal/polyfill@0.5.1`、
+`rrule@2.8.1`）。`src/shared/scheduleRule.ts` 只做拒绝档映射与一次性草稿的形态拼装，不复制
+日历、时区或 DST 判断；官方的发生时刻算术虽然在副本里，但界面只调用 `RRule.parse`，
+不驱动投递。显示格式仍是本仓库自己的实现。
+
 显示格式（频率句子、绝对时间文本、cron / rrule 的呈现）是本仓库自己的实现，**不声明**与官方
 `schedule-format.ts` 逐字等价：cron 显示规范表达式而不是句子式描述、rrule 显示原文、时钟固定
 两位 24 小时制。官方实现的运行期依赖（slot / store / 品牌类型）不引入。
@@ -233,17 +276,24 @@ cron 的「有没有改」与「提交什么」都走**官方规范式**：`src/
 官方实现依赖它自己的 slot / store 与品牌类型，本扩展改为自己的视图模型与纯函数接口，
 不引入官方 UI 组件的运行期依赖；界面按本仓库既有自绘风格实现，没有逐字复制官方组件。
 
-**审计缺口（本轮未做）**：创建目录的 Workspace 注册表通道（见「界面结构」）；`TaskManagerPage`
-的搜索与批量清除已结束任务的入口；模型侧 `schedule_create` / `schedule_turn` 卡片的呈现；
-旧代（0.1.x）服务端的真实往返未实测。这些属于独立范围，不与本轮修复混做。
+**本轮四项对齐之外的界面差异**：`TaskManagerPage` 的搜索与批量清除已结束任务的入口；
+模型侧 `schedule_create` / `schedule_turn` 卡片的呈现；
+旧代（0.1.x）服务端的真实往返未实测；`daily` / `weekly` 没有保存官方 guided 草稿里的锚点
+日期，本地无法复现「锚点日期 + 时钟落在 DST 缺口」这一条官方检查；本地 RRULE 输入框只接受
+RRULE 原文，官方 advanced 框在不以 `DTSTART` 开头时还会把输入当 cron 表达式校验（本地 cron
+是独立输入档，时区行也不同），这是界面分档差异而不是校验放宽；RRULE 的**实际推进**
+（`next` / `resolve`）仍只在服务端执行，离线证据只覆盖解析与校验。这些属于独立范围，不与
+本轮修复混做。
 
 ## 验证边界
 
-离线回归在 `scripts/schedule.test.ts`（线格式、频率、时间编辑、cron 规范式与 dirty、旧代兼容）、
+离线回归在 `scripts/schedule.test.ts`（线格式、频率、时间编辑、cron 规范式与 dirty、
+RRULE 官方接受/拒绝集与 TZID / UNTIL / 密度、一次性真实日历与 DST 缺口、旧代兼容）、
 `scripts/scheduleManage.test.ts`（目录字段、归属过滤、请求体校验、客户端载荷、宿主接线、
 界面接线与文案）与 `scripts/scheduleEditor.test.ts`（编辑状态机、变更入口策略、结算账本、
-执行记录的读取终点与重展开、时区口径、目标会话候选与空壳会话、选中会话的渲染、归档目标提示）
-以及 `scripts/scheduleConcurrency.test.ts`（驱真控制器 + 假客户端：成功结算前先读回目录、
-迟到上下文不写当前域 / 不降级 / 不换客户端读旧域）。这些是**纯离线**断言：不启动真实 DSH、
-不发送模型消息、不调用真实 `schedule/run`。真实服务端的端到端行为（限流时序、归档目标、
-RRULE 的实际推进）不在离线证据范围内，需要时按当次批准单独验证。
+执行记录的读取终点与重展开、时区口径、未触碰坏规则短路、RRULE 行空白噪声、目标会话候选
+与空壳会话、选中会话的渲染、归档目标提示）以及 `scripts/scheduleConcurrency.test.ts`
+（驱真控制器 + 假客户端：成功结算前先读回目录、迟到上下文不写当前域 / 不降级 / 不换客户端
+读旧域）。这些是**纯离线**断言：不启动真实 DSH、不发送模型消息、不调用真实 `schedule/run`。
+真实服务端的端到端行为（限流时序、归档目标、RRULE 的实际推进）不在离线证据范围内，需要时
+按当次批准单独验证。

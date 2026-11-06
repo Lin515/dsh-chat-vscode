@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
-import type { ChatState, ScheduleItemView, SessionSummaryView } from "../../shared/chat";
+import type { ChatState, ScheduleItemView, ScheduleProjectView, SessionSummaryView } from "../../shared/chat";
 import {
   deviceZone,
   formatScheduleStamp,
@@ -17,6 +17,7 @@ import {
   scheduleStatusOf,
   scheduleTargetError,
   scheduleTargetSessionId,
+  scheduleTimingIssue,
   type ScheduleEditorDraft,
   type ScheduleTexts,
 } from "../../shared/schedule";
@@ -33,7 +34,9 @@ import {
   scheduleEditorStateConflict,
   scheduleEditorStateDirty,
 } from "../scheduleEditorState";
-import { ScheduleEditor, scheduleTimingCronError } from "./ScheduleEditor";
+import { ScheduleEditor } from "./ScheduleEditor";
+import { scheduleProjectChoices } from "../../shared/scheduleProjects";
+import { useScheduleProjects } from "../scheduleProjects";
 
 /**
  * 后台任务抽屉里的**自动化任务**分区（DSH `schedule`）。
@@ -107,7 +110,12 @@ export function SchedulesSection({
 }: {
   /** 当前窗口绑定的会话：它变了就重读一次目录，并把本地展开 / 表单收起来。 */
   sessionId?: string;
-  /** 会话列表（目标的会话候选与创建目录候选都来自这里的真实值）。 */
+  /**
+   * 会话列表：投递目标的候选，以及创建目录的**旧端点回退来源**。
+   *
+   * 创建目录的权威候选是注册的 Workspace（`useScheduleProjects` 那条专用通道）；
+   * 这里只补注册表里没有、但会话真实用过的 `cwd`。
+   */
   sessions: readonly SessionSummaryView[];
   /** 整份全局目录（不再只是本会话的子集）。 */
   schedules: ScheduleItemView[];
@@ -122,6 +130,7 @@ export function SchedulesSection({
   dispatch: (action: ScheduleAction) => void;
 }) {
   const texts = useTexts();
+  const projects = useScheduleProjects();
   const [scopeView, setScopeView] = useState<ScheduleScopeView>("session");
   const [statusFilter, setStatusFilter] = useState<ScheduleStatusFilter>("all");
   // 展开的那一行（同一时刻只看一条详情，与后台任务的输出区同口径）
@@ -245,6 +254,7 @@ export function SchedulesSection({
           key={`create:${sessionId ?? ""}`}
           sessionId={sessionId}
           sessions={sessions}
+          projects={projects}
           newSessionIntervalSeconds={newSessionIntervalSeconds}
           limits={limits}
           result={result}
@@ -275,6 +285,7 @@ export function SchedulesSection({
               limits={limits}
               sessionId={sessionId}
               sessions={sessions}
+              projects={projects}
               history={history?.[item.id]}
               result={result}
               dispatch={dispatch}
@@ -342,6 +353,7 @@ function ScheduleListNotice({
 function ScheduleCreateCard({
   sessionId,
   sessions,
+  projects,
   newSessionIntervalSeconds,
   limits,
   result,
@@ -349,15 +361,26 @@ function ScheduleCreateCard({
 }: {
   sessionId?: string;
   sessions: readonly SessionSummaryView[];
+  /** 注册 Workspace 的创建目录候选；`undefined` = 还没有权威注册表（退回会话 cwd）。 */
+  projects?: readonly ScheduleProjectView[];
   newSessionIntervalSeconds?: number;
   limits?: AppState["scheduleLimits"];
   result?: AppState["scheduleResult"];
   onClose: () => void;
 }) {
   const texts = useTexts();
-  const [draft, setDraft] = useState<ScheduleEditorDraft>(() =>
-    scheduleCreateDraft({ target: "new_once", sessionId: sessionId ?? "" }),
-  );
+  const projectDefaultCwd = scheduleProjectChoices(projects, [], texts.scheduleDefaultWorkspace).defaultCwd;
+  const cwdChosen = useRef(false);
+  const [draft, setDraft] = useState<ScheduleEditorDraft>(() => ({
+    ...scheduleCreateDraft({ target: "new_once", sessionId: sessionId ?? "" }),
+    cwd: projectDefaultCwd,
+  }));
+  // 注册表可能晚于表单到达；只初始化尚未选择过的目录，不覆盖用户显式选择的默认值。
+  useEffect(() => {
+    if (cwdChosen.current || !projectDefaultCwd) return;
+    setDraft((current) => current.cwd || current.target === "session"
+      ? current : { ...current, cwd: projectDefaultCwd });
+  }, [projectDefaultCwd]);
   const [pending, setPending] = useState<SchedulePendingOp>();
   const [failure, setFailure] = useState<string>();
   const [created, setCreated] = useState(false);
@@ -380,7 +403,7 @@ function ScheduleCreateCard({
     setFailure(changeErrorText(result.code, texts));
   }, [result]);
 
-  const cronError = scheduleTimingCronError(draft.timing);
+  const timingIssue = scheduleTimingIssue(draft.timing);
   const missingTarget = scheduleTargetError(draft) !== undefined;
   const submit = () => {
     const built = scheduleCreateRequestOf(draft);
@@ -405,12 +428,14 @@ function ScheduleCreateCard({
         idPrefix="schedule-create"
         draft={draft}
         onChange={(next) => {
+          if (next.cwd !== draft.cwd) cwdChosen.current = true;
           setDraft(next);
           setFailure(undefined);
         }}
         disabled={saving}
         basicDisabled={false}
         allowRrule
+        projects={projects}
         sessions={sessions}
         currentSessionId={sessionId}
         storedTargetSessionId={undefined}
@@ -430,7 +455,7 @@ function ScheduleCreateCard({
         <button
           type="button"
           className="schedule-btn is-primary"
-          disabled={saving || created || cronError !== undefined || missingTarget || !draft.title.trim() || !draft.prompt.trim()}
+          disabled={saving || created || timingIssue !== undefined || missingTarget || !draft.title.trim() || !draft.prompt.trim()}
           onClick={submit}
         >
           {saving ? texts.scheduleCreating : texts.scheduleCreate}
@@ -460,6 +485,7 @@ export function ScheduleRow({
   limits,
   sessionId,
   sessions,
+  projects,
   history,
   result,
   dispatch,
@@ -482,6 +508,8 @@ export function ScheduleRow({
   limits?: AppState["scheduleLimits"];
   sessionId?: string;
   sessions: readonly SessionSummaryView[];
+  /** 注册 Workspace 的创建目录候选；`undefined` = 还没有权威注册表（退回会话 cwd）。 */
+  projects?: readonly ScheduleProjectView[];
   history?: HistoryEntry;
   result?: AppState["scheduleResult"];
   dispatch: (action: ScheduleAction) => void;
@@ -606,7 +634,7 @@ export function ScheduleRow({
     ? texts.scheduleDeliveryFloor(formatScheduleStamp(new Date(floorAt).toISOString(), locale))
     : undefined;
   const executionActive = item.executionActive === true;
-  const cronError = scheduleTimingCronError(draft.timing);
+  const timingIssue = scheduleTimingIssue(draft.timing, canEditDetails ? base : undefined);
   const missingTarget = scheduleTargetError(draft) !== undefined;
   const controls = scheduleRowControls({
     catalogStatus,
@@ -615,7 +643,7 @@ export function ScheduleRow({
     pending: pending !== undefined,
     deleting: deletePhase?.state === "pending",
     dirty,
-    invalid: cronError !== undefined || missingTarget || !draft.title.trim() || !draft.prompt.trim(),
+    invalid: timingIssue !== undefined || missingTarget || !draft.title.trim() || !draft.prompt.trim(),
     executionActive,
     floorActive,
     targetArchived,
@@ -828,9 +856,11 @@ export function ScheduleRow({
             disabled={controls.fieldsDisabled || item.editable === false}
             basicDisabled={controls.basicDisabled}
             allowRrule={item.api === "edit"}
+            projects={projects}
             sessions={sessions}
             currentSessionId={sessionId}
             storedTargetSessionId={scheduleTargetSessionId(item)}
+            timingBase={canEditDetails ? base : undefined}
             texts={texts}
           />
           {/* 只有「每次新建会话」受投递间隔约束：`new_once` 首次投递之后复用同一

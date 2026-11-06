@@ -263,6 +263,41 @@
       "declaredEdits": [
         "仅摘录 RecurrenceRejection 类型与 RecurrenceInputError 类；定义逐字相同"
       ]
+    },
+    "src/vendor/dsh-util-time/rrule.ts": {
+      "upstream": {
+        "path": "packages/util/time/src/rrule.ts",
+        "bytes": 30176,
+        "sha256": "e2ec78046deb7b4e2c3ebdefa3e101709460463764bf2e0e260d73f7a475649a"
+      },
+      "upstreamNormalizedSha256": "95b76914f6b0dcdf2ac0acff172f3a12f26e15c07001c6faac909a263bda8a27",
+      "vendorNormalizedSha256": "6be535492127f4f1c9ea338003b15baef7f1de90b5bc9fe7a718b28442265c9f",
+      "relation": "verbatim",
+      "declaredEdits": [
+        "仅把 rrule 的默认导入改为命名空间导入：esbuild 的 __esModule CJS 与 browser ESM 无 default；仍取同名 Weekday / rrulestr 导出，完整函数体与常量不变"
+      ]
+    },
+    "src/vendor/dsh-util-time/instant.ts": {
+      "upstream": {
+        "path": "packages/util/time/src/instant.ts",
+        "bytes": 14104,
+        "sha256": "503f8c7c844a2512cf9543653cbcc3643a8996215c570f98ad745a34344c83fd"
+      },
+      "upstreamNormalizedSha256": "aa21ac3415eca94153546eea0b6d2ade0f7c6cee0509917c87f7b774b1f3ebc1",
+      "vendorNormalizedSha256": "aa21ac3415eca94153546eea0b6d2ade0f7c6cee0509917c87f7b774b1f3ebc1",
+      "relation": "verbatim",
+      "declaredEdits": []
+    },
+    "src/vendor/dsh-util-time/recurrence.ts": {
+      "upstream": {
+        "path": "packages/util/time/src/recurrence.ts",
+        "bytes": 2544,
+        "sha256": "dd2091dbede8a01ff1bd5fe1b963a75dd56ff5903ae41eddceae6fd9e125bc93"
+      },
+      "upstreamNormalizedSha256": "8c1ed4b504079bbb65cf45380fdaef55535d1612b4dffccdb284c49f573ceb0b",
+      "vendorNormalizedSha256": "8c1ed4b504079bbb65cf45380fdaef55535d1612b4dffccdb284c49f573ceb0b",
+      "relation": "verbatim",
+      "declaredEdits": []
     }
   }
 }

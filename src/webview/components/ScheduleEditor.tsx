@@ -9,11 +9,12 @@
  * 每天 / 每周 / cron / RRULE），新增的只有名称、指令与投递目标。
  */
 import { useMemo } from "react";
-import type { SessionSummaryView } from "../../shared/chat";
+import type { ScheduleItemView, ScheduleProjectView, SessionSummaryView } from "../../shared/chat";
 import {
   deviceZone,
   formatZoneLabel,
   scheduleChangeFromDraft,
+  scheduleTimingIssue,
   unitText,
   zoneChoices,
   type CronField,
@@ -22,6 +23,7 @@ import {
   type ScheduleTargetDraft,
   type ScheduleTimingDraft,
 } from "../../shared/schedule";
+import { scheduleProjectChoices } from "../../shared/scheduleProjects";
 import { useLocale, type Texts } from "../texts";
 
 /** 运行时间草稿里 cron 表达式坏在哪一段（本地判定，与服务端同一套方言）。 */
@@ -62,23 +64,13 @@ export function weekdayName(day: number, texts: Texts): string {
 }
 
 /**
- * 编辑器要显示的可选投递目录（来自会话列表的真实 cwd，去重后给）。
+ * 旧口径的目录候选：只列会话列表里出现过的 `cwd`（不回退到注册表）。
  *
- * 这是本扩展能拿到的**替代来源**：官方 `projectChoices` 用注册的 Workspace 列表
- * （还带默认 Workspace），本仓库的 webview 没有那份注册表，只能列「已经出现过会话的
- * 目录」。因此一个已注册但还没有会话的 Workspace 选不到——已知缺口，见
- * `docs/design-schedules.md` 的「界面结构」一节。
+ * 保留它是因为「没有注册表时的候选」仍是一个独立可断言的形状；组件本身走
+ * `scheduleProjectChoices`，把注册表与这份回退合在一起。新代码不要再直接调用它。
  */
 export function scheduleDirectoryChoices(sessions: readonly SessionSummaryView[]): { value: string; label: string }[] {
-  const seen = new Set<string>();
-  const choices: { value: string; label: string }[] = [];
-  for (const session of sessions) {
-    const cwd = session.cwd;
-    if (cwd === undefined || cwd === "" || seen.has(cwd)) continue;
-    seen.add(cwd);
-    choices.push({ value: cwd, label: cwd });
-  }
-  return choices;
+  return scheduleProjectChoices(undefined, sessions.map((session) => session.cwd)).items;
 }
 
 /**
@@ -123,9 +115,11 @@ export function ScheduleEditor({
   disabled,
   basicDisabled,
   allowRrule,
+  projects,
   sessions,
   currentSessionId,
   storedTargetSessionId,
+  timingBase,
   texts,
 }: {
   idPrefix: string;
@@ -136,21 +130,33 @@ export function ScheduleEditor({
   /** 名称 / 指令 / 投递目标是否只读（旧代目录只有时间编辑这一条路）。 */
   basicDisabled: boolean;
   allowRrule: boolean;
+  /**
+   * 注册的 Workspace（宿主 `ChatState.scheduleProjects`）。
+   *
+   * `undefined` = 还没有权威注册表：候选退回会话 `cwd`（旧服务端 / 断线清理后）。
+   */
+  projects?: readonly ScheduleProjectView[];
   sessions: readonly SessionSummaryView[];
   currentSessionId: string | undefined;
   storedTargetSessionId: string | undefined;
+  /** 现代编辑的原始规则；未修改时间组时不重新否决已存规则。 */
+  timingBase?: ScheduleItemView;
   texts: Texts;
 }) {
   const locale = useLocale();
   const zone = deviceZone();
   const timing = draft.timing;
   const zones = useMemo(() => zoneChoices(timing.timeZone, zone), [timing.timeZone, zone]);
-  const cronError = scheduleTimingCronError(timing);
+  const timingIssue = scheduleTimingIssue(timing, timingBase);
+  const cronError = timingIssue?.field;
   const sessionChoices = useMemo(
     () => scheduleTargetSessionChoices(sessions, currentSessionId, storedTargetSessionId),
     [sessions, currentSessionId, storedTargetSessionId],
   );
-  const directories = useMemo(() => scheduleDirectoryChoices(sessions), [sessions]);
+  const directories = useMemo(
+    () => scheduleProjectChoices(projects, sessions.map((session) => session.cwd), texts.scheduleDefaultWorkspace),
+    [projects, sessions, texts.scheduleDefaultWorkspace],
+  );
   const change = (values: Partial<ScheduleEditorDraft>): void => {
     if (basicDisabled) return;
     onChange({ ...draft, ...values });
@@ -209,7 +215,10 @@ export function ScheduleEditor({
                     ? (storedTargetSessionId ?? currentSessionId ?? "")
                     : draft.sessionId
                   : draft.sessionId,
-              cwd: target === "session" ? "" : draft.cwd,
+              // 与官方 `TaskEditorFields` 同口径：从「发往会话」切到新建目标时，目录落到
+              // 注册表的默认 Workspace（没有注册表就是空串 = 服务端默认），不是沿用
+              // 会话目标清空后的空值。
+              cwd: target === "session" ? "" : draft.target === "session" ? directories.defaultCwd : draft.cwd,
             });
           }}
         >
@@ -256,12 +265,12 @@ export function ScheduleEditor({
             onChange={(event) => change({ cwd: event.target.value })}
           >
             <option value="">{texts.scheduleCwdDefault}</option>
-            {directories.map((choice) => (
+            {directories.items.map((choice) => (
               <option key={choice.value} value={choice.value}>
                 {choice.label}
               </option>
             ))}
-            {draft.cwd !== "" && !directories.some((choice) => choice.value === draft.cwd) ? (
+            {draft.cwd !== "" && !directories.items.some((choice) => choice.value === draft.cwd) ? (
               <option value={draft.cwd}>{draft.cwd}</option>
             ) : null}
           </select>
@@ -438,8 +447,12 @@ export function ScheduleEditor({
           </div>
         )}
 
-        {cronError !== undefined ? (
-          <div className="job-notice is-error">{texts.scheduleCronInvalid(cronFieldText(cronError, texts))}</div>
+        {timingIssue !== undefined ? (
+          <div className="job-notice is-error">
+            {cronError !== undefined
+              ? texts.scheduleCronInvalid(cronFieldText(cronError, texts))
+              : timingIssue.error === "invalid_time_zone" ? texts.scheduleErrZone : texts.scheduleRuleInvalid}
+          </div>
         ) : null}
       </div>
     </div>

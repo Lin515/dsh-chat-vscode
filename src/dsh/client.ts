@@ -982,6 +982,17 @@ export class DshClient {
   }
 
   /**
+   * 观察一个已提交工具结果的**当前值**（`toolResults/watch`，stream）。
+   *
+   * 端点与参数逐字对过官方 0.2.2-rc.1：`{request: {sessionId, seq}}`。它不是
+   * durable 事件或投影——只读当前会话实例的内存表，结果被淘汰 / 会话实例离开注册表
+   * 时推 `{available:false}`。客户端**不缓存历史值**：关闭这条流即释放。
+   */
+  watchToolResult(sessionId: string, seq: number, callbacks: StreamCallbacks): StreamHandle {
+    return this.openStream(STREAMS.toolResultWatch, { request: { sessionId, seq } }, callbacks);
+  }
+
+  /**
    * 跟随一个执行世界文件 / 目录的变更（`workspaceFiles/changes`，stream）。
    *
    * payload 是 `{workspaceFileScopeId, path}`（官方 `changes()` 的两个位置参数；

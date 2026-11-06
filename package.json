@@ -293,6 +293,7 @@
     "install:vsix": "node scripts/installVsix.mjs"
   },
   "devDependencies": {
+    "@js-temporal/polyfill": "0.5.1",
     "@shikijs/langs": "^4.5.0",
     "@types/jsdom": "^30.0.0",
     "@types/node": "^22.10.0",
@@ -313,6 +314,7 @@
     "micromark-extension-math": "^3.1.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "rrule": "2.8.1",
     "shiki": "^4.5.0",
     "typescript": "^5.7.2",
     "ws": "^8.18.0"

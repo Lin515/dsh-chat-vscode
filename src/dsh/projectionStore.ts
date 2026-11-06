@@ -38,8 +38,8 @@
 /** 一行投影值：解析前的原始 wire 值 + 它被提交时的水位。 */
 export interface ProjectionRow {
   value: unknown;
-  /** 提交这一行的 seq；无水位通道写入时保留旧水位（没有就是 0）。 */
-  seq: number;
+  /** 提交这一行的 seq；无水位通道保留旧水位，尚未观察过时不伪造为 0。 */
+  seq: number | undefined;
 }
 
 /** `baseline`（或跟随开帧的 `projections` 块）的形状：一批值 + 同一个截止水位。 */
@@ -63,8 +63,8 @@ export class ProjectionStore {
    */
   apply(key: string, value: unknown, seq?: number): boolean {
     const row = this.rows.get(key);
-    if (typeof seq === "number" && row && seq <= row.seq) return false;
-    this.rows.set(key, { value, seq: typeof seq === "number" ? seq : (row?.seq ?? 0) });
+    if (typeof seq === "number" && row?.seq !== undefined && seq <= row.seq) return false;
+    this.rows.set(key, { value, seq: typeof seq === "number" ? seq : row?.seq });
     return true;
   }
 
@@ -94,7 +94,7 @@ export class ProjectionStore {
 
     for (const [key, row] of [...this.rows]) {
       if (Object.hasOwn(values, key)) continue;
-      if (row.seq > cut) continue;
+      if (row.seq !== undefined && row.seq > cut) continue;
       this.rows.delete(key);
       touched.add(key);
     }
@@ -112,7 +112,7 @@ export class ProjectionStore {
   truncate(lastSeq: number): string[] {
     const dropped: string[] = [];
     for (const [key, row] of [...this.rows]) {
-      if (row.seq <= lastSeq) continue;
+      if (row.seq === undefined || row.seq <= lastSeq) continue;
       this.rows.delete(key);
       dropped.push(key);
     }
@@ -122,6 +122,11 @@ export class ProjectionStore {
   /** 当前值；这个键从没被写入过（或已被清掉）时是 `undefined`（能力缺失）。 */
   get(key: string): unknown {
     return this.rows.get(key)?.value;
+  }
+
+  /** 当前值对应的事件水位；缺键不伪造为 0，供收件箱回执交接判定。 */
+  seqOf(key: string): number | undefined {
+    return this.rows.get(key)?.seq;
   }
 
   has(key: string): boolean {

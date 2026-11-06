@@ -303,8 +303,37 @@ export const STREAMS = {
    * 0.1.7-alpha.1 才有的，所以展开旧服务端的行只会拿到一条错误，界面如实显示。
    */
   jobFollow: "job/follow",
+  /**
+   * 轨迹 Result 页选中工具结果的**实时观察流**（`ui-trajectory` 的
+   * `toolResults.watch`，0.2.2-rc.1 起）。
+   *
+   * 请求体是 `{request: {sessionId, seq}}`；首帧起就是当前值，之后结果被淘汰 /
+   * 会话实例离开注册表时再推 `{available:false}`。它**不是** Session 历史或投影，
+   * 也不保证冷读可用——客户端只观察当前选中项，不缓存历史值。
+   */
+  toolResultWatch: "toolResults/watch",
   events: "$events",
 } as const;
+
+/**
+ * `toolResults/watch` 的位置参数（官方 `SessionToolResultRequest`）。
+ *
+ * `seq` 是 durable 的 `tool/result` 事件序号，不是工具调用 id；服务端按这个序号在
+ * **当前会话实例**的内存表里找值，所以换服务器 / 换会话后即使同名 id 也不能沿用。
+ */
+export interface SessionToolResultRequest {
+  sessionId: string;
+  seq: number;
+}
+
+/**
+ * `toolResults/watch` 的一帧（官方 `SessionToolResultValue`）。
+ *
+ * `available:false` 与「值是 JSON null」严格分开：前者是清空，后者是有效结果。
+ */
+export type SessionToolResultValue =
+  | { available: false }
+  | { available: true; value: unknown };
 
 /**
  * `job/list` 的帧（`JobListFrame`）。

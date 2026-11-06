@@ -126,13 +126,23 @@ const userMessage = (text: string, source: Record<string, unknown>) => message(t
   // 不是宿主截好的摘要——截断口径在界面侧（`trajectoryDisplay.ts`）。
   assert.strictEqual(cells[3].text, "read");
   assert.strictEqual(cells[3].previewMarkdown, '{"file_path":"a.ts"}');
-  assert.strictEqual(cells[3].resultPreviewMarkdown, "export {}");
-  assert.strictEqual(cells[3].result, undefined, "有正文时 result 留空（官方同口径）");
+  assert.strictEqual(cells[3].resultPreviewMarkdown, "export {}", "正文进 resultPreviewMarkdown（首块原文）");
+  assert.strictEqual(cells[3].result, "", "有正文时 result 是空串（官方 summarizeResult 同口径）");
+  assert.strictEqual(
+    cells[3].resultSeq,
+    events.find((entry) => entry.type === "tool/result")?.seq,
+    "resultSeq 指向已提交的结果事件，不是发起调用那一帧",
+  );
   assert.strictEqual(cells[3].timeSeconds, 1, "调用到结果之间 1 秒");
   // 子工具行：独立一条，kind 是 subtool
   assert.strictEqual(cells[4].toolName, "grep");
   assert.strictEqual(cells[4].status, "complete");
   assert.strictEqual(cells[4].resultPreviewMarkdown, "a.ts:1");
+  assert.strictEqual(
+    cells[4].resultSeq,
+    events.find((entry) => entry.type === "tool/ptc-dispatch")?.seq,
+    "子工具的结果事件同样记在 resultSeq 上",
+  );
   assert.strictEqual(model.cellCount, 5);
 }
 console.log("trajectory: 完整轮次的账本折叠 ✓");
@@ -191,6 +201,11 @@ console.log("trajectory: context 与 user 的分派 ✓");
   assert.strictEqual(cells[0].kind, "compacted");
   assert.strictEqual(cells[0].status, "complete");
   assert.strictEqual(cells[0].outputDetail, "摘要正文");
+  assert.deepStrictEqual(
+    cells[0].outputBlocks?.map((block) => block.type),
+    ["text"],
+    "压缩摘要的原始块也进 outputBlocks（官方压缩支同列）",
+  );
   assert.strictEqual(cells[0].inputDetail, "模型原始输出", "rawOutput 进「原始输出」页签");
   // 官方 `detailReasoning(rawOutput ?? summary)`：思考块**单独**进 thinkingDetail，
   // 「原始输出」里不留它（`blocksToText` 本来就跳过 reasoning 块）。
@@ -455,6 +470,8 @@ console.log("trajectory: 运行中的占位行 ✓");
   ];
   const cells = deriveTrajectoryModel(events, true).turns.flatMap(trajectoryTurnCells);
   assert.strictEqual(cells[1].status, "error");
+  assert.strictEqual(cells[1].isError, true, "官方 expandAssistant 对被中断的助手记录同样置 isError");
+  assert.strictEqual(cells[1].previewMarkdown, "半截", "中断不吞正文（isError 只决定状态 / 颜色）");
   assert.strictEqual(cells[1].error, "@interrupted", "中断走界面词典的 @interrupted（不是服务端原始串）");
   assert.strictEqual(cells[2].status, "running", "只有调用没有结果 → 仍在运行，不是 complete");
   assert.strictEqual(cells[2].timeSeconds, null, "不知道结束时刻就给 null，不要拿 0 冒充");
@@ -462,6 +479,295 @@ console.log("trajectory: 运行中的占位行 ✓");
   assert.strictEqual(model.hasOlder, true, "hasOlder 要透传给界面（面板顶部的「加载更早」）");
 }
 console.log("trajectory: 中断与运行中的记录 ✓");
+
+// ---------- 7b. 工具结果摘要 / 详情 / 结果事件：官方正文优先 ----------
+//
+// 官方 `layout.ts` 的 `summarizeResult()` 先找 `text !== ''` 的块，再判 `isError`：
+// 失败结果带正文时仍显示正文（isError 只决定颜色/状态），只有没有正文才显示错误码。
+// `resultPreviewMarkdown` 只取**第一个**非空文本块，`outputDetail` 才按 `\n` 连接全部
+// （保留尾换行）；`resultSeq` 指向已提交的结果事件，供检查器定位那次结果。
+{
+  const turn = event("turn/start", { turn: 0 }, 0);
+  const step = event("step/start", { turn: 0, step: 1 }, 0);
+  const call = event("tool/call", { turn: 0, step: 1, callId: "c1", name: "read", arguments: "{}" }, 0.1);
+  const result = event("tool/result", {
+    turn: 0,
+    step: 1,
+    message: {
+      content: [
+        { type: "text", text: "第一段" },
+        { type: "text", text: "第二段\n" },
+        { type: "image", attachment: { attachmentId: "sha256:abc", name: "a.png" } },
+      ],
+      source: { callId: "c1" },
+    },
+  }, 1);
+  const tool = deriveTrajectoryModel([turn, step, call, result], false)
+    .turns.flatMap(trajectoryTurnCells)
+    .find((cell) => cell.callId === "c1");
+  assert.ok(tool);
+  assert.strictEqual(tool?.result, "", "有正文时 result 是空串（官方 summarizeResult 同口径）");
+  assert.strictEqual(tool?.resultPreviewMarkdown, "第一段", "预览只取第一个非空文本块，不拼接");
+  assert.strictEqual(tool?.outputDetail, "第一段\n第二段\n", "详情按 \\n 连接全部文本块，保留尾换行");
+  assert.strictEqual(tool?.resultSummary, undefined, "有正文就不走图片 / 无输出语义");
+  assert.strictEqual(tool?.resultSeq, result.seq, "resultSeq 是已提交的结果事件");
+  assert.deepStrictEqual(
+    tool?.outputBlocks?.map((block) => block.type),
+    ["text", "text", "image"],
+    "outputBlocks 按结果原始块顺序采集（官方同列）",
+  );
+  assert.strictEqual(
+    tool?.outputBlocks?.[2]?.attachment?.name,
+    "a.png",
+    "图片附件名随 outputBlocks 留下（搜索索引按块读它）",
+  );
+
+  const content = trajectoryCellContent(tool!, texts);
+  assert.strictEqual(content.text, 'read · {}', "请求列仍是工具名 · 参数预览");
+  assert.strictEqual(content.result, "第一段", "结果列取 resultPreviewMarkdown 的预览");
+}
+
+// 失败但带正文：正文优先，错误码不遮蔽原文（官方同一条分支顺序）。
+{
+  seq = 0;
+  const events: SessionWireEvent[] = [
+    event("turn/start", { turn: 0 }, 0),
+    event("step/start", { turn: 0, step: 1 }, 0),
+    event("tool/call", { turn: 0, step: 1, callId: "c1", name: "read", arguments: "{}" }, 0.1),
+    event("tool/result", {
+      turn: 0,
+      step: 1,
+      error: { name: "ToolError", code: "ENOENT" },
+      message: {
+        content: [
+          { type: "text", text: "missing.txt does not exist" },
+          { type: "text", text: "Check the file path.\n" },
+        ],
+        source: { callId: "c1" },
+        isError: true,
+      },
+    }, 1),
+  ];
+  const tool = deriveTrajectoryModel(events, false)
+    .turns.flatMap(trajectoryTurnCells)
+    .find((cell) => cell.callId === "c1");
+  assert.ok(tool);
+  assert.strictEqual(tool?.isError, true, "失败标记保留");
+  assert.strictEqual(tool?.resultPreviewMarkdown, "missing.txt does not exist", "失败也先给正文预览");
+  assert.strictEqual(tool?.result, "", "失败且带正文时 result 仍是空串（不写错误码）");
+  assert.strictEqual(
+    tool?.outputDetail,
+    "missing.txt does not exist\nCheck the file path.\n",
+    "详情保留全部文本块与尾换行",
+  );
+}
+
+// 失败且没有正文：结果列是错误码，详情是官方 `${name}: ${code}`。
+{
+  seq = 0;
+  const events: SessionWireEvent[] = [
+    event("turn/start", { turn: 0 }, 0),
+    event("step/start", { turn: 0, step: 1 }, 0),
+    event("tool/call", { turn: 0, step: 1, callId: "c1", name: "read", arguments: "{}" }, 0.1),
+    event("tool/result", {
+      turn: 0,
+      step: 1,
+      error: { name: "Interrupted", code: "interrupted" },
+      message: { content: [], source: { callId: "c1" }, isError: true },
+    }, 1),
+  ];
+  const tool = deriveTrajectoryModel(events, false)
+    .turns.flatMap(trajectoryTurnCells)
+    .find((cell) => cell.callId === "c1");
+  assert.ok(tool);
+  assert.strictEqual(tool?.result, "interrupted", "没有正文时 result 是错误码");
+  assert.strictEqual(tool?.resultPreviewMarkdown, undefined);
+  assert.strictEqual(tool?.outputDetail, "Interrupted: interrupted", "详情是官方的 name: code");
+  assert.strictEqual(tool?.isError, true);
+}
+
+// 只有图片：结果列走语义（宿主不本地化），详情不出文案。
+{
+  seq = 0;
+  const events: SessionWireEvent[] = [
+    event("turn/start", { turn: 0 }, 0),
+    event("step/start", { turn: 0, step: 1 }, 0),
+    event("tool/call", { turn: 0, step: 1, callId: "c1", name: "read_image", arguments: "{}" }, 0.1),
+    event("tool/result", {
+      turn: 0,
+      step: 1,
+      message: {
+        content: [
+          { type: "image", attachment: { attachmentId: "sha256:abc", name: "a.png" } },
+          { type: "file", attachment: { attachmentId: "sha256:def", name: "notes.pdf" } },
+        ],
+        source: { callId: "c1" },
+      },
+    }, 1),
+  ];
+  const tool = deriveTrajectoryModel(events, false)
+    .turns.flatMap(trajectoryTurnCells)
+    .find((cell) => cell.callId === "c1");
+  assert.ok(tool);
+  assert.deepStrictEqual(tool?.resultSummary, { kind: "images", count: 1 });
+  assert.strictEqual(tool?.result, undefined, "图片计数由界面按语义本地化，宿主不写本地化字符串");
+  assert.strictEqual(tool?.outputDetail, undefined);
+  assert.strictEqual(trajectoryCellContent(tool!, texts).result, texts.imageCount(1));
+  assert.deepStrictEqual(
+    tool?.outputBlocks?.map((block) => block.type),
+    ["image", "file"],
+    "图片 / 文件块都进 outputBlocks",
+  );
+  assert.strictEqual(tool?.outputBlocks?.[0]?.attachment?.name, "a.png");
+  assert.strictEqual(tool?.outputBlocks?.[1]?.file?.name, "notes.pdf");
+}
+
+// 调用不在窗口里的「只有结果」行：text 不再是结果原文（否则列表会拼两遍），
+// 原文进 previewMarkdown，resultSeq 与 seq 是同一个事件。
+{
+  seq = 0;
+  const result = event("tool/result", {
+    turn: 0,
+    step: 1,
+    message: { content: block("只有结果"), source: { callId: "missing" } },
+  }, 1);
+  const events: SessionWireEvent[] = [
+    event("turn/start", { turn: 0 }, 0),
+    event("step/start", { turn: 0, step: 1 }, 0),
+    result,
+  ];
+  const cell = deriveTrajectoryModel(events, false)
+    .turns.flatMap(trajectoryTurnCells)
+    .find((entry) => entry.callId === "missing");
+  assert.ok(cell);
+  assert.strictEqual(cell?.text, "", "官方 resultAsText 的 text 是 result（正文时为空串）");
+  assert.strictEqual(cell?.previewMarkdown, "只有结果");
+  assert.strictEqual(cell?.result, "", "正文时 result 是空串");
+  assert.strictEqual(cell?.resultSeq, result.seq);
+  assert.strictEqual(cell?.seq, result.seq, "只有结果没有调用：sourceSeq / resultSeq 同值");
+  const content = trajectoryCellContent(cell!, texts);
+  assert.strictEqual(content.text, "只有结果", "列表只显示一遍原文（不再 text · preview 重复）");
+  assert.strictEqual(content.result, "只有结果", "结果列同样是它的预览");
+}
+
+// 请求表的 resultSeq：助手请求取最终 message 的事件；retry 作废旧 final 时清掉；
+// 压缩请求在收尾后取 startSeq。
+{
+  seq = 0;
+  const settle = event("assistant/message", { turn: 0, step: 1, message: message("答", {}) }, 1);
+  const model = deriveTrajectoryModel([
+    event("turn/start", { turn: 0 }, 0),
+    event("step/start", { turn: 0, step: 1 }, 0),
+    settle,
+  ], false);
+  assert.strictEqual(model.requests[0]?.resultSeq, settle.seq, "助手请求的 resultSeq 是最终节点的事件");
+
+  seq = 0;
+  const retried = deriveTrajectoryModel([
+    event("turn/start", { turn: 0 }, 0),
+    event("step/start", { turn: 0, step: 1 }, 0),
+    event("assistant/message", { turn: 0, step: 1, message: message("答", {}) }, 1),
+    event("llm/retry", {
+      turn: 0,
+      step: 1,
+      retry: 1,
+      maxRetries: 2,
+      mode: "normal",
+      delayMs: 10,
+      failure: { code: "SERVER", message: "boom" },
+    }, 2),
+  ], false);
+  assert.strictEqual(retried.requests[0]?.resultSeq, undefined, "重试作废旧 final → 不再有 resultSeq");
+
+  seq = 0;
+  const compactStart = event("compaction/start", { turn: null }, 0);
+  const compacted = deriveTrajectoryModel([
+    compactStart,
+    event("compaction/summary", { summary: block("摘要") }, 1),
+    event("compaction/end", {}, 2),
+  ], false);
+  assert.strictEqual(compacted.requests[0]?.resultSeq, compactStart.seq, "压缩请求收尾后的 resultSeq 是 startSeq");
+}
+console.log("trajectory: 工具结果摘要 / 详情 / resultSeq 与官方正文优先 ✓");
+
+// ---------- 7c. 工具格由助手块建行：重复 call / 缺独立 tool-call 的截断窗口 ----------
+//
+// 官方`expandAssistant()` 从助手消息的 `tool-call` 块展开工具格；`tool/call` 事件只补
+// 调用时刻与目录。因此：
+// - 同一 callId 重复 `tool/call` 不新增行；
+// - 窗口把独立 `tool/call` 切掉（只剩助手块 + 结果）时，结果仍按 callId 落回助手块
+//   展开的那一格，不退化成无工具名的「只有结果」补行。
+{
+  seq = 0;
+  const captured = deriveTrajectoryModel([
+    event("turn/start", { turn: 1 }, 0),
+    event("step/start", { turn: 1, step: 1 }, 0),
+    event("assistant/message", {
+      turn: 1,
+      step: 1,
+      message: {
+        content: [
+          { type: "text", text: "查一下" },
+          { type: "tool-call", id: "c1", name: "read", arguments: "{\"path\":\"a\"}" },
+        ],
+      },
+    }, 1),
+    // 独立 tool/call 被窗口切掉，只剩结果
+    event("tool/result", {
+      turn: 1,
+      step: 1,
+      message: { content: block("ok"), source: { callId: "c1" } },
+    }, 2),
+  ], false);
+  const capturedTools = captured.turns.flatMap(trajectoryTurnCells).filter((cell) => cell.kind === "tool");
+  assert.strictEqual(capturedTools.length, 1, "助手块已建行，结果按 callId 落回同一格");
+  assert.strictEqual(capturedTools[0]?.toolName, "read", "工具名来自助手块，不是结果占位名");
+  assert.strictEqual(capturedTools[0]?.previewMarkdown, '{"path":"a"}');
+  assert.strictEqual(capturedTools[0]?.resultPreviewMarkdown, "ok");
+  assert.strictEqual(
+    capturedTools[0]?.startedAt,
+    null,
+    "没有独立 tool/call 时不拿助手消息时刻冒充调用开始时刻",
+  );
+  assert.strictEqual(capturedTools[0]?.timeSeconds, null, "缺调用开始时刻 → 时长未知");
+
+  seq = 0;
+  const duplicated = deriveTrajectoryModel([
+    event("turn/start", { turn: 1 }, 0),
+    event("step/start", { turn: 1, step: 1 }, 0),
+    event("tool/call", { turn: 1, step: 1, callId: "c1", name: "read", arguments: "{\"n\":1}" }, 0.1),
+    event("tool/call", { turn: 1, step: 1, callId: "c1", name: "read", arguments: "{\"n\":2}" }, 0.2),
+    event("tool/result", {
+      turn: 1,
+      step: 1,
+      message: { content: block("ok"), source: { callId: "c1" } },
+    }, 1),
+  ], false);
+  const duplicatedTools = duplicated.turns.flatMap(trajectoryTurnCells).filter((cell) => cell.kind === "tool");
+  assert.strictEqual(duplicatedTools.length, 1, "同一 callId 的重复 tool/call 只保留一格");
+  assert.strictEqual(duplicatedTools[0]?.previewMarkdown, '{"n":2}', "重复调用更新同一格的参数");
+  assert.strictEqual(duplicatedTools[0]?.resultPreviewMarkdown, "ok");
+  assert.strictEqual(duplicatedTools[0]?.timeSeconds, 0.8, "开始时刻取最后一次调用事件，结果仍配对");
+}
+
+// ---------- 7d. 已结算助手缺 stepStartTime：官方 prevAbsTime 时长回退 ----------
+{
+  seq = 0;
+  const model = deriveTrajectoryModel([
+    event("turn/start", { turn: 1 }, 0),
+    event("user/message", message("问", { kind: "user" }), 1),
+    // 没有 step/start：没有 stepStartTime，但布局游标在 user 行
+    event("assistant/message", { turn: 1, step: 1, message: message("答", {}) }, 3),
+  ], false);
+  const assistant = model.turns.flatMap(trajectoryTurnCells).find((cell) => cell.kind === "message");
+  assert.ok(assistant);
+  assert.strictEqual(assistant?.assistantMetrics?.stepStartTime, null, "缺 step/start 仍是 null");
+  assert.strictEqual(assistant?.assistantMetrics?.timingRecorded, true);
+  assert.strictEqual(assistant?.startedAt, null, "官方 startedAt 就是 timing.stepStartTime（这里 null）");
+  assert.strictEqual(assistant?.timeSeconds, 2, "时长回退到上一布局条目的绝对时刻（user at(1) → at(3)）");
+}
+
+console.log("trajectory: 助手块建行 / 重复调用 / prevAbsTime 时长回退 ✓");
 
 // ---------- 8. 单行摘要：压平空白 + 截断 ----------
 {
@@ -575,23 +881,30 @@ console.log("trajectory: 单行摘要 ✓");
   );
 
   /**
-   * 错误色的判据是官方那一条：`isError === true`。**助手行从不置这个字段**——
-   * 被中断 / 收尾失败的助手条不该被涂成错误色（用 `status === "error"` 判会把它们全涂红）。
+   * 错误色的判据是官方那一条：`isError === true`。**被中断的助手记录同样带它**——
+   * 官方 `expandAssistant()` 对 `node.interrupted === true` 写 `isError: true`。
+   * `status === "error"` 是宿主的状态事实（轮次失败等），不能拿它反推官方着色。
    */
   const interrupted: TrajectoryCell[] = [
-    { ...cells[0], index: 1, kind: "message", turn: 0, status: "error", isError: undefined, startedAt: at(0), timeSeconds: 1 },
+    { ...cells[0], index: 1, kind: "message", turn: 0, status: "error", isError: true, startedAt: at(0), timeSeconds: 1 },
     { ...cells[0], index: 2, kind: "tool", turn: 0, status: "error", isError: true, startedAt: at(0), timeSeconds: 1 },
+    { ...cells[0], index: 3, kind: "message", turn: 0, status: "error", isError: undefined, startedAt: at(0), timeSeconds: 1 },
   ];
   const errors = deriveTrajectoryTimeline([turnOf(0, interrupted)], "duration");
   assert.strictEqual(
     errors.spans.find((span) => span.cellIndex === 1)?.error,
-    false,
-    "中断的助手条不涂错误色",
+    true,
+    "被中断的助手条涂错误色（官方 isError）",
   );
   assert.strictEqual(
     errors.spans.find((span) => span.cellIndex === 2)?.error,
     true,
     "真的失败的工具条涂错误色",
+  );
+  assert.strictEqual(
+    errors.spans.find((span) => span.cellIndex === 3)?.error,
+    false,
+    "只有 status=error、没有 isError 的记录不凭状态涂色",
   );
 }
 console.log("trajectory: 时间线的三种模式 ✓");
@@ -1045,15 +1358,14 @@ console.log("trajectory: 顶条选中 → 账本跳转 ✓");
   assert.strictEqual(second.error, "503 upstream", "失败文案取 failure.message");
   assert.strictEqual(second.errorCode, "SERVER", "稳定错误码取 failure.code");
   /**
-   * 官方 rc.2 `trajectoryAssistantDefinition` 的 `assistantRequest()`：
+   * 官方 `trajectory-assistant-definition.ts`（固定 `66491b0…`）的 `assistantRequest()`：
    *
-   *   status = node !== undefined && node.interrupted !== true
-   *     ? 'complete'
-   *     : state.retry !== undefined || boundary !== undefined ? 'error' : 'running'
+   *   status = node !== undefined
+   *     ? node.interrupted === true ? 'error' : 'complete'
+   *     : boundary !== undefined ? 'error' : 'running'
    *
-   * **非中断的最终节点优先**——`llm/retry` 之后同一步又成功了，这次请求就是 complete
-   * （F04 修的正是这里：从前 `status !== 'error'` 的门槛把重试过一次的请求永远钉在
-   * error 上，而助手记录已经是 complete）。重试事实（次数 / 上限 / 延迟 / 失败文案）
+   * **最终节点优先**——`llm/retry` 之后同一步又成功了，这次请求就是 complete；
+   * `state.retry` 只带诊断，不把状态钉在 error。重试事实（次数 / 上限 / 延迟 / 失败文案）
    * 照旧留在请求上，下面那几条断言不许动。
    */
   assert.strictEqual(second.status, "complete", "重试后同一步成功结算 → 请求是 complete，不是 error");
@@ -2406,17 +2718,21 @@ console.log("trajectory: 终态 AUTH 清除前诊断 ✓");
 }
 console.log("trajectory: 边界补收尾时刻与状态分开 ✓");
 
-// ---------- 14t. 中断的助手消息在步骤关闭之前仍然算「还在跑」（F04 补完） ----------
+// ---------- 14t. 中断的助手消息在步骤关闭之前即判失败（官方节点分支） ----------
 //
-// 官方 `assistantRequest()` 的状态是三分支：**非中断的最终节点** → `complete`；否则
-// `state.retry !== undefined || boundary !== undefined` → `error`；**两者都没有 → `running`**。
-// 中断的 `assistant/message` 是「节点存在、但不是非中断的最终节点」——它只在步骤/轮次
-// 关闭（boundary）或重试（retry）出现之后才判失败，在那之前这一次请求仍在跑。
+// 官方 `assistantRequest()`（固定 66491b0）：
+//
+//     const status = node !== undefined
+//       ? node.interrupted === true ? 'error' : 'complete'
+//       : boundary !== undefined ? 'error' : 'running'
+//
+// 中断的 `assistant/message` **是一个节点**，所以它当场就是 `error`，不需要等步骤 / 轮次
+// 关闭。`state.retry` 只带诊断，不参与状态：重试把旧节点清掉后，边界未到就是 `running`。
 // 收尾时刻与状态是两条独立判据（`completedAt = node?.time ?? boundary?.time ?? null`），
-// 所以边界还没到时它已经有节点自己的时刻。
+// 所以中断节点已经有自己的时刻。
 //
 // 账本行是另一件事：那一行就是「被中断」的助手记录（界面词典的 `@interrupted`），
-// 与请求状态无关。
+// 请求状态与行状态都按官方各自成立。
 {
   seq = 0;
   const model = deriveTrajectoryModel([
@@ -2437,17 +2753,18 @@ console.log("trajectory: 边界补收尾时刻与状态分开 ✓");
   const [request] = model.requests;
   assert.strictEqual(
     request?.status,
-    "running",
-    "中断消息不是「非中断的最终节点」，但又没有重试、也没有关闭边界 → 仍在跑（官方 running）",
+    "error",
+    "中断节点本身即失败（官方 node.interrupted === true → error）",
   );
   assert.strictEqual(request?.completedAt, at(1), "收尾时刻仍取节点自己的时刻");
-  assert.strictEqual(request?.error, undefined, "没有失败证据就不编文案");
+  assert.strictEqual(request?.resultSeq, 3, "中断节点同样有 resultSeq（最终消息事件）");
+  assert.strictEqual(request?.error, undefined, "中断本身不编失败文案");
   const cell = model.turns.flatMap(trajectoryTurnCells).find((entry) => entry.kind === "message");
   assert.strictEqual(cell?.status, "error", "账本行仍是「被中断」那一行");
   assert.strictEqual(cell?.error, "@interrupted");
 }
 {
-  // 同样的中断消息，但步骤关掉了：boundary 成立 → 失败
+  // 步骤关闭后仍是失败（状态不会从 error 退回）。
   seq = 0;
   const model = deriveTrajectoryModel([
     event("turn/start", { turn: 1 }, 0),
@@ -2461,10 +2778,11 @@ console.log("trajectory: 边界补收尾时刻与状态分开 ✓");
     }, 1),
     event("step/end", { turn: 1, step: 1 }, 1),
   ], false);
-  assert.strictEqual(model.requests[0]?.status, "error", "步骤关闭（boundary）之后才判失败");
+  assert.strictEqual(model.requests[0]?.status, "error", "边界成立仍是 error");
 }
 {
-  // 中断消息之后又重试：retry 本身就是失败证据
+  // 中断消息之后又重试：官方 `initialState()` 清掉旧节点与块证据、只带诊断，
+  // 边界还没到 → running（官方 retry 用例同口径，retry 不是状态证据）。
   seq = 0;
   const request = deriveTrajectoryModel([
     event("turn/start", { turn: 1 }, 0),
@@ -2486,11 +2804,12 @@ console.log("trajectory: 边界补收尾时刻与状态分开 ✓");
       failure: { message: "again", code: "SERVER" },
     }, 2),
   ], false).requests[0];
-  assert.strictEqual(request?.status, "error", "重试出现即判失败");
-  assert.strictEqual(request?.error, "again");
+  assert.strictEqual(request?.status, "running", "重试只重置节点与状态；边界未到仍在跑");
+  assert.strictEqual(request?.completedAt, null, "旧节点的收尾时刻随重置作废");
+  assert.strictEqual(request?.error, "again", "重试诊断照旧保留");
   assert.deepStrictEqual(request?.retry, { attempt: 1, max: 2 });
 }
-console.log("trajectory: 中断消息在边界之前仍算还在跑 ✓");
+console.log("trajectory: 中断节点即失败、retry 只带诊断 ✓");
 
 // ---------- 14u. 同一轮重复 turn/end：先到的失败收尾不被后到的成功收尾抹掉（F04 补完） ----------
 //
@@ -2631,7 +2950,7 @@ console.log("trajectory: 同轮重复 turn/end 的失败诊断不被成功收尾
   assert.ok(stray, "越界帧自己的记录行照旧要出（官方那时仍然发布助手节点）");
   assert.strictEqual(stray?.step, 2, "行的步骤取帧自己的身份，不是窗口当前步");
   assert.strictEqual(stray?.requestNumber, undefined, "它挂不上请求号——官方那一步没有任何请求");
-  assert.strictEqual(stray?.assistantMetrics?.timingRecorded, false, "没有 step/start 就没有步骤开始时刻");
+  assert.strictEqual(stray?.assistantMetrics?.timingRecorded, true, "官方最终节点的 timing 对象始终存在，缺的只是步骤开始时刻");
   assert.strictEqual(stray?.assistantMetrics?.stepStartTime, null);
   assert.strictEqual(stray?.usage?.input, 999, "用量留在记录行自己身上");
 }
@@ -2822,8 +3141,8 @@ console.log("trajectory: 首个 token 时刻的两条来源（attempt 优先） 
 
 // ---------- 16d. 首个 token 的官方读法（F03） ----------
 /**
- * 官方 `packages/llm/llm/src/assistant-stream.ts`（固定提交 `639ed015…`，
- * 即 `refs/tags/dsh-v0.2.0-rc.2`）的三条判据：
+ * 官方 `packages/llm/llm/src/assistant-stream.ts`（固定提交 `66491b0…`，
+ * 即 `refs/tags/dsh-v0.2.2-rc.1`）的三条判据：
  *
  * - `isTokenDelta`：`text-delta` / `reasoning-delta` 判 `text !== ''`——**空白字符串
  *   也算 token**，不 trim；`tool-call-delta` 判 `argumentsDelta !== '' || name !== undefined`
@@ -3681,7 +4000,7 @@ console.log("trajectory: 独立压缩段自成一组 ✓");
 
 // ---------- 16e/16f/16g. F03 剩余：越界 retry 徽章、非法 stream 形状、截断窗口时序 ----------
 /**
- * 这一批钉三件事，官方来源都是固定提交 `639ed015…`（`refs/tags/dsh-v0.2.0-rc.2`）：
+ * 这一批钉三件事，官方来源都是固定提交 `66491b0…`（`refs/tags/dsh-v0.2.2-rc.1`）：
  *
  * 1. **越界 `llm/retry` 的重试徽章**：官方 `trajectoryAssistantDefinition.match()` 给
  *    `llm/retry` 的身份是 `${data.turn}:${data.step}`（与 `assistant/message` /
@@ -3918,7 +4237,7 @@ console.log("trajectory: 独立压缩段自成一组 ✓");
     assert.strictEqual(model.requests.length, 0, "没有 step/start，请求表里就没有这一步");
     assert.strictEqual(cell?.assistantMetrics?.firstTokenTime, at(1.5), "attempt 先到：行取 1500 而不是 1700");
     assert.strictEqual(cell?.assistantMetrics?.stepStartTime, null, "没有 step/start → 步骤开始时刻仍是 null（TTFT 不可用）");
-    assert.strictEqual(cell?.assistantMetrics?.timingRecorded, false);
+    assert.strictEqual(cell?.assistantMetrics?.timingRecorded, true, "最终节点的 timing 对象存在（缺的是步骤开始时刻）");
     assert.strictEqual(cell?.requestNumber, undefined, "不挂别人的请求号");
   });
 
@@ -4093,7 +4412,7 @@ console.log("trajectory: 越界 retry 徽章 / 非法 stream 形状 / 截断窗�
 
 // ---------- 17. F04：`llm/retry` 的整份状态重置与诊断替换组合 ----------
 /**
- * 官方 `trajectory-assistant-definition.ts`（固定 `639ed015…` = `refs/tags/dsh-v0.2.0-rc.2`）
+ * 官方 `trajectory-assistant-definition.ts`（固定 `66491b0…` = `refs/tags/dsh-v0.2.2-rc.1`）
  * 的 `update` 里 `llm/retry` 那一支是**整份重置**：
  *
  *     return { ...initialState(state.turn, state.step, state.startSeq, state.startTime, true),
@@ -4104,7 +4423,8 @@ console.log("trajectory: 越界 retry 徽章 / 非法 stream 形状 / 截断窗�
  *
  * - `state.final` 没了 → `node` 为 `undefined`：`completedAt = boundary?.time ?? null`
  *   （旧 final 的收尾时刻作废）、`providerMetadata` 没有来源（身份随节点一起消失）；
- * - `state.retry !== undefined` → 状态 `error`；
+ * - `state.retry !== undefined` **不参与状态**：诊断挂在请求上，`status` 仍由
+ *   `node` / `boundary` 决定（通常回到 `running`，边界已成立时才是 `error`）；
  * - `error` / `errorCode` 就是**这一条** retry 的（`displayFailure(AUTH)` 给
  *   `{code:'AUTH', message:''}`——空文案在公开模型里规范化为缺席；没有 `code` 就没有该键，
  *   都不保留上一条）；
@@ -4178,14 +4498,18 @@ console.log("trajectory: 越界 retry 徽章 / 非法 stream 形状 / 截断窗�
   const assistant = (events: SessionWireEvent[]) =>
     deriveTrajectoryModel(events, false).requests.find((entry) => entry.purpose === "assistant");
 
-  check("final 后 retry：旧收尾时刻作废、状态 error、首 token 与用量保留", () => {
+  check("final 后 retry：旧收尾时刻作废、状态回到 running、首 token 与用量保留", () => {
     seq = 0;
     const request = assistant([
       ...stepStart(),
       settled(),
       retry({ code: "SERVER", message: "failed" }, {}, 3),
     ]);
-    assert.strictEqual(request?.status, "error", "retry 出现即 error（官方 state.retry !== undefined）");
+    assert.strictEqual(
+      request?.status,
+      "running",
+      "retry 只重置节点与诊断；官方状态分支不看 state.retry，边界未到仍是 running",
+    );
     assert.strictEqual(
       request?.completedAt,
       null,
@@ -4221,7 +4545,7 @@ console.log("trajectory: 越界 retry 徽章 / 非法 stream 形状 / 截断窗�
       retry({ code: "RATE_LIMIT", message: "retry" }, {}, 3),
     ]);
     assert.strictEqual(request?.completedAt, null, "中断节点也是 final，state 重置后同样作废");
-    assert.strictEqual(request?.status, "error");
+    assert.strictEqual(request?.status, "running", "重试只清节点与状态；边界未到仍在跑");
     assert.strictEqual(request?.assistantFirstTokenTime, at(1.5), "首 token 保留");
     assert.strictEqual(request?.errorCode, "RATE_LIMIT");
   });
@@ -4233,7 +4557,7 @@ console.log("trajectory: 越界 retry 徽章 / 非法 stream 形状 / 截断窗�
       retry({ code: "SERVER", message: "old" }, {}, 1.2),
       retry({ code: "AUTH", message: "private" }, { retry: 2, mode: "unlimited", maxRetries: 9, delayMs: 90 }, 1.6),
     ]);
-    assert.strictEqual(request?.status, "error");
+    assert.strictEqual(request?.status, "running", "retry 只带诊断；没有节点也没有边界 → running");
     assert.strictEqual(request?.error, undefined, "AUTH 的空文案规范化为缺席，不许留着上一条的 old");
     assert.strictEqual(request?.errorCode, "AUTH", "码换成这一条的");
     assert.deepStrictEqual(request?.retry, { attempt: 2 }, "mode !== normal 不记 maxRetries");
@@ -4304,7 +4628,7 @@ console.log("trajectory: 越界 retry 徽章 / 非法 stream 形状 / 截断窗�
     assert.strictEqual(request?.provider, "h2", "身份重置后，后到的 header 配置重新成为兜底");
     assert.strictEqual(request?.model, "m2");
     assert.deepStrictEqual(request?.options, { provider: "h2", model: "m2" });
-    assert.strictEqual(request?.status, "error");
+    assert.strictEqual(request?.status, "running", "重试后边界未到仍是 running");
     assert.strictEqual(request?.completedAt, null);
   });
 
@@ -4356,13 +4680,12 @@ console.log("trajectory: 越界 retry 徽章 / 非法 stream 形状 / 截断窗�
     const second = model.requests.find((entry) => entry.purpose === "assistant" && entry.turn === 2);
     const compaction = model.requests.find((entry) => entry.purpose === "compaction");
     /**
-     * 第 1 轮那一步在这个窗口里**先** `step/end` / `turn/end` 过、晚到的 retry 才来——
-     * 这正是上面那条契约标注的 durable 不可能序列，所以这里只钉「重置发生了」与
-     * 「别的请求没被动」：旧 final 的结算时刻必须不残留，具体落到哪个边界（state 分支
-     * 已随重置清掉、位置索引那一支本扩展没有）不在本判据里声明。
+     * 第 1 轮那一步在这个窗口里**先** `step/end`（2.1）/ `turn/end`（2.2）过、晚到的 retry
+     * 才来。官方位置索引仍闭合，且 `closedBoundary()` 让**步骤自己的 end 优先**于轮次 end，
+     * 所以收尾取 2.1；旧 final 的 2.0 不残留。
      */
-    assert.notStrictEqual(first?.completedAt, at(2), "旧 final 的收尾时刻不残留（边界分支见上一条契约标注）");
-    assert.strictEqual(first?.status, "error", "第 1 轮那一步被自己的 retry 重置");
+    assert.strictEqual(first?.completedAt, at(2.1), "步骤边界优先于轮次边界，旧 final 的收尾时刻不残留");
+    assert.strictEqual(first?.status, "error", "第 1 轮那一步被自己的 retry 重置，轮次边界仍把它收成 error");
     assert.strictEqual(first?.error, "late");
     assert.deepStrictEqual(first?.retry, { attempt: 1, max: 3 });
     assert.strictEqual(first?.provider, undefined, "旧身份随 final 一起清掉");
@@ -4376,13 +4699,13 @@ console.log("trajectory: 越界 retry 徽章 / 非法 stream 形状 / 截断窗�
     assert.strictEqual(compaction?.completedAt, null);
   });
 
-  check("旧 step/end 的契约标注：重置只认 state 分支，不回溯 closedStep（durable 不可能序列）", () => {
+  check("step/end → retry：位置索引闭合边界仍成立（官方 closedBoundary 第二支）", () => {
     /**
-     * 顺序 `step/end` → 同一 step 的 `llm/retry` 在 durable 流里不可能出现（重试发生在这次
-     * 模型调用**期间**，`step/end` 是它收尾之后才写的），所以这里只标契约、**不声称官方等价**：
-     * 官方 `initialState()` 把 `state.stepEnd` 清掉，`closedBoundary()` 的第一支随之失效；
-     * 它另有位置索引那一支（`location.step.status === 'closed'`）会给出同一步的 `step/end`，
-     * 本扩展没有那一层，重置后不再回溯这个旧边界。
+     * 官方 `initialState()` 只清状态机里的 `stepEnd`；`closedBoundary()` 的第二 / 第三条
+     * 来源读**位置索引**（`location.step.status === 'closed'` / `location.turn.status ===
+     * 'closed'`），不随 state 重置消失。所以 `step/end` 先于 retry 时，retry 后的
+     * `assistantRequest()` 仍取该边界：状态 `error`、`completedAt = boundary.time`。
+     * 本扩展的 `closedSteps` 就是那张位置索引表，不因 retry 清空。
      */
     seq = 0;
     const request = assistant([
@@ -4391,9 +4714,22 @@ console.log("trajectory: 越界 retry 徽章 / 非法 stream 形状 / 截断窗�
       event("step/end", { turn: 1, step: 1 }, 2.5),
       retry({ code: "SERVER", message: "after-end" }, {}, 3),
     ]);
-    assert.strictEqual(request?.completedAt, null, "重置后旧 step/end 不再是边界（契约标注）");
-    assert.strictEqual(request?.status, "error");
+    assert.strictEqual(request?.completedAt, at(2.5), "位置索引里的 step/end 仍是收尾时刻");
+    assert.strictEqual(request?.status, "error", "边界成立 → error（retry 诊断同时保留）");
     assert.strictEqual(request?.error, "after-end");
+  });
+
+  check("turn/end → retry：轮次位置索引闭合边界同样成立（官方 closedBoundary 第三支）", () => {
+    seq = 0;
+    const request = assistant([
+      ...stepStart(),
+      settled(),
+      event("turn/end", { turn: 1, reason: { kind: "completed" } }, 2.6),
+      retry({ code: "SERVER", message: "after-turn" }, {}, 3),
+    ]);
+    assert.strictEqual(request?.completedAt, at(2.6), "轮次位置索引给边界时刻");
+    assert.strictEqual(request?.status, "error");
+    assert.strictEqual(request?.error, "after-turn");
   });
 
   check("合法 mode / maxRetries：只有 mode === 'normal' 才记上限", () => {
@@ -4459,8 +4795,8 @@ console.log("trajectory: 越界 retry 徽章 / 非法 stream 形状 / 截断窗�
         const expected = kinds[second];
         assert.deepStrictEqual(
           [request?.error, request?.errorCode, request?.retry, request?.status],
-          [expected.error, expected.code, { attempt: 2, max: 3 }, "error"],
-          `${first} → ${second}：诊断与状态必须整份等于后一条`,
+          [expected.error, expected.code, { attempt: 2, max: 3 }, "running"],
+          `${first} → ${second}：诊断整份等于后一条，状态由节点 / 边界决定（这里两者都没有 → running）`,
         );
         assert.ok(!JSON.stringify(request).includes("auth-secret"), `${first} → ${second}：AUTH 原文不进模型`);
       }
@@ -4511,7 +4847,7 @@ console.log("trajectory: llm/retry 整份状态重置与诊断替换（F04） �
 // ---------- 18. F05：系统更新归轮（`enclosingPromptTurn`）、布局 partial 身份与前插编号 ----------
 /**
  * 官方 `packages/client/ui-trajectory/src/client/trajectory-layout.ts` 与
- * `trajectory-assistant-definition.ts`（固定基准 `639ed015…` = `refs/tags/dsh-v0.2.0-rc.2`）
+ * `trajectory-assistant-definition.ts`（固定基准 `66491b0…` = `refs/tags/dsh-v0.2.2-rc.1`）
  * 里与本批有关的三件事：
  *
  * 1. **提示词那一行归哪一轮**（布局的 system 分支）：
@@ -4525,17 +4861,18 @@ console.log("trajectory: llm/retry 整份状态重置与诊断替换（F04） �
  *    窗口带前插历史、整轮收尾之后再改提示词、或在跑的流还没有 node 时，两种读法给出不同答案。
  *
  * 2. **`partial` 是哪个身份**（`buildViewNode()`）：
- *    `node === undefined && boundary === undefined && state.sawChunk` 才是「在跑的流」，
+ *    `node === undefined && boundary === undefined && state.blocks.length > 0` 才是「在跑的流」，
  *    快照层（`trajectory-snapshot-builder.ts`：`if (data.partial !== null) partial = data.partial`）
  *    只留**最后一个**非空的那一个，contributions 按 `anchorSeq` 升序迭代（`anchorSeq` 就是
  *    这个身份第一次出现的 `seq`）。逐条口径：
- *    - `assistant/live-chunk` 的**任何** chunk 都置 `sawChunk`（`usage` / `finish` 走各自分支、
- *      未知 `type` 落 `default`，三支都置位）；
- *    - `settleMessage()` 清 `sawChunk` 并落下 `final`（`node` 从此存在）；
- *    - `llm/retry` 走 `initialState()` **整份重置**（`sawChunk` 与 `final` 一起清）；
+ *    - `assistant/live-chunk` 的**块**帧（`block-start` / `*-delta` / `block-end`）动块证据；
+ *      `usage` / `finish` / 未知 `type` 不动块，因此**不构成 partial**（官方看 `blocks.length`，
+ *      不是「收到过 chunk」）；
+ *    - `settleMessage()` 落下 `final`（`node` 从此存在，partial 不成立）；
+ *    - `llm/retry` 走 `initialState()` **整份重置**（`final` 与块证据一起清，首 token 保留）；
  *    - `closedBoundary()` 看见 `step/end`（或位置索引里已关闭的步骤 / 轮次）→ `boundary` 成立
  *      → 同样不发 `partial`；
- *    - `assistant/attempt` 只做 `settleTiming()`：**不置也不清** `sawChunk`。
+ *    - `assistant/attempt` 只做 `settleTiming()`：**不动块证据**。
  *    窗口里没有 `step/start` 时官方那台状态机由 `fallbackState()` 按该身份自己的帧重建
  *    （`live-chunk` / `attempt` / `message` / `step/end`），本扩展的等价物同样按帧自己的
  *    `turn:step` 记状态，且**不出请求**（`assistantRequest()` 第一句 `!state.started`）。
@@ -4546,9 +4883,10 @@ console.log("trajectory: llm/retry 整份状态重置与诊断替换（F04） �
  *    既定不变量是「摊平顺序 = 显示序号」（见设计文档的排序与合并规则），所以分组定稿后
  *    按摊平顺序**统一重编一次显示序号**：它只改 `#N`，与源事件 `seq`、请求号、归属步骤无关。
  *
- * 本扩展的刻意差异不变：不出流式正文行，`partial` 只用于**归轮**（身份），不发布流式内容。
- * 合法的「未知 `type`」chunk 与畸形帧（没有 `chunk` 对象）分开：前者与官方 `default` 分支
- * 等价（置 `sawChunk`），后者是适配边界（不置），不拿畸形事件替合法等价。
+ * 本扩展的刻意差异不变：不出流式正文行，`partial` 只用于**归轮与占位行计时**（身份 +
+ * timing），不发布流式内容。合法的「未知 `type`」chunk 与畸形帧（没有 `chunk` 对象）分开：
+ * 前者与官方 `default` 分支等价（不动块证据），后者是适配边界（不建身份），不拿畸形事件
+ * 替合法等价。
  */
 {
   const checks: { name: string; run: () => void }[] = [];
@@ -4698,7 +5036,7 @@ console.log("trajectory: llm/retry 整份状态重置与诊断替换（F04） �
   });
 
   // ---- 18b. `partial` 身份的成立与清除（官方 `buildViewNode` / `settleMessage` / retry / `closedBoundary`） ----
-  check("G 结算（`settleMessage`）清掉 `sawChunk`，尾部更新不归旧轮", () => {
+  check("G 结算（`settleMessage`）落下 final，尾部更新不归旧轮", () => {
     seq = 0;
     const model = deriveTrajectoryModel([
       event("turn/start", { turn: 7 }),
@@ -4750,7 +5088,7 @@ console.log("trajectory: llm/retry 整份状态重置与诊断替换（F04） �
       retry(7, 3),
       changeHeader(),
     ], true);
-    assert.strictEqual(updateCell(afterRetry)?.turn, 1, "`initialState()` 清 `sawChunk`");
+    assert.strictEqual(updateCell(afterRetry)?.turn, 1, "`initialState()` 清块证据（final 也没有）");
     seq = 0;
     const rearmed = deriveTrajectoryModel([
       event("turn/start", { turn: 7 }),
@@ -4793,10 +5131,10 @@ console.log("trajectory: llm/retry 整份状态重置与诊断替换（F04） �
       event("turn/start", { turn: 9 }),
       changeHeader(),
     ], true);
-    assert.strictEqual(updateCell(model)?.turn, 7, "重置把 `final` 与 `sawChunk` 一起清掉");
+    assert.strictEqual(updateCell(model)?.turn, 7, "重置把 `final` 与块证据一起清掉");
   });
 
-  check("G7 `usage` / `finish` / 未知 `type` 的合法 chunk 都置 `sawChunk`", () => {
+  check("G7 `usage` / `finish` / 未知 `type` 的合法 chunk 不动块证据，不构成 partial", () => {
     for (const chunkValue of [
       { type: "usage", usage: { inputTokens: 1, outputTokens: 1 } },
       { type: "finish" },
@@ -4806,8 +5144,8 @@ console.log("trajectory: llm/retry 整份状态重置与诊断替换（F04） �
       const model = deriveTrajectoryModel([initialHeader(), changeHeader(), chunk(9, 4, chunkValue)], true);
       assert.strictEqual(
         updateCell(model)?.turn,
-        9,
-        `chunk.type=${String(chunkValue.type)} 也算流来源（官方三支都置 sawChunk）`,
+        1,
+        `chunk.type=${String(chunkValue.type)} 不构成 partial（官方看 state.blocks.length，不是 sawChunk）`,
       );
     }
   });
@@ -4822,7 +5160,7 @@ console.log("trajectory: llm/retry 整份状态重置与诊断替换（F04） �
     assert.strictEqual(updateCell(earlier)?.turn, 7, "同一个身份重复 chunk 不改变先后");
   });
 
-  check("G9 `assistant/attempt` 不置也不清 `sawChunk`（只做 `settleTiming`）", () => {
+  check("G9 `assistant/attempt` 不动块证据（只做 `settleTiming`）", () => {
     seq = 0;
     const model = deriveTrajectoryModel([
       initialHeader(),
@@ -4833,10 +5171,65 @@ console.log("trajectory: llm/retry 整份状态重置与诊断替换（F04） �
         stream: [{ type: "chunk", time: at(1), chunk: { type: "text-delta", index: 0, text: "x" } }],
       }),
     ], true);
-    assert.strictEqual(updateCell(model)?.turn, 1, "只有 attempt 的步骤没有 `sawChunk`，不是在跑的流");
+    assert.strictEqual(updateCell(model)?.turn, 1, "只有 attempt 的步骤没有块证据，不是在跑的流");
   });
 
-  check("J 畸形 live-chunk（没有 `chunk` 对象）不置 `sawChunk`", () => {
+  check("G10 在跑的流的 `partial.timing` 进占位行：步骤开始 + live 首 token，收尾仍未知", () => {
+    seq = 0;
+    const model = deriveTrajectoryModel([
+      event("turn/start", { turn: 9 }),
+      event("step/start", { turn: 9, step: 4 }, 0),
+      event("assistant/live-chunk", {
+        turn: 9,
+        step: 4,
+        chunk: { type: "text-delta", index: 0, text: "x" },
+      }, 1.5),
+    ], true);
+    const placeholder = flat(model).find((cell) => cell.kind === "message" && cell.turn === 9);
+    assert.ok(placeholder, "在跑的步骤仍出生成占位（既定差异：不出流式正文）");
+    assert.deepStrictEqual(
+      placeholder?.assistantMetrics,
+      {
+        timingRecorded: true,
+        stepStartTime: at(0),
+        firstTokenTime: at(1.5),
+        completedTime: null,
+        usageProvided: false,
+        outputTokens: null,
+      },
+      "官方 partial 的计时三件套（startedAt / timingRecorded / firstTokenTime）与未知收尾",
+    );
+    assert.strictEqual(placeholder?.startedAt, at(0), "startedAt 取 timing.stepStartTime");
+    assert.strictEqual(placeholder?.timeSeconds, null, "流式中的自身时长未知，不是 0");
+    assert.strictEqual(
+      model.requests[0]?.assistantFirstTokenTime,
+      at(1.5),
+      "live chunk 的 token 先到者胜，请求级镜像同一时刻",
+    );
+  });
+
+  check("G11 live chunk 的首 token 先于 message 的 stream：结算行不改成更晚那个", () => {
+    seq = 0;
+    const model = deriveTrajectoryModel([
+      event("step/start", { turn: 9, step: 4 }, 0),
+      event("assistant/live-chunk", {
+        turn: 9,
+        step: 4,
+        chunk: { type: "text-delta", index: 0, text: "x" },
+      }, 0.4),
+      event("assistant/message", {
+        turn: 9,
+        step: 4,
+        message: message("答", {}),
+        stream: [{ type: "chunk", time: at(0.8), chunk: { type: "text-delta", index: 0, text: "y" } }],
+      }, 1),
+    ], true);
+    const settled = flat(model).find((cell) => cell.kind === "message" && cell.turn === 9);
+    assert.strictEqual(settled?.assistantMetrics?.firstTokenTime, at(0.4), "官方 settleTiming 保留 state 里更早的 live token");
+    assert.strictEqual(model.requests[0]?.assistantFirstTokenTime, at(0.4), "请求级镜像同样是先到者胜");
+  });
+
+  check("J 畸形 live-chunk（没有 `chunk` 对象）不建流身份", () => {
     seq = 0;
     const model = deriveTrajectoryModel([
       initialHeader(),
@@ -4848,7 +5241,7 @@ console.log("trajectory: llm/retry 整份状态重置与诊断替换（F04） �
 
   // ---- 18d. retry 的重置只作用于窗口里开过 `step/start` 的身份（官方 `context.state`） ----
   /**
-   * 官方装配器（`ui-conversation` 的 `assembler.ts`，固定 `639ed015…`）只在一个 Context
+   * 官方装配器（`ui-conversation` 的 `assembler.ts`，固定 `66491b0…`）只在一个 Context
    * **有 `start` 匹配**时才把帧交给 `update`：
    *
    *     const starting = role === 'start' && context.start === undefined
@@ -4860,10 +5253,10 @@ console.log("trajectory: llm/retry 整份状态重置与诊断替换（F04） �
    * `step/start`** 时这一帧对状态是个空操作：状态由 `buildViewNode()` 的
    * `fallbackState()` 按该身份自己的帧重放，而 `fallbackState()` 只认
    * `live-chunk` / `attempt` / `message` / `step/end`，**没有 retry 分支**。
-   * 于是孤儿流的 `sawChunk`（→ `partial`）与孤儿结算的 `final`（→ `node`）都不被它清掉。
+   * 于是孤儿流的块证据（→ `partial`）与孤儿结算的 `final`（→ `node`）都不被它清掉。
    *
    * 反过来，窗口里**开过** `step/start` 的身份才走 `update`：那一支是 `initialState()`
-   * 整份重置（`sawChunk` 与 `final` 一起清），之后新到的 chunk 又能重新武装 partial。
+   * 整份重置（块证据与 `final` 一起清），之后新到的 chunk 又能重新武装 partial。
    * 本扩展的请求表那一份同样只在找到该步请求时重置（同一条「窗口里开过 `step/start`」
    * 口径）；重试徽章也只在有请求时写。
    *
@@ -4890,7 +5283,7 @@ console.log("trajectory: llm/retry 整份状态重置与诊断替换（F04） �
     assert.strictEqual(
       updateCell(model)?.turn,
       1,
-      "`final` 仍在（官方 `fallbackState()` 无 retry 分支）→ 后到的 chunk 只置 `sawChunk`，不发 partial",
+      "`final` 仍在（官方 `fallbackState()` 无 retry 分支）→ 后到的 chunk 不动 partial，因为 final 挡着",
     );
     assert.strictEqual(model.requests.length, 0, "孤儿步骤没有请求");
   });
@@ -4911,7 +5304,11 @@ console.log("trajectory: llm/retry 整份状态重置与诊断替换（F04） �
       1,
       "既定差异：每次结算各出的历史账本行照旧保留",
     );
-    assert.strictEqual(model.requests[0]?.status, "error", "重试即失败证据（官方 `state.retry !== undefined`）");
+    assert.strictEqual(
+      model.requests[0]?.status,
+      "running",
+      "重试只重置节点；没有边界时官方状态仍是 running（state.retry 不参与状态分支）",
+    );
     assert.strictEqual(model.requests[0]?.completedAt, null, "旧收尾时刻随重置作废");
   });
 
@@ -5004,7 +5401,7 @@ console.log("trajectory: llm/retry 整份状态重置与诊断替换（F04） �
 
   // ---- 18e. 闭合边界上的**合成中断节点**与重复 `step/start` 的布局生命周期 ----
   /**
-   * 官方 `finalNode()`（`trajectory-assistant-definition.ts`，固定 `639ed015…`）的两条支：
+   * 官方 `finalNode()`（`trajectory-assistant-definition.ts`，固定 `66491b0…`）的两条支：
    *
    *     const final = state.final
    *     if (final?.event.type === 'assistant/message') { …最终结算节点… }
@@ -5026,7 +5423,7 @@ console.log("trajectory: llm/retry 整份状态重置与诊断替换（F04） �
    *
    * 另一侧是重复 `step/start`：装配器 `const starting = role === 'start' &&
    * context.start === undefined`，同身份的第二个 `step/start` 走 `update`，而 assistant
-   * definition 的 `update` 对它落到 `return context.state`——`final` / `sawChunk` / `stepEnd`
+   * definition 的 `update` 对它落到 `return context.state`——`final` / 块证据 / `stepEnd`
    * 一个字都不改（`step/start` 只有**第一个**才是状态机的 `start`）。
    *
    * 本扩展不出流式正文行（刻意差异 1），块证据只留「有没有」的判据（`BlockEvidence`），
@@ -5295,7 +5692,7 @@ console.log("trajectory: llm/retry 整份状态重置与诊断替换（F04） �
       chunk(9, 4),
       event("step/start", { turn: 9, step: 4 }),
     ], true);
-    assert.strictEqual(updateCell(keptPartial)?.turn, 9, "`sawChunk` 不被清 → `partial` 照旧");
+    assert.strictEqual(updateCell(keptPartial)?.turn, 9, "块证据不被清 → `partial` 照旧");
     assert.strictEqual(initialCell(keptPartial)?.turn, 9);
     seq = 0;
     const keptInterrupted = deriveTrajectoryModel([
@@ -5310,13 +5707,11 @@ console.log("trajectory: llm/retry 整份状态重置与诊断替换（F04） �
     assert.strictEqual(initialCell(keptInterrupted)?.turn, 9);
   });
 
-  check("M13 重复 `step/start` 的请求表差异（诚实登记：另开一行，不等价于官方一份请求）", () => {
+  check("M13 重复 `step/start` 同 identity 只保留一份请求：不改 startSeq / startedAt / 状态", () => {
     /**
-     * 官方的请求视图是**一个 identity 一份**（`assistantRequest()` 由那份 state 投影），
-     * 重复 `step/start` 是 update、不改请求的 `startedAt` / 状态。本扩展按**每次
-     * `step/start` 各开一行请求**（既定口径，本批不动）：同一个 `turn:step` 会出现两行，
-     * 第二行才是 `assistantRequests` 里的当前那一个（后续帧挂它）。这里把它钉住，
-     * **不宣称与官方请求表等价**。
+     * 官方请求视图是一个 identity 一份（`assistantRequest()` 由那份 state 投影）；
+     * 重复 `step/start` 走装配器 `update`，assistant definition 对它 `return context.state`，
+     * 所以 `startSeq` / `startTime` / 状态 / 首 token 都不重开。
      */
     seq = 0;
     const afterSettlement = deriveTrajectoryModel([
@@ -5329,18 +5724,18 @@ console.log("trajectory: llm/retry 整份状态重置与诊断替换（F04） �
     ], true);
     assert.deepStrictEqual(
       afterSettlement.requests.map((request) => [request.number, request.turn, request.step, request.status]),
-      [[1, 6, 2, "complete"], [2, 6, 2, "running"]],
-      "重复 start 各开一行：第一行保留自己的结算事实，第二行从头 `running`",
+      [[1, 6, 2, "complete"]],
+      "重复 start 不新开请求：同一个 turn:step 只有第一份，状态仍是 complete",
+    );
+    assert.strictEqual(
+      afterSettlement.requests[0]?.startedAt,
+      at(1),
+      "startedAt 保持第一次 step/start 的时刻",
     );
     assert.strictEqual(
       afterSettlement.requests[0]?.assistantFirstTokenTime,
       null,
-      "结算过的请求：首 token 定稿为显式 null（结算帧没带 token）",
-    );
-    assert.strictEqual(
-      afterSettlement.requests[1]?.assistantFirstTokenTime,
-      undefined,
-      "还在跑的重复请求：键缺席（宿主还没把它的计时定稿）",
+      "结算过的请求：首 token 定稿为显式 null（重复 start 不改）",
     );
     seq = 0;
     const running = deriveTrajectoryModel([
@@ -5351,9 +5746,14 @@ console.log("trajectory: llm/retry 整份状态重置与诊断替换（F04） �
       event("step/start", { turn: 9, step: 4 }),
     ], true);
     assert.strictEqual(
+      flat(running).filter((cell) => cell.kind === "message").length,
+      1,
+      "重复 start 不新增占位行",
+    );
+    assert.strictEqual(
       flat(running).find((cell) => cell.kind === "message")?.requestNumber,
-      2,
-      "占位行挂**最后一次** `step/start` 的请求号（按 start 开帧编号的既定口径）",
+      1,
+      "占位行仍挂第一次 start 的请求号（同一身份一份请求）",
     );
   });
 
