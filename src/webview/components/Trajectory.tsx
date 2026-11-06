@@ -41,7 +41,7 @@ import { TrajectoryPre } from "./TrajectoryPre";
 import { TrajectorySection } from "./TrajectorySection";
 import { useTexts } from "../texts";
 import { trajectoryAssistantRequestNumber, trajectoryAssistantSummary, trajectoryCallCellIndex, trajectoryCellContent, trajectoryCellError, trajectoryCodeProgram, trajectoryGroupTitle, trajectoryRecordGenerationTime, trajectoryRecordThroughput, trajectoryRecordTotalTime, trajectoryRecordTtft, trajectoryRequestCallCounts, trajectoryRequestCells, trajectoryRequestResultCell, trajectoryResultText, trajectoryRowLabel, trajectoryToolUpdateParams, trajectoryTurnSummary, trajectoryUsesSourceBlocks, type TrajectoryRequestCallCounts } from "../trajectoryDisplay";
-import { useTrajectoryResult } from "../trajectoryResult";
+import { useTrajectoryResult, useTrajectoryScopeGeneration } from "../trajectoryResult";
 import { trajectoryRowPositions, trajectoryWindowPlan, VIRTUALIZATION_THRESHOLD, VIRTUAL_ROW_HEIGHT } from "../trajectoryVirtual";
 import { trajectoryCollapsibleCalls, trajectoryCollapsibleTurns, trajectoryLedgerRows } from "../trajectoryLedgerRows";
 import { useTrajectoryInteraction, type TrajectoryRequestTab } from "../trajectoryInteraction";
@@ -1305,6 +1305,24 @@ export function TrajectoryView({
   const tt = useMemo(() => trajectoryTexts(locale), [locale]);
   /** 这一页**唯一**的交互端口（含账本 / 绘图区两个容器 ref 与全部动作）。 */
   const port = useTrajectoryInteraction(sessionId);
+  /**
+   * 执行世界换代（`images/scope` 换到另一个连接）时**复位选中项**。
+   *
+   * 旧世界的记录序号属于旧服务器的会话实例：同 session / seq 的 inspector 若继续留着，
+   * Result 页会一直停在 `available:false` 的 durable 回退上，直到用户手动切行 / 切页签
+   * ——而任何「自动按旧 seq 重绑」都是把旧世界的序号发到新服务器。这里只清选择
+   * （检查器卸载 → 结果观察随之释放），等新轨迹和用户重新选中再订阅。
+   *
+   * 首个连接号只记认、同一 client 的短线重连也不换代，那两条都不该动用户的选择
+   * （后者由宿主 `resume` 在原连接上重开）。用 ref 记已见代次，挂载时不会误清。
+   */
+  const scopeGeneration = useTrajectoryScopeGeneration();
+  const seenScopeGeneration = useRef(scopeGeneration);
+  useLayoutEffect(() => {
+    if (seenScopeGeneration.current === scopeGeneration) return;
+    seenScopeGeneration.current = scopeGeneration;
+    port.clearSelection();
+  }, [scopeGeneration, port]);
   const { record, request, requestTab, range, query, collapsedTurns, collapsedCalls, reveal } = port.state;
   /**
    * 时间线模式：官方工具栏「时长」开关（`sequence` ⇄ `duration`），**跨会话持久化**。

@@ -86,7 +86,7 @@ vendor 提供 sequence / duration / time / actual：duration 去空闲、保并�
 
 ### 检查器与文案
 
-记录 / 请求双向跳转；工具→助手按 callIds，认不到不链接。请求计时有助手记录复用，否则读请求起点 / 时长 / 来源，不跨请求兜底；计时标题直达页签，边界回概述。请求选项不入搜索。工具行与请求的 `resultSeq` 随折叠 / 适配层透传，请求结果链接只按结果 seq 精确定位，缺席才退助手记录。Result 页通过 `useTrajectoryResult` → IPC → controller 每视图观察者 → `toolResults/watch` 订阅当前结果；仅在结果页且 seq 已知时开流。`available:true` 的 null / false / 0 / 空串都原样展示；不可用则回退已提交结果，不补读历史缓存。换行、离开页签、切会话、断线和销毁清值并取消旧流；同 client 重连恢复，换 client 不沿用旧服务器的 session/seq。
+记录 / 请求双向跳转；工具→助手按 callIds，认不到不链接。请求计时有助手记录复用，否则读请求起点 / 时长 / 来源，不跨请求兜底；计时标题直达页签，边界回概述。请求选项不入搜索。工具行与请求的 `resultSeq` 随折叠 / 适配层透传，请求结果链接只按结果 seq 精确定位，缺席才退助手记录。Result 页通过 `useTrajectoryResult` → IPC → controller 每视图观察者 → `toolResults/watch` 订阅当前结果；仅在结果页且 seq 已知时开流。`available:true` 的 null / false / 0 / 空串都原样展示；不可用则回退已提交结果，不补读历史缓存。换行、离开页签、切会话、断线和销毁清值并取消旧流；执行世界换代（`images/scope`）同一刻清值、释放旧流并复位选中项，等新轨迹与用户重新选中才订阅，不把旧 session/seq 发到新服务器；同 client 重连由宿主恢复，换 client 不沿用旧服务器的 session/seq。
 
 system diff 用 structuredPatch(context=3)，system / tools 分开比前后同类快照，相同或缺一份不显示。Schema 用调用时版本。窗口没带进「调用之前那一帧 request/header」时（跟随分页按消息对齐切，而表头不属于任何消息），宿主按需往前补页、只取其中的表头交给折叠：判据是「这条工具行之前有没有表头」，有表头即视为真缺席（那一帧目录里本来就没有这个工具名）不再往回翻；账本一行都不变（回补不进账本，否则往用户正看着的视图上方插行），聊天流的消息、分页锚点与 hasMore 同样不动。「结果在窗口里、调用在窗口外」的结果行没有工具名，仍不可用（官方同口径）。PTC code-program 行显描述、参数叫代码、有程序即使空输出也给结果页签；TypeScript / Python 只按 Schema，不猜源码。PTC 真实零样本，不把契约回归当安装验证。
 

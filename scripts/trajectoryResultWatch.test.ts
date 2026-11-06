@@ -7,9 +7,14 @@
  *    旧 client / 旧 session 迟到帧不透出、`suspendAll` + `resume` 的断线 / 换代语义、
  *    不缓存历史值；
  * 3. webview `createTrajectoryResultWatcher`：`watchId` 过滤、`null/false/0/""/{}` 有效、
- *    `images/scope` 切代先清值并释放观察（不把旧 seq 重发到新服务器）、销毁 unwatch；
+ *    `images/scope` 切代先清值、释放观察并推进代次（不把旧 seq 重发到新服务器）、
+ *    首个连接号 / 同连接重复通知不换代、销毁 unwatch；
  * 4. 真 React mount `useTrajectoryResult`：`this` 绑定、切 seq 的 effect 前渲染不闪旧值、
- *    `images/scope` 清值重开、卸载 unwatch（jsdom + 真 bridge）。
+ *    `images/scope` 清值并释放观察（界面复位选择后重新选中才重开）、卸载 unwatch
+ *    （jsdom + 真 bridge）；
+ * 5. 真 `TrajectoryView` 接线：换代复位选中项 / 关闭结果页，同 session、同 seq 不自动跨
+ *    client 重绑；用户重新选中后用新观察号订阅；同 client 重连不清选择；旧连接迟到帧
+ *    丢弃；卸载释放。
  *
  * 仅私有 `.agent` 打包运行；父代理负责登记 `esbuild.scripts.mjs`。
  */
@@ -349,7 +354,7 @@ function lastFrame(frames: TrajectoryResultFrame[]): TrajectoryResultFrame | und
   assert.equal(manager.activeCount, 0, "没有 client 的描述在 onConnected 丢弃");
   assert.equal(a.calls.length, callsBeforeResume, "不猜旧描述订阅新连接");
 
-  // 界面随后（例如 images/scope 复位后）重新发观察，就能正常接上。
+  // 界面随后（例如连接换代复位选择后用户重新选中）重新发观察，就能正常接上。
   manager.observe("v5", 6, "s5", 50, a as never, emit);
   assert.equal(manager.activeCount, 1);
   assert.equal(a.calls.length, callsBeforeResume + 1);
@@ -426,18 +431,20 @@ const { createTrajectoryResultWatcher, useTrajectoryResult } = await import("../
   deliver({ type: "trajectory/result", seq: 20, watchId: secondWatch.watchId!, available: true, value: "new" });
   assert.deepEqual(watcher.getSnapshot(), { available: true, value: "new" });
 
-  // images/scope 首帧只记认；换代先清值再重开
+  // images/scope 首帧只记认；换代先清值、释放观察并推进代次
   deliver({ type: "images/scope", connectionId: "c1" });
   assert.deepEqual(watcher.getSnapshot(), { available: true, value: "new" }, "首个 scope 不清值");
+  assert.equal(watcher.scopeGeneration(), 0, "首个连接号只记认、不换代");
   const beforeScope = posts.length;
   deliver({ type: "images/scope", connectionId: "c2" });
   assert.equal(watcher.getSnapshot().available, false, "换代同一刻清旧值（无过期 flash）");
+  assert.equal(watcher.scopeGeneration(), 1, "换代推进代次（界面据此复位选择）");
   assert.equal(posts.length, beforeScope + 1, "换代只 unwatch 旧观察，不把旧 seq 订阅到新连接");
   assert.deepEqual(watchPosts()[beforeScope], { type: "unwatchTrajectoryResult", watchId: secondWatch.watchId });
   deliver({ type: "trajectory/result", seq: 20, watchId: secondWatch.watchId!, available: true, value: "old-connection" });
   assert.equal(watcher.getSnapshot().available, false, "旧连接 / 旧 watchId 帧被丢弃");
 
-  // 新连接必须由界面重新选择才会重新订阅（这里模拟 Inspector 先清空再选中）。
+  // 新连接必须由界面复位选择、用户重新选中才会重新订阅（这里直接模拟这一顺序）。
   watcher.bind(undefined);
   watcher.bind(20);
   const thirdWatch = watchPosts()[posts.length - 1];
@@ -445,10 +452,11 @@ const { createTrajectoryResultWatcher, useTrajectoryResult } = await import("../
   deliver({ type: "trajectory/result", seq: 20, watchId: thirdWatch.watchId!, available: true, value: "fresh" });
   assert.deepEqual(watcher.getSnapshot(), { available: true, value: "fresh" });
 
-  // 同一连接号重复通知不重开
+  // 同一连接号重复通知不重开、也不换代
   const beforeSameScope = posts.length;
   deliver({ type: "images/scope", connectionId: "c2" });
   assert.equal(posts.length, beforeSameScope, "同连接号不清值、不重开");
+  assert.equal(watcher.scopeGeneration(), 1, "同连接号不换代（同 client 重连保留选择）");
 
   // bind(undefined) / dispose：清值并 unwatch
   const beforeUnbind = posts.length;
@@ -541,7 +549,7 @@ const { createTrajectoryResultWatcher, useTrajectoryResult } = await import("../
     "切 seq 先释放旧观察",
   );
 
-  // images/scope：首个连接号只记认；换代同一刻清值并重开
+  // images/scope：首个连接号只记认；换代同一刻清值并释放观察（不自动重开）
   await act(async () => {
     dispatch({
       type: "trajectory/result",
@@ -566,7 +574,7 @@ const { createTrajectoryResultWatcher, useTrajectoryResult } = await import("../
     "换代释放旧观察",
   );
 
-  // 新连接必须由界面重新选择（Inspector 先清空再选中）才会重新订阅。
+  // 新连接必须由界面复位选择、用户重新选中（这里用先 undefined 再同 seq 模拟）才会重新订阅。
   await act(async () => {
     root.render(React.createElement(Probe, { seq: undefined }));
   });
@@ -797,6 +805,214 @@ const { createTrajectoryResultWatcher, useTrajectoryResult } = await import("../
   controller.dispose();
 }
 
+// ---------- 8. 真 TrajectoryView 接线：执行世界换代复位选择，重新选中才订阅 ----------
+/**
+ * 这一段走**真实组件**（`TrajectoryView` → `Inspector` → `useTrajectoryResult`）而不是
+ * 只测 watcher：真正要防的回归是「换代后旧 seq 还挂在界面上，于是永远不重绑（或反过来
+ * 自动把旧 seq 发到新服务器）」。只有点得动账本、开得了结果页签，才算接上了。
+ */
+{
+  const React = await import("react");
+  const { createRoot } = await import("react-dom/client");
+  const { act } = await import("react-dom/test-utils");
+  const { TrajectoryView } = await import("../src/webview/components/Trajectory");
+  const { deriveTrajectoryModel } = await import("../src/dsh/trajectory");
+  const { trajectoryTurnCells } = await import("../src/shared/trajectory");
+
+  let wireSeq = 0;
+  const wireTime = 1_700_000_000_000;
+  const wire = (type: string, data: Record<string, unknown>) => ({
+    type,
+    seq: wireSeq,
+    time: wireTime + wireSeq++ * 1000,
+    data,
+  });
+  const text = (value: string) => [{ type: "text", text: value }];
+  const events = [
+    wire("turn/start", { turn: 0 }),
+    wire("step/start", { turn: 0, step: 0 }),
+    wire("system/message", { turn: 0, step: 0, message: { content: text("system") } }),
+    wire("user/message", { id: "u1", role: "user", content: text("question"), source: {} }),
+    wire("request/header", {
+      header: { config: { provider: "p", model: "m" }, tools: [{ name: "read" }] },
+      reason: "initial",
+    }),
+    wire("assistant/message", {
+      turn: 0,
+      step: 0,
+      message: { id: "a1", role: "assistant", content: text("answer"), source: { model: "m" } },
+      usage: { inputTokens: 1, outputTokens: 1 },
+    }),
+    wire("tool/call", { turn: 0, step: 0, callId: "c1", name: "read", arguments: "{}" }),
+    wire("tool/result", {
+      turn: 0,
+      step: 0,
+      message: { content: text("durable-result"), source: { callId: "c1" } },
+    }),
+    wire("turn/end", { turn: 0, reason: "success" }),
+  ];
+  const model = deriveTrajectoryModel(events, false);
+  const toolCell = model.turns.flatMap(trajectoryTurnCells).find((cell) => cell.kind === "tool");
+  assert.ok(toolCell !== undefined, "夹具里必须有工具行");
+  const resultSeq = toolCell.resultSeq;
+  assert.ok(resultSeq !== undefined, "工具行必须携带已提交结果 seq");
+
+  const container = dom.window.document.createElement("div");
+  dom.window.document.body.appendChild(container);
+  const root = createRoot(container);
+  const watches = (): Extract<WebviewToHost, { type: "watchTrajectoryResult" }>[] =>
+    webviewPosts.filter(
+      (message): message is Extract<WebviewToHost, { type: "watchTrajectoryResult" }> =>
+        message.type === "watchTrajectoryResult",
+    );
+  const unwatches = (): Extract<WebviewToHost, { type: "unwatchTrajectoryResult" }>[] =>
+    webviewPosts.filter(
+      (message): message is Extract<WebviewToHost, { type: "unwatchTrajectoryResult" }> =>
+        message.type === "unwatchTrajectoryResult",
+    );
+  const dispatchView = (frame: HostToWebview): void => {
+    dom.window.dispatchEvent(new dom.window.MessageEvent("message", { data: frame }));
+  };
+  const row = (): HTMLElement | null =>
+    container.querySelector<HTMLElement>(`tr[data-cell-index="${toolCell.index}"]`);
+  const resultTab = (): HTMLElement | undefined =>
+    [...container.querySelectorAll<HTMLElement>('[role="tab"]')].find(
+      (node) => node.textContent === "Result",
+    );
+
+  // 先把执行世界定到一个已知连接上（首个连接号只记认，不算换代）。
+  await act(async () => {
+    dispatchView({ type: "images/scope", connectionId: "view-c1" });
+  });
+  await act(async () => {
+    root.render(
+      React.createElement(TrajectoryView, {
+        model,
+        sessionId: "s-view",
+        locale: "en",
+        onLoadEarlier() {},
+        loadingEarlier: false,
+      }),
+    );
+  });
+  assert.ok(row() !== null, "账本渲染出工具行");
+
+  await act(async () => {
+    row()!.click();
+  });
+  assert.ok(container.querySelector(".trajectory-details") !== null, "选中工具行打开检查器");
+  const beforeFirstWatch = watches().length;
+  await act(async () => {
+    resultTab()!.click();
+  });
+  const firstWatch = watches().at(-1);
+  assert.ok(firstWatch !== undefined);
+  assert.equal(watches().length, beforeFirstWatch + 1, "打开结果页签才订阅");
+  assert.equal(firstWatch.seq, resultSeq);
+  await act(async () => {
+    dispatchView({
+      type: "trajectory/result",
+      seq: resultSeq,
+      watchId: firstWatch.watchId,
+      available: true,
+      value: { live: true },
+    });
+  });
+  assert.match(container.textContent ?? "", /"live": true/);
+
+  // 换代：同一 session / seq 还在旧 model 上，但旧 client 的结果序号对新 client 无意义。
+  // 必须复位选择（检查器关闭）并释放观察，且**不能**自动把旧 seq 发到新连接。
+  const beforeScopeWatch = watches().length;
+  const beforeScopeUnwatch = unwatches().length;
+  await act(async () => {
+    dispatchView({ type: "images/scope", connectionId: "view-c2" });
+  });
+  assert.equal(watches().length, beforeScopeWatch, "换代后不得把旧 seq 自动重发到新 client");
+  assert.ok(
+    unwatches().slice(beforeScopeUnwatch).some((message) => message.watchId === firstWatch.watchId),
+    "换代释放旧观察",
+  );
+  assert.equal(
+    container.querySelector(".trajectory-details"),
+    null,
+    "换代复位选中项：同 session / seq 的旧模型不会继续占着 Result 页",
+  );
+
+  // 用户重新选中同一条记录、再打开结果页签，才允许重新订阅（seq 相同、watchId 换新）。
+  await act(async () => {
+    row()!.click();
+  });
+  await act(async () => {
+    resultTab()!.click();
+  });
+  const reboundWatch = watches().at(-1);
+  assert.ok(reboundWatch !== undefined);
+  assert.equal(reboundWatch.seq, resultSeq, "重新选中仍订阅同一条已提交结果");
+  assert.notEqual(reboundWatch.watchId, firstWatch.watchId, "重新选中用新观察号");
+  await act(async () => {
+    dispatchView({
+      type: "trajectory/result",
+      seq: resultSeq,
+      watchId: reboundWatch.watchId,
+      available: true,
+      value: "new-client",
+    });
+  });
+  assert.match(container.textContent ?? "", /new-client/);
+
+  // 旧连接 / 旧观察的迟到帧不得写进新观察。
+  await act(async () => {
+    dispatchView({
+      type: "trajectory/result",
+      seq: resultSeq,
+      watchId: firstWatch.watchId,
+      available: true,
+      value: "old-client-late",
+    });
+  });
+  assert.doesNotMatch(container.textContent ?? "", /old-client-late/);
+
+  // 同一 client 的短线重连是宿主 `resume` 的事：界面保留选择，不重发观察；
+  // 宿主推 available:false 时回退已提交内容，恢复后同一个观察号继续出值。
+  await act(async () => {
+    dispatchView({
+      type: "trajectory/result",
+      seq: resultSeq,
+      watchId: reboundWatch.watchId,
+      available: false,
+    });
+  });
+  assert.ok(container.querySelector(".trajectory-details") !== null, "同 client 断线不清选择");
+  assert.match(container.textContent ?? "", /durable-result/, "断线回退已提交结果");
+  const beforeReconnectWatch = watches().length;
+  const beforeReconnectUnwatch = unwatches().length;
+  await act(async () => {
+    dispatchView({ type: "images/scope", connectionId: "view-c2" });
+  });
+  assert.equal(watches().length, beforeReconnectWatch, "同 client 重连不重新订阅");
+  assert.equal(unwatches().length, beforeReconnectUnwatch, "同 client 重连不释放选择");
+  await act(async () => {
+    dispatchView({
+      type: "trajectory/result",
+      seq: resultSeq,
+      watchId: reboundWatch.watchId,
+      available: true,
+      value: "resumed",
+    });
+  });
+  assert.match(container.textContent ?? "", /resumed/);
+
+  const beforeUnmountUnwatch = unwatches().length;
+  await act(async () => {
+    root.unmount();
+  });
+  assert.ok(
+    unwatches().slice(beforeUnmountUnwatch).some((message) => message.watchId === reboundWatch.watchId),
+    "卸载释放当前观察",
+  );
+  container.remove();
+}
+
 console.log("trajectoryResultWatch: client 端点参数 ✓");
 console.log("trajectoryResultWatch: 线格式 null / false / 0 / 空串 / 空对象 ✓");
 console.log("trajectoryResultWatch: 切换 / 迟到 token/client/session 隔离 ✓");
@@ -804,6 +1020,7 @@ console.log("trajectoryResultWatch: suspendAll + resume / closeSession / 无缓�
 console.log("trajectoryResultWatch: webview watchId / images-scope / 销毁 ✓");
 console.log("trajectoryResultWatch: React mount hook / 切 seq 不闪旧值 / 卸载 ✓");
 console.log("trajectoryResultWatch: 真 controller ready/watchId / unbind/detach / teardown/resume ✓");
+console.log("trajectoryResultWatch: 真 TrajectoryView 换代复位选择 / 重选订阅 / 同 client 重连 ✓");
 // JSDOM 自己会留消息循环 / 事件目标；React 18 的调度器在 Node 里还会留一个
 // MessageChannel。离线脚本没有收尾队列可等，断言全部通过后显式退出，避免
 // `npm test` 的 runner 一直等这一套（失败仍会在上面的 assert 处抛非零退出）。

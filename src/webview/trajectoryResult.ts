@@ -10,9 +10,10 @@
  * 销毁立即把快照换成 `available:false`，不会先闪一下上一条结果。`null` / `false` /
  * `0` / 空串 / 空对象都是有效结果，不能用 truthiness 判空。
  *
- * `images/scope` 是执行世界（连接）换代：收到的同一刻清空当前值并**释放**观察，不把
- * 旧 seq 重发到新服务器（界面应复位选中项，重新选中时再由 `bind` 订阅）；同一 client
- * 的短线重连由宿主 `resume` 重开，不经过这里。
+ * `images/scope` 是执行世界（连接）换代：收到的同一刻清空当前值、**释放**观察并把
+ * `scopeGeneration` +1，不把旧 seq 重发到新服务器。界面按这个代次复位选中项（见
+ * `useTrajectoryScopeGeneration`），用户重新选中后 `bind` 才订阅；同一 client 的短线
+ * 重连由宿主 `resume` 重开，既不改代次也不经过这里。
  */
 import { useEffect, useSyncExternalStore } from "react";
 import type { HostToWebview, TrajectoryResultFrame, WebviewToHost } from "../shared/ipc";
@@ -41,6 +42,13 @@ export interface TrajectoryResultWatcher {
   bind(seq: number | undefined): void;
   /** 当前绑定的是哪个 `seq`（React 渲染期用来拒绝「effect 还没跑」时的上一 seq 值）。 */
   currentSeq(): number | undefined;
+  /**
+   * 执行世界（连接）的代次：`images/scope` 换到**另一个**连接时 +1。
+   *
+   * 首个连接号只记认、重复通知不换代，所以它表达的是「旧世界的选中 / 序号已经作废」，
+   * 而不是「刚连上」。界面用它复位选中项；同一 client 的短线重连不改它。
+   */
+  scopeGeneration(): number;
   /** 释放观察并取消宿主订阅（页面销毁 / 测试收尾）。 */
   dispose(): void;
 }
@@ -64,6 +72,8 @@ class Watcher implements TrajectoryResultWatcher {
   private seq: number | undefined;
   private watchId = 0;
   private connectionId: string | null | undefined;
+  /** 执行世界代次；只在连接号真的换了一条时 +1（首个连接号与重复通知都不算）。 */
+  private generation = 0;
   private disposed = false;
 
   constructor(private readonly ports: TrajectoryResultPorts) {
@@ -81,6 +91,8 @@ class Watcher implements TrajectoryResultWatcher {
   };
 
   readonly currentSeq = (): number | undefined => this.seq;
+
+  readonly scopeGeneration = (): number => this.generation;
 
   readonly bind = (seq: number | undefined): void => {
     if (this.disposed) return;
@@ -123,12 +135,16 @@ class Watcher implements TrajectoryResultWatcher {
     }
     if (next === this.connectionId) return;
     this.connectionId = next;
-    // 连接换代（新 client / 另一台服务器）：**只清值并释放旧观察，不重发**。旧 seq
-    // 属于旧服务器的会话实例，直接订阅到新服务器同名 session 就是读错对象。
-    // 界面应把选中项复位；用户重新选中后由 `bind(seq)`（watchId 已归零）重新订阅。
+    // 连接换代（新 client / 另一台服务器）：**只清值、释放旧观察并推进代次，不重发**。
+    // 旧 seq 属于旧服务器的会话实例，直接订阅到新服务器同名 session 就是读错对象。
+    // 界面按代次复位选中项；用户重新选中后由 `bind(seq)`（watchId 已归零）重新订阅。
     // 同一 client 的短线重连不经过这里，由宿主 `resume` 在原连接上重开。
-    this.setSnapshot(UNAVAILABLE);
+    this.generation += 1;
     this.releaseWatch();
+    // 代次变化必须**无条件**通知：当前值可能已经是 `available:false`（快照引用不变），
+    // 只靠 `setSnapshot` 会漏掉这次换代，界面就不会复位选择。
+    this.snapshot = UNAVAILABLE;
+    this.notify();
   }
 
   private onResult(message: TrajectoryResultFrame): void {
@@ -155,10 +171,14 @@ class Watcher implements TrajectoryResultWatcher {
     this.ports.post({ type: "unwatchTrajectoryResult", watchId });
   }
 
+  private notify(): void {
+    for (const listener of this.listeners) listener();
+  }
+
   private setSnapshot(next: TrajectoryResultView): void {
     if (this.snapshot.available === next.available && Object.is(this.snapshot.value, next.value)) return;
     this.snapshot = next;
-    for (const listener of this.listeners) listener();
+    this.notify();
   }
 }
 
@@ -168,6 +188,18 @@ export function createTrajectoryResultWatcher(ports: TrajectoryResultPorts): Tra
 }
 
 const shared = createTrajectoryResultWatcher({ post: postToHost, subscribe: subscribeHost });
+
+/**
+ * 执行世界（连接）的代次：`images/scope` 换到另一个连接时 +1，首个连接号与重复通知不变。
+ *
+ * 界面（`TrajectoryView`）在本代世界换代时复位选中项：旧世界的记录序号对新服务器没有
+ * 意义，检查器因此卸载、结果观察随卸载释放；等新轨迹和用户重新选中，才由
+ * `useTrajectoryResult` 重新订阅。同一 client 的短线重连不改代次。
+ * @returns 当前代次（`0` = 还没发生过换代）。
+ */
+export function useTrajectoryScopeGeneration(): number {
+  return useSyncExternalStore(shared.subscribe, shared.scopeGeneration, shared.scopeGeneration);
+}
 
 /**
  * Result 页当前选中结果的实时值。
