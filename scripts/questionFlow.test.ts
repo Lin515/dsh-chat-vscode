@@ -2,8 +2,7 @@
  * 问卷展示口径：一次展开 vs 依次问答（`dshChat.questionBatch`）。
  *
  * 用户 2026-09-14 的口径：题目不超过阈值时保持原来的一次全展开；超过时改成一题
- * 一题（`0` 表示始终全部展开）。2026-11-05 追加：**已答完的记录卡**也按同一条阈值
- * 决定默认是否展开（题数在阈值内直接看，超过才收缩成一行）。
+ * 一题（`0` 表示始终全部显示）。已答节点始终默认收起；阈值只决定正文展示模式。
  *
  * 判据与「能不能提交」都在这里钉住——这些是纯函数，界面只做渲染，改坏了不会报错、
  * 只会静默改变问答流程。
@@ -22,8 +21,6 @@ import {
   isAnswered,
   questionMode,
   questionReplyText,
-  recordExpanded,
-  recordOpenByDefault,
 } from "../src/webview/questionFlow";
 
 const items: QuestionItemView[] = [
@@ -51,55 +48,6 @@ const items: QuestionItemView[] = [
   }
 }
 console.log("questionFlow: 阈值语义（含 0 与坏值） ✓");
-
-// ---------- 1b. 记录卡默认展开：同一条阈值；计划审阅与已撤回不参与 ----------
-{
-  assert.strictEqual(recordOpenByDefault(2, 3), true, "题目数在阈值内：记录卡默认展开");
-  assert.strictEqual(recordOpenByDefault(3, 3), true, "正好等于阈值：一次铺得下，默认展开");
-  assert.strictEqual(recordOpenByDefault(4, 3), false, "超过阈值：默认收缩成一行");
-  assert.strictEqual(recordOpenByDefault(12, 0), true, "配置 0 = 始终一次展开：记录卡默认展开");
-  assert.strictEqual(recordOpenByDefault(1, undefined), true, "单题在默认阈值内，默认展开");
-  assert.strictEqual(
-    recordOpenByDefault(2, undefined),
-    false,
-    `缺省阈值 ${DEFAULT_QUESTION_BATCH}：2 题超过它，默认收缩`,
-  );
-  assert.strictEqual(
-    recordOpenByDefault(1, 3, { planReview: true }),
-    false,
-    "计划审阅始终收缩（展开体是整份计划，体积与题数无关）",
-  );
-  assert.strictEqual(
-    recordOpenByDefault(1, 3, { cancelled: true }),
-    false,
-    "已撤回始终收缩（没有回答可看）",
-  );
-  assert.strictEqual(recordOpenByDefault(2, -1), false, "坏阈值回退默认 1：2 题收缩");
-}
-console.log("questionFlow: 记录卡默认展开跟随阈值 ✓");
-
-// ---------- 1c. 记录卡的当前展开态：用户没碰过就跟着**当前**阈值走 ----------
-//
-// 用户 2026-11-05 报的「配置是 1，两题的记录却展开」：把挂载那一刻的判定冻进
-// state，会让旧阈值（或首帧迟到时的默认值）一直留在屏幕上。这里钉住两条：
-// 当前阈值说话；用户手动开合过之后才轮到用户说话。
-{
-  assert.strictEqual(recordExpanded(2, 2), true, "阈值 2：两题一次铺得下，展开");
-  assert.strictEqual(
-    recordExpanded(2, 1),
-    false,
-    "同一张卡、阈值改成 1：按当前配置收缩，不冻结挂载时的判定",
-  );
-  assert.strictEqual(recordExpanded(2, 1, { userOpen: true }), true, "用户手动展开过：听用户的");
-  assert.strictEqual(recordExpanded(2, 3, { userOpen: false }), false, "用户手动收起过：听用户的");
-  assert.strictEqual(
-    recordExpanded(1, 3, { planReview: true }),
-    false,
-    "计划审阅始终收缩（默认值与当前值同一条例外）",
-  );
-  assert.strictEqual(recordExpanded(1, 3, { cancelled: true }), false, "已撤回始终收缩");
-}
-console.log("questionFlow: 记录卡展开态按当前阈值重算 ✓");
 
 // ---------- 2. 单题作答判据 ----------
 {
@@ -140,21 +88,12 @@ console.log("questionFlow: 提交闸门覆盖全部题目 ✓");
       /question\.answers\?\.\[itemId\]\?\.custom/.test(rows),
     "已答完的问卷要以 question.answers 为准（本地 state 只作回退）",
   );
-  // 已答完的记录卡也听阈值（用户 2026-11-05 口径）：展开态必须**每次按当前阈值**
-  // 现算（`recordExpanded`），不能把挂载那一刻的判定冻进 state；用户手动开合过之后
-  // 才轮到用户的选择。计划审阅 / 已撤回作为例外一起喂进去。
-  assert.ok(
-    /const expanded = recordExpanded\(items\.length, batch, \{/.test(rows),
-    "记录卡的展开态要按当前阈值现算（不冻结挂载时的判定）",
-  );
-  assert.ok(
-    /planReview: review !== undefined,[\s\S]{0,60}?cancelled,[\s\S]{0,60}?userOpen,/.test(rows),
-    "阈值默认值要带计划审阅 / 已撤回例外，并让用户的手动开合优先",
-  );
-  assert.ok(
-    /onToggle=\{\(\) => setUserOpen\(!expanded\)\}/.test(rows),
-    "用户点行头后要记下自己的选择（此后不再自动切换）",
-  );
+  // 记录开合独立于题数和配置；不保留阈值展开辅助逻辑。
+  assert.match(rows, /const \[expanded, setExpanded\] = useState\(false\)/, "已答节点初始化收起");
+  assert.doesNotMatch(rows, /recordExpanded|recordOpenByDefault|setUserOpen/, "删除阈值展开链路");
+  const flow = readFileSync(join(process.cwd(), "src", "webview", "questionFlow.ts"), "utf8");
+  assert.doesNotMatch(flow, /recordExpanded|recordOpenByDefault/, "不遗留默认展开判定函数");
+  assert.match(rows, /onToggle=\{\(\) => setExpanded\(!expanded\)\}/, "只允许手动开合");
   assert.ok(
     /if \(!waiting\)[\s\S]{0,700}?open=\{expanded\}/.test(rows),
     "已收场的记录卡行头仍可开合（展开态由 expanded 驱动）",

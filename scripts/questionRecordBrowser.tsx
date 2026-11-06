@@ -89,9 +89,28 @@ export function run(): { checks: number } {
         }
         for (const batch of [2, 3, 0]) {
           reset(record(batch, kind));
-          check(head()?.getAttribute("aria-expanded") === "true", "阈值内/0 默认展开");
-          check(host.querySelectorAll(".question-item").length === 2, "阈值内/0 同时显示全部题目");
+          check(head()?.getAttribute("aria-expanded") === "false", "阈值内/0 的已答节点也必须默认收起");
+          check(host.querySelector(".question-item") === null, "收起时不挂载题目正文");
+          click(head());
+          check(host.querySelectorAll(".question-item").length === 2, "手动展开后阈值内/0 同时显示全部题目");
           check(host.querySelector(".question-pager") === null, "一次展开时没有分页器");
+        }
+        for (const count of [1, 2, 4]) {
+          const value = { ...question, items: Array.from({ length: count }, (_, i) =>
+            ({ ...question.items[i % 2]!, id: String(i) })) };
+          reset(record(undefined, kind, value));
+          for (const batch of [undefined, 0, 1, 2, 3, -1, Number.NaN]) {
+            render(record(batch, kind, value));
+            check(head()?.getAttribute("aria-expanded") === "false", "配置迟到或热更新不展开任何题数的已答节点");
+            check(host.querySelector(".question-item") === null, "收起节点不挂载正文");
+          }
+          click(head());
+          render(record(0, kind, value));
+          check(head()?.getAttribute("aria-expanded") === "true", "配置更新保留手动展开");
+          check(host.querySelectorAll(".question-item").length === count, "0 仅控制手动展开后显示全部题目");
+          click(head());
+          render(record(3, kind, value));
+          check(head()?.getAttribute("aria-expanded") === "false", "配置更新保留手动收起");
         }
       }
     }
@@ -138,6 +157,30 @@ export function run(): { checks: number } {
     render(<QuestionCard question={completed} batch={1} sessionId="offline" />);
     click(head());
     checkPage("第一题");
+    // 真正完成填写并提交后，无论分页模式、题数、新消息或同一实例都必须收起。
+    for (const count of [1, 2, 4]) {
+      for (const batch of [0, 1, 2, 3]) {
+        const pending: QuestionView = { ...waiting, requestId: `submit-${count}-${batch}`,
+          items: Array.from({ length: count }, (_, i) => ({ ...question.items[i % 2]!, id: String(i) })) };
+        reset(<QuestionCard question={pending} batch={batch} sessionId="offline" />);
+        for (let i = 0; i < count; i += 1) {
+          const visible = [...host.querySelectorAll(".question-item")];
+          click((visible.length === 1 ? visible[0] : visible[i])?.querySelector<HTMLButtonElement>(".question-option"));
+        }
+        click(byText(dictionaryFor(locale).submit));
+        const frame = frames.at(-1);
+        check(frame?.type === "answerQuestion" && frame.answers.length === count, "各配置仍能提交完整问卷");
+        if (frame?.type !== "answerQuestion") throw new Error("未捕获提交帧");
+        const answered: QuestionView = { ...pending, state: "answered",
+          answers: Object.fromEntries(frame.answers.map(({ id, ...answer }) => [id, answer])) };
+        render(<QuestionCard question={answered} batch={batch} sessionId="offline" />);
+        check(head()?.getAttribute("aria-expanded") === "false", "同一组件答完默认收起");
+        render(record(batch, "tool", answered));
+        check(head()?.getAttribute("aria-expanded") === "false", "答完生成工具节点默认收起");
+        click(head());
+        check(head()?.getAttribute("aria-expanded") === "true", "答后仍可手动展开复看");
+      }
+    }
     return { checks };
   } finally {
     flushSync(() => root.unmount());

@@ -34,7 +34,6 @@ import {
   isAnswered,
   questionMode,
   questionReplyText,
-  recordExpanded,
 } from "../questionFlow";
 import { customAnswerSize } from "../questionInput";
 import { useUiScale } from "../uiScale";
@@ -1451,10 +1450,8 @@ export function pendingQuestionCopyText(
  *    所有题目一起铺开，全部作答后才能提交；
  * 2. **待回答 · 依次问答**（题目数更多）：一次一道，带「第 N / M 题」与上一题 /
  *    下一题；单选点一下就前进（官方 `choose` 同口径），最后一题变成提交；
- * 3. **已答完**：用户没手动开合过时，按**当前**阈值决定默认展开——题目数不超过
- *    阈值（或阈值 `0`）时**默认展开**，直接看当时的题目与**用户当时选了什么**；
- *    超过阈值则收缩成一行（`已作答 N 题`），点行头再展开复看（用户 2026-11-05
- *    口径）；展开后也按阈值逐题复看，而非全部铺开。复看页码与填写页码独立，
+ * 3. **已答完**：默认收缩成一行（`已作答 N 题`），与题数、展示阈值无关。
+ *    点行头手动展开后，正文按阈值显示全部题目或逐题复看。复看页码与填写页码独立，
  *    不受「必须答完才能下一题」限制。答案取自 `question.answers`（宿主写进卡片的数据），
  *    不是组件自己的 state：换会话回来、另一个窗口答的、页面重载之后，本地 state
  *    都是空的（用户 2026-09-15 报的「展开后没有显示用户的回答」就是这个）；
@@ -1539,21 +1536,8 @@ function QuestionCardState({
   const cancelled = question.state === "cancelled";
   const items = question.items;
   const review = planReviewOf(items);
-  /**
-   * 记录卡的展开态（用户 2026-11-05 口径）：用户没手动开合过就**每次按当前阈值**
-   * 重算默认值（题目一次铺得下就展开，超过阈值收缩成一行；计划审阅与已撤回不参与，
-   * 见 `recordExpanded`）。不把挂载那一刻的判定冻在 state 里：首帧 `questionBatch`
-   * 迟到、或用户改了配置，记录卡都要跟着当前口径走。
-   *
-   * `undefined` = 用户还没碰过；点过之后（`userOpen` 有值）就听用户的选择，配置
-   * 再变也不自动切换。
-   */
-  const [userOpen, setUserOpen] = useState<boolean | undefined>(undefined);
-  const expanded = recordExpanded(items.length, batch, {
-    planReview: review !== undefined,
-    cancelled,
-    userOpen,
-  });
+  // 记录节点始终默认收起；仅手动操作改变开合，展示阈值只控制正文分页。
+  const [expanded, setExpanded] = useState(false);
   const mode = questionMode(items.length, batch);
   const interactive = waiting;
   const stepped = mode === "stepped";
@@ -1895,9 +1879,8 @@ function QuestionCardState({
     </div>
   ) : null;
 
-  // 已答完 / 已撤回：默认展开与否按**当前**阈值算（`recordExpanded`；计划审阅与
-  // 已撤回默认收缩），用户手动开合过则听用户的；行头随时可点开复看题目与当时的
-  // 回答。用与工具行同一套 `Row`，视觉语言不分家：这同样是「对话里发生过的一件事」。
+  // 已答完 / 已撤回：默认收起，行头可手动点开复看题目与当时的回答。
+  // 用与工具行同一套 `Row`，视觉语言不分家：这同样是「对话里发生过的一件事」。
   // 展开体（`.question.is-record`）走与其它展开体**同一张节点框**（缩进 + 边框 +
   // 底色，见 app.css 的 `.row-body` 那一组选择器）：它此前刻意不带框，展开后整段
   // 题目与选项和助手正文同级，看不出属于上面那个提问节点（用户 2026-10-02 口径）。
@@ -1932,7 +1915,7 @@ function QuestionCardState({
             : texts.questionAnswered(items.length)
         }
         open={expanded}
-        onToggle={() => setUserOpen(!expanded)}
+        onToggle={() => setExpanded(!expanded)}
       >
         <div className="question is-record">
           {/* 复制按钮落在**当前首个可见题头行的右端**，载荷始终为完整问卷：

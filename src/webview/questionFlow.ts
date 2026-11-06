@@ -11,9 +11,8 @@ import type { QuestionAnswerView, QuestionItemView } from "../shared/chat";
  * 官方 `QuestionComposer` 是**恒分页**的（一次一道 + prev/next + skip），这里刻意
  * 不是它的复刻：短问卷一次看完更省事，这是用户明确选了的行为。
  *
- * 已收场的记录卡原先固定收缩（用户 2026-09-14 口径）；2026-11-05 起同一条阈值也
- * 决定它**默认是否展开**：一次铺得下就直接看当时的问答，铺不下才收缩成一行
- * （见 `recordExpanded`）。点开后的正文也必须按 `questionMode` 逐题复看，而非全铺开。
+ * 已收场的记录节点默认收起，开合与题数、阈值无关；仅手动展开后的正文按
+ * `questionMode` 决定一次显示全部题目还是逐题复看。
  *
  * 纯函数、不引 React：断言见 `scripts/questionFlow.test.ts`。
  */
@@ -36,42 +35,6 @@ export function questionMode(total: number, batch: number | undefined): Question
       ? batch
       : DEFAULT_QUESTION_BATCH;
   return limit > 0 && total > limit ? "stepped" : "all";
-}
-
-/**
- * 已收场的问卷记录卡默认是否展开。
- *
- * 用户 2026-11-05 口径：记录卡也听 `dshChat.questionBatch`——题目能在一次里铺完
- * （不超过阈值，或阈值 `0` = 始终一次展开）时默认展开，直接看当时的问答；超过
- * 阈值仍收缩成一行，点行头复看，免得长问卷一答完就占满屏幕。
- *
- * 两种记录不参与：计划审阅（展开体里是整份计划，体积与题数无关）与已撤回
- * （没有回答可看）。它们保持原来的默认收起。
- */
-export function recordOpenByDefault(
-  total: number,
-  batch: number | undefined,
-  kind: { planReview?: boolean; cancelled?: boolean } = {},
-): boolean {
-  if (kind.planReview === true || kind.cancelled === true) return false;
-  return questionMode(total, batch) === "all";
-}
-
-/**
- * 记录卡**当前**是否展开。
- *
- * 用户手动开合过（`userOpen` 有值）就听用户的；否则每次渲染都按**当前**阈值重算
- * `recordOpenByDefault`。不能把挂载那一刻的判定冻进 state：配置热更新、首帧
- * `questionBatch` 迟到、或记录卡在旧阈值下挂载过，都会让过期的展开态留在屏幕上。
- * 这里只控制外层开合；展开后的正文分页由 `questionMode` 决定，不能用开合代替分页。
- */
-export function recordExpanded(
-  total: number,
-  batch: number | undefined,
-  options: { planReview?: boolean; cancelled?: boolean; userOpen?: boolean } = {},
-): boolean {
-  if (options.userOpen !== undefined) return options.userOpen;
-  return recordOpenByDefault(total, batch, options);
 }
 
 /** 单题是否已作答：选中过任一选项，或填了自定义回答。 */
