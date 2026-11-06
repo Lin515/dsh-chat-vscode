@@ -769,6 +769,148 @@ console.log("trajectory: 工具结果摘要 / 详情 / resultSeq 与官方正文
 
 console.log("trajectory: 助手块建行 / 重复调用 / prevAbsTime 时长回退 ✓");
 
+// ---------- 7e. 压缩行做前驱：游标取请求的 completedAt（官方 `prevAbsTime`） ----------
+//
+// `compaction/end` 与 `session/end-seed` 的中断收尾都只更新**请求**的 `completedAt`，
+// 压缩行自身的 `time` / `startedAt` 仍是**开始**时刻（它自己的耗时也是「开始 → 结束」）。
+// 官方 `layout.ts` 的压缩支是
+// `prevAbsTime = finiteTime(request.completedAt) ?? finiteTime(request.startedAt) ?? prevAbsTime`。
+// 按行上的开始时刻推进会把整段压缩时长算进下一条缺 `step/start` 的助手行
+// （离线复现：压缩 1s → 11s 之后那条 13s 的助手行得到 12s，官方口径是 2s）。
+{
+  // 开始 / 完成时刻都在：游标推进到 completedAt。
+  seq = 0;
+  const model = deriveTrajectoryModel([
+    event("turn/start", { turn: 1 }, 0),
+    event("compaction/start", { compactionId: "k1", turn: 1 }, 1),
+    event("compaction/end", { compactionId: "k1", turn: 1 }, 11),
+    // 没有 `step/start`：这一行只能走 `prevAbsTime` 回退。
+    event("assistant/message", { turn: 1, step: 1, message: message("答", {}) }, 13),
+  ], false);
+  const cells = model.turns.flatMap(trajectoryTurnCells);
+  const compacted = cells.find((cell) => cell.kind === "compacted");
+  const assistant = cells.find((cell) => cell.kind === "message");
+  assert.deepStrictEqual(cells.map((cell) => cell.kind), ["compacted", "message"], "压缩行仍在前，排序不变");
+  assert.strictEqual(compacted?.time, at(1), "压缩行自身的开始时刻不变（时间线 / 排序仍按它）");
+  assert.strictEqual(compacted?.timeSeconds, 10, "压缩行自身耗时仍是开始 → 结束");
+  assert.strictEqual(compacted?.requestNumber, 1);
+  assert.strictEqual(assistant?.assistantMetrics?.stepStartTime, null, "没有 step/start");
+  assert.strictEqual(assistant?.startedAt, null, "startedAt 仍按官方保持 null");
+  assert.strictEqual(
+    assistant?.timeSeconds,
+    2,
+    "游标推进到压缩请求的 completedAt(at 11)，不是压缩行的 startedAt(at 1)",
+  );
+}
+{
+  // 被 `session/end-seed` 打断：没有 compaction/end，收尾时刻取会话边界。
+  seq = 0;
+  const model = deriveTrajectoryModel([
+    event("turn/start", { turn: 1 }, 0),
+    event("compaction/start", { compactionId: "k2", turn: 1 }, 1),
+    event("session/end-seed", { inherited: false }, 11),
+    event("assistant/message", { turn: 1, step: 1, message: message("答", {}) }, 13),
+  ], false);
+  const cells = model.turns.flatMap(trajectoryTurnCells);
+  const compacted = cells.find((cell) => cell.kind === "compacted");
+  const assistant = cells.find((cell) => cell.kind === "message");
+  assert.strictEqual(model.requests.find((request) => request.purpose === "compaction")?.completedAt, at(11));
+  assert.strictEqual(compacted?.status, "error", "中断判据不变");
+  assert.strictEqual(compacted?.timeSeconds, 10, "压缩行自身按会话边界结算耗时");
+  assert.strictEqual(assistant?.timeSeconds, 2, "被中断的压缩同样以请求 completedAt 推进游标");
+}
+{
+  // 完成时刻缺失（没有 compaction/end，也没有会话边界）：官方回落到 startedAt。
+  seq = 0;
+  const model = deriveTrajectoryModel([
+    event("turn/start", { turn: 1 }, 0),
+    event("compaction/start", { compactionId: "k3", turn: 1 }, 1),
+    event("assistant/message", { turn: 1, step: 1, message: message("答", {}) }, 13),
+  ], false);
+  const assistant = model.turns.flatMap(trajectoryTurnCells).find((cell) => cell.kind === "message");
+  assert.strictEqual(assistant?.timeSeconds, 12, "缺完成时刻退回压缩开始时刻（官方 completedAt ?? startedAt ?? prev）");
+}
+{
+  // 开始时刻缺失（compaction/start 没带 time）、完成时刻在：仍按 completedAt。
+  seq = 0;
+  const noTimeEvent = (type: string, data: Record<string, unknown>): SessionWireEvent => {
+    seq += 1;
+    return { type, seq: seq - 1, time: undefined as unknown as number, data };
+  };
+  const model = deriveTrajectoryModel([
+    event("turn/start", { turn: 1 }, 0),
+    noTimeEvent("compaction/start", { compactionId: "k4", turn: 1 }),
+    event("compaction/end", { compactionId: "k4", turn: 1 }, 11),
+    event("assistant/message", { turn: 1, step: 1, message: message("答", {}) }, 13),
+  ], false);
+  const cells = model.turns.flatMap(trajectoryTurnCells);
+  const compacted = cells.find((cell) => cell.kind === "compacted");
+  const assistant = cells.find((cell) => cell.kind === "message");
+  assert.strictEqual(compacted?.startedAt, null, "没有开始时刻不编造");
+  assert.strictEqual(compacted?.timeSeconds, null, "缺开始时刻时压缩行自身耗时为 null，不是 0");
+  assert.strictEqual(assistant?.timeSeconds, 2, "开始时刻缺失也能按 completedAt(at 11) 推进游标");
+}
+{
+  // 开始与完成时刻都缺失：游标原样停在上一条布局条目（官方 `?? prevAbsTime`）。
+  seq = 0;
+  const noTimeEvent = (type: string, data: Record<string, unknown>): SessionWireEvent => {
+    seq += 1;
+    return { type, seq: seq - 1, time: undefined as unknown as number, data };
+  };
+  const model = deriveTrajectoryModel([
+    event("turn/start", { turn: 1 }, 0),
+    event("user/message", userMessage("问", { kind: "user" }), 5),
+    noTimeEvent("compaction/start", { compactionId: "k5", turn: 1 }),
+    event("assistant/message", { turn: 1, step: 1, message: message("答", {}) }, 13),
+  ], false);
+  const assistant = model.turns.flatMap(trajectoryTurnCells).find((cell) => cell.kind === "message");
+  assert.strictEqual(assistant?.timeSeconds, 8, "两个时刻都缺时游标停在 user 行（at 5）");
+}
+{
+  // 其他布局条目的原规则不变：助手展开的配对工具格与工具结果不推进游标。
+  seq = 0;
+  const model = deriveTrajectoryModel([
+    event("turn/start", { turn: 1 }, 0),
+    event("compaction/start", { compactionId: "k6", turn: 1 }, 1),
+    event("compaction/end", { compactionId: "k6", turn: 1 }, 11),
+    event("assistant/message", {
+      turn: 1,
+      step: 1,
+      message: {
+        id: "m1",
+        role: "assistant",
+        content: [...block("答"), { type: "tool-call", id: "c1", name: "read", arguments: "{}" }],
+        source: {},
+      },
+    }, 12),
+    event("tool/call", { turn: 1, step: 1, callId: "c1", name: "read", arguments: "{}" }, 12),
+    event("tool/result", { turn: 1, step: 1, message: { content: block("ok"), source: { callId: "c1" } } }, 12.5),
+    event("assistant/message", { turn: 1, step: 2, message: message("再答", {}) }, 13),
+  ], false);
+  const cells = model.turns.flatMap(trajectoryTurnCells);
+  const assistants = cells.filter((cell) => cell.kind === "message");
+  assert.strictEqual(cells.find((cell) => cell.kind === "tool")?.status, "complete");
+  assert.strictEqual(assistants[0]?.timeSeconds, 1, "第 1 步助手行按压缩 completedAt(at 11) 起算");
+  assert.strictEqual(assistants[1]?.timeSeconds, 1, "配对工具格与工具结果不推进游标（仍是 12 → 13）");
+}
+{
+  // 独立工具结果（助手消息块里没有这次调用）推进游标；在跑的工具不推进。
+  seq = 0;
+  const model = deriveTrajectoryModel([
+    event("turn/start", { turn: 1 }, 0),
+    event("compaction/start", { compactionId: "k7", turn: 1 }, 1),
+    event("compaction/end", { compactionId: "k7", turn: 1 }, 11),
+    event("tool/call", { turn: 1, step: 1, callId: "c9", name: "read", arguments: "{}" }, 11.5),
+    event("tool/result", { turn: 1, step: 1, message: { content: block("ok"), source: { callId: "c9" } } }, 12),
+    // 没有结果的工具调用（runningCalls）不是布局条目
+    event("tool/call", { turn: 1, step: 1, callId: "c10", name: "read", arguments: "{}" }, 12.5),
+    event("assistant/message", { turn: 1, step: 2, message: message("答", {}) }, 13),
+  ], false);
+  const assistant = model.turns.flatMap(trajectoryTurnCells).find((cell) => cell.kind === "message");
+  assert.strictEqual(assistant?.timeSeconds, 1.5, "独立工具结果按 startedAt(at 11.5) 推进游标；在跑的工具不推进");
+}
+console.log("trajectory: 压缩前驱的 prevAbsTime 取请求 completedAt ✓");
+
 // ---------- 8. 单行摘要：压平空白 + 截断 ----------
 {
   assert.strictEqual(trajectorySummary("  第一行\n第二行  "), "第一行 第二行");

@@ -3023,6 +3023,15 @@ export function deriveTrajectoryModel(
    * 只由 assistant / system / user / context / compaction / 独立 tool-result 推进；
    * 助手展开出来的工具格和 runningCalls 不推进它。
    *
+   * **压缩行推进的是请求的收尾时刻**：官方 `layout.ts` 的压缩支是
+   * `prevAbsTime = finiteTime(request.completedAt) ?? finiteTime(request.startedAt) ?? prevAbsTime`。
+   * 行上的 `time` / `startedAt` 是**压缩开始**时刻（自身耗时也是「开始 → 结束」），
+   * 拿它推进游标会把整段压缩时长算进下一条缺 `step/start` 的助手行——离线复现里
+   * 压缩 1s→11s 之后那条 13s 的助手行得到 12s，官方口径是 2s。`compaction/end`
+   * 与 `session/end-seed` 的中断收尾都只更新请求的 `completedAt`，所以这里按
+   * `compaction/start` 的 seq 回查请求表，不另在行上复制请求级事实，也不改行本身
+   * 的开始时刻 / 排序 / 时间线。
+   *
    * 本地在初始 system 前插后按同一份条目顺序遍历一次，只补 `stepStartTime === null`
    * 且 `timeSeconds === null` 的已结算助手行；`startedAt` 仍按官方保持 `null`。
    * 不把助手消息时刻或工具格时刻混进 `prevAbsTime`。
@@ -3035,6 +3044,13 @@ export function deriveTrajectoryModel(
     }
     const finiteAbs = (value: number | null | undefined): number | null =>
       typeof value === "number" && Number.isFinite(value) ? value : null;
+    /** 压缩请求的收尾时刻，按 `compaction/start` 的 seq（= 账本行的 `seq`）索引。 */
+    const compactionCompletedAt = new Map<number, number>();
+    for (const request of requests) {
+      if (request.purpose !== "compaction") continue;
+      const completedAt = finiteAbs(request.completedAt);
+      if (completedAt !== null) compactionCompletedAt.set(request.seq, completedAt);
+    }
     let previousAbs: number | null = null;
     for (const cell of cells) {
       if (cell.kind === "message") {
@@ -3061,6 +3077,16 @@ export function deriveTrajectoryModel(
         continue;
       }
       if (cell.kind === "subtool") continue;
+      if (cell.kind === "compacted") {
+        // 官方压缩支：`completedAt ?? startedAt ?? prevAbsTime`（行上的开始时刻是兜底，
+        // 不是首选——`compaction/end` 不覆写它）。
+        const abs =
+          finiteAbs(compactionCompletedAt.get(cell.seq))
+          ?? finiteAbs(cell.startedAt)
+          ?? finiteAbs(cell.time);
+        if (abs !== null) previousAbs = abs;
+        continue;
+      }
       const abs = finiteAbs(cell.startedAt) ?? finiteAbs(cell.time);
       if (abs !== null) previousAbs = abs;
     }
