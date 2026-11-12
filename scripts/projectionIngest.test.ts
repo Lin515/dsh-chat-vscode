@@ -66,7 +66,7 @@ function recorder(): { handlers: ProjectionHandlers; seen: Recorded[] } {
   return { handlers, seen };
 }
 
-// ---------- 1. 键集合：与契约的 20 键对拍（双向） ----------
+// ---------- 1. 键集合：与契约的 21 键对拍（双向） ----------
 
 {
   // 契约里**本扩展消费**的键（`docs/dsh-server-api.md`「投影」一节）。
@@ -93,14 +93,15 @@ function recorder(): { handlers: ProjectionHandlers; seen: Recorded[] } {
   // 契约里存在、但本扩展**有意不消费**的键。它们不是「忘了做」：
   // - `subagent` / `subagentTiming` / `schedule` 是三个还没做的面板
   //   （见 docs/design-projections.md「验证与未覆盖边界」），解析一份没人用的形状只会攒死代码；
-  // - `sessionListMetadata` 是冷列表提示，本扩展的列表走自己的排序。
-  const NOT_CONSUMED = ["schedule", "subagent", "subagentTiming", "sessionListMetadata"];
+  // - `sessionListMetadata` 是冷列表提示，本扩展的列表走自己的排序；
+  // - `conversationContinuation` 是失败续跑提示，本扩展暂不提供空提交重试入口。
+  const NOT_CONSUMED = ["schedule", "subagent", "subagentTiming", "sessionListMetadata", "conversationContinuation"];
   for (const key of NOT_CONSUMED) {
     assert.strictEqual(isProjectionKey(key), false, `${key} 有意不消费，不该进登记表`);
     assert.strictEqual(readProjection(key, { anything: true }), undefined, `${key} 没有读取器`);
   }
 }
-console.log(`projectionIngest: 键集合 ${PROJECTION_KEYS.length} 个与契约对齐（4 个有意不消费）✓`);
+console.log(`projectionIngest: 键集合 ${PROJECTION_KEYS.length} 个与契约对齐（5 个有意不消费）✓`);
 
 // ---------- 2. 一个键一条：逐个键解析 + 派发 ----------
 

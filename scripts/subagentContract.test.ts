@@ -16,6 +16,7 @@ async function stub() {
   let generation: "current" | "legacy" = "current";
   let failure: Failure | number | undefined;
   const hits: Hit[] = [];
+  const prompts: Record<string, unknown>[] = [];
   const server = createServer((req, res) => {
     const chunks: Buffer[] = [];
     req.on("data", (chunk: Buffer) => chunks.push(chunk));
@@ -29,8 +30,14 @@ async function stub() {
       let error = failure;
       if (!error && method === "subagents/prompt") {
         const request = args.request as Record<string, unknown>;
-        const legacy = "parentSessionId" in request;
-        if (legacy !== (generation === "legacy")) error = promptBoundary;
+        if (generation === "legacy" && !("parentSessionId" in request && request.mode === "continuable")) {
+          error = promptBoundary;
+        } else {
+          // rc.2 网关使用普通对象 schema：旧字段被剥离，不因携带旧字段而拒绝。
+          const keys = ["requestId", "childSessionId", "delivery", "content", "clientTimeZone"];
+          if (generation === "legacy") keys.push("parentSessionId", "mode");
+          prompts.push(Object.fromEntries(keys.filter((key) => key in request).map((key) => [key, request[key]])));
+        }
       } else if (!error && method !== (generation === "current"
         ? "subagents/interruptByUser" : "subagents/interruptByParent")) {
         error = absent;
@@ -50,17 +57,17 @@ async function stub() {
   const prompt = () => client.promptSubagent("parent", "child", content, "steer", "stable-request");
   const interrupt = () => client.interruptSubagent("child", "parent");
   return {
-    hits, prompt, interrupt,
+    hits, prompts, prompt, interrupt,
     generation: (value: typeof generation) => { generation = value; },
     failure: (value: typeof failure) => { failure = value; },
-    clear: () => { hits.length = 0; },
+    clear: () => { hits.length = 0; prompts.length = 0; },
     close: () => new Promise<void>((resolve) => {
       server.closeAllConnections(); server.close(() => resolve());
     }),
   };
 }
 
-// 首次仅发新请求；旧代协商一次后复用，服务端升级与回滚可重新协商。
+// 首次仅发新请求；旧代协商一次后复用，rc.2 升级剥离旧字段，回滚仍沿用旧载荷。
 {
   const s = await stub();
   try {
@@ -72,17 +79,19 @@ async function stub() {
     assert.equal(current.delivery, "steer");
     assert.deepEqual(current.content, content);
     assert.equal(typeof current.clientTimeZone, "string");
-    for (const generation of ["legacy", "current", "legacy"] as const) {
+    assert.deepEqual(s.prompts, [current]);
+    for (const [generation, requests] of [["legacy", 2], ["current", 1], ["legacy", 1]] as const) {
       s.generation(generation); s.clear();
       await s.prompt();
-      assert.equal(s.hits.length, 2);
+      assert.equal(s.hits.length, requests);
       for (const hit of s.hits) assert.equal((hit.args.request as Record<string, unknown>).requestId, "stable-request");
-      const request = s.hits[1].args.request as Record<string, unknown>;
-      assert.equal("parentSessionId" in request, generation === "legacy");
-      if (generation === "legacy") {
-        assert.equal(request.parentSessionId, "parent"); assert.equal(request.mode, "continuable");
-      }
+      const request = s.hits[s.hits.length - 1].args.request as Record<string, unknown>;
+      assert.equal(request.parentSessionId, "parent");
+      assert.equal(request.mode, "continuable");
+      assert.deepEqual(s.prompts, [generation === "current" ? current : request]);
       s.clear(); await s.prompt(); assert.equal(s.hits.length, 1);
+      assert.deepEqual(s.hits[0].args.request, request);
+      assert.deepEqual(s.prompts, [generation === "current" ? current : request]);
     }
   } finally { await s.close(); }
 }
