@@ -3,6 +3,18 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 This project follows [Semantic Versioning](https://semver.org/).
 
+## 0.13.2（2026-11-12）
+
+### 中文
+
+- 改进：对齐 DSH 0.2.2-rc.2 的子代理消息发送、停止与列表展示，并保留旧版兼容。
+- 修复：团队模式事件不再触发未知事件提示。
+
+### English
+
+- Improved: Subagent messaging, stopping, and list display align with DSH 0.2.2-rc.2 while retaining compatibility with older versions.
+- Fixed: Team mode events no longer trigger unknown-event warnings.
+
 ## 0.13.1（2026-11-06）
 
 ### 中文
