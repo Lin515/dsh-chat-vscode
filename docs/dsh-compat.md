@@ -102,7 +102,9 @@ compaction-image-offload 包里声明，契约快照里那份 `SessionEventMap` 
 - 基准**单调向前**：它之前的官方版本不需要核对（从最早的 tag 补起会把二十多个历史版本变成待办）。
   要看两个历史版本之间的差异，用 `npm run dsh:diff -- <旧版本> <新版本>`。
 
-本扩展当前对齐：DSH `0.2.2-rc.1`（next 渠道；2026-11-05 逐版核对 `0.2.2-alpha.3` 与 `0.2.2-rc.1`，两版契约一致；批量投影、新自动化目录与管理端点的 P0 已适配并保留旧代兼容。人工复核事件集合、审批与问卷、认证 cookie、desktop-host 连接边界及文件路径与媒体读取；正文引用改按当前执行目录解析。自动化任务在旧代查看 / 改时间 / 删除之上，补了手动创建、立即运行、暂停恢复与名称 / 指令 / 目标编辑，以及「本会话 / 全部任务」两种视图；代际按目录形状判，空目录才用零形参只读的 `schedule/deliveryLimits` 探一次，只有明确 404 才算旧代。旧 `dsh-agent-presets` 缺包已由 `dsh-agent-preset-registry` 覆盖。）<!-- dsh-compat:baseline -->
+本扩展当前对齐：DSH `0.2.2-rc.2`（next 渠道；2026-11-12 核对相对 `0.2.2-rc.1` 的差异，已适配子代理续发请求、用户停止端点与目录事件版本 3，保留旧代协商；新增 `team/mode` 登记为静默事件。官方客户端的本地历史加载接口重构不在本扩展消费面。人工复核事件集合、审批与问卷、认证 cookie、desktop-host 连接边界及文件路径与媒体读取；类型检查、离线测试与生产构建通过。旧 `dsh-agent-presets` 缺包已由 `dsh-agent-preset-registry` 覆盖。）<!-- dsh-compat:baseline -->
+
+本轮新增的失败续跑入口、工作区搜索接口及子代理名称显示暂不引入（P1）；现有非空发送、文件访问和按会话 id 管理子代理的链路不依赖这些能力。`conversationContinuation` 与 `kind:'retry'` 的含义见[服务端契约](<dsh-server-api.md>)「后续版本的契约变更」。
 
 ### 暂缓待办：连接层 WebSocket 载体适配（P1）
 
@@ -134,6 +136,7 @@ compaction-image-offload 包里声明，契约快照里那份 `SessionEventMap` 
 | `dsh-desktop-host` 的入口与 spawn 形态（命令行含该签名、loopback 端口随机、无票 `GET /` 回 401） | 依赖桌面端实现，非公开契约（0.2.1-rc.2 起） | `src/dsh/desktopSession.ts`、`src/dsh/processTable.ts`、`src/dsh/desktopAttach.ts` | 2026-10-18 | 2026-12-18 | 认人只能按命令行签名匹配、认领只能按"无票 401"判断（见[桌面端接入](<design-desktop.md>)「端点发现」）。官方改了入口路径、spawn 形态或那道 401 握手时这条支路会静默失效（表现为"找不到桌面端服务"），所以每次推进基准要人工对拍 |
 | 控制流投影的旧单键帧（`key` / `value`） | ≤ 0.2.2-alpha.2 | `src/dsh/projectionIngest.ts` 的 `ingestProjectionFrame` | 2026-11-05 | 2027-01-05 | 新代改为同水位 `changes` 批量；仅缺新字段时读取旧单键，防止空批被旧值覆盖 |
 | 自动化任务旧目录与管理端点（`sessionId`、`schedule/update` / `schedule/delete`） | ≤ 0.2.2-alpha.2 | `src/dsh/scheduleView.ts`、`src/dsh/client.ts`、`src/dsh/controller.ts` | 2026-11-05 | 2027-01-05 | 新目录以相关会话集合过滤，使用全局 history 与带时间戳比较基准的 edit；按目录形状选择代际，不对变更请求试错 |
+| 子代理续发旧请求与父地址停止端点 | ≤ 0.2.2-rc.1 | `src/dsh/client.ts` 的 `promptSubagent` / `interruptSubagent` | 2026-11-12 | 2027-01-12 | rc.2 的续发请求删除父地址与 mode，停止改为仅收目标 id 的用户端点。首次优先新代，仅执行前的 request 边界校验拒绝才切换续发载荷，仅明确缺路由才切换停止端点；成功后记住格式，同一客户端可适应升级与回滚，业务拒绝、认证与传输失败均不触发重发 |
 <!-- dsh-compat:layers:end -->
 
 登记之外还有三条仍然有效的口径（来自核对时的取舍，不随上述条目到期）：

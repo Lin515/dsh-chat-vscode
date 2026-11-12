@@ -587,6 +587,7 @@ export const SILENT_EVENT_TYPES: ReadonlySet<string> = new Set([
   // 只为不误报「不认识的事件」；真有内容进来时这里是待补的渲染缺口，不是永久决定。
   "developer/message",
   // 团队协作
+  "team/mode",
   "team/member",
   "team/message/delivered",
   "team/message/queued",

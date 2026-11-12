@@ -71,6 +71,7 @@ const sourceWitnesses = {
 };
 
 const entries = {
+  "build/subagent-contract.test.mjs": "scripts/subagentContract.test.ts",
   "build/smoke.mjs": "scripts/smoke.ts",
   "build/model-switch.mjs": "scripts/modelSwitch.ts",
   "build/dump-settings.mjs": "scripts/dumpSettings.ts",

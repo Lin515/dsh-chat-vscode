@@ -295,16 +295,13 @@ console.log("subagentPanel: 子代理域的 running 打底 ✓");
     "子代理会话有文件附件时直接不发并提示（服务端会整轮拒绝）",
   );
   assert.ok(
-    /await this\.client\.interruptSubagentByParent\(scope\.sessionId, address\.parentSessionId\);/.test(
+    /await this\.client\.interruptSubagent\(scope\.sessionId, address\.parentSessionId\);/.test(
       controller,
     ),
-    "子代理的停止走 subagents/interruptByParent（父地址是持久事实，父不在线也停得了）",
+    "子代理的停止由客户端协商用户端点与旧代父地址端点",
   );
   // 客户端方法与线格式对齐，见 docs/dsh-server-api.md「端点位置参数名总表」。
-  assert.ok(
-    /"subagents\/prompt",\s*\{\s*request:\s*\{[\s\S]{0,400}delivery,/.test(client),
-    "subagents/prompt 的参数是 {request: {...}}，delivery 必填（0.1.5 起）",
-  );
+  // prompt 的严格线格式与代际协商由 subagentContract.test.ts 的 HTTP stub 验证。
   assert.ok(
     /"subagents\/interruptByParent",\s*\{\s*childSessionId,\s*parentSessionId,\s*mode: "continuable",\s*\}/.test(
       client,

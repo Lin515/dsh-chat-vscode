@@ -871,7 +871,7 @@ console.log("projections: 目录按 id 并入，保留 activity，不整表替�
 // ---------- 5b. subagent/catalog durable 事件 → 目录一条（注册这条路的形状） ----------
 //
 // 契约（`dsh-subagent` 的 `SubagentCatalogEvent`，与投影条目**不是**一个形状）：
-// `{version: 0, childId, childCreatedAt, mode, label?}`。父会话在子级建立成功时追加它，
+// `{version: 0|1|2|3, childId, childCreatedAt, mode, label?, name?}`。父会话在子级建立成功时追加它，
 // 所以跟随流里就有——不再依赖「点开面板」那一下 RPC。
 {
   assert.deepStrictEqual(
@@ -896,7 +896,16 @@ console.log("projections: 目录按 id 并入，保留 activity，不整表替�
     "one-shot",
   );
   // **不猜**：版本认不出、childId 缺失就当没有（交给 RPC 那条完整路兜）
-  assert.strictEqual(subagentFromCatalogEvent({ version: 1, childId: "s-4", mode: "one-shot" }), undefined);
+  for (const version of [1, 2, 3]) {
+    assert.deepStrictEqual(
+      subagentFromCatalogEvent({ version, childId: "named", childCreatedAt: 3, mode: "continuable", name: "reviewer", label: "审阅" }),
+      { id: "named", createdAt: 3, label: "审阅", mode: "continuable" },
+    );
+    assert.equal(subagentFromCatalogEvent({ version, childId: "external", mode: "external" })?.mode, "one-shot");
+  }
+  for (const version of [4, "3", null, undefined]) {
+    assert.strictEqual(subagentFromCatalogEvent({ version, childId: "s-4", mode: "one-shot" }), undefined);
+  }
   assert.strictEqual(subagentFromCatalogEvent({ version: 0, mode: "one-shot" }), undefined);
   assert.strictEqual(subagentFromCatalogEvent(null), undefined);
   // 事件里没有 activity：不知道就不下发（与投影同口径）

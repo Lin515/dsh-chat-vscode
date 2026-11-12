@@ -252,14 +252,14 @@ export function subagentsFromList(value: unknown): SubagentView[] {
  * 所以**跟随流里就能拿到**——不必等 RPC，也不必等投影。
  *
  * 两条纪律：
- * - `version !== 0` 或 `childId` 空 → `undefined`（认不出的版本**不猜**，交给 RPC 那条完整路兜）；
+ * - 版本不在已知的 0 / 1 / 2 / 3 内或 `childId` 空 → `undefined`（认不出的版本**不猜**，交给 RPC 那条完整路兜）；
  * - **不设 `activity`**：事件里没有这个字段，状态由 `api-session/status` 中继或 RPC 给。
  *
  * `childCreatedAt` 照收成 `createdAt`（判定时间并列时的先后判据，见 `SubagentView.createdAt`）。
  */
 export function subagentFromCatalogEvent(value: unknown): SubagentView | undefined {
   const event = value as { version?: unknown; childId?: unknown; childCreatedAt?: unknown; mode?: unknown; label?: unknown } | null | undefined;
-  if (event?.version !== 0) return undefined;
+  if (!event || ![0, 1, 2, 3].some((version) => event.version === version)) return undefined;
   const id = typeof event.childId === "string" ? event.childId : "";
   if (!id) return undefined;
   return {

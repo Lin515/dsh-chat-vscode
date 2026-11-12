@@ -22,6 +22,7 @@
 ### 会话主链路与协议适配
 
 - [wire.test.ts](<wire.test.ts>) — 过线语义：宿主 → webview 的帧被 JSON 序列化会丢 `undefined` 键，清空字段必须发 `null`。
+- [subagentContract.test.ts](<subagentContract.test.ts>) — 子代理续发与停止的新旧契约协商、升级回滚及拒绝重试边界；仅本地 HTTP stub。
 - [sessionFollow.test.ts](<sessionFollow.test.ts>) — 跟随请求显式激活会话，与官方界面保持一致，同时兼容旧服务端忽略未知字段的行为。
 - [sessionView.test.ts](<sessionView.test.ts>) — 「一个会话在界面上的状态」只有唯一生产者，字段集合不得在生产者之间漂移。
 - [sessionStatus.test.ts](<sessionStatus.test.ts>) — `api-session/status` 状态位中继的解码与采纳策略（服务端权威的「这轮在不在跑」）。

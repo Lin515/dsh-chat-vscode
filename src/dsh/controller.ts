@@ -11398,7 +11398,7 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
-   * 子代理用持久父地址走 subagents/interruptByParent；普通会话走 session/cancel。
+   * 子代理走用户停止端点（旧代回退父地址端点）；普通会话走 session/cancel。
    * 不乐观置 running:false，须等服务端收尾，否则 waitUntilIdle 会提前重发进未续跑的队列。
    */
   private async cancelTurn(scope: SessionScope): Promise<void> {
@@ -11406,7 +11406,7 @@ export class ChatController implements vscode.Disposable {
     try {
       const address = scope.subagentAddress;
       if (address) {
-        await this.client.interruptSubagentByParent(scope.sessionId, address.parentSessionId);
+        await this.client.interruptSubagent(scope.sessionId, address.parentSessionId);
       } else {
         await this.client.cancel(scope.sessionId);
       }

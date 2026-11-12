@@ -58,7 +58,7 @@ Auto review 只在 `permissionPresets/catalog.options` 明确含 auto 时开放�
 | 来源 | 身份与状态 |
 |---|---|
 | subagentCatalog 投影 | id / createdAt / mode / label；没有 kind、activity |
-| subagent/catalog durable 事件 | version=0 / childId / childCreatedAt / mode / label；没有 activity |
+| subagent/catalog durable 事件 | 已知 version=0/1/2/3 / childId / childCreatedAt / mode / label；新版可带 name，当前不作显示身份；没有 activity |
 | 旧 subagents/list RPC | kind=child 才入表；带 mode、activity；该端点在 0.1.7-alpha.1 删除 |
 
 目录按 id 只增并入，缺失 activity / unread 不覆盖已知值；不同来源不是完整超集。运行状态来自 `api-session/status` 中继，宿主账本处理晚登记回填；unread 是本地已读账本，不是目录字段。继承前缀按 `session/end-seed` 的 inherited 位排除。

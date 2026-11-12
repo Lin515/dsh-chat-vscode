@@ -157,6 +157,8 @@ console.log("unknownEvent: 已知词汇被「渲染 ∪ 静默 ∪ 消费」完�
     // 0.2.1-alpha.3：有主任务的生命周期簿记（注册 / 结算各一条；官方 web 端不出界面）
     "job/registered",
     "job/settled",
+    // 0.2.2-rc.2：团队开关持久化，仅作簿记，不渲染为聊天内容。
+    "team/mode",
   ];
   const uncovered = ADDED_KNOWN.filter(
     (type) =>
@@ -167,7 +169,7 @@ console.log("unknownEvent: 已知词汇被「渲染 ∪ 静默 ∪ 消费」完�
   for (const type of ADDED_KNOWN) adapter.applyEvent(wire(type) as never);
   assert.deepStrictEqual(toasts.filter((t) => t.startsWith("@unknownEvent:")), []);
 }
-console.log("unknownEvent: 升级新增的类型已登记（workspace/changes、image/offload、developer/message、working-directory/change、job/registered、job/settled） ✓");
+console.log("unknownEvent: 升级新增的类型已登记（workspace/changes、image/offload、developer/message、working-directory/change、job/registered、job/settled、team/mode） ✓");
 
 // ---------- 3. 真正没见过的类型：告警保留 ----------
 

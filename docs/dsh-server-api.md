@@ -46,6 +46,10 @@
 本扩展当前对齐到哪一版、以及每条兼容代码的登记与退役期限，见 `docs/dsh-compat.md`。
 读下面任何一节时先扫一眼这张清单。
 
+- **子代理按目标会话操作**（0.2.2-rc.2）：停止端点改为 `subagents/interruptByUser`，平铺参数仅 `{childSessionId}`；`subagents/prompt` 的 `request` 删除 `parentSessionId` 与 `mode`，保留 `requestId`、`childSessionId`、`delivery`、`content`、可选 `clientTimeZone`，不再要求父 Agent 在线。新请求严格拒绝额外字段；旧代兼容仅在执行前的网关形状拒绝或明确缺端点时协商，记住成功代际。目录事件版本 3 为可继续与外部子代理增加可选名称，版本 0/1/2 的共同字段继续可读；未知未来版本不猜测。
+- **新增团队模式簿记**（0.2.2-rc.2）：`team/mode` 的数据为 `{enabled:boolean}`，本扩展登记为已知静默事件。
+- **新增失败续跑**（0.2.2-rc.2）：`conversationContinuation` 投影指示可续跑的失败结束位置，空内容的 `session/prompt` 用于请求重试，消息来源增加 `kind:'retry'`。本扩展暂不新增空提交入口；既有非空发送链路保持不变。
+
 - **后台任务换了通道**（0.1.7-alpha.1）：`session/control` 的 `jobs` 字段与 `type:'jobs'` 增量帧
   删除（`SessionJob` 类型同去），改由 `@deepseek-ai/dsh-api-job-controller` 的 `job` 命名空间承载：
   `job/list`（流，逐帧整表替换 `{type:'rows', jobs: JobView[]}`）、`job/follow`（流，单任务输出、

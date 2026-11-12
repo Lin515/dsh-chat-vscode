@@ -83,6 +83,8 @@ export class DshClient {
   private disposed = false;
   private reconnectTimer: NodeJS.Timeout | undefined;
   private retryDelay = 1_000;
+  private subagentPromptFormat: "current" | "legacy" = "current";
+  private subagentInterruptFormat: "current" | "legacy" = "current";
 
   private readonly streams = new Map<string, StreamCallbacks>();
   private readonly pendingOpens: { streamId: string; endpoint: string; args: unknown }[] = [];
@@ -588,50 +590,69 @@ export class DshClient {
   }
 
   /**
-   * 给**可继续的子代理**续发一条人的消息（`subagents/prompt`）。
-   *
-   * 参数形状逐字对照契约（`dsh-subagent/lib/types/control-types.d.ts` 的
-   * `SubagentPromptRequest`；位置参数名见 docs/dsh-server-api.md「端点位置参数名总表」）：
-   * `mode` 在线上**恒为 `'continuable'`**——那是地址的判别标记，不是本子代理的
-   * 模式（一次性子代理走不到这里：界面只读，宿主也不发）。
-   * `delivery` 是官方 prompt `mode` 在这条端点上的名字（`queue` / `steer`）。
-   * 父会话不在线会回 `subagent/parent-unavailable`（调用方按需提示）。
+   * 续发可继续子代理：rc.2 仅按目标会话授权，不再发送父地址和 mode。
+   * 只有网关在执行前拒绝 request 形状时才切换代际；复用 requestId，并记住成功格式。
    */
-  promptSubagent(
+  async promptSubagent(
     parentSessionId: string,
     childSessionId: string,
     content: unknown[],
     delivery: "queue" | "steer",
     requestId: string = randomUUID(),
   ): Promise<{ messageId: string }> {
-    return this.request("subagents/prompt", {
-      request: {
-        requestId,
-        parentSessionId,
-        childSessionId,
-        mode: "continuable",
-        delivery,
-        content,
-        clientTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      },
-    });
+    const request = {
+      requestId,
+      childSessionId,
+      delivery,
+      content,
+      clientTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    };
+    const send = (format: "current" | "legacy") => this.request<{ messageId: string }>(
+      "subagents/prompt",
+      { request: format === "current" ? request : { ...request, parentSessionId, mode: "continuable" } },
+    );
+    const preferred = this.subagentPromptFormat;
+    try {
+      const result = await send(preferred);
+      this.subagentPromptFormat = preferred;
+      return result;
+    } catch (error) {
+      const details = error instanceof DshApiError ? error.details : undefined;
+      if (!(error instanceof DshApiError) || error.code !== "gateway/input-invalid"
+        || !details || typeof details !== "object"
+        || !("endpoint" in details) || details.endpoint !== "subagents/prompt"
+        || !("field" in details) || details.field !== "request") throw error;
+      const alternate = preferred === "current" ? "legacy" : "current";
+      const result = await send(alternate);
+      this.subagentPromptFormat = alternate;
+      return result;
+    }
   }
 
-  /**
-   * 停止子代理的当前轮（`subagents/interruptByParent`，三个**平铺**位置参数）。
-   *
-   * 官方的停止路由（`ISession.cancel` 对子代理地址的分支）：父地址是**持久事实**，
-   * 所以父 Agent 不在线也停得了；受理 ≠ 已停（行状态由会话状态位收敛）。
-   */
-  interruptSubagentByParent(
+  /** 新停止端点优先；仅明确缺路由时兼容旧父地址端点，受理后仍等待服务端状态收敛。 */
+  async interruptSubagent(
     childSessionId: string,
     parentSessionId: string,
   ): Promise<{ accepted: true }> {
-    return this.request("subagents/interruptByParent", {
-      childSessionId,
-      parentSessionId,
-      mode: "continuable",
-    });
+    const send = (format: "current" | "legacy") => format === "current"
+      ? this.request<{ accepted: true }>("subagents/interruptByUser", { childSessionId })
+      : this.request<{ accepted: true }>("subagents/interruptByParent", {
+        childSessionId,
+        parentSessionId,
+        mode: "continuable",
+      });
+    const preferred = this.subagentInterruptFormat;
+    try {
+      const result = await send(preferred);
+      this.subagentInterruptFormat = preferred;
+      return result;
+    } catch (error) {
+      if (!endpointAbsent(error)) throw error;
+      const alternate = preferred === "current" ? "legacy" : "current";
+      const result = await send(alternate);
+      this.subagentInterruptFormat = alternate;
+      return result;
+    }
   }
 
   /**
