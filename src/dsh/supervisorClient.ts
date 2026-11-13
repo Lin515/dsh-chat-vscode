@@ -254,10 +254,15 @@ export async function ensureSupervisor(options: {
    * 因此它不能兼作就绪判据，也不能在退场状态上返回 false。
    */
   exists: (state: SupervisorState) => Promise<boolean>;
+  /** 启动轮次的中断信号；每次异步复查返回后与真正启动前都须重新检查。 */
+  signal?: AbortSignal;
 }): Promise<EnsureSupervisorResult> {
+  if (options.signal?.aborted) return { launched: false };
   const directory = supervisorDirectory(options.group);
   const existing = readState(directory);
-  if (existing && (await options.exists(existing))) {
+  const existingAlive = existing ? await options.exists(existing) : false;
+  if (options.signal?.aborted) return { launched: false };
+  if (existing && existingAlive) {
     return { state: existing, launched: false };
   }
 
@@ -268,16 +273,21 @@ export async function ensureSupervisor(options: {
   try {
     // 抢到锁后再读一次：可能在抢锁前的几毫秒里别人已经写好了
     const reread = readState(directory);
-    if (reread && (await options.exists(reread))) {
+    const rereadAlive = reread ? await options.exists(reread) : false;
+    if (options.signal?.aborted) return { launched: false };
+    if (reread && rereadAlive) {
       return { state: reread, launched: false };
     }
     // 抢锁只保证"同一时刻一个窗口在决策"，但**拿锁与 spawn 之间仍有几毫秒**：
     // 并发激活时会出现"两个窗口都判定要起"（实测 3 个窗口同时激活时启动者=2 个）。
     // 这里再等一小会儿复查一次，把那个窗口关掉——重复 spawn 虽然会被 supervisor 的
     // 第二代检测收敛掉，但代价是两个 supervisor 同时去 spawn dsh，固定端口下就会撞车。
-    await delay(START_DECISION_SETTLE_MS);
+    await delay(START_DECISION_SETTLE_MS, undefined, { signal: options.signal }).catch(() => undefined);
+    if (options.signal?.aborted) return { launched: false };
     const settled = readState(directory);
-    if (settled && (await options.exists(settled))) {
+    const settledAlive = settled ? await options.exists(settled) : false;
+    if (options.signal?.aborted) return { launched: false };
+    if (settled && settledAlive) {
       options.log("[supervisor] 我拿到锁之前别的窗口已经把它起好了，直接接入");
       return { state: settled, launched: false };
     }

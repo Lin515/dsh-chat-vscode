@@ -266,7 +266,7 @@ function check(label: string, ok: boolean, detail = ""): void {
   const stopEntry = bodyOf("stop", managerSource);
   check(
     "release 那一档同时做两件事：置位 detachedByUser + 收连接（只断不挡 = 5 秒后被接回去）",
-    /if\s*\(release\)\s*this\.detachedByUser\s*=\s*true;/u.test(stopEntry) && /detachConnection\s*\(/u.test(stopEntry),
+    /if\s*\(release\)\s*(?:\{\s*)?this\.detachedByUser\s*=\s*true;/u.test(stopEntry) && /detachConnection\s*\(/u.test(stopEntry),
   );
   check(
     "bringUp 清掉 detachedByUser（显式动作必须能重新接上）",

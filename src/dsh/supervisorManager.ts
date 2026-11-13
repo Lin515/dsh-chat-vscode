@@ -340,6 +340,8 @@ export class SupervisorManager {
    * 于是"重启完成"的收尾与提示全被跳过。用户叫停时两轮一起中断才是对的。
    */
   private readonly waits = new Set<AbortController>();
+  /** 内部启动轮次仍登记在 waits 中；交还占用或切换目标时只取消这一轮，不误伤外部等待。 */
+  private internalWait: AbortController | undefined;
   /**
    * 本轮 `bringUp` 有没有拿到"可以拉起一套"的许可（见文件头的启动决策）。
    *
@@ -952,6 +954,7 @@ export class SupervisorManager {
    */
   async ensure(options: EnsureOptions = {}): Promise<ServerInfo> {
     this.target = options.target ?? this.target ?? "internal";
+    if (this.target !== "internal") this.internalWait?.abort();
     if (this.target === "desktop") {
       // 与切外部同口径：先交还内部占用，再发现桌面端；不等探测完成或心跳兜底。
       this.detachInternal("目标切到桌面端");
@@ -1143,9 +1146,11 @@ export class SupervisorManager {
     this.detachedByUser = false;
     this.setStatus({ state: "starting" });
     const wait = this.beginWait();
+    this.internalWait = wait;
     try {
       return await this.bringUpWith(wait.signal);
     } finally {
+      if (this.internalWait === wait) this.internalWait = undefined;
       this.endWait(wait);
     }
   }
@@ -1164,7 +1169,9 @@ export class SupervisorManager {
       await this.waitForStopping(existing, signal);
       if (signal.aborted) throw new WaitCancelledError();
       existing = readState(this.directory);
-      if (existing?.stopping && (await this.supervisorAlive(existing))) {
+      const stillStopping = existing?.stopping && (await this.supervisorAlive(existing));
+      if (signal.aborted) throw new WaitCancelledError();
+      if (stillStopping) {
         this.options.log("[supervisor] 上一套仍在退场，本次不接入、也不另起一套");
         this.setStatus({ state: "stopped", detail: "previous supervisor stopping", cause: "gone" });
         throw new ServerNotRunningError();
@@ -1177,9 +1184,12 @@ export class SupervisorManager {
       this.state = existing;
       // 先连上它的 socket 再谈别的：连接本身就是"我在用"，守护进程据此会把
       // 崩掉的 dsh 重新拉起（它只在有活连接时才重起 dsh）
-      if (!this.connection?.connected) await this.connect(existing);
-      if (existing.baseUrl && existing.token && (await this.usable(existing))) {
-        return this.publishReady(existing);
+      if (!this.connection?.connected) await this.connect(existing, signal);
+      if (signal.aborted) throw new WaitCancelledError();
+      const ready = existing.baseUrl && existing.token && (await this.usable(existing));
+      if (signal.aborted) throw new WaitCancelledError();
+      if (ready) {
+        return this.publishReady(existing, signal);
       }
       // 它正在拉起（或刚被我们唤醒）→ 等它写出一份可用状态。
       // **等多久不由时钟决定**：一直等到就绪，或用户点「停止连接」（用户 2026-09-14 口径）。
@@ -1196,7 +1206,7 @@ export class SupervisorManager {
       });
       if (signal.aborted) throw new WaitCancelledError();
       if (!state) throw this.startFailure(state);
-      return this.publishReady(state);
+      return this.publishReady(state, signal);
     }
 
     // ①' 会合文件在、但守护进程已死：崩溃残留（留给下一次决策，顺带记一条日志）
@@ -1219,7 +1229,9 @@ export class SupervisorManager {
       launcher: this.launcher,
       log: this.options.log,
       exists: (state) => this.existsForStartup(state),
+      signal,
     });
+    if (signal.aborted) throw new WaitCancelledError();
     if (ensured.error) {
       // 走 `@serverSpawnFailed` 标记而不是直接写文案：这条详情既进连接条（界面词典
       // 按 `dshChat.language` 翻），也会经 `resolveForVsCode` 进 VS Code 原生通知
@@ -1248,7 +1260,7 @@ export class SupervisorManager {
     }
     if (signal.aborted) throw new WaitCancelledError();
     if (!state) throw this.startFailure(state);
-    return this.publishReady(state);
+    return this.publishReady(state, signal);
   }
 
   /**
@@ -1258,7 +1270,8 @@ export class SupervisorManager {
    * （否则只剩一条没头没脑的失败，排查时完全看不出方向）。多窗口接入靠的就是
    * 会合文件里那份令牌：`token` 是 supervisor 写进去的、跨窗口共用的唯一凭据。
    */
-  private async publishReady(state: SupervisorState): Promise<ServerInfo> {
+  private async publishReady(state: SupervisorState, signal: AbortSignal): Promise<ServerInfo> {
+    if (signal.aborted) throw new WaitCancelledError();
     // 防御：等待与推送都已排除退场状态；万一调用点仍递来一份退场状态，宁可如实报不可用，
     // 也不能把"正在被杀的后台"发布成就绪（同一条纪律见 `usable` 的 stopping 判据）。
     if (state.stopping === true) {
@@ -1273,12 +1286,13 @@ export class SupervisorManager {
       owned: this.launched,
       ownership: this.launched ? "self" : "peer",
     };
-    this.state = state;
-    this.setStatus({ state: "ready", info });
     // **始终建立/恢复长连接**（哪怕这一套早就在跑）：`ensure()` 会在"地址还在、但连接没了"
     // 时被再次调用（restart、连接断开、命令手动连），此时跳过 connect() 就会留下
     // "状态 ready、其实没连着"的假象（实测：restart 之后本窗口再也收不到状态推送）。
-    if (!this.connection?.connected) await this.connect(state);
+    if (!this.connection?.connected) await this.connect(state, signal);
+    if (signal.aborted) throw new WaitCancelledError();
+    this.state = state;
+    this.setStatus({ state: "ready", info });
     return info;
   }
 
@@ -1393,7 +1407,8 @@ export class SupervisorManager {
    * 连接本身就是"我在用"——断开即表示本窗口不再使用；**不杀任何东西**。
    * 断开后按 `HEARTBEAT_MS` 的节拍尝试重连（后台可能被重启成新地址）。
    */
-  private async connect(state: SupervisorState): Promise<void> {
+  private async connect(state: SupervisorState, signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted || this.disposed || this.target !== "internal" || this.detachedByUser) return;
     this.connection?.close();
     const connection = new SupervisorConnection(
       state.socket,
@@ -1438,9 +1453,9 @@ export class SupervisorManager {
       this.options.log("[supervisor] 连不上 supervisor 的 socket，将在心跳里重试");
       return;
     }
-    // 连接是异步建立的：等回来时窗口可能已经退出了。那就**别挂上去**——
-    // 挂上就等于"本窗口还在用"，后台会因此不按空闲退场，而这条连接已经没人会关它。
-    if (this.disposed) {
+    // 异步连接返回时，这一轮可能已取消、退出、交还占用或切换目标。迟到连接必须自行关闭，
+    // 不能再挂回管理器，否则后台会误以为本窗口仍在使用它。
+    if (signal?.aborted || this.disposed || this.target !== "internal" || this.detachedByUser) {
       connection.close();
       return;
     }
@@ -1697,7 +1712,10 @@ export class SupervisorManager {
 
     // ① 两道闸 + 在途等待：幂等、不发控制帧，先落（见上面第 2 条）。
     if (askSupervisor) this.stoppedByUser = true;
-    if (release) this.detachedByUser = true;
+    if (release) {
+      this.detachedByUser = true;
+      this.internalWait?.abort();
+    }
     if (cancelWait) this.abortWaits();
 
     // ② 「请守护进程收场」：唯一会发控制帧的一支，**整段合并**（连点只发一条，理由见

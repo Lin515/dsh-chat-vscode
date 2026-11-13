@@ -47,7 +47,8 @@ import { DesktopStartError, type DesktopDeps } from "../src/dsh/desktopAttach";
 const TEST_ROOT = mkdtempSync(join(tmpdir(), "dsh-chat-policy-"));
 process.env.DSH_CHAT_SUPERVISOR_DIR = TEST_ROOT;
 const { ServerNotRunningError, SupervisorManager, WaitCancelledError } = await import("../src/dsh/supervisorManager");
-const { STATE_VERSION, socketPathIn, supervisorDirectory, readState, writeState } = await import("../src/dsh/supervisorProtocol");
+const { STATE_VERSION, socketPathIn, supervisorDirectory, readState, writeState, acquireStartLock, releaseStartLock } = await import("../src/dsh/supervisorProtocol");
+const { ensureSupervisor, SupervisorConnection } = await import("../src/dsh/supervisorClient");
 
 let failures = 0;
 function check(label: string, ok: boolean, detail = ""): void {
@@ -327,32 +328,167 @@ try {
     retry.dispose();
   }
 
-  for (const action of ["cancel", "dispose"] as const) {
+  for (const action of ["cancel", "dispose", "release", "external"] as const) {
     for (const valid of [false, true]) {
       const group = `policy-identity-cancel-${action}-${valid}`;
-      publishState(group, { baseUrl: background.baseUrl, token: "shared-token" });
+      const socket = socketFor(group);
+      const daemon = await listenDaemon(socket);
+      publishState(group, { baseUrl: background.baseUrl, token: "shared-token", socket });
       let release!: () => void;
       let queried = false;
       const gate = new Promise<void>((resolve) => { release = resolve; });
-      const launcher = fakeLauncher();
+      const launcher = fakeLauncher(() => publishState(group, { baseUrl: background.baseUrl, token: "fresh-token", socket, startedAt: 2 }));
       const manager = new SupervisorManager({
-        group, url: "", command: "dsh web --port 0 --no-open", autoConnect: false,
+        group, url: background.baseUrl, command: "dsh web --port 0 --no-open", autoConnect: false,
         launcher: launcher.launcher,
         supervisorCommandLines: async () => {
           queried = true;
           await gate;
-          return new Map([[process.pid, valid ? `node dist/supervisor.js --directory "${supervisorDirectory(group)}" --command-b64 ZHNo` : "msedge.exe"]]);
+          return new Map([[process.pid, valid || launcher.calls() > 0 ? `node dist/supervisor.js --directory "${supervisorDirectory(group)}" --command-b64 ZHNo` : "msedge.exe"]]);
         },
         log: () => undefined,
       });
       managers.push(manager);
       const pending = manager.ensure({ start: true }).then(() => undefined, (error: unknown) => error);
       await waitFor(() => queried);
-      if (action === "cancel") manager.cancelWaiting(); else manager.dispose();
+      if (action === "cancel") manager.cancelWaiting();
+      else if (action === "dispose") manager.dispose();
+      else if (action === "release") manager.releaseInternal();
+      else await manager.ensure({ target: "external", start: false });
       release();
       const error = await pending;
-      check(`身份查询迟到不越过 ${action}（valid=${valid}）`, error instanceof WaitCancelledError && launcher.calls() === 0 && !manager.snapshot().connected && manager.getStatus().state !== "ready");
+      check(`身份查询迟到不越过 ${action}（valid=${valid}）`, error instanceof WaitCancelledError && launcher.calls() === 0 && !manager.snapshot().connected && daemon.opened() === 0 && (action === "external" ? manager.getStatus().info?.ownership === "external" : manager.getStatus().state !== "ready"));
       manager.dispose();
+      await daemon.close();
+    }
+  }
+
+  // 只收连接不等于取消在途等待；stop({}) 保留原有轮次继续接入的语义。
+  {
+    const group = "policy-identity-detach-only";
+    const socket = socketFor(group);
+    const daemon = await listenDaemon(socket);
+    publishState(group, { baseUrl: background.baseUrl, token: "shared-token", socket });
+    let release!: () => void;
+    let queried = false;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const launcher = fakeLauncher();
+    const manager = new SupervisorManager({
+      group, url: "", command: "dsh web --port 0 --no-open", autoConnect: false,
+      launcher: launcher.launcher,
+      supervisorCommandLines: async () => {
+        queried = true;
+        await gate;
+        return undefined;
+      },
+      log: () => undefined,
+    });
+    managers.push(manager);
+    const pending = manager.ensure({ start: true });
+    await waitFor(() => queried);
+    await manager.stop({});
+    release();
+    const info = await pending;
+    check("只收连接不取消身份查询中的启动轮次", info.ownership === "peer" && launcher.calls() === 0 && manager.snapshot().connected && manager.getStatus().state === "ready");
+    manager.dispose();
+    await daemon.close();
+  }
+
+  // 每次换代强制重新查询身份，分别暂停在启动决策的首次读取、抢锁重读与 settle 复查。
+  for (const checkpoint of [2, 3, 4]) {
+    for (const action of ["cancel", "dispose", "release", "external"] as const) {
+      const group = `policy-identity-start-${checkpoint}-${action}`;
+      publishState(group, { startedAt: 1 });
+      let release!: () => void;
+      let queries = 0;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const launcher = fakeLauncher(() => publishState(group, { baseUrl: background.baseUrl, token: "fresh-token", startedAt: 100 }));
+      const manager = new SupervisorManager({
+        group, url: background.baseUrl, command: "dsh web --port 0 --no-open", autoConnect: false,
+        launcher: launcher.launcher,
+        supervisorCommandLines: async () => {
+          if (launcher.calls() > 0) return new Map([[process.pid, `node dist/supervisor.js --directory "${supervisorDirectory(group)}" --command-b64 ZHNo`]]);
+          queries++;
+          if (queries === checkpoint) await gate;
+          else publishState(group, { stopping: true, startedAt: queries + 1 });
+          return new Map([[process.pid, "msedge.exe"]]);
+        },
+        log: () => undefined,
+      });
+      managers.push(manager);
+      const pending = manager.ensure({ start: true }).then(() => undefined, (error: unknown) => error);
+      await waitFor(() => queries === checkpoint);
+      check(`启动检查点 ${checkpoint} 已进入身份查询`, queries === checkpoint);
+      if (action === "cancel") manager.cancelWaiting();
+      else if (action === "dispose") manager.dispose();
+      else if (action === "release") manager.releaseInternal();
+      else await manager.ensure({ target: "external", start: false });
+      const status = manager.getStatus();
+      release();
+      const error = await pending;
+      check(`启动检查点 ${checkpoint} 不越过 ${action} 启动或改写状态`, error instanceof WaitCancelledError && launcher.calls() === 0 && !manager.snapshot().connected && manager.getStatus() === status);
+      manager.dispose();
+    }
+  }
+
+  // 无会合文件时也可能在 300ms 决策等待中被取消；取消返回后启动锁必须已释放。
+  {
+    const group = "policy-cancel-start-settle";
+    const controller = new AbortController();
+    const launcher = fakeLauncher();
+    const pending = ensureSupervisor({
+      group, command: "dsh web --port 0 --no-open", launcher: launcher.launcher,
+      log: () => undefined, exists: async () => false, signal: controller.signal,
+    });
+    controller.abort();
+    const result = await pending;
+    check("决策等待取消后不启动后台", !result.launched && launcher.calls() === 0);
+    const directory = supervisorDirectory(group);
+    const acquired = acquireStartLock(directory);
+    check("取消启动决策仍释放启动锁", acquired);
+    if (acquired) releaseStartLock(directory);
+  }
+
+  // socket 已建立但 open() 尚未返回：迟到连接也不能越过取消、释放或目标切换。
+  for (const action of ["cancel", "dispose", "release", "external"] as const) {
+    const group = `policy-late-socket-${action}`;
+    const socket = socketFor(group);
+    const daemon = await listenDaemon(socket);
+    publishState(group, { baseUrl: background.baseUrl, token: "shared-token", socket });
+    const manager = new SupervisorManager({
+      group, url: background.baseUrl, command: "dsh web --port 0 --no-open", autoConnect: false,
+      launcher: fakeLauncher().launcher, supervisorCommandLines: async () => undefined,
+      log: () => undefined,
+    });
+    managers.push(manager);
+    let release!: () => void;
+    let connected = false;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const open = SupervisorConnection.prototype.open;
+    SupervisorConnection.prototype.open = async function () {
+      const ok = await open.call(this);
+      connected = ok;
+      await gate;
+      return ok;
+    };
+    try {
+      const pending = manager.ensure({ start: true }).then(() => undefined, (error: unknown) => error);
+      await waitFor(() => connected);
+      check(`迟到 socket ${action} 已成功连接并暂停收尾`, connected);
+      if (action === "cancel") manager.cancelWaiting();
+      else if (action === "dispose") manager.dispose();
+      else if (action === "release") manager.releaseInternal();
+      else await manager.ensure({ target: "external", start: false });
+      const status = manager.getStatus();
+      release();
+      const error = await pending;
+      await waitFor(() => daemon.clients() === 0);
+      check(`迟到 socket 不越过 ${action} 保留连接或改写状态`, error instanceof WaitCancelledError && !manager.snapshot().connected && daemon.clients() === 0 && manager.getStatus() === status);
+    } finally {
+      SupervisorConnection.prototype.open = open;
+      release();
+      manager.dispose();
+      await daemon.close();
     }
   }
 
