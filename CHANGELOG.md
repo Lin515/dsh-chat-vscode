@@ -3,6 +3,18 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 This project follows [Semantic Versioning](https://semver.org/).
 
+## 0.13.3（2026-11-14）
+
+### 中文
+
+- 修复：内部后台退出后，手动连接不再因残留状态持续等待。
+- 修复：取消连接、停止连接、切换目标或退出窗口后，未完成的连接操作不再意外启动或重新接入内部后台。
+
+### English
+
+- Fixed: Manually reconnecting after the internal background service exits no longer waits indefinitely on stale state.
+- Fixed: Pending connection operations no longer unexpectedly start or reconnect to the internal background service after cancellation, disconnection, switching targets, or closing the window.
+
 ## 0.13.2（2026-11-12）
 
 ### 中文
