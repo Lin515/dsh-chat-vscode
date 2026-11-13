@@ -186,6 +186,7 @@ function makeManager(
   launcher: { launch: (input: never) => Promise<{ ok: true }> },
 ): SupervisorManager {
   return new SupervisorManager({
+    supervisorCommandLines: async () => undefined,
     group,
     url: "",
     command: "dsh web --port 0 --no-open",

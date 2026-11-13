@@ -129,6 +129,7 @@ try {
     let launches = 0;
     const launcher = { async launch() { launches++; return { ok: true as const }; } };
     const manager = new SupervisorManager({
+      supervisorCommandLines: async () => undefined,
       group: "snapshot-idle",
       url: "",
       command: "dsh web --port 0 --no-open",
@@ -175,6 +176,7 @@ try {
     const daemon = await listenDaemon(socket);
     daemons.push(daemon);
     const manager = new SupervisorManager({
+      supervisorCommandLines: async () => undefined,
       group,
       url: "",
       command: "dsh web --port 0 --no-open",
@@ -264,6 +266,7 @@ try {
   {
     const group = "snapshot-external";
     const manager = new SupervisorManager({
+      supervisorCommandLines: async () => undefined,
       group,
       url: `${background.baseUrl}/`,
       command: "dsh web --port 0 --no-open",
@@ -290,6 +293,7 @@ try {
   {
     const EXE = "C:\\Apps\\DSH Desktop\\dsh-desktop.exe";
     const manager = new SupervisorManager({
+      supervisorCommandLines: async () => undefined,
       group: "snapshot-desktop",
       url: "",
       command: "dsh web --port 0 --no-open",

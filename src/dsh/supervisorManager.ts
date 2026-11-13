@@ -43,6 +43,7 @@ import {
 } from "./supervisorClient";
 import { createDefaultSupervisorLauncher } from "./supervisorRunner";
 import { isProcessAlive } from "./processRegistry";
+import { fetchCommandLines } from "./processTable";
 import {
   DesktopCredentialError,
   DesktopStartCancelledError,
@@ -285,6 +286,8 @@ export interface ManagerOptions {
   group?: string;
   /** 拉起 supervisor 的真实实现。省缺时自动找 `dist/supervisor.js`（探针走这条）。 */
   launcher?: SupervisorLauncher;
+  /** supervisor 身份查询；拿不到命令行时保守复用，不因查询失败或管道瞬断另起后台。 */
+  supervisorCommandLines?: () => Promise<Map<number, string> | undefined>;
   /** 扩展安装目录（给启动器找脚本用）。 */
   extensionPath?: string;
   /** VS Code 的 `vscode.env.appRoot`（扩展宿主里传；探针不传）。 */
@@ -391,6 +394,8 @@ export class SupervisorManager {
    * 只在连接建立/状态推送时更新，连接收掉时清空。
    */
   private connectionGeneration: string | undefined;
+  /** 仅缓存一代、最多 5 秒；合并并发查询，避免就绪轮询每 300ms 起一次 PowerShell。 */
+  private supervisorIdentity: { generation: string; until: number; result: Promise<boolean> } | undefined;
   /**
    * 当前这一轮要连的目标（**粘性**，见文件头）。
    *
@@ -628,7 +633,7 @@ export class SupervisorManager {
     if (!state) {
       return { hasState: false, supervisorAlive: false, serverAlive: false, starting: false };
     }
-    const supervisorAlive = !state.stopping && isProcessAlive(state.supervisorPid);
+    const supervisorAlive = !state.stopping && (await this.supervisorAlive(state));
     const serverAlive = supervisorAlive && Boolean(state.baseUrl) && (await this.tcpReachable(state.baseUrl!));
     return {
       hasState: true,
@@ -1159,13 +1164,15 @@ export class SupervisorManager {
       await this.waitForStopping(existing, signal);
       if (signal.aborted) throw new WaitCancelledError();
       existing = readState(this.directory);
-      if (existing?.stopping && isProcessAlive(existing.supervisorPid)) {
+      if (existing?.stopping && (await this.supervisorAlive(existing))) {
         this.options.log("[supervisor] 上一套仍在退场，本次不接入、也不另起一套");
         this.setStatus({ state: "stopped", detail: "previous supervisor stopping", cause: "gone" });
         throw new ServerNotRunningError();
       }
     }
-    if (existing && isProcessAlive(existing.supervisorPid)) {
+    const existingAlive = existing ? await this.supervisorAlive(existing) : false;
+    if (signal.aborted) throw new WaitCancelledError();
+    if (existing && existingAlive) {
       this.launched = false;
       this.state = existing;
       // 先连上它的 socket 再谈别的：连接本身就是"我在用"，守护进程据此会把
@@ -1291,20 +1298,50 @@ export class SupervisorManager {
   }
 
   /**
-   * 会合文件里那一套**能不能宣称就绪**：没在退场、supervisor 进程在、（就绪后）地址连得上。
-   *
-   * `stopping` 一律不可用：退场中的守护进程还活着、地址与端口也可能照旧可达，但它不是
-   * 可用后台。就绪轮询必须在**等待途中**也排除它，不能只在 `bringUpWith` 的入口筛一次。
-   *
-   * **整体包 try/catch**：它是轮询里的判据，任何一处抛出去都会把"等待就绪"整段打断，
-   * 而错误信息会伪装成一次失败（实测踩到：探针里表现为几百毫秒就报失败，
-   * 看着像对方坏了，其实是判据自己炸了）。判据的纪律是：**拿不到证据就当"还不可用"**，
-   * 让轮询继续，而不是把异常抛给上层。
+   * PID 存活不等于 supervisor 仍在：陈旧会合文件可能指向已经复用给其他程序的 PID。
+   * 已连接的同代管道是肯定证据；否则异步核对启动脚本与会合目录。
+   * 同代查询合并并短暂缓存，避免就绪轮询反复启动进程查询；查不到身份时保守复用。
+   */
+  private async supervisorAlive(state: SupervisorState): Promise<boolean> {
+    if (!isProcessAlive(state.supervisorPid)) return false;
+    const generation = generationOf(state);
+    if (this.connection?.connected && this.connectionGeneration === generation) return true;
+    if (this.supervisorIdentity?.generation === generation && this.supervisorIdentity.until > Date.now()) {
+      return this.supervisorIdentity.result;
+    }
+    const result = (async () => {
+      try {
+        const commands = await (this.options.supervisorCommandLines ?? fetchCommandLines)();
+        const command = commands?.get(state.supervisorPid);
+        // 无权限、查询失败或进程恰好退出：没有肯定的身份不符证据，不能另起第二套。
+        if (!command) return isProcessAlive(state.supervisorPid);
+        // 启动器固定传 script、directory、command-b64；同时认脚本与会合目录，避免 PID
+        // 被浏览器、普通 Node 或另一组 supervisor 复用。查询结果从不进入日志（可能含凭据）。
+        const normalize = (text: string) => {
+          const value = text.replace(/["']/gu, "").replace(/\\/gu, "/");
+          return process.platform === "win32" ? value.toLowerCase() : value;
+        };
+        const text = normalize(command);
+        return /(?:^|[\s/])supervisor\.js\s/u.test(text) &&
+          text.includes(`--directory ${normalize(this.directory)} --command-b64 `);
+      } catch {
+        return isProcessAlive(state.supervisorPid);
+      }
+    })();
+    const cached = { generation, until: Number.POSITIVE_INFINITY, result };
+    this.supervisorIdentity = cached;
+    void result.then(() => { cached.until = Date.now() + 5_000; });
+    return result;
+  }
+
+  /**
+   * 会合状态可就绪的条件：未退场、supervisor 身份仍有效、地址可达（或仍在启动）。
+   * 轮询判据不向外抛异常；缺少就绪证据时继续等待，而不是伪装成启动失败。
    */
   private async usable(state: SupervisorState): Promise<boolean> {
     try {
       if (state.stopping === true) return false;
-      if (!isProcessAlive(state.supervisorPid)) return false;
+      if (!(await this.supervisorAlive(state))) return false;
       if (!state.baseUrl) return state.starting; // 正在启动：算"可用"，交给等待逻辑
       return await this.tcpReachable(state.baseUrl);
     } catch {
@@ -1322,7 +1359,7 @@ export class SupervisorManager {
   private async existsForStartup(state: SupervisorState): Promise<boolean> {
     if (state.stopping === true) {
       try {
-        return isProcessAlive(state.supervisorPid);
+        return await this.supervisorAlive(state);
       } catch {
         return false;
       }
@@ -1344,7 +1381,7 @@ export class SupervisorManager {
     while (!signal.aborted && Date.now() < deadline) {
       const next = readState(this.directory);
       if (!next || generationOf(next) !== generation) return;
-      if (!isProcessAlive(state.supervisorPid)) return;
+      if (!(await this.supervisorAlive(state))) return;
       await delay(200, undefined, { signal }).catch(() => undefined);
     }
     if (!signal.aborted) this.options.log("[supervisor] 上一套退场超过 30 秒仍未清干净，本次不再等");
@@ -1501,7 +1538,12 @@ export class SupervisorManager {
     // 正在退场：socket 可能还开着，但它的 dsh 正在被杀。接上去只会把"还有人在用"
     // 重新写回去，甚至让空闲退场等不到 `clients.size === 0` 的完整窗口。
     if (state?.stopping) return;
-    if (state && isProcessAlive(state.supervisorPid)) {
+    const alive = state ? await this.supervisorAlive(state) : false;
+    // 身份查询期间可能已经切换目标、交还占用或换代，迟到结果不能恢复旧连接或覆盖状态。
+    if (this.disposed || this.target !== "internal" || this.detachedByUser || this.connection?.connected) return;
+    const latest = readState(this.directory);
+    if (latest?.stopping || (latest ? generationOf(latest) : undefined) !== (state ? generationOf(state) : undefined)) return;
+    if (state && alive) {
       // 用户刚要求停的就是这一代：请求可能丢、也可能还在收尾，**不许**把它接回来。
       // 这一道让空闲退场成为真正的兜底；换了一代（别的窗口重新拉起）才继续往下接。
       if (this.stoppedByUser && this.stoppedGeneration !== undefined && generationOf(state) === this.stoppedGeneration) {
@@ -1760,7 +1802,7 @@ export class SupervisorManager {
    * 不让心跳把它接回来，才留得出空闲退场的兜底窗口。
    */
   private async stopDetachedInternal(state: SupervisorState | undefined): Promise<boolean> {
-    if (!state || !isProcessAlive(state.supervisorPid)) {
+    if (!state || !(await this.supervisorAlive(state))) {
       this.options.log("[supervisor] 「停止内部 DSH」：内部守护进程不在，没有可停的东西");
       return false;
     }

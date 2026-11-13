@@ -226,6 +226,7 @@ function makeManager(
   command = "dsh web --port 0 --no-open",
 ): SupervisorManager {
   return new SupervisorManager({
+    supervisorCommandLines: async () => undefined,
     group,
     url: "",
     command,
@@ -256,6 +257,133 @@ const background = await listen();
 const managers: SupervisorManager[] = [];
 
 try {
+  // PID 仍在但已经属于其他程序：旧状态不得挡住显式启动，也不能因旧端口可达而报运行中。
+  {
+    const group = "policy-reused-pid";
+    publishState(group, { baseUrl: background.baseUrl, token: "stale-token", startedAt: 1 });
+    let command = "msedge.exe --utility-sub-type=video_capture.mojom.VideoCaptureService";
+    const launcher = fakeLauncher(() => {
+      command = `node dist/supervisor.js --directory "${supervisorDirectory(group)}" --command-b64 ZHNo`;
+      publishState(group, { baseUrl: background.baseUrl, token: "fresh-token", startedAt: 2 });
+    });
+    const manager = new SupervisorManager({
+      group, url: "", command: "dsh web --port 0 --no-open", autoConnect: false,
+      launcher: launcher.launcher,
+      supervisorCommandLines: async () => new Map([[process.pid, command]]),
+      log: () => undefined,
+    });
+    managers.push(manager);
+    const running = await manager.probeRunning();
+    check("复用给其他程序的 PID 不算活 supervisor，旧端口可达也不算运行中", !running.supervisorAlive && !running.serverAlive);
+    const info = await manager.ensure({ start: true });
+    check("PID 被复用后允许启动一次新后台，不复用旧凭据", launcher.calls() === 1 && info.token === "fresh-token" && info.ownership === "self");
+    manager.dispose();
+  }
+
+  // 身份判断的边界：缺证据不能重复启动；确认 PID 复用也不能越过 start:false。
+  for (const kind of ["valid", "other-directory", "other-script", "unavailable", "missing", "throws"] as const) {
+    const group = `policy-identity-${kind}`;
+    publishState(group, { baseUrl: background.baseUrl, token: "shared-token" });
+    let queries = 0;
+    const launcher = fakeLauncher();
+    const manager = new SupervisorManager({
+      group, url: "", command: "dsh web --port 0 --no-open", autoConnect: false,
+      launcher: launcher.launcher,
+      supervisorCommandLines: async () => {
+        queries++;
+        if (kind === "throws") throw new Error("process query unavailable");
+        if (kind === "unavailable") return undefined;
+        if (kind === "missing") return new Map();
+        const directory = kind === "other-directory" ? `${supervisorDirectory(group)}-other` : supervisorDirectory(group);
+        const script = kind === "other-script" ? "worker.js" : "supervisor.js";
+        return new Map([[process.pid, `"node" "some path/${script}" --directory "${directory}" --command-b64 ZHNo`]]);
+      },
+      log: () => undefined,
+    });
+    managers.push(manager);
+    const rejected = kind === "other-directory" || kind === "other-script";
+    const [a, b] = await Promise.all([manager.probeRunning(), manager.probeRunning()]);
+    check(`身份查询 ${kind}：同代并发查询合并且运行判据一致`, queries === 1 && a.supervisorAlive === !rejected && b.supervisorAlive === !rejected);
+    let error: unknown;
+    let info: Awaited<ReturnType<SupervisorManager["ensure"]>> | undefined;
+    try { info = await manager.ensure({ start: false }); } catch (caught) { error = caught; }
+    check(`身份查询 ${kind}：不重复启动、不绕过启动许可`, launcher.calls() === 0 && (rejected ? error instanceof ServerNotRunningError : info?.ownership === "peer"));
+    manager.dispose();
+  }
+  for (const phase of ["starting", "stopping"] as const) {
+    const group = `policy-reused-${phase}`;
+    publishState(group, { [phase]: true, startedAt: 1 });
+    const launcher = fakeLauncher(() => publishState(group, { baseUrl: background.baseUrl, token: "fresh-token", startedAt: 2 }));
+    // 旧代 PID 属于其他程序；新代才由启动器发布有效身份。
+    const retry = new SupervisorManager({
+      group, url: "", command: "dsh web --port 0 --no-open", autoConnect: false,
+      launcher: launcher.launcher,
+      supervisorCommandLines: async () => new Map([[process.pid, launcher.calls() ? `node dist/supervisor.js --directory "${supervisorDirectory(group)}" --command-b64 ZHNo` : "msedge.exe"]]),
+      log: () => undefined,
+    });
+    managers.push(retry);
+    const info = await retry.ensure({ start: true });
+    check(`PID 复用时陈旧 ${phase} 标记不阻止显式启动`, launcher.calls() === 1 && info.token === "fresh-token");
+    retry.dispose();
+  }
+
+  for (const action of ["cancel", "dispose"] as const) {
+    for (const valid of [false, true]) {
+      const group = `policy-identity-cancel-${action}-${valid}`;
+      publishState(group, { baseUrl: background.baseUrl, token: "shared-token" });
+      let release!: () => void;
+      let queried = false;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const launcher = fakeLauncher();
+      const manager = new SupervisorManager({
+        group, url: "", command: "dsh web --port 0 --no-open", autoConnect: false,
+        launcher: launcher.launcher,
+        supervisorCommandLines: async () => {
+          queried = true;
+          await gate;
+          return new Map([[process.pid, valid ? `node dist/supervisor.js --directory "${supervisorDirectory(group)}" --command-b64 ZHNo` : "msedge.exe"]]);
+        },
+        log: () => undefined,
+      });
+      managers.push(manager);
+      const pending = manager.ensure({ start: true }).then(() => undefined, (error: unknown) => error);
+      await waitFor(() => queried);
+      if (action === "cancel") manager.cancelWaiting(); else manager.dispose();
+      release();
+      const error = await pending;
+      check(`身份查询迟到不越过 ${action}（valid=${valid}）`, error instanceof WaitCancelledError && launcher.calls() === 0 && !manager.snapshot().connected && manager.getStatus().state !== "ready");
+      manager.dispose();
+    }
+  }
+
+  for (const action of ["release", "external"] as const) {
+    const group = `policy-identity-heartbeat-${action}`;
+    const socket = socketFor(group);
+    publishState(group, { baseUrl: background.baseUrl, token: "shared-token", socket });
+    const daemon = await listenDaemon(socket);
+    let release!: () => void;
+    let queried = false;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const manager = new SupervisorManager({
+      group, url: background.baseUrl, command: "dsh web --port 0 --no-open", autoConnect: false,
+      launcher: fakeLauncher().launcher,
+      supervisorCommandLines: async () => { queried = true; await gate; return undefined; },
+      log: () => undefined,
+    });
+    managers.push(manager);
+    const internals = manager as unknown as { target: string; heartbeatTick(): Promise<void> };
+    internals.target = "internal";
+    const pending = internals.heartbeatTick();
+    await waitFor(() => queried);
+    if (action === "release") await manager.stop({ release: true });
+    else await manager.ensure({ target: "external", start: false });
+    release();
+    await pending;
+    check(`心跳身份查询迟到不越过 ${action}`, !manager.snapshot().connected && daemon.clients() === 0 && (action !== "external" || manager.getStatus().info?.ownership === "external"));
+    manager.dispose();
+    await daemon.close();
+  }
+
   // ---------- 1. 没有许可 + 后台不在 → 抛「没在跑」，且一次 spawn 都不许发生 ----------
   {
     const launcher = fakeLauncher();
@@ -433,6 +561,7 @@ try {
     const dead = await listen();
     await dead.close();
     const manager = new SupervisorManager({
+      supervisorCommandLines: async () => undefined,
       url: dead.baseUrl,
       command: "dsh web --port 0 --no-open",
       autoConnect: false,
@@ -483,6 +612,7 @@ try {
     publishState(group, { baseUrl: internalUrl.baseUrl, token: "internal-token", socket });
     const daemon = await listenDaemon(socket);
     const manager = new SupervisorManager({
+      supervisorCommandLines: async () => undefined,
       group,
       url: externalUrl.baseUrl,
       command: "dsh web --port 0 --no-open",
@@ -542,6 +672,7 @@ try {
     let releaseProbe!: () => void;
     const gate = new Promise<void>((resolve) => { releaseProbe = resolve; });
     const manager = new SupervisorManager({
+      supervisorCommandLines: async () => undefined,
       group, url: "", command: "dsh web --port 0 --no-open", desktopExecutable: DESKTOP_EXE,
       autoConnect: false, launcher: fakeLauncher().launcher as never, log: () => undefined,
       desktop: desktopDeps({ commandLines: async () => { await gate; return DESKTOP_COMMANDS; } }),
@@ -575,6 +706,7 @@ try {
       const gate = new Promise<void>((resolve) => { releaseProbe = resolve; });
       let launches = 0;
       const manager = new SupervisorManager({
+        supervisorCommandLines: async () => undefined,
         group: `policy-desktop-cancel-${action}-${running}`, url: "", command: "", desktopExecutable: DESKTOP_EXE,
         autoConnect: false, log: () => undefined,
         desktop: desktopDeps({ commandLines: async () => { await gate; return running ? DESKTOP_COMMANDS : new Map(); } }),
@@ -617,6 +749,7 @@ try {
     publishState(group, { baseUrl: internalUrl.baseUrl, token: "internal-token", socket });
     const daemon = await listenDaemon(socket);
     const manager = new SupervisorManager({
+      supervisorCommandLines: async () => undefined,
       group,
       url: "",
       command: "dsh web --port 0 --no-open",
@@ -681,6 +814,7 @@ try {
       }, 700);
     });
     const manager = new SupervisorManager({
+      supervisorCommandLines: async () => undefined,
       group,
       url: "",
       command: "dsh web --port 0 --no-open",
@@ -731,6 +865,7 @@ try {
     publishState(group, { starting: true, socket });
     const daemon = await listenDaemon(socket);
     const manager = new SupervisorManager({
+      supervisorCommandLines: async () => undefined,
       group,
       url: "",
       command: "dsh web --port 0 --no-open",
@@ -982,6 +1117,7 @@ try {
     const daemon2 = await listenDaemon(g2Socket);
     const daemon3 = await listenDaemon(g3Socket);
     const manager = new SupervisorManager({
+      supervisorCommandLines: async () => undefined,
       group,
       url: "",
       command: "dsh web --port 0 --no-open",
@@ -1055,6 +1191,7 @@ try {
     const daemon1 = await listenDaemon(g1Socket);
     const daemon2 = await listenDaemon(g2Socket);
     const manager = new SupervisorManager({
+      supervisorCommandLines: async () => undefined,
       group,
       url: "",
       command: "dsh web --port 0 --no-open",
