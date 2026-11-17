@@ -11,7 +11,7 @@ import { basenameWorkspacePath } from "../shared/workspacePath";
 
 /** 弹层里「更改」那一段的形态。 */
 export type DirChangeMode =
-  /** 空会话 + 多根工作区：直接在几个根目录之间切换（换的是创建目录，不占对话）。 */
+  /** 空会话 + 打开着文件夹：在工作区的根目录之间切换，或选一个工作区外的文件夹（换的是新会话的创建目录，不占对话）。 */
   | "switch-root"
   /** 空会话 + 没打开文件夹：沿用空态页那条「选择目录」的系统目录选择器。 */
   | "pick-folder"
@@ -29,7 +29,7 @@ export interface ComposerDirView {
   created: string | undefined;
   /** 执行目录与创建目录不同（弹层里要把「已切换」标出来）。 */
   switched: boolean;
-  /** 多根工作区的全部根目录（单根 / 没打开文件夹为空数组）。 */
+  /** 工作区的全部根目录（没打开文件夹为空数组）。 */
   roots: readonly string[];
   mode: DirChangeMode;
 }
@@ -57,7 +57,7 @@ export function composerDirView(
   const blank = state.messages.length === 0;
   let mode: DirChangeMode;
   if (!blank) mode = "started";
-  else if (roots.length > 1) mode = "switch-root";
+  else if (roots.length > 0) mode = "switch-root";
   else if (state.workspace && !state.workspace.locked) mode = "pick-folder";
   else mode = "none";
   return {

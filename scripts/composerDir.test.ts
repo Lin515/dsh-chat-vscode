@@ -2,7 +2,8 @@
  * 输入栏工作目录胶囊 / 弹层的判据（`composerDirView`）与弹层渲染。
  *
  * 口径（用户 2026-11-17）：目录像权限那样显示在输入栏，需要时在那里改。改的方式按会话状态分：
- * 空会话 + 多根 → 直接切根；空会话 + 没开文件夹 → 系统目录选择器；空会话 + 单个文件夹 → 只读；
+ * 空会话 + 打开着文件夹 → 切根或「选择其他文件夹…」（可以选工作区外的目录）；空会话 + 没开文件夹 →
+ * 系统目录选择器；
  * 已有对话 → 只读。
  *
  * 运行：npm test
@@ -41,13 +42,20 @@ assert.strictEqual(
   undefined,
 );
 
-// 空会话 + 单个文件夹：只读，名字取末段
+// 空会话 + 文件夹但宿主没给根目录列表（旧形态）：只读，名字取末段
 {
   const view = composerDirView(base({ workspace: { path: "D:\\proj\\a", locked: true } }));
   assert.ok(view);
   assert.strictEqual(view.name, "a");
   assert.strictEqual(view.mode, "none");
   assert.strictEqual(view.switched, false);
+}
+
+// 空会话 + 单个文件夹：也能「选择其他文件夹…」（不再是只读死路）
+{
+  const view = composerDirView(base({ workspace: { path: "D:\\proj\\a", locked: true, roots: ["D:\\proj\\a"] } }));
+  assert.ok(view);
+  assert.strictEqual(view.mode, "switch-root");
 }
 
 // 空会话 + 多根：可在根目录间切换
@@ -129,6 +137,12 @@ const started = composerDirView(
   }),
 )!;
 const switchRoot = composerDirView(base({ workspace: { path: "D:\\proj\\a", locked: true, roots: roots2 } }))!;
+// 当前目录是工作区外的文件夹（用户「选择其他文件夹…」选的）：仍是 switch-root，当前行单独列出
+const outside = composerDirView(
+  base({ workspace: { path: "E:\\other\\place", locked: true, roots: roots2 } }),
+)!;
+assert.strictEqual(outside.mode, "switch-root");
+assert.strictEqual(outside.name, "place");
 const locked = composerDirView(base({ workspace: { path: "D:\\proj\\a", locked: true } }))!;
 const picker = composerDirView(base({ workspace: { path: "D:\\x\\y", locked: false } }))!;
 for (const lang of ["zh", "en"] as const) {
@@ -138,6 +152,10 @@ for (const lang of ["zh", "en"] as const) {
   assert.ok(!m.includes("popover-item"), `${lang}: 已有对话不给任何更改入口`);
   const r = render(lang, switchRoot);
   assert.ok(r.includes(t.dirSwitchRoot) && r.includes("D:\\proj\\b"), `${lang}: 空会话多根形态（列出另一个根）`);
+  assert.ok(r.includes(t.dirOtherFolder), `${lang}: 多根形态有「选择其他文件夹…」`);
+  const o = render(lang, outside);
+  assert.ok(o.includes("E:\\other\\place") && o.includes(t.dirOtherFolder), `${lang}: 工作区外目录作为已选中行列出，且仍可再选`);
+  assert.ok(!r.includes("E:\\other"), `${lang}: 工作区内的目录不会多出「外部」行`);
   assert.ok(render(lang, locked).includes(t.workspaceLocked), `${lang}: 单根只读形态`);
   assert.ok(render(lang, picker).includes(t.dirPickFolder), `${lang}: 没开文件夹形态`);
 }

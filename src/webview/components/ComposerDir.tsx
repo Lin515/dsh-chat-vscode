@@ -35,9 +35,9 @@ export function DirPill({
 /**
  * 工作目录弹层：先说清**现在在哪**（创建目录 / 执行目录），再按会话状态给「怎么改」。
  *
- * - 空会话 + 多根：列出根目录，点一个就切（换的是新会话的根目录，直接生效，不弹确认）；
+ * - 空会话 + 打开着文件夹：列出工作区的根目录，点一个就切；最后一行「选择其他文件夹…」打开系统
+ *   文件夹选择器，可以选工作区之外的目录（直接生效，不弹确认）；
  * - 空会话 + 没打开文件夹：走空态页同一条系统目录选择器；
- * - 空会话 + 单个文件夹：只读，说明目录跟随 VS Code；
  * - 已有对话：只读。会话的目录是创建时定下的事实，扩展没有可用的接口改它，所以只说明、不给入口。
  */
 export function DirMenu({ view, onClose }: { view: ComposerDirView; onClose: () => void }) {
@@ -98,6 +98,15 @@ export function DirMenu({ view, onClose }: { view: ComposerDirView; onClose: () 
         <>
           <div className="popover-sep" />
           <div className="popover-section">{texts.dirSwitchRoot}</div>
+          {/* 当前目录不在工作区的根目录里：它就是用户「选择其他文件夹…」选的，作为已选中的一行列在最前 */}
+          {view.roots.some((root) => dirKey(root) === currentKey) ? null : (
+            <div className="popover-item is-selected" title={view.path}>
+              <span className="popover-item-icon">
+                <IconCheck size={14} />
+              </span>
+              <span className="popover-item-main">{view.path}</span>
+            </div>
+          )}
           {view.roots.map((root) => {
             const current = dirKey(root) === currentKey;
             return (
@@ -116,6 +125,18 @@ export function DirMenu({ view, onClose }: { view: ComposerDirView; onClose: () 
               </button>
             );
           })}
+          <button
+            className="popover-item"
+            onClick={() => {
+              post({ type: "pickOtherRoot" });
+              onClose();
+            }}
+          >
+            <span className="popover-item-icon">
+              <IconFolder size={14} />
+            </span>
+            <span className="popover-item-main">{texts.dirOtherFolder}</span>
+          </button>
         </>
       ) : null}
     </>

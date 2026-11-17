@@ -357,6 +357,11 @@ export type WebviewToHost =
    */
   | { type: "switchRoot"; path: string }
   /**
+   * 「选择其他文件夹…」：宿主弹系统文件夹选择器，选中的目录（可以不在工作区里）成为新会话的落脚点
+   * （只对空会话有效；不注册成服务端工作区，重载窗口后失效）。
+   */
+  | { type: "pickOtherRoot" }
+  /**
    * 给当前**空白会话**切换 agent 预设（`agentPresets/select`）。
    *
    * 只在会话还没有产生任何轮次时有效：服务端对已经开始的会话回

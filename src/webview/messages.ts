@@ -161,7 +161,8 @@ export const MESSAGES = {
   dirCreated: { zh: "创建目录（会话归属）", en: "Created in (session home)" },
   dirExecution: { zh: "当前执行目录", en: "Current execution directory" },
   dirPickFolder: { zh: "选择目录…", en: "Choose a folder…" },
-  dirSwitchRoot: { zh: "切换新会话的根目录", en: "Switch the root for this session" },
+  dirSwitchRoot: { zh: "新会话的工作目录", en: "Working directory for new sessions" },
+  dirOtherFolder: { zh: "选择其他文件夹…", en: "Choose another folder…" },
   dirStartedHint: {
     zh: "对话已开始，不能在这里更改工作目录。想换目录：先新建会话，再在新会话里更改。",
     en: "This conversation has started, so its working directory can't be changed here. To use another folder, start a new session and change it there.",

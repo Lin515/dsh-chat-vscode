@@ -68,6 +68,7 @@ export interface Texts {
   dirExecution: string;
   dirPickFolder: string;
   dirSwitchRoot: string;
+  dirOtherFolder: string;
   dirStartedHint: string;
   /** 标题栏上工作目录那一段的 title（没打开文件夹时常驻的那段路径）。 */
   sessionDir: string;
