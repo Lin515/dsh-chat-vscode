@@ -2174,6 +2174,19 @@
                 path: query.get("lock") === "1" ? "D:\\dev\\demo-app" : "C:\\Users\\me\\Projects\\demo-app",
                 locked: query.get("lock") === "1"
               };
+          // 多根工作区（`?roots=1`）：跟随 VS Code、但有几个根目录可选——输入栏最左的目录胶囊
+          // 弹层里列出全部根目录，空会话时点一个即切（`path` 是当前用作新会话根的那个）。
+          if (query.get("roots") === "1") {
+            state.workspace = {
+              path: "C:\\Users\\me\\Projects\\demo-app",
+              locked: true,
+              roots: [
+                "C:\\Users\\me\\Projects\\demo-app",
+                "C:\\Users\\me\\Projects\\demo-docs",
+                "C:\\Users\\me\\Projects\\demo-infra"
+              ]
+            };
+          }
           state.agentPresets = presetRoster;
           state.agentPreset = "ptc";
         }
