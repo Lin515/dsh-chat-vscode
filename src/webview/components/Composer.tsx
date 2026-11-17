@@ -1140,6 +1140,23 @@ export function Composer({
           {/* 底部工具栏：显示哪些由 useToolbarFit 按实测宽度 + 优先级决定，
               这里只按视觉顺序摆位（槽位 → 节点）。 */}
           <div className="composer-bar" ref={attachBar}>
+            {/* 工作目录：放在最左（用户 2026-11-17 口径：先说「在哪」，再是权限与模型），优先级是 P1 第一项，
+                窄时先让位。点开看创建 / 执行目录，并在那里更改。 */}
+            <div className="anchor">
+              {bar.dir}
+              {dirView ? (
+                <Popover
+                  open={dirOpen}
+                  onClose={() => {
+                    if (dirToggleRef.current) return;
+                    setDirOpen(false);
+                  }}
+                >
+                  <DirMenu view={dirView} onClose={() => setDirOpen(false)} />
+                </Popover>
+              ) : null}
+            </div>
+
             {/* 权限：P0（始终显示）。窄时只有盾牌图标，宽裕时才补上权限名。
                 悬停始终有 title，点开弹层也能看到权限名。 */}
             <div className="anchor">
@@ -1244,22 +1261,6 @@ export function Composer({
                   <span className="popover-item-sub">/plan</span>
                 </button>
               </Popover>
-            </div>
-
-            {/* 工作目录：P1 第一项，紧挨权限。点开看创建 / 执行目录，并在那里更改。 */}
-            <div className="anchor">
-              {bar.dir}
-              {dirView ? (
-                <Popover
-                  open={dirOpen}
-                  onClose={() => {
-                    if (dirToggleRef.current) return;
-                    setDirOpen(false);
-                  }}
-                >
-                  <DirMenu view={dirView} onClose={() => setDirOpen(false)} />
-                </Popover>
-              ) : null}
             </div>
 
             {/* 模型切换：P0（始终显示）。 */}

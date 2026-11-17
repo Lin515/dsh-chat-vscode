@@ -77,7 +77,7 @@ export const BAR_ORDER: readonly {
   { slot: "model", level: "full", rank: 2, pinned: true },
   { slot: "send", level: "full", rank: 3, pinned: true },
   // P1 —— 次优先
-  // 工作目录胶囊：紧挨在权限右边、也是 P1 的第一项（用户 2026-11-17 口径：像权限那样提示，
+  // 工作目录胶囊：渲染在整条工具栏最左，优先级是 P1 的第一项（窄时先让位，权限 / 模型这些 P0 不受影响）（用户 2026-11-17 口径：像权限那样提示，
   // 要改也在那里改）。只有目录名一档——名字过长由 CSS 省略，不再另设更窄的档位。
   { slot: "dir", level: "full", rank: 4 },
   { slot: "effort", level: "full", rank: 5 },

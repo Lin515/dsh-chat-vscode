@@ -10,7 +10,7 @@
 | `permission:icon` | 1 | P0 pinned，盾牌入口，title 给全称，无下箭头 |
 | `model:full` | 2 | P0 pinned，当前模型名，max-width 150px，无下箭头 |
 | `send:full` | 3 | P0 pinned，运行且正文与附件都没有为停止；否则按 busyEnter / 当下 Ctrl、Cmd 手势显示发送模式 |
-| `dir:full` | 4 | P1 第一项，工作目录胶囊（图标 + 目录名，max-width 130px），点开弹层，见「工作目录弹层」 |
+| `dir:full` | 4 | P1 第一项，工作目录胶囊（图标 + 目录名，max-width 130px），渲染在工具栏最左（先说「在哪」，再是权限与模型），点开弹层，见「工作目录弹层」 |
 | `effort:full` | 5 | P1，只读思考等级，点击 toggle 同一模型弹层 |
 | `attach:full` | 6 | P1，通用附件入口，不随模型是否收图隐藏 |
 | `tps:full` | 7 | P1，会话平均输出速度（Σ 输出 token / Σ 解码窗口），与 hover 同源同格式 |

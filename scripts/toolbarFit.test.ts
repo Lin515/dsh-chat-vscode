@@ -146,7 +146,7 @@ const ALL_WITHOUT_CACHE = ALL.filter((key) => key !== "cache:full").sort();
   const visual = [...composer.matchAll(/\{bar\.(\w+)\}/g)].map((match) => match[1]);
   assert.deepStrictEqual(
     visual,
-    ["permission", "dir", "model", "effort", "preset", "attach", "tps", "context", "cache", "send"],
+    ["dir", "permission", "model", "effort", "preset", "attach", "tps", "context", "cache", "send"],
     "工具栏的渲染次序（= 从左至右）变了：同档内的优先级就是按它定的，改位置要同步改 rank（命中率必须紧跟上下文数值右边）",
   );
   assert.ok(
