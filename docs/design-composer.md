@@ -10,13 +10,14 @@
 | `permission:icon` | 1 | P0 pinned，盾牌入口，title 给全称，无下箭头 |
 | `model:full` | 2 | P0 pinned，当前模型名，max-width 150px，无下箭头 |
 | `send:full` | 3 | P0 pinned，运行且正文与附件都没有为停止；否则按 busyEnter / 当下 Ctrl、Cmd 手势显示发送模式 |
-| `effort:full` | 4 | P1，只读思考等级，点击 toggle 同一模型弹层 |
-| `attach:full` | 5 | P1，通用附件入口，不随模型是否收图隐藏 |
-| `tps:full` | 6 | P1，会话平均输出速度（Σ 输出 token / Σ 解码窗口），与 hover 同源同格式 |
-| `permission:label` | 7 | P2，图标 + 权限名，与 icon 互斥 |
-| `preset:full` | 8 | P2，会话开始后的只读预设名 |
-| `context:text` | 9 | P2，环 + 44K/128K，与 ring 互斥，环内无百分比 |
-| `model:provider` | 10 | P2，提供商/模型名，与 full 互斥 |
+| `dir:full` | 4 | P1 第一项，工作目录胶囊（图标 + 目录名，max-width 130px），点开弹层，见「工作目录弹层」 |
+| `effort:full` | 5 | P1，只读思考等级，点击 toggle 同一模型弹层 |
+| `attach:full` | 6 | P1，通用附件入口，不随模型是否收图隐藏 |
+| `tps:full` | 7 | P1，会话平均输出速度（Σ 输出 token / Σ 解码窗口），与 hover 同源同格式 |
+| `permission:label` | 8 | P2，图标 + 权限名，与 icon 互斥 |
+| `preset:full` | 9 | P2，会话开始后的只读预设名 |
+| `context:text` | 10 | P2，环 + 44K/128K，与 ring 互斥，环内无百分比 |
+| `model:provider` | 11 | P2，提供商/模型名，与 full 互斥 |
 
 P0 四项无条件落位，极窄也留 DOM。P1 / P2 各档按渲染左右次序，左边优先；挪元素必须同步 rank。占用环是有意例外，虽然在右半区仍最高优先级。
 
@@ -51,12 +52,28 @@ Auto 能力与目录失败的判据统一见[投影设计的 permissions](<desig
 
 Auto 的七条文字逐字取官方 accessZh / accessEn；官方中文名也为 Auto review。自补 IconShieldReview 以满足最小图标档。danger-full-access / auto 都在弹层内确认，不弹系统模态；auto 必须勾选风险确认才可继续。关弹层 / 再点胶囊 / 换档复位确认态。
 
+## 工作目录弹层
+
+胶囊显示**执行目录**（缺失时退回创建目录、再退回窗口目录；都没有则整个不出现，子代理页也不出现），弹层并排写出创建目录与执行目录，两者不同时都列出。「怎么改」只取决于会话状态，判据在 `composerDir.ts` 的 `composerDirView`：
+
+| 状态 | 弹层 | 效果 |
+|---|---|---|
+| 空会话 + 多根工作区 | 列出全部根目录，点一个即切 | 新会话落在所选根目录；选定值记进 `workspaceState` 并沿用，默认是第一个根；记着的根被移出工作区则回到第一个 |
+| 空会话 + 没打开文件夹 | 「选择目录…」 | 与空态页同一条系统目录选择器（`pickWorkspace`） |
+| 空会话 + 单个文件夹 | 只读，说明跟随 VS Code | — |
+| 已有对话 | 只读，说明「想换目录先新建会话」 | 会话 header 的 cwd 是创建事实，扩展没有可用接口改它 |
+
+换根（`switchRoot`）只认当前工作区的根目录、只作用于空白会话或还没有会话的窗口，并连带：清掉服务端工作区注册缓存（`workspaceId` 属于旧根）、按新根重拉历史列表、把窗口落到新根那条空壳（`rebindWorkspaceDir`）。当前根统一经控制器的 `rootFolder()` 读取，决定新会话目录、工作区注册与历史过滤，不再各处直接取 `workspaceFolders[0]`。
+
+**有意不做**：对已有对话改执行目录。网页网关没有「改会话目录」的入口（`session/working-directory/set` 属于 SDK 运行时），唯一合规路径是让模型调 `working_directory` 工具，会占一轮对话且结果取决于模型。官方提供入口后再评估。
+
 ## 实现与回归
 
 | 文件 | 职责 |
 |---|---|
 | [toolbarFit.ts](<../src/webview/toolbarFit.ts>) | BAR_ORDER、pickVariants、观察目标与可用宽度前置 |
 | [Composer.tsx](<../src/webview/components/Composer.tsx>) | barNodes、useToolbarFit、渲染次序 |
+| [ComposerDir.tsx](<../src/webview/components/ComposerDir.tsx>)、[composerDir.ts](<../src/webview/composerDir.ts>) | 工作目录胶囊、弹层与按状态分档的纯判据 |
 | [app.css](<../src/webview/styles/app.css>) | 测量层、定位基准与收窄 |
 | [messages.ts](<../src/webview/messages.ts>) / [texts.ts](<../src/webview/texts.ts>) | 双语登记与取词典 |
 | [projections.ts](<../src/dsh/projections.ts>) / [controller.ts](<../src/dsh/controller.ts>) | 权限目录判据与拉取 |

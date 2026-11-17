@@ -164,7 +164,7 @@ import {
 import { NotificationQueue, type NoticeInput, type NoticeRecord } from "./notificationQueue";
 import { deriveTrajectoryModel } from "./trajectory";
 import { backfillTrajectorySchemas, missingSchemaAnchor } from "./trajectoryBackfill";
-import { normalizePath, upperDriveLetter, visibleForView, visibleForWorkspace, visibleSessionCandidates, visibleSessionRows } from "./sessionList";
+import { activeRootIndex, normalizePath, upperDriveLetter, visibleForView, visibleForWorkspace, visibleSessionCandidates, visibleSessionRows } from "./sessionList";
 import { decodeSessionActivity } from "./sessionActivity";
 import { acceptSessionStatus, decodeSessionStatus } from "./sessionStatus";
 import { orderSubagentEntries } from "./subagentOrder";
@@ -185,6 +185,8 @@ import { isBlank, mergeWindowCache, WindowRestore, WorkspaceWindowStateStore, ty
  *
  * 按 baseUrl 分键：不同地址的服务器各有各的会话。
  */
+/** 多根工作区里用户换过的「新会话根目录」（`workspaceState` 的键，见 `rootFolder`）。 */
+const ACTIVE_ROOT_KEY = "dshChat.activeRoot";
 const SESSION_SECRET_PREFIX = "dshChat.session.";
 
 /** 早期版本把启动令牌存进了 SecretStorage；存它没有意义，激活时清掉。 */
@@ -1018,6 +1020,14 @@ export class ChatController implements vscode.Disposable {
    * 重载窗口后回到与今天一致的行为（没有文件夹就按宿主 cwd 建会话）。
    */
   private newSessionCwd: string | undefined;
+  /**
+   * 多根工作区里用户在输入栏目录胶囊上换过的「新会话落在哪个根目录」（路径）。
+   *
+   * 默认（没换过）是第一个根目录，与官方一致；换过之后记进 `workspaceState` 并沿用；记着的
+   * 根被移出工作区就回到第一个。读取一律经 `rootFolder()`，不直接用它。单根 / 没打开文件夹
+   * 时用不到。
+   */
+  private activeRootPath: string | undefined;
   /**
    * 空态页上的**待建会话**选择（按窗口）：预设与模型。
    *
@@ -2128,6 +2138,22 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
+   * 新会话所在的 VS Code 根目录：多根工作区里取用户换过的那个，没换过 / 已不在工作区里就取
+   * 第一个。没有打开文件夹时是 `undefined`。
+   *
+   * 「当前根目录」是一处事实：决定**新会话目录 / 工作区注册 / 历史过滤**的地方都走这里，不另算。
+   */
+  private rootFolder(): vscode.WorkspaceFolder | undefined {
+    const folders = vscode.workspace.workspaceFolders;
+    if (!folders?.length) return undefined;
+    if (this.activeRootPath === undefined) {
+      const stored = this.workspaceState.get<string>(ACTIVE_ROOT_KEY);
+      this.activeRootPath = typeof stored === "string" ? stored : "";
+    }
+    return folders[activeRootIndex(folders.map((folder) => folder.uri.fsPath), this.activeRootPath)];
+  }
+
+  /**
    * 新会话落在哪个目录。
    *
    * **只用在「已经确定有目录」的时刻**：建会话之前 `ensureSession` 已经问过了
@@ -2137,7 +2163,7 @@ export class ChatController implements vscode.Disposable {
    * （会话 cwd 解析等）一个字符串。
    */
   private workspacePath(): string {
-    const folder = vscode.workspace.workspaceFolders?.[0];
+    const folder = this.rootFolder();
     if (folder) return upperDriveLetter(folder.uri.fsPath);
     return this.newSessionCwd ? upperDriveLetter(this.newSessionCwd) : process.cwd();
   }
@@ -2154,8 +2180,16 @@ export class ChatController implements vscode.Disposable {
    * 各自那个目录。打开着文件夹时与窗口无关（目录跟随 VS Code）。
    */
   private workspaceView(viewId?: string): NonNullable<ChatState["workspace"]> {
-    const folder = vscode.workspace.workspaceFolders?.[0];
-    if (folder) return { path: upperDriveLetter(folder.uri.fsPath), locked: true };
+    const folder = this.rootFolder();
+    if (folder) {
+      const folders = vscode.workspace.workspaceFolders ?? [];
+      return {
+        path: upperDriveLetter(folder.uri.fsPath),
+        locked: true,
+        // 多根工作区：把全部根目录交给界面（输入栏目录胶囊的候选），单根不给
+        ...(folders.length > 1 ? { roots: folders.map((item) => upperDriveLetter(item.uri.fsPath)) } : {}),
+      };
+    }
     // 没有打开文件夹：用户选过的那个目录；**没选过就是空串**——界面显示
     // 「未选择工作区」。绝不拿宿主的 `process.cwd()`（= VS Code 安装路径）冒充一个
     // 工作目录（用户 2026-09-22 报的现场）。
@@ -4523,7 +4557,7 @@ export class ChatController implements vscode.Disposable {
           this.subagentRunning.delete(item.sessionId);
         }
       }
-      const folder = vscode.workspace.workspaceFolders?.[0];
+      const folder = this.rootFolder();
       const workspacePath = folder ? normalizePath(folder.uri.fsPath) : undefined;
       // 服务端注册表：这条会话被记在哪个工作区里（同一会话只属于一个工作区）
       let ownIds: Set<string> | undefined;
@@ -5148,7 +5182,7 @@ export class ChatController implements vscode.Disposable {
     // （`newSessionCwd`）只是个落脚点，把它注册进服务端的工作区注册表是另一回事
     // （那会长期留在 Web 的侧栏里），会话按 cwd 建、落在「未分组」——与用户口径
     // 「和以前一样，是未分组会话」一致。
-    const folder = vscode.workspace.workspaceFolders?.[0];
+    const folder = this.rootFolder();
     if (!folder) return undefined;
     const path = folder.uri.fsPath;
     try {
@@ -5767,6 +5801,31 @@ export class ChatController implements vscode.Disposable {
     // 用户取消 → 保持原状（点击的反馈就是那个对话框本身，不再另外弹提示）
     if (!(await this.askWorkspaceDir())) return;
     // 用户显式选了一个目录 ⇒ 允许拉起后台（与发消息同一档）
+    await this.rebindWorkspaceDir(viewId);
+  }
+
+  /**
+   * 多根工作区里换「新会话落在哪个根目录」（输入栏目录胶囊，空会话时可用）。
+   *
+   * 只认当前工作区里的根目录；只换**空白会话 / 还没有会话**的窗口——已经有对话的会话 header
+   * 的 cwd 是创建事实，改不了（界面上那种会话只读）。换根要连带：服务端工作区注册的
+   * 缓存（`workspaceId`）属于旧根，清掉；历史列表按当前根收窄（见 `refreshSessions`），重拉；
+   * 窗口落到新根那条空壳上（`rebindWorkspaceDir`：先解绑、再复用或新建）。
+   */
+  private async switchRoot(viewId: string, path: string): Promise<void> {
+    const folders = vscode.workspace.workspaceFolders ?? [];
+    if (folders.length < 2 || typeof path !== "string") return;
+    const hit = folders.find((folder) => normalizePath(folder.uri.fsPath) === normalizePath(path));
+    if (!hit) return;
+    const bound = this.viewSessions.get(viewId);
+    if (bound !== undefined && !this.isBlankShell(bound)) return;
+    const current = this.rootFolder();
+    if (current && normalizePath(current.uri.fsPath) === normalizePath(hit.uri.fsPath)) return;
+    this.activeRootPath = hit.uri.fsPath;
+    await this.workspaceState.update(ACTIVE_ROOT_KEY, this.activeRootPath);
+    this.workspaceId = undefined;
+    this.refreshWorkspace();
+    if (this.client) await this.refreshSessions();
     await this.rebindWorkspaceDir(viewId);
   }
 
@@ -9163,6 +9222,10 @@ export class ChatController implements vscode.Disposable {
 
       case "pickWorkspace":
         await this.pickWorkspace(viewId);
+        break;
+
+      case "switchRoot":
+        await this.switchRoot(viewId, message.path);
         break;
 
       case "setAgentPreset":

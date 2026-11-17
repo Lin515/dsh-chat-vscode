@@ -3682,6 +3682,42 @@ button.changes-card-head:hover .changes-card-chevron,
   min-width: 0;
 }
 
+/* 工作目录胶囊（权限右侧）：与权限胶囊同款，目录名可省略、不换行；
+   max-width 给长目录名 / 英文留一个上限，宽度仍由 toolbarFit 实测决定显不显示。 */
+.pill-dir {
+  max-width: calc(130 * var(--dp));
+}
+
+/* 工作目录弹层里的路径行 / 说明：路径不换行、中间省略不了就收成省略号；完整值在 title 里。 */
+.dir-row {
+  display: flex;
+  flex-direction: column;
+  gap: calc(1 * var(--dp));
+  padding: calc(2 * var(--dp)) calc(7 * var(--dp));
+  font-size: var(--font-size-xs);
+  min-width: 0;
+}
+
+.dir-row-label {
+  font-size: var(--font-size-2xs);
+  color: var(--muted);
+}
+
+.dir-row-path {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.dir-hint {
+  padding: calc(3 * var(--dp)) calc(7 * var(--dp));
+  font-size: var(--font-size-2xs);
+  color: var(--muted);
+  white-space: normal;
+}
+
 /* 思考强度（模型右侧的次优先级元素）：只是当前档位的展示，点击开模型弹层。
    比模型胶囊更淡——它是模型的一个属性，不是一个独立入口。 */
 .pill-effort {

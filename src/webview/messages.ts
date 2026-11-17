@@ -156,6 +156,16 @@ export const MESSAGES = {
     zh: "工作目录跟随 VS Code 打开的文件夹",
     en: "Working directory follows the folder open in VS Code",
   },
+  // 输入栏「工作目录」胶囊与弹层（目录显示在权限旁边，需要时在那里改）
+  dirTitle: { zh: "工作目录", en: "Working directory" },
+  dirCreated: { zh: "创建目录（会话归属）", en: "Created in (session home)" },
+  dirExecution: { zh: "当前执行目录", en: "Current execution directory" },
+  dirPickFolder: { zh: "选择目录…", en: "Choose a folder…" },
+  dirSwitchRoot: { zh: "切换新会话的根目录", en: "Switch the root for this session" },
+  dirStartedHint: {
+    zh: "对话已开始，不能在这里更改工作目录。想换目录：先新建会话，再在新会话里更改。",
+    en: "This conversation has started, so its working directory can't be changed here. To use another folder, start a new session and change it there.",
+  },
   /** 标题右侧的执行目录说明：与工作区不同，或 VS Code 未打开文件夹时显示。 */
   sessionDir: { zh: "会话执行目录", en: "Session execution directory" },
   agentPresetLabel: { zh: "Agent 预设", en: "Agent preset" },

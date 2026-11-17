@@ -77,26 +77,29 @@ export const BAR_ORDER: readonly {
   { slot: "model", level: "full", rank: 2, pinned: true },
   { slot: "send", level: "full", rank: 3, pinned: true },
   // P1 —— 次优先
-  { slot: "effort", level: "full", rank: 4 },
-  { slot: "attach", level: "full", rank: 5 },
-  { slot: "tps", level: "full", rank: 6 },
+  // 工作目录胶囊：紧挨在权限右边、也是 P1 的第一项（用户 2026-11-17 口径：像权限那样提示，
+  // 要改也在那里改）。只有目录名一档——名字过长由 CSS 省略，不再另设更窄的档位。
+  { slot: "dir", level: "full", rank: 4 },
+  { slot: "effort", level: "full", rank: 5 },
+  { slot: "attach", level: "full", rank: 6 },
+  { slot: "tps", level: "full", rank: 7 },
   // P2 —— 最低（三项都是「把已有信息写详细一点」或纯文字，故排在最后；
   //        档内次序 = 左右次序：左端的权限文字 → 中段的预设标签 → 右端的上下文数值）
-  { slot: "permission", level: "label", rank: 7 },
-  { slot: "preset", level: "full", rank: 8 },
+  { slot: "permission", level: "label", rank: 8 },
+  { slot: "preset", level: "full", rank: 9 },
   // 数值档留在 P2（用户 2026-10-06 口径）：「始终显示」只指圆环本身，
   // 环右侧的精确数值仍按原来的低优先级回来。
-  { slot: "context", level: "text", rank: 9 },
+  { slot: "context", level: "text", rank: 10 },
   // P2 末位（用户口径）：模型胶囊的升级档——`提供商/模型名` 全格式。宽度充裕时
   // 才从裸模型名（rank 2 的 pinned 档）升上来；它是 model 槽位的第二档，rank 必须
   // 大于同槽位的第一档（算法按 rank 逐档升级，不递增就升不上去）。
-  { slot: "model", level: "provider", rank: 10 },
+  { slot: "model", level: "provider", rank: 11 },
   // **全场最低优先级**（用户 2026-10-10 口径）：上下文容量数值右侧的缓存命中率
   // （`98.7%HIT`，中英文同一份写法）。它是**独立槽位**——同日第二条口径明确要求
   // 「不要和上下文放一起用逗号隔开」，所以不再去替换 `context` 的数值档，而是紧跟在
   // 数值右边自己占一格；rank 仍必须排最后：命中率是锦上添花的信息，宽度不够时
   // 第一个让位（容量数值留在原位）。
-  { slot: "cache", level: "full", rank: 11 },
+  { slot: "cache", level: "full", rank: 12 },
 ];
 
 /**

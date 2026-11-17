@@ -61,6 +61,8 @@ import { segmentColumns } from "../segment";
 import { fill, resolveText, useTexts } from "../texts";
 import { useUiScale } from "../uiScale";
 import { sessionCacheHitPercent } from "../cacheHit";
+import { composerDirView } from "../composerDir";
+import { DirMenu, DirPill } from "./ComposerDir";
 import { BAR_ORDER, createFitAnchor, pickVariants, toolbarAvailableWidth, type ToolbarVariant } from "../toolbarFit";
 
 /**
@@ -320,6 +322,9 @@ export function Composer({
   const pointerAt = useRef<{ x: number; y: number } | null>(null);
   const [modelOpen, setModelOpen] = useState(false);
   const [modeOpen, setModeOpen] = useState(false);
+  /** 工作目录弹层（输入栏目录胶囊）。toggle 标志的用法同权限 / 模型按钮。 */
+  const [dirOpen, setDirOpen] = useState(false);
+  const dirToggleRef = useRef(false);
   // 模型按钮 toggle 标志：标记「这次关闭是按钮触发的」，让 Popover 的
   // mousedown 外部检测跳过它（选中模型后弹层不关，再点按钮需能关闭）
   const modelToggleRef = useRef(false);
@@ -858,7 +863,23 @@ export function Composer({
       sendButton
     );
 
+  // 工作目录胶囊：拿不到任何目录（没打开文件夹、也没会话）或是子代理页时不出现
+  const dirView = composerDirView(state);
   const barNodes: Record<string, ReactNode> = {
+    "dir:full": dirView ? (
+      <DirPill
+        view={dirView}
+        onMouseDown={() => {
+          dirToggleRef.current = true;
+        }}
+        onClick={() => {
+          setTimeout(() => {
+            dirToggleRef.current = false;
+          }, 0);
+          setDirOpen((v) => !v);
+        }}
+      />
+    ) : null,
     "permission:icon": permissionPill(false),
     "permission:label": permissionPill(true),
     "model:full": modelPill(false),
@@ -1223,6 +1244,22 @@ export function Composer({
                   <span className="popover-item-sub">/plan</span>
                 </button>
               </Popover>
+            </div>
+
+            {/* 工作目录：P1 第一项，紧挨权限。点开看创建 / 执行目录，并在那里更改。 */}
+            <div className="anchor">
+              {bar.dir}
+              {dirView ? (
+                <Popover
+                  open={dirOpen}
+                  onClose={() => {
+                    if (dirToggleRef.current) return;
+                    setDirOpen(false);
+                  }}
+                >
+                  <DirMenu view={dirView} onClose={() => setDirOpen(false)} />
+                </Popover>
+              ) : null}
             </div>
 
             {/* 模型切换：P0（始终显示）。 */}

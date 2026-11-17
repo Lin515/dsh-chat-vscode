@@ -352,6 +352,11 @@ export type WebviewToHost =
    */
   | { type: "pickWorkspace" }
   /**
+   * 多根工作区里把**新会话的根目录**换成 `path`（输入栏目录胶囊，只在空会话时有效）。
+   * `path` 必须是当前工作区的根目录之一，宿主逐个核对。
+   */
+  | { type: "switchRoot"; path: string }
+  /**
    * 给当前**空白会话**切换 agent 预设（`agentPresets/select`）。
    *
    * 只在会话还没有产生任何轮次时有效：服务端对已经开始的会话回

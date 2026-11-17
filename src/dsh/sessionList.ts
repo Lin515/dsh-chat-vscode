@@ -176,3 +176,21 @@ export function visibleForView<T extends { id: string; cwd?: string }>(
   if (cwd) return rows.filter((row) => normalizePath(row.cwd) === cwd);
   return rows.filter((row) => !scope.groupedSessionIds.has(row.id));
 }
+
+/**
+ * 多根工作区里「新会话落在哪个根目录」：返回 `folders` 中被选中那一项的下标。
+ *
+ * - 没换过（`active` 为空）、只有一个根、或记着的路径已不在工作区里 → 第一个（默认口径）；
+ * - 记着的路径还在 `folders` 里 → 它（比较走 `normalizePath`，不区分盘符大小写与尾斜杠）。
+ *
+ * `folders` 为空时返回 -1（没有打开文件夹）。纯函数：记着哪个根的存取在控制器里。
+ */
+export function activeRootIndex(folders: readonly string[], active: string | undefined): number {
+  if (!folders.length) return -1;
+  if (folders.length > 1 && active) {
+    const wanted = normalizePath(active);
+    const hit = folders.findIndex((folder) => normalizePath(folder) === wanted);
+    if (hit >= 0) return hit;
+  }
+  return 0;
+}

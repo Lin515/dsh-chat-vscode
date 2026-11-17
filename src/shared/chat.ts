@@ -1421,6 +1421,11 @@ export interface WorkspaceView {
   path: string;
   /** true = 跟随 VS Code 打开的文件夹，不可更改。 */
   locked: boolean;
+  /**
+   * VS Code 多根工作区的全部根目录（仅在 > 1 个根时给出）。`path` 是其中当前用作新会话根的那个；
+   * 输入栏目录胶囊用它列候选。单根 / 没打开文件夹时缺省。
+   */
+  roots?: string[];
 }
 
 /** 一个可选的 agent 预设（roster 一行的界面形态，`broken` 的已在宿主侧滤掉）。 */
