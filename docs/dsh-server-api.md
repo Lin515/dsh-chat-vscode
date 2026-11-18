@@ -46,6 +46,8 @@
 本扩展当前对齐到哪一版、以及每条兼容代码的登记与退役期限，见 `docs/dsh-compat.md`。
 读下面任何一节时先扫一眼这张清单。
 
+- **DeepSeek 网页搜索默认改为自动选择**（0.2.2-rc.5）：未显式指定提供方时，来自 `deepseek-official` 和 `deepseek-account` 模型路由的搜索走 Messages，其他搜索仍走 DeepSeek Search API。Messages 路径写入已有的 `web/deepseek-search-llm-request`，本扩展继续静默处理，工具结果契约不变。搜索端点不继承模型网关地址；网关部署若要让 Messages 搜索也经过网关，需单独配置搜索 Base URL，或显式选回 DeepSeek Search API。
+- **DeepSeek 内容拒答错误码改名**（0.2.2-rc.4）：模型流以 `stop_reason: 'refusal'` 结束时，轮次结束事件 `turn/end` 的 `reason.error.code` 由 `MALFORMED_RESPONSE` 改为 `CONTENT_REFUSED`，失败载荷形状不变。本扩展按 `reason.kind: 'error'` 展示服务端报文，轨迹保留错误码，不依赖旧码。
 - **子代理按目标会话操作**（0.2.2-rc.2）：停止端点改为 `subagents/interruptByUser`，平铺参数仅 `{childSessionId}`；`subagents/prompt` 的 `request` 删除 `parentSessionId` 与 `mode`，保留 `requestId`、`childSessionId`、`delivery`、`content`、可选 `clientTimeZone`，不再要求父 Agent 在线。新请求由普通对象 schema 解码，剥离未声明字段而非拒绝，因此携带旧字段的请求仍可成功；旧代兼容仅在执行前的网关形状拒绝或明确缺端点时协商，记住成功代际。目录事件版本 3 为可继续与外部子代理增加可选名称，版本 0/1/2 的共同字段继续可读；未知未来版本不猜测。
 - **新增团队模式簿记**（0.2.2-rc.2）：`team/mode` 的数据为 `{enabled:boolean}`，本扩展登记为已知静默事件。
 - **新增失败续跑**（0.2.2-rc.2）：`conversationContinuation` 投影指示可续跑的失败结束位置，空内容的 `session/prompt` 用于请求重试，消息来源增加 `kind:'retry'`。本扩展暂不新增空提交入口；既有非空发送链路保持不变。

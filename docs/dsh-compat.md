@@ -102,9 +102,9 @@ compaction-image-offload 包里声明，契约快照里那份 `SessionEventMap` 
 - 基准**单调向前**：它之前的官方版本不需要核对（从最早的 tag 补起会把二十多个历史版本变成待办）。
   要看两个历史版本之间的差异，用 `npm run dsh:diff -- <旧版本> <新版本>`。
 
-本扩展当前对齐：DSH `0.2.2-rc.2`（next 渠道；2026-11-12 核对相对 `0.2.2-rc.1` 的差异，已适配子代理续发请求、用户停止端点与目录事件版本 3，保留旧代协商；新增 `team/mode` 登记为静默事件。官方客户端的本地历史加载接口重构不在本扩展消费面。人工复核事件集合、审批与问卷、认证 cookie、desktop-host 连接边界及文件路径与媒体读取；类型检查、离线测试与生产构建通过。旧 `dsh-agent-presets` 缺包已由 `dsh-agent-preset-registry` 覆盖。）<!-- dsh-compat:baseline -->
+本扩展当前对齐：DSH `0.2.2-rc.5`（next 渠道；2026-11-18 自 `0.2.2-rc.2` 逐版核对，无破坏性差异。63 项持久化事件与扩展分类完全一致；审批与问卷、认证 cookie、desktop-host 连接、文件路径与媒体读取边界未变。旧 `dsh-agent-presets` 缺包已由 `dsh-agent-preset-registry` 覆盖。）<!-- dsh-compat:baseline -->
 
-本轮新增的失败续跑入口、工作区搜索接口及子代理名称显示暂不引入（P1）；现有非空发送、文件访问和按会话 id 管理子代理的链路不依赖这些能力。`conversationContinuation` 与 `kind:'retry'` 的含义见[服务端契约](<dsh-server-api.md>)「后续版本的契约变更」。
+`0.2.2-rc.2` 新增的失败续跑入口、工作区搜索接口及子代理名称显示仍暂缓（P1）；现有非空发送、文件访问和按会话 id 管理子代理的链路不依赖这些能力。`conversationContinuation` 与 `kind:'retry'` 的含义见[服务端契约](<dsh-server-api.md>)「后续版本的契约变更」。
 
 ### 暂缓待办：连接层 WebSocket 载体适配（P1）
 
