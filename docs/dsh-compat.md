@@ -7,8 +7,8 @@
 工具在 `scripts/dshCompat.ts`（命令 `npm run dsh:watch` / `dsh:check`）；分级与抽取规则在
 `scripts/dshContract.ts`。契约面本身见 `docs/dsh-server-api.md`。
 
-**本文不记历史核对台账**：逐版本的核对结论只留在 git 历史与该版 `CHANGELOG.md` 里，文档只保留
-规则、当前基准与兼容层登记——否则它会长成一份没人再读的流水账，而且每换一版就得维护两处。
+**本文不记历史核对台账**：逐版本的核对结论写入提交说明，涉及发布的用户可见变化写入该版
+`CHANGELOG.md`。本文只保留规则、当前基准、仍待决定或暂缓的事项与兼容层登记。
 
 ---
 
@@ -48,8 +48,18 @@
 | 有 P0，且该版本是 npm `latest` | 改代码 + `npm run typecheck` / `test` / `build` + 版本号 + CHANGELOG，**处理完才推进基准行** | **扩展商店 + GitHub Release** |
 | 有 P0，且该版本不是 `latest`（alpha / rc / canary / 仅 GitHub） | 同上 | **仅 GitHub Release** |
 
-CHANGELOG：某版本若含与 DSH 对齐的改动，在该版本条目里写明**对齐的是哪个 DSH 版本**。
-核对的结论（哪几处 P0、怎么处理的）写进提交说明与那条 CHANGELOG——不写进本文档。
+逐版分级与处理结论写进提交说明。若发布含对齐改动的扩展版本，在该版 CHANGELOG 里写明**对齐的 DSH 版本**和用户可见的变化。
+
+### 对齐流程：先列差异，再定范围
+
+1. 先跑 `npm run dsh:watch`，按发布顺序逐版跑 `npm run dsh:check -- <版本>`。有多个待核对版本时，
+   用 `npm run dsh:diff -- <上一版> <目标版>` 对比相邻快照，不为了生成报告提前推进基准。
+   对照官方 tag 和 npm 产物人工复核，补上报告未覆盖的端点、可选插件、事件和行为变化，并核实疑似误报。
+2. **在修改扩展代码或推进基准之前，先向用户列出逐版 P0 / P1 / P2 清单**。分开写自动计数和人工复核结论；
+   没有项目的等级也写「无」。每项说明上游改了什么、扩展当前是否消费、是否需要新增消费。
+   自动报告 `0 / 0 / 0` 不能代替人工结论，工具的推进基准提示也不能代替范围决定。
+3. 清单列完再决定本轮范围：确认的 P0 必须处理；P1 给出接入或暂缓的建议，尚未明确取舍的先向用户确认，
+   不默认接入；P2 只说明影响，不为它改代码或发版。处理并验证后再推进基准。
 
 ### 词汇漂移（工具看不见，必须人工核对）
 
@@ -70,11 +80,11 @@ compaction-image-offload 包里声明，契约快照里那份 `SessionEventMap` 
    `KNOWN_SESSION_EVENT_TYPES`（由 `scripts/gen-persistence-catalog.ts` 生成，含各模块增强
    登记的全部类型）；npm 产物里对应 `@deepseek-ai/dsh-session` 的 `known-event-types.js`。
 2. 与 `src/dsh/protocol.ts` 的 `RENDERED_EVENT_TYPES` ∪ `SILENT_EVENT_TYPES` ∪
-   `CONSUMED_EVENT_TYPES` 求差：官方有、本扩展没有的**逐个当场归类**——有界面的进渲染、
-   纯簿记的进知情静默、要读内容的进消费（三集合互斥），并同步
-   `scripts/unknownEvent.test.ts` 的 `ADDED_KNOWN`（该测试会拦住漏登记）。反向的一侧
-   （本扩展有、官方已删）也顺手看一眼：那说明我们还在为不存在的类型留渲染分支。
-3. 差集为空，这一步才算做完。差额与处理结论写进该版的提交说明与 CHANGELOG，不另立台账。
+   `CONSUMED_EVENT_TYPES` 双向求差。官方有、本扩展没有的逐个提出建议分类：有界面的进渲染、
+   纯簿记的进知情静默、要读内容的进消费（三集合互斥）。反向差额要核实是否为旧版兼容而保留。
+3. 先把差额与建议分类列进对齐清单，确定范围后再修改事件表，并同步 `scripts/unknownEvent.test.ts`
+   的 `ADDED_KNOWN`（该测试会拦住漏登记）。核实双方差额都已处理，差额与处理结论写进提交说明；
+   若发版则将用户可见影响写进 CHANGELOG，不另立台账。
 
 ---
 
@@ -105,6 +115,12 @@ compaction-image-offload 包里声明，契约快照里那份 `SessionEventMap` 
 本扩展当前对齐：DSH `0.2.2-rc.5`（next 渠道；2026-11-18 自 `0.2.2-rc.2` 逐版核对，无破坏性差异。63 项持久化事件与扩展分类完全一致；审批与问卷、认证 cookie、desktop-host 连接、文件路径与媒体读取边界未变。旧 `dsh-agent-presets` 缺包已由 `dsh-agent-preset-registry` 覆盖。）<!-- dsh-compat:baseline -->
 
 `0.2.2-rc.2` 新增的失败续跑入口、工作区搜索接口及子代理名称显示仍暂缓（P1）；现有非空发送、文件访问和按会话 id 管理子代理的链路不依赖这些能力。`conversationContinuation` 与 `kind:'retry'` 的含义见[服务端契约](<dsh-server-api.md>)「后续版本的契约变更」。
+
+### 暂缓待办：DeepSeek 官网会话导入入口（P1）
+
+`0.2.2-rc.3` 新增实验性会话导入插件，默认关闭，仅 owner 可调用 `deepseekChatImport/limits` 和上传端点 `/api/deepseek-chat-import/archive`。这是自动契约报告未覆盖的新增能力，由人工复核列为 P1。
+
+**暂不在扩展添加导入入口，也不调用这两个端点。** 服务端导入后写入标准 DSH 会话及持久化事件，扩展沿用现有会话读取路径。若以后明确需要从扩展发起导入，再评估插件可用性与 owner 权限；本项不阻碍推进基准。
 
 ### 暂缓待办：连接层 WebSocket 载体适配（P1）
 
