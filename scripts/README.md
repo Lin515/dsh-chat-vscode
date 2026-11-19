@@ -136,7 +136,8 @@
 - [pathDisplay.test.ts](<pathDisplay.test.ts>) — 单行标题里路径拆分与省略口径（文件名不参与压缩），以及候选 / 「上一层」行悬停标题的完整绝对路径解析（绝对与 cwd 两侧都按根锚定语义消掉 `..`）。
 - [segment.test.ts](<segment.test.ts>) — 思考档位分段控件列数（≤4 档一行、5/6 档均分两行）。
 - [pickerFocus.test.ts](<pickerFocus.test.ts>) — 模型弹层「打开即定位到选中项」：起点判定、方向键移动（只走模型列表这一段）、高亮样式可见，以及「滚动只归模型列表、思考档位区常驻在滚动容器之外、模型不支持可选档位时整块（含分隔线）不渲染」的结构与样式契约。
-- [toolbarFit.test.ts](<toolbarFit.test.ts>) — 工具栏档位分配、极窄保底与布局盒判据；使用可注入观察者验证节点替换、幂等挂载、StrictMode 重挂与清理，并覆盖旧生命周期的负对照。
+- [toolbarFit.test.ts](<toolbarFit.test.ts>) — 工具栏默认与自定义档位分配、极窄保底与布局盒判据；使用可注入观察者验证节点替换、幂等挂载、StrictMode 重挂与清理，并覆盖旧生命周期的负对照。
+- [toolbarPreferencesHost.test.ts](<toolbarPreferencesHost.test.ts>) — 底栏命令路由、偏好归一化与持久化、多视图同步和保存失败恢复。
 - [connectView.test.ts](<connectView.test.ts>) — 连接条三类状态、文案与按钮矩阵。
 - [contextMenu.test.ts](<contextMenu.test.ts>) — 会话右键菜单判据、「引用」落点算术、保存建议文件名；真实快捷复制处理器覆盖 Ctrl / Cmd、跨消息空白换行保真、编辑焦点、修饰键、组字、重复与已处理事件、选区包含性和空选区让路。
 - [nodeCopy.test.ts](<nodeCopy.test.ts>) / [nodeCopyBrowser.tsx](<nodeCopyBrowser.tsx>) — 独立 jsdom realm 点击生产节点按钮，核验思考 / 注入 / 技能 / 命令 / 提示 / 未知块、审批 / 待答问卷 / 计划 / 计划记录的复制载荷、空内容让路、助手只在轮尾复制最后一段正文（中间正文不挂按钮、不跨工具拼接）、用户整条复制与流式选区冻结渲染。可同入口在 Chromium 运行；不连接真实 DSH、不验证系统剪贴板。

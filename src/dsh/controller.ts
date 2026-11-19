@@ -35,6 +35,7 @@ import type {
   TodoView,
 } from "../shared/chat";
 import type { ChangeCoordinates, HostToWebview, WebviewToHost } from "../shared/ipc";
+import { applyToolbarPreferenceAction, normalizeToolbarPreference, type ToolbarPreference } from "../shared/toolbarPreference";
 import { SessionAdapter, type ImageRef } from "./adapter";
 import { createTrajectoryResultWatchManager } from "./trajectoryResultWatch";
 import type { SubmissionReceipt } from "./submissionReceipts";
@@ -190,6 +191,8 @@ import { isBlank, mergeWindowCache, WindowRestore, WorkspaceWindowStateStore, ty
 /** 多根工作区里用户换过的「新会话根目录」（`workspaceState` 的键，见 `rootFolder`）。 */
 const ACTIVE_ROOT_KEY = "dshChat.activeRoot";
 const SESSION_SECRET_PREFIX = "dshChat.session.";
+const TOOLBAR_PREFERENCE_KEY = "toolbarPreference";
+const TOOLBAR_PREFERENCES_PANEL = "toolbar-preferences";
 
 /** 一次「要落会话的目录」的冻结快照（见 `captureSessionTarget`）。 */
 interface SessionTarget {
@@ -924,12 +927,13 @@ export class ChatController implements vscode.Disposable {
    */
   private readonly pendingPanelOpens = new Map<string, string>();
   /**
-   * 「命令在没有任何窗口时按下的通知入口」：先唤起主侧栏，等它的 `ready` 到了再开抽屉。
-   *
-   * 与 `pendingPanelOpens` 分开是因为这一刻**还不知道 viewId**——侧栏视图可能还没被
-   * VS Code 实例化（`dshChat.view.focus` 才刚让它出现），所以只能记一个意图。
+   * 「没有任何窗口时收到的开面板指令」：先唤起主侧栏，等它的 `ready` 到了再开抽屉。
+   * 此时侧栏可能还未实例化，没有 `viewId` 可记到 `pendingPanelOpens`。
    */
-  private pendingNotificationsOpen = false;
+  private pendingPrimaryPanelOpen?: { panel: string };
+  /** 底栏显示偏好以最近一次成功持久化的值为准；各视图的动作共用一条写入队列。 */
+  private toolbarPreference: ToolbarPreference;
+  private toolbarPreferenceWrites = Promise.resolve();
   /**
    * 每窗口「界面本地复制失败」请求号的已见水位（见 `reportImageCopyFailure`）。
    *
@@ -1689,7 +1693,7 @@ export class ChatController implements vscode.Disposable {
   constructor(
     private server: SupervisorManager,
     private readonly log: (line: string) => void,
-    /** 全局存储：跨工作区的状态（本地已删除的会话 id）。 */
+    /** 全局存储：跨工作区的状态（本地已删除的会话 id、底栏显示偏好等）。 */
     private readonly state: vscode.Memento,
     /** **工作区**存储：VS Code 自己那份按工作区分文件的缓存（窗口状态）。 */
     private readonly workspaceState: vscode.Memento,
@@ -1724,6 +1728,7 @@ export class ChatController implements vscode.Disposable {
       createClient: createClient ?? ((baseUrl, token) => new DshClient(baseUrl, token, log)),
       log,
     });
+    this.toolbarPreference = normalizeToolbarPreference(this.state.get(TOOLBAR_PREFERENCE_KEY));
     this.deletedSessionIds = new Set(this.state.get<string[]>("deletedSessionIds") ?? []);
     // 未读游标一个会话一把键（见 `unreadStore.ts`）：整份数组在多窗口下会互相覆写，
     // 把别人清掉的旗标写回来。旧口径那份整份集合连同它的判据一起作废。
@@ -2106,46 +2111,65 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
-   * 让某个窗口打开右侧抽屉。
-   *
-   * 窗口**已就绪**才直接发帧；否则先记成待开（`ready` 首帧之后补发）——
-   * 命令面板入口可能在 webview 还没加载完时被按下，直接发帧会落在空处。
+   * 在最近活动的窗口打开右侧抽屉。窗口未就绪时等首帧之后再开；
+   * 没有活动窗口时唤起主侧栏，只让主侧栏的 `ready` 消费待开指令。
    */
-  private openPanelTo(viewId: string, panel: string): void {
-    if (this.readyViews.has(viewId)) {
-      this.emitToView(viewId, { type: "ui/openPanel", panel });
-      return;
-    }
-    this.pendingPanelOpens.set(viewId, panel);
-  }
-
-  /**
-   * 命令面板入口「DSH: 查看消息通知」：让**最近活动的窗口**打开通知抽屉。
-   *
-   * 有活动窗口就走定向帧（与 `openHistory` 同一条路由）；一个窗口都没有时**先唤起
-   * 主侧栏**并把抽屉记成待开——不能广播（那会把抽屉开到所有视图上），也不能什么都不做
-   * （从未实例化过任何视图时，原来那条 `emitAll` 兜底是彻底的空操作）。
-   * 队列为空时同样可打开：抽屉自己渲染空态与已确认历史。
-   */
-  openNotifications(): void {
+  private openActivePanel(panel: string): void {
     const target = this.activeViewId();
     if (target) {
-      this.openPanelTo(target, "notifications");
+      if (this.readyViews.has(target)) {
+        if (panel === TOOLBAR_PREFERENCES_PANEL) this.emitToolbarPreference(target);
+        this.emitToView(target, { type: "ui/openPanel", panel });
+      } else {
+        this.pendingPanelOpens.set(target, panel);
+      }
       return;
     }
-    // 一个窗口都没有：唤起主侧栏，并把抽屉记成「它的 `ready` 之后要开」。
-    // `executeCommand` 会 reject（贡献点被禁用 / 视图容器没注册），不接住就是宿主里的
-    // unhandled rejection，而且这个意图会一直留着、等下一个不相干的 ready 才意外打开——
-    // 失败就作废并留日志。
-    this.pendingNotificationsOpen = true;
-    this.log("[notify] 没有活动窗口，唤起主侧栏并登记待开通知抽屉");
+    const intent = { panel };
+    this.pendingPrimaryPanelOpen = intent;
     vscode.commands.executeCommand("dshChat.view.focus").then(
       () => {},
       (error: unknown) => {
-        this.pendingNotificationsOpen = false;
-        this.log(`[notify] 唤起主侧栏失败，撤下待开的通知抽屉：${this.describeError(error)}`);
+        // 较早的唤起失败不能撤掉较新的意图。
+        if (this.pendingPrimaryPanelOpen === intent) this.pendingPrimaryPanelOpen = undefined;
+        this.log(`[view] 唤起主侧栏以打开 ${panel} 失败：${this.describeError(error)}`);
       },
     );
+  }
+
+  openNotifications(): void {
+    this.openActivePanel("notifications");
+  }
+
+  openToolbarPreferences(): void {
+    this.openActivePanel(TOOLBAR_PREFERENCES_PANEL);
+  }
+
+  private emitToolbarPreference(viewId: string): void {
+    this.emitToView(viewId, { type: "toolbar/preference", preference: this.toolbarPreference });
+  }
+
+  private changeToolbarPreference(viewId: string, action: unknown): Promise<void> {
+    const write = this.toolbarPreferenceWrites.then(async () => {
+      // 到队首再读权威值，避免来自不同视图的动作互相覆盖。
+      const next = applyToolbarPreferenceAction(this.toolbarPreference, action);
+      if (next === this.toolbarPreference) {
+        this.emitToolbarPreference(viewId);
+        return;
+      }
+      try {
+        await this.state.update(TOOLBAR_PREFERENCE_KEY, next);
+      } catch (error) {
+        this.log(`[toolbar] 保存底栏显示偏好失败：${this.describeError(error)}`);
+        this.emitToolbarPreference(viewId);
+        return;
+      }
+      this.toolbarPreference = next;
+      this.emitAll({ type: "toolbar/preference", preference: next });
+    });
+    // 即使投递异常，下一条动作也继续；调用方仍会收到这一条的异常。
+    this.toolbarPreferenceWrites = write.catch(() => {});
+    return write;
   }
 
   /**
@@ -9597,17 +9621,12 @@ export class ChatController implements vscode.Disposable {
         // 能收到 `ready` 就说明 webview 的监听已挂上，此刻推帧不会丢。
         this.emitToView(viewId, { type: "images/scope", connectionId: this.hostFiles?.connectionId ?? null });
         this.emitToView(viewId, { type: "state", state: this.snapshotFor(viewId) });
-        // 这个窗口在就绪之前收到的开面板指令（命令面板入口可能比页面加载更早按下）：
-        // 放在快照**之后**补发，抽屉打开时界面已经有全量状态了。
-        // 「没有任何窗口」时那条通知意图（`pendingNotificationsOpen`）**只由主侧栏消费**：
-        // 那一刻 VS Code 可能同时把编辑区面板恢复起来，谁先 ready 就把抽屉开到谁上面是错的
-        // （用户按的是主侧栏那个入口）；secondary / panel 的 ready 不消费、也不清除它。
-        const consumeGlobal = this.pendingNotificationsOpen && this.viewKinds.get(viewId) === "primary";
-        const pendingPanel = consumeGlobal ? "notifications" : this.pendingPanelOpens.get(viewId);
-        if (consumeGlobal) {
-          this.pendingNotificationsOpen = false;
-          this.log(`[notify] 主侧栏 ${viewId} 就绪，补发待开的通知抽屉`);
-        }
+        this.emitToolbarPreference(viewId);
+        // 待开指令放在快照和底栏偏好之后；无窗口时记下的意图只由主侧栏消费，
+        // 若该视图挂上后又收到定向指令，则以较新的指令为准。
+        const primaryIntent = this.viewKinds.get(viewId) === "primary" ? this.pendingPrimaryPanelOpen : undefined;
+        const pendingPanel = this.pendingPanelOpens.get(viewId) ?? primaryIntent?.panel;
+        if (primaryIntent) this.pendingPrimaryPanelOpen = undefined;
         if (pendingPanel !== undefined) {
           this.pendingPanelOpens.delete(viewId);
           this.emitToView(viewId, { type: "ui/openPanel", panel: pendingPanel });
@@ -9626,6 +9645,10 @@ export class ChatController implements vscode.Disposable {
         // 不该把用户刚停掉的后台又拉起来（用户 2026-10-18 口径）。那一次没连上时窗口就停在
         // 按钮态等用户点，而连接落地后 `onConnected` 会回来补这条空壳。
         await this.ensureSession(viewId, { start: false, askDir: false });
+        break;
+
+      case "toolbar/change":
+        await this.changeToolbarPreference(viewId, message.action);
         break;
 
       case "acknowledgeNotification":

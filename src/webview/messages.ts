@@ -1287,6 +1287,47 @@ export const MESSAGES = {
     zh: (percent: number, used: string, total: string) => `上下文已用 ${percent}%（${used} / ${total}）`,
     en: (percent: number, used: string, total: string) => `Context used ${percent}% (${used} / ${total})`,
   },
+  ctxUnavailable: { zh: "上下文占用暂不可用", en: "Context usage unavailable" },
+  toolbarTokensLabel: { zh: "Token 用量", en: "Token usage" },
+  toolbarTokensDetail: {
+    zh: (total: string) => `会话累计 Token 用量：${total}`,
+    en: (total: string) => `Total tokens used in this session: ${total}`,
+  },
+  toolbarPreferencesTitle: { zh: "工具栏偏好", en: "Toolbar Preferences" },
+  toolbarPreferencesIntro: {
+    zh: "空间不足时，优先保留靠前的选项。此顺序不改变选项在工具栏中的位置。",
+    en: "When space is limited, higher-priority options stay visible first. This order does not change their positions on the toolbar.",
+  },
+  toolbarPreferencesEnabled: { zh: "已启用（按优先级）", en: "Enabled (by priority)" },
+  toolbarPreferencesHidden: { zh: "已隐藏", en: "Hidden" },
+  toolbarPreferencesNoneEnabled: { zh: "未启用任何可选项。", en: "No optional items are enabled." },
+  toolbarPreferencesNoneHidden: { zh: "没有隐藏的选项。", en: "No items are hidden." },
+  toolbarPreferencesReset: { zh: "恢复默认", en: "Reset to defaults" },
+  toolbarPreferencesHide: { zh: "隐藏", en: "Hide" },
+  toolbarPreferencesEnable: { zh: "启用", en: "Enable" },
+  toolbarPreferencesHideItem: {
+    zh: (name: string) => `隐藏${name}`,
+    en: (name: string) => `Hide ${name}`,
+  },
+  toolbarPreferencesEnableItem: {
+    zh: (name: string) => `启用${name}`,
+    en: (name: string) => `Enable ${name}`,
+  },
+  toolbarPreferencesMoveUp: {
+    zh: (name: string) => `提高${name}的优先级`,
+    en: (name: string) => `Raise priority for ${name}`,
+  },
+  toolbarPreferencesMoveDown: {
+    zh: (name: string) => `降低${name}的优先级`,
+    en: (name: string) => `Lower priority for ${name}`,
+  },
+  toolbarPreferencesEffort: { zh: "思考档位", en: "Reasoning effort" },
+  toolbarPreferencesAttach: { zh: "添加附件", en: "Attach files" },
+  toolbarPreferencesSpeed: { zh: "输出速度", en: "Output speed" },
+  toolbarPreferencesPermission: { zh: "权限标签", en: "Permission label" },
+  toolbarPreferencesPreset: { zh: "预设", en: "Preset" },
+  toolbarPreferencesContext: { zh: "上下文数值", en: "Context numbers" },
+  toolbarPreferencesProvider: { zh: "模型供应商", en: "Model provider" },
   ctxDetailCached: { zh: "缓存命中", en: "Cache hit" },
   /**
    * 悬停明细里的 Token 用量行（用户 2026-11-20 口径：位置在缓存命中率**上方**）。

@@ -38,6 +38,7 @@ import {
   contextDetailLines,
   contextNumbers,
   formatDuration,
+  formatTokens,
   useElapsed,
 } from "./primitives";
 import { ApprovalCard, PlanReviewCard, QuestionCard, formatTps } from "./Rows";
@@ -61,7 +62,7 @@ import { segmentColumns } from "../segment";
 import { fill, resolveText, useTexts } from "../texts";
 import { useUiScale } from "../uiScale";
 import { sessionCacheHitPercent, sessionTokenTotal } from "../cacheHit";
-import { BAR_ORDER, createFitAnchor, pickVariants, toolbarAvailableWidth, type ToolbarVariant } from "../toolbarFit";
+import { createFitAnchor, pickVariants, toolbarAvailableWidth, toolbarOrder, type ToolbarVariantId } from "../toolbarFit";
 
 /**
  * 输入框的布局、工具行与文本域。
@@ -161,7 +162,7 @@ function permissionMeta(
 }
 
 /** 一帧都没结算时的空集合（模块级常量：避免每次渲染新建 Set 触发无谓的重渲染）。 */
-const EMPTY_RANKS: ReadonlySet<number> = new Set();
+const EMPTY_VARIANTS: ReadonlySet<ToolbarVariantId> = new Set();
 
 /**
  * 底部工具栏的自适应：量出候选档位的**实际宽度**，按 `toolbarFit.ts` 的优先级
@@ -180,16 +181,16 @@ const EMPTY_RANKS: ReadonlySet<number> = new Set();
  * 全程没有写死的像素阈值：「多宽显示谁」完全由实测宽度算出来，
  * 所以换语言（权限名长短差近一倍）、换模型、调字号都自动跟上。
  */
-function useToolbarFit(variants: ToolbarVariant[]) {
-  /** 测量层里的 DOM（rank → 元素），宽度每次结算时重新读。 */
-  const nodes = useRef(new Map<number, HTMLElement>());
+function useToolbarFit(variants: ReturnType<typeof toolbarOrder>) {
+  /** 用稳定的档位 ID 关联节点；调优先级时 rank 会变化。 */
+  const nodes = useRef(new Map<string, HTMLElement>());
   // 每次渲染刷新「当前档位表」：ResizeObserver 的回调引用是稳定的，
   // 只有通过 ref 才能读到这一帧的表
   const latest = useRef(variants);
   latest.current = variants;
-  /** 上一次结算出的档位签名（排序后的 rank），用来判断要不要重新渲染。 */
+  /** 上一次结算出的档位签名（排序后的 ID），用来判断要不要重新渲染。 */
   const signature = useRef("");
-  const [shown, setShown] = useState<ReadonlySet<number>>(EMPTY_RANKS);
+  const [shown, setShown] = useState(EMPTY_VARIANTS);
   /**
    * 当前那一枚 `.composer-bar`。**由下面 `anchor` 的 callback ref 写**，不在挂载时取一次：
    * 这个节点会被换掉（只读子代理会话那一支是同类型 div 的子树替换），而 `fit` 读的是
@@ -219,15 +220,13 @@ function useToolbarFit(variants: ToolbarVariant[]) {
       ...variant,
       // 每次都**重新读 DOM**，不能沿用 ref 回调那一次的结果：文案/字号/语言变了
       // 宽度就变，而节点本身没有重新挂载，ref 回调不会再触发
-      width: nodes.current.get(variant.rank)?.getBoundingClientRect().width ?? 0,
+      width: nodes.current.get(variant.id)?.getBoundingClientRect().width ?? 0,
     }));
-    const picked = [...pickVariants(measured, available, gap).values()]
-      .map((variant) => variant.rank)
-      .sort((a, b) => a - b)
-      .join(",");
-    if (picked === signature.current) return;
-    signature.current = picked;
-    setShown(new Set(picked ? picked.split(",").map(Number) : []));
+    const picked = [...pickVariants(measured, available, gap).values()].map((variant) => variant.id).sort();
+    const nextSignature = picked.join(",");
+    if (nextSignature === signature.current) return;
+    signature.current = nextSignature;
+    setShown(new Set(picked));
   }, [barRef]);
 
   useLayoutEffect(fit);
@@ -253,18 +252,18 @@ function useToolbarFit(variants: ToolbarVariant[]) {
   }, [anchor, barRef]);
   // 测量层那些 ref 回调（`register`）必须**稳定**：每次渲染新建函数的话，React 会先把旧的
   // 解绑（传 null）再绑新的，白白多一轮往返，`nodes` 也会被反复清空又填上。
-  // 档位表变没变看 rank 列表就够了。
-  const ranks = variants.map((variant) => variant.rank).join(",");
+  // 只根据 ID 集合建回调，调顺序不重绑测量节点。
+  const ids = variants.map((variant) => variant.id).sort().join(",");
   const register = useMemo(() => {
-    const map = new Map<number, (element: HTMLElement | null) => void>();
-    for (const rank of ranks ? ranks.split(",").map(Number) : []) {
-      map.set(rank, (element) => {
-        if (element) nodes.current.set(rank, element);
-        else nodes.current.delete(rank);
+    const map = new Map<string, (element: HTMLElement | null) => void>();
+    for (const id of ids ? ids.split(",") : []) {
+      map.set(id, (element) => {
+        if (element) nodes.current.set(id, element);
+        else nodes.current.delete(id);
       });
     }
     return map;
-  }, [ranks]);
+  }, [ids]);
 
   // 交给 `.composer-bar` 的 callback ref：它既把节点同步给 `fit`，又把观察者挂到**这一枚**
   // 节点上（换节点先断旧的）。必须是这个而不是裸 ref 对象——裸 ref 只写 `barRef.current`，
@@ -626,7 +625,7 @@ export function Composer({
 
   /* ---------------- 底部工具栏：候选档位表 ---------------- */
   //
-  // 每个档位一个节点，键是 `槽位:档位`，与 `toolbarFit.ts` 的 BAR_ORDER 一一对应。
+  // 每个档位一个节点，键是 `槽位:档位`，与 `toolbarFit.ts` 的档位 ID 一一对应。
   // 这些节点是**先渲染、再决定显不显示**的：`useToolbarFit` 会把整张表渲染进一个
   // 不可见的测量层里量出各自的实际宽度，再按优先级挑出这一帧显示哪些。
   //
@@ -788,8 +787,7 @@ export function Composer({
     state.contextOccupancy?.contextWindow,
   );
   /**
-   * 缓存命中率（用户 2026-10-10 口径：工具栏**最低优先级**的那一项，位置在上下文容量
-   * 数值右边，写法是 `98.7%HIT`——中英文同一份）。
+   * 缓存命中率（默认最后显示，位置固定在发送按钮左侧，写法是 `98.7%HIT`）。
    *
    * 取的是**会话累计**口径（`tokenUsage` 投影，官方 UsagePill 的同一个键与同一个
    * 分母）。这个值是界面上**唯一**的命中率来源：工具栏那一枚与两处悬停明细里的
@@ -800,8 +798,8 @@ export function Composer({
    */
   const cacheHitText = sessionCacheHitPercent(state.tokenUsage);
   /**
-   * 会话累计的 Token 用量**总数**（与上面那枚命中率同一个投影）：悬停明细里
-   * 「Token 用量」行读它，位置在缓存命中率**上方**（用户 2026-11-20 口径）。
+   * 会话累计的 Token 用量**总数**（与上面那枚命中率同一个投影）：可选的底栏项
+   * 和悬停明细都读它，位置在缓存命中率之前。
    * 只给总数——官方的输入 / 缓存读取 / 缓存写入 / 输出四行不复制进来。
    */
   const tokenTotal = sessionTokenTotal(state.tokenUsage);
@@ -817,11 +815,8 @@ export function Composer({
    * 悬停明细：**圆环与缓存命中读数共用同一份文本**（用户 2026-10-10 口径：缓存命中
    * 悬停要显示与上下文悬停一模一样的信息）。拼法只有一份（`contextDetailLines`），
    * 两处喂的又是同一组 `ctxProps`，所以两处悬停必然逐字一致。
-   *
-   * 一行都没有时给 `undefined`（不挂空提示）：此时圆环那边同样没有明细可看，
-   * 悬停弹出一个空白框反而像坏了。
    */
-  const ctxDetailTitle = contextDetailLines(ctxProps, texts).join("\n") || undefined;
+  const ctxDetailTitle = contextDetailLines(ctxProps, texts).join("\n");
 
   // 运行中的主按钮（官方 `primaryStops = running && (empty || blocked)`）：
   // - 正文与附件都没有 → 停止（生成中还能"点一下停"，这是用户最需要的动作；按住修饰键也不变）；
@@ -865,7 +860,7 @@ export function Composer({
       sendButton
     );
 
-  const barNodes: Record<string, ReactNode> = {
+  const barNodes: Record<ToolbarVariantId, ReactNode> = {
     "permission:icon": permissionPill(false),
     "permission:label": permissionPill(true),
     "model:full": modelPill(false),
@@ -875,8 +870,13 @@ export function Composer({
     "preset:full": presetLabel,
     "attach:full": attachPill,
     "tps:full": speedText,
-    "context:ring": ctxNumbers ? <CtxText {...ctxProps} /> : null,
+    "context:ring": <CtxText {...ctxProps} />,
     "context:text": ctxNumbers ? <CtxText {...ctxProps} detailed /> : null,
+    "tokens:full": tokenTotal !== undefined ? (
+      <span className="ctx-token-usage" title={texts.toolbarTokensDetail(tokenTotal.toLocaleString())}>
+        {texts.toolbarTokensLabel} {formatTokens(tokenTotal)}
+      </span>
+    ) : null,
     // 缓存命中率是**独立元素**（用户 2026-10-10 第二条口径：不与上下文数字逗号连写），
     // 所以它不要求 `ctxNumbers`——命中率读的是另一个投影（`tokenUsage`），有数据就显示。
     // 只在拿不到命中率数据时整档消失（不显示 `0%HIT`）。
@@ -888,14 +888,12 @@ export function Composer({
       </span>
     ) : null,
   };
-  const barVariants: ToolbarVariant[] = BAR_ORDER.filter(
-    (spec) => barNodes[`${spec.slot}:${spec.level}`] != null,
-  ).map((spec) => ({ ...spec, width: 0 }));
+  const barVariants = toolbarOrder(state.toolbarPreference.enabled, (id) => barNodes[id] != null);
   const { shown, register, attachBar } = useToolbarFit(barVariants);
   /** 这一帧实际要渲染的节点（槽位 → 节点），按优先级分配的结果。 */
   const bar: Record<string, ReactNode> = {};
   for (const variant of barVariants) {
-    if (shown.has(variant.rank)) bar[variant.slot] = barNodes[`${variant.slot}:${variant.level}`];
+    if (shown.has(variant.id)) bar[variant.slot] = barNodes[variant.id];
   }
 
   /**
@@ -1349,13 +1347,10 @@ export function Composer({
 
             <span className="spacer" />
 
-            {/* tps 与上下文占用：次优先级（占用只给圆环）；最宽裕时圆环
-                右侧才补上 `44K/128K` 的精确数值（最低优先级）。 */}
+            {/* 固定视觉顺序；上下文数值是圆环的可选升级，Token 用量和缓存命中率各自进退。 */}
             {bar.tps}
             {bar.context}
-
-            {/* 缓存命中率：全场最低优先级，位置在容量数值右边，但**自成一项**
-                （用户 2026-10-10 第二条口径）——它与容量数值各自进退。 */}
+            {bar.tokens}
             {bar.cache}
 
             {bar.send}
@@ -1368,10 +1363,10 @@ export function Composer({
                 {barVariants.map((variant) => (
                   <span
                     className="measure-item"
-                    key={`${variant.slot}:${variant.level}`}
-                    ref={register.get(variant.rank)}
+                    key={variant.id}
+                    ref={register.get(variant.id)}
                   >
-                    {barNodes[`${variant.slot}:${variant.level}`]}
+                    {barNodes[variant.id]}
                   </span>
                 ))}
               </div>

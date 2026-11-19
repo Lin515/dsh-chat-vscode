@@ -93,6 +93,10 @@
         "icon": "$(bell)"
       },
       {
+        "command": "dshChat.toolbarPreferences",
+        "title": "%cmd.toolbarPreferences.title%"
+      },
+      {
         "command": "dshChat.openInEditor",
         "title": "%cmd.openInEditor.title%",
         "icon": "$(open-preview)"

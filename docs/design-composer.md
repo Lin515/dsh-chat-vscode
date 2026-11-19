@@ -1,26 +1,30 @@
 # 输入区工具栏：优先级与宽度自适应
 
-修改 `.composer-bar` 元素、次序或布局前读本文。显示档位由同一份 `BAR_ORDER` 与实测宽度分配，不用固定窗口宽度猜隐藏谁。
+修改 `.composer-bar` 元素、次序或布局前读本文。`toolbarOrder` 把固定档与用户偏好组合成候选表，再用实测宽度分配，不用固定窗口宽度猜隐藏谁。
 
 ## 优先级与档位
 
-| 槽位:档位 | rank | 口径 |
+| 槽位:档位 | 默认保留顺序 | 口径 |
 |---|---|---|
-| `context:ring` | 0 | P0 pinned，占用环最高优先级；精确数值另属 P2 |
-| `permission:icon` | 1 | P0 pinned，盾牌入口，title 给全称，无下箭头 |
-| `model:full` | 2 | P0 pinned，当前模型名，max-width 150px，无下箭头 |
-| `send:full` | 3 | P0 pinned，运行且正文与附件都没有为停止；否则按 busyEnter / 当下 Ctrl、Cmd 手势显示发送模式 |
-| `effort:full` | 4 | P1，只读思考等级，点击 toggle 同一模型弹层 |
-| `attach:full` | 5 | P1，通用附件入口，不随模型是否收图隐藏 |
-| `tps:full` | 6 | P1，会话平均输出速度（Σ 输出 token / Σ 解码窗口），与 hover 同源同格式 |
-| `permission:label` | 7 | P2，图标 + 权限名，与 icon 互斥 |
-| `preset:full` | 8 | P2，会话开始后的只读预设名 |
-| `context:text` | 9 | P2，环 + 44K/128K，与 ring 互斥，环内无百分比 |
-| `model:provider` | 10 | P2，提供商/模型名，与 full 互斥 |
+| `context:ring` | 固定 | 上下文占用环；没有有效数据时显示中性圆环，不冒充 0% |
+| `permission:icon` | 固定 | 盾牌入口，title 给全称，无下箭头 |
+| `model:full` | 固定 | 当前模型名，max-width 150px，无下箭头 |
+| `send:full` | 固定 | 发送 / 停止入口 |
+| `effort:full` | 1 | 只读思考等级，点击切换模型弹层 |
+| `attach:full` | 2 | 通用附件入口，不随模型是否收图隐藏 |
+| `tps:full` | 3 | 会话平均输出速度（Σ 输出 token / Σ 解码窗口），与悬停同源同格式 |
+| `permission:label` | 4 | 权限图标 + 权限名，升级图标档 |
+| `preset:full` | 5 | 会话开始后的只读预设名 |
+| `context:text` | 6 | 环 + 44K/128K，升级圆环档；精确数值仍可悬停查看 |
+| `model:provider` | 7 | 提供商/模型名，升级模型名档 |
+| `cache:full` | 8 | 独立的缓存命中率 |
+| `tokens:full` | 默认不显示 | 会话累计 Token，沿用悬停明细口径（官方计费输入 + 输出）；有数据才显示 |
 
-P0 四项无条件落位，极窄也留 DOM。P1 / P2 各档按渲染左右次序，左边优先；挪元素必须同步 rank。占用环是有意例外，虽然在右半区仍最高优先级。
+命令面板的「底栏显示顺序」打开设置。显示项按保留先后排序，可移动、移出底栏、重新加入列表末尾或恢复默认。**优先级不改变视觉位置**：底栏右侧仍是速度 → 上下文 → Token 用量 → 缓存命中率 → 发送；隐藏上下文数值后，Token 用量直接跟在圆环旁。固定四项不参加设置，极窄时也留在 DOM。
 
-分配是**前缀**：某档装不下，后面的这一帧都不显示，不跳过高档贪心填低档。接受空隙以保证宽度增加时元素只进不出、不降档。同槽位逐档升级只付宽度差，不再付 gap；互斥档 rank 必须递增。
+偏好由扩展宿主的 `globalState` 保存，不随会话或工作区切换。webview 发送单个动作，宿主按顺序应用到最新值，保存成功才向已打开视图同步；视图就绪时读取当前权威值。归一化保留已记录的顺序，未记录的新档位按默认状态追加。
+
+分配是**前缀**：先跳过未启用或没有数据的档位；某个实际候选装不下，之后的候选在这一帧都不显示。接受空隙以保证宽度增加时元素只进不出、不降档。同槽位升级只付宽度差，不再付 gap。
 
 ## 实测与生命周期
 
@@ -30,7 +34,7 @@ P0 四项无条件落位，极窄也留 DOM。P1 / P2 各档按渲染左右次�
 - 可用宽度 = bar.clientWidth − computed 左右 padding；新槽位计 computed column-gap（通常 8px，mini 4px）。
 - 提交后的 layout effect 与 ResizeObserver 两处触发。`createFitAnchor` 的 callback ref 随条件渲染替换节点，断旧观察、挂新观察；StrictMode 重新挂载也必须恢复观察。
 - `toolbarAvailableWidth` 量不到有效布局盒时不结算，保上一有效档位。真实极窄、扣 padding 后为 0 / 负值仍须分配；visibility:hidden 保布局盒，仍可测，不能靠视口宽度猜。
-- 缺数据的档位不进表，null 不占槽位 / gap；签名没变不 render，空结果用稳定 EMPTY_RANKS。
+- 缺数据的档位不进表，不占槽位 / gap；测量和选中结果用稳定档位标识，不用可变化的优先级当键。
 
 连 P0 都放不下时由 CSS 收窄 / ellipsis，不再另加隐藏门。mini 的 220px 只调间距与 padding，不决定谁显示。新文字需 nowrap + ellipsis，中英都检查。
 
@@ -74,7 +78,9 @@ Auto 的七条文字逐字取官方 accessZh / accessEn；官方中文名也为 
 
 | 文件 | 职责 |
 |---|---|
-| [toolbarFit.ts](<../src/webview/toolbarFit.ts>) | BAR_ORDER、pickVariants、观察目标与可用宽度前置 |
+| [toolbarFit.ts](<../src/webview/toolbarFit.ts>) | toolbarOrder、pickVariants、观察目标与可用宽度前置 |
+| [toolbarPreference.ts](<../src/shared/toolbarPreference.ts>) / [ToolbarPreferences.tsx](<../src/webview/components/ToolbarPreferences.tsx>) | 默认档位、偏好动作与设置面板 |
+| [toolbarPreferencesHost.test.ts](<../scripts/toolbarPreferencesHost.test.ts>) | 命令路由、保存与恢复、多视图同步及失败处理 |
 | [Composer.tsx](<../src/webview/components/Composer.tsx>) | barNodes、useToolbarFit、渲染次序 |
 | [EmptyMeta.tsx](<../src/webview/components/EmptyMeta.tsx>)、[composerDir.ts](<../src/webview/composerDir.ts>) | 空态页目录行、根目录菜单与按状态分档的纯判据 |
 | [directoryLabel.ts](<../src/webview/directoryLabel.ts>) | 同名目录的去重短名（根目录菜单与历史混合目录共用） |

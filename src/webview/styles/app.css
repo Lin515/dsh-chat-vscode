@@ -3804,7 +3804,7 @@ button.changes-card-head:hover .changes-card-chevron,
 }
 
 /* context-window usage: 圆环给「还剩多少余地」，宽裕时环右侧再给精确数值
-   `44K/128K`（最低优先级那一档）。环内**不写百分比**。 */
+   `44K/128K`（可选档位）。环内**不写百分比**。 */
 .ctx-ring {
   display: inline-flex;
   align-items: center;
@@ -3846,7 +3846,8 @@ button.changes-card-head:hover .changes-card-chevron,
    弹性收缩；与 `.ctx-ring` 同一档描述色——它**不吃占用高低的警告色**：`.is-high` /
    `.is-critical` 说的是「上下文快满了」，缓存省了多少是另一回事，跟着变红会读成
    「命中率有问题」。 */
-.ctx-cache-hit {
+.ctx-cache-hit,
+.ctx-token-usage {
   flex: 0 0 auto;
   font-size: var(--font-size-2xs);
   font-variant-numeric: tabular-nums;
@@ -7858,4 +7859,140 @@ textarea.composer-input {
 /* 窄屏时检查器是绝对定位的（见上面的容器查询），锚点就是这块主体区 */
 .trajectory-body {
   position: relative;
+}
+
+/* ============================ 工具栏偏好 ============================ */
+
+.toolbar-preferences {
+  --toolbar-dialog-gutter: min(calc(12 * var(--dp)), 4vmin);
+  width: min(calc(420 * var(--dp)), calc(100% - 2 * var(--toolbar-dialog-gutter)));
+  max-width: none;
+  max-height: calc(100% - 2 * var(--toolbar-dialog-gutter));
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.toolbar-preferences[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+.toolbar-preferences::backdrop {
+  background: rgb(0 0 0 / 45%);
+}
+
+.toolbar-preferences-header,
+.toolbar-preferences-footer {
+  display: flex;
+  align-items: center;
+  gap: calc(8 * var(--dp));
+  padding: calc(8 * var(--dp)) calc(14 * var(--dp));
+}
+
+.toolbar-preferences-header {
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border);
+}
+
+.toolbar-preferences-footer {
+  justify-content: flex-end;
+  border-top: 1px solid var(--border);
+}
+
+.toolbar-preferences-body {
+  min-height: 0;
+  padding: calc(12 * var(--dp)) calc(14 * var(--dp));
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.toolbar-preferences-header h2,
+.toolbar-preferences-body h3,
+.toolbar-preferences-body p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.toolbar-preferences-header h2 {
+  font-size: var(--font-size-body);
+}
+
+.toolbar-preferences-body h3 {
+  margin-bottom: calc(4 * var(--dp));
+  font-size: var(--font-size-sm);
+}
+
+.toolbar-preferences-body p,
+.toolbar-preferences-list li::marker {
+  color: var(--description);
+}
+
+.toolbar-preferences-body section {
+  margin-top: calc(12 * var(--dp));
+}
+
+.toolbar-preferences-list {
+  margin: 0;
+  padding-inline-start: calc(23 * var(--dp));
+}
+
+.toolbar-preferences-list li + li {
+  border-top: 1px solid var(--border);
+}
+
+.toolbar-preferences-row,
+.toolbar-preferences-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: calc(4 * var(--dp));
+}
+
+.toolbar-preferences-row {
+  justify-content: flex-end;
+  padding: calc(4 * var(--dp)) 0;
+}
+
+.toolbar-preferences-row > span {
+  flex: 1 1 calc(110 * var(--dp));
+  overflow-wrap: anywhere;
+}
+
+.toolbar-preferences-actions {
+  justify-content: flex-end;
+}
+
+.toolbar-preferences-button {
+  min-height: calc(26 * var(--dp));
+  max-width: 100%;
+  padding: calc(3 * var(--dp)) calc(8 * var(--dp));
+  border-radius: var(--radius-sm);
+  background: var(--secondary);
+  color: var(--secondary-fg);
+  overflow-wrap: anywhere;
+}
+
+.toolbar-preferences-button.is-icon {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  min-width: calc(26 * var(--dp));
+  padding-inline: calc(4 * var(--dp));
+}
+
+.toolbar-preferences-button:hover:not(:disabled) {
+  background: var(--secondary-hover);
+}
+
+.toolbar-preferences-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.toolbar-preferences-up {
+  transform: rotate(180deg);
 }

@@ -14,7 +14,10 @@
 import assert from "node:assert";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { BAR_ORDER, createFitAnchor, pickVariants, toolbarAvailableWidth, type FitObserver, type ToolbarVariant } from "../src/webview/toolbarFit";
+import { applyToolbarPreferenceAction, DEFAULT_TOOLBAR_PREFERENCE, normalizeToolbarPreference } from "../src/shared/toolbarPreference";
+import { createFitAnchor, pickVariants, toolbarAvailableWidth, toolbarOrder, type FitObserver, type ToolbarVariant } from "../src/webview/toolbarFit";
+
+const BAR_ORDER = toolbarOrder(DEFAULT_TOOLBAR_PREFERENCE.enabled, () => true);
 
 /** 一份贴近真实的宽度样本（px）：模型名较长、权限文字是中文口径。
  *
@@ -78,10 +81,7 @@ const ALL_WITHOUT_CACHE = ALL.filter((key) => key !== "cache:full").sort();
 // 附件/tps）全部排在 P2（权限文字、预设标签、上下文数值）之前；同槽位的档位 rank
 // 必须递增，否则「先图标、后图标+文字」这种升级在算法里永远升不上去。
 //
-// **同一档内部按元素在工具栏里的左右次序定优先级**（用户 2026-09-22 口径）：
-// 越靠左越先保住。所以 P1/P2 各自的 rank 次序必须与下面记的左右次序一致，
-// 而左右次序的**真正来源**是 Composer 的渲染次序——两条一起断言，
-// 挪动元素位置却不改表就会被抓住。
+// 默认优先级沿用设置引入前的顺序；优先级和左右位置现在独立，各自断言。
 {
   const byRank = [...BAR_ORDER].sort((a, b) => a.rank - b.rank);
   const pinned = byRank.filter((spec) => spec.pinned).map((spec) => spec.slot);
@@ -134,8 +134,7 @@ const ALL_WITHOUT_CACHE = ALL.filter((key) => key !== "cache:full").sort();
   // 它自成一项，于是「数值」与「命中率」各自进退——宽度不够时先掉命中率，数值仍留着。
   assert.deepStrictEqual(cache, ["full"], "缓存命中率必须是独立槽位（不是上下文槽位的第三档）");
 
-  // 左右次序的**来源**：Composer 里 `{bar.槽位}` 的先后就是工具栏的左右布局
-  // （`.composer-bar` 是 flex 行）。它一变，「哪一项先被挤掉」就跟着变。
+  // Composer 里的槽位顺序是固定的；用户设置只决定谁能进入这些槽位。
   const composer = readFileSync(
     join(process.cwd(), "src", "webview", "components", "Composer.tsx"),
     "utf8",
@@ -143,8 +142,8 @@ const ALL_WITHOUT_CACHE = ALL.filter((key) => key !== "cache:full").sort();
   const visual = [...composer.matchAll(/\{bar\.(\w+)\}/g)].map((match) => match[1]);
   assert.deepStrictEqual(
     visual,
-    ["permission", "model", "effort", "preset", "attach", "tps", "context", "cache", "send"],
-    "工具栏的渲染次序（= 从左至右）变了：同档内的优先级就是按它定的，改位置要同步改 rank（命中率必须紧跟上下文数值右边）",
+    ["permission", "model", "effort", "preset", "attach", "tps", "context", "tokens", "cache", "send"],
+    "Token 用量固定在上下文槽位右边，之后是命中率与发送；优先级不改变视觉顺序",
   );
   assert.ok(
     /"model:provider": modelPill\(true\)/.test(composer),
@@ -152,6 +151,42 @@ const ALL_WITHOUT_CACHE = ALL.filter((key) => key !== "cache:full").sort();
   );
 }
 console.log("toolbarFit: 优先级表符合用户口径 ✓");
+
+// 用户首选 Token、隐藏上下文数值；缺 Token 数据时跳过它，有数据但放不下时不跳级。
+{
+  const custom = normalizeToolbarPreference({
+    enabled: ["tokens:full", null, "tokens:full", "unknown:full", "attach:full"],
+    hidden: ["context:text", "tokens:full", "context:ring", "context:text"],
+  });
+  assert.deepStrictEqual(custom, {
+    enabled: ["tokens:full", "attach:full", "effort:full", "tps:full", "permission:label", "preset:full", "model:provider", "cache:full"],
+    hidden: ["context:text"],
+  });
+  assert.strictEqual(normalizeToolbarPreference({ enabled: null, hidden: [] }), DEFAULT_TOOLBAR_PREFERENCE);
+  assert.strictEqual(applyToolbarPreferenceAction(custom, { type: "hide", id: "context:ring" }), custom);
+  assert.strictEqual(applyToolbarPreferenceAction(custom, { type: "move", id: "tokens:full", direction: "up" }), custom);
+  const moved = applyToolbarPreferenceAction(custom, { type: "move", id: "tokens:full", direction: "down" });
+  assert.deepStrictEqual(moved.enabled.slice(0, 2), ["attach:full", "tokens:full"]);
+  const hidden = applyToolbarPreferenceAction(moved, { type: "hide", id: "tokens:full" });
+  assert.ok(!hidden.enabled.includes("tokens:full"));
+  const enabled = applyToolbarPreferenceAction(hidden, { type: "enable", id: "tokens:full" });
+  assert.strictEqual(enabled.enabled.at(-1), "tokens:full");
+  assert.strictEqual(applyToolbarPreferenceAction(enabled, { type: "reset" }), DEFAULT_TOOLBAR_PREFERENCE);
+  assert.deepStrictEqual(DEFAULT_TOOLBAR_PREFERENCE.hidden, ["tokens:full"]);
+
+  const fit = (available: number, hasTokens = true) => pickVariants(
+    toolbarOrder(custom.enabled, (id) => id !== "tokens:full" || hasTokens)
+      .map((variant) => ({ ...variant, width: variant.id === "tokens:full" ? 56 : WIDTHS[variant.id] ?? 0 })),
+    available,
+    8,
+  );
+  assert.deepStrictEqual([...fit(272).values()].map((variant) => variant.id), ["context:ring", "permission:icon", "model:full", "send:full"]);
+  assert.strictEqual(fit(272, false).get("attach")?.id, "attach:full");
+  assert.strictEqual(fit(306).get("tokens")?.id, "tokens:full");
+  assert.ok(!fit(306).has("attach"));
+  assert.strictEqual(fit(800).get("context")?.id, "context:ring");
+}
+console.log("toolbarFit: 自定义排序、隐藏、复位与无数据跳过 ✓");
 
 // ---------- 2. 宽度充裕：全部都显示（含 P2 各档） ----------
 //

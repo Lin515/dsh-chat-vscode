@@ -888,6 +888,29 @@ export interface Texts {
   deleteSelectedConfirm: (count: number) => string;
 
   contextUsed: (percent: number, used: string, total: string) => string;
+  ctxUnavailable: string;
+  toolbarTokensLabel: string;
+  toolbarTokensDetail: (total: string) => string;
+  toolbarPreferencesTitle: string;
+  toolbarPreferencesIntro: string;
+  toolbarPreferencesEnabled: string;
+  toolbarPreferencesHidden: string;
+  toolbarPreferencesNoneEnabled: string;
+  toolbarPreferencesNoneHidden: string;
+  toolbarPreferencesReset: string;
+  toolbarPreferencesHide: string;
+  toolbarPreferencesEnable: string;
+  toolbarPreferencesHideItem: (name: string) => string;
+  toolbarPreferencesEnableItem: (name: string) => string;
+  toolbarPreferencesMoveUp: (name: string) => string;
+  toolbarPreferencesMoveDown: (name: string) => string;
+  toolbarPreferencesEffort: string;
+  toolbarPreferencesAttach: string;
+  toolbarPreferencesSpeed: string;
+  toolbarPreferencesPermission: string;
+  toolbarPreferencesPreset: string;
+  toolbarPreferencesContext: string;
+  toolbarPreferencesProvider: string;
   /** 悬停上下文占用时的明细行（标签 + 数值）。 */
   ctxDetailCached: string;
   /**

@@ -42,6 +42,8 @@ import type { PanelKind } from "./state";
  * 依赖变化重跑（原图的 `value`、回调新身份都会），注册先后不稳定。
  */
 export const ESC_LAYER = {
+  /** 工具栏偏好使用浏览器顶层模态，盖在所有自绘浮层之上。 */
+  modal: 40,
   /** 自绘右键菜单：盖在原图浮层之上（视觉同序），一次 ESC 只关它。 */
   contextMenu: 30,
   /** 原图浮层：菜单关掉之后的下一次 ESC 才轮到它。 */

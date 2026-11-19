@@ -15,6 +15,7 @@ import type {
   ContextOccupancyView,
 } from "../shared/chat";
 import type { HostToWebview } from "../shared/ipc";
+import { DEFAULT_TOOLBAR_PREFERENCE, type ToolbarPreference } from "../shared/toolbarPreference";
 import { mergeWirePatch } from "../shared/wire";
 import { changesSummaryKey } from "../shared/changesSummary";
 import {
@@ -53,6 +54,10 @@ export interface AppState extends ChatState {
   /** 归档会话列表（历史抽屉的归档视图）。 */
   archivedSessions: SessionSummaryView[];
   panel: PanelKind;
+  /** 模态偏好可叠在任意抽屉上；关掉后仍回到原页面。 */
+  toolbarPreferencesOpen: boolean;
+  /** 宿主同步的工具栏偏好，与会话快照无关。 */
+  toolbarPreference: ToolbarPreference;
   commands: CommandView[];
   fileRefs: {
     /** 查询归属；切会话时不接收另一条会话的迟到结果。 */
@@ -210,6 +215,8 @@ export const initialState: AppState = {
   sessions: [],
   archivedSessions: [],
   panel: "none",
+  toolbarPreferencesOpen: false,
+  toolbarPreference: DEFAULT_TOOLBAR_PREFERENCE,
   commands: [],
   fileRefs: { query: "", items: [], sessions: [], resolved: false, cwd: "" },
 };
@@ -269,6 +276,7 @@ function mapMessage(
 export type Action =
   | HostToWebview
   | { type: "ui/setPanel"; panel: PanelKind }
+  | { type: "ui/closeToolbarPreferences" }
   | { type: "ui/setDraft"; text: string }
   /** 界面自产的「引用到输入框」（右键菜单）：文本已经是当前语言的成品，不走 `@key`。 */
   | { type: "ui/quoteText"; text: string }
@@ -592,10 +600,18 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, scheduleHistory: { ...state.scheduleHistory, [action.id]: entry } };
     }
 
+    case "toolbar/preference":
+      return { ...state, toolbarPreference: action.preference };
+
     case "ui/openPanel":
-      // 宿主帧里的 `panel` 是字符串：只认登记过的抽屉，未知值**忽略**（不猜、不存）。
-      // 这一条命令同时是「查看消息通知」的落点，所以 notifications 必须在允许名单里。
+      if (action.panel === "toolbar-preferences") {
+        return state.toolbarPreferencesOpen ? state : { ...state, toolbarPreferencesOpen: true };
+      }
+      // 除独立模态外只认登记过的抽屉；未知值忽略。
       return isPanelKind(action.panel) ? { ...state, panel: action.panel } : state;
+
+    case "ui/closeToolbarPreferences":
+      return state.toolbarPreferencesOpen ? { ...state, toolbarPreferencesOpen: false } : state;
 
     case "ui/setDraft":
       return { ...state, draft: action.text };

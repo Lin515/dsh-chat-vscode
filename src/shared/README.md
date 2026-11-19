@@ -5,6 +5,7 @@
 
 - `chat.ts` — 视图模型：宿主与 webview 共用的聊天状态形状（刻意与线协议解耦，协议变更只影响 `dsh/` 适配层）；含按窗口的 `HistoryDirectoryView` / `HistoryScope` / `DirectoryOption`。
 - `ipc.ts` — 宿主 ↔ webview 的消息协议类型（`HostToWebview` / `WebviewToHost`）。
+- [toolbarPreference.ts](<toolbarPreference.ts>) — 底栏可选档位、默认优先级、保存值归一化与单步操作。
 - `wire.ts` — 宿主 → webview 的过线语义：JSON 过线会丢 `undefined` 键，清空字段必须发 `null`（`jsonSafeFrame` / `mergeWirePatch`）。
 - `jsonValue.ts` — 未知 JSON 值的形状收窄：`isRecord` 只认普通对象（排除 `null` 与数组），读字段前先过这一道。
 - `attachmentGate.ts` — 发送门的唯一判据：文件附件是否就绪、阻止发送的原因是上传中还是上传失败；宿主兜底、界面按钮与 `buildPromptContent` 同源。

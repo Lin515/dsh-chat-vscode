@@ -373,7 +373,7 @@ export interface ContextDetailInput {
  * 所以拼法只此一份：两处各自拼一遍的话，加一行、改一个标签都会只改一处，
  * 「一模一样」就成了一句会过期的话。
  *
- * 四组行各自独立，缺数据的行**不出现**（于是数据相同时两处必然逐字一致）：
+ * 四组行各自独立；除了首行明确说明占用不可用，缺数据的行不出现：
  * - 首行要三个数同源同现（判据见 `contextNumbers`，宿主没算出可信测量时不下发）；
  * - Token 用量那行是**会话累计**的总数，读 `tokens`：位置在缓存命中率**上方**
  *   （用户 2026-11-20 口径），只给总数，不展开计费桶；
@@ -389,7 +389,9 @@ export function contextDetailLines(input: ContextDetailInput, texts: Texts): str
   const detail: string[] = [];
   const numbers = contextNumbers(input.percent, input.used, input.total);
   if (numbers) {
-    detail.push(texts.contextUsed(numbers.percent, formatTokens(numbers.used), formatTokens(numbers.total)));
+    detail.push(texts.contextUsed(numbers.percent, numbers.used.toLocaleString(), numbers.total.toLocaleString()));
+  } else {
+    detail.push(texts.ctxUnavailable);
   }
   // 总量行在命中率**上方**（用户 2026-11-20 口径）：两个数同源（都来自 `tokenUsage`），
   // 先给出「用了多少」，再回答「其中多少命中了缓存」。
@@ -408,7 +410,7 @@ export function contextDetailLines(input: ContextDetailInput, texts: Texts): str
 }
 
 /**
- * 上下文占用：圆环（宽裕时环右侧再给精确数值），悬停显示明细行。
+ * 上下文占用：圆环（可在右侧显示缩写数值），悬停显示明细行。
  *
  * **数字只有一个来源**：宿主按官方口径算好的 `contextOccupancy`
  * （`projectedTokens ?? pressureTokens`，prompt 侧、不含 output）。
@@ -416,12 +418,9 @@ export function contextDetailLines(input: ContextDetailInput, texts: Texts): str
  * 后者含 output，会让同一个圆环在不同时刻代表不同口径的东西
  * ——「这数字怎么不动了 / 怎么乱跳」的观感正是这么来的。
  *
- * 拿不到值时**什么都不显示**（宿主会在没数据时不下发）。但**一旦有过值就不会再空**：
- * 宿主那边会一直保留上一次的数字（占用条是常驻指示器，见 `adapter.refreshOccupancy`）。
- *
  * 两种形态由工具栏的优先级分配决定（`toolbarFit.ts`）：
- * - 圆环：P0 始终显示（用户 2026-10-06 口径：最高优先级）——弧长本身就回答了「还剩多少余地」；
- * - 最低优先级：`detailed` 打开，环右侧补 `44K/128K` 的精确数值。
+ * - 圆环始终显示：弧长回答「还剩多少余地」，数据不可用时只画底环；
+ * - 可选档位 `detailed`：环右侧补 `44K/128K`，悬停保留未缩写的数值。
  *
  * 环内**始终不写百分比**（用户 2026-09-14 口径：只显示圆圈）；
  * 百分比与构成只在悬停明细里——那里每次更新都会重算，但只有悬停时才看得见。
@@ -435,24 +434,22 @@ export function CtxText({
   breakdown,
   detailed,
 }: ContextDetailInput & {
-  /** 最低优先级档位：环右侧再显示 `44K/128K`。 */
+  /** 可选档位：环右侧再显示 `44K/128K`。 */
   detailed?: boolean;
 }) {
   const texts = useTexts();
   const numbers = contextNumbers(percent, used, total);
-  if (!numbers) return null;
-
   // 明细在这里、在缓存命中读数那里都是同一份（`contextDetailLines`）；
   // 环本身与它**不是**一回事：环看「还剩多少余地」，明细看精确读数与构成。
   const detail = contextDetailLines({ percent, used, total, tokens, cacheHit, breakdown }, texts);
 
   return (
     <CtxRing
-      percent={numbers.percent}
+      percent={numbers?.percent}
       title={detail.join("\n")}
-      used={numbers.used}
-      total={numbers.total}
-      text={detailed ? formatContextSpan(numbers.used, numbers.total) : undefined}
+      used={numbers?.used}
+      total={numbers?.total}
+      text={detailed && numbers ? formatContextSpan(numbers.used, numbers.total) : undefined}
     />
   );
 }
@@ -476,8 +473,8 @@ export function CtxRing({
   total,
   text,
 }: {
-  percent: number;
-  title?: string;
+  percent?: number;
+  title: string;
   used?: number;
   total?: number;
   /** 环右侧的精确数值（`44K/128K`）；不传就只有环。 */
@@ -486,16 +483,16 @@ export function CtxRing({
   // 半径与描边按 16×16 视窗设计：小尺寸下仍有 1px 以上的笔画，不会糊成一团
   const radius = 6.4;
   const circumference = 2 * Math.PI * radius;
-  const clamped = Math.max(0, Math.min(100, percent));
-  const dash = (clamped / 100) * circumference;
+  const clamped = percent === undefined ? undefined : Math.max(0, Math.min(100, percent));
+  const dash = clamped === undefined ? undefined : (clamped / 100) * circumference;
   // 与文字版同一套阈值语义：60% 起进入「偏高」，90% 起算「快满」
-  const level = clamped >= 90 ? "is-critical" : clamped >= 60 ? "is-high" : "";
+  const level = clamped === undefined ? "" : clamped >= 90 ? "is-critical" : clamped >= 60 ? "is-high" : "";
   return (
     <span
       className={`ctx-ring ${level}`.trimEnd()}
       title={title}
       role="img"
-      aria-label={title ?? `${clamped}%`}
+      aria-label={title}
       data-used={used}
       data-total={total}
     >
@@ -505,13 +502,15 @@ export function CtxRing({
         aria-hidden="true"
       >
         <circle className="ctx-ring-track" cx="8" cy="8" r={radius} />
-        <circle
-          className="ctx-ring-value"
-          cx="8"
-          cy="8"
-          r={radius}
-          strokeDasharray={`${dash} ${circumference - dash}`}
-        />
+        {dash !== undefined ? (
+          <circle
+            className="ctx-ring-value"
+            cx="8"
+            cy="8"
+            r={radius}
+            strokeDasharray={`${dash} ${circumference - dash}`}
+          />
+        ) : null}
       </svg>
       {/* 精确数值写在环的右边（`.ctx-ring` 是 flex 行）。缓存命中率**不在这里**：
           它是工具栏里的独立元素（用户 2026-10-10 第二条口径），样式见 `.ctx-cache-hit`。 */}

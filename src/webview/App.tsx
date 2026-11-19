@@ -17,6 +17,7 @@ import { JobsPanel } from "./components/Panels";
 import { NotificationBar, NotificationsPanel } from "./components/Notifications";
 import { TrajectoryView } from "./components/Trajectory";
 import { TodoPanel } from "./components/TodoPanel";
+import { ToolbarPreferences } from "./components/ToolbarPreferences";
 import { Spinner } from "./components/primitives";
 import { AppState, useAppState, type PanelKind } from "./state";
 import { TODO_PANEL_DEFAULT, todosOpenIn, toggleTodos, type TodoPanelState } from "./todoPanel";
@@ -935,10 +936,11 @@ export function App() {
   }, [state.running]);
   // 「无人认领的 ESC = 停止生成」只在**会话页**占据前景时成立（见 isConversationForeground）：
   // 轨迹整页或历史 / 任务抽屉顶掉会话页之后，中止机制就该不存在，而不是被谁抢先消费
-  const conversationForegroundRef = useRef(isConversationForeground(state.panel));
-  useEffect(() => {
-    conversationForegroundRef.current = isConversationForeground(state.panel);
-  }, [state.panel]);
+  const conversationForeground = isConversationForeground(state.panel) && !state.toolbarPreferencesOpen;
+  const conversationForegroundRef = useRef(conversationForeground);
+  useLayoutEffect(() => {
+    conversationForegroundRef.current = conversationForeground;
+  }, [conversationForeground]);
 
   // 轨迹视图开着时的刷新节奏：**运行中每 3 秒取一次**，停下后再取一次收尾。
   //
@@ -974,7 +976,7 @@ export function App() {
     const unsubscribe = subscribe(dispatch as (message: HostToWebview) => void);
     post({ type: "ready" });
     // ESC 归属链的**唯一**挂点：元素层（输入框 / 绘图区）已经消费的到不了这里；活跃
-    // 浮层按层级消费（菜单 > 原图 > 其余）；都没有、会话页还在前景且生成中才停止生成
+    // 浮层按层级消费（顶层模态 > 菜单 > 原图 > 其余）；都没有、会话页还在前景且生成中才停止生成
     // （见 escapeOwner.ts）
     const detachEscape = attachEscapeFallback({
       isConversationForeground: () => conversationForegroundRef.current,
@@ -1273,6 +1275,13 @@ export function App() {
           触发点附近闪一条「已复制到剪贴板」（见 copyFeedback.ts）。挂在菜单之后：
           菜单先收，提示后出现，z-index 也压过菜单。 */}
       <CopyFlashLayer />
+      {state.toolbarPreferencesOpen ? (
+        <ToolbarPreferences
+          preference={state.toolbarPreference}
+          onChange={(action) => postUserAction({ type: "toolbar/change", action })}
+          onClose={() => dispatch({ type: "ui/closeToolbarPreferences" })}
+        />
+      ) : null}
       </UiScaleContext.Provider>
       </LocaleContext.Provider>
       </CommandLinksContext.Provider>

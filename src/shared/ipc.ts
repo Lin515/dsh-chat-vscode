@@ -6,6 +6,7 @@ import type {
   SessionRefView,
   SubagentView,
 } from "./chat";
+import type { ToolbarPreference, ToolbarPreferenceAction } from "./toolbarPreference";
 
 /**
  * 宿主 ↔ webview 消息协议。
@@ -261,6 +262,8 @@ export type HostToWebview =
    * 空对象都是**有效结果**，不能用 `undefined` 或 truthiness 判空。
    */
   | TrajectoryResultFrame
+  /** 与会话无关的底栏显示偏好，由宿主初始化和同步。 */
+  | { type: "toolbar/preference"; preference: ToolbarPreference }
   /** 让界面打开某个右侧抽屉（命令面板入口用，如「DSH: 历史对话」）。 */
   | { type: "ui/openPanel"; panel: string };
 
@@ -283,6 +286,8 @@ export type WebviewToHost =
   | { type: "view/ping"; id: number }
   /** webview 加载完成，请求首帧状态。 */
   | { type: "ready" }
+  /** 申请修改底栏显示偏好；宿主按当前偏好应用动作，不接受整份覆盖。 */
+  | { type: "toolbar/change"; action: ToolbarPreferenceAction }
   /**
    * 确认一条消息通知（用户明确知悉，不表示问题已解决）。
    *

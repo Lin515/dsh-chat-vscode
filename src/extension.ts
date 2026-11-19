@@ -194,6 +194,10 @@ function registerContributions(context: vscode.ExtensionContext, host: Contribut
       controller.openNotifications();
       controller.revealActiveView();
     }),
+    vscode.commands.registerCommand("dshChat.toolbarPreferences", () => {
+      controller.openToolbarPreferences();
+      controller.revealActiveView();
+    }),
     // 「在编辑器中打开」：webview 按钮会把点击来源窗口的会话与窗口本身带过来；
     // 命令面板直接执行（没有来源窗口）时用最近活动窗口的会话、落点是当前活动分组。
     // 落点规则（用户 2026-10-10 口径）：来源窗口自己就在某个标签组里就在**那一组**
