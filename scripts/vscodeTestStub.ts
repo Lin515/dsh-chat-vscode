@@ -30,6 +30,8 @@ export const l10n = {
 };
 export const env = {
   language: "zh-cn",
+  /** 远端窗口（Remote-SSH / WSL / 容器 / Codespaces）的标识；测试按需替换。 */
+  remoteName: undefined as string | undefined,
   clipboard: { writeText: async () => undefined },
   openExternal: async () => true,
 };

@@ -13,10 +13,12 @@ import type {
   CommandView,
   ConnectPhase,
   DiffLayout,
+  DirectoryOption,
   DshTarget,
   FileChangeKind,
   FileRefView,
   GoalView,
+  HistoryScope,
   ModelSelectionView,
   NotificationView,
   PendingMessageView,
@@ -72,7 +74,7 @@ import {
   probeExistence,
   unsupportedLocalPathForm,
 } from "./localAccess";
-import { resolveWorkspacePath } from "../shared/workspacePath";
+import { basenameWorkspacePath, resolveWorkspacePath } from "../shared/workspacePath";
 import { scheduleProjectsFromWire } from "../shared/scheduleProjects";
 import { readHostImages } from "./localImages";
 import { isLocalAbsolutePath, localPlatform, sameBytes } from "./localPath";
@@ -164,7 +166,7 @@ import {
 import { NotificationQueue, type NoticeInput, type NoticeRecord } from "./notificationQueue";
 import { deriveTrajectoryModel } from "./trajectory";
 import { backfillTrajectorySchemas, missingSchemaAnchor } from "./trajectoryBackfill";
-import { normalizePath, upperDriveLetter, visibleForView, visibleForWorkspace, visibleSessionCandidates, visibleSessionRows } from "./sessionList";
+import { activeRootIndex, historyIsMixed, historyRowsForScope, normalizePath, otherHistoryDirectories, parseHistoryScope, upperDriveLetter, visibleForView, visibleForWorkspaceViews, visibleSessionCandidates, visibleSessionRows } from "./sessionList";
 import { decodeSessionActivity } from "./sessionActivity";
 import { acceptSessionStatus, decodeSessionStatus } from "./sessionStatus";
 import { orderSubagentEntries } from "./subagentOrder";
@@ -185,7 +187,19 @@ import { isBlank, mergeWindowCache, WindowRestore, WorkspaceWindowStateStore, ty
  *
  * 按 baseUrl 分键：不同地址的服务器各有各的会话。
  */
+/** 多根工作区里用户换过的「新会话根目录」（`workspaceState` 的键，见 `rootFolder`）。 */
+const ACTIVE_ROOT_KEY = "dshChat.activeRoot";
 const SESSION_SECRET_PREFIX = "dshChat.session.";
+
+/** 一次「要落会话的目录」的冻结快照（见 `captureSessionTarget`）。 */
+interface SessionTarget {
+  /** 原样路径（新建会话的 cwd）。 */
+  path: string;
+  /** 归一后的路径键（Windows 不区分大小写、POSIX 保留大小写）。 */
+  key: string;
+  /** 是否注册成服务端工作区（工作区根为 true；工作区外 / 无文件夹时为 false）。 */
+  registered: boolean;
+}
 
 /** 早期版本把启动令牌存进了 SecretStorage；存它没有意义，激活时清掉。 */
 const LEGACY_TOKEN_SECRET = "dshChat.externalAccessToken";
@@ -778,6 +792,19 @@ export class ChatController implements vscode.Disposable {
   private readonly hostFileConnections = new Map<string, HostFileAccess>();
   private sessions: SessionSummaryView[] = [];
   /**
+   * 历史抽屉的**完整候选**（同一份 `session/list` 的镜像，不按当前工作区 / 已打开目录
+   * 收窄）：子代理已滤掉、本地删除的已滤掉、空壳 `blank` 位已收敛，但有 cwd 的会话都在。
+   *
+   * 与 `this.sessions` 的分工：那份是**旧帧**（`sessions` / `archivedSessions`）与内部
+   * 复用 / 恢复 / 未读判据继续读的列表，语义与本次改动前完全一致；这份只服务按窗口的
+   * `history` 视图——用户可以在历史里看别的项目根 / 工作区外目录，不能因为上游先按当前
+   * 目录滤过一遍就看不到。
+   *
+   * 生命周期与 `this.sessions` 同步：`refreshSessions` 每次从同一份权威原始行整份重建；
+   * 换连接 / 断线时清空。
+   */
+  private historySessions: SessionSummaryView[] = [];
+  /**
    * **会话落在哪个目录**的权威账本（会话 id → cwd），来自 `session/list` 的**原始行**。
    *
    * 与 `this.sessions` 的分工：那份是**界面该看见的历史**（子代理会话被
@@ -1001,14 +1028,50 @@ export class ChatController implements vscode.Disposable {
    */
   private workspaceGeneration = 0;
   /**
-   * 服务端**工作区注册表**里当前项目那条记录的 id（`workspace/create` 幂等返回）。
+   * 服务端**工作区注册表**里各目录的记录 id（`workspace/create` 幂等返回）。
    *
    * 它决定新会话会不会被记进工作区分组：DSH Web 的分组不是按 cwd 推的，而是
    * 「会话 header 的 cwd == 工作区路径」**且**「会话在注册表的 sessionIds 里」，
-   * 后半条只有 `session/create` 带 `workspaceId` 时才会发生。缓存它避免每次
-   * 新建会话都发一次注册请求；换个服务器（新 client）时清空重取。
+   * 后半条只有 `session/create` 带 `workspaceId` 时才会发生。
+   *
+   * 键 = 连接世代 + 目录键 + **是否注册**（工作区外的落脚点永远不注册，走另一档）。
+   * 每个窗口可以各自换根：缓存按目录分，A 窗的根不能把 B 窗的登记结果顶掉；换连接时
+   * 整个作废（世代号参与键，旧条目自然淘汰）。
    */
-  private workspaceId: string | undefined;
+  private readonly workspaceRegistrations = new Map<string, string>();
+  /** 在飞的注册请求（同键合并，避免两个窗口同时为新根各发一次幂等请求）。 */
+  private readonly workspaceRegistrationPending = new Map<string, Promise<string | undefined>>();
+  /** 连接世代：换 client 时 +1，参与工作区注册缓存的键（见上）。 */
+  private connectionGeneration = 0;
+  /**
+   * 每个窗口**当前选中的新会话根**（工作区根或工作区外目录）。
+   *
+   * 根是**窗口级**选择：另一个窗口换根不能覆盖本窗口。只有默认偏好（`ACTIVE_ROOT_KEY`）
+   * 进 `workspaceState`——那是「下次新开窗口从哪个根开始」，不是所有已绑定窗口的当前状态。
+   * 工作区外目录只在当前扩展宿主里有效（不持久化、不注册），重载 / 文件夹变化后回到根。
+   */
+  private readonly viewRootChoices = new Map<string, { kind: "root" | "outside"; path: string }>();
+  /** `workspaceState` 里记着的默认根（惰性读一次；换根时同步更新）。 */
+  private defaultRootPath: string | undefined;
+  private defaultRootLoaded = false;
+  /**
+   * 每个窗口历史抽屉的只读范围。缺省 = `current`（绑定会话的创建目录 / 本窗预选目录）。
+   * 只影响本窗口的 `history` 帧，不改默认、不注册、不影响旧的 `sessions` 帧消费者。
+   */
+  private readonly viewHistoryScopes = new Map<string, HistoryScope>();
+  /**
+   * 这次提交**冻结**的目标目录（requestId → 快照）：`beginSend` 在按下发送那一刻抓，
+   * 跨过连接 / 目录询问也只按它落壳。跨 await 期间换根不能把已经发出的消息搬走。
+   */
+  private readonly frozenSendTargets = new Map<string, SessionTarget | undefined>();
+  /**
+   * 每个窗口**在飞提交**的计数：`submitMessage` 在 `beginSend` 之后同步占住，finally 释放。
+   *
+   * 第一个提交要跨过连接、建会话、系统目录选择器等若干 await，这段期间换根 / 迟到的目录
+   * 选择器若还能改这个窗口的根，第一条消息就会被改道。计数非零时 `canChangeRoot` 一律拒绝；
+   * 用计数而不是布尔，是因为重发 / 队列重发可能在同一条链里嵌套提交。
+   */
+  private readonly pendingSends = new Map<string, number>();
   /**
    * 用户在新会话页上选定的工作目录（**只在 VS Code 没有打开文件夹时有意义**）。
    *
@@ -1018,6 +1081,7 @@ export class ChatController implements vscode.Disposable {
    * 重载窗口后回到与今天一致的行为（没有文件夹就按宿主 cwd 建会话）。
    */
   private newSessionCwd: string | undefined;
+
   /**
    * 空态页上的**待建会话**选择（按窗口）：预设与模型。
    *
@@ -1048,7 +1112,10 @@ export class ChatController implements vscode.Disposable {
    * 会话（用户 2026-09-24 报的现场是菜单空；这条是同一个改动带来的并发入口）。键是窗口，
    * 因为「建会话」这件事本身就是按窗口的（草稿、待建参数都按窗口存）。
    */
-  private readonly sessionEnsures = new Map<string, Promise<SessionScope | undefined>>();
+  private readonly sessionEnsures = new Map<
+    string,
+    { key: string; attempt: Promise<SessionScope | undefined> }
+  >();
   /**
    * 每个窗口**当前那一次** `@` 候选查询的取消句柄。
    *
@@ -2128,39 +2195,130 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
+   * `workspaceState` 里记着的默认根（只读一次；换根时同步更新）。只有**合法**的根才会被
+   * 采用：记着的那个已经不在工作区里就走 `activeRootIndex` 回到第一个。
+   */
+  private rememberedRootPath(): string | undefined {
+    if (!this.defaultRootLoaded) {
+      const stored = this.workspaceState.get<string>(ACTIVE_ROOT_KEY);
+      this.defaultRootPath = typeof stored === "string" ? stored : "";
+      this.defaultRootLoaded = true;
+    }
+    return this.defaultRootPath;
+  }
+
+  /**
+   * 这个窗口当前选中的新会话根（工作区根，或「选择其他文件夹…」选的工作区外目录）。
+   *
+   * 每个窗口各记一份：另一个窗口换根不改本窗口（`workspaceState` 只记默认偏好，见字段
+   * `viewRootChoices`）。没选过的窗口按默认偏好初始化，并把这一刻的选择**落到窗口上**
+   * ——之后默认偏好再变，也不会把已经开着的窗口静默搬走。
+   *
+   * 选中的工作区根被移出工作区时不沿用：下一次读取回到默认偏好（合法时）或第一个根。
+   * 工作区外目录不持久化，文件夹变化时由 `applyWorkspaceFoldersChange` 清掉。
+   */
+  private rootChoice(viewId?: string): { kind: "root" | "outside"; path: string } | undefined {
+    const folders = vscode.workspace.workspaceFolders ?? [];
+    if (!folders.length) {
+      if (viewId) this.viewRootChoices.delete(viewId);
+      return undefined;
+    }
+    if (viewId) {
+      const cached = this.viewRootChoices.get(viewId);
+      if (cached?.kind === "outside") return cached;
+      if (cached?.kind === "root") {
+        const hit = folders.find((folder) => normalizePath(folder.uri.fsPath) === normalizePath(cached.path));
+        if (hit) return { kind: "root", path: hit.uri.fsPath };
+        this.viewRootChoices.delete(viewId);
+      }
+    }
+    const index = activeRootIndex(
+      folders.map((folder) => folder.uri.fsPath),
+      this.rememberedRootPath(),
+    );
+    const choice = { kind: "root" as const, path: folders[index].uri.fsPath };
+    if (viewId) this.viewRootChoices.set(viewId, choice);
+    return choice;
+  }
+
+  /**
+   * 新会话的根目录路径（工作区外目录优先，否则是窗口选中的工作区根）。
+   * 没有打开文件夹时是 `undefined`（那条路由 `newSessionCwd` 负责）。
+   */
+  private rootPath(viewId?: string): string | undefined {
+    return this.rootChoice(viewId)?.path;
+  }
+
+  /**
    * 新会话落在哪个目录。
    *
-   * **只用在「已经确定有目录」的时刻**：建会话之前 `ensureSession` 已经问过了
-   * （打开着文件夹、或用户选过一个）。最后那一级 `process.cwd()` 是兜底——它是
-   * 扩展宿主的 cwd（VS Code 的安装路径），**不该**被当成用户的工作目录，所以
-   * 新会话那条路绝不会走到它（见 `askWorkspaceDir`）；这里留着只是给别的调用点
-   * （会话 cwd 解析等）一个字符串。
+   * 有窗口时按**这个窗口**的根（不同窗口可以各自选一个根）；没有窗口（命令面板等）按
+   * 默认偏好。「选择其他文件夹…」选的工作区外目录同样算根。没有打开文件夹时退回
+   * `newSessionCwd`。
+   *
+   * **只用在「已经确定有目录」的时刻**：建会话之前 `ensureSession` 已经问过了。最后那一级
+   * `process.cwd()` 是兜底——它是扩展宿主的 cwd（VS Code 的安装路径），**不该**被当成用户的
+   * 工作目录，所以新会话那条路绝不会走到它（见 `askWorkspaceDir`）。
    */
-  private workspacePath(): string {
-    const folder = vscode.workspace.workspaceFolders?.[0];
-    if (folder) return upperDriveLetter(folder.uri.fsPath);
+  private workspacePath(viewId?: string): string {
+    const root = this.rootPath(viewId);
+    if (root) return upperDriveLetter(root);
     return this.newSessionCwd ? upperDriveLetter(this.newSessionCwd) : process.cwd();
   }
 
   /**
-   * 空态页上那一行工作目录提示（`locked` = 跟随 VS Code 打开的文件夹，不可改）。
+   * 系统目录选择器能不能用来选**工作区外**目录。
    *
-   * `locked` 为真时**没有可选目录**；为假时 `path` 可能还是空的（用户没打开文件夹、
-   * 也没选过目录）——那时界面显示「未选择工作区」，不再拿宿主的 `process.cwd()` 冒充
-   * （那会变成 VS Code 的安装路径，用户 2026-09-22 报的现场）。
+   * 远端窗口（Remote-SSH / WSL / 容器 / Codespaces）里这个选择器给出的是**客户端本机**的
+   * 路径，而会话的 cwd 属于扩展宿主 / DSH 执行世界——把没验证过的本地路径当执行世界路径
+   * 是错的。这类窗口明确禁用「选择其他文件夹…」，只列 VS Code 的工作区根（它们才是宿主
+   * 侧路径）；不做「本机恰好存在就当同一个」的猜测。
+   */
+  private canPickOtherRoot(): boolean {
+    return !vscode.env.remoteName;
+  }
+
+  /** 目录候选（`DirectoryOption`）：路径原样、名字取末段。 */
+  private directoryOptions(paths: readonly string[]): DirectoryOption[] {
+    return paths.map((path) => ({
+      path: upperDriveLetter(path),
+      name: basenameWorkspacePath(path.replace(/[/\\]+$/, "")) || path,
+    }));
+  }
+
+  /**
+   * 空态页 / 输入栏那一行工作目录（`locked` = 目录跟随 VS Code 的文件夹集合，见
+   * `WorkspaceView`）。
    *
-   * 没有打开文件夹时 `path` **按窗口**取（`viewId` 给出时）：先看这个窗口当前那条会话的
-   * cwd，再退回用户选定的目录（`viewCwd`）——两个窗口各停在各目录的空壳上时，各自显示
-   * 各自那个目录。打开着文件夹时与窗口无关（目录跟随 VS Code）。
+   * 打开着文件夹时给出全部根目录（`roots`）与能否选工作区外目录（`canPickOther`）；
+   * `path` 是**本窗口**当前选中的根，不在 `roots` 里就是工作区外目录。没有打开文件夹时
+   * `path` 按窗口取（会话 cwd / 选定的目录），空串 = 未选择——绝不拿宿主的
+   * `process.cwd()` 冒充工作目录（用户 2026-09-22 报的现场）。
    */
   private workspaceView(viewId?: string): NonNullable<ChatState["workspace"]> {
-    const folder = vscode.workspace.workspaceFolders?.[0];
-    if (folder) return { path: upperDriveLetter(folder.uri.fsPath), locked: true };
+    const folders = vscode.workspace.workspaceFolders ?? [];
+    if (folders.length) {
+      const choice = this.rootChoice(viewId);
+      const roots = this.directoryOptions(folders.map((folder) => folder.uri.fsPath));
+      return {
+        path: upperDriveLetter(choice?.path ?? folders[0].uri.fsPath),
+        // 打开着文件夹时目录集合跟随 VS Code；单个根时可换的只有「工作区外目录」那一档，
+        // 多个根时还能在根之间切（界面按 roots 是否存在决定入口，见 `WorkspaceView`）。
+        locked: true,
+        roots,
+        canPickOther: this.canPickOtherRoot(),
+      };
+    }
     // 没有打开文件夹：用户选过的那个目录；**没选过就是空串**——界面显示
-    // 「未选择工作区」。绝不拿宿主的 `process.cwd()`（= VS Code 安装路径）冒充一个
-    // 工作目录（用户 2026-09-22 报的现场）。
+    // 「未选择工作区」。
     const path = (viewId ? this.viewCwd(viewId) : undefined) ?? this.newSessionCwd;
-    return { path: path ? upperDriveLetter(path) : "", locked: false };
+    return {
+      path: path ? upperDriveLetter(path) : "",
+      locked: false,
+      // 没有工作区根可列；旧路径 `pickWorkspace` 负责选目录（见 `ipc.ts`）。
+      // 远端窗口同样禁用：系统选择器给的是客户端本机路径，不是执行世界目录。
+      canPickOther: this.canPickOtherRoot(),
+    };
   }
 
   /**
@@ -2278,6 +2436,9 @@ export class ChatController implements vscode.Disposable {
       // 窗口级事实（不属于会话片段，也不属于部署设置）：本窗口是不是编辑区标签组里
       // 的会话，见 `ChatState.inEditorTab`
       inEditorTab: this.viewKinds.get(viewId ?? "") === "panel",
+      // 历史抽屉的按窗口镜像：首帧 / 恢复必须带（否则界面要等下一次 listSessions 才知道范围），
+      // 与旧的顶层 sessions / archivedSessions 帧并存，互不影响。
+      ...(viewId ? { history: this.historyView(viewId) } : {}),
       ...sessionView(
         sessionSourceOf(
           scope,
@@ -2327,12 +2488,26 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
+   * 一条会话的列表行：旧的可见列表优先，查不到再看历史完整候选。
+   *
+   * 历史可以从别的项目根 / 工作区外目录打开会话；那些行不在按当前根收窄的 `this.sessions`
+   * 里，但它们的摘要、空壳位与 running 打底仍然是权威事实。反过来，旧列表里有行时**语义
+   * 不变**（未读 / 复用 / 恢复都先读它）。
+   */
+  private sessionRow(sessionId: string): SessionSummaryView | undefined {
+    return (
+      this.sessions.find((item) => item.id === sessionId) ??
+      this.historySessions.find((item) => item.id === sessionId)
+    );
+  }
+
+  /**
    * 会话摘要：会话列表行优先；**子代理会话不在列表里**（`sessionList.ts` 滤掉了），
    * 用子代理目录行合成一份（标题 = 目录里的 label，父会话 id 来自地址）。
    * 首帧快照与编辑区标签标题共用这一个读法，两者看到的子代理名字必然一致。
    */
   private summaryOfSession(sessionId: string): SessionSummaryView | undefined {
-    const row = this.sessions.find((session) => session.id === sessionId);
+    const row = this.sessionRow(sessionId);
     if (row) return row;
     const scope = this.scopes.get(sessionId);
     const address = scope?.subagentAddress;
@@ -2836,6 +3011,10 @@ export class ChatController implements vscode.Disposable {
     // 条目在这里删掉：窗口的键不会再有人用，删掉同时保证「同 id 重建」也拿不到旧代号
     // （代号是只增不减的全局序号，重建会 `beginViewAction` 取新号）。
     this.viewActions.delete(viewId);
+    // 窗口级的根选择 / 历史范围随窗口一起消失（viewId 是每次 webview 实例现铸的，
+    // 留着只会让这两张表只增不减；同 id 重建会重新按默认偏好初始化）。
+    this.viewRootChoices.delete(viewId);
+    this.viewHistoryScopes.delete(viewId);
     // 关掉的窗口也可能正是「看着它生成」的那个：先取状态，`dropViewers` 之后域就没了
     const wasGenerating = this.isSessionGenerating(sessionId);
     // 窗口关掉时它那条后台任务观察流必须一起收（否则流会跟着扩展宿主一直活着）
@@ -3259,9 +3438,9 @@ export class ChatController implements vscode.Disposable {
       // 接管这一轮建好的客户端。**接管失败 = 这一轮已经不作数**（换目标 / 用户叫停 /
       // 窗口释放）：客户端已被账本收掉，当前那条连接一个字都没动，这里立刻放弃。
       if (!round.adopt(client)) return;
-      // 工作区 id 是**服务端注册表**里的东西：换了服务器（或注册表被重置）时
-      // 旧 id 会 `workspace/not-found`，所以每次新建 client 都重新解析一次
-      this.workspaceId = undefined;
+      // 工作区注册 id 属于**上一条连接**的注册表（旧 id 可能 `workspace/not-found`）。
+      // `adoptClient` 已经按连接世代整体作废旧缓存，这里只清当前这几条待用记录。
+      this.workspaceRegistrations.clear();
       client.connect();
       await this.loadModels();
       await this.refreshSessions();
@@ -3617,7 +3796,17 @@ export class ChatController implements vscode.Disposable {
    * 就有 cwd（见 `reusableBlank`），拿旧工作区那份列表扫会扫不进新目录。
    */
   async applyWorkspaceFoldersChange(): Promise<void> {
+    // 工作区的文件夹变了：「其他文件夹」的落脚点跟着作废，回到工作区里的根。每个窗口
+    // 各清自己那一份（工作区外目录只在当前扩展宿主里有效，见 `viewRootChoices`）；
+    // 选中的工作区根被移出时由 `rootChoice` 的下一次读取回到默认 / 第一个，不沿用旧路径。
+    for (const [viewId, choice] of [...this.viewRootChoices]) {
+      if (choice.kind === "outside") this.viewRootChoices.delete(viewId);
+    }
     this.refreshWorkspace();
+    // **第一个 await 之前**就让不再匹配新根的旧空壳失去发送资格：否则用户马上发消息会
+    // 命中那条旧壳（`detachStaleBlank` 只解绑空壳，已有历史会话保持不动）。
+    for (const viewId of this.liveViewIds()) this.detachStaleBlank(viewId);
+    this.emitHistoryViews();
     if (!this.client) return;
     await this.refreshSessions();
     await this.adoptBlankForUnboundViews();
@@ -4037,6 +4226,15 @@ export class ChatController implements vscode.Disposable {
    */
   private adoptClient(client: DshClient | undefined): void {
     if (this.client === client) return;
+    // 工作区注册 id 属于**上一条连接**的注册表（同一路径在另一台 Host 上是另一条记录）：
+    // 世代号 +1 让全部缓存键失效，旧请求回来也写不回新连接。
+    this.connectionGeneration = (this.connectionGeneration ?? 0) + 1;
+    this.workspaceRegistrations?.clear();
+    this.workspaceRegistrationPending?.clear();
+    // 历史抽屉可浏览其他目录，不能在新连接的列表尚未返回时展示上一个端点的会话。
+    const historyChanged = Boolean(this.historySessions?.length || this.viewHistoryScopes?.size);
+    this.historySessions = [];
+    this.viewHistoryScopes?.clear();
     this.hostFileConnections.clear();
     this.hostFiles?.close();
     this.client = client;
@@ -4044,6 +4242,7 @@ export class ChatController implements vscode.Disposable {
     if (this.hostFiles) this.hostFileConnections.set(this.hostFiles.connectionId, this.hostFiles);
     // 图片字节同样属于原连接：即使会话 id 没变，也要让页面作废缓存与在途请求。
     this.emitAll({ type: "images/scope", connectionId: this.hostFiles?.connectionId ?? null });
+    if (historyChanged) this.emitHistoryViews();
   }
 
   /**
@@ -4523,8 +4722,8 @@ export class ChatController implements vscode.Disposable {
           this.subagentRunning.delete(item.sessionId);
         }
       }
-      const folder = vscode.workspace.workspaceFolders?.[0];
-      const workspacePath = folder ? normalizePath(folder.uri.fsPath) : undefined;
+      const root = this.rootPath();
+      const workspacePath = root ? normalizePath(root) : undefined;
       // 服务端注册表：这条会话被记在哪个工作区里（同一会话只属于一个工作区）
       let ownIds: Set<string> | undefined;
       for (const row of this.workspaces) {
@@ -4542,26 +4741,29 @@ export class ChatController implements vscode.Disposable {
         const cwd = normalizePath(this.sessionCwds.get(scope.sessionId));
         if (cwd) openCwds.push(cwd);
       }
-      const raw = visibleForWorkspace(
-        visibleSessionRows(value.items ?? [])
-          // 本地删过的会话若被当前 dsh 进程打开过，仍会留在服务端内存里被
-          // session/list 列出——按持久化的删除集合过滤，保证界面干净
-          .filter((item) => !this.deletedSessionIds.has(item.sessionId)),
-        { workspacePath, workspaceSessionIds: ownIds, openCwds },
-      ).map((item) => this.toSessionView(item));
+      // 权威候选（**可见性过滤之前**）：子代理全局藏掉、本地删除的滤掉；有 cwd 的会话
+      // 全部留下。`this.sessions` 与 `historySessions` 是同一份的两个投影——前者仍按
+      // 旧口径（当前工作区 / 已打开域）收窄，后者只给历史视图看，不在这里先剪掉。
+      const all = visibleSessionRows(value.items ?? [])
+        // 本地删过的会话若被当前 dsh 进程打开过，仍会留在服务端内存里被
+        // session/list 列出——按持久化的删除集合过滤，保证界面干净
+        .filter((item) => !this.deletedSessionIds.has(item.sessionId))
+        .map((item) => this.toSessionView(item));
       // 本地 blank 位（`engagedSessions`）在这里**收敛**（见它的字段注释）：服务端自己
       // 已经把这条翻成不空、或它已经不在列表里，本地这一位就没有留下的理由——它只负责
       // 顶住两次拉取之间的空档。判据用**服务端那一行**，不是折过之后的行。
       for (const id of [...this.engagedSessions]) {
-        const row = raw.find((item) => item.id === id);
+        const row = all.find((item) => item.id === id);
         if (!row || row.blank !== true) this.engagedSessions.delete(id);
       }
       // 官方的 `effectiveBlank`：列表行说它空、本地这一位说它不空 → **不空**。少了这一步，
       // 刚发出第一条消息的会话会随下一次拉取（服务端的 `blank` 还没随 `turn/start` 翻假）
       // 从历史列表里消失一下再回来。
-      const views = raw.map((item) =>
+      const allViews = all.map((item) =>
         item.blank === true && this.engagedSessions.has(item.id) ? { ...item, blank: false } : item,
       );
+      // 旧列表口径原样保留（`visibleForWorkspace` 只做减法）：历史视图是否跨目录与它无关。
+      const views = visibleForWorkspaceViews(allViews, { workspacePath, workspaceSessionIds: ownIds, openCwds });
       // 分支不再缩进（用户 2026-09-19 口径：和普通会话同级，靠标题前缀「分支: 」区分），
       // 所以这里不再算血缘深度——那个字段的唯一用途就是缩进。
       // 列表整份替换也会造成 running 变化（服务端算的权威值落下来），同样要结算
@@ -4574,6 +4776,8 @@ export class ChatController implements vscode.Disposable {
         this.settleRunningChange(view.id, view.running);
       }
       this.sessions = views;
+      // 历史候选：有 cwd 的都在（没有 cwd 的会话 resume 不了，旧列表也不收）。
+      this.historySessions = allViews.filter((item) => Boolean(item.cwd));
       // 权威 cwd 账本刚整份重建：给已建域的适配器补一次创建目录展示值（只补不清）。
       this.syncScopeSessionCwds();
       this.emitSessionLists();
@@ -4582,7 +4786,7 @@ export class ChatController implements vscode.Disposable {
       // durable 轮次边界推导，窗口被截断 + 工具阶段时它**不发帧**（见适配器的注释），
       // 那个缺口就由这里与 `api-session/status` 中继补上。
       for (const scope of [...this.scopes.values()]) {
-        const row = views.find((item) => item.id === scope.sessionId);
+        const row = allViews.find((item) => item.id === scope.sessionId);
         if (!row) continue;
         if (!acceptSessionStatus(row.running, scope.adapter?.hasOpenTurn() === true)) continue;
         // 列表比中继那条更晚、也是权威：它一旦被采纳，先前拒收的那条就没有留下的理由了
@@ -4758,7 +4962,7 @@ export class ChatController implements vscode.Disposable {
    * 它收尾时记未读」永远不发生（用户 2026-10-10 报的「一次性行分不出已完成」）。
    */
   private setSessionRowRunning(sessionId: string, running: boolean): void {
-    const row = this.sessions.find((item) => item.id === sessionId);
+    const row = this.sessionRow(sessionId);
     if (!row) {
       // 行不在可见列表里：只做未读结算（`settleRunningChange` 自己按「离开标记 + 没有
       // 窗口看着它」判断，重复调用是幂等的）
@@ -4767,6 +4971,9 @@ export class ChatController implements vscode.Disposable {
     }
     if (row.running === running) return;
     this.sessions = this.sessions.map((item) => (item.id === sessionId ? { ...item, running } : item));
+    this.historySessions = this.historySessions.map((item) =>
+      item.id === sessionId ? { ...item, running } : item,
+    );
     // 服务端说它在跑 ⇒ 这条会话一定不是空壳了（`blank` 位在 `turn/start` 翻假，但那条
     // 帧要比这里的判断晚一整轮）。这条证据比「本窗口发过消息」宽：别的窗口 / dsh web 在
     // 一条扩展建出来的空壳里说话，只有这里看得见（见 `markSessionEngaged`）
@@ -4824,7 +5031,7 @@ export class ChatController implements vscode.Disposable {
   private isSessionGenerating(sessionId: string | undefined): boolean {
     if (!sessionId) return false;
     if (this.scopes.get(sessionId)?.running === true) return true;
-    return this.sessions.some((item) => item.id === sessionId && item.running);
+    return this.sessionRow(sessionId)?.running === true;
   }
 
   /** 本窗口还有没有视图开着这条会话。 */
@@ -4862,9 +5069,31 @@ export class ChatController implements vscode.Disposable {
    */
   private emitSessionLists(): void {
     if (vscode.workspace.workspaceFolders?.[0]) {
-      const { active, archived } = this.groupSessionLists(this.sessions);
-      this.emitAll({ type: "sessions", sessions: active });
-      this.emitAll({ type: "archivedSessions", sessions: archived });
+      // 打开着文件夹时旧口径是「所有窗口同一份」；多根工作区里每个窗口可以各自选根，
+      // 这里按**窗口的根**发同一套旧列表（单根时与原来逐字相同，jobs 等消费者不受
+      // history 范围影响）。候选用完整镜像，避免上游按默认根先剪掉别的根。
+      const candidates = this.historySessions.length ? this.historySessions : this.sessions;
+      const openCwds: string[] = [];
+      for (const scope of this.scopes.values()) {
+        const cwd = normalizePath(this.sessionCwds.get(scope.sessionId));
+        if (cwd) openCwds.push(cwd);
+      }
+      for (const viewId of this.liveViewIds()) {
+        const root = this.rootPath(viewId);
+        const workspacePath = root ? normalizePath(root) : undefined;
+        let ownIds: Set<string> | undefined;
+        for (const row of this.workspaces) {
+          if (workspacePath !== undefined && normalizePath(row.path) === workspacePath) {
+            ownIds = new Set(row.sessionIds);
+          }
+        }
+        const { active, archived } = this.groupSessionLists(
+          visibleForWorkspaceViews(candidates, { workspacePath, workspaceSessionIds: ownIds, openCwds }),
+        );
+        this.emitToView(viewId, { type: "sessions", sessions: active });
+        this.emitToView(viewId, { type: "archivedSessions", sessions: archived });
+      }
+      this.emitHistoryViews();
       return;
     }
     // 「未分组」的判据：不在**任何**工作区注册记录里的会话（注册表是权威，见
@@ -4880,6 +5109,7 @@ export class ChatController implements vscode.Disposable {
       this.emitToView(viewId, { type: "sessions", sessions: active });
       this.emitToView(viewId, { type: "archivedSessions", sessions: archived });
     }
+    this.emitHistoryViews();
   }
 
   /**
@@ -4914,8 +5144,130 @@ export class ChatController implements vscode.Disposable {
    */
   private viewCwd(viewId: string): string | undefined {
     const sessionId = this.viewSessions.get(viewId);
-    if (sessionId === undefined) return this.newSessionCwd;
+    if (sessionId === undefined) return this.newSessionCwd ?? this.rootPath(viewId);
     return this.sessionCwds.get(sessionId);
+  }
+
+  /** 服务端工作区注册表里所有记账的会话 id（历史 `current` 无目录时判「未分组」）。 */
+  private groupedSessionIds(): Set<string> {
+    const ids = new Set<string>();
+    for (const row of this.workspaces) {
+      for (const id of row.sessionIds) ids.add(id);
+    }
+    return ids;
+  }
+
+  /**
+   * 历史 `current` 范围用的目录证据：绑定会话的**创建目录**（权威 `sessionCwds`），
+   * 未绑定时是本窗预选的新目录 / 当前根。没有证据时返回 undefined，按旧的「未分组」档。
+   */
+  private historyCurrentCwd(viewId: string): string | undefined {
+    const sessionId = this.viewSessions.get(viewId);
+    if (sessionId !== undefined) return this.sessionCreationCwd(sessionId);
+    // 打开着文件夹时窗口的根才是「当前预选的新目录」；`newSessionCwd` 是没打开文件夹
+    // 时那条旧路径的记录，不能反过来盖住工作区根。
+    if (vscode.workspace.workspaceFolders?.length) return this.rootPath(viewId) ?? this.newSessionCwd;
+    return this.newSessionCwd ?? this.rootPath(viewId);
+  }
+
+  private sessionCreationCwd(sessionId: string): string | undefined {
+    return this.sessionCwds.get(sessionId) ?? this.scopes.get(sessionId)?.creationCwd;
+  }
+
+  /** 这个窗口历史范围的全部候选目录（根 + 其他已知目录）。 */
+  private historyDirectories(viewId: string): {
+    roots: DirectoryOption[];
+    otherDirectories: DirectoryOption[];
+    rootPaths: string[];
+  } {
+    const rootPaths = (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath);
+    const roots = this.directoryOptions(rootPaths);
+    const choice = this.rootChoice(viewId);
+    const extra = choice?.kind === "outside" ? [choice.path] : [];
+    return {
+      roots,
+      otherDirectories: otherHistoryDirectories(this.historySessions, rootPaths, extra),
+      rootPaths,
+    };
+  }
+
+  /**
+   * 一个范围现在还可不可选：`current` 永远可以；`roots` 要有工作区根；`directory` 必须是
+   * 当前工作区根或当前连接已知会话的目录（含已经移出工作区的）。浏览历史本身不注册任何
+   * 东西——这里只读已有快照。
+   */
+  private historyScopeAvailable(
+    viewId: string,
+    scope: HistoryScope,
+    directories: { rootPaths: string[]; otherDirectories: DirectoryOption[] },
+  ): boolean {
+    if (scope.kind === "current") return true;
+    if (scope.kind === "roots") return directories.rootPaths.length > 0;
+    const wanted = normalizePath(scope.path);
+    const choice = this.rootChoice(viewId);
+    return (
+      directories.rootPaths.some((path) => normalizePath(path) === wanted) ||
+      directories.otherDirectories.some((option) => normalizePath(option.path) === wanted) ||
+      (choice?.kind === "outside" && normalizePath(choice.path) === wanted)
+    );
+  }
+
+  /**
+   * 本窗口的 `history` 视图：范围（无效 / 过期折回 `current`）+ 候选目录 + 按范围收窄的
+   * 两份列表。旧顶层 `sessions` / `archivedSessions` 帧不经过这里。
+   */
+  private historyView(viewId: string): NonNullable<ChatState["history"]> {
+    const directories = this.historyDirectories(viewId);
+    let scope = this.viewHistoryScopes.get(viewId) ?? { kind: "current" as const };
+    if (!this.historyScopeAvailable(viewId, scope, directories)) {
+      // 连接换了 / 目录已经无从证明：不让旧目标留在界面上（迟到目标一律拒绝）
+      if (this.viewHistoryScopes.delete(viewId)) {
+        this.log(`[history] 窗口=${viewId} 的范围已经不可用，折回 current：${JSON.stringify(scope)}`);
+      }
+      scope = { kind: "current" };
+    }
+    const rows = historyRowsForScope(this.historySessions, {
+      scope,
+      currentCwd: this.historyCurrentCwd(viewId),
+      roots: directories.rootPaths,
+      groupedSessionIds: this.groupedSessionIds(),
+    });
+    const { active, archived } = this.groupSessionLists(rows);
+    return {
+      scope,
+      roots: directories.roots,
+      otherDirectories: directories.otherDirectories,
+      mixedDirectories: historyIsMixed(rows),
+      sessions: active,
+      archivedSessions: archived,
+    };
+  }
+
+  /** 切换一个窗口的历史范围：只改本窗口，不注册 / 不落壳 / 不刷新 RPC。 */
+  private setHistoryScope(viewId: string, value: unknown): void {
+    const scope = parseHistoryScope(value);
+    if (!scope) {
+      this.log(`[history] 窗口=${viewId} 的范围形状不认识，整条拒绝：${JSON.stringify(value)}`);
+      return;
+    }
+    if (!this.liveViewIds().includes(viewId)) {
+      this.log(`[history] 窗口=${viewId} 已经下线，迟到的范围切换丢弃`);
+      return;
+    }
+    const directories = this.historyDirectories(viewId);
+    if (!this.historyScopeAvailable(viewId, scope, directories)) {
+      this.log(`[history] 窗口=${viewId} 的范围不可用，拒绝：${JSON.stringify(scope)}`);
+      return;
+    }
+    this.viewHistoryScopes.set(viewId, scope);
+    this.emitToView(viewId, { type: "patch", patch: { history: this.historyView(viewId) } });
+  }
+
+  /** 按窗口推 `history`（与旧列表帧同一刻发；首帧快照另由 `snapshotFor` 带）。 */
+  private emitHistoryViews(): void {
+    for (const viewId of this.liveViewIds()) {
+      this.emitToView(viewId, { type: "patch", patch: { history: this.historyView(viewId) } });
+    }
   }
 
   /**
@@ -5058,6 +5410,7 @@ export class ChatController implements vscode.Disposable {
       }
     }
     this.sessions = this.sessions.filter((s) => s.id !== sessionId);
+    this.historySessions = this.historySessions.filter((s) => s.id !== sessionId);
     this.rememberDeleted(sessionId);
     // 删掉的会话在未读账上也不该留一条：`deletedSessionIds` 让它从列表里永远消失（连归档
     // 列表都不进），那条旗标就成了永远不会被清掉的死重量（真机 globalState 里见过实例）。
@@ -5141,29 +5494,87 @@ export class ChatController implements vscode.Disposable {
    * 而不是抛错**：会话照旧按 cwd 建得出来，只是那一条在 Web 端仍落在未分组里——
    * 让「新建会话」整体失败是更糟的结果。失败原因进日志。
    */
-  private async ensureWorkspace(): Promise<string | undefined> {
-    if (this.workspaceId) return this.workspaceId;
-    if (!this.client) return undefined;
-    // 只有**VS Code 打开的文件夹**才注册成工作区：没有文件夹时用户挑的那个目录
-    // （`newSessionCwd`）只是个落脚点，把它注册进服务端的工作区注册表是另一回事
-    // （那会长期留在 Web 的侧栏里），会话按 cwd 建、落在「未分组」——与用户口径
-    // 「和以前一样，是未分组会话」一致。
-    const folder = vscode.workspace.workspaceFolders?.[0];
-    if (!folder) return undefined;
-    const path = folder.uri.fsPath;
-    try {
-      const value = await this.client.createWorkspace(path);
-      const id = value?.workspace?.workspaceId;
-      if (typeof id === "string" && id) {
-        this.workspaceId = id;
-        this.log(`[workspace] 工作区已注册：${path} → ${id}`);
-        return id;
+  /**
+   * 这个窗口此刻要落会话的目录（**同步冻结**用）：路径、路径键与是否注册成服务端工作区。
+   *
+   * 发送在 `beginSend` 里就抓一份，后面跨过连接 / 目录选择等 await 也只用这一份——中途别的
+   * 窗口 / 本窗口换根不能把已经按下的发送搬走。没有目录时返回 undefined（由发送路径再问一次）。
+   */
+  private captureSessionTarget(viewId?: string): SessionTarget | undefined {
+    const choice = this.rootChoice(viewId);
+    if (choice) {
+      const path = upperDriveLetter(choice.path);
+      return { path, key: normalizePath(path), registered: choice.kind === "root" };
+    }
+    if (this.newSessionCwd) {
+      const path = upperDriveLetter(this.newSessionCwd);
+      return { path, key: normalizePath(path), registered: false };
+    }
+    return undefined;
+  }
+
+  /** 工作区注册缓存的键：连接世代 + 目录键 + 是否注册（工作区外目录永远走未注册档）。 */
+  private workspaceRegistrationKey(target: SessionTarget): string {
+    return `${this.connectionGeneration}|${target.registered ? "1" : "0"}|${target.key}`;
+  }
+
+  /**
+   * 取回（必要时注册）**这个窗口当前根**在服务端的工作区 id。
+   *
+   * `workspace/create` 是**幂等**的：同一条 realpath 再来一次就返回原有记录
+   * （`resolveByPath`），所以「每次连接解析一次」不会堆出重复工作区。注册结果按
+   * 连接世代 + 目录 + 是否注册分键缓存（见 `workspaceRegistrations`），先用 `workspace/follow`
+   * 的快照复用（同一目录别的窗口已经注册过就直接拿 id），再发请求；请求回来时连接已经换代
+   * 就丢弃，不把上一台 Host 的 id 写进当前。
+   *
+   * 只有**VS Code 打开的文件夹**才注册成工作区：没有文件夹时用户挑的那个目录
+   * （`newSessionCwd`）与「选择其他文件夹…」选的工作区外目录都只是落脚点，注册会长期留在
+   * Web 侧栏里；会话按 cwd 建、落在「未分组」（`target.registered === false`）。
+   *
+   * 拿不到（老版本服务器没有这条 RPC、路径不存在、网络失败…）时**返回 undefined
+   * 而不是抛错**：会话照旧按 cwd 建得出来，只是那一条在 Web 端仍落在未分组里——
+   * 让「新建会话」整体失败是更糟的结果。失败原因进日志。
+   */
+  private async ensureWorkspace(target: SessionTarget | undefined): Promise<string | undefined> {
+    if (!target?.registered) return undefined;
+    const client = this.client;
+    if (!client) return undefined;
+    const key = this.workspaceRegistrationKey(target);
+    const cached = this.workspaceRegistrations.get(key);
+    if (cached !== undefined) return cached;
+    const pending = this.workspaceRegistrationPending.get(key);
+    if (pending) return await pending;
+    // 「按快照复用」：`workspace/follow` 已经给出这条目录的注册记录时不再发请求。判据只认
+    // **当前连接**的注册表快照（换连接时它整体被清掉 / 重放）。
+    const known = this.workspaces.find((row) => normalizePath(row.path) === target.key);
+    if (known) {
+      this.workspaceRegistrations.set(key, known.workspaceId);
+      return known.workspaceId;
+    }
+    const generation = this.connectionGeneration;
+    const request = (async (): Promise<string | undefined> => {
+      try {
+        const value = await client.createWorkspace(target.path);
+        // 请求期间换了连接：这份结果属于上一台 Host，丢掉
+        if (this.client !== client || this.connectionGeneration !== generation) return undefined;
+        const id = value?.workspace?.workspaceId;
+        if (typeof id === "string" && id) {
+          this.workspaceRegistrations.set(key, id);
+          this.log(`[workspace] 工作区已注册：${target.path} → ${id}`);
+          return id;
+        }
+        this.log(`[workspace] 注册返回里没有 workspaceId：${JSON.stringify(value)}`);
+        return undefined;
+      } catch (error) {
+        this.log(`[workspace] 注册失败（本次回退到按 cwd 建会话）：${this.describeError(error)}`);
+        return undefined;
       }
-      this.log(`[workspace] 注册返回里没有 workspaceId：${JSON.stringify(value)}`);
-      return undefined;
-    } catch (error) {
-      this.log(`[workspace] 注册失败（本次回退到按 cwd 建会话）：${this.describeError(error)}`);
-      return undefined;
+    })();
+    this.workspaceRegistrationPending.set(key, request);
+    try {
+      return await request;
+    } finally {
+      if (this.workspaceRegistrationPending.get(key) === request) this.workspaceRegistrationPending.delete(key);
     }
   }
 
@@ -5244,7 +5655,8 @@ export class ChatController implements vscode.Disposable {
     this.beginViewAction(viewId);
     // 手里已经有一条现成的空壳：**同步换过去**（0 往返），界面下一帧就是空态。
     // 空壳由窗口共享：别的标签停着的也是这一条，这里照常接上去（见 `reusableBlank`）
-    const reusable = this.reusableBlank();
+    const blankTarget = this.captureSessionTarget(viewId);
+    const reusable = blankTarget ? this.reusableBlank(blankTarget) : undefined;
     if (reusable !== undefined && this.switchToBlankSync(viewId, reusable)) return;
     // 还没有现成的壳（列表还没拉过、或这个工作区还没建过）：先退回空态，再去建。
     // 「+」是用户显式动作（`AGENTS.md` 的「能不能启动后台」那一档明确列了「新建」），
@@ -5310,12 +5722,21 @@ export class ChatController implements vscode.Disposable {
     options: {
       start: boolean;
       askDir: boolean;
+      /**
+       * **冻结**的目标目录（发送在 `beginSend` 里抓的那一份）。给出时后面跨 await 也不再
+       * 重新读根：用户按下发送之后别的窗口 / 本窗口换根不能把这条消息搬走。
+       */
+      target?: SessionTarget;
     },
   ): Promise<SessionScope | undefined> {
+    // 只有换目录或工作区文件夹变化可以解绑旧壳。显式打开的会话不受新会话目录偏好影响。
     const existing = this.scopeOfView(viewId);
     if (existing) return existing;
+    const frozen = options.target !== undefined;
+    const target = options.target ?? this.captureSessionTarget(viewId);
+    const key = target?.key ?? "";
     const inflight = this.sessionEnsures.get(viewId);
-    if (inflight) {
+    if (inflight && inflight.key === key) {
       // **显式请求要能把在飞的这条链升档**：在飞的多半是 `ready` 尾巴 / 补壳那条**自动路径**
       // （`start: false`），它可能正卡在"等激活期那次自动连接"上。用户这时点「+」/发消息若只是
       // 并进去，`ensureConnected({ start: true })` 与 `userChoseConnection` 都不会发生——
@@ -5324,11 +5745,13 @@ export class ChatController implements vscode.Disposable {
       if (options.start) await this.ensureConnected({ start: true });
       // **同窗口共用一次尝试**（`@` 候选每敲一个字符重取、附件、自动补壳都会并发调到这里）：
       // 共享的那条链失败时不能变成 N 个等待者各建一次（那正好把合并承诺反过来了）。
-      const settledScope = await inflight;
+      const settledScope = await inflight.attempt;
       const bound = this.scopeOfView(viewId);
       if (bound) return bound;
       return settledScope;
     }
+    // 目标目录不同：**不并进旧那条**（它就是「切 B 后立即发送还落 A」的根因），另起一条，
+    // 旧尝试回来时按自己的目录键核对，不能再绑定。
     const attempt = (async (): Promise<SessionScope | undefined> => {
       if (!this.client || this.connection !== "connected") {
         // `start: true` 是**用户显式动作**（发消息、点「+」、打开菜单）：允许拉起后台。
@@ -5343,30 +5766,62 @@ export class ChatController implements vscode.Disposable {
       // 里的一条）：绑定是既成事实，就按它走，不再自己建一条把它顶掉
       const bound = this.scopeOfView(viewId);
       if (bound) return bound;
-      if (options.askDir) {
+      let settledTarget = target;
+      if (!settledTarget && options.askDir) {
         // 「要目录」的判据是**有没有一个能用的目录**（`hasWorkspaceDir`），不是
         // 「有没有真工作区」：用户已经在新会话页上选过目录时，发消息不该再问一遍
         // （`askWorkspaceDir` 每次都弹，见那里的注释）。
-        if (!this.hasWorkspaceDir() && !(await this.askWorkspaceDir())) return undefined;
+        const pickerAction = { viewId, epoch: this.viewActions.get(viewId) };
+        if (!this.hasWorkspaceDir() && !(await this.askWorkspaceDir(pickerAction))) return undefined;
+        settledTarget = this.captureSessionTarget(viewId);
       } else if (!this.hasWorkspaceDir()) {
         // 建空壳必须先有工作目录：`session/create` 要么给 `workspaceId`、要么给 `cwd`，
         // 而 `workspacePath()` 在两者都没有时给的是**扩展宿主**的 `process.cwd()`
         // ——那是 VS Code 的安装路径，用户既没选、也无从知道（见 `workspacePath`）。
-        // 这条路上不弹选择器，窗口就停在「无会话的空态」。
+        // 这条路上不弹选择器，窗口就停在「无会话的空态」。冻结目标（发送那一刻已有目录）
+        // 是例外：按它落，不因窗口此刻没有别的目录证据而丢消息。
+        if (!settledTarget) return undefined;
+      }
+      if (!settledTarget) return undefined;
+      // 自动路径在等连接 / 等目录期间根已经换了：这次落壳作废（提示发送的那条是冻结的，
+      // 按冻结目录落，不能被这里作废）。
+      if (!frozen && !this.sessionTargetIsCurrent(viewId, settledTarget)) {
+        this.log(`[new] 窗口=${viewId} 的目标目录在落壳期间变了，这次作废（${settledTarget.path}）`);
         return undefined;
       }
       // 落壳串行化与扫描都在 `reuseOrCreateBlank` 里：上面那条 `await ensureConnected`
       // 之后列表可能才第一次到手，判据要在那里重新读（见 `blankEnsures`）
-      return await this.reuseOrCreateBlank(viewId);
+      return await this.reuseOrCreateBlank(viewId, settledTarget, !frozen);
     })();
-    this.sessionEnsures.set(viewId, attempt);
+    this.sessionEnsures.set(viewId, { key, attempt });
     try {
       return await attempt;
     } finally {
       // **只清新自己的那一份**：按对象身份比对，避免把期间可能换成的另一条尝试删掉
       // （换掉了就说明有更新的那一条在飞，删它会让别人另起一条、重复建壳）。
-      if (this.sessionEnsures.get(viewId) === attempt) this.sessionEnsures.delete(viewId);
+      if (this.sessionEnsures.get(viewId)?.attempt === attempt) this.sessionEnsures.delete(viewId);
     }
+  }
+
+  /** 这个窗口此刻的目标目录还是不是 `target`（自动落壳的作废判据）。 */
+  private sessionTargetIsCurrent(viewId: string, target: SessionTarget): boolean {
+    return this.captureSessionTarget(viewId)?.key === target.key;
+  }
+
+  /**
+   * 绑着的空白壳与当前目标目录不一致时解绑（换根 / 选目录的连带动作可能还没跑完）。
+   *
+   * 只在目录选择或 VS Code 文件夹变化时调用。已开始的会话不动（cwd 是创建事实）。
+   */
+  private detachStaleBlank(viewId: string): void {
+    const bound = this.viewSessions.get(viewId);
+    if (bound === undefined || !this.isBlankShell(bound)) return;
+    const target = this.captureSessionTarget(viewId);
+    if (target && normalizePath(this.sessionCreationCwd(bound)) === target.key) return;
+    this.log(`[workspace] 窗口=${viewId} 绑着旧根的空壳 ${bound}，先解绑（目标=${target?.path ?? "未选择"}）`);
+    // 换根**不搬**草稿与附件：那是旧根那条空壳上的东西，跟着搬到新根等于把内容改道
+    this.detachView(viewId, false);
+    this.emitToView(viewId, { type: "state", state: this.snapshotFor(viewId) });
   }
 
   /**
@@ -5395,33 +5850,42 @@ export class ChatController implements vscode.Disposable {
    * 串行执行（见 `withBlankGate`）。空壳由窗口共享，闸只保证并发进入空态的窗口接到同
    * 一条壳上，不再是「一个窗口一条壳」，也不再有预留 / 占用账本。
    */
-  private async reuseOrCreateBlank(viewId: string): Promise<SessionScope | undefined> {
+  private async reuseOrCreateBlank(
+    viewId: string,
+    target: SessionTarget,
+    /** true = 自动 / 换根路径：期间目标目录变了就整条作废；false = 发送冻结的那一份。 */
+    requireCurrent: boolean,
+  ): Promise<SessionScope | undefined> {
     if (!this.client) return undefined;
     try {
       const preset = this.agentPresetFor(viewId);
-      const workspaceId = await this.ensureWorkspace();
-      // 闸按**目录**分：同一个目录里同时进空态的窗口排成一队，后到的在闸内重新扫列表
-      const gateKey = normalizePath(this.workspacePath());
+      const workspaceId = await this.ensureWorkspace(target);
+      // 闸按**目录**分：同一个目录里同时进空态的窗口排成一队，后到的在闸内重新扫列表。
+      // 目录键已被冻结（`target.key`），不再读窗口当前根。
+      const gateKey = target.key;
       const created = await this.withBlankGate(gateKey, async () => {
         // 扫描前先确保手里有一份列表：`reusableBlank` 扫的就是 `this.sessions`，而它可能
         // 还没拉过（窗口刚就绪、恢复路径没走到）——空着扫会把**别的窗口建好的壳**漏掉，
         // 于是又建一条
         if (!this.sessions.length) await this.refreshSessions();
-        const reusable = this.reusableBlank();
+        // 等列表 / 闸期间根换了：自动路径到此收手，绝不把旧目录的壳绑给新根窗口
+        if (requireCurrent && !this.sessionTargetIsCurrent(viewId, target)) return undefined;
+        const reusable = this.reusableBlank(target);
         if (reusable !== undefined) this.log(`[new] 窗口=${viewId} 复用空壳 ${reusable}`);
         const result =
           reusable !== undefined
-            ? await this.adoptBlankShell(reusable)
-            : await this.createSessionInWorkspace(workspaceId, preset);
+            ? await this.adoptBlankShell(reusable, target)
+            : await this.createSessionInWorkspace(workspaceId, preset, target);
         // 新壳要出现在 `this.sessions` 里才找得到（`reusableBlank` 扫的就是它），本地 blank
         // 位也在这里与服务端对齐一次。放在闸内：排队的那几个窗口要靠这份列表看到它
         await this.refreshSessions();
         return { reusable, result };
       });
+      if (!created) return this.scopeOfView(viewId);
       // 「这条会话是这次**真新建**的吗」：认领那条路上服务端也可能回一条**另铸**的会话
       // （点名的空壳已经不是空壳 / 写者不放手，见服务端的 `claim`），那条就等同于新建
       const fresh = created.reusable === undefined || created.result.sessionId !== created.reusable;
-      const target = created.result.sessionId;
+      const sessionId = created.result.sessionId;
       // 空态页选过的权限在**绑定前**读走（`bindViewToSession` 会清掉它）
       const wantedPermission = this.viewPermission.get(viewId);
       // **写绑定前复查**：从上面的判据走到这里跨了至少一个 await（`ensureWorkspace` /
@@ -5432,18 +5896,24 @@ export class ChatController implements vscode.Disposable {
       // 复用），只是不绑给这个窗口。
       const bound = this.scopeOfView(viewId);
       if (bound) return bound;
+      // 自动路径：落壳最后一次 await（`refreshSessions`）期间根已经换了 → 不绑定
+      if (requireCurrent && !this.sessionTargetIsCurrent(viewId, target)) {
+        this.log(`[new] 窗口=${viewId} 在落壳完成前换了根：不绑定旧目录的会话 ${sessionId}`);
+        return undefined;
+      }
       // **窗口在 await 期间关掉了**（用户关掉编辑区面板 / 收起侧栏）：落壳链回来时
       // webview 已经不在了，绑定它只会在这张表里留一条永远没人看的记录（恢复、持久化
       // 缓存都读它）。判据用窗口名册的当前快照——`viewOrder` 是「这个 viewId 还在」的
       // 肯定证据（`bindView` 登记、`unbindView` 摘掉），比时间戳可靠
       if (!this.viewOrder.includes(viewId)) {
-        this.log(`[new] 窗口=${viewId} 已在落壳期间关闭：不写绑定（会话 ${target} 留作以后复用）`);
+        this.log(`[new] 窗口=${viewId} 已在落壳期间关闭：不写绑定（会话 ${sessionId} 留作以后复用）`);
         return undefined;
       }
       // **域到这里才建**（`ensureScope` 会开 follow / jobs 两条长活流）：上面任何一条早退
       // 路径都不该留下一个 `viewers === 0`、没人看的域——那两条流会跟着扩展宿主一直活着
-      const scope = this.ensureScope(target);
+      const scope = this.ensureScope(sessionId);
       if (!scope) return undefined;
+      scope.creationCwd = target.path;
       // 投影帧要晚一点才到，先用服务端的答复给域一个初值（`agentPreset` 那条路见
       // `applyAgentPresetProjection`）。认领那条路这一笔尤其有用：服务端回的正是那条
       // 会话**最终**认下的预设（照日志记着的那个，或退回的部署默认）。
@@ -5459,12 +5929,12 @@ export class ChatController implements vscode.Disposable {
           scope.model = model;
         }
       }
-      this.bindViewToSession(viewId, target, scope);
+      this.bindViewToSession(viewId, sessionId, scope);
       // 待建会话的权限选择到此落实（会话启动后以界面显示的设定运行）。与部署默认
       // 相同就不发：那个值服务端建会话时本来就会装上，再发一次只会在新会话里留下
       // 一条没人点的 `/permission` 命令节点
       if (wantedPermission && wantedPermission !== this.defaultPermission) {
-        await this.runCommandOnSession(target, `/permission ${wantedPermission}`);
+        await this.runCommandOnSession(sessionId, `/permission ${wantedPermission}`);
       }
       this.emitToView(viewId, { type: "state", state: this.snapshotFor(viewId) });
       return scope;
@@ -5482,7 +5952,7 @@ export class ChatController implements vscode.Disposable {
    * **窗口键**搬回去——与 `bindViewToSession` 的迁移严格对称，否则输入框里的话
    * 会在点「+」的那一刻消失（它们跟着会话键走了）。编辑区标签的标题也回到 `DSH`。
    */
-  private detachView(viewId: string): void {
+  private detachView(viewId: string, moveDraft = true): void {
     const previous = this.viewSessions.get(viewId);
     if (previous === undefined) return;
     // 点「新建对话」也是离开：正在生成就记一笔离开标记（域随后被回收，先取状态）
@@ -5492,14 +5962,20 @@ export class ChatController implements vscode.Disposable {
     this.closeJobWatch(viewId);
     this.trajectoryResults.close(viewId);
     this.viewSessions.delete(viewId);
-    const draft = this.drafts.get(previous);
-    if (draft !== undefined) {
-      this.drafts.set(viewId, draft);
-      this.drafts.delete(previous);
+    // 草稿与附件只在这两种意义上才搬：
+    // - moveDraft：退回空态 / 换会话（与 `bindViewToSession` 严格对称，输入框跟着窗口走）；
+    // - 换根（`detachStaleBlank` 传 false）：旧根空壳上的东西**不搬**，否则草稿与附件
+    //   会被改道到新根的会话上。
+    if (moveDraft) {
+      const draft = this.drafts.get(previous);
+      if (draft !== undefined) {
+        this.drafts.set(viewId, draft);
+        this.drafts.delete(previous);
+      }
+      // 附件草稿按**窗口键**搬回去（与 `bindViewToSession` 的迁移严格对称）：点「+」
+      // 之后输入框上那几枚芯片还在，用户接着发不需要重加
+      this.attachments.move(previous, viewId);
     }
-    // 附件草稿按**窗口键**搬回去（与 `bindViewToSession` 的迁移严格对称）：点「+」
-    // 之后输入框上那几枚芯片还在，用户接着发不需要重加
-    this.attachments.move(previous, viewId);
     this.dropViewers(previous);
     this.noteSessionLeft(previous, wasGenerating);
     if (this.viewKinds.get(viewId) === "panel") this.setPanelTitle(viewId, panelTabTitle(undefined));
@@ -5517,18 +5993,22 @@ export class ChatController implements vscode.Disposable {
   private async createSessionInWorkspace(
     workspaceId: string | undefined,
     agentPreset: string | undefined,
+    target: SessionTarget,
   ): Promise<{ sessionId: string; agentPreset?: string }> {
     if (!this.client) throw new Error("no client");
     // 预设只在**创建时**能指定（之后换要走 `agentPresets/select`，且只在会话还没有
     // 轮次时有效）。没有就不传这个字段——服务端按它自己的默认预设组装。
-    const target = agentPreset ? { agentPreset } : {};
-    if (!workspaceId) return this.client.createSession({ cwd: this.workspacePath(), ...target });
+    const preset = agentPreset ? { agentPreset } : {};
+    if (!workspaceId) return this.client.createSession({ cwd: target.path, ...preset });
     try {
-      return await this.client.createSession({ workspaceId, ...target });
+      return await this.client.createSession({ workspaceId, ...preset });
     } catch (error) {
-      this.workspaceId = undefined;
+      // 只作废**这个目录**的注册缓存：别的窗口 / 别的根的登记结果仍然有效
+      for (const key of [...this.workspaceRegistrations.keys()]) {
+        if (key.endsWith(`|${target.key}`)) this.workspaceRegistrations.delete(key);
+      }
       this.log(`[workspace] 按工作区建会话失败，回退 cwd：${this.describeError(error)}`);
-      return this.client.createSession({ cwd: this.workspacePath(), ...target });
+      return this.client.createSession({ cwd: target.path, ...preset });
     }
   }
 
@@ -5562,13 +6042,16 @@ export class ChatController implements vscode.Disposable {
    * @returns 服务端**最终认下的**会话身份与预设：点名的空壳在这中间已经不是空壳时，服务端
    *          会另铸一条新的（`claim` 的既有语义），调用方要用返回值，不能用入参。
    */
-  private async adoptBlankShell(sessionId: string): Promise<{ sessionId: string; agentPreset?: string }> {
+  private async adoptBlankShell(
+    sessionId: string,
+    target?: SessionTarget,
+  ): Promise<{ sessionId: string; agentPreset?: string }> {
     if (!this.client) throw new Error("no client");
-    const cwd = this.sessionCwds.get(sessionId) ?? this.workspacePath();
+    const cwd = this.sessionCwds.get(sessionId) ?? target?.path ?? this.workspacePath();
     const recorded = this.sessionPresets.get(sessionId);
-    const target = { cwd, ...(recorded === undefined ? {} : { agentPreset: recorded }) };
+    const request = { cwd, ...(recorded === undefined ? {} : { agentPreset: recorded }) };
     try {
-      return await this.client.createSession(target, sessionId);
+      return await this.client.createSession(request, sessionId);
     } catch (error) {
       // 认不出被点名的预设：它对应的定义已经从部署里删掉了（或装不起来 / 注册表整个不在）。
       // 这是**正常的一种结局**（不是异常状态）：会话日志里那个 id 是过去某次的选择，会话不可能
@@ -5630,13 +6113,13 @@ export class ChatController implements vscode.Disposable {
    *
    * 找不到就返回 undefined，调用方照常 `session/create`。
    */
-  private reusableBlank(): string | undefined {
-    const target = normalizePath(this.workspacePath());
-    for (const row of this.sessions) {
+  private reusableBlank(target: SessionTarget): string | undefined {
+    const candidates = this.historySessions.length ? this.historySessions : this.sessions;
+    for (const row of candidates) {
       if (row.blank !== true) continue;
       if (this.engagedSessions.has(row.id)) continue;
       if (this.archivedSessionIds.has(row.id) || this.subagentSessionIds.has(row.id)) continue;
-      if (normalizePath(row.cwd) !== target) continue;
+      if (normalizePath(row.cwd) !== target.key) continue;
       return row.id;
     }
     return undefined;
@@ -5687,7 +6170,7 @@ export class ChatController implements vscode.Disposable {
    */
   private isBlankShell(sessionId: string): boolean {
     if (this.engagedSessions.has(sessionId)) return false;
-    return this.sessions.find((row) => row.id === sessionId)?.blank === true;
+    return this.sessionRow(sessionId)?.blank === true;
   }
 
   /**
@@ -5764,42 +6247,175 @@ export class ChatController implements vscode.Disposable {
       this.refreshWorkspace();
       return;
     }
-    // 用户取消 → 保持原状（点击的反馈就是那个对话框本身，不再另外弹提示）
-    if (!(await this.askWorkspaceDir())) return;
+    if (!this.canPickOtherRoot()) {
+      this.log(`[workspace] 远端窗口：系统目录选择器给出的本地路径不能当执行世界路径，忽略选目录`);
+      return;
+    }
+    if (!this.liveViewIds().includes(viewId) || !this.canChangeRoot(viewId)) return;
+    // 与发送 / 关窗共用一个动作代号，作废迟到的选择。
+    const action = this.beginViewAction(viewId);
+    if (!(await this.askWorkspaceDir(action, true))) return;
+    if (!this.viewActionIsCurrent(action) || !this.liveViewIds().includes(viewId)) return;
     // 用户显式选了一个目录 ⇒ 允许拉起后台（与发消息同一档）
-    await this.rebindWorkspaceDir(viewId);
+    await this.rebindWorkspaceDir(viewId, action);
   }
 
   /**
-   * 把窗口落到**当前工作目录**那条空壳上（用户刚在新会话页上选了 / 换了目录）。
+   * 换「新会话落在哪个目录」（输入栏目录胶囊，空会话时可用）：换到**工作区里的某个根目录**。
    *
-   * 为什么不能只调 `ensureSession`：它见到域就直接返回（「这个窗口已经有会话了」），
-   * 于是界面上写着新目录、窗口却仍绑在旧目录那条壳上——用户 2026-10-10 报的
-   * 「选完目录实际没有反应」正是这一半。
-   *
-   * 目录是**会话的创建事实**（服务端没有改 cwd 的 API），所以换目录只能是**换一条壳**：
-   *
-   * - 还绑着**空壳**（`isBlankShell`：没说过话）且它的 cwd 与新目录不同 → 解绑 → 立刻
-   *   推一帧空态（**先切、后建**，与 `newSession` 同一口径：落壳那串往返不许挡住切换）
-   *   → 由 `ensureSession` 落到新目录那条壳上（`reuseOrCreateBlank` 会复用该目录里
-   *   已有的空壳，没有才建）。旧壳**留在服务端**（没有删除 API），以后切回那个目录时
-   *   `reusableBlank` 还会复用它是它最好的去处；
-   * - 目录没变 → 什么都不做（重复点同一个目录不该重建会话）；
-   * - 已经绑着**说过话**的会话 → 不动它（换目录不该改写一条已经在用的对话；这种窗口
-   *   本来也不在空态页上——空态页只在没有消息时渲染）。判据按肯定证据写：**拿不到
-   *   「它是空壳」的证据就不动手**（`isBlankShell` 对查不到的会话返回 false）。
+   * 只认当前工作区里的根目录（逐个核对）；只换**空白会话 / 还没有会话**的窗口——已经有对话的
+   * 会话 header 的 cwd 是创建事实，改不了（界面上那种会话只读）。换根要连带：服务端工作区注册的
+   * 缓存（`workspaceId`）属于旧根，清掉；历史列表按当前根收窄（见 `refreshSessions`），重拉；
+   * 窗口落到新根那条空壳上（`rebindWorkspaceDir`：先解绑、再复用或新建）。
+   * 选回工作区里的根会同时放弃这个窗口的「其他文件夹」落脚点（`viewRootChoices`）。
    */
-  private async rebindWorkspaceDir(viewId: string): Promise<void> {
+  private async switchRoot(viewId: string, path: string): Promise<void> {
+    const folders = vscode.workspace.workspaceFolders ?? [];
+    if (!folders.length || typeof path !== "string") return;
+    const hit = folders.find((folder) => normalizePath(folder.uri.fsPath) === normalizePath(path));
+    if (!hit) {
+      this.log(`[workspace] 窗口=${viewId} 要切的根不在当前工作区里，拒绝：${path}`);
+      return;
+    }
+    if (!this.canChangeRoot(viewId)) return;
+    if (!this.liveViewIds().includes(viewId)) return;
+    const current = this.rootPath(viewId);
+    const bound = this.viewSessions.get(viewId);
+    const boundRow = bound === undefined ? undefined : this.sessionRow(bound);
+    // 路径没变**且**绑着的空壳就在这个目录：才真的不用动。根被移除后回退到另一个根、
+    // 但旧空壳还绑着旧目录时，不能因为「路径看起来没变」就跳过换壳。
+    const boundMatches =
+      bound === undefined ||
+      !this.isBlankShell(bound) ||
+      (boundRow !== undefined && normalizePath(boundRow.cwd) === normalizePath(hit.uri.fsPath));
+    if (current && normalizePath(current) === normalizePath(hit.uri.fsPath) && boundMatches) return;
+    // 一次点击 = 一次窗口动作：紧跟着的第一次发送 / 打开会话 / 再切根都会让这次落壳作废
+    const action = this.beginViewAction(viewId);
+    // **先同步换根**（界面上那一帧也立刻发）：后面所有 await 都只按新根走，另一个窗口
+    // 的默认偏好改不动本窗口已经落下的选择（见 `viewRootChoices`）。
+    this.viewRootChoices.set(viewId, { kind: "root", path: hit.uri.fsPath });
+    this.defaultRootPath = hit.uri.fsPath;
+    this.defaultRootLoaded = true;
+    // 记住的是**默认偏好**（下次新开窗口从哪开始），不是「所有已绑定窗口的当前根」
+    void this.workspaceState.update(ACTIVE_ROOT_KEY, hit.uri.fsPath).then(undefined, (error: unknown) => {
+      this.log(`[workspace] 默认根写入失败：${this.describeError(error)}`);
+    });
+    await this.afterRootChanged(viewId, action);
+  }
+
+  /**
+   * 「选择其他文件夹…」：弹系统文件夹选择器，选一个**不一定在工作区里**的目录作为新会话的落脚点。
+   *
+   * 选中的恰好是工作区里的某个根 → 等同 `switchRoot`；否则记成**这个窗口**的工作区外目录
+   * （只在当前扩展宿主里有效、不注册成工作区）。用户取消 → 什么都不做。只对空白会话 /
+   * 没有会话的窗口有效；对话框返回时窗口若已经被关闭、或又发生了别的动作，这次选择整条作废。
+   *
+   * 远端窗口明确禁用：系统选择器给出的是客户端本机路径，不能当成执行世界的目录
+   * （见 `canPickOtherRoot`）。
+   */
+  private async pickOtherRoot(viewId: string): Promise<void> {
+    const folders = vscode.workspace.workspaceFolders ?? [];
+    if (!folders.length || !this.canChangeRoot(viewId)) return;
+    if (!this.canPickOtherRoot()) {
+      this.log(`[workspace] 远端窗口：系统目录选择器给出的本地路径不能当执行世界路径，忽略「选择其他文件夹」`);
+      return;
+    }
+    // 弹框前占号：对话框是异步的，期间发送 / 打开会话 / 关窗都让这次选择作废
+    const action = this.beginViewAction(viewId);
+    const picked = await vscode.window.showOpenDialog({
+      canSelectFiles: false,
+      canSelectFolders: true,
+      canSelectMany: false,
+      title: vscode.l10n.t("Select the working directory for new sessions"),
+      openLabel: vscode.l10n.t("Use This Folder"),
+    });
+    const pickedUri = picked?.[0];
+    const path = pickedUri?.fsPath;
+    if (!path) return;
+    // 选的时候窗口可能已经变了（对话框是异步的）：动作代号 + 存活 + 可换根三道都再核一次
+    if (!this.viewActionIsCurrent(action) || !this.liveViewIds().includes(viewId) || !this.canChangeRoot(viewId)) {
+      this.log(`[workspace] 窗口=${viewId} 在选目录期间又发生了别的动作，这次选择作废`);
+      return;
+    }
+    if (pickedUri?.scheme && pickedUri.scheme !== "file") {
+      this.log(`[workspace] 目录选择器返回了非本地 scheme（${pickedUri.scheme}），拒绝当作新会话根`);
+      return;
+    }
+    // **按对话框返回时的 roots 分流**：等待期间工作区可能已经换了文件夹 / 整个关掉
+    const currentFolders = vscode.workspace.workspaceFolders ?? [];
+    if (!currentFolders.length) return;
+    if (currentFolders.some((folder) => normalizePath(folder.uri.fsPath) === normalizePath(path))) {
+      await this.switchRoot(viewId, path);
+      return;
+    }
+    const current = this.rootPath(viewId);
+    if (current && normalizePath(current) === normalizePath(path)) return;
+    // 选中目录必须通过**本机身份**证据（与工作区外 `@` 发现同一道门）：远端执行世界 / 本机
+    // 不存在的路径不许当落脚点。这是启发式门，不宣称能识别所有远端部署（见 `localAccess.ts`）。
+    if (!(await this.localAccess.allows(path, new LocalFsBudget()))) {
+      this.log(`[workspace] 选中的目录没有通过本机身份检查，拒绝作为新会话根：${path}`);
+      return;
+    }
+    // 再核一次：身份检查也是一次 await；工作区根集合也按这一刻重读
+    if (!this.viewActionIsCurrent(action) || !this.liveViewIds().includes(viewId) || !this.canChangeRoot(viewId)) return;
+    const latestFolders = vscode.workspace.workspaceFolders ?? [];
+    if (!latestFolders.length) return;
+    if (latestFolders.some((folder) => normalizePath(folder.uri.fsPath) === normalizePath(path))) {
+      await this.switchRoot(viewId, path);
+      return;
+    }
+    this.viewRootChoices.set(viewId, { kind: "outside", path });
+    await this.afterRootChanged(viewId, action);
+  }
+
+  /** 这个窗口现在能不能换新会话的根目录：没有会话，或绑着的是还没说过话的空壳。 */
+  private canChangeRoot(viewId: string): boolean {
+    // **提交在飞时一律不许换根**：第一条消息正在跨连接 / 建会话 / 等目录选择器，
+    // 此刻改根就是把它改道（见 `pendingSends`）。
+    if ((this.pendingSends.get(viewId) ?? 0) > 0) return false;
+    const bound = this.viewSessions.get(viewId);
+    return bound === undefined || this.isBlankShell(bound);
+  }
+
+  /**
+   * 根换过之后的连带动作：立刻推工作目录 / 历史范围，重算旧列表的口径，然后（这次动作还是
+   * 最新意图时）把窗口落到新根那条空壳上。**不**注册任何东西就给历史换范围那是另一回事
+   * （`setHistoryScope` 完全不走这里）。
+   */
+  private async afterRootChanged(
+    viewId: string,
+    action: { viewId: string; epoch: number },
+  ): Promise<void> {
+    // **先同步摘掉旧根的空壳**：这一帧（以及后面按新根重拉的历史）之前窗口就不该还绑着
+    // 旧目录的空壳，否则第一次发送 / 打开会话可能沿着旧绑定走下去。
+    this.detachStaleBlank(viewId);
+    this.emitViewScopedState();
+    // 旧列表（`this.sessions`）是按旧根收窄的那一份；根换了要按新根重算一次（只读）
+    if (this.client) await this.refreshSessions();
+    if (!this.viewActionIsCurrent(action)) {
+      this.log(`[workspace] 窗口=${viewId} 换根之后又发生了别的动作：这次落壳作废`);
+      return;
+    }
+    await this.rebindWorkspaceDir(viewId, action);
+  }
+
+  /** 把窗口落到**这个窗口当前根**那条空壳上（见 `rebindWorkspaceDir` 的完整口径）。 */
+  private async rebindWorkspaceDir(
+    viewId: string,
+    action?: { viewId: string; epoch: number },
+  ): Promise<void> {
+    const target = this.captureSessionTarget(viewId);
     const bound = this.viewSessions.get(viewId);
     if (bound !== undefined) {
       if (!this.isBlankShell(bound)) return;
-      // 空壳一定在 `this.sessions` 里（`isBlankShell` 就是查它），所以这里读得到 cwd
-      const row = this.sessions.find((item) => item.id === bound);
-      if (row && normalizePath(row.cwd) === normalizePath(this.workspacePath())) return;
-      this.detachView(viewId);
+      if (target && normalizePath(this.sessionCreationCwd(bound)) === target.key) return;
+      // **先切、后建**：立刻解绑并推一帧空态，落壳那串往返不许挡住界面
+      this.detachView(viewId, false);
       this.emitToView(viewId, { type: "state", state: this.snapshotFor(viewId) });
     }
-    await this.ensureSession(viewId, { start: true, askDir: false });
+    if (action && !this.viewActionIsCurrent(action)) return;
+    if (!target) return;
+    await this.ensureSession(viewId, { start: true, askDir: false, target });
   }
 
   /**
@@ -5819,8 +6435,12 @@ export class ChatController implements vscode.Disposable {
    *
    * @returns 现在有目录了（本来就打开着文件夹、或选了一个）就是 true；用户取消 → false。
    */
-  private async askWorkspaceDir(): Promise<boolean> {
-    if (vscode.workspace.workspaceFolders?.[0]) return true;
+  private async askWorkspaceDir(
+    action: { viewId: string; epoch: number | undefined },
+    explicit = false,
+  ): Promise<boolean> {
+    if (vscode.workspace.workspaceFolders?.[0]) return !explicit;
+    if (!this.canPickOtherRoot()) return false;
     const picked = await vscode.window.showOpenDialog({
       canSelectFiles: false,
       canSelectFolders: true,
@@ -5828,9 +6448,22 @@ export class ChatController implements vscode.Disposable {
       title: vscode.l10n.t("Select the working directory for new sessions"),
       openLabel: vscode.l10n.t("Use This Folder"),
     });
-    const path = picked?.[0]?.fsPath;
+    // 对话框是异步的：期间用户又发了消息 / 换了根 / 关了窗，这次选择不许再落进状态
+    if (!this.viewActionIsCurrent(action) || !this.liveViewIds().includes(action.viewId) ||
+        (explicit && !this.canChangeRoot(action.viewId))) {
+      this.log(`[workspace] 窗口=${action.viewId} 在选目录期间又发生了别的动作，这次选择作废`);
+      return false;
+    }
+    if (vscode.workspace.workspaceFolders?.[0]) return !explicit;
+    const pickedUri = picked?.[0];
+    const path = pickedUri?.fsPath;
     if (!path) return false;
+    if (pickedUri?.scheme && pickedUri.scheme !== "file") {
+      this.log(`[workspace] 目录选择器返回了非本地 scheme（${pickedUri.scheme}），拒绝当作工作目录`);
+      return false;
+    }
     this.newSessionCwd = path;
+    if (explicit) this.detachStaleBlank(action.viewId);
     // 目录变了：空态页那行目录与这个窗口的历史列表（没有打开文件夹时按选定目录收窄，
     // 见 `viewCwd`）必须同一刻换——两者是同一件事（「这个窗口现在的目录是哪个」）的两面
     this.emitViewScopedState();
@@ -9165,6 +9798,18 @@ export class ChatController implements vscode.Disposable {
         await this.pickWorkspace(viewId);
         break;
 
+      case "switchRoot":
+        await this.switchRoot(viewId, message.path);
+        break;
+
+      case "pickOtherRoot":
+        await this.pickOtherRoot(viewId);
+        break;
+
+      case "historyScope":
+        this.setHistoryScope(viewId, message.scope);
+        break;
+
       case "setAgentPreset":
         await this.selectAgentPreset(viewId, message.id);
         break;
@@ -10252,18 +10897,53 @@ export class ChatController implements vscode.Disposable {
     handoffLeaseFrom?: string,
   ): Promise<boolean> {
     const requestId = this.beginSend(viewId, text, attachments, source, handoffLeaseFrom);
-    // 未连接时先恢复连接：历史会话切换后跟随流尚未建立时直接 prompt
-    // 会触发服务端 resume，冷启动竞态下 resume 可能失败。
-    // **用户显式动作**（按了发送）：允许拉起内部后台（关掉自动连接时也算数，
-    // 用户口径 2026-09-18：`autoConnect` 只约束扩展自己的自动行为）
-    if (!this.client || this.connection !== "connected") await this.ensureConnected({ start: true });
-    if (!this.client) {
-      if (!this.failEcho(requestId, "@sendNoConnection")) {
-        this.appendDraft(viewId, text, attachments, requestId);
+    // **同步占住这个窗口**（早于任何 await）：这次提交结束前换根 / 迟到的目录选择器
+    // 都不许把这个窗口的根改到别处（见 `pendingSends` 与 `canChangeRoot`）。
+    this.holdPendingSend(viewId);
+    try {
+      // 冻结目录在**任何 await 之前**取走：后面只按这份落壳
+      const frozenTarget = this.frozenSendTargets.get(requestId);
+      this.frozenSendTargets.delete(requestId);
+      // 未连接时先恢复连接：历史会话切换后跟随流尚未建立时直接 prompt
+      // 会触发服务端 resume，冷启动竞态下 resume 可能失败。
+      // **用户显式动作**（按了发送）：允许拉起内部后台（关掉自动连接时也算数，
+      // 用户口径 2026-09-18：`autoConnect` 只约束扩展自己的自动行为）
+      if (!this.client || this.connection !== "connected") await this.ensureConnected({ start: true });
+      if (!this.client) {
+        if (!this.failEcho(requestId, "@sendNoConnection")) {
+          this.appendDraft(viewId, text, attachments, requestId);
+        }
+        return false;
       }
-      return false;
+      return await this.send(
+        viewId,
+        text,
+        attachments,
+        gesture,
+        requestId,
+        source,
+        prebuiltContent,
+        frozenTarget,
+      );
+    } finally {
+      this.releasePendingSend(viewId);
     }
-    return this.send(viewId, text, attachments, gesture, requestId, source, prebuiltContent);
+  }
+
+  /**
+   * 占住 / 放掉一个窗口的「提交在飞」名额（见 `pendingSends`）。
+   *
+   * 释放按计数减一：同一条链里嵌套的提交（`resubmit` 的循环）各自占一次，最先结束的
+   * 那一个不能替还没回来的那个放行。
+   */
+  private holdPendingSend(viewId: string): void {
+    this.pendingSends.set(viewId, (this.pendingSends.get(viewId) ?? 0) + 1);
+  }
+
+  private releasePendingSend(viewId: string): void {
+    const count = (this.pendingSends.get(viewId) ?? 0) - 1;
+    if (count > 0) this.pendingSends.set(viewId, count);
+    else this.pendingSends.delete(viewId);
   }
 
   /**
@@ -10288,6 +10968,8 @@ export class ChatController implements vscode.Disposable {
     requestId: string,
     source: "composer" | "retry" | "queue",
     prebuiltContent?: readonly PromptContentPart[],
+    /** `beginSend` 冻结的目标目录（见 `frozenSendTargets`）。 */
+    frozenTarget?: SessionTarget,
   ): Promise<boolean> {
     if (!this.client) {
       if (!this.failEcho(requestId, "@sendNoConnection")) {
@@ -10299,7 +10981,7 @@ export class ChatController implements vscode.Disposable {
     // 时会先问一次（取消 → 不建会话也不发送，草稿留在输入框里）
     let scope = this.scopeOfView(viewId);
     if (!scope) {
-      scope = await this.ensureSession(viewId, { start: true, askDir: true });
+      scope = await this.ensureSession(viewId, { start: true, askDir: true, target: frozenTarget });
     }
     if (!scope) {
       // 用户**主动取消**了目录选择：这不是"发送失败"，而是这条消息收回输入框
@@ -10321,7 +11003,7 @@ export class ChatController implements vscode.Disposable {
       // 附件租约（提交那一刻移走的那一份）跟着释放——命令不再引用它。
       this.retireEcho(requestId, "slash");
       this.attachments.releaseLease(requestId);
-      const outcome = await this.runCommand(viewId, slash.line);
+      const outcome = await this.runCommand(viewId, slash.line, frozenTarget);
       // 同 `runCommand` 那条：只有未进处理器的命令才入队（红色）；
       // 执行过但 error 的结果由正文里的红色命令节点承接
       if (outcome?.unhandled === true) {
@@ -10655,13 +11337,14 @@ export class ChatController implements vscode.Disposable {
   private async runCommand(
     viewId: string,
     line: string,
+    frozenTarget?: SessionTarget,
   ): Promise<{ ok: boolean; text?: string; unhandled?: boolean } | undefined> {
     if (!this.client) return undefined;
     // 命令按会话执行：还没有会话时先落到本工作区那条空壳上（点按钮时用户并没有先发过
     // 消息；没有工作目录时会先问一次，取消则整条命令不执行）
     let scope = this.scopeOfView(viewId);
     if (!scope) {
-      scope = await this.ensureSession(viewId, { start: true, askDir: true });
+      scope = await this.ensureSession(viewId, { start: true, askDir: true, target: frozenTarget });
     }
     if (!scope) return undefined;
     const agentId = scope.sessionId;
@@ -11440,6 +12123,10 @@ export class ChatController implements vscode.Disposable {
     handoffLeaseFrom?: string,
   ): string {
     const requestId = randomUUID();
+    // **同步冻结目录选择**：这一刻之后即使换根 / 选择框晚返回，这次发送也落在这里。
+    // 同时占一个窗口动作号：正在飞的 switchRoot / 目录选择框回来时会发现意图已经换人。
+    this.frozenSendTargets.set(requestId, this.captureSessionTarget(viewId));
+    this.beginViewAction(viewId);
     if (handoffLeaseFrom) this.attachments.transferLease(handoffLeaseFrom, requestId);
     const key = this.keyForView(viewId);
     const scope = this.scopeOfView(viewId);

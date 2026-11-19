@@ -1,7 +1,16 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import type { SessionSummaryView } from "../../shared/chat";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
+import type { HistoryDirectoryView, SessionSummaryView } from "../../shared/chat";
 import { post } from "../bridge";
+import { dirKey } from "../composerDir";
 import { ESC_LAYER, useEscapeLayer } from "../escapeOwner";
+import {
+  historyDirectoryLabels,
+  historyLists,
+  historyScopeOptions,
+  historyScopeValue,
+  parseHistoryScopeValue,
+  sameHistoryScope,
+} from "../historyDirectoryView";
 import { IconArchive, IconClose, IconMultiSelect, IconPlus, IconSearch, IconTrash, IconUnarchive } from "../icons";
 import {
   allSelected,
@@ -38,11 +47,18 @@ type HistoryView = "sessions" | "archived";
 export function HistoryPanel({
   sessions,
   archivedSessions,
+  history,
   currentId,
   onClose,
 }: {
+  /** 旧宿主（没有 `history` 投影）的宽列表；有投影时只作回退，不参与渲染。 */
   sessions: SessionSummaryView[];
   archivedSessions: SessionSummaryView[];
+  /**
+   * 本窗口的历史范围与两份已收窄列表（`ChatState.history`）。缺席 = 旧宿主，
+   * 退回上面两份顶层列表，且不显示范围选择器。
+   */
+  history?: HistoryDirectoryView;
   currentId?: string;
   onClose: () => void;
 }) {
@@ -79,8 +95,50 @@ export function HistoryPanel({
 
   const archived = view === "archived";
 
+  /**
+   * 列表来源：有宿主的历史投影就**只**用投影的两份列表（同一范围）；旧宿主没有这个键
+   * 才退回顶层 `sessions` / `archivedSessions`。两者不混用——混着用会让范围之外的会话
+   * 漏进来，而范围选择器又解释不了它们为什么在。
+   */
+  const data = useMemo(
+    () => historyLists(history, sessions, archivedSessions),
+    [history, sessions, archivedSessions],
+  );
+
+  /**
+   * 抽屉的范围。它以**宿主投影**为准（一份状态，普通与归档共用）：范围只是一次读取，
+   * 列表与选中范围必须来自同一帧，界面不自己筛一份平行的列表。用户点选只发意图，
+   * 宿主折回或拒绝时选择器跟着投影回到实际范围，不会停在发不出去的值上。
+   *
+   * 切归档只换列表，不动这份范围；范围选择器也不在视图分支里。
+   */
+  const scope = history?.scope;
+  const scopeOptions = useMemo(
+    () =>
+      history
+        ? historyScopeOptions(history, {
+            current: texts.historyScopeCurrent,
+            roots: texts.historyScopeRoots,
+          })
+        : [],
+    [history, texts.historyScopeCurrent, texts.historyScopeRoots],
+  );
+  const scopeValue = scope ? historyScopeValue(scope) : "";
+  // 宿主可能把路径规范化成另一种拼写（盘符大小写 / 斜杠方向）：不能拿编码后的字节串
+  // 直接比，否则同一目录会找不到选项，`<select>` 显示空白。选中项按 `sameHistoryScope` 认。
+  const activeScopeOption = scope
+    ? scopeOptions.find((option) => sameHistoryScope(option.scope, scope))
+    : undefined;
+  const selectValue = activeScopeOption?.value ?? scopeValue;
+  const scopeId = useId();
+  const chooseScope = (value: string) => {
+    const next = parseHistoryScopeValue(value);
+    if (!next || !history || sameHistoryScope(next, history.scope)) return;
+    post({ type: "historyScope", scope: next });
+  };
+
   const { today, earlier } = useMemo(() => {
-    const source = archived ? archivedSessions : sessions;
+    const source = archived ? data.archivedSessions : data.sessions;
     const filtered = query.trim()
       ? source.filter((s) => s.title.toLowerCase().includes(query.trim().toLowerCase()))
       : source;
@@ -92,7 +150,19 @@ export function HistoryPanel({
       (session.updatedAt >= startOfToday.getTime() ? todayList : earlierList).push(session);
     }
     return { today: todayList, earlier: earlierList };
-  }, [archived, sessions, archivedSessions, query]);
+  }, [archived, data, query]);
+
+  /**
+   * 混合目录时每行的创建目录短名。按**两份投影的并集**算去重：普通与归档里同名的
+   * 两个 `app` 也要互相区分（否则同一目录在归档里突然换了写法）。非混合目录不显示。
+   */
+  const dirLabels = useMemo(
+    () =>
+      data.projected && data.mixedDirectories
+        ? historyDirectoryLabels([...data.sessions, ...data.archivedSessions])
+        : undefined,
+    [data],
+  );
 
   /**
    * 当前**看得见且可选**的会话：选择集只跟这一份走。
@@ -135,7 +205,13 @@ export function HistoryPanel({
     setArmedBatch(false);
   };
 
-  const selectedCount = selected.size;
+  /**
+   * 本帧**看得见且可选**的选中项。批量操作只遍历这一份，不遍历 `selected` 全集：
+   * 范围 / 归档视图 / 搜索切换后，选择集里可能还留着本帧画不出来的 id（prune 的
+   * effect 要等下一次渲染才跑），拿全集去归档 / 删除会命中用户看不见的行。
+   */
+  const visibleSelected = selectableIds.filter((sessionId) => selected.has(sessionId));
+  const selectedCount = visibleSelected.length;
   const allChecked = allSelected(selected, selectableIds);
   // 「准备删除」的渲染判据：确认态只在**真有选中项**时成立——选择集被对齐清空的那一帧
   // （下面那条 effect 还没来得及复位）不该画出「再次点击确认删除 0 项」
@@ -146,12 +222,12 @@ export function HistoryPanel({
   };
 
   const archiveSelected = () => {
-    for (const sessionId of selected) post({ type: "archiveSession", sessionId });
+    for (const sessionId of visibleSelected) post({ type: "archiveSession", sessionId });
     clearSelection();
   };
 
   const restoreSelected = () => {
-    for (const sessionId of selected) post({ type: "unarchiveSession", sessionId });
+    for (const sessionId of visibleSelected) post({ type: "unarchiveSession", sessionId });
     clearSelection();
   };
 
@@ -167,7 +243,7 @@ export function HistoryPanel({
       armBatchDelete();
       return;
     }
-    for (const sessionId of selected) post({ type: "deleteSession", sessionId });
+    for (const sessionId of visibleSelected) post({ type: "deleteSession", sessionId });
     clearSelection();
   };
 
@@ -205,6 +281,9 @@ export function HistoryPanel({
           // 它继承源会话的标题，所以靠标题前缀「分支: 」区分，不靠缩进。
           const forked = session.parentSessionId !== undefined;
           const title = session.title || texts.untitled;
+          // 混合目录的投影才显示创建目录；单一目录列表里每行重复同一个名字是噪音。
+          // `cwd` 是创建事实（执行目录切换不改它），完整路径挂在子标题的 title 上。
+          const dirLabel = session.cwd ? dirLabels?.get(dirKey(session.cwd)) : undefined;
           return (
             <div
               key={session.id}
@@ -258,6 +337,16 @@ export function HistoryPanel({
                     <span className="session-item-delete-hint">{texts.deleteSessionConfirm}</span>
                   ) : (
                     <>
+                      {dirLabel && session.cwd ? (
+                        <>
+                          <span className="session-item-dir" title={session.cwd}>
+                            {dirLabel}
+                          </span>
+                          <span className="session-item-sep" aria-hidden="true">
+                            {" · "}
+                          </span>
+                        </>
+                      ) : null}
                       {session.running ? `${texts.runningTag} · ` : ""}
                       {formatClock(session.updatedAt)}
                     </>
@@ -353,17 +442,39 @@ export function HistoryPanel({
             onChange={(event) => setQuery(event.target.value)}
           />
         </label>
+        {/* 范围选择器**独立于归档切换**：普通列表与归档列表共用这一份范围，切归档不重置。
+            它放在列表之外，所以当前范围没有结果时仍然看得见——那正是要换范围的时候。 */}
+        {history ? (
+          <label className="drawer-scope" htmlFor={scopeId}>
+            <span className="drawer-scope-label">{texts.historyScope}</span>
+            <select
+              id={scopeId}
+              className="drawer-scope-select"
+              value={selectValue}
+              title={activeScopeOption?.title ?? activeScopeOption?.label ?? texts.historyScope}
+              onChange={(event) => chooseScope(event.target.value)}
+            >
+              {scopeOptions.map((option) => (
+                <option key={option.value} value={option.value} title={option.title}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
         <div className="drawer-body">
           {view === "sessions"
-            ? sessions.length === 0 ? (
-                <div className="popover-empty">{texts.noSessions}</div>
+            ? data.sessions.length === 0 ? (
+                <div className="popover-empty">
+                  {data.projected ? texts.noScopedSessions : texts.noSessions}
+                </div>
               ) : (
                 <>
                   {renderGroup(texts.today, today)}
                   {renderGroup(texts.earlier, earlier)}
                 </>
               )
-            : archivedSessions.length === 0 ? (
+            : data.archivedSessions.length === 0 ? (
                 <div className="popover-empty">{texts.noArchivedSessions}</div>
               ) : (
                 <>

@@ -55,6 +55,9 @@ React / 浏览器环境，不使用 Node API。上层边界见[源码导航](<..
 - [pathDisplay.ts](<pathDisplay.ts>) — 单行路径拆分与保文件名省略。
 - [sessionDir.ts](<sessionDir.ts>) — 标题栏执行目录取值与工作区差异显示判据。
 - [sessionSelection.ts](<sessionSelection.ts>) — 历史列表多选：可选判据、选择集跟随列表、全选翻转。
+- [composerDir.ts](<composerDir.ts>) — 空态页工作目录行的形态判据：工作区根预设 / 系统目录选择器 / 老宿主只读，以及 `dirKey`（复用宿主 `directoryPathKey`）。
+- [directoryLabel.ts](<directoryLabel.ts>) — 同名目录的去重短名：逐级补父目录，仍撞名退回完整路径（根目录菜单与历史混合目录共用）。
+- [historyDirectoryView.ts](<historyDirectoryView.ts>) — 历史抽屉范围选择器的选项、投影 / 旧顶层列表的来源选择、混合目录行的创建目录短名。
 - [connectView.ts](<connectView.ts>) — 连接条状态、文案与按钮矩阵。
 - [notifications.ts](<notifications.ts>) — 消息通知的展示口径（顶部取哪条、抽屉列表与时间格式化、级别到 `.notice` 修饰类），宿主权威队列见 `dsh/notificationQueue.ts`。
 - [copyFeedback.ts](<copyFeedback.ts>) — 复制反馈的唯一实现：唯一 `copy` 帧入口 `copyText`、图标按钮的 1s 成功态状态机，以及右键菜单 / 会话选区快捷键在触发点闪一枚对勾的提示（`flashCopied`），见[右键设计](<../../docs/design-context-menu.md#复制反馈>)。

@@ -3,7 +3,7 @@
 运行环境：宿主与 webview **两边共用**——纯函数，不碰 `vscode` 也不碰 DOM。
 上一层的说明见 [../README.md](../README.md)。
 
-- `chat.ts` — 视图模型：宿主与 webview 共用的聊天状态形状（刻意与线协议解耦，协议变更只影响 `dsh/` 适配层）。
+- `chat.ts` — 视图模型：宿主与 webview 共用的聊天状态形状（刻意与线协议解耦，协议变更只影响 `dsh/` 适配层）；含按窗口的 `HistoryDirectoryView` / `HistoryScope` / `DirectoryOption`。
 - `ipc.ts` — 宿主 ↔ webview 的消息协议类型（`HostToWebview` / `WebviewToHost`）。
 - `wire.ts` — 宿主 → webview 的过线语义：JSON 过线会丢 `undefined` 键，清空字段必须发 `null`（`jsonSafeFrame` / `mergeWirePatch`）。
 - `jsonValue.ts` — 未知 JSON 值的形状收窄：`isRecord` 只认普通对象（排除 `null` 与数组），读字段前先过这一道。
@@ -12,7 +12,7 @@
 - `changesSummary.ts` — 改动清单的缓存键（必须带会话 id，事件 seq 是按会话各自编号的）、卡片可见行，以及只在唯一命中时成立的路径关联。
 - `trajectory.ts` — 轨迹视图的线格式与视图模型（记录种类逐字对齐官方契约；**含请求表 `TrajectoryRequest`**——请求级检查器吃的选项 / 用量含会话累计 / 请求计时都在这张表里；时间线投影已 vendor 到 `src/vendor/`，这里只剩类型与域坐标换算）。
 - `toolMeta.ts` — 工具行的契约事实：工具分类、退出码解析（`[exit code: N]`）、running/ok/error/stopped 状态语义，纯数据与纯函数。
-- `workspacePath.ts` — 跨平台路径的纯字符串判据：POSIX / 盘符 / UNC 的绝对形态、只拼接不规范的相对解析、记录值读取、终端标签的点段折叠，以及**不转小写、不消点**的身份比较键（身份只能由执行世界规范化）。
+- `workspacePath.ts` — 跨平台路径的纯字符串判据：POSIX / 盘符 / UNC 的绝对形态、只拼接不规范的相对解析、记录值读取、终端标签的点段折叠，以及**不转小写、不消点**的身份比较键（身份只能由执行世界规范化）；`directoryPathKey` 是宿主历史范围与界面目录胶囊共用的目录身份键（Windows 形态忽略大小写，POSIX 保留大小写与根）。
 - `toolPath.ts` — 工具路径模型：工具行打开目标（记录值优先且不凭空造动作、运行/失败/嵌套只对绝对参数放行）、产物三档（`mutationResultPath`）、终端目录标签（记录 cwd 原样、旧根调用按创建目录回退、运行/嵌套不猜）。
 - `toolCard.ts` — 工具卡契约事实：从「工具名 + 参数 + 结果元数据」折出卡片数据（对齐官方 `deriveSummary`，终端目录按 `toolPath` 的判据取值）。
 - `toolSource.ts` — 工具节点里「语言可确定」的源码事实：workflow 的 `script`（旧 `code` 兜底）与精确 inspect 工具（含本地 `cordis_package_inspect` / `cordis_runtime_inspect`）的整段 JSON OUT 判据；不解析字段树。

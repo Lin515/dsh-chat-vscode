@@ -62,6 +62,11 @@ export interface Texts {
   workspaceNone: string;
   /** 空态页：目录那一行不可改时的 title（跟随 VS Code 打开的文件夹）。 */
   workspaceLocked: string;
+  /** 空态页工作目录菜单：分组标题与「选择其他文件夹…」。 */
+  dirSwitchRoot: string;
+  dirOtherFolder: string;
+  /** 宿主明确禁用外部目录、又没有根目录列表时的静态说明。 */
+  workspacePickDisabled: string;
   /** 标题栏上工作目录那一段的 title（没打开文件夹时常驻的那段路径）。 */
   sessionDir: string;
   /** 预设下拉框的分组标题。 */
@@ -809,6 +814,12 @@ export interface Texts {
   sharedRestarted: string;
 
   searchSessions: string;
+  /** 历史抽屉的范围选择器（独立于归档切换）。 */
+  historyScope: string;
+  historyScopeCurrent: string;
+  historyScopeRoots: string;
+  /** 当前范围没有任何会话（区别于「从来没有历史对话」）。 */
+  noScopedSessions: string;
   today: string;
   earlier: string;
   noSessions: string;

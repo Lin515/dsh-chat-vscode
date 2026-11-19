@@ -1,0 +1,350 @@
+{
+  "generatedBy": "ChatController (offline vscode stub, real frames)",
+  "view": "pr4-fixture",
+  "workspaceFrame": {
+    "type": "patch",
+    "patch": {
+      "workspace": {
+        "path": "C:\\work\\alpha",
+        "locked": true,
+        "roots": [
+          {
+            "path": "C:\\work\\alpha",
+            "name": "alpha"
+          },
+          {
+            "path": "C:\\work\\beta",
+            "name": "beta"
+          }
+        ],
+        "canPickOther": true
+      }
+    }
+  },
+  "historyFrame": {
+    "type": "patch",
+    "patch": {
+      "history": {
+        "scope": {
+          "kind": "current"
+        },
+        "roots": [
+          {
+            "path": "C:\\work\\alpha",
+            "name": "alpha"
+          },
+          {
+            "path": "C:\\work\\beta",
+            "name": "beta"
+          }
+        ],
+        "otherDirectories": [],
+        "mixedDirectories": false,
+        "sessions": [
+          {
+            "id": "used-A1",
+            "title": "重构启动流程",
+            "updatedAt": 1005,
+            "cwd": "C:\\work\\alpha",
+            "running": false,
+            "unread": false,
+            "occupied": false
+          },
+          {
+            "id": "used-A2",
+            "title": "补测试",
+            "updatedAt": 1004,
+            "cwd": "C:\\work\\alpha",
+            "running": false,
+            "unread": false,
+            "occupied": false
+          },
+          {
+            "id": "blank-A",
+            "title": "",
+            "updatedAt": 1003,
+            "cwd": "C:\\work\\alpha",
+            "running": false,
+            "blank": true,
+            "unread": false,
+            "occupied": false
+          }
+        ],
+        "archivedSessions": []
+      }
+    }
+  },
+  "historyRootsFrame": {
+    "type": "patch",
+    "patch": {
+      "history": {
+        "scope": {
+          "kind": "roots"
+        },
+        "roots": [
+          {
+            "path": "C:\\work\\alpha",
+            "name": "alpha"
+          },
+          {
+            "path": "C:\\work\\beta",
+            "name": "beta"
+          }
+        ],
+        "otherDirectories": [],
+        "mixedDirectories": true,
+        "sessions": [
+          {
+            "id": "used-A1",
+            "title": "重构启动流程",
+            "updatedAt": 1005,
+            "cwd": "C:\\work\\alpha",
+            "running": false,
+            "unread": false,
+            "occupied": false
+          },
+          {
+            "id": "used-A2",
+            "title": "补测试",
+            "updatedAt": 1004,
+            "cwd": "C:\\work\\alpha",
+            "running": false,
+            "unread": false,
+            "occupied": false
+          },
+          {
+            "id": "blank-A",
+            "title": "",
+            "updatedAt": 1003,
+            "cwd": "C:\\work\\alpha",
+            "running": false,
+            "blank": true,
+            "unread": false,
+            "occupied": false
+          },
+          {
+            "id": "used-B",
+            "title": "另一个项目",
+            "updatedAt": 1002,
+            "cwd": "C:\\work\\beta",
+            "running": false,
+            "unread": false,
+            "occupied": false
+          }
+        ],
+        "archivedSessions": []
+      }
+    }
+  },
+  "historyDirectoryFrame": {
+    "type": "patch",
+    "patch": {
+      "history": {
+        "scope": {
+          "kind": "directory",
+          "path": "C:\\work\\beta"
+        },
+        "roots": [
+          {
+            "path": "C:\\work\\alpha",
+            "name": "alpha"
+          },
+          {
+            "path": "C:\\work\\beta",
+            "name": "beta"
+          }
+        ],
+        "otherDirectories": [],
+        "mixedDirectories": false,
+        "sessions": [
+          {
+            "id": "used-B",
+            "title": "另一个项目",
+            "updatedAt": 1002,
+            "cwd": "C:\\work\\beta",
+            "running": false,
+            "unread": false,
+            "occupied": false
+          }
+        ],
+        "archivedSessions": []
+      }
+    }
+  },
+  "historyDirectoryAFrame": {
+    "type": "patch",
+    "patch": {
+      "history": {
+        "scope": {
+          "kind": "directory",
+          "path": "C:\\work\\alpha"
+        },
+        "roots": [
+          {
+            "path": "C:\\work\\alpha",
+            "name": "alpha"
+          },
+          {
+            "path": "C:\\work\\beta",
+            "name": "beta"
+          }
+        ],
+        "otherDirectories": [],
+        "mixedDirectories": false,
+        "sessions": [
+          {
+            "id": "used-A1",
+            "title": "重构启动流程",
+            "updatedAt": 1005,
+            "cwd": "C:\\work\\alpha",
+            "running": false,
+            "unread": false,
+            "occupied": false
+          },
+          {
+            "id": "used-A2",
+            "title": "补测试",
+            "updatedAt": 1004,
+            "cwd": "C:\\work\\alpha",
+            "running": false,
+            "unread": false,
+            "occupied": false
+          },
+          {
+            "id": "blank-A",
+            "title": "",
+            "updatedAt": 1003,
+            "cwd": "C:\\work\\alpha",
+            "running": false,
+            "blank": true,
+            "unread": false,
+            "occupied": false
+          }
+        ],
+        "archivedSessions": []
+      }
+    }
+  },
+  "workspaceBetaFrame": {
+    "type": "patch",
+    "patch": {
+      "workspace": {
+        "path": "C:\\work\\beta",
+        "locked": true,
+        "roots": [
+          {
+            "path": "C:\\work\\alpha",
+            "name": "alpha"
+          },
+          {
+            "path": "C:\\work\\beta",
+            "name": "beta"
+          }
+        ],
+        "canPickOther": true
+      }
+    }
+  },
+  "historyBetaCurrentFrame": {
+    "type": "patch",
+    "patch": {
+      "history": {
+        "scope": {
+          "kind": "current"
+        },
+        "roots": [
+          {
+            "path": "C:\\work\\alpha",
+            "name": "alpha"
+          },
+          {
+            "path": "C:\\work\\beta",
+            "name": "beta"
+          }
+        ],
+        "otherDirectories": [],
+        "mixedDirectories": false,
+        "sessions": [
+          {
+            "id": "used-B",
+            "title": "另一个项目",
+            "updatedAt": 1002,
+            "cwd": "C:\\work\\beta",
+            "running": false,
+            "unread": false,
+            "occupied": false
+          }
+        ],
+        "archivedSessions": []
+      }
+    }
+  },
+  "stateFrame": {
+    "type": "state",
+    "state": {
+      "workspace": {
+        "path": "C:\\work\\alpha",
+        "locked": true,
+        "roots": [
+          {
+            "path": "C:\\work\\alpha",
+            "name": "alpha"
+          },
+          {
+            "path": "C:\\work\\beta",
+            "name": "beta"
+          }
+        ],
+        "canPickOther": true
+      },
+      "history": {
+        "scope": {
+          "kind": "current"
+        },
+        "roots": [
+          {
+            "path": "C:\\work\\alpha",
+            "name": "alpha"
+          },
+          {
+            "path": "C:\\work\\beta",
+            "name": "beta"
+          }
+        ],
+        "otherDirectories": [],
+        "mixedDirectories": false,
+        "sessions": [
+          {
+            "id": "used-A1",
+            "title": "重构启动流程",
+            "updatedAt": 1005,
+            "cwd": "C:\\work\\alpha",
+            "running": false,
+            "unread": false,
+            "occupied": false
+          },
+          {
+            "id": "used-A2",
+            "title": "补测试",
+            "updatedAt": 1004,
+            "cwd": "C:\\work\\alpha",
+            "running": false,
+            "unread": false,
+            "occupied": false
+          },
+          {
+            "id": "blank-A",
+            "title": "",
+            "updatedAt": 1003,
+            "cwd": "C:\\work\\alpha",
+            "running": false,
+            "blank": true,
+            "unread": false,
+            "occupied": false
+          }
+        ],
+        "archivedSessions": []
+      }
+    }
+  }
+}

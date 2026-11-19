@@ -1222,6 +1222,7 @@ export function App() {
           <HistoryPanel
             sessions={state.sessions}
             archivedSessions={state.archivedSessions}
+            history={state.history}
             currentId={state.session?.id}
             onClose={closePanel}
           />

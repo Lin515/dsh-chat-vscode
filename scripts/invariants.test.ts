@@ -411,7 +411,7 @@ console.log("invariants: guard 工厂的返回值不被丢弃（收尾体真的�
   ] as const) {
     const body = bodyOf(signature);
     assert.ok(
-      /ensureSession\(viewId, \{ start: true, askDir: true \}\)/.test(body),
+      /ensureSession\(viewId, \{ start: true, askDir: true(?:, target: frozenTarget)? \}\)/.test(body),
       `${label}没有会话时必须先走 ensureSession（要目录那条路：没有工作目录时问一次）`,
     );
     assert.ok(!/this\.newSession\(/.test(body), `${label}不该借 newSession 落会话（它只退出现有会话）`);
@@ -449,7 +449,7 @@ console.log("invariants: guard 工厂的返回值不被丢弃（收尾体真的�
 
   const ensure = bodyOf("private async ensureSession(");
   assert.ok(
-    /askWorkspaceDir\(\)/.test(ensure),
+    /askWorkspaceDir\(/.test(ensure),
     "落会话之前必须先确定工作目录：没有打开文件夹、也没选过目录时问一次" +
       "（拿宿主的 cwd 冒充会得到 VS Code 的安装路径，用户 2026-09-22 报的现场）",
   );
@@ -483,7 +483,7 @@ console.log("invariants: guard 工厂的返回值不被丢弃（收尾体真的�
       "只看服务端会把已经说过话的会话当空壳接回去（用户 2026-10-01 报的现场）",
   );
   assert.ok(
-    /normalizePath\(row\.cwd\) !== target/.test(reusable),
+    /normalizePath\(row\.cwd\) !== target\.key/.test(reusable),
     "空壳必须落在本工作区（cwd 归一后相同）",
   );
   assert.ok(
@@ -556,7 +556,7 @@ console.log("invariants: guard 工厂的返回值不被丢弃（收尾体真的�
     /wantedPermission && wantedPermission !== this\.defaultPermission/.test(shell) &&
       // 权限命令按**这次真正落下的那条会话 id** 执行（不是按窗口再解析一次）：落壳这一路
       // 跨了往返，期间窗口可能已经切走，按窗口解析会打到别的会话上
-      /runCommandOnSession\(target, `\/permission \$\{wantedPermission\}`\)/.test(shell),
+      /runCommandOnSession\(sessionId, `\/permission \$\{wantedPermission\}`\)/.test(shell),
     "空态页选过且不同于部署默认的权限必须在落壳后落实（否则实际与 UI 错位），" +
       "而且要钉在**刚落的这条会话**上",
   );
@@ -584,7 +584,7 @@ console.log("invariants: guard 工厂的返回值不被丢弃（收尾体真的�
     "后台补壳必须跳过「这一轮恢复还没结算」的窗口（抢跑就是「历史会话一闪变成空会话」）",
   );
   assert.ok(
-    /scopeOfView\(viewId\)[\s\S]*?if \(bound\) return bound;[\s\S]*?this\.bindViewToSession\(viewId, target, scope\)/.test(
+    /scopeOfView\(viewId\)[\s\S]*?if \(bound\) return bound;[\s\S]*?this\.bindViewToSession\(viewId, sessionId, scope\)/.test(
       shell,
     ),
     "空壳写绑定前必须复查窗口有没有被别的路径绑走（恢复路径、用户点历史里的一条）：" +

@@ -5,6 +5,7 @@
 - [预览页](<preview.html>)消费正式 webview 产物。轨迹参数 `trajectory=small|long|compaction` 异步载入已授权生成的真实脱敏夹具；`locale=en|zh` 切中英，载入后点击顶栏轨迹按钮。缺载荷或不合格时失败，不退回合成轨迹。
 - `write=1` 从现有真实脱敏长会话夹具取一份 write 参数，显示其累计前缀；`window.__writePreviewInfo` 保留出处和原参数，`window.__writePreview.set(end, status, diff)` 回放追加／中断／diff 交接。切点与状态用于 UI 验收，不声称历史 chunk 或实际落盘；不启动真实 DSH、不读取用户日志。
 - 默认聊天演示、`empty=1`／`rail=one` 等仍是独立界面材料，不算真实轨迹语料；`trajectory=ptc` 明确无真实样本，不伪造工具调用。
+- `roots=1` 从[预览帧目录](<preview/README.md>)读取宿主实际发出的工作区 / 历史帧（`empty=1&roots=1` 看空态目录菜单，`scope=roots|alpha|beta` 选历史起始范围）；默认与 `lock=1` 不加载。
 - [预览回归](<../scripts/previewFixture.test.ts>)检查真实载荷接线、失败路径、预览状态和既有语法／重复键启发式；不能把 `Function` 编译成功当成重复键不存在的证明。
 - [滚动探针页](<scroll-probe.html>)是单独的离线量测入口；不能替代真实完整载荷的组件与连续 DOM 验收。
 - [夹具根索引](<fixtures/README.md>)区分用户会话脱敏材料与固定上游源码见证，两者都可离线消费，不读用户日志。

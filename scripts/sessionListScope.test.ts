@@ -557,7 +557,7 @@ console.log("sessionListScope: 历史列表跟随当前会话 cwd（驱动真控
   );
   assert.deepStrictEqual(
     workspaceFor(frames, "v1"),
-    { path: DIR_A, locked: false },
+    { path: DIR_A, locked: false, canPickOther: true },
     "同一刻那行工作目录也要显示子代理会话的 cwd（没有打开文件夹、`newSessionCwd` 为空时不许显示成「未选择工作区」）",
   );
 

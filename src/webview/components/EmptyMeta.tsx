@@ -1,6 +1,8 @@
 import { useState } from "react";
 import type { AgentPresetsView, WorkspaceView } from "../../shared/chat";
 import { post } from "../bridge";
+import { dirKey, workspaceDirView, type WorkspaceDirView } from "../composerDir";
+import { shortDirectoryLabels } from "../directoryLabel";
 import { IconAgentPreset, IconCheck, IconChevronDown, IconFolder } from "../icons";
 import { splitPath } from "../pathDisplay";
 import { presetDisplayText } from "../presetDisplay";
@@ -15,6 +17,11 @@ import { Popover } from "./primitives";
  * agent 预设只有空白会话能换（服务端在有过轮次后回 `agent-preset/locked`），
  * 工作目录更是会话一建好就固定了。一个大部分时间只能显示不能用的控件，
  * 该放在它还有用的那页上（官方 agent-preset chip 的同一句理由）。
+ *
+ * 工作目录行在空会话页才可改：打开着文件夹时把工作区根目录作为预设列出，
+ * 并允许（宿主没禁用时）选一个工作区外目录；没有根目录列表的老宿主仍走原来的
+ * 系统目录选择器。已有对话不会再渲染这里，标题栏那枚目录只是静态说明——目录是
+ * 创建时定下的事实，扩展没有可用的接口改它。
  *
  * `workspace` / `agentPresets` 的可见性判据都在宿主侧定死（`ChatState` 的字段注释）：
  * 拿不到就整个不渲染，而不是渲染一个空壳。这里只做渲染与本地的展开态。
@@ -60,19 +67,22 @@ function PathText({ path }: { path: string }) {
 /**
  * 工作目录那一行。
  *
- * 三种形态：
- * - **没选**（VS Code 没打开文件夹、用户也没挑过）：占位文案「未选择工作区」，
- *   点了弹系统目录选择器——**不显示**任何路径（绝不拿宿主的 cwd 冒充工作目录）；
- * - **可改**（没打开文件夹、选过一个）：显示那个目录，点了可以换；
- * - **不可改**（VS Code 打开了文件夹）：静态文字，悬停说明它跟着 VS Code。
+ * - **打开着文件夹**：胶囊可点，菜单列出全部根目录（当前那个打勾）与「选择其他
+ *   文件夹…」（`canPickOther` 明确为 false 时不显示）；点根目录发 `switchRoot`，
+ *   点其他文件夹发 `pickOtherRoot`；
+ * - **可改**（没打开文件夹、选过或没选过）：沿用空态页原来的系统目录选择器
+ *   （`pickWorkspace`），没选过时显示「未选择工作区」；
+ * - **老宿主 / 跟随 VS Code**：静态文字，悬停说明它跟着 VS Code。
  *
- * 判据由宿主下发（`workspace.locked` 与空 `path`）而不是界面自己问「有没有打开
- * 文件夹」—— webview 读不到 VS Code 的工作区状态。
+ * 判据由宿主下发（`WorkspaceView.roots` / `locked` / `canPickOther`）而不是界面
+ * 自己问「有没有打开文件夹」—— webview 读不到 VS Code 的工作区状态。
  */
 function WorkspaceChip({ workspace }: { workspace?: WorkspaceView }) {
   const texts = useTexts();
-  if (!workspace) return null;
-  const chosen = workspace.path;
+  const view = workspaceDirView(workspace);
+  const [open, setOpen] = useState(false);
+  if (!view) return null;
+  const chosen = view.path;
   const body = (
     <>
       <IconFolder size={13} />
@@ -81,22 +91,117 @@ function WorkspaceChip({ workspace }: { workspace?: WorkspaceView }) {
       </span>
     </>
   );
-  if (workspace.locked) {
+
+  if (view.mode === "locked") {
     // 静态行也要能读到**完整路径**：窄侧栏里上面那段目录前缀是被裁掉的
     return (
-      <span className="meta-chip is-static" title={`${workspace.path}\n${texts.workspaceLocked}`}>
+      <span className="meta-chip is-static" title={`${view.path}\n${texts.workspaceLocked}`}>
         {body}
       </span>
     );
   }
-  // 悬停说明点下去会发生什么；没选过时说「选择工作目录」，选过时说「更改工作目录」。
-  // 没选过时不把 title 拼成「（空行）+ 提示」，所以两条分开写。
-  const title = chosen ? `${chosen}\n${texts.workspaceChange}` : texts.workspaceChoose;
+
+  if (view.mode === "disabled") {
+    // 宿主明确禁用外部目录：仍显示当前值，但不给任何选择入口（系统选择器也是外部目录）
+    return (
+      <span className="meta-chip is-static" title={texts.workspacePickDisabled}>
+        {body}
+      </span>
+    );
+  }
+
+  if (view.mode === "pick") {
+    // 悬停说明点下去会发生什么；没选过时说「选择工作目录」，选过时说「更改工作目录」。
+    // 没选过时不把 title 拼成「（空行）+ 提示」，所以两条分开写。
+    const title = chosen ? `${chosen}\n${texts.workspaceChange}` : texts.workspaceChoose;
+    return (
+      <button className="meta-chip" title={title} onClick={() => post({ type: "pickWorkspace" })}>
+        {body}
+        <IconChevronDown size={9} />
+      </button>
+    );
+  }
+
   return (
-    <button className="meta-chip" title={title} onClick={() => post({ type: "pickWorkspace" })}>
-      {body}
-      <IconChevronDown size={9} />
-    </button>
+    <>
+      <button
+        className="meta-chip"
+        title={chosen ? `${chosen}\n${texts.dirSwitchRoot}` : texts.dirSwitchRoot}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+      >
+        {body}
+        <IconChevronDown size={9} />
+      </button>
+      {/* 向下展开、并相对**这一块**居中：与 agent 预设菜单同一套落位（`.empty-meta`
+          是定位祖先）；窄侧栏里菜单不会按触发按钮的对齐方向被裁掉一边。 */}
+      <Popover open={open} onClose={() => setOpen(false)} align="center" drop="down">
+        <WorkspaceMenu view={view} onClose={() => setOpen(false)} />
+      </Popover>
+    </>
+  );
+}
+
+/**
+ * 工作目录菜单：当前值先说清，再列可选项。
+ *
+ * 根目录用去重短名（`shortDirectoryLabels`），完整路径挂在 `title` 上；当前目录
+ * 是工作区外目录时，在根目录上方单独列一条已选中行——用户点过「选择其他文件夹…」
+ * 之后要能看出现在落在哪，而不是一列根目录里一个都没勾。
+ */
+export function WorkspaceMenu({ view, onClose }: { view: WorkspaceDirView; onClose: () => void }) {
+  const texts = useTexts();
+  const labels = shortDirectoryLabels(view.roots);
+  const choose = (path: string) => {
+    onClose();
+    if (dirKey(path) === dirKey(view.path)) return;
+    post({ type: "switchRoot", path });
+  };
+  return (
+    <>
+      <div className="popover-section">{texts.dirSwitchRoot}</div>
+      {view.currentInRoots ? null : (
+        <div className="popover-item is-selected" title={view.path}>
+          <span className="popover-item-icon">
+            <IconCheck size={14} />
+          </span>
+          <span className="popover-item-main">{view.name}</span>
+          <span className="popover-item-sub">{view.path}</span>
+        </div>
+      )}
+      {view.roots.map((root) => {
+        const current = dirKey(root.path) === dirKey(view.path);
+        return (
+          <button
+            key={root.path}
+            className={`popover-item${current ? " is-selected" : ""}`}
+            title={root.path}
+            onClick={() => choose(root.path)}
+          >
+            <span className="popover-item-icon">
+              {current ? <IconCheck size={14} /> : <IconFolder size={14} />}
+            </span>
+            <span className="popover-item-main">{labels.get(dirKey(root.path)) ?? root.name}</span>
+            <span className="popover-item-sub">{root.path}</span>
+          </button>
+        );
+      })}
+      {view.canPickOther ? (
+        <button
+          className="popover-item"
+          onClick={() => {
+            onClose();
+            post({ type: "pickOtherRoot" });
+          }}
+        >
+          <span className="popover-item-icon">
+            <IconFolder size={14} />
+          </span>
+          <span className="popover-item-main">{texts.dirOtherFolder}</span>
+        </button>
+      ) : null}
+    </>
   );
 }
 

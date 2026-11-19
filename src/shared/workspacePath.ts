@@ -84,6 +84,30 @@ export function workspacePathKey(path: string): string {
   return key.replace(/\/+$/, "");
 }
 
+/**
+ * **目录身份键**：比较「这两个拼写是不是同一个目录」时的统一口径（宿主与界面共用）。
+ *
+ * 与 {@link workspacePathKey} 的区别只在大小写：Windows 形态（盘符 / UNC）的路径在
+ * Windows 文件系统上不区分大小写，按目录身份比较时统一小写；POSIX 形态**保留大小写**
+ * —— `/work/A` 与 `/work/a` 是两个目录。形态由拼写判定，不读本机平台（远端执行世界的
+ * POSIX 路径在本机是 Windows 时也必须保留大小写）。
+ *
+ * 边界（刻意不做的）：不 realpath、不消 `.` / `..`、不换 POSIX 路径里的反斜杠
+ * （`/a\b` 与 `/a/b` 是两个目录）。文件系统根必须保留：`/` 不能折成空串，盘符根
+ * `C:/` 不能裁成盘符相对值 `C:`（UNC 的 share 根同理）。
+ */
+export function directoryPathKey(value: string | undefined): string {
+  const original = value ?? "";
+  if (isWindowsStylePath(original)) {
+    const slashed = original.replace(/\\/g, "/");
+    if (/^[A-Za-z]:\/$/.test(slashed)) return slashed.toLowerCase();
+    const trimmed = slashed.replace(/\/+$/, "");
+    return (trimmed || "/").toLowerCase();
+  }
+  const trimmed = original.replace(/\/+$/, "");
+  return trimmed || (original.startsWith("/") ? "/" : "");
+}
+
 /** 两个拼写能否证明是同一路径（见 {@link workspacePathKey} 的边界）。 */
 export function sameWorkspacePath(left: string, right: string): boolean {
   return workspacePathKey(left) === workspacePathKey(right);

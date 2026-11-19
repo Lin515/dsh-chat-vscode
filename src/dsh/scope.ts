@@ -39,6 +39,8 @@ export class SessionScope {
   subagentAddress: { parentSessionId: string; mode: "one-shot" | "continuable" } | undefined;
 
   readonly sessionId: string;
+  /** 创建或认领空壳时的目录证据；会话名册尚未返回该 ID 时才用。 */
+  creationCwd: string | undefined;
 
   /** 本会话的视图模型（消息流与粘性显示值）。socket 重连时整个重建。 */
   adapter: SessionAdapter | undefined;

@@ -15,8 +15,27 @@
 - **空壳由窗口共享，不按标签各占一条**（用户 2026-11-02 口径，取代 2026-10-17 的按窗口独占）：一个工作区只有一条空壳，谁进空态都接它（官方 `ui-workspace` 的字面行为）。打开 / 恢复一条别的窗口正停着的空壳照常绑上去——与两个窗口看同一条已开始的对话是同一件事。**并发进入空态只落一条壳**：`blankEnsures`（归一后的目录 → 队尾 promise）把「扫描 → 认领 / 新建 → 刷新列表」串行化（`withBlankGate`），后到的窗口在闸内重扫列表、接到前一条上；不串行的话，几个窗口同时进空态会各建一条，又回到「开几个标签就有几条空壳」。运行期状态、不落盘，没有预留 / 占用账本。
 - **后台补壳必须让位恢复**：入口跳过 `hasRestorePending`，写绑定前再查窗口是否已被恢复或手动打开路径绑定，**并查这个窗口在落壳期间有没有被关掉**（关掉了就不写绑定、也不建域——`ensureScope` 放在这些检查之后，否则那两条长活流会留给一个没人看的域）。
 - 无 cwd 不建壳。没有 VS Code 文件夹时，空壳的复用键就是**用户在新会话页上选定的那个目录**（`newSessionCwd`，宿主级一个值；已绑定窗口显示的是自己那条会话的 cwd）：还没有目录时窗口停在「未选择工作区」、不建壳，第一次发消息才弹目录选择器；选定之后，同一目录里已有的空壳会被接回来，读不到目录证据就不猜（`reusableBlank` 按 `normalizePath` 比较）。换目录是换到该目录的空壳，不修改已聊会话的 cwd（换回原目录时，那条壳还空着就会被接回来）；并发进入空态仍由 `blankEnsures` 的闸保证一个目录只落一条。
-- 打开文件夹时按工作区登记与 cwd 过滤（含「任何已打开域的 cwd」兜底）；未打开文件夹时全局候选保持完整，**发帧前**再按窗口收窄：窗口有目录就只留该目录（注册分组无关），还停在空态（没选目录）就只列**未分组**的会话——「未分组」按服务端注册表判（没有任何工作区记过它），别的窗口打开过某个目录不构成这个窗口该看见它的理由。按服务端 updatedAt 降序，不另猜 lastPromptAt。
+- 旧列表帧（`sessions` / `archivedSessions`，jobs 等消费者）仍按原口径：打开文件夹时按该窗口选中的根、工作区登记与 cwd 过滤（含「任何已打开域的 cwd」兜底）；未打开文件夹时全局候选保持完整，**发帧前**再按窗口收窄：窗口有目录就只留该目录（注册分组无关），还停在空态（没选目录）就只列**未分组**的会话——「未分组」按服务端注册表判（没有任何工作区记过它），别的窗口打开过某个目录不构成这个窗口该看见它的理由。历史抽屉另走上面的只读范围。按服务端 updatedAt 降序，不另猜 lastPromptAt。
 - 会话的 cwd 与「日志里记着的 agent 预设」两张账本都从 `session/list` 的原始行整份重建（`sessionCwds` / `sessionPresets`），换连接时清空。预设取投影值（服务端重建会话读的就是它，header 只是创建事实），且只用来「照原样再报一次」，权威判定留给服务端。
+
+## 工作目录：每窗口的根
+
+新会话落在哪个目录是**窗口级**选择，不是宿主级：`ChatController` 按 `viewId` 记一份根（`viewRootChoices`），另一个窗口换根不会覆盖本窗口。`workspaceState` 只记**默认偏好**（`dshChat.activeRoot`）——下次新开窗口从哪个根开始；不记各窗口当前绑定状态。默认偏好指向的根被移出工作区时回到第一个根，不沿用旧路径。
+
+- **打开文件夹**：`WorkspaceView` 给出 `path`（本窗当前根）、`locked: true`、`roots`（全部根，`DirectoryOption { path, name }`）与 `canPickOther`。`switchRoot` 只接受当前工作区里的根；`pickOtherRoot` 可选任意目录。空会话 / 还没落壳的窗口才能换（`canChangeRoot`）；已经说过话的会话不迁移，会话 header 的 cwd 是创建事实。
+- **工作区外目录**：只在当前扩展宿主里有效，**不注册**服务端工作区，按 cwd 建会话、落在未分组；重载窗口 / 工作区文件夹变化后回到项目根。系统选择器给出的目录先通过本机身份门（与 `@` 工作区外发现同一道 `LocalAccessGate`）；远端窗口里选择器给的是客户端本机路径，明确禁用这条入口，不把未验证路径当执行世界路径。
+- **注册缓存**（`workspaceRegistrations`）按**连接世代 + 目录键 + 是否注册**分键；`workspace/follow` 的快照里有该目录就直接复用，没有才 `workspace/create`。换连接 / 移除根不会沿用旧 `workspaceId`。路径键在 Windows 形态下不区分大小写，POSIX 形态保留大小写与反斜杠（`shared/workspacePath` 的 `directoryPathKey`）。
+- **竞态**：换根、选目录、发送、打开会话、关窗共用 `viewActions` 代号。`beginSend` 在按下发送那一刻**同步冻结**目标目录（`captureSessionTarget`），跨连接 / 目录询问只按冻结值落壳；晚返回的选择框按代号作废。`ensureSession` 的在飞记录按目录键匹配（不同目录不合并），旧目录的迟到落壳在绑定前再核一次；`detachStaleBlank` 让不再匹配当前根的空壳在第一次发送 / 落壳前失去资格。
+
+## 历史抽屉的只读范围
+
+历史与「当前工作区的会话列表」是两件事：`ChatState.history` 按窗口下发，旧的顶层 `sessions` / `archivedSessions` 帧仍按原口径服务 jobs 等消费者，不受历史范围影响。
+
+- `HistoryScope` 三档：`current`（默认，绑定会话的创建目录；未绑定时本窗预选的新目录；都没有时沿用旧「未分组」口径）、`roots`（全部 VS Code 根）、`directory`（某个根，或当前连接已知会话所属的其他目录，含已经移出工作区的）。
+- 宿主从**同一份权威 `session/list`** 建完整候选镜像（`historySessions`），不依赖已按当前根收窄的 `this.sessions`；内部复用空壳、恢复、未读、`@` 仍读旧列表。发帧时按范围过滤（`historyRowsForScope`），归档规则与时间顺序沿用 `groupSessionLists`。
+- `setHistoryScope` 逐字段校验（`parseHistoryScope`）并核对目录仍然可选；无效 / 迟到的范围整条拒绝。切换范围只推本窗口的 `history` patch，不注册、不落壳、不刷新 RPC，也不改默认口径。
+- 首帧（`ready`）与打开 / 恢复会话的整份快照都带 `history` 镜像，界面不必等下一次列表请求。归档 / 恢复 / 空壳占用变化与范围切换走同一条按窗口的发射路径。
+- 子代理会话仍不进历史；`@` 对话候选仍用官方 resolver 与既有跨目录检索，不套用历史范围。
 
 ## 生成完毕未读
 
@@ -57,7 +76,7 @@
 
 ## 验证与未覆盖边界
 
-回归入口：blankSessionReuse、blankRestoreRace、blankPresetAdopt、blankSessionNoop、emptyComposer、workspaceDirRepick、sessionSelection、composerSessionDraft、commandNode、unreadMarker。覆盖空壳参与状态、首条消息归属与本地 blank 位折算、恢复让位、认领与预设兜底、**停在空壳上点「+」完全 no-op**（改过模型 / 思考强度 / 权限 / 预设、留着草稿附件与失败回显、有标题 / 计划 / 目标 / 自动化任务、断连、模型目录不可用各档都不发一帧也不发一笔 RPC，反复点仍是同一条壳）、无壳 / 内容会话照旧落壳（接回现成壳要一次指名认领，否则真新建）、**空壳由窗口共享**（第二个窗口接回同一条、两个窗口并发也只落一条、共享之后各自点「+」都是 no-op）、落壳期间关窗收手、历史列表的占用锁、运行状态对账、逐项未读持久化、删除清理与多选判据，不替代全部跨宿主时序验证。
+回归入口：blankSessionReuse、blankRestoreRace、blankPresetAdopt、blankSessionNoop、emptyComposer、workspaceDirRepick、historyDirectory、directoryPathKey、sessionSelection、composerSessionDraft、commandNode、unreadMarker。覆盖空壳参与状态、首条消息归属与本地 blank 位折算、恢复让位、认领与预设兜底、**停在空壳上点「+」完全 no-op**（改过模型 / 思考强度 / 权限 / 预设、留着草稿附件与失败回显、有标题 / 计划 / 目标 / 自动化任务、断连、模型目录不可用各档都不发一帧也不发一笔 RPC，反复点仍是同一条壳）、无壳 / 内容会话照旧落壳（接回现成壳要一次指名认领，否则真新建）、**空壳由窗口共享**（第二个窗口接回同一条、两个窗口并发也只落一条、共享之后各自点「+」都是 no-op）、落壳期间关窗收手、历史列表的占用锁、运行状态对账、逐项未读持久化、删除清理与多选判据，不替代全部跨宿主时序验证。
 
 - 不跨独立 VS Code 窗口登记“哪个窗口打开哪条会话”；要支持它，须在 supervisor 共享通道增加登记协议。
 - 不与浏览器 dsh web 同步未读：服务端没有这项客户端状态。

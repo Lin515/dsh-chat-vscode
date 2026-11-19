@@ -156,6 +156,13 @@ export const MESSAGES = {
     zh: "工作目录跟随 VS Code 打开的文件夹",
     en: "Working directory follows the folder open in VS Code",
   },
+  // 空态页工作目录菜单：打开着文件夹时列工作区根目录，末行可选工作区外目录
+  dirSwitchRoot: { zh: "新会话的工作目录", en: "Working directory for new sessions" },
+  dirOtherFolder: { zh: "选择其他文件夹…", en: "Choose another folder…" },
+  workspacePickDisabled: {
+    zh: "当前环境不能选择其他工作目录",
+    en: "Choosing another working directory is not available in this environment",
+  },
   /** 标题右侧的执行目录说明：与工作区不同，或 VS Code 未打开文件夹时显示。 */
   sessionDir: { zh: "会话执行目录", en: "Session execution directory" },
   agentPresetLabel: { zh: "Agent 预设", en: "Agent preset" },
@@ -1219,6 +1226,11 @@ export const MESSAGES = {
   sharedRestarted: { zh: "共享后台已由本窗口接管并重启，其它窗口会自动重新接入。", en: "This window took over the shared server and restarted it; the other windows reconnect automatically." },
 
   searchSessions: { zh: "搜索历史对话", en: "Search past sessions" },
+  // 历史抽屉的独立范围选择器：与归档切换正交，切归档不清范围
+  historyScope: { zh: "范围", en: "Scope" },
+  historyScopeCurrent: { zh: "当前目录", en: "Current directory" },
+  historyScopeRoots: { zh: "全部工作区文件夹", en: "All workspace folders" },
+  noScopedSessions: { zh: "此范围内没有会话", en: "No sessions in this scope" },
   today: { zh: "今天", en: "Today" },
   earlier: { zh: "更早", en: "Earlier" },
   noSessions: { zh: "还没有历史对话", en: "No past sessions yet" },

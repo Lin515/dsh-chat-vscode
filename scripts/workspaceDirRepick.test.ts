@@ -26,6 +26,9 @@
  * 无 token、亚秒级）。
  */
 import assert from "node:assert";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 process.on("unhandledRejection", (error) => {
   console.error("[workspaceDirRepick] 未处理的异步拒绝（当作失败）：", error);
@@ -58,9 +61,11 @@ function fakeClient() {
     running: boolean;
   }[] = [];
   const calls: string[] = [];
+  const workspaces: string[] = [];
   const prompts: { sessionId: string; content: unknown[] }[] = [];
   return {
     calls,
+    workspaces,
     rows,
     prompts,
     async createSession(target: { workspaceId?: string; cwd?: string }, reuse?: string) {
@@ -74,12 +79,18 @@ function fakeClient() {
       const sessionId = `session-${rows.length + 1}`;
       rows.push({
         sessionId,
-        cwd: target.cwd ?? "",
+        // 带 `workspaceId` 建会话时服务端取那个工作区的路径作 cwd（真服务端同源）
+        cwd: target.cwd ?? workspaces[Number(String(target.workspaceId ?? "").replace("ws-", "")) - 1] ?? "",
         blank: true,
         updatedAt: Date.now() + rows.length,
         running: false,
       });
       return { sessionId };
+    },
+    async createWorkspace(path: string) {
+      calls.push("workspace/create");
+      workspaces.push(path);
+      return { workspace: { workspaceId: `ws-${workspaces.length}` } };
     },
     async listSessions() {
       calls.push("session/list");
@@ -280,7 +291,7 @@ console.log("workspaceDirRepick: 空态页的目录胶囊能反复改目录（�
     assert.strictEqual(cwdOf(client, first), DIR_A, "空壳的 cwd 就是刚选的目录");
     assert.deepStrictEqual(
       lastWorkspace(frames),
-      { path: DIR_A, locked: false },
+      { path: DIR_A, locked: false, canPickOther: true },
       "选完目录要把新的工作目录投影回界面（`path` 更新、`locked` 仍是 false = 还能改）",
     );
 
@@ -299,7 +310,7 @@ console.log("workspaceDirRepick: 空态页的目录胶囊能反复改目录（�
     assert.strictEqual(cwdOf(client, second), DIR_B, "新壳落在刚选的目录上");
     assert.deepStrictEqual(
       lastWorkspace(frames),
-      { path: DIR_B, locked: false },
+      { path: DIR_B, locked: false, canPickOther: true },
       "界面显示的是新目录，且仍然可改",
     );
     assert.ok(
@@ -408,8 +419,13 @@ console.log("workspaceDirRepick: 空态页的目录胶囊能反复改目录（�
     assert.deepStrictEqual(client.rows, [], "目录由 VS Code 给，这里是 stub（没有真文件夹）——不建会话");
     assert.deepStrictEqual(
       lastWorkspace(frames),
-      { path: DIR_A, locked: true },
-      "真工作区必须锁成不可改（界面那枚胶囊据此渲染成静态文字）",
+      {
+        path: DIR_A,
+        locked: true,
+        roots: [{ path: DIR_A, name: "alpha" }],
+        canPickOther: true,
+      },
+      "真工作区必须锁成不可改（空态页那行据此渲染成静态文字）；根目录列表交给输入栏目录胶囊作候选",
     );
   } finally {
     dialog.restore();
@@ -499,6 +515,67 @@ console.log("workspaceDirRepick: 空态页的目录胶囊能反复改目录（�
     assert.notStrictEqual(back, shellB, "不许把新目录那条壳带回来");
   } finally {
     dialog.restore();
+  }
+}
+
+// ---------- 九、输入栏目录胶囊：工作区的根目录与「选择其他文件夹…」 ----------
+//
+// 用户 2026-11-17 口径：打开着文件夹时，空会话也能换到别处——工作区里的另一个根，或系统文件夹
+// 选择器选的**任意**目录（不能只给工作区里那几个，否则是半成品）。工作区外的目录不注册成服务端
+// 工作区（会长期留在 Web 侧栏），会话按 cwd 建；选回工作区里的根才注册。已有对话不许换。
+{
+  // 工作区外目录必须真实存在：宿主用与 `@` 同一个本机身份门验证后才接受
+  const OUTSIDE = mkdtempSync(join(tmpdir(), "dsh-chat-outside-"));
+  const workspace = vscode.workspace as unknown as { workspaceFolders: unknown };
+  const originalFolders = workspace.workspaceFolders;
+  workspace.workspaceFolders = [{ uri: { fsPath: DIR_A } }, { uri: { fsPath: DIR_B } }];
+  const dialog = stubDialog([OUTSIDE]);
+  try {
+    const { c, client, frames } = makeHarness();
+    c.bindView("v1");
+    await c.handle({ type: "pickOtherRoot" }, "v1");
+    const shell = c.viewSessions.get("v1");
+    const ws = lastWorkspace(frames) as { path?: string; roots?: string[] } | undefined;
+    console.log(`  选其他文件夹 → 会话 ${shell} cwd=${cwdOf(client, shell)}，workspace=${JSON.stringify(ws)}`);
+    assert.strictEqual(dialog.dialogs.length, 1, "点「选择其他文件夹…」弹一次系统文件夹选择器");
+    assert.ok(shell, "空会话落到新目录那条壳上");
+    assert.strictEqual(cwdOf(client, shell), OUTSIDE, "新会话的 cwd 就是选的那个工作区外目录");
+    assert.ok(!client.calls.includes("workspace/create"), "工作区外的目录不注册成服务端工作区（会长期留在 Web 侧栏）");
+    assert.strictEqual(ws?.path, OUTSIDE, "目录提示显示所选的工作区外目录");
+    assert.deepStrictEqual(
+      ws?.roots,
+      [
+        { path: DIR_A, name: "alpha" },
+        { path: DIR_B, name: "beta" },
+      ],
+      "工作区的根目录仍作候选交给界面（带展示名）",
+    );
+
+    // 选回工作区里的根：注册、cwd 回到那个根
+    await c.handle({ type: "switchRoot", path: DIR_B }, "v1");
+    const shellB = c.viewSessions.get("v1");
+    console.log(`  选回根 B → 会话 ${shellB} cwd=${cwdOf(client, shellB)}`);
+    assert.strictEqual(cwdOf(client, shellB), DIR_B, "选回工作区里的根：新会话落在那个根");
+    assert.deepStrictEqual(client.workspaces, [DIR_B], "工作区里的根照旧注册成服务端工作区（且只注册这一个）");
+    assert.strictEqual((lastWorkspace(frames) as { path?: string }).path, DIR_B, "目录提示回到所选的根");
+
+    // 不在工作区里的路径不能走 switchRoot（那条只认根目录；工作区外的目录走选择器）
+    const before = c.viewSessions.get("v1");
+    await c.handle({ type: "switchRoot", path: OUTSIDE }, "v1");
+    assert.strictEqual(c.viewSessions.get("v1"), before, "switchRoot 不接受工作区外的路径");
+
+    // 已有对话：不许换（会话 header 的 cwd 是创建事实），且不弹选择器
+    await sendMessage(c, "v1", "开始聊");
+    const dialogsBefore = dialog.dialogs.length;
+    const bound = c.viewSessions.get("v1");
+    await c.handle({ type: "pickOtherRoot" }, "v1");
+    await c.handle({ type: "switchRoot", path: DIR_A }, "v1");
+    assert.strictEqual(dialog.dialogs.length, dialogsBefore, "已有对话时点「选择其他文件夹…」不弹框");
+    assert.strictEqual(c.viewSessions.get("v1"), bound, "已有对话不会被换到别的目录");
+  } finally {
+    dialog.restore();
+    workspace.workspaceFolders = originalFolders;
+    rmSync(OUTSIDE, { recursive: true, force: true });
   }
 }
 

@@ -403,8 +403,8 @@ console.log("sessionList: 窗口级收窄（有 cwd 跟随、空态按未分组�
     "refreshSessions 必须用 visibleSessionRows 过滤子代理（判据在 sessionList.ts 里注释着）",
   );
   assert.ok(
-    /visibleForWorkspace\(/.test(controller),
-    "refreshSessions 的工作区可见性必须走 visibleForWorkspace（它带断言、也是设计口径的落点）",
+    /visibleForWorkspaceViews\(/.test(controller),
+    "refreshSessions 的工作区可见性必须走共享判据（视图行版 visibleForWorkspaceViews）",
   );
   assert.ok(
     !/return cwd === workspace \|\| openCwds\.includes\(cwd\)/.test(controller),
@@ -440,8 +440,9 @@ console.log("sessionList: 窗口级收窄（有 cwd 跟随、空态按未分组�
   );
   assert.ok(
     /vscode\.workspace\.workspaceFolders\?\.\[0\]/.test(emitBody) &&
-      /this\.emitAll\(\{ type: "sessions", sessions: active \}\)/.test(emitBody),
-    "打开着文件夹时仍走广播（所有窗口同一份，行为与旧口径逐字相同）",
+      /this\.rootPath\(viewId\)/.test(emitBody) &&
+      /this\.emitToView\(viewId, \{ type: "sessions", sessions: active \}\)/.test(emitBody),
+    "打开着文件夹时按窗口的根发旧列表（单根与旧广播逐字相同；多根时每个窗口跟自己选中的根）",
   );
   assert.ok(
     /for \(const viewId of this\.liveViewIds\(\)\)/.test(emitBody),

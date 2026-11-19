@@ -51,12 +51,33 @@ Auto 能力与目录失败的判据统一见[投影设计的 permissions](<desig
 
 Auto 的七条文字逐字取官方 accessZh / accessEn；官方中文名也为 Auto review。自补 IconShieldReview 以满足最小图标档。danger-full-access / auto 都在弹层内确认，不弹系统模态；auto 必须勾选风险确认才可继续。关弹层 / 再点胶囊 / 换档复位确认态。
 
+## 空态页的工作目录
+
+输入栏**不常驻**工作目录胶囊：目录只在「会话还没开始」时有得改，已有对话的目录是创建事实。空会话页的元信息行（`EmptyMeta.tsx`，判据在 `composerDir.ts` 的 `workspaceDirView`）承担这件事：
+
+| 状态 | 形态 | 效果 |
+|---|---|---|
+| 打开着文件夹（`workspace.roots` 非空） | 胶囊可点，菜单列出全部根目录（当前那个打勾）与「选择其他文件夹…」 | 点根目录发 `switchRoot`；`canPickOther` 不为 false 时才显示其他文件夹，点了发 `pickOtherRoot`。根目录用去重短名，同名时逐级补父目录；完整路径在悬停标题与行内副文字里 |
+| 没有根目录列表、可改（`canPickOther` 不为 false） | 沿用原来的系统目录选择器 | 发 `pickWorkspace`；没选过时显示「未选择工作区」，不拿宿主 cwd 冒充 |
+| 没有根目录列表、`canPickOther === false` | 静态文字 | 宿主禁用外部目录时系统选择器也不能用，不退回 `pickWorkspace`；悬停说明当前环境不能选其他目录 |
+| 没有根目录列表、`locked` | 静态文字 | 老宿主的「跟随 VS Code」形态；已有对话同样只读（`HeaderDir` 只是静态说明） |
+
+换根（`switchRoot`）只认当前工作区的根目录，「选择其他文件夹」（`pickOtherRoot`）可以选任意目录；二者都只作用于空白会话或还没有会话的窗口，并连带：清掉服务端工作区注册缓存（`workspaceId` 属于旧根）、按新根重拉历史列表、把窗口落到新根那条空壳（`rebindWorkspaceDir`）。当前根统一经控制器的 `rootPath()` 读取（工作区外目录 `outsideRoot` 优先，否则 `rootFolder()`），决定新会话目录、工作区注册与历史过滤。
+
+**工作区外的目录不注册成服务端工作区**，与没有打开文件夹时选的目录（`newSessionCwd`）同一口径：注册会让它长期留在 Web 侧栏，而它只是个落脚点；会话按 cwd 建、落在「未分组」。它刻意不持久化，重载窗口或工作区文件夹变化后回到工作区里的根。
+
+预览入口：`?empty=1&roots=1` 用 `test/preview/pr4-host-frames.json` 里宿主实际发出的帧展示根目录菜单；`?roots=1` 同时提供历史抽屉的范围切换帧。默认预览与 `?lock=1` 不加载这些帧。
+
+**有意不做**：对已有对话改执行目录。网页网关没有「改会话目录」的入口（`session/working-directory/set` 属于 SDK 运行时），唯一合规路径是让模型调 `working_directory` 工具，会占一轮对话且结果取决于模型。官方提供入口后再评估。
+
 ## 实现与回归
 
 | 文件 | 职责 |
 |---|---|
 | [toolbarFit.ts](<../src/webview/toolbarFit.ts>) | BAR_ORDER、pickVariants、观察目标与可用宽度前置 |
 | [Composer.tsx](<../src/webview/components/Composer.tsx>) | barNodes、useToolbarFit、渲染次序 |
+| [EmptyMeta.tsx](<../src/webview/components/EmptyMeta.tsx>)、[composerDir.ts](<../src/webview/composerDir.ts>) | 空态页目录行、根目录菜单与按状态分档的纯判据 |
+| [directoryLabel.ts](<../src/webview/directoryLabel.ts>) | 同名目录的去重短名（根目录菜单与历史混合目录共用） |
 | [app.css](<../src/webview/styles/app.css>) | 测量层、定位基准与收窄 |
 | [messages.ts](<../src/webview/messages.ts>) / [texts.ts](<../src/webview/texts.ts>) | 双语登记与取词典 |
 | [projections.ts](<../src/dsh/projections.ts>) / [controller.ts](<../src/dsh/controller.ts>) | 权限目录判据与拉取 |

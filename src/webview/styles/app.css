@@ -5101,6 +5101,36 @@ textarea.composer-input {
   color: var(--input-placeholder);
 }
 
+/* 历史范围选择器：与搜索框同一条横向节奏，但独立成行——它不参与搜索，也不随归档
+   切换重置。窄侧栏里标签不收缩、下拉占满剩余宽度并省略过长目录名。 */
+.drawer-scope {
+  display: flex;
+  align-items: center;
+  gap: calc(6 * var(--dp));
+  margin: 0 calc(6 * var(--dp)) calc(6 * var(--dp));
+  min-width: 0;
+}
+
+.drawer-scope-label {
+  flex: 0 0 auto;
+  font-size: var(--font-size-2xs);
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.drawer-scope-select {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: 100%;
+  padding: calc(3 * var(--dp)) calc(6 * var(--dp));
+  border: 1px solid var(--input-border);
+  border-radius: var(--radius);
+  background: var(--input-bg);
+  color: var(--input-fg);
+  font-size: var(--font-size-xs);
+  text-overflow: ellipsis;
+}
+
 .drawer-body {
   flex: 1 1 auto;
   min-height: 0;
@@ -5194,6 +5224,20 @@ textarea.composer-input {
 /* 删除两步确认：首次点击后行内显示红色提示，取代时间文本 */
 .session-item-delete-hint {
   color: var(--error);
+}
+
+/* 混合目录的结果行：创建目录短名放在时间前，窄侧栏里可省略；完整路径在 title 上。
+   非混合结果不渲染这一段，行内子标题保持原样。 */
+.session-item-dir {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-item-sep {
+  flex: 0 0 auto;
 }
 
 /* 多选形态（用户 2026-10-15）下每行行首的自绘复选框。**不用原生外观**：原生方框是

@@ -217,6 +217,11 @@ const entries = {
   "build/session-log.test.mjs": "scripts/sessionLog.test.ts",
   "build/session-list-probe.mjs": "scripts/sessionListProbe.ts",
   "build/session-list.test.mjs": "scripts/sessionList.test.ts",
+  "build/active-root.test.mjs": "scripts/activeRoot.test.ts",
+  "build/directory-path-key.test.mjs": "scripts/directoryPathKey.test.ts",
+  "build/history-directory.test.mjs": "scripts/historyDirectory.test.ts",
+  "build/history-directory-view.test.mjs": "scripts/historyDirectoryView.test.ts",
+  "build/composer-dir.test.mjs": "scripts/composerDir.test.ts",
   // 历史列表按窗口当前会话 cwd 隔离（无文件夹时多会话各有 cwd）：驱真控制器 + stub（必须登记，否则 npm test 静默不跑）
   "build/session-list-scope.test.mjs": "scripts/sessionListScope.test.ts",
   // 历史列表的多选（可选判据 / 选择集跟随列表 / 全选翻转）：必须登记，否则 npm test 静默不跑

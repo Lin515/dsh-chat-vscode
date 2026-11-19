@@ -1,4 +1,4 @@
-import type { AttachmentKind, ChatState, ChangesSummaryView, MessageView, ModelSelectionView, ProviderGroupView, ScheduleDeliveryView, ScheduleHistoryRetention, ScheduleTimingChangeView, Segment, SessionSummaryView, TodoView } from "./chat";
+import type { AttachmentKind, ChatState, ChangesSummaryView, HistoryScope, MessageView, ModelSelectionView, ProviderGroupView, ScheduleDeliveryView, ScheduleHistoryRetention, ScheduleTimingChangeView, Segment, SessionSummaryView, TodoView } from "./chat";
 import type {
   CommandView,
   FileRefView,
@@ -351,6 +351,23 @@ export type WebviewToHost =
    * 会在新目录里**重建**（会话 header 的 cwd 是创建事实，改不了）。
    */
   | { type: "pickWorkspace" }
+  /**
+   * 多根工作区里把**新会话的根目录**换成 `path`（输入栏目录胶囊，只在空会话时有效）。
+   * `path` 必须是当前工作区的根目录之一，宿主逐个核对。
+   */
+  | { type: "switchRoot"; path: string }
+  /**
+   * 「选择其他文件夹…」：宿主弹系统文件夹选择器，选中的目录（可以不在工作区里）成为新会话的落脚点
+   * （只对空会话有效；不注册成服务端工作区，重载窗口后失效）。
+   */
+  | { type: "pickOtherRoot" }
+  /**
+   * 切换本窗口历史抽屉的只读视图范围（`HistoryScope`）。
+   *
+   * 只改这个窗口看哪一段历史：不注册服务端工作区、不建 / 不换会话、不改新会话默认目录，
+   * 也不影响其他窗口。宿主逐字段校验；无效或目标已经不可用的范围整条拒绝。
+   */
+  | { type: "historyScope"; scope: HistoryScope }
   /**
    * 给当前**空白会话**切换 agent 预设（`agentPresets/select`）。
    *

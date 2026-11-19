@@ -11,7 +11,7 @@
 - [assistantStream.ts](<assistantStream.ts>) — activeAttempt 紧凑记录展开、首 token 时刻复原与重开 follow 恢复。
 - [scope.ts](<scope.ts>) — 会话投影、适配器与视图装配容器。
 - [sessionView.ts](<sessionView.ts>) — 会话视图字段唯一生产者，快照 / patch / 切会话共用。
-- [sessionList.ts](<sessionList.ts>) — 工作区 / 窗口 cwd 可见性与子代理、分支血缘。
+- [sessionList.ts](<sessionList.ts>) — 工作区 / 窗口 cwd 可见性、子代理与分支血缘、多根选中项，以及历史范围的形状校验 / 目录候选 / 按范围过滤（纯函数）。
 - [sessionStatus.ts](<sessionStatus.ts>) — api-session/status 的解码与采纳。
 - [sessionActivity.ts](<sessionActivity.ts>) — api-session/activity 的解码（子代理目录排序里「用户消息」的实时来路）。
 - [historyPaging.ts](<historyPaging.ts>) — 单页 loadOlder 与到目标 loadThrough。

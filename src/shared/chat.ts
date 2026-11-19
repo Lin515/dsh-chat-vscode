@@ -1421,6 +1421,68 @@ export interface WorkspaceView {
   path: string;
   /** true = 跟随 VS Code 打开的文件夹，不可更改。 */
   locked: boolean;
+  /**
+   * VS Code 工作区的全部根目录（打开着文件夹时给出）。`path` 是当前用作新会话根的目录——通常是
+   * 其中之一；不在其中就是用户「选择其他文件夹…」选的工作区外目录。输入栏目录胶囊用它列候选。
+   * 没打开文件夹时缺省。
+   */
+  roots?: DirectoryOption[];
+  /**
+   * 能不能打开系统目录选择器选一个**工作区外**的目录（「选择其他文件夹…」）。
+   *
+   * 缺省（老宿主）时界面只在 `roots` 缺席且 `locked` 为假时退回 `pickWorkspace`。宿主明确禁用
+   * （例如远端窗口里的系统选择器只能给出**本地**路径，而执行世界不在本机）时设为 false，
+   * 界面只列工作区根，不给这条入口。
+   */
+  canPickOther?: boolean;
+}
+
+/** 一个可选的目录（输入栏目录胶囊 / 历史范围选择器）。 */
+export interface DirectoryOption {
+  /** 绝对路径（执行世界的拼写，原样展示）。 */
+  path: string;
+  /** 展示名：目录末段（根目录的文件夹名）。 */
+  name: string;
+}
+
+/**
+ * 历史抽屉的**只读视图范围**。
+ *
+ * 默认（`current`）跟随当前窗口：绑定会话的创建目录，或新会话页上预选的新目录；两者都没有时
+ * 沿用旧口径（未分组）。`roots` 看全部 VS Code 工作区根；`directory` 看指定目录——可以是某个
+ * 根，也可以是当前连接已知会话所属的其他目录（含已经移出工作区的）。
+ *
+ * 浏览范围只是一次读取：不注册服务端工作区、不建会话、不改默认口径、不影响别的窗口。
+ */
+export type HistoryScope =
+  | { kind: "current" }
+  | { kind: "roots" }
+  | { kind: "directory"; path: string };
+
+/**
+ * 一个窗口的历史抽屉内容。
+ *
+ * 宿主按窗口各算一份（`ChatState.history`）：`sessions` / `archivedSessions` 已经按 `scope`
+ * 收窄，旧的顶层 `sessions` / `archivedSessions` 帧仍按原口径服务其他消费者（jobs 等），
+ * 不受这里的范围影响。
+ */
+export interface HistoryDirectoryView {
+  /** 这一份实际用的范围（无效 / 过期范围会折回 `current`）。 */
+  scope: HistoryScope;
+  /** VS Code 工作区的全部根目录；没有打开文件夹时为空。 */
+  roots: DirectoryOption[];
+  /**
+   * 当前连接已知会话所属、但不在工作区根里的目录（含已经移出工作区的）。
+   *
+   * 顺序按最近活动的会话优先；当前窗口选中的工作区外目录即使还没有会话也列在最前。
+   */
+  otherDirectories: DirectoryOption[];
+  /** 这一份列表是否跨了不止一个目录（界面据此提示「混合目录」）。 */
+  mixedDirectories: boolean;
+  /** 未归档会话（时间顺序与归档规则沿用旧列表）。 */
+  sessions: SessionSummaryView[];
+  /** 归档会话。 */
+  archivedSessions: SessionSummaryView[];
 }
 
 /** 一个可选的 agent 预设（roster 一行的界面形态，`broken` 的已在宿主侧滤掉）。 */
@@ -1569,6 +1631,13 @@ export interface ChatState {
    * `SessionView` 里——切会话不该动它。
    */
   workspace?: WorkspaceView;
+  /**
+   * 本窗口历史抽屉的只读视图范围与两份列表（见 `HistoryDirectoryView`）。
+   *
+   * **按窗口**下发：首帧快照与每次范围 / 列表变化都用 `patch` 带上这一份；旧宿主没有
+   * 这个键时界面退回旧的顶层 `sessions` / `archivedSessions` 帧。
+   */
+  history?: HistoryDirectoryView;
   /**
    * 部署提供的 agent 预设目录（`agentPresets/list` 的 roster）。
    *
