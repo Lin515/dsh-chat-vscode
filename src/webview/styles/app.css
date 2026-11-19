@@ -5101,26 +5101,12 @@ textarea.composer-input {
   color: var(--input-placeholder);
 }
 
-/* 历史范围选择器：与搜索框同一条横向节奏，但独立成行——它不参与搜索，也不随归档
-   切换重置。窄侧栏里标签不收缩、下拉占满剩余宽度并省略过长目录名。 */
+/* 历史范围选择器：与搜索框对齐，但独立成行，不参与搜索，也不随归档切换重置。 */
 .drawer-scope {
-  display: flex;
-  align-items: center;
-  gap: calc(6 * var(--dp));
   margin: 0 calc(6 * var(--dp)) calc(6 * var(--dp));
-  min-width: 0;
-}
-
-.drawer-scope-label {
-  flex: 0 0 auto;
-  font-size: var(--font-size-2xs);
-  color: var(--muted);
-  white-space: nowrap;
 }
 
 .drawer-scope-select {
-  flex: 1 1 auto;
-  min-width: 0;
   width: 100%;
   padding: calc(3 * var(--dp)) calc(6 * var(--dp));
   border: 1px solid var(--input-border);

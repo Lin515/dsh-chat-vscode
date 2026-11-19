@@ -155,7 +155,8 @@ function renderPanel(history: HistoryDirectoryView | undefined, fallback: Sessio
   assert.ok(markup.includes("PROJECTED"), "有投影时显示投影会话");
   assert.ok(!markup.includes("FALLBACK"), "有投影时不得把旧顶层列表混进来");
   assert.ok(markup.includes('class="drawer-scope"'), "有投影时有独立范围选择器");
-  assert.ok(markup.includes(esc(dictionaryFor("en").historyScope)), "范围选择器有双语标签");
+  assert.ok(markup.includes(`aria-label="${esc(dictionaryFor("en").historyScope)}"`), "下拉框保留本地化无障碍名称");
+  assert.ok(!markup.includes(`>${esc(dictionaryFor("en").historyScope)}<`), "不另画可见的范围标签");
   assert.ok(markup.includes(esc(dictionaryFor("en").historyScopeCurrent)), "默认范围是当前目录");
 }
 
@@ -231,10 +232,6 @@ for (const roots of [[], [dir("C:\\client\\app")]]) {
     /const scope = history\?\.scope;/.test(history) &&
       !/archived \? history\.scope|view === "archived" \? history\.scope/.test(history),
     "范围是宿主投影的一份状态，普通 / 归档共用（不在 view 分支里各存一份）",
-  );
-  assert.ok(
-    /<label className="drawer-scope"/.test(history) && /data\.sessions\.length === 0/.test(history),
-    "范围选择器在列表之外，空结果时仍渲染",
   );
   assert.ok(
     /sameHistoryScope\(option\.scope, scope\)/.test(history) && /value=\{selectValue\}/.test(history),

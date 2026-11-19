@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { HistoryDirectoryView, SessionSummaryView } from "../../shared/chat";
 import { post } from "../bridge";
 import { dirKey } from "../composerDir";
@@ -130,7 +130,6 @@ export function HistoryPanel({
     ? scopeOptions.find((option) => sameHistoryScope(option.scope, scope))
     : undefined;
   const selectValue = activeScopeOption?.value ?? scopeValue;
-  const scopeId = useId();
   const chooseScope = (value: string) => {
     const next = parseHistoryScopeValue(value);
     if (!next || !history || sameHistoryScope(next, history.scope)) return;
@@ -445,10 +444,9 @@ export function HistoryPanel({
         {/* 范围选择器**独立于归档切换**：普通列表与归档列表共用这一份范围，切归档不重置。
             它放在列表之外，所以当前范围没有结果时仍然看得见——那正是要换范围的时候。 */}
         {scopeOptions.length > 0 ? (
-          <label className="drawer-scope" htmlFor={scopeId}>
-            <span className="drawer-scope-label">{texts.historyScope}</span>
+          <div className="drawer-scope">
             <select
-              id={scopeId}
+              aria-label={texts.historyScope}
               className="drawer-scope-select"
               value={selectValue}
               title={activeScopeOption?.title ?? activeScopeOption?.label ?? texts.historyScope}
@@ -460,7 +458,7 @@ export function HistoryPanel({
                 </option>
               ))}
             </select>
-          </label>
+          </div>
         ) : null}
         <div className="drawer-body">
           {view === "sessions"
