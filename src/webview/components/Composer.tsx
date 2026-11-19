@@ -811,11 +811,7 @@ export function Composer({
     cacheHit: cacheHitText,
     breakdown: state.contextBreakdown,
   };
-  /**
-   * 悬停明细：**圆环与缓存命中读数共用同一份文本**（用户 2026-10-10 口径：缓存命中
-   * 悬停要显示与上下文悬停一模一样的信息）。拼法只有一份（`contextDetailLines`），
-   * 两处喂的又是同一组 `ctxProps`，所以两处悬停必然逐字一致。
-   */
+  /** 圆环、Token 用量与缓存命中率的悬停统一使用 `contextDetailLines` 和同一组 `ctxProps`。 */
   const ctxDetailTitle = contextDetailLines(ctxProps, texts).join("\n");
 
   // 运行中的主按钮（官方 `primaryStops = running && (empty || blocked)`）：
@@ -873,8 +869,8 @@ export function Composer({
     "context:ring": <CtxText {...ctxProps} />,
     "context:text": ctxNumbers ? <CtxText {...ctxProps} detailed /> : null,
     "tokens:full": tokenTotal !== undefined ? (
-      <span className="ctx-token-usage" title={texts.toolbarTokensDetail(tokenTotal.toLocaleString())}>
-        {texts.toolbarTokensLabel} {formatTokens(tokenTotal)}
+      <span className="ctx-token-usage" title={ctxDetailTitle}>
+        {formatTokens(tokenTotal)}
       </span>
     ) : null,
     // 缓存命中率是**独立元素**（用户 2026-10-10 第二条口径：不与上下文数字逗号连写），

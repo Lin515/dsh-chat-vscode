@@ -1289,10 +1289,6 @@ export const MESSAGES = {
   },
   ctxUnavailable: { zh: "上下文占用暂不可用", en: "Context usage unavailable" },
   toolbarTokensLabel: { zh: "Token 用量", en: "Token usage" },
-  toolbarTokensDetail: {
-    zh: (total: string) => `会话累计 Token 用量：${total}`,
-    en: (total: string) => `Total tokens used in this session: ${total}`,
-  },
   toolbarPreferencesTitle: { zh: "工具栏偏好", en: "Toolbar Preferences" },
   toolbarPreferencesIntro: {
     zh: "空间不足时，优先保留靠前的选项。此顺序不改变选项在工具栏中的位置。",

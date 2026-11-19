@@ -232,6 +232,11 @@ console.log("cacheHit: 视图模型不编总账（透传服务端 / 缺就缺）
       /tokens: tokenTotal,/.test(composer),
     "明细里的 Token 用量必须取会话累计的 `sessionTokenTotal`，并喂进共用的 `ctxProps`",
   );
+  assert.match(
+    composer,
+    /className="ctx-token-usage" title=\{ctxDetailTitle\}>\s*\{formatTokens\(tokenTotal\)\}\s*<\/span>/,
+    "底栏只显示紧凑的 Token 数值，悬停复用上下文圆环和缓存命中率的明细",
+  );
   assert.ok(
     primitives.indexOf("texts.ctxDetailTokens") >= 0 &&
       primitives.indexOf("texts.ctxDetailTokens") < primitives.indexOf("texts.ctxDetailCached"),

@@ -890,7 +890,6 @@ export interface Texts {
   contextUsed: (percent: number, used: string, total: string) => string;
   ctxUnavailable: string;
   toolbarTokensLabel: string;
-  toolbarTokensDetail: (total: string) => string;
   toolbarPreferencesTitle: string;
   toolbarPreferencesIntro: string;
   toolbarPreferencesEnabled: string;
