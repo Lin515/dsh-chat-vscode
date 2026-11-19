@@ -61,7 +61,7 @@ import { usePageContextMenu } from "./contextMenu";
 import { jobsEntrySignal, subagentsBusy } from "./activity";
 import { subagentRowFace } from "./subagentRow";
 import { subagentCurrentNode, subagentDescendants } from "./subagentTree";
-import { sessionDirParts, sessionDirPath } from "./sessionDir";
+import { sessionDirBadge } from "./sessionDir";
 import { LocaleContext, TextsContext, dictionaryFor, normalizeLocale, resolveText, useTexts } from "./texts";
 import { CommandLinksContext, type CommandMenuRequest } from "./commandLinks";
 import type { SubagentTreeView, SubagentView } from "../shared/chat";
@@ -110,7 +110,7 @@ function Header({
       {/* 标题本身就是切换入口（用户 2026-10-20 口径）：有子代理时变成可点击，
           点击展开「顶层会话 + 多层子代理树」；标题后的计数仍在。 */}
       <SessionTitle state={state} agentsBusy={agentsBusy} />
-      {/* 执行目录跟在标题（与子代理计数）之后；只有等于 VS Code 唯一根目录时省略。 */}
+      {/* 只读的执行目录标签跟在标题（与子代理计数）之后。 */}
       <HeaderDir state={state} />
       <span className="header-spacer" />
       <button className="icon-btn" title={texts.newChat} onClick={() => postUserAction({ type: "newSession" })}>
@@ -187,36 +187,19 @@ function Header({
   );
 }
 
-/**
- * 标题右侧的执行目录（文件夹图标 + 目录名 + 所在路径）。
- *
- * 无根或多根工作区显示已知目录；单根工作区只省略与唯一根目录相同的目录。
- * 判据与回退取值集中在 `sessionDirPath`，不影响空态页的工作区目录选择。
- *
- * 静态文字，不是切目录入口。全文挂在 `title` 上——窄侧栏里被裁掉的是所在路径，
- * 悬停仍读得到完整目录。
- *
- * 显示形态（用户 2026-10-20 口径）：文件夹图标后空一格接目录名，再空一格是它
- * 所在的路径，路径里不再重复目录名（`📁 dsh-chat D:\dev`）。装不下时先省略所在
- * 路径，目录名留住——与正文路径「末段不参与收缩」同一口径。
- *
- * 宽度（用户 2026-10-21 口径）：这一段占满标题与右侧按钮之间的剩余宽度，宽面板里
- * 一直显示到「新建」按钮前；与按钮之间留 80dp 基准间隔（跟随字号缩放）。见
- * `app.css` 的 `.header-dir` 与其后的 `.header-spacer`。
- */
+/** 标题只显示执行目录的短名；完整路径和不同的创建目录在悬停时读，不提供切换动作。 */
 function HeaderDir({ state }: { state: AppState }) {
   const texts = useTexts();
-  const path = sessionDirPath(state);
-  if (!path) return null;
-  const parts = sessionDirParts(path);
-  if (!parts) return null;
+  const badge = sessionDirBadge(state);
+  if (!badge) return null;
+  const execution = texts.sessionDir(badge.directory);
+  const title = badge.differentCreationDirectory
+    ? `${execution}\n${texts.sessionCreationDir(badge.differentCreationDirectory)}`
+    : execution;
   return (
-    <span className="header-dir" title={`${path}\n${texts.sessionDir}`}>
-      <IconFolder size={16} />
-      <span className="header-dir-name">{parts.name}</span>
-      {parts.parent ? (
-        <span className="header-dir-parent">{parts.parent}</span>
-      ) : null}
+    <span className="header-dir" title={title}>
+      <IconFolder size={12} />
+      <span className="header-dir-name">{badge.name}</span>
     </span>
   );
 }

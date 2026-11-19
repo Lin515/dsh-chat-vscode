@@ -168,8 +168,15 @@ export const MESSAGES = {
     zh: "当前环境不能选择其他工作目录",
     en: "Choosing another working directory is not available in this environment",
   },
-  /** 标题右侧的执行目录说明：与工作区不同，或 VS Code 未打开文件夹时显示。 */
-  sessionDir: { zh: "会话执行目录", en: "Session execution directory" },
+  /** 标题目录标签悬停详情。 */
+  sessionDir: {
+    zh: (path: string) => `执行目录：${path}`,
+    en: (path: string) => `Execution directory: ${path}`,
+  },
+  sessionCreationDir: {
+    zh: (path: string) => `创建目录：${path}`,
+    en: (path: string) => `Creation directory: ${path}`,
+  },
   agentPresetLabel: { zh: "Agent 预设", en: "Agent preset" },
   agentPresetSeat: {
     zh: "即将开始的这个会话所用的 Agent 预设",

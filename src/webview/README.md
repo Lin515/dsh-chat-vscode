@@ -53,7 +53,7 @@ React / 浏览器环境，不使用 Node API。上层边界见[源码导航](<..
 
 - [cacheHit.ts](<cacheHit.ts>) — 会话累计缓存命中格式化；缺数据不返回读数。
 - [pathDisplay.ts](<pathDisplay.ts>) — 单行路径拆分与保文件名省略。
-- [sessionDir.ts](<sessionDir.ts>) — 标题栏执行目录取值与唯一根目录的省略判据。
+- [sessionDir.ts](<sessionDir.ts>) — 标题栏执行目录标签：短名、悬停详情的路径，以及单根时的省略判据。
 - [sessionSelection.ts](<sessionSelection.ts>) — 历史列表多选：可选判据、选择集跟随列表、全选翻转。
 - [composerDir.ts](<composerDir.ts>) — 空态页工作目录行的形态判据：工作区根预设 / 系统目录选择器 / 老宿主只读，以及 `dirKey`（复用宿主 `directoryPathKey`）。
 - [directoryLabel.ts](<directoryLabel.ts>) — 同名目录的去重短名：逐级补父目录，仍撞名退回完整路径（根目录菜单与历史混合目录共用）。

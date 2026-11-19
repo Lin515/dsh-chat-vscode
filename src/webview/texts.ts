@@ -69,8 +69,9 @@ export interface Texts {
   dirOtherFolder: string;
   /** 宿主明确禁用外部目录、又没有根目录列表时的静态说明。 */
   workspacePickDisabled: string;
-  /** 标题栏上工作目录那一段的 title（没打开文件夹时常驻的那段路径）。 */
-  sessionDir: string;
+  /** 标题目录标签悬停详情。 */
+  sessionDir: (path: string) => string;
+  sessionCreationDir: (path: string) => string;
   /** 预设下拉框的分组标题。 */
   agentPresetLabel: string;
   /** 预设胶囊的 title（官方 `seatHint` 同一句话）。 */
