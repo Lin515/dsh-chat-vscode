@@ -1,5 +1,5 @@
 /**
- * 标题右侧的执行目录：未打开文件夹时显示；打开时仅在与工作区目录不同时显示。
+ * 标题右侧的执行目录：只有与 VS Code 唯一根目录相同时才省略已知目录。
  * 执行目录投影优先，缺失时保留会话创建目录的回退。
  *
  * 第 1 节钉**判据**（纯函数 `sessionDirPath`，按真实取值分档：会话 cwd 优先、
@@ -105,7 +105,24 @@ assert.equal(sessionDirPath({ workspace: { path: "/work/Alpha", locked: true }, 
 assert.equal(sessionDirPath({ workspace: { path: "/work/alpha/", locked: true }, workingDirectory: "/work/alpha" }), undefined);
 assert.equal(sessionDirPath({ workspace: { path: "/", locked: true }, workingDirectory: "/" }), undefined);
 assert.equal(sessionDirPath({ workspace: { path: DIR_A, locked: true }, session: summary(), workingDirectory: DIR_B }), DIR_B, "子代理不必依赖摘要 cwd");
-console.log("sessionDir: 执行目录优先、差异显示与平台路径比较 ✓");
+{
+  const alpha = { path: DIR_A, name: "alpha" };
+  const beta = { path: DIR_B, name: "beta" };
+  const single = { path: DIR_A, locked: true, roots: [alpha] };
+  const outside = { ...single, path: DIR_B };
+  const multi = { ...single, roots: [alpha, beta] };
+  assert.equal(sessionDirPath({ workspace: multi, session: summary(DIR_A) }), DIR_A, "多根：会话目录等于新建目标也显示");
+  assert.equal(sessionDirPath({ workspace: multi, session: summary(DIR_B) }), DIR_B, "多根：历史会话显示自身目录");
+  assert.equal(sessionDirPath({ workspace: multi }), DIR_A, "多根：无会话时显示已知的新建目标");
+  assert.equal(sessionDirPath({ workspace: multi, session: summary(DIR_A), workingDirectory: DIR_B }), DIR_B, "多根：执行目录优先");
+  assert.equal(sessionDirPath({ workspace: { ...multi, path: "" }, session: summary() }), undefined, "多根：未知目录不猜测");
+  assert.equal(sessionDirPath({ workspace: outside, session: summary(DIR_B) }), DIR_B, "单根：当前会话在选中的外部目录时仍显示");
+  assert.equal(sessionDirPath({ workspace: outside }), DIR_B, "单根：空会话显示新选的外部目录");
+  assert.equal(sessionDirPath({ workspace: outside, session: summary(DIR_A) }), undefined, "单根：改变新建目标不改变根目录会话的显示");
+  assert.equal(sessionDirPath({ workspace: single, session: summary(DIR_B), workingDirectory: DIR_A }), undefined, "单根：外部会话执行目录切回唯一根后省略");
+  assert.equal(sessionDirPath({ workspace: { ...single, roots: [] } }), DIR_A, "显式空根列表不按旧版锁定状态猜测");
+}
+console.log("sessionDir: 执行目录优先、单根省略、多根显示与平台路径比较 ✓");
 
 // ---------- 2. 显示拆分：目录名 + 所在路径（路径里不重复目录名） ----------
 {

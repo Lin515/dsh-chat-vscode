@@ -110,8 +110,7 @@ function Header({
       {/* 标题本身就是切换入口（用户 2026-10-20 口径）：有子代理时变成可点击，
           点击展开「顶层会话 + 多层子代理树」；标题后的计数仍在。 */}
       <SessionTitle state={state} agentsBusy={agentsBusy} />
-      {/* 执行目录跟在标题（与子代理计数）之后；未打开文件夹或与工作区目录不同时
-          显示，见 sessionDirPath。 */}
+      {/* 执行目录跟在标题（与子代理计数）之后；只有等于 VS Code 唯一根目录时省略。 */}
       <HeaderDir state={state} />
       <span className="header-spacer" />
       <button className="icon-btn" title={texts.newChat} onClick={() => postUserAction({ type: "newSession" })}>
@@ -191,7 +190,7 @@ function Header({
 /**
  * 标题右侧的执行目录（文件夹图标 + 目录名 + 所在路径）。
  *
- * VS Code 未打开文件夹时显示；打开时仅在执行目录与工作区目录不同时显示。
+ * 无根或多根工作区显示已知目录；单根工作区只省略与唯一根目录相同的目录。
  * 判据与回退取值集中在 `sessionDirPath`，不影响空态页的工作区目录选择。
  *
  * 静态文字，不是切目录入口。全文挂在 `title` 上——窄侧栏里被裁掉的是所在路径，

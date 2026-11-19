@@ -1419,11 +1419,11 @@ export interface ContextWindowView {
 export interface WorkspaceView {
   /** 绝对路径（新会话的 cwd）。 */
   path: string;
-  /** true = 跟随 VS Code 打开的文件夹，不可更改。 */
+  /** 旧界面用的锁定标记；有 `roots` 时，是否显示选择器及候选由根目录清单决定。 */
   locked: boolean;
   /**
-   * VS Code 工作区的全部根目录（打开着文件夹时给出）。`path` 是当前用作新会话根的目录——通常是
-   * 其中之一；不在其中就是用户「选择其他文件夹…」选的工作区外目录。输入栏目录胶囊用它列候选。
+   * VS Code 工作区的全部根目录（打开着文件夹时给出）。`path` 是当前的新会话目标，
+   * 可以是其中之一，也可以是用户「选择其他文件夹…」选的工作区外目录。空态目录选择器用它列候选。
    * 没打开文件夹时缺省。
    */
   roots?: DirectoryOption[];

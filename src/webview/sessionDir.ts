@@ -1,7 +1,8 @@
 import type { SessionSummaryView, WorkspaceView } from "../shared/chat";
+import { directoryPathKey } from "../shared/workspacePath";
 
 /**
- * 标题右侧的执行目录：未打开 VS Code 文件夹时始终显示；打开时只显示不同的目录。
+ * 标题右侧的执行目录：只有它与 VS Code 唯一根目录相同时才省略已知目录。
  * 投影未到 / 能力缺失时退回创建目录，最后才是窗口目录，不拿宿主 cwd 冒充。
  * 该判据只影响显示，不改变工作区归属、创建目录或历史列表。
  */
@@ -13,8 +14,12 @@ export function sessionDirPath(state: {
   const workspace = state.workspace;
   if (!workspace) return undefined;
   const directory = state.workingDirectory || state.session?.cwd || workspace.path || undefined;
-  if (!directory || (workspace.locked && sameDirectory(directory, workspace.path))) return undefined;
-  return directory;
+  if (!directory) return undefined;
+  // `path` 是下次新建目标，可能是外部目录；仅在没有根目录清单的旧帧中沿用锁定语义。
+  const soleRoot = workspace.roots
+    ? workspace.roots.length === 1 ? workspace.roots[0]?.path : undefined
+    : workspace.locked ? workspace.path : undefined;
+  return soleRoot && directoryPathKey(directory) === directoryPathKey(soleRoot) ? undefined : directory;
 }
 
 /** 标题栏目录的两段展示：末段目录名 + 它所在的路径（**不含**末段）。 */
@@ -47,14 +52,4 @@ export function sessionDirParts(path: string): SessionDirParts | undefined {
   if (!parent) parent = trimmed[0] as string;
   else if (/^[A-Za-z]:$/u.test(parent)) parent += trimmed[cut];
   return { name: trimmed.slice(cut + 1), parent };
-}
-
-/** 只做展示比较：Windows 形态忽略大小写与分隔符差别，POSIX 保留大小写；不猜远端 realpath。 */
-function sameDirectory(left: string, right: string): boolean {
-  const key = (path: string): string => {
-    const windows = /^[A-Za-z]:[/\\]|^[\\/]{2}/u.test(path);
-    const normalized = (windows ? path.replace(/\\/gu, "/") : path).replace(/\/+$/u, "");
-    return windows ? normalized.toLowerCase() : normalized;
-  };
-  return key(left) === key(right);
 }
