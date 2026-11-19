@@ -31,7 +31,7 @@
 
 历史与「当前工作区的会话列表」是两件事：`ChatState.history` 按窗口下发，旧的顶层 `sessions` / `archivedSessions` 帧仍按原口径服务 jobs 等消费者，不受历史范围影响。
 
-- `HistoryScope` 三档：`current`（默认，绑定会话的创建目录；未绑定时本窗预选的新目录；都没有时沿用旧「未分组」口径）、`roots`（全部 VS Code 根）、`directory`（某个根，或当前连接已知会话所属的其他目录，含已经移出工作区的）。
+- `HistoryScope` 默认是 `current`：绑定会话的创建目录；未绑定时本窗预选的新目录；都没有时沿用旧「未分组」口径。只有 VS Code 工作区有至少两个显式根时，抽屉才提供范围选择器，可切到 `roots`（全部显式根）或 `directory`（其中一个根）。会话记录与空会话选址都不会增加历史候选；移除根导致所选范围失效时折回 `current`。
 - 宿主从**同一份权威 `session/list`** 建完整候选镜像（`historySessions`），不依赖已按当前根收窄的 `this.sessions`；内部复用空壳、恢复、未读、`@` 仍读旧列表。发帧时按范围过滤（`historyRowsForScope`），归档规则与时间顺序沿用 `groupSessionLists`。
 - `setHistoryScope` 逐字段校验（`parseHistoryScope`）并核对目录仍然可选；无效 / 迟到的范围整条拒绝。切换范围只推本窗口的 `history` patch，不注册、不落壳、不刷新 RPC，也不改默认口径。
 - 首帧（`ready`）与打开 / 恢复会话的整份快照都带 `history` 镜像，界面不必等下一次列表请求。归档 / 恢复 / 空壳占用变化与范围切换走同一条按窗口的发射路径。

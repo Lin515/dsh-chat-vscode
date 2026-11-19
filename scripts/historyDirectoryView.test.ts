@@ -48,7 +48,6 @@ const dir = (path: string, name?: string) => ({
 const view = (over: Partial<HistoryDirectoryView> = {}): HistoryDirectoryView => ({
   scope: { kind: "current" },
   roots: [dir("C:\\client\\app"), dir("C:\\server\\app")],
-  otherDirectories: [dir("E:\\shared\\app")],
   mixedDirectories: false,
   sessions: [],
   archivedSessions: [],
@@ -78,7 +77,7 @@ const view = (over: Partial<HistoryDirectoryView> = {}): HistoryDirectoryView =>
   );
 }
 
-// ---------- 2. 选项：当前 / 全部根 / 各目录（同名去重），当前范围缺席时补一条 ----------
+// ---------- 2. 选项：当前 / 全部根 / 各显式添加的根目录；少于两个根没有选项 ----------
 {
   const options = historyScopeOptions(view(), {
     current: "Current directory",
@@ -86,24 +85,13 @@ const view = (over: Partial<HistoryDirectoryView> = {}): HistoryDirectoryView =>
   });
   assert.deepStrictEqual(
     options.map((option) => option.label),
-    ["Current directory", "All workspace folders", "client/app", "server/app", "shared/app"],
+    ["Current directory", "All workspace folders", "client/app", "server/app"],
     "范围选项的次序与去重短名（不同根里同名的 app 必须能区分）",
   );
   assert.strictEqual(options[2]?.title, "C:\\client\\app", "目录选项悬停给完整路径");
-  assert.deepStrictEqual(
-    historyScopeOptions(view({ scope: { kind: "directory", path: "F:\\gone" } }), {
-      current: "Current",
-      roots: "All",
-    }).at(-1)?.scope,
-    { kind: "directory", path: "F:\\gone" },
-    "当前范围暂时不在候选里时补一条，避免下拉显示空白",
-  );
-  assert.ok(
-    !historyScopeOptions(view({ roots: [] }), { current: "C", roots: "R" }).some(
-      (option) => option.scope.kind === "roots",
-    ),
-    "没有工作区根时不出现「全部工作区文件夹」",
-  );
+  for (const roots of [[], [dir("C:\\client\\app")]]) {
+    assert.deepStrictEqual(historyScopeOptions(view({ roots }), { current: "C", roots: "R" }), []);
+  }
 }
 
 // ---------- 3. 列表来源：投影优先，缺席才回退；不混用 ----------
@@ -185,12 +173,18 @@ function renderPanel(history: HistoryDirectoryView | undefined, fallback: Sessio
   assert.ok(markup.includes(esc(dictionaryFor("en").noSessions)), "旧宿主保持原来的空态文案");
 }
 
-// 5c2) 宿主把范围路径规范化成另一种拼写（盘符大小写 / 斜杠方向）：仍要选中同一目录
+// 5c2) 同一历史投影在单根 / 无根下仍显示会话，但不画范围选择器
+for (const roots of [[], [dir("C:\\client\\app")]]) {
+  const markup = renderPanel(view({ roots, sessions: [row("CURRENT")] }));
+  assert.ok(markup.includes("CURRENT"));
+  assert.ok(!markup.includes('class="drawer-scope"'));
+}
+
+// 5c3) 宿主把范围路径规范化成另一种拼写（盘符大小写 / 斜杠方向）：仍要选中同一目录
 {
   const canonical = view({
     scope: { kind: "directory", path: "c:/WORK/alpha/" },
     roots: [dir("C:\\work\\alpha"), dir("C:\\work\\beta")],
-    otherDirectories: [],
     mixedDirectories: false,
     sessions: [row("ONE", { cwd: "C:\\work\\alpha" })],
   });

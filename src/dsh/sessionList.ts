@@ -35,8 +35,8 @@
  * 不能把别的窗口打开过的目录里那些**已分组**的会话漏进一个还没选目录的窗口。
  */
 
-import { basenameWorkspacePath, directoryPathKey, isAbsoluteWorkspacePath } from "../shared/workspacePath";
-import type { DirectoryOption, HistoryScope } from "../shared/chat";
+import { directoryPathKey, isAbsoluteWorkspacePath } from "../shared/workspacePath";
+import type { HistoryScope } from "../shared/chat";
 
 /** 只藏**子代理**会话；分支（有 parent、`origin` 为空）必须留着。 */
 export function visibleSessionRows<T extends { origin?: string }>(rows: readonly T[]): T[] {
@@ -286,33 +286,6 @@ export function historyRowsForScope<T extends { id: string; cwd?: string }>(
   const cwd = normalizePath(filter.currentCwd);
   if (cwd) return usable.filter((row) => normalizePath(row.cwd) === cwd);
   return usable.filter((row) => !filter.groupedSessionIds.has(row.id));
-}
-
-/**
- * 「其他目录」候选：当前连接已知会话所属、但不在工作区根里的目录（含已经移出工作区的），
- * 按会话顺序（最近活动优先）去重；`extra` 里的目录（本窗选中的工作区外目录）即使还没有
- * 会话也补在最前。目录名取末段，取不到时退回完整路径。
- */
-export function otherHistoryDirectories(
-  rows: readonly { cwd?: string }[],
-  roots: readonly string[],
-  extra: readonly string[] = [],
-): DirectoryOption[] {
-  const rootKeys = new Set(roots.map(normalizePath).filter(Boolean));
-  const seen = new Set<string>();
-  const options: DirectoryOption[] = [];
-  const add = (path: string): void => {
-    const key = normalizePath(path);
-    if (!key || rootKeys.has(key) || seen.has(key)) return;
-    seen.add(key);
-    const name = basenameWorkspacePath(path.replace(/[/\\]+$/, "")) || path;
-    options.push({ path, name });
-  };
-  for (const path of extra) add(path);
-  for (const row of rows) {
-    if (row.cwd) add(row.cwd);
-  }
-  return options;
 }
 
 /** 这一份历史是否跨了不止一个目录（按归一后的 cwd 去重）。 */

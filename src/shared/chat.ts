@@ -1469,14 +1469,8 @@ export type HistoryScope =
 export interface HistoryDirectoryView {
   /** 这一份实际用的范围（无效 / 过期范围会折回 `current`）。 */
   scope: HistoryScope;
-  /** VS Code 工作区的全部根目录；没有打开文件夹时为空。 */
+  /** VS Code 工作区显式包含的根目录；至少两个根时才可切换历史范围。 */
   roots: DirectoryOption[];
-  /**
-   * 当前连接已知会话所属、但不在工作区根里的目录（含已经移出工作区的）。
-   *
-   * 顺序按最近活动的会话优先；当前窗口选中的工作区外目录即使还没有会话也列在最前。
-   */
-  otherDirectories: DirectoryOption[];
   /** 这一份列表是否跨了不止一个目录（界面据此提示「混合目录」）。 */
   mixedDirectories: boolean;
   /** 未归档会话（时间顺序与归档规则沿用旧列表）。 */

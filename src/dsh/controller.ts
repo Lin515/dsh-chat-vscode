@@ -166,7 +166,7 @@ import {
 import { NotificationQueue, type NoticeInput, type NoticeRecord } from "./notificationQueue";
 import { deriveTrajectoryModel } from "./trajectory";
 import { backfillTrajectorySchemas, missingSchemaAnchor } from "./trajectoryBackfill";
-import { activeRootIndex, historyIsMixed, historyRowsForScope, normalizePath, otherHistoryDirectories, parseHistoryScope, upperDriveLetter, visibleForView, visibleForWorkspaceViews, visibleSessionCandidates, visibleSessionRows } from "./sessionList";
+import { activeRootIndex, historyIsMixed, historyRowsForScope, normalizePath, parseHistoryScope, upperDriveLetter, visibleForView, visibleForWorkspaceViews, visibleSessionCandidates, visibleSessionRows } from "./sessionList";
 import { decodeSessionActivity } from "./sessionActivity";
 import { acceptSessionStatus, decodeSessionStatus } from "./sessionStatus";
 import { orderSubagentEntries } from "./subagentOrder";
@@ -5174,42 +5174,18 @@ export class ChatController implements vscode.Disposable {
     return this.sessionCwds.get(sessionId) ?? this.scopes.get(sessionId)?.creationCwd;
   }
 
-  /** 这个窗口历史范围的全部候选目录（根 + 其他已知目录）。 */
-  private historyDirectories(viewId: string): {
-    roots: DirectoryOption[];
-    otherDirectories: DirectoryOption[];
-    rootPaths: string[];
-  } {
-    const rootPaths = (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath);
-    const roots = this.directoryOptions(rootPaths);
-    const choice = this.rootChoice(viewId);
-    const extra = choice?.kind === "outside" ? [choice.path] : [];
-    return {
-      roots,
-      otherDirectories: otherHistoryDirectories(this.historySessions, rootPaths, extra),
-      rootPaths,
-    };
+  /** 历史范围候选只来自 VS Code 显式添加的根，不读取会话列表或选址偏好。 */
+  private historyRootPaths(): string[] {
+    return (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath);
   }
 
-  /**
-   * 一个范围现在还可不可选：`current` 永远可以；`roots` 要有工作区根；`directory` 必须是
-   * 当前工作区根或当前连接已知会话的目录（含已经移出工作区的）。浏览历史本身不注册任何
-   * 东西——这里只读已有快照。
-   */
-  private historyScopeAvailable(
-    viewId: string,
-    scope: HistoryScope,
-    directories: { rootPaths: string[]; otherDirectories: DirectoryOption[] },
-  ): boolean {
+  /** 单根或无根只看当前目录；多根可以看全部根或其中之一。 */
+  private historyScopeAvailable(scope: HistoryScope, rootPaths: readonly string[]): boolean {
     if (scope.kind === "current") return true;
-    if (scope.kind === "roots") return directories.rootPaths.length > 0;
+    if (rootPaths.length < 2) return false;
+    if (scope.kind === "roots") return true;
     const wanted = normalizePath(scope.path);
-    const choice = this.rootChoice(viewId);
-    return (
-      directories.rootPaths.some((path) => normalizePath(path) === wanted) ||
-      directories.otherDirectories.some((option) => normalizePath(option.path) === wanted) ||
-      (choice?.kind === "outside" && normalizePath(choice.path) === wanted)
-    );
+    return rootPaths.some((path) => normalizePath(path) === wanted);
   }
 
   /**
@@ -5217,9 +5193,9 @@ export class ChatController implements vscode.Disposable {
    * 两份列表。旧顶层 `sessions` / `archivedSessions` 帧不经过这里。
    */
   private historyView(viewId: string): NonNullable<ChatState["history"]> {
-    const directories = this.historyDirectories(viewId);
+    const rootPaths = this.historyRootPaths();
     let scope = this.viewHistoryScopes.get(viewId) ?? { kind: "current" as const };
-    if (!this.historyScopeAvailable(viewId, scope, directories)) {
+    if (!this.historyScopeAvailable(scope, rootPaths)) {
       // 连接换了 / 目录已经无从证明：不让旧目标留在界面上（迟到目标一律拒绝）
       if (this.viewHistoryScopes.delete(viewId)) {
         this.log(`[history] 窗口=${viewId} 的范围已经不可用，折回 current：${JSON.stringify(scope)}`);
@@ -5229,14 +5205,13 @@ export class ChatController implements vscode.Disposable {
     const rows = historyRowsForScope(this.historySessions, {
       scope,
       currentCwd: this.historyCurrentCwd(viewId),
-      roots: directories.rootPaths,
+      roots: rootPaths,
       groupedSessionIds: this.groupedSessionIds(),
     });
     const { active, archived } = this.groupSessionLists(rows);
     return {
       scope,
-      roots: directories.roots,
-      otherDirectories: directories.otherDirectories,
+      roots: this.directoryOptions(rootPaths),
       mixedDirectories: historyIsMixed(rows),
       sessions: active,
       archivedSessions: archived,
@@ -5254,8 +5229,7 @@ export class ChatController implements vscode.Disposable {
       this.log(`[history] 窗口=${viewId} 已经下线，迟到的范围切换丢弃`);
       return;
     }
-    const directories = this.historyDirectories(viewId);
-    if (!this.historyScopeAvailable(viewId, scope, directories)) {
+    if (!this.historyScopeAvailable(scope, this.historyRootPaths())) {
       this.log(`[history] 窗口=${viewId} 的范围不可用，拒绝：${JSON.stringify(scope)}`);
       return;
     }

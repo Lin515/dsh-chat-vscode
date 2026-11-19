@@ -1,10 +1,8 @@
 import type {
-  DirectoryOption,
   HistoryDirectoryView,
   HistoryScope,
   SessionSummaryView,
 } from "../shared/chat";
-import { basenameWorkspacePath } from "../shared/workspacePath";
 import { dirKey } from "./composerDir";
 import { shortDirectoryLabels } from "./directoryLabel";
 
@@ -74,60 +72,32 @@ export function sameHistoryScope(left: HistoryScope, right: HistoryScope): boole
 }
 
 /**
- * 范围选择器的选项：当前目录 → 全部工作区根（有根时）→ 各根目录 → 其他目录。
- *
- * 「其他目录」是当前连接已知会话所属、但不在工作区根里的目录；根目录与它可能同名，
- * 所以两段目录统一走 `shortDirectoryLabels` 去重。当前范围是某个目录、但它暂时不在
- * 候选里（宿主尚未刷新）时补一条，避免 `<select>` 显示空白。
+ * 多根工作区才有范围选择器：当前目录 → 全部工作区根 → 各显式添加的根目录。
  */
 export function historyScopeOptions(
-  view: Pick<HistoryDirectoryView, "scope" | "roots" | "otherDirectories">,
+  view: Pick<HistoryDirectoryView, "roots">,
   labels: HistoryScopeLabels,
 ): HistoryScopeOption[] {
-  const directories: DirectoryOption[] = [];
-  const seen = new Set<string>();
-  for (const option of [...view.roots, ...view.otherDirectories]) {
-    const key = dirKey(option.path);
-    if (!key || seen.has(key)) continue;
-    seen.add(key);
-    directories.push(option);
-  }
-  const names = shortDirectoryLabels(directories);
+  if (view.roots.length < 2) return [];
+  const names = shortDirectoryLabels(view.roots);
   const out: HistoryScopeOption[] = [
     {
       value: historyScopeValue({ kind: "current" }),
       scope: { kind: "current" },
       label: labels.current,
     },
-  ];
-  // 当前范围是 roots 时即使根目录刚好暂时为空也保留这一项，避免 `<select>` 的值
-  // 匹配不到任何选项而显示空白（宿主的工作区变化与投影帧之间可能有一瞬）。
-  if (view.roots.length > 0 || view.scope.kind === "roots") {
-    out.push({
+    {
       value: historyScopeValue({ kind: "roots" }),
       scope: { kind: "roots" },
       label: labels.roots,
-    });
-  }
-  for (const option of directories) {
+    },
+  ];
+  for (const option of view.roots) {
     out.push({
       value: historyScopeValue({ kind: "directory", path: option.path }),
       scope: { kind: "directory", path: option.path },
       label: names.get(dirKey(option.path)) ?? option.name,
       title: option.path,
-    });
-  }
-  if (
-    view.scope.kind === "directory" &&
-    !out.some((option) => sameHistoryScope(option.scope, view.scope))
-  ) {
-    const fallback =
-      basenameWorkspacePath(view.scope.path.replace(/[/\\]+$/u, "")) || view.scope.path;
-    out.push({
-      value: historyScopeValue(view.scope),
-      scope: view.scope,
-      label: fallback,
-      title: view.scope.path,
     });
   }
   return out;

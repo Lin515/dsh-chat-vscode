@@ -409,6 +409,8 @@ console.log("historyDirectory: 根选择 / 注册缓存 / 竞态 / 历史范围�
     "roots 范围的归档列表同样按范围收窄（B 的归档会话在列）",
   );
   assert.deepStrictEqual(v2Before, ["used-B"], "v2 的范围在 v1 切换前是它自己的目录");
+  assert.deepStrictEqual((roots.roots as { path: string }[]).map((root) => root.path), [DIR_A, DIR_B]);
+  assert.ok(!("otherDirectories" in roots), "服务端的其他目录不下发为历史候选");
   assert.strictEqual(historyIds(h.frames, "v2"), undefined, "v1 切范围不改 v2（没有发给 v2 的新帧）");
 
   h.frames.length = 0;
@@ -438,10 +440,21 @@ console.log("historyDirectory: 根选择 / 注册缓存 / 竞态 / 历史范围�
 
 // ---------- 三、无效 / 迟到的范围整条拒绝 ----------
 {
-  const h = makeHarness([{ sessionId: "used-A", cwd: DIR_A }], { folders: [DIR_A] });
+  const h = makeHarness([{ sessionId: "used-A", cwd: DIR_A }, { sessionId: "used-C", cwd: DIR_C }], { folders: [DIR_A, DIR_B] });
   await bindAndRefresh(h, "v1");
   await open(h, "v1", "used-A");
   h.frames.length = 0;
+  await h.c.handle({ type: "historyScope", scope: { kind: "directory", path: DIR_C } }, "v1");
+  assert.strictEqual(historyFor(h.frames, "v1"), undefined, "已有会话的外部目录也不是历史候选");
+  await h.c.handle({ type: "historyScope", scope: { kind: "directory", path: DIR_B } }, "v1");
+  assert.deepStrictEqual(historyFor(h.frames, "v1")?.scope, { kind: "directory", path: DIR_B });
+  stubFolders([DIR_A]);
+  await h.c.applyWorkspaceFoldersChange();
+  assert.deepStrictEqual(historyFor(h.frames, "v1")?.scope, { kind: "current" }, "改单根后立即回到当前范围");
+  h.frames.length = 0;
+  await h.c.handle({ type: "historyScope", scope: { kind: "roots" } }, "v1");
+  await h.c.handle({ type: "historyScope", scope: { kind: "directory", path: DIR_A } }, "v1");
+  assert.strictEqual(historyFor(h.frames, "v1"), undefined, "单根不能显式切换范围");
   await h.c.handle({ type: "historyScope", scope: { kind: "directory", path: "relative/dir" } }, "v1");
   assert.strictEqual(historyFor(h.frames, "v1"), undefined, "相对路径范围被拒绝，不推帧");
   await h.c.handle({ type: "historyScope", scope: { kind: "directory", path: DIR_B } }, "v1");
@@ -552,12 +565,12 @@ console.log("historyDirectory: 根选择 / 注册缓存 / 竞态 / 历史范围�
   }
 }
 
-// ---------- 六、选择先完成，再发送：发送落工作区外目录且不注册 ----------
-{
+// ---------- 六、单根和多根都能选外部目录，按 cwd 落壳且不加入历史候选 ----------
+for (const folders of [[DIR_A], [DIR_A, DIR_B]]) {
   const external = mkdtempSync(join(tmpdir(), "dsh-chat-external-"));
   const dialog = stubDialog([external]);
   try {
-    const h = makeHarness([], { folders: [DIR_A, DIR_B] });
+    const h = makeHarness([], { folders });
     await bindAndRefresh(h, "v1");
     const registersBefore = h.client.workspaces.length;
     await h.c.handle({ type: "pickOtherRoot" }, "v1");
@@ -573,10 +586,14 @@ console.log("historyDirectory: 根选择 / 注册缓存 / 竞态 / 历史范围�
     assert.strictEqual(view.path, external, "目录胶囊显示工作区外目录");
     assert.deepStrictEqual(
       (view.roots ?? []).map((item) => item.path),
-      [DIR_A, DIR_B],
-      "roots 仍是 VS Code 的两个根",
+      folders,
+      "换到外部目录后，根候选仍与 VS Code 一致",
     );
     assert.strictEqual(view.canPickOther, true, "本机窗口允许选工作区外目录");
+    assert.deepStrictEqual(historyFor(h.frames, "v1")?.roots, view.roots);
+    h.frames.length = 0;
+    await h.c.handle({ type: "historyScope", scope: { kind: "directory", path: external } }, "v1");
+    assert.strictEqual(historyFor(h.frames, "v1"), undefined, "本窗刚选的外部目录也不是显式历史选项");
     await send(h, "v1", "external-send");
     assert.strictEqual(createdCwd(h.client, h.c.viewSessions.get("v1")), external, "后续发送仍在外部目录");
   } finally {
@@ -699,7 +716,7 @@ console.log("historyDirectory: 根选择 / 注册缓存 / 竞态 / 历史范围�
       { sessionId: "upper", cwd: posixA },
       { sessionId: "lower", cwd: posixB },
     ],
-    { folders: [posixA] },
+    { folders: [posixA, posixB] },
   );
   await bindAndRefresh(h, "v1");
   await open(h, "v1", "upper");

@@ -444,7 +444,7 @@ export function HistoryPanel({
         </label>
         {/* 范围选择器**独立于归档切换**：普通列表与归档列表共用这一份范围，切归档不重置。
             它放在列表之外，所以当前范围没有结果时仍然看得见——那正是要换范围的时候。 */}
-        {history ? (
+        {scopeOptions.length > 0 ? (
           <label className="drawer-scope" htmlFor={scopeId}>
             <span className="drawer-scope-label">{texts.historyScope}</span>
             <select
