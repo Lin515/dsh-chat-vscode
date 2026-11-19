@@ -191,4 +191,62 @@ assert.ok(
 
 console.log("pickerFocus: 外框不滚、列表才滚、档位区常驻、高亮看得见 ✓");
 
+// ---------- 6. 搜索栏：打开即聚焦，定位与方向键的既有行为一条不少 ----------
+//
+// 用户口径：模型列表打开时，焦点要落在搜索框里（可以直接输入搜索），同时**保持**
+// 「定位到当前选中模型」的行为。于是搜索框只能做两件事：拿焦点、过滤；滚动定位仍在
+// 模型列表那一层（`pickerFocus`），关闭时还要把焦点交还触发按钮——否则 `Esc` 之后
+// 按回车会重开不了弹层（`pickerFocus.ts` 里记着这条退化）。
+{
+  const searchAt = composer.indexOf('className="model-popover-search"');
+  assert.ok(searchAt >= 0, "模型弹层要有搜索栏");
+  assert.ok(
+    searchAt > popoverAt && searchAt < listAt,
+    "搜索栏是弹层外框里、可滚列表**之外**的一段（跟着列表滚走就边看结果边改不了过滤词）",
+  );
+  assert.ok(/data-picker-search="model"/.test(composer), "搜索框要带 data-picker-search，方向键才归列表导航");
+  assert.ok(
+    /modelSearchRef\.current\?\.focus\(\{ preventScroll: true \}\)/.test(composer),
+    "打开弹层要把焦点放进搜索框，且 preventScroll 不能把滚动定位抢走",
+  );
+  assert.ok(
+    /modelTriggerRef\.current\?\.focus\(\)/.test(composer),
+    "关闭弹层要把焦点交还触发按钮（否则 Esc 之后回车重开不了弹层）",
+  );
+  // 过滤走纯函数、座位表按**过滤后**的条目建：序号必须与画面上那几行一一对应
+  assert.ok(/filterModelGroups\(state\.models, modelQuery\)/.test(composer), "搜索栏要接 filterModelGroups 的过滤结果");
+  assert.ok(
+    /for \(const row of visibleRows\)/.test(composer),
+    "座位表要按过滤后的条目建（否则搜索之后高亮落到别的行、方向键跳过看得见的条目）",
+  );
+  assert.ok(/texts\.noMatchingModels/.test(composer), "搜不到时要说「没有匹配的模型」，而不是留一张空列表");
+  assert.ok(/texts\.searchModels/.test(composer), "搜索框要有占位文案");
+  // 模型列表仍然渲染过滤结果，而不是整份目录
+  assert.ok(
+    /filteredModelGroups\.map\(/.test(composer),
+    "列表要画过滤后的分组，不能还画整份目录",
+  );
+
+  // 方向键的让路规则：输入框自己的键归输入框，弹层搜索框例外；输入法组字一律放过
+  const pickerSource = readFileSync(join(process.cwd(), "src", "webview", "pickerFocus.ts"), "utf8");
+  assert.ok(
+    /!target\.closest\("\[data-picker-search\]"\)/.test(pickerSource),
+    "搜索框上的方向键要归列表导航（输入框让路规则对它不生效）",
+  );
+  assert.ok(/event\.isComposing/.test(pickerSource), "输入法组字中的方向键归输入法，不许挪高亮");
+
+  // 样式：搜索栏不参与收缩（列表再长也压不掉它），清除按钮空态只隐藏、仍占位
+  assert.match(
+    ruleOf(".model-popover-search"),
+    /flex:\s*0\s+0/,
+    ".model-popover-search 必须 flex: 0 0 auto（不参与收缩），否则列表一长就把搜索栏压没",
+  );
+  assert.match(
+    ruleOf(".model-popover-search-clear.is-idle"),
+    /visibility:\s*hidden/,
+    "清除按钮空态只隐藏、不撤出布局——否则输入第一个字时搜索栏与列表会跳一下",
+  );
+}
+console.log("pickerFocus: 搜索栏常驻、打开即聚焦、定位与关闭交还焦点都还在 ✓");
+
 console.log("\npickerFocus: all assertions passed");

@@ -4821,6 +4821,52 @@ textarea.composer-input {
   overflow: hidden;
 }
 
+/* 搜索栏：与思考档位区一样**常驻**在滚动容器之外——列表滚到哪里，它都还在视野里，
+   边看结果边改过滤词不必先滑回顶部。打开弹层时焦点就在这里（见 Composer 的模型弹层），
+   所以焦点态用 `:focus-within` 描边框，不另画焦点环。 */
+.model-popover-search {
+  display: flex;
+  align-items: center;
+  gap: calc(6 * var(--dp));
+  flex: 0 0 auto;
+  margin: 0 0 calc(2 * var(--dp));
+  padding: calc(3 * var(--dp)) calc(6 * var(--dp));
+  border: 1px solid var(--input-border);
+  border-radius: var(--radius-sm);
+  background: var(--editor-bg);
+  color: var(--input-placeholder);
+}
+
+.model-popover-search:focus-within {
+  border-color: var(--border-focus);
+}
+
+/* 输入框自己不留边框与背景：整条搜索栏就是一个输入面，里面再描一层会多出两条竖线 */
+.model-popover-search input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: calc(2 * var(--dp)) 0;
+  border: 0;
+  background: none;
+  color: var(--input-fg);
+  font-size: var(--font-size-xs);
+  outline: none;
+}
+
+.model-popover-search input::placeholder {
+  color: var(--input-placeholder);
+}
+
+/* 清除按钮：不参与收缩。空搜索词时只隐藏、仍占位（见 Composer），
+   于是「有没有过滤词」不影响搜索栏与列表的高度。 */
+.model-popover-search-clear {
+  flex: 0 0 auto;
+}
+
+.model-popover-search-clear.is-idle {
+  visibility: hidden;
+}
+
 /* 真正滚的那一层。`min-height: 0` 是 flex 子项被允许收缩到内容高度以下的前提：少了它，
    模型一多就按内容高度把外框顶开，档位区会被挤出 max-height 之外。 */
 .model-popover-list {

@@ -135,7 +135,8 @@
 - [panelTitle.test.ts](<panelTitle.test.ts>) — 编辑区标签标题与窗口身份读法（不恒写 `DSH`、重载后不交叉）。
 - [pathDisplay.test.ts](<pathDisplay.test.ts>) — 单行标题里路径拆分与省略口径（文件名不参与压缩），以及候选 / 「上一层」行悬停标题的完整绝对路径解析（绝对与 cwd 两侧都按根锚定语义消掉 `..`）。
 - [segment.test.ts](<segment.test.ts>) — 思考档位分段控件列数（≤4 档一行、5/6 档均分两行）。
-- [pickerFocus.test.ts](<pickerFocus.test.ts>) — 模型弹层「打开即定位到选中项」：起点判定、方向键移动（只走模型列表这一段）、高亮样式可见，以及「滚动只归模型列表、思考档位区常驻在滚动容器之外、模型不支持可选档位时整块（含分隔线）不渲染」的结构与样式契约。
+- [pickerFocus.test.ts](<pickerFocus.test.ts>) — 模型弹层「打开即定位到选中项」：起点判定、方向键移动（只走模型列表这一段）、高亮样式可见，以及「滚动只归模型列表、思考档位区常驻在滚动容器之外、模型不支持可选档位时整块（含分隔线）不渲染」的结构与样式契约；另钉住搜索栏常驻在列表之外、打开即聚焦搜索框、关闭交还触发按钮，以及方向键对搜索框的例外。
+- [modelSearch.test.ts](<modelSearch.test.ts>) — 模型弹层搜索的过滤规则：名 / id / 提供商四层命中面、不区分大小写、多词同时命中、保持目录次序、丢弃分不出内容的组与中文命中。
 - [toolbarFit.test.ts](<toolbarFit.test.ts>) — 工具栏默认与自定义档位分配、极窄保底与布局盒判据；使用可注入观察者验证节点替换、幂等挂载、StrictMode 重挂与清理，并覆盖旧生命周期的负对照。
 - [toolbarPreferencesHost.test.ts](<toolbarPreferencesHost.test.ts>) — 底栏命令路由、偏好归一化与持久化、多视图同步和保存失败恢复。
 - [connectView.test.ts](<connectView.test.ts>) — 连接条三类状态、文案与按钮矩阵。

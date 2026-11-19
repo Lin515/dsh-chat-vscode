@@ -109,6 +109,12 @@ export interface Texts {
   models: string;
   defaultModel: string;
   noModels: string;
+  /** 模型弹层搜索框的占位文案（打开弹层即聚焦在此）。 */
+  searchModels: string;
+  /** 搜索过滤后一个模型都没剩下时的提示。 */
+  noMatchingModels: string;
+  /** 搜索框清除按钮的 title。 */
+  clearModelSearch: string;
   /** 通用附件按钮（图片与普通文件同一入口）。 */
   attachFile: string;
   /** `@` 列表里目录行右侧的按钮：把整个目录作为引用载入。 */

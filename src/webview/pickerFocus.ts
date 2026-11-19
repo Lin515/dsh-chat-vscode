@@ -13,6 +13,18 @@ import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "re
  * 那是既有行为的退化。高亮只是多一个类，没有任何焦点副作用：`Esc` / 回车 / 点外部关闭
  * 逐字不变。
  *
+ * 搜索框是这条规则的唯一例外：它确实是打开后的 DOM 焦点落点（用户口径：打开即可输入
+ * 过滤，不必先按 Tab），代价同样是「关闭时焦点掉给 body」，由 `Composer` 在关闭时交还
+ * 触发按钮兜住。条目本身仍只加高亮、不拿焦点。
+ *
+ * ## 搜索框里的方向键也归这里
+ *
+ * 焦点在搜索框里时，上下键本可以什么都不做（单行输入框没有上下移动光标这回事），
+ * 而用户刚打完过滤词，最自然的下一个动作是把高亮走进结果里。所以输入框上的
+ * 「方向键归输入框」这条让路规则对**弹层自己的搜索框**（`data-picker-search`）不生效：
+ * 上下键照常移动高亮并滚进视野，`Enter` 选中高亮行（由 `Composer` 接）。
+ * 输入法组字中的上下键仍归输入法，不挪高亮。
+ *
  * ## 定位范围只有「可滚的模型列表」这一段
  *
  * 同一个弹层里还有一块思考档位区。它现在**常驻**在列表之外（列表滚到底也卷不走它，
@@ -25,7 +37,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "re
 export interface PickerFocusOptions {
   /** 弹层是否打开。 */
   open: boolean;
-  /** 可键盘导航的条目数（模型列表的扁平序号数）；0 = 没有可选条目，方向键不理它。 */
+  /** 可键盘导航的条目数（搜索过滤后模型列表的扁平序号数）；0 = 没有可选条目，方向键不理它。 */
   count: number;
   /** 当前生效项在列表里的索引；`-1` = 认不出（那就退回第一项）。 */
   selected: number;
@@ -118,9 +130,18 @@ export function usePickerFocus(options: PickerFocusOptions): PickerFocus {
       const step = event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : 0;
       // 只接上下键：`Esc` / 回车 / `Tab` / 左右键一个字都不碰，弹层的既有行为由它自己负责
       if (step === 0 || event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) return;
+      // 输入法组字中的上下键归输入法（翻候选），不许当成列表导航
+      if (event.isComposing) return;
       const target = event.target;
-      // 焦点在输入框 / 问卷填空里时方向键是它自己的（上下移动光标、翻候选）
-      if (target instanceof HTMLElement && target.closest("input, textarea, [contenteditable='true']")) return;
+      // 焦点在输入框 / 问卷填空里时方向键是它自己的（上下移动光标、翻候选）。
+      // 弹层自己的搜索框例外：那里方向键就是拿来走进结果的（见文件头的机制说明）。
+      if (
+        target instanceof HTMLElement &&
+        target.closest("input, textarea, [contenteditable='true']") &&
+        !target.closest("[data-picker-search]")
+      ) {
+        return;
+      }
       const current = latest.current;
       if (current.index < 0 || current.count <= 0) return;
       // 抢在浏览器前面：这两下方向键不许滚动页面、也不许滚弹层自己

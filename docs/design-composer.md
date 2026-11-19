@@ -55,6 +55,21 @@ Auto 能力与目录失败的判据统一见[投影设计的 permissions](<desig
 
 Auto 的七条文字逐字取官方 accessZh / accessEn；官方中文名也为 Auto review。自补 IconShieldReview 以满足最小图标档。danger-full-access / auto 都在弹层内确认，不弹系统模态；auto 必须勾选风险确认才可继续。关弹层 / 再点胶囊 / 换档复位确认态。
 
+## 模型弹层（搜索与焦点）
+
+弹层三段：搜索栏、可滚的模型列表、常驻的思考档位。搜索栏与档位区都在滚动容器之外，列表滚到哪里它们都看得见；目录为空时不渲染搜索栏。
+
+| 动作 | 行为 |
+|---|---|
+| 打开（模型胶囊 / 思考强度胶囊） | 焦点落进搜索框（`preventScroll`，不抢滚动定位）；列表仍定位并高亮当前模型 |
+| 输入 | 按模型名 / 模型 id / 提供商名 / 提供商 id 做不区分大小写的子串过滤，多个词须同时命中；搜到提供商名时该组模型全部保留 |
+| ↑ / ↓ | 焦点在搜索框时也归列表高亮，输入法组字中不抢 |
+| Enter | 选中高亮行；档位只在目标模型支持时带上，否则退回该模型默认档位 |
+| 关闭 | 焦点交还最后一次打开弹层的按钮（`Esc` 之后回车仍能重开）；过滤词清空 |
+| 无命中 | 列表区显示「没有匹配的模型」，不留空分组标题 |
+
+过滤规则在 [modelSearch.ts](<../src/webview/modelSearch.ts>)（纯函数），高亮与滚动定位在 [pickerFocus.ts](<../src/webview/pickerFocus.ts>)，焦点交接与接线在 [Composer.tsx](<../src/webview/components/Composer.tsx>)。
+
 ## 空态页的工作目录
 
 输入栏**不常驻**工作目录胶囊：目录只在「会话还没开始」时有得改，已有对话的目录是创建事实。空会话页的元信息行（`EmptyMeta.tsx`，判据在 `composerDir.ts` 的 `workspaceDirView`）承担这件事：
@@ -81,7 +96,9 @@ Auto 的七条文字逐字取官方 accessZh / accessEn；官方中文名也为 
 | [toolbarFit.ts](<../src/webview/toolbarFit.ts>) | toolbarOrder、pickVariants、观察目标与可用宽度前置 |
 | [toolbarPreference.ts](<../src/shared/toolbarPreference.ts>) / [ToolbarPreferences.tsx](<../src/webview/components/ToolbarPreferences.tsx>) | 默认档位、偏好动作与设置面板 |
 | [toolbarPreferencesHost.test.ts](<../scripts/toolbarPreferencesHost.test.ts>) | 命令路由、保存与恢复、多视图同步及失败处理 |
-| [Composer.tsx](<../src/webview/components/Composer.tsx>) | barNodes、useToolbarFit、渲染次序 |
+| [Composer.tsx](<../src/webview/components/Composer.tsx>) | barNodes、useToolbarFit、渲染次序；模型弹层的搜索接线与焦点交接 |
+| [modelSearch.ts](<../src/webview/modelSearch.ts>) / [modelSearch.test.ts](<../scripts/modelSearch.test.ts>) | 模型弹层搜索的过滤规则与回归 |
+| [pickerFocus.ts](<../src/webview/pickerFocus.ts>) / [pickerFocus.test.ts](<../scripts/pickerFocus.test.ts>) | 模型列表的高亮、滚动定位与搜索框方向键例外 |
 | [EmptyMeta.tsx](<../src/webview/components/EmptyMeta.tsx>)、[composerDir.ts](<../src/webview/composerDir.ts>) | 空态页目录行、根目录菜单与按状态分档的纯判据 |
 | [directoryLabel.ts](<../src/webview/directoryLabel.ts>) | 同名目录的去重短名（根目录菜单与历史混合目录共用） |
 | [app.css](<../src/webview/styles/app.css>) | 测量层、定位基准与收窄 |

@@ -9,7 +9,13 @@ import {
   type CSSProperties,
   type ReactNode,
 } from "react";
-import { AUTO_REVIEW_PRESET, goalBarActions, type GoalView, type QueuedMessageView } from "../../shared/chat";
+import {
+  AUTO_REVIEW_PRESET,
+  goalBarActions,
+  type GoalView,
+  type ModelOptionView,
+  type QueuedMessageView,
+} from "../../shared/chat";
 import { attachmentUploadBlock } from "../../shared/attachmentGate";
 import type { AppState } from "../state";
 import { post } from "../bridge";
@@ -22,6 +28,7 @@ import {
   IconPencil,
   IconPlay,
   IconRefresh,
+  IconSearch,
   IconSend,
   IconPermissionReadOnly,
   IconPermissionWorkspaceWrite,
@@ -53,6 +60,7 @@ import { altLabel, modifierLabel } from "../modifierLabel";
 import { scanCommandLinks, useCommandLinks } from "../commandLinks";
 import { openAttachment } from "../attachmentOpen";
 import { usePickerFocus } from "../pickerFocus";
+import { filterModelGroups, modelRows } from "../modelSearch";
 import { presetDisplayText } from "../presetDisplay";
 import { bottomGap, type AutoScrollPort } from "../autoScroll";
 import { queueDisplayOrder, queueItemHasAttachments } from "../queueOrder";
@@ -322,6 +330,24 @@ export function Composer({
   // 模型按钮 toggle 标志：标记「这次关闭是按钮触发的」，让 Popover 的
   // mousedown 外部检测跳过它（选中模型后弹层不关，再点按钮需能关闭）
   const modelToggleRef = useRef(false);
+  /**
+   * 模型弹层里的搜索词。
+   *
+   * 只在弹层开着时有意义：关闭即清空（见打开 / 关闭那条 layout effect），下次打开回到
+   * 完整目录——把上一次的过滤词带回来，会让人以为模型目录少了东西。
+   */
+  const [modelQuery, setModelQuery] = useState("");
+  /** 打开弹层后的焦点落点：用户不必先按 Tab，直接就能输入过滤。 */
+  const modelSearchRef = useRef<HTMLInputElement>(null);
+  /**
+   * 最近一次打开弹层的触发按钮（模型胶囊 / 思考强度胶囊）。
+   *
+   * 弹层关闭时里面的搜索框随内容一起卸载，焦点会掉给 `body`——`Esc` 之后按回车就
+   * 重开不了弹层（这条退化记在 `pickerFocus.ts`）。关闭时把焦点交还这里。
+   */
+  const modelTriggerRef = useRef<HTMLButtonElement | null>(null);
+  /** 上一次渲染时弹层开着没有：只在「真的关了一次」时收尾，首次挂载不动焦点。 */
+  const modelWasOpen = useRef(false);
   // 权限按钮与模型按钮同机制：弹层已开时再点按钮是关闭，而不是被外部检测
   // 「关掉」之后又被 click 翻转回来
   const modeToggleRef = useRef(false);
@@ -696,7 +722,9 @@ export function Composer({
         // 标记：接下来 Popover 的 mousedown 外部检测是「按钮触发的」，跳过
         modelToggleRef.current = true;
       }}
-      onClick={() => {
+      onClick={(event) => {
+        // 关闭时焦点要交还这一枚按钮（见 modelTriggerRef）
+        modelTriggerRef.current = event.currentTarget;
         // 同一次交互内消费标志（mousedown 已先于 click 触发）
         setTimeout(() => {
           modelToggleRef.current = false;
@@ -724,7 +752,9 @@ export function Composer({
         // 与模型按钮共用同一个标志：两者开的是同一个弹层
         modelToggleRef.current = true;
       }}
-      onClick={() => {
+      onClick={(event) => {
+        // 与模型按钮共用同一个交还目标：两者开的是同一个弹层
+        modelTriggerRef.current = event.currentTarget;
         // 同一次交互内消费标志（mousedown 已先于 click 触发）。
         // toggle 与模型按钮同一语义：弹层开着时再点一下就关掉
         setTimeout(() => {
@@ -893,23 +923,71 @@ export function Composer({
   }
 
   /**
+   * 弹层里还看得见的模型（搜索栏的过滤结果）。搜索词为空时就是整份目录——过滤规则
+   * 全在 `modelSearch.ts`，这里不重复一遍「按哪些字段、怎么比」。
+   */
+  const filteredModelGroups = filterModelGroups(state.models, modelQuery);
+  /**
    * 「第几行」→ 模型：弹层里的模型按钮按提供商分组渲染，而键盘导航要的是**扁平序号**
    * （分组标题只占视觉、不占号）。键与按钮自己的 `key` 同源（`提供商:模型`），于是
    * 选中项的序号与每一行的高亮判定都只查这一张表，不必把 JSX 拍平。
+   *
+   * 表按**过滤后**的条目建：序号必须与画面上那几行一一对应，否则搜索之后高亮会落到
+   * 别的行、方向键也会跳过看得见的条目。
    */
+  const visibleRows = modelRows(filteredModelGroups);
   const modelSeat = new Map<string, number>();
-  for (const group of state.models) {
-    for (const model of group.models) modelSeat.set(`${group.id}:${model.id}`, modelSeat.size);
-  }
+  for (const row of visibleRows) modelSeat.set(`${row.provider}:${row.model.id}`, modelSeat.size);
   const modelSelected = state.model ? (modelSeat.get(`${state.model.provider}:${state.model.model}`) ?? -1) : -1;
   /**
    * 模型弹层「打开即定位到当前模型」：可键盘导航的只有模型列表这一段——思考档位区
    * 常驻显示、不参与滚动，方向键也就没有第二段可去（见 `pickerFocus.ts`）。
+   * 搜索框是例外：它把上下键交给这套高亮，Enter 由本组件选中高亮行。
    */
-  const pickerFocus = usePickerFocus({ open: modelOpen, count: modelSeat.size, selected: modelSelected });
+  const pickerFocus = usePickerFocus({ open: modelOpen, count: visibleRows.length, selected: modelSelected });
   /** 该模型行此刻是不是键盘高亮（`usePickerFocus` 的判定入口）。 */
   const modelHighlighted = (provider: string, id: string) =>
     pickerFocus.isHighlighted(modelSeat.get(`${provider}:${id}`) ?? -1);
+  /** 键盘高亮那一行；搜索框里按 Enter 选中的就是它。 */
+  const highlightedRow = visibleRows.find((row) => modelHighlighted(row.provider, row.model.id));
+
+  /**
+   * 选中一个模型。点击行与搜索框里的 Enter 都走这里：
+   *
+   * 档位只在目标模型支持时才带上，否则服务端会拒绝；面板保持打开，用户可紧接着调深度。
+   */
+  const chooseModel = (provider: string, model: ModelOptionView) => {
+    const wanted = model.efforts?.some((item) => item.id === state.model?.reasoningEffort)
+      ? state.model?.reasoningEffort
+      : model.defaultEffort;
+    post({ type: "setModel", provider, model: model.id, reasoningEffort: wanted });
+  };
+
+  /**
+   * 打开 / 关闭弹层时的焦点交接。
+   *
+   * 打开：焦点放进搜索框，用户不必先按 Tab 就能输入过滤。**滚动定位不受影响**——
+   * 那是 `pickerFocus` 的事，它只给行加高亮、不挪 DOM 焦点；`preventScroll` 再保证
+   * 聚焦输入框这一下不会把弹层或页面滚一下。目录晚到（弹层先开、模型表后到）时
+   * 搜索框才挂上，所以目录有没有也要进依赖：到了就把焦点补进去。
+   *
+   * 关闭：搜索框随弹层卸载，焦点会掉给 `body`（`Esc` 之后按回车就重开不了弹层）。
+   * 只在「焦点已经无人接管」时交还触发按钮：点外面点走的焦点归点击目标，不抢。
+   */
+  const hasModelCatalog = state.models.length > 0;
+  useLayoutEffect(() => {
+    if (modelOpen) {
+      if (hasModelCatalog) modelSearchRef.current?.focus({ preventScroll: true });
+    } else if (modelWasOpen.current) {
+      const active = document.activeElement;
+      if (!active || active === document.body || active === document.documentElement) {
+        modelTriggerRef.current?.focus();
+      }
+      // 过滤词不带到下一次打开：它属于刚关掉的那一次
+      setModelQuery("");
+    }
+    modelWasOpen.current = modelOpen;
+  }, [modelOpen, hasModelCatalog]);
 
   return (
     <div className="composer">
@@ -1232,10 +1310,10 @@ export function Composer({
               {/* 选完模型不关闭：思考档位区留在同一面板里继续调。
                   选中态只在点击时更新（不再随鼠标悬停变化），与权限/命令弹层一致。
 
-                  面板分两段，**只有模型列表这一段滚**（用户 2026-10-10 口径）：
-                  外框自己不滚，把高度分给「可滚的列表」与「常驻的档位区」。列表那一层
-                  同时是「打开即定位到当前模型」的挂点（`pickerFocus.bodyRef`）——滚动
-                  定位因此只落在这里，不会把档位区或页面一起带走。 */}
+                  面板分三段，**只有模型列表这一段滚**（用户 2026-10-10 口径）：
+                  外框自己不滚，把高度分给「常驻的搜索栏 + 可滚的列表 + 常驻的档位区」。
+                  列表那一层同时是「打开即定位到当前模型」的挂点（`pickerFocus.bodyRef`）
+                  ——滚动定位因此只落在这里，不会把档位区或页面一起带走。 */}
               <Popover
                 open={modelOpen}
                 onClose={() => {
@@ -1245,12 +1323,55 @@ export function Composer({
                 }}
                 className="model-popover"
               >
+                {/* 搜索栏：打开弹层时焦点就在这里（用户口径），可以直接输入过滤。
+                    它和思考档位区一样**在列表之外**——列表滚动时仍看得见、也仍可继续输入。
+                    目录为空时不渲染：没有东西可搜。 */}
+                {hasModelCatalog ? (
+                  <div className="model-popover-search">
+                    <IconSearch size={13} />
+                    <input
+                      ref={modelSearchRef}
+                      type="text"
+                      className="model-popover-search-input"
+                      data-picker-search="model"
+                      placeholder={texts.searchModels}
+                      aria-label={texts.searchModels}
+                      value={modelQuery}
+                      onChange={(event) => setModelQuery(event.target.value)}
+                      onKeyDown={(event) => {
+                        // 输入法组字中的回车是在上屏，不是选中（方向键同理，见 `pickerFocus.ts`）
+                        if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
+                        if (!highlightedRow) return;
+                        event.preventDefault();
+                        chooseModel(highlightedRow.provider, highlightedRow.model);
+                      }}
+                    />
+                    {/* 清除按钮常驻在 DOM 里（空搜索词时只是不显示）：按不按得动不改变
+                        搜索栏与列表的高度，输入第一个字时列表不会往下跳一格。 */}
+                    <button
+                      type="button"
+                      className={`icon-btn model-popover-search-clear${modelQuery ? "" : " is-idle"}`}
+                      title={texts.clearModelSearch}
+                      aria-label={texts.clearModelSearch}
+                      disabled={!modelQuery}
+                      onClick={() => {
+                        setModelQuery("");
+                        // 清掉过滤词后继续输入：这一下不该把焦点挪走
+                        modelSearchRef.current?.focus({ preventScroll: true });
+                      }}
+                    >
+                      <IconClose size={12} />
+                    </button>
+                  </div>
+                ) : null}
                 <div className="model-popover-list" ref={pickerFocus.bodyRef}>
                   <div className="popover-section">{texts.models}</div>
                   {state.models.length === 0 ? (
                     <div className="popover-empty">{texts.noModels}</div>
+                  ) : filteredModelGroups.length === 0 ? (
+                    <div className="popover-empty">{texts.noMatchingModels}</div>
                   ) : (
-                    state.models.map((group) => (
+                    filteredModelGroups.map((group) => (
                       <div key={group.id}>
                         {state.models.length > 1 ? (
                           <div className="popover-section">{group.name}</div>
@@ -1264,21 +1385,7 @@ export function Composer({
                                 ? " is-selected"
                                 : ""
                             }${modelHighlighted(group.id, model.id) ? " is-active" : ""}`}
-                            onClick={() => {
-                              // 档位只在目标模型支持时才带上，否则服务端会拒绝；
-                              // 面板保持打开，用户可紧接着调深度
-                              const wanted = model.efforts?.some(
-                                (item) => item.id === state.model?.reasoningEffort,
-                              )
-                                ? state.model?.reasoningEffort
-                                : model.defaultEffort;
-                              post({
-                                type: "setModel",
-                                provider: group.id,
-                                model: model.id,
-                                reasoningEffort: wanted,
-                              });
-                            }}
+                            onClick={() => chooseModel(group.id, model)}
                           >
                             <span className="popover-item-main">{model.name}</span>
                           </button>

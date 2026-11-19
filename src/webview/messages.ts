@@ -241,6 +241,10 @@ export const MESSAGES = {
   models: { zh: "模型", en: "Models" },
   defaultModel: { zh: "默认模型", en: "Default model" },
   noModels: { zh: "未获取到模型目录", en: "No model catalog available" },
+  /** 模型弹层搜索栏：打开弹层即聚焦在此，可直接输入过滤（见 Composer 的模型弹层）。 */
+  searchModels: { zh: "搜索模型", en: "Search models" },
+  noMatchingModels: { zh: "没有匹配的模型", en: "No matching models" },
+  clearModelSearch: { zh: "清除搜索", en: "Clear search" },
   attachFile: { zh: "添加文件", en: "Attach file" },
   attachFolder: { zh: "整个目录", en: "whole folder" },
   cancel: { zh: "取消", en: "Cancel" },
