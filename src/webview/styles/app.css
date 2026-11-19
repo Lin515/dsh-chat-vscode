@@ -17,6 +17,21 @@
   position: relative;
 }
 
+.view-host-warning {
+  flex: 0 0 auto;
+  padding: calc(6 * var(--dp)) calc(10 * var(--dp));
+  border-bottom: 1px solid var(--border);
+  color: var(--warning);
+  overflow-wrap: anywhere;
+}
+
+.view-host-warning a {
+  display: block;
+  width: fit-content;
+  margin-top: calc(2 * var(--dp));
+  text-decoration: underline;
+}
+
 /* ============================ header ============================ */
 
 .header {

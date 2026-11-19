@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useInsertionEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ChatState, MessageView, PendingMessageView } from "../shared/chat";
-import type { HostToWebview } from "../shared/ipc";
-import { persistIdentity, post, subscribe } from "./bridge";
+import { RELOAD_WINDOW_COMMAND, type HostToWebview } from "../shared/ipc";
+import { persistIdentity, post, postUserAction, subscribe, watchHostConnection } from "./bridge";
 import { installModifierHeld } from "./modifierHeld";
 import { useAutoScroll } from "./autoScroll";
 import { useReadingPort } from "./readingPlacement";
@@ -114,13 +114,13 @@ function Header({
           显示，见 sessionDirPath。 */}
       <HeaderDir state={state} />
       <span className="header-spacer" />
-      <button className="icon-btn" title={texts.newChat} onClick={() => post({ type: "newSession" })}>
+      <button className="icon-btn" title={texts.newChat} onClick={() => postUserAction({ type: "newSession" })}>
         <IconPlus size={15} />
       </button>
       <button
         className={`icon-btn${state.panel === "history" ? " is-active" : ""}`}
         title={texts.history}
-        onClick={() => toggle("history", () => post({ type: "listSessions" }))}
+        onClick={() => toggle("history", () => postUserAction({ type: "listSessions" }))}
       >
         <IconHistory size={15} />
       </button>
@@ -130,7 +130,7 @@ function Header({
           jobsSignal === "busy" ? " is-busy" : jobsSignal === "pending" ? " is-pending" : ""
         }`}
         title={texts.jobs}
-        onClick={() => toggle("jobs", () => post({ type: "listJobs" }))}
+        onClick={() => toggle("jobs", () => postUserAction({ type: "listJobs" }))}
       >
         <IconJobs size={15} />
       </button>
@@ -145,7 +145,7 @@ function Header({
         data-mini={state.panel === "trajectory" ? undefined : "hide"}
         className="icon-btn"
         title={state.panel === "trajectory" ? texts.backToChat : texts.trajectory}
-        onClick={() => toggle("trajectory", () => post({ type: "listTrajectory" }))}
+        onClick={() => toggle("trajectory", () => postUserAction({ type: "listTrajectory" }))}
       >
         {state.panel === "trajectory" ? <IconChat size={15} /> : <IconTrajectory size={15} />}
       </button>
@@ -157,7 +157,7 @@ function Header({
           data-mini="hide"
           className="icon-btn"
           title={texts.openInEditor}
-          onClick={() => post({ type: "openInEditor" })}
+          onClick={() => postUserAction({ type: "openInEditor" })}
         >
           <IconOpenInEditor size={15} />
         </button>
@@ -170,7 +170,7 @@ function Header({
           data-mini="hide"
           className="icon-btn"
           title={texts.openDesktop}
-          onClick={() => post({ type: "openDesktop" })}
+          onClick={() => postUserAction({ type: "openDesktop" })}
         >
           <IconDesktop size={15} />
         </button>
@@ -179,7 +179,7 @@ function Header({
           data-mini="hide"
           className="icon-btn"
           title={texts.openInBrowser}
-          onClick={() => post({ type: "openInBrowser" })}
+          onClick={() => postUserAction({ type: "openInBrowser" })}
         >
           <IconGlobe size={15} />
         </button>
@@ -746,6 +746,8 @@ function usePagePaste(state: AppState) {
 
 export function App() {
   const { state, dispatch } = useAppState();
+  const [hostUnresponsive, setHostUnresponsive] = useState(false);
+  useEffect(() => watchHostConnection(setHostUnresponsive), []);
   // 修饰键按住时给「可打开文件」的节点加下划线：只切根元素上的一个类，不重渲染消息树。
   useEffect(() => installModifierHeld(), []);
   const [commandRequest, setCommandRequest] = useState<CommandMenuRequest>();
@@ -1074,6 +1076,13 @@ export function App() {
       >
         <Header state={state} dispatch={dispatch} />
         <ConnectionBar state={state} />
+        {hostUnresponsive && (
+          <div className="view-host-warning">
+            <span role="status">{texts.viewHostUnresponsive}</span>{" "}
+            {/* 原生命令 URI 不经过已经失联的 postMessage。 */}
+            <a href={`command:${RELOAD_WINDOW_COMMAND}`}>{texts.viewReloadWindow}</a>
+          </div>
+        )}
         {/* 顶部常驻通知条（宿主权威镜像）：只画最近一条未确认，没有就整块不渲染。
             它**不自动消失**、不自动展开抽屉；展开走那颗写明的入口。 */}
         <NotificationBar
@@ -1092,7 +1101,7 @@ export function App() {
             注意两个滚动监听挂在 `chat-scroll` 上，它被卸载后必须能在回来时重挂，
             所以下面两个 hook 都吃一个 `active`（见 `useAutoScroll`）。 */}
         {state.panel === "trajectory" ? (
-          <TrajectoryView
+          hostUnresponsive && !state.trajectory ? null : <TrajectoryView
             model={state.trajectory}
             sessionId={sessionId}
             locale={state.locale}

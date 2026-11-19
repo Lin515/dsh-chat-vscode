@@ -439,6 +439,10 @@
       window.acquireVsCodeApi = function () {
         return {
           postMessage: function (message) {
+            if (message && message.type === "view/ping") {
+              setTimeout(function () { window.__push({ type: "view/pong", id: message.id }); }, 0);
+              return;
+            }
             window.__sent.push(message);
             // `?roots=1` 时由预览自己回的帧（历史范围 / 根目录选择）；其它模式没有路由，
             // 落到下面原有的 postMessage 分支。

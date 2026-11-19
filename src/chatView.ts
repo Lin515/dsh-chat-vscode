@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import * as vscode from "vscode";
 import { parsePanelIdentity } from "./shared/chat";
-import type { HostToWebview, WebviewToHost } from "./shared/ipc";
+import { RELOAD_WINDOW_COMMAND, type HostToWebview, type WebviewToHost } from "./shared/ipc";
 import { jsonSafeFrame } from "./shared/wire";
 import type { ChatController } from "./dsh/controller";
 
@@ -225,6 +225,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   private webviewOptions(): vscode.WebviewOptions & vscode.WebviewPanelOptions {
     return {
       enableScripts: true,
+      // 由 VS Code 工作台执行，不经过可能已经失联的扩展宿主。
+      enableCommandUris: [RELOAD_WINDOW_COMMAND],
       retainContextWhenHidden: true,
       localResourceRoots: [vscode.Uri.joinPath(this.context.extensionUri, "dist")],
     };
@@ -246,7 +248,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
     this.disposables.push(
       webview.onDidReceiveMessage((message: WebviewToHost) => {
-        // 任何来自窗口的消息都算它的活动；指令按这个窗口路由
+        if (message?.type === "view/ping") {
+          if (Number.isSafeInteger(message.id) && message.id > 0) {
+            this.deliver(viewId, { type: "view/pong", id: message.id });
+          }
+          return;
+        }
+        // 用户消息才算窗口活动；探测不抢活动窗口，也不进入控制器。
         this.controller.noteActiveView(viewId);
         // **接住异常**：`handle` 是 async，帧又来自 webview（形状不受类型系统约束），
         // 一条残缺的帧不该变成扩展宿主里的 unhandled rejection——那既没有全局处理器，

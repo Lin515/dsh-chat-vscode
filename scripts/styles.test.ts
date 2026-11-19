@@ -1879,7 +1879,7 @@ console.log("styles: 轨迹整页占用会话窗口（输入区移出布局但�
     "轨迹视图不许再有抽屉头——标题栏里那个「加载更早」正是它带出来的重复入口",
   );
   assert.ok(
-    /\{state\.panel === "trajectory" \? \( <TrajectoryView/.test(flatApp),
+    /\{state\.panel === "trajectory" \? \( [^<]*<TrajectoryView\b.*?\) : \( <div className="chat-area">/.test(flatApp),
     "App 必须在轨迹分支里**顶掉整块会话页**（含 chat-scroll），而不是叠在会话上",
   );
 

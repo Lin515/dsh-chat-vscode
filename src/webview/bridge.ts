@@ -73,12 +73,84 @@ export function onHostFrame(listener: FrameListener): () => void {
   return () => frameListeners.delete(listener);
 }
 
+const pongListeners = new Set<(id: number) => void>();
+const hostChecks = new Set<() => void>();
+const HOST_POLL_MS = 2000;
+const HOST_REPLY_MS = 3000;
+let nextPingId = 0;
+
+/** 显式操作照常发送，并立即检查宿主；不等回执、不重发操作。 */
+export function postUserAction(message: WebviewToHost): void {
+  post(message);
+  for (const check of hostChecks) check();
+}
+
+/** 只在可见时检查扩展宿主，不探测 DSH，也不把回执混进会话帧。 */
+export function watchHostConnection(onUnresponsive: (unresponsive: boolean) => void): () => void {
+  let pendingId: number | undefined;
+  let deadline: number | undefined;
+
+  const clearDeadline = () => {
+    if (deadline !== undefined) window.clearTimeout(deadline);
+    deadline = undefined;
+  };
+  const onResponsive = () => {
+    if (pendingId === undefined) return;
+    clearDeadline();
+    pendingId = undefined;
+    onUnresponsive(false);
+  };
+  const onPong = (id: number) => {
+    if (id === pendingId) onResponsive();
+  };
+  // 普通宿主帧也是通信仍在的证据，和帧里的 DSH 在线状态无关。
+  const unsubscribeFrames = onHostFrame(onResponsive);
+  const check = () => {
+    if (document.hidden || deadline !== undefined) return;
+    const id = ++nextPingId;
+    pendingId = id;
+    deadline = window.setTimeout(() => {
+      deadline = undefined;
+      if (!document.hidden) onUnresponsive(true);
+    }, HOST_REPLY_MS);
+    post({ type: "view/ping", id });
+  };
+  const onVisibility = () => {
+    if (document.hidden) {
+      clearDeadline();
+      pendingId = undefined;
+    } else {
+      check();
+    }
+  };
+
+  pongListeners.add(onPong);
+  hostChecks.add(check);
+  document.addEventListener("visibilitychange", onVisibility);
+  window.addEventListener("focus", check);
+  const interval = window.setInterval(check, HOST_POLL_MS);
+  check();
+  return () => {
+    pongListeners.delete(onPong);
+    hostChecks.delete(check);
+    unsubscribeFrames();
+    document.removeEventListener("visibilitychange", onVisibility);
+    window.removeEventListener("focus", check);
+    window.clearInterval(interval);
+    clearDeadline();
+  };
+}
+
 // 无头 / SSR 导入时没有 window；webview 里恒存在。这里只跳过事件挂载，
 // 不改变浏览器路径的任何行为。
 if (typeof window !== "undefined") {
   window.addEventListener("message", (event: MessageEvent) => {
     const message = event.data as HostToWebview | undefined;
     if (!message || typeof message !== "object" || typeof message.type !== "string") return;
+    if (message.type === "view/pong") {
+      for (const listener of pongListeners) listener(message.id);
+      return;
+    }
     for (const listener of frameListeners) listener();
     for (const listener of listeners) listener(message);
   });

@@ -40,7 +40,12 @@ export interface ChangeCoordinates {
   turn: number;
 }
 
+/** 唯一允许 webview 直接调用的 VS Code 命令；宿主失联时仍须能由用户发起。 */
+export const RELOAD_WINDOW_COMMAND = "workbench.action.reloadWindow";
+
 export type HostToWebview =
+  /** webview 通信探测的回执，不进入会话状态。 */
+  | { type: "view/pong"; id: number }
   /** 首次连接时的一次性全量快照。 */
   | { type: "state"; state: WireState }
   /** 状态中非消息字段的局部更新。 */
@@ -274,6 +279,8 @@ export interface TrajectoryResultFrame {
 }
 
 export type WebviewToHost =
+  /** 只探测这张页面到扩展宿主的消息通道，不触发连接或会话动作。 */
+  | { type: "view/ping"; id: number }
   /** webview 加载完成，请求首帧状态。 */
   | { type: "ready" }
   /**

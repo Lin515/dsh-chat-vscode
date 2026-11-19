@@ -112,6 +112,11 @@ export const MESSAGES = {
   commandPermissionDescription: { zh: "切换权限预设（沙箱模式与审批策略）", en: "Switch the permission preset (sandbox mode + approval policy)" },
   commandExportDescription: { zh: "将当前会话内容导出为 ZIP", en: "Download this Session log as a ZIP archive" },
   commandOpenMenu: { zh: "打开并筛选斜杠命令", en: "Open and filter slash commands" },
+  viewHostUnresponsive: {
+    zh: "此聊天标签页暂时无法与 VS Code 扩展通信。重载前请先复制未发送的草稿。",
+    en: "This chat view is not responding to the VS Code extension. Copy any unsent draft before reloading.",
+  },
+  viewReloadWindow: { zh: "重载窗口以恢复聊天", en: "Reload window to restore chat" },
   newChat: { zh: "新建对话", en: "New chat" },
   history: { zh: "历史对话", en: "Chat history" },
   openInEditor: { zh: "在编辑器中打开", en: "Open in editor" },

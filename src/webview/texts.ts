@@ -38,6 +38,8 @@ export interface Texts {
   commandPermissionDescription: string;
   commandExportDescription: string;
   commandOpenMenu: string;
+  viewHostUnresponsive: string;
+  viewReloadWindow: string;
   newChat: string;
   history: string;
   openInEditor: string;
