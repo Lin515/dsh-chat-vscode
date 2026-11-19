@@ -353,6 +353,14 @@ export interface ContextDetailInput {
    * 对话框是**整轮累加**），不在这里显示。
    */
   cacheHit?: string;
+  /**
+   * 会话累计的 Token 用量**总数**（`webview/cacheHit.ts` 的 `sessionTokenTotal`：
+   * 三个 prompt 侧计费桶加输出，即官方「Token 用量」的口径）。
+   *
+   * **只给总数**：官方「Token 用量」对话框里的输入 / 缓存读取 / 缓存写入 / 输出四行
+   * 不复制进来（用户 2026-11-20 口径）。
+   */
+  tokens?: number;
   /** 上下文构成（`contextBreakdown` 投影），与 Web 的 ContextMeter 面板同源。 */
   breakdown?: ChatState["contextBreakdown"];
 }
@@ -365,14 +373,16 @@ export interface ContextDetailInput {
  * 所以拼法只此一份：两处各自拼一遍的话，加一行、改一个标签都会只改一处，
  * 「一模一样」就成了一句会过期的话。
  *
- * 三组行各自独立，缺数据的行**不出现**（于是数据相同时两处必然逐字一致）：
+ * 四组行各自独立，缺数据的行**不出现**（于是数据相同时两处必然逐字一致）：
  * - 首行要三个数同源同现（判据见 `contextNumbers`，宿主没算出可信测量时不下发）；
+ * - Token 用量那行是**会话累计**的总数，读 `tokens`：位置在缓存命中率**上方**
+ *   （用户 2026-11-20 口径），只给总数，不展开计费桶；
  * - 缓存命中那行读的是**会话累计**口径（用户 2026-10-10 口径：与工具栏那枚读数同值，
  *   官方可见的也是这个口径——官方那个面板本身没有这一行）；
  * - 构成三行是启发式估算（`~` 前缀与 Web 一致，数值**固定一位小数**），说的是当前
- *   上下文由什么构成，与上面两个读数不是同一个维度。
+ *   上下文由什么构成，与上面几个读数不是同一个维度。
  *
- * @param input 与 `CtxText` 同源的三个上下文数与构成投影。
+ * @param input 与 `CtxText` 同源的上下文数、Token 总量与构成投影。
  * @param texts 界面词典（调用方自己 `useTexts()` 取）。
  */
 export function contextDetailLines(input: ContextDetailInput, texts: Texts): string[] {
@@ -380,6 +390,11 @@ export function contextDetailLines(input: ContextDetailInput, texts: Texts): str
   const numbers = contextNumbers(input.percent, input.used, input.total);
   if (numbers) {
     detail.push(texts.contextUsed(numbers.percent, formatTokens(numbers.used), formatTokens(numbers.total)));
+  }
+  // 总量行在命中率**上方**（用户 2026-11-20 口径）：两个数同源（都来自 `tokenUsage`），
+  // 先给出「用了多少」，再回答「其中多少命中了缓存」。
+  if (input.tokens !== undefined) {
+    detail.push(`${texts.ctxDetailTokens} ${formatTokens(input.tokens)}`);
   }
   if (input.cacheHit) detail.push(`${texts.ctxDetailCached} ${input.cacheHit}%`);
   if (input.breakdown) {
@@ -415,6 +430,7 @@ export function CtxText({
   percent,
   used,
   total,
+  tokens,
   cacheHit,
   breakdown,
   detailed,
@@ -428,7 +444,7 @@ export function CtxText({
 
   // 明细在这里、在缓存命中读数那里都是同一份（`contextDetailLines`）；
   // 环本身与它**不是**一回事：环看「还剩多少余地」，明细看精确读数与构成。
-  const detail = contextDetailLines({ percent, used, total, cacheHit, breakdown }, texts);
+  const detail = contextDetailLines({ percent, used, total, tokens, cacheHit, breakdown }, texts);
 
   return (
     <CtxRing

@@ -17,6 +17,9 @@ import type { ChatState } from "../shared/chat";
  * 也不是会话累计的用量：本扩展不放这个数，免得与工具栏那枚打架。
  *
  * **不许在组件里再算一遍**，否则同一个界面上会出现两个口径。
+ *
+ * 同一个投影的**总量**也住在这里（`sessionTokenTotal`）：悬停明细里的「Token 用量」行
+ * 与命中率读的是同一个 `tokenUsage`，两行的口径不能各算各的。
  */
 
 /** 会话累计用量（`tokenUsage` 投影）里本模块要读的三个 prompt 侧计费桶。 */
@@ -136,4 +139,24 @@ export function sessionCacheHitPercent(usage: ChatState["tokenUsage"] | undefine
   // 一位小数：用户口径的示例形如 `98.7%HIT`（官方的会话胶囊默认取整数，但同一个
   // `formatCacheHitPercent` 在「本轮用量」面板里取一位——精度是显示选择，口径才是算法）。
   return formatCacheHitPercent(usage.cacheReadTokens, billedInputTokens(usage), 1) ?? undefined;
+}
+
+/**
+ * 会话累计的 Token 用量**总数**（不是四个计费桶的明细）。
+ *
+ * 口径逐项对齐官方 `StatsPills.tsx` 的 `UsagePill`：总量 = 三个 prompt 侧计费桶之和
+ * 加输出（`billedInputTokens(usage) + usage.outputTokens`）——官方那枚胶囊显示的
+ * 就是这个数，所以悬停明细里的「Token 用量」行也只能是它。**只给总数**：
+ * 官方的输入 / 缓存读取 / 缓存写入 / 输出四行在「Token 用量」对话框里，本扩展不复制
+ * （用户 2026-11-20 口径）。
+ *
+ * 两种「没有读数」的情形都返回 `undefined`：
+ * - 老服务端没有 `tokenUsage` 投影；
+ * - 投影在、但会话还没有任何计费（靠官方同一条判据：`UsagePill` 在没有 token 活动时
+ *   整枚不显示，而不是显示 `0`）。
+ */
+export function sessionTokenTotal(usage: ChatState["tokenUsage"] | undefined): number | undefined {
+  if (!usage) return undefined;
+  const total = billedInputTokens(usage) + usage.outputTokens;
+  return total > 0 ? total : undefined;
 }

@@ -1289,6 +1289,13 @@ export const MESSAGES = {
   },
   ctxDetailCached: { zh: "缓存命中", en: "Cache hit" },
   /**
+   * 悬停明细里的 Token 用量行（用户 2026-11-20 口径：位置在缓存命中率**上方**）。
+   *
+   * 数值是会话累计的**总数**（`webview/cacheHit.ts` 的 `sessionTokenTotal`），
+   * 只此一行：官方的未缓存输入 / 缓存读取 / 缓存写入 / 输出明细不复制进来。
+   */
+  ctxDetailTokens: { zh: "Token 用量", en: "Token usage" },
+  /**
    * 工具栏里**独立的**缓存命中率元素（用户 2026-10-10 口径的最低优先级那一项，
    * 位置在上下文容量数值右边，形如 `98.7%HIT`）。
    *

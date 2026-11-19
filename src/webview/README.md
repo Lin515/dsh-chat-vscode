@@ -51,7 +51,7 @@ React / 浏览器环境，不使用 Node API。上层边界见[源码导航](<..
 
 ## 状态与展示
 
-- [cacheHit.ts](<cacheHit.ts>) — 会话累计缓存命中格式化；缺数据不返回读数。
+- [cacheHit.ts](<cacheHit.ts>) — 会话累计的缓存命中与 Token 用量总数口径；缺数据不返回读数。
 - [pathDisplay.ts](<pathDisplay.ts>) — 单行路径拆分与保文件名省略。
 - [sessionDir.ts](<sessionDir.ts>) — 标题栏执行目录标签：短名、悬停详情的路径，以及单根时的省略判据。
 - [sessionSelection.ts](<sessionSelection.ts>) — 历史列表多选：可选判据、选择集跟随列表、全选翻转。

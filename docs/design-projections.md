@@ -50,7 +50,7 @@ Auto review 只在 `permissionPresets/catalog.options` 明确含 auto 时开放�
 - `contextPressure` 分子取 `projectedTokens ?? pressureTokens`，只含 prompt 侧，不加 output；压缩等 surface 变化可产生负增量。
 - 容量与压力不是原子观测。模型切换可能出现新容量配旧压力，不能用一次静态值证明一致。
 - `contextBreakdown` 的 systemTokens / toolsTokens / messageTokens 只是近似构成，不能求和冒充压力值。
-- `tokenUsage` 是会话累计的 uncachedInputTokens / outputTokens / cacheReadTokens / cacheWriteTokens。缓存命中分母为三个输入桶之和；工具栏 HIT 与悬停共用 `cacheHit.ts`，不取最后一步用量。线格式读取 `cacheReadTokens`，不读视图字段 `cachedTokens`。
+- `tokenUsage` 是会话累计的 uncachedInputTokens / outputTokens / cacheReadTokens / cacheWriteTokens。缓存命中分母为三个输入桶之和；工具栏 HIT 与悬停共用 `cacheHit.ts`，不取最后一步用量。悬停里命中率上方的「Token 用量」取同一投影的总数（三桶加输出，官方 UsagePill 的口径），不展开计费桶。线格式读取 `cacheReadTokens`，不读视图字段 `cachedTokens`。
 - `message.usage` 是最后一步，不代表整轮 attempt 聚合。`sessionStats` 八字段已消费，但主要显示在 tps 悬停，不等于完整的 turns / steps 常驻面板。
 
 ## 子代理：目录、身份与活性

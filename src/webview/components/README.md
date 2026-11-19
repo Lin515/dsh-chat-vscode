@@ -32,4 +32,4 @@
 - `EmptyMeta.tsx` — 空态页元信息：会话工作目录与 agent 预设。打开着文件夹时目录胶囊展开工作区根目录预设（`switchRoot`）与「选择其他文件夹…」（`pickOtherRoot`），同名根目录用 `../directoryLabel.ts` 的去重短名；没有根目录列表时保留原来的系统目录选择器 / 老宿主只读形态。已有对话不渲染这一行。
 - `ContextMenu.tsx` — 自绘右键菜单浮层（根部挂一次，只管画）。ESC 收菜单按 `../escapeOwner.ts` 的 `ESC_LAYER.contextMenu` 登记：压过原图浮层，一次 ESC 只关它。
 - `CopyButton.tsx` — 复制按钮的**唯一**外观：一枚图标按钮（无文字标签），成功态只把图标换成对勾并上成功色（1s），悬停说明与无障碍名由 `title` 给出。用户气泡、助手轮尾、思考 / 注入 / 技能 / 命令 / 提示 / 未知块、审批 / 待答问卷 / 计划 / 记录卡、工具卡、diff 头部、IN/OUT 标签行、写入预览、后台任务详情、历史会话 ID、代码块、轨迹原文全部复用它；文字只留在读屏的 `sr-only` live region 里。文件里还有轨迹自动换行开关 `WrapLinesButton`，以及没有按钮可换文案的复制入口用的提示层 `CopyFlashLayer`（同样只闪一枚对勾）。状态机、计时与剪贴板写入在 `../copyFeedback.ts`，本文件只画外观。
-- `primitives.tsx` — 小组件与格式化工具（Popover、`formatClock`、路径拆分展示等）；Popover 带可选 `className` 作为分区挂点（模型弹层靠它把可滚的模型列表与常驻的思考档位区拆成两层，见 `Composer.tsx`）。上下文占用的圆环与它的悬停明细也在这里，明细拼法 `contextDetailLines` 是**唯一一份**（工具栏那枚缓存命中读数的悬停也读它，两处信息刻意保持一致）。
+- `primitives.tsx` — 小组件与格式化工具（Popover、`formatClock`、路径拆分展示等）；Popover 带可选 `className` 作为分区挂点（模型弹层靠它把可滚的模型列表与常驻的思考档位区拆成两层，见 `Composer.tsx`）。上下文占用的圆环与它的悬停明细也在这里，明细拼法 `contextDetailLines` 是**唯一一份**（工具栏那枚缓存命中读数的悬停也读它，两处信息刻意保持一致）；明细里「Token 用量」行在缓存命中率上方，只给会话累计总数。

@@ -60,7 +60,7 @@ import { readableMentionText } from "../mentionLinks";
 import { segmentColumns } from "../segment";
 import { fill, resolveText, useTexts } from "../texts";
 import { useUiScale } from "../uiScale";
-import { sessionCacheHitPercent } from "../cacheHit";
+import { sessionCacheHitPercent, sessionTokenTotal } from "../cacheHit";
 import { BAR_ORDER, createFitAnchor, pickVariants, toolbarAvailableWidth, type ToolbarVariant } from "../toolbarFit";
 
 /**
@@ -799,10 +799,17 @@ export function Composer({
    * 「数据缺失」显示成 `0%HIT`（判据与算法在 `cacheHit.ts`）。
    */
   const cacheHitText = sessionCacheHitPercent(state.tokenUsage);
+  /**
+   * 会话累计的 Token 用量**总数**（与上面那枚命中率同一个投影）：悬停明细里
+   * 「Token 用量」行读它，位置在缓存命中率**上方**（用户 2026-11-20 口径）。
+   * 只给总数——官方的输入 / 缓存读取 / 缓存写入 / 输出四行不复制进来。
+   */
+  const tokenTotal = sessionTokenTotal(state.tokenUsage);
   const ctxProps = {
     percent: state.contextOccupancy?.percent,
     used: state.contextOccupancy?.usedTokens,
     total: state.contextOccupancy?.contextWindow,
+    tokens: tokenTotal,
     cacheHit: cacheHitText,
     breakdown: state.contextBreakdown,
   };

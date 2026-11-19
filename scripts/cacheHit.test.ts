@@ -8,11 +8,13 @@
  * 官方另一个命中率在「本轮用量」对话框，那是**整轮累加**（`deriveTurnTokenUsage`），
  * 与逐 step 的用量都不是一回事，本扩展不放那个数——下面有一条断言钉住这一点。
  *
- * 这个文件钉四件事（前两件是任务验收要求的）：
+ * 这个文件钉五件事（前两件是任务验收要求的）：
  * 1. 命中率的算法与官方逐值同口径（含「部分命中不许显示成 100%」那条）；
  * 2. 数据缺失时返回 `undefined`（调用方据此隐藏该元素，而不是显示 `0%`）；
  * 3. 视图模型不许替服务端编总账（`inputTokens` 是未缓存输入，加出来的 total 会漏缓存桶）；
- * 4. 工具栏那一档与两处悬停明细接的都是**同一个会话口径的值**（结构不变量）。
+ * 4. 工具栏那一档与两处悬停明细接的都是**同一个会话口径的值**（结构不变量）；
+ * 5. 悬停明细里「Token 用量」行（命中率上方）是会话累计的**总数**口径
+ *    （用户 2026-11-20 口径：只给总数，不展开计费桶）。
  *
  * 运行：npm test（已在 esbuild.scripts.mjs 的 entries 里登记）
  */
@@ -23,6 +25,7 @@ import {
   billedInputTokens,
   formatCacheHitPercent,
   sessionCacheHitPercent,
+  sessionTokenTotal,
 } from "../src/webview/cacheHit";
 import { SessionAdapter } from "../src/dsh/adapter";
 import type { UsageView } from "../src/shared/chat";
@@ -84,6 +87,32 @@ import type { UsageView } from "../src/shared/chat";
   assert.strictEqual(formatCacheHitPercent(988, 1000, 0), "99");
 }
 console.log("cacheHit: 会话口径（三桶做分母、部分命中不显示 100%）✓");
+
+// ---------- 1.5 Token 用量：总数口径（悬停明细里命中率上方那一行） ----------
+//
+// 用户 2026-11-20 口径：悬停明细在缓存命中率**上方**加一行「Token 用量」，只给总数，
+// 不复制官方「Token 用量」对话框里的输入 / 缓存读取 / 缓存写入 / 输出四行。
+// 口径逐项对齐官方 `UsagePill`：总量 = 三个 prompt 侧计费桶 + 输出。
+{
+  const usage = {
+    uncachedInputTokens: 18240,
+    outputTokens: 3120,
+    cacheReadTokens: 40100,
+    cacheWriteTokens: 2048,
+  };
+  assert.strictEqual(
+    sessionTokenTotal(usage),
+    18240 + 40100 + 2048 + 3120,
+    "Token 用量 = 三个 prompt 侧计费桶 + 输出（官方 UsagePill 的总量同式）",
+  );
+  assert.strictEqual(sessionTokenTotal(undefined), undefined, "没有 tokenUsage 投影（老服务端）→ 不显示");
+  assert.strictEqual(
+    sessionTokenTotal({ uncachedInputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }),
+    undefined,
+    "会话还没有任何计费 → 不显示 0（官方 UsagePill 在没有 token 活动时整枚不显示）",
+  );
+}
+console.log("cacheHit: Token 用量总数口径（三桶加输出，缺数据不显示）✓");
 
 // ---------- 2. 数据缺失 → 隐藏（不是显示 0%） ----------
 //
@@ -193,8 +222,20 @@ console.log("cacheHit: 视图模型不编总账（透传服务端 / 缺就缺）
     "缓存命中的悬停明细必须由 `contextDetailLines` + 同一组 `ctxProps` 拼出，不许另拼一份",
   );
   assert.ok(
-    /const detail = contextDetailLines\(\{ percent, used, total, cacheHit, breakdown \}, texts\);/.test(primitives),
+    /const detail = contextDetailLines\(\{ percent, used, total, tokens, cacheHit, breakdown \}, texts\);/.test(primitives),
     "上下文圆环的悬停明细也必须走这同一个拼法（否则「一模一样」会随任一处改动过期）",
+  );
+  // Token 用量：与命中率同源（都是 `tokenUsage` 投影），行在命中率**上方**
+  // （用户 2026-11-20 口径）；只给总数，不展开计费桶。
+  assert.ok(
+    /const tokenTotal = sessionTokenTotal\(state\.tokenUsage\);/.test(composer) &&
+      /tokens: tokenTotal,/.test(composer),
+    "明细里的 Token 用量必须取会话累计的 `sessionTokenTotal`，并喂进共用的 `ctxProps`",
+  );
+  assert.ok(
+    primitives.indexOf("texts.ctxDetailTokens") >= 0 &&
+      primitives.indexOf("texts.ctxDetailTokens") < primitives.indexOf("texts.ctxDetailCached"),
+    "Token 用量行必须排在缓存命中行**上方**（用户 2026-11-20 口径）",
   );
   // 明细里那一行**就是**工具栏那个数（用户 2026-10-10 口径：两处同一个数）。
   // 数据源只有一个 `cacheHitText`，所以这里钉的是「它被喂进明细」，而不是「再算一遍」。
