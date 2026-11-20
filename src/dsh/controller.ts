@@ -5737,7 +5737,9 @@ export class ChatController implements vscode.Disposable {
   ): Promise<SessionScope | undefined> {
     // 只有换目录或工作区文件夹变化可以解绑旧壳。显式打开的会话不受新会话目录偏好影响。
     const existing = this.scopeOfView(viewId);
-    if (existing) return existing;
+    // `null` = 冻结在「发送那一刻没有目录」上：既有绑定不是这次提交的落点，交回去就等于
+    // 把消息搬到别的根（发送侧按「取消目录选择」收场，见 `send`）。
+    if (existing) return options.target === null ? undefined : existing;
     const frozen = options.target !== undefined;
     const action = options.action;
     // **普通目标在这里同步抓**：换目录调用方不再自己抓一份当冻结目标传进来，冻结只属于发送
@@ -5762,8 +5764,9 @@ export class ChatController implements vscode.Disposable {
       // 共享的那条链失败时不能变成 N 个等待者各建一次（那正好把合并承诺反过来了）。
       const settledScope = await inflight.attempt;
       const bound = this.scopeOfView(viewId);
-      if (bound) return bound;
-      return settledScope;
+      // `null` 冻结：既有绑定（含这条在飞的链刚绑上的那一条）都不是这次提交的落点
+      if (bound) return options.target === null ? undefined : bound;
+      return options.target === null ? undefined : settledScope;
     }
     // 目标目录不同：**不并进旧那条**（它就是「切 B 后立即发送还落 A」的根因），另起一条，
     // 旧尝试回来时按自己的目录键核对，不能再绑定。
@@ -5784,9 +5787,10 @@ export class ChatController implements vscode.Disposable {
         return undefined;
       }
       // 连接与目录这两步都可能让**别的路径**先把这个窗口绑到一条会话上（用户点了历史
-      // 里的一条）：绑定是既成事实，就按它走，不再自己建一条把它顶掉
+      // 里的一条）：绑定是既成事实，就按它走，不再自己建一条把它顶掉。
+      // `null` 冻结时例外：不把这条既有绑定当成这次提交的结果（见 `send` 的落点核对）。
       const bound = this.scopeOfView(viewId);
-      if (bound) return bound;
+      if (bound) return options.target === null ? undefined : bound;
       let settledTarget = target;
       if (!settledTarget && options.askDir) {
         // 「要目录」的判据是**有没有一个能用的目录**（`hasWorkspaceDir`），不是
@@ -5821,7 +5825,15 @@ export class ChatController implements vscode.Disposable {
       }
       // 落壳串行化与扫描都在 `reuseOrCreateBlank` 里：上面那条 `await ensureConnected`
       // 之后列表可能才第一次到手，判据要在那里重新读（见 `blankEnsures`）
-      return await this.reuseOrCreateBlank(viewId, settledTarget, !frozen, action);
+      const scope = await this.reuseOrCreateBlank(viewId, settledTarget, !frozen, action);
+      // 冻结在「没有目录」上时，`settledTarget` 是**用户当场选的**那份目录；落壳这几步仍可能
+      // 被别的路径先绑走（`reuseOrCreateBlank` 的绑定复查会原样返回它）：不在所选目录上就
+      // 不算这次提交的落点。
+      if (options.target === null && scope && !this.scopeMatchesFrozen(scope, settledTarget)) {
+        this.log(`[new] 窗口=${viewId} 落壳后绑在 ${scope.creationCwd ?? "?"}、所选目录是 ${settledTarget.key}：不算这次提交的落点`);
+        return undefined;
+      }
+      return scope;
     })();
     this.sessionEnsures.set(viewId, { key, frozen, action, attempt });
     try {
@@ -11076,14 +11088,6 @@ export class ChatController implements vscode.Disposable {
     // 窗口还没有会话（空态）：落到本工作区那条空壳上（没有就建一条）。没有工作目录
     // 时会先问一次（取消 → 不建会话也不发送，草稿留在输入框里）
     let scope = this.scopeOfView(viewId);
-    // **按下那一刻还没有绑定**：等连接这趟（`submitMessage` 里的 `ensureConnected`）期间，
-    // 工作区文件夹变化 / `onConnected` 的自动补壳（`adoptBlankForUnboundViews`）可能已经把这个
-    // 窗口绑到**另一个根**的空壳上。那不是用户对这条消息的选择：冻结在「没有目录」上、或与
-    // 冻结目录不同，都不顺着它发——退回下面「取消目录选择」的同一收场（正文回输入框）。
-    if (scope && boundAtClick === undefined && !this.scopeMatchesFrozen(scope, frozenTarget)) {
-      this.log(`[submit] 窗口=${viewId} 在等连接期间被绑到 ${scope.creationCwd ?? "?"}：不按它发，正文回输入框`);
-      scope = undefined;
-    }
     if (!scope) {
       scope = await this.ensureSession(viewId, { start: true, askDir: true, target: frozenTarget });
       // 落壳这趟也可能被别的路径先绑走（`reuseOrCreateBlank` 的绑定复查会把它原样返回）：
@@ -11092,6 +11096,22 @@ export class ChatController implements vscode.Disposable {
         this.log(`[submit] 窗口=${viewId} 落壳后绑在 ${scope.creationCwd ?? "?"}、冻结目录是 ${frozenTarget.key}：不发，正文回输入框`);
         scope = undefined;
       }
+    } else if (boundAtClick !== undefined) {
+      // 按下那一刻的那条历史会话在等连接期间被换掉了（点了别的会话 / 恢复路径重绑）：
+      // 这条提交是按它写的，不跟到新绑定上发，正文回输入框。
+      if (this.viewSessions.get(viewId) !== boundAtClick) {
+        this.log(`[submit] 窗口=${viewId} 按下时的会话 ${boundAtClick} 在等连接期间被换掉：不按新绑定发，正文回输入框`);
+        scope = undefined;
+      }
+    } else if (!this.scopeMatchesFrozen(scope, frozenTarget)) {
+      // **按下那一刻还没有绑定**：等连接这趟（`submitMessage` 里的 `ensureConnected`）期间，
+      // 工作区文件夹变化 / `onConnected` 的自动补壳（`adoptBlankForUnboundViews`）可能已经把这个
+      // 窗口绑到**另一个根**的空壳上。那不是用户对这条消息的选择：冻结在「没有目录」上、或与
+      // 冻结目录不同，都不顺着它发——退回下面「取消目录选择」的同一收场（正文回输入框）。
+      // **不能**在这里再调 `ensureSession`：它的入口会把这条既有绑定原样返回（见那里），
+      // 冻结在「没有目录」上（`null`）时更是直接放行。
+      this.log(`[submit] 窗口=${viewId} 在等连接期间被绑到 ${scope.creationCwd ?? "?"}：不按它发，正文回输入框`);
+      scope = undefined;
     }
     if (!scope) {
       // 用户**主动取消**了目录选择 / 落点不是这条提交的冻结目录：这不是"发送失败"，而是这条
