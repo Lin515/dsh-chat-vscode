@@ -1033,4 +1033,37 @@ function stubConnectWait(h: Harness, during: () => Promise<void>): void {
   assert.ok(draftsOf(h).some((text) => text.includes("stale-history")), "正文回到输入框");
 }
 
+// 十二f、冻结为「没有目录」、用户当场选了 A，但建会话那趟被别的路径绑到 B：
+// 落壳复查（`ensureSession` 内的 `settledTarget` 核对）必须把 B 判成不算落点
+{
+  const h = makeHarness([{ sessionId: "used-B", cwd: DIR_B }], { folders: [] });
+  await bindAndRefresh(h, "v1");
+  assert.strictEqual(h.c.viewSessions.get("v1"), undefined, "前置：窗口未绑定、没有目录");
+  const dialog = stubDialog([DIR_A]);
+  try {
+    stubConnectWait(h, async () => {
+      h.c.connection = "connected";
+    });
+    const originalCreate = h.client.createSession.bind(h.client);
+    h.client.createSession = async (target, reuse) => {
+      // 建 A 的会话期间，另一条路径把窗口绑到了 B（历史会话 / 自动补壳都走这条绑定）。
+      await open(h, "v1", "used-B");
+      return originalCreate(target, reuse);
+    };
+    await send(h, "v1", "picked-late-bind");
+  } finally {
+    dialog.restore();
+  }
+  console.log(
+    `  picked：选了 A、落壳时被绑到 ${createdCwd(h.client, h.c.viewSessions.get("v1"))} 发送次数=${h.client.prompts.length}`,
+  );
+  assert.ok(
+    h.client.created.some((item) => item.cwd === DIR_A),
+    "前置：用户选的 A 确实走到了建会话那一步",
+  );
+  assert.strictEqual(h.client.prompts.length, 0, "落壳后不在所选目录上的绑定不能承载这条提交");
+  assert.strictEqual(h.c.viewSessions.get("v1"), "used-B", "别的路径的绑定保留、不被覆盖");
+  assert.ok(draftsOf(h).some((text) => text.includes("picked-late-bind")), "正文回到输入框");
+}
+
 console.log("historyDirectory: late-binding assertions passed");
