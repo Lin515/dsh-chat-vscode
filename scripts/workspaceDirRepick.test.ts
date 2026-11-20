@@ -15,12 +15,16 @@
  *    那条壳上——界面上写着新目录，会话的 cwd 却还是旧的。目录是**会话的创建事实**
  *    （服务端没有改 cwd 的 API），所以换目录只能换一条壳（见 `rebindWorkspaceDir`）。
  *
- * 钉住四件事：
+ * 钉住五件事：
  * 1. 没打开文件夹时，点那枚胶囊**每次都弹**选择框（第二次、第三次都弹）；
  * 2. 换目录后窗口落到**新目录**那条空壳上（没有就建），旧壳留在服务端不复用；
  * 3. 之后发消息真的发给新目录那条会话（用户报的「还没有真实创建会话」）；
  * 4. 真·工作区（VS Code 打开着文件夹）仍然是锁定口径：不弹框、界面不可改；
- *    已经说过话的会话不因换目录被改写（cwd 是创建事实）。
+ *    已经说过话的会话不因换目录被改写（cwd 是创建事实）；
+ * 5. 选中的目录要过**本机身份**门（与「选择其他文件夹…」同一条 `LocalAccessGate`，
+ *    见 `localAccess.ts`）：本机不存在的路径被拒绝且**保持原目录**；门那次 await
+ *    期间用户又动了手（动作代号 / 关窗 / 文件夹打开 / 提交在飞）则整条选择作废。
+ *    这道门是启发式证据，不宣称能识别所有远端部署。
  *
  * vscode 依赖由 esbuild.scripts.mjs 的 alias 指到 `vscodeTestStub.ts`（离线、无网络、
  * 无 token、亚秒级）。
@@ -40,8 +44,16 @@ const { ChatController } = await import("../src/dsh/controller");
 // `showOpenDialog` / `workspaceFolders` 能被 controller 看到。
 const vscode = await import("vscode");
 
-const DIR_A = "C:\\work\\alpha";
-const DIR_B = "C:\\work\\beta";
+// 工作区根目录只是字符串（VS Code 的文件夹集合），不必真实存在。
+const ROOT_A = "C:\\work\\alpha";
+const ROOT_B = "C:\\work\\beta";
+// 系统选择器选中的目录必须在本机**真实存在**：宿主用与工作区外 `@` 同一个本机身份门
+// 验证后才接受（见 `askWorkspaceDir` / `pickOtherRoot`）。夹具按宿主平台拼绝对路径。
+const DIR_A = mkdtempSync(join(tmpdir(), "dsh-chat-dir-a-"));
+const DIR_B = mkdtempSync(join(tmpdir(), "dsh-chat-dir-b-"));
+process.on("exit", () => {
+  for (const dir of [DIR_A, DIR_B]) rmSync(dir, { recursive: true, force: true });
+});
 
 interface Captured {
   target: string;
@@ -178,9 +190,14 @@ interface ControllerInternals {
   sessions: { id: string; cwd: string; blank?: boolean }[];
   viewSessions: Map<string, string>;
   newSessionCwd?: string;
+  /** 身份门（`LocalAccessGate`）：测试里换成挂起版本以制造 await 期间的竞态。 */
+  localAccess: { allows(path: string, budget: unknown): Promise<boolean> };
+  /** 「提交在飞」名额：> 0 时 `canChangeRoot` 为假（见 controller 的 `pendingSends`）。 */
+  pendingSends: Map<string, number>;
   bindView(viewId: string): void;
   handle(message: Record<string, unknown>, viewId: string): Promise<void>;
   bindViewToSession(viewId: string, sessionId: string, scope: unknown): void;
+  unbindView(viewId: string): void;
 }
 
 function makeHarness(options: { dir?: string } = {}): Harness {
@@ -242,6 +259,35 @@ function stubFolder(path: string | undefined) {
   return {
     restore() {
       workspace.workspaceFolders = original;
+    },
+  };
+}
+
+/**
+ * 把本机身份门换成「挂起 + 手动放行」：用来复现 `await localAccess.allows(...)` 期间
+ * 用户又动了手（换动作 / 关窗 / 打开文件夹 / 提交在飞）。`entered` 在门被调用时 resolve，
+ * `release` 决定门最后判通过还是拒绝。
+ */
+function deferredGate(c: ControllerInternals) {
+  const gate = c.localAccess;
+  const original = gate.allows;
+  let enter!: () => void;
+  const entered = new Promise<void>((resolve) => {
+    enter = resolve;
+  });
+  let release!: (allowed: boolean) => void;
+  const outcome = new Promise<boolean>((resolve) => {
+    release = resolve;
+  });
+  gate.allows = () => {
+    enter();
+    return outcome;
+  };
+  return {
+    entered,
+    release,
+    restore() {
+      gate.allows = original;
     },
   };
 }
@@ -408,8 +454,8 @@ console.log("workspaceDirRepick: 空态页的目录胶囊能反复改目录（�
 // 「只对真工作区早退」是这次改动的界限：打开着文件夹时目录跟随 VS Code，那枚胶囊
 // 在界面上是静态文字（`locked === true`），点它也不该弹框。
 {
-  const folder = stubFolder(DIR_A);
-  const dialog = stubDialog([DIR_B]);
+  const folder = stubFolder(ROOT_A);
+  const dialog = stubDialog([ROOT_B]);
   try {
     const { c, client, frames } = makeHarness();
     c.bindView("v1");
@@ -420,9 +466,9 @@ console.log("workspaceDirRepick: 空态页的目录胶囊能反复改目录（�
     assert.deepStrictEqual(
       lastWorkspace(frames),
       {
-        path: DIR_A,
+        path: ROOT_A,
         locked: true,
-        roots: [{ path: DIR_A, name: "alpha" }],
+        roots: [{ path: ROOT_A, name: "alpha" }],
         canPickOther: true,
       },
       "真工作区必须锁成不可改（空态页那行据此渲染成静态文字）；根目录列表交给输入栏目录胶囊作候选",
@@ -528,7 +574,7 @@ console.log("workspaceDirRepick: 空态页的目录胶囊能反复改目录（�
   const OUTSIDE = mkdtempSync(join(tmpdir(), "dsh-chat-outside-"));
   const workspace = vscode.workspace as unknown as { workspaceFolders: unknown };
   const originalFolders = workspace.workspaceFolders;
-  workspace.workspaceFolders = [{ uri: { fsPath: DIR_A } }, { uri: { fsPath: DIR_B } }];
+  workspace.workspaceFolders = [{ uri: { fsPath: ROOT_A } }, { uri: { fsPath: ROOT_B } }];
   const dialog = stubDialog([OUTSIDE]);
   try {
     const { c, client, frames } = makeHarness();
@@ -545,19 +591,19 @@ console.log("workspaceDirRepick: 空态页的目录胶囊能反复改目录（�
     assert.deepStrictEqual(
       ws?.roots,
       [
-        { path: DIR_A, name: "alpha" },
-        { path: DIR_B, name: "beta" },
+        { path: ROOT_A, name: "alpha" },
+        { path: ROOT_B, name: "beta" },
       ],
       "工作区的根目录仍作候选交给界面（带展示名）",
     );
 
     // 选回工作区里的根：注册、cwd 回到那个根
-    await c.handle({ type: "switchRoot", path: DIR_B }, "v1");
+    await c.handle({ type: "switchRoot", path: ROOT_B }, "v1");
     const shellB = c.viewSessions.get("v1");
     console.log(`  选回根 B → 会话 ${shellB} cwd=${cwdOf(client, shellB)}`);
-    assert.strictEqual(cwdOf(client, shellB), DIR_B, "选回工作区里的根：新会话落在那个根");
-    assert.deepStrictEqual(client.workspaces, [DIR_B], "工作区里的根照旧注册成服务端工作区（且只注册这一个）");
-    assert.strictEqual((lastWorkspace(frames) as { path?: string }).path, DIR_B, "目录提示回到所选的根");
+    assert.strictEqual(cwdOf(client, shellB), ROOT_B, "选回工作区里的根：新会话落在那个根");
+    assert.deepStrictEqual(client.workspaces, [ROOT_B], "工作区里的根照旧注册成服务端工作区（且只注册这一个）");
+    assert.strictEqual((lastWorkspace(frames) as { path?: string }).path, ROOT_B, "目录提示回到所选的根");
 
     // 不在工作区里的路径不能走 switchRoot（那条只认根目录；工作区外的目录走选择器）
     const before = c.viewSessions.get("v1");
@@ -569,7 +615,7 @@ console.log("workspaceDirRepick: 空态页的目录胶囊能反复改目录（�
     const dialogsBefore = dialog.dialogs.length;
     const bound = c.viewSessions.get("v1");
     await c.handle({ type: "pickOtherRoot" }, "v1");
-    await c.handle({ type: "switchRoot", path: DIR_A }, "v1");
+    await c.handle({ type: "switchRoot", path: ROOT_A }, "v1");
     assert.strictEqual(dialog.dialogs.length, dialogsBefore, "已有对话时点「选择其他文件夹…」不弹框");
     assert.strictEqual(c.viewSessions.get("v1"), bound, "已有对话不会被换到别的目录");
   } finally {
@@ -579,4 +625,56 @@ console.log("workspaceDirRepick: 空态页的目录胶囊能反复改目录（�
   }
 }
 
-console.log("workspaceDirRepick: 目录胶囊每次都弹框、换目录真的换到新目录那条壳上（含先切后建与换回复用）✓");
+// ---------- 十、本机身份门：选中的目录不存在 → 拒绝，原目录不变 ----------
+//
+// 与「选择其他文件夹…」同一条 `LocalAccessGate`：远端执行世界、本机不存在的路径不许
+// 当工作目录（见 `localAccess.ts`）。拒绝**不改** `newSessionCwd`，也不建壳。
+{
+  const missing = join(tmpdir(), `dsh-chat-missing-${process.pid}-${Date.now()}`);
+  const dialog = stubDialog([DIR_A, missing]);
+  try {
+    const { c, client, frames } = makeHarness();
+    c.bindView("v1");
+    await clickChip(c, "v1");
+    const shell = c.viewSessions.get("v1");
+    const rowsBefore = client.rows.length;
+    frames.length = 0;
+    await clickChip(c, "v1");
+    console.log(`  选中不存在的目录 → newSessionCwd=${c.newSessionCwd}，会话仍是 ${c.viewSessions.get("v1")}`);
+    assert.strictEqual(c.newSessionCwd, DIR_A, "本机不存在的目录被拒绝，保持原目录");
+    assert.strictEqual(c.viewSessions.get("v1"), shell, "窗口不因被拒绝的目录换壳");
+    assert.strictEqual(client.rows.length, rowsBefore, "被拒绝的目录不建会话");
+    assert.strictEqual(lastWorkspace(frames), undefined, "被拒绝的目录不改工作目录投影");
+  } finally {
+    dialog.restore();
+  }
+}
+
+// ---------- 十一、身份门那次 await 期间用户又动了手：这次选择作废 ----------
+//
+// 门是异步的：等它的来回里用户可能点了「+」（= 同一窗口的新动作代号）。回来时动作代号
+// 已经不是这一趟的了，目录与壳都不许落地（与迟到对话框同一口径）。
+{
+  const dialog = stubDialog([DIR_B]);
+  try {
+    const { c, client } = makeHarness();
+    c.bindView("v1");
+    const gate = deferredGate(c);
+    try {
+      const picking = clickChip(c, "v1");
+      await gate.entered;
+      await c.handle({ type: "newSession" }, "v1");
+      gate.release(true);
+      await picking;
+      console.log(`  身份检查期间点了「+」 → newSessionCwd=${c.newSessionCwd}，服务端 ${client.rows.length} 条会话`);
+      assert.strictEqual(c.newSessionCwd, undefined, "动作代号已换：这次选择作废，不记目录");
+      assert.deepStrictEqual(client.rows, [], "作废的选择不建会话");
+    } finally {
+      gate.restore();
+    }
+  } finally {
+    dialog.restore();
+  }
+}
+
+console.log("workspaceDirRepick: 目录胶囊每次都弹框、换目录真的换到新目录那条壳上（含先切后建、换回复用与本机身份门）✓");

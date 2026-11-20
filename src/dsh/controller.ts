@@ -6490,7 +6490,11 @@ export class ChatController implements vscode.Disposable {
    * 不弹框、目录改不了」的根因（用户 2026-10-10 报的现场）：第一次选完目录之后
    * `hasWorkspaceDir()` 就为真，之后再点连对话框都不弹，而对话框是这一下点击唯一的反馈。
    *
-   * @returns 现在有目录了（本来就打开着文件夹、或选了一个）就是 true；用户取消 → false。
+   * 选中目录还要过**本机身份**门（与「选择其他文件夹…」同一条 `LocalAccessGate`）：
+   * 远端执行世界、本机不存在的路径都不记，拒绝时保持原目录不变。这是启发式证据，
+   * 不宣称能识别所有远端部署（见 `localAccess.ts`）。
+   *
+   * @returns 现在有目录了（本来就打开着文件夹、或选了一个）就是 true；用户取消 / 被拒 → false。
    */
   private async askWorkspaceDir(
     action: { viewId: string; epoch: number | undefined },
@@ -6519,6 +6523,19 @@ export class ChatController implements vscode.Disposable {
       this.log(`[workspace] 目录选择器返回了非本地 scheme（${pickedUri.scheme}），拒绝当作工作目录`);
       return false;
     }
+    // 选中的目录必须通过**本机身份**证据（与工作区外「选择其他文件夹…」同一道门）：
+    // 远端执行世界 / 本机不存在的路径不许当工作目录，拒绝时保持原目录不变。
+    if (!(await this.localAccess.allows(path, new LocalFsBudget()))) {
+      this.log(`[workspace] 选中的目录没有通过本机身份检查，拒绝作为工作目录（保持原目录）：${path}`);
+      return false;
+    }
+    // 身份检查也是一次 await：动作代号、窗口存活、可换根再核一次，文件夹集合按这一刻重读
+    if (!this.viewActionIsCurrent(action) || !this.liveViewIds().includes(action.viewId) ||
+        (explicit && !this.canChangeRoot(action.viewId))) {
+      this.log(`[workspace] 窗口=${action.viewId} 在本机身份检查期间又发生了别的动作，这次选择作废`);
+      return false;
+    }
+    if (vscode.workspace.workspaceFolders?.[0]) return !explicit;
     this.newSessionCwd = path;
     if (explicit) this.detachStaleBlank(action.viewId);
     // 目录变了：空态页那行目录与这个窗口的历史列表（没有打开文件夹时按选定目录收窄，
