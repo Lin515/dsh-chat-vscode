@@ -4258,9 +4258,8 @@ export class ChatController implements vscode.Disposable {
     this.workspaceRegistrations?.clear();
     this.workspaceRegistrationPending?.clear();
     // 历史抽屉可浏览其他目录，不能在新连接的列表尚未返回时展示上一个端点的会话。
-    const historyChanged = Boolean(this.historySessions?.length || this.viewHistoryScopes?.size);
+    const historyChanged = this.historySessions?.length > 0;
     this.historySessions = [];
-    this.viewHistoryScopes?.clear();
     this.hostFileConnections.clear();
     this.hostFiles?.close();
     this.client = client;
