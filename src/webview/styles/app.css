@@ -5133,6 +5133,7 @@ textarea.composer-input {
 
 .drawer-scope-select {
   width: 100%;
+  min-width: 0;
   padding: calc(3 * var(--dp)) calc(6 * var(--dp));
   border: 1px solid var(--input-border);
   border-radius: var(--radius);

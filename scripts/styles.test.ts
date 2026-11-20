@@ -1847,6 +1847,68 @@ console.log("styles: 行内代码文件链接跨行时芯片包住按钮、文�
 }
 console.log("styles: 轨迹整页占用会话窗口（输入区移出布局但不卸载） ✓");
 
+// ---------- 16e. 失联横幅与新增窄栏元素：长文案可收窄 / 截断，不靠固定像素 ----------
+//
+// 这四类样式都是窄侧栏里新出现的「可能被长文本撑破」的元素。断言只钉稳定的
+// 同语义声明（nowrap / ellipsis / min-width / flex 收缩 / 视口感知宽度），不钉像素。
+{
+  const app = readFileSync(join(process.cwd(), "src", "webview", "App.tsx"), "utf8");
+  const warningAt = app.indexOf("{hostUnresponsive && (");
+  assert.ok(warningAt >= 0, "App 里找不到失联横幅的分支");
+  const warningEnd = app.indexOf(")}", warningAt);
+  const warning = app.slice(warningAt, warningEnd);
+  assert.match(warning, /className="view-host-warning"/, "失联时先渲染重载横幅");
+  assert.match(
+    warning,
+    /command:\$\{RELOAD_WINDOW_COMMAND\}/,
+    "重载入口必须走原生 command URI（宿主已经失联，postMessage 送不出去）",
+  );
+  const warningStyle = rule(".view-host-warning");
+  assert.match(warningStyle, /overflow-wrap:\s*anywhere/, "横幅文案与长链接必须能就地折行");
+  assert.doesNotMatch(
+    warningStyle,
+    /position:\s*(absolute|fixed)/,
+    "失联横幅在正常流里占位，不盖住会话 / 轨迹内容",
+  );
+  const reloadLink = rule(".view-host-warning a");
+  assert.match(reloadLink, /display:\s*block/, "重载入口独占一行，短侧栏里不和时间信息挤在一起");
+  assert.match(reloadLink, /width:\s*fit-content/, "链接按内容收紧，不拉成一整行可点区域");
+
+  const history = readFileSync(join(process.cwd(), "src", "webview", "components", "History.tsx"), "utf8");
+  assert.match(
+    history,
+    /className="session-item-dir" title=\{session\.cwd\}/,
+    "会话行目录短名要带完整路径悬停；截断处不丢信息",
+  );
+  const dir = rule(".session-item-dir");
+  for (const declaration of ["min-width: 0", "overflow: hidden", "text-overflow: ellipsis", "white-space: nowrap"]) {
+    assert.ok(dir.includes(declaration), `会话行目录短名要能单行截断：${declaration}`);
+  }
+
+  const select = rule(".drawer-scope-select");
+  for (const declaration of ["width: 100%", "min-width: 0", "text-overflow: ellipsis"]) {
+    assert.ok(select.includes(declaration), `历史范围选择器要能收窄并省略长名：${declaration}`);
+  }
+
+  const dialog = rule(".toolbar-preferences");
+  assert.match(dialog, /width:\s*min\(/, "工具栏优先级对话框宽度必须视口感知（min(...)），不能是固定宽度");
+  assert.match(dialog, /max-width:\s*none/, "对话框自身不设固定 max-width，交给 min() 钳制");
+  assert.match(
+    dialog,
+    /max-height:\s*calc\(100% - 2 \* var\(--toolbar-dialog-gutter\)\)/,
+    "对话框高度也要随视口收缩，窄而矮的侧栏里不能超出窗口",
+  );
+  const body = rule(".toolbar-preferences-body");
+  assert.match(body, /min-height:\s*0/, "滚动主体必须允许在 flex 列里收缩");
+  assert.match(body, /overflow:\s*auto/, "长列表在对话框内部滚动");
+  const rowGroup = /^\.toolbar-preferences-row,\s*\n\.toolbar-preferences-actions\s*\{([\s\S]*?)\}/mu.exec(css)?.[1] ?? "";
+  assert.match(rowGroup, /flex-wrap:\s*wrap/, "名称与按钮放不下时换行，不撑破对话框");
+  const button = rule(".toolbar-preferences-button");
+  assert.match(button, /max-width:\s*100%/, "按钮不超出对话框宽度");
+  assert.match(button, /overflow-wrap:\s*anywhere/, "按钮文案过长时就地折行");
+}
+console.log("styles: 失联横幅与新增窄栏元素的可收窄 / 截断语义 ✓");
+
 // ---------- 17. 轨迹是整页视图（不是抽屉），「加载更早」贴在时间线左端 ----------
 //
 // 用户 2026-09-14 口径：
@@ -1878,9 +1940,31 @@ console.log("styles: 轨迹整页占用会话窗口（输入区移出布局但�
     !/role="dialog"/.test(trajectory) && !/drawer-head/.test(trajectory),
     "轨迹视图不许再有抽屉头——标题栏里那个「加载更早」正是它带出来的重复入口",
   );
+  // 轨迹分支必须有明确边界：`then` 窗口止于替代分支之前，不许用跨分支的 `.*?`
+  // 把 `chat-area` 也吞进来后再自证。三段分别断言：有数据照常显示；失联且无数据
+  // 返回 null（由重载横幅替代加载）；失去失联标记后回到 TrajectoryView（加载态）。
+  const branchStart = flatApp.indexOf('{state.panel === "trajectory" ? (');
+  assert.ok(branchStart >= 0, "App 里找不到轨迹整页分支");
+  const elseAt = flatApp.indexOf(") : (", branchStart);
+  assert.ok(elseAt > branchStart, "轨迹三元必须有替代分支");
+  const thenBranch = flatApp.slice(branchStart, elseAt);
   assert.ok(
-    /\{state\.panel === "trajectory" \? \( [^<]*<TrajectoryView\b.*?\) : \( <div className="chat-area">/.test(flatApp),
-    "App 必须在轨迹分支里**顶掉整块会话页**（含 chat-scroll），而不是叠在会话上",
+    thenBranch.length < 1000,
+    `轨迹 then 窗口必须止于替代分支之前（现在 ${thenBranch.length} 字符，疑似跨到了 chat-area）`,
+  );
+  assert.equal(flatApp.split("<TrajectoryView").length - 1, 1, "整页轨迹只有一个 TrajectoryView");
+  assert.match(thenBranch, /<TrajectoryView\b/, "轨迹 then 分支渲染整页 TrajectoryView");
+  assert.match(
+    thenBranch,
+    /hostUnresponsive && !state\.trajectory \? null : <TrajectoryView\b/,
+    "失联且没有轨迹数据时用重载横幅替代加载；已有轨迹内容照常显示，恢复后回到 TrajectoryView",
+  );
+  assert.doesNotMatch(thenBranch, /className="chat-area"|className="chat-scroll"/, "then 分支不许叠着会话页");
+  const elseBranch = flatApp.slice(elseAt, flatApp.indexOf("<FindBar", elseAt));
+  assert.match(elseBranch, /^\) : \( <div className="chat-area">/, "else 分支才是会话页");
+  assert.ok(
+    flatApp.indexOf('className="chat-scroll"') > elseAt,
+    "chat-scroll 只属于替代分支：轨迹打开时整块会话页被替换，不是并排",
   );
 
   // 「…」在绘图区**内部**、贴左缘（官方 earlierHistory）
