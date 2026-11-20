@@ -3,6 +3,26 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 This project follows [Semantic Versioning](https://semver.org/).
 
+## 0.14.0（2026-11-20）
+
+### 中文
+
+- 新增：空会话可切换工作区根目录，也可选择工作区外的本机目录，各聊天窗口互不影响。
+- 新增：多根工作区的历史列表可独立筛选当前目录、单个根目录或全部根目录，无需切换聊天的工作目录。
+- 新增：可设置输入工具栏在空间不足时的保留优先级，并选择显示会话累计 Token 用量；悬停可查看精确的上下文用量和容量。
+- 新增：模型选择器支持搜索，打开时自动聚焦搜索框。
+- 改进：聊天标题栏更清楚地标识当前执行目录。
+- 改进：聊天标签与扩展宿主失联时，会提示重载窗口，并保留已加载的轨迹和未发送草稿。
+
+### English
+
+- Added: Empty chats can switch workspace roots or select a local folder outside the workspace without affecting other chat views.
+- Added: In multi-root workspaces, history can be filtered to the current directory, one root, or all roots without changing the chat's working directory.
+- Added: Set which composer toolbar items are kept when space is limited and optionally show the session's total token usage; hover to see exact context usage and capacity.
+- Added: The model picker supports search and focuses the search box when opened.
+- Improved: The chat header labels the current execution directory more clearly.
+- Improved: When a chat tab loses contact with the extension host, it offers to reload the window while keeping the loaded trajectory and unsent draft available.
+
 ## 0.13.3（2026-11-14）
 
 ### 中文
