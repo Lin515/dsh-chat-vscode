@@ -75,8 +75,7 @@ npm run package  # Releases/dsh-chat-<version>.vsix
 
 ### 输入、引用与附件
 
-- 在 VS Code 命令面板运行「DSH: 底栏显示顺序」，可调整窄窗口优先保留哪些项目，不改变它们的左右位置。默认布局不变；如想让会话累计 **Token 用量** 紧挨上下文圆环，启用它并隐藏「上下文数值」。具体上下文占用仍可悬停查看。
-
+- 在 VS Code 命令面板运行「DSH: 工具栏保留优先级」，可调整窄窗口优先保留哪些项目，不改变它们的左右位置。默认布局不变；如想让会话累计 **Token 用量** 紧挨上下文圆环，启用它并隐藏「上下文数值」。悬停于上下文圆环可查看精确的占用量与容量。
 - `/` 打开命令与技能菜单；`@` 引用文件、目录或历史会话，写入 `@path`、`@dir/` 或 `@[标题](dsh-session:…)`，由模型自行读取，不占附件通道。
 - 目录行主体进入目录，右侧「整个目录」按钮引用目录；键盘用 Enter 引用、Tab 进入。已发送的引用直接点击；草稿引用按住 `Alt` 打开可编辑的真实文件，按住 `Ctrl/Cmd` 打开引用。会话引用在新标签页打开，沿用编辑器分组规则。
 - `Alt+Shift+2` 将编辑器选区加入为 `@path#L12-L40` 引用。
@@ -194,8 +193,7 @@ Open the notification drawer with **Show history** or **DSH: View Notifications*
 
 ### Input, references and attachments
 
-- Run **DSH: Bottom Bar Display Order** from the VS Code Command Palette to choose what stays visible first in narrow views without changing where items appear. The default layout is unchanged. To put the session's cumulative **Token usage** beside the context ring, enable it and hide **Context numbers**. Hover over the ring for exact context usage.
-
+- Run **DSH: Toolbar retention priority** from the VS Code Command Palette to choose what stays visible first in narrow views without changing where items appear. The default layout is unchanged. To put the session's cumulative **Token usage** beside the context ring, enable it and hide **Context numbers**. Hover over the ring for exact context usage and capacity.
 - `/` opens commands and skills; `@` references files, folders or past sessions using `@path`, `@dir/` or `@[title](dsh-session:…)`. The model reads references itself; they are not attachments.
 - A folder row navigates into it; its “Entire folder” button references it. Enter references, Tab navigates. Click references in sent messages directly; hold `Alt` to open the editable real file from a draft reference, or hold `Ctrl/Cmd` to open the reference. Session links open a new tab using the same editor-group rules.
 - `Alt+Shift+2` inserts an editor selection as `@path#L12-L40`.

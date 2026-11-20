@@ -138,7 +138,7 @@
 - [pickerFocus.test.ts](<pickerFocus.test.ts>) — 模型弹层「打开即定位到选中项」：起点判定、方向键移动（只走模型列表这一段）、高亮样式可见，以及「滚动只归模型列表、思考档位区常驻在滚动容器之外、模型不支持可选档位时整块（含分隔线）不渲染」的结构与样式契约；另钉住搜索栏常驻在列表之外、打开即聚焦搜索框、关闭交还触发按钮，以及方向键对搜索框的例外。
 - [modelSearch.test.ts](<modelSearch.test.ts>) — 模型弹层搜索的过滤规则：名 / id / 提供商四层命中面、不区分大小写、多词同时命中、保持目录次序、丢弃分不出内容的组与中文命中。
 - [toolbarFit.test.ts](<toolbarFit.test.ts>) — 工具栏默认与自定义档位分配、极窄保底与布局盒判据；使用可注入观察者验证节点替换、幂等挂载、StrictMode 重挂与清理，并覆盖旧生命周期的负对照。
-- [toolbarPreferencesHost.test.ts](<toolbarPreferencesHost.test.ts>) — 底栏命令路由、偏好归一化与持久化、多视图同步和保存失败恢复。
+- [toolbarPreferencesHost.test.ts](<toolbarPreferencesHost.test.ts>) — 工具栏保留优先级命令的路由、偏好归一化与持久化、多视图同步和保存失败恢复。
 - [connectView.test.ts](<connectView.test.ts>) — 连接条三类状态、文案与按钮矩阵。
 - [contextMenu.test.ts](<contextMenu.test.ts>) — 会话右键菜单判据、「引用」落点算术、保存建议文件名；真实快捷复制处理器覆盖 Ctrl / Cmd、跨消息空白换行保真、编辑焦点、修饰键、组字、重复与已处理事件、选区包含性和空选区让路。
 - [nodeCopy.test.ts](<nodeCopy.test.ts>) / [nodeCopyBrowser.tsx](<nodeCopyBrowser.tsx>) — 独立 jsdom realm 点击生产节点按钮，核验思考 / 注入 / 技能 / 命令 / 提示 / 未知块、审批 / 待答问卷 / 计划 / 计划记录的复制载荷、空内容让路、助手只在轮尾复制最后一段正文（中间正文不挂按钮、不跨工具拼接）、用户整条复制与流式选区冻结渲染。可同入口在 Chromium 运行；不连接真实 DSH、不验证系统剪贴板。
@@ -224,7 +224,10 @@
 - [find.test.ts](<find.test.ts>) — 会话查找的跨文本节点匹配、命中位置环绕与导航前脱树判据；不替代真实 DOM 高亮验收。
 - [blankRestoreRace.test.ts](<blankRestoreRace.test.ts>) — 恢复历史会话与自动补空会话并发时，驱动真实控制器验证绑定不被覆盖。
 - [workspaceDirRepick.test.ts](<workspaceDirRepick.test.ts>) — 目录胶囊：未打开文件夹时每次都弹选择框、换目录真的落到新目录那条壳上（先切后建、取消保持原状、换回复用旧壳）；打开着文件夹时列出全部根并可切根 / 选工作区外目录（外部目录不注册），已有对话只读。
-- [historyDirectory.test.ts](<historyDirectory.test.ts>) — PR #4 修订的宿主行为：每窗口根 / 工作区外目录不注册 / 注册缓存按连接 + 目录分键 / 切根后立即发送与晚返回选择框的竞态 / 历史范围（current、roots、directory、归档、POSIX 大小写）/ 首帧与恢复快照带 `history` / 工作区文件夹变化时旧空壳先失去资格且已有会话不重绑。
+- [activeRoot.test.ts](<activeRoot.test.ts>) — 新窗口的默认根、归一化后的已记偏好与失效回退；覆盖零根、单根和多根。
+- [composerDir.test.ts](<composerDir.test.ts>) — 空态的目录菜单、系统选择器与禁用态、同名根的区分，以及已有会话只读。
+- [historyDirectory.test.ts](<historyDirectory.test.ts>) — 宿主的每窗口根、工作区外目录、工作区注册缓存、异步切根与发送的时序、历史范围与跨范围操作，以及首帧和恢复快照。
+- [historyDirectoryView.test.ts](<historyDirectoryView.test.ts>) — 历史抽屉的范围选项、当前范围显示，以及新 `history` 帧与旧列表帧的界面兼容。
 - [directoryPathKey.test.ts](<directoryPathKey.test.ts>) — 目录身份键：保留 POSIX `/` 与盘符根 `C:/`、Windows 形态忽略大小写、POSIX 保留大小写且不把反斜杠当分隔符。
 - [localImageResolve.test.ts](<localImageResolve.test.ts>) — 本地图片 loader 的范围隔离 / 回帧 / 去重 / 迟到帧，以及回帧前浏览器失败不触发最终降级；组件 DOM 时序由受控浏览器回放。
 - [trajectoryPre.test.ts](<trajectoryPre.test.ts>) — 轨迹原文呈现的默认不换行、渲染不写偏好以及复制与换行入口。

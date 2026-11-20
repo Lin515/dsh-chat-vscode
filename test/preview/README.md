@@ -2,7 +2,7 @@
 
 本目录只放离线预览页 `test/preview.html` 消费的数据，不进入扩展发布包。取不到时预览不合成回退。
 
-- [pr4-host-frames.json](<pr4-host-frames.json>) — PR #4 多根工作区 / 历史范围的帧。由当前源码的 `ChatController` 在离屏 `vscode` stub 中实际发出后原样保存（`workspaceFrame`、`historyFrame`、`historyRootsFrame`、`historyDirectoryFrame`、`historyDirectoryAFrame`、`workspaceBetaFrame`、`historyBetaCurrentFrame`）。`?roots=1` 时预览页读取它，并按界面发来的 `historyScope` / `switchRoot` 推送对应已录帧；没有录到的目标不回帧，不手编。
+- [multi-root-history-frames.json](<multi-root-history-frames.json>) — 多根工作区与历史范围的帧，由 `ChatController` 在离屏 `vscode` stub 中实际发出后原样保存。`?roots=1` 时预览页读取它；`historyScope` / `switchRoot` 的目录参数必须与已录帧中的路径完全相同，没有录到的目标不回帧，也不合成替代帧。
 
 预览入口：
 
