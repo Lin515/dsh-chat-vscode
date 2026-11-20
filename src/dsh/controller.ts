@@ -1118,7 +1118,14 @@ export class ChatController implements vscode.Disposable {
    */
   private readonly sessionEnsures = new Map<
     string,
-    { key: string; attempt: Promise<SessionScope | undefined> }
+    {
+      key: string;
+      /** 这一趟是不是**冻结发送**（`target` 由调用方给，不按目录变化作废）。 */
+      frozen: boolean;
+      /** 这一趟替**哪一次窗口动作**落壳（换目录路径带）；自动路径与发送没有动作。 */
+      action?: { viewId: string; epoch: number };
+      attempt: Promise<SessionScope | undefined>;
+    }
   >();
   /**
    * 每个窗口**当前那一次** `@` 候选查询的取消句柄。
@@ -5725,16 +5732,28 @@ export class ChatController implements vscode.Disposable {
        * 重新读根：用户按下发送之后别的窗口 / 本窗口换根不能把这条消息搬走。
        */
       target?: SessionTarget;
+      /**
+       * 这一次**窗口动作**（`rebindWorkspaceDir` 的换目录）：沿途在等连接、落壳、绑定之前
+       * 核对它还是不是这个窗口最新的意图，不是就整条作废。不传 = 不按动作作废（发送与自动路径）。
+       */
+      action?: { viewId: string; epoch: number };
     },
   ): Promise<SessionScope | undefined> {
     // 只有换目录或工作区文件夹变化可以解绑旧壳。显式打开的会话不受新会话目录偏好影响。
     const existing = this.scopeOfView(viewId);
     if (existing) return existing;
     const frozen = options.target !== undefined;
+    const action = options.action;
+    // **普通目标在这里同步抓**：换目录调用方不再自己抓一份当冻结目标传进来，冻结只属于发送
+    // ——不冻结，后面「落壳期间目录又变了」的作废判据才管得到换目录这条路。
     const target = options.target ?? this.captureSessionTarget(viewId);
     const key = target?.key ?? "";
     const inflight = this.sessionEnsures.get(viewId);
-    if (inflight && inflight.key === key) {
+    // **只并进判据相同的那一条**：冻结发送（不认目录变化）、自动路径（认目录变化）、某一次
+    // 换目录动作（还认动作身份）各有一套作废判据，并错一条就会让冻结目录被自动路径顶掉，
+    // 或让旧动作顺着新动作的壳写绑定。同一个目录里它们会并发进来，目录键相同还不够。
+    // 不并进也不会多建：建壳那一步有目录级的闸（`blankEnsures`）。
+    if (inflight && inflight.key === key && this.sameEnsureIntent(inflight, frozen, action)) {
       // **显式请求要能把在飞的这条链升档**：在飞的多半是 `ready` 尾巴 / 补壳那条**自动路径**
       // （`start: false`），它可能正卡在"等激活期那次自动连接"上。用户这时点「+」/发消息若只是
       // 并进去，`ensureConnected({ start: true })` 与 `userChoseConnection` 都不会发生——
@@ -5760,6 +5779,12 @@ export class ChatController implements vscode.Disposable {
         else await this.awaitActivationConnect();
       }
       if (!this.client) return undefined;
+      // 等连接期间这个窗口的意图可能已经换人（又换了一次目录 / 点开历史 / 点「+」）：
+      // 这一次动作到此作废，连已有的绑定也不当作它的结果交回去。
+      if (action && !this.viewActionIsCurrent(action)) {
+        this.log(`[new] 窗口=${viewId} 的这次动作已被后来的动作取代：不落壳`);
+        return undefined;
+      }
       // 连接与目录这两步都可能让**别的路径**先把这个窗口绑到一条会话上（用户点了历史
       // 里的一条）：绑定是既成事实，就按它走，不再自己建一条把它顶掉
       const bound = this.scopeOfView(viewId);
@@ -5789,9 +5814,9 @@ export class ChatController implements vscode.Disposable {
       }
       // 落壳串行化与扫描都在 `reuseOrCreateBlank` 里：上面那条 `await ensureConnected`
       // 之后列表可能才第一次到手，判据要在那里重新读（见 `blankEnsures`）
-      return await this.reuseOrCreateBlank(viewId, settledTarget, !frozen);
+      return await this.reuseOrCreateBlank(viewId, settledTarget, !frozen, action);
     })();
-    this.sessionEnsures.set(viewId, { key, attempt });
+    this.sessionEnsures.set(viewId, { key, frozen, action, attempt });
     try {
       return await attempt;
     } finally {
@@ -5804,6 +5829,26 @@ export class ChatController implements vscode.Disposable {
   /** 这个窗口此刻的目标目录还是不是 `target`（自动落壳的作废判据）。 */
   private sessionTargetIsCurrent(viewId: string, target: SessionTarget): boolean {
     return this.captureSessionTarget(viewId)?.key === target.key;
+  }
+
+  /**
+   * 两条落壳尝试是不是**同一套判据**：冻结与否相同，且动作身份相同（都没有，或都是同一次动作）。
+   *
+   * 只有判据相同才允许合并：冻结发送不能被自动路径的目录作废判据顶掉，旧动作也不能顺着
+   * 新动作的那条链写绑定。建壳仍由目录级的闸去重，所以判据不同时各走一趟不会多建。
+   */
+  private sameEnsureIntent(
+    inflight: { frozen: boolean; action?: { viewId: string; epoch: number } },
+    frozen: boolean,
+    action: { viewId: string; epoch: number } | undefined,
+  ): boolean {
+    if (inflight.frozen !== frozen) return false;
+    if (inflight.action === undefined) return action === undefined;
+    return (
+      action !== undefined &&
+      inflight.action.viewId === action.viewId &&
+      inflight.action.epoch === action.epoch
+    );
   }
 
   /**
@@ -5853,6 +5898,11 @@ export class ChatController implements vscode.Disposable {
     target: SessionTarget,
     /** true = 自动 / 换根路径：期间目标目录变了就整条作废；false = 发送冻结的那一份。 */
     requireCurrent: boolean,
+    /**
+     * 换根 / 换目录路径带上**这一次窗口动作**：期间用户又动了这个窗口（再换一次目录、
+     * 点「+」、点开历史里的一条）就整条作废，绝不把旧动作的壳绑上去。
+     */
+    action?: { viewId: string; epoch: number },
   ): Promise<SessionScope | undefined> {
     if (!this.client) return undefined;
     try {
@@ -5868,6 +5918,8 @@ export class ChatController implements vscode.Disposable {
         if (!this.sessions.length) await this.refreshSessions();
         // 等列表 / 闸期间根换了：自动路径到此收手，绝不把旧目录的壳绑给新根窗口
         if (requireCurrent && !this.sessionTargetIsCurrent(viewId, target)) return undefined;
+        // 等闸期间这次换目录动作已被取代：同样到此收手，不扫、不建、也不认领
+        if (action && !this.viewActionIsCurrent(action)) return undefined;
         const reusable = this.reusableBlank(target);
         if (reusable !== undefined) this.log(`[new] 窗口=${viewId} 复用空壳 ${reusable}`);
         const result =
@@ -5897,6 +5949,11 @@ export class ChatController implements vscode.Disposable {
       // 自动路径：落壳最后一次 await（`refreshSessions`）期间根已经换了 → 不绑定
       if (requireCurrent && !this.sessionTargetIsCurrent(viewId, target)) {
         this.log(`[new] 窗口=${viewId} 在落壳完成前换了根：不绑定旧目录的会话 ${sessionId}`);
+        return undefined;
+      }
+      // 换目录动作：落壳这几串往返期间用户又动了这个窗口 → 不绑定（壳留着给以后复用）
+      if (action && !this.viewActionIsCurrent(action)) {
+        this.log(`[new] 窗口=${viewId} 的这次换目录动作在落壳期间已被取代：不绑定会话 ${sessionId}`);
         return undefined;
       }
       // **窗口在 await 期间关掉了**（用户关掉编辑区面板 / 收起侧栏）：落壳链回来时
@@ -6413,7 +6470,9 @@ export class ChatController implements vscode.Disposable {
     }
     if (action && !this.viewActionIsCurrent(action)) return;
     if (!target) return;
-    await this.ensureSession(viewId, { start: true, askDir: false, target });
+    // 换目录**不是冻结发送**：不把这里抓到的目录当冻结目标传下去（那会让落壳跳过「期间
+    // 目录又变了」的作废判据），只把这一次窗口动作带下去；目标目录由 `ensureSession` 同步抓。
+    await this.ensureSession(viewId, { start: true, askDir: false, action });
   }
 
   /**
