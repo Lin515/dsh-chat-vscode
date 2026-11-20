@@ -919,3 +919,118 @@ for (const folders of [[DIR_A], [DIR_A, DIR_B]]) {
 }
 
 console.log("historyDirectory: all assertions passed");
+
+// ---------- 十二、发送落点核对：按下时未绑定，等连接期间自动补的壳不得承载这条消息 ----------
+//
+// `submitMessage` 在按下发送后先 await 连接；这一趟里工作区文件夹变化 / `onConnected` 的
+// 自动补壳（`adoptBlankForUnboundViews`）会把「无会话的空态」窗口绑到**当时那个根**的空壳上。
+// 这条提交的落点只认按下那一刻冻结的目录（`null` = 那一刻确实没有目录），不能借补出来的壳发。
+// 以下用 `ensureConnected` 的替身确定性地制造这段等待：替身里换文件夹并跑一次
+// `applyWorkspaceFoldersChange`，与真实入口同一套代码。
+
+/** 当前所有草稿（失败 / 取消后正文应当回到输入框）。 */
+const draftsOf = (h: Harness): string[] =>
+  [...(h.c as unknown as { drafts: Map<string, string> }).drafts.values()];
+
+/** 把「等连接那一趟」换成给定动作（动作里负责把连接结算成 connected）。 */
+function stubConnectWait(h: Harness, during: () => Promise<void>): void {
+  h.c.connection = "connecting";
+  (h.c as unknown as { ensureConnected(options: { start: boolean }): Promise<void> }).ensureConnected =
+    async () => {
+      await during();
+    };
+}
+
+// 十二a、冻结为「没有目录」（null）：等连接期间补到 B 的壳 → 不发送、草稿回输入框
+{
+  const h = makeHarness([], { folders: [] });
+  await bindAndRefresh(h, "v1");
+  assert.strictEqual(h.c.viewSessions.get("v1"), undefined, "前置：窗口未绑定、没有目录");
+  stubConnectWait(h, async () => {
+    stubFolders([DIR_B]);
+    h.c.connection = "connected";
+    await h.c.applyWorkspaceFoldersChange();
+  });
+  await send(h, "v1", "nil-late-bind");
+  const bound = h.c.viewSessions.get("v1");
+  console.log(`  nil：补壳绑定=${createdCwd(h.client, bound)} 发送次数=${h.client.prompts.length}`);
+  assert.ok(bound, "前置：自动补壳确实把窗口绑到了 B 的空壳上");
+  assert.strictEqual(createdCwd(h.client, bound), DIR_B, "补出来的壳在 B");
+  assert.strictEqual(h.client.prompts.length, 0, "冻结在「没有目录」上的提交不跟到后来补的壳上");
+  assert.ok(draftsOf(h).some((text) => text.includes("nil-late-bind")), "正文回到输入框");
+}
+
+// 十二b、冻结目录 A、等连接期间补到 B 的壳 → 不发送、不覆盖 B 的绑定、草稿回输入框
+{
+  const h = makeHarness([], { folders: [DIR_A] });
+  await bindAndRefresh(h, "v1");
+  assert.strictEqual(h.c.viewSessions.get("v1"), undefined, "前置：窗口未绑定");
+  stubConnectWait(h, async () => {
+    stubFolders([DIR_B]);
+    h.c.connection = "connected";
+    await h.c.applyWorkspaceFoldersChange();
+  });
+  await send(h, "v1", "mismatch-late-bind");
+  const bound = h.c.viewSessions.get("v1");
+  console.log(`  mismatch：补壳绑定=${createdCwd(h.client, bound)} 发送次数=${h.client.prompts.length}`);
+  assert.ok(bound, "前置：自动补壳把窗口绑到了 B 的空壳上");
+  assert.strictEqual(createdCwd(h.client, bound), DIR_B, "B 的绑定保留、不被静默替换");
+  assert.strictEqual(h.client.prompts.length, 0, "冻结目录是 A 的提交不落到 B 的壳上");
+  assert.ok(draftsOf(h).some((text) => text.includes("mismatch-late-bind")), "正文回到输入框");
+}
+
+// 十二c、冻结目录 A、等连接期间补到 A 的壳 → 同目录，照常发给这条补出的壳
+{
+  const h = makeHarness([], { folders: [DIR_A] });
+  await bindAndRefresh(h, "v1");
+  assert.strictEqual(h.c.viewSessions.get("v1"), undefined, "前置：窗口未绑定");
+  stubConnectWait(h, async () => {
+    stubFolders([DIR_A]);
+    h.c.connection = "connected";
+    await h.c.applyWorkspaceFoldersChange();
+  });
+  await send(h, "v1", "match-late-bind");
+  const bound = h.c.viewSessions.get("v1");
+  console.log(`  match：补壳绑定=${createdCwd(h.client, bound)} 发送=${h.client.prompts.at(-1)?.sessionId}`);
+  assert.ok(bound, "前置：自动补壳把窗口绑到了 A 的空壳上");
+  assert.strictEqual(createdCwd(h.client, bound), DIR_A, "冻结目录与补壳目录一致");
+  assert.strictEqual(h.client.prompts.length, 1, "同目录的补壳可以承载这条提交");
+  assert.strictEqual(h.client.prompts.at(-1)?.sessionId, bound, "就发在这条壳上");
+}
+
+// 十二d、按下那一刻已绑定历史会话（cwd 与当前根偏好不同）：照旧发给它
+{
+  const h = makeHarness([{ sessionId: "used-B", cwd: DIR_B }], { folders: [DIR_A] });
+  await bindAndRefresh(h, "v1");
+  await open(h, "v1", "used-B");
+  stubConnectWait(h, async () => {
+    h.c.connection = "connected";
+  });
+  await send(h, "v1", "history-bound");
+  console.log(`  history：发送=${h.client.prompts.at(-1)?.sessionId}`);
+  assert.strictEqual(h.client.prompts.at(-1)?.sessionId, "used-B", "按下时的历史会话不受根偏好影响");
+}
+
+// 十二e、按下时的会话在等连接期间被换掉：不发到新绑定上，正文回输入框
+{
+  const h = makeHarness(
+    [
+      { sessionId: "used-A", cwd: DIR_A },
+      { sessionId: "used-B", cwd: DIR_B },
+    ],
+    { folders: [DIR_A, DIR_B] },
+  );
+  await bindAndRefresh(h, "v1");
+  await open(h, "v1", "used-A");
+  stubConnectWait(h, async () => {
+    h.c.connection = "connected";
+    await open(h, "v1", "used-B");
+  });
+  await send(h, "v1", "stale-history");
+  console.log(`  stale：绑定=${h.c.viewSessions.get("v1")} 发送次数=${h.client.prompts.length}`);
+  assert.strictEqual(h.client.prompts.length, 0, "不把等待期间换上的会话当这次点击的对象");
+  assert.strictEqual(h.c.viewSessions.get("v1"), "used-B", "绑定保持用户后来的选择");
+  assert.ok(draftsOf(h).some((text) => text.includes("stale-history")), "正文回到输入框");
+}
+
+console.log("historyDirectory: late-binding assertions passed");
