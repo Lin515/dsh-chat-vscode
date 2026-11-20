@@ -551,6 +551,56 @@ console.log("historyDirectory: 根选择 / 注册缓存 / 竞态 / 历史范围�
   assert.strictEqual(historyFor(h.frames, "v1"), undefined, "没有可见变化就不推帧");
 }
 
+// ---------- 三c、陈旧历史空壳：开过一轮就清占用标记，不需要重新拉列表 ----------
+{
+  const h = makeHarness([{ sessionId: "blank-A", cwd: DIR_A, blank: true }], { folders: [DIR_A, DIR_B] });
+  await bindAndRefresh(h, "occupier");
+  await bindAndRefresh(h, "observer");
+  await open(h, "occupier", "blank-A");
+  interface RowView {
+    id: string;
+    running?: boolean;
+    blank?: boolean;
+    occupied?: boolean;
+  }
+  const rowOf = () =>
+    (historyFor(h.frames, "observer")?.sessions as RowView[] | undefined)?.find(
+      (row) => row.id === "blank-A",
+    );
+  const shape = (row: RowView | undefined) => ({
+    running: row?.running,
+    blank: row?.blank,
+    occupied: row?.occupied,
+  });
+  console.log(`  历史空壳：${JSON.stringify(shape(rowOf()))}`);
+  assert.deepStrictEqual(
+    shape(rowOf()),
+    { running: false, blank: true, occupied: true },
+    "前置：窗口停在真正的空壳上，历史行的占用标记锁住垃圾桶",
+  );
+  const listsBefore = h.client.calls.filter((call) => call === "session/list").length;
+
+  // 在这条空壳里开一轮（别的窗口 / dsh web 都行）：状态中继先 true 后 false，**不拉整份列表**
+  assert.strictEqual(h.c.applySessionStatus("api-session/status", ["blank-A", true]), true);
+  assert.strictEqual(h.c.applySessionStatus("api-session/status", ["blank-A", false]), true);
+  console.log(`  空壳开轮后：${JSON.stringify(shape(rowOf()))}`);
+  assert.strictEqual(
+    h.client.calls.filter((call) => call === "session/list").length,
+    listsBefore,
+    "占用标记的清理不依赖重新拉整份列表",
+  );
+  assert.deepStrictEqual(
+    shape(rowOf()),
+    { running: false, blank: true, occupied: false },
+    "跑过一轮的陈旧空壳只剩服务端的 blank 位，占用标记必须清掉（垃圾桶解锁）",
+  );
+  assert.strictEqual(
+    h.c.sessions.find((row) => row.id === "blank-A")?.blank,
+    false,
+    "旧列表里的空位已按 `markSessionEngaged` 翻假",
+  );
+}
+
 // ---------- 四、每窗口的根互不覆盖；换根后发送 / 落壳只用新根 ----------
 {
   const h = makeHarness(
