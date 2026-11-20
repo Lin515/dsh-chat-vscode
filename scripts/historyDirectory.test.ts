@@ -442,6 +442,40 @@ console.log("historyDirectory: 根选择 / 注册缓存 / 竞态 / 历史范围�
   );
 }
 
+// ---------- 二b、roots 范围只认根目录本身，严格子目录不算（精确匹配） ----------
+{
+  const childA = DIR_A + "\\\\sub";
+  const childB = DIR_B + "\\\\nested";
+  const h = makeHarness(
+    [
+      { sessionId: "root-A", cwd: DIR_A },
+      { sessionId: "child-A", cwd: childA },
+      { sessionId: "root-B", cwd: DIR_B },
+      { sessionId: "child-B", cwd: childB },
+    ],
+    { folders: [DIR_A, DIR_B] },
+  );
+  await bindAndRefresh(h, "v1");
+  await open(h, "v1", "root-A");
+  assert.deepStrictEqual(historyIds(h.frames, "v1"), ["root-A"], "current 只看当前会话的创建目录本身");
+  h.frames.length = 0;
+  await h.c.handle({ type: "historyScope", scope: { kind: "roots" } }, "v1");
+  console.log(`  roots 严格子目录：${JSON.stringify(historyIds(h.frames, "v1"))}`);
+  assert.deepStrictEqual(
+    historyIds(h.frames, "v1"),
+    ["root-A", "root-B"],
+    "roots 是各根目录的精确匹配，严格子目录不进列表",
+  );
+  assert.strictEqual(
+    (historyFor(h.frames, "v1") as Record<string, unknown>).mixedDirectories,
+    true,
+    "跨两个根仍是混合目录",
+  );
+  h.frames.length = 0;
+  await h.c.handle({ type: "historyScope", scope: { kind: "directory", path: DIR_A } }, "v1");
+  assert.deepStrictEqual(historyIds(h.frames, "v1"), ["root-A"], "directory 同样精确匹配，不含子目录");
+}
+
 // ---------- 三、无效 / 迟到的范围整条拒绝 ----------
 {
   const h = makeHarness([{ sessionId: "used-A", cwd: DIR_A }, { sessionId: "used-C", cwd: DIR_C }], { folders: [DIR_A, DIR_B] });
