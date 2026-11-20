@@ -10,7 +10,8 @@
  *    （系统选择器给的是本机路径）明确禁用；
  * 3. **注册缓存**：按连接 + 目录 + 是否注册分键，切根 / 移除根不会沿用旧 workspaceId；
  * 4. **竞态**：切根后立即发送只落新根；发送先于选择框返回时 `beginSend` 同步冻结目录，
- *    晚返回的选择框不能污染新动作 / 关窗；反过来（选择先完成）发送落新目录；
+ *    晚返回的选择框不能污染新动作 / 关窗；反过来（选择先完成）发送落新目录；连续换根时
+ *    先发起的建会话晚完成也不能把窗口绑回旧根；
  * 5. **历史范围**：默认当前会话创建目录 / 本窗预选目录，`roots` 混合全部根，`directory`
  *    只看指定目录；切换范围不发注册 / 建会话、只发给本窗口；
  * 6. **旧列表帧不变**：`sessions` / `archivedSessions` 仍按旧口径发（jobs 等消费者）；
@@ -520,6 +521,60 @@ console.log("historyDirectory: 根选择 / 注册缓存 / 竞态 / 历史范围�
   await send(h, "v1", "also-b");
   assert.strictEqual(createdCwd(h.client, h.c.viewSessions.get("v1")), DIR_B, "v2 开着 B 不妨碍 v1 切 B");
   assert.strictEqual(h.c.viewSessions.get("v2"), "used-B", "v2 的绑定不受 v1 换根影响");
+}
+
+// ---------- 四c、连续换根：早发起的 B 建会话晚完成，不能把窗口从 C 绑回 B ----------
+{
+  const h = makeHarness([], { folders: [DIR_A, DIR_B, DIR_C] });
+  await bindAndRefresh(h, "v1");
+  await h.c.handle({ type: "newSession" }, "v1");
+  const original = h.client.createSession.bind(h.client);
+  const gate = () => {
+    let open!: () => void;
+    const wait = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    return { wait, open };
+  };
+  const gates = new Map([
+    [DIR_B, { entered: gate(), proceed: gate() }],
+    [DIR_C, { entered: gate(), proceed: gate() }],
+  ]);
+  const gateFor = (cwd: string) => {
+    const found = gates.get(cwd);
+    assert.ok(found, `前置：${cwd} 的建会话闸存在`);
+    return found;
+  };
+  h.client.createSession = async (target, reuse) => {
+    const cwd =
+      target.cwd ?? h.client.workspaces.find((item) => item.workspaceId === target.workspaceId)?.path;
+    const blocked = cwd === undefined ? undefined : gates.get(cwd);
+    if (blocked) {
+      blocked.entered.open();
+      await blocked.proceed.wait;
+    }
+    return original(target, reuse);
+  };
+  // 切 B 的建会话先卡住；切 C 在 B 还没完成时发起，也卡住；然后先放行 B。
+  const toB = h.c.handle({ type: "switchRoot", path: DIR_B }, "v1");
+  await gateFor(DIR_B).entered.wait;
+  const toC = h.c.handle({ type: "switchRoot", path: DIR_C }, "v1");
+  await gateFor(DIR_C).entered.wait;
+  gateFor(DIR_B).proceed.open();
+  await toB;
+  const bShell = h.client.created.find((item) => item.cwd === DIR_B)?.sessionId;
+  assert.ok(bShell, "B 的空壳最终建了出来");
+  assert.notStrictEqual(h.c.viewSessions.get("v1"), bShell, "晚完成的 B 不能把窗口绑回 B");
+  gateFor(DIR_C).proceed.open();
+  await toC;
+  const cShell = h.c.viewSessions.get("v1");
+  assert.strictEqual(createdCwd(h.client, cShell), DIR_C, "后发起的 C 才是窗口的根");
+  await send(h, "v1", "race-send");
+  const sent = h.client.prompts.at(-1)?.sessionId;
+  console.log(
+    `  连续换根：绑定=${createdCwd(h.client, cShell)} 发送=${createdCwd(h.client, sent)}`,
+  );
+  assert.strictEqual(createdCwd(h.client, sent), DIR_C, "消息落后发起的 C，不回到 B");
 }
 
 // ---------- 五、发送先于选择框返回：beginSend 同步冻结目录；晚返回不污染新动作 ----------
