@@ -186,6 +186,12 @@ interface ChatControllerInternals {
   detachView(viewId: string): void;
   /** 换连接 / 断线收场（真实链路上 prepareRound / 掉线时走它）。 */
   teardownStreams(): void;
+  /** 接上一条新连接（同端点重连也走它，见 `adoptClient`）。 */
+  adoptClient(client: unknown): void;
+  /** 历史行（`historyView` 的候选；连接换代时清空）。 */
+  historySessions: { id: string }[];
+  /** 每个窗口的历史范围（只有显式切过才有条目）。 */
+  viewHistoryScopes: Map<string, { kind: string; path?: string }>;
 }
 
 interface HarnessOptions {
@@ -279,6 +285,28 @@ function archivedIdsFor(frames: Captured[], viewId: string): string[] | undefine
     return ((frame.sessions ?? []) as { id: string }[]).map((row) => row.id);
   }
   return undefined;
+}
+
+/**
+ * **这个窗口**最近一帧 `history`（换连接后的重发 / 范围切换 / 列表刷新都读它）。
+ *
+ * 过线语义与 {@link sessionIdsFor} 一致：`all` 是广播，其余按 viewId 定向。
+ * `patch` 与整份 `state` 快照两个渠道都认。
+ */
+function historyFor(frames: Captured[], viewId: string): Record<string, unknown> | undefined {
+  for (let i = frames.length - 1; i >= 0; i -= 1) {
+    const { target, frame } = frames[i];
+    if (target !== "all" && target !== viewId) continue;
+    const source = frame.type === "patch" ? frame.patch : frame.type === "state" ? frame.state : undefined;
+    const history = (source as { history?: Record<string, unknown> } | undefined)?.history;
+    if (history) return history;
+  }
+  return undefined;
+}
+
+/** `history` 帧里那两行会话 id（活动 / 归档），只做断言用。 */
+function historyIdsOf(history: Record<string, unknown> | undefined, key: "sessions" | "archivedSessions") {
+  return ((history?.[key] ?? []) as { id: string }[]).map((row) => row.id);
 }
 
 /** 用户点开历史抽屉（界面发 `listSessions`）。 */
@@ -881,4 +909,68 @@ console.log("sessionListScope: 历史列表跟随当前会话 cwd（驱动真控
   );
 }
 
-console.log("sessionListScope: 每窗口按当前会话 cwd 隔离、切换即跟随、文件夹旧口径不变 ✓");
+// ---------- 九、同一端点重连：有效范围保留（行清空即发），根不可用才折回 ----------
+{
+  const workspace = vscode.workspace as unknown as { workspaceFolders: unknown };
+  const originalFolders = workspace.workspaceFolders;
+  // 多根工作区：`directory` 范围才有候选（单根时 `historyScopeAvailable` 只认 current）
+  workspace.workspaceFolders = [{ uri: { fsPath: DIR_A } }, { uri: { fsPath: DIR_B } }];
+  try {
+    const rows: Row[] = [
+      { sessionId: "used-A", cwd: DIR_A },
+      { sessionId: "used-B", cwd: DIR_B },
+    ];
+    const { c, frames } = makeHarness(rows);
+    c.bindView("v1");
+    await c.openSession("v1", "used-A");
+    await openHistory(c, "v1");
+    // 用户把这个窗口的历史范围切到 B 这个显式根
+    await c.handle({ type: "historyScope", scope: { kind: "directory", path: DIR_B } }, "v1");
+    assert.deepStrictEqual(historyFor(frames, "v1")?.scope, { kind: "directory", path: DIR_B });
+    assert.deepStrictEqual(historyIdsOf(historyFor(frames, "v1"), "sessions"), ["used-B"], "前置：范围只列 B 的会话");
+
+    // 同一端点重连：控制器拿到的是**另一个**客户端对象，历史行整体作废
+    frames.length = 0;
+    c.adoptClient(fakeClient(rows));
+    const reconnected = historyFor(frames, "v1");
+    assert.ok(reconnected, "历史行清空前必须发一帧（界面才知道旧行已经作废）");
+    assert.deepStrictEqual(
+      reconnected.scope,
+      { kind: "directory", path: DIR_B },
+      "同一端点重连保留窗口显式选的范围（B 仍在本机根里，没有理由折回）",
+    );
+    assert.deepStrictEqual(historyIdsOf(reconnected, "sessions"), [], "换代先清空行，等新连接的列表回来");
+    assert.deepStrictEqual(historyIdsOf(reconnected, "archivedSessions"), [], "归档那一份同样清空");
+    assert.strictEqual(c.viewHistoryScopes.get("v1")?.kind, "directory", "范围表里那条也还在（不再随换代清掉）");
+    assert.deepStrictEqual(c.historySessions, [], "历史候选本身照旧整体作废");
+    console.log(
+      `  重连后 v1：scope=${JSON.stringify(reconnected.scope)} sessions=${JSON.stringify(historyIdsOf(reconnected, "sessions"))}`,
+    );
+
+    // 新连接的列表回来：仍按保留下来的范围过滤，不折回 current
+    await openHistory(c, "v1");
+    assert.deepStrictEqual(
+      historyIdsOf(historyFor(frames, "v1"), "sessions"),
+      ["used-B"],
+      "重连后重新拉取仍按原范围收窄（不是只保住 scope 字段、列表却走了 current）",
+    );
+
+    // 根不可用（用户改了工作区文件夹）：下一次按范围出帧时折回 current 并删掉那条
+    workspace.workspaceFolders = [{ uri: { fsPath: DIR_A } }];
+    await openHistory(c, "v1");
+    assert.deepStrictEqual(historyFor(frames, "v1")?.scope, { kind: "current" }, "根不可用时当场折回 current");
+    assert.deepStrictEqual(
+      historyIdsOf(historyFor(frames, "v1"), "sessions"),
+      ["used-A"],
+      "折回 current 后按当前会话目录列（保留的范围没把旧目录的会话带出来）",
+    );
+    assert.strictEqual(c.viewHistoryScopes.has("v1"), false, "失效范围从表里删掉，不留在界面上");
+    console.log(
+      `  根不可用后 v1：scope=${JSON.stringify(historyFor(frames, "v1")?.scope)} sessions=${JSON.stringify(historyIdsOf(historyFor(frames, "v1"), "sessions"))}`,
+    );
+  } finally {
+    workspace.workspaceFolders = originalFolders;
+  }
+}
+
+console.log("sessionListScope: 每窗口按当前会话 cwd 隔离、切换即跟随、文件夹旧口径不变、重连保留有效范围 ✓");
