@@ -143,7 +143,7 @@ interface Driver {
   unbindView(viewId: string): void;
   newSession(viewId: string): Promise<void>;
   refreshSessions(): Promise<void>;
-  /** 用户发了一条消息（`controller.send`：域上**乐观**置为生成中）。 */
+  /** 用户发了一条消息（走生产入口 `controller.submitMessage`：域上**乐观**置为生成中）。 */
   send(viewId: string, text: string): Promise<void>;
   /** `$events` 流上的 `api-session/status`（`args = [sessionId, running]`）真帧。 */
   status(sessionId: string, running: boolean): Promise<void>;
@@ -185,7 +185,7 @@ function makeDriver(rows: Row[], options: { state?: () => ReturnType<typeof fake
     unbindView(viewId: string): void;
     newSession(viewId: string): Promise<void>;
     refreshSessions(): Promise<void>;
-    send(viewId: string, text: string, attachments: never[]): Promise<void>;
+    submitMessage(viewId: string, text: string, attachments: never[], gesture: "enter"): Promise<boolean>;
   };
   let turnSeq = 100;
   const driver: Driver = {
@@ -194,7 +194,9 @@ function makeDriver(rows: Row[], options: { state?: () => ReturnType<typeof fake
     unbindView: (viewId) => c.unbindView(viewId),
     newSession: (viewId) => c.newSession(viewId),
     refreshSessions: () => c.refreshSessions(),
-    send: (viewId, text) => c.send(viewId, text, []),
+    send: async (viewId, text) => {
+      await c.submitMessage(viewId, text, [], "enter");
+    },
     status: (sessionId, running) =>
       internals.onEventFrame({ type: "emit", event: "api-session/status", args: [sessionId, running] }),
     turn: (sessionId, type, turnNo) => {
