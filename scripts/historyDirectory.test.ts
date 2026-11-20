@@ -1,5 +1,5 @@
 /**
- * PR #4 修订的**宿主行为级**回归：每窗口的新会话根、工作区注册缓存、发送 / 落壳竞态，以及
+ * 多根工作区的**宿主行为级**回归：每窗口的新会话根、工作区注册缓存、发送 / 落壳竞态，以及
  * 历史抽屉的只读范围（`ChatState.history`）。
  *
  * 全部驱动真 `ChatController`（离线 vscode stub + 假服务端），不启动真实 DSH、不发模型请求。
@@ -190,6 +190,9 @@ interface Internals {
   newSessionCwd?: string;
   archivedSessionIds: Set<string>;
   viewRootChoices: Map<string, { kind: string; path: string }>;
+  deletedSessionIds: Set<string>;
+  findSessionDir(sessionId: string): string | undefined;
+  applySessionStatus(event: string, args: readonly unknown[]): boolean;
   bindView(viewId: string): void;
   unbindView(viewId: string): void;
   snapshotFor(viewId: string | undefined): Record<string, unknown>;
@@ -465,6 +468,53 @@ console.log("historyDirectory: 根选择 / 注册缓存 / 竞态 / 历史范围�
   h.c.unbindView("v1");
   await h.c.handle({ type: "historyScope", scope: { kind: "roots" } }, "v1");
   assert.strictEqual(historyFor(h.frames, "v1"), undefined, "窗口下线后迟到的范围切换丢弃");
+}
+
+// ---------- 三b、跨根删除：历史镜像里的会话按历史行找到并真的删除 ----------
+{
+  const h = makeHarness(
+    [
+      { sessionId: "used-A", cwd: DIR_A },
+      { sessionId: "used-B", cwd: DIR_B },
+    ],
+    { folders: [DIR_A, DIR_B] },
+  );
+  await bindAndRefresh(h, "v1");
+  await open(h, "v1", "used-A");
+  await h.c.handle({ type: "historyScope", scope: { kind: "roots" } }, "v1");
+  assert.ok(!h.c.sessions.some((row) => row.id === "used-B"), "前置：B 在按当前根收窄的旧列表里不可见");
+  const mirrorB = (historyFor(h.frames, "v1")?.sessions as { id: string; running?: boolean }[]).find(
+    (row) => row.id === "used-B",
+  );
+  assert.ok(mirrorB && mirrorB.running === false, "B 只出现在历史镜像里，且是停止态");
+
+  // 删日志目录要全盘扫描 `~/.dsh/sessions`：跨根会话必须真的走到这条路，而不是按旧列表扑空
+  let touchedDeletePath = false;
+  h.c.findSessionDir = () => {
+    touchedDeletePath = true;
+    return undefined;
+  };
+  await h.c.handle({ type: "deleteSession", sessionId: "used-B" }, "v1");
+  console.log(
+    `  跨根删除：touched=${touchedDeletePath} 仍可见=${(historyIds(h.frames, "v1") ?? []).includes("used-B")}`,
+  );
+  assert.strictEqual(touchedDeletePath, true, "跨根会话按历史行找到，真的进入日志目录删除路径");
+  assert.ok(!(historyIds(h.frames, "v1") ?? []).includes("used-B"), "删除后历史镜像不再列出 B");
+  assert.ok(h.c.deletedSessionIds.has("used-B"), "删除记入本地删除集合，后续拉取不会让它回来");
+
+  // 删除后迟到的状态帧仍然认得，但不许把已删除的会话复活成历史行
+  h.frames.length = 0;
+  assert.strictEqual(
+    h.c.applySessionStatus("api-session/status", ["used-B", true]),
+    true,
+    "状态帧仍被认下（不交给配置路由）",
+  );
+  assert.strictEqual(
+    h.c.historySessions.some((row) => row.id === "used-B"),
+    false,
+    "已删除的会话不会被状态帧复活",
+  );
+  assert.strictEqual(historyFor(h.frames, "v1"), undefined, "没有可见变化就不推帧");
 }
 
 // ---------- 四、每窗口的根互不覆盖；换根后发送 / 落壳只用新根 ----------
