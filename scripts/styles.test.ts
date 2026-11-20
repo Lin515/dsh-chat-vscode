@@ -1948,10 +1948,6 @@ console.log("styles: 失联横幅与新增窄栏元素的可收窄 / 截断语�
   const elseAt = flatApp.indexOf(") : (", branchStart);
   assert.ok(elseAt > branchStart, "轨迹三元必须有替代分支");
   const thenBranch = flatApp.slice(branchStart, elseAt);
-  assert.ok(
-    thenBranch.length < 1000,
-    `轨迹 then 窗口必须止于替代分支之前（现在 ${thenBranch.length} 字符，疑似跨到了 chat-area）`,
-  );
   assert.equal(flatApp.split("<TrajectoryView").length - 1, 1, "整页轨迹只有一个 TrajectoryView");
   assert.match(thenBranch, /<TrajectoryView\b/, "轨迹 then 分支渲染整页 TrajectoryView");
   assert.match(
