@@ -13,7 +13,7 @@ import { ESC_LAYER, useEscapeLayer } from "../escapeOwner";
 import { IconChevronRight } from "../icons";
 import { splitPath } from "../pathDisplay";
 import { selectionIntersectsElement } from "../selectionRange";
-import { useTexts, type Texts } from "../texts";
+import { textsLocale, useTexts, type Locale, type Texts } from "../texts";
 import { dpLength } from "../uiScale";
 
 /**
@@ -366,6 +366,21 @@ export interface ContextDetailInput {
 }
 
 /**
+ * 上下文悬停里的**完整整数**（`3,200 / 128,000`），按界面当前生效语言分组。
+ *
+ * 不调无参 `toLocaleString()`：那会跟随宿主 / 浏览器默认 locale，与词典语言不一致时
+ * 同一个界面里会混进另一套分隔符。分组规则只跟着 `Texts` 走（`textsLocale`）。
+ */
+const FULL_INTEGER = {
+  zh: new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 0 }),
+  en: new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }),
+} satisfies Record<Locale, Intl.NumberFormat>;
+
+function formatFullInteger(value: number, texts: Texts): string {
+  return FULL_INTEGER[textsLocale(texts)].format(value);
+}
+
+/**
  * 上下文悬停明细的唯一拼法：上下文圆环、Token 用量与缓存命中率的悬停内容相同。
  *
  * 四组行各自独立；除了首行明确说明占用不可用，缺数据的行不出现：
@@ -384,7 +399,7 @@ export function contextDetailLines(input: ContextDetailInput, texts: Texts): str
   const detail: string[] = [];
   const numbers = contextNumbers(input.percent, input.used, input.total);
   if (numbers) {
-    detail.push(texts.contextUsed(numbers.percent, numbers.used.toLocaleString(), numbers.total.toLocaleString()));
+    detail.push(texts.contextUsed(numbers.percent, formatFullInteger(numbers.used, texts), formatFullInteger(numbers.total, texts)));
   } else {
     detail.push(texts.ctxUnavailable);
   }

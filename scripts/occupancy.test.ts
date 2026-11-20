@@ -24,7 +24,8 @@ import assert from "node:assert";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { SessionAdapter } from "../src/dsh/adapter";
-import { contextNumbers, formatBreakdownTokens, formatContextSpan } from "../src/webview/components/primitives";
+import { contextDetailLines, contextNumbers, formatBreakdownTokens, formatContextSpan, formatTokens } from "../src/webview/components/primitives";
+import { dictionaryFor } from "../src/webview/texts";
 
 /** 收集 patch 帧里的 contextOccupancy 序列。 */
 function harness() {
@@ -293,5 +294,53 @@ console.log("occupancy: 界面侧没有本地重算 / 回退路径（结构不�
   assert.strictEqual(contextNumbers(34, 43_520, 0), undefined, "分母为 0 不显示");
 }
 console.log("occupancy: 精确数值写法 `44K/128K` / `400K/1.0M` ✓");
+
+// ---------- 9. 悬停的完整整数按界面语言，胶囊保持紧凑 ----------
+//
+// 用户口径：悬停里的已用 / 总量要**完整整数**，语言取界面当前生效的 zh/en；
+// 圆环右侧的 `44K/128K` 和累计 Token 行仍用紧凑写法。宿主 / 浏览器的默认 locale
+// 不参与——否则同一套中文界面里可能出现另一套分组分隔符。
+{
+  const zh = dictionaryFor("zh");
+  const en = dictionaryFor("en");
+  const input = { percent: 3, used: 3_200, total: 128_000, tokens: 2_400_000 };
+
+  // 精确值：完整整数 + 千位分组，且与胶囊的紧凑值分开断言。
+  assert.strictEqual(
+    contextDetailLines(input, zh)[0],
+    "上下文已用 3%（3,200 / 128,000）",
+    "中文悬停用完整整数（带分组），不是 `3.2K/128K`",
+  );
+  assert.strictEqual(
+    contextDetailLines(input, en)[0],
+    "Context used 3% (3,200 / 128,000)",
+    "英文悬停同样给完整整数",
+  );
+  assert.strictEqual(formatContextSpan(input.used, input.total), "3.2K/128K", "胶囊仍是紧凑写法");
+
+  // 短值：累计 Token 行保留现有 compact（`2.4M`），不在悬停里展开成完整整数。
+  assert.strictEqual(contextDetailLines(input, zh)[1], "Token 用量 2.4M");
+  assert.strictEqual(contextDetailLines(input, en)[1], "Token usage 2.4M");
+  assert.strictEqual(formatTokens(input.tokens), "2.4M", "Token 行的紧凑口径没有变");
+
+  // 语言来源：文案取词典、分组取词典语言，不落回宿主默认 locale。
+  const nativeToLocaleString = Number.prototype.toLocaleString;
+  Number.prototype.toLocaleString = () => "HOST-LOCALE";
+  try {
+    assert.strictEqual(
+      contextDetailLines(input, zh)[0],
+      "上下文已用 3%（3,200 / 128,000）",
+      "不使用无参 `toLocaleString()`：宿主 locale 变化不该影响悬停数值",
+    );
+    assert.strictEqual(
+      contextDetailLines(input, en)[0],
+      "Context used 3% (3,200 / 128,000)",
+      "同一份数据在英文词典下走英文文案与英文分组",
+    );
+  } finally {
+    Number.prototype.toLocaleString = nativeToLocaleString;
+  }
+}
+console.log("occupancy: 悬停完整整数按界面语言，胶囊 / Token 行保持紧凑 ✓");
 
 console.log("\noccupancy: all assertions passed");

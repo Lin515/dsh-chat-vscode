@@ -81,11 +81,11 @@ const view = (over: Partial<HistoryDirectoryView> = {}): HistoryDirectoryView =>
 {
   const options = historyScopeOptions(view(), {
     current: "Current directory",
-    roots: "All workspace folders",
+    roots: "All workspace roots",
   });
   assert.deepStrictEqual(
     options.map((option) => option.label),
-    ["Current directory", "All workspace folders", "client/app", "server/app"],
+    ["Current directory", "All workspace roots", "client/app", "server/app"],
     "范围选项的次序与去重短名（不同根里同名的 app 必须能区分）",
   );
   assert.strictEqual(options[2]?.title, "C:\\client\\app", "目录选项悬停给完整路径");

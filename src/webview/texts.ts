@@ -1384,3 +1384,13 @@ type MessageFn = (...args: any[]) => string;
 function localeKey(texts: Texts): Locale {
   return texts === zh ? "zh" : "en";
 }
+
+/**
+ * 界面当前**生效**的语言（由词典引用认出，不读宿主 / 浏览器的默认 locale）。
+ *
+ * 需要按语言格式化数字（分组分隔符等）的调用方用它，而不是宿主 locale 或
+ * `toLocaleString()` 的缺省行为：词典已经按 `state.locale` 派生，两者必须同源。
+ */
+export function textsLocale(texts: Texts): Locale {
+  return localeKey(texts);
+}

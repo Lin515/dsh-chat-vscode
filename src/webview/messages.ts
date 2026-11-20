@@ -1245,7 +1245,7 @@ export const MESSAGES = {
   // 历史抽屉的独立范围选择器：与归档切换正交，切归档不清范围
   historyScope: { zh: "范围", en: "Scope" },
   historyScopeCurrent: { zh: "当前目录", en: "Current directory" },
-  historyScopeRoots: { zh: "全部工作区文件夹", en: "All workspace folders" },
+  historyScopeRoots: { zh: "全部工作区根目录", en: "All workspace roots" },
   noScopedSessions: { zh: "此范围内没有会话", en: "No sessions in this scope" },
   today: { zh: "今天", en: "Today" },
   earlier: { zh: "更早", en: "Earlier" },
@@ -1293,10 +1293,10 @@ export const MESSAGES = {
   },
   ctxUnavailable: { zh: "上下文占用暂不可用", en: "Context usage unavailable" },
   toolbarTokensLabel: { zh: "Token 用量", en: "Token usage" },
-  toolbarPreferencesTitle: { zh: "工具栏偏好", en: "Toolbar Preferences" },
+  toolbarPreferencesTitle: { zh: "工具栏保留优先级", en: "Toolbar retention priority" },
   toolbarPreferencesIntro: {
-    zh: "空间不足时，优先保留靠前的选项。此顺序不改变选项在工具栏中的位置。",
-    en: "When space is limited, higher-priority options stay visible first. This order does not change their positions on the toolbar.",
+    zh: "空间紧张时，只决定工具栏优先保留哪些选项，不改变它们在工具栏中的位置。",
+    en: "When space is tight, this only decides which toolbar options are kept first. It does not change their positions on the toolbar.",
   },
   toolbarPreferencesEnabled: { zh: "已启用（按优先级）", en: "Enabled (by priority)" },
   toolbarPreferencesHidden: { zh: "已隐藏", en: "Hidden" },
