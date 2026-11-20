@@ -67,6 +67,7 @@ attempt / message 都读合格 stream delta，先到者胜，不取任意首帧�
 ## 界面与交互
 
 - 整页轨迹仍保留输入区；默认展开无选择，贴底阈值 2px。运行中视图每 3 秒取数，停止取收尾，切会话重取，关闭不取。JSON 字符串帧保有意义 null。
+- 扩展宿主失联时保留已加载的轨迹；未加载时不显示加载状态，使用[全局宿主失联提示](<design-sessions.md#编辑区标签与宿主失联>)。恢复通信后重新允许加载。
 - 加载更早共用 loadMore，生成中重折须抄送 CarriedLiveOverlay 保正文 / 工具 / 首 token。只有按钮，无自动上滚加载；每次折全量已加载事件，不截最近 N 条。
 - trajectoryDisplay.ts 统一判据：正文优先思考；仅工具调用须无正文 / 思考且有调用，空结算为破折号。vendor 预览读取 2048，转纯文本折空白，截 512 + 省略号。
 - 搜索 AND，requestOnly 不入索引，身份 recordId；`result` 与 `resultPreviewMarkdown`、`outputDetail`、`sourceBlocks`、`outputBlocks` 都入索引（正文优先时原文在预览字段，工具结果因此可搜；仅图片 / 文件结果靠 outputBlocks 的附件名与块原文可搜）。先搜索后折叠，清查询恢复折叠集合。未命中时间线压暗为 14%，索引节流 3000ms，引用不变跳过。
