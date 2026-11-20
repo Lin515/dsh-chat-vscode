@@ -1064,11 +1064,6 @@ export class ChatController implements vscode.Disposable {
    */
   private readonly viewHistoryScopes = new Map<string, HistoryScope>();
   /**
-   * 这次提交**冻结**的目标目录（requestId → 快照）：`beginSend` 在按下发送那一刻抓，
-   * 跨过连接 / 目录询问也只按它落壳。跨 await 期间换根不能把已经发出的消息搬走。
-   */
-  private readonly frozenSendTargets = new Map<string, SessionTarget | undefined>();
-  /**
    * 每个窗口**在飞提交**的计数：`submitMessage` 在 `beginSend` 之后同步占住，finally 释放。
    *
    * 第一个提交要跨过连接、建会话、系统目录选择器等若干 await，这段期间换根 / 迟到的目录
@@ -10969,14 +10964,12 @@ export class ChatController implements vscode.Disposable {
     /** 「重发」专用：把上一行的附件租约交给这次提交继续持有（见 `beginSend`）。 */
     handoffLeaseFrom?: string,
   ): Promise<boolean> {
-    const requestId = this.beginSend(viewId, text, attachments, source, handoffLeaseFrom);
+    // 冻结目录随 `beginSend` 直接返回（它只被这一次提交用到，不再经 requestId → 目录的表）
+    const { requestId, frozenTarget } = this.beginSend(viewId, text, attachments, source, handoffLeaseFrom);
     // **同步占住这个窗口**（早于任何 await）：这次提交结束前换根 / 迟到的目录选择器
     // 都不许把这个窗口的根改到别处（见 `pendingSends` 与 `canChangeRoot`）。
     this.holdPendingSend(viewId);
     try {
-      // 冻结目录在**任何 await 之前**取走：后面只按这份落壳
-      const frozenTarget = this.frozenSendTargets.get(requestId);
-      this.frozenSendTargets.delete(requestId);
       // 未连接时先恢复连接：历史会话切换后跟随流尚未建立时直接 prompt
       // 会触发服务端 resume，冷启动竞态下 resume 可能失败。
       // **用户显式动作**（按了发送）：允许拉起内部后台（关掉自动连接时也算数，
@@ -11041,7 +11034,7 @@ export class ChatController implements vscode.Disposable {
     requestId: string,
     source: "composer" | "retry" | "queue",
     prebuiltContent?: readonly PromptContentPart[],
-    /** `beginSend` 冻结的目标目录（见 `frozenSendTargets`）。 */
+    /** `beginSend` 在按下发送那一刻同步冻结的目标目录。 */
     frozenTarget?: SessionTarget,
   ): Promise<boolean> {
     if (!this.client) {
@@ -12186,7 +12179,7 @@ export class ChatController implements vscode.Disposable {
    * 仅 source=composer 清草稿与附件；retry / queue 不能擦掉用户当前输入。
    * handoffLeaseFrom 将旧提交的附件租约交给新提交，保在飞上传，不重启或回填输入框。
    * 顺序与 durable 交接见 docs/design-draft.md。
-   * @returns prompt 与 durable 回显关联的 requestId。
+   * @returns requestId（prompt 与 durable 回显的关联身份）与按下这一刻同步冻结的目标目录。
    */
   private beginSend(
     viewId: string,
@@ -12194,11 +12187,12 @@ export class ChatController implements vscode.Disposable {
     attachments: Attachment[],
     source: "composer" | "retry" | "queue",
     handoffLeaseFrom?: string,
-  ): string {
+  ): { requestId: string; frozenTarget: SessionTarget | undefined } {
     const requestId = randomUUID();
     // **同步冻结目录选择**：这一刻之后即使换根 / 选择框晚返回，这次发送也落在这里。
-    // 同时占一个窗口动作号：正在飞的 switchRoot / 目录选择框回来时会发现意图已经换人。
-    this.frozenSendTargets.set(requestId, this.captureSessionTarget(viewId));
+    // 冻结值随返回值直接带下去（只有这一次提交用得到）；同时占一个窗口动作号：
+    // 正在飞的 switchRoot / 目录选择框回来时会发现意图已经换人。
+    const frozenTarget = this.captureSessionTarget(viewId);
     this.beginViewAction(viewId);
     if (handoffLeaseFrom) this.attachments.transferLease(handoffLeaseFrom, requestId);
     const key = this.keyForView(viewId);
@@ -12238,7 +12232,7 @@ export class ChatController implements vscode.Disposable {
       this.commitDraft(viewId);
       this.commitAttachments(viewId, requestId);
     }
-    return requestId;
+    return { requestId, frozenTarget };
   }
 
   /**
