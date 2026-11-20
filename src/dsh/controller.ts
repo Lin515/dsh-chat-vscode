@@ -5369,7 +5369,7 @@ export class ChatController implements vscode.Disposable {
    * 它上面时界面上那颗垃圾桶本就不给（`sessionSelection.sessionLocked` 的 `occupied`）。
    */
   private async deleteSession(sessionId: string): Promise<void> {
-    const session = this.sessions.find((s) => s.id === sessionId);
+    const session = this.sessionRow(sessionId);
     if (!session) {
       this.log(`[sessions] 删除失败：列表中不存在会话 ${sessionId}`);
       return;
