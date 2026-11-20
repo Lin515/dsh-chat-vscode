@@ -5297,7 +5297,7 @@ export class ChatController implements vscode.Disposable {
       const row: SessionSummaryView = {
         ...session,
         unread: this.unreadSessionIds.has(session.id),
-        occupied: session.blank === true ? this.occupiedBlank(session.id) : false,
+        occupied: this.isBlankShell(session.id) && this.occupiedBlank(session.id),
       };
       (this.archivedSessionIds.has(session.id) ? archived : active).push(row);
     }
