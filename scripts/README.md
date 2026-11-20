@@ -223,10 +223,10 @@
 - [sessionListScope.test.ts](<sessionListScope.test.ts>) — 旧列表帧（`sessions` / `archivedSessions`）跟随**当前会话 cwd**：没有打开文件夹时两个面板各开一个目录，列表按各自的 cwd 隔离（切换 / 换选目录 / 空态未绑 / 无 cwd 兜底逐条覆盖），打开着文件夹时按窗口选中的根走同一套「注册表 + 已打开域兜底」判据；还覆盖**绑在子代理会话**上的窗口（它的 cwd 只在权威 `session/list` 里、不在可见历史里）与权威 cwd 账本的生命周期（列表里消失即淘汰、换连接清空）。
 - [find.test.ts](<find.test.ts>) — 会话查找的跨文本节点匹配、命中位置环绕与导航前脱树判据；不替代真实 DOM 高亮验收。
 - [blankRestoreRace.test.ts](<blankRestoreRace.test.ts>) — 恢复历史会话与自动补空会话并发时，驱动真实控制器验证绑定不被覆盖。
-- [workspaceDirRepick.test.ts](<workspaceDirRepick.test.ts>) — 目录胶囊：未打开文件夹时每次都弹选择框、换目录真的落到新目录那条壳上（先切后建、取消保持原状、换回复用旧壳）；打开着文件夹时列出全部根并可切根 / 选工作区外目录（外部目录不注册），已有对话只读。
+- [workspaceDirRepick.test.ts](<workspaceDirRepick.test.ts>) — 目录胶囊：未打开文件夹时每次都弹选择框、换目录真的落到新目录那条壳上（先切后建、取消保持原状、换回复用旧壳）；打开着文件夹时列出全部根并可切根 / 选工作区外目录（外部目录不注册），已有对话只读；目录验证拒绝或结果迟到时保留原目录。
 - [activeRoot.test.ts](<activeRoot.test.ts>) — 新窗口的默认根、归一化后的已记偏好与失效回退；覆盖零根、单根和多根。
 - [composerDir.test.ts](<composerDir.test.ts>) — 空态的目录菜单、系统选择器与禁用态、同名根的区分，以及已有会话只读。
-- [historyDirectory.test.ts](<historyDirectory.test.ts>) — 宿主的每窗口根、工作区外目录、工作区注册缓存、异步切根与发送的时序、历史范围与跨范围操作，以及首帧和恢复快照。
+- [historyDirectory.test.ts](<historyDirectory.test.ts>) — 宿主的每窗口根、工作区外目录、工作区注册缓存、连续切根和发送等待期间的绑定竞态（含选目录后被换绑）、历史根范围的精确匹配与跨范围删除，以及首帧和恢复快照。
 - [historyDirectoryView.test.ts](<historyDirectoryView.test.ts>) — 历史抽屉的范围选项、当前范围显示，以及新 `history` 帧与旧列表帧的界面兼容。
 - [directoryPathKey.test.ts](<directoryPathKey.test.ts>) — 目录身份键：保留 POSIX `/` 与盘符根 `C:/`、Windows 形态忽略大小写、POSIX 保留大小写且不把反斜杠当分隔符。
 - [localImageResolve.test.ts](<localImageResolve.test.ts>) — 本地图片 loader 的范围隔离 / 回帧 / 去重 / 迟到帧，以及回帧前浏览器失败不触发最终降级；组件 DOM 时序由受控浏览器回放。
