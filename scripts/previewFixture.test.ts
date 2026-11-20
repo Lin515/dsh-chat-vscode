@@ -955,5 +955,87 @@ for (const [label, check] of must) {
   console.log("  ✓ write 真实夹具：正式工具帧、来源锚点、累计前缀解码、中断与diff入口");
 }
 
+// 7) 多根工作区 / 历史范围预览：只按录制帧里真实出现的 scope / workspace.path 路由。
+//
+// 预览页曾经手写一份「与宿主 directoryPathKey 同口径」的路径比较，还写死盘符路径；
+// 夹具或宿主规则一变，预览就会静默按错误目标回帧。这里直接执行页面里的 loader，
+// 用真实夹具验证：回发的值逐字匹配录制帧才推帧，没录到就不推。
+{
+  const fixturePath = "test/preview/multi-root-history-frames.json";
+  const fixture = JSON.parse(readFileSync(fixturePath, "utf8")) as Record<string, any>;
+  assert.ok(!/^pr4/i.test(String(fixture.view)), "夹具的 view 标签用长期主题名，不再带 PR 编号");
+  const workspaceFrame = Object.values(fixture).find(
+    (frame: any) => frame?.patch?.workspace && Array.isArray(frame.patch.workspace.roots),
+  );
+  assert.ok(workspaceFrame, "多根预览夹具必须有带 roots 的 workspace 帧");
+  const alpha = workspaceFrame.patch.workspace.path as string;
+  const beta = workspaceFrame.patch.workspace.roots.find((root: any) => root.path !== alpha)?.path as string;
+  assert.ok(alpha && beta && alpha !== beta, "夹具应录到两个不同根");
+
+  const start = html.indexOf("// ==== multi-root-history-loader:start ====");
+  const end = html.indexOf("// ==== multi-root-history-loader:end ====");
+  assert.ok(start >= 0 && end > start, "多根 / 历史范围 loader 必须有可抽取的边界");
+  const loader = html.slice(start, end);
+  assert.doesNotMatch(loader, /[A-Za-z]:[\\/]/, "loader 不许写死盘符路径：目标一律取自录制帧");
+  assert.doesNotMatch(loader, /\bpathKey\b|\bsamePath\b/, "loader 不许重写宿主的路径比较规则");
+
+  const pushed: any[] = [];
+  const host: Record<string, any> = { __push: (frame: any) => pushed.push(JSON.parse(JSON.stringify(frame))) };
+  const fetchFixture = async () => ({ ok: true, json: async () => fixture });
+  new Function("window", "location", "fetch", loader)(host, { search: "" }, fetchFixture);
+  await host.__multiRootHistoryLoad();
+
+  assert.equal(pushed[0]?.patch?.workspace?.path, alpha, "首帧是录制的初始工作区");
+  assert.equal(pushed[1]?.patch?.history?.scope?.kind, "current", "初始历史范围是 current");
+  pushed[1].patch.history.sessions.forEach((session: any) => {
+    assert.equal(session.cwd, alpha, "current 帧必须来自当前根，不拿别的根顶替");
+  });
+
+  const beforeRoot = pushed.length;
+  assert.equal(host.__multiRootHistory.applyRoot(beta), true, "切到录制过的根要回帧");
+  assert.equal(pushed.length, beforeRoot + 2, "切根回 workspace 帧 + 当前根的 current 历史帧");
+  assert.equal(pushed[beforeRoot].patch.workspace.path, beta);
+  pushed[beforeRoot + 1].patch.history.sessions.forEach((session: any) => {
+    assert.equal(session.cwd, beta, "切根后 current 历史跟着新根");
+  });
+  assert.equal(host.__multiRootHistory.applyRoot(`${beta}-not-recorded`), false, "没录到的根不回帧");
+  assert.equal(pushed.length, beforeRoot + 2);
+  for (const inherited of ["constructor", "__proto__", "toString"]) {
+    assert.equal(host.__multiRootHistory.applyRoot(inherited), false, "对象原型上的名字不算录到的根");
+    assert.equal(
+      host.__multiRootHistory.applyScope({ kind: "directory", path: inherited }),
+      false,
+      "对象原型上的名字不算录到的目录范围",
+    );
+  }
+
+  const beforeScope = pushed.length;
+  assert.equal(
+    host.__multiRootHistory.applyScope({ kind: "directory", path: beta }),
+    true,
+    "目录范围按录制帧的 scope.path 逐字匹配",
+  );
+  assert.equal(pushed[beforeScope].patch.history.scope.path, beta);
+  assert.equal(
+    host.__multiRootHistory.applyScope({ kind: "directory", path: `${beta}-not-recorded` }),
+    false,
+    "没录到的目录范围不回帧",
+  );
+  assert.equal(host.__multiRootHistory.applyScope({ kind: "roots" }), true, "录制过的 roots 范围照常回帧");
+  assert.equal(pushed.length, beforeScope + 2);
+
+  assert.equal(
+    host.__multiRootHistoryRoute({ type: "historyScope", scope: { kind: "roots" } }),
+    true,
+    "预览路由接管界面的 historyScope",
+  );
+  assert.equal(
+    host.__multiRootHistoryRoute({ type: "switchRoot", path: `${alpha}-not-recorded` }),
+    false,
+    "预览路由对未录到的根返回 false，交回普通分支",
+  );
+  console.log("  ✓ 多根 / 历史范围预览：按录制帧逐字路由，未录到不回帧，无手写路径比较");
+}
+
 console.log(failed === 0 ? "\npreview: 夹具结构完整" : `\npreview: ${failed} 项不合规`);
 if (failed > 0) process.exitCode = 1;

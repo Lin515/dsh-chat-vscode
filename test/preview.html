@@ -446,7 +446,7 @@
             window.__sent.push(message);
             // `?roots=1` 时由预览自己回的帧（历史范围 / 根目录选择）；其它模式没有路由，
             // 落到下面原有的 postMessage 分支。
-            if (window.__pr4Route && window.__pr4Route(message)) return;
+            if (window.__multiRootHistoryRoute && window.__multiRootHistoryRoute(message)) return;
             if (message && message.type === "ready") {
               // 真实宿主是异步回帧的（webview → 扩展进程 → postMessage 回来），
               // 这里用宏任务复刻同样的时序：effect 里的 ready 发完，脚本才继续定义 __buildState
@@ -460,10 +460,10 @@
                 previewNotifications = (snapshot.notifications || []).slice();
                 previewNotificationSession = snapshot.session ? snapshot.session.id : null;
                 window.__push({ type: "state", state: snapshot });
-                // PR #4 多根工作区 / 历史范围：帧来自真实 ChatController（见下方 loader），
+                // 多根工作区 / 历史范围：帧来自真实 ChatController（见下方 loader），
                 // 只有 `?roots=1` 才加载；默认预览与 `?empty=1` / `?lock=1` 都不受影响。
-                if (new URLSearchParams(location.search).get("roots") === "1" && typeof window.__pr4Load === "function") {
-                  window.__pr4Load();
+                if (new URLSearchParams(location.search).get("roots") === "1" && typeof window.__multiRootHistoryLoad === "function") {
+                  window.__multiRootHistoryLoad();
                 }
                 if (new URLSearchParams(location.search).get("write") === "1") window.__writePreview();
                 // 自动化任务：真实宿主在**会话域建起来时**就静默预取一次（不等人打开
@@ -786,71 +786,100 @@
     </script>
     <script>
       /**
-       * PR #4 多根工作区 / 历史范围的离线预览（`?roots=1`）。
+       * 多根工作区 / 历史范围的离线预览（`?roots=1`）。
        *
-       * 帧原样取 `test/preview/pr4-host-frames.json`：由当前源码的 `ChatController`
+       * 帧原样取 `test/preview/multi-root-history-frames.json`：由当前源码的 `ChatController`
        * 在离屏 vscode stub 里实际发出（`workspace` / `history` patch），不手编、不改写。
-       * 预览只负责在收到界面的 `historyScope` / `switchRoot` 时把**已录好的对应帧**
-       * 推回去，模拟宿主的路由；没有录到的目标不合成。
+       * 预览只拿界面回发的 `historyScope` / `switchRoot` 值与录制帧里**真实出现过的**
+       * `history.scope` / `workspace.path` 逐字比较，再把对应帧推回去；没有录到的目标
+       * 不回帧，也不在本页重新解释路径的大小写或斜杠方向。
        *
        * 默认预览、`?empty=1`、`?lock=1` 都不会加载这份帧。
        */
+      // ==== multi-root-history-loader:start ====
       (function () {
         var frames = null;
-        var onBeta = false;
-        var selectedScope = { kind: "current" };
+        var currentRoot = null;
+        var currentScope = { kind: "current" };
+        /** 录制帧里出现过的真实值：路径 / scope 原样当键，不做规范化。 */
+        var recorded = {
+          workspaces: Object.create(null), // workspace.path → 录制帧（null 原型：不认 constructor/__proto__）
+          roots: null, // history.scope.kind = "roots" 的录制帧
+          directories: Object.create(null), // history.scope.path → 录制帧
+          current: [], // history.scope.kind = "current" 的录制帧
+        };
         function clone(value) {
           return JSON.parse(JSON.stringify(value));
         }
-        /** 与宿主 `directoryPathKey` 同口径：Windows 忽略大小写与斜杠方向。 */
-        function pathKey(value) {
-          var text = String(value || "").replace(/\\/g, "/");
-          var windows = /^[A-Za-z]:\//.test(text) || text.indexOf("//") === 0;
-          var trimmed = text === "/" ? "/" : text.replace(/\/+$/, "");
-          return windows ? trimmed.toLowerCase() : trimmed;
+        function indexRecorded(payload) {
+          Object.keys(payload).forEach(function (key) {
+            var frame = payload[key];
+            var patch = frame && frame.patch;
+            if (!patch) return;
+            if (patch.workspace && patch.workspace.path) {
+              recorded.workspaces[patch.workspace.path] = frame;
+            }
+            var history = patch.history;
+            if (!history) return;
+            var scope = history.scope || {};
+            if (scope.kind === "roots") recorded.roots = frame;
+            else if (scope.kind === "directory" && scope.path) recorded.directories[scope.path] = frame;
+            else if (scope.kind === "current") {
+              // current 帧属于哪个根，看录制下来的会话 cwd；不猜、不改写帧。
+              recorded.current.push({
+                frame: frame,
+                sessionDirs: (history.sessions || []).map(function (session) { return session.cwd; }),
+              });
+            }
+          });
         }
-        function samePath(left, right) {
-          return pathKey(left) === pathKey(right);
+        function recordedRoots() {
+          var paths = Object.keys(recorded.workspaces);
+          var workspace = paths.length > 0 ? recorded.workspaces[paths[0]].patch.workspace : null;
+          return workspace && workspace.roots ? workspace.roots : [];
         }
-        /** 界面发来的范围 → 已录好的 history 帧；没有录到就不回。 */
+        /** 当前根下的 current 帧；没录到就返回 null，不拿别的根的帧顶替。 */
+        function currentFrame() {
+          if (!frames || !currentRoot) return null;
+          var match = recorded.current.filter(function (entry) {
+            return entry.sessionDirs.length > 0 && entry.sessionDirs.every(function (dir) {
+              return dir === currentRoot;
+            });
+          })[0];
+          return match ? match.frame : null;
+        }
+        /** 界面发来的范围 → 已录好的 history 帧；按录制帧自己的 scope 值精确比较。 */
         function frameForScope(scope) {
           if (!frames || !scope) return null;
-          if (scope.kind === "current") return onBeta ? frames.historyBetaCurrentFrame : frames.historyFrame;
-          if (scope.kind === "roots") return frames.historyRootsFrame;
-          if (scope.kind === "directory") {
-            if (samePath(scope.path, "C:\\work\\beta")) return frames.historyDirectoryFrame;
-            if (samePath(scope.path, "C:\\work\\alpha")) return frames.historyDirectoryAFrame;
-          }
+          if (scope.kind === "current") return currentFrame();
+          if (scope.kind === "roots") return recorded.roots;
+          if (scope.kind === "directory" && scope.path) return recorded.directories[scope.path] || null;
           return null;
         }
         function applyScope(scope) {
           var frame = frameForScope(scope);
           if (!frame) return false;
-          selectedScope = scope;
+          currentScope = scope;
           window.__push(clone(frame));
           return true;
         }
-        /**
-         * 空态页的根目录菜单：alpha / beta 各有一份真实 workspace 帧；切到 beta 时
-         * 宿主还会重推 history（current 范围），一并使用录到的那份，避免抽屉停在旧目录。
-         */
         function applyRoot(path) {
           if (!frames) return false;
-          if (samePath(path, "C:\\work\\beta")) onBeta = true;
-          else if (samePath(path, "C:\\work\\alpha")) onBeta = false;
-          else return false;
-          window.__push(clone(onBeta ? frames.workspaceBetaFrame : frames.workspaceFrame));
-          applyScope(selectedScope);
+          var frame = recorded.workspaces[path];
+          if (!frame) return false;
+          currentRoot = path;
+          window.__push(clone(frame));
+          applyScope(currentScope);
           return true;
         }
-        window.__pr4 = {
+        window.__multiRootHistory = {
           frames: function () {
             return frames ? clone(frames) : null;
           },
           applyScope: applyScope,
           applyRoot: applyRoot,
         };
-        window.__pr4Route = function (message) {
+        window.__multiRootHistoryRoute = function (message) {
           if (!frames || !message) return false;
           if (message.type === "historyScope") return applyScope(message.scope);
           if (message.type === "switchRoot") return applyRoot(message.path);
@@ -858,35 +887,40 @@
           if (message.type === "pickOtherRoot" || message.type === "pickWorkspace") return true;
           return false;
         };
-        window.__pr4Load = function () {
-          return fetch("preview/pr4-host-frames.json", { cache: "no-store" })
+        window.__multiRootHistoryLoad = function () {
+          return fetch("preview/multi-root-history-frames.json", { cache: "no-store" })
             .then(function (response) {
               if (!response.ok) throw new Error("HTTP " + response.status);
               return response.json();
             })
             .then(function (payload) {
               frames = payload;
-              // 起始范围可以由 `?scope=current|roots|alpha|beta` 选；默认 current。
+              indexRecorded(payload);
+              var workspacePaths = Object.keys(recorded.workspaces);
+              if (workspacePaths.length === 0) throw new Error("录制帧里没有 workspace");
+              // 起始根取第一份录制 workspace 帧；起始范围可由 `?scope=current|roots|<根名>` 选。
+              var initial = recorded.workspaces[workspacePaths[0]];
+              currentRoot = initial.patch.workspace.path;
+              window.__push(clone(initial));
               var scopeKey = new URLSearchParams(location.search).get("scope");
-              window.__push(clone(frames.workspaceFrame));
-              var scope =
-                scopeKey === "roots"
-                  ? { kind: "roots" }
-                  : scopeKey === "alpha"
-                    ? { kind: "directory", path: "C:\\work\\alpha" }
-                    : scopeKey === "beta"
-                      ? { kind: "directory", path: "C:\\work\\beta" }
-                      : { kind: "current" };
+              var scope = { kind: "current" };
+              if (scopeKey === "roots") scope = { kind: "roots" };
+              else if (scopeKey) {
+                var root = recordedRoots().filter(function (item) { return item.name === scopeKey; })[0];
+                if (root) scope = { kind: "directory", path: root.path };
+              }
               applyScope(scope);
-              console.log("[preview] PR4 帧 = 真实 ChatController 输出，scope=" + JSON.stringify(scope));
+              console.log("[preview] 多根工作区 / 历史范围帧 = 真实 ChatController 输出，scope=" + JSON.stringify(scope));
             })
             .catch(function (error) {
               // 不合成回退：取不到就保持普通预览，并在控制台说明原因。
-              console.error("[preview] PR4 真实帧不可用（不做合成回退）", error);
+              console.error("[preview] 多根 / 历史范围真实帧不可用（不做合成回退）", error);
             });
         };
       })();
+      // ==== multi-root-history-loader:end ====
     </script>
+
     <script src="../dist/webview.js"></script>
     <script>
       /**
