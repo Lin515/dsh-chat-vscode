@@ -677,4 +677,72 @@ console.log("workspaceDirRepick: 空态页的目录胶囊能反复改目录（�
   }
 }
 
+// ---------- 十二、落壳末尾落实权限期间被改绑：不按落壳结果发，正文回输入框 ----------
+//
+// `reuseOrCreateBlank` 是**先绑定、再落实 `/permission`**：新壳绑好之后还要等一次
+// `commands/execute`。那一等里用户完全可能点开历史里的另一条（B），窗口绑定就变成了 B；
+// 但落壳结果仍是新壳。发送侧必须核对「落壳结果还是不是窗口此刻的绑定」，否则这条提交会
+// 继续按新壳走——斜杠命令的 `runCommand(viewId, ...)` 甚至会按当前绑定打到 B 上。
+// 绑定已经不是它就与「取消目录选择」同一收场：不发，正文回到窗口现在这条会话的输入框。
+{
+  const { c, client, frames } = makeHarness({ dir: DIR_A });
+  c.bindView("v1");
+  // 空态页先选了权限：落壳时会补一条 `/permission plan`，它就是这次竞态的等待点
+  await c.handle({ type: "setPermission", permission: "plan" }, "v1");
+  client.rows.push({
+    sessionId: "session-b",
+    cwd: DIR_B,
+    blank: false,
+    updatedAt: Date.now(),
+    running: false,
+  });
+
+  let permissionEntered!: () => void;
+  const atPermission = new Promise<void>((resolve) => {
+    permissionEntered = resolve;
+  });
+  let releasePermission!: () => void;
+  const permissionGate = new Promise<void>((resolve) => {
+    releasePermission = resolve;
+  });
+  const request = client.request;
+  const permissionTargets: string[] = [];
+  client.request = async (method, params) => {
+    if (method === "commands/execute") {
+      permissionTargets.push(String(params?.agentId ?? ""));
+      permissionEntered();
+      await permissionGate;
+    }
+    return request(method, params);
+  };
+
+  const sending = sendMessage(c, "v1", "落壳后被换绑的正文");
+  await atPermission;
+  const shell = c.viewSessions.get("v1");
+  assert.ok(shell !== undefined && shell !== "session-b", "前置：落壳已经把这个窗口绑在新壳上");
+  // 权限命令还在等 RPC：用户点开了历史里的 B，窗口改绑
+  await c.handle({ type: "openSession", sessionId: "session-b" }, "v1");
+  assert.strictEqual(c.viewSessions.get("v1"), "session-b", "前置：权限等待期间窗口已改绑到 B");
+  releasePermission();
+  await sending;
+
+  console.log(
+    `  落壳权限等待期间改绑 → 权限命令=${permissionTargets.join(",")}，prompt ${client.prompts.length} 条，窗口=${c.viewSessions.get("v1")}`,
+  );
+  assert.deepStrictEqual(permissionTargets, [shell], "落壳末尾的权限命令仍打在新建的那条壳上");
+  assert.strictEqual(client.prompts.length, 0, "绑定已经不是落壳结果：这条消息不许发出去");
+  assert.strictEqual(c.viewSessions.get("v1"), "session-b", "窗口留在用户后来打开的 B 上");
+  let draft: string | undefined;
+  for (let index = frames.length - 1; index >= 0; index -= 1) {
+    const { target, frame } = frames[index];
+    if (target !== "v1" || frame.type !== "patch") continue;
+    const value = (frame.patch as { draft?: unknown }).draft;
+    if (typeof value === "string") {
+      draft = value;
+      break;
+    }
+  }
+  assert.strictEqual(draft, "落壳后被换绑的正文", "正文回到 B 的输入框（与取消目录选择同一收场）");
+}
+
 console.log("workspaceDirRepick: 目录胶囊每次都弹框、换目录真的换到新目录那条壳上（含先切后建、换回复用与本机身份门）✓");

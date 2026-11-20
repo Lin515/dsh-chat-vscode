@@ -11106,6 +11106,14 @@ export class ChatController implements vscode.Disposable {
           this.log(`[submit] 窗口=${viewId} 落壳后绑在 ${scope.creationCwd ?? "?"}、冻结目录是 ${frozenTarget.key}：不发，正文回输入框`);
           scope = undefined;
         }
+        // `reuseOrCreateBlank` 是**先绑定、再落实 `/permission`**：那条命令还在等 RPC 时，
+        // 另一个动作（点历史里的一条 / 换目录）可能已经把这个窗口改绑到 B。落壳结果仍是
+        // 这条提交要冻结的会话，但窗口当前绑定已经不是它——后面的斜杠命令按 `viewId`
+        // 重新解析，会打到 B 上。绑定已经不是它就按「取消目录选择」收场：不发，正文回输入框。
+        if (scope && this.viewSessions.get(viewId) !== scope.sessionId) {
+          this.log(`[submit] 窗口=${viewId} 落壳后绑定已换成 ${this.viewSessions.get(viewId) ?? "空态"}：不按 ${scope.sessionId} 发，正文回输入框`);
+          scope = undefined;
+        }
       } else if (!this.scopeMatchesFrozen(scope, frozenTarget)) {
         // **按下那一刻还没有绑定**：等连接这趟（`submitMessage` 里的 `ensureConnected`）期间，
         // 工作区文件夹变化 / `onConnected` 的自动补壳（`adoptBlankForUnboundViews`）可能已经把这个
