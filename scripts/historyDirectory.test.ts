@@ -1066,4 +1066,26 @@ function stubConnectWait(h: Harness, during: () => Promise<void>): void {
   assert.ok(draftsOf(h).some((text) => text.includes("picked-late-bind")), "正文回到输入框");
 }
 
+// 十二g、按下时绑定的会话在连接等待里被摘下（重连后旧壳解绑、`scopeOfView` 变空）：
+// 不另建会话、不发消息；只接受按下时那一条，其余一律正文回输入框
+{
+  const h = makeHarness([{ sessionId: "used-A", cwd: DIR_A }], { folders: [DIR_A] });
+  await bindAndRefresh(h, "v1");
+  await open(h, "v1", "used-A");
+  assert.strictEqual(h.c.viewSessions.get("v1"), "used-A", "前置：按下时已绑定 used-A");
+  stubConnectWait(h, async () => {
+    h.c.connection = "connected";
+    // 重连后旧壳的绑定被摘下：窗口不再绑任何会话，也没有替代
+    h.c.unbindView("v1");
+  });
+  await send(h, "v1", "detached-after-reconnect");
+  console.log(
+    `  detached：绑定=${h.c.viewSessions.get("v1")} 新建=${h.client.created.length} 发送次数=${h.client.prompts.length}`,
+  );
+  assert.strictEqual(h.client.prompts.length, 0, "按下时的会话已不在绑定上：不发");
+  assert.strictEqual(h.client.created.length, 0, "不为这条提交另建会话");
+  assert.strictEqual(h.c.viewSessions.get("v1"), undefined, "没有替换绑定");
+  assert.ok(draftsOf(h).some((text) => text.includes("detached-after-reconnect")), "正文回到输入框");
+}
+
 console.log("historyDirectory: late-binding assertions passed");
