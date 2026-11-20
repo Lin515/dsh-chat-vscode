@@ -192,6 +192,8 @@ interface ChatControllerInternals {
   historySessions: { id: string }[];
   /** 每个窗口的历史范围（只有显式切过才有条目）。 */
   viewHistoryScopes: Map<string, { kind: string; path?: string }>;
+  /** 本机身份门（`LocalAccessGate`）：本文件只验目录 / 列表语义，换成恒通过的替身。 */
+  localAccess: { allows(path: string, budget: unknown): Promise<boolean> };
 }
 
 interface HarnessOptions {
@@ -216,6 +218,10 @@ function makeHarness(seed: Row[], options: HarnessOptions = {}): Harness {
     }
   ).subscribe((target, frame) => frames.push({ target, frame }));
   const c = controller as unknown as ChatControllerInternals;
+  // 夹具目录（`C:\work\alpha` 这类）只是服务端会话行里的 cwd 字符串，本机并不存在；
+  // 本文件验的是「目录 → 历史范围」的纯语义，所以把身份门换成恒通过替身。门本身
+  // （真实存在才放行、拒绝保持原目录）由 `workspaceDirRepick.test.ts` 用本机临时目录覆盖。
+  c.localAccess = { allows: async () => true };
   if (options.dir !== undefined) c.newSessionCwd = options.dir;
   if (options.workspaces) c.workspaces = options.workspaces;
   const client = fakeClient(seed);

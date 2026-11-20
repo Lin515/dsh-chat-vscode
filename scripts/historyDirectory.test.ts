@@ -1039,7 +1039,10 @@ function stubConnectWait(h: Harness, during: () => Promise<void>): void {
   const h = makeHarness([{ sessionId: "used-B", cwd: DIR_B }], { folders: [] });
   await bindAndRefresh(h, "v1");
   assert.strictEqual(h.c.viewSessions.get("v1"), undefined, "前置：窗口未绑定、没有目录");
-  const dialog = stubDialog([DIR_A]);
+  // 用户选的目录要过本机身份门（`LocalAccessGate` 的 `stat`）：夹具必须是本机真实目录，
+  // 不能拿 `C:\work\alpha` 这种只存在于服务端会话行里的假路径。
+  const picked = mkdtempSync(join(tmpdir(), "dsh-chat-picked-"));
+  const dialog = stubDialog([picked]);
   try {
     stubConnectWait(h, async () => {
       h.c.connection = "connected";
@@ -1053,12 +1056,13 @@ function stubConnectWait(h: Harness, during: () => Promise<void>): void {
     await send(h, "v1", "picked-late-bind");
   } finally {
     dialog.restore();
+    rmSync(picked, { recursive: true, force: true });
   }
   console.log(
-    `  picked：选了 A、落壳时被绑到 ${createdCwd(h.client, h.c.viewSessions.get("v1"))} 发送次数=${h.client.prompts.length}`,
+    `  picked：选了 ${picked}、落壳时被绑到 ${createdCwd(h.client, h.c.viewSessions.get("v1"))} 发送次数=${h.client.prompts.length}`,
   );
   assert.ok(
-    h.client.created.some((item) => item.cwd === DIR_A),
+    h.client.created.some((item) => item.cwd === picked),
     "前置：用户选的 A 确实走到了建会话那一步",
   );
   assert.strictEqual(h.client.prompts.length, 0, "落壳后不在所选目录上的绑定不能承载这条提交");
