@@ -5724,8 +5724,10 @@ export class ChatController implements vscode.Disposable {
       /**
        * **冻结**的目标目录（发送在 `beginSend` 里抓的那一份）。给出时后面跨 await 也不再
        * 重新读根：用户按下发送之后别的窗口 / 本窗口换根不能把这条消息搬走。
+       * `null` = 冻结在「按下发送那一刻确实没有目录」：需要目录时只认用户当场选的，
+       * 绝不静默改用等连接期间才出现的根。
        */
-      target?: SessionTarget;
+      target?: SessionTarget | null;
       /**
        * 这一次**窗口动作**（`rebindWorkspaceDir` 的换目录）：沿途在等连接、落壳、绑定之前
        * 核对它还是不是这个窗口最新的意图，不是就整条作废。不传 = 不按动作作废（发送与自动路径）。
@@ -5740,7 +5742,9 @@ export class ChatController implements vscode.Disposable {
     const action = options.action;
     // **普通目标在这里同步抓**：换目录调用方不再自己抓一份当冻结目标传进来，冻结只属于发送
     // ——不冻结，后面「落壳期间目录又变了」的作废判据才管得到换目录这条路。
-    const target = options.target ?? this.captureSessionTarget(viewId);
+    // `null` 相反：冻结在「那一刻没有目录」上，不回头另抓一个（那会把消息搬到后来出现的根上）。
+    const target =
+      options.target === null ? undefined : options.target ?? this.captureSessionTarget(viewId);
     const key = target?.key ?? "";
     const inflight = this.sessionEnsures.get(viewId);
     // **只并进判据相同的那一条**：冻结发送（不认目录变化）、自动路径（认目录变化）、某一次
@@ -5789,7 +5793,16 @@ export class ChatController implements vscode.Disposable {
         // 「有没有真工作区」：用户已经在新会话页上选过目录时，发消息不该再问一遍
         // （`askWorkspaceDir` 每次都弹，见那里的注释）。
         const pickerAction = { viewId, epoch: this.viewActions.get(viewId) };
-        if (!this.hasWorkspaceDir() && !(await this.askWorkspaceDir(pickerAction))) return undefined;
+        if (this.hasWorkspaceDir()) {
+          // **冻结在「发送那一刻没有目录」上**：等连接期间才出现的根（例如用户这时打开了
+          // 文件夹）不能静默当成这条消息的落点——根偏好不是用户对这条消息的选择。打开着
+          // 文件夹时系统选择器也不给改（见 `askWorkspaceDir` 的早退），所以整条作废，正文按
+          // 「取消目录选择」回输入框；用户重发那一刻的目录才算数。
+          if (options.target === null) {
+            this.log(`[new] 窗口=${viewId} 发送那一刻没有目录、落壳前才出现根：不静默改用，这次作废`);
+            return undefined;
+          }
+        } else if (!(await this.askWorkspaceDir(pickerAction))) return undefined;
         settledTarget = this.captureSessionTarget(viewId);
       } else if (!this.hasWorkspaceDir()) {
         // 建空壳必须先有工作目录：`session/create` 要么给 `workspaceId`、要么给 `cwd`，
@@ -11033,8 +11046,8 @@ export class ChatController implements vscode.Disposable {
     requestId: string,
     source: "composer" | "retry" | "queue",
     prebuiltContent?: readonly PromptContentPart[],
-    /** `beginSend` 在按下发送那一刻同步冻结的目标目录。 */
-    frozenTarget?: SessionTarget,
+    /** `beginSend` 在按下发送那一刻同步冻结的目标目录（`null` = 那一刻没有目录）。 */
+    frozenTarget?: SessionTarget | null,
   ): Promise<boolean> {
     if (!this.client) {
       if (!this.failEcho(requestId, "@sendNoConnection")) {
@@ -11402,7 +11415,8 @@ export class ChatController implements vscode.Disposable {
   private async runCommand(
     viewId: string,
     line: string,
-    frozenTarget?: SessionTarget,
+    /** 发送那条链透传下来的冻结目录（`null` = 发送那一刻没有目录），见 `ensureSession`。 */
+    frozenTarget?: SessionTarget | null,
   ): Promise<{ ok: boolean; text?: string; unhandled?: boolean } | undefined> {
     if (!this.client) return undefined;
     // 命令按会话执行：还没有会话时先落到本工作区那条空壳上（点按钮时用户并没有先发过
@@ -12178,7 +12192,8 @@ export class ChatController implements vscode.Disposable {
    * 仅 source=composer 清草稿与附件；retry / queue 不能擦掉用户当前输入。
    * handoffLeaseFrom 将旧提交的附件租约交给新提交，保在飞上传，不重启或回填输入框。
    * 顺序与 durable 交接见 docs/design-draft.md。
-   * @returns requestId（prompt 与 durable 回显的关联身份）与按下这一刻同步冻结的目标目录。
+   * @returns requestId（prompt 与 durable 回显的关联身份）与按下这一刻同步冻结的目标目录
+   * （`null` = 那一刻确实没有目录，后续只认用户当场选的目录）。
    */
   private beginSend(
     viewId: string,
@@ -12186,12 +12201,12 @@ export class ChatController implements vscode.Disposable {
     attachments: Attachment[],
     source: "composer" | "retry" | "queue",
     handoffLeaseFrom?: string,
-  ): { requestId: string; frozenTarget: SessionTarget | undefined } {
+  ): { requestId: string; frozenTarget: SessionTarget | null } {
     const requestId = randomUUID();
     // **同步冻结目录选择**：这一刻之后即使换根 / 选择框晚返回，这次发送也落在这里。
     // 冻结值随返回值直接带下去（只有这一次提交用得到）；同时占一个窗口动作号：
     // 正在飞的 switchRoot / 目录选择框回来时会发现意图已经换人。
-    const frozenTarget = this.captureSessionTarget(viewId);
+    const frozenTarget = this.captureSessionTarget(viewId) ?? null;
     this.beginViewAction(viewId);
     if (handoffLeaseFrom) this.attachments.transferLease(handoffLeaseFrom, requestId);
     const key = this.keyForView(viewId);
