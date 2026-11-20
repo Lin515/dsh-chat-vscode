@@ -5221,7 +5221,7 @@ export class ChatController implements vscode.Disposable {
     const rootPaths = this.historyRootPaths();
     let scope = this.viewHistoryScopes.get(viewId) ?? { kind: "current" as const };
     if (!this.historyScopeAvailable(scope, rootPaths)) {
-      // 连接换了 / 目录已经无从证明：不让旧目标留在界面上（迟到目标一律拒绝）
+      // 目录已经无从证明：不让旧目标留在界面上（迟到目标一律拒绝）
       if (this.viewHistoryScopes.delete(viewId)) {
         this.log(`[history] 窗口=${viewId} 的范围已经不可用，折回 current：${JSON.stringify(scope)}`);
       }
