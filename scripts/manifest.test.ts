@@ -50,6 +50,19 @@ for (const path of [light, dark]) {
   );
 }
 
+// 按住 Alt 的同一颗按钮走另一条命令：VS Code 会把图标换成那条命令自己的 icon
+// （`MenuItemActionItem.updateClass`），没有 icon 就整颗变空。所以 Alt 分支也
+// 必须声明同一只鲸鱼——按住 Alt 时按钮不换形、不变空。
+const beside = pkg.contributes?.commands?.find(
+  (entry) => entry.command === "dshChat.newSessionBeside",
+);
+assert.ok(beside, "package.json 必须有 dshChat.newSessionBeside 命令（鲸鱼的 Alt 分支）");
+assert.deepStrictEqual(
+  beside.icon,
+  { light: "media/whale-light.svg", dark: "media/whale-dark.svg" },
+  "Alt 分支的图标必须与单击那条一致（VS Code 会换成 alt 命令的 icon）",
+);
+
 // ---------- 2. 两份 SVG 必须真的在，且是「同一只鲸鱼」 ----------
 //
 // vsix 打包靠 `media/` 整目录进包，这里少一份按钮就哑成空白；路径数据与
@@ -74,7 +87,7 @@ for (const [name, fill] of [
   );
 }
 
-console.log("manifest: newSessionInGroup = 鲸鱼图标（两份单色 SVG，与品牌鲸同形）✓");
+console.log("manifest: newSessionInGroup / newSessionBeside = 同一只鲸鱼图标（两份单色 SVG，与品牌鲸同形）✓");
 
 // ---------- 3. 发布包用白名单 ----------
 //

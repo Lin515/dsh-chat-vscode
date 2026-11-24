@@ -133,12 +133,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
    *
    * `column` 默认 `ViewColumn.Beside`（新开一个分组）；「在编辑器中打开」那条路先用
    * {@link editorColumnFor} 取落点（已有标签组就在里面开新标签），只有明确要新开一个
-   * 分组时才落回这个默认值。`focus` 默认 false——**只有编辑器标题栏那条**
-   * 「在本分组新建对话窗口」要 `focus: true`（用户 2026-09-15 口径：点了要「跳转」过去）。
+   * 分组时才落回这个默认值。`focus` 默认 false——编辑器标题栏那头鲸鱼的**两个动作**
+   * 都要 `focus: true`（用户 2026-09-15 口径：点了要「跳转」过去）：单击在本分组新建
+   * （{@link openPanelInCurrentGroup}），按住 Alt 单击在右侧并排新建
+   * （{@link openPanelBeside}）。
    *
    * 返回 `viewId`：调用方可能要往这个新窗口里塞一个**新会话**
-   * （`newSessionInGroup` 走 `controller.newSession(viewId)`）。页面还没加载完也没关系
-   * ——界面发 `ready` 时宿主会补一份完整快照。
+   * （`newSessionInGroup` / `newSessionBeside` 都走 `controller.newSession(viewId)`）。
+   * 页面还没加载完也没关系——界面发 `ready` 时宿主会补一份完整快照。
    */
   openPanel(
     sessionId?: string,
@@ -163,6 +165,29 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     // 新面板刻意**不认领**缓存里的会话：缓存属于「上次退出时还开着的那些窗口」，
     // 用户此刻新开一个，就该是空态
     return { panel, viewId };
+  }
+
+  /**
+   * 编辑器标题栏那头鲸鱼的**单击**（命令「DSH: 在本分组新建对话窗口」）：
+   * 在用户当前所在的编辑器分组里开一个新会话面板。
+   *
+   * 落点固定 `ViewColumn.Active`（用户 2026-09-15 口径：在编辑窗口右上角点一下，
+   * 本分组里多一个 DSH 新会话标签页并跳过去）。落点规则收在这一个方法里，命令侧
+   * 只调它——`scripts/editorColumn.test.ts` 的源码扫描守着「命令里不许写死分组落点」。
+   */
+  openPanelInCurrentGroup(): { panel: vscode.WebviewPanel; viewId: string } {
+    return this.openPanel(undefined, vscode.ViewColumn.Active, true);
+  }
+
+  /**
+   * 编辑器标题栏那头鲸鱼的 **Alt+单击**（命令「DSH: 在右侧新建对话窗口」）：
+   * 在代码区右侧并排开一个新分组，代码与对话同时可见（用户 2026-11-24 口径）。
+   *
+   * 与单击那条共用 `openPanel`：新会话、聚焦都一样，只有落点不同。Alt 分支由
+   * `package.json` 的 `editor/title` 菜单 `alt` 字段接住，命令侧同样不写死分组常量。
+   */
+  openPanelBeside(): { panel: vscode.WebviewPanel; viewId: string } {
+    return this.openPanel(undefined, vscode.ViewColumn.Beside, true);
   }
 
   /** 挂一个编辑区面板：与侧栏共用 attach，额外登记种类与可见性。 */

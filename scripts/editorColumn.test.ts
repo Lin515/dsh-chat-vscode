@@ -1,5 +1,6 @@
 /**
- * 「在编辑器中打开」与 `@会话` 引用的**落点**（编辑区哪一个标签组）——行为级回归。
+ * 「在编辑器中打开」与 `@会话` 引用的**落点**（编辑区哪一个标签组）——行为级回归；
+ * 编辑器标题栏鲸鱼的单击 / Alt+单击落点也在这里钉。
  *
  * 用户 2026-10-10 口径：
  * 1. 来源窗口自己就在某个标签组里（编辑区面板，`@会话` 引用从那里点出来）→ 开在
@@ -181,7 +182,7 @@ const attach = (panel: unknown): string =>
   );
   assert.ok(
     !/ViewColumn\.Beside/.test(extensionSource),
-    "命令里不许再写死「新开一个分组」的落点（那正是这次要改掉的旧行为）",
+    "命令里不写死分组落点：单击与 Alt+单击两侧规则都在 `ChatViewProvider`（`openPanelInCurrentGroup` / `openPanelBeside`）",
   );
   const app = readFileSync(join(process.cwd(), "src", "webview", "App.tsx"), "utf8");
   assert.ok(
@@ -189,6 +190,83 @@ const attach = (panel: unknown): string =>
     "编辑区标签组里的会话不显示「在编辑器中打开」（自己就在标签组里）",
   );
   console.log("editorColumn: 来源窗口与按钮显示条件都接上了 ✓");
+}
+
+// ---------- 5. 编辑器标题栏鲸鱼：单击本分组，Alt+单击右侧并排 ----------
+//
+// 单击走 `newSessionInGroup`（`ViewColumn.Active`）；Alt+单击由 `package.json` 的
+// `editor/title` 菜单 `alt` 字段接到 `newSessionBeside`（`ViewColumn.Beside`）。
+// 两条命令都只调 provider 里的一个方法，落点规则只有一处。
+{
+  const created = (
+    vscode as unknown as {
+      createdWebviewPanels: {
+        viewType: string;
+        title: string;
+        viewColumn: number | undefined;
+        preserveFocus: boolean;
+      }[];
+    }
+  ).createdWebviewPanels;
+  created.length = 0;
+
+  provider.openPanelInCurrentGroup();
+  const single = created[created.length - 1];
+  assert.strictEqual(
+    single?.viewColumn,
+    vscode.ViewColumn.Active,
+    "单击鲸鱼在**当前分组**开新会话（ViewColumn.Active）",
+  );
+  assert.strictEqual(single?.preserveFocus, false, "点一下要跳过去：显式 focus");
+
+  provider.openPanelBeside();
+  const alt = created[created.length - 1];
+  assert.strictEqual(
+    alt?.viewColumn,
+    vscode.ViewColumn.Beside,
+    "Alt+单击在**代码区右侧并排**开新分组（ViewColumn.Beside）",
+  );
+  assert.strictEqual(alt?.preserveFocus, false, "Alt+单击同样跳过去：显式 focus");
+  console.log("editorColumn: 鲸鱼单击本分组 / Alt+单击右侧并排 ✓");
+}
+
+// ---------- 6. 清单接线：菜单 `alt` 必须指向已声明的命令，且宿主真的注册了 ----------
+//
+// VS Code 的菜单 `alt` 只认 `contributes.commands` 里声明过的命令（宿主按 id 查
+// 命令表）；少一条，Alt+单击就会静默退回单击。清单与宿主分处两处，按源码钉。
+{
+  const manifest = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf8")) as {
+    contributes: {
+      commands: { command: string }[];
+      menus: Record<string, { command?: string; alt?: string }[]>;
+    };
+  };
+  const whale = (manifest.contributes.menus["editor/title"] ?? []).find(
+    (item) => item.command === "dshChat.newSessionInGroup",
+  );
+  assert.strictEqual(
+    whale?.alt,
+    "dshChat.newSessionBeside",
+    "编辑器标题栏鲸鱼的 `alt` 分支指向「在右侧新建对话窗口」",
+  );
+  assert.ok(
+    manifest.contributes.commands.some((item) => item.command === "dshChat.newSessionBeside"),
+    "`alt` 指向的命令必须在 contributes.commands 里声明（否则 VS Code 不认这条分支）",
+  );
+  const extensionSource = readFileSync(join(process.cwd(), "src", "extension.ts"), "utf8");
+  assert.ok(
+    /provider\.openPanelInCurrentGroup\(\)/.test(extensionSource),
+    "单击鲸鱼的落点走 `provider.openPanelInCurrentGroup`（命令侧不写死分组常量）",
+  );
+  assert.ok(
+    /registerCommand\("dshChat\.newSessionBeside"/.test(extensionSource),
+    "Alt 分支的命令要在宿主里注册",
+  );
+  assert.ok(
+    /provider\.openPanelBeside\(\)/.test(extensionSource),
+    "Alt 分支的落点走 `provider.openPanelBeside`",
+  );
+  console.log("editorColumn: 菜单 alt / 命令声明 / 宿主注册接上了 ✓");
 }
 
 console.log("\neditorColumn: all assertions passed");

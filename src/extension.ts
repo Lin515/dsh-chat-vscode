@@ -265,15 +265,27 @@ function registerContributions(context: vscode.ExtensionContext, host: Contribut
         return provider.openPanel(sessionId ?? controller.activeSessionId(), column).panel;
       },
     ),
-    // 编辑器标题栏（`editor/title` 贡献点）那颗「打开 DSH 窗口」按钮的落点：
-    // 与上面那条**刻意不同**——它固定开在**用户当前所在的编辑器分组**里
-    // （`ViewColumn.Active`，不是旁边新开一个分组），并且直接起一个**新会话**
-    // （用户 2026-09-15 口径：在编辑窗口右上角点一下，本分组里多一个 DSH 新会话
-    // 标签页并跳过去）。新会话是用户显式动作，允许拉起后台（见 supervisorManager
-    // 的口径），`newSession` 内部就是按 `{ start: true }` 连的。
+    // 编辑器标题栏（`editor/title` 贡献点）那颗鲸鱼按钮的两个落点：
+    // - **单击**：开在**用户当前所在的编辑器分组**里（`ViewColumn.Active`，不是旁边
+    //   新开一个分组），直接起一个**新会话**（用户 2026-09-15 口径：在编辑窗口右上角
+    //   点一下，本分组里多一个 DSH 新会话标签页并跳过去）；
+    // - **Alt+单击**：在代码区右侧并排开一个新分组，代码与对话同时可见（用户
+    //   2026-11-24 口径）。VS Code 的菜单 `alt` 字段接住 Alt 按住时的点击（工具栏在
+    //   Alt 按下时切到 alt 命令），所以这里注册两条命令，落点规则都住在
+    //   `ChatViewProvider`，命令侧不写死分组常量。
+    // 新会话是用户显式动作，允许拉起后台（见 supervisorManager 的口径），`newSession`
+    // 内部就是按 `{ start: true }` 连的。
     vscode.commands.registerCommand("dshChat.newSessionInGroup", async () => {
-      const { viewId } = provider.openPanel(undefined, vscode.ViewColumn.Active, true);
+      const { viewId } = provider.openPanelInCurrentGroup();
       log(`[cmd] newSessionInGroup viewId=${viewId}`);
+      await controller.newSession(viewId);
+    }),
+    // 上面那条的 Alt 分支：`package.json` 的 `editor/title` 菜单把 `alt` 指到这里。
+    // 菜单 `alt` 只认 `contributes.commands` 里声明过的命令；它的标题同时是按住 Alt
+    // 时悬停提示的后半句（`editorColumn.test.ts` 钉着这两条清单事实）。
+    vscode.commands.registerCommand("dshChat.newSessionBeside", async () => {
+      const { viewId } = provider.openPanelBeside();
+      log(`[cmd] newSessionBeside viewId=${viewId}`);
       await controller.newSession(viewId);
     }),
     // 「停止生成」停最近活动窗口正在跑的这一轮（后台继续）

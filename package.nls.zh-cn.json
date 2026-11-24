@@ -8,6 +8,7 @@
   "cmd.toolbarPreferences.title": "DSH: 工具栏保留优先级",
   "cmd.openInEditor.title": "DSH: 在编辑器中打开对话",
   "cmd.newSessionInGroup.title": "DSH: 在本分组新建对话窗口",
+  "cmd.newSessionBeside.title": "DSH: 在右侧新建对话窗口",
   "cmd.stop.title": "DSH: 停止生成",
   "cmd.addToChat.title": "DSH: 添加文件(或选区)到对话",
   "cmd.addFolder.title": "DSH: 添加文件夹到对话",

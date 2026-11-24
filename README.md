@@ -59,7 +59,7 @@ npm run package  # Releases/dsh-chat-<version>.vsix
 
 ### 面板与会话
 
-- 可在活动栏、辅助侧栏或编辑器中使用。命令「DSH: 在编辑器中打开对话」与活动栏头部按钮将对话开到已有编辑器分组；编辑器标题栏的鲸鱼按钮在当前分组新建会话
+- 可在活动栏、辅助侧栏或编辑器中使用。命令「DSH: 在编辑器中打开对话」与活动栏头部按钮将对话开到已有编辑器分组；编辑器标题栏的鲸鱼按钮单击在**当前分组**新建会话窗口，按住 `Alt` 单击则在**代码区右侧并排**新建，代码与对话可同时查看
 
 - 历史列表只显示当前工作区的会话，支持新建、归档、删除。
 - 可从会话具体节点分支，分支标题带「分支: 」前缀。
@@ -180,7 +180,7 @@ The desktop app (Electron) already runs a DSH service of its own, and the extens
 
 ### Panels and sessions
 
-- Use the activity bar, secondary sidebar or editor area. **DSH: Open in Editor** and the activity-bar header button open a conversation in an existing editor group; the whale button in the editor title bar creates a session in the current group.
+- Use the activity bar, secondary sidebar or editor area. **DSH: Open in Editor** and the activity-bar header button open a conversation in an existing editor group; the whale button in the editor title bar creates a session in the **current group**, or opens it **beside the code** when you hold `Alt` and click, so code and conversation stay visible together.
 - History is scoped to the current workspace and supports new, archive and delete.
 - You can branch from a specific session node; branch titles have a “Branch: ” prefix.
 - Click the title when subagents exist to expand the top-level session and the multi-level subagent tree and switch across any level; the count after the title shows how many subagents the current session has. One-shot agents are read-only, continuable agents support follow-up chat.
