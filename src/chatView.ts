@@ -66,7 +66,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     this.armRestoreFallback(viewId);
     this.log(`[view] ${this.kind} 侧栏视图实例化 viewId=${viewId}`);
     // 侧栏视图变可见视作活动：命令面板入口（新建/历史/加选区…）据此定位窗口。
-    // 编辑区面板有同样的处理（见 openPanel），两边口径必须一致
+    // 编辑区面板有同样的处理（见 openPanel），两边口径必须一致。
+    // 「点一下侧栏消息框」的切换由输入框聚焦帧 `composerFocus` 兜底（侧栏视图
+    // 的公开 API 没有「激活」事件可挂，见 resolveWebviewView 的注释）。
     this.disposables.push(
       view.onDidChangeVisibility(() => {
         if (view.visible) this.controller.noteActiveView(viewId);
@@ -215,7 +217,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     // 面板变可见时视作活动（命令面板入口「最近活动的窗口」靠它定位）
     this.disposables.push(
       panel.onDidChangeViewState((event) => {
-        if (event.webviewPanel.visible) this.controller.noteActiveView(viewId);
+        // 可见**或激活**都算窗口活动：点一下面板里的消息框（active 翻真）也要把
+        // 「最近活动窗口」切过来，选区芯片才跟着走（评审 2026-11-24 实机反馈）
+        if (event.webviewPanel.visible || event.webviewPanel.active) this.controller.noteActiveView(viewId);
       }),
     );
     return viewId;

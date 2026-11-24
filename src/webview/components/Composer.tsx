@@ -1206,6 +1206,14 @@ export function Composer({
               // 文本域是**纯文本**，做不出真正的行内链接，只能按光标位置判（见 `../mentionOpen`）。
               title={texts.mentionClickHint(altLabel(), modifierLabel())}
               {...completion.textareaProps}
+              // 点进消息框 = 用户开始用这个窗口：发一条纯活动帧，宿主把「最近活动
+              // 窗口」切过来，选区芯片随之落到本窗口（评审 2026-11-24 第 1 条的实机
+              // 反馈：侧栏视图的单击本来不产生任何宿主帧，活动切不过去）。补全那边
+              // 的 onFocus（焦点回输入框重算触发词）原样先执行，不顶掉。
+              onFocus={(event) => {
+                completion.textareaProps.onFocus?.(event);
+                post({ type: "composerFocus" });
+              }}
               // 写在摊开之后：文本域只有一个 `onClick`，这里**接着**补全那边的光标刷新
               // 再判一次 Ctrl+单击，而不是把它顶掉（否则候选菜单不再跟着光标走）。
               onClick={(event) => {

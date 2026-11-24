@@ -217,6 +217,14 @@ function registerContributions(context: vscode.ExtensionContext, host: Contribut
       mode === "off" || !selectionFacts || (mode === "selection" && selectionFacts.lines === undefined)
         ? null
         : selectionFacts;
+    // 投递账目落一行日志：实机排障用（「芯片怎么变成了整文件 / 为什么没了」直接
+    // 看输出面板的 DSH Chat 通道就能对上每一次投递的档位与行号）
+    log(
+      `[selection] mode=${mode} ` +
+        (deliverable
+          ? `file=${deliverable.filePath} lines=${deliverable.lines ? `${deliverable.lines.start}-${deliverable.lines.end}` : "整文件"} → 投递`
+          : "→ 清除"),
+    );
     controller.setSelectionFacts(deliverable);
   };
 

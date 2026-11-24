@@ -302,7 +302,7 @@ console.log("selectionSend: 芯片投递与发送安全（驱动真控制器，o
   console.log("selectionSend: /compact 与带参数命令不受引用影响，普通消息才附加 ✓");
 }
 
-// ---------- 4. 接线源码钉：ready 重放的归属判据与 extension 的三处快照事件 ----------
+// ---------- 4. 接线源码钉：ready 重放的归属判据、事件即快照、点消息框即切换 ----------
 {
   const source = readFileSync(join(process.cwd(), "src", "dsh", "controller.ts"), "utf8");
   assert.ok(
@@ -320,7 +320,25 @@ console.log("selectionSend: 芯片投递与发送安全（驱动真控制器，o
       `${event} 必须在事件那一刻快照（防抖只延迟投递，评审第 2 条）`,
     );
   }
-  console.log("selectionSend: ready 归属判据与事件即快照的接线钉住 ✓");
+  // 「点一下消息框就切窗口」的落点信号：文本域聚焦发 composerFocus（评审 1 的实机
+  // 反馈——侧栏单击本来不产生任何宿主帧，活动窗口切不过去）；两处视图容器也要把
+  // 「激活」算作活动。
+  const composer = readFileSync(join(process.cwd(), "src", "webview", "components", "Composer.tsx"), "utf8");
+  assert.ok(
+    /onFocus=\{\(event\) => \{\s*\n\s*completion\.textareaProps\.onFocus\?\.\(event\);\s*\n\s*post\(\{ type: "composerFocus" \}\);/.test(composer),
+    "文本域聚焦必须先跑补全的 onFocus 再发 composerFocus（两条都不许顶掉）",
+  );
+  const chatView = readFileSync(join(process.cwd(), "src", "chatView.ts"), "utf8");
+  assert.ok(
+    /event\.webviewPanel\.visible \|\| event\.webviewPanel\.active/.test(chatView),
+    "编辑区面板的激活（点进去）也要记活动窗口（侧栏视图公开 API 没有「激活」事件，靠 composerFocus 兜底）",
+  );
+  const controllerSource = source;
+  assert.ok(
+    /case "composerFocus":/.test(controllerSource),
+    "宿主要显式接住 composerFocus 帧（活动登记在 attach 层，本身无语义）",
+  );
+  console.log("selectionSend: ready 归属判据、事件即快照、点消息框即切换的接线钉住 ✓");
 }
 
 console.log("\nselectionSend: all assertions passed");
