@@ -230,3 +230,42 @@ export function displaySessionMentions(text: string): string {
     },
   );
 }
+
+/**
+ * 「编辑器当前选区」的自动引用拼到正文末尾（评审 2026-11-24 口径）。
+ *
+ * **拼接只发生在宿主**、且发生在命令识别**之后**：Webview 把原始正文与引用 token
+ * 分两笔过线（`send` 帧的 `autoReference`），宿主先按命令目录判 `/xxx`，只给普通
+ * 消息附加——引用先拼进正文会让 `/compact` 因多出尾巴而判不成命令（评审第 3 条）。
+ * 拼接规则只有一条：正文与 token 之间空一行（token 独占一行），正文为空时直接就是
+ * token（空白正文 + 附件的场景在发送门本来就放行）。
+ */
+export function appendAutoReference(draft: string, token: string): string {
+  return draft === "" ? token : `${draft}\n\n${token}`;
+}
+
+/**
+ * 「编辑器当前选区」能不能按**目标会话的执行目录**引用（评审 2026-11-24 第 5 条）。
+ *
+ * VS Code 的工作区相对路径不一定是那条会话读得到的路径：多根工作区里两个根可能有
+ * 同名文件，远端 / 桌面端会话的执行目录甚至不在本机。所以引用按 `dir`（会话的 cwd）
+ * 生成，目录拼写**逐字**成前缀才算数（与 `relativizeToCwd` 同一口径：realpath、
+ * 大小写、另一个根的拼写差异在字符串层面证明不了同一个目录，宁可不算）；不匹配时
+ * 返回 undefined，调用方不自动附带（手动 `@` 不受影响）。
+ *
+ * 两种分隔符都先归一成 `/`（{@link normalizeMentionPath} 的既定偏离），所以 Windows
+ * 形态的 cwd 与正斜杠形态的文件路径也能对上。
+ */
+export function relativeMentionPath(dir: string, filePath: string): string | undefined {
+  if (dir === "" || filePath === "") return undefined;
+  const root = normalizeMentionPath(dir).replace(/[/\\]+$/u, "");
+  const full = normalizeMentionPath(filePath);
+  const prefix = `${root}/`;
+  if (!full.startsWith(prefix)) return undefined;
+  const relative = full.slice(prefix.length);
+  // 越过根（`..`）= 不是这个目录里的东西：不猜
+  if (relative === "" || relative === ".." || relative.startsWith("../") || relative.includes("/../") || relative.endsWith("/..")) {
+    return undefined;
+  }
+  return relative;
+}

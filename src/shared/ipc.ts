@@ -47,24 +47,17 @@ export const RELOAD_WINDOW_COMMAND = "workbench.action.reloadWindow";
 /**
  * 输入框「编辑器当前选区」芯片的一帧（`ui/selectionContext` 的载荷）。
  *
- * 由宿主从**活动编辑器**算出，界面只负责展示与发送时附带：
- * - `token`：发送时追加进正文末尾的 `@` 引用（`@src/a.ts#L12-L40`），
- *   与「添加文件(或选区)到对话」同一条口径（路径引用，模型自己 read）；
- * - `name` / `lines`：芯片上显示的相对路径与 1 基闭区间行号（`selectionLines` 的口径）；
+ * 由宿主按**目标窗口的会话执行目录**算出（评审 2026-11-24 第 1、5 条），界面只负责
+ * 展示与发送时把 `token` 分笔传回（宿主在命令识别之后自己拼接，见 `send` 帧的
+ * `autoReference`）：
+ * - `token`：**显示与发送共用同一个值**（评审 2026-11-24 设计建议），单行、带空格的
+ *   路径都按实际发送形态（`@src/a.ts#L12`、`@"my file.txt#L12-L40"`）；
  * - `preview`：选区原文预览（已截断、归一换行），芯片悬停时看，原文不翻译。
  */
 export interface SelectionContextView {
-  /** 发送时追加进正文的 `@` 引用 token（整文件 `@src/a.ts` / 选区 `@src/a.ts#L12-L40`）。 */
+  /** 发送时附带的 `@` 引用 token，也是芯片上显示的那串（整文件 `@src/a.ts` / 选区带行号）。 */
   token: string;
-  /** 芯片显示用相对路径（与 token 同源）。 */
-  name: string;
-  /**
-   * 选区覆盖的行号（1 基闭区间）；**`undefined` = 只有光标、没有选中**，
-   * 引用的是整个文件（用户 2026-11-23 口径：光标点到文件里就先自动选中这个文件，
-   * 再选中几行才显示行号区间）。芯片在这一档只显示文件名、不显示行号段。
-   */
-  lines?: { start: number; end: number };
-  /** 选区原文预览（悬停显示；空串 = 只有光标 / 选区只有空白），原文不翻译。 */
+  /** 选区原文预览（悬停显示；空串 = 选区只有空白），原文不翻译。 */
   preview: string;
 }
 
@@ -271,11 +264,12 @@ export type HostToWebview =
   /**
    * 编辑器「当前选区」芯片（`dshChat.autoSelection`）。
    *
-   * 宿主监听编辑器选区变化（防抖后）把**最近活动窗口**该显示的选区推过去；
-   * `context: null` 表示清除（选区没了 / 开关关了 / 切到非文件文档）。
-   * 与 `ui/insertText`（把 token 写进草稿）互补：这条链**完全不碰草稿**，
-   * 界面只在**发送那一刻**把 `token` 追加进正文（一次性，发完即清芯片）——
-   * 用户正在打的问题一个字都不会被改掉。
+   * 宿主只投递给**最近活动的窗口**（评审 2026-11-24 第 1 条：芯片反映编辑器状态，
+   * 但后台窗口不该重新显示同一引用；活动目标切换时旧窗口那一帧会被撤下）；
+   * `context: null` 表示清除（选区没了 / 开关关了 / 目标会话的执行目录够不着那个
+   * 文件）。与 `ui/insertText`（把 token 写进草稿）互补：这条链**完全不碰草稿**，
+   * 界面只在发送那一刻把 `token` 通过 `send.autoReference` 分笔传回——用户正在打的
+   * 问题一个字都不会被改掉。
    */
   | { type: "ui/selectionContext"; context: SelectionContextView | null }
   /**
@@ -357,8 +351,18 @@ export type WebviewToHost =
    * **不带附件**：草稿附件的权威是宿主账本（界面那份只是它的投影），发送时宿主按
    * 窗口键取账本里那一份。以前这里回传整份 `Attachment[]`，而图片附件带着完整的
    * `dataUrl`——同一串 base64 于是要从 webview 再走一趟单程（几 MB，2026-10-13）。
+   *
+   * `autoReference` 是「编辑器当前选区」芯片的引用 token，与正文**分两笔过线**
+   * （评审 2026-11-24 第 3 条）：宿主先按命令目录识别 `/xxx`，只给普通消息附加——
+   * 引用先拼进正文会让 `/compact` 判不成命令、给带参数的命令多塞一份引用文本。
    */
-  | { type: "send"; text: string; gesture?: "enter" | "accelerated" }
+  | { type: "send"; text: string; gesture?: "enter" | "accelerated"; autoReference?: string }
+  /**
+   * 用户点掉了「当前选区」芯片（或发送后界面收起）：通知宿主撤下并记住「用户已
+   * 收起」（评审 2026-11-24 第 2 条）——此后**仅重载页面不得把它带回来**，下一次
+   * 符合当前档位的编辑器操作（选区 / 光标变化）才允许重显。
+   */
+  | { type: "selectionContextDismiss" }
   /**
    * **撤回**一条发送失败的回显：把那一行删掉。
    *

@@ -1209,7 +1209,12 @@ export function App() {
           chatScroll={chatScroll.port}
           onDraft={(text) => dispatch({ type: "ui/setDraft", text })}
           onFollowLatest={chatScroll.jumpToLatest}
-          onSelectionDismiss={() => dispatch({ type: "ui/selectionDismiss" })}
+          onSelectionDismiss={() => {
+            // 界面收起 + 通知宿主「用户已收起」：重载页面不得把同一引用带回来
+            // （评审 2026-11-24 第 2 条），下一次编辑器操作才允许重显
+            dispatch({ type: "ui/selectionDismiss" });
+            post({ type: "selectionContextDismiss" });
+          }}
         />
 
         {state.panel === "history" ? (

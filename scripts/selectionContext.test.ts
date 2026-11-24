@@ -1,24 +1,28 @@
 /**
- * 「编辑器当前选区」芯片（`dshChat.autoSelection`）的三条链路。
+ * 「编辑器当前选区」芯片（`dshChat.autoSelection`，评审 2026-11-24 口径）的几条链路。
  *
- * 1. **拼接**（`appendSelectionReference`）：发送那一刻把 `@` 引用 token 追加到
- *    正文末尾——正文与 token 之间空一行、正文为空时直接是 token；
- * 2. **归约**（`reducer` 的 `ui/selectionContext` / `ui/selectionDismiss`）：
+ * 1. **引用折算**（`relativeMentionPath`）：按目标会话的执行目录折相对路径，
+ *    目录之外（多根同名、`..` 越界、空目录）一律 undefined = 不自动附带；
+ * 2. **发送拼接**（`appendAutoReference`）：正文与引用之间空一行，空正文直接是
+ *    引用——宿主在命令识别**之后**才拼（见 `selectionSend.test.ts`）；
+ * 3. **三档开关**（`parseAutoSelectionMode`）：合法档位原样收下，旧布尔按迁移表
+ *    翻（true → file、false → off），其余回默认 `selection`；
+ * 4. **归约**（`reducer` 的 `ui/selectionContext` / `ui/selectionDismiss`）：
  *    宿主帧置上 / 清除、用户点掉；空态收到清除帧不许换引用（白渲染）；
- * 3. **渲染**（真渲染 `Composer`，react-dom/server）：芯片画出文件名、行号与
- *    悬停预览（中英两份词典各渲一遍，钉住「行号文案进了词典而不是写死中文」），
+ * 5. **渲染**（真渲染 `Composer`，react-dom/server）：芯片直接显示**实际会发出去**
+ *    的引用 token（显示与发送共用同一个值，评审设计建议），悬停给选区原文预览；
  *    没有那一帧时芯片整枚不出现。
  *
- * 发送动作本身（`send` 里读 `state.selectionContext`）不在这条无头链上：仓库不为
- * 测试引入 jsdom，点击模拟起不来；拼接规则与状态归约各自钉死后，剩下的只是一行
- * 接线（`Composer` 的 `send`）。
+ * 投递归属、命令安全与取消回填是**行为**链路，见 `selectionSend.test.ts`
+ * （驱动真控制器）；这里钉纯函数与界面。
  *
  * 运行：npm test（已登记到 esbuild.scripts.mjs 的 entries）
  */
 import assert from "node:assert";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { appendSelectionReference } from "../src/webview/selectionContext";
+import { appendAutoReference, relativeMentionPath } from "../src/shared/mentions";
+import { parseAutoSelectionMode } from "../src/shared/autoSelection";
 import { initialState, reducer, type AppState } from "../src/webview/state";
 import type { SelectionContextView } from "../src/shared/ipc";
 import { TextsContext, dictionaryFor } from "../src/webview/texts";
@@ -34,20 +38,50 @@ const { Composer } = await import("../src/webview/components/Composer");
 
 const context: SelectionContextView = {
   token: "@src/config.ts#L12-L18",
-  name: "src/config.ts",
-  lines: { start: 12, end: 18 },
   preview: "const port = 3080;",
 };
+/** 带空格的路径：实际发送形态带成对引号（SSR 会把 `"` 转义，断言按转义后比对）。 */
+const quotedContext: SelectionContextView = {
+  token: '@"src/my file.ts"#L12-L18',
+  preview: "",
+};
 
-// ---------- 1. 拼接：正文 + token ----------
+// ---------- 1. 引用折算：按目标会话的执行目录 ----------
 {
-  assert.strictEqual(appendSelectionReference("帮我解释这段", context.token), `帮我解释这段\n\n${context.token}`, "正文与 token 之间空一行");
-  assert.strictEqual(appendSelectionReference("", context.token), context.token, "空正文（只发附件的场景）直接是 token");
-  assert.strictEqual(appendSelectionReference("第一行\n第二行", context.token), `第一行\n第二行\n\n${context.token}`, "多行正文同样只在末尾追加");
+  assert.strictEqual(relativeMentionPath("C:\\work\\demo", "C:\\work\\demo\\src\\a.ts"), "src/a.ts", "Windows 目录与反斜杠文件路径折成 `@` 语法所需的正斜杠相对路径");
+  assert.strictEqual(relativeMentionPath("/w/demo", "/w/demo/src/a.ts"), "src/a.ts", "POSIX 目录之下照折");
+  assert.strictEqual(relativeMentionPath("/w/demo/", "/w/demo/a.ts"), "a.ts", "目录尾分隔符不参与比对");
+  assert.strictEqual(relativeMentionPath("/w/demo", "/w/other/src/a.ts"), undefined, "另一个根（多根工作区）不给引用——字符串层面证明不了 Agent 读得到同一文件");
+  assert.strictEqual(relativeMentionPath("/w/demo", "/w/demo/../escape/a.ts"), undefined, "前缀撞上但相对段越界（..）不引用");
+  assert.strictEqual(relativeMentionPath("/w/demo", "/w/demox/a.ts"), undefined, "目录前缀是别名的开头（demo 与 demox）不算同目录");
+  assert.strictEqual(relativeMentionPath("", "/w/demo/a.ts"), undefined, "没有目录证据不猜");
+  // 多根同名文件：两个根各有一个 src/config.ts，只有「目标会话的那个根」折得出来
+  assert.strictEqual(relativeMentionPath("/w/alpha", "/w/alpha/src/config.ts"), "src/config.ts");
+  assert.strictEqual(relativeMentionPath("/w/beta", "/w/alpha/src/config.ts"), undefined, "目标会话在 beta 根时，alpha 根的同名文件不自动附带");
 }
-console.log("selectionContext: 发送拼接（正文 + 引用 token）✓");
+console.log("selectionContext: 按会话执行目录折引用（多根 / 越界 / 空目录不附带）✓");
 
-// ---------- 2. 归约：宿主帧与用户点掉 ----------
+// ---------- 2. 发送拼接：正文 + 引用 ----------
+{
+  assert.strictEqual(appendAutoReference("帮我解释这段", context.token), `帮我解释这段\n\n${context.token}`, "正文与引用之间空一行");
+  assert.strictEqual(appendAutoReference("", context.token), context.token, "空正文（只发附件的场景）直接是引用");
+  assert.strictEqual(appendAutoReference("第一行\n第二行", context.token), `第一行\n第二行\n\n${context.token}`, "多行正文同样只在末尾追加");
+}
+console.log("selectionContext: 发送拼接（正文 + 引用，宿主在命令识别后拼）✓");
+
+// ---------- 3. 三档开关：合法档位、旧布尔迁移、未知回默认 ----------
+{
+  assert.strictEqual(parseAutoSelectionMode("off"), "off");
+  assert.strictEqual(parseAutoSelectionMode("selection"), "selection");
+  assert.strictEqual(parseAutoSelectionMode("file"), "file");
+  assert.strictEqual(parseAutoSelectionMode(undefined), "selection", "未设置回默认档");
+  assert.strictEqual(parseAutoSelectionMode("whatever"), "selection", "拼错回默认档");
+  assert.strictEqual(parseAutoSelectionMode(true), "file", "旧布尔 true = 选区或整文件（迁移）");
+  assert.strictEqual(parseAutoSelectionMode(false), "off", "旧布尔 false = 关闭（迁移）");
+}
+console.log("selectionContext: 三档开关（含旧布尔迁移）✓");
+
+// ---------- 4. 归约：宿主帧与用户点掉 ----------
 {
   const set = reducer(initialState, { type: "ui/selectionContext", context });
   assert.strictEqual(set.selectionContext, context, "宿主帧把芯片置上");
@@ -63,7 +97,7 @@ console.log("selectionContext: 发送拼接（正文 + 引用 token）✓");
 }
 console.log("selectionContext: 状态归约（置上 / 清除 / 点掉）✓");
 
-// ---------- 3. 渲染：芯片画出文件名、行号与悬停预览 ----------
+// ---------- 5. 渲染：芯片显示实际发送的引用（中英同值），悬停给原文预览 ----------
 {
   // React 在 server 渲染时会对 `useLayoutEffect` 打一句 warning（组件本来就不在
   // server 上跑）。只在渲染期间静音那一句，其它 error 照旧。
@@ -83,32 +117,39 @@ console.log("selectionContext: 状态归约（置上 / 清除 / 点掉）✓");
   try {
     const withChip = { ...initialState, connection: "ready" as const, draft: "帮我解释", selectionContext: context };
     const zh = render(withChip, "zh");
-    assert.ok(zh.includes("src/config.ts"), "芯片上有文件名");
-    assert.ok(zh.includes("第12-18行"), "中文行号文案来自词典");
-    assert.ok(zh.includes("第12-18行") && !zh.includes("Lines 12-18"), "中文界面不出现英文行号");
-    assert.ok(zh.includes("已选"), "芯片带「已选」前缀（用户 2026-11-23 口径）");
     const en = render(withChip, "en");
-    assert.ok(en.includes("Lines 12-18"), "英文行号文案来自词典");
-    assert.ok(en.includes("Selected"), "英文界面前缀来自词典");
-    assert.ok(en.includes("Line ") === false || en.includes("Lines 12-18"), "英文区间形态正确");
-
-    for (const html of [zh, en]) {
-      assert.ok(html.includes("const port = 3080;"), "悬停 title 里有选区原文预览");
-      assert.ok(html.includes(context.token), "悬停 title 里有会发出去的 token");
-      assert.ok(html.includes("chip-remove"), "点掉按钮在");
-    }
-
-    // 整文件档（只有光标、没有选中）：芯片只显示文件名，不出现行号段
-    const wholeFile: SelectionContextView = { token: "@src/config.ts", name: "src/config.ts", preview: "" };
     for (const [locale, html] of [
-      ["zh", render({ ...initialState, connection: "ready", draft: "帮我解释", selectionContext: wholeFile }, "zh")],
-      ["en", render({ ...initialState, connection: "ready", draft: "帮我解释", selectionContext: wholeFile }, "en")],
+      ["zh", zh],
+      ["en", en],
     ] as const) {
-      assert.ok(html.includes("@src/config.ts"), `${locale}：悬停 title 里有整文件 token`);
-      assert.ok(html.includes("已选") || html.includes("Selected"), `${locale}：前缀在`);
-      assert.ok(!html.includes("第12-18行") && !html.includes("Lines 12-18"), `${locale}：没有行号段`);
-      assert.ok(!/第\d+-\d+行/.test(html), `${locale}：不出现任何行号区间`);
+      assert.ok(html.includes(context.token), `${locale}：芯片显示的就是实际会发出去的引用（含引号与行号区间）`);
+      assert.ok(html.includes("const port = 3080;"), `${locale}：悬停 title 里有选区原文预览`);
+      assert.ok(html.includes("chip-remove"), `${locale}：点掉按钮在`);
+      assert.ok(!html.includes("第12-18行") && !html.includes("Lines 12-18"), `${locale}：不再把文件名与行号拆开显示（显示即发送的 token）`);
     }
+    assert.ok(zh.includes("已选"), "中文界面带「已选」前缀");
+    assert.ok(en.includes("Selected"), "英文界面带「Selected」前缀");
+    assert.strictEqual(
+      /chip-name">([^<]*)</u.exec(zh)?.[1],
+      /chip-name">([^<]*)</u.exec(en)?.[1],
+      "引用 token 不随界面语言变：显示与发送共用同一个值",
+    );
+
+    // 带空格的路径：按实际发送形态（成对引号）显示，不拆开、不去引号
+    const quoted = render({ ...initialState, connection: "ready", draft: "hi", selectionContext: quotedContext }, "en");
+    assert.ok(quoted.includes("&quot;src/my file.ts&quot;#L12-L18"), "带空格路径按实际发送形态（含引号）显示");
+
+    // 整文件档（`file` 档、只有光标）：token 没有 `#L` 段，照原样显示
+    const wholeFile: SelectionContextView = { token: "@src/config.ts", preview: "" };
+    const whole = render({ ...initialState, connection: "ready", draft: "hi", selectionContext: wholeFile }, "zh");
+    assert.ok(whole.includes("@src/config.ts"), "整文件引用照原样显示");
+    assert.ok(!whole.includes("#L"), "整文件档不出现行号段");
+
+    // 单行档：宿主折出的 token 就是 `#L12` 形态，显示与发送同值（评审测试小项：
+    // 单行形态独立验证，不靠区间档顺带）
+    const singleLine: SelectionContextView = { token: "@src/a.ts#L12", preview: "x" };
+    const single = render({ ...initialState, connection: "ready", draft: "hi", selectionContext: singleLine }, "en");
+    assert.ok(single.includes("@src/a.ts#L12"), "单行引用按实际发送形态显示（#L12）");
 
     const without = render({ ...initialState, connection: "ready" as const, draft: "hi" }, "zh");
     assert.ok(!without.includes("chip-sub") && !without.includes("src/config.ts"), "没有那一帧时芯片整枚不出现");
@@ -116,6 +157,6 @@ console.log("selectionContext: 状态归约（置上 / 清除 / 点掉）✓");
     console.error = realError;
   }
 }
-console.log("selectionContext: 芯片渲染（文件名 / 行号 / 预览，中英双语，整文件档）✓");
+console.log("selectionContext: 芯片渲染（显示即发送的 token，中英同值，整文件 / 单行档）✓");
 
 console.log("\nselectionContext: all assertions passed");

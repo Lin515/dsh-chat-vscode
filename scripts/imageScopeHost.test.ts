@@ -20,6 +20,11 @@ interface Harness {
   pendingPanelOpens: Map<string, string>;
   sessionCwds: Map<string, string>;
   sessions: [];
+  /** ready 的芯片重放要读的三样选区状态与活动窗口序（夹具绕过了构造器，手工补齐）。 */
+  viewOrder: string[];
+  selectionFacts: null;
+  selectionDismissed: boolean;
+  selectionDelivered: Map<string, unknown>;
   scopeOfView(viewId: string): { sessionId: string; workingDirectory?: string };
   log(message: string): void;
   snapshotFor(viewId: string): object;
@@ -137,6 +142,10 @@ c.copyFailureWatermarks = new Map();
 c.pendingNotificationsOpen = false;
 c.viewKinds = new Map();
 c.pendingPanelOpens = new Map();
+c.viewOrder = ["v1"];
+c.selectionFacts = null;
+c.selectionDismissed = false;
+c.selectionDelivered = new Map();
 c.snapshotFor = () => ({});
 c.resumeRestoreHint = async () => {};
 c.hasRestorePending = () => true;

@@ -19,7 +19,6 @@ import {
 import { attachmentUploadBlock } from "../../shared/attachmentGate";
 import type { AppState } from "../state";
 import { post } from "../bridge";
-import { appendSelectionReference } from "../selectionContext";
 import {
   IconAttach,
   IconCheck,
@@ -610,18 +609,19 @@ export function Composer({
    */
   const send = (gesture: "enter" | "accelerated" = "enter") => {
     if (!canSend) return;
-    // 「当前选区」芯片在场时，把引用 token 附在正文末尾（一次性口径，见
-    // `selectionContext.ts`）：正文与 token 之间空一行，正文为空（只发附件）时
-    // 直接就是 token。发送门不看芯片——只选中文本不打问题是发不出去的，
-    // 与「只有附件、正文为空也能发」的官方口径不冲突（那是不带芯片的场景）。
+    // 「当前选区」芯片在场时把引用 **分笔** 传给宿主（评审 2026-11-24 第 3 条）：
+    // 命令识别必须看到原始正文——引用先拼进正文会让 `/compact` 判不成命令、给带
+    // 参数的命令多塞一份引用文本。宿主判完「是普通消息」才自己拼接。发送门不看
+    // 芯片——只选中文本不打问题是发不出去的，与「只有附件、正文为空也能发」的
+    // 官方口径不冲突（那是不带芯片的场景）。
     const selection = state.selectionContext;
-    const text = selection ? appendSelectionReference(draft.trim(), selection.token) : draft.trim();
-    post({ type: "send", text, gesture });
+    post({ type: "send", text: draft.trim(), gesture, ...(selection ? { autoReference: selection.token } : {}) });
     // 发出去了就是要看回答：脱贴状态下也贴回最新（与切会话同一条规则）
     onFollowLatest?.();
     onDraft("");
-    // 附带是一次性的：发完就收起芯片。编辑器里的选区还在，用户再选中（或改选）
-    // 时宿主会推来新的一帧——连续追问同一段代码就是「再点一下选中」的成本。
+    // 附带是一次性的：发完就收起芯片（宿主同步记住「用户已收起」，重载页面不
+    // 复活）。编辑器里的选区还在，用户再选中（或改选）时宿主会推来新的一帧
+    // ——连续追问同一段代码就是「再点一下选中」的成本。
     if (selection) onSelectionDismiss?.();
   };
 
@@ -1077,34 +1077,22 @@ export function Composer({
           {state.selectionContext !== undefined || state.attachments.length ? (
             <div className="composer-chips">
               {/* 「编辑器当前选区」芯片（宿主 `ui/selectionContext` 推送）：只随编辑器
-                  选区变化更新，不碰草稿；发送那一刻才把 token 附进正文（见 send）。
-                  悬停给**选区原文预览** + 附带说明 + 会发出去的 token——用户在发送前
-                  就能核对「附带的是哪几行」。与附件芯片不同，这枚不可点开（模型自己
-                  read 引用，界面没有可打开的字节），所以不走 `chip-open`。 */}
+                  选区变化更新，不碰草稿；发送那一刻把 token 分笔传回宿主（见 send）。
+                  芯片直接显示**实际会发出去**的引用（评审 2026-11-24 设计建议：显示
+                  与发送共用同一个值，单行 / 带空格路径都按真实形态画）；悬停给**选区
+                  原文预览** + 附带说明。与附件芯片不同，这枚不可点开（模型自己 read
+                  引用，界面没有可打开的字节），所以不走 `chip-open`。 */}
               {state.selectionContext ? (
                 <span
                   className="chip"
-                  title={[
-                    texts.selectionChipTitle,
-                    state.selectionContext.preview,
-                    state.selectionContext.token,
-                  ]
+                  title={[texts.selectionChipTitle, state.selectionContext.preview]
                     .filter((line) => line !== "")
                     .join("\n")}
                 >
-                  {/* 前缀「已选 / Selected」：光看文件名 + 行号像是普通引用，
-                      加上这词才一眼认出「这是我刚才选中的内容」 */}
+                  {/* 前缀「已选 / Selected」：光看一串引用像是普通引用，加上这词才
+                      一眼认出「这是我刚才选中的内容」 */}
                   <span className="chip-sub">{texts.selectionChipPrefix}</span>
-                  <span className="chip-name">{state.selectionContext.name}</span>
-                  {/* 只有选中了几行才显示行号段；只有光标那一档表示「整文件引用」 */}
-                  {state.selectionContext.lines ? (
-                    <span className="chip-sub">
-                      {texts.selectionLines(
-                        state.selectionContext.lines.start,
-                        state.selectionContext.lines.end,
-                      )}
-                    </span>
-                  ) : null}
+                  <span className="chip-name">{state.selectionContext.token}</span>
                   <button
                     className="chip-remove"
                     title={texts.remove}

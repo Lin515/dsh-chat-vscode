@@ -112,11 +112,13 @@ export interface AppState extends ChatState {
    */
   quoteRequest?: { id: number; text: string };
   /**
-   * 编辑器「当前选区」芯片（宿主 `ui/selectionContext` 推送）。
+   * 编辑器「当前选区」芯片（宿主 `ui/selectionContext` 推送，只投递给最近活动的
+   * 窗口）。
    *
    * `undefined` = 不显示。它反映的是**编辑器**的状态而不是某条会话的：切会话
-   * 不清它（选区还在编辑器里），发送后由界面清（一次性口径，见 `Composer` 的
-   * `send`），宿主下一次选区变化会推来新的。也只活在界面侧，不进 `ChatState`。
+   * 不清它（选区还在编辑器里）；发送 / 点 × 后界面清、宿主同步记住「用户已收起」
+   * （重载页面不复活，评审 2026-11-24 第 2 条）；宿主的下一次编辑器事件或目标
+   * 切换会推来新的帧。也只活在界面侧，不进 `ChatState`。
    */
   selectionContext?: SelectionContextView;
   /**

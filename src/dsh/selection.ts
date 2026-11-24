@@ -70,3 +70,21 @@ export function selectionPreview(text: string, cap = 400): string {
   if (body.length <= cap) return body;
   return `${body.slice(0, cap)}…`;
 }
+
+/**
+ * 编辑器「当前选区」的**事实**快照（`extension.ts` 在编辑器事件那一刻算好，
+ * 300ms 防抖只延迟投递；控制器按活动窗口的会话执行目录把它折成引用帧，
+ * 见 `ChatController.setSelectionFacts`）。
+ *
+ * 这里只有「编辑器里是什么」的原始事实，不含任何按窗口折算的产物（引用 token
+ * 取决于目标会话的执行目录，多根工作区下不同窗口折出的 token 可以不同）：
+ * - `filePath`：选区所在文件的**绝对路径**（分隔符保持平台原样，折算时归一）；
+ * - `lines`：选区覆盖的行号（1 基闭区间）；`undefined` = 只有光标、没有选中
+ *   （`selection` 档不显示，`file` 档引用整个文件）；
+ * - `preview`：选区原文预览（{@link selectionPreview} 的产物），悬停显示。
+ */
+export interface SelectionFacts {
+  filePath: string;
+  lines?: { start: number; end: number };
+  preview: string;
+}

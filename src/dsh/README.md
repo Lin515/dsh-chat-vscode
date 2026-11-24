@@ -85,7 +85,7 @@
 - [configChanges.ts](<configChanges.ts>) — 服务端配置热重载到客户端重读的映射。
 - [hostLog.ts](<hostLog.ts>) — 包括停用期也不抛异常的宿主日志。
 - [hostText.ts](<hostText.ts>) — @key 到原生 UI 文本，跟随 VS Code 语言。
-- [selection.ts](<selection.ts>) — 编辑器选区行号边界与芯片悬停预览（归一换行、去首尾空行、截断，保留缩进）。
+- [selection.ts](<selection.ts>) — 编辑器选区行号边界、芯片悬停预览（归一换行、去首尾空行、截断，保留缩进）与选区事实快照的类型。
 - [windowState.ts](<windowState.ts>) — workspaceState 会话窗口缓存。
 - [unreadStore.ts](<unreadStore.ts>) — 每会话一个 globalState 键的未读存储。
 - [notificationQueue.ts](<notificationQueue.ts>) — 宿主权威的消息通知队列（合并 / 确认 / seq 水位 / 容量；不 import vscode、不落盘）。

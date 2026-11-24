@@ -251,18 +251,13 @@ export const MESSAGES = {
   remove: { zh: "移除", en: "Remove" },
   close: { zh: "关闭", en: "Close" },
 
-  // 「编辑器当前选区」芯片（宿主 `ui/selectionContext` 推送，发送时自动附带引用）
+  // 「编辑器当前选区」芯片（宿主 `ui/selectionContext` 推送，发送时把引用分笔传回宿主）
   selectionChipTitle: {
     zh: "编辑器选区：发送时自动附带为引用",
     en: "Editor selection: attached as a reference when sending",
   },
-  /** 芯片上的前缀词：说明这枚芯片表示「已选中的内容」。 */
+  /** 芯片上的前缀词：说明这枚芯片表示「已选中的内容」。引用本体按实际发送形态显示。 */
   selectionChipPrefix: { zh: "已选", en: "Selected" },
-  /** 行号区间（1 基闭区间；单行时不说区间）。 */
-  selectionLines: {
-    zh: (start: number, end: number) => (start === end ? `第${start}行` : `第${start}-${end}行`),
-    en: (start: number, end: number) => (start === end ? `Line ${start}` : `Lines ${start}-${end}`),
-  },
 
   permission: { zh: "权限", en: "Permission" },
   permReadOnly: { zh: "仅可查看", en: "Read Only" },

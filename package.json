@@ -207,9 +207,19 @@
           "description": "%config.autoConnect%"
         },
         "dshChat.autoSelection": {
-          "type": "boolean",
-          "default": true,
-          "description": "%config.autoSelection%"
+          "type": "string",
+          "enum": [
+            "off",
+            "selection",
+            "file"
+          ],
+          "default": "selection",
+          "markdownDescription": "%config.autoSelection%",
+          "enumDescriptions": [
+            "%config.autoSelection.off%",
+            "%config.autoSelection.selection%",
+            "%config.autoSelection.file%"
+          ]
         },
         "dshChat.command": {
           "type": "string",
