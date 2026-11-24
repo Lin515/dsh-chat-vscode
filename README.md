@@ -47,6 +47,7 @@ npm run package  # Releases/dsh-chat-<version>.vsix
 | `dshChat.desktopExecutable` | 空 | DSH 桌面端可执行文件路径，需与桌面端使用同一个 DSH 主目录（如果没有特别配置过 DSH 主目录，那么默认就是满足的） |
 | `dshChat.supervisorIdleSec` | `10` | 内部 DSH 在无 VSCode 窗口连接后的退出宽限期，5–600 秒 |
 | `dshChat.autoConnect` | `true` | 启动时自动连接，无可用连接时自动启动服务 |
+| `dshChat.autoSelection` | `true` | 编辑器选中内容时，输入框上方自动显示选区芯片，发送时自动附带该选区为引用 |
 | `dshChat.diffLayout` | `auto` | 编辑 diff：窄单栏 / 宽双栏，或固定 `unified` / `split` |
 | `dshChat.language` | `auto` | 聊天语言：跟随 VS Code，或 `zh-cn` / `en` |
 | `dshChat.fontSize` | `0` | 整数 px；`0` 跟随 VS Code，非零值最小 8 px，基准为 13px。字体会直接使用设定值，整个界面会根据设定值与基准值的比例进行缩放 |
@@ -79,6 +80,7 @@ npm run package  # Releases/dsh-chat-<version>.vsix
 - `/` 打开命令与技能菜单；`@` 引用文件、目录或历史会话，写入 `@path`、`@dir/` 或 `@[标题](dsh-session:…)`，由模型自行读取，不占附件通道。
 - 目录行主体进入目录，右侧「整个目录」按钮引用目录；键盘用 Enter 引用、Tab 进入。已发送的引用直接点击；草稿引用按住 `Alt` 打开可编辑的真实文件，按住 `Ctrl/Cmd` 打开引用。会话引用在新标签页打开，沿用编辑器分组规则。
 - `Alt+Shift+2` 将编辑器选区加入为 `@path#L12-L40` 引用。
+- 编辑器里选中内容后，输入框上方自动出现**选区芯片**（文件名 + 行号，悬停可看原文预览与将附带的引用）；只有光标、没有选中时芯片显示当前文件（整文件引用）。发送时自动把该选区 / 文件附带为 `@path#Lx-Ly` / `@path` 引用，发完收起，不改动正在输入的草稿。可在设置中关闭（`dshChat.autoSelection`）。
 - 会话正文里的文件链接悬停显示完整路径，web 链接显示完整地址；按住 `Alt` 单击打开可编辑的真实文件（本机存在同路径且内容一致时；内部、外部与桌面端连接同一口径，不一致或无法校验则回退只读预览）。HTML 文件（`.html` / `.htm` / `.xhtml` / `.shtml`）按住 `Ctrl/Cmd` 单击用系统浏览器打开；普通单击打开只读预览。
 - 回形针选择文件：图片发送为内容块，其余文件上传，芯片显示上传状态。此路径通道不受拖放的 8 MB 限制。
 - 拖放须按住 `Shift`：文件走字节通道，单文件最多 8 MB，不支持目录。Windows 复制文件或目录后粘贴可由宿主取回真路径：文件走附件、目录变成正文引用；其它平台与截图粘贴回退到同一字节通道。纯文本粘贴不变。粘贴进来的图片按会话内序号命名（中文界面 `图1.png`、英文界面 `image1.png`），编号只增不回收，便于在对话里直接指代。
@@ -166,6 +168,7 @@ The desktop app (Electron) already runs a DSH service of its own, and the extens
 | `dshChat.desktopExecutable` | empty | Path of the DSH desktop app executable; both sides must use the same DSH home (the default is fine unless you have customised it) |
 | `dshChat.supervisorIdleSec` | `10` | Exit grace period for internal DSH once no VS Code window is connected, 5–600 seconds |
 | `dshChat.autoConnect` | `true` | Connect at startup; start the service automatically when no connection is available |
+| `dshChat.autoSelection` | `true` | Show a selection chip above the input while text is selected in the editor; sending attaches that selection as a reference |
 | `dshChat.diffLayout` | `auto` | Narrow unified / wide split diff, or fixed `unified` / `split` |
 | `dshChat.language` | `auto` | Follow VS Code, or use `zh-cn` / `en` |
 | `dshChat.fontSize` | `0` | Integer px; `0` follows VS Code, nonzero values are at least 8 px, baseline 13px. The font uses the value directly and the whole UI scales by its ratio to the baseline |
@@ -197,6 +200,7 @@ Open the notification drawer with **Show history** or **DSH: View Notifications*
 - `/` opens commands and skills; `@` references files, folders or past sessions using `@path`, `@dir/` or `@[title](dsh-session:…)`. The model reads references itself; they are not attachments.
 - A folder row navigates into it; its “Entire folder” button references it. Enter references, Tab navigates. Click references in sent messages directly; hold `Alt` to open the editable real file from a draft reference, or hold `Ctrl/Cmd` to open the reference. Session links open a new tab using the same editor-group rules.
 - `Alt+Shift+2` inserts an editor selection as `@path#L12-L40`.
+- While text is selected in the editor, a **selection chip** appears above the input (file name + lines; hover for the selected text and the reference that will be attached); with only a cursor, the chip shows the current file (whole-file reference). Sending automatically attaches that selection / file as an `@path#Lx-Ly` / `@path` reference and clears the chip; the draft you are typing is never touched. It can be turned off in settings (`dshChat.autoSelection`).
 - Hovering a file link in conversation content shows its full path and hovering a web link shows its full URL. Hold `Alt` and click to open the editable real file when the local file at the same path exists with identical content. The same rule applies to internal, external, and desktop connections; a missing, different, or unverifiable local file falls back to the read-only preview. Hold `Ctrl/Cmd` and click an HTML file (`.html` / `.htm` / `.xhtml` / `.shtml`) to open it in the system browser; a plain click opens the read-only preview.
 - The paperclip sends images as content blocks and uploads other files, showing upload status on their chips. This path channel is not subject to the drop channel's 8 MB cap.
 - Hold `Shift` to drop files. Drops use bytes, allow up to 8 MB per file and do not support folders. On Windows, pasting copied files/folders retrieves their paths: files become attachments, folders become text references. Other platforms and pasted screenshots use the same byte channel. Plain-text paste is unchanged. Pasted images are named by session order (`图1.png` in the Chinese interface, `image1.png` in the English one); numbers only grow and are never reused, so you can refer to an image by name in the conversation.

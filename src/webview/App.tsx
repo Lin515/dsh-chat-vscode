@@ -1209,6 +1209,7 @@ export function App() {
           chatScroll={chatScroll.port}
           onDraft={(text) => dispatch({ type: "ui/setDraft", text })}
           onFollowLatest={chatScroll.jumpToLatest}
+          onSelectionDismiss={() => dispatch({ type: "ui/selectionDismiss" })}
         />
 
         {state.panel === "history" ? (

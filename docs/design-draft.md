@@ -30,6 +30,13 @@
 
 队列取回编辑与取消不参与回显账本。界面写草稿同时更新本地与宿主，但按发送时不额外 post `setDraft ""` 押注两条 IPC 的顺序；清空唯一入口是 `commitDraft`，附件是 `commitAttachments`，回显是 `addEcho`。
 
+## 编辑器选区随发送附带（`dshChat.autoSelection`）
+
+- 宿主监听活动编辑器选区变化（300ms 防抖），把 `SelectionContextView` 以 `ui/selectionContext` 广播给所有已挂窗口；清空发 `null`（wire 约定）。窗口 `ready` 时重放宿主锁存的那一帧，覆盖「先选中、后开面板」；相邻两帧相同不重发，避免拖选落定后白闪。
+- 界面只在**发送那一刻**拼正文（`appendSelectionReference`：正文与 token 之间空一行，空正文直接是 token），**不碰草稿**；发送门不读芯片，带附件的空正文场景不变。发送后界面收起芯片（一次性），编辑器里的选区还在，宿主下一次选区变化会推新帧。
+- **没有活动文本编辑器 ≠ 没有选区**：焦点交给 webview 时 `activeTextEditor` 会变成 `undefined`，此时保留锁存、不推清除帧；切到非文件文档（输出 / 设置 / 对比视图）或开关关闭才清除。界面用键缺失表示不显示，跨线清空一律 `null`。
+- 发送动作的接线（`Composer.send` 读芯片）不在离线链上：仓库不为测试引入点击模拟，拼接规则与归约各自钉死后，`composerSend.test.ts` 只钉 send 帧形状、`selectionContext.test.ts` 钉芯片渲染；真实编辑器的选中、切面板与发送附带仍属安装端验收。
+
 ## 顺序契约
 
 1. `beginSend` 必须同步且在任何 await（尤其 ensureConnected）之前铸 requestId、更新回显与 composer 草稿 / 附件。否则连接 / 建会话期间快照会把已清草稿塞回、把回显抹掉。附件的**来源是宿主账本**（`send` 帧不再回传 `Attachment[]`：图片的 `dataUrl` 是几 MB 的 base64，回传等于让它再走一趟单程），取账本就在这一步，早于 `commitAttachments` 把芯片移进租约。
@@ -141,6 +148,8 @@
 | submissionReceipts | 收件箱回执的纯数学：形状与占位、位次平移、水位单调与重放幂等、领取与取消的分野、两条队列互不干扰、同帧既删又插；`inbox` 投影补位 / 缺位不推断 / 无水位只跳过位次且不收 chat 回显、开窗截点按 Host 已持有收显、只认本客户端身份、`admitted` 回执按投影水位延迟收显、替换型 baseline 降水位 / 第二次 snapshot cut / 快照缺 inbox 不抬水位 / 键清空回未知、适配器重连搬运与 durable 承认优先 |
 | queueRestore | 真控制器 + vscode stub：回显先到、跨会话与任一附件失败时整条保留的负面场景 |
 | attachments | included 与 includedAttachments 同序 |
+| selection | 编辑器选区行号区间边界，以及芯片悬停预览的归一 / 截断 / 保留缩进 |
+| selectionContext | 发送拼接（正文 + token、空正文）、reducer 置上 / 清除 / 点掉、真渲染芯片双语（含整文件档） |
 | styles | 失败气泡、动作顺序、原因截断 |
 | previewFixture | 在飞带图、failed 与 failed 带落位锚点三种形态，队列区不吃乐观回显 |
 

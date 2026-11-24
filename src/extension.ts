@@ -4,7 +4,8 @@ import { ChatController } from "./dsh/controller";
 import { AGENT_DIFF_SCHEME, AgentDiffDocuments } from "./dsh/agentDiffDocuments";
 import { REMOTE_FILE_SCHEME, RemoteFileSystemProvider } from "./dsh/remoteFileSystem";
 import { resolveForVsCode } from "./dsh/hostText";
-import { selectionLines } from "./dsh/selection";
+import { selectionLines, selectionPreview } from "./dsh/selection";
+import { formatFileMentionWithLines } from "./shared/mentions";
 import { createHostLog } from "./dsh/hostLog";
 import { IDLE_SEC_DEFAULT } from "./dsh/supervisorProtocol";
 import { SupervisorManager, groupForConfig } from "./dsh/supervisorManager";
@@ -160,7 +161,58 @@ interface Contributions {
 function registerContributions(context: vscode.ExtensionContext, host: Contributions): void {
   const { controller, provider, secondaryProvider, server } = host;
 
+  /**
+   * 编辑器「当前选区」芯片的推送入口（见下面两条 `onDidChange*` 监听）。
+   *
+   * 定时器只在订阅里留一份：防抖窗口内新事件来了就重排，窗口里只认最后一次。
+   * 扩展释放时把挂着的定时器一并清掉（见 subscriptions 里那个 Disposable）。
+   */
+  let selectionPushTimer: ReturnType<typeof setTimeout> | undefined;
+  const scheduleSelectionPush = () => {
+    if (selectionPushTimer !== undefined) clearTimeout(selectionPushTimer);
+    selectionPushTimer = setTimeout(pushSelectionContext, 300);
+  };
+  const pushSelectionContext = () => {
+    selectionPushTimer = undefined;
+    // 开关关掉时**也要走清除**：芯片可能是开着的时候推上去的，关掉那一刻必须撤下
+    if (!(host.config().get<boolean>("autoSelection") ?? true)) {
+      controller.setSelectionContext(null);
+      return;
+    }
+    const editor = vscode.window.activeTextEditor;
+    // **没有活动文本编辑器 ≠ 没有选区**：用户点开聊天面板 / 编辑器区面板时焦点交给
+    // webview，`activeTextEditor` 恰好变成 undefined（用户 2026-11-23 实测报的
+    // 「点鲸鱼按钮开面板后芯片消失」）。此刻**保留**宿主锁存的选区事实，不推清除帧
+    // ——编辑器里的选区还在，回来照样有效。
+    if (!editor) {
+      return;
+    }
+    // 非文件文档（输出面板 / 设置页 / 对比视图等）给不出可引用的路径 → 清除
+    if (editor.document.uri.scheme !== "file") {
+      controller.setSelectionContext(null);
+      return;
+    }
+    const name = vscode.workspace.asRelativePath(editor.document.uri);
+    // `selectionLines` 对空选区（只有光标）返回 undefined：那一档引用**整个文件**，
+    // 芯片只显示文件名（用户 2026-11-23 口径：光标点到文件里就先自动选中这个文件）
+    const lines = selectionLines(editor.selection);
+    const token = formatFileMentionWithLines(name, lines);
+    if (token === undefined) {
+      // 路径含控制字符或引号等无法表示的形态：不显示芯片（与 insertMention 同口径）
+      controller.setSelectionContext(null);
+      return;
+    }
+    controller.setSelectionContext({
+      token,
+      name,
+      lines,
+      preview: lines ? selectionPreview(editor.document.getText(editor.selection)) : "",
+    });
+  };
+
   context.subscriptions.push(
+    // 选区推送的防抖定时器：释放时清掉，别让最后一帧在扩展卸载后还发出去
+    { dispose: () => (selectionPushTimer === undefined ? undefined : clearTimeout(selectionPushTimer)) },
     // 必须走 `outputChannel()`（它会**赋值**给模块级的 `output`）：写成
     // `output ?? vscode.window.createOutputChannel(...)` 的话那个新建的通道不会被记住，
     // 于是第一次真正落日志时懒加载又建一个——输出下拉里从此有**两个** 「DSH Chat」，
@@ -392,6 +444,17 @@ function registerContributions(context: vscode.ExtensionContext, host: Contribut
       controller.revealActiveView();
     }),
 
+    // 编辑器「当前选区」自动进芯片（用户 2026-11-23 口径）：选中即显示、发送时
+    // 附带为 `@` 引用，**不碰草稿**——与上面的 addToChat（显式把 token 写进草稿）
+    // 互补，两条链互不影响。
+    //
+    // **防抖 300ms**：拖选经过的每个位置都会发事件，芯片跟着闪没有意义；落定后
+    // 才推这一帧。重读活动编辑器（而不是吃事件里的 selections）：防抖窗口里事件
+    // 会攒好几条，只认最后一次落定的状态。活动编辑器切换也走同一帧——切过去的
+    // 编辑器有没有选区，芯片都应该立刻对上。
+    vscode.window.onDidChangeTextEditorSelection(() => scheduleSelectionPush()),
+    vscode.window.onDidChangeActiveTextEditor(() => scheduleSelectionPush()),
+
     // 界面相关配置（diff 排版 / 语言 / 字号 / 问卷题数 / 折叠阈值）改了即时生效，
     // 不必重载窗口。它们都是纯显示层：重载会丢掉滚动位置与展开状态，代价不成比例。
     vscode.workspace.onDidChangeConfiguration((event) => {
@@ -423,6 +486,11 @@ function registerContributions(context: vscode.ExtensionContext, host: Contribut
       // 已建的连接；用户此时的显式动作照常放行。
       if (event.affectsConfiguration("dshChat.autoConnect")) {
         controller.applyAutoConnect(host.config().get<boolean>("autoConnect") ?? true);
+      }
+      // `dshChat.autoSelection` 同样即时生效：关掉的那一刻立刻撤下芯片（下一次
+      // 选区事件本来也会走"开关关了 → 清除"那条路，这里是主动补一帧，不等事件）。
+      if (event.affectsConfiguration("dshChat.autoSelection")) {
+        if (!(host.config().get<boolean>("autoSelection") ?? true)) controller.setSelectionContext(null);
       }
     }),
     // 打开 / 关掉文件夹会改「新会话落在哪个目录」（空态页那一行提示，含它可不可改），

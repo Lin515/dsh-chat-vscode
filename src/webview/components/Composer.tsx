@@ -19,6 +19,7 @@ import {
 import { attachmentUploadBlock } from "../../shared/attachmentGate";
 import type { AppState } from "../state";
 import { post } from "../bridge";
+import { appendSelectionReference } from "../selectionContext";
 import {
   IconAttach,
   IconCheck,
@@ -285,6 +286,7 @@ export function Composer({
   chatScroll,
   onDraft,
   onFollowLatest,
+  onSelectionDismiss,
 }: {
   state: AppState;
   /** 正在等用户回答的交互（审批 / 提问）：有它时**接管**输入区（官方 `conversation.composer` 槽）。 */
@@ -303,6 +305,12 @@ export function Composer({
    * 而"发出去"本身就是"我要看回答"——不该还停在旧的阅读位置。
    */
   onFollowLatest?: () => void;
+  /**
+   * 「当前选区」芯片被点掉 / 发送后收起时回调（宿主不感知，见 `ui/selectionDismiss`）。
+   *
+   * 可选是给离线渲染留的：芯片平时由宿主帧驱动，SSR / 预览没有那一帧就没有芯片。
+   */
+  onSelectionDismiss?: () => void;
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   /**
@@ -602,10 +610,19 @@ export function Composer({
    */
   const send = (gesture: "enter" | "accelerated" = "enter") => {
     if (!canSend) return;
-    post({ type: "send", text: draft.trim(), gesture });
+    // 「当前选区」芯片在场时，把引用 token 附在正文末尾（一次性口径，见
+    // `selectionContext.ts`）：正文与 token 之间空一行，正文为空（只发附件）时
+    // 直接就是 token。发送门不看芯片——只选中文本不打问题是发不出去的，
+    // 与「只有附件、正文为空也能发」的官方口径不冲突（那是不带芯片的场景）。
+    const selection = state.selectionContext;
+    const text = selection ? appendSelectionReference(draft.trim(), selection.token) : draft.trim();
+    post({ type: "send", text, gesture });
     // 发出去了就是要看回答：脱贴状态下也贴回最新（与切会话同一条规则）
     onFollowLatest?.();
     onDraft("");
+    // 附带是一次性的：发完就收起芯片。编辑器里的选区还在，用户再选中（或改选）
+    // 时宿主会推来新的一帧——连续追问同一段代码就是「再点一下选中」的成本。
+    if (selection) onSelectionDismiss?.();
   };
 
   // 认不出的当前值（`custom`：两个旋钮的组合不对应任何一档）退回第二档显示，
@@ -1057,8 +1074,46 @@ export function Composer({
           接管、它再补发一次 paste」这两条机制都见 `attachIntake.ts`。
         */}
         <div className="composer-box">
-          {state.attachments.length ? (
+          {state.selectionContext !== undefined || state.attachments.length ? (
             <div className="composer-chips">
+              {/* 「编辑器当前选区」芯片（宿主 `ui/selectionContext` 推送）：只随编辑器
+                  选区变化更新，不碰草稿；发送那一刻才把 token 附进正文（见 send）。
+                  悬停给**选区原文预览** + 附带说明 + 会发出去的 token——用户在发送前
+                  就能核对「附带的是哪几行」。与附件芯片不同，这枚不可点开（模型自己
+                  read 引用，界面没有可打开的字节），所以不走 `chip-open`。 */}
+              {state.selectionContext ? (
+                <span
+                  className="chip"
+                  title={[
+                    texts.selectionChipTitle,
+                    state.selectionContext.preview,
+                    state.selectionContext.token,
+                  ]
+                    .filter((line) => line !== "")
+                    .join("\n")}
+                >
+                  {/* 前缀「已选 / Selected」：光看文件名 + 行号像是普通引用，
+                      加上这词才一眼认出「这是我刚才选中的内容」 */}
+                  <span className="chip-sub">{texts.selectionChipPrefix}</span>
+                  <span className="chip-name">{state.selectionContext.name}</span>
+                  {/* 只有选中了几行才显示行号段；只有光标那一档表示「整文件引用」 */}
+                  {state.selectionContext.lines ? (
+                    <span className="chip-sub">
+                      {texts.selectionLines(
+                        state.selectionContext.lines.start,
+                        state.selectionContext.lines.end,
+                      )}
+                    </span>
+                  ) : null}
+                  <button
+                    className="chip-remove"
+                    title={texts.remove}
+                    onClick={() => onSelectionDismiss?.()}
+                  >
+                    ×
+                  </button>
+                </span>
+              ) : null}
               {state.attachments.map((attachment) => (
                 <span
                   // `chip-open`：整枚芯片都是打开入口（鼠标指针可点），见 `../attachmentOpen`

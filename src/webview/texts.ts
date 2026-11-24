@@ -123,6 +123,12 @@ export interface Texts {
   remove: string;
   /** 抽屉标题栏的「关闭」（此前是写死的中文，双语规则不允许）。 */
   close: string;
+  /** 「编辑器当前选区」芯片的悬停说明（发送时自动附带为引用）。 */
+  selectionChipTitle: string;
+  /** 芯片上的前缀词（说明这枚芯片表示「已选中的内容」）。 */
+  selectionChipPrefix: string;
+  /** 芯片上的行号区间（1 基闭区间；单行时不说区间）。 */
+  selectionLines: (start: number, end: number) => string;
 
   permission: string;
   permReadOnly: string;

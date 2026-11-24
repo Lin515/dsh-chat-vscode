@@ -51,3 +51,22 @@ export function selectionLines(selection: SelectionLike): { start: number; end: 
       : selection.end.line + 1;
   return { start, end };
 }
+
+/**
+ * 选区芯片的悬停预览：归一换行、去掉首尾的空行、超长截断。
+ *
+ * 只为「一眼认出是哪段」：芯片上有文件名与行号，模型读到的永远是文件本身，
+ * 预览截断不丢信息。**保留缩进**（只丢空行，不 trim 行内容）——代码预览丢了
+ * 缩进就认不出是哪段；`\r\n` 归一成 `\n`（悬停 title 的多行显示口径）。
+ * 整段只有空白时给空串（芯片仍显示，行号还在）。纯函数、不引 `vscode`，
+ * 断言见 `scripts/selection.test.ts`。
+ */
+export function selectionPreview(text: string, cap = 400): string {
+  const lines = text.replace(/\r\n?/gu, "\n").split("\n");
+  // 只丢「整行空白」的行（首尾的），行内的缩进与空格原样保留
+  while (lines.length > 0 && lines[0].trim() === "") lines.shift();
+  while (lines.length > 0 && lines[lines.length - 1].trim() === "") lines.pop();
+  const body = lines.join("\n");
+  if (body.length <= cap) return body;
+  return `${body.slice(0, cap)}…`;
+}

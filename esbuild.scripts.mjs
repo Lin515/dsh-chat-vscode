@@ -248,6 +248,7 @@ const entries = {
   "build/mention-links.test.mjs": "scripts/mentionLinks.test.ts",
   "build/mention-links-ui.test.mjs": "scripts/mentionLinksUi.test.ts",
   "build/selection.test.mjs": "scripts/selection.test.ts",
+  "build/selection-context.test.mjs": "scripts/selectionContext.test.ts",
   "build/workspace-probe.mjs": "scripts/workspaceProbe.ts",
   "build/history-replay.test.mjs": "scripts/historyReplay.test.ts",
   "build/render-order-probe.mjs": "scripts/renderOrderProbe.ts",

@@ -23,6 +23,7 @@
   "config.desktopExecutable": "DSH 桌面端可执行文件的路径。留空则关闭「接入桌面端内置服务」这条支路；填写后扩展可以启动它，并接上它正在内置运行的那套服务（桌面端与本扩展必须使用同一个 DSH 主目录）。",
   "config.url": "外部 DSH 服务的备用地址，例如 http://127.0.0.1:3080。只在内部 DSH 没在跑、且这个地址有应答时才连它。",
   "config.autoConnect": "VSCode 启动时自动连接一次：内部 DSH 优先，其次是外部 Url 与桌面端，都没有则启动内部 DSH（内部启动命令留空时启动桌面端）。关掉后只显示连接按钮，等用户操作。",
+  "config.autoSelection": "在编辑器里选中内容时，聊天输入框上方自动显示选区芯片；发送消息时自动把该选区附带为引用。",
   "config.supervisorIdleSec": "最后一个 VSCode 窗口关掉之后，内部 DSH 后台等待多少秒自动关闭，建议不小于 10 秒。",
   "config.diffLayout": "编辑类工具调用的改动怎么排版：单栏还是左右对照。",
   "config.diffLayout.auto": "自适应：窄面板单栏，宽面板双栏。",

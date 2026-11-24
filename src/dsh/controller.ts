@@ -34,7 +34,7 @@ import type {
   SubagentView,
   TodoView,
 } from "../shared/chat";
-import type { ChangeCoordinates, HostToWebview, WebviewToHost } from "../shared/ipc";
+import type { ChangeCoordinates, HostToWebview, SelectionContextView, WebviewToHost } from "../shared/ipc";
 import { applyToolbarPreferenceAction, normalizeToolbarPreference, type ToolbarPreference } from "../shared/toolbarPreference";
 import { SessionAdapter, type ImageRef } from "./adapter";
 import { createTrajectoryResultWatchManager } from "./trajectoryResultWatch";
@@ -9717,6 +9717,12 @@ export class ChatController implements vscode.Disposable {
         this.emitToView(viewId, { type: "images/scope", connectionId: this.hostFiles?.connectionId ?? null });
         this.emitToView(viewId, { type: "state", state: this.snapshotFor(viewId) });
         this.emitToolbarPreference(viewId);
+        // 「编辑器当前选区」芯片的**重放**：用户可能先选好了内容、再打开聊天面板
+        // （或页面还在就绪的路上时选中），那一帧当初没人接。此刻页面监听已挂上，
+        // 补推宿主锁存的当前事实（`setSelectionContext` 只在外层把事实锁存）。
+        if (this.lastSelectionContext !== null) {
+          this.emitToView(viewId, { type: "ui/selectionContext", context: this.lastSelectionContext });
+        }
         // 待开指令放在快照和底栏偏好之后；无窗口时记下的意图只由主侧栏消费，
         // 若该视图挂上后又收到定向指令，则以较新的指令为准。
         const primaryIntent = this.viewKinds.get(viewId) === "primary" ? this.pendingPrimaryPanelOpen : undefined;
@@ -12875,6 +12881,39 @@ export class ChatController implements vscode.Disposable {
     if (!viewId) return;
     this.insertMention(viewId, formatFileMentionWithLines(name, lines));
   }
+
+  /**
+   * 推送「编辑器当前选区」芯片（`dshChat.autoSelection`，用户 2026-11-23 口径）。
+   *
+   * 与 `addSelection`（右键 / 快捷键，把引用 token **写进草稿**）互补：这条链
+   * 不碰草稿，只把最新选区推给窗口，界面在发送那一刻自己把 token 附进正文
+   * （一次性，见 `webview/selectionContext.ts`）。`null` 表示清除。
+   *
+   * 投递按「当前事实」处理（用户 2026-11-23 实测报的「重开窗口选中不出现」）：
+   * - **广播给所有已挂窗口**而不是只投最近活动窗口——面板与侧栏两处都可能开着，
+   *   芯片反映的是编辑器状态，每处都该看到同一份；
+   * - 选中往往发生在面板**还没挂上**（或页面还在就绪的路上）的时候，那一帧此刻
+   *   没人接是正常的：宿主把事实**锁存**在这里，窗口 `ready` 时补推（见
+   *   `case "ready"` 的重放）。
+   *
+   * 相邻两帧相同就不再发：宿主侧已防抖，但「拖选落定后的那一帧」与上一帧相同
+   * 仍是常态（改选别的列、同一行内重选），重发只会让界面白闪一次。
+   */
+  setSelectionContext(context: SelectionContextView | null): void {
+    const last = this.lastSelectionContext;
+    if (
+      last?.token === context?.token &&
+      last?.preview === context?.preview &&
+      (last === null) === (context === null)
+    ) {
+      return;
+    }
+    this.lastSelectionContext = context;
+    this.emitAll({ type: "ui/selectionContext", context });
+  }
+
+  /** 当前选区**事实**的锁存（窗口就绪时重放，见 `setSelectionContext`）。 */
+  private lastSelectionContext: SelectionContextView | null = null;
 
   /**
    * 供资源管理器右键 / 命令调用：把**文件或目录**作为 `@` 引用加到输入框。

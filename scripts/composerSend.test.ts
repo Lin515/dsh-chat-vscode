@@ -471,9 +471,10 @@ function sendButtonOf(html: string): { attribute: string; text: string } {
     "发送按钮的点击必须把事件交给 clickGestureHandler（事件 → 手势），不许写死手势",
   );
   assert.ok(
-    /post\(\{ type: "send", text: draft\.trim\(\), gesture \}\)/.test(composer),
+    /post\(\{ type: "send", text(: \w+)?, gesture \}\)/.test(composer),
     "send 帧只带 gesture：模式由宿主按 busyEnter + 按下那一刻是否在跑解析，界面不算模式；" +
-      "附件也不回传（草稿附件的权威是宿主账本，图片的 base64 不该再走一趟单程）",
+      "附件也不回传（草稿附件的权威是宿主账本，图片的 base64 不该再走一趟单程）；" +
+      "text 可能是选区芯片附带后的正文（见 selectionContext.test），所以这里只钉形状不钉字面量",
   );
   assert.ok(
     /sendButtonView\(\{/.test(composer),

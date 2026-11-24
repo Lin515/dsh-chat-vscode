@@ -197,6 +197,11 @@
           "default": true,
           "description": "%config.autoConnect%"
         },
+        "dshChat.autoSelection": {
+          "type": "boolean",
+          "default": true,
+          "description": "%config.autoSelection%"
+        },
         "dshChat.command": {
           "type": "string",
           "scope": "machine",

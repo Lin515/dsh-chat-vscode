@@ -44,6 +44,30 @@ export interface ChangeCoordinates {
 /** 唯一允许 webview 直接调用的 VS Code 命令；宿主失联时仍须能由用户发起。 */
 export const RELOAD_WINDOW_COMMAND = "workbench.action.reloadWindow";
 
+/**
+ * 输入框「编辑器当前选区」芯片的一帧（`ui/selectionContext` 的载荷）。
+ *
+ * 由宿主从**活动编辑器**算出，界面只负责展示与发送时附带：
+ * - `token`：发送时追加进正文末尾的 `@` 引用（`@src/a.ts#L12-L40`），
+ *   与「添加文件(或选区)到对话」同一条口径（路径引用，模型自己 read）；
+ * - `name` / `lines`：芯片上显示的相对路径与 1 基闭区间行号（`selectionLines` 的口径）；
+ * - `preview`：选区原文预览（已截断、归一换行），芯片悬停时看，原文不翻译。
+ */
+export interface SelectionContextView {
+  /** 发送时追加进正文的 `@` 引用 token（整文件 `@src/a.ts` / 选区 `@src/a.ts#L12-L40`）。 */
+  token: string;
+  /** 芯片显示用相对路径（与 token 同源）。 */
+  name: string;
+  /**
+   * 选区覆盖的行号（1 基闭区间）；**`undefined` = 只有光标、没有选中**，
+   * 引用的是整个文件（用户 2026-11-23 口径：光标点到文件里就先自动选中这个文件，
+   * 再选中几行才显示行号区间）。芯片在这一档只显示文件名、不显示行号段。
+   */
+  lines?: { start: number; end: number };
+  /** 选区原文预览（悬停显示；空串 = 只有光标 / 选区只有空白），原文不翻译。 */
+  preview: string;
+}
+
 export type HostToWebview =
   /** webview 通信探测的回执，不进入会话状态。 */
   | { type: "view/pong"; id: number }
@@ -244,6 +268,16 @@ export type HostToWebview =
    * （目录不走这里：目录是 `@dir/` 引用芯片。）
    */
   | { type: "ui/insertText"; text: string }
+  /**
+   * 编辑器「当前选区」芯片（`dshChat.autoSelection`）。
+   *
+   * 宿主监听编辑器选区变化（防抖后）把**最近活动窗口**该显示的选区推过去；
+   * `context: null` 表示清除（选区没了 / 开关关了 / 切到非文件文档）。
+   * 与 `ui/insertText`（把 token 写进草稿）互补：这条链**完全不碰草稿**，
+   * 界面只在**发送那一刻**把 `token` 追加进正文（一次性，发完即清芯片）——
+   * 用户正在打的问题一个字都不会被改掉。
+   */
+  | { type: "ui/selectionContext"; context: SelectionContextView | null }
   /**
    * 轨迹账本（宿主折叠后下发）。
    *

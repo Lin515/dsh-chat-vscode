@@ -10,7 +10,7 @@
 import assert from "node:assert";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { selectionLines } from "../src/dsh/selection";
+import { selectionLines, selectionPreview } from "../src/dsh/selection";
 
 /** 快速构造一个选区（行/列都是 0 基，与 VS Code 一致）。 */
 function pick(startLine: number, startChar: number, endLine: number, endChar: number) {
@@ -104,5 +104,17 @@ console.log("selection: 空选区返回 undefined ✓");
   );
 }
 console.log("selection: 命令 → 带行号的 `@` 引用 ✓");
+
+// ---------- 选区芯片的悬停预览（selectionPreview） ----------
+{
+  assert.strictEqual(selectionPreview("const x = 1;"), "const x = 1;", "短原文原样保留");
+  assert.strictEqual(selectionPreview("  \nconst x = 1;\n"), "const x = 1;", "首尾空白去掉");
+  assert.strictEqual(selectionPreview("a\r\nb\r\nc"), "a\nb\nc", "Windows 换行归一成 \\n");
+  assert.strictEqual(selectionPreview("    if (x) {\n      return;\n    }"), "    if (x) {\n      return;\n    }", "缩进保留——代码预览丢了缩进就认不出是哪段");
+  assert.strictEqual(selectionPreview("x".repeat(500)), `${"x".repeat(400)}…`, "超长截断到 400 字符加省略号");
+  assert.strictEqual(selectionPreview("x".repeat(400)), "x".repeat(400), "恰好 400 不截断");
+  assert.strictEqual(selectionPreview("   \n  "), "", "只有空白：预览是空串（芯片仍显示，行号还在）");
+}
+console.log("selection: 选区预览（归一 / 截断 / 保留缩进）✓");
 
 console.log("\nselection: all assertions passed");

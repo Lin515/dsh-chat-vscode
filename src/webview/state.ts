@@ -14,7 +14,7 @@ import type {
   ContextWindowView,
   ContextOccupancyView,
 } from "../shared/chat";
-import type { HostToWebview } from "../shared/ipc";
+import type { HostToWebview, SelectionContextView } from "../shared/ipc";
 import { DEFAULT_TOOLBAR_PREFERENCE, type ToolbarPreference } from "../shared/toolbarPreference";
 import { mergeWirePatch } from "../shared/wire";
 import { changesSummaryKey } from "../shared/changesSummary";
@@ -111,6 +111,14 @@ export interface AppState extends ChatState {
    * 它只活在界面侧，所以不放进 `ChatState`。
    */
   quoteRequest?: { id: number; text: string };
+  /**
+   * 编辑器「当前选区」芯片（宿主 `ui/selectionContext` 推送）。
+   *
+   * `undefined` = 不显示。它反映的是**编辑器**的状态而不是某条会话的：切会话
+   * 不清它（选区还在编辑器里），发送后由界面清（一次性口径，见 `Composer` 的
+   * `send`），宿主下一次选区变化会推来新的。也只活在界面侧，不进 `ChatState`。
+   */
+  selectionContext?: SelectionContextView;
   /**
    * 最近一条停止请求的结算（宿主 `jobs/killResult` 帧的落点，后台任务面板消费）。
    *
@@ -280,6 +288,11 @@ export type Action =
   | { type: "ui/setDraft"; text: string }
   /** 界面自产的「引用到输入框」（右键菜单）：文本已经是当前语言的成品，不走 `@key`。 */
   | { type: "ui/quoteText"; text: string }
+  /**
+   * 用户点掉「当前选区」芯片（或发送后界面自己收起）：只清这一帧显示，
+   * 不通知宿主——编辑器再选中时宿主自然会推新的一帧过来。
+   */
+  | { type: "ui/selectionDismiss" }
   /**
    * 展开一行后台任务：铸造这一轮的观察代号并清空旧累积（见 `AppState.jobOutputs`）。
    *
@@ -549,6 +562,18 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, quoteRequest: { id: previous + 1, text: action.text } };
     }
 
+    case "ui/selectionContext": {
+      // `null` = 宿主明确说「没有选区了」（清空值过线必须用 null，见 AGENTS.md）。
+      // 已经是空的再收到清空帧就不换引用，避免无意义的重渲染。
+      if (action.context !== null) return { ...state, selectionContext: action.context };
+      if (state.selectionContext === undefined) return state;
+      return withoutSelectionContext(state);
+    }
+
+    case "ui/selectionDismiss":
+      if (state.selectionContext === undefined) return state;
+      return withoutSelectionContext(state);
+
     case "ui/setPanel":
       return { ...state, panel: action.panel };
 
@@ -619,6 +644,18 @@ export function reducer(state: AppState, action: Action): AppState {
     default:
       return state;
   }
+}
+
+/**
+ * 去掉「当前选区」芯片那一帧（`undefined` = 键不存在，区别于 `null` 过线语义）。
+ *
+ * 浅拷贝后 delete：不用解构 rest 的写法是避开 `noUnusedLocals` 对弃用变量的
+ * 纠缠——两种写法生成的对象一样，这里选不费一个标识符的那种。
+ */
+function withoutSelectionContext(state: AppState): AppState {
+  const next = { ...state };
+  delete next.selectionContext;
+  return next;
 }
 
 export function useAppState() {

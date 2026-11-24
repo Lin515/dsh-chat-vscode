@@ -23,6 +23,7 @@
   "config.desktopExecutable": "Path of the DSH desktop app executable. Empty disables attaching to the service the desktop app runs; when set, the extension can start the app and attach to that service (the app and the extension must use the same DSH home).",
   "config.url": "Fallback address of an external DSH service, e.g. http://127.0.0.1:3080. Used only when no internal DSH is running and that address answers.",
   "config.autoConnect": "Connect once when VS Code starts: a running internal DSH first, then the external URL, then the desktop app; if none is usable it starts the internal DSH (or the desktop app when no internal launch command is set). When off, only the connection buttons are shown and the extension waits for you.",
+  "config.autoSelection": "Show a chip above the chat input while text is selected in the editor; sending a message attaches that selection as a reference automatically.",
   "config.supervisorIdleSec": "How many seconds the internal DSH background waits before shutting down automatically after the last VS Code window closes. Recommended: no less than 10 seconds.",
   "config.diffLayout": "How edit tool calls render their change: single column or side-by-side.",
   "config.diffLayout.auto": "Adaptive: single column in a narrow panel, side-by-side when wide.",

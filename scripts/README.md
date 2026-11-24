@@ -102,7 +102,8 @@
 - [pastedImageNames.test.ts](<pastedImageNames.test.ts>) — 粘贴图片的会话内编号名（`图N.png` / `imageN.png`）：编号识别、起始编号的基线、只改图片、被拒条目不编号。
 - [imageSize.test.ts](<imageSize.test.ts>) — 四种图片格式的头部宽高解析（含截断 / 0 边长 / 未知格式一律返回 undefined 的放行口径）。
 - [references.test.ts](<references.test.ts>) — `@path` 引用文本的拼写规则（对齐官方 `formatFileMention`）。
-- [selection.test.ts](<selection.test.ts>) — 编辑器选区 → 行号区间（「下一行行首结束要少算一行」边界）。
+- [selection.test.ts](<selection.test.ts>) — 编辑器选区 → 行号区间（「下一行行首结束要少算一行」边界），以及芯片悬停预览的归一 / 截断 / 保留缩进。
+- [selectionContext.test.ts](<selectionContext.test.ts>) — 编辑器当前选区芯片：发送拼接（正文 + token、空正文）、reducer 置上 / 清除 / 点掉，以及真渲染 Composer 的中英双语芯片（含整文件档）。
 - [imageAttachments.test.ts](<imageAttachments.test.ts>) — 图片链路适配器侧：`attachmentId` → data URL 异步补字节。
 - [imageFiles.test.ts](<imageFiles.test.ts>) — 图片地址 → 字节与保存对话框默认文件名（扩展名按真实媒体类型）。
 - [imageRender.test.ts](<imageRender.test.ts>) — 会话图片渲染断言（服务端渲染出 HTML，覆盖三处来源）。
