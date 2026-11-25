@@ -169,9 +169,15 @@ export const Uri = Object.assign(
       scheme: parts.scheme,
       path: parts.path ?? "",
       query: parts.query ?? "",
+      toString: () => `${parts.scheme}:${parts.path ?? ""}${parts.query ? `?${parts.query}` : ""}`,
     }),
   },
 );
+/** 编辑器引用需要识别真正的 diff 标签输入，而不是凭 URI scheme 猜。 */
+export class TabInputTextDiff {
+  constructor(readonly original: unknown, readonly modified: unknown) {}
+}
+
 export function Position(line: number, character: number) {
   this.line = line;
   this.character = character;

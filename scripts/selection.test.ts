@@ -53,10 +53,16 @@ console.log("selection: 空选区返回 undefined ✓");
 // 所以「三处接线」现在是：命令带行号 → 宿主格式化 → 界面插到光标处。
 {
   const extension = readFileSync(join(process.cwd(), "src", "extension.ts"), "utf8");
-  assert.ok(
-    /controller\.addSelection\(name, selectionLines\(editor\.selection\)\)/.test(extension),
-    "编辑器命令必须把行号一起交给控制器",
-  );
+  const addToChat = extension.split('registerCommand("dshChat.addToChat",')[1]?.split("registerCommand(")[0];
+  assert.ok(addToChat, "添加引用的命令必须注册");
+  assert.match(addToChat, /const\s+lines\s*=\s*selectionLines\(editor\.selection\)/,
+    "编辑器命令必须从当前选区提取行号");
+  assert.match(addToChat,
+    /if\s*\(lines\)\s*controller\.addSelection\(vscode\.workspace\.asRelativePath\(editor\.document\.uri\),\s*lines\);\s*else\s+void\s+controller\.addFileContext\(source\.filePath\)/,
+    "普通文件沿用带行号的选区入口，空选区走整文件入口");
+  // 实际的插入与发送在 selectionSend.test.ts 用真控制器验证，这里只钉住编辑器分派。
+  assert.match(addToChat, /if\s*\(source\.remoteFile\)\s*\{[\s\S]*?controller\.addRemoteFileContext\(source\.remoteFile,\s*lines\);\s*return;/,
+    "只读文档必须把原文件身份与可选行号一起交给控制器，不落入本地文件分支");
   const controller = readFileSync(join(process.cwd(), "src", "dsh", "controller.ts"), "utf8");
   assert.ok(
     /this\.insertMention\(viewId, formatFileMentionWithLines\(name, lines\)\)/.test(controller),

@@ -11,6 +11,17 @@
  * `scripts/selection.test.ts`。
  */
 
+import {
+  formatFileMentionWithLines,
+  isDriveQuery,
+  mentionPathOf,
+  normalizeMentionPath,
+  relativeMentionPath,
+  selectionDirectoryKey,
+} from "../shared/mentions";
+import { isAbsoluteWorkspacePath, isWindowsStylePath } from "../shared/workspacePath";
+import type { RemoteFileAddress } from "./remoteFileAddress";
+
 /** 选区端点的**结构**视图（`vscode.Position` 的字段子集）。 */
 export interface SelectionPointLike {
   /** 0 基行号。 */
@@ -78,13 +89,54 @@ export function selectionPreview(text: string, cap = 400): string {
  *
  * 这里只有「编辑器里是什么」的原始事实，不含任何按窗口折算的产物（引用 token
  * 取决于目标会话的执行目录，多根工作区下不同窗口折出的 token 可以不同）：
- * - `filePath`：选区所在文件的**绝对路径**（分隔符保持平台原样，折算时归一）；
+ * - `filePath`：本机文件绝对路径；`remoteFile`：只读副本的「连接 + 会话 + 原始绝对路径」。
  * - `lines`：选区覆盖的行号（1 基闭区间）；`undefined` = 只有光标、没有选中
  *   （`selection` 档不显示，`file` 档引用整个文件）；
  * - `preview`：选区原文预览（{@link selectionPreview} 的产物），悬停显示。
  */
-export interface SelectionFacts {
-  filePath: string;
+export type EditorReferenceSource =
+  | { filePath: string; remoteFile?: never }
+  | { filePath?: never; remoteFile: RemoteFileAddress };
+
+export type SelectionFacts = EditorReferenceSource & {
   lines?: { start: number; end: number };
   preview: string;
+};
+
+/** 只接受不需要消 `.` / `..` 或猜测分隔符就能表示的执行世界绝对路径。 */
+function remoteReferencePath(path: string, directory: boolean): string | undefined {
+  // `/a\b` 中的反斜杠在 POSIX 是文件名的一部分，不能交给会无条件归一的引用语法。
+  if (!isAbsoluteWorkspacePath(path) || (!isWindowsStylePath(path) && path.includes("\\"))) return undefined;
+  const slashed = normalizeMentionPath(path);
+  const key = selectionDirectoryKey(slashed);
+  if (!key || /^\/\/[?.](?:\/|$)/u.test(slashed)) return undefined;
+  const value = directory ? key : slashed;
+  const root = /^(?:\/\/[^/]+\/[^/]+(?:\/|$)|[A-Za-z]:\/|\/)/u.exec(value)?.[0];
+  if (!root) return undefined;
+  // 根目录不能作为整文件引用，也不消文件路径中的空段或尾斜杠。
+  const tail = value.slice(root.length);
+  if (!tail) return directory ? value : undefined;
+  return tail.split("/").every(Boolean) ? value : undefined;
+}
+
+/** 不把无法相对化的 cwd 当成同一个目录；退用绝对引用也要在 cwd 变化时撤下旧芯片。 */
+export function remoteSelectionCwdKey(cwd: string | undefined): string | undefined {
+  return cwd === undefined ? undefined : (remoteReferencePath(cwd, true) ?? cwd);
+}
+
+/** 只读副本折回原始文件：优先相对路径，无法安全相对化时用可表示的绝对路径。 */
+export function remoteFileReference(
+  path: string,
+  cwd: string | undefined,
+  lines?: SelectionFacts["lines"],
+): string | undefined {
+  const absolute = remoteReferencePath(path, false);
+  if (!absolute || mentionPathOf(absolute) !== absolute) return undefined;
+  const absoluteToken = formatFileMentionWithLines(absolute, lines);
+  if (!absoluteToken) return undefined;
+  const dir = cwd === undefined ? undefined : remoteReferencePath(cwd, true);
+  const relative = dir === undefined ? undefined : relativeMentionPath(dir, absolute);
+  // POSIX 目录下合法的 `C:/x` 或 `C:` 相对拼写会被误认成 Windows 路径或盘符查询。
+  if (relative === undefined || isAbsoluteWorkspacePath(relative) || isDriveQuery(relative)) return absoluteToken;
+  return formatFileMentionWithLines(relative, lines);
 }

@@ -87,6 +87,7 @@ import {
   type HostFileStat,
 } from "./remoteFiles";
 import { remoteFileUri } from "./remoteFileSystem";
+import type { RemoteFileAddress } from "./remoteFileAddress";
 import { shouldContinuePaging } from "./historyPaging";
 import { formatFileMention } from "./references";
 import {
@@ -100,7 +101,7 @@ import {
   selectionDirectoryKey,
 } from "../shared/mentions";
 import { matchPresetInput } from "../shared/presetMatch";
-import type { SelectionFacts } from "./selection";
+import { remoteFileReference, remoteSelectionCwdKey, type SelectionFacts } from "./selection";
 import { presetMatchNames } from "../webview/presetDisplay";
 import { resolveForVsCode } from "./hostText";
 import { normalizeTurnProcessThreshold } from "../shared/turnProcessThreshold";
@@ -208,11 +209,20 @@ interface SessionTarget {
   registered: boolean;
 }
 
-interface SelectionTarget {
+interface RemoteSelectionTarget {
+  viewId: string;
+  sessionId: string;
+  cwdKey: string | undefined;
+  connectionId: string;
+}
+
+// 只有只读副本绑定原连接；本机文件的首次自动绑定规则保持不变。
+type SelectionTarget = RemoteSelectionTarget | {
   viewId: string;
   sessionId: string | undefined;
   cwdKey: string;
-}
+  connectionId?: never;
+};
 
 interface TargetedSelection {
   target: SelectionTarget;
@@ -3281,6 +3291,7 @@ export class ChatController implements vscode.Disposable {
       // 首次开窗自动补齐同目录的空壳不是用户切换；只迁移归属，不重投选区。
       if (
         automaticBlank && initial && previous === undefined && selection &&
+        selection.target.connectionId === undefined &&
         selection.target.cwdKey === selectionDirectoryKey(scope.workingDirectory ?? this.cwdOf(scope))
       ) {
         selection.target.sessionId = sessionId;
@@ -9866,8 +9877,8 @@ export class ChatController implements vscode.Disposable {
         }
         const selection = this.sendableSelectionFor(viewId);
         const autoReference = selection &&
-          selection.id === message.autoReferenceId && selection.token === message.autoReference
-          ? selection.token
+          selection.context.id === message.autoReferenceId && selection.context.token === message.autoReference
+          ? selection
           : undefined;
         if (message.autoReference !== undefined && autoReference === undefined) {
           this.log("[selection] 未随发送提交：界面引用已失效或不匹配");
@@ -11078,11 +11089,12 @@ export class ChatController implements vscode.Disposable {
      * 它只进「确认是普通消息」之后的实际提交（`submitted`），输入框草稿、取消
      * 回填、命令行都只见原始正文。
      */
-    autoReference?: string,
+    autoReference?: TargetedSelection,
   ): Promise<boolean> {
     // 冻结目录随 `beginSend` 直接返回（它只被这一次提交用到，不再经 requestId → 目录的表）
-    const submitted =
-      source === "composer" && autoReference !== undefined ? appendAutoReference(text, autoReference) : text;
+    const submitted = source === "composer" && autoReference
+      ? appendAutoReference(text, autoReference.context.token) : text;
+    const remoteReferenceTarget = autoReference?.target.connectionId === undefined ? undefined : autoReference.target;
     const { requestId, frozenTarget } = this.beginSend(viewId, text, attachments, source, handoffLeaseFrom, submitted);
     // **按下那一刻的绑定**（同步记下、早于任何 await）：有 = 用户显式打开 / 切换到的历史会话，
     // 这次发送照旧发给它，不拿根偏好去比；没有 = 这次落点只认冻结目录（见 `send`）。
@@ -11097,6 +11109,9 @@ export class ChatController implements vscode.Disposable {
       // 用户口径 2026-09-18：`autoConnect` 只约束扩展自己的自动行为）
       if (!this.client || this.connection !== "connected") await this.ensureConnected({ start: true });
       if (!this.client) {
+        if (remoteReferenceTarget && this.cancelStaleRemoteSelectionSubmit(remoteReferenceTarget, text, attachments, requestId)) {
+          return false;
+        }
         if (!this.failEcho(requestId, "@sendNoConnection")) {
           this.appendDraft(viewId, text, attachments, requestId);
         }
@@ -11113,6 +11128,7 @@ export class ChatController implements vscode.Disposable {
         frozenTarget,
         boundAtClick,
         submitted,
+        remoteReferenceTarget,
       );
     } finally {
       this.releasePendingSend(viewId);
@@ -11179,6 +11195,7 @@ export class ChatController implements vscode.Disposable {
      * 原始草稿仍用 `text`（评审 2026-11-24 第 3、4 条）。
      */
     submitted: string,
+    remoteReferenceTarget: RemoteSelectionTarget | undefined,
   ): Promise<boolean> {
     if (!this.client) {
       if (!this.failEcho(requestId, "@sendNoConnection")) {
@@ -11227,6 +11244,9 @@ export class ChatController implements vscode.Disposable {
       }
     }
     if (!scope) {
+      if (remoteReferenceTarget && this.cancelStaleRemoteSelectionSubmit(remoteReferenceTarget, text, attachments, requestId)) {
+        return false;
+      }
       // 用户**主动取消**了目录选择 / 落点不是这条提交的冻结目录：这不是"发送失败"，而是这条
       // 消息收回输入框（唯一一条不回显失败态的路径——把用户自己的取消画成红框是误导）
       this.retireEcho(requestId, "workspace-cancelled");
@@ -11260,6 +11280,11 @@ export class ChatController implements vscode.Disposable {
         });
       }
       return outcome?.ok === true;
+    }
+
+    // 只有普通消息使用自动引用；斜杠命令不受芯片随连接或目录失效的影响。
+    if (remoteReferenceTarget && this.cancelStaleRemoteSelectionSubmit(remoteReferenceTarget, text, attachments, requestId)) {
+      return false;
     }
 
     // 空态那条 `/xxx` 的正文：按下那一刻还没有会话、没有命令目录，`beginSend` 判不了
@@ -11340,6 +11365,11 @@ export class ChatController implements vscode.Disposable {
     try {
       // 发送前应用待生效的模型选择（切换即时生效于"下一轮"）
       await this.applyPendingModel(scope);
+      // 切换焦点不取消已按下的发送，但在等待 RPC 时原连接、会话绑定或执行目录可能变了。
+      // 在清草稿、写提交记录和 normal/subagent prompt 之前收回失效引用的这次提交。
+      if (remoteReferenceTarget && this.cancelStaleRemoteSelectionSubmit(remoteReferenceTarget, text, attachments, requestId)) {
+        return false;
+      }
       // 草稿与附件在 beginSend 里已清（空态那一步清的是窗口键，绑定后由
       // `bindViewToSession` 迁到会话键）；这里按会话键复述一次，不依赖迁移链路的细节。
       // **只对输入框来源做**：重发 / 排队重发的内容不是输入框里那份，清它等于擦掉用户的草稿。
@@ -12996,9 +13026,41 @@ export class ChatController implements vscode.Disposable {
     this.insertMention(viewId, formatFileMentionWithLines(name, lines));
   }
 
+  /** 只读副本的原路径只在产生它的连接 + 会话中有意义。 */
+  private remoteReferenceScope(viewId: string, address: RemoteFileAddress): SessionScope | undefined {
+    const scope = this.scopeOfView(viewId);
+    return scope?.sessionId === address.sessionId && this.resolveHostFileConnection(address.connectionId)
+      ? scope : undefined;
+  }
+
+  /** 「添加到对话」只向真正接收该引用的活动窗口插入、回焦，不跨会话寻找窗口。 */
+  addRemoteFileContext(address: RemoteFileAddress, lines?: SelectionFacts["lines"]): void {
+    const viewId = this.activeViewId();
+    if (!viewId || !this.remoteReferenceScope(viewId, address)) return;
+    const token = remoteFileReference(address.path, this.selectionCwd(viewId), lines);
+    if (!token) return;
+    this.insertMention(viewId, token);
+    this.revealers.get(viewId)?.();
+  }
+
   /** 编辑器事件同步冻结选区及目标；防抖只延迟投递，不采样编辑器或重新生成引用。 */
   setSelectionFacts(facts: SelectionFacts): void {
     const viewId = this.activeViewId();
+    if (facts.remoteFile) {
+      const address = facts.remoteFile;
+      if (!viewId || !this.remoteReferenceScope(viewId, address)) {
+        return this.clearSelectionContext("只读副本不属于活动会话或原连接已失效");
+      }
+      const dir = this.selectionCwd(viewId);
+      const token = remoteFileReference(address.path, dir, facts.lines);
+      if (token === undefined) return this.clearSelectionContext("无法引用只读副本的原路径");
+      return this.captureSelection({
+        viewId,
+        sessionId: address.sessionId,
+        cwdKey: remoteSelectionCwdKey(dir),
+        connectionId: address.connectionId,
+      }, token, facts.preview);
+    }
     if (!viewId) {
       // 只允许首次开窗消费开窗前的选区；关闭已有窗后不跨窗继承。
       const cwdKey = selectionDirectoryKey(this.captureSessionTarget()?.path);
@@ -13020,13 +13082,19 @@ export class ChatController implements vscode.Disposable {
     const token = formatFileMentionWithLines(relative, facts.lines);
     if (token === undefined) return this.clearSelectionContext("无法生成引用");
 
+    this.captureSelection({ viewId, sessionId: this.viewSessions.get(viewId), cwdKey }, token, facts.preview);
+  }
+
+  private captureSelection(target: SelectionTarget, token: string, preview: string): void {
     this.invalidateSelectionTarget();
+    const previous = this.selectionPending ?? this.selectionDisplayed;
+    if (previous && previous.target.connectionId !== target.connectionId) this.clearSelectionContext("引用来源身份变化");
     const displayed = this.selectionDisplayed;
-    if (!this.selectionPending && displayed?.context.token === token && displayed.context.preview === facts.preview) return;
+    if (!this.selectionPending && displayed?.context.token === token && displayed.context.preview === preview) return;
     this.scheduleSelection({
-      // 若已投递，复用同一目标对象：首次自动绑定同目录空会话时两个状态一起迁移。
-      target: displayed?.target ?? { viewId, sessionId: this.viewSessions.get(viewId), cwdKey },
-      context: { token, preview: facts.preview },
+      // 若已投递，复用同一目标对象：本机选区首次自动绑定同目录空会话时一起迁移。
+      target: displayed?.target ?? target,
+      context: { token, preview },
     });
   }
 
@@ -13084,14 +13152,29 @@ export class ChatController implements vscode.Disposable {
       this.clearSelectionContext("执行目录变化");
     }
     const target = (this.selectionPending ?? this.selectionDisplayed)?.target;
-    if (
-      target &&
-      (target.viewId !== this.activeViewId() ||
-        target.sessionId !== this.viewSessions.get(target.viewId) ||
-        target.cwdKey !== selectionDirectoryKey(this.selectionCwd(target.viewId)))
-    ) {
-      this.clearSelectionContext("目标或执行目录变化");
+    if (!target) return;
+    if (target.viewId !== this.activeViewId() || target.sessionId !== this.viewSessions.get(target.viewId) ||
+        (target.connectionId === undefined
+          ? target.cwdKey !== selectionDirectoryKey(this.selectionCwd(target.viewId))
+          : !this.isRemoteSelectionTargetCurrent(target))) {
+      this.clearSelectionContext("目标、执行目录或原连接变化");
     }
+  }
+
+  private isRemoteSelectionTargetCurrent(target: SelectionTarget): boolean {
+    const scope = this.scopeOfView(target.viewId);
+    return target.connectionId !== undefined && !!scope && scope.sessionId === target.sessionId &&
+      !!this.resolveHostFileConnection(target.connectionId) &&
+      target.cwdKey === remoteSelectionCwdKey(scope.workingDirectory ?? this.cwdOf(scope));
+  }
+
+  private cancelStaleRemoteSelectionSubmit(
+    target: RemoteSelectionTarget, text: string, attachments: Attachment[], requestId: string,
+  ): boolean {
+    if (this.isRemoteSelectionTargetCurrent(target)) return false;
+    this.retireEcho(requestId, "remote-reference-target-changed");
+    this.appendDraftForSession(target.sessionId, text, attachments, requestId);
+    return true;
   }
 
   private displayedSelectionFor(viewId: string): SelectionContextView | undefined {
@@ -13099,10 +13182,11 @@ export class ChatController implements vscode.Disposable {
     return this.selectionDisplayed?.target.viewId === viewId ? this.selectionDisplayed.context : undefined;
   }
 
-  private sendableSelectionFor(viewId: string): SelectionContextView | undefined {
-    const displayed = this.displayedSelectionFor(viewId);
+  private sendableSelectionFor(viewId: string): TargetedSelection | undefined {
+    this.invalidateSelectionTarget();
+    const displayed = this.selectionDisplayed;
     // 防抖期间界面上的上一个引用只是占位，只有最新事件稳定后才允许随正文发送。
-    return this.selectionPending ? undefined : displayed;
+    return !this.selectionPending && displayed?.target.viewId === viewId ? displayed : undefined;
   }
 
   private selectionPending?: PendingSelection;

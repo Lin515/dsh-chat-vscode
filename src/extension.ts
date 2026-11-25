@@ -5,6 +5,7 @@ import { AGENT_DIFF_SCHEME, AgentDiffDocuments } from "./dsh/agentDiffDocuments"
 import { REMOTE_FILE_SCHEME, RemoteFileSystemProvider } from "./dsh/remoteFileSystem";
 import { resolveForVsCode } from "./dsh/hostText";
 import { selectionLines, selectionPreview } from "./dsh/selection";
+import { editorReferenceSource } from "./dsh/editorReference";
 import { parseAutoSelectionMode } from "./shared/autoSelection";
 import { createHostLog } from "./dsh/hostLog";
 import { IDLE_SEC_DEFAULT } from "./dsh/supervisorProtocol";
@@ -167,18 +168,16 @@ function registerContributions(context: vscode.ExtensionContext, host: Contribut
     selectionSourceEditor = undefined;
     controller.clearSelectionContext(reason);
   };
-  const isSupportedSelectionEditor = (editor: vscode.TextEditor): boolean => {
-    if (editor.document.uri.scheme !== "file") return false;
+  const sourceOfEditor = (editor: vscode.TextEditor) => {
     const activeInput = vscode.window.tabGroups.all.find((group) => group.viewColumn === editor.viewColumn)
       ?.activeTab?.input;
-    if (!(activeInput instanceof vscode.TabInputTextDiff)) return true;
-    const uri = editor.document.uri.toString();
-    return uri !== activeInput.original.toString() && uri !== activeInput.modified.toString();
+    return editorReferenceSource(editor.document.uri, activeInput);
   };
   const captureEditorSelection = (editor: vscode.TextEditor, selection?: vscode.Selection, mouse = false) => {
     const mode = selectionMode();
     if (mode === "off") return clearEditorSelection("配置已关闭");
-    if (!isSupportedSelectionEditor(editor)) return clearEditorSelection(`编辑器不支持（${mode}）`);
+    const source = sourceOfEditor(editor);
+    if (!source) return clearEditorSelection(`编辑器不支持（${mode}）`);
     const lines = selection && selectionLines(selection);
     if (!lines && mode === "selection") {
       // 鼠标拖过锚点会短暂为空；只有同一来源可留占位，键盘等明确折叠立即清除。
@@ -189,7 +188,7 @@ function registerContributions(context: vscode.ExtensionContext, host: Contribut
     selectionSourceEditor = editor;
     log(`[selection] 已采样：档位=${mode}，类型=${lines ? "选区" : "文件"}`);
     controller.setSelectionFacts({
-      filePath: editor.document.uri.fsPath,
+      ...source,
       lines,
       preview: selection && lines ? selectionPreview(editor.document.getText(selection)) : "",
     });
@@ -425,19 +424,19 @@ function registerContributions(context: vscode.ExtensionContext, host: Contribut
         return;
       }
 
-      // 编辑器入口（或有选中时的命令面板/快捷键）：有选中加**带行号的选区引用**
-      if (editor && !editor.selection.isEmpty) {
-        const name = vscode.workspace.asRelativePath(editor.document.uri);
-        controller.addSelection(name, selectionLines(editor.selection));
-        // 焦点回到**加引用的那个窗口**（可能是侧栏，也可能是编辑区面板）：
-        // 写死 `dshChat.view.focus` 会把开在编辑区的对话硬拽回侧栏
-        controller.revealActiveView();
+      if (!editor) return;
+      const source = sourceOfEditor(editor);
+      if (!source) return;
+      const lines = selectionLines(editor.selection);
+      if (source.remoteFile) {
+        // 虚拟文件不走本机工作区路径；由控制器核对原连接与会话，再向插入的窗口回焦。
+        controller.addRemoteFileContext(source.remoteFile, lines);
         return;
       }
-      // 没有选区（或选区为空）→ 添加整个文件的 `@` 引用
-      const target = editor?.document.uri;
-      if (!target || target.scheme !== "file") return;
-      void controller.addFileContext(target.fsPath);
+      // 普通文件沿用选区的工作区相对路径、整文件的文件引用入口。
+      if (lines) controller.addSelection(vscode.workspace.asRelativePath(editor.document.uri), lines);
+      else void controller.addFileContext(source.filePath);
+      // 焦点回到加引用的窗口，不能把编辑区对话硬拽回侧栏。
       controller.revealActiveView();
     }),
     // 目录单独入口：Windows/Linux 的文件对话框不能同时选文件和目录
@@ -467,7 +466,7 @@ function registerContributions(context: vscode.ExtensionContext, host: Contribut
     }),
     vscode.window.onDidChangeActiveTextEditor((editor) => {
       if (!editor) return clearForUnsupportedActiveTab();
-      if (!isSupportedSelectionEditor(editor)) return clearEditorSelection("活动编辑器不支持");
+      if (!sourceOfEditor(editor)) return clearEditorSelection("活动编辑器不支持");
       if (editor === selectionSourceEditor) return;
       // 聚焦另一普通文件只允许整文件引用；不能读取该编辑器遗留的选区。
       if (selectionMode() === "file") captureEditorSelection(editor);

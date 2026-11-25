@@ -13,12 +13,20 @@
  * vscode 依赖由 esbuild.scripts.mjs 的 alias 指到 `vscodeTestStub.ts`（离线、无网络）。
  */
 import assert from "node:assert";
-import { join } from "node:path";
+import { join, sep } from "node:path";
+import { tmpdir } from "node:os";
 import { readFileSync } from "node:fs";
 import { mock } from "node:test";
+import * as vscode from "vscode";
+import { commands } from "./vscodeTestStub";
 import { relativeMentionPath } from "../src/shared/mentions";
+import type { ModelSelectionView } from "../src/shared/chat";
 import type { SelectionContextView, WebviewToHost } from "../src/shared/ipc";
-import type { SelectionFacts } from "../src/dsh/selection";
+import { editorReferenceSource } from "../src/dsh/editorReference";
+import { remoteFileReference, selectionLines, type SelectionFacts } from "../src/dsh/selection";
+import { remoteFileUri } from "../src/dsh/remoteFileSystem";
+import { AGENT_DIFF_SCHEME } from "../src/dsh/agentDiffDocuments";
+import type { HostFileAccess } from "../src/dsh/remoteFiles";
 
 process.on("unhandledRejection", (error) => {
   console.error("[selectionSend] 未处理的异步拒绝（当作失败）：", error);
@@ -46,12 +54,17 @@ function fakeClient() {
   const executed: string[] = [];
   const prompts: { sessionId: string; requestId: string; content: unknown[]; mode: string }[] = [];
   const followers: { session?: (value: unknown) => void; control?: (value: unknown) => void } = {};
+  const files = new Map<string, Set<string>>();
+  const fileStats: { workspaceFileScopeId: string; path: string }[] = [];
   return {
     calls,
     executed,
     prompts,
     followers,
     rows,
+    files,
+    fileStats,
+    async selectModel() {},
     async cancel() {
       calls.push("session/cancel");
       return { accepted: true };
@@ -72,6 +85,13 @@ function fakeClient() {
     },
     async request(method: string, params?: Record<string, unknown>) {
       calls.push(method);
+      if (method === "workspaceFiles/stat") {
+        const workspaceFileScopeId = String(params?.workspaceFileScopeId);
+        const path = String(params?.path);
+        fileStats.push({ workspaceFileScopeId, path });
+        if (!files.get(workspaceFileScopeId)?.has(path)) throw new Error("unexpected file stat");
+        return { absolutePath: path, version: "v1" };
+      }
       if (method === "workspace/create") return { workspace: { workspaceId: "ws-1" } };
       if (method === "agentPresets/list") return { presets: [] };
       if (method === "subagents/list") return { entries: [] };
@@ -138,7 +158,7 @@ const fakeMemento = () => {
   };
 };
 
-function makeController() {
+function makeController({ cwd = CWD, remoteFiles = false } = {}) {
   const logs: string[] = [];
   const controller = new ChatController(
     fakeServer() as never,
@@ -158,22 +178,25 @@ function makeController() {
     client: unknown;
     connection: string;
     newSessionCwd?: string;
+    adoptClient(client: ReturnType<typeof fakeClient>): void;
+    hostFiles?: HostFileAccess;
     bindView(viewId: string): void;
     noteActiveView(viewId: string): void;
     clearSelectionContext(reason: string): void;
     deferSelectionCollapse(): void;
     setSelectionFacts(facts: SelectionFacts): void;
     handle(message: WebviewToHost, viewId: string): Promise<void>;
-    scopeOfView(viewId: string): { sessionId: string } | undefined;
+    scopeOfView(viewId: string): { sessionId: string; pendingModel?: ModelSelectionView } | undefined;
     applyWorkingDirectoryProjection(scope: { sessionId: string }, value: string, present: boolean, source: "snapshot"): void;
     bindViewToSession(viewId: string, sessionId: string, scope: { sessionId: string }): void;
     detachView(viewId: string): void;
     afterRootChanged(viewId: string, action: { viewId: string; epoch: number }): Promise<void>;
   };
-  c.newSessionCwd = CWD;
-  c.client = client;
+  c.newSessionCwd = cwd;
+  if (remoteFiles) c.adoptClient(client);
+  else c.client = client;
   c.connection = "connected";
-  return { c, frames, client, logs };
+  return { controller, c, frames, client, logs };
 }
 
 function chipsFor(frames: Captured[], viewId: string): (SelectionContextView | null)[] {
@@ -186,7 +209,7 @@ function settleSelection(): void {
   mock.timers.tick(300);
 }
 
-async function showSelection(c: ReturnType<typeof makeController>["c"], frames: Captured[], viewId: string, facts = FACTS) {
+async function showSelection(c: ReturnType<typeof makeController>["c"], frames: Captured[], viewId: string, facts: SelectionFacts = FACTS) {
   c.setSelectionFacts(facts);
   settleSelection();
   const chip = chipsFor(frames, viewId).at(-1);
@@ -513,6 +536,265 @@ mock.timers.enable({ apis: ["setTimeout"] });
   assert.match(chatView, /const activated = active && !wasActive;\s*wasActive = active;\s*if \(activated\) this\.controller\.noteActiveView\(viewId\);/);
   console.log("selectionSend: 选区事件和活动帧的宿主接线 ✓");
 }
+
+// ---------- 7. 执行世界只读文档：真实打开 → 编辑器来源 → 引用投递与实际发送 ----------
+{
+  const root = join(tmpdir(), "dsh-chat-readonly-selection");
+  const creationCwd = join(root, "creation");
+  const executionCwd = join(root, "execution");
+  const basename = "shared file.ts";
+  const insidePath = join(executionCwd, "src", basename);
+  const outsidePath = join(creationCwd, "src", basename);
+  const absoluteMention = outsidePath.split(sep).join("/");
+  const relativeRange = '@"src/shared file.ts#L12-L18"';
+  const absoluteRange = `@"${absoluteMention}#L12-L18"`;
+  const wholeFile = '@"src/shared file.ts"';
+  const { controller, c, frames, client } = makeController({ cwd: creationCwd, remoteFiles: true });
+  c.bindView("owner");
+  await c.handle({ type: "ready" }, "owner");
+  const scope = c.scopeOfView("owner");
+  const access = c.hostFiles;
+  assert.ok(scope && access);
+  const { sessionId } = scope;
+  const { connectionId } = access;
+  assert.strictEqual(client.rows.find((row) => row.sessionId === sessionId)?.cwd, creationCwd);
+  client.files.set(sessionId, new Set([insidePath, outsidePath]));
+  c.applyWorkingDirectoryProjection(scope, executionCwd, true, "snapshot");
+
+  // 两条链接实际经过 controller 的打开入口和 Host stat；只截获 VS Code 最后的打开调用。
+  const openCommand = mock.method(commands, "executeCommand");
+  let opened: vscode.Uri[];
+  try {
+    await c.handle({ type: "openFile", path: join("src", basename), link: true }, "owner");
+    await c.handle({ type: "openFile", path: outsidePath, link: true }, "owner");
+    opened = openCommand.mock.calls.flatMap(({ arguments: [command, arg] }) =>
+      command === "vscode.open" ? [arg as vscode.Uri] : []);
+  } finally {
+    openCommand.mock.restore();
+  }
+  assert.deepStrictEqual(client.fileStats, [
+    { workspaceFileScopeId: sessionId, path: insidePath },
+    { workspaceFileScopeId: sessionId, path: outsidePath },
+  ]);
+  assert.strictEqual(opened.length, 2);
+  const [insideUri, outsideUri] = opened;
+  assert.strictEqual(insideUri.scheme, "dsh-chat-world");
+  assert.strictEqual(insideUri.path, outsideUri.path, "同名文件的展示路径没有身份信息");
+  assert.notStrictEqual(insideUri.fsPath, insidePath, "只读资源的 fsPath 不是执行世界路径");
+  const inside = editorReferenceSource(insideUri)?.remoteFile;
+  const outside = editorReferenceSource(outsideUri)?.remoteFile;
+  assert.deepStrictEqual(inside, { sessionId, connectionId, path: insidePath }, "编辑器取回真实 URI 的原始身份");
+  assert.deepStrictEqual(outside, { sessionId, connectionId, path: outsidePath }, "同名文件不会被合并");
+  assert.ok(inside && outside);
+
+  const diff = new vscode.TabInputTextDiff(insideUri, outsideUri);
+  assert.strictEqual(editorReferenceSource(insideUri, diff), undefined, "真实只读 URI 在 diff 左侧也不引用");
+  assert.strictEqual(editorReferenceSource(outsideUri, diff), undefined, "真实只读 URI 在 diff 右侧也不引用");
+  const snapshot = vscode.Uri.from({ scheme: AGENT_DIFF_SCHEME, path: `/src/${basename}`, query: "id=1&side=after" });
+  assert.strictEqual(editorReferenceSource(snapshot), undefined, "单独打开的历史快照也不引用");
+  const unrelatedDiff = new vscode.TabInputTextDiff(outsideUri, snapshot);
+  assert.deepStrictEqual(editorReferenceSource(insideUri, unrelatedDiff), { remoteFile: inside }, "同名 URI 不代表同一个 diff 资源");
+  const malformed = vscode.Uri.from({ scheme: insideUri.scheme, path: insideUri.path, query: "id=bad" });
+  assert.strictEqual(editorReferenceSource(malformed), undefined, "无效身份不能回落到 URI 展示路径");
+
+  const lines = selectionLines({ start: { line: 11, character: 0 }, end: { line: 18, character: 0 } });
+  assert.deepStrictEqual(lines, { start: 12, end: 18 });
+  const insideFacts = { remoteFile: inside, lines, preview: "选中的代码" };
+  const outsideFacts = { ...insideFacts, remoteFile: outside };
+  const relative = await showSelection(c, frames, "owner", insideFacts);
+  assert.strictEqual(relative.token, relativeRange, "相对执行 cwd，而不是会话创建 cwd 或 basename");
+
+  // 切到另一个同名文件所在的目录时，防抖内的旧选区不能按新 cwd 重新折算。
+  c.setSelectionFacts(outsideFacts);
+  c.applyWorkingDirectoryProjection(scope, creationCwd, true, "snapshot");
+  settleSelection();
+  assert.deepStrictEqual(chipsFor(frames, "owner"), [relative, null]);
+  await c.handle(send("切目录后的迟到帧", relative), "owner");
+  assert.strictEqual(promptText(client), "切目录后的迟到帧");
+  c.applyWorkingDirectoryProjection(scope, executionCwd, true, "snapshot");
+  const relativeAgain = await showSelection(c, frames, "owner", insideFacts);
+  await c.handle(send("引用执行目录中的文件", relativeAgain), "owner");
+  assert.strictEqual(client.prompts.at(-1)?.sessionId, sessionId);
+  assert.strictEqual(promptText(client), `引用执行目录中的文件\n\n${relativeRange}`);
+  const absolute = await showSelection(c, frames, "owner", outsideFacts);
+  assert.strictEqual(absolute.token, absoluteRange, "目录外同名文件保留带空格的绝对路径，锚点在引号内");
+  await c.handle(send("引用创建目录中的文件", absolute), "owner");
+  assert.strictEqual(client.prompts.at(-1)?.sessionId, sessionId);
+  assert.strictEqual(promptText(client), `引用创建目录中的文件\n\n${absoluteRange}`);
+
+  const cursor = { line: 11, character: 0 };
+  const noLines = selectionLines({ start: cursor, end: cursor });
+  assert.strictEqual(noLines, undefined);
+  const full = await showSelection(c, frames, "owner", { remoteFile: inside, lines: noLines, preview: "" });
+  assert.strictEqual(full.token, wholeFile, "file 档的空选区只附整文件引用");
+  await c.handle(send("引用整文件", full), "owner");
+  assert.strictEqual(promptText(client), `引用整文件\n\n${wholeFile}`);
+
+  const revealed: string[] = [];
+  controller.registerRevealer("owner", () => { revealed.push("owner"); });
+  const insertions = () => frames.flatMap(({ target, frame }) =>
+    frame.type === "ui/insertText" ? [{ target, text: frame.text }] : []);
+  controller.addRemoteFileContext(outside, lines);
+  controller.addRemoteFileContext(inside, noLines);
+  const expectedInserts = [{ target: "owner", text: absoluteRange }, { target: "owner", text: wholeFile }];
+  assert.deepStrictEqual(insertions(), expectedInserts, "手动选区和整文件都只向所属活动窗口插入引用");
+  assert.deepStrictEqual(revealed, ["owner", "owner"]);
+
+  c.bindView("other");
+  await c.handle({ type: "ready" }, "other");
+  const otherScope = c.scopeOfView("other");
+  assert.ok(otherScope && otherScope.sessionId !== sessionId, "同一连接上确实还有另一条会话");
+  c.applyWorkingDirectoryProjection(otherScope, executionCwd, true, "snapshot");
+  controller.registerRevealer("other", () => { revealed.push("other"); });
+  c.noteActiveView("other");
+  const ownerChips = chipsFor(frames, "owner");
+  c.setSelectionFacts(insideFacts);
+  settleSelection();
+  assert.deepStrictEqual(chipsFor(frames, "other"), [], "同 cwd 的另一会话也不是源 URI 的目标");
+  assert.deepStrictEqual(chipsFor(frames, "owner"), ownerChips, "不能跳过活动窗口，反向搜索源会话投递");
+  controller.addRemoteFileContext(inside, lines);
+  await c.handle(send("其他会话的迟到帧", full), "other");
+  assert.strictEqual(client.prompts.at(-1)?.sessionId, otherScope.sessionId);
+  assert.strictEqual(promptText(client), "其他会话的迟到帧");
+  c.bindView("unbound");
+  c.noteActiveView("unbound");
+  assert.strictEqual(c.scopeOfView("unbound"), undefined);
+  c.setSelectionFacts(insideFacts);
+  settleSelection();
+  assert.deepStrictEqual(chipsFor(frames, "unbound"), [], "未绑定的活动窗口不能猜会话");
+  controller.addRemoteFileContext(inside, noLines);
+  assert.deepStrictEqual(insertions(), expectedInserts, "无效手势既不插入其他窗口，也不搜索源窗口");
+  assert.deepStrictEqual(revealed, ["owner", "owner"]);
+
+  c.noteActiveView("owner");
+  const another = makeController({ cwd: creationCwd, remoteFiles: true }).c.hostFiles;
+  assert.ok(another && another.connectionId !== connectionId);
+  const rejectAddress = (remoteFile: NonNullable<SelectionFacts["remoteFile"]>, reason: string) => {
+    const before = chipsFor(frames, "owner");
+    c.setSelectionFacts({ ...insideFacts, remoteFile });
+    settleSelection();
+    assert.deepStrictEqual(chipsFor(frames, "owner"), before, reason);
+    controller.addRemoteFileContext(remoteFile, lines);
+    assert.deepStrictEqual(insertions(), expectedInserts, reason);
+    assert.deepStrictEqual(revealed, ["owner", "owner"], reason);
+  };
+  // 仍然经过 URI 解析；地址可解码不等于该连接可用。
+  for (const badId of ["unknown-connection", another.connectionId]) {
+    const bad = editorReferenceSource(remoteFileUri({ ...inside, connectionId: badId }))?.remoteFile;
+    assert.ok(bad, "连接是否有效应由控制器判断，而不是 URI 解码器猜测");
+    rejectAddress(bad, "未知连接或属于另一控制器的连接不能回落到当前连接");
+  }
+  const replacement = fakeClient();
+  replacement.rows.push(...client.rows);
+  c.setSelectionFacts(insideFacts);
+  c.adoptClient(replacement);
+  assert.strictEqual(access.isClosed, true);
+  settleSelection();
+  assert.deepStrictEqual(chipsFor(frames, "owner").at(-1), null, "连接替换作废待投递的旧 URI");
+  rejectAddress(inside, "原连接已关闭；即使会话 id 相同也不能重新解释旧 URI");
+  await c.handle(send("连接更换后的迟到帧", full), "owner");
+  assert.strictEqual(replacement.prompts.at(-1)?.sessionId, sessionId);
+  assert.strictEqual(promptText(replacement), "连接更换后的迟到帧");
+  const activeAccess = c.hostFiles;
+  assert.ok(activeAccess && !activeAccess.isClosed);
+  const closing = { ...inside, connectionId: activeAccess.connectionId };
+  const beforeClose = await showSelection(c, frames, "owner", { ...insideFacts, remoteFile: closing });
+  assert.strictEqual(beforeClose.token, relativeRange);
+  activeAccess.close();
+  assert.strictEqual(c.hostFiles, activeAccess, "连接已关闭但仍是当前文件访问对象");
+  await c.handle(send("连接关闭后的迟到帧", beforeClose), "owner");
+  assert.strictEqual(promptText(replacement), "连接关闭后的迟到帧");
+  rejectAddress(closing, "当前连接 id 匹配，但访问对象已关闭，不能再接受自动或手动引用");
+  assert.strictEqual(client.fileStats.length, 2, "引用不再次 stat 或读取文件");
+  assert.strictEqual(replacement.fileStats.length, 0, "旧 URI 不发送到替换后的连接");
+  another.close();
+  console.log("selectionSend: 只读 URI 真实打开、发送、手动插入和会话/连接隔离 ✓");
+}
+
+// ---------- 8. 按下发送之后、真正 prompt 之前，原工作目录 / 会话绑定 / 连接仍须成立 ----------
+for (const change of ["cwd", "session", "connection"] as const) {
+  const root = join(tmpdir(), "dsh-chat-readonly-selection-submit", change);
+  const cwd = join(root, "before");
+  const nextCwd = join(root, "after");
+  const { c, client, frames } = makeController({ cwd, remoteFiles: true });
+  c.bindView("owner");
+  await c.handle({ type: "ready" }, "owner");
+  const scope = c.scopeOfView("owner");
+  const access = c.hostFiles;
+  assert.ok(scope && access);
+
+  // 另开同一会话的镜像窗口，用来观察原会话的回填（即使发起发送的窗口切走了）。
+  c.bindView("mirror");
+  c.bindViewToSession("mirror", scope.sessionId, scope);
+  c.newSessionCwd = nextCwd;
+  c.bindView("other");
+  await c.handle({ type: "ready" }, "other");
+  const otherScope = c.scopeOfView("other");
+  assert.ok(otherScope && otherScope.sessionId !== scope.sessionId);
+  c.noteActiveView("owner");
+
+  const chip = await showSelection(c, frames, "owner", {
+    remoteFile: { sessionId: scope.sessionId, connectionId: access.connectionId, path: join(cwd, "one file.ts") },
+    preview: "",
+  });
+  assert.strictEqual(chip.token, '@"one file.ts"');
+  scope.pendingModel = { provider: "test", model: "test", label: "test" };
+  let releaseModel = () => {};
+  const modelResponse = new Promise<void>((resolve) => { releaseModel = resolve; });
+  const modelRpc = mock.method(client, "selectModel", () => modelResponse);
+  const draft = "等待模型选择时发送";
+  const sending = c.handle(send(draft, chip), "owner");
+  const replacement = fakeClient();
+  const before = frames.length;
+  try {
+    await waitFor(() => modelRpc.mock.callCount() === 1);
+    assert.deepStrictEqual(client.prompts, [], "原模型选择 RPC 尚未返回");
+    if (change === "cwd") {
+      c.applyWorkingDirectoryProjection(scope, nextCwd, true, "snapshot");
+    } else if (change === "session") {
+      c.bindViewToSession("owner", otherScope.sessionId, otherScope);
+    } else {
+      replacement.rows.push(...client.rows);
+      c.adoptClient(replacement);
+    }
+  } finally {
+    releaseModel();
+    await sending;
+    modelRpc.mock.restore();
+  }
+  assert.deepStrictEqual(client.prompts, [], `${change}：旧目标不得收到 prompt`);
+  assert.deepStrictEqual(replacement.prompts, [], `${change}：新目标不得收到旧引用`);
+  const restored = frames.slice(before).flatMap(({ target, frame }) => {
+    const patch = frame.patch as { draft?: string } | undefined;
+    return frame.type === "patch" && patch?.draft ? [{ target, draft: patch.draft }] : [];
+  });
+  assert.deepStrictEqual(restored.filter(({ target }) => target === "mirror"), [{ target: "mirror", draft }],
+    `${change}：只还回原始正文，不把失效的自动引用写进草稿`);
+  assert.deepStrictEqual(restored.filter(({ target }) => target === "other" || (change === "session" && target === "owner")), [],
+    `${change}：不回填到别的会话`);
+  c.hostFiles?.close();
+}
+console.log("selectionSend: 发送在等待模型时变更目录/会话/连接，收回引用并回填原会话 ✓");
+
+// ---------- 9. 只解析执行世界的路径字符串，不探测本机文件系统 ----------
+for (const [path, cwd, expected, reason] of [
+  ["/work/project/src/a b.ts", "/work/project", '@"src/a b.ts#L2-L4"', "POSIX 目录内相对引用"],
+  ["/work/project2/src/a b.ts", "/work/project", '@"/work/project2/src/a b.ts#L2-L4"', "同名前缀不算子目录"],
+  ["/work/project/a.ts", undefined, "@/work/project/a.ts#L2-L4", "缺少 cwd 时保留绝对路径"],
+  [String.raw`d:\Work\a b.ts`, "D:/Work", '@"a b.ts#L2-L4"', "只折叠 Windows 盘符大小写与分隔符"],
+  [String.raw`d:\Work\a b.ts`, "D:/work", '@"d:/Work/a b.ts#L2-L4"', "不猜 Windows 目录名大小写"],
+  [String.raw`\\server\Share\root\a b.ts`, "//server/Share/root", '@"a b.ts#L2-L4"', "UNC 同名共享内相对引用"],
+  [String.raw`\\server\Share\root\a b.ts`, "//server/share/root", '@"//server/Share/root/a b.ts#L2-L4"', "不猜 UNC 共享名大小写"],
+  ["/work/D:", "/work", "@/work/D:#L2-L4", "POSIX 裸盘符名不能变成盘符查询"],
+  ["/work/D:/a.ts", "/work", "@/work/D:/a.ts#L2-L4", "POSIX 目录名不能变成 Windows 绝对路径"],
+  [String.raw`/work/name\with-backslash.ts`, "/work", undefined, "POSIX 文件名的反斜杠不是分隔符"],
+  ["/work/a.ts#L22", "/work", undefined, "不能把文件名的后缀误解析为行号"],
+] as const) {
+  assert.strictEqual(remoteFileReference(path, cwd, { start: 2, end: 4 }), expected, reason);
+}
+assert.strictEqual(remoteFileReference("/work/D:", "/work"), "@/work/D:", "整文件引用也不能变成裸盘符查询");
+assert.strictEqual(remoteFileReference("/work/a.ts#L22-L30", "/work"), undefined, "整文件名不能误解析为既有行号范围");
+console.log("selectionSend: 执行世界的 POSIX、盘符与 UNC 路径按语法折算，不猜路径身份 ✓");
 
 mock.timers.reset();
 console.log("\nselectionSend: all assertions passed");

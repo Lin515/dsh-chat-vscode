@@ -40,7 +40,7 @@ export function encodeRemoteFileAddress(address: RemoteFileAddress): string {
 
 /** 解码 authority；形状不完整或不是合法 base64url 时返回 undefined。 */
 export function decodeRemoteFileAddress(token: string): RemoteFileAddress | undefined {
-  if (!token) return undefined;
+  if (!/^[A-Za-z0-9_-]+$/u.test(token)) return undefined;
   let parsed: unknown;
   try {
     parsed = JSON.parse(Buffer.from(token, "base64url").toString("utf8"));
