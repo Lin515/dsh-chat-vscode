@@ -125,8 +125,6 @@ export interface Texts {
   close: string;
   /** 「编辑器当前选区」芯片的悬停说明（发送时自动附带为引用）。 */
   selectionChipTitle: string;
-  /** 芯片上的前缀词（说明这枚芯片表示「已选中的内容」）。引用本体按实际发送形态显示。 */
-  selectionChipPrefix: string;
 
   permission: string;
   permReadOnly: string;

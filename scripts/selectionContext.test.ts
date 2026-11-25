@@ -10,7 +10,7 @@
  * 4. **归约**（`reducer` 的 `ui/selectionContext` / `ui/selectionDismiss`）：
  *    宿主帧置上 / 清除、用户点掉；空态收到清除帧不许换引用（白渲染）；
  * 5. **渲染**（真渲染 `Composer`，react-dom/server）：芯片直接显示**实际会发出去**
- *    的引用 token（显示与发送共用同一个值，评审设计建议），悬停给选区原文预览；
+ *    的引用 token（不加前缀，从前面省略时保留完整 DOM 文本），悬停给选区原文预览；
  *    没有那一帧时芯片整枚不出现。
  *
  * 投递归属、命令安全与取消回填是**行为**链路，见 `selectionSend.test.ts`
@@ -41,10 +41,10 @@ const context: SelectionContextView = {
   token: "@src/config.ts#L12-L18",
   preview: "const port = 3080;",
 };
-/** 带空格的路径：实际发送形态带成对引号（SSR 会把 `"` 转义，断言按转义后比对）。 */
+/** 含空格和双向文字的长引用：SSR 会转义引号，但不能删字或改变 token 次序。 */
 const quotedContext: SelectionContextView = {
   id: 2,
-  token: '@"src/my file.ts"#L12-L18',
+  token: '@"src/features/mixed 路径/longer directory/ملف.ts"#L12-L18',
   preview: "",
 };
 
@@ -119,52 +119,37 @@ console.log("selectionContext: 状态归约（置上 / 清除 / 点掉）✓");
         createElement(Composer, { state, onDraft: () => {} }),
       ),
     );
-  const chipTitle = (html: string): string => /class="chip" title="([^"]*)"/u.exec(html)?.[1] ?? "";
+  // 芯片只有 token 和移除按钮两个子元素；前缀（无论是独立元素还是拼进标签）都会使断言失败。
+  const chip = (html: string) =>
+    /<span class="chip chip-selection" title="(?<title>[^"]*)"><span class="chip-name"><bdi dir="ltr">(?<token>[^<]*)<\/bdi><\/span><button class="chip-remove" title="(?<remove>[^"]*)">×<\/button><\/span>/u.exec(html)?.groups;
   try {
     const withChip = { ...initialState, connection: "ready" as const, draft: "帮我解释", selectionContext: context };
-    const zh = render(withChip, "zh");
-    const en = render(withChip, "en");
-    for (const [locale, html] of [
-      ["zh", zh],
-      ["en", en],
-    ] as const) {
-      assert.ok(html.includes(context.token), `${locale}：芯片显示的就是实际会发出去的引用（含引号与行号区间）`);
-      assert.ok(chipTitle(html).includes(context.token), `${locale}：悬停 title 里有完整的发送 token`);
-      assert.ok(chipTitle(html).includes(context.preview), `${locale}：悬停 title 里有选区原文预览`);
-      assert.ok(html.includes("chip-remove"), `${locale}：点掉按钮在`);
-      assert.ok(!html.includes("第12-18行") && !html.includes("Lines 12-18"), `${locale}：不再把文件名与行号拆开显示（显示即发送的 token）`);
-    }
-    assert.ok(zh.includes("已选"), "中文界面带「已选」前缀");
-    assert.ok(en.includes("Selected"), "英文界面带「Selected」前缀");
-    assert.strictEqual(
-      /chip-name">([^<]*)</u.exec(zh)?.[1],
-      /chip-name">([^<]*)</u.exec(en)?.[1],
-      "引用 token 不随界面语言变：显示与发送共用同一个值",
-    );
-
-    // 带空格的路径：按实际发送形态（成对引号）显示，不拆开、不去引号
-    const escapedToken = "@&quot;src/my file.ts&quot;#L12-L18";
+    const escapedToken = quotedContext.token.replaceAll('"', "&quot;");
     const wholeFile: SelectionContextView = { id: 3, token: "@src/config.ts", preview: "" };
     for (const locale of ["zh", "en"] as const) {
-      const quoted = render({ ...withChip, selectionContext: quotedContext }, locale);
-      assert.ok(quoted.includes(`class="chip-name">${escapedToken}<`), `${locale}：带空格路径按实际发送形态显示`);
-      assert.ok(chipTitle(quoted).includes(escapedToken), `${locale}：悬停保留带空格引用的完整引号与行号`);
+      const texts = dictionaryFor(locale);
+      const selected = chip(render(withChip, locale));
+      assert.strictEqual(selected?.token, context.token, `${locale}：芯片标签只有实际发送的引用，不带前缀`);
+      assert.strictEqual(selected?.title, [context.token, texts.selectionChipTitle, context.preview].join("\n"), `${locale}：悬停显示完整 token、附带说明和原文预览`);
+      assert.strictEqual(selected?.remove, texts.remove, `${locale}：保留移除按钮及其悬停说明`);
+
+      const quoted = chip(render({ ...withChip, selectionContext: quotedContext }, locale));
+      assert.strictEqual(quoted?.token, escapedToken, `${locale}：带空格路径按实际发送形态显示`);
+      assert.strictEqual(quoted?.title, [escapedToken, texts.selectionChipTitle].join("\n"), `${locale}：悬停保留完整引号与行号，不附空预览`);
 
       // 整文件档（`file` 档、只有光标）：token 没有 `#L` 段，照原样显示；不需要预览也能悬停读全。
-      const whole = render({ ...withChip, selectionContext: wholeFile }, locale);
-      assert.ok(whole.includes(`class="chip-name">${wholeFile.token}<`), `${locale}：整文件引用照原样显示`);
-      assert.ok(chipTitle(whole).includes(wholeFile.token), `${locale}：无预览的整文件引用悬停也显示全文`);
-      assert.ok(!whole.includes("#L"), `${locale}：整文件档不出现行号段`);
+      const whole = chip(render({ ...withChip, selectionContext: wholeFile }, locale));
+      assert.strictEqual(whole?.token, wholeFile.token, `${locale}：整文件引用照原样显示`);
+      assert.strictEqual(whole?.title, [wholeFile.token, texts.selectionChipTitle].join("\n"), `${locale}：无预览的整文件引用悬停也显示全文`);
     }
 
-    // 单行档：宿主折出的 token 就是 `#L12` 形态，显示与发送同值（评审测试小项：
-    // 单行形态独立验证，不靠区间档顺带）
+    // 单行档：独立验证 `#L12`，不靠区间档顺带。
     const singleLine: SelectionContextView = { id: 4, token: "@src/a.ts#L12", preview: "x" };
-    const single = render({ ...initialState, connection: "ready", draft: "hi", selectionContext: singleLine }, "en");
-    assert.ok(single.includes("@src/a.ts#L12"), "单行引用按实际发送形态显示（#L12）");
+    const single = chip(render({ ...withChip, selectionContext: singleLine }, "en"));
+    assert.strictEqual(single?.token, singleLine.token, "单行引用按实际发送形态显示（#L12）");
 
     const without = render({ ...initialState, connection: "ready" as const, draft: "hi" }, "zh");
-    assert.ok(!without.includes("chip-sub") && !without.includes("src/config.ts"), "没有那一帧时芯片整枚不出现");
+    assert.ok(!without.includes('class="composer-chips"'), "没有那一帧时芯片整枚不出现");
   } finally {
     console.error = realError;
   }

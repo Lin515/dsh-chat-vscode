@@ -256,8 +256,6 @@ export const MESSAGES = {
     zh: "编辑器选区：发送时自动附带为引用",
     en: "Editor selection: attached as a reference when sending",
   },
-  /** 芯片上的前缀词：说明这枚芯片表示「已选中的内容」。引用本体按实际发送形态显示。 */
-  selectionChipPrefix: { zh: "已选", en: "Selected" },
 
   permission: { zh: "权限", en: "Permission" },
   permReadOnly: { zh: "仅可查看", en: "Read Only" },

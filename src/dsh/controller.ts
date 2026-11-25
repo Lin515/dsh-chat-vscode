@@ -219,6 +219,12 @@ interface TargetedSelection {
   context: SelectionContextView;
 }
 
+interface PendingSelection {
+  target: SelectionTarget;
+  /** null 表示同一来源的鼠标选区暂时为空。 */
+  context: Omit<SelectionContextView, "id"> | null;
+}
+
 /** 早期版本把启动令牌存进了 SecretStorage；存它没有意义，激活时清掉。 */
 const LEGACY_TOKEN_SECRET = "dshChat.externalAccessToken";
 
@@ -3271,7 +3277,7 @@ export class ChatController implements vscode.Disposable {
     const initial = this.selectionInitialView === viewId;
     if (initial) this.selectionInitialView = undefined;
     if (viewId === this.activeViewId()) {
-      const selection = this.selectionPending ?? this.selectionLive;
+      const selection = this.selectionPending ?? this.selectionDisplayed;
       // 首次开窗自动补齐同目录的空壳不是用户切换；只迁移归属，不重投选区。
       if (
         automaticBlank && initial && previous === undefined && selection &&
@@ -4292,7 +4298,7 @@ export class ChatController implements vscode.Disposable {
     if (this.client === client) return;
     // 初次本地后台连接不是执行世界切换；已建立过连接后，不以 cwd 字符串相同当作同一世界。
     const firstInternalConnection = this.connectionGeneration === 0 && client !== undefined && this.target?.kind === "internal";
-    if (!firstInternalConnection && (this.selectionPending || this.selectionLive || this.initialSelectionFacts)) {
+    if (!firstInternalConnection && (this.selectionPending || this.selectionDisplayed || this.initialSelectionFacts)) {
       this.clearSelectionContext("连接执行环境变化");
     }
     // 工作区注册 id 属于**上一条连接**的注册表（同一路径在另一台 Host 上是另一条记录）：
@@ -6074,7 +6080,7 @@ export class ChatController implements vscode.Disposable {
   private detachView(viewId: string, moveDraft = true): void {
     const previous = this.viewSessions.get(viewId);
     if (viewId === this.selectionInitialView) this.selectionInitialView = undefined;
-    if (viewId === this.activeViewId() && (this.selectionPending || this.selectionLive)) {
+    if (viewId === this.activeViewId() && (this.selectionPending || this.selectionDisplayed)) {
       this.clearSelectionContext("活动会话解绑");
     }
     if (previous === undefined) return;
@@ -9774,8 +9780,8 @@ export class ChatController implements vscode.Disposable {
         this.emitToView(viewId, { type: "images/scope", connectionId: this.hostFiles?.connectionId ?? null });
         this.emitToView(viewId, { type: "state", state: this.snapshotFor(viewId) });
         this.emitToolbarPreference(viewId);
-        // 就绪只同步同一活动目标已生效的引用，不采样编辑器，不提升窗口，也不抢跑防抖。
-        const selection = this.selectionContextFor(viewId);
+        // 就绪只同步同一活动目标当前展示的引用（含占位），不采样编辑器，不提升窗口，也不抢跑防抖。
+        const selection = this.displayedSelectionFor(viewId);
         if (selection) this.emitToView(viewId, { type: "ui/selectionContext", context: selection });
         // 待开指令放在快照和底栏偏好之后；无窗口时记下的意图只由主侧栏消费，
         // 若该视图挂上后又收到定向指令，则以较新的指令为准。
@@ -9858,7 +9864,7 @@ export class ChatController implements vscode.Disposable {
           });
           break;
         }
-        const selection = this.selectionContextFor(viewId);
+        const selection = this.sendableSelectionFor(viewId);
         const autoReference = selection &&
           selection.id === message.autoReferenceId && selection.token === message.autoReference
           ? selection.token
@@ -9881,8 +9887,8 @@ export class ChatController implements vscode.Disposable {
       }
 
       case "selectionContextDismiss": {
-        // 只撤下界面实际点掉的那张；迟到的旧帧不能撤下新选区。
-        const selection = this.selectionContextFor(viewId);
+        // 只撤下界面实际点掉的那张（同时取消待投递）；迟到的旧帧不能撤下新选区。
+        const selection = this.displayedSelectionFor(viewId);
         if (selection && selection.id === message.id) this.clearSelectionContext("用户收起引用");
         break;
       }
@@ -13015,23 +13021,41 @@ export class ChatController implements vscode.Disposable {
     if (token === undefined) return this.clearSelectionContext("无法生成引用");
 
     this.invalidateSelectionTarget();
-    const existing = this.selectionLive?.context;
-    if (existing?.token === token && existing.preview === facts.preview) return;
-    if (this.selectionLive) this.clearSelectionContext("选区更新");
+    const displayed = this.selectionDisplayed;
+    if (!this.selectionPending && displayed?.context.token === token && displayed.context.preview === facts.preview) return;
+    this.scheduleSelection({
+      // 若已投递，复用同一目标对象：首次自动绑定同目录空会话时两个状态一起迁移。
+      target: displayed?.target ?? { viewId, sessionId: this.viewSessions.get(viewId), cwdKey },
+      context: { token, preview: facts.preview },
+    });
+  }
+
+  /** 仅同一编辑器来源的鼠标事件可暂留占位；其他折叠由扩展立即清除。 */
+  deferSelectionCollapse(): void {
+    this.invalidateSelectionTarget();
+    const displayed = this.selectionDisplayed;
+    if (!displayed) return this.clearSelectionContext("选区为空");
+    this.scheduleSelection({ target: displayed.target, context: null });
+  }
+
+  private scheduleSelection(pending: PendingSelection): void {
     clearTimeout(this.selectionTimer);
-    const pending: TargetedSelection = {
-      target: { viewId, sessionId: this.viewSessions.get(viewId), cwdKey },
-      context: { id: ++this.selectionSequence, token, preview: facts.preview },
-    };
     this.selectionPending = pending;
     this.selectionTimer = setTimeout(() => {
+      if (this.selectionPending !== pending) return;
       this.selectionTimer = undefined;
       this.invalidateSelectionTarget();
       if (this.selectionPending !== pending) return;
       this.selectionPending = undefined;
-      this.selectionLive = pending;
+      const next = pending.context;
+      if (!next) return this.clearSelectionContext("鼠标选区为空");
+      const displayed = this.selectionDisplayed?.context;
+      // 回到同一选区：到此才恢复发送资格，不更换标识，也不重发展示帧。
+      if (displayed?.token === next.token && displayed.preview === next.preview) return;
+      const context = { ...next, id: ++this.selectionSequence };
+      this.selectionDisplayed = { target: pending.target, context };
       this.log("[selection] 已投递引用");
-      this.emitToView(viewId, { type: "ui/selectionContext", context: pending.context });
+      this.emitToView(pending.target.viewId, { type: "ui/selectionContext", context });
     }, 300);
   }
 
@@ -13041,10 +13065,10 @@ export class ChatController implements vscode.Disposable {
     this.selectionTimer = undefined;
     this.initialSelectionFacts = undefined;
     this.selectionPending = undefined;
-    const live = this.selectionLive;
-    this.selectionLive = undefined;
+    const displayed = this.selectionDisplayed;
+    this.selectionDisplayed = undefined;
     this.log(`[selection] 未投递或已撤下：${reason}`);
-    if (live) this.emitToView(live.target.viewId, { type: "ui/selectionContext", context: null });
+    if (displayed) this.emitToView(displayed.target.viewId, { type: "ui/selectionContext", context: null });
   }
 
   private selectionCwd(viewId: string): string | undefined {
@@ -13059,7 +13083,7 @@ export class ChatController implements vscode.Disposable {
         this.initialSelectionFacts.cwdKey !== selectionDirectoryKey(this.captureSessionTarget()?.path)) {
       this.clearSelectionContext("执行目录变化");
     }
-    const target = (this.selectionPending ?? this.selectionLive)?.target;
+    const target = (this.selectionPending ?? this.selectionDisplayed)?.target;
     if (
       target &&
       (target.viewId !== this.activeViewId() ||
@@ -13070,13 +13094,19 @@ export class ChatController implements vscode.Disposable {
     }
   }
 
-  private selectionContextFor(viewId: string): SelectionContextView | undefined {
+  private displayedSelectionFor(viewId: string): SelectionContextView | undefined {
     this.invalidateSelectionTarget();
-    return this.selectionLive?.target.viewId === viewId ? this.selectionLive.context : undefined;
+    return this.selectionDisplayed?.target.viewId === viewId ? this.selectionDisplayed.context : undefined;
   }
 
-  private selectionPending?: TargetedSelection;
-  private selectionLive?: TargetedSelection;
+  private sendableSelectionFor(viewId: string): SelectionContextView | undefined {
+    const displayed = this.displayedSelectionFor(viewId);
+    // 防抖期间界面上的上一个引用只是占位，只有最新事件稳定后才允许随正文发送。
+    return this.selectionPending ? undefined : displayed;
+  }
+
+  private selectionPending?: PendingSelection;
+  private selectionDisplayed?: TargetedSelection;
   private selectionTimer?: ReturnType<typeof setTimeout>;
   private selectionSequence = 0;
   private hasRegisteredSelectionView = false;

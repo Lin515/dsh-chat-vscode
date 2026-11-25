@@ -15,7 +15,7 @@
 import assert from "node:assert";
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
-import { setTimeout as delay } from "node:timers/promises";
+import { mock } from "node:test";
 import { relativeMentionPath } from "../src/shared/mentions";
 import type { SelectionContextView, WebviewToHost } from "../src/shared/ipc";
 import type { SelectionFacts } from "../src/dsh/selection";
@@ -31,6 +31,7 @@ const CWD = "C:\\work\\demo";
 const FILE = `${CWD}\\src\\a.ts`;
 const REF = "@src/a.ts#L12-L18";
 const FACTS = { filePath: FILE, lines: { start: 12, end: 18 }, preview: "const x = 1;" };
+const MORE_LINES = { ...FACTS, lines: { start: 12, end: 19 } };
 
 interface Captured {
   target: string;
@@ -160,6 +161,7 @@ function makeController() {
     bindView(viewId: string): void;
     noteActiveView(viewId: string): void;
     clearSelectionContext(reason: string): void;
+    deferSelectionCollapse(): void;
     setSelectionFacts(facts: SelectionFacts): void;
     handle(message: WebviewToHost, viewId: string): Promise<void>;
     scopeOfView(viewId: string): { sessionId: string } | undefined;
@@ -179,14 +181,14 @@ function chipsFor(frames: Captured[], viewId: string): (SelectionContextView | n
     .map(({ frame }) => frame.context as SelectionContextView | null);
 }
 
-/** 等实际防抖结束（包括应当什么也不投递的情形）。 */
-function settleSelection(): Promise<void> {
-  return delay(340);
+/** 推进真控制器的防抖，不依赖实际等待或事件循环负载。 */
+function settleSelection(): void {
+  mock.timers.tick(300);
 }
 
 async function showSelection(c: ReturnType<typeof makeController>["c"], frames: Captured[], viewId: string, facts = FACTS) {
   c.setSelectionFacts(facts);
-  await settleSelection();
+  settleSelection();
   const chip = chipsFor(frames, viewId).at(-1);
   assert.ok(chip, "活动窗口应收到有效的选区投递");
   return chip;
@@ -223,6 +225,97 @@ const commandLoadedOf = (c: unknown, viewId: string): boolean => {
 };
 
 console.log("selectionSend: 芯片投递与发送安全（驱动真控制器，offline stub）");
+mock.timers.enable({ apis: ["setTimeout"] });
+
+// ---------- 同目标拖动只原子替换，ready 仍可重放旧外观，但旧引用不能发送 ----------
+{
+  const { c, frames, client } = makeController();
+  c.bindView("v1");
+  await c.handle({ type: "ready" }, "v1");
+  const first = await showSelection(c, frames, "v1");
+  c.setSelectionFacts(MORE_LINES);
+  assert.deepStrictEqual(chipsFor(frames, "v1"), [first], "同目标拖动不得先发 null");
+  mock.timers.tick(200);
+  const latest = { ...FACTS, lines: { start: 12, end: 20 }, preview: "new preview" };
+  c.setSelectionFacts(latest);
+  await c.handle({ type: "ready" }, "v1");
+  assert.deepStrictEqual(chipsFor(frames, "v1"), [first, first], "ready 只重放当前可见的占位引用");
+  await c.handle(send("仍在拖动", first), "v1");
+  assert.strictEqual(promptText(client), "仍在拖动", "待投递时占位引用不能随发送提交");
+  mock.timers.tick(299);
+  assert.deepStrictEqual(chipsFor(frames, "v1"), [first, first], "按最后一次选区事件计算防抖");
+  mock.timers.tick(1);
+  const replacement = chipsFor(frames, "v1").at(-1);
+  assert.ok(replacement);
+  assert.strictEqual(replacement.token, "@src/a.ts#L12-L20");
+  assert.strictEqual(replacement.preview, latest.preview);
+  assert.notStrictEqual(replacement.id, first.id);
+  assert.deepStrictEqual(chipsFor(frames, "v1"), [first, first, replacement], "新引用原子替换且无中间空帧");
+  await c.handle({ type: "selectionContextDismiss", id: first.id }, "v1");
+  await c.handle(send("旧引用迟到", first), "v1");
+  assert.strictEqual(promptText(client), "旧引用迟到");
+  await c.handle(send("拖动结束", replacement), "v1");
+  assert.strictEqual(promptText(client), `拖动结束\n\n${replacement.token}`, "迟到旧标识不能撤下已经替换的新引用");
+}
+
+// ---------- 往返同一选区及鼠标拖过锚点 ----------
+{
+  const { c, frames, client } = makeController();
+  c.bindView("v1");
+  const first = await showSelection(c, frames, "v1");
+  c.setSelectionFacts(MORE_LINES);
+  c.deferSelectionCollapse();
+  await c.handle({ type: "ready" }, "v1");
+  // 首次 ready 自动补同目录空会话，展示态与待投递态同时迁移。
+  assert.deepStrictEqual(chipsFor(frames, "v1"), [first, first], "鼠标拖过锚点不清除；ready 只同步占位");
+  await c.handle(send("锚点处发送", first), "v1");
+  assert.strictEqual(promptText(client), "锚点处发送", "暂时为空时不能发送占位引用");
+  mock.timers.tick(100);
+  c.setSelectionFacts(FACTS);
+  c.setSelectionFacts(FACTS);
+  mock.timers.tick(299);
+  await c.handle(send("再次选中但尚未稳定", first), "v1");
+  assert.strictEqual(promptText(client), "再次选中但尚未稳定", "重复事件不能抢跑、使旧标识提前有效");
+  mock.timers.tick(1);
+  assert.deepStrictEqual(chipsFor(frames, "v1"), [first, first], "回到相同选区不闪、不重新投递");
+  await c.handle(send("稳定后原标识可用", first), "v1");
+  assert.strictEqual(promptText(client), `稳定后原标识可用\n\n${REF}`);
+
+  c.deferSelectionCollapse();
+  mock.timers.tick(299);
+  assert.deepStrictEqual(chipsFor(frames, "v1"), [first, first], "鼠标折叠到防抖结束前留作占位");
+  mock.timers.tick(1);
+  assert.deepStrictEqual(chipsFor(frames, "v1"), [first, first, null], "鼠标选区持续为空才清除");
+  c.setSelectionFacts(FACTS);
+  c.deferSelectionCollapse();
+  settleSelection();
+  assert.deepStrictEqual(chipsFor(frames, "v1"), [first, first, null], "无展示时鼠标折叠取消待投递选区");
+}
+
+// ---------- 收起占位同时取消替换，禁止重放和迟到发送 ----------
+{
+  const { c, frames, client } = makeController();
+  c.bindView("v1");
+  await c.handle({ type: "ready" }, "v1");
+  const first = await showSelection(c, frames, "v1");
+  c.setSelectionFacts(MORE_LINES);
+  await c.handle({ type: "selectionContextDismiss", id: first.id }, "v1");
+  assert.deepStrictEqual(chipsFor(frames, "v1"), [first, null], "点占位 × 同步收起");
+  await c.handle({ type: "ready" }, "v1");
+  settleSelection();
+  assert.deepStrictEqual(chipsFor(frames, "v1"), [first, null], "收起取消待投递；防抖与 ready 都不复活");
+  await c.handle(send("收起后迟到发送", first), "v1");
+  assert.strictEqual(promptText(client), "收起后迟到发送");
+  const fresh = await showSelection(c, frames, "v1", MORE_LINES);
+  assert.notStrictEqual(fresh.id, first.id, "下一次编辑器操作可显示新引用");
+  c.setSelectionFacts(FACTS);
+  await c.handle({ type: "selectionContextDismiss", id: first.id }, "v1");
+  settleSelection();
+  const replacement = chipsFor(frames, "v1").at(-1);
+  assert.ok(replacement);
+  assert.strictEqual(replacement.token, REF);
+  assert.deepStrictEqual(chipsFor(frames, "v1"), [first, null, fresh, replacement], "迟到标识不能收起另一张占位或取消替换");
+}
 
 // ---------- 1. 首次开窗、被动 ready、窗口往返与待投递失效 ----------
 {
@@ -231,7 +324,7 @@ console.log("selectionSend: 芯片投递与发送安全（驱动真控制器，o
   c.bindView("v1");
   await c.handle({ type: "ready" }, "v1");
   assert.deepStrictEqual(chipsFor(frames, "v1"), [], "ready 不抢跑首次防抖");
-  await settleSelection();
+  settleSelection();
   const initial = chipsFor(frames, "v1").at(-1);
   assert.ok(initial, "首次同目录的自动空会话可接收先开的选区");
   assert.strictEqual(initial.token, REF);
@@ -243,6 +336,7 @@ console.log("selectionSend: 芯片投递与发送安全（驱动真控制器，o
   c.noteActiveView("v1");
   await c.handle({ type: "ready" }, "v1");
   assert.deepStrictEqual(chipsFor(frames, "v1"), [initial, initial], "同一活动窗口只重放已生效的引用");
+  c.setSelectionFacts(MORE_LINES);
   c.noteActiveView("v2");
   assert.strictEqual(chipsFor(frames, "v1").at(-1), null, "切走时同步撤下已显示的引用");
   c.setSelectionFacts(FACTS);
@@ -250,7 +344,7 @@ console.log("selectionSend: 芯片投递与发送安全（驱动真控制器，o
   c.noteActiveView("v2");
   await c.handle({ type: "ready" }, "v1");
   await c.handle({ type: "ready" }, "v2");
-  await settleSelection();
+  settleSelection();
   assert.deepStrictEqual(chipsFor(frames, "v1"), [initial, initial, null], "回原窗口及重载均不恢复旧选区");
   assert.deepStrictEqual(chipsFor(frames, "v2"), [], "切走再回来也不能保留待投递选区");
   console.log("selectionSend: 首次开窗、防抖、窗口往返与被动 ready ✓");
@@ -274,12 +368,15 @@ console.log("selectionSend: 芯片投递与发送安全（驱动真控制器，o
 
   const scope = c.scopeOfView("v1");
   assert.ok(scope, "ready 已经绑定同目录空会话");
+  c.setSelectionFacts(MORE_LINES);
   c.detachView("v1");
   assert.strictEqual(chipsFor(frames, "v1").at(-1), null, "脱离会话同步清除已显示的引用");
+  settleSelection();
+  assert.deepStrictEqual(chipsFor(frames, "v1"), [first, null, fresh, null], "脱离会话也取消替换");
   c.setSelectionFacts(FACTS);
   c.bindViewToSession("v1", scope.sessionId, scope);
   await c.handle({ type: "ready" }, "v1");
-  await settleSelection();
+  settleSelection();
   assert.deepStrictEqual(chipsFor(frames, "v1"), [first, null, fresh, null], "显式绑定同目录会话也作废待投递引用");
   console.log("selectionSend: 收起不复活、迟到收起帧与会话边界 ✓");
 }
@@ -348,8 +445,11 @@ console.log("selectionSend: 芯片投递与发送安全（驱动真控制器，o
   await c.handle({ type: "ready" }, "v1");
   assert.strictEqual(chipsFor(frames, "v1").at(-1), old, "仅盘符大小写或尾分隔符变化不改变目标");
 
+  c.setSelectionFacts(MORE_LINES);
   c.applyWorkingDirectoryProjection(scope, "C:/work/other", true, "snapshot");
   assert.strictEqual(chipsFor(frames, "v1").at(-1), null, "同会话切执行目录也同步撤下");
+  settleSelection();
+  assert.deepStrictEqual(chipsFor(frames, "v1"), [old, old, null], "切目录也取消替换");
   c.setSelectionFacts(FACTS);
   assert.ok(logs.some((line) => line.includes("文件不在执行目录或路径不支持")), "诊断记录实际拦截原因");
   assert.ok(logs.filter((line) => line.startsWith("[selection]")).every((line) =>
@@ -370,6 +470,23 @@ console.log("selectionSend: 芯片投递与发送安全（驱动真控制器，o
   console.log("selectionSend: 执行目录、盘符和根边界、相同 token 的迟到发送 ✓");
 }
 
+// ---------- 文件不支持或非鼠标折叠仍立即撤下 ----------
+{
+  const { c, frames } = makeController();
+  c.bindView("v1");
+  const first = await showSelection(c, frames, "v1");
+  c.setSelectionFacts(MORE_LINES);
+  c.setSelectionFacts({ ...FACTS, filePath: "D:/unsupported.ts" });
+  assert.deepStrictEqual(chipsFor(frames, "v1"), [first, null], "不支持的路径不保留占位");
+  settleSelection();
+  const current = await showSelection(c, frames, "v1");
+  c.deferSelectionCollapse();
+  c.clearSelectionContext("选区为空");
+  assert.deepStrictEqual(chipsFor(frames, "v1"), [first, null, current, null], "明确折叠不等鼠标防抖");
+  settleSelection();
+  assert.deepStrictEqual(chipsFor(frames, "v1"), [first, null, current, null]);
+}
+
 // ---------- 5. 未绑窗口的根切换也中止待投递 ----------
 {
   const { c, frames } = makeController();
@@ -378,7 +495,7 @@ console.log("selectionSend: 芯片投递与发送安全（驱动真控制器，o
   c.newSessionCwd = "D:/work/other";
   await c.afterRootChanged("v1", { viewId: "v1", epoch: 0 });
   c.newSessionCwd = CWD;
-  await settleSelection();
+  settleSelection();
   assert.deepStrictEqual(chipsFor(frames, "v1"), [], "未绑定时切走再回原根，也不能继承待投递选区");
 }
 
@@ -388,7 +505,8 @@ console.log("selectionSend: 芯片投递与发送安全（驱动真控制器，o
   const selectionListener = extension.split("vscode.window.onDidChangeTextEditorSelection(")[1]
     ?.split("vscode.window.onDidChangeActiveTextEditor(")[0];
   assert.ok(selectionListener?.includes("const primary = selections[0]"));
-  assert.ok(selectionListener.includes("captureEditorSelection(textEditor, primary)"));
+  assert.ok(selectionListener.includes("captureEditorSelection(textEditor, primary, kind === vscode.TextEditorSelectionChangeKind.Mouse)"));
+  assert.match(extension, /if \(mouse && editor === selectionSourceEditor\) return controller\.deferSelectionCollapse\(\);\s*return clearEditorSelection\("选区为空"\);/);
   assert.ok(!selectionListener.includes("activeTextEditor"));
   const chatView = readFileSync(join(process.cwd(), "src", "chatView.ts"), "utf8");
   assert.match(chatView, /message\?\.type === "view\/activity"\)\s*\{\s*this\.controller\.noteActiveView\(viewId\);\s*return;/);
@@ -396,4 +514,5 @@ console.log("selectionSend: 芯片投递与发送安全（驱动真控制器，o
   console.log("selectionSend: 选区事件和活动帧的宿主接线 ✓");
 }
 
+mock.timers.reset();
 console.log("\nselectionSend: all assertions passed");

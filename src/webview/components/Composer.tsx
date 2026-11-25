@@ -1084,15 +1084,12 @@ export function Composer({
                   悬停补原文预览与附带说明。这枚不可点开（模型自己读引用），不走 `chip-open`。 */}
               {selection ? (
                 <span
-                  className="chip"
+                  className="chip chip-selection"
                   title={[selection.token, texts.selectionChipTitle, selection.preview]
                     .filter((line) => line !== "")
                     .join("\n")}
                 >
-                  {/* 前缀「已选 / Selected」：光看一串引用像是普通引用，加上这词才
-                      一眼认出「这是我刚才选中的内容」 */}
-                  <span className="chip-sub">{texts.selectionChipPrefix}</span>
-                  <span className="chip-name">{selection.token}</span>
+                  <span className="chip-name"><bdi dir="ltr">{selection.token}</bdi></span>
                   <button
                     className="chip-remove"
                     title={texts.remove}

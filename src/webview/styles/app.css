@@ -4500,11 +4500,16 @@ button.meta-chip:hover {
   max-width: 26ch;
 }
 
-/* 选区芯片的行号段（文件名之后的「第12-40行」）：弱一级的信息，别跟文件名抢。
-   不设 max-width——行号最长就十来个字符，省略预算全留给文件名。 */
-.chip-sub {
-  color: var(--muted);
-  white-space: nowrap;
+/* 自动引用过长时从前面省略，让文件名和行号优先可见。RTL 只作用于溢出盒；
+   里面的 LTR bdi 保留 @、引号和行号的顺序。宽度由芯片容器限制，不用附件名的上限。 */
+.chip-selection .chip-name {
+  direction: rtl;
+  min-width: 0;
+  max-width: none;
+}
+
+.chip-selection .chip-remove {
+  flex: none;
 }
 
 /* 芯片名 / 整枚芯片就是**打开入口**（单击在编辑器里打开，见 `webview/attachmentOpen.ts`）：

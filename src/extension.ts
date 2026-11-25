@@ -175,12 +175,17 @@ function registerContributions(context: vscode.ExtensionContext, host: Contribut
     const uri = editor.document.uri.toString();
     return uri !== activeInput.original.toString() && uri !== activeInput.modified.toString();
   };
-  const captureEditorSelection = (editor: vscode.TextEditor, selection?: vscode.Selection) => {
+  const captureEditorSelection = (editor: vscode.TextEditor, selection?: vscode.Selection, mouse = false) => {
     const mode = selectionMode();
     if (mode === "off") return clearEditorSelection("配置已关闭");
     if (!isSupportedSelectionEditor(editor)) return clearEditorSelection(`编辑器不支持（${mode}）`);
     const lines = selection && selectionLines(selection);
-    if (!lines && mode === "selection") return clearEditorSelection("选区为空");
+    if (!lines && mode === "selection") {
+      // 鼠标拖过锚点会短暂为空；只有同一来源可留占位，键盘等明确折叠立即清除。
+      if (mouse && editor === selectionSourceEditor) return controller.deferSelectionCollapse();
+      return clearEditorSelection("选区为空");
+    }
+    if (selectionSourceEditor && selectionSourceEditor !== editor) clearEditorSelection("选区来源编辑器变化");
     selectionSourceEditor = editor;
     log(`[selection] 已采样：档位=${mode}，类型=${lines ? "选区" : "文件"}`);
     controller.setSelectionFacts({
@@ -458,7 +463,7 @@ function registerContributions(context: vscode.ExtensionContext, host: Contribut
         }
         return;
       }
-      captureEditorSelection(textEditor, primary);
+      captureEditorSelection(textEditor, primary, kind === vscode.TextEditorSelectionChangeKind.Mouse);
     }),
     vscode.window.onDidChangeActiveTextEditor((editor) => {
       if (!editor) return clearForUnsupportedActiveTab();
