@@ -13,13 +13,12 @@
 
 import {
   formatFileMentionWithLines,
-  isDriveQuery,
   mentionPathOf,
   normalizeMentionPath,
   relativeMentionPath,
   selectionDirectoryKey,
 } from "../shared/mentions";
-import { isAbsoluteWorkspacePath, isWindowsStylePath } from "../shared/workspacePath";
+import { isAbsoluteWorkspacePath, isDeviceNamespacePath, isWindowsStylePath } from "../shared/workspacePath";
 import type { RemoteFileAddress } from "./remoteFileAddress";
 
 /** 选区端点的**结构**视图（`vscode.Position` 的字段子集）。 */
@@ -107,9 +106,10 @@ export type SelectionFacts = EditorReferenceSource & {
 function remoteReferencePath(path: string, directory: boolean): string | undefined {
   // `/a\b` 中的反斜杠在 POSIX 是文件名的一部分，不能交给会无条件归一的引用语法。
   if (!isAbsoluteWorkspacePath(path) || (!isWindowsStylePath(path) && path.includes("\\"))) return undefined;
+  if (isDeviceNamespacePath(path)) return undefined;
   const slashed = normalizeMentionPath(path);
   const key = selectionDirectoryKey(slashed);
-  if (!key || /^\/\/[?.](?:\/|$)/u.test(slashed)) return undefined;
+  if (!key) return undefined;
   const value = directory ? key : slashed;
   const root = /^(?:\/\/[^/]+\/[^/]+(?:\/|$)|[A-Za-z]:\/|\/)/u.exec(value)?.[0];
   if (!root) return undefined;
@@ -119,9 +119,35 @@ function remoteReferencePath(path: string, directory: boolean): string | undefin
   return tail.split("/").every(Boolean) ? value : undefined;
 }
 
-/** 不把无法相对化的 cwd 当成同一个目录；退用绝对引用也要在 cwd 变化时撤下旧芯片。 */
+/**
+ * 只读副本执行目录的**仅比较键**：无法安全折算成引用语法时退回原样 cwd。
+ *
+ * 它只回答「比较两次读到的 cwd 是不是同一个拼写」，绝不拿去拼相对引用——那是
+ * `selectionDirectoryKey`（可折算键）的职责。保留这种 opaque 回退，是为了让
+ * 「目录无法表示」的会话在 cwd 真的变化时仍能撤下旧芯片，而不是因为键为空就
+ * 一直显示一个可能指向别的目录的绝对引用。
+ */
 export function remoteSelectionCwdKey(cwd: string | undefined): string | undefined {
   return cwd === undefined ? undefined : (remoteReferencePath(cwd, true) ?? cwd);
+}
+
+/**
+ * 本机选区的引用：**只允许安全的目录内相对路径**（任务口径：本机不做绝对回退，
+ * 也不把目录外文件自动带上）。
+ *
+ * 校验统一走 `relativeMentionPath`：路径家族（POSIX 字面反斜杠）、点段、目录边界、
+ * 设备命名空间、盘符样式与行号后缀歧义都在那一处判断；这里只把折出的相对路径
+ * 交给 token 生成。
+ */
+export function localFileReference(
+  path: string,
+  cwd: string | undefined,
+  lines?: SelectionFacts["lines"],
+): string | undefined {
+  if (cwd === undefined) return undefined;
+  const relative = relativeMentionPath(cwd, path);
+  if (relative === undefined) return undefined;
+  return formatFileMentionWithLines(relative, lines);
 }
 
 /** 只读副本折回原始文件：优先相对路径，无法安全相对化时用可表示的绝对路径。 */
@@ -136,7 +162,8 @@ export function remoteFileReference(
   if (!absoluteToken) return undefined;
   const dir = cwd === undefined ? undefined : remoteReferencePath(cwd, true);
   const relative = dir === undefined ? undefined : relativeMentionPath(dir, absolute);
-  // POSIX 目录下合法的 `C:/x` 或 `C:` 相对拼写会被误认成 Windows 路径或盘符查询。
-  if (relative === undefined || isAbsoluteWorkspacePath(relative) || isDriveQuery(relative)) return absoluteToken;
+  // 相对拼写不安全（POSIX 字面反斜杠、盘符样式、行号后缀……）时用绝对路径；
+  // 这些语法判据统一在 `relativeMentionPath` 里，两边不再各写一份。
+  if (relative === undefined) return absoluteToken;
   return formatFileMentionWithLines(relative, lines);
 }

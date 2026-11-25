@@ -100,6 +100,8 @@ function fakePanel(viewColumn: number, active = false) {
 
 const boundViews: string[] = [];
 const activity: string[] = [];
+/** `noteRestoredActiveView` 的登记：恢复时初始 active 的面板，不算用户活动。 */
+const restoredActivity: string[] = [];
 const handled: { message: WebviewToHost; viewId: string }[] = [];
 const controller = {
   subscribe: () => new vscode.Disposable(),
@@ -112,6 +114,7 @@ const controller = {
   hasRestoreHint: () => false,
   hasPendingRestore: () => false,
   noteActiveView: (viewId: string) => activity.push(viewId),
+  noteRestoredActiveView: (viewId: string) => restoredActivity.push(viewId),
   handle: async (message: WebviewToHost, viewId: string) => { handled.push({ message, viewId }); },
   openSession: async () => {},
 };
@@ -126,6 +129,10 @@ const provider = new ChatViewProvider(
 /** 挂一个编辑区面板（与 `openPanel` 里那条路同一个入口，拿到它的 viewId）。 */
 const attach = (panel: unknown): string =>
   (provider as unknown as { attachPanel(panel: unknown): string }).attachPanel(panel);
+
+/** 模拟序列化器恢复：初态 active 要交给控制器的「恢复默认」入口，而不是用户活动。 */
+const attachRestored = (panel: unknown): string =>
+  (provider as unknown as { attachPanel(panel: unknown, restored?: boolean): string }).attachPanel(panel, true);
 
 // ---------- 1. 来源窗口自己就在某个标签组里 → 同组新标签 ----------
 {
@@ -313,11 +320,16 @@ const attach = (panel: unknown): string =>
   const sidebarId = boundViews.at(-1)!;
 
   const restored = fakePanel(2, true);
-  const restoredId = attach(restored.panel);
+  const restoredId = attachRestored(restored.panel);
   // 序列化器挂接的面板已有 active 状态也不立即抢活动；单纯改变列号同样不抢。
   restored.moveTo(3);
   restored.message({ type: "ready" });
   assert.deepStrictEqual(activity, [], "面板恢复挂载与 ready 不会宣告用户活动");
+  assert.deepStrictEqual(restoredActivity, [restoredId], "初始 active 的恢复面板只登记为默认，不算用户活动");
+
+  const backgroundRestored = fakePanel(2, false);
+  attachRestored(backgroundRestored.panel);
+  assert.deepStrictEqual(restoredActivity, [restoredId], "后台（未激活）恢复不登记默认活动窗口");
 
   const background = fakePanel(2);
   const backgroundId = attach(background.panel);

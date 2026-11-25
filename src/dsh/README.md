@@ -86,7 +86,7 @@
 - [hostLog.ts](<hostLog.ts>) — 包括停用期也不抛异常的宿主日志。
 - [hostText.ts](<hostText.ts>) — @key 到原生 UI 文本，跟随 VS Code 语言。
 - [editorReference.ts](<editorReference.ts>) — 识别本机文件或只读副本的原始地址，排除差异视图及快照。
-- [selection.ts](<selection.ts>) — 编辑器选区行号边界、芯片悬停预览（归一换行、去首尾空行、截断，保留缩进）、选区事实快照及只读原始路径引用折算。
+- [selection.ts](<selection.ts>) — 编辑器选区行号边界、芯片悬停预览（归一换行、去首尾空行、截断，保留缩进）、选区事实快照；本机选区只生成安全的目录内相对引用（`localFileReference`），只读副本按原连接折原始文件路径，并区分可折算目录键与仅比较键。
 - [windowState.ts](<windowState.ts>) — workspaceState 会话窗口缓存。
 - [unreadStore.ts](<unreadStore.ts>) — 每会话一个 globalState 键的未读存储。
 - [notificationQueue.ts](<notificationQueue.ts>) — 宿主权威的消息通知队列（合并 / 确认 / seq 水位 / 容量；不 import vscode、不落盘）。

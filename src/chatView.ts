@@ -87,7 +87,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     this.disposables.push(
       vscode.window.registerWebviewPanelSerializer(ChatViewProvider.panelViewType, {
         deserializeWebviewPanel: (panel: vscode.WebviewPanel, state: unknown) => {
-          const viewId = owner.attachPanel(panel);
+          const viewId = owner.attachPanel(panel, true);
           // 认领会话：优先用 webview 存下的身份（`state`，含子代理地址），认不出才按
           // VS Code 的恢复顺序对位（见 dsh/windowState.ts——只看顺序就是标签与会话
           // 交叉的那个缺陷）
@@ -188,7 +188,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   }
 
   /** 挂一个编辑区面板：与侧栏共用 attach，额外跟踪标签组和激活事件。 */
-  private attachPanel(panel: vscode.WebviewPanel): string {
+  private attachPanel(panel: vscode.WebviewPanel, restored = false): string {
     const viewId = this.attach(panel.webview, panel.onDidDispose, () =>
       panel.reveal(undefined, false),
     );
@@ -207,6 +207,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       if (column !== undefined) this.panelColumns.set(viewId, column);
     };
     rememberColumn();
+    // 序列化器恢复的面板可能**一开始就是 active**（VS Code 按上次布局重建）：这一帧
+    // 不是用户活动，不能走 `noteActiveView`；交给控制器的「恢复默认」入口——它只在
+    // 尚无真实用户活动时生效，后台 / 迟到恢复不会抢走用户正在用的窗口。
+    if (restored && panel.active) this.controller.noteRestoredActiveView(viewId);
+    // 初态也可能已经是 active：从它变到后台再回来时，下面的 `activated` 才能成立。
     let wasActive = panel.active;
     this.disposables.push(
       panel.onDidChangeViewState(({ webviewPanel }) => {

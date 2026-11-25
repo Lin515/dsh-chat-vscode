@@ -21,6 +21,16 @@ export function isWindowsStylePath(value: string): boolean {
 }
 
 /**
+ * Windows 设备命名空间（`\\?\C:\…`、`\\.\COM1`，两种分隔符写法都认）。
+ *
+ * 这类拼写不是工作区内的普通路径：它们的身份由设备层解析，既不能折成 `@` 引用的
+ * 相对路径，也不能拿去和别的根比较。引用语法与本地目录发现共用这一条判据。
+ */
+export function isDeviceNamespacePath(value: string): boolean {
+  return /^[/\\]{2}[?.][/\\]/.test(value);
+}
+
+/**
  * 是否按绝对路径处理（官方 `isAbsoluteWorkspacePath`）。
  *
  * 只认两种拼写：POSIX 的 `/a/b`，以及 Windows 盘符 / UNC。单个反斜杠开头的

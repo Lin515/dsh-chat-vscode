@@ -23,7 +23,7 @@ import { relativeMentionPath } from "../src/shared/mentions";
 import type { ModelSelectionView } from "../src/shared/chat";
 import type { SelectionContextView, WebviewToHost } from "../src/shared/ipc";
 import { editorReferenceSource } from "../src/dsh/editorReference";
-import { remoteFileReference, selectionLines, type SelectionFacts } from "../src/dsh/selection";
+import { remoteFileReference, localFileReference, selectionLines, type SelectionFacts } from "../src/dsh/selection";
 import { remoteFileUri } from "../src/dsh/remoteFileSystem";
 import { AGENT_DIFF_SCHEME } from "../src/dsh/agentDiffDocuments";
 import type { HostFileAccess } from "../src/dsh/remoteFiles";
@@ -191,7 +191,26 @@ function makeController({ cwd = CWD, remoteFiles = false } = {}) {
     bindViewToSession(viewId: string, sessionId: string, scope: { sessionId: string }): void;
     detachView(viewId: string): void;
     afterRootChanged(viewId: string, action: { viewId: string; epoch: number }): Promise<void>;
+    attachmentIds(viewId: string): string[];
+    putAttachment(
+      viewId: string,
+      attachment: {
+        id: string;
+        kind: "file" | "image";
+        name: string;
+        upload?: { status: "ready"; receiptId: string };
+      },
+    ): void;
   };
+  const inner = controller as unknown as {
+    attachments: {
+      list(key: string | undefined): readonly { id: string }[];
+      add(key: string, attachments: readonly { id: string }[]): void;
+    };
+    keyForView(viewId: string): string;
+  };
+  c.attachmentIds = (viewId) => inner.attachments.list(inner.keyForView(viewId)).map((item) => item.id);
+  c.putAttachment = (viewId, attachment) => inner.attachments.add(inner.keyForView(viewId), [attachment]);
   c.newSessionCwd = cwd;
   if (remoteFiles) c.adoptClient(client);
   else c.client = client;
@@ -532,6 +551,12 @@ mock.timers.enable({ apis: ["setTimeout"] });
   assert.match(extension, /if \(mouse && editor === selectionSourceEditor\) return controller\.deferSelectionCollapse\(\);\s*return clearEditorSelection\("选区为空"\);/);
   assert.ok(!selectionListener.includes("activeTextEditor"));
   const chatView = readFileSync(join(process.cwd(), "src", "chatView.ts"), "utf8");
+  assert.match(chatView, /owner\.attachPanel\(panel, true\)/, "序列化器恢复必须把「恢复」身份传进 attachPanel");
+  assert.match(
+    chatView,
+    /if \(restored && panel\.active\) this\.controller\.noteRestoredActiveView\(viewId\);/,
+    "只有初始 active 的恢复面板才登记默认，且走独立入口而不是 noteActiveView",
+  );
   assert.match(chatView, /message\?\.type === "view\/activity"\)\s*\{\s*this\.controller\.noteActiveView\(viewId\);\s*return;/);
   assert.match(chatView, /const activated = active && !wasActive;\s*wasActive = active;\s*if \(activated\) this\.controller\.noteActiveView\(viewId\);/);
   console.log("selectionSend: 选区事件和活动帧的宿主接线 ✓");
@@ -776,7 +801,153 @@ for (const change of ["cwd", "session", "connection"] as const) {
 }
 console.log("selectionSend: 发送在等待模型时变更目录/会话/连接，收回引用并回填原会话 ✓");
 
-// ---------- 9. 只解析执行世界的路径字符串，不探测本机文件系统 ----------
+// ---------- 8b. 本机相对引用同样在真正 prompt 之前复核目标会话 / 执行目录 ----------
+for (const change of ["cwd", "session"] as const) {
+  const root = join(tmpdir(), "dsh-chat-local-selection-submit", change);
+  const cwd = join(root, "before");
+  const nextCwd = join(root, "after");
+  const { c, client, frames } = makeController({ cwd });
+  c.bindView("owner");
+  await c.handle({ type: "ready" }, "owner");
+  const scope = c.scopeOfView("owner");
+  assert.ok(scope);
+
+  // 同一会话的镜像窗口观察原会话回填；另一会话用来验证 stale 后不会改道。
+  c.bindView("mirror");
+  c.bindViewToSession("mirror", scope.sessionId, scope);
+  c.newSessionCwd = nextCwd;
+  c.bindView("other");
+  await c.handle({ type: "ready" }, "other");
+  const otherScope = c.scopeOfView("other");
+  assert.ok(otherScope && otherScope.sessionId !== scope.sessionId);
+  c.noteActiveView("owner");
+
+  const chip = await showSelection(c, frames, "owner", {
+    filePath: join(cwd, "one file.ts"),
+    preview: "",
+  });
+  assert.strictEqual(chip.token, '@"one file.ts"', "本机选区按执行目录折相对引用");
+  const attachment = {
+    id: "local-cwd-a1",
+    kind: "file" as const,
+    name: "notes.txt",
+    upload: { status: "ready" as const, receiptId: "r-local-cwd" },
+  };
+  if (change === "cwd") c.putAttachment("owner", attachment);
+  scope.pendingModel = { provider: "test", model: "test", label: "test" };
+  let releaseModel = () => {};
+  const modelResponse = new Promise<void>((resolve) => { releaseModel = resolve; });
+  const modelRpc = mock.method(client, "selectModel", () => modelResponse);
+  const draft = "等待模型选择时发送的本机引用";
+  const sending = c.handle(send(draft, chip), "owner");
+  const before = frames.length;
+  try {
+    await waitFor(() => modelRpc.mock.callCount() === 1);
+    assert.deepStrictEqual(client.prompts, [], "原模型选择 RPC 尚未返回");
+    if (change === "cwd") {
+      c.applyWorkingDirectoryProjection(scope, nextCwd, true, "snapshot");
+    } else {
+      c.bindViewToSession("owner", otherScope.sessionId, otherScope);
+    }
+  } finally {
+    releaseModel();
+    await sending;
+    modelRpc.mock.restore();
+  }
+  assert.deepStrictEqual(client.prompts, [], `${change}：本机旧引用不得原样发出`);
+  const restored = frames.slice(before).flatMap(({ target, frame }) => {
+    const patch = frame.patch as { draft?: string } | undefined;
+    return frame.type === "patch" && patch?.draft ? [{ target, draft: patch.draft }] : [];
+  });
+  assert.deepStrictEqual(
+    restored.filter(({ target }) => target === "mirror"),
+    [{ target: "mirror", draft }],
+    `${change}：本机引用失效时只还回原始草稿，不携带旧 token`,
+  );
+  assert.ok(restored.every(({ draft: value }) => !value.includes("@src/a.ts") && !value.includes("@\"one file.ts\"")));
+  assert.deepStrictEqual(
+    restored.filter(({ target }) => target === "other" || (change === "session" && target === "owner")),
+    [],
+    `${change}：不回填到别的会话`,
+  );
+  if (change === "cwd") {
+    assert.deepStrictEqual(c.attachmentIds("mirror"), [attachment.id], "附件随原始草稿回到原会话");
+    assert.deepStrictEqual(c.attachmentIds("other"), [], "附件不得泄到别的会话");
+  }
+}
+
+// 按下发送时还没有绑定：第一条消息按同一执行目录建会话时，`sessionId` 为空的冻结目标
+// 不能因此被误判成 stale。
+{
+  const { c, frames, client } = makeController();
+  c.bindView("v1");
+  const chip = await showSelection(c, frames, "v1");
+  assert.ok(c.scopeOfView("v1") === undefined, "前置：发送时窗口还没有会话");
+  await c.handle(send("未绑定的第一条", chip), "v1");
+  const scope = c.scopeOfView("v1");
+  assert.ok(scope);
+  assert.strictEqual(client.prompts.at(-1)?.sessionId, scope.sessionId);
+  assert.strictEqual(promptText(client), `未绑定的第一条\n\n${REF}`, "同目录新建会话仍接受冻结目标");
+}
+console.log("selectionSend: 本机自动引用在发送前复核目标与会话目录 ✓");
+
+// 同一 sessionId 切走再切回会重建**新的 scope 对象**（执行目录也可能不同）：
+// 只比 sessionId 会放行旧目标，必须按域对象身份拒绝。原 A 的 cwd 保持不变。
+{
+  const root = join(tmpdir(), "dsh-chat-local-selection-recreated-scope");
+  const cwd = join(root, "before");
+  const nextCwd = join(root, "after");
+  const { c, client, frames } = makeController({ cwd });
+  c.bindView("owner");
+  await c.handle({ type: "ready" }, "owner");
+  const scopeA = c.scopeOfView("owner");
+  assert.ok(scopeA);
+  const sessionIdA = scopeA.sessionId;
+  const inner = c as unknown as {
+    ensureScope(sessionId: string): { sessionId: string; workingDirectory?: string } | undefined;
+    executionCwdOf(scope: { sessionId: string }): string | undefined;
+  };
+  assert.strictEqual(inner.executionCwdOf(scopeA), cwd);
+  const chip = await showSelection(c, frames, "owner", {
+    filePath: join(cwd, "one file.ts"),
+    preview: "",
+  });
+
+  scopeA.pendingModel = { provider: "test", model: "test", label: "test" };
+  let releaseModel = () => {};
+  const modelResponse = new Promise<void>((resolve) => { releaseModel = resolve; });
+  const modelRpc = mock.method(client, "selectModel", () => modelResponse);
+  const draft = "切走再切回前的本机草稿";
+  const sending = c.handle(send(draft, chip), "owner");
+  try {
+    await waitFor(() => modelRpc.mock.callCount() === 1);
+    // A → B：owner 离开 A，独占的旧 scope 被回收。
+    c.newSessionCwd = nextCwd;
+    c.bindView("other");
+    await c.handle({ type: "ready" }, "other");
+    const scopeB = c.scopeOfView("other");
+    assert.ok(scopeB && scopeB.sessionId !== sessionIdA);
+    c.bindViewToSession("owner", scopeB.sessionId, scopeB);
+    // B → A：同一 sessionId 重新建域，并换成新的执行目录。
+    const recreatedA = inner.ensureScope(sessionIdA);
+    assert.ok(recreatedA);
+    c.applyWorkingDirectoryProjection(recreatedA, nextCwd, true, "snapshot");
+    c.bindViewToSession("owner", sessionIdA, recreatedA);
+    assert.strictEqual(inner.executionCwdOf(scopeA), cwd, "原 A 的 cwd 不被改写");
+  } finally {
+    releaseModel();
+    await sending;
+    modelRpc.mock.restore();
+  }
+  assert.deepStrictEqual(client.prompts, [], "同 sessionId 的新 scope 不能放行旧引用");
+  const restored = frames.flatMap(({ target, frame }) => {
+    const patch = frame.patch as { draft?: string } | undefined;
+    return target === "owner" && frame.type === "patch" && patch?.draft ? [patch.draft] : [];
+  });
+  assert.ok(restored.includes(draft), "失效后原始草稿回到当前窗口/会话");
+}
+
+// ---------- 10. 只解析执行世界的路径字符串，不探测本机文件系统 ----------
 for (const [path, cwd, expected, reason] of [
   ["/work/project/src/a b.ts", "/work/project", '@"src/a b.ts#L2-L4"', "POSIX 目录内相对引用"],
   ["/work/project2/src/a b.ts", "/work/project", '@"/work/project2/src/a b.ts#L2-L4"', "同名前缀不算子目录"],
@@ -794,7 +965,332 @@ for (const [path, cwd, expected, reason] of [
 }
 assert.strictEqual(remoteFileReference("/work/D:", "/work"), "@/work/D:", "整文件引用也不能变成裸盘符查询");
 assert.strictEqual(remoteFileReference("/work/a.ts#L22-L30", "/work"), undefined, "整文件名不能误解析为既有行号范围");
+
+// ---------- 9. 恢复时初始 active 的面板：无用户活动时才作默认 ----------
+// 恢复时初始 active 的编辑区面板：无用户活动时是默认窗口，已经按先登记侧栏折算过的
+// 选择要迁过去；真实活动之后才迟到的恢复不能抢回默认。
+{
+  const { c, frames } = makeController();
+  const inner = c as unknown as {
+    activeViewId(): string | undefined;
+    noteRestoredActiveView(viewId: string): void;
+    selectionDisplayed?: { target: { kind: string; viewId: string } };
+  };
+  c.bindView("sidebar");
+  const chip = await showSelection(c, frames, "sidebar");
+  const oldTarget = inner.selectionDisplayed?.target;
+  assert.ok(oldTarget);
+  c.bindView("panel");
+  assert.strictEqual(inner.activeViewId(), "sidebar", "只登记新窗口不抢占已有默认");
+  inner.noteRestoredActiveView("panel");
+  assert.strictEqual(inner.activeViewId(), "panel", "无用户活动时恢复的 active 面板成为默认");
+  assert.strictEqual(chipsFor(frames, "sidebar").at(-1), null, "先登记侧栏的旧芯片被撤下");
+  assert.strictEqual(chipsFor(frames, "panel").at(-1)?.token, chip.token, "选择迁到恢复出来的默认窗口");
+  const newTarget = inner.selectionDisplayed?.target;
+  assert.notStrictEqual(newTarget, oldTarget, "迁移换新 target 对象，不改写已冻结的发送目标");
+  assert.strictEqual(oldTarget.viewId, "sidebar", "旧 target 的归属保持不变");
+
+  // 真实活动正好落在 MRU 栈尾的侧栏：更新前的有效目标是恢复面板，必须撤下它的 chip。
+  assert.strictEqual(inner.activeViewId(), "panel");
+  c.noteActiveView("sidebar");
+  assert.strictEqual(inner.activeViewId(), "sidebar", "真实活动后侧栏成为活动窗口");
+  assert.strictEqual(chipsFor(frames, "panel").at(-1), null, "侧栏虽是栈尾，旧 pane 的 chip 也要撤下");
+
+  c.bindView("late");
+  inner.noteRestoredActiveView("late");
+  assert.strictEqual(inner.activeViewId(), "sidebar", "真实活动之后迟到的恢复不覆盖");
+  assert.deepStrictEqual(chipsFor(frames, "late"), [], "迟到恢复不接收选择");
+
+  // 点中当前恢复面板时目标其实没变（只是它在 MRU 里的下标不同），不能误撤它的 chip。
+  const clicked = makeController();
+  const clickInner = clicked.c as unknown as {
+    activeViewId(): string | undefined;
+    noteRestoredActiveView(viewId: string): void;
+  };
+  clicked.c.bindView("sidebar");
+  const clickedChip = await showSelection(clicked.c, clicked.frames, "sidebar");
+  clicked.c.bindView("panel");
+  // 无效 view 不记活动：随后的恢复仍应生效。
+  clicked.c.noteActiveView("missing");
+  clickInner.noteRestoredActiveView("panel");
+  assert.strictEqual(clickInner.activeViewId(), "panel");
+  clicked.c.noteActiveView("panel");
+  assert.strictEqual(clickInner.activeViewId(), "panel", "点击当前恢复面板不改变活动目标");
+  assert.strictEqual(chipsFor(clicked.frames, "panel").at(-1)?.token, clickedChip.token, "目标未变时 chip 保留");
+
+  // 同一窗口上的首次真实活动即便本来就在栈尾，也要把「恢复默认」清掉。
+  const only = makeController();
+  const other = only.c as unknown as {
+    activeViewId(): string | undefined;
+    noteRestoredActiveView(viewId: string): void;
+  };
+  only.c.bindView("only");
+  only.c.setSelectionFacts(FACTS);
+  settleSelection();
+  other.noteRestoredActiveView("only");
+  only.c.noteActiveView("only");
+  only.c.bindView("late");
+  other.noteRestoredActiveView("late");
+  assert.strictEqual(other.activeViewId(), "only", "栈尾 early return 之前已记下真实活动");
+}
+console.log("selectionSend: 恢复的 active 面板只在无用户活动时作默认 ✓");
+
+// 启动同目录迁移时防抖仍在途：迁移必须保留 pending 容器身份，到点后照常投递并可发送。
+{
+  const { c, frames, client } = makeController();
+  const inner = c as unknown as {
+    noteRestoredActiveView(viewId: string): void;
+    selectionPending?: { target: { viewId: string } };
+    selectionDisplayed?: { target: { viewId: string } };
+  };
+  c.bindView("sidebar");
+  c.setSelectionFacts(FACTS);
+  assert.ok(inner.selectionPending, "前置：防抖中的待投递选区");
+  c.bindView("panel");
+  inner.noteRestoredActiveView("panel");
+  assert.deepStrictEqual(chipsFor(frames, "panel"), [], "未到点不提前投递");
+  settleSelection();
+  const chip = chipsFor(frames, "panel").at(-1);
+  assert.ok(chip, "迁移后的 pending 到点仍能投递");
+  assert.strictEqual(chip.token, REF);
+  await c.handle(send("防抖迁移后发送", chip), "panel");
+  assert.strictEqual(promptText(client), `防抖迁移后发送\n\n${REF}`, "到点后的引用真的随 prompt 送出");
+}
+
+// 展示 + 防抖替换共享同一个 target：迁移后两者仍必须指向同一新对象，新的防抖不能被丢。
+{
+  const { c, frames, client } = makeController();
+  const inner = c as unknown as {
+    noteRestoredActiveView(viewId: string): void;
+    selectionPending?: { target: unknown };
+    selectionDisplayed?: { target: unknown };
+  };
+  c.bindView("sidebar");
+  await showSelection(c, frames, "sidebar");
+  c.setSelectionFacts(MORE_LINES); // pending 复用 displayed.target
+  c.bindView("panel");
+  inner.noteRestoredActiveView("panel");
+  assert.strictEqual(inner.selectionPending?.target, inner.selectionDisplayed?.target,
+    "pending 与 displayed 共用同一个迁移后的 target，不能分裂");
+  settleSelection();
+  const chip = chipsFor(frames, "panel").at(-1);
+  assert.ok(chip);
+  assert.strictEqual(chip.token, "@src/a.ts#L12-L19", "新的防抖证据没有被旧 pending 容器身份丢弃");
+  await c.handle(send("共享目标迁移后发送", chip), "panel");
+  assert.strictEqual(promptText(client), "共享目标迁移后发送\n\n@src/a.ts#L12-L19");
+}
+
+// 旧窗口只有只读副本引用：恢复默认切到新面板时立即撤下，不能遗留。
+{
+  const { c, frames } = makeController({ remoteFiles: true });
+  c.bindView("sidebar");
+  await c.handle({ type: "ready" }, "sidebar");
+  const scope = c.scopeOfView("sidebar");
+  const access = c.hostFiles;
+  assert.ok(scope && access);
+  c.setSelectionFacts({
+    remoteFile: {
+      sessionId: scope.sessionId,
+      connectionId: access.connectionId,
+      path: join(tmpdir(), "dsh-chat-restore-remote", "a.ts"),
+    },
+    lines: { start: 1, end: 2 },
+    preview: "",
+  });
+  settleSelection();
+  const remoteChip = chipsFor(frames, "sidebar").at(-1);
+  assert.ok(remoteChip);
+  c.bindView("panel");
+  (c as unknown as { noteRestoredActiveView(viewId: string): void }).noteRestoredActiveView("panel");
+  assert.strictEqual(chipsFor(frames, "sidebar").at(-1), null, "只读副本不能迁移，旧 chip 立即撤下");
+  assert.deepStrictEqual(chipsFor(frames, "panel"), [], "不把旧窗口的只读引用留给新默认");
+  access.close();
+}
+
+// 恢复面板已经绑在别的会话 / 别的执行目录：迁移既不 emit A 的 token 给 B，也不重算。
+{
+  const { c, frames } = makeController();
+  c.bindView("sidebar");
+  const chip = await showSelection(c, frames, "sidebar");
+  c.bindView("panel");
+  c.newSessionCwd = join(tmpdir(), "dsh-chat-restore-mismatch", "elsewhere");
+  c.bindView("other");
+  await c.handle({ type: "ready" }, "other");
+  const otherScope = c.scopeOfView("other");
+  assert.ok(otherScope);
+  c.bindViewToSession("panel", otherScope.sessionId, otherScope);
+  (c as unknown as { noteRestoredActiveView(viewId: string): void }).noteRestoredActiveView("panel");
+  assert.strictEqual(chipsFor(frames, "sidebar").at(-1), null, "不匹配时旧 chip 直接撤下");
+  assert.deepStrictEqual(chipsFor(frames, "panel"), [], "不把 A 的 token emit 给不同 session/cwd 的 B");
+  assert.strictEqual((c as unknown as { activeViewId(): string | undefined }).activeViewId(), "panel");
+  assert.ok(chip.token, "前置：旧目标本来有 token");
+}
+
+// 本机自动引用：只允许安全的目录内相对路径，POSIX 字面反斜杠 / 行号后缀 / 盘符样式
+// 都必须在这里被拒绝（不能生成看起来指向另一个位置的 token）。
+for (const [path, cwd, expected, reason] of [
+  ["/work/src/a b.ts", "/work", '@"src/a b.ts#L2-L4"', "POSIX 目录内相对引用"],
+  [String.raw`C:\work\src\a.ts`, "C:/work", "@src/a.ts#L2-L4", "Windows 两种分隔符与盘符大小写"],
+  [String.raw`/work/name\with-backslash.ts`, "/work", undefined, "POSIX 文件名的反斜杠不是分隔符"],
+  ["/work/a.ts#L22", "/work", undefined, "行号后缀文件名不能拼第二段行号"],
+  ["/work/a.ts#L22-L30", "/work", undefined, "行号区间后缀文件名同样拒绝"],
+  ["/work/C:/x", "/work", undefined, "POSIX 目录下的 C:/x 不能变成本机盘径"],
+  ["/work/C:", "/work", undefined, "POSIX 目录下的 C: 不能变成盘符查询"],
+  ["/work/../secret.ts", "/work", undefined, "点段不参与相对化"],
+  ["/work2/a.ts", "/work", undefined, "同名前缀不是目录边界"],
+  ["//?/C:/work/a.ts", "//?/C:/work", undefined, "设备命名空间不能生成自动引用"],
+] as const) {
+  assert.strictEqual(localFileReference(path, cwd, { start: 2, end: 4 }), expected, reason);
+}
+
+// 控制器真实路径：同样这些拼写不投递芯片（不会把用户引到错误文件）。
+{
+  const { c, frames } = makeController({ cwd: "/work" });
+  c.bindView("posix");
+  for (const filePath of [
+    String.raw`/work/name\with-backslash.ts`,
+    "/work/a.ts#L22",
+    "/work/C:/x",
+    "/work/C:",
+  ]) {
+    c.setSelectionFacts({ filePath, preview: "" });
+    settleSelection();
+    assert.deepStrictEqual(chipsFor(frames, "posix"), [], `${filePath} 不生成歧义自动引用`);
+  }
+  const positive = await showSelection(c, frames, "posix", { filePath: "/work/src/a b.ts", lines: { start: 2, end: 4 }, preview: "" });
+  assert.strictEqual(positive.token, '@"src/a b.ts#L2-L4"', "安全相对引用照常投递");
+}
 console.log("selectionSend: 执行世界的 POSIX、盘符与 UNC 路径按语法折算，不猜路径身份 ✓");
+
+// ---------- 11. 连接失败、从未交给 transport 的自动引用不能随「重发」重放 ----------
+{
+  const { c, client, frames } = makeController();
+  c.bindView("v1");
+  await c.handle({ type: "ready" }, "v1");
+  const chip = await showSelection(c, frames, "v1");
+  const inner = c as unknown as {
+    client: unknown;
+    connection: string;
+    ensureConnected(options: unknown): Promise<void>;
+    pendingMessages: Map<string, { requestId: string; text: string; status?: string }[]>;
+    keyForView(viewId: string): string;
+    drafts: Map<string, string>;
+  };
+  const originalEnsure = inner.ensureConnected.bind(c);
+  // 首次发送时连接失败（客户端在 ensureConnected 之后仍为空）。
+  inner.connection = "disconnected";
+  inner.ensureConnected = async () => {
+    inner.client = undefined;
+    inner.connection = "disconnected";
+  };
+  const draft = "连接失败的原稿";
+  try {
+    await c.handle(send(draft, chip), "v1");
+  } finally {
+    inner.ensureConnected = originalEnsure;
+    inner.client = client;
+    inner.connection = "connected";
+  }
+  const failed = inner.pendingMessages.get(inner.keyForView("v1"))
+    ?.find((entry) => entry.status === "failed");
+  assert.ok(failed, "前置：失败行留在原地");
+  assert.strictEqual(failed.text, draft, "从未交给 transport 的失败行只保留原始草稿");
+  assert.ok(!failed.text.includes(REF), "失败行不携带旧自动引用 token");
+
+  // 用户改 cwd 后点「重发」：不能把旧 token 当普通正文送出去。
+  const scope = c.scopeOfView("v1");
+  assert.ok(scope);
+  c.applyWorkingDirectoryProjection(scope, join(tmpdir(), "dsh-chat-local-no-connection", "after"), true, "snapshot");
+  client.prompts.length = 0;
+  await c.handle({ type: "resendPending", requestId: failed.requestId }, "v1");
+  assert.strictEqual(promptText(client), draft, "重发只送原始草稿，不重采选区、不带旧引用");
+  assert.ok(client.prompts.at(-1)?.content.every((part) => {
+    const text = (part as { type?: string; text?: string }).text ?? "";
+    return !text.includes(REF);
+  }));
+  console.log("selectionSend: 连接失败的回显只保留原始草稿，重发不带旧引用 ✓");
+}
+
+// ---------- 12. 原始草稿与送达正文分开：lost / 重发 / 排队重发 ----------
+{
+  const { c, frames, client } = makeController();
+  c.bindView("v1");
+  await c.handle({ type: "ready" }, "v1");
+  const scope = c.scopeOfView("v1");
+  assert.ok(scope);
+  const inner = c as unknown as {
+    resubmit(
+      viewId: string,
+      entries: { origin: { text: string; draft?: string; attachments: unknown[]; content: unknown[] } }[],
+    ): Promise<void>;
+    settleLostSubmission(rpcId: string, reason: "lost" | "canceled"): void;
+    submissions: Map<string, { text: string; draft: string }>;
+    drafts: Map<string, string>;
+    keyForView(viewId: string): string;
+  };
+  const lastDraft = (): string | undefined =>
+    frames.flatMap(({ target, frame }) => {
+      const patch = frame.patch as { draft?: string } | undefined;
+      return target === "v1" && frame.type === "patch" && patch?.draft !== undefined ? [patch.draft] : [];
+    }).at(-1);
+  const chip = await showSelection(c, frames, "v1");
+
+  // 运行中发送不建回显；lost 时不能把提交正文里的旧引用回填成草稿。
+  scope.running = true;
+  await c.handle(send("原始草稿", chip), "v1");
+  const lostId = String(client.prompts.at(-1)?.requestId);
+  assert.strictEqual(promptText(client), `原始草稿\n\n${REF}`, "前置：送达正文含冻结的自动引用");
+  frames.length = 0;
+  inner.settleLostSubmission(lostId, "lost");
+  assert.strictEqual(lastDraft(), "原始草稿", "lost 回填原始草稿，不带旧引用 token");
+  assert.strictEqual(inner.submissions.get(lostId)?.draft, "原始草稿");
+
+  // 「重发」保留原送达正文，新提交记录的 draft 仍是旧记录的原稿（不重采选区）。
+  inner.drafts.set(inner.keyForView("v1"), "");
+  scope.running = false;
+  client.prompts.length = 0;
+  await c.handle(send("重发原稿", chip), "v1");
+  const firstRetryId = String(client.prompts.at(-1)?.requestId);
+  assert.strictEqual(promptText(client), `重发原稿\n\n${REF}`);
+  client.prompts.length = 0;
+  await c.handle({ type: "resendPending", requestId: firstRetryId }, "v1");
+  const secondRetryId = String(client.prompts.at(-1)?.requestId);
+  assert.notStrictEqual(secondRetryId, firstRetryId);
+  assert.strictEqual(promptText(client), `重发原稿\n\n${REF}`, "重发仍送达原完整正文（保留当时的引用）");
+  assert.strictEqual(inner.submissions.get(secondRetryId)?.text, `重发原稿\n\n${REF}`);
+  assert.strictEqual(inner.submissions.get(secondRetryId)?.draft, "重发原稿", "新记录草稿是原稿，不是含引用的正文");
+
+  // 排队重发：送达 origin.text，记录 / 回填用 origin.draft。
+  scope.running = true;
+  inner.drafts.set(inner.keyForView("v1"), "");
+  client.prompts.length = 0;
+  const delivered = `送达正文\n\n${REF}`;
+  await inner.resubmit("v1", [
+    { origin: { text: delivered, draft: "送达正文", attachments: [], content: [{ type: "text", text: delivered }] } },
+  ]);
+  const resubmittedId = String(client.prompts.at(-1)?.requestId);
+  assert.strictEqual(promptText(client), delivered, "排队重发原样送达");
+  assert.strictEqual(inner.submissions.get(resubmittedId)?.text, delivered);
+  assert.strictEqual(inner.submissions.get(resubmittedId)?.draft, "送达正文");
+
+  // 排队重发失败：这一条与后面未提交的都回填原始草稿，不把旧 token 带回输入框。
+  inner.drafts.set(inner.keyForView("v1"), "");
+  const promptFail = mock.method(client, "prompt", async () => {
+    throw new Error("boom");
+  });
+  try {
+    await inner.resubmit("v1", [
+      { origin: { text: `第一行\n\n${REF}`, draft: "第一行", attachments: [], content: [{ type: "text", text: `第一行\n\n${REF}` }] } },
+      { origin: { text: `第二行\n\n${REF}`, draft: "第二行", attachments: [], content: [{ type: "text", text: `第二行\n\n${REF}` }] } },
+    ]);
+  } finally {
+    promptFail.mock.restore();
+  }
+  const failedDraft = inner.drafts.get(inner.keyForView("v1"));
+  assert.strictEqual(failedDraft, "第一行\n第二行", "排队重发失败按原始草稿回填这一条与余项");
+  assert.ok(!failedDraft.includes(REF), "失败回填不携带旧引用");
+  console.log("selectionSend: 原始草稿与送达正文分开（lost / 重发 / 排队重发）✓");
+}
 
 mock.timers.reset();
 console.log("\nselectionSend: all assertions passed");
