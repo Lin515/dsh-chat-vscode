@@ -3032,7 +3032,7 @@ console.log("styles: 三颗「打开」按钮图标两两不同（编辑区=方�
     "Composer 从端口取滚动容器（自适应量高的瞬态补回要用它）",
   );
   assert.ok(
-    /post\(\{ type: "send"[\s\S]{0,400}?onFollowLatest\?\.\(\)/.test(composer),
+    /post\(\{\s*type: "send"[\s\S]{0,400}?onFollowLatest\?\.\(\)/.test(composer),
     "发消息 = 要看最新（官方 useAutoScroll 同口径）：脱贴状态下发出去也要贴回底部",
   );
   assert.ok(

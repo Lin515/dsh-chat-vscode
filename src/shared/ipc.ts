@@ -48,13 +48,15 @@ export const RELOAD_WINDOW_COMMAND = "workbench.action.reloadWindow";
  * 输入框「编辑器当前选区」芯片的一帧（`ui/selectionContext` 的载荷）。
  *
  * 由宿主按**目标窗口的会话执行目录**算出（评审 2026-11-24 第 1、5 条），界面只负责
- * 展示与发送时把 `token` 分笔传回（宿主在命令识别之后自己拼接，见 `send` 帧的
- * `autoReference`）：
+ * 展示并在发送时把 `token` 和投递 `id` 分笔传回（宿主在命令识别之后自己拼接，见
+ * `send` 帧的 `autoReference` / `autoReferenceId`）：
  * - `token`：**显示与发送共用同一个值**（评审 2026-11-24 设计建议），单行、带空格的
  *   路径都按实际发送形态（`@src/a.ts#L12`、`@"my file.txt#L12-L40"`）；
  * - `preview`：选区原文预览（已截断、归一换行），芯片悬停时看，原文不翻译。
  */
 export interface SelectionContextView {
+  /** 宿主为选区投递生成的标识：不同对话或不同投递即使 token 一样也不能混用。 */
+  id: number;
   /** 发送时附带的 `@` 引用 token，也是芯片上显示的那串（整文件 `@src/a.ts` / 选区带行号）。 */
   token: string;
   /** 选区原文预览（悬停显示；空串 = 选区只有空白），原文不翻译。 */
@@ -265,11 +267,9 @@ export type HostToWebview =
    * 编辑器「当前选区」芯片（`dshChat.autoSelection`）。
    *
    * 宿主只投递给**最近活动的窗口**（评审 2026-11-24 第 1 条：芯片反映编辑器状态，
-   * 但后台窗口不该重新显示同一引用；活动目标切换时旧窗口那一帧会被撤下）；
-   * `context: null` 表示清除（选区没了 / 开关关了 / 目标会话的执行目录够不着那个
-   * 文件）。与 `ui/insertText`（把 token 写进草稿）互补：这条链**完全不碰草稿**，
-   * 界面只在发送那一刻把 `token` 通过 `send.autoReference` 分笔传回——用户正在打的
-   * 问题一个字都不会被改掉。
+   * 但后台窗口不该重新显示同一引用；切换目标清除旧选区，不转交给新对话）；
+   * `context: null` 表示撤下芯片。与 `ui/insertText`（把 token 写进草稿）互补：
+   * 这条链**完全不碰草稿**，界面只在发送时把引用及投递标识与正文分笔传回。
    */
   | { type: "ui/selectionContext"; context: SelectionContextView | null }
   /**
@@ -312,6 +312,8 @@ export interface TrajectoryResultFrame {
 export type WebviewToHost =
   /** 只探测这张页面到扩展宿主的消息通道，不触发连接或会话动作。 */
   | { type: "view/ping"; id: number }
+  /** 用户实际操作本窗口：仅视图宿主消费，不进入控制器的消息分派。 */
+  | { type: "view/activity" }
   /** webview 加载完成，请求首帧状态。 */
   | { type: "ready" }
   /** 申请修改底栏显示偏好；宿主按当前偏好应用动作，不接受整份覆盖。 */
@@ -356,20 +358,12 @@ export type WebviewToHost =
    * （评审 2026-11-24 第 3 条）：宿主先按命令目录识别 `/xxx`，只给普通消息附加——
    * 引用先拼进正文会让 `/compact` 判不成命令、给带参数的命令多塞一份引用文本。
    */
-  | { type: "send"; text: string; gesture?: "enter" | "accelerated"; autoReference?: string }
+  | { type: "send"; text: string; gesture?: "enter" | "accelerated"; autoReference?: string; autoReferenceId?: number }
   /**
    * 用户点掉了「当前选区」芯片（或发送后界面收起）：通知宿主撤下并记住「用户已
-   * 收起」（评审 2026-11-24 第 2 条）——此后**仅重载页面不得把它带回来**，下一次
-   * 符合当前档位的编辑器操作（选区 / 光标变化）才允许重显。
+   * 收起」（评审 2026-11-24 第 2 条）。只撤下 `id` 对应的那次投递，不能撤掉后来的新选区。
    */
-  | { type: "selectionContextDismiss" }
-  /**
-   * 焦点进入输入框（用户点了一下消息框）：**纯活动信号**。侧栏视图的单击本来
-   * 不产生任何宿主帧，「最近活动的窗口」切不过去，选区芯片也就不跟着走（评审
-   * 2026-11-24 第 1 条的实机反馈）。宿主在 attach 层对每条非探测消息都会记活动，
-   * 这条帧自身不带任何语义、无回执。
-   */
-  | { type: "composerFocus" }
+  | { type: "selectionContextDismiss"; id: number }
   /**
    * **撤回**一条发送失败的回显：把那一行删掉。
    *

@@ -65,15 +65,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     }
     this.armRestoreFallback(viewId);
     this.log(`[view] ${this.kind} 侧栏视图实例化 viewId=${viewId}`);
-    // 侧栏视图变可见视作活动：命令面板入口（新建/历史/加选区…）据此定位窗口。
-    // 编辑区面板有同样的处理（见 openPanel），两边口径必须一致。
-    // 「点一下侧栏消息框」的切换由输入框聚焦帧 `composerFocus` 兜底（侧栏视图
-    // 的公开 API 没有「激活」事件可挂，见 resolveWebviewView 的注释）。
-    this.disposables.push(
-      view.onDidChangeVisibility(() => {
-        if (view.visible) this.controller.noteActiveView(viewId);
-      }),
-    );
+    // 侧栏的公开 API 只有可见性，没有激活事件；可见可能只是恢复布局或展开旁边的栏。
+    // 用户在侧栏里实际操作由 webview 的 `view/activity` 报告。
   }
 
   /**
@@ -133,11 +126,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   /**
    * 在编辑器区打开一个独立面板；指定会话时面板打开那个会话。
    *
-   * `column` 默认 `ViewColumn.Beside`（新开一个分组）；「在编辑器中打开」那条路先用
-   * {@link editorColumnFor} 取落点（已有标签组就在里面开新标签），只有明确要新开一个
-   * 分组时才落回这个默认值。`focus` 默认 false——编辑器标题栏那头鲸鱼的**两个动作**
-   * 都要 `focus: true`（用户 2026-09-15 口径：点了要「跳转」过去）：单击在本分组新建
-   * （{@link openPanelInCurrentGroup}），按住 Alt 单击在右侧并排新建
+   * `column` 默认 `ViewColumn.Beside`（由 VS Code 决定并排落点，可复用已有相邻分组）。
+   * 「在编辑器中打开」先用 {@link editorColumnFor} 取落点，优先在已有分组内开新标签。
+   * `focus` 默认 false——编辑器标题栏鲸鱼按钮的两个动作都要 `focus: true`（点了要跳转）：
+   * 单击在本分组打开新会话（{@link openPanelInCurrentGroup}），按住 Alt 单击则并排打开
    * （{@link openPanelBeside}）。
    *
    * 返回 `viewId`：调用方可能要往这个新窗口里塞一个**新会话**
@@ -159,6 +151,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       this.webviewOptions(),
     );
     const viewId = this.attachPanel(panel);
+    // 用户显式打开并跳过去（如标题栏单击 / Alt+单击）不必等 webview 加载或下次事件。
+    // 序列化器只挂 attachPanel，不走这里：恢复不能因初始 active 状态抢走活动窗口。
+    if (focus || panel.active) this.controller.noteActiveView(viewId);
     this.log(`[view] 创建编辑区面板 viewId=${viewId} session=${sessionId ?? "（空态）"}`);
     // 「在编辑器中打开」：调用方带会话时，编辑器窗口打开那个会话（点击动作
     // 来自那个会话所在的窗口）。openSession 绑定后会向这个窗口推完整状态
@@ -183,7 +178,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
   /**
    * 编辑器标题栏那头鲸鱼的 **Alt+单击**（命令「DSH: 在右侧新建对话窗口」）：
-   * 在代码区右侧并排开一个新分组，代码与对话同时可见（用户 2026-11-24 口径）。
+   * 用 `ViewColumn.Beside` 并排打开新会话，代码与对话同时可见；可复用已有相邻分组。
    *
    * 与单击那条共用 `openPanel`：新会话、聚焦都一样，只有落点不同。Alt 分支由
    * `package.json` 的 `editor/title` 菜单 `alt` 字段接住，命令侧同样不写死分组常量。
@@ -192,7 +187,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     return this.openPanel(undefined, vscode.ViewColumn.Beside, true);
   }
 
-  /** 挂一个编辑区面板：与侧栏共用 attach，额外登记种类与可见性。 */
+  /** 挂一个编辑区面板：与侧栏共用 attach，额外跟踪标签组和激活事件。 */
   private attachPanel(panel: vscode.WebviewPanel): string {
     const viewId = this.attach(panel.webview, panel.onDidDispose, () =>
       panel.reveal(undefined, false),
@@ -212,15 +207,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       if (column !== undefined) this.panelColumns.set(viewId, column);
     };
     rememberColumn();
-    this.disposables.push(panel.onDidChangeViewState(rememberColumn));
-    this.disposables.push(panel.onDidDispose(() => this.panelColumns.delete(viewId)));
-    // 面板变可见时视作活动（命令面板入口「最近活动的窗口」靠它定位）
+    let wasActive = panel.active;
     this.disposables.push(
-      panel.onDidChangeViewState((event) => {
-        // 可见**或激活**都算窗口活动：点一下面板里的消息框（active 翻真）也要把
-        // 「最近活动窗口」切过来，选区芯片才跟着走（评审 2026-11-24 实机反馈）
-        if (event.webviewPanel.visible || event.webviewPanel.active) this.controller.noteActiveView(viewId);
+      panel.onDidChangeViewState(({ webviewPanel }) => {
+        rememberColumn();
+        // 并排显示或拖动分组也会触发事件；只看真正从未激活切到激活。
+        const active = webviewPanel.active;
+        const activated = active && !wasActive;
+        wasActive = active;
+        if (activated) this.controller.noteActiveView(viewId);
       }),
+      panel.onDidDispose(() => this.panelColumns.delete(viewId)),
     );
     return viewId;
   }
@@ -283,8 +280,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           }
           return;
         }
-        // 用户消息才算窗口活动；探测不抢活动窗口，也不进入控制器。
-        this.controller.noteActiveView(viewId);
+        // 活动是独立信号；ready、轮询、回执等普通消息都不能把后台窗口变成活动窗口。
+        if (message?.type === "view/activity") {
+          this.controller.noteActiveView(viewId);
+          return;
+        }
         // **接住异常**：`handle` 是 async，帧又来自 webview（形状不受类型系统约束），
         // 一条残缺的帧不该变成扩展宿主里的 unhandled rejection——那既没有全局处理器，
         // 用户也只会看到"某个功能莫名不动了"。记日志、继续服务下一条消息。

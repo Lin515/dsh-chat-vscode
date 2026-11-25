@@ -305,11 +305,9 @@ export function Composer({
    */
   onFollowLatest?: () => void;
   /**
-   * 「当前选区」芯片被点掉 / 发送后收起时回调（宿主不感知，见 `ui/selectionDismiss`）。
-   *
-   * 可选是给离线渲染留的：芯片平时由宿主帧驱动，SSR / 预览没有那一帧就没有芯片。
+   * 「当前选区」芯片被点掉 / 发送后收起时，回传它的投递标识。离线渲染可省略。
    */
-  onSelectionDismiss?: () => void;
+  onSelectionDismiss?: (id: number) => void;
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   /**
@@ -592,6 +590,7 @@ export function Composer({
   const hasContent = draftText.length > 0 || state.attachments.length > 0;
   const uploadBlock = attachmentUploadBlock(state.attachments);
   const canSend = hasContent && uploadBlock === undefined && (state.connection === "ready" || state.connection === "stopped");
+  const selection = state.selectionContext;
 
   /**
    * 把草稿发出去。
@@ -614,15 +613,19 @@ export function Composer({
     // 参数的命令多塞一份引用文本。宿主判完「是普通消息」才自己拼接。发送门不看
     // 芯片——只选中文本不打问题是发不出去的，与「只有附件、正文为空也能发」的
     // 官方口径不冲突（那是不带芯片的场景）。
-    const selection = state.selectionContext;
-    post({ type: "send", text: draft.trim(), gesture, ...(selection ? { autoReference: selection.token } : {}) });
+    post({
+      type: "send",
+      text: draft.trim(),
+      gesture,
+      ...(selection ? { autoReference: selection.token, autoReferenceId: selection.id } : {}),
+    });
     // 发出去了就是要看回答：脱贴状态下也贴回最新（与切会话同一条规则）
     onFollowLatest?.();
     onDraft("");
     // 附带是一次性的：发完就收起芯片（宿主同步记住「用户已收起」，重载页面不
     // 复活）。编辑器里的选区还在，用户再选中（或改选）时宿主会推来新的一帧
     // ——连续追问同一段代码就是「再点一下选中」的成本。
-    if (selection) onSelectionDismiss?.();
+    if (selection) onSelectionDismiss?.(selection.id);
   };
 
   // 认不出的当前值（`custom`：两个旋钮的组合不对应任何一档）退回第二档显示，
@@ -1074,29 +1077,26 @@ export function Composer({
           接管、它再补发一次 paste」这两条机制都见 `attachIntake.ts`。
         */}
         <div className="composer-box">
-          {state.selectionContext !== undefined || state.attachments.length ? (
+          {selection || state.attachments.length ? (
             <div className="composer-chips">
-              {/* 「编辑器当前选区」芯片（宿主 `ui/selectionContext` 推送）：只随编辑器
-                  选区变化更新，不碰草稿；发送那一刻把 token 分笔传回宿主（见 send）。
-                  芯片直接显示**实际会发出去**的引用（评审 2026-11-24 设计建议：显示
-                  与发送共用同一个值，单行 / 带空格路径都按真实形态画）；悬停给**选区
-                  原文预览** + 附带说明。与附件芯片不同，这枚不可点开（模型自己 read
-                  引用，界面没有可打开的字节），所以不走 `chip-open`。 */}
-              {state.selectionContext ? (
+              {/* 「编辑器当前选区」芯片由宿主 `ui/selectionContext` 推送，不碰草稿；
+                  发送时把 token 和投递标识分笔传回。标签与悬停显示实际要发送的完整引用，
+                  悬停补原文预览与附带说明。这枚不可点开（模型自己读引用），不走 `chip-open`。 */}
+              {selection ? (
                 <span
                   className="chip"
-                  title={[texts.selectionChipTitle, state.selectionContext.preview]
+                  title={[selection.token, texts.selectionChipTitle, selection.preview]
                     .filter((line) => line !== "")
                     .join("\n")}
                 >
                   {/* 前缀「已选 / Selected」：光看一串引用像是普通引用，加上这词才
                       一眼认出「这是我刚才选中的内容」 */}
                   <span className="chip-sub">{texts.selectionChipPrefix}</span>
-                  <span className="chip-name">{state.selectionContext.token}</span>
+                  <span className="chip-name">{selection.token}</span>
                   <button
                     className="chip-remove"
                     title={texts.remove}
-                    onClick={() => onSelectionDismiss?.()}
+                    onClick={() => onSelectionDismiss?.(selection.id)}
                   >
                     ×
                   </button>
@@ -1206,14 +1206,6 @@ export function Composer({
               // 文本域是**纯文本**，做不出真正的行内链接，只能按光标位置判（见 `../mentionOpen`）。
               title={texts.mentionClickHint(altLabel(), modifierLabel())}
               {...completion.textareaProps}
-              // 点进消息框 = 用户开始用这个窗口：发一条纯活动帧，宿主把「最近活动
-              // 窗口」切过来，选区芯片随之落到本窗口（评审 2026-11-24 第 1 条的实机
-              // 反馈：侧栏视图的单击本来不产生任何宿主帧，活动切不过去）。补全那边
-              // 的 onFocus（焦点回输入框重算触发词）原样先执行，不顶掉。
-              onFocus={(event) => {
-                completion.textareaProps.onFocus?.(event);
-                post({ type: "composerFocus" });
-              }}
               // 写在摊开之后：文本域只有一个 `onClick`，这里**接着**补全那边的光标刷新
               // 再判一次 Ctrl+单击，而不是把它顶掉（否则候选菜单不再跟着光标走）。
               onClick={(event) => {

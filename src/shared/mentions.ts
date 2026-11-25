@@ -249,23 +249,36 @@ export function appendAutoReference(draft: string, token: string): string {
  *
  * VS Code 的工作区相对路径不一定是那条会话读得到的路径：多根工作区里两个根可能有
  * 同名文件，远端 / 桌面端会话的执行目录甚至不在本机。所以引用按 `dir`（会话的 cwd）
- * 生成，目录拼写**逐字**成前缀才算数（与 `relativizeToCwd` 同一口径：realpath、
- * 大小写、另一个根的拼写差异在字符串层面证明不了同一个目录，宁可不算）；不匹配时
- * 返回 undefined，调用方不自动附带（手动 `@` 不受影响）。
+ * 生成。只忽略 Windows 盘符大小写与分隔符拼写；其余目录拼写必须逐字匹配，不能把
+ * 大小写不同的目录、不同盘或同名前缀的另一个根混在一起。不匹配时返回 undefined，
+ * 调用方不自动附带（手动 `@` 不受影响）。
  *
  * 两种分隔符都先归一成 `/`（{@link normalizeMentionPath} 的既定偏离），所以 Windows
  * 形态的 cwd 与正斜杠形态的文件路径也能对上。
  */
 export function relativeMentionPath(dir: string, filePath: string): string | undefined {
-  if (dir === "" || filePath === "") return undefined;
-  const root = normalizeMentionPath(dir).replace(/[/\\]+$/u, "");
-  const full = normalizeMentionPath(filePath);
-  const prefix = `${root}/`;
-  if (!full.startsWith(prefix)) return undefined;
+  const root = selectionDirectoryKey(dir);
+  if (root === undefined) return undefined;
+  const full = normalizeSelectionPath(filePath);
+  const prefix = root.endsWith("/") ? root : `${root}/`;
+  if (!full.startsWith(prefix) || (!root.startsWith("//") && full.startsWith("//"))) return undefined;
   const relative = full.slice(prefix.length);
-  // 越过根（`..`）= 不是这个目录里的东西：不猜
-  if (relative === "" || relative === ".." || relative.startsWith("../") || relative.includes("/../") || relative.endsWith("/..")) {
+  if (!relative || relative.split("/").some((segment) => !segment || segment === "." || segment === "..")) {
     return undefined;
   }
   return relative;
+}
+
+/** 选区引用的目录身份：保留目录段大小写，且只接受有根的路径。 */
+export function selectionDirectoryKey(path: string | undefined): string | undefined {
+  if (!path) return undefined;
+  const normalized = normalizeSelectionPath(path);
+  if (!/^(?:\/|[A-Z]:\/)/u.test(normalized) || /(?:^|\/)\.{1,2}(?:\/|$)/u.test(normalized)) return undefined;
+  if (normalized.startsWith("//") && !/^\/\/[^/]+\/[^/]+(?:\/|$)/u.test(normalized)) return undefined;
+  const root = normalized.replace(/\/+$/u, "");
+  return root === "" || /^[A-Z]:$/u.test(root) ? `${root}/` : root;
+}
+
+function normalizeSelectionPath(path: string): string {
+  return normalizeMentionPath(path).replace(/^[a-z]:(?=\/)/u, (drive) => drive.toUpperCase());
 }

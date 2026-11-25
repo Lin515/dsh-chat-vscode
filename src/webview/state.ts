@@ -115,10 +115,9 @@ export interface AppState extends ChatState {
    * 编辑器「当前选区」芯片（宿主 `ui/selectionContext` 推送，只投递给最近活动的
    * 窗口）。
    *
-   * `undefined` = 不显示。它反映的是**编辑器**的状态而不是某条会话的：切会话
-   * 不清它（选区还在编辑器里）；发送 / 点 × 后界面清、宿主同步记住「用户已收起」
-   * （重载页面不复活，评审 2026-11-24 第 2 条）；宿主的下一次编辑器事件或目标
-   * 切换会推来新的帧。也只活在界面侧，不进 `ChatState`。
+   * `undefined` = 不显示。宿主按编辑器操作和目标对话投递，切换目标时清除旧芯片，
+   * 即使编辑器里仍选着原文也不搬到新对话。发送 / 点 × 只收起对应的投递，单纯把
+   * 焦点移回同一对话或重载页面不会复活。它只活在界面侧，不进 `ChatState`。
    */
   selectionContext?: SelectionContextView;
   /**
@@ -291,10 +290,10 @@ export type Action =
   /** 界面自产的「引用到输入框」（右键菜单）：文本已经是当前语言的成品，不走 `@key`。 */
   | { type: "ui/quoteText"; text: string }
   /**
-   * 用户点掉「当前选区」芯片（或发送后界面自己收起）：只清这一帧显示，
-   * 不通知宿主——编辑器再选中时宿主自然会推新的一帧过来。
+   * 用户点掉「当前选区」芯片（或发送后界面自己收起）：仅收起匹配 id 的投递。
+   * App 另行把同一个 id 通知宿主；reducer 只负责界面显示。
    */
-  | { type: "ui/selectionDismiss" }
+  | { type: "ui/selectionDismiss"; id: number }
   /**
    * 展开一行后台任务：铸造这一轮的观察代号并清空旧累积（见 `AppState.jobOutputs`）。
    *
@@ -573,7 +572,7 @@ export function reducer(state: AppState, action: Action): AppState {
     }
 
     case "ui/selectionDismiss":
-      if (state.selectionContext === undefined) return state;
+      if (state.selectionContext?.id !== action.id) return state;
       return withoutSelectionContext(state);
 
     case "ui/setPanel":

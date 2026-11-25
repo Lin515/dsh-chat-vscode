@@ -19,6 +19,7 @@ import assert from "node:assert";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import * as vscode from "vscode";
+import type { WebviewToHost } from "../src/shared/ipc";
 
 // 动态 import：让 alias（esbuild 打包期）把 chatView 依赖的 vscode 换成 stub
 const { ChatViewProvider } = await import("../src/chatView");
@@ -42,35 +43,53 @@ function stageGroups(groups: number[], active: number): void {
 }
 
 /** 面板：只给 `attachPanel` 会碰到的那些面。 */
-function fakePanel(viewColumn: number) {
-  const viewListeners: ((event: { webviewPanel: { visible: boolean } }) => void)[] = [];
+function fakePanel(viewColumn: number, active = false) {
+  const viewListeners: ((event: { webviewPanel: { visible: boolean; active: boolean } }) => void)[] = [];
   const disposeListeners: (() => void)[] = [];
+  const messageListeners: ((message: WebviewToHost) => void)[] = [];
+  const outbound: unknown[] = [];
   const panel = {
     viewColumn,
+    visible: true,
+    active,
     iconPath: undefined as unknown,
     webview: {
       options: undefined as unknown,
       html: "",
       cspSource: "vscode-webview://test",
       asWebviewUri: (uri: unknown) => uri,
-      onDidReceiveMessage: () => new vscode.Disposable(),
+      onDidReceiveMessage: (listener: (message: WebviewToHost) => void) => {
+        messageListeners.push(listener);
+        return new vscode.Disposable();
+      },
+      postMessage: async (frame: unknown) => { outbound.push(frame); return true; },
     },
     onDidDispose: (listener: () => void) => {
       disposeListeners.push(listener);
       return new vscode.Disposable();
     },
-    onDidChangeViewState: (listener: (event: { webviewPanel: { visible: boolean } }) => void) => {
+    onDidChangeViewState: (listener: (event: { webviewPanel: { visible: boolean; active: boolean } }) => void) => {
       viewListeners.push(listener);
       return new vscode.Disposable();
     },
     reveal: () => {},
   };
+  const setState = (visible: boolean, nextActive: boolean): void => {
+    panel.visible = visible;
+    panel.active = nextActive;
+    for (const listener of viewListeners) listener({ webviewPanel: panel });
+  };
   return {
     panel,
+    setState,
+    outbound,
+    message(message: WebviewToHost): void {
+      for (const listener of messageListeners) listener(message);
+    },
     /** 用户在编辑器里把标签拖到别的分组（或让它重新可见）：列号跟着事件一起变。 */
     moveTo(next: number): void {
       panel.viewColumn = next;
-      for (const listener of viewListeners) listener({ webviewPanel: { visible: true } });
+      setState(true, panel.active);
     },
     /** 用户关掉这个标签。 */
     close(): void {
@@ -79,14 +98,21 @@ function fakePanel(viewColumn: number) {
   };
 }
 
+const boundViews: string[] = [];
+const activity: string[] = [];
+const handled: { message: WebviewToHost; viewId: string }[] = [];
 const controller = {
   subscribe: () => new vscode.Disposable(),
-  bindView: () => {},
+  bindView: (viewId: string) => boundViews.push(viewId),
   unbindView: () => {},
   registerRevealer: () => {},
   registerTitleSetter: () => {},
   bindViewKind: () => {},
-  noteActiveView: () => {},
+  claimSidebarRestore: () => {},
+  hasRestoreHint: () => false,
+  hasPendingRestore: () => false,
+  noteActiveView: (viewId: string) => activity.push(viewId),
+  handle: async (message: WebviewToHost, viewId: string) => { handled.push({ message, viewId }); },
   openSession: async () => {},
 };
 
@@ -210,7 +236,8 @@ const attach = (panel: unknown): string =>
   ).createdWebviewPanels;
   created.length = 0;
 
-  provider.openPanelInCurrentGroup();
+  const { viewId: singleView } = provider.openPanelInCurrentGroup();
+  assert.strictEqual(activity.at(-1), singleView, "标题栏单击立即激活新窗口，不等 webview 就绪");
   const single = created[created.length - 1];
   assert.strictEqual(
     single?.viewColumn,
@@ -219,7 +246,8 @@ const attach = (panel: unknown): string =>
   );
   assert.strictEqual(single?.preserveFocus, false, "点一下要跳过去：显式 focus");
 
-  provider.openPanelBeside();
+  const { viewId: altView } = provider.openPanelBeside();
+  assert.strictEqual(activity.at(-1), altView, "Alt+单击同样立即激活新窗口");
   const alt = created[created.length - 1];
   assert.strictEqual(
     alt?.viewColumn,
@@ -267,6 +295,61 @@ const attach = (panel: unknown): string =>
     "Alt 分支的落点走 `provider.openPanelBeside`",
   );
   console.log("editorColumn: 菜单 alt / 命令声明 / 宿主注册接上了 ✓");
+}
+
+// ---------- 7. 后台挂载、可见、ready、轮询都不能冒充用户活动 ----------
+{
+  activity.length = 0;
+  handled.length = 0;
+
+  const sidebar = fakePanel(1);
+  provider.resolveWebviewView({
+    webview: sidebar.panel.webview,
+    onDidDispose: sidebar.panel.onDidDispose,
+    onDidChangeVisibility: (listener: () => void) => sidebar.panel.onDidChangeViewState(() => listener()),
+    get visible() { return sidebar.panel.visible; },
+    show: () => {},
+  } as unknown as vscode.WebviewView);
+  const sidebarId = boundViews.at(-1)!;
+
+  const restored = fakePanel(2, true);
+  const restoredId = attach(restored.panel);
+  // 序列化器挂接的面板已有 active 状态也不立即抢活动；单纯改变列号同样不抢。
+  restored.moveTo(3);
+  restored.message({ type: "ready" });
+  assert.deepStrictEqual(activity, [], "面板恢复挂载与 ready 不会宣告用户活动");
+
+  const background = fakePanel(2);
+  const backgroundId = attach(background.panel);
+  background.setState(false, false);
+  background.setState(true, false);
+  background.message({ type: "ready" });
+  background.message({ type: "listTrajectory" });
+  background.message({ type: "view/ping", id: 1 });
+  sidebar.setState(false, false);
+  sidebar.setState(true, false);
+  sidebar.message({ type: "ready" });
+  assert.deepStrictEqual(activity, [], "侧栏可见、并排面板可见与后台帧都不算活动");
+  assert.deepStrictEqual(background.outbound, [{ type: "view/pong", id: 1 }], "宿主探测仍走视图层往返");
+  assert.deepStrictEqual(handled, [
+    { message: { type: "ready" }, viewId: restoredId },
+    { message: { type: "ready" }, viewId: backgroundId },
+    { message: { type: "listTrajectory" }, viewId: backgroundId },
+    { message: { type: "ready" }, viewId: sidebarId },
+  ], "ready 与轮询仍由控制器接手，并保留窗口归属");
+
+  background.setState(true, true);
+  sidebar.message({ type: "view/activity" });
+  background.moveTo(3);
+  background.message({ type: "listTrajectory" });
+  assert.deepStrictEqual(activity, [backgroundId, sidebarId], "面板真实激活和侧栏活动帧才更新活动窗口；列号与后台消息不抢回去");
+  assert.deepStrictEqual(handled.at(-1), { message: { type: "listTrajectory" }, viewId: backgroundId });
+  assert.ok(!handled.some(({ message }) => message.type === "view/activity"), "纯活动帧只由 ChatViewProvider 消费");
+
+  background.setState(true, false);
+  background.setState(true, true);
+  assert.deepStrictEqual(activity, [backgroundId, sidebarId, backgroundId], "再次真正激活面板时可以从侧栏切回");
+  console.log("editorColumn: 后台窗口不抢活动；面板激活 / 侧栏实际操作才切换 ✓");
 }
 
 console.log("\neditorColumn: all assertions passed");

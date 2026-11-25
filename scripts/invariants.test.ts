@@ -584,7 +584,7 @@ console.log("invariants: guard 工厂的返回值不被丢弃（收尾体真的�
     "后台补壳必须跳过「这一轮恢复还没结算」的窗口（抢跑就是「历史会话一闪变成空会话」）",
   );
   assert.ok(
-    /scopeOfView\(viewId\)[\s\S]*?if \(bound\) return bound;[\s\S]*?this\.bindViewToSession\(viewId, sessionId, scope\)/.test(
+    /scopeOfView\(viewId\)[\s\S]*?if \(bound\) return bound;[\s\S]*?this\.bindViewToSession\(viewId, sessionId, scope(?:,\s*automaticBlank)?\)/.test(
       shell,
     ),
     "空壳写绑定前必须复查窗口有没有被别的路径绑走（恢复路径、用户点历史里的一条）：" +

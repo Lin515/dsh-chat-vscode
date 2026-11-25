@@ -2,8 +2,8 @@
  * 「编辑器当前选区」芯片的**投递与发送安全**（评审 2026-11-24 第 1–5 条）：驱动真
  * `ChatController`（offline stub），只看发给窗口的帧与假客户端收到的调用。
  *
- * - **只投递给最近活动的窗口**：后台窗口不显示同一引用；活动目标切换时旧窗口的
- *   芯片被撤下，新活动窗口按**自己的会话执行目录**拿到引用；
+ * - **只投递给最近活动的窗口**：后台挂载和 ready 不切换活动窗口；目标切换撤下旧引用，
+ *   清掉待投递选区；切回来也不恢复，直到下一次编辑器操作；
  * - **按会话执行目录折引用**：目录之下才引用；另一个根 / 目录之外的文件不自动附带；
  * - **用户收起后不自动复活**：点 × / 发送收起后，仅重载页面（`ready` 重放）不得
  *   带回同一引用；下一次编辑器操作（`setSelectionFacts`）才解除，同引用也重显；
@@ -15,6 +15,10 @@
 import assert from "node:assert";
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
+import { setTimeout as delay } from "node:timers/promises";
+import { relativeMentionPath } from "../src/shared/mentions";
+import type { SelectionContextView, WebviewToHost } from "../src/shared/ipc";
+import type { SelectionFacts } from "../src/dsh/selection";
 
 process.on("unhandledRejection", (error) => {
   console.error("[selectionSend] 未处理的异步拒绝（当作失败）：", error);
@@ -134,9 +138,10 @@ const fakeMemento = () => {
 };
 
 function makeController() {
+  const logs: string[] = [];
   const controller = new ChatController(
     fakeServer() as never,
-    () => undefined,
+    (message) => logs.push(message),
     fakeMemento() as never,
     fakeMemento() as never,
     { delete: async () => undefined, get: async () => undefined, store: async () => undefined } as never,
@@ -154,22 +159,49 @@ function makeController() {
     newSessionCwd?: string;
     bindView(viewId: string): void;
     noteActiveView(viewId: string): void;
-    setSelectionFacts(facts: unknown): void;
-    handle(message: Record<string, unknown>, viewId: string): Promise<void>;
+    clearSelectionContext(reason: string): void;
+    setSelectionFacts(facts: SelectionFacts): void;
+    handle(message: WebviewToHost, viewId: string): Promise<void>;
+    scopeOfView(viewId: string): { sessionId: string } | undefined;
+    applyWorkingDirectoryProjection(scope: { sessionId: string }, value: string, present: boolean, source: "snapshot"): void;
+    bindViewToSession(viewId: string, sessionId: string, scope: { sessionId: string }): void;
+    detachView(viewId: string): void;
+    afterRootChanged(viewId: string, action: { viewId: string; epoch: number }): Promise<void>;
   };
   c.newSessionCwd = CWD;
-  c.client = client as never;
+  c.client = client;
   c.connection = "connected";
-  return { c, frames, client };
+  return { c, frames, client, logs };
 }
 
-/** 最近一帧发给 viewId 的芯片帧；`frames` 里没有就是 undefined。 */
-function lastChip(frames: Captured[], viewId: string): { context: unknown } | undefined {
-  for (let i = frames.length - 1; i >= 0; i -= 1) {
-    const { target, frame } = frames[i];
-    if (target === viewId && frame.type === "ui/selectionContext") return frame as { context: unknown };
-  }
-  return undefined;
+function chipsFor(frames: Captured[], viewId: string): (SelectionContextView | null)[] {
+  return frames.filter(({ target, frame }) => target === viewId && frame.type === "ui/selectionContext")
+    .map(({ frame }) => frame.context as SelectionContextView | null);
+}
+
+/** 等实际防抖结束（包括应当什么也不投递的情形）。 */
+function settleSelection(): Promise<void> {
+  return delay(340);
+}
+
+async function showSelection(c: ReturnType<typeof makeController>["c"], frames: Captured[], viewId: string, facts = FACTS) {
+  c.setSelectionFacts(facts);
+  await settleSelection();
+  const chip = chipsFor(frames, viewId).at(-1);
+  assert.ok(chip, "活动窗口应收到有效的选区投递");
+  return chip;
+}
+
+function send(text: string, selection?: SelectionContextView): WebviewToHost {
+  return {
+    type: "send", text, gesture: "enter",
+    ...(selection && { autoReference: selection.token, autoReferenceId: selection.id }),
+  };
+}
+
+function promptText(client: ReturnType<typeof fakeClient>): string | undefined {
+  const block = client.prompts.at(-1)?.content.at(-1) as { type?: string; text?: string } | undefined;
+  return block?.type === "text" ? block.text : undefined;
 }
 
 /** 轮询等一个测试侧条件成立（命令目录是异步预取的）。 */
@@ -192,79 +224,79 @@ const commandLoadedOf = (c: unknown, viewId: string): boolean => {
 
 console.log("selectionSend: 芯片投递与发送安全（驱动真控制器，offline stub）");
 
-// ---------- 1. 只投递给活动窗口；切换目标时撤下旧窗口 ----------
+// ---------- 1. 首次开窗、被动 ready、窗口往返与待投递失效 ----------
 {
   const { c, frames } = makeController();
+  c.setSelectionFacts(FACTS);
   c.bindView("v1");
-  c.setSelectionFacts(FACTS);
-  const chip = lastChip(frames, "v1")?.context as { token: string; preview: string } | null;
-  assert.ok(chip, "活动窗口收到芯片帧");
-  assert.strictEqual(chip.token, REF, "引用按会话执行目录（newSessionCwd）折出");
-  assert.strictEqual(chip.preview, "const x = 1;", "预览原样随帧");
+  await c.handle({ type: "ready" }, "v1");
+  assert.deepStrictEqual(chipsFor(frames, "v1"), [], "ready 不抢跑首次防抖");
+  await settleSelection();
+  const initial = chipsFor(frames, "v1").at(-1);
+  assert.ok(initial, "首次同目录的自动空会话可接收先开的选区");
+  assert.strictEqual(initial.token, REF);
+  assert.strictEqual(initial.preview, FACTS.preview);
 
-  // 目录之外的文件（多根工作区的另一个根）：不自动附带
-  c.setSelectionFacts({ ...FACTS, filePath: "C:\\other\\proj\\b.ts" });
-  assert.strictEqual(lastChip(frames, "v1")?.context, null, "执行目录之外的文件不附带（评审第 5 条）");
-  c.setSelectionFacts(FACTS);
-
-  // 第二个窗口成为活动目标：v1 的芯片被撤下，v2 拿到引用
   c.bindView("v2");
+  await c.handle({ type: "ready" }, "v2");
+  assert.deepStrictEqual(chipsFor(frames, "v2"), [], "后台窗口挂载及 ready 不抢活动，也不继承引用");
+  c.noteActiveView("v1");
+  await c.handle({ type: "ready" }, "v1");
+  assert.deepStrictEqual(chipsFor(frames, "v1"), [initial, initial], "同一活动窗口只重放已生效的引用");
   c.noteActiveView("v2");
-  assert.strictEqual(lastChip(frames, "v1")?.context, null, "目标切换时撤下旧窗口的芯片（评审第 1 条）");
-  assert.strictEqual((lastChip(frames, "v2")?.context as { token: string } | null)?.token, REF, "新活动窗口拿到引用");
-  console.log("selectionSend: 只投递活动窗口，切换撤旧 ✓");
+  assert.strictEqual(chipsFor(frames, "v1").at(-1), null, "切走时同步撤下已显示的引用");
+  c.setSelectionFacts(FACTS);
+  c.noteActiveView("v1");
+  c.noteActiveView("v2");
+  await c.handle({ type: "ready" }, "v1");
+  await c.handle({ type: "ready" }, "v2");
+  await settleSelection();
+  assert.deepStrictEqual(chipsFor(frames, "v1"), [initial, initial, null], "回原窗口及重载均不恢复旧选区");
+  assert.deepStrictEqual(chipsFor(frames, "v2"), [], "切走再回来也不能保留待投递选区");
+  console.log("selectionSend: 首次开窗、防抖、窗口往返与被动 ready ✓");
 }
 
-// ---------- 2. 收起后不复活：ready 重放检查归属与「已收起」位 ----------
+// ---------- 2. 收起与同窗口的会话绑定 / 脱离 ----------
 {
   const { c, frames } = makeController();
   c.bindView("v1");
-  c.setSelectionFacts(FACTS);
-  c.dismissSelectionContext("v1");
-  assert.strictEqual(lastChip(frames, "v1")?.context, null, "点掉后撤下");
-
-  // 仅重载页面（ready 重放）不得把同一引用带回来（评审第 2 条）
+  const first = await showSelection(c, frames, "v1");
+  await c.handle({ type: "selectionContextDismiss", id: first.id }, "v1");
   await c.handle({ type: "ready" }, "v1");
-  assert.strictEqual(
-    lastChip(frames, "v1")?.context,
-    null,
-    "收起后 ready 重放不复活芯片",
-  );
+  c.noteActiveView("v1");
+  assert.deepStrictEqual(chipsFor(frames, "v1"), [first, null], "收起后被动 ready 和同目标活动均不复活");
 
-  // 下一次编辑器操作（哪怕算出的引用一模一样）解除「已收起」：重新显示
+  const fresh = await showSelection(c, frames, "v1");
+  assert.strictEqual(fresh.token, first.token);
+  assert.notStrictEqual(fresh.id, first.id, "下一次真实选区操作可显示同 token，但必须是新投递");
+  await c.handle({ type: "selectionContextDismiss", id: first.id }, "v1");
+  assert.strictEqual(chipsFor(frames, "v1").at(-1), fresh, "迟到的旧收起帧不影响同 token 的新投递");
+
+  const scope = c.scopeOfView("v1");
+  assert.ok(scope, "ready 已经绑定同目录空会话");
+  c.detachView("v1");
+  assert.strictEqual(chipsFor(frames, "v1").at(-1), null, "脱离会话同步清除已显示的引用");
   c.setSelectionFacts(FACTS);
-  assert.strictEqual(
-    (lastChip(frames, "v1")?.context as { token: string } | null)?.token,
-    REF,
-    "新的编辑器操作重显芯片（同引用也算新操作）",
-  );
-
-  // 后台窗口的 ready 重放不投递：先把活动目标挪走，再让 v1 重载
-  c.bindView("v2");
-  c.noteActiveView("v2");
-  const before = frames.filter(({ target, frame }) => target === "v1" && frame.type === "ui/selectionContext").length;
+  c.bindViewToSession("v1", scope.sessionId, scope);
   await c.handle({ type: "ready" }, "v1");
-  const after = frames.filter(({ target, frame }) => target === "v1" && frame.type === "ui/selectionContext").length;
-  assert.strictEqual(after, before, "后台窗口的 ready 重放不重显引用（评审第 1 条）");
-  console.log("selectionSend: 收起不复活，ready 检查归属 ✓");
+  await settleSelection();
+  assert.deepStrictEqual(chipsFor(frames, "v1"), [first, null, fresh, null], "显式绑定同目录会话也作废待投递引用");
+  console.log("selectionSend: 收起不复活、迟到收起帧与会话边界 ✓");
 }
 
 // ---------- 3. 命令安全：引用不改变 /compact 与带参命令的含义 ----------
 {
   const { c, frames, client } = makeController();
   c.bindView("v1");
-  c.setSelectionFacts(FACTS);
-  // 先发一条普通消息落壳（让窗口绑上会话、命令目录开始预取）
-  await c.handle({ type: "send", text: "第一条", attachments: [], gesture: "enter" }, "v1");
+  // 先让窗口绑定会话、预取命令，再投递供命令和普通消息使用的有效引用。
+  await c.handle({ type: "ready" }, "v1");
   await waitFor(() => commandLoadedOf(c, "v1"));
+  const selection = await showSelection(c, frames, "v1");
   client.calls.length = 0;
   client.prompts.length = 0;
 
   // 无参命令 + 芯片：仍走命令通道，命令行不带引用，prompt 不被调用
-  await c.handle(
-    { type: "send", text: "/compact", attachments: [], gesture: "enter", autoReference: REF },
-    "v1",
-  );
+  await c.handle(send("/compact", selection), "v1");
   assert.ok(client.executed.includes("/compact"), "/compact 照常进命令通道（评审第 3 条）");
   assert.ok(
     client.executed.every((line) => !line.includes("@src")),
@@ -278,67 +310,90 @@ console.log("selectionSend: 芯片投递与发送安全（驱动真控制器，o
   assert.strictEqual(pending?.length ?? 0, 0, "命令不留乐观回显（引用也没把它变成普通消息）");
 
   // 带参数命令 + 芯片：参数原样（声明了自由输入的命令），引用不混进去
-  await c.handle(
-    { type: "send", text: "/model gpt-5", attachments: [], gesture: "enter", autoReference: REF },
-    "v1",
-  );
+  await c.handle(send("/model gpt-5", selection), "v1");
   assert.ok(client.executed.includes("/model gpt-5"), "带参数命令整行照常执行");
   assert.strictEqual(client.prompts.length, 0, "带参数命令同样不发给模型");
 
   // 普通消息 + 芯片：实际提交（回显与 prompt 内容）拼上引用，原始草稿不变
-  await c.handle(
-    { type: "send", text: "帮我解释", attachments: [], gesture: "enter", autoReference: REF },
-    "v1",
-  );
-  const prompt = client.prompts.at(-1);
-  assert.ok(prompt, "普通消息照常 prompt");
-  const textPart = prompt?.content.at(-1) as { type: string; text?: string } | undefined;
-  assert.strictEqual(textPart?.type, "text");
+  await c.handle(send("帮我解释", selection), "v1");
   assert.strictEqual(
-    textPart?.text,
+    promptText(client),
     `帮我解释\n\n${REF}`,
     "prompt 内容带拼好的引用（正文与引用之间空一行）",
   );
   console.log("selectionSend: /compact 与带参数命令不受引用影响，普通消息才附加 ✓");
 }
 
-// ---------- 4. 接线源码钉：ready 重放的归属判据、事件即快照、点消息框即切换 ----------
+// ---------- 4. 执行目录投影、路径边界与迟到发送 ----------
 {
-  const source = readFileSync(join(process.cwd(), "src", "dsh", "controller.ts"), "utf8");
-  assert.ok(
-    /viewId === this\.activeViewId\(\) && !this\.selectionDismissed/.test(source),
-    "ready 重放必须同时检查「活动窗口」与「用户已收起」两道判据",
-  );
-  const extensionSource = readFileSync(join(process.cwd(), "src", "extension.ts"), "utf8");
-  for (const event of [
-    "onDidChangeTextEditorSelection",
-    "onDidChangeActiveTextEditor",
-    "onDidChangeVisibleTextEditors",
-  ]) {
-    assert.ok(
-      new RegExp(`${event}\\(\\(\\) => \\{\\n\\s+snapshotSelectionFacts\\(\\);`).test(extensionSource),
-      `${event} 必须在事件那一刻快照（防抖只延迟投递，评审第 2 条）`,
-    );
-  }
-  // 「点一下消息框就切窗口」的落点信号：文本域聚焦发 composerFocus（评审 1 的实机
-  // 反馈——侧栏单击本来不产生任何宿主帧，活动窗口切不过去）；两处视图容器也要把
-  // 「激活」算作活动。
-  const composer = readFileSync(join(process.cwd(), "src", "webview", "components", "Composer.tsx"), "utf8");
-  assert.ok(
-    /onFocus=\{\(event\) => \{\s*\n\s*completion\.textareaProps\.onFocus\?\.\(event\);\s*\n\s*post\(\{ type: "composerFocus" \}\);/.test(composer),
-    "文本域聚焦必须先跑补全的 onFocus 再发 composerFocus（两条都不许顶掉）",
-  );
+  assert.strictEqual(relativeMentionPath("c:/work/demo/", FILE), "src/a.ts", "只忽略盘符大小写");
+  assert.strictEqual(relativeMentionPath("C:/", FILE), "work/demo/src/a.ts", "盘根可用");
+  assert.strictEqual(relativeMentionPath("/", "/workspace/src/a.ts"), "workspace/src/a.ts", "POSIX 根可用");
+  assert.strictEqual(relativeMentionPath("//srv/share/", "\\\\srv\\share\\a.ts"), "a.ts", "同一 UNC 根可用");
+  for (const [root, file] of [
+    ["D:/work/demo", FILE], ["c:/Work/demo", FILE], ["C:/work/dem", FILE],
+    ["C:/work/demo", "C:/work/demo/../secret.ts"], ["//srv/share", "//srv/share2/file.ts"],
+    ["/", "//srv/share/a.ts"], ["C:work/demo", FILE],
+  ]) assert.strictEqual(relativeMentionPath(root, file), undefined, `${root} 不得跨根引用 ${file}`);
+
+  const { c, frames, client, logs } = makeController();
+  c.bindView("v1");
+  await c.handle({ type: "ready" }, "v1");
+  const scope = c.scopeOfView("v1");
+  assert.ok(scope);
+  c.applyWorkingDirectoryProjection(scope, "c:/work/demo/src", true, "snapshot");
+  const old = await showSelection(c, frames, "v1");
+  assert.strictEqual(old.token, "@a.ts#L12-L18", "工作目录投影优先于会话创建目录");
+  c.applyWorkingDirectoryProjection(scope, "C:/work/demo/src/", true, "snapshot");
+  await c.handle({ type: "ready" }, "v1");
+  assert.strictEqual(chipsFor(frames, "v1").at(-1), old, "仅盘符大小写或尾分隔符变化不改变目标");
+
+  c.applyWorkingDirectoryProjection(scope, "C:/work/other", true, "snapshot");
+  assert.strictEqual(chipsFor(frames, "v1").at(-1), null, "同会话切执行目录也同步撤下");
+  c.setSelectionFacts(FACTS);
+  assert.ok(logs.some((line) => line.includes("文件不在执行目录或路径不支持")), "诊断记录实际拦截原因");
+  assert.ok(logs.filter((line) => line.startsWith("[selection]")).every((line) =>
+    !line.includes(FACTS.preview) && !line.includes(FILE) && !line.includes(old.token)), "选区诊断不记录文件、引用或正文");
+  await c.handle(send("旧界面发送", old), "v1");
+  assert.strictEqual(promptText(client), "旧界面发送", "旧界面迟到发送不能附带其他目录的文件");
+
+  const current = await showSelection(c, frames, "v1", { ...FACTS, filePath: "C:/work/other/a.ts" });
+  assert.strictEqual(current.token, old.token, "不同文件可折出同一个相对 token");
+  assert.notStrictEqual(current.id, old.id);
+  await c.handle(send("相同 token 也不采纳迟到帧", old), "v1");
+  assert.strictEqual(promptText(client), "相同 token 也不采纳迟到帧");
+  await c.handle(send("仅采纳新投递", current), "v1");
+  assert.strictEqual(promptText(client), `仅采纳新投递\n\n${current.token}`);
+  c.applyWorkingDirectoryProjection(scope, "C:/work/demo/src", true, "snapshot");
+  await c.handle({ type: "ready" }, "v1");
+  assert.strictEqual(chipsFor(frames, "v1").at(-1), null, "切回旧 cwd 并重载也不会复活引用");
+  console.log("selectionSend: 执行目录、盘符和根边界、相同 token 的迟到发送 ✓");
+}
+
+// ---------- 5. 未绑窗口的根切换也中止待投递 ----------
+{
+  const { c, frames } = makeController();
+  c.bindView("v1");
+  c.setSelectionFacts(FACTS);
+  c.newSessionCwd = "D:/work/other";
+  await c.afterRootChanged("v1", { viewId: "v1", epoch: 0 });
+  c.newSessionCwd = CWD;
+  await settleSelection();
+  assert.deepStrictEqual(chipsFor(frames, "v1"), [], "未绑定时切走再回原根，也不能继承待投递选区");
+}
+
+// ---------- 6. 真实 VS Code 事件与视图活动的接线；不依赖源码换行符 ----------
+{
+  const extension = readFileSync(join(process.cwd(), "src", "extension.ts"), "utf8");
+  const selectionListener = extension.split("vscode.window.onDidChangeTextEditorSelection(")[1]
+    ?.split("vscode.window.onDidChangeActiveTextEditor(")[0];
+  assert.ok(selectionListener?.includes("const primary = selections[0]"));
+  assert.ok(selectionListener.includes("captureEditorSelection(textEditor, primary)"));
+  assert.ok(!selectionListener.includes("activeTextEditor"));
   const chatView = readFileSync(join(process.cwd(), "src", "chatView.ts"), "utf8");
-  assert.ok(
-    /event\.webviewPanel\.visible \|\| event\.webviewPanel\.active/.test(chatView),
-    "编辑区面板的激活（点进去）也要记活动窗口（侧栏视图公开 API 没有「激活」事件，靠 composerFocus 兜底）",
-  );
-  const controllerSource = source;
-  assert.ok(
-    /case "composerFocus":/.test(controllerSource),
-    "宿主要显式接住 composerFocus 帧（活动登记在 attach 层，本身无语义）",
-  );
-  console.log("selectionSend: ready 归属判据、事件即快照、点消息框即切换的接线钉住 ✓");
+  assert.match(chatView, /message\?\.type === "view\/activity"\)\s*\{\s*this\.controller\.noteActiveView\(viewId\);\s*return;/);
+  assert.match(chatView, /const activated = active && !wasActive;\s*wasActive = active;\s*if \(activated\) this\.controller\.noteActiveView\(viewId\);/);
+  console.log("selectionSend: 选区事件和活动帧的宿主接线 ✓");
 }
 
 console.log("\nselectionSend: all assertions passed");

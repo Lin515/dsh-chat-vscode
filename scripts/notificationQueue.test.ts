@@ -281,6 +281,7 @@ interface Internals {
   subscribe(listener: (target: string, frame: Record<string, unknown>) => void): unknown;
   bindView(viewId: string): void;
   bindViewKind(viewId: string, kind: "primary" | "secondary" | "panel"): void;
+  noteActiveView(viewId: string): void;
   unbindView(viewId: string): void;
   openSession(viewId: string, sessionId: string): Promise<void>;
   handle(message: Record<string, unknown>, viewId: string): Promise<void>;
@@ -561,13 +562,22 @@ async function open(h: Harness, viewId: string, sessionId: string): Promise<void
   );
   assert.deepStrictEqual(opened.map((captured) => captured.target), ["primary-1"], "只向主侧栏开抽屉");
 
-  // 有活动窗口时走定向帧
+  // 主侧栏消费专属意图，但它的登记与 ready 不等于主动切换窗口。
+  h.frames.length = 0;
+  h.c.openNotifications();
+  assert.deepStrictEqual(
+    h.frames.filter((captured) => captured.frame.type === "ui/openPanel").map((captured) => captured.target),
+    ["panel-1"],
+    "侧栏 ready 不抢走活动窗口",
+  );
+
+  h.c.noteActiveView("primary-1");
   h.frames.length = 0;
   h.c.openNotifications();
   assert.deepStrictEqual(
     h.frames.filter((captured) => captured.frame.type === "ui/openPanel").map((captured) => captured.target),
     ["primary-1"],
-    "有活动窗口时定向发帧（activeViewId 是最近活动的那个）",
+    "用户切到侧栏后，命令定向发给新的活动窗口",
   );
   console.log("  ✓ 命令路由：无窗口唤起主侧栏、只由 primary 消费、有窗口定向发帧");
 }

@@ -25,4 +25,4 @@
 ## src/ 根（扩展宿主）
 
 - `extension.ts` — 扩展入口：注册命令、`ChatViewProvider`、配置监听、supervisor 管理器装配与停用清理。
-- `chatView.ts` — 承载自绘界面的 webview 面板：只做注入带 nonce 的 CSP、加载打包产物、宿主 ↔ 界面消息转发；所有会话逻辑都在 `dsh/controller.ts`。
+- `chatView.ts` — 承载自绘界面的 Webview：注入带 nonce 的 CSP、加载打包产物、转发宿主 ↔ 界面消息；只有专用活动帧、编辑器面板实际激活或显式打开才通知控制器切换活动视图。会话逻辑在 `dsh/controller.ts`。
