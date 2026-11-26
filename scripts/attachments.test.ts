@@ -514,10 +514,10 @@ console.log("attachments: 目录探测 / id / 错误上报 ✓");
     "四项准入上限与「已有附件」都要真的传进 planIntake：漏了 existing 就等于只按新条目判额度",
   );
   assert.ok(
-    /private addDirectoryReference\(viewId: string, path: string\): void \{\s*\n\s*this\.insertMention\(viewId, formatFileMention\(this\.relativePath\(path\), "directory"\)\)/.test(
+    /private addDirectoryReference\(viewId: string, path: string\): void \{\s*\n\s*this\.insertMention\(viewId, manualDirectoryReference\(path, this\.selectionCwd\(viewId\)\)\)/.test(
       controller,
     ),
-    "目录只有一个落点：`@dir/` 引用文本（分隔符归一与尾斜杠在 formatFileMention 里）",
+    "目录只有一个落点：`@dir/` 引用文本（分隔符归一、尾斜杠与按会话执行目录折算都在 manualDirectoryReference 里）",
   );
   assert.ok(
     (controller.match(/this\.addDirectoryReference\(/g) ?? []).length >= 3,

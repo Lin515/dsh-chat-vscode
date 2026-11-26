@@ -5,6 +5,8 @@
  * - **只投递给最近活动的窗口**：后台挂载和 ready 不切换活动窗口；目标切换撤下旧引用，
  *   清掉待投递选区；切回来也不恢复，直到下一次编辑器操作；
  * - **按会话执行目录折引用**：目录之下才引用；另一个根 / 目录之外的文件不自动附带；
+ * - **手动引用同一条链**：编辑器选区 / 空选区整文件 / 目录都按目标会话执行目录折算，
+ *   目录之外退绝对路径；工作区相对拼写（多根会带文件夹名）不再被直接插入；
  * - **用户收起后不自动复活**：点 × / 发送收起后，仅重载页面（`ready` 重放）不得
  *   带回同一引用；下一次编辑器操作（`setSelectionFacts`）才解除，同引用也重显；
  * - **命令安全**：`/compact`、带参数的 `/model …` 带着芯片发送时仍走命令通道，
@@ -298,6 +300,42 @@ mock.timers.enable({ apis: ["setTimeout"] });
   assert.strictEqual(promptText(client), "旧引用迟到");
   await c.handle(send("拖动结束", replacement), "v1");
   assert.strictEqual(promptText(client), `拖动结束\n\n${replacement.token}`, "迟到旧标识不能撤下已经替换的新引用");
+}
+
+// ---------- 手动引用与自动引用同一条链：按目标会话执行目录折算 ----------
+//
+// 编辑器命令只把**绝对路径**交给控制器，折算在这里完成。多根工作区的
+// workspace.asRelativePath 会带上工作区文件夹名，那个拼写按会话目录再解释一次就会
+// 指向 <cwd>/<文件夹名>/…；所以「工作区相对拼写」不能再被当成执行世界相对路径。
+{
+  const { controller, c, frames } = makeController();
+  c.bindView("v1");
+  await c.handle({ type: "ready" }, "v1");
+  const insertions = () => frames.flatMap(({ target, frame }) =>
+    frame.type === "ui/insertText" ? [{ target, text: frame.text }] : []);
+
+  controller.addSelection(FILE, { start: 12, end: 18 });
+  assert.deepStrictEqual(insertions().at(-1), { target: "v1", text: REF },
+    "选区按目标会话执行目录折相对路径，而不是把本机绝对路径插进去");
+
+  controller.addSelection("C:/work/other/src/a.ts", { start: 1, end: 2 });
+  assert.deepStrictEqual(insertions().at(-1), { target: "v1", text: "@C:/work/other/src/a.ts#L1-L2" },
+    "多根工作区的另一个根退回可表示的绝对路径，绝不带工作区文件夹名");
+
+  const before = insertions().length;
+  controller.addSelection("demo/src/a.ts", { start: 1, end: 2 });
+  assert.strictEqual(insertions().length, before,
+    "旧链路的工作区文件夹名拼写不能被当成执行世界相对路径直接插入");
+
+  const scope = c.scopeOfView("v1");
+  assert.ok(scope);
+  c.applyWorkingDirectoryProjection(scope, "C:/work/moved", true, "snapshot");
+  controller.addSelection(FILE, { start: 12, end: 18 });
+  assert.deepStrictEqual(insertions().at(-1), { target: "v1", text: "@C:/work/demo/src/a.ts#L12-L18" },
+    "绑定会话的执行目录不再是窗口根时，目录之外的文件退回绝对路径");
+  controller.addFileContext(FILE);
+  assert.deepStrictEqual(insertions().at(-1), { target: "v1", text: "@C:/work/demo/src/a.ts" },
+    "整文件入口与选区委派同一份折算（不再按窗口根）");
 }
 
 // ---------- 往返同一选区及鼠标拖过锚点 ----------

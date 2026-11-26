@@ -10,7 +10,12 @@
 import assert from "node:assert";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { selectionLines, selectionPreview } from "../src/dsh/selection";
+import {
+  manualDirectoryReference,
+  manualFileReference,
+  selectionLines,
+  selectionPreview,
+} from "../src/dsh/selection";
 
 /** 快速构造一个选区（行/列都是 0 基，与 VS Code 一致）。 */
 function pick(startLine: number, startChar: number, endLine: number, endChar: number) {
@@ -58,24 +63,24 @@ console.log("selection: 空选区返回 undefined ✓");
   assert.match(addToChat, /const\s+lines\s*=\s*selectionLines\(editor\.selection\)/,
     "编辑器命令必须从当前选区提取行号");
   assert.match(addToChat,
-    /if\s*\(lines\)\s*controller\.addSelection\(vscode\.workspace\.asRelativePath\(editor\.document\.uri\),\s*lines\);\s*else\s+void\s+controller\.addFileContext\(source\.filePath\)/,
-    "普通文件沿用带行号的选区入口，空选区走整文件入口");
+    /if\s*\(lines\)\s*controller\.addSelection\(source\.filePath,\s*lines\);\s*else\s+void\s+controller\.addFileContext\(source\.filePath\)/,
+    "普通文件把**绝对路径**交给控制器，由它按目标会话执行目录折算");
+  assert.doesNotMatch(addToChat, /vscode\.workspace\.asRelativePath\s*\(/,
+    "多根工作区的 asRelativePath 会带上工作区文件夹名，不能再用来生成引用");
   // 实际的插入与发送在 selectionSend.test.ts 用真控制器验证，这里只钉住编辑器分派。
   assert.match(addToChat, /if\s*\(source\.remoteFile\)\s*\{[\s\S]*?controller\.addRemoteFileContext\(source\.remoteFile,\s*lines\);\s*return;/,
     "只读文档必须把原文件身份与可选行号一起交给控制器，不落入本地文件分支");
   const controller = readFileSync(join(process.cwd(), "src", "dsh", "controller.ts"), "utf8");
   assert.ok(
-    /this\.insertMention\(viewId, formatFileMentionWithLines\(name, lines\)\)/.test(controller),
-    "选区要插成带行号的 `@` 引用",
+    /manualFileReference\(filePath, this\.selectionCwd\(viewId\), lines\)/.test(controller),
+    "选区要插成带行号的 `@` 引用，并和自动引用共用按会话执行目录折算的函数",
   );
   assert.ok(
-    /this\.insertMention\(viewId, formatFileMention\(this\.relativePath\(path\), "file"\)\)/.test(controller),
-    "文件右键也要插成 `@` 引用",
+    /manualFileReference\(path, this\.selectionCwd\(viewId\)\)/.test(controller),
+    "文件右键也要插成 `@` 引用，同样按会话执行目录折算",
   );
   assert.ok(
-    /private addDirectoryReference\(viewId: string, path: string\): void \{\s*\n\s*this\.insertMention\(viewId, formatFileMention\(this\.relativePath\(path\), "directory"\)\)/.test(
-      controller,
-    ),
+    /manualDirectoryReference\(path, this\.selectionCwd\(viewId\)\)/.test(controller),
     "目录（右键 / 粘贴 / 接入管线）走唯一的目录落点，插成带结尾斜杠的 `@` 引用",
   );
   assert.ok(
@@ -110,6 +115,52 @@ console.log("selection: 空选区返回 undefined ✓");
   );
 }
 console.log("selection: 命令 → 带行号的 `@` 引用 ✓");
+
+// ---------- 手动引用与自动引用同一条链：目标会话执行目录优先，目录外退绝对路径 ----------
+//
+// 手动命令的 token 在插入时就得定下来，之后只会跟着草稿走；所以必须按**插入那一刻**
+// 目标窗口会话的执行目录折算。多根工作区的 workspace.asRelativePath 会带上工作区
+// 文件夹名（demo/src/a.ts），那个拼写不是执行世界路径——按会话目录再解释一次就指到
+// <cwd>/demo/src/a.ts。这里钉住「相对优先、绝对兜底、无法表示就不插」三条。
+{
+  const cwd = "C:/work/demo";
+  assert.strictEqual(
+    manualFileReference("C:/work/demo/src/a.ts", cwd, { start: 12, end: 40 }),
+    "@src/a.ts#L12-L40",
+    "执行目录之下折相对路径，与自动引用同一个折算函数",
+  );
+  assert.strictEqual(
+    manualFileReference("C:/work/other/src/a.ts", cwd, { start: 1, end: 2 }),
+    "@C:/work/other/src/a.ts#L1-L2",
+    "多根工作区的另一个根退回可表示的绝对路径，绝不带工作区文件夹名",
+  );
+  assert.strictEqual(
+    manualFileReference("C:/work/demo/my dir/a.ts", cwd, { start: 1, end: 2 }),
+    '@"my dir/a.ts#L1-L2"',
+    "目录内的带空格路径仍是引号内的单 token",
+  );
+  assert.strictEqual(
+    manualFileReference("demo/src/a.ts", cwd, { start: 1, end: 2 }),
+    undefined,
+    "工作区相对拼写不是执行世界路径，不猜它相对谁",
+  );
+  assert.strictEqual(
+    manualFileReference("C:/work/demo/src/a.ts", undefined),
+    "@C:/work/demo/src/a.ts",
+    "还没有执行目录证据时才按绝对路径引用",
+  );
+  assert.strictEqual(
+    manualDirectoryReference("C:/work/demo/src", cwd),
+    "@src/",
+    "目录同样按执行目录折算",
+  );
+  assert.strictEqual(
+    manualDirectoryReference("C:/work/other/src", cwd),
+    "@C:/work/other/src/",
+    "目录在另一个根时退绝对路径并保留结尾斜杠",
+  );
+}
+console.log("selection: 手动引用的折算与回退 ✓");
 
 // ---------- 选区芯片的悬停预览（selectionPreview） ----------
 {

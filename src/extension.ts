@@ -433,8 +433,11 @@ function registerContributions(context: vscode.ExtensionContext, host: Contribut
         controller.addRemoteFileContext(source.remoteFile, lines);
         return;
       }
-      // 普通文件沿用选区的工作区相对路径、整文件的文件引用入口。
-      if (lines) controller.addSelection(vscode.workspace.asRelativePath(editor.document.uri), lines);
+      // 普通文件把**绝对路径**交给控制器：它按目标窗口会话的执行目录折算（与自动引用
+      // 同一份函数），目录之外退绝对路径。**不能**用 `workspace.asRelativePath`——多根
+      // 工作区会带上工作区文件夹名，那个拼写再按会话目录解释一次就会指到
+      // `<cwd>/<文件夹名>/…`。
+      if (lines) controller.addSelection(source.filePath, lines);
       else void controller.addFileContext(source.filePath);
       // 焦点回到加引用的窗口，不能把编辑区对话硬拽回侧栏。
       controller.revealActiveView();

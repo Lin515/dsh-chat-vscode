@@ -89,10 +89,8 @@ import {
 import { remoteFileUri } from "./remoteFileSystem";
 import type { RemoteFileAddress } from "./remoteFileAddress";
 import { shouldContinuePaging } from "./historyPaging";
-import { formatFileMention } from "./references";
 import {
   appendAutoReference,
-  formatFileMentionWithLines,
   isBrowseQuery,
   isDirectoryQuery,
   mentionPathOf,
@@ -100,7 +98,14 @@ import {
   selectionDirectoryKey,
 } from "../shared/mentions";
 import { matchPresetInput } from "../shared/presetMatch";
-import { localFileReference, remoteFileReference, remoteSelectionCwdKey, type SelectionFacts } from "./selection";
+import {
+  localFileReference,
+  manualDirectoryReference,
+  manualFileReference,
+  remoteFileReference,
+  remoteSelectionCwdKey,
+  type SelectionFacts,
+} from "./selection";
 import { presetMatchNames } from "../webview/presetDisplay";
 import { resolveForVsCode } from "./hostText";
 import { normalizeTurnProcessThreshold } from "../shared/turnProcessThreshold";
@@ -12147,10 +12152,10 @@ export class ChatController implements vscode.Disposable {
    * 附件入口（文件选择器返回的目录联接 / macOS bundle）、粘贴的剪贴板真路径、
    * 以及接入管线判出来的目录条目都走这里：目录**永远**是正文里的 `@dir/` token，
    * 不是附件芯片（用户 2026-09-21 口径：「粘贴文件夹不该变成附件」）。
-   * 分隔符归一（`\` → `/`）与结尾斜杠都在 `formatFileMention` 里。
+   * 分隔符归一（`\` → `/`）与结尾斜杠都在 `manualDirectoryReference` 里。
    */
   private addDirectoryReference(viewId: string, path: string): void {
-    this.insertMention(viewId, formatFileMention(this.relativePath(path), "directory"));
+    this.insertMention(viewId, manualDirectoryReference(path, this.selectionCwd(viewId)));
   }
 
   /**
@@ -13197,14 +13202,19 @@ export class ChatController implements vscode.Disposable {
    * 现在与文件 / 目录统一：插入 `@文件#L12-L40` 这样的**路径引用**，由模型自己用
    * `read` 工具去读那几行。
    *
+   * `filePath` 是编辑器文件的**绝对路径**，不是 `workspace.asRelativePath` 的结果：
+   * 多根工作区里后者会带上工作区文件夹名，那个拼写按会话目录再解释一次就会指到
+   * `<cwd>/<文件夹名>/…`。这里与自动引用共用 {@link manualFileReference}，按目标
+   * 窗口会话的执行目录折算；目录之外退可表示的绝对路径（手动命令不能静默失效）。
+   *
    * `lines` 是选区覆盖的行号（1 基闭区间）：**部分引用必须带上它**——它是这条引用
    * 与「整文件引用」唯一的区别（不说清楚的话模型只看到一个路径，而用户想的是
    * 「这几行」）。语法偏离官方的说明见 `shared/mentions.ts`。
    */
-  addSelection(name: string, lines?: { start: number; end: number }): void {
+  addSelection(filePath: string, lines?: { start: number; end: number }): void {
     const viewId = this.activeViewId();
     if (!viewId) return;
-    this.insertMention(viewId, formatFileMentionWithLines(name, lines));
+    this.insertMention(viewId, manualFileReference(filePath, this.selectionCwd(viewId), lines));
   }
 
   /** 只读副本的原路径只在产生它的连接 + 会话中有意义。 */
@@ -13446,12 +13456,14 @@ export class ChatController implements vscode.Disposable {
   async addFileContext(path: string): Promise<void> {
     const viewId = this.activeViewId();
     if (!viewId) return;
-    // 目录与文件都插成 `@` 引用；目录走唯一的目录落点（与附件入口、粘贴同一条规则）
+    // 目录与文件都插成 `@` 引用；目录走唯一的目录落点（与附件入口、粘贴同一条规则）。
+    // 两者都按**目标窗口会话的执行目录**折算（与编辑器自动引用同一份函数），
+    // 不按 VS Code 窗口根：绑定会话的执行目录可以不是窗口根。
     if (isDirectoryPath(path)) {
       this.addDirectoryReference(viewId, path);
       return;
     }
-    this.insertMention(viewId, formatFileMention(this.relativePath(path), "file"));
+    this.insertMention(viewId, manualFileReference(path, this.selectionCwd(viewId)));
   }
 
   /** 命令面板 / 右键文件夹：选目录加为最近活动窗口的 `@dir/` 引用。 */

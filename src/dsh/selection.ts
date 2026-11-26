@@ -12,6 +12,7 @@
  */
 
 import {
+  formatFileMention,
   formatFileMentionWithLines,
   mentionPathOf,
   normalizeMentionPath,
@@ -103,7 +104,7 @@ export type SelectionFacts = EditorReferenceSource & {
 };
 
 /** 只接受不需要消 `.` / `..` 或猜测分隔符就能表示的执行世界绝对路径。 */
-function remoteReferencePath(path: string, directory: boolean): string | undefined {
+function referenceablePath(path: string, directory: boolean): string | undefined {
   // `/a\b` 中的反斜杠在 POSIX 是文件名的一部分，不能交给会无条件归一的引用语法。
   if (!isAbsoluteWorkspacePath(path) || (!isWindowsStylePath(path) && path.includes("\\"))) return undefined;
   if (isDeviceNamespacePath(path)) return undefined;
@@ -128,7 +129,7 @@ function remoteReferencePath(path: string, directory: boolean): string | undefin
  * 一直显示一个可能指向别的目录的绝对引用。
  */
 export function remoteSelectionCwdKey(cwd: string | undefined): string | undefined {
-  return cwd === undefined ? undefined : (remoteReferencePath(cwd, true) ?? cwd);
+  return cwd === undefined ? undefined : (referenceablePath(cwd, true) ?? cwd);
 }
 
 /**
@@ -150,17 +151,62 @@ export function localFileReference(
   return formatFileMentionWithLines(relative, lines);
 }
 
+/**
+ * 手动添加的**本机文件**引用：优先相对目标会话执行目录，目录之外退可表示的绝对路径。
+ *
+ * 与 {@link localFileReference}（自动附带）的分别只在「折不出来怎么办」：自动附带
+ * 是背景行为，目录之外就静默不附带；手动命令是用户显式动作，选中的文件可能就在
+ * 多根工作区的另一个根下，不能什么都不做（那会让快捷键看起来失灵）。绝对路径与
+ * 只读副本的回退同口径——同一个执行世界，`@` 语法两种拼写模型都读得到。
+ *
+ * 返回 `undefined` 只表示**连绝对拼写也无法无歧义表示**（相对拼写、设备命名空间、
+ * 控制字符/引号、行号后缀歧义等），调用方按「跳过插入」处理。
+ */
+export function manualFileReference(
+  path: string,
+  cwd: string | undefined,
+  lines?: SelectionFacts["lines"],
+): string | undefined {
+  return localFileReference(path, cwd, lines) ?? absoluteFileReference(path, lines);
+}
+
+/** 执行世界绝对路径的 `@` 引用（本机目录外回退与只读副本共用）。 */
+export function absoluteFileReference(
+  path: string,
+  lines?: SelectionFacts["lines"],
+): string | undefined {
+  const absolute = referenceablePath(path, false);
+  if (!absolute || mentionPathOf(absolute) !== absolute) return undefined;
+  return formatFileMentionWithLines(absolute, lines);
+}
+
+/**
+ * 手动添加的**本机目录**引用：与 {@link manualFileReference} 同一条链，只多结尾斜杠。
+ *
+ * 目录拼写的相对折算要先把结尾分隔符去掉：`relativeMentionPath` 只认真实的目录段，
+ * 尾斜杠会被当成空段而拒绝。POSIX 上反斜杠是文件名的一部分，所以只有 Windows 形态
+ * 才把 `\\` 归成 `/`；绝对回退交给 `referenceablePath` 校验。
+ */
+export function manualDirectoryReference(path: string, cwd: string | undefined): string | undefined {
+  const trimmed = isWindowsStylePath(path)
+    ? normalizeMentionPath(path).replace(/\/+$/u, "")
+    : path.replace(/\/+$/u, "");
+  const relative = cwd === undefined || trimmed === "" ? undefined : relativeMentionPath(cwd, trimmed);
+  const value = relative ?? referenceablePath(path, true);
+  return value === undefined ? undefined : formatFileMention(value, "directory");
+}
+
 /** 只读副本折回原始文件：优先相对路径，无法安全相对化时用可表示的绝对路径。 */
 export function remoteFileReference(
   path: string,
   cwd: string | undefined,
   lines?: SelectionFacts["lines"],
 ): string | undefined {
-  const absolute = remoteReferencePath(path, false);
+  const absolute = referenceablePath(path, false);
   if (!absolute || mentionPathOf(absolute) !== absolute) return undefined;
   const absoluteToken = formatFileMentionWithLines(absolute, lines);
   if (!absoluteToken) return undefined;
-  const dir = cwd === undefined ? undefined : remoteReferencePath(cwd, true);
+  const dir = cwd === undefined ? undefined : referenceablePath(cwd, true);
   const relative = dir === undefined ? undefined : relativeMentionPath(dir, absolute);
   // 相对拼写不安全（POSIX 字面反斜杠、盘符样式、行号后缀……）时用绝对路径；
   // 这些语法判据统一在 `relativeMentionPath` 里，两边不再各写一份。
