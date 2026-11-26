@@ -3,6 +3,22 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 This project follows [Semantic Versioning](https://semver.org/).
 
+## 0.15.0（2026-11-26）
+
+### 中文
+
+- 新增：可自动附带编辑器选区或整文件引用（默认仅选区），发送前可预览或移除，且不修改草稿或影响斜杠命令。
+- 新增：对话打开的普通只读副本支持自动和手动引用原文件，优先使用相对执行目录的路径，目录外使用绝对路径。
+- 新增：按住 Alt（macOS 上为 Option）单击鲸鱼按钮可并排打开对话，普通单击仍在当前分组打开。
+- 修复：发送前复核自动引用的目标会话和执行目录，避免在多根工作区切换时发出指向错误文件的引用；取消发送时保留原始草稿和附件。
+
+### English
+
+- Added: Automatically include editor selections or whole-file references (selections only by default), with a preview and a remove button, without changing drafts or slash commands.
+- Added: Read-only copies opened from chat support automatic and manual references to the original file, using paths relative to the working directory when possible and absolute paths for files outside it.
+- Added: Alt-click (Option-click on macOS) the whale button to open a chat beside the editor; a regular click still opens it in the current group.
+- Fixed: Automatic references are rechecked against the target session and working directory before sending, preventing wrong-file references when switching roots and preserving the original draft and attachments if the send is canceled.
+
 ## 0.14.0（2026-11-20）
 
 ### 中文
