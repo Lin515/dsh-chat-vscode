@@ -85,6 +85,7 @@ const EXPECTED_SESSION_KEYS = [
 const EXPECTED_APPEARANCE_KEYS = [
   "locale",
   "diffLayout",
+  "openRealFileOnClick",
   "fontSizePx",
   "questionBatch",
   "turnProcessThreshold",
@@ -247,6 +248,7 @@ console.log("sessionView: undefined → null 的折返只在构造器里 ✓");
   const source: AppearanceViewSource = {
     locale: () => "zh-cn",
     diffLayout: () => "auto",
+    openRealFileOnClick: () => true,
     fontSizePx: () => undefined,
     questionBatch: () => 0,
     turnProcessThreshold: () => 3,
@@ -265,6 +267,7 @@ console.log("sessionView: undefined → null 的折返只在构造器里 ✓");
   assert.strictEqual(view.fontSizePx, null, "字号 0（auto）过线成 null，界面清掉 CSS 变量");
   assert.strictEqual(view.questionBatch, 0, "0 是真值（不是「没有值」）");
   assert.strictEqual(view.permissionAutoReview, true, "布尔按取值过（Auto review 档可用）");
+  assert.strictEqual(view.openRealFileOnClick, true, "文件链接单击档按布尔过线");
 }
 console.log("sessionView: 外观态键集固定 ✓");
 

@@ -1175,6 +1175,9 @@
           questionBatch: 1,
           // 连续过程折叠的阈值（`dshChat.turnProcessThreshold`）：默认 5。
           turnProcessThreshold: 5,
+          // 文件链接单击档（`dshChat.openRealFileOnClick`）：`?realClick=1` 看
+          // 「普通单击已走真实文件」的悬停形态（Alt 提示省掉，HTML 浏览器提示保留）。
+          openRealFileOnClick: flag("realClick"),
           // 界面字号（整数 px，`dshChat.fontSize`）：undefined = auto（配置为 0 或坏值）。
           // `?font=16` 直接看某一个字号下的整套尺度——走的是真实通路：宿主下发的就是
           // 这个字段，界面自己据此写 `--font-size` 并推算倍率（见 src/webview/uiScale.ts）。

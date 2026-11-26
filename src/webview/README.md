@@ -83,8 +83,9 @@ React / 浏览器环境，不使用 Node API。上层边界见[源码导航](<..
 
 ## 内容、附件、任务与队列
 
-- [fileLinks.ts](<fileLinks.ts>) — Markdown 路径锚点与本轮文件 token；行内代码按「精确 / 唯一 basename / 产物参数别名」并入同一集合，只有唯一目标才可点；另给 `fileOpenIntent`（Alt 真实文件 / Ctrl+HTML 浏览器 / 普通只读）的唯一判据。
-- [linkHovers.ts](<linkHovers.ts>) — 正文链接的悬停标题（完整路径 / 完整地址、Alt 真实文件、HTML 的 Ctrl/Cmd 浏览器提示）；标题由 `markdown/render.tsx` 在渲染时合并，不再做渲染后 DOM 注入。
+- [fileLinks.ts](<fileLinks.ts>) — Markdown 路径锚点与本轮文件 token；行内代码按「精确 / 唯一 basename / 产物参数别名」并入同一集合，只有唯一目标才可点；另给 `fileOpenIntent`（Alt 真实文件 / Ctrl+HTML 浏览器 / 普通只读）与单击档 `FileOpenPolicy`（`dshChat.openRealFileOnClick` 打开后普通单击复刻 Alt，且决定悬停是否还提示 Alt）的唯一判据。
+- [fileOpenPolicyContext.ts](<fileOpenPolicyContext.ts>) — 把单击档放进 React 树：正文与已发出的引用共用同一份策略；缺省 Provider 时退回「单击只读副本」。
+- [linkHovers.ts](<linkHovers.ts>) — 正文链接的悬停标题（完整路径 / 完整地址、Alt 真实文件、HTML 的 Ctrl/Cmd 浏览器提示）；单击已是真实文件时省掉 Alt 那一行；标题由 `markdown/render.tsx` 在渲染时合并，不再做渲染后 DOM 注入。
 - [modifierLabel.ts](<modifierLabel.ts>) — 悬停文案的平台修饰键标签（Mac→Cmd，Win/Linux→Ctrl）；点击判据仍只看 ctrlKey / metaKey。
 - [localImages.ts](<localImages.ts>) — 正文图片交宿主读取，缓存按连接、会话与有效执行目录隔离；图片叶节点自持 pending / ready / failed。
 - [imagePreview.ts](<imagePreview.ts>) — 原图浮层的开合订阅、滚轮缩放 / 拖动几何与「复原」端口；1 为适配视口，缩放锚定光标、平移受边界约束。

@@ -338,8 +338,8 @@ export function sessionPatch<K extends keyof SessionView>(
 }
 
 /**
- * 全局外观态（**与会话无关**的那几项：语言、diff 排版、字号、问卷批次、过程折叠阈值、
- * 运行中发送行为、权限目录里有没有 Auto review 档）。
+ * 全局外观态（**与会话无关**的那几项：语言、diff 排版、文件链接的单击档、字号、
+ * 问卷批次、过程折叠阈值、运行中发送行为、权限目录里有没有 Auto review 档）。
  *
  * 与 `SessionView` 同一个来源形态与同一条折返流水线；它填的是首帧快照里属于部署/窗口
  * 设置的那一半。刻意与 `SessionView` 分开：会话切换时它们**不变**，混在一起会让
@@ -348,6 +348,7 @@ export function sessionPatch<K extends keyof SessionView>(
 export interface AppearanceView {
   locale?: ChatState["locale"];
   diffLayout?: ChatState["diffLayout"];
+  openRealFileOnClick?: ChatState["openRealFileOnClick"];
   fontSizePx?: ChatState["fontSizePx"];
   questionBatch?: ChatState["questionBatch"];
   turnProcessThreshold?: ChatState["turnProcessThreshold"];
@@ -365,6 +366,7 @@ export type AppearanceViewSource = Record<keyof AppearanceView, () => unknown>;
 export const APPEARANCE_VIEW_KEYS = [
   "locale",
   "diffLayout",
+  "openRealFileOnClick",
   "fontSizePx",
   "questionBatch",
   "turnProcessThreshold",
@@ -381,6 +383,9 @@ type AppearanceFields = FieldTable<AppearanceView, AppearanceViewSource>;
 export const APPEARANCE_FIELDS = {
   locale: { read: (source) => source.locale?.() as AppearanceView["locale"] },
   diffLayout: { read: (source) => source.diffLayout?.() as AppearanceView["diffLayout"] },
+  openRealFileOnClick: {
+    read: (source) => source.openRealFileOnClick?.() as AppearanceView["openRealFileOnClick"],
+  },
   fontSizePx: { read: (source) => source.fontSizePx?.() as AppearanceView["fontSizePx"] },
   questionBatch: { read: (source) => source.questionBatch?.() as AppearanceView["questionBatch"] },
   turnProcessThreshold: {

@@ -294,6 +294,11 @@
           "minimum": 0,
           "markdownDescription": "%config.turnProcessThreshold%"
         },
+        "dshChat.openRealFileOnClick": {
+          "type": "boolean",
+          "default": false,
+          "description": "%config.openRealFileOnClick%"
+        },
         "dshChat.agentPreset": {
           "type": "string",
           "scope": "machine",

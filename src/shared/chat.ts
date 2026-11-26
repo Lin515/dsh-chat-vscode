@@ -1651,6 +1651,15 @@ export interface ChatState {
   /** 编辑类节点的 diff 排版（对应 dshChat.diffLayout）。 */
   diffLayout?: DiffLayout;
   /**
+   * 文件链接单击直接打开可编辑的真实文件，而不是只读副本
+   * （对应 `dshChat.openRealFileOnClick`）。
+   *
+   * 只影响正文锚点、行内代码与已发出的 `@文件` 引用：文件芯片、本轮改动行、
+   * 草稿引用与工具节点的修饰键动作都不读它。真实文件不可达时由宿主回退只读
+   * 副本并在通知里说明（与 Alt 那一档同一条链路）。
+   */
+  openRealFileOnClick?: boolean;
+  /**
    * 文件芯片的改动种类表（键 = 芯片上的原样路径，值 = 宿主按执行世界判定的种类）。
    *
    * 宿主在会话加载与每轮写类调用后**整表**重算下发（patch 顶层合并，整表替换）；

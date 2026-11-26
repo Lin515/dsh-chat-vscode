@@ -14,8 +14,10 @@
  * 词表里有的东西。对不上（或同名文件不止一个）就保持惰性。
  *
  * 点开分三档（`fileOpenIntent`）：普通单击只读、Alt 打开可编辑真实文件、
- * Ctrl/Cmd + HTML 家族交系统浏览器（原有动作）。文件芯片 / 改动卡片不走这一档
- * ——它们的普通单击已经是「看改动」，Alt 直接打开真实文件，其余修饰键保持原只读打开。
+ * Ctrl/Cmd + HTML 家族交系统浏览器（原有动作）。配了 `dshChat.openRealFileOnClick`
+ * 时普通单击改走 Alt 那一档（真实文件不可达由宿主回退只读并提示），Alt 本身不变。
+ * 文件芯片 / 改动卡片不走这一档——它们的普通单击已经是「看改动」，Alt 直接打开
+ * 真实文件，其余修饰键保持原只读打开。
  *
  * 纯函数、不碰 DOM 也不引 React：断言见 `scripts/fileLinks.test.ts`。DOM 那一步
  * （把命中的行内代码换成按钮）在 `webview/markdown/render.tsx`。
@@ -134,7 +136,43 @@ export function externalLinkUrl(value: string): string | undefined {
  */
 export type FileOpenIntent = "read" | "real" | "browser";
 
-/** 按住 Alt：打开真实文件这一档。 */
+/**
+ * 文件链接的单击策略（`dshChat.openRealFileOnClick`）。
+ *
+ * 默认单击只读、Alt 真实文件；开关打开后单击直接走真实文件那一档。之所以做成
+ * **一个策略对象**而不是让每个入口各读一次配置：点击判据与悬停说明必须同步——
+ * 单击已经是真实文件时，悬停里「按住 Alt 打开真实文件」那一行就是多余的
+ * （动作仍保留，见 {@link showsAltFileHint}）。
+ */
+export interface FileOpenPolicy {
+  /** 单击（无修饰键）直接打开可编辑的真实文件。 */
+  readonly realFileOnClick: boolean;
+}
+
+/** 缺省策略：单击只读副本。 */
+export const DEFAULT_FILE_OPEN_POLICY: FileOpenPolicy = Object.freeze({ realFileOnClick: false });
+
+/** 宿主下发的布尔（缺省 / 坏值一律当关闭）。 */
+export function fileOpenPolicy(realFileOnClick: boolean | undefined): FileOpenPolicy {
+  return realFileOnClick === true ? { realFileOnClick: true } : DEFAULT_FILE_OPEN_POLICY;
+}
+
+/** 普通单击是否走真实文件那一档。 */
+export function plainClickOpensRealFile(policy: FileOpenPolicy = DEFAULT_FILE_OPEN_POLICY): boolean {
+  return policy.realFileOnClick;
+}
+
+/**
+ * 悬停是否还要给「按住 Alt 打开真实文件」提示。
+ *
+ * 单击已经是真实文件时不再给（用户 2026-11-26 口径）；Alt 的行为本身仍保留，
+ * 只是不必再提示。
+ */
+export function showsAltFileHint(policy: FileOpenPolicy = DEFAULT_FILE_OPEN_POLICY): boolean {
+  return !policy.realFileOnClick;
+}
+
+/** 按住 Alt：打开真实文件这一档（与单击策略无关，始终成立）。 */
 export function realFileRequested(event: { readonly altKey: boolean }): boolean {
   return event.altKey;
 }
@@ -147,6 +185,8 @@ export function realFileRequested(event: { readonly altKey: boolean }): boolean 
  * 文件**才换路（原有动作）。Alt 被真实文件档占用，不参与浏览器分流；普通文件
  * 按住 Ctrl/Cmd 仍是只读预览。文件芯片 / 改动卡片不在此列：那里 Alt 表示
  * “打开真实文件”，Ctrl/Cmd 等其它修饰键仍是原来的“直接打开只读文件、不要 diff”。
+ * 文件链接单击档（`openRealFileOnClick`）也不影响这里：它只改普通单击的档位
+ * （Alt 始终是真实文件），Ctrl/Cmd 的浏览器分流照旧。
  *
  * @param event 只读键盘修饰键的鼠标事件。
  * @param path 链接目标里的本地路径。
@@ -161,7 +201,15 @@ export function browserOpenRequested(
 /**
  * 文件链接点击意图的唯一判据（正文锚点、行内代码、已发出的 `@文件` 共用）。
  *
- * Alt 优先于 Ctrl/Cmd：Alt 是明确的“打开真实文件”，同时按住两键时按这一档处理。
+ * 优先序：
+ * 1. 按住 Alt → `real`；
+ * 2. 配置打开且**没有**按 Ctrl/Cmd → `real`（普通单击复刻 Alt 链路，含行号、
+ *    真实文件校验与失败回退提示）；
+ * 3. 按住 Ctrl/Cmd 且目标是浏览器可打开的文件 → `browser`；
+ * 4. 其余 → `read`。
+ *
+ * Alt 优先于 Ctrl/Cmd：同时按住两键时按真实文件处理。单击档刻意不越过 Ctrl/Cmd：
+ * 那是用户显式按住的另一条修饰键动作，HTML 的浏览器入口不该被配置项抢走。
  * 文件芯片 / 改动卡片的“Alt 真实文件、其余修饰键只读直接打开”不走这里，它们自己判。
  */
 export function fileOpenIntent(
@@ -171,8 +219,10 @@ export function fileOpenIntent(
     readonly metaKey: boolean;
   },
   path: string,
+  policy: FileOpenPolicy = DEFAULT_FILE_OPEN_POLICY,
 ): FileOpenIntent {
   if (realFileRequested(event)) return "real";
+  if (plainClickOpensRealFile(policy) && !event.ctrlKey && !event.metaKey) return "real";
   if (browserOpenRequested(event, path)) return "browser";
   return "read";
 }

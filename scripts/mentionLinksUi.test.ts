@@ -12,7 +12,9 @@
  * 4. 解不开 id 的会话引用**不做成链接**（点了也不知道开哪一条），照旧只做显示还原；
  * 5. 普通文本里的路径不造链接；
  * 6. **已经发出去**的会话引用（落盘时被服务端折成 `@标题`、id 由召回清单带回来）按会
- *    话渲染，且同一条正文在没有清单时按形状是文件引用。
+ *    话渲染，且同一条正文在没有清单时按形状是文件引用；
+ * 7. `dshChat.openRealFileOnClick` 打开后，文件引用的悬停不再提示 Alt（动作仍保留），
+ *    HTML 的 Ctrl/Cmd 浏览器提示照旧。
  *
  * 另有一条样式断言：`.mention-link` 必须是**行内**元素、没有上下内边距——气泡的折叠
  * 判定量的是 `scrollHeight`，按钮把行盒撑高的话「5 行」的阈值就与实际行数对不上。
@@ -29,6 +31,8 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { CommandView, MessageView } from "../src/shared/chat";
 import { CommandLinksContext, scanCommandLinks, commandDescription } from "../src/webview/commandLinks";
+import { fileOpenPolicy, type FileOpenPolicy } from "../src/webview/fileLinks";
+import { FileOpenPolicyContext } from "../src/webview/fileOpenPolicyContext";
 import { altLabel, modifierLabel } from "../src/webview/modifierLabel";
 import { TextsContext, dictionaryFor } from "../src/webview/texts";
 
@@ -80,14 +84,19 @@ const render = (
   sessionRefs?: MessageView["sessionRefs"],
   commands: readonly CommandView[] = [],
   cwd?: string,
+  policy: FileOpenPolicy = fileOpenPolicy(undefined),
 ): string =>
   quietly(() =>
     renderToStaticMarkup(
       createElement(
-        TextsContext.Provider,
-        { value: dictionaryFor(locale) },
-        createElement(CommandLinksContext.Provider, { value: { commands, openMenu() {} } },
-          createElement(Message, { message: userMessage(text, sessionRefs), cwd })),
+        FileOpenPolicyContext.Provider,
+        { value: policy },
+        createElement(
+          TextsContext.Provider,
+          { value: dictionaryFor(locale) },
+          createElement(CommandLinksContext.Provider, { value: { commands, openMenu() {} } },
+            createElement(Message, { message: userMessage(text, sessionRefs), cwd })),
+        ),
       ),
     ),
   );
@@ -156,6 +165,30 @@ const sessionToken = (label: string, id: string): string =>
   assert.deepEqual(posted, [{ type: "openFile", path: "out/index.html", line: undefined, link: true }]);
   posted.length = 0;
   console.log("mentionLinksUi: HTML 文件引用显示完整路径并按修饰键分流浏览器 / 真实文件 ✓");
+}
+
+// ---------- 2c. 单击档打开：Alt 提示省掉，HTML 浏览器提示保留 ----------
+{
+  const clickReal = fileOpenPolicy(true);
+  const plainFile = render("先看 @src/a.ts 再改别的", "zh", undefined, [], undefined, clickReal);
+  assert.ok(
+    plainFile.includes(`title="src/a.ts"`),
+    `单击已直接打开真实文件时，不该再挂「按住 Alt 打开真实文件」那一行：${plainFile}`,
+  );
+  assert.ok(
+    !plainFile.includes(zh.openRealFileHint(alt)),
+    `Alt 提示必须省掉（动作本身仍保留，见 fileOpenIntent）：${plainFile}`,
+  );
+  const htmlFile = render("看 @out/index.html 的渲染结果", "zh", undefined, [], "D:/dev/app", clickReal);
+  assert.ok(
+    htmlFile.includes(`title="D:/dev/app/out/index.html\n${zh.webFileBrowserHint(modifier)}"`),
+    `HTML 文件仍保留 Ctrl/Cmd 浏览器提示，只省掉 Alt 那一行：${htmlFile}`,
+  );
+  assert.ok(
+    !htmlFile.includes(zh.openRealFileHint(alt)),
+    `HTML 文件的 Alt 提示同样省掉：${htmlFile}`,
+  );
+  console.log("mentionLinksUi: 单击档打开后不再提示 Alt ✓");
 }
 
 // ---------- 3. 纯文本消息：一个链接按钮都不该出现 ----------

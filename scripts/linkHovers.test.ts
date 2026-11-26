@@ -4,9 +4,10 @@
  * 这一份只测纯函数与接线：
  * - `isBrowserOpenableFile`：哪些扩展名可以交给系统浏览器（白名单，界面与宿主共用）；
  * - `browserOpenRequested`：Ctrl/Cmd + 扩展名同时成立才换路；
- * - `fileOpenIntent` / `modifierLabelFor` / `altLabelFor`：Alt 真实文件、平台标签；
+ * - `fileOpenIntent` / `fileOpenPolicy` / `modifierLabelFor` / `altLabelFor`：Alt
+ *   真实文件、单击档复刻 Alt、平台标签；
  * - `fileLinkHoverTitle` / `externalLinkHoverTitle` / `mergeHoverTitle`：悬停给完整
- *   路径 / 完整地址，并保留作者写的 title；
+ *   路径 / 完整地址，保留作者写的 title；单击已是真实文件时省掉 Alt 提示；
  * - 渲染与宿主两端的接线（标题现在由 React 渲染树合成，DOM 证据见 markdown 测试）。
  *
  * 运行：npm test（已登记到 esbuild.scripts.mjs 的 entries）
@@ -15,7 +16,12 @@ import assert from "node:assert";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { isBrowserOpenableFile } from "../src/shared/webFile";
-import { browserOpenRequested, fileOpenIntent } from "../src/webview/fileLinks";
+import {
+  browserOpenRequested,
+  fileOpenIntent,
+  fileOpenPolicy,
+  showsAltFileHint,
+} from "../src/webview/fileLinks";
 import { externalLinkHoverTitle, fileLinkHoverTitle, mergeHoverTitle } from "../src/webview/linkHovers";
 import { altLabelFor, modifierLabelFor } from "../src/webview/modifierLabel";
 
@@ -89,33 +95,69 @@ console.log("linkHovers: 平台标签 Mac→Cmd/Option、Win/Linux→Ctrl/Alt �
   assert.strictEqual(fileOpenIntent(ctrl, "out/index.html"), "browser");
   assert.strictEqual(fileOpenIntent(ctrl, "src/a.ts"), "read");
   assert.strictEqual(fileOpenIntent(plain, "src/a.ts"), "read");
+
+  // 单击档打开后：普通单击复刻 Alt 链路；Alt 不变，Ctrl/Cmd 的浏览器 / 只读档不变
+  const clickReal = fileOpenPolicy(true);
+  assert.strictEqual(fileOpenIntent(plain, "src/a.ts", clickReal), "real");
+  assert.strictEqual(fileOpenIntent(plain, "out/index.html", clickReal), "real");
+  assert.strictEqual(fileOpenIntent(alt, "src/a.ts", clickReal), "real");
+  assert.strictEqual(
+    fileOpenIntent(ctrl, "out/index.html", clickReal),
+    "browser",
+    "Ctrl/Cmd + HTML 是显式修饰键动作，单击档不能把它抢成真实文件",
+  );
+  assert.strictEqual(
+    fileOpenIntent(ctrl, "src/a.ts", clickReal),
+    "read",
+    "Ctrl/Cmd 单击普通文件仍是只读预览（单击档只改无修饰键的单击）",
+  );
+  // 缺省 / 坏值都当关闭
+  assert.strictEqual(fileOpenIntent(plain, "src/a.ts", fileOpenPolicy(undefined)), "read");
+  assert.strictEqual(fileOpenIntent(plain, "src/a.ts", fileOpenPolicy(false)), "read");
+  // 单击已是真实文件时省掉 Alt 提示（动作仍保留）
+  assert.strictEqual(showsAltFileHint(clickReal), false);
+  assert.strictEqual(showsAltFileHint(fileOpenPolicy(undefined)), true);
 }
-console.log("linkHovers: Alt 走真实文件、Ctrl/Cmd+HTML 走浏览器、普通文件 Ctrl 仍只读 ✓");
+console.log("linkHovers: Alt 走真实文件、Ctrl/Cmd+HTML 走浏览器、单击档复刻 Alt 链路 ✓");
 
 // ---------- 3. 悬停标题：完整路径 / 完整链接 / 真实文件与浏览器提示 ----------
 {
   assert.strictEqual(
-    fileLinkHoverTitle("D:/dev/app", "src/index.html", texts, "Alt", "Ctrl"),
+    fileLinkHoverTitle("D:/dev/app", "src/index.html", texts, { alt: "Alt", modifier: "Ctrl" }),
     `D:/dev/app/src/index.html\n${texts.openRealFileHint("Alt")}\n${texts.webFileBrowserHint("Ctrl")}`,
   );
   // 绝对路径归一（盘符保留、分隔符统一）；macOS 标签
   assert.strictEqual(
-    fileLinkHoverTitle("D:/dev/app", "D:\\dev\\demo\\index.html", texts, "Option", "Cmd"),
+    fileLinkHoverTitle("D:/dev/app", "D:\\dev\\demo\\index.html", texts, { alt: "Option", modifier: "Cmd" }),
     `D:/dev/demo/index.html\n${texts.openRealFileHint("Option")}\n${texts.webFileBrowserHint("Cmd")}`,
   );
   // 普通文件只给路径与真实文件提示，不补浏览器提示
   assert.strictEqual(
-    fileLinkHoverTitle("D:/dev/app", "src/a.ts", texts, "Alt", "Ctrl"),
+    fileLinkHoverTitle("D:/dev/app", "src/a.ts", texts, { alt: "Alt", modifier: "Ctrl" }),
     `D:/dev/app/src/a.ts\n${texts.openRealFileHint("Alt")}`,
   );
   // 没有 cwd 时不猜绝对位置：保留链接上的原样拼写
   assert.strictEqual(
-    fileLinkHoverTitle(undefined, "src/index.html", texts, "Alt", "Ctrl"),
+    fileLinkHoverTitle(undefined, "src/index.html", texts, { alt: "Alt", modifier: "Ctrl" }),
     `src/index.html\n${texts.openRealFileHint("Alt")}\n${texts.webFileBrowserHint("Ctrl")}`,
+  );
+  // 单击已经是真实文件：Alt 那一行不再出现，HTML 的浏览器提示照旧
+  assert.strictEqual(
+    fileLinkHoverTitle("D:/dev/app", "src/index.html", texts, {
+      alt: "Alt",
+      modifier: "Ctrl",
+      policy: fileOpenPolicy(true),
+    }),
+    `D:/dev/app/src/index.html\n${texts.webFileBrowserHint("Ctrl")}`,
+  );
+  assert.strictEqual(
+    fileLinkHoverTitle("D:/dev/app", "src/a.ts", texts, { policy: fileOpenPolicy(true) }),
+    "D:/dev/app/src/a.ts",
+    "单击已是真实文件时普通文件只剩路径，没有多余的 Alt 提示",
   );
   assert.strictEqual(externalLinkHoverTitle("https://example.com/a"), "https://example.com/a");
 }
-console.log("linkHovers: 文件链接给完整路径、Alt 真实文件提示（HTML 再加 Ctrl/Cmd 浏览器） ✓");
+console.log("linkHovers: 文件链接给完整路径、Alt 真实文件提示（单击档打开后省掉 Alt 提示） ✓");
 
 // ---------- 3b. 作者 title 与完整目标合成到同一个 title 属性 ----------
 {
@@ -143,6 +185,13 @@ console.log("linkHovers: 作者 title 与完整目标合成、空值不编标题
       /webFileBrowserHint: \{\s*\n\s*zh:/.test(messages) &&
       /en:/.test(messages),
     "真实文件与浏览器提示必须中英各一条",
+  );
+  const manifest = JSON.parse(read("package.json")) as {
+    contributes?: { configuration?: { properties?: Record<string, unknown> } };
+  };
+  assert.ok(
+    manifest.contributes?.configuration?.properties?.["dshChat.openRealFileOnClick"] !== undefined,
+    "单击档必须是一条真实存在的配置项（界面读的是宿主下发的值）",
   );
 }
 console.log("linkHovers: 真实文件 / 浏览器分流在宿主侧再验、提示中英登记 ✓");

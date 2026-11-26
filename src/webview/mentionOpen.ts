@@ -6,8 +6,8 @@
  * Ctrl/Cmd+单击（`components/Composer.tsx`）共用这一份分派，三档目标各一条帧：
  *
  * - 文件 → 按 `FileOpenIntent` 三档：普通 `openFile`（只读虚拟资源）、
- *   `real: true`（Alt，可编辑的真实文件）、`openFileInBrowser`（Ctrl/Cmd + HTML，
- *   原有系统浏览器动作）；
+ *   `real: true`（Alt，或 `dshChat.openRealFileOnClick` 打开后的普通单击，
+ *   可编辑的真实文件）、`openFileInBrowser`（Ctrl/Cmd + HTML，原有系统浏览器动作）；
  * - 目录 → `revealPath`（宿主在资源管理器里展开它）；
  * - 会话 → `openInEditor` + `sessionId`（宿主**新开一个标签页**打开那条会话；不是
  *   `openSession`——那条会把**当前窗口**切走，点一条引用就换掉正在看的对话太唐突）。
@@ -22,8 +22,9 @@ import { mentionAt, type MentionLinkTarget } from "./mentionLinks";
 /**
  * 按目标种类打开一条引用。
  *
- * @param intent 只对文件目标有意义：`"read"` 普通只读、`"real"` Alt 可编辑真实文件、
- *   `"browser"` Ctrl/Cmd + HTML 交系统浏览器。目录 / 会话 / 命令目标忽略它。
+ * @param intent 只对文件目标有意义：`"read"` 普通只读、`"real"` 可编辑真实文件
+ *   （Alt，或配置打开后的普通单击）、`"browser"` Ctrl/Cmd + HTML 交系统浏览器。
+ *   目录 / 会话 / 命令目标忽略它。
  */
 export function openMentionTarget(
   target: MentionLinkTarget,

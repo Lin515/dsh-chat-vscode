@@ -1,5 +1,6 @@
 import { memo, useMemo } from "react";
 import type { FileLinkPort } from "../fileLinks";
+import { useFileOpenPolicy } from "../fileOpenPolicyContext";
 import { parseMarkdown } from "../markdown/parse";
 import { renderMarkdownDocument } from "../markdown/render";
 import type { MarkdownPhase } from "../markdown/types";
@@ -33,10 +34,13 @@ export const Markdown = memo(function Markdown({
   cwd?: string;
 }) {
   const texts = useTexts();
+  // 文件链接的单击档挂在树上（App 提供）：这里不接 prop，正文、工具卡与轨迹
+  // 预览才会共用同一份策略，不会有人漏传就退回另一档。
+  const policy = useFileOpenPolicy();
   const document = useMemo(() => parseMarkdown(text, phase), [text, phase]);
   return (
     <div className="md">
-      {renderMarkdownDocument(document, { phase, fileLinks, cwd, texts })}
+      {renderMarkdownDocument(document, { phase, fileLinks, cwd, policy, texts })}
     </div>
   );
 });

@@ -20,6 +20,8 @@ import { TodoPanel } from "./components/TodoPanel";
 import { ToolbarPreferences } from "./components/ToolbarPreferences";
 import { Spinner } from "./components/primitives";
 import { AppState, useAppState, type PanelKind } from "./state";
+import { fileOpenPolicy } from "./fileLinks";
+import { FileOpenPolicyContext } from "./fileOpenPolicyContext";
 import { TODO_PANEL_DEFAULT, todosOpenIn, toggleTodos, type TodoPanelState } from "./todoPanel";
 import { changesSummaryKey, turnsWithChangesCard } from "../shared/changesSummary";
 import { resolveInteractions } from "./pendingInteraction";
@@ -761,6 +763,17 @@ export function App() {
     }
     return paths;
   }, [state.commands]);
+  /**
+   * 文件链接的单击档（`dshChat.openRealFileOnClick`）。
+   *
+   * 只影响正文锚点、行内代码与已发出的 `@文件` 引用；文件芯片、改动卡片、草稿
+   * 引用与工具节点的修饰键动作各有自己的固定语义。策略对象同时决定点击档位与
+   * 悬停要不要再提示 Alt，见 `fileLinks.ts`。
+   */
+  const fileOpen = useMemo(
+    () => fileOpenPolicy(state.openRealFileOnClick),
+    [state.openRealFileOnClick],
+  );
   // 会话页是否在场：轨迹视图下它整块卸载，两个滚动 hook 都要能重挂
   const chatActive = state.panel !== "trajectory";
   // 当前会话 id：进 useAutoScroll（切会话时恢复贴底、回最新）与轨迹刷新（下方）
@@ -1053,6 +1066,7 @@ export function App() {
   };
 
   return (
+    <FileOpenPolicyContext.Provider value={fileOpen}>
     <TextsContext.Provider value={texts}>
       <CommandLinksContext.Provider value={commandLinks}>
       {/* 语言本身也下一层：服务端给的本地化文案（审批的 displayReason）要在渲染时按它挑 */}
@@ -1302,5 +1316,6 @@ export function App() {
       </LocaleContext.Provider>
       </CommandLinksContext.Provider>
     </TextsContext.Provider>
+    </FileOpenPolicyContext.Provider>
   );
 }

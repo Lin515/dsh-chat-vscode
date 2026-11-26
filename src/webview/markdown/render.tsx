@@ -24,7 +24,14 @@ import { isRemoteImageRef } from "../../shared/imageRef";
 import { post } from "../bridge";
 import { CodeBlock } from "../components/CodeBlock";
 import { MathView } from "../components/MathView";
-import { externalLinkUrl, fileOpenIntent, parseFileLink, type FileLinkPort } from "../fileLinks";
+import {
+  DEFAULT_FILE_OPEN_POLICY,
+  externalLinkUrl,
+  fileOpenIntent,
+  parseFileLink,
+  type FileLinkPort,
+  type FileOpenPolicy,
+} from "../fileLinks";
 import { openImagePreview } from "../imagePreview";
 import {
   failedImageText,
@@ -58,6 +65,8 @@ interface RenderContext {
   readonly codeSources: ReadonlyMap<number, CodeSource>;
   readonly fileLinks: FileLinkPort | undefined;
   readonly cwd: string | undefined;
+  /** 文件链接单击档（配置打开后普通单击也走真实文件；见 `fileLinks.ts`）。 */
+  readonly policy: FileOpenPolicy;
   readonly texts: Texts;
   readonly phase: MarkdownPhase;
   readonly inLink: boolean;
@@ -72,6 +81,8 @@ export interface RenderMarkdownOptions {
   readonly phase: MarkdownPhase;
   readonly fileLinks?: FileLinkPort;
   readonly cwd?: string;
+  /** 文件链接单击档；缺省 = 单击只读副本。 */
+  readonly policy?: FileOpenPolicy;
   readonly texts: Texts;
 }
 
@@ -87,6 +98,7 @@ export function renderMarkdownDocument(
     codeSources: document.codeSources,
     fileLinks: options.fileLinks,
     cwd: options.cwd,
+    policy: options.policy ?? DEFAULT_FILE_OPEN_POLICY,
     texts: options.texts,
     phase: options.phase,
     inLink: false,
@@ -434,7 +446,7 @@ function renderInlineCode(value: string, key: Key, context: RenderContext): Reac
         <button
           type="button"
           className="file-mention"
-          title={fileLinkHoverTitle(context.cwd, mention, context.texts)}
+          title={fileLinkHoverTitle(context.cwd, mention, context.texts, { policy: context.policy })}
           onClick={(event) => {
             event.preventDefault();
             event.stopPropagation();
@@ -570,7 +582,7 @@ function renderAnchor(node: Link, key: Key, context: RenderContext): ReactNode {
   const file = parseFileLink(node.url);
   const external = file === undefined ? externalLinkUrl(node.url) : undefined;
   const hint = file !== undefined
-    ? fileLinkHoverTitle(context.cwd, file.path, context.texts)
+    ? fileLinkHoverTitle(context.cwd, file.path, context.texts, { policy: context.policy })
     : external === undefined
       ? undefined
       : externalLinkHoverTitle(external);
@@ -771,7 +783,7 @@ function openMarkdownFile(
   event: { readonly altKey: boolean; readonly ctrlKey: boolean; readonly metaKey: boolean },
   context: RenderContext,
 ): void {
-  const intent = fileOpenIntent(event, path);
+  const intent = fileOpenIntent(event, path, context.policy);
   if (intent === "browser") {
     post({ type: "openFileInBrowser", path });
     return;

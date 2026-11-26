@@ -2,7 +2,8 @@ import { memo, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, t
 import type { ChangesSummaryView, DiffLayout, FileChangeKind, MessageSessionRef, MessageView, Segment } from "../../shared/chat";
 import { localImageMediaType } from "../../shared/imageRef";
 import { post } from "../bridge";
-import { fileLinkPort, fileOpenIntent, type FileLinkPort } from "../fileLinks";
+import { fileLinkPort, fileOpenIntent, type FileLinkPort, type FileOpenPolicy } from "../fileLinks";
+import { useFileOpenPolicy } from "../fileOpenPolicyContext";
 import { fileLinkHoverTitle, resolvedFilePath } from "../linkHovers";
 import { IconBranch } from "../icons";
 import { CopyButton } from "./CopyButton";
@@ -73,9 +74,14 @@ const USER_COLLAPSE_LINES = 5;
  * 文件引用只给路径与修饰键提示，**不写「打开这个文件」**：链接外观（蓝色、悬停
  * 下划线）已经说明单击能打开，再复述动作是噪音。
  */
-function mentionTitle(texts: Texts, target: MentionLinkTarget, cwd?: string): string {
+function mentionTitle(
+  texts: Texts,
+  target: MentionLinkTarget,
+  policy: FileOpenPolicy,
+  cwd?: string,
+): string {
   if (target.kind === "file") {
-    return fileLinkHoverTitle(cwd, target.path, texts);
+    return fileLinkHoverTitle(cwd, target.path, texts, { policy });
   }
   if (target.kind === "directory") {
     return `${resolvedFilePath(cwd, target.path)}\n${texts.mentionRevealFolder}`;
@@ -106,6 +112,7 @@ function renderMentionText(
   sessionRefs: readonly MessageSessionRef[] | undefined,
   commandLinks: CommandLinksPort,
   cwd: string | undefined,
+  policy: FileOpenPolicy,
 ): ReactNode[] {
   const mentions = scanMentionLinks(text, sessionRefs);
   const commands = scanCommandLinks(text, commandLinks.commands)
@@ -127,11 +134,13 @@ function renderMentionText(
           key={span.start}
           type="button"
           className="mention-link"
-          title={mentionTitle(texts, target, cwd)}
+          title={mentionTitle(texts, target, policy, cwd)}
           onClick={(event) => {
-            // 已发出的引用普通单击仍是只读预览；Alt 打开可编辑的真实文件，
-            // Ctrl/Cmd + HTML 文件改走系统浏览器（原有动作）。
-            const intent = target.kind === "file" ? fileOpenIntent(event, target.path) : "read";
+            // 已发出的引用：普通单击默认只读预览；配置打开后与 Alt 一样走
+            // 可编辑的真实文件；Ctrl/Cmd + HTML 文件仍可交给系统浏览器。
+            const intent = target.kind === "file"
+              ? fileOpenIntent(event, target.path, policy)
+              : "read";
             openMentionTarget(target, commandLinks.openMenu, intent);
           }}
         >
@@ -244,6 +253,7 @@ function UserBubble({
 }) {
   const texts = useTexts();
   const commandLinks = useCommandLinks();
+  const policy = useFileOpenPolicy();
   return (
     <div
       className={`bubble${expanded ? "" : " is-clamped"}`}
@@ -254,7 +264,7 @@ function UserBubble({
       {/* 正文里的 `@` 引用渲染成可点链接（一条消息里可能好几处），其余照旧纯文本 */}
       {text !== "" ? (
         <div ref={textRef} className="bubble-text">
-          {renderMentionText(text, texts, sessionRefs, commandLinks, cwd)}
+          {renderMentionText(text, texts, sessionRefs, commandLinks, cwd, policy)}
         </div>
       ) : null}
       {media}

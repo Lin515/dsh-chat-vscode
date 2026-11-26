@@ -367,6 +367,17 @@ function readDiffLayout(): DiffLayout {
 }
 
 /**
+ * 文件链接单击是否直接打开可编辑的真实文件（`dshChat.openRealFileOnClick`）。
+ *
+ * 只认布尔 `true`：缺省、手写 settings.json 里的坏值一律当关闭（单击仍开只读
+ * 副本）。真实文件那一档的准入与回退全在宿主 `openFile` 的 `real` 分支里，这里
+ * 只决定界面发哪条帧，不另做本机校验。
+ */
+function readOpenRealFileOnClick(): boolean {
+  return vscode.workspace.getConfiguration("dshChat").get<boolean>("openRealFileOnClick") === true;
+}
+
+/**
  * 行号是不是可用的 **1 基正整数**。
  *
  * 行号可能来自模型写的链接（`[…](src/a.ts#L0)`、`#Labc` 都能写出来），而
@@ -2753,6 +2764,8 @@ export class ChatController implements vscode.Disposable {
     return {
       locale: () => readLanguage(),
       diffLayout: () => readDiffLayout(),
+      /** 文件链接单击直接打开真实文件（缺省 false：单击只读副本，Alt 仍开真实文件）。 */
+      openRealFileOnClick: () => readOpenRealFileOnClick(),
       /** 界面字号（px）；undefined = auto，跟随 VS Code 注入的字号。 */
       fontSizePx: () => readFontSize(),
       /** 问卷一次展开几道题（多于它就依次问答；0 = 始终全部展开）。 */
@@ -3952,16 +3965,17 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
-   * 配置里改了语言、字号、问卷一次展开的题数或折叠阈值：推给界面。
+   * 配置里改了语言、文件链接的单击档、字号、问卷一次展开的题数或折叠阈值：推给界面。
    *
-   * 四者都**不需要**重载 webview：语言是纯词典切换（界面用 `locale` 选字典），
-   * 其余是三个数字。重载会丢掉滚动位置与展开状态，代价不成比例。
+   * 它们都**不需要**重载 webview：语言是纯词典切换（界面用 `locale` 选字典），
+   * 单击档是一个布尔，其余是三个数字。重载会丢掉滚动位置与展开状态，代价不成比例。
    */
   refreshAppearance(): void {
     this.emitAll({
       type: "patch",
       patch: {
         locale: readLanguage(),
+        openRealFileOnClick: readOpenRealFileOnClick(),
         /** 0（auto）时为 undefined，过线成 null，界面清掉 `--font-size` 回到 VS Code 字号 */
         fontSizePx: readFontSize(),
         questionBatch: readQuestionBatch(),
