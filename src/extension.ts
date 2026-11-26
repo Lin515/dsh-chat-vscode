@@ -4,7 +4,9 @@ import { ChatController } from "./dsh/controller";
 import { AGENT_DIFF_SCHEME, AgentDiffDocuments } from "./dsh/agentDiffDocuments";
 import { REMOTE_FILE_SCHEME, RemoteFileSystemProvider } from "./dsh/remoteFileSystem";
 import { resolveForVsCode } from "./dsh/hostText";
-import { selectionLines } from "./dsh/selection";
+import { selectionLines, selectionPreview } from "./dsh/selection";
+import { editorReferenceSource } from "./dsh/editorReference";
+import { parseAutoSelectionMode } from "./shared/autoSelection";
 import { createHostLog } from "./dsh/hostLog";
 import { IDLE_SEC_DEFAULT } from "./dsh/supervisorProtocol";
 import { SupervisorManager, groupForConfig } from "./dsh/supervisorManager";
@@ -160,6 +162,48 @@ interface Contributions {
 function registerContributions(context: vscode.ExtensionContext, host: Contributions): void {
   const { controller, provider, secondaryProvider, server } = host;
 
+  let selectionSourceEditor: vscode.TextEditor | undefined;
+  const selectionMode = () => parseAutoSelectionMode(host.config().get<unknown>("autoSelection"));
+  const clearEditorSelection = (reason: string) => {
+    selectionSourceEditor = undefined;
+    controller.clearSelectionContext(reason);
+  };
+  const sourceOfEditor = (editor: vscode.TextEditor) => {
+    const activeInput = vscode.window.tabGroups.all.find((group) => group.viewColumn === editor.viewColumn)
+      ?.activeTab?.input;
+    return editorReferenceSource(editor.document.uri, activeInput);
+  };
+  const captureEditorSelection = (editor: vscode.TextEditor, selection?: vscode.Selection, mouse = false) => {
+    const mode = selectionMode();
+    if (mode === "off") return clearEditorSelection("配置已关闭");
+    const source = sourceOfEditor(editor);
+    if (!source) return clearEditorSelection(`编辑器不支持（${mode}）`);
+    const lines = selection && selectionLines(selection);
+    if (!lines && mode === "selection") {
+      // 鼠标拖过锚点会短暂为空；只有同一来源可留占位，键盘等明确折叠立即清除。
+      if (mouse && editor === selectionSourceEditor) return controller.deferSelectionCollapse();
+      return clearEditorSelection("选区为空");
+    }
+    if (selectionSourceEditor && selectionSourceEditor !== editor) clearEditorSelection("选区来源编辑器变化");
+    selectionSourceEditor = editor;
+    log(`[selection] 已采样：档位=${mode}，类型=${lines ? "选区" : "文件"}`);
+    controller.setSelectionFacts({
+      ...source,
+      lines,
+      preview: selection && lines ? selectionPreview(editor.document.getText(selection)) : "",
+    });
+  };
+  const clearForUnsupportedActiveTab = () => {
+    if (!selectionSourceEditor) return;
+    const input = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
+    // 编辑区聊天标签可遮住源编辑器，但没有关闭它。侧栏焦点也可能保留原标签。
+    if (!input || input instanceof vscode.TabInputText) return;
+    if (input instanceof vscode.TabInputWebview &&
+        (input.viewType === ChatViewProvider.panelViewType ||
+         input.viewType === `mainThreadWebview-${ChatViewProvider.panelViewType}`)) return;
+    clearEditorSelection("活动标签不支持");
+  };
+
   context.subscriptions.push(
     // 必须走 `outputChannel()`（它会**赋值**给模块级的 `output`）：写成
     // `output ?? vscode.window.createOutputChannel(...)` 的话那个新建的通道不会被记住，
@@ -213,15 +257,27 @@ function registerContributions(context: vscode.ExtensionContext, host: Contribut
         return provider.openPanel(sessionId ?? controller.activeSessionId(), column).panel;
       },
     ),
-    // 编辑器标题栏（`editor/title` 贡献点）那颗「打开 DSH 窗口」按钮的落点：
-    // 与上面那条**刻意不同**——它固定开在**用户当前所在的编辑器分组**里
-    // （`ViewColumn.Active`，不是旁边新开一个分组），并且直接起一个**新会话**
-    // （用户 2026-09-15 口径：在编辑窗口右上角点一下，本分组里多一个 DSH 新会话
-    // 标签页并跳过去）。新会话是用户显式动作，允许拉起后台（见 supervisorManager
-    // 的口径），`newSession` 内部就是按 `{ start: true }` 连的。
+    // 编辑器标题栏（`editor/title` 贡献点）那颗鲸鱼按钮的两个落点：
+    // - **单击**：开在**用户当前所在的编辑器分组**里（`ViewColumn.Active`，不是旁边
+    //   新开一个分组），直接起一个**新会话**（用户 2026-09-15 口径：在编辑窗口右上角
+    //   点一下，本分组里多一个 DSH 新会话标签页并跳过去）；
+    // - **Alt+单击**：在相邻编辑器分组打开，VS Code 可复用已有分组，代码与对话同时可见（用户
+    //   2026-11-24 口径）。VS Code 的菜单 `alt` 字段接住 Alt 按住时的点击（工具栏在
+    //   Alt 按下时切到 alt 命令），所以这里注册两条命令，落点规则都住在
+    //   `ChatViewProvider`，命令侧不写死分组常量。
+    // 新会话是用户显式动作，允许拉起后台（见 supervisorManager 的口径），`newSession`
+    // 内部就是按 `{ start: true }` 连的。
     vscode.commands.registerCommand("dshChat.newSessionInGroup", async () => {
-      const { viewId } = provider.openPanel(undefined, vscode.ViewColumn.Active, true);
+      const { viewId } = provider.openPanelInCurrentGroup();
       log(`[cmd] newSessionInGroup viewId=${viewId}`);
+      await controller.newSession(viewId);
+    }),
+    // 上面那条的 Alt 分支：`package.json` 的 `editor/title` 菜单把 `alt` 指到这里。
+    // 菜单 `alt` 只认 `contributes.commands` 里声明过的命令；它的标题同时是按住 Alt
+    // 时悬停提示的后半句（`editorColumn.test.ts` 钉着这两条清单事实）。
+    vscode.commands.registerCommand("dshChat.newSessionBeside", async () => {
+      const { viewId } = provider.openPanelBeside();
+      log(`[cmd] newSessionBeside viewId=${viewId}`);
       await controller.newSession(viewId);
     }),
     // 「停止生成」停最近活动窗口正在跑的这一轮（后台继续）
@@ -368,19 +424,19 @@ function registerContributions(context: vscode.ExtensionContext, host: Contribut
         return;
       }
 
-      // 编辑器入口（或有选中时的命令面板/快捷键）：有选中加**带行号的选区引用**
-      if (editor && !editor.selection.isEmpty) {
-        const name = vscode.workspace.asRelativePath(editor.document.uri);
-        controller.addSelection(name, selectionLines(editor.selection));
-        // 焦点回到**加引用的那个窗口**（可能是侧栏，也可能是编辑区面板）：
-        // 写死 `dshChat.view.focus` 会把开在编辑区的对话硬拽回侧栏
-        controller.revealActiveView();
+      if (!editor) return;
+      const source = sourceOfEditor(editor);
+      if (!source) return;
+      const lines = selectionLines(editor.selection);
+      if (source.remoteFile) {
+        // 虚拟文件不走本机工作区路径；由控制器核对原连接与会话，再向插入的窗口回焦。
+        controller.addRemoteFileContext(source.remoteFile, lines);
         return;
       }
-      // 没有选区（或选区为空）→ 添加整个文件的 `@` 引用
-      const target = editor?.document.uri;
-      if (!target || target.scheme !== "file") return;
-      void controller.addFileContext(target.fsPath);
+      // 普通文件沿用选区的工作区相对路径、整文件的文件引用入口。
+      if (lines) controller.addSelection(vscode.workspace.asRelativePath(editor.document.uri), lines);
+      else void controller.addFileContext(source.filePath);
+      // 焦点回到加引用的窗口，不能把编辑区对话硬拽回侧栏。
       controller.revealActiveView();
     }),
     // 目录单独入口：Windows/Linux 的文件对话框不能同时选文件和目录
@@ -390,6 +446,43 @@ function registerContributions(context: vscode.ExtensionContext, host: Contribut
       if (uri) await controller.addFileContext(uri.fsPath);
       else await controller.addFolder();
       controller.revealActiveView();
+    }),
+
+    // 编辑器「当前选区」自动进芯片（评审 2026-11-24 口径）：选中即显示、发送时把
+    // 引用分笔传给宿主，**不碰草稿**——与上面的 addToChat（显式把 token 写进草稿）
+    // 互补，两条链互不影响。
+    //
+    // 选区事实只读本次事件（不是活动编辑器全局快照），只取主选区。
+    vscode.window.onDidChangeTextEditorSelection(({ textEditor, selections, kind }) => {
+      const primary = selections[0];
+      // 未知来源可能是 VS Code 恢复焦点或编辑器状态；它可以使已有选区失效，不能恢复选区。
+      if (kind === undefined) {
+        if ((!primary || primary.isEmpty) && textEditor === selectionSourceEditor) {
+          clearEditorSelection("选区已折叠（来源未知）");
+        }
+        return;
+      }
+      captureEditorSelection(textEditor, primary, kind === vscode.TextEditorSelectionChangeKind.Mouse);
+    }),
+    vscode.window.onDidChangeActiveTextEditor((editor) => {
+      if (!editor) return clearForUnsupportedActiveTab();
+      if (!sourceOfEditor(editor)) return clearEditorSelection("活动编辑器不支持");
+      if (editor === selectionSourceEditor) return;
+      // 聚焦另一普通文件只允许整文件引用；不能读取该编辑器遗留的选区。
+      if (selectionMode() === "file") captureEditorSelection(editor);
+      else if (selectionSourceEditor) clearEditorSelection("活动编辑器变化");
+    }),
+    vscode.window.tabGroups.onDidChangeTabs(({ closed }) => {
+      const source = selectionSourceEditor?.document.uri.toString();
+      if (source && closed.some((tab) =>
+        tab.input instanceof vscode.TabInputText && tab.input.uri.toString() === source)) {
+        return clearEditorSelection("源文件标签已关闭");
+      }
+      clearForUnsupportedActiveTab();
+    }),
+    vscode.window.tabGroups.onDidChangeTabGroups(clearForUnsupportedActiveTab),
+    vscode.workspace.onDidCloseTextDocument((document) => {
+      if (document === selectionSourceEditor?.document) clearEditorSelection("源文档已关闭");
     }),
 
     // 界面相关配置（diff 排版 / 语言 / 字号 / 问卷题数 / 折叠阈值）改了即时生效，
@@ -424,6 +517,12 @@ function registerContributions(context: vscode.ExtensionContext, host: Contribut
       if (event.affectsConfiguration("dshChat.autoConnect")) {
         controller.applyAutoConnect(host.config().get<boolean>("autoConnect") ?? true);
       }
+      if (event.affectsConfiguration("dshChat.autoSelection")) {
+        const mode = selectionMode();
+        clearEditorSelection(`配置变化：档位=${mode}`);
+        const editor = vscode.window.activeTextEditor;
+        if (mode === "file" && editor) captureEditorSelection(editor);
+      }
     }),
     // 打开 / 关掉文件夹会改「新会话落在哪个目录」（空态页那一行提示，含它可不可改），
     // 也决定还能不能给空态窗口补上那条空壳会话（没有目录时建不出来）
@@ -431,6 +530,9 @@ function registerContributions(context: vscode.ExtensionContext, host: Contribut
       void controller.applyWorkspaceFoldersChange();
     }),
   );
+  // 初次激活时可以引用当前文件，不能复用 VS Code 恢复的选区。
+  const editor = vscode.window.activeTextEditor;
+  if (selectionMode() === "file" && editor) captureEditorSelection(editor);
 }
 
 /** 服务器配置改了：提示重载窗口（这是唯一生效方式）。 */

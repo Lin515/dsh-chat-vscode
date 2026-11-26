@@ -90,19 +90,26 @@ const relevantFrames = (frames: ReturnType<typeof makeHarness>["frames"]) =>
     const preferenceAt = frames.findIndex(({ target, frame }) => target === "sidebar" && frame.type === "toolbar/preference");
     assert.ok(snapshotAt >= 0 && snapshotAt < preferenceAt, "底栏偏好应在首帧快照之后、打开抽屉之前到达");
 
-    controller.noteActiveView("editor");
     const afterReady = frames.length;
     controller.openToolbarPreferences();
     assert.deepEqual(relevantFrames(frames.slice(afterReady)), [
       { target: "editor", frame: preference(normalized) },
       { target: "editor", frame: panel },
-    ]);
+    ], "侧栏 ready 消费原命令，但不抢走当前活动窗口");
 
     controller.bindView("late");
     controller.bindViewKind("late", "panel");
+    const afterAttach = frames.length;
+    controller.openToolbarPreferences();
+    assert.deepEqual(relevantFrames(frames.slice(afterAttach)), [
+      { target: "editor", frame: preference(normalized) },
+      { target: "editor", frame: panel },
+    ], "后台登记也不抢走当前活动窗口");
+
+    controller.noteActiveView("late");
     const beforeLate = frames.length;
     controller.openToolbarPreferences();
-    assert.deepEqual(relevantFrames(frames.slice(beforeLate)), []);
+    assert.deepEqual(relevantFrames(frames.slice(beforeLate)), [], "已切到未就绪窗口时，命令等待该窗口 ready");
     await controller.handle({ type: "ready" }, "late");
     assert.deepEqual(relevantFrames(frames.slice(beforeLate)), [
       { target: "late", frame: preference(normalized) },

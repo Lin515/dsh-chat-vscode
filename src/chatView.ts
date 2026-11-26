@@ -65,13 +65,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     }
     this.armRestoreFallback(viewId);
     this.log(`[view] ${this.kind} 侧栏视图实例化 viewId=${viewId}`);
-    // 侧栏视图变可见视作活动：命令面板入口（新建/历史/加选区…）据此定位窗口。
-    // 编辑区面板有同样的处理（见 openPanel），两边口径必须一致
-    this.disposables.push(
-      view.onDidChangeVisibility(() => {
-        if (view.visible) this.controller.noteActiveView(viewId);
-      }),
-    );
+    // 侧栏的公开 API 只有可见性，没有激活事件；可见可能只是恢复布局或展开旁边的栏。
+    // 用户在侧栏里实际操作由 webview 的 `view/activity` 报告。
   }
 
   /**
@@ -92,7 +87,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     this.disposables.push(
       vscode.window.registerWebviewPanelSerializer(ChatViewProvider.panelViewType, {
         deserializeWebviewPanel: (panel: vscode.WebviewPanel, state: unknown) => {
-          const viewId = owner.attachPanel(panel);
+          const viewId = owner.attachPanel(panel, true);
           // 认领会话：优先用 webview 存下的身份（`state`，含子代理地址），认不出才按
           // VS Code 的恢复顺序对位（见 dsh/windowState.ts——只看顺序就是标签与会话
           // 交叉的那个缺陷）
@@ -131,14 +126,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   /**
    * 在编辑器区打开一个独立面板；指定会话时面板打开那个会话。
    *
-   * `column` 默认 `ViewColumn.Beside`（新开一个分组）；「在编辑器中打开」那条路先用
-   * {@link editorColumnFor} 取落点（已有标签组就在里面开新标签），只有明确要新开一个
-   * 分组时才落回这个默认值。`focus` 默认 false——**只有编辑器标题栏那条**
-   * 「在本分组新建对话窗口」要 `focus: true`（用户 2026-09-15 口径：点了要「跳转」过去）。
+   * `column` 默认 `ViewColumn.Beside`（由 VS Code 决定并排落点，可复用已有相邻分组）。
+   * 「在编辑器中打开」先用 {@link editorColumnFor} 取落点，优先在已有分组内开新标签。
+   * `focus` 默认 false——编辑器标题栏鲸鱼按钮的两个动作都要 `focus: true`（点了要跳转）：
+   * 单击在本分组打开新会话（{@link openPanelInCurrentGroup}），按住 Alt 单击则并排打开
+   * （{@link openPanelBeside}）。
    *
    * 返回 `viewId`：调用方可能要往这个新窗口里塞一个**新会话**
-   * （`newSessionInGroup` 走 `controller.newSession(viewId)`）。页面还没加载完也没关系
-   * ——界面发 `ready` 时宿主会补一份完整快照。
+   * （`newSessionInGroup` / `newSessionBeside` 都走 `controller.newSession(viewId)`）。
+   * 页面还没加载完也没关系——界面发 `ready` 时宿主会补一份完整快照。
    */
   openPanel(
     sessionId?: string,
@@ -155,6 +151,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       this.webviewOptions(),
     );
     const viewId = this.attachPanel(panel);
+    // 用户显式打开并跳过去（如标题栏单击 / Alt+单击）不必等 webview 加载或下次事件。
+    // 序列化器只挂 attachPanel，不走这里：恢复不能因初始 active 状态抢走活动窗口。
+    if (focus || panel.active) this.controller.noteActiveView(viewId);
     this.log(`[view] 创建编辑区面板 viewId=${viewId} session=${sessionId ?? "（空态）"}`);
     // 「在编辑器中打开」：调用方带会话时，编辑器窗口打开那个会话（点击动作
     // 来自那个会话所在的窗口）。openSession 绑定后会向这个窗口推完整状态
@@ -165,8 +164,31 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     return { panel, viewId };
   }
 
-  /** 挂一个编辑区面板：与侧栏共用 attach，额外登记种类与可见性。 */
-  private attachPanel(panel: vscode.WebviewPanel): string {
+  /**
+   * 编辑器标题栏那头鲸鱼的**单击**（命令「DSH: 在本分组新建对话窗口」）：
+   * 在用户当前所在的编辑器分组里开一个新会话面板。
+   *
+   * 落点固定 `ViewColumn.Active`（用户 2026-09-15 口径：在编辑窗口右上角点一下，
+   * 本分组里多一个 DSH 新会话标签页并跳过去）。落点规则收在这一个方法里，命令侧
+   * 只调它——`scripts/editorColumn.test.ts` 的源码扫描守着「命令里不许写死分组落点」。
+   */
+  openPanelInCurrentGroup(): { panel: vscode.WebviewPanel; viewId: string } {
+    return this.openPanel(undefined, vscode.ViewColumn.Active, true);
+  }
+
+  /**
+   * 编辑器标题栏那头鲸鱼的 **Alt+单击**（命令「DSH: 在右侧新建对话窗口」）：
+   * 用 `ViewColumn.Beside` 并排打开新会话，代码与对话同时可见；可复用已有相邻分组。
+   *
+   * 与单击那条共用 `openPanel`：新会话、聚焦都一样，只有落点不同。Alt 分支由
+   * `package.json` 的 `editor/title` 菜单 `alt` 字段接住，命令侧同样不写死分组常量。
+   */
+  openPanelBeside(): { panel: vscode.WebviewPanel; viewId: string } {
+    return this.openPanel(undefined, vscode.ViewColumn.Beside, true);
+  }
+
+  /** 挂一个编辑区面板：与侧栏共用 attach，额外跟踪标签组和激活事件。 */
+  private attachPanel(panel: vscode.WebviewPanel, restored = false): string {
     const viewId = this.attach(panel.webview, panel.onDidDispose, () =>
       panel.reveal(undefined, false),
     );
@@ -185,13 +207,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       if (column !== undefined) this.panelColumns.set(viewId, column);
     };
     rememberColumn();
-    this.disposables.push(panel.onDidChangeViewState(rememberColumn));
-    this.disposables.push(panel.onDidDispose(() => this.panelColumns.delete(viewId)));
-    // 面板变可见时视作活动（命令面板入口「最近活动的窗口」靠它定位）
+    // 序列化器恢复的面板可能**一开始就是 active**（VS Code 按上次布局重建）：这一帧
+    // 不是用户活动，不能走 `noteActiveView`；交给控制器的「恢复默认」入口——它只在
+    // 尚无真实用户活动时生效，后台 / 迟到恢复不会抢走用户正在用的窗口。
+    if (restored && panel.active) this.controller.noteRestoredActiveView(viewId);
+    // 初态也可能已经是 active：从它变到后台再回来时，下面的 `activated` 才能成立。
+    let wasActive = panel.active;
     this.disposables.push(
-      panel.onDidChangeViewState((event) => {
-        if (event.webviewPanel.visible) this.controller.noteActiveView(viewId);
+      panel.onDidChangeViewState(({ webviewPanel }) => {
+        rememberColumn();
+        // 并排显示或拖动分组也会触发事件；只看真正从未激活切到激活。
+        const active = webviewPanel.active;
+        const activated = active && !wasActive;
+        wasActive = active;
+        if (activated) this.controller.noteActiveView(viewId);
       }),
+      panel.onDidDispose(() => this.panelColumns.delete(viewId)),
     );
     return viewId;
   }
@@ -254,8 +285,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           }
           return;
         }
-        // 用户消息才算窗口活动；探测不抢活动窗口，也不进入控制器。
-        this.controller.noteActiveView(viewId);
+        // 活动是独立信号；ready、轮询、回执等普通消息都不能把后台窗口变成活动窗口。
+        if (message?.type === "view/activity") {
+          this.controller.noteActiveView(viewId);
+          return;
+        }
         // **接住异常**：`handle` 是 async，帧又来自 webview（形状不受类型系统约束），
         // 一条残缺的帧不该变成扩展宿主里的 unhandled rejection——那既没有全局处理器，
         // 用户也只会看到"某个功能莫名不动了"。记日志、继续服务下一条消息。

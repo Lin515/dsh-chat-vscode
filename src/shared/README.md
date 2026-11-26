@@ -9,6 +9,7 @@
 - `wire.ts` — 宿主 → webview 的过线语义：JSON 过线会丢 `undefined` 键，清空字段必须发 `null`（`jsonSafeFrame` / `mergeWirePatch`）。
 - `jsonValue.ts` — 未知 JSON 值的形状收窄：`isRecord` 只认普通对象（排除 `null` 与数组），读字段前先过这一道。
 - `attachmentGate.ts` — 发送门的唯一判据：文件附件是否就绪、阻止发送的原因是上传中还是上传失败；宿主兜底、界面按钮与 `buildPromptContent` 同源。
+- `autoSelection.ts` — `dshChat.autoSelection` 的三档口径（`off` / `selection` / `file`）与旧布尔值的迁移；宿主只按它决定要不要生成 / 投递编辑器选区引用。
 - `diff.ts` — 编辑类节点的 diff：两条来源归一成 `DiffHunkView`，只做行序列与增删计数，排版交给界面；`diffClipboardText` 给复制按钮拼纯文本载荷（路径行 + `- ` / `+ ` / 两个空格前缀，覆盖被折叠的行）。
 - `changesSummary.ts` — 改动清单的缓存键（必须带会话 id，事件 seq 是按会话各自编号的）、卡片可见行，以及只在唯一命中时成立的路径关联。
 - `trajectory.ts` — 轨迹视图的线格式与视图模型（记录种类逐字对齐官方契约；**含请求表 `TrajectoryRequest`**——请求级检查器吃的选项 / 用量含会话累计 / 请求计时都在这张表里；时间线投影已 vendor 到 `src/vendor/`，这里只剩类型与域坐标换算）。
@@ -23,7 +24,7 @@
 - `imageRef.ts` — 正文图片引用分类（远程 / 内联 / 本地路径）：判断哪些该交给宿主读成 data URL。
 - `injectedSource.ts` — 「自动载入的上下文」条目的结构化字段解析（按官方各 `form` 的正文逐条解析，全有或全无）；另给消息正文用的「跨会话引用标题 ↔ 会话 id」读法（逐条跳过认不出的条目）。
 - `localizedText.ts` — 服务端给的本地化文案（`{en, [locale]}`）的形状校验与取值（审批 `displayReason` 等官方口径）。
-- `mentions.ts` — `@` 引用的文本形态：宿主插目录引用与界面补全插入必须产出一模一样的拼写；另给「这一块指向什么」的判据（浏览入口 / 目录查询（含盘符裸写）/ 去行号区间的语义路径 / 对话引用 token 的会话 id），宿主与界面共用同一份（判「这块是不是已经能引用到内容」、要不要列对话候选、要不要等判定）。
+- `mentions.ts` — `@` 引用的文本形态：宿主插目录引用与界面补全插入必须产出一模一样的拼写；另给「这一块指向什么」的判据（浏览入口 / 目录查询（含盘符裸写）/ 去行号区间的语义路径 / 对话引用 token 的会话 id），宿主与界面共用同一份（判「这块是不是已经能引用到内容」、要不要列对话候选、要不要等判定）。路径安全判据也收在这里：自动引用只用**能安全折算**的目录键（`selectionDirectoryKey`，保留大小写、拒绝点段 / 设备命名空间），相对路径拒绝 POSIX 字面反斜杠、盘符样式与行号后缀歧义；它不同于只读副本的仅比较键 `remoteSelectionCwdKey` 和历史目录身份键 `directoryPathKey`。
 - `presetMatch.ts` — 配置项里的预设（可以写 id，也可以写界面上的名字）折成服务端认的 id：id 优先，名字取目录里第一个命中的。
 - [scheduleRule.ts](<scheduleRule.ts>) — 官方 RRULE / Temporal 引擎的薄适配：规则规范化、真实日期、时区和 DST；不另写发生时刻算术。
 - [scheduleProjects.ts](<scheduleProjects.ts>) — 注册项目优先、会话目录回退的自动化工作目录候选及默认选择。

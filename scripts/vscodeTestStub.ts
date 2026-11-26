@@ -64,11 +64,64 @@ export const editorCalls = {
  */
 export const nativeErrors: string[] = [];
 
+/**
+ * `window.createWebviewPanel` 的调用记录（编辑区面板落点断言用）。
+ *
+ * 编辑器标题栏那颗鲸鱼的两个命令都经 `ChatViewProvider.openPanel` 落到这里：
+ * `viewColumn` 是 `ViewColumn.Active`（单击）或 `ViewColumn.Beside`（Alt+单击），
+ * `preserveFocus: false` 表示点了要跳过去。面板替身只覆盖 `attachPanel` 会碰到的面。
+ */
+export interface CreatedWebviewPanelRecord {
+  viewType: string;
+  title: string;
+  viewColumn: number | undefined;
+  preserveFocus: boolean;
+  panel: unknown;
+}
+export const createdWebviewPanels: CreatedWebviewPanelRecord[] = [];
+
+/** 面板替身：只覆盖 `attachPanel` 会碰到的面（webview 事件、图标、标题、reveal）。 */
+function fakeWebviewPanel(viewColumn: number | undefined) {
+  return {
+    viewColumn,
+    iconPath: undefined as unknown,
+    title: "DSH",
+    webview: {
+      options: undefined as unknown,
+      html: "",
+      cspSource: "vscode-webview://test",
+      asWebviewUri: (uri: unknown) => uri,
+      onDidReceiveMessage: () => new DisposableLike(),
+    },
+    onDidDispose: (_listener: () => void) => new DisposableLike(),
+    onDidChangeViewState: (_listener: (event: unknown) => void) => new DisposableLike(),
+    reveal: () => {},
+  };
+}
+
 export const window = {
   activeTextEditor: undefined,
   // 编辑区标签组：「在编辑器中打开」的落点判定（`editorColumn.test.ts`）要读它。
   // 默认没有分组 = 空窗口，落到 `ViewColumn.Beside`（新开一个分组）
   tabGroups: { all: [] as unknown[], activeTabGroup: undefined as unknown },
+  /** 编辑器标题栏鲸鱼的两个命令：落点（本分组 / 右侧并排）与聚焦都从这里断言。 */
+  createWebviewPanel: (
+    viewType: string,
+    title: string,
+    showOptions: number | { viewColumn?: number; preserveFocus?: boolean },
+    _options?: unknown,
+  ) => {
+    const options = typeof showOptions === "object" && showOptions !== null ? showOptions : { viewColumn: showOptions };
+    const panel = fakeWebviewPanel(options.viewColumn);
+    createdWebviewPanels.push({
+      viewType,
+      title,
+      viewColumn: options.viewColumn,
+      preserveFocus: options.preserveFocus ?? false,
+      panel,
+    });
+    return panel;
+  },
   showErrorMessage: async (message: string) => {
     nativeErrors.push(String(message));
     return undefined;
@@ -116,9 +169,15 @@ export const Uri = Object.assign(
       scheme: parts.scheme,
       path: parts.path ?? "",
       query: parts.query ?? "",
+      toString: () => `${parts.scheme}:${parts.path ?? ""}${parts.query ? `?${parts.query}` : ""}`,
     }),
   },
 );
+/** 编辑器引用需要识别真正的 diff 标签输入，而不是凭 URI scheme 猜。 */
+export class TabInputTextDiff {
+  constructor(readonly original: unknown, readonly modified: unknown) {}
+}
+
 export function Position(line: number, character: number) {
   this.line = line;
   this.character = character;

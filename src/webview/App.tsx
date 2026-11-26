@@ -727,6 +727,11 @@ function usePagePaste(state: AppState) {
   }, []);
 }
 
+/** 不监听 focus：挂载、草稿恢复或补全同样会调用 focus()，不是切换对话窗口。 */
+function reportViewActivity(event: { isTrusted: boolean }): void {
+  if (event.isTrusted) post({ type: "view/activity" });
+}
+
 export function App() {
   const { state, dispatch } = useAppState();
   const [hostUnresponsive, setHostUnresponsive] = useState(false);
@@ -1057,6 +1062,12 @@ export function App() {
       <div
         ref={appRef}
         className={`app${mini ? " is-mini" : ""}${state.panel === "trajectory" ? " is-trajectory" : ""}`}
+        onPointerDownCapture={reportViewActivity}
+        onKeyDownCapture={reportViewActivity}
+        onClickCapture={(event) => {
+          // 键盘 / 辅助技术也可能产生没有 pointerdown 的点击。
+          if (event.detail === 0) reportViewActivity(event);
+        }}
       >
         <Header state={state} dispatch={dispatch} />
         <ConnectionBar state={state} />
@@ -1209,6 +1220,11 @@ export function App() {
           chatScroll={chatScroll.port}
           onDraft={(text) => dispatch({ type: "ui/setDraft", text })}
           onFollowLatest={chatScroll.jumpToLatest}
+          onSelectionDismiss={(id) => {
+            // 只收起触发操作的芯片；不能让旧点击撤掉已投递的新选区。
+            dispatch({ type: "ui/selectionDismiss", id });
+            post({ type: "selectionContextDismiss", id });
+          }}
         />
 
         {state.panel === "history" ? (

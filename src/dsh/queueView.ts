@@ -41,7 +41,10 @@ export interface QueuedItemEntry {
 }
 
 export interface QueueOrigin {
+  /** 实际提交的正文（含当时的自动引用）：「重新发出」用它，保留当时附带的引用。 */
   text: string;
+  /** 用户输入框里的原始草稿（拼引用之前）：「重新编辑」与回填只恢复它。 */
+  draft: string;
   attachments: Attachment[];
   /** 本地记录的原始提交内容（最权威）。 */
   content?: unknown[];

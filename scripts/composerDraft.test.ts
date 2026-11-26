@@ -205,10 +205,14 @@ console.log("composerDraft: 连不上后台时那一行标成失败 ✓");
   assert.ok(resendStart >= 0, "找不到 resendPending 分支");
   const resend = controller.slice(resendStart, controller.indexOf('case "stop":', resendStart));
   assert.ok(
-    /submitMessage\(\s*viewId,\s*echo\.text,\s*echo\.attachments,\s*"enter",\s*"retry",\s*undefined,\s*message\.requestId,?\s*\)/.test(
+    /submitMessage\(\s*viewId,\s*echo\.text,\s*echo\.attachments,\s*"enter",\s*"retry",\s*undefined,\s*message\.requestId,/.test(
       resend,
     ),
-    "重发按 `retry` 提交：走同一条通道，但不碰输入框；最后那个 requestId 是把附件租约交接给新提交",
+    "重发按 `retry` 提交：走同一条通道，但不碰输入框；requestId 是把附件租约交接给新提交",
+  );
+  assert.ok(
+    /const draft = this\.submissions\.get\(message\.requestId\)\?\.draft \?\? echo\.text/.test(resend),
+    "重发保留原记录里的原始草稿；本地记录淘汰时按旧条目原在线文本回退",
   );
   assert.ok(
     /this\.echoOfView\(viewId, message\.requestId\)/.test(resend),

@@ -2,7 +2,7 @@
 
 运行环境：webview（浏览器环境，React）。上一层的说明见 [../README.md](../README.md)。
 
-- `Composer.tsx` — 底部输入框：目标条、附件、发送 / 排队（队列行真的被截断时悬停看全文），弹层规则在 `../composerCompletion.tsx`，草稿里引用的蓝字镜像与 Ctrl 悬停手指光标在 `../composerMention.ts`（本组件只渲染镜像层并同步它的几何）；发送按钮的文字 / 停止态与点击手势走 `../composerSend.ts`，本组件只把按住态与事件交给它。局部编辑（改目标正文）里的 ESC 用 `../escapeOwner.ts` 的 `consumeEscape` 消费。
+- `Composer.tsx` — 底部输入框：目标条、附件、发送 / 排队（队列行真的被截断时悬停看全文），弹层规则在 `../composerCompletion.tsx`，草稿里引用的蓝字镜像与 Ctrl 悬停手指光标在 `../composerMention.ts`（本组件只渲染镜像层并同步它的几何）；发送按钮的文字 / 停止态与点击手势走 `../composerSend.ts`，本组件只把按住态与事件交给它。编辑器选区芯片悬停显示完整发送引用和原文预览；发送与收起回传投递标识，不改草稿。局部编辑（改目标正文）里的 ESC 用 `../escapeOwner.ts` 的 `consumeEscape` 消费。
 - [ToolbarPreferences.tsx](<ToolbarPreferences.tsx>) — 「工具栏保留优先级」对话框：可选项按保留优先级上移 / 下移、隐藏 / 启用，支持恢复默认；不改变工具栏的物理顺序，也不列出固定元素。列表只镜像宿主偏好；项目换位或换列表后尽量将焦点留在同一项目，ESC 只关对话框、不停止生成。
 - `Message.tsx` — 单条消息：按 `MessageView` 种类装配正文、图片、工具行、折叠过程、轮尾文件；助手正文段本身不带复制入口，轮尾只保留时间 / 分支 / 复制 / 用时，复制载荷取本轮最后一段正文（`../turnProcess.ts` 的 `lastTextSegment`，与折叠边界同一条），不把工具前后的正文拼接冒充整条复制，用户消息整条复制保留；用户消息的正文在最前，其后是气泡内的附件区（文件芯片 `UserMedia`，再下面是图片缩略图），折叠只夹正文节点 `.bubble-text`（`UserBubble`）；已发出的 `@` 引用悬停给完整路径与 Alt 真实文件提示，HTML 文件另给 Ctrl/Cmd 浏览器提示（文件引用不复述「打开这个文件」——链接外观已经说明单击能打开）；Alt 打开可编辑真实文件，Ctrl/Cmd+HTML 交系统浏览器。
 - `Markdown.tsx` — 正文入口的薄包装：把文本、phase 与文件词表交给 `../markdown/` 的解析与 React 文档树；streaming 只走 GFM，settled 解析数学；链接悬停补完整路径、Alt 真实文件提示与外链地址，点击按 `fileOpenIntent` 分流只读 / 真实文件 / Ctrl+HTML 浏览器。

@@ -117,6 +117,7 @@ interface Internals {
   rememberSubmission(
     requestId: string,
     text: string,
+    draft: string,
     content: unknown[],
     attachments: Attachment[],
     sessionId: string,
@@ -255,7 +256,7 @@ async function scene(options: {
   const scope = h.c.scopes.get(S1);
   assert.ok(scope, "S1 的域应已建立（回路自身前提）");
   if (options.remember) {
-    h.c.rememberSubmission("r1", TEXT, SUBMITTED_CONTENT, options.local ?? [IMAGE, FILE], S1);
+    h.c.rememberSubmission("r1", TEXT, TEXT, SUBMITTED_CONTENT, options.local ?? [IMAGE, FILE], S1);
   }
   const item = { inbox: inboxItem, wire: wireItem }[options.channel]("q1", "r1", options.content);
   if (options.channel === "inbox") h.pushInbox(S1, [item]);

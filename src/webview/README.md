@@ -5,7 +5,7 @@ React / 浏览器环境，不使用 Node API。上层边界见[源码导航](<..
 ## 应用与文案
 
 - [main.tsx](<main.tsx>) — 挂载 App 与引入样式（含 KaTeX 官方 CSS，字体由构建收敛为本地 WOFF2）。
-- [App.tsx](<App.tsx>) — 布局、路由与宿主帧分发。
+- [App.tsx](<App.tsx>) — 布局、路由与宿主帧分发；根节点只为可信指针 / 键盘交互及可信的键盘式点击报告视图活动，不监听聚焦作为活动信号。
 - [state.ts](<state.ts>) — ChatState reducer、patch 与派生状态。
 - [bridge.ts](<bridge.ts>) — acquireVsCodeApi 单例、IPC、状态持久化与可见页面的扩展宿主探测。
 - [texts.ts](<texts.ts>) — 按宿主语言取词典与 Texts 上下文。

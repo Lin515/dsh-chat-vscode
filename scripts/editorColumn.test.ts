@@ -1,5 +1,6 @@
 /**
- * 「在编辑器中打开」与 `@会话` 引用的**落点**（编辑区哪一个标签组）——行为级回归。
+ * 「在编辑器中打开」与 `@会话` 引用的**落点**（编辑区哪一个标签组）——行为级回归；
+ * 编辑器标题栏鲸鱼的单击 / Alt+单击落点也在这里钉。
  *
  * 用户 2026-10-10 口径：
  * 1. 来源窗口自己就在某个标签组里（编辑区面板，`@会话` 引用从那里点出来）→ 开在
@@ -18,6 +19,7 @@ import assert from "node:assert";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import * as vscode from "vscode";
+import type { WebviewToHost } from "../src/shared/ipc";
 
 // 动态 import：让 alias（esbuild 打包期）把 chatView 依赖的 vscode 换成 stub
 const { ChatViewProvider } = await import("../src/chatView");
@@ -41,35 +43,53 @@ function stageGroups(groups: number[], active: number): void {
 }
 
 /** 面板：只给 `attachPanel` 会碰到的那些面。 */
-function fakePanel(viewColumn: number) {
-  const viewListeners: ((event: { webviewPanel: { visible: boolean } }) => void)[] = [];
+function fakePanel(viewColumn: number, active = false) {
+  const viewListeners: ((event: { webviewPanel: { visible: boolean; active: boolean } }) => void)[] = [];
   const disposeListeners: (() => void)[] = [];
+  const messageListeners: ((message: WebviewToHost) => void)[] = [];
+  const outbound: unknown[] = [];
   const panel = {
     viewColumn,
+    visible: true,
+    active,
     iconPath: undefined as unknown,
     webview: {
       options: undefined as unknown,
       html: "",
       cspSource: "vscode-webview://test",
       asWebviewUri: (uri: unknown) => uri,
-      onDidReceiveMessage: () => new vscode.Disposable(),
+      onDidReceiveMessage: (listener: (message: WebviewToHost) => void) => {
+        messageListeners.push(listener);
+        return new vscode.Disposable();
+      },
+      postMessage: async (frame: unknown) => { outbound.push(frame); return true; },
     },
     onDidDispose: (listener: () => void) => {
       disposeListeners.push(listener);
       return new vscode.Disposable();
     },
-    onDidChangeViewState: (listener: (event: { webviewPanel: { visible: boolean } }) => void) => {
+    onDidChangeViewState: (listener: (event: { webviewPanel: { visible: boolean; active: boolean } }) => void) => {
       viewListeners.push(listener);
       return new vscode.Disposable();
     },
     reveal: () => {},
   };
+  const setState = (visible: boolean, nextActive: boolean): void => {
+    panel.visible = visible;
+    panel.active = nextActive;
+    for (const listener of viewListeners) listener({ webviewPanel: panel });
+  };
   return {
     panel,
+    setState,
+    outbound,
+    message(message: WebviewToHost): void {
+      for (const listener of messageListeners) listener(message);
+    },
     /** 用户在编辑器里把标签拖到别的分组（或让它重新可见）：列号跟着事件一起变。 */
     moveTo(next: number): void {
       panel.viewColumn = next;
-      for (const listener of viewListeners) listener({ webviewPanel: { visible: true } });
+      setState(true, panel.active);
     },
     /** 用户关掉这个标签。 */
     close(): void {
@@ -78,14 +98,24 @@ function fakePanel(viewColumn: number) {
   };
 }
 
+const boundViews: string[] = [];
+const activity: string[] = [];
+/** `noteRestoredActiveView` 的登记：恢复时初始 active 的面板，不算用户活动。 */
+const restoredActivity: string[] = [];
+const handled: { message: WebviewToHost; viewId: string }[] = [];
 const controller = {
   subscribe: () => new vscode.Disposable(),
-  bindView: () => {},
+  bindView: (viewId: string) => boundViews.push(viewId),
   unbindView: () => {},
   registerRevealer: () => {},
   registerTitleSetter: () => {},
   bindViewKind: () => {},
-  noteActiveView: () => {},
+  claimSidebarRestore: () => {},
+  hasRestoreHint: () => false,
+  hasPendingRestore: () => false,
+  noteActiveView: (viewId: string) => activity.push(viewId),
+  noteRestoredActiveView: (viewId: string) => restoredActivity.push(viewId),
+  handle: async (message: WebviewToHost, viewId: string) => { handled.push({ message, viewId }); },
   openSession: async () => {},
 };
 
@@ -99,6 +129,10 @@ const provider = new ChatViewProvider(
 /** 挂一个编辑区面板（与 `openPanel` 里那条路同一个入口，拿到它的 viewId）。 */
 const attach = (panel: unknown): string =>
   (provider as unknown as { attachPanel(panel: unknown): string }).attachPanel(panel);
+
+/** 模拟序列化器恢复：初态 active 要交给控制器的「恢复默认」入口，而不是用户活动。 */
+const attachRestored = (panel: unknown): string =>
+  (provider as unknown as { attachPanel(panel: unknown, restored?: boolean): string }).attachPanel(panel, true);
 
 // ---------- 1. 来源窗口自己就在某个标签组里 → 同组新标签 ----------
 {
@@ -181,7 +215,7 @@ const attach = (panel: unknown): string =>
   );
   assert.ok(
     !/ViewColumn\.Beside/.test(extensionSource),
-    "命令里不许再写死「新开一个分组」的落点（那正是这次要改掉的旧行为）",
+    "命令里不写死分组落点：单击与 Alt+单击两侧规则都在 `ChatViewProvider`（`openPanelInCurrentGroup` / `openPanelBeside`）",
   );
   const app = readFileSync(join(process.cwd(), "src", "webview", "App.tsx"), "utf8");
   assert.ok(
@@ -189,6 +223,145 @@ const attach = (panel: unknown): string =>
     "编辑区标签组里的会话不显示「在编辑器中打开」（自己就在标签组里）",
   );
   console.log("editorColumn: 来源窗口与按钮显示条件都接上了 ✓");
+}
+
+// ---------- 5. 编辑器标题栏鲸鱼：单击本分组，Alt+单击右侧并排 ----------
+//
+// 单击走 `newSessionInGroup`（`ViewColumn.Active`）；Alt+单击由 `package.json` 的
+// `editor/title` 菜单 `alt` 字段接到 `newSessionBeside`（`ViewColumn.Beside`）。
+// 两条命令都只调 provider 里的一个方法，落点规则只有一处。
+{
+  const created = (
+    vscode as unknown as {
+      createdWebviewPanels: {
+        viewType: string;
+        title: string;
+        viewColumn: number | undefined;
+        preserveFocus: boolean;
+      }[];
+    }
+  ).createdWebviewPanels;
+  created.length = 0;
+
+  const { viewId: singleView } = provider.openPanelInCurrentGroup();
+  assert.strictEqual(activity.at(-1), singleView, "标题栏单击立即激活新窗口，不等 webview 就绪");
+  const single = created[created.length - 1];
+  assert.strictEqual(
+    single?.viewColumn,
+    vscode.ViewColumn.Active,
+    "单击鲸鱼在**当前分组**开新会话（ViewColumn.Active）",
+  );
+  assert.strictEqual(single?.preserveFocus, false, "点一下要跳过去：显式 focus");
+
+  const { viewId: altView } = provider.openPanelBeside();
+  assert.strictEqual(activity.at(-1), altView, "Alt+单击同样立即激活新窗口");
+  const alt = created[created.length - 1];
+  assert.strictEqual(
+    alt?.viewColumn,
+    vscode.ViewColumn.Beside,
+    "Alt+单击在**代码区右侧并排**开新分组（ViewColumn.Beside）",
+  );
+  assert.strictEqual(alt?.preserveFocus, false, "Alt+单击同样跳过去：显式 focus");
+  console.log("editorColumn: 鲸鱼单击本分组 / Alt+单击右侧并排 ✓");
+}
+
+// ---------- 6. 清单接线：菜单 `alt` 必须指向已声明的命令，且宿主真的注册了 ----------
+//
+// VS Code 的菜单 `alt` 只认 `contributes.commands` 里声明过的命令（宿主按 id 查
+// 命令表）；少一条，Alt+单击就会静默退回单击。清单与宿主分处两处，按源码钉。
+{
+  const manifest = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf8")) as {
+    contributes: {
+      commands: { command: string }[];
+      menus: Record<string, { command?: string; alt?: string }[]>;
+    };
+  };
+  const whale = (manifest.contributes.menus["editor/title"] ?? []).find(
+    (item) => item.command === "dshChat.newSessionInGroup",
+  );
+  assert.strictEqual(
+    whale?.alt,
+    "dshChat.newSessionBeside",
+    "编辑器标题栏鲸鱼的 `alt` 分支指向「在右侧新建对话窗口」",
+  );
+  assert.ok(
+    manifest.contributes.commands.some((item) => item.command === "dshChat.newSessionBeside"),
+    "`alt` 指向的命令必须在 contributes.commands 里声明（否则 VS Code 不认这条分支）",
+  );
+  const extensionSource = readFileSync(join(process.cwd(), "src", "extension.ts"), "utf8");
+  assert.ok(
+    /provider\.openPanelInCurrentGroup\(\)/.test(extensionSource),
+    "单击鲸鱼的落点走 `provider.openPanelInCurrentGroup`（命令侧不写死分组常量）",
+  );
+  assert.ok(
+    /registerCommand\("dshChat\.newSessionBeside"/.test(extensionSource),
+    "Alt 分支的命令要在宿主里注册",
+  );
+  assert.ok(
+    /provider\.openPanelBeside\(\)/.test(extensionSource),
+    "Alt 分支的落点走 `provider.openPanelBeside`",
+  );
+  console.log("editorColumn: 菜单 alt / 命令声明 / 宿主注册接上了 ✓");
+}
+
+// ---------- 7. 后台挂载、可见、ready、轮询都不能冒充用户活动 ----------
+{
+  activity.length = 0;
+  handled.length = 0;
+
+  const sidebar = fakePanel(1);
+  provider.resolveWebviewView({
+    webview: sidebar.panel.webview,
+    onDidDispose: sidebar.panel.onDidDispose,
+    onDidChangeVisibility: (listener: () => void) => sidebar.panel.onDidChangeViewState(() => listener()),
+    get visible() { return sidebar.panel.visible; },
+    show: () => {},
+  } as unknown as vscode.WebviewView);
+  const sidebarId = boundViews.at(-1)!;
+
+  const restored = fakePanel(2, true);
+  const restoredId = attachRestored(restored.panel);
+  // 序列化器挂接的面板已有 active 状态也不立即抢活动；单纯改变列号同样不抢。
+  restored.moveTo(3);
+  restored.message({ type: "ready" });
+  assert.deepStrictEqual(activity, [], "面板恢复挂载与 ready 不会宣告用户活动");
+  assert.deepStrictEqual(restoredActivity, [restoredId], "初始 active 的恢复面板只登记为默认，不算用户活动");
+
+  const backgroundRestored = fakePanel(2, false);
+  attachRestored(backgroundRestored.panel);
+  assert.deepStrictEqual(restoredActivity, [restoredId], "后台（未激活）恢复不登记默认活动窗口");
+
+  const background = fakePanel(2);
+  const backgroundId = attach(background.panel);
+  background.setState(false, false);
+  background.setState(true, false);
+  background.message({ type: "ready" });
+  background.message({ type: "listTrajectory" });
+  background.message({ type: "view/ping", id: 1 });
+  sidebar.setState(false, false);
+  sidebar.setState(true, false);
+  sidebar.message({ type: "ready" });
+  assert.deepStrictEqual(activity, [], "侧栏可见、并排面板可见与后台帧都不算活动");
+  assert.deepStrictEqual(background.outbound, [{ type: "view/pong", id: 1 }], "宿主探测仍走视图层往返");
+  assert.deepStrictEqual(handled, [
+    { message: { type: "ready" }, viewId: restoredId },
+    { message: { type: "ready" }, viewId: backgroundId },
+    { message: { type: "listTrajectory" }, viewId: backgroundId },
+    { message: { type: "ready" }, viewId: sidebarId },
+  ], "ready 与轮询仍由控制器接手，并保留窗口归属");
+
+  background.setState(true, true);
+  sidebar.message({ type: "view/activity" });
+  background.moveTo(3);
+  background.message({ type: "listTrajectory" });
+  assert.deepStrictEqual(activity, [backgroundId, sidebarId], "面板真实激活和侧栏活动帧才更新活动窗口；列号与后台消息不抢回去");
+  assert.deepStrictEqual(handled.at(-1), { message: { type: "listTrajectory" }, viewId: backgroundId });
+  assert.ok(!handled.some(({ message }) => message.type === "view/activity"), "纯活动帧只由 ChatViewProvider 消费");
+
+  background.setState(true, false);
+  background.setState(true, true);
+  assert.deepStrictEqual(activity, [backgroundId, sidebarId, backgroundId], "再次真正激活面板时可以从侧栏切回");
+  console.log("editorColumn: 后台窗口不抢活动；面板激活 / 侧栏实际操作才切换 ✓");
 }
 
 console.log("\neditorColumn: all assertions passed");

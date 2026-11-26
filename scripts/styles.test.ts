@@ -56,6 +56,19 @@ function designPx(value: string | undefined): number | undefined {
 }
 console.log("styles: 正文与输入镜像的普通、悬停、修饰键及 inert 链接状态 ✓");
 
+// 附件和选区芯片共用单行省略，只有选区保留引用后缀；移除按钮不能被长引用挤窄。
+{
+  const name = rule(".chip-name");
+  assert.match(name, /text-overflow:\s*ellipsis\s*;/u);
+  assert.match(name, /white-space:\s*nowrap\s*;/u);
+  assert.doesNotMatch(name, /direction:\s*rtl/u, "附件名不从左侧省略");
+  const selectionName = rule(".chip-selection .chip-name");
+  assert.match(selectionName, /direction:\s*rtl\s*;/u, "引用从左侧省略，保留文件名与行号");
+  assert.match(selectionName, /max-width:\s*none\s*;/u, "引用使用侧栏实际可用宽度");
+  assert.match(rule(".chip-selection .chip-remove"), /flex:\s*none\s*;/u, "移除按钮不被引用挤窄");
+}
+console.log("styles: 选区引用从左侧省略，保留移除按钮 ✓");
+
 // ---------- 1. 弹层宽度必须视口感知，否则窄侧栏会被裁掉 ----------
 //
 // 实测：`min-width: 224px` 这种固定下限 + 触发按钮距左边缘约 66px，
@@ -3032,7 +3045,7 @@ console.log("styles: 三颗「打开」按钮图标两两不同（编辑区=方�
     "Composer 从端口取滚动容器（自适应量高的瞬态补回要用它）",
   );
   assert.ok(
-    /post\(\{ type: "send"[\s\S]{0,400}?onFollowLatest\?\.\(\)/.test(composer),
+    /post\(\{\s*type: "send"[\s\S]{0,400}?onFollowLatest\?\.\(\)/.test(composer),
     "发消息 = 要看最新（官方 useAutoScroll 同口径）：脱贴状态下发出去也要贴回底部",
   );
   assert.ok(

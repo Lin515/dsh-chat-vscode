@@ -471,8 +471,10 @@ function sendButtonOf(html: string): { attribute: string; text: string } {
     "发送按钮的点击必须把事件交给 clickGestureHandler（事件 → 手势），不许写死手势",
   );
   assert.ok(
-    /post\(\{ type: "send", text: draft\.trim\(\), gesture \}\)/.test(composer),
-    "send 帧只带 gesture：模式由宿主按 busyEnter + 按下那一刻是否在跑解析，界面不算模式；" +
+    /post\(\{\s*type: "send",\s*text: draft\.trim\(\),\s*gesture,\s*\.\.\.\(selection \? \{ autoReference: selection\.token, autoReferenceId: selection\.id \} : \{\}\),?\s*\}\)/.test(composer),
+    "send 帧带 gesture 与**分笔的** autoReference、autoReferenceId（正文与自动引用" +
+      "分开过线，宿主在命令识别之后才拼接——引用先拼进正文会让 /compact 判不成命令）；" +
+      "模式由宿主按 busyEnter + 按下那一刻是否在跑解析，界面不算模式；" +
       "附件也不回传（草稿附件的权威是宿主账本，图片的 base64 不该再走一趟单程）",
   );
   assert.ok(

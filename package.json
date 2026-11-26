@@ -110,6 +110,14 @@
         }
       },
       {
+        "command": "dshChat.newSessionBeside",
+        "title": "%cmd.newSessionBeside.title%",
+        "icon": {
+          "light": "media/whale-light.svg",
+          "dark": "media/whale-dark.svg"
+        }
+      },
+      {
         "command": "dshChat.stop",
         "title": "%cmd.stop.title%",
         "icon": "$(debug-stop)"
@@ -167,6 +175,7 @@
       "editor/title": [
         {
           "command": "dshChat.newSessionInGroup",
+          "alt": "dshChat.newSessionBeside",
           "group": "navigation@9"
         }
       ],
@@ -196,6 +205,21 @@
           "type": "boolean",
           "default": true,
           "description": "%config.autoConnect%"
+        },
+        "dshChat.autoSelection": {
+          "type": "string",
+          "enum": [
+            "off",
+            "selection",
+            "file"
+          ],
+          "default": "selection",
+          "markdownDescription": "%config.autoSelection%",
+          "enumDescriptions": [
+            "%config.autoSelection.off%",
+            "%config.autoSelection.selection%",
+            "%config.autoSelection.file%"
+          ]
         },
         "dshChat.command": {
           "type": "string",

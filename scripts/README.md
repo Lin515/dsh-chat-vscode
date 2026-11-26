@@ -102,7 +102,9 @@
 - [pastedImageNames.test.ts](<pastedImageNames.test.ts>) — 粘贴图片的会话内编号名（`图N.png` / `imageN.png`）：编号识别、起始编号的基线、只改图片、被拒条目不编号。
 - [imageSize.test.ts](<imageSize.test.ts>) — 四种图片格式的头部宽高解析（含截断 / 0 边长 / 未知格式一律返回 undefined 的放行口径）。
 - [references.test.ts](<references.test.ts>) — `@path` 引用文本的拼写规则（对齐官方 `formatFileMention`）。
-- [selection.test.ts](<selection.test.ts>) — 编辑器选区 → 行号区间（「下一行行首结束要少算一行」边界）。
+- [selection.test.ts](<selection.test.ts>) — 编辑器选区 → 行号区间（「下一行行首结束要少算一行」边界），以及芯片悬停预览的归一 / 截断 / 保留缩进。
+- [selectionContext.test.ts](<selectionContext.test.ts>) — 编辑器选区芯片：按会话执行目录折算、发送拼接、三档开关（含旧布尔迁移）、过期收起帧与中英文渲染（悬停查看完整发送引用和原文预览）。
+- [selectionSend.test.ts](<selectionSend.test.ts>) — 真控制器：芯片只投递活动窗口、切换撤旧、收起后 ready 重放不复活，`/compact` 与带参数命令不受引用影响、普通消息才附加。
 - [imageAttachments.test.ts](<imageAttachments.test.ts>) — 图片链路适配器侧：`attachmentId` → data URL 异步补字节。
 - [imageFiles.test.ts](<imageFiles.test.ts>) — 图片地址 → 字节与保存对话框默认文件名（扩展名按真实媒体类型）。
 - [imageRender.test.ts](<imageRender.test.ts>) — 会话图片渲染断言（服务端渲染出 HTML，覆盖三处来源）。
@@ -178,7 +180,7 @@
 - [occupancy.test.ts](<occupancy.test.ts>) — 上下文占用环：常驻显示、每轮刷新、口径唯一。
 - [cacheHit.test.ts](<cacheHit.test.ts>) — 会话累计缓存命中率、缺数据隐藏与工具栏 / 悬停读数同源。
 - [composerMention.test.ts](<composerMention.test.ts>) — 草稿引用镜像逐字还原、可解析目标上色与文本域排版一致。
-- [editorColumn.test.ts](<editorColumn.test.ts>) — 打开聊天与会话引用的标签组落点：来源组、活动组与无分组兜底。
+- [editorColumn.test.ts](<editorColumn.test.ts>) — 打开聊天与会话引用的标签组落点；标题栏普通 / `Alt` 打开、面板实际激活、侧栏活动帧、后台消息和恢复对活动窗口的影响。
 - [sessionDir.test.ts](<sessionDir.test.ts>) — 标题栏执行目录标签的取值与省略判据、悬停区别执行和创建目录、窄栏收缩与迷你模式收起。
 - [changesCard.test.ts](<changesCard.test.ts>) — 改动文件卡片三段链路（`workspace/changes` 事件 → `/api/changes.summary` → 渲染）。
 - [changesDiff.test.ts](<changesDiff.test.ts>) — 本轮快照对比（`/api/changes.diff`）的 hunk 校验、两侧文本拼装与「看改动」接线。

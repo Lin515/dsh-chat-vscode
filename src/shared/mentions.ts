@@ -27,6 +27,12 @@
  * - 含控制字符或 `"` 的路径**不可引用**（返回 undefined，调用方退回普通文本）。
  */
 
+import {
+  isAbsoluteWorkspacePath,
+  isDeviceNamespacePath,
+  isWindowsStylePath,
+} from "./workspacePath";
+
 /**
  * 把路径里的分隔符统一成 `/`（`@` 引用只认正斜杠，见文件头）。
  *
@@ -229,4 +235,80 @@ export function displaySessionMentions(text: string): string {
       return `@${label}`;
     },
   );
+}
+
+/**
+ * 「编辑器当前选区」的自动引用拼到正文末尾（评审 2026-11-24 口径）。
+ *
+ * **拼接只发生在宿主**、且发生在命令识别**之后**：Webview 把原始正文与引用 token
+ * 分两笔过线（`send` 帧的 `autoReference`），宿主先按命令目录判 `/xxx`，只给普通
+ * 消息附加——引用先拼进正文会让 `/compact` 因多出尾巴而判不成命令（评审第 3 条）。
+ * 拼接规则只有一条：正文与 token 之间空一行（token 独占一行），正文为空时直接就是
+ * token（空白正文 + 附件的场景在发送门本来就放行）。
+ */
+export function appendAutoReference(draft: string, token: string): string {
+  return draft === "" ? token : `${draft}\n\n${token}`;
+}
+
+/**
+ * 「编辑器当前选区」能不能按**目标会话的执行目录**引用（评审 2026-11-24 第 5 条）。
+ *
+ * VS Code 的工作区相对路径不一定是那条会话读得到的路径：多根工作区里两个根可能有
+ * 同名文件，远端 / 桌面端会话的执行目录甚至不在本机。所以引用按 `dir`（会话的 cwd）
+ * 生成。只忽略 Windows 盘符大小写与分隔符拼写；其余目录拼写必须逐字匹配，不能把
+ * 大小写不同的目录、不同盘或同名前缀的另一个根混在一起。不匹配时返回 undefined，
+ * 调用方不自动附带（手动 `@` 不受影响）。
+ *
+ * 两种分隔符都先归一成 `/`（{@link normalizeMentionPath} 的既定偏离），所以 Windows
+ * 形态的 cwd 与正斜杠形态的文件路径也能对上。
+ */
+export function relativeMentionPath(dir: string, filePath: string): string | undefined {
+  if (!dir || !filePath) return undefined;
+  // 路径家族必须一致：POSIX 里反斜杠是**文件名的一部分**，按分隔符归一就会把
+  // `/work/name\file.ts` 错折成 `/work/name/file.ts`。Windows 形态两种分隔符等价。
+  if (!isWindowsStylePath(dir) && dir.includes("\\")) return undefined;
+  if (!isWindowsStylePath(filePath) && filePath.includes("\\")) return undefined;
+  if (isDeviceNamespacePath(dir) || isDeviceNamespacePath(filePath)) return undefined;
+  const root = selectionDirectoryKey(dir);
+  if (root === undefined) return undefined;
+  const full = normalizeSelectionPath(filePath);
+  const prefix = root.endsWith("/") ? root : `${root}/`;
+  if (!full.startsWith(prefix) || (!root.startsWith("//") && full.startsWith("//"))) return undefined;
+  const relative = full.slice(prefix.length);
+  if (!relative || relative.split("/").some((segment) => !segment || segment === "." || segment === "..")) {
+    return undefined;
+  }
+  // 相对拼写自己不能看起来像绝对路径 / 盘符查询：POSIX 目录下的 `C:/x`、`C:` 会被
+  // 模型与 `@` 解析当成 Windows 盘径或「列盘根」，指到完全另一个位置。
+  if (isAbsoluteWorkspacePath(relative) || isDriveQuery(relative)) return undefined;
+  // 末尾的 `#L22` 是行号锚点语法：文件**本身**叫 `a.ts#L22` 时不能再拼第二段行号，
+  // 否则整条 token 无法无歧义还原（`mentionPathOf` 会把文件名尾巴当行号剥掉）。
+  if (mentionPathOf(relative) !== relative) return undefined;
+  return relative;
+}
+
+/**
+ * 选区引用的目录身份：**可折算键**——保留目录段大小写，且只接受有根、无点段、
+ * 无设备命名空间的路径。返回 `undefined` 表示这个目录拼写不能安全地用于生成
+ * 相对引用（调用方应撤下自动引用）。
+ *
+ * 与 `workspacePath.directoryPathKey` 的分工：后者是历史列表 / 目录胶囊的**比较**
+ * 键，Windows 形态忽略大小写；自动引用必须保留大小写，且必须能真正折出相对路径，
+ * 所以不能拿它替代本函数。只读副本的 `remoteSelectionCwdKey` 是另一种**仅比较**
+ * 键（无法折算时允许退回原样 cwd），两者不可互换。
+ */
+export function selectionDirectoryKey(path: string | undefined): string | undefined {
+  if (!path) return undefined;
+  if (!isWindowsStylePath(path) && path.includes("\\")) return undefined;
+  if (isDeviceNamespacePath(path)) return undefined;
+  const normalized = normalizeSelectionPath(path);
+  if (isDeviceNamespacePath(normalized)) return undefined;
+  if (!/^(?:\/|[A-Z]:\/)/u.test(normalized) || /(?:^|\/)\.{1,2}(?:\/|$)/u.test(normalized)) return undefined;
+  if (normalized.startsWith("//") && !/^\/\/[^/]+\/[^/]+(?:\/|$)/u.test(normalized)) return undefined;
+  const root = normalized.replace(/\/+$/u, "");
+  return root === "" || /^[A-Z]:$/u.test(root) ? `${root}/` : root;
+}
+
+function normalizeSelectionPath(path: string): string {
+  return normalizeMentionPath(path).replace(/^[a-z]:(?=\/)/u, (drive) => drive.toUpperCase());
 }

@@ -251,6 +251,12 @@ export const MESSAGES = {
   remove: { zh: "移除", en: "Remove" },
   close: { zh: "关闭", en: "Close" },
 
+  // 「编辑器当前选区」芯片（宿主 `ui/selectionContext` 推送，发送时把引用分笔传回宿主）
+  selectionChipTitle: {
+    zh: "编辑器选区：发送时自动附带为引用",
+    en: "Editor selection: attached as a reference when sending",
+  },
+
   permission: { zh: "权限", en: "Permission" },
   permReadOnly: { zh: "仅可查看", en: "Read Only" },
   permReadOnlyDesc: { zh: "只能读取，不做任何修改", en: "Can read but never modify anything" },

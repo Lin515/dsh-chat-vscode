@@ -47,6 +47,7 @@ npm run package  # Releases/dsh-chat-<version>.vsix
 | `dshChat.desktopExecutable` | 空 | DSH 桌面端可执行文件路径，需与桌面端使用同一个 DSH 主目录（如果没有特别配置过 DSH 主目录，那么默认就是满足的） |
 | `dshChat.supervisorIdleSec` | `10` | 内部 DSH 在无 VSCode 窗口连接后的退出宽限期，5–600 秒 |
 | `dshChat.autoConnect` | `true` | 启动时自动连接，无可用连接时自动启动服务 |
+| `dshChat.autoSelection` | `selection` | 发送时自动把编辑器选区附带为引用：`off` 关闭 / `selection` 仅引用选区 / `file` 无选区时引用整个文件 |
 | `dshChat.diffLayout` | `auto` | 编辑 diff：窄单栏 / 宽双栏，或固定 `unified` / `split` |
 | `dshChat.language` | `auto` | 聊天语言：跟随 VS Code，或 `zh-cn` / `en` |
 | `dshChat.fontSize` | `0` | 整数 px；`0` 跟随 VS Code，非零值最小 8 px，基准为 13px。字体会直接使用设定值，整个界面会根据设定值与基准值的比例进行缩放 |
@@ -58,7 +59,7 @@ npm run package  # Releases/dsh-chat-<version>.vsix
 
 ### 面板与会话
 
-- 可在活动栏、辅助侧栏或编辑器中使用。命令「DSH: 在编辑器中打开对话」与活动栏头部按钮将对话开到已有编辑器分组；编辑器标题栏的鲸鱼按钮在当前分组新建会话
+- 可在活动栏、辅助侧栏或编辑器中使用。命令「DSH: 在编辑器中打开对话」与活动栏头部按钮将对话开到已有编辑器分组；编辑器标题栏的鲸鱼按钮单击在**当前分组**新建会话窗口，按住 `Alt` 单击则在**代码区右侧并排**新建，代码与对话可同时查看
 
 - 历史列表只显示当前工作区的会话，支持新建、归档、删除。
 - 可从会话具体节点分支，分支标题带「分支: 」前缀。
@@ -78,7 +79,10 @@ npm run package  # Releases/dsh-chat-<version>.vsix
 - 在 VS Code 命令面板运行「DSH: 工具栏保留优先级」，可调整窄窗口优先保留哪些项目，不改变它们的左右位置。默认布局不变；如想让会话累计 **Token 用量** 紧挨上下文圆环，启用它并隐藏「上下文数值」。悬停于上下文圆环可查看精确的占用量与容量。
 - `/` 打开命令与技能菜单；`@` 引用文件、目录或历史会话，写入 `@path`、`@dir/` 或 `@[标题](dsh-session:…)`，由模型自行读取，不占附件通道。
 - 目录行主体进入目录，右侧「整个目录」按钮引用目录；键盘用 Enter 引用、Tab 进入。已发送的引用直接点击；草稿引用按住 `Alt` 打开可编辑的真实文件，按住 `Ctrl/Cmd` 打开引用。会话引用在新标签页打开，沿用编辑器分组规则。
-- `Alt+Shift+2` 将编辑器选区加入为 `@path#L12-L40` 引用。
+- 先将焦点放在 VS Code 的文本编辑器里（不是聊天输入框），再按 `Alt+Shift+2`（macOS 上为 `Option+Shift+2`）。「添加文件或选区到对话」会在活动对话的草稿光标处插入 `@path#L12-L40`；未选中文字时插入整文件引用。
+- 编辑器里选中内容后，输入框上方会出现**选区芯片**，显示将随消息发送的引用（如 `@path#Lx-Ly`）；悬停可看完整引用和原文预览。发送普通消息时只附带引用，收起芯片而不改动草稿；`/` 命令不附带引用。本机文件只有路径按字面位于活动会话的执行目录下时才自动附带；不由此判断远端能否读取同一文件。三档可选（`dshChat.autoSelection`）：`off` 关闭 / `selection` 仅引用选区（默认，只有光标不显示）/ `file` 无选区时引用整个文件。
+- 对话打开的普通**只读副本**也支持芯片和手动添加，引用原始文件而不是编辑器中的副本。仅在产生它的连接仍有效、活动对话绑定同一会话时才可引用：优先使用相对执行目录的路径，不在目录内或目录未知时用可安全表示的绝对路径。差异对比及其快照不参与。
+- 只把焦点移回**同一**对话不会清除选区芯片。切换对话窗口（点另一侧栏或编辑器对话的空白处也算）、会话、执行目录或连接时，不会把旧引用带过去；从已有对话通过鲸鱼按钮（含 `Alt` 并排）打开新对话也一样。需要时请在编辑器里重新选择。只有本机文件的选区可在首次打开对话时按执行目录匹配保留。后台加载或恢复的页面不会抢占活动对话。
 - 会话正文里的文件链接悬停显示完整路径，web 链接显示完整地址；按住 `Alt` 单击打开可编辑的真实文件（本机存在同路径且内容一致时；内部、外部与桌面端连接同一口径，不一致或无法校验则回退只读预览）。HTML 文件（`.html` / `.htm` / `.xhtml` / `.shtml`）按住 `Ctrl/Cmd` 单击用系统浏览器打开；普通单击打开只读预览。
 - 回形针选择文件：图片发送为内容块，其余文件上传，芯片显示上传状态。此路径通道不受拖放的 8 MB 限制。
 - 拖放须按住 `Shift`：文件走字节通道，单文件最多 8 MB，不支持目录。Windows 复制文件或目录后粘贴可由宿主取回真路径：文件走附件、目录变成正文引用；其它平台与截图粘贴回退到同一字节通道。纯文本粘贴不变。粘贴进来的图片按会话内序号命名（中文界面 `图1.png`、英文界面 `image1.png`），编号只增不回收，便于在对话里直接指代。
@@ -166,6 +170,7 @@ The desktop app (Electron) already runs a DSH service of its own, and the extens
 | `dshChat.desktopExecutable` | empty | Path of the DSH desktop app executable; both sides must use the same DSH home (the default is fine unless you have customised it) |
 | `dshChat.supervisorIdleSec` | `10` | Exit grace period for internal DSH once no VS Code window is connected, 5–600 seconds |
 | `dshChat.autoConnect` | `true` | Connect at startup; start the service automatically when no connection is available |
+| `dshChat.autoSelection` | `selection` | Attach the editor selection as a reference when sending: `off` disables it / `selection` references selections only / `file` also references the whole file without a selection |
 | `dshChat.diffLayout` | `auto` | Narrow unified / wide split diff, or fixed `unified` / `split` |
 | `dshChat.language` | `auto` | Follow VS Code, or use `zh-cn` / `en` |
 | `dshChat.fontSize` | `0` | Integer px; `0` follows VS Code, nonzero values are at least 8 px, baseline 13px. The font uses the value directly and the whole UI scales by its ratio to the baseline |
@@ -177,7 +182,7 @@ The desktop app (Electron) already runs a DSH service of its own, and the extens
 
 ### Panels and sessions
 
-- Use the activity bar, secondary sidebar or editor area. **DSH: Open in Editor** and the activity-bar header button open a conversation in an existing editor group; the whale button in the editor title bar creates a session in the current group.
+- Use the activity bar, secondary sidebar or editor area. **DSH: Open in Editor** and the activity-bar header button open a conversation in an existing editor group; the whale button in the editor title bar creates a session in the **current group**, or opens it **beside the code** when you hold `Alt` and click, so code and conversation stay visible together.
 - History is scoped to the current workspace and supports new, archive and delete.
 - You can branch from a specific session node; branch titles have a “Branch: ” prefix.
 - Click the title when subagents exist to expand the top-level session and the multi-level subagent tree and switch across any level; the count after the title shows how many subagents the current session has. One-shot agents are read-only, continuable agents support follow-up chat.
@@ -196,7 +201,10 @@ Open the notification drawer with **Show history** or **DSH: View Notifications*
 - Run **DSH: Toolbar retention priority** from the VS Code Command Palette to choose what stays visible first in narrow views without changing where items appear. The default layout is unchanged. To put the session's cumulative **Token usage** beside the context ring, enable it and hide **Context numbers**. Hover over the ring for exact context usage and capacity.
 - `/` opens commands and skills; `@` references files, folders or past sessions using `@path`, `@dir/` or `@[title](dsh-session:…)`. The model reads references itself; they are not attachments.
 - A folder row navigates into it; its “Entire folder” button references it. Enter references, Tab navigates. Click references in sent messages directly; hold `Alt` to open the editable real file from a draft reference, or hold `Ctrl/Cmd` to open the reference. Session links open a new tab using the same editor-group rules.
-- `Alt+Shift+2` inserts an editor selection as `@path#L12-L40`.
+- Focus the VS Code text editor (not the chat input), then press `Alt+Shift+2` (`Option+Shift+2` on macOS). **Add File or Selection to Chat** inserts `@path#L12-L40` at the active chat’s draft caret, or a whole-file reference if no text is selected.
+- Selecting text in the editor shows a **selection chip** above the input with the reference that will be sent (for example, `@path#Lx-Ly`). Hover for the full reference and a preview of the selected text. Sending a regular message attaches only the reference and clears the chip without editing the draft; slash commands never receive it. A local file is attached this way only when its path falls under the active session’s working directory. This path comparison does not verify that a remote session can read the same file. Three modes (`dshChat.autoSelection`): `off` / `selection` (default, only when text is selected) / `file` (references the whole file when there is no selection).
+- Regular **read-only copies** opened from chat also support chips and manual insertion. Both reference the original file, and only work when the connection that opened it is still valid and the active chat is bound to that same session. References prefer a path relative to the session’s working directory, with a safe absolute path for files outside it or when the directory is unknown. Diff editors and snapshots are excluded.
+- Returning focus to the **same** chat keeps the chip. Switching to another sidebar or editor chat (even by clicking blank space), switching sessions, changing the working directory, or changing connections clears it. The same applies when the whale button opens a new chat, including `Alt`-click to open beside the code. Select text again to attach it. Only a local file selection can carry into the first chat when its working directory matches. Background loading and tab restoration do not take over the active chat.
 - Hovering a file link in conversation content shows its full path and hovering a web link shows its full URL. Hold `Alt` and click to open the editable real file when the local file at the same path exists with identical content. The same rule applies to internal, external, and desktop connections; a missing, different, or unverifiable local file falls back to the read-only preview. Hold `Ctrl/Cmd` and click an HTML file (`.html` / `.htm` / `.xhtml` / `.shtml`) to open it in the system browser; a plain click opens the read-only preview.
 - The paperclip sends images as content blocks and uploads other files, showing upload status on their chips. This path channel is not subject to the drop channel's 8 MB cap.
 - Hold `Shift` to drop files. Drops use bytes, allow up to 8 MB per file and do not support folders. On Windows, pasting copied files/folders retrieves their paths: files become attachments, folders become text references. Other platforms and pasted screenshots use the same byte channel. Plain-text paste is unchanged. Pasted images are named by session order (`图1.png` in the Chinese interface, `image1.png` in the English one); numbers only grow and are never reused, so you can refer to an image by name in the conversation.
