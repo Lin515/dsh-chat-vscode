@@ -3,6 +3,20 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 This project follows [Semantic Versioning](https://semver.org/).
 
+## 0.15.1（2026-11-28）
+
+### 中文
+
+- 新增：可设置为单击对话正文中的文件链接即打开可编辑的原文件，无法打开原文件时仍显示只读副本。
+- 修复：在多根工作区手动添加文件或选区引用时，以当前会话的执行目录为准，目录外使用绝对路径。
+- 修复：Windows 绝对路径引用统一使用大写盘符，其他路径字符的大小写保持不变。
+
+### English
+
+- Added: An option to open the editable original with a single click on a file link in a chat message, falling back to a read-only copy if the original cannot be opened.
+- Fixed: File and selection references added manually in multi-root workspaces are relative to the active session's working directory, with absolute paths for files outside it.
+- Fixed: Absolute Windows file references use uppercase drive letters without changing the case of any other path characters.
+
 ## 0.15.0（2026-11-26）
 
 ### 中文
