@@ -104,7 +104,8 @@
 - [references.test.ts](<references.test.ts>) — `@path` 引用文本的拼写规则（对齐官方 `formatFileMention`）。
 - [selection.test.ts](<selection.test.ts>) — 编辑器选区 → 行号区间（「下一行行首结束要少算一行」边界），以及芯片悬停预览的归一 / 截断 / 保留缩进。
 - [selectionContext.test.ts](<selectionContext.test.ts>) — 编辑器选区芯片：按会话执行目录折算、发送拼接、三档开关（含旧布尔迁移）、过期收起帧与中英文渲染（悬停查看完整发送引用和原文预览）。
-- [selectionSend.test.ts](<selectionSend.test.ts>) — 真控制器：芯片只投递活动窗口、切换撤旧、收起后 ready 重放不复活，`/compact` 与带参数命令不受引用影响、普通消息才附加。
+- [selectionDelivery.test.ts](<selectionDelivery.test.ts>) — 直接驱动宿主选区模块：首次补壳、占位的发送资格、已取出引用不随绑定或焦点改写，以及只读副本的目录与原连接复核。
+- [selectionSend.test.ts](<selectionSend.test.ts>) — 真控制器：芯片只投递活动窗口、恢复窗口迁移、防抖和收起、斜杠命令不受引用影响、普通消息发送前复核目标及失效回填。
 - [imageAttachments.test.ts](<imageAttachments.test.ts>) — 图片链路适配器侧：`attachmentId` → data URL 异步补字节。
 - [imageFiles.test.ts](<imageFiles.test.ts>) — 图片地址 → 字节与保存对话框默认文件名（扩展名按真实媒体类型）。
 - [imageRender.test.ts](<imageRender.test.ts>) — 会话图片渲染断言（服务端渲染出 HTML，覆盖三处来源）。

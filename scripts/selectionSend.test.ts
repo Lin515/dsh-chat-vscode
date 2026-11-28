@@ -934,8 +934,7 @@ for (const change of ["cwd", "session"] as const) {
 }
 console.log("selectionSend: 本机自动引用在发送前复核目标与会话目录 ✓");
 
-// 同一 sessionId 切走再切回会重建**新的 scope 对象**（执行目录也可能不同）：
-// 只比 sessionId 会放行旧目标，必须按域对象身份拒绝。原 A 的 cwd 保持不变。
+// 同一 sessionId 切走再切回会重建**新的 scope 对象**：即使执行目录没变，也必须按域对象身份拒绝。
 {
   const root = join(tmpdir(), "dsh-chat-local-selection-recreated-scope");
   const cwd = join(root, "before");
@@ -971,12 +970,12 @@ console.log("selectionSend: 本机自动引用在发送前复核目标与会话�
     const scopeB = c.scopeOfView("other");
     assert.ok(scopeB && scopeB.sessionId !== sessionIdA);
     c.bindViewToSession("owner", scopeB.sessionId, scopeB);
-    // B → A：同一 sessionId 重新建域，并换成新的执行目录。
+    // B → A：会话 id 和执行目录都不变，唯一使这次发送失效的是域对象已被替换。
     const recreatedA = inner.ensureScope(sessionIdA);
     assert.ok(recreatedA);
-    c.applyWorkingDirectoryProjection(recreatedA, nextCwd, true, "snapshot");
+    assert.notStrictEqual(recreatedA, scopeA);
     c.bindViewToSession("owner", sessionIdA, recreatedA);
-    assert.strictEqual(inner.executionCwdOf(scopeA), cwd, "原 A 的 cwd 不被改写");
+    assert.strictEqual(inner.executionCwdOf(recreatedA), cwd);
   } finally {
     releaseModel();
     await sending;
@@ -1017,21 +1016,15 @@ assert.strictEqual(remoteFileReference("/work/a.ts#L22-L30", "/work"), undefined
   const inner = c as unknown as {
     activeViewId(): string | undefined;
     noteRestoredActiveView(viewId: string): void;
-    selectionDisplayed?: { target: { kind: string; viewId: string } };
   };
   c.bindView("sidebar");
   const chip = await showSelection(c, frames, "sidebar");
-  const oldTarget = inner.selectionDisplayed?.target;
-  assert.ok(oldTarget);
   c.bindView("panel");
   assert.strictEqual(inner.activeViewId(), "sidebar", "只登记新窗口不抢占已有默认");
   inner.noteRestoredActiveView("panel");
   assert.strictEqual(inner.activeViewId(), "panel", "无用户活动时恢复的 active 面板成为默认");
   assert.strictEqual(chipsFor(frames, "sidebar").at(-1), null, "先登记侧栏的旧芯片被撤下");
-  assert.strictEqual(chipsFor(frames, "panel").at(-1)?.token, chip.token, "选择迁到恢复出来的默认窗口");
-  const newTarget = inner.selectionDisplayed?.target;
-  assert.notStrictEqual(newTarget, oldTarget, "迁移换新 target 对象，不改写已冻结的发送目标");
-  assert.strictEqual(oldTarget.viewId, "sidebar", "旧 target 的归属保持不变");
+  assert.deepStrictEqual(chipsFor(frames, "panel"), [chip], "选择保留原标识迁到恢复出来的默认窗口");
 
   // 真实活动正好落在 MRU 栈尾的侧栏：更新前的有效目标是恢复面板，必须撤下它的 chip。
   assert.strictEqual(inner.activeViewId(), "panel");
@@ -1078,21 +1071,21 @@ assert.strictEqual(remoteFileReference("/work/a.ts#L22-L30", "/work"), undefined
 }
 console.log("selectionSend: 恢复的 active 面板只在无用户活动时作默认 ✓");
 
-// 启动同目录迁移时防抖仍在途：迁移必须保留 pending 容器身份，到点后照常投递并可发送。
+// 启动同目录迁移时防抖仍在途：必须按原时间投到新窗口，并可随消息发送。
 {
   const { c, frames, client } = makeController();
   const inner = c as unknown as {
     noteRestoredActiveView(viewId: string): void;
-    selectionPending?: { target: { viewId: string } };
-    selectionDisplayed?: { target: { viewId: string } };
   };
   c.bindView("sidebar");
   c.setSelectionFacts(FACTS);
-  assert.ok(inner.selectionPending, "前置：防抖中的待投递选区");
+  mock.timers.tick(100); // 先经过一部分防抖，再迁移到面板。
   c.bindView("panel");
   inner.noteRestoredActiveView("panel");
+  mock.timers.tick(199);
   assert.deepStrictEqual(chipsFor(frames, "panel"), [], "未到点不提前投递");
-  settleSelection();
+  mock.timers.tick(1);
+  assert.deepStrictEqual(chipsFor(frames, "sidebar"), [], "在途引用不能投回旧窗口");
   const chip = chipsFor(frames, "panel").at(-1);
   assert.ok(chip, "迁移后的 pending 到点仍能投递");
   assert.strictEqual(chip.token, REF);
@@ -1100,27 +1093,31 @@ console.log("selectionSend: 恢复的 active 面板只在无用户活动时作�
   assert.strictEqual(promptText(client), `防抖迁移后发送\n\n${REF}`, "到点后的引用真的随 prompt 送出");
 }
 
-// 展示 + 防抖替换共享同一个 target：迁移后两者仍必须指向同一新对象，新的防抖不能被丢。
+// 已显示占位与防抖中的替换，一起随恢复窗口与首次补壳迁移。
 {
   const { c, frames, client } = makeController();
   const inner = c as unknown as {
     noteRestoredActiveView(viewId: string): void;
-    selectionPending?: { target: unknown };
-    selectionDisplayed?: { target: unknown };
   };
   c.bindView("sidebar");
-  await showSelection(c, frames, "sidebar");
-  c.setSelectionFacts(MORE_LINES); // pending 复用 displayed.target
+  const placeholder = await showSelection(c, frames, "sidebar");
+  c.setSelectionFacts(MORE_LINES);
   c.bindView("panel");
   inner.noteRestoredActiveView("panel");
-  assert.strictEqual(inner.selectionPending?.target, inner.selectionDisplayed?.target,
-    "pending 与 displayed 共用同一个迁移后的 target，不能分裂");
+  assert.deepStrictEqual(chipsFor(frames, "sidebar"), [placeholder, null]);
+  assert.deepStrictEqual(chipsFor(frames, "panel"), [placeholder]);
+  await c.handle({ type: "ready" }, "panel");
+  assert.ok(c.scopeOfView("panel"), "恢复出的面板自动补壳");
+  assert.deepStrictEqual(chipsFor(frames, "panel"), [placeholder, placeholder], "补壳不撤下或替换占位");
+  await c.handle(send("迁移中的占位不可发送", placeholder), "panel");
+  assert.strictEqual(promptText(client), "迁移中的占位不可发送");
   settleSelection();
   const chip = chipsFor(frames, "panel").at(-1);
   assert.ok(chip);
-  assert.strictEqual(chip.token, "@src/a.ts#L12-L19", "新的防抖证据没有被旧 pending 容器身份丢弃");
-  await c.handle(send("共享目标迁移后发送", chip), "panel");
-  assert.strictEqual(promptText(client), "共享目标迁移后发送\n\n@src/a.ts#L12-L19");
+  assert.strictEqual(chip.token, "@src/a.ts#L12-L19", "防抖结束后投递最新选区");
+  assert.deepStrictEqual(chipsFor(frames, "panel"), [placeholder, placeholder, chip], "原子替换，占位与新选区之间没有空帧");
+  await c.handle(send("迁移并绑定后发送", chip), "panel");
+  assert.strictEqual(promptText(client), "迁移并绑定后发送\n\n@src/a.ts#L12-L19");
 }
 
 // 旧窗口只有只读副本引用：恢复默认切到新面板时立即撤下，不能遗留。

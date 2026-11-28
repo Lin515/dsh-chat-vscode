@@ -34,7 +34,7 @@ import type {
   SubagentView,
   TodoView,
 } from "../shared/chat";
-import type { ChangeCoordinates, HostToWebview, SelectionContextView, WebviewToHost } from "../shared/ipc";
+import type { ChangeCoordinates, HostToWebview, WebviewToHost } from "../shared/ipc";
 import { applyToolbarPreferenceAction, normalizeToolbarPreference, type ToolbarPreference } from "../shared/toolbarPreference";
 import { SessionAdapter, type ImageRef } from "./adapter";
 import { createTrajectoryResultWatchManager } from "./trajectoryResultWatch";
@@ -95,17 +95,15 @@ import {
   isDirectoryQuery,
   mentionPathOf,
   referenceSessionIdOf,
-  selectionDirectoryKey,
 } from "../shared/mentions";
 import { matchPresetInput } from "../shared/presetMatch";
 import {
-  localFileReference,
   manualDirectoryReference,
   manualFileReference,
   remoteFileReference,
-  remoteSelectionCwdKey,
   type SelectionFacts,
 } from "./selection";
+import { SelectionContext, type SelectionSubmission } from "./selectionContext";
 import { presetMatchNames } from "../webview/presetDisplay";
 import { resolveForVsCode } from "./hostText";
 import { normalizeTurnProcessThreshold } from "../shared/turnProcessThreshold";
@@ -211,47 +209,6 @@ interface SessionTarget {
   key: string;
   /** 是否注册成服务端工作区（工作区根为 true；工作区外 / 无文件夹时为 false）。 */
   registered: boolean;
-}
-
-interface RemoteSelectionTarget {
-  kind: "remote";
-  viewId: string;
-  sessionId: string;
-  /** 仅比较键（见 `remoteSelectionCwdKey`）：无法安全折算时退回原样 cwd。 */
-  cwdKey: string | undefined;
-  connectionId: string;
-}
-
-/**
- * 自动引用的冻结目标。两种引用的**目录键语义不同**，复核时不可互换：
- * - 本机：`cwdKey` 是 `selectionDirectoryKey`（可折算键）；它必须能安全地生成
- *   目录内相对引用，复核只要求目标会话的执行目录仍是这一份。
- * - 只读副本：`cwdKey` 是 `remoteSelectionCwdKey`（仅比较键），复核在此基础上
- *   还要原连接仍然有效——远端目录可能根本不能折算成引用语法。
- *
- * 本机目标允许 `sessionId === undefined`：按下发送时窗口尚未绑定，第一条消息
- * 按同一执行目录建立（或迁移到）会话后仍属于这个目标。
- */
-type SelectionTarget =
-  | RemoteSelectionTarget
-  | {
-    kind: "local";
-    viewId: string;
-    sessionId: string | undefined;
-    cwdKey: string;
-  };
-
-type LocalSelectionTarget = Extract<SelectionTarget, { kind: "local" }>;
-
-interface TargetedSelection {
-  target: SelectionTarget;
-  context: SelectionContextView;
-}
-
-interface PendingSelection {
-  target: SelectionTarget;
-  /** null 表示同一来源的鼠标选区暂时为空。 */
-  context: Omit<SelectionContextView, "id"> | null;
 }
 
 /** 早期版本把启动令牌存进了 SecretStorage；存它没有意义，激活时清掉。 */
@@ -1773,6 +1730,15 @@ export class ChatController implements vscode.Disposable {
    */
   private readonly listeners = new Set<(target: "all" | string, frame: HostToWebview) => void>();
 
+  private readonly selection = new SelectionContext({
+    activeViewId: () => this.activeViewId(),
+    view: (viewId) => this.selectionView(viewId),
+    initialCwd: () => this.captureSessionTarget()?.path,
+    connectionCurrent: (connectionId) => this.resolveHostFileConnection(connectionId) !== undefined,
+    publish: (viewId, context) => this.emitToView(viewId, { type: "ui/selectionContext", context }),
+    log: (line) => this.log(line),
+  });
+
   constructor(
     private server: SupervisorManager,
     private readonly log: (line: string) => void,
@@ -2799,15 +2765,7 @@ export class ChatController implements vscode.Disposable {
     if (this.viewOrder.includes(viewId)) return;
     // 首个窗口可作默认目标；其后的窗口仅登记，不能抢占已经活动过的窗口。
     this.viewOrder.unshift(viewId);
-    if (!this.hasRegisteredSelectionView) {
-      this.hasRegisteredSelectionView = true;
-      this.selectionInitialView = viewId;
-      const initial = this.initialSelectionFacts;
-      this.initialSelectionFacts = undefined;
-      if (initial && initial.cwdKey === selectionDirectoryKey(this.selectionCwd(viewId))) {
-        this.setSelectionFacts(initial.facts);
-      }
-    }
+    this.selection.viewRegistered(viewId);
   }
 
   /**
@@ -3131,7 +3089,7 @@ export class ChatController implements vscode.Disposable {
       this.viewOrder.push(viewId);
       this.persistWindowState();
     }
-    if (previousActive !== viewId) this.clearSelectionContext("活动窗口变化");
+    this.selection.activeViewChanged(previousActive);
   }
 
   /**
@@ -3147,65 +3105,13 @@ export class ChatController implements vscode.Disposable {
   noteRestoredActiveView(viewId: string): void {
     if (this.userActivitySeen || !this.viewOrder.includes(viewId)) return;
     this.restoredActiveView = viewId;
-    this.adoptRestoredSelection(viewId);
-  }
-
-  /** 把已折算到先登记窗口的本机选区迁到恢复出来的默认活动窗口（仅无用户活动时）。 */
-  private adoptRestoredSelection(viewId: string): void {
-    const pending = this.selectionPending;
-    const displayed = this.selectionDisplayed;
-    const candidates = [pending?.target, displayed?.target].filter(
-      (target): target is SelectionTarget => target !== undefined && target.viewId !== viewId,
-    );
-    if (!candidates.length) return;
-    const moving = candidates.filter((target): target is LocalSelectionTarget => target.kind === "local");
-    const target = moving[0];
-    // 只读副本不能迁移；与旧来源不一致的混合状态也不猜。只要还有不属于新默认窗口的
-    // 引用，就即时撤下——留下旧 pane 的 chip 比丢掉它更糟（活动目标已经换了）。
-    const sameOrigin = target !== undefined && moving.length === candidates.length &&
-      moving.every((item) => item.viewId === target.viewId);
-    const from = target?.viewId;
-    if (!sameOrigin || from === undefined ||
-        !this.isLocalSelectionTargetCurrent(target) || !this.localTargetMatchesView(target, viewId)) {
-      this.clearSelectionContext("恢复活动窗口与引用目标不匹配");
-      return;
-    }
-    // 迁移**保留 pending 容器对象**：防抖定时器闭包捕获的是它，换对象会让回调首句
-    // `this.selectionPending !== pending` 直接丢弃这一帧，随后 pending 永久滞留。
-    // pending 与 displayed 正常共享同一个 target：只换一份新对象给两者共用，不能各建
-    // 一份——首次自动绑定只给 `pending ?? displayed` 之一补 sessionId，分裂后另一方
-    // 会永久留下旧 sessionId。
-    const movedTarget: LocalSelectionTarget = { ...target, viewId };
-    if (pending?.target.kind === "local" && pending.target.viewId === from) {
-      pending.target = movedTarget;
-    }
-    if (displayed?.target.kind === "local" && displayed.target.viewId === from) {
-      this.selectionDisplayed = { ...displayed, target: movedTarget };
-    }
-    if (this.selectionInitialView === from) this.selectionInitialView = viewId;
-    // 展示帧已经投给旧窗口：先撤回，再投给默认窗口；防抖中的那一份只改目标，
-    // 到点后自然投到新窗口，不重新读编辑器、也不重新折算引用。
-    const moved = this.selectionDisplayed;
-    if (moved?.target.kind === "local" && moved.target.viewId === viewId) {
-      this.emitToView(from, { type: "ui/selectionContext", context: null });
-      this.emitToView(viewId, { type: "ui/selectionContext", context: moved.context });
-    }
-  }
-
-  /** 新默认窗口是否与旧目标可证明为同一会话、同一执行目录（只做比较，不重算 token）。 */
-  private localTargetMatchesView(target: LocalSelectionTarget, viewId: string): boolean {
-    const scope = this.scopeOfView(viewId);
-    const sessionId = this.viewSessions.get(viewId);
-    if (sessionId !== target.sessionId) return false;
-    const cwd = scope ? this.executionCwdOf(scope) : this.captureSessionTarget(viewId)?.path;
-    return target.cwdKey === selectionDirectoryKey(cwd);
+    this.selection.restoreActiveView(viewId);
   }
 
   /** 窗口下线：解绑，若它是该会话最后一个窗口则回收整个域。 */
   unbindView(viewId: string): void {
     const sessionId = this.viewSessions.get(viewId);
-    if (viewId === this.selectionInitialView) this.selectionInitialView = undefined;
-    if (viewId === this.activeViewId()) this.clearSelectionContext("活动窗口关闭");
+    this.selection.viewClosed(viewId);
     if (viewId === this.restoredActiveView) this.restoredActiveView = undefined;
     // 关窗是一次**用户动作**：正在飞的落壳回来时必须收手（绑定已经不是它的了）。
     // 条目在这里删掉：窗口的键不会再有人用，删掉同时保证「同 id 重建」也拿不到旧代号
@@ -3416,21 +3322,7 @@ export class ChatController implements vscode.Disposable {
   private bindViewToSession(viewId: string, sessionId: string, scope: SessionScope, automaticBlank = false): void {
     const previous = this.viewSessions.get(viewId);
     if (previous === sessionId) return;
-    const initial = this.selectionInitialView === viewId;
-    if (initial) this.selectionInitialView = undefined;
-    if (viewId === this.activeViewId()) {
-      const selection = this.selectionPending ?? this.selectionDisplayed;
-      // 首次开窗自动补齐同目录的空壳不是用户切换；只迁移归属，不重投选区。
-      if (
-        automaticBlank && initial && previous === undefined && selection &&
-        selection.target.kind === "local" &&
-        selection.target.cwdKey === selectionDirectoryKey(this.executionCwdOf(scope))
-      ) {
-        selection.target.sessionId = sessionId;
-      } else if (selection) {
-        this.clearSelectionContext("活动会话绑定变化");
-      }
-    }
+    this.selection.bindingChanged(viewId, { sessionId, cwd: this.executionCwdOf(scope), automaticBlank });
     // 换会话：这个窗口的后台任务观察流是**上一个会话**的，跟着一起收
     // （同一会话的重入在上面那行就返回了，展开中的面板不会被这次绑定打断）
     this.closeJobWatch(viewId);
@@ -4016,7 +3908,7 @@ export class ChatController implements vscode.Disposable {
       if (choice.kind === "outside") this.viewRootChoices.delete(viewId);
     }
     this.refreshWorkspace();
-    this.invalidateSelectionTarget();
+    this.selection.refresh();
     // **第一个 await 之前**就让不再匹配新根的旧空壳失去发送资格：否则用户马上发消息会
     // 命中那条旧壳（`detachStaleBlank` 只解绑空壳，已有历史会话保持不动）。
     for (const viewId of this.liveViewIds()) this.detachStaleBlank(viewId);
@@ -4442,9 +4334,7 @@ export class ChatController implements vscode.Disposable {
     if (this.client === client) return;
     // 初次本地后台连接不是执行世界切换；已建立过连接后，不以 cwd 字符串相同当作同一世界。
     const firstInternalConnection = this.connectionGeneration === 0 && client !== undefined && this.target?.kind === "internal";
-    if (!firstInternalConnection && (this.selectionPending || this.selectionDisplayed || this.initialSelectionFacts)) {
-      this.clearSelectionContext("连接执行环境变化");
-    }
+    if (!firstInternalConnection) this.selection.executionWorldChanged();
     // 工作区注册 id 属于**上一条连接**的注册表（同一路径在另一台 Host 上是另一条记录）：
     // 世代号 +1 让全部缓存键失效，旧请求回来也写不回新连接。
     this.connectionGeneration = (this.connectionGeneration ?? 0) + 1;
@@ -4998,7 +4888,7 @@ export class ChatController implements vscode.Disposable {
       this.historySessions = allViews.filter((item) => Boolean(item.cwd));
       // 权威 cwd 账本刚整份重建：给已建域的适配器补一次创建目录展示值（只补不清）。
       this.syncScopeSessionCwds();
-      this.invalidateSelectionTarget();
+      this.selection.refresh();
       this.emitSessionLists();
       // running 的**权威打底**：列表是服务端算的（`SessionSummary.running`），域存在时
       // 按它对齐——官方 `ui-session` 的 `reconcileStatus()` 是同一口径。适配器那一路只从
@@ -6223,10 +6113,7 @@ export class ChatController implements vscode.Disposable {
    */
   private detachView(viewId: string, moveDraft = true): void {
     const previous = this.viewSessions.get(viewId);
-    if (viewId === this.selectionInitialView) this.selectionInitialView = undefined;
-    if (viewId === this.activeViewId() && (this.selectionPending || this.selectionDisplayed)) {
-      this.clearSelectionContext("活动会话解绑");
-    }
+    this.selection.bindingChanged(viewId);
     if (previous === undefined) return;
     // 点「新建对话」也是离开：正在生成就记一笔离开标记（域随后被回收，先取状态）
     const wasGenerating = this.isSessionGenerating(previous);
@@ -6661,7 +6548,7 @@ export class ChatController implements vscode.Disposable {
   ): Promise<void> {
     // **先同步摘掉旧根的空壳**：这一帧（以及后面按新根重拉的历史）之前窗口就不该还绑着
     // 旧目录的空壳，否则第一次发送 / 打开会话可能沿着旧绑定走下去。
-    this.invalidateSelectionTarget();
+    this.selection.refresh();
     this.detachStaleBlank(viewId);
     this.emitViewScopedState();
     // 旧列表（`this.sessions`）是按旧根收窄的那一份；根换了要按新根重算一次（只读）
@@ -6756,7 +6643,7 @@ export class ChatController implements vscode.Disposable {
     }
     if (vscode.workspace.workspaceFolders?.[0]) return !explicit;
     this.newSessionCwd = path;
-    this.invalidateSelectionTarget();
+    this.selection.refresh();
     if (explicit) this.detachStaleBlank(action.viewId);
     // 目录变了：空态页那行目录与这个窗口的历史列表（没有打开文件夹时按选定目录收窄，
     // 见 `viewCwd`）必须同一刻换——两者是同一件事（「这个窗口现在的目录是哪个」）的两面
@@ -8008,7 +7895,7 @@ export class ChatController implements vscode.Disposable {
     const previous = this.executionCwdOf(scope);
     if (scope.workingDirectory === next) return;
     scope.workingDirectory = next;
-    this.invalidateSelectionTarget();
+    this.selection.refresh();
     // 在发补丁之前作废旧目录的查询；即使查询串没变，界面也会按新目录重取。
     for (const [viewId, sessionId] of this.viewSessions) {
       if (sessionId === scope.sessionId) this.menuQueries.get(viewId)?.abort();
@@ -9925,8 +9812,7 @@ export class ChatController implements vscode.Disposable {
         this.emitToView(viewId, { type: "state", state: this.snapshotFor(viewId) });
         this.emitToolbarPreference(viewId);
         // 就绪只同步同一活动目标当前展示的引用（含占位），不采样编辑器，不提升窗口，也不抢跑防抖。
-        const selection = this.displayedSelectionFor(viewId);
-        if (selection) this.emitToView(viewId, { type: "ui/selectionContext", context: selection });
+        this.selection.replay(viewId);
         // 待开指令放在快照和底栏偏好之后；无窗口时记下的意图只由主侧栏消费，
         // 若该视图挂上后又收到定向指令，则以较新的指令为准。
         const primaryIntent = this.viewKinds.get(viewId) === "primary" ? this.pendingPrimaryPanelOpen : undefined;
@@ -10008,14 +9894,7 @@ export class ChatController implements vscode.Disposable {
           });
           break;
         }
-        const selection = this.sendableSelectionFor(viewId);
-        const autoReference = selection &&
-          selection.context.id === message.autoReferenceId && selection.context.token === message.autoReference
-          ? selection
-          : undefined;
-        if (message.autoReference !== undefined && autoReference === undefined) {
-          this.log("[selection] 未随发送提交：界面引用已失效或不匹配");
-        }
+        const autoReference = this.selection.referenceForSend(viewId, message.autoReferenceId, message.autoReference);
         await this.submitMessage(
           viewId,
           message.text,
@@ -10031,9 +9910,7 @@ export class ChatController implements vscode.Disposable {
       }
 
       case "selectionContextDismiss": {
-        // 只撤下界面实际点掉的那张（同时取消待投递）；迟到的旧帧不能撤下新选区。
-        const selection = this.displayedSelectionFor(viewId);
-        if (selection && selection.id === message.id) this.clearSelectionContext("用户收起引用");
+        this.selection.dismiss(viewId, message.id);
         break;
       }
 
@@ -11227,7 +11104,7 @@ export class ChatController implements vscode.Disposable {
      * 它只进「确认是普通消息」之后的实际提交（`submitted`），输入框草稿、取消
      * 回填、命令行都只见原始正文。
      */
-    autoReference?: TargetedSelection,
+    autoReference?: SelectionSubmission,
     /**
      * **原始草稿**（自动引用拼进正文之前的那份）。重发 / 排队重发把当初送达的完整
      * 正文当 `text` 再提交时不重采选区，失败回填、提交记录与「重新编辑」仍只恢复
@@ -11238,7 +11115,7 @@ export class ChatController implements vscode.Disposable {
     const draft = originalDraft ?? text;
     // 冻结目录随 `beginSend` 直接返回（它只被这一次提交用到，不再经 requestId → 目录的表）
     const submitted = source === "composer" && autoReference
-      ? appendAutoReference(text, autoReference.context.token) : text;
+      ? appendAutoReference(text, autoReference.token) : text;
     const { requestId, frozenTarget } = this.beginSend(viewId, text, attachments, source, handoffLeaseFrom, submitted);
     // **按下那一刻的绑定**（同步记下、早于任何 await）：有 = 用户显式打开 / 切换到的历史会话，
     // 这次发送照旧发给它，不拿根偏好去比；没有 = 这次落点只认冻结目录（见 `send`）。
@@ -11256,8 +11133,7 @@ export class ChatController implements vscode.Disposable {
         // 从未交给 transport：自动引用不能留在失败行里冒充「已提交正文」，否则改 cwd
         // 后「重发」会把旧 token 当普通内容重放。失败行 / 回填只留原始草稿。
         if (source === "composer" && autoReference) this.rewriteEchoToDraft(requestId, draft);
-        if (autoReference &&
-            this.cancelStaleSelectionSubmit(autoReference.target, undefined, viewId, draft, attachments, requestId)) {
+        if (this.cancelStaleSelectionSubmit(autoReference, undefined, viewId, draft, attachments, requestId)) {
           return false;
         }
         if (!this.failEcho(requestId, "@sendNoConnection")) {
@@ -11282,6 +11158,28 @@ export class ChatController implements vscode.Disposable {
     } finally {
       this.releasePendingSend(viewId);
     }
+  }
+
+  /** 自动引用失效时取消提交，只回填原始草稿与附件，不回填 token。 */
+  private cancelStaleSelectionSubmit(
+    reference: SelectionSubmission | undefined,
+    scope: SessionScope | undefined,
+    viewId: string,
+    text: string,
+    attachments: Attachment[],
+    requestId: string,
+  ): boolean {
+    if (!reference) return false;
+    const current = this.scopeOfView(viewId);
+    // 只看发送来源窗口，不看当前焦点。等待 RPC 期间切走再切回同一会话可能重建域；
+    // 已确定落点时必须是同一个域对象，不能只比会话 id。
+    if (current && (!scope || scope === current) &&
+        reference.matches({ sessionId: current.sessionId, cwd: this.executionCwdOf(current) })) return false;
+    this.retireEcho(requestId, "reference-target-changed");
+    const sessionId = reference.sessionId ?? scope?.sessionId ?? this.viewSessions.get(viewId);
+    if (sessionId) this.appendDraftForSession(sessionId, text, attachments, requestId);
+    else this.appendDraft(viewId, text, attachments, requestId);
+    return true;
   }
 
   /**
@@ -11347,7 +11245,7 @@ export class ChatController implements vscode.Disposable {
     /** 原始草稿：失败回填与提交记录的 `draft` 只恢复它（见 `submitMessage`）。 */
     draft: string,
     /** 按下发送时冻结的自动引用目标（本机或只读副本）；发送前统一复核。 */
-    autoReference: TargetedSelection | undefined,
+    autoReference: SelectionSubmission | undefined,
   ): Promise<boolean> {
     if (!this.client) {
       // 与 `submitMessage` 的同一道口：从未交给 transport 的自动引用不能留在失败行里。
@@ -11398,8 +11296,7 @@ export class ChatController implements vscode.Disposable {
       }
     }
     if (!scope) {
-      if (autoReference &&
-          this.cancelStaleSelectionSubmit(autoReference.target, undefined, viewId, draft, attachments, requestId)) {
+      if (this.cancelStaleSelectionSubmit(autoReference, undefined, viewId, draft, attachments, requestId)) {
         return false;
       }
       // 用户**主动取消**了目录选择 / 落点不是这条提交的冻结目录：这不是"发送失败"，而是这条
@@ -11438,9 +11335,7 @@ export class ChatController implements vscode.Disposable {
     }
 
     // 只有普通消息使用自动引用；斜杠命令不受芯片随连接或目录失效的影响。
-    // 本机与只读副本都走同一道复核（`cancelStaleSelectionSubmit`），且都只还原始草稿。
-    if (autoReference &&
-        this.cancelStaleSelectionSubmit(autoReference.target, scope, viewId, draft, attachments, requestId)) {
+    if (this.cancelStaleSelectionSubmit(autoReference, scope, viewId, draft, attachments, requestId)) {
       return false;
     }
 
@@ -11524,9 +11419,7 @@ export class ChatController implements vscode.Disposable {
       await this.applyPendingModel(scope);
       // 切换焦点不取消已按下的发送，但在等待 RPC 时原连接、会话绑定或执行目录可能变了。
       // 在清草稿、写提交记录和 normal/subagent prompt 之前收回失效引用的这次提交。
-      // 本机与只读副本都走同一道复核；回填的是原始草稿，不携带旧引用 token。
-      if (autoReference &&
-          this.cancelStaleSelectionSubmit(autoReference.target, scope, viewId, draft, attachments, requestId)) {
+      if (this.cancelStaleSelectionSubmit(autoReference, scope, viewId, draft, attachments, requestId)) {
         return false;
       }
       // 草稿与附件在 beginSend 里已清（空态那一步清的是窗口键，绑定后由
@@ -13234,218 +13127,29 @@ export class ChatController implements vscode.Disposable {
     this.revealers.get(viewId)?.();
   }
 
-  /** 编辑器事件同步冻结选区及目标；防抖只延迟投递，不采样编辑器或重新生成引用。 */
   setSelectionFacts(facts: SelectionFacts): void {
-    const viewId = this.activeViewId();
-    if (facts.remoteFile) {
-      const address = facts.remoteFile;
-      if (!viewId || !this.remoteReferenceScope(viewId, address)) {
-        return this.clearSelectionContext("只读副本不属于活动会话或原连接已失效");
-      }
-      const dir = this.selectionCwd(viewId);
-      const token = remoteFileReference(address.path, dir, facts.lines);
-      if (token === undefined) return this.clearSelectionContext("无法引用只读副本的原路径");
-      return this.captureSelection({
-        kind: "remote",
-        viewId,
-        sessionId: address.sessionId,
-        cwdKey: remoteSelectionCwdKey(dir),
-        connectionId: address.connectionId,
-      }, token, facts.preview);
-    }
-    if (!viewId) {
-      // 只允许首次开窗消费开窗前的选区；关闭已有窗后不跨窗继承。
-      const cwdKey = selectionDirectoryKey(this.captureSessionTarget()?.path);
-      if (!this.hasRegisteredSelectionView && cwdKey) {
-        this.initialSelectionFacts = { facts, cwdKey };
-        this.log("[selection] 暂存：等待首次聊天窗口");
-      } else if (!this.hasRegisteredSelectionView) {
-        this.clearSelectionContext("执行目录未知或不支持");
-      } else {
-        this.log("[selection] 未投递：无活动聊天窗口");
-      }
-      return;
-    }
-    const dir = this.selectionCwd(viewId);
-    const cwdKey = selectionDirectoryKey(dir);
-    if (!dir || !cwdKey) return this.clearSelectionContext("执行目录未知或不支持");
-    // 本机自动引用只允许安全的目录内相对路径；语法判据与只读副本共用
-    // `relativeMentionPath`（POSIX 字面反斜杠、盘符样式、行号后缀都在那里拒绝）。
-    const token = localFileReference(facts.filePath, dir, facts.lines);
-    if (token === undefined) return this.clearSelectionContext("文件不在执行目录或路径不支持");
-
-    this.captureSelection({ kind: "local", viewId, sessionId: this.viewSessions.get(viewId), cwdKey }, token, facts.preview);
+    this.selection.capture(facts);
   }
 
-  private captureSelection(target: SelectionTarget, token: string, preview: string): void {
-    this.invalidateSelectionTarget();
-    const previous = this.selectionPending ?? this.selectionDisplayed;
-    // 来源身份变化就整条撤下：本机与只读副本之间切换，或只读副本换了原连接。
-    // 首次投递没有旧来源，不是「撤下」，不许记一条空的撤下日志/状态。
-    const sameSource = previous === undefined ||
-      (previous.target.kind === target.kind &&
-        (target.kind === "local" ||
-          (previous.target.kind === "remote" && previous.target.connectionId === target.connectionId)));
-    if (!sameSource) this.clearSelectionContext("引用来源身份变化");
-    const displayed = this.selectionDisplayed;
-    if (!this.selectionPending && displayed?.context.token === token && displayed.context.preview === preview) return;
-    this.scheduleSelection({
-      // 若已投递，复用同一目标对象：本机选区首次自动绑定同目录空会话时一起迁移。
-      target: displayed?.target ?? target,
-      context: { token, preview },
-    });
-  }
-
-  /** 仅同一编辑器来源的鼠标事件可暂留占位；其他折叠由扩展立即清除。 */
   deferSelectionCollapse(): void {
-    this.invalidateSelectionTarget();
-    const displayed = this.selectionDisplayed;
-    if (!displayed) return this.clearSelectionContext("选区为空");
-    this.scheduleSelection({ target: displayed.target, context: null });
+    this.selection.deferCollapse();
   }
 
-  private scheduleSelection(pending: PendingSelection): void {
-    clearTimeout(this.selectionTimer);
-    this.selectionPending = pending;
-    this.selectionTimer = setTimeout(() => {
-      if (this.selectionPending !== pending) return;
-      this.selectionTimer = undefined;
-      this.invalidateSelectionTarget();
-      if (this.selectionPending !== pending) return;
-      this.selectionPending = undefined;
-      const next = pending.context;
-      if (!next) return this.clearSelectionContext("鼠标选区为空");
-      const displayed = this.selectionDisplayed?.context;
-      // 回到同一选区：到此才恢复发送资格，不更换标识，也不重发展示帧。
-      if (displayed?.token === next.token && displayed.preview === next.preview) return;
-      const context = { ...next, id: ++this.selectionSequence };
-      this.selectionDisplayed = { target: pending.target, context };
-      this.log("[selection] 已投递引用");
-      this.emitToView(pending.target.viewId, { type: "ui/selectionContext", context });
-    }, 300);
-  }
-
-  /** 诊断只记录分支，不记录路径、行号、文本、引用或会话标识。 */
   clearSelectionContext(reason: string): void {
-    clearTimeout(this.selectionTimer);
-    this.selectionTimer = undefined;
-    this.initialSelectionFacts = undefined;
-    this.selectionPending = undefined;
-    const displayed = this.selectionDisplayed;
-    this.selectionDisplayed = undefined;
-    this.log(`[selection] 未投递或已撤下：${reason}`);
-    if (displayed) this.emitToView(displayed.target.viewId, { type: "ui/selectionContext", context: null });
+    this.selection.clear(reason);
+  }
+
+  private selectionView(viewId: string) {
+    const scope = this.scopeOfView(viewId);
+    return {
+      sessionId: scope?.sessionId,
+      cwd: scope ? this.executionCwdOf(scope) : this.captureSessionTarget(viewId)?.path,
+    };
   }
 
   private selectionCwd(viewId: string): string | undefined {
-    const scope = this.scopeOfView(viewId);
-    return scope ? this.executionCwdOf(scope) : this.captureSessionTarget(viewId)?.path;
+    return this.selectionView(viewId).cwd;
   }
-
-  private invalidateSelectionTarget(): void {
-    if (this.initialSelectionFacts &&
-        this.initialSelectionFacts.cwdKey !== selectionDirectoryKey(this.captureSessionTarget()?.path)) {
-      this.clearSelectionContext("执行目录变化");
-    }
-    const target = (this.selectionPending ?? this.selectionDisplayed)?.target;
-    if (!target) return;
-    const current = target.kind === "remote"
-      ? this.isRemoteSelectionTargetCurrent(target)
-      : this.isLocalSelectionTargetCurrent(target);
-    if (target.viewId !== this.activeViewId() || !current) {
-      this.clearSelectionContext("目标、执行目录或原连接变化");
-    }
-  }
-
-  /** 本机选区：仍指向同一会话（未绑定时也允许）且执行目录的**可折算键**未变。 */
-  private isLocalSelectionTargetCurrent(target: LocalSelectionTarget): boolean {
-    return target.sessionId === this.viewSessions.get(target.viewId) &&
-      target.cwdKey === selectionDirectoryKey(this.selectionCwd(target.viewId));
-  }
-
-  private isRemoteSelectionTargetCurrent(target: RemoteSelectionTarget): boolean {
-    const scope = this.scopeOfView(target.viewId);
-    return !!scope && scope.sessionId === target.sessionId &&
-      !!this.resolveHostFileConnection(target.connectionId) &&
-      target.cwdKey === remoteSelectionCwdKey(this.executionCwdOf(scope));
-  }
-
-  /**
-   * 真正交给 transport 之前复核冻结的自动引用目标（本机与只读副本都走这一道）。
-   *
-   * - 必须仍指向**这次实际要发送的 scope**（等待模型 / 落壳 RPC 期间换会话在这里挡住）；
-   * - 本机：执行目录的可折算键必须未变；按下发送时 `sessionId` 为空也接受——第一条
-   *   消息按同一目录新建（或迁移到）会话，本来就是那个目标；
-   * - 只读副本：额外要求原连接仍有效（远端目录键只是比较键，不参与折算）。
-   *
-   * 不重新读编辑器选区、也不看当前活动窗口：用户点击后改变选区 / 切换窗口不应把
-   * 已经冻结的引用重新拼一遍。
-   */
-  private isSelectionTargetCurrent(
-    target: SelectionTarget,
-    scope: SessionScope | undefined,
-  ): boolean {
-    // scope 给出时必须仍是**同一个域对象**：等待模型 / 落壳期间切走再切回同一
-    // sessionId 会重建一个新的域（执行目录也可能不同），只比 id 会放行旧目标。
-    // 未给出（尚无连接）时按当前绑定复核，行为与改动前的只读副本判定一致。
-    const current = this.scopeOfView(target.viewId);
-    if (scope) {
-      if (current !== scope) return false;
-    } else if (current === undefined) {
-      return false;
-    }
-    const cwd = scope ? this.executionCwdOf(scope) : current ? this.executionCwdOf(current) : undefined;
-    if (target.kind === "remote") {
-      const sessionId = scope?.sessionId ?? current?.sessionId;
-      return target.sessionId === sessionId && !!this.resolveHostFileConnection(target.connectionId) &&
-        target.cwdKey === remoteSelectionCwdKey(cwd);
-    }
-    const sessionId = scope?.sessionId ?? current?.sessionId;
-    if (target.sessionId !== undefined && target.sessionId !== sessionId) return false;
-    return target.cwdKey === selectionDirectoryKey(cwd);
-  }
-
-  /**
-   * 自动引用目标已失效：不发送、不携旧 token，把**原始草稿与附件**还给原会话。
-   *
-   * 只读副本还回它提交那一刻的会话（改动前的口径）；本机目标若按下发送时还没有
-   * 会话，就还给这次实际落到的会话（`scope`）——那份草稿仍然属于用户此刻的消息。
-   */
-  private cancelStaleSelectionSubmit(
-    target: SelectionTarget,
-    scope: SessionScope | undefined,
-    viewId: string,
-    text: string,
-    attachments: Attachment[],
-    requestId: string,
-  ): boolean {
-    if (this.isSelectionTargetCurrent(target, scope)) return false;
-    this.retireEcho(requestId, "reference-target-changed");
-    const sessionId = target.sessionId ?? scope?.sessionId ?? this.viewSessions.get(target.viewId);
-    if (sessionId) this.appendDraftForSession(sessionId, text, attachments, requestId);
-    else this.appendDraft(viewId, text, attachments, requestId);
-    return true;
-  }
-
-  private displayedSelectionFor(viewId: string): SelectionContextView | undefined {
-    this.invalidateSelectionTarget();
-    return this.selectionDisplayed?.target.viewId === viewId ? this.selectionDisplayed.context : undefined;
-  }
-
-  private sendableSelectionFor(viewId: string): TargetedSelection | undefined {
-    this.invalidateSelectionTarget();
-    const displayed = this.selectionDisplayed;
-    // 防抖期间界面上的上一个引用只是占位，只有最新事件稳定后才允许随正文发送。
-    return !this.selectionPending && displayed?.target.viewId === viewId ? displayed : undefined;
-  }
-
-  private selectionPending?: PendingSelection;
-  private selectionDisplayed?: TargetedSelection;
-  private selectionTimer?: ReturnType<typeof setTimeout>;
-  private selectionSequence = 0;
-  private hasRegisteredSelectionView = false;
-  private initialSelectionFacts?: { facts: SelectionFacts; cwdKey: string };
-  private selectionInitialView?: string;
 
   /**
    * 供资源管理器右键 / 命令调用：把**文件或目录**作为 `@` 引用加到输入框。
@@ -14957,7 +14661,7 @@ export class ChatController implements vscode.Disposable {
 
   dispose(): void {
     this.disposed = true;
-    clearTimeout(this.selectionTimer);
+    this.selection.dispose();
     this.trajectoryResults.closeAll();
     // 已打开的执行世界资源随连接一起失效：关闭后 provider 明确报不可用。
     this.hostFileConnections.clear();

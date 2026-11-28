@@ -87,6 +87,7 @@
 - [hostText.ts](<hostText.ts>) — @key 到原生 UI 文本，跟随 VS Code 语言。
 - [editorReference.ts](<editorReference.ts>) — 识别本机文件或只读副本的原始地址，排除差异视图及快照。
 - [selection.ts](<selection.ts>) — 编辑器选区行号边界、芯片悬停预览（归一换行、去首尾空行、截断，保留缩进）、选区事实快照；本机选区只生成安全的目录内相对引用（`localFileReference`），只读副本按原连接折原始文件路径，并区分可折算目录键与仅比较键；手动添加的文件 / 选区 / 目录按目标会话执行目录折算，目录外退可表示绝对路径（`manualFileReference` / `manualDirectoryReference`）。
+- [selectionContext.ts](<selectionContext.ts>) — 自动引用的投递与发送资格：防抖中的待投递内容和已显示占位共用一个目标，窗口恢复与首次补壳只替换投递归属，不修改按下发送时的快照。控制器提供活动窗口、会话、执行目录与连接事实，并负责 IPC 和取消回填。
 - [windowState.ts](<windowState.ts>) — workspaceState 会话窗口缓存。
 - [unreadStore.ts](<unreadStore.ts>) — 每会话一个 globalState 键的未读存储。
 - [notificationQueue.ts](<notificationQueue.ts>) — 宿主权威的消息通知队列（合并 / 确认 / seq 水位 / 容量；不 import vscode、不落盘）。

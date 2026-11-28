@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import { ChatController } from "../src/dsh/controller";
 import { HostFileAccess } from "../src/dsh/remoteFiles";
+import type { SelectionContext } from "../src/dsh/selectionContext";
 import { createTrajectoryResultWatchManager } from "../src/dsh/trajectoryResultWatch";
 import type { HostToWebview, WebviewToHost } from "../src/shared/ipc";
 
@@ -10,6 +11,7 @@ interface Harness {
   client?: object;
   hostFiles?: HostFileAccess;
   hostFileConnections: Map<string, HostFileAccess>;
+  selection: Pick<SelectionContext, "executionWorldChanged" | "replay">;
   listeners: Set<(target: string, frame: HostToWebview) => void>;
   viewSessions: Map<string, string>;
   readyViews: Set<string>;
@@ -62,6 +64,8 @@ c.scopeOfView = () => scope;
 c.sessionCwds = new Map([["s1", "/creation"]]);
 c.sessions = [];
 c.log = () => {};
+// 本夹具没有编辑器选区，只补齐构造器原本提供的自动引用协作者。
+c.selection = { executionWorldChanged() {}, replay() {} };
 const first = fakeClient();
 c.adoptClient(first);
 const firstAccess = c.hostFiles!;

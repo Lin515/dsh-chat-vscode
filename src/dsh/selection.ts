@@ -84,8 +84,7 @@ export function selectionPreview(text: string, cap = 400): string {
 
 /**
  * 编辑器「当前选区」的**事实**快照（`extension.ts` 在编辑器事件那一刻算好，
- * 300ms 防抖只延迟投递；控制器按活动窗口的会话执行目录把它折成引用帧，
- * 见 `ChatController.setSelectionFacts`）。
+ * `SelectionContext.capture` 按活动窗口的会话执行目录把它折成引用；防抖只延迟投递）。
  *
  * 这里只有「编辑器里是什么」的原始事实，不含任何按窗口折算的产物（引用 token
  * 取决于目标会话的执行目录，多根工作区下不同窗口折出的 token 可以不同）：
