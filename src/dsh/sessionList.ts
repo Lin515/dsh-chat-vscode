@@ -38,6 +38,12 @@
 import { directoryPathKey, isAbsoluteWorkspacePath } from "../shared/workspacePath";
 import type { HistoryScope } from "../shared/chat";
 
+/**
+ * 盘符大写：唯一实现在 `shared/workspacePath.ts`（界面与宿主同一口径），这里
+ * 只保留 `sessionList` 的导入面向后兼容。
+ */
+export { upperDriveLetter } from "../shared/workspacePath";
+
 /** 只藏**子代理**会话；分支（有 parent、`origin` 为空）必须留着。 */
 export function visibleSessionRows<T extends { origin?: string }>(rows: readonly T[]): T[] {
   return rows.filter((row) => row.origin !== "subagent");
@@ -74,17 +80,6 @@ export function visibleSessionCandidates<T extends { sessionId: string }>(
 export function normalizePath(value: string | undefined): string {
   // 唯一实现放在 `shared/workspacePath.ts`：界面与宿主必须用同一个目录身份键
   return directoryPathKey(value);
-}
-
-/**
- * Windows 盘符统一成大写（`d:/x` → `D:/x`），其余原样。
- *
- * 盘符在 Windows 上大小写等价，但**给人看**的路径应该是大写盘符（`D:\dev`）——
- * VS Code 以小写盘符打开文件夹（命令行 `code d:\dev`）时 `fsPath` 原样保留小写，
- * 界面照抄就会显示小写。只动开头那个盘符，路径其余部分的大小写是有意义的，不碰。
- */
-export function upperDriveLetter(value: string): string {
-  return value.replace(/^[a-z]:/, (drive) => drive.toUpperCase());
 }
 
 /** 一条会话「该不该出现在本窗口的历史列表里」所需的全部上下文。 */

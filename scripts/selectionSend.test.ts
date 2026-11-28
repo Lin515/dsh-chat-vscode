@@ -322,6 +322,11 @@ mock.timers.enable({ apis: ["setTimeout"] });
   assert.deepStrictEqual(insertions().at(-1), { target: "v1", text: "@C:/work/other/src/a.ts#L1-L2" },
     "多根工作区的另一个根退回可表示的绝对路径，绝不带工作区文件夹名");
 
+  // `Uri.fsPath` 给的是小写盘符；回退绝对路径时统一成大写（与工作目录显示同一口径）。
+  controller.addSelection("c:/work/other/src/a.ts", { start: 1, end: 2 });
+  assert.deepStrictEqual(insertions().at(-1), { target: "v1", text: "@C:/work/other/src/a.ts#L1-L2" },
+    "完整路径的盘符统一大写，路径其余部分的大小写保持原样");
+
   const before = insertions().length;
   controller.addSelection("demo/src/a.ts", { start: 1, end: 2 });
   assert.strictEqual(insertions().length, before,
@@ -991,7 +996,7 @@ for (const [path, cwd, expected, reason] of [
   ["/work/project2/src/a b.ts", "/work/project", '@"/work/project2/src/a b.ts#L2-L4"', "同名前缀不算子目录"],
   ["/work/project/a.ts", undefined, "@/work/project/a.ts#L2-L4", "缺少 cwd 时保留绝对路径"],
   [String.raw`d:\Work\a b.ts`, "D:/Work", '@"a b.ts#L2-L4"', "只折叠 Windows 盘符大小写与分隔符"],
-  [String.raw`d:\Work\a b.ts`, "D:/work", '@"d:/Work/a b.ts#L2-L4"', "不猜 Windows 目录名大小写"],
+  [String.raw`d:\Work\a b.ts`, "D:/work", '@"D:/Work/a b.ts#L2-L4"', "盘符统一大写，但不猜 Windows 目录名大小写"],
   [String.raw`\\server\Share\root\a b.ts`, "//server/Share/root", '@"a b.ts#L2-L4"', "UNC 同名共享内相对引用"],
   [String.raw`\\server\Share\root\a b.ts`, "//server/share/root", '@"//server/Share/root/a b.ts#L2-L4"', "不猜 UNC 共享名大小写"],
   ["/work/D:", "/work", "@/work/D:#L2-L4", "POSIX 裸盘符名不能变成盘符查询"],

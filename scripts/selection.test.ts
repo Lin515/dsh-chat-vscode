@@ -135,6 +135,11 @@ console.log("selection: 命令 → 带行号的 `@` 引用 ✓");
     "多根工作区的另一个根退回可表示的绝对路径，绝不带工作区文件夹名",
   );
   assert.strictEqual(
+    manualFileReference("c:/work/other/src/a.ts", cwd, { start: 1, end: 2 }),
+    "@C:/work/other/src/a.ts#L1-L2",
+    "回退绝对路径时盘符统一大写（Uri.fsPath 给的是小写），目录段大小写原样",
+  );
+  assert.strictEqual(
     manualFileReference("C:/work/demo/my dir/a.ts", cwd, { start: 1, end: 2 }),
     '@"my dir/a.ts#L1-L2"',
     "目录内的带空格路径仍是引号内的单 token",
@@ -155,9 +160,9 @@ console.log("selection: 命令 → 带行号的 `@` 引用 ✓");
     "目录同样按执行目录折算",
   );
   assert.strictEqual(
-    manualDirectoryReference("C:/work/other/src", cwd),
+    manualDirectoryReference("c:/work/other/src", cwd),
     "@C:/work/other/src/",
-    "目录在另一个根时退绝对路径并保留结尾斜杠",
+    "目录在另一个根时退绝对路径并保留结尾斜杠（盘符同样大写）",
   );
 }
 console.log("selection: 手动引用的折算与回退 ✓");

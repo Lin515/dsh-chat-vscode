@@ -31,6 +31,7 @@ import {
   isAbsoluteWorkspacePath,
   isDeviceNamespacePath,
   isWindowsStylePath,
+  upperDriveLetter,
 } from "./workspacePath";
 
 /**
@@ -131,7 +132,7 @@ export function referenceSessionIdOf(query: string): string | undefined {
 /** 生成 `@` 引用的模型可见文本；不可引用时返回 undefined。 */
 export function formatFileMention(path: string, kind: "file" | "directory" = "file"): string | undefined {
   // 先归一化分隔符，再谈尾斜杠：`src\dsh\` 归一后就是 `src/dsh/`，不必再补
-  const normalized = normalizeMentionPath(path);
+  const normalized = upperDriveLetter(normalizeMentionPath(path));
   const needsSlash = kind === "directory" && !normalized.endsWith("/");
   const full = needsSlash ? `${normalized}/` : normalized;
   // eslint-disable-next-line no-control-regex -- 官方逐字如此：控制字符会让 token 无法解析

@@ -39,6 +39,8 @@ import {
   assert.strictEqual(formatFileMention("src\\dsh\\", "directory"), "@src/dsh/", "目录：反斜杠归一 + 尾斜杠只留一个");
   assert.strictEqual(formatFileMention("src\\dsh\\adapter.ts"), "@src/dsh/adapter.ts", "文件同样归一（两处产生方要一致）");
   assert.strictEqual(formatFileMention("D:\\dev\\app\\a.ts"), "@D:/dev/app/a.ts", "绝对路径也归一");
+  assert.strictEqual(formatFileMention("d:\\dev\\app\\a.ts"), "@D:/dev/app/a.ts", "小写盘符统一成大写（VS Code 的 Uri.fsPath 给小写盘符）");
+  assert.strictEqual(formatFileMention("/home/d:/x"), "@/home/d:/x", "POSIX 根下的名字不按盘符改写");
   // **文件**不补斜杠，哪怕路径以斜杠结尾也不动它
   assert.strictEqual(formatFileMention("src/dsh/", "file"), "@src/dsh/");
 }

@@ -19,7 +19,7 @@ import {
   relativeMentionPath,
   selectionDirectoryKey,
 } from "../shared/mentions";
-import { isAbsoluteWorkspacePath, isDeviceNamespacePath, isWindowsStylePath } from "../shared/workspacePath";
+import { isAbsoluteWorkspacePath, isDeviceNamespacePath, isWindowsStylePath, upperDriveLetter } from "../shared/workspacePath";
 import type { RemoteFileAddress } from "./remoteFileAddress";
 
 /** 选区端点的**结构**视图（`vscode.Position` 的字段子集）。 */
@@ -108,7 +108,8 @@ function referenceablePath(path: string, directory: boolean): string | undefined
   // `/a\b` 中的反斜杠在 POSIX 是文件名的一部分，不能交给会无条件归一的引用语法。
   if (!isAbsoluteWorkspacePath(path) || (!isWindowsStylePath(path) && path.includes("\\"))) return undefined;
   if (isDeviceNamespacePath(path)) return undefined;
-  const slashed = normalizeMentionPath(path);
+  // 盘符统一大写只改开头一个字母；目录段 / 文件名的大小写是路径身份的一部分，原样保留。
+  const slashed = upperDriveLetter(normalizeMentionPath(path));
   const key = selectionDirectoryKey(slashed);
   if (!key) return undefined;
   const value = directory ? key : slashed;
@@ -157,7 +158,8 @@ export function localFileReference(
  * 与 {@link localFileReference}（自动附带）的分别只在「折不出来怎么办」：自动附带
  * 是背景行为，目录之外就静默不附带；手动命令是用户显式动作，选中的文件可能就在
  * 多根工作区的另一个根下，不能什么都不做（那会让快捷键看起来失灵）。绝对路径与
- * 只读副本的回退同口径——同一个执行世界，`@` 语法两种拼写模型都读得到。
+ * 只读副本的回退同口径——同一个执行世界，`@` 语法两种拼写模型都读得到；盘符统一
+ * 大写（VS Code 的 `Uri.fsPath` 给小写盘符），与工作目录显示同一口径。
  *
  * 返回 `undefined` 只表示**连绝对拼写也无法无歧义表示**（相对拼写、设备命名空间、
  * 控制字符/引号、行号后缀歧义等），调用方按「跳过插入」处理。

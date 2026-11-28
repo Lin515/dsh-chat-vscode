@@ -41,6 +41,19 @@ export function isAbsoluteWorkspacePath(path: string): boolean {
 }
 
 /**
+ * Windows 盘符统一成大写（`d:/x` → `D:/x`），其余原样。
+ *
+ * 盘符在 Windows 上大小写等价，但**给人看**的路径应该是大写盘符（`D:\dev`）。
+ * VS Code 的 `Uri.fsPath` 会把盘符统一小写（`uriToFsPath` 的默认
+ * `keepDriveLetterCasing` 为 false），所以编辑器给出的绝对路径、本机文件选择器
+ * 返回的路径都可能是小写盘符，直接照抄进界面或 `@` 引用就会与工作目录那一带的
+ * 显示口径不一致。只动开头那个盘符；路径其余部分的大小写是有意义的，不碰。
+ */
+export function upperDriveLetter(value: string): string {
+  return value.replace(/^[a-z]:/, (drive) => drive.toUpperCase());
+}
+
+/**
  * 把相对路径拼到工作目录上（官方 `resolveWorkspacePath`）。
  *
  * 只做字符串拼接，**不**消内部的 `.` / `..`、不转分隔符、不校验存在性：最终规范化由
