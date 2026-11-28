@@ -5,7 +5,7 @@
  * 目标），这里钉的是「用户真能点到」——判定对了却没渲染成按钮、或者按钮长在了一段
  * 本来就该是普通文本的文字上，源码正则都看不出来。
  *
- * 覆盖六件事：
+ * 覆盖：
  * 1. `@src/a.ts` 渲染成带 `.mention-link` 的行内按钮，悬停说明按「文件」那一档给；
  * 2. 目录引用同样可点，但提示是「展开目录」——三档目标点开的行为不同，提示不能混；
  * 3. 会话引用按**显示形态**（`@标题`）渲染，原始的长 token 一个字节都不出现在界面上；
@@ -14,7 +14,7 @@
  * 6. **已经发出去**的会话引用（落盘时被服务端折成 `@标题`、id 由召回清单带回来）按会
  *    话渲染，且同一条正文在没有清单时按形状是文件引用；
  * 7. `dshChat.openRealFileOnClick` 打开后，文件引用的悬停不再提示 Alt（动作仍保留），
- *    HTML 的 Ctrl/Cmd 浏览器提示照旧。
+ *    HTML 的 Ctrl/Cmd 浏览器提示照旧；助手正文启用同一策略，工具卡不启用。
  *
  * 另有一条样式断言：`.mention-link` 必须是**行内**元素、没有上下内边距——气泡的折叠
  * 判定量的是 `scrollHeight`，按钮把行盒撑高的话「5 行」的阈值就与实际行数对不上。
@@ -46,6 +46,7 @@ import { TextsContext, dictionaryFor } from "../src/webview/texts";
 const posted: unknown[] = [];
 (globalThis as { acquireVsCodeApi?: unknown }).acquireVsCodeApi = () => ({ postMessage: (message: unknown) => posted.push(message) });
 const { Message } = await import("../src/webview/components/Message");
+const { ToolCardBody } = await import("../src/webview/components/ToolCards");
 const { openMentionTarget } = await import("../src/webview/mentionOpen");
 
 const zh = dictionaryFor("zh");
@@ -189,6 +190,35 @@ const sessionToken = (label: string, id: string): string =>
     `HTML 文件的 Alt 提示同样省掉：${htmlFile}`,
   );
   console.log("mentionLinksUi: 单击档打开后不再提示 Alt ✓");
+}
+
+// ---------- 2d. 同一配置下，只改正文文件链接的单击策略 ----------
+{
+  const bodyPath = "./reply/index.html";
+  const toolPath = "./tool/index.html";
+  const message: MessageView = {
+    id: "a:1",
+    role: "assistant",
+    ts: Date.now(),
+    segments: [{ kind: "text", id: "answer", text: `[正文](${bodyPath})` }],
+  };
+  const html = quietly(() => renderToStaticMarkup(
+    createElement(FileOpenPolicyContext.Provider, { value: fileOpenPolicy(true) },
+      createElement(TextsContext.Provider, { value: zh },
+        createElement(Message, { message }),
+        createElement(ToolCardBody, {
+          card: { kind: "web_search", answer: `[工具结果](${toolPath})`, sources: [], truncated: false },
+        }),
+      ),
+    ),
+  ));
+  const browserHint = zh.webFileBrowserHint(modifier);
+  assert.ok(html.includes(`title="${bodyPath}\n${browserHint}"`), "正文省略 Alt 提示，保留 HTML 浏览器入口");
+  assert.ok(
+    html.includes(`title="${toolPath}\n${zh.openRealFileHint(alt)}\n${browserHint}"`),
+    "工具结果仍保留 Alt 提示与浏览器入口，不继承正文的单击配置",
+  );
+  console.log("mentionLinksUi: 真实文件单击配置不作用于工具结果 ✓");
 }
 
 // ---------- 3. 纯文本消息：一个链接按钮都不该出现 ----------

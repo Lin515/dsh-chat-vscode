@@ -50,9 +50,10 @@ function StreamText({
     [text, streaming],
   );
   const shown = useSelectionFreeze(ref, snapshot);
+  const fileOpenPolicy = useFileOpenPolicy();
   return (
     <div ref={ref} className="md-wrapper">
-      <Markdown text={shown.text} phase={shown.phase} fileLinks={fileLinks} cwd={cwd} />
+      <Markdown text={shown.text} phase={shown.phase} fileLinks={fileLinks} cwd={cwd} fileOpenPolicy={fileOpenPolicy} />
     </div>
   );
 }

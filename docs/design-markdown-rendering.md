@@ -161,7 +161,7 @@ GFM 对多段脚注、重复定义、复杂分隔符等边缘输入可能与迁�
 
 ## 链接、图片与生命周期
 
-- 复用 `parseFileLink`、`fileOpenIntent`、现有悬停文本和宿主帧。普通单击默认只读，`dshChat.openRealFileOnClick` 打开后走 Alt 那一档；Alt 始终打开校验后的真实文件，Ctrl/Cmd + HTML 家族仍走系统浏览器。校验失败的只读回退与提示不改；单击已走真实文件时悬停省掉 Alt 提示（动作保留）。`#` 页内锚点保持原路，危险 / 未认可 scheme 不导航。
+- 复用 `parseFileLink`、`fileOpenIntent`、现有悬停文本和宿主帧。普通单击默认只读；只有助手正文传入 `dshChat.openRealFileOnClick` 策略，开启后未按 Ctrl/Cmd 的单击走 Alt 那一档。工具详情、计划和轨迹不启用该策略。Alt 始终打开校验后的真实文件，Ctrl/Cmd + HTML 家族仍走系统浏览器。校验失败的只读回退与提示不改；单击已走真实文件时悬停省掉 Alt 提示（动作保留）。`#` 页内锚点保持原路，危险 / 未认可 scheme 不导航。
 - 外链仍只发一次 `openExternal`，必须 `preventDefault` + `stopPropagation` 防止 VS Code 外层再开一次。不能复制官方 URL 白名单而丢相对路径、盘符路径、带行号目标、`%5C` 或邮件链接等现有判据。
 - 行内代码的文件目标继续由 `FileLinkPort` 精确 / 唯一别名判定，不能按“像路径”猜。词表晚于正文到达、cwd 变化、语言变化时按钮与悬停必须更新，悬停和点击持有同一个解析目标，歧义时不挂动作。
 - 图片沿用 `localImages` 的执行世界读取、连接 + 会话缓存、有限并发和失败占位。HTTPS 图保留 no-referrer / lazy / async，HTTP 图仍拒绝；不增加远端 fetch、桌面文件路由、本机读盘回退或认证重定向。

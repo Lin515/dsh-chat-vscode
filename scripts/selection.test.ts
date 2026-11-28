@@ -164,6 +164,11 @@ console.log("selection: 命令 → 带行号的 `@` 引用 ✓");
     "@C:/work/other/src/",
     "目录在另一个根时退绝对路径并保留结尾斜杠（盘符同样大写）",
   );
+  assert.strictEqual(
+    manualFileReference("/work/c:notes.md", "/work", { start: 2, end: 4 }),
+    "@c:notes.md#L2-L4",
+    "POSIX 路径折成相对引用后仍保留文件名大小写",
+  );
 }
 console.log("selection: 手动引用的折算与回退 ✓");
 

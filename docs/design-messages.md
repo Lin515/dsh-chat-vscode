@@ -18,7 +18,7 @@
 
 外链由扩展的 `openExternal` 帧交给系统，系统按受信域名决定是否先问一次，**一次点击只走这一条**。正文锚点的点击因此必须 `stopPropagation`：VS Code 的 webview 外层页本身还挂着 click 监听，会把同一个锚点再转成一次 `did-click-link`，而且不检查 `defaultPrevented`；两条都跑就是一次点击打开两次。页内锚点（`#…`）仍放行给外层页滚动。
 
-HTML 家族（`.html` / `.htm` / `.xhtml` / `.shtml`）的文件链接保留 **Ctrl/Cmd+单击**系统浏览器打开入口；普通单击默认是只读预览，Alt 打开可编辑的真实文件。markdown 锚点、行内代码文件链接与已发出的 `@文件` 引用共用点击意图判据（`fileOpenIntent`）与扩展名白名单（`shared/webFile.ts`）：Alt → `openFile` 的 `real`，配置 `dshChat.openRealFileOnClick` 后无修饰键的单击也走 `real`（复刻 Alt 链路，真实文件不可达由宿主回退只读并提示），Ctrl/Cmd+HTML → `openFileInBrowser`，其余只读。单击档不越过 Ctrl/Cmd，HTML 的浏览器入口不被它抢走。宿主收到 `openFileInBrowser` 后再验白名单，并通过 Host 的原生能力打开，由 Host 验证执行世界到桌面的文件映射；不能把远端路径直接交扩展本机浏览器，能力不可用时明确提示。文件芯片与本轮改动行的普通单击是「看改动」；Alt 打开可编辑的真实文件，Ctrl/Cmd/Shift 保留原来的只读直接打开、不叠加浏览器行为。真实文件的落点、校验与远端回退见[文件路径](<design-paths.md>)。
+HTML 家族（`.html` / `.htm` / `.xhtml` / `.shtml`）的文件链接保留 **Ctrl/Cmd+单击**系统浏览器打开入口；普通单击默认是只读预览，Alt 打开可编辑的真实文件。markdown 锚点、行内代码文件链接与已发出的 `@文件` 引用共用点击意图判据（`fileOpenIntent`）与扩展名白名单（`shared/webFile.ts`）：Alt → `openFile` 的 `real`，配置 `dshChat.openRealFileOnClick` 后未按 Ctrl/Cmd 的单击也走 `real`（复刻 Alt 链路，真实文件不可达由宿主回退只读并提示），Ctrl/Cmd+HTML → `openFileInBrowser`，其余只读。正文文件链接不为 Shift 定义额外动作：Shift+单击与普通单击一致，和 Alt 或 Ctrl/Cmd 一起按也不改变原有动作。工具详情、计划与轨迹的 Markdown 不应用该配置，单击仍走只读。宿主收到 `openFileInBrowser` 后再验白名单，并通过 Host 的原生能力打开，由 Host 验证执行世界到桌面的文件映射；不能把远端路径直接交扩展本机浏览器，能力不可用时明确提示。文件芯片与本轮改动行的普通单击是「看改动」；Alt 打开可编辑的真实文件，Ctrl/Cmd/Shift 保留原来的只读直接打开、不叠加浏览器行为。真实文件的落点、校验与远端回退见[文件路径](<design-paths.md>)。
 
 ## 改动对比的来源
 

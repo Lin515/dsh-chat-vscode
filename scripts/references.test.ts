@@ -1,5 +1,5 @@
 /**
- * `@path` **引用文本**的规则（对齐官方 `formatFileMention`）。
+ * `@path` **引用文本**的规则（以官方 `formatFileMention` 为底，差异见 `src/shared/mentions.ts`）。
  *
  * 引用只有一个落点：**正文**（界面在 `@` 候选里选中时插、宿主把目录插成 `@dir/`）。
  * 早先还有一条「引用芯片」线——附件列表里的一条，发送时由 `composeWithReferences`
@@ -25,8 +25,7 @@ import {
 
 // ---------- 1. mention 文本：目录补尾斜杠、分隔符统一成 `/` ----------
 //
-// 分隔符归一与「引号成对」是**刻意偏离官方**的两条（用户 2026-09-21 口径，理由写在
-// `src/shared/mentions.ts` 的文件头）：官方保留调用方给的反斜杠、且目录只写开引号。
+// 分隔符、成对引号与 Windows 绝对路径盘符的归一规则见 `src/shared/mentions.ts` 的文件头。
 {
   assert.strictEqual(formatFileMention("src/dsh/controller.ts"), "@src/dsh/controller.ts");
   // 目录补结尾斜杠——系统提示段用它区分「这是目录，要内容就 list」
@@ -41,6 +40,9 @@ import {
   assert.strictEqual(formatFileMention("D:\\dev\\app\\a.ts"), "@D:/dev/app/a.ts", "绝对路径也归一");
   assert.strictEqual(formatFileMention("d:\\dev\\app\\a.ts"), "@D:/dev/app/a.ts", "小写盘符统一成大写（VS Code 的 Uri.fsPath 给小写盘符）");
   assert.strictEqual(formatFileMention("/home/d:/x"), "@/home/d:/x", "POSIX 根下的名字不按盘符改写");
+  assert.strictEqual(formatFileMention("c:notes.md"), "@c:notes.md", "POSIX 相对文件名不按盘符改写");
+  assert.strictEqual(formatFileMention("c:docs/subdir", "directory"), "@c:docs/subdir/", "POSIX 相对目录名保留大小写");
+  assert.strictEqual(formatFileMention("d:/dev/App/a.ts"), "@D:/dev/App/a.ts", "正斜杠绝对路径只改写盘符");
   // **文件**不补斜杠，哪怕路径以斜杠结尾也不动它
   assert.strictEqual(formatFileMention("src/dsh/", "file"), "@src/dsh/");
 }

@@ -1,13 +1,12 @@
 import { memo, useMemo } from "react";
-import type { FileLinkPort } from "../fileLinks";
-import { useFileOpenPolicy } from "../fileOpenPolicyContext";
+import type { FileLinkPort, FileOpenPolicy } from "../fileLinks";
 import { parseMarkdown } from "../markdown/parse";
 import { renderMarkdownDocument } from "../markdown/render";
 import type { MarkdownPhase } from "../markdown/types";
 import { useTexts } from "../texts";
 
 /**
- * 助手正文的 Markdown 入口（薄包装）。
+ * 助手正文及辅助面板共用的 Markdown 入口（薄包装）。
  *
  * 解析与渲染都在 `webview/markdown/`：这里只把文本、完成态与文件词表交给
  * 同一棵 React 文档树，不再切分 HTML 块、不再用 innerHTML，也不在渲染后
@@ -24,6 +23,7 @@ export const Markdown = memo(function Markdown({
   phase = "settled",
   fileLinks,
   cwd,
+  fileOpenPolicy,
 }: {
   text: string;
   /** 生成中 / 完成态；决定 GFM 或本地数学解析臂。 */
@@ -32,15 +32,14 @@ export const Markdown = memo(function Markdown({
   fileLinks?: FileLinkPort;
   /** 会话工作目录：相对路径的悬停标题按它补全；缺省保留链接上的原样拼写。 */
   cwd?: string;
+  /** 仅助手正文传入配置策略；工具详情、计划和轨迹仍默认单击只读。 */
+  fileOpenPolicy?: FileOpenPolicy;
 }) {
   const texts = useTexts();
-  // 文件链接的单击档挂在树上（App 提供）：这里不接 prop，正文、工具卡与轨迹
-  // 预览才会共用同一份策略，不会有人漏传就退回另一档。
-  const policy = useFileOpenPolicy();
   const document = useMemo(() => parseMarkdown(text, phase), [text, phase]);
   return (
     <div className="md">
-      {renderMarkdownDocument(document, { phase, fileLinks, cwd, policy, texts })}
+      {renderMarkdownDocument(document, { phase, fileLinks, cwd, policy: fileOpenPolicy, texts })}
     </div>
   );
 });

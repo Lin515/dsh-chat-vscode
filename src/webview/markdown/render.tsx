@@ -795,7 +795,6 @@ function openMarkdownFile(
     link: true,
     ...(intent === "real" ? { real: true } : {}),
   });
-  void context;
 }
 
 interface ImageState {

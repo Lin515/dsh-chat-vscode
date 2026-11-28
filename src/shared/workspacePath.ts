@@ -41,7 +41,7 @@ export function isAbsoluteWorkspacePath(path: string): boolean {
 }
 
 /**
- * Windows 盘符统一成大写（`d:/x` → `D:/x`），其余原样。
+ * Windows 绝对路径的盘符统一成大写（`d:/x` → `D:/x`），其余原样。
  *
  * 盘符在 Windows 上大小写等价，但**给人看**的路径应该是大写盘符（`D:\dev`）。
  * VS Code 的 `Uri.fsPath` 会把盘符统一小写（`uriToFsPath` 的默认
@@ -50,7 +50,7 @@ export function isAbsoluteWorkspacePath(path: string): boolean {
  * 显示口径不一致。只动开头那个盘符；路径其余部分的大小写是有意义的，不碰。
  */
 export function upperDriveLetter(value: string): string {
-  return value.replace(/^[a-z]:/, (drive) => drive.toUpperCase());
+  return value.replace(/^[a-z]:(?=[/\\])/, (drive) => drive.toUpperCase());
 }
 
 /**

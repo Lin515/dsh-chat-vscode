@@ -44,7 +44,7 @@
 - **发送安全（命令不被引用改写）**：Webview 把原始正文与引用分别传给宿主（`send.autoReference` / `send.autoReferenceId`）；宿主先用原始 `text` 识别 `/xxx`，只有普通消息且没有待投递、标识和 token 均与当前展示匹配时才追加（`appendAutoReference`：正文与引用之间空一行，空正文直接是引用）。`/compact` 等命令不混进引用；命令不留回显。**本机与只读副本**的自动引用都在真正 `session/prompt` / 子代理 prompt 之前复核实际 scope 与执行目录（本机按可折算目录键，只读副本另要求原连接仍有效；按下发送时未绑定、之后按同一目录建立或迁移的第一条消息不算失效）。若发送准备阶段目标已变，撤销临时回显并把**原始草稿**及附件归还原会话，不投递旧引用。点 × 或发送后的 `selectionContextDismiss` 也必须匹配投递标识，旧界面帧不能影响同 token 的新投递。
 - **原始草稿与提交正文分开记账**：提交记录（`SubmissionRecord`）同时记 `text`（实际提交，含当时的引用）与 `draft`（拼引用之前的草稿）。取消目录选择 / 落点被占回填的是 `draft`；无回显的 `lost` 收场、队列「重新编辑」与回滚回填同样只还原 `draft`；「ESC 中止把队首重新发出」与失败行「重发」按 `text` 原样重发，保留当时附带的引用，不重取当前选区。**已经真正交给 transport** 的失败行才按 `text` 原样重发；连接都没建立、从未提交过的自动引用，失败行只保留原始草稿（不带旧 token），改 cwd 后重发也不会把它当普通正文送出去。
 - **芯片显示的是发送引用**：`ui/selectionContext` 带 `{ id, token, preview }`（`null` 表示撤下）。芯片不加「已选」前缀，空间不足时从开头省略以尽量保留文件名和行号；悬停提示和发送仍使用完整 `token`（含单行 `#L12` 或带空格路径的成对引号）。悬停也会显示选区原文预览，整文件无预览时仍可查看完整引用。
-- 离线覆盖：`composerSend.test.ts` 检查 send 帧，`selectionContext.test.ts` 检查折算 / 拼接 / 三档 / reducer / 芯片渲染，`selectionSend.test.ts` 驱动真控制器验证投递与发送，`editorColumn.test.ts` 驱动真 provider 验证活动信号与标签组落点；真实编辑器的选中、切面板与发送附带仍属安装端验收。
+- 离线覆盖：`composerSend.test.ts` 检查 send 帧，`selectionContext.test.ts` 检查折算 / 拼接 / 三档 / reducer / 芯片渲染，`selectionDelivery.test.ts` 检查防抖占位与发送资格、重复选区标识及目标迁移，`selectionSend.test.ts` 驱动真控制器验证投递与发送，`editorColumn.test.ts` 驱动真 provider 验证活动信号与标签组落点；真实编辑器的选中、切面板与发送附带仍属安装端验收。
 
 ## 顺序契约
 
@@ -159,6 +159,7 @@
 | attachments | included 与 includedAttachments 同序 |
 | selection | 编辑器选区行号区间边界，芯片悬停预览的归一 / 截断 / 保留缩进，手动引用按执行目录折算与目录外绝对回退 |
 | selectionContext | 引用按会话执行目录折算（多根 / 越界不附带）、发送拼接、三档开关（含旧布尔迁移）、归约与芯片渲染（显示即发送的 token） |
+| selectionDelivery | 直接驱动宿主投递模块：防抖占位不可发送、重复选区恢复稳定标识且不重发展示帧、首次绑定迁移与发送前目标复核 |
 | selectionSend | 真控制器：只投递活动窗口、切换撤旧、收起后 ready 不复活、`/compact` 与带参数命令不受引用影响、手动选区 / 整文件 / 目录按会话执行目录折算（工作区相对拼写不再直接插入） |
 | styles | 失败气泡、动作顺序、原因截断 |
 | previewFixture | 在飞带图、failed 与 failed 带落位锚点三种形态，队列区不吃乐观回显 |
